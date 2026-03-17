@@ -1,0 +1,115 @@
+# Copyright 2025 Enactic, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""상수 정의: 5g_grasp_right_v5
+
+v5: FABRICS pregrasp reset + 정책 손가락 grasp formation + Scripted lift checker.
+
+Action (8D):
+  [0:5]  per-finger lerp factor  ([-1,1] → [0,1] → lerp(HAND_START, HAND_GRASP))
+  [5:8]  palm xyz residual       ([-1,1] × PALM_RESIDUAL_RANGE = ±3cm)
+  Orientation: pregrasp에서 결정, episode 동안 고정
+
+Observation (94D) — actor = critic (단순화):
+  palm_to_cup_pos:       3  (world frame)
+  cup_rot:               4  (quaternion w,x,y,z)
+  fingertip_to_cup_pos:  15 (5 × 3D, world frame)
+  finger_joint_pos:      20
+  finger_joint_vel:      20
+  arm_joint_pos:          7
+  arm_joint_vel:          7
+  binary_contact:         5 (ContactSensor 기반, per-fingertip)
+  contact_force_norm:     5 (정규화 접촉력 per-fingertip, [0,1])
+  last_actions:           8
+  Total:                 94
+"""
+
+import math
+
+from .grasp_right_preset import (
+    HAND_GRASP_POSE,
+    HAND_START_POSE,
+    OBJECT_GOAL_POS,
+    OBJECT_SPAWN_CENTER,
+    OBJECT_SPAWN_RANGE_XY,
+    PREGRASP_OFFSET,
+    RIGHT_ARM_JOINT_NAMES,
+    RIGHT_ARM_START_POSE,
+    RIGHT_HAND_JOINT_NAMES,
+    palm_pose_maxs,
+    palm_pose_mins,
+)
+
+# ---------------------------------------------------------------------------
+# Dimensions
+# ---------------------------------------------------------------------------
+NUM_ARM_DOF  = len(RIGHT_ARM_JOINT_NAMES)    # 7
+NUM_HAND_DOF = len(RIGHT_HAND_JOINT_NAMES)   # 20
+NUM_ROBOT_DOF = NUM_ARM_DOF + NUM_HAND_DOF   # 27
+
+NUM_FINGER_ACTION = 5    # per-finger lerp (thumb, index, middle, ring, pinky)
+NUM_PALM_RESIDUAL = 3    # palm xyz residual
+NUM_ACTIONS = NUM_FINGER_ACTION + NUM_PALM_RESIDUAL   # 8
+
+NUM_FINGERTIPS = 5
+
+# ---------------------------------------------------------------------------
+# Observation space
+# ---------------------------------------------------------------------------
+NUM_OBSERVATIONS = 94   # Actor (94D): 3+4+15+20+20+7+7+5+5+8
+
+# Critic privileged sensors
+NUM_DISTAL_SENSORS = 5   # rl_dg_1_4 ~ rl_dg_5_4 (distal phalanx)
+NUM_MIDDLE_SENSORS = 3   # rl_dg_1_3 ~ rl_dg_3_3 (thumb, index, middle)
+
+# Critic extras over actor obs (24D):
+#   cup_lin_vel(3) + cup_ang_vel(3)
+#   + distal_binary(5) + distal_force(5)
+#   + middle_binary(3) + middle_force(3)
+#   + lift_phase_flag(1) + cup_height_delta(1)
+NUM_CRITIC_EXTRAS = 24
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 118
+
+# ---------------------------------------------------------------------------
+# Palm residual control
+# ---------------------------------------------------------------------------
+PALM_RESIDUAL_RANGE = 0.03   # ±3cm from pregrasp palm position
+
+# ---------------------------------------------------------------------------
+# Episode structure (@ 60 Hz policy rate)
+# ---------------------------------------------------------------------------
+GRASP_PHASE_STEPS = 300    # 5s: 정책 완전 제어 (손가락 닫기 + palm residual)
+LIFT_PHASE_STEPS  = 60     # 1s: 스크립트 z 상승 + 정책 손가락 유지
+TOTAL_EPISODE_STEPS = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS   # 360 = 6s
+
+LIFT_Z_DELTA = 0.04         # 4cm 수직 상승 (Scripted Lift Checker)
+
+# ---------------------------------------------------------------------------
+# Contact
+# ---------------------------------------------------------------------------
+CONTACT_FORCE_THRESHOLD  = 0.1    # N  binary contact 판정
+CONTACT_FORCE_MAX        = 10.0   # N  force_norm 정규화 분모 (clamp 후 /max → [0,1])
+MIN_CONTACTS_FOR_SUCCESS = 2      # 성공 판정 최소 접촉 손가락 수
+
+# ---------------------------------------------------------------------------
+# FABRICS pregrasp steps
+# ---------------------------------------------------------------------------
+PREGRASP_FABRICS_STEPS = 60   # 리셋 시 FABRICS rollout 스텝 수
+
+# ---------------------------------------------------------------------------
+# v1/v4/v5 alias
+# ---------------------------------------------------------------------------
+ARM_START_POSE     = RIGHT_ARM_START_POSE
+PALM_POSE_MINS_FUNC = palm_pose_mins
+PALM_POSE_MAXS_FUNC = palm_pose_maxs

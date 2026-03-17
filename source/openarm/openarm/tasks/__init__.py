@@ -66,6 +66,8 @@ for _mod in [
     "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_grasp_right_v1.config",
     "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_grasp_right_v2.config",
     "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_grasp_right_v3.config",
+    "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_grasp_right_v4.config",
+    "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_grasp_right_v5.config",
     "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_lift_right_v1.config",
 ]:
     try:
