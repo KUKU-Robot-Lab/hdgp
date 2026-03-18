@@ -67,9 +67,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS         # 94  (actor)
+    observation_space: int = NUM_OBSERVATIONS         # 104 (actor)
     action_space:      int = NUM_ACTIONS              # 8
-    state_space:       int = NUM_CRITIC_OBSERVATIONS  # 118 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS  # 128 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -86,9 +86,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 60
-    pregrasp_offset_x:     float = 0.01   # grasp2g_target_offset x
-    pregrasp_offset_y:     float = -0.09  # grasp2g_target_offset y(-0.06) - 3cm 안전 여유 (open hand)
-    pregrasp_offset_z:     float = 0.08   # grasp2g_target_offset z
+    pregrasp_offset_x:     float = -0.02   # grasp2g_target_offset x
+    pregrasp_offset_y:     float = -0.09  # grasp2g_target_offset y(-0.06)
+    pregrasp_offset_z:     float = 0.045   # grasp2g_target_offset z
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005
@@ -96,7 +96,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
-    cup_grasp_z_offset:  float = 0.056   # cup root → 실제 파지 중심 z offset
+    cup_grasp_z_offset:  float = 0.045   # cup root → 실제 파지 중심 z offset
     lift_success_height: float = 0.04    # 성공 판정: cup_z > init_z + 4cm
 
     # -----------------------------------------------------------------------
@@ -115,7 +115,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     enclosure_sharpness: float = 10.0  # exp(-sharpness * mean_dist)
 
     # 4. opposition: thumb + 다른 손가락 동시 접촉
-    opposition_weight: float = 1.0
+    opposition_weight: float = 5.0
 
     # 5. action_reg: ||action||² 패널티
     action_reg_weight: float = -0.005
@@ -134,8 +134,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "reward_weights": {
-            "contact_delta_weight": (3.0, 1.0),   # 초기 contact 유도 후 감소
-            "enclosure_weight":     (2.0, 3.0),   # 점점 강화
+            "contact_delta_weight": (5.0, 1.0),   # 초기 contact 유도 후 감소
+            "enclosure_weight":     (2.0, 5.0),   # 점점 강화
         },
     })
 
@@ -147,14 +147,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obj_out_x_max:  float = 0.85
     obj_out_y_min:  float = -0.60
     obj_out_y_max:  float = 0.25
-    obj_fallen_z:   float = 0.18
+    obj_fallen_z:   float = 0.10
 
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
     object_spawn_x_center: float = 0.40
     object_spawn_y_center: float = -0.15
-    object_spawn_z:        float = 0.38
+    object_spawn_z:        float = 0.215  # = table_center(0.2) + table_half_thickness(0.015)
     object_spawn_xy_range: float = 0.01   # 초기: 매우 좁게 (±1cm) → 학습 안정화 후 확대
 
     # -----------------------------------------------------------------------
@@ -190,7 +190,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Table",
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=[0.5725, 0.003, 0.235],
+            pos=[0.5725, 0.003, 0.2],
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
@@ -319,7 +319,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     cup_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Cup",
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=[0.5, 0.0, 0.38],
+            pos=[0.5, 0.0, 0.25],
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(

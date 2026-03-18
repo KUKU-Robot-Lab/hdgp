@@ -18,21 +18,21 @@ v5: FABRICS pregrasp reset + 정책 손가락 grasp formation + Scripted lift ch
 
 Action (8D):
   [0:5]  per-finger lerp factor  ([-1,1] → [0,1] → lerp(HAND_START, HAND_GRASP))
-  [5:8]  palm xyz residual       ([-1,1] × PALM_RESIDUAL_RANGE = ±3cm)
+  [5:8]  palm xyz residual       ([-1,1] × PALM_RESIDUAL_RANGE)
   Orientation: pregrasp에서 결정, episode 동안 고정
 
-Observation (94D) — actor = critic (단순화):
-  palm_to_cup_pos:       3  (world frame)
-  cup_rot:               4  (quaternion w,x,y,z)
-  fingertip_to_cup_pos:  15 (5 × 3D, world frame)
+Observation (104D) — actor (real-compatible):
+  palm_to_cup_pos:        3  (world frame)
+  cup_rot:                4  (quaternion w,x,y,z)
+  fingertip_to_cup_pos:  15  (5 × 3D, world frame)
   finger_joint_pos:      20
   finger_joint_vel:      20
   arm_joint_pos:          7
   arm_joint_vel:          7
-  binary_contact:         5 (ContactSensor 기반, per-fingertip)
-  contact_force_norm:     5 (정규화 접촉력 per-fingertip, [0,1])
+  binary_contact:         5  (ContactSensor Cup-filtered, per-fingertip)
+  fingertip_force_xyz:   15  (get_contact_force_matrix: Cup-only fx,fy,fz × 5tips, [-1,1])
   last_actions:           8
-  Total:                 94
+  Total:                104
 """
 
 import math
@@ -67,7 +67,7 @@ NUM_FINGERTIPS = 5
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 94   # Actor (94D): 3+4+15+20+20+7+7+5+5+8
+NUM_OBSERVATIONS = 104  # Actor (104D): 3+4+15+20+20+7+7+5+15+8
 
 # Critic privileged sensors
 NUM_DISTAL_SENSORS = 5   # rl_dg_1_4 ~ rl_dg_5_4 (distal phalanx)
@@ -79,7 +79,7 @@ NUM_MIDDLE_SENSORS = 3   # rl_dg_1_3 ~ rl_dg_3_3 (thumb, index, middle)
 #   + middle_binary(3) + middle_force(3)
 #   + lift_phase_flag(1) + cup_height_delta(1)
 NUM_CRITIC_EXTRAS = 24
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 118
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 128
 
 # ---------------------------------------------------------------------------
 # Palm residual control

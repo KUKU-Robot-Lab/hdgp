@@ -210,10 +210,12 @@ class GraspRightEnv(DirectRLEnv):
 
         # ----------------------------------------------------------------
         # 접촉 상태 버퍼 (actor: fingertip)
+        # get_contact_force_matrix() 해당: Cup-only pair-wise filtered force
         # ----------------------------------------------------------------
-        self.contact_force_raw  = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)
-        self.binary_contact_buf = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
-        self.num_contacts_buf   = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.contact_force_xyz_raw = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)  # (N,5,3) fx,fy,fz
+        self.contact_force_raw     = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)      # (N,5) norm
+        self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
+        self.num_contacts_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.prev_contact_count_buf = torch.zeros(self.num_envs, device=self.device)
 
         # ----------------------------------------------------------------
@@ -361,39 +363,53 @@ class GraspRightEnv(DirectRLEnv):
         print("=== GraspRightEnv v5: Fabrics initialized ===")
 
     # ------------------------------------------------------------------
-    # Contact force reading (v2/v3 패턴)
+    # Contact force reading — MD Section 10 PhysX API 대응
     # ------------------------------------------------------------------
-    def _sensor_max_contact_force(self, sensor: ContactSensor) -> torch.Tensor:
-        """(N,) 최대 접촉력 magnitude 반환. force_matrix_w 우선, 없으면 net_forces_w 사용."""
-        force_matrix_w = getattr(sensor.data, "force_matrix_w", None)
-        if force_matrix_w is not None:
-            mags = force_matrix_w.norm(dim=-1)   # (..., bodies, filters) → (N, B, K)
-            if mags.ndim >= 3:
-                mags = mags.max(dim=-1)[0]        # → (N, B)
-        else:
-            mags = sensor.data.net_forces_w.norm(dim=-1)  # (N, B)
-        return mags.max(dim=-1)[0]   # (N,)
+    def _get_cup_contact_force_xyz(self, sensor: ContactSensor) -> torch.Tensor:
+        """get_contact_force_matrix() 해당: Cup-only pair-wise filtered 3D force.
+
+        force_matrix_w shape: (N, 1_body, 1_filter=Cup, 3)
+        → (N, 3) fx, fy, fz (world frame)
+
+        net_forces_w (get_net_contact_forces)는 filter 무시이므로 사용하지 않음.
+        """
+        fm = sensor.data.force_matrix_w   # (N, 1, 1, 3) — Cup-only filtered
+        if fm is not None and fm.numel() > 0:
+            return fm[:, 0, 0, :]         # (N, 3)
+        return torch.zeros(self.num_envs, 3, device=self.device)
+
+    def _get_cup_contact_force_norm(self, sensor: ContactSensor) -> torch.Tensor:
+        """Cup-only filtered contact force magnitude (N,)."""
+        return self._get_cup_contact_force_xyz(sensor).norm(dim=-1)
 
     def _update_contact_forces(self) -> None:
-        """Actor/critic 접촉력 업데이트."""
-        # Actor: fingertip (tip 전용 sensor)
-        per_tip = torch.stack(
-            [self._sensor_max_contact_force(s) for s in self._tip_sensors], dim=-1
-        )  # (N, 5)
-        self.contact_force_raw.copy_(per_tip)
-        self.binary_contact_buf.copy_(per_tip > CONTACT_FORCE_THRESHOLD)
+        """Actor/critic 접촉력 업데이트.
+
+        MD Section 10 PhysX API 대응:
+          get_contact_force_matrix() → force_matrix_w (Cup-only filtered, primary)
+          get_net_contact_forces()   → net_forces_w    (unfiltered, 사용 안 함)
+        """
+        # ---- Actor: fingertip xyz force (get_contact_force_matrix 해당) ----
+        tip_xyz = torch.stack(
+            [self._get_cup_contact_force_xyz(s) for s in self._tip_sensors], dim=1
+        )  # (N, 5, 3)
+        tip_norms = tip_xyz.norm(dim=-1)  # (N, 5)
+
+        self.contact_force_xyz_raw.copy_(tip_xyz)
+        self.contact_force_raw.copy_(tip_norms)
+        self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
         self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
 
-        # Critic: distal (rl_dg_*_4)
+        # ---- Critic: distal (rl_dg_*_4) ----
         per_distal = torch.stack(
-            [self._sensor_max_contact_force(s) for s in self._distal_sensors], dim=-1
+            [self._get_cup_contact_force_norm(s) for s in self._distal_sensors], dim=-1
         )  # (N, 5)
         self.distal_contact_force_raw.copy_(per_distal)
         self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
 
-        # Critic: middle (rl_dg_*_3)
+        # ---- Critic: middle (rl_dg_*_3) ----
         per_middle = torch.stack(
-            [self._sensor_max_contact_force(s) for s in self._middle_sensors], dim=-1
+            [self._get_cup_contact_force_norm(s) for s in self._middle_sensors], dim=-1
         )  # (N, 3)
         self.middle_contact_force_raw.copy_(per_middle)
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
@@ -521,7 +537,7 @@ class GraspRightEnv(DirectRLEnv):
     # Observations: Actor 94D | Critic 118D (actor + privileged)
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
-        # ==== Actor obs (94D) — real-compatible ====
+        # ==== Actor obs (104D) — real-compatible ====
 
         # 1. palm → cup 상대 위치 (3D)
         palm_to_cup = self.object_pos - self.palm_center_pos   # (N, 3)
@@ -545,24 +561,27 @@ class GraspRightEnv(DirectRLEnv):
         # 6. fingertip binary contact (5D) — real Teosllo FT sensor 기반
         binary_contact = self.binary_contact_buf.float()   # (N, 5)
 
-        # 7. fingertip contact force norm (5D, [0,1])
-        contact_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)  # (N, 5)
+        # 7. fingertip contact force xyz (15D) — get_contact_force_matrix() 해당, Cup-only filtered
+        #    real Teosllo fingertip 6축 FT 중 force(fx,fy,fz) 성분, 정규화 [-1,1]
+        fingertip_force_xyz = (
+            self.contact_force_xyz_raw / CONTACT_FORCE_MAX
+        ).clamp(-1.0, 1.0).view(self.num_envs, -1)   # (N, 15)
 
         # 8. last actions (8D)
         last_actions = self.actions   # (N, 8)
 
         actor_obs = torch.cat([
-            palm_to_cup,          # 3
-            cup_rot,              # 4
-            fingertip_to_cup,     # 15
-            finger_joint_pos,     # 20
-            finger_joint_vel,     # 20
-            arm_joint_pos,        # 7
-            arm_joint_vel,        # 7
-            binary_contact,       # 5
-            contact_force_norm,   # 5
-            last_actions,         # 8
-        ], dim=-1)   # 94D
+            palm_to_cup,           # 3
+            cup_rot,               # 4
+            fingertip_to_cup,      # 15
+            finger_joint_pos,      # 20
+            finger_joint_vel,      # 20
+            arm_joint_pos,         # 7
+            arm_joint_vel,         # 7
+            binary_contact,        # 5
+            fingertip_force_xyz,   # 15  (fx,fy,fz × 5 tips, Cup-only filtered)
+            last_actions,          # 8
+        ], dim=-1)   # 104D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
