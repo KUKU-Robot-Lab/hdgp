@@ -86,9 +86,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 60
-    pregrasp_offset_x:     float = 0.0
-    pregrasp_offset_y:     float = -0.12   # cup -Y 방향 12cm (palm_link 기준, lift_v1 palm_ee=-6cm → palm_link≈-9cm + 여유 3cm)
-    pregrasp_offset_z:     float = 0.05    # cup +Z 방향 5cm
+    pregrasp_offset_x:     float = 0.01   # grasp2g_target_offset x
+    pregrasp_offset_y:     float = -0.09  # grasp2g_target_offset y(-0.06) - 3cm 안전 여유 (open hand)
+    pregrasp_offset_z:     float = 0.08   # grasp2g_target_offset z
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005

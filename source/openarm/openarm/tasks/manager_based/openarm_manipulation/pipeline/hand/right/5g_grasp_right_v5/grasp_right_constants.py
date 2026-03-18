@@ -84,7 +84,7 @@ NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 118
 # ---------------------------------------------------------------------------
 # Palm residual control
 # ---------------------------------------------------------------------------
-PALM_RESIDUAL_RANGE = 0.03   # ±3cm from pregrasp palm position
+PALM_RESIDUAL_RANGE = 0.06   # ±6cm from pregrasp palm position
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz policy rate)
