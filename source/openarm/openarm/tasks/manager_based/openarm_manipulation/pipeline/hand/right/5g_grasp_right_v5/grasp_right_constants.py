@@ -90,7 +90,7 @@ GRASP_PHASE_STEPS = 540    # 9s: 정책 완전 제어 (손가락 닫기 + palm r
 LIFT_PHASE_STEPS  = 60     # 1s: 스크립트 z 상승 + 정책 손가락 유지
 TOTAL_EPISODE_STEPS = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS   # 600 = 10s
 
-LIFT_Z_DELTA = 0.04         # 4cm 수직 상승 (Scripted Lift Checker)
+LIFT_Z_DELTA = 0.10         # 10cm 수직 상승 (Scripted Lift Checker)
 
 # ---------------------------------------------------------------------------
 # Contact

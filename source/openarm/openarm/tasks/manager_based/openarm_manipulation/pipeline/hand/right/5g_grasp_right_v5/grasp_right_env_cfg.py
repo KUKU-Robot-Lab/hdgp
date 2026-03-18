@@ -123,6 +123,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 5. action_reg: ||action||² 패널티
     action_reg_weight: float = -0.005
 
+    # 5b. lift_reward: Lift phase 동안 cup_z - init_z 비례 보상 (gradient 제공)
+    #   weight=20: 최대 0.04m 상승 시 0.8/step → Lift phase 60step × 0.8 = 48 total
+    lift_reward_weight: float = 20.0
+
     # 6. terminal rewards
     terminal_success_weight: float = 10.0
     terminal_fail_weight:    float = -1.0

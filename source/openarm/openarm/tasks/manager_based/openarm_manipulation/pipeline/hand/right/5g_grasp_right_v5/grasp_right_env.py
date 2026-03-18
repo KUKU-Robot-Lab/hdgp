@@ -112,7 +112,7 @@ class GraspRightEnv(DirectRLEnv):
         - finger joints = 정책 제어 (5D per-finger lerp)
       step GRASP_PHASE_STEPS ~ 끝:  Lift Phase
         - arm joints = pregrasp → prelift 선형 보간
-        - finger joints = Grasp Phase 종료 시점 포지션으로 고정
+        - finger joints = Grasp Phase 종료 시점 포지션으로 고정 (마지막 action hold)
 
     Success: Lift Phase 이후 cup_z > spawn_z + lift_success_height AND num_contacts >= 2
     """
@@ -449,15 +449,14 @@ class GraspRightEnv(DirectRLEnv):
         is_lift = (self.episode_length_buf >= GRASP_PHASE_STEPS)   # (N,) bool
         self.is_lift_phase.copy_(is_lift)
 
-        # ---- 3. Lift phase 진입 시 finger joint 포지션 캡처 ----
-        # episode_length_buf == GRASP_PHASE_STEPS인 첫 번째 스텝에 캡처
-        # (이때 robot.data.joint_pos = Grasp phase 마지막 스텝의 실제 값)
-        just_entering_lift = (self.episode_length_buf == GRASP_PHASE_STEPS)
-        if just_entering_lift.any():
-            ids = just_entering_lift.nonzero(as_tuple=True)[0]
-            self.lift_finger_pos_buf[ids] = (
-                self.robot.data.joint_pos[ids][:, self.hand_dof_indices].clone()
-            )
+        # ---- 3. Lift phase 진입 시 finger joint 포지션 캡처 (마지막 action hold) ----
+        # torch.where로 CPU sync 없이 순수 GPU 연산으로 처리
+        just_entering_lift = (self.episode_length_buf == GRASP_PHASE_STEPS)  # (N,) bool
+        self.lift_finger_pos_buf = torch.where(
+            just_entering_lift.unsqueeze(1),
+            self.robot.data.joint_pos[:, self.hand_dof_indices],
+            self.lift_finger_pos_buf,
+        )
 
     def _apply_action(self) -> None:
         is_lift = self.is_lift_phase   # (N,) bool
@@ -487,13 +486,12 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 오른손 ----
         # Grasp phase: 정책 action → per-finger lerp target
-        # Lift phase:  Grasp phase 종료 시점 캡처 포지션으로 고정
+        # Lift phase:  마지막 action hold (Grasp phase 종료 시점 캡처값 고정)
         finger_target = torch.where(
             is_lift.unsqueeze(1),
             self.lift_finger_pos_buf,
             self.hand_joint_targets,
         )
-
         self.robot.set_joint_position_target(finger_target, joint_ids=self.hand_dof_indices)
         self.robot.set_joint_velocity_target(
             torch.zeros_like(finger_target), joint_ids=self.hand_dof_indices
@@ -599,8 +597,8 @@ class GraspRightEnv(DirectRLEnv):
         cup_ang_vel = self.cup.data.root_ang_vel_w   # (N, 3)
 
         # distal link contact (5D binary + 5D force_norm)
-        distal_binary    = self.distal_binary_contact_buf.float()   # (N, 5)
-        distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)  # (N, 5)
+        distal_binary     = self.distal_binary_contact_buf.float()
+        distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
         # middle link contact — thumb/index/middle (3D binary + 3D force_norm)
         middle_binary    = self.middle_binary_contact_buf.float()   # (N, 3)
@@ -615,7 +613,7 @@ class GraspRightEnv(DirectRLEnv):
         ).unsqueeze(1)   # (N, 1)
 
         critic_obs = torch.cat([
-            actor_obs,            # 94
+            actor_obs,            # 101
             cup_lin_vel,          # 3
             cup_ang_vel,          # 3
             distal_binary,        # 5
@@ -624,7 +622,7 @@ class GraspRightEnv(DirectRLEnv):
             middle_force_norm,    # 3
             lift_flag,            # 1
             cup_height_delta,     # 1
-        ], dim=-1)   # 118D
+        ], dim=-1)   # 125D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -672,6 +670,14 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 5. action_reg: action 크기 패널티 ----
         action_reg = self.cfg.action_reg_weight * self.actions.pow(2).sum(dim=-1)
 
+        # ---- 5b. lift_reward: Lift phase 동안 cup_z 상승 비례 보상 ----
+        # Lift phase (episode_length_buf >= GRASP_PHASE_STEPS)에서만 활성
+        is_lift_flag = self.is_lift_phase.float()   # (N,)
+        cup_height_delta = (
+            self.object_pos[:, 2] - self.object_init_pos[:, 2]
+        ).clamp(min=0.0)   # (N,) ≥ 0
+        lift_reward = self.cfg.lift_reward_weight * is_lift_flag * cup_height_delta
+
         # ---- 6. terminal rewards ----
         is_terminal = self.reset_buf   # (N,) True when episode ends (terminated|truncated)
         terminal_success_reward = self.cfg.terminal_success_weight * self.success_flag.float()
@@ -686,6 +692,7 @@ class GraspRightEnv(DirectRLEnv):
             + enclosure_reward
             + opposition_reward
             + action_reg
+            + lift_reward
             + terminal_success_reward
             + terminal_fail_reward
         )
@@ -702,6 +709,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["enclosure_reward"]     = enclosure_reward.mean()
         self.extras["opposition_reward"]    = opposition_reward.mean()
         self.extras["action_reg"]           = action_reg.mean()
+        self.extras["lift_reward"]          = lift_reward.mean()
+        self.extras["cup_height_delta"]     = cup_height_delta.mean()
         self.extras["terminal_success"]     = terminal_success_reward.mean()
         self.extras["terminal_fail"]        = terminal_fail_reward.mean()
         self.extras["num_contacts"]         = num_contacts.mean()
@@ -748,7 +757,7 @@ class GraspRightEnv(DirectRLEnv):
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         # 로깅
-        self.extras["grasp_success"] = self.success_flag.float().mean()
+        # grasp_success = success_rate (동일값, _get_rewards에서 로깅)
         self.extras["object_z"]      = self.object_pos[:, 2].mean()
 
         return terminated, truncated
@@ -766,30 +775,6 @@ class GraspRightEnv(DirectRLEnv):
             return
 
         n = len(env_ids)
-
-        # ---- DEBUG: 에피소드 종료 시점 위치 출력 (env 0 기준) ----
-        if 0 in env_ids.tolist():
-            body_names = list(self.robot.data.body_names)
-
-            def _get_local(body_name: str) -> torch.Tensor:
-                if body_name in body_names:
-                    bid = body_names.index(body_name)
-                    return self.robot.data.body_pos_w[0, bid] - self.scene.env_origins[0]
-                return torch.full((3,), float("nan"), device=self.device)
-
-            palm_dbg  = _get_local("rl_dg_palm")
-            thumb_dbg = _get_local("rl_dg_1_1")
-            cup_dbg   = self.cup.data.root_pos_w[0] - self.scene.env_origins[0]
-
-            print(
-                f"\n[DEBUG episode-end env0]\n"
-                f"  rl_dg_palm : x={palm_dbg[0]:.4f}  y={palm_dbg[1]:.4f}  z={palm_dbg[2]:.4f}\n"
-                f"  rl_dg_1_1  : x={thumb_dbg[0]:.4f}  y={thumb_dbg[1]:.4f}  z={thumb_dbg[2]:.4f}\n"
-                f"  cup        : x={cup_dbg[0]:.4f}  y={cup_dbg[1]:.4f}  z={cup_dbg[2]:.4f}\n"
-                f"  palm→cup   : dx={cup_dbg[0]-palm_dbg[0]:.4f}"
-                f"  dy={cup_dbg[1]-palm_dbg[1]:.4f}"
-                f"  dz={cup_dbg[2]-palm_dbg[2]:.4f}"
-            )
 
         # ---- 1. 로봇 관절 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
@@ -921,20 +906,6 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 5d. lift_finger_pos_buf 초기화 (approach pose) ----
         # _pre_physics_step에서 GRASP_PHASE_STEPS 진입 시 실제 값으로 덮어쓴다
         self.lift_finger_pos_buf[env_ids] = approach_hand
-
-        # ---- 5e. pregrasp 완료 위치 디버그 (env0만) ----
-        if 0 in env_ids.tolist():
-            pg_palm = self.pregrasp_palm_pos_buf[0]   # Fabrics FK palm_link 위치
-            pg_cup  = obj_pos_local[0] if 0 < n else obj_pos_local[0]
-            print(
-                f"\n[DEBUG pregrasp-start env0]\n"
-                f"  palm_link (Fabrics FK): x={pg_palm[0]:.4f}  y={pg_palm[1]:.4f}  z={pg_palm[2]:.4f}\n"
-                f"  cup target            : x={pg_cup[0]:.4f}  y={pg_cup[1]:.4f}  z={pg_cup[2]:.4f}\n"
-                f"  palm→cup dx={pg_cup[0]-pg_palm[0]:.4f}"
-                f"  dy={pg_cup[1]-pg_palm[1]:.4f}"
-                f"  dz={pg_cup[2]-pg_palm[2]:.4f}"
-                f"  (기대 dx≈+0.167, dy≈+0.09, dz≈-0.04)"
-            )
 
         # ---- 6. 로봇 관절을 Fabrics pregrasp 결과로 업데이트 ----
         pregrasp_full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)

@@ -104,7 +104,7 @@ HAND_GRASP_POSE = [
     0.0,  0.7, 0.5, 0.5,   # index
     0.0,  0.7, 0.5, 0.5,   # middle
     0.0,  0.7, 0.5, 0.5,   # ring
-    0.0,  0.0, 0.7, 0.5,   # pinky
+    0.0,  0.0, 1.2, 0.8,   # pinky
 ]
 
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
