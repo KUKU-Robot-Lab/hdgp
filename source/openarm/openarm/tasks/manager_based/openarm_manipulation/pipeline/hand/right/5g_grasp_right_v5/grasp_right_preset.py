@@ -91,7 +91,7 @@ HAND_START_POSE = [
 #   → episode 중 action[0]=1 → lerp → HAND_GRASP_POSE (thumb_2 = -1.5, ≈ 유지)
 #   → 나머지 손가락(1~4)은 0에서 시작하여 lerp로 curl
 HAND_APPROACH_POSE = [
-    0.0, -1.57, 0.0, 0.0,   # thumb: _2=-1.57 (π/2 opposition pre-curl)
+    0.0,  0.0,  0.0, 0.0,   # thumb: _2=0 (fully open, 관통 방지)
     0.0,  0.0,  0.0, 0.0,   # index: fully open
     0.0,  0.0,  0.0, 0.0,   # middle: fully open
     0.0,  0.0,  0.0, 0.0,   # ring: fully open

@@ -318,7 +318,7 @@ class GraspRightEnv(DirectRLEnv):
             batch_size=self.num_envs,
             max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
             device=self.device,
-            world_filename="open_tesollo_boxes",
+            world_filename="open_tesollo_boxes_no_table",
         )
         self.object_ids, self.object_indicator = self.world_model.get_object_ids()
 

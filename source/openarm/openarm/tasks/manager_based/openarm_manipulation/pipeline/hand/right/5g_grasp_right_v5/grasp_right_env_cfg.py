@@ -234,7 +234,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 "openarm_right_joint6":  0.0,
                 "openarm_right_joint7":  0.0,
                 # HAND_APPROACH_POSE: thumb _2=-1.57 (π/2 opposition pre-curl), 나머지=0
-                "rj_dg_1_1": 0.0, "rj_dg_1_2": -1.57, "rj_dg_1_3": 0.0, "rj_dg_1_4": 0.0,
+                "rj_dg_1_1": 0.0, "rj_dg_1_2":  0.0,  "rj_dg_1_3": 0.0, "rj_dg_1_4": 0.0,
                 "rj_dg_2_1": 0.0, "rj_dg_2_2":  0.0,  "rj_dg_2_3": 0.0, "rj_dg_2_4": 0.0,
                 "rj_dg_3_1": 0.0, "rj_dg_3_2":  0.0,  "rj_dg_3_3": 0.0, "rj_dg_3_4": 0.0,
                 "rj_dg_4_1": 0.0, "rj_dg_4_2":  0.0,  "rj_dg_4_3": 0.0, "rj_dg_4_4": 0.0,
