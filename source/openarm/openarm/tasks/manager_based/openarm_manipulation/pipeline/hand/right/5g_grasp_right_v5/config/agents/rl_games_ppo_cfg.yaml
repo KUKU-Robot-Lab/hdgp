@@ -1,7 +1,7 @@
 # 5g_grasp_right_v5 rl_games PPO 설정
 # v5: FABRICS pregrasp reset + 정책 손가락 grasp formation + Scripted lift checker
-# 관측: 94D, 액션: 8D (5D per-finger lerp + 3D palm xyz residual)
-# Actor = Critic (separate: False), MLP [512, 256, 128]
+# 관측: actor 101D / critic 125D (asymmetric), 액션: 5D (per-finger lerp)
+# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:
   seed: 42
@@ -71,8 +71,8 @@ params:
     entropy_coef: 0.002
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: 16        # 2048 envs × 16 = 32768 samples/iter
-    minibatch_size: 16384     # 32768 / 2
+    horizon_length: 16        # 128 envs × 16 = 2048 samples/iter  (2048 envs 기준: 16 → 32768 samples/iter)
+    minibatch_size: 512       # 2048 / 4                           (2048 envs 기준: 16384 = 32768 / 2)
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
@@ -80,13 +80,13 @@ params:
     bound_loss_type: regularization
     bounds_loss_coef: 0.005
 
-    # Asymmetric Actor-Critic: critic은 118D privileged obs 사용
+    # Asymmetric Actor-Critic: critic은 128D privileged obs 사용
     has_central_value: True
     central_value_config:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 16384
+      minibatch_size: 512       # 128 envs 기준  (2048 envs 기준: 16384)
       mini_epochs: 4
       learning_rate: 3e-4
       lr_schedule: linear

@@ -16,12 +16,15 @@
 
 v5: FABRICS pregrasp reset + 정책 손가락 grasp formation + Scripted lift checker.
 
-Action (8D):
-  [0:5]  per-finger lerp factor  ([-1,1] → [0,1] → lerp(HAND_START, HAND_GRASP))
-  [5:8]  palm xyz residual       ([-1,1] × PALM_RESIDUAL_RANGE)
-  Orientation: pregrasp에서 결정, episode 동안 고정
+Episode 구조:
+  Grasp phase (0~GRASP_PHASE_STEPS-1): arm joints = pregrasp 고정, 정책이 finger만 제어
+  Lift phase  (GRASP_PHASE_STEPS~끝):  arm joints = pregrasp→prelift 선형 보간 (reset 시 미리 계산)
+                                        finger joints = grasp phase 종료 시점 포지션으로 고정
 
-Observation (104D) — actor (real-compatible):
+Action (5D):
+  [0:5]  per-finger lerp factor  ([-1,1] → lerp(HAND_APPROACH, HAND_GRASP) per finger)
+
+Observation (101D) — actor (real-compatible):
   palm_to_cup_pos:        3  (world frame)
   cup_rot:                4  (quaternion w,x,y,z)
   fingertip_to_cup_pos:  15  (5 × 3D, world frame)
@@ -31,8 +34,8 @@ Observation (104D) — actor (real-compatible):
   arm_joint_vel:          7
   binary_contact:         5  (ContactSensor Cup-filtered, per-fingertip)
   fingertip_force_xyz:   15  (get_contact_force_matrix: Cup-only fx,fy,fz × 5tips, [-1,1])
-  last_actions:           8
-  Total:                104
+  last_actions:           5
+  Total:                101
 """
 
 import math
@@ -59,15 +62,14 @@ NUM_HAND_DOF = len(RIGHT_HAND_JOINT_NAMES)   # 20
 NUM_ROBOT_DOF = NUM_ARM_DOF + NUM_HAND_DOF   # 27
 
 NUM_FINGER_ACTION = 5    # per-finger lerp (thumb, index, middle, ring, pinky)
-NUM_PALM_RESIDUAL = 3    # palm xyz residual
-NUM_ACTIONS = NUM_FINGER_ACTION + NUM_PALM_RESIDUAL   # 8
+NUM_ACTIONS = NUM_FINGER_ACTION                        # 5
 
 NUM_FINGERTIPS = 5
 
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 104  # Actor (104D): 3+4+15+20+20+7+7+5+15+8
+NUM_OBSERVATIONS = 101  # Actor (101D): 3+4+15+20+20+7+7+5+15+5
 
 # Critic privileged sensors
 NUM_DISTAL_SENSORS = 5   # rl_dg_1_4 ~ rl_dg_5_4 (distal phalanx)
@@ -79,19 +81,14 @@ NUM_MIDDLE_SENSORS = 3   # rl_dg_1_3 ~ rl_dg_3_3 (thumb, index, middle)
 #   + middle_binary(3) + middle_force(3)
 #   + lift_phase_flag(1) + cup_height_delta(1)
 NUM_CRITIC_EXTRAS = 24
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 128
-
-# ---------------------------------------------------------------------------
-# Palm residual control
-# ---------------------------------------------------------------------------
-PALM_RESIDUAL_RANGE = 0.06   # ±6cm from pregrasp palm position
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 125
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz policy rate)
 # ---------------------------------------------------------------------------
-GRASP_PHASE_STEPS = 300    # 5s: 정책 완전 제어 (손가락 닫기 + palm residual)
+GRASP_PHASE_STEPS = 540    # 9s: 정책 완전 제어 (손가락 닫기 + palm residual)
 LIFT_PHASE_STEPS  = 60     # 1s: 스크립트 z 상승 + 정책 손가락 유지
-TOTAL_EPISODE_STEPS = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS   # 360 = 6s
+TOTAL_EPISODE_STEPS = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS   # 600 = 10s
 
 LIFT_Z_DELTA = 0.04         # 4cm 수직 상승 (Scripted Lift Checker)
 

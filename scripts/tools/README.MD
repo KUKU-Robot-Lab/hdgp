@@ -52,6 +52,7 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/<script>.py [옵션]
 
 - `build_run_dataset.py`
 - `convert_demograsp_references.py`
+- `find_pregrasp_pose.py`
 - `freeze_run_analysis.py`
 - `generate_object_pc_feature_map.py`
 - `patch_swap_lr.py`
@@ -537,6 +538,29 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/convert_demograsp_references.py \
   --src_dir /home/user/rl_ws/hdgp/assets/demograsp_references \
   --dst_dir /home/user/rl_ws/hdgp/assets/demograsp_references/normalized \
   --fit_to_bounds
+```
+
+#### `find_pregrasp_pose.py`
+
+- 목적: `5g_grasp_right`에서 컵 위치 기준 pregrasp `ARM_START_POSE` 7-DOF를 IK로 계산
+- 원리:
+- 컵 중심이 thumb base 와 middle fingertip 사이 중점에 오도록 palm_link 목표 위치를 정의
+- `scipy.optimize.minimize(L-BFGS-B)`로 관절 한계 내 최적 자세 탐색
+- 출력:
+- 추천 `RIGHT_ARM_START_POSE`
+- `grasp_right_env_cfg.py`에 넣을 joint 초기값 형식
+- 주요 옵션:
+- `--cup X Y Z`: 컵 root 위치
+- `--pregrasp-y`: Y축 접근 오프셋
+- `--restarts`: 다중 초기값 시도 횟수
+- `--quiet`: 간략 출력
+- 예시:
+
+```bash
+python3 /home/user/rl_ws/hdgp/scripts/tools/find_pregrasp_pose.py \
+  --cup 0.40 -0.15 0.215 \
+  --pregrasp-y -0.09 \
+  --restarts 10
 ```
 
 #### `generate_object_pc_feature_map.py`

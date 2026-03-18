@@ -15,10 +15,10 @@
 """환경 설정: 5g_grasp_right_v5
 
 v5: FABRICS pregrasp reset + 정책 손가락 grasp formation + Scripted lift checker.
-- Action: 8D (5D per-finger lerp + 3D palm xyz residual)
-- Observation: 94D (actor = critic)
-- Episode: 6s (5s grasp + 1s scripted lift)
-- Contact: 물리 ContactSensor 기반 (fingertip 5개)
+- Action: 5D (per-finger lerp)
+- Observation: actor 101D / critic 125D (asymmetric, critic = actor + 24D privileged)
+- Episode: Grasp phase (arm 고정, finger 정책 제어) + Lift phase (arm 보간 상승, finger 고정)
+- Contact: 물리 ContactSensor 기반 (fingertip 5개 actor, distal+middle critic)
 """
 
 from dataclasses import MISSING, field
@@ -56,9 +56,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 시뮬레이션 파라미터
     # 물리: 120 Hz, 정책: 60 Hz (decimation=2)
     # Fabrics: fabrics_dt=1/60 × fabric_decimation=2 → 120 Hz
-    # Episode: 6s = 360 steps @ 60Hz (5s grasp + 1s lift)
+    # Episode: 10s = 600 steps @ 60Hz (9s grasp + 1s lift)
     # -----------------------------------------------------------------------
-    episode_length_s: float = 6.0    # GRASP_PHASE(5s) + LIFT_PHASE(1s)
+    episode_length_s: float = 10.0   # GRASP_PHASE(9s) + LIFT_PHASE(1s)
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -85,10 +85,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
-    pregrasp_fabric_steps: int   = 60
-    pregrasp_offset_x:     float = -0.02   # grasp2g_target_offset x
-    pregrasp_offset_y:     float = -0.09  # grasp2g_target_offset y(-0.06)
-    pregrasp_offset_z:     float = 0.045   # grasp2g_target_offset z
+    pregrasp_fabric_steps: int   = 200
+    pregrasp_offset_x:     float = -0.06   # palm_link가 cup -X 방향 5cm
+                                            # palm_ee = palm_link + local_z(0.04) → palm_ee_x = cup_x - 0.01
+                                            # 즉 cup_root_x ≈ palm_ee_x + 0.01 (손가락 뿌리에 컵이 위치)
+                                            # 이전 -0.19: 컵이 손가락 끝(rl_dg_3_tip/rl_dg_3_1 사이)에 위치 → 밀침 발생
+    pregrasp_offset_y:     float = -0.07   # 컵 -Y 방향 7cm (컵 반경 4.5cm + 여유 2.5cm → 손가락 관통 방지)
+    pregrasp_offset_z:     float = 0.00    # cup_root + 7cm → palm z ≈ 컵 높이 중간 (pinky 테이블 여유 확보)
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005
@@ -96,7 +99,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
-    cup_grasp_z_offset:  float = 0.045   # cup root → 실제 파지 중심 z offset
+    cup_grasp_z_offset:  float = 0.06   # cup root → 실제 파지 중심 z offset (cup 높이 17.76cm 중간 ≈ 0.09)
     lift_success_height: float = 0.04    # 성공 판정: cup_z > init_z + 4cm
 
     # -----------------------------------------------------------------------
@@ -147,14 +150,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obj_out_x_max:  float = 0.85
     obj_out_y_min:  float = -0.60
     obj_out_y_max:  float = 0.25
-    obj_fallen_z:   float = 0.10
+    obj_fallen_z:   float = 0.20  # cup_big origin이 cup 중간 → 바닥 기준 z≈0.22, 여유값 0.20
 
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
     object_spawn_x_center: float = 0.40
     object_spawn_y_center: float = -0.15
-    object_spawn_z:        float = 0.215  # = table_center(0.2) + table_half_thickness(0.015)
+    object_spawn_z:        float = 0.297  # table_surface(0.215) + cup_z_min_abs(0.0773) + margin(0.005)
+                                           # cup_big.usd: origin이 컵 중간, z_min=-0.0773 → 바닥이 원점 아래 7.73cm
     object_spawn_xy_range: float = 0.01   # 초기: 매우 좁게 (±1cm) → 학습 안정화 후 확대
 
     # -----------------------------------------------------------------------
@@ -179,7 +183,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 씬 설정
     # -----------------------------------------------------------------------
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=2048,
+        num_envs=128,   # 디버그 기준  (2048: 학습 기준)
         env_spacing=2.5,
         replicate_physics=True,
     )
@@ -229,7 +233,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 "openarm_right_joint1":  0.5,
                 "openarm_right_joint2":  0.1,
                 "openarm_right_joint3":  0.4,
-                "openarm_right_joint4":  0.8,
+                "openarm_right_joint4":  0.60,
                 "openarm_right_joint5": -0.2,
                 "openarm_right_joint6":  0.0,
                 "openarm_right_joint7":  0.0,
@@ -253,26 +257,26 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 stiffness=400.0,
                 damping=80.0,
             ),
-            # Teosllo hand: abduction/curl/pip/dip 분리 stiffness (v5 고정값)
+            # Teosllo hand: stiffness/damping=None → USD 저장값 사용
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
-                stiffness=1.9,
-                damping=7.5e-4,
+                stiffness=None,
+                damping=None,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                stiffness=0.84,
-                damping=3.3e-4,
+                stiffness=None,
+                damping=None,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                stiffness=0.43,
-                damping=1.7e-4,
+                stiffness=None,
+                damping=None,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                stiffness=0.13,
-                damping=5.1e-5,
+                stiffness=None,
+                damping=None,
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],
@@ -323,9 +327,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup_bead/cup.usd"),
+            usd_path="/home/user/rl_ws/hdgp/assets/cup/cup_big.usd",
             activate_contact_sensors=True,
-            scale=(1.0, 1.0, 1.2),
+            scale=(1.0, 1.0, 1.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 articulation_enabled=False,
             ),
