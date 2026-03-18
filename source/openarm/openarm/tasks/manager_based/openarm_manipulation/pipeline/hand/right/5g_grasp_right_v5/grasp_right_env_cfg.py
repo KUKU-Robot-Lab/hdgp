@@ -327,7 +327,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path="/home/user/rl_ws/hdgp/assets/cup/cup_big.usd",
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big.usd"),
             activate_contact_sensors=True,
             scale=(1.0, 1.0, 1.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
