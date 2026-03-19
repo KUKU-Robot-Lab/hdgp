@@ -164,6 +164,7 @@ class BiPouringEnv(DirectRLEnv):
         self._last_actions = torch.zeros(self.num_envs, NUM_ACTIONS, device=self.device)
         self._obs_buf = torch.zeros(self.num_envs, NUM_OBSERVATIONS, device=self.device)
         self._state_buf = torch.zeros(self.num_envs, self.cfg.num_states, device=self.device)
+        self._approach_stable_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._stable_alignment_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._stable_retention_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._prev_bead_in_target_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -440,13 +441,33 @@ class BiPouringEnv(DirectRLEnv):
             & (self._stable_retention_steps >= self.cfg.success_retention_steps)
         )
 
-        self._approach_reward = torch.exp(-cup_xy / max(self.cfg.approach_xy_scale, 1.0e-6))
+        # ---- approach gate (5g_lift_left_v1 방식: soft + stable) ----
+        # gate=0: 접근 단계 (cup_xy 크다), gate=1: 틸팅 단계 (cup_xy 작다)
+        xy_far = max(self.cfg.approach_gate_xy_far, self.cfg.approach_gate_xy_near + 1.0e-6)
+        xy_near = self.cfg.approach_gate_xy_near
+        approach_soft_gate = torch.clamp(
+            (xy_far - cup_xy) / max(xy_far - xy_near, 1.0e-6), 0.0, 1.0
+        )
+        at_near = cup_xy <= xy_near
+        self._approach_stable_steps = torch.where(
+            at_near, self._approach_stable_steps + 1, torch.zeros_like(self._approach_stable_steps)
+        )
+        approach_stable_gate = (self._approach_stable_steps >= self.cfg.approach_gate_hold_steps).float()
+        approach_gate = torch.maximum(approach_stable_gate, (approach_soft_gate * 1.2).clamp(0.0, 1.0))
+
+        # Phase 1 (gate→0): exp-decay approach reward
+        self._approach_reward = (1.0 - approach_gate) * torch.exp(
+            -cup_xy / max(self.cfg.approach_xy_scale, 1.0e-6)
+        )
+
+        # Phase 2 (gate→1): fine XY + Z alignment reward
         alignment_xy_term = torch.exp(-torch.square(cup_xy / max(self.cfg.alignment_xy_scale, 1.0e-6)))
         alignment_z_term = torch.exp(
             -torch.square((cup_z - self.cfg.alignment_z_target) / max(self.cfg.alignment_z_scale, 1.0e-6))
         )
-        self._alignment_reward = alignment_xy_term * alignment_z_term
+        self._alignment_reward = approach_gate * alignment_xy_term * alignment_z_term
 
+        # Tilt: 접근 완료 후에만 활성화
         source_up_dot_world = tilt_alignment_summary[:, 0].clamp(-1.0, 1.0)
         pour_axis_to_target = tilt_alignment_summary[:, 1].clamp(-1.0, 1.0)
         upright_progress = torch.clamp(
@@ -462,9 +483,11 @@ class BiPouringEnv(DirectRLEnv):
             )
         )
         pour_progress = torch.clamp(0.5 * (pour_axis_to_target + 1.0), 0.0, 1.0)
-        alignment_gate = self._alignment_reward.detach()
-        self._controlled_tilt_reward = ((1.0 - alignment_gate) * upright_progress) + (
-            alignment_gate * tilt_window * pour_progress
+        # Phase 1: 컵 직립 유지 보상 (접근 중 흘리지 않도록)
+        # Phase 2: 제어된 틸팅 보상
+        self._controlled_tilt_reward = (
+            (1.0 - approach_gate) * upright_progress
+            + approach_gate * tilt_window * pour_progress
         )
         self._bead_entry_reward = bead_entry_event.float()
         self._stable_retention_reward = stable_retention.float() * (
@@ -617,11 +640,13 @@ class BiPouringEnv(DirectRLEnv):
         # actions 리셋 (delta 방식이므로 0으로 초기화)
         self._last_actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
+        self._approach_stable_steps[env_ids] = 0
         self._stable_alignment_steps[env_ids] = 0
         self._stable_retention_steps[env_ids] = 0
         self._prev_bead_in_target_flag[env_ids] = False
         self._bead_has_entered_target_flag[env_ids] = False
         self._bead_exited_target_after_entry_flag[env_ids] = False
+        self._approach_reward[env_ids] = 0.0
         self._alignment_reward[env_ids] = 0.0
         self._controlled_tilt_reward[env_ids] = 0.0
         self._bead_entry_reward[env_ids] = 0.0

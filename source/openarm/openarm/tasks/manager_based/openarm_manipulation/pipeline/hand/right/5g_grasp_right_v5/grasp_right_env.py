@@ -550,11 +550,9 @@ class GraspRightEnv(DirectRLEnv):
             torch.zeros_like(finger_target), joint_ids=self.hand_dof_indices
         )
 
-        # ---- 왼팔: 고정 자세 ----
-        self.robot.write_joint_state_to_sim(
-            self.left_arm_zero_pos,
-            self.left_arm_zero_vel,
-            joint_ids=self.left_arm_dof_indices,
+        # ---- 왼팔: 고정 자세 (PD target, teleport 없이) ----
+        self.robot.set_joint_position_target(
+            self.left_arm_zero_pos, joint_ids=self.left_arm_dof_indices
         )
 
     # ------------------------------------------------------------------
@@ -898,15 +896,13 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 5b. pregrasp arm joint 위치 저장 ----
         self.pregrasp_arm_pos_buf[env_ids] = self.fabric_q[env_ids, :NUM_ARM_DOF]
 
-        # ---- 5c. prelift arm joint 위치 계산 ----
-        lifted_palm_pose = pregrasp_palm_pose.clone()
-        lifted_palm_pose[:, 2] += LIFT_Z_DELTA   # z만 LIFT_Z_DELTA 올림
-
-        q_init_prelift = self.fabric_q[env_ids].clone()   # pregrasp 수렴점에서 시작
-        q_prelift = self._run_reset_fabric(
-            env_ids, lifted_palm_pose, q_init_prelift
-        )   # (n, 27)
-        self.prelift_arm_pos_buf[env_ids] = q_prelift[:, :NUM_ARM_DOF]
+        # ---- 5c. prelift arm joint 위치 계산 (Fabrics IK 제거, j4 오프셋 근사) ----
+        # OpenArm FK: dz/dj4 ≈ 0.32 m/rad (캘리브레이션 기반)
+        # LIFT_Z_DELTA=0.10m → Δj4 ≈ +0.31 rad
+        # 리프트 phase는 scripted(정책 미관여)이므로 근사 허용
+        prelift_arm = q_pregrasp[:, :NUM_ARM_DOF].clone()
+        prelift_arm[:, 3] = (prelift_arm[:, 3] + 0.31).clamp(max=3.14)
+        self.prelift_arm_pos_buf[env_ids] = prelift_arm
 
         # ---- 5d. lift_finger_pos_buf 초기화 (approach pose) ----
         # _pre_physics_step에서 GRASP_PHASE_STEPS 진입 시 실제 값으로 덮어쓴다

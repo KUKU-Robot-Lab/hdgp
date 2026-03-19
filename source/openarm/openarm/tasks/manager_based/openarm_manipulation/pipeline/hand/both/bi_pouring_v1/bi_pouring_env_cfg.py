@@ -270,6 +270,9 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     stable_alignment_z_min: float = 0.010
     stable_alignment_z_max: float = 0.120
     approach_xy_scale: float = 0.25
+    approach_gate_xy_far: float = 0.10
+    approach_gate_xy_near: float = 0.04
+    approach_gate_hold_steps: int = 5
     alignment_xy_scale: float = 0.12
     alignment_z_target: float = 0.040
     alignment_z_scale: float = 0.035
