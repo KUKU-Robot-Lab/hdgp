@@ -365,6 +365,33 @@ class GraspRightEnv(DirectRLEnv):
 
         self.fabric_damping_gain = 10.0 * torch.ones(self.num_envs, 1, device=self.device)
 
+        # Reset 전용 소형 Fabrics (env_ids만 실행하여 full-batch 낭비 제거)
+        # 매 iter reset env 수 ≈ num_envs × horizon / episode_length ≈ 56개
+        # MAX_RESET_CHUNK보다 많으면 chunk로 나눠 처리
+        self._reset_chunk = self.cfg.reset_fabric_chunk_size
+        self._reset_fabric = OpenArmTeoslloPoseFabric(
+            self._reset_chunk, self.device, self.timestep,
+            graph_capturable=False,
+            use_hand_fabric=False,
+        )
+        self._reset_integrator = DisplacementIntegrator(self._reset_fabric)
+
+        reset_cspace = self._reset_fabric.default_config.clone()
+        reset_cspace[:, NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self._reset_chunk, -1)
+        self._reset_fabric.default_config.copy_(reset_cspace)
+
+        # Reset Fabrics 고정 입력 버퍼
+        self._reset_pca    = torch.zeros(self._reset_chunk, 5, device=self.device)
+        self._reset_damping = 10.0 * torch.ones(self._reset_chunk, 1, device=self.device)
+        # WorldMeshesModel은 batch_size 고정이므로 reset 전용 더미 생성
+        self._reset_world = WorldMeshesModel(
+            batch_size=self._reset_chunk,
+            max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
+            device=self.device,
+            world_filename="open_tesollo_boxes_no_table",
+        )
+        self._reset_obj_ids, self._reset_obj_indicator = self._reset_world.get_object_ids()
+
         # Hand FK taskmap (센서 URDF 기준, 7 bodies)
         # [0]=palm_link (Fabrics attractor 기준점), [1]=palm_x, [2:7]=rl_dg_*_tip
         robot_dir_name = "openarm_tesollo_sensor"
@@ -378,6 +405,66 @@ class GraspRightEnv(DirectRLEnv):
 
     # ------------------------------------------------------------------
     # Contact force reading — MD Section 10 PhysX API 대응
+    # ------------------------------------------------------------------
+    # Reset 전용 Fabrics rollout (env_ids chunk만 실행)
+    # ------------------------------------------------------------------
+    def _run_reset_fabric(
+        self,
+        env_ids: torch.Tensor,
+        palm_pose: torch.Tensor,
+        q_init: torch.Tensor,
+    ) -> torch.Tensor:
+        """env_ids(n개)만 Fabrics rollout해서 arm joint 위치 반환.
+
+        Args:
+            env_ids: reset 대상 env 인덱스 (n,)
+            palm_pose: 목표 palm pose (n, 6)
+            q_init: 시작 joint pos (n, 27)
+
+        Returns:
+            q_out: 수렴된 joint pos (n, 27)
+        """
+        n = len(env_ids)
+        C = self._reset_chunk   # chunk 크기 (128)
+        q_out = torch.zeros_like(q_init)   # (n, 27)
+
+        for start in range(0, n, C):
+            end = min(start + C, n)
+            m   = end - start   # 실제 envs 수
+
+            # chunk 슬라이스 (m ≤ C)
+            pp = palm_pose[start:end]       # (m, 6)
+            qi = q_init[start:end]          # (m, 27)
+
+            # m < C 이면 마지막 env로 패딩 (Fabrics batch_size=C 유지)
+            if m < C:
+                pad = C - m
+                pp = torch.cat([pp, pp[-1:].expand(pad, -1)], dim=0)
+                qi = torch.cat([qi, qi[-1:].expand(pad, -1)], dim=0)
+
+            fq   = qi.clone().contiguous()
+            fqd  = torch.zeros(C, qi.shape[1], device=self.device)
+            fqdd = torch.zeros(C, qi.shape[1], device=self.device)
+
+            self._reset_fabric.set_features(
+                self._reset_pca,
+                pp,
+                "euler_zyx",
+                fq.detach(),
+                fqd.detach(),
+                self._reset_obj_ids,
+                self._reset_obj_indicator,
+                self._reset_damping,
+            )
+            for _ in range(self.cfg.pregrasp_fabric_steps):
+                fq, fqd, fqdd = self._reset_integrator.step(
+                    fq.detach(), fqd.detach(), fqdd.detach(), self.timestep
+                )
+
+            q_out[start:end] = fq[:m]
+
+        return q_out
+
     # ------------------------------------------------------------------
     def _get_cup_contact_force_xyz(self, sensor: ContactSensor) -> torch.Tensor:
         """net_forces_w 기반 contact force (N, 3).
@@ -842,36 +929,17 @@ class GraspRightEnv(DirectRLEnv):
         # Fabrics pregrasp rollout (full-batch, env_ids 슬롯만 실제 변경)
         self.palm_pose_targets[env_ids] = pregrasp_palm_pose
 
-        fabric_q_full   = self.fabric_q.clone()
-        fabric_qd_full  = self.fabric_qd.clone()
-        fabric_qdd_full = self.fabric_qdd.clone()
+        # ---- Pregrasp IK: env_ids 전용 소형 Fabrics (full-batch 낭비 제거) ----
+        q_init_pregrasp = self.fabric_q[env_ids].clone()   # (n, 27) 현재 joint 상태
+        q_pregrasp = self._run_reset_fabric(
+            env_ids, pregrasp_palm_pose, q_init_pregrasp
+        )   # (n, 27)
 
-        inputs_pregrasp = [
-            self.hand_pca_targets,
-            self.palm_pose_targets.clone(),
-            "euler_zyx",
-            fabric_q_full.detach(),
-            fabric_qd_full.detach(),
-            self.object_ids,
-            self.object_indicator,
-            self.fabric_damping_gain,
-        ]
-        self.open_tesollo_fabric.set_features(*inputs_pregrasp)
-
-        for _ in range(self.cfg.pregrasp_fabric_steps):
-            fabric_q_full, fabric_qd_full, fabric_qdd_full = self.open_tesollo_integrator.step(
-                fabric_q_full.detach(),
-                fabric_qd_full.detach(),
-                fabric_qdd_full.detach(),
-                self.timestep,
-            )
-
-        self.fabric_q[env_ids]   = fabric_q_full[env_ids]
-        self.fabric_qd[env_ids]  = fabric_qd_full[env_ids]
-        self.fabric_qdd[env_ids] = fabric_qdd_full[env_ids]
+        self.fabric_q[env_ids]   = q_pregrasp
+        self.fabric_qd[env_ids].zero_()
+        self.fabric_qdd[env_ids].zero_()
 
         # hand DOF를 APPROACH_POSE로 고정 (arm DOF만 Fabrics 결과 사용)
-        # pregrasp rollout 중 cspace attractor가 손가락을 당겼을 수 있으므로 열린 자세로 복원
         approach_hand = self.hand_approach_buf.unsqueeze(0).expand(n, -1)
         self.fabric_q[env_ids, NUM_ARM_DOF:]   = approach_hand
         self.fabric_qd[env_ids, NUM_ARM_DOF:].zero_()
@@ -883,37 +951,17 @@ class GraspRightEnv(DirectRLEnv):
         self.pregrasp_palm_pos_buf[env_ids] = all_pos_pg[env_ids, 0, :]   # palm_link
 
         # ---- 5b. pregrasp arm joint 위치 저장 ----
-        # Grasp phase 전 기간 동안 arm joint target으로 사용 (고정)
         self.pregrasp_arm_pos_buf[env_ids] = self.fabric_q[env_ids, :NUM_ARM_DOF]
 
         # ---- 5c. prelift arm joint 위치 계산 ----
-        # lifted palm target (pregrasp + LIFT_Z_DELTA) 으로 Fabrics rollout →
-        # Lift phase에서 선형 보간의 끝점으로 사용
-        lifted_palm_pose = self.palm_pose_targets.clone()
-        lifted_palm_pose[env_ids, 2] += LIFT_Z_DELTA   # z만 LIFT_Z_DELTA 올림
+        lifted_palm_pose = pregrasp_palm_pose.clone()
+        lifted_palm_pose[:, 2] += LIFT_Z_DELTA   # z만 LIFT_Z_DELTA 올림
 
-        fabric_q_lift   = self.fabric_q.clone()
-        fabric_qd_lift  = torch.zeros_like(fabric_q_lift)
-        fabric_qdd_lift = torch.zeros_like(fabric_q_lift)
-
-        self.open_tesollo_fabric.set_features(
-            self.hand_pca_targets,
-            lifted_palm_pose,
-            "euler_zyx",
-            fabric_q_lift.detach(),
-            fabric_qd_lift.detach(),
-            self.object_ids,
-            self.object_indicator,
-            self.fabric_damping_gain,
-        )
-        for _ in range(self.cfg.pregrasp_fabric_steps):
-            fabric_q_lift, fabric_qd_lift, fabric_qdd_lift = self.open_tesollo_integrator.step(
-                fabric_q_lift.detach(),
-                fabric_qd_lift.detach(),
-                fabric_qdd_lift.detach(),
-                self.timestep,
-            )
-        self.prelift_arm_pos_buf[env_ids] = fabric_q_lift[env_ids, :NUM_ARM_DOF]
+        q_init_prelift = self.fabric_q[env_ids].clone()   # pregrasp 수렴점에서 시작
+        q_prelift = self._run_reset_fabric(
+            env_ids, lifted_palm_pose, q_init_prelift
+        )   # (n, 27)
+        self.prelift_arm_pos_buf[env_ids] = q_prelift[:, :NUM_ARM_DOF]
 
         # ---- 5d. lift_finger_pos_buf 초기화 (approach pose) ----
         # _pre_physics_step에서 GRASP_PHASE_STEPS 진입 시 실제 값으로 덮어쓴다

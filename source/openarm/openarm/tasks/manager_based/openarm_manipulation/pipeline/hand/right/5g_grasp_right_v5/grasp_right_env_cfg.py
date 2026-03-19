@@ -85,7 +85,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
-    pregrasp_fabric_steps: int   = 200
+    pregrasp_fabric_steps: int   = 60    # 200 → 60: full-batch 비용 절감 (60 step으로 수렴 충분)
+    reset_fabric_chunk_size: int = 128   # reset 전용 소형 Fabrics batch 크기 (env_ids chunk 단위)
     pregrasp_offset_x:     float = -0.06   # palm_link가 cup -X 방향 5cm
                                             # palm_ee = palm_link + local_z(0.04) → palm_ee_x = cup_x - 0.01
                                             # 즉 cup_root_x ≈ palm_ee_x + 0.01 (손가락 뿌리에 컵이 위치)
