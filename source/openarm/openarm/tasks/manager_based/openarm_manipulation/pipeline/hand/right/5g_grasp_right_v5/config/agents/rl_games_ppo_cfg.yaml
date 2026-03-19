@@ -1,7 +1,7 @@
 # 5g_grasp_right_v5 rl_games PPO 설정
 # v5: FABRICS pregrasp reset + 정책 손가락 grasp formation + Scripted lift checker
 # 관측: actor 101D / critic 119D (asymmetric), 액션: 5D (per-finger lerp)
-# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
+# Asymmetric Actor-Critic (has_central_value: True), MLP [256, 128, 64]
 
 params:
   seed: 42
@@ -30,7 +30,7 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [512, 256, 128]
+      units: [256, 128, 64]
       activation: elu
       d2rl: False
       initializer:
@@ -63,7 +63,7 @@ params:
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
-    max_epochs: 20000
+    max_epochs: 10000
     save_best_after: 100
     save_frequency: 50
     print_stats: True
@@ -71,11 +71,11 @@ params:
     entropy_coef: 0.002
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: 16
+    horizon_length: 32
     # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
-    #   128  envs: batch=  2048 → minibatch=  512 (4 splits)
-    #   2048 envs: batch= 32768 → minibatch=16384 (2 splits)  ← 학습 권장
-    minibatch_size: 16384     # --num_envs 2048 기준. 128 envs 사용 시 512로 변경
+    #   128  envs: batch=  4096 → minibatch= 1024 (4 splits)
+    #   2048 envs: batch= 65536 → minibatch=32768 (2 splits)  ← 학습 권장
+    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 1024로 변경
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
@@ -89,7 +89,7 @@ params:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 16384     # actor와 동일하게 맞출 것
+      minibatch_size: 32768     # actor와 동일하게 맞출 것
       mini_epochs: 4
       learning_rate: 3e-4
       lr_schedule: linear
@@ -100,7 +100,7 @@ params:
         name: actor_critic
         central_value: True
         mlp:
-          units: [512, 256, 128]
+          units: [256, 128, 64]
           activation: elu
           d2rl: False
           initializer:

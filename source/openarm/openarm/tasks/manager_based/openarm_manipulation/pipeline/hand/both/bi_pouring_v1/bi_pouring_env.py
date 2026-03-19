@@ -36,6 +36,8 @@ from .bi_pouring_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
     LEFT_HOLDER_FIXED_JOINT_POS,
+    RIGHT_HAND_GRASP_JOINT_POS,
+    RIGHT_HAND_JOINT_NAMES,
     RIGHT_ARM_HOME_POSE,
 )
 
@@ -47,9 +49,11 @@ class BiPouringEnv(DirectRLEnv):
 
     def __init__(self, cfg: BiPouringEnvCfg, render_mode: str | None = None, **kwargs):
         self._right_arm_joint_ids: list[int] = []
+        self._right_hand_joint_ids: list[int] = []
         self._left_holder_joint_ids: list[int] = []
 
         self._right_arm_home = None
+        self._right_hand_grasp = None
         self._left_holder_home = None
         self._last_actions = None
         self._joint_pos_target = None
@@ -93,10 +97,14 @@ class BiPouringEnv(DirectRLEnv):
 
         for name in cfg.policy_arm_joint_names:
             self._right_arm_joint_ids.append(self.robot.joint_names.index(name))
+        for name in RIGHT_HAND_JOINT_NAMES:
+            self._right_hand_joint_ids.append(self.robot.joint_names.index(name))
         for name in cfg.left_holder_joint_names:
             self._left_holder_joint_ids.append(self.robot.joint_names.index(name))
 
         self._right_arm_home = torch.tensor(RIGHT_ARM_HOME_POSE, dtype=torch.float32, device=self.device)
+        right_hand_grasp = [RIGHT_HAND_GRASP_JOINT_POS[name] for name in RIGHT_HAND_JOINT_NAMES]
+        self._right_hand_grasp = torch.tensor(right_hand_grasp, dtype=torch.float32, device=self.device)
         left_holder_home = [
             LEFT_HOLDER_FIXED_JOINT_POS[name]
             for name in cfg.left_holder_joint_names
@@ -186,6 +194,8 @@ class BiPouringEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         self.robot.set_joint_position_target(self._joint_pos_target, joint_ids=self._right_arm_joint_ids)
+        right_hand_target = self._right_hand_grasp.unsqueeze(0).expand(self.num_envs, -1)
+        self.robot.set_joint_position_target(right_hand_target, joint_ids=self._right_hand_joint_ids)
         left_holder_target = self._left_holder_home.unsqueeze(0).expand(self.num_envs, -1)
         self.robot.set_joint_position_target(left_holder_target, joint_ids=self._left_holder_joint_ids)
         self._update_attached_cups_from_ee()
@@ -473,10 +483,14 @@ class BiPouringEnv(DirectRLEnv):
         full_vel = torch.zeros(num_envs, self.robot.num_joints, device=self.device)
 
         full_pos[:, self._right_arm_joint_ids] = reset_plan["right_arm_joint_pos"]
+        full_pos[:, self._right_hand_joint_ids] = self._right_hand_grasp.unsqueeze(0).expand(num_envs, -1)
         full_pos[:, self._left_holder_joint_ids] = reset_plan["left_holder_joint_pos"]
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
         self.robot.set_joint_position_target(
             full_pos[:, self._right_arm_joint_ids], joint_ids=self._right_arm_joint_ids, env_ids=env_ids
+        )
+        self.robot.set_joint_position_target(
+            full_pos[:, self._right_hand_joint_ids], joint_ids=self._right_hand_joint_ids, env_ids=env_ids
         )
         self.robot.set_joint_position_target(
             full_pos[:, self._left_holder_joint_ids], joint_ids=self._left_holder_joint_ids, env_ids=env_ids

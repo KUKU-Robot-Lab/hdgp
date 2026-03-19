@@ -32,6 +32,19 @@ gym.register(
 )
 
 gym.register(
+    id="bi_pourint-v1",
+    entry_point=(
+        "openarm.tasks.manager_based.openarm_manipulation"
+        ".pipeline.hand.both.bi_pouring_v1.bi_pouring_env:BiPouringEnv"
+    ),
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}:BiPouringEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
     id="bi_pouring-play-v1",
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"

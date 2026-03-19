@@ -53,6 +53,7 @@ import_packages(__name__, _BLACKLIST_PKGS)
 
 # Explicitly import the new 'approach' task config to ensure registration
 import openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.both.approach.config
+import openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.both.bi_pouring_v1.config
 
 # bimanual/reach
 import openarm.tasks.manager_based.openarm_manipulation.pipeline.gripper.both.reach.config

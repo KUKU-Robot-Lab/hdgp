@@ -223,7 +223,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # ----------------------------------------------------------------
         # 접촉 상태 버퍼 (actor: fingertip)
-        # get_contact_force_matrix() 해당: Cup-only pair-wise filtered force
+        # force_matrix_w: Cup-only pair-wise filtered force (get_contact_force_matrix)
         # ----------------------------------------------------------------
         self.contact_force_xyz_raw = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)  # (N,5,3) fx,fy,fz
         self.contact_force_raw     = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)      # (N,5) norm
@@ -275,22 +275,32 @@ class GraspRightEnv(DirectRLEnv):
         self.scene.rigid_objects["cup"]   = self.cup
         self.scene.rigid_objects["table"] = self.table
 
-        # Actor: tip ContactSensor (merged, 5 bodies: rl_dg_[1-5]_tip)
-        # net_forces_w 사용 (force_matrix_w는 항상 0 반환 버그로 filter 불필요)
-        self._tip_sensor = ContactSensor(ContactSensorCfg(
-            prim_path="/World/envs/env_.*/Robot/rl_dg_.*_tip",
-            history_length=1,
-            track_air_time=False,
-        ))
-        self.scene.sensors["tip_sensor"] = self._tip_sensor
+        # Actor: Per-fingertip ContactSensor (rl_dg_1_tip ~ rl_dg_5_tip)
+        # filter_prim_paths_expr → force_matrix_w: Cup-only 접촉력 (노이즈 제거)
+        _CUP_FILTER = ["/World/envs/env_.*/Cup"]
+        self._tip_sensors: list[ContactSensor] = []
+        for link_name in self.cfg.right_tip_contact_links:
+            sensor = ContactSensor(ContactSensorCfg(
+                prim_path=f"/World/envs/env_.*/Robot/{link_name}",
+                filter_prim_paths_expr=_CUP_FILTER,
+                history_length=1,
+                track_air_time=False,
+            ))
+            self._tip_sensors.append(sensor)
+            self.scene.sensors[f"tip_sensor_{link_name}"] = sensor
 
-        # Critic privileged: Distal ContactSensor (merged, 5 bodies: rl_dg_[1-5]_4)
-        self._distal_sensor = ContactSensor(ContactSensorCfg(
-            prim_path="/World/envs/env_.*/Robot/rl_dg_.*_4",
-            history_length=1,
-            track_air_time=False,
-        ))
-        self.scene.sensors["distal_sensor"] = self._distal_sensor
+        # Critic privileged: Distal ContactSensor (rl_dg_*_4)
+        # filter_prim_paths_expr → force_matrix_w: Cup-only 접촉력
+        self._distal_sensors: list[ContactSensor] = []
+        for link_name in self.cfg.right_distal_contact_links:
+            sensor = ContactSensor(ContactSensorCfg(
+                prim_path=f"/World/envs/env_.*/Robot/{link_name}",
+                filter_prim_paths_expr=_CUP_FILTER,
+                history_length=1,
+                track_air_time=False,
+            ))
+            self._distal_sensors.append(sensor)
+            self.scene.sensors[f"distal_sensor_{link_name}"] = sensor
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
@@ -441,29 +451,38 @@ class GraspRightEnv(DirectRLEnv):
         return q_out
 
     # ------------------------------------------------------------------
-    def _update_contact_forces(self) -> None:
-        """Actor/critic 접촉력 업데이트 (net_forces_w 기반, merged sensor).
+    def _get_sensor_cup_force_xyz(self, sensor: ContactSensor) -> torch.Tensor:
+        """single-body sensor force_matrix_w → (N, 3) Cup-only 접촉력.
 
-        merged sensor net_forces_w shape: (N, B, 3)  B=body 수
-          tip sensor:    B=5 → (N, 5, 3)
-          distal sensor: B=5 → (N, 5, 3)
+        force_matrix_w shape: (N, 1, 1, 3)
+          axis-0: num_envs
+          axis-1: num_bodies (=1, single-body sensor)
+          axis-2: num_filter_shapes (=1, Cup 1개)
+          axis-3: xyz
+        filter 미활성 또는 데이터 없을 경우 zeros 반환.
         """
-        # ---- Actor: fingertip (merged, B=5) ----
-        nf_tip = self._tip_sensor.data.net_forces_w   # (N, 5, 3)
-        if nf_tip is None or nf_tip.numel() == 0:
-            nf_tip = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
-        tip_norms = nf_tip.norm(dim=-1)   # (N, 5)
+        fm = sensor.data.force_matrix_w   # (N, 1, 1, 3) or None
+        if fm is not None and fm.numel() > 0:
+            return fm[:, 0, 0, :]   # (N, 3)
+        return torch.zeros(self.num_envs, 3, device=self.device)
 
-        self.contact_force_xyz_raw.copy_(nf_tip)
+    def _update_contact_forces(self) -> None:
+        """Actor/critic 접촉력 업데이트 (force_matrix_w 기반, Cup-only 필터)."""
+        # ---- Actor: fingertip (5개 별개 sensor) ----
+        tip_xyz = torch.stack(
+            [self._get_sensor_cup_force_xyz(s) for s in self._tip_sensors], dim=1
+        )  # (N, 5, 3)
+        tip_norms = tip_xyz.norm(dim=-1)   # (N, 5)
+
+        self.contact_force_xyz_raw.copy_(tip_xyz)
         self.contact_force_raw.copy_(tip_norms)
         self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
         self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
 
-        # ---- Critic: distal (merged, B=5) ----
-        nf_distal = self._distal_sensor.data.net_forces_w   # (N, 5, 3)
-        if nf_distal is None or nf_distal.numel() == 0:
-            nf_distal = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, 3, device=self.device)
-        per_distal = nf_distal.norm(dim=-1)   # (N, 5)
+        # ---- Critic: distal (5개 별개 sensor) ----
+        per_distal = torch.stack(
+            [self._get_sensor_cup_force_xyz(s).norm(dim=-1) for s in self._distal_sensors], dim=-1
+        )  # (N, 5)
 
         self.distal_contact_force_raw.copy_(per_distal)
         self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
@@ -610,7 +629,7 @@ class GraspRightEnv(DirectRLEnv):
         # 6. fingertip binary contact (5D) — real Teosllo FT sensor 기반
         binary_contact = self.binary_contact_buf.float()   # (N, 5)
 
-        # 7. fingertip contact force xyz (15D) — net_forces_w 기반, 정규화 [-1,1]
+        # 7. fingertip contact force xyz (15D) — force_matrix_w Cup-only, 정규화 [-1,1]
         fingertip_force_xyz = (
             self.contact_force_xyz_raw / CONTACT_FORCE_MAX
         ).clamp(-1.0, 1.0).view(self.num_envs, -1)   # (N, 15)
@@ -627,7 +646,7 @@ class GraspRightEnv(DirectRLEnv):
             arm_joint_pos,         # 7
             arm_joint_vel,         # 7
             binary_contact,        # 5
-            fingertip_force_xyz,   # 15  (fx,fy,fz × 5 tips, Cup-only filtered)
+            fingertip_force_xyz,   # 15  (fx,fy,fz × 5 tips, Cup-only, force_matrix_w)
             last_actions,          # 5
         ], dim=-1)   # 104D
 
@@ -768,6 +787,11 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["success_rate"]         = self.success_flag.float().mean()
         self.extras["adr_contact_delta_w"]  = torch.tensor(contact_delta_weight, device=self.device)
         self.extras["adr_enclosure_w"]      = torch.tensor(enclosure_weight, device=self.device)
+        # ---- tip / distal 접촉 상태 개별 모니터링 (force_matrix_w Cup-only) ----
+        self.extras["tip_num_contacts"]     = self.binary_contact_buf.float().sum(dim=-1).mean()
+        self.extras["tip_force_mean"]       = self.contact_force_raw.mean()
+        self.extras["distal_num_contacts"]  = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
+        self.extras["distal_force_mean"]    = self.distal_contact_force_raw.mean()
         if self.grasp_adr is not None:
             self.extras["adr_progress"] = torch.tensor(self.grasp_adr.progress, device=self.device)
 
