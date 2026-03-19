@@ -25,17 +25,18 @@ from .bi_pouring_preset import LEFT_HOLDER_JOINT_NAMES, RIGHT_POLICY_ARM_JOINT_N
 
 NUM_RIGHT_ARM_DOF = len(RIGHT_POLICY_ARM_JOINT_NAMES)
 NUM_LEFT_HOLDER_DOF = len(LEFT_HOLDER_JOINT_NAMES)
+NUM_ARM_DOF = NUM_RIGHT_ARM_DOF  # 7
 
 # Actor observation layout:
 #   right_arm_joint_pos: 7
 #   right_arm_joint_vel: 7
-#   source_to_target_relative_pose: 7
+#   source_to_target_relative_pose: 7  (pos 3 + quat 4)
 #   source_pour_point_to_target_opening: 3
 #   source_cup_velocity_summary: 2
 #   tilt_alignment_summary: 3
-#   last_actions: 7
-NUM_OBSERVATIONS = 36
-NUM_ACTIONS = NUM_RIGHT_ARM_DOF
+#   last_actions: 6  (palm pose 6D)
+NUM_OBSERVATIONS = 35
+NUM_ACTIONS = 6  # FABRICS palm pose 6D (x,y,z,ez,ey,ex)
 
 # Critic-only extras:
 #   bead_pos_env: 3
@@ -43,4 +44,4 @@ NUM_ACTIONS = NUM_RIGHT_ARM_DOF
 #   task_flags: 3
 #   stable_step_counter: 1
 #   spill_flags: 2
-NUM_STATES = 48
+NUM_STATES = 47

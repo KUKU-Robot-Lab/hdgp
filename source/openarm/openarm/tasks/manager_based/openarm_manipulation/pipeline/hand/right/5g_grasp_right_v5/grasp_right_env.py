@@ -139,6 +139,19 @@ class GraspRightEnv(DirectRLEnv):
         self.arm_dof_indices  = self.actuated_dof_indices[:NUM_ARM_DOF]   # list[int]
         self.hand_dof_indices = self.actuated_dof_indices[NUM_ARM_DOF:]   # list[int]
 
+        # fingertip body indices (body_pos_w 직접 참조용, taskmap 대체)
+        _tip_names = [f"rl_dg_{i}_tip" for i in range(1, 6)]
+        self.fingertip_body_indices: list[int] = [
+            self.robot.data.body_names.index(name)
+            for name in _tip_names
+        ]
+        _palm_name = "rl_dg_palm"
+        self.palm_body_index: int = (
+            self.robot.data.body_names.index(_palm_name)
+            if _palm_name in self.robot.data.body_names
+            else -1
+        )
+
         # ----------------------------------------------------------------
         # Palm pose 워크스페이스
         # ----------------------------------------------------------------
@@ -223,7 +236,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # ----------------------------------------------------------------
         # 접촉 상태 버퍼 (actor: fingertip)
-        # force_matrix_w: Cup-only pair-wise filtered force (get_contact_force_matrix)
+        # net_forces_w: (N, 5, 3) — body별 합산 접촉력
         # ----------------------------------------------------------------
         self.contact_force_xyz_raw = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)  # (N,5,3) fx,fy,fz
         self.contact_force_raw     = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)      # (N,5) norm
@@ -275,8 +288,8 @@ class GraspRightEnv(DirectRLEnv):
         self.scene.rigid_objects["cup"]   = self.cup
         self.scene.rigid_objects["table"] = self.table
 
-        # Actor: Per-fingertip ContactSensor (rl_dg_1_tip ~ rl_dg_5_tip)
-        # filter_prim_paths_expr → force_matrix_w: Cup-only 접촉력 (노이즈 제거)
+        # Actor: fingertip 5개 개별 ContactSensor (USD ContactSensor + filter)
+        # force_matrix_w: (N, 1, 1, 3) — Cup-only 접촉력
         _CUP_FILTER = ["/World/envs/env_.*/Cup"]
         self._tip_sensors: list[ContactSensor] = []
         for link_name in self.cfg.right_tip_contact_links:
@@ -289,18 +302,10 @@ class GraspRightEnv(DirectRLEnv):
             self._tip_sensors.append(sensor)
             self.scene.sensors[f"tip_sensor_{link_name}"] = sensor
 
-        # Critic privileged: Distal ContactSensor (rl_dg_*_4)
-        # filter_prim_paths_expr → force_matrix_w: Cup-only 접촉력
-        self._distal_sensors: list[ContactSensor] = []
-        for link_name in self.cfg.right_distal_contact_links:
-            sensor = ContactSensor(ContactSensorCfg(
-                prim_path=f"/World/envs/env_.*/Robot/{link_name}",
-                filter_prim_paths_expr=_CUP_FILTER,
-                history_length=1,
-                track_air_time=False,
-            ))
-            self._distal_sensors.append(sensor)
-            self.scene.sensors[f"distal_sensor_{link_name}"] = sensor
+        # Critic privileged: distal 5개 통합 ContactSensor (USD ContactSensor 없음)
+        # net_forces_w: (N, 5, 3) — filter 없이 body별 합산 접촉력
+        self._distal_sensor = ContactSensor(self.cfg.distal_sensor_cfg)
+        self.scene.sensors["distal_sensor"] = self._distal_sensor
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
@@ -450,28 +455,16 @@ class GraspRightEnv(DirectRLEnv):
 
         return q_out
 
-    # ------------------------------------------------------------------
-    def _get_sensor_cup_force_xyz(self, sensor: ContactSensor) -> torch.Tensor:
-        """single-body sensor force_matrix_w → (N, 3) Cup-only 접촉력.
-
-        force_matrix_w shape: (N, 1, 1, 3)
-          axis-0: num_envs
-          axis-1: num_bodies (=1, single-body sensor)
-          axis-2: num_filter_shapes (=1, Cup 1개)
-          axis-3: xyz
-        filter 미활성 또는 데이터 없을 경우 zeros 반환.
-        """
-        fm = sensor.data.force_matrix_w   # (N, 1, 1, 3) or None
-        if fm is not None and fm.numel() > 0:
-            return fm[:, 0, 0, :]   # (N, 3)
-        return torch.zeros(self.num_envs, 3, device=self.device)
-
     def _update_contact_forces(self) -> None:
-        """Actor/critic 접촉력 업데이트 (force_matrix_w 기반, Cup-only 필터)."""
-        # ---- Actor: fingertip (5개 별개 sensor) ----
-        tip_xyz = torch.stack(
-            [self._get_sensor_cup_force_xyz(s) for s in self._tip_sensors], dim=1
-        )  # (N, 5, 3)
+        """Actor/critic 접촉력 업데이트.
+
+        tip: 개별 센서 force_matrix_w (N,1,1,3) → Cup-only 접촉력 (USD ContactSensor 기반)
+        distal: 통합 센서 net_forces_w (N,5,3) → 합산 접촉력 (critic only, sim-only)
+        """
+        # ---- Actor: fingertip 개별 센서 (Cup-only, force_matrix_w) ----
+        tip_xyz = torch.stack([
+            s.data.force_matrix_w[:, 0, 0, :] for s in self._tip_sensors
+        ], dim=1)                          # (N, 5, 3)
         tip_norms = tip_xyz.norm(dim=-1)   # (N, 5)
 
         self.contact_force_xyz_raw.copy_(tip_xyz)
@@ -479,10 +472,8 @@ class GraspRightEnv(DirectRLEnv):
         self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
         self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
 
-        # ---- Critic: distal (5개 별개 sensor) ----
-        per_distal = torch.stack(
-            [self._get_sensor_cup_force_xyz(s).norm(dim=-1) for s in self._distal_sensors], dim=-1
-        )  # (N, 5)
+        # ---- Critic: distal 통합 센서 (net_forces_w, filter 없음) ----
+        per_distal = self._distal_sensor.data.net_forces_w.norm(dim=-1)  # (N, 5)
 
         self.distal_contact_force_raw.copy_(per_distal)
         self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
@@ -499,15 +490,12 @@ class GraspRightEnv(DirectRLEnv):
         # action=-1 → HAND_APPROACH_POSE (완전 열림)
         finger_action = actions[:, :5]   # (N, 5) ∈ [-1, 1]
 
-        hand_target = self.hand_grasp_pose.unsqueeze(0).expand(self.num_envs, -1).clone()  # (N, 20)
-        for i in range(5):
-            s = i * 4
-            e = s + 4
-            a_i    = finger_action[:, i:i+1]                                  # (N, 1)
-            delta  = self.hand_grasp_pose[s:e] - self.hand_open_pose[s:e]     # (4,) GRASP-APPROACH
-            hand_target[:, s:e] = (
-                self.hand_grasp_pose[s:e].unsqueeze(0) + a_i * delta.unsqueeze(0)
-            )
+        # per-finger lerp 벡터화: action (N,5) → joint target (N,20)
+        # delta (20,): GRASP - APPROACH per joint
+        # action_exp (N,20): 각 finger action을 4 joints에 반복 적용
+        delta_20    = self.hand_grasp_pose - self.hand_open_pose               # (20,)
+        action_exp  = finger_action.repeat_interleave(4, dim=1)                # (N, 20)
+        hand_target = self.hand_grasp_pose.unsqueeze(0) + action_exp * delta_20.unsqueeze(0)
         self.hand_joint_targets.copy_(hand_target)
 
         # ---- 2. Phase 판정 ----
@@ -573,30 +561,19 @@ class GraspRightEnv(DirectRLEnv):
     # Intermediate values
     # ------------------------------------------------------------------
     def _compute_intermediate_values(self) -> None:
-        # fabric_q 동기화 (episode 중 Fabrics를 사용하지 않으므로 robot 실제값으로 갱신)
-        # hand_points_taskmap FK에서 arm + hand DOF 모두 필요
-        self.fabric_q[:, :NUM_ARM_DOF] = self.robot.data.joint_pos[:, self.arm_dof_indices]
-        self.fabric_q[:, NUM_ARM_DOF:] = self.robot.data.joint_pos[:, self.hand_dof_indices]
-
         # 물체 위치
         self.object_pos = self.cup.data.root_pos_w - self.scene.env_origins
         self.object_rot = self.cup.data.root_quat_w
 
-        # Hand FK (센서 URDF 기준)
-        # [0]=palm_link, [1]=palm_x, [2:7]=rl_dg_*_tip
-        hand_pos_flat, _ = self.hand_points_taskmap(self.fabric_q, None)  # (N, 21)
-        all_pos = hand_pos_flat.view(self.num_envs, 7, 3)
-
-        # palm 위치: rl_dg_palm USD body 우선, 없으면 Fabrics FK palm_link
-        if self.cfg.right_palm_contact_link in self.robot.data.body_names:
-            palm_body_id = self.robot.data.body_names.index(self.cfg.right_palm_contact_link)
+        # palm / fingertip 위치 — body_pos_w (순수 GPU tensor, taskmap 불필요)
+        env_origins = self.scene.env_origins   # (N, 3)
+        if self.palm_body_index >= 0:
             self.palm_center_pos = (
-                self.robot.data.body_pos_w[:, palm_body_id] - self.scene.env_origins
+                self.robot.data.body_pos_w[:, self.palm_body_index, :] - env_origins
             )
-        else:
-            self.palm_center_pos = all_pos[:, 0, :]
-
-        self.fingertip_pos = all_pos[:, 2:, :]   # (N, 5, 3)
+        self.fingertip_pos = (
+            self.robot.data.body_pos_w[:, self.fingertip_body_indices, :] - env_origins.unsqueeze(1)
+        )  # (N, 5, 3)
 
         # 접촉력 업데이트
         self._update_contact_forces()
@@ -646,7 +623,7 @@ class GraspRightEnv(DirectRLEnv):
             arm_joint_pos,         # 7
             arm_joint_vel,         # 7
             binary_contact,        # 5
-            fingertip_force_xyz,   # 15  (fx,fy,fz × 5 tips, Cup-only, force_matrix_w)
+            fingertip_force_xyz,   # 15  (fx,fy,fz × 5 tips, force_matrix_w Cup-only)
             last_actions,          # 5
         ], dim=-1)   # 104D
 
@@ -787,7 +764,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["success_rate"]         = self.success_flag.float().mean()
         self.extras["adr_contact_delta_w"]  = torch.tensor(contact_delta_weight, device=self.device)
         self.extras["adr_enclosure_w"]      = torch.tensor(enclosure_weight, device=self.device)
-        # ---- tip / distal 접촉 상태 개별 모니터링 (force_matrix_w Cup-only) ----
+        # ---- tip / distal 접촉 상태 개별 모니터링 ----
         self.extras["tip_num_contacts"]     = self.binary_contact_buf.float().sum(dim=-1).mean()
         self.extras["tip_force_mean"]       = self.contact_force_raw.mean()
         self.extras["distal_num_contacts"]  = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
@@ -854,10 +831,8 @@ class GraspRightEnv(DirectRLEnv):
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
 
-        for k, idx in enumerate(self.actuated_dof_indices):
-            full_pos[:, idx] = self.robot_start_joint_pos[0, k]
-        for k, idx in enumerate(self.left_arm_dof_indices):
-            full_pos[:, idx] = self.left_arm_zero_pos[0, k]
+        full_pos[:, self.actuated_dof_indices] = self.robot_start_joint_pos[0]
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
 
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
@@ -920,11 +895,6 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qd[env_ids, NUM_ARM_DOF:].zero_()
         self.fabric_qdd[env_ids, NUM_ARM_DOF:].zero_()
 
-        # ---- 5. pregrasp palm FK 위치 기록 ----
-        hand_pos_flat, _ = self.hand_points_taskmap(self.fabric_q, None)   # (N, 21)
-        all_pos_pg = hand_pos_flat.view(self.num_envs, 7, 3)
-        self.pregrasp_palm_pos_buf[env_ids] = all_pos_pg[env_ids, 0, :]   # palm_link
-
         # ---- 5b. pregrasp arm joint 위치 저장 ----
         self.pregrasp_arm_pos_buf[env_ids] = self.fabric_q[env_ids, :NUM_ARM_DOF]
 
@@ -946,12 +916,9 @@ class GraspRightEnv(DirectRLEnv):
         pregrasp_full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
 
-        for k, idx in enumerate(self.arm_dof_indices):
-            pregrasp_full_pos[:, idx] = self.fabric_q[env_ids, k]
-        for k_hand, idx in enumerate(self.hand_dof_indices):
-            pregrasp_full_pos[:, idx] = HAND_APPROACH_POSE[k_hand]   # 열린 자세: 침투 없음
-        for k, idx in enumerate(self.left_arm_dof_indices):
-            pregrasp_full_pos[:, idx] = self.left_arm_zero_pos[0, k]
+        pregrasp_full_pos[:, self.arm_dof_indices]  = self.fabric_q[env_ids, :NUM_ARM_DOF]
+        pregrasp_full_pos[:, self.hand_dof_indices] = self.hand_approach_buf.unsqueeze(0).expand(n, -1)
+        pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
 
         self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
 

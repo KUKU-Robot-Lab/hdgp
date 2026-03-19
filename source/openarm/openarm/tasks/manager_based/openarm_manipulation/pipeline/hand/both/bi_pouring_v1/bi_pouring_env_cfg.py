@@ -73,6 +73,7 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     decimation: int = 2
     fabrics_dt: float = 1.0 / 60.0
     fabric_decimation: int = 2
+    fabrics_max_objects_per_env: int = 4
     use_cuda_graph: bool = False
 
     observation_space: int = NUM_OBSERVATIONS
@@ -131,7 +132,7 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
                 max_depenetration_velocity=5.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=True,
+                enabled_self_collisions=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
             ),
@@ -164,23 +165,23 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
             ),
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
-                stiffness=200.0,
-                damping=40.0,
+                stiffness=400.0,
+                damping=80.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                stiffness=200.0,
-                damping=40.0,
+                stiffness=400.0,
+                damping=80.0,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                stiffness=200.0,
-                damping=40.0,
+                stiffness=400.0,
+                damping=80.0,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                stiffness=200.0,
-                damping=40.0,
+                stiffness=400.0,
+                damping=80.0,
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],
@@ -268,7 +269,8 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     stable_alignment_xy_threshold: float = 0.040
     stable_alignment_z_min: float = 0.010
     stable_alignment_z_max: float = 0.120
-    alignment_xy_scale: float = 0.040
+    approach_xy_scale: float = 0.25
+    alignment_xy_scale: float = 0.12
     alignment_z_target: float = 0.040
     alignment_z_scale: float = 0.035
     controlled_tilt_target_cos: float = 0.55
@@ -296,6 +298,7 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     invalid_bead_drop_z_threshold: float = 0.230
     invalid_bead_floor_z_threshold: float = 0.050
     invalid_bead_xy_threshold: float = 0.800
+    reward_approach_weight: float = 1.5
     reward_alignment_weight: float = 1.5
     reward_controlled_tilt_weight: float = 0.75
     reward_bead_entry_weight: float = 6.0

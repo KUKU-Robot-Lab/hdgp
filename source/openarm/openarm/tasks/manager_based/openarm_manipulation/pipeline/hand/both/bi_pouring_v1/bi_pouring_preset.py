@@ -18,6 +18,8 @@ The structure deliberately keeps a left-holder init-pose seam for future
 curriculum randomization via FABRICS or an equivalent pose generator.
 """
 
+import math
+
 RIGHT_SOURCE_CUP_ATTACH_FRAME_NAME = "rl_dg_palm"
 LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "openarm_left_hand"
 
@@ -30,15 +32,15 @@ LEFT_HOLDER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
 # Symmetric holder-like baseline for early pouring-motion learning.
 # The source cup is already attached to the right hand, and reset-time joint
 # noise is applied around this baseline for initial pose randomization.
-RIGHT_ARM_POUR_READY_POSE = [-0.5, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0]
+RIGHT_ARM_POUR_READY_POSE = [-0.5, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0]
 # Backward-compatible alias for existing references inside the task.
 RIGHT_ARM_HOME_POSE = RIGHT_ARM_POUR_READY_POSE
 
 LEFT_HOLDER_FIXED_JOINT_POS = {
-    "openarm_left_joint1": 0.5,
+    "openarm_left_joint1": 0.0,
     "openarm_left_joint2": 0,
     "openarm_left_joint3": 0,
-    "openarm_left_joint4": 2.0,
+    "openarm_left_joint4": 1.5,
     "openarm_left_joint5": 0,
     "openarm_left_joint6": 0,
     "openarm_left_joint7": 0,
@@ -54,7 +56,7 @@ LEFT_HOLDER_FIXED_JOINT_POS = {
 # xyz = [0.028, 0.0, 0.04]. Since palm_ee is not a simulated rigid body in
 # Isaac Lab body_names, attach from rl_dg_palm and bake the helper-frame
 # offset directly in the palm local frame.
-RIGHT_SOURCE_CUP_ATTACH_POS_B = [0.06, 0.07, 0.0]
+RIGHT_SOURCE_CUP_ATTACH_POS_B = [0.06, 0.02, 0.04]
 RIGHT_SOURCE_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, -0.70710678, 0.0, 0.0]
 LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.06]
 LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]
@@ -97,3 +99,9 @@ TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.080]
 SOURCE_CUP_POUR_AXIS_B = [1.0, 0.0, 0.0]
 SOURCE_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
+
+# ---------------------------------------------------------------------------
+# FABRICS arm control
+# ---------------------------------------------------------------------------
+# FABRICS 초기 arm joint 위치 (RIGHT_ARM_POUR_READY_POSE alias)
+ARM_START_POSE = RIGHT_ARM_POUR_READY_POSE

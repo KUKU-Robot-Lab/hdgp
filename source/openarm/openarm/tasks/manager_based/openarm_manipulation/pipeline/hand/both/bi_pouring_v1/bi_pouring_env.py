@@ -20,9 +20,21 @@ leaving scene/reset/observation/reward/bead details as explicit TODOs.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from collections.abc import Sequence
 
 import torch
+
+# FABRICS 경로 설정 (hdgp/source/FABRICS/src 우선)
+for _parent in Path(__file__).resolve().parents:
+    if _parent.name == "source":
+        _vendored = _parent / "FABRICS" / "src"
+        if _vendored.exists():
+            _v = str(_vendored)
+            if _v not in sys.path:
+                sys.path.insert(0, _v)
+        break
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
@@ -30,15 +42,21 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_mul, subtract_frame_transforms
 
-from .bi_pouring_constants import NUM_ACTIONS, NUM_OBSERVATIONS
+from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
+from fabrics_sim.integrator.integrators import DisplacementIntegrator
+from fabrics_sim.utils.utils import initialize_warp
+from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
+
+from .bi_pouring_constants import NUM_ACTIONS, NUM_OBSERVATIONS, NUM_ARM_DOF
 from .bi_pouring_env_cfg import BiPouringEnvCfg
 from .bi_pouring_preset import (
+    ARM_START_POSE,
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
     LEFT_HOLDER_FIXED_JOINT_POS,
     RIGHT_HAND_GRASP_JOINT_POS,
     RIGHT_HAND_JOINT_NAMES,
-    RIGHT_ARM_HOME_POSE,
+    RIGHT_ARM_POUR_READY_POSE,
 )
 
 
@@ -52,11 +70,9 @@ class BiPouringEnv(DirectRLEnv):
         self._right_hand_joint_ids: list[int] = []
         self._left_holder_joint_ids: list[int] = []
 
-        self._right_arm_home = None
         self._right_hand_grasp = None
         self._left_holder_home = None
         self._last_actions = None
-        self._joint_pos_target = None
         self._obs_buf = None
         self._state_buf = None
         self._right_source_cup_attach_pos_b = None
@@ -102,7 +118,6 @@ class BiPouringEnv(DirectRLEnv):
         for name in cfg.left_holder_joint_names:
             self._left_holder_joint_ids.append(self.robot.joint_names.index(name))
 
-        self._right_arm_home = torch.tensor(RIGHT_ARM_HOME_POSE, dtype=torch.float32, device=self.device)
         right_hand_grasp = [RIGHT_HAND_GRASP_JOINT_POS[name] for name in RIGHT_HAND_JOINT_NAMES]
         self._right_hand_grasp = torch.tensor(right_hand_grasp, dtype=torch.float32, device=self.device)
         left_holder_home = [
@@ -147,7 +162,6 @@ class BiPouringEnv(DirectRLEnv):
 
         self._prev_actions = torch.zeros(self.num_envs, NUM_ACTIONS, device=self.device)
         self._last_actions = torch.zeros(self.num_envs, NUM_ACTIONS, device=self.device)
-        self._joint_pos_target = self._right_arm_home.unsqueeze(0).repeat(self.num_envs, 1).clone()
         self._obs_buf = torch.zeros(self.num_envs, NUM_OBSERVATIONS, device=self.device)
         self._state_buf = torch.zeros(self.num_envs, self.cfg.num_states, device=self.device)
         self._stable_alignment_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -155,6 +169,7 @@ class BiPouringEnv(DirectRLEnv):
         self._prev_bead_in_target_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._bead_has_entered_target_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._bead_exited_target_after_entry_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._approach_reward = torch.zeros(self.num_envs, device=self.device)
         self._alignment_reward = torch.zeros(self.num_envs, device=self.device)
         self._controlled_tilt_reward = torch.zeros(self.num_envs, device=self.device)
         self._bead_entry_reward = torch.zeros(self.num_envs, device=self.device)
@@ -168,6 +183,58 @@ class BiPouringEnv(DirectRLEnv):
         self._bead_in_source_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._bead_spilled_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        # ---- FABRICS arm 제어 ----
+        # arm(7) + hand(20) = 27 DOF 시작 자세
+        arm_start = torch.tensor(ARM_START_POSE, dtype=torch.float32, device=self.device)
+        self.robot_start_joint_pos = torch.cat(
+            [arm_start, self._right_hand_grasp]
+        ).unsqueeze(0).repeat(self.num_envs, 1).contiguous()
+
+        # delta action 누적용 palm pose 상태 버퍼 (reset 시 FK로 초기화)
+        self.palm_pose_state = torch.zeros(self.num_envs, 6, device=self.device)
+
+        self._setup_geometric_fabrics()
+
+        # 시작 joint 위치의 FK palm pose → (6,) 저장 후 reset 시 재사용
+        _palm_start = self.open_tesollo_fabric.get_palm_pose(
+            self.robot_start_joint_pos, "euler_zyx"
+        )  # (num_envs, 6)
+        self._init_palm_pose = _palm_start[0].clone()  # (6,)
+        self.palm_pose_state.copy_(self._init_palm_pose.unsqueeze(0).expand(self.num_envs, -1))
+
+    def _setup_geometric_fabrics(self) -> None:
+        initialize_warp(self.device[-1])
+        print("=== BiPouringEnv: Creating Fabrics world ===")
+        self.world_model = WorldMeshesModel(
+            batch_size=self.num_envs,
+            max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
+            device=self.device,
+            world_filename="open_tesollo_boxes_no_table",
+        )
+        self.object_ids, self.object_indicator = self.world_model.get_object_ids()
+        self.timestep = self.cfg.fabrics_dt
+        self.open_tesollo_fabric = OpenArmTeoslloPoseFabric(
+            self.num_envs, self.device, self.timestep,
+            graph_capturable=False,
+            use_hand_fabric=False,
+        )
+        num_joints = self.open_tesollo_fabric.num_joints  # 27
+        self.open_tesollo_integrator = DisplacementIntegrator(self.open_tesollo_fabric)
+        self.fabric_q   = self.robot_start_joint_pos.clone().contiguous()
+        self.fabric_qd  = torch.zeros(self.num_envs, num_joints, device=self.device)
+        self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
+        self.hand_pca_targets  = torch.zeros(self.num_envs, 5, device=self.device)
+        self.palm_pose_targets = torch.zeros(self.num_envs, 6, device=self.device)
+        self.fabric_damping_gain = 10.0 * torch.ones(self.num_envs, 1, device=self.device)
+        # cspace attractor: arm = ARM_START_POSE, hand = grasp pose
+        cspace_default = self.open_tesollo_fabric.default_config.clone()
+        cspace_default[:, :NUM_ARM_DOF] = torch.tensor(
+            ARM_START_POSE, dtype=torch.float32, device=self.device
+        ).unsqueeze(0).expand(self.num_envs, -1)
+        cspace_default[:, NUM_ARM_DOF:] = self._right_hand_grasp.unsqueeze(0).expand(self.num_envs, -1)
+        self.open_tesollo_fabric.default_config.copy_(cspace_default)
+        print("=== BiPouringEnv: Fabrics initialized ===")
 
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -190,14 +257,51 @@ class BiPouringEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._prev_actions.copy_(self._last_actions)
         self._last_actions = actions.clamp(-1.0, 1.0)
-        self._joint_pos_target = self._right_arm_home.unsqueeze(0) + self.cfg.action_scale * self._last_actions
+
+        # delta action: palm pose 누적 (lab_test1 방식)
+        self.palm_pose_state = self.palm_pose_state + self._last_actions * self.cfg.action_scale
+        self.palm_pose_targets.copy_(self.palm_pose_state)
+        self.hand_pca_targets.zero_()
+
+        # FABRICS step: palm pose → arm joint pos/vel
+        self.open_tesollo_fabric.set_features(
+            self.hand_pca_targets,
+            self.palm_pose_targets,
+            "euler_zyx",
+            self.fabric_q.detach(),
+            self.fabric_qd.detach(),
+            self.object_ids,
+            self.object_indicator,
+            self.fabric_damping_gain,
+        )
+        for _ in range(self.cfg.fabric_decimation):
+            self.fabric_q, self.fabric_qd, self.fabric_qdd = self.open_tesollo_integrator.step(
+                self.fabric_q.detach(),
+                self.fabric_qd.detach(),
+                self.fabric_qdd.detach(),
+                self.timestep,
+            )
 
     def _apply_action(self) -> None:
-        self.robot.set_joint_position_target(self._joint_pos_target, joint_ids=self._right_arm_joint_ids)
-        right_hand_target = self._right_hand_grasp.unsqueeze(0).expand(self.num_envs, -1)
-        self.robot.set_joint_position_target(right_hand_target, joint_ids=self._right_hand_joint_ids)
-        left_holder_target = self._left_holder_home.unsqueeze(0).expand(self.num_envs, -1)
-        self.robot.set_joint_position_target(left_holder_target, joint_ids=self._left_holder_joint_ids)
+        # 오른팔: FABRICS 계산된 arm joint target
+        arm_target = self.fabric_q[:, :NUM_ARM_DOF]
+        arm_vel    = self.fabric_qd[:, :NUM_ARM_DOF]
+        self.robot.set_joint_position_target(arm_target, joint_ids=self._right_arm_joint_ids)
+        self.robot.set_joint_velocity_target(arm_vel,    joint_ids=self._right_arm_joint_ids)
+
+        # 손가락과 왼팔: state 직접 덮어써서 완전히 고정
+        zero_vel_hand = torch.zeros(self.num_envs, len(self._right_hand_joint_ids), device=self.device)
+        zero_vel_left = torch.zeros(self.num_envs, len(self._left_holder_joint_ids), device=self.device)
+        self.robot.write_joint_state_to_sim(
+            self._right_hand_grasp.unsqueeze(0).expand(self.num_envs, -1),
+            zero_vel_hand,
+            joint_ids=self._right_hand_joint_ids,
+        )
+        self.robot.write_joint_state_to_sim(
+            self._left_holder_home.unsqueeze(0).expand(self.num_envs, -1),
+            zero_vel_left,
+            joint_ids=self._left_holder_joint_ids,
+        )
         self._update_attached_cups_from_ee()
 
     def _get_observations(self) -> dict:
@@ -336,6 +440,7 @@ class BiPouringEnv(DirectRLEnv):
             & (self._stable_retention_steps >= self.cfg.success_retention_steps)
         )
 
+        self._approach_reward = torch.exp(-cup_xy / max(self.cfg.approach_xy_scale, 1.0e-6))
         alignment_xy_term = torch.exp(-torch.square(cup_xy / max(self.cfg.alignment_xy_scale, 1.0e-6)))
         alignment_z_term = torch.exp(
             -torch.square((cup_z - self.cfg.alignment_z_target) / max(self.cfg.alignment_z_scale, 1.0e-6))
@@ -450,7 +555,8 @@ class BiPouringEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         rewards = (
-            self.cfg.reward_alignment_weight * self._alignment_reward
+            self.cfg.reward_approach_weight * self._approach_reward
+            + self.cfg.reward_alignment_weight * self._alignment_reward
             + self.cfg.reward_controlled_tilt_weight * self._controlled_tilt_reward
             + self.cfg.reward_bead_entry_weight * self._bead_entry_reward
             + self.cfg.reward_stable_retention_weight * self._stable_retention_reward
@@ -482,23 +588,19 @@ class BiPouringEnv(DirectRLEnv):
         full_pos = self.robot.data.default_joint_pos[env_ids].clone()
         full_vel = torch.zeros(num_envs, self.robot.num_joints, device=self.device)
 
-        full_pos[:, self._right_arm_joint_ids] = reset_plan["right_arm_joint_pos"]
+        arm_start = torch.tensor(RIGHT_ARM_POUR_READY_POSE, dtype=torch.float32, device=self.device)
+        full_pos[:, self._right_arm_joint_ids]  = arm_start.unsqueeze(0).expand(num_envs, -1)
         full_pos[:, self._right_hand_joint_ids] = self._right_hand_grasp.unsqueeze(0).expand(num_envs, -1)
-        full_pos[:, self._left_holder_joint_ids] = reset_plan["left_holder_joint_pos"]
+        full_pos[:, self._left_holder_joint_ids] = self._left_holder_home.unsqueeze(0).expand(num_envs, -1)
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
-        self.robot.set_joint_position_target(
-            full_pos[:, self._right_arm_joint_ids], joint_ids=self._right_arm_joint_ids, env_ids=env_ids
-        )
-        self.robot.set_joint_position_target(
-            full_pos[:, self._right_hand_joint_ids], joint_ids=self._right_hand_joint_ids, env_ids=env_ids
-        )
-        self.robot.set_joint_position_target(
-            full_pos[:, self._left_holder_joint_ids], joint_ids=self._left_holder_joint_ids, env_ids=env_ids
-        )
-        if hasattr(self.robot, "write_data_to_sim"):
-            self.robot.write_data_to_sim()
-        if hasattr(self.robot, "update"):
-            self.robot.update(0.0)
+
+        # FABRICS 상태 리셋
+        self.fabric_q[env_ids]   = self.robot_start_joint_pos[env_ids]
+        self.fabric_qd[env_ids].zero_()
+        self.fabric_qdd[env_ids].zero_()
+
+        # palm pose 상태 리셋 (__init__에서 저장한 초기값 재사용)
+        self.palm_pose_state[env_ids] = self._init_palm_pose.unsqueeze(0).expand(num_envs, -1)
 
         object_reset_plan = self._build_object_reset_plan(env_ids)
         right_pose = object_reset_plan["right_source_cup_pose"]
@@ -512,9 +614,9 @@ class BiPouringEnv(DirectRLEnv):
         self.bead.write_root_pose_to_sim(bead_pose, env_ids=env_ids)
         self.bead.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
+        # actions 리셋 (delta 방식이므로 0으로 초기화)
         self._last_actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
-        self._joint_pos_target[env_ids] = reset_plan["right_arm_joint_pos"]
         self._stable_alignment_steps[env_ids] = 0
         self._stable_retention_steps[env_ids] = 0
         self._prev_bead_in_target_flag[env_ids] = False
@@ -538,13 +640,8 @@ class BiPouringEnv(DirectRLEnv):
         # replace the left-holder sampler upstream so the cup/bead staging stays shared.
 
     def _build_reset_plan(self, env_ids: Sequence[int]) -> dict[str, torch.Tensor]:
-        right_arm_joint_pos = self._sample_right_arm_init_joint_pos(env_ids)
         left_holder_joint_pos = self._sample_left_holder_init_joint_pos(env_ids)
-
-        return {
-            "right_arm_joint_pos": right_arm_joint_pos,
-            "left_holder_joint_pos": left_holder_joint_pos,
-        }
+        return {"left_holder_joint_pos": left_holder_joint_pos}
 
     def _build_object_reset_plan(self, env_ids: Sequence[int]) -> dict[str, torch.Tensor]:
         right_source_cup_pose = self._sample_right_source_cup_pose(env_ids)
@@ -555,16 +652,6 @@ class BiPouringEnv(DirectRLEnv):
             "left_target_cup_pose": left_target_cup_pose,
             "bead_pose": bead_pose,
         }
-
-    def _sample_right_arm_init_joint_pos(self, env_ids: Sequence[int]) -> torch.Tensor:
-        num_envs = len(env_ids)
-        joint_pos = self._right_arm_home.unsqueeze(0).repeat(num_envs, 1)
-        if not self.cfg.enable_right_arm_init_noise:
-            return joint_pos
-
-        noise_abs = torch.tensor(self.cfg.right_arm_init_joint_noise_abs, dtype=torch.float32, device=self.device)
-        noise = (2.0 * torch.rand(num_envs, noise_abs.shape[0], device=self.device) - 1.0) * noise_abs.unsqueeze(0)
-        return joint_pos + noise
 
     def _sample_left_holder_init_joint_pos(self, env_ids: Sequence[int]) -> torch.Tensor:
         num_envs = len(env_ids)

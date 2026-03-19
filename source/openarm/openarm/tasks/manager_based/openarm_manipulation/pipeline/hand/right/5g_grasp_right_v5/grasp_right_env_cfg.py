@@ -31,6 +31,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg, GroundPlaneCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 
 import os as _os
@@ -85,7 +86,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
-    pregrasp_fabric_steps: int   = 60    # 200 → 60: full-batch 비용 절감 (60 step으로 수렴 충분)
+    pregrasp_fabric_steps: int   = 30    # 200 → 60 → 30: GPU idle 감소 (30 step 수렴 충분)
     reset_fabric_chunk_size: int = 128   # reset 전용 소형 Fabrics batch 크기 (env_ids chunk 단위)
     pregrasp_offset_x:     float = -0.06   # palm_link가 cup -X 방향 5cm
                                             # palm_ee = palm_link + local_z(0.04) → palm_ee_x = cup_x - 0.01
@@ -304,10 +305,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     )
 
     # -----------------------------------------------------------------------
-    # Fingertip ContactSensor 링크명 (URDF: openarm_tesollo_sensor.urdf)
+    # ContactSensor 설정
     # rl_dg_*_tip: fixed joint로 rl_dg_*_4에 붙은 전용 sensor rigid body
+    # 단일 ContactSensor에 glob으로 5개 body 묶기 → force_matrix_w: (N, 5, 1, 3)
     # -----------------------------------------------------------------------
-    # Actor ContactSensor (real-compatible: Teosllo fingertip FT)
+    _CUP_FILTER = ["/World/envs/env_.*/Cup"]
+
+    # Actor: fingertip 5개 개별 센서 (USD에 ContactSensor 정의 존재)
+    # filter_prim_paths_expr → Cup-only 접촉력 (force_matrix_w)
+    # 멀티-body 통합 시 PhysX filter 개수 불일치(expected N×5, found N) 문제로 개별 유지
     right_tip_contact_links: tuple = (
         "rl_dg_1_tip",
         "rl_dg_2_tip",
@@ -317,14 +323,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     )
     right_palm_contact_link: str = "rl_dg_palm"
 
-    # Critic privileged ContactSensor (sim-only)
-    # distal (rl_dg_*_4): 5개 전 손가락 (merged into 1 sensor)
-    right_distal_contact_links: tuple = (
-        "rl_dg_1_4",
-        "rl_dg_2_4",
-        "rl_dg_3_4",
-        "rl_dg_4_4",
-        "rl_dg_5_4",
+    # Critic privileged: distal 5개 통합 센서 (USD에 ContactSensor 없음)
+    # filter 없이 net_forces_w 사용 — sim-only critic obs이므로 허용
+    distal_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/rl_dg_[1-5]_4",
+        history_length=1,
+        track_air_time=False,
     )
 
     # -----------------------------------------------------------------------
