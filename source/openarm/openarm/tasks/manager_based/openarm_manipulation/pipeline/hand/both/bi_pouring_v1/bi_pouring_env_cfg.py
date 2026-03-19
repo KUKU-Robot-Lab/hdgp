@@ -70,6 +70,8 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
 
     episode_length_s: float = 6.0
     decimation: int = 2
+    fabrics_dt: float = 1.0 / 60.0
+    fabric_decimation: int = 2
     use_cuda_graph: bool = False
 
     observation_space: int = NUM_OBSERVATIONS
@@ -83,7 +85,7 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     action_scale: float = 0.25
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=128,
+        num_envs=2048,
         env_spacing=2.5,
         replicate_physics=True,
     )
@@ -128,7 +130,7 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
                 max_depenetration_velocity=5.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False,
+                enabled_self_collisions=True,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
             ),
@@ -283,14 +285,20 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     source_inner_radius: float = 0.055
     source_inside_z_min: float = -0.020
     source_inside_z_max: float = 0.110
+    target_entry_z_max: float = 0.000
     stable_retention_speed_threshold: float = 0.35
-    success_retention_steps: int = 8
+    success_retention_steps: int = 100
     bead_spill_z_threshold: float = 0.220
     major_spill_xy_radius: float = 0.100
     major_spill_z_margin: float = -0.040
-    collision_center_distance_threshold: float = 0.085
+    rim_clearance_threshold: float = 0.035
+    ee_clearance_threshold: float = 0.120
+    cup_to_opposite_ee_clearance_threshold: float = 0.110
     invalid_cup_xy_threshold: float = 0.300
     invalid_cup_z_threshold: float = 0.250
+    invalid_bead_drop_z_threshold: float = 0.230
+    invalid_bead_floor_z_threshold: float = 0.050
+    invalid_bead_xy_threshold: float = 0.800
     reward_alignment_weight: float = 1.5
     reward_controlled_tilt_weight: float = 0.75
     reward_bead_entry_weight: float = 6.0
@@ -299,12 +307,12 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     penalty_collision_weight: float = 1.0
     penalty_action_smoothness_weight: float = 0.05
 
-    # Future sim2real curriculum seam:
-    # FABRICS or an equivalent pose sampler can randomize the left holder arm/gripper
-    # initial pose while preserving a valid cup-to-cup pouring geometry.
-    # Keep these as simple placeholders in v1 so later curriculum configs can
-    # override them without renaming the current fixed-holder path.
-    enable_left_holder_init_pose_randomization: bool = False
+    # Left-holder reset seam aligned with 5g_grasp_right_v5 reset-fabric usage.
+    # bi_pouring_v1 still defaults to the fixed holder path because this codebase
+    # currently does not provide a reusable left-side FABRICS pose sampler.
+    use_left_holder_reset_fabric: bool = False
+    pregrasp_fabric_steps: int = 60
+    reset_fabric_chunk_size: int = 128
     left_holder_init_pose_sampler: str = "fixed"
     left_holder_init_pos_noise_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
     left_holder_init_rot_noise_rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)

@@ -67,9 +67,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS         # 104 (actor)
-    action_space:      int = NUM_ACTIONS              # 8
-    state_space:       int = NUM_CRITIC_OBSERVATIONS  # 128 (critic, privileged)
+    observation_space: int = NUM_OBSERVATIONS         # 101 (actor)
+    action_space:      int = NUM_ACTIONS              # 5
+    state_space:       int = NUM_CRITIC_OBSERVATIONS  # 119 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -318,19 +318,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     right_palm_contact_link: str = "rl_dg_palm"
 
     # Critic privileged ContactSensor (sim-only)
-    # distal (rl_dg_*_4): 5개 전 손가락
+    # distal (rl_dg_*_4): 5개 전 손가락 (merged into 1 sensor)
     right_distal_contact_links: tuple = (
         "rl_dg_1_4",
         "rl_dg_2_4",
         "rl_dg_3_4",
         "rl_dg_4_4",
         "rl_dg_5_4",
-    )
-    # middle (rl_dg_*_3): thumb, index, middle 3개 (MD Section 10.2)
-    right_middle_contact_links: tuple = (
-        "rl_dg_1_3",
-        "rl_dg_2_3",
-        "rl_dg_3_3",
     )
 
     # -----------------------------------------------------------------------

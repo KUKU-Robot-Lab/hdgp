@@ -24,6 +24,7 @@
   - Actor obs: 36D
   - Critic obs: 48D
   - Action: 7D
+- Default train envs: `2048`
 
 ### Scene 구성
 
@@ -58,20 +59,25 @@
 - 에피소드 길이: `6.0s`
 - 시뮬레이션 `dt`: `1/120`
 - decimation: `2`
-- 학습 env 수: `128`
+- 학습 env 수: `2048`
 - play env 수: `50`
 - 오른팔 초기 joint에는 작은 noise가 들어간다.
 - 왼쪽 holder pose는 현재 고정값이다.
+- left holder reset seam은 `5g_grasp_right_v5`와 동일한 reset-fabric naming을 따르지만, 현재 구현은 fixed holder 경로를 유지한다.
 - bead 수는 반드시 `1`이어야 한다.
 
 ### Termination
 
 다음 중 하나면 종료된다.
 
-- 성공: bead가 target 내부에서 안정적으로 유지되어 `success_retention_steps >= 8`
 - major spill 발생
 - invalid state 발생
+  - bead가 컵 밖으로 떨어져 table/floor height 영역으로 내려감
+  - bead가 workspace를 크게 벗어남
+  - cup geometry가 비정상적으로 벌어짐
 - episode timeout
+
+성공은 조기 종료 조건이 아니라, bead가 target 내부 중심 XY 영역을 통과해 들어온 뒤 다시 나오지 않고 `100 step` 이상 안정적으로 유지된 상태가 episode 마지막까지 이어질 때 성립한다.
 
 ## 3. ACTOR / CRITIC가 보는 OBS
 
@@ -104,7 +110,7 @@ Critic은 actor observation 36D에 다음 privileged information 12D를 추가�
 2. Bead linear velocity in world frame: 3
 3. Task flags: 3
    - stable alignment 여부
-   - bead in target 여부
+   - bead entered target 여부
    - success 여부
 4. Stable alignment steps normalized: 1
 5. Spill flags: 2
@@ -158,7 +164,7 @@ reward =
 
 ### 3) Bead entry reward
 
-bead가 source를 떠나 target 내부로 처음 들어가는 순간 이벤트성 reward를 준다.
+bead가 source를 떠나 target 로컬 좌표계 기준으로 `cup 중심 XY 영역` 안에 들어오고, `z < 0` 측으로 내려온 순간 이벤트성 reward를 준다.
 
 - one-time event 성격
 - target 진입을 강하게 밀어주는 주요 sparse reward
@@ -169,15 +175,15 @@ bead가 source를 떠나 target 내부로 처음 들어가는 순간 이벤트�
 
 ### 4) Stable retention reward
 
-bead가 target 내부에 있고 속도가 낮을수록 보상을 준다.
+bead가 target 내부 중심 XY 영역 안에 유지되고 속도가 낮을수록 보상을 준다.
 
 - 단순 진입이 아니라 "안정적으로 담기는 것"을 학습 목표로 만든다.
-- success 판정과도 연결된다.
+- success 판정은 최소 `100 step` 연속 안정 유지와 episode 마지막까지 non-exit를 요구한다.
 
 핵심 파라미터:
 
 - `stable_retention_speed_threshold = 0.35`
-- `success_retention_steps = 8`
+- `success_retention_steps = 100`
 
 ### 5) Spill penalty
 
@@ -194,14 +200,22 @@ major spill은 종료 조건에도 사용된다.
 
 ### 6) Collision penalty
 
-두 컵 중심이 지나치게 가까워지는 것을 패널티로 준다.
+기존의 cup center distance 패널티를 제거하고, orientation-aware clearance proxy로 변경했다.
 
-- 실제 충돌 proxy 역할
-- cup center distance 기반
+- rim scrape risk:
+  - source pour rim과 target opening이 XY로 너무 가깝고
+  - source rim이 target rim보다 충분히 위에 있지 않을 때 패널티
+- EE clearance risk:
+  - right EE와 left EE가 과도하게 가까워질 때 패널티
+- cross cup / opposite EE risk:
+  - source cup vs left holder EE
+  - target cup vs right EE
 
 핵심 파라미터:
 
-- `collision_center_distance_threshold = 0.085`
+- `rim_clearance_threshold = 0.035`
+- `ee_clearance_threshold = 0.120`
+- `cup_to_opposite_ee_clearance_threshold = 0.110`
 
 ### 7) Smoothness penalty
 
@@ -254,7 +268,7 @@ major spill은 종료 조건에도 사용된다.
 - gamma: `0.998`
 - tau: `0.95`
 - horizon length: `16`
-- minibatch size: `512`
+- minibatch size: `16384`
 - mini epochs: `4`
 - entropy coef: `0.002`
 - critic coef: `4`

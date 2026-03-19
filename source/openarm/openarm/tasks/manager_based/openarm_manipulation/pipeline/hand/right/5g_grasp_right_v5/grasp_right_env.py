@@ -69,7 +69,6 @@ from .grasp_right_constants import (
     NUM_FINGERTIPS,
     NUM_OBSERVATIONS,
     NUM_DISTAL_SENSORS,
-    NUM_MIDDLE_SENSORS,
     NUM_CRITIC_OBSERVATIONS,
     GRASP_PHASE_STEPS,
     LIFT_PHASE_STEPS,
@@ -233,12 +232,10 @@ class GraspRightEnv(DirectRLEnv):
         self.prev_contact_count_buf = torch.zeros(self.num_envs, device=self.device)
 
         # ----------------------------------------------------------------
-        # 접촉 상태 버퍼 (critic privileged: distal/middle)
+        # 접촉 상태 버퍼 (critic privileged: distal)
         # ----------------------------------------------------------------
         self.distal_contact_force_raw  = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, device=self.device)
         self.distal_binary_contact_buf = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, dtype=torch.bool, device=self.device)
-        self.middle_contact_force_raw  = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, device=self.device)
-        self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
         # 성공 플래그 (terminal reward 판정용)
@@ -278,44 +275,22 @@ class GraspRightEnv(DirectRLEnv):
         self.scene.rigid_objects["cup"]   = self.cup
         self.scene.rigid_objects["table"] = self.table
 
-        # Actor: Per-fingertip ContactSensor (rl_dg_1_tip ~ rl_dg_5_tip)
-        self._tip_sensors: list[ContactSensor] = []
-        for link_name in self.cfg.right_tip_contact_links:
-            sensor_cfg = ContactSensorCfg(
-                prim_path=f"/World/envs/env_.*/Robot/{link_name}",
-                filter_prim_paths_expr=["/World/envs/env_.*/Cup"],
-                history_length=1,
-                track_air_time=False,
-            )
-            sensor = ContactSensor(sensor_cfg)
-            self._tip_sensors.append(sensor)
-            self.scene.sensors[f"tip_sensor_{link_name}"] = sensor
+        # Actor: tip ContactSensor (merged, 5 bodies: rl_dg_[1-5]_tip)
+        # net_forces_w 사용 (force_matrix_w는 항상 0 반환 버그로 filter 불필요)
+        self._tip_sensor = ContactSensor(ContactSensorCfg(
+            prim_path="/World/envs/env_.*/Robot/rl_dg_.*_tip",
+            history_length=1,
+            track_air_time=False,
+        ))
+        self.scene.sensors["tip_sensor"] = self._tip_sensor
 
-        # Critic privileged: Distal ContactSensor (rl_dg_*_4)
-        self._distal_sensors: list[ContactSensor] = []
-        for link_name in self.cfg.right_distal_contact_links:
-            sensor_cfg = ContactSensorCfg(
-                prim_path=f"/World/envs/env_.*/Robot/{link_name}",
-                filter_prim_paths_expr=["/World/envs/env_.*/Cup"],
-                history_length=1,
-                track_air_time=False,
-            )
-            sensor = ContactSensor(sensor_cfg)
-            self._distal_sensors.append(sensor)
-            self.scene.sensors[f"distal_sensor_{link_name}"] = sensor
-
-        # Critic privileged: Middle ContactSensor (rl_dg_*_3, thumb/index/middle)
-        self._middle_sensors: list[ContactSensor] = []
-        for link_name in self.cfg.right_middle_contact_links:
-            sensor_cfg = ContactSensorCfg(
-                prim_path=f"/World/envs/env_.*/Robot/{link_name}",
-                filter_prim_paths_expr=["/World/envs/env_.*/Cup"],
-                history_length=1,
-                track_air_time=False,
-            )
-            sensor = ContactSensor(sensor_cfg)
-            self._middle_sensors.append(sensor)
-            self.scene.sensors[f"middle_sensor_{link_name}"] = sensor
+        # Critic privileged: Distal ContactSensor (merged, 5 bodies: rl_dg_[1-5]_4)
+        self._distal_sensor = ContactSensor(ContactSensorCfg(
+            prim_path="/World/envs/env_.*/Robot/rl_dg_.*_4",
+            history_length=1,
+            track_air_time=False,
+        ))
+        self.scene.sensors["distal_sensor"] = self._distal_sensor
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
@@ -466,50 +441,32 @@ class GraspRightEnv(DirectRLEnv):
         return q_out
 
     # ------------------------------------------------------------------
-    def _get_cup_contact_force_xyz(self, sensor: ContactSensor) -> torch.Tensor:
-        """net_forces_w 기반 contact force (N, 3).
-
-        force_matrix_w(Cup-only filtered)가 항상 0을 반환하는 문제로 인해
-        net_forces_w(전체 contact 합산)를 사용.
-        self_collision=False이고 tip이 table에 닿는 경우는 극히 드물어 실질적으로 Cup-only.
-
-        net_forces_w shape: (N, B, 3)  B=1(single body sensor)
-        """
-        nf = sensor.data.net_forces_w   # (N, 1, 3)
-        if nf is not None and nf.numel() > 0:
-            return nf[:, 0, :]           # (N, 3)
-        return torch.zeros(self.num_envs, 3, device=self.device)
-
-    def _get_cup_contact_force_norm(self, sensor: ContactSensor) -> torch.Tensor:
-        """Contact force magnitude (N,)."""
-        return self._get_cup_contact_force_xyz(sensor).norm(dim=-1)
-
     def _update_contact_forces(self) -> None:
-        """Actor/critic 접촉력 업데이트 (net_forces_w 기반)."""
-        # ---- Actor: fingertip xyz force (get_contact_force_matrix 해당) ----
-        tip_xyz = torch.stack(
-            [self._get_cup_contact_force_xyz(s) for s in self._tip_sensors], dim=1
-        )  # (N, 5, 3)
-        tip_norms = tip_xyz.norm(dim=-1)  # (N, 5)
+        """Actor/critic 접촉력 업데이트 (net_forces_w 기반, merged sensor).
 
-        self.contact_force_xyz_raw.copy_(tip_xyz)
+        merged sensor net_forces_w shape: (N, B, 3)  B=body 수
+          tip sensor:    B=5 → (N, 5, 3)
+          distal sensor: B=5 → (N, 5, 3)
+        """
+        # ---- Actor: fingertip (merged, B=5) ----
+        nf_tip = self._tip_sensor.data.net_forces_w   # (N, 5, 3)
+        if nf_tip is None or nf_tip.numel() == 0:
+            nf_tip = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
+        tip_norms = nf_tip.norm(dim=-1)   # (N, 5)
+
+        self.contact_force_xyz_raw.copy_(nf_tip)
         self.contact_force_raw.copy_(tip_norms)
         self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
         self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
 
-        # ---- Critic: distal (rl_dg_*_4) ----
-        per_distal = torch.stack(
-            [self._get_cup_contact_force_norm(s) for s in self._distal_sensors], dim=-1
-        )  # (N, 5)
+        # ---- Critic: distal (merged, B=5) ----
+        nf_distal = self._distal_sensor.data.net_forces_w   # (N, 5, 3)
+        if nf_distal is None or nf_distal.numel() == 0:
+            nf_distal = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, 3, device=self.device)
+        per_distal = nf_distal.norm(dim=-1)   # (N, 5)
+
         self.distal_contact_force_raw.copy_(per_distal)
         self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
-
-        # ---- Critic: middle (rl_dg_*_3) ----
-        per_middle = torch.stack(
-            [self._get_cup_contact_force_norm(s) for s in self._middle_sensors], dim=-1
-        )  # (N, 3)
-        self.middle_contact_force_raw.copy_(per_middle)
-        self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
 
     # ------------------------------------------------------------------
     # Physics step
@@ -689,10 +646,6 @@ class GraspRightEnv(DirectRLEnv):
         distal_binary     = self.distal_binary_contact_buf.float()
         distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
-        # middle link contact — thumb/index/middle (3D binary + 3D force_norm)
-        middle_binary    = self.middle_binary_contact_buf.float()   # (N, 3)
-        middle_force_norm = (self.middle_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)  # (N, 3)
-
         # scripted lift phase flag (1D)
         lift_flag = (self.episode_length_buf >= GRASP_PHASE_STEPS).float().unsqueeze(1)  # (N, 1)
 
@@ -707,11 +660,9 @@ class GraspRightEnv(DirectRLEnv):
             cup_ang_vel,          # 3
             distal_binary,        # 5
             distal_force_norm,    # 5
-            middle_binary,        # 3
-            middle_force_norm,    # 3
             lift_flag,            # 1
             cup_height_delta,     # 1
-        ], dim=-1)   # 125D
+        ], dim=-1)   # 119D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -999,8 +950,6 @@ class GraspRightEnv(DirectRLEnv):
 
         self.distal_contact_force_raw[env_ids].zero_()
         self.distal_binary_contact_buf[env_ids] = False
-        self.middle_contact_force_raw[env_ids].zero_()
-        self.middle_binary_contact_buf[env_ids] = False
 
         # ---- 10. 성공 플래그 리셋 ----
         self.success_flag[env_ids] = False

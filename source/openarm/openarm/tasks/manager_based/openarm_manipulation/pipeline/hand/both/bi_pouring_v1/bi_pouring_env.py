@@ -73,6 +73,8 @@ class BiPouringEnv(DirectRLEnv):
         self._stable_retention_steps = None
         self._prev_actions = None
         self._prev_bead_in_target_flag = None
+        self._bead_has_entered_target_flag = None
+        self._bead_exited_target_after_entry_flag = None
         self._alignment_reward = None
         self._controlled_tilt_reward = None
         self._bead_entry_reward = None
@@ -143,6 +145,8 @@ class BiPouringEnv(DirectRLEnv):
         self._stable_alignment_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._stable_retention_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._prev_bead_in_target_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._bead_has_entered_target_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._bead_exited_target_after_entry_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._alignment_reward = torch.zeros(self.num_envs, device=self.device)
         self._controlled_tilt_reward = torch.zeros(self.num_envs, device=self.device)
         self._bead_entry_reward = torch.zeros(self.num_envs, device=self.device)
@@ -258,6 +262,8 @@ class BiPouringEnv(DirectRLEnv):
             right_cup_pos_w, right_cup_quat_w, self.bead.data.root_pos_w, self.bead.data.root_quat_w
         )
         bead_speed = torch.norm(bead_lin_vel_w, dim=-1)
+        right_ee_pos_w = self.robot.data.body_pos_w[:, self._right_source_cup_body_id]
+        left_ee_pos_w = self.robot.data.body_pos_w[:, self._left_target_cup_body_id]
         pour_point_to_target_opening_w = target_opening_w - source_pour_point_w
         cup_xy = torch.norm(pour_point_to_target_opening_w[:, :2], dim=-1)
         cup_z = source_pour_point_w[:, 2] - target_opening_w[:, 2]
@@ -275,7 +281,7 @@ class BiPouringEnv(DirectRLEnv):
         self._bead_in_target_flag = (
             (bead_target_xy <= self.cfg.target_inner_radius)
             & (bead_pos_in_target[:, 2] >= self.cfg.target_inside_z_min)
-            & (bead_pos_in_target[:, 2] <= self.cfg.target_inside_z_max)
+            & (bead_pos_in_target[:, 2] <= self.cfg.target_entry_z_max)
         )
         self._bead_in_source_flag = (
             (bead_source_xy <= self.cfg.source_inner_radius)
@@ -283,7 +289,18 @@ class BiPouringEnv(DirectRLEnv):
             & (bead_pos_in_source[:, 2] <= self.cfg.source_inside_z_max)
         )
         bead_entry_event = self._bead_in_target_flag & (~self._prev_bead_in_target_flag) & (~self._bead_in_source_flag)
-        stable_retention = self._bead_in_target_flag & (bead_speed <= self.cfg.stable_retention_speed_threshold)
+        self._bead_has_entered_target_flag |= bead_entry_event
+        bead_exit_after_entry = (
+            self._prev_bead_in_target_flag
+            & (~self._bead_in_target_flag)
+            & self._bead_has_entered_target_flag
+        )
+        self._bead_exited_target_after_entry_flag |= bead_exit_after_entry
+        stable_retention = (
+            self._bead_in_target_flag
+            & (~self._bead_exited_target_after_entry_flag)
+            & (bead_speed <= self.cfg.stable_retention_speed_threshold)
+        )
         self._stable_retention_steps = torch.where(
             stable_retention, self._stable_retention_steps + 1, torch.zeros_like(self._stable_retention_steps)
         )
@@ -302,7 +319,12 @@ class BiPouringEnv(DirectRLEnv):
             & (~self._bead_in_target_flag)
             & (~self._bead_in_source_flag)
         )
-        self._success_flag = self._stable_retention_steps >= self.cfg.success_retention_steps
+        self._success_flag = (
+            self._bead_has_entered_target_flag
+            & (~self._bead_exited_target_after_entry_flag)
+            & self._bead_in_target_flag
+            & (self._stable_retention_steps >= self.cfg.success_retention_steps)
+        )
 
         alignment_xy_term = torch.exp(-torch.square(cup_xy / max(self.cfg.alignment_xy_scale, 1.0e-6)))
         alignment_z_term = torch.exp(
@@ -330,34 +352,60 @@ class BiPouringEnv(DirectRLEnv):
             alignment_gate * tilt_window * pour_progress
         )
         self._bead_entry_reward = bead_entry_event.float()
-        self._stable_retention_reward = self._bead_in_target_flag.float() * (
+        self._stable_retention_reward = stable_retention.float() * (
             0.5 + 0.5 * torch.clamp(1.0 - bead_speed / max(self.cfg.stable_retention_speed_threshold, 1.0e-6), 0.0, 1.0)
         )
         self._spill_penalty = self._bead_spilled_flag.float()
-        cup_center_distance = torch.norm(right_cup_pos_w - left_cup_pos_w, dim=-1)
-        self._collision_penalty = torch.clamp(
-            (self.cfg.collision_center_distance_threshold - cup_center_distance)
-            / max(self.cfg.collision_center_distance_threshold, 1.0e-6),
+        rim_xy_clearance = torch.norm((source_pour_point_w - target_opening_w)[:, :2], dim=-1)
+        rim_vertical_clearance = source_pour_point_w[:, 2] - target_opening_w[:, 2]
+        rim_scrape_penalty = self._proximity_penalty(rim_xy_clearance, self.cfg.rim_clearance_threshold) * torch.clamp(
+            (self.cfg.stable_alignment_z_min - rim_vertical_clearance) / max(self.cfg.stable_alignment_z_min, 1.0e-6),
             min=0.0,
             max=1.0,
         )
+        ee_clearance_penalty = self._proximity_penalty(
+            torch.norm(right_ee_pos_w - left_ee_pos_w, dim=-1),
+            self.cfg.ee_clearance_threshold,
+        )
+        cross_cup_ee_penalty = torch.maximum(
+            self._proximity_penalty(
+                torch.norm(right_cup_pos_w - left_ee_pos_w, dim=-1),
+                self.cfg.cup_to_opposite_ee_clearance_threshold,
+            ),
+            self._proximity_penalty(
+                torch.norm(left_cup_pos_w - right_ee_pos_w, dim=-1),
+                self.cfg.cup_to_opposite_ee_clearance_threshold,
+            ),
+        )
+        self._collision_penalty = torch.maximum(rim_scrape_penalty, torch.maximum(ee_clearance_penalty, cross_cup_ee_penalty))
         self._smoothness_penalty = torch.mean(torch.square(self._last_actions - self._prev_actions), dim=-1)
         finite_mask = (
             torch.isfinite(actor_obs).all(dim=-1)
             & torch.isfinite(bead_pos_env).all(dim=-1)
             & torch.isfinite(bead_lin_vel_w).all(dim=-1)
         )
+        bead_dropped_to_table_or_floor = (
+            (~self._bead_in_target_flag)
+            & (~self._bead_in_source_flag)
+            & (
+                (bead_pos_env[:, 2] <= self.cfg.invalid_bead_drop_z_threshold)
+                | (bead_pos_env[:, 2] <= self.cfg.invalid_bead_floor_z_threshold)
+            )
+        )
+        bead_out_of_workspace = torch.norm(bead_pos_env[:, :2], dim=-1) >= self.cfg.invalid_bead_xy_threshold
         self._invalid_state_flag = (
             (~finite_mask)
             | (cup_xy >= self.cfg.invalid_cup_xy_threshold)
             | (torch.abs(cup_z) >= self.cfg.invalid_cup_z_threshold)
+            | bead_dropped_to_table_or_floor
+            | bead_out_of_workspace
         )
         self._prev_bead_in_target_flag.copy_(self._bead_in_target_flag)
 
         task_flags = torch.stack(
             [
                 stable_alignment.float(),
-                self._bead_in_target_flag.float(),
+                self._bead_has_entered_target_flag.float(),
                 self._success_flag.float(),
             ],
             dim=-1,
@@ -368,7 +416,7 @@ class BiPouringEnv(DirectRLEnv):
         spill_flags = torch.stack(
             [
                 self._bead_spilled_flag.float(),
-                (self._bead_spilled_flag & (~self._bead_in_target_flag)).float(),
+                self._bead_exited_target_after_entry_flag.float(),
             ],
             dim=-1,
         )
@@ -403,7 +451,7 @@ class BiPouringEnv(DirectRLEnv):
         return rewards
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        terminated = self._success_flag | self._major_spill_flag | self._invalid_state_flag
+        terminated = self._major_spill_flag | self._invalid_state_flag
         time_out = self.episode_length_buf >= (self.max_episode_length - 1)
         return terminated, time_out
 
@@ -456,6 +504,8 @@ class BiPouringEnv(DirectRLEnv):
         self._stable_alignment_steps[env_ids] = 0
         self._stable_retention_steps[env_ids] = 0
         self._prev_bead_in_target_flag[env_ids] = False
+        self._bead_has_entered_target_flag[env_ids] = False
+        self._bead_exited_target_after_entry_flag[env_ids] = False
         self._alignment_reward[env_ids] = 0.0
         self._controlled_tilt_reward[env_ids] = 0.0
         self._bead_entry_reward[env_ids] = 0.0
@@ -504,8 +554,12 @@ class BiPouringEnv(DirectRLEnv):
 
     def _sample_left_holder_init_joint_pos(self, env_ids: Sequence[int]) -> torch.Tensor:
         num_envs = len(env_ids)
-        # TODO: when curriculum is enabled, sample a valid left-holder initial pose with
-        # FABRICS or an equivalent pose generator and map it back to joint space.
+        # Match the 5g_grasp_right_v5 reset-fabric seam naming, but keep the fixed
+        # holder path until a reusable left-side FABRICS pose sampler is available.
+        if self.cfg.use_left_holder_reset_fabric:
+            raise NotImplementedError(
+                "bi_pouring_v1 does not yet provide a left-side FABRICS reset sampler; keep use_left_holder_reset_fabric=False."
+            )
         # TODO: future curriculum should randomize both left-arm pose and left-gripper
         # aperture jointly so the receiving cup pose remains robust to perception noise.
         return self._left_holder_home.unsqueeze(0).repeat(num_envs, 1)
@@ -587,3 +641,7 @@ class BiPouringEnv(DirectRLEnv):
     @staticmethod
     def _safe_normalize(vec: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
         return vec / torch.clamp(torch.norm(vec, dim=-1, keepdim=True), min=eps)
+
+    @staticmethod
+    def _proximity_penalty(distance: torch.Tensor, threshold: float) -> torch.Tensor:
+        return torch.clamp((threshold - distance) / max(threshold, 1.0e-6), min=0.0, max=1.0)
