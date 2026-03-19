@@ -104,31 +104,42 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # -----------------------------------------------------------------------
     # Reward 파라미터
+    #
+    # [방향 A: Lift-phase conditioned reward]
+    # dense reward (contact/enclosure/opposition)에 phase scale 적용:
+    #   Grasp phase: dense × grasp_shaping_scale (방향 안내만, 누적 지배 방지)
+    #   Lift  phase: dense × 1.0                 (파지 유지 + 리프트 동시 달성 시 풀 보상)
+    # 목표: "터치만 540step" local optimum 탈피 → "파지 후 리프트" 전략 학습
     # -----------------------------------------------------------------------
     # 1. contact_reward: 접촉 유지 (num_contacts / 5)
     contact_reward_weight: float = 2.0
 
     # 2. contact_delta: 접촉 증가 보상 / 감소 패널티
-    #    ADR: 3.0 → 1.0 (초기 contact 유도 후 감소)
-    contact_delta_weight: float = 3.0   # ADR 초기값
+    #    ADR: 2.0 → 0.5 (접촉 획득 유도 후 감소, 이미 학습됨)
+    contact_delta_weight: float = 2.0   # ADR 초기값
 
     # 3. enclosure: fingertip → cup 거리 기반 exp reward
-    #    ADR: 2.0 → 3.0 (점점 강화)
-    enclosure_weight:    float = 2.0   # ADR 초기값
-    enclosure_sharpness: float = 10.0  # exp(-sharpness * mean_dist)
+    #    ADR: 4.0 → 8.0 (점점 강화)
+    enclosure_weight:    float = 4.0    # ADR 초기값 (2.0 → 4.0, 더 강한 enclosure 압력)
+    enclosure_sharpness: float = 15.0  # exp(-sharpness * mean_dist)  (10.0 → 15.0)
 
     # 4. opposition: thumb + 다른 손가락 동시 접촉
-    opposition_weight: float = 5.0
+    opposition_weight: float = 2.0     # 5.0 → 2.0 (지배 방지, 67% → ~25% 목표)
 
-    # 5. action_reg: ||action||² 패널티
+    # 5a. grasp_shaping_scale: Grasp phase dense reward 억제 스케일
+    #   dense_scale = grasp_shaping_scale + (1 - grasp_shaping_scale) × is_lift_flag
+    #   Grasp phase: dense × 0.05  Lift phase: dense × 1.00
+    grasp_shaping_scale: float = 0.05
+
+    # 5b. action_reg: ||action||² 패널티 (scale 미적용, 항상 full)
     action_reg_weight: float = -0.005
 
-    # 5b. lift_reward: Lift phase 동안 cup_z - init_z 비례 보상 (gradient 제공)
-    #   weight=20: 최대 0.04m 상승 시 0.8/step → Lift phase 60step × 0.8 = 48 total
-    lift_reward_weight: float = 20.0
+    # 5c. lift_reward: Lift phase 동안 cup_z - init_z 비례 보상
+    #   weight=60: 최대 0.04m 상승 시 2.4/step → Lift phase 120step × 2.4 = 288 total
+    lift_reward_weight: float = 60.0   # 20.0 → 60.0
 
     # 6. terminal rewards
-    terminal_success_weight: float = 10.0
+    terminal_success_weight: float = 200.0  # 10.0 → 200.0 (성공이 수지맞는 전략이 되도록)
     terminal_fail_weight:    float = -1.0
 
     # -----------------------------------------------------------------------
@@ -137,12 +148,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     enable_adr:            bool  = True
     adr_num_increments:    int   = 50
     adr_increment_interval: int  = 200
-    adr_trigger_threshold: float = 0.1   # success ratio 10% 이상
+    adr_trigger_threshold: float = 0.02   # 0.1 → 0.02 (success 2% 이상이면 진행)
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "reward_weights": {
-            "contact_delta_weight": (5.0, 1.0),   # 초기 contact 유도 후 감소
-            "enclosure_weight":     (2.0, 5.0),   # 점점 강화
+            "contact_delta_weight": (2.0, 0.5),   # 접촉 획득 유도 후 감소
+            "enclosure_weight":     (4.0, 8.0),   # 점점 강화
         },
     })
 

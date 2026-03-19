@@ -17,12 +17,14 @@
 v5: FABRICS pre-grasp reset + 정책 손가락 grasp formation + Scripted lift checker.
 
 핵심 차이 (v4 대비):
-  - Action: 8D = 5D per-finger lerp + 3D palm xyz residual (orientation 고정)
+  - Action: 5D per-finger lerp (orientation 고정)
   - Pre-grasp: reset에서 FABRICS로 cup-relative 위치 형성
   - Contact: 물리 ContactSensor (fingertip 5개) 기반
-  - Episode: 6s = 5s grasp phase + 1s scripted lift checker
-  - Reward: contact-rich (contact_reward, contact_delta, enclosure, opposition)
-  - ADR: contact_delta_weight (3→1), enclosure_weight (2→3)
+  - Episode: 10s = 8s grasp phase + 2s scripted lift checker
+  - Reward: Lift-phase conditioned (방향 A)
+      Grasp phase: dense reward × grasp_shaping_scale (0.05)  ← 누적 지배 방지
+      Lift  phase: dense reward × 1.0 + lift_reward           ← 파지 유지하며 리프트
+  - ADR: contact_delta_weight (2→0.5), enclosure_weight (4→8), trigger 2%
 """
 
 from __future__ import annotations
@@ -635,7 +637,7 @@ class GraspRightEnv(DirectRLEnv):
     # Rewards
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        # ---- ADR: contact_delta_weight (3→1), enclosure_weight (2→3) ----
+        # ---- ADR ----
         if self.grasp_adr is not None:
             contact_delta_weight = self.grasp_adr.get_param("reward_weights", "contact_delta_weight")
             enclosure_weight     = self.grasp_adr.get_param("reward_weights", "enclosure_weight")
@@ -643,16 +645,27 @@ class GraspRightEnv(DirectRLEnv):
             contact_delta_weight = self.cfg.contact_delta_weight
             enclosure_weight     = self.cfg.enclosure_weight
 
-        # ---- 1. contact_reward: 유지 보상 ----
+        # ---- Phase flag ----
+        is_lift_flag = self.is_lift_phase.float()   # (N,)
+
+        # ---- Phase-conditional dense reward scale (방향 A) ----
+        # Grasp phase: dense × grasp_shaping_scale  (방향 안내만, 누적 지배 방지)
+        # Lift  phase: dense × 1.0                  (파지 유지 + 리프트 동시 달성 시 풀 보상)
+        dense_scale = (
+            self.cfg.grasp_shaping_scale
+            + (1.0 - self.cfg.grasp_shaping_scale) * is_lift_flag
+        )   # (N,) ∈ [grasp_shaping_scale, 1.0]
+
+        # ---- 1. contact_reward ----
         num_contacts = self.num_contacts_buf.float()   # (N,)
         contact_reward = self.cfg.contact_reward_weight * (num_contacts / NUM_FINGERTIPS)
 
-        # ---- 2. contact_delta: 증가 보상 / 감소 패널티 ----
+        # ---- 2. contact_delta ----
         delta_contacts = (num_contacts - self.prev_contact_count_buf)   # (N,)
         contact_delta_reward = contact_delta_weight * delta_contacts
         self.prev_contact_count_buf.copy_(num_contacts)
 
-        # ---- 3. enclosure: fingertip → cup 평균 거리 기반 ----
+        # ---- 3. enclosure ----
         grasp_center = self.object_pos.clone()
         grasp_center[:, 2] += self.cfg.cup_grasp_z_offset
         fingertip_to_cup_dist = (
@@ -662,24 +675,30 @@ class GraspRightEnv(DirectRLEnv):
             -self.cfg.enclosure_sharpness * fingertip_to_cup_dist.mean(dim=-1)
         )
 
-        # ---- 4. opposition: thumb + 다른 손가락 동시 접촉 ----
-        thumb_contact  = self.binary_contact_buf[:, 0].float()            # (N,)
-        other_contact  = self.binary_contact_buf[:, 1:].any(dim=-1).float()  # (N,)
+        # ---- 4. opposition ----
+        thumb_contact = self.binary_contact_buf[:, 0].float()             # (N,)
+        other_contact = self.binary_contact_buf[:, 1:].any(dim=-1).float()  # (N,)
         opposition_reward = self.cfg.opposition_weight * (thumb_contact * other_contact)
 
-        # ---- 5. action_reg: action 크기 패널티 ----
+        # ---- dense reward에 phase scale 적용 ----
+        dense_reward = dense_scale * (
+            contact_reward
+            + contact_delta_reward
+            + enclosure_reward
+            + opposition_reward
+        )
+
+        # ---- 5. action_reg (scale 미적용, 항상 full) ----
         action_reg = self.cfg.action_reg_weight * self.actions.pow(2).sum(dim=-1)
 
-        # ---- 5b. lift_reward: Lift phase 동안 cup_z 상승 비례 보상 ----
-        # Lift phase (episode_length_buf >= GRASP_PHASE_STEPS)에서만 활성
-        is_lift_flag = self.is_lift_phase.float()   # (N,)
+        # ---- 6. lift_reward ----
         cup_height_delta = (
             self.object_pos[:, 2] - self.object_init_pos[:, 2]
         ).clamp(min=0.0)   # (N,) ≥ 0
         lift_reward = self.cfg.lift_reward_weight * is_lift_flag * cup_height_delta
 
-        # ---- 6. terminal rewards ----
-        is_terminal = self.reset_buf   # (N,) True when episode ends (terminated|truncated)
+        # ---- 7. terminal rewards ----
+        is_terminal = self.reset_buf
         terminal_success_reward = self.cfg.terminal_success_weight * self.success_flag.float()
         terminal_fail_reward    = self.cfg.terminal_fail_weight * (
             is_terminal.float() * (~self.success_flag).float()
@@ -687,10 +706,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 합산 ----
         total = (
-            contact_reward
-            + contact_delta_reward
-            + enclosure_reward
-            + opposition_reward
+            dense_reward
             + action_reg
             + lift_reward
             + terminal_success_reward
@@ -699,22 +715,18 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- ADR increment ----
         if self.grasp_adr is not None:
-            # 성공 비율로 ADR 진행
-            lift_success_ratio = self.success_flag.float().mean()
-            self.grasp_adr.maybe_increment(lift_success_ratio)
+            self.grasp_adr.maybe_increment(self.success_flag.float().mean())
 
         # ---- 로깅 ----
         self.extras["contact_reward"]       = contact_reward.mean()
         self.extras["contact_delta_reward"] = contact_delta_reward.mean()
         self.extras["enclosure_reward"]     = enclosure_reward.mean()
         self.extras["opposition_reward"]    = opposition_reward.mean()
+        self.extras["dense_scale"]          = dense_scale.mean()   # 모니터링: 0.05→1.0 전환 확인
         self.extras["action_reg"]           = action_reg.mean()
         self.extras["lift_reward"]          = lift_reward.mean()
         self.extras["cup_height_delta"]     = cup_height_delta.mean()
-        self.extras["terminal_success"]     = terminal_success_reward.mean()
-        self.extras["terminal_fail"]        = terminal_fail_reward.mean()
         self.extras["num_contacts"]         = num_contacts.mean()
-        self.extras["cup_z"]                = self.object_pos[:, 2].mean()
         self.extras["success_rate"]         = self.success_flag.float().mean()
         self.extras["adr_contact_delta_w"]  = torch.tensor(contact_delta_weight, device=self.device)
         self.extras["adr_enclosure_w"]      = torch.tensor(enclosure_weight, device=self.device)
