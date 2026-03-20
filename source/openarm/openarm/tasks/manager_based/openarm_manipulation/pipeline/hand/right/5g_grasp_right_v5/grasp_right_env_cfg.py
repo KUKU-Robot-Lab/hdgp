@@ -16,7 +16,7 @@
 
 v5: FABRICS pregrasp reset + 정책 손가락 grasp formation + Scripted lift checker.
 - Action: 5D (per-finger lerp)
-- Observation: actor 101D / critic 125D (asymmetric, critic = actor + 24D privileged)
+- Observation: actor 101D / critic 129D (asymmetric, critic = actor + 28D privileged)
 - Episode: Grasp phase (arm 고정, finger 정책 제어) + Lift phase (arm 보간 상승, finger 고정)
 - Contact: 물리 ContactSensor 기반 (fingertip 5개 actor, distal+middle critic)
 """
@@ -328,6 +328,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # filter 없이 net_forces_w 사용 — sim-only critic obs이므로 허용
     distal_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/rl_dg_[1-5]_4",
+        history_length=1,
+        track_air_time=False,
+    )
+
+    # Critic privileged: middle phalanx 5개 통합 센서 (USD에 ContactSensor 없음)
+    # 파지 깊이(enclosure depth) 정보: distal만 닿는 얕은 파지 vs distal+middle 감싼 깊은 파지 구별
+    middle_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/rl_dg_[1-5]_3",
         history_length=1,
         track_air_time=False,
     )

@@ -34,9 +34,9 @@ NUM_ARM_DOF = NUM_RIGHT_ARM_DOF  # 7
 #   source_pour_point_to_target_opening: 3
 #   source_cup_velocity_summary: 2
 #   tilt_alignment_summary: 3
-#   last_actions: 6  (palm pose 6D)
-NUM_OBSERVATIONS = 35
-NUM_ACTIONS = 6  # FABRICS palm pose 6D (x,y,z,ez,ey,ex)
+#   last_actions: 7  (right arm joint delta 7D)
+NUM_OBSERVATIONS = 36
+NUM_ACTIONS = 7  # right arm joint delta 7D (PD 제어)
 
 # Critic-only extras (DexPour 계층적 리워드 구조):
 #   bead_centroid_pos: 3
@@ -47,4 +47,4 @@ NUM_ACTIONS = 6  # FABRICS palm pose 6D (x,y,z,ez,ey,ex)
 #   stable_retention_steps: 1
 #   spill_flags: 2  (bead_spilled, major_spill)
 #   bead_spill_ratio: 1
-NUM_STATES = 50
+NUM_STATES = 51

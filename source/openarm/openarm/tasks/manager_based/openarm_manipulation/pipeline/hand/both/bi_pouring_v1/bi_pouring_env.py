@@ -12,32 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DexPour 계층적 리워드를 적용한 bi_pouring_v1 환경.
+"""DexPour 계층적 리워드를 적용한 bi_pouring_v1 환경 (PD 직접 관절 제어).
 
 Stage 3 (Transport, ρ=0): 컵 이동 + 직립 유지
 Stage 4 (Pour, ρ=1): 45° 틸팅 + pour axis 정렬
 
 컵은 EE에 이미 부착되어 있으므로 Stage 1/2(Approaching/Grasping)는 Skip.
+오른팔 7개 관절을 PD 제어기로 직접 제어한다 (FABRICS 제거).
 """
 
 from __future__ import annotations
 
 import copy
-import sys
-from pathlib import Path
 from collections.abc import Sequence
 
 import torch
-
-# FABRICS 경로 설정 (hdgp/source/FABRICS/src 우선)
-for _parent in Path(__file__).resolve().parents:
-    if _parent.name == "source":
-        _vendored = _parent / "FABRICS" / "src"
-        if _vendored.exists():
-            _v = str(_vendored)
-            if _v not in sys.path:
-                sys.path.insert(0, _v)
-        break
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
@@ -45,15 +34,9 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_mul, subtract_frame_transforms
 
-from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
-from fabrics_sim.integrator.integrators import DisplacementIntegrator
-from fabrics_sim.utils.utils import initialize_warp
-from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
-
 from .bi_pouring_constants import NUM_ACTIONS, NUM_OBSERVATIONS, NUM_ARM_DOF
 from .bi_pouring_env_cfg import BiPouringEnvCfg
 from .bi_pouring_preset import (
-    ARM_START_POSE,
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
     LEFT_HOLDER_FIXED_JOINT_POS,
@@ -68,6 +51,7 @@ class BiPouringEnv(DirectRLEnv):
 
     컵이 EE에 이미 부착되어 있으므로 Transport(Stage 3) + Pour(Stage 4)만 구현.
     ρ trigger로 두 단계를 전환하며, multi-bead APA를 지원한다.
+    오른팔 7D 관절 델타 액션을 PD 제어기로 직접 적용한다.
     """
 
     cfg: BiPouringEnvCfg
@@ -79,6 +63,8 @@ class BiPouringEnv(DirectRLEnv):
 
         self._right_hand_grasp = None
         self._left_holder_home = None
+        self._arm_default_pos = None   # RIGHT_ARM_POUR_READY_POSE tensor
+        self._arm_target = None        # 현재 arm 관절 목표 (누적 delta)
         self._last_actions = None
         self._obs_buf = None
         self._state_buf = None
@@ -98,8 +84,8 @@ class BiPouringEnv(DirectRLEnv):
         self._world_up_axis = None
 
         # DexPour stage buffers
-        self._pour_trigger_steps = None       # (N,) 연속 pour 조건 충족 step 수
-        self._pour_stage_active = None        # (N,) latch: Transport→Pour 전환
+        self._pour_trigger_steps = None
+        self._pour_stage_active = None
 
         # Multi-bead 상태 추적 (N, K)
         self._prev_bead_in_target_flags = None
@@ -122,9 +108,9 @@ class BiPouringEnv(DirectRLEnv):
         # State flags
         self._major_spill_flag = None
         self._invalid_state_flag = None
-        self._bead_in_target_flags = None     # (N, K)
-        self._bead_in_source_flags = None     # (N, K)
-        self._bead_spilled_flags = None       # (N, K)
+        self._bead_in_target_flags = None
+        self._bead_in_source_flags = None
+        self._bead_spilled_flags = None
         self._success_flag = None
 
         super().__init__(cfg, render_mode, **kwargs)
@@ -185,11 +171,17 @@ class BiPouringEnv(DirectRLEnv):
         self._obs_buf = torch.zeros(self.num_envs, NUM_OBSERVATIONS, device=self.device)
         self._state_buf = torch.zeros(self.num_envs, self.cfg.num_states, device=self.device)
 
+        # PD 관절 제어 버퍼
+        self._arm_default_pos = torch.tensor(
+            RIGHT_ARM_POUR_READY_POSE, dtype=torch.float32, device=self.device
+        )
+        self._arm_target = self._arm_default_pos.unsqueeze(0).expand(self.num_envs, -1).clone()
+
         # DexPour stage
         self._pour_trigger_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._pour_stage_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-        # Stable retention (bead 기준)
+        # Stable retention
         self._stable_retention_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # Per-bead 상태 (N, K)
@@ -211,53 +203,6 @@ class BiPouringEnv(DirectRLEnv):
         self._major_spill_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._invalid_state_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-
-        # ---- FABRICS arm 제어 ----
-        arm_start = torch.tensor(ARM_START_POSE, dtype=torch.float32, device=self.device)
-        self.robot_start_joint_pos = torch.cat(
-            [arm_start, self._right_hand_grasp]
-        ).unsqueeze(0).repeat(self.num_envs, 1).contiguous()
-
-        self.palm_pose_state = torch.zeros(self.num_envs, 6, device=self.device)
-        self._setup_geometric_fabrics()
-
-        _palm_start = self.open_tesollo_fabric.get_palm_pose(
-            self.robot_start_joint_pos, "euler_zyx"
-        )
-        self._init_palm_pose = _palm_start[0].clone()
-        self.palm_pose_state.copy_(self._init_palm_pose.unsqueeze(0).expand(self.num_envs, -1))
-
-    def _setup_geometric_fabrics(self) -> None:
-        initialize_warp(self.device[-1])
-        print("=== BiPouringEnv: Creating Fabrics world ===")
-        self.world_model = WorldMeshesModel(
-            batch_size=self.num_envs,
-            max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
-            device=self.device,
-            world_filename="open_tesollo_boxes_no_table",
-        )
-        self.object_ids, self.object_indicator = self.world_model.get_object_ids()
-        self.timestep = self.cfg.fabrics_dt
-        self.open_tesollo_fabric = OpenArmTeoslloPoseFabric(
-            self.num_envs, self.device, self.timestep,
-            graph_capturable=False,
-            use_hand_fabric=False,
-        )
-        num_joints = self.open_tesollo_fabric.num_joints  # 27
-        self.open_tesollo_integrator = DisplacementIntegrator(self.open_tesollo_fabric)
-        self.fabric_q   = self.robot_start_joint_pos.clone().contiguous()
-        self.fabric_qd  = torch.zeros(self.num_envs, num_joints, device=self.device)
-        self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
-        self.hand_pca_targets  = torch.zeros(self.num_envs, 5, device=self.device)
-        self.palm_pose_targets = torch.zeros(self.num_envs, 6, device=self.device)
-        self.fabric_damping_gain = 10.0 * torch.ones(self.num_envs, 1, device=self.device)
-        cspace_default = self.open_tesollo_fabric.default_config.clone()
-        cspace_default[:, :NUM_ARM_DOF] = torch.tensor(
-            ARM_START_POSE, dtype=torch.float32, device=self.device
-        ).unsqueeze(0).expand(self.num_envs, -1)
-        cspace_default[:, NUM_ARM_DOF:] = self._right_hand_grasp.unsqueeze(0).expand(self.num_envs, -1)
-        self.open_tesollo_fabric.default_config.copy_(cspace_default)
-        print("=== BiPouringEnv: Fabrics initialized ===")
 
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -288,34 +233,15 @@ class BiPouringEnv(DirectRLEnv):
         self._prev_actions.copy_(self._last_actions)
         self._last_actions = actions.clamp(-1.0, 1.0)
 
-        self.palm_pose_state = self.palm_pose_state + self._last_actions * self.cfg.action_scale
-        self.palm_pose_targets.copy_(self.palm_pose_state)
-        self.hand_pca_targets.zero_()
-
-        self.open_tesollo_fabric.set_features(
-            self.hand_pca_targets,
-            self.palm_pose_targets,
-            "euler_zyx",
-            self.fabric_q.detach(),
-            self.fabric_qd.detach(),
-            self.object_ids,
-            self.object_indicator,
-            self.fabric_damping_gain,
-        )
-        for _ in range(self.cfg.fabric_decimation):
-            self.fabric_q, self.fabric_qd, self.fabric_qdd = self.open_tesollo_integrator.step(
-                self.fabric_q.detach(),
-                self.fabric_qd.detach(),
-                self.fabric_qdd.detach(),
-                self.timestep,
-            )
+        # PD 제어: 누적 delta joint position
+        # target += action * scale (관절 한계는 USD soft_joint_pos_limit_factor로 제한)
+        self._arm_target = self._arm_target + self._last_actions * self.cfg.action_scale
 
     def _apply_action(self) -> None:
-        arm_target = self.fabric_q[:, :NUM_ARM_DOF]
-        arm_vel    = self.fabric_qd[:, :NUM_ARM_DOF]
-        self.robot.set_joint_position_target(arm_target, joint_ids=self._right_arm_joint_ids)
-        self.robot.set_joint_velocity_target(arm_vel,    joint_ids=self._right_arm_joint_ids)
+        # 오른팔: PD 목표 관절 위치 적용
+        self.robot.set_joint_position_target(self._arm_target, joint_ids=self._right_arm_joint_ids)
 
+        # 오른손: 파지 자세 고정 (write_joint_state_to_sim으로 직접 고정)
         zero_vel_hand = torch.zeros(self.num_envs, len(self._right_hand_joint_ids), device=self.device)
         zero_vel_left = torch.zeros(self.num_envs, len(self._left_holder_joint_ids), device=self.device)
         self.robot.write_joint_state_to_sim(
@@ -377,7 +303,7 @@ class BiPouringEnv(DirectRLEnv):
             dim=-1,
         )
 
-        # ---- Actor obs (35D) ----
+        # ---- Actor obs (36D) ----
         actor_obs = torch.cat(
             [
                 arm_joint_pos,
@@ -395,24 +321,20 @@ class BiPouringEnv(DirectRLEnv):
             raise RuntimeError(f"bi_pouring_v1 actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}")
 
         # ---- DexPour ρ trigger: Transport → Pour 단계 전환 ----
-        pour_point_to_target_opening_w = target_opening_w - source_pour_point_w  # (N, 3)
-        dist_cup = torch.norm(pour_point_to_target_opening_w, dim=-1)             # (N,)
+        pour_point_to_target_opening_w = target_opening_w - source_pour_point_w
+        dist_cup = torch.norm(pour_point_to_target_opening_w, dim=-1)
         at_pour = dist_cup < self.cfg.pour_trigger_dist
         self._pour_trigger_steps = torch.where(
             at_pour,
             self._pour_trigger_steps + 1,
             torch.zeros_like(self._pour_trigger_steps),
         )
-        # Persistent condition (래치 없음): 컵이 target에서 멀어지면 transport mode로 복귀
-        # 래치(| 누적)를 사용하면 탐색 중 우연히 trigger된 뒤 제자리에서 tilting만 해도
-        # pour reward가 계속 주어지는 local optimum이 생긴다.
+        # Persistent condition: 컵이 target에서 멀어지면 transport mode로 복귀
         self._pour_stage_active = self._pour_trigger_steps >= self.cfg.pour_trigger_hold_steps
 
-        source_up_dot_world = tilt_alignment_summary[:, 0].clamp(-1.0, 1.0)  # (N,)
+        source_up_dot_world = tilt_alignment_summary[:, 0].clamp(-1.0, 1.0)
 
         # ---- Proximity reward: stage 무관 항상 활성 ----
-        # pour stage에서 꺼지면 "제자리 tilting" local optimum 발생.
-        # 컵이 target 위에 있을 때만 tilt reward가 의미 있도록 항상 위치 보상 유지.
         r_cup_dist = torch.exp(-2.0 * dist_cup)
 
         # ---- Transport stage 한정: 이송 중 기울기 패널티 ----
@@ -424,7 +346,6 @@ class BiPouringEnv(DirectRLEnv):
         )
 
         # ---- Pour stage reward (ρ=1): tilt + align ----
-        # r_cup_dist는 위에서 항상 포함되므로 여기서는 회전 성분만
         r_tilt = torch.exp(
             -((source_up_dot_world - self.cfg.pour_tilt_target_cos) / max(self.cfg.pour_tilt_cos_scale, 1.0e-6)) ** 2
         )
@@ -439,45 +360,42 @@ class BiPouringEnv(DirectRLEnv):
         # ---- Multi-bead dynamics ----
         K = self.cfg.bead_count
 
-        # (N, K, 3) 모든 bead 위치/속도 stack
         all_bead_pos_w = torch.stack([b.data.root_pos_w for b in self.beads], dim=1)
         all_bead_vel_w = torch.stack([b.data.root_lin_vel_w for b in self.beads], dim=1)
-        bead_centroid_pos_w = all_bead_pos_w.mean(dim=1)   # (N, 3)
-        bead_centroid_vel_w = all_bead_vel_w.mean(dim=1)   # (N, 3)
+        bead_centroid_pos_w = all_bead_pos_w.mean(dim=1)
+        bead_centroid_vel_w = all_bead_vel_w.mean(dim=1)
 
-        # 각 bead의 target/source 컵 내 위치 (N, K, 3)
         bead_pos_in_target_list = []
         bead_pos_in_source_list = []
         for i in range(K):
-            bead_pos_w_i = self.beads[i].data.root_pos_w       # (N, 3)
-            bead_quat_w_i = self.beads[i].data.root_quat_w     # (N, 4)
+            bead_pos_w_i = self.beads[i].data.root_pos_w
+            bead_quat_w_i = self.beads[i].data.root_quat_w
             pos_in_t, _ = subtract_frame_transforms(left_cup_pos_w, left_cup_quat_w, bead_pos_w_i, bead_quat_w_i)
             pos_in_s, _ = subtract_frame_transforms(right_cup_pos_w, right_cup_quat_w, bead_pos_w_i, bead_quat_w_i)
             bead_pos_in_target_list.append(pos_in_t)
             bead_pos_in_source_list.append(pos_in_s)
-        bead_pos_in_target = torch.stack(bead_pos_in_target_list, dim=1)  # (N, K, 3)
-        bead_pos_in_source = torch.stack(bead_pos_in_source_list, dim=1)  # (N, K, 3)
+        bead_pos_in_target = torch.stack(bead_pos_in_target_list, dim=1)
+        bead_pos_in_source = torch.stack(bead_pos_in_source_list, dim=1)
 
-        bead_target_xy = torch.norm(bead_pos_in_target[..., :2], dim=-1)  # (N, K)
-        bead_source_xy = torch.norm(bead_pos_in_source[..., :2], dim=-1)  # (N, K)
+        bead_target_xy = torch.norm(bead_pos_in_target[..., :2], dim=-1)
+        bead_source_xy = torch.norm(bead_pos_in_source[..., :2], dim=-1)
 
         self._bead_in_target_flags = (
             (bead_target_xy <= self.cfg.target_inner_radius)
             & (bead_pos_in_target[..., 2] >= self.cfg.target_inside_z_min)
             & (bead_pos_in_target[..., 2] <= self.cfg.target_entry_z_max)
-        )  # (N, K)
+        )
         self._bead_in_source_flags = (
             (bead_source_xy <= self.cfg.source_inner_radius)
             & (bead_pos_in_source[..., 2] >= self.cfg.source_inside_z_min)
             & (bead_pos_in_source[..., 2] <= self.cfg.source_inside_z_max)
-        )  # (N, K)
+        )
 
-        # 새로 target에 진입한 bead (entry event)
         bead_entry_event = (
             self._bead_in_target_flags
             & (~self._prev_bead_in_target_flags)
             & (~self._bead_in_source_flags)
-        )  # (N, K)
+        )
         self._bead_has_entered_target_flags = self._bead_has_entered_target_flags | bead_entry_event
         bead_exit_after_entry = (
             self._prev_bead_in_target_flags
@@ -486,23 +404,22 @@ class BiPouringEnv(DirectRLEnv):
         )
         self._bead_exited_target_after_entry_flags = self._bead_exited_target_after_entry_flags | bead_exit_after_entry
 
-        bead_new_entry_count = bead_entry_event.sum(dim=-1).float()   # (N,)
+        bead_new_entry_count = bead_entry_event.sum(dim=-1).float()
         self._bead_entry_reward = bead_new_entry_count
 
-        bead_in_target_count = self._bead_in_target_flags.sum(dim=-1).float()  # (N,)
-        bead_in_target_ratio = bead_in_target_count / float(K)                 # (N,)
+        bead_in_target_count = self._bead_in_target_flags.sum(dim=-1).float()
+        bead_in_target_ratio = bead_in_target_count / float(K)
 
-        # Spill 판단
         bead_below_target = all_bead_pos_w[..., 2] <= (
             target_opening_w.unsqueeze(1)[..., 2] + self.cfg.major_spill_z_margin
-        )  # (N, K)
+        )
         bead_xy_to_target = torch.norm(
             (all_bead_pos_w - target_opening_w.unsqueeze(1))[..., :2], dim=-1
-        )  # (N, K)
+        )
         bead_xy_to_source = torch.norm(
             (all_bead_pos_w - source_pour_point_w.unsqueeze(1))[..., :2], dim=-1
-        )  # (N, K)
-        bead_pos_env = all_bead_pos_w - self.scene.env_origins.unsqueeze(1)  # (N, K, 3)
+        )
+        bead_pos_env = all_bead_pos_w - self.scene.env_origins.unsqueeze(1)
 
         major_spill_per_bead = (
             (~self._bead_in_target_flags)
@@ -517,12 +434,11 @@ class BiPouringEnv(DirectRLEnv):
             & (~self._bead_in_source_flags)
         )
 
-        bead_spilled_count = self._bead_spilled_flags.sum(dim=-1).float()   # (N,)
-        bead_spill_ratio = bead_spilled_count / float(K)                    # (N,)
-        self._major_spill_flag = major_spill_per_bead.any(dim=-1)           # (N,)
+        bead_spilled_count = self._bead_spilled_flags.sum(dim=-1).float()
+        bead_spill_ratio = bead_spilled_count / float(K)
+        self._major_spill_flag = major_spill_per_bead.any(dim=-1)
 
-        # Stable retention
-        centroid_speed = torch.norm(bead_centroid_vel_w, dim=-1)  # (N,)
+        centroid_speed = torch.norm(bead_centroid_vel_w, dim=-1)
         any_in_target = self._bead_in_target_flags.any(dim=-1)
         any_exited = self._bead_exited_target_after_entry_flags.any(dim=-1)
         stable_retention = (
@@ -543,7 +459,6 @@ class BiPouringEnv(DirectRLEnv):
         )
         self._spill_penalty = bead_spill_ratio
 
-        # Success
         any_has_entered = self._bead_has_entered_target_flags.any(dim=-1)
         self._success_flag = (
             any_has_entered
@@ -552,7 +467,6 @@ class BiPouringEnv(DirectRLEnv):
             & (self._stable_retention_steps >= self.cfg.success_retention_steps)
         )
 
-        # Collision penalty
         right_ee_pos_w = self.robot.data.body_pos_w[:, self._right_source_cup_body_id]
         left_ee_pos_w  = self.robot.data.body_pos_w[:, self._left_target_cup_body_id]
         rim_xy_clearance = torch.norm((source_pour_point_w - target_opening_w)[:, :2], dim=-1)
@@ -605,10 +519,22 @@ class BiPouringEnv(DirectRLEnv):
             | bead_out_of_workspace
         )
 
+        # DEBUG: 첫 번째 env의 termination 원인 주기적 출력
+        if (self.episode_length_buf[0].item() % 500 == 1) or (
+            self._invalid_state_flag[0].item() and self.episode_length_buf[0].item() < 10
+        ):
+            print(
+                f"[DBG ep={self.episode_length_buf[0].item()}] "
+                f"cup_xy={cup_xy[0]:.3f}(th={self.cfg.invalid_cup_xy_threshold}) "
+                f"cup_z={cup_z[0]:.3f}(th={self.cfg.invalid_cup_z_threshold}) "
+                f"dist={dist_cup[0]:.3f} pour={self._pour_stage_active[0].item()} "
+                f"finite={finite_mask[0].item()} invalid={self._invalid_state_flag[0].item()}"
+            )
+
         self._prev_bead_in_target_flags.copy_(self._bead_in_target_flags)
 
-        # ---- Critic obs (50D) ----
-        bead_centroid_pos_env = bead_centroid_pos_w - self.scene.env_origins  # (N, 3)
+        # ---- Critic obs (51D) ----
+        bead_centroid_pos_env = bead_centroid_pos_w - self.scene.env_origins
         task_flags = torch.stack(
             [
                 any_has_entered.float(),
@@ -616,22 +542,22 @@ class BiPouringEnv(DirectRLEnv):
                 any_exited.float(),
             ],
             dim=-1,
-        )  # (N, 3)
+        )
         stable_steps = (
             self._stable_retention_steps.float().unsqueeze(-1) / float(max(1, self.max_episode_length))
-        ).clamp(0.0, 1.0)  # (N, 1)
+        ).clamp(0.0, 1.0)
         spill_flags = torch.stack(
             [
                 self._bead_spilled_flags.any(dim=-1).float(),
                 self._major_spill_flag.float(),
             ],
             dim=-1,
-        )  # (N, 2)
-        spill_ratio = bead_spill_ratio.unsqueeze(-1)  # (N, 1)
+        )
+        spill_ratio = bead_spill_ratio.unsqueeze(-1)
 
         critic_obs = torch.cat(
             [
-                actor_obs,                            # 35
+                actor_obs,                            # 36
                 bead_centroid_pos_env,                # 3
                 bead_centroid_vel_w,                  # 3
                 bead_in_target_ratio.unsqueeze(-1),   # 1
@@ -680,16 +606,14 @@ class BiPouringEnv(DirectRLEnv):
         full_pos = self.robot.data.default_joint_pos[env_ids].clone()
         full_vel = torch.zeros(num_envs, self.robot.num_joints, device=self.device)
 
-        arm_start = torch.tensor(RIGHT_ARM_POUR_READY_POSE, dtype=torch.float32, device=self.device)
+        arm_start = self._arm_default_pos
         full_pos[:, self._right_arm_joint_ids]   = arm_start.unsqueeze(0).expand(num_envs, -1)
         full_pos[:, self._right_hand_joint_ids]  = self._right_hand_grasp.unsqueeze(0).expand(num_envs, -1)
         full_pos[:, self._left_holder_joint_ids] = self._left_holder_home.unsqueeze(0).expand(num_envs, -1)
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
-        self.fabric_q[env_ids]   = self.robot_start_joint_pos[env_ids]
-        self.fabric_qd[env_ids].zero_()
-        self.fabric_qdd[env_ids].zero_()
-        self.palm_pose_state[env_ids] = self._init_palm_pose.unsqueeze(0).expand(num_envs, -1)
+        # PD arm target 리셋
+        self._arm_target[env_ids] = arm_start.unsqueeze(0).expand(num_envs, -1)
 
         # 컵 포즈 리셋
         right_pose = self._sample_right_source_cup_pose(env_ids)
@@ -700,7 +624,7 @@ class BiPouringEnv(DirectRLEnv):
         self.left_target_cup.write_root_pose_to_sim(left_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        # Multi-bead 리셋: bead 0은 중심, 나머지는 XY jitter 적용
+        # Multi-bead 리셋
         for i, bead in enumerate(self.beads):
             jitter = torch.zeros(num_envs, 3, device=self.device)
             if self.cfg.bead_count > 1:

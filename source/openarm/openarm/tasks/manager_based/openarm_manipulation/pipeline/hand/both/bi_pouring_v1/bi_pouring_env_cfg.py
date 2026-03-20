@@ -71,9 +71,6 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
 
     episode_length_s: float = 6.0
     decimation: int = 2
-    fabrics_dt: float = 1.0 / 60.0
-    fabric_decimation: int = 2
-    fabrics_max_objects_per_env: int = 4
     use_cuda_graph: bool = False
 
     observation_space: int = NUM_OBSERVATIONS
@@ -84,7 +81,10 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     num_actions: int = NUM_ACTIONS
     num_states: int = NUM_STATES
 
-    action_scale: float = 0.25
+    # PD 직접 관절 제어 파라미터
+    # target = default_joint_pos + clamp(action, -1, 1) * action_scale
+    # action_scale(rad): 각 스텝에서 정책이 더할 수 있는 최대 델타
+    action_scale: float = 0.05  # 0.05 rad/step @ 60Hz policy = 3 rad/s 최대
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=2048,
@@ -299,8 +299,8 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     rim_clearance_threshold: float = 0.035
     ee_clearance_threshold: float = 0.120
     cup_to_opposite_ee_clearance_threshold: float = 0.110
-    invalid_cup_xy_threshold: float = 0.300
-    invalid_cup_z_threshold: float = 0.250
+    invalid_cup_xy_threshold: float = 1.000  # 초기 간격(~0.5m) 허용, 물리 붕괴만 검출
+    invalid_cup_z_threshold: float = 0.600   # 두 EE Z차이 여유 확보
     invalid_bead_drop_z_threshold: float = 0.230
     invalid_bead_floor_z_threshold: float = 0.050
     invalid_bead_xy_threshold: float = 0.800

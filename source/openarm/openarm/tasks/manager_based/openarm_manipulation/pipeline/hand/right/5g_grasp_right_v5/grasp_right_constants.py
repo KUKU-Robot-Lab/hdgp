@@ -73,13 +73,15 @@ NUM_OBSERVATIONS = 101  # Actor (101D): 3+4+15+20+20+7+7+5+15+5
 
 # Critic privileged sensors
 NUM_DISTAL_SENSORS = 5   # rl_dg_1_4 ~ rl_dg_5_4 (distal phalanx)
+NUM_MIDDLE_SENSORS = 5   # rl_dg_1_3 ~ rl_dg_5_3 (middle phalanx)
 
-# Critic extras over actor obs (18D):
+# Critic extras over actor obs (28D):
 #   cup_lin_vel(3) + cup_ang_vel(3)
 #   + distal_binary(5) + distal_force(5)
+#   + middle_binary(5) + middle_force(5)
 #   + lift_phase_flag(1) + cup_height_delta(1)
-NUM_CRITIC_EXTRAS = 18
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 119
+NUM_CRITIC_EXTRAS = 28
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 129
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz policy rate)

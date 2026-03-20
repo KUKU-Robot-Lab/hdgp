@@ -1,10 +1,10 @@
 # bi_pouring_v1 rl_games PPO config
 # v1 scope:
-#   - right-arm-only policy
+#   - right-arm-only policy (PD 직접 관절 제어, 7D delta joint)
 #   - fixed left holder (non-policy-controlled)
 #   - no finger action / no finger observation
 #   - single-bead transfer shaping
-# Actor obs: 36D / critic obs: 48D / actions: 7D
+# Actor obs: 36D / critic obs: 51D / actions: 7D
 # Default train envs: 2048
 # Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 

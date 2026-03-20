@@ -69,6 +69,7 @@ from .grasp_right_constants import (
     NUM_FINGERTIPS,
     NUM_OBSERVATIONS,
     NUM_DISTAL_SENSORS,
+    NUM_MIDDLE_SENSORS,
     NUM_CRITIC_OBSERVATIONS,
     GRASP_PHASE_STEPS,
     LIFT_PHASE_STEPS,
@@ -251,6 +252,13 @@ class GraspRightEnv(DirectRLEnv):
         self.distal_binary_contact_buf = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
+        # 접촉 상태 버퍼 (critic privileged: middle phalanx)
+        # 파지 깊이 정보: distal만 닿는 얕은 파지 vs distal+middle 감싼 깊은 파지 구별
+        # ----------------------------------------------------------------
+        self.middle_contact_force_raw  = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, device=self.device)
+        self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
+
+        # ----------------------------------------------------------------
         # 성공 플래그 (terminal reward 판정용)
         # ----------------------------------------------------------------
         self.success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -306,6 +314,11 @@ class GraspRightEnv(DirectRLEnv):
         # net_forces_w: (N, 5, 3) — filter 없이 body별 합산 접촉력
         self._distal_sensor = ContactSensor(self.cfg.distal_sensor_cfg)
         self.scene.sensors["distal_sensor"] = self._distal_sensor
+
+        # Critic privileged: middle phalanx 5개 통합 ContactSensor
+        # net_forces_w: (N, 5, 3) — 파지 깊이 정보 (깊은 감싸기 여부 판별)
+        self._middle_sensor = ContactSensor(self.cfg.middle_sensor_cfg)
+        self.scene.sensors["middle_sensor"] = self._middle_sensor
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
@@ -478,6 +491,12 @@ class GraspRightEnv(DirectRLEnv):
         self.distal_contact_force_raw.copy_(per_distal)
         self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
 
+        # ---- Critic: middle phalanx 통합 센서 (net_forces_w, filter 없음) ----
+        per_middle = self._middle_sensor.data.net_forces_w.norm(dim=-1)  # (N, 5)
+
+        self.middle_contact_force_raw.copy_(per_middle)
+        self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
+
     # ------------------------------------------------------------------
     # Physics step
     # ------------------------------------------------------------------
@@ -577,7 +596,7 @@ class GraspRightEnv(DirectRLEnv):
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 104D | Critic 128D (actor + 24D privileged)
+    # Observations: Actor 101D | Critic 129D (actor + 28D privileged)
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
         # ==== Actor obs (104D) — real-compatible ====
@@ -630,7 +649,7 @@ class GraspRightEnv(DirectRLEnv):
                 f"[v5] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
             )
 
-        # ==== Critic privileged extras (24D) — sim-only ====
+        # ==== Critic privileged extras (28D) — sim-only ====
 
         # cup velocity (6D)
         cup_lin_vel = self.cup.data.root_lin_vel_w   # (N, 3)
@@ -639,6 +658,10 @@ class GraspRightEnv(DirectRLEnv):
         # distal link contact (5D binary + 5D force_norm)
         distal_binary     = self.distal_binary_contact_buf.float()
         distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+
+        # middle phalanx contact (5D binary + 5D force_norm) — 파지 깊이 정보
+        middle_binary     = self.middle_binary_contact_buf.float()
+        middle_force_norm = (self.middle_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
         # scripted lift phase flag (1D)
         lift_flag = (self.episode_length_buf >= GRASP_PHASE_STEPS).float().unsqueeze(1)  # (N, 1)
@@ -654,9 +677,11 @@ class GraspRightEnv(DirectRLEnv):
             cup_ang_vel,          # 3
             distal_binary,        # 5
             distal_force_norm,    # 5
+            middle_binary,        # 5
+            middle_force_norm,    # 5
             lift_flag,            # 1
             cup_height_delta,     # 1
-        ], dim=-1)   # 119D
+        ], dim=-1)   # 129D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -770,6 +795,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["tip_force_mean"]       = self.contact_force_raw.mean()
         self.extras["distal_num_contacts"]  = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
         self.extras["distal_force_mean"]    = self.distal_contact_force_raw.mean()
+        self.extras["middle_num_contacts"]  = self.middle_binary_contact_buf.float().sum(dim=-1).mean()
+        self.extras["middle_force_mean"]    = self.middle_contact_force_raw.mean()
         if self.grasp_adr is not None:
             self.extras["adr_progress"] = torch.tensor(self.grasp_adr.progress, device=self.device)
 
@@ -940,6 +967,9 @@ class GraspRightEnv(DirectRLEnv):
 
         self.distal_contact_force_raw[env_ids].zero_()
         self.distal_binary_contact_buf[env_ids] = False
+
+        self.middle_contact_force_raw[env_ids].zero_()
+        self.middle_binary_contact_buf[env_ids] = False
 
         # ---- 10. 성공 플래그 리셋 ----
         self.success_flag[env_ids] = False
