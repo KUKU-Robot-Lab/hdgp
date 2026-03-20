@@ -12,30 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DexPour 계층적 리워드를 적용한 bi_pouring_v1 환경 (PD 직접 관절 제어).
+"""bi_pouring_v1 환경 (DirectRLEnv 기반, 5g_grasp_right_v5 패턴).
 
 Stage 3 (Transport, ρ=0): 컵 이동 + 직립 유지
-Stage 4 (Pour, ρ=1): 45° 틸팅 + pour axis 정렬
+Stage 4 (Pour,      ρ=1): 45° 틸팅 + pour axis 정렬
 
-컵은 EE에 이미 부착되어 있으므로 Stage 1/2(Approaching/Grasping)는 Skip.
-오른팔 7개 관절을 PD 제어기로 직접 제어한다 (FABRICS 제거).
+제어 방식:
+  - 오른팔 7D: set_joint_position_target (default_pos + clamp(action) * scale)
+  - 오른손 / 왼팔+그리퍼: _apply_action() 에서 write_joint_state_to_sim 으로 강제 고정
+
+컵 부착:
+  - right source cup  → rl_dg_ee (오른손 EE)에 kinematic attach
+  - left target cup   → ll_dg_ee (왼손 EE)에 kinematic attach
+  - 매 physics sub-step마다 EE body pose에서 cup pose 역산하여 write_root_pose_to_sim
+
+DexPour ρ-trigger 및 bead 상태는 env attribute로 관리하고,
+mdp/rewards.py, mdp/terminations.py 함수들이 이를 참조한다.
 """
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Sequence
 
 import torch
 
-import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_mul, subtract_frame_transforms
 
-from .bi_pouring_constants import NUM_ACTIONS, NUM_OBSERVATIONS, NUM_ARM_DOF
-from .bi_pouring_env_cfg import BiPouringEnvCfg
 from .bi_pouring_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
@@ -47,203 +52,197 @@ from .bi_pouring_preset import (
 
 
 class BiPouringEnv(DirectRLEnv):
-    """DexPour 계층적 리워드(Transport + Pour)를 적용한 포어링 환경.
+    """DexPour Transport+Pour 포어링 환경 (DirectRLEnv).
 
-    컵이 EE에 이미 부착되어 있으므로 Transport(Stage 3) + Pour(Stage 4)만 구현.
-    ρ trigger로 두 단계를 전환하며, multi-bead APA를 지원한다.
-    오른팔 7D 관절 델타 액션을 PD 제어기로 직접 적용한다.
+    초기화 순서:
+      super().__init__() 내부:
+        1. _setup_scene()  ← Articulation/RigidObject 생성 + scene 등록
+        2. sim.reset() + scene 초기화
+      __init__() 계속:
+        3. _setup_env_refs()  ← joint/body ID, tensor 파라미터 설정
+        4. state buffer 초기화
     """
 
-    cfg: BiPouringEnvCfg
+    cfg: "BiPouringEnvCfg"  # noqa: F821
 
-    def __init__(self, cfg: BiPouringEnvCfg, render_mode: str | None = None, **kwargs):
-        self._right_arm_joint_ids: list[int] = []
-        self._right_hand_joint_ids: list[int] = []
-        self._left_holder_joint_ids: list[int] = []
+    # ------------------------------------------------------------------
+    # Scene 구성 (DirectRLEnv 필수 override)
+    # ------------------------------------------------------------------
 
-        self._right_hand_grasp = None
-        self._left_holder_home = None
-        self._arm_default_pos = None   # RIGHT_ARM_POUR_READY_POSE tensor
-        self._arm_target = None        # 현재 arm 관절 목표 (누적 delta)
-        self._last_actions = None
-        self._obs_buf = None
-        self._state_buf = None
-        self._right_source_cup_attach_pos_b = None
-        self._right_source_cup_attach_quat_b = None
-        self._left_target_cup_attach_pos_b = None
-        self._left_target_cup_attach_quat_b = None
-        self._bead_spawn_pos_source_cup_b = None
-        self._bead_spawn_quat_source_cup = None
-        self._right_source_cup_body_id = -1
-        self._left_target_cup_body_id = -1
-        self._source_cup_pour_point_pos_b = None
-        self._target_cup_opening_pos_b = None
-        self._source_cup_pour_axis_b = None
-        self._source_cup_up_axis_b = None
-        self._target_cup_up_axis_b = None
-        self._world_up_axis = None
-
-        # DexPour stage buffers
-        self._pour_trigger_steps = None
-        self._pour_stage_active = None
-
-        # Multi-bead 상태 추적 (N, K)
-        self._prev_bead_in_target_flags = None
-        self._bead_has_entered_target_flags = None
-        self._bead_exited_target_after_entry_flags = None
-
-        # Aggregated bead 상태 (N,)
-        self._stable_retention_steps = None
-        self._prev_actions = None
-
-        # Reward component buffers
-        self._transport_reward = None
-        self._pour_reward = None
-        self._bead_entry_reward = None
-        self._stable_retention_reward = None
-        self._spill_penalty = None
-        self._collision_penalty = None
-        self._smoothness_penalty = None
-
-        # State flags
-        self._major_spill_flag = None
-        self._invalid_state_flag = None
-        self._bead_in_target_flags = None
-        self._bead_in_source_flags = None
-        self._bead_spilled_flags = None
-        self._success_flag = None
-
-        super().__init__(cfg, render_mode, **kwargs)
-
-        for name in cfg.policy_arm_joint_names:
-            self._right_arm_joint_ids.append(self.robot.joint_names.index(name))
-        for name in RIGHT_HAND_JOINT_NAMES:
-            self._right_hand_joint_ids.append(self.robot.joint_names.index(name))
-        for name in cfg.left_holder_joint_names:
-            self._left_holder_joint_ids.append(self.robot.joint_names.index(name))
-
-        right_hand_grasp = [RIGHT_HAND_GRASP_JOINT_POS[name] for name in RIGHT_HAND_JOINT_NAMES]
-        self._right_hand_grasp = torch.tensor(right_hand_grasp, dtype=torch.float32, device=self.device)
-        left_holder_home = [
-            LEFT_HOLDER_FIXED_JOINT_POS[name]
-            for name in cfg.left_holder_joint_names
+    def _setup_scene(self) -> None:
+        """Articulation/RigidObject 생성 후 scene에 등록."""
+        self.robot = Articulation(self.cfg.robot_cfg)
+        self.right_source_cup = RigidObject(self.cfg.right_source_cup_cfg)
+        self.left_target_cup = RigidObject(self.cfg.left_target_cup_cfg)
+        self.table = RigidObject(self.cfg.table_cfg)
+        self.beads: list[RigidObject] = [
+            RigidObject(self.cfg.bead_cfg) for _ in range(self.cfg.bead_count)
         ]
-        self._left_holder_home = torch.tensor(left_holder_home, dtype=torch.float32, device=self.device)
-        self._right_source_cup_attach_pos_b = torch.tensor(
-            cfg.right_source_cup_attach_pos_b, dtype=torch.float32, device=self.device
+
+        self.scene.articulations["robot"] = self.robot
+        self.scene.rigid_objects["right_source_cup"] = self.right_source_cup
+        self.scene.rigid_objects["left_target_cup"] = self.left_target_cup
+        self.scene.rigid_objects["table"] = self.table
+        for i, bead in enumerate(self.beads):
+            self.scene.rigid_objects[f"bead{i}"] = bead
+
+        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        self.scene.clone_environments(copy_from_source=False)
+        self.scene.filter_collisions(global_prim_paths=["/World/ground"])
+
+    # ------------------------------------------------------------------
+    # 초기화
+    # ------------------------------------------------------------------
+
+    def __init__(self, cfg: "BiPouringEnvCfg", render_mode: str | None = None, **kwargs):  # noqa: F821
+        # super().__init__() 내부:
+        #   1. scene = InteractiveScene(cfg.scene)
+        #   2. self._setup_scene()
+        #   3. sim.reset() + 초기 physics step → robot.data 사용 가능
+        super().__init__(cfg, render_mode=render_mode, **kwargs)
+
+        # super() 이후: robot.data.body_names, robot.joint_names 등 사용 가능
+        self._setup_env_refs()
+
+        K = cfg.bead_count
+        N = self.num_envs
+
+        # ---- DexPour stage ----
+        self._pour_trigger_steps = torch.zeros(N, dtype=torch.long, device=self.device)
+        self._pour_stage_active = torch.zeros(N, dtype=torch.bool, device=self.device)
+
+        # ---- Stable retention ----
+        self._stable_retention_steps = torch.zeros(N, dtype=torch.long, device=self.device)
+
+        # ---- Per-bead 상태 (N, K) ----
+        self._prev_bead_in_target_flags = torch.zeros(N, K, dtype=torch.bool, device=self.device)
+        self._bead_has_entered_target_flags = torch.zeros(N, K, dtype=torch.bool, device=self.device)
+        self._bead_exited_target_after_entry_flags = torch.zeros(N, K, dtype=torch.bool, device=self.device)
+        self._bead_in_target_flags = torch.zeros(N, K, dtype=torch.bool, device=self.device)
+        self._bead_in_source_flags = torch.zeros(N, K, dtype=torch.bool, device=self.device)
+        self._bead_spilled_flags = torch.zeros(N, K, dtype=torch.bool, device=self.device)
+
+        # ---- Reward 중간값 (mdp/rewards.py 참조용) ----
+        self._r_cup_dist = torch.zeros(N, device=self.device)
+        self._p_upright = torch.zeros(N, device=self.device)
+        self._r_tilt = torch.zeros(N, device=self.device)
+        self._r_align = torch.zeros(N, device=self.device)
+        self._bead_entry_reward = torch.zeros(N, device=self.device)
+        self._stable_retention_reward = torch.zeros(N, device=self.device)
+        self._spill_penalty = torch.zeros(N, device=self.device)
+        self._collision_penalty = torch.zeros(N, device=self.device)
+        self._smoothness_penalty = torch.zeros(N, device=self.device)
+
+        # ---- 종료 flag (mdp/terminations.py 참조용) ----
+        self._major_spill_flag = torch.zeros(N, dtype=torch.bool, device=self.device)
+        self._invalid_state_flag = torch.zeros(N, dtype=torch.bool, device=self.device)
+        self._success_flag = torch.zeros(N, dtype=torch.bool, device=self.device)
+
+        # ---- action 버퍼 ----
+        num_arm_dof = len(cfg.policy_arm_joint_names)
+        self._actions = torch.zeros(N, num_arm_dof, device=self.device)
+        self._prev_actions = torch.zeros(N, num_arm_dof, device=self.device)
+
+    # ------------------------------------------------------------------
+    # scene refs / tensor 파라미터 설정 (_setup_scene() 이후 호출)
+    # ------------------------------------------------------------------
+
+    def _setup_env_refs(self) -> None:
+        """joint/body ID 해석 및 tensor 파라미터 초기화."""
+        cfg = self.cfg
+
+        # ---- 관절 ID 해석 ----
+        self._right_arm_joint_ids: list[int] = [
+            self.robot.joint_names.index(n) for n in cfg.policy_arm_joint_names
+        ]
+        self._right_hand_joint_ids: list[int] = [
+            self.robot.joint_names.index(n) for n in RIGHT_HAND_JOINT_NAMES
+        ]
+        self._left_holder_joint_ids: list[int] = [
+            self.robot.joint_names.index(n) for n in cfg.left_holder_joint_names
+        ]
+
+        # ---- 고정 자세 tensor ----
+        self._right_hand_grasp = torch.tensor(
+            [RIGHT_HAND_GRASP_JOINT_POS[n] for n in RIGHT_HAND_JOINT_NAMES],
+            dtype=torch.float32, device=self.device,
         )
+        self._left_holder_home = torch.tensor(
+            [LEFT_HOLDER_FIXED_JOINT_POS[n] for n in cfg.left_holder_joint_names],
+            dtype=torch.float32, device=self.device,
+        )
+
+        # ---- 컵 부착 파라미터 ----
+        attach_pos_r = torch.tensor(cfg.right_source_cup_attach_pos_b, dtype=torch.float32, device=self.device)
+        attach_pos_l = torch.tensor(cfg.left_target_cup_attach_pos_b, dtype=torch.float32, device=self.device)
         self._right_source_cup_attach_quat_b = torch.tensor(
             cfg.right_source_cup_attach_quat_wxyz_b, dtype=torch.float32, device=self.device
-        )
-        self._left_target_cup_attach_pos_b = torch.tensor(
-            cfg.left_target_cup_attach_pos_b, dtype=torch.float32, device=self.device
         )
         self._left_target_cup_attach_quat_b = torch.tensor(
             cfg.left_target_cup_attach_quat_wxyz_b, dtype=torch.float32, device=self.device
         )
-        self._bead_spawn_pos_source_cup_b = torch.tensor(
-            getattr(cfg, "bead_spawn_pos_source_cup_b", BEAD_SPAWN_POS_SOURCE_CUP_B),
-            dtype=torch.float32,
-            device=self.device,
+
+        # ---- 컵 attachment body/frame ----
+        self._right_source_cup_body_id, self._right_source_cup_attach_pos_b = self._resolve_attachment_body(
+            cfg.right_source_cup_attach_frame_name, attach_pos_r,
         )
-        self._bead_spawn_quat_source_cup = torch.tensor(
-            getattr(cfg, "bead_spawn_quat_source_cup_wxyz", BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ),
-            dtype=torch.float32,
-            device=self.device,
+        self._left_target_cup_body_id, self._left_target_cup_attach_pos_b = self._resolve_attachment_body(
+            cfg.left_target_cup_attach_frame_name, attach_pos_l,
         )
-        self._right_source_cup_body_id = self.robot.data.body_names.index(cfg.right_source_cup_attach_frame_name)
-        self._left_target_cup_body_id = self.robot.data.body_names.index(cfg.left_target_cup_attach_frame_name)
+
+        # ---- pour 포인트/축 (obs 함수에서 참조) ----
         self._source_cup_pour_point_pos_b = torch.tensor(
             cfg.source_cup_pour_point_pos_b, dtype=torch.float32, device=self.device
         )
         self._target_cup_opening_pos_b = torch.tensor(
             cfg.target_cup_opening_pos_b, dtype=torch.float32, device=self.device
         )
-        self._source_cup_pour_axis_b = torch.tensor(cfg.source_cup_pour_axis_b, dtype=torch.float32, device=self.device)
-        self._source_cup_up_axis_b = torch.tensor(cfg.source_cup_up_axis_b, dtype=torch.float32, device=self.device)
-        self._target_cup_up_axis_b = torch.tensor(cfg.target_cup_up_axis_b, dtype=torch.float32, device=self.device)
-        self._world_up_axis = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=self.device).unsqueeze(0)
-
-        K = cfg.bead_count
-
-        self._prev_actions = torch.zeros(self.num_envs, NUM_ACTIONS, device=self.device)
-        self._last_actions = torch.zeros(self.num_envs, NUM_ACTIONS, device=self.device)
-        self._obs_buf = torch.zeros(self.num_envs, NUM_OBSERVATIONS, device=self.device)
-        self._state_buf = torch.zeros(self.num_envs, self.cfg.num_states, device=self.device)
-
-        # PD 관절 제어 버퍼
-        self._arm_default_pos = torch.tensor(
-            RIGHT_ARM_POUR_READY_POSE, dtype=torch.float32, device=self.device
+        self._source_cup_pour_axis_b = torch.tensor(
+            cfg.source_cup_pour_axis_b, dtype=torch.float32, device=self.device
         )
-        self._arm_target = self._arm_default_pos.unsqueeze(0).expand(self.num_envs, -1).clone()
+        self._source_cup_up_axis_b = torch.tensor(
+            cfg.source_cup_up_axis_b, dtype=torch.float32, device=self.device
+        )
+        self._target_cup_up_axis_b = torch.tensor(
+            cfg.target_cup_up_axis_b, dtype=torch.float32, device=self.device
+        )
+        self._world_up_axis = torch.tensor(
+            [0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
+        ).unsqueeze(0)
 
-        # DexPour stage
-        self._pour_trigger_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self._pour_stage_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # ---- bead spawn ----
+        self._bead_spawn_pos_source_cup_b = torch.tensor(
+            getattr(cfg, "bead_spawn_pos_source_cup_b", BEAD_SPAWN_POS_SOURCE_CUP_B),
+            dtype=torch.float32, device=self.device,
+        )
+        self._bead_spawn_quat_source_cup = torch.tensor(
+            getattr(cfg, "bead_spawn_quat_source_cup_wxyz", BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ),
+            dtype=torch.float32, device=self.device,
+        )
 
-        # Stable retention
-        self._stable_retention_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-
-        # Per-bead 상태 (N, K)
-        self._prev_bead_in_target_flags = torch.zeros(self.num_envs, K, dtype=torch.bool, device=self.device)
-        self._bead_has_entered_target_flags = torch.zeros(self.num_envs, K, dtype=torch.bool, device=self.device)
-        self._bead_exited_target_after_entry_flags = torch.zeros(self.num_envs, K, dtype=torch.bool, device=self.device)
-        self._bead_in_target_flags = torch.zeros(self.num_envs, K, dtype=torch.bool, device=self.device)
-        self._bead_in_source_flags = torch.zeros(self.num_envs, K, dtype=torch.bool, device=self.device)
-        self._bead_spilled_flags = torch.zeros(self.num_envs, K, dtype=torch.bool, device=self.device)
-
-        # Reward buffers
-        self._transport_reward = torch.zeros(self.num_envs, device=self.device)
-        self._pour_reward = torch.zeros(self.num_envs, device=self.device)
-        self._bead_entry_reward = torch.zeros(self.num_envs, device=self.device)
-        self._stable_retention_reward = torch.zeros(self.num_envs, device=self.device)
-        self._spill_penalty = torch.zeros(self.num_envs, device=self.device)
-        self._collision_penalty = torch.zeros(self.num_envs, device=self.device)
-        self._smoothness_penalty = torch.zeros(self.num_envs, device=self.device)
-        self._major_spill_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._invalid_state_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-
-    def _setup_scene(self) -> None:
-        self.robot = Articulation(self.cfg.robot_cfg)
-        self.table = RigidObject(self.cfg.table_cfg)
-        self.right_source_cup = RigidObject(self.cfg.right_source_cup_cfg)
-        self.left_target_cup = RigidObject(self.cfg.left_target_cup_cfg)
-
-        # Multi-bead: bead_count 만큼 RigidObject 생성
-        self.beads: list[RigidObject] = []
-        for i in range(self.cfg.bead_count):
-            bead_cfg_i = copy.deepcopy(self.cfg.bead_cfg)
-            bead_cfg_i.prim_path = f"/World/envs/env_.*/Bead{i}"
-            bead_obj = RigidObject(bead_cfg_i)
-            self.beads.append(bead_obj)
-            self.scene.rigid_objects[f"bead{i}"] = bead_obj
-
-        self.scene.articulations["robot"] = self.robot
-        self.scene.rigid_objects["table"] = self.table
-        self.scene.rigid_objects["right_source_cup"] = self.right_source_cup
-        self.scene.rigid_objects["left_target_cup"] = self.left_target_cup
-
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
-        light_cfg.func("/World/Light", light_cfg)
-        self.scene.clone_environments(copy_from_source=True)
+    # ------------------------------------------------------------------
+    # Physics step overrides (DirectRLEnv)
+    # ------------------------------------------------------------------
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self._prev_actions.copy_(self._last_actions)
-        self._last_actions = actions.clamp(-1.0, 1.0)
-
-        # PD 제어: 절대 오프셋 (approach 방식과 동일)
-        # target = default_pos + action * scale  (매 스텝 독립, 누적 없음)
-        self._arm_target = self._arm_default_pos.unsqueeze(0) + self._last_actions * self.cfg.action_scale
+        """이전 action 저장 후 현재 action 갱신."""
+        self._prev_actions.copy_(self._actions)
+        self._actions.copy_(actions)
 
     def _apply_action(self) -> None:
-        # 오른팔: PD 목표 관절 위치 적용
-        self.robot.set_joint_position_target(self._arm_target, joint_ids=self._right_arm_joint_ids)
+        """오른팔 joint target 적용 + 손/왼팔 강제 고정 + 컵 부착."""
+        # 오른팔: default_pos + clamp(action, -1, 1) * action_scale
+        arm_default = self.robot.data.default_joint_pos[:, self._right_arm_joint_ids]
+        arm_target = arm_default + torch.clamp(self._actions, -1.0, 1.0) * self.cfg.action_scale
+        self.robot.set_joint_position_target(arm_target, joint_ids=self._right_arm_joint_ids)
 
-        # 오른손: 파지 자세 고정 (write_joint_state_to_sim으로 직접 고정)
-        zero_vel_hand = torch.zeros(self.num_envs, len(self._right_hand_joint_ids), device=self.device)
-        zero_vel_left = torch.zeros(self.num_envs, len(self._left_holder_joint_ids), device=self.device)
+        # 오른손 / 왼팔 강제 고정
+        zero_vel_hand = torch.zeros(
+            self.num_envs, len(self._right_hand_joint_ids), device=self.device
+        )
+        zero_vel_left = torch.zeros(
+            self.num_envs, len(self._left_holder_joint_ids), device=self.device
+        )
         self.robot.write_joint_state_to_sim(
             self._right_hand_grasp.unsqueeze(0).expand(self.num_envs, -1),
             zero_vel_hand,
@@ -256,124 +255,132 @@ class BiPouringEnv(DirectRLEnv):
         )
         self._update_attached_cups_from_ee()
 
+    # ------------------------------------------------------------------
+    # Observations / Rewards / Dones (DirectRLEnv 필수 overrides)
+    # ------------------------------------------------------------------
+
     def _get_observations(self) -> dict:
+        """중간값 계산 후 36D policy observation 반환."""
+        self._compute_intermediate_values()
+        from .mdp import observations as O
+        obs = torch.cat(
+            [
+                O.arm_joint_pos(self),                 # 7
+                O.arm_joint_vel(self),                 # 7
+                O.cup_relative_pose(self),             # 7
+                O.pour_point_to_opening(self),         # 3
+                O.source_cup_velocity_summary(self),   # 2
+                O.tilt_alignment_summary(self),        # 3
+                self._prev_actions,                    # 7
+            ],
+            dim=-1,
+        )  # total 36D
+        return {"policy": obs}
+
+    def _get_rewards(self) -> torch.Tensor:
+        """각 stage별 reward / penalty 합산."""
+        from .mdp import rewards as R
+        cfg = self.cfg
+        return (
+            cfg.reward_cup_dist_weight * R.transport_cup_distance(self)
+            - cfg.penalty_transport_tilt_weight * R.transport_upright_penalty(self)
+            + cfg.reward_tilt_weight * R.pour_tilt(self)
+            + cfg.reward_align_weight * R.pour_align(self)
+            + cfg.reward_bead_entry_weight * R.bead_entry(self)
+            + cfg.reward_stable_retention_weight * R.bead_stable_retention(self)
+            - cfg.penalty_spill_weight * R.bead_spill_penalty(self)
+            - cfg.penalty_collision_weight * R.collision_penalty(self)
+            - cfg.penalty_action_smoothness_weight * R.action_smoothness_penalty(self)
+        )
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """종료 조건: (terminated, time_out)."""
+        from .mdp import terminations as T
+        time_out = self.episode_length_buf >= self.max_episode_length - 1
+        terminated = T.major_spill(self) | T.invalid_state(self) | self._success_flag
+        return terminated, time_out
+
+    # ------------------------------------------------------------------
+    # DexPour 중간값 계산 (reward / termination 함수들이 참조)
+    # ------------------------------------------------------------------
+
+    def _compute_intermediate_values(self) -> None:
+        """매 step 한 번: ρ-trigger, bead 상태, reward 중간값을 갱신."""
+        cfg = self.cfg
+        N = self.num_envs
+
         right_cup_pos_w = self.right_source_cup.data.root_pos_w
         right_cup_quat_w = self.right_source_cup.data.root_quat_w
         left_cup_pos_w = self.left_target_cup.data.root_pos_w
         left_cup_quat_w = self.left_target_cup.data.root_quat_w
-        arm_joint_pos = self.robot.data.joint_pos[:, self._right_arm_joint_ids]
-        arm_joint_vel = self.robot.data.joint_vel[:, self._right_arm_joint_ids]
-        rel_cup_pos_source, rel_cup_quat_source = subtract_frame_transforms(
-            right_cup_pos_w, right_cup_quat_w, left_cup_pos_w, left_cup_quat_w
-        )
 
         source_pour_point_w = right_cup_pos_w + quat_apply(
             right_cup_quat_w,
-            self._source_cup_pour_point_pos_b.unsqueeze(0).expand(self.num_envs, -1),
+            self._source_cup_pour_point_pos_b.unsqueeze(0).expand(N, -1),
         )
         target_opening_w = left_cup_pos_w + quat_apply(
             left_cup_quat_w,
-            self._target_cup_opening_pos_b.unsqueeze(0).expand(self.num_envs, -1),
+            self._target_cup_opening_pos_b.unsqueeze(0).expand(N, -1),
         )
-        target_opening_in_source, _ = subtract_frame_transforms(
-            right_cup_pos_w, right_cup_quat_w, target_opening_w
-        )
-        pour_point_to_target_opening = target_opening_in_source - self._source_cup_pour_point_pos_b.unsqueeze(0)
-
-        source_lin_speed = torch.norm(self.right_source_cup.data.root_lin_vel_w, dim=-1, keepdim=True)
-        source_ang_speed = torch.norm(self.right_source_cup.data.root_ang_vel_w, dim=-1, keepdim=True)
-        source_velocity_summary = torch.cat([source_lin_speed, source_ang_speed], dim=-1)
-
-        source_up_axis_w = quat_apply(
-            right_cup_quat_w, self._source_cup_up_axis_b.unsqueeze(0).expand(self.num_envs, -1)
+        source_up_w = quat_apply(
+            right_cup_quat_w,
+            self._source_cup_up_axis_b.unsqueeze(0).expand(N, -1),
         )
         source_pour_axis_w = quat_apply(
-            right_cup_quat_w, self._source_cup_pour_axis_b.unsqueeze(0).expand(self.num_envs, -1)
-        )
-        target_up_axis_w = quat_apply(
-            left_cup_quat_w, self._target_cup_up_axis_b.unsqueeze(0).expand(self.num_envs, -1)
-        )
-        source_to_target_dir_w = self._safe_normalize(target_opening_w - source_pour_point_w)
-        tilt_alignment_summary = torch.cat(
-            [
-                torch.sum(source_up_axis_w * self._world_up_axis.expand(self.num_envs, -1), dim=-1, keepdim=True),
-                torch.sum(source_pour_axis_w * source_to_target_dir_w, dim=-1, keepdim=True),
-                torch.sum(source_up_axis_w * target_up_axis_w, dim=-1, keepdim=True),
-            ],
-            dim=-1,
+            right_cup_quat_w,
+            self._source_cup_pour_axis_b.unsqueeze(0).expand(N, -1),
         )
 
-        # ---- Actor obs (36D) ----
-        actor_obs = torch.cat(
-            [
-                arm_joint_pos,
-                arm_joint_vel,
-                rel_cup_pos_source,
-                rel_cup_quat_source,
-                pour_point_to_target_opening,
-                source_velocity_summary,
-                tilt_alignment_summary,
-                self._last_actions,
-            ],
-            dim=-1,
-        )
-        if actor_obs.shape[1] != NUM_OBSERVATIONS:
-            raise RuntimeError(f"bi_pouring_v1 actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}")
+        pour_point_to_target_w = target_opening_w - source_pour_point_w
+        dist_cup = torch.norm(pour_point_to_target_w, dim=-1)
 
-        # ---- DexPour ρ trigger: Transport → Pour 단계 전환 ----
-        pour_point_to_target_opening_w = target_opening_w - source_pour_point_w
-        dist_cup = torch.norm(pour_point_to_target_opening_w, dim=-1)
-        at_pour = dist_cup < self.cfg.pour_trigger_dist
+        # ρ-trigger 업데이트
+        at_pour = dist_cup < cfg.pour_trigger_dist
         self._pour_trigger_steps = torch.where(
             at_pour,
             self._pour_trigger_steps + 1,
             torch.zeros_like(self._pour_trigger_steps),
         )
-        # Persistent condition: 컵이 target에서 멀어지면 transport mode로 복귀
-        self._pour_stage_active = self._pour_trigger_steps >= self.cfg.pour_trigger_hold_steps
+        self._pour_stage_active = self._pour_trigger_steps >= cfg.pour_trigger_hold_steps
 
-        source_up_dot_world = tilt_alignment_summary[:, 0].clamp(-1.0, 1.0)
+        # source_up · world_up
+        world_up = self._world_up_axis.expand(N, -1)
+        source_up_dot_world = torch.sum(source_up_w * world_up, dim=-1).clamp(-1.0, 1.0)
 
-        # ---- Proximity reward: stage 무관 항상 활성 ----
-        r_cup_dist = torch.exp(-2.0 * dist_cup)
+        # Transport 중간값
+        self._r_cup_dist = torch.exp(-2.0 * dist_cup)
+        self._p_upright = (1.0 - source_up_dot_world).clamp(0.0, 1.0)
 
-        # ---- Transport stage 한정: 이송 중 기울기 패널티 ----
-        p_upright = (1.0 - source_up_dot_world).clamp(0.0, 1.0)
-        transport_mask = (~self._pour_stage_active).float()
-        self._transport_reward = (
-            self.cfg.reward_cup_dist_weight * r_cup_dist
-            - transport_mask * self.cfg.penalty_transport_tilt_weight * p_upright
+        # Pour 중간값
+        self._r_tilt = torch.exp(
+            -((source_up_dot_world - cfg.pour_tilt_target_cos)
+              / max(cfg.pour_tilt_cos_scale, 1e-6)) ** 2
         )
-
-        # ---- Pour stage reward (ρ=1): tilt + align ----
-        r_tilt = torch.exp(
-            -((source_up_dot_world - self.cfg.pour_tilt_target_cos) / max(self.cfg.pour_tilt_cos_scale, 1.0e-6)) ** 2
+        to_target_dir = pour_point_to_target_w / torch.clamp(
+            torch.norm(pour_point_to_target_w, dim=-1, keepdim=True), min=1e-6
         )
-        pour_axis_to_target_cos = tilt_alignment_summary[:, 1].clamp(-1.0, 1.0)
-        r_align = 0.5 * (1.0 + pour_axis_to_target_cos)
-        pour_mask = self._pour_stage_active.float()
-        self._pour_reward = pour_mask * (
-            self.cfg.reward_tilt_weight * r_tilt
-            + self.cfg.reward_align_weight * r_align
-        )
+        pour_axis_cos = torch.sum(source_pour_axis_w * to_target_dir, dim=-1).clamp(-1.0, 1.0)
+        self._r_align = 0.5 * (1.0 + pour_axis_cos)
 
         # ---- Multi-bead dynamics ----
-        K = self.cfg.bead_count
-
+        K = cfg.bead_count
         all_bead_pos_w = torch.stack([b.data.root_pos_w for b in self.beads], dim=1)
         all_bead_vel_w = torch.stack([b.data.root_lin_vel_w for b in self.beads], dim=1)
-        bead_centroid_pos_w = all_bead_pos_w.mean(dim=1)
-        bead_centroid_vel_w = all_bead_vel_w.mean(dim=1)
 
         bead_pos_in_target_list = []
         bead_pos_in_source_list = []
         for i in range(K):
             bead_pos_w_i = self.beads[i].data.root_pos_w
             bead_quat_w_i = self.beads[i].data.root_quat_w
-            pos_in_t, _ = subtract_frame_transforms(left_cup_pos_w, left_cup_quat_w, bead_pos_w_i, bead_quat_w_i)
-            pos_in_s, _ = subtract_frame_transforms(right_cup_pos_w, right_cup_quat_w, bead_pos_w_i, bead_quat_w_i)
+            pos_in_t, _ = subtract_frame_transforms(
+                left_cup_pos_w, left_cup_quat_w, bead_pos_w_i, bead_quat_w_i
+            )
+            pos_in_s, _ = subtract_frame_transforms(
+                right_cup_pos_w, right_cup_quat_w, bead_pos_w_i, bead_quat_w_i
+            )
             bead_pos_in_target_list.append(pos_in_t)
             bead_pos_in_source_list.append(pos_in_s)
+
         bead_pos_in_target = torch.stack(bead_pos_in_target_list, dim=1)
         bead_pos_in_source = torch.stack(bead_pos_in_source_list, dim=1)
 
@@ -381,14 +388,14 @@ class BiPouringEnv(DirectRLEnv):
         bead_source_xy = torch.norm(bead_pos_in_source[..., :2], dim=-1)
 
         self._bead_in_target_flags = (
-            (bead_target_xy <= self.cfg.target_inner_radius)
-            & (bead_pos_in_target[..., 2] >= self.cfg.target_inside_z_min)
-            & (bead_pos_in_target[..., 2] <= self.cfg.target_entry_z_max)
+            (bead_target_xy <= cfg.target_inner_radius)
+            & (bead_pos_in_target[..., 2] >= cfg.target_inside_z_min)
+            & (bead_pos_in_target[..., 2] <= cfg.target_entry_z_max)
         )
         self._bead_in_source_flags = (
-            (bead_source_xy <= self.cfg.source_inner_radius)
-            & (bead_pos_in_source[..., 2] >= self.cfg.source_inside_z_min)
-            & (bead_pos_in_source[..., 2] <= self.cfg.source_inside_z_max)
+            (bead_source_xy <= cfg.source_inner_radius)
+            & (bead_pos_in_source[..., 2] >= cfg.source_inside_z_min)
+            & (bead_pos_in_source[..., 2] <= cfg.source_inside_z_max)
         )
 
         bead_entry_event = (
@@ -396,55 +403,30 @@ class BiPouringEnv(DirectRLEnv):
             & (~self._prev_bead_in_target_flags)
             & (~self._bead_in_source_flags)
         )
-        self._bead_has_entered_target_flags = self._bead_has_entered_target_flags | bead_entry_event
+        self._bead_has_entered_target_flags |= bead_entry_event
         bead_exit_after_entry = (
             self._prev_bead_in_target_flags
             & (~self._bead_in_target_flags)
             & self._bead_has_entered_target_flags
         )
-        self._bead_exited_target_after_entry_flags = self._bead_exited_target_after_entry_flags | bead_exit_after_entry
+        self._bead_exited_target_after_entry_flags |= bead_exit_after_entry
 
-        bead_new_entry_count = bead_entry_event.sum(dim=-1).float()
-        self._bead_entry_reward = bead_new_entry_count
+        self._bead_entry_reward = bead_entry_event.sum(dim=-1).float()
 
-        bead_in_target_count = self._bead_in_target_flags.sum(dim=-1).float()
-        bead_in_target_ratio = bead_in_target_count / float(K)
-
-        bead_below_target = all_bead_pos_w[..., 2] <= (
-            target_opening_w.unsqueeze(1)[..., 2] + self.cfg.major_spill_z_margin
+        bead_spill_ratio = self._compute_bead_spill(
+            all_bead_pos_w, target_opening_w, source_pour_point_w, cfg
         )
-        bead_xy_to_target = torch.norm(
-            (all_bead_pos_w - target_opening_w.unsqueeze(1))[..., :2], dim=-1
-        )
-        bead_xy_to_source = torch.norm(
-            (all_bead_pos_w - source_pour_point_w.unsqueeze(1))[..., :2], dim=-1
-        )
-        bead_pos_env = all_bead_pos_w - self.scene.env_origins.unsqueeze(1)
+        self._spill_penalty = bead_spill_ratio
 
-        major_spill_per_bead = (
-            (~self._bead_in_target_flags)
-            & (~self._bead_in_source_flags)
-            & bead_below_target
-            & (bead_xy_to_target >= self.cfg.major_spill_xy_radius)
-            & (bead_xy_to_source >= self.cfg.major_spill_xy_radius)
-        )
-        self._bead_spilled_flags = major_spill_per_bead | (
-            (all_bead_pos_w[..., 2] <= self.cfg.bead_spill_z_threshold)
-            & (~self._bead_in_target_flags)
-            & (~self._bead_in_source_flags)
-        )
-
-        bead_spilled_count = self._bead_spilled_flags.sum(dim=-1).float()
-        bead_spill_ratio = bead_spilled_count / float(K)
-        self._major_spill_flag = major_spill_per_bead.any(dim=-1)
-
+        # stable retention
+        bead_centroid_vel_w = all_bead_vel_w.mean(dim=1)
         centroid_speed = torch.norm(bead_centroid_vel_w, dim=-1)
         any_in_target = self._bead_in_target_flags.any(dim=-1)
         any_exited = self._bead_exited_target_after_entry_flags.any(dim=-1)
         stable_retention = (
             any_in_target
             & (~any_exited)
-            & (centroid_speed <= self.cfg.stable_retention_speed_threshold)
+            & (centroid_speed <= cfg.stable_retention_speed_threshold)
         )
         self._stable_retention_steps = torch.where(
             stable_retention,
@@ -453,145 +435,124 @@ class BiPouringEnv(DirectRLEnv):
         )
         self._stable_retention_reward = stable_retention.float() * (
             0.5 + 0.5 * torch.clamp(
-                1.0 - centroid_speed / max(self.cfg.stable_retention_speed_threshold, 1.0e-6),
+                1.0 - centroid_speed / max(cfg.stable_retention_speed_threshold, 1e-6),
                 0.0, 1.0,
             )
         )
-        self._spill_penalty = bead_spill_ratio
 
         any_has_entered = self._bead_has_entered_target_flags.any(dim=-1)
         self._success_flag = (
             any_has_entered
             & (~any_exited)
             & any_in_target
-            & (self._stable_retention_steps >= self.cfg.success_retention_steps)
+            & (self._stable_retention_steps >= cfg.success_retention_steps)
         )
 
+        # collision penalty
         right_ee_pos_w = self.robot.data.body_pos_w[:, self._right_source_cup_body_id]
-        left_ee_pos_w  = self.robot.data.body_pos_w[:, self._left_target_cup_body_id]
-        rim_xy_clearance = torch.norm((source_pour_point_w - target_opening_w)[:, :2], dim=-1)
+        left_ee_pos_w = self.robot.data.body_pos_w[:, self._left_target_cup_body_id]
+        rim_xy_clearance = torch.norm(
+            (source_pour_point_w - target_opening_w)[:, :2], dim=-1
+        )
         rim_vertical_clearance = source_pour_point_w[:, 2] - target_opening_w[:, 2]
-        rim_scrape_penalty = self._proximity_penalty(rim_xy_clearance, self.cfg.rim_clearance_threshold) * torch.clamp(
-            (self.cfg.target_inside_z_min - rim_vertical_clearance)
-            / max(abs(self.cfg.target_inside_z_min), 1.0e-6),
+        rim_scrape = self._proximity_penalty(
+            rim_xy_clearance, cfg.rim_clearance_threshold
+        ) * torch.clamp(
+            (cfg.target_inside_z_min - rim_vertical_clearance)
+            / max(abs(cfg.target_inside_z_min), 1e-6),
             min=0.0, max=1.0,
         )
-        ee_clearance_penalty = self._proximity_penalty(
+        ee_pen = self._proximity_penalty(
             torch.norm(right_ee_pos_w - left_ee_pos_w, dim=-1),
-            self.cfg.ee_clearance_threshold,
+            cfg.ee_clearance_threshold,
         )
-        cross_cup_ee_penalty = torch.maximum(
+        cross_pen = torch.maximum(
             self._proximity_penalty(
                 torch.norm(right_cup_pos_w - left_ee_pos_w, dim=-1),
-                self.cfg.cup_to_opposite_ee_clearance_threshold,
+                cfg.cup_to_opposite_ee_clearance_threshold,
             ),
             self._proximity_penalty(
                 torch.norm(left_cup_pos_w - right_ee_pos_w, dim=-1),
-                self.cfg.cup_to_opposite_ee_clearance_threshold,
+                cfg.cup_to_opposite_ee_clearance_threshold,
             ),
         )
-        self._collision_penalty = torch.maximum(
-            rim_scrape_penalty, torch.maximum(ee_clearance_penalty, cross_cup_ee_penalty)
+        self._collision_penalty = torch.maximum(rim_scrape, torch.maximum(ee_pen, cross_pen))
+
+        # action smoothness
+        self._smoothness_penalty = torch.mean(
+            torch.square(self._actions - self._prev_actions), dim=-1
         )
 
-        self._smoothness_penalty = torch.mean(torch.square(self._last_actions - self._prev_actions), dim=-1)
-
-        # Validity
-        cup_xy = torch.norm(pour_point_to_target_opening_w[:, :2], dim=-1)
-        cup_z  = torch.abs(pour_point_to_target_opening_w[:, 2])
-        finite_mask = torch.isfinite(actor_obs).all(dim=-1) & torch.isfinite(bead_centroid_pos_w).all(dim=-1)
+        # invalid state
+        bead_pos_env = all_bead_pos_w - self.scene.env_origins.unsqueeze(1)
+        cup_xy = torch.norm(pour_point_to_target_w[:, :2], dim=-1)
+        cup_z = torch.abs(pour_point_to_target_w[:, 2])
         bead_dropped = (
             (~self._bead_in_target_flags)
             & (~self._bead_in_source_flags)
             & (
-                (bead_pos_env[..., 2] <= self.cfg.invalid_bead_drop_z_threshold)
-                | (bead_pos_env[..., 2] <= self.cfg.invalid_bead_floor_z_threshold)
+                (bead_pos_env[..., 2] <= cfg.invalid_bead_drop_z_threshold)
+                | (bead_pos_env[..., 2] <= cfg.invalid_bead_floor_z_threshold)
             )
         ).any(dim=-1)
-        bead_out_of_workspace = (
-            torch.norm(bead_pos_env[..., :2], dim=-1) >= self.cfg.invalid_bead_xy_threshold
+        bead_out = (
+            torch.norm(bead_pos_env[..., :2], dim=-1) >= cfg.invalid_bead_xy_threshold
         ).any(dim=-1)
         self._invalid_state_flag = (
-            (~finite_mask)
-            | (cup_xy >= self.cfg.invalid_cup_xy_threshold)
-            | (cup_z >= self.cfg.invalid_cup_z_threshold)
+            (cup_xy >= cfg.invalid_cup_xy_threshold)
+            | (cup_z >= cfg.invalid_cup_z_threshold)
             | bead_dropped
-            | bead_out_of_workspace
+            | bead_out
         )
 
-        # DEBUG: 첫 번째 env의 termination 원인 주기적 출력
+        # DEBUG
         if (self.episode_length_buf[0].item() % 500 == 1) or (
             self._invalid_state_flag[0].item() and self.episode_length_buf[0].item() < 10
         ):
             print(
                 f"[DBG ep={self.episode_length_buf[0].item()}] "
-                f"cup_xy={cup_xy[0]:.3f}(th={self.cfg.invalid_cup_xy_threshold}) "
-                f"cup_z={cup_z[0]:.3f}(th={self.cfg.invalid_cup_z_threshold}) "
                 f"dist={dist_cup[0]:.3f} pour={self._pour_stage_active[0].item()} "
-                f"finite={finite_mask[0].item()} invalid={self._invalid_state_flag[0].item()}"
+                f"cup_xy={cup_xy[0]:.3f} cup_z={cup_z[0]:.3f} "
+                f"invalid={self._invalid_state_flag[0].item()}"
             )
 
         self._prev_bead_in_target_flags.copy_(self._bead_in_target_flags)
 
-        # ---- Critic obs (51D) ----
-        bead_centroid_pos_env = bead_centroid_pos_w - self.scene.env_origins
-        task_flags = torch.stack(
-            [
-                any_has_entered.float(),
-                self._success_flag.float(),
-                any_exited.float(),
-            ],
-            dim=-1,
+    def _compute_bead_spill(
+        self,
+        all_bead_pos_w: torch.Tensor,
+        target_opening_w: torch.Tensor,
+        source_pour_point_w: torch.Tensor,
+        cfg,
+    ) -> torch.Tensor:
+        K = cfg.bead_count
+        bead_below_target = all_bead_pos_w[..., 2] <= (
+            target_opening_w.unsqueeze(1)[..., 2] + cfg.major_spill_z_margin
         )
-        stable_steps = (
-            self._stable_retention_steps.float().unsqueeze(-1) / float(max(1, self.max_episode_length))
-        ).clamp(0.0, 1.0)
-        spill_flags = torch.stack(
-            [
-                self._bead_spilled_flags.any(dim=-1).float(),
-                self._major_spill_flag.float(),
-            ],
-            dim=-1,
+        bead_xy_to_target = torch.norm(
+            (all_bead_pos_w - target_opening_w.unsqueeze(1))[..., :2], dim=-1
         )
-        spill_ratio = bead_spill_ratio.unsqueeze(-1)
-
-        critic_obs = torch.cat(
-            [
-                actor_obs,                            # 36
-                bead_centroid_pos_env,                # 3
-                bead_centroid_vel_w,                  # 3
-                bead_in_target_ratio.unsqueeze(-1),   # 1
-                self._pour_stage_active.float().unsqueeze(-1),  # 1
-                task_flags,                           # 3
-                stable_steps,                         # 1
-                spill_flags,                          # 2
-                spill_ratio,                          # 1
-            ],
-            dim=-1,
+        bead_xy_to_source = torch.norm(
+            (all_bead_pos_w - source_pour_point_w.unsqueeze(1))[..., :2], dim=-1
         )
-        if critic_obs.shape[1] != self.cfg.num_states:
-            raise RuntimeError(f"bi_pouring_v1 critic obs dim mismatch: {critic_obs.shape[1]} != {self.cfg.num_states}")
-
-        self._obs_buf.copy_(actor_obs)
-        self._state_buf.copy_(critic_obs)
-        return {"policy": self._obs_buf, "critic": self._state_buf}
-
-    def _get_rewards(self) -> torch.Tensor:
-        rewards = (
-            self._transport_reward
-            + self._pour_reward
-            + self.cfg.reward_bead_entry_weight * self._bead_entry_reward
-            + self.cfg.reward_stable_retention_weight * self._stable_retention_reward
-            - self.cfg.penalty_spill_weight * self._spill_penalty
-            - self.cfg.penalty_collision_weight * self._collision_penalty
-            - self.cfg.penalty_action_smoothness_weight * self._smoothness_penalty
+        major_spill_per_bead = (
+            (~self._bead_in_target_flags)
+            & (~self._bead_in_source_flags)
+            & bead_below_target
+            & (bead_xy_to_target >= cfg.major_spill_xy_radius)
+            & (bead_xy_to_source >= cfg.major_spill_xy_radius)
         )
-        return rewards
+        self._bead_spilled_flags = major_spill_per_bead | (
+            (all_bead_pos_w[..., 2] <= cfg.bead_spill_z_threshold)
+            & (~self._bead_in_target_flags)
+            & (~self._bead_in_source_flags)
+        )
+        self._major_spill_flag = major_spill_per_bead.any(dim=-1)
+        return self._bead_spilled_flags.sum(dim=-1).float() / float(K)
 
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        terminated = self._major_spill_flag | self._invalid_state_flag
-        time_out = self.episode_length_buf >= (self.max_episode_length - 1)
-        return terminated, time_out
+    # ------------------------------------------------------------------
+    # Reset
+    # ------------------------------------------------------------------
 
     def _reset_idx(self, env_ids: Sequence[int] | None) -> None:
         if env_ids is None:
@@ -602,102 +563,142 @@ class BiPouringEnv(DirectRLEnv):
         if len(env_ids) == 0:
             return
 
-        num_envs = len(env_ids)
+        num_reset = len(env_ids)
         full_pos = self.robot.data.default_joint_pos[env_ids].clone()
-        full_vel = torch.zeros(num_envs, self.robot.num_joints, device=self.device)
+        full_vel = torch.zeros(num_reset, self.robot.num_joints, device=self.device)
 
-        arm_start = self._arm_default_pos
-        full_pos[:, self._right_arm_joint_ids]   = arm_start.unsqueeze(0).expand(num_envs, -1)
-        full_pos[:, self._right_hand_joint_ids]  = self._right_hand_grasp.unsqueeze(0).expand(num_envs, -1)
-        full_pos[:, self._left_holder_joint_ids] = self._left_holder_home.unsqueeze(0).expand(num_envs, -1)
+        arm_start = torch.tensor(
+            RIGHT_ARM_POUR_READY_POSE, dtype=torch.float32, device=self.device
+        )
+        full_pos[:, self._right_arm_joint_ids] = arm_start.unsqueeze(0).expand(num_reset, -1)
+        full_pos[:, self._right_hand_joint_ids] = (
+            self._right_hand_grasp.unsqueeze(0).expand(num_reset, -1)
+        )
+        full_pos[:, self._left_holder_joint_ids] = (
+            self._left_holder_home.unsqueeze(0).expand(num_reset, -1)
+        )
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
-        # PD arm target 리셋
-        self._arm_target[env_ids] = arm_start.unsqueeze(0).expand(num_envs, -1)
-
         # 컵 포즈 리셋
-        right_pose = self._sample_right_source_cup_pose(env_ids)
-        left_pose  = self._sample_left_holder_cup_pose(env_ids)
-        zero_vel   = torch.zeros(num_envs, 6, device=self.device)
+        right_pose = self._compute_attached_root_pose(
+            self._right_source_cup_body_id,
+            self._right_source_cup_attach_pos_b,
+            self._right_source_cup_attach_quat_b,
+            env_ids=env_ids,
+        )
+        left_pose = self._compute_attached_root_pose(
+            self._left_target_cup_body_id,
+            self._left_target_cup_attach_pos_b,
+            self._left_target_cup_attach_quat_b,
+            env_ids=env_ids,
+        )
+        zero_vel = torch.zeros(num_reset, 6, device=self.device)
         self.right_source_cup.write_root_pose_to_sim(right_pose, env_ids=env_ids)
         self.right_source_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
         self.left_target_cup.write_root_pose_to_sim(left_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        # Multi-bead 리셋
-        for i, bead in enumerate(self.beads):
-            jitter = torch.zeros(num_envs, 3, device=self.device)
+        # bead 리셋
+        for bead in self.beads:
+            jitter = torch.zeros(num_reset, 3, device=self.device)
             if self.cfg.bead_count > 1:
                 jitter[:, :2] = (
-                    torch.rand(num_envs, 2, device=self.device) - 0.5
+                    torch.rand(num_reset, 2, device=self.device) - 0.5
                 ) * 2.0 * self.cfg.bead_spawn_jitter_xy
             bead_pose = self._sample_bead_pose_inside_source_cup(right_pose, offset=jitter)
             bead.write_root_pose_to_sim(bead_pose, env_ids=env_ids)
             bead.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        # 액션 버퍼 리셋
-        self._last_actions[env_ids] = 0.0
+        # 상태 버퍼 리셋
+        self._pour_trigger_steps[env_ids] = 0
+        self._pour_stage_active[env_ids] = False
+        self._stable_retention_steps[env_ids] = 0
+        self._prev_bead_in_target_flags[env_ids] = False
+        self._bead_has_entered_target_flags[env_ids] = False
+        self._bead_exited_target_after_entry_flags[env_ids] = False
+        self._bead_in_target_flags[env_ids] = False
+        self._bead_in_source_flags[env_ids] = False
+        self._bead_spilled_flags[env_ids] = False
+        self._major_spill_flag[env_ids] = False
+        self._invalid_state_flag[env_ids] = False
+        self._success_flag[env_ids] = False
+        self._r_cup_dist[env_ids] = 0.0
+        self._p_upright[env_ids] = 0.0
+        self._r_tilt[env_ids] = 0.0
+        self._r_align[env_ids] = 0.0
+        self._bead_entry_reward[env_ids] = 0.0
+        self._stable_retention_reward[env_ids] = 0.0
+        self._spill_penalty[env_ids] = 0.0
+        self._collision_penalty[env_ids] = 0.0
+        self._smoothness_penalty[env_ids] = 0.0
+        self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
 
-        # DexPour stage 리셋
-        self._pour_trigger_steps[env_ids] = 0
-        self._pour_stage_active[env_ids]  = False
+    # ------------------------------------------------------------------
+    # 내부 유틸
+    # ------------------------------------------------------------------
 
-        # Stable retention 리셋
-        self._stable_retention_steps[env_ids] = 0
-
-        # Per-bead 상태 리셋
-        self._prev_bead_in_target_flags[env_ids]             = False
-        self._bead_has_entered_target_flags[env_ids]          = False
-        self._bead_exited_target_after_entry_flags[env_ids]   = False
-        self._bead_in_target_flags[env_ids]                   = False
-        self._bead_in_source_flags[env_ids]                   = False
-        self._bead_spilled_flags[env_ids]                     = False
-
-        # Reward/flag 리셋
-        self._transport_reward[env_ids]      = 0.0
-        self._pour_reward[env_ids]           = 0.0
-        self._bead_entry_reward[env_ids]     = 0.0
-        self._stable_retention_reward[env_ids] = 0.0
-        self._spill_penalty[env_ids]         = 0.0
-        self._collision_penalty[env_ids]     = 0.0
-        self._smoothness_penalty[env_ids]    = 0.0
-        self._major_spill_flag[env_ids]      = False
-        self._invalid_state_flag[env_ids]    = False
-        self._success_flag[env_ids]          = False
-
-    def _sample_right_source_cup_pose(self, env_ids: Sequence[int]) -> torch.Tensor:
-        return self._compute_attached_root_pose(
-            body_id=self._right_source_cup_body_id,
-            attach_pos_b=self._right_source_cup_attach_pos_b,
-            attach_quat_b=self._right_source_cup_attach_quat_b,
+    def _update_attached_cups_from_ee(self, env_ids: Sequence[int] | None = None) -> None:
+        right_pose = self._compute_attached_root_pose(
+            self._right_source_cup_body_id,
+            self._right_source_cup_attach_pos_b,
+            self._right_source_cup_attach_quat_b,
             env_ids=env_ids,
         )
-
-    def _sample_left_holder_cup_pose(self, env_ids: Sequence[int]) -> torch.Tensor:
-        return self._compute_attached_root_pose(
-            body_id=self._left_target_cup_body_id,
-            attach_pos_b=self._left_target_cup_attach_pos_b,
-            attach_quat_b=self._left_target_cup_attach_quat_b,
+        left_pose = self._compute_attached_root_pose(
+            self._left_target_cup_body_id,
+            self._left_target_cup_attach_pos_b,
+            self._left_target_cup_attach_quat_b,
             env_ids=env_ids,
         )
+        zero_vel = torch.zeros(right_pose.shape[0], 6, device=self.device)
+        self.right_source_cup.write_root_pose_to_sim(right_pose, env_ids=env_ids)
+        self.right_source_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+        self.left_target_cup.write_root_pose_to_sim(left_pose, env_ids=env_ids)
+        self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-    def _sample_bead_pose_inside_source_cup(
+    def _resolve_attachment_body(
         self,
-        source_cup_pose: torch.Tensor,
-        offset: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        source_cup_pos_w  = source_cup_pose[:, :3]
-        source_cup_quat_w = source_cup_pose[:, 3:7]
-        spawn_offset = self._bead_spawn_pos_source_cup_b.unsqueeze(0).expand_as(source_cup_pos_w)
-        if offset is not None:
-            spawn_offset = spawn_offset + offset
-        bead_pos_w = source_cup_pos_w + quat_apply(source_cup_quat_w, spawn_offset)
-        bead_quat_w = quat_mul(
-            source_cup_quat_w,
-            self._bead_spawn_quat_source_cup.unsqueeze(0).expand(source_cup_quat_w.shape[0], -1),
+        requested_body_name: str,
+        attach_pos_b: torch.Tensor,
+    ) -> tuple[int, torch.Tensor]:
+        """Resolve desired attachment frames to actual simulated bodies."""
+        body_names = self.robot.data.body_names
+        alias_offsets: dict[str, list[tuple[str, tuple[float, float, float]]]] = {
+            # desired-frame origin expressed in the candidate actual body frame.
+            "rl_dg_ee": [
+                ("rl_dg_ee", (0.0, 0.0, 0.0)),
+                ("palm_ee", (0.0, 0.0, 0.0)),
+                ("rl_dg_palm", (0.028, 0.0, 0.04)),
+            ],
+            "palm_ee": [
+                ("palm_ee", (0.0, 0.0, 0.0)),
+                ("rl_dg_ee", (0.0, 0.0, 0.0)),
+                ("rl_dg_palm", (0.028, 0.0, 0.04)),
+            ],
+            "ll_dg_ee": [
+                ("ll_dg_ee", (0.0, 0.0, 0.0)),
+                ("openarm_left_hand_tcp", (0.0, 0.0, -0.08)),
+                ("openarm_left_hand", (0.0, 0.0, 0.0)),
+            ],
+            "openarm_left_hand": [
+                ("openarm_left_hand", (0.0, 0.0, 0.0)),
+                ("openarm_left_hand_tcp", (0.0, 0.0, -0.08)),
+                ("ll_dg_ee", (0.0, 0.0, -0.08)),
+            ],
+        }
+        candidates = alias_offsets.get(requested_body_name, [(requested_body_name, (0.0, 0.0, 0.0))])
+        for body_name, desired_origin_in_body in candidates:
+            if body_name in body_names:
+                resolved_pos_b = attach_pos_b + torch.tensor(
+                    desired_origin_in_body, dtype=attach_pos_b.dtype, device=attach_pos_b.device
+                )
+                return body_names.index(body_name), resolved_pos_b
+        candidate_names = [name for name, _ in candidates]
+        raise ValueError(
+            f"Attachment frame '{requested_body_name}' was not found. "
+            f"Tried body names: {candidate_names}. Available bodies: {body_names}"
         )
-        return torch.cat([bead_pos_w, bead_quat_w], dim=-1)
 
     def _compute_attached_root_pose(
         self,
@@ -707,39 +708,39 @@ class BiPouringEnv(DirectRLEnv):
         env_ids: Sequence[int] | None = None,
     ) -> torch.Tensor:
         if env_ids is None:
-            body_pos_w  = self.robot.data.body_pos_w[:, body_id]
+            body_pos_w = self.robot.data.body_pos_w[:, body_id]
             body_quat_w = self.robot.data.body_quat_w[:, body_id]
         else:
-            body_pos_w  = self.robot.data.body_pos_w[env_ids, body_id]
+            body_pos_w = self.robot.data.body_pos_w[env_ids, body_id]
             body_quat_w = self.robot.data.body_quat_w[env_ids, body_id]
 
-        attach_pos_w  = body_pos_w + quat_apply(body_quat_w, attach_pos_b.unsqueeze(0).expand_as(body_pos_w))
-        attach_quat_w = quat_mul(body_quat_w, attach_quat_b.unsqueeze(0).expand(body_quat_w.shape[0], -1))
+        attach_pos_w = body_pos_w + quat_apply(
+            body_quat_w, attach_pos_b.unsqueeze(0).expand_as(body_pos_w)
+        )
+        attach_quat_w = quat_mul(
+            body_quat_w, attach_quat_b.unsqueeze(0).expand(body_quat_w.shape[0], -1)
+        )
         return torch.cat([attach_pos_w, attach_quat_w], dim=-1)
 
-    def _update_attached_cups_from_ee(self, env_ids: Sequence[int] | None = None) -> None:
-        right_pose = self._compute_attached_root_pose(
-            body_id=self._right_source_cup_body_id,
-            attach_pos_b=self._right_source_cup_attach_pos_b,
-            attach_quat_b=self._right_source_cup_attach_quat_b,
-            env_ids=env_ids,
+    def _sample_bead_pose_inside_source_cup(
+        self,
+        source_cup_pose: torch.Tensor,
+        offset: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        source_cup_pos_w = source_cup_pose[:, :3]
+        source_cup_quat_w = source_cup_pose[:, 3:7]
+        spawn_offset = self._bead_spawn_pos_source_cup_b.unsqueeze(0).expand_as(source_cup_pos_w)
+        if offset is not None:
+            spawn_offset = spawn_offset + offset
+        bead_pos_w = source_cup_pos_w + quat_apply(source_cup_quat_w, spawn_offset)
+        bead_quat_w = quat_mul(
+            source_cup_quat_w,
+            self._bead_spawn_quat_source_cup.unsqueeze(0).expand(
+                source_cup_quat_w.shape[0], -1
+            ),
         )
-        left_pose = self._compute_attached_root_pose(
-            body_id=self._left_target_cup_body_id,
-            attach_pos_b=self._left_target_cup_attach_pos_b,
-            attach_quat_b=self._left_target_cup_attach_quat_b,
-            env_ids=env_ids,
-        )
-        zero_vel = torch.zeros(right_pose.shape[0], 6, device=self.device)
-        self.right_source_cup.write_root_pose_to_sim(right_pose, env_ids=env_ids)
-        self.right_source_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
-        self.left_target_cup.write_root_pose_to_sim(left_pose, env_ids=env_ids)
-        self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
-
-    @staticmethod
-    def _safe_normalize(vec: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
-        return vec / torch.clamp(torch.norm(vec, dim=-1, keepdim=True), min=eps)
+        return torch.cat([bead_pos_w, bead_quat_w], dim=-1)
 
     @staticmethod
     def _proximity_penalty(distance: torch.Tensor, threshold: float) -> torch.Tensor:
-        return torch.clamp((threshold - distance) / max(threshold, 1.0e-6), min=0.0, max=1.0)
+        return torch.clamp((threshold - distance) / max(threshold, 1e-6), min=0.0, max=1.0)

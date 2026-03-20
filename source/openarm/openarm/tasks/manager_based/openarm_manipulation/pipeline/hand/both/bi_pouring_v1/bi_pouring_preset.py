@@ -20,8 +20,8 @@ curriculum randomization via FABRICS or an equivalent pose generator.
 
 import math
 
-RIGHT_SOURCE_CUP_ATTACH_FRAME_NAME = "rl_dg_palm"
-LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "openarm_left_hand"
+RIGHT_SOURCE_CUP_ATTACH_FRAME_NAME = "rl_dg_ee"
+LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "ll_dg_ee"
 
 RIGHT_POLICY_ARM_JOINT_NAMES = [f"openarm_right_joint{i}" for i in range(1, 8)]
 RIGHT_HAND_JOINT_NAMES = [f"rj_dg_{f}_{j}" for f in range(1, 6) for j in range(1, 5)]
@@ -52,11 +52,9 @@ LEFT_HOLDER_FIXED_JOINT_POS = {
 # Keep these separate from any future left-holder pose generator so FABRICS-based
 # randomization only changes the holder start pose, not the attachment model.
 # TODO: replace / validate with measured cup-to-tool transforms for sim2real.
-# URDF: rl_dg_palm -> palm_link is identity, and palm_link -> palm_ee is
-# xyz = [0.028, 0.0, 0.04]. Since palm_ee is not a simulated rigid body in
-# Isaac Lab body_names, attach from rl_dg_palm and bake the helper-frame
-# offset directly in the palm local frame.
-RIGHT_SOURCE_CUP_ATTACH_POS_B = [0.06, 0.02, 0.04]
+# Prefer the canonical EE helper bodies already used throughout the hand tasks:
+# right = rl_dg_ee, left = ll_dg_ee. The env keeps fallbacks for older assets.
+RIGHT_SOURCE_CUP_ATTACH_POS_B = [0.032, 0.02, 0.0]
 RIGHT_SOURCE_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, -0.70710678, 0.0, 0.0]
 LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.06]
 LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]

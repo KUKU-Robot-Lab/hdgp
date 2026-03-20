@@ -24,7 +24,7 @@ v5: FABRICS pre-grasp reset + 정책 손가락 grasp formation + Scripted lift c
   - Reward: Lift-phase conditioned (방향 A)
       Grasp phase: dense reward × grasp_shaping_scale (0.05)  ← 누적 지배 방지
       Lift  phase: dense reward × 1.0 + lift_reward           ← 파지 유지하며 리프트
-  - ADR: contact_delta_weight (2→0.5), enclosure_weight (4→8), trigger 2%
+  - ADR: enclosure_weight (4→8), trigger 2%
 """
 
 from __future__ import annotations
@@ -72,7 +72,10 @@ from .grasp_right_constants import (
     NUM_MIDDLE_SENSORS,
     NUM_CRITIC_OBSERVATIONS,
     GRASP_PHASE_STEPS,
+    HOLD_PHASE_STEPS,
     LIFT_PHASE_STEPS,
+    HOLD_START_STEP,
+    LIFT_START_STEP,
     LIFT_Z_DELTA,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
@@ -216,6 +219,7 @@ class GraspRightEnv(DirectRLEnv):
         self.palm_center_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.fingertip_pos   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.actions         = torch.zeros(self.num_envs, cfg.num_actions, device=self.device)
+        self.prev_actions    = torch.full((self.num_envs, cfg.num_actions), -1.0, device=self.device)
 
         # ----------------------------------------------------------------
         # Pregrasp / Lift 버퍼 (reset에서 계산)
@@ -228,6 +232,7 @@ class GraspRightEnv(DirectRLEnv):
         # finger joint: Lift phase 진입 시점에 캡처 → Lift phase 동안 고정
         self.lift_finger_pos_buf  = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
         # 현재 phase 플래그 (_pre_physics_step → _apply_action 전달)
+        self.is_hold_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.is_lift_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
@@ -257,6 +262,11 @@ class GraspRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         self.middle_contact_force_raw  = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, device=self.device)
         self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
+
+        # ----------------------------------------------------------------
+        # 비대칭 enclosure 계산용 approach direction 버퍼 (매 step 재사용)
+        # ----------------------------------------------------------------
+        self._approach_dir_buf = torch.zeros(self.num_envs, 3, device=self.device)
 
         # ----------------------------------------------------------------
         # 성공 플래그 (terminal reward 판정용)
@@ -565,26 +575,33 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_joint_targets.copy_(hand_target)
 
         # ---- 2. Phase 판정 ----
-        is_lift = (self.episode_length_buf >= GRASP_PHASE_STEPS)   # (N,) bool
+        is_hold = (
+            (self.episode_length_buf >= HOLD_START_STEP) &
+            (self.episode_length_buf < LIFT_START_STEP)
+        )   # (N,) bool
+        is_lift = (self.episode_length_buf >= LIFT_START_STEP)   # (N,) bool
+        self.is_hold_phase.copy_(is_hold)
         self.is_lift_phase.copy_(is_lift)
 
-        # ---- 3. Lift phase 진입 시 finger joint 포지션 캡처 (마지막 action hold) ----
-        # torch.where로 CPU sync 없이 순수 GPU 연산으로 처리
-        just_entering_lift = (self.episode_length_buf == GRASP_PHASE_STEPS)  # (N,) bool
+        # ---- 3. Hold phase 진입 시 finger joint 포지션 캡처 (hold/lift 내내 고정) ----
+        just_entering_hold = (self.episode_length_buf == HOLD_START_STEP)  # (N,) bool
         self.lift_finger_pos_buf = torch.where(
-            just_entering_lift.unsqueeze(1),
+            just_entering_hold.unsqueeze(1),
             self.robot.data.joint_pos[:, self.hand_dof_indices],
             self.lift_finger_pos_buf,
         )
 
+
     def _apply_action(self) -> None:
+        is_hold = self.is_hold_phase   # (N,) bool
         is_lift = self.is_lift_phase   # (N,) bool
+        is_frozen = is_hold | is_lift  # Hold + Lift 모두 finger 고정
 
         # ---- 오른팔 ----
-        # Grasp phase: pregrasp arm joint 위치 고정
-        # Lift phase:  pregrasp → prelift 선형 보간 (reset 시 Fabrics로 미리 계산된 값)
+        # Grasp/Hold phase: pregrasp arm joint 위치 고정
+        # Lift phase:       pregrasp → prelift 선형 보간
         lift_progress = (
-            (self.episode_length_buf - GRASP_PHASE_STEPS).clamp(min=0).float()
+            (self.episode_length_buf - LIFT_START_STEP).clamp(min=0).float()
             / LIFT_PHASE_STEPS
         ).clamp(max=1.0).unsqueeze(1)   # (N, 1) ∈ [0, 1]
 
@@ -605,9 +622,9 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 오른손 ----
         # Grasp phase: 정책 action → per-finger lerp target
-        # Lift phase:  마지막 action hold (Grasp phase 종료 시점 캡처값 고정)
+        # Hold/Lift:   Hold 진입 시점 캡처값 고정
         finger_target = torch.where(
-            is_lift.unsqueeze(1),
+            is_frozen.unsqueeze(1),
             self.lift_finger_pos_buf,
             self.hand_joint_targets,
         )
@@ -710,8 +727,9 @@ class GraspRightEnv(DirectRLEnv):
         middle_binary     = self.middle_binary_contact_buf.float()
         middle_force_norm = (self.middle_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
-        # scripted lift phase flag (1D)
-        lift_flag = (self.episode_length_buf >= GRASP_PHASE_STEPS).float().unsqueeze(1)  # (N, 1)
+        # phase flags (hold: 1D, lift: 1D)
+        hold_flag = self.is_hold_phase.float().unsqueeze(1)                     # (N, 1)
+        lift_flag = self.is_lift_phase.float().unsqueeze(1)                     # (N, 1)
 
         # cup height delta from spawn (1D)
         cup_height_delta = (
@@ -726,9 +744,10 @@ class GraspRightEnv(DirectRLEnv):
             distal_force_norm,    # 5
             middle_binary,        # 5
             middle_force_norm,    # 5
+            hold_flag,            # 1
             lift_flag,            # 1
             cup_height_delta,     # 1
-        ], dim=-1)   # 129D
+        ], dim=-1)   # 130D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -743,66 +762,103 @@ class GraspRightEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # ---- ADR ----
         if self.grasp_adr is not None:
-            contact_delta_weight = self.grasp_adr.get_param("reward_weights", "contact_delta_weight")
-            enclosure_weight     = self.grasp_adr.get_param("reward_weights", "enclosure_weight")
+            enclosure_weight = self.grasp_adr.get_param("reward_weights", "enclosure_weight")
         else:
-            contact_delta_weight = self.cfg.contact_delta_weight
-            enclosure_weight     = self.cfg.enclosure_weight
+            enclosure_weight = self.cfg.enclosure_weight
 
-        # ---- Phase flag ----
-        is_lift_flag = self.is_lift_phase.float()   # (N,)
+        # ---- Phase flags ----
+        is_grasp_only = ~(self.is_hold_phase | self.is_lift_phase)  # (N,)
+        is_lift_flag  = self.is_lift_phase.float()                   # (N,)
 
-        # ---- Phase-conditional dense reward scale (방향 A) ----
-        # Grasp phase: dense × grasp_shaping_scale  (방향 안내만, 누적 지배 방지)
-        # Lift  phase: dense × 1.0                  (파지 유지 + 리프트 동시 달성 시 풀 보상)
+        # ---- Phase-conditional dense reward scale ----
+        # Grasp phase: dense × grasp_shaping_scale  (방향 안내만)
+        # Hold/Lift:   dense × 1.0                  (파지 유지·평가 풀 보상)
         dense_scale = (
-            self.cfg.grasp_shaping_scale
-            + (1.0 - self.cfg.grasp_shaping_scale) * is_lift_flag
+            1.0 - (1.0 - self.cfg.grasp_shaping_scale) * is_grasp_only.float()
         )   # (N,) ∈ [grasp_shaping_scale, 1.0]
 
         # ---- 1. contact_reward ----
         num_contacts = self.num_contacts_buf.float()   # (N,)
         contact_reward = self.cfg.contact_reward_weight * (num_contacts / NUM_FINGERTIPS)
 
-        # ---- 2. contact_delta ----
-        delta_contacts = (num_contacts - self.prev_contact_count_buf)   # (N,)
-        contact_delta_reward = contact_delta_weight * delta_contacts
-        self.prev_contact_count_buf.copy_(num_contacts)
-
-        # ---- 3. enclosure ----
-        grasp_center = self.object_pos.clone()
-        grasp_center[:, 2] += self.cfg.cup_grasp_z_offset
-        fingertip_to_cup_dist = (
-            self.fingertip_pos - grasp_center.unsqueeze(1)
-        ).norm(dim=-1)  # (N, 5)
-        enclosure_reward = enclosure_weight * torch.exp(
-            -self.cfg.enclosure_sharpness * fingertip_to_cup_dist.mean(dim=-1)
+        # ---- 2. hold_entry_reward: Hold 진입 1회만 지급 ----
+        just_entering_hold = (self.episode_length_buf == HOLD_START_STEP).float()  # (N,)
+        tip_count    = self.binary_contact_buf.float().sum(dim=-1)           # (N,) 0~5
+        middle_count = self.middle_binary_contact_buf.float().sum(dim=-1)    # (N,) 0~5
+        hold_entry_reward = just_entering_hold * (
+            self.cfg.hold_tip_reward_weight    * tip_count
+            + self.cfg.hold_middle_reward_weight * middle_count
         )
 
-        # ---- 4. opposition ----
-        thumb_contact = self.binary_contact_buf[:, 0].float()             # (N,)
-        other_contact = self.binary_contact_buf[:, 1:].any(dim=-1).float()  # (N,)
-        opposition_reward = self.cfg.opposition_weight * (thumb_contact * other_contact)
+        # ---- 3. asymmetric enclosure (DexPour r_finger_cup_dist, sim2real 호환) ----
+        # palm→cup XY 방향 기준:
+        #   엄지(0): near side(palm 쪽) 목표 → 반대 손가락과 합력 상쇄 → cup 안 밀림
+        #   나머지(1-4): far side(반대 쪽) 목표
+        grasp_center = self.object_pos.clone()
+        grasp_center[:, 2] += self.cfg.cup_grasp_z_offset   # (N, 3)
+
+        cup_to_palm_xy = self.palm_center_pos[:, :2] - grasp_center[:, :2]  # (N, 2)
+        approach_dir_xy = cup_to_palm_xy / cup_to_palm_xy.norm(
+            dim=-1, keepdim=True
+        ).clamp(min=1e-6)                                    # (N, 2) 단위벡터
+        self._approach_dir_buf[:, :2] = approach_dir_xy
+        self._approach_dir_buf[:, 2]  = 0.0                 # Z 성분 0
+
+        r = self.cfg.cup_radius_approx
+        thumb_target  = grasp_center + self._approach_dir_buf * r   # (N, 3) near side
+        others_target = grasp_center - self._approach_dir_buf * r   # (N, 3) far side
+
+        thumb_dist  = (self.fingertip_pos[:, 0, :] - thumb_target).norm(dim=-1)          # (N,)
+        others_dist = (self.fingertip_pos[:, 1:, :] - others_target.unsqueeze(1)).norm(
+            dim=-1
+        ).mean(dim=-1)                                                                     # (N,)
+
+        enclosure_reward = enclosure_weight * 0.5 * (
+            torch.exp(-self.cfg.enclosure_sharpness * thumb_dist)
+            + torch.exp(-self.cfg.enclosure_sharpness * others_dist)
+        )
+
+        # ---- 4. full_grasp_bonus (per-step, Grasp phase only, scale 미적용) ----
+        # 조건: 엄지 contact AND 나머지(2~5) 3개 이상 → opposition 보장
+        # DexPour r_grasp에 해당: 안정 파지 유지 시 매 스텝 보상 → oscillation 억제
+        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)          # (N,) 0~4
+        full_grasp_flag = (self.binary_contact_buf[:, 0] & (others_count >= 3)).float()
+        full_grasp_bonus = (
+            self.cfg.full_grasp_bonus_weight * is_grasp_only.float() * full_grasp_flag
+        )
 
         # ---- dense reward에 phase scale 적용 ----
+        # opposition_reward 제거: full_grasp_bonus가 엄지 포함 조건을 더 강하게 요구
+        # contact_balance 제거: min(5개)가 full_grasp(4개) 목표와 상충
         dense_reward = dense_scale * (
             contact_reward
-            + contact_delta_reward
             + enclosure_reward
-            + opposition_reward
         )
+        # full_grasp_bonus는 scale 미적용 (grasp phase에서 full strength 유지)
 
         # ---- 5. action_reg (scale 미적용, 항상 full) ----
         action_reg = self.cfg.action_reg_weight * self.actions.pow(2).sum(dim=-1)
 
-        # ---- 6. lift_reward ----
+        # ---- 5e. action_smoothness: 급격한 action 변화 패널티 ----
+        action_smoothness = (
+            self.cfg.action_smoothness_weight
+            * (self.actions - self.prev_actions).pow(2).sum(dim=-1)
+        )
+        self.prev_actions.copy_(self.actions)
+
+        # ---- 6. lift_reward (contact_quality 기반, sim2real 호환) ----
         cup_height_delta = (
             self.object_pos[:, 2] - self.object_init_pos[:, 2]
         ).clamp(min=0.0)   # (N,) ≥ 0
-        # contact 조건: 최소 1개 이상 접촉 시에만 lift reward 지급
-        # → 팔만 올리는 degenerate solution 방지 (bb_1_contact_force_hold 설계 원칙 참고)
-        has_any_contact = (self.num_contacts_buf >= 1).float()   # (N,)
-        lift_reward = self.cfg.lift_reward_weight * is_lift_flag * cup_height_delta * has_any_contact
+
+        # contact_quality: Teosllo FT 센서 기반, 카메라 불필요
+        #   Lift phase occlusion 문제 없음, 실 로봇 직접 적용 가능
+        #   cup 안 잡히면 cup_height_delta=0 → reward=0 자동 처리
+        contact_quality = self.num_contacts_buf.float() / NUM_FINGERTIPS  # (N,) ∈ [0, 1]
+
+        lift_reward = (
+            self.cfg.lift_reward_weight * is_lift_flag * cup_height_delta * contact_quality
+        )
 
         # ---- 7. terminal rewards ----
         is_terminal = self.reset_buf
@@ -814,7 +870,10 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 합산 ----
         total = (
             dense_reward
+            + full_grasp_bonus
+            + hold_entry_reward
             + action_reg
+            + action_smoothness
             + lift_reward
             + terminal_success_reward
             + terminal_fail_reward
@@ -826,16 +885,18 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 로깅 ----
         self.extras["contact_reward"]       = contact_reward.mean()
-        self.extras["contact_delta_reward"] = contact_delta_reward.mean()
+        self.extras["full_grasp_bonus"]     = full_grasp_bonus.mean()
+        self.extras["full_grasp_rate"]      = full_grasp_flag.mean()   # 비율 모니터링
+        self.extras["hold_entry_reward"]    = hold_entry_reward.mean()
         self.extras["enclosure_reward"]     = enclosure_reward.mean()
-        self.extras["opposition_reward"]    = opposition_reward.mean()
-        self.extras["dense_scale"]          = dense_scale.mean()   # 모니터링: 0.05→1.0 전환 확인
+        self.extras["dense_scale"]          = dense_scale.mean()   # 모니터링: 0.25→1.0 전환 확인
         self.extras["action_reg"]           = action_reg.mean()
+        self.extras["action_smoothness"]    = action_smoothness.mean()
         self.extras["lift_reward"]          = lift_reward.mean()
         self.extras["cup_height_delta"]     = cup_height_delta.mean()
+        self.extras["contact_quality"]      = contact_quality.mean()
         self.extras["num_contacts"]         = num_contacts.mean()
         self.extras["success_rate"]         = self.success_flag.float().mean()
-        self.extras["adr_contact_delta_w"]  = torch.tensor(contact_delta_weight, device=self.device)
         self.extras["adr_enclosure_w"]      = torch.tensor(enclosure_weight, device=self.device)
         # ---- tip / distal 접촉 상태 개별 모니터링 ----
         self.extras["tip_num_contacts"]     = self.binary_contact_buf.float().sum(dim=-1).mean()
@@ -873,8 +934,8 @@ class GraspRightEnv(DirectRLEnv):
         tipped = cup_z_world[:, 2] < self._cup_tipping_cos
 
         # ---- success: lift phase 이후 컵 들린 상태 + 접촉 유지 ----
-        # GRASP_PHASE_STEPS 이후(lift phase)에만 success 판정
-        in_or_past_lift = (self.episode_length_buf >= GRASP_PHASE_STEPS)
+        # LIFT_START_STEP 이후(lift phase)에만 success 판정
+        in_or_past_lift = (self.episode_length_buf >= LIFT_START_STEP)
         lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         grasped = (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
         self.success_flag.copy_(in_or_past_lift & lifted & grasped)
@@ -1034,4 +1095,5 @@ class GraspRightEnv(DirectRLEnv):
         self.success_flag[env_ids] = False
 
         # ---- 11. actions 리셋 (손가락: open 상태에서 시작) ----
-        self.actions[env_ids].fill_(-1.0)  # 손가락 action=-1 → APPROACH_POSE(open) 유지
+        self.actions[env_ids].fill_(-1.0)       # 손가락 action=-1 → APPROACH_POSE(open) 유지
+        self.prev_actions[env_ids].fill_(-1.0)  # smoothness 계산 기준점 동기화

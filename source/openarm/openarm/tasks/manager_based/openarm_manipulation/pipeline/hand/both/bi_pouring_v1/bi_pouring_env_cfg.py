@@ -84,7 +84,7 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     # PD 직접 관절 제어 파라미터
     # target = default_joint_pos + clamp(action, -1, 1) * action_scale
     # action_scale(rad): 각 스텝에서 정책이 더할 수 있는 최대 델타
-    action_scale: float = 0.5  # default_pos ± 0.5 rad 범위 (approach JointPositionActionCfg scale=0.5과 동일)
+    action_scale: float = 0.5  # default_pos ± 0.5 rad 범위
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=2048,
@@ -266,24 +266,23 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     source_cup_pour_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_AXIS_B)
     source_cup_up_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_UP_AXIS_B)
     target_cup_up_axis_b: tuple[float, float, float] = tuple(TARGET_CUP_UP_AXIS_B)
-    # Multi-bead APA
-    bead_spawn_jitter_xy: float = 0.015  # bead 초기 위치 XY 분산 (m)
+    bead_spawn_jitter_xy: float = 0.015
 
     # DexPour stage trigger (ρ)
-    pour_trigger_dist: float = 0.17      # pour point → target opening 임계값 (m)
-    pour_trigger_hold_steps: int = 5     # latch까지 유지해야 하는 step 수
+    pour_trigger_dist: float = 0.17
+    pour_trigger_hold_steps: int = 5
 
-    # Transport stage rewards (ρ=0: pour_stage_active=False)
-    reward_cup_dist_weight: float = 1.5          # exp(-2 * dist) 거리 감소 보상
-    penalty_transport_tilt_weight: float = 0.5   # 이송 중 직립 유지 패널티
+    # Transport stage rewards
+    reward_cup_dist_weight: float = 1.5
+    penalty_transport_tilt_weight: float = 0.5
 
-    # Pour stage rewards (ρ=1: pour_stage_active=True)
-    reward_tilt_weight: float = 1.5      # 45° 틸팅 Gaussian 보상
-    pour_tilt_target_cos: float = 0.707  # cos(45°) 목표
-    pour_tilt_cos_scale: float = 0.2     # Gaussian 스케일
-    reward_align_weight: float = 1.5     # pour axis → target 정렬 보상
+    # Pour stage rewards
+    reward_tilt_weight: float = 1.5
+    pour_tilt_target_cos: float = 0.707
+    pour_tilt_cos_scale: float = 0.2
+    reward_align_weight: float = 1.5
 
-    # Bead detection geometry (항상 활성)
+    # Bead detection geometry
     target_inner_radius: float = 0.050
     target_inside_z_min: float = -0.015
     target_inside_z_max: float = 0.095
@@ -299,22 +298,19 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     rim_clearance_threshold: float = 0.035
     ee_clearance_threshold: float = 0.120
     cup_to_opposite_ee_clearance_threshold: float = 0.110
-    invalid_cup_xy_threshold: float = 1.000  # 초기 간격(~0.5m) 허용, 물리 붕괴만 검출
-    invalid_cup_z_threshold: float = 0.600   # 두 EE Z차이 여유 확보
+    invalid_cup_xy_threshold: float = 1.000
+    invalid_cup_z_threshold: float = 0.600
     invalid_bead_drop_z_threshold: float = 0.230
     invalid_bead_floor_z_threshold: float = 0.050
     invalid_bead_xy_threshold: float = 0.800
 
-    # Bead dynamics rewards (항상 활성)
+    # Bead dynamics rewards
     reward_bead_entry_weight: float = 6.0
     reward_stable_retention_weight: float = 2.5
     penalty_spill_weight: float = 4.0
     penalty_collision_weight: float = 1.0
     penalty_action_smoothness_weight: float = 0.05
 
-    # Left-holder reset seam aligned with 5g_grasp_right_v5 reset-fabric usage.
-    # bi_pouring_v1 still defaults to the fixed holder path because this codebase
-    # currently does not provide a reusable left-side FABRICS pose sampler.
     use_left_holder_reset_fabric: bool = False
     pregrasp_fabric_steps: int = 60
     reset_fabric_chunk_size: int = 128

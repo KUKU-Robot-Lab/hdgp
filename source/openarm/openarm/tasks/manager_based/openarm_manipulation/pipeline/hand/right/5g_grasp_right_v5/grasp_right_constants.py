@@ -17,9 +17,9 @@
 v5: FABRICS pregrasp reset + 정책 손가락 grasp formation + Scripted lift checker.
 
 Episode 구조:
-  Grasp phase (0~GRASP_PHASE_STEPS-1): arm joints = pregrasp 고정, 정책이 finger만 제어
-  Lift phase  (GRASP_PHASE_STEPS~끝):  arm joints = pregrasp→prelift 선형 보간 (reset 시 미리 계산)
-                                        finger joints = grasp phase 종료 시점 포지션으로 고정
+  Grasp phase (0~HOLD_START_STEP-1):          arm 고정, 정책이 finger 제어
+  Hold  phase (HOLD_START_STEP~LIFT_START_STEP-1): arm 고정, finger 고정 (hold 진입 시 1회 contact 보상)
+  Lift  phase (LIFT_START_STEP~끝):           arm pregrasp→prelift 보간, finger 고정
 
 Action (5D):
   [0:5]  per-finger lerp factor  ([-1,1] → lerp(HAND_APPROACH, HAND_GRASP) per finger)
@@ -75,20 +75,25 @@ NUM_OBSERVATIONS = 101  # Actor (101D): 3+4+15+20+20+7+7+5+15+5
 NUM_DISTAL_SENSORS = 5   # rl_dg_1_4 ~ rl_dg_5_4 (distal phalanx)
 NUM_MIDDLE_SENSORS = 5   # rl_dg_1_3 ~ rl_dg_5_3 (middle phalanx)
 
-# Critic extras over actor obs (28D):
+# Critic extras over actor obs (29D):
 #   cup_lin_vel(3) + cup_ang_vel(3)
 #   + distal_binary(5) + distal_force(5)
 #   + middle_binary(5) + middle_force(5)
-#   + lift_phase_flag(1) + cup_height_delta(1)
-NUM_CRITIC_EXTRAS = 28
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 129
+#   + hold_phase_flag(1) + lift_phase_flag(1) + cup_height_delta(1)
+NUM_CRITIC_EXTRAS = 29
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 130
 
 # ---------------------------------------------------------------------------
-# Episode structure (@ 60 Hz policy rate)
+# Episode structure (@ 60 Hz policy rate)  총 12s = 720 steps
 # ---------------------------------------------------------------------------
-GRASP_PHASE_STEPS = 480    # 8s: 정책 완전 제어 (손가락 닫기)
-LIFT_PHASE_STEPS  = 240    # 2s → 4s: 리프트 시간 2배 확보 (컵 충분히 올라가기 전 에피소드 종료 방지)
-TOTAL_EPISODE_STEPS = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS   # 720 = 12s
+GRASP_PHASE_STEPS = 360    # 6s: 정책 완전 제어 (손가락 닫기)
+HOLD_PHASE_STEPS  = 120    # 2s: 파지 자세 고정·평가 (hold 진입 1회 contact 보상)
+LIFT_PHASE_STEPS  = 240    # 4s: arm 상승, finger 고정 (최종 평가)
+
+HOLD_START_STEP   = GRASP_PHASE_STEPS                       # 360
+LIFT_START_STEP   = GRASP_PHASE_STEPS + HOLD_PHASE_STEPS    # 480
+
+TOTAL_EPISODE_STEPS = GRASP_PHASE_STEPS + HOLD_PHASE_STEPS + LIFT_PHASE_STEPS  # 720 = 12s
 
 LIFT_Z_DELTA = 0.10         # 10cm 수직 상승 (Scripted Lift Checker)
 

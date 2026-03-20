@@ -70,7 +70,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     observation_space: int = NUM_OBSERVATIONS         # 101 (actor)
     action_space:      int = NUM_ACTIONS              # 5
-    state_space:       int = NUM_CRITIC_OBSERVATIONS  # 119 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS  # 130 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -117,17 +117,26 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 1. contact_reward: 접촉 유지 (num_contacts / 5)
     contact_reward_weight: float = 2.0
 
-    # 2. contact_delta: 접촉 증가 보상 / 감소 패널티
-    #    ADR: 2.0 → 0.5 (접촉 획득 유도 후 감소, 이미 학습됨)
-    contact_delta_weight: float = 2.0   # ADR 초기값
+    # 2. hold_entry: Hold 진입 시 1회만 지급 (tip × 5 + middle × 10)
+    #    contact_delta 대체: 진동 유발 없이 파지 품질 1회 평가
+    hold_tip_reward_weight:    float = 5.0    # tip contact 개당 (+5)
+    hold_middle_reward_weight: float = 10.0   # middle contact 개당 (+10)
 
-    # 3. enclosure: fingertip → cup 거리 기반 exp reward
+    # 3. asymmetric enclosure (DexPour r_finger_cup_dist 방식, sim2real 호환)
+    #    palm→cup 방향 기준 비대칭 유도:
+    #      엄지(0): near side(palm 쪽) → 상대 힘이 상쇄 → cup 안 밀림
+    #      나머지(1-4): far side(반대 쪽)
+    #    → 대칭 파지 → 합력 ≈ 0 → cup 제자리 유지 (명시적 stability reward 불필요)
     #    ADR: 4.0 → 8.0 (점점 강화)
-    enclosure_weight:    float = 4.0    # ADR 초기값 (2.0 → 4.0, 더 강한 enclosure 압력)
-    enclosure_sharpness: float = 15.0  # exp(-sharpness * mean_dist)  (10.0 → 15.0)
+    enclosure_weight:    float = 4.0
+    enclosure_sharpness: float = 15.0
+    cup_radius_approx:   float = 0.045  # cup_big 반경 (near/far target offset 계산용)
 
-    # 4. opposition: thumb + 다른 손가락 동시 접촉
-    opposition_weight: float = 4.0     # 2.0 → 4.0: 엄지-나머지 안정 파지 구조 유도 강화
+    # 4. full_grasp_bonus: Grasp phase 내내 per-step (DexPour r_grasp 방식)
+    #   조건: 엄지(1) contact AND 나머지(2~5) 중 3개 이상 → opposition 보장
+    #   opposition_reward 제거 이유: 낮은 bar(thumb+1)가 local optimum 형성 → oscillation 유발
+    #   contact_balance 제거 이유: min(5개) 조건이 full_grasp(4개)와 목표 불일치
+    full_grasp_bonus_weight: float = 8.0   # per-step bonus (scale 미적용, Grasp phase only)
 
     # 5a. grasp_shaping_scale: Grasp phase dense reward 억제 스케일
     #   dense_scale = grasp_shaping_scale + (1 - grasp_shaping_scale) × is_lift_flag
@@ -137,9 +146,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 5b. action_reg: ||action||² 패널티 (scale 미적용, 항상 full)
     action_reg_weight: float = -0.005
 
-    # 5c. lift_reward: Lift phase 동안 cup_z - init_z 비례 보상
-    #   weight=60: 최대 0.04m 상승 시 2.4/step → Lift phase 120step × 2.4 = 288 total
-    lift_reward_weight: float = 60.0   # 20.0 → 60.0
+    # 5e. action_smoothness: ||(action_t - action_{t-1})||² 패널티
+    #    급격한 action 변화 → 손가락 충격력 → 컵 쓰러짐 방지
+    action_smoothness_weight: float = -0.02
+
+    # 5c. lift_reward: Lift phase 동안 cup_z × contact_quality 복합 보상 (sim2real 호환)
+    #   contact_quality = num_contacts / NUM_FINGERTIPS ∈ [0, 1]
+    #     → Teosllo FT 센서 기반, 카메라 불필요 (Lift phase occlusion 문제 없음)
+    #   cup 안 잡히면 cup_height_delta=0 → reward=0 자동 처리
+    lift_reward_weight: float = 60.0
 
     # 6. terminal rewards
     terminal_success_weight: float = 200.0  # 10.0 → 200.0 (성공이 수지맞는 전략이 되도록)
@@ -155,8 +170,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "reward_weights": {
-            "contact_delta_weight": (2.0, 0.5),   # 접촉 획득 유도 후 감소
-            "enclosure_weight":     (4.0, 8.0),   # 점점 강화
+            "enclosure_weight": (4.0, 8.0),   # 점점 강화
         },
     })
 
@@ -276,26 +290,27 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 stiffness=400.0,
                 damping=80.0,
             ),
-            # Teosllo hand: stiffness/damping=None → USD 저장값 사용
+            # Teosllo hand: abduction(_1)은 명시적 stiffness로 고정
+            # stiffness=None이면 컵 충돌 시 관절이 밀려 thumb 옆면 파지 발생
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
-                stiffness=None,
-                damping=None,
+                stiffness=30.0,
+                damping=5.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                stiffness=None,
-                damping=None,
+                stiffness=30.0,
+                damping=5.0,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                stiffness=None,
-                damping=None,
+                stiffness=30.0,
+                damping=5.0,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                stiffness=None,
-                damping=None,
+                stiffness=30.0,
+                damping=5.0,
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],

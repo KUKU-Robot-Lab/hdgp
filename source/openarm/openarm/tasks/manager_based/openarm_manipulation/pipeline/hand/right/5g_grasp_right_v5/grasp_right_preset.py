@@ -91,11 +91,11 @@ HAND_START_POSE = [
 #   → episode 중 action[0]=1 → lerp → HAND_GRASP_POSE (thumb_2 = -1.5, ≈ 유지)
 #   → 나머지 손가락(1~4)은 0에서 시작하여 lerp로 curl
 HAND_APPROACH_POSE = [
-    0.0,  0.0,  0.0, 0.0,   # thumb: _2=0 (fully open, 관통 방지)
-    0.0,  0.0,  0.0, 0.0,   # index: fully open
-    0.0,  0.0,  0.0, 0.0,   # middle: fully open
-    0.0,  0.0,  0.0, 0.0,   # ring: fully open
-    0.0,  0.0,  0.0, 0.0,   # pinky: fully open
+    0.0, -1.57, -0.5, 0.0,   # thumb: _2=-1.57(opposition 유지), _3=-0.5(PIP curl → _3 부분이 컵에 먼저 닿는 문제 방지)
+    0.0,  0.0,   0.0, 0.0,   # index: fully open
+    0.0,  0.0,   0.0, 0.0,   # middle: fully open
+    0.0,  0.0,   0.0, 0.0,   # ring: fully open
+    0.0,  0.0,   0.0, 0.0,   # pinky: fully open
 ]
 
 # 파지 자세 (cspace attractor 기준)
