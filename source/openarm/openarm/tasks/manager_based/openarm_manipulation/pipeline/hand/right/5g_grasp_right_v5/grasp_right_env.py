@@ -283,6 +283,7 @@ class GraspRightEnv(DirectRLEnv):
         # Fabrics 초기화
         # ----------------------------------------------------------------
         self._setup_geometric_fabrics()
+        self._setup_cached_reset_targets()
 
     # ------------------------------------------------------------------
     # Scene 설정
@@ -405,6 +406,52 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         print("=== GraspRightEnv v5: Fabrics initialized ===")
+
+    def _setup_cached_reset_targets(self) -> None:
+        """Precompute fixed pregrasp/prelift targets for reset-time reuse."""
+        self._cached_pregrasp_arm_pos: torch.Tensor | None = None
+        self._cached_prelift_arm_pos: torch.Tensor | None = None
+        self._cached_pregrasp_hand_pos: torch.Tensor | None = None
+        self._cached_pregrasp_palm_orient: torch.Tensor | None = None
+
+        if not self.cfg.cache_pregrasp_reset:
+            return
+
+        if self.cfg.object_spawn_xy_range != 0.0:
+            print("[GraspRightEnv v5] cache_pregrasp_reset ignored because object spawn is randomized.")
+            return
+
+        base_object_pos = torch.tensor(
+            [[
+                self.cfg.object_spawn_x_center,
+                self.cfg.object_spawn_y_center,
+                self.cfg.object_spawn_z,
+            ]],
+            device=self.device,
+        )
+        pregrasp_pos = base_object_pos + self.pregrasp_offset.unsqueeze(0)
+
+        pregrasp_palm_pose = torch.zeros(1, 6, device=self.device)
+        pregrasp_palm_pose[:, :3] = pregrasp_pos
+        pregrasp_palm_pose[:, 3] = math.radians(90.0)
+        pregrasp_palm_pose[:, 4] = math.radians(0.0)
+        pregrasp_palm_pose[:, 5] = math.radians(90.0)
+        pregrasp_palm_pose = torch.max(
+            torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
+            self.palm_mins.unsqueeze(0),
+        )
+
+        q_init = self.robot_start_joint_pos[:1].clone()
+        q_pregrasp = self._run_reset_fabric(torch.zeros(1, dtype=torch.long, device=self.device), pregrasp_palm_pose, q_init)
+        approach_hand = self.hand_approach_buf.unsqueeze(0)
+
+        self._cached_pregrasp_arm_pos = q_pregrasp[:, :NUM_ARM_DOF].clone()
+        self._cached_prelift_arm_pos = q_pregrasp[:, :NUM_ARM_DOF].clone()
+        self._cached_prelift_arm_pos[:, 3] = (self._cached_prelift_arm_pos[:, 3] + 0.31).clamp(max=3.14)
+        self._cached_pregrasp_hand_pos = approach_hand.clone()
+        self._cached_pregrasp_palm_orient = pregrasp_palm_pose[:, 3:6].clone()
+
+        print("[GraspRightEnv v5] Cached fixed pregrasp/prelift reset targets.")
 
     # ------------------------------------------------------------------
     # Contact force reading — MD Section 10 PhysX API 대응
@@ -881,72 +928,84 @@ class GraspRightEnv(DirectRLEnv):
         )
         self.object_init_pos[env_ids] = obj_pos_local
 
-        # ---- 4. FABRICS pregrasp: cup 기준 palm 위치 이동 ----
-        noise = torch.stack([
-            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
-            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
-            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
-        ], dim=1)
-        pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise   # (n, 3)
-
-        pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
-        pregrasp_palm_pose[:, :3] = pregrasp_pos
-        pregrasp_palm_pose[:, 3] = math.radians(90.0)   # ez: +90° (palm +X → world +Y, 손바닥이 컵 방향)
-        pregrasp_palm_pose[:, 4] = math.radians(0.0)    # ey:   0° (side-approach, v1과 동일)
-        pregrasp_palm_pose[:, 5] = math.radians(90.0)   # ex: +90° (palm +Z → world +X, 손가락이 +X 방향)
-
-        # workspace clamp (전체 6D)
-        pregrasp_palm_pose = torch.max(
-            torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
-            self.palm_mins.unsqueeze(0),
+        use_cached_reset = (
+            self.cfg.cache_pregrasp_reset
+            and self._cached_pregrasp_arm_pos is not None
+            and self._cached_prelift_arm_pos is not None
+            and self._cached_pregrasp_hand_pos is not None
+            and self._cached_pregrasp_palm_orient is not None
+            and self.cfg.object_spawn_xy_range == 0.0
         )
 
-        # pregrasp orientation 저장 (clamp 적용 후 값)
-        self.pregrasp_palm_orient_buf[env_ids] = pregrasp_palm_pose[:, 3:6]
+        if use_cached_reset:
+            cached_pregrasp_arm = self._cached_pregrasp_arm_pos.expand(n, -1)
+            cached_prelift_arm = self._cached_prelift_arm_pos.expand(n, -1)
+            approach_hand = self._cached_pregrasp_hand_pos.expand(n, -1)
 
-        # Fabrics pregrasp rollout (full-batch, env_ids 슬롯만 실제 변경)
-        self.palm_pose_targets[env_ids] = pregrasp_palm_pose
+            self.pregrasp_palm_orient_buf[env_ids] = self._cached_pregrasp_palm_orient.expand(n, -1)
+            self.pregrasp_arm_pos_buf[env_ids] = cached_pregrasp_arm
+            self.prelift_arm_pos_buf[env_ids] = cached_prelift_arm
+            self.lift_finger_pos_buf[env_ids] = approach_hand
 
-        # ---- Pregrasp IK: env_ids 전용 소형 Fabrics (full-batch 낭비 제거) ----
-        q_init_pregrasp = self.fabric_q[env_ids].clone()   # (n, 27) 현재 joint 상태
-        q_pregrasp = self._run_reset_fabric(
-            env_ids, pregrasp_palm_pose, q_init_pregrasp
-        )   # (n, 27)
+            self.fabric_q[env_ids, :NUM_ARM_DOF] = cached_pregrasp_arm
+            self.fabric_q[env_ids, NUM_ARM_DOF:] = approach_hand
+            self.fabric_qd[env_ids].zero_()
+            self.fabric_qdd[env_ids].zero_()
 
-        self.fabric_q[env_ids]   = q_pregrasp
-        self.fabric_qd[env_ids].zero_()
-        self.fabric_qdd[env_ids].zero_()
+            pregrasp_full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
+            pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
+            pregrasp_full_pos[:, self.arm_dof_indices] = cached_pregrasp_arm
+            pregrasp_full_pos[:, self.hand_dof_indices] = approach_hand
+            pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+            self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
+        else:
 
-        # hand DOF를 APPROACH_POSE로 고정 (arm DOF만 Fabrics 결과 사용)
-        approach_hand = self.hand_approach_buf.unsqueeze(0).expand(n, -1)
-        self.fabric_q[env_ids, NUM_ARM_DOF:]   = approach_hand
-        self.fabric_qd[env_ids, NUM_ARM_DOF:].zero_()
-        self.fabric_qdd[env_ids, NUM_ARM_DOF:].zero_()
+            # ---- 4. FABRICS pregrasp: cup 기준 palm 위치 이동 ----
+            noise = torch.stack([
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
+            ], dim=1)
+            pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
 
-        # ---- 5b. pregrasp arm joint 위치 저장 ----
-        self.pregrasp_arm_pos_buf[env_ids] = self.fabric_q[env_ids, :NUM_ARM_DOF]
+            pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
+            pregrasp_palm_pose[:, :3] = pregrasp_pos
+            pregrasp_palm_pose[:, 3] = math.radians(90.0)
+            pregrasp_palm_pose[:, 4] = math.radians(0.0)
+            pregrasp_palm_pose[:, 5] = math.radians(90.0)
+            pregrasp_palm_pose = torch.max(
+                torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
+                self.palm_mins.unsqueeze(0),
+            )
 
-        # ---- 5c. prelift arm joint 위치 계산 (Fabrics IK 제거, j4 오프셋 근사) ----
-        # OpenArm FK: dz/dj4 ≈ 0.32 m/rad (캘리브레이션 기반)
-        # LIFT_Z_DELTA=0.10m → Δj4 ≈ +0.31 rad
-        # 리프트 phase는 scripted(정책 미관여)이므로 근사 허용
-        prelift_arm = q_pregrasp[:, :NUM_ARM_DOF].clone()
-        prelift_arm[:, 3] = (prelift_arm[:, 3] + 0.31).clamp(max=3.14)
-        self.prelift_arm_pos_buf[env_ids] = prelift_arm
+            self.pregrasp_palm_orient_buf[env_ids] = pregrasp_palm_pose[:, 3:6]
+            self.palm_pose_targets[env_ids] = pregrasp_palm_pose
 
-        # ---- 5d. lift_finger_pos_buf 초기화 (approach pose) ----
-        # _pre_physics_step에서 GRASP_PHASE_STEPS 진입 시 실제 값으로 덮어쓴다
-        self.lift_finger_pos_buf[env_ids] = approach_hand
+            q_init_pregrasp = self.fabric_q[env_ids].clone()
+            q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_init_pregrasp)
 
-        # ---- 6. 로봇 관절을 Fabrics pregrasp 결과로 업데이트 ----
-        pregrasp_full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
-        pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
+            self.fabric_q[env_ids] = q_pregrasp
+            self.fabric_qd[env_ids].zero_()
+            self.fabric_qdd[env_ids].zero_()
 
-        pregrasp_full_pos[:, self.arm_dof_indices]  = self.fabric_q[env_ids, :NUM_ARM_DOF]
-        pregrasp_full_pos[:, self.hand_dof_indices] = self.hand_approach_buf.unsqueeze(0).expand(n, -1)
-        pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+            approach_hand = self.hand_approach_buf.unsqueeze(0).expand(n, -1)
+            self.fabric_q[env_ids, NUM_ARM_DOF:] = approach_hand
+            self.fabric_qd[env_ids, NUM_ARM_DOF:].zero_()
+            self.fabric_qdd[env_ids, NUM_ARM_DOF:].zero_()
 
-        self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
+            self.pregrasp_arm_pos_buf[env_ids] = self.fabric_q[env_ids, :NUM_ARM_DOF]
+
+            prelift_arm = q_pregrasp[:, :NUM_ARM_DOF].clone()
+            prelift_arm[:, 3] = (prelift_arm[:, 3] + 0.31).clamp(max=3.14)
+            self.prelift_arm_pos_buf[env_ids] = prelift_arm
+            self.lift_finger_pos_buf[env_ids] = approach_hand
+
+            pregrasp_full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
+            pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
+            pregrasp_full_pos[:, self.arm_dof_indices] = self.fabric_q[env_ids, :NUM_ARM_DOF]
+            pregrasp_full_pos[:, self.hand_dof_indices] = approach_hand
+            pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+            self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
 
         # ---- 7. 컵 spawn ----
         obj_pos_world = obj_pos_local + self.scene.env_origins[env_ids]

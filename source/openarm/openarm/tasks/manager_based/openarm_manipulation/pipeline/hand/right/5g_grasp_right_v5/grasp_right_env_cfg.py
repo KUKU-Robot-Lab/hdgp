@@ -88,6 +88,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 60    # 30 → 60: pregrasp 수렴 품질 향상 (palm 위치 오차 감소)
     reset_fabric_chunk_size: int = 128   # reset 전용 소형 Fabrics batch 크기 (env_ids chunk 단위)
+    cache_pregrasp_reset:  bool  = True  # 고정 spawn 기준 pregrasp/prelift를 1회 계산 후 reset마다 재사용
     pregrasp_offset_x:     float = -0.06   # palm_link가 cup -X 방향 5cm
                                             # palm_ee = palm_link + local_z(0.04) → palm_ee_x = cup_x - 0.01
                                             # 즉 cup_root_x ≈ palm_ee_x + 0.01 (손가락 뿌리에 컵이 위치)

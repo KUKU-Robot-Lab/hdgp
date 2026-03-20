@@ -84,7 +84,7 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     # PD 직접 관절 제어 파라미터
     # target = default_joint_pos + clamp(action, -1, 1) * action_scale
     # action_scale(rad): 각 스텝에서 정책이 더할 수 있는 최대 델타
-    action_scale: float = 0.05  # 0.05 rad/step @ 60Hz policy = 3 rad/s 최대
+    action_scale: float = 0.5  # default_pos ± 0.5 rad 범위 (approach JointPositionActionCfg scale=0.5과 동일)
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=2048,

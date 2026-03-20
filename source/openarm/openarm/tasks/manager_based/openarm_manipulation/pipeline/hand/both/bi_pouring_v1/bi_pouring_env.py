@@ -233,9 +233,9 @@ class BiPouringEnv(DirectRLEnv):
         self._prev_actions.copy_(self._last_actions)
         self._last_actions = actions.clamp(-1.0, 1.0)
 
-        # PD 제어: 누적 delta joint position
-        # target += action * scale (관절 한계는 USD soft_joint_pos_limit_factor로 제한)
-        self._arm_target = self._arm_target + self._last_actions * self.cfg.action_scale
+        # PD 제어: 절대 오프셋 (approach 방식과 동일)
+        # target = default_pos + action * scale  (매 스텝 독립, 누적 없음)
+        self._arm_target = self._arm_default_pos.unsqueeze(0) + self._last_actions * self.cfg.action_scale
 
     def _apply_action(self) -> None:
         # 오른팔: PD 목표 관절 위치 적용
