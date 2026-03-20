@@ -1,0 +1,970 @@
+# Copyright 2025 Enactic, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""환경 클래스: 5g_grasp_right_v7
+
+v7: Fabrics 팔 학습 + per-finger lerp 5D + Contact sensor 없는 FK 기반 근접도 리워드
+
+핵심 개선 (v1/v6 대비):
+  - v1 문제: fabric_q/qd obs → sim2real 불가, palm_dist 기반 자동 닫힘 → 충돌 충격
+  - v6 문제: 팔 고정 → cup 위치 오차 대응 불가, per-finger 5D 협응 학습 부족
+
+Action (11D):
+  [0:6]  6D palm pose → Fabrics IK → arm 7 DOF (학습, cup 위치 오차 대응)
+  [6:11] 5D per-finger lerp: -1 → HAND_APPROACH_POSE, +1 → HAND_GRASP_POSE
+
+Episode (10s @ 60Hz):
+  Grasp phase (0~479): Fabrics arm + per-finger 정책
+  Lift  phase (480~599): scripted arm prelift + frozen hand
+"""
+
+from __future__ import annotations
+
+import math
+import sys
+from pathlib import Path
+from collections.abc import Sequence
+
+import torch
+
+# Fabrics 경로 설정 (hdgp/source/FABRICS/src 우선)
+for _parent in Path(__file__).resolve().parents:
+    if _parent.name == "source":
+        _vendored = _parent / "FABRICS" / "src"
+        if _vendored.exists():
+            _v = str(_vendored)
+            if _v not in sys.path:
+                sys.path.insert(0, _v)
+        break
+
+import isaaclab.sim as sim_utils
+from isaaclab.assets import Articulation, RigidObject
+from isaaclab.envs import DirectRLEnv
+from isaaclab.sensors import ContactSensor, ContactSensorCfg
+from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
+from isaaclab.utils.math import quat_apply
+
+from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
+from fabrics_sim.integrator.integrators import DisplacementIntegrator
+from fabrics_sim.utils.utils import initialize_warp
+from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
+
+from .grasp_right_env_cfg import GraspRightEnvCfg
+from .grasp_adr import GraspADR
+from .grasp_right_constants import (
+    NUM_ARM_DOF,
+    NUM_HAND_DOF,
+    NUM_FINGERTIPS,
+    NUM_OBSERVATIONS,
+    NUM_DISTAL_SENSORS,
+    NUM_MIDDLE_SENSORS,
+    NUM_CRITIC_OBSERVATIONS,
+    GRASP_PHASE_STEPS,
+    LIFT_PHASE_STEPS,
+    LIFT_START_STEP,
+    EPISODE_STEPS,
+    CONTACT_FORCE_THRESHOLD,
+    CONTACT_FORCE_MAX,
+    MIN_CONTACTS_FOR_SUCCESS,
+    PREGRASP_FABRICS_STEPS,
+    CUP_RADIUS_APPROX,
+    ARM_START_POSE,
+    PALM_POSE_MINS_FUNC,
+    PALM_POSE_MAXS_FUNC,
+)
+from .grasp_right_preset import (
+    LEFT_ARM_REST_JOINT_POS,
+    RIGHT_ACTUATED_JOINT_NAMES,
+    HAND_APPROACH_POSE,
+    HAND_GRASP_POSE,
+    OBJECT_GOAL_POS,
+)
+from .grasp_right_utils import scale, to_torch
+
+
+class GraspRightEnv(DirectRLEnv):
+    """OpenArm+Teosllo 오른손 파지 환경 v7.
+
+    Action: 11D
+      [0:6]  palm pose (x,y,z,ez,ey,ex), 정규화 [-1,1] → Fabrics IK
+      [6:11] per-finger lerp (thumb,index,middle,ring,pinky)
+             -1 = HAND_APPROACH_POSE, +1 = HAND_GRASP_POSE
+
+    Episode:
+      Grasp phase (step 0~479):  Fabrics arm + 정책 손가락
+      Lift  phase (step 480~599): scripted arm prelift + frozen hand
+    """
+
+    cfg: GraspRightEnvCfg
+
+    def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+
+        # ----------------------------------------------------------------
+        # DOF index 설정
+        # ----------------------------------------------------------------
+        self.actuated_dof_indices: list[int] = []
+        for name in cfg.actuated_joint_names:
+            self.actuated_dof_indices.append(self.robot.joint_names.index(name))
+
+        self.left_arm_dof_indices: list[int] = []
+        for name in cfg.left_arm_joint_names:
+            if name in self.robot.joint_names:
+                self.left_arm_dof_indices.append(self.robot.joint_names.index(name))
+
+        self.arm_dof_indices  = self.actuated_dof_indices[:NUM_ARM_DOF]    # list[int]
+        self.hand_dof_indices = self.actuated_dof_indices[NUM_ARM_DOF:]    # list[int]
+
+        # body indices (robot.data.body_pos_w 참조용)
+        _tip_names = [f"rl_dg_{i}_tip" for i in range(1, 6)]
+        self.fingertip_body_indices: list[int] = [
+            self.robot.data.body_names.index(name) for name in _tip_names
+        ]
+        _palm_name = "rl_dg_palm"
+        self.palm_body_index: int = (
+            self.robot.data.body_names.index(_palm_name)
+            if _palm_name in self.robot.data.body_names
+            else -1
+        )
+        # distal phalanx body indices (rl_dg_*_4) — R2 reward용
+        _distal4_names = [f"rl_dg_{i}_4" for i in range(1, 6)]
+        self.distal4_body_indices: list[int] = [
+            self.robot.data.body_names.index(name)
+            for name in _distal4_names
+            if name in self.robot.data.body_names
+        ]
+
+        # ----------------------------------------------------------------
+        # Palm pose 절대 workspace (안전 한계 클램프용)
+        # ----------------------------------------------------------------
+        self.palm_mins = to_torch(PALM_POSE_MINS_FUNC(cfg.max_pose_angle), device=self.device)
+        self.palm_maxs = to_torch(PALM_POSE_MAXS_FUNC(cfg.max_pose_angle), device=self.device)
+
+        # ----------------------------------------------------------------
+        # Delta palm action 범위 (pregrasp 기준 상대 오프셋)
+        # action=0 → pregrasp 위치 유지, action=±1 → ±delta 이동
+        # scale(0) = pregrasp 이므로 초기 정책(출력≈0) = 안정된 pregrasp 위치
+        # ----------------------------------------------------------------
+        _delta_rad = math.radians(cfg.palm_delta_rot_deg)
+        self.delta_mins = to_torch([
+            -cfg.palm_delta_xyz, -cfg.palm_delta_xyz, -cfg.palm_delta_xyz,
+            -_delta_rad, -_delta_rad, -_delta_rad,
+        ], device=self.device)
+        self.delta_maxs = to_torch([
+            cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
+            _delta_rad, _delta_rad, _delta_rad,
+        ], device=self.device)
+
+        # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
+        self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 6, device=self.device)
+
+        # ----------------------------------------------------------------
+        # Hand poses (per-finger lerp용)
+        # open_pose = HAND_APPROACH_POSE (action=-1), grasp_pose = HAND_GRASP_POSE (action=+1)
+        # ----------------------------------------------------------------
+        self.hand_open_pose  = to_torch(HAND_APPROACH_POSE, device=self.device)  # (20,)
+        self.hand_grasp_pose = to_torch(HAND_GRASP_POSE,    device=self.device)  # (20,)
+
+        # ----------------------------------------------------------------
+        # 로봇 시작 자세 (arm: ARM_START_POSE, hand: HAND_APPROACH_POSE)
+        # ----------------------------------------------------------------
+        arm_start  = to_torch(ARM_START_POSE,    device=self.device)  # (7,)
+        hand_start = to_torch(HAND_APPROACH_POSE, device=self.device)  # (20,)
+        robot_start = torch.cat([arm_start, hand_start], dim=0)         # (27,)
+        self.robot_start_joint_pos = (
+            robot_start.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
+        )
+
+        # ----------------------------------------------------------------
+        # 왼팔 고정 자세
+        # ----------------------------------------------------------------
+        left_vals = [
+            LEFT_ARM_REST_JOINT_POS.get(self.robot.joint_names[idx], 0.0)
+            for idx in self.left_arm_dof_indices
+        ]
+        self.left_arm_zero_pos = (
+            to_torch(left_vals, device=self.device)
+            .unsqueeze(0).repeat(self.num_envs, 1)
+        )
+        self.left_arm_zero_vel = torch.zeros(
+            self.num_envs, len(self.left_arm_dof_indices), device=self.device
+        )
+
+        # ----------------------------------------------------------------
+        # 목표 위치
+        # ----------------------------------------------------------------
+        self.object_goal = (
+            to_torch(OBJECT_GOAL_POS, device=self.device)
+            .unsqueeze(0).repeat(self.num_envs, 1)
+        )
+
+        # Pregrasp offset (cup 기준 palm target offset)
+        self.pregrasp_offset = to_torch(
+            [cfg.pregrasp_offset_x, cfg.pregrasp_offset_y, cfg.pregrasp_offset_z],
+            device=self.device,
+        )
+
+        # ----------------------------------------------------------------
+        # 중간값 버퍼
+        # ----------------------------------------------------------------
+        self.object_pos      = torch.zeros(self.num_envs, 3, device=self.device)
+        self.object_rot      = torch.zeros(self.num_envs, 4, device=self.device)
+        self.object_init_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        self.palm_center_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        self.fingertip_pos   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
+        self.distal4_pos     = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
+        self.actions         = torch.zeros(self.num_envs, cfg.num_actions, device=self.device)
+        self.prev_actions    = torch.full((self.num_envs, cfg.num_actions), 0.0, device=self.device)
+
+        # ----------------------------------------------------------------
+        # Pregrasp / Lift 버퍼 (reset에서 계산)
+        # ----------------------------------------------------------------
+        self.pregrasp_arm_pos_buf = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        self.prelift_arm_pos_buf  = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        self.lift_finger_pos_buf  = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
+        self.is_lift_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        # ----------------------------------------------------------------
+        # Hand joint targets (per-finger lerp 결과)
+        # ----------------------------------------------------------------
+        self.hand_joint_targets = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
+
+        # ----------------------------------------------------------------
+        # 접촉 상태 버퍼
+        # ----------------------------------------------------------------
+        self.contact_force_xyz_raw = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
+        self.contact_force_raw     = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)
+        self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
+        self.num_contacts_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
+        self.distal_contact_force_raw  = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, device=self.device)
+        self.distal_binary_contact_buf = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, dtype=torch.bool, device=self.device)
+
+        self.middle_contact_force_raw  = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, device=self.device)
+        self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
+
+        # ----------------------------------------------------------------
+        # 기타 버퍼
+        # ----------------------------------------------------------------
+        self._approach_dir_buf = torch.zeros(self.num_envs, 3, device=self.device)
+        self.success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._cup_tipping_cos = math.cos(math.radians(cfg.cup_tipping_max_deg))
+
+        # ----------------------------------------------------------------
+        # ADR
+        # ----------------------------------------------------------------
+        if cfg.enable_adr:
+            self.grasp_adr = GraspADR(
+                custom_cfg=cfg.adr_custom_cfg,
+                num_increments=cfg.adr_num_increments,
+                increment_interval=cfg.adr_increment_interval,
+                trigger_threshold=cfg.adr_trigger_threshold,
+            )
+        else:
+            self.grasp_adr = None
+
+        # ----------------------------------------------------------------
+        # Fabrics 초기화
+        # ----------------------------------------------------------------
+        self._setup_geometric_fabrics()
+
+        # cspace attractor: hand는 grasp pose 방향
+        cspace_default = self.open_tesollo_fabric.default_config.clone()
+        cspace_default[:, NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self.num_envs, -1)
+        self.open_tesollo_fabric.default_config.copy_(cspace_default)
+
+        # 초기 액션: 0 → palm pose workspace 중심 (접근 자세 유지)
+        self.actions.zero_()
+
+    # ------------------------------------------------------------------
+    # Scene 설정
+    # ------------------------------------------------------------------
+    def _setup_scene(self) -> None:
+        self.robot = Articulation(self.cfg.robot_cfg)
+        self.cup   = RigidObject(self.cfg.cup_cfg)
+        self.table = RigidObject(self.cfg.table_cfg)
+
+        self.scene.articulations["robot"] = self.robot
+        self.scene.rigid_objects["cup"]   = self.cup
+        self.scene.rigid_objects["table"] = self.table
+
+        # Actor: fingertip 개별 ContactSensor (Cup-only, real FT sensor 대응)
+        _CUP_FILTER = ["/World/envs/env_.*/Cup"]
+        self._tip_sensors: list[ContactSensor] = []
+        for link_name in self.cfg.right_tip_contact_links:
+            sensor = ContactSensor(ContactSensorCfg(
+                prim_path=f"/World/envs/env_.*/Robot/{link_name}",
+                filter_prim_paths_expr=_CUP_FILTER,
+                history_length=1,
+                track_air_time=False,
+            ))
+            self._tip_sensors.append(sensor)
+            self.scene.sensors[f"tip_sensor_{link_name}"] = sensor
+
+        # Critic: distal phalanx ContactSensor (sim-only)
+        self._distal_sensor = ContactSensor(self.cfg.distal_sensor_cfg)
+        self.scene.sensors["distal_sensor"] = self._distal_sensor
+
+        # Critic: middle phalanx ContactSensor (sim-only)
+        self._middle_sensor = ContactSensor(self.cfg.middle_sensor_cfg)
+        self.scene.sensors["middle_sensor"] = self._middle_sensor
+
+        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
+        light_cfg.func("/World/Light", light_cfg)
+        self.scene.clone_environments(copy_from_source=True)
+
+    # ------------------------------------------------------------------
+    # Geometric Fabrics 초기화
+    # ------------------------------------------------------------------
+    def _setup_geometric_fabrics(self) -> None:
+        warp_cache_dir = self.device[-1]
+        initialize_warp(warp_cache_dir)
+
+        print("=== GraspRightEnv v7: Creating Fabrics world ===")
+        self.world_model = WorldMeshesModel(
+            batch_size=self.num_envs,
+            max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
+            device=self.device,
+            world_filename="open_tesollo_boxes_no_table",
+        )
+        self.object_ids, self.object_indicator = self.world_model.get_object_ids()
+
+        self.timestep = self.cfg.fabrics_dt
+
+        # Main fabric (arm 제어용, graph_capturable=False)
+        self.open_tesollo_fabric = OpenArmTeoslloPoseFabric(
+            self.num_envs, self.device, self.timestep,
+            graph_capturable=False,
+            use_hand_fabric=False,
+        )
+        num_joints = self.open_tesollo_fabric.num_joints   # 27
+
+        self.open_tesollo_integrator = DisplacementIntegrator(self.open_tesollo_fabric)
+
+        # Fabric 상태 버퍼
+        self.fabric_q   = self.robot_start_joint_pos.clone().contiguous()
+        self.fabric_qd  = torch.zeros(self.num_envs, num_joints, device=self.device)
+        self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
+
+        # Fabric input 버퍼
+        self.hand_pca_targets  = torch.zeros(self.num_envs, 5, device=self.device)
+        self.palm_pose_targets = torch.zeros(self.num_envs, 6, device=self.device)
+        self.fabric_damping_gain = 10.0 * torch.ones(self.num_envs, 1, device=self.device)
+
+        # Reset 전용 소형 Fabrics (chunk 단위)
+        self._reset_chunk = self.cfg.reset_fabric_chunk_size
+        self._reset_fabric = OpenArmTeoslloPoseFabric(
+            self._reset_chunk, self.device, self.timestep,
+            graph_capturable=False,
+            use_hand_fabric=False,
+        )
+        self._reset_integrator = DisplacementIntegrator(self._reset_fabric)
+
+        reset_cspace = self._reset_fabric.default_config.clone()
+        reset_cspace[:, NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self._reset_chunk, -1)
+        self._reset_fabric.default_config.copy_(reset_cspace)
+
+        self._reset_pca     = torch.zeros(self._reset_chunk, 5, device=self.device)
+        self._reset_damping = 10.0 * torch.ones(self._reset_chunk, 1, device=self.device)
+        self._reset_world   = WorldMeshesModel(
+            batch_size=self._reset_chunk,
+            max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
+            device=self.device,
+            world_filename="open_tesollo_boxes_no_table",
+        )
+        self._reset_obj_ids, self._reset_obj_indicator = self._reset_world.get_object_ids()
+
+        print("=== GraspRightEnv v7: Fabrics initialized ===")
+
+    # ------------------------------------------------------------------
+    # Reset 전용 Fabrics rollout (chunk 단위)
+    # ------------------------------------------------------------------
+    def _run_reset_fabric(
+        self,
+        env_ids: torch.Tensor,
+        palm_pose: torch.Tensor,
+        q_init: torch.Tensor,
+    ) -> torch.Tensor:
+        """env_ids(n개)만 Fabrics rollout해서 arm joint 위치 반환."""
+        n = len(env_ids)
+        C = self._reset_chunk
+        q_out = torch.zeros_like(q_init)
+
+        for start in range(0, n, C):
+            end = min(start + C, n)
+            m   = end - start
+
+            pp = palm_pose[start:end]
+            qi = q_init[start:end]
+
+            if m < C:
+                pad = C - m
+                pp = torch.cat([pp, pp[-1:].expand(pad, -1)], dim=0)
+                qi = torch.cat([qi, qi[-1:].expand(pad, -1)], dim=0)
+
+            fq   = qi.clone().contiguous()
+            fqd  = torch.zeros(C, qi.shape[1], device=self.device)
+            fqdd = torch.zeros(C, qi.shape[1], device=self.device)
+
+            self._reset_fabric.set_features(
+                self._reset_pca,
+                pp,
+                "euler_zyx",
+                fq.detach(),
+                fqd.detach(),
+                self._reset_obj_ids,
+                self._reset_obj_indicator,
+                self._reset_damping,
+            )
+            for _ in range(self.cfg.pregrasp_fabric_steps):
+                fq, fqd, fqdd = self._reset_integrator.step(
+                    fq.detach(), fqd.detach(), fqdd.detach(), self.timestep
+                )
+
+            q_out[start:end] = fq[:m]
+
+        return q_out
+
+    # ------------------------------------------------------------------
+    # 접촉력 업데이트
+    # ------------------------------------------------------------------
+    def _update_contact_forces(self) -> None:
+        # Actor: fingertip 개별 센서 (Cup-only)
+        tip_xyz = torch.stack([
+            s.data.force_matrix_w[:, 0, 0, :] for s in self._tip_sensors
+        ], dim=1)   # (N, 5, 3)
+        tip_norms = tip_xyz.norm(dim=-1)   # (N, 5)
+
+        self.contact_force_xyz_raw.copy_(tip_xyz)
+        self.contact_force_raw.copy_(tip_norms)
+        self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
+        self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
+
+        # Critic: distal
+        per_distal = self._distal_sensor.data.net_forces_w.norm(dim=-1)   # (N, 5)
+        self.distal_contact_force_raw.copy_(per_distal)
+        self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
+
+        # Critic: middle
+        per_middle = self._middle_sensor.data.net_forces_w.norm(dim=-1)   # (N, 5)
+        self.middle_contact_force_raw.copy_(per_middle)
+        self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
+
+    # ------------------------------------------------------------------
+    # Physics step
+    # ------------------------------------------------------------------
+    def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        self.prev_actions.copy_(self.actions)
+        self.actions = actions.clone()
+
+        palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
+        finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
+
+        # ---- Phase 판정 ----
+        is_lift = (self.episode_length_buf >= LIFT_START_STEP)
+        self.is_lift_phase.copy_(is_lift)
+
+        # ---- Lift 진입 시 finger joint pos 캡처 (이후 고정) ----
+        just_entering_lift = (self.episode_length_buf == LIFT_START_STEP)
+        self.lift_finger_pos_buf = torch.where(
+            just_entering_lift.unsqueeze(1),
+            self.robot.data.joint_pos[:, self.hand_dof_indices],
+            self.lift_finger_pos_buf,
+        )
+
+        # ---- Grasp phase: Fabrics arm 제어 ----
+        # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
+        # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
+        delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
+        palm_pose = self.pregrasp_palm_pose_buf + delta
+        palm_pose = torch.max(torch.min(palm_pose, self.palm_maxs), self.palm_mins)
+        self.palm_pose_targets.copy_(palm_pose)
+        self.hand_pca_targets.zero_()
+
+        self.open_tesollo_fabric.set_features(
+            self.hand_pca_targets,
+            self.palm_pose_targets,
+            "euler_zyx",
+            self.fabric_q.detach(),
+            self.fabric_qd.detach(),
+            self.object_ids,
+            self.object_indicator,
+            self.fabric_damping_gain,
+        )
+        for _ in range(self.cfg.fabric_decimation):
+            self.fabric_q, self.fabric_qd, self.fabric_qdd = self.open_tesollo_integrator.step(
+                self.fabric_q.detach(),
+                self.fabric_qd.detach(),
+                self.fabric_qdd.detach(),
+                self.timestep,
+            )
+
+        # ---- Per-finger lerp: action [-1,1] → APPROACH_POSE(-1) ~ GRASP_POSE(+1) ----
+        delta_20   = self.hand_grasp_pose - self.hand_open_pose                # (20,)
+        t          = (finger_action + 1.0) / 2.0                               # (N,5) ∈ [0,1]
+        t_expanded = t.repeat_interleave(4, dim=1)                             # (N,20)
+        hand_target = self.hand_open_pose.unsqueeze(0) + t_expanded * delta_20.unsqueeze(0)
+        self.hand_joint_targets.copy_(hand_target)
+
+        # fabric_q hand 부분 동기화 (FK 계산에 활용)
+        self.fabric_q[:, NUM_ARM_DOF:] = hand_target
+        self.fabric_qd[:, NUM_ARM_DOF:].zero_()
+
+    def _apply_action(self) -> None:
+        is_lift = self.is_lift_phase   # (N,) bool
+
+        # ---- 오른팔 ----
+        # Grasp phase: Fabrics arm target
+        # Lift  phase: pregrasp → prelift 선형 보간
+        lift_progress = (
+            (self.episode_length_buf - LIFT_START_STEP).clamp(min=0).float()
+            / LIFT_PHASE_STEPS
+        ).clamp(max=1.0).unsqueeze(1)   # (N, 1) ∈ [0, 1]
+
+        arm_target_lift = (
+            self.pregrasp_arm_pos_buf * (1.0 - lift_progress)
+            + self.prelift_arm_pos_buf * lift_progress
+        )
+        arm_target = torch.where(
+            is_lift.unsqueeze(1),
+            arm_target_lift,
+            self.fabric_q[:, :NUM_ARM_DOF],
+        )
+
+        self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_dof_indices)
+        self.robot.set_joint_velocity_target(
+            torch.zeros_like(arm_target), joint_ids=self.arm_dof_indices
+        )
+
+        # ---- 오른손 ----
+        # Grasp phase: per-finger lerp target
+        # Lift  phase: 진입 시점 캡처값 고정
+        finger_target = torch.where(
+            is_lift.unsqueeze(1),
+            self.lift_finger_pos_buf,
+            self.hand_joint_targets,
+        )
+        self.robot.set_joint_position_target(finger_target, joint_ids=self.hand_dof_indices)
+        self.robot.set_joint_velocity_target(
+            torch.zeros_like(finger_target), joint_ids=self.hand_dof_indices
+        )
+
+        # ---- 왼팔: 고정 자세 ----
+        self.robot.set_joint_position_target(
+            self.left_arm_zero_pos, joint_ids=self.left_arm_dof_indices
+        )
+
+    # ------------------------------------------------------------------
+    # Intermediate values
+    # ------------------------------------------------------------------
+    def _compute_intermediate_values(self) -> None:
+        # 물체 위치
+        self.object_pos = self.cup.data.root_pos_w - self.scene.env_origins
+        self.object_rot = self.cup.data.root_quat_w
+
+        # body_pos_w 기반 위치 (실제 sim 위치, Fabrics FK보다 정확)
+        env_origins = self.scene.env_origins
+
+        if self.palm_body_index >= 0:
+            self.palm_center_pos = (
+                self.robot.data.body_pos_w[:, self.palm_body_index, :] - env_origins
+            )
+
+        self.fingertip_pos = (
+            self.robot.data.body_pos_w[:, self.fingertip_body_indices, :] - env_origins.unsqueeze(1)
+        )   # (N, 5, 3)
+
+        if len(self.distal4_body_indices) == NUM_FINGERTIPS:
+            self.distal4_pos = (
+                self.robot.data.body_pos_w[:, self.distal4_body_indices, :] - env_origins.unsqueeze(1)
+            )   # (N, 5, 3)
+
+        # 접촉력 업데이트
+        self._update_contact_forces()
+
+    # ------------------------------------------------------------------
+    # Observations: Actor 106D | Critic 143D
+    # ------------------------------------------------------------------
+    def _get_observations(self) -> dict:
+        # ==== Actor obs (106D) ====
+
+        # 1. arm joint pos/vel (7D each)
+        arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]   # (N, 7)
+        arm_joint_vel = self.robot.data.joint_vel[:, self.arm_dof_indices]   # (N, 7)
+
+        # 2. finger joint pos/vel (20D each)
+        finger_joint_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]   # (N, 20)
+        finger_joint_vel = self.robot.data.joint_vel[:, self.hand_dof_indices]   # (N, 20)
+
+        # 3. palm center pos (world, local frame) (3D)
+        palm_center_pos = self.palm_center_pos   # (N, 3)
+
+        # 4. fingertip pos relative to palm (15D)
+        fingertip_pos_rel_palm = (
+            self.fingertip_pos - palm_center_pos.unsqueeze(1)
+        ).view(self.num_envs, -1)   # (N, 15)
+
+        # 5. palm to cup vector (3D)
+        palm_to_cup = self.object_pos - palm_center_pos   # (N, 3)
+
+        # 6. cup to fingertip vectors (15D)
+        cup_to_fingertip = (
+            self.fingertip_pos - self.object_pos.unsqueeze(1)
+        ).view(self.num_envs, -1)   # (N, 15)
+
+        # 7. fingertip binary contact (5D)
+        binary_contact = self.binary_contact_buf.float()   # (N, 5)
+
+        # 8. last actions (11D)
+        last_actions = self.actions   # (N, 11)
+
+        actor_obs = torch.cat([
+            arm_joint_pos,          # 7
+            arm_joint_vel,          # 7
+            finger_joint_pos,       # 20
+            finger_joint_vel,       # 20
+            palm_center_pos,        # 3
+            fingertip_pos_rel_palm, # 15
+            palm_to_cup,            # 3
+            cup_to_fingertip,       # 15
+            binary_contact,         # 5
+            last_actions,           # 11
+        ], dim=-1)   # 106D
+
+        if actor_obs.shape[1] != NUM_OBSERVATIONS:
+            raise RuntimeError(
+                f"[v7] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
+            )
+
+        # ==== Critic extra obs (37D) ====
+
+        # cup velocity (6D)
+        cup_lin_vel = self.cup.data.root_lin_vel_w   # (N, 3)
+        cup_ang_vel = self.cup.data.root_ang_vel_w   # (N, 3)
+
+        # cup rotation (4D)
+        cup_rot = self.object_rot   # (N, 4)
+
+        # cup height delta (1D)
+        cup_height_delta = (
+            self.object_pos[:, 2] - self.object_init_pos[:, 2]
+        ).unsqueeze(1)   # (N, 1)
+
+        # distal contact (5D binary + 5D norm)
+        distal_binary     = self.distal_binary_contact_buf.float()
+        distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+
+        # middle contact (5D binary + 5D norm)
+        middle_binary     = self.middle_binary_contact_buf.float()
+        middle_force_norm = (self.middle_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+
+        # phase step ratio (1D)
+        phase_step_ratio = (
+            self.episode_length_buf.float() / EPISODE_STEPS
+        ).unsqueeze(1)   # (N, 1)
+
+        # fingertip to cup signed distance (5D): ||tip - cup_center|| - cup_radius
+        tip_to_cup_dist = (
+            self.fingertip_pos - self.object_pos.unsqueeze(1)
+        ).norm(dim=-1)   # (N, 5)
+        fingertip_signed_dist = (tip_to_cup_dist - CUP_RADIUS_APPROX).unsqueeze(-1).squeeze(-1)  # (N, 5)
+
+        critic_obs = torch.cat([
+            actor_obs,              # 106
+            cup_lin_vel,            # 3
+            cup_ang_vel,            # 3
+            cup_rot,                # 4
+            cup_height_delta,       # 1
+            distal_binary,          # 5
+            distal_force_norm,      # 5
+            middle_binary,          # 5
+            middle_force_norm,      # 5
+            phase_step_ratio,       # 1
+            fingertip_signed_dist,  # 5
+        ], dim=-1)   # 143D
+
+        if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
+            raise RuntimeError(
+                f"[v7] Critic obs dim mismatch: {critic_obs.shape[1]} != {NUM_CRITIC_OBSERVATIONS}"
+            )
+
+        return {"policy": actor_obs, "critic": critic_obs}
+
+    # ------------------------------------------------------------------
+    # Rewards: R1~R5
+    # ------------------------------------------------------------------
+    def _get_rewards(self) -> torch.Tensor:
+        # ---- ADR ----
+        if self.grasp_adr is not None:
+            enclosure_weight = self.grasp_adr.get_param("reward_weights", "enclosure_weight")
+        else:
+            enclosure_weight = self.cfg.enclosure_weight
+
+        # ---- 공통 참조 ----
+        cup_height_delta = (
+            self.object_pos[:, 2] - self.object_init_pos[:, 2]
+        ).clamp(min=0.0)   # (N,) ≥ 0
+
+        # ---- R0. palm_to_cup: arm이 컵을 향해 접근하도록 유도 ----
+        # 이 항이 없으면 초기 정책(출력≈0) → workspace 중심으로 이동 → cup에서 멀어짐
+        # v1의 hand_to_object와 동일 역할: arm approach의 1차 gradient
+        grasp_center_approach = self.object_pos.clone()
+        grasp_center_approach[:, 2] += self.cfg.cup_grasp_z_offset
+        palm_to_cup_dist = (self.palm_center_pos - grasp_center_approach).norm(dim=-1)   # (N,)
+        r0_palm_approach = self.cfg.palm_approach_weight * torch.exp(
+            -self.cfg.palm_approach_sharpness * palm_to_cup_dist
+        )
+
+        # ---- R1. fingertip_enclosure ----
+        # 비대칭: 엄지(near side) + 나머지(far side) → 합력 상쇄 → cup 안 밀림
+        grasp_center = grasp_center_approach
+
+        cup_to_palm_xy = self.palm_center_pos[:, :2] - grasp_center[:, :2]   # (N, 2)
+        approach_dir_xy = cup_to_palm_xy / cup_to_palm_xy.norm(
+            dim=-1, keepdim=True
+        ).clamp(min=1e-6)   # (N, 2)
+        self._approach_dir_buf[:, :2] = approach_dir_xy
+        self._approach_dir_buf[:, 2]  = 0.0
+
+        r = self.cfg.cup_radius_approx
+        thumb_target  = grasp_center + self._approach_dir_buf * r    # (N, 3)
+        others_target = grasp_center - self._approach_dir_buf * r    # (N, 3)
+
+        thumb_dist  = (self.fingertip_pos[:, 0, :] - thumb_target).norm(dim=-1)           # (N,)
+        others_dist = (self.fingertip_pos[:, 1:, :] - others_target.unsqueeze(1)).norm(
+            dim=-1
+        ).mean(dim=-1)   # (N,)
+
+        r1_enclosure = enclosure_weight * 0.5 * (
+            torch.exp(-self.cfg.enclosure_sharpness * thumb_dist)
+            + torch.exp(-self.cfg.enclosure_sharpness * others_dist)
+        )
+
+        # ---- R1b. fingertip_contact_bonus ----
+        # 실제 fingertip이 cup에 접촉할 때마다 추가 보너스
+        # max = 5 × contact_bonus_weight = 15.0 → Grasp phase 최대 리워드
+        r1b_contact = self.cfg.contact_bonus_weight * self.binary_contact_buf.float().sum(dim=-1)
+
+        # ---- R2. tip_approach_bonus ----
+        # tip이 distal(rl_dg_*_4)보다 cup surface에 먼저 닿도록 유도
+        if len(self.distal4_body_indices) == NUM_FINGERTIPS:
+            # cup surface dist: ||pos - cup_center|| - cup_radius (clamp >= 0)
+            tip_surf_dist    = (self.fingertip_pos - grasp_center.unsqueeze(1)).norm(dim=-1) - r
+            distal_surf_dist = (self.distal4_pos   - grasp_center.unsqueeze(1)).norm(dim=-1) - r
+            tip_lead = (distal_surf_dist - tip_surf_dist).clamp(min=0.0).mean(dim=-1)   # (N,)
+            r2_tip_bonus = self.cfg.tip_approach_bonus_weight * tip_lead
+        else:
+            r2_tip_bonus = torch.zeros(self.num_envs, device=self.device)
+
+        # ---- R3. lift_reward: 선형 height delta ----
+        r3_lift = self.cfg.lift_reward_weight * cup_height_delta   # (N,)
+
+        # ---- R4. action_smoothness ----
+        palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
+        finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
+        r4_smooth = (
+            self.cfg.action_smoothness_palm_weight   * palm_delta
+            + self.cfg.action_smoothness_finger_weight * finger_delta
+        )   # (N,) — 음수
+
+        # ---- R5. grasp_quality_lift ----
+        # enclosure_quality × cup_height_delta → 파지하며 들어야 큰 보상
+        min_tip_dist = (self.fingertip_pos - grasp_center.unsqueeze(1)).norm(dim=-1).min(dim=-1).values
+        enclosure_quality = torch.exp(
+            -self.cfg.grasp_quality_lift_sharpness * min_tip_dist
+        ).clamp(max=1.0)   # (N,)
+        r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality
+
+        # ---- 합산 ----
+        total = r0_palm_approach + r1_enclosure + r1b_contact + r2_tip_bonus + r3_lift + r4_smooth + r5_quality_lift
+
+        # ---- ADR increment ----
+        if self.grasp_adr is not None:
+            self.grasp_adr.maybe_increment(self.success_flag.float().mean())
+
+        # ---- 로깅 ----
+        self.extras["palm_approach_reward"] = r0_palm_approach.mean()
+        self.extras["palm_to_cup_dist"]     = palm_to_cup_dist.mean()
+        self.extras["enclosure_reward"]     = r1_enclosure.mean()
+        self.extras["contact_bonus"]        = r1b_contact.mean()
+        self.extras["tip_approach_bonus"]  = r2_tip_bonus.mean()
+        self.extras["lift_reward"]         = r3_lift.mean()
+        self.extras["action_smoothness"]   = r4_smooth.mean()
+        self.extras["grasp_quality_lift"]  = r5_quality_lift.mean()
+        self.extras["cup_height_delta"]    = cup_height_delta.mean()
+        self.extras["num_contacts"]        = self.num_contacts_buf.float().mean()
+        self.extras["success_rate"]        = self.success_flag.float().mean()
+        self.extras["thumb_dist"]          = thumb_dist.mean()
+        self.extras["others_dist"]         = others_dist.mean()
+        self.extras["adr_enclosure_w"]     = torch.tensor(enclosure_weight, device=self.device)
+        if self.grasp_adr is not None:
+            self.extras["adr_progress"] = torch.tensor(self.grasp_adr.progress, device=self.device)
+
+        return total
+
+    # ------------------------------------------------------------------
+    # Dones
+    # ------------------------------------------------------------------
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        self._compute_intermediate_values()
+
+        out_x = (
+            (self.object_pos[:, 0] < self.cfg.obj_out_x_min) |
+            (self.object_pos[:, 0] > self.cfg.obj_out_x_max)
+        )
+        out_y = (
+            (self.object_pos[:, 1] < self.cfg.obj_out_y_min) |
+            (self.object_pos[:, 1] > self.cfg.obj_out_y_max)
+        )
+        fallen = self.object_pos[:, 2] < self.cfg.obj_fallen_z
+
+        z_local = torch.zeros(self.num_envs, 3, device=self.device)
+        z_local[:, 2] = 1.0
+        cup_z_world = quat_apply(self.object_rot, z_local)
+        tipped = cup_z_world[:, 2] < self._cup_tipping_cos
+
+        # success: lift phase 이후 + cup 들림 + contact 유지
+        in_or_past_lift = (self.episode_length_buf >= LIFT_START_STEP)
+        lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
+        grasped = (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
+        self.success_flag.copy_(in_or_past_lift & lifted & grasped)
+
+        terminated = out_x | out_y | fallen | tipped | self.success_flag
+        truncated  = self.episode_length_buf >= self.max_episode_length - 1
+
+        self.extras["object_z"] = self.object_pos[:, 2].mean()
+        return terminated, truncated
+
+    # ------------------------------------------------------------------
+    # Reset
+    # ------------------------------------------------------------------
+    def _reset_idx(self, env_ids: Sequence[int] | None) -> None:
+        if env_ids is None:
+            env_ids = self.robot._ALL_INDICES
+
+        super()._reset_idx(env_ids)
+
+        if len(env_ids) == 0:
+            return
+
+        n = len(env_ids)
+
+        # ---- 1. 로봇 관절 상태 리셋 ----
+        full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
+        full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
+        full_pos[:, self.actuated_dof_indices] = self.robot_start_joint_pos[0]
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
+
+        # ---- 2. Fabrics 상태 리셋 ----
+        self.fabric_q[env_ids]   = self.robot_start_joint_pos[env_ids]
+        self.fabric_qd[env_ids].zero_()
+        self.fabric_qdd[env_ids].zero_()
+
+        # ---- 3. 컵 spawn 위치 계산 (±0.06m 랜덤) ----
+        obj_x = self.cfg.object_spawn_x_center + (
+            torch.rand(n, device=self.device) - 0.5
+        ) * 2.0 * self.cfg.object_spawn_xy_range
+        obj_y = self.cfg.object_spawn_y_center + (
+            torch.rand(n, device=self.device) - 0.5
+        ) * 2.0 * self.cfg.object_spawn_xy_range
+        obj_pos_local = torch.stack(
+            [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
+        )
+        self.object_init_pos[env_ids] = obj_pos_local
+
+        # ---- 4. FABRICS pregrasp rollout ----
+        noise = torch.stack([
+            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
+            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
+            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
+        ], dim=1)
+        pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
+
+        pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
+        pregrasp_palm_pose[:, :3] = pregrasp_pos
+        pregrasp_palm_pose[:, 3] = math.radians(90.0)
+        pregrasp_palm_pose[:, 4] = math.radians(0.0)
+        pregrasp_palm_pose[:, 5] = math.radians(90.0)
+        pregrasp_palm_pose = torch.max(
+            torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
+            self.palm_mins.unsqueeze(0),
+        )
+
+        q_init_pregrasp = self.fabric_q[env_ids].clone()
+        q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_init_pregrasp)
+
+        self.fabric_q[env_ids] = q_pregrasp
+        self.fabric_qd[env_ids].zero_()
+        self.fabric_qdd[env_ids].zero_()
+
+        # hand는 APPROACH_POSE로 강제
+        approach_hand = self.hand_open_pose.unsqueeze(0).expand(n, -1)
+        self.fabric_q[env_ids, NUM_ARM_DOF:] = approach_hand
+        self.fabric_qd[env_ids, NUM_ARM_DOF:].zero_()
+
+        # ---- 5. pregrasp / prelift 버퍼 저장 ----
+        self.pregrasp_arm_pos_buf[env_ids] = q_pregrasp[:, :NUM_ARM_DOF]
+
+        # palm_pose_targets를 pregrasp로 동기화 (첫 Fabrics 스텝 타겟 일관성)
+        self.palm_pose_targets[env_ids] = pregrasp_palm_pose
+
+        # delta action 기준점: action=0 → pregrasp 위치 유지
+        self.pregrasp_palm_pose_buf[env_ids] = pregrasp_palm_pose
+
+        # Fabrics cspace attractor(null-space)를 pregrasp arm pos로 설정
+        # default_config가 ARM_START_POSE이면 null-space 항이 계속 팔을 당겨 초기 흔들림 발생
+        # pregrasp arm pos로 설정 → 에피소드 시작 시 null-space 항 ≈ 0 → 안정
+        self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = q_pregrasp[:, :NUM_ARM_DOF]
+
+        prelift_arm = q_pregrasp[:, :NUM_ARM_DOF].clone()
+        prelift_arm[:, 3] = (prelift_arm[:, 3] + 0.31).clamp(max=3.14)
+        self.prelift_arm_pos_buf[env_ids] = prelift_arm
+
+        self.lift_finger_pos_buf[env_ids] = approach_hand
+
+        # ---- 6. 로봇 pregrasp 자세로 초기화 ----
+        pregrasp_full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
+        pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
+        pregrasp_full_pos[:, self.arm_dof_indices]  = q_pregrasp[:, :NUM_ARM_DOF]
+        pregrasp_full_pos[:, self.hand_dof_indices] = approach_hand
+        pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
+
+        # ---- 7. 컵 spawn ----
+        obj_pos_world = obj_pos_local + self.scene.env_origins[env_ids]
+        upright_rot = torch.zeros(n, 4, device=self.device)
+        upright_rot[:, 0] = 1.0
+        zero_vel = torch.zeros(n, 6, device=self.device)
+        cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
+        self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
+
+        # ---- 8. 버퍼 리셋 ----
+        self.hand_joint_targets[env_ids] = approach_hand
+        self.contact_force_raw[env_ids].zero_()
+        self.binary_contact_buf[env_ids] = False
+        self.num_contacts_buf[env_ids]   = 0
+        self.distal_contact_force_raw[env_ids].zero_()
+        self.distal_binary_contact_buf[env_ids] = False
+        self.middle_contact_force_raw[env_ids].zero_()
+        self.middle_binary_contact_buf[env_ids] = False
+        self.success_flag[env_ids] = False
+
+        # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
+        # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)
+        self.actions[env_ids, :6] = 0.0
+        self.actions[env_ids, 6:] = -1.0
+        self.prev_actions[env_ids, :6] = 0.0
+        self.prev_actions[env_ids, 6:] = -1.0

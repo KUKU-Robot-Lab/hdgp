@@ -12,14 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Observation functions for bi_pouring_v1."""
+"""Observation functions for bi_pouring_v1.
+
+Actor obs is intentionally world/env-aligned rather than source-cup-relative so
+the policy can learn cup transport from the right palm frame without the input
+changing drastically under in-place cup rotation.
+"""
 
 from __future__ import annotations
 
 import torch
 from typing import TYPE_CHECKING
 
-from isaaclab.utils.math import quat_apply, subtract_frame_transforms
+from isaaclab.utils.math import quat_apply
 
 if TYPE_CHECKING:
     from ..bi_pouring_env import BiPouringEnv
@@ -36,32 +41,24 @@ def arm_joint_vel(env: BiPouringEnv) -> torch.Tensor:
 
 
 def cup_relative_pose(env: BiPouringEnv) -> torch.Tensor:
-    """source cup 기준으로 target cup 상대 포즈 (7D: pos3 + quat4)."""
-    right_cup_pos_w = env.right_source_cup.data.root_pos_w
-    right_cup_quat_w = env.right_source_cup.data.root_quat_w
+    """환경 원점 기준 target cup 절대 포즈 (7D: pos3 + quat4)."""
     left_cup_pos_w = env.left_target_cup.data.root_pos_w
     left_cup_quat_w = env.left_target_cup.data.root_quat_w
-    rel_pos, rel_quat = subtract_frame_transforms(
-        right_cup_pos_w, right_cup_quat_w, left_cup_pos_w, left_cup_quat_w
-    )
-    return torch.cat([rel_pos, rel_quat], dim=-1)
+    left_cup_pos_env = left_cup_pos_w - env.scene.env_origins
+    return torch.cat([left_cup_pos_env, left_cup_quat_w], dim=-1)
 
 
 def pour_point_to_opening(env: BiPouringEnv) -> torch.Tensor:
-    """source cup pour point → target cup opening 벡터 (3D, source cup local frame)."""
-    right_cup_pos_w = env.right_source_cup.data.root_pos_w
-    right_cup_quat_w = env.right_source_cup.data.root_quat_w
+    """right palm_ee → target cup opening 절대 벡터 (3D, env/world aligned)."""
     left_cup_pos_w = env.left_target_cup.data.root_pos_w
     left_cup_quat_w = env.left_target_cup.data.root_quat_w
+    right_palm_pos_w = env.robot.data.body_pos_w[:, env._right_palm_body_id]
 
     target_opening_w = left_cup_pos_w + quat_apply(
         left_cup_quat_w,
         env._target_cup_opening_pos_b.unsqueeze(0).expand(env.num_envs, -1),
     )
-    target_opening_in_source, _ = subtract_frame_transforms(
-        right_cup_pos_w, right_cup_quat_w, target_opening_w
-    )
-    return target_opening_in_source - env._source_cup_pour_point_pos_b.unsqueeze(0)
+    return target_opening_w - right_palm_pos_w
 
 
 def source_cup_velocity_summary(env: BiPouringEnv) -> torch.Tensor:

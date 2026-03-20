@@ -14,9 +14,9 @@
 
 """DexPour Transport → Pour 보상 함수 (bi_pouring_v1).
 
-Stage 분기 (ρ-trigger):
-  Transport (pour_stage_active=False): 컵 이동 + 직립 유지
-  Pour      (pour_stage_active=True):  45° 틸팅 + pour axis 정렬
+lab_test1-style gating:
+  Transport: (1 - rho) 가중
+  Pour:      rho 가중
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def transport_upright_penalty(env: BiPouringEnv) -> torch.Tensor:
     source_up · world_up 가 1에 가까울수록 직립 → 패널티 0.
     반환값은 양수 (cfg에서 음수 weight 부여).
     """
-    return env._p_upright * (~env._pour_stage_active).float()
+    return env._p_upright * (1.0 - env._rho)
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ def pour_tilt(env: BiPouringEnv) -> torch.Tensor:
 
     cos(45°) ≈ 0.707을 목표로 하는 Gaussian.
     """
-    return env._r_tilt * env._pour_stage_active.float()
+    return env._r_tilt * env._rho
 
 
 def pour_align(env: BiPouringEnv) -> torch.Tensor:
@@ -67,7 +67,7 @@ def pour_align(env: BiPouringEnv) -> torch.Tensor:
 
     0.5*(1 + cos): 완전 정렬 → 1.0, 반대 → 0.0.
     """
-    return env._r_align * env._pour_stage_active.float()
+    return env._r_align * env._rho
 
 
 # ---------------------------------------------------------------------------

@@ -107,9 +107,9 @@ class BiPouringEnv(DirectRLEnv):
         K = cfg.bead_count
         N = self.num_envs
 
-        # ---- DexPour stage ----
-        self._pour_trigger_steps = torch.zeros(N, dtype=torch.long, device=self.device)
-        self._pour_stage_active = torch.zeros(N, dtype=torch.bool, device=self.device)
+        # ---- lab_test1-style rho gate ----
+        self._rho = torch.zeros(N, device=self.device)
+        self._reset_hold_steps_left = torch.zeros(N, dtype=torch.long, device=self.device)
 
         # ---- Stable retention ----
         self._stable_retention_steps = torch.zeros(N, dtype=torch.long, device=self.device)
@@ -124,6 +124,7 @@ class BiPouringEnv(DirectRLEnv):
 
         # ---- Reward 중간값 (mdp/rewards.py 참조용) ----
         self._r_cup_dist = torch.zeros(N, device=self.device)
+        self._prev_dist_cup = torch.zeros(N, device=self.device)
         self._p_upright = torch.zeros(N, device=self.device)
         self._r_tilt = torch.zeros(N, device=self.device)
         self._r_align = torch.zeros(N, device=self.device)
@@ -171,6 +172,11 @@ class BiPouringEnv(DirectRLEnv):
             [LEFT_HOLDER_FIXED_JOINT_POS[n] for n in cfg.left_holder_joint_names],
             dtype=torch.float32, device=self.device,
         )
+        self._right_arm_home = torch.tensor(
+            RIGHT_ARM_POUR_READY_POSE,
+            dtype=torch.float32,
+            device=self.device,
+        )
 
         # ---- 컵 부착 파라미터 ----
         attach_pos_r = torch.tensor(cfg.right_source_cup_attach_pos_b, dtype=torch.float32, device=self.device)
@@ -188,6 +194,9 @@ class BiPouringEnv(DirectRLEnv):
         )
         self._left_target_cup_body_id, self._left_target_cup_attach_pos_b = self._resolve_attachment_body(
             cfg.left_target_cup_attach_frame_name, attach_pos_l,
+        )
+        self._right_palm_body_id, _ = self._resolve_attachment_body(
+            "palm_ee", torch.zeros(3, dtype=torch.float32, device=self.device)
         )
 
         # ---- pour 포인트/축 (obs 함수에서 참조) ----
@@ -219,6 +228,10 @@ class BiPouringEnv(DirectRLEnv):
             getattr(cfg, "bead_spawn_quat_source_cup_wxyz", BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ),
             dtype=torch.float32, device=self.device,
         )
+        self._transport_locked_action_indices = tuple(
+            int(i) for i in getattr(cfg, "transport_locked_action_indices", ())
+            if 0 <= int(i) < len(self._right_arm_joint_ids)
+        )
 
     # ------------------------------------------------------------------
     # Physics step overrides (DirectRLEnv)
@@ -231,9 +244,21 @@ class BiPouringEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         """오른팔 joint target 적용 + 손/왼팔 강제 고정 + 컵 부착."""
-        # 오른팔: default_pos + clamp(action, -1, 1) * action_scale
-        arm_default = self.robot.data.default_joint_pos[:, self._right_arm_joint_ids]
-        arm_target = arm_default + torch.clamp(self._actions, -1.0, 1.0) * self.cfg.action_scale
+        effective_actions = torch.clamp(self._actions, -1.0, 1.0).clone()
+
+        hold_mask = self._reset_hold_steps_left > 0
+        if hold_mask.any():
+            effective_actions[hold_mask] = 0.0
+
+        transport_mask = (self._rho < 0.5) & (~hold_mask)
+        if transport_mask.any() and self._transport_locked_action_indices:
+            for action_idx in self._transport_locked_action_indices:
+                effective_actions[transport_mask, action_idx] = 0.0
+
+        # 오른팔: reset/home pose 기준으로 action delta를 더한다.
+        # default_joint_pos를 쓰면 리셋 직후에도 내부 기본자세로 끌려가며 원치 않는 회전이 생긴다.
+        arm_default = self._right_arm_home.unsqueeze(0).expand(self.num_envs, -1)
+        arm_target = arm_default + effective_actions * self.cfg.action_scale
         self.robot.set_joint_position_target(arm_target, joint_ids=self._right_arm_joint_ids)
 
         # 오른손 / 왼팔 강제 고정
@@ -254,6 +279,7 @@ class BiPouringEnv(DirectRLEnv):
             joint_ids=self._left_holder_joint_ids,
         )
         self._update_attached_cups_from_ee()
+        self._reset_hold_steps_left = torch.clamp(self._reset_hold_steps_left - 1, min=0)
 
     # ------------------------------------------------------------------
     # Observations / Rewards / Dones (DirectRLEnv 필수 overrides)
@@ -334,28 +360,31 @@ class BiPouringEnv(DirectRLEnv):
         pour_point_to_target_w = target_opening_w - source_pour_point_w
         dist_cup = torch.norm(pour_point_to_target_w, dim=-1)
 
-        # ρ-trigger 업데이트
-        at_pour = dist_cup < cfg.pour_trigger_dist
-        self._pour_trigger_steps = torch.where(
-            at_pour,
-            self._pour_trigger_steps + 1,
-            torch.zeros_like(self._pour_trigger_steps),
-        )
-        self._pour_stage_active = self._pour_trigger_steps >= cfg.pour_trigger_hold_steps
+        # lab_test1-style rho: 현재 컵 기하 상태로 매 step 직접 계산
+        cup_xy = torch.norm(pour_point_to_target_w[:, :2], dim=-1)
+        cup_z_clearance = source_pour_point_w[:, 2] - target_opening_w[:, 2]
+        self._rho = (
+            (cup_xy <= cfg.rho_xy_threshold)
+            & (cup_z_clearance > cfg.rho_z_min)
+            & (cup_z_clearance < cfg.rho_z_max)
+        ).float()
 
         # source_up · world_up
         world_up = self._world_up_axis.expand(N, -1)
         source_up_dot_world = torch.sum(source_up_w * world_up, dim=-1).clamp(-1.0, 1.0)
 
-        # Transport 중간값
-        self._r_cup_dist = torch.exp(-2.0 * dist_cup)
+        # Transport 중간값: 절대 거리 기반 shaping.
+        # 멀수록 약하고, 가까워질수록 즉시 보상이 증가해 리셋 직후부터 이송을 유도한다.
+        self._r_cup_dist = torch.exp(-cfg.transport_dist_temperature * dist_cup)
+        self._prev_dist_cup = dist_cup.clone()
         self._p_upright = (1.0 - source_up_dot_world).clamp(0.0, 1.0)
 
-        # Pour 중간값
-        self._r_tilt = torch.exp(
-            -((source_up_dot_world - cfg.pour_tilt_target_cos)
-              / max(cfg.pour_tilt_cos_scale, 1e-6)) ** 2
-        )
+        # Pour 중간값: pour_axis(컵 X축)가 아래(-Z)를 향할수록 reward
+        # lab_test1 방식: (1 + dot(pour_axis, target_dir)) / 2
+        # 직립 시 pour_axis ≈ world +X → z성분=0 → reward=0.5
+        # 완전 기울이면 pour_axis → world -Z → reward=1.0
+        pour_axis_down_dot = (-source_pour_axis_w[:, 2]).clamp(-1.0, 1.0)
+        self._r_tilt = (1.0 + pour_axis_down_dot) * 0.5
         to_target_dir = pour_point_to_target_w / torch.clamp(
             torch.norm(pour_point_to_target_w, dim=-1, keepdim=True), min=1e-6
         )
@@ -485,7 +514,6 @@ class BiPouringEnv(DirectRLEnv):
 
         # invalid state
         bead_pos_env = all_bead_pos_w - self.scene.env_origins.unsqueeze(1)
-        cup_xy = torch.norm(pour_point_to_target_w[:, :2], dim=-1)
         cup_z = torch.abs(pour_point_to_target_w[:, 2])
         bead_dropped = (
             (~self._bead_in_target_flags)
@@ -511,7 +539,7 @@ class BiPouringEnv(DirectRLEnv):
         ):
             print(
                 f"[DBG ep={self.episode_length_buf[0].item()}] "
-                f"dist={dist_cup[0]:.3f} pour={self._pour_stage_active[0].item()} "
+                f"dist={dist_cup[0]:.3f} rho={self._rho[0].item():.0f} "
                 f"cup_xy={cup_xy[0]:.3f} cup_z={cup_z[0]:.3f} "
                 f"invalid={self._invalid_state_flag[0].item()}"
             )
@@ -610,8 +638,8 @@ class BiPouringEnv(DirectRLEnv):
             bead.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
         # 상태 버퍼 리셋
-        self._pour_trigger_steps[env_ids] = 0
-        self._pour_stage_active[env_ids] = False
+        self._rho[env_ids] = 0.0
+        self._reset_hold_steps_left[env_ids] = self.cfg.reset_hold_steps
         self._stable_retention_steps[env_ids] = 0
         self._prev_bead_in_target_flags[env_ids] = False
         self._bead_has_entered_target_flags[env_ids] = False
@@ -623,6 +651,7 @@ class BiPouringEnv(DirectRLEnv):
         self._invalid_state_flag[env_ids] = False
         self._success_flag[env_ids] = False
         self._r_cup_dist[env_ids] = 0.0
+        self._prev_dist_cup[env_ids] = 0.0
         self._p_upright[env_ids] = 0.0
         self._r_tilt[env_ids] = 0.0
         self._r_align[env_ids] = 0.0

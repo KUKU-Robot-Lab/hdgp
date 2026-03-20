@@ -85,6 +85,8 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     # target = default_joint_pos + clamp(action, -1, 1) * action_scale
     # action_scale(rad): 각 스텝에서 정책이 더할 수 있는 최대 델타
     action_scale: float = 0.5  # default_pos ± 0.5 rad 범위
+    reset_hold_steps: int = 60
+    transport_locked_action_indices: tuple[int, ...] = (3, 4, 5, 6)
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=2048,
@@ -268,18 +270,20 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     target_cup_up_axis_b: tuple[float, float, float] = tuple(TARGET_CUP_UP_AXIS_B)
     bead_spawn_jitter_xy: float = 0.015
 
-    # DexPour stage trigger (ρ)
-    pour_trigger_dist: float = 0.17
-    pour_trigger_hold_steps: int = 5
+    # lab_test1-style rho gating
+    rho_xy_threshold: float = 0.055
+    rho_z_min: float = 0.0
+    rho_z_max: float = 0.17
 
     # Transport stage rewards
     reward_cup_dist_weight: float = 1.5
     penalty_transport_tilt_weight: float = 0.5
+    transport_dist_temperature: float = 2.0
 
     # Pour stage rewards
+    # pour_tilt: pour_axis(컵 X축)가 아래를 향할수록 reward (lab_test1 방식)
+    # target_cos 없음 - 자연스러운 tilting 학습
     reward_tilt_weight: float = 1.5
-    pour_tilt_target_cos: float = 0.707
-    pour_tilt_cos_scale: float = 0.2
     reward_align_weight: float = 1.5
 
     # Bead detection geometry
