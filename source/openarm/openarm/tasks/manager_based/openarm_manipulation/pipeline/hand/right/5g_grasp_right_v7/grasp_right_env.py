@@ -728,14 +728,23 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ---- R1. fingertip_enclosure ----
-        # 비대칭: 엄지(near side) + 나머지(far side) → 합력 상쇄 → cup 안 밀림
+        # 타겟을 접근 방향(approach)의 수직(perpendicular) 축으로 설정:
+        #   thumb   → cup 중심에서 perp 방향 (측면)
+        #   others  → cup 중심에서 -perp 방향 (반대 측면)
+        # 이렇게 하면 엄지↔나머지가 컵을 양옆에서 감싸는 구조 → 토크 균형 → 컵 안 기울어짐
+        # (approach-axis 타겟은 near/far 비대칭으로 토크 불균형 유발)
         grasp_center = grasp_center_approach
 
         cup_to_palm_xy = self.palm_center_pos[:, :2] - grasp_center[:, :2]   # (N, 2)
         approach_dir_xy = cup_to_palm_xy / cup_to_palm_xy.norm(
             dim=-1, keepdim=True
         ).clamp(min=1e-6)   # (N, 2)
-        self._approach_dir_buf[:, :2] = approach_dir_xy
+        # approach에 수직인 방향 (XY 평면에서 90° 회전)
+        perp_dir_xy = torch.stack(
+            [-approach_dir_xy[:, 1], approach_dir_xy[:, 0]], dim=1
+        )   # (N, 2)
+
+        self._approach_dir_buf[:, :2] = perp_dir_xy
         self._approach_dir_buf[:, 2]  = 0.0
 
         r = self.cfg.cup_radius_approx
@@ -757,6 +766,21 @@ class GraspRightEnv(DirectRLEnv):
         # max = 5 × contact_bonus_weight = 15.0 → Grasp phase 최대 리워드
         r1b_contact = self.cfg.contact_bonus_weight * self.binary_contact_buf.float().sum(dim=-1)
 
+        # ---- R1c. force_uniformity ----
+        # tip당 ||[fx,fy,fz]|| norm (N,5) 기반 균등도 보상
+        # 조건: thumb(tip1) force > threshold + 다른 손가락 1개 이상 force > threshold
+        # std(force_norms) ↓ → 엄지 포함 균형 파지 유도
+        tip_forces = self.contact_force_raw   # (N, 5): ||[fx,fy,fz]|| per tip
+        thumb_engaged = tip_forces[:, 0] > CONTACT_FORCE_THRESHOLD          # (N,)
+        other_engaged = (tip_forces[:, 1:] > CONTACT_FORCE_THRESHOLD).any(dim=-1)  # (N,)
+        has_thumb_and_other = thumb_engaged & other_engaged
+        force_std = tip_forces.std(dim=-1)   # (N,)
+        r1c_uniformity = (
+            self.cfg.force_uniformity_weight
+            * torch.exp(-self.cfg.force_uniformity_sharpness * force_std)
+            * has_thumb_and_other.float()
+        )
+
         # ---- R2. tip_approach_bonus ----
         # tip이 distal(rl_dg_*_4)보다 cup surface에 먼저 닿도록 유도
         if len(self.distal4_body_indices) == NUM_FINGERTIPS:
@@ -768,8 +792,16 @@ class GraspRightEnv(DirectRLEnv):
         else:
             r2_tip_bonus = torch.zeros(self.num_envs, device=self.device)
 
-        # ---- R3. lift_reward: 선형 height delta ----
-        r3_lift = self.cfg.lift_reward_weight * cup_height_delta   # (N,)
+        # ---- cup uprightness: 컵 Z축이 세계 Z축과 얼마나 일치하는지 ----
+        # 1.0 = 완전히 수직, 0.0 = 수평 → R3/R5에 곱해 기울어진 채 들어올리면 보상 차단
+        z_local = torch.zeros(self.num_envs, 3, device=self.device)
+        z_local[:, 2] = 1.0
+        cup_z_world = quat_apply(self.object_rot, z_local)
+        cup_uprightness = cup_z_world[:, 2].clamp(min=0.0)   # (N,) ∈ [0, 1]
+
+        # ---- R3. lift_reward: 선형 height delta × cup uprightness ----
+        # 기울어진 채로 들어올리면 uprightness 낮아져 보상 감소 → 기울어진 파지 억제
+        r3_lift = self.cfg.lift_reward_weight * cup_height_delta * cup_uprightness   # (N,)
 
         # ---- R4. action_smoothness ----
         palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
@@ -780,15 +812,15 @@ class GraspRightEnv(DirectRLEnv):
         )   # (N,) — 음수
 
         # ---- R5. grasp_quality_lift ----
-        # enclosure_quality × cup_height_delta → 파지하며 들어야 큰 보상
+        # enclosure_quality × cup_height_delta × cup_uprightness → 수직으로 파지하며 들어야 큰 보상
         min_tip_dist = (self.fingertip_pos - grasp_center.unsqueeze(1)).norm(dim=-1).min(dim=-1).values
         enclosure_quality = torch.exp(
             -self.cfg.grasp_quality_lift_sharpness * min_tip_dist
         ).clamp(max=1.0)   # (N,)
-        r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality
+        r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
         # ---- 합산 ----
-        total = r0_palm_approach + r1_enclosure + r1b_contact + r2_tip_bonus + r3_lift + r4_smooth + r5_quality_lift
+        total = r0_palm_approach + r1_enclosure + r1b_contact + r1c_uniformity + r2_tip_bonus + r3_lift + r4_smooth + r5_quality_lift
 
         # ---- ADR increment ----
         if self.grasp_adr is not None:
@@ -799,11 +831,14 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["palm_to_cup_dist"]     = palm_to_cup_dist.mean()
         self.extras["enclosure_reward"]     = r1_enclosure.mean()
         self.extras["contact_bonus"]        = r1b_contact.mean()
+        self.extras["force_uniformity"]     = r1c_uniformity.mean()
+        self.extras["force_std"]            = force_std.mean()
         self.extras["tip_approach_bonus"]  = r2_tip_bonus.mean()
         self.extras["lift_reward"]         = r3_lift.mean()
         self.extras["action_smoothness"]   = r4_smooth.mean()
         self.extras["grasp_quality_lift"]  = r5_quality_lift.mean()
         self.extras["cup_height_delta"]    = cup_height_delta.mean()
+        self.extras["cup_uprightness"]     = cup_uprightness.mean()
         self.extras["num_contacts"]        = self.num_contacts_buf.float().mean()
         self.extras["success_rate"]        = self.success_flag.float().mean()
         self.extras["thumb_dist"]          = thumb_dist.mean()

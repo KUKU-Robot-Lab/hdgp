@@ -127,6 +127,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # max ≈ 5손가락 × 3.0 = 15.0 → 가장 강한 파지 신호
     contact_bonus_weight: float = 3.0
 
+    # R1c. force_uniformity: 각 tip에 인가되는 force가 균등할수록 추가 보상
+    # max = weight = 15.0 (contact_bonus 최대치와 동등, 5손가락 균등 접촉 시)
+    # std↓ → exp(-1.5 * std) → 불균등 파지 강하게 억제
+    force_uniformity_weight:    float = 15.0
+    force_uniformity_sharpness: float = 1.5   # exp(-1.5 * std[N])
+
     # R2. tip_approach_bonus: distal보다 tip이 먼저 닿도록 유도
     tip_approach_bonus_weight: float = 1.0
 

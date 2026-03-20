@@ -12,19 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Environment config for bi_pouring_v1.
-
-Training-facing v1 scope:
-  - direct env patterned after 5g_grasp_right_v5
-  - right-arm-only policy control
-  - fixed left-side target holder
-  - rigid cup-to-EE attachment on both sides
-  - single-bead transfer proxy
-
-Future left-holder randomization is intentionally kept as explicit config hooks
-instead of adding a broader curriculum abstraction in v1.
-"""
-
 from dataclasses import field
 import os as _os
 
@@ -48,17 +35,19 @@ from .bi_pouring_preset import (
     LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B,
     LEFT_HOLDER_FIXED_JOINT_POS,
     LEFT_HOLDER_JOINT_NAMES,
+    PALM_POUR_MAXS,
+    PALM_POUR_MINS,
+    RIGHT_ARM_POUR_READY_POSE,
     RIGHT_HAND_GRASP_JOINT_POS,
+    RIGHT_POLICY_ARM_JOINT_NAMES,
+    RIGHT_SOURCE_CUP_ATTACH_FRAME_NAME,
+    RIGHT_SOURCE_CUP_ATTACH_POS_B,
+    RIGHT_SOURCE_CUP_ATTACH_QUAT_WXYZ_B,
     SOURCE_CUP_POUR_AXIS_B,
     SOURCE_CUP_POUR_POINT_POS_B,
     SOURCE_CUP_UP_AXIS_B,
     TARGET_CUP_OPENING_POS_B,
     TARGET_CUP_UP_AXIS_B,
-    RIGHT_SOURCE_CUP_ATTACH_FRAME_NAME,
-    RIGHT_SOURCE_CUP_ATTACH_POS_B,
-    RIGHT_SOURCE_CUP_ATTACH_QUAT_WXYZ_B,
-    RIGHT_ARM_POUR_READY_POSE,
-    RIGHT_POLICY_ARM_JOINT_NAMES,
 )
 
 _HDGP_ROOT = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
@@ -67,8 +56,6 @@ _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
 @configclass
 class BiPouringEnvCfg(DirectRLEnvCfg):
-    """Initial direct RL config for bi_pouring_v1."""
-
     episode_length_s: float = 6.0
     decimation: int = 2
     use_cuda_graph: bool = False
@@ -80,13 +67,6 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     num_observations: int = NUM_OBSERVATIONS
     num_actions: int = NUM_ACTIONS
     num_states: int = NUM_STATES
-
-    # PD 직접 관절 제어 파라미터
-    # target = default_joint_pos + clamp(action, -1, 1) * action_scale
-    # action_scale(rad): 각 스텝에서 정책이 더할 수 있는 최대 델타
-    action_scale: float = 0.5  # default_pos ± 0.5 rad 범위
-    reset_hold_steps: int = 60
-    transport_locked_action_indices: tuple[int, ...] = (3, 4, 5, 6)
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=2048,
@@ -108,6 +88,11 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
             friction_correlation_distance=0.00625,
         ),
     )
+
+    fabrics_dt: float = 1.0 / 60.0
+    fabric_decimation: int = 2
+    fabrics_damping_gain: float = 10.0
+    fabrics_max_objects_per_env: int = 20
 
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Table",
@@ -248,6 +233,7 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
 
     policy_arm_joint_names: list[str] = field(default_factory=lambda: list(RIGHT_POLICY_ARM_JOINT_NAMES))
     left_holder_joint_names: list[str] = field(default_factory=lambda: list(LEFT_HOLDER_JOINT_NAMES))
+
     right_source_cup_attach_frame_name: str = RIGHT_SOURCE_CUP_ATTACH_FRAME_NAME
     right_source_cup_attach_pos_b: tuple[float, float, float] = tuple(RIGHT_SOURCE_CUP_ATTACH_POS_B)
     right_source_cup_attach_quat_wxyz_b: tuple[float, float, float, float] = tuple(
@@ -258,44 +244,54 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     left_target_cup_attach_quat_wxyz_b: tuple[float, float, float, float] = tuple(
         LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B
     )
-    bead_count: int = 1
-    bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)
-    bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ)
-    enable_right_arm_init_noise: bool = True
-    right_arm_init_joint_noise_abs: tuple[float, ...] = (0.015, 0.020, 0.020, 0.025, 0.015, 0.010, 0.010)
+
     source_cup_pour_point_pos_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_POINT_POS_B)
     target_cup_opening_pos_b: tuple[float, float, float] = tuple(TARGET_CUP_OPENING_POS_B)
     source_cup_pour_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_AXIS_B)
     source_cup_up_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_UP_AXIS_B)
     target_cup_up_axis_b: tuple[float, float, float] = tuple(TARGET_CUP_UP_AXIS_B)
+
+    palm_pose_mins: tuple[float, float, float, float, float, float] = tuple(PALM_POUR_MINS)
+    palm_pose_maxs: tuple[float, float, float, float, float, float] = tuple(PALM_POUR_MAXS)
+
+    bead_count: int = 1
+    bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)
+    bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ)
     bead_spawn_jitter_xy: float = 0.015
 
-    # lab_test1-style rho gating
-    rho_xy_threshold: float = 0.055
-    rho_z_min: float = 0.0
-    rho_z_max: float = 0.17
+    target_transport_tilt_deg: float = 30.0
+    target_mouth_z_clearance: float = 0.025
 
-    # Transport stage rewards
-    reward_cup_dist_weight: float = 1.5
-    penalty_transport_tilt_weight: float = 0.5
-    transport_dist_temperature: float = 2.0
+    transport_goal_sharpness: float = 10.0
+    transport_palm_goal_sharpness: float = 4.0
+    transport_tilt_sharpness: float = 12.0
+    transport_height_sharpness: float = 25.0
 
-    # Pour stage rewards
-    # pour_tilt: pour_axis(컵 X축)가 아래를 향할수록 reward (lab_test1 방식)
-    # target_cos 없음 - 자연스러운 tilting 학습
-    reward_tilt_weight: float = 1.5
-    reward_align_weight: float = 1.5
+    reward_transport_goal_weight: float = 3.0
+    reward_palm_to_goal_weight: float = 0.8
+    reward_tilt_weight: float = 1.2
+    reward_directional_tilt_weight: float = 0.8
+    reward_height_weight: float = 0.8
+    reward_mouth_alignment_weight: float = 0.6
+    penalty_spill_weight: float = 4.0
+    penalty_collision_weight: float = 1.0
+    penalty_action_smoothness_weight: float = 0.02
 
-    # Bead detection geometry
+    success_mouth_xy_threshold: float = 0.035
+    success_mouth_dist_threshold: float = 0.055
+    success_z_clearance_min: float = 0.0
+    success_z_clearance_max: float = 0.055
+    success_tilt_cos_tolerance: float = 0.08
+    success_directional_tilt_cos: float = 0.75
+    success_alignment_cos: float = 0.55
+    success_hold_steps: int = 12
+
     target_inner_radius: float = 0.050
     target_inside_z_min: float = -0.015
     target_inside_z_max: float = 0.095
     source_inner_radius: float = 0.055
     source_inside_z_min: float = -0.020
     source_inside_z_max: float = 0.110
-    target_entry_z_max: float = 0.000
-    stable_retention_speed_threshold: float = 0.35
-    success_retention_steps: int = 100
     bead_spill_z_threshold: float = 0.220
     major_spill_xy_radius: float = 0.100
     major_spill_z_margin: float = -0.040
@@ -308,24 +304,8 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     invalid_bead_floor_z_threshold: float = 0.050
     invalid_bead_xy_threshold: float = 0.800
 
-    # Bead dynamics rewards
-    reward_bead_entry_weight: float = 6.0
-    reward_stable_retention_weight: float = 2.5
-    penalty_spill_weight: float = 4.0
-    penalty_collision_weight: float = 1.0
-    penalty_action_smoothness_weight: float = 0.05
-
-    use_left_holder_reset_fabric: bool = False
-    pregrasp_fabric_steps: int = 60
-    reset_fabric_chunk_size: int = 128
-    left_holder_init_pose_sampler: str = "fixed"
-    left_holder_init_pos_noise_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    left_holder_init_rot_noise_rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
-
 
 class BiPouringEnvCfg_PLAY(BiPouringEnvCfg):
-    """Play config with fewer environments."""
-
     def __post_init__(self):
         super().__post_init__() if hasattr(super(), "__post_init__") else None
         self.scene.num_envs = 50

@@ -12,100 +12,47 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Observation functions for bi_pouring_v1.
-
-Actor obs is intentionally world/env-aligned rather than source-cup-relative so
-the policy can learn cup transport from the right palm frame without the input
-changing drastically under in-place cup rotation.
-"""
-
 from __future__ import annotations
 
 import torch
 from typing import TYPE_CHECKING
 
-from isaaclab.utils.math import quat_apply
-
 if TYPE_CHECKING:
     from ..bi_pouring_env import BiPouringEnv
 
 
-def arm_joint_pos(env: BiPouringEnv) -> torch.Tensor:
-    """오른팔 관절 위치 (7D)."""
+def right_arm_joint_pos(env: BiPouringEnv) -> torch.Tensor:
     return env.robot.data.joint_pos[:, env._right_arm_joint_ids]
 
 
-def arm_joint_vel(env: BiPouringEnv) -> torch.Tensor:
-    """오른팔 관절 속도 (7D)."""
+def right_arm_joint_vel(env: BiPouringEnv) -> torch.Tensor:
     return env.robot.data.joint_vel[:, env._right_arm_joint_ids]
 
 
-def cup_relative_pose(env: BiPouringEnv) -> torch.Tensor:
-    """환경 원점 기준 target cup 절대 포즈 (7D: pos3 + quat4)."""
-    left_cup_pos_w = env.left_target_cup.data.root_pos_w
-    left_cup_quat_w = env.left_target_cup.data.root_quat_w
-    left_cup_pos_env = left_cup_pos_w - env.scene.env_origins
-    return torch.cat([left_cup_pos_env, left_cup_quat_w], dim=-1)
+def right_palm_env_pos(env: BiPouringEnv) -> torch.Tensor:
+    return env._right_palm_pos_w - env.scene.env_origins
 
 
-def pour_point_to_opening(env: BiPouringEnv) -> torch.Tensor:
-    """right palm_ee → target cup opening 절대 벡터 (3D, env/world aligned)."""
-    left_cup_pos_w = env.left_target_cup.data.root_pos_w
-    left_cup_quat_w = env.left_target_cup.data.root_quat_w
-    right_palm_pos_w = env.robot.data.body_pos_w[:, env._right_palm_body_id]
-
-    target_opening_w = left_cup_pos_w + quat_apply(
-        left_cup_quat_w,
-        env._target_cup_opening_pos_b.unsqueeze(0).expand(env.num_envs, -1),
-    )
-    return target_opening_w - right_palm_pos_w
+def source_to_target_mouth_vec(env: BiPouringEnv) -> torch.Tensor:
+    return env._target_opening_w - env._source_pour_point_w
 
 
-def source_cup_velocity_summary(env: BiPouringEnv) -> torch.Tensor:
-    """source cup 선속도/각속도 크기 (2D)."""
-    lin_speed = torch.norm(env.right_source_cup.data.root_lin_vel_w, dim=-1, keepdim=True)
-    ang_speed = torch.norm(env.right_source_cup.data.root_ang_vel_w, dim=-1, keepdim=True)
-    return torch.cat([lin_speed, ang_speed], dim=-1)
+def source_cup_quat(env: BiPouringEnv) -> torch.Tensor:
+    return env.right_source_cup.data.root_quat_w
 
 
-def tilt_alignment_summary(env: BiPouringEnv) -> torch.Tensor:
-    """틸팅/정렬 요약 (3D): [source_up·world_up, pour_axis·target_dir, source_up·target_up]."""
-    right_cup_pos_w = env.right_source_cup.data.root_pos_w
-    right_cup_quat_w = env.right_source_cup.data.root_quat_w
-    left_cup_pos_w = env.left_target_cup.data.root_pos_w
-    left_cup_quat_w = env.left_target_cup.data.root_quat_w
+def target_cup_quat(env: BiPouringEnv) -> torch.Tensor:
+    return env.left_target_cup.data.root_quat_w
 
-    source_up_w = quat_apply(
-        right_cup_quat_w,
-        env._source_cup_up_axis_b.unsqueeze(0).expand(env.num_envs, -1),
-    )
-    source_pour_axis_w = quat_apply(
-        right_cup_quat_w,
-        env._source_cup_pour_axis_b.unsqueeze(0).expand(env.num_envs, -1),
-    )
-    target_up_w = quat_apply(
-        left_cup_quat_w,
-        env._target_cup_up_axis_b.unsqueeze(0).expand(env.num_envs, -1),
-    )
-    source_pour_point_w = right_cup_pos_w + quat_apply(
-        right_cup_quat_w,
-        env._source_cup_pour_point_pos_b.unsqueeze(0).expand(env.num_envs, -1),
-    )
-    target_opening_w = left_cup_pos_w + quat_apply(
-        left_cup_quat_w,
-        env._target_cup_opening_pos_b.unsqueeze(0).expand(env.num_envs, -1),
-    )
-    to_target_vec = target_opening_w - source_pour_point_w
-    to_target_dir = to_target_vec / torch.clamp(
-        torch.norm(to_target_vec, dim=-1, keepdim=True), min=1e-6
-    )
-    world_up = env._world_up_axis.expand(env.num_envs, -1)
 
+def transport_summary(env: BiPouringEnv) -> torch.Tensor:
     return torch.stack(
         [
-            torch.sum(source_up_w * world_up, dim=-1),
-            torch.sum(source_pour_axis_w * to_target_dir, dim=-1),
-            torch.sum(source_up_w * target_up_w, dim=-1),
+            env._mouth_distance,
+            env._mouth_xy_distance,
+            env._mouth_z_clearance,
+            env._source_up_dot_world,
+            env._directional_tilt_cos,
         ],
         dim=-1,
     )
