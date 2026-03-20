@@ -117,10 +117,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 1. contact_reward: 접촉 유지 (num_contacts / 5)
     contact_reward_weight: float = 2.0
 
-    # 2. hold_entry: Hold 진입 시 1회만 지급 (tip × 5 + middle × 10)
-    #    contact_delta 대체: 진동 유발 없이 파지 품질 1회 평가
-    hold_tip_reward_weight:    float = 5.0    # tip contact 개당 (+5)
-    hold_middle_reward_weight: float = 10.0   # middle contact 개당 (+10)
+    # 2. hold_entry: Hold 진입 시 1회만 지급
+    #    tip contact: primary (손끝이 닿아야 의미 있는 파지)
+    #    deep grasp bonus: tip AND middle 동시 접촉 손가락에만 추가 보상
+    #      → middle만 닿은 손가락 = 보상 0 → 더 curl해서 tip까지 닿으려는 유인
+    hold_tip_reward_weight:   float = 10.0   # tip contact 개당 (primary, 5→10)
+    hold_deep_reward_weight:  float = 5.0    # tip+middle 동시 접촉 개당 (deep grasp bonus)
 
     # 3. asymmetric enclosure (DexPour r_finger_cup_dist 방식, sim2real 호환)
     #    palm→cup 방향 기준 비대칭 유도:

@@ -782,12 +782,17 @@ class GraspRightEnv(DirectRLEnv):
         contact_reward = self.cfg.contact_reward_weight * (num_contacts / NUM_FINGERTIPS)
 
         # ---- 2. hold_entry_reward: Hold 진입 1회만 지급 ----
+        # tip contact: primary (손끝 파지가 의미 있는 파지)
+        # deep grasp bonus: tip AND middle 동시 접촉 → 더 curl된 깊은 파지
+        #   middle만 닿은 손가락 → 보상 0 → 더 curl해서 tip까지 닿으려는 유인 발생
         just_entering_hold = (self.episode_length_buf == HOLD_START_STEP).float()  # (N,)
-        tip_count    = self.binary_contact_buf.float().sum(dim=-1)           # (N,) 0~5
-        middle_count = self.middle_binary_contact_buf.float().sum(dim=-1)    # (N,) 0~5
+        tip_count       = self.binary_contact_buf.float().sum(dim=-1)              # (N,) 0~5
+        tip_and_middle  = (
+            self.binary_contact_buf & self.middle_binary_contact_buf
+        ).float().sum(dim=-1)                                                       # (N,) 0~5
         hold_entry_reward = just_entering_hold * (
-            self.cfg.hold_tip_reward_weight    * tip_count
-            + self.cfg.hold_middle_reward_weight * middle_count
+            self.cfg.hold_tip_reward_weight  * tip_count
+            + self.cfg.hold_deep_reward_weight * tip_and_middle
         )
 
         # ---- 3. asymmetric enclosure (DexPour r_finger_cup_dist, sim2real 호환) ----
@@ -905,6 +910,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["distal_force_mean"]    = self.distal_contact_force_raw.mean()
         self.extras["middle_num_contacts"]  = self.middle_binary_contact_buf.float().sum(dim=-1).mean()
         self.extras["middle_force_mean"]    = self.middle_contact_force_raw.mean()
+        self.extras["deep_grasp_count"]     = tip_and_middle.mean()   # tip+middle 동시 접촉 평균 수
         if self.grasp_adr is not None:
             self.extras["adr_progress"] = torch.tensor(self.grasp_adr.progress, device=self.device)
 
