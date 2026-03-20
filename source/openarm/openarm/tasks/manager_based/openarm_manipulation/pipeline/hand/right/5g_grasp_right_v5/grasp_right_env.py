@@ -727,7 +727,10 @@ class GraspRightEnv(DirectRLEnv):
         cup_height_delta = (
             self.object_pos[:, 2] - self.object_init_pos[:, 2]
         ).clamp(min=0.0)   # (N,) ≥ 0
-        lift_reward = self.cfg.lift_reward_weight * is_lift_flag * cup_height_delta
+        # contact 조건: 최소 1개 이상 접촉 시에만 lift reward 지급
+        # → 팔만 올리는 degenerate solution 방지 (bb_1_contact_force_hold 설계 원칙 참고)
+        has_any_contact = (self.num_contacts_buf >= 1).float()   # (N,)
+        lift_reward = self.cfg.lift_reward_weight * is_lift_flag * cup_height_delta * has_any_contact
 
         # ---- 7. terminal rewards ----
         is_terminal = self.reset_buf

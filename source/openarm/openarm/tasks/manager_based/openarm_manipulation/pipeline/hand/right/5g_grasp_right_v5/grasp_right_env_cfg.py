@@ -59,7 +59,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Fabrics: fabrics_dt=1/60 × fabric_decimation=2 → 120 Hz
     # Episode: 10s = 600 steps @ 60Hz (9s grasp + 1s lift)
     # -----------------------------------------------------------------------
-    episode_length_s: float = 10.0   # GRASP_PHASE(9s) + LIFT_PHASE(1s)
+    episode_length_s: float = 12.0   # GRASP_PHASE(8s) + LIFT_PHASE(4s)
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -86,7 +86,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
-    pregrasp_fabric_steps: int   = 30    # 200 → 60 → 30: GPU idle 감소 (30 step 수렴 충분)
+    pregrasp_fabric_steps: int   = 60    # 30 → 60: pregrasp 수렴 품질 향상 (palm 위치 오차 감소)
     reset_fabric_chunk_size: int = 128   # reset 전용 소형 Fabrics batch 크기 (env_ids chunk 단위)
     pregrasp_offset_x:     float = -0.06   # palm_link가 cup -X 방향 5cm
                                             # palm_ee = palm_link + local_z(0.04) → palm_ee_x = cup_x - 0.01
@@ -126,12 +126,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     enclosure_sharpness: float = 15.0  # exp(-sharpness * mean_dist)  (10.0 → 15.0)
 
     # 4. opposition: thumb + 다른 손가락 동시 접촉
-    opposition_weight: float = 2.0     # 5.0 → 2.0 (지배 방지, 67% → ~25% 목표)
+    opposition_weight: float = 4.0     # 2.0 → 4.0: 엄지-나머지 안정 파지 구조 유도 강화
 
     # 5a. grasp_shaping_scale: Grasp phase dense reward 억제 스케일
     #   dense_scale = grasp_shaping_scale + (1 - grasp_shaping_scale) × is_lift_flag
-    #   Grasp phase: dense × 0.05  Lift phase: dense × 1.00
-    grasp_shaping_scale: float = 0.05
+    #   Grasp phase: dense × 0.25  Lift phase: dense × 1.00
+    grasp_shaping_scale: float = 0.25   # 0.05 → 0.25: grasp formation 학습 신호 복구
 
     # 5b. action_reg: ||action||² 패널티 (scale 미적용, 항상 full)
     action_reg_weight: float = -0.005
@@ -176,7 +176,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_spawn_y_center: float = -0.15
     object_spawn_z:        float = 0.297  # table_surface(0.215) + cup_z_min_abs(0.0773) + margin(0.005)
                                            # cup_big.usd: origin이 컵 중간, z_min=-0.0773 → 바닥이 원점 아래 7.73cm
-    object_spawn_xy_range: float = 0.01   # 초기: 매우 좁게 (±1cm) → 학습 안정화 후 확대
+    object_spawn_xy_range: float = 0.0     # 5D action(finger only)이라 spawn 변동 보정 불가 → 고정
+                                            # arm 위치 변동성은 pregrasp_noise(±0.01)가 담당
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 설정

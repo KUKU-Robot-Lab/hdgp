@@ -266,21 +266,24 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     source_cup_pour_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_AXIS_B)
     source_cup_up_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_UP_AXIS_B)
     target_cup_up_axis_b: tuple[float, float, float] = tuple(TARGET_CUP_UP_AXIS_B)
-    stable_alignment_xy_threshold: float = 0.040
-    stable_alignment_z_min: float = 0.010
-    stable_alignment_z_max: float = 0.120
-    approach_xy_scale: float = 0.25
-    approach_gate_xy_far: float = 0.10
-    approach_gate_xy_near: float = 0.04
-    approach_gate_hold_steps: int = 5
-    alignment_xy_scale: float = 0.12
-    alignment_z_target: float = 0.040
-    alignment_z_scale: float = 0.035
-    controlled_tilt_target_cos: float = 0.55
-    controlled_tilt_cos_scale: float = 0.18
-    approach_upright_min_cos: float = 0.92
-    target_opening_capture_radius: float = 0.050
-    source_cup_capture_radius: float = 0.060
+    # Multi-bead APA
+    bead_spawn_jitter_xy: float = 0.015  # bead 초기 위치 XY 분산 (m)
+
+    # DexPour stage trigger (ρ)
+    pour_trigger_dist: float = 0.17      # pour point → target opening 임계값 (m)
+    pour_trigger_hold_steps: int = 5     # latch까지 유지해야 하는 step 수
+
+    # Transport stage rewards (ρ=0: pour_stage_active=False)
+    reward_cup_dist_weight: float = 1.5          # exp(-2 * dist) 거리 감소 보상
+    penalty_transport_tilt_weight: float = 0.5   # 이송 중 직립 유지 패널티
+
+    # Pour stage rewards (ρ=1: pour_stage_active=True)
+    reward_tilt_weight: float = 1.5      # 45° 틸팅 Gaussian 보상
+    pour_tilt_target_cos: float = 0.707  # cos(45°) 목표
+    pour_tilt_cos_scale: float = 0.2     # Gaussian 스케일
+    reward_align_weight: float = 1.5     # pour axis → target 정렬 보상
+
+    # Bead detection geometry (항상 활성)
     target_inner_radius: float = 0.050
     target_inside_z_min: float = -0.015
     target_inside_z_max: float = 0.095
@@ -301,9 +304,8 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     invalid_bead_drop_z_threshold: float = 0.230
     invalid_bead_floor_z_threshold: float = 0.050
     invalid_bead_xy_threshold: float = 0.800
-    reward_approach_weight: float = 1.5
-    reward_alignment_weight: float = 1.5
-    reward_controlled_tilt_weight: float = 0.75
+
+    # Bead dynamics rewards (항상 활성)
     reward_bead_entry_weight: float = 6.0
     reward_stable_retention_weight: float = 2.5
     penalty_spill_weight: float = 4.0

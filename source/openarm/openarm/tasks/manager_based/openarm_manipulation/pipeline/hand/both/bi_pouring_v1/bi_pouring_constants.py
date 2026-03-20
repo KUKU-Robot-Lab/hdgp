@@ -38,10 +38,13 @@ NUM_ARM_DOF = NUM_RIGHT_ARM_DOF  # 7
 NUM_OBSERVATIONS = 35
 NUM_ACTIONS = 6  # FABRICS palm pose 6D (x,y,z,ez,ey,ex)
 
-# Critic-only extras:
-#   bead_pos_env: 3
-#   bead_lin_vel_world: 3
-#   task_flags: 3
-#   stable_step_counter: 1
-#   spill_flags: 2
-NUM_STATES = 47
+# Critic-only extras (DexPour 계층적 리워드 구조):
+#   bead_centroid_pos: 3
+#   bead_centroid_vel: 3
+#   bead_in_target_ratio: 1
+#   pour_stage_active: 1
+#   task_flags: 3  (bead_has_entered, success, bead_exited_after_entry)
+#   stable_retention_steps: 1
+#   spill_flags: 2  (bead_spilled, major_spill)
+#   bead_spill_ratio: 1
+NUM_STATES = 50

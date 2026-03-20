@@ -85,8 +85,8 @@ NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS   # 119
 # Episode structure (@ 60 Hz policy rate)
 # ---------------------------------------------------------------------------
 GRASP_PHASE_STEPS = 480    # 8s: 정책 완전 제어 (손가락 닫기)
-LIFT_PHASE_STEPS  = 120    # 2s: 스크립트 z 상승 + 정책 손가락 유지 (1s → 2s, 리프트 시간 확보)
-TOTAL_EPISODE_STEPS = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS   # 600 = 10s
+LIFT_PHASE_STEPS  = 240    # 2s → 4s: 리프트 시간 2배 확보 (컵 충분히 올라가기 전 에피소드 종료 방지)
+TOTAL_EPISODE_STEPS = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS   # 720 = 12s
 
 LIFT_Z_DELTA = 0.10         # 10cm 수직 상승 (Scripted Lift Checker)
 

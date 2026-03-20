@@ -105,3 +105,11 @@ TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 # ---------------------------------------------------------------------------
 # FABRICS 초기 arm joint 위치 (RIGHT_ARM_POUR_READY_POSE alias)
 ARM_START_POSE = RIGHT_ARM_POUR_READY_POSE
+
+# ---------------------------------------------------------------------------
+# DexPour stage trigger parameters
+# ---------------------------------------------------------------------------
+# ρ trigger: pour point → target opening 거리 임계값 (m)
+DEXPOUR_D_POUR = 0.17
+# Pour 단계 45° 틸팅 목표 cos 값 (cos(45°) ≈ 0.707)
+DEXPOUR_POUR_COS_45 = 0.707
