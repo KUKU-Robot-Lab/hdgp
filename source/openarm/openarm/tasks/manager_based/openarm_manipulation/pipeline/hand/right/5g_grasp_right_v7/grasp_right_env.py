@@ -230,9 +230,10 @@ class GraspRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         # Pregrasp / Lift 버퍼 (reset에서 계산)
         # ----------------------------------------------------------------
-        self.pregrasp_arm_pos_buf = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.prelift_arm_pos_buf  = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.lift_finger_pos_buf  = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
+        self.pregrasp_arm_pos_buf  = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        self.prelift_arm_pos_buf   = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        self.lift_arm_start_buf    = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        self.lift_finger_pos_buf   = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
         self.is_lift_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
@@ -476,12 +477,32 @@ class GraspRightEnv(DirectRLEnv):
         is_lift = (self.episode_length_buf >= LIFT_START_STEP)
         self.is_lift_phase.copy_(is_lift)
 
-        # ---- Lift 진입 시 finger joint pos 캡처 (이후 고정) ----
+        # ---- Lift 진입 시 finger/arm joint pos 캡처 ----
         just_entering_lift = (self.episode_length_buf == LIFT_START_STEP)
+
+        # Finger: 진입 시점 자세로 고정
         self.lift_finger_pos_buf = torch.where(
             just_entering_lift.unsqueeze(1),
             self.robot.data.joint_pos[:, self.hand_dof_indices],
             self.lift_finger_pos_buf,
+        )
+
+        # Arm: 진입 시점 실제 위치 캡처 → lift 보간 시작점으로 사용
+        # (pregrasp_arm_pos_buf 대신 실제값 사용: grasp phase에서 Fabrics가 arm을
+        #  실제로 이동했으므로 전환 시 불연속 없이 자연스럽게 lift)
+        actual_arm_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
+        self.lift_arm_start_buf = torch.where(
+            just_entering_lift.unsqueeze(1),
+            actual_arm_pos,
+            self.lift_arm_start_buf,
+        )
+        # prelift = 실제 위치에서 j4 +0.31 (lift 방향 고정)
+        actual_prelift = actual_arm_pos.clone()
+        actual_prelift[:, 3] = (actual_arm_pos[:, 3] + 0.31).clamp(max=3.14)
+        self.prelift_arm_pos_buf = torch.where(
+            just_entering_lift.unsqueeze(1),
+            actual_prelift,
+            self.prelift_arm_pos_buf,
         )
 
         # ---- Grasp phase: Fabrics arm 제어 ----
@@ -534,7 +555,7 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0).unsqueeze(1)   # (N, 1) ∈ [0, 1]
 
         arm_target_lift = (
-            self.pregrasp_arm_pos_buf * (1.0 - lift_progress)
+            self.lift_arm_start_buf * (1.0 - lift_progress)
             + self.prelift_arm_pos_buf * lift_progress
         )
         arm_target = torch.where(
