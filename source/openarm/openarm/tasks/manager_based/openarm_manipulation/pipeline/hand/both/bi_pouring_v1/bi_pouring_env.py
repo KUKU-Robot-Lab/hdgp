@@ -99,6 +99,7 @@ class BiPouringEnv(DirectRLEnv):
         self._mouth_distance = torch.zeros(n, device=self.device)
         self._mouth_xy_distance = torch.zeros(n, device=self.device)
         self._mouth_z_clearance = torch.zeros(n, device=self.device)
+        self._mouth_z_band_error = torch.zeros(n, device=self.device)
         self._source_up_dot_world = torch.zeros(n, device=self.device)
         self._directional_tilt_cos = torch.zeros(n, device=self.device)
         self._mouth_alignment_cos = torch.zeros(n, device=self.device)
@@ -272,8 +273,13 @@ class BiPouringEnv(DirectRLEnv):
 
         hand_target = self._right_hand_grasp.unsqueeze(0).expand(self.num_envs, -1)
         left_target = self._left_holder_home.unsqueeze(0).expand(self.num_envs, -1)
-        self.robot.set_joint_position_target(hand_target, joint_ids=self._right_hand_joint_ids)
-        self.robot.set_joint_velocity_target(torch.zeros_like(hand_target), joint_ids=self._right_hand_joint_ids)
+        zero_hand_vel = torch.zeros_like(hand_target)
+        # Keep rj_dg_*_* kinematically fixed at the default grasp pose.
+        self.robot.write_joint_state_to_sim(
+            hand_target,
+            zero_hand_vel,
+            joint_ids=self._right_hand_joint_ids,
+        )
         self.robot.set_joint_position_target(left_target, joint_ids=self._left_holder_joint_ids)
         self.robot.set_joint_velocity_target(torch.zeros_like(left_target), joint_ids=self._left_holder_joint_ids)
 
@@ -302,7 +308,7 @@ class BiPouringEnv(DirectRLEnv):
         from .mdp import rewards as R
 
         cfg = self.cfg
-        return (
+        reward = (
             cfg.reward_transport_goal_weight * R.transport_goal(self)
             + cfg.reward_palm_to_goal_weight * R.palm_to_goal(self)
             + cfg.reward_tilt_weight * R.tilt(self)
@@ -313,6 +319,26 @@ class BiPouringEnv(DirectRLEnv):
             - cfg.penalty_collision_weight * R.collision_penalty(self)
             - cfg.penalty_action_smoothness_weight * R.action_smoothness_penalty(self)
         )
+        self.extras["mouth_distance"] = self._mouth_distance.mean()
+        self.extras["mouth_xy_distance"] = self._mouth_xy_distance.mean()
+        self.extras["mouth_z_clearance"] = self._mouth_z_clearance.mean()
+        self.extras["mouth_z_band_error"] = self._mouth_z_band_error.mean()
+        self.extras["source_up_dot_world"] = self._source_up_dot_world.mean()
+        self.extras["directional_tilt_cos"] = self._directional_tilt_cos.mean()
+        self.extras["mouth_alignment_cos"] = self._mouth_alignment_cos.mean()
+        self.extras["reward_transport_goal"] = self._r_transport_goal.mean()
+        self.extras["reward_palm_to_goal"] = self._r_palm_to_goal.mean()
+        self.extras["reward_tilt"] = self._r_tilt.mean()
+        self.extras["reward_directional_tilt"] = self._r_directional_tilt.mean()
+        self.extras["reward_height"] = self._r_height.mean()
+        self.extras["reward_mouth_alignment"] = self._r_mouth_alignment.mean()
+        self.extras["penalty_spill"] = self._spill_penalty.mean()
+        self.extras["penalty_collision"] = self._collision_penalty.mean()
+        self.extras["penalty_action_smoothness"] = self._smoothness_penalty.mean()
+        self.extras["pre_pour_ready_steps"] = self._pre_pour_ready_steps.float().mean()
+        self.extras["success_rate"] = self._success_flag.float().mean()
+        self.extras["invalid_rate"] = self._invalid_state_flag.float().mean()
+        return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         from .mdp import terminations as T
@@ -348,12 +374,21 @@ class BiPouringEnv(DirectRLEnv):
         self._mouth_z_clearance = self._source_pour_point_w[:, 2] - self._target_opening_w[:, 2]
         self._source_up_dot_world = torch.sum(source_up_w * self._world_up_axis.expand(n, -1), dim=-1).clamp(-1.0, 1.0)
 
-        target_xy_dir = _safe_normalize(torch.cat([mouth_delta[:, :2], torch.zeros(n, 1, device=self.device)], dim=-1))
-        source_up_xy = torch.cat([source_up_w[:, :2], torch.zeros(n, 1, device=self.device)], dim=-1)
-        source_up_xy_dir = _safe_normalize(source_up_xy)
+        target_xy_vec = torch.cat([mouth_delta[:, :2], torch.zeros(n, 1, device=self.device)], dim=-1)
+        target_xy_dir = _safe_normalize(target_xy_vec)
         source_pour_dir = _safe_normalize(mouth_delta)
-        self._directional_tilt_cos = torch.sum(source_up_xy_dir[:, :2] * target_xy_dir[:, :2], dim=-1).clamp(-1.0, 1.0)
+        ref_up = self._target_tilt_cos * self._world_up_axis.expand(n, -1) - math.sin(
+            math.radians(cfg.target_transport_tilt_deg)
+        ) * target_xy_dir
+        ref_up = _safe_normalize(ref_up)
+        self._directional_tilt_cos = torch.sum(source_up_w * ref_up, dim=-1).clamp(-1.0, 1.0)
         self._mouth_alignment_cos = torch.sum(source_pour_axis_w * source_pour_dir, dim=-1).clamp(-1.0, 1.0)
+
+        z_low = cfg.target_mouth_z_clearance_min
+        z_high = cfg.target_mouth_z_clearance_max
+        self._mouth_z_band_error = torch.clamp(z_low - self._mouth_z_clearance, min=0.0) + torch.clamp(
+            self._mouth_z_clearance - z_high, min=0.0
+        )
 
         palm_to_goal = self._target_opening_w - self._right_palm_pos_w
         self._r_transport_goal = torch.exp(-cfg.transport_goal_sharpness * self._mouth_distance)
@@ -362,9 +397,7 @@ class BiPouringEnv(DirectRLEnv):
             -cfg.transport_tilt_sharpness * torch.abs(self._source_up_dot_world - self._target_tilt_cos)
         )
         self._r_directional_tilt = 0.5 * (1.0 + self._directional_tilt_cos)
-        self._r_height = torch.exp(
-            -cfg.transport_height_sharpness * torch.abs(self._mouth_z_clearance - cfg.target_mouth_z_clearance)
-        )
+        self._r_height = torch.exp(-cfg.transport_height_sharpness * self._mouth_z_band_error)
         self._r_mouth_alignment = 0.5 * (1.0 + self._mouth_alignment_cos)
 
         all_bead_pos_w = torch.stack([b.data.root_pos_w for b in self.beads], dim=1)
@@ -417,8 +450,8 @@ class BiPouringEnv(DirectRLEnv):
         ready_mask = (
             (self._mouth_xy_distance <= cfg.success_mouth_xy_threshold)
             & (self._mouth_distance <= cfg.success_mouth_dist_threshold)
-            & (self._mouth_z_clearance >= cfg.success_z_clearance_min)
-            & (self._mouth_z_clearance <= cfg.success_z_clearance_max)
+            & (self._mouth_z_clearance >= cfg.target_mouth_z_clearance_min)
+            & (self._mouth_z_clearance <= cfg.target_mouth_z_clearance_max)
             & (torch.abs(self._source_up_dot_world - self._target_tilt_cos) <= cfg.success_tilt_cos_tolerance)
             & (self._directional_tilt_cos >= cfg.success_directional_tilt_cos)
             & (self._mouth_alignment_cos >= cfg.success_alignment_cos)

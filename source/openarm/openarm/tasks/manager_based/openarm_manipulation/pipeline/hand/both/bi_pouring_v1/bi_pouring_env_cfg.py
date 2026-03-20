@@ -260,7 +260,9 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     bead_spawn_jitter_xy: float = 0.015
 
     target_transport_tilt_deg: float = 30.0
-    target_mouth_z_clearance: float = 0.025
+    target_mouth_z_clearance: float = 0.035
+    target_mouth_z_clearance_min: float = 0.020
+    target_mouth_z_clearance_max: float = 0.050
 
     transport_goal_sharpness: float = 10.0
     transport_palm_goal_sharpness: float = 4.0
@@ -268,11 +270,11 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     transport_height_sharpness: float = 25.0
 
     reward_transport_goal_weight: float = 3.0
-    reward_palm_to_goal_weight: float = 0.8
-    reward_tilt_weight: float = 1.2
-    reward_directional_tilt_weight: float = 0.8
-    reward_height_weight: float = 0.8
-    reward_mouth_alignment_weight: float = 0.6
+    reward_palm_to_goal_weight: float = 0.2
+    reward_tilt_weight: float = 1.0
+    reward_directional_tilt_weight: float = 1.2
+    reward_height_weight: float = 1.2
+    reward_mouth_alignment_weight: float = 0.4
     penalty_spill_weight: float = 4.0
     penalty_collision_weight: float = 1.0
     penalty_action_smoothness_weight: float = 0.02
