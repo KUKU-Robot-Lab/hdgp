@@ -28,6 +28,8 @@ from isaaclab.utils import configclass
 from openarm.tasks.manager_based.openarm_manipulation import OPENARM_ROOT_DIR
 from .bi_pouring_constants import NUM_ACTIONS, NUM_OBSERVATIONS, NUM_STATES
 from .bi_pouring_preset import (
+    ARM_JOINT_MAXS,
+    ARM_JOINT_MINS,
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
     LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
@@ -35,8 +37,6 @@ from .bi_pouring_preset import (
     LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B,
     LEFT_HOLDER_FIXED_JOINT_POS,
     LEFT_HOLDER_JOINT_NAMES,
-    PALM_POUR_MAXS,
-    PALM_POUR_MINS,
     RIGHT_ARM_POUR_READY_POSE,
     RIGHT_HAND_GRASP_JOINT_POS,
     RIGHT_POLICY_ARM_JOINT_NAMES,
@@ -88,11 +88,6 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
             friction_correlation_distance=0.00625,
         ),
     )
-
-    fabrics_dt: float = 1.0 / 60.0
-    fabric_decimation: int = 2
-    fabrics_damping_gain: float = 10.0
-    fabrics_max_objects_per_env: int = 20
 
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Table",
@@ -251,8 +246,8 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     source_cup_up_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_UP_AXIS_B)
     target_cup_up_axis_b: tuple[float, float, float] = tuple(TARGET_CUP_UP_AXIS_B)
 
-    palm_pose_mins: tuple[float, float, float, float, float, float] = tuple(PALM_POUR_MINS)
-    palm_pose_maxs: tuple[float, float, float, float, float, float] = tuple(PALM_POUR_MAXS)
+    arm_joint_mins: tuple[float, ...] = tuple(ARM_JOINT_MINS)
+    arm_joint_maxs: tuple[float, ...] = tuple(ARM_JOINT_MAXS)
 
     bead_count: int = 1
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)

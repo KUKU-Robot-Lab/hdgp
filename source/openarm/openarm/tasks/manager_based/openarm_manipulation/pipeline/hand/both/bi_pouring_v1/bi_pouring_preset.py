@@ -18,8 +18,6 @@ The structure deliberately keeps a left-holder init-pose seam for future
 curriculum randomization via FABRICS or an equivalent pose generator.
 """
 
-import math
-
 RIGHT_SOURCE_CUP_ATTACH_FRAME_NAME = "rl_dg_ee"
 LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "ll_dg_ee"
 
@@ -99,35 +97,11 @@ SOURCE_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 
 # ---------------------------------------------------------------------------
-# FABRICS arm control
+# PD arm control — joint position action bounds (URDF limits)
 # ---------------------------------------------------------------------------
-# FABRICS 초기 arm joint 위치 (RIGHT_ARM_POUR_READY_POSE alias)
-ARM_START_POSE = RIGHT_ARM_POUR_READY_POSE
-
-# ---------------------------------------------------------------------------
-# FABRICS palm pose workspace bounds (absolute action mode)
-# ---------------------------------------------------------------------------
-# 회전 중심: ez=+90°, ey=0°, ex=+90° (v1 grasp와 동일 관례)
-#   palm_link +X(손바닥 법선) = world +Y
-#   palm_link +Z(손가락)      = world +X
-# y 범위: [-0.55, 0.55] — 오른팔 초기 위치(y≈-0.26) → 왼쪽 컵(y≈+0.26) 이동 허용
-# z 범위: [0.05, 0.90] — 이송/포어링 중 충분한 높이 확보
-# 회전: ±100° 허용 (포어링 45° 틸팅 포함)
-def _d(deg: float) -> float:
-    return deg * math.pi / 180.0
-
-PALM_POUR_MINS = [
-    -0.20, -0.55, 0.05,        # x, y, z [m]
-    _d(90.0 - 100.0),          # ez
-    _d(0.0  - 100.0),          # ey
-    _d(90.0 - 100.0),          # ex
-]
-PALM_POUR_MAXS = [
-    0.65, 0.55, 0.90,          # x, y, z [m]
-    _d(90.0 + 100.0),          # ez
-    _d(0.0  + 100.0),          # ey
-    _d(90.0 + 100.0),          # ex
-]
+# openarm_right_joint 1~7 lower/upper from openarm_tesollo.urdf
+ARM_JOINT_MINS = [-1.3962629, -0.1745327, -1.5707959, 0.0,        -1.5707959, -0.785398, -1.5707959]
+ARM_JOINT_MAXS = [ 3.4906588,  3.3161253,  1.5707959, 2.4434607,   1.5707959,  0.785398,  1.5707959]
 
 # ---------------------------------------------------------------------------
 # DexPour stage trigger parameters

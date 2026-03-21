@@ -14,7 +14,7 @@
 
 """Constants for the pre-pouring version of bi_pouring_v1.
 
-Observation layout (39D):
+Observation layout (40D):
   right_arm_joint_pos          : 7
   right_arm_joint_vel          : 7
   right_palm_env_pos           : 3
@@ -22,7 +22,7 @@ Observation layout (39D):
   source_cup_quat              : 4
   target_cup_quat              : 4
   transport_summary            : 5
-  last_palm_pose_action        : 6
+  last_arm_joint_action        : 7
 """
 
 from .bi_pouring_preset import RIGHT_POLICY_ARM_JOINT_NAMES
@@ -30,8 +30,6 @@ from .bi_pouring_preset import RIGHT_POLICY_ARM_JOINT_NAMES
 NUM_RIGHT_ARM_DOF = len(RIGHT_POLICY_ARM_JOINT_NAMES)
 NUM_ARM_DOF = NUM_RIGHT_ARM_DOF
 
-NUM_PALM_POSE_ACTIONS = 6
-
-NUM_OBSERVATIONS = 39
-NUM_ACTIONS = NUM_PALM_POSE_ACTIONS
+NUM_OBSERVATIONS = 40
+NUM_ACTIONS = NUM_RIGHT_ARM_DOF
 NUM_STATES = 0

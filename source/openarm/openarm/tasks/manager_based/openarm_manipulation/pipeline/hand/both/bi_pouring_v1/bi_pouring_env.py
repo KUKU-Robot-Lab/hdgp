@@ -16,29 +16,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import math
-from pathlib import Path
-import sys
 
 import torch
-
-for _parent in Path(__file__).resolve().parents:
-    if _parent.name == "source":
-        _vendored = _parent / "FABRICS" / "src"
-        if _vendored.exists():
-            _v = str(_vendored)
-            if _v not in sys.path:
-                sys.path.insert(0, _v)
-        break
 
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_mul, subtract_frame_transforms
-
-from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
-from fabrics_sim.integrator.integrators import DisplacementIntegrator
-from fabrics_sim.utils.utils import initialize_warp
-from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
 
 from .bi_pouring_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
@@ -86,11 +70,11 @@ class BiPouringEnv(DirectRLEnv):
         super().__init__(cfg, render_mode=render_mode, **kwargs)
 
         self._setup_env_refs()
-        self._setup_geometric_fabrics()
 
         n = self.num_envs
         self._actions = torch.zeros(n, self.cfg.num_actions, device=self.device)
         self._prev_actions = torch.zeros_like(self._actions)
+        self._arm_joint_targets = self._right_arm_home.unsqueeze(0).expand(n, -1).clone()
 
         self._right_palm_pos_w = torch.zeros(n, 3, device=self.device)
         self._source_pour_point_w = torch.zeros(n, 3, device=self.device)
@@ -146,8 +130,8 @@ class BiPouringEnv(DirectRLEnv):
         arm_hand_start = torch.cat([self._right_arm_home, self._right_hand_grasp], dim=0)
         self.robot_start_joint_pos = arm_hand_start.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
 
-        self._palm_pose_lower_limits = torch.tensor(cfg.palm_pose_mins, dtype=torch.float32, device=self.device)
-        self._palm_pose_upper_limits = torch.tensor(cfg.palm_pose_maxs, dtype=torch.float32, device=self.device)
+        self._arm_joint_lower_limits = torch.tensor(cfg.arm_joint_mins, dtype=torch.float32, device=self.device)
+        self._arm_joint_upper_limits = torch.tensor(cfg.arm_joint_maxs, dtype=torch.float32, device=self.device)
         self._target_tilt_cos = math.cos(math.radians(cfg.target_transport_tilt_deg))
 
         attach_pos_r = torch.tensor(cfg.right_source_cup_attach_pos_b, dtype=torch.float32, device=self.device)
@@ -197,79 +181,16 @@ class BiPouringEnv(DirectRLEnv):
             device=self.device,
         )
 
-    def _setup_geometric_fabrics(self) -> None:
-        initialize_warp(self.device[-1])
-
-        self.world_model = WorldMeshesModel(
-            batch_size=self.num_envs,
-            max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
-            device=self.device,
-            world_filename="open_tesollo_boxes_no_table",
-        )
-        self.object_ids, self.object_indicator = self.world_model.get_object_ids()
-
-        self.timestep = self.cfg.fabrics_dt
-        self.open_tesollo_fabric = OpenArmTeoslloPoseFabric(
-            self.num_envs,
-            self.device,
-            self.timestep,
-            graph_capturable=False,
-            use_hand_fabric=False,
-        )
-        self.open_tesollo_integrator = DisplacementIntegrator(self.open_tesollo_fabric)
-
-        default_config = self.open_tesollo_fabric.default_config.clone()
-        default_config[:, : self.robot_start_joint_pos.shape[1]] = self.robot_start_joint_pos
-        self.open_tesollo_fabric.default_config.copy_(default_config)
-
-        num_joints = self.open_tesollo_fabric.num_joints
-        self.fabric_q = self.robot_start_joint_pos.clone().contiguous()
-        if self.fabric_q.shape[1] != num_joints:
-            raise RuntimeError(f"Unexpected fabric joint count: {num_joints}")
-        self.fabric_qd = torch.zeros(self.num_envs, num_joints, device=self.device)
-        self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
-        self.hand_pca_targets = torch.zeros(self.num_envs, 5, device=self.device)
-        self.palm_pose_targets = torch.zeros(self.num_envs, 6, device=self.device)
-        self.fabric_damping_gain = self.cfg.fabrics_damping_gain * torch.ones(
-            self.num_envs, 1, device=self.device
-        )
-
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._prev_actions.copy_(self._actions)
         self._actions.copy_(torch.clamp(actions, -1.0, 1.0))
 
-        self.palm_pose_targets.copy_(
-            _scale_actions(self._actions, self._palm_pose_lower_limits, self._palm_pose_upper_limits)
+        self._arm_joint_targets = _scale_actions(
+            self._actions, self._arm_joint_lower_limits, self._arm_joint_upper_limits
         )
-
-        self.open_tesollo_fabric.set_features(
-            self.hand_pca_targets,
-            self.palm_pose_targets,
-            "euler_zyx",
-            self.fabric_q.detach(),
-            self.fabric_qd.detach(),
-            self.object_ids,
-            self.object_indicator,
-            self.fabric_damping_gain,
-        )
-        for _ in range(self.cfg.fabric_decimation):
-            self.fabric_q, self.fabric_qd, self.fabric_qdd = self.open_tesollo_integrator.step(
-                self.fabric_q.detach(),
-                self.fabric_qd.detach(),
-                self.fabric_qdd.detach(),
-                self.timestep,
-            )
-            self.fabric_q[:, len(self._right_arm_joint_ids) :] = self._right_hand_grasp.unsqueeze(0)
-            self.fabric_qd[:, len(self._right_arm_joint_ids) :] = 0.0
-            self.fabric_qdd[:, len(self._right_arm_joint_ids) :] = 0.0
 
     def _apply_action(self) -> None:
-        arm_dim = len(self._right_arm_joint_ids)
-        arm_target = self.fabric_q[:, :arm_dim]
-        arm_vel_target = self.fabric_qd[:, :arm_dim]
-
-        self.robot.set_joint_position_target(arm_target, joint_ids=self._right_arm_joint_ids)
-        self.robot.set_joint_velocity_target(arm_vel_target, joint_ids=self._right_arm_joint_ids)
+        self.robot.set_joint_position_target(self._arm_joint_targets, joint_ids=self._right_arm_joint_ids)
 
         hand_target = self._right_hand_grasp.unsqueeze(0).expand(self.num_envs, -1)
         left_target = self._left_holder_home.unsqueeze(0).expand(self.num_envs, -1)
@@ -550,13 +471,9 @@ class BiPouringEnv(DirectRLEnv):
             bead.write_root_pose_to_sim(bead_pose, env_ids=env_ids)
             bead.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        self.fabric_q[env_ids] = self.robot_start_joint_pos[env_ids]
-        self.fabric_qd[env_ids] = 0.0
-        self.fabric_qdd[env_ids] = 0.0
-        self.hand_pca_targets[env_ids] = 0.0
-        self.palm_pose_targets[env_ids] = 0.0
         self._actions[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
+        self._arm_joint_targets[env_ids] = self._right_arm_home.unsqueeze(0).expand(len(env_ids), -1)
         self._spill_penalty[env_ids] = 0.0
         self._collision_penalty[env_ids] = 0.0
         self._smoothness_penalty[env_ids] = 0.0
