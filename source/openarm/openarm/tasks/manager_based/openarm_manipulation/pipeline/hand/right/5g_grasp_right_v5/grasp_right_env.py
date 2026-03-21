@@ -777,28 +777,47 @@ class GraspRightEnv(DirectRLEnv):
             1.0 - (1.0 - self.cfg.grasp_shaping_scale) * is_grasp_only.float()
         )   # (N,) ∈ [grasp_shaping_scale, 1.0]
 
-        # ---- 1. contact_reward ----
-        num_contacts = self.num_contacts_buf.float()   # (N,)
-        contact_reward = self.cfg.contact_reward_weight * (num_contacts / NUM_FINGERTIPS)
+        # ---- tip contact force (Cup-filtered, 실 Teosllo FT 센서 직접 대응) ----
+        # contact_force_raw: (N, 5) [N 단위], force_matrix_w Cup-only (sim2real 호환)
+        thumb_force      = self.contact_force_raw[:, 0]           # (N,) 엄지 tip 힘
+        others_force     = self.contact_force_raw[:, 1:]          # (N, 4) 나머지 tip 힘
+        others_avg_force = others_force.mean(dim=-1)              # (N,) 나머지 평균 힘
 
-        # ---- 2. hold_entry_reward: Hold 진입 1회만 지급 ----
-        # tip contact: primary (손끝 파지가 의미 있는 파지)
-        # deep grasp bonus: tip AND middle 동시 접촉 → 더 curl된 깊은 파지
-        #   middle만 닿은 손가락 → 보상 0 → 더 curl해서 tip까지 닿으려는 유인 발생
+        # ---- 1. force_balance_reward: |F_thumb| ≈ |F_others_avg| (sim2real 핵심) ----
+        # [contact_reward 대체] binary count(num_contacts/5) 제거 → 힘 품질 직접 측정
+        # 물리적 근거: 컵 기울어짐 = 합력 불균형 → 엄지가 나머지 4개에 밀림
+        #   |F_thumb| = |F_others_avg| → 엄지 1개 vs 나머지 1개 평균 균형 = 합력 ≈ 0
+        # gaussian: 균형점(err=0)에서 최대, 멀어질수록 감소
+        # gate: 양쪽 모두 접촉 시에만 활성화 (무접촉 시 err=0 → 오보상 방지)
+        has_thumb_contact  = self.binary_contact_buf[:, 0].float()             # (N,)
+        has_others_contact = (self.binary_contact_buf[:, 1:].sum(-1) >= 1).float()  # (N,)
+        balance_gate       = has_thumb_contact * has_others_contact            # (N,)
+        force_balance_err  = (thumb_force - others_avg_force).abs()            # (N,) [N]
+        force_balance_reward = (
+            self.cfg.force_balance_weight
+            * balance_gate
+            * torch.exp(-self.cfg.force_balance_sharpness * force_balance_err)
+        )
+
+        # ---- 2. hold_entry_reward: Hold 진입 1회만 지급 (force-weighted) ----
+        # tip_count(binary) → tip_force_total(FT 크기 합산): 실 FT 센서 호환
+        #   강하게 닿을수록 더 보상 → 파지력 품질 유도
         just_entering_hold = (self.episode_length_buf == HOLD_START_STEP).float()  # (N,)
-        tip_count       = self.binary_contact_buf.float().sum(dim=-1)              # (N,) 0~5
+        tip_force_norm  = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)  # (N,5) ∈[0,1]
+        tip_force_total = tip_force_norm.sum(dim=-1)                               # (N,) 0~5
         tip_and_middle  = (
             self.binary_contact_buf & self.middle_binary_contact_buf
         ).float().sum(dim=-1)                                                       # (N,) 0~5
         hold_entry_reward = just_entering_hold * (
-            self.cfg.hold_tip_reward_weight  * tip_count
-            + self.cfg.hold_deep_reward_weight * tip_and_middle
+            self.cfg.hold_tip_reward_weight  * tip_force_total   # force-weighted (FT sensor)
+            + self.cfg.hold_deep_reward_weight * tip_and_middle  # deep grasp bonus (critic)
         )
 
-        # ---- 3. asymmetric enclosure (DexPour r_finger_cup_dist, sim2real 호환) ----
-        # palm→cup XY 방향 기준:
-        #   엄지(0): near side(palm 쪽) 목표 → 반대 손가락과 합력 상쇄 → cup 안 밀림
-        #   나머지(1-4): far side(반대 쪽) 목표
+        # ---- 3. asymmetric enclosure (position shaping, approach용, sim2real 호환) ----
+        # palm→cup XY 방향 기준 비대칭 위치 유도:
+        #   엄지(0): near side(palm 쪽) — thumb_weight(0.6) 비중으로 강화
+        #   나머지(1-4): far side(반대 쪽) — (1-thumb_weight)(0.4) 비중
+        # [force_balance와 역할 분리] enclosure=접근 유도(contact 전), force_balance=힘 품질(contact 후)
         grasp_center = self.object_pos.clone()
         grasp_center[:, 2] += self.cfg.cup_grasp_z_offset   # (N, 3)
 
@@ -818,25 +837,32 @@ class GraspRightEnv(DirectRLEnv):
             dim=-1
         ).mean(dim=-1)                                                                     # (N,)
 
-        enclosure_reward = enclosure_weight * 0.5 * (
-            torch.exp(-self.cfg.enclosure_sharpness * thumb_dist)
-            + torch.exp(-self.cfg.enclosure_sharpness * others_dist)
+        tw = self.cfg.enclosure_thumb_weight   # 0.6: 엄지 유도 강화 (0.5 → 0.6)
+        enclosure_reward = enclosure_weight * (
+            tw * torch.exp(-self.cfg.enclosure_sharpness * thumb_dist)
+            + (1.0 - tw) * torch.exp(-self.cfg.enclosure_sharpness * others_dist)
         )
 
         # ---- 4. full_grasp_bonus (per-step, Grasp phase only, scale 미적용) ----
-        # 조건: 엄지 contact AND 나머지(2~5) 3개 이상 → opposition 보장
-        # DexPour r_grasp에 해당: 안정 파지 유지 시 매 스텝 보상 → oscillation 억제
+        # 조건: 엄지 contact AND 나머지 3개 이상 AND 엄지 힘 충분 (force adequacy)
+        #   thumb_force_ratio_min: 엄지 힘 ≥ others_avg × ratio_min (0.5 = 50%)
+        #   → 엄지가 0.1N(threshold) 살짝 닿기만 해도 조건 충족하는 문제 방지
         others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)          # (N,) 0~4
-        full_grasp_flag = (self.binary_contact_buf[:, 0] & (others_count >= 3)).float()
+        thumb_force_adequate = (
+            thumb_force >= others_avg_force * self.cfg.thumb_force_ratio_min
+        ).float()  # (N,) — 엄지가 나머지 평균 힘의 최소 비율 이상
+        full_grasp_flag = (
+            self.binary_contact_buf[:, 0] & (others_count >= 3)
+        ).float() * thumb_force_adequate
         full_grasp_bonus = (
             self.cfg.full_grasp_bonus_weight * is_grasp_only.float() * full_grasp_flag
         )
 
         # ---- dense reward에 phase scale 적용 ----
-        # opposition_reward 제거: full_grasp_bonus가 엄지 포함 조건을 더 강하게 요구
-        # contact_balance 제거: min(5개)가 full_grasp(4개) 목표와 상충
+        # force_balance: 힘 품질 (contact 후 활성, sim2real 핵심)
+        # enclosure:     위치 유도 (contact 전후 모두, approach shaping)
         dense_reward = dense_scale * (
-            contact_reward
+            force_balance_reward
             + enclosure_reward
         )
         # full_grasp_bonus는 scale 미적용 (grasp phase에서 full strength 유지)
@@ -889,28 +915,34 @@ class GraspRightEnv(DirectRLEnv):
             self.grasp_adr.maybe_increment(self.success_flag.float().mean())
 
         # ---- 로깅 ----
-        self.extras["contact_reward"]       = contact_reward.mean()
-        self.extras["full_grasp_bonus"]     = full_grasp_bonus.mean()
-        self.extras["full_grasp_rate"]      = full_grasp_flag.mean()   # 비율 모니터링
-        self.extras["hold_entry_reward"]    = hold_entry_reward.mean()
-        self.extras["enclosure_reward"]     = enclosure_reward.mean()
-        self.extras["dense_scale"]          = dense_scale.mean()   # 모니터링: 0.25→1.0 전환 확인
-        self.extras["action_reg"]           = action_reg.mean()
-        self.extras["action_smoothness"]    = action_smoothness.mean()
-        self.extras["lift_reward"]          = lift_reward.mean()
-        self.extras["cup_height_delta"]     = cup_height_delta.mean()
-        self.extras["contact_quality"]      = contact_quality.mean()
-        self.extras["num_contacts"]         = num_contacts.mean()
-        self.extras["success_rate"]         = self.success_flag.float().mean()
-        self.extras["adr_enclosure_w"]      = torch.tensor(enclosure_weight, device=self.device)
-        # ---- tip / distal 접촉 상태 개별 모니터링 ----
-        self.extras["tip_num_contacts"]     = self.binary_contact_buf.float().sum(dim=-1).mean()
-        self.extras["tip_force_mean"]       = self.contact_force_raw.mean()
-        self.extras["distal_num_contacts"]  = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
-        self.extras["distal_force_mean"]    = self.distal_contact_force_raw.mean()
-        self.extras["middle_num_contacts"]  = self.middle_binary_contact_buf.float().sum(dim=-1).mean()
-        self.extras["middle_force_mean"]    = self.middle_contact_force_raw.mean()
-        self.extras["deep_grasp_count"]     = tip_and_middle.mean()   # tip+middle 동시 접촉 평균 수
+        # [force balance 핵심 지표] — 컵 기울어짐 진단용
+        self.extras["force_balance_reward"]  = force_balance_reward.mean()
+        self.extras["force_balance_err"]     = force_balance_err.mean()       # N: 0이면 완벽 균형
+        self.extras["thumb_force_mean"]      = thumb_force.mean()             # N: 엄지 tip 힘
+        self.extras["others_avg_force_mean"] = others_avg_force.mean()        # N: 나머지 평균 힘
+        self.extras["thumb_force_adequate"]  = thumb_force_adequate.mean()    # 비율: 엄지 힘 충분도
+        # [grasp quality]
+        self.extras["full_grasp_bonus"]      = full_grasp_bonus.mean()
+        self.extras["full_grasp_rate"]       = full_grasp_flag.mean()
+        self.extras["hold_entry_reward"]     = hold_entry_reward.mean()
+        self.extras["enclosure_reward"]      = enclosure_reward.mean()
+        self.extras["dense_scale"]           = dense_scale.mean()
+        self.extras["action_reg"]            = action_reg.mean()
+        self.extras["action_smoothness"]     = action_smoothness.mean()
+        self.extras["lift_reward"]           = lift_reward.mean()
+        self.extras["cup_height_delta"]      = cup_height_delta.mean()
+        self.extras["contact_quality"]       = contact_quality.mean()
+        self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
+        self.extras["success_rate"]          = self.success_flag.float().mean()
+        self.extras["adr_enclosure_w"]       = torch.tensor(enclosure_weight, device=self.device)
+        # [tip / distal 접촉 상태 모니터링]
+        self.extras["tip_num_contacts"]      = self.binary_contact_buf.float().sum(dim=-1).mean()
+        self.extras["tip_force_mean"]        = self.contact_force_raw.mean()
+        self.extras["distal_num_contacts"]   = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
+        self.extras["distal_force_mean"]     = self.distal_contact_force_raw.mean()
+        self.extras["middle_num_contacts"]   = self.middle_binary_contact_buf.float().sum(dim=-1).mean()
+        self.extras["middle_force_mean"]     = self.middle_contact_force_raw.mean()
+        self.extras["deep_grasp_count"]      = tip_and_middle.mean()
         if self.grasp_adr is not None:
             self.extras["adr_progress"] = torch.tensor(self.grasp_adr.progress, device=self.device)
 

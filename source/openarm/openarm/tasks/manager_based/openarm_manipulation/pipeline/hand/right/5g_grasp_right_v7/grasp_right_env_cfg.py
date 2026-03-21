@@ -119,19 +119,23 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # R1. fingertip_enclosure (ADR: 10→20) — Grasp phase 핵심 리워드
     # max ≈ 10.0 (palm 접근보다 10×, 손가락 파지가 지배적 gradient)
-    enclosure_weight:    float = 10.0
-    enclosure_sharpness: float = 15.0
-    cup_radius_approx:   float = 0.045
+    enclosure_weight:       float = 10.0
+    enclosure_sharpness:    float = 15.0
+    cup_radius_approx:      float = 0.045
+    enclosure_thumb_weight: float = 0.6   # 엄지 유도 비중 (0.5→0.6): 비대칭 강화
 
-    # R1b. fingertip_contact_bonus: 실제 contact 발생 시 추가 보너스
-    # max ≈ 5손가락 × 3.0 = 15.0 → 가장 강한 파지 신호
-    contact_bonus_weight: float = 3.0
+    # R1b. force_balance_reward: |F_thumb - F_others_avg| → 0 (컵 기울임 방지 핵심)
+    # [contact_bonus 대체] binary count → 힘 균형 직접 측정 (sim2real 호환)
+    # gate: 엄지 + 나머지 1개 이상 접촉 시에만 활성 (무접촉 err=0 오보상 방지)
+    # gaussian: 균형점(err=0)에서 최대, 불균형 커질수록 급감
+    force_balance_weight:    float = 3.0
+    force_balance_sharpness: float = 8.0   # 1/8N 오차 → e^-1
 
-    # R1c. force_uniformity: 각 tip에 인가되는 force가 균등할수록 추가 보상
-    # max = weight = 15.0 (contact_bonus 최대치와 동등, 5손가락 균등 접촉 시)
-    # std↓ → exp(-1.5 * std) → 불균등 파지 강하게 억제
-    force_uniformity_weight:    float = 15.0
-    force_uniformity_sharpness: float = 1.5   # exp(-1.5 * std[N])
+    # R1c. full_grasp_bonus: Grasp phase per-step
+    # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
+    # → 엄지가 0.1N 살짝 닿기만 해서 조건 충족하던 허점 제거
+    full_grasp_bonus_weight: float = 8.0
+    thumb_force_ratio_min:   float = 0.5   # 엄지 힘 ≥ others 평균 × 0.5
 
     # R2. tip_approach_bonus: distal보다 tip이 먼저 닿도록 유도
     tip_approach_bonus_weight: float = 1.0

@@ -109,36 +109,47 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Reward 파라미터
     #
     # [방향 A: Lift-phase conditioned reward]
-    # dense reward (contact/enclosure/opposition)에 phase scale 적용:
+    # dense reward (force_balance/enclosure)에 phase scale 적용:
     #   Grasp phase: dense × grasp_shaping_scale (방향 안내만, 누적 지배 방지)
     #   Lift  phase: dense × 1.0                 (파지 유지 + 리프트 동시 달성 시 풀 보상)
     # 목표: "터치만 540step" local optimum 탈피 → "파지 후 리프트" 전략 학습
+    #
+    # [contact_reward 제거 이유]
+    #   binary count (num_contacts/5) → 모든 손가락 균등 → 엄지 힘 불균형 유발
+    #   → force_balance_reward로 대체 (힘 품질 직접 측정, 실 FT 센서 호환)
     # -----------------------------------------------------------------------
-    # 1. contact_reward: 접촉 유지 (num_contacts / 5)
-    contact_reward_weight: float = 2.0
 
-    # 2. hold_entry: Hold 진입 시 1회만 지급
-    #    tip contact: primary (손끝이 닿아야 의미 있는 파지)
-    #    deep grasp bonus: tip AND middle 동시 접촉 손가락에만 추가 보상
-    #      → middle만 닿은 손가락 = 보상 0 → 더 curl해서 tip까지 닿으려는 유인
-    hold_tip_reward_weight:   float = 10.0   # tip contact 개당 (primary, 5→10)
+    # 1. force_balance_reward: 엄지 tip 힘 ≈ 나머지 손가락 평균 tip 힘 (sim2real 호환)
+    #    물리적 근거: 컵에 가해지는 합력 = 0 → |F_thumb| ≈ |F_2+F_3+F_4+F_5| / 4
+    #    → 엄지가 나머지 4개에 밀리지 않아야 컵이 기울지 않음
+    #    구현: gaussian bell reward, 양쪽 접촉 시에만 활성화 (gate)
+    #    센서: Cup-filtered force_matrix_w (실 Teosllo FT 센서 직접 대응)
+    force_balance_weight:    float = 3.0
+    force_balance_sharpness: float = 8.0   # gaussian 너비 (N 단위, 1/8N 오차 → e^-1)
+
+    # 2. hold_entry: Hold 진입 시 1회만 지급 (force-weighted, 실 FT 센서 호환)
+    #    tip_force_total: binary count → FT 크기 합산으로 변경 (힘이 클수록 더 보상)
+    #    deep grasp bonus: tip AND middle 동시 접촉 → 깊은 파지 유인 (critic obs 사용)
+    hold_tip_reward_weight:   float = 10.0   # Σ(tip_force_norm) 기반 (0~5 범위 유지)
     hold_deep_reward_weight:  float = 5.0    # tip+middle 동시 접촉 개당 (deep grasp bonus)
 
-    # 3. asymmetric enclosure (DexPour r_finger_cup_dist 방식, sim2real 호환)
-    #    palm→cup 방향 기준 비대칭 유도:
-    #      엄지(0): near side(palm 쪽) → 상대 힘이 상쇄 → cup 안 밀림
-    #      나머지(1-4): far side(반대 쪽)
-    #    → 대칭 파지 → 합력 ≈ 0 → cup 제자리 유지 (명시적 stability reward 불필요)
+    # 3. asymmetric enclosure (position shaping, approach용, sim2real 호환)
+    #    palm→cup 방향 기준 비대칭 위치 유도:
+    #      엄지(0): near side(palm 쪽) — thumb_weight 비중 (0.6)
+    #      나머지(1-4): far side(반대 쪽) — (1-thumb_weight) 비중 (0.4)
+    #    → 엄지 위치 유도 강화 (0.5→0.6): 힘 균형의 선행 조건
     #    ADR: 4.0 → 8.0 (점점 강화)
-    enclosure_weight:    float = 4.0
-    enclosure_sharpness: float = 15.0
-    cup_radius_approx:   float = 0.045  # cup_big 반경 (near/far target offset 계산용)
+    enclosure_weight:       float = 4.0
+    enclosure_sharpness:    float = 15.0
+    enclosure_thumb_weight: float = 0.6    # 엄지 유도 비중 (0.5→0.6): 비대칭 강화
+    cup_radius_approx:      float = 0.045  # cup_big 반경 (near/far target offset 계산용)
 
-    # 4. full_grasp_bonus: Grasp phase 내내 per-step (DexPour r_grasp 방식)
-    #   조건: 엄지(1) contact AND 나머지(2~5) 중 3개 이상 → opposition 보장
-    #   opposition_reward 제거 이유: 낮은 bar(thumb+1)가 local optimum 형성 → oscillation 유발
-    #   contact_balance 제거 이유: min(5개) 조건이 full_grasp(4개)와 목표 불일치
+    # 4. full_grasp_bonus: Grasp phase 내내 per-step
+    #   조건: 엄지 contact AND 나머지 3개 이상 AND 엄지 힘 ≥ others_avg × ratio_min
+    #   thumb_force_ratio_min: 엄지 힘이 나머지 평균의 최소 비율 (0.5 = 50%)
+    #     → 엄지가 살짝만 닿는 것(0.1N)으로 조건 충족하는 문제 방지
     full_grasp_bonus_weight: float = 8.0   # per-step bonus (scale 미적용, Grasp phase only)
+    thumb_force_ratio_min:   float = 0.5   # 엄지 힘 ≥ others 평균 × 0.5 (force adequacy)
 
     # 5a. grasp_shaping_scale: Grasp phase dense reward 억제 스케일
     #   dense_scale = grasp_shaping_scale + (1 - grasp_shaping_scale) × is_lift_flag
