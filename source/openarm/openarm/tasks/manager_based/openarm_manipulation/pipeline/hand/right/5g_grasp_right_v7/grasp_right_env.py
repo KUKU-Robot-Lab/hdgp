@@ -879,8 +879,6 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["force_balance_err"]     = force_balance_err.mean()       # 0이면 완벽 균형
         self.extras["thumb_force_mean"]      = thumb_force.mean()
         self.extras["others_avg_force_mean"] = others_avg_force.mean()
-        self.extras["force_uniformity"]      = r1c_uniformity.mean()
-        self.extras["force_std"]             = force_std.mean()
         self.extras["full_grasp_bonus"]      = r1c_full_grasp.mean()
         self.extras["full_grasp_rate"]       = full_grasp_flag.mean()
         self.extras["thumb_force_adequate"]  = thumb_force_adequate.mean()
