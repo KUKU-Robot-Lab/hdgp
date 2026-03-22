@@ -263,11 +263,11 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     arm_joint_mins: tuple[float, ...] = tuple(ARM_JOINT_MINS)
     arm_joint_maxs: tuple[float, ...] = tuple(ARM_JOINT_MAXS)
 
-    # offset-from-home: target = home + action * action_scale_rad.
-    # action=0 → home pose 유지, action=±1 → home ± action_scale_rad (drift 없음).
-    action_scale_rad: float = 0.1
+    # incremental joint position control: target += dt * action_speed_scale * action
+    # max Δ/step = action_speed_scale * (1/60) ≈ 0.05 rad  (action_speed_scale=3.0)
+    action_speed_scale: float = 3.0
 
-    # curriculum_stage: 현재 미사용 (wrist masking 제거됨).
+    # curriculum_stage: 현재 미사용.
     curriculum_stage: int = 0
 
     bead_count: int = 1
@@ -321,7 +321,6 @@ class BiPouringEnvCfg(DirectRLEnvCfg):
     invalid_bead_drop_z_threshold: float = 0.230
     invalid_bead_floor_z_threshold: float = 0.050
     invalid_bead_xy_threshold: float = 0.800
-
 
     debug_print: bool = True
 

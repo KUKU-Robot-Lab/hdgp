@@ -12,6 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""bi_pouring_v2: incremental joint position control (franka_cabinet 패턴).
+
+v1 대비 주요 변경:
+  - 제어 방식: offset-from-home → incremental joint position control
+    target += dt * action_speed_scale * action  (clamp to joint limits)
+  - Observation: prev_actions → arm_joint_targets (현재 누적 target)
+  - 단일 파일: obs/reward/done 모두 인라인 (mdp/ 서브모듈 없음)
+  - 내부 버퍼: _raw_actions, _prev_raw_actions (v1의 _actions/_prev_actions 대체)
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -34,18 +44,6 @@ from .bi_pouring_preset import (
     RIGHT_HAND_GRASP_JOINT_POS,
     RIGHT_HAND_JOINT_NAMES,
 )
-
-
-def _offset_from_home(
-    actions: torch.Tensor,
-    home: torch.Tensor,
-    scale_rad: float,
-    lower: torch.Tensor,
-    upper: torch.Tensor,
-) -> torch.Tensor:
-    """use_default_offset 방식: action=0 → home pose, action=±1 → home ± scale_rad.
-    delta 누적 없이 매 step 독립적으로 target을 계산하므로 drift가 없다."""
-    return torch.clamp(home + actions * scale_rad, lower, upper)
 
 
 def _safe_normalize(vec: torch.Tensor, dim: int = -1) -> torch.Tensor:
@@ -98,8 +96,13 @@ class BiPouringEnv(DirectRLEnv):
         )
 
         n = self.num_envs
-        self._actions = torch.zeros(n, self.cfg.num_actions, device=self.device)
-        self._prev_actions = torch.zeros_like(self._actions)
+        # incremental 제어: physics_dt = sim.dt * decimation = 1/120 * 2 = 1/60 s
+        self._physics_dt: float = self.cfg.sim.dt * self.cfg.decimation
+
+        # raw_actions: policy 출력 (clamp [-1, 1])
+        # arm_joint_targets: 누적된 joint position target (incremental 적분)
+        self._raw_actions = torch.zeros(n, self.cfg.num_actions, device=self.device)
+        self._prev_raw_actions = torch.zeros_like(self._raw_actions)
         self._arm_joint_targets = self._right_arm_home.unsqueeze(0).expand(n, -1).clone()
 
         self._right_palm_pos_w = torch.zeros(n, 3, device=self.device)
@@ -147,7 +150,7 @@ class BiPouringEnv(DirectRLEnv):
         self._left_ids_t: torch.Tensor | None = None
 
         if getattr(cfg, "debug_print", False):
-            print("\n========== [BiPouring] Joint ID Mapping ==========")
+            print("\n========== [BiPouring v2] Joint ID Mapping ==========")
             print(f"Total robot joints: {len(self.robot.joint_names)}")
             print(f"All joint names: {self.robot.joint_names}")
             print(f"\nRight arm joint IDs  : {self._right_arm_joint_ids}")
@@ -159,11 +162,10 @@ class BiPouringEnv(DirectRLEnv):
             overlap_arm_left = set(self._right_arm_joint_ids) & set(self._left_holder_joint_ids)
             print(f"\nOverlap arm vs hand: {overlap_arm_hand}  (should be empty!)")
             print(f"Overlap arm vs left: {overlap_arm_left}  (should be empty!)")
-            print("\n========== [BiPouring] Actuator Coverage ==========")
+            print("\n========== [BiPouring v2] Actuator Coverage ==========")
             for act_name, actuator in self.robot.actuators.items():
                 act_joints = list(actuator.joint_names)
                 print(f"  [{act_name}] ({len(act_joints)} joints): {act_joints}")
-            # arm wrist joints가 actuator에 포함됐는지 명시 확인
             all_actuated = set()
             for actuator in self.robot.actuators.values():
                 all_actuated.update(actuator.joint_names)
@@ -240,19 +242,14 @@ class BiPouringEnv(DirectRLEnv):
         )
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self._prev_actions.copy_(self._actions)
-        self._actions.copy_(torch.clamp(actions, -1.0, 1.0))
+        self._prev_raw_actions.copy_(self._raw_actions)
+        self._raw_actions.copy_(torch.clamp(actions, -1.0, 1.0))
 
-        # wrist masking 제거: proximal joints 움직임이 wrist에 coupling을 발생시켜
-        # target=0 고정 상태에서 wrist가 발산하는 문제 해결.
-        # 5g_lift_left처럼 7 DOF 전체를 policy가 직접 제어.
-        effective_actions = self._actions.clone()
-
-        # offset-from-home: action=0 → home pose, drift 없이 매 step 독립 계산.
-        self._arm_joint_targets = _offset_from_home(
-            effective_actions,
-            self._right_arm_home,
-            self.cfg.action_scale_rad,
+        # incremental: target += dt * speed_scale * action
+        # max Δ/step = action_speed_scale * physics_dt ≈ 3.0 * (1/60) = 0.05 rad
+        delta = self.cfg.action_speed_scale * self._physics_dt * self._raw_actions
+        self._arm_joint_targets = torch.clamp(
+            self._arm_joint_targets + delta,
             self._arm_joint_lower_limits,
             self._arm_joint_upper_limits,
         )
@@ -328,11 +325,11 @@ class BiPouringEnv(DirectRLEnv):
         target    = self._arm_joint_targets[e]
         # physics buffer에 실제로 설정된 arm target (actuator가 이 값으로 PD 계산)
         arm_tgt_buf = self.robot.data.joint_pos_target[e, self._right_arm_joint_ids]
-        action    = self._actions[e]
-        home      = self._right_arm_home
-        delta_pos = joint_pos - home   # 현재 위치가 home에서 벗어난 정도
-        delta_tgt = target    - home   # 목표가 home에서 벗어난 정도
-        pd_error  = target    - joint_pos  # PD 제어 오차
+        raw_action  = self._raw_actions[e]
+        home        = self._right_arm_home
+        delta_pos   = joint_pos - home   # 현재 위치가 home에서 벗어난 정도
+        delta_tgt   = target    - home   # 목표가 home에서 벗어난 정도
+        pd_error    = target    - joint_pos  # PD 제어 오차
 
         # hand joints (first 5 of 20) — rj_dg 마스킹 확인용
         hand_ids_5 = self._right_hand_joint_ids[:5]
@@ -362,7 +359,6 @@ class BiPouringEnv(DirectRLEnv):
         # wrist PD error 경고 (|error| > 0.3 rad)
         wrist_warn = any(abs(float(pd_error[i].item())) > 0.3 for i in range(4, 7))
         # reward 분해값 (env 0 기준)
-        cfg = self.cfg
         r_transport = float(self._r_transport_goal[e].item()) * cfg.reward_transport_goal_weight
         r_palm     = float(self._r_palm_to_goal[e].item())    * cfg.reward_palm_to_goal_weight
         r_tilt     = float(self._r_tilt[e].item())            * cfg.reward_tilt_weight
@@ -379,12 +375,13 @@ class BiPouringEnv(DirectRLEnv):
 
         hand_max_vel = float(self.robot.data.joint_vel[e, self._right_hand_joint_ids].abs().max().item())
         print(
-            f"\n[BiPouring DBG step={step:3d}]"
-            f"\n  action   : {_f(action)}"
-            f"\n  target   : {_f(target)}"
-            f"\n  arm_tgt_buf: {_f(arm_tgt_buf)}  ← physics buffer 실제값"
-            f"\n  joint_pos: {_f(joint_pos)}"
-            f"\n  joint_vel: {_f(joint_vel)}"
+            f"\n[BiPouring v2 DBG step={step:3d}]"
+            f"\n  raw_action  : {_f(raw_action)}"
+            f"\n  target(incr): {_f(target)}"
+            f"\n  Δtgt(tgt-home): {_f(delta_tgt)}"
+            f"\n  arm_tgt_buf : {_f(arm_tgt_buf)}  ← physics buffer 실제값"
+            f"\n  joint_pos   : {_f(joint_pos)}"
+            f"\n  joint_vel   : {_f(joint_vel)}"
             f"\n  pd_error (tgt-pos): {_f(pd_error)}"
             f"{'  *** WRIST LARGE ERROR ***' if wrist_warn else ''}"
             f"\n  Δpos(pos-home): {_f(delta_pos)}"
@@ -392,7 +389,7 @@ class BiPouringEnv(DirectRLEnv):
             f"\n  hand_vel(rj1-5_1): {_f(hand_vel5)}  max_abs={hand_max_vel:.2f} rad/s"
             f"\n  hand_tgt(rj1-5_1): {_f(hand_tgt5)}"
             f"\n  mouth dist={mouth_d:.3f}m  xy={mouth_xy:.3f}m  z_clear={mouth_z:.3f}m"
-            f"\n  palm→target vec: [{palm_vec[0]:+.3f} {palm_vec[1]:+.3f} {palm_vec[2]:+.3f}]  (palm이 이 방향으로 이동해야 r_palm↑)"
+            f"\n  palm→target vec: [{palm_vec[0]:+.3f} {palm_vec[1]:+.3f} {palm_vec[2]:+.3f}]"
             f"\n  bead env-local xyz: [{bead_env[0]:.3f} {bead_env[1]:.3f} {bead_z:.3f}]"
             f"  in_source={bool(self._bead_in_source_flags[e, 0].item())}"
             f"  in_target={bool(self._bead_in_target_flags[e, 0].item())}"
@@ -412,37 +409,43 @@ class BiPouringEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         self._compute_intermediate_values()
         self._debug_log()
-        from .mdp import observations as O
 
         obs = torch.cat(
             [
-                O.right_arm_joint_pos(self),
-                O.right_arm_joint_vel(self),
-                O.right_palm_env_pos(self),
-                O.source_to_target_mouth_vec(self),
-                O.source_cup_quat(self),
-                O.target_cup_quat(self),
-                O.transport_summary(self),
-                self._prev_actions,
+                self.robot.data.joint_pos[:, self._right_arm_joint_ids],          # 7D
+                self.robot.data.joint_vel[:, self._right_arm_joint_ids],           # 7D
+                self._right_palm_pos_w - self.scene.env_origins,                   # 3D
+                self._target_opening_w - self._source_pour_point_w,               # 3D
+                self.right_source_cup.data.root_quat_w,                           # 4D
+                self.left_target_cup.data.root_quat_w,                            # 4D
+                torch.stack(
+                    [
+                        self._mouth_distance,
+                        self._mouth_xy_distance,
+                        self._mouth_z_clearance,
+                        self._source_up_dot_world,
+                        self._directional_tilt_cos,
+                    ],
+                    dim=-1,
+                ),                                                                 # 5D
+                self._arm_joint_targets,                                           # 7D (v1: prev_actions)
             ],
             dim=-1,
         )
         return {"policy": obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        from .mdp import rewards as R
-
         cfg = self.cfg
         reward = (
-            cfg.reward_transport_goal_weight * R.transport_goal(self)
-            + cfg.reward_palm_to_goal_weight * R.palm_to_goal(self)
-            + cfg.reward_tilt_weight * R.tilt(self)
-            + cfg.reward_directional_tilt_weight * R.directional_tilt(self)
-            + cfg.reward_height_weight * R.height(self)
-            + cfg.reward_mouth_alignment_weight * R.mouth_alignment(self)
-            - cfg.penalty_spill_weight * R.bead_spill_penalty(self)
-            - cfg.penalty_collision_weight * R.collision_penalty(self)
-            - cfg.penalty_action_smoothness_weight * R.action_smoothness_penalty(self)
+            cfg.reward_transport_goal_weight * self._r_transport_goal
+            + cfg.reward_palm_to_goal_weight * self._r_palm_to_goal
+            + cfg.reward_tilt_weight * self._r_tilt
+            + cfg.reward_directional_tilt_weight * self._r_directional_tilt
+            + cfg.reward_height_weight * self._r_height
+            + cfg.reward_mouth_alignment_weight * self._r_mouth_alignment
+            - cfg.penalty_spill_weight * self._spill_penalty
+            - cfg.penalty_collision_weight * self._collision_penalty
+            - cfg.penalty_action_smoothness_weight * self._smoothness_penalty
         )
         self.extras["mouth_distance"] = self._mouth_distance.mean()
         self.extras["mouth_xy_distance"] = self._mouth_xy_distance.mean()
@@ -466,10 +469,8 @@ class BiPouringEnv(DirectRLEnv):
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        from .mdp import terminations as T
-
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        terminated = T.major_spill(self) | T.invalid_state(self) | self._success_flag
+        terminated = self._major_spill_flag | self._invalid_state_flag | self._success_flag
         return terminated, time_out
 
     def _compute_intermediate_values(self) -> None:
@@ -570,7 +571,9 @@ class BiPouringEnv(DirectRLEnv):
             self._proximity_penalty(torch.norm(left_cup_pos_w - right_ee_pos_w, dim=-1), cfg.cup_to_opposite_ee_clearance_threshold),
         )
         self._collision_penalty = torch.maximum(rim_scrape, torch.maximum(ee_pen, cross_pen))
-        self._smoothness_penalty = torch.mean(torch.square(self._actions - self._prev_actions), dim=-1)
+
+        # smoothness_penalty: raw_actions 기반 jerk 페널티
+        self._smoothness_penalty = torch.mean(torch.square(self._raw_actions - self._prev_raw_actions), dim=-1)
 
         ready_mask = (
             (self._mouth_xy_distance <= cfg.success_mouth_xy_threshold)
@@ -608,7 +611,6 @@ class BiPouringEnv(DirectRLEnv):
         )
 
         # GUI 시각화: 빨강 = source pour point, 파랑 = target opening
-        # env 0만 표시하면 충분하지만, 모든 env를 한꺼번에 표시 가능
         _all_pts = torch.cat([self._source_pour_point_w, self._target_opening_w], dim=0)  # (2n, 3)
         _marker_idx = torch.zeros(2 * n, dtype=torch.long, device=self.device)
         _marker_idx[n:] = 1  # 뒤쪽 n개 = target opening (파랑)
@@ -654,7 +656,6 @@ class BiPouringEnv(DirectRLEnv):
         full_pos[:, self._right_arm_joint_ids] = self._right_arm_home.unsqueeze(0).expand(num_reset, -1)
         # cup collision_props(contact_offset=-0.1)로 cup-robot collision 비활성화됐으므로
         # 처음부터 grasp 위치로 초기화해도 penetration shock 없음.
-        # open(0)에서 grasp로 PD 전환 시 -62 rad/s 충격 → grasp로 직접 초기화.
         full_pos[:, self._right_hand_joint_ids] = self._right_hand_grasp.unsqueeze(0).expand(num_reset, -1)
         full_pos[:, self._left_holder_joint_ids] = self._left_holder_home.unsqueeze(0).expand(num_reset, -1)
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
@@ -694,9 +695,11 @@ class BiPouringEnv(DirectRLEnv):
             bead.write_root_pose_to_sim(bead_pose, env_ids=env_ids)
             bead.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        self._actions[env_ids] = 0.0
-        self._prev_actions[env_ids] = 0.0
+        # incremental control 버퍼 리셋: home으로 복원
         self._arm_joint_targets[env_ids] = self._right_arm_home.unsqueeze(0).expand(len(env_ids), -1)
+        self._raw_actions[env_ids] = 0.0
+        self._prev_raw_actions[env_ids] = 0.0
+
         self._spill_penalty[env_ids] = 0.0
         self._collision_penalty[env_ids] = 0.0
         self._smoothness_penalty[env_ids] = 0.0

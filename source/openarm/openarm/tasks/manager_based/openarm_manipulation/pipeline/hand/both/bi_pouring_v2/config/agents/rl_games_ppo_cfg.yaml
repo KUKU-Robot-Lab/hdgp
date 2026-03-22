@@ -1,9 +1,9 @@
-# bi_pouring_v1 rl_games PPO config
-# ManagerBasedRLEnv 기반 (5g_lift_left_v1 패턴)
-#   - right-arm-only policy (JointPositionActionCfg, 7D)
+# bi_pouring_v2 rl_games PPO config
+# DirectRLEnv 기반 (incremental joint position control)
+#   - right-arm-only policy (7D incremental velocity-like actions)
 #   - fixed left holder / fixed right hand (write_joint_state_to_sim)
 #   - single-bead transfer shaping
-# Actor obs: 36D / actions: 7D
+# Actor obs: 40D / actions: 7D
 # Default train envs: 2048
 
 params:
@@ -45,7 +45,7 @@ params:
   load_path: ""
 
   config:
-    name: bi_pouring_v1
+    name: bi_pouring_v2
     env_name: rlgpu
     device: "cuda:0"
     device_name: "cuda:0"
