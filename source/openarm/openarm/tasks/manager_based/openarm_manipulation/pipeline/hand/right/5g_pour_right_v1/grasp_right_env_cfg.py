@@ -48,6 +48,11 @@ from .grasp_right_preset import (
     LEFT_TARGET_CUP_ATTACH_POS_B,
     LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B,
     RIGHT_ACTUATED_JOINT_NAMES,
+    SOURCE_CUP_POUR_AXIS_B,
+    SOURCE_CUP_POUR_POINT_POS_B,
+    SOURCE_CUP_UP_AXIS_B,
+    TARGET_CUP_OPENING_POS_B,
+    TARGET_CUP_UP_AXIS_B,
 )
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
@@ -217,6 +222,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     left_target_cup_attach_quat_wxyz_b: tuple[float, float, float, float] = tuple(
         LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B
     )
+    source_cup_pour_point_pos_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_POINT_POS_B)
+    target_cup_opening_pos_b: tuple[float, float, float] = tuple(TARGET_CUP_OPENING_POS_B)
+    source_cup_pour_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_AXIS_B)
+    source_cup_up_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_UP_AXIS_B)
+    target_cup_up_axis_b: tuple[float, float, float] = tuple(TARGET_CUP_UP_AXIS_B)
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 설정

@@ -333,6 +333,18 @@ class GraspRightEnv(DirectRLEnv):
         )
         self._bead_spawn_pos_source_cup_b = to_torch(self.cfg.bead_spawn_pos_source_cup_b, device=self.device)
         self._bead_spawn_quat_source_cup = to_torch(self.cfg.bead_spawn_quat_source_cup_wxyz, device=self.device)
+        self._source_cup_pour_point_pos_b = to_torch(self.cfg.source_cup_pour_point_pos_b, device=self.device)
+        self._target_cup_opening_pos_b = to_torch(self.cfg.target_cup_opening_pos_b, device=self.device)
+        self._source_cup_pour_axis_b = to_torch(self.cfg.source_cup_pour_axis_b, device=self.device)
+        self._source_cup_up_axis_b = to_torch(self.cfg.source_cup_up_axis_b, device=self.device)
+        self._target_cup_up_axis_b = to_torch(self.cfg.target_cup_up_axis_b, device=self.device)
+        self._source_pour_point_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._target_opening_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._source_pour_axis_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._source_up_axis_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._target_up_axis_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._mouth_delta = torch.zeros(self.num_envs, 3, device=self.device)
+        self._mouth_distance = torch.zeros(self.num_envs, device=self.device)
         self._warmstart_collect_mode = False
         self._warmstart_policy = None
         self._warmstart_cache_count = 0
@@ -731,6 +743,8 @@ class GraspRightEnv(DirectRLEnv):
         # 물체 위치
         self.object_pos = self.cup.data.root_pos_w - self.scene.env_origins
         self.object_rot = self.cup.data.root_quat_w
+        left_target_pos_w = self.left_target_cup.data.root_pos_w
+        left_target_quat_w = self.left_target_cup.data.root_quat_w
 
         # body_pos_w 기반 위치 (실제 sim 위치, Fabrics FK보다 정확)
         env_origins = self.scene.env_origins
@@ -748,6 +762,30 @@ class GraspRightEnv(DirectRLEnv):
             self.distal4_pos = (
                 self.robot.data.body_pos_w[:, self.distal4_body_indices, :] - env_origins.unsqueeze(1)
             )   # (N, 5, 3)
+
+        n = self.num_envs
+        self._source_pour_point_w = self.cup.data.root_pos_w + quat_apply(
+            self.cup.data.root_quat_w,
+            self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
+        )
+        self._target_opening_w = left_target_pos_w + quat_apply(
+            left_target_quat_w,
+            self._target_cup_opening_pos_b.unsqueeze(0).expand(n, -1),
+        )
+        self._source_pour_axis_w = quat_apply(
+            self.cup.data.root_quat_w,
+            self._source_cup_pour_axis_b.unsqueeze(0).expand(n, -1),
+        )
+        self._source_up_axis_w = quat_apply(
+            self.cup.data.root_quat_w,
+            self._source_cup_up_axis_b.unsqueeze(0).expand(n, -1),
+        )
+        self._target_up_axis_w = quat_apply(
+            left_target_quat_w,
+            self._target_cup_up_axis_b.unsqueeze(0).expand(n, -1),
+        )
+        self._mouth_delta = self._target_opening_w - self._source_pour_point_w
+        self._mouth_distance = torch.norm(self._mouth_delta, dim=-1)
 
         # 접촉력 업데이트
         self._update_contact_forces()
