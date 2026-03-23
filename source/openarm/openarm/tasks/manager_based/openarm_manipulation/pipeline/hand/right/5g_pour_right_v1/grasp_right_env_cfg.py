@@ -160,14 +160,27 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # R2. tip_approach_bonus: distal보다 tip이 먼저 닿도록 유도
     tip_approach_bonus_weight: float = 1.0
 
-    # R3. lift_reward: 선형 height delta
+    # DexPour-style transport -> pour reward
     lift_reward_weight: float = 30.0
+    transport_cup_dist_weight: float = 4.0
+    transport_cup_dist_sharpness: float = 2.0
+    transport_tilt_penalty_weight: float = 2.0
+    pour_activate_distance: float = 0.17
+    pour_tilt_weight: float = 4.0
+    pour_tilt_sharpness: float = 12.0
+    target_pour_tilt_deg: float = 45.0
+    pour_align_weight: float = 4.0
 
-    # R4. action_smoothness
+    # Action smoothness
     action_smoothness_palm_weight:   float = -0.02
     action_smoothness_finger_weight: float = -0.01
 
-    # R5. grasp_quality_lift: enclosure_quality × height delta
+    # Success / target-cup inclusion
+    target_inner_radius: float = 0.050
+    target_inside_z_min: float = -0.015
+    target_inside_z_max: float = 0.095
+
+    # Legacy grasp reward params retained for compatibility with older configs.
     grasp_quality_lift_weight:     float = 40.0
     grasp_quality_lift_sharpness:  float = 10.0
 

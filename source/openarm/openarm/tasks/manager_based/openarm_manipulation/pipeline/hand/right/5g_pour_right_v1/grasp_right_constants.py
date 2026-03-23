@@ -21,33 +21,40 @@ Action (11D):
   [6:11] 5D per-finger lerp (thumb, index, middle, ring, pinky)
          -1 → HAND_APPROACH_POSE, +1 → HAND_GRASP_POSE
 
-Actor Observation (106D) — sim2real 가능:
+Actor Observation (102D) — sim2real 가능:
   arm_joint_pos:            7
   arm_joint_vel:            7
   finger_joint_pos:        20
   finger_joint_vel:        20
-  palm_center_pos (world):  3
-  fingertip_pos_rel_palm:  15  (5 × 3D)
-  palm_to_cup_pos:          3
-  cup_to_fingertip:        15  (5 × 3D)
-  fingertip_contact_binary: 5  (FT sensor, 실 로봇 가능)
+  right_cup_pos_rel_palm:   3
+  right_cup_quat:           4
+  right_cup_lin_vel:        3
+  right_cup_ang_vel:        3
+  left_cup_pos_rel_palm:    3
+  left_cup_quat:            4
+  pour_point_to_opening:    3
+  source_pour_axis:         3
+  source_up_axis:           3
+  target_up_axis:           3
+  fingertip_contact_binary: 5
   last_actions:            11
-  Total:                  106
+  Total:                  102
 
-Critic Extra (37D) — sim-only privileged:
-  cup_lin_vel:              3
-  cup_ang_vel:              3
-  cup_rot (quat):           4
-  cup_height_delta:         1
+Critic Extra (47D) — sim-only privileged:
+  left_arm_joint_pos:       9
+  left_arm_joint_vel:       9
   distal_contact_binary:    5  (rl_dg_*_4)
   distal_contact_norm:      5
   middle_contact_binary:    5  (rl_dg_*_3)
   middle_contact_norm:      5
   phase_step_ratio:         1
-  fingertip_to_cup_signed_dist: 5
-  Total:                   37
+  cup_height_delta:         1
+  bead_pos_rel_source_cup:  3
+  bead_pos_rel_target_cup:  3
+  pour_point_to_opening_norm: 1
+  Total:                   47
 
-Critic Total: 106 + 37 = 143D
+Critic Total: 102 + 47 = 149D
 
 Episode (10s @ 60Hz = 600 steps):
   Grasp phase (0~479):  Fabrics arm + per-finger policy
@@ -82,11 +89,11 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 106        # Actor: sim2real 가능
+NUM_OBSERVATIONS = 102        # Actor: sim2real 가능
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 37
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 143
+NUM_CRITIC_EXTRAS   = 47
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 149
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

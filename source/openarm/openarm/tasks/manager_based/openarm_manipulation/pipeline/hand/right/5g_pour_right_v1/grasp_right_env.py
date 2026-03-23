@@ -52,9 +52,10 @@ for _parent in Path(__file__).resolve().parents:
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_apply, quat_mul
+from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_mul
 
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
@@ -353,6 +354,23 @@ class GraspRightEnv(DirectRLEnv):
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
         self._warmstart_palm_pose = torch.zeros(cache_size, 6, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
+        # GUI target visualization: source pour point (red) + target opening (blue)
+        self._vis_markers = VisualizationMarkers(
+            VisualizationMarkersCfg(
+                prim_path="/Visuals/FiveGPourRightMarkers",
+                markers={
+                    "source_pour": sim_utils.SphereCfg(
+                        radius=0.018,
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.2, 0.2)),
+                    ),
+                    "target_opening": sim_utils.SphereCfg(
+                        radius=0.018,
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 1.0)),
+                    ),
+                },
+            )
+        )
+
         self._build_warmstart_reset_cache()
 
     # ------------------------------------------------------------------
@@ -787,21 +805,81 @@ class GraspRightEnv(DirectRLEnv):
         self._mouth_delta = self._target_opening_w - self._source_pour_point_w
         self._mouth_distance = torch.norm(self._mouth_delta, dim=-1)
 
+        # GUI visualization: red = source pour point, blue = target opening
+        _all_pts = torch.cat([self._source_pour_point_w, self._target_opening_w], dim=0)
+        _marker_idx = torch.zeros(2 * n, dtype=torch.long, device=self.device)
+        _marker_idx[n:] = 1
+        self._vis_markers.visualize(translations=_all_pts, marker_indices=_marker_idx)
+
         # 접촉력 업데이트
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 106D | Critic 143D
+    # Observations: Actor 102D | Critic 149D
     # ------------------------------------------------------------------
+    def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
+        """Build the original 106D actor observation for the warmstart checkpoint.
+
+        The warmstart policy was trained on the pre-pouring grasp task and must
+        keep receiving the legacy actor observation layout even though the main
+        training actor observation has changed.
+        """
+
+        arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
+        arm_joint_vel = self.robot.data.joint_vel[:, self.arm_dof_indices]
+        finger_joint_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
+        finger_joint_vel = self.robot.data.joint_vel[:, self.hand_dof_indices]
+        palm_center_pos = self.palm_center_pos
+        fingertip_pos = self.fingertip_pos
+        cup_pos = self.object_pos
+        binary_contact = self.binary_contact_buf.float()
+        last_actions = self.actions
+
+        fingertip_pos_rel_palm = (fingertip_pos - palm_center_pos.unsqueeze(1)).view(self.num_envs, -1)
+        palm_to_cup = cup_pos - palm_center_pos
+        cup_to_fingertip = (fingertip_pos - cup_pos.unsqueeze(1)).view(self.num_envs, -1)
+
+        warmstart_obs = torch.cat([
+            arm_joint_pos,
+            arm_joint_vel,
+            finger_joint_pos,
+            finger_joint_vel,
+            palm_center_pos,
+            fingertip_pos_rel_palm,
+            palm_to_cup,
+            cup_to_fingertip,
+            binary_contact,
+            last_actions,
+        ], dim=-1)
+
+        if warmstart_obs.shape[1] != 106:
+            raise RuntimeError(f"[warmstart] Legacy obs dim mismatch: {warmstart_obs.shape[1]} != 106")
+
+        return warmstart_obs
+
     def _get_observations(self) -> dict:
         # ==== 공통 clean state (critic용, 물리 정확값) ====
-        arm_joint_pos_clean    = self.robot.data.joint_pos[:, self.arm_dof_indices]    # (N, 7)
-        arm_joint_vel_clean    = self.robot.data.joint_vel[:, self.arm_dof_indices]    # (N, 7)
-        finger_joint_pos_clean = self.robot.data.joint_pos[:, self.hand_dof_indices]  # (N, 20)
-        finger_joint_vel_clean = self.robot.data.joint_vel[:, self.hand_dof_indices]  # (N, 20)
-        palm_center_pos_clean  = self.palm_center_pos                                  # (N, 3)
-        fingertip_pos_clean    = self.fingertip_pos                                    # (N, 5, 3)
-        cup_pos_clean          = self.object_pos                                       # (N, 3)
+        arm_joint_pos_clean = self.robot.data.joint_pos[:, self.arm_dof_indices]
+        arm_joint_vel_clean = self.robot.data.joint_vel[:, self.arm_dof_indices]
+        finger_joint_pos_clean = self.robot.data.joint_pos[:, self.hand_dof_indices]
+        finger_joint_vel_clean = self.robot.data.joint_vel[:, self.hand_dof_indices]
+        left_arm_joint_pos_clean = self.robot.data.joint_pos[:, self.left_arm_dof_indices]
+        left_arm_joint_vel_clean = self.robot.data.joint_vel[:, self.left_arm_dof_indices]
+        palm_center_pos_clean = self.palm_center_pos
+
+        right_cup_pos_clean = self.cup.data.root_pos_w
+        right_cup_quat_clean = self.cup.data.root_quat_w
+        right_cup_lin_vel_clean = self.cup.data.root_lin_vel_w
+        right_cup_ang_vel_clean = self.cup.data.root_ang_vel_w
+        left_cup_pos_clean = self.left_target_cup.data.root_pos_w
+        left_cup_quat_clean = self.left_target_cup.data.root_quat_w
+
+        source_pour_point_clean = self._source_pour_point_w
+        target_opening_clean = self._target_opening_w
+        source_pour_axis_clean = self._source_pour_axis_w
+        source_up_axis_clean = self._source_up_axis_w
+        target_up_axis_clean = self._target_up_axis_w
+        bead_pos_clean = self.bead.data.root_pos_w
 
         # ==== Actor obs용 noisy state (sim2real domain randomization) ====
         σ_qp = self.cfg.obs_noise_joint_pos
@@ -809,64 +887,49 @@ class GraspRightEnv(DirectRLEnv):
         σ_bp = self.cfg.obs_noise_body_pos
         σ_cp = self.cfg.obs_noise_cup_pos
 
-        arm_joint_pos    = arm_joint_pos_clean    + torch.randn_like(arm_joint_pos_clean)    * σ_qp
-        arm_joint_vel    = arm_joint_vel_clean    + torch.randn_like(arm_joint_vel_clean)    * σ_qv
+        arm_joint_pos = arm_joint_pos_clean + torch.randn_like(arm_joint_pos_clean) * σ_qp
+        arm_joint_vel = arm_joint_vel_clean + torch.randn_like(arm_joint_vel_clean) * σ_qv
         finger_joint_pos = finger_joint_pos_clean + torch.randn_like(finger_joint_pos_clean) * σ_qp
         finger_joint_vel = finger_joint_vel_clean + torch.randn_like(finger_joint_vel_clean) * σ_qv
-        palm_center_pos  = palm_center_pos_clean  + torch.randn_like(palm_center_pos_clean)  * σ_bp
-        fingertip_pos    = fingertip_pos_clean    + torch.randn_like(fingertip_pos_clean)    * σ_bp
-        cup_pos_noisy    = cup_pos_clean          + torch.randn_like(cup_pos_clean)          * σ_cp
+        palm_center_pos = palm_center_pos_clean + torch.randn_like(palm_center_pos_clean) * σ_bp
+        right_cup_pos = right_cup_pos_clean + torch.randn_like(right_cup_pos_clean) * σ_cp
+        left_cup_pos = left_cup_pos_clean + torch.randn_like(left_cup_pos_clean) * σ_cp
+        source_pour_point = source_pour_point_clean + torch.randn_like(source_pour_point_clean) * σ_cp
+        target_opening = target_opening_clean + torch.randn_like(target_opening_clean) * σ_cp
 
-        # ==== Actor obs 조합 (106D) ====
-        # 4. fingertip pos relative to palm (15D)
-        fingertip_pos_rel_palm = (
-            fingertip_pos - palm_center_pos.unsqueeze(1)
-        ).view(self.num_envs, -1)
+        right_cup_pos_rel_palm = right_cup_pos - palm_center_pos
+        left_cup_pos_rel_palm = left_cup_pos - palm_center_pos
+        pour_point_to_opening = target_opening - source_pour_point
 
-        # 5. palm to cup vector (3D)
-        palm_to_cup = cup_pos_noisy - palm_center_pos
-
-        # 6. cup to fingertip vectors (15D)
-        cup_to_fingertip = (
-            fingertip_pos - cup_pos_noisy.unsqueeze(1)
-        ).view(self.num_envs, -1)
-
-        # 7. fingertip binary contact (5D) — contact 자체에는 noise 없음
         binary_contact = self.binary_contact_buf.float()
-
-        # 8. last actions (11D)
         last_actions = self.actions
 
         actor_obs = torch.cat([
-            arm_joint_pos,          # 7
-            arm_joint_vel,          # 7
-            finger_joint_pos,       # 20
-            finger_joint_vel,       # 20
-            palm_center_pos,        # 3
-            fingertip_pos_rel_palm, # 15
-            palm_to_cup,            # 3
-            cup_to_fingertip,       # 15
-            binary_contact,         # 5
-            last_actions,           # 11
-        ], dim=-1)   # 106D
+            arm_joint_pos,              # 7
+            arm_joint_vel,              # 7
+            finger_joint_pos,           # 20
+            finger_joint_vel,           # 20
+            right_cup_pos_rel_palm,     # 3
+            right_cup_quat_clean,       # 4
+            right_cup_lin_vel_clean,    # 3
+            right_cup_ang_vel_clean,    # 3
+            left_cup_pos_rel_palm,      # 3
+            left_cup_quat_clean,        # 4
+            pour_point_to_opening,      # 3
+            source_pour_axis_clean,     # 3
+            source_up_axis_clean,       # 3
+            target_up_axis_clean,       # 3
+            binary_contact,             # 5
+            last_actions,               # 11
+        ], dim=-1)   # 102D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
                 f"[v7] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
             )
 
-        # ==== Critic extra obs (37D) — clean state 사용 ====
-        # cup velocity (6D)
-        cup_lin_vel = self.cup.data.root_lin_vel_w
-        cup_ang_vel = self.cup.data.root_ang_vel_w
-
-        # cup rotation (4D)
-        cup_rot = self.object_rot
-
-        # cup height delta (1D) — clean cup pos
-        cup_height_delta = (
-            cup_pos_clean[:, 2] - self.object_init_pos[:, 2]
-        ).unsqueeze(1)
+        # ==== Critic extra obs (47D) — clean state + privileged state 사용 ====
+        cup_height_delta = (right_cup_pos_clean[:, 2] - self.object_init_pos[:, 2]).unsqueeze(1)
 
         # distal contact (5D binary + 5D norm)
         distal_binary     = self.distal_binary_contact_buf.float()
@@ -881,39 +944,49 @@ class GraspRightEnv(DirectRLEnv):
             self.episode_length_buf.float() / EPISODE_STEPS
         ).unsqueeze(1)
 
-        # fingertip signed dist (5D) — clean positions
-        tip_to_cup_dist = (
-            fingertip_pos_clean - cup_pos_clean.unsqueeze(1)
-        ).norm(dim=-1)
-        fingertip_signed_dist = (tip_to_cup_dist - CUP_RADIUS_APPROX).unsqueeze(-1).squeeze(-1)
+        bead_pos_rel_source_cup = quat_apply_inverse(
+            right_cup_quat_clean,
+            bead_pos_clean - right_cup_pos_clean,
+        )
+        bead_pos_rel_target_cup = quat_apply_inverse(
+            left_cup_quat_clean,
+            bead_pos_clean - left_cup_pos_clean,
+        )
 
-        # critic actor_obs_clean (106D) — clean state 재조합
+        # critic actor_obs_clean (102D) — clean state 재조합
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,
             arm_joint_vel_clean,
             finger_joint_pos_clean,
             finger_joint_vel_clean,
-            palm_center_pos_clean,
-            (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
-            cup_pos_clean - palm_center_pos_clean,
-            (fingertip_pos_clean - cup_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
+            right_cup_pos_clean - palm_center_pos_clean,
+            right_cup_quat_clean,
+            right_cup_lin_vel_clean,
+            right_cup_ang_vel_clean,
+            left_cup_pos_clean - palm_center_pos_clean,
+            left_cup_quat_clean,
+            target_opening_clean - source_pour_point_clean,
+            source_pour_axis_clean,
+            source_up_axis_clean,
+            target_up_axis_clean,
             binary_contact,
             last_actions,
-        ], dim=-1)   # 106D
+        ], dim=-1)   # 102D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 106
-            cup_lin_vel,            # 3
-            cup_ang_vel,            # 3
-            cup_rot,                # 4
-            cup_height_delta,       # 1
-            distal_binary,          # 5
-            distal_force_norm,      # 5
-            middle_binary,          # 5
-            middle_force_norm,      # 5
-            phase_step_ratio,       # 1
-            fingertip_signed_dist,  # 5
-        ], dim=-1)   # 143D
+            actor_obs_clean,           # 102
+            left_arm_joint_pos_clean,  # 9
+            left_arm_joint_vel_clean,  # 9
+            distal_binary,             # 5
+            distal_force_norm,         # 5
+            middle_binary,             # 5
+            middle_force_norm,         # 5
+            phase_step_ratio,          # 1
+            cup_height_delta,          # 1
+            bead_pos_rel_source_cup,   # 3
+            bead_pos_rel_target_cup,   # 3
+            self._mouth_distance.unsqueeze(1),  # 1
+        ], dim=-1)   # 149D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -923,147 +996,42 @@ class GraspRightEnv(DirectRLEnv):
         return {"policy": actor_obs, "critic": critic_obs}
 
     # ------------------------------------------------------------------
-    # Rewards: R1~R5
+    # Rewards: DexPour-style transport -> pour
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        # ---- ADR ----
-        if self.grasp_adr is not None:
-            enclosure_weight = self.grasp_adr.get_param("reward_weights", "enclosure_weight")
-        else:
-            enclosure_weight = self.cfg.enclosure_weight
+        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
+        lift_progress = torch.clamp(cup_height_delta / max(self.cfg.lift_success_height, 1e-6), 0.0, 1.0)
 
-        # ---- 공통 참조 ----
-        cup_height_delta = (
-            self.object_pos[:, 2] - self.object_init_pos[:, 2]
-        ).clamp(min=0.0)   # (N,) ≥ 0
-
-        # ---- R0. palm_to_cup: arm이 컵을 향해 접근하도록 유도 ----
-        # 이 항이 없으면 초기 정책(출력≈0) → workspace 중심으로 이동 → cup에서 멀어짐
-        # v1의 hand_to_object와 동일 역할: arm approach의 1차 gradient
-        grasp_center_approach = self.object_pos.clone()
-        grasp_center_approach[:, 2] += self.cfg.cup_grasp_z_offset
-        palm_to_cup_dist = (self.palm_center_pos - grasp_center_approach).norm(dim=-1)   # (N,)
-        r0_palm_approach = self.cfg.palm_approach_weight * torch.exp(
-            -self.cfg.palm_approach_sharpness * palm_to_cup_dist
+        # Transport stage (DexPour): lift + cup opening distance + upright transport penalty
+        transport_active = (cup_height_delta >= self.cfg.lift_success_height).float()
+        r_lift = self.cfg.lift_reward_weight * lift_progress
+        r_cup_dist = self.cfg.transport_cup_dist_weight * torch.exp(
+            -self.cfg.transport_cup_dist_sharpness * self._mouth_distance
         )
+        source_up_dot_world = self._source_up_axis_w[:, 2].clamp(-1.0, 1.0)
+        p_transport_tilt = -self.cfg.transport_tilt_penalty_weight * (1.0 - source_up_dot_world.clamp(min=0.0))
+        transport_reward = r_lift + transport_active * (r_cup_dist + p_transport_tilt)
 
-        # ---- R1. fingertip_enclosure ----
-        # 타겟을 접근 방향(approach)의 수직(perpendicular) 축으로 설정:
-        #   thumb   → cup 중심에서 perp 방향 (측면)
-        #   others  → cup 중심에서 -perp 방향 (반대 측면)
-        # 이렇게 하면 엄지↔나머지가 컵을 양옆에서 감싸는 구조 → 토크 균형 → 컵 안 기울어짐
-        # (approach-axis 타겟은 near/far 비대칭으로 토크 불균형 유발)
-        grasp_center = grasp_center_approach
-
-        cup_to_palm_xy = self.palm_center_pos[:, :2] - grasp_center[:, :2]   # (N, 2)
-        approach_dir_xy = cup_to_palm_xy / cup_to_palm_xy.norm(
-            dim=-1, keepdim=True
-        ).clamp(min=1e-6)   # (N, 2)
-        # approach에 수직인 방향 (XY 평면에서 90° 회전)
-        perp_dir_xy = torch.stack(
-            [-approach_dir_xy[:, 1], approach_dir_xy[:, 0]], dim=1
-        )   # (N, 2)
-
-        self._approach_dir_buf[:, :2] = perp_dir_xy
-        self._approach_dir_buf[:, 2]  = 0.0
-
-        r = self.cfg.cup_radius_approx
-        thumb_target  = grasp_center + self._approach_dir_buf * r    # (N, 3)
-        others_target = grasp_center - self._approach_dir_buf * r    # (N, 3)
-
-        thumb_dist  = (self.fingertip_pos[:, 0, :] - thumb_target).norm(dim=-1)           # (N,)
-        others_dist = (self.fingertip_pos[:, 1:, :] - others_target.unsqueeze(1)).norm(
-            dim=-1
-        ).mean(dim=-1)   # (N,)
-
-        tw = self.cfg.enclosure_thumb_weight   # 0.6: 엄지 유도 비대칭 강화
-        r1_enclosure = enclosure_weight * (
-            tw * torch.exp(-self.cfg.enclosure_sharpness * thumb_dist)
-            + (1.0 - tw) * torch.exp(-self.cfg.enclosure_sharpness * others_dist)
+        # Pour stage (DexPour): 45-degree tilt + alignment to target opening
+        pour_active = transport_active * (self._mouth_distance < self.cfg.pour_activate_distance).float()
+        target_tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
+        r_tilt = self.cfg.pour_tilt_weight * torch.exp(
+            -self.cfg.pour_tilt_sharpness * torch.abs(source_up_dot_world - target_tilt_cos)
         )
+        mouth_dir = self._mouth_delta / self._mouth_distance.unsqueeze(1).clamp(min=1e-6)
+        align_cos = torch.sum(self._source_pour_axis_w * mouth_dir, dim=-1).clamp(-1.0, 1.0)
+        r_align = self.cfg.pour_align_weight * (1.0 + align_cos) * 0.5
+        pour_reward = pour_active * (r_tilt + r_align)
 
-        # ---- tip contact force (Cup-filtered, 실 Teosllo FT 센서 직접 대응) ----
-        thumb_force      = self.contact_force_raw[:, 0]           # (N,) 엄지 tip 힘
-        others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)  # (N,) 나머지 평균 힘
-
-        # ---- R1b. force_balance_reward: |F_thumb - F_others_avg| → 0 (컵 기울임 방지) ----
-        # [contact_bonus 대체] binary count 제거 → 힘 균형 직접 측정
-        # 물리적 근거: 컵 기울어짐 = 합력 불균형 → |F_thumb| ≈ |F_others_avg| = 합력 ≈ 0
-        # gate: 양쪽 모두 접촉 시에만 활성 (무접촉 err=0 → 오보상 방지)
-        has_thumb_contact  = self.binary_contact_buf[:, 0].float()              # (N,)
-        has_others_contact = (self.binary_contact_buf[:, 1:].sum(-1) >= 1).float()  # (N,)
-        balance_gate       = has_thumb_contact * has_others_contact             # (N,)
-        force_balance_err  = (thumb_force - others_avg_force).abs()             # (N,) [N]
-        r1b_force_balance = (
-            self.cfg.force_balance_weight
-            * balance_gate
-            * torch.exp(-self.cfg.force_balance_sharpness * force_balance_err)
-        )
-
-        # ---- R1c. full_grasp_bonus: Grasp phase per-step ----
-        # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
-        # → 엄지가 0.1N 살짝 닿아도 통과하던 허점 제거 (force adequacy 조건)
-        is_grasp_phase = ~self.is_lift_phase                                  # (N,) bool
-        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)             # (N,) 0~4
-        thumb_force_adequate = (
-            thumb_force >= others_avg_force * self.cfg.thumb_force_ratio_min
-        ).float()   # (N,)
-        full_grasp_flag = (
-            self.binary_contact_buf[:, 0] & (others_count >= 3)
-        ).float() * thumb_force_adequate
-        r1c_full_grasp = (
-            self.cfg.full_grasp_bonus_weight * is_grasp_phase.float() * full_grasp_flag
-        )
-
-        # ---- R2. tip_approach_bonus ----
-        # tip이 distal(rl_dg_*_4)보다 cup surface에 먼저 닿도록 유도
-        if len(self.distal4_body_indices) == NUM_FINGERTIPS:
-            # cup surface dist: ||pos - cup_center|| - cup_radius (clamp >= 0)
-            tip_surf_dist    = (self.fingertip_pos - grasp_center.unsqueeze(1)).norm(dim=-1) - r
-            distal_surf_dist = (self.distal4_pos   - grasp_center.unsqueeze(1)).norm(dim=-1) - r
-            tip_lead = (distal_surf_dist - tip_surf_dist).clamp(min=0.0).mean(dim=-1)   # (N,)
-            r2_tip_bonus = self.cfg.tip_approach_bonus_weight * tip_lead
-        else:
-            r2_tip_bonus = torch.zeros(self.num_envs, device=self.device)
-
-        # ---- cup uprightness: 컵 Z축이 세계 Z축과 얼마나 일치하는지 ----
-        # 1.0 = 완전히 수직, 0.0 = 수평 → R3/R5에 곱해 기울어진 채 들어올리면 보상 차단
-        z_local = torch.zeros(self.num_envs, 3, device=self.device)
-        z_local[:, 2] = 1.0
-        cup_z_world = quat_apply(self.object_rot, z_local)
-        cup_uprightness = cup_z_world[:, 2].clamp(min=0.0)   # (N,) ∈ [0, 1]
-
-        # ---- R3. lift_reward: 선형 height delta × cup uprightness ----
-        # 기울어진 채로 들어올리면 uprightness 낮아져 보상 감소 → 기울어진 파지 억제
-        r3_lift = self.cfg.lift_reward_weight * cup_height_delta * cup_uprightness   # (N,)
-
-        # ---- R4. action_smoothness ----
+        # Smoothness penalty is kept for sim2real stability.
         palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
         finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
-        r4_smooth = (
+        r_smooth = (
             self.cfg.action_smoothness_palm_weight   * palm_delta
             + self.cfg.action_smoothness_finger_weight * finger_delta
-        )   # (N,) — 음수
-
-        # ---- R5. grasp_quality_lift ----
-        # enclosure_quality × cup_height_delta × cup_uprightness → 수직으로 파지하며 들어야 큰 보상
-        min_tip_dist = (self.fingertip_pos - grasp_center.unsqueeze(1)).norm(dim=-1).min(dim=-1).values
-        enclosure_quality = torch.exp(
-            -self.cfg.grasp_quality_lift_sharpness * min_tip_dist
-        ).clamp(max=1.0)   # (N,)
-        r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
-
-        # ---- 합산 ----
-        total = (
-            r0_palm_approach
-            + r1_enclosure
-            + r1b_force_balance
-            + r1c_full_grasp
-            + r2_tip_bonus
-            + r3_lift
-            + r4_smooth
-            + r5_quality_lift
         )
+
+        total = transport_reward + pour_reward + r_smooth
 
         # ---- ADR increment ----
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
@@ -1071,29 +1039,24 @@ class GraspRightEnv(DirectRLEnv):
             self.grasp_adr.maybe_increment(_ep_success_rate)
 
         # ---- 로깅 ----
-        self.extras["palm_approach_reward"]  = r0_palm_approach.mean()
-        self.extras["palm_to_cup_dist"]      = palm_to_cup_dist.mean()
-        self.extras["enclosure_reward"]      = r1_enclosure.mean()
-        # [force balance 핵심 지표] — 컵 기울어짐 진단
-        self.extras["force_balance_reward"]  = r1b_force_balance.mean()
-        self.extras["force_balance_err"]     = force_balance_err.mean()       # 0이면 완벽 균형
-        self.extras["thumb_force_mean"]      = thumb_force.mean()
-        self.extras["others_avg_force_mean"] = others_avg_force.mean()
-        self.extras["full_grasp_bonus"]      = r1c_full_grasp.mean()
-        self.extras["full_grasp_rate"]       = full_grasp_flag.mean()
-        self.extras["thumb_force_adequate"]  = thumb_force_adequate.mean()
-        self.extras["tip_approach_bonus"]    = r2_tip_bonus.mean()
-        self.extras["lift_reward"]           = r3_lift.mean()
-        self.extras["action_smoothness"]     = r4_smooth.mean()
-        self.extras["grasp_quality_lift"]    = r5_quality_lift.mean()
+        self.extras["transport_reward"]      = transport_reward.mean()
+        self.extras["pour_reward"]           = pour_reward.mean()
+        self.extras["lift_reward"]           = r_lift.mean()
+        self.extras["cup_dist_reward"]       = r_cup_dist.mean()
+        self.extras["transport_tilt_penalty"] = p_transport_tilt.mean()
+        self.extras["pour_tilt_reward"]      = r_tilt.mean()
+        self.extras["pour_align_reward"]     = r_align.mean()
+        self.extras["mouth_distance"]        = self._mouth_distance.mean()
+        self.extras["mouth_alignment_cos"]   = align_cos.mean()
+        self.extras["source_up_dot_world"]   = source_up_dot_world.mean()
+        self.extras["transport_active"]      = transport_active.mean()
+        self.extras["pour_active"]           = pour_active.mean()
+        self.extras["action_smoothness"]     = r_smooth.mean()
         self.extras["cup_height_delta"]      = cup_height_delta.mean()
-        self.extras["cup_uprightness"]       = cup_uprightness.mean()
+        self.extras["cup_uprightness"]       = source_up_dot_world.clamp(min=0.0).mean()
         self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
         self.extras["success_rate"]          = self.success_flag.float().mean()
         self.extras["episode_success_rate"]  = torch.tensor(_ep_success_rate, device=self.device)
-        self.extras["thumb_dist"]            = thumb_dist.mean()
-        self.extras["others_dist"]           = others_dist.mean()
-        self.extras["adr_enclosure_w"]       = torch.tensor(enclosure_weight, device=self.device)
         if self.grasp_adr is not None:
             self.extras["adr_progress"] = torch.tensor(self.grasp_adr.progress, device=self.device)
 
@@ -1120,11 +1083,18 @@ class GraspRightEnv(DirectRLEnv):
         cup_z_world = quat_apply(self.object_rot, z_local)
         tipped = cup_z_world[:, 2] < self._cup_tipping_cos
 
-        # success: lift phase 이후 + cup 들림 + contact 유지
-        in_or_past_lift = (self.episode_length_buf >= LIFT_START_STEP)
-        lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        grasped = (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
-        self.success_flag.copy_(in_or_past_lift & lifted & grasped)
+        bead_pos_w = self.bead.data.root_pos_w
+        bead_pos_in_target = quat_apply_inverse(
+            self.left_target_cup.data.root_quat_w,
+            bead_pos_w - self.left_target_cup.data.root_pos_w,
+        )
+        bead_target_xy = torch.norm(bead_pos_in_target[:, :2], dim=-1)
+        bead_in_target = (
+            (bead_target_xy <= self.cfg.target_inner_radius)
+            & (bead_pos_in_target[:, 2] >= self.cfg.target_inside_z_min)
+            & (bead_pos_in_target[:, 2] <= self.cfg.target_inside_z_max)
+        )
+        self.success_flag.copy_(bead_in_target)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
         self._maybe_store_warmstart_successes()
 
@@ -1374,13 +1344,13 @@ class GraspRightEnv(DirectRLEnv):
         self._warmstart_collect_mode = True
 
         try:
-            obs, _ = self.reset()
+            self.reset()
             with torch.no_grad():
                 for _ in range(int(self.cfg.warmstart_max_rollout_steps)):
                     if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
                         break
-                    actions = self._warmstart_policy(obs["policy"])
-                    obs, _, _, _, _ = self.step(actions)
+                    actions = self._warmstart_policy(self._get_legacy_warmstart_policy_obs())
+                    self.step(actions)
         finally:
             self._warmstart_collect_mode = False
             self.cfg.obs_noise_joint_pos = obs_noise_joint_pos
@@ -1406,7 +1376,13 @@ class GraspRightEnv(DirectRLEnv):
         if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
             return
 
-        success_env_ids = self.success_flag.nonzero(as_tuple=False).squeeze(-1)
+        in_or_past_lift = self.episode_length_buf >= LIFT_START_STEP
+        lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
+        grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
+        upright = self._source_up_axis_w[:, 2] > 0.7
+        warmstart_success = in_or_past_lift & lifted & grasped & upright
+
+        success_env_ids = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
         if success_env_ids.numel() == 0:
             return
 
