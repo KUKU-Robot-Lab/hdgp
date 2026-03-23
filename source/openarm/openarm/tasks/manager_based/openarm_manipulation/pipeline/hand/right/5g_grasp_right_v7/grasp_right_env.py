@@ -261,6 +261,10 @@ class GraspRightEnv(DirectRLEnv):
         self._approach_dir_buf = torch.zeros(self.num_envs, 3, device=self.device)
         self.success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._cup_tipping_cos = math.cos(math.radians(cfg.cup_tipping_max_deg))
+        # episode-level 성공 추적 (per-step average 허수 문제 해결)
+        self.episode_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._total_episodes: int = 0
+        self._successful_episodes: int = 0
 
         # ----------------------------------------------------------------
         # ADR
@@ -867,8 +871,9 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ---- ADR increment ----
+        _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         if self.grasp_adr is not None:
-            self.grasp_adr.maybe_increment(self.success_flag.float().mean())
+            self.grasp_adr.maybe_increment(_ep_success_rate)
 
         # ---- 로깅 ----
         self.extras["palm_approach_reward"]  = r0_palm_approach.mean()
@@ -890,6 +895,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["cup_uprightness"]       = cup_uprightness.mean()
         self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
         self.extras["success_rate"]          = self.success_flag.float().mean()
+        self.extras["episode_success_rate"]  = torch.tensor(_ep_success_rate, device=self.device)
         self.extras["thumb_dist"]            = thumb_dist.mean()
         self.extras["others_dist"]           = others_dist.mean()
         self.extras["adr_enclosure_w"]       = torch.tensor(enclosure_weight, device=self.device)
@@ -924,11 +930,40 @@ class GraspRightEnv(DirectRLEnv):
         lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         grasped = (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
         self.success_flag.copy_(in_or_past_lift & lifted & grasped)
+        self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
 
         terminated = out_x | out_y | fallen | tipped | self.success_flag
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         self.extras["object_z"] = self.object_pos[:, 2].mean()
+
+        # ---- DEBUG: lift phase 진입 시 각 env 상태 출력 ----
+        entering_lift = (self.episode_length_buf == LIFT_START_STEP)
+        if entering_lift.any():
+            palm   = self.palm_center_pos[entering_lift]   # (M, 3)
+            obj    = self.object_pos[entering_lift]        # (M, 3)
+            delta  = palm - obj                            # palm이 물체 대비 어디에?
+            dist   = delta.norm(dim=-1)                    # (M,)
+            conts  = self.num_contacts_buf[entering_lift].float()  # (M,)
+            has_c  = conts >= MIN_CONTACTS_FOR_SUCCESS
+            M = entering_lift.sum().item()
+
+            print(f"\n{'='*60}")
+            print(f"[LIFT 진입] {M} envs @ step {LIFT_START_STEP}")
+            print(f"  palm-obj 거리  mean={dist.mean():.3f}m  max={dist.max():.3f}m  min={dist.min():.3f}m")
+            print(f"  palm-obj delta(x,y,z) mean: [{delta[:,0].mean():.3f}, {delta[:,1].mean():.3f}, {delta[:,2].mean():.3f}]")
+            print(f"  palm-obj delta(x,y,z) std : [{delta[:,0].std():.3f}, {delta[:,1].std():.3f}, {delta[:,2].std():.3f}]")
+            print(f"  contacts mean={conts.mean():.2f}  contact≥2: {has_c.float().mean()*100:.1f}%")
+
+            # 실패(접촉 없음) vs 성공(접촉 있음) 분리 출력
+            if has_c.any():
+                d_ok = delta[has_c]
+                print(f"  [접촉O {has_c.sum().item()}개] palm-obj delta mean: [{d_ok[:,0].mean():.3f}, {d_ok[:,1].mean():.3f}, {d_ok[:,2].mean():.3f}]  dist={d_ok.norm(dim=-1).mean():.3f}m")
+            if (~has_c).any():
+                d_fail = delta[~has_c]
+                print(f"  [접촉X {(~has_c).sum().item()}개] palm-obj delta mean: [{d_fail[:,0].mean():.3f}, {d_fail[:,1].mean():.3f}, {d_fail[:,2].mean():.3f}]  dist={d_fail.norm(dim=-1).mean():.3f}m")
+            print(f"{'='*60}")
+
         return terminated, truncated
 
     # ------------------------------------------------------------------
@@ -944,6 +979,11 @@ class GraspRightEnv(DirectRLEnv):
             return
 
         n = len(env_ids)
+
+        # ---- episode 성공 집계 후 클리어 ----
+        self._total_episodes += n
+        self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
+        self.episode_success_buf[env_ids] = False
 
         # ---- 1. 로봇 관절 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
