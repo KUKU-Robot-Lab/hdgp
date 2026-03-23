@@ -90,6 +90,12 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         ).reshape(self.batch_size, 9)
         self._native_palm_pose_target = None
 
+        # Fingertip FK taskmap (sim2real용: rl_dg_*_tip 위치 계산)
+        _tip_frames = [f"rl_dg_{i}_tip" for i in range(1, 6)]
+        self._fingertip_taskmap = RobotFrameOriginsTaskMap(
+            self.urdf_path, _tip_frames, batch_size, device
+        )
+
     # ------------------------------------------------------------------
     # Fabric construction methods
     # ------------------------------------------------------------------
@@ -381,6 +387,23 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
             raise ValueError('orientation_convention must be "euler_zyx" or "quaternion"')
 
         return torch.cat([palm_origin, orientation], dim=-1)
+
+    def get_fingertip_positions(self, cspace_position: torch.Tensor) -> torch.Tensor:
+        """FK로 5개 손가락 끝 위치를 계산합니다 (sim2real 관측 구성용).
+
+        Args:
+            cspace_position: (B, 27) 관절 각도
+
+        Returns:
+            (B, 5, 3) 월드 프레임 기준 fingertip 위치
+              [0] = rl_dg_1_tip (thumb)
+              [1] = rl_dg_2_tip (index)
+              [2] = rl_dg_3_tip (middle)
+              [3] = rl_dg_4_tip (ring)
+              [4] = rl_dg_5_tip (pinky)
+        """
+        tip_points, _ = self._fingertip_taskmap(cspace_position, None)
+        return tip_points.view(cspace_position.shape[0], 5, 3)
 
     @property
     def pca_matrix(self):

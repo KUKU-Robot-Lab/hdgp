@@ -1242,4 +1242,42 @@
     <parent link="world" />
     <child link="world_body_sphere3" />
   </joint>
+
+  <!-- ========== Fingertip virtual links (FK reference for sim2real) ========== -->
+  <!-- Offsets match tip mesh origins in each _4 link's local frame             -->
+  <link name="rl_dg_1_tip"/>
+  <joint name="rl_dg_1_tip_joint" type="fixed">
+    <origin xyz="0. 0.0363 0." rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_4" />
+    <child link="rl_dg_1_tip" />
+  </joint>
+
+  <link name="rl_dg_2_tip"/>
+  <joint name="rl_dg_2_tip_joint" type="fixed">
+    <origin xyz="0. 0. 0.0255" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_4" />
+    <child link="rl_dg_2_tip" />
+  </joint>
+
+  <link name="rl_dg_3_tip"/>
+  <joint name="rl_dg_3_tip_joint" type="fixed">
+    <origin xyz="0. 0. 0.0255" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_4" />
+    <child link="rl_dg_3_tip" />
+  </joint>
+
+  <link name="rl_dg_4_tip"/>
+  <joint name="rl_dg_4_tip_joint" type="fixed">
+    <origin xyz="0. 0. 0.0255" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_4" />
+    <child link="rl_dg_4_tip" />
+  </joint>
+
+  <link name="rl_dg_5_tip"/>
+  <joint name="rl_dg_5_tip_joint" type="fixed">
+    <origin xyz="0. 0. 0.0363" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_4" />
+    <child link="rl_dg_5_tip" />
+  </joint>
+
 </robot>
