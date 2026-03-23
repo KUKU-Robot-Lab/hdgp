@@ -595,10 +595,10 @@ class GraspRightEnv(DirectRLEnv):
     def _apply_action(self) -> None:
         is_hold = self.is_hold_phase   # (N,) bool
         is_lift = self.is_lift_phase   # (N,) bool
-        # [Fix #2] Hold phase만 finger 고정, Lift phase는 정책 계속 제어
-        # 이전: is_hold | is_lift → 손가락 완전 고정, lift_reward gradient 없음
-        # 수정: Hold만 고정 → Lift 중 fingertip_force_xyz 감지 후 더 강하게 쥐기 가능
-        is_frozen = is_hold
+        # Hold / Lift 모두 정책 계속 제어 — 손가락 고정 없음
+        # Grasp → Hold → Lift 전 구간 정책이 finger action 출력
+        # (이전: Hold 진입 시 고정 → Lift까지 고정, gradient 단절)
+        is_frozen = torch.zeros_like(is_hold)  # always False
 
         # ---- 오른팔 ----
         # Grasp/Hold phase: pregrasp arm joint 위치 고정
@@ -677,26 +677,44 @@ class GraspRightEnv(DirectRLEnv):
     # Observations: Actor 101D | Critic 129D (actor + 28D privileged)
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
-        # ==== Actor obs (104D) — real-compatible ====
+        # ==== Actor obs (101D) — real-compatible + sim2real noise ====
 
-        # 1. palm → cup 상대 위치 (3D)
-        palm_to_cup = self.object_pos - self.palm_center_pos   # (N, 3)
+        # sim2real noise (actor obs에만 적용, critic은 clean state 유지)
+        def _noise(shape, sigma):
+            return torch.randn(shape, device=self.device) * sigma
 
-        # 2. cup 회전 (4D)
+        # 1. palm → cup 상대 위치 (3D) — cup pos noise
+        cup_pos_noisy = self.object_pos + _noise(self.object_pos.shape, self.cfg.obs_noise_cup_pos)
+        palm_to_cup = cup_pos_noisy - self.palm_center_pos   # (N, 3)
+
+        # 2. cup 회전 (4D) — clean (quaternion noise는 normalization 문제로 제외)
         cup_rot = self.object_rot   # (N, 4)
 
-        # 3. fingertip → cup 상대 위치 (15D)
+        # 3. fingertip → cup 상대 위치 (15D) — fingertip pos + cup pos noise
+        fingertip_pos_noisy = self.fingertip_pos + _noise(self.fingertip_pos.shape, self.cfg.obs_noise_body_pos)
         fingertip_to_cup = (
-            self.fingertip_pos - self.object_pos.unsqueeze(1)
+            fingertip_pos_noisy - cup_pos_noisy.unsqueeze(1)
         ).view(self.num_envs, -1)   # (N, 15)
 
-        # 4. finger joint pos/vel (20D each)
-        finger_joint_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]   # (N, 20)
-        finger_joint_vel = self.robot.data.joint_vel[:, self.hand_dof_indices]   # (N, 20)
+        # 4. finger joint pos/vel (20D each) — sensor noise
+        finger_joint_pos = (
+            self.robot.data.joint_pos[:, self.hand_dof_indices]
+            + _noise((self.num_envs, NUM_HAND_DOF), self.cfg.obs_noise_joint_pos)
+        )   # (N, 20)
+        finger_joint_vel = (
+            self.robot.data.joint_vel[:, self.hand_dof_indices]
+            + _noise((self.num_envs, NUM_HAND_DOF), self.cfg.obs_noise_joint_vel)
+        )   # (N, 20)
 
-        # 5. arm joint pos/vel (7D each)
-        arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]   # (N, 7)
-        arm_joint_vel = self.robot.data.joint_vel[:, self.arm_dof_indices]   # (N, 7)
+        # 5. arm joint pos/vel (7D each) — sensor noise
+        arm_joint_pos = (
+            self.robot.data.joint_pos[:, self.arm_dof_indices]
+            + _noise((self.num_envs, NUM_ARM_DOF), self.cfg.obs_noise_joint_pos)
+        )   # (N, 7)
+        arm_joint_vel = (
+            self.robot.data.joint_vel[:, self.arm_dof_indices]
+            + _noise((self.num_envs, NUM_ARM_DOF), self.cfg.obs_noise_joint_vel)
+        )   # (N, 7)
 
         # 6. fingertip tip contact force magnitude (5D) — normalized [0,1]
         # binary_contact(이진 0/1) → 연속 force magnitude: policy가 grip force 세기 직접 인식

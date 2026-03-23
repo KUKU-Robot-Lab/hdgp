@@ -100,6 +100,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     pregrasp_noise_z:      float = 0.005
 
     # -----------------------------------------------------------------------
+    # Observation noise (sim2real domain randomization)
+    # actor obs에만 적용; critic obs는 privileged clean state 유지
+    # -----------------------------------------------------------------------
+    obs_noise_joint_pos: float = 0.01    # joint position σ [rad]
+    obs_noise_joint_vel: float = 0.05    # joint velocity σ [rad/s]
+    obs_noise_body_pos:  float = 0.005   # body position σ [m] (fingertip)
+    obs_noise_cup_pos:   float = 0.015   # cup position observation σ [m]
+
+    # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
     # [Fix #1] cup_grasp_z_offset 컵 기하 중심으로 수정
@@ -296,12 +305,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 "openarm_right_joint5": -0.2,
                 "openarm_right_joint6":  0.0,
                 "openarm_right_joint7":  0.0,
-                # HAND_APPROACH_POSE: thumb _2=-1.57 (π/2 opposition pre-curl), 나머지=0
-                "rj_dg_1_1": 0.0, "rj_dg_1_2":  0.0,  "rj_dg_1_3": 0.0, "rj_dg_1_4": 0.0,
-                "rj_dg_2_1": 0.0, "rj_dg_2_2":  0.0,  "rj_dg_2_3": 0.0, "rj_dg_2_4": 0.0,
-                "rj_dg_3_1": 0.0, "rj_dg_3_2":  0.0,  "rj_dg_3_3": 0.0, "rj_dg_3_4": 0.0,
-                "rj_dg_4_1": 0.0, "rj_dg_4_2":  0.0,  "rj_dg_4_3": 0.0, "rj_dg_4_4": 0.0,
-                "rj_dg_5_1": 0.0, "rj_dg_5_2":  0.0,  "rj_dg_5_3": 0.0, "rj_dg_5_4": 0.0,
+                # HAND_APPROACH_POSE와 동일하게 설정: 물리 첫 스텝부터 thumb opposition 유지
+                # thumb _2=-1.57(opposition pre-curl), _3=-0.5(PIP pre-curl → 컵 먼저 닿는 문제 방지)
+                "rj_dg_1_1": 0.0, "rj_dg_1_2": -1.57, "rj_dg_1_3": -0.5, "rj_dg_1_4": 0.0,
+                "rj_dg_2_1": 0.0, "rj_dg_2_2":  0.0,  "rj_dg_2_3":  0.0, "rj_dg_2_4": 0.0,
+                "rj_dg_3_1": 0.0, "rj_dg_3_2":  0.0,  "rj_dg_3_3":  0.0, "rj_dg_3_4": 0.0,
+                "rj_dg_4_1": 0.0, "rj_dg_4_2":  0.0,  "rj_dg_4_3":  0.0, "rj_dg_4_4": 0.0,
+                "rj_dg_5_1": 0.0, "rj_dg_5_2":  0.0,  "rj_dg_5_3":  0.0, "rj_dg_5_4": 0.0,
                 **LEFT_ARM_REST_JOINT_POS,
             },
         ),
