@@ -84,10 +84,6 @@ class GraspADR:
         # tensor인 경우 item() 없이 비교 (Python bool 변환은 단일 값 tensor에서 자동)
         if metric >= self.trigger_threshold and self.increment_counter < self.num_increments:
             self.increment_counter += 1
-            print(
-                f"[GraspADR] Increment {self.increment_counter}/{self.num_increments} "
-                f"(metric={metric:.3f} >= threshold={self.trigger_threshold:.3f})"
-            )
             return True
         return False
 

@@ -38,8 +38,8 @@ params:
       regularizer:
         name: None
 
-  load_checkpoint: True
-  load_path: '/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7/test3/nn/last_5g_grasp_right-v7_ep_950_rew_9625.699.pth'
+  load_checkpoint: False
+  load_path: '/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7/test4/nn/5g_grasp_right-v7.pth'
 
   config:
     name: 5g_grasp_right-v7

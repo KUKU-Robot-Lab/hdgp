@@ -82,19 +82,29 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     use_hand_fabric:            bool  = False
     max_pose_angle:             float = 45.0
     fabrics_max_objects_per_env: int  = 6
+    fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 60
     reset_fabric_chunk_size: int = 128
-    cache_pregrasp_reset:  bool  = False   # spawn 랜덤화(±0.06m)로 캐시 불가
+    cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
     pregrasp_offset_x:     float = -0.06
     pregrasp_offset_y:     float = -0.07
     pregrasp_offset_z:     float = 0.00
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005
+
+    # -----------------------------------------------------------------------
+    # Observation noise (sim2real domain randomization)
+    # actor obs에만 적용; critic obs는 privileged clean state 유지
+    # -----------------------------------------------------------------------
+    obs_noise_joint_pos: float = 0.01    # joint position σ [rad]
+    obs_noise_joint_vel: float = 0.05    # joint velocity σ [rad/s]
+    obs_noise_body_pos:  float = 0.005   # FK body position σ [m] (palm, fingertip)
+    obs_noise_cup_pos:   float = 0.015   # cup position observation σ [m]
 
     # -----------------------------------------------------------------------
     # 접촉 감지

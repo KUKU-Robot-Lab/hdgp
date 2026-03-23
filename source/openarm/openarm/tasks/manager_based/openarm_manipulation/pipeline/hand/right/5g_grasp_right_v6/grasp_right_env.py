@@ -698,8 +698,12 @@ class GraspRightEnv(DirectRLEnv):
         arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]   # (N, 7)
         arm_joint_vel = self.robot.data.joint_vel[:, self.arm_dof_indices]   # (N, 7)
 
-        # 6. fingertip binary contact (5D) — real Teosllo FT sensor 기반
-        binary_contact = self.binary_contact_buf.float()   # (N, 5)
+        # 6. fingertip tip contact force magnitude (5D) — normalized [0,1]
+        # binary_contact(이진 0/1) → 연속 force magnitude: policy가 grip force 세기 직접 인식
+        # binary 정보는 magnitude > 0 이면 내포 (threshold 이상이면 non-zero)
+        fingertip_force_mag = (
+            self.contact_force_raw / CONTACT_FORCE_MAX
+        ).clamp(0.0, 1.0)   # (N, 5)
 
         # 7. fingertip contact force xyz (15D) — force_matrix_w Cup-only, 정규화 [-1,1]
         fingertip_force_xyz = (
@@ -717,10 +721,10 @@ class GraspRightEnv(DirectRLEnv):
             finger_joint_vel,      # 20
             arm_joint_pos,         # 7
             arm_joint_vel,         # 7
-            binary_contact,        # 5
+            fingertip_force_mag,   # 5  (grip force magnitude per tip, [0,1])
             fingertip_force_xyz,   # 15  (fx,fy,fz × 5 tips, force_matrix_w Cup-only)
             last_actions,          # 5
-        ], dim=-1)   # 104D
+        ], dim=-1)   # 101D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -1157,6 +1161,10 @@ class GraspRightEnv(DirectRLEnv):
         self.middle_binary_contact_buf[env_ids] = False
 
         # ---- 10. 성공 플래그 리셋 ----
+        # [episode_success_rate] 리셋 직전, 이 에피소드의 성공 여부 기록
+        if "episode" not in self.extras:
+            self.extras["episode"] = {}
+        self.extras["episode"]["success_rate"] = self.success_flag[env_ids].float().mean()
         self.success_flag[env_ids] = False
 
         # ---- 11. actions 리셋 (손가락: open 상태에서 시작) ----

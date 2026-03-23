@@ -337,7 +337,7 @@ class GraspRightEnv(DirectRLEnv):
         warp_cache_dir = self.device[-1]
         initialize_warp(warp_cache_dir)
 
-        print("=== GraspRightEnv v7: Creating Fabrics world ===")
+
         self.world_model = WorldMeshesModel(
             batch_size=self.num_envs,
             max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
@@ -366,7 +366,7 @@ class GraspRightEnv(DirectRLEnv):
         # Fabric input 버퍼
         self.hand_pca_targets  = torch.zeros(self.num_envs, 5, device=self.device)
         self.palm_pose_targets = torch.zeros(self.num_envs, 6, device=self.device)
-        self.fabric_damping_gain = 10.0 * torch.ones(self.num_envs, 1, device=self.device)
+        self.fabric_damping_gain = self.cfg.fabrics_damping_gain * torch.ones(self.num_envs, 1, device=self.device)
 
         # Reset 전용 소형 Fabrics (chunk 단위)
         self._reset_chunk = self.cfg.reset_fabric_chunk_size
@@ -391,7 +391,57 @@ class GraspRightEnv(DirectRLEnv):
         )
         self._reset_obj_ids, self._reset_obj_indicator = self._reset_world.get_object_ids()
 
-        print("=== GraspRightEnv v7: Fabrics initialized ===")
+
+
+        # Pregrasp IK 캐시 사전 계산 (spawn grid 전체)
+        self._build_pregrasp_cache()
+
+    # ------------------------------------------------------------------
+    # Pregrasp grid 캐시 빌드 (startup 1회)
+    # ------------------------------------------------------------------
+    def _build_pregrasp_cache(self) -> None:
+        """spawn 위치 13×13 grid에 대해 Fabrics IK를 startup에서 일괄 계산.
+
+        reset 시 nearest-neighbor lookup → Fabrics rollout 생략 → 대폭 속도 향상.
+        1cm 간격 grid이므로 실제 spawn 위치와 최대 ~0.7cm 오차 → Fabrics가 첫 몇 스텝에서 보정.
+        """
+        _N = 13  # 1cm 간격, ±6cm 범위
+        xs = torch.linspace(
+            self.cfg.object_spawn_x_center - self.cfg.object_spawn_xy_range,
+            self.cfg.object_spawn_x_center + self.cfg.object_spawn_xy_range,
+            _N, device=self.device,
+        )
+        ys = torch.linspace(
+            self.cfg.object_spawn_y_center - self.cfg.object_spawn_xy_range,
+            self.cfg.object_spawn_y_center + self.cfg.object_spawn_xy_range,
+            _N, device=self.device,
+        )
+        gx, gy = torch.meshgrid(xs, ys, indexing="ij")
+        flat_x, flat_y = gx.flatten(), gy.flatten()
+        M = flat_x.shape[0]  # 169
+
+        palm = torch.zeros(M, 6, device=self.device)
+        palm[:, 0] = flat_x + self.cfg.pregrasp_offset_x
+        palm[:, 1] = flat_y + self.cfg.pregrasp_offset_y
+        palm[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
+        palm[:, 3] = math.radians(90.0)
+        palm[:, 4] = math.radians(0.0)
+        palm[:, 5] = math.radians(90.0)
+        palm = torch.max(
+            torch.min(palm, self.palm_maxs.unsqueeze(0)),
+            self.palm_mins.unsqueeze(0),
+        )
+
+        q_init = self.robot_start_joint_pos[0].unsqueeze(0).expand(M, -1).contiguous()
+        dummy  = torch.arange(M, device=self.device)
+        q_out  = self._run_reset_fabric(dummy, palm, q_init.clone())
+
+        # (13, 13, 7): arm joints only
+        self._cache_q_arm = q_out[:, :NUM_ARM_DOF].view(_N, _N, NUM_ARM_DOF).contiguous()
+        self._cache_xs    = xs
+        self._cache_ys    = ys
+        self._cache_n     = _N
+
 
     # ------------------------------------------------------------------
     # Reset 전용 Fabrics rollout (chunk 단위)
@@ -547,6 +597,18 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_q[:, NUM_ARM_DOF:] = hand_target
         self.fabric_qd[:, NUM_ARM_DOF:].zero_()
 
+        # ---- Lift phase: Fabrics arm 상태 동결 ----
+        # lift 중에도 Fabrics integrator가 계속 실행되면 palm target과 실제 arm 위치가
+        # 괴리되면서 fabric_qd가 발산 → arm에 전달되지 않더라도 상태 불안정 초래
+        # 실제 arm joint 위치로 동기화 + 속도 제로 → lift phase 좌우 흔들림 제거
+        if self.is_lift_phase.any():
+            lift_mask = self.is_lift_phase
+            self.fabric_q[lift_mask, :NUM_ARM_DOF] = (
+                self.robot.data.joint_pos[lift_mask][:, self.arm_dof_indices]
+            )
+            self.fabric_qd[lift_mask, :NUM_ARM_DOF].zero_()
+            self.fabric_qdd[lift_mask, :NUM_ARM_DOF].zero_()
+
     def _apply_action(self) -> None:
         is_lift = self.is_lift_phase   # (N,) bool
 
@@ -623,37 +685,48 @@ class GraspRightEnv(DirectRLEnv):
     # Observations: Actor 106D | Critic 143D
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
-        # ==== Actor obs (106D) ====
+        # ==== 공통 clean state (critic용, 물리 정확값) ====
+        arm_joint_pos_clean    = self.robot.data.joint_pos[:, self.arm_dof_indices]    # (N, 7)
+        arm_joint_vel_clean    = self.robot.data.joint_vel[:, self.arm_dof_indices]    # (N, 7)
+        finger_joint_pos_clean = self.robot.data.joint_pos[:, self.hand_dof_indices]  # (N, 20)
+        finger_joint_vel_clean = self.robot.data.joint_vel[:, self.hand_dof_indices]  # (N, 20)
+        palm_center_pos_clean  = self.palm_center_pos                                  # (N, 3)
+        fingertip_pos_clean    = self.fingertip_pos                                    # (N, 5, 3)
+        cup_pos_clean          = self.object_pos                                       # (N, 3)
 
-        # 1. arm joint pos/vel (7D each)
-        arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]   # (N, 7)
-        arm_joint_vel = self.robot.data.joint_vel[:, self.arm_dof_indices]   # (N, 7)
+        # ==== Actor obs용 noisy state (sim2real domain randomization) ====
+        σ_qp = self.cfg.obs_noise_joint_pos
+        σ_qv = self.cfg.obs_noise_joint_vel
+        σ_bp = self.cfg.obs_noise_body_pos
+        σ_cp = self.cfg.obs_noise_cup_pos
 
-        # 2. finger joint pos/vel (20D each)
-        finger_joint_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]   # (N, 20)
-        finger_joint_vel = self.robot.data.joint_vel[:, self.hand_dof_indices]   # (N, 20)
+        arm_joint_pos    = arm_joint_pos_clean    + torch.randn_like(arm_joint_pos_clean)    * σ_qp
+        arm_joint_vel    = arm_joint_vel_clean    + torch.randn_like(arm_joint_vel_clean)    * σ_qv
+        finger_joint_pos = finger_joint_pos_clean + torch.randn_like(finger_joint_pos_clean) * σ_qp
+        finger_joint_vel = finger_joint_vel_clean + torch.randn_like(finger_joint_vel_clean) * σ_qv
+        palm_center_pos  = palm_center_pos_clean  + torch.randn_like(palm_center_pos_clean)  * σ_bp
+        fingertip_pos    = fingertip_pos_clean    + torch.randn_like(fingertip_pos_clean)    * σ_bp
+        cup_pos_noisy    = cup_pos_clean          + torch.randn_like(cup_pos_clean)          * σ_cp
 
-        # 3. palm center pos (world, local frame) (3D)
-        palm_center_pos = self.palm_center_pos   # (N, 3)
-
+        # ==== Actor obs 조합 (106D) ====
         # 4. fingertip pos relative to palm (15D)
         fingertip_pos_rel_palm = (
-            self.fingertip_pos - palm_center_pos.unsqueeze(1)
-        ).view(self.num_envs, -1)   # (N, 15)
+            fingertip_pos - palm_center_pos.unsqueeze(1)
+        ).view(self.num_envs, -1)
 
         # 5. palm to cup vector (3D)
-        palm_to_cup = self.object_pos - palm_center_pos   # (N, 3)
+        palm_to_cup = cup_pos_noisy - palm_center_pos
 
         # 6. cup to fingertip vectors (15D)
         cup_to_fingertip = (
-            self.fingertip_pos - self.object_pos.unsqueeze(1)
-        ).view(self.num_envs, -1)   # (N, 15)
+            fingertip_pos - cup_pos_noisy.unsqueeze(1)
+        ).view(self.num_envs, -1)
 
-        # 7. fingertip binary contact (5D)
-        binary_contact = self.binary_contact_buf.float()   # (N, 5)
+        # 7. fingertip binary contact (5D) — contact 자체에는 noise 없음
+        binary_contact = self.binary_contact_buf.float()
 
         # 8. last actions (11D)
-        last_actions = self.actions   # (N, 11)
+        last_actions = self.actions
 
         actor_obs = torch.cat([
             arm_joint_pos,          # 7
@@ -673,19 +746,18 @@ class GraspRightEnv(DirectRLEnv):
                 f"[v7] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
             )
 
-        # ==== Critic extra obs (37D) ====
-
+        # ==== Critic extra obs (37D) — clean state 사용 ====
         # cup velocity (6D)
-        cup_lin_vel = self.cup.data.root_lin_vel_w   # (N, 3)
-        cup_ang_vel = self.cup.data.root_ang_vel_w   # (N, 3)
+        cup_lin_vel = self.cup.data.root_lin_vel_w
+        cup_ang_vel = self.cup.data.root_ang_vel_w
 
         # cup rotation (4D)
-        cup_rot = self.object_rot   # (N, 4)
+        cup_rot = self.object_rot
 
-        # cup height delta (1D)
+        # cup height delta (1D) — clean cup pos
         cup_height_delta = (
-            self.object_pos[:, 2] - self.object_init_pos[:, 2]
-        ).unsqueeze(1)   # (N, 1)
+            cup_pos_clean[:, 2] - self.object_init_pos[:, 2]
+        ).unsqueeze(1)
 
         # distal contact (5D binary + 5D norm)
         distal_binary     = self.distal_binary_contact_buf.float()
@@ -698,16 +770,30 @@ class GraspRightEnv(DirectRLEnv):
         # phase step ratio (1D)
         phase_step_ratio = (
             self.episode_length_buf.float() / EPISODE_STEPS
-        ).unsqueeze(1)   # (N, 1)
+        ).unsqueeze(1)
 
-        # fingertip to cup signed distance (5D): ||tip - cup_center|| - cup_radius
+        # fingertip signed dist (5D) — clean positions
         tip_to_cup_dist = (
-            self.fingertip_pos - self.object_pos.unsqueeze(1)
-        ).norm(dim=-1)   # (N, 5)
-        fingertip_signed_dist = (tip_to_cup_dist - CUP_RADIUS_APPROX).unsqueeze(-1).squeeze(-1)  # (N, 5)
+            fingertip_pos_clean - cup_pos_clean.unsqueeze(1)
+        ).norm(dim=-1)
+        fingertip_signed_dist = (tip_to_cup_dist - CUP_RADIUS_APPROX).unsqueeze(-1).squeeze(-1)
+
+        # critic actor_obs_clean (106D) — clean state 재조합
+        actor_obs_clean = torch.cat([
+            arm_joint_pos_clean,
+            arm_joint_vel_clean,
+            finger_joint_pos_clean,
+            finger_joint_vel_clean,
+            palm_center_pos_clean,
+            (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
+            cup_pos_clean - palm_center_pos_clean,
+            (fingertip_pos_clean - cup_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
+            binary_contact,
+            last_actions,
+        ], dim=-1)   # 106D
 
         critic_obs = torch.cat([
-            actor_obs,              # 106
+            actor_obs_clean,        # 106
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4
@@ -937,33 +1023,6 @@ class GraspRightEnv(DirectRLEnv):
 
         self.extras["object_z"] = self.object_pos[:, 2].mean()
 
-        # ---- DEBUG: lift phase 진입 시 각 env 상태 출력 ----
-        entering_lift = (self.episode_length_buf == LIFT_START_STEP)
-        if entering_lift.any():
-            palm   = self.palm_center_pos[entering_lift]   # (M, 3)
-            obj    = self.object_pos[entering_lift]        # (M, 3)
-            delta  = palm - obj                            # palm이 물체 대비 어디에?
-            dist   = delta.norm(dim=-1)                    # (M,)
-            conts  = self.num_contacts_buf[entering_lift].float()  # (M,)
-            has_c  = conts >= MIN_CONTACTS_FOR_SUCCESS
-            M = entering_lift.sum().item()
-
-            print(f"\n{'='*60}")
-            print(f"[LIFT 진입] {M} envs @ step {LIFT_START_STEP}")
-            print(f"  palm-obj 거리  mean={dist.mean():.3f}m  max={dist.max():.3f}m  min={dist.min():.3f}m")
-            print(f"  palm-obj delta(x,y,z) mean: [{delta[:,0].mean():.3f}, {delta[:,1].mean():.3f}, {delta[:,2].mean():.3f}]")
-            print(f"  palm-obj delta(x,y,z) std : [{delta[:,0].std():.3f}, {delta[:,1].std():.3f}, {delta[:,2].std():.3f}]")
-            print(f"  contacts mean={conts.mean():.2f}  contact≥2: {has_c.float().mean()*100:.1f}%")
-
-            # 실패(접촉 없음) vs 성공(접촉 있음) 분리 출력
-            if has_c.any():
-                d_ok = delta[has_c]
-                print(f"  [접촉O {has_c.sum().item()}개] palm-obj delta mean: [{d_ok[:,0].mean():.3f}, {d_ok[:,1].mean():.3f}, {d_ok[:,2].mean():.3f}]  dist={d_ok.norm(dim=-1).mean():.3f}m")
-            if (~has_c).any():
-                d_fail = delta[~has_c]
-                print(f"  [접촉X {(~has_c).sum().item()}개] palm-obj delta mean: [{d_fail[:,0].mean():.3f}, {d_fail[:,1].mean():.3f}, {d_fail[:,2].mean():.3f}]  dist={d_fail.norm(dim=-1).mean():.3f}m")
-            print(f"{'='*60}")
-
         return terminated, truncated
 
     # ------------------------------------------------------------------
@@ -1027,8 +1086,11 @@ class GraspRightEnv(DirectRLEnv):
             self.palm_mins.unsqueeze(0),
         )
 
-        q_init_pregrasp = self.fabric_q[env_ids].clone()
-        q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_init_pregrasp)
+        # ---- cache lookup: spawn 위치 → 가장 가까운 grid point arm IK ----
+        xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
+        yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
+        q_pregrasp = self.fabric_q[env_ids].clone()
+        q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[xi, yi]
 
         self.fabric_q[env_ids] = q_pregrasp
         self.fabric_qd[env_ids].zero_()
