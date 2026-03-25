@@ -82,7 +82,7 @@ params:
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.002       # DEXTRAH kuka-allegro 동일
+    entropy_coef: 0.01        # 탐색 유지 (0.002→0.01: 결정론적 수렴 방지)
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 16        # 2048 envs × 16 = 32768 samples/iter

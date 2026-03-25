@@ -129,7 +129,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   curl_weight    : -2→-1 (패널티 완화)
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "reward_weights": {
-            "lift_weight":        (5.0, 0.0),    # DEXTRAH: 5→0
+            "lift_weight":        (5.0, 1.0),    # 최소 1.0 유지 (복구 gradient 보장)
             "finger_curl_weight": (-2.0, -1.0),  # DEXTRAH: -0.01→-0.005 스케일 조정
         },
         "sharpness": {

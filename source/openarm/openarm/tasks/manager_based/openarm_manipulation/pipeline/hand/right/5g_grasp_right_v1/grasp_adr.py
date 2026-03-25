@@ -50,6 +50,7 @@ class GraspADR:
 
         self.increment_counter: int = 0
         self._step_counter: int = 0
+        self._consecutive_success: int = 0
 
     # ------------------------------------------------------------------
     # 파라미터 조회
@@ -82,8 +83,14 @@ class GraspADR:
             return False
 
         # tensor인 경우 item() 없이 비교 (Python bool 변환은 단일 값 tensor에서 자동)
-        if metric >= self.trigger_threshold and self.increment_counter < self.num_increments:
+        if metric >= self.trigger_threshold:
+            self._consecutive_success += 1
+        else:
+            self._consecutive_success = 0
+
+        if self._consecutive_success >= 2 and self.increment_counter < self.num_increments:
             self.increment_counter += 1
+            self._consecutive_success = 0
             print(
                 f"[GraspADR] Increment {self.increment_counter}/{self.num_increments} "
                 f"(metric={metric:.3f} >= threshold={self.trigger_threshold:.3f})"
