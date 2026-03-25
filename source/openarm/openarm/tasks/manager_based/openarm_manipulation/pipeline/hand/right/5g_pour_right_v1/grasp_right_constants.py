@@ -12,53 +12,55 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""상수 정의: 5g_grasp_right_v7
+"""상수 정의: 5g_pour_right_v1
 
-v7: Fabrics 팔 학습(6D palm action) + per-finger lerp(5D) + Contact sensor 없는 FK 기반 보상
+v1: Warmstart(v7 grasp) 기반 물붓기 태스크
+    컵이 이미 파지·들린 상태로 시작 → transport + tilt + pour 학습
 
 Action (11D):
   [0:6]  6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
-  [6:11] 5D per-finger lerp (thumb, index, middle, ring, pinky)
-         -1 → HAND_APPROACH_POSE, +1 → HAND_GRASP_POSE
+  [6:11] 5D per-finger lerp (freeze_grasp=True → 항상 1.0 강제)
 
-Actor Observation (102D) — sim2real 가능:
+Actor Observation (101D) — sim2real 가능:
   arm_joint_pos:            7
   arm_joint_vel:            7
   finger_joint_pos:        20
   finger_joint_vel:        20
   right_cup_pos_rel_palm:   3
   right_cup_quat:           4
-  right_cup_lin_vel:        3
-  right_cup_ang_vel:        3
   left_cup_pos_rel_palm:    3
   left_cup_quat:            4
   pour_point_to_opening:    3
   source_pour_axis:         3
   source_up_axis:           3
   target_up_axis:           3
+  transport_summary:        5  [mouth_dist, mouth_xy_dist, z_clearance,
+                                source_up_dot, dir_tilt_cos]
   fingertip_contact_binary: 5
   last_actions:            11
-  Total:                  102
+  Total:                  101
 
-Critic Extra (47D) — sim-only privileged:
+Critic Extra (42D) — sim-only privileged:
   left_arm_joint_pos:       9
   left_arm_joint_vel:       9
   distal_contact_binary:    5  (rl_dg_*_4)
   distal_contact_norm:      5
-  middle_contact_binary:    5  (rl_dg_*_3)
-  middle_contact_norm:      5
-  phase_step_ratio:         1
   cup_height_delta:         1
   bead_pos_rel_source_cup:  3
   bead_pos_rel_target_cup:  3
-  pour_point_to_opening_norm: 1
-  Total:                   47
+  mouth_distance:           1
+  mouth_xy_distance:        1
+  mouth_z_clearance:        1
+  source_up_dot_world:      1
+  directional_tilt_cos:     1
+  mouth_alignment_cos:      1
+  bead_in_target_flag:      1
+  Total:                   42
 
-Critic Total: 102 + 47 = 149D
+Critic Total: 101 + 42 = 143D
 
-Episode (10s @ 60Hz = 600 steps):
-  Grasp phase (0~479):  Fabrics arm + per-finger policy
-  Lift  phase (480~599): scripted arm prelift + frozen hand
+Episode (6s @ 60Hz = 360 steps):
+  Pour phase (0~359): Fabrics arm policy + frozen hand
 """
 
 import math
@@ -89,21 +91,17 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 102        # Actor: sim2real 가능
+NUM_OBSERVATIONS = 101        # Actor: sim2real 가능
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 47
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 149
+NUM_CRITIC_EXTRAS   = 42
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 143
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
-GRASP_PHASE_STEPS = 480    # 8s: Fabrics arm + per-finger policy
-LIFT_PHASE_STEPS  = 120    # 2s: scripted arm + frozen hand
-LIFT_START_STEP   = GRASP_PHASE_STEPS    # 480
-EPISODE_STEPS     = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS  # 600
-
-LIFT_Z_DELTA = 0.10    # 10cm 수직 상승 (j4 += 0.31 근사)
+POUR_EPISODE_STEPS = 360    # 6s: transport + tilt + pour (bi_pouring_v1과 동일)
+EPISODE_STEPS = POUR_EPISODE_STEPS
 
 # ---------------------------------------------------------------------------
 # Contact

@@ -154,7 +154,7 @@ def palm_pose_mins(max_pose_angle: float) -> list:
 def palm_pose_maxs(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
-        0.65, -0.02, 0.65,
+        0.65, 0.22, 0.65,   # pour task: y_max +0.22m (타겟 컵 도달 위해 왼쪽 이동 허용)
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

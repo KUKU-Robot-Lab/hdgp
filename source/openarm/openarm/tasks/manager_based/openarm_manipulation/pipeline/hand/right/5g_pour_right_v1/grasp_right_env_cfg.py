@@ -69,7 +69,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Fabrics: fabrics_dt=1/60 × fabric_decimation=2 → 120 Hz
     # Episode: 10s = 600 steps @ 60Hz (8s grasp + 2s lift)
     # -----------------------------------------------------------------------
-    episode_length_s: float = 10.0
+    episode_length_s: float = 6.0
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -97,7 +97,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
-    pregrasp_fabric_steps: int   = 60
+    pregrasp_fabric_steps: int   = 200
+    episode_hold_steps:    int   = 20   # 에피소드 시작 후 N스텝 palm action=0 강제 (warmstart 물리 안착)
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
     pregrasp_offset_x:     float = -0.06
@@ -126,75 +127,77 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Delta palm action (pregrasp 기준 상대 오프셋)
     # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.15   # ±0.15m per axis
-    palm_delta_rot_deg: float = 20.0   # ±20° per axis
+    palm_delta_xyz:     float = 0.35   # ±0.35m per axis (grasp_y≈-0.15 → target_y≈+0.20 = 0.35m)
+    palm_delta_rot_deg: float = 60.0   # ±60° per axis (45° tilt 달성 위해 확장)
 
     # -----------------------------------------------------------------------
-    # Reward 파라미터
+    # Reward 파라미터 (bi_pouring_v1 기반 pour 전용)
     # -----------------------------------------------------------------------
-    # R0. palm_to_cup: arm 접근 유도 (v1 hand_to_object 동일 역할)
-    # 초기 정책(출력≈0) → workspace 중심 이동 방지, arm approach 1차 gradient 제공
-    palm_approach_weight:    float = 1.0
-    palm_approach_sharpness: float = 10.0
 
-    # R1. fingertip_enclosure (ADR: 10→20) — Grasp phase 핵심 리워드
-    # max ≈ 10.0 (palm 접근보다 10×, 손가락 파지가 지배적 gradient)
-    enclosure_weight:       float = 10.0
-    enclosure_sharpness:    float = 15.0
-    cup_radius_approx:      float = 0.045
-    enclosure_thumb_weight: float = 0.6   # 엄지 유도 비중 (0.5→0.6): 비대칭 강화
+    # R1. Transport goal: pour point → target opening 거리 최소화
+    # test2 분석: r_transport(0.242) << r_height(0.906) → 이동 동기 부족
+    transport_goal_sharpness:      float = 8.0
+    reward_transport_goal_weight:  float = 6.0   # 3.0 → 6.0 (transport 우선순위 대폭 강화)
 
-    # R1b. force_balance_reward: |F_thumb - F_others_avg| → 0 (컵 기울임 방지 핵심)
-    # [contact_bonus 대체] binary count → 힘 균형 직접 측정 (sim2real 호환)
-    # gate: 엄지 + 나머지 1개 이상 접촉 시에만 활성 (무접촉 err=0 오보상 방지)
-    # gaussian: 균형점(err=0)에서 최대, 불균형 커질수록 급감
-    force_balance_weight:    float = 3.0
-    force_balance_sharpness: float = 8.0   # 1/8N 오차 → e^-1
+    # R2. Palm to goal: arm 이동 보조 신호
+    transport_palm_sharpness:      float = 4.0
+    reward_palm_to_goal_weight:    float = 0.2
 
-    # R1c. full_grasp_bonus: Grasp phase per-step
-    # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
-    # → 엄지가 0.1N 살짝 닿기만 해서 조건 충족하던 허점 제거
-    full_grasp_bonus_weight: float = 8.0
-    thumb_force_ratio_min:   float = 0.5   # 엄지 힘 ≥ others 평균 × 0.5
+    # R3. Tilt: source_up_dot → cos(45°) 유도
+    # test2: tilt 30°에서 정체 → weight/sharpness 강화
+    target_pour_tilt_deg:          float = 45.0
+    pour_tilt_sharpness:           float = 12.0
+    reward_tilt_weight:            float = 2.5   # 1.0 → 2.5 (tilt 강화)
 
-    # R2. tip_approach_bonus: distal보다 tip이 먼저 닿도록 유도
-    tip_approach_bonus_weight: float = 1.0
+    # R4. Directional tilt: target 방향으로 기울기
+    # test2: 초기값 이미 0.997 (free baseline) → 과도한 우선순위 하향
+    reward_directional_tilt_weight: float = 0.8  # 1.2 → 0.8 (free baseline 비중 축소)
 
-    # DexPour-style transport -> pour reward
-    lift_reward_weight: float = 30.0
-    transport_cup_dist_weight: float = 4.0
-    transport_cup_dist_sharpness: float = 2.0
-    transport_tilt_penalty_weight: float = 2.0
-    pour_activate_distance: float = 0.17
-    pour_tilt_weight: float = 4.0
-    pour_tilt_sharpness: float = 12.0
-    target_pour_tilt_deg: float = 45.0
-    pour_align_weight: float = 4.0
+    # R5. Height band: z_clearance ∈ [z_min, z_max]m
+    # test2: r_height(1.2 weight)가 지배 → 컵 낮추는 게 최적해가 됨 → 비중 감소
+    height_z_band_min:             float = 0.01
+    height_z_band_max:             float = 0.08
+    transport_height_sharpness:    float = 25.0
+    reward_height_weight:          float = 0.5   # 1.2 → 0.5 (height 지배 방지)
 
-    # Action smoothness
-    action_smoothness_palm_weight:   float = -0.02
+    # R6. Mouth alignment: pour axis → target 방향
+    reward_mouth_alignment_weight: float = 0.4
+
+    # P1. Spill penalty
+    penalty_spill_weight:          float = 4.0
+    bead_spill_z_threshold:        float = 0.230   # bead z < 이 값이면 spill
+
+    # P2. Smoothness
+    action_smoothness_palm_weight:  float = -0.02
     action_smoothness_finger_weight: float = -0.01
 
-    # Success / target-cup inclusion
-    target_inner_radius: float = 0.050
-    target_inside_z_min: float = -0.015
-    target_inside_z_max: float = 0.095
+    # Success condition (bi_pouring_v1 패턴: ready pose N steps 유지)
+    success_hold_steps:             int   = 12      # 0.2s @ 60Hz
+    success_mouth_xy_threshold:     float = 0.040
+    success_z_clearance_min:        float = 0.00
+    success_z_clearance_max:        float = 0.08
+    success_tilt_cos_tolerance:     float = 0.15
+    success_directional_tilt_cos:   float = 0.65
 
-    # Legacy grasp reward params retained for compatibility with older configs.
-    grasp_quality_lift_weight:     float = 40.0
-    grasp_quality_lift_sharpness:  float = 10.0
+    # bead / cup geometry
+    target_inner_radius:  float = 0.050
+    target_inside_z_min:  float = -0.015
+    target_inside_z_max:  float = 0.095
+    source_inner_radius:  float = 0.055
+    source_inside_z_min:  float = -0.020
+    source_inside_z_max:  float = 0.110
 
     # -----------------------------------------------------------------------
     # ADR
     # -----------------------------------------------------------------------
-    enable_adr:            bool  = True
+    enable_adr:            bool  = False   # pour 학습 안정화 후 활성화
     adr_num_increments:    int   = 50
     adr_increment_interval: int  = 200
     adr_trigger_threshold: float = 0.02
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "reward_weights": {
-            "enclosure_weight": (10.0, 20.0),
+            "reward_transport_goal_weight": (3.0, 5.0),
         },
     })
 
