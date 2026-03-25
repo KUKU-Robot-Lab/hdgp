@@ -1022,9 +1022,16 @@ class GraspRightEnv(DirectRLEnv):
     # Rewards: bi_pouring_v1 기반 pour 전용 reward
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        # R1. Transport goal: pour point → target opening 거리 최소화
+        # R0. Grasp hold: 파지 유지 보상 (슬립 방지)
+        # 접촉 손가락 수 비례 → slip 발생 시 즉시 reward 감소 → 부드러운 이동 학습 유도
+        r_hold = self.cfg.reward_grasp_hold_weight * (
+            self.num_contacts_buf.float() / NUM_FINGERTIPS
+        )
+
+        # R1. Transport goal: XY 정렬 최소화 (Z는 height reward가 담당)
+        # test2 분석: 3D distance로는 XY 학습 신호 약함 → XY-only로 분리
         r_transport = self.cfg.reward_transport_goal_weight * torch.exp(
-            -self.cfg.transport_goal_sharpness * self._mouth_distance
+            -self.cfg.transport_goal_sharpness * self._mouth_xy_distance
         )
 
         # R2. Palm to goal: arm 이동 보조 신호
@@ -1064,7 +1071,7 @@ class GraspRightEnv(DirectRLEnv):
             + self.cfg.action_smoothness_finger_weight * finger_delta
         )
 
-        total = r_transport + r_palm + r_tilt + r_dir_tilt + r_height + r_align - p_spill + r_smooth
+        total = r_hold + r_transport + r_palm + r_tilt + r_dir_tilt + r_height + r_align - p_spill + r_smooth
 
         # ---- ADR increment ----
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
@@ -1072,7 +1079,8 @@ class GraspRightEnv(DirectRLEnv):
             self.grasp_adr.maybe_increment(_ep_success_rate)
 
         # ---- 로깅 ----
-        self.extras["r_transport_goal"]      = r_transport.mean()
+        self.extras["r_grasp_hold"]          = r_hold.mean()
+        self.extras["r_transport_xy"]         = r_transport.mean()
         self.extras["r_palm_to_goal"]        = r_palm.mean()
         self.extras["r_tilt"]                = r_tilt.mean()
         self.extras["r_directional_tilt"]    = r_dir_tilt.mean()

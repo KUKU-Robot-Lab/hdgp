@@ -134,34 +134,41 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Reward 파라미터 (bi_pouring_v1 기반 pour 전용)
     # -----------------------------------------------------------------------
 
-    # R1. Transport goal: pour point → target opening 거리 최소화
-    # test2 분석: r_transport(0.242) << r_height(0.906) → 이동 동기 부족
-    transport_goal_sharpness:      float = 8.0
-    reward_transport_goal_weight:  float = 6.0   # 3.0 → 6.0 (transport 우선순위 대폭 강화)
+    # R1. Transport goal: XY 정렬 최소화 (pour point → target opening XY 거리)
+    # test3: 3D distance → XY-only (Z는 height reward 담당, XY 학습 신호 분리)
+    # sharpness 12: plateau 반경 1/12 ≈ 8.3cm (3D distance 8.0보다 강한 XY 집중)
+    transport_goal_sharpness:      float = 12.0  # 8.0 → 12.0 (XY-only sharpness 강화)
+    reward_transport_goal_weight:  float = 5.0   # 6.0 → 5.0 (XY 분리로 height와 균형)
 
     # R2. Palm to goal: arm 이동 보조 신호
     transport_palm_sharpness:      float = 4.0
     reward_palm_to_goal_weight:    float = 0.2
 
-    # R3. Tilt: source_up_dot → cos(45°) 유도
-    # test2: tilt 30°에서 정체 → weight/sharpness 강화
-    target_pour_tilt_deg:          float = 45.0
-    pour_tilt_sharpness:           float = 12.0
-    reward_tilt_weight:            float = 2.5   # 1.0 → 2.5 (tilt 강화)
+    # R3. Tilt: source_up_dot → cos(target_pour_tilt_deg) 유도
+    # 컵이 크기 때문에 bead가 개구부(130mm 높이)를 넘으려면 깊은 tilt 필요
+    # 45° → 75°: cos(75°)=0.259 (거의 옆으로, 중력이 bead를 컵 밖으로 충분히 당김)
+    target_pour_tilt_deg:          float = 75.0  # 45.0 → 75.0 (큰 컵 대응)
+    pour_tilt_sharpness:           float = 12.0  # 15.0 → 12.0 (75° 범위 넓어 gradient 완화)
+    reward_tilt_weight:            float = 3.0
 
     # R4. Directional tilt: target 방향으로 기울기
     # test2: 초기값 이미 0.997 (free baseline) → 과도한 우선순위 하향
     reward_directional_tilt_weight: float = 0.8  # 1.2 → 0.8 (free baseline 비중 축소)
 
     # R5. Height band: z_clearance ∈ [z_min, z_max]m
-    # test2: r_height(1.2 weight)가 지배 → 컵 낮추는 게 최적해가 됨 → 비중 감소
+    # test3: band 확대 [0.01, 0.10] + sharpness 완화 → 이동 자유도 증가
+    # (test2: 0.078m ≈ band 최대치 → 이동 제약)
     height_z_band_min:             float = 0.01
-    height_z_band_max:             float = 0.08
-    transport_height_sharpness:    float = 25.0
-    reward_height_weight:          float = 0.5   # 1.2 → 0.5 (height 지배 방지)
+    height_z_band_max:             float = 0.10  # 0.08 → 0.10 (band 확대)
+    transport_height_sharpness:    float = 15.0  # 25.0 → 15.0 (sharpness 완화)
+    reward_height_weight:          float = 0.5   # 유지
 
     # R6. Mouth alignment: pour axis → target 방향
     reward_mouth_alignment_weight: float = 0.4
+
+    # R0. Grasp hold: 파지 유지 보상 (슬립 방지)
+    # 접촉 손가락 수에 비례 → arm이 빠르게 움직여 slip 시 reward 감소 → 부드러운 이동 유도
+    reward_grasp_hold_weight:      float = 2.0   # 5개 모두 접촉 시 2.0, 0개면 0.0
 
     # P1. Spill penalty
     penalty_spill_weight:          float = 4.0
@@ -172,12 +179,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     action_smoothness_finger_weight: float = -0.01
 
     # Success condition (bi_pouring_v1 패턴: ready pose N steps 유지)
+    # tilt 75° 기준: cos(75°)=0.259, tolerance ±0.20 → [55°, 87°] 허용
     success_hold_steps:             int   = 12      # 0.2s @ 60Hz
     success_mouth_xy_threshold:     float = 0.040
     success_z_clearance_min:        float = 0.00
-    success_z_clearance_max:        float = 0.08
-    success_tilt_cos_tolerance:     float = 0.15
-    success_directional_tilt_cos:   float = 0.65
+    success_z_clearance_max:        float = 0.10   # 0.08 → 0.10 (band 확대와 동기)
+    success_tilt_cos_tolerance:     float = 0.20   # 0.15 → 0.20 (75° 기준, 허용 범위 확대)
+    success_directional_tilt_cos:   float = 0.55   # 0.65 → 0.55 (더 깊은 tilt 달성 중엔 방향 오차 허용)
 
     # bead / cup geometry
     target_inner_radius:  float = 0.050
