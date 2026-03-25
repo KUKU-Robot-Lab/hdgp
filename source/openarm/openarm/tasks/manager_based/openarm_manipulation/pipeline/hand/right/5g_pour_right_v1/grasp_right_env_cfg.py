@@ -98,7 +98,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 200
-    episode_hold_steps:    int   = 20   # 에피소드 시작 후 N스텝 palm action=0 강제 (warmstart 물리 안착)
+    episode_hold_steps:    int   = 30   # 에피소드 시작 후 N스텝 palm action=0 강제 (warmstart 물리 안착)
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
     pregrasp_offset_x:     float = -0.06

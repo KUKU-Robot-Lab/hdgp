@@ -798,13 +798,16 @@ class GraspRightEnv(DirectRLEnv):
         self._mouth_z_clearance = self._source_pour_point_w[:, 2] - self._target_opening_w[:, 2]
         self._source_up_dot_world = self._source_up_axis_w[:, 2].clamp(-1.0, 1.0)
 
-        # Directional tilt: target 방향으로 기울어야 함
+        # Directional tilt: pour axis(-x)가 아래를 향하도록 cup up을 유도
+        # source_pour_axis_w = cup local [-1,0,0] in world (스파웃 방향)
+        # cup up이 (-pour_axis_xy) 방향으로 기울면 스파웃이 내려감
+        # e.g. pour_axis_w ≈ [-1,0,0] → -pour_axis_xy ≈ [1,0] → ref_up ≈ [sin45, 0, cos45]
         _tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
         _tilt_sin = math.sin(math.radians(self.cfg.target_pour_tilt_deg))
-        _mouth_xy = self._mouth_delta[:, :2]
-        _mouth_xy_norm = _mouth_xy / (_mouth_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
-        _ref_up_xy = torch.cat([_mouth_xy_norm, torch.zeros(n, 1, device=self.device)], dim=-1)
-        _ref_up = _tilt_cos * self._world_up.expand(n, -1) - _tilt_sin * _ref_up_xy
+        _pour_axis_xy = self._source_pour_axis_w[:, :2]   # (N, 2)
+        _tilt_dir_xy = -_pour_axis_xy / (_pour_axis_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
+        _tilt_dir_3d = torch.cat([_tilt_dir_xy, torch.zeros(n, 1, device=self.device)], dim=-1)
+        _ref_up = _tilt_cos * self._world_up.expand(n, -1) + _tilt_sin * _tilt_dir_3d
         _ref_up = _ref_up / _ref_up.norm(dim=-1, keepdim=True).clamp(min=1e-6)
         self._directional_tilt_cos = (self._source_up_axis_w * _ref_up).sum(dim=-1).clamp(-1.0, 1.0)
 
