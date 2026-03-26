@@ -179,14 +179,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Reward shaping
     # sim2real-safe signal만 사용: cup pose, palm pose, fingertip contact, bead pose
     # -----------------------------------------------------------------------
-    reward_grasp_contact_weight: float = 0.0
-    reward_grasp_stability_weight: float = 1.0   # 2.4 → 1.0: 이동 억제 완화 (조건 역할)
-    reward_force_balance_weight: float = 1.0     # 2.5 → 1.0: 조건 역할
-    reward_full_grasp_weight: float = 1.5        # 6.0 → 1.5: local minimum 주범, 대폭 감소
-    reward_transport_weight: float = 3.0         # 1.0 → 3.0: 이동 인센티브 강화
-    reward_clearance_weight: float = 0.5
-    reward_tilt_weight: float = 1.5              # 0.8 → 1.5: 틸트 비중 강화
-    reward_pour_alignment_weight: float = 0.6
+    # ---- 단순화된 리워드 (v2 test1 분석 후 개선) ----
+    # 제거: grasp_stability (기울이기 방해), clearance (기울이면 패널티)
+    # grasp_hold gate 제거: tilt/transport 독립 학습
+    # force_balance 유지: 컵 낙하 방지 (기울임 후에도 균형 잡힌 파지 필요)
+    reward_grasp_contact_weight: float = 0.0     # 제거: full_grasp으로 충분
+    reward_grasp_stability_weight: float = 0.0   # 제거: 기울이기 방해
+    reward_force_balance_weight: float = 1.5     # 0.0 → 1.5: 컵 낙하 방지 핵심
+    reward_full_grasp_weight: float = 0.5        # 1.5 → 0.5: local minimum 방지, 약한 가이드
+    reward_transport_weight: float = 3.0
+    reward_clearance_weight: float = 0.0         # 제거: 기울이면 패널티
+    reward_tilt_weight: float = 3.0              # 1.5 → 3.0: 기울이기 핵심 신호 강화
+    reward_pour_alignment_weight: float = 1.0    # 0.6 → 1.0: 방향 정렬 강화
     reward_bead_target_weight: float = 8.0
     reward_success_weight: float = 10.0
     penalty_spill_weight: float = 2.0
@@ -194,9 +198,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     reward_grasp_slip_scale: float = 35.0
     reward_force_balance_sharpness: float = 8.0
-    reward_transport_scale: float = 5.0          # 10.0 → 5.0: gradient 범위 확대 (0.3m 이상)
-    reward_clearance_scale: float = 10.0  # 25.0 → 10.0: 기울임 시 pour point Z 변화 허용
-    reward_tilt_scale: float = 3.0   # 8.0 → 3.0: gradient 범위 확대 (45°에서도 signal 존재)
+    reward_transport_scale: float = 5.0
+    reward_clearance_scale: float = 10.0
+    reward_tilt_scale: float = 2.0               # 3.0 → 2.0: gradient 범위 확대 (60°에서도 signal)
     reward_mouth_align_scale: float = 4.0
     thumb_force_ratio_min: float = 0.5
 

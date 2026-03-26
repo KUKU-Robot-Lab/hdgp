@@ -1042,17 +1042,11 @@ class GraspRightEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         self._compute_intermediate_values()
 
+        # ---- Grasp quality ----
         grasp_contact = self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
+        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)
         thumb_force = self.contact_force_raw[:, 0]
         others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)
-        has_thumb_contact = self.binary_contact_buf[:, 0].float()
-        has_others_contact = (self.binary_contact_buf[:, 1:].sum(dim=-1) >= 1).float()
-        force_balance_gate = has_thumb_contact * has_others_contact
-        force_balance_err = (thumb_force - others_avg_force).abs()
-        force_balance_reward = force_balance_gate * torch.exp(
-            -self.cfg.reward_force_balance_sharpness * force_balance_err
-        )
-        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)
         thumb_force_adequate = (
             thumb_force >= others_avg_force * self.cfg.thumb_force_ratio_min
         ).float()
@@ -1060,36 +1054,34 @@ class GraspRightEnv(DirectRLEnv):
             (self.binary_contact_buf[:, 0] & (others_count >= 3)).float()
             * thumb_force_adequate
         )
+        # force_balance: 컵 낙하 방지 (기울임 중에도 엄지-나머지 균형 유지)
+        # grasp_hold gate 없이 독립 적용 → 기울이기를 방해하지 않으면서 파지 품질 유지
+        has_thumb_contact = self.binary_contact_buf[:, 0].float()
+        has_others_contact = (self.binary_contact_buf[:, 1:].sum(dim=-1) >= 1).float()
+        force_balance_gate = has_thumb_contact * has_others_contact
+        force_balance_err = (thumb_force - others_avg_force).abs()
+        force_balance_reward = force_balance_gate * torch.exp(
+            -self.cfg.reward_force_balance_sharpness * force_balance_err
+        )
 
-        rel_palm_to_cup = self.object_pos - self.palm_center_pos
-        # 거리 기반 slip 측정 (rotation-invariant): 팔이 기울어도 cup-palm 거리가 일정하면 OK
-        current_dist = torch.norm(rel_palm_to_cup, dim=-1)
-        init_dist = torch.norm(self._grasp_rel_palm_to_cup_init, dim=-1)
-        grasp_slip_error = torch.abs(current_dist - init_dist)
-        grasp_stability = 1.0 - torch.tanh(self.cfg.reward_grasp_slip_scale * grasp_slip_error)
-        grasp_stability = grasp_stability.clamp(min=0.0)
-        cup_drop = torch.relu(self._grasp_cup_height_init - self.object_pos[:, 2])
-        grasp_height_keep = 1.0 - torch.tanh(self.cfg.reward_grasp_slip_scale * cup_drop)
-        grasp_hold = 0.5 * force_balance_reward + 0.5 * grasp_stability
-
+        # ---- Transport: pour point를 target opening XY 근처로 ----
         transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
-        target_clearance = 0.5 * (self.cfg.success_z_clearance_min + self.cfg.success_z_clearance_max)
-        clearance_error = torch.abs(self._mouth_z_clearance - target_clearance)
-        clearance_reward = 1.0 - torch.tanh(self.cfg.reward_clearance_scale * clearance_error)
 
+        # ---- Tilt: gate 없이 독립 학습 ----
+        # grasp_hold/grasp_stability gate 제거: 기울이는 행동 자체를 방해하지 않도록
         target_tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
         tilt_error = torch.abs(self._source_up_dot_world - target_tilt_cos)
         tilt_reward = 1.0 - torch.tanh(self.cfg.reward_tilt_scale * tilt_error)
-        mouth_alignment_reward = ((self._mouth_alignment_cos + 1.0) * 0.5).pow(self.cfg.reward_mouth_align_scale)
         directional_tilt_reward = ((self._directional_tilt_cos + 1.0) * 0.5).clamp(0.0, 1.0)
+        mouth_alignment_reward = ((self._mouth_alignment_cos + 1.0) * 0.5).pow(self.cfg.reward_mouth_align_scale)
 
-        near_target_gate = transport_reward.detach()  # clearance gate 제거: 기울이면 clearance 깨지는 구조 방지
-        # tilt_reward(수직 기울기)와 directional_tilt_reward(방향) 결합
-        # - tilt_reward: upright=0, 90°=1 (강한 기울기 유도)
-        # - directional_tilt_reward: 타겟 방향으로 기울기 (upright=0.5 floor → 방향 보정)
-        pour_pose_reward = near_target_gate * (0.5 * tilt_reward + 0.5 * directional_tilt_reward)
+        # tilt + 방향 결합 (gate 없음)
+        pour_pose_reward = 0.5 * tilt_reward + 0.5 * directional_tilt_reward
+        # 입 정렬: transport 진행 시 추가 보상
+        near_target_gate = transport_reward.detach()
         align_reward = near_target_gate * mouth_alignment_reward
 
+        # ---- Bead / Success ----
         bead_target_reward = self._bead_cross_fraction
         success_reward = self.success_flag.float()
         spill_penalty = self._spill_ratio
@@ -1097,15 +1089,11 @@ class GraspRightEnv(DirectRLEnv):
 
         total = (
             self.cfg.reward_grasp_contact_weight * grasp_contact
-            + self.cfg.reward_grasp_stability_weight * (0.7 * grasp_stability + 0.3 * grasp_height_keep)
-            + self.cfg.reward_force_balance_weight * force_balance_reward
             + self.cfg.reward_full_grasp_weight * full_grasp_reward
-            + grasp_hold * (
-                self.cfg.reward_transport_weight * transport_reward
-                + self.cfg.reward_clearance_weight * clearance_reward
-                + self.cfg.reward_pour_alignment_weight * align_reward
-            )
-            + self.cfg.reward_tilt_weight * pour_pose_reward  # grasp_hold 게이트 밖: tilting 자체가 패널티 받지 않도록
+            + self.cfg.reward_force_balance_weight * force_balance_reward
+            + self.cfg.reward_transport_weight * transport_reward
+            + self.cfg.reward_tilt_weight * pour_pose_reward
+            + self.cfg.reward_pour_alignment_weight * align_reward
             + self.cfg.reward_bead_target_weight * bead_target_reward
             + self.cfg.reward_success_weight * success_reward
             - self.cfg.penalty_spill_weight * spill_penalty
@@ -1113,17 +1101,17 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         self.extras["reward_grasp_contact"] = grasp_contact.mean()
-        self.extras["reward_grasp_stability"] = grasp_stability.mean()
-        self.extras["reward_grasp_height_keep"] = grasp_height_keep.mean()
+        self.extras["reward_grasp_stability"] = torch.zeros(1, device=self.device).squeeze()
+        self.extras["reward_grasp_height_keep"] = torch.zeros(1, device=self.device).squeeze()
         self.extras["reward_force_balance"] = force_balance_reward.mean()
         self.extras["reward_full_grasp"] = full_grasp_reward.mean()
         self.extras["reward_transport"] = transport_reward.mean()
-        self.extras["reward_clearance"] = clearance_reward.mean()
+        self.extras["reward_clearance"] = torch.zeros(1, device=self.device).squeeze()
         self.extras["reward_tilt"] = tilt_reward.mean()
         self.extras["reward_directional_tilt"] = directional_tilt_reward.mean()
         self.extras["reward_mouth_alignment"] = mouth_alignment_reward.mean()
         self.extras["penalty_action_rate"] = action_rate_penalty.mean()
-        self.extras["force_balance_err"] = force_balance_err.mean()
+        self.extras["force_balance_err"] = (thumb_force - others_avg_force).abs().mean()
         self.extras["thumb_force_mean"] = thumb_force.mean()
         self.extras["others_avg_force_mean"] = others_avg_force.mean()
         self.extras["thumb_force_adequate"] = thumb_force_adequate.mean()
