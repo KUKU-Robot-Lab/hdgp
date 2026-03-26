@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Hand/robot preset metadata for 5g_pour_right_v2.
+"""Hand/robot preset metadata for 5g_grasp_right_v4.
 
 v3와 동일한 joint/body 구성. v4에서 재사용.
 """
@@ -33,28 +33,16 @@ LEFT_GRIPPER_JOINT_NAMES = ["openarm_left_finger_joint1", "openarm_left_finger_j
 LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
-    "openarm_left_joint1": 0.0,
-    "openarm_left_joint2": 0.0,
-    "openarm_left_joint3": 0.0,
-    "openarm_left_joint4": 1.5,
+    "openarm_left_joint1": -0.5,
+    "openarm_left_joint2": -0.5,
+    "openarm_left_joint3": 0.6,
+    "openarm_left_joint4": 0.7,
     "openarm_left_joint5": 0.0,
     "openarm_left_joint6": 0.0,
-    "openarm_left_joint7": 0.0,
-    "openarm_left_finger_joint1": 0.044,
-    "openarm_left_finger_joint2": 0.044,
+    "openarm_left_joint7": -1.0,
+    "openarm_left_finger_joint1": 0.0,
+    "openarm_left_finger_joint2": 0.0,
 }
-
-LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "openarm_left_hand"
-LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.06]
-LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]
-
-BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.035]
-BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ = [1.0, 0.0, 0.0, 0.0]
-SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.130]   # 정중앙 상단 (타겟 컵과 동일 기준)
-TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.150]   # 충돌 방지: source cup body가 target cup top을 넘도록 (0.200 → 0.280)
-SOURCE_CUP_POUR_AXIS_B = [-1.0, 0.0, 0.0]
-SOURCE_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
-TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +142,7 @@ def palm_pose_mins(max_pose_angle: float) -> list:
 def palm_pose_maxs(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
-        0.65, 0.10, 0.65,   # pour task: y_max +0.22m (타겟 컵 도달 위해 왼쪽 이동 허용)
+        0.65, -0.02, 0.65,
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

@@ -50,7 +50,7 @@ for _parent in Path(__file__).resolve().parents:
         break
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets import Articulation, RigidObject, RigidObjectCollection
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
@@ -320,6 +320,17 @@ class GraspRightEnv(DirectRLEnv):
         self._source_cup_pour_axis_b = to_torch(self.cfg.source_cup_pour_axis_b, device=self.device)
         self._source_cup_up_axis_b = to_torch(self.cfg.source_cup_up_axis_b, device=self.device)
         self._target_cup_up_axis_b = to_torch(self.cfg.target_cup_up_axis_b, device=self.device)
+        self.num_beads = int(self.cfg.bead_count)
+        _bead_offsets = []
+        beads_per_layer = 5
+        for i in range(self.num_beads):
+            layer = i // beads_per_layer
+            slot = i % beads_per_layer
+            angle = (2.0 * math.pi * slot / beads_per_layer) + (0.35 * layer)
+            radius = 0.014 + 0.004 * (layer % 2)
+            z = 0.006 + 0.014 * layer
+            _bead_offsets.append([radius * math.cos(angle), radius * math.sin(angle), z])
+        self._bead_offsets_source_cup_b = torch.tensor(_bead_offsets, device=self.device)
         self._source_pour_point_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._target_opening_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._source_pour_axis_w = torch.zeros(self.num_envs, 3, device=self.device)
@@ -334,10 +345,22 @@ class GraspRightEnv(DirectRLEnv):
         self._source_up_dot_world = torch.zeros(self.num_envs, device=self.device)
         self._directional_tilt_cos = torch.zeros(self.num_envs, device=self.device)
         self._mouth_alignment_cos = torch.zeros(self.num_envs, device=self.device)
-        self._bead_in_target = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._bead_in_source = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._bead_in_target = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
+        self._bead_in_source = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
+        self._bead_crossed_target_mouth = torch.zeros(
+            self.num_envs, self.num_beads, dtype=torch.bool, device=self.device
+        )
+        self._prev_bead_target_local_z = torch.full(
+            (self.num_envs, self.num_beads), 10.0, device=self.device
+        )
+        self._bead_cross_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._bead_cross_fraction = torch.zeros(self.num_envs, device=self.device)
+        self._bead_in_target_fraction = torch.zeros(self.num_envs, device=self.device)
+        self._bead_in_source_fraction = torch.zeros(self.num_envs, device=self.device)
+        self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._no_tip_force_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._world_up = torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
 
         self._warmstart_collect_mode = False
@@ -374,13 +397,13 @@ class GraspRightEnv(DirectRLEnv):
         self.robot = Articulation(self.cfg.robot_cfg)
         self.cup = RigidObject(self.cfg.cup_cfg)
         self.left_target_cup = RigidObject(self.cfg.left_target_cup_cfg)
-        self.bead = RigidObject(self.cfg.bead_cfg)
+        self.beads = RigidObjectCollection(self.cfg.beads_cfg)
         self.table = RigidObject(self.cfg.table_cfg)
 
         self.scene.articulations["robot"] = self.robot
         self.scene.rigid_objects["cup"] = self.cup
         self.scene.rigid_objects["left_target_cup"] = self.left_target_cup
-        self.scene.rigid_objects["bead"] = self.bead
+        self.scene.rigid_object_collections["beads"] = self.beads
         self.scene.rigid_objects["table"] = self.table
 
         # Actor: fingertip 개별 ContactSensor (Cup-only, real FT sensor 대응)
@@ -597,39 +620,58 @@ class GraspRightEnv(DirectRLEnv):
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
 
     def _compute_bead_flags(self) -> None:
-        """bead가 source/target cup 안에 있는지, 흘렸는지 계산."""
-        bead_pos_w = self.bead.data.root_pos_w
+        """beads가 source/target cup 내부 또는 target mouth를 통과했는지 계산."""
+        bead_pos_w = self.beads.data.object_pos_w
+        self._bead_centroid_w.copy_(bead_pos_w.mean(dim=1))
 
-        # bead in target cup (local frame)
+        n = bead_pos_w.shape[0]
+        k = bead_pos_w.shape[1]
+
         left_cup_quat_w = self.left_target_cup.data.root_quat_w
         left_cup_pos_w = self.left_target_cup.data.root_pos_w
-        pos_in_target = quat_apply_inverse(left_cup_quat_w, bead_pos_w - left_cup_pos_w)
-        bead_xy_to_target = torch.norm(pos_in_target[:, :2], dim=-1)
-        self._bead_in_target = (
+        left_quat_flat = left_cup_quat_w.unsqueeze(1).expand(-1, k, -1).reshape(-1, 4)
+        left_rel_flat = (bead_pos_w - left_cup_pos_w.unsqueeze(1)).reshape(-1, 3)
+        pos_in_target = quat_apply_inverse(left_quat_flat, left_rel_flat).reshape(n, k, 3)
+        bead_xy_to_target = torch.norm(pos_in_target[..., :2], dim=-1)
+        bead_in_target = (
             (bead_xy_to_target <= self.cfg.target_inner_radius)
-            & (pos_in_target[:, 2] >= self.cfg.target_inside_z_min)
-            & (pos_in_target[:, 2] <= self.cfg.target_inside_z_max)
+            & (pos_in_target[..., 2] >= self.cfg.target_inside_z_min)
+            & (pos_in_target[..., 2] <= self.cfg.target_inside_z_max)
         )
+        self._bead_in_target.copy_(bead_in_target)
 
-        # bead in source cup (local frame)
         cup_quat_w = self.cup.data.root_quat_w
         cup_pos_w = self.cup.data.root_pos_w
-        pos_in_source = quat_apply_inverse(cup_quat_w, bead_pos_w - cup_pos_w)
-        bead_xy_to_source = torch.norm(pos_in_source[:, :2], dim=-1)
-        self._bead_in_source = (
+        cup_quat_flat = cup_quat_w.unsqueeze(1).expand(-1, k, -1).reshape(-1, 4)
+        cup_rel_flat = (bead_pos_w - cup_pos_w.unsqueeze(1)).reshape(-1, 3)
+        pos_in_source = quat_apply_inverse(cup_quat_flat, cup_rel_flat).reshape(n, k, 3)
+        bead_xy_to_source = torch.norm(pos_in_source[..., :2], dim=-1)
+        bead_in_source = (
             (bead_xy_to_source <= self.cfg.source_inner_radius)
-            & (pos_in_source[:, 2] >= self.cfg.source_inside_z_min)
-            & (pos_in_source[:, 2] <= self.cfg.source_inside_z_max)
+            & (pos_in_source[..., 2] >= self.cfg.source_inside_z_min)
+            & (pos_in_source[..., 2] <= self.cfg.source_inside_z_max)
         )
+        self._bead_in_source.copy_(bead_in_source)
 
-        # spill: bead가 두 컵 모두 벗어나고 z가 낮아진 경우
-        bead_env_z = bead_pos_w[:, 2] - self.scene.env_origins[:, 2]
+        mouth_crossed_now = (
+            (bead_xy_to_target <= self.cfg.target_inner_radius)
+            & (self._prev_bead_target_local_z > self.cfg.target_mouth_z)
+            & (pos_in_target[..., 2] <= self.cfg.target_mouth_z)
+        )
+        self._bead_crossed_target_mouth |= mouth_crossed_now
+        self._bead_cross_count.copy_(self._bead_crossed_target_mouth.sum(dim=-1).long())
+        self._bead_cross_fraction.copy_(self._bead_crossed_target_mouth.float().mean(dim=-1))
+        self._bead_in_target_fraction.copy_(self._bead_in_target.float().mean(dim=-1))
+        self._bead_in_source_fraction.copy_(self._bead_in_source.float().mean(dim=-1))
+
+        bead_env_z = bead_pos_w[..., 2] - self.scene.env_origins[:, 2].unsqueeze(1)
         bead_spilled = (
             (~self._bead_in_target)
             & (~self._bead_in_source)
             & (bead_env_z < 0.230)
         )
-        self._spill_ratio = bead_spilled.float()
+        self._spill_ratio.copy_(bead_spilled.float().mean(dim=-1))
+        self._prev_bead_target_local_z.copy_(pos_in_target[..., 2])
 
     # ------------------------------------------------------------------
     # Physics step
@@ -876,7 +918,7 @@ class GraspRightEnv(DirectRLEnv):
         source_pour_axis_clean = self._source_pour_axis_w
         source_up_axis_clean = self._source_up_axis_w
         target_up_axis_clean = self._target_up_axis_w
-        bead_pos_clean = self.bead.data.root_pos_w
+        bead_pos_clean = self._bead_centroid_w
 
         # ==== Actor obs용 noisy state (sim2real domain randomization) ====
         σ_qp = self.cfg.obs_noise_joint_pos
@@ -988,7 +1030,7 @@ class GraspRightEnv(DirectRLEnv):
             self._source_up_dot_world.unsqueeze(1),            # 1
             self._directional_tilt_cos.unsqueeze(1),           # 1
             self._mouth_alignment_cos.unsqueeze(1),            # 1
-            self._bead_in_target.float().unsqueeze(1),         # 1
+            self._bead_cross_fraction.unsqueeze(1),            # 1
         ], dim=-1)   # 143D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
@@ -1043,7 +1085,7 @@ class GraspRightEnv(DirectRLEnv):
         pour_pose_reward = near_target_gate * (0.5 * tilt_reward + 0.5 * directional_tilt_reward)
         align_reward = near_target_gate * mouth_alignment_reward
 
-        bead_target_reward = self._bead_in_target.float()
+        bead_target_reward = self._bead_cross_fraction
         success_reward = self.success_flag.float()
         spill_penalty = self._spill_ratio
         action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
@@ -1087,8 +1129,10 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["source_up_dot"]         = self._source_up_dot_world.mean()
         self.extras["directional_tilt_cos"]  = self._directional_tilt_cos.mean()
         self.extras["mouth_alignment_cos"]   = self._mouth_alignment_cos.mean()
-        self.extras["bead_in_source_rate"]   = self._bead_in_source.float().mean()
-        self.extras["bead_in_target_rate"]   = self._bead_in_target.float().mean()
+        self.extras["bead_in_source_rate"]   = self._bead_in_source_fraction.mean()
+        self.extras["bead_in_target_rate"]   = self._bead_in_target_fraction.mean()
+        self.extras["bead_cross_fraction"]   = self._bead_cross_fraction.mean()
+        self.extras["bead_cross_count"]      = self._bead_cross_count.float().mean()
         self.extras["spill_ratio"]           = self._spill_ratio.mean()
         self.extras["success_rate"]          = self.success_flag.float().mean()
         self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
@@ -1110,29 +1154,29 @@ class GraspRightEnv(DirectRLEnv):
             (self.object_pos[:, 1] > self.cfg.obj_out_y_max)
         )
         fallen = self.object_pos[:, 2] < self.cfg.obj_fallen_z  # 컵이 테이블 아래로 낙하
+        no_tip_force = self.contact_force_raw.max(dim=-1).values <= CONTACT_FORCE_THRESHOLD
+        drop_force_active = (
+            (~torch.full_like(no_tip_force, self._warmstart_collect_mode, dtype=torch.bool))
+            & (self.episode_length_buf >= self.cfg.episode_hold_steps)
+        )
+        no_tip_force = no_tip_force & drop_force_active
+        self._no_tip_force_steps = torch.where(
+            no_tip_force,
+            self._no_tip_force_steps + 1,
+            torch.zeros_like(self._no_tip_force_steps),
+        )
+        dropped_by_force = drop_force_active & (self._no_tip_force_steps >= self.cfg.drop_force_hold_steps)
 
-        # ---- Pour ready 성공 판정 (bi_pouring_v1 패턴) ----
-        _target_tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
-        ready_mask = (
-            (self._mouth_xy_distance <= self.cfg.success_mouth_xy_threshold)
-            & (self._mouth_z_clearance >= self.cfg.success_z_clearance_min)
-            & (self._mouth_z_clearance <= self.cfg.success_z_clearance_max)
-            & (torch.abs(self._source_up_dot_world - _target_tilt_cos) <= self.cfg.success_tilt_cos_tolerance)
-            & (self._directional_tilt_cos >= self.cfg.success_directional_tilt_cos)
-        )
-        self._pre_pour_ready_steps = torch.where(
-            ready_mask,
-            self._pre_pour_ready_steps + 1,
-            torch.zeros_like(self._pre_pour_ready_steps),
-        )
-        self.success_flag.copy_(self._pre_pour_ready_steps >= self.cfg.success_hold_steps)
+        self.success_flag.copy_(self._bead_cross_count >= self.cfg.success_bead_cross_count)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
         self._maybe_store_warmstart_successes()
 
-        terminated = out_x | out_y | fallen | self.success_flag
+        terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         self.extras["object_z"] = self.object_pos[:, 2].mean()
+        self.extras["drop_force_rate"] = dropped_by_force.float().mean()
+        self.extras["no_tip_force_steps"] = self._no_tip_force_steps.float().mean()
 
         return terminated, truncated
 
@@ -1260,11 +1304,10 @@ class GraspRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
         if self._warmstart_collect_mode:
-            self._hide_bead(env_ids)
+            self._hide_beads(env_ids)
         else:
-            bead_pose = self._sample_bead_pose_inside_cup(cup_root_state[:, :7])
-            self.bead.write_root_pose_to_sim(bead_pose, env_ids=env_ids)
-            self.bead.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+            bead_state = self._sample_bead_states_inside_cup(cup_root_state[:, :7])
+            self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
 
         # ---- 8. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand
@@ -1275,6 +1318,17 @@ class GraspRightEnv(DirectRLEnv):
         self.distal_binary_contact_buf[env_ids] = False
         self.middle_contact_force_raw[env_ids].zero_()
         self.middle_binary_contact_buf[env_ids] = False
+        self._bead_in_target[env_ids] = False
+        self._bead_in_source[env_ids] = False
+        self._bead_crossed_target_mouth[env_ids] = False
+        self._prev_bead_target_local_z[env_ids].fill_(10.0)
+        self._bead_cross_count[env_ids] = 0
+        self._bead_cross_fraction[env_ids] = 0.0
+        self._bead_in_target_fraction[env_ids] = 0.0
+        self._bead_in_source_fraction[env_ids] = 0.0
+        self._bead_centroid_w[env_ids].zero_()
+        self._spill_ratio[env_ids] = 0.0
+        self._no_tip_force_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._pre_pour_ready_steps[env_ids] = 0
 
@@ -1327,25 +1381,32 @@ class GraspRightEnv(DirectRLEnv):
         attach_quat_w = quat_mul(body_quat_w, attach_quat_b.unsqueeze(0).expand(body_quat_w.shape[0], -1))
         return torch.cat([attach_pos_w, attach_quat_w], dim=-1)
 
-    def _sample_bead_pose_inside_cup(self, cup_pose: torch.Tensor) -> torch.Tensor:
+    def _sample_bead_states_inside_cup(self, cup_pose: torch.Tensor) -> torch.Tensor:
         cup_pos_w = cup_pose[:, :3]
         cup_quat_w = cup_pose[:, 3:7]
-        spawn_offset = self._bead_spawn_pos_source_cup_b.unsqueeze(0).expand_as(cup_pos_w)
-        bead_pos_w = cup_pos_w + quat_apply(cup_quat_w, spawn_offset)
+        n = cup_pose.shape[0]
+        base_offset = self._bead_spawn_pos_source_cup_b.unsqueeze(0).unsqueeze(1).expand(n, self.num_beads, -1)
+        local_offsets = base_offset + self._bead_offsets_source_cup_b.unsqueeze(0).expand(n, -1, -1)
+        cup_quat_expanded = cup_quat_w.unsqueeze(1).expand(-1, self.num_beads, -1)
+        bead_pos_w = cup_pos_w.unsqueeze(1) + quat_apply(
+            cup_quat_expanded.reshape(-1, 4),
+            local_offsets.reshape(-1, 3),
+        ).reshape(n, self.num_beads, 3)
         bead_quat_w = quat_mul(
-            cup_quat_w,
-            self._bead_spawn_quat_source_cup.unsqueeze(0).expand(cup_quat_w.shape[0], -1),
-        )
-        return torch.cat([bead_pos_w, bead_quat_w], dim=-1)
+            cup_quat_expanded.reshape(-1, 4),
+            self._bead_spawn_quat_source_cup.unsqueeze(0).unsqueeze(1).expand(n, self.num_beads, -1).reshape(-1, 4),
+        ).reshape(n, self.num_beads, 4)
+        bead_state = torch.zeros(n, self.num_beads, 13, device=self.device)
+        bead_state[..., :3] = bead_pos_w
+        bead_state[..., 3:7] = bead_quat_w
+        return bead_state
 
-    def _hide_bead(self, env_ids: Sequence[int]) -> None:
+    def _hide_beads(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
-        bead_pose = torch.zeros(n, 7, device=self.device)
-        bead_pose[:, 2] = -10.0
-        bead_pose[:, 3] = 1.0
-        zero_vel = torch.zeros(n, 6, device=self.device)
-        self.bead.write_root_pose_to_sim(bead_pose, env_ids=env_ids)
-        self.bead.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+        bead_state = torch.zeros(n, self.num_beads, 13, device=self.device)
+        bead_state[..., 2] = -10.0
+        bead_state[..., 3] = 1.0
+        self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
 
     def _build_warmstart_reset_cache(self) -> None:
         if not self.cfg.enable_warmstart_reset:
@@ -1486,9 +1547,8 @@ class GraspRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        bead_pose = self._sample_bead_pose_inside_cup(cup_pose_world)
-        self.bead.write_root_pose_to_sim(bead_pose, env_ids=env_ids)
-        self.bead.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+        bead_state = self._sample_bead_states_inside_cup(cup_pose_world)
+        self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
 
         self.contact_force_raw[env_ids].zero_()
         self.binary_contact_buf[env_ids] = False
@@ -1497,6 +1557,17 @@ class GraspRightEnv(DirectRLEnv):
         self.distal_binary_contact_buf[env_ids] = False
         self.middle_contact_force_raw[env_ids].zero_()
         self.middle_binary_contact_buf[env_ids] = False
+        self._bead_in_target[env_ids] = False
+        self._bead_in_source[env_ids] = False
+        self._bead_crossed_target_mouth[env_ids] = False
+        self._prev_bead_target_local_z[env_ids].fill_(10.0)
+        self._bead_cross_count[env_ids] = 0
+        self._bead_cross_fraction[env_ids] = 0.0
+        self._bead_in_target_fraction[env_ids] = 0.0
+        self._bead_in_source_fraction[env_ids] = 0.0
+        self._bead_centroid_w[env_ids].zero_()
+        self._spill_ratio[env_ids] = 0.0
+        self._no_tip_force_steps[env_ids] = 0
         self.success_flag[env_ids] = False
 
         self.actions[env_ids, :6] = 0.0
