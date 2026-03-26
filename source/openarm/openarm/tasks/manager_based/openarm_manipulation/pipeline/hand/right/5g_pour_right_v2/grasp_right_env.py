@@ -1002,13 +1002,31 @@ class GraspRightEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         grasp_contact = self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
+        thumb_force = self.contact_force_raw[:, 0]
+        others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)
+        has_thumb_contact = self.binary_contact_buf[:, 0].float()
+        has_others_contact = (self.binary_contact_buf[:, 1:].sum(dim=-1) >= 1).float()
+        force_balance_gate = has_thumb_contact * has_others_contact
+        force_balance_err = (thumb_force - others_avg_force).abs()
+        force_balance_reward = force_balance_gate * torch.exp(
+            -self.cfg.reward_force_balance_sharpness * force_balance_err
+        )
+        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)
+        thumb_force_adequate = (
+            thumb_force >= others_avg_force * self.cfg.thumb_force_ratio_min
+        ).float()
+        full_grasp_reward = (
+            (self.binary_contact_buf[:, 0] & (others_count >= 3)).float()
+            * thumb_force_adequate
+        )
+
         rel_palm_to_cup = self.object_pos - self.palm_center_pos
         grasp_slip_error = torch.norm(rel_palm_to_cup - self._grasp_rel_palm_to_cup_init, dim=-1)
         grasp_stability = 1.0 - torch.tanh(self.cfg.reward_grasp_slip_scale * grasp_slip_error)
         grasp_stability = grasp_stability.clamp(min=0.0)
         cup_drop = torch.relu(self._grasp_cup_height_init - self.object_pos[:, 2])
         grasp_height_keep = 1.0 - torch.tanh(self.cfg.reward_grasp_slip_scale * cup_drop)
-        grasp_hold = 0.5 * grasp_contact + 0.5 * grasp_stability
+        grasp_hold = 0.5 * force_balance_reward + 0.5 * grasp_stability
 
         transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
         target_clearance = 0.5 * (self.cfg.success_z_clearance_min + self.cfg.success_z_clearance_max)
@@ -1033,6 +1051,8 @@ class GraspRightEnv(DirectRLEnv):
         total = (
             self.cfg.reward_grasp_contact_weight * grasp_contact
             + self.cfg.reward_grasp_stability_weight * (0.7 * grasp_stability + 0.3 * grasp_height_keep)
+            + self.cfg.reward_force_balance_weight * force_balance_reward
+            + self.cfg.reward_full_grasp_weight * full_grasp_reward
             + grasp_hold * (
                 self.cfg.reward_transport_weight * transport_reward
                 + self.cfg.reward_clearance_weight * clearance_reward
@@ -1048,12 +1068,18 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward_grasp_contact"] = grasp_contact.mean()
         self.extras["reward_grasp_stability"] = grasp_stability.mean()
         self.extras["reward_grasp_height_keep"] = grasp_height_keep.mean()
+        self.extras["reward_force_balance"] = force_balance_reward.mean()
+        self.extras["reward_full_grasp"] = full_grasp_reward.mean()
         self.extras["reward_transport"] = transport_reward.mean()
         self.extras["reward_clearance"] = clearance_reward.mean()
         self.extras["reward_tilt"] = tilt_reward.mean()
         self.extras["reward_directional_tilt"] = directional_tilt_reward.mean()
         self.extras["reward_mouth_alignment"] = mouth_alignment_reward.mean()
         self.extras["penalty_action_rate"] = action_rate_penalty.mean()
+        self.extras["force_balance_err"] = force_balance_err.mean()
+        self.extras["thumb_force_mean"] = thumb_force.mean()
+        self.extras["others_avg_force_mean"] = others_avg_force.mean()
+        self.extras["thumb_force_adequate"] = thumb_force_adequate.mean()
 
         self.extras["mouth_distance"]        = self._mouth_distance.mean()
         self.extras["mouth_xy_distance"]     = self._mouth_xy_distance.mean()

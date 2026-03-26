@@ -148,8 +148,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Reward shaping
     # sim2real-safe signal만 사용: cup pose, palm pose, fingertip contact, bead pose
     # -----------------------------------------------------------------------
-    reward_grasp_contact_weight: float = 0.8
-    reward_grasp_stability_weight: float = 1.2
+    reward_grasp_contact_weight: float = 0.0
+    reward_grasp_stability_weight: float = 2.4
+    reward_force_balance_weight: float = 2.5
+    reward_full_grasp_weight: float = 6.0
     reward_transport_weight: float = 1.0
     reward_clearance_weight: float = 0.5
     reward_tilt_weight: float = 0.8
@@ -159,11 +161,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     penalty_spill_weight: float = 12.0
     penalty_action_rate_weight: float = 0.01
 
-    reward_grasp_slip_scale: float = 20.0
+    reward_grasp_slip_scale: float = 35.0
+    reward_force_balance_sharpness: float = 8.0
     reward_transport_scale: float = 10.0
     reward_clearance_scale: float = 25.0
     reward_tilt_scale: float = 8.0
     reward_mouth_align_scale: float = 4.0
+    thumb_force_ratio_min: float = 0.5
 
     # -----------------------------------------------------------------------
     # 종료 조건
@@ -302,23 +306,23 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             ),
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
-                stiffness=30.0,
-                damping=5.0,
+                stiffness=60.0,
+                damping=10.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                stiffness=30.0,
-                damping=5.0,
+                stiffness=60.0,
+                damping=10.0,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                stiffness=30.0,
-                damping=5.0,
+                stiffness=60.0,
+                damping=10.0,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                stiffness=30.0,
-                damping=5.0,
+                stiffness=60.0,
+                damping=10.0,
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],
