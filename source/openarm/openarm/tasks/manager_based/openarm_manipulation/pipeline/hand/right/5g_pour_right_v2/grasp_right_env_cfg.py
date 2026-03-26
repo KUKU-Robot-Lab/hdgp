@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_pour_right_v1
+"""환경 설정: 5g_pour_right_v2
 
 v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Action: 11D (6D palm pose + 5D per-finger lerp)
@@ -21,7 +21,7 @@ v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
 
-from dataclasses import MISSING, field
+from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, RigidObjectCfg
@@ -61,7 +61,7 @@ _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
 @configclass
 class GraspRightEnvCfg(DirectRLEnvCfg):
-    """5g_pour_right_v1 환경 설정."""
+    """5g_pour_right_v2 환경 설정."""
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
@@ -117,85 +117,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obs_noise_body_pos:  float = 0.005   # FK body position σ [m] (palm, fingertip)
     obs_noise_cup_pos:   float = 0.015   # cup position observation σ [m]
 
-    # -----------------------------------------------------------------------
-    # 접촉 감지
-    # -----------------------------------------------------------------------
-    cup_grasp_z_offset:  float = 0.06
-    lift_success_height: float = 0.04
-
-    # -----------------------------------------------------------------------
-    # Delta palm action (pregrasp 기준 상대 오프셋)
-    # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
-    # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.35   # ±0.35m per axis (grasp_y≈-0.15 → target_y≈+0.20 = 0.35m)
-    palm_delta_rot_deg: float = 90.0   # ±90° per axis (pour 75° tilt 달성 위해 확장)
-
-    # -----------------------------------------------------------------------
-    # Reward 파라미터 (bi_pouring_v1 기반 pour 전용)
-    # -----------------------------------------------------------------------
-
-    # R1. Transport (rho=0): XY-only distance (warmstart pre-lift 덕분에 cup이 이미 충분히 높음)
-    # pre-lift: warmstart reset 시 pregrasp Z +0.25m → episode_hold_steps 동안 팔 리프트
-    # 완료 후 cup z≈0.59m (z_clearance≈0.145m) → XY 이동만 필요
-    transport_xy_sharpness:        float = 6.0
-    reward_transport_xy_weight:    float = 4.0
-
-    # R1b. Pour XY align (rho=1): X,Y 유지하며 tilt (XY-only, pour phase에서 XY 미세 정렬)
-    pour_xy_sharpness:             float = 12.0  # tight XY (plateau ≈ 8cm)
-    reward_pour_xy_weight:         float = 3.0   # r_tilt(5.0)보다 낮게 → tilt 우선
-
-    # R2. Palm to goal: arm 이동 보조 신호
-    transport_palm_sharpness:      float = 4.0
-    reward_palm_to_goal_weight:    float = 0.2
-
-    # R3. Tilt: tanh progressive reward (pour phase only, rho=1)
-    # DexPour: Stage 3(transport)에서 tilt penalty, Stage 4(pour)에서 tilt reward로 분리
-    target_pour_tilt_deg:          float = 60.0
-    tilt_tanh_scale:               float = 1.0   # 0.5→1.0: gradient 범위 확장 (0.5에서는 42°에서 포화, 1.0에서는 60°까지 학습 가능)
-    reward_tilt_weight:            float = 5.0
-
-    # Phase gate (DexPour ν→ρ): XY < threshold AND z_clearance >= height_z_band_min → pour phase (rho=1)
-    # height_z_band_min(0.10)과 같이 사용: 컵이 충분히 들어올려진 후 tilt 활성화
-    tilt_phase_xy_threshold:       float = 0.10
-
-    # P_transport_tilt: transport 중 tilt 패널티 (DexPour Stage 3 p_tilt)
-    transport_tilt_penalty_weight: float = 1.5   # 수평 유지 강제 → 이동 중 컵 충돌 방지
-
-    # R4. Directional tilt: target 방향으로 기울기 (pour phase only)
-    reward_directional_tilt_weight: float = 2.5  # 1.5 → 2.5 (방향 없는 R3 대비 균형)
-
-    # R5. Height cap (pre-lift 후 cup이 이미 높으므로 유지 보조 신호)
-    # pre-lift 후 cup z≈0.59m → z_clearance≈0.145m (0.10m 이미 충족)
-    # height_z_band_min = 0.10: rho gate 조건 (z_clearance >= 0.10m AND XY < 0.10m → pour phase)
-    # transport_height_sharpness = 4.0: cup이 높이를 유지하도록 보조 gradient
-    # reward_height_weight = 2.0: 주 역할은 XY transport(4.0), height는 유지용
-    height_z_band_min:             float = 0.10
-    transport_height_sharpness:    float = 4.0
-    reward_height_weight:          float = 2.0
-
-    # R6. Mouth alignment: pour axis → target 방향 (DexPour r_align, 항상 활성)
-    reward_mouth_alignment_weight: float = 0.8   # 0.4 → 0.8 (tilt 방향 보조)
-
-    # R0. Grasp hold: 파지 유지 보상 (슬립 방지)
-    # 접촉 손가락 수에 비례 → arm이 빠르게 움직여 slip 시 reward 감소 → 부드러운 이동 유도
-    reward_grasp_hold_weight:      float = 2.0   # 5개 모두 접촉 시 2.0, 0개면 0.0
-
-    # P1. Spill penalty
-    penalty_spill_weight:          float = 4.0
-    bead_spill_z_threshold:        float = 0.230   # bead z < 이 값이면 spill
-
-    # P2. Smoothness
-    action_smoothness_palm_weight:  float = -0.02
-    action_smoothness_finger_weight: float = -0.01
-
-    # Success condition (bi_pouring_v1 패턴: ready pose N steps 유지)
-    # tilt 60° 기준: cos(60°)=0.500, tolerance ±0.25 → [43°, 75°] 허용
-    success_hold_steps:             int   = 12      # 0.2s @ 60Hz
-    success_mouth_xy_threshold:     float = 0.040
-    success_z_clearance_min:        float = 0.00
-    success_z_clearance_max:        float = 0.10
-    success_tilt_cos_tolerance:     float = 0.25   # 0.20 → 0.25 (60° 기준, ±cos 허용폭)
-    success_directional_tilt_cos:   float = 0.50   # 0.55 → 0.50 (방향 오차 허용 확대)
 
     # bead / cup geometry
     target_inner_radius:  float = 0.050
@@ -206,18 +127,43 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     source_inside_z_max:  float = 0.110
 
     # -----------------------------------------------------------------------
-    # ADR
+    # Policy action / pouring target
     # -----------------------------------------------------------------------
-    enable_adr:            bool  = False   # pour 학습 안정화 후 활성화
-    adr_num_increments:    int   = 50
-    adr_increment_interval: int  = 200
-    adr_trigger_threshold: float = 0.02
+    palm_delta_xyz: float = 0.10
+    palm_delta_rot_deg: float = 35.0
+    target_pour_tilt_deg: float = 55.0
 
-    adr_custom_cfg: dict = field(default_factory=lambda: {
-        "reward_weights": {
-            "reward_transport_xy_weight": (4.0, 6.0),
-        },
-    })
+    # -----------------------------------------------------------------------
+    # Warmstart quality / success
+    # -----------------------------------------------------------------------
+    lift_success_height: float = 0.03
+    success_mouth_xy_threshold: float = 0.045
+    success_z_clearance_min: float = 0.02
+    success_z_clearance_max: float = 0.10
+    success_tilt_cos_tolerance: float = 0.12
+    success_directional_tilt_cos: float = 0.90
+    success_hold_steps: int = 10
+
+    # -----------------------------------------------------------------------
+    # Reward shaping
+    # sim2real-safe signal만 사용: cup pose, palm pose, fingertip contact, bead pose
+    # -----------------------------------------------------------------------
+    reward_grasp_contact_weight: float = 0.8
+    reward_grasp_stability_weight: float = 1.2
+    reward_transport_weight: float = 1.0
+    reward_clearance_weight: float = 0.5
+    reward_tilt_weight: float = 0.8
+    reward_pour_alignment_weight: float = 0.6
+    reward_bead_target_weight: float = 8.0
+    reward_success_weight: float = 10.0
+    penalty_spill_weight: float = 12.0
+    penalty_action_rate_weight: float = 0.01
+
+    reward_grasp_slip_scale: float = 20.0
+    reward_transport_scale: float = 10.0
+    reward_clearance_scale: float = 25.0
+    reward_tilt_scale: float = 8.0
+    reward_mouth_align_scale: float = 4.0
 
     # -----------------------------------------------------------------------
     # 종료 조건

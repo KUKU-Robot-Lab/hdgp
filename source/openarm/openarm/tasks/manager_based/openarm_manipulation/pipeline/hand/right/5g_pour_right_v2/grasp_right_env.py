@@ -63,7 +63,6 @@ from fabrics_sim.utils.utils import initialize_warp
 from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
 
 from .grasp_right_env_cfg import GraspRightEnvCfg
-from .grasp_adr import GraspADR
 from .grasp_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
@@ -168,7 +167,7 @@ class GraspRightEnv(DirectRLEnv):
             if _palm_name in self.robot.data.body_names
             else -1
         )
-        # distal phalanx body indices (rl_dg_*_4) — R2 reward용
+        # distal phalanx body indices (rl_dg_*_4)
         _distal4_names = [f"rl_dg_{i}_4" for i in range(1, 6)]
         self.distal4_body_indices: list[int] = [
             self.robot.data.body_names.index(name)
@@ -252,6 +251,8 @@ class GraspRightEnv(DirectRLEnv):
         self.object_pos      = torch.zeros(self.num_envs, 3, device=self.device)
         self.object_rot      = torch.zeros(self.num_envs, 4, device=self.device)
         self.object_init_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        self._grasp_rel_palm_to_cup_init = torch.zeros(self.num_envs, 3, device=self.device)
+        self._grasp_cup_height_init = torch.zeros(self.num_envs, device=self.device)
         self.palm_center_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.fingertip_pos   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.distal4_pos     = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
@@ -294,19 +295,6 @@ class GraspRightEnv(DirectRLEnv):
         self._successful_episodes: int = 0
 
         # ----------------------------------------------------------------
-        # ADR
-        # ----------------------------------------------------------------
-        if cfg.enable_adr:
-            self.grasp_adr = GraspADR(
-                custom_cfg=cfg.adr_custom_cfg,
-                num_increments=cfg.adr_num_increments,
-                increment_interval=cfg.adr_increment_interval,
-                trigger_threshold=cfg.adr_trigger_threshold,
-            )
-        else:
-            self.grasp_adr = None
-
-        # ----------------------------------------------------------------
         # Fabrics 초기화
         # ----------------------------------------------------------------
         self._setup_geometric_fabrics()
@@ -343,7 +331,6 @@ class GraspRightEnv(DirectRLEnv):
         # ---- Pour 중간값 버퍼 ----
         self._mouth_xy_distance = torch.zeros(self.num_envs, device=self.device)
         self._mouth_z_clearance = torch.zeros(self.num_envs, device=self.device)
-        self._mouth_z_band_error = torch.zeros(self.num_envs, device=self.device)
         self._source_up_dot_world = torch.zeros(self.num_envs, device=self.device)
         self._directional_tilt_cos = torch.zeros(self.num_envs, device=self.device)
         self._mouth_alignment_cos = torch.zeros(self.num_envs, device=self.device)
@@ -640,7 +627,7 @@ class GraspRightEnv(DirectRLEnv):
         bead_spilled = (
             (~self._bead_in_target)
             & (~self._bead_in_source)
-            & (bead_env_z < self.cfg.bead_spill_z_threshold)
+            & (bead_env_z < 0.230)
         )
         self._spill_ratio = bead_spilled.float()
 
@@ -813,12 +800,6 @@ class GraspRightEnv(DirectRLEnv):
         # Mouth alignment: pour axis → target 방향
         _mouth_dir = self._mouth_delta / self._mouth_distance.unsqueeze(1).clamp(min=1e-6)
         self._mouth_alignment_cos = (self._source_pour_axis_w * _mouth_dir).sum(dim=-1).clamp(-1.0, 1.0)
-
-        # Height cap error (one-sided: 최소 높이 미달 시만 패널티, 위쪽 제한 없음)
-        # DexPour: lift reward에 상한을 두어 tilt 시 pour point 하강과 충돌 제거
-        self._mouth_z_band_error = torch.clamp(
-            self.cfg.height_z_band_min - self._mouth_z_clearance, min=0.0
-        )
 
         # Bead flags & spill
         self._compute_bead_flags()
@@ -1017,102 +998,63 @@ class GraspRightEnv(DirectRLEnv):
 
         return {"policy": actor_obs, "critic": critic_obs}
 
-    # ------------------------------------------------------------------
-    # Rewards: bi_pouring_v1 기반 pour 전용 reward
-    # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        # Phase gate (DexPour ν→ρ 구조 참고)
-        # rho=0 (transport): 3D 이동 + 수평 유지 패널티
-        # rho=1 (pour):      XY 유지 + tilt reward (XY<0.10m AND z_clearance≥0.12m)
-        # 높이 조건 없으면: 같은 높이에서 XY<0.10m → tilt 켜짐 → 입구끼리 마주봄
-        rho = (
-            (self._mouth_xy_distance <= self.cfg.tilt_phase_xy_threshold)
-            & (self._mouth_z_clearance >= self.cfg.height_z_band_min)
-        ).float()
+        self._compute_intermediate_values()
 
-        # R0. Grasp hold: 파지 유지 보상 (슬립 방지)
-        r_hold = self.cfg.reward_grasp_hold_weight * (
-            self.num_contacts_buf.float() / NUM_FINGERTIPS
+        grasp_contact = self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
+        rel_palm_to_cup = self.object_pos - self.palm_center_pos
+        grasp_slip_error = torch.norm(rel_palm_to_cup - self._grasp_rel_palm_to_cup_init, dim=-1)
+        grasp_stability = 1.0 - torch.tanh(self.cfg.reward_grasp_slip_scale * grasp_slip_error)
+        grasp_stability = grasp_stability.clamp(min=0.0)
+        cup_drop = torch.relu(self._grasp_cup_height_init - self.object_pos[:, 2])
+        grasp_height_keep = 1.0 - torch.tanh(self.cfg.reward_grasp_slip_scale * cup_drop)
+        grasp_hold = 0.5 * grasp_contact + 0.5 * grasp_stability
+
+        transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
+        target_clearance = 0.5 * (self.cfg.success_z_clearance_min + self.cfg.success_z_clearance_max)
+        clearance_error = torch.abs(self._mouth_z_clearance - target_clearance)
+        clearance_reward = 1.0 - torch.tanh(self.cfg.reward_clearance_scale * clearance_error)
+
+        target_tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
+        tilt_error = torch.abs(self._source_up_dot_world - target_tilt_cos)
+        tilt_reward = 1.0 - torch.tanh(self.cfg.reward_tilt_scale * tilt_error)
+        mouth_alignment_reward = ((self._mouth_alignment_cos + 1.0) * 0.5).pow(self.cfg.reward_mouth_align_scale)
+        directional_tilt_reward = ((self._directional_tilt_cos + 1.0) * 0.5).clamp(0.0, 1.0)
+
+        near_target_gate = (transport_reward * clearance_reward).detach()
+        pour_pose_reward = near_target_gate * (0.5 * tilt_reward + 0.5 * directional_tilt_reward)
+        align_reward = near_target_gate * mouth_alignment_reward
+
+        bead_target_reward = self._bead_in_target.float()
+        success_reward = self.success_flag.float()
+        spill_penalty = self._spill_ratio
+        action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
+
+        total = (
+            self.cfg.reward_grasp_contact_weight * grasp_contact
+            + self.cfg.reward_grasp_stability_weight * (0.7 * grasp_stability + 0.3 * grasp_height_keep)
+            + grasp_hold * (
+                self.cfg.reward_transport_weight * transport_reward
+                + self.cfg.reward_clearance_weight * clearance_reward
+                + self.cfg.reward_tilt_weight * pour_pose_reward
+                + self.cfg.reward_pour_alignment_weight * align_reward
+            )
+            + self.cfg.reward_bead_target_weight * bead_target_reward
+            + self.cfg.reward_success_weight * success_reward
+            - self.cfg.penalty_spill_weight * spill_penalty
+            - self.cfg.penalty_action_rate_weight * action_rate_penalty
         )
 
-        # R1. Transport (rho=0): XY-only distance → 컵이 이미 lifted 상태로 시작하므로 XY 접근만 필요
-        # (warmstart reset 시 pregrasp Z +0.25m 오프셋 적용으로 cup이 이미 높이 위치)
-        # 3D를 쓰면 cup이 target opening보다 높을 때 오히려 Z를 낮추는 gradient 발생 → XY-only 유지
-        r_transport = self.cfg.reward_transport_xy_weight * torch.exp(
-            -self.cfg.transport_xy_sharpness * self._mouth_xy_distance
-        ) * (1.0 - rho)
+        self.extras["reward_grasp_contact"] = grasp_contact.mean()
+        self.extras["reward_grasp_stability"] = grasp_stability.mean()
+        self.extras["reward_grasp_height_keep"] = grasp_height_keep.mean()
+        self.extras["reward_transport"] = transport_reward.mean()
+        self.extras["reward_clearance"] = clearance_reward.mean()
+        self.extras["reward_tilt"] = tilt_reward.mean()
+        self.extras["reward_directional_tilt"] = directional_tilt_reward.mean()
+        self.extras["reward_mouth_alignment"] = mouth_alignment_reward.mean()
+        self.extras["penalty_action_rate"] = action_rate_penalty.mean()
 
-        # R1b. Pour XY align (rho=1): X,Y 유지하며 tilt → 빨간 공이 파란 공 바로 위에서 내려오도록
-        r_pour_xy = self.cfg.reward_pour_xy_weight * torch.exp(
-            -self.cfg.pour_xy_sharpness * self._mouth_xy_distance
-        ) * rho
-
-        # R2. Palm to goal: arm 이동 보조 신호
-        palm_to_goal_dist = torch.norm(
-            self._target_opening_w - (self.palm_center_pos + self.scene.env_origins),
-            dim=-1,
-        )
-        r_palm = self.cfg.reward_palm_to_goal_weight * torch.exp(
-            -self.cfg.transport_palm_sharpness * palm_to_goal_dist
-        )
-
-        # P_transport_tilt: transport 중 tilt 패널티 (DexPour Stage 3 p_tilt)
-        # source_up_dot_world=1 → 수직(패널티 0), =0 → 90° 기울어짐(패널티 최대)
-        p_transport_tilt = self.cfg.transport_tilt_penalty_weight * (
-            1.0 - self._source_up_dot_world.clamp(0.0, 1.0)
-        ) * (1.0 - rho)
-
-        # R3. Tilt: tanh progressive reward (pour phase only, rho=1)
-        _tilt_angle_rad = torch.acos(self._source_up_dot_world.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
-        _target_rad = math.radians(self.cfg.target_pour_tilt_deg)
-        _target_saturate = math.tanh(_target_rad / self.cfg.tilt_tanh_scale)
-        r_tilt_raw = torch.tanh(_tilt_angle_rad / self.cfg.tilt_tanh_scale)
-        r_tilt = self.cfg.reward_tilt_weight * (r_tilt_raw / _target_saturate).clamp(0.0, 1.0) * rho
-
-        # R4. Directional tilt: target 방향으로 기울어야 함 (pour phase only)
-        r_dir_tilt = self.cfg.reward_directional_tilt_weight * 0.5 * (1.0 + self._directional_tilt_cos) * rho
-
-        # R5. Height cap (transport phase only)
-        # pour phase(rho=1)에서는 off → tilt 시 z_clearance 감소를 방해하지 않음
-        # cup이 tilt하면 pour point가 자연스럽게 target 방향으로 내려와야 하므로
-        r_height = self.cfg.reward_height_weight * torch.exp(
-            -self.cfg.transport_height_sharpness * self._mouth_z_band_error
-        ) * (1.0 - rho)
-
-        # R6. Mouth alignment: pour axis → target 방향
-        r_align = self.cfg.reward_mouth_alignment_weight * 0.5 * (1.0 + self._mouth_alignment_cos)
-
-        # P1. Spill penalty
-        p_spill = self.cfg.penalty_spill_weight * self._spill_ratio
-
-        # P2. Smoothness
-        palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
-        finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
-        r_smooth = (
-            self.cfg.action_smoothness_palm_weight   * palm_delta
-            + self.cfg.action_smoothness_finger_weight * finger_delta
-        )
-
-        total = r_hold + r_transport + r_pour_xy + r_palm + r_tilt - p_transport_tilt + r_dir_tilt + r_height + r_align - p_spill + r_smooth
-
-        # ---- ADR increment ----
-        _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
-        if self.grasp_adr is not None:
-            self.grasp_adr.maybe_increment(_ep_success_rate)
-
-        # ---- 로깅 ----
-        self.extras["r_grasp_hold"]          = r_hold.mean()
-        self.extras["r_transport_xy"]         = r_transport.mean()
-        self.extras["r_pour_xy"]             = r_pour_xy.mean()
-        self.extras["r_palm_to_goal"]        = r_palm.mean()
-        self.extras["r_tilt"]                = r_tilt.mean()
-        self.extras["p_transport_tilt"]      = p_transport_tilt.mean()
-        self.extras["tilt_phase_rho"]        = rho.mean()
-        self.extras["r_directional_tilt"]    = r_dir_tilt.mean()
-        self.extras["r_height"]              = r_height.mean()
-        self.extras["r_mouth_alignment"]     = r_align.mean()
-        self.extras["p_spill"]               = p_spill.mean()
-        self.extras["action_smoothness"]     = r_smooth.mean()
         self.extras["mouth_distance"]        = self._mouth_distance.mean()
         self.extras["mouth_xy_distance"]     = self._mouth_xy_distance.mean()
         self.extras["mouth_z_clearance"]     = self._mouth_z_clearance.mean()
@@ -1123,10 +1065,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["bead_in_target_rate"]   = self._bead_in_target.float().mean()
         self.extras["spill_ratio"]           = self._spill_ratio.mean()
         self.extras["success_rate"]          = self.success_flag.float().mean()
-        self.extras["episode_success_rate"]  = torch.tensor(_ep_success_rate, device=self.device)
         self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
-        if self.grasp_adr is not None:
-            self.extras["adr_progress"] = torch.tensor(self.grasp_adr.progress, device=self.device)
 
         return total
 
@@ -1259,6 +1198,8 @@ class GraspRightEnv(DirectRLEnv):
 
         # delta action 기준점: action=0 → pregrasp 위치 유지
         self.pregrasp_palm_pose_buf[env_ids] = pregrasp_palm_pose
+        self._grasp_rel_palm_to_cup_init[env_ids] = obj_pos_local - pregrasp_palm_pose[:, :3]
+        self._grasp_cup_height_init[env_ids] = obj_pos_local[:, 2]
 
         # Fabrics cspace attractor(null-space)를 pregrasp arm pos로 설정
         # default_config가 ARM_START_POSE이면 null-space 항이 계속 팔을 당겨 초기 흔들림 발생
@@ -1391,7 +1332,7 @@ class GraspRightEnv(DirectRLEnv):
         try:
             self._warmstart_policy = _WarmstartPolicy(ckpt, self.device).to(self.device)
         except Exception as exc:
-            print(f"[5g_pour_right_v1] warmstart policy load failed: {exc}", flush=True)
+            print(f"[5g_pour_right_v2] warmstart policy load failed: {exc}", flush=True)
             self._warmstart_policy = None
             return
 
@@ -1422,13 +1363,13 @@ class GraspRightEnv(DirectRLEnv):
 
         if self._warmstart_cache_count == 0:
             raise RuntimeError(
-                "[5g_pour_right_v1] warmstart cache is empty. "
+                "[5g_pour_right_v2] warmstart cache is empty. "
                 "The v7 checkpoint rollout did not produce any lift-success state, so this task cannot start "
                 "from the requested play-like grasp state."
             )
 
         print(
-            f"[5g_pour_right_v1] collected {self._warmstart_cache_count} warmstart success states.",
+            f"[5g_pour_right_v2] collected {self._warmstart_cache_count} warmstart success states.",
             flush=True,
         )
 
@@ -1500,6 +1441,8 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_joint_targets[env_ids] = hand_pos
         self.object_init_pos[env_ids] = cup_pose_local[:, :3]
         self.object_init_pos[env_ids, 2] = self.cfg.object_spawn_z  # z는 테이블 높이 기준으로 고정 (캐시 lifted z 사용 시 cup_height_delta=0 버그)
+        self._grasp_rel_palm_to_cup_init[env_ids] = cup_pose_local[:, :3] - palm_pose[:, :3]
+        self._grasp_cup_height_init[env_ids] = cup_pose_local[:, 2]
         self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = arm_pos
 
         cup_pose_world = cup_pose_local.clone()

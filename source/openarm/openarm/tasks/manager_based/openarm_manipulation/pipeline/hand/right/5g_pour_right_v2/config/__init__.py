@@ -15,44 +15,41 @@
 import gymnasium as gym
 
 from . import agents
-from ..bi_pouring_env_cfg import BiPouringEnvCfg, BiPouringEnvCfg_PLAY
+from ..grasp_right_env_cfg import GraspRightEnvCfg
+
+
+class GraspRightEnvCfg_PLAY(GraspRightEnvCfg):
+    """플레이용 설정 (소규모 환경)."""
+
+    def __post_init__(self):
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
 
 
 gym.register(
-    id="bi_pouring-v1",
+    id="5g_pour_right-v2",
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
-        ".pipeline.hand.both.bi_pouring_v1.bi_pouring_env:BiPouringEnv"
+        ".pipeline.hand.right.5g_pour_right_v2"
+        ".grasp_right_env:GraspRightEnv"
     ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}:BiPouringEnvCfg",
+        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
     },
 )
 
 gym.register(
-    id="bi_pourint-v1",
+    id="5g_pour_right-play-v2",
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
-        ".pipeline.hand.both.bi_pouring_v1.bi_pouring_env:BiPouringEnv"
+        ".pipeline.hand.right.5g_pour_right_v2"
+        ".grasp_right_env:GraspRightEnv"
     ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}:BiPouringEnvCfg",
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
-    },
-)
-
-gym.register(
-    id="bi_pouring-play-v1",
-    entry_point=(
-        "openarm.tasks.manager_based.openarm_manipulation"
-        ".pipeline.hand.both.bi_pouring_v1.bi_pouring_env:BiPouringEnv"
-    ),
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}:BiPouringEnvCfg_PLAY",
+        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfg_PLAY",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
     },
 )

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Hand/robot preset metadata for 5g_pour_right_v1.
+"""Hand/robot preset metadata for 5g_pour_right_v2.
 
 v3와 동일한 joint/body 구성. v4에서 재사용.
 """
