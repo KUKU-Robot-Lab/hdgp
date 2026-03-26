@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_pour_right_v2
+"""환경 설정: 5g_pour_right_v3
 
-v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
-- Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 106D / critic 143D (asymmetric)
-- Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
-- Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
+v3: source cup을 오른손 EE에 고정한 arm-only pouring task
+- Action: 6D palm pose
+- Observation: actor 51D / critic 81D (asymmetric)
+- Episode: pure pouring motion only
 """
 
 from dataclasses import MISSING
@@ -47,6 +46,9 @@ from .grasp_right_preset import (
     LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
     LEFT_TARGET_CUP_ATTACH_POS_B,
     LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B,
+    RIGHT_SOURCE_CUP_ATTACH_FRAME_NAME,
+    RIGHT_SOURCE_CUP_ATTACH_POS_B,
+    RIGHT_SOURCE_CUP_ATTACH_QUAT_WXYZ_B,
     RIGHT_ACTUATED_JOINT_NAMES,
     SOURCE_CUP_POUR_AXIS_B,
     SOURCE_CUP_POUR_POINT_POS_B,
@@ -88,7 +90,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
 
 @configclass
 class GraspRightEnvCfg(DirectRLEnvCfg):
-    """5g_pour_right_v2 환경 설정."""
+    """5g_pour_right_v3 환경 설정."""
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
@@ -106,8 +108,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 관측·액션 공간
     # -----------------------------------------------------------------------
     observation_space: int = NUM_OBSERVATIONS          # 106 (actor)
-    action_space:      int = NUM_ACTIONS               # 11
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 143 (critic, privileged)
+    action_space:      int = NUM_ACTIONS               # 6
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 81 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -180,10 +182,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # sim2real-safe signal만 사용: cup pose, palm pose, fingertip contact, bead pose
     # -----------------------------------------------------------------------
     reward_grasp_contact_weight: float = 0.0
-    reward_grasp_stability_weight: float = 1.0   # 2.4 → 1.0: 이동 억제 완화 (조건 역할)
-    reward_force_balance_weight: float = 1.0     # 2.5 → 1.0: 조건 역할
-    reward_full_grasp_weight: float = 1.5        # 6.0 → 1.5: local minimum 주범, 대폭 감소
-    reward_transport_weight: float = 3.0         # 1.0 → 3.0: 이동 인센티브 강화
+    reward_grasp_stability_weight: float = 0.0
+    reward_force_balance_weight: float = 0.0
+    reward_full_grasp_weight: float = 0.0
+    reward_transport_weight: float = 3.0
     reward_clearance_weight: float = 0.5
     reward_tilt_weight: float = 1.5              # 0.8 → 1.5: 틸트 비중 강화
     reward_pour_alignment_weight: float = 0.6
@@ -220,7 +222,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Warmstart reset cache
     # -----------------------------------------------------------------------
-    enable_warmstart_reset: bool = True
+    enable_warmstart_reset: bool = False
     warmstart_checkpoint_path: str = (
         "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7/test4/nn/5g_grasp_right-v7.pth"
     )
@@ -235,6 +237,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     left_target_cup_attach_pos_b: tuple[float, float, float] = tuple(LEFT_TARGET_CUP_ATTACH_POS_B)
     left_target_cup_attach_quat_wxyz_b: tuple[float, float, float, float] = tuple(
         LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B
+    )
+    right_source_cup_attach_frame_name: str = RIGHT_SOURCE_CUP_ATTACH_FRAME_NAME
+    right_source_cup_attach_pos_b: tuple[float, float, float] = tuple(RIGHT_SOURCE_CUP_ATTACH_POS_B)
+    right_source_cup_attach_quat_wxyz_b: tuple[float, float, float, float] = tuple(
+        RIGHT_SOURCE_CUP_ATTACH_QUAT_WXYZ_B
     )
     source_cup_pour_point_pos_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_POINT_POS_B)
     target_cup_opening_pos_b: tuple[float, float, float] = tuple(TARGET_CUP_OPENING_POS_B)
