@@ -1067,19 +1067,24 @@ class GraspRightEnv(DirectRLEnv):
         # ---- Transport: pour point를 target opening XY 근처로 ----
         transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
 
-        # ---- Tilt: gate 없이 독립 학습 ----
-        # grasp_hold/grasp_stability gate 제거: 기울이는 행동 자체를 방해하지 않도록
+        # ---- Tilt: proximity gate 적용 ----
+        # transport_reward를 gate로 사용: 타겟 근처일수록 tilt/align reward 증폭
+        # → 먼저 transport 학습 후 tilt 학습되는 자연스러운 커리큘럼 형성
         target_tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
         tilt_error = torch.abs(self._source_up_dot_world - target_tilt_cos)
         tilt_reward = 1.0 - torch.tanh(self.cfg.reward_tilt_scale * tilt_error)
         directional_tilt_reward = ((self._directional_tilt_cos + 1.0) * 0.5).clamp(0.0, 1.0)
         mouth_alignment_reward = ((self._mouth_alignment_cos + 1.0) * 0.5).pow(self.cfg.reward_mouth_align_scale)
 
-        # tilt + 방향 결합 (gate 없음)
-        pour_pose_reward = 0.5 * tilt_reward + 0.5 * directional_tilt_reward
-        # 입 정렬: transport 진행 시 추가 보상
         near_target_gate = transport_reward.detach()
+        # tilt: proximity gate → 타겟 근처에서 기울여야 reward
+        pour_pose_reward = near_target_gate * (0.5 * tilt_reward + 0.5 * directional_tilt_reward)
         align_reward = near_target_gate * mouth_alignment_reward
+
+        # ---- Z Clearance: source pour point가 target opening 위에 있도록 ----
+        # z_clearance = source_pour_point_z - target_opening_z
+        # upright에서 0.100*cos(tilt)가 기여 → 150도 기울어도 cup이 충분히 높으면 양수 유지
+        clearance_reward = torch.sigmoid(self.cfg.reward_clearance_scale * self._mouth_z_clearance)
 
         # ---- Bead / Success ----
         bead_target_reward = self._bead_cross_fraction
@@ -1092,6 +1097,7 @@ class GraspRightEnv(DirectRLEnv):
             + self.cfg.reward_full_grasp_weight * full_grasp_reward
             + self.cfg.reward_force_balance_weight * force_balance_reward
             + self.cfg.reward_transport_weight * transport_reward
+            + self.cfg.reward_clearance_weight * clearance_reward
             + self.cfg.reward_tilt_weight * pour_pose_reward
             + self.cfg.reward_pour_alignment_weight * align_reward
             + self.cfg.reward_bead_target_weight * bead_target_reward
@@ -1106,7 +1112,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward_force_balance"] = force_balance_reward.mean()
         self.extras["reward_full_grasp"] = full_grasp_reward.mean()
         self.extras["reward_transport"] = transport_reward.mean()
-        self.extras["reward_clearance"] = torch.zeros(1, device=self.device).squeeze()
+        self.extras["reward_clearance"] = clearance_reward.mean()
         self.extras["reward_tilt"] = tilt_reward.mean()
         self.extras["reward_directional_tilt"] = directional_tilt_reward.mean()
         self.extras["reward_mouth_alignment"] = mouth_alignment_reward.mean()

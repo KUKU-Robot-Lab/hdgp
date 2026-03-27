@@ -117,7 +117,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
-    max_pose_angle:             float = 120.0  # 45.0 → 120.0 (pour tilt 75°+ 허용)
+    max_pose_angle:             float = 180.0  # 120.0 → 180.0: 완전 반전(180°) 허용
     fabrics_max_objects_per_env: int  = 6
     fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
 
@@ -146,11 +146,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
 
     # bead / cup geometry
-    target_inner_radius:  float = 0.050
+    target_inner_radius:  float = 0.041   # 실제 컵 내부 반경
     target_inside_z_min:  float = -0.015
     target_inside_z_max:  float = 0.095
     target_mouth_z:       float = 0.095
-    source_inner_radius:  float = 0.055
+    source_inner_radius:  float = 0.041   # 실제 컵 내부 반경
     source_inside_z_min:  float = -0.020
     source_inside_z_max:  float = 0.110
     bead_count: int = _DEFAULT_BEAD_COUNT
@@ -161,7 +161,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     palm_delta_xyz: float = 0.10
     palm_delta_rot_deg: float = 35.0
-    target_pour_tilt_deg: float = 90.0
+    target_pour_tilt_deg: float = 150.0  # 90.0 → 150.0: 실제 물붓기에 필요한 강한 기울기
 
     # -----------------------------------------------------------------------
     # Warmstart quality / success
@@ -188,7 +188,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_force_balance_weight: float = 1.5     # 0.0 → 1.5: 컵 낙하 방지 핵심
     reward_full_grasp_weight: float = 0.5        # 1.5 → 0.5: local minimum 방지, 약한 가이드
     reward_transport_weight: float = 3.0
-    reward_clearance_weight: float = 0.0         # 제거: 기울이면 패널티
+    reward_clearance_weight: float = 1.5         # source pour point가 target opening 위에 있도록
     reward_tilt_weight: float = 3.0              # 1.5 → 3.0: 기울이기 핵심 신호 강화
     reward_pour_alignment_weight: float = 1.0    # 0.6 → 1.0: 방향 정렬 강화
     reward_bead_target_weight: float = 8.0
@@ -200,7 +200,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_force_balance_sharpness: float = 8.0
     reward_transport_scale: float = 5.0
     reward_clearance_scale: float = 10.0
-    reward_tilt_scale: float = 2.0               # 3.0 → 2.0: gradient 범위 확대 (60°에서도 signal)
+    reward_tilt_scale: float = 1.0               # 2.0 → 1.0: target=150° 대비 전 구간 gradient 확보
     reward_mouth_align_scale: float = 4.0
     thumb_force_ratio_min: float = 0.5
 

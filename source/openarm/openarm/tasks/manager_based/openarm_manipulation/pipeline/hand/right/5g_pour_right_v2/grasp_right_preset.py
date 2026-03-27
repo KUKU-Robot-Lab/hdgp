@@ -50,8 +50,8 @@ LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]
 
 BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.035]
 BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ = [1.0, 0.0, 0.0, 0.0]
-SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.130]   # 정중앙 상단 (타겟 컵과 동일 기준)
-TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.150]   # 충돌 방지: source cup body가 target cup top을 넘도록 (0.200 → 0.280)
+SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
+TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
 SOURCE_CUP_POUR_AXIS_B = [-1.0, 0.0, 0.0]
 SOURCE_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
