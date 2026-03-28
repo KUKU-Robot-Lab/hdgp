@@ -188,8 +188,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_force_balance_weight: float = 1.5     # 0.0 → 1.5: 컵 낙하 방지 핵심
     reward_full_grasp_weight: float = 0.5        # 1.5 → 0.5: local minimum 방지, 약한 가이드
     reward_transport_weight: float = 3.0
-    reward_clearance_weight: float = 1.5         # source pour point가 target opening 위에 있도록
-    reward_tilt_weight: float = 3.0              # 1.5 → 3.0: 기울이기 핵심 신호 강화
+    reward_clearance_weight: float = 2.0         # 1.5→2.0: tanh 기반으로 변경 (중립=0, 패널티 포함)
+    reward_tilt_weight: float = 4.0              # 3.0→4.0: gate 제거로 독립 학습, weight 강화
     reward_pour_alignment_weight: float = 1.0    # 0.6 → 1.0: 방향 정렬 강화
     reward_bead_target_weight: float = 8.0
     reward_success_weight: float = 10.0
@@ -198,7 +198,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     reward_grasp_slip_scale: float = 35.0
     reward_force_balance_sharpness: float = 8.0
-    reward_transport_scale: float = 5.0
+    reward_transport_scale: float = 10.0          # 5.0→10.0: XY gradient 강화 (6cm plateau 극복)
     reward_clearance_scale: float = 10.0
     reward_tilt_scale: float = 1.0               # 2.0 → 1.0: target=150° 대비 전 구간 gradient 확보
     reward_mouth_align_scale: float = 4.0

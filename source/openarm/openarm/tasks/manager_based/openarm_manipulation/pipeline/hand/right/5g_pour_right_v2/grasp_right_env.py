@@ -1076,15 +1076,15 @@ class GraspRightEnv(DirectRLEnv):
         directional_tilt_reward = ((self._directional_tilt_cos + 1.0) * 0.5).clamp(0.0, 1.0)
         mouth_alignment_reward = ((self._mouth_alignment_cos + 1.0) * 0.5).pow(self.cfg.reward_mouth_align_scale)
 
-        near_target_gate = transport_reward.detach()
-        # tilt: proximity gate → 타겟 근처에서 기울여야 reward
-        pour_pose_reward = near_target_gate * (0.5 * tilt_reward + 0.5 * directional_tilt_reward)
-        align_reward = near_target_gate * mouth_alignment_reward
+        # ---- near_target_gate 제거: tilt/align 독립 학습 ----
+        # gate가 있으면 transport 진전 없이는 tilt reward 학습 불가 → local minimum
+        pour_pose_reward = 0.5 * tilt_reward + 0.5 * directional_tilt_reward
+        align_reward = mouth_alignment_reward
 
         # ---- Z Clearance: source pour point가 target opening 위에 있도록 ----
-        # z_clearance = source_pour_point_z - target_opening_z
-        # upright에서 0.100*cos(tilt)가 기여 → 150도 기울어도 cup이 충분히 높으면 양수 유지
-        clearance_reward = torch.sigmoid(self.cfg.reward_clearance_scale * self._mouth_z_clearance)
+        # tanh 사용: z_clearance=0에서 0 (중립), 양수면 양(+), 음수면 패널티
+        # sigmoid 대비: 포화 없이 gradient 유지
+        clearance_reward = torch.tanh(self.cfg.reward_clearance_scale * self._mouth_z_clearance)
 
         # ---- Bead / Success ----
         bead_target_reward = self._bead_cross_fraction

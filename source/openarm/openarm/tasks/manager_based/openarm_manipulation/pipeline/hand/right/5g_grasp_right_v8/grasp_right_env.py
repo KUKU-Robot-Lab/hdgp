@@ -265,6 +265,14 @@ class GraspRightEnv(DirectRLEnv):
         self._successful_episodes: int = 0
 
         # ----------------------------------------------------------------
+        # Eval 로깅 (bead 무게별 파지 품질 평가)
+        # ----------------------------------------------------------------
+        # grasp phase 마지막(LIFT_START_STEP)에서의 finger action 강도 기록
+        self._eval_grip_at_lift = torch.zeros(self.num_envs, device=self.device)
+        # 에피소드별 (bead_mass_normalized, grip_intensity, success) 기록 리스트
+        self._eval_records: list[dict] = []
+
+        # ----------------------------------------------------------------
         # Bead 무게 도메인 랜덤화 (v8)
         # ----------------------------------------------------------------
         # 컵 내부 layered spiral 오프셋 사전 계산 (pour_v2 패턴)
@@ -551,6 +559,10 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- Lift 진입 시 finger/arm joint pos 캡처 ----
         just_entering_lift = (self.episode_length_buf == LIFT_START_STEP)
+
+        # Eval: lift 진입 시점 grip intensity (actions[6:11] 평균) 기록
+        if just_entering_lift.any():
+            self._eval_grip_at_lift[just_entering_lift] = finger_action[just_entering_lift].mean(dim=-1)
 
         # Finger: 진입 시점 자세로 고정
         self.lift_finger_pos_buf = torch.where(
@@ -1062,6 +1074,15 @@ class GraspRightEnv(DirectRLEnv):
         # ---- episode 성공 집계 후 클리어 ----
         self._total_episodes += n
         self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
+
+        # Eval 기록: success_buf 클리어 전에 per-episode 데이터 저장
+        for i, env_id in enumerate(env_ids):
+            self._eval_records.append({
+                "bead_mass": self._bead_mass_normalized[env_id].item(),
+                "grip":      self._eval_grip_at_lift[env_id].item(),
+                "success":   self.episode_success_buf[env_id].item(),
+            })
+
         self.episode_success_buf[env_ids] = False
 
         # ---- 1. 로봇 관절 상태 리셋 ----
