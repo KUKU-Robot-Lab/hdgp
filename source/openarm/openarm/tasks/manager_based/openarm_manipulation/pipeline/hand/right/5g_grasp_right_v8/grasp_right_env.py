@@ -1163,9 +1163,13 @@ class GraspRightEnv(DirectRLEnv):
             (n,), device=self.device
         )  # 각 env당 활성 bead 수 (0 ~ bead_count_max)
 
-        # 기본: 모든 bead off-scene (z=-10)
+        # 비활성 bead 숨김: ground plane(z=0) 위 2cm, 테이블 반대 방향 (x-0.8m)
+        # z=-10 사용 시 ground plane에 튕겨 테이블 위에 흩어지는 문제 방지
+        hide_pos = self.scene.env_origins[env_ids].clone()  # (n, 3) world
+        hide_pos[:, 0] -= 0.8  # 테이블(local x≈+0.57) 반대쪽
+        hide_pos[:, 2] = 0.02  # ground plane(z=0) 위 2cm
         bead_state = torch.zeros(n, self.cfg.num_beads, 13, device=self.device)
-        bead_state[..., 2] = -10.0
+        bead_state[..., :3] = hide_pos.unsqueeze(1)  # 모든 bead → 숨김 위치
         bead_state[..., 3] = 1.0   # quat w
 
         # 활성 bead: 컵 내부 layered spiral (컵은 항상 upright이므로 quat_apply 불필요)
