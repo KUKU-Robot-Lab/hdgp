@@ -382,18 +382,21 @@ class GraspRightEnv(DirectRLEnv):
     def _make_fluid_grid_offsets(self) -> torch.Tensor:
         """4×5×10 grid = 200 particles, cup local frame (단위: m).
 
-        x: 4열 (±7.5mm, ±2.5mm)
-        y: 5열 (±10mm, ±5mm, 0mm)
-        z: 10층 (2.5mm ~ 47.5mm, spacing 5mm)
+        rigid cup collision과 초기 overlap을 피하려고 XY footprint를 줄이고,
+        바닥에서 조금 띄운 높이에서 시작한다.
+
+        x: 4열 (±4.5mm, ±1.5mm)
+        y: 5열 (±6mm, ±3mm, 0mm)
+        z: 10층 (22.5mm ~ 67.5mm, spacing 5mm)
         """
         d = PARTICLE_DIAMETER
         positions = []
         for zi in range(10):
             for yi in range(5):
                 for xi in range(4):
-                    x = (xi - 1.5) * d
-                    y = (yi - 2.0) * d
-                    z = (zi + 0.5) * d
+                    x = (xi - 1.5) * (0.6 * d)
+                    y = (yi - 2.0) * (0.6 * d)
+                    z = (zi + 4.5) * d
                     positions.append([x, y, z])
         return torch.tensor(positions, dtype=torch.float32, device=self.device)  # (200, 3)
 
@@ -450,7 +453,7 @@ class GraspRightEnv(DirectRLEnv):
         try:
             import omni.usd as _omni_usd
             from omni.physx.scripts import particleUtils as _pu
-            from pxr import Gf, Sdf, PhysxSchema, UsdShade
+            from pxr import Gf, Sdf, PhysxSchema, UsdGeom, UsdShade, Vt
 
             stage = _omni_usd.get_context().get_stage()
 
@@ -521,6 +524,12 @@ class GraspRightEnv(DirectRLEnv):
                 density=0.0,
             )
 
+            # 디버그 가시성을 위해 source fluid를 빨간색으로 고정
+            fluid_points_prim = stage.GetPrimAtPath("/World/envs/env_0/FluidParticles")
+            if fluid_points_prim.IsValid():
+                fluid_points = UsdGeom.Points(fluid_points_prim)
+                fluid_points.CreateDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(1.0, 0.1, 0.1)]))
+
             print(
                 f"[5g_pour_right_v3] Fluid particle system created: "
                 f"{N_P} particles/env × {self.num_envs} envs",
@@ -589,15 +598,16 @@ class GraspRightEnv(DirectRLEnv):
     def _get_particle_positions_w(self) -> torch.Tensor | None:
         """(N, P, 3) 세계좌표 particle positions 반환. 실패 시 None.
 
-        PhysxParticleSetAPI.GetSimulationPointsAttr() 로 PhysX simulation buffer에서
-        직접 읽음. UsdGeom.Points.GetPointsAttr()는 렌더링용(authored)이라 시뮬레이션
-        중 실제 위치와 다를 수 있음.
+        `physxParticle:simulationPoints`는 PhysX schema 상 시뮬레이션 미러 버퍼이며,
+        렌더/authoring 기준 위치는 `UsdGeom.Points.points`이다. Isaac Lab의 cloned env는
+        각 `/World/envs/env_i` prim translation 아래에 있으므로, stage에 기록된 local
+        point를 env origin을 더해 world 좌표로 복원한다.
         """
         if not self._init_particle_view_if_needed():
             return None
         try:
             import omni.usd as _omni_usd
-            from pxr import UsdGeom, PhysxSchema, Vt
+            from pxr import UsdGeom, PhysxSchema
             import numpy as np
 
             stage = _omni_usd.get_context().get_stage()
@@ -611,17 +621,18 @@ class GraspRightEnv(DirectRLEnv):
                 if not prim.IsValid():
                     continue
 
-                # simulation points (PhysX buffer) 우선, 없으면 authored points 사용
-                particle_api = PhysxSchema.PhysxParticleSetAPI(prim)
-                sim_attr = particle_api.GetSimulationPointsAttr()
-                pts = sim_attr.Get() if sim_attr else None
+                points_prim = UsdGeom.Points(prim)
+                pts = points_prim.GetPointsAttr().Get()
                 if pts is None or len(pts) == 0:
-                    pts = UsdGeom.Points(prim).GetPointsAttr().Get()
+                    particle_api = PhysxSchema.PhysxParticleSetAPI(prim)
+                    sim_attr = particle_api.GetSimulationPointsAttr()
+                    pts = sim_attr.Get() if sim_attr else None
                 if pts is None:
                     continue
-                arr = np.array(pts, dtype=np.float32)
+                arr = np.array(pts, dtype=np.float32, copy=True)
                 if arr.shape[0] != P:
                     continue
+                arr += self.scene.env_origins[env_idx].detach().cpu().numpy()
                 all_pos[env_idx] = torch.from_numpy(arr).to(self.device)
 
             return all_pos
@@ -631,9 +642,10 @@ class GraspRightEnv(DirectRLEnv):
     def _set_particle_positions_w(self, positions: torch.Tensor) -> None:
         """(N, P, 3) 세계좌표로 particle positions 설정.
 
-        PhysxParticleSetAPI.GetSimulationPointsAttr().Set() 으로 PhysX simulation
-        buffer에 직접 teleport. UsdGeom.Points.GetPointsAttr().Set()만으로는
-        시뮬레이션 중 physics buffer에 반영되지 않음.
+        Particle set prim은 각 env prim 하위에 있으므로 local 좌표로 authoring해야 한다.
+        PhysX schema 상 `simulationPoints`는 시뮬레이션 상태 mirror이므로, reset 시에는
+        `UsdGeom.Points.points`를 canonical source로 갱신하고 `simulationPoints`는
+        동일 길이 동기화가 필요한 경우에만 보조적으로 맞춘다.
         """
         if not self._init_particle_view_if_needed():
             return
@@ -643,7 +655,7 @@ class GraspRightEnv(DirectRLEnv):
             import numpy as np
 
             stage = _omni_usd.get_context().get_stage()
-            pos_np = positions.cpu().numpy()  # (N, P, 3)
+            pos_np = positions.detach().cpu().numpy().copy()  # (N, P, 3), world
             N = pos_np.shape[0]
 
             for env_idx in range(N):
@@ -651,15 +663,19 @@ class GraspRightEnv(DirectRLEnv):
                 prim = stage.GetPrimAtPath(prim_path)
                 if not prim.IsValid():
                     continue
-                pts = Vt.Vec3fArray.FromNumpy(pos_np[env_idx])
-                # PhysX simulation buffer에 직접 teleport
+
+                local_pts_np = pos_np[env_idx] - self.scene.env_origins[env_idx].detach().cpu().numpy()
+                pts = Vt.Vec3fArray.FromNumpy(local_pts_np.astype(np.float32, copy=False))
+
+                points_prim = UsdGeom.Points(prim)
+                points_prim.GetPointsAttr().Set(pts)
+
+                # smoothing / parser consistency를 위해 동일 local 좌표를 맞춰 둔다.
                 particle_api = PhysxSchema.PhysxParticleSetAPI(prim)
                 sim_attr = particle_api.GetSimulationPointsAttr()
                 if not sim_attr.HasAuthoredValue():
                     sim_attr = particle_api.CreateSimulationPointsAttr()
                 sim_attr.Set(pts)
-                # 렌더링용 authored points도 동기화
-                UsdGeom.Points(prim).GetPointsAttr().Set(pts)
         except Exception:
             pass
 

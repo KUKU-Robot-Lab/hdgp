@@ -378,7 +378,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_particle.usd"),
             activate_contact_sensors=True,
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 articulation_enabled=False,
@@ -401,15 +401,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_particle.usd"),
             activate_contact_sensors=False,
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
                 disable_gravity=True,
             ),
             collision_props=CollisionPropertiesCfg(
-                contact_offset=-0.1,
-                rest_offset=-0.1,
+                contact_offset=0.01,
+                rest_offset=0.0,
             ),
         ),
     )

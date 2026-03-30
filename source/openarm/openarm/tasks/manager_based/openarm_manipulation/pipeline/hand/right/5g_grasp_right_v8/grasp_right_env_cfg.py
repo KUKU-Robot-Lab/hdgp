@@ -174,7 +174,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # R1c. full_grasp_bonus: Grasp phase per-step
     # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
     # → 엄지가 0.1N 살짝 닿기만 해서 조건 충족하던 허점 제거
-    full_grasp_bonus_weight: float = 3.0
+    full_grasp_bonus_weight: float = 6.0
     thumb_force_ratio_min:   float = 0.5   # 엄지 힘 ≥ others 평균 × 0.5
 
     # R2. tip_approach_bonus: distal보다 tip이 먼저 닿도록 유도
@@ -191,12 +191,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_quality_lift_weight:     float = 25.0
     grasp_quality_lift_sharpness:  float = 10.0
 
-    # R7. grip_target: bead 무게 기반 목표 grip 정확도 보상
-    # 가우시안 중심 = bead_mass_normalized + margin → 양방향 gradient로 최적 grip 유도
-    # (penalty 방식 R6 대체: 안 닫는 게 안전하다는 오학습 방지)
-    grip_target_weight:     float = 15.0
-    grip_target_sharpness:  float = 20.0   # ±0.15 범위에서 급감
-    grip_target_margin:     float = 0.30   # 빈 컵도 target=0.30 → 물리적 접촉 가능한 최소 grip
+    # R6. grip_efficiency: full grasp 형성 이후 과도한 grip 억제
+    # 초반에는 grasp acquisition을 우선하고, grasp 형성 후에만 효율을 비교한다.
+    grip_efficiency_weight: float = 0.75
 
     # -----------------------------------------------------------------------
     # ADR

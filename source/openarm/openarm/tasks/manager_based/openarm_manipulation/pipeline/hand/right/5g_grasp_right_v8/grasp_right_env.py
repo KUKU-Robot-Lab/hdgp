@@ -1004,16 +1004,11 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0)   # (N,)
         r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
-        # ---- R6. grip_target: bead 무게 기반 목표 grip 정확도 보상 ----
-        # 가우시안 중심 = bead_mass_normalized + margin → 양방향 gradient로 최적 grip 유도
+        # ---- R6. grip_efficiency: full grasp 형성 이후 과도한 grip 억제 ----
+        # 초반 grasp acquisition을 방해하지 않도록 full grasp가 형성된 뒤에만 적용한다.
         grip_normalized = (self.actions[:, 6:].mean(dim=-1) + 1.0) / 2.0   # (N,)
-        grip_target = (self._bead_mass_normalized + self.cfg.grip_target_margin).clamp(max=1.0)
-        grip_err = (grip_normalized - grip_target).abs()
-        r6_grip_target = (
-            self.cfg.grip_target_weight
-            * torch.exp(-self.cfg.grip_target_sharpness * grip_err)
-            * is_grasp_f
-        )
+        over_grip = (grip_normalized - self._bead_mass_normalized).clamp(min=0.0)
+        r6_grip_eff = -self.cfg.grip_efficiency_weight * over_grip * full_grasp_flag * is_grasp_f
 
         # ---- 합산 ----
         total = (
@@ -1025,7 +1020,7 @@ class GraspRightEnv(DirectRLEnv):
             + r3_lift
             + r4_smooth
             + r5_quality_lift
-            + r6_grip_target
+            + r6_grip_eff
         )
 
         # ---- ADR increment ----
@@ -1043,7 +1038,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["lift_reward"]           = r3_lift.mean()
         self.extras["action_smoothness"]     = r4_smooth.mean()
         self.extras["grasp_quality_lift"]    = r5_quality_lift.mean()
-        self.extras["grip_target_reward"]    = r6_grip_target.mean()
+        self.extras["grip_efficiency"]       = r6_grip_eff.mean()
         # [진단 지표]
         self.extras["force_balance_err"]     = force_balance_err.mean()
         self.extras["thumb_force_mean"]      = thumb_force.mean()
@@ -1051,7 +1046,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["thumb_force_adequate"]  = thumb_force_adequate.mean()
         self.extras["full_grasp_rate"]       = full_grasp_flag.mean()
         self.extras["grip_normalized"]       = grip_normalized.mean()
-        self.extras["grip_err"]              = grip_err.mean()
+        self.extras["over_grip"]             = over_grip.mean()
         self.extras["bead_mass_normalized"]  = self._bead_mass_normalized.mean()
         self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
         self.extras["episode_success_rate"]  = torch.tensor(_ep_success_rate, device=self.device)
