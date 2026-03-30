@@ -196,8 +196,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_adr:            bool  = True
     adr_num_increments:    int   = 50
-    adr_increment_interval: int  = 200
-    adr_trigger_threshold: float = 0.02
+    adr_increment_interval: int  = 400
+    adr_trigger_threshold: float = 0.3
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "reward_weights": {
