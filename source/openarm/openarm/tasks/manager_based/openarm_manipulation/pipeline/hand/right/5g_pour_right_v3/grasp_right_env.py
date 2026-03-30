@@ -407,13 +407,11 @@ class GraspRightEnv(DirectRLEnv):
     def _setup_scene(self) -> None:
         self.robot          = Articulation(self.cfg.robot_cfg)
         self.cup            = RigidObject(self.cfg.cup_cfg)
-        self.source_particle_cage = RigidObject(self.cfg.source_particle_cage_cfg)
         self.left_target_cup = RigidObject(self.cfg.left_target_cup_cfg)
         self.table          = RigidObject(self.cfg.table_cfg)
 
         self.scene.articulations["robot"]          = self.robot
         self.scene.rigid_objects["cup"]            = self.cup
-        self.scene.rigid_objects["source_particle_cage"] = self.source_particle_cage
         self.scene.rigid_objects["left_target_cup"] = self.left_target_cup
         self.scene.rigid_objects["table"]          = self.table
 
@@ -1041,9 +1039,6 @@ class GraspRightEnv(DirectRLEnv):
             self._left_target_cup_attach_quat_b,
         )
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
-        source_cage_pose = torch.cat([self.cup.data.root_pos_w, self.cup.data.root_quat_w], dim=-1)
-        self.source_particle_cage.write_root_pose_to_sim(source_cage_pose)
-        self.source_particle_cage.write_root_velocity_to_sim(zero_cup_vel)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
 
@@ -1538,8 +1533,6 @@ class GraspRightEnv(DirectRLEnv):
         zero_vel = torch.zeros(n, 6, device=self.device)
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
-        self.source_particle_cage.write_root_pose_to_sim(cup_root_state[:, :7], env_ids=env_ids)
-        self.source_particle_cage.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
         left_cup_pose = self._compute_attached_root_pose(
             self._left_target_cup_body_id,
@@ -1807,8 +1800,6 @@ class GraspRightEnv(DirectRLEnv):
         zero_vel = torch.zeros(n, 6, device=self.device)
         self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
         self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
-        self.source_particle_cage.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
-        self.source_particle_cage.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
         left_cup_pose = self._compute_attached_root_pose(
             self._left_target_cup_body_id,

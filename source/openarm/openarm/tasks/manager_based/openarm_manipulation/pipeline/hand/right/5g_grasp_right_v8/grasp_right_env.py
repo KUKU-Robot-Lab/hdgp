@@ -1004,11 +1004,21 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0)   # (N,)
         r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
-        # ---- R6. grip_efficiency: full grasp 형성 이후 과도한 grip 억제 ----
-        # 초반 grasp acquisition을 방해하지 않도록 full grasp가 형성된 뒤에만 적용한다.
+        # ---- R6. force_efficiency: lift 상태에서 안정 grasp를 유지한 채 접촉력을 줄이도록 유도 ----
+        # gate는 lift 성공 유지에 필요한 조건만 사용하고, grasp-phase 전용 shape 조건(full_grasp_flag)은 제외한다.
         grip_normalized = (self.actions[:, 6:].mean(dim=-1) + 1.0) / 2.0   # (N,)
-        over_grip = (grip_normalized - self._bead_mass_normalized).clamp(min=0.0)
-        r6_grip_eff = -self.cfg.grip_efficiency_weight * over_grip * full_grasp_flag * is_grasp_f
+        total_tip_force = self.contact_force_raw.sum(dim=-1)
+        total_tip_force_normalized = (
+            total_tip_force / (CONTACT_FORCE_MAX * NUM_FINGERTIPS)
+        ).clamp(min=0.0, max=1.0)
+        lifted_for_eff = (cup_height_delta > self.cfg.force_efficiency_lift_height).float()
+        contact_maintained = (self.num_contacts_buf >= max(MIN_CONTACTS_FOR_SUCCESS, 3)).float()
+        eff_gate = (
+            self.is_lift_phase.float()
+            * lifted_for_eff
+            * contact_maintained
+        )
+        r6_force_eff = -self.cfg.force_efficiency_weight * total_tip_force_normalized * eff_gate
 
         # ---- 합산 ----
         total = (
@@ -1020,7 +1030,7 @@ class GraspRightEnv(DirectRLEnv):
             + r3_lift
             + r4_smooth
             + r5_quality_lift
-            + r6_grip_eff
+            + r6_force_eff
         )
 
         # ---- ADR increment ----
@@ -1038,15 +1048,17 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["lift_reward"]           = r3_lift.mean()
         self.extras["action_smoothness"]     = r4_smooth.mean()
         self.extras["grasp_quality_lift"]    = r5_quality_lift.mean()
-        self.extras["grip_efficiency"]       = r6_grip_eff.mean()
+        self.extras["force_efficiency"]      = r6_force_eff.mean()
         # [진단 지표]
         self.extras["force_balance_err"]     = force_balance_err.mean()
         self.extras["thumb_force_mean"]      = thumb_force.mean()
         self.extras["others_avg_force_mean"] = others_avg_force.mean()
+        self.extras["total_tip_force"]       = total_tip_force.mean()
+        self.extras["total_tip_force_norm"]  = total_tip_force_normalized.mean()
         self.extras["thumb_force_adequate"]  = thumb_force_adequate.mean()
         self.extras["full_grasp_rate"]       = full_grasp_flag.mean()
         self.extras["grip_normalized"]       = grip_normalized.mean()
-        self.extras["over_grip"]             = over_grip.mean()
+        self.extras["force_efficiency_gate"] = eff_gate.mean()
         self.extras["bead_mass_normalized"]  = self._bead_mass_normalized.mean()
         self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
         self.extras["episode_success_rate"]  = torch.tensor(_ep_success_rate, device=self.device)
@@ -1054,7 +1066,6 @@ class GraspRightEnv(DirectRLEnv):
             self.extras["adr_progress"]          = torch.tensor(self.grasp_adr.progress, device=self.device)
             self.extras["adr_spawn_xy_range"]    = torch.tensor(self.grasp_adr.get_param("spawn",  "object_spawn_xy_range"), device=self.device)
             self.extras["adr_obs_noise_cup_pos"] = torch.tensor(self.grasp_adr.get_param("noise",  "obs_noise_cup_pos"),     device=self.device)
-            self.extras["adr_bead_count_max"]    = torch.tensor(self.grasp_adr.get_param("beads",  "bead_count_max"),        device=self.device)
 
         return total
 
@@ -1267,16 +1278,11 @@ class GraspRightEnv(DirectRLEnv):
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
-        # ---- 7b. Bead 스폰 (무게 도메인 랜덤화) ----
-        _bead_max = int(
-            self.grasp_adr.get_param("beads", "bead_count_max")
-            if self.grasp_adr is not None
-            else self.cfg.bead_count_max
-        )
+        # ---- 7b. Bead 스폰 (에피소드마다 0~MAX 균등 랜덤) ----
         bead_count = torch.randint(
-            self.cfg.bead_count_min, _bead_max + 1,
+            self.cfg.bead_count_min, self.cfg.bead_count_max + 1,
             (n,), device=self.device
-        )  # 각 env당 활성 bead 수 (0 ~ adr_bead_count_max)
+        )  # 각 env당 활성 bead 수 (0 ~ bead_count_max)
 
         bead_state = torch.zeros(n, self.cfg.num_beads, 13, device=self.device)
         hidden_pos = self.scene.env_origins[env_ids].unsqueeze(1) + self._hidden_bead_offsets_b.unsqueeze(0)

@@ -14,7 +14,7 @@
 
 """환경 설정: 5g_grasp_right_v8
 
-v8: v7 기반 + Bead 무게 도메인 랜덤화
+v8: v7 기반 + Bead 무게 랜덤화
 - Action: 11D (6D palm pose + 5D per-finger lerp)
 - Observation: actor 107D / critic 144D (asymmetric)
 - Bead: 컵 안에 0~10개 랜덤 스폰 (×10g = 최대 +100g), bead_mass_normalized obs 추가
@@ -191,9 +191,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_quality_lift_weight:     float = 25.0
     grasp_quality_lift_sharpness:  float = 10.0
 
-    # R6. grip_efficiency: full grasp 형성 이후 과도한 grip 억제
-    # 초반에는 grasp acquisition을 우선하고, grasp 형성 후에만 효율을 비교한다.
-    grip_efficiency_weight: float = 0.75
+    # R6. force_efficiency: lift 상태에서 안정 grasp를 유지한 채 접촉력을 줄이도록 유도
+    # grasp acquisition은 건드리지 않고, lift refinement 단계에서만 작동한다.
+    force_efficiency_weight: float = 0.5
+    force_efficiency_lift_height: float = 0.01
+    force_efficiency_upright_min: float = 0.90
 
     # -----------------------------------------------------------------------
     # ADR
@@ -209,9 +211,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         },
         "noise": {
             "obs_noise_cup_pos": (0.005, 0.025),      # 5mm → 25mm: 컵 위치 관측 노이즈 증가
-        },
-        "beads": {
-            "bead_count_max": (0.0, 20.0),            # 빈 컵 → 최대 200g 추가 무게
         },
     })
 

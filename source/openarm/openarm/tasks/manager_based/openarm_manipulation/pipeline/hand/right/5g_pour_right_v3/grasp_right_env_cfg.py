@@ -134,12 +134,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Cup / bead geometry (particle in-cup check 용)
     # -----------------------------------------------------------------------
     target_inner_radius:  float = 0.041
-    target_inside_z_min:  float = -0.015
-    target_inside_z_max:  float = 0.095
-    target_mouth_z:       float = 0.095
+    # cup_big_particle.usd collider 기준:
+    #   particle bottom top face ≈ -0.060, rim ≈ +0.100
+    # 기존 z_min=-0.015는 reset 직후 source/target 내부 판정을 대부분 실패시켜
+    # spill termination과 warmstart 품질을 왜곡했다.
+    target_inside_z_min:  float = -0.060
+    target_inside_z_max:  float = 0.100
+    target_mouth_z:       float = 0.100
     source_inner_radius:  float = 0.041
-    source_inside_z_min:  float = -0.020
-    source_inside_z_max:  float = 0.110
+    # source cup도 동일한 컵 로컬 프레임을 사용하므로 같은 높이 범위를 적용한다.
+    source_inside_z_min:  float = -0.060
+    source_inside_z_max:  float = 0.100
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -390,26 +395,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 max_linear_velocity=100.0,
                 max_depenetration_velocity=5.0,
                 disable_gravity=False,
-            ),
-        ),
-    )
-
-    source_particle_cage_cfg: RigidObjectCfg = RigidObjectCfg(
-        prim_path="/World/envs/env_.*/SourceParticleCage",
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=[0.5, 0.0, 0.25],
-            rot=[1.0, 0.0, 0.0, 0.0],
-        ),
-        spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/source_particle_cage.usd"),
-            activate_contact_sensors=False,
-            rigid_props=RigidBodyPropertiesCfg(
-                kinematic_enabled=True,
-                disable_gravity=True,
-            ),
-            collision_props=CollisionPropertiesCfg(
-                contact_offset=0.005,
-                rest_offset=0.0,
             ),
         ),
     )
