@@ -120,10 +120,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     particle_mass:              float = 0.001     # 1g per particle
 
     # PBD 물리 파라미터
-    particle_viscosity:         float = 0.3
-    particle_surface_tension:   float = 0.4
-    particle_cohesion:          float = 0.2
-    particle_adhesion:          float = 0.05
+    particle_viscosity:         float = 0.02
+    particle_surface_tension:   float = 0.02
+    particle_cohesion:          float = 0.005
+    particle_adhesion:          float = 0.0
 
     # PhysX particle system contact offsets
     particle_contact_offset:    float = 0.003     # 3mm
@@ -209,7 +209,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     enable_warmstart_reset:    bool  = True
     warmstart_checkpoint_path: str   = (
         "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right"
-        "/5g_grasp_right_v8/test1/nn/5g_grasp_right-v8.pth"
+        "/5g_grasp_right_v7/test4/nn/5g_grasp_right-v7.pth"
     )
     warmstart_cache_size:        int   = 256
     warmstart_max_rollout_steps: int   = 6000
@@ -251,7 +251,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=128,
         env_spacing=2.5,
-        replicate_physics=True,
+        replicate_physics=False,
     )
 
     # -----------------------------------------------------------------------
@@ -378,7 +378,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_particle.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big.usd"),
             activate_contact_sensors=True,
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 articulation_enabled=False,

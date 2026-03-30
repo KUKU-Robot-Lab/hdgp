@@ -115,6 +115,7 @@ class _WarmstartPolicy(nn.Module):
         self.register_buffer("actor_l3_b", state["a2c_network.actor_mlp.4.bias"].float())
         self.register_buffer("mu_w", state["a2c_network.mu.weight"].float())
         self.register_buffer("mu_b", state["a2c_network.mu.bias"].float())
+        self.obs_dim = int(self.obs_mean.numel())
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         x = (obs - self.obs_mean) / torch.sqrt(self.obs_var + 1e-5)
@@ -304,6 +305,7 @@ class GraspRightEnv(DirectRLEnv):
         # Particle view (lazy init after first physics step)
         self._particle_view = None
         self._num_particles_per_env: int = PARTICLES_PER_ENV
+        self._particle_spawn_pending = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # Particle grid offsets in source cup frame (P, 3)
         self._fluid_grid_offsets_b = self._make_fluid_grid_offsets()
@@ -382,21 +384,21 @@ class GraspRightEnv(DirectRLEnv):
     def _make_fluid_grid_offsets(self) -> torch.Tensor:
         """4×5×10 grid = 200 particles, cup local frame (단위: m).
 
-        rigid cup collision과 초기 overlap을 피하려고 XY footprint를 줄이고,
-        바닥에서 조금 띄운 높이에서 시작한다.
+        v2 bead spawn offset를 재사용하면 fluid가 컵 중상단에서 시작하므로,
+        fluid는 컵 local 좌표에서 직접 바닥 근처 volume을 채운다.
 
-        x: 4열 (±4.5mm, ±1.5mm)
-        y: 5열 (±6mm, ±3mm, 0mm)
-        z: 10층 (22.5mm ~ 67.5mm, spacing 5mm)
+        x: 4열, y: 5열은 컵 내경보다 작은 footprint
+        z: 컵 바닥(-0.077m) 위 약 21mm ~ 59mm 범위
         """
         d = PARTICLE_DIAMETER
+        z_base = -0.058
         positions = []
         for zi in range(10):
             for yi in range(5):
                 for xi in range(4):
-                    x = (xi - 1.5) * (0.6 * d)
-                    y = (yi - 2.0) * (0.6 * d)
-                    z = (zi + 4.5) * d
+                    x = (xi - 1.5) * (0.55 * d)
+                    y = (yi - 2.0) * (0.55 * d)
+                    z = z_base + zi * (0.85 * d)
                     positions.append([x, y, z])
         return torch.tensor(positions, dtype=torch.float32, device=self.device)  # (200, 3)
 
@@ -679,8 +681,12 @@ class GraspRightEnv(DirectRLEnv):
         except Exception:
             pass
 
-    def _set_particle_velocities_zero(self, env_ids_tensor: torch.Tensor | None = None) -> None:
-        """particle velocity를 0으로 설정."""
+    def _set_particle_velocities_zero(
+        self,
+        env_ids_tensor: torch.Tensor | None = None,
+        linear_velocity_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> None:
+        """particle velocity를 설정. 기본값은 0."""
         if not self._init_particle_view_if_needed():
             return
         try:
@@ -690,7 +696,7 @@ class GraspRightEnv(DirectRLEnv):
 
             stage = _omni_usd.get_context().get_stage()
             P = self._num_particles_per_env
-            zero_np = np.zeros((P, 3), dtype=np.float32)
+            zero_np = np.tile(np.array(linear_velocity_xyz, dtype=np.float32), (P, 1))
             zero_vels = Vt.Vec3fArray.FromNumpy(zero_np)
 
             if env_ids_tensor is not None:
@@ -942,6 +948,16 @@ class GraspRightEnv(DirectRLEnv):
     # Physics step
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        if torch.any(self._particle_spawn_pending):
+            activate_mask = self._particle_spawn_pending & (self.episode_length_buf >= self.cfg.episode_hold_steps)
+            if torch.any(activate_mask):
+                activate_env_ids = activate_mask.nonzero(as_tuple=False).squeeze(-1)
+                cup_pose_world = torch.cat(
+                    [self.cup.data.root_pos_w[activate_env_ids], self.cup.data.root_quat_w[activate_env_ids]], dim=-1
+                )
+                self._reset_particle_state(activate_env_ids.tolist(), cup_pose_world)
+                self._particle_spawn_pending[activate_env_ids] = False
+
         self.prev_actions.copy_(self.actions)
         self.actions = actions.clone()
 
@@ -1089,13 +1105,7 @@ class GraspRightEnv(DirectRLEnv):
     # Observations
     # ------------------------------------------------------------------
     def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
-        """v8 warmstart policy 107D 관측 구성.
-
-        106D 기반 + bead_mass_normalized (1D) = 107D.
-        bead_mass_normalized = 1.0 고정: v8 학습 시 최대 하중(100g) 기준으로 학습됨.
-        PBD fluid 200g > v8 max 100g이므로 1.0(최대 하중)으로 고정하여
-        가장 강한 파지 자세 유도.
-        """
+        """Warmstart checkpoint 차원(106D/107D)에 맞는 legacy obs 구성."""
         arm_joint_pos    = self.robot.data.joint_pos[:, self.arm_dof_indices]
         arm_joint_vel    = self.robot.data.joint_vel[:, self.arm_dof_indices]
         finger_joint_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
@@ -1123,15 +1133,17 @@ class GraspRightEnv(DirectRLEnv):
             last_actions,            # 11
         ], dim=-1)   # 106D
 
-        # v8 추가 차원: bead_mass_normalized = 1.0 (최대 하중)
-        bead_mass_normalized = torch.ones(self.num_envs, 1, device=self.device)
-
-        warmstart_obs = torch.cat([base_106, bead_mass_normalized], dim=-1)   # 107D
-
-        if warmstart_obs.shape[1] != NUM_LEGACY_WARMSTART_OBS:
+        policy_obs_dim = int(getattr(self._warmstart_policy, "obs_dim", NUM_LEGACY_WARMSTART_OBS))
+        if policy_obs_dim == base_106.shape[1]:
+            warmstart_obs = base_106
+        elif policy_obs_dim == base_106.shape[1] + 1:
+            # bead_mass_normalized = 1.0 고정: 최대 하중 기준 파지 자세 유도
+            bead_mass_normalized = torch.ones(self.num_envs, 1, device=self.device)
+            warmstart_obs = torch.cat([base_106, bead_mass_normalized], dim=-1)
+        else:
             raise RuntimeError(
-                f"[warmstart v8] Legacy obs dim mismatch: "
-                f"{warmstart_obs.shape[1]} != {NUM_LEGACY_WARMSTART_OBS}"
+                f"[warmstart] Unsupported legacy obs dim: {policy_obs_dim}. "
+                f"Expected {base_106.shape[1]} or {base_106.shape[1] + 1}."
             )
         return warmstart_obs
 
@@ -1515,10 +1527,8 @@ class GraspRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
         # ---- 8. Particle 처리 ----
-        if self._warmstart_collect_mode:
-            self._hide_particles(list(env_ids))
-        else:
-            self._reset_particle_state(list(env_ids), cup_root_state[:, :7])
+        self._hide_particles(list(env_ids))
+        self._particle_spawn_pending[env_ids] = not self._warmstart_collect_mode
 
         # ---- 9. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand
@@ -1558,7 +1568,7 @@ class GraspRightEnv(DirectRLEnv):
         cup_quat_w = cup_pose_world[:, 3:7]  # (n, 4)
 
         # cup local frame offset → world frame
-        offsets = self._fluid_grid_offsets_b + self._bead_spawn_pos_source_cup_b.unsqueeze(0)  # (P, 3)
+        offsets = self._fluid_grid_offsets_b  # (P, 3)
         offsets_expanded = offsets.unsqueeze(0).expand(n, -1, -1)   # (n, P, 3)
         cup_quat_flat = cup_quat_w.unsqueeze(1).expand(n, P, 4).reshape(-1, 4)
         offsets_flat  = offsets_expanded.reshape(-1, 3)
@@ -1575,7 +1585,7 @@ class GraspRightEnv(DirectRLEnv):
         env_ids_t = torch.tensor(env_ids, device=self.device, dtype=torch.long)
         all_pos[env_ids_t] = particle_pos_w
         self._set_particle_positions_w(all_pos)
-        self._set_particle_velocities_zero(env_ids_t)
+        self._set_particle_velocities_zero(env_ids_t, linear_velocity_xyz=(0.0, 0.0, -0.05))
 
     def _hide_particles(self, env_ids: list[int]) -> None:
         """particle을 지하로 이동 (warmstart collect mode)."""
@@ -1781,8 +1791,9 @@ class GraspRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        # Particle: source cup 내부에 배치
-        self._reset_particle_state(list(env_ids), cup_pose_world)
+        # Particle은 empty-cup grasp 안정화 후 투입
+        self._hide_particles(list(env_ids))
+        self._particle_spawn_pending[env_ids] = True
 
         # 버퍼 리셋
         self.contact_force_raw[env_ids].zero_()
