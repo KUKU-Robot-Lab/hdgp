@@ -24,7 +24,7 @@ Action (11D):
 
 Episode (10s @ 60Hz):
   Grasp phase (0~479): Fabrics arm + per-finger 정책
-  Lift  phase (480~599): scripted arm prelift + frozen hand
+  Lift  phase (480~599): scripted task-space lift + frozen hand
 """
 
 from __future__ import annotations
@@ -72,6 +72,7 @@ from .grasp_right_constants import (
     LIFT_PHASE_STEPS,
     LIFT_START_STEP,
     EPISODE_STEPS,
+    LIFT_Z_DELTA,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
     MIN_CONTACTS_FOR_SUCCESS,
@@ -101,7 +102,7 @@ class GraspRightEnv(DirectRLEnv):
 
     Episode:
       Grasp phase (step 0~479):  Fabrics arm + 정책 손가락
-      Lift  phase (step 480~599): scripted arm prelift + frozen hand
+      Lift  phase (step 480~599): scripted task-space lift + frozen hand
     """
 
     cfg: GraspRightEnvCfg
@@ -166,6 +167,8 @@ class GraspRightEnv(DirectRLEnv):
 
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
         self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 6, device=self.device)
+        # lift phase scripted task-space 기준점: lift 진입 시점의 palm target을 캡처한다.
+        self.lift_palm_start_pose_buf = torch.zeros(self.num_envs, 6, device=self.device)
 
         # ----------------------------------------------------------------
         # Hand poses (per-finger lerp용)
@@ -229,8 +232,6 @@ class GraspRightEnv(DirectRLEnv):
         # Pregrasp / Lift 버퍼 (reset에서 계산)
         # ----------------------------------------------------------------
         self.pregrasp_arm_pos_buf  = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.prelift_arm_pos_buf   = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.lift_arm_start_buf    = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
         self.lift_finger_pos_buf   = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
         self.is_lift_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
@@ -579,7 +580,7 @@ class GraspRightEnv(DirectRLEnv):
         is_lift = (self.episode_length_buf >= LIFT_START_STEP)
         self.is_lift_phase.copy_(is_lift)
 
-        # ---- Lift 진입 시 finger/arm joint pos 캡처 ----
+        # ---- Lift 진입 시 finger/task-space 기준점 캡처 ----
         just_entering_lift = (self.episode_length_buf == LIFT_START_STEP)
 
         # Eval: lift 진입 시점 grip intensity (actions[6:11] 평균) 기록
@@ -593,30 +594,31 @@ class GraspRightEnv(DirectRLEnv):
             self.lift_finger_pos_buf,
         )
 
-        # Arm: 진입 시점 실제 위치 캡처 → lift 보간 시작점으로 사용
-        # (pregrasp_arm_pos_buf 대신 실제값 사용: grasp phase에서 Fabrics가 arm을
-        #  실제로 이동했으므로 전환 시 불연속 없이 자연스럽게 lift)
-        actual_arm_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
-        self.lift_arm_start_buf = torch.where(
+        # Arm: lift 진입 직전 grasp phase의 palm target을 task-space lift 기준점으로 캡처
+        self.lift_palm_start_pose_buf = torch.where(
             just_entering_lift.unsqueeze(1),
-            actual_arm_pos,
-            self.lift_arm_start_buf,
-        )
-        # prelift = 실제 위치에서 j4 +0.31 (lift 방향 고정)
-        actual_prelift = actual_arm_pos.clone()
-        actual_prelift[:, 3] = (actual_arm_pos[:, 3] + 0.31).clamp(max=3.14)
-        self.prelift_arm_pos_buf = torch.where(
-            just_entering_lift.unsqueeze(1),
-            actual_prelift,
-            self.prelift_arm_pos_buf,
+            self.palm_pose_targets,
+            self.lift_palm_start_pose_buf,
         )
 
-        # ---- Grasp phase: Fabrics arm 제어 ----
-        # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
-        # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
         delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
-        palm_pose = self.pregrasp_palm_pose_buf + delta
-        palm_pose = torch.max(torch.min(palm_pose, self.palm_maxs), self.palm_mins)
+        grasp_palm_pose = self.pregrasp_palm_pose_buf + delta
+        grasp_palm_pose = torch.max(torch.min(grasp_palm_pose, self.palm_maxs), self.palm_mins)
+
+        # Lift phase: policy arm action 대신 lift 진입 시점 palm target을 기준으로 z만 상승
+        lift_progress = (
+            (self.episode_length_buf - LIFT_START_STEP).clamp(min=0).float()
+            / LIFT_PHASE_STEPS
+        ).clamp(max=1.0).unsqueeze(1)
+        lift_palm_pose = self.lift_palm_start_pose_buf.clone()
+        lift_palm_pose[:, 2] = lift_palm_pose[:, 2] + LIFT_Z_DELTA * lift_progress.squeeze(1)
+        lift_palm_pose = torch.max(torch.min(lift_palm_pose, self.palm_maxs), self.palm_mins)
+
+        palm_pose = torch.where(
+            is_lift.unsqueeze(1),
+            lift_palm_pose,
+            grasp_palm_pose,
+        )
         self.palm_pose_targets.copy_(palm_pose)
         self.hand_pca_targets.zero_()
 
@@ -649,42 +651,14 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_q[:, NUM_ARM_DOF:] = hand_target
         self.fabric_qd[:, NUM_ARM_DOF:].zero_()
 
-        # ---- Lift phase: Fabrics arm 상태 동결 ----
-        # lift 중에도 Fabrics integrator가 계속 실행되면 palm target과 실제 arm 위치가
-        # 괴리되면서 fabric_qd가 발산 → arm에 전달되지 않더라도 상태 불안정 초래
-        # 실제 arm joint 위치로 동기화 + 속도 제로 → lift phase 좌우 흔들림 제거
-        if self.is_lift_phase.any():
-            lift_mask = self.is_lift_phase
-            self.fabric_q[lift_mask, :NUM_ARM_DOF] = (
-                self.robot.data.joint_pos[lift_mask][:, self.arm_dof_indices]
-            )
-            self.fabric_qd[lift_mask, :NUM_ARM_DOF].zero_()
-            self.fabric_qdd[lift_mask, :NUM_ARM_DOF].zero_()
-
     def _apply_action(self) -> None:
         is_lift = self.is_lift_phase   # (N,) bool
 
         # ---- 오른팔 ----
-        # Grasp phase: Fabrics arm target
-        # Lift  phase: pregrasp → prelift 선형 보간
-        lift_progress = (
-            (self.episode_length_buf - LIFT_START_STEP).clamp(min=0).float()
-            / LIFT_PHASE_STEPS
-        ).clamp(max=1.0).unsqueeze(1)   # (N, 1) ∈ [0, 1]
-
-        arm_target_lift = (
-            self.lift_arm_start_buf * (1.0 - lift_progress)
-            + self.prelift_arm_pos_buf * lift_progress
-        )
-        arm_target = torch.where(
-            is_lift.unsqueeze(1),
-            arm_target_lift,
-            self.fabric_q[:, :NUM_ARM_DOF],
-        )
-
-        self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_dof_indices)
+        # Grasp/Lift 모두 Fabrics arm target 사용
+        self.robot.set_joint_position_target(self.fabric_q[:, :NUM_ARM_DOF], joint_ids=self.arm_dof_indices)
         self.robot.set_joint_velocity_target(
-            torch.zeros_like(arm_target), joint_ids=self.arm_dof_indices
+            torch.zeros_like(self.fabric_q[:, :NUM_ARM_DOF]), joint_ids=self.arm_dof_indices
         )
 
         # ---- 오른손 ----
@@ -1197,10 +1171,6 @@ class GraspRightEnv(DirectRLEnv):
         # pregrasp arm pos로 설정 → 에피소드 시작 시 null-space 항 ≈ 0 → 안정
         self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = q_pregrasp[:, :NUM_ARM_DOF]
 
-        prelift_arm = q_pregrasp[:, :NUM_ARM_DOF].clone()
-        prelift_arm[:, 3] = (prelift_arm[:, 3] + 0.31).clamp(max=3.14)
-        self.prelift_arm_pos_buf[env_ids] = prelift_arm
-
         self.lift_finger_pos_buf[env_ids] = approach_hand
 
         # ---- 6. 로봇 pregrasp 자세로 초기화 ----
@@ -1265,3 +1235,4 @@ class GraspRightEnv(DirectRLEnv):
         self.actions[env_ids, 6:] = -1.0
         self.prev_actions[env_ids, :6] = 0.0
         self.prev_actions[env_ids, 6:] = -1.0
+        self.lift_palm_start_pose_buf[env_ids] = self.pregrasp_palm_pose_buf[env_ids]
