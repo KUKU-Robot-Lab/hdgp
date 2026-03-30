@@ -209,7 +209,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     enable_warmstart_reset:    bool  = True
     warmstart_checkpoint_path: str   = (
         "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right"
-        "/5g_grasp_right_v8/test6/nn/5g_grasp_right-v8.pth"
+        "/5g_grasp_right_v8/test1/nn/5g_grasp_right-v8.pth"
     )
     warmstart_cache_size:        int   = 256
     warmstart_max_rollout_steps: int   = 6000

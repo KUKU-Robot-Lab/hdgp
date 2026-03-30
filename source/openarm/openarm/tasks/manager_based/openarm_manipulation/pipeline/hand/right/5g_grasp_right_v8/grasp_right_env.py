@@ -956,6 +956,7 @@ class GraspRightEnv(DirectRLEnv):
         # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
         # → 엄지가 0.1N 살짝 닿아도 통과하던 허점 제거 (force adequacy 조건)
         is_grasp_phase = ~self.is_lift_phase                                  # (N,) bool
+        is_grasp_f     = is_grasp_phase.float()                               # (N,) float, 3곳 공유
         others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)             # (N,) 0~4
         thumb_force_adequate = (
             thumb_force >= others_avg_force * self.cfg.thumb_force_ratio_min
@@ -963,9 +964,7 @@ class GraspRightEnv(DirectRLEnv):
         full_grasp_flag = (
             self.binary_contact_buf[:, 0] & (others_count >= 3)
         ).float() * thumb_force_adequate
-        r1c_full_grasp = (
-            self.cfg.full_grasp_bonus_weight * is_grasp_phase.float() * full_grasp_flag
-        )
+        r1c_full_grasp = self.cfg.full_grasp_bonus_weight * is_grasp_f * full_grasp_flag
 
         # ---- R2. tip_approach_bonus ----
         # tip이 distal(rl_dg_*_4)보다 cup surface에 먼저 닿도록 유도
@@ -1005,12 +1004,22 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0)   # (N,)
         r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
-        # ---- R6. grip_efficiency: bead 무게 대비 과도한 grip 패널티 ----
+        # ---- R6. grip_efficiency: bead 무게 대비 과도한 grip 제곱 패널티 ----
         # grip_normalized ∈ [0,1]: 0=open, 1=fully closed
-        # over_grip > 0 일 때만 패널티 → bead가 많을수록 강한 grip 허용
+        # over_grip² 사용: 소량 초과는 허용, 대량 초과(max grip)는 급격히 페널티
         grip_normalized = (self.actions[:, 6:].mean(dim=-1) + 1.0) / 2.0   # (N,)
         over_grip = (grip_normalized - self._bead_mass_normalized).clamp(min=0.0)
-        r6_grip_eff = -self.cfg.grip_efficiency_weight * over_grip * is_grasp_phase.float()
+        r6_grip_eff = -self.cfg.grip_efficiency_weight * over_grip.pow(2) * is_grasp_f
+
+        # ---- R7. grip_target: bead 무게 기반 목표 grip 정확도 보상 ----
+        # target = bead_mass_normalized + margin → 딱 맞는 grip에 양방향 gradient 제공
+        grip_target = (self._bead_mass_normalized + self.cfg.grip_target_margin).clamp(max=1.0)
+        grip_err = (grip_normalized - grip_target).abs()
+        r7_grip_target = (
+            self.cfg.grip_target_weight
+            * torch.exp(-self.cfg.grip_target_sharpness * grip_err)
+            * is_grasp_f
+        )
 
         # ---- 합산 ----
         total = (
@@ -1023,6 +1032,7 @@ class GraspRightEnv(DirectRLEnv):
             + r4_smooth
             + r5_quality_lift
             + r6_grip_eff
+            + r7_grip_target
         )
 
         # ---- ADR increment ----
@@ -1031,31 +1041,28 @@ class GraspRightEnv(DirectRLEnv):
             self.grasp_adr.maybe_increment(_ep_success_rate)
 
         # ---- 로깅 ----
+        # [보상값]
         self.extras["palm_approach_reward"]  = r0_palm_approach.mean()
-        self.extras["palm_to_cup_dist"]      = palm_to_cup_dist.mean()
         self.extras["enclosure_reward"]      = r1_enclosure.mean()
-        # [force balance 핵심 지표] — 컵 기울어짐 진단
         self.extras["force_balance_reward"]  = r1b_force_balance.mean()
-        self.extras["force_balance_err"]     = force_balance_err.mean()       # 0이면 완벽 균형
-        self.extras["thumb_force_mean"]      = thumb_force.mean()
-        self.extras["others_avg_force_mean"] = others_avg_force.mean()
         self.extras["full_grasp_bonus"]      = r1c_full_grasp.mean()
-        self.extras["full_grasp_rate"]       = full_grasp_flag.mean()
-        self.extras["thumb_force_adequate"]  = thumb_force_adequate.mean()
         self.extras["tip_approach_bonus"]    = r2_tip_bonus.mean()
-        self.extras["grip_efficiency"]       = r6_grip_eff.mean()
-        self.extras["grip_normalized"]       = grip_normalized.mean()
-        self.extras["bead_mass_normalized"]  = self._bead_mass_normalized.mean()
         self.extras["lift_reward"]           = r3_lift.mean()
         self.extras["action_smoothness"]     = r4_smooth.mean()
         self.extras["grasp_quality_lift"]    = r5_quality_lift.mean()
-        self.extras["cup_height_delta"]      = cup_height_delta.mean()
-        self.extras["cup_uprightness"]       = cup_uprightness.mean()
+        self.extras["grip_efficiency"]       = r6_grip_eff.mean()
+        self.extras["grip_target_reward"]    = r7_grip_target.mean()
+        # [진단 지표]
+        self.extras["force_balance_err"]     = force_balance_err.mean()
+        self.extras["thumb_force_mean"]      = thumb_force.mean()
+        self.extras["others_avg_force_mean"] = others_avg_force.mean()
+        self.extras["thumb_force_adequate"]  = thumb_force_adequate.mean()
+        self.extras["full_grasp_rate"]       = full_grasp_flag.mean()
+        self.extras["grip_normalized"]       = grip_normalized.mean()
+        self.extras["grip_err"]              = grip_err.mean()
+        self.extras["bead_mass_normalized"]  = self._bead_mass_normalized.mean()
         self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
-        self.extras["success_rate"]          = self.success_flag.float().mean()
         self.extras["episode_success_rate"]  = torch.tensor(_ep_success_rate, device=self.device)
-        self.extras["thumb_dist"]            = thumb_dist.mean()
-        self.extras["others_dist"]           = others_dist.mean()
         if self.grasp_adr is not None:
             self.extras["adr_progress"]          = torch.tensor(self.grasp_adr.progress, device=self.device)
             self.extras["adr_spawn_xy_range"]    = torch.tensor(self.grasp_adr.get_param("spawn",  "object_spawn_xy_range"), device=self.device)

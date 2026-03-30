@@ -174,7 +174,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # R1c. full_grasp_bonus: Grasp phase per-step
     # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
     # → 엄지가 0.1N 살짝 닿기만 해서 조건 충족하던 허점 제거
-    full_grasp_bonus_weight: float = 8.0
+    full_grasp_bonus_weight: float = 3.0
     thumb_force_ratio_min:   float = 0.5   # 엄지 힘 ≥ others 평균 × 0.5
 
     # R2. tip_approach_bonus: distal보다 tip이 먼저 닿도록 유도
@@ -188,13 +188,19 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     action_smoothness_finger_weight: float = -0.01
 
     # R5. grasp_quality_lift: enclosure_quality × height delta
-    grasp_quality_lift_weight:     float = 40.0
+    grasp_quality_lift_weight:     float = 25.0
     grasp_quality_lift_sharpness:  float = 10.0
 
-    # R6. grip_efficiency: bead 무게에 비해 과도한 grip 패널티
-    # → policy가 bead_mass_normalized obs를 읽고 적절한 grip 강도 학습
+    # R6. grip_efficiency: bead 무게에 비해 과도한 grip 제곱 패널티
+    # over_grip² 사용: 소량 초과는 허용, 대량 초과는 급격히 페널티
     # 가벼운 컵(bead=0) + 강한 grip → 패널티 / 무거운 컵(bead=10) + 강한 grip → 패널티 없음
-    grip_efficiency_weight: float = 1.5
+    grip_efficiency_weight: float = 12.0
+
+    # R7. grip_target: bead 무게 기반 목표 grip 정확도 보상
+    # target = bead_mass_normalized + margin → 딱 맞는 grip에 양방향 gradient 제공
+    grip_target_weight:     float = 5.0
+    grip_target_sharpness:  float = 20.0   # ±0.15 범위에서 급감
+    grip_target_margin:     float = 0.15   # target = bead_mass_normalized + margin
 
     # -----------------------------------------------------------------------
     # ADR
