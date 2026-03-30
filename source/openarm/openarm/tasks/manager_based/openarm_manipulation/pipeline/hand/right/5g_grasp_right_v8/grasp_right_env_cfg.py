@@ -200,8 +200,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     adr_trigger_threshold: float = 0.3
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
-        "reward_weights": {
-            "enclosure_weight": (10.0, 20.0),
+        "spawn": {
+            "object_spawn_xy_range": (0.01, 0.06),   # ±1cm → ±6cm: 캐시 grid 범위(cfg값)와 동일하게 상한 설정
+        },
+        "noise": {
+            "obs_noise_cup_pos": (0.005, 0.025),      # 5mm → 25mm: 컵 위치 관측 노이즈 증가
+        },
+        "beads": {
+            "bead_count_max": (0.0, 10.0),            # 빈 컵 → 최대 100g 추가 무게
         },
     })
 

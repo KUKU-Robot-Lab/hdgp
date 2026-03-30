@@ -728,7 +728,11 @@ class GraspRightEnv(DirectRLEnv):
         σ_qp = self.cfg.obs_noise_joint_pos
         σ_qv = self.cfg.obs_noise_joint_vel
         σ_bp = self.cfg.obs_noise_body_pos
-        σ_cp = self.cfg.obs_noise_cup_pos
+        σ_cp = (
+            self.grasp_adr.get_param("noise", "obs_noise_cup_pos")
+            if self.grasp_adr is not None
+            else self.cfg.obs_noise_cup_pos
+        )
 
         arm_joint_pos    = arm_joint_pos_clean    + torch.randn_like(arm_joint_pos_clean)    * σ_qp
         arm_joint_vel    = arm_joint_vel_clean    + torch.randn_like(arm_joint_vel_clean)    * σ_qv
@@ -849,11 +853,8 @@ class GraspRightEnv(DirectRLEnv):
     # Rewards: R1~R5
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        # ---- ADR ----
-        if self.grasp_adr is not None:
-            enclosure_weight = self.grasp_adr.get_param("reward_weights", "enclosure_weight")
-        else:
-            enclosure_weight = self.cfg.enclosure_weight
+        # ---- enclosure weight: ADR 대상 아님, 고정값 사용 ----
+        enclosure_weight = self.cfg.enclosure_weight
 
         # ---- 공통 참조 ----
         cup_height_delta = (
@@ -1016,9 +1017,11 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["episode_success_rate"]  = torch.tensor(_ep_success_rate, device=self.device)
         self.extras["thumb_dist"]            = thumb_dist.mean()
         self.extras["others_dist"]           = others_dist.mean()
-        self.extras["adr_enclosure_w"]       = torch.tensor(enclosure_weight, device=self.device)
         if self.grasp_adr is not None:
-            self.extras["adr_progress"] = torch.tensor(self.grasp_adr.progress, device=self.device)
+            self.extras["adr_progress"]          = torch.tensor(self.grasp_adr.progress, device=self.device)
+            self.extras["adr_spawn_xy_range"]    = torch.tensor(self.grasp_adr.get_param("spawn",  "object_spawn_xy_range"), device=self.device)
+            self.extras["adr_obs_noise_cup_pos"] = torch.tensor(self.grasp_adr.get_param("noise",  "obs_noise_cup_pos"),     device=self.device)
+            self.extras["adr_bead_count_max"]    = torch.tensor(self.grasp_adr.get_param("beads",  "bead_count_max"),        device=self.device)
 
         return total
 
@@ -1097,13 +1100,18 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
 
-        # ---- 3. 컵 spawn 위치 계산 (±0.06m 랜덤) ----
+        # ---- 3. 컵 spawn 위치 계산 (ADR: ±1cm → ±8cm) ----
+        _xy_range = (
+            self.grasp_adr.get_param("spawn", "object_spawn_xy_range")
+            if self.grasp_adr is not None
+            else self.cfg.object_spawn_xy_range
+        )
         obj_x = self.cfg.object_spawn_x_center + (
             torch.rand(n, device=self.device) - 0.5
-        ) * 2.0 * self.cfg.object_spawn_xy_range
+        ) * 2.0 * _xy_range
         obj_y = self.cfg.object_spawn_y_center + (
             torch.rand(n, device=self.device) - 0.5
-        ) * 2.0 * self.cfg.object_spawn_xy_range
+        ) * 2.0 * _xy_range
         obj_pos_local = torch.stack(
             [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
         )
@@ -1179,10 +1187,15 @@ class GraspRightEnv(DirectRLEnv):
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
         # ---- 7b. Bead 스폰 (무게 도메인 랜덤화) ----
+        _bead_max = int(
+            self.grasp_adr.get_param("beads", "bead_count_max")
+            if self.grasp_adr is not None
+            else self.cfg.bead_count_max
+        )
         bead_count = torch.randint(
-            self.cfg.bead_count_min, self.cfg.bead_count_max + 1,
+            self.cfg.bead_count_min, _bead_max + 1,
             (n,), device=self.device
-        )  # 각 env당 활성 bead 수 (0 ~ bead_count_max)
+        )  # 각 env당 활성 bead 수 (0 ~ adr_bead_count_max)
 
         # 비활성 bead 숨김: ground plane(z=0) 위 2cm, 테이블 반대 방향 (x-0.8m)
         # z=-10 사용 시 ground plane에 튕겨 테이블 위에 흩어지는 문제 방지
