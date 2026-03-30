@@ -287,6 +287,28 @@ class GraspRightEnv(DirectRLEnv):
             _bead_offsets.append([radius * math.cos(angle), radius * math.sin(angle), z])
         self._bead_offsets_b = torch.tensor(_bead_offsets, dtype=torch.float32, device=self.device)  # (num_beads, 3)
 
+        # 비활성 bead는 컵 근처/바닥에 겹쳐 놓지 않고 env 밖 parking grid로 분리 배치한다.
+        # 같은 위치에 겹치면 reset 직후 contact resolution으로 튀면서 바닥을 굴러다닌다.
+        hidden_cols = 5
+        hidden_spacing = 0.03
+        hidden_base_x = -1.20
+        hidden_base_y = -0.60
+        hidden_z = 0.02
+        _hidden_bead_offsets = []
+        for i in range(cfg.num_beads):
+            row = i // hidden_cols
+            col = i % hidden_cols
+            _hidden_bead_offsets.append(
+                [
+                    hidden_base_x - hidden_spacing * col,
+                    hidden_base_y - hidden_spacing * row,
+                    hidden_z,
+                ]
+            )
+        self._hidden_bead_offsets_b = torch.tensor(
+            _hidden_bead_offsets, dtype=torch.float32, device=self.device
+        )  # (num_beads, 3)
+
         # obs용 정규화된 bead 무게 버퍼
         self._bead_mass_normalized = torch.zeros(self.num_envs, device=self.device)
 
@@ -1208,13 +1230,9 @@ class GraspRightEnv(DirectRLEnv):
             (n,), device=self.device
         )  # 각 env당 활성 bead 수 (0 ~ adr_bead_count_max)
 
-        # 비활성 bead 숨김: ground plane(z=0) 위 2cm, 테이블 반대 방향 (x-0.8m)
-        # z=-10 사용 시 ground plane에 튕겨 테이블 위에 흩어지는 문제 방지
-        hide_pos = self.scene.env_origins[env_ids].clone()  # (n, 3) world
-        hide_pos[:, 0] -= 0.8  # 테이블(local x≈+0.57) 반대쪽
-        hide_pos[:, 2] = 0.02  # ground plane(z=0) 위 2cm
         bead_state = torch.zeros(n, self.cfg.num_beads, 13, device=self.device)
-        bead_state[..., :3] = hide_pos.unsqueeze(1)  # 모든 bead → 숨김 위치
+        hidden_pos = self.scene.env_origins[env_ids].unsqueeze(1) + self._hidden_bead_offsets_b.unsqueeze(0)
+        bead_state[..., :3] = hidden_pos
         bead_state[..., 3] = 1.0   # quat w
 
         # 활성 bead: 컵 내부 layered spiral (컵은 항상 upright이므로 quat_apply 불필요)
