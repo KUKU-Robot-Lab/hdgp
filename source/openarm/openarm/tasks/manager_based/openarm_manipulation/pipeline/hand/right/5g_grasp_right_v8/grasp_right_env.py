@@ -268,8 +268,18 @@ class GraspRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         # Eval 로깅 (bead 무게별 파지 품질 평가)
         # ----------------------------------------------------------------
-        # grasp phase 마지막(LIFT_START_STEP)에서의 finger action 강도 기록
+        # grasp phase 마지막(LIFT_START_STEP)에서의 정규화 grip 강도 기록
+        # raw action ∈ [-1, 1] 이므로 (a + 1) / 2 로 [0, 1] grip으로 변환해 저장한다.
         self._eval_grip_at_lift = torch.zeros(self.num_envs, device=self.device)
+        self._eval_finger_actions_at_lift = torch.zeros(self.num_envs, 5, device=self.device)
+        self._last_grasp_finger_action = torch.zeros(self.num_envs, 5, device=self.device)
+        self._eval_episode_started = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._eval_grasp_action_sum = torch.zeros(self.num_envs, 5, device=self.device)
+        self._eval_grasp_action_sq_sum = torch.zeros(self.num_envs, 5, device=self.device)
+        self._eval_grasp_action_min = torch.full((self.num_envs, 5), float("inf"), device=self.device)
+        self._eval_grasp_action_max = torch.full((self.num_envs, 5), float("-inf"), device=self.device)
+        self._eval_grasp_action_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._eval_lift_snapshot_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # 에피소드별 (bead_mass_normalized, grip_intensity, success) 기록 리스트
         self._eval_records: list[dict] = []
 
@@ -580,12 +590,34 @@ class GraspRightEnv(DirectRLEnv):
         is_lift = (self.episode_length_buf >= LIFT_START_STEP)
         self.is_lift_phase.copy_(is_lift)
 
+        # Eval: grasp phase 동안의 마지막 finger action을 계속 버퍼링한다.
+        # lift 경계 step 타이밍에 의존하지 않고, 실제 마지막 grasp action을 보존하기 위함.
+        grasp_mask = ~is_lift
+        if grasp_mask.any():
+            self._eval_episode_started[grasp_mask] = True
+            self._last_grasp_finger_action[grasp_mask] = finger_action[grasp_mask]
+            self._eval_grasp_action_sum[grasp_mask] += finger_action[grasp_mask]
+            self._eval_grasp_action_sq_sum[grasp_mask] += finger_action[grasp_mask].square()
+            self._eval_grasp_action_min[grasp_mask] = torch.minimum(
+                self._eval_grasp_action_min[grasp_mask], finger_action[grasp_mask]
+            )
+            self._eval_grasp_action_max[grasp_mask] = torch.maximum(
+                self._eval_grasp_action_max[grasp_mask], finger_action[grasp_mask]
+            )
+            self._eval_grasp_action_count[grasp_mask] += 1
+
         # ---- Lift 진입 시 finger/task-space 기준점 캡처 ----
         just_entering_lift = (self.episode_length_buf == LIFT_START_STEP)
 
-        # Eval: lift 진입 시점 grip intensity (actions[6:11] 평균) 기록
+        # Eval: lift 진입 시에는 현재 action 대신, grasp phase에서 마지막으로 관측된
+        # finger action 버퍼를 고정해 episode 기록용으로 사용한다.
         if just_entering_lift.any():
-            self._eval_grip_at_lift[just_entering_lift] = finger_action[just_entering_lift].mean(dim=-1)
+            prev_finger_action = self._last_grasp_finger_action[just_entering_lift]
+            self._eval_grip_at_lift[just_entering_lift] = (
+                prev_finger_action.mean(dim=-1) + 1.0
+            ) / 2.0
+            self._eval_finger_actions_at_lift[just_entering_lift] = prev_finger_action
+            self._eval_lift_snapshot_valid[just_entering_lift] = True
 
         # Finger: 진입 시점 자세로 고정
         self.lift_finger_pos_buf = torch.where(
@@ -1074,22 +1106,74 @@ class GraspRightEnv(DirectRLEnv):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
 
+        had_started = self._eval_episode_started[env_ids].clone()
+
         super()._reset_idx(env_ids)
 
         if len(env_ids) == 0:
             return
 
         n = len(env_ids)
+        started_n = int(had_started.sum().item())
 
         # ---- episode 성공 집계 후 클리어 ----
-        self._total_episodes += n
-        self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
+        self._total_episodes += started_n
+        if started_n > 0:
+            self._successful_episodes += int((self.episode_success_buf[env_ids] & had_started).sum().item())
 
         # Eval 기록: success_buf 클리어 전에 per-episode 데이터 저장
         for i, env_id in enumerate(env_ids):
+            if not bool(had_started[i].item()):
+                continue
+
+            grasp_count = max(int(self._eval_grasp_action_count[env_id].item()), 1)
+            grasp_mean = self._eval_grasp_action_sum[env_id] / grasp_count
+            grasp_var = (
+                self._eval_grasp_action_sq_sum[env_id] / grasp_count - grasp_mean.square()
+            ).clamp_min(0.0)
+            grasp_std = torch.sqrt(grasp_var)
+            if bool(self._eval_lift_snapshot_valid[env_id].item()):
+                finger_action_at_lift = self._eval_finger_actions_at_lift[env_id]
+                grip_at_lift = self._eval_grip_at_lift[env_id].item()
+            else:
+                # Fallback for episodes where the lift-boundary callback is skipped by reset ordering.
+                finger_action_at_lift = self._last_grasp_finger_action[env_id]
+                grip_at_lift = ((finger_action_at_lift.mean() + 1.0) / 2.0).item()
+            bead_count = int(round(self._bead_mass_normalized[env_id].item() * self.cfg.bead_count_max))
             self._eval_records.append({
+                "bead_count": bead_count,
                 "bead_mass": self._bead_mass_normalized[env_id].item(),
-                "grip":      self._eval_grip_at_lift[env_id].item(),
+                "grip":      grip_at_lift,
+                "grasp_steps": grasp_count,
+                "grasp_action_mean": grasp_mean.mean().item(),
+                "grasp_action_std": grasp_std.mean().item(),
+                "grasp_action_min": self._eval_grasp_action_min[env_id].mean().item(),
+                "grasp_action_max": self._eval_grasp_action_max[env_id].mean().item(),
+                "thumb_action":  finger_action_at_lift[0].item(),
+                "index_action":  finger_action_at_lift[1].item(),
+                "middle_action": finger_action_at_lift[2].item(),
+                "ring_action":   finger_action_at_lift[3].item(),
+                "pinky_action":  finger_action_at_lift[4].item(),
+                "thumb_mean_action":  grasp_mean[0].item(),
+                "index_mean_action":  grasp_mean[1].item(),
+                "middle_mean_action": grasp_mean[2].item(),
+                "ring_mean_action":   grasp_mean[3].item(),
+                "pinky_mean_action":  grasp_mean[4].item(),
+                "thumb_std_action":  grasp_std[0].item(),
+                "index_std_action":  grasp_std[1].item(),
+                "middle_std_action": grasp_std[2].item(),
+                "ring_std_action":   grasp_std[3].item(),
+                "pinky_std_action":  grasp_std[4].item(),
+                "thumb_min_action":  self._eval_grasp_action_min[env_id, 0].item(),
+                "index_min_action":  self._eval_grasp_action_min[env_id, 1].item(),
+                "middle_min_action": self._eval_grasp_action_min[env_id, 2].item(),
+                "ring_min_action":   self._eval_grasp_action_min[env_id, 3].item(),
+                "pinky_min_action":  self._eval_grasp_action_min[env_id, 4].item(),
+                "thumb_max_action":  self._eval_grasp_action_max[env_id, 0].item(),
+                "index_max_action":  self._eval_grasp_action_max[env_id, 1].item(),
+                "middle_max_action": self._eval_grasp_action_max[env_id, 2].item(),
+                "ring_max_action":   self._eval_grasp_action_max[env_id, 3].item(),
+                "pinky_max_action":  self._eval_grasp_action_max[env_id, 4].item(),
                 "success":   self.episode_success_buf[env_id].item(),
             })
 
@@ -1220,14 +1304,24 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 8. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand
-        self.contact_force_raw[env_ids].zero_()
+        self.contact_force_raw[env_ids] = 0.0
         self.binary_contact_buf[env_ids] = False
         self.num_contacts_buf[env_ids]   = 0
-        self.distal_contact_force_raw[env_ids].zero_()
+        self.distal_contact_force_raw[env_ids] = 0.0
         self.distal_binary_contact_buf[env_ids] = False
-        self.middle_contact_force_raw[env_ids].zero_()
+        self.middle_contact_force_raw[env_ids] = 0.0
         self.middle_binary_contact_buf[env_ids] = False
         self.success_flag[env_ids] = False
+        self._eval_grip_at_lift[env_ids] = 0.0
+        self._eval_finger_actions_at_lift[env_ids] = 0.0
+        self._last_grasp_finger_action[env_ids] = 0.0
+        self._eval_episode_started[env_ids] = False
+        self._eval_grasp_action_sum[env_ids] = 0.0
+        self._eval_grasp_action_sq_sum[env_ids] = 0.0
+        self._eval_grasp_action_min[env_ids] = float("inf")
+        self._eval_grasp_action_max[env_ids] = float("-inf")
+        self._eval_grasp_action_count[env_ids] = 0
+        self._eval_lift_snapshot_valid[env_ids] = False
 
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
         # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)

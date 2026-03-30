@@ -36,6 +36,18 @@ parser.add_argument(
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument(
+    "--disable_adr",
+    action="store_true",
+    default=False,
+    help="Disable ADR for visualization/eval-style playback.",
+)
+parser.add_argument(
+    "--bead_fixed",
+    type=int,
+    default=None,
+    help="Fix bead count for tasks that support bead_count_min/max. If unset, use configured random range.",
+)
+parser.add_argument(
     "--use_pretrained_checkpoint",
     action="store_true",
     help="Use the pre-trained checkpoint from Nucleus.",
@@ -167,6 +179,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the environment seed (after multi-gpu config for updated rank from agent seed)
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg["params"]["seed"]
+
+    # Optional playback overrides for ADR / bead count visualization
+    if args_cli.disable_adr and hasattr(env_cfg, "enable_adr"):
+        env_cfg.enable_adr = False
+        print("[INFO] ADR disabled for playback.")
+
+    if args_cli.bead_fixed is not None:
+        if hasattr(env_cfg, "bead_count_min") and hasattr(env_cfg, "bead_count_max"):
+            env_cfg.bead_count_min = args_cli.bead_fixed
+            env_cfg.bead_count_max = args_cli.bead_fixed
+            print(f"[INFO] bead count fixed for playback: {args_cli.bead_fixed}")
+        else:
+            print("[WARN] --bead_fixed ignored: env does not expose bead_count_min/max")
 
     # CHECKPOINT SEARCH ROOT RULE:
     #   <sbm_root>/log/rl_games/pipeline/<left|right|both>/<task_dir_name>

@@ -60,7 +60,7 @@ parser.add_argument("--bead_fixed", type=int,   default=None,
                     help="특정 bead 수 고정 (None이면 0~10 랜덤)")
 parser.add_argument("--seed",       type=int,   default=42)
 parser.add_argument("--output_csv", type=str,   default="eval_bead_results.csv",
-                    help="결과 CSV 저장 경로")
+                    help="결과 CSV 파일명 또는 경로 (기본: 체크포인트 run 폴더 아래)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + hydra_args
@@ -124,7 +124,7 @@ def _print_table(records: list[dict], bead_max: int = 10) -> None:
     """bead 수(0~10)별로 집계해서 표 출력."""
     bins: dict[int, list] = defaultdict(list)
     for r in records:
-        bead_count = round(r["bead_mass"] * bead_max)
+        bead_count = r.get("bead_count", round(r["bead_mass"] * bead_max))
         bins[bead_count].append(r)
 
     header = f"{'bead':>6} | {'n_ep':>5} | {'success%':>9} | {'grip_mean':>10} | {'grip_std':>9} | 판정"
@@ -180,9 +180,27 @@ def _print_table(records: list[dict], bead_max: int = 10) -> None:
             print(f"\n[결과] 항상 동일한 grip (grip 범위: {grip_range:.3f}) — bead obs 미활용 의심")
 
 
+def _resolve_output_csv_path(resume_path: str, output_csv: str) -> str:
+    if os.path.isabs(output_csv):
+        return output_csv
+
+    run_dir = os.path.dirname(resume_path)
+    if os.path.basename(run_dir) == "nn":
+        run_dir = os.path.dirname(run_dir)
+    return os.path.join(run_dir, output_csv)
+
+
 def _save_csv(records: list[dict], path: str) -> None:
+    if not records:
+        print(f"[WARN] 저장할 eval record가 없음: {path}")
+        return
+
+    out_dir = os.path.dirname(path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    fieldnames = list(records[0].keys())
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["bead_mass", "grip", "success"])
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(records)
     print(f"[INFO] 결과 저장: {path}")
@@ -244,17 +262,22 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
 
     # 기반 환경 접근 (eval 기록용)
     base_env = env.unwrapped  # GraspRightEnv
-    base_env._eval_records.clear()
 
     obs = env.reset()
     if isinstance(obs, dict):
         obs = obs["obs"]
+    base_env._eval_records.clear()
+    if hasattr(base_env, "_total_episodes"):
+        base_env._total_episodes = 0
+    if hasattr(base_env, "_successful_episodes"):
+        base_env._successful_episodes = 0
     _ = agent.get_batch_size(obs, 1)
     if agent.is_rnn:
         agent.init_rnn()
 
     target_episodes = args_cli.num_episodes
     print(f"[INFO] {target_episodes} 에피소드 수집 시작...")
+    last_reported = 0
 
     while simulation_app.is_running():
         with torch.inference_mode():
@@ -274,13 +297,16 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
             print(f"[INFO] {n_collected} 에피소드 수집 완료")
             break
 
-        if n_collected % 50 == 0 and n_collected > 0:
-            print(f"  진행: {n_collected}/{target_episodes} 에피소드")
+        report_count = (n_collected // 50) * 50
+        if report_count > last_reported:
+            print(f"[INFO] 진행 {report_count}/{target_episodes}")
+            last_reported = report_count
 
     # ---- 결과 출력 ----
     records = base_env._eval_records[:target_episodes]
+    output_csv_path = _resolve_output_csv_path(resume_path, args_cli.output_csv)
     _print_table(records, bead_max=env_cfg.bead_count_max)
-    _save_csv(records, args_cli.output_csv)
+    _save_csv(records, output_csv_path)
 
     env.close()
 
