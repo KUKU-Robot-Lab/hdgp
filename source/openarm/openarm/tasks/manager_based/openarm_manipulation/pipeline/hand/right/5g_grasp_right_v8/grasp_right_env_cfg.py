@@ -191,16 +191,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_quality_lift_weight:     float = 25.0
     grasp_quality_lift_sharpness:  float = 10.0
 
-    # R6. grip_efficiency: bead 무게에 비해 과도한 grip 제곱 패널티
-    # over_grip² 사용: 소량 초과는 허용, 대량 초과는 급격히 페널티
-    # 가벼운 컵(bead=0) + 강한 grip → 패널티 / 무거운 컵(bead=10) + 강한 grip → 패널티 없음
-    grip_efficiency_weight: float = 12.0
-
     # R7. grip_target: bead 무게 기반 목표 grip 정확도 보상
-    # target = bead_mass_normalized + margin → 딱 맞는 grip에 양방향 gradient 제공
-    grip_target_weight:     float = 5.0
+    # 가우시안 중심 = bead_mass_normalized + margin → 양방향 gradient로 최적 grip 유도
+    # (penalty 방식 R6 대체: 안 닫는 게 안전하다는 오학습 방지)
+    grip_target_weight:     float = 15.0
     grip_target_sharpness:  float = 20.0   # ±0.15 범위에서 급감
-    grip_target_margin:     float = 0.15   # target = bead_mass_normalized + margin
+    grip_target_margin:     float = 0.30   # 빈 컵도 target=0.30 → 물리적 접촉 가능한 최소 grip
 
     # -----------------------------------------------------------------------
     # ADR

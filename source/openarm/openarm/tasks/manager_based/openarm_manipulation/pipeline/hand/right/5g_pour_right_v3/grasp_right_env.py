@@ -465,7 +465,7 @@ class GraspRightEnv(DirectRLEnv):
                 fluid_rest_offset=self.cfg.particle_fluid_rest_offset,
                 solver_position_iterations=4,
                 simulation_owner=Sdf.Path("/physicsScene"),
-                self_collision=False,  # 서로 다른 group 간 충돌 없음 (global_self_collision=False)
+                global_self_collision_enabled=False,  # 서로 다른 group 간 충돌 없음
             )
 
             # Global self-collision 비활성화 (다른 env 입자 간 상호작용 제거)
@@ -559,56 +559,108 @@ class GraspRightEnv(DirectRLEnv):
             print(f"[5g_pour_right_v3] WARNING: particle group assignment failed: {exc}", flush=True)
 
     # ------------------------------------------------------------------
-    # Particle view lazy init (첫 physics step 이후)
+    # Particle stage 경로 lazy 캐시 (첫 호출 시 stage 확인)
     # ------------------------------------------------------------------
     def _init_particle_view_if_needed(self) -> bool:
-        """Physics Tensor API로 particle view 초기화. 성공 시 True 반환."""
+        """USD stage에서 fluid particle prim 경로를 캐시. 성공 시 True 반환."""
         if self._particle_view is not None:
             return True
         try:
-            import omni.physics.tensors as _pt
-            _phys_view = _pt.create_simulation_view("cuda")
-            _phys_view.set_subspace_roots("/World/envs/env_*")
-            self._particle_view = _phys_view.create_particle_cloth_view(PARTICLE_SET_PATTERN)
-            # max_particles_per_cloth: per-env 입자 수
-            if hasattr(self._particle_view, "max_particles_per_cloth"):
-                self._num_particles_per_env = self._particle_view.max_particles_per_cloth
+            import omni.usd as _omni_usd
+            stage = _omni_usd.get_context().get_stage()
+            # env_0 prim이 존재하면 초기화 완료로 간주
+            prim = stage.GetPrimAtPath("/World/envs/env_0/FluidParticles")
+            if not prim.IsValid():
+                return False
+            # _particle_view를 stage 자체로 저장 (None이 아님을 표시)
+            self._particle_view = stage
             print(
-                f"[5g_pour_right_v3] Particle view initialized: "
-                f"shape ({self.num_envs}, {self._num_particles_per_env}, 3)",
+                f"[5g_pour_right_v3] Particle USD view ready: "
+                f"{self.num_envs} envs × {self._num_particles_per_env} particles",
                 flush=True,
             )
             return True
-        except Exception as exc:
+        except Exception:
             return False
 
     # ------------------------------------------------------------------
-    # Particle positions 조회 / 설정
+    # Particle positions 조회 / 설정 (PhysX SimulationPoints API)
     # ------------------------------------------------------------------
     def _get_particle_positions_w(self) -> torch.Tensor | None:
-        """(N, P, 3) 세계좌표 particle positions 반환. 실패 시 None."""
+        """(N, P, 3) 세계좌표 particle positions 반환. 실패 시 None.
+
+        PhysxParticleSetAPI.GetSimulationPointsAttr() 로 PhysX simulation buffer에서
+        직접 읽음. UsdGeom.Points.GetPointsAttr()는 렌더링용(authored)이라 시뮬레이션
+        중 실제 위치와 다를 수 있음.
+        """
         if not self._init_particle_view_if_needed():
             return None
         try:
-            pos = self._particle_view.get_positions()   # (N, P, 3) or (N, P, 4)
-            if pos.shape[-1] == 4:
-                pos = pos[..., :3]
-            return pos.to(self.device)
+            import omni.usd as _omni_usd
+            from pxr import UsdGeom, PhysxSchema, Vt
+            import numpy as np
+
+            stage = _omni_usd.get_context().get_stage()
+            N = self.num_envs
+            P = self._num_particles_per_env
+            all_pos = torch.zeros(N, P, 3, dtype=torch.float32, device=self.device)
+
+            for env_idx in range(N):
+                prim_path = f"/World/envs/env_{env_idx}/FluidParticles"
+                prim = stage.GetPrimAtPath(prim_path)
+                if not prim.IsValid():
+                    continue
+
+                # simulation points (PhysX buffer) 우선, 없으면 authored points 사용
+                particle_api = PhysxSchema.PhysxParticleSetAPI(prim)
+                sim_attr = particle_api.GetSimulationPointsAttr()
+                pts = sim_attr.Get() if sim_attr else None
+                if pts is None or len(pts) == 0:
+                    pts = UsdGeom.Points(prim).GetPointsAttr().Get()
+                if pts is None:
+                    continue
+                arr = np.array(pts, dtype=np.float32)
+                if arr.shape[0] != P:
+                    continue
+                all_pos[env_idx] = torch.from_numpy(arr).to(self.device)
+
+            return all_pos
         except Exception:
             return None
 
     def _set_particle_positions_w(self, positions: torch.Tensor) -> None:
-        """(N, P, 3) 세계좌표로 particle positions 설정."""
+        """(N, P, 3) 세계좌표로 particle positions 설정.
+
+        PhysxParticleSetAPI.GetSimulationPointsAttr().Set() 으로 PhysX simulation
+        buffer에 직접 teleport. UsdGeom.Points.GetPointsAttr().Set()만으로는
+        시뮬레이션 중 physics buffer에 반영되지 않음.
+        """
         if not self._init_particle_view_if_needed():
             return
         try:
-            existing = self._particle_view.get_positions()
-            needs_w = (existing.shape[-1] == 4)
-            if needs_w:
-                w = torch.ones(*positions.shape[:-1], 1, device=positions.device, dtype=positions.dtype)
-                positions = torch.cat([positions, w], dim=-1)
-            self._particle_view.set_positions(positions.contiguous())
-        except Exception as exc:
+            import omni.usd as _omni_usd
+            from pxr import UsdGeom, PhysxSchema, Vt
+            import numpy as np
+
+            stage = _omni_usd.get_context().get_stage()
+            pos_np = positions.cpu().numpy()  # (N, P, 3)
+            N = pos_np.shape[0]
+
+            for env_idx in range(N):
+                prim_path = f"/World/envs/env_{env_idx}/FluidParticles"
+                prim = stage.GetPrimAtPath(prim_path)
+                if not prim.IsValid():
+                    continue
+                pts = Vt.Vec3fArray.FromNumpy(pos_np[env_idx])
+                # PhysX simulation buffer에 직접 teleport
+                particle_api = PhysxSchema.PhysxParticleSetAPI(prim)
+                sim_attr = particle_api.GetSimulationPointsAttr()
+                if not sim_attr.HasAuthoredValue():
+                    sim_attr = particle_api.CreateSimulationPointsAttr()
+                sim_attr.Set(pts)
+                # 렌더링용 authored points도 동기화
+                UsdGeom.Points(prim).GetPointsAttr().Set(pts)
+        except Exception:
             pass
 
     def _set_particle_velocities_zero(self, env_ids_tensor: torch.Tensor | None = None) -> None:
@@ -616,12 +668,28 @@ class GraspRightEnv(DirectRLEnv):
         if not self._init_particle_view_if_needed():
             return
         try:
-            vels = self._particle_view.get_velocities()
+            import omni.usd as _omni_usd
+            from pxr import UsdGeom, Vt
+            import numpy as np
+
+            stage = _omni_usd.get_context().get_stage()
+            P = self._num_particles_per_env
+            zero_np = np.zeros((P, 3), dtype=np.float32)
+            zero_vels = Vt.Vec3fArray.FromNumpy(zero_np)
+
             if env_ids_tensor is not None:
-                vels[env_ids_tensor] = 0.0
+                env_ids = env_ids_tensor.cpu().tolist()
+                if isinstance(env_ids, int):
+                    env_ids = [env_ids]
             else:
-                vels.zero_()
-            self._particle_view.set_velocities(vels.contiguous())
+                env_ids = list(range(self.num_envs))
+
+            for env_idx in env_ids:
+                prim_path = f"/World/envs/env_{env_idx}/FluidParticles"
+                prim = stage.GetPrimAtPath(prim_path)
+                if not prim.IsValid():
+                    continue
+                UsdGeom.Points(prim).GetVelocitiesAttr().Set(zero_vels)
         except Exception:
             pass
 

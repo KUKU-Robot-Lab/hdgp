@@ -1004,18 +1004,12 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0)   # (N,)
         r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
-        # ---- R6. grip_efficiency: bead 무게 대비 과도한 grip 제곱 패널티 ----
-        # grip_normalized ∈ [0,1]: 0=open, 1=fully closed
-        # over_grip² 사용: 소량 초과는 허용, 대량 초과(max grip)는 급격히 페널티
+        # ---- R6. grip_target: bead 무게 기반 목표 grip 정확도 보상 ----
+        # 가우시안 중심 = bead_mass_normalized + margin → 양방향 gradient로 최적 grip 유도
         grip_normalized = (self.actions[:, 6:].mean(dim=-1) + 1.0) / 2.0   # (N,)
-        over_grip = (grip_normalized - self._bead_mass_normalized).clamp(min=0.0)
-        r6_grip_eff = -self.cfg.grip_efficiency_weight * over_grip.pow(2) * is_grasp_f
-
-        # ---- R7. grip_target: bead 무게 기반 목표 grip 정확도 보상 ----
-        # target = bead_mass_normalized + margin → 딱 맞는 grip에 양방향 gradient 제공
         grip_target = (self._bead_mass_normalized + self.cfg.grip_target_margin).clamp(max=1.0)
         grip_err = (grip_normalized - grip_target).abs()
-        r7_grip_target = (
+        r6_grip_target = (
             self.cfg.grip_target_weight
             * torch.exp(-self.cfg.grip_target_sharpness * grip_err)
             * is_grasp_f
@@ -1031,8 +1025,7 @@ class GraspRightEnv(DirectRLEnv):
             + r3_lift
             + r4_smooth
             + r5_quality_lift
-            + r6_grip_eff
-            + r7_grip_target
+            + r6_grip_target
         )
 
         # ---- ADR increment ----
@@ -1050,8 +1043,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["lift_reward"]           = r3_lift.mean()
         self.extras["action_smoothness"]     = r4_smooth.mean()
         self.extras["grasp_quality_lift"]    = r5_quality_lift.mean()
-        self.extras["grip_efficiency"]       = r6_grip_eff.mean()
-        self.extras["grip_target_reward"]    = r7_grip_target.mean()
+        self.extras["grip_target_reward"]    = r6_grip_target.mean()
         # [진단 지표]
         self.extras["force_balance_err"]     = force_balance_err.mean()
         self.extras["thumb_force_mean"]      = thumb_force.mean()
