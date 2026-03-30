@@ -49,7 +49,7 @@ from .grasp_right_preset import (
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
-_DEFAULT_BEAD_COUNT = 10
+_DEFAULT_BEAD_COUNT = 20
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
@@ -191,6 +191,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_quality_lift_weight:     float = 40.0
     grasp_quality_lift_sharpness:  float = 10.0
 
+    # R6. grip_efficiency: bead 무게에 비해 과도한 grip 패널티
+    # → policy가 bead_mass_normalized obs를 읽고 적절한 grip 강도 학습
+    # 가벼운 컵(bead=0) + 강한 grip → 패널티 / 무거운 컵(bead=10) + 강한 grip → 패널티 없음
+    grip_efficiency_weight: float = 1.5
+
     # -----------------------------------------------------------------------
     # ADR
     # -----------------------------------------------------------------------
@@ -207,7 +212,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             "obs_noise_cup_pos": (0.005, 0.025),      # 5mm → 25mm: 컵 위치 관측 노이즈 증가
         },
         "beads": {
-            "bead_count_max": (0.0, 10.0),            # 빈 컵 → 최대 100g 추가 무게
+            "bead_count_max": (0.0, 20.0),            # 빈 컵 → 최대 200g 추가 무게
         },
     })
 
@@ -412,7 +417,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     beads_cfg: RigidObjectCollectionCfg = field(default_factory=_make_beads_cfg)
     num_beads: int = _DEFAULT_BEAD_COUNT
     bead_count_min: int = 0     # 에피소드당 최소 bead 수
-    bead_count_max: int = 10    # 에피소드당 최대 bead 수
+    bead_count_max: int = 20    # 에피소드당 최대 bead 수
     bead_spawn_z_offset: float = 0.035  # 컵 내부 base z 오프셋 (m)
 
     # -----------------------------------------------------------------------

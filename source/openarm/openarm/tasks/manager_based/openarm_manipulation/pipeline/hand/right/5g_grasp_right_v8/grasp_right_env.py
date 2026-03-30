@@ -977,6 +977,13 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0)   # (N,)
         r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
+        # ---- R6. grip_efficiency: bead 무게 대비 과도한 grip 패널티 ----
+        # grip_normalized ∈ [0,1]: 0=open, 1=fully closed
+        # over_grip > 0 일 때만 패널티 → bead가 많을수록 강한 grip 허용
+        grip_normalized = (self.actions[:, 6:].mean(dim=-1) + 1.0) / 2.0   # (N,)
+        over_grip = (grip_normalized - self._bead_mass_normalized).clamp(min=0.0)
+        r6_grip_eff = -self.cfg.grip_efficiency_weight * over_grip * is_grasp_phase.float()
+
         # ---- 합산 ----
         total = (
             r0_palm_approach
@@ -987,6 +994,7 @@ class GraspRightEnv(DirectRLEnv):
             + r3_lift
             + r4_smooth
             + r5_quality_lift
+            + r6_grip_eff
         )
 
         # ---- ADR increment ----
@@ -1007,6 +1015,9 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["full_grasp_rate"]       = full_grasp_flag.mean()
         self.extras["thumb_force_adequate"]  = thumb_force_adequate.mean()
         self.extras["tip_approach_bonus"]    = r2_tip_bonus.mean()
+        self.extras["grip_efficiency"]       = r6_grip_eff.mean()
+        self.extras["grip_normalized"]       = grip_normalized.mean()
+        self.extras["bead_mass_normalized"]  = self._bead_mass_normalized.mean()
         self.extras["lift_reward"]           = r3_lift.mean()
         self.extras["action_smoothness"]     = r4_smooth.mean()
         self.extras["grasp_quality_lift"]    = r5_quality_lift.mean()

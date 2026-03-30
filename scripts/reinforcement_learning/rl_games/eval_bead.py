@@ -195,6 +195,9 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
     env_cfg.seed = args_cli.seed
     agent_cfg["params"]["seed"] = args_cli.seed
 
+    # eval 시 ADR 비활성화: ADR counter=0이면 bead_count_max=0 → 항상 0개가 되는 버그 방지
+    env_cfg.enable_adr = False
+
     # bead 수 고정 옵션
     if args_cli.bead_fixed is not None:
         env_cfg.bead_count_min = args_cli.bead_fixed
