@@ -305,7 +305,6 @@ class GraspRightEnv(DirectRLEnv):
         # Particle view (lazy init after first physics step)
         self._particle_view = None
         self._num_particles_per_env: int = PARTICLES_PER_ENV
-        self._particle_spawn_pending = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # Particle grid offsets in source cup frame (P, 3)
         self._fluid_grid_offsets_b = self._make_fluid_grid_offsets()
@@ -408,11 +407,13 @@ class GraspRightEnv(DirectRLEnv):
     def _setup_scene(self) -> None:
         self.robot          = Articulation(self.cfg.robot_cfg)
         self.cup            = RigidObject(self.cfg.cup_cfg)
+        self.source_particle_cage = RigidObject(self.cfg.source_particle_cage_cfg)
         self.left_target_cup = RigidObject(self.cfg.left_target_cup_cfg)
         self.table          = RigidObject(self.cfg.table_cfg)
 
         self.scene.articulations["robot"]          = self.robot
         self.scene.rigid_objects["cup"]            = self.cup
+        self.scene.rigid_objects["source_particle_cage"] = self.source_particle_cage
         self.scene.rigid_objects["left_target_cup"] = self.left_target_cup
         self.scene.rigid_objects["table"]          = self.table
 
@@ -479,6 +480,34 @@ class GraspRightEnv(DirectRLEnv):
                 _ps_api = PhysxSchema.PhysxParticleSystem.Get(stage, PARTICLE_SYSTEM_PATH)
                 if _ps_api:
                     _ps_api.CreateGlobalSelfCollisionEnabledAttr().Set(False)
+                _pu.add_physx_particle_anisotropy(
+                    stage,
+                    PARTICLE_SYSTEM_PATH,
+                    enabled=True,
+                    scale=5.0,
+                    min=1.0,
+                    max=2.0,
+                )
+                _pu.add_physx_particle_smoothing(
+                    stage,
+                    PARTICLE_SYSTEM_PATH,
+                    enabled=True,
+                    strength=0.8,
+                )
+                _pu.add_physx_particle_isosurface(
+                    stage,
+                    PARTICLE_SYSTEM_PATH,
+                    enabled=True,
+                    max_vertices=1_048_576,
+                    max_triangles=2_097_152,
+                    max_subgrids=4096,
+                    grid_spacing=self.cfg.particle_fluid_rest_offset * 1.5,
+                    surface_distance=self.cfg.particle_fluid_rest_offset * 1.2,
+                    grid_filtering_passes="GSRS",
+                    grid_smoothing_radius=self.cfg.particle_fluid_rest_offset * 2.0,
+                    num_mesh_smoothing_passes=2,
+                    num_mesh_normal_smoothing_passes=2,
+                )
 
             # 2. PBD Particle Material 생성
             _pbd_mat_path = "/World/PBDFluidMaterial"
@@ -948,16 +977,6 @@ class GraspRightEnv(DirectRLEnv):
     # Physics step
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        if torch.any(self._particle_spawn_pending):
-            activate_mask = self._particle_spawn_pending & (self.episode_length_buf >= self.cfg.episode_hold_steps)
-            if torch.any(activate_mask):
-                activate_env_ids = activate_mask.nonzero(as_tuple=False).squeeze(-1)
-                cup_pose_world = torch.cat(
-                    [self.cup.data.root_pos_w[activate_env_ids], self.cup.data.root_quat_w[activate_env_ids]], dim=-1
-                )
-                self._reset_particle_state(activate_env_ids.tolist(), cup_pose_world)
-                self._particle_spawn_pending[activate_env_ids] = False
-
         self.prev_actions.copy_(self.actions)
         self.actions = actions.clone()
 
@@ -1022,6 +1041,9 @@ class GraspRightEnv(DirectRLEnv):
             self._left_target_cup_attach_quat_b,
         )
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
+        source_cage_pose = torch.cat([self.cup.data.root_pos_w, self.cup.data.root_quat_w], dim=-1)
+        self.source_particle_cage.write_root_pose_to_sim(source_cage_pose)
+        self.source_particle_cage.write_root_velocity_to_sim(zero_cup_vel)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
 
@@ -1516,6 +1538,8 @@ class GraspRightEnv(DirectRLEnv):
         zero_vel = torch.zeros(n, 6, device=self.device)
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
+        self.source_particle_cage.write_root_pose_to_sim(cup_root_state[:, :7], env_ids=env_ids)
+        self.source_particle_cage.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
         left_cup_pose = self._compute_attached_root_pose(
             self._left_target_cup_body_id,
@@ -1527,8 +1551,10 @@ class GraspRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
         # ---- 8. Particle 처리 ----
-        self._hide_particles(list(env_ids))
-        self._particle_spawn_pending[env_ids] = not self._warmstart_collect_mode
+        if self._warmstart_collect_mode:
+            self._hide_particles(list(env_ids))
+        else:
+            self._reset_particle_state(list(env_ids), cup_root_state[:, :7])
 
         # ---- 9. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand
@@ -1781,6 +1807,8 @@ class GraspRightEnv(DirectRLEnv):
         zero_vel = torch.zeros(n, 6, device=self.device)
         self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
         self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+        self.source_particle_cage.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
+        self.source_particle_cage.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
         left_cup_pose = self._compute_attached_root_pose(
             self._left_target_cup_body_id,
@@ -1791,9 +1819,8 @@ class GraspRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        # Particle은 empty-cup grasp 안정화 후 투입
-        self._hide_particles(list(env_ids))
-        self._particle_spawn_pending[env_ids] = True
+        # Particle: source cup 내부에 배치
+        self._reset_particle_state(list(env_ids), cup_pose_world)
 
         # 버퍼 리셋
         self.contact_force_raw[env_ids].zero_()

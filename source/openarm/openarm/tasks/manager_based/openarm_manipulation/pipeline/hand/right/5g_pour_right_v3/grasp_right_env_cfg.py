@@ -394,6 +394,26 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         ),
     )
 
+    source_particle_cage_cfg: RigidObjectCfg = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/SourceParticleCage",
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=[0.5, 0.0, 0.25],
+            rot=[1.0, 0.0, 0.0, 0.0],
+        ),
+        spawn=UsdFileCfg(
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/source_particle_cage.usd"),
+            activate_contact_sensors=False,
+            rigid_props=RigidBodyPropertiesCfg(
+                kinematic_enabled=True,
+                disable_gravity=True,
+            ),
+            collision_props=CollisionPropertiesCfg(
+                contact_offset=0.005,
+                rest_offset=0.0,
+            ),
+        ),
+    )
+
     left_target_cup_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/LeftTargetCup",
         init_state=RigidObjectCfg.InitialStateCfg(
