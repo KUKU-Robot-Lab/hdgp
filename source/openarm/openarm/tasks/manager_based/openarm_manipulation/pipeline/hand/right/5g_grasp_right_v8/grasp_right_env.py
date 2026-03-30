@@ -259,6 +259,7 @@ class GraspRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         self._approach_dir_buf = torch.zeros(self.num_envs, 3, device=self.device)
         self.success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._cup_tipping_cos = math.cos(math.radians(cfg.cup_tipping_max_deg))
         # episode-level 성공 추적 (per-step average 허수 문제 해결)
         self.episode_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -1091,13 +1092,22 @@ class GraspRightEnv(DirectRLEnv):
         tipped = cup_z_world[:, 2] < self._cup_tipping_cos
 
         # success: lift phase 이후 + cup 들림 + contact 유지
+        # 즉시 종료하지 않고 일정 step 유지해야 종료시켜 lift refinement 구간을 확보한다.
         in_or_past_lift = (self.episode_length_buf >= LIFT_START_STEP)
         lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         grasped = (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
-        self.success_flag.copy_(in_or_past_lift & lifted & grasped)
-        self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
+        success_now = in_or_past_lift & lifted & grasped
+        self.success_flag.copy_(success_now)
+        self.episode_success_buf |= success_now   # 에피소드 중 한 번이라도 성공 시 True
 
-        terminated = out_x | out_y | fallen | tipped | self.success_flag
+        self._success_hold_count = torch.where(
+            success_now,
+            self._success_hold_count + 1,
+            torch.zeros_like(self._success_hold_count),
+        )
+        success_held = self._success_hold_count >= self.cfg.success_hold_steps
+
+        terminated = out_x | out_y | fallen | tipped | success_held
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         self.extras["object_z"] = self.object_pos[:, 2].mean()
@@ -1312,6 +1322,7 @@ class GraspRightEnv(DirectRLEnv):
         self.middle_contact_force_raw[env_ids] = 0.0
         self.middle_binary_contact_buf[env_ids] = False
         self.success_flag[env_ids] = False
+        self._success_hold_count[env_ids] = 0
         self._eval_grip_at_lift[env_ids] = 0.0
         self._eval_finger_actions_at_lift[env_ids] = 0.0
         self._last_grasp_finger_action[env_ids] = 0.0

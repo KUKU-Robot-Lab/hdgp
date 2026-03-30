@@ -141,6 +141,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
+    success_hold_steps: int = 90
 
     # -----------------------------------------------------------------------
     # Delta palm action (pregrasp 기준 상대 오프셋)
