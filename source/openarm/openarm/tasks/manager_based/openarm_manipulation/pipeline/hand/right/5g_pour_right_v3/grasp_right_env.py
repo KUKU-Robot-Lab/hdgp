@@ -81,6 +81,8 @@ from .grasp_right_constants import (
     ARM_START_POSE,
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
+    PARTICLES_PER_ENV,
+    PARTICLE_SYSTEM_PATH,
 )
 from .grasp_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
@@ -301,6 +303,13 @@ class GraspRightEnv(DirectRLEnv):
         self._bead_offsets_source_cup_b = self._make_bead_offsets()
 
         # ----------------------------------------------------------------
+        # PBD Fluid Particle 버퍼 (lazy init: particle system은 _setup_scene 후 생성)
+        # ----------------------------------------------------------------
+        self._particle_view: object | None = None   # USD stage 캐시 (None = 미초기화)
+        self._num_particles_per_env: int = PARTICLES_PER_ENV
+        self._particle_offsets_b = self._make_particle_offsets()  # (200, 3) cup local
+
+        # ----------------------------------------------------------------
         # 성공 버퍼
         # ----------------------------------------------------------------
         self.success_flag        = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -385,6 +394,22 @@ class GraspRightEnv(DirectRLEnv):
             positions.append([radius * math.cos(angle), radius * math.sin(angle), z])
         return torch.tensor(positions, dtype=torch.float32, device=self.device)
 
+    def _make_particle_offsets(self) -> torch.Tensor:
+        """컵 local frame 기준 200개 PBD 입자 초기 위치 (5 layers × 5 rings × 8 angles)."""
+        positions: list[list[float]] = []
+        n_layers = 5
+        n_rings = 5
+        n_angles = 8
+        r_max = 0.030  # 컵 inner radius(0.041) 보다 작게, 벽 마찰 여유
+        for layer in range(n_layers):
+            z = 0.005 + layer * 0.009  # 5mm ~ 41mm (컵 내부 높이 내)
+            for ring in range(n_rings):
+                r = (ring + 1) * r_max / n_rings
+                for ai in range(n_angles):
+                    angle = 2.0 * math.pi * ai / n_angles + layer * 0.3
+                    positions.append([r * math.cos(angle), r * math.sin(angle), z])
+        return torch.tensor(positions, dtype=torch.float32, device=self.device)
+
     # ------------------------------------------------------------------
     # Scene 설정
     # ------------------------------------------------------------------
@@ -425,6 +450,11 @@ class GraspRightEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
         self.scene.clone_environments(copy_from_source=True)
+
+        # PBD Fluid Particle System: clone_environments() 이후에 생성해야 env_*/FluidParticles가 복제됨
+        self._create_fluid_particle_system()
+        self._fix_particle_groups_after_clone()
+        self._apply_particle_collision_to_cups()
 
     # ------------------------------------------------------------------
     # Fluid particle system 생성
@@ -577,6 +607,44 @@ class GraspRightEnv(DirectRLEnv):
             print(f"[5g_pour_right_v3] WARNING: particle group assignment failed: {exc}", flush=True)
 
     # ------------------------------------------------------------------
+    # 컵 prim에 particle collision offset 런타임 주입 (USD 변경 없이)
+    # ------------------------------------------------------------------
+    def _apply_particle_collision_to_cups(self) -> None:
+        """각 env의 Cup/LeftTargetCup collision mesh에 PhysxParticleAPI를 적용.
+
+        cup_big.usd는 warmstart 그립 자세 유지를 위해 변경하지 않고,
+        scene 생성 후 Python USD API로 particle contact offset을 런타임에 주입한다.
+        이 설정이 없으면 PBD 입자가 컵 mesh를 통과한다.
+        """
+        try:
+            import omni.usd as _omni_usd
+            from pxr import Usd, UsdPhysics, PhysxSchema
+
+            stage = _omni_usd.get_context().get_stage()
+            cup_names = ["Cup", "LeftTargetCup"]
+            contact_offset = self.cfg.particle_solid_rest_offset + 0.002
+
+            for env_idx in range(self.num_envs):
+                for cup_name in cup_names:
+                    cup_prim = stage.GetPrimAtPath(f"/World/envs/env_{env_idx}/{cup_name}")
+                    if not cup_prim.IsValid():
+                        continue
+                    for child in Usd.PrimRange(cup_prim):
+                        if child.HasAPI(UsdPhysics.CollisionAPI):
+                            # particle과 collision mesh 사이 contact offset 설정
+                            physx_col = PhysxSchema.PhysxCollisionAPI.Apply(child)
+                            physx_col.CreateContactOffsetAttr().Set(contact_offset)
+                            physx_col.CreateRestOffsetAttr().Set(0.0)
+
+            print(
+                f"[5g_pour_right_v3] Particle collision applied to cups "
+                f"(contact_offset={contact_offset:.4f})",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"[5g_pour_right_v3] WARNING: particle collision setup failed: {exc}", flush=True)
+
+    # ------------------------------------------------------------------
     # Particle stage 경로 lazy 캐시 (첫 호출 시 stage 확인)
     # ------------------------------------------------------------------
     def _init_particle_view_if_needed(self) -> bool:
@@ -648,13 +716,16 @@ class GraspRightEnv(DirectRLEnv):
         except Exception:
             return None
 
-    def _set_particle_positions_w(self, positions: torch.Tensor) -> None:
-        """(N, P, 3) 세계좌표로 particle positions 설정.
+    def _set_particle_positions_w(
+        self,
+        positions: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
+    ) -> None:
+        """particle positions 설정.
 
-        Particle set prim은 각 env prim 하위에 있으므로 local 좌표로 authoring해야 한다.
-        PhysX schema 상 `simulationPoints`는 시뮬레이션 상태 mirror이므로, reset 시에는
-        `UsdGeom.Points.points`를 canonical source로 갱신하고 `simulationPoints`는
-        동일 길이 동기화가 필요한 경우에만 보조적으로 맞춘다.
+        Args:
+            positions: env_ids가 None이면 (N_all, P, 3), 아니면 (len(env_ids), P, 3).
+            env_ids:   업데이트할 env 인덱스. None이면 positions의 dim-0 순서대로 전체 env.
         """
         if not self._init_particle_view_if_needed():
             return
@@ -664,22 +735,29 @@ class GraspRightEnv(DirectRLEnv):
             import numpy as np
 
             stage = _omni_usd.get_context().get_stage()
-            pos_np = positions.detach().cpu().numpy().copy()  # (N, P, 3), world
-            N = pos_np.shape[0]
+            pos_np = positions.detach().cpu().numpy().copy()
 
-            for env_idx in range(N):
+            if env_ids is not None:
+                id_list = env_ids.cpu().tolist()
+                if isinstance(id_list, int):
+                    id_list = [id_list]
+            else:
+                id_list = list(range(pos_np.shape[0]))
+
+            origins_np = self.scene.env_origins.detach().cpu().numpy()
+
+            for i, env_idx in enumerate(id_list):
                 prim_path = f"/World/envs/env_{env_idx}/FluidParticles"
                 prim = stage.GetPrimAtPath(prim_path)
                 if not prim.IsValid():
                     continue
 
-                local_pts_np = pos_np[env_idx] - self.scene.env_origins[env_idx].detach().cpu().numpy()
+                local_pts_np = pos_np[i] - origins_np[env_idx]
                 pts = Vt.Vec3fArray.FromNumpy(local_pts_np.astype(np.float32, copy=False))
 
                 points_prim = UsdGeom.Points(prim)
                 points_prim.GetPointsAttr().Set(pts)
 
-                # smoothing / parser consistency를 위해 동일 local 좌표를 맞춰 둔다.
                 particle_api = PhysxSchema.PhysxParticleSetAPI(prim)
                 sim_attr = particle_api.GetSimulationPointsAttr()
                 if not sim_attr.HasAuthoredValue():
@@ -890,8 +968,10 @@ class GraspRightEnv(DirectRLEnv):
     # Fluid particle flags 계산 (bead flags 대체)
     # ------------------------------------------------------------------
     def _compute_fluid_flags(self) -> None:
-        """각 bead가 source/target cup 내부에 있는지, spill 여부를 계산."""
-        bead_pos_w = self.beads.data.object_pos_w
+        """각 PBD 입자가 source/target cup 내부에 있는지, spill 여부를 계산."""
+        bead_pos_w = self._get_particle_positions_w()
+        if bead_pos_w is None:
+            return   # particle system 미초기화 — 다음 step에서 재시도
         self._fluid_centroid_w.copy_(bead_pos_w.mean(dim=1))
 
         n = bead_pos_w.shape[0]
@@ -1572,15 +1652,37 @@ class GraspRightEnv(DirectRLEnv):
         return bead_state
 
     def _reset_particle_state(self, env_ids: torch.Tensor, cup_pose_world: torch.Tensor) -> None:
-        bead_state = self._sample_bead_states_inside_cup(cup_pose_world)
-        self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
+        """PBD 입자를 컵 내부에 배치하고 속도를 0으로 초기화."""
+        n = cup_pose_world.shape[0]
+        cup_pos_w  = cup_pose_world[:, :3]   # (n, 3)
+        cup_quat_w = cup_pose_world[:, 3:7]  # (n, 4)
+        P = self._num_particles_per_env
+
+        # spawn offset: bead_spawn_pos (컵 내부 중심) + 각 입자 offset
+        base = (
+            self._bead_spawn_pos_source_cup_b
+            .unsqueeze(0).unsqueeze(1)
+            .expand(n, P, -1)
+        )  # (n, P, 3)
+        local_offsets = base + self._particle_offsets_b.unsqueeze(0).expand(n, -1, -1)  # (n, P, 3)
+
+        quat_exp = cup_quat_w.unsqueeze(1).expand(-1, P, -1)  # (n, P, 4)
+        particle_pos_w = cup_pos_w.unsqueeze(1) + quat_apply(
+            quat_exp.reshape(-1, 4),
+            local_offsets.reshape(-1, 3),
+        ).reshape(n, P, 3)
+
+        self._set_particle_positions_w(particle_pos_w, env_ids=env_ids)
+        self._set_particle_velocities_zero(env_ids_tensor=env_ids)
 
     def _hide_particles(self, env_ids: torch.Tensor) -> None:
+        """PBD 입자를 지하(z=-10)로 이동해 숨김 (warmstart 중 화면에서 제거)."""
         n = int(env_ids.numel())
-        bead_state = torch.zeros(n, self.num_beads, 13, device=self.device)
-        bead_state[..., 2] = -10.0
-        bead_state[..., 3] = 1.0
-        self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
+        P = self._num_particles_per_env
+        hidden_pos = torch.zeros(n, P, 3, device=self.device)
+        hidden_pos[..., 2] = -10.0
+        self._set_particle_positions_w(hidden_pos, env_ids=env_ids)
+        self._set_particle_velocities_zero(env_ids_tensor=env_ids)
 
     # ------------------------------------------------------------------
     # Attachment / pose utilities

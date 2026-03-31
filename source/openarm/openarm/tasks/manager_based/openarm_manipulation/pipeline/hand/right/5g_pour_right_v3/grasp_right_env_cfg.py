@@ -140,7 +140,21 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obs_noise_cup_pos:   float = 0.015
 
     # -----------------------------------------------------------------------
-    # Small rigid bead 설정
+    # Fluid Particle (PhysX 5 PBD) 파라미터
+    # -----------------------------------------------------------------------
+    particle_diameter:        float = 0.005    # 5mm
+    particle_mass:            float = 0.001    # 1g per particle
+    particle_viscosity:       float = 0.3
+    particle_surface_tension: float = 0.4
+    particle_cohesion:        float = 0.2
+    particle_adhesion:        float = 0.05
+    # 5mm 직경 기준: fluid_rest_offset ≈ diameter×0.6, solid ≈ diameter×0.5
+    particle_fluid_rest_offset:  float = 0.003   # fluid particle 간 rest 거리
+    particle_solid_rest_offset:  float = 0.0025  # particle↔solid 경계 rest 거리
+    particle_contact_offset:     float = 0.008   # 충돌 감지 반경 (rest_offset보다 크게)
+
+    # -----------------------------------------------------------------------
+    # Small rigid bead 설정 (v3에서는 PBD로 대체, 구조 유지)
     # -----------------------------------------------------------------------
     bead_count:               int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
@@ -421,10 +435,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
                 disable_gravity=True,
-            ),
-            collision_props=CollisionPropertiesCfg(
-                contact_offset=-0.1,
-                rest_offset=-0.1,
             ),
         ),
     )

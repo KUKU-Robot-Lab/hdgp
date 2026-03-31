@@ -1042,20 +1042,20 @@ class GraspRightEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         self._compute_intermediate_values()
 
-        # ---- [편익] A: Accuracy — target cup 안에 남아있는 bead 비율 ----
-        A = self._bead_in_target_fraction
-
-        # ---- [비용] T: Time ----
-        t_frac = self.episode_length_buf.float() / float(EPISODE_STEPS)
-        T = torch.exp(self.cfg.alpha_time * (t_frac - 1.0))
-
-        # ---- [비용] E: Effort — 팔 관절 토크 제곱합 ----
-        arm_torque = self.robot.data.applied_torque[:, self.arm_dof_indices]
-        E = (arm_torque ** 2).sum(dim=-1)
-        main_reward = self.cfg.w_accuracy * A - self.cfg.w_time * T - self.cfg.w_effort * E
-
+        # ---- Grasp quality ----
+        grasp_contact = self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
+        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)
         thumb_force = self.contact_force_raw[:, 0]
         others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)
+        thumb_force_adequate = (
+            thumb_force >= others_avg_force * self.cfg.thumb_force_ratio_min
+        ).float()
+        full_grasp_reward = (
+            (self.binary_contact_buf[:, 0] & (others_count >= 3)).float()
+            * thumb_force_adequate
+        )
+        # force_balance: 컵 낙하 방지 (기울임 중에도 엄지-나머지 균형 유지)
+        # grasp_hold gate 없이 독립 적용 → 기울이기를 방해하지 않으면서 파지 품질 유지
         has_thumb_contact = self.binary_contact_buf[:, 0].float()
         has_others_contact = (self.binary_contact_buf[:, 1:].sum(dim=-1) >= 1).float()
         force_balance_gate = has_thumb_contact * has_others_contact
@@ -1064,58 +1064,77 @@ class GraspRightEnv(DirectRLEnv):
             -self.cfg.reward_force_balance_sharpness * force_balance_err
         )
 
-        # ---- 보조 shaping: Transport ----
+        # ---- Transport: pour point를 target opening XY 근처로 ----
         transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
 
-        # ---- 보조 shaping: Tilt ----
+        # ---- Tilt: proximity gate 적용 ----
+        # transport_reward를 gate로 사용: 타겟 근처일수록 tilt/align reward 증폭
+        # → 먼저 transport 학습 후 tilt 학습되는 자연스러운 커리큘럼 형성
         target_tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
         tilt_error = torch.abs(self._source_up_dot_world - target_tilt_cos)
         tilt_reward = 1.0 - torch.tanh(self.cfg.reward_tilt_scale * tilt_error)
         directional_tilt_reward = ((self._directional_tilt_cos + 1.0) * 0.5).clamp(0.0, 1.0)
-        combined_tilt = 0.5 * tilt_reward + 0.5 * directional_tilt_reward
+        mouth_alignment_reward = ((self._mouth_alignment_cos + 1.0) * 0.5).pow(self.cfg.reward_mouth_align_scale)
 
-        # ---- 성공 / 패널티 ----
+        # ---- near_target_gate 제거: tilt/align 독립 학습 ----
+        # gate가 있으면 transport 진전 없이는 tilt reward 학습 불가 → local minimum
+        pour_pose_reward = 0.5 * tilt_reward + 0.5 * directional_tilt_reward
+        align_reward = mouth_alignment_reward
+
+        # ---- Z Clearance: source pour point가 target opening 위에 있도록 ----
+        # tanh 사용: z_clearance=0에서 0 (중립), 양수면 양(+), 음수면 패널티
+        # sigmoid 대비: 포화 없이 gradient 유지
+        clearance_reward = torch.tanh(self.cfg.reward_clearance_scale * self._mouth_z_clearance)
+
+        # ---- Bead / Success ----
+        bead_target_reward = self._bead_cross_fraction
         success_reward = self.success_flag.float()
         spill_penalty = self._spill_ratio
         action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
 
         total = (
-            main_reward
-            + self.cfg.w_transport * transport_reward
-            + self.cfg.w_tilt * combined_tilt
-            + self.cfg.w_force_balance * force_balance_reward
-            + self.cfg.w_success * success_reward
-            - self.cfg.w_spill * spill_penalty
-            - self.cfg.w_action_rate * action_rate_penalty
+            self.cfg.reward_grasp_contact_weight * grasp_contact
+            + self.cfg.reward_full_grasp_weight * full_grasp_reward
+            + self.cfg.reward_force_balance_weight * force_balance_reward
+            + self.cfg.reward_transport_weight * transport_reward
+            + self.cfg.reward_clearance_weight * clearance_reward
+            + self.cfg.reward_tilt_weight * pour_pose_reward
+            + self.cfg.reward_pour_alignment_weight * align_reward
+            + self.cfg.reward_bead_target_weight * bead_target_reward
+            + self.cfg.reward_success_weight * success_reward
+            - self.cfg.penalty_spill_weight * spill_penalty
+            - self.cfg.penalty_action_rate_weight * action_rate_penalty
         )
 
-        self.extras["reward_accuracy"] = A.mean()
-        self.extras["reward_time_cost"] = T.mean()
-        self.extras["reward_effort_cost"] = E.mean()
-        self.extras["reward_main"] = main_reward.mean()
+        self.extras["reward_grasp_contact"] = grasp_contact.mean()
+        self.extras["reward_grasp_stability"] = torch.zeros(1, device=self.device).squeeze()
+        self.extras["reward_grasp_height_keep"] = torch.zeros(1, device=self.device).squeeze()
+        self.extras["reward_force_balance"] = force_balance_reward.mean()
+        self.extras["reward_full_grasp"] = full_grasp_reward.mean()
         self.extras["reward_transport"] = transport_reward.mean()
+        self.extras["reward_clearance"] = clearance_reward.mean()
         self.extras["reward_tilt"] = tilt_reward.mean()
         self.extras["reward_directional_tilt"] = directional_tilt_reward.mean()
-        self.extras["reward_force_balance"] = force_balance_reward.mean()
-        self.extras["reward_success"] = success_reward.mean()
-        self.extras["penalty_spill"] = spill_penalty.mean()
+        self.extras["reward_mouth_alignment"] = mouth_alignment_reward.mean()
         self.extras["penalty_action_rate"] = action_rate_penalty.mean()
-        self.extras["force_balance_err"] = force_balance_err.mean()
-        self.extras["mouth_distance"] = self._mouth_distance.mean()
-        self.extras["mouth_xy_distance"] = self._mouth_xy_distance.mean()
-        self.extras["mouth_z_clearance"] = self._mouth_z_clearance.mean()
-        self.extras["source_up_dot"] = self._source_up_dot_world.mean()
-        self.extras["directional_tilt_cos"] = self._directional_tilt_cos.mean()
-        self.extras["mouth_alignment_cos"] = self._mouth_alignment_cos.mean()
-        self.extras["bead_in_source_rate"] = self._bead_in_source_fraction.mean()
-        self.extras["bead_in_target_rate"] = self._bead_in_target_fraction.mean()
-        self.extras["bead_cross_fraction"] = self._bead_cross_fraction.mean()
-        self.extras["bead_cross_count"] = self._bead_cross_count.float().mean()
-        self.extras["spill_ratio"] = self._spill_ratio.mean()
-        self.extras["success_rate"] = self.success_flag.float().mean()
-        self.extras["num_contacts"] = self.num_contacts_buf.float().mean()
+        self.extras["force_balance_err"] = (thumb_force - others_avg_force).abs().mean()
         self.extras["thumb_force_mean"] = thumb_force.mean()
         self.extras["others_avg_force_mean"] = others_avg_force.mean()
+        self.extras["thumb_force_adequate"] = thumb_force_adequate.mean()
+
+        self.extras["mouth_distance"]        = self._mouth_distance.mean()
+        self.extras["mouth_xy_distance"]     = self._mouth_xy_distance.mean()
+        self.extras["mouth_z_clearance"]     = self._mouth_z_clearance.mean()
+        self.extras["source_up_dot"]         = self._source_up_dot_world.mean()
+        self.extras["directional_tilt_cos"]  = self._directional_tilt_cos.mean()
+        self.extras["mouth_alignment_cos"]   = self._mouth_alignment_cos.mean()
+        self.extras["bead_in_source_rate"]   = self._bead_in_source_fraction.mean()
+        self.extras["bead_in_target_rate"]   = self._bead_in_target_fraction.mean()
+        self.extras["bead_cross_fraction"]   = self._bead_cross_fraction.mean()
+        self.extras["bead_cross_count"]      = self._bead_cross_count.float().mean()
+        self.extras["spill_ratio"]           = self._spill_ratio.mean()
+        self.extras["success_rate"]          = self.success_flag.float().mean()
+        self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
 
         return total
 
@@ -1147,19 +1166,16 @@ class GraspRightEnv(DirectRLEnv):
         )
         dropped_by_force = drop_force_active & (self._no_tip_force_steps >= self.cfg.drop_force_hold_steps)
 
-        excessive_spill = self._spill_ratio > self.cfg.spill_termination_ratio
-
-        self.success_flag.copy_(self._bead_in_target_fraction >= self.cfg.success_accuracy_threshold)
-        self.episode_success_buf |= self.success_flag
+        self.success_flag.copy_(self._bead_cross_count >= self.cfg.success_bead_cross_count)
+        self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
         self._maybe_store_warmstart_successes()
 
-        terminated = out_x | out_y | fallen | dropped_by_force | excessive_spill | self.success_flag
+        terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         self.extras["object_z"] = self.object_pos[:, 2].mean()
         self.extras["drop_force_rate"] = dropped_by_force.float().mean()
         self.extras["no_tip_force_steps"] = self._no_tip_force_steps.float().mean()
-        self.extras["excessive_spill_rate"] = excessive_spill.float().mean()
 
         return terminated, truncated
 
@@ -1402,7 +1418,7 @@ class GraspRightEnv(DirectRLEnv):
         try:
             self._warmstart_policy = _WarmstartPolicy(ckpt, self.device).to(self.device)
         except Exception as exc:
-            print(f"[5g_pour_right_v4] warmstart policy load failed: {exc}", flush=True)
+            print(f"[5g_pour_right_v2] warmstart policy load failed: {exc}", flush=True)
             self._warmstart_policy = None
             return
 
@@ -1433,13 +1449,13 @@ class GraspRightEnv(DirectRLEnv):
 
         if self._warmstart_cache_count == 0:
             raise RuntimeError(
-                "[5g_pour_right_v4] warmstart cache is empty. "
+                "[5g_pour_right_v2] warmstart cache is empty. "
                 "The v7 checkpoint rollout did not produce any lift-success state, so this task cannot start "
                 "from the requested play-like grasp state."
             )
 
         print(
-            f"[5g_pour_right_v4] collected {self._warmstart_cache_count} warmstart success states.",
+            f"[5g_pour_right_v2] collected {self._warmstart_cache_count} warmstart success states.",
             flush=True,
         )
 

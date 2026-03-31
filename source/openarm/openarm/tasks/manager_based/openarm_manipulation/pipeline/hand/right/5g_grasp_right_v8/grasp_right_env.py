@@ -1005,21 +1005,18 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0)   # (N,)
         r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
-        # ---- R6. force_efficiency: lift 상태에서 안정 grasp를 유지한 채 접촉력을 줄이도록 유도 ----
-        # gate는 lift 성공 유지에 필요한 조건만 사용하고, grasp-phase 전용 shape 조건(full_grasp_flag)은 제외한다.
+        # ---- R6. force_efficiency: lift 상태에서 접촉력을 줄이도록 유도 ----
+        # 분모를 CONTACT_FORCE_MAX(10N, per-finger)로 정규화 → avg force 1~3N 시 0.1~0.3 수준
+        # mass별 적정 파지력은 명시하지 않고 물리 환경이 자연스럽게 결정:
+        #   무거운 컵: 힘 줄이면 낙하(-lift_reward) > efficiency 이득 → 높은 힘에서 수렴
+        #   가벼운 컵: 힘 줄여도 안 떨어짐 → 더 줄이는 방향으로 학습
         grip_normalized = (self.actions[:, 6:].mean(dim=-1) + 1.0) / 2.0   # (N,)
-        total_tip_force = self.contact_force_raw.sum(dim=-1)
-        total_tip_force_normalized = (
-            total_tip_force / (CONTACT_FORCE_MAX * NUM_FINGERTIPS)
+        avg_tip_force_normalized = (
+            self.contact_force_raw.mean(dim=-1) / CONTACT_FORCE_MAX
         ).clamp(min=0.0, max=1.0)
-        lifted_for_eff = (cup_height_delta > self.cfg.force_efficiency_lift_height).float()
         contact_maintained = (self.num_contacts_buf >= max(MIN_CONTACTS_FOR_SUCCESS, 3)).float()
-        eff_gate = (
-            self.is_lift_phase.float()
-            * lifted_for_eff
-            * contact_maintained
-        )
-        r6_force_eff = -self.cfg.force_efficiency_weight * total_tip_force_normalized * eff_gate
+        eff_gate = self.is_lift_phase.float() * contact_maintained
+        r6_force_eff = -self.cfg.force_efficiency_weight * avg_tip_force_normalized * eff_gate
 
         # ---- 합산 ----
         total = (

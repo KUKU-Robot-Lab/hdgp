@@ -838,9 +838,23 @@ class GraspRightEnv(DirectRLEnv):
         _ref_up = _ref_up / _ref_up.norm(dim=-1, keepdim=True).clamp(min=1e-6)
         self._directional_tilt_cos = (self._source_up_axis_w * _ref_up).sum(dim=-1).clamp(-1.0, 1.0)
 
-        # Mouth alignment: pour axis → target 방향
+        # Mouth alignment: a cylindrical cup has no meaningful yaw axis at the rim.
+        # If we align a fixed local axis (e.g. [-1, 0, 0]) to the target, the policy can exploit
+        # wrist yaw / joint7-only spin without improving actual pouring geometry.
+        # Therefore use only the XY heading induced by the current tilt. When nearly upright,
+        # there is no valid pour heading, so keep the alignment cosine at 0 (neutral / no reward).
         _mouth_dir = self._mouth_delta / self._mouth_distance.unsqueeze(1).clamp(min=1e-6)
-        self._mouth_alignment_cos = (self._source_pour_axis_w * _mouth_dir).sum(dim=-1).clamp(-1.0, 1.0)
+        _pour_heading_xy = self._source_up_axis_w[:, :2]
+        _pour_heading_xy_norm = _pour_heading_xy.norm(dim=-1, keepdim=True)
+        _effective_heading_xy = torch.where(
+            _pour_heading_xy_norm > 1e-4,
+            _pour_heading_xy / _pour_heading_xy_norm.clamp(min=1e-6),
+            torch.zeros_like(_pour_heading_xy),
+        )
+        _effective_pour_heading = torch.cat(
+            [_effective_heading_xy, torch.zeros(n, 1, device=self.device)], dim=-1
+        )
+        self._mouth_alignment_cos = (_effective_pour_heading * _mouth_dir).sum(dim=-1).clamp(-1.0, 1.0)
 
         # Bead flags & spill
         self._compute_bead_flags()
@@ -1042,7 +1056,7 @@ class GraspRightEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         self._compute_intermediate_values()
 
-        # ---- Grasp quality ----
+        # ---- Benefit: stable grasp that still permits pouring ----
         grasp_contact = self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
         others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)
         thumb_force = self.contact_force_raw[:, 0]
@@ -1064,47 +1078,54 @@ class GraspRightEnv(DirectRLEnv):
             -self.cfg.reward_force_balance_sharpness * force_balance_err
         )
 
-        # ---- Transport: pour point를 target opening XY 근처로 ----
+        # ---- Benefit: approach and controllable pour pose ----
         transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
-
-        # ---- Tilt: proximity gate 적용 ----
-        # transport_reward를 gate로 사용: 타겟 근처일수록 tilt/align reward 증폭
-        # → 먼저 transport 학습 후 tilt 학습되는 자연스러운 커리큘럼 형성
         target_tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
         tilt_error = torch.abs(self._source_up_dot_world - target_tilt_cos)
         tilt_reward = 1.0 - torch.tanh(self.cfg.reward_tilt_scale * tilt_error)
         directional_tilt_reward = ((self._directional_tilt_cos + 1.0) * 0.5).clamp(0.0, 1.0)
         mouth_alignment_reward = ((self._mouth_alignment_cos + 1.0) * 0.5).pow(self.cfg.reward_mouth_align_scale)
+        # Tilt magnitude alone is axis-ambiguous. Only reward "tilt" strongly when the pour axis
+        # is also facing the target opening, so the cup does not learn a twisted side-pour pose.
+        aligned_tilt_benefit = tilt_reward * mouth_alignment_reward
+        aligned_directional_tilt_benefit = directional_tilt_reward * mouth_alignment_reward
 
-        # ---- near_target_gate 제거: tilt/align 독립 학습 ----
-        # gate가 있으면 transport 진전 없이는 tilt reward 학습 불가 → local minimum
-        pour_pose_reward = 0.5 * tilt_reward + 0.5 * directional_tilt_reward
-        align_reward = mouth_alignment_reward
-
-        # ---- Z Clearance: source pour point가 target opening 위에 있도록 ----
-        # tanh 사용: z_clearance=0에서 0 (중립), 양수면 양(+), 음수면 패널티
-        # sigmoid 대비: 포화 없이 gradient 유지
         clearance_reward = torch.tanh(self.cfg.reward_clearance_scale * self._mouth_z_clearance)
+        positive_clearance_benefit = torch.relu(clearance_reward)
 
-        # ---- Bead / Success ----
-        bead_target_reward = self._bead_cross_fraction
-        success_reward = self.success_flag.float()
-        spill_penalty = self._spill_ratio
+        # ---- Benefit: actual liquid transfer to target ----
+        pour_accuracy_benefit = self._bead_cross_fraction
+        success_benefit = self.success_flag.float()
+
+        # ---- Cost: risky/inefficient actions ----
+        premature_tilt_cost = aligned_directional_tilt_benefit * (1.0 - transport_reward)
+        low_clearance_tilt_cost = aligned_directional_tilt_benefit * torch.relu(-clearance_reward)
+        misaligned_pour_cost = directional_tilt_reward * (1.0 - mouth_alignment_reward)
+        spill_cost = self._spill_ratio
         action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
 
-        total = (
-            self.cfg.reward_grasp_contact_weight * grasp_contact
-            + self.cfg.reward_full_grasp_weight * full_grasp_reward
-            + self.cfg.reward_force_balance_weight * force_balance_reward
-            + self.cfg.reward_transport_weight * transport_reward
-            + self.cfg.reward_clearance_weight * clearance_reward
-            + self.cfg.reward_tilt_weight * pour_pose_reward
-            + self.cfg.reward_pour_alignment_weight * align_reward
-            + self.cfg.reward_bead_target_weight * bead_target_reward
-            + self.cfg.reward_success_weight * success_reward
-            - self.cfg.penalty_spill_weight * spill_penalty
-            - self.cfg.penalty_action_rate_weight * action_rate_penalty
+        task_benefit = (
+            self.cfg.benefit_grasp_contact_weight * grasp_contact
+            + self.cfg.benefit_full_grasp_weight * full_grasp_reward
+            + self.cfg.benefit_force_balance_weight * force_balance_reward
+            + self.cfg.benefit_transport_weight * transport_reward
+            + self.cfg.benefit_clearance_weight * positive_clearance_benefit
+            + self.cfg.benefit_tilt_weight * aligned_tilt_benefit
+            + self.cfg.benefit_directional_tilt_weight * aligned_directional_tilt_benefit
+            + self.cfg.benefit_alignment_weight * mouth_alignment_reward
         )
+        outcome_benefit = (
+            self.cfg.benefit_pour_accuracy_weight * pour_accuracy_benefit
+            + self.cfg.benefit_success_weight * success_benefit
+        )
+        control_cost = self.cfg.cost_action_rate_weight * action_rate_penalty
+        risk_cost = (
+            self.cfg.cost_premature_tilt_weight * premature_tilt_cost
+            + self.cfg.cost_low_clearance_tilt_weight * low_clearance_tilt_cost
+            + self.cfg.cost_misaligned_pour_weight * misaligned_pour_cost
+            + self.cfg.cost_spill_weight * spill_cost
+        )
+        total = task_benefit + outcome_benefit - control_cost - risk_cost
 
         self.extras["reward_grasp_contact"] = grasp_contact.mean()
         self.extras["reward_grasp_stability"] = torch.zeros(1, device=self.device).squeeze()
@@ -1112,10 +1133,20 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward_force_balance"] = force_balance_reward.mean()
         self.extras["reward_full_grasp"] = full_grasp_reward.mean()
         self.extras["reward_transport"] = transport_reward.mean()
-        self.extras["reward_clearance"] = clearance_reward.mean()
+        self.extras["reward_clearance"] = positive_clearance_benefit.mean()
         self.extras["reward_tilt"] = tilt_reward.mean()
         self.extras["reward_directional_tilt"] = directional_tilt_reward.mean()
         self.extras["reward_mouth_alignment"] = mouth_alignment_reward.mean()
+        self.extras["reward_aligned_tilt"] = aligned_tilt_benefit.mean()
+        self.extras["reward_aligned_directional_tilt"] = aligned_directional_tilt_benefit.mean()
+        self.extras["benefit_task"] = task_benefit.mean()
+        self.extras["benefit_outcome"] = outcome_benefit.mean()
+        self.extras["cost_control"] = control_cost.mean()
+        self.extras["cost_risk"] = risk_cost.mean()
+        self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
+        self.extras["cost_low_clearance_tilt"] = low_clearance_tilt_cost.mean()
+        self.extras["cost_misaligned_pour"] = misaligned_pour_cost.mean()
+        self.extras["cost_spill"] = spill_cost.mean()
         self.extras["penalty_action_rate"] = action_rate_penalty.mean()
         self.extras["force_balance_err"] = (thumb_force - others_avg_force).abs().mean()
         self.extras["thumb_force_mean"] = thumb_force.mean()

@@ -1,5 +1,5 @@
-# 5g_pour_right_v2 rl_games PPO 설정
-# reset 은 v7 warmstart cache를 사용하고, 학습 task 이름만 새로 분리한다.
+# 5g_pour_right_v4 rl_games PPO 설정
+# v2 dynamics/reset 구조를 유지하고 reward만 v3 cost-benefit 구조를 사용한다.
 # 관측: actor 101D / critic 143D (asymmetric), 액션: 11D
 # Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
@@ -42,7 +42,7 @@ params:
   load_path: ''
 
   config:
-    name: 5g_pour_right-v2
+    name: 5g_pour_right-v4
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'

@@ -177,32 +177,30 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # -----------------------------------------------------------------------
     # Reward shaping
-    # 비용-편익 상충(Cost-Benefit Tradeoff) 기반:
-    # reward = task_benefit + outcome_benefit - control_cost - risk_cost
-    # gate로 보상을 막지 않고, 이른 붓기/낮은 clearance/유출을 명시적 비용으로 둔다.
-    # sim2real-safe signal만 사용: cup pose, fingertip contact, bead pose
+    # sim2real-safe signal만 사용: cup pose, palm pose, fingertip contact, bead pose
     # -----------------------------------------------------------------------
-    benefit_grasp_contact_weight: float = 0.15
-    benefit_full_grasp_weight: float = 0.60
-    benefit_force_balance_weight: float = 1.40
-    benefit_transport_weight: float = 2.50
-    benefit_clearance_weight: float = 1.00
-    benefit_tilt_weight: float = 1.60
-    benefit_directional_tilt_weight: float = 1.60
-    benefit_alignment_weight: float = 1.20
-    benefit_pour_accuracy_weight: float = 8.00
-    benefit_success_weight: float = 10.00
+    # ---- 단순화된 리워드 (v2 test1 분석 후 개선) ----
+    # 제거: grasp_stability (기울이기 방해), clearance (기울이면 패널티)
+    # grasp_hold gate 제거: tilt/transport 독립 학습
+    # force_balance 유지: 컵 낙하 방지 (기울임 후에도 균형 잡힌 파지 필요)
+    reward_grasp_contact_weight: float = 0.0     # 제거: full_grasp으로 충분
+    reward_grasp_stability_weight: float = 0.0   # 제거: 기울이기 방해
+    reward_force_balance_weight: float = 1.5     # 0.0 → 1.5: 컵 낙하 방지 핵심
+    reward_full_grasp_weight: float = 0.5        # 1.5 → 0.5: local minimum 방지, 약한 가이드
+    reward_transport_weight: float = 3.0
+    reward_clearance_weight: float = 2.0         # 1.5→2.0: tanh 기반으로 변경 (중립=0, 패널티 포함)
+    reward_tilt_weight: float = 4.0              # 3.0→4.0: gate 제거로 독립 학습, weight 강화
+    reward_pour_alignment_weight: float = 1.0    # 0.6 → 1.0: 방향 정렬 강화
+    reward_bead_target_weight: float = 8.0
+    reward_success_weight: float = 10.0
+    penalty_spill_weight: float = 2.0
+    penalty_action_rate_weight: float = 0.01
 
-    cost_spill_weight: float = 3.50
-    cost_action_rate_weight: float = 0.01
-    cost_premature_tilt_weight: float = 2.00
-    cost_low_clearance_tilt_weight: float = 1.50
-    cost_misaligned_pour_weight: float = 1.00
-
+    reward_grasp_slip_scale: float = 35.0
     reward_force_balance_sharpness: float = 8.0
-    reward_transport_scale: float = 10.0
+    reward_transport_scale: float = 10.0          # 5.0→10.0: XY gradient 강화 (6cm plateau 극복)
     reward_clearance_scale: float = 10.0
-    reward_tilt_scale: float = 1.0
+    reward_tilt_scale: float = 1.0               # 2.0 → 1.0: target=150° 대비 전 구간 gradient 확보
     reward_mouth_align_scale: float = 4.0
     thumb_force_ratio_min: float = 0.5
 

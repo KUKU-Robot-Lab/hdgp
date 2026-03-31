@@ -192,11 +192,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_quality_lift_weight:     float = 25.0
     grasp_quality_lift_sharpness:  float = 10.0
 
-    # R6. force_efficiency: lift 상태에서 안정 grasp를 유지한 채 접촉력을 줄이도록 유도
-    # grasp acquisition은 건드리지 않고, lift refinement 단계에서만 작동한다.
-    force_efficiency_weight: float = 0.5
-    force_efficiency_lift_height: float = 0.01
-    force_efficiency_upright_min: float = 0.90
+    # R6. force_efficiency: lift 상태에서 접촉력을 줄이도록 유도
+    # avg_tip_force / CONTACT_FORCE_MAX 정규화 (per-finger 기준, 값 범위 0.1~0.5)
+    # mass별 적정 파지력은 policy가 물리 환경과의 상호작용으로 자동 결정
+    force_efficiency_weight: float = 15.0
 
     # -----------------------------------------------------------------------
     # ADR

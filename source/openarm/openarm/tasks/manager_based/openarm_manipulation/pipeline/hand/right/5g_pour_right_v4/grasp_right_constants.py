@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""상수 정의: 5g_pour_right_v2
+"""상수 정의: 5g_pour_right_v4
 
 v1: Warmstart(v7 grasp) 기반 물붓기 태스크
     컵이 이미 파지·들린 상태로 시작 → transport + tilt + pour 학습
