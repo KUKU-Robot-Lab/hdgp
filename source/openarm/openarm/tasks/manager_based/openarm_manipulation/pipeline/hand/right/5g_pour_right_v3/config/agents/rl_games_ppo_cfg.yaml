@@ -1,5 +1,5 @@
-# 5g_pour_right_v3 rl_games PPO 설정
-# Warmstart v8 (107D grasp policy) + PBD Fluid Particle + Cost-Benefit Tradeoff Reward
+# 5g_pour_right_v2 rl_games PPO 설정
+# reset 은 v7 warmstart cache를 사용하고, 학습 task 이름만 새로 분리한다.
 # 관측: actor 101D / critic 143D (asymmetric), 액션: 11D
 # Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
@@ -42,7 +42,7 @@ params:
   load_path: ''
 
   config:
-    name: 5g_pour_right-v3
+    name: 5g_pour_right-v2
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'

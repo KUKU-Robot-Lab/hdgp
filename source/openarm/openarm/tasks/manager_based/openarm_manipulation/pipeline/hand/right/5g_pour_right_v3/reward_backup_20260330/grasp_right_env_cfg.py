@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_pour_right_v4
+"""환경 설정: 5g_pour_right_v2
 
-v4: v2 환경 구조를 유지하고 reward/success 기준만 v3 cost-benefit 형태로 교체.
+v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
+- Action: 11D (6D palm pose + 5D per-finger lerp)
+- Observation: actor 106D / critic 143D (asymmetric)
+- Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
+- Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
 
 from dataclasses import MISSING
@@ -84,7 +88,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
 
 @configclass
 class GraspRightEnvCfg(DirectRLEnvCfg):
-    """5g_pour_right_v4 환경 설정."""
+    """5g_pour_right_v2 환경 설정."""
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
@@ -157,35 +161,48 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     palm_delta_xyz: float = 0.10
     palm_delta_rot_deg: float = 35.0
-    target_pour_tilt_deg: float = 150.0
+    target_pour_tilt_deg: float = 150.0  # 90.0 → 150.0: 실제 물붓기에 필요한 강한 기울기
 
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
     lift_success_height: float = 0.03
-    success_accuracy_threshold: float = 0.10
+    success_mouth_xy_threshold: float = 0.045
+    success_z_clearance_min: float = 0.02
+    success_z_clearance_max: float = 0.10
+    success_tilt_cos_tolerance: float = 0.12
+    success_directional_tilt_cos: float = 0.90
     success_hold_steps: int = 10
     drop_force_hold_steps: int = 3
-    spill_termination_ratio: float = 0.60
 
     # -----------------------------------------------------------------------
-    # Reward: Cost-Benefit Tradeoff (v3 구조)
-    # v4에서는 fluid accuracy 대신 bead_in_target_fraction을 accuracy로 사용.
+    # Reward shaping
+    # sim2real-safe signal만 사용: cup pose, palm pose, fingertip contact, bead pose
     # -----------------------------------------------------------------------
-    w_accuracy: float = 10.0
-    w_time: float = 1.0
-    alpha_time: float = 0.5
-    w_effort: float = 0.001
-    w_transport: float = 0.5
-    w_tilt: float = 1.0
-    w_spill: float = 3.0
-    w_force_balance: float = 1.5
-    w_success: float = 10.0
-    w_action_rate: float = 0.01
+    # ---- 단순화된 리워드 (v2 test1 분석 후 개선) ----
+    # 제거: grasp_stability (기울이기 방해), clearance (기울이면 패널티)
+    # grasp_hold gate 제거: tilt/transport 독립 학습
+    # force_balance 유지: 컵 낙하 방지 (기울임 후에도 균형 잡힌 파지 필요)
+    reward_grasp_contact_weight: float = 0.0     # 제거: full_grasp으로 충분
+    reward_grasp_stability_weight: float = 0.0   # 제거: 기울이기 방해
+    reward_force_balance_weight: float = 1.5     # 0.0 → 1.5: 컵 낙하 방지 핵심
+    reward_full_grasp_weight: float = 0.5        # 1.5 → 0.5: local minimum 방지, 약한 가이드
+    reward_transport_weight: float = 3.0
+    reward_clearance_weight: float = 2.0         # 1.5→2.0: tanh 기반으로 변경 (중립=0, 패널티 포함)
+    reward_tilt_weight: float = 4.0              # 3.0→4.0: gate 제거로 독립 학습, weight 강화
+    reward_pour_alignment_weight: float = 1.0    # 0.6 → 1.0: 방향 정렬 강화
+    reward_bead_target_weight: float = 8.0
+    reward_success_weight: float = 10.0
+    penalty_spill_weight: float = 2.0
+    penalty_action_rate_weight: float = 0.01
 
+    reward_grasp_slip_scale: float = 35.0
     reward_force_balance_sharpness: float = 8.0
-    reward_transport_scale: float = 10.0
-    reward_tilt_scale: float = 1.0
+    reward_transport_scale: float = 10.0          # 5.0→10.0: XY gradient 강화 (6cm plateau 극복)
+    reward_clearance_scale: float = 10.0
+    reward_tilt_scale: float = 1.0               # 2.0 → 1.0: target=150° 대비 전 구간 gradient 확보
+    reward_mouth_align_scale: float = 4.0
+    thumb_force_ratio_min: float = 0.5
 
     # -----------------------------------------------------------------------
     # 종료 조건

@@ -560,6 +560,7 @@ class GraspRightEnv(DirectRLEnv):
         tip_xyz = torch.stack([
             s.data.force_matrix_w[:, 0, 0, :] for s in self._tip_sensors
         ], dim=1)   # (N, 5, 3)
+        tip_xyz = torch.nan_to_num(tip_xyz, nan=0.0, posinf=0.0, neginf=0.0)
         tip_norms = tip_xyz.norm(dim=-1)   # (N, 5)
 
         self.contact_force_xyz_raw.copy_(tip_xyz)
@@ -569,11 +570,13 @@ class GraspRightEnv(DirectRLEnv):
 
         # Critic: distal
         per_distal = self._distal_sensor.data.net_forces_w.norm(dim=-1)   # (N, 5)
+        per_distal = torch.nan_to_num(per_distal, nan=0.0, posinf=0.0, neginf=0.0)
         self.distal_contact_force_raw.copy_(per_distal)
         self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
 
         # Critic: middle
         per_middle = self._middle_sensor.data.net_forces_w.norm(dim=-1)   # (N, 5)
+        per_middle = torch.nan_to_num(per_middle, nan=0.0, posinf=0.0, neginf=0.0)
         self.middle_contact_force_raw.copy_(per_middle)
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
 
@@ -791,6 +794,10 @@ class GraspRightEnv(DirectRLEnv):
         # 8. last actions (11D)
         last_actions = self.actions
 
+        # 9. fingertip force magnitude normalized (5D) — 실로봇 Teosllo FT 센서 직결
+        # CONTACT_FORCE_MAX(10N) 기준 정규화, clamp [0,1]
+        tip_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+
         actor_obs = torch.cat([
             arm_joint_pos,          # 7
             arm_joint_vel,          # 7
@@ -803,7 +810,8 @@ class GraspRightEnv(DirectRLEnv):
             binary_contact,         # 5
             last_actions,           # 11
             self._bead_mass_normalized.unsqueeze(-1),  # 1 (0=빈 컵, 1=최대 하중)
-        ], dim=-1)   # 107D
+            tip_force_norm,         # 5 (fingertip force magnitude, sim2real 가능)
+        ], dim=-1)   # 112D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -842,7 +850,7 @@ class GraspRightEnv(DirectRLEnv):
         ).norm(dim=-1)
         fingertip_signed_dist = (tip_to_cup_dist - CUP_RADIUS_APPROX).unsqueeze(-1).squeeze(-1)
 
-        # critic actor_obs_clean (107D) — clean state 재조합
+        # critic actor_obs_clean (112D) — clean state 재조합
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,
             arm_joint_vel_clean,
@@ -855,10 +863,11 @@ class GraspRightEnv(DirectRLEnv):
             binary_contact,
             last_actions,
             self._bead_mass_normalized.unsqueeze(-1),  # 1
-        ], dim=-1)   # 107D
+            tip_force_norm,         # 5 (fingertip force magnitude)
+        ], dim=-1)   # 112D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 107
+            actor_obs_clean,        # 112
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4
@@ -869,7 +878,7 @@ class GraspRightEnv(DirectRLEnv):
             middle_force_norm,      # 5
             phase_step_ratio,       # 1
             fingertip_signed_dist,  # 5
-        ], dim=-1)   # 144D
+        ], dim=-1)   # 149D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -1030,6 +1039,7 @@ class GraspRightEnv(DirectRLEnv):
             + r5_quality_lift
             + r6_force_eff
         )
+        total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
 
         # ---- ADR increment ----
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)

@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Hand/robot preset metadata for 5g_pour_right_v2.
+"""Hand/robot preset metadata for 5g_pour_right_v3.
 
-v3와 동일한 joint/body 구성. v4에서 재사용.
+v3: PhysX PBD particle system 기반. joint/body 구성은 v2와 동일.
 """
 
 import math
@@ -48,8 +48,8 @@ LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "openarm_left_hand"
 LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.06]
 LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]
 
-BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.035]
-BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ = [1.0, 0.0, 0.0, 0.0]
+# v3: bead spawn 상수 제거 (PhysX PBD로 대체됨)
+# BEAD_SPAWN_POS_SOURCE_CUP_B, BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ → 삭제
 SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
 TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
 SOURCE_CUP_POUR_AXIS_B = [-1.0, 0.0, 0.0]

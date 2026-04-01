@@ -85,7 +85,7 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 107        # Actor: sim2real 가능 (106 + 1 bead_mass_normalized)
+NUM_OBSERVATIONS = 112        # Actor: sim2real 가능 (107 + 5 tip_force_norm)
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 37
