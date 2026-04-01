@@ -55,7 +55,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_mul
+from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_from_angle_axis, quat_mul
 
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
@@ -112,6 +112,7 @@ class _WarmstartPolicy(nn.Module):
         self.register_buffer("actor_l3_b", state["a2c_network.actor_mlp.4.bias"].float())
         self.register_buffer("mu_w", state["a2c_network.mu.weight"].float())
         self.register_buffer("mu_b", state["a2c_network.mu.bias"].float())
+        self.obs_dim = int(self.obs_mean.shape[0])
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         x = (obs - self.obs_mean) / torch.sqrt(self.obs_var + 1e-5)
@@ -137,6 +138,92 @@ class GraspRightEnv(DirectRLEnv):
     """
 
     cfg: GraspRightEnvCfg
+
+    @staticmethod
+    def _quat_xyzw_from_euler_zyx(euler_zyx: torch.Tensor) -> torch.Tensor:
+        """Convert ZYX Euler angles to quaternion ordered as (x, y, z, w)."""
+        batch = euler_zyx.shape[0]
+        unit_x = euler_zyx.new_tensor([1.0, 0.0, 0.0]).expand(batch, -1)
+        unit_y = euler_zyx.new_tensor([0.0, 1.0, 0.0]).expand(batch, -1)
+        unit_z = euler_zyx.new_tensor([0.0, 0.0, 1.0]).expand(batch, -1)
+        qz = quat_from_angle_axis(euler_zyx[:, 0], unit_z)
+        qy = quat_from_angle_axis(euler_zyx[:, 1], unit_y)
+        qx = quat_from_angle_axis(euler_zyx[:, 2], unit_x)
+        quat_wxyz = quat_mul(quat_mul(qz, qy), qx)
+        return quat_wxyz[:, [1, 2, 3, 0]]
+
+    @staticmethod
+    def _compose_world_delta_quat_xyzw(base_quat_xyzw: torch.Tensor, delta_rotvec: torch.Tensor) -> torch.Tensor:
+        """Apply a world-frame axis-angle delta to a base quaternion."""
+        delta_angle = torch.norm(delta_rotvec, dim=-1)
+        delta_axis = torch.zeros_like(delta_rotvec)
+        nonzero = delta_angle > 1e-8
+        if torch.any(nonzero):
+            delta_axis[nonzero] = delta_rotvec[nonzero] / delta_angle[nonzero].unsqueeze(-1)
+        delta_axis[~nonzero, 0] = 1.0
+        delta_quat_wxyz = quat_from_angle_axis(delta_angle, delta_axis)
+        base_quat_wxyz = base_quat_xyzw[:, [3, 0, 1, 2]]
+        # World-frame delta uses left-multiplication.
+        target_quat_wxyz = quat_mul(delta_quat_wxyz, base_quat_wxyz)
+        target_quat_xyzw = target_quat_wxyz[:, [1, 2, 3, 0]]
+        return torch.nn.functional.normalize(target_quat_xyzw, dim=-1)
+
+    @staticmethod
+    def _safe_normalize(vec: torch.Tensor, fallback: torch.Tensor) -> torch.Tensor:
+        norm = torch.norm(vec, dim=-1, keepdim=True)
+        fallback_norm = torch.norm(fallback, dim=-1, keepdim=True).clamp(min=1e-6)
+        fallback_unit = fallback / fallback_norm
+        return torch.where(norm > 1e-6, vec / norm.clamp(min=1e-6), fallback_unit)
+
+    def _build_cup_local_tilt_rotvec(self, delta_local: torch.Tensor) -> torch.Tensor:
+        """Map local tilt commands to a world-frame rotvec.
+
+        delta_local[:, 0]: spin around current cup up-axis
+        delta_local[:, 1]: tilt toward target opening
+        delta_local[:, 2]: tilt in the orthogonal in-plane direction
+        """
+        n = delta_local.shape[0]
+        cup_quat_w = self.cup.data.root_quat_w
+        left_target_pos_w = self.left_target_cup.data.root_pos_w
+        left_target_quat_w = self.left_target_cup.data.root_quat_w
+
+        source_pour_point_w = self.cup.data.root_pos_w + quat_apply(
+            cup_quat_w,
+            self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
+        )
+        target_opening_w = left_target_pos_w + quat_apply(
+            left_target_quat_w,
+            self._target_cup_opening_pos_b.unsqueeze(0).expand(n, -1),
+        )
+        cup_up_axis_w = quat_apply(
+            cup_quat_w,
+            self._source_cup_up_axis_b.unsqueeze(0).expand(n, -1),
+        )
+        cup_pour_axis_w = quat_apply(
+            cup_quat_w,
+            self._source_cup_pour_axis_b.unsqueeze(0).expand(n, -1),
+        )
+
+        mouth_delta = target_opening_w - source_pour_point_w
+        target_dir = mouth_delta - (mouth_delta * cup_up_axis_w).sum(dim=-1, keepdim=True) * cup_up_axis_w
+        pour_axis_plane = cup_pour_axis_w - (cup_pour_axis_w * cup_up_axis_w).sum(dim=-1, keepdim=True) * cup_up_axis_w
+        target_dir = self._safe_normalize(target_dir, pour_axis_plane)
+
+        tilt_toward_axis = self._safe_normalize(
+            torch.cross(target_dir, cup_up_axis_w, dim=-1),
+            torch.cross(pour_axis_plane, cup_up_axis_w, dim=-1),
+        )
+        tilt_ortho_axis = self._safe_normalize(
+            torch.cross(cup_up_axis_w, tilt_toward_axis, dim=-1),
+            pour_axis_plane,
+        )
+        spin_axis = self._safe_normalize(cup_up_axis_w, cup_up_axis_w.new_tensor([0.0, 0.0, 1.0]).expand_as(cup_up_axis_w))
+
+        return (
+            delta_local[:, 0:1] * spin_axis
+            + delta_local[:, 1:2] * tilt_toward_axis
+            + delta_local[:, 2:3] * tilt_ortho_axis
+        )
 
     def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
@@ -197,7 +284,8 @@ class GraspRightEnv(DirectRLEnv):
         ], device=self.device)
 
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
-        self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 6, device=self.device)
+        # [x, y, z, qx, qy, qz, qw]
+        self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 7, device=self.device)
 
         # ----------------------------------------------------------------
         # Hand poses (per-finger lerp용)
@@ -258,6 +346,7 @@ class GraspRightEnv(DirectRLEnv):
         self.distal4_pos     = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.actions         = torch.zeros(self.num_envs, cfg.num_actions, device=self.device)
         self.prev_actions    = torch.full((self.num_envs, cfg.num_actions), 0.0, device=self.device)
+        self._prev_mouth_xy_distance = torch.zeros(self.num_envs, device=self.device)
 
         # ----------------------------------------------------------------
         # Pregrasp / Lift 버퍼 (reset에서 계산)
@@ -366,10 +455,11 @@ class GraspRightEnv(DirectRLEnv):
         self._warmstart_collect_mode = False
         self._warmstart_policy = None
         self._warmstart_cache_count = 0
+        self._warmstart_reset_debug_printed = False
         cache_size = max(int(self.cfg.warmstart_cache_size), 1)
         self._warmstart_arm_pos = torch.zeros(cache_size, NUM_ARM_DOF, device=self.device)
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
-        self._warmstart_palm_pose = torch.zeros(cache_size, 6, device=self.device)
+        self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
         # GUI target visualization: source pour point (red) + target opening (blue)
         self._vis_markers = VisualizationMarkers(
@@ -467,7 +557,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # Fabric input 버퍼
         self.hand_pca_targets  = torch.zeros(self.num_envs, 5, device=self.device)
-        self.palm_pose_targets = torch.zeros(self.num_envs, 6, device=self.device)
+        self.palm_pose_targets = torch.zeros(self.num_envs, 7, device=self.device)
         self.fabric_damping_gain = self.cfg.fabrics_damping_gain * torch.ones(self.num_envs, 1, device=self.device)
 
         # Reset 전용 소형 Fabrics (chunk 단위)
@@ -522,17 +612,20 @@ class GraspRightEnv(DirectRLEnv):
         flat_x, flat_y = gx.flatten(), gy.flatten()
         M = flat_x.shape[0]  # 169
 
-        palm = torch.zeros(M, 6, device=self.device)
-        palm[:, 0] = flat_x + self.cfg.pregrasp_offset_x
-        palm[:, 1] = flat_y + self.cfg.pregrasp_offset_y
-        palm[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
-        palm[:, 3] = math.radians(90.0)
-        palm[:, 4] = math.radians(0.0)
-        palm[:, 5] = math.radians(90.0)
-        palm = torch.max(
-            torch.min(palm, self.palm_maxs.unsqueeze(0)),
+        palm_euler = torch.zeros(M, 6, device=self.device)
+        palm_euler[:, 0] = flat_x + self.cfg.pregrasp_offset_x
+        palm_euler[:, 1] = flat_y + self.cfg.pregrasp_offset_y
+        palm_euler[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
+        palm_euler[:, 3] = math.radians(90.0)
+        palm_euler[:, 4] = math.radians(0.0)
+        palm_euler[:, 5] = math.radians(90.0)
+        palm_euler = torch.max(
+            torch.min(palm_euler, self.palm_maxs.unsqueeze(0)),
             self.palm_mins.unsqueeze(0),
         )
+        palm = torch.zeros(M, 7, device=self.device)
+        palm[:, :3] = palm_euler[:, :3]
+        palm[:, 3:7] = self._quat_xyzw_from_euler_zyx(palm_euler[:, 3:6])
 
         q_init = self.robot_start_joint_pos[0].unsqueeze(0).expand(M, -1).contiguous()
         dummy  = torch.arange(M, device=self.device)
@@ -578,7 +671,7 @@ class GraspRightEnv(DirectRLEnv):
             self._reset_fabric.set_features(
                 self._reset_pca,
                 pp,
-                "euler_zyx",
+                "quaternion",
                 fq.detach(),
                 fqd.detach(),
                 self._reset_obj_ids,
@@ -695,8 +788,19 @@ class GraspRightEnv(DirectRLEnv):
             palm_action = torch.where(hold_mask, torch.zeros_like(palm_action), palm_action)
 
         delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
-        palm_pose = self.pregrasp_palm_pose_buf + delta
-        palm_pose = torch.max(torch.min(palm_pose, self.palm_maxs), self.palm_mins)
+        # Rotation action is interpreted in a cup-local basis:
+        # [spin around cup-up, tilt toward target opening, orthogonal tilt].
+        delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
+        palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
+        palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3]
+        palm_pose[:, :3] = torch.max(
+            torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
+        )
+        palm_pose[:, 3:7] = self._compose_world_delta_quat_xyzw(
+            self.pregrasp_palm_pose_buf[:, 3:7],
+            delta_rotvec_world,
+        )
         self.palm_pose_targets.copy_(palm_pose)
         self.hand_pca_targets.zero_()
 
@@ -709,7 +813,7 @@ class GraspRightEnv(DirectRLEnv):
         self.open_tesollo_fabric.set_features(
             self.hand_pca_targets,
             self.palm_pose_targets,
-            "euler_zyx",
+            "quaternion",
             self.fabric_q.detach(),
             self.fabric_qd.detach(),
             self.object_ids,
@@ -826,17 +930,16 @@ class GraspRightEnv(DirectRLEnv):
         self._mouth_z_clearance = self._source_pour_point_w[:, 2] - self._target_opening_w[:, 2]
         self._source_up_dot_world = self._source_up_axis_w[:, 2].clamp(-1.0, 1.0)
 
-        # Directional tilt: source cup → target cup 방향(XY)으로 기울도록 유도
-        # cup local frame 기반이 아닌 타겟 방향 기반으로 변경
-        # (컵 그립 방향에 무관하게 항상 타겟 쪽으로 기울어야 함)
+        # Directional tilt: 원통 컵의 실제 pouring side는 cup root +Z 축이 기울어진 반대편 림이다.
+        # 따라서 낮아지는 림 방향 = -project(source_up_axis, XY) 로 정의하고,
+        # 그 방향이 target opening의 XY 방향을 향하도록 보상한다.
         _tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
-        _tilt_sin = math.sin(math.radians(self.cfg.target_pour_tilt_deg))
         _mouth_delta_xy = self._mouth_delta[:, :2]   # (N, 2): target - source XY
-        _tilt_dir_xy = _mouth_delta_xy / (_mouth_delta_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
-        _tilt_dir_3d = torch.cat([_tilt_dir_xy, torch.zeros(n, 1, device=self.device)], dim=-1)
-        _ref_up = _tilt_cos * self._world_up.expand(n, -1) + _tilt_sin * _tilt_dir_3d
-        _ref_up = _ref_up / _ref_up.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-        self._directional_tilt_cos = (self._source_up_axis_w * _ref_up).sum(dim=-1).clamp(-1.0, 1.0)
+        _mouth_dir_xy = _mouth_delta_xy / (_mouth_delta_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
+        # cup up axis XY = mouth 방향 XY. 올바른 pour = mouth가 target 방향 → 양수
+        _mouth_tilt_dir_xy = self._source_up_axis_w[:, :2]
+        _mouth_tilt_dir_xy = _mouth_tilt_dir_xy / (_mouth_tilt_dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
+        self._directional_tilt_cos = (_mouth_tilt_dir_xy * _mouth_dir_xy).sum(dim=-1).clamp(-1.0, 1.0)
 
         # Mouth alignment: a cylindrical cup has no meaningful yaw axis at the rim.
         # If we align a fixed local axis (e.g. [-1, 0, 0]) to the target, the policy can exploit
@@ -872,11 +975,12 @@ class GraspRightEnv(DirectRLEnv):
     # Observations: Actor 102D | Critic 149D
     # ------------------------------------------------------------------
     def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
-        """Build the original 106D actor observation for the warmstart checkpoint.
+        """Build the legacy actor observation expected by the warmstart checkpoint.
 
-        The warmstart policy was trained on the pre-pouring grasp task and must
-        keep receiving the legacy actor observation layout even though the main
-        training actor observation has changed.
+        Supported warmstart actor observation layouts:
+          106D: v7 grasp checkpoint
+          107D: v8 grasp checkpoint (106D + bead_mass_normalized)
+          112D: future-proof fallback (107D + tip_force_norm)
         """
 
         arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
@@ -893,7 +997,7 @@ class GraspRightEnv(DirectRLEnv):
         palm_to_cup = cup_pos - palm_center_pos
         cup_to_fingertip = (fingertip_pos - cup_pos.unsqueeze(1)).view(self.num_envs, -1)
 
-        warmstart_obs = torch.cat([
+        warmstart_obs_106 = torch.cat([
             arm_joint_pos,
             arm_joint_vel,
             finger_joint_pos,
@@ -906,10 +1010,30 @@ class GraspRightEnv(DirectRLEnv):
             last_actions,
         ], dim=-1)
 
-        if warmstart_obs.shape[1] != 106:
-            raise RuntimeError(f"[warmstart] Legacy obs dim mismatch: {warmstart_obs.shape[1]} != 106")
+        if warmstart_obs_106.shape[1] != 106:
+            raise RuntimeError(f"[warmstart] Legacy obs dim mismatch: {warmstart_obs_106.shape[1]} != 106")
 
-        return warmstart_obs
+        if self._warmstart_policy is None:
+            return warmstart_obs_106
+
+        obs_dim = self._warmstart_policy.obs_dim
+        if obs_dim == 106:
+            return warmstart_obs_106
+
+        bead_mass_normalized = torch.ones(self.num_envs, 1, device=self.device)
+        warmstart_obs_107 = torch.cat([warmstart_obs_106, bead_mass_normalized], dim=-1)
+        if obs_dim == 107:
+            return warmstart_obs_107
+
+        tip_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+        warmstart_obs_112 = torch.cat([warmstart_obs_107, tip_force_norm], dim=-1)
+        if obs_dim == 112:
+            return warmstart_obs_112
+
+        raise RuntimeError(
+            f"[warmstart] Unsupported checkpoint obs dim: {obs_dim}. "
+            "Expected one of {106, 107, 112}."
+        )
 
     def _get_observations(self) -> dict:
         # ==== 공통 clean state (critic용, 물리 정확값) ====
@@ -1077,75 +1201,85 @@ class GraspRightEnv(DirectRLEnv):
         force_balance_reward = force_balance_gate * torch.exp(
             -self.cfg.reward_force_balance_sharpness * force_balance_err
         )
+        grasp_stability_reward = force_balance_reward * (
+            self.num_contacts_buf.float() / float(MIN_CONTACTS_FOR_SUCCESS)
+        ).clamp(0.0, 1.0)
+        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
+        grasp_height_keep_reward = full_grasp_reward * (
+            cup_height_delta / max(self.cfg.lift_success_height, 1e-6)
+        ).clamp(0.0, 1.0)
 
         # ---- Benefit: approach and controllable pour pose ----
         transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
+        transport_progress = torch.clamp(self._prev_mouth_xy_distance - self._mouth_xy_distance, min=0.0)
         target_tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
         tilt_error = torch.abs(self._source_up_dot_world - target_tilt_cos)
-        tilt_reward = 1.0 - torch.tanh(self.cfg.reward_tilt_scale * tilt_error)
-        directional_tilt_reward = ((self._directional_tilt_cos + 1.0) * 0.5).clamp(0.0, 1.0)
-        mouth_alignment_reward = ((self._mouth_alignment_cos + 1.0) * 0.5).pow(self.cfg.reward_mouth_align_scale)
-        # Tilt magnitude alone is axis-ambiguous. Only reward "tilt" strongly when the pour axis
-        # is also facing the target opening, so the cup does not learn a twisted side-pour pose.
-        aligned_tilt_benefit = tilt_reward * mouth_alignment_reward
-        aligned_directional_tilt_benefit = directional_tilt_reward * mouth_alignment_reward
+        tilt_reward = torch.exp(-self.cfg.reward_tilt_scale * tilt_error)
+        tilt_distance_scale = max(self.cfg.reward_tilt_distance_scale, 1e-6)
+        tilt_influence = torch.exp(-torch.square(self._mouth_xy_distance / tilt_distance_scale))
+        # directional factor: 타겟 방향으로 기울인 경우만 reward. 반대 방향=0
+        directional_factor = self._directional_tilt_cos.clamp(0.0, 1.0)
+        # tilt_influence(proximity gate) 제거: 거리 무관하게 tilt 학습, 로컬미니멈 방지
+        total_tilt_reward = tilt_reward * directional_factor
 
         clearance_reward = torch.tanh(self.cfg.reward_clearance_scale * self._mouth_z_clearance)
         positive_clearance_benefit = torch.relu(clearance_reward)
+        xy_gate = torch.clamp(
+            (self.cfg.pour_gate_xy_far - self._mouth_xy_distance)
+            / max(self.cfg.pour_gate_xy_far - self.cfg.pour_gate_xy_near, 1e-6),
+            0.0,
+            1.0,
+        )
+        z_gate = torch.clamp(
+            (self._mouth_z_clearance - self.cfg.pour_gate_z_low)
+            / max(self.cfg.pour_gate_z_high - self.cfg.pour_gate_z_low, 1e-6),
+            0.0,
+            1.0,
+        )
+        pour_gate = xy_gate * z_gate
 
         # ---- Benefit: actual liquid transfer to target ----
         pour_accuracy_benefit = self._bead_cross_fraction
-        success_benefit = self.success_flag.float()
 
         # ---- Cost: risky/inefficient actions ----
-        premature_tilt_cost = aligned_directional_tilt_benefit * (1.0 - transport_reward)
-        low_clearance_tilt_cost = aligned_directional_tilt_benefit * torch.relu(-clearance_reward)
-        misaligned_pour_cost = directional_tilt_reward * (1.0 - mouth_alignment_reward)
         spill_cost = self._spill_ratio
         action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
 
         task_benefit = (
             self.cfg.benefit_grasp_contact_weight * grasp_contact
             + self.cfg.benefit_full_grasp_weight * full_grasp_reward
+            + self.cfg.benefit_grasp_stability_weight * grasp_stability_reward
+            + self.cfg.benefit_grasp_height_keep_weight * grasp_height_keep_reward
             + self.cfg.benefit_force_balance_weight * force_balance_reward
             + self.cfg.benefit_transport_weight * transport_reward
+            + self.cfg.benefit_transport_progress_weight * transport_progress
             + self.cfg.benefit_clearance_weight * positive_clearance_benefit
-            + self.cfg.benefit_tilt_weight * aligned_tilt_benefit
-            + self.cfg.benefit_directional_tilt_weight * aligned_directional_tilt_benefit
-            + self.cfg.benefit_alignment_weight * mouth_alignment_reward
+            + self.cfg.benefit_tilt_weight * total_tilt_reward
         )
-        outcome_benefit = (
-            self.cfg.benefit_pour_accuracy_weight * pour_accuracy_benefit
-            + self.cfg.benefit_success_weight * success_benefit
-        )
+        outcome_benefit = self.cfg.benefit_pour_accuracy_weight * pour_accuracy_benefit
         control_cost = self.cfg.cost_action_rate_weight * action_rate_penalty
-        risk_cost = (
-            self.cfg.cost_premature_tilt_weight * premature_tilt_cost
-            + self.cfg.cost_low_clearance_tilt_weight * low_clearance_tilt_cost
-            + self.cfg.cost_misaligned_pour_weight * misaligned_pour_cost
-            + self.cfg.cost_spill_weight * spill_cost
-        )
+        risk_cost = self.cfg.cost_spill_weight * spill_cost
         total = task_benefit + outcome_benefit - control_cost - risk_cost
 
         self.extras["reward_grasp_contact"] = grasp_contact.mean()
-        self.extras["reward_grasp_stability"] = torch.zeros(1, device=self.device).squeeze()
-        self.extras["reward_grasp_height_keep"] = torch.zeros(1, device=self.device).squeeze()
+        self.extras["reward_grasp_stability"] = grasp_stability_reward.mean()
+        self.extras["reward_grasp_height_keep"] = grasp_height_keep_reward.mean()
         self.extras["reward_force_balance"] = force_balance_reward.mean()
         self.extras["reward_full_grasp"] = full_grasp_reward.mean()
         self.extras["reward_transport"] = transport_reward.mean()
+        self.extras["reward_transport_progress"] = transport_progress.mean()
         self.extras["reward_clearance"] = positive_clearance_benefit.mean()
-        self.extras["reward_tilt"] = tilt_reward.mean()
-        self.extras["reward_directional_tilt"] = directional_tilt_reward.mean()
-        self.extras["reward_mouth_alignment"] = mouth_alignment_reward.mean()
-        self.extras["reward_aligned_tilt"] = aligned_tilt_benefit.mean()
-        self.extras["reward_aligned_directional_tilt"] = aligned_directional_tilt_benefit.mean()
+        self.extras["reward_tilt"] = total_tilt_reward.mean()
+        self.extras["reward_tilt_raw"] = tilt_reward.mean()           # 방향/거리 무관 순수 tilt 품질
+        self.extras["reward_directional_tilt"] = (tilt_influence * directional_factor).mean()
+        self.extras["tilt_directional_factor"] = directional_factor.mean()  # 0=반대방향, 1=정방향
+        self.extras["pct_correct_tilt_dir"] = (self._directional_tilt_cos > 0).float().mean()  # 올바른 방향 env 비율
+        self.extras["reward_aligned_tilt"] = total_tilt_reward.mul(pour_gate).mean()
+        self.extras["reward_aligned_directional_tilt"] = (tilt_influence * directional_factor).mul(pour_gate).mean()
         self.extras["benefit_task"] = task_benefit.mean()
         self.extras["benefit_outcome"] = outcome_benefit.mean()
         self.extras["cost_control"] = control_cost.mean()
         self.extras["cost_risk"] = risk_cost.mean()
-        self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
-        self.extras["cost_low_clearance_tilt"] = low_clearance_tilt_cost.mean()
-        self.extras["cost_misaligned_pour"] = misaligned_pour_cost.mean()
         self.extras["cost_spill"] = spill_cost.mean()
         self.extras["penalty_action_rate"] = action_rate_penalty.mean()
         self.extras["force_balance_err"] = (thumb_force - others_avg_force).abs().mean()
@@ -1159,6 +1293,10 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["source_up_dot"]         = self._source_up_dot_world.mean()
         self.extras["directional_tilt_cos"]  = self._directional_tilt_cos.mean()
         self.extras["mouth_alignment_cos"]   = self._mouth_alignment_cos.mean()
+        self.extras["pour_gate_xy"]          = xy_gate.mean()
+        self.extras["pour_gate_z"]           = z_gate.mean()
+        self.extras["pour_gate"]             = pour_gate.mean()
+        self.extras["tilt_influence"]        = tilt_influence.mean()
         self.extras["bead_in_source_rate"]   = self._bead_in_source_fraction.mean()
         self.extras["bead_in_target_rate"]   = self._bead_in_target_fraction.mean()
         self.extras["bead_cross_fraction"]   = self._bead_cross_fraction.mean()
@@ -1166,6 +1304,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["spill_ratio"]           = self._spill_ratio.mean()
         self.extras["success_rate"]          = self.success_flag.float().mean()
         self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
+
+        self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
 
         return total
 
@@ -1265,15 +1405,18 @@ class GraspRightEnv(DirectRLEnv):
         ], dim=1)
         pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
 
-        pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
-        pregrasp_palm_pose[:, :3] = pregrasp_pos
-        pregrasp_palm_pose[:, 3] = math.radians(90.0)
-        pregrasp_palm_pose[:, 4] = math.radians(0.0)
-        pregrasp_palm_pose[:, 5] = math.radians(90.0)
-        pregrasp_palm_pose = torch.max(
-            torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
+        pregrasp_palm_pose_euler = torch.zeros(n, 6, device=self.device)
+        pregrasp_palm_pose_euler[:, :3] = pregrasp_pos
+        pregrasp_palm_pose_euler[:, 3] = math.radians(90.0)
+        pregrasp_palm_pose_euler[:, 4] = math.radians(0.0)
+        pregrasp_palm_pose_euler[:, 5] = math.radians(90.0)
+        pregrasp_palm_pose_euler = torch.max(
+            torch.min(pregrasp_palm_pose_euler, self.palm_maxs.unsqueeze(0)),
             self.palm_mins.unsqueeze(0),
         )
+        pregrasp_palm_pose = torch.zeros(n, 7, device=self.device)
+        pregrasp_palm_pose[:, :3] = pregrasp_palm_pose_euler[:, :3]
+        pregrasp_palm_pose[:, 3:7] = self._quat_xyzw_from_euler_zyx(pregrasp_palm_pose_euler[:, 3:6])
 
         # ---- cache lookup: spawn 위치 → 가장 가까운 grid point arm IK ----
         xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
@@ -1368,6 +1511,7 @@ class GraspRightEnv(DirectRLEnv):
         self.actions[env_ids, 6:] = -1.0
         self.prev_actions[env_ids, :6] = 0.0
         self.prev_actions[env_ids, 6:] = -1.0
+        self._prev_mouth_xy_distance[env_ids] = 0.0
 
 
     def _resolve_attachment_body(self, requested_body_name: str, attach_pos_b: torch.Tensor) -> tuple[int, torch.Tensor]:
@@ -1544,17 +1688,13 @@ class GraspRightEnv(DirectRLEnv):
         self.pregrasp_arm_pos_buf[env_ids] = arm_pos
         self.grasp_hold_hand_pos_buf[env_ids] = hand_pos
 
-        # Scripted pre-lift: warmstart cup은 z≈0.34m로 낮아 왼팔 구조체와 충돌 가능.
-        # pregrasp Z 기준점을 +0.25m 올려서 episode_hold_steps 동안 팔이 먼저 위로 올라오도록.
-        # hold 완료 후 cup z≈0.59m → z_clearance≈0.145m > 0.10m → rho gate 즉시 충족 가능.
-        lifted_palm_pose = palm_pose.clone()
-        lifted_palm_pose[:, 2] = torch.clamp(
-            palm_pose[:, 2] + 0.25,
-            self.palm_mins[2],
-            self.palm_maxs[2],
+        warmstart_palm_pose = palm_pose.clone()
+        warmstart_palm_pose[:, :3] = torch.max(
+            torch.min(warmstart_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
         )
-        self.pregrasp_palm_pose_buf[env_ids] = lifted_palm_pose
-        self.palm_pose_targets[env_ids] = lifted_palm_pose
+        self.pregrasp_palm_pose_buf[env_ids] = warmstart_palm_pose
+        self.palm_pose_targets[env_ids] = warmstart_palm_pose
         self.hand_joint_targets[env_ids] = hand_pos
         self.object_init_pos[env_ids] = cup_pose_local[:, :3]
         self.object_init_pos[env_ids, 2] = self.cfg.object_spawn_z  # z는 테이블 높이 기준으로 고정 (캐시 lifted z 사용 시 cup_height_delta=0 버그)
@@ -1604,5 +1744,32 @@ class GraspRightEnv(DirectRLEnv):
         self.actions[env_ids, 6:] = 1.0
         self.prev_actions[env_ids, :6] = 0.0
         self.prev_actions[env_ids, 6:] = 1.0
+        self._prev_mouth_xy_distance[env_ids] = 0.0
         self._pre_pour_ready_steps[env_ids] = 0
         self.success_flag[env_ids] = False
+
+        if not self._warmstart_reset_debug_printed:
+            source_pour_point_w = cup_pose_world[:, :3] + quat_apply(
+                cup_pose_world[:, 3:7],
+                self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
+            )
+            target_opening_w = left_cup_pose[:, :3] + quat_apply(
+                left_cup_pose[:, 3:7],
+                self._target_cup_opening_pos_b.unsqueeze(0).expand(n, -1),
+            )
+            mouth_delta = target_opening_w - source_pour_point_w
+            mouth_xy_distance = torch.norm(mouth_delta[:, :2], dim=-1)
+            mouth_z_clearance = source_pour_point_w[:, 2] - target_opening_w[:, 2]
+            cup_z_local = cup_pose_local[:, 2]
+            print(
+                "[5g_pour_right_v2][warmstart_reset] "
+                f"cup_z_local mean={cup_z_local.mean().item():.4f} "
+                f"min={cup_z_local.min().item():.4f} max={cup_z_local.max().item():.4f} | "
+                f"mouth_xy mean={mouth_xy_distance.mean().item():.4f} "
+                f"min={mouth_xy_distance.min().item():.4f} max={mouth_xy_distance.max().item():.4f} | "
+                f"mouth_z_clearance mean={mouth_z_clearance.mean().item():.4f} "
+                f"min={mouth_z_clearance.min().item():.4f} max={mouth_z_clearance.max().item():.4f} | "
+                f"warmstart_palm_z mean={warmstart_palm_pose[:, 2].mean().item():.4f}",
+                flush=True,
+            )
+            self._warmstart_reset_debug_printed = True

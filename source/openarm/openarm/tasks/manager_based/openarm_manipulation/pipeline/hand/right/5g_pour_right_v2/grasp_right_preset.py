@@ -52,7 +52,7 @@ BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.035]
 BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ = [1.0, 0.0, 0.0, 0.0]
 SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
 TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
-SOURCE_CUP_POUR_AXIS_B = [-1.0, 0.0, 0.0]
+SOURCE_CUP_POUR_AXIS_B = [1.0, 0.0, 0.0]
 SOURCE_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 

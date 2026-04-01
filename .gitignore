@@ -2,6 +2,10 @@ env_setup/reachability/output/
 __pycache__/
 *.pyc
 *.pyo
+*.swp
+*.swo
+.*.swp
+.*.swo
 *.pt
 *.pth
 *.onnx

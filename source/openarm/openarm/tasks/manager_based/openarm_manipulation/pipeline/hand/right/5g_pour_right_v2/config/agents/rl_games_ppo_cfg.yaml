@@ -75,7 +75,7 @@ params:
     # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
     #   128  envs: batch=   8192 → minibatch= 2048 (4 splits)
     #   2048 envs: batch= 131072 → minibatch=32768 (4 splits)  ← 학습 권장
-    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 2048로 변경
+    minibatch_size: 2048      # default tuned for --num_envs 128
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
@@ -89,7 +89,7 @@ params:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768     # actor와 동일하게 맞출 것
+      minibatch_size: 2048      # actor와 동일하게 맞출 것
       mini_epochs: 4
       learning_rate: 3e-4
       lr_schedule: linear

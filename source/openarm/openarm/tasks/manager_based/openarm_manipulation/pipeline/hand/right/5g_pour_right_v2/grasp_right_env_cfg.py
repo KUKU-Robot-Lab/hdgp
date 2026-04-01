@@ -57,7 +57,7 @@ from .grasp_right_preset import (
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
-_DEFAULT_BEAD_COUNT = 20
+_DEFAULT_BEAD_COUNT = 10
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
@@ -71,7 +71,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             ),
             spawn=UsdFileCfg(
                 usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
-                activate_contact_sensors=True,
+                activate_contact_sensors=False,
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.01),  # 10g 구슬
                 rigid_props=RigidBodyPropertiesCfg(
                     disable_gravity=False,
@@ -96,7 +96,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Fabrics: fabrics_dt=1/60 × fabric_decimation=2 → 120 Hz
     # Episode: 10s = 600 steps @ 60Hz (8s grasp + 2s lift)
     # -----------------------------------------------------------------------
-    episode_length_s: float = 6.0
+    episode_length_s: float = 10.0
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -125,7 +125,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 200
-    episode_hold_steps:    int   = 60   # 30→60: warmstart 물리 안착 + pre-lift 시간 확보 (1s @ 60Hz)
+    episode_hold_steps:    int   = 60   # 텔레포트 후 contact 재정립 대기 (1s @ 60Hz)
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
     pregrasp_offset_x:     float = -0.06
@@ -145,14 +145,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obs_noise_cup_pos:   float = 0.015   # cup position observation σ [m]
 
 
-    # bead / cup geometry
-    target_inner_radius:  float = 0.041   # 실제 컵 내부 반경
-    target_inside_z_min:  float = -0.015
-    target_inside_z_max:  float = 0.095
-    target_mouth_z:       float = 0.095
-    source_inner_radius:  float = 0.041   # 실제 컵 내부 반경
-    source_inside_z_min:  float = -0.020
-    source_inside_z_max:  float = 0.110
+    # bead / cup geometry (cup_big.usd 기준: bottom=-0.077m, rim=+0.100m, inner_r=0.041m)
+    target_inner_radius:  float = 0.041   # 컵 내부 반경
+    target_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
+    target_inside_z_max:  float = 0.100   # 림 높이
+    target_mouth_z:       float = 0.100   # 림 높이 (bead crossing 기준)
+    source_inner_radius:  float = 0.041   # 컵 내부 반경
+    source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
+    source_inside_z_max:  float = 0.100   # 림 높이
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
 
@@ -161,19 +161,25 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     palm_delta_xyz: float = 0.10
     palm_delta_rot_deg: float = 35.0
-    target_pour_tilt_deg: float = 150.0  # 90.0 → 150.0: 실제 물붓기에 필요한 강한 기울기
+    target_pour_tilt_deg: float = 90.0
+
+    # near-pour activation zone for cup_big.usd
+    pour_gate_xy_near: float = 0.035
+    pour_gate_xy_far: float = 0.100
+    pour_gate_z_low: float = 0.015
+    pour_gate_z_high: float = 0.050
 
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
     lift_success_height: float = 0.03
-    success_mouth_xy_threshold: float = 0.045
-    success_z_clearance_min: float = 0.02
-    success_z_clearance_max: float = 0.10
+    success_mouth_xy_threshold: float = 0.030
+    success_z_clearance_min: float = 0.015
+    success_z_clearance_max: float = 0.050
     success_tilt_cos_tolerance: float = 0.12
     success_directional_tilt_cos: float = 0.90
     success_hold_steps: int = 10
-    drop_force_hold_steps: int = 3
+    drop_force_hold_steps: int = 10
 
     # -----------------------------------------------------------------------
     # Reward shaping
@@ -184,26 +190,23 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     benefit_grasp_contact_weight: float = 0.15
     benefit_full_grasp_weight: float = 0.60
+    benefit_grasp_stability_weight: float = 0.20
+    benefit_grasp_height_keep_weight: float = 0.10
     benefit_force_balance_weight: float = 1.40
-    benefit_transport_weight: float = 2.50
-    benefit_clearance_weight: float = 1.00
-    benefit_tilt_weight: float = 1.60
-    benefit_directional_tilt_weight: float = 1.60
-    benefit_alignment_weight: float = 1.20
-    benefit_pour_accuracy_weight: float = 8.00
-    benefit_success_weight: float = 10.00
+    benefit_transport_weight: float = 4.00
+    benefit_transport_progress_weight: float = 5.00
+    benefit_clearance_weight: float = 0.00  # sigmoid 포화 → 학습 gradient 0, 제거
+    benefit_tilt_weight: float = 8.00
+    benefit_pour_accuracy_weight: float = 0.80
 
-    cost_spill_weight: float = 3.50
+    cost_spill_weight: float = 0.50
     cost_action_rate_weight: float = 0.01
-    cost_premature_tilt_weight: float = 2.00
-    cost_low_clearance_tilt_weight: float = 1.50
-    cost_misaligned_pour_weight: float = 1.00
 
     reward_force_balance_sharpness: float = 8.0
     reward_transport_scale: float = 10.0
     reward_clearance_scale: float = 10.0
     reward_tilt_scale: float = 1.0
-    reward_mouth_align_scale: float = 4.0
+    reward_tilt_distance_scale: float = 0.12
     thumb_force_ratio_min: float = 0.5
 
     # -----------------------------------------------------------------------
@@ -228,7 +231,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7/test4/nn/5g_grasp_right-v7.pth"
+        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v8/test1/nn/5g_grasp_right-v8.pth"
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
