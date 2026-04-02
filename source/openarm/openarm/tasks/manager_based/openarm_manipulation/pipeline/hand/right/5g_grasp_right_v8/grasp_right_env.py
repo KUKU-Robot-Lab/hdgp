@@ -704,7 +704,7 @@ class GraspRightEnv(DirectRLEnv):
         #   delta 범위: ±lift_finger_delta_scale × (GRASP_POSE - APPROACH_POSE)
         delta_20 = self.hand_grasp_pose - self.hand_open_pose            # (20,)
         lift_micro = (
-            finger_action.repeat_interleave(4, dim=1)                    # (N,20)
+            self.actions[:, 6:11].repeat_interleave(4, dim=1)           # (N,20)
             * delta_20.unsqueeze(0)
             * self.cfg.lift_finger_delta_scale
         )
