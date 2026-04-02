@@ -169,10 +169,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     force_balance_weight:    float = 8.0
     force_balance_sharpness: float = 8.0   # 1/8N 오차 → e^-1
 
-    # R1c. full_grasp_bonus: 접촉+힘 조건 강화
-    # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
-    full_grasp_bonus_weight: float = 8.0
-    thumb_force_ratio_min:   float = 0.5
+    # R1c. multi_phalanx_contact: distal(_4) × middle(_3) phalanx force geometric mean
+    # binary count 대신 연속적 접촉 품질 → max-grip 편향 제거
+    # finger_depth = sqrt(distal_norm × middle_norm) per finger, mean over 5 fingers
+    multi_phalanx_weight: float = 8.0
 
     # R2. tip_approach_bonus: distal보다 tip이 먼저 닿도록 유도
     tip_approach_bonus_weight: float = 0.5
@@ -192,7 +192,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # mass-conditional: r6 = -weight * (1 - bead_mass_normalized) * avg_force
     #   가벼운 컵(mass=0): 최대 페널티 → 힘 최소화 학습
     #   무거운 컵(mass=1): 페널티 0 → 물리가 필요 최소 grip 결정
-    force_efficiency_weight: float = 15.0
+    force_efficiency_weight: float = 5.0
 
     # Lift phase 손가락 micro-adjustment
     # action ∈ [-1,1] → lift_finger_pos_buf ± lift_finger_delta_scale × delta_20

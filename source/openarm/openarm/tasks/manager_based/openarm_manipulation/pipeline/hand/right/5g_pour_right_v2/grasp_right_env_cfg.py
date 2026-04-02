@@ -187,6 +187,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Reward weights
     # total = weight_grasp_maintain * grasp_maintain
+    #       + weight_contact_maintain * full_grasp_flag      (v8 이식)
+    #       + weight_force_balance * force_balance            (v8 이식)
+    #       + weight_finger_curl * finger_curl                (손가락 닫힘 유지)
     #       + weight_transport * transport
     #       + weight_transport_progress * transport_progress
     #       + weight_tilt * tilt (directional, soft proximity gate)
@@ -194,17 +197,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #       - weight_spill * spill_ratio
     #       - weight_action_rate * action_rate_penalty
     # -----------------------------------------------------------------------
-    weight_grasp_maintain: float = 2.00        # cup-palm 초기 상대위치 유지 (slip 억제)
+    weight_grasp_maintain: float = 2.00        # cup-palm 상대위치 유지 [4→2: tilt 중 cup 이동 허용]
+    weight_contact_maintain: float = 2.00      # thumb + others≥N 접촉 유지 bonus [1.5→2.0]
+    weight_force_balance: float = 0.50         # |F_thumb - F_others| → 0 [0.3→0.5]
+    weight_finger_curl: float = 3.00           # per-finger lerp → +1 (닫힘) 유도
     weight_transport: float = 4.00             # source pour point → target opening XY 근접
     weight_transport_progress: float = 5.00    # 매 스텝 XY 접근 progress
-    weight_tilt: float = 8.00                  # 타겟 방향 기울이기 (directional)
-    weight_pour_accuracy: float = 2.00         # bead cross fraction
+    weight_tilt: float = 10.00                 # 타겟 방향 기울이기 [8→10]
+    weight_pour_accuracy: float = 8.00         # bead cross fraction [2→8: 구슬 이동 강한 신호]
     weight_spill: float = 1.00                 # 유출 패널티
     weight_action_rate: float = 0.01           # action rate 패널티
 
-    reward_grasp_slip_sharpness: float = 10.0  # grasp_maintain 감쇠율 (e^(-k*slip))
+    reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
+    contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
+    force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
     reward_transport_scale: float = 10.0       # transport tanh 스케일
-    reward_tilt_scale: float = 1.0             # tilt exp 스케일
+    reward_tilt_scale: float = 2.5             # tilt exp 스케일 [1.0→2.5: 90° 도달 gradient 강화]
     reward_tilt_distance_scale: float = 0.20   # soft proximity gate σ (0.20 → 9cm에서 82%)
 
     # -----------------------------------------------------------------------
@@ -233,7 +241,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
-    freeze_grasp_hand_during_episode: bool = True
+    freeze_grasp_hand_during_episode: bool = False
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
         BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ
@@ -339,8 +347,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             ),
             "openarm_left_arm": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_joint[1-7]"],
-                stiffness=400.0,
-                damping=80.0,
+                stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
+                damping=200.0,
             ),
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],

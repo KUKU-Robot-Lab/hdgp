@@ -340,6 +340,8 @@ class GraspRightEnv(DirectRLEnv):
         self.object_rot      = torch.zeros(self.num_envs, 4, device=self.device)
         self.object_init_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self._grasp_rel_palm_to_cup_init = torch.zeros(self.num_envs, 3, device=self.device)
+        self._grasp_cup_pos_palm_local_init = torch.zeros(self.num_envs, 3, device=self.device)  # palm local frame
+        self._needs_grasp_init_update = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self._grasp_cup_height_init = torch.zeros(self.num_envs, device=self.device)
         self.palm_center_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.fingertip_pos   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
@@ -1186,11 +1188,50 @@ class GraspRightEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         self._compute_intermediate_values()
 
-        # ---- 1. Grasp maintenance: cup-palm 초기 상대 위치 유지 (slip 억제) ----
-        # slip이 발생하면 패널티 → arm이 cup을 떨어뜨리는 동작 기피
-        current_cup_palm_rel = self.object_pos - self.palm_center_pos
-        slip_dist = torch.norm(current_cup_palm_rel - self._grasp_rel_palm_to_cup_init, dim=-1)
+        # ---- 1. Grasp maintenance: cup의 palm local frame 위치 유지 (slip 억제) ----
+        # palm이 기울어져도 cup이 단단히 잡혀있으면 palm local frame 내 위치는 불변
+        # (world frame 비교는 tilt 시 cup center가 arc 이동 → 오탐 발생)
+        palm_quat_w = self.robot.data.body_quat_w[:, self.palm_body_index]   # (N, 4) wxyz
+        palm_pos_w  = self.robot.data.body_pos_w[:, self.palm_body_index]    # (N, 3)
+        cup_pos_w   = self.cup.data.root_pos_w                                # (N, 3)
+        cup_in_palm_local = quat_apply_inverse(palm_quat_w, cup_pos_w - palm_pos_w)  # (N, 3)
+
+        # 첫 스텝(reset 직후)에 init 기준 설정 — reset 시점엔 body_pos_w 미갱신이라 여기서 처리
+        if self._needs_grasp_init_update.any():
+            upd = self._needs_grasp_init_update.nonzero(as_tuple=False).squeeze(-1)
+            self._grasp_cup_pos_palm_local_init[upd] = cup_in_palm_local[upd].detach()
+            self._needs_grasp_init_update[upd] = False
+
+        slip_dist = torch.norm(cup_in_palm_local - self._grasp_cup_pos_palm_local_init, dim=-1)
         grasp_maintain_reward = torch.exp(-self.cfg.reward_grasp_slip_sharpness * slip_dist)
+
+        # ---- 1b. contact_maintain: thumb + others≥N 접촉 유지 bonus (v8 full_grasp_bonus 이식) ----
+        # freeze_grasp=False 이후 손가락이 움직이면서 접촉을 잃을 수 있음 → per-step contact bonus
+        thumb_force = self.contact_force_raw[:, 0]                              # (N,) 엄지 tip 힘
+        others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)           # (N,) 나머지 평균
+        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)               # (N,) 0~4
+        full_grasp_flag = (
+            self.binary_contact_buf[:, 0] & (others_count >= self.cfg.contact_maintain_min_others)
+        ).float()
+        r_contact_maintain = self.cfg.weight_contact_maintain * full_grasp_flag
+
+        # ---- 1c. force_balance: |F_thumb - F_others_avg| → 0 (기울이기 중 파지 유지) ----
+        # 기울일 때 중력이 컵을 당기므로 힘 균형이 깨지기 쉬움 → 균형 유지 유도
+        has_thumb  = self.binary_contact_buf[:, 0].float()
+        has_others = (others_count >= 1).float()
+        balance_gate = has_thumb * has_others
+        force_balance_err = (thumb_force - others_avg_force).abs()
+        r_force_balance = (
+            self.cfg.weight_force_balance
+            * balance_gate
+            * torch.exp(-self.cfg.force_balance_sharpness * force_balance_err)
+        )
+
+        # ---- 1d. finger_curl: per-finger lerp → +1(닫힘) 유도 ----
+        # freeze_grasp=False 이후 정책이 손가락을 덜 닫는 방향을 선택하는 것을 방지
+        # (mean + 1) / 2: 모두 +1(닫힘)=1.0, 모두 0(중간)=0.5, 모두 -1(열림)=0.0
+        finger_lerp_mean = self.actions[:, 6:11].mean(dim=-1)                   # (N,) ∈ [-1, 1]
+        r_finger_curl = self.cfg.weight_finger_curl * (finger_lerp_mean + 1.0) / 2.0
 
         # ---- 2. Transport: source pour point → target opening XY 접근 ----
         transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
@@ -1228,6 +1269,9 @@ class GraspRightEnv(DirectRLEnv):
 
         total = (
             self.cfg.weight_grasp_maintain * grasp_maintain_reward
+            + r_contact_maintain
+            + r_force_balance
+            + r_finger_curl
             + self.cfg.weight_transport * transport_reward
             + self.cfg.weight_transport_progress * transport_progress
             + self.cfg.weight_tilt * total_tilt_reward
@@ -1239,6 +1283,12 @@ class GraspRightEnv(DirectRLEnv):
         # ---- Logging (pour task 진단 필수 지표만) ----
         self.extras["grasp_maintain"]            = grasp_maintain_reward.mean()
         self.extras["slip_dist"]                 = slip_dist.mean()
+        self.extras["contact_maintain"]          = full_grasp_flag.mean()
+        self.extras["force_balance"]             = r_force_balance.mean()
+        self.extras["force_balance_err"]         = force_balance_err.mean()
+        self.extras["thumb_force_mean"]          = thumb_force.mean()
+        self.extras["total_tip_force"]           = self.contact_force_raw.sum(dim=-1).mean()
+        self.extras["finger_curl_mean"]          = ((finger_lerp_mean + 1.0) / 2.0).mean()  # 0=열림, 1=닫힘
         self.extras["num_contacts"]              = self.num_contacts_buf.float().mean()
         self.extras["reward_transport"]          = transport_reward.mean()
         self.extras["reward_transport_progress"] = transport_progress.mean()
@@ -1455,6 +1505,7 @@ class GraspRightEnv(DirectRLEnv):
         self._bead_in_source[env_ids] = False
         self._bead_crossed_target_mouth[env_ids] = False
         self._prev_bead_target_local_z[env_ids].fill_(10.0)
+        self._needs_grasp_init_update[env_ids] = True   # 다음 스텝에 palm local init 갱신
         self._bead_cross_count[env_ids] = 0
         self._bead_cross_fraction[env_ids] = 0.0
         self._bead_in_target_fraction[env_ids] = 0.0
@@ -1692,6 +1743,7 @@ class GraspRightEnv(DirectRLEnv):
         self._bead_in_source[env_ids] = False
         self._bead_crossed_target_mouth[env_ids] = False
         self._prev_bead_target_local_z[env_ids].fill_(10.0)
+        self._needs_grasp_init_update[env_ids] = True   # 다음 스텝에 palm local init 갱신
         self._bead_cross_count[env_ids] = 0
         self._bead_cross_fraction[env_ids] = 0.0
         self._bead_in_target_fraction[env_ids] = 0.0

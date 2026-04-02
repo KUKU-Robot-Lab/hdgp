@@ -975,19 +975,19 @@ class GraspRightEnv(DirectRLEnv):
             * torch.exp(-self.cfg.force_balance_sharpness * force_balance_err)
         )
 
-        # ---- R1c. full_grasp_bonus: Grasp phase per-step ----
-        # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
-        # → 엄지가 0.1N 살짝 닿아도 통과하던 허점 제거 (force adequacy 조건)
+        # ---- R1c. multi_phalanx_contact: Grasp phase per-step ----
+        # distal(_4) × middle(_3) phalanx force geometric mean per finger
+        # binary count 대신 접촉 깊이/품질 측정 → max-grip 편향 제거
+        # 올바른 curl 깊이에서만 distal+middle 동시 접촉 → 자연스러운 wrap-around 유도
         is_grasp_phase = ~self.is_lift_phase                                  # (N,) bool
         is_grasp_f     = is_grasp_phase.float()                               # (N,) float, 3곳 공유
-        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)             # (N,) 0~4
-        thumb_force_adequate = (
-            thumb_force >= others_avg_force * self.cfg.thumb_force_ratio_min
-        ).float()   # (N,)
-        full_grasp_flag = (
-            self.binary_contact_buf[:, 0] & (others_count >= 3)
-        ).float() * thumb_force_adequate
-        r1c_full_grasp = self.cfg.full_grasp_bonus_weight * is_grasp_f * full_grasp_flag
+        # tip_norm: cup-only 필터링된 tip 센서 → 노이즈 없음 (테이블/자기충돌 제외)
+        # middle_norm: net_forces_w (cup 필터 없음) — geometric mean으로 tip 접촉에 게이팅
+        #   tip=0(cup 미접촉) → sqrt(0 × middle) = 0 → 테이블 닿아도 보상 없음
+        tip_norm    = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)         # (N, 5) cup-filtered
+        middle_norm = (self.middle_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)  # (N, 5)
+        finger_depth = (tip_norm * middle_norm).sqrt()                        # (N, 5) envelope grip 지표
+        r1c_multi_phalanx = self.cfg.multi_phalanx_weight * is_grasp_f * finger_depth.mean(dim=-1)
 
         # ---- R2. tip_approach_bonus ----
         # tip이 distal(rl_dg_*_4)보다 cup surface에 먼저 닿도록 유도
@@ -1027,17 +1027,16 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0)   # (N,)
         r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
-        # ---- R6. force_efficiency: lift 상태에서 mass-conditional 파지력 조절 ----
-        # mass-conditional: effective_weight = weight × (1 - bead_mass_normalized)
-        #   가벼운 컵(mass=0): 최대 페널티 → 힘 줄이도록 강하게 유도
-        #   무거운 컵(mass=1): 페널티 0 → 물리(낙하 페널티)가 최소 필요 grip 자연 결정
-        # target force를 하드코딩하지 않고 물리와 reward 균형으로 adaptive 학습
+        # ---- R6. force_efficiency: Grasp phase에서 mass-conditional 파지력 조절 ----
+        # eff_gate = grasp phase AND 1개 이상 접촉
+        #   → 접촉 발생 시점부터 바로 adaptive signal 제공 (기존 lift-only 구조 수정)
+        # circular dependency 해소: contact >= 1 (기존 >= 3) → grip 줄여도 gate 유지
         grip_normalized = (self.actions[:, 6:].mean(dim=-1) + 1.0) / 2.0   # (N,)
         avg_tip_force_normalized = (
             self.contact_force_raw.mean(dim=-1) / CONTACT_FORCE_MAX
         ).clamp(min=0.0, max=1.0)
-        contact_maintained = (self.num_contacts_buf >= max(MIN_CONTACTS_FOR_SUCCESS, 3)).float()
-        eff_gate = self.is_lift_phase.float() * contact_maintained
+        has_any_contact = (self.num_contacts_buf >= 1).float()
+        eff_gate = is_grasp_f * has_any_contact
         mass_scale = (1.0 - self._bead_mass_normalized).clamp(min=0.0, max=1.0)   # (N,)
         r6_force_eff = -self.cfg.force_efficiency_weight * mass_scale * avg_tip_force_normalized * eff_gate
 
@@ -1046,7 +1045,7 @@ class GraspRightEnv(DirectRLEnv):
             r0_palm_approach
             + r1_enclosure
             + r1b_force_balance
-            + r1c_full_grasp
+            + r1c_multi_phalanx
             + r2_tip_bonus
             + r3_lift
             + r4_smooth
@@ -1062,38 +1061,40 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 로깅 ----
         # [보상값]
-        self.extras["palm_approach_reward"]  = r0_palm_approach.mean()
-        self.extras["enclosure_reward"]      = r1_enclosure.mean()
-        self.extras["force_balance_reward"]  = r1b_force_balance.mean()
-        self.extras["full_grasp_bonus"]      = r1c_full_grasp.mean()
-        self.extras["tip_approach_bonus"]    = r2_tip_bonus.mean()
-        self.extras["lift_reward"]           = r3_lift.mean()
-        self.extras["action_smoothness"]     = r4_smooth.mean()
-        self.extras["grasp_quality_lift"]    = r5_quality_lift.mean()
-        self.extras["force_efficiency"]      = r6_force_eff.mean()
+        self.extras["palm_approach_reward"]   = r0_palm_approach.mean()
+        self.extras["enclosure_reward"]       = r1_enclosure.mean()
+        self.extras["force_balance_reward"]   = r1b_force_balance.mean()
+        self.extras["multi_phalanx_reward"]   = r1c_multi_phalanx.mean()
+        self.extras["tip_approach_bonus"]     = r2_tip_bonus.mean()
+        self.extras["lift_reward"]            = r3_lift.mean()
+        self.extras["action_smoothness"]      = r4_smooth.mean()
+        self.extras["grasp_quality_lift"]     = r5_quality_lift.mean()
+        self.extras["force_efficiency"]       = r6_force_eff.mean()
         # [진단 지표]
-        self.extras["force_balance_err"]     = force_balance_err.mean()
-        self.extras["thumb_force_mean"]      = thumb_force.mean()
-        self.extras["others_avg_force_mean"] = others_avg_force.mean()
-        self.extras["total_tip_force"]       = self.contact_force_raw.sum(dim=-1).mean()
-        self.extras["total_tip_force_norm"]  = avg_tip_force_normalized.mean()
-        self.extras["thumb_force_adequate"]  = thumb_force_adequate.mean()
-        self.extras["full_grasp_rate"]       = full_grasp_flag.mean()
-        self.extras["grip_normalized"]       = grip_normalized.mean()
-        self.extras["force_efficiency_gate"] = eff_gate.mean()
-        self.extras["bead_mass_normalized"]  = self._bead_mass_normalized.mean()
-        self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
-        self.extras["episode_success_rate"]  = torch.tensor(_ep_success_rate, device=self.device)
+        self.extras["force_balance_err"]      = force_balance_err.mean()
+        self.extras["thumb_force_mean"]       = thumb_force.mean()
+        self.extras["others_avg_force_mean"]  = others_avg_force.mean()
+        self.extras["total_tip_force_norm"]   = avg_tip_force_normalized.mean()
+        self.extras["multi_phalanx_contact"]  = finger_depth.mean()          # distal×middle 접촉 품질
+        self.extras["grip_normalized"]        = grip_normalized.mean()
+        self.extras["r6_active_ratio"]        = eff_gate.mean()              # 0이면 eff_gate 문제
+        self.extras["bead_mass_normalized"]   = self._bead_mass_normalized.mean()
+        self.extras["num_contacts"]           = self.num_contacts_buf.float().mean()
+        self.extras["episode_success_rate"]   = torch.tensor(_ep_success_rate, device=self.device)
         # [mass별 조건부 지표] adaptive grasping 확인용
         # light(0~33%): 0~6 beads, heavy(66~100%): 14~20 beads
         light_mask = (self._bead_mass_normalized < 0.33)
         heavy_mask = (self._bead_mass_normalized > 0.66)
+        grip_norm_light = grip_normalized[light_mask].mean() if light_mask.any() else grip_normalized.mean()
+        grip_norm_heavy = grip_normalized[heavy_mask].mean() if heavy_mask.any() else grip_normalized.mean()
         if light_mask.any():
-            self.extras["grip_norm_light"]      = grip_normalized[light_mask].mean()
-            self.extras["tip_force_norm_light"] = avg_tip_force_normalized[light_mask].mean()
+            self.extras["grip_norm_light"]       = grip_norm_light
+            self.extras["tip_force_norm_light"]  = avg_tip_force_normalized[light_mask].mean()
         if heavy_mask.any():
-            self.extras["grip_norm_heavy"]      = grip_normalized[heavy_mask].mean()
-            self.extras["tip_force_norm_heavy"] = avg_tip_force_normalized[heavy_mask].mean()
+            self.extras["grip_norm_heavy"]       = grip_norm_heavy
+            self.extras["tip_force_norm_heavy"]  = avg_tip_force_normalized[heavy_mask].mean()
+        # adaptive grasping 핵심 지표: 양수여야 heavy를 더 강하게 잡는 것
+        self.extras["grip_adaptive_delta"]    = grip_norm_heavy - grip_norm_light
         if self.grasp_adr is not None:
             self.extras["adr_progress"]          = torch.tensor(self.grasp_adr.progress, device=self.device)
             self.extras["adr_spawn_xy_range"]    = torch.tensor(self.grasp_adr.get_param("spawn",  "object_spawn_xy_range"), device=self.device)
