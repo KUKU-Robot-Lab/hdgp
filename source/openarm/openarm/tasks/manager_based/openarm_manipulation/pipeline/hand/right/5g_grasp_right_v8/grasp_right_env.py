@@ -1084,6 +1084,16 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["bead_mass_normalized"]  = self._bead_mass_normalized.mean()
         self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
         self.extras["episode_success_rate"]  = torch.tensor(_ep_success_rate, device=self.device)
+        # [mass별 조건부 지표] adaptive grasping 확인용
+        # light(0~33%): 0~6 beads, heavy(66~100%): 14~20 beads
+        light_mask = (self._bead_mass_normalized < 0.33)
+        heavy_mask = (self._bead_mass_normalized > 0.66)
+        if light_mask.any():
+            self.extras["grip_norm_light"]      = grip_normalized[light_mask].mean()
+            self.extras["tip_force_norm_light"] = avg_tip_force_normalized[light_mask].mean()
+        if heavy_mask.any():
+            self.extras["grip_norm_heavy"]      = grip_normalized[heavy_mask].mean()
+            self.extras["tip_force_norm_heavy"] = avg_tip_force_normalized[heavy_mask].mean()
         if self.grasp_adr is not None:
             self.extras["adr_progress"]          = torch.tensor(self.grasp_adr.progress, device=self.device)
             self.extras["adr_spawn_xy_range"]    = torch.tensor(self.grasp_adr.get_param("spawn",  "object_spawn_xy_range"), device=self.device)
