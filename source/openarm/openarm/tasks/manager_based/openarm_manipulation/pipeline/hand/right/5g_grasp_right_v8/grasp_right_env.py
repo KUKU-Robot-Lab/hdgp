@@ -810,6 +810,11 @@ class GraspRightEnv(DirectRLEnv):
         # CONTACT_FORCE_MAX(10N) 기준 정규화, clamp [0,1]
         tip_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
+        # 10. phase step ratio (1D) — 실로봇 step counter로 계산 가능
+        phase_step_ratio = (
+            self.episode_length_buf.float() / EPISODE_STEPS
+        ).unsqueeze(1)
+
         actor_obs = torch.cat([
             arm_joint_pos,          # 7
             arm_joint_vel,          # 7
@@ -851,11 +856,6 @@ class GraspRightEnv(DirectRLEnv):
         # middle contact (5D binary + 5D norm)
         middle_binary     = self.middle_binary_contact_buf.float()
         middle_force_norm = (self.middle_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
-
-        # phase step ratio (1D)
-        phase_step_ratio = (
-            self.episode_length_buf.float() / EPISODE_STEPS
-        ).unsqueeze(1)
 
         # fingertip signed dist (5D) — clean positions
         tip_to_cup_dist = (
