@@ -57,24 +57,25 @@ HAND_BODY_NAMES_USD = [
     "rl_dg_5_4",
 ]
 
-# Fabrics FK taskmap body names (openarm_tesollo.urdf 기준)
-# [0]=palm_center, [1]=palm_x, [2:7]=fingertip ×5
+# Fabrics FK taskmap body names (openarm_tesollo_sensor.urdf 기준)
+# [0]=palm_link (= rl_dg_palm alias, Fabrics attractor 기준점)
+# [1]=palm_x    (palm_link +X 방향 기준, 방향 참조용)
+# [2:7]=rl_dg_*_tip (fingertip sensor 링크, 센서 URDF 기준)
 FABRIC_HAND_BODY_NAMES = [
-    "palm_center",
+    "palm_link",
     "palm_x",
-    "tesollo_right_rl_dg_1_4",
-    "tesollo_right_rl_dg_2_4",
-    "tesollo_right_rl_dg_3_4",
-    "tesollo_right_rl_dg_4_4",
-    "tesollo_right_rl_dg_5_4",
+    "rl_dg_1_tip",
+    "rl_dg_2_tip",
+    "rl_dg_3_tip",
+    "rl_dg_4_tip",
+    "rl_dg_5_tip",
 ]
 
 
 # ---------------------------------------------------------------------------
 # Start / grasp poses
 # ---------------------------------------------------------------------------
-# 완전히 열린 자세
-# 컵 관통 방지는 리셋 순서로 해결 (컵 spawn을 Fabrics pregrasp 이후로)
+# 완전히 열린 자세 (절대 열림 기준; 사용처 없어도 alias로 유지)
 HAND_START_POSE = [
     0.0, 0.0, 0.0, 0.0,   # thumb
     0.0, 0.0, 0.0, 0.0,   # index
@@ -83,17 +84,35 @@ HAND_START_POSE = [
     0.0, 0.0, 0.0, 0.0,   # pinky
 ]
 
-# 파지 자세 (cspace attractor 기준)
-HAND_GRASP_POSE = [
-    0.0, -1.5, 0.5, 0.5,   # thumb
-    0.0,  0.7, 0.5, 0.5,   # index
-    0.0,  0.7, 0.5, 0.5,   # middle
-    0.0,  0.7, 0.5, 0.5,   # ring
-    0.0,  0.0, 0.7, 0.5,   # pinky
+# FABRICS 접근 자세 (Approach pose)
+# FABRICS pregrasp rollout 동안 유지 + episode 시작 초기 손 자세 + per-finger lerp 기준점
+# rj_dg_1_2 (thumb, Z-axis curl, range [-π, 0]) = -1.57 rad
+#   → thumb을 opposition 방향으로 pre-curl하여 접근 시 컵과의 collision 방지
+#   → episode 중 action[0]=1 → lerp → HAND_GRASP_POSE (thumb_2 = -1.5, ≈ 유지)
+#   → 나머지 손가락(1~4)은 0에서 시작하여 lerp로 curl
+HAND_APPROACH_POSE = [
+    0.0, -1.57, -0.5, 0.0,   # thumb: _2=-1.57(opposition 유지), _3=-0.5(PIP curl → _3 부분이 컵에 먼저 닿는 문제 방지)
+    0.0,  0.0,   0.0, 0.0,   # index: fully open
+    0.0,  0.0,   0.0, 0.0,   # middle: fully open
+    0.0,  0.0,   0.0, 0.0,   # ring: fully open
+    0.0,  0.0,   0.0, 0.0,   # pinky: fully open
 ]
 
-# 팔 시작 자세 (FK: palm ≈ [0.463, -0.311, 0.431])
-RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.8, -0.2, 0.0, 0.0]
+# 파지 자세 (per-finger lerp action=+1 목표)
+# index/middle/ring _2: 0.7→1.6 rad (관절 한계 ~2.0 rad의 80%)
+# thumb _3/_4: 0.5→0.8 (더 강한 curl)
+HAND_GRASP_POSE = [
+    0.0, -1.57, 1.5, 1.5,   # thumb
+    0.0,  1.6,  1.5, 1.5,   # index
+    0.0,  1.6,  1.5, 1.5,   # middle
+    0.0,  1.6,  1.5, 1.5,   # ring
+    0.0,  0.0,  1.5, 1.5,   # pinky
+]
+
+# 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
+# Fabrics rollout이 [cup_x-0.167, cup_y-0.09, cup_z+0.04]로 수렴
+# j4=0.60: FK z≈0.282, 테이블 안전, 물리 충돌 없음
+RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0]
 
 
 # ---------------------------------------------------------------------------
@@ -104,10 +123,10 @@ OBJECT_SPAWN_CENTER = [0.40, -0.15, 0.38]
 OBJECT_SPAWN_RANGE_XY = 0.06
 OBJECT_GOAL_POS = [0.40, -0.15, 0.65]
 
-# Pregrasp offset: cup 옆(-Y 방향)에서 접근
-# cup_pos + [0, -0.20, 0.05] → 컵 옆 20cm, 위로 5cm
-# -0.12 → -0.20: palm Y=-0.35, 엄지 tip Y≈-0.23 (cup edge -0.19보다 4cm 여유)
-PREGRASP_OFFSET = [0.0, -0.20, 0.05]
+# Pregrasp offset: cup 옆(-Y 방향)에서 접근 (palm_link 기준)
+# orientation: ez=90°, ey=0°, ex=90° → palm +X(손바닥 법선)=world +Y, palm +Z(손가락)=world +X
+# lift_v1: palm_ee 기준 -6cm → palm_link 기준 ≈ -9cm + rollout 여유 3cm = -12cm
+PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 
 
 def palm_pose_mins(max_pose_angle: float) -> list:

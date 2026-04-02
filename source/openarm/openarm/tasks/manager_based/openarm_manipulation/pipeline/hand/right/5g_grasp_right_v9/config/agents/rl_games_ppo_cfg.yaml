@@ -1,7 +1,7 @@
-# 5g_grasp_right_v5 rl_games PPO 설정
-# v5: FABRICS pregrasp reset + 정책 손가락 grasp formation + Scripted lift checker
-# 관측: actor 101D / critic 119D (asymmetric), 액션: 5D (per-finger lerp)
-# Asymmetric Actor-Critic (has_central_value: True), MLP [256, 128, 64]
+# 5g_grasp_right_v9 rl_games PPO 설정
+# v9: v8 기반 + 20D 손가락 직접 제어 + Slip/Force-Efficiency/Force-Smooth reward
+# 관측: actor 128D / critic 164D (asymmetric), 액션: 26D
+# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:
   seed: 42
@@ -42,7 +42,7 @@ params:
   load_path: ''
 
   config:
-    name: 5g_grasp_right_v5
+    name: 5g_grasp_right-v9
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -68,14 +68,14 @@ params:
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.002
+    entropy_coef: 0.01
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 64
     # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
     #   128  envs: batch=   8192 → minibatch= 2048 (4 splits)
     #   2048 envs: batch= 131072 → minibatch=32768 (4 splits)  ← 학습 권장
-    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 2048로 변경
+    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 2048으로 변경
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
@@ -83,13 +83,13 @@ params:
     bound_loss_type: regularization
     bounds_loss_coef: 0.005
 
-    # Asymmetric Actor-Critic: critic은 119D privileged obs 사용
+    # Asymmetric Actor-Critic: critic은 164D privileged obs 사용
     has_central_value: True
     central_value_config:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768     # actor와 동일하게 맞출 것
+      minibatch_size: 32768
       mini_epochs: 4
       learning_rate: 3e-4
       lr_schedule: linear

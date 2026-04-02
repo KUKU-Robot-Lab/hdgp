@@ -12,9 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""GraspADR: v5 파지 태스크용 ADR 파라미터 스케줄러.
+"""GraspADR: DEXTRAH DextrahADR의 custom_param_value 기능 이식.
 
-v1.grasp_adr.GraspADR 동일 구조 — 의존성 분리.
+원본: DEXTRAH/dextrah_lab/tasks/dextrah_kuka_allegro/dextrah_adr.py
+이식 범위: get_custom_param_value() 로직만 — event_manager 의존성 제거.
+외부 프로젝트 import 없음.
+
+동작:
+  - increment_counter가 0 → num_increments 로 올라가면서
+    각 파라미터가 initial → final 값으로 선형 보간됨.
+  - 트리거는 환경 코드에서 직접 호출: adr.maybe_increment(metric, threshold)
 """
 
 
@@ -44,29 +51,47 @@ class GraspADR:
         self.increment_counter: int = 0
         self._step_counter: int = 0
 
+    # ------------------------------------------------------------------
+    # 파라미터 조회
+    # ------------------------------------------------------------------
+
     def get_param(self, group: str, name: str) -> float:
-        """현재 increment_counter 기준 선형 보간 값 반환."""
+        """현재 increment_counter 기준 선형 보간 값 반환.
+
+        DEXTRAH get_custom_param_value()와 동일 로직.
+        """
         lo, hi = self.custom_cfg[group][name]
         t = min(self.increment_counter / float(self.num_increments), 1.0)
         return lo + (hi - lo) * t
 
+    # ------------------------------------------------------------------
+    # Increment 관리
+    # ------------------------------------------------------------------
+
     def maybe_increment(self, metric) -> bool:
-        """step_counter가 interval에 도달하고 metric >= threshold이면 increment."""
+        """step_counter가 interval에 도달하고 metric이 threshold 이상이면 increment.
+
+        metric은 float 또는 0-dim torch.Tensor 모두 허용.
+        tensor 비교는 Python 레벨에서 이루어지므로 GPU 동기화 없음.
+
+        Returns:
+            bool: increment가 발생했으면 True.
+        """
         self._step_counter += 1
         if self._step_counter % self.increment_interval != 0:
             return False
+
+        # tensor인 경우 item() 없이 비교 (Python bool 변환은 단일 값 tensor에서 자동)
         if metric >= self.trigger_threshold and self.increment_counter < self.num_increments:
             self.increment_counter += 1
-            print(
-                f"[GraspADR v5] Increment {self.increment_counter}/{self.num_increments} "
-                f"(metric={float(metric):.3f} >= {self.trigger_threshold:.3f})"
-            )
             return True
         return False
 
     def set_increment(self, n: int) -> None:
+        """체크포인트 복원 등에서 직접 increment 설정."""
         self.increment_counter = min(max(0, n), self.num_increments)
 
     @property
     def progress(self) -> float:
+        """0.0 (초기) → 1.0 (최대 난이도) 진행률."""
         return self.increment_counter / float(self.num_increments)

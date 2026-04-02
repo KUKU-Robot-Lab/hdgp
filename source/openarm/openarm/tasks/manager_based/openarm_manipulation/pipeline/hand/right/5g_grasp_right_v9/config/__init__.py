@@ -27,10 +27,10 @@ class GraspRightEnvCfg_PLAY(GraspRightEnvCfg):
 
 
 gym.register(
-    id="5g_grasp_right-v1",
+    id="5g_grasp_right-v9",
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
-        ".pipeline.hand.right.5g_grasp_right_v1"
+        ".pipeline.hand.right.5g_grasp_right_v9"
         ".grasp_right_env:GraspRightEnv"
     ),
     disable_env_checker=True,
@@ -41,10 +41,10 @@ gym.register(
 )
 
 gym.register(
-    id="5g_grasp_right-play-v1",
+    id="5g_grasp_right-play-v9",
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
-        ".pipeline.hand.right.5g_grasp_right_v1"
+        ".pipeline.hand.right.5g_grasp_right_v9"
         ".grasp_right_env:GraspRightEnv"
     ),
     disable_env_checker=True,
