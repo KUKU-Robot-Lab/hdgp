@@ -213,7 +213,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
     reward_transport_scale: float = 10.0       # transport tanh 스케일
     reward_tilt_scale: float = 5.0             # tilt exp 스케일 [2.5→5.0: 47°→90° gradient 강화]
-    reward_tilt_distance_scale: float = 0.20   # soft proximity gate σ (0.20 → 9cm에서 82%)
+    reward_tilt_distance_scale: float = 0.08   # soft proximity gate σ [0.20→0.08: 8cm이내만 tilt 보상, 멀어져서 기울이기 차단]
 
     # -----------------------------------------------------------------------
     # 종료 조건

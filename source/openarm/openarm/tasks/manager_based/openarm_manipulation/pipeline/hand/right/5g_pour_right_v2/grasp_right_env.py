@@ -1229,9 +1229,9 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 1d. finger_curl: per-finger lerp → +1(닫힘) 유도 ----
         # freeze_grasp=False 이후 정책이 손가락을 덜 닫는 방향을 선택하는 것을 방지
-        # (mean + 1) / 2: 모두 +1(닫힘)=1.0, 모두 0(중간)=0.5, 모두 -1(열림)=0.0
-        finger_lerp_mean = self.actions[:, 6:11].mean(dim=-1)                   # (N,) ∈ [-1, 1]
-        r_finger_curl = self.cfg.weight_finger_curl * (finger_lerp_mean + 1.0) / 2.0
+        # min 사용: 한 손가락이라도 열려있으면 (min+1)/2 ≈ 0 → 중지 등 선택적 열기 차단
+        finger_lerp_min = self.actions[:, 6:11].min(dim=-1).values              # (N,) ∈ [-1, 1]
+        r_finger_curl = self.cfg.weight_finger_curl * (finger_lerp_min + 1.0) / 2.0
 
         # ---- 2. Transport: source pour point → target opening XY 접근 ----
         transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
@@ -1288,7 +1288,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["force_balance_err"]         = force_balance_err.mean()
         self.extras["thumb_force_mean"]          = thumb_force.mean()
         self.extras["total_tip_force"]           = self.contact_force_raw.sum(dim=-1).mean()
-        self.extras["finger_curl_mean"]          = ((finger_lerp_mean + 1.0) / 2.0).mean()  # 0=열림, 1=닫힘
+        self.extras["finger_curl_min"]           = ((finger_lerp_min + 1.0) / 2.0).mean()   # 0=열림, 1=닫힘 (min 기준)
         self.extras["num_contacts"]              = self.num_contacts_buf.float().mean()
         self.extras["reward_transport"]          = transport_reward.mean()
         self.extras["reward_transport_progress"] = transport_progress.mean()
