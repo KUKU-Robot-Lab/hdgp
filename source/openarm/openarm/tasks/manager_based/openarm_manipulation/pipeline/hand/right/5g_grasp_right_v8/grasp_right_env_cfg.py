@@ -98,9 +98,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 106 (actor)
+    observation_space: int = NUM_OBSERVATIONS          # 113 (actor)
     action_space:      int = NUM_ACTIONS               # 11
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 143 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 149 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -155,47 +155,49 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # R0. palm_to_cup: arm 접근 유도 (v1 hand_to_object 동일 역할)
     # 초기 정책(출력≈0) → workspace 중심 이동 방지, arm approach 1차 gradient 제공
-    palm_approach_weight:    float = 1.0
+    palm_approach_weight:    float = 0.5
     palm_approach_sharpness: float = 10.0
 
-    # R1. fingertip_enclosure (ADR: 10→20) — Grasp phase 핵심 리워드
-    # max ≈ 10.0 (palm 접근보다 10×, 손가락 파지가 지배적 gradient)
-    enclosure_weight:       float = 10.0
+    # R1. fingertip_enclosure — 자세 유도 보조 역할 (비중 낮춤)
+    enclosure_weight:       float = 4.0
     enclosure_sharpness:    float = 15.0
     cup_radius_approx:      float = 0.045
-    enclosure_thumb_weight: float = 0.6   # 엄지 유도 비중 (0.5→0.6): 비대칭 강화
+    enclosure_thumb_weight: float = 0.6
 
-    # R1b. force_balance_reward: |F_thumb - F_others_avg| → 0 (컵 기울임 방지 핵심)
-    # [contact_bonus 대체] binary count → 힘 균형 직접 측정 (sim2real 호환)
+    # R1b. force_balance_reward: |F_thumb - F_others_avg| → 0 (파지 품질 핵심)
     # gate: 엄지 + 나머지 1개 이상 접촉 시에만 활성 (무접촉 err=0 오보상 방지)
-    # gaussian: 균형점(err=0)에서 최대, 불균형 커질수록 급감
-    force_balance_weight:    float = 3.0
+    force_balance_weight:    float = 8.0
     force_balance_sharpness: float = 8.0   # 1/8N 오차 → e^-1
 
-    # R1c. full_grasp_bonus: Grasp phase per-step
+    # R1c. full_grasp_bonus: 접촉+힘 조건 강화
     # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
-    # → 엄지가 0.1N 살짝 닿기만 해서 조건 충족하던 허점 제거
-    full_grasp_bonus_weight: float = 6.0
-    thumb_force_ratio_min:   float = 0.5   # 엄지 힘 ≥ others 평균 × 0.5
+    full_grasp_bonus_weight: float = 8.0
+    thumb_force_ratio_min:   float = 0.5
 
     # R2. tip_approach_bonus: distal보다 tip이 먼저 닿도록 유도
-    tip_approach_bonus_weight: float = 1.0
+    tip_approach_bonus_weight: float = 0.5
 
-    # R3. lift_reward: 선형 height delta
-    lift_reward_weight: float = 30.0
+    # R3. lift_reward: 들어올리기 행동 gradient 유지
+    lift_reward_weight: float = 20.0
 
     # R4. action_smoothness
     action_smoothness_palm_weight:   float = -0.02
     action_smoothness_finger_weight: float = -0.01
 
-    # R5. grasp_quality_lift: enclosure_quality × height delta
-    grasp_quality_lift_weight:     float = 25.0
+    # R5. grasp_quality_lift: 판단용 — 대폭 감소
+    grasp_quality_lift_weight:     float = 8.0
     grasp_quality_lift_sharpness:  float = 10.0
 
     # R6. force_efficiency: lift 상태에서 접촉력을 줄이도록 유도
-    # avg_tip_force / CONTACT_FORCE_MAX 정규화 (per-finger 기준, 값 범위 0.1~0.5)
-    # mass별 적정 파지력은 policy가 물리 환경과의 상호작용으로 자동 결정
+    # mass-conditional: r6 = -weight * (1 - bead_mass_normalized) * avg_force
+    #   가벼운 컵(mass=0): 최대 페널티 → 힘 최소화 학습
+    #   무거운 컵(mass=1): 페널티 0 → 물리가 필요 최소 grip 결정
     force_efficiency_weight: float = 15.0
+
+    # Lift phase 손가락 micro-adjustment
+    # action ∈ [-1,1] → lift_finger_pos_buf ± lift_finger_delta_scale × delta_20
+    # 0: 파지 자세 유지, +1: 더 조임, -1: 완화 → force_efficiency 피드백 반영 가능
+    lift_finger_delta_scale: float = 0.20
 
     # -----------------------------------------------------------------------
     # ADR

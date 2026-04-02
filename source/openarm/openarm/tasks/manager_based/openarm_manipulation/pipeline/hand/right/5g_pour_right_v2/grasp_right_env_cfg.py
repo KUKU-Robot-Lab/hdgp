@@ -163,6 +163,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     palm_delta_rot_deg: float = 35.0
     target_pour_tilt_deg: float = 90.0
 
+    # target cup world_z offset (left arm 자세 유지, cup만 하강)
+    left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
+
     # near-pour activation zone for cup_big.usd
     pour_gate_xy_near: float = 0.035
     pour_gate_xy_far: float = 0.100
@@ -182,32 +185,27 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     drop_force_hold_steps: int = 10
 
     # -----------------------------------------------------------------------
-    # Reward shaping
-    # 비용-편익 상충(Cost-Benefit Tradeoff) 기반:
-    # reward = task_benefit + outcome_benefit - control_cost - risk_cost
-    # gate로 보상을 막지 않고, 이른 붓기/낮은 clearance/유출을 명시적 비용으로 둔다.
-    # sim2real-safe signal만 사용: cup pose, fingertip contact, bead pose
+    # Reward weights
+    # total = weight_grasp_maintain * grasp_maintain
+    #       + weight_transport * transport
+    #       + weight_transport_progress * transport_progress
+    #       + weight_tilt * tilt (directional, soft proximity gate)
+    #       + weight_pour_accuracy * bead_cross_fraction
+    #       - weight_spill * spill_ratio
+    #       - weight_action_rate * action_rate_penalty
     # -----------------------------------------------------------------------
-    benefit_grasp_contact_weight: float = 0.15
-    benefit_full_grasp_weight: float = 0.60
-    benefit_grasp_stability_weight: float = 0.20
-    benefit_grasp_height_keep_weight: float = 0.10
-    benefit_force_balance_weight: float = 1.40
-    benefit_transport_weight: float = 4.00
-    benefit_transport_progress_weight: float = 5.00
-    benefit_clearance_weight: float = 0.00  # sigmoid 포화 → 학습 gradient 0, 제거
-    benefit_tilt_weight: float = 8.00
-    benefit_pour_accuracy_weight: float = 0.80
+    weight_grasp_maintain: float = 2.00        # cup-palm 초기 상대위치 유지 (slip 억제)
+    weight_transport: float = 4.00             # source pour point → target opening XY 근접
+    weight_transport_progress: float = 5.00    # 매 스텝 XY 접근 progress
+    weight_tilt: float = 8.00                  # 타겟 방향 기울이기 (directional)
+    weight_pour_accuracy: float = 2.00         # bead cross fraction
+    weight_spill: float = 1.00                 # 유출 패널티
+    weight_action_rate: float = 0.01           # action rate 패널티
 
-    cost_spill_weight: float = 0.50
-    cost_action_rate_weight: float = 0.01
-
-    reward_force_balance_sharpness: float = 8.0
-    reward_transport_scale: float = 10.0
-    reward_clearance_scale: float = 10.0
-    reward_tilt_scale: float = 1.0
-    reward_tilt_distance_scale: float = 0.12
-    thumb_force_ratio_min: float = 0.5
+    reward_grasp_slip_sharpness: float = 10.0  # grasp_maintain 감쇠율 (e^(-k*slip))
+    reward_transport_scale: float = 10.0       # transport tanh 스케일
+    reward_tilt_scale: float = 1.0             # tilt exp 스케일
+    reward_tilt_distance_scale: float = 0.20   # soft proximity gate σ (0.20 → 9cm에서 82%)
 
     # -----------------------------------------------------------------------
     # 종료 조건

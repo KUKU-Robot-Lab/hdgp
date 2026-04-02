@@ -14,14 +14,11 @@
 
 """상수 정의: 5g_pour_right_v2
 
-v1: Warmstart(v7 grasp) 기반 물붓기 태스크
-    컵이 이미 파지·들린 상태로 시작 → transport + tilt + pour 학습
-
 Action (11D):
   [0:6]  6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
   [6:11] 5D per-finger lerp (freeze_grasp=True → 항상 1.0 강제)
 
-Actor Observation (101D) — sim2real 가능:
+Actor Observation (103D) — sim2real 가능:
   arm_joint_pos:            7
   arm_joint_vel:            7
   finger_joint_pos:        20
@@ -33,14 +30,14 @@ Actor Observation (101D) — sim2real 가능:
   pour_point_to_opening:    3
   source_pour_axis:         3
   source_up_axis:           3
-  target_up_axis:           3
   transport_summary:        5  [mouth_dist, mouth_xy_dist, z_clearance,
                                 source_up_dot, dir_tilt_cos]
   fingertip_contact_binary: 5
+  tip_force_norm:           5  (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
   last_actions:            11
-  Total:                  101
+  Total:                  103
 
-Critic Extra (42D) — sim-only privileged:
+Critic Extra (41D) — sim-only privileged:
   left_arm_joint_pos:       9
   left_arm_joint_vel:       9
   distal_contact_binary:    5  (rl_dg_*_4)
@@ -53,14 +50,13 @@ Critic Extra (42D) — sim-only privileged:
   mouth_z_clearance:        1
   source_up_dot_world:      1
   directional_tilt_cos:     1
-  mouth_alignment_cos:      1
   bead_in_target_flag:      1
-  Total:                   42
+  Total:                   41
 
-Critic Total: 101 + 42 = 143D
+Critic Total: 103 + 41 = 144D
 
-Episode (6s @ 60Hz = 360 steps):
-  Pour phase (0~359): Fabrics arm policy + frozen hand
+Episode (10s @ 60Hz = 600 steps):
+  Pour phase: Fabrics arm policy + frozen hand
 """
 
 import math
@@ -91,16 +87,16 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 101        # Actor: sim2real 가능
+NUM_OBSERVATIONS = 103        # Actor: sim2real 가능 (tip_force_norm 5D 추가, target_up_axis 3D 제거)
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 42
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 143
+NUM_CRITIC_EXTRAS   = 41      # mouth_alignment_cos 제거
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 144
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
-POUR_EPISODE_STEPS = 360    # 6s: transport + tilt + pour (bi_pouring_v1과 동일)
+POUR_EPISODE_STEPS = 600    # 10s: transport + tilt + pour
 EPISODE_STEPS = POUR_EPISODE_STEPS
 
 # ---------------------------------------------------------------------------

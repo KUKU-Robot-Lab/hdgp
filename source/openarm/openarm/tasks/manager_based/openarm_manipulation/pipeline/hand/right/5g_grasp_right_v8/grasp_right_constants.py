@@ -35,9 +35,11 @@ Actor Observation (107D) — sim2real 가능:
   fingertip_contact_binary: 5  (FT sensor, 실 로봇 가능)
   last_actions:            11
   bead_mass_normalized:     1  (0=빈 컵, 1=최대 하중)
-  Total:                  107
+  tip_force_norm:           5  (Teosllo FT sensor, 실 로봇 가능)
+  phase_step_ratio:         1  (step counter 기반, 실 로봇 가능)
+  Total:                  113
 
-Critic Extra (37D) — sim-only privileged:
+Critic Extra (36D) — sim-only privileged:
   cup_lin_vel:              3
   cup_ang_vel:              3
   cup_rot (quat):           4
@@ -46,11 +48,10 @@ Critic Extra (37D) — sim-only privileged:
   distal_contact_norm:      5
   middle_contact_binary:    5  (rl_dg_*_3)
   middle_contact_norm:      5
-  phase_step_ratio:         1
   fingertip_to_cup_signed_dist: 5
-  Total:                   37
+  Total:                   36
 
-Critic Total: 107 + 37 = 144D
+Critic Total: 113 + 36 = 149D
 
 Episode (10s @ 60Hz = 600 steps):
   Grasp phase (0~479):  Fabrics arm + per-finger policy
@@ -85,11 +86,11 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 112        # Actor: sim2real 가능 (107 + 5 tip_force_norm)
+NUM_OBSERVATIONS = 113        # Actor: sim2real 가능 (107 + 5 tip_force_norm + 1 phase_step_ratio)
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 37
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 144
+NUM_CRITIC_EXTRAS   = 36
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 149
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

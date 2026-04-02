@@ -870,6 +870,7 @@ class GraspRightEnv(DirectRLEnv):
             self._left_target_cup_attach_pos_b,
             self._left_target_cup_attach_quat_b,
         )
+        left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
@@ -972,7 +973,7 @@ class GraspRightEnv(DirectRLEnv):
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 102D | Critic 149D
+    # Observations: Actor 103D | Critic 144D
     # ------------------------------------------------------------------
     def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
         """Build the legacy actor observation expected by the warmstart checkpoint.
@@ -1089,6 +1090,9 @@ class GraspRightEnv(DirectRLEnv):
             self._directional_tilt_cos,
         ], dim=-1)   # (N, 5)
 
+        # tip force (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
+        tip_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+
         actor_obs = torch.cat([
             arm_joint_pos,              # 7
             arm_joint_vel,              # 7
@@ -1101,18 +1105,19 @@ class GraspRightEnv(DirectRLEnv):
             pour_point_to_opening,      # 3
             source_pour_axis_clean,     # 3
             source_up_axis_clean,       # 3
-            target_up_axis_clean,       # 3
+            # target_up_axis 제거: 타겟 컵은 항상 직립 → 항상 [0,0,1], 정보 없음
             transport_summary,          # 5
             binary_contact,             # 5
+            tip_force_norm,             # 5 (fingertip force, sim2real 가능)
             last_actions,               # 11
-        ], dim=-1)   # 101D
+        ], dim=-1)   # 103D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
-                f"[pour_v1] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
+                f"[pour_v2] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
             )
 
-        # ==== Critic extra obs (42D) ====
+        # ==== Critic extra obs (41D) ====
         cup_height_delta = (right_cup_pos_clean[:, 2] - self.object_init_pos[:, 2]).unsqueeze(1)
 
         distal_binary     = self.distal_binary_contact_buf.float()
@@ -1127,33 +1132,34 @@ class GraspRightEnv(DirectRLEnv):
             bead_pos_clean - left_cup_pos_clean,
         )
 
-        # critic actor_obs_clean (101D) — clean state 재조합
+        # critic actor_obs_clean (103D) — clean state 재조합, actor_obs 구조와 동일
         actor_obs_clean = torch.cat([
-            arm_joint_pos_clean,
-            arm_joint_vel_clean,
-            finger_joint_pos_clean,
-            finger_joint_vel_clean,
-            right_cup_pos_clean - palm_center_pos_clean,
-            right_cup_quat_clean,
-            left_cup_pos_clean - palm_center_pos_clean,
-            left_cup_quat_clean,
-            target_opening_clean - source_pour_point_clean,
-            source_pour_axis_clean,
-            source_up_axis_clean,
-            target_up_axis_clean,
-            torch.stack([
+            arm_joint_pos_clean,                                      # 7
+            arm_joint_vel_clean,                                      # 7
+            finger_joint_pos_clean,                                   # 20
+            finger_joint_vel_clean,                                   # 20
+            right_cup_pos_clean - palm_center_pos_clean,              # 3
+            right_cup_quat_clean,                                     # 4
+            left_cup_pos_clean - palm_center_pos_clean,               # 3
+            left_cup_quat_clean,                                      # 4
+            target_opening_clean - source_pour_point_clean,           # 3
+            source_pour_axis_clean,                                   # 3
+            source_up_axis_clean,                                     # 3
+            # target_up_axis 제거: 항상 [0,0,1], 정보 없음
+            torch.stack([                                             # 5
                 self._mouth_distance,
                 self._mouth_xy_distance,
                 self._mouth_z_clearance,
                 self._source_up_dot_world,
                 self._directional_tilt_cos,
             ], dim=-1),
-            binary_contact,
-            last_actions,
-        ], dim=-1)   # 101D
+            binary_contact,                                           # 5
+            tip_force_norm,                                           # 5 (v8처럼, sim2real)
+            last_actions,                                             # 11
+        ], dim=-1)   # 103D
 
         critic_obs = torch.cat([
-            actor_obs_clean,                                    # 101
+            actor_obs_clean,                                    # 103
             left_arm_joint_pos_clean,                          # 9
             left_arm_joint_vel_clean,                          # 9
             distal_binary,                                     # 5
@@ -1166,13 +1172,13 @@ class GraspRightEnv(DirectRLEnv):
             self._mouth_z_clearance.unsqueeze(1),              # 1
             self._source_up_dot_world.unsqueeze(1),            # 1
             self._directional_tilt_cos.unsqueeze(1),           # 1
-            self._mouth_alignment_cos.unsqueeze(1),            # 1
+            # mouth_alignment_cos 제거 (NUM_CRITIC_EXTRAS=41)
             self._bead_cross_fraction.unsqueeze(1),            # 1
-        ], dim=-1)   # 143D
+        ], dim=-1)   # 144D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
-                f"[pour_v1] Critic obs dim mismatch: {critic_obs.shape[1]} != {NUM_CRITIC_OBSERVATIONS}"
+                f"[pour_v2] Critic obs dim mismatch: {critic_obs.shape[1]} != {NUM_CRITIC_OBSERVATIONS}"
             )
 
         return {"policy": actor_obs, "critic": critic_obs}
@@ -1180,130 +1186,83 @@ class GraspRightEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         self._compute_intermediate_values()
 
-        # ---- Benefit: stable grasp that still permits pouring ----
-        grasp_contact = self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
-        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)
-        thumb_force = self.contact_force_raw[:, 0]
-        others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)
-        thumb_force_adequate = (
-            thumb_force >= others_avg_force * self.cfg.thumb_force_ratio_min
-        ).float()
-        full_grasp_reward = (
-            (self.binary_contact_buf[:, 0] & (others_count >= 3)).float()
-            * thumb_force_adequate
-        )
-        # force_balance: 컵 낙하 방지 (기울임 중에도 엄지-나머지 균형 유지)
-        # grasp_hold gate 없이 독립 적용 → 기울이기를 방해하지 않으면서 파지 품질 유지
-        has_thumb_contact = self.binary_contact_buf[:, 0].float()
-        has_others_contact = (self.binary_contact_buf[:, 1:].sum(dim=-1) >= 1).float()
-        force_balance_gate = has_thumb_contact * has_others_contact
-        force_balance_err = (thumb_force - others_avg_force).abs()
-        force_balance_reward = force_balance_gate * torch.exp(
-            -self.cfg.reward_force_balance_sharpness * force_balance_err
-        )
-        grasp_stability_reward = force_balance_reward * (
-            self.num_contacts_buf.float() / float(MIN_CONTACTS_FOR_SUCCESS)
-        ).clamp(0.0, 1.0)
-        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
-        grasp_height_keep_reward = full_grasp_reward * (
-            cup_height_delta / max(self.cfg.lift_success_height, 1e-6)
-        ).clamp(0.0, 1.0)
+        # ---- 1. Grasp maintenance: cup-palm 초기 상대 위치 유지 (slip 억제) ----
+        # slip이 발생하면 패널티 → arm이 cup을 떨어뜨리는 동작 기피
+        current_cup_palm_rel = self.object_pos - self.palm_center_pos
+        slip_dist = torch.norm(current_cup_palm_rel - self._grasp_rel_palm_to_cup_init, dim=-1)
+        grasp_maintain_reward = torch.exp(-self.cfg.reward_grasp_slip_sharpness * slip_dist)
 
-        # ---- Benefit: approach and controllable pour pose ----
+        # ---- 2. Transport: source pour point → target opening XY 접근 ----
         transport_reward = 1.0 - torch.tanh(self.cfg.reward_transport_scale * self._mouth_xy_distance)
         transport_progress = torch.clamp(self._prev_mouth_xy_distance - self._mouth_xy_distance, min=0.0)
+
+        # ---- 3. Tilt: 타겟 방향으로 기울이기 (soft proximity gate 복구, σ=0.20) ----
+        # tilt_influence: 거리별 soft gate (9cm에서 82%, 20cm에서 37%) → 제자리 회전 억제
         target_tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
         tilt_error = torch.abs(self._source_up_dot_world - target_tilt_cos)
         tilt_reward = torch.exp(-self.cfg.reward_tilt_scale * tilt_error)
         tilt_distance_scale = max(self.cfg.reward_tilt_distance_scale, 1e-6)
         tilt_influence = torch.exp(-torch.square(self._mouth_xy_distance / tilt_distance_scale))
-        # directional factor: 타겟 방향으로 기울인 경우만 reward. 반대 방향=0
         directional_factor = self._directional_tilt_cos.clamp(0.0, 1.0)
-        # tilt_influence(proximity gate) 제거: 거리 무관하게 tilt 학습, 로컬미니멈 방지
-        total_tilt_reward = tilt_reward * directional_factor
+        total_tilt_reward = tilt_influence * tilt_reward * directional_factor
 
-        clearance_reward = torch.tanh(self.cfg.reward_clearance_scale * self._mouth_z_clearance)
-        positive_clearance_benefit = torch.relu(clearance_reward)
+        # ---- 4. Pour gate (clearance/XY 조건, bead 이전 reward 스케일 기준) ----
         xy_gate = torch.clamp(
             (self.cfg.pour_gate_xy_far - self._mouth_xy_distance)
             / max(self.cfg.pour_gate_xy_far - self.cfg.pour_gate_xy_near, 1e-6),
-            0.0,
-            1.0,
+            0.0, 1.0,
         )
         z_gate = torch.clamp(
             (self._mouth_z_clearance - self.cfg.pour_gate_z_low)
             / max(self.cfg.pour_gate_z_high - self.cfg.pour_gate_z_low, 1e-6),
-            0.0,
-            1.0,
+            0.0, 1.0,
         )
         pour_gate = xy_gate * z_gate
 
-        # ---- Benefit: actual liquid transfer to target ----
-        pour_accuracy_benefit = self._bead_cross_fraction
+        # ---- 5. Pour outcome ----
+        pour_accuracy = self._bead_cross_fraction
 
-        # ---- Cost: risky/inefficient actions ----
+        # ---- 6. Costs ----
         spill_cost = self._spill_ratio
         action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
 
-        task_benefit = (
-            self.cfg.benefit_grasp_contact_weight * grasp_contact
-            + self.cfg.benefit_full_grasp_weight * full_grasp_reward
-            + self.cfg.benefit_grasp_stability_weight * grasp_stability_reward
-            + self.cfg.benefit_grasp_height_keep_weight * grasp_height_keep_reward
-            + self.cfg.benefit_force_balance_weight * force_balance_reward
-            + self.cfg.benefit_transport_weight * transport_reward
-            + self.cfg.benefit_transport_progress_weight * transport_progress
-            + self.cfg.benefit_clearance_weight * positive_clearance_benefit
-            + self.cfg.benefit_tilt_weight * total_tilt_reward
+        total = (
+            self.cfg.weight_grasp_maintain * grasp_maintain_reward
+            + self.cfg.weight_transport * transport_reward
+            + self.cfg.weight_transport_progress * transport_progress
+            + self.cfg.weight_tilt * total_tilt_reward
+            + self.cfg.weight_pour_accuracy * pour_accuracy
+            - self.cfg.weight_spill * spill_cost
+            - self.cfg.weight_action_rate * action_rate_penalty
         )
-        outcome_benefit = self.cfg.benefit_pour_accuracy_weight * pour_accuracy_benefit
-        control_cost = self.cfg.cost_action_rate_weight * action_rate_penalty
-        risk_cost = self.cfg.cost_spill_weight * spill_cost
-        total = task_benefit + outcome_benefit - control_cost - risk_cost
 
-        self.extras["reward_grasp_contact"] = grasp_contact.mean()
-        self.extras["reward_grasp_stability"] = grasp_stability_reward.mean()
-        self.extras["reward_grasp_height_keep"] = grasp_height_keep_reward.mean()
-        self.extras["reward_force_balance"] = force_balance_reward.mean()
-        self.extras["reward_full_grasp"] = full_grasp_reward.mean()
-        self.extras["reward_transport"] = transport_reward.mean()
+        # ---- Logging (pour task 진단 필수 지표만) ----
+        self.extras["grasp_maintain"]            = grasp_maintain_reward.mean()
+        self.extras["slip_dist"]                 = slip_dist.mean()
+        self.extras["num_contacts"]              = self.num_contacts_buf.float().mean()
+        self.extras["reward_transport"]          = transport_reward.mean()
         self.extras["reward_transport_progress"] = transport_progress.mean()
-        self.extras["reward_clearance"] = positive_clearance_benefit.mean()
-        self.extras["reward_tilt"] = total_tilt_reward.mean()
-        self.extras["reward_tilt_raw"] = tilt_reward.mean()           # 방향/거리 무관 순수 tilt 품질
-        self.extras["reward_directional_tilt"] = (tilt_influence * directional_factor).mean()
-        self.extras["tilt_directional_factor"] = directional_factor.mean()  # 0=반대방향, 1=정방향
-        self.extras["pct_correct_tilt_dir"] = (self._directional_tilt_cos > 0).float().mean()  # 올바른 방향 env 비율
-        self.extras["reward_aligned_tilt"] = total_tilt_reward.mul(pour_gate).mean()
-        self.extras["reward_aligned_directional_tilt"] = (tilt_influence * directional_factor).mul(pour_gate).mean()
-        self.extras["benefit_task"] = task_benefit.mean()
-        self.extras["benefit_outcome"] = outcome_benefit.mean()
-        self.extras["cost_control"] = control_cost.mean()
-        self.extras["cost_risk"] = risk_cost.mean()
-        self.extras["cost_spill"] = spill_cost.mean()
-        self.extras["penalty_action_rate"] = action_rate_penalty.mean()
-        self.extras["force_balance_err"] = (thumb_force - others_avg_force).abs().mean()
-        self.extras["thumb_force_mean"] = thumb_force.mean()
-        self.extras["others_avg_force_mean"] = others_avg_force.mean()
-        self.extras["thumb_force_adequate"] = thumb_force_adequate.mean()
-
-        self.extras["mouth_distance"]        = self._mouth_distance.mean()
-        self.extras["mouth_xy_distance"]     = self._mouth_xy_distance.mean()
-        self.extras["mouth_z_clearance"]     = self._mouth_z_clearance.mean()
-        self.extras["source_up_dot"]         = self._source_up_dot_world.mean()
-        self.extras["directional_tilt_cos"]  = self._directional_tilt_cos.mean()
-        self.extras["mouth_alignment_cos"]   = self._mouth_alignment_cos.mean()
-        self.extras["pour_gate_xy"]          = xy_gate.mean()
-        self.extras["pour_gate_z"]           = z_gate.mean()
-        self.extras["pour_gate"]             = pour_gate.mean()
-        self.extras["tilt_influence"]        = tilt_influence.mean()
-        self.extras["bead_in_source_rate"]   = self._bead_in_source_fraction.mean()
-        self.extras["bead_in_target_rate"]   = self._bead_in_target_fraction.mean()
-        self.extras["bead_cross_fraction"]   = self._bead_cross_fraction.mean()
-        self.extras["bead_cross_count"]      = self._bead_cross_count.float().mean()
-        self.extras["spill_ratio"]           = self._spill_ratio.mean()
-        self.extras["success_rate"]          = self.success_flag.float().mean()
-        self.extras["num_contacts"]          = self.num_contacts_buf.float().mean()
+        self.extras["reward_tilt"]               = total_tilt_reward.mean()
+        self.extras["reward_tilt_raw"]           = tilt_reward.mean()
+        self.extras["tilt_influence"]            = tilt_influence.mean()
+        self.extras["tilt_directional_factor"]   = directional_factor.mean()
+        self.extras["pct_correct_tilt_dir"]      = (self._directional_tilt_cos > 0).float().mean()
+        self.extras["reward_aligned_tilt"]       = total_tilt_reward.mul(pour_gate).mean()
+        self.extras["pour_accuracy"]             = pour_accuracy.mean()
+        self.extras["cost_spill"]                = spill_cost.mean()
+        self.extras["mouth_xy_distance"]         = self._mouth_xy_distance.mean()
+        self.extras["mouth_z_clearance"]         = self._mouth_z_clearance.mean()
+        self.extras["source_up_dot"]             = self._source_up_dot_world.mean()
+        self.extras["directional_tilt_cos"]      = self._directional_tilt_cos.mean()
+        self.extras["pour_gate_xy"]              = xy_gate.mean()
+        self.extras["pour_gate_z"]               = z_gate.mean()
+        self.extras["pour_gate"]                 = pour_gate.mean()
+        self.extras["bead_in_source_rate"]       = self._bead_in_source_fraction.mean()
+        self.extras["bead_in_target_rate"]       = self._bead_in_target_fraction.mean()
+        self.extras["bead_cross_fraction"]       = self._bead_cross_fraction.mean()
+        self.extras["bead_cross_count"]          = self._bead_cross_count.float().mean()
+        self.extras["spill_ratio"]               = self._spill_ratio.mean()
+        self.extras["success_rate"]              = self.success_flag.float().mean()
 
         self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
 
@@ -1473,6 +1432,7 @@ class GraspRightEnv(DirectRLEnv):
             self._left_target_cup_attach_quat_b,
             env_ids=env_ids,
         )
+        left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
@@ -1714,6 +1674,7 @@ class GraspRightEnv(DirectRLEnv):
             self._left_target_cup_attach_quat_b,
             env_ids=env_ids,
         )
+        left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 

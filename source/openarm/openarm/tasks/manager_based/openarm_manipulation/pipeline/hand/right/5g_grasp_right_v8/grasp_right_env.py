@@ -698,11 +698,23 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ---- 오른손 ----
-        # Grasp phase: per-finger lerp target
-        # Lift  phase: 진입 시점 캡처값 고정
+        # Grasp phase: per-finger lerp target (full range)
+        # Lift  phase: 캡처 자세 + action 기반 micro-delta
+        #   action=0 → 파지 자세 유지, +1 → 더 조임, -1 → 완화
+        #   delta 범위: ±lift_finger_delta_scale × (GRASP_POSE - APPROACH_POSE)
+        delta_20 = self.hand_grasp_pose - self.hand_open_pose            # (20,)
+        lift_micro = (
+            finger_action.repeat_interleave(4, dim=1)                    # (N,20)
+            * delta_20.unsqueeze(0)
+            * self.cfg.lift_finger_delta_scale
+        )
+        lift_finger_target = (self.lift_finger_pos_buf + lift_micro).clamp(
+            torch.min(self.hand_open_pose, self.hand_grasp_pose).unsqueeze(0),
+            torch.max(self.hand_open_pose, self.hand_grasp_pose).unsqueeze(0),
+        )
         finger_target = torch.where(
             is_lift.unsqueeze(1),
-            self.lift_finger_pos_buf,
+            lift_finger_target,
             self.hand_joint_targets,
         )
         self.robot.set_joint_position_target(finger_target, joint_ids=self.hand_dof_indices)
@@ -811,7 +823,8 @@ class GraspRightEnv(DirectRLEnv):
             last_actions,           # 11
             self._bead_mass_normalized.unsqueeze(-1),  # 1 (0=빈 컵, 1=최대 하중)
             tip_force_norm,         # 5 (fingertip force magnitude, sim2real 가능)
-        ], dim=-1)   # 112D
+            phase_step_ratio,       # 1 (현재 phase: 0=grasp, 1=lift, 실로봇 step counter로 가능)
+        ], dim=-1)   # 113D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -864,10 +877,11 @@ class GraspRightEnv(DirectRLEnv):
             last_actions,
             self._bead_mass_normalized.unsqueeze(-1),  # 1
             tip_force_norm,         # 5 (fingertip force magnitude)
-        ], dim=-1)   # 112D
+            phase_step_ratio,       # 1
+        ], dim=-1)   # 113D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 112
+            actor_obs_clean,        # 113 (phase_step_ratio 포함)
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4
@@ -876,7 +890,6 @@ class GraspRightEnv(DirectRLEnv):
             distal_force_norm,      # 5
             middle_binary,          # 5
             middle_force_norm,      # 5
-            phase_step_ratio,       # 1
             fingertip_signed_dist,  # 5
         ], dim=-1)   # 149D
 
@@ -1014,18 +1027,19 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0)   # (N,)
         r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
-        # ---- R6. force_efficiency: lift 상태에서 접촉력을 줄이도록 유도 ----
-        # 분모를 CONTACT_FORCE_MAX(10N, per-finger)로 정규화 → avg force 1~3N 시 0.1~0.3 수준
-        # mass별 적정 파지력은 명시하지 않고 물리 환경이 자연스럽게 결정:
-        #   무거운 컵: 힘 줄이면 낙하(-lift_reward) > efficiency 이득 → 높은 힘에서 수렴
-        #   가벼운 컵: 힘 줄여도 안 떨어짐 → 더 줄이는 방향으로 학습
+        # ---- R6. force_efficiency: lift 상태에서 mass-conditional 파지력 조절 ----
+        # mass-conditional: effective_weight = weight × (1 - bead_mass_normalized)
+        #   가벼운 컵(mass=0): 최대 페널티 → 힘 줄이도록 강하게 유도
+        #   무거운 컵(mass=1): 페널티 0 → 물리(낙하 페널티)가 최소 필요 grip 자연 결정
+        # target force를 하드코딩하지 않고 물리와 reward 균형으로 adaptive 학습
         grip_normalized = (self.actions[:, 6:].mean(dim=-1) + 1.0) / 2.0   # (N,)
         avg_tip_force_normalized = (
             self.contact_force_raw.mean(dim=-1) / CONTACT_FORCE_MAX
         ).clamp(min=0.0, max=1.0)
         contact_maintained = (self.num_contacts_buf >= max(MIN_CONTACTS_FOR_SUCCESS, 3)).float()
         eff_gate = self.is_lift_phase.float() * contact_maintained
-        r6_force_eff = -self.cfg.force_efficiency_weight * avg_tip_force_normalized * eff_gate
+        mass_scale = (1.0 - self._bead_mass_normalized).clamp(min=0.0, max=1.0)   # (N,)
+        r6_force_eff = -self.cfg.force_efficiency_weight * mass_scale * avg_tip_force_normalized * eff_gate
 
         # ---- 합산 ----
         total = (
