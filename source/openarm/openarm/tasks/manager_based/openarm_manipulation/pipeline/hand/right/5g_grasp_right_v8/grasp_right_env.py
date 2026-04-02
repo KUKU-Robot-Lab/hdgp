@@ -1027,18 +1027,22 @@ class GraspRightEnv(DirectRLEnv):
         ).clamp(max=1.0)   # (N,)
         r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
 
-        # ---- R6. force_efficiency: Grasp phase에서 mass-conditional 파지력 조절 ----
-        # eff_gate = grasp phase AND 1개 이상 접촉
-        #   → 접촉 발생 시점부터 바로 adaptive signal 제공 (기존 lift-only 구조 수정)
-        # circular dependency 해소: contact >= 1 (기존 >= 3) → grip 줄여도 gate 유지
+        # ---- R6. force_target: mass에 비례하는 적정 파지력으로 유도 ----
+        # target(mass) = base + mass × scale
+        # 양방향 패널티: |actual - target| → 너무 약하면(drop risk), 너무 강하면(waste) 모두 패널티
+        # gate: grasp phase AND 1개 이상 접촉 (접촉 발생 시점부터 활성)
         grip_normalized = (self.actions[:, 6:].mean(dim=-1) + 1.0) / 2.0   # (N,)
         avg_tip_force_normalized = (
             self.contact_force_raw.mean(dim=-1) / CONTACT_FORCE_MAX
         ).clamp(min=0.0, max=1.0)
         has_any_contact = (self.num_contacts_buf >= 1).float()
         eff_gate = is_grasp_f * has_any_contact
-        mass_scale = (1.0 - self._bead_mass_normalized).clamp(min=0.0, max=1.0)   # (N,)
-        r6_force_eff = -self.cfg.force_efficiency_weight * mass_scale * avg_tip_force_normalized * eff_gate
+        force_target = (
+            self.cfg.force_target_base
+            + self._bead_mass_normalized * self.cfg.force_target_scale
+        ).clamp(min=0.0, max=1.0)   # (N,)
+        force_error = (avg_tip_force_normalized - force_target).abs()       # (N,) 절댓값 오차
+        r6_force_eff = -self.cfg.force_target_weight * force_error * eff_gate
 
         # ---- 합산 ----
         total = (
@@ -1069,7 +1073,9 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["lift_reward"]            = r3_lift.mean()
         self.extras["action_smoothness"]      = r4_smooth.mean()
         self.extras["grasp_quality_lift"]     = r5_quality_lift.mean()
-        self.extras["force_efficiency"]       = r6_force_eff.mean()
+        self.extras["force_target_reward"]    = r6_force_eff.mean()
+        self.extras["force_target_err"]      = force_error.mean()           # 목표 오차 (0에 가까울수록 좋음)
+        self.extras["force_target_value"]    = force_target.mean()          # 현재 에피소드 평균 target
         # [진단 지표]
         self.extras["force_balance_err"]      = force_balance_err.mean()
         self.extras["thumb_force_mean"]       = thumb_force.mean()

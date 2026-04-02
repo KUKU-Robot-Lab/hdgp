@@ -188,11 +188,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_quality_lift_weight:     float = 8.0
     grasp_quality_lift_sharpness:  float = 10.0
 
-    # R6. force_efficiency: lift 상태에서 접촉력을 줄이도록 유도
-    # mass-conditional: r6 = -weight * (1 - bead_mass_normalized) * avg_force
-    #   가벼운 컵(mass=0): 최대 페널티 → 힘 최소화 학습
-    #   무거운 컵(mass=1): 페널티 0 → 물리가 필요 최소 grip 결정
-    force_efficiency_weight: float = 5.0
+    # R6. force_target: mass에 비례하는 적정 파지력으로 유도
+    # target(mass) = base + mass × scale  →  target ∈ [base, base+scale]
+    # 실측 calibration (test7, 99% 성공):
+    #   light(mass≈0.17): tip_force≈0.205  →  target=0.15  (줄일 여지 유지)
+    #   heavy(mass≈0.83): tip_force≈0.217  →  target=0.21  (여기서 유지)
+    # 양방향 패널티: |actual - target| → 너무 약해도(drop), 너무 강해도(waste) 패널티
+    force_target_base:   float = 0.13   # 빈 컵 target (tip_force_norm 기준)
+    force_target_scale:  float = 0.10   # 가득 찬 컵에서 추가되는 양 → target_max=0.23
+    force_target_weight: float = 10.0
 
     # Lift phase 손가락 micro-adjustment
     # action ∈ [-1,1] → lift_finger_pos_buf ± lift_finger_delta_scale × delta_20

@@ -201,7 +201,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_contact_maintain: float = 2.00      # thumb + others≥N 접촉 유지 bonus [1.5→2.0]
     weight_force_balance: float = 0.50         # |F_thumb - F_others| → 0 [0.3→0.5]
     weight_finger_curl: float = 3.00           # per-finger lerp → +1 (닫힘) 유도
-    weight_transport: float = 4.00             # source pour point → target opening XY 근접
+    weight_transport: float = 6.00             # source pour point → target opening XY 근접 [4→6]
     weight_transport_progress: float = 5.00    # 매 스텝 XY 접근 progress
     weight_tilt: float = 10.00                 # 타겟 방향 기울이기 [8→10]
     weight_pour_accuracy: float = 8.00         # bead cross fraction [2→8: 구슬 이동 강한 신호]
@@ -212,7 +212,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
     reward_transport_scale: float = 10.0       # transport tanh 스케일
-    reward_tilt_scale: float = 2.5             # tilt exp 스케일 [1.0→2.5: 90° 도달 gradient 강화]
+    reward_tilt_scale: float = 5.0             # tilt exp 스케일 [2.5→5.0: 47°→90° gradient 강화]
     reward_tilt_distance_scale: float = 0.20   # soft proximity gate σ (0.20 → 9cm에서 82%)
 
     # -----------------------------------------------------------------------
