@@ -247,6 +247,10 @@ def run_train(
                     stripped = text.strip()
                     if not stripped:
                         continue
+                    if is_rl_games:
+                        print(f"{prefix}{stripped}", file=sys.stdout)
+                        sys.stdout.flush()
+                        continue
                     # skrl tqdm progress
                     if _SKRL_PROGRESS.search(stripped):
                         print(f"\r{prefix}{stripped}          ", end="", file=sys.stdout)

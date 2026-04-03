@@ -661,7 +661,12 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- Per-joint finger delta: 현재 위치 + scaled delta ----
         current_finger_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]  # (N, 20)
-        finger_delta = finger_action * self.cfg.finger_delta_scale * self.finger_delta_mask  # (N, 20)
+        _finger_delta_scale = (
+            self.grasp_adr.get_param("finger", "delta_scale")
+            if self.grasp_adr is not None
+            else self.cfg.finger_delta_scale
+        )
+        finger_delta = finger_action * _finger_delta_scale * self.finger_delta_mask  # (N, 20)
         hand_target  = (current_finger_pos + finger_delta).clamp(
             self.hand_joint_lower_limits.unsqueeze(0),
             self.hand_joint_upper_limits.unsqueeze(0),
@@ -1075,9 +1080,10 @@ class GraspRightEnv(DirectRLEnv):
             else torch.tensor(0.0, device=self.device)
         )
         if self.grasp_adr is not None:
-            self.extras["adr_progress"]          = torch.tensor(self.grasp_adr.progress, device=self.device)
-            self.extras["adr_spawn_xy_range"]    = torch.tensor(self.grasp_adr.get_param("spawn",  "object_spawn_xy_range"), device=self.device)
-            self.extras["adr_obs_noise_cup_pos"] = torch.tensor(self.grasp_adr.get_param("noise",  "obs_noise_cup_pos"),     device=self.device)
+            self.extras["adr_progress"]            = torch.tensor(self.grasp_adr.progress, device=self.device)
+            self.extras["adr_spawn_xy_range"]      = torch.tensor(self.grasp_adr.get_param("spawn",  "object_spawn_xy_range"), device=self.device)
+            self.extras["adr_obs_noise_cup_pos"]   = torch.tensor(self.grasp_adr.get_param("noise",  "obs_noise_cup_pos"),     device=self.device)
+            self.extras["adr_finger_delta_scale"]  = torch.tensor(self.grasp_adr.get_param("finger", "delta_scale"),           device=self.device)
 
         return total
 

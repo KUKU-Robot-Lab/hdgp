@@ -98,15 +98,14 @@ HAND_APPROACH_POSE = [
     0.0,  0.0,   0.0, 0.0,   # pinky: fully open
 ]
 
-# 파지 자세 (per-finger lerp action=+1 목표)
-# index/middle/ring _2: 0.7→1.6 rad (관절 한계 ~2.0 rad의 80%)
-# thumb _3/_4: 0.5→0.8 (더 강한 curl)
+# 파지 자세 — v7 test* 학습 결과에서 추출 (100 에피소드 평균, ep_len>=450 AND contacts>=2)
+# extract_grasp_pose.py --task 5g_grasp_right-v7 --collect_from_step 450 --min_contacts 2
 HAND_GRASP_POSE = [
-    0.0, -1.57, 1.5, 1.5,   # thumb
-    0.0,  1.6,  1.5, 1.5,   # index
-    0.0,  1.6,  1.5, 1.5,   # middle
-    0.0,  1.6,  1.5, 1.5,   # ring
-    0.0,  0.0,  1.5, 1.5,   # pinky
+    -0.283, -1.241, +0.104, +0.790,   # thumb
+    +0.016, +0.527, +0.502, +0.674,   # index
+    +0.004, +0.775, +0.170, +1.090,   # middle
+    -0.000, +0.668, +0.387, +1.013,   # ring
+    +0.000, -0.002, +0.716, +0.889,   # pinky
 ]
 
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
