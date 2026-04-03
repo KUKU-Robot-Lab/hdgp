@@ -443,6 +443,9 @@ class GraspRightEnv(DirectRLEnv):
         self._g_pour = torch.zeros(self.num_envs, device=self.device)
         self._bead_in_target = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
         self._bead_in_source = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
+        self._bead_ever_in_target = torch.zeros(
+            self.num_envs, self.num_beads, dtype=torch.bool, device=self.device
+        )
         self._bead_crossed_target_mouth = torch.zeros(
             self.num_envs, self.num_beads, dtype=torch.bool, device=self.device
         )
@@ -451,10 +454,12 @@ class GraspRightEnv(DirectRLEnv):
         )
         self._bead_cross_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._bead_cross_fraction = torch.zeros(self.num_envs, device=self.device)
+        self._prev_bead_ever_in_target_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._bead_in_target_fraction = torch.zeros(self.num_envs, device=self.device)
         self._bead_in_source_fraction = torch.zeros(self.num_envs, device=self.device)
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
+        self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._no_tip_force_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._world_up = torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
@@ -740,6 +745,7 @@ class GraspRightEnv(DirectRLEnv):
             & (pos_in_target[..., 2] <= self.cfg.target_inside_z_max)
         )
         self._bead_in_target.copy_(bead_in_target)
+        self._bead_ever_in_target |= bead_in_target
 
         cup_quat_w = self.cup.data.root_quat_w
         cup_pos_w = self.cup.data.root_pos_w
@@ -1326,6 +1332,19 @@ class GraspRightEnv(DirectRLEnv):
             + self.cfg.weight_capture * r_capture
         )
 
+        bead_ever_in_target_count = self._bead_ever_in_target.sum(dim=-1).long()
+        new_bead_capture_count = torch.clamp(
+            bead_ever_in_target_count - self._prev_bead_ever_in_target_count,
+            min=0,
+        ).float()
+        r_bead_first_capture = self.cfg.weight_bead_first_capture * new_bead_capture_count
+
+        all_beads_in_target_now = self._bead_in_target.all(dim=-1)
+        all_beads_bonus_now = all_beads_in_target_now & (~self._all_beads_bonus_paid)
+        r_all_beads_capture = self.cfg.weight_all_beads_capture * all_beads_bonus_now.float()
+        self._all_beads_bonus_paid |= all_beads_bonus_now
+        self._prev_bead_ever_in_target_count.copy_(bead_ever_in_target_count)
+
         # ---- 5. Outcome and costs ----
         success_now = (
             (self._bead_in_target_fraction >= self.cfg.success_target_fill_ratio)
@@ -1353,6 +1372,8 @@ class GraspRightEnv(DirectRLEnv):
             + self.cfg.weight_transport_progress * r_transport_progress
             + r_prepour_stage
             + r_pour_stage
+            + r_bead_first_capture
+            + r_all_beads_capture
             + self.cfg.weight_success * r_success
             - self.cfg.weight_spill * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
@@ -1383,6 +1404,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward_cross"]              = r_cross.mean()
         self.extras["reward_capture"]            = r_capture.mean()
         self.extras["reward_pour_stage"]         = r_pour_stage.mean()
+        self.extras["reward_bead_first_capture"] = r_bead_first_capture.mean()
+        self.extras["reward_all_beads_capture"]  = r_all_beads_capture.mean()
         self.extras["reward_success"]            = r_success.mean()
         self.extras["tilt_directional_factor"]   = directional_factor.mean()
         self.extras["pct_correct_tilt_dir"]      = (self._directional_tilt_cos > 0).float().mean()
@@ -1602,15 +1625,18 @@ class GraspRightEnv(DirectRLEnv):
         self.middle_binary_contact_buf[env_ids] = False
         self._bead_in_target[env_ids] = False
         self._bead_in_source[env_ids] = False
+        self._bead_ever_in_target[env_ids] = False
         self._bead_crossed_target_mouth[env_ids] = False
         self._prev_bead_target_local_z[env_ids].fill_(10.0)
         self._needs_grasp_init_update[env_ids] = True   # 다음 스텝에 palm local init 갱신
         self._bead_cross_count[env_ids] = 0
         self._bead_cross_fraction[env_ids] = 0.0
+        self._prev_bead_ever_in_target_count[env_ids] = 0
         self._bead_in_target_fraction[env_ids] = 0.0
         self._bead_in_source_fraction[env_ids] = 0.0
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
+        self._all_beads_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._pre_pour_ready_steps[env_ids] = 0
@@ -1847,15 +1873,18 @@ class GraspRightEnv(DirectRLEnv):
         self.middle_binary_contact_buf[env_ids] = False
         self._bead_in_target[env_ids] = False
         self._bead_in_source[env_ids] = False
+        self._bead_ever_in_target[env_ids] = False
         self._bead_crossed_target_mouth[env_ids] = False
         self._prev_bead_target_local_z[env_ids].fill_(10.0)
         self._needs_grasp_init_update[env_ids] = True   # 다음 스텝에 palm local init 갱신
         self._bead_cross_count[env_ids] = 0
         self._bead_cross_fraction[env_ids] = 0.0
+        self._prev_bead_ever_in_target_count[env_ids] = 0
         self._bead_in_target_fraction[env_ids] = 0.0
         self._bead_in_source_fraction[env_ids] = 0.0
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
+        self._all_beads_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self.success_flag[env_ids] = False
 

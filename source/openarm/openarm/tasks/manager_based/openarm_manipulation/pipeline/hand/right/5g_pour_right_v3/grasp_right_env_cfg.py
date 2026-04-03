@@ -234,6 +234,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_cross: float = 4.00
     weight_capture: float = 12.00
     weight_success: float = 15.00
+    weight_bead_first_capture: float = 50.00
+    weight_all_beads_capture: float = 200.00
     weight_spill: float = 6.00
     weight_premature_tilt: float = 4.00
     weight_grasp_loss: float = 4.00
