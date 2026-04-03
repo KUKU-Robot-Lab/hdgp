@@ -80,8 +80,8 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
         # spawn_from_usd()는 cfg.physics_material 속성이 있으면 바인딩하므로 생성 후 후첨가한다.
         # 기본 material 마찰(0.5/0.5)보다 낮춰 컵 내부에서 구슬이 더 쉽게 굴러가게 한다.
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
-            static_friction=0.1,
-            dynamic_friction=0.1,
+            static_friction=0.05,
+            dynamic_friction=0.05,
             restitution=0.1,
             friction_combine_mode="min",
             restitution_combine_mode="max",
@@ -105,9 +105,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 시뮬레이션 파라미터
     # 물리: 120 Hz, 정책: 60 Hz (decimation=2)
     # Fabrics: fabrics_dt=1/60 × fabric_decimation=2 → 120 Hz
-    # Episode: 10s = 600 steps @ 60Hz (8s grasp + 2s lift)
+    # Episode: 20s = 1200 steps @ 60Hz
     # -----------------------------------------------------------------------
-    episode_length_s: float = 10.0
+    episode_length_s: float = 20.0
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -184,9 +184,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # stage gate / pre-pour geometry
     # test1에서 mouth_xy≈0.23m일 때 g_align_xy가 1e-3 이하로 죽어 접근 전 stage 신호가 약했음.
     # xy gate/approach를 넓혀 먼 거리에서도 target 방향 gradient를 유지한다.
-    reward_gate_xy_scale: float = 12.0
-    reward_gate_clear_scale: float = 60.0
-    reward_gate_tilt_scale: float = 8.0
+    reward_gate_xy_scale: float = 20.0
+    reward_gate_clear_scale: float = 80.0
+    reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015
     reward_tilt_cos_min: float = 0.15
     reward_approach_clearance_ref: float = 0.045
@@ -222,21 +222,21 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_contact_maintain: float = 1.00
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 1.50
-    weight_approach_xy: float = 12.00
+    weight_approach_xy: float = 15.00
     weight_approach_z: float = 3.00
     weight_cup_upright: float = 0.80
     weight_transport_progress: float = 10.00
-    weight_mouth_xy_dist: float = 6.00
+    weight_mouth_xy_dist: float = 10.00
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
     weight_prepour_geom: float = 5.00
-    weight_release: float = 1.00
-    weight_cross: float = 4.00
+    weight_release: float = 5.00
+    weight_cross: float = 12.00
     weight_capture: float = 12.00
     weight_success: float = 15.00
-    weight_bead_first_capture: float = 50.00
-    weight_all_beads_capture: float = 200.00
-    weight_spill: float = 6.00
+    weight_bead_first_capture: float = 5.00
+    weight_all_beads_capture: float = 20.00
+    weight_spill: float = 15.00
     weight_premature_tilt: float = 4.00
     weight_grasp_loss: float = 4.00
     weight_action_rate: float = 0.02
@@ -245,7 +245,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
-    reward_approach_xy_scale: float = 6.0
+    reward_approach_xy_scale: float = 12.0
 
     # -----------------------------------------------------------------------
     # 종료 조건
