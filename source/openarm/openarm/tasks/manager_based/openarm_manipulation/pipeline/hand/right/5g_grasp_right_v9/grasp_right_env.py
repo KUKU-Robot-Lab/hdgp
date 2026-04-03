@@ -948,19 +948,12 @@ class GraspRightEnv(DirectRLEnv):
             -self.cfg.slip_sharpness * cup_horiz_vel
         )
 
-        # ---- R3. force_target: mass에 비례하는 적정 파지력 ----
+        # ---- R3 & R4 통합. Adaptive Force Reward (v9 개선) ----
+        # F_total / mg → k (안전계수)에 가깝도록 유도하는 보너스형 보상
         total_grip_force = self.contact_force_raw.sum(dim=-1)        # (N,) [N]
         grip_normalized  = (total_grip_force / (CONTACT_FORCE_MAX * NUM_FINGERTIPS)).clamp(0.0, 1.0)
         eff_gate         = is_grasp_f * has_any_contact
-        force_target = (
-            self.cfg.force_target_base
-            + self._bead_mass_normalized * self.cfg.force_target_scale
-        ).clamp(min=0.0, max=1.0)
-        force_error = (grip_normalized - force_target).abs()
-        r3_force_target_eff = -self.cfg.force_target_weight * force_error * eff_gate
-
-        # ---- R4. force_efficiency (v9 신규) ----
-        # F_total / mg → k (안전계수)에 가깝도록 유도
+        
         effective_mass = (
             self.cfg.cup_base_mass
             + self._bead_mass_normalized * self.cfg.bead_count_max * self.cfg.bead_single_mass
@@ -968,10 +961,18 @@ class GraspRightEnv(DirectRLEnv):
         mg = effective_mass * 9.81                                            # (N,) [N]
         force_ratio = total_grip_force / (mg + 1e-4)                          # (N,)
         k = self.cfg.force_efficiency_target_ratio
-        r4_force_efficiency = (
-            -self.cfg.force_efficiency_weight
-            * (force_ratio - k).pow(2)
+        
+        af_weight = (
+            self.grasp_adr.get_param("reward", "adaptive_force_weight")
+            if self.grasp_adr is not None
+            else self.cfg.adaptive_force_weight
+        )
+        
+        # 보너스 형태: exp(-sharpness * |error|)
+        r3_adaptive_force = (
+            af_weight
             * eff_gate
+            * torch.exp(-self.cfg.adaptive_force_sharpness * (force_ratio - k).abs())
         )
 
         # ---- R5. force_smooth (v9 신규) ----
@@ -998,8 +999,7 @@ class GraspRightEnv(DirectRLEnv):
             + r1b_force_balance
             + r1c_multi_phalanx
             + r2_slip
-            + r3_force_target_eff
-            + r4_force_efficiency
+            + r3_adaptive_force
             + r5_force_smooth
             + r6_lift
             + r7_action_smooth
@@ -1017,28 +1017,27 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["force_balance_reward"]   = r1b_force_balance.mean()
         self.extras["multi_phalanx_reward"]   = r1c_multi_phalanx.mean()
         self.extras["slip_reward"]            = r2_slip.mean()
-        self.extras["force_target_reward"]    = r3_force_target_eff.mean()
-        self.extras["force_efficiency_reward"] = r4_force_efficiency.mean()
+        self.extras["adaptive_force_reward"]  = r3_adaptive_force.mean()
         self.extras["force_smooth_reward"]    = r5_force_smooth.mean()
         self.extras["lift_reward"]            = r6_lift.mean()
         self.extras["action_smoothness"]      = r7_action_smooth.mean()
         # 진단 지표
-        self.extras["force_target_err"]       = force_error.mean()
-        self.extras["force_target_value"]     = force_target.mean()
+        self.extras["force_ratio_mean"]       = force_ratio.mean()
+        self.extras["force_target_err"]       = (force_ratio - k).abs().mean()
         self.extras["force_balance_err"]      = force_balance_err.mean()
         self.extras["thumb_force_mean"]       = thumb_force.mean()
         self.extras["others_avg_force_mean"]  = others_avg_force.mean()
         self.extras["total_tip_force_norm"]   = grip_normalized.mean()
         self.extras["multi_phalanx_contact"]  = finger_depth.mean()
         self.extras["grip_normalized"]        = grip_normalized.mean()
-        self.extras["r3_active_ratio"]        = eff_gate.mean()
+        self.extras["eff_gate_active_ratio"]  = eff_gate.mean()
         self.extras["bead_mass_normalized"]   = self._bead_mass_normalized.mean()
         self.extras["num_contacts"]           = self.num_contacts_buf.float().mean()
         self.extras["episode_success_rate"]   = torch.tensor(_ep_success_rate, device=self.device)
         # v9 신규 진단 지표
         self.extras["slip_proxy_cup_vel"]     = cup_horiz_vel.mean()
-        self.extras["force_ratio_mean"]       = force_ratio.mean()
         self.extras["effective_mass_mean"]    = effective_mass.mean()
+        self.extras["adaptive_force_weight"]  = torch.tensor(af_weight, device=self.device)
         # mass별 조건부 지표
         light_mask = (self._bead_mass_normalized < 0.33)
         heavy_mask = (self._bead_mass_normalized > 0.66)
@@ -1243,9 +1242,9 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
 
-        # hand는 GRASP_POSE로 초기화 (파지 포즈 근처에서 시작하여 탐색 공간 축소)
-        grasp_hand = self.hand_grasp_pose.unsqueeze(0).expand(n, -1)
-        self.fabric_q[env_ids, NUM_ARM_DOF:] = grasp_hand
+        # hand는 APPROACH_POSE로 초기화 (80% 개방형 자세에서 시작)
+        approach_hand = self.hand_approach_pose.unsqueeze(0).expand(n, -1)
+        self.fabric_q[env_ids, NUM_ARM_DOF:] = approach_hand
         self.fabric_qd[env_ids, NUM_ARM_DOF:].zero_()
 
         # ---- 5. pregrasp 버퍼 저장 ----
@@ -1254,13 +1253,13 @@ class GraspRightEnv(DirectRLEnv):
         self.pregrasp_palm_pose_buf[env_ids] = pregrasp_palm_pose
 
         self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = q_pregrasp[:, :NUM_ARM_DOF]
-        self.lift_finger_pos_buf[env_ids] = grasp_hand
+        self.lift_finger_pos_buf[env_ids] = approach_hand
 
         # ---- 6. 로봇 pregrasp 자세로 초기화 ----
         pregrasp_full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         pregrasp_full_pos[:, self.arm_dof_indices]  = q_pregrasp[:, :NUM_ARM_DOF]
-        pregrasp_full_pos[:, self.hand_dof_indices] = grasp_hand
+        pregrasp_full_pos[:, self.hand_dof_indices] = approach_hand
         pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
         self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
 
@@ -1294,7 +1293,7 @@ class GraspRightEnv(DirectRLEnv):
         self._bead_mass_normalized[env_ids] = bead_count.float() / self.cfg.bead_count_max
 
         # ---- 8. 버퍼 리셋 ----
-        self.hand_joint_targets[env_ids] = grasp_hand
+        self.hand_joint_targets[env_ids] = approach_hand
         self.contact_force_raw[env_ids] = 0.0
         self.binary_contact_buf[env_ids] = False
         self.num_contacts_buf[env_ids]   = 0

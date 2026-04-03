@@ -177,20 +177,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     slip_weight:    float = 8.0
     slip_sharpness: float = 20.0
 
-    # R3. force_target: mass에 비례하는 적정 파지력
-    force_target_base:   float = 0.13
-    force_target_scale:  float = 0.10
-    force_target_weight: float = 10.0
-
-    # R4. force_efficiency (v9 신규): 질량 기반 최소 충분 파지력 유도
-    # R_eff = -force_efficiency_weight * (F_total / mg - k)^2 * gate
-    force_efficiency_weight:       float = 4.0
+    # R3 & R4 통합: Adaptive Force Reward (v9 개선)
+    # F_total / mg 가 target_ratio에 도달하도록 유도하는 보너스형 보상
+    # R_af = adaptive_force_weight * gate * exp(-adaptive_force_sharpness * |force_ratio - k|)
+    adaptive_force_weight:         float = 10.0  # ADR로 0 -> 10 조절
+    adaptive_force_sharpness:      float = 2.0
     force_efficiency_target_ratio: float = 1.5   # F_total/mg 목표 비율 (안전계수)
     cup_base_mass:                 float = 0.170  # kg (빈 컵 질량)
     bead_single_mass:              float = 0.010  # kg per bead
 
     # R5. force_smooth (v9 신규): 파지력 변화율 억제 (sim2real 안정성)
-    # R_smooth = -force_smooth_weight * (ΔF / mg)^2
     force_smooth_weight: float = 1.5
 
     # R6. lift_reward (v8: 20.0 → v9: 6.0, success dominance 완화)
@@ -216,8 +212,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             "obs_noise_cup_pos": (0.005, 0.025),
         },
         "finger": {
-            "delta_scale": (0.1, 0.22),   # 초기 0.1 → 최종 0.22 (성공률 상승에 따라 확장)
+            "delta_scale": (0.05, 0.15),   # 초기 0.05 -> 최종 0.15 (안정성 위해 축소)
         },
+        "reward": {
+            "adaptive_force_weight": (0.0, 10.0),  # 초반에는 파지 형태에 집중, 점차 힘 조절 학습
+        }
     })
 
     # -----------------------------------------------------------------------

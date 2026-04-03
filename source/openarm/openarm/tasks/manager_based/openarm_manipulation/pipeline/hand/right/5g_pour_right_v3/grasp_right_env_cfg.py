@@ -189,7 +189,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015
     reward_tilt_cos_min: float = 0.15
-    reward_approach_clearance_ref: float = 0.045
+    reward_approach_clearance_ref: float = 0.15
     reward_prepour_clearance_ref: float = 0.030
     reward_approach_z_scale: float = 35.0
     reward_prepour_geom_xy_scale: float = 12.0
@@ -221,7 +221,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_grasp_maintain: float = 1.00
     weight_contact_maintain: float = 1.00
     weight_force_balance: float = 0.30
-    weight_finger_curl: float = 1.50
+    weight_finger_curl: float = 3.00
     weight_approach_xy: float = 15.00
     weight_approach_z: float = 3.00
     weight_cup_upright: float = 0.80
@@ -384,23 +384,23 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             ),
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
-                stiffness=90.0,
-                damping=15.0,
+                stiffness=300.0,
+                damping=40.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                stiffness=100.0,
-                damping=18.0,
+                stiffness=300.0,
+                damping=40.0,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                stiffness=100.0,
-                damping=18.0,
+                stiffness=300.0,
+                damping=40.0,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                stiffness=100.0,
-                damping=18.0,
+                stiffness=300.0,
+                damping=40.0,
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],

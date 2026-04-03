@@ -1366,7 +1366,7 @@ class GraspRightEnv(DirectRLEnv):
             + self.cfg.weight_approach_xy * r_approach_xy
             - self.cfg.weight_mouth_xy_dist * self._mouth_xy_distance
             + self.cfg.weight_approach_z * r_approach_z
-            + self.cfg.weight_cup_upright * r_cup_upright_hold
+            + self.cfg.weight_cup_upright * r_cup_upright_hold * (1.0 - self._g_ready)
             + self.cfg.weight_transport_progress * r_transport_progress
             + r_prepour_stage
             + r_pour_stage

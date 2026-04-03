@@ -91,21 +91,21 @@ HAND_START_POSE = [
 #   → episode 중 action[0]=1 → lerp → HAND_GRASP_POSE (thumb_2 = -1.5, ≈ 유지)
 #   → 나머지 손가락(1~4)은 0에서 시작하여 lerp로 curl
 HAND_APPROACH_POSE = [
-    0.0, -1.57, -0.5, 0.0,   # thumb: _2=-1.57(opposition 유지), _3=-0.5(PIP curl → _3 부분이 컵에 먼저 닿는 문제 방지)
-    0.0,  0.0,   0.0, 0.0,   # index: fully open
-    0.0,  0.0,   0.0, 0.0,   # middle: fully open
-    0.0,  0.0,   0.0, 0.0,   # ring: fully open
-    0.0,  0.0,   0.0, 0.0,   # pinky: fully open
-]
-
-# 파지 자세 — v7 test* 학습 결과에서 추출 (100 에피소드 평균, ep_len>=450 AND contacts>=2)
-# extract_grasp_pose.py --task 5g_grasp_right-v7 --collect_from_step 450 --min_contacts 2
-HAND_GRASP_POSE = [
     -0.283, -1.241, +0.104, +0.790,   # thumb
     +0.016, +0.527, +0.502, +0.674,   # index
     +0.004, +0.775, +0.170, +1.090,   # middle
     -0.000, +0.668, +0.387, +1.013,   # ring
     +0.000, -0.002, +0.716, +0.889,   # pinky
+]ㅊ
+
+# 파지 자세 — v7 test* 학습 결과에서 추출 (100 에피소드 평균, ep_len>=450 AND contacts>=2)
+# extract_grasp_pose.py --task 5g_grasp_right-v7 --collect_from_step 450 --min_contacts 2
+HAND_GRASP_POSE = [
+    -0.354, -1.551, +0.130, +0.988,   # thumb
+    +0.020, +0.659, +0.628, +0.843,   # index
+    +0.005, +0.969, +0.213, +1.363,   # middle
+    -0.000, +0.835, +0.484, +1.266,   # ring
+    +0.000, -0.003, +0.895, +1.111,   # pinky
 ]
 
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
