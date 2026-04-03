@@ -171,41 +171,34 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # R1c. multi_phalanx_contact (v8: 8.0 → v9: 6.0)
     multi_phalanx_weight: float = 6.0
 
-    # R2. tip_approach_bonus
-    tip_approach_bonus_weight: float = 0.5
-
-    # R3. lift_reward (v8: 20.0 → v9: 6.0, success dominance 완화)
-    lift_reward_weight: float = 6.0
-
-    # R4. action_smoothness
-    action_smoothness_palm_weight:   float = -0.02
-    action_smoothness_finger_weight: float = -0.003  # v8: -0.01 → v9: -0.003 (20D이므로 축소)
-
-    # R5. grasp_quality_lift
-    grasp_quality_lift_weight:     float = 8.0
-    grasp_quality_lift_sharpness:  float = 10.0
-
-    # R6. force_target: mass에 비례하는 적정 파지력
-    force_target_base:   float = 0.13
-    force_target_scale:  float = 0.10
-    force_target_weight: float = 10.0
-
-    # R7. slip_reward (v9 신규): cup 수평 속도 기반 slip proxy
+    # R2. slip_reward (v9 신규): cup 수평 속도 기반 slip proxy
     # gate: grasp phase AND contact 시 활성
     # R_slip = slip_weight * gate * exp(-slip_sharpness * cup_horiz_vel)
     slip_weight:    float = 8.0
     slip_sharpness: float = 20.0
 
-    # R8. force_efficiency (v9 신규): 질량 기반 최소 충분 파지력 유도
+    # R3. force_target: mass에 비례하는 적정 파지력
+    force_target_base:   float = 0.13
+    force_target_scale:  float = 0.10
+    force_target_weight: float = 10.0
+
+    # R4. force_efficiency (v9 신규): 질량 기반 최소 충분 파지력 유도
     # R_eff = -force_efficiency_weight * (F_total / mg - k)^2 * gate
     force_efficiency_weight:       float = 4.0
     force_efficiency_target_ratio: float = 1.5   # F_total/mg 목표 비율 (안전계수)
     cup_base_mass:                 float = 0.170  # kg (빈 컵 질량)
     bead_single_mass:              float = 0.010  # kg per bead
 
-    # R9. force_smooth (v9 신규): 파지력 변화율 억제 (sim2real 안정성)
+    # R5. force_smooth (v9 신규): 파지력 변화율 억제 (sim2real 안정성)
     # R_smooth = -force_smooth_weight * (ΔF / mg)^2
     force_smooth_weight: float = 1.5
+
+    # R6. lift_reward (v8: 20.0 → v9: 6.0, success dominance 완화)
+    lift_reward_weight: float = 6.0
+
+    # R7. action_smoothness
+    action_smoothness_palm_weight:   float = -0.02
+    action_smoothness_finger_weight: float = -0.003  # v8: -0.01 → v9: -0.003 (20D이므로 축소)
 
     # -----------------------------------------------------------------------
     # ADR

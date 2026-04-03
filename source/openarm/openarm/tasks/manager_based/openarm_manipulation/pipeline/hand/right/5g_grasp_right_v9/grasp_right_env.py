@@ -932,62 +932,34 @@ class GraspRightEnv(DirectRLEnv):
         finger_depth = (tip_norm * middle_norm).sqrt()
         r1c_multi_phalanx = self.cfg.multi_phalanx_weight * is_grasp_f * finger_depth.mean(dim=-1)
 
-        # ---- R2. tip_approach_bonus ----
-        if len(self.distal4_body_indices) == NUM_FINGERTIPS:
-            tip_surf_dist    = (self.fingertip_pos - grasp_center.unsqueeze(1)).norm(dim=-1) - r
-            distal_surf_dist = (self.distal4_pos   - grasp_center.unsqueeze(1)).norm(dim=-1) - r
-            tip_lead = (distal_surf_dist - tip_surf_dist).clamp(min=0.0).mean(dim=-1)
-            r2_tip_bonus = self.cfg.tip_approach_bonus_weight * tip_lead
-        else:
-            r2_tip_bonus = torch.zeros(self.num_envs, device=self.device)
-
         # ---- cup uprightness ----
         z_local = torch.zeros(self.num_envs, 3, device=self.device)
         z_local[:, 2] = 1.0
         cup_z_world   = quat_apply(self.object_rot, z_local)
         cup_uprightness = cup_z_world[:, 2].clamp(min=0.0)
 
-        # ---- R3. lift_reward ----
-        r3_lift = self.cfg.lift_reward_weight * cup_height_delta * cup_uprightness
-
-        # ---- R4. action_smoothness ----
-        palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
-        finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
-        r4_smooth = (
-            self.cfg.action_smoothness_palm_weight   * palm_delta
-            + self.cfg.action_smoothness_finger_weight * finger_delta
+        # ---- R2. slip_reward (v9 신규) ----
+        # cup 수평 속도를 slip proxy로 사용 (contact + grasp phase gate)
+        cup_horiz_vel = self.cup.data.root_lin_vel_w[:, :2].norm(dim=-1)   # (N,)
+        cup_horiz_vel = torch.nan_to_num(cup_horiz_vel, nan=0.0)
+        has_any_contact  = (self.num_contacts_buf >= 1).float()
+        grasp_contact_gate = is_grasp_f * has_any_contact
+        r2_slip = self.cfg.slip_weight * grasp_contact_gate * torch.exp(
+            -self.cfg.slip_sharpness * cup_horiz_vel
         )
 
-        # ---- R5. grasp_quality_lift ----
-        min_tip_dist = (self.fingertip_pos - grasp_center.unsqueeze(1)).norm(dim=-1).min(dim=-1).values
-        enclosure_quality = torch.exp(
-            -self.cfg.grasp_quality_lift_sharpness * min_tip_dist
-        ).clamp(max=1.0)
-        r5_quality_lift = self.cfg.grasp_quality_lift_weight * cup_height_delta * enclosure_quality * cup_uprightness
-
-        # ---- R6. force_target: mass에 비례하는 적정 파지력 ----
-        # v9: grip_normalized = 실제 tip force 기반 (delta action은 누적 위치 의존)
+        # ---- R3. force_target: mass에 비례하는 적정 파지력 ----
         total_grip_force = self.contact_force_raw.sum(dim=-1)        # (N,) [N]
         grip_normalized  = (total_grip_force / (CONTACT_FORCE_MAX * NUM_FINGERTIPS)).clamp(0.0, 1.0)
-        has_any_contact  = (self.num_contacts_buf >= 1).float()
         eff_gate         = is_grasp_f * has_any_contact
         force_target = (
             self.cfg.force_target_base
             + self._bead_mass_normalized * self.cfg.force_target_scale
         ).clamp(min=0.0, max=1.0)
         force_error = (grip_normalized - force_target).abs()
-        r6_force_eff = -self.cfg.force_target_weight * force_error * eff_gate
+        r3_force_target_eff = -self.cfg.force_target_weight * force_error * eff_gate
 
-        # ---- R7. slip_reward (v9 신규) ----
-        # cup 수평 속도를 slip proxy로 사용 (contact + grasp phase gate)
-        cup_horiz_vel = self.cup.data.root_lin_vel_w[:, :2].norm(dim=-1)   # (N,)
-        cup_horiz_vel = torch.nan_to_num(cup_horiz_vel, nan=0.0)
-        grasp_contact_gate = is_grasp_f * has_any_contact
-        r7_slip = self.cfg.slip_weight * grasp_contact_gate * torch.exp(
-            -self.cfg.slip_sharpness * cup_horiz_vel
-        )
-
-        # ---- R8. force_efficiency (v9 신규) ----
+        # ---- R4. force_efficiency (v9 신규) ----
         # F_total / mg → k (안전계수)에 가깝도록 유도
         effective_mass = (
             self.cfg.cup_base_mass
@@ -996,17 +968,28 @@ class GraspRightEnv(DirectRLEnv):
         mg = effective_mass * 9.81                                            # (N,) [N]
         force_ratio = total_grip_force / (mg + 1e-4)                          # (N,)
         k = self.cfg.force_efficiency_target_ratio
-        r8_force_efficiency = (
+        r4_force_efficiency = (
             -self.cfg.force_efficiency_weight
             * (force_ratio - k).pow(2)
             * eff_gate
         )
 
-        # ---- R9. force_smooth (v9 신규) ----
+        # ---- R5. force_smooth (v9 신규) ----
         # 파지력 변화율 (mass-normalized) 억제
         force_delta_norm = (total_grip_force - self._prev_avg_force_buf) / (mg + 1e-4)
-        r9_force_smooth  = -self.cfg.force_smooth_weight * force_delta_norm.pow(2)
+        r5_force_smooth  = -self.cfg.force_smooth_weight * force_delta_norm.pow(2)
         self._prev_avg_force_buf.copy_(total_grip_force)
+
+        # ---- R6. lift_reward ----
+        r6_lift = self.cfg.lift_reward_weight * cup_height_delta * cup_uprightness
+
+        # ---- R7. action_smoothness ----
+        palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
+        finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
+        r7_action_smooth = (
+            self.cfg.action_smoothness_palm_weight   * palm_delta
+            + self.cfg.action_smoothness_finger_weight * finger_delta
+        )
 
         # ---- 합산 ----
         total = (
@@ -1014,14 +997,12 @@ class GraspRightEnv(DirectRLEnv):
             + r1_enclosure
             + r1b_force_balance
             + r1c_multi_phalanx
-            + r2_tip_bonus
-            + r3_lift
-            + r4_smooth
-            + r5_quality_lift
-            + r6_force_eff
-            + r7_slip
-            + r8_force_efficiency
-            + r9_force_smooth
+            + r2_slip
+            + r3_force_target_eff
+            + r4_force_efficiency
+            + r5_force_smooth
+            + r6_lift
+            + r7_action_smooth
         )
         total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -1035,14 +1016,12 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["enclosure_reward"]       = r1_enclosure.mean()
         self.extras["force_balance_reward"]   = r1b_force_balance.mean()
         self.extras["multi_phalanx_reward"]   = r1c_multi_phalanx.mean()
-        self.extras["tip_approach_bonus"]     = r2_tip_bonus.mean()
-        self.extras["lift_reward"]            = r3_lift.mean()
-        self.extras["action_smoothness"]      = r4_smooth.mean()
-        self.extras["grasp_quality_lift"]     = r5_quality_lift.mean()
-        self.extras["force_target_reward"]    = r6_force_eff.mean()
-        self.extras["slip_reward"]            = r7_slip.mean()
-        self.extras["force_efficiency_reward"] = r8_force_efficiency.mean()
-        self.extras["force_smooth_reward"]    = r9_force_smooth.mean()
+        self.extras["slip_reward"]            = r2_slip.mean()
+        self.extras["force_target_reward"]    = r3_force_target_eff.mean()
+        self.extras["force_efficiency_reward"] = r4_force_efficiency.mean()
+        self.extras["force_smooth_reward"]    = r5_force_smooth.mean()
+        self.extras["lift_reward"]            = r6_lift.mean()
+        self.extras["action_smoothness"]      = r7_action_smooth.mean()
         # 진단 지표
         self.extras["force_target_err"]       = force_error.mean()
         self.extras["force_target_value"]     = force_target.mean()
@@ -1052,7 +1031,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["total_tip_force_norm"]   = grip_normalized.mean()
         self.extras["multi_phalanx_contact"]  = finger_depth.mean()
         self.extras["grip_normalized"]        = grip_normalized.mean()
-        self.extras["r6_active_ratio"]        = eff_gate.mean()
+        self.extras["r3_active_ratio"]        = eff_gate.mean()
         self.extras["bead_mass_normalized"]   = self._bead_mass_normalized.mean()
         self.extras["num_contacts"]           = self.num_contacts_buf.float().mean()
         self.extras["episode_success_rate"]   = torch.tensor(_ep_success_rate, device=self.device)
