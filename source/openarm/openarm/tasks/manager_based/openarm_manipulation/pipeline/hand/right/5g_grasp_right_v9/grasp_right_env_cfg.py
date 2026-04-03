@@ -148,8 +148,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Finger joint delta 제어 (v9 신규)
     # action ∈ [-1,1] → ±finger_delta_scale rad per step
     # -----------------------------------------------------------------------
-    finger_delta_scale:      float = 0.30   # grasp phase: ±0.3 rad/step
-    lift_finger_delta_scale: float = 0.10   # lift phase: ±0.1 rad micro-delta
+    finger_delta_scale:      float = 0.08   # grasp phase: ±0.08 rad/step (grasp_pose 근처 미세 조정)
+    lift_finger_delta_scale: float = 0.05   # lift phase: ±0.05 rad micro-delta
 
     # -----------------------------------------------------------------------
     # Reward 파라미터

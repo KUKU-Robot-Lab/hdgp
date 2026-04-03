@@ -102,6 +102,7 @@ def rule_based_issues(payload: dict, thresholds: dict) -> tuple[list[str], list[
     issues: list[str] = []
     observations: list[str] = []
 
+    task_name = str(payload.get("task", "")).lower()
     train = payload.get("train", {}).get("scalars", {})
     eval_metrics = payload.get("eval", {})
 
@@ -164,6 +165,8 @@ def rule_based_issues(payload: dict, thresholds: dict) -> tuple[list[str], list[
 
     # ── 개별 reward term 기반 진단 (새로 추가) ──
     _diagnose_per_reward(train, issues, observations, thresholds)
+    if "5g_pour_right" in task_name:
+        _diagnose_pour_right_v2(train, issues, observations, thresholds)
 
     return issues, observations
 
@@ -313,6 +316,110 @@ def _diagnose_per_reward(scalars: dict, issues: list[str], observations: list[st
             )
 
 
+def _diagnose_pour_right_v2(
+    scalars: dict,
+    issues: list[str],
+    observations: list[str],
+    thresholds: dict,
+) -> None:
+    """5g_pour_right_v2 전용 진단.
+
+    이 task는 단일 오른손 파지 유지 + target cup 쪽 transport + directional tilt + bead crossing이
+    핵심이므로, 기존 grasp2g phase 기반 진단만으로는 실패를 거의 놓친다.
+    """
+
+    success_rate = _get_scalar(scalars, "success_rate")
+    bead_cross = _get_scalar(scalars, "bead_cross_fraction")
+    bead_in_target = _get_scalar(scalars, "bead_in_target_rate")
+    bead_in_source = _get_scalar(scalars, "bead_in_source_rate")
+    mouth_xy = _get_scalar(scalars, "mouth_xy_distance")
+    mouth_z = _get_scalar(scalars, "mouth_z_clearance")
+    tilt_reward = _get_scalar(scalars, "reward_tilt")
+    aligned_tilt = _get_scalar(scalars, "reward_aligned_tilt")
+    directional_tilt = _get_scalar(scalars, "directional_tilt_cos")
+    pour_gate_xy = _get_scalar(scalars, "pour_gate_xy")
+    pour_gate = _get_scalar(scalars, "pour_gate")
+    transport_progress = _get_scalar(scalars, "reward_transport_progress")
+    grasp_maintain = _get_scalar(scalars, "grasp_maintain")
+    contact_maintain = _get_scalar(scalars, "contact_maintain")
+    finger_curl = _get_scalar(scalars, "finger_curl_min")
+
+    min_success = float(thresholds.get("pour_success_rate_min", 0.05))
+    min_bead_cross = float(thresholds.get("pour_bead_cross_fraction_min", 0.02))
+    max_mouth_xy = float(thresholds.get("pour_mouth_xy_max", 0.05))
+    max_mouth_z = float(thresholds.get("pour_mouth_z_clearance_max", 0.12))
+    min_tilt_reward = float(thresholds.get("pour_tilt_reward_min", 0.02))
+    min_aligned_tilt = float(thresholds.get("pour_aligned_tilt_min", 0.01))
+    min_directional_tilt = float(thresholds.get("pour_directional_tilt_cos_min", 0.70))
+    min_pour_gate_xy = float(thresholds.get("pour_gate_xy_min", 0.70))
+    min_transport_progress = float(thresholds.get("pour_transport_progress_min", 0.001))
+    grasp_lock_success_max = float(thresholds.get("pour_grasp_lock_success_max", 0.01))
+    grasp_lock_min = float(thresholds.get("pour_grasp_maintain_lock_min", 0.98))
+    contact_lock_min = float(thresholds.get("pour_contact_maintain_lock_min", 0.95))
+    finger_lock_min = float(thresholds.get("pour_finger_curl_lock_min", 0.85))
+
+    if success_rate is not None and success_rate < min_success:
+        issues.append("pour_success_zero")
+        observations.append(f"success_rate={success_rate:.4f} < {min_success:.4f}")
+
+    if bead_cross is not None and bead_cross < min_bead_cross:
+        issues.append("pour_bead_transfer_fail")
+        src = f", bead_in_source_rate={bead_in_source:.4f}" if bead_in_source is not None else ""
+        dst = f", bead_in_target_rate={bead_in_target:.4f}" if bead_in_target is not None else ""
+        observations.append(f"bead_cross_fraction={bead_cross:.4f} < {min_bead_cross:.4f}{src}{dst}")
+
+    if mouth_xy is not None and mouth_xy > max_mouth_xy:
+        issues.append("pour_transport_xy_far")
+        gate_text = f", pour_gate_xy={pour_gate_xy:.4f}" if pour_gate_xy is not None else ""
+        observations.append(f"mouth_xy_distance={mouth_xy:.4f} > {max_mouth_xy:.4f}{gate_text}")
+
+    if mouth_z is not None and mouth_z > max_mouth_z:
+        issues.append("pour_height_too_high")
+        observations.append(f"mouth_z_clearance={mouth_z:.4f} > {max_mouth_z:.4f}")
+
+    if tilt_reward is not None and tilt_reward < min_tilt_reward:
+        issues.append("pour_tilt_reward_too_weak")
+        d = f", directional_tilt_cos={directional_tilt:.4f}" if directional_tilt is not None else ""
+        observations.append(f"reward_tilt={tilt_reward:.4f} < {min_tilt_reward:.4f}{d}")
+
+    if aligned_tilt is not None and aligned_tilt < min_aligned_tilt:
+        if "pour_tilt_reward_too_weak" not in issues:
+            issues.append("pour_tilt_reward_too_weak")
+        gate_text = f", pour_gate={pour_gate:.4f}" if pour_gate is not None else ""
+        observations.append(f"reward_aligned_tilt={aligned_tilt:.4f} < {min_aligned_tilt:.4f}{gate_text}")
+
+    if directional_tilt is not None and directional_tilt < min_directional_tilt:
+        issues.append("pour_wrong_tilt_direction")
+        observations.append(f"directional_tilt_cos={directional_tilt:.4f} < {min_directional_tilt:.4f}")
+
+    if pour_gate_xy is not None and pour_gate_xy < min_pour_gate_xy:
+        if "pour_transport_xy_far" not in issues:
+            issues.append("pour_transport_xy_far")
+        observations.append(f"pour_gate_xy={pour_gate_xy:.4f} < {min_pour_gate_xy:.4f}")
+
+    if transport_progress is not None and transport_progress < min_transport_progress:
+        issues.append("pour_transport_progress_stalled")
+        observations.append(
+            f"reward_transport_progress={transport_progress:.6f} < {min_transport_progress:.6f}"
+        )
+
+    if (
+        (success_rate is None or success_rate <= grasp_lock_success_max)
+        and grasp_maintain is not None
+        and contact_maintain is not None
+        and finger_curl is not None
+        and grasp_maintain >= grasp_lock_min
+        and contact_maintain >= contact_lock_min
+        and finger_curl >= finger_lock_min
+    ):
+        issues.append("pour_grasp_overconstrained")
+        observations.append(
+            "grasp/contact/finger-curl are saturated while pour is failing: "
+            f"grasp_maintain={grasp_maintain:.4f}, contact_maintain={contact_maintain:.4f}, "
+            f"finger_curl_min={finger_curl:.4f}"
+        )
+
+
 def _format_prompt(
     payload: dict,
     issues: list[str],
@@ -445,8 +552,31 @@ def _format_prompt(
 """
 
     is_grasp2g = "grasp2g" in task_name.lower()
+    is_pour_right = "5g_pour_right" in task_name.lower()
     is_left_only = ("left" in task_name.lower()) and ("both" not in task_name.lower()) and not is_grasp2g
-    if is_left_only:
+    if is_pour_right:
+        task_description = (
+            "Single-arm right-hand pouring task.\n"
+            "Success requires maintaining grasp while moving the source cup mouth near the target cup opening, "
+            "then tilting toward the target direction enough to transfer beads.\n"
+            "The main failure mode is over-optimizing grasp/contact closure while transport/tilt remain too weak."
+        )
+        reward_reference = (
+            "- grasp_maintain / contact_maintain / force_balance / finger_curl: cup grasp retention and hand closure\n"
+            "- reward_transport / reward_transport_progress: source mouth XY alignment to target opening\n"
+            "- reward_tilt / reward_tilt_raw / reward_aligned_tilt: directional pouring tilt with proximity gate\n"
+            "- pour_accuracy / bead_cross_fraction / success_rate: bead transfer objective\n"
+            "- cost_spill / spill_ratio: spill penalty"
+        )
+        override_examples = (
+            "- env.weight_tilt=16.0\n"
+            "- env.weight_transport_progress=12.0\n"
+            "- env.reward_tilt_distance_scale=0.12\n"
+            "- env.weight_finger_curl=1.5\n"
+            "- env.pour_gate_xy_far=0.13"
+        )
+        symmetry_instruction = "Do not add left-hand overrides; this is a right-hand pouring task with a scripted left target cup."
+    elif is_left_only:
         task_description = (
             "Single-arm left-hand lift task.\n"
             "Focus on left-side reaching -> pre-grasp shaping -> wrap grasp -> lift.\n"
@@ -618,6 +748,8 @@ def _load_task_guide(task_name: str) -> tuple[str, str]:
         guide_file = "lift_left_v2_REWARDS_GUIDE.md"
     elif "5g_lift_left-v1" in task_lower:
         guide_file = "lift_left_v1_REWARDS_GUIDE.md"
+    elif "5g_pour_right-v2" in task_lower:
+        guide_file = "5g_pour_right_v2_REWARDS_GUIDE.md"
     else:
         return "", ""
 

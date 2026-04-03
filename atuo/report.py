@@ -21,9 +21,10 @@ def build_report_md(report: dict, metrics: dict) -> str:
     eval_metrics = metrics.get("eval", {})
     decision = report.get("decision", {})
     analysis = report.get("analysis", {})
+    scalars = train.get("scalars", {})
 
-    mean_reward = train.get("scalars", {}).get("mean_reward", {})
-    entropy = train.get("scalars", {}).get("entropy", {})
+    mean_reward = scalars.get("mean_reward", {})
+    entropy = scalars.get("entropy", {})
 
     lift_mean = _mean_pair(
         eval_metrics.get("lift_success_left"), eval_metrics.get("lift_success_right")
@@ -64,8 +65,51 @@ def build_report_md(report: dict, metrics: dict) -> str:
     lines.append(f"- goal_dist_mean: {_fmt_float(goal_dist_mean)}")
     lines.append("")
 
+    pour_diag_keys = [
+        ("success_rate", "success_rate"),
+        ("bead_cross_fraction", "bead_cross_fraction"),
+        ("bead_cross_count", "bead_cross_count"),
+        ("bead_in_source_rate", "bead_in_source_rate"),
+        ("bead_in_target_rate", "bead_in_target_rate"),
+        ("mouth_xy_distance", "mouth_xy_distance"),
+        ("mouth_z_clearance", "mouth_z_clearance"),
+        ("reward_transport", "reward_transport"),
+        ("reward_transport_progress", "reward_transport_progress"),
+        ("reward_tilt", "reward_tilt"),
+        ("reward_tilt_raw", "reward_tilt_raw"),
+        ("reward_aligned_tilt", "reward_aligned_tilt"),
+        ("directional_tilt_cos", "directional_tilt_cos"),
+        ("pct_correct_tilt_dir", "pct_correct_tilt_dir"),
+        ("pour_gate", "pour_gate"),
+        ("pour_gate_xy", "pour_gate_xy"),
+        ("pour_gate_z", "pour_gate_z"),
+        ("grasp_maintain", "grasp_maintain"),
+        ("contact_maintain", "contact_maintain"),
+        ("force_balance", "force_balance"),
+        ("force_balance_err", "force_balance_err"),
+        ("finger_curl_min", "finger_curl_min"),
+        ("spill_ratio", "spill_ratio"),
+    ]
+    has_pour_diag = any(
+        isinstance(scalars.get(key), dict) and scalars.get(key, {}).get("mean_last_100") is not None
+        for _, key in pour_diag_keys
+    )
+    if has_pour_diag:
+        lines.append("## Pour Diagnostics")
+        lines.append("| Metric | Mean | Last | Min | Max |")
+        lines.append("|--------|------|------|-----|-----|")
+        for label, key in pour_diag_keys:
+            v = scalars.get(key, {})
+            if isinstance(v, dict) and v.get("mean_last_100") is not None:
+                lines.append(
+                    f"| {label} | {_fmt_float(v.get('mean_last_100'))} "
+                    f"| {_fmt_float(v.get('last'))} "
+                    f"| {_fmt_float(v.get('min'))} "
+                    f"| {_fmt_float(v.get('max'))} |"
+                )
+        lines.append("")
+
     # ── Key Diagnostic Metrics ──
-    scalars = train.get("scalars", {})
     diag_keys = [
         ("left_eef_dist", "reward_left_eef_dist_diag"),
         ("right_eef_dist", "reward_right_eef_dist_diag"),

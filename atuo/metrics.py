@@ -28,6 +28,12 @@ def _sha256_of_file(path: Path) -> str | None:
 
 def _find_latest_event_file(log_dir: Path) -> Path | None:
     events = sorted(log_dir.glob("events.out.tfevents.*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not events:
+        events = sorted(
+            log_dir.glob("summaries/events.out.tfevents.*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
     return events[0] if events else None
 
 
@@ -159,6 +165,18 @@ def _tag_to_key(tag: str) -> str:
         return f"policy_{name}"
     elif prefix == "Perf":
         return f"perf_{name}"
+    elif prefix == "rewards" and name == "iter":
+        return "mean_reward"
+    elif prefix == "shaped_rewards" and name == "iter":
+        return "shaped_reward"
+    elif prefix == "losses":
+        return name
+    elif prefix == "info":
+        return f"info_{name}"
+    elif prefix == "performance":
+        return f"perf_{name}"
+    elif name == "iter":
+        return prefix
     else:
         return f"{prefix.lower()}_{name}"
 
@@ -169,12 +187,19 @@ def summarize_train_metrics(log_dir: str) -> dict:
     if event_file is None:
         return {"event_file": None, "scalars": {}}
 
-    all_tags = _get_all_tags(event_file)
+    try:
+        from tensorboard.backend.event_processing import event_accumulator
+    except Exception:
+        return {"event_file": str(event_file), "scalars": {}}
+
+    acc = event_accumulator.EventAccumulator(str(event_file), size_guidance={event_accumulator.SCALARS: 0})
+    acc.Reload()
+    all_tags = acc.Tags().get("scalars", [])
 
     scalars = {}
     for tag in all_tags:
         key = _tag_to_key(tag)
-        series = _read_scalar_series(event_file, tag)
+        series = [(e.step, float(e.value)) for e in acc.Scalars(tag)]
         summary = _summarize_series(series, n=100)
         scalars[key] = {
             "last": summary.last,

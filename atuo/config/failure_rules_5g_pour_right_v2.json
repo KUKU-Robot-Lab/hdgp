@@ -1,0 +1,70 @@
+{
+  "issue_to_overrides": {
+    "no_learning": [
+      "env.weight_transport=10.0",
+      "env.weight_transport_progress=12.0",
+      "env.weight_tilt=14.0",
+      "env.reward_tilt_distance_scale=0.12"
+    ],
+    "training_collapse": [
+      "env.weight_action_rate=0.02",
+      "env.weight_tilt=12.0",
+      "env.reward_tilt_scale=3.0",
+      "env.reward_tilt_distance_scale=0.10"
+    ],
+    "entropy_collapse": [
+      "env.weight_grasp_maintain=1.5",
+      "env.weight_contact_maintain=1.5",
+      "env.weight_finger_curl=2.0",
+      "env.weight_action_rate=0.005"
+    ],
+    "pour_success_zero": [
+      "env.weight_pour_accuracy=16.0",
+      "env.weight_tilt=18.0",
+      "env.weight_transport_progress=12.0",
+      "env.reward_tilt_distance_scale=0.12"
+    ],
+    "pour_bead_transfer_fail": [
+      "env.weight_pour_accuracy=16.0",
+      "env.weight_tilt=18.0",
+      "env.reward_tilt_scale=3.0",
+      "env.reward_tilt_distance_scale=0.12"
+    ],
+    "pour_transport_xy_far": [
+      "env.weight_transport=10.0",
+      "env.weight_transport_progress=12.0",
+      "env.reward_transport_scale=8.0",
+      "env.pour_gate_xy_near=0.05",
+      "env.pour_gate_xy_far=0.14",
+      "env.reward_tilt_distance_scale=0.12"
+    ],
+    "pour_transport_progress_stalled": [
+      "env.weight_transport_progress=15.0",
+      "env.weight_transport=8.0",
+      "env.reward_transport_scale=8.0"
+    ],
+    "pour_height_too_high": [
+      "env.left_cup_world_z_offset=-0.03",
+      "env.pour_gate_z_low=0.00",
+      "env.pour_gate_z_high=0.12",
+      "env.success_z_clearance_max=0.12"
+    ],
+    "pour_tilt_reward_too_weak": [
+      "env.weight_tilt=18.0",
+      "env.reward_tilt_scale=3.0",
+      "env.reward_tilt_distance_scale=0.12"
+    ],
+    "pour_wrong_tilt_direction": [
+      "env.weight_tilt=20.0",
+      "env.reward_tilt_scale=3.0",
+      "env.target_pour_tilt_deg=95.0"
+    ],
+    "pour_grasp_overconstrained": [
+      "env.weight_grasp_maintain=1.0",
+      "env.weight_contact_maintain=1.2",
+      "env.weight_finger_curl=1.5",
+      "env.reward_grasp_slip_sharpness=2.0",
+      "env.contact_maintain_min_others=1"
+    ]
+  }
+}

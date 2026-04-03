@@ -663,7 +663,7 @@ def main() -> int:
         if resume_log_dir.is_dir():
             print(f"[orchestrator] Pre-analysis: analyzing {resume_log_dir} before first run...")
             pre_metrics = summarize_train_metrics(str(resume_log_dir))
-            pre_payload = {"train": pre_metrics, "eval": {}}
+            pre_payload = {"task": train["task"], "train": pre_metrics, "eval": {}}
 
             env_yaml = resume_log_dir / "params" / "env.yaml"
             reward_names = _extract_reward_keys(env_yaml)
@@ -793,7 +793,7 @@ def main() -> int:
 
             if last_log_dir:
                 train_metrics = summarize_train_metrics(str(last_log_dir))
-                probe_payload = {"train": train_metrics, "eval": {}}
+                probe_payload = {"task": train["task"], "train": train_metrics, "eval": {}}
                 issues, _ = rule_based_issues(probe_payload, analysis_thresholds)
                 if stop_on_collapse and ("training_collapse" in issues or "entropy_collapse" in issues):
                     early_stop_reason = "training_collapse" if "training_collapse" in issues else "entropy_collapse"
@@ -801,6 +801,8 @@ def main() -> int:
 
         report = {
             "run_id": run_id,
+            "task": train["task"],
+            "agent": train["agent"],
             "train": {
                 "returncode": train_result.returncode,
                 "log_dir": train_result.log_dir,
@@ -875,7 +877,7 @@ def main() -> int:
         write_metrics_json(metrics_path, payload)
 
         if skip_eval:
-            train_only_payload = {"train": train_metrics, "eval": {}}
+            train_only_payload = {"task": train["task"], "train": train_metrics, "eval": {}}
             train_issues, _ = rule_based_issues(train_only_payload, analysis_thresholds)
             success = len(train_issues) == 0
             aggregated = {"train_only_issues": train_issues}

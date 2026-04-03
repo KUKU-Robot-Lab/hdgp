@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_pour_right_v2
+"""환경 설정: 5g_pour_right_v3
 
 v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Action: 11D (6D palm pose + 5D per-finger lerp)
@@ -88,7 +88,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
 
 @configclass
 class GraspRightEnvCfg(DirectRLEnvCfg):
-    """5g_pour_right_v2 환경 설정."""
+    """5g_pour_right_v3 환경 설정."""
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
@@ -155,6 +155,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     source_inside_z_max:  float = 0.100   # 림 높이
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
+    success_target_fill_ratio: float = 0.50
+    success_spill_max: float = 0.20
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -166,11 +168,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
     left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
 
-    # near-pour activation zone for cup_big.usd
-    pour_gate_xy_near: float = 0.035
-    pour_gate_xy_far: float = 0.100
-    pour_gate_z_low: float = 0.015
-    pour_gate_z_high: float = 0.050
+    # stage gate / pre-pour geometry
+    reward_gate_xy_scale: float = 35.0
+    reward_gate_clear_scale: float = 80.0
+    reward_gate_tilt_scale: float = 12.0
+    reward_clearance_min: float = 0.015
+    reward_tilt_cos_min: float = 0.10
+    reward_approach_clearance_ref: float = 0.045
+    reward_prepour_clearance_ref: float = 0.030
+    reward_approach_z_scale: float = 35.0
+    reward_prepour_geom_xy_scale: float = 35.0
+    reward_prepour_geom_z_scale: float = 45.0
+    reward_upright_min: float = 0.85
 
     # -----------------------------------------------------------------------
     # Warmstart quality / success
@@ -186,34 +195,36 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # -----------------------------------------------------------------------
     # Reward weights
-    # total = weight_grasp_maintain * grasp_maintain
-    #       + weight_contact_maintain * full_grasp_flag      (v8 이식)
-    #       + weight_force_balance * force_balance            (v8 이식)
-    #       + weight_finger_curl * finger_curl                (손가락 닫힘 유지)
-    #       + weight_transport * transport
-    #       + weight_transport_progress * transport_progress
-    #       + weight_tilt * tilt (directional, soft proximity gate)
-    #       + weight_pour_accuracy * bead_cross_fraction
-    #       - weight_spill * spill_ratio
-    #       - weight_action_rate * action_rate_penalty
+    # reward_v3 =
+    #   approach_stage + g_ready * pre_pour_stage + g_pour * pour_stage + outcome
+    #   + grasp/contact/force/finger 유지 보상
+    #   - spill/premature_tilt/grasp_loss/action_rate/wrist_spin 비용
     # -----------------------------------------------------------------------
     weight_grasp_maintain: float = 2.00        # cup-palm 상대위치 유지 [4→2: tilt 중 cup 이동 허용]
     weight_contact_maintain: float = 2.00      # thumb + others≥N 접촉 유지 bonus [1.5→2.0]
     weight_force_balance: float = 0.50         # |F_thumb - F_others| → 0 [0.3→0.5]
     weight_finger_curl: float = 3.00           # per-finger lerp → +1 (닫힘) 유도
-    weight_transport: float = 6.00             # source pour point → target opening XY 근접 [4→6]
-    weight_transport_progress: float = 5.00    # 매 스텝 XY 접근 progress
-    weight_tilt: float = 10.00                 # 타겟 방향 기울이기 [8→10]
-    weight_pour_accuracy: float = 8.00         # bead cross fraction [2→8: 구슬 이동 강한 신호]
-    weight_spill: float = 1.00                 # 유출 패널티
-    weight_action_rate: float = 0.01           # action rate 패널티
+    weight_approach_xy: float = 6.00
+    weight_approach_z: float = 2.00
+    weight_cup_upright: float = 1.50
+    weight_transport_progress: float = 4.00
+    weight_prepour_dir: float = 4.00
+    weight_prepour_align: float = 3.00
+    weight_prepour_geom: float = 3.00
+    weight_release: float = 2.00
+    weight_cross: float = 5.00
+    weight_capture: float = 8.00
+    weight_success: float = 10.00
+    weight_spill: float = 4.00
+    weight_premature_tilt: float = 2.50
+    weight_grasp_loss: float = 2.00
+    weight_action_rate: float = 0.02
+    weight_wrist_spin: float = 0.05
 
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
-    reward_transport_scale: float = 10.0       # transport tanh 스케일
-    reward_tilt_scale: float = 5.0             # tilt exp 스케일 [2.5→5.0: 47°→90° gradient 강화]
-    reward_tilt_distance_scale: float = 0.08   # soft proximity gate σ [0.20→0.08: 8cm이내만 tilt 보상, 멀어져서 기울이기 차단]
+    reward_approach_xy_scale: float = 10.0
 
     # -----------------------------------------------------------------------
     # 종료 조건

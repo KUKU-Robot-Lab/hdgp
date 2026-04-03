@@ -200,10 +200,11 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_joint_upper_limits = _new_upper.contiguous()
 
         # ----------------------------------------------------------------
-        # 로봇 시작 자세 (arm: ARM_START_POSE, hand: HAND_APPROACH_POSE)
+        # 로봇 시작 자세 (arm: ARM_START_POSE, hand: HAND_GRASP_POSE)
+        # HAND_GRASP_POSE에서 시작 → 20D delta 탐색 공간 축소 (파지 포즈 근처 미세 조정)
         # ----------------------------------------------------------------
-        arm_start   = to_torch(ARM_START_POSE,    device=self.device)
-        hand_start  = to_torch(HAND_APPROACH_POSE, device=self.device)
+        arm_start   = to_torch(ARM_START_POSE,   device=self.device)
+        hand_start  = to_torch(HAND_GRASP_POSE,  device=self.device)
         robot_start = torch.cat([arm_start, hand_start], dim=0)
         self.robot_start_joint_pos = (
             robot_start.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
@@ -1257,9 +1258,9 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
 
-        # hand는 APPROACH_POSE로 초기화
-        approach_hand = self.hand_approach_pose.unsqueeze(0).expand(n, -1)
-        self.fabric_q[env_ids, NUM_ARM_DOF:] = approach_hand
+        # hand는 GRASP_POSE로 초기화 (파지 포즈 근처에서 시작하여 탐색 공간 축소)
+        grasp_hand = self.hand_grasp_pose.unsqueeze(0).expand(n, -1)
+        self.fabric_q[env_ids, NUM_ARM_DOF:] = grasp_hand
         self.fabric_qd[env_ids, NUM_ARM_DOF:].zero_()
 
         # ---- 5. pregrasp 버퍼 저장 ----
@@ -1268,13 +1269,13 @@ class GraspRightEnv(DirectRLEnv):
         self.pregrasp_palm_pose_buf[env_ids] = pregrasp_palm_pose
 
         self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = q_pregrasp[:, :NUM_ARM_DOF]
-        self.lift_finger_pos_buf[env_ids] = approach_hand
+        self.lift_finger_pos_buf[env_ids] = grasp_hand
 
         # ---- 6. 로봇 pregrasp 자세로 초기화 ----
         pregrasp_full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         pregrasp_full_pos[:, self.arm_dof_indices]  = q_pregrasp[:, :NUM_ARM_DOF]
-        pregrasp_full_pos[:, self.hand_dof_indices] = approach_hand
+        pregrasp_full_pos[:, self.hand_dof_indices] = grasp_hand
         pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
         self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
 
@@ -1308,7 +1309,7 @@ class GraspRightEnv(DirectRLEnv):
         self._bead_mass_normalized[env_ids] = bead_count.float() / self.cfg.bead_count_max
 
         # ---- 8. 버퍼 리셋 ----
-        self.hand_joint_targets[env_ids] = approach_hand
+        self.hand_joint_targets[env_ids] = grasp_hand
         self.contact_force_raw[env_ids] = 0.0
         self.binary_contact_buf[env_ids] = False
         self.num_contacts_buf[env_ids]   = 0
