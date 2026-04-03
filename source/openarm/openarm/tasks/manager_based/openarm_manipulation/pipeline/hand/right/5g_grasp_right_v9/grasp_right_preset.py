@@ -96,7 +96,7 @@ HAND_APPROACH_POSE = [
     +0.004, +0.775, +0.170, +1.090,   # middle
     -0.000, +0.668, +0.387, +1.013,   # ring
     +0.000, -0.002, +0.716, +0.889,   # pinky
-]ㅊ
+]
 
 # 파지 자세 — v7 test* 학습 결과에서 추출 (100 에피소드 평균, ep_len>=450 AND contacts>=2)
 # extract_grasp_pose.py --task 5g_grasp_right-v7 --collect_from_step 450 --min_contacts 2
