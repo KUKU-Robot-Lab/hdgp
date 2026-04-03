@@ -463,6 +463,7 @@ class GraspRightEnv(DirectRLEnv):
         self._warmstart_policy = None
         self._warmstart_cache_count = 0
         self._warmstart_reset_debug_printed = False
+        self._warmstart_success_stored = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         cache_size = max(int(self.cfg.warmstart_cache_size), 1)
         self._warmstart_arm_pos = torch.zeros(cache_size, NUM_ARM_DOF, device=self.device)
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
@@ -787,12 +788,14 @@ class GraspRightEnv(DirectRLEnv):
         # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
         # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
 
-        # 에피소드 시작 직후 N스텝: palm action=0 강제 (warmstart 물리 안착)
+        # 에피소드 시작 직후 N스텝: warmstart pose를 강제 유지 (물리 안착)
         # warmstart 캐시에서 텔레포트한 직후 contact force가 안정화되기 전에
-        # 랜덤 action이 arm을 움직이면 컵이 낙하함.
+        # 랜덤 action이 arm/hand를 움직이면 손가락이 먼저 풀리거나 컵이 낙하함.
         if self.cfg.episode_hold_steps > 0:
             hold_mask = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
             palm_action = torch.where(hold_mask, torch.zeros_like(palm_action), palm_action)
+            if not self._warmstart_collect_mode:
+                finger_action = torch.where(hold_mask, torch.ones_like(finger_action), finger_action)
 
         delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
         # Rotation action is interpreted in a cup-local basis:
@@ -1252,7 +1255,9 @@ class GraspRightEnv(DirectRLEnv):
         full_grasp_flag = (
             self.binary_contact_buf[:, 0] & (others_count >= self.cfg.contact_maintain_min_others)
         ).float()
-        r_contact_maintain = self.cfg.weight_contact_maintain * full_grasp_flag
+        # 유지 항은 "잘하면 큰 양의 상수 보상"이 아니라 "잃으면 음의 패널티"로 둔다.
+        # 그렇지 않으면 target 근처로 가지 않아도 grasp/upright 유지 만으로 높은 episode reward가 누적된다.
+        r_contact_maintain = self.cfg.weight_contact_maintain * (full_grasp_flag - 1.0)
 
         # ---- 1c. force_balance: |F_thumb - F_others_avg| → 0 (기울이기 중 파지 유지) ----
         # 기울일 때 중력이 컵을 당기므로 힘 균형이 깨지기 쉬움 → 균형 유지 유도
@@ -1270,7 +1275,8 @@ class GraspRightEnv(DirectRLEnv):
         # freeze_grasp=False 이후 정책이 손가락을 덜 닫는 방향을 선택하는 것을 방지
         # min 사용: 한 손가락이라도 열려있으면 (min+1)/2 ≈ 0 → 중지 등 선택적 열기 차단
         finger_lerp_min = self.actions[:, 6:11].min(dim=-1).values              # (N,) ∈ [-1, 1]
-        r_finger_curl = self.cfg.weight_finger_curl * (finger_lerp_min + 1.0) / 2.0
+        finger_curl_score = (finger_lerp_min + 1.0) / 2.0
+        r_finger_curl = self.cfg.weight_finger_curl * (finger_curl_score - 1.0)
 
         # ---- 2. Approach stage: target opening 위로 안전하게 이동 ----
         r_approach_xy = 1.0 - torch.tanh(
@@ -1301,7 +1307,10 @@ class GraspRightEnv(DirectRLEnv):
                 * torch.abs(self._mouth_z_clearance - self.cfg.reward_prepour_clearance_ref)
             )
         )
-        r_prepour_stage = self._g_ready * (
+        # g_ready가 작아도 방향/정렬 항이 0.5 안팎이면 pre-pour reward가 생겨
+        # "타겟컵에서 먼데 먼저 기울이는" 로컬옵티마가 생긴다.
+        # g_ready^2로 pre-pour 진입을 더 늦추고, 접근이 먼저 일어나게 한다.
+        r_prepour_stage = self._g_ready.square() * (
             self.cfg.weight_prepour_dir * r_prepour_dir
             + self.cfg.weight_prepour_align * r_prepour_align
             + self.cfg.weight_prepour_geom * r_prepour_geom
@@ -1331,13 +1340,16 @@ class GraspRightEnv(DirectRLEnv):
         wrist_spin_cost = torch.abs(self.robot.data.joint_vel[:, self.arm_dof_indices[-1]])
 
         total = (
-            self.cfg.weight_grasp_maintain * grasp_maintain_reward
+            self.cfg.weight_grasp_maintain * (grasp_maintain_reward - 1.0)
             + r_contact_maintain
             + r_force_balance
             + r_finger_curl
             + self.cfg.weight_approach_xy * r_approach_xy
-            + self.cfg.weight_approach_z * r_approach_z
-            + self.cfg.weight_cup_upright * r_cup_upright_hold
+            - self.cfg.weight_mouth_xy_dist * self._mouth_xy_distance
+            + self._g_align_xy * (
+                self.cfg.weight_approach_z * r_approach_z
+                + self.cfg.weight_cup_upright * r_cup_upright_hold
+            )
             + self.cfg.weight_transport_progress * r_transport_progress
             + r_prepour_stage
             + r_pour_stage
@@ -1357,7 +1369,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["force_balance_err"]         = force_balance_err.mean()
         self.extras["thumb_force_mean"]          = thumb_force.mean()
         self.extras["total_tip_force"]           = self.contact_force_raw.sum(dim=-1).mean()
-        self.extras["finger_curl_min"]           = ((finger_lerp_min + 1.0) / 2.0).mean()   # 0=열림, 1=닫힘 (min 기준)
+        self.extras["finger_curl_min"]           = finger_curl_score.mean()   # 0=열림, 1=닫힘 (min 기준)
         self.extras["num_contacts"]              = self.num_contacts_buf.float().mean()
         self.extras["reward_approach_xy"]        = r_approach_xy.mean()
         self.extras["reward_approach_z"]         = r_approach_z.mean()
@@ -1463,6 +1475,7 @@ class GraspRightEnv(DirectRLEnv):
         self._total_episodes += n
         self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
         self.episode_success_buf[env_ids] = False
+        self._warmstart_success_stored[env_ids] = False
 
         if (not self._warmstart_collect_mode) and self._warmstart_cache_count > 0:
             self._reset_from_warmstart_cache(env_ids)
@@ -1740,7 +1753,13 @@ class GraspRightEnv(DirectRLEnv):
         lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
         upright = self._source_up_axis_w[:, 2] > 0.7
-        warmstart_success = lifted & grasped & upright
+        # 테이블 기준 약 10cm 든 상태에서 시작하도록 lifted 조건을 포함하고,
+        # 그 조건을 처음 만족한 한 스텝만 저장한다.
+        warmstart_ready = lifted & grasped & upright
+        # 한 episode에서 최초 ready 시점만 저장한다.
+        # 이전 구현은 success 이후 더 높이 들어올린 후속 스텝까지 계속 캐시에 들어가
+        # warmstart reset이 과도하게 높은 자세에서 시작하는 문제가 있었다.
+        warmstart_success = warmstart_ready & (~self._warmstart_success_stored)
 
         success_env_ids = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
         if success_env_ids.numel() == 0:
@@ -1760,6 +1779,7 @@ class GraspRightEnv(DirectRLEnv):
         self._warmstart_cup_pose[start:end, :3] = self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
         self._warmstart_cup_pose[start:end, 3:7] = self.cup.data.root_quat_w[success_env_ids]
         self._warmstart_cache_count = end
+        self._warmstart_success_stored[success_env_ids] = True
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
