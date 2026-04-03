@@ -925,12 +925,10 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ---- R1c. multi_phalanx_contact ----
-        is_grasp_phase = ~self.is_lift_phase
-        is_grasp_f     = is_grasp_phase.float()
         tip_norm    = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
         middle_norm = (self.middle_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
         finger_depth = (tip_norm * middle_norm).sqrt()
-        r1c_multi_phalanx = self.cfg.multi_phalanx_weight * is_grasp_f * finger_depth.mean(dim=-1)
+        r1c_multi_phalanx = self.cfg.multi_phalanx_weight * finger_depth.mean(dim=-1)
 
         # ---- cup uprightness ----
         z_local = torch.zeros(self.num_envs, 3, device=self.device)
@@ -939,12 +937,11 @@ class GraspRightEnv(DirectRLEnv):
         cup_uprightness = cup_z_world[:, 2].clamp(min=0.0)
 
         # ---- R2. slip_reward (v9 신규) ----
-        # cup 수평 속도를 slip proxy로 사용 (contact + grasp phase gate)
+        # cup 수평 속도를 slip proxy로 사용 (contact gate만 사용)
         cup_horiz_vel = self.cup.data.root_lin_vel_w[:, :2].norm(dim=-1)   # (N,)
         cup_horiz_vel = torch.nan_to_num(cup_horiz_vel, nan=0.0)
         has_any_contact  = (self.num_contacts_buf >= 1).float()
-        grasp_contact_gate = is_grasp_f * has_any_contact
-        r2_slip = self.cfg.slip_weight * grasp_contact_gate * torch.exp(
+        r2_slip = self.cfg.slip_weight * has_any_contact * torch.exp(
             -self.cfg.slip_sharpness * cup_horiz_vel
         )
 
@@ -952,7 +949,6 @@ class GraspRightEnv(DirectRLEnv):
         # F_total / mg → k (안전계수)에 가깝도록 유도하는 보너스형 보상
         total_grip_force = self.contact_force_raw.sum(dim=-1)        # (N,) [N]
         grip_normalized  = (total_grip_force / (CONTACT_FORCE_MAX * NUM_FINGERTIPS)).clamp(0.0, 1.0)
-        eff_gate         = is_grasp_f * has_any_contact
         
         effective_mass = (
             self.cfg.cup_base_mass
@@ -968,10 +964,10 @@ class GraspRightEnv(DirectRLEnv):
             else self.cfg.adaptive_force_weight
         )
         
-        # 보너스 형태: exp(-sharpness * |error|)
+        # 보너스 형태: exp(-sharpness * |error|) (contact 시 상시 활성)
         r3_adaptive_force = (
             af_weight
-            * eff_gate
+            * has_any_contact
             * torch.exp(-self.cfg.adaptive_force_sharpness * (force_ratio - k).abs())
         )
 
