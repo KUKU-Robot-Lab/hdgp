@@ -938,13 +938,16 @@ class GraspRightEnv(DirectRLEnv):
         cup_z_world   = quat_apply(self.object_rot, z_local)
         cup_uprightness = cup_z_world[:, 2].clamp(min=0.0)
 
-        # ---- R2. slip_reward (v9 신규) ----
-        # cup 수평 속도를 slip proxy로 사용 (contact gate만 사용)
+        # ---- R2. slip_reward ----
+        # v9.2: lift phase에서만 활성 — grasp phase에서 "접촉만 해도 보상" local-min 차단
         cup_horiz_vel = self.cup.data.root_lin_vel_w[:, :2].norm(dim=-1)   # (N,)
         cup_horiz_vel = torch.nan_to_num(cup_horiz_vel, nan=0.0)
         has_any_contact  = (self.num_contacts_buf >= 1).float()
-        r2_slip = self.cfg.slip_weight * has_any_contact * torch.exp(
-            -self.cfg.slip_sharpness * cup_horiz_vel
+        r2_slip = (
+            self.cfg.slip_weight
+            * self.is_lift_phase.float()
+            * has_any_contact
+            * torch.exp(-self.cfg.slip_sharpness * cup_horiz_vel)
         )
 
         # ---- R3 & R4 통합. Adaptive Force Reward (v9 개선) ----
@@ -989,6 +992,10 @@ class GraspRightEnv(DirectRLEnv):
         # ---- R6. lift_reward ----
         r6_lift = self.cfg.lift_reward_weight * cup_height_delta * cup_uprightness
 
+        # ---- R8. success_bonus ----
+        # lift 성공 조건 유지 중 step당 보너스 (직전 step success_flag 사용, 1 step lag 무방)
+        r8_success = self.cfg.success_bonus_weight * self.success_flag.float()
+
         # ---- R7. action_smoothness ----
         palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
         finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
@@ -1008,6 +1015,7 @@ class GraspRightEnv(DirectRLEnv):
             + r5_force_smooth
             + r6_lift
             + r7_action_smooth
+            + r8_success
         )
         total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -1025,6 +1033,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["adaptive_force_reward"]  = r3_adaptive_force.mean()
         self.extras["force_smooth_reward"]    = r5_force_smooth.mean()
         self.extras["lift_reward"]            = r6_lift.mean()
+        self.extras["success_bonus"]          = r8_success.mean()
         self.extras["action_smoothness"]      = r7_action_smooth.mean()
         # 진단 지표
         self.extras["force_ratio_mean"]       = force_ratio.mean()

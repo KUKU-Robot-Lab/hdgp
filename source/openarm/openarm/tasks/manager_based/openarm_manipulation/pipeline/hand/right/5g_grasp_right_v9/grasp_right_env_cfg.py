@@ -189,8 +189,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # R5. force_smooth (v9 신규): 파지력 변화율 억제 (sim2real 안정성)
     force_smooth_weight: float = 1.5
 
-    # R6. lift_reward (v8: 20.0 → v9: 6.0, success dominance 완화)
-    lift_reward_weight: float = 6.0
+    # R6. lift_reward (v8: 20.0 → v9: 6.0 → v9.2: 20.0, slip local-min 탈출)
+    lift_reward_weight: float = 20.0
+
+    # R8. success_bonus: lift 성공 유지 중 step당 보너스 (slip local-min 탈출)
+    success_bonus_weight: float = 20.0
 
     # R7. action_smoothness
     action_smoothness_palm_weight:   float = -0.01
