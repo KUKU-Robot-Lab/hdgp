@@ -1026,7 +1026,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["total_tip_force_norm"]   = grip_normalized.mean()
         self.extras["multi_phalanx_contact"]  = finger_depth.mean()
         self.extras["grip_normalized"]        = grip_normalized.mean()
-        self.extras["eff_gate_active_ratio"]  = eff_gate.mean()
+        self.extras["contact_active_ratio"]   = has_any_contact.mean()
         self.extras["bead_mass_normalized"]   = self._bead_mass_normalized.mean()
         self.extras["num_contacts"]           = self.num_contacts_buf.float().mean()
         self.extras["episode_success_rate"]   = torch.tensor(_ep_success_rate, device=self.device)
