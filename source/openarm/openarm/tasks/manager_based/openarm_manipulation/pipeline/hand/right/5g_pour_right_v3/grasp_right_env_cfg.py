@@ -245,14 +245,21 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_all_beads_capture: float = 20.00
     weight_spill: float = 15.00
     weight_premature_tilt: float = 4.00
-    weight_grasp_loss: float = 4.00
+    weight_grasp_loss: float = 0.00
     weight_action_rate: float = 0.02
-    weight_wrist_spin: float = 0.05
+    weight_wrist_spin: float = 0.00
 
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
     reward_approach_xy_scale: float = 12.0
+    # DexPour-style stage thresholds / shaping
+    stage_approach_xy_threshold: float = 0.14
+    stage_pour_xy_threshold: float = 0.10
+    transport_dist_exp_scale: float = 8.0
+    transport_tilt_penalty_weight: float = 4.0
+    pour_tilt_target_deg: float = 45.0
+    pour_tilt_sharpness: float = 6.0
 
     # -----------------------------------------------------------------------
     # 종료 조건

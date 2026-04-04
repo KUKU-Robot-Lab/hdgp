@@ -1029,7 +1029,7 @@ class GraspRightEnv(DirectRLEnv):
         if self.grasp_adr is not None:
             self.grasp_adr.maybe_increment(_ep_success_rate)
 
-        # ---- 로깅 ----
+        # ---- 로깅: rewards + tip force ----
         self.extras["palm_approach_reward"]   = r0_palm_approach.mean()
         self.extras["enclosure_reward"]       = r1_enclosure.mean()
         self.extras["force_balance_reward"]   = r1b_force_balance.mean()
@@ -1040,46 +1040,23 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["lift_reward"]            = r6_lift.mean()
         self.extras["success_bonus"]          = r8_success.mean()
         self.extras["action_smoothness"]      = r7_action_smooth.mean()
-        # 진단 지표
-        self.extras["force_ratio_mean"]       = force_ratio.mean()
-        self.extras["force_balance_err"]      = force_balance_err.mean()
+        # tip force
         self.extras["thumb_force_mean"]       = thumb_force.mean()
         self.extras["others_avg_force_mean"]  = others_avg_force.mean()
         self.extras["total_tip_force_norm"]   = grip_normalized.mean()
-        self.extras["multi_phalanx_contact"]  = finger_depth.mean()
-        self.extras["grip_normalized"]        = grip_normalized.mean()
-        self.extras["contact_active_ratio"]   = has_any_contact.mean()
-        self.extras["bead_mass_normalized"]   = self._bead_mass_normalized.mean()
-        self.extras["num_contacts"]           = self.num_contacts_buf.float().mean()
-        self.extras["episode_success_rate"]   = torch.tensor(_ep_success_rate, device=self.device)
-        # v9 신규 진단 지표
-        self.extras["slip_proxy_cup_vel"]     = cup_horiz_vel.mean()
-        self.extras["effective_mass_mean"]    = effective_mass.mean()
-        self.extras["adaptive_force_weight"]  = torch.tensor(af_weight, device=self.device)
-        # mass별 조건부 지표
         light_mask = (self._bead_mass_normalized < 0.33)
         heavy_mask = (self._bead_mass_normalized > 0.66)
-        grip_norm_light = grip_normalized[light_mask].mean() if light_mask.any() else grip_normalized.mean()
-        grip_norm_heavy = grip_normalized[heavy_mask].mean() if heavy_mask.any() else grip_normalized.mean()
         if light_mask.any():
-            self.extras["grip_norm_light"]      = grip_norm_light
             self.extras["tip_force_norm_light"] = grip_normalized[light_mask].mean()
-            self.extras["force_ratio_light"]    = force_ratio[light_mask].mean()
         if heavy_mask.any():
-            self.extras["grip_norm_heavy"]      = grip_norm_heavy
             self.extras["tip_force_norm_heavy"] = grip_normalized[heavy_mask].mean()
-            self.extras["force_ratio_heavy"]    = force_ratio[heavy_mask].mean()
-        self.extras["grip_adaptive_delta"]    = grip_norm_heavy - grip_norm_light
-        self.extras["force_ratio_delta"]      = (
-            force_ratio[heavy_mask].mean() - force_ratio[light_mask].mean()
-            if (light_mask.any() and heavy_mask.any())
-            else torch.tensor(0.0, device=self.device)
-        )
-        if self.grasp_adr is not None:
-            self.extras["adr_progress"]            = torch.tensor(self.grasp_adr.progress, device=self.device)
-            self.extras["adr_spawn_xy_range"]      = torch.tensor(self.grasp_adr.get_param("spawn",  "object_spawn_xy_range"), device=self.device)
-            self.extras["adr_obs_noise_cup_pos"]   = torch.tensor(self.grasp_adr.get_param("noise",  "obs_noise_cup_pos"),     device=self.device)
-            self.extras["adr_finger_delta_scale"]  = torch.tensor(self.grasp_adr.get_param("finger", "delta_scale"),           device=self.device)
+        # 파지 학습 진행 지표
+        self.extras["num_contacts"]           = self.num_contacts_buf.float().mean()
+        self.extras["episode_success_rate"]   = torch.tensor(_ep_success_rate, device=self.device)
+        # mg:grip 적응 검증 (force_ratio_delta ≈ 0 → 질량 적응 성공)
+        self.extras["force_ratio_mean"]       = force_ratio.mean()
+        if light_mask.any() and heavy_mask.any():
+            self.extras["force_ratio_delta"]  = force_ratio[heavy_mask].mean() - force_ratio[light_mask].mean()
 
         return total
 

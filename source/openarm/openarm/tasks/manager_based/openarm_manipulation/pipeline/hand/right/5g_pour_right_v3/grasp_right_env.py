@@ -1318,153 +1318,98 @@ class GraspRightEnv(DirectRLEnv):
         # min 사용: 한 손가락이라도 열려있으면 score가 크게 떨어지게 해 선택적 열기 차단
         finger_lerp_min = self.actions[:, 6:11].min(dim=-1).values              # (N,) ∈ [-1, 1]
         finger_curl_score = (finger_lerp_min + 1.0) / 2.0
-        # 닫힘(>0.5)은 보상, 열림(<0.5)은 패널티가 되도록 중심점을 0.5로 둔다.
-        r_finger_curl = self.cfg.weight_finger_curl * (finger_curl_score - 0.5)
+        # 닫힘 자체를 양의 보상으로 둬서 파지 유지를 더 직접적으로 유도한다.
+        r_finger_curl = self.cfg.weight_finger_curl * finger_curl_score
 
-        # ---- 2. Approach stage: target opening 위로 안전하게 이동 ----
-        r_approach_xy = 1.0 - torch.tanh(
-            self.cfg.reward_approach_xy_scale * self._mouth_xy_distance
+        # ---- DexPour-style stage triggers (binary) ----
+        approach_trigger = (self._mouth_xy_distance < self.cfg.stage_approach_xy_threshold).float()
+        grasp_trigger = approach_trigger * full_grasp_flag
+        lifted_flag = (
+            self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
+        ).float()
+        transport_trigger = grasp_trigger * lifted_flag
+        pour_trigger = transport_trigger * (
+            self._mouth_xy_distance < self.cfg.stage_pour_xy_threshold
+        ).float()
+
+        # ---- Stage A. Hold (grasp 유지) ----
+        r_hold = (
+            self.cfg.weight_grasp_maintain * grasp_maintain_reward
+            + self.cfg.weight_contact_maintain * full_grasp_flag
+            + r_force_balance
+            + r_finger_curl
         )
-        r_approach_z = torch.exp(
-            -self.cfg.reward_approach_z_scale
-            * torch.abs(self.cfg.reward_approach_clearance_ref - self._mouth_z_clearance)
-        )
-        upright_denom = max(1.0 - self.cfg.reward_upright_min, 1e-6)
-        r_cup_upright_hold = torch.clamp(
-            (self._source_up_dot_world - self.cfg.reward_upright_min) / upright_denom,
-            0.0,
-            1.0,
-        )
+
+        # ---- Stage B. Transport ----
+        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
+        r_lift = self.cfg.weight_approach_z * cup_height_delta
+        r_cup_dist = torch.exp(-self.cfg.transport_dist_exp_scale * self._mouth_distance)
         r_transport_progress = torch.clamp(
             self._prev_mouth_xy_distance - self._mouth_xy_distance,
             min=0.0,
         )
-
-        # ---- 3. Pre-pour stage: readiness 이후 방향/입구 정렬 ----
-        r_prepour_dir = 0.5 * (self._directional_tilt_cos + 1.0)
-        r_prepour_align = 0.5 * (self._mouth_alignment_cos + 1.0)
-        r_prepour_geom = (
-            torch.exp(-self.cfg.reward_prepour_geom_xy_scale * self._mouth_xy_distance)
-            * torch.exp(
-                -self.cfg.reward_prepour_geom_z_scale
-                * torch.abs(self._mouth_z_clearance - self.cfg.reward_prepour_clearance_ref)
-            )
-        )
-        # g_ready가 작아도 방향/정렬 항이 0.5 안팎이면 pre-pour reward가 생겨
-        # "타겟컵에서 먼데 먼저 기울이는" 로컬옵티마가 생긴다.
-        # g_ready^2로 pre-pour 진입을 더 늦추고, 접근이 먼저 일어나게 한다.
-        r_prepour_stage = self._g_ready.square() * (
-            self.cfg.weight_prepour_dir * r_prepour_dir
-            + self.cfg.weight_prepour_align * r_prepour_align
-            + self.cfg.weight_prepour_geom * r_prepour_geom
+        transport_tilt_cost = (1.0 - self._source_up_dot_world.clamp(0.0, 1.0))
+        r_transport_stage = transport_trigger * (
+            self.cfg.weight_approach_xy * r_cup_dist
+            + self.cfg.weight_transport_progress * r_transport_progress
+            - self.cfg.transport_tilt_penalty_weight * transport_tilt_cost
         )
 
-        # ---- 4. Pour stage: source 이탈 → mouth 통과 → target capture ----
-        r_release = 1.0 - self._bead_in_source_fraction
+        # ---- Stage C. Pour (근접 시에만 tilt/alignment) ----
+        target_tilt_cos = math.cos(math.radians(self.cfg.pour_tilt_target_deg))
+        r_tilt = torch.exp(
+            -self.cfg.pour_tilt_sharpness * torch.abs(self._source_up_dot_world - target_tilt_cos)
+        )
+        r_align = 0.5 * (self._mouth_alignment_cos + 1.0)
         r_cross = self._bead_cross_fraction
         r_capture = self._bead_in_target_fraction
-        r_pour_stage = self._g_pour * (
-            self.cfg.weight_release * r_release
+        r_pour_stage = pour_trigger * (
+            self.cfg.weight_prepour_dir * r_tilt
+            + self.cfg.weight_prepour_align * r_align
             + self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
         )
 
-        bead_ever_in_target_count = self._bead_ever_in_target.sum(dim=-1).long()
-        new_bead_capture_count = torch.clamp(
-            bead_ever_in_target_count - self._prev_bead_ever_in_target_count,
-            min=0,
-        ).float()
-        r_bead_first_capture = self.cfg.weight_bead_first_capture * new_bead_capture_count
-
-        all_beads_in_target_now = self._bead_in_target.all(dim=-1)
-        all_beads_bonus_now = all_beads_in_target_now & (~self._all_beads_bonus_paid)
-        r_all_beads_capture = self.cfg.weight_all_beads_capture * all_beads_bonus_now.float()
-        self._all_beads_bonus_paid |= all_beads_bonus_now
-        self._prev_bead_ever_in_target_count.copy_(bead_ever_in_target_count)
-
-        # ---- 5. Outcome and costs ----
+        # ---- Outcome and costs ----
         success_now = (
             (self._bead_in_target_fraction >= self.cfg.success_target_fill_ratio)
             & (self._spill_ratio <= self.cfg.success_spill_max)
         )
         r_success = success_now.float()
         spill_cost = self._spill_ratio
-        directional_factor = self._directional_tilt_cos.clamp(0.0, 1.0)
-        premature_tilt_cost = directional_factor * (1.0 - self._g_ready)
-        grasp_loss_cost = self._g_pour * (1.0 - full_grasp_flag)
+        # Pour 단계 이전의 tilt를 패널티로 둔다(방향과 무관).
+        premature_tilt_cost = (1.0 - pour_trigger) * (1.0 - self._source_up_dot_world.clamp(0.0, 1.0))
         action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
-        wrist_spin_cost = torch.abs(self.robot.data.joint_vel[:, self.arm_dof_indices[-1]])
 
         total = (
-            self.cfg.weight_grasp_maintain * (grasp_maintain_reward - 1.0)
-            + r_contact_maintain
-            + r_force_balance
-            + r_finger_curl
-            + self.cfg.weight_approach_xy * r_approach_xy
-            - self.cfg.weight_mouth_xy_dist * self._mouth_xy_distance
-            + self.cfg.weight_approach_z * r_approach_z
-            + self.cfg.weight_cup_upright * r_cup_upright_hold * (1.0 - self._g_ready)
-            + self.cfg.weight_transport_progress * r_transport_progress
-            + r_prepour_stage
+            r_hold
+            + r_lift
+            + r_transport_stage
             + r_pour_stage
-            + r_bead_first_capture
-            + r_all_beads_capture
             + self.cfg.weight_success * r_success
             - self.cfg.weight_spill * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
-            - self.cfg.weight_grasp_loss * grasp_loss_cost
             - self.cfg.weight_action_rate * action_rate_penalty
-            - self.cfg.weight_wrist_spin * wrist_spin_cost
         )
 
-        # ---- Logging (pour task 진단 필수 지표만) ----
-        self.extras["grasp_maintain"]            = grasp_maintain_reward.mean()
-        self.extras["slip_dist"]                 = slip_dist.mean()
-        self.extras["contact_maintain"]          = full_grasp_flag.mean()
-        self.extras["force_balance"]             = r_force_balance.mean()
-        self.extras["force_balance_err"]         = force_balance_err.mean()
-        self.extras["thumb_force_mean"]          = thumb_force.mean()
-        self.extras["total_tip_force"]           = self.contact_force_raw.sum(dim=-1).mean()
-        self.extras["finger_curl_min"]           = finger_curl_score.mean()   # 0=열림, 1=닫힘 (min 기준)
-        self.extras["num_contacts"]              = self.num_contacts_buf.float().mean()
-        self.extras["reward_approach_xy"]        = r_approach_xy.mean()
-        self.extras["reward_approach_z"]         = r_approach_z.mean()
-        self.extras["reward_cup_upright"]        = r_cup_upright_hold.mean()
-        self.extras["reward_transport_progress"] = r_transport_progress.mean()
-        self.extras["reward_prepour_dir"]        = r_prepour_dir.mean()
-        self.extras["reward_prepour_align"]      = r_prepour_align.mean()
-        self.extras["reward_prepour_geom"]       = r_prepour_geom.mean()
-        self.extras["reward_prepour_stage"]      = r_prepour_stage.mean()
-        self.extras["reward_release"]            = r_release.mean()
-        self.extras["reward_cross"]              = r_cross.mean()
-        self.extras["reward_capture"]            = r_capture.mean()
-        self.extras["reward_pour_stage"]         = r_pour_stage.mean()
-        self.extras["reward_bead_first_capture"] = r_bead_first_capture.mean()
-        self.extras["reward_all_beads_capture"]  = r_all_beads_capture.mean()
-        self.extras["reward_success"]            = r_success.mean()
-        self.extras["tilt_directional_factor"]   = directional_factor.mean()
-        self.extras["pct_correct_tilt_dir"]      = (self._directional_tilt_cos > 0).float().mean()
-        self.extras["cost_spill"]                = spill_cost.mean()
-        self.extras["cost_premature_tilt"]       = premature_tilt_cost.mean()
-        self.extras["cost_grasp_loss"]           = grasp_loss_cost.mean()
-        self.extras["cost_action_rate"]          = action_rate_penalty.mean()
-        self.extras["cost_wrist_spin"]           = wrist_spin_cost.mean()
-        self.extras["mouth_xy_distance"]         = self._mouth_xy_distance.mean()
-        self.extras["mouth_z_clearance"]         = self._mouth_z_clearance.mean()
-        self.extras["source_up_dot"]             = self._source_up_dot_world.mean()
-        self.extras["directional_tilt_cos"]      = self._directional_tilt_cos.mean()
-        self.extras["mouth_alignment_cos"]       = self._mouth_alignment_cos.mean()
-        self.extras["g_align_xy"]                = self._g_align_xy.mean()
-        self.extras["g_clear"]                   = self._g_clear.mean()
-        self.extras["g_tilt"]                    = self._g_tilt.mean()
-        self.extras["g_ready"]                   = self._g_ready.mean()
-        self.extras["g_pour"]                    = self._g_pour.mean()
-        self.extras["bead_in_source_rate"]       = self._bead_in_source_fraction.mean()
-        self.extras["bead_in_target_rate"]       = self._bead_in_target_fraction.mean()
-        self.extras["bead_cross_fraction"]       = self._bead_cross_fraction.mean()
-        self.extras["bead_cross_count"]          = self._bead_cross_count.float().mean()
-        self.extras["spill_ratio"]               = self._spill_ratio.mean()
-        self.extras["success_rate"]              = success_now.float().mean()
+        # ---- Logging (reward terms + gate conditions only) ----
+        self.extras["reward_total"]             = total.mean()
+        self.extras["reward_hold"]              = r_hold.mean()
+        self.extras["reward_lift"]              = r_lift.mean()
+        self.extras["reward_transport_stage"]   = r_transport_stage.mean()
+        self.extras["reward_tilt"]              = r_tilt.mean()
+        self.extras["reward_align"]             = r_align.mean()
+        self.extras["reward_cross"]             = r_cross.mean()
+        self.extras["reward_capture"]           = r_capture.mean()
+        self.extras["reward_pour_stage"]        = r_pour_stage.mean()
+        self.extras["reward_success"]           = r_success.mean()
+        self.extras["cost_spill"]               = spill_cost.mean()
+        self.extras["cost_premature_tilt"]      = premature_tilt_cost.mean()
+        self.extras["cost_action_rate"]         = action_rate_penalty.mean()
+        self.extras["gate_approach"]            = approach_trigger.mean()
+        self.extras["gate_grasp"]               = grasp_trigger.mean()
+        self.extras["gate_transport"]           = transport_trigger.mean()
+        self.extras["gate_pour"]                = pour_trigger.mean()
 
         self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
 
