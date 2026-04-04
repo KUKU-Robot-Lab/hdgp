@@ -89,6 +89,7 @@ from .grasp_right_preset import (
     RIGHT_ACTUATED_JOINT_NAMES,
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
+    HAND_FULL_GRIP_POSE,
     OBJECT_GOAL_POS,
 )
 from .grasp_right_utils import scale, to_torch
@@ -183,8 +184,9 @@ class GraspRightEnv(DirectRLEnv):
         # 접근 자세 (reset 및 Fabrics null-space용)
         # v9는 lerp를 쓰지 않으나 reset 초기화와 Fabrics attractor에서는 계속 필요.
         # ----------------------------------------------------------------
-        self.hand_approach_pose = to_torch(HAND_APPROACH_POSE, device=self.device)  # (20,)
-        self.hand_grasp_pose    = to_torch(HAND_GRASP_POSE,    device=self.device)  # (20,)
+        self.hand_approach_pose   = to_torch(HAND_APPROACH_POSE,   device=self.device)  # (20,)
+        self.hand_grasp_pose      = to_torch(HAND_GRASP_POSE,      device=self.device)  # (20,)
+        self.hand_full_grip_pose  = to_torch(HAND_FULL_GRIP_POSE,  device=self.device)  # (20,)
 
         # ----------------------------------------------------------------
         # approach_pose 기준 관절 한계 재조정 — 반대 방향 휘어짐 방지
@@ -660,10 +662,9 @@ class GraspRightEnv(DirectRLEnv):
             )
 
         # ---- Per-joint finger absolute offset: Approach + (action * range) ----
-        # v9.1: 기준 자세(Approach) 기반 절대 오프셋. 
-        # action ∈ [-1, 1]. 0.0 -> APPROACH_POSE. 
-        # 1.0 -> GRASP_POSE보다 1.5배 더 깊게(강하게) 쥐도록 설계 (Headroom 확보)
-        finger_range = (self.hand_grasp_pose - self.hand_approach_pose).unsqueeze(0) * 1.5
+        # v9.2: action=0 → APPROACH_POSE, action=1 → FULL_GRIP_POSE (주먹)
+        # joint limit clamp이 물리적 한계 보호 (별도 headroom 불필요)
+        finger_range = (self.hand_full_grip_pose - self.hand_approach_pose).unsqueeze(0)
         
         hand_target = self.hand_approach_pose.unsqueeze(0) + finger_action * finger_range
         

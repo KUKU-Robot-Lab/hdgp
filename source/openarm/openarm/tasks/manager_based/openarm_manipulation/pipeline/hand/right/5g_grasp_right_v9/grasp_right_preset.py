@@ -108,6 +108,17 @@ HAND_GRASP_POSE = [
     +0.000, -0.003, +0.895, +1.111,   # pinky
 ]
 
+# 완전 파지 자세 (주먹) — joint limit의 85~90% 기준
+# action=0 → APPROACH_POSE, action=1 → FULL_GRIP_POSE
+# 현재 GRASP_POSE 대비 curl 범위: index 6.4x, middle 3.4x, ring 3.9x, thumb 2.7x
+HAND_FULL_GRIP_POSE = [
+    -0.300, -2.500, +0.200, +1.500,   # thumb:  curl 깊게 (-2.5, limit=-π)
+    +0.016, +1.800, +1.200, +1.200,   # index:  curl 1.80 (limit 2.007의 90%)
+    +0.004, +1.750, +0.500, +1.450,   # middle: curl 1.75 (limit 1.955의 90%)
+    +0.000, +1.650, +0.700, +1.350,   # ring:   curl 1.65 (limit 1.902의 87%)
+    +0.000, -0.002, +1.400, +1.200,   # pinky:  PIP  1.40 (limit 1.571의 89%)
+]
+
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
 # Fabrics rollout이 [cup_x-0.167, cup_y-0.09, cup_z+0.04]로 수렴
 # j4=0.60: FK z≈0.282, 테이블 안전, 물리 충돌 없음

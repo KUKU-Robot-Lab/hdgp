@@ -360,6 +360,11 @@ class GraspRightEnv(DirectRLEnv):
         # Hand joint targets (per-finger lerp 결과)
         # ----------------------------------------------------------------
         self.hand_joint_targets = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
+        # warmstart reset으로 시작한 env는 초기 grasp보다 열리는 방향(action 감소)을 금지한다.
+        self._warmstart_finger_action_floor = torch.full(
+            (self.num_envs, NUM_FINGER_ACTION), -1.0, device=self.device
+        )
+        self._warmstart_only_close = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
         # 접촉 상태 버퍼
@@ -468,7 +473,6 @@ class GraspRightEnv(DirectRLEnv):
         self._warmstart_policy = None
         self._warmstart_cache_count = 0
         self._warmstart_reset_debug_printed = False
-        self._warmstart_success_stored = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         cache_size = max(int(self.cfg.warmstart_cache_size), 1)
         self._warmstart_arm_pos = torch.zeros(cache_size, NUM_ARM_DOF, device=self.device)
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
@@ -802,6 +806,14 @@ class GraspRightEnv(DirectRLEnv):
             palm_action = torch.where(hold_mask, torch.zeros_like(palm_action), palm_action)
             if not self._warmstart_collect_mode:
                 finger_action = torch.where(hold_mask, torch.ones_like(finger_action), finger_action)
+        if not self._warmstart_collect_mode:
+            close_only = self._warmstart_only_close.unsqueeze(1)
+            finger_action = torch.where(
+                close_only,
+                torch.maximum(finger_action, self._warmstart_finger_action_floor),
+                finger_action,
+            )
+            self.actions[:, 6:11] = finger_action
 
         delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
         # Rotation action is interpreted in a cup-local basis:
@@ -1279,10 +1291,11 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 1d. finger_curl: per-finger lerp → +1(닫힘) 유도 ----
         # freeze_grasp=False 이후 정책이 손가락을 덜 닫는 방향을 선택하는 것을 방지
-        # min 사용: 한 손가락이라도 열려있으면 (min+1)/2 ≈ 0 → 중지 등 선택적 열기 차단
+        # min 사용: 한 손가락이라도 열려있으면 score가 크게 떨어지게 해 선택적 열기 차단
         finger_lerp_min = self.actions[:, 6:11].min(dim=-1).values              # (N,) ∈ [-1, 1]
         finger_curl_score = (finger_lerp_min + 1.0) / 2.0
-        r_finger_curl = self.cfg.weight_finger_curl * (finger_curl_score - 1.0)
+        # 닫힘(>0.5)은 보상, 열림(<0.5)은 패널티가 되도록 중심점을 0.5로 둔다.
+        r_finger_curl = self.cfg.weight_finger_curl * (finger_curl_score - 0.5)
 
         # ---- 2. Approach stage: target opening 위로 안전하게 이동 ----
         r_approach_xy = 1.0 - torch.tanh(
@@ -1496,8 +1509,8 @@ class GraspRightEnv(DirectRLEnv):
         self._total_episodes += n
         self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
         self.episode_success_buf[env_ids] = False
-        self._warmstart_success_stored[env_ids] = False
-
+        self._warmstart_only_close[env_ids] = False
+        self._warmstart_finger_action_floor[env_ids] = -1.0
         if (not self._warmstart_collect_mode) and self._warmstart_cache_count > 0:
             self._reset_from_warmstart_cache(env_ids)
             return
@@ -1777,13 +1790,7 @@ class GraspRightEnv(DirectRLEnv):
         lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
         upright = self._source_up_axis_w[:, 2] > 0.7
-        # 테이블 기준 약 10cm 든 상태에서 시작하도록 lifted 조건을 포함하고,
-        # 그 조건을 처음 만족한 한 스텝만 저장한다.
-        warmstart_ready = lifted & grasped & upright
-        # 한 episode에서 최초 ready 시점만 저장한다.
-        # 이전 구현은 success 이후 더 높이 들어올린 후속 스텝까지 계속 캐시에 들어가
-        # warmstart reset이 과도하게 높은 자세에서 시작하는 문제가 있었다.
-        warmstart_success = warmstart_ready & (~self._warmstart_success_stored)
+        warmstart_success = lifted & grasped & upright
 
         success_env_ids = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
         if success_env_ids.numel() == 0:
@@ -1803,7 +1810,6 @@ class GraspRightEnv(DirectRLEnv):
         self._warmstart_cup_pose[start:end, :3] = self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
         self._warmstart_cup_pose[start:end, 3:7] = self.cup.data.root_quat_w[success_env_ids]
         self._warmstart_cache_count = end
-        self._warmstart_success_stored[success_env_ids] = True
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
@@ -1828,6 +1834,21 @@ class GraspRightEnv(DirectRLEnv):
 
         self.pregrasp_arm_pos_buf[env_ids] = arm_pos
         self.grasp_hold_hand_pos_buf[env_ids] = hand_pos
+        delta_20 = (self.hand_grasp_pose - self.hand_open_pose).unsqueeze(0).expand(n, -1)
+        open_20 = self.hand_open_pose.unsqueeze(0).expand(n, -1)
+        valid = torch.abs(delta_20) > 1e-6
+        t_20 = torch.where(valid, (hand_pos - open_20) / delta_20, torch.zeros_like(hand_pos))
+        t_20 = t_20.clamp(0.0, 1.0)
+        valid_f = valid.view(n, NUM_FINGER_ACTION, 4).float()
+        t_f = t_20.view(n, NUM_FINGER_ACTION, 4)
+        valid_count = valid_f.sum(dim=-1)
+        t_finger = torch.where(
+            valid_count > 0,
+            (t_f * valid_f).sum(dim=-1) / valid_count.clamp(min=1.0),
+            torch.zeros_like(valid_count),
+        )
+        self._warmstart_finger_action_floor[env_ids] = (2.0 * t_finger - 1.0).clamp(-1.0, 1.0)
+        self._warmstart_only_close[env_ids] = True
 
         warmstart_palm_pose = palm_pose.clone()
         warmstart_palm_pose[:, :3] = torch.max(
