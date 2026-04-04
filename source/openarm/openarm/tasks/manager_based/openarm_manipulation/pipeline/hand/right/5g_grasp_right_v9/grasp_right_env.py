@@ -659,15 +659,15 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # ---- Per-joint finger delta: 현재 위치 + scaled delta ----
-        current_finger_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]  # (N, 20)
-        _finger_delta_scale = (
-            self.grasp_adr.get_param("finger", "delta_scale")
-            if self.grasp_adr is not None
-            else self.cfg.finger_delta_scale
-        )
-        finger_delta = finger_action * _finger_delta_scale * self.finger_delta_mask  # (N, 20)
-        hand_target  = (current_finger_pos + finger_delta).clamp(
+        # ---- Per-joint finger absolute offset: Approach + (action * range) ----
+        # v9.1: 기준 자세(Approach) 기반 절대 오프셋. 
+        # action ∈ [-1, 1]. 0.0 -> APPROACH_POSE. 
+        # 1.0 -> GRASP_POSE보다 1.5배 더 깊게(강하게) 쥐도록 설계 (Headroom 확보)
+        finger_range = (self.hand_joint_grasp_limits - self.hand_joint_approach_limits) * 1.5
+        
+        hand_target = self.hand_joint_approach_limits + finger_action * finger_range
+        
+        hand_target = hand_target.clamp(
             self.hand_joint_lower_limits.unsqueeze(0),
             self.hand_joint_upper_limits.unsqueeze(0),
         )
@@ -1303,6 +1303,15 @@ class GraspRightEnv(DirectRLEnv):
         self._eval_grip_at_lift[env_ids] = 0.0
         self._eval_finger_actions_at_lift[env_ids] = 0.0
         self._last_grasp_finger_action[env_ids] = 0.0
+        # ---- Fabrics 상태 초기화 ----
+        # 리셋 시 실제 로봇 상태로 동기화하여 첫 프레임 튐 방지
+        self.fabric_q[env_ids]  = self.robot.data.joint_pos[env_ids].clone()
+        self.fabric_qd[env_ids] = 0.0
+        self.fabric_qdd[env_ids] = 0.0
+        
+        self.hand_joint_targets[env_ids] = self.fabric_q[env_ids, NUM_ARM_DOF:]
+        self.palm_pose_targets[env_ids]  = self.pregrasp_palm_pose_buf[env_ids]
+
         self._eval_episode_started[env_ids] = False
         self._eval_grasp_action_sum[env_ids] = 0.0
         self._eval_grasp_action_sq_sum[env_ids] = 0.0
