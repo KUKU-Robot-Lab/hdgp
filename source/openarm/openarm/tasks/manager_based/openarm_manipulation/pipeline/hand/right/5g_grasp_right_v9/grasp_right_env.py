@@ -950,30 +950,35 @@ class GraspRightEnv(DirectRLEnv):
             * torch.exp(-self.cfg.slip_sharpness * cup_horiz_vel)
         )
 
-        # ---- R3 & R4 통합. Adaptive Force Reward (v9 개선) ----
-        # F_total / mg → k (안전계수)에 가깝도록 유도하는 보너스형 보상
+        # ---- R3. Adaptive Force Reward (v9.3: k 제거, 순수 효율 gradient) ----
+        # 역할 분담:
+        #   slip        → force 부족 커버 (컵 미끄러지면 penalty)
+        #   adaptive_force → force 과도 억제 (force_ratio 클수록 보상 감소)
+        # 수식: exp(-decay * force_ratio)
+        #   force_ratio = total_grip / mg  (dimensionless)
+        #   decay=0.3: ratio=2→0.55, ratio=4→0.30
+        # k 없음. slip과의 균형으로 policy가 최적 ratio를 스스로 학습
         total_grip_force = self.contact_force_raw.sum(dim=-1)        # (N,) [N]
         grip_normalized  = (total_grip_force / (CONTACT_FORCE_MAX * NUM_FINGERTIPS)).clamp(0.0, 1.0)
-        
+
         effective_mass = (
             self.cfg.cup_base_mass
             + self._bead_mass_normalized * self.cfg.bead_count_max * self.cfg.bead_single_mass
         )   # (N,) [kg]
-        mg = effective_mass * 9.81                                            # (N,) [N]
-        force_ratio = total_grip_force / (mg + 1e-4)                          # (N,)
-        k = self.cfg.force_efficiency_target_ratio
-        
+        mg = effective_mass * 9.81                                    # (N,) [N]
+        force_ratio = total_grip_force / (mg + 1e-4)                  # (N,) dimensionless
+
         af_weight = (
             self.grasp_adr.get_param("reward", "adaptive_force_weight")
             if self.grasp_adr is not None
             else self.cfg.adaptive_force_weight
         )
-        
-        # 보너스 형태: exp(-sharpness * |error|) (contact 시 상시 활성)
+
         r3_adaptive_force = (
             af_weight
+            * self.is_lift_phase.float()
             * has_any_contact
-            * torch.exp(-self.cfg.adaptive_force_sharpness * (force_ratio - k).abs())
+            * torch.exp(-self.cfg.adaptive_force_decay * force_ratio)
         )
 
         # ---- R5. force_smooth (v9 신규) ----
@@ -1037,7 +1042,6 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["action_smoothness"]      = r7_action_smooth.mean()
         # 진단 지표
         self.extras["force_ratio_mean"]       = force_ratio.mean()
-        self.extras["force_target_err"]       = (force_ratio - k).abs().mean()
         self.extras["force_balance_err"]      = force_balance_err.mean()
         self.extras["thumb_force_mean"]       = thumb_force.mean()
         self.extras["others_avg_force_mean"]  = others_avg_force.mean()

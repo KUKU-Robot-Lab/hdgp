@@ -180,6 +180,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     warmstart_collect_palm_delta_xyz: float = 0.10
     palm_delta_rot_deg: float = 45.0
     target_pour_tilt_deg: float = 90.0
+    # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
+    # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
+    tilt_action_gate_xy_near: float = 0.06
+    tilt_action_gate_xy_far: float = 0.14
 
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
     left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)

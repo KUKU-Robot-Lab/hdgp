@@ -832,6 +832,14 @@ class GraspRightEnv(DirectRLEnv):
             delta = scale(palm_action, self.delta_mins_warmstart_collect, self.delta_maxs_warmstart_collect)
         else:
             delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
+            # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
+            gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
+            tilt_gate = torch.clamp(
+                (self.cfg.tilt_action_gate_xy_far - self._mouth_xy_distance) / gate_den,
+                0.0,
+                1.0,
+            )
+            delta[:, 3:6] = delta[:, 3:6] * tilt_gate.unsqueeze(1)
         # Rotation action is interpreted in a cup-local basis:
         # [spin around cup-up, tilt toward target opening, orthogonal tilt].
         delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])

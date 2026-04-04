@@ -177,12 +177,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     slip_weight:    float = 8.0
     slip_sharpness: float = 20.0
 
-    # R3 & R4 통합: Adaptive Force Reward (v9 개선)
-    # F_total / mg 가 target_ratio에 도달하도록 유도하는 보너스형 보상
-    # R_af = adaptive_force_weight * gate * exp(-adaptive_force_sharpness * |force_ratio - k|)
-    adaptive_force_weight:         float = 10.0  # ADR로 0 -> 10 조절
-    adaptive_force_sharpness:      float = 2.0
-    force_efficiency_target_ratio: float = 1.5   # F_total/mg 목표 비율 (안전계수)
+    # R3. Adaptive Force Reward (v9.3: k 제거, 순수 효율 gradient)
+    # 설계 철학:
+    #   slip          → "force 부족" 커버 (결과 기반)
+    #   adaptive_force → "force 과도" 억제 (단조감소, k 없음)
+    #   k (최적 비율) → 두 신호 균형에서 policy가 스스로 학습
+    #
+    # R_af = af_weight * is_lift * contact * exp(-decay * force_ratio)
+    #   force_ratio = F_total / mg  (질량 정규화)
+    #   decay 작을수록 완만 → slip과 균형점 결정
+    adaptive_force_weight:         float = 10.0
+    adaptive_force_decay:          float = 0.3   # exp(-0.3 × ratio): ratio=2→0.55, ratio=4→0.30
     cup_base_mass:                 float = 0.170  # kg (빈 컵 질량)
     bead_single_mass:              float = 0.010  # kg per bead
 
@@ -197,7 +202,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # R7. action_smoothness
     action_smoothness_palm_weight:   float = -0.01
-    action_smoothness_finger_weight: float = -0.003  # v8: -0.01 → v9: -0.003 (20D이므로 축소)
+    action_smoothness_finger_weight: float = -0.01   # v9.2: v8 수준 복원 (entropy explosion 억제)
 
     # -----------------------------------------------------------------------
     # ADR
@@ -218,7 +223,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             "delta_scale": (0.05, 0.15),   # 초기 0.05 -> 최종 0.15 (안정성 위해 축소)
         },
         "reward": {
-            "adaptive_force_weight": (0.0, 10.0),  # 초반에는 파지 형태에 집중, 점차 힘 조절 학습
+            "adaptive_force_weight": (5.0, 10.0),  # v9.2: lift phase 전용, 초반 5.0으로 시작
         }
     })
 
