@@ -663,9 +663,9 @@ class GraspRightEnv(DirectRLEnv):
         # v9.1: 기준 자세(Approach) 기반 절대 오프셋. 
         # action ∈ [-1, 1]. 0.0 -> APPROACH_POSE. 
         # 1.0 -> GRASP_POSE보다 1.5배 더 깊게(강하게) 쥐도록 설계 (Headroom 확보)
-        finger_range = (self.hand_joint_grasp_limits - self.hand_joint_approach_limits) * 1.5
+        finger_range = (self.hand_grasp_pose - self.hand_approach_pose).unsqueeze(0) * 1.5
         
-        hand_target = self.hand_joint_approach_limits + finger_action * finger_range
+        hand_target = self.hand_approach_pose.unsqueeze(0) + finger_action * finger_range
         
         hand_target = hand_target.clamp(
             self.hand_joint_lower_limits.unsqueeze(0),
@@ -1305,11 +1305,15 @@ class GraspRightEnv(DirectRLEnv):
         self._last_grasp_finger_action[env_ids] = 0.0
         # ---- Fabrics 상태 초기화 ----
         # 리셋 시 실제 로봇 상태로 동기화하여 첫 프레임 튐 방지
-        self.fabric_q[env_ids]  = self.robot.data.joint_pos[env_ids].clone()
+        # fabric_q(27D) = arm(7D) + hand(20D)
+        arm_pos  = self.robot.data.joint_pos[env_ids][:, self.arm_dof_indices]
+        hand_pos = self.robot.data.joint_pos[env_ids][:, self.hand_dof_indices]
+        self.fabric_q[env_ids] = torch.cat([arm_pos, hand_pos], dim=-1)
+        
         self.fabric_qd[env_ids] = 0.0
         self.fabric_qdd[env_ids] = 0.0
         
-        self.hand_joint_targets[env_ids] = self.fabric_q[env_ids, NUM_ARM_DOF:]
+        self.hand_joint_targets[env_ids] = hand_pos
         self.palm_pose_targets[env_ids]  = self.pregrasp_palm_pose_buf[env_ids]
 
         self._eval_episode_started[env_ids] = False
