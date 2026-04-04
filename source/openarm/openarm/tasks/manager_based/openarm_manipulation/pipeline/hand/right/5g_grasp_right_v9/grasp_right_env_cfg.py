@@ -193,7 +193,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_reward_weight: float = 6.0
 
     # R7. action_smoothness
-    action_smoothness_palm_weight:   float = -0.02
+    action_smoothness_palm_weight:   float = -0.01
     action_smoothness_finger_weight: float = -0.003  # v8: -0.01 → v9: -0.003 (20D이므로 축소)
 
     # -----------------------------------------------------------------------

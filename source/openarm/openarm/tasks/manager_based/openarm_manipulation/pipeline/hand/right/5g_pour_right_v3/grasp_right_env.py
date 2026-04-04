@@ -66,6 +66,7 @@ from .grasp_right_env_cfg import GraspRightEnvCfg
 from .grasp_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
+    NUM_FINGER_ACTION,
     NUM_FINGERTIPS,
     NUM_OBSERVATIONS,
     NUM_DISTAL_SENSORS,
@@ -280,6 +281,18 @@ class GraspRightEnv(DirectRLEnv):
         ], device=self.device)
         self.delta_maxs = to_torch([
             cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
+            _delta_rad, _delta_rad, _delta_rad,
+        ], device=self.device)
+        self.delta_mins_warmstart_collect = to_torch([
+            -cfg.warmstart_collect_palm_delta_xyz,
+            -cfg.warmstart_collect_palm_delta_xyz,
+            -cfg.warmstart_collect_palm_delta_xyz,
+            -_delta_rad, -_delta_rad, -_delta_rad,
+        ], device=self.device)
+        self.delta_maxs_warmstart_collect = to_torch([
+            cfg.warmstart_collect_palm_delta_xyz,
+            cfg.warmstart_collect_palm_delta_xyz,
+            cfg.warmstart_collect_palm_delta_xyz,
             _delta_rad, _delta_rad, _delta_rad,
         ], device=self.device)
 
@@ -815,7 +828,10 @@ class GraspRightEnv(DirectRLEnv):
             )
             self.actions[:, 6:11] = finger_action
 
-        delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
+        if self._warmstart_collect_mode:
+            delta = scale(palm_action, self.delta_mins_warmstart_collect, self.delta_maxs_warmstart_collect)
+        else:
+            delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
         # Rotation action is interpreted in a cup-local basis:
         # [spin around cup-up, tilt toward target opening, orthogonal tilt].
         delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])

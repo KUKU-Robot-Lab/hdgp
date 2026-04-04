@@ -281,6 +281,7 @@ class GraspRightEnv(DirectRLEnv):
         # Force-smooth 버퍼 (이전 스텝 총 파지력)
         # ----------------------------------------------------------------
         self._prev_avg_force_buf = torch.zeros(self.num_envs, device=self.device)
+        self._force_smooth_ready = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
         # 기타 버퍼
@@ -975,7 +976,14 @@ class GraspRightEnv(DirectRLEnv):
         # ---- R5. force_smooth (v9 신규) ----
         # 파지력 변화율 (mass-normalized) 억제
         force_delta_norm = (total_grip_force - self._prev_avg_force_buf) / (mg + 1e-4)
+        # 에피소드 시작 직후(ready=False)에는 현재 force를 기준값으로 세팅하고 패널티를 주지 않는다.
+        force_delta_norm = torch.where(
+            self._force_smooth_ready,
+            force_delta_norm,
+            torch.zeros_like(force_delta_norm),
+        )
         r5_force_smooth  = -self.cfg.force_smooth_weight * force_delta_norm.pow(2)
+        self._force_smooth_ready.fill_(True)
         self._prev_avg_force_buf.copy_(total_grip_force)
 
         # ---- R6. lift_reward ----
@@ -1301,6 +1309,7 @@ class GraspRightEnv(DirectRLEnv):
         self.success_flag[env_ids] = False
         self._success_hold_count[env_ids] = 0
         self._prev_avg_force_buf[env_ids] = 0.0       # force-smooth 초기화
+        self._force_smooth_ready[env_ids] = False
         self._eval_grip_at_lift[env_ids] = 0.0
         self._eval_finger_actions_at_lift[env_ids] = 0.0
         self._last_grasp_finger_action[env_ids] = 0.0
