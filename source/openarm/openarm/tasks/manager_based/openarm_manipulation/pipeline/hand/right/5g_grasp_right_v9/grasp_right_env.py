@@ -927,7 +927,7 @@ class GraspRightEnv(DirectRLEnv):
         # force magnitude gate: 힘이 약할수록 보상 감소 → "힘 없이 balanced" local optimum 방지
         # force_ratio 기반 gate: ratio=1→0.63, ratio=2→0.86, ratio=0→0.0
         has_thumb_contact  = self.binary_contact_buf[:, 0].float()
-        has_others_contact = (self.binary_contact_buf[:, 1:].sum(-1) >= 1).float()
+        has_others_contact = (self.binary_contact_buf[:, 1:].sum(-1) >= 3).float()  # 4접촉 이상
         balance_gate       = has_thumb_contact * has_others_contact
         force_balance_err  = (thumb_force - others_avg_force).abs()
         force_mag_gate     = (1.0 - torch.exp(-force_ratio))          # 0~1, ratio=0→0, ratio=2→0.86
@@ -954,11 +954,13 @@ class GraspRightEnv(DirectRLEnv):
         # v9.2: lift phase에서만 활성 — grasp phase에서 "접촉만 해도 보상" local-min 차단
         cup_horiz_vel = self.cup.data.root_lin_vel_w[:, :2].norm(dim=-1)   # (N,)
         cup_horiz_vel = torch.nan_to_num(cup_horiz_vel, nan=0.0)
-        has_any_contact  = (self.num_contacts_buf >= 1).float()
+        has_4_contact    = (self.num_contacts_buf >= 4).float()   # force reward gate
+        has_5_contact    = (self.num_contacts_buf >= 5).float()   # full envelope bonus
+
         r2_slip = (
             self.cfg.slip_weight
             * self.is_lift_phase.float()
-            * has_any_contact
+            * has_4_contact
             * torch.exp(-self.cfg.slip_sharpness * cup_horiz_vel)
         )
 
@@ -979,9 +981,14 @@ class GraspRightEnv(DirectRLEnv):
         r3_adaptive_force = (
             af_weight
             * self.is_lift_phase.float()
-            * has_any_contact
+            * has_4_contact
             * torch.exp(-self.cfg.adaptive_force_decay * force_ratio)
         )
+
+        # ---- R9. full_contact_bonus (5손가락 전체 접촉 보너스) ----
+        # sim2real: 전 손가락 envelope grip 유도
+        # grasp/lift 양 phase 모두 활성 (접촉 유지 장려)
+        r9_full_contact = self.cfg.full_contact_bonus_weight * has_5_contact
 
         # ---- R5. force_smooth (v9 신규) ----
         # 파지력 변화율 (mass-normalized) 억제
@@ -1023,6 +1030,7 @@ class GraspRightEnv(DirectRLEnv):
             + r6_lift
             + r7_action_smooth
             + r8_success
+            + r9_full_contact
         )
         total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -1041,6 +1049,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["force_smooth_reward"]    = r5_force_smooth.mean()
         self.extras["lift_reward"]            = r6_lift.mean()
         self.extras["success_bonus"]          = r8_success.mean()
+        self.extras["full_contact_bonus"]     = r9_full_contact.mean()
         self.extras["action_smoothness"]      = r7_action_smooth.mean()
         # tip force
         self.extras["thumb_force_mean"]       = thumb_force.mean()

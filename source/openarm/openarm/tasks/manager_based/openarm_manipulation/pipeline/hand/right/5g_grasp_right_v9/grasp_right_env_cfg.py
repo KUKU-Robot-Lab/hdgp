@@ -200,6 +200,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # R8. success_bonus: lift 성공 유지 중 step당 보너스 (slip local-min 탈출)
     success_bonus_weight: float = 20.0
 
+    # R9. full_contact_bonus: 5손가락 전체 접촉 보너스 (sim2real envelope grip 유도)
+    # step당 보너스 → 유지할수록 누적 (grasp + lift phase 모두)
+    full_contact_bonus_weight: float = 0.5
+
     # R7. action_smoothness
     action_smoothness_palm_weight:   float = -0.01
     action_smoothness_finger_weight: float = -0.01   # v9.2: v8 수준 복원 (entropy explosion 억제)

@@ -988,7 +988,6 @@ class GraspRightEnv(DirectRLEnv):
         # Directional tilt: 원통 컵의 실제 pouring side는 cup root +Z 축이 기울어진 반대편 림이다.
         # 따라서 낮아지는 림 방향 = -project(source_up_axis, XY) 로 정의하고,
         # 그 방향이 target opening의 XY 방향을 향하도록 보상한다.
-        _tilt_cos = math.cos(math.radians(self.cfg.target_pour_tilt_deg))
         _mouth_delta_xy = self._mouth_delta[:, :2]   # (N, 2): target - source XY
         _mouth_dir_xy = _mouth_delta_xy / (_mouth_delta_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
         # cup up axis XY = mouth 방향 XY. 올바른 pour = mouth가 target 방향 → 양수
@@ -1401,26 +1400,6 @@ class GraspRightEnv(DirectRLEnv):
             - self.cfg.weight_action_rate * action_rate_penalty
         )
 
-        # ---- Logging (reward terms + gate conditions only) ----
-        self.extras["reward_total"]             = total.mean()
-        self.extras["reward_hold"]              = r_hold.mean()
-        self.extras["reward_lift"]              = r_lift.mean()
-        self.extras["reward_approach_global"]   = r_approach_global.mean()
-        self.extras["reward_transport_stage"]   = r_transport_stage.mean()
-        self.extras["reward_tilt"]              = r_tilt.mean()
-        self.extras["reward_align"]             = r_align.mean()
-        self.extras["reward_cross"]             = r_cross.mean()
-        self.extras["reward_capture"]           = r_capture.mean()
-        self.extras["reward_pour_stage"]        = r_pour_stage.mean()
-        self.extras["reward_success"]           = r_success.mean()
-        self.extras["cost_spill"]               = spill_cost.mean()
-        self.extras["cost_premature_tilt"]      = premature_tilt_cost.mean()
-        self.extras["cost_action_rate"]         = action_rate_penalty.mean()
-        self.extras["gate_approach"]            = approach_trigger.mean()
-        self.extras["gate_grasp"]               = grasp_trigger.mean()
-        self.extras["gate_transport"]           = transport_trigger.mean()
-        self.extras["gate_pour"]                = pour_trigger.mean()
-
         self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
 
         return total
@@ -1463,10 +1442,6 @@ class GraspRightEnv(DirectRLEnv):
 
         terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
-
-        self.extras["object_z"] = self.object_pos[:, 2].mean()
-        self.extras["drop_force_rate"] = dropped_by_force.float().mean()
-        self.extras["no_tip_force_steps"] = self._no_tip_force_steps.float().mean()
 
         return terminated, truncated
 

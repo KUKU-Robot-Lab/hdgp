@@ -179,7 +179,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
     warmstart_collect_palm_delta_xyz: float = 0.10
     palm_delta_rot_deg: float = 45.0
-    target_pour_tilt_deg: float = 90.0
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
     tilt_action_gate_xy_near: float = 0.06
@@ -196,12 +195,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015
     reward_tilt_cos_min: float = 0.15
-    reward_approach_clearance_ref: float = 0.05
-    reward_prepour_clearance_ref: float = 0.030
-    reward_approach_z_scale: float = 35.0
-    reward_prepour_geom_xy_scale: float = 12.0
-    reward_prepour_geom_z_scale: float = 45.0
-    reward_upright_min: float = 0.85
 
     # -----------------------------------------------------------------------
     # Warmstart quality / success
@@ -211,8 +204,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     success_mouth_xy_threshold: float = 0.030
     success_z_clearance_min: float = 0.015
     success_z_clearance_max: float = 0.050
-    success_tilt_cos_tolerance: float = 0.12
-    success_directional_tilt_cos: float = 0.90
     success_hold_steps: int = 10
     drop_force_hold_steps: int = 10
 
@@ -233,16 +224,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_approach_z: float = 3.00
     weight_cup_upright: float = 0.80
     weight_transport_progress: float = 10.00
-    weight_mouth_xy_dist: float = 10.00
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
-    weight_prepour_geom: float = 5.00
-    weight_release: float = 5.00
     weight_cross: float = 12.00
     weight_capture: float = 12.00
     weight_success: float = 15.00
-    weight_bead_first_capture: float = 5.00
-    weight_all_beads_capture: float = 20.00
     weight_spill: float = 15.00
     weight_premature_tilt: float = 4.00
     weight_grasp_loss: float = 0.00
@@ -258,7 +244,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stage_pour_xy_threshold: float = 0.10
     transport_dist_exp_scale: float = 8.0
     transport_tilt_penalty_weight: float = 4.0
-    pour_tilt_target_deg: float = 45.0
+    pour_tilt_target_deg: float = 135.0
     pour_tilt_sharpness: float = 6.0
 
     # -----------------------------------------------------------------------
