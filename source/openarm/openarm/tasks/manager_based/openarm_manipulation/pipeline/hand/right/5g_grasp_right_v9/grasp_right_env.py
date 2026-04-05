@@ -914,15 +914,27 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 접촉력 공통 ----
         thumb_force      = self.contact_force_raw[:, 0]
         others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)
+        total_grip_force = self.contact_force_raw.sum(dim=-1)          # (N,) [N]
+        grip_normalized  = (total_grip_force / (CONTACT_FORCE_MAX * NUM_FINGERTIPS)).clamp(0.0, 1.0)
+        effective_mass   = (
+            self.cfg.cup_base_mass
+            + self._bead_mass_normalized * self.cfg.bead_count_max * self.cfg.bead_single_mass
+        )   # (N,) [kg]
+        mg               = effective_mass * 9.81                       # (N,) [N]
+        force_ratio      = total_grip_force / (mg + 1e-4)             # (N,) dimensionless
 
         # ---- R1b. force_balance ----
+        # force magnitude gate: 힘이 약할수록 보상 감소 → "힘 없이 balanced" local optimum 방지
+        # force_ratio 기반 gate: ratio=1→0.63, ratio=2→0.86, ratio=0→0.0
         has_thumb_contact  = self.binary_contact_buf[:, 0].float()
         has_others_contact = (self.binary_contact_buf[:, 1:].sum(-1) >= 1).float()
         balance_gate       = has_thumb_contact * has_others_contact
         force_balance_err  = (thumb_force - others_avg_force).abs()
+        force_mag_gate     = (1.0 - torch.exp(-force_ratio))          # 0~1, ratio=0→0, ratio=2→0.86
         r1b_force_balance = (
             self.cfg.force_balance_weight
             * balance_gate
+            * force_mag_gate
             * torch.exp(-self.cfg.force_balance_sharpness * force_balance_err)
         )
 
@@ -958,16 +970,6 @@ class GraspRightEnv(DirectRLEnv):
         #   force_ratio = total_grip / mg  (dimensionless)
         #   decay=0.3: ratio=2→0.55, ratio=4→0.30
         # k 없음. slip과의 균형으로 policy가 최적 ratio를 스스로 학습
-        total_grip_force = self.contact_force_raw.sum(dim=-1)        # (N,) [N]
-        grip_normalized  = (total_grip_force / (CONTACT_FORCE_MAX * NUM_FINGERTIPS)).clamp(0.0, 1.0)
-
-        effective_mass = (
-            self.cfg.cup_base_mass
-            + self._bead_mass_normalized * self.cfg.bead_count_max * self.cfg.bead_single_mass
-        )   # (N,) [kg]
-        mg = effective_mass * 9.81                                    # (N,) [N]
-        force_ratio = total_grip_force / (mg + 1e-4)                  # (N,) dimensionless
-
         af_weight = (
             self.grasp_adr.get_param("reward", "adaptive_force_weight")
             if self.grasp_adr is not None

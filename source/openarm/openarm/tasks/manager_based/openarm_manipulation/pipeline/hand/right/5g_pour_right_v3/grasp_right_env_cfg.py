@@ -174,7 +174,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # test2에서 reset 직후 mouth_xy가 0.30~0.36m인데 delta_xyz=0.10m로는 일부 env가
     # 타겟컵 근처까지 도달 불가하다. transport 여유를 키운다.
-    palm_delta_xyz: float = 0.10
+    palm_delta_xyz: float = 0.40
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm xyz delta.
     # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
     warmstart_collect_palm_delta_xyz: float = 0.10
@@ -246,7 +246,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_spill: float = 15.00
     weight_premature_tilt: float = 4.00
     weight_grasp_loss: float = 0.00
-    weight_action_rate: float = 0.02
+    weight_action_rate: float = 0.01
     weight_wrist_spin: float = 0.00
 
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]

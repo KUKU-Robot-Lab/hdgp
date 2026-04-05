@@ -416,12 +416,19 @@ class GraspRightEnv(DirectRLEnv):
         # 초기 액션: 0 → palm pose workspace 중심 (접근 자세 유지)
         self.actions.zero_()
 
-        self._left_target_cup_attach_pos_b = to_torch(self.cfg.left_target_cup_attach_pos_b, device=self.device)
-        self._left_target_cup_attach_quat_b = to_torch(self.cfg.left_target_cup_attach_quat_wxyz_b, device=self.device)
+        # Left target cup는 reset 시점 attach pose를 스냅샷으로 저장하고,
+        # 에피소드 중에는 그 월드 pose를 고정 유지한다.
+        self._left_target_cup_attach_pos_b = to_torch(
+            self.cfg.left_target_cup_attach_pos_b, device=self.device
+        )
+        self._left_target_cup_attach_quat_b = to_torch(
+            self.cfg.left_target_cup_attach_quat_wxyz_b, device=self.device
+        )
         self._left_target_cup_body_id, self._left_target_cup_attach_pos_b = self._resolve_attachment_body(
             self.cfg.left_target_cup_attach_frame_name,
             self._left_target_cup_attach_pos_b,
         )
+        self._left_target_cup_fixed_pose_w = torch.zeros(self.num_envs, 7, device=self.device)
         self._bead_spawn_pos_source_cup_b = to_torch(self.cfg.bead_spawn_pos_source_cup_b, device=self.device)
         self._bead_spawn_quat_source_cup = to_torch(self.cfg.bead_spawn_quat_source_cup_wxyz, device=self.device)
         self._source_cup_pour_point_pos_b = to_torch(self.cfg.source_cup_pour_point_pos_b, device=self.device)
@@ -917,12 +924,7 @@ class GraspRightEnv(DirectRLEnv):
             self.left_arm_zero_vel, joint_ids=self.left_arm_dof_indices
         )
 
-        left_cup_pose = self._compute_attached_root_pose(
-            self._left_target_cup_body_id,
-            self._left_target_cup_attach_pos_b,
-            self._left_target_cup_attach_quat_b,
-        )
-        left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
+        left_cup_pose = self._get_left_target_cup_fixed_pose()
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
@@ -1348,6 +1350,12 @@ class GraspRightEnv(DirectRLEnv):
             self._prev_mouth_xy_distance - self._mouth_xy_distance,
             min=0.0,
         )
+        # gate 밖(원거리)에서는 "빨리 다가가기" 신호를 별도로 제공한다.
+        r_approach_global = (1.0 - transport_trigger) * (
+            self.cfg.weight_approach_xy
+            * torch.exp(-self.cfg.transport_dist_exp_scale * self._mouth_xy_distance)
+            + self.cfg.weight_transport_progress * r_transport_progress
+        )
         transport_tilt_cost = (1.0 - self._source_up_dot_world.clamp(0.0, 1.0))
         r_transport_stage = transport_trigger * (
             self.cfg.weight_approach_xy * r_cup_dist
@@ -1384,6 +1392,7 @@ class GraspRightEnv(DirectRLEnv):
         total = (
             r_hold
             + r_lift
+            + r_approach_global
             + r_transport_stage
             + r_pour_stage
             + self.cfg.weight_success * r_success
@@ -1396,6 +1405,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward_total"]             = total.mean()
         self.extras["reward_hold"]              = r_hold.mean()
         self.extras["reward_lift"]              = r_lift.mean()
+        self.extras["reward_approach_global"]   = r_approach_global.mean()
         self.extras["reward_transport_stage"]   = r_transport_stage.mean()
         self.extras["reward_tilt"]              = r_tilt.mean()
         self.extras["reward_align"]             = r_align.mean()
@@ -1585,6 +1595,7 @@ class GraspRightEnv(DirectRLEnv):
             env_ids=env_ids,
         )
         left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
+        self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
@@ -1652,6 +1663,11 @@ class GraspRightEnv(DirectRLEnv):
                 )
                 return body_names.index(body_name), resolved_pos_b
         raise ValueError(f"Attachment frame '{requested_body_name}' was not found.")
+
+    def _get_left_target_cup_fixed_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
+        if env_ids is None:
+            return self._left_target_cup_fixed_pose_w
+        return self._left_target_cup_fixed_pose_w[env_ids]
 
     def _compute_attached_root_pose(
         self,
@@ -1846,6 +1862,7 @@ class GraspRightEnv(DirectRLEnv):
             env_ids=env_ids,
         )
         left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
+        self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
