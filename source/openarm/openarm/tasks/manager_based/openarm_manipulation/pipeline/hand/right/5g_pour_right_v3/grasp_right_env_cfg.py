@@ -174,15 +174,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # test2에서 reset 직후 mouth_xy가 0.30~0.36m인데 delta_xyz=0.10m로는 일부 env가
     # 타겟컵 근처까지 도달 불가하다. transport 여유를 키운다.
-    palm_delta_xyz: float = 0.40
+    palm_delta_xyz: float = 0.3
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm xyz delta.
     # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
     warmstart_collect_palm_delta_xyz: float = 0.10
     palm_delta_rot_deg: float = 45.0
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
-    tilt_action_gate_xy_near: float = 0.06
-    tilt_action_gate_xy_far: float = 0.14
+    tilt_action_gate_xy_near: float = 0.8
+    tilt_action_gate_xy_far: float = 0.15
 
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
     left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
@@ -220,10 +220,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_contact_maintain: float = 1.00
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 3.00
-    weight_approach_xy: float = 15.00
+    weight_approach_xy: float = 8.00
     weight_approach_z: float = 3.00
     weight_cup_upright: float = 0.80
-    weight_transport_progress: float = 10.00
+    weight_transport_progress: float = 6.00
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
     weight_cross: float = 12.00
@@ -241,7 +241,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_approach_xy_scale: float = 12.0
     # DexPour-style stage thresholds / shaping
     stage_approach_xy_threshold: float = 0.14
-    stage_pour_xy_threshold: float = 0.10
+    stage_pour_xy_threshold: float = 0.15
     transport_dist_exp_scale: float = 8.0
     transport_tilt_penalty_weight: float = 4.0
     pour_tilt_target_deg: float = 135.0
