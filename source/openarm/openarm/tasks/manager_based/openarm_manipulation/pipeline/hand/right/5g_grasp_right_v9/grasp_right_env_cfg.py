@@ -214,7 +214,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # R9. full_contact_bonus: 5손가락 전체 접촉 보너스 (sim2real envelope grip 유도)
     # step당 보너스 → 유지할수록 누적 (grasp + lift phase 모두)
-    full_contact_bonus_weight: float = 0.5
+    # 0.5 → 5.0: lift_reward(20)와 경쟁 가능한 수준으로 상향, 5개 접촉 유인 강화
+    full_contact_bonus_weight: float = 5.0
 
     # R7. action_smoothness
     action_smoothness_palm_weight:   float = -0.01

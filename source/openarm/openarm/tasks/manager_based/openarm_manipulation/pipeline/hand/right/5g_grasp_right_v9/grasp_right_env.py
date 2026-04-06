@@ -1158,7 +1158,15 @@ class GraspRightEnv(DirectRLEnv):
 
         in_or_past_lift = (self.episode_length_buf >= LIFT_START_STEP)
         lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        grasped = (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
+        # success 기준을 contact ADR과 연동: adr_min_contacts가 높아질수록 성공 조건도 강화
+        # 초기(adr_min=2): MIN_CONTACTS_FOR_SUCCESS=2와 동일 → 기존 학습 호환
+        # 후기(adr_min=5): 5개 접촉 없으면 success 판정 안 됨 → 5손가락 파지 강제
+        _success_min = (
+            int(round(self.contact_adr.get_param("contact", "min_contacts")))
+            if self.contact_adr is not None
+            else MIN_CONTACTS_FOR_SUCCESS
+        )
+        grasped = (self.num_contacts_buf >= _success_min)
         success_now = in_or_past_lift & lifted & grasped
         self.success_flag.copy_(success_now)
         self.episode_success_buf |= success_now
@@ -1174,6 +1182,7 @@ class GraspRightEnv(DirectRLEnv):
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         self.extras["object_z"] = self.object_pos[:, 2].mean()
+        self.extras["success_min_contacts"] = torch.tensor(float(_success_min), device=self.device)
 
         return terminated, truncated
 
