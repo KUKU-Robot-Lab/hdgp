@@ -25,7 +25,7 @@ Action (26D):
   [6:26] 20D per-joint finger delta (±finger_delta_scale rad)
          rj_dg_1_1~4, rj_dg_2_1~4, rj_dg_3_1~4, rj_dg_4_1~4, rj_dg_5_1~4
 
-Actor Observation (128D) — sim2real 가능:
+Actor Observation (138D) — sim2real 가능:
   arm_joint_pos:            7
   arm_joint_vel:            7
   finger_joint_pos:        20
@@ -37,9 +37,9 @@ Actor Observation (128D) — sim2real 가능:
   fingertip_contact_binary: 5  (FT sensor, 실 로봇 가능)
   last_actions:            26  (v8: 11D → v9: 26D)
   bead_mass_normalized:     1  (0=빈 컵, 1=최대 하중)
-  tip_force_norm:           5  (Teosllo FT sensor, 실 로봇 가능)
+  tip_force_xyz_norm:      15  (5 × 3D 법선 방향 힘 벡터, v9.1: 5D norm → 15D vector)
   phase_step_ratio:         1  (step counter 기반, 실 로봇 가능)
-  Total:                  128
+  Total:                  138
 
 Critic Extra (36D) — sim-only privileged:
   cup_lin_vel:              3
@@ -53,7 +53,7 @@ Critic Extra (36D) — sim-only privileged:
   fingertip_to_cup_signed_dist: 5
   Total:                   36
 
-Critic Total: 128 + 36 = 164D
+Critic Total: 138 + 36 = 174D
 
 Episode (10s @ 60Hz = 600 steps):
   Grasp phase (0~479):  Fabrics arm + per-joint finger delta
@@ -88,11 +88,11 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 26
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 128        # Actor: 113 + 15 (last_actions 11→26)
+NUM_OBSERVATIONS = 138        # Actor: 123 + 15 (tip_force 5D norm → 15D xyz vector)
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 36
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 164
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 174
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

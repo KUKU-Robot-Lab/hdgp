@@ -1,6 +1,6 @@
 # 5g_grasp_right_v9 rl_games PPO 설정
-# v9: v8 기반 + 20D 손가락 직접 제어 + Slip/Force-Efficiency/Force-Smooth reward
-# 관측: actor 128D / critic 164D (asymmetric), 액션: 26D
+# v9.1: 관측 138D (tip_force 5D→15D xyz), 비드 이산 4단계 {0,10,20,30}×10g
+# 관측: actor 138D / critic 174D (asymmetric), 액션: 26D
 # Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:
@@ -68,7 +68,7 @@ params:
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.0
+    entropy_coef: 0.001
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 64

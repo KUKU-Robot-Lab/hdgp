@@ -176,9 +176,12 @@ class GraspRightEnv(DirectRLEnv):
 
         # 외전/내전 관절(abduction) delta scale 마스크 — 0으로 설정 시 사실상 고정
         # RIGHT_HAND_JOINT_NAMES = [rj_dg_{f}_{j} for f in 1~5, j in 1~4]
-        # 고정 인덱스: 0(thm_ab), 4(idx_ab), 8(mid_ab), 12(rng_ab), 16(pnk_z), 17(pnk_ab)
+        # index 0 (rj_dg_1_1, thumb abduction): 열림 — 에이전트가 opposition 각도 직접 최적화
+        #   초기값 APPROACH_POSE[-0.283]에서 시작하므로 초기 opposition 자세 보존
+        # index 4,8,12 (index/middle/ring abduction): 고정 — 컵 파지에서 측면 스프레드 효과 미미
+        # index 16,17 (pinky Z-flex/abduction): 고정
         self.finger_delta_mask = torch.ones(NUM_HAND_DOF, device=self.device)
-        self.finger_delta_mask[[0, 4, 8, 12, 16, 17]] = 0.0
+        self.finger_delta_mask[[4, 8, 12, 16, 17]] = 0.0
 
         # ----------------------------------------------------------------
         # 접근 자세 (reset 및 Fabrics null-space용)
@@ -344,7 +347,20 @@ class GraspRightEnv(DirectRLEnv):
         self._bead_mass_normalized = torch.zeros(self.num_envs, device=self.device)
 
         # ----------------------------------------------------------------
-        # ADR
+        # ADR — contact curriculum (threshold=0.1, 먼저 진행)
+        # ----------------------------------------------------------------
+        if cfg.enable_contact_adr:
+            self.contact_adr = GraspADR(
+                custom_cfg=cfg.contact_adr_custom_cfg,
+                num_increments=cfg.contact_adr_num_increments,
+                increment_interval=cfg.contact_adr_increment_interval,
+                trigger_threshold=cfg.contact_adr_trigger_threshold,
+            )
+        else:
+            self.contact_adr = None
+
+        # ----------------------------------------------------------------
+        # ADR — 난이도 (threshold=0.8, contact ADR 이후 진행)
         # ----------------------------------------------------------------
         if cfg.enable_adr:
             self.grasp_adr = GraspADR(
@@ -783,7 +799,12 @@ class GraspRightEnv(DirectRLEnv):
         binary_contact   = self.binary_contact_buf.float()
         last_actions     = self.actions  # (N, 26)
 
-        tip_force_norm   = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+        # tip force: 3D 법선 방향 벡터 (5 × 3D = 15D)
+        # ContactSensor는 normal force만 제공 (tangential 불가)
+        # 3D 벡터 방향으로 contact 위치/각도 정보 포함 → 5D magnitude보다 풍부
+        tip_force_xyz_norm = (
+            self.contact_force_xyz_raw / CONTACT_FORCE_MAX
+        ).clamp(-1.0, 1.0).view(self.num_envs, -1)  # (N, 15)
 
         phase_step_ratio = (
             self.episode_length_buf.float() / EPISODE_STEPS
@@ -799,11 +820,11 @@ class GraspRightEnv(DirectRLEnv):
             palm_to_cup,            # 3
             cup_to_fingertip,       # 15
             binary_contact,         # 5
-            last_actions,           # 26 (v9: 11→26)
+            last_actions,           # 26
             self._bead_mass_normalized.unsqueeze(-1),  # 1
-            tip_force_norm,         # 5
+            tip_force_xyz_norm,     # 15 (v9.1: 5D norm → 15D xyz vector)
             phase_step_ratio,       # 1
-        ], dim=-1)   # 128D
+        ], dim=-1)   # 138D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -840,9 +861,9 @@ class GraspRightEnv(DirectRLEnv):
             binary_contact,
             last_actions,
             self._bead_mass_normalized.unsqueeze(-1),
-            tip_force_norm,
+            tip_force_xyz_norm,     # 15D (critic도 동일 변환)
             phase_step_ratio,
-        ], dim=-1)   # 128D
+        ], dim=-1)   # 138D
 
         critic_obs = torch.cat([
             actor_obs_clean,        # 128
@@ -923,11 +944,24 @@ class GraspRightEnv(DirectRLEnv):
         mg               = effective_mass * 9.81                       # (N,) [N]
         force_ratio      = total_grip_force / (mg + 1e-4)             # (N,) dimensionless
 
+        # ---- contact ADR: min_contacts 결정 ----
+        # contact_adr: 2 → 5 (int로 반올림)
+        # force_balance: others >= (min_contacts - 1), 즉 thumb 제외 필요 접촉 수
+        # slip/adaptive/full_contact: num_contacts >= min_contacts
+        _adr_min_contacts = (
+            int(round(self.contact_adr.get_param("contact", "min_contacts")))
+            if self.contact_adr is not None
+            else 2
+        )
+        _adr_min_others = max(1, _adr_min_contacts - 1)  # thumb 제외 필요 접촉 수 (1 → 4)
+
         # ---- R1b. force_balance ----
         # force magnitude gate: 힘이 약할수록 보상 감소 → "힘 없이 balanced" local optimum 방지
         # force_ratio 기반 gate: ratio=1→0.63, ratio=2→0.86, ratio=0→0.0
         has_thumb_contact  = self.binary_contact_buf[:, 0].float()
-        has_others_contact = (self.binary_contact_buf[:, 1:].sum(-1) >= 3).float()  # 4접촉 이상
+        has_others_contact = (
+            self.binary_contact_buf[:, 1:].sum(-1) >= _adr_min_others
+        ).float()   # contact ADR: 초기 1개 → 최종 4개
         balance_gate       = has_thumb_contact * has_others_contact
         force_balance_err  = (thumb_force - others_avg_force).abs()
         force_mag_gate     = (1.0 - torch.exp(-force_ratio))          # 0~1, ratio=0→0, ratio=2→0.86
@@ -954,8 +988,8 @@ class GraspRightEnv(DirectRLEnv):
         # v9.2: lift phase에서만 활성 — grasp phase에서 "접촉만 해도 보상" local-min 차단
         cup_horiz_vel = self.cup.data.root_lin_vel_w[:, :2].norm(dim=-1)   # (N,)
         cup_horiz_vel = torch.nan_to_num(cup_horiz_vel, nan=0.0)
-        has_4_contact    = (self.num_contacts_buf >= 4).float()   # force reward gate
-        has_5_contact    = (self.num_contacts_buf >= 5).float()   # full envelope bonus
+        has_4_contact    = (self.num_contacts_buf >= _adr_min_contacts).float()   # contact ADR gate
+        has_5_contact    = (self.num_contacts_buf >= _adr_min_contacts).float()  # full envelope bonus
 
         r2_slip = (
             self.cfg.slip_weight
@@ -964,14 +998,14 @@ class GraspRightEnv(DirectRLEnv):
             * torch.exp(-self.cfg.slip_sharpness * cup_horiz_vel)
         )
 
-        # ---- R3. Adaptive Force Reward (v9.3: k 제거, 순수 효율 gradient) ----
-        # 역할 분담:
-        #   slip        → force 부족 커버 (컵 미끄러지면 penalty)
-        #   adaptive_force → force 과도 억제 (force_ratio 클수록 보상 감소)
-        # 수식: exp(-decay * force_ratio)
-        #   force_ratio = total_grip / mg  (dimensionless)
-        #   decay=0.3: ratio=2→0.55, ratio=4→0.30
-        # k 없음. slip과의 균형으로 policy가 최적 ratio를 스스로 학습
+        # ---- R3. Adaptive Force Reward (v9.3 철학 유지: 단조감소, decay 강화) ----
+        # 수식: exp(-decay * ratio)  — 단조감소, 목표 ratio 없음
+        #   force_ratio = total_grip / mg  (질량 정규화)
+        #   slip과의 균형으로 policy가 최적 ratio를 스스로 학습 (v9.3 설계 철학)
+        #   decay 0.3 → 0.8: 과도 grip 패널티 강화 (ratio=4.85: 0.23 → 0.02)
+        #     ratio=1.0: exp(-0.8) = 0.45
+        #     ratio=2.0: exp(-1.6) = 0.20
+        #     ratio=4.85: exp(-3.9) = 0.02  → slip/R3 균형이 ratio≈2 근방에서 수렴 유도
         af_weight = (
             self.grasp_adr.get_param("reward", "adaptive_force_weight")
             if self.grasp_adr is not None
@@ -985,10 +1019,20 @@ class GraspRightEnv(DirectRLEnv):
             * torch.exp(-self.cfg.adaptive_force_decay * force_ratio)
         )
 
-        # ---- R9. full_contact_bonus (5손가락 전체 접촉 보너스) ----
-        # sim2real: 전 손가락 envelope grip 유도
+        # ---- R9. full_contact_bonus (contact ADR 기준 전 손가락 접촉 보너스) ----
         # grasp/lift 양 phase 모두 활성 (접촉 유지 장려)
         r9_full_contact = self.cfg.full_contact_bonus_weight * has_5_contact
+
+        # ---- R_ft. fingertip_guide (항상 gradient, seed 분산 방지) ----
+        # fingertip_pos: FK 기반 (실 로봇: FT 센서 내장 링크 FK)
+        # cup_pos: 노이즈 적용 관측값 사용 (obs_noise_cup_pos 반영)
+        # sim2real 영향 없음: fingertip_pos/cup_pos 모두 실 로봇 획득 가능
+        fingertip_cup_dist = (
+            self.fingertip_pos - grasp_center.unsqueeze(1)
+        ).norm(dim=-1).mean(dim=-1)   # (N,) — 5 tip의 평균 거리
+        r_ft_guide = self.cfg.fingertip_guide_weight * torch.exp(
+            -self.cfg.fingertip_guide_sharpness * fingertip_cup_dist
+        )
 
         # ---- R5. force_smooth (v9 신규) ----
         # 파지력 변화율 (mass-normalized) 억제
@@ -1031,13 +1075,16 @@ class GraspRightEnv(DirectRLEnv):
             + r7_action_smooth
             + r8_success
             + r9_full_contact
+            + r_ft_guide
         )
         total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
 
         # ---- ADR increment ----
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
+        if self.contact_adr is not None:
+            self.contact_adr.maybe_increment(_ep_success_rate)   # threshold=0.1
         if self.grasp_adr is not None:
-            self.grasp_adr.maybe_increment(_ep_success_rate)
+            self.grasp_adr.maybe_increment(_ep_success_rate)     # threshold=0.8
 
         # ---- 로깅: rewards + tip force ----
         self.extras["palm_approach_reward"]   = r0_palm_approach.mean()
@@ -1050,13 +1097,28 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["lift_reward"]            = r6_lift.mean()
         self.extras["success_bonus"]          = r8_success.mean()
         self.extras["full_contact_bonus"]     = r9_full_contact.mean()
+        self.extras["fingertip_guide_reward"] = r_ft_guide.mean()
         self.extras["action_smoothness"]      = r7_action_smooth.mean()
+        # ADR 진행률 로깅
+        if self.contact_adr is not None:
+            self.extras["adr_contact_progress"] = torch.tensor(
+                self.contact_adr.progress, device=self.device
+            )
+            self.extras["adr_min_contacts"] = torch.tensor(
+                float(_adr_min_contacts), device=self.device
+            )
+        if self.grasp_adr is not None:
+            self.extras["adr_difficulty_progress"] = torch.tensor(
+                self.grasp_adr.progress, device=self.device
+            )
         # tip force
         self.extras["thumb_force_mean"]       = thumb_force.mean()
         self.extras["others_avg_force_mean"]  = others_avg_force.mean()
         self.extras["total_tip_force_norm"]   = grip_normalized.mean()
-        light_mask = (self._bead_mass_normalized < 0.33)
-        heavy_mask = (self._bead_mass_normalized > 0.66)
+        # 이산 레벨 기준 마스크 (normalized: 0/0.333/0.667/1.0)
+        # light: 0 or 10개 (norm < 0.5), heavy: 20 or 30개 (norm > 0.5)
+        light_mask = (self._bead_mass_normalized < 0.5)
+        heavy_mask = (self._bead_mass_normalized > 0.5)
         if light_mask.any():
             self.extras["tip_force_norm_light"] = grip_normalized[light_mask].mean()
         if heavy_mask.any():
@@ -1278,10 +1340,10 @@ class GraspRightEnv(DirectRLEnv):
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
         # ---- 7b. Bead 스폰 ----
-        bead_count = torch.randint(
-            self.cfg.bead_count_min, self.cfg.bead_count_max + 1,
-            (n,), device=self.device
-        )
+        # 이산 4단계: {0, 10, 20, 30}개 × 10g = {0, 100, 200, 300}g 추가 질량
+        # 총 컵 질량: 170g / 270g / 370g / 470g (1x / 1.6x / 2.2x / 2.8x)
+        _bead_lvl = torch.randint(0, 4, (n,), device=self.device)  # 0~3
+        bead_count = _bead_lvl * 10  # {0, 10, 20, 30}
 
         bead_state = torch.zeros(n, self.cfg.num_beads, 13, device=self.device)
         hidden_pos = self.scene.env_origins[env_ids].unsqueeze(1) + self._hidden_bead_offsets_b.unsqueeze(0)

@@ -128,7 +128,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
-    max_pose_angle:             float = 180.0  # 120.0 → 180.0: 완전 반전(180°) 허용
+    max_pose_angle:             float = 45.0  # 180.0 -> 45.0: 접근/이동 중 기괴한 손목 회전 억제
     fabrics_max_objects_per_env: int  = 6
     fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
 
@@ -216,21 +216,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 유지계는 패널티형 reward로 바꿨으므로 과도한 상수항이 되지 않게 낮추고,
     # transport/capture/success 쪽 가중치를 상대적으로 키운다.
-    weight_grasp_maintain: float = 1.00
+    weight_grasp_maintain: float = 2.00
     weight_contact_maintain: float = 1.00
     weight_force_balance: float = 0.30
-    weight_finger_curl: float = 3.00
-    weight_approach_xy: float = 8.00
+    weight_finger_curl: float = 2.00
+    weight_approach_xy: float = 15.00
     weight_approach_z: float = 3.00
     weight_cup_upright: float = 0.80
     weight_transport_progress: float = 6.00
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
+    weight_release: float = 5.00
     weight_cross: float = 12.00
     weight_capture: float = 12.00
     weight_success: float = 15.00
-    weight_spill: float = 15.00
-    weight_premature_tilt: float = 4.00
+    weight_spill: float = 10.00
+    weight_premature_tilt: float = 2.00
     weight_grasp_loss: float = 0.00
     weight_action_rate: float = 0.01
     weight_wrist_spin: float = 0.00
@@ -238,12 +239,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
-    reward_approach_xy_scale: float = 12.0
+    reward_approach_xy_scale: float = 15.0
     # DexPour-style stage thresholds / shaping
     stage_approach_xy_threshold: float = 0.14
     stage_pour_xy_threshold: float = 0.15
     transport_dist_exp_scale: float = 8.0
-    transport_tilt_penalty_weight: float = 4.0
+    transport_tilt_penalty_weight: float = 2.0
     pour_tilt_target_deg: float = 135.0
     pour_tilt_sharpness: float = 6.0
 

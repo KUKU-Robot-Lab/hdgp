@@ -1274,14 +1274,11 @@ class GraspRightEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         # ---- 1. Grasp maintenance: cup의 palm local frame 위치 유지 (slip 억제) ----
-        # palm이 기울어져도 cup이 단단히 잡혀있으면 palm local frame 내 위치는 불변
-        # (world frame 비교는 tilt 시 cup center가 arc 이동 → 오탐 발생)
-        palm_quat_w = self.robot.data.body_quat_w[:, self.palm_body_index]   # (N, 4) wxyz
-        palm_pos_w  = self.robot.data.body_pos_w[:, self.palm_body_index]    # (N, 3)
-        cup_pos_w   = self.cup.data.root_pos_w                                # (N, 3)
-        cup_in_palm_local = quat_apply_inverse(palm_quat_w, cup_pos_w - palm_pos_w)  # (N, 3)
+        palm_quat_w = self.robot.data.body_quat_w[:, self.palm_body_index]
+        palm_pos_w  = self.robot.data.body_pos_w[:, self.palm_body_index]
+        cup_pos_w   = self.cup.data.root_pos_w
+        cup_in_palm_local = quat_apply_inverse(palm_quat_w, cup_pos_w - palm_pos_w)
 
-        # 첫 스텝(reset 직후)에 init 기준 설정 — reset 시점엔 body_pos_w 미갱신이라 여기서 처리
         if self._needs_grasp_init_update.any():
             upd = self._needs_grasp_init_update.nonzero(as_tuple=False).squeeze(-1)
             self._grasp_cup_pos_palm_local_init[upd] = cup_in_palm_local[upd].detach()
@@ -1290,20 +1287,15 @@ class GraspRightEnv(DirectRLEnv):
         slip_dist = torch.norm(cup_in_palm_local - self._grasp_cup_pos_palm_local_init, dim=-1)
         grasp_maintain_reward = torch.exp(-self.cfg.reward_grasp_slip_sharpness * slip_dist)
 
-        # ---- 1b. contact_maintain: thumb + others≥N 접촉 유지 bonus (v8 full_grasp_bonus 이식) ----
-        # freeze_grasp=False 이후 손가락이 움직이면서 접촉을 잃을 수 있음 → per-step contact bonus
-        thumb_force = self.contact_force_raw[:, 0]                              # (N,) 엄지 tip 힘
-        others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)           # (N,) 나머지 평균
-        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)               # (N,) 0~4
+        # contact_maintain
+        thumb_force = self.contact_force_raw[:, 0]
+        others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)
+        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)
         full_grasp_flag = (
             self.binary_contact_buf[:, 0] & (others_count >= self.cfg.contact_maintain_min_others)
         ).float()
-        # 유지 항은 "잘하면 큰 양의 상수 보상"이 아니라 "잃으면 음의 패널티"로 둔다.
-        # 그렇지 않으면 target 근처로 가지 않아도 grasp/upright 유지 만으로 높은 episode reward가 누적된다.
-        r_contact_maintain = self.cfg.weight_contact_maintain * (full_grasp_flag - 1.0)
-
-        # ---- 1c. force_balance: |F_thumb - F_others_avg| → 0 (기울이기 중 파지 유지) ----
-        # 기울일 때 중력이 컵을 당기므로 힘 균형이 깨지기 쉬움 → 균형 유지 유도
+        
+        # force_balance
         has_thumb  = self.binary_contact_buf[:, 0].float()
         has_others = (others_count >= 1).float()
         balance_gate = has_thumb * has_others
@@ -1314,26 +1306,12 @@ class GraspRightEnv(DirectRLEnv):
             * torch.exp(-self.cfg.force_balance_sharpness * force_balance_err)
         )
 
-        # ---- 1d. finger_curl: per-finger lerp → +1(닫힘) 유도 ----
-        # freeze_grasp=False 이후 정책이 손가락을 덜 닫는 방향을 선택하는 것을 방지
-        # min 사용: 한 손가락이라도 열려있으면 score가 크게 떨어지게 해 선택적 열기 차단
-        finger_lerp_min = self.actions[:, 6:11].min(dim=-1).values              # (N,) ∈ [-1, 1]
+        # finger_curl (닫힘 유도)
+        finger_lerp_min = self.actions[:, 6:11].min(dim=-1).values
         finger_curl_score = (finger_lerp_min + 1.0) / 2.0
-        # 닫힘 자체를 양의 보상으로 둬서 파지 유지를 더 직접적으로 유도한다.
         r_finger_curl = self.cfg.weight_finger_curl * finger_curl_score
 
-        # ---- DexPour-style stage triggers (binary) ----
-        approach_trigger = (self._mouth_xy_distance < self.cfg.stage_approach_xy_threshold).float()
-        grasp_trigger = approach_trigger * full_grasp_flag
-        lifted_flag = (
-            self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        ).float()
-        transport_trigger = grasp_trigger * lifted_flag
-        pour_trigger = transport_trigger * (
-            self._mouth_xy_distance < self.cfg.stage_pour_xy_threshold
-        ).float()
-
-        # ---- Stage A. Hold (grasp 유지) ----
+        # Stage A. Hold (grasp 유지)
         r_hold = (
             self.cfg.weight_grasp_maintain * grasp_maintain_reward
             + self.cfg.weight_contact_maintain * full_grasp_flag
@@ -1341,38 +1319,41 @@ class GraspRightEnv(DirectRLEnv):
             + r_finger_curl
         )
 
-        # ---- Stage B. Transport ----
+        # ---- Stage B. Transport (Approach) - Always active with smooth gradient ----
         cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
         r_lift = self.cfg.weight_approach_z * cup_height_delta
-        r_cup_dist = torch.exp(-self.cfg.transport_dist_exp_scale * self._mouth_distance)
+        
+        # Smooth approach reward using tanh (0 at infinity, 1 at 0)
+        r_approach_xy = 1.0 - torch.tanh(self.cfg.reward_approach_xy_scale * self._mouth_xy_distance)
         r_transport_progress = torch.clamp(
             self._prev_mouth_xy_distance - self._mouth_xy_distance,
             min=0.0,
         )
-        # gate 밖(원거리)에서는 "빨리 다가가기" 신호를 별도로 제공한다.
-        r_approach_global = (1.0 - transport_trigger) * (
-            self.cfg.weight_approach_xy
-            * torch.exp(-self.cfg.transport_dist_exp_scale * self._mouth_xy_distance)
+        r_approach = (
+            self.cfg.weight_approach_xy * r_approach_xy
             + self.cfg.weight_transport_progress * r_transport_progress
-        )
-        transport_tilt_cost = (1.0 - self._source_up_dot_world.clamp(0.0, 1.0))
-        r_transport_stage = transport_trigger * (
-            self.cfg.weight_approach_xy * r_cup_dist
-            + self.cfg.weight_transport_progress * r_transport_progress
-            - self.cfg.transport_tilt_penalty_weight * transport_tilt_cost
         )
 
-        # ---- Stage C. Pour (근접 시에만 tilt/alignment) ----
+        # ---- Stage C. Pre-pour (using soft g_ready gate) ----
         target_tilt_cos = math.cos(math.radians(self.cfg.pour_tilt_target_deg))
         r_tilt = torch.exp(
             -self.cfg.pour_tilt_sharpness * torch.abs(self._source_up_dot_world - target_tilt_cos)
         )
         r_align = 0.5 * (self._mouth_alignment_cos + 1.0)
-        r_cross = self._bead_cross_fraction
-        r_capture = self._bead_in_target_fraction
-        r_pour_stage = pour_trigger * (
+        
+        # Soft-gated pre-pour signals
+        r_prepour_stage = self._g_ready * (
             self.cfg.weight_prepour_dir * r_tilt
             + self.cfg.weight_prepour_align * r_align
+        )
+
+        # ---- Stage D. Pour (using soft g_pour gate) ----
+        r_release = 1.0 - self._bead_in_source_fraction
+        r_cross = self._bead_cross_fraction
+        r_capture = self._bead_in_target_fraction
+        
+        r_pour_stage = self._g_pour * (
+            self.cfg.weight_release * r_release
             + self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
         )
@@ -1384,15 +1365,16 @@ class GraspRightEnv(DirectRLEnv):
         )
         r_success = success_now.float()
         spill_cost = self._spill_ratio
-        # Pour 단계 이전의 tilt를 패널티로 둔다(방향과 무관).
-        premature_tilt_cost = (1.0 - pour_trigger) * (1.0 - self._source_up_dot_world.clamp(0.0, 1.0))
+        
+        # Smooth premature tilt penalty: only active when far from target (g_ready is low)
+        premature_tilt_cost = (1.0 - self._g_ready) * (1.0 - self._source_up_dot_world.clamp(0.0, 1.0))
         action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
 
         total = (
             r_hold
             + r_lift
-            + r_approach_global
-            + r_transport_stage
+            + r_approach
+            + r_prepour_stage
             + r_pour_stage
             + self.cfg.weight_success * r_success
             - self.cfg.weight_spill * spill_cost
@@ -1401,6 +1383,19 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
+
+        # ---- Logging to TensorBoard ----
+        self.extras["r_hold"] = r_hold.mean()
+        self.extras["r_lift"] = r_lift.mean()
+        self.extras["r_approach"] = r_approach.mean()
+        self.extras["r_prepour"] = r_prepour_stage.mean()
+        self.extras["r_pour"] = r_pour_stage.mean()
+        self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
+        self.extras["cost_spill"] = spill_cost.mean()
+        self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
+        self.extras["g_ready"] = self._g_ready.mean()
+        self.extras["g_pour"] = self._g_pour.mean()
+        self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
 
         return total
 

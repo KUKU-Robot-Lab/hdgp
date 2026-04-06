@@ -48,11 +48,13 @@ from .grasp_right_preset import (
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
-_DEFAULT_BEAD_COUNT = 20
+# 비드 4단계 이산 질량: {0, 10, 20, 30}개 × 10g = {0, 100, 200, 300}g
+# mesh scale=0.5x (크기 절반), mass는 그대로 10g (밀도 8배)
+_DEFAULT_BEAD_COUNT = 30
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
-    """컵 내부 무게 도메인 랜덤화용 bead 설정 (20개, 각 10g)."""
+    """컵 내부 무게 도메인 랜덤화용 bead 설정 (30개, 각 10g, mesh 0.5x)."""
     rigid_objects: dict = {}
     for i in range(_DEFAULT_BEAD_COUNT):
         rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
@@ -63,6 +65,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             ),
             spawn=UsdFileCfg(
                 usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
+                scale=(0.5, 0.5, 0.5),          # mesh 절반 크기, mass는 10g 유지
                 activate_contact_sensors=False,
                 mass_props=sim_utils.MassPropertiesCfg(mass=0.01),
                 rigid_props=RigidBodyPropertiesCfg(
@@ -94,9 +97,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 128 (actor)
+    observation_space: int = NUM_OBSERVATIONS          # 138 (actor, tip_force 5D→15D)
     action_space:      int = NUM_ACTIONS               # 26
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 164 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 174 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -177,19 +180,26 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     slip_weight:    float = 8.0
     slip_sharpness: float = 20.0
 
-    # R3. Adaptive Force Reward (v9.3: k 제거, 순수 효율 gradient)
+    # R3. Adaptive Force Reward (v9.3 철학 유지: 단조감소, decay 강화)
     # 설계 철학:
     #   slip          → "force 부족" 커버 (결과 기반)
-    #   adaptive_force → "force 과도" 억제 (단조감소, k 없음)
-    #   k (최적 비율) → 두 신호 균형에서 policy가 스스로 학습
+    #   adaptive_force → "force 과도" 억제 (단조감소)
+    #   최적 ratio → slip과 R3의 균형에서 policy가 스스로 학습 (target 없음)
     #
-    # R_af = af_weight * is_lift * contact * exp(-decay * force_ratio)
+    # R_af = af_weight * is_lift * contact * exp(-decay * ratio)
     #   force_ratio = F_total / mg  (질량 정규화)
-    #   decay 작을수록 완만 → slip과 균형점 결정
+    #   decay 0.3 → 0.8: 과도 grip 패널티 강화
+    #     ratio=1.0: 0.45, ratio=2.0: 0.20, ratio=4.85: 0.02
     adaptive_force_weight:         float = 10.0
-    adaptive_force_decay:          float = 0.3   # exp(-0.3 × ratio): ratio=2→0.55, ratio=4→0.30
+    adaptive_force_decay:          float = 0.8   # v9.3: 0.3 → 0.8 (과도 grip 억제 강화)
     cup_base_mass:                 float = 0.170  # kg (빈 컵 질량)
     bead_single_mass:              float = 0.010  # kg per bead
+
+    # R_ft. fingertip_guide: fingertip → cup 거리 기반 (항상 gradient, seed 분산 방지)
+    # sim2real 영향 없음: fingertip_pos는 FK 또는 FT 센서로 실 로봇에서도 획득 가능
+    # cup_pos: 관측 노이즈 처리된 값 사용 (σ_cp 적용됨)
+    fingertip_guide_weight:    float = 0.5
+    fingertip_guide_sharpness: float = 5.0
 
     # R5. force_smooth (v9 신규): 파지력 변화율 억제 (sim2real 안정성)
     force_smooth_weight: float = 1.5
@@ -209,12 +219,29 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     action_smoothness_finger_weight: float = -0.01   # v9.2: v8 수준 복원 (entropy explosion 억제)
 
     # -----------------------------------------------------------------------
-    # ADR
+    # ADR — contact curriculum (threshold=0.1, 먼저 진행)
+    # -----------------------------------------------------------------------
+    # force_balance gate의 최소 others 접촉 수: 1 → 4 (thumb+1 → thumb+4)
+    # slip/adaptive/full_contact gate의 최소 총 접촉 수: 2 → 5
+    enable_contact_adr:             bool  = True
+    contact_adr_num_increments:     int   = 50
+    contact_adr_increment_interval: int   = 400
+    contact_adr_trigger_threshold:  float = 0.1   # 10% 성공률에서 진행 (early curriculum)
+
+    contact_adr_custom_cfg: dict = field(default_factory=lambda: {
+        "contact": {
+            # int(round(value)) 로 사용: 2 → 5 (전 손가락)
+            "min_contacts": (2.0, 5.0),
+        },
+    })
+
+    # -----------------------------------------------------------------------
+    # ADR — 난이도 (threshold=0.8, contact ADR 이후 진행)
     # -----------------------------------------------------------------------
     enable_adr:            bool  = True
     adr_num_increments:    int   = 50
     adr_increment_interval: int  = 400
-    adr_trigger_threshold: float = 0.3
+    adr_trigger_threshold: float = 0.8   # 80% 성공률에서 진행 (contact 학습 후)
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "spawn": {
@@ -224,10 +251,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             "obs_noise_cup_pos": (0.005, 0.025),
         },
         "finger": {
-            "delta_scale": (0.05, 0.15),   # 초기 0.05 -> 최종 0.15 (안정성 위해 축소)
+            "delta_scale": (0.05, 0.15),
         },
         "reward": {
-            "adaptive_force_weight": (5.0, 10.0),  # v9.2: lift phase 전용, 초반 5.0으로 시작
+            "adaptive_force_weight": (5.0, 10.0),
         }
     })
 
@@ -425,9 +452,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Bead 무게 도메인 랜덤화
     # -----------------------------------------------------------------------
     beads_cfg: RigidObjectCollectionCfg = field(default_factory=_make_beads_cfg)
-    num_beads: int = _DEFAULT_BEAD_COUNT
+    num_beads: int = _DEFAULT_BEAD_COUNT              # 30
     bead_count_min: int = 0
-    bead_count_max: int = 20
+    bead_count_max: int = 30                           # 이산: {0, 10, 20, 30}개
     bead_spawn_z_offset: float = 0.035
 
     # -----------------------------------------------------------------------
