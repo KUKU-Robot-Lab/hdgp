@@ -21,8 +21,6 @@ v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
 
-from dataclasses import MISSING
-
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, RigidObjectCfg, RigidObjectCollectionCfg
 from isaaclab.actuators import ImplicitActuatorCfg
@@ -155,6 +153,20 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obs_noise_body_pos:  float = 0.005   # FK body position σ [m] (palm, fingertip)
     obs_noise_cup_pos:   float = 0.015   # cup position observation σ [m]
 
+    # ADR: noise 스케줄 (low→high) — 성공률이 오르면 강건성 위해 노이즈 증대
+    enable_noise_adr: bool = True
+    noise_adr_custom_cfg: dict = {
+        "noise": {
+            "obs_noise_joint_pos": (0.002, 0.01),
+            "obs_noise_joint_vel": (0.01, 0.05),
+            "obs_noise_body_pos":  (0.001, 0.005),
+            "obs_noise_cup_pos":   (0.003, 0.015),
+        }
+    }
+    noise_adr_num_increments: int = 40
+    noise_adr_increment_interval: int = 20000
+    noise_adr_trigger_threshold: float = 0.3
+
 
     # bead / cup geometry (cup_big.usd 기준: bottom=-0.077m, rim=+0.100m, inner_r=0.041m)
     target_inner_radius:  float = 0.041   # 컵 내부 반경
@@ -228,13 +240,25 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_prepour_align: float = 4.00
     weight_release: float = 5.00
     weight_cross: float = 12.00
-    weight_capture: float = 12.00
-    weight_success: float = 15.00
+    weight_capture: float = 18.00   # ↑ 성공/타겟 보상 강화
+    weight_success: float = 30.00   # ↑ 최종 성공 보상 강화
     weight_spill: float = 10.00
     weight_premature_tilt: float = 2.00
     weight_grasp_loss: float = 0.00
     weight_action_rate: float = 0.01
     weight_wrist_spin: float = 0.00
+
+    # ADR: spill penalty 스케줄 (low→high)
+    enable_spill_adr: bool = True
+    spill_adr_custom_cfg: dict = {
+        "reward": {
+            # start small to allow exploration, ramp to 기존 10.0 페널티
+            "spill_weight": (2.0, 10.0),
+        }
+    }
+    spill_adr_num_increments: int = 50
+    spill_adr_increment_interval: int = 20000
+    spill_adr_trigger_threshold: float = 0.3
 
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수

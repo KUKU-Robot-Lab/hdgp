@@ -82,6 +82,7 @@ from .grasp_right_constants import (
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
 )
+from .grasp_adr import GraspADR
 from .grasp_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
@@ -362,6 +363,36 @@ class GraspRightEnv(DirectRLEnv):
         self.actions         = torch.zeros(self.num_envs, cfg.num_actions, device=self.device)
         self.prev_actions    = torch.full((self.num_envs, cfg.num_actions), 0.0, device=self.device)
         self._prev_mouth_xy_distance = torch.zeros(self.num_envs, device=self.device)
+
+        # ----------------------------------------------------------------
+        # ADR schedulers (spill penalty / noise scaling)
+        # ----------------------------------------------------------------
+        self.spill_adr = (
+            GraspADR(
+                custom_cfg=cfg.spill_adr_custom_cfg,
+                num_increments=cfg.spill_adr_num_increments,
+                increment_interval=cfg.spill_adr_increment_interval,
+                trigger_threshold=cfg.spill_adr_trigger_threshold,
+            )
+            if cfg.enable_spill_adr
+            else None
+        )
+
+        self.noise_adr = (
+            GraspADR(
+                custom_cfg=cfg.noise_adr_custom_cfg,
+                num_increments=cfg.noise_adr_num_increments,
+                increment_interval=cfg.noise_adr_increment_interval,
+                trigger_threshold=cfg.noise_adr_trigger_threshold,
+            )
+            if cfg.enable_noise_adr
+            else None
+        )
+
+        self._noise_base_joint_pos = cfg.obs_noise_joint_pos
+        self._noise_base_joint_vel = cfg.obs_noise_joint_vel
+        self._noise_base_body_pos  = cfg.obs_noise_body_pos
+        self._noise_base_cup_pos   = cfg.obs_noise_cup_pos
 
         # ----------------------------------------------------------------
         # Pregrasp / Lift 버퍼 (reset에서 계산)
@@ -1134,10 +1165,18 @@ class GraspRightEnv(DirectRLEnv):
         bead_pos_clean = self._bead_centroid_w
 
         # ==== Actor obs용 noisy state (sim2real domain randomization) ====
-        σ_qp = self.cfg.obs_noise_joint_pos
-        σ_qv = self.cfg.obs_noise_joint_vel
-        σ_bp = self.cfg.obs_noise_body_pos
-        σ_cp = self.cfg.obs_noise_cup_pos
+        if self._warmstart_collect_mode:
+            σ_qp = σ_qv = σ_bp = σ_cp = 0.0
+        elif self.noise_adr is not None:
+            σ_qp = self.noise_adr.get_param("noise", "obs_noise_joint_pos")
+            σ_qv = self.noise_adr.get_param("noise", "obs_noise_joint_vel")
+            σ_bp = self.noise_adr.get_param("noise", "obs_noise_body_pos")
+            σ_cp = self.noise_adr.get_param("noise", "obs_noise_cup_pos")
+        else:
+            σ_qp = self.cfg.obs_noise_joint_pos
+            σ_qv = self.cfg.obs_noise_joint_vel
+            σ_bp = self.cfg.obs_noise_body_pos
+            σ_cp = self.cfg.obs_noise_cup_pos
 
         arm_joint_pos = arm_joint_pos_clean + torch.randn_like(arm_joint_pos_clean) * σ_qp
         arm_joint_vel = arm_joint_vel_clean + torch.randn_like(arm_joint_vel_clean) * σ_qv
@@ -1365,6 +1404,11 @@ class GraspRightEnv(DirectRLEnv):
         )
         r_success = success_now.float()
         spill_cost = self._spill_ratio
+        spill_weight = (
+            self.spill_adr.get_param("reward", "spill_weight")
+            if self.spill_adr is not None
+            else self.cfg.weight_spill
+        )
         
         # Smooth premature tilt penalty: only active when far from target (g_ready is low)
         premature_tilt_cost = (1.0 - self._g_ready) * (1.0 - self._source_up_dot_world.clamp(0.0, 1.0))
@@ -1377,12 +1421,19 @@ class GraspRightEnv(DirectRLEnv):
             + r_prepour_stage
             + r_pour_stage
             + self.cfg.weight_success * r_success
-            - self.cfg.weight_spill * spill_cost
+            - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
             - self.cfg.weight_action_rate * action_rate_penalty
         )
 
         self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
+
+        # ---- ADR increment (success-rate 기반) ----
+        _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
+        if self.spill_adr is not None:
+            self.spill_adr.maybe_increment(_ep_success_rate)
+        if self.noise_adr is not None:
+            self.noise_adr.maybe_increment(_ep_success_rate)
 
         # ---- Logging to TensorBoard ----
         self.extras["r_hold"] = r_hold.mean()
@@ -1392,6 +1443,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["r_pour"] = r_pour_stage.mean()
         self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
         self.extras["cost_spill"] = spill_cost.mean()
+        self.extras["spill_weight"] = torch.tensor(float(spill_weight), device=self.device)
         self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
         self.extras["g_ready"] = self._g_ready.mean()
         self.extras["g_pour"] = self._g_pour.mean()
@@ -1399,6 +1451,15 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
         self.extras["bead_cross"] = self._bead_cross_fraction.mean()
         self.extras["spill_ratio"] = self._spill_ratio.mean()
+
+        if self.spill_adr is not None:
+            self.extras["adr_spill_progress"] = torch.tensor(
+                self.spill_adr.progress, device=self.device
+            )
+        if self.noise_adr is not None:
+            self.extras["adr_noise_progress"] = torch.tensor(
+                self.noise_adr.progress, device=self.device
+            )
 
         return total
 
