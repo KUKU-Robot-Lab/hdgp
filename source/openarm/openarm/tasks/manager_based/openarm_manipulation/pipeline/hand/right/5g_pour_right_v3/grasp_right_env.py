@@ -1396,6 +1396,9 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["g_ready"] = self._g_ready.mean()
         self.extras["g_pour"] = self._g_pour.mean()
         self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
+        self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
+        self.extras["bead_cross"] = self._bead_cross_fraction.mean()
+        self.extras["spill_ratio"] = self._spill_ratio.mean()
 
         return total
 
