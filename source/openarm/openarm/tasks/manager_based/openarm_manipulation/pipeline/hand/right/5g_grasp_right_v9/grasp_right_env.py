@@ -269,8 +269,9 @@ class GraspRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         # 접촉 상태 버퍼
         # ----------------------------------------------------------------
-        self.contact_force_xyz_raw = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
-        self.contact_force_raw     = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)
+        self.contact_force_xyz_raw   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
+        self.contact_force_raw       = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)
+        self.contact_friction_xyz_raw = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
         self.num_contacts_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
@@ -583,6 +584,9 @@ class GraspRightEnv(DirectRLEnv):
         self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
         self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
 
+        # friction_forces_w: track_friction_forces 비활성화로 미사용
+        # (get_friction_data()의 buffer overflow 문제로 제거)
+
         per_distal = self._distal_sensor.data.net_forces_w.norm(dim=-1)
         per_distal = torch.nan_to_num(per_distal, nan=0.0, posinf=0.0, neginf=0.0)
         self.distal_contact_force_raw.copy_(per_distal)
@@ -800,8 +804,6 @@ class GraspRightEnv(DirectRLEnv):
         last_actions     = self.actions  # (N, 26)
 
         # tip force: 3D 법선 방향 벡터 (5 × 3D = 15D)
-        # ContactSensor는 normal force만 제공 (tangential 불가)
-        # 3D 벡터 방향으로 contact 위치/각도 정보 포함 → 5D magnitude보다 풍부
         tip_force_xyz_norm = (
             self.contact_force_xyz_raw / CONTACT_FORCE_MAX
         ).clamp(-1.0, 1.0).view(self.num_envs, -1)  # (N, 15)
@@ -866,7 +868,7 @@ class GraspRightEnv(DirectRLEnv):
         ], dim=-1)   # 138D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 128
+            actor_obs_clean,        # 138
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4
@@ -876,7 +878,7 @@ class GraspRightEnv(DirectRLEnv):
             middle_binary,          # 5
             middle_force_norm,      # 5
             fingertip_signed_dist,  # 5
-        ], dim=-1)   # 164D
+        ], dim=-1)   # 174D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -1339,6 +1341,24 @@ class GraspRightEnv(DirectRLEnv):
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
+        # ---- 7a. 컵 마찰계수 DR ----
+        # μ_static ~ Uniform[cup_friction_min, cup_friction_max]
+        # μ_dynamic = μ_static × 0.9
+        # materials shape: (num_envs, num_shapes, 3) — [static, dynamic, restitution]
+        _friction_vals = (
+            torch.rand(n, device=self.device)
+            * (self.cfg.cup_friction_max - self.cfg.cup_friction_min)
+            + self.cfg.cup_friction_min
+        ).cpu()
+        _env_ids_cpu = (
+            env_ids.cpu().int() if isinstance(env_ids, torch.Tensor)
+            else torch.tensor(list(env_ids), dtype=torch.int32)
+        )
+        _materials = self.cup.root_physx_view.get_material_properties().clone()  # (N_envs, shapes, 3)
+        _materials[_env_ids_cpu, :, 0] = _friction_vals.unsqueeze(-1)          # static friction
+        _materials[_env_ids_cpu, :, 1] = (_friction_vals * 0.9).unsqueeze(-1)  # dynamic friction
+        self.cup.root_physx_view.set_material_properties(_materials, _env_ids_cpu)
+
         # ---- 7b. Bead 스폰 ----
         # 이산 4단계: {0, 10, 20, 30}개 × 10g = {0, 100, 200, 300}g 추가 질량
         # 총 컵 질량: 170g / 270g / 370g / 470g (1x / 1.6x / 2.2x / 2.8x)
@@ -1363,6 +1383,7 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 8. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand
         self.contact_force_raw[env_ids] = 0.0
+        self.contact_friction_xyz_raw[env_ids] = 0.0
         self.binary_contact_buf[env_ids] = False
         self.num_contacts_buf[env_ids]   = 0
         self.distal_contact_force_raw[env_ids] = 0.0

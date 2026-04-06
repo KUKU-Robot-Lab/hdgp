@@ -1,5 +1,6 @@
 # 5g_grasp_right_v9 rl_games PPO 설정
 # v9.1: 관측 138D (tip_force 5D→15D xyz), 비드 이산 4단계 {0,10,20,30}×10g
+#        컵 마찰계수 DR μ~Uniform[0.15, 0.60], 썸 외전 열림, contact ADR
 # 관측: actor 138D / critic 174D (asymmetric), 액션: 26D
 # Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 

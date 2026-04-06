@@ -16,8 +16,10 @@
 
 v9: v8 기반 + 20D 손가락 직접 제어 + Slip/Force-Efficiency/Force-Smooth reward
 - Action: 26D (6D palm pose + 20D per-joint finger delta)
-- Observation: actor 128D / critic 164D (asymmetric)
+- Observation: actor 138D / critic 174D (asymmetric)
+  v9.1: tip_force 5D norm → 15D xyz vector
 - Reward: R_slip (cup 수평 속도 기반), R_force_efficiency (mg 기준 최소 충분 힘), R_force_smooth (힘 변화 억제)
+- DR: 컵 마찰계수 μ ~ Uniform[cup_friction_min, cup_friction_max] (에피소드별 리셋)
 - 기존 reward weight 조정: lift 20→6, enclosure 4→3, balance 8→6, multi_phalanx 8→6
 """
 
@@ -447,6 +449,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             ),
         ),
     )
+
+    # -----------------------------------------------------------------------
+    # 컵 마찰계수 도메인 랜덤화
+    # -----------------------------------------------------------------------
+    # μ_static  ~ Uniform[cup_friction_min, cup_friction_max]  (에피소드별 리셋)
+    # μ_dynamic = μ_static × 0.9
+    # 목적: max-grip이 Pareto-optimal이 되는 것을 방지 → 마찰 변동으로 적응형 파지 학습
+    cup_friction_min: float = 0.15
+    cup_friction_max: float = 0.60
 
     # -----------------------------------------------------------------------
     # Bead 무게 도메인 랜덤화
