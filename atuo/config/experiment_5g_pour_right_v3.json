@@ -1,0 +1,120 @@
+{
+  "project": {
+    "isaaclab_root": "../../../IsaacLab",
+    "skillblender_root": "../..",
+    "log_root": "../../log/rl_games"
+  },
+  "env": {
+    "ISAAC_SIM_DISABLE_SHARED_MEMORY": "1",
+    "OMNI_DISABLE_SHARED_MEMORY": "1",
+    "CARB_DISABLE_SHARED_MEMORY": "1"
+  },
+  "train": {
+    "task": "5g_pour_right-v3",
+    "agent": "rl_games_cfg_entry_point",
+    "train_script": "../../scripts/reinforcement_learning/rl_games/train.py",
+    "base_args": ["--headless"],
+    "num_envs": 256,
+    "seed": 42,
+    "max_iterations": 2000
+  },
+  "eval": {
+    "skip_eval": true,
+    "eval_script": "../eval_grasp2g_metrics.py",
+    "base_args": ["--headless"],
+    "num_episodes": 100,
+    "num_envs": 1,
+    "goal_threshold": 0.8,
+    "lift_threshold": 0.1,
+    "goal_dist_threshold": 0.05,
+    "seed": 123
+  },
+  "success_criteria": {
+    "success_rate_min": 0.9
+  },
+  "analysis_thresholds": {
+    "min_train_reward": 100.0,
+    "collapse_ratio": 0.7,
+    "entropy_min": 0.005,
+    "pour_success_rate_min": 0.9,
+    "pour_bead_cross_fraction_min": 0.02,
+    "pour_mouth_xy_max": 0.05,
+    "pour_mouth_z_clearance_max": 0.12,
+    "pour_tilt_reward_min": 0.02,
+    "pour_aligned_tilt_min": 0.01,
+    "pour_directional_tilt_cos_min": 0.7,
+    "pour_gate_xy_min": 0.7,
+    "pour_transport_progress_min": 0.001,
+    "pour_grasp_lock_success_max": 0.01,
+    "pour_grasp_maintain_lock_min": 0.98,
+    "pour_contact_maintain_lock_min": 0.95,
+    "pour_finger_curl_lock_min": 0.85
+  },
+  "analysis_rules_path": "failure_rules_5g_pour_right_v3.json",
+  "llm": {
+    "enabled": true,
+    "provider": "ollama",
+    "model": "qwen2.5:14b",
+    "temperature": 0.3,
+    "max_tokens": 2048,
+    "api_base": "http://localhost:11434"
+  },
+  "llm_refine_loop": {
+    "enabled": false,
+    "freeze_analysis_script": "../../scripts/tools/freeze_run_analysis.py",
+    "out_dir": "../../log/analysis_llm",
+    "report_verbosity": "long",
+    "gemini": false,
+    "gemini_cmd": "gemini",
+    "gemini_no_browser": true
+  },
+  "override_policy": {
+    "allowed_overrides": [
+      "env.weight_grasp_maintain",
+      "env.weight_contact_maintain",
+      "env.weight_force_balance",
+      "env.weight_finger_curl",
+      "env.weight_transport",
+      "env.weight_transport_progress",
+      "env.weight_tilt",
+      "env.weight_pour_accuracy",
+      "env.weight_spill",
+      "env.weight_action_rate",
+      "env.weight_premature_tilt",
+      "env.reward_grasp_slip_sharpness",
+      "env.contact_maintain_min_others",
+      "env.force_balance_sharpness",
+      "env.reward_transport_scale",
+      "env.reward_tilt_scale",
+      "env.reward_tilt_distance_scale",
+      "env.reward_gate_xy_scale",
+      "env.reward_gate_clear_scale",
+      "env.reward_gate_tilt_scale",
+      "env.pour_gate_xy_near",
+      "env.pour_gate_xy_far",
+      "env.pour_gate_z_low",
+      "env.pour_gate_z_high",
+      "env.stage_pour_xy_threshold",
+      "env.stage_approach_xy_threshold",
+      "env.tilt_action_gate_xy_near",
+      "env.tilt_action_gate_xy_far",
+      "env.target_pour_tilt_deg",
+      "env.left_cup_world_z_offset",
+      "env.success_mouth_xy_threshold",
+      "env.success_z_clearance_min",
+      "env.success_z_clearance_max",
+      "env.success_tilt_cos_tolerance",
+      "env.success_directional_tilt_cos",
+      "env.success_hold_steps",
+      "env.drop_force_hold_steps"
+    ]
+  },
+  "run_policy": {
+    "max_runs": 10,
+    "stop_on_success": true,
+    "train_chunk_iterations": null,
+    "max_total_iterations": null,
+    "stop_on_collapse": true,
+    "stream_logs": true
+  }
+}

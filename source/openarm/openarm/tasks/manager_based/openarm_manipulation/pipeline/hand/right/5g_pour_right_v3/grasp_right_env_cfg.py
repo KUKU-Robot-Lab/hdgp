@@ -153,6 +153,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obs_noise_body_pos:  float = 0.005   # FK body position σ [m] (palm, fingertip)
     obs_noise_cup_pos:   float = 0.015   # cup position observation σ [m]
 
+    # GUI helper
+    enable_visual_markers: bool = False  # 시각화 마커 (붉은/푸른 점) 표시 여부
+
     # ADR: noise 스케줄 (low→high) — 성공률이 오르면 강건성 위해 노이즈 증대
     enable_noise_adr: bool = True
     noise_adr_custom_cfg: dict = {

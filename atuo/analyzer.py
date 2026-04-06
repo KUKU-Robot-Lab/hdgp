@@ -329,6 +329,20 @@ def _diagnose_pour_right_v2(
     """
 
     success_rate = _get_scalar(scalars, "success_rate")
+    # rl_games pour logs expose success proxies differently (no eval):
+    #   - success_rate (eval)
+    #   - success (custom)
+    #   - bead_in_target_frame (train TB tag: bead_in_target/frame)
+    #   - bead_cross_fraction (train TB tag)
+    # We pick the first available metric as "success proxy" for gating loops.
+    success_candidates = [
+        success_rate,
+        _get_scalar(scalars, "success"),
+        _get_scalar(scalars, "bead_in_target_frame"),
+        _get_scalar(scalars, "bead_cross_fraction"),
+    ]
+    success_val = next((v for v in success_candidates if v is not None), None)
+
     bead_cross = _get_scalar(scalars, "bead_cross_fraction")
     bead_in_target = _get_scalar(scalars, "bead_in_target_rate")
     bead_in_source = _get_scalar(scalars, "bead_in_source_rate")
@@ -358,9 +372,10 @@ def _diagnose_pour_right_v2(
     contact_lock_min = float(thresholds.get("pour_contact_maintain_lock_min", 0.95))
     finger_lock_min = float(thresholds.get("pour_finger_curl_lock_min", 0.85))
 
-    if success_rate is not None and success_rate < min_success:
-        issues.append("pour_success_zero")
-        observations.append(f"success_rate={success_rate:.4f} < {min_success:.4f}")
+    if success_val is not None and success_val < min_success:
+        issues.append("success_too_low")
+        metric_name = "success_rate" if success_rate is not None else "success_proxy"
+        observations.append(f"{metric_name}={success_val:.4f} < {min_success:.4f}")
 
     if bead_cross is not None and bead_cross < min_bead_cross:
         issues.append("pour_bead_transfer_fail")
@@ -748,6 +763,8 @@ def _load_task_guide(task_name: str) -> tuple[str, str]:
         guide_file = "lift_left_v2_REWARDS_GUIDE.md"
     elif "5g_lift_left-v1" in task_lower:
         guide_file = "lift_left_v1_REWARDS_GUIDE.md"
+    elif "5g_pour_right-v3" in task_lower:
+        guide_file = "5g_pour_right_v3_REWARDS_GUIDE.md"
     elif "5g_pour_right-v2" in task_lower:
         guide_file = "5g_pour_right_v2_REWARDS_GUIDE.md"
     else:

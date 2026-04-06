@@ -530,21 +530,25 @@ class GraspRightEnv(DirectRLEnv):
         self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
         # GUI target visualization: source pour point (red) + target opening (blue)
-        self._vis_markers = VisualizationMarkers(
-            VisualizationMarkersCfg(
-                prim_path="/Visuals/FiveGPourRightMarkers",
-                markers={
-                    "source_pour": sim_utils.SphereCfg(
-                        radius=0.018,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.2, 0.2)),
-                    ),
-                    "target_opening": sim_utils.SphereCfg(
-                        radius=0.018,
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 1.0)),
-                    ),
-                },
+        # 비활성화 가능 (cfg.enable_visual_markers)
+        if cfg.enable_visual_markers:
+            self._vis_markers = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/FiveGPourRightMarkers",
+                    markers={
+                        "source_pour": sim_utils.SphereCfg(
+                            radius=0.018,
+                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.2, 0.2)),
+                        ),
+                        "target_opening": sim_utils.SphereCfg(
+                            radius=0.018,
+                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 1.0)),
+                        ),
+                    },
+                )
             )
-        )
+        else:
+            self._vis_markers = None
 
         self._build_warmstart_reset_cache()
 
@@ -1059,11 +1063,11 @@ class GraspRightEnv(DirectRLEnv):
         # Bead flags & spill
         self._compute_bead_flags()
 
-        # GUI visualization: red = source pour point, blue = target opening
-        _all_pts = torch.cat([self._source_pour_point_w, self._target_opening_w], dim=0)
-        _marker_idx = torch.zeros(2 * n, dtype=torch.long, device=self.device)
-        _marker_idx[n:] = 1
-        self._vis_markers.visualize(translations=_all_pts, marker_indices=_marker_idx)
+        if self._vis_markers is not None:
+            _all_pts = torch.cat([self._source_pour_point_w, self._target_opening_w], dim=0)
+            _marker_idx = torch.zeros(2 * n, dtype=torch.long, device=self.device)
+            _marker_idx[n:] = 1
+            self._vis_markers.visualize(translations=_all_pts, marker_indices=_marker_idx)
 
         # 접촉력 업데이트
         self._update_contact_forces()
