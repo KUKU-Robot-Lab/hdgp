@@ -200,6 +200,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     tilt_action_gate_xy_near: float = 0.06
     tilt_action_gate_xy_far: float = 0.12
 
+    # 접근 보상 앤일링: target 3cm 부근에서는 접근 보상을 0으로 끈다.
+    approach_xy_off_near: float = 0.03
+    approach_xy_off_far: float = 0.07
+
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
     left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
 
@@ -243,8 +247,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
     weight_release: float = 0.00    # 제거: spill도 보상하는 문제로 인해 비활성화
-    weight_cross: float = 25.00    # ↑ pour 신호 강화 (g_ready gate로 변경에 맞춰)
-    weight_capture: float = 30.00   # ↑ pour 신호 강화
+    weight_cross: float = 60.00    # pour 신호를 접근보다 우선하도록 대폭 강화
+    weight_capture: float = 120.00  # 비드 유입을 압도적으로 보상
+    weight_first_capture_bonus: float = 8.00  # 첫 비드 유입 시 1회 보너스
     weight_success: float = 30.00   # ↑ 최종 성공 보상 강화
     weight_spill: float = 10.00
     weight_premature_tilt: float = 2.00

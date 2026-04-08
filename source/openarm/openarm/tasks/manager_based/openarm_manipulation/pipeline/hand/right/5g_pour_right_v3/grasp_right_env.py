@@ -516,6 +516,7 @@ class GraspRightEnv(DirectRLEnv):
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
         self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._first_capture_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._no_tip_force_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._world_up = torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
@@ -1372,7 +1373,14 @@ class GraspRightEnv(DirectRLEnv):
             self._prev_mouth_xy_distance - self._mouth_xy_distance,
             min=0.0,
         )
-        r_approach = (
+        # 가까이 다가오면(≈3cm) 접근 보상을 끄고 pour 신호를 강조
+        approach_gate_den = max(self.cfg.approach_xy_off_far - self.cfg.approach_xy_off_near, 1e-6)
+        approach_gate = torch.clamp(
+            (self._mouth_xy_distance - self.cfg.approach_xy_off_near) / approach_gate_den,
+            min=0.0,
+            max=1.0,
+        )
+        r_approach = approach_gate * (
             self.cfg.weight_approach_xy * r_approach_xy
             + self.cfg.weight_transport_progress * r_transport_progress
         )
@@ -1406,6 +1414,11 @@ class GraspRightEnv(DirectRLEnv):
             + self.cfg.weight_capture * r_capture
         )
 
+        # 첫 비드 유입 시 1회성 보너스로 탐색을 유도
+        first_capture = (self._bead_in_target_fraction > 0.0) & (~self._first_capture_bonus_paid)
+        r_first_capture = self.cfg.weight_first_capture_bonus * first_capture.float()
+        self._first_capture_bonus_paid |= first_capture
+
         # ---- Outcome and costs ----
         success_now = (
             (self._bead_in_target_fraction >= self.cfg.success_target_fill_ratio)
@@ -1429,6 +1442,7 @@ class GraspRightEnv(DirectRLEnv):
             + r_approach
             + r_prepour_stage
             + r_pour_stage
+            + r_first_capture
             + self.cfg.weight_success * r_success
             - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
@@ -1671,6 +1685,7 @@ class GraspRightEnv(DirectRLEnv):
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False
+        self._first_capture_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._pre_pour_ready_steps[env_ids] = 0
@@ -1933,6 +1948,7 @@ class GraspRightEnv(DirectRLEnv):
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False
+        self._first_capture_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self.success_flag[env_ids] = False
 
