@@ -198,11 +198,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
     # near < far 여야 선형 보간이 성립하므로 작은 값(가까움) → 1, 큰 값(멀어짐) → 0 순서로 둔다.
     tilt_action_gate_xy_near: float = 0.06
-    tilt_action_gate_xy_far: float = 0.12
+    tilt_action_gate_xy_far: float = 0.20  # 더 먼 거리(20cm)부터 천천히 tilt 허용
 
-    # 접근 보상 앤일링: target 3cm 부근에서는 접근 보상을 0으로 끈다.
-    approach_xy_off_near: float = 0.03
-    approach_xy_off_far: float = 0.07
+    # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
+    approach_xy_off_near: float = 0.05
+    approach_xy_off_far: float = 0.12
 
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
     left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
@@ -272,7 +272,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
-    reward_approach_xy_scale: float = 15.0
+    reward_approach_xy_scale: float = 5.0
     # DexPour-style stage thresholds / shaping
     stage_approach_xy_threshold: float = 0.14
     stage_pour_xy_threshold: float = 0.15

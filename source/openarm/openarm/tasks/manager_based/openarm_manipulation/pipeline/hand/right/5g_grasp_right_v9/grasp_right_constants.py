@@ -25,7 +25,7 @@ Action (26D):
   [6:26] 20D per-joint finger delta (±finger_delta_scale rad)
          rj_dg_1_1~4, rj_dg_2_1~4, rj_dg_3_1~4, rj_dg_4_1~4, rj_dg_5_1~4
 
-Actor Observation (138D) — sim2real 가능:
+Actor Observation (153D) — sim2real 가능:
   arm_joint_pos:            7
   arm_joint_vel:            7
   finger_joint_pos:        20
@@ -38,8 +38,9 @@ Actor Observation (138D) — sim2real 가능:
   last_actions:            26  (v8: 11D → v9: 26D)
   bead_mass_normalized:     1  (0=빈 컵, 1=최대 하중)
   tip_force_xyz_norm:      15  (5 × 3D 법선 방향 힘 벡터, v9.1: 5D norm → 15D vector)
+  middle_to_cup_xyz:       15  (5 × 3D FK 기반, sim2real 가능: joint encoder → FK)
   phase_step_ratio:         1  (step counter 기반, 실 로봇 가능)
-  Total:                  138
+  Total:                  153
 
 Critic Extra (36D) — sim-only privileged:
   cup_lin_vel:              3
@@ -88,20 +89,19 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 26
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-# Actor obs (133D):
-#   arm_joint_pos        7  | arm_joint_vel         7
-#   finger_joint_pos    20  | finger_joint_vel      20
+# Actor obs (153D):
+#   arm_joint_pos        7  | arm_joint_vel          7
+#   finger_joint_pos    20  | finger_joint_vel       20
 #   palm_center_pos      3  | fingertip_pos_rel_palm 15
-#   palm_to_cup          3  | middle_to_cup_xyz      15  (FK 기반, sim2real 가능)
-#   last_actions        26  | bead_mass_normalized    1
-#   tip_force_xyz_norm  15  | phase_step_ratio        1
-#   [제거 v9.4] cup_to_fingertip 15D (fingertip_rel_palm - palm_to_cup 항등식)
-#   [제거 v9.4] binary_contact   5D (tip_force_xyz_norm 크기에서 복원 가능)
-NUM_OBSERVATIONS = 133
+#   palm_to_cup          3  | cup_to_fingertip       15
+#   binary_contact       5  | last_actions           26
+#   bead_mass_normalized 1  | tip_force_xyz_norm     15
+#   middle_to_cup_xyz   15  | phase_step_ratio        1
+NUM_OBSERVATIONS = 153
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 36
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 169
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 189
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
