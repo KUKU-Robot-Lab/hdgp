@@ -1391,13 +1391,14 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ---- Stage D. Pour (using soft g_pour gate) ----
-        r_release = 1.0 - self._bead_in_source_fraction
+        # r_release 제거: (1 - bead_in_source)는 spill에도 보상을 줘서
+        # 정책이 "붓지 않음" 로컬 최적값으로 수렴하는 문제 유발.
+        # r_cross(target mouth 통과)와 r_capture(target 안에 있음)만으로 보상.
         r_cross = self._bead_cross_fraction
         r_capture = self._bead_in_target_fraction
-        
+
         r_pour_stage = self._g_pour * (
-            self.cfg.weight_release * r_release
-            + self.cfg.weight_cross * r_cross
+            self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
         )
 

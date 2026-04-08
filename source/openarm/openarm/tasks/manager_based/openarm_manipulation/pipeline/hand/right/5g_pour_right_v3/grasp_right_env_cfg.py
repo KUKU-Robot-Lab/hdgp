@@ -193,11 +193,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm xyz delta.
     # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
     warmstart_collect_palm_delta_xyz: float = 0.10
-    palm_delta_rot_deg: float = 45.0
+    palm_delta_rot_deg: float = 120.0  # 45→120: cup 135° tilt 도달 가능하도록 확장
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
-    tilt_action_gate_xy_near: float = 0.8
-    tilt_action_gate_xy_far: float = 0.15
+    # near < far 여야 선형 보간이 성립하므로 작은 값(가까움) → 1, 큰 값(멀어짐) → 0 순서로 둔다.
+    tilt_action_gate_xy_near: float = 0.06
+    tilt_action_gate_xy_far: float = 0.12
 
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
     left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
@@ -241,8 +242,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_transport_progress: float = 6.00
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
-    weight_release: float = 5.00
-    weight_cross: float = 12.00
+    weight_release: float = 0.00    # 제거: spill도 보상하는 문제로 인해 비활성화
+    weight_cross: float = 17.00    # +5.0 (r_release 5.0 흡수 — target 도달 시에만 보상)
     weight_capture: float = 18.00   # ↑ 성공/타겟 보상 강화
     weight_success: float = 30.00   # ↑ 최종 성공 보상 강화
     weight_spill: float = 10.00
@@ -256,7 +257,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     spill_adr_custom_cfg: dict = {
         "reward": {
             # start small to allow exploration, ramp to 기존 10.0 페널티
-            "spill_weight": (2.0, 10.0),
+            "spill_weight": (0.5, 8.0),  # 초기 허용도 ↑ (pour 시도 장려)
         }
     }
     spill_adr_num_increments: int = 50
@@ -272,8 +273,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stage_pour_xy_threshold: float = 0.15
     transport_dist_exp_scale: float = 8.0
     transport_tilt_penalty_weight: float = 2.0
-    pour_tilt_target_deg: float = 135.0
-    pour_tilt_sharpness: float = 6.0
+    pour_tilt_target_deg: float = 100.0  # 135→100: 물리적으로 달성 가능한 각도 (비드 쏟기 충분)
+    pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
 
     # -----------------------------------------------------------------------
     # 종료 조건

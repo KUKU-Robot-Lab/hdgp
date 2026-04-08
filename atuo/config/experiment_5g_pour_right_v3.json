@@ -19,7 +19,7 @@
     "max_iterations": 2000
   },
   "eval": {
-    "skip_eval": true,
+    "skip_eval": false,
     "eval_script": "../eval_grasp2g_metrics.py",
     "base_args": ["--headless"],
     "num_episodes": 100,
@@ -110,8 +110,8 @@
     ]
   },
   "run_policy": {
-    "max_runs": 10,
-    "stop_on_success": true,
+    "max_runs": 3,
+    "stop_on_success": false,
     "train_chunk_iterations": null,
     "max_total_iterations": null,
     "stop_on_collapse": true,

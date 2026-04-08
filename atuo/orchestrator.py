@@ -837,7 +837,8 @@ def main() -> int:
             continue
 
         metrics_path = str(log_dir / "metrics.json")
-        skip_eval = bool(eval_cfg.get("skip_eval", False)) or is_skrl or is_rl_games
+        # rl_games runs were previously hard-skipped here; allow eval unless the config explicitly disables it.
+        skip_eval = bool(eval_cfg.get("skip_eval", False)) or is_skrl
         if skip_eval:
             eval_result = EvalResult(0, metrics_path, "", "")
             eval_metrics = {}
