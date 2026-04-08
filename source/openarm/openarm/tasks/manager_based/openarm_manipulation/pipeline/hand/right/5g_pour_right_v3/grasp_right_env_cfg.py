@@ -198,7 +198,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
     # near < far 여야 선형 보간이 성립하므로 작은 값(가까움) → 1, 큰 값(멀어짐) → 0 순서로 둔다.
     tilt_action_gate_xy_near: float = 0.06
-    tilt_action_gate_xy_far: float = 0.20  # 더 먼 거리(20cm)부터 천천히 tilt 허용
+    tilt_action_gate_xy_far: float = 0.32  # policy 수렴 위치 ~0.23m보다 충분히 커야 tilt 가능
 
     # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
     approach_xy_off_near: float = 0.05
@@ -210,7 +210,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # stage gate / pre-pour geometry
     # test1에서 mouth_xy≈0.23m일 때 g_align_xy가 1e-3 이하로 죽어 접근 전 stage 신호가 약했음.
     # xy gate/approach를 넓혀 먼 거리에서도 target 방향 gradient를 유지한다.
-    reward_gate_xy_scale: float = 20.0
+    reward_gate_xy_scale: float = 12.0   # cup center 기반으로 변경: center는 항상 pour_point보다 작음
     reward_gate_clear_scale: float = 80.0
     reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015
@@ -240,19 +240,19 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_contact_maintain: float = 1.00
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 2.00
-    weight_approach_xy: float = 8.00   # 15→8: pour 신호 대비 approach 지배 억제
+    weight_approach_xy: float = 10.00   # cup center 기반 approach → 더 직접적으로 유도 가능
     weight_approach_z: float = 3.00
     weight_cup_upright: float = 0.80
     weight_transport_progress: float = 6.00
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
     weight_release: float = 0.00    # 제거: spill도 보상하는 문제로 인해 비활성화
-    weight_cross: float = 60.00    # pour 신호를 접근보다 우선하도록 대폭 강화
-    weight_capture: float = 120.00  # 비드 유입을 압도적으로 보상
+    weight_cross: float = 15.00    # gate 없이 raw reward: 과도한 weight 불필요
+    weight_capture: float = 25.00  # gate 없이 raw reward: physics가 자연스럽게 제어
     weight_first_capture_bonus: float = 8.00  # 첫 비드 유입 시 1회 보너스
     weight_success: float = 30.00   # ↑ 최종 성공 보상 강화
     weight_spill: float = 10.00
-    weight_premature_tilt: float = 2.00
+    weight_premature_tilt: float = 4.00   # gate 없으므로 이것이 조기 tilt 억제 유일 수단
     weight_grasp_loss: float = 0.00
     weight_action_rate: float = 0.01
     weight_wrist_spin: float = 0.00

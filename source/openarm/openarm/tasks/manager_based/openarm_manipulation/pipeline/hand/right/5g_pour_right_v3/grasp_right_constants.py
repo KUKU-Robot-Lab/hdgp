@@ -97,11 +97,11 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 105        # Actor: sim2real 가능 (mouth_alignment_cos, g_ready 추가)
+NUM_OBSERVATIONS = 106        # Actor: sim2real 가능 (cup_center_xy_dist 추가로 transport_summary 7→8)
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 50      # stage gate + bead/spill privileged state 추가
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 155
+NUM_CRITIC_EXTRAS   = 51      # stage gate + bead/spill + cup_center_xy_dist
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 157
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

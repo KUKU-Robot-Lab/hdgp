@@ -144,7 +144,7 @@ PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
-        0.20, -0.55, 0.20,
+        0.00, -0.55, 0.20,  # x_min: 0.20→0.00 (target cup이 x≈0.0에 있어 더 들어가야 함)
         (90.0 - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,
         (90.0 - max_pose_angle) * d,

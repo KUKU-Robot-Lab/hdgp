@@ -488,6 +488,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- Pour 중간값 버퍼 ----
         self._mouth_xy_distance = torch.zeros(self.num_envs, device=self.device)
+        self._cup_center_xy_dist = torch.zeros(self.num_envs, device=self.device)
         self._mouth_z_clearance = torch.zeros(self.num_envs, device=self.device)
         self._source_up_dot_world = torch.zeros(self.num_envs, device=self.device)
         self._directional_tilt_cos = torch.zeros(self.num_envs, device=self.device)
@@ -878,7 +879,7 @@ class GraspRightEnv(DirectRLEnv):
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
             gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
             tilt_gate = torch.clamp(
-                (self.cfg.tilt_action_gate_xy_far - self._mouth_xy_distance) / gate_den,
+                (self.cfg.tilt_action_gate_xy_far - self._cup_center_xy_dist) / gate_den,
                 0.0,
                 1.0,
             )
@@ -1049,7 +1050,14 @@ class GraspRightEnv(DirectRLEnv):
         )
         self._mouth_alignment_cos = (_effective_pour_heading * _mouth_dir).sum(dim=-1).clamp(-1.0, 1.0)
 
-        self._g_align_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._mouth_xy_distance)
+        # cup center XY dist to target (tilt-invariant: pour_point이 기울어져도 변하지 않음)
+        cup_center_w = self.cup.data.root_pos_w
+        self._cup_center_xy_dist = torch.norm(
+            cup_center_w[:, :2] - self._target_opening_w[:, :2], dim=-1
+        )
+
+        # g_align_xy: cup center 기반 (tilt 시 pour_point이 9.8cm 이동해도 gate 붕괴 없음)
+        self._g_align_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._cup_center_xy_dist)
         self._g_clear = torch.sigmoid(
             self.cfg.reward_gate_clear_scale
             * (self._mouth_z_clearance - self.cfg.reward_clearance_min)
@@ -1200,16 +1208,17 @@ class GraspRightEnv(DirectRLEnv):
         binary_contact = self.binary_contact_buf.float()
         last_actions = self.actions
 
-        # transport_summary (7D): pour 기하학 + stage readiness
+        # transport_summary (8D): pour 기하학 + stage readiness
         transport_summary = torch.stack([
             self._mouth_distance,
-            self._mouth_xy_distance,
+            self._mouth_xy_distance,       # pour point 기반 (pour phase 정밀도)
+            self._cup_center_xy_dist,      # cup center 기반 (approach 기준, tilt-invariant)
             self._mouth_z_clearance,
             self._source_up_dot_world,
             self._directional_tilt_cos,
             self._mouth_alignment_cos,
             self._g_ready,
-        ], dim=-1)   # (N, 7)
+        ], dim=-1)   # (N, 8)
 
         # tip force (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
         tip_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
@@ -1227,11 +1236,11 @@ class GraspRightEnv(DirectRLEnv):
             source_pour_axis_clean,     # 3
             source_up_axis_clean,       # 3
             # target_up_axis 제거: 타겟 컵은 항상 직립 → 항상 [0,0,1], 정보 없음
-            transport_summary,          # 5
+            transport_summary,          # 8
             binary_contact,             # 5
             tip_force_norm,             # 5 (fingertip force, sim2real 가능)
             last_actions,               # 11
-        ], dim=-1)   # 105D
+        ], dim=-1)   # 106D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -1253,7 +1262,7 @@ class GraspRightEnv(DirectRLEnv):
             bead_pos_clean - left_cup_pos_clean,
         )
 
-        # critic actor_obs_clean (105D) — clean state 재조합, actor_obs 구조와 동일
+        # critic actor_obs_clean (106D) — clean state 재조합, actor_obs 구조와 동일
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,                                      # 7
             arm_joint_vel_clean,                                      # 7
@@ -1267,9 +1276,10 @@ class GraspRightEnv(DirectRLEnv):
             source_pour_axis_clean,                                   # 3
             source_up_axis_clean,                                     # 3
             # target_up_axis 제거: 항상 [0,0,1], 정보 없음
-            torch.stack([                                             # 7
+            torch.stack([                                             # 8
                 self._mouth_distance,
                 self._mouth_xy_distance,
+                self._cup_center_xy_dist,
                 self._mouth_z_clearance,
                 self._source_up_dot_world,
                 self._directional_tilt_cos,
@@ -1279,10 +1289,10 @@ class GraspRightEnv(DirectRLEnv):
             binary_contact,                                           # 5
             tip_force_norm,                                           # 5 (v8처럼, sim2real)
             last_actions,                                             # 11
-        ], dim=-1)   # 105D
+        ], dim=-1)   # 106D
 
         critic_obs = torch.cat([
-            actor_obs_clean,                                    # 103
+            actor_obs_clean,                                    # 106
             left_arm_joint_pos_clean,                          # 9
             left_arm_joint_vel_clean,                          # 9
             distal_binary,                                     # 5
@@ -1292,6 +1302,7 @@ class GraspRightEnv(DirectRLEnv):
             bead_pos_rel_target_cup,                           # 3
             self._mouth_distance.unsqueeze(1),                 # 1
             self._mouth_xy_distance.unsqueeze(1),              # 1
+            self._cup_center_xy_dist.unsqueeze(1),             # 1
             self._mouth_z_clearance.unsqueeze(1),              # 1
             self._source_up_dot_world.unsqueeze(1),            # 1
             self._directional_tilt_cos.unsqueeze(1),           # 1
@@ -1305,7 +1316,7 @@ class GraspRightEnv(DirectRLEnv):
             self._bead_in_source_fraction.unsqueeze(1),        # 1
             self._bead_in_target_fraction.unsqueeze(1),        # 1
             self._spill_ratio.unsqueeze(1),                    # 1
-        ], dim=-1)   # 155D
+        ], dim=-1)   # 157D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -1368,7 +1379,8 @@ class GraspRightEnv(DirectRLEnv):
         r_lift = self.cfg.weight_approach_z * cup_height_delta
         
         # Smooth approach reward using tanh (0 at infinity, 1 at 0)
-        r_approach_xy = 1.0 - torch.tanh(self.cfg.reward_approach_xy_scale * self._mouth_xy_distance)
+        # cup center 기반: tilt 시 pour_point이 이동해도 approach reward가 흔들리지 않음
+        r_approach_xy = 1.0 - torch.tanh(self.cfg.reward_approach_xy_scale * self._cup_center_xy_dist)
         r_transport_progress = torch.clamp(
             self._prev_mouth_xy_distance - self._mouth_xy_distance,
             min=0.0,
@@ -1376,7 +1388,7 @@ class GraspRightEnv(DirectRLEnv):
         # 가까이 다가오면(≈3cm) 접근 보상을 끄고 pour 신호를 강조
         approach_gate_den = max(self.cfg.approach_xy_off_far - self.cfg.approach_xy_off_near, 1e-6)
         approach_gate = torch.clamp(
-            (self._mouth_xy_distance - self.cfg.approach_xy_off_near) / approach_gate_den,
+            (self._cup_center_xy_dist - self.cfg.approach_xy_off_near) / approach_gate_den,
             min=0.0,
             max=1.0,
         )
@@ -1405,11 +1417,9 @@ class GraspRightEnv(DirectRLEnv):
         r_cross = self._bead_cross_fraction
         r_capture = self._bead_in_target_fraction
 
-        # g_pour(=g_ready*g_tilt) → g_ready만 사용:
-        # g_tilt gate는 r_prepour(g_ready*r_tilt)가 이미 담당.
-        # 삼중 AND(g_align*g_clear*g_tilt) 는 너무 restrictive해서
-        # r_pour density가 너무 낮아 학습 신호 부족 → pour 시도 포기 로컬 최적값 유발.
-        r_pour_stage = self._g_ready * (
+        # gate 제거: physics가 자연스럽게 제어 (컵이 멀리 있으면 비드가 target에 안 들어감)
+        # g_ready gate는 tilt 시 g_align_xy 붕괴로 r_pour가 0이 되는 근본 원인이었음.
+        r_pour_stage = (
             self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
         )
@@ -1471,6 +1481,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["g_ready"] = self._g_ready.mean()
         self.extras["g_pour"] = self._g_pour.mean()
         self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
+        self.extras["cup_center_xy_dist"] = self._cup_center_xy_dist.mean()
         self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
         self.extras["bead_cross"] = self._bead_cross_fraction.mean()
         self.extras["spill_ratio"] = self._spill_ratio.mean()
