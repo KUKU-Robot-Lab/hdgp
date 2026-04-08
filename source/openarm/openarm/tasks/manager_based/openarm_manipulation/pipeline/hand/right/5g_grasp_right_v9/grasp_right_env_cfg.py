@@ -99,7 +99,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 138 (actor, tip_force 5D→15D)
+    observation_space: int = NUM_OBSERVATIONS          # 133 (v9.4: -cup_to_fingertip 15D, -binary_contact 5D, +middle_to_cup 15D)
     action_space:      int = NUM_ACTIONS               # 26
     state_space:       int = NUM_CRITIC_OBSERVATIONS   # 174 (critic, privileged)
 
@@ -169,18 +169,30 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     cup_radius_approx:      float = 0.045
     enclosure_thumb_weight: float = 0.6
 
-    # R1b. force_balance (v8: 8.0 → v9: 6.0)
-    force_balance_weight:    float = 6.0
+    # R1b. force_balance (v8: 8.0 → v9: 6.0 → v9.4: 3.5)
+    # 축소 이유: 과포화 시 force_balance local-min → multi_phalanx 저하 (test3 붕괴 원인)
+    # 역할은 보조 제약 수준으로 유지 (엄지 대립 약화 방지)
+    force_balance_weight:    float = 3.5
     force_balance_sharpness: float = 8.0
 
-    # R1c. multi_phalanx_contact (v8: 8.0 → v9: 6.0)
-    multi_phalanx_weight: float = 6.0
+    # R1c. multi_phalanx_contact (v8: 8.0 → v9: 6.0 → v9.4: 8.0)
+    # 증가 이유: deep envelope grasp 학습 강화, seed robustness 개선
+    multi_phalanx_weight: float = 8.0
 
     # R2. slip_reward (v9 신규): cup 수평 속도 기반 slip proxy
     # gate: grasp phase AND contact 시 활성
     # R_slip = slip_weight * gate * exp(-slip_sharpness * cup_horiz_vel)
     slip_weight:    float = 8.0
     slip_sharpness: float = 20.0
+
+    # R_preload. under-grip penalty (grasp phase 후반 80 step: PRELOAD_START_STEP~LIFT_START_STEP)
+    # 설계: -w * has_contact * relu(target_ratio - force_ratio)
+    #   → 목표 ratio 미달 시 선형 패널티 (상한이 없으므로 과도 grip은 억제 안 함)
+    #   → R3(adaptive_force)의 상한 억제와 쌍으로 동작
+    # target_ratio=1.6: 탐색 시작점 (권장 sweep 범위 1.2~2.0)
+    preload_penalty_weight:     float = 3.0
+    preload_force_target_ratio: float = 1.6
+    preload_start_step:         int   = 400
 
     # R3. Adaptive Force Reward (v9.3 철학 유지: 단조감소, decay 강화)
     # 설계 철학:

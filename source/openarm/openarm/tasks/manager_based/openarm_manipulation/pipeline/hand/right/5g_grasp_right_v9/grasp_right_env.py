@@ -74,6 +74,7 @@ from .grasp_right_constants import (
     LIFT_PHASE_STEPS,
     LIFT_START_STEP,
     EPISODE_STEPS,
+    PRELOAD_START_STEP,
     LIFT_Z_DELTA,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
@@ -142,6 +143,15 @@ class GraspRightEnv(DirectRLEnv):
         self.distal4_body_indices: list[int] = [
             self.robot.data.body_names.index(name)
             for name in _distal4_names
+            if name in self.robot.data.body_names
+        ]
+
+        # middle phalanx (PIP, _3 link) body indices — FK 기반 actor obs용
+        # sim2real 가능: joint encoder FK로 실기에서도 계산 가능
+        _middle3_names = [f"rl_dg_{i}_3" for i in range(1, 6)]
+        self.middle3_body_indices: list[int] = [
+            self.robot.data.body_names.index(name)
+            for name in _middle3_names
             if name in self.robot.data.body_names
         ]
 
@@ -251,6 +261,7 @@ class GraspRightEnv(DirectRLEnv):
         self.palm_center_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.fingertip_pos   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.distal4_pos     = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
+        self.middle3_pos     = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.actions         = torch.zeros(self.num_envs, cfg.num_actions, device=self.device)
         self.prev_actions    = torch.full((self.num_envs, cfg.num_actions), 0.0, device=self.device)
 
@@ -758,10 +769,15 @@ class GraspRightEnv(DirectRLEnv):
                 self.robot.data.body_pos_w[:, self.distal4_body_indices, :] - env_origins.unsqueeze(1)
             )
 
+        if len(self.middle3_body_indices) == NUM_FINGERTIPS:
+            self.middle3_pos = (
+                self.robot.data.body_pos_w[:, self.middle3_body_indices, :] - env_origins.unsqueeze(1)
+            )
+
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 128D | Critic 164D
+    # Observations: Actor 133D | Critic 169D
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
         # ==== 공통 clean state (critic용) ====
@@ -795,13 +811,15 @@ class GraspRightEnv(DirectRLEnv):
             fingertip_pos - palm_center_pos.unsqueeze(1)
         ).view(self.num_envs, -1)
 
-        palm_to_cup      = cup_pos_noisy - palm_center_pos
-        cup_to_fingertip = (
-            fingertip_pos - cup_pos_noisy.unsqueeze(1)
-        ).view(self.num_envs, -1)
+        palm_to_cup = cup_pos_noisy - palm_center_pos
 
-        binary_contact   = self.binary_contact_buf.float()
-        last_actions     = self.actions  # (N, 26)
+        # middle phalanx → cup 벡터 (FK 기반, sim2real 가능)
+        middle3_pos_noisy = self.middle3_pos + torch.randn_like(self.middle3_pos) * σ_bp
+        middle_to_cup = (
+            middle3_pos_noisy - cup_pos_noisy.unsqueeze(1)
+        ).view(self.num_envs, -1)   # (N, 15)
+
+        last_actions = self.actions  # (N, 26)
 
         # tip force: 3D 법선 방향 벡터 (5 × 3D = 15D)
         tip_force_xyz_norm = (
@@ -820,13 +838,12 @@ class GraspRightEnv(DirectRLEnv):
             palm_center_pos,        # 3
             fingertip_pos_rel_palm, # 15
             palm_to_cup,            # 3
-            cup_to_fingertip,       # 15
-            binary_contact,         # 5
+            middle_to_cup,          # 15  (v9.4: cup_to_fingertip 대체, FK 기반)
             last_actions,           # 26
             self._bead_mass_normalized.unsqueeze(-1),  # 1
-            tip_force_xyz_norm,     # 15 (v9.1: 5D norm → 15D xyz vector)
+            tip_force_xyz_norm,     # 15
             phase_step_ratio,       # 1
-        ], dim=-1)   # 138D
+        ], dim=-1)   # 133D  (v9.4: -cup_to_fingertip 15D, -binary_contact 5D, +middle_to_cup 15D)
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(

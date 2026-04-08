@@ -1397,7 +1397,11 @@ class GraspRightEnv(DirectRLEnv):
         r_cross = self._bead_cross_fraction
         r_capture = self._bead_in_target_fraction
 
-        r_pour_stage = self._g_pour * (
+        # g_pour(=g_ready*g_tilt) → g_ready만 사용:
+        # g_tilt gate는 r_prepour(g_ready*r_tilt)가 이미 담당.
+        # 삼중 AND(g_align*g_clear*g_tilt) 는 너무 restrictive해서
+        # r_pour density가 너무 낮아 학습 신호 부족 → pour 시도 포기 로컬 최적값 유발.
+        r_pour_stage = self._g_ready * (
             self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
         )

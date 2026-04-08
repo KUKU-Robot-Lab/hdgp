@@ -88,19 +88,29 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 26
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 138        # Actor: 123 + 15 (tip_force 5D norm → 15D xyz vector)
+# Actor obs (133D):
+#   arm_joint_pos        7  | arm_joint_vel         7
+#   finger_joint_pos    20  | finger_joint_vel      20
+#   palm_center_pos      3  | fingertip_pos_rel_palm 15
+#   palm_to_cup          3  | middle_to_cup_xyz      15  (FK 기반, sim2real 가능)
+#   last_actions        26  | bead_mass_normalized    1
+#   tip_force_xyz_norm  15  | phase_step_ratio        1
+#   [제거 v9.4] cup_to_fingertip 15D (fingertip_rel_palm - palm_to_cup 항등식)
+#   [제거 v9.4] binary_contact   5D (tip_force_xyz_norm 크기에서 복원 가능)
+NUM_OBSERVATIONS = 133
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 36
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 174
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 169
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
-GRASP_PHASE_STEPS = 480    # 8s: Fabrics arm + per-joint finger delta
-LIFT_PHASE_STEPS  = 240    # 4s: scripted arm + micro-delta hand
-LIFT_START_STEP   = GRASP_PHASE_STEPS    # 480
-EPISODE_STEPS     = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS  # 720
+GRASP_PHASE_STEPS  = 480    # 8s: Fabrics arm + per-joint finger delta
+LIFT_PHASE_STEPS   = 240    # 4s: scripted arm + micro-delta hand
+LIFT_START_STEP    = GRASP_PHASE_STEPS    # 480
+EPISODE_STEPS      = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS  # 720
+PRELOAD_START_STEP = 400    # lift 직전 80 step: under-grip penalty 활성 구간 (400~479)
 
 LIFT_Z_DELTA = 0.10    # 10cm 수직 상승
 
