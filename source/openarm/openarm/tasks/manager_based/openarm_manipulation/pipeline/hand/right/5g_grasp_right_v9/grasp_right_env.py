@@ -838,12 +838,12 @@ class GraspRightEnv(DirectRLEnv):
             palm_center_pos,        # 3
             fingertip_pos_rel_palm, # 15
             palm_to_cup,            # 3
-            middle_to_cup,          # 15  (v9.4: cup_to_fingertip 대체, FK 기반)
             last_actions,           # 26
             self._bead_mass_normalized.unsqueeze(-1),  # 1
             tip_force_xyz_norm,     # 15
+            middle_to_cup,          # 15
             phase_step_ratio,       # 1
-        ], dim=-1)   # 133D  (v9.4: -cup_to_fingertip 15D, -binary_contact 5D, +middle_to_cup 15D)
+        ], dim=-1)   # 133D  (중복 제거: -cup_to_fingertip 15D, -binary_contact 5D, +middle_to_cup 15D)
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -868,6 +868,10 @@ class GraspRightEnv(DirectRLEnv):
         ).norm(dim=-1)
         fingertip_signed_dist = (tip_to_cup_dist - CUP_RADIUS_APPROX).unsqueeze(-1).squeeze(-1)
 
+        middle_to_cup_clean = (
+            self.middle3_pos - cup_pos_clean.unsqueeze(1)
+        ).view(self.num_envs, -1)   # (N, 15)
+
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,
             arm_joint_vel_clean,
@@ -876,16 +880,15 @@ class GraspRightEnv(DirectRLEnv):
             palm_center_pos_clean,
             (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
             cup_pos_clean - palm_center_pos_clean,
-            (fingertip_pos_clean - cup_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
-            binary_contact,
             last_actions,
             self._bead_mass_normalized.unsqueeze(-1),
             tip_force_xyz_norm,     # 15D (critic도 동일 변환)
+            middle_to_cup_clean,    # 15D
             phase_step_ratio,
-        ], dim=-1)   # 138D
+        ], dim=-1)   # 133D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 138
+            actor_obs_clean,        # 133
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4
@@ -895,7 +898,7 @@ class GraspRightEnv(DirectRLEnv):
             middle_binary,          # 5
             middle_force_norm,      # 5
             fingertip_signed_dist,  # 5
-        ], dim=-1)   # 174D
+        ], dim=-1)   # 169D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -1038,9 +1041,29 @@ class GraspRightEnv(DirectRLEnv):
             * torch.exp(-self.cfg.adaptive_force_decay * force_ratio)
         )
 
+        # ---- R_preload. under-grip penalty (grasp phase 후반) ----
+        # 목적: lift 직전 80 step에서 질량 조건부 grip force 준비 학습
+        # 구조: relu(target - ratio) → 부족할수록 선형 패널티
+        # contact gate: 접촉 없을 때 패널티 없음 (grip 준비 전 탐색 방해 차단)
+        is_preload_phase = (
+            (self.episode_length_buf >= self.cfg.preload_start_step)
+            & (~self.is_lift_phase)
+        ).float()
+        r_preload = (
+            -self.cfg.preload_penalty_weight
+            * is_preload_phase
+            * has_4_contact
+            * torch.relu(self.cfg.preload_force_target_ratio - force_ratio)
+        )
+
         # ---- R9. full_contact_bonus (contact ADR 기준 전 손가락 접촉 보너스) ----
         # grasp/lift 양 phase 모두 활성 (접촉 유지 장려)
-        r9_full_contact = self.cfg.full_contact_bonus_weight * has_5_contact
+        # v9.4: depth 가중 추가 — 얕은 접촉만으로 full_bonus 받는 것 방지
+        r9_full_contact = (
+            self.cfg.full_contact_bonus_weight
+            * has_5_contact
+            * finger_depth.mean(dim=-1)   # 0~1, tip×middle 깊이 기하평균
+        )
 
         # ---- R_ft. fingertip_guide (항상 gradient, seed 분산 방지) ----
         # fingertip_pos: FK 기반 (실 로봇: FT 센서 내장 링크 FK)
@@ -1089,6 +1112,7 @@ class GraspRightEnv(DirectRLEnv):
             + r1c_multi_phalanx
             + r2_slip
             + r3_adaptive_force
+            + r_preload
             + r5_force_smooth
             + r6_lift
             + r7_action_smooth
@@ -1112,6 +1136,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["multi_phalanx_reward"]   = r1c_multi_phalanx.mean()
         self.extras["slip_reward"]            = r2_slip.mean()
         self.extras["adaptive_force_reward"]  = r3_adaptive_force.mean()
+        self.extras["preload_penalty"]        = r_preload.mean()
         self.extras["force_smooth_reward"]    = r5_force_smooth.mean()
         self.extras["lift_reward"]            = r6_lift.mean()
         self.extras["success_bonus"]          = r8_success.mean()

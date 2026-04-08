@@ -16,7 +16,7 @@
 
 v9: v8 기반 + 20D 손가락 직접 제어 + Slip/Force-Efficiency/Force-Smooth reward
 - Action: 26D (6D palm pose + 20D per-joint finger delta)
-- Observation: actor 138D / critic 174D (asymmetric)
+- Observation: actor 133D / critic 169D (asymmetric)
   v9.1: tip_force 5D norm → 15D xyz vector
 - Reward: R_slip (cup 수평 속도 기반), R_force_efficiency (mg 기준 최소 충분 힘), R_force_smooth (힘 변화 억제)
 - DR: 컵 마찰계수 μ ~ Uniform[cup_friction_min, cup_friction_max] (에피소드별 리셋)
@@ -99,9 +99,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 133 (v9.4: -cup_to_fingertip 15D, -binary_contact 5D, +middle_to_cup 15D)
+    observation_space: int = NUM_OBSERVATIONS          # 133 (중복 제거: -cup_to_fingertip 15D, -binary_contact 5D, +middle_to_cup 15D)
     action_space:      int = NUM_ACTIONS               # 26
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 174 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 169 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
