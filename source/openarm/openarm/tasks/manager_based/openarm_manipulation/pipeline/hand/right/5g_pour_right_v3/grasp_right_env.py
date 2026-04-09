@@ -518,6 +518,7 @@ class GraspRightEnv(DirectRLEnv):
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
         self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._first_capture_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._tilt_onset_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._no_tip_force_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._world_up = torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
@@ -1429,6 +1430,16 @@ class GraspRightEnv(DirectRLEnv):
         r_first_capture = self.cfg.weight_first_capture_bonus * first_capture.float()
         self._first_capture_bonus_paid |= first_capture
 
+        # tilt onset bonus: >60° 기울기 + 근접 조건 첫 달성 시 1회 bridge reward
+        # "안전한 직립 유지" 로컬 최적을 벗어나 tilt 탐색을 유도
+        tilt_onset = (
+            (self._source_up_dot_world < self.cfg.tilt_onset_dot_threshold)
+            & (self._cup_center_xy_dist < self.cfg.tilt_onset_dist_threshold)
+            & (~self._tilt_onset_bonus_paid)
+        )
+        r_tilt_onset = self.cfg.weight_tilt_onset_bonus * tilt_onset.float()
+        self._tilt_onset_bonus_paid |= tilt_onset
+
         # ---- Outcome and costs ----
         success_now = (
             (self._bead_in_target_fraction >= self.cfg.success_target_fill_ratio)
@@ -1453,6 +1464,9 @@ class GraspRightEnv(DirectRLEnv):
         # 90° 수평(dot=0): 페널티 0
         # 100° pour(dot=-0.174→clamp=0): 페널티 0 ← 핵심: pour 각도에서 페널티 없음
         premature_tilt_cost = (1.0 - self._g_ready) * self._source_up_dot_world.clamp(0.0, 1.0)
+        # grasp quality loss: full_grasp_flag=0 (thumb 없거나 others<2) 매 스텝 즉각 dense penalty
+        # 낙하(episode termination)와 달리 grasp이 흔들리는 구간에서 즉각 gradient 제공
+        grasp_loss_cost = 1.0 - full_grasp_flag
         action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
 
         total = (
@@ -1462,9 +1476,11 @@ class GraspRightEnv(DirectRLEnv):
             + r_prepour_stage
             + r_pour_stage
             + r_first_capture
+            + r_tilt_onset
             + self.cfg.weight_success * r_success
             - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
+            - self.cfg.weight_grasp_loss * grasp_loss_cost
             - self.cfg.weight_action_rate * action_rate_penalty
         )
 
@@ -1487,6 +1503,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["cost_spill"] = spill_cost.mean()
         self.extras["spill_weight"] = torch.tensor(float(spill_weight), device=self.device)
         self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
+        self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
+        self.extras["r_tilt_onset"] = r_tilt_onset.mean()
         self.extras["g_ready"] = self._g_ready.mean()
         self.extras["g_pour"] = self._g_pour.mean()
         self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
@@ -1706,6 +1724,7 @@ class GraspRightEnv(DirectRLEnv):
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False
         self._first_capture_bonus_paid[env_ids] = False
+        self._tilt_onset_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._pre_pour_ready_steps[env_ids] = 0
@@ -1969,6 +1988,7 @@ class GraspRightEnv(DirectRLEnv):
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False
         self._first_capture_bonus_paid[env_ids] = False
+        self._tilt_onset_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self.success_flag[env_ids] = False
 

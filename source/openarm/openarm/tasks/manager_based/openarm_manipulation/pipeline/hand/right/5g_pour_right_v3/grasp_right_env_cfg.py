@@ -219,7 +219,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   수정: far=0.20m → 0.22m에서 gate=(0.20-0.22)/(0.20-0.06)=-0.14 → clamp=0
     #   → 0.20m 이내에 도달하기 전에는 tilt action 완전 차단 → 순수 위치 접근만 학습
     tilt_action_gate_xy_near: float = 0.06
-    tilt_action_gate_xy_far: float = 0.20  # 0.32→0.20: 0.22m에서 tilt gate=0 → wrist spin 방지
+    tilt_action_gate_xy_far: float = 0.25  # 0.32→0.20→0.25: equilibrium 0.16m에서 gate 28%→47%
 
     # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
     approach_xy_off_near: float = 0.05
@@ -295,6 +295,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_cross: float = 15.00    # gate 없이 raw reward: 과도한 weight 불필요
     weight_capture: float = 25.00  # gate 없이 raw reward: physics가 자연스럽게 제어
     weight_first_capture_bonus: float = 8.00  # 첫 비드 유입 시 1회 보너스
+    weight_tilt_onset_bonus: float = 5.00    # tilt 탐색 유도 1회 보너스 (bridge reward)
+    tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
+    tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
     weight_success: float = 30.00   # ↑ 최종 성공 보상 강화
     weight_spill: float = 10.00
     # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
@@ -307,8 +310,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
     #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
-    weight_premature_tilt: float = 1.50   # 4.00→1.50: tilt cost < r_prepour 가능하도록
-    weight_grasp_loss: float = 0.00
+    weight_premature_tilt: float = 0.50   # 4.00→1.50→0.50: tilt_action_gate가 wrist spin 차단하므로 추가 감소
+    weight_grasp_loss: float = 0.30      # tilt 중 grasp 품질 저하에 즉각 dense signal (full_grasp_flag=0 시)
     weight_action_rate: float = 0.01
     weight_wrist_spin: float = 0.00
 
