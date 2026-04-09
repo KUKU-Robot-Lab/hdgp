@@ -1023,25 +1023,19 @@ class GraspRightEnv(DirectRLEnv):
             * torch.exp(-self.cfg.slip_sharpness * cup_horiz_vel)
         )
 
-        # ---- R3. Adaptive Force Reward (v9.3 철학 유지: 단조감소, decay 강화) ----
-        # 수식: exp(-decay * ratio)  — 단조감소, 목표 ratio 없음
+        # ---- R3. Adaptive Force Reward (v10: Gaussian target 방식) ----
+        # 수식: exp(-sharpness * (ratio - target)²)  — sweet spot at target_ratio
         #   force_ratio = total_grip / mg  (질량 정규화)
-        #   slip과의 균형으로 policy가 최적 ratio를 스스로 학습 (v9.3 설계 철학)
-        #   decay 0.3 → 0.8: 과도 grip 패널티 강화 (ratio=4.85: 0.23 → 0.02)
-        #     ratio=1.0: exp(-0.8) = 0.45
-        #     ratio=2.0: exp(-1.6) = 0.20
-        #     ratio=4.85: exp(-3.9) = 0.02  → slip/R3 균형이 ratio≈2 근방에서 수렴 유도
-        af_weight = (
-            self.grasp_adr.get_param("reward", "adaptive_force_weight")
-            if self.grasp_adr is not None
-            else self.cfg.adaptive_force_weight
-        )
-
+        #   bead_mass_normalized 관측으로 policy가 질량별 최적 grip 학습 (adaptive grip)
+        #   target=2.5: ratio=0→0.04, ratio=1→0.33, ratio=2.5→1.0, ratio=4→0.33
+        #   slip_reward와 방향 일치: target 2.5×mg는 slip 방지 충분 수준
         r3_adaptive_force = (
-            af_weight
+            self.cfg.adaptive_force_weight
             * self.is_lift_phase.float()
             * has_4_contact
-            * torch.exp(-self.cfg.adaptive_force_decay * force_ratio)
+            * torch.exp(
+                -self.cfg.af_sharpness * (force_ratio - self.cfg.af_target_ratio).pow(2)
+            )
         )
 
         # ---- R_preload. under-grip penalty (grasp phase 후반) ----
@@ -1138,7 +1132,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["force_balance_reward"]   = r1b_force_balance.mean()
         self.extras["multi_phalanx_reward"]   = r1c_multi_phalanx.mean()
         self.extras["slip_reward"]            = r2_slip.mean()
-        self.extras["adaptive_force_reward"]  = r3_adaptive_force.mean()
+        self.extras["adaptive_grip_reward"]   = r3_adaptive_force.mean()   # v10: Gaussian target
         self.extras["preload_penalty"]        = r_preload.mean()
         self.extras["force_smooth_reward"]    = r5_force_smooth.mean()
         self.extras["lift_reward"]            = r6_lift.mean()

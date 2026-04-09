@@ -87,7 +87,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
     # -----------------------------------------------------------------------
-    episode_length_s: float = 10.0
+    episode_length_s: float = 12.0   # v10: 10→12s (grasp 8s + lift 4s = 720 steps @ 60Hz)
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -191,20 +191,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     preload_force_target_ratio: float = 1.6
     preload_start_step:         int   = 400
 
-    # R3. Adaptive Force Reward (v9.3 철학 유지: 단조감소, decay 강화)
+    # R3. Adaptive Force Reward (v10: 단조감소 → Gaussian target 방식으로 변경)
     # 설계 철학:
-    #   slip          → "force 부족" 커버 (결과 기반)
-    #   adaptive_force → "force 과도" 억제 (단조감소)
-    #   최적 ratio → slip과 R3의 균형에서 policy가 스스로 학습 (target 없음)
+    #   기존(v9): exp(-decay × ratio) — 단조감소, slip과 상충하여 붕괴 유발
+    #   변경(v10): exp(-sharpness × (ratio - target)²) — Gaussian, target ratio에 sweet spot
     #
-    # R_af = af_weight * is_lift * contact * exp(-decay * ratio)
-    #   force_ratio = F_total / mg  (질량 정규화)
-    #   decay 0.3 → 0.8: 과도 grip 패널티 강화
-    #     ratio=1.0: 0.45, ratio=2.0: 0.20, ratio=4.85: 0.02
-    adaptive_force_weight:         float = 10.0
-    adaptive_force_decay:          float = 0.8   # v9.3: 0.3 → 0.8 (과도 grip 억제 강화)
-    cup_base_mass:                 float = 0.170  # kg (빈 컵 질량)
-    bead_single_mass:              float = 0.010  # kg per bead
+    #   → policy가 bead_mass_normalized 관측을 활용해 target ratio 유지하는 adaptive grip 학습
+    #   → force가 부족해도(ratio<target) 페널티, 과해도(ratio>target) 페널티
+    #   → slip_reward와 방향 일치: target ratio(2.5×mg)는 slip 방지에 충분한 수준
+    #
+    # R_af = weight * is_lift * contact * exp(-sharpness * (ratio - target)²)
+    #   target=2.5: ratio=0→0.04, ratio=1→0.33, ratio=2.5→1.0(최대), ratio=4→0.33, ratio=6→0.04
+    adaptive_force_weight:     float = 5.0
+    af_target_ratio:           float = 2.5   # 최적 grip = 2.5 × mg
+    af_sharpness:              float = 0.5   # Gaussian 폭 (클수록 좁은 sweet spot)
+    cup_base_mass:             float = 0.170  # kg (빈 컵 질량)
+    bead_single_mass:          float = 0.010  # kg per bead
 
     # R_ft. fingertip_guide: fingertip → cup 거리 기반 (항상 gradient, seed 분산 방지)
     # sim2real 영향 없음: fingertip_pos는 FK 또는 FT 센서로 실 로봇에서도 획득 가능
@@ -265,9 +267,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         "finger": {
             "delta_scale": (0.05, 0.15),
         },
-        "reward": {
-            "adaptive_force_weight": (5.0, 10.0),
-        }
+        # adaptive_force_weight는 ADR에서 제거 (v10: Gaussian target 방식으로 변경, 가중치 고정)
     })
 
     # -----------------------------------------------------------------------
