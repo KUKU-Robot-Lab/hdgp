@@ -845,6 +845,8 @@ class GraspRightEnv(DirectRLEnv):
             phase_step_ratio,       # 1
         ], dim=-1)   # 133D  (중복 제거: -cup_to_fingertip 15D, -binary_contact 5D, +middle_to_cup 15D)
 
+        actor_obs = torch.nan_to_num(actor_obs, nan=0.0, posinf=5.0, neginf=-5.0)
+
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
                 f"[v9] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
@@ -899,6 +901,8 @@ class GraspRightEnv(DirectRLEnv):
             middle_force_norm,      # 5
             fingertip_signed_dist,  # 5
         ], dim=-1)   # 169D
+
+        critic_obs = torch.nan_to_num(critic_obs, nan=0.0, posinf=5.0, neginf=-5.0)
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
