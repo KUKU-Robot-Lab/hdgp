@@ -299,8 +299,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
-    # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 300으로 압도적 강화
-    weight_success: float = 300.00  # 30→300: terminal signal이 dense reward를 압도해야 학습 유도
+    # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 100으로 강화 (300은 과도했음)
+    weight_success: float = 100.00  # 30→300→100
     # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
     # 0이면 비활성.
     weight_success_overfill: float = 0.0

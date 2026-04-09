@@ -62,8 +62,8 @@ params:
     #   128  envs: lr=4e-4  (baseline)
     #   512  envs: lr=8e-4
     #   1024 envs: lr=1.1e-3
-    #   2048 envs: lr=1.6e-3  ← default below
-    learning_rate: 1.6e-3
+    #   2048 envs: lr=1.6e-3
+    learning_rate: 3e-4
     lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
@@ -75,7 +75,7 @@ params:
     grad_norm: 1.0
     entropy_coef: 0.0008         # 탐색 과잉 완화
     truncate_grads: True
-    e_clip: 0.2
+    e_clip: 0.25
     horizon_length: 64
     # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함 (항상 4 splits)
     #   128  envs: batch=   8,192 → minibatch=  2,048  lr=4e-4
@@ -83,7 +83,7 @@ params:
     #   1024 envs: batch=  65,536 → minibatch= 16,384  lr=1.1e-3
     #   2048 envs: batch= 131,072 → minibatch= 32,768  lr=1.6e-3  ← default below
     minibatch_size: 32768     # tuned for --num_envs 2048
-    mini_epochs: 4
+    mini_epochs: 6
     critic_coef: 4
     clip_value: True
     clip_actions: False
@@ -97,12 +97,12 @@ params:
       normalize_value: True
       value_bootstrap: False
       minibatch_size: 32768     # actor와 동일하게 맞출 것 (num_envs 2048 기준)
-      mini_epochs: 4
-      learning_rate: 1.6e-3
+      mini_epochs: 6
+      learning_rate: 3e-4
       lr_schedule: linear
       kl_threshold: 0.013
       clip_value: True
-      e_clip: 0.2
+      e_clip: 0.25
       network:
         name: actor_critic
         central_value: True
