@@ -1443,7 +1443,16 @@ class GraspRightEnv(DirectRLEnv):
         )
         
         # Smooth premature tilt penalty: only active when far from target (g_ready is low)
-        premature_tilt_cost = (1.0 - self._g_ready) * (1.0 - self._source_up_dot_world.clamp(0.0, 1.0))
+        # [test4 분석] 버그 수정: 기존 (1 - dot.clamp(0,1))은 90° 이상 기울면 dot이 음수 → clamp(0)
+        # → (1-0)=1.0으로 최대 페널티. pour_tilt_target=100°에서 dot=cos(100°)=-0.174 → clamp=0
+        # → 실제 pour 각도가 항상 최대 페널티 구간 → cost_premtilt(0.82/step) >> r_pour(0.06/step)
+        # → 정책이 pour를 시도할수록 손해 → g_tilt Q3=0.535→Q4=0.373으로 급감하며 pour 포기
+        #
+        # 수정: (1-dot.clamp(0,1)) → dot.clamp(0,1)
+        # 직립(dot=1): 페널티 최대 (이동 전 upright 유지 유도, 기존과 동일한 방향)
+        # 90° 수평(dot=0): 페널티 0
+        # 100° pour(dot=-0.174→clamp=0): 페널티 0 ← 핵심: pour 각도에서 페널티 없음
+        premature_tilt_cost = (1.0 - self._g_ready) * self._source_up_dot_world.clamp(0.0, 1.0)
         action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
 
         total = (

@@ -152,9 +152,23 @@ def palm_pose_mins(max_pose_angle: float) -> list:
 
 
 def palm_pose_maxs(max_pose_angle: float) -> list:
+    # [test1/3 분석] y_max=0.18m 이 workspace 병목:
+    #   pregrasp palm y = spawn_center_y(-0.15) + offset_y(-0.07) = -0.22m
+    #   env_cfg.py palm_delta_xyz=0.3m → max palm y = -0.22 + 0.30 = +0.08m
+    #   → workspace clamp(y_max=0.18)은 이미 0.08m보다 크므로 clamp 발생 안함
+    #   → 실질적 병목은 delta=0.3m 부족 + y_max=0.18m의 조합
+    #
+    #   palm_delta_xyz=0.5m(env_cfg.py 동시 수정) 후 계산:
+    #   max palm y = -0.22 + 0.50 = +0.28m → y_max=0.22m clamp 작동
+    #   → 실제 달성 palm y = 0.22m → cup y ≈ 0.22m
+    #   타겟 컵 y ≈ 왼팔 end-effector y ≈ +0.27m (LEFT_ARM_REST_JOINT_POS j4=1.5 기준)
+    #   → cup-target gap ≈ 0.27 - 0.22 = 0.05m
+    #   g_align_xy(scale=5) = exp(-5 × 0.05) = exp(-0.25) = 0.78 → pre-pour 완전 활성화
+    #
+    #   y_max=0.22m: 왼팔 y≈0.27m에서 5cm 여유 (기존 0.18m 대비 4cm 더 접근, 충돌 위험 낮음)
     d = math.pi / 180.0
     return [
-        0.65, 0.18, 0.65,   # pour task: y_max +0.18m (타겟 컵 도달, 왼팔 y≈0.27m에서 9cm 여유)
+        0.65, 0.22, 0.65,   # y_max: 0.18→0.22 (왼팔 y≈0.27m 기준 5cm 여유, cup-target 0.05m 달성)
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

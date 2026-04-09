@@ -189,7 +189,19 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # test2에서 reset 직후 mouth_xy가 0.30~0.36m인데 delta_xyz=0.10m로는 일부 env가
     # 타겟컵 근처까지 도달 불가하다. transport 여유를 키운다.
-    palm_delta_xyz: float = 0.3
+    #
+    # [test1/3 분석] Workspace-Target 거리 불일치:
+    #   pregrasp palm y = cup_y_spawn(-0.15) + pregrasp_offset_y(-0.07) = -0.22m
+    #   delta=0.3m → max palm y = -0.22 + 0.30 = +0.08m (workspace y_max=0.18 이전에 delta 소진)
+    #   타겟 컵 y ≈ 왼팔 end-effector y ≈ +0.27m
+    #   → 최소 cup-target XY gap = 0.27 - 0.08 = 0.19m (달성 불가)
+    #   → TB 관찰 cup_center_xy_dist 0.22~0.25m plateau 원인
+    #
+    #   수정: delta=0.5m + y_max=0.22m(preset.py 동시 수정)
+    #   max palm y = min(-0.22+0.50, 0.22) = 0.22m
+    #   → cup-target gap ≈ 0.27 - 0.22 = 0.05m → g_align_xy(scale=5) = exp(-5×0.05) = 0.78
+    #   → pre-pour reward 완전 활성화 가능
+    palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm xyz delta.
     # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
     warmstart_collect_palm_delta_xyz: float = 0.10
@@ -197,8 +209,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
     # near < far 여야 선형 보간이 성립하므로 작은 값(가까움) → 1, 큰 값(멀어짐) → 0 순서로 둔다.
+    #
+    # [test1/3 분석] tilt_gate 과도 허용 → 제자리 wrist spin:
+    #   기존 far=0.32m: policy 수렴 위치(0.22m)에서 gate=(0.32-0.22)/(0.32-0.06)=0.38 (38% 허용)
+    #   → tilt 시도 시 premature_tilt_cost(3.6/step) >> r_prepour(0.99/step) → 실제 tilt 불가
+    #   → 대신 cup-local Z축 spin만 발생 (spin은 source_up_dot_world 변화 없어 penalty 없음)
+    #   → 정성 관찰 "제자리 회전" 환경의 원인
+    #
+    #   수정: far=0.20m → 0.22m에서 gate=(0.20-0.22)/(0.20-0.06)=-0.14 → clamp=0
+    #   → 0.20m 이내에 도달하기 전에는 tilt action 완전 차단 → 순수 위치 접근만 학습
     tilt_action_gate_xy_near: float = 0.06
-    tilt_action_gate_xy_far: float = 0.32  # policy 수렴 위치 ~0.23m보다 충분히 커야 tilt 가능
+    tilt_action_gate_xy_far: float = 0.20  # 0.32→0.20: 0.22m에서 tilt gate=0 → wrist spin 방지
 
     # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
     approach_xy_off_near: float = 0.05
@@ -210,7 +231,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # stage gate / pre-pour geometry
     # test1에서 mouth_xy≈0.23m일 때 g_align_xy가 1e-3 이하로 죽어 접근 전 stage 신호가 약했음.
     # xy gate/approach를 넓혀 먼 거리에서도 target 방향 gradient를 유지한다.
-    reward_gate_xy_scale: float = 12.0   # cup center 기반으로 변경: center는 항상 pour_point보다 작음
+    #
+    # [test1/3 분석] g_ready Gate 너무 엄격 → Stage C/D 학습 완전 차단:
+    #   g_align_xy = exp(-scale × cup_center_xy_dist)
+    #   scale=12, dist=0.22m → exp(-12×0.22) = exp(-2.64) = 0.071 (7.1%)
+    #   g_ready = g_align_xy × g_clear ≈ 0.071 × g_clear → TB 관찰값 g_ready≈0.11과 일치
+    #
+    #   g_ready=0.5가 되려면: exp(-12×d)=0.5 → d = ln(2)/12 = 0.058m
+    #   그런데 workspace 제한으로 cup-target gap 최소 0.19m → 물리적으로 달성 불가
+    #
+    #   결과: r_prepour = g_ready(0.11) × 9.0 = 0.99/step
+    #         premature_tilt_cost = (1-0.11) × 4.0 = 3.56/step
+    #         tilt 시 cost > reward → policy가 tilt 학습 자체를 포기
+    #
+    #   수정: scale=5 → g_align_xy @ 0.22m = exp(-5×0.22) = 0.33 (4.7배 증가)
+    #         g_ready=0.5 달성 거리: ln(2)/5 = 0.14m (workspace 확장 후 달성 가능)
+    reward_gate_xy_scale: float = 5.0   # 12.0→5.0: g_align_xy @ 0.22m: 0.07→0.33, 50%선 0.06→0.14m
     reward_gate_clear_scale: float = 80.0
     reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015
@@ -236,14 +272,23 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 유지계는 패널티형 reward로 바꿨으므로 과도한 상수항이 되지 않게 낮추고,
     # transport/capture/success 쪽 가중치를 상대적으로 키운다.
-    weight_grasp_maintain: float = 2.00
-    weight_contact_maintain: float = 1.00
+    #
+    # [test1/3 분석] r_hold Local Optimum → 안 움직임:
+    #   r_hold max = grasp_maintain(2.0) + contact_maintain(1.0) + finger_curl(2.0) = 5.0/step
+    #   TB 관찰: r_hold≈4.87/step (포화), cup_center_xy_dist=0.22m 에서 8756 epoch 내내 plateau
+    #   원인: 안 움직이면 step당 5.0을 안정적으로 받음. 이동 시 grasp slip → grasp_maintain 감소.
+    #         이동으로 얻는 r_approach 증분보다 잃는 r_hold가 크면 이동하지 않는 게 유리.
+    #   수정: r_hold max → 0.5+0.3+0.5 = 1.3/step (75% 감소) → 이동 유인 상대적 강화
+    weight_grasp_maintain: float = 0.50   # 2.00→0.50: r_hold local optimum 해소
+    weight_contact_maintain: float = 0.30  # 1.00→0.30
     weight_force_balance: float = 0.30
-    weight_finger_curl: float = 2.00
+    weight_finger_curl: float = 0.50      # 2.00→0.50: r_hold max 5.0→1.3/step
     weight_approach_xy: float = 10.00   # cup center 기반 approach → 더 직접적으로 유도 가능
     weight_approach_z: float = 3.00
     weight_cup_upright: float = 0.80
-    weight_transport_progress: float = 6.00
+    # [test1/3 분석] r_transport_progress = clamp(prev_mouth_xy - mouth_xy, 0): 전진할 때만 보상.
+    # r_hold를 낮춰 이동 유인이 생겼을 때 전진 방향 신호를 강화한다.
+    weight_transport_progress: float = 12.00  # 6.00→12.00: 전진 보상 강화
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
     weight_release: float = 0.00    # 제거: spill도 보상하는 문제로 인해 비활성화
@@ -252,7 +297,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_first_capture_bonus: float = 8.00  # 첫 비드 유입 시 1회 보너스
     weight_success: float = 30.00   # ↑ 최종 성공 보상 강화
     weight_spill: float = 10.00
-    weight_premature_tilt: float = 4.00   # gate 없으므로 이것이 조기 tilt 억제 유일 수단
+    # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
+    #   premature_tilt_cost = (1 - g_ready) × (1 - source_up_dot_world)
+    #   g_ready=0.11, cup 100° tilt 시 source_up_dot_world≈-0.17 → (1-(-0.17))=1.17
+    #   cost = 0.89 × 1.17 × 4.0 = 4.17/step
+    #   r_prepour = 0.11 × (5.0+4.0) = 0.99/step
+    #   → cost(4.17) >> reward(0.99) → policy가 tilt 절대 시도하지 않음
+    #
+    #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
+    #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
+    #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
+    weight_premature_tilt: float = 1.50   # 4.00→1.50: tilt cost < r_prepour 가능하도록
     weight_grasp_loss: float = 0.00
     weight_action_rate: float = 0.01
     weight_wrist_spin: float = 0.00
@@ -272,7 +327,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
-    reward_approach_xy_scale: float = 5.0
+    # [test1/3 분석] approach tanh 포화 → 0.22m에서 gradient 약화:
+    #   r_approach_xy = 1 - tanh(scale × dist)
+    #   scale=5.0, dist=0.22m → 1 - tanh(1.10) = 1 - 0.80 = 0.20 (max의 20%만 남음)
+    #   gradient = 5 × sech²(1.10) = 5 × 0.358 = 1.79 → 완만해서 전진 유인 약함
+    #
+    #   수정: scale=2.5 → 1 - tanh(0.55) = 1 - 0.50 = 0.50 (max의 50%)
+    #   gradient = 2.5 × sech²(0.55) = 2.5 × 0.748 = 1.87 → 유사한 gradient, 더 넓은 범위
+    reward_approach_xy_scale: float = 2.5   # 5.0→2.5: 0.22m에서 approach reward 0.20→0.50
     # DexPour-style stage thresholds / shaping
     stage_approach_xy_threshold: float = 0.14
     stage_pour_xy_threshold: float = 0.15
