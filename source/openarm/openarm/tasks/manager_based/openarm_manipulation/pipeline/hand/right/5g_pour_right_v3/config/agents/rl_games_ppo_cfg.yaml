@@ -58,7 +58,12 @@ params:
     normalize_advantage: True
     gamma: 0.998
     tau: 0.95
-    learning_rate: 4e-4           # 살짝 올려 plateau 이후 재점화
+    # num_envs별 lr (sqrt scaling 기준):
+    #   128  envs: lr=4e-4  (baseline)
+    #   512  envs: lr=8e-4
+    #   1024 envs: lr=1.1e-3
+    #   2048 envs: lr=1.6e-3  ← default below
+    learning_rate: 1.6e-3
     lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
@@ -72,10 +77,12 @@ params:
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 64
-    # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
-    #   128  envs: batch=   8192 → minibatch= 2048 (4 splits)
-    #   2048 envs: batch= 131072 → minibatch=32768 (4 splits)  ← 학습 권장
-    minibatch_size: 2048      # default tuned for --num_envs 128
+    # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함 (항상 4 splits)
+    #   128  envs: batch=   8,192 → minibatch=  2,048  lr=4e-4
+    #   512  envs: batch=  32,768 → minibatch=  8,192  lr=8e-4
+    #   1024 envs: batch=  65,536 → minibatch= 16,384  lr=1.1e-3
+    #   2048 envs: batch= 131,072 → minibatch= 32,768  lr=1.6e-3  ← default below
+    minibatch_size: 32768     # tuned for --num_envs 2048
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
@@ -89,9 +96,9 @@ params:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 2048      # actor와 동일하게 맞출 것
+      minibatch_size: 32768     # actor와 동일하게 맞출 것 (num_envs 2048 기준)
       mini_epochs: 4
-      learning_rate: 4e-4
+      learning_rate: 1.6e-3
       lr_schedule: linear
       kl_threshold: 0.013
       clip_value: True

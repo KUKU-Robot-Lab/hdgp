@@ -292,13 +292,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
     weight_release: float = 0.00    # 제거: spill도 보상하는 문제로 인해 비활성화
-    weight_cross: float = 15.00    # gate 없이 raw reward: 과도한 weight 불필요
-    weight_capture: float = 25.00  # gate 없이 raw reward: physics가 자연스럽게 제어
+    weight_cross: float = 20.00    # 15→20: pour 신호 강화
+    weight_capture: float = 40.00  # 25→40: 더 많이 넣기 신호 강화
     weight_first_capture_bonus: float = 8.00  # 첫 비드 유입 시 1회 보너스
     weight_tilt_onset_bonus: float = 5.00    # tilt 탐색 유도 1회 보너스 (bridge reward)
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
-    weight_success: float = 30.00   # ↑ 최종 성공 보상 강화
+    # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
+    # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 300으로 압도적 강화
+    weight_success: float = 300.00  # 30→300: terminal signal이 dense reward를 압도해야 학습 유도
+    # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
+    # 0이면 비활성.
+    weight_success_overfill: float = 0.0
     weight_spill: float = 10.00
     # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
     #   premature_tilt_cost = (1 - g_ready) × (1 - source_up_dot_world)
@@ -310,7 +315,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
     #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
-    weight_premature_tilt: float = 0.50   # 4.00→1.50→0.50: tilt_action_gate가 wrist spin 차단하므로 추가 감소
+    weight_premature_tilt: float = 0.50   # 4.00→1.50→0.50: tilt_action_gate가 wrist spin 차단하므로 감소
     weight_grasp_loss: float = 0.30      # tilt 중 grasp 품질 저하에 즉각 dense signal (full_grasp_flag=0 시)
     weight_action_rate: float = 0.01
     weight_wrist_spin: float = 0.00
@@ -326,6 +331,19 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     spill_adr_num_increments: int = 50
     spill_adr_increment_interval: int = 20000
     spill_adr_trigger_threshold: float = 0.3
+
+    # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
+    # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
+    # 해당 기준에서 success_rate >= 15%이면 한 단계 올림 (8단계 × 0.0375 = 0.30 range)
+    enable_success_adr: bool = True
+    success_adr_custom_cfg: dict = {
+        "success": {
+            "fill_ratio": (0.20, 0.50),  # 2개→5개 커리큘럼
+        }
+    }
+    success_adr_num_increments: int = 8
+    success_adr_increment_interval: int = 20000
+    success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
 
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수

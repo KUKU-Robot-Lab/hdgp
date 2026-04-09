@@ -389,6 +389,17 @@ class GraspRightEnv(DirectRLEnv):
             else None
         )
 
+        self.success_adr = (
+            GraspADR(
+                custom_cfg=cfg.success_adr_custom_cfg,
+                num_increments=cfg.success_adr_num_increments,
+                increment_interval=cfg.success_adr_increment_interval,
+                trigger_threshold=cfg.success_adr_trigger_threshold,
+            )
+            if cfg.enable_success_adr
+            else None
+        )
+
         self._noise_base_joint_pos = cfg.obs_noise_joint_pos
         self._noise_base_joint_vel = cfg.obs_noise_joint_vel
         self._noise_base_body_pos  = cfg.obs_noise_body_pos
@@ -1405,7 +1416,7 @@ class GraspRightEnv(DirectRLEnv):
         )
         r_align = 0.5 * (self._mouth_alignment_cos + 1.0)
         
-        # Soft-gated pre-pour signals
+        # Pre-pour signals (g_ready gate: tilt reward only active near target)
         r_prepour_stage = self._g_ready * (
             self.cfg.weight_prepour_dir * r_tilt
             + self.cfg.weight_prepour_align * r_align
@@ -1441,11 +1452,31 @@ class GraspRightEnv(DirectRLEnv):
         self._tilt_onset_bonus_paid |= tilt_onset
 
         # ---- Outcome and costs ----
+        # ADR: success 기준을 낮은 fill_ratio에서 시작해 점진적으로 상향
+        success_fill_ratio = (
+            self.success_adr.get_param("success", "fill_ratio")
+            if self.success_adr is not None
+            else self.cfg.success_target_fill_ratio
+        )
+
         success_now = (
-            (self._bead_in_target_fraction >= self.cfg.success_target_fill_ratio)
+            (self._bead_in_target_fraction >= success_fill_ratio)
             & (self._spill_ratio <= self.cfg.success_spill_max)
         )
+
+        # 기본 성공 보상(바이너리)
         r_success = success_now.float()
+
+        # 성공 기준을 넘은 양에 비례한 오버필 보너스 (옵션)
+        overfill_bonus = 0.0
+        if self.cfg.weight_success_overfill > 0.0:
+            overfill = torch.clamp(
+                (self._bead_in_target_fraction - success_fill_ratio)
+                / (1.0 - success_fill_ratio + 1e-6),
+                min=0.0,
+                max=1.0,
+            )
+            overfill_bonus = self.cfg.weight_success_overfill * overfill
         spill_cost = self._spill_ratio
         spill_weight = (
             self.spill_adr.get_param("reward", "spill_weight")
@@ -1478,6 +1509,7 @@ class GraspRightEnv(DirectRLEnv):
             + r_first_capture
             + r_tilt_onset
             + self.cfg.weight_success * r_success
+            + overfill_bonus
             - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
             - self.cfg.weight_grasp_loss * grasp_loss_cost
@@ -1492,6 +1524,8 @@ class GraspRightEnv(DirectRLEnv):
             self.spill_adr.maybe_increment(_ep_success_rate)
         if self.noise_adr is not None:
             self.noise_adr.maybe_increment(_ep_success_rate)
+        if self.success_adr is not None:
+            self.success_adr.maybe_increment(_ep_success_rate)
 
         # ---- Logging to TensorBoard ----
         self.extras["r_hold"] = r_hold.mean()
@@ -1500,6 +1534,9 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["r_prepour"] = r_prepour_stage.mean()
         self.extras["r_pour"] = r_pour_stage.mean()
         self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
+        self.extras["r_success_overfill"] = (
+            overfill_bonus.mean() if isinstance(overfill_bonus, torch.Tensor) else 0.0
+        )
         self.extras["cost_spill"] = spill_cost.mean()
         self.extras["spill_weight"] = torch.tensor(float(spill_weight), device=self.device)
         self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
@@ -1520,6 +1557,13 @@ class GraspRightEnv(DirectRLEnv):
         if self.noise_adr is not None:
             self.extras["adr_noise_progress"] = torch.tensor(
                 self.noise_adr.progress, device=self.device
+            )
+        if self.success_adr is not None:
+            self.extras["adr_success_progress"] = torch.tensor(
+                self.success_adr.progress, device=self.device
+            )
+            self.extras["success_fill_ratio"] = torch.tensor(
+                float(success_fill_ratio), device=self.device
             )
 
         return total
@@ -1552,8 +1596,14 @@ class GraspRightEnv(DirectRLEnv):
         )
         dropped_by_force = drop_force_active & (self._no_tip_force_steps >= self.cfg.drop_force_hold_steps)
 
+        success_fill_ratio = (
+            self.success_adr.get_param("success", "fill_ratio")
+            if self.success_adr is not None
+            else self.cfg.success_target_fill_ratio
+        )
+
         success_by_fill = (
-            (self._bead_in_target_fraction >= self.cfg.success_target_fill_ratio)
+            (self._bead_in_target_fraction >= success_fill_ratio)
             & (self._spill_ratio <= self.cfg.success_spill_max)
         )
         self.success_flag.copy_(success_by_fill)
