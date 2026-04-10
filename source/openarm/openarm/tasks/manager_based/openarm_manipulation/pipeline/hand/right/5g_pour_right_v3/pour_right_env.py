@@ -82,7 +82,8 @@ from .pour_right_constants import (
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
 )
-from .pour_adr import GraspADR
+from .pour_adr import PourADR
+from .pour_adr import PourADR as GraspADR
 from .pour_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
@@ -1188,7 +1189,7 @@ class PourRightEnv(DirectRLEnv):
         source_pour_axis_clean = self._source_pour_axis_w
         source_up_axis_clean = self._source_up_axis_w
         target_up_axis_clean = self._target_up_axis_w
-        bead_pos_clean = self._bead_centroid_w
+        bead_pos_clean = self._bead_centroid_w  # (미사용, 하위 호환 보존)
 
         # ==== Actor obs용 noisy state (sim2real domain randomization) ====
         if self._warmstart_collect_mode:
@@ -1271,14 +1272,6 @@ class PourRightEnv(DirectRLEnv):
         distal_binary     = self.distal_binary_contact_buf.float()
         distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
-        bead_pos_rel_source_cup = quat_apply_inverse(
-            right_cup_quat_clean,
-            bead_pos_clean - right_cup_pos_clean,
-        )
-        bead_pos_rel_target_cup = quat_apply_inverse(
-            left_cup_quat_clean,
-            bead_pos_clean - left_cup_pos_clean,
-        )
 
         # critic actor_obs_clean (106D) — clean state 재조합, actor_obs 구조와 동일
         actor_obs_clean = torch.cat([
@@ -1314,14 +1307,12 @@ class PourRightEnv(DirectRLEnv):
         ], dim=-1)   # 110D
 
         critic_obs = torch.cat([
-            actor_obs_clean,                                    # 106
+            actor_obs_clean,                                    # 110
             left_arm_joint_pos_clean,                          # 9
             left_arm_joint_vel_clean,                          # 9
             distal_binary,                                     # 5
             distal_force_norm,                                 # 5
             cup_height_delta,                                  # 1
-            bead_pos_rel_source_cup,                           # 3
-            bead_pos_rel_target_cup,                           # 3
             self._mouth_distance.unsqueeze(1),                 # 1
             self._mouth_xy_distance.unsqueeze(1),              # 1
             self._cup_center_xy_dist.unsqueeze(1),             # 1
@@ -1338,7 +1329,7 @@ class PourRightEnv(DirectRLEnv):
             self._bead_in_source_fraction.unsqueeze(1),        # 1
             self._bead_in_target_fraction.unsqueeze(1),        # 1
             self._spill_ratio.unsqueeze(1),                    # 1
-        ], dim=-1)   # 157D
+        ], dim=-1)   # 155D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(

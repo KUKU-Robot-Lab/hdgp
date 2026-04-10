@@ -71,10 +71,11 @@ class TestObsDimensions:
         )
 
     def test_critic_obs_includes_bead_fractions(self):
-        """Critic obs는 bead 상태 fractions을 포함해야 한다 (기존 유지 검증)."""
-        # critic extras에 bead_cross(1) + bead_in_source(1) + bead_in_target(1) + spill(1) = 4
-        assert NUM_CRITIC_EXTRAS >= 4, (
-            f"Critic extras({NUM_CRITIC_EXTRAS}D)에 bead fraction 4개가 없음."
+        """Critic extras는 bead 상태 fractions + stage gates + distal sensors를 포함해야 한다."""
+        # extras: left_arm(18) + distal(10) + cup_height(1) + scalars(16) = 45
+        assert NUM_CRITIC_EXTRAS == 45, (
+            f"Critic extras({NUM_CRITIC_EXTRAS}D) != 45. "
+            f"bead pos 6D 제거 후 기대값: 45D."
         )
 
     def test_critic_total_dim_consistent(self):

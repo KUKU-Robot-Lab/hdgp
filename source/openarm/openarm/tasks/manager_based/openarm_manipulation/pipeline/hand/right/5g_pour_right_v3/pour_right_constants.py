@@ -42,14 +42,12 @@ Actor Observation (108D) — sim2real 가능:
   spill_ratio:              1  (유출 비율 — spill_cost weight=10 대응)
   Total:                  110
 
-Critic Extra (50D) — sim-only privileged:
+Critic Extra (45D) — sim-only privileged:
   left_arm_joint_pos:       9
   left_arm_joint_vel:       9
   distal_contact_binary:    5  (rl_dg_*_4)
   distal_contact_norm:      5
   cup_height_delta:         1
-  bead_pos_rel_source_cup:  3
-  bead_pos_rel_target_cup:  3
   mouth_distance:           1
   mouth_xy_distance:        1
   mouth_z_clearance:        1
@@ -65,9 +63,9 @@ Critic Extra (50D) — sim-only privileged:
   bead_in_source_fraction:  1
   bead_in_target_fraction:  1
   spill_ratio:              1
-  Total:                   50
+  Total:                   45
 
-Critic Total: 105 + 50 = 155D
+Critic Total: 110 + 45 = 155D
 
 Episode (10s @ 60Hz = 600 steps):
   Pour phase: Fabrics arm policy + frozen hand
@@ -104,8 +102,8 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 NUM_OBSERVATIONS = 110        # Actor: 106 + bead_in_source(1) + bead_in_target(1) + bead_cross(1) + spill_ratio(1)
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 51      # stage gate + bead/spill + cup_center_xy_dist
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 159
+NUM_CRITIC_EXTRAS   = 45      # stage gate + bead/spill + distal sensors
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 155
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
