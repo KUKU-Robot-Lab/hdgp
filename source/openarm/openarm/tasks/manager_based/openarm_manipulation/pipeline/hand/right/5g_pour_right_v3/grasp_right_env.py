@@ -532,6 +532,7 @@ class GraspRightEnv(DirectRLEnv):
         self._tilt_onset_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._no_tip_force_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._source_empty_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._world_up = torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
 
         self._warmstart_collect_mode = False
@@ -1431,9 +1432,16 @@ class GraspRightEnv(DirectRLEnv):
 
         # gate 제거: physics가 자연스럽게 제어 (컵이 멀리 있으면 비드가 target에 안 들어감)
         # g_ready gate는 tilt 시 g_align_xy 붕괴로 r_pour가 0이 되는 근본 원인이었음.
+        # r_pour_align: pour 중에도 방향 정렬(mouth alignment) 유지 유도.
+        # pre-pour stage에서는 g_ready gate 하에 r_align이 제공되지만,
+        # 실제 pour(tilted)로 진입하면 g_ready gate가 약해져 alignment 신호가 사라짐 → 빗나감.
+        # 이를 보완하기 위해 pour stage에 ungated alignment를 추가.
+        # weight=2.0 (capture=40, cross=20 대비 소규모 → 방향 유지 유도, 과도한 alignment 최적화 방지)
+        r_pour_align = 0.5 * (self._mouth_alignment_cos + 1.0)
         r_pour_stage = (
             self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
+            + self.cfg.weight_pour_align * r_pour_align
         )
 
         # 첫 비드 유입 시 1회성 보너스로 탐색을 유도
@@ -1533,6 +1541,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["r_approach"] = r_approach.mean()
         self.extras["r_prepour"] = r_prepour_stage.mean()
         self.extras["r_pour"] = r_pour_stage.mean()
+        self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
+        self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
         self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
         self.extras["r_success_overfill"] = (
             overfill_bonus.mean() if isinstance(overfill_bonus, torch.Tensor) else 0.0
@@ -1596,6 +1606,21 @@ class GraspRightEnv(DirectRLEnv):
         )
         dropped_by_force = drop_force_active & (self._no_tip_force_steps >= self.cfg.drop_force_hold_steps)
 
+        # 소스 컵이 비어있는 상태가 source_empty_hold_steps 연속 지속되면 종료.
+        # hold 버퍼를 두는 이유: 비드가 공중에 있는 동안 종료하면 타겟 컵 착지 전에 에피소드가
+        # 끝나 capture 집계가 누락될 수 있음 → 30 steps(0.5s) 대기 후 최종 판정.
+        source_empty_now = (
+            (self._bead_in_source_fraction < 0.05)
+            & (self.episode_length_buf >= self.cfg.episode_hold_steps)
+            & (~torch.full_like(self.success_flag, self._warmstart_collect_mode))
+        )
+        self._source_empty_steps = torch.where(
+            source_empty_now,
+            self._source_empty_steps + 1,
+            torch.zeros_like(self._source_empty_steps),
+        )
+        source_drained = source_empty_now & (self._source_empty_steps >= self.cfg.source_empty_hold_steps)
+
         success_fill_ratio = (
             self.success_adr.get_param("success", "fill_ratio")
             if self.success_adr is not None
@@ -1610,7 +1635,7 @@ class GraspRightEnv(DirectRLEnv):
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
         self._maybe_store_warmstart_successes()
 
-        terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag
+        terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag | source_drained
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         return terminated, truncated
@@ -1776,6 +1801,7 @@ class GraspRightEnv(DirectRLEnv):
         self._first_capture_bonus_paid[env_ids] = False
         self._tilt_onset_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
+        self._source_empty_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._pre_pour_ready_steps[env_ids] = 0
 
@@ -2040,6 +2066,7 @@ class GraspRightEnv(DirectRLEnv):
         self._first_capture_bonus_paid[env_ids] = False
         self._tilt_onset_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
+        self._source_empty_steps[env_ids] = 0
         self.success_flag[env_ids] = False
 
         self.actions[env_ids, :6] = 0.0

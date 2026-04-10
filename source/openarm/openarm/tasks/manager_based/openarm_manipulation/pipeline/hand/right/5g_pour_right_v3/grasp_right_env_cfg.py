@@ -63,6 +63,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
     for i in range(_DEFAULT_BEAD_COUNT):
         bead_spawn_cfg = UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
+            scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
             mass_props=sim_utils.MassPropertiesCfg(mass=0.01),  # 10g 구슬
             rigid_props=RigidBodyPropertiesCfg(
@@ -262,6 +263,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     success_z_clearance_max: float = 0.050
     success_hold_steps: int = 10
     drop_force_hold_steps: int = 10
+    # 소스 컵이 비어있는 상태가 N 스텝 연속 지속되면 에피소드 종료
+    # 비드 낙하 + 착지에 ~0.3~0.5초 필요 → 60 steps (1.0s @ 60Hz) 여유
+    source_empty_hold_steps: int = 60
 
     # -----------------------------------------------------------------------
     # Reward weights
@@ -294,6 +298,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     weight_release: float = 0.00    # 제거: spill도 보상하는 문제로 인해 비활성화
     weight_cross: float = 20.00    # 15→20: pour 신호 강화
     weight_capture: float = 40.00  # 25→40: 더 많이 넣기 신호 강화
+    weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
     weight_first_capture_bonus: float = 8.00  # 첫 비드 유입 시 1회 보너스
     weight_tilt_onset_bonus: float = 5.00    # tilt 탐색 유도 1회 보너스 (bridge reward)
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거

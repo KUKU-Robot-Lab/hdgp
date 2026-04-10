@@ -1126,21 +1126,23 @@ class GraspRightEnv(DirectRLEnv):
         if self.grasp_adr is not None:
             self.grasp_adr.maybe_increment(_ep_success_rate)     # threshold=0.8
 
-        # ---- 로깅: rewards + tip force ----
-        self.extras["palm_approach_reward"]   = r0_palm_approach.mean()
-        self.extras["enclosure_reward"]       = r1_enclosure.mean()
-        self.extras["force_balance_reward"]   = r1b_force_balance.mean()
-        self.extras["multi_phalanx_reward"]   = r1c_multi_phalanx.mean()
-        self.extras["slip_reward"]            = r2_slip.mean()
-        self.extras["adaptive_grip_reward"]   = r3_adaptive_force.mean()   # v10: Gaussian target
-        self.extras["preload_penalty"]        = r_preload.mean()
-        self.extras["force_smooth_reward"]    = r5_force_smooth.mean()
-        self.extras["lift_reward"]            = r6_lift.mean()
-        self.extras["success_bonus"]          = r8_success.mean()
-        self.extras["full_contact_bonus"]     = r9_full_contact.mean()
-        self.extras["fingertip_guide_reward"] = r_ft_guide.mean()
-        self.extras["action_smoothness"]      = r7_action_smooth.mean()
-        # ADR 진행률 로깅
+        # ---- 로깅 ----
+        # r_*   : reward 성분별 값
+        self.extras["r_palm"]            = r0_palm_approach.mean()
+        self.extras["r_enclosure"]       = r1_enclosure.mean()
+        self.extras["r_force_balance"]   = r1b_force_balance.mean()
+        self.extras["r_multi_phalanx"]   = r1c_multi_phalanx.mean()
+        self.extras["r_slip"]            = r2_slip.mean()
+        self.extras["r_adaptive_grip"]   = r3_adaptive_force.mean()
+        self.extras["r_preload"]         = r_preload.mean()
+        self.extras["r_force_smooth"]    = r5_force_smooth.mean()
+        self.extras["r_lift"]            = r6_lift.mean()
+        self.extras["r_success_bonus"]   = r8_success.mean()
+        self.extras["r_full_contact"]    = r9_full_contact.mean()
+        self.extras["r_fingertip_guide"] = r_ft_guide.mean()
+        self.extras["r_action_smooth"]   = r7_action_smooth.mean()
+
+        # adr_* : ADR 진행 상태
         if self.contact_adr is not None:
             self.extras["adr_contact_progress"] = torch.tensor(
                 self.contact_adr.progress, device=self.device
@@ -1152,25 +1154,28 @@ class GraspRightEnv(DirectRLEnv):
             self.extras["adr_difficulty_progress"] = torch.tensor(
                 self.grasp_adr.progress, device=self.device
             )
-        # tip force
-        self.extras["thumb_force_mean"]       = thumb_force.mean()
-        self.extras["others_avg_force_mean"]  = others_avg_force.mean()
-        self.extras["total_tip_force_norm"]   = grip_normalized.mean()
-        # 이산 레벨 기준 마스크 (normalized: 0/0.333/0.667/1.0)
-        # light: 0 or 10개 (norm < 0.5), heavy: 20 or 30개 (norm > 0.5)
+
+        # f_*   : 파지력 지표
+        self.extras["f_thumb"]      = thumb_force.mean()
+        self.extras["f_others"]     = others_avg_force.mean()
+        self.extras["f_total_norm"] = grip_normalized.mean()
+        self.extras["f_ratio"]      = force_ratio.mean()
         light_mask = (self._bead_mass_normalized < 0.5)
         heavy_mask = (self._bead_mass_normalized > 0.5)
         if light_mask.any():
-            self.extras["tip_force_norm_light"] = grip_normalized[light_mask].mean()
+            self.extras["f_norm_light"]  = grip_normalized[light_mask].mean()
+            self.extras["f_ratio_light"] = force_ratio[light_mask].mean()
         if heavy_mask.any():
-            self.extras["tip_force_norm_heavy"] = grip_normalized[heavy_mask].mean()
-        # 파지 학습 진행 지표
-        self.extras["num_contacts"]           = self.num_contacts_buf.float().mean()
-        self.extras["episode_success_rate"]   = torch.tensor(_ep_success_rate, device=self.device)
-        # mg:grip 적응 검증 (force_ratio_delta ≈ 0 → 질량 적응 성공)
-        self.extras["force_ratio_mean"]       = force_ratio.mean()
+            self.extras["f_norm_heavy"]  = grip_normalized[heavy_mask].mean()
+            self.extras["f_ratio_heavy"] = force_ratio[heavy_mask].mean()
         if light_mask.any() and heavy_mask.any():
-            self.extras["force_ratio_delta"]  = force_ratio[heavy_mask].mean() - force_ratio[light_mask].mean()
+            self.extras["f_ratio_delta"] = (
+                force_ratio[heavy_mask].mean() - force_ratio[light_mask].mean()
+            )
+
+        # stat_ : 학습 진행 지표
+        self.extras["stat_num_contacts"] = self.num_contacts_buf.float().mean()
+        self.extras["stat_success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
 
         return total
 
@@ -1215,8 +1220,8 @@ class GraspRightEnv(DirectRLEnv):
         terminated = out_x | out_y | fallen | tipped | success_held
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
-        self.extras["object_z"] = self.object_pos[:, 2].mean()
-        self.extras["success_min_contacts"] = torch.tensor(float(_success_min), device=self.device)
+        self.extras["stat_obj_z"]         = self.object_pos[:, 2].mean()
+        self.extras["adr_success_min"]    = torch.tensor(float(_success_min), device=self.device)
 
         return terminated, truncated
 
