@@ -55,7 +55,7 @@ from .grasp_right_preset import (
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
-_DEFAULT_BEAD_COUNT = 10
+_DEFAULT_BEAD_COUNT = 20
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
@@ -65,7 +65,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
             scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.01),  # 10g 구슬
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),  # 1g 구슬
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=16,
