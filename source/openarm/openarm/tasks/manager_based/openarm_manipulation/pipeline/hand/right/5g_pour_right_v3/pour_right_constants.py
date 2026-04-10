@@ -18,7 +18,7 @@ Action (11D):
   [0:6]  6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
   [6:11] 5D per-finger lerp (freeze_grasp=True → 항상 1.0 강제)
 
-Actor Observation (105D) — sim2real 가능:
+Actor Observation (108D) — sim2real 가능:
   arm_joint_pos:            7
   arm_joint_vel:            7
   finger_joint_pos:        20
@@ -30,13 +30,17 @@ Actor Observation (105D) — sim2real 가능:
   pour_point_to_opening:    3
   source_pour_axis:         3
   source_up_axis:           3
-  transport_summary:        7  [mouth_dist, mouth_xy_dist, z_clearance,
-                                source_up_dot, dir_tilt_cos,
+  transport_summary:        8  [mouth_dist, mouth_xy_dist, cup_center_xy_dist,
+                                z_clearance, source_up_dot, dir_tilt_cos,
                                 mouth_alignment_cos, g_ready]
   fingertip_contact_binary: 5
   tip_force_norm:           5  (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
   last_actions:            11
-  Total:                  105
+  bead_in_source_fraction:  1  (소스 컵 잔량 — "다 쏟았나" 인식)
+  bead_in_target_fraction:  1  (타겟 컵 유입량 — "얼마나 넣었나" 인식)
+  bead_cross_fraction:      1  (mouth 통과 비율 — r_cross weight=20 대응)
+  spill_ratio:              1  (유출 비율 — spill_cost weight=10 대응)
+  Total:                  110
 
 Critic Extra (50D) — sim-only privileged:
   left_arm_joint_pos:       9
@@ -71,7 +75,7 @@ Episode (10s @ 60Hz = 600 steps):
 
 import math
 
-from .grasp_right_preset import (
+from .pour_right_preset import (
     RIGHT_ARM_JOINT_NAMES,
     RIGHT_HAND_JOINT_NAMES,
     palm_pose_mins,
@@ -97,11 +101,11 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 106        # Actor: sim2real 가능 (cup_center_xy_dist 추가로 transport_summary 7→8)
+NUM_OBSERVATIONS = 110        # Actor: 106 + bead_in_source(1) + bead_in_target(1) + bead_cross(1) + spill_ratio(1)
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 51      # stage gate + bead/spill + cup_center_xy_dist
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 157
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 159
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

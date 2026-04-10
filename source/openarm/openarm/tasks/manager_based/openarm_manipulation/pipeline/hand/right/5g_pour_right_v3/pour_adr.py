@@ -2,11 +2,11 @@
 # Licensed under the Apache License, Version 2.0
 """Minimal ADR scheduler used for pour task.
 
-GraspADR from 5g_grasp_right_v9 is reused so we can linearly ramp
+GraspADR from 5g_pour_right_v9 is reused so we can linearly ramp
 parameters (e.g., spill penalty, noise) based on episode success rate.
 """
 
-class GraspADR:
+class PourADR:
     """Lightweight ADR parameter scheduler.
 
     Args:

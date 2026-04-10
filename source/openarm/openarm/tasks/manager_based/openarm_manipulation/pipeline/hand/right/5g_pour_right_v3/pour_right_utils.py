@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""유틸리티: 5g_grasp_right_v1"""
+"""유틸리티: 5g_pour_right_v1"""
 
 import torch
 

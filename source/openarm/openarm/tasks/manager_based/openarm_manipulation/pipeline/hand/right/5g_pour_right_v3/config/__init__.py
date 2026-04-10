@@ -15,10 +15,10 @@
 import gymnasium as gym
 
 from . import agents
-from ..grasp_right_env_cfg import GraspRightEnvCfg
+from ..pour_right_env_cfg import PourRightEnvCfg
 
 
-class GraspRightEnvCfg_PLAY(GraspRightEnvCfg):
+class PourRightEnvCfg_PLAY(PourRightEnvCfg):
     """플레이용 설정 (소규모 환경)."""
 
     def __post_init__(self):
@@ -31,11 +31,11 @@ gym.register(
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
         ".pipeline.hand.right.5g_pour_right_v3"
-        ".grasp_right_env:GraspRightEnv"
+        ".pour_right_env:PourRightEnv"
     ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfg",
+        "env_cfg_entry_point": f"{__name__}:PourRightEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
     },
 )
@@ -45,11 +45,11 @@ gym.register(
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
         ".pipeline.hand.right.5g_pour_right_v3"
-        ".grasp_right_env:GraspRightEnv"
+        ".pour_right_env:PourRightEnv"
     ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfg_PLAY",
+        "env_cfg_entry_point": f"{__name__}:PourRightEnvCfg_PLAY",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
     },
 )
