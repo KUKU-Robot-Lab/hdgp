@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import math
 import sys
+from collections import deque
 from pathlib import Path
 from collections.abc import Sequence
 
@@ -356,6 +357,14 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         self._bead_mass_normalized = torch.zeros(self.num_envs, device=self.device)
+
+        # 6.2: moving-window ADR trigger (최근 N 에피소드 성공률)
+        _win = cfg.adr_window_size if cfg.adr_window_size > 0 else 500
+        self._success_window: deque = deque(maxlen=_win)
+
+        # 6.3: per-bin 에피소드 성공 카운터 (bead level 0~3: 0/10/20/30 beads)
+        self._total_episodes_bin: list[int] = [0, 0, 0, 0]
+        self._successful_episodes_bin: list[int] = [0, 0, 0, 0]
 
         # ----------------------------------------------------------------
         # ADR — contact curriculum (threshold=0.1, 먼저 진행)
@@ -1082,6 +1091,13 @@ class GraspRightEnv(DirectRLEnv):
             force_delta_norm,
             torch.zeros_like(force_delta_norm),
         )
+        # 6.5: lift phase 초반 N step warmup — force_smooth 완화 (0이면 비활성)
+        if self.cfg.force_smooth_lift_warmup_steps > 0:
+            lift_step = (self.episode_length_buf - LIFT_START_STEP).clamp(min=0)
+            in_warmup = (
+                self.is_lift_phase & (lift_step < self.cfg.force_smooth_lift_warmup_steps)
+            ).float()
+            force_delta_norm = force_delta_norm * (1.0 - in_warmup)
         r5_force_smooth  = -self.cfg.force_smooth_weight * force_delta_norm.pow(2)
         self._force_smooth_ready.fill_(True)
         self._prev_avg_force_buf.copy_(total_grip_force)
@@ -1120,7 +1136,11 @@ class GraspRightEnv(DirectRLEnv):
         total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
 
         # ---- ADR increment ----
-        _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
+        # 6.2: moving window success rate (adr_window_size > 0이고 최소 10개 샘플 이상이면 사용)
+        if len(self._success_window) >= 10:
+            _ep_success_rate = sum(self._success_window) / len(self._success_window)
+        else:
+            _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         if self.contact_adr is not None:
             self.contact_adr.maybe_increment(_ep_success_rate)   # threshold=0.1
         if self.grasp_adr is not None:
@@ -1176,6 +1196,29 @@ class GraspRightEnv(DirectRLEnv):
         # stat_ : 학습 진행 지표
         self.extras["stat_num_contacts"] = self.num_contacts_buf.float().mean()
         self.extras["stat_success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
+        # 6.2: moving window 크기 로깅 (수렴 여부 확인용)
+        self.extras["stat_window_n"] = torch.tensor(float(len(self._success_window)), device=self.device)
+
+        # 6.3: mass bin별 KPI 로깅
+        # bead level 0=0bead, 1=10bead, 2=20bead, 3=30bead → 정규화 0/0.33/0.67/1.0
+        _bin_defs = [
+            ("0b",  self._bead_mass_normalized < 0.17),
+            ("10b", (self._bead_mass_normalized >= 0.17) & (self._bead_mass_normalized < 0.50)),
+            ("20b", (self._bead_mass_normalized >= 0.50) & (self._bead_mass_normalized < 0.84)),
+            ("30b", self._bead_mass_normalized >= 0.84),
+        ]
+        for _lvl, (_tag, _mask) in enumerate(_bin_defs):
+            if _mask.any():
+                self.extras[f"bin_{_tag}_contacts"] = self.num_contacts_buf[_mask].float().mean()
+                self.extras[f"bin_{_tag}_slip"]     = r2_slip[_mask].mean()
+                self.extras[f"bin_{_tag}_lift"]     = r6_lift[_mask].mean()
+                self.extras[f"bin_{_tag}_f_ratio"]  = force_ratio[_mask].mean()
+                self.extras[f"bin_{_tag}_f_smooth"] = r5_force_smooth[_mask].mean()
+            _b_total = self._total_episodes_bin[_lvl]
+            if _b_total > 0:
+                self.extras[f"bin_{_tag}_sr"] = torch.tensor(
+                    self._successful_episodes_bin[_lvl] / _b_total, device=self.device
+                )
 
         return total
 
@@ -1202,9 +1245,15 @@ class GraspRightEnv(DirectRLEnv):
 
         in_or_past_lift = (self.episode_length_buf >= LIFT_START_STEP)
         lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        # v10: success 판정을 contact ADR과 분리 — MIN_CONTACTS_FOR_SUCCESS(=4) 고정값 사용
-        # ADR은 reward gate용으로만 사용, success 판정은 항상 4손가락 이상 접촉 요구
-        _success_min = MIN_CONTACTS_FOR_SUCCESS  # 4, ADR 진행과 무관하게 고정
+        # 6.1 Option A: success 기준을 contact ADR gate와 동기화
+        # ADR reward gate가 5접촉을 요구할 때 success도 5접촉을 요구 → ADR 진행 기준 일치
+        # (ADR 없거나 초기: MIN_CONTACTS_FOR_SUCCESS=4 유지)
+        _success_min = (
+            int(round(self.contact_adr.get_param("contact", "min_contacts")))
+            if self.contact_adr is not None
+            else MIN_CONTACTS_FOR_SUCCESS
+        )
+        _success_min = max(_success_min, MIN_CONTACTS_FOR_SUCCESS)  # 4 미만으로 내려가지 않도록
         grasped = (self.num_contacts_buf >= _success_min)
         success_now = in_or_past_lift & lifted & grasped
         self.success_flag.copy_(success_now)
@@ -1220,8 +1269,8 @@ class GraspRightEnv(DirectRLEnv):
         terminated = out_x | out_y | fallen | tipped | success_held
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
-        self.extras["stat_obj_z"]         = self.object_pos[:, 2].mean()
-        self.extras["adr_success_min"]    = torch.tensor(float(_success_min), device=self.device)
+        self.extras["stat_obj_z"]      = self.object_pos[:, 2].mean()
+        self.extras["adr_success_min"] = torch.tensor(float(_success_min), device=self.device)
 
         return terminated, truncated
 
@@ -1246,6 +1295,19 @@ class GraspRightEnv(DirectRLEnv):
         self._total_episodes += started_n
         if started_n > 0:
             self._successful_episodes += int((self.episode_success_buf[env_ids] & had_started).sum().item())
+
+        # 6.2 & 6.3: moving window + per-bin 업데이트
+        for i, env_id in enumerate(env_ids):
+            if not bool(had_started[i].item()):
+                continue
+            success_val = int(bool(self.episode_success_buf[env_id].item()))
+            # 6.2: deque에 추가 (maxlen으로 자동 oldest 제거)
+            self._success_window.append(success_val)
+            # 6.3: bead level (0~3) 판별 — _bead_mass_normalized는 아직 이전 에피소드 값
+            lvl = int(round(self._bead_mass_normalized[env_id].item() * 3.0))
+            lvl = min(max(lvl, 0), 3)
+            self._total_episodes_bin[lvl] += 1
+            self._successful_episodes_bin[lvl] += success_val
 
         # Eval 기록 저장
         for i, env_id in enumerate(env_ids):
@@ -1393,11 +1455,15 @@ class GraspRightEnv(DirectRLEnv):
         # μ_static ~ Uniform[cup_friction_min, cup_friction_max]
         # μ_dynamic = μ_static × 0.9
         # materials shape: (num_envs, num_shapes, 3) — [static, dynamic, restitution]
-        _friction_vals = (
-            torch.rand(n, device=self.device)
-            * (self.cfg.cup_friction_max - self.cfg.cup_friction_min)
-            + self.cfg.cup_friction_min
-        ).cpu()
+        # 6.4: cup_friction_fixed >= 0이면 고정값 사용 (friction ablation)
+        if self.cfg.cup_friction_fixed >= 0.0:
+            _friction_vals = torch.full((n,), self.cfg.cup_friction_fixed, device=self.device).cpu()
+        else:
+            _friction_vals = (
+                torch.rand(n, device=self.device)
+                * (self.cfg.cup_friction_max - self.cfg.cup_friction_min)
+                + self.cfg.cup_friction_min
+            ).cpu()
         _env_ids_cpu = (
             env_ids.cpu().int() if isinstance(env_ids, torch.Tensor)
             else torch.tensor(list(env_ids), dtype=torch.int32)

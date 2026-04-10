@@ -216,6 +216,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # R5. force_smooth (v9 신규): 파지력 변화율 억제 (sim2real 안정성)
     force_smooth_weight: float = 1.5
+    # 6.5: lift phase 초반 N step 동안 force_smooth 완화 (0: 비활성)
+    # lift 시작 직후 grip force 급변을 허용해 과도 패널티 방지
+    force_smooth_lift_warmup_steps: int = 0
 
     # R6. lift_reward (v8: 20.0 → v9: 6.0 → v9.2: 20.0, slip local-min 탈출)
     lift_reward_weight: float = 20.0
@@ -241,6 +244,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     contact_adr_num_increments:     int   = 50
     contact_adr_increment_interval: int   = 400
     contact_adr_trigger_threshold:  float = 0.1   # 10% 성공률에서 진행 (early curriculum)
+
+    # 6.2: ADR trigger moving-window 크기
+    # 최근 N episode 성공률을 ADR trigger에 사용 (0: 기존 cumulative 방식 유지)
+    adr_window_size: int = 500
 
     contact_adr_custom_cfg: dict = field(default_factory=lambda: {
         "contact": {
@@ -468,6 +475,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 목적: max-grip이 Pareto-optimal이 되는 것을 방지 → 마찰 변동으로 적응형 파지 학습
     cup_friction_min: float = 0.15
     cup_friction_max: float = 0.60
+
+    # 6.4: friction ablation — 고정값 (>= 0)이면 DR 비활성화, -1이면 랜덤화
+    cup_friction_fixed: float = -1.0
 
     # -----------------------------------------------------------------------
     # Bead 무게 도메인 랜덤화
