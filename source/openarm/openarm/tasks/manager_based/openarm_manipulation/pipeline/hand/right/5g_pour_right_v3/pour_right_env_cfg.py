@@ -296,10 +296,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
     weight_release: float = 0.00    # 제거: spill도 보상하는 문제로 인해 비활성화
-    weight_cross: float = 20.00    # 15→20: pour 신호 강화
-    weight_capture: float = 40.00  # 25→40: 더 많이 넣기 신호 강화
+    weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
+    weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
-    weight_first_capture_bonus: float = 8.00  # 첫 비드 유입 시 1회 보너스
+    weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
     weight_tilt_onset_bonus: float = 5.00    # tilt 탐색 유도 1회 보너스 (bridge reward)
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
@@ -309,7 +309,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
     # 0이면 비활성.
     weight_success_overfill: float = 0.0
-    weight_spill: float = 10.00
+    weight_spill: float = 0.00     # 10→0: 초반 spill 두려움 제거, pour 탐색 장려
     # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
     #   premature_tilt_cost = (1 - g_ready) × (1 - source_up_dot_world)
     #   g_ready=0.11, cup 100° tilt 시 source_up_dot_world≈-0.17 → (1-(-0.17))=1.17
@@ -326,7 +326,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_wrist_spin: float = 0.00
 
     # ADR: spill penalty 스케줄 (low→high)
-    enable_spill_adr: bool = True
+    enable_spill_adr: bool = False  # True→False: weight_spill=0이므로 ADR 불필요
     spill_adr_custom_cfg: dict = {
         "reward": {
             # start small to allow exploration, ramp to 기존 10.0 페널티
