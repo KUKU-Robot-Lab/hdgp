@@ -364,6 +364,8 @@ class PourRightEnv(DirectRLEnv):
         self.actions         = torch.zeros(self.num_envs, cfg.num_actions, device=self.device)
         self.prev_actions    = torch.full((self.num_envs, cfg.num_actions), 0.0, device=self.device)
         self._prev_mouth_xy_distance = torch.zeros(self.num_envs, device=self.device)
+        # Phase-0 진단용: arm joint velocity/acceleration 추적 버퍼
+        self._prev_arm_joint_vel = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
 
         # ----------------------------------------------------------------
         # ADR schedulers (spill penalty / noise scaling)
@@ -1506,7 +1508,31 @@ class PourRightEnv(DirectRLEnv):
         # grasp quality loss: full_grasp_flag=0 (thumb 없거나 others<2) 매 스텝 즉각 dense penalty
         # 낙하(episode termination)와 달리 grasp이 흔들리는 구간에서 즉각 gradient 제공
         grasp_loss_cost = 1.0 - full_grasp_flag
-        action_rate_penalty = torch.sum((self.actions - self.prev_actions) ** 2, dim=-1)
+        # [Phase-2 Step 9] action_rate: palm(6D) / finger(5D) 분리
+        # grasp v9의 action_smoothness_palm/finger 패턴과 동일
+        palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
+        finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
+        action_rate_penalty = (
+            self.cfg.weight_action_rate_palm   * palm_delta
+            + self.cfg.weight_action_rate_finger * finger_delta
+        )
+
+        # ---- Phase-0 진단 + Phase-1 Step 4: arm joint velocity / acceleration ----
+        arm_qd = self.robot.data.joint_vel[:, self.arm_dof_indices]
+        arm_qd_l2 = arm_qd.norm(dim=-1)                          # (num_envs,) L2 norm
+        arm_qd_max = arm_qd.abs().max(dim=-1).values              # (num_envs,) per-joint max
+        arm_qacc = (arm_qd - self._prev_arm_joint_vel).norm(dim=-1)  # (num_envs,) acc proxy
+        # pouring phase에서의 arm vel (cup이 가까울 때)
+        in_tilt_phase = (self._cup_center_xy_dist < self.cfg.tilt_action_gate_xy_far).float()
+        tilt_phase_arm_vel = (arm_qd_l2 * in_tilt_phase).sum() / (in_tilt_phase.sum() + 1e-6)
+
+        # [Phase-1 Step 4] arm joint vel^2 sum penalty (clipped)
+        arm_qd_sq_sum = arm_qd.pow(2).sum(dim=-1).clamp_max(self.cfg.arm_joint_vel_sq_clip)
+        arm_qacc_sq_sum = (arm_qd - self._prev_arm_joint_vel).pow(2).sum(dim=-1)
+        arm_vel_cost = (
+            self.cfg.weight_arm_joint_vel * arm_qd_sq_sum
+            + self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum
+        )
 
         total = (
             r_hold
@@ -1521,10 +1547,12 @@ class PourRightEnv(DirectRLEnv):
             - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
             - self.cfg.weight_grasp_loss * grasp_loss_cost
-            - self.cfg.weight_action_rate * action_rate_penalty
+            - action_rate_penalty
+            - arm_vel_cost
         )
 
         self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
+        self._prev_arm_joint_vel.copy_(arm_qd)
 
         # ---- ADR increment (success-rate 기반) ----
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
@@ -1559,6 +1587,17 @@ class PourRightEnv(DirectRLEnv):
         self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
         self.extras["bead_cross"] = self._bead_cross_fraction.mean()
         self.extras["spill_ratio"] = self._spill_ratio.mean()
+        # Phase-0 진단 메트릭: arm joint velocity / acceleration
+        self.extras["arm_joint_vel_l2_mean"] = arm_qd_l2.mean()
+        self.extras["arm_joint_vel_max_mean"] = arm_qd_max.mean()
+        self.extras["arm_joint_acc_l2_mean"] = arm_qacc.mean()
+        self.extras["tilt_phase_arm_vel"] = tilt_phase_arm_vel
+        # Phase-1 Step 4: arm vel cost 로깅
+        self.extras["cost_arm_vel"] = (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum).mean()
+        self.extras["cost_arm_acc"] = (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum).mean()
+        # Phase-2 Step 9: action_rate 분리 로깅
+        self.extras["cost_action_rate_palm"] = (self.cfg.weight_action_rate_palm * palm_delta).mean()
+        self.extras["cost_action_rate_finger"] = (self.cfg.weight_action_rate_finger * finger_delta).mean()
 
         if self.spill_adr is not None:
             self.extras["adr_spill_progress"] = torch.tensor(
@@ -1804,6 +1843,7 @@ class PourRightEnv(DirectRLEnv):
         self._source_empty_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._pre_pour_ready_steps[env_ids] = 0
+        self._prev_arm_joint_vel[env_ids].zero_()
 
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
         # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)
@@ -2068,6 +2108,7 @@ class PourRightEnv(DirectRLEnv):
         self._no_tip_force_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
         self.success_flag[env_ids] = False
+        self._prev_arm_joint_vel[env_ids].zero_()
 
         self.actions[env_ids, :6] = 0.0
         self.actions[env_ids, 6:] = 1.0

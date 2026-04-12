@@ -322,7 +322,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
     weight_premature_tilt: float = 0.50   # 4.00→1.50→0.50: tilt_action_gate가 wrist spin 차단하므로 감소
     weight_grasp_loss: float = 0.30      # tilt 중 grasp 품질 저하에 즉각 dense signal (full_grasp_flag=0 시)
-    weight_action_rate: float = 0.01
+    # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
+    # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
+    weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
+    weight_arm_joint_acc: float = 0.0005  # arm 가속도 프록시 페널티
+    arm_joint_vel_sq_clip: float = 64.0   # (arm_qd L2 norm)^2 클리핑 상한 (8 rad/s L2 기준)
+    # [Phase-2 Step 9] action_rate를 palm(6D) / finger(5D) 분리
+    # grasp v9 패턴과 동일 (action_smoothness_palm/finger_weight)
+    # 기존 단일 weight_action_rate=0.01 → palm 강화, finger 완화
+    weight_action_rate_palm: float = 0.02    # palm 6D: arm jerk 억제 강화
+    weight_action_rate_finger: float = 0.005  # finger 5D: 채터링 적당히 억제
     weight_wrist_spin: float = 0.00
 
     # ADR: spill penalty 스케줄 (low→high)

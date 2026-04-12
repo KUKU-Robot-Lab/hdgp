@@ -63,12 +63,12 @@ params:
     #   512  envs: lr=8e-4
     #   1024 envs: lr=1.1e-3
     #   2048 envs: lr=1.6e-3
-    learning_rate: 3e-4
+    learning_rate: 1e-4      # fine-tune: 3e-4→1e-4 (KL 폭주 방지, test3 완료 후 복원)
     lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
-    max_epochs: 10000
+    max_epochs: 10000        # --max_iterations 2000 으로 CLI에서 override
     save_best_after: 100
     save_frequency: 50
     print_stats: True
@@ -98,7 +98,7 @@ params:
       value_bootstrap: False
       minibatch_size: 32768     # actor와 동일하게 맞출 것 (num_envs 2048 기준)
       mini_epochs: 6
-      learning_rate: 3e-4
+      learning_rate: 1e-4      # fine-tune: actor와 동일하게 맞춤
       lr_schedule: linear
       kl_threshold: 0.013
       clip_value: True
