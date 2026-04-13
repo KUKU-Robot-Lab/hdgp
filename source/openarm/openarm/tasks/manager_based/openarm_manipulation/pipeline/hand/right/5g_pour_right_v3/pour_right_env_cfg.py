@@ -63,7 +63,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
     for i in range(_DEFAULT_BEAD_COUNT):
         bead_spawn_cfg = UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
-            scale=(0.5, 0.5, 0.5),
+            scale=(1.0, 1.0, 1.0),
             activate_contact_sensors=False,
             mass_props=sim_utils.MassPropertiesCfg(mass=0.001),  # 1g 구슬
             rigid_props=RigidBodyPropertiesCfg(
