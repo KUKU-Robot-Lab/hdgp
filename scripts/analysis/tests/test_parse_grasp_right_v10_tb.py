@@ -86,3 +86,42 @@ def test_render_markdown_includes_missing_metrics_section():
     assert "# 5g_grasp_right_v10 test7/test8" in report
     assert "bin_20b_sr" in report
     assert "Both runs differ only by seed." in report
+
+
+def test_bin_metrics_whitelist_matches_reduced_logging():
+    module = load_module()
+
+    expected_metrics = {
+        "bin_0b_sr",
+        "bin_10b_sr",
+        "bin_20b_sr",
+        "bin_30b_sr",
+        "bin_0b_f_ratio",
+        "bin_10b_f_ratio",
+        "bin_20b_f_ratio",
+        "bin_30b_f_ratio",
+        "bin_0b_contacts",
+        "bin_10b_contacts",
+        "bin_20b_contacts",
+        "bin_30b_contacts",
+        "bin_0b_lift",
+        "bin_10b_lift",
+        "bin_20b_lift",
+        "bin_30b_lift",
+        "bin_0b_adaptive_grip",
+        "bin_10b_adaptive_grip",
+        "bin_20b_adaptive_grip",
+        "bin_30b_adaptive_grip",
+        "bin_0b_full_contact",
+        "bin_10b_full_contact",
+        "bin_20b_full_contact",
+        "bin_30b_full_contact",
+        "bin_0b_multi_phalanx",
+        "bin_10b_multi_phalanx",
+        "bin_20b_multi_phalanx",
+        "bin_30b_multi_phalanx",
+    }
+
+    assert expected_metrics.issubset(set(module.BIN_METRICS))
+    assert "bin_0b_slip" not in module.BIN_METRICS
+    assert "bin_10b_f_smooth" not in module.BIN_METRICS

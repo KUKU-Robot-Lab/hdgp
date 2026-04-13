@@ -60,18 +60,22 @@ BIN_METRICS = [
     "bin_10b_contacts",
     "bin_20b_contacts",
     "bin_30b_contacts",
-    "bin_0b_slip",
-    "bin_10b_slip",
-    "bin_20b_slip",
-    "bin_30b_slip",
     "bin_0b_lift",
     "bin_10b_lift",
     "bin_20b_lift",
     "bin_30b_lift",
-    "bin_0b_f_smooth",
-    "bin_10b_f_smooth",
-    "bin_20b_f_smooth",
-    "bin_30b_f_smooth",
+    "bin_0b_adaptive_grip",
+    "bin_10b_adaptive_grip",
+    "bin_20b_adaptive_grip",
+    "bin_30b_adaptive_grip",
+    "bin_0b_full_contact",
+    "bin_10b_full_contact",
+    "bin_20b_full_contact",
+    "bin_30b_full_contact",
+    "bin_0b_multi_phalanx",
+    "bin_10b_multi_phalanx",
+    "bin_20b_multi_phalanx",
+    "bin_30b_multi_phalanx",
 ]
 
 LOSS_TAGS = [
@@ -390,7 +394,7 @@ def plot_adr_diagnostics(run_artifacts: list[RunArtifacts], out_path: Path, smoo
         (["adr_difficulty_progress", "adr_success_min"], "ADR Progress / Success Min", "value"),
         (["episode_lengths", "shaped_rewards"], "Episode Length / Shaped Reward", "value"),
         (["bin_0b_lift", "bin_10b_lift", "bin_20b_lift", "bin_30b_lift"], "Per-Mass Lift", "value"),
-        (["bin_0b_slip", "bin_10b_slip", "bin_20b_slip", "bin_30b_slip"], "Per-Mass Slip", "value"),
+        (["bin_0b_adaptive_grip", "bin_10b_adaptive_grip", "bin_20b_adaptive_grip", "bin_30b_adaptive_grip"], "Per-Mass Adaptive Grip", "value"),
     ]
 
     for ax, (metrics, title, ylabel) in zip(axes.flatten(), metric_groups):
@@ -639,6 +643,7 @@ def render_markdown_report(
             "- `f_ratio`, `f_ratio_light/heavy`, `bin_*_f_ratio`는 질량 적응 성향을 직접 보여준다.",
             "- `stat_num_contacts`, `r_multi_phalanx`, `r_full_contact`는 deep-envelope grasp 유지력을 보여준다.",
             "- `r_slip`, `r_preload`, `r_force_smooth`, `r_lift`는 lift 단계 failure mode를 분해한다.",
+            "- bin 로깅은 `bin_*_f_ratio`와 bin별 success/contact/lift/adaptive_grip/full_contact/multi_phalanx만 유지한다.",
             "",
         ]
     )

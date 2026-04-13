@@ -21,7 +21,7 @@ v10: v9 기반 버그 수정
 
 Action (26D):
   [0:6]  6D palm pose → Fabrics IK → arm 7 DOF
-  [6:26] 20D per-joint finger delta: action × finger_delta_scale [rad]
+  [6:26] 20D per-joint finger delta: reference_pose + action × finger_delta_scale [rad]
 
 Episode (10s @ 60Hz):
   Grasp phase (0~479): Fabrics arm + per-joint finger delta
@@ -93,6 +93,11 @@ from .grasp_right_preset import (
     HAND_FULL_GRIP_POSE,
     OBJECT_GOAL_POS,
 )
+from .finger_action_utils import (
+    compute_grasp_finger_targets,
+    compute_lift_finger_targets,
+    resolve_grasp_delta_scale,
+)
 from .grasp_right_utils import scale, to_torch
 
 
@@ -101,7 +106,7 @@ class GraspRightEnv(DirectRLEnv):
 
     Action: 26D
       [0:6]  palm pose (x,y,z,ez,ey,ex), 정규화 [-1,1] → Fabrics IK
-      [6:26] 20D per-joint finger delta: action × finger_delta_scale [rad]
+      [6:26] 20D per-joint finger delta: reference_pose + action × finger_delta_scale [rad]
 
     Episode:
       Grasp phase (step 0~479):  Fabrics arm + per-joint finger delta
@@ -701,16 +706,24 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # ---- Per-joint finger absolute offset: Approach + (action * range) ----
-        # v9.2: action=0 → APPROACH_POSE, action=1 → FULL_GRIP_POSE (주먹)
-        # joint limit clamp이 물리적 한계 보호 (별도 headroom 불필요)
-        finger_range = (self.hand_full_grip_pose - self.hand_approach_pose).unsqueeze(0)
-        
-        hand_target = self.hand_approach_pose.unsqueeze(0) + finger_action * finger_range
-        
-        hand_target = hand_target.clamp(
-            self.hand_joint_lower_limits.unsqueeze(0),
-            self.hand_joint_upper_limits.unsqueeze(0),
+        # ---- Grasp phase finger delta target ----
+        # grasp/lift 모두 "reference pose + bounded delta" semantics를 사용한다.
+        current_finger_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
+        grasp_delta_scale = resolve_grasp_delta_scale(
+            default_scale=self.cfg.finger_delta_scale,
+            adr_delta_scale=(
+                self.grasp_adr.get_param("finger", "delta_scale")
+                if self.grasp_adr is not None
+                else None
+            ),
+        )
+        hand_target = compute_grasp_finger_targets(
+            current_pos=current_finger_pos,
+            finger_action=finger_action,
+            lower_limits=self.hand_joint_lower_limits,
+            upper_limits=self.hand_joint_upper_limits,
+            delta_scale=grasp_delta_scale,
+            delta_mask=self.finger_delta_mask,
         )
         self.hand_joint_targets.copy_(hand_target)
 
@@ -728,16 +741,14 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ---- 오른손 ----
-        # Grasp phase: per-joint delta target
-        # Lift  phase: 캡처 자세 + action 기반 micro-delta (±lift_finger_delta_scale rad)
-        lift_micro = (
-            self.actions[:, 6:26]                         # (N,20)
-            * self.cfg.lift_finger_delta_scale
-            * self.finger_delta_mask                      # abduction joints 고정
-        )
-        lift_finger_target = (self.lift_finger_pos_buf + lift_micro).clamp(
-            self.hand_joint_lower_limits.unsqueeze(0),
-            self.hand_joint_upper_limits.unsqueeze(0),
+        # Grasp/Lift 모두 reference pose + bounded delta semantics 사용
+        lift_finger_target = compute_lift_finger_targets(
+            lift_reference_pos=self.lift_finger_pos_buf,
+            finger_action=self.actions[:, 6:26],
+            lower_limits=self.hand_joint_lower_limits,
+            upper_limits=self.hand_joint_upper_limits,
+            delta_scale=self.cfg.lift_finger_delta_scale,
+            delta_mask=self.finger_delta_mask,
         )
         finger_target = torch.where(
             is_lift.unsqueeze(1),
@@ -1210,10 +1221,11 @@ class GraspRightEnv(DirectRLEnv):
         for _lvl, (_tag, _mask) in enumerate(_bin_defs):
             if _mask.any():
                 self.extras[f"bin_{_tag}_contacts"] = self.num_contacts_buf[_mask].float().mean()
-                self.extras[f"bin_{_tag}_slip"]     = r2_slip[_mask].mean()
                 self.extras[f"bin_{_tag}_lift"]     = r6_lift[_mask].mean()
                 self.extras[f"bin_{_tag}_f_ratio"]  = force_ratio[_mask].mean()
-                self.extras[f"bin_{_tag}_f_smooth"] = r5_force_smooth[_mask].mean()
+                self.extras[f"bin_{_tag}_adaptive_grip"] = r3_adaptive_force[_mask].mean()
+                self.extras[f"bin_{_tag}_full_contact"] = r9_full_contact[_mask].mean()
+                self.extras[f"bin_{_tag}_multi_phalanx"] = r1c_multi_phalanx[_mask].mean()
             _b_total = self._total_episodes_bin[_lvl]
             if _b_total > 0:
                 self.extras[f"bin_{_tag}_sr"] = torch.tensor(
