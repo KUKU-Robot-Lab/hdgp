@@ -1617,7 +1617,6 @@ class PourRightEnv(DirectRLEnv):
         self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
         self.extras["r_tilt_onset"] = r_tilt_onset.mean()
         self.extras["g_ready"] = self._g_ready.mean()
-        self.extras["g_pour"] = self._g_pour.mean()
         self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
         self.extras["cup_center_xy_dist"] = self._cup_center_xy_dist.mean()
         self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()

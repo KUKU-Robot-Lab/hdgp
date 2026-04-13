@@ -53,7 +53,8 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         #   robot_start_joint_pos 및 curled_q와 일치
         default_config = torch.tensor([
             # OpenArm right arm joint1~7
-            1.0,  -0.1,   0.0,  0.5,  0.0,  0.0,  0.0,
+            # j3: 0.0 → -0.6 (내회전 방향, pour tilt 유도: null-space가 j3를 음수 방향으로 당김)
+            1.0,  -0.1,  -0.6,  0.5,  0.0,  0.0,  0.0,
             # Teosllo thumb (rj_dg_1_1~4):
             #   _1(X): 0.0 (neutral abduction)
             #   _2(Z): -1.0 (opposition curl, 한계 -π, 32%)

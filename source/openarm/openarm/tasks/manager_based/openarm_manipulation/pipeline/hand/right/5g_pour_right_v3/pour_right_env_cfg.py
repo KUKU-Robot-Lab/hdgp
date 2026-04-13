@@ -510,7 +510,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             joint_pos={
                 "openarm_right_joint1":  0.5,
                 "openarm_right_joint2":  0.1,
-                "openarm_right_joint3":  0.4,
+                "openarm_right_joint3":  0.0,
                 "openarm_right_joint4":  0.60,
                 "openarm_right_joint5": -0.2,
                 "openarm_right_joint6":  0.0,
