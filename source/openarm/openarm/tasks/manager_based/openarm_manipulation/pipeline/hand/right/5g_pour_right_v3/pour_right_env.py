@@ -366,6 +366,10 @@ class PourRightEnv(DirectRLEnv):
         self._prev_mouth_xy_distance = torch.zeros(self.num_envs, device=self.device)
         # Phase-0 진단용: arm joint velocity/acceleration 추적 버퍼
         self._prev_arm_joint_vel = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        # [Phase-1 Step 6] jerk 계산용: 이전 step acc 벡터
+        self._prev_arm_joint_acc = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        # [Phase-1 Step 7] EMA palm action 버퍼 (Fabrics IK 입력 smoothing)
+        self._ema_palm_action = torch.zeros(self.num_envs, 6, device=self.device)
 
         # ----------------------------------------------------------------
         # ADR schedulers (spill penalty / noise scaling)
@@ -888,10 +892,17 @@ class PourRightEnv(DirectRLEnv):
             )
             self.actions[:, 6:11] = finger_action
 
+        # [Phase-1 Step 7] EMA palm action smoothing: Fabrics에 smooth 궤적 전달
+        # action_rate_penalty는 raw self.actions 기반 유지 (training gradient 보존)
+        self._ema_palm_action.copy_(
+            self.cfg.ema_action_alpha * palm_action
+            + (1.0 - self.cfg.ema_action_alpha) * self._ema_palm_action
+        )
+
         if self._warmstart_collect_mode:
-            delta = scale(palm_action, self.delta_mins_warmstart_collect, self.delta_maxs_warmstart_collect)
+            delta = scale(self._ema_palm_action, self.delta_mins_warmstart_collect, self.delta_maxs_warmstart_collect)
         else:
-            delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
+            delta = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
             gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
             tilt_gate = torch.clamp(
@@ -1528,11 +1539,19 @@ class PourRightEnv(DirectRLEnv):
 
         # [Phase-1 Step 4] arm joint vel^2 sum penalty (clipped)
         arm_qd_sq_sum = arm_qd.pow(2).sum(dim=-1).clamp_max(self.cfg.arm_joint_vel_sq_clip)
-        arm_qacc_sq_sum = (arm_qd - self._prev_arm_joint_vel).pow(2).sum(dim=-1)
+        arm_acc_vec = arm_qd - self._prev_arm_joint_vel          # 현재 acc 벡터 (N, DOF)
+        arm_qacc_sq_sum = arm_acc_vec.pow(2).sum(dim=-1)
+
+        # [Phase-1 Step 6] jerk = d(acc)/dt (acc 벡터 변화량)
+        arm_jerk_vec = arm_acc_vec - self._prev_arm_joint_acc    # (N, DOF)
+        arm_jerk_sq_sum = arm_jerk_vec.pow(2).sum(dim=-1)
+
+        # [Phase-1 Step 5] tilt-phase gate: approach 구간은 페널티 0 (arm 이동 자유)
         arm_vel_cost = (
-            self.cfg.weight_arm_joint_vel * arm_qd_sq_sum
-            + self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum
-        )
+            self.cfg.weight_arm_joint_vel  * arm_qd_sq_sum
+            + self.cfg.weight_arm_joint_acc  * arm_qacc_sq_sum
+            + self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum
+        ) * in_tilt_phase   # gate: cup 근처(tilt 준비)에서만 활성
 
         total = (
             r_hold
@@ -1553,6 +1572,7 @@ class PourRightEnv(DirectRLEnv):
 
         self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
         self._prev_arm_joint_vel.copy_(arm_qd)
+        self._prev_arm_joint_acc.copy_(arm_acc_vec)   # [Step 6] jerk 계산용
 
         # ---- ADR increment (success-rate 기반) ----
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
@@ -1590,11 +1610,13 @@ class PourRightEnv(DirectRLEnv):
         # Phase-0 진단 메트릭: arm joint velocity / acceleration
         self.extras["arm_joint_vel_l2_mean"] = arm_qd_l2.mean()
         self.extras["arm_joint_vel_max_mean"] = arm_qd_max.mean()
-        self.extras["arm_joint_acc_l2_mean"] = arm_qacc.mean()
+        self.extras["arm_joint_acc_l2_mean"] = arm_acc_vec.norm(dim=-1).mean()
+        self.extras["arm_joint_jerk_l2_mean"] = arm_jerk_vec.norm(dim=-1).mean()
         self.extras["tilt_phase_arm_vel"] = tilt_phase_arm_vel
-        # Phase-1 Step 4: arm vel cost 로깅
-        self.extras["cost_arm_vel"] = (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum).mean()
-        self.extras["cost_arm_acc"] = (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum).mean()
+        # Phase-1 Step 4/5/6: arm vel/acc/jerk cost 로깅 (in_tilt_phase gate 포함)
+        self.extras["cost_arm_vel"] = (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum * in_tilt_phase).mean()
+        self.extras["cost_arm_acc"] = (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum * in_tilt_phase).mean()
+        self.extras["cost_arm_jerk"] = (self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum * in_tilt_phase).mean()
         # Phase-2 Step 9: action_rate 분리 로깅
         self.extras["cost_action_rate_palm"] = (self.cfg.weight_action_rate_palm * palm_delta).mean()
         self.extras["cost_action_rate_finger"] = (self.cfg.weight_action_rate_finger * finger_delta).mean()
@@ -1844,6 +1866,8 @@ class PourRightEnv(DirectRLEnv):
         self.success_flag[env_ids] = False
         self._pre_pour_ready_steps[env_ids] = 0
         self._prev_arm_joint_vel[env_ids].zero_()
+        self._prev_arm_joint_acc[env_ids].zero_()   # [Step 6]
+        self._ema_palm_action[env_ids].zero_()       # [Step 7]
 
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
         # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)
@@ -2109,6 +2133,8 @@ class PourRightEnv(DirectRLEnv):
         self._source_empty_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._prev_arm_joint_vel[env_ids].zero_()
+        self._prev_arm_joint_acc[env_ids].zero_()   # [Step 6]
+        self._ema_palm_action[env_ids].zero_()       # [Step 7]
 
         self.actions[env_ids, :6] = 0.0
         self.actions[env_ids, 6:] = 1.0

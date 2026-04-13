@@ -327,6 +327,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
     weight_arm_joint_acc: float = 0.0005  # arm 가속도 프록시 페널티
     arm_joint_vel_sq_clip: float = 64.0   # (arm_qd L2 norm)^2 클리핑 상한 (8 rad/s L2 기준)
+    # [Phase-1 Step 5] tilt-phase gate: arm vel penalty는 cup 근처(tilt 준비 구간)에서만 활성
+    # → approach 단계에서 arm movement 자유 → mouth_xy_dist 단축 가능
+    arm_vel_tilt_gate_only: bool = True
+    # [Phase-1 Step 6] arm joint jerk penalty (acc 변화율, 흔들림 급변 억제)
+    weight_arm_joint_jerk: float = 0.0002
+    # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
+    # action_rate_penalty는 raw action 기반 유지 (training gradient 보존)
+    ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
     # [Phase-2 Step 9] action_rate를 palm(6D) / finger(5D) 분리
     # grasp v9 패턴과 동일 (action_smoothness_palm/finger_weight)
     # 기존 단일 weight_action_rate=0.01 → palm 강화, finger 완화
