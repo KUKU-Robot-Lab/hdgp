@@ -17,6 +17,8 @@ TensorBoard 이벤트 파일 파싱 및 시각화 스크립트
 
 import argparse
 import os
+import struct
+import collections
 from pathlib import Path
 
 import pandas as pd
@@ -24,26 +26,154 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from tensorboard.backend.event_processing import event_accumulator
 
 
 # ──────────────────────────────────────────────────────────────
-# 1. 파싱
+# 1. 파싱 (protobuf 없이 순수 struct 기반 TFEvents 직접 파싱)
 # ──────────────────────────────────────────────────────────────
+
+def _read_varint(buf: bytes, pos: int) -> tuple[int, int]:
+    """Little-endian base-128 varint 디코딩. (value, new_pos) 반환."""
+    result, shift = 0, 0
+    while pos < len(buf):
+        b = buf[pos]; pos += 1
+        result |= (b & 0x7F) << shift
+        shift += 7
+        if not (b & 0x80):
+            break
+    return result, pos
+
+
+def _parse_proto_scalars(buf: bytes) -> list[tuple[str, float]]:
+    """Summary.Value 메시지에서 (tag_string, simple_value) 쌍 추출.
+
+    TFEvents proto 구조:
+      Event        { wall_time(1,d), step(2,i64), summary(5,msg) }
+      Summary      { value(1,msg)* }
+      Summary.Value{ tag(1,str), simple_value(2,f32) }
+    """
+    results: list[tuple[str, float]] = []
+    pos, n = 0, len(buf)
+
+    def skip_field(wire: int) -> None:
+        nonlocal pos
+        if wire == 0:      # varint
+            _, pos = _read_varint(buf, pos)
+        elif wire == 1:    # 64-bit
+            pos += 8
+        elif wire == 2:    # length-delimited
+            ln, pos = _read_varint(buf, pos)
+            pos += ln
+        elif wire == 5:    # 32-bit
+            pos += 4
+
+    def read_summary_value(vbuf: bytes) -> tuple[str, float] | None:
+        """Summary.Value bytes → (tag, float)."""
+        p, nb = 0, len(vbuf)
+        tag_str: str | None = None
+        fval: float | None = None
+        while p < nb:
+            tw, p = _read_varint(vbuf, p)
+            fnum, wire = tw >> 3, tw & 0x7
+            if wire == 0:
+                _, p = _read_varint(vbuf, p)
+            elif wire == 1:
+                p += 8
+            elif wire == 2:
+                ln, p = _read_varint(vbuf, p)
+                chunk = vbuf[p:p + ln]; p += ln
+                if fnum == 1:  # tag string
+                    try: tag_str = chunk.decode("utf-8")
+                    except Exception: pass
+            elif wire == 5:    # 32-bit float
+                if p + 4 <= nb:
+                    fval = struct.unpack_from("<f", vbuf, p)[0]
+                p += 4
+            else:
+                break
+        if tag_str is not None and fval is not None:
+            return tag_str, fval
+        return None
+
+    def read_summary(sbuf: bytes) -> list[tuple[str, float]]:
+        """Summary bytes → [(tag, float), ...]"""
+        out: list[tuple[str, float]] = []
+        p, nb = 0, len(sbuf)
+        while p < nb:
+            tw, p = _read_varint(sbuf, p)
+            fnum, wire = tw >> 3, tw & 0x7
+            if wire == 2:
+                ln, p = _read_varint(sbuf, p)
+                chunk = sbuf[p:p + ln]; p += ln
+                if fnum == 1:  # Value entry
+                    r = read_summary_value(chunk)
+                    if r: out.append(r)
+            elif wire == 0:
+                _, p = _read_varint(sbuf, p)
+            elif wire == 1:
+                p += 8
+            elif wire == 5:
+                p += 4
+            else:
+                break
+        return out
+
+    # Event 메시지 파싱
+    step: int | None = None
+    summary_bytes: bytes | None = None
+    while pos < n:
+        tw, pos = _read_varint(buf, pos)
+        fnum, wire = tw >> 3, tw & 0x7
+        if wire == 0:
+            val, pos = _read_varint(buf, pos)
+            if fnum == 2:   # step
+                step = val
+        elif wire == 1:     # wall_time (field 1, double)
+            pos += 8
+        elif wire == 2:
+            ln, pos = _read_varint(buf, pos)
+            chunk = buf[pos:pos + ln]; pos += ln
+            if fnum == 5:   # summary
+                summary_bytes = chunk
+        elif wire == 5:
+            pos += 4
+        else:
+            break
+
+    if step is not None and summary_bytes is not None:
+        for tag, val in read_summary(summary_bytes):
+            results.append((step, tag, val))
+    return results
+
 
 def load_events(events_path: str) -> dict[str, pd.DataFrame]:
-    """events 파일을 읽어 {tag: DataFrame(step, value)} 딕셔너리로 반환."""
-    ea = event_accumulator.EventAccumulator(events_path)
-    ea.Reload()
+    """TFEvents 바이너리를 직접 파싱해 {tag: DataFrame(step, value)} 반환.
 
-    tags = ea.Tags().get("scalars", [])
-    data: dict[str, pd.DataFrame] = {}
-    for tag in tags:
-        events = ea.Scalars(tag)
-        data[tag] = pd.DataFrame(
-            {"step": [e.step for e in events], "value": [e.value for e in events]}
-        )
-    return data
+    tensorboard / protobuf 라이브러리 불필요 — struct 기반 순수 Python 구현.
+    """
+    path = Path(events_path)
+    tag_rows: dict[str, list[tuple[int, float]]] = collections.defaultdict(list)
+
+    with open(path, "rb") as f:
+        while True:
+            # TFRecord 헤더: uint64 data_length + uint32 masked_crc
+            hdr = f.read(12)
+            if len(hdr) < 12:
+                break
+            data_len = struct.unpack_from("<Q", hdr, 0)[0]
+            data = f.read(data_len)
+            f.read(4)  # masked_crc of data (검증 생략)
+            if len(data) < data_len:
+                break
+
+            for step, tag, val in _parse_proto_scalars(data):
+                tag_rows[tag].append((step, val))
+
+    data_dict: dict[str, pd.DataFrame] = {}
+    for tag, rows in tag_rows.items():
+        df = pd.DataFrame(rows, columns=["step", "value"])
+        data_dict[tag] = df
+    return data_dict
 
 
 def build_master_df(data: dict[str, pd.DataFrame], suffix: str = "/iter") -> pd.DataFrame:
@@ -76,8 +206,9 @@ def _plot_series(ax, df, cols, labels=None, colors=None, smooth_w=20, title="", 
         s = df[col].dropna()
         label = labels[i] if labels else col
         color = colors[i] if colors else None
-        ax.plot(s.index, s.values, alpha=0.25, linewidth=0.8, color=color)
-        ax.plot(s.index, smooth(s, smooth_w).values, linewidth=1.6, label=label, color=color)
+        xs = s.index.to_numpy()
+        ax.plot(xs, s.values, alpha=0.25, linewidth=0.8, color=color)
+        ax.plot(xs, smooth(s, smooth_w).values, linewidth=1.6, label=label, color=color)
     ax.set_title(title, fontsize=10)
     ax.set_ylabel(ylabel, fontsize=8)
     ax.set_xlabel("iter", fontsize=8)
@@ -255,8 +386,9 @@ def plot_losses(df: pd.DataFrame, outdir: Path, data: dict) -> None:
             break
         ax = axes_flat[i]
         s = loss_df[col].dropna()
-        ax.plot(s.index, s.values, alpha=0.3, linewidth=0.8)
-        ax.plot(s.index, smooth(s, 10).values, linewidth=1.6, label=col)
+        xs = s.index.to_numpy()
+        ax.plot(xs, s.values, alpha=0.3, linewidth=0.8)
+        ax.plot(xs, smooth(s, 10).values, linewidth=1.6, label=col)
         ax.set_title(col.replace("_", "/"), fontsize=9)
         ax.set_xlabel("step", fontsize=8)
         ax.tick_params(labelsize=7)

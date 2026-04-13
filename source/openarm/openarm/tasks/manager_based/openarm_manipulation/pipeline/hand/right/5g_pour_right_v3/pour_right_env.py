@@ -1401,7 +1401,12 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # ---- Stage B. Transport (Approach) - Always active with smooth gradient ----
-        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
+        # [P2] DexPour: "lift reward ceases once cup reaches h_lift"
+        # test4: 컵 0.407m 높이에서도 r_lift 수령 → 컵 올리는 행동 지속 유인
+        # lift_height_cap(0.05m) 이상은 보상 없음
+        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(
+            min=0.0, max=self.cfg.lift_height_cap
+        )
         r_lift = self.cfg.weight_approach_z * cup_height_delta
         
         # Smooth approach reward using tanh (0 at infinity, 1 at 0)
@@ -1436,22 +1441,21 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_prepour_align * r_align
         )
 
-        # ---- Stage D. Pour (using soft g_pour gate) ----
-        # r_release 제거: (1 - bead_in_source)는 spill에도 보상을 줘서
-        # 정책이 "붓지 않음" 로컬 최적값으로 수렴하는 문제 유발.
-        # r_cross(target mouth 통과)와 r_capture(target 안에 있음)만으로 보상.
+        # ---- Stage D. Pour (DexPour-style binary gate: ρ) ----
+        # [P3] DexPour ρ = (cup_target_dist < d_pour) AND (prior stages complete)
+        # 기존 soft g_pour: g_pour=0.128 → pour reward 항상 희미하게 활성 → 멀리서도 bead 흘러도 reward
+        # binary gate: cup_center_xy_dist < 0.15m AND source_up_dot < 0.50(>60° tilt) 동시 충족 시에만 활성
+        # → "컵 근처에서 기울어야만 pour reward" → transport + tilt 순서 명확히 학습
         r_cross = self._bead_cross_fraction
         r_capture = self._bead_in_target_fraction
 
-        # gate 제거: physics가 자연스럽게 제어 (컵이 멀리 있으면 비드가 target에 안 들어감)
-        # g_ready gate는 tilt 시 g_align_xy 붕괴로 r_pour가 0이 되는 근본 원인이었음.
-        # r_pour_align: pour 중에도 방향 정렬(mouth alignment) 유지 유도.
-        # pre-pour stage에서는 g_ready gate 하에 r_align이 제공되지만,
-        # 실제 pour(tilted)로 진입하면 g_ready gate가 약해져 alignment 신호가 사라짐 → 빗나감.
-        # 이를 보완하기 위해 pour stage에 ungated alignment를 추가.
-        # weight=2.0 (capture=40, cross=20 대비 소규모 → 방향 유지 유도, 과도한 alignment 최적화 방지)
+        gate_pour_binary = (
+            (self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh)
+            & (self._source_up_dot_world < self.cfg.pour_binary_tilt_thresh)
+        ).float()
+
         r_pour_align = 0.5 * (self._mouth_alignment_cos + 1.0)
-        r_pour_stage = (
+        r_pour_stage = gate_pour_binary * (
             self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
             + self.cfg.weight_pour_align * r_pour_align
@@ -1546,12 +1550,23 @@ class PourRightEnv(DirectRLEnv):
         arm_jerk_vec = arm_acc_vec - self._prev_arm_joint_acc    # (N, DOF)
         arm_jerk_sq_sum = arm_jerk_vec.pow(2).sum(dim=-1)
 
-        # [Phase-1 Step 5] tilt-phase gate: approach 구간은 페널티 0 (arm 이동 자유)
-        arm_vel_cost = (
-            self.cfg.weight_arm_joint_vel  * arm_qd_sq_sum
-            + self.cfg.weight_arm_joint_acc  * arm_qacc_sq_sum
-            + self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum
-        ) * in_tilt_phase   # gate: cup 근처(tilt 준비)에서만 활성
+        # [P1] arm vel penalty: approach 구간도 낮은 가중치로 적용 (arm_vel_tilt_gate_only=False)
+        # test4: cost_arm_vel=0.001/step → 사실상 0, approach에서 arm이 너무 빠르게 이동
+        # approach 구간: weight_arm_joint_vel_approach (tilt 구간의 1/4)
+        # tilt 구간: weight_arm_joint_vel (기존 값 유지)
+        approach_only = 1.0 - in_tilt_phase   # approach 구간 (cup 멀리 있을 때)
+        if self.cfg.arm_vel_tilt_gate_only:
+            arm_vel_cost = (
+                self.cfg.weight_arm_joint_vel  * arm_qd_sq_sum
+                + self.cfg.weight_arm_joint_acc  * arm_qacc_sq_sum
+                + self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum
+            ) * in_tilt_phase
+        else:
+            arm_vel_cost = (
+                self.cfg.weight_arm_joint_vel  * arm_qd_sq_sum
+                + self.cfg.weight_arm_joint_acc  * arm_qacc_sq_sum
+                + self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum
+            ) * in_tilt_phase + self.cfg.weight_arm_joint_vel_approach * arm_qd_sq_sum * approach_only
 
         total = (
             r_hold
@@ -1590,6 +1605,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_prepour"] = r_prepour_stage.mean()
         self.extras["r_pour"] = r_pour_stage.mean()
         self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
+        self.extras["gate_pour_binary"] = gate_pour_binary.mean()  # [P3] binary gate 활성 비율
         self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
         self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
         self.extras["r_success_overfill"] = (
@@ -1617,6 +1633,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["cost_arm_vel"] = (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum * in_tilt_phase).mean()
         self.extras["cost_arm_acc"] = (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum * in_tilt_phase).mean()
         self.extras["cost_arm_jerk"] = (self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum * in_tilt_phase).mean()
+        self.extras["cost_arm_vel_approach"] = (self.cfg.weight_arm_joint_vel_approach * arm_qd_sq_sum * approach_only).mean()
         # Phase-2 Step 9: action_rate 분리 로깅
         self.extras["cost_action_rate_palm"] = (self.cfg.weight_action_rate_palm * palm_delta).mean()
         self.extras["cost_action_rate_finger"] = (self.cfg.weight_action_rate_finger * finger_delta).mean()

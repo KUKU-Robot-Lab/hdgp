@@ -183,7 +183,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
-    success_spill_max: float = 0.20
+    success_spill_max: float = 0.40   # 0.20→0.40: [test4] spill=33% > 0.20 → 성공 불가. weight_spill 복활로 spill 억제하면서 기준 완화
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -309,7 +309,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
     # 0이면 비활성.
     weight_success_overfill: float = 0.0
-    weight_spill: float = 0.00     # 10→0: 초반 spill 두려움 제거, pour 탐색 장려
+    weight_spill: float = 1.00     # 0→1.0: [test4] spill=33% > success_spill_max(20%) → 성공 불가. 소량 복활로 억제
     # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
     #   premature_tilt_cost = (1 - g_ready) × (1 - source_up_dot_world)
     #   g_ready=0.11, cup 100° tilt 시 source_up_dot_world≈-0.17 → (1-(-0.17))=1.17
@@ -321,15 +321,17 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
     weight_premature_tilt: float = 0.50   # 4.00→1.50→0.50: tilt_action_gate가 wrist spin 차단하므로 감소
-    weight_grasp_loss: float = 0.30      # tilt 중 grasp 품질 저하에 즉각 dense signal (full_grasp_flag=0 시)
+    weight_grasp_loss: float = 0.05      # 0.30→0.05: [test4] cost_grasp_loss=0.73/step (전체 cost 73%) → tilt 억제. DexPour는 contact reward로 대체
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
     weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
     weight_arm_joint_acc: float = 0.0005  # arm 가속도 프록시 페널티
     arm_joint_vel_sq_clip: float = 64.0   # (arm_qd L2 norm)^2 클리핑 상한 (8 rad/s L2 기준)
-    # [Phase-1 Step 5] tilt-phase gate: arm vel penalty는 cup 근처(tilt 준비 구간)에서만 활성
-    # → approach 단계에서 arm movement 자유 → mouth_xy_dist 단축 가능
-    arm_vel_tilt_gate_only: bool = True
+    # [Phase-1 Step 5] arm vel penalty gate
+    # [test4] cost_arm_vel=0.001/step (사실상 0) → approach 구간 빠른 이동 억제 없음
+    # → arm_vel_tilt_gate_only=False: approach 구간에도 낮은 가중치로 적용
+    arm_vel_tilt_gate_only: bool = False   # True→False
+    weight_arm_joint_vel_approach: float = 0.0005  # approach 구간 (tilt 구간 0.002의 1/4)
     # [Phase-1 Step 6] arm joint jerk penalty (acc 변화율, 흔들림 급변 억제)
     weight_arm_joint_jerk: float = 0.0002
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
@@ -385,6 +387,17 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     transport_tilt_penalty_weight: float = 2.0
     pour_tilt_target_deg: float = 100.0  # 135→100: 물리적으로 달성 가능한 각도 (비드 쏟기 충분)
     pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
+
+    # [P2] r_lift 상한: DexPour "Once cup reaches h_lift, lift reward ceases"
+    # test4: 컵이 0.407m 들린 채로 r_lift 계속 수령 → 컵을 올리는 행동 유인
+    # 0.05m 이상은 보상 없음 (warmstart 시작 높이 ~0.03m 기준)
+    lift_height_cap: float = 0.05   # DexPour h_lift=0.15m 참고, warmstart 높이에 맞춤
+
+    # [P3] pour stage binary gate: DexPour ρ 방식
+    # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
+    # → "컵 근처에서 기울어야만 pour reward" → 명확한 행동 학습
+    pour_binary_xy_thresh: float = 0.15   # DexPour d_pour=0.17m 참고
+    pour_binary_tilt_thresh: float = 0.50  # source_up_dot < 0.50 (>60° 기울기)
 
     # -----------------------------------------------------------------------
     # 종료 조건
