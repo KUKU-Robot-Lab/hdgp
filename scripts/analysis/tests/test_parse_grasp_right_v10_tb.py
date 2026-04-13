@@ -125,3 +125,18 @@ def test_bin_metrics_whitelist_matches_reduced_logging():
     assert expected_metrics.issubset(set(module.BIN_METRICS))
     assert "bin_0b_slip" not in module.BIN_METRICS
     assert "bin_10b_f_smooth" not in module.BIN_METRICS
+
+
+def test_core_metrics_include_thumb_and_shape_rewards():
+    module = load_module()
+
+    expected_metrics = {
+        "r_thumb_pose_anchor",
+        "r_thumb_slide_penalty",
+        "r_grasp_shape_consistency",
+        "thumb_anchor_error",
+        "thumb_downward_delta",
+        "grasp_shape_error",
+    }
+
+    assert expected_metrics.issubset(set(module.CORE_METRICS))

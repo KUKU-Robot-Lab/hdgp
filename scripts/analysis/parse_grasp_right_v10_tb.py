@@ -43,6 +43,12 @@ CORE_METRICS = [
     "r_full_contact",
     "r_lift",
     "r_success_bonus",
+    "r_thumb_pose_anchor",
+    "r_thumb_slide_penalty",
+    "r_grasp_shape_consistency",
+    "thumb_anchor_error",
+    "thumb_downward_delta",
+    "grasp_shape_error",
     "adr_difficulty_progress",
     "adr_success_min",
 ]
@@ -361,7 +367,7 @@ def plot_contact_success(run_artifacts: list[RunArtifacts], out_path: Path, smoo
         (["stat_num_contacts", "r_multi_phalanx", "r_full_contact"], "Contact Quality", "value"),
         (["r_slip", "r_preload", "r_force_smooth"], "Lift Stability", "value"),
         (["r_lift", "r_success_bonus"], "Lift/Success Bonus", "value"),
-        (["bin_0b_contacts", "bin_10b_contacts", "bin_20b_contacts", "bin_30b_contacts"], "Per-Mass Contacts", "count"),
+        (["r_thumb_pose_anchor", "r_thumb_slide_penalty", "r_grasp_shape_consistency"], "Thumb / Shape Control", "value"),
     ]
 
     for ax, (metrics, title, ylabel) in zip(axes.flatten(), metric_groups):
@@ -643,6 +649,7 @@ def render_markdown_report(
             "- `f_ratio`, `f_ratio_light/heavy`, `bin_*_f_ratio`는 질량 적응 성향을 직접 보여준다.",
             "- `stat_num_contacts`, `r_multi_phalanx`, `r_full_contact`는 deep-envelope grasp 유지력을 보여준다.",
             "- `r_slip`, `r_preload`, `r_force_smooth`, `r_lift`는 lift 단계 failure mode를 분해한다.",
+            "- `r_thumb_pose_anchor`, `r_thumb_slide_penalty`, `r_grasp_shape_consistency`와 `thumb_*_error`는 grasp form 유지 여부를 보여준다.",
             "- bin 로깅은 `bin_*_f_ratio`와 bin별 success/contact/lift/adaptive_grip/full_contact/multi_phalanx만 유지한다.",
             "",
         ]

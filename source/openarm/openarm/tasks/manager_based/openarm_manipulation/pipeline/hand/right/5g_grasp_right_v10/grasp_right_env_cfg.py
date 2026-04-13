@@ -216,6 +216,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # R5. force_smooth (v9 신규): 파지력 변화율 억제 (sim2real 안정성)
     force_smooth_weight: float = 1.5
+    force_smooth_penalty_cap: float = 2.0
     # 6.5: lift phase 초반 N step 동안 force_smooth 완화 (0: 비활성)
     # lift 시작 직후 grip force 급변을 허용해 과도 패널티 방지
     force_smooth_lift_warmup_steps: int = 0
@@ -230,6 +231,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # step당 보너스 → 유지할수록 누적 (grasp + lift phase 모두)
     # 0.5 → 5.0: lift_reward(20)와 경쟁 가능한 수준으로 상향, 5개 접촉 유인 강화
     full_contact_bonus_weight: float = 5.0
+
+    # R10. thumb pose / grasp shape consistency
+    thumb_pose_anchor_weight: float = 1.2
+    thumb_pose_anchor_sharpness: float = 8.0
+    thumb_slide_penalty_weight: float = 2.0
+    thumb_slide_z_margin: float = 0.01
+    grasp_shape_consistency_weight: float = 1.0
+    grasp_shape_consistency_sharpness: float = 6.0
+
+    # Thumb downward shortcut 억제
+    thumb_curl_downward_action_scale: float = 0.25
+    thumb_curl_max_downward_delta: float = 0.05
 
     # R7. action_smoothness
     action_smoothness_palm_weight:   float = -0.01

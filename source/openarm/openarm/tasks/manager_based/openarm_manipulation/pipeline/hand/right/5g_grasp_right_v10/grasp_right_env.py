@@ -98,6 +98,12 @@ from .finger_action_utils import (
     compute_lift_finger_targets,
     resolve_grasp_delta_scale,
 )
+from .grasp_reward_utils import (
+    compute_bounded_force_smooth_penalty,
+    compute_grasp_shape_consistency_reward,
+    compute_thumb_downward_slide_penalty,
+    compute_thumb_pose_anchor_reward,
+)
 from .grasp_right_utils import scale, to_torch
 
 
@@ -205,6 +211,8 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_approach_pose   = to_torch(HAND_APPROACH_POSE,   device=self.device)  # (20,)
         self.hand_grasp_pose      = to_torch(HAND_GRASP_POSE,      device=self.device)  # (20,)
         self.hand_full_grip_pose  = to_torch(HAND_FULL_GRIP_POSE,  device=self.device)  # (20,)
+        self.thumb_joint_indices = torch.tensor([0, 1, 2, 3], dtype=torch.long, device=self.device)
+        self.thumb_curl_index = 1
 
         # ----------------------------------------------------------------
         # approach_pose 기준 관절 한계 재조정 — 반대 방향 휘어짐 방지
@@ -724,6 +732,10 @@ class GraspRightEnv(DirectRLEnv):
             upper_limits=self.hand_joint_upper_limits,
             delta_scale=grasp_delta_scale,
             delta_mask=self.finger_delta_mask,
+            thumb_curl_index=self.thumb_curl_index,
+            thumb_downward_action_scale=self.cfg.thumb_curl_downward_action_scale,
+            thumb_anchor_pose=self.hand_grasp_pose,
+            thumb_curl_max_downward_delta=self.cfg.thumb_curl_max_downward_delta,
         )
         self.hand_joint_targets.copy_(hand_target)
 
@@ -749,6 +761,10 @@ class GraspRightEnv(DirectRLEnv):
             upper_limits=self.hand_joint_upper_limits,
             delta_scale=self.cfg.lift_finger_delta_scale,
             delta_mask=self.finger_delta_mask,
+            thumb_curl_index=self.thumb_curl_index,
+            thumb_downward_action_scale=self.cfg.thumb_curl_downward_action_scale,
+            thumb_anchor_pose=self.hand_grasp_pose,
+            thumb_curl_max_downward_delta=self.cfg.thumb_curl_max_downward_delta,
         )
         finger_target = torch.where(
             is_lift.unsqueeze(1),
@@ -1093,6 +1109,35 @@ class GraspRightEnv(DirectRLEnv):
             -self.cfg.fingertip_guide_sharpness * fingertip_cup_dist
         )
 
+        # ---- R10. thumb / grasp-shape consistency ----
+        thumb_joint_pos = self.robot.data.joint_pos[:, self.hand_dof_indices][:, self.thumb_joint_indices]
+        r10_thumb_anchor, thumb_anchor_error = compute_thumb_pose_anchor_reward(
+            thumb_joint_pos=thumb_joint_pos,
+            thumb_reference_pose=self.hand_grasp_pose[self.thumb_joint_indices],
+            weight=self.cfg.thumb_pose_anchor_weight,
+            sharpness=self.cfg.thumb_pose_anchor_sharpness,
+        )
+        r10_thumb_anchor = r10_thumb_anchor * balance_gate
+
+        r10_thumb_slide, thumb_downward_delta = compute_thumb_downward_slide_penalty(
+            thumb_tip_pos=self.fingertip_pos[:, 0, :],
+            grasp_center=grasp_center,
+            z_margin=self.cfg.thumb_slide_z_margin,
+            weight=self.cfg.thumb_slide_penalty_weight,
+        )
+        r10_thumb_slide = r10_thumb_slide * has_thumb_contact
+
+        r10_shape_consistency, grasp_shape_error = compute_grasp_shape_consistency_reward(
+            hand_joint_pos=self.robot.data.joint_pos[:, self.hand_dof_indices],
+            reference_pose=self.hand_grasp_pose,
+            lower_limits=self.hand_joint_lower_limits,
+            upper_limits=self.hand_joint_upper_limits,
+            active_mask=self.finger_delta_mask,
+            weight=self.cfg.grasp_shape_consistency_weight,
+            sharpness=self.cfg.grasp_shape_consistency_sharpness,
+        )
+        r10_shape_consistency = r10_shape_consistency * has_4_contact
+
         # ---- R5. force_smooth (v9 신규) ----
         # 파지력 변화율 (mass-normalized) 억제
         force_delta_norm = (total_grip_force - self._prev_avg_force_buf) / (mg + 1e-4)
@@ -1109,7 +1154,11 @@ class GraspRightEnv(DirectRLEnv):
                 self.is_lift_phase & (lift_step < self.cfg.force_smooth_lift_warmup_steps)
             ).float()
             force_delta_norm = force_delta_norm * (1.0 - in_warmup)
-        r5_force_smooth  = -self.cfg.force_smooth_weight * force_delta_norm.pow(2)
+        r5_force_smooth = compute_bounded_force_smooth_penalty(
+            force_delta_norm=force_delta_norm,
+            weight=self.cfg.force_smooth_weight,
+            penalty_cap=self.cfg.force_smooth_penalty_cap,
+        )
         self._force_smooth_ready.fill_(True)
         self._prev_avg_force_buf.copy_(total_grip_force)
 
@@ -1143,6 +1192,9 @@ class GraspRightEnv(DirectRLEnv):
             + r8_success
             + r9_full_contact
             + r_ft_guide
+            + r10_thumb_anchor
+            + r10_thumb_slide
+            + r10_shape_consistency
         )
         total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -1172,6 +1224,9 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["r_full_contact"]    = r9_full_contact.mean()
         self.extras["r_fingertip_guide"] = r_ft_guide.mean()
         self.extras["r_action_smooth"]   = r7_action_smooth.mean()
+        self.extras["r_thumb_pose_anchor"] = torch.nan_to_num(r10_thumb_anchor, nan=0.0).mean()
+        self.extras["r_thumb_slide_penalty"] = torch.nan_to_num(r10_thumb_slide, nan=0.0).mean()
+        self.extras["r_grasp_shape_consistency"] = torch.nan_to_num(r10_shape_consistency, nan=0.0).mean()
 
         # adr_* : ADR 진행 상태
         if self.contact_adr is not None:
@@ -1191,6 +1246,9 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["f_others"]     = others_avg_force.mean()
         self.extras["f_total_norm"] = grip_normalized.mean()
         self.extras["f_ratio"]      = force_ratio.mean()
+        self.extras["thumb_anchor_error"] = torch.nan_to_num(thumb_anchor_error, nan=0.0).mean()
+        self.extras["thumb_downward_delta"] = torch.nan_to_num(thumb_downward_delta, nan=0.0).mean()
+        self.extras["grasp_shape_error"] = torch.nan_to_num(grasp_shape_error, nan=0.0).mean()
         light_mask = (self._bead_mass_normalized < 0.5)
         heavy_mask = (self._bead_mass_normalized > 0.5)
         if light_mask.any():

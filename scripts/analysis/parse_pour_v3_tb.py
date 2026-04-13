@@ -297,10 +297,13 @@ def plot_stability(df: pd.DataFrame, outdir: Path) -> None:
                  title="Grasp Loss Cost", ylabel="cost/step", legend=False)
     _plot_series(axes[0, 2], df, ["cost_spill"],
                  title="Spill Cost", ylabel="cost/step", legend=False)
-    _plot_series(axes[1, 0], df, ["g_ready", "g_pour"],
-                 labels=["g_ready", "g_pour"],
-                 colors=["green", "blue"],
-                 title="Gate (g_ready / g_pour)", ylabel="gate value")
+    # gate_pour_binary (test5+) or legacy g_pour (test4-)
+    gate_cols = [c for c in ["gate_pour_binary", "g_ready", "g_pour"] if c in df.columns]
+    gate_labels = gate_cols
+    _plot_series(axes[1, 0], df, gate_cols,
+                 labels=gate_labels,
+                 colors=["crimson", "green", "blue"][:len(gate_cols)],
+                 title="Gate (binary / g_ready / g_pour)", ylabel="gate value")
     _plot_series(axes[1, 1], df, ["mouth_xy_dist", "cup_center_xy_dist"],
                  labels=["mouth_xy_dist", "cup_center_xy_dist"],
                  colors=["navy", "darkorange"],
@@ -318,7 +321,8 @@ def plot_stability(df: pd.DataFrame, outdir: Path) -> None:
 def plot_arm_velocity(df: pd.DataFrame, outdir: Path) -> None:
     """Phase-0 진단: arm joint velocity/acceleration 시계열."""
     vel_cols = ["arm_joint_vel_l2_mean", "arm_joint_vel_max_mean",
-                "arm_joint_acc_l2_mean", "tilt_phase_arm_vel"]
+                "arm_joint_acc_l2_mean", "tilt_phase_arm_vel",
+                "cost_arm_vel_approach"]
     present = [c for c in vel_cols if c in df.columns]
     if not present:
         print("  arm vel 메트릭 없음 (새 학습 후 재실행 필요)")
@@ -329,7 +333,7 @@ def plot_arm_velocity(df: pd.DataFrame, outdir: Path) -> None:
         axes = [axes]
     fig.suptitle("Arm Joint Velocity/Acceleration (Phase-0 Diagnostics)", fontsize=12)
 
-    colors = ["steelblue", "darkorange", "green", "red"]
+    colors = ["steelblue", "darkorange", "green", "red", "purple"]
     for i, col in enumerate(present):
         _plot_series(axes[i], df, [col], title=col, ylabel="rad/s or rad/s^2",
                      colors=[colors[i]], legend=False)
@@ -432,6 +436,8 @@ def print_summary(df: pd.DataFrame) -> None:
         "arm_joint_vel_max_mean (rad/s)": "arm_joint_vel_max_mean",
         "arm_joint_acc_l2_mean": "arm_joint_acc_l2_mean",
         "tilt_phase_arm_vel (rad/s)": "tilt_phase_arm_vel",
+        "gate_pour_binary": "gate_pour_binary",
+        "cost_arm_vel_approach": "cost_arm_vel_approach",
     }
 
     for label, col in metrics.items():
