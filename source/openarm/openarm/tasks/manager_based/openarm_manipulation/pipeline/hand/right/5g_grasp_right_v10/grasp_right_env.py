@@ -1039,6 +1039,17 @@ class GraspRightEnv(DirectRLEnv):
         finger_depth = (tip_norm * middle_norm).sqrt()
         r1c_multi_phalanx = self.cfg.multi_phalanx_weight * finger_depth.mean(dim=-1)
 
+        # ---- R1d. middle_phalanx_guide ----
+        # middle3_pos → grasp_center 거리 기반 exp reward (항상 활성)
+        # actor obs의 middle_to_cup 15D에 직접 대응하는 reward gradient 제공
+        # tip-only grasp local optimum 탈출 유도
+        middle_to_grasp_dist = (
+            self.middle3_pos - grasp_center.unsqueeze(1)
+        ).norm(dim=-1).mean(dim=-1)   # (N,)
+        r1d_middle_guide = self.cfg.middle_guide_weight * torch.exp(
+            -self.cfg.middle_guide_sharpness * middle_to_grasp_dist
+        )
+
         # ---- cup uprightness ----
         z_local = torch.zeros(self.num_envs, 3, device=self.device)
         z_local[:, 2] = 1.0
@@ -1183,6 +1194,7 @@ class GraspRightEnv(DirectRLEnv):
             + r1_enclosure
             + r1b_force_balance
             + r1c_multi_phalanx
+            + r1d_middle_guide
             + r2_slip
             + r3_adaptive_force
             + r_preload
@@ -1215,6 +1227,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["r_enclosure"]       = r1_enclosure.mean()
         self.extras["r_force_balance"]   = r1b_force_balance.mean()
         self.extras["r_multi_phalanx"]   = r1c_multi_phalanx.mean()
+        self.extras["r_middle_guide"]    = r1d_middle_guide.mean()
         self.extras["r_slip"]            = r2_slip.mean()
         self.extras["r_adaptive_grip"]   = r3_adaptive_force.mean()
         self.extras["r_preload"]         = r_preload.mean()
@@ -1230,9 +1243,6 @@ class GraspRightEnv(DirectRLEnv):
 
         # adr_* : ADR 진행 상태
         if self.contact_adr is not None:
-            self.extras["adr_contact_progress"] = torch.tensor(
-                self.contact_adr.progress, device=self.device
-            )
             self.extras["adr_min_contacts"] = torch.tensor(
                 float(_adr_min_contacts), device=self.device
             )
@@ -1242,21 +1252,14 @@ class GraspRightEnv(DirectRLEnv):
             )
 
         # f_*   : 파지력 지표
-        self.extras["f_thumb"]      = thumb_force.mean()
-        self.extras["f_others"]     = others_avg_force.mean()
-        self.extras["f_total_norm"] = grip_normalized.mean()
-        self.extras["f_ratio"]      = force_ratio.mean()
-        self.extras["thumb_anchor_error"] = torch.nan_to_num(thumb_anchor_error, nan=0.0).mean()
+        self.extras["f_thumb"]  = thumb_force.mean()
+        self.extras["f_others"] = others_avg_force.mean()
+        self.extras["f_ratio"]  = force_ratio.mean()
+        self.extras["thumb_anchor_error"]   = torch.nan_to_num(thumb_anchor_error, nan=0.0).mean()
         self.extras["thumb_downward_delta"] = torch.nan_to_num(thumb_downward_delta, nan=0.0).mean()
-        self.extras["grasp_shape_error"] = torch.nan_to_num(grasp_shape_error, nan=0.0).mean()
+        self.extras["grasp_shape_error"]    = torch.nan_to_num(grasp_shape_error, nan=0.0).mean()
         light_mask = (self._bead_mass_normalized < 0.5)
         heavy_mask = (self._bead_mass_normalized > 0.5)
-        if light_mask.any():
-            self.extras["f_norm_light"]  = grip_normalized[light_mask].mean()
-            self.extras["f_ratio_light"] = force_ratio[light_mask].mean()
-        if heavy_mask.any():
-            self.extras["f_norm_heavy"]  = grip_normalized[heavy_mask].mean()
-            self.extras["f_ratio_heavy"] = force_ratio[heavy_mask].mean()
         if light_mask.any() and heavy_mask.any():
             self.extras["f_ratio_delta"] = (
                 force_ratio[heavy_mask].mean() - force_ratio[light_mask].mean()
@@ -1265,8 +1268,6 @@ class GraspRightEnv(DirectRLEnv):
         # stat_ : 학습 진행 지표
         self.extras["stat_num_contacts"] = self.num_contacts_buf.float().mean()
         self.extras["stat_success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
-        # 6.2: moving window 크기 로깅 (수렴 여부 확인용)
-        self.extras["stat_window_n"] = torch.tensor(float(len(self._success_window)), device=self.device)
 
         # 6.3: mass bin별 KPI 로깅
         # bead level 0=0bead, 1=10bead, 2=20bead, 3=30bead → 정규화 0/0.33/0.67/1.0
@@ -1278,17 +1279,9 @@ class GraspRightEnv(DirectRLEnv):
         ]
         for _lvl, (_tag, _mask) in enumerate(_bin_defs):
             if _mask.any():
-                self.extras[f"bin_{_tag}_contacts"] = self.num_contacts_buf[_mask].float().mean()
-                self.extras[f"bin_{_tag}_lift"]     = r6_lift[_mask].mean()
-                self.extras[f"bin_{_tag}_f_ratio"]  = force_ratio[_mask].mean()
-                self.extras[f"bin_{_tag}_adaptive_grip"] = r3_adaptive_force[_mask].mean()
-                self.extras[f"bin_{_tag}_full_contact"] = r9_full_contact[_mask].mean()
-                self.extras[f"bin_{_tag}_multi_phalanx"] = r1c_multi_phalanx[_mask].mean()
-            _b_total = self._total_episodes_bin[_lvl]
-            if _b_total > 0:
-                self.extras[f"bin_{_tag}_sr"] = torch.tensor(
-                    self._successful_episodes_bin[_lvl] / _b_total, device=self.device
-                )
+                self.extras[f"bin_{_tag}_f_ratio"]       = force_ratio[_mask].mean()
+                self.extras[f"bin_{_tag}_adaptive_grip"]  = r3_adaptive_force[_mask].mean()
+                self.extras[f"bin_{_tag}_multi_phalanx"]  = r1c_multi_phalanx[_mask].mean()
 
         return total
 
@@ -1339,8 +1332,7 @@ class GraspRightEnv(DirectRLEnv):
         terminated = out_x | out_y | fallen | tipped | success_held
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
-        self.extras["stat_obj_z"]      = self.object_pos[:, 2].mean()
-        self.extras["adr_success_min"] = torch.tensor(float(_success_min), device=self.device)
+        self.extras["stat_obj_z"] = self.object_pos[:, 2].mean()
 
         return terminated, truncated
 

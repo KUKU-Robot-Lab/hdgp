@@ -172,9 +172,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     force_balance_weight:    float = 3.5
     force_balance_sharpness: float = 8.0
 
-    # R1c. multi_phalanx_contact (v8: 8.0 → v9: 6.0 → v9.4: 8.0)
-    # 증가 이유: deep envelope grasp 학습 강화, seed robustness 개선
-    multi_phalanx_weight: float = 8.0
+    # R1c. multi_phalanx_contact (v10: 8.0 → v10.1: 12.0)
+    # 증가 이유: tip-only local optimum 탈출, r1d_middle_guide와 함께 deep envelope 강화
+    multi_phalanx_weight: float = 12.0
+
+    # R1d. middle_phalanx_guide (v10.1 신규)
+    # middle phalanx → cup 거리 기반 exp reward (enclosure와 동일 구조, 항상 활성)
+    # actor obs middle_to_cup 15D에 직접 대응하는 reward gradient 제공
+    middle_guide_weight:    float = 2.0
+    middle_guide_sharpness: float = 10.0
 
     # R2. slip_reward (v9 신규): cup 수평 속도 기반 slip proxy
     # gate: grasp phase AND contact 시 활성
@@ -229,15 +235,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # R9. full_contact_bonus: 5손가락 전체 접촉 보너스 (sim2real envelope grip 유도)
     # step당 보너스 → 유지할수록 누적 (grasp + lift phase 모두)
-    # 0.5 → 5.0: lift_reward(20)와 경쟁 가능한 수준으로 상향, 5개 접촉 유인 강화
-    full_contact_bonus_weight: float = 5.0
+    # v10.1: 5.0 → 8.0, middle_guide와 함께 5-contact envelope 강화
+    full_contact_bonus_weight: float = 8.0
 
     # R10. thumb pose / grasp shape consistency
-    thumb_pose_anchor_weight: float = 1.2
-    thumb_pose_anchor_sharpness: float = 8.0
+    # v10.1: thumb_pose_anchor_weight 1.2 → 2.5 (엄지 미끄러짐 방지)
+    # v10.1: thumb_pose_anchor_sharpness 8.0 → 10.0 (error plateau 좁히기)
+    # v10.1: grasp_shape_consistency_weight 1.0 → 1.5 (전체 hand shape 유지 보조)
+    thumb_pose_anchor_weight: float = 2.5
+    thumb_pose_anchor_sharpness: float = 10.0
     thumb_slide_penalty_weight: float = 2.0
     thumb_slide_z_margin: float = 0.01
-    grasp_shape_consistency_weight: float = 1.0
+    grasp_shape_consistency_weight: float = 1.5
     grasp_shape_consistency_sharpness: float = 6.0
 
     # Thumb downward shortcut 억제
