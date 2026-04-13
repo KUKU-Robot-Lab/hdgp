@@ -1042,13 +1042,19 @@ class GraspRightEnv(DirectRLEnv):
         # ---- R1d. middle_phalanx_guide ----
         # middle3_pos → grasp_center 거리 기반 exp reward (항상 활성)
         # actor obs의 middle_to_cup 15D에 직접 대응하는 reward gradient 제공
-        # tip-only grasp local optimum 탈출 유도
+        # tip-only grasp local optimum 탈출 유도 (위치 단계)
         middle_to_grasp_dist = (
             self.middle3_pos - grasp_center.unsqueeze(1)
         ).norm(dim=-1).mean(dim=-1)   # (N,)
         r1d_middle_guide = self.cfg.middle_guide_weight * torch.exp(
             -self.cfg.middle_guide_sharpness * middle_to_grasp_dist
         )
+
+        # ---- R1e. middle_contact (독립 force reward) ----
+        # middle_norm 단독 사용 — tip contact 여부와 무관
+        # finger_depth(tip×middle 곱)와 달리 middle=0에서도 gradient 살아있음
+        # tip-only 초반 고착 이후에도 middle contact 탐색 gradient 제공 (접촉 단계)
+        r1e_middle_contact = self.cfg.middle_contact_weight * middle_norm.mean(dim=-1)
 
         # ---- cup uprightness ----
         z_local = torch.zeros(self.num_envs, 3, device=self.device)
@@ -1195,6 +1201,7 @@ class GraspRightEnv(DirectRLEnv):
             + r1b_force_balance
             + r1c_multi_phalanx
             + r1d_middle_guide
+            + r1e_middle_contact
             + r2_slip
             + r3_adaptive_force
             + r_preload
@@ -1228,6 +1235,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["r_force_balance"]   = r1b_force_balance.mean()
         self.extras["r_multi_phalanx"]   = r1c_multi_phalanx.mean()
         self.extras["r_middle_guide"]    = r1d_middle_guide.mean()
+        self.extras["r_middle_contact"]  = r1e_middle_contact.mean()
         self.extras["r_slip"]            = r2_slip.mean()
         self.extras["r_adaptive_grip"]   = r3_adaptive_force.mean()
         self.extras["r_preload"]         = r_preload.mean()

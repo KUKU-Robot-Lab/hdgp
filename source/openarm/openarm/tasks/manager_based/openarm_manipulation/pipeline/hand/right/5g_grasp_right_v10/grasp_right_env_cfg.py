@@ -178,9 +178,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # R1d. middle_phalanx_guide (v10.1 신규)
     # middle phalanx → cup 거리 기반 exp reward (enclosure와 동일 구조, 항상 활성)
-    # actor obs middle_to_cup 15D에 직접 대응하는 reward gradient 제공
+    # actor obs middle_to_cup 15D에 직접 대응하는 reward gradient 제공 (위치 단계)
     middle_guide_weight:    float = 2.0
     middle_guide_sharpness: float = 10.0
+
+    # R1e. middle_contact (v10.2 신규)
+    # middle_norm 단독 reward — tip contact 여부와 무관 (접촉 단계)
+    # finger_depth(tip×middle 곱)와 달리 tip-only 상태에서도 gradient 살아있음
+    # tip-only 초반 고착 이후 middle contact 탐색을 독립적으로 유도
+    middle_contact_weight: float = 3.0
 
     # R2. slip_reward (v9 신규): cup 수평 속도 기반 slip proxy
     # gate: grasp phase AND contact 시 활성
@@ -240,9 +246,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # R10. thumb pose / grasp shape consistency
     # v10.1: thumb_pose_anchor_weight 1.2 → 2.5 (엄지 미끄러짐 방지)
+    # v10.2: thumb_pose_anchor_weight 2.5 → 4.0 (test3/4 분석: anchor_error 단조증가 확인)
     # v10.1: thumb_pose_anchor_sharpness 8.0 → 10.0 (error plateau 좁히기)
     # v10.1: grasp_shape_consistency_weight 1.0 → 1.5 (전체 hand shape 유지 보조)
-    thumb_pose_anchor_weight: float = 2.5
+    thumb_pose_anchor_weight: float = 4.0
     thumb_pose_anchor_sharpness: float = 10.0
     thumb_slide_penalty_weight: float = 2.0
     thumb_slide_z_margin: float = 0.01
