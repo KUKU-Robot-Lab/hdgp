@@ -1476,6 +1476,14 @@ class PourRightEnv(DirectRLEnv):
         r_tilt_onset = self.cfg.weight_tilt_onset_bonus * tilt_onset.float()
         self._tilt_onset_bonus_paid |= tilt_onset
 
+        # 마지막 step까지 pour pose를 유지하면 종료 시 명확한 자세 신호를 준다.
+        is_last_step = self.episode_length_buf >= (self.max_episode_length - 1)
+        in_terminal_pour_pose = (
+            (self._cup_center_xy_dist < self.cfg.terminal_pour_xy_thresh)
+            & (self._source_up_dot_world < self.cfg.terminal_pour_tilt_thresh)
+        )
+        r_terminal_pour = self.cfg.weight_terminal_pour * is_last_step.float() * in_terminal_pour_pose.float()
+
         # ---- Outcome and costs ----
         # ADR: success 기준을 낮은 fill_ratio에서 시작해 점진적으로 상향
         success_fill_ratio = (
@@ -1576,6 +1584,7 @@ class PourRightEnv(DirectRLEnv):
             + r_pour_stage
             + r_first_capture
             + r_tilt_onset
+            + r_terminal_pour
             + self.cfg.weight_success * r_success
             + overfill_bonus
             - spill_weight * spill_cost
@@ -1616,6 +1625,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
         self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
         self.extras["r_tilt_onset"] = r_tilt_onset.mean()
+        self.extras["r_terminal_pour"] = r_terminal_pour.mean()
         self.extras["g_ready"] = self._g_ready.mean()
         self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
         self.extras["cup_center_xy_dist"] = self._cup_center_xy_dist.mean()

@@ -222,9 +222,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     tilt_action_gate_xy_near: float = 0.06
     tilt_action_gate_xy_far: float = 0.25  # 0.32→0.20→0.25: equilibrium 0.16m에서 gate 28%→47%
 
-    # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
-    approach_xy_off_near: float = 0.05
-    approach_xy_off_far: float = 0.12
+    # 접근 보상 앤일링: 6cm까지는 gradient를 유지하고 2cm 이내에서만 꺼준다.
+    # test2에서 5~12cm dead zone에 정책이 고착되어 추가 접근 유인이 사라졌음.
+    approach_xy_off_near: float = 0.02
+    approach_xy_off_far: float = 0.06
 
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
     left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
@@ -300,9 +301,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
     weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
-    weight_tilt_onset_bonus: float = 5.00    # tilt 탐색 유도 1회 보너스 (bridge reward)
-    tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
+    weight_tilt_onset_bonus: float = 10.00   # 80° 부근 첫 진입에 더 강한 bridge reward
+    tilt_onset_dot_threshold: float = 0.17   # source_up_dot < 0.17 (>80° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
+    weight_terminal_pour: float = 30.00      # 마지막 step pour pose 유지 보너스
+    terminal_pour_tilt_thresh: float = 0.0   # source_up_dot < 0.0 (>90° tilt)
+    terminal_pour_xy_thresh: float = 0.12    # cup_center_xy < 0.12m
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
     # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 100으로 강화 (300은 과도했음)
     weight_success: float = 100.00  # 30→300→100
@@ -396,8 +400,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [P3] pour stage binary gate: DexPour ρ 방식
     # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
     # → "컵 근처에서 기울어야만 pour reward" → 명확한 행동 학습
-    pour_binary_xy_thresh: float = 0.15   # DexPour d_pour=0.17m 참고
-    pour_binary_tilt_thresh: float = 0.50  # source_up_dot < 0.50 (>60° 기울기)
+    pour_binary_xy_thresh: float = 0.10   # 10cm 이내에서만 pour capture 활성
+    pour_binary_tilt_thresh: float = 0.0  # source_up_dot < 0.0 (>90° 기울기)
 
     # -----------------------------------------------------------------------
     # 종료 조건
