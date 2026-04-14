@@ -1441,16 +1441,15 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_prepour_align * r_align
         )
 
-        # ---- Stage D. Pour (DexPour-style binary gate: ρ) ----
-        # [P3] DexPour ρ = (cup_target_dist < d_pour) AND (prior stages complete)
-        # 기존 soft g_pour: g_pour=0.128 → pour reward 항상 희미하게 활성 → 멀리서도 bead 흘러도 reward
-        # binary gate: cup_center_xy_dist < 0.15m AND source_up_dot < 0.50(>60° tilt) 동시 충족 시에만 활성
-        # → "컵 근처에서 기울어야만 pour reward" → transport + tilt 순서 명확히 학습
+        # ---- Stage D. Pour (mouth-to-mouth binary gate) ----
+        # 컵 중심 근접만으로는 위에서 멀리 붓는 정책이 남으므로, 입구 정렬과 rim 높이를 직접 gate한다.
         r_cross = self._bead_cross_fraction
         r_capture = self._bead_in_target_fraction
 
         gate_pour_binary = (
-            (self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh)
+            (self._mouth_xy_distance < self.cfg.pour_binary_mouth_xy_thresh)
+            & (self._mouth_z_clearance > self.cfg.pour_binary_mouth_z_min)
+            & (self._mouth_z_clearance < self.cfg.pour_binary_mouth_z_max)
             & (self._source_up_dot_world < self.cfg.pour_binary_tilt_thresh)
         ).float()
 
@@ -1463,7 +1462,7 @@ class PourRightEnv(DirectRLEnv):
 
         # 첫 비드 유입 시 1회성 보너스로 탐색을 유도
         first_capture = (self._bead_in_target_fraction > 0.0) & (~self._first_capture_bonus_paid)
-        r_first_capture = self.cfg.weight_first_capture_bonus * first_capture.float()
+        r_first_capture = gate_pour_binary * self.cfg.weight_first_capture_bonus * first_capture.float()
         self._first_capture_bonus_paid |= first_capture
 
         # tilt onset bonus: >60° 기울기 + 근접 조건 첫 달성 시 1회 bridge reward
@@ -1479,7 +1478,9 @@ class PourRightEnv(DirectRLEnv):
         # 마지막 step까지 pour pose를 유지하면 종료 시 명확한 자세 신호를 준다.
         is_last_step = self.episode_length_buf >= (self.max_episode_length - 1)
         in_terminal_pour_pose = (
-            (self._cup_center_xy_dist < self.cfg.terminal_pour_xy_thresh)
+            (self._mouth_xy_distance < self.cfg.terminal_pour_mouth_xy_thresh)
+            & (self._mouth_z_clearance > self.cfg.terminal_pour_mouth_z_min)
+            & (self._mouth_z_clearance < self.cfg.terminal_pour_mouth_z_max)
             & (self._source_up_dot_world < self.cfg.terminal_pour_tilt_thresh)
         )
         r_terminal_pour = self.cfg.weight_terminal_pour * is_last_step.float() * in_terminal_pour_pose.float()
@@ -1498,7 +1499,7 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # 기본 성공 보상(바이너리)
-        r_success = success_now.float()
+        r_success = gate_pour_binary * success_now.float()
 
         # 성공 기준을 넘은 양에 비례한 오버필 보너스 (옵션)
         overfill_bonus = 0.0

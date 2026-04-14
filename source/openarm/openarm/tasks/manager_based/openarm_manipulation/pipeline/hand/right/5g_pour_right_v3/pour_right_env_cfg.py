@@ -304,16 +304,18 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_tilt_onset_bonus: float = 10.00   # 80° 부근 첫 진입에 더 강한 bridge reward
     tilt_onset_dot_threshold: float = 0.17   # source_up_dot < 0.17 (>80° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
-    weight_terminal_pour: float = 30.00      # 마지막 step pour pose 유지 보너스
-    terminal_pour_tilt_thresh: float = 0.0   # source_up_dot < 0.0 (>90° tilt)
-    terminal_pour_xy_thresh: float = 0.12    # cup_center_xy < 0.12m
+    weight_terminal_pour: float = 30.00        # 마지막 step pour pose 유지 보너스
+    terminal_pour_tilt_thresh: float = 0.0     # source_up_dot < 0.0 (>90° tilt)
+    terminal_pour_mouth_xy_thresh: float = 0.03
+    terminal_pour_mouth_z_min: float = -0.01
+    terminal_pour_mouth_z_max: float = 0.03
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
     # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 100으로 강화 (300은 과도했음)
     weight_success: float = 100.00  # 30→300→100
     # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
     # 0이면 비활성.
     weight_success_overfill: float = 0.0
-    weight_spill: float = 1.00     # 0→1.0: [test4] spill=33% > success_spill_max(20%) → 성공 불가. 소량 복활로 억제
+    weight_spill: float = 3.00     # mouth-to-mouth gate 이후에도 overspill 억제를 위해 penalty 강화
     # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
     #   premature_tilt_cost = (1 - g_ready) × (1 - source_up_dot_world)
     #   g_ready=0.11, cup 100° tilt 시 source_up_dot_world≈-0.17 → (1-(-0.17))=1.17
@@ -397,10 +399,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 0.05m 이상은 보상 없음 (warmstart 시작 높이 ~0.03m 기준)
     lift_height_cap: float = 0.05   # DexPour h_lift=0.15m 참고, warmstart 높이에 맞춤
 
-    # [P3] pour stage binary gate: DexPour ρ 방식
-    # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
-    # → "컵 근처에서 기울어야만 pour reward" → 명확한 행동 학습
-    pour_binary_xy_thresh: float = 0.10   # 10cm 이내에서만 pour capture 활성
+    # [P3] pour stage binary gate: mouth-to-mouth 정렬 + strict tilt
+    # 입구 중심이 거의 겹치고 rim 높이가 비슷할 때만 pour reward를 연다.
+    pour_binary_mouth_xy_thresh: float = 0.03
+    pour_binary_mouth_z_min: float = -0.01
+    pour_binary_mouth_z_max: float = 0.03
     pour_binary_tilt_thresh: float = 0.0  # source_up_dot < 0.0 (>90° 기울기)
 
     # -----------------------------------------------------------------------
