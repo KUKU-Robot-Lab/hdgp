@@ -931,7 +931,7 @@ class PourRightEnv(DirectRLEnv):
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
             gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
             tilt_gate = torch.clamp(
-                (self.cfg.tilt_action_gate_xy_far - self._cup_center_xy_dist) / gate_den,
+                (self.cfg.tilt_action_gate_xy_far - self._mouth_xy_distance) / gate_den,
                 0.0,
                 1.0,
             )
@@ -1483,8 +1483,8 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # 첫 비드 유입 시 1회성 보너스로 탐색을 유도
-        first_capture = (self._bead_in_target_fraction > 0.0) & (~self._first_capture_bonus_paid)
-        r_first_capture = gate_pour_binary * self.cfg.weight_first_capture_bonus * first_capture.float()
+        first_capture = gate_pour_binary.bool() & (self._bead_in_target_fraction > 0.0) & (~self._first_capture_bonus_paid)
+        r_first_capture = self.cfg.weight_first_capture_bonus * first_capture.float()
         self._first_capture_bonus_paid |= first_capture
 
         # tilt onset bonus: >60° 기울기 + 근접 조건 첫 달성 시 1회 bridge reward
@@ -1519,9 +1519,16 @@ class PourRightEnv(DirectRLEnv):
             (self._bead_in_target_fraction >= success_fill_ratio)
             & (self._spill_ratio <= self.cfg.success_spill_max)
         )
+        success_by_pose_and_fill = gate_pour_binary.bool() & success_now
 
         # 기본 성공 보상(바이너리)
-        r_success = gate_pour_binary * success_now.float()
+        r_success = success_by_pose_and_fill.float()
+
+        final_success_strict = (
+            gate_pour_binary.bool()
+            & (self._bead_in_target_fraction >= self.cfg.final_success_target_fill_ratio)
+            & (self._spill_ratio <= self.cfg.final_success_spill_max)
+        )
 
         # 성공 기준을 넘은 양에 비례한 오버필 보너스 (옵션)
         overfill_bonus = 0.0
@@ -1550,7 +1557,11 @@ class PourRightEnv(DirectRLEnv):
         # 직립(dot=1): 페널티 최대 (이동 전 upright 유지 유도, 기존과 동일한 방향)
         # 90° 수평(dot=0): 페널티 0
         # 100° pour(dot=-0.174→clamp=0): 페널티 0 ← 핵심: pour 각도에서 페널티 없음
-        premature_tilt_cost = (1.0 - self._g_ready) * self._source_up_dot_world.clamp(0.0, 1.0)
+        significant_tilt = torch.clamp(
+            self.cfg.tilt_onset_dot_threshold - self._source_up_dot_world,
+            min=0.0,
+        )
+        premature_tilt_cost = (1.0 - self._g_ready) * significant_tilt
         # grasp quality loss: full_grasp_flag=0 (thumb 없거나 others<2) 매 스텝 즉각 dense penalty
         # 낙하(episode termination)와 달리 grasp이 흔들리는 구간에서 즉각 gradient 제공
         grasp_loss_cost = 1.0 - full_grasp_flag
@@ -1569,7 +1580,7 @@ class PourRightEnv(DirectRLEnv):
         arm_qd_max = arm_qd.abs().max(dim=-1).values              # (num_envs,) per-joint max
         arm_qacc = (arm_qd - self._prev_arm_joint_vel).norm(dim=-1)  # (num_envs,) acc proxy
         # pouring phase에서의 arm vel (cup이 가까울 때)
-        in_tilt_phase = (self._cup_center_xy_dist < self.cfg.tilt_action_gate_xy_far).float()
+        in_tilt_phase = (self._mouth_xy_distance < self.cfg.tilt_action_gate_xy_far).float()
         tilt_phase_arm_vel = (arm_qd_l2 * in_tilt_phase).sum() / (in_tilt_phase.sum() + 1e-6)
 
         # [Phase-1 Step 4] arm joint vel^2 sum penalty (clipped)
@@ -1650,6 +1661,8 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_tilt_onset"] = r_tilt_onset.mean()
         self.extras["r_terminal_pour"] = r_terminal_pour.mean()
         self.extras["g_ready"] = self._g_ready.mean()
+        self.extras["curriculum_success"] = success_by_pose_and_fill.float().mean()
+        self.extras["final_success_strict"] = final_success_strict.float().mean()
         self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
         self.extras["cup_center_xy_dist"] = self._cup_center_xy_dist.mean()
         self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
@@ -1737,11 +1750,18 @@ class PourRightEnv(DirectRLEnv):
             else self.cfg.success_target_fill_ratio
         )
 
-        success_by_fill = (
+        success_now = (
             (self._bead_in_target_fraction >= success_fill_ratio)
             & (self._spill_ratio <= self.cfg.success_spill_max)
         )
-        self.success_flag.copy_(success_by_fill)
+        gate_pour_binary = (
+            (self._mouth_xy_distance < self.cfg.pour_binary_mouth_xy_thresh)
+            & (self._mouth_z_clearance > self.cfg.pour_binary_mouth_z_min)
+            & (self._mouth_z_clearance < self.cfg.pour_binary_mouth_z_max)
+            & (self._source_up_dot_world < self.cfg.pour_binary_tilt_thresh)
+        )
+        success_by_pose_and_fill = gate_pour_binary.bool() & success_now
+        self.success_flag.copy_(success_by_pose_and_fill)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
         self._maybe_store_warmstart_successes()
 

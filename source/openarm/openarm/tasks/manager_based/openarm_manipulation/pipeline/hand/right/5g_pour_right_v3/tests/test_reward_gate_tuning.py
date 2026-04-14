@@ -81,6 +81,36 @@ def _terminal_pour_bonus(
     return weight * is_last_step.float() * in_pour_pose.float()
 
 
+def _first_capture_bonus(
+    gate_pour_binary: torch.Tensor,
+    bead_in_target_fraction: torch.Tensor,
+    bonus_paid: torch.Tensor,
+    weight: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    first_capture = gate_pour_binary.bool() & (bead_in_target_fraction > 0.0) & (~bonus_paid)
+    return weight * first_capture.float(), (bonus_paid | first_capture)
+
+
+def _premature_tilt_cost(g_ready: torch.Tensor, source_up_dot: torch.Tensor, tilt_onset_dot_threshold: float) -> torch.Tensor:
+    significant_tilt = torch.clamp(tilt_onset_dot_threshold - source_up_dot, min=0.0)
+    return (1.0 - g_ready) * significant_tilt
+
+
+def _success_by_pose_and_fill(
+    gate_pour_binary: torch.Tensor,
+    bead_in_target_fraction: torch.Tensor,
+    spill_ratio: torch.Tensor,
+    success_fill_ratio: float,
+    success_spill_max: float,
+) -> torch.Tensor:
+    return gate_pour_binary.bool() & (bead_in_target_fraction >= success_fill_ratio) & (spill_ratio <= success_spill_max)
+
+
+def _tilt_action_gate(mouth_xy_dist: torch.Tensor, near: float, far: float) -> torch.Tensor:
+    den = max(far - near, 1e-6)
+    return torch.clamp((far - mouth_xy_dist) / den, min=0.0, max=1.0)
+
+
 class TestRewardGateConfig:
     def test_phase_a_pour_gate_is_tightened(self):
         assert _parse_float_constant("pour_binary_mouth_xy_thresh", _CFG_TEXT) == pytest.approx(0.03)
@@ -103,6 +133,10 @@ class TestRewardGateConfig:
         assert _parse_float_constant("terminal_pour_mouth_z_min", _CFG_TEXT) == pytest.approx(-0.01)
         assert _parse_float_constant("terminal_pour_mouth_z_max", _CFG_TEXT) == pytest.approx(0.03)
         assert _parse_float_constant("weight_spill", _CFG_TEXT) == pytest.approx(3.0)
+
+    def test_strict_success_metrics_exist(self):
+        assert _parse_float_constant("final_success_target_fill_ratio", _CFG_TEXT) == pytest.approx(0.95)
+        assert _parse_float_constant("final_success_spill_max", _CFG_TEXT) == pytest.approx(0.05)
 
 
 class TestRewardGateBehavior:
@@ -155,9 +189,37 @@ class TestRewardGateBehavior:
         )
         assert bonus.tolist() == pytest.approx([0.0, 30.0, 0.0, 0.0])
 
-    def test_first_capture_and_success_are_expected_to_be_gated_by_pour_pose(self):
-        assert "r_first_capture = gate_pour_binary *" in _ENV_TEXT
-        assert "r_success = gate_pour_binary * success_now.float()" in _ENV_TEXT
+    def test_first_capture_bonus_only_latches_inside_pour_gate(self):
+        reward, bonus_paid = _first_capture_bonus(
+            gate_pour_binary=torch.tensor([0.0, 1.0, 1.0]),
+            bead_in_target_fraction=torch.tensor([0.2, 0.2, 0.2]),
+            bonus_paid=torch.tensor([False, False, True]),
+            weight=20.0,
+        )
+        assert reward.tolist() == pytest.approx([0.0, 20.0, 0.0])
+        assert bonus_paid.tolist() == [False, True, True]
+
+    def test_success_requires_valid_pour_pose_and_fill(self):
+        success = _success_by_pose_and_fill(
+            gate_pour_binary=torch.tensor([0.0, 1.0, 1.0]),
+            bead_in_target_fraction=torch.tensor([0.8, 0.8, 0.4]),
+            spill_ratio=torch.tensor([0.0, 0.1, 0.1]),
+            success_fill_ratio=0.5,
+            success_spill_max=0.2,
+        )
+        assert success.tolist() == [False, True, False]
+
+    def test_premature_tilt_cost_penalizes_far_tilt_not_upright_pose(self):
+        cost = _premature_tilt_cost(
+            g_ready=torch.tensor([0.1, 0.1, 0.9]),
+            source_up_dot=torch.tensor([-0.2, 1.0, -0.2]),
+            tilt_onset_dot_threshold=0.17,
+        )
+        assert cost.tolist() == pytest.approx([0.333, 0.0, 0.037], abs=1e-3)
+
+    def test_tilt_action_gate_is_based_on_mouth_distance(self):
+        gate = _tilt_action_gate(torch.tensor([0.30, 0.20, 0.06, 0.03]), near=0.06, far=0.25)
+        assert gate.tolist() == pytest.approx([0.0, 0.2631579, 1.0, 1.0], abs=1e-6)
 
 
 class TestRewardImplementationHooks:
@@ -171,6 +233,7 @@ class TestRewardImplementationHooks:
 
     def test_env_logs_terminal_pour_metric(self):
         assert 'self.extras["r_terminal_pour"]' in _ENV_TEXT
+        assert 'self.extras["final_success_strict"]' in _ENV_TEXT
 
     def test_env_uses_dynamic_rim_point_and_mouth_based_shaping(self):
         assert "def _compute_dynamic_source_pour_point_w" in _ENV_TEXT
@@ -178,3 +241,13 @@ class TestRewardImplementationHooks:
         assert "self._g_align_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._mouth_xy_distance)" in _ENV_TEXT
         assert "r_approach_xy = 1.0 - torch.tanh(self.cfg.reward_approach_xy_scale * self._mouth_xy_distance)" in _ENV_TEXT
         assert "(self._mouth_xy_distance < self.cfg.tilt_onset_dist_threshold)" in _ENV_TEXT
+        assert "(self.cfg.tilt_action_gate_xy_far - self._mouth_xy_distance)" in _ENV_TEXT
+
+    def test_env_wires_success_and_first_capture_to_pose_gate(self):
+        assert "first_capture = gate_pour_binary.bool() &" in _ENV_TEXT
+        assert "success_by_pose_and_fill = gate_pour_binary.bool() & success_now" in _ENV_TEXT
+        assert "self.success_flag.copy_(success_by_pose_and_fill)" in _ENV_TEXT
+
+    def test_env_uses_far_tilt_penalty_not_upright_penalty(self):
+        assert "significant_tilt = torch.clamp(" in _ENV_TEXT
+        assert "self.cfg.tilt_onset_dot_threshold - self._source_up_dot_world" in _ENV_TEXT

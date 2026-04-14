@@ -183,7 +183,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
-    success_spill_max: float = 0.40   # 0.20→0.40: [test4] spill=33% > 0.20 → 성공 불가. weight_spill 복활로 spill 억제하면서 기준 완화
+    success_spill_max: float = 0.20   # curriculum 성공도 과도한 spill은 허용하지 않음
+    # 최종 목표 진척도는 curriculum 성공과 별도로 더 엄격하게 측정한다.
+    final_success_target_fill_ratio: float = 0.95
+    final_success_spill_max: float = 0.05
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
