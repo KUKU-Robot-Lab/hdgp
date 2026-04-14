@@ -1287,9 +1287,17 @@ class GraspRightEnv(DirectRLEnv):
         ]
         for _lvl, (_tag, _mask) in enumerate(_bin_defs):
             if _mask.any():
-                self.extras[f"bin_{_tag}_f_ratio"]       = force_ratio[_mask].mean()
-                self.extras[f"bin_{_tag}_adaptive_grip"]  = r3_adaptive_force[_mask].mean()
-                self.extras[f"bin_{_tag}_multi_phalanx"]  = r1c_multi_phalanx[_mask].mean()
+                self.extras[f"bin_{_tag}_f_ratio"] = force_ratio[_mask].mean()
+                self.extras[f"bin_{_tag}_sr"] = torch.tensor(
+                    self._successful_episodes_bin[_lvl]
+                    / max(self._total_episodes_bin[_lvl], 1),
+                    device=self.device,
+                )
+                self.extras[f"bin_{_tag}_contacts"] = self.num_contacts_buf[_mask].float().mean()
+                self.extras[f"bin_{_tag}_lift"] = r6_lift[_mask].mean()
+                self.extras[f"bin_{_tag}_adaptive_grip"] = r3_adaptive_force[_mask].mean()
+                self.extras[f"bin_{_tag}_full_contact"] = r9_full_contact[_mask].mean()
+                self.extras[f"bin_{_tag}_multi_phalanx"] = r1c_multi_phalanx[_mask].mean()
 
         return total
 
