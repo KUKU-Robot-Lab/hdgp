@@ -178,6 +178,34 @@ class PourRightEnv(DirectRLEnv):
         fallback_unit = fallback / fallback_norm
         return torch.where(norm > 1e-6, vec / norm.clamp(min=1e-6), fallback_unit)
 
+    def _compute_dynamic_source_pour_point_w(
+        self,
+        cup_pos_w: torch.Tensor,
+        cup_quat_w: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return the downhill rim edge instead of the mouth-center point.
+
+        The old mouth-center point matches the cup axis but not the actual bead exit point.
+        For a tilted cylindrical cup, the relevant pour point is the lowest rim edge.
+        """
+        n = cup_pos_w.shape[0]
+        mouth_center_w = cup_pos_w + quat_apply(
+            cup_quat_w,
+            self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
+        )
+        cup_up_axis_w = quat_apply(
+            cup_quat_w,
+            self._source_cup_up_axis_b.unsqueeze(0).expand(n, -1),
+        )
+        cup_pour_axis_w = quat_apply(
+            cup_quat_w,
+            self._source_cup_pour_axis_b.unsqueeze(0).expand(n, -1),
+        )
+        gravity_down = cup_up_axis_w.new_tensor([0.0, 0.0, -1.0]).expand_as(cup_up_axis_w)
+        downhill_rim_dir = gravity_down - (gravity_down * cup_up_axis_w).sum(dim=-1, keepdim=True) * cup_up_axis_w
+        downhill_rim_dir = self._safe_normalize(downhill_rim_dir, cup_pour_axis_w)
+        return mouth_center_w + self.cfg.source_inner_radius * downhill_rim_dir
+
     def _build_cup_local_tilt_rotvec(self, delta_local: torch.Tensor) -> torch.Tensor:
         """Map local tilt commands to a world-frame rotvec.
 
@@ -190,10 +218,7 @@ class PourRightEnv(DirectRLEnv):
         left_target_pos_w = self.left_target_cup.data.root_pos_w
         left_target_quat_w = self.left_target_cup.data.root_quat_w
 
-        source_pour_point_w = self.cup.data.root_pos_w + quat_apply(
-            cup_quat_w,
-            self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
-        )
+        source_pour_point_w = self._compute_dynamic_source_pour_point_w(self.cup.data.root_pos_w, cup_quat_w)
         target_opening_w = left_target_pos_w + quat_apply(
             left_target_quat_w,
             self._target_cup_opening_pos_b.unsqueeze(0).expand(n, -1),
@@ -1021,9 +1046,9 @@ class PourRightEnv(DirectRLEnv):
             )   # (N, 5, 3)
 
         n = self.num_envs
-        self._source_pour_point_w = self.cup.data.root_pos_w + quat_apply(
+        self._source_pour_point_w = self._compute_dynamic_source_pour_point_w(
+            self.cup.data.root_pos_w,
             self.cup.data.root_quat_w,
-            self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
         )
         self._target_opening_w = left_target_pos_w + quat_apply(
             left_target_quat_w,
@@ -1077,14 +1102,11 @@ class PourRightEnv(DirectRLEnv):
         )
         self._mouth_alignment_cos = (_effective_pour_heading * _mouth_dir).sum(dim=-1).clamp(-1.0, 1.0)
 
-        # cup center XY dist to target (tilt-invariant: pour_point이 기울어져도 변하지 않음)
-        cup_center_w = self.cup.data.root_pos_w
+        # dense shaping도 mouth geometry를 직접 따른다. 그렇지 않으면 root 정렬만 학습한다.
         self._cup_center_xy_dist = torch.norm(
-            cup_center_w[:, :2] - self._target_opening_w[:, :2], dim=-1
+            self.cup.data.root_pos_w[:, :2] - self._target_opening_w[:, :2], dim=-1
         )
-
-        # g_align_xy: cup center 기반 (tilt 시 pour_point이 9.8cm 이동해도 gate 붕괴 없음)
-        self._g_align_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._cup_center_xy_dist)
+        self._g_align_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._mouth_xy_distance)
         self._g_clear = torch.sigmoid(
             self.cfg.reward_gate_clear_scale
             * (self._mouth_z_clearance - self.cfg.reward_clearance_min)
@@ -1410,8 +1432,8 @@ class PourRightEnv(DirectRLEnv):
         r_lift = self.cfg.weight_approach_z * cup_height_delta
         
         # Smooth approach reward using tanh (0 at infinity, 1 at 0)
-        # cup center 기반: tilt 시 pour_point이 이동해도 approach reward가 흔들리지 않음
-        r_approach_xy = 1.0 - torch.tanh(self.cfg.reward_approach_xy_scale * self._cup_center_xy_dist)
+        # dense reward도 실제 붓는 점을 따라가야 mouth-to-mouth로 수렴한다.
+        r_approach_xy = 1.0 - torch.tanh(self.cfg.reward_approach_xy_scale * self._mouth_xy_distance)
         r_transport_progress = torch.clamp(
             self._prev_mouth_xy_distance - self._mouth_xy_distance,
             min=0.0,
@@ -1419,7 +1441,7 @@ class PourRightEnv(DirectRLEnv):
         # 가까이 다가오면(≈3cm) 접근 보상을 끄고 pour 신호를 강조
         approach_gate_den = max(self.cfg.approach_xy_off_far - self.cfg.approach_xy_off_near, 1e-6)
         approach_gate = torch.clamp(
-            (self._cup_center_xy_dist - self.cfg.approach_xy_off_near) / approach_gate_den,
+            (self._mouth_xy_distance - self.cfg.approach_xy_off_near) / approach_gate_den,
             min=0.0,
             max=1.0,
         )
@@ -1469,7 +1491,7 @@ class PourRightEnv(DirectRLEnv):
         # "안전한 직립 유지" 로컬 최적을 벗어나 tilt 탐색을 유도
         tilt_onset = (
             (self._source_up_dot_world < self.cfg.tilt_onset_dot_threshold)
-            & (self._cup_center_xy_dist < self.cfg.tilt_onset_dist_threshold)
+            & (self._mouth_xy_distance < self.cfg.tilt_onset_dist_threshold)
             & (~self._tilt_onset_bonus_paid)
         )
         r_tilt_onset = self.cfg.weight_tilt_onset_bonus * tilt_onset.float()
@@ -2172,9 +2194,9 @@ class PourRightEnv(DirectRLEnv):
         self.success_flag[env_ids] = False
 
         if not self._warmstart_reset_debug_printed:
-            source_pour_point_w = cup_pose_world[:, :3] + quat_apply(
+            source_pour_point_w = self._compute_dynamic_source_pour_point_w(
+                cup_pose_world[:, :3],
                 cup_pose_world[:, 3:7],
-                self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
             )
             target_opening_w = left_cup_pose[:, :3] + quat_apply(
                 left_cup_pose[:, 3:7],

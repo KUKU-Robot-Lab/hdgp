@@ -28,9 +28,18 @@ def _parse_float_constant(name: str, text: str) -> float:
     return float(match.group(1))
 
 
-def _approach_gate(cup_center_xy_dist: torch.Tensor, near: float, far: float) -> torch.Tensor:
+def _approach_gate(mouth_xy_dist: torch.Tensor, near: float, far: float) -> torch.Tensor:
     den = max(far - near, 1e-6)
-    return torch.clamp((cup_center_xy_dist - near) / den, min=0.0, max=1.0)
+    return torch.clamp((mouth_xy_dist - near) / den, min=0.0, max=1.0)
+
+
+def _dynamic_rim_point(mouth_center: torch.Tensor, cup_up: torch.Tensor, fallback_axis: torch.Tensor, radius: float) -> torch.Tensor:
+    gravity_down = torch.tensor([0.0, 0.0, -1.0], dtype=mouth_center.dtype).expand_as(cup_up)
+    downhill = gravity_down - (gravity_down * cup_up).sum(dim=-1, keepdim=True) * cup_up
+    downhill_norm = downhill.norm(dim=-1, keepdim=True)
+    fallback_unit = fallback_axis / fallback_axis.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+    downhill_unit = torch.where(downhill_norm > 1e-6, downhill / downhill_norm.clamp(min=1e-6), fallback_unit)
+    return mouth_center + radius * downhill_unit
 
 
 def _gate_pour_binary(
@@ -102,6 +111,20 @@ class TestRewardGateBehavior:
         gate = _approach_gate(dists, near=0.02, far=0.06)
         assert gate.tolist() == pytest.approx([0.0, 0.25, 0.75, 1.0])
 
+    def test_dynamic_rim_point_moves_to_downhill_edge_when_tilted(self):
+        mouth_center = torch.tensor([[0.0, 0.0, 0.1]])
+        cup_up = torch.tensor([[1.0, 0.0, 0.0]])
+        fallback_axis = torch.tensor([[1.0, 0.0, 0.0]])
+        point = _dynamic_rim_point(mouth_center, cup_up, fallback_axis, radius=0.041)
+        assert point[0].tolist() == pytest.approx([0.0, 0.0, 0.059], abs=1e-3)
+
+    def test_dynamic_rim_point_falls_back_when_upright(self):
+        mouth_center = torch.tensor([[0.0, 0.0, 0.1]])
+        cup_up = torch.tensor([[0.0, 0.0, 1.0]])
+        fallback_axis = torch.tensor([[1.0, 0.0, 0.0]])
+        point = _dynamic_rim_point(mouth_center, cup_up, fallback_axis, radius=0.041)
+        assert point[0].tolist() == pytest.approx([0.041, 0.0, 0.1], abs=1e-6)
+
     def test_pour_gate_requires_mouth_alignment_and_over_ninety_deg_tilt(self):
         mouth_xy = torch.tensor([0.02, 0.02, 0.04, 0.02, 0.02])
         mouth_z = torch.tensor([0.02, 0.05, 0.02, -0.02, 0.02])
@@ -148,3 +171,10 @@ class TestRewardImplementationHooks:
 
     def test_env_logs_terminal_pour_metric(self):
         assert 'self.extras["r_terminal_pour"]' in _ENV_TEXT
+
+    def test_env_uses_dynamic_rim_point_and_mouth_based_shaping(self):
+        assert "def _compute_dynamic_source_pour_point_w" in _ENV_TEXT
+        assert "self._source_pour_point_w = self._compute_dynamic_source_pour_point_w" in _ENV_TEXT
+        assert "self._g_align_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._mouth_xy_distance)" in _ENV_TEXT
+        assert "r_approach_xy = 1.0 - torch.tanh(self.cfg.reward_approach_xy_scale * self._mouth_xy_distance)" in _ENV_TEXT
+        assert "(self._mouth_xy_distance < self.cfg.tilt_onset_dist_threshold)" in _ENV_TEXT
