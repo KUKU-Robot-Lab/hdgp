@@ -323,6 +323,7 @@ class PourRightEnv(DirectRLEnv):
             cfg.warmstart_collect_palm_delta_xyz,
             _delta_rad, _delta_rad, _delta_rad,
         ], device=self.device)
+        self.success_reset_palm_delta_xyz = float(cfg.success_reset_palm_delta_xyz)
 
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
         # [x, y, z, qx, qy, qz, qw]
@@ -453,6 +454,7 @@ class PourRightEnv(DirectRLEnv):
             (self.num_envs, NUM_FINGER_ACTION), -1.0, device=self.device
         )
         self._warmstart_only_close = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._success_reset_until_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # ----------------------------------------------------------------
         # 접촉 상태 버퍼
@@ -606,6 +608,26 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
         self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
+        self._success_cache_count = 0
+        success_cache_size = max(int(self.cfg.success_warmstart_cache_size), 1)
+        self._success_cache_scores = torch.full((success_cache_size,), -1.0e9, device=self.device)
+        self._success_cache_arm_pos = torch.zeros(success_cache_size, NUM_ARM_DOF, device=self.device)
+        self._success_cache_hand_pos = torch.zeros(success_cache_size, NUM_HAND_DOF, device=self.device)
+        self._success_cache_palm_pose = torch.zeros(success_cache_size, 7, device=self.device)
+        self._success_cache_cup_pose = torch.zeros(success_cache_size, 7, device=self.device)
+        self._success_cache_left_cup_pose = torch.zeros(success_cache_size, 7, device=self.device)
+        self._success_cache_bead_state = torch.zeros(
+            success_cache_size, self.num_beads, 13, device=self.device
+        )
+        self._success_cache_active_bead_count = torch.ones(
+            success_cache_size, dtype=torch.long, device=self.device
+        )
+        self._success_cache_candidate_total = 0
+        self._success_cache_store_total = 0
+        self._success_cache_reset_total = 0
+        self._total_reset_total = 0
+        self._last_success_cache_reset_frac = 0.0
+        self._last_grasp_cache_reset_frac = 0.0
         # GUI target visualization: source pour point (red) + target opening (blue)
         # 비활성화 가능 (cfg.enable_visual_markers)
         if cfg.enable_visual_markers:
@@ -972,6 +994,14 @@ class PourRightEnv(DirectRLEnv):
             delta = scale(self._ema_palm_action, self.delta_mins_warmstart_collect, self.delta_maxs_warmstart_collect)
         else:
             delta = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
+            success_reset_mask = self.episode_length_buf < self._success_reset_until_step
+            if torch.any(success_reset_mask):
+                delta[success_reset_mask, :3] = torch.clamp(
+                    delta[success_reset_mask, :3],
+                    min=-self.success_reset_palm_delta_xyz,
+                    max=self.success_reset_palm_delta_xyz,
+                )
+                delta[success_reset_mask, 3:6] = 0.5 * delta[success_reset_mask, 3:6]
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
             gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
             tilt_gate = torch.clamp(
@@ -1737,6 +1767,29 @@ class PourRightEnv(DirectRLEnv):
         self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
         self.extras["bead_cross"] = self._bead_cross_fraction.mean()
         self.extras["spill_ratio"] = self._spill_ratio.mean()
+        self.extras["env_frac_bead_cross_gt_0"] = (self._bead_cross_fraction > 0.0).float().mean()
+        self.extras["env_frac_bead_in_target_gt_0"] = (self._bead_in_target_fraction > 0.0).float().mean()
+        self.extras["env_frac_mouth_xy_lt_0p08"] = (self._mouth_xy_distance < 0.08).float().mean()
+        self.extras["best_bead_in_target_fraction"] = self._bead_in_target_fraction.max()
+        self.extras["success_cache_size"] = torch.tensor(float(self._success_cache_count), device=self.device)
+        store_rate = (
+            self._success_cache_store_total / self._success_cache_candidate_total
+            if self._success_cache_candidate_total > 0
+            else 0.0
+        )
+        reset_frac = (
+            self._success_cache_reset_total / self._total_reset_total
+            if self._total_reset_total > 0
+            else 0.0
+        )
+        self.extras["success_cache_store_rate"] = torch.tensor(store_rate, device=self.device)
+        self.extras["success_cache_reset_frac"] = torch.tensor(reset_frac, device=self.device)
+        self.extras["last_success_cache_reset_frac"] = torch.tensor(
+            self._last_success_cache_reset_frac, device=self.device
+        )
+        self.extras["last_grasp_cache_reset_frac"] = torch.tensor(
+            self._last_grasp_cache_reset_frac, device=self.device
+        )
         # Phase-0 진단 메트릭: arm joint velocity / acceleration
         self.extras["arm_joint_vel_l2_mean"] = arm_qd_l2.mean()
         self.extras["arm_joint_vel_max_mean"] = arm_qd_max.mean()
@@ -1833,6 +1886,7 @@ class PourRightEnv(DirectRLEnv):
         self.success_flag.copy_(success_by_pose_and_fill)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
         self._maybe_store_warmstart_successes()
+        self._maybe_store_success_states(gate_pour_binary.float())
 
         terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag | source_drained
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
@@ -1859,9 +1913,33 @@ class PourRightEnv(DirectRLEnv):
         self.episode_success_buf[env_ids] = False
         self._warmstart_only_close[env_ids] = False
         self._warmstart_finger_action_floor[env_ids] = -1.0
-        if (not self._warmstart_collect_mode) and self._warmstart_cache_count > 0:
-            self._reset_from_warmstart_cache(env_ids)
-            return
+        self._success_reset_until_step[env_ids] = 0
+        if not self._warmstart_collect_mode:
+            env_ids_t = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+            reset_draw = torch.rand(len(env_ids_t), device=self.device)
+            success_mask = torch.zeros(len(env_ids_t), dtype=torch.bool, device=self.device)
+            grasp_mask = torch.zeros(len(env_ids_t), dtype=torch.bool, device=self.device)
+
+            if self.cfg.enable_success_warmstart_reset and self._success_cache_count > 0:
+                success_mask = reset_draw < self.cfg.success_cache_reset_ratio
+            if self._warmstart_cache_count > 0:
+                grasp_cutoff = self.cfg.success_cache_reset_ratio + self.cfg.grasp_warmstart_reset_ratio
+                grasp_mask = (~success_mask) & (reset_draw < grasp_cutoff)
+
+            self._last_success_cache_reset_frac = success_mask.float().mean().item()
+            self._last_grasp_cache_reset_frac = grasp_mask.float().mean().item()
+            self._success_cache_reset_total += int(success_mask.sum().item())
+            self._total_reset_total += len(env_ids_t)
+
+            if torch.any(success_mask):
+                self._reset_from_success_cache(env_ids_t[success_mask])
+            if torch.any(grasp_mask):
+                self._reset_from_warmstart_cache(env_ids_t[grasp_mask])
+
+            env_ids = env_ids_t[~(success_mask | grasp_mask)]
+            n = len(env_ids)
+            if n == 0:
+                return
 
         # ---- 1. 로봇 관절 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
@@ -2209,14 +2287,72 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_cup_pose[start:end, 3:7] = self.cup.data.root_quat_w[success_env_ids]
         self._warmstart_cache_count = end
 
-    def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
-        n = len(env_ids)
-        pick = torch.randint(self._warmstart_cache_count, (n,), device=self.device)
-        arm_pos = self._warmstart_arm_pos[pick]
-        hand_pos = self._warmstart_hand_pos[pick]
-        palm_pose = self._warmstart_palm_pose[pick]
-        cup_pose_local = self._warmstart_cup_pose[pick]
+    def _maybe_store_success_states(self, gate_pour_binary: torch.Tensor) -> None:
+        if not self.cfg.enable_success_warmstart_reset:
+            return
+        if self._warmstart_collect_mode:
+            return
 
+        candidate_mask = gate_pour_binary.bool() & (
+            (self._bead_cross_fraction > self.cfg.success_cache_store_min_bead_cross_fraction)
+            | (self._bead_in_target_fraction > self.cfg.success_cache_store_min_bead_in_target_fraction)
+        )
+        candidate_env_ids = candidate_mask.nonzero(as_tuple=False).squeeze(-1)
+        if candidate_env_ids.numel() == 0:
+            return
+
+        self._success_cache_candidate_total += int(candidate_env_ids.numel())
+        candidate_scores = (
+            1000.0 * self._bead_in_target_fraction[candidate_env_ids]
+            + 100.0 * self._bead_cross_fraction[candidate_env_ids]
+            - self._mouth_xy_distance[candidate_env_ids]
+        )
+        for env_id, score in zip(candidate_env_ids.tolist(), candidate_scores.tolist(), strict=False):
+            if self._success_cache_count < self._success_cache_scores.shape[0]:
+                slot = self._success_cache_count
+                self._success_cache_count += 1
+            else:
+                min_score, min_slot = torch.min(self._success_cache_scores[: self._success_cache_count], dim=0)
+                if score <= float(min_score.item()):
+                    continue
+                slot = int(min_slot.item())
+
+            self._success_cache_scores[slot] = score
+            self._success_cache_store_total += 1
+            self._success_cache_arm_pos[slot] = self.robot.data.joint_pos[env_id, self.arm_dof_indices]
+            self._success_cache_hand_pos[slot] = self.robot.data.joint_pos[env_id, self.hand_dof_indices]
+            self._success_cache_palm_pose[slot] = self.palm_pose_targets[env_id]
+            self._success_cache_cup_pose[slot, :3] = (
+                self.cup.data.root_pos_w[env_id] - self.scene.env_origins[env_id]
+            )
+            self._success_cache_cup_pose[slot, 3:7] = self.cup.data.root_quat_w[env_id]
+            self._success_cache_left_cup_pose[slot, :3] = (
+                self._left_target_cup_fixed_pose_w[env_id, :3] - self.scene.env_origins[env_id]
+            )
+            self._success_cache_left_cup_pose[slot, 3:7] = self._left_target_cup_fixed_pose_w[env_id, 3:7]
+            self._success_cache_bead_state[slot, :, :3] = (
+                self.beads.data.object_pos_w[env_id] - self.scene.env_origins[env_id]
+            )
+            self._success_cache_bead_state[slot, :, 3:7] = self.beads.data.object_quat_w[env_id]
+            self._success_cache_bead_state[slot, :, 7:10] = self.beads.data.object_lin_vel_w[env_id]
+            self._success_cache_bead_state[slot, :, 10:13] = self.beads.data.object_ang_vel_w[env_id]
+            self._success_cache_active_bead_count[slot] = self._active_bead_count[env_id]
+
+    def _reset_from_cached_state(
+        self,
+        env_ids: Sequence[int],
+        arm_pos: torch.Tensor,
+        hand_pos: torch.Tensor,
+        palm_pose: torch.Tensor,
+        cup_pose_local: torch.Tensor,
+        *,
+        left_cup_pose_local: torch.Tensor | None = None,
+        bead_state_local: torch.Tensor | None = None,
+        active_bead_count: torch.Tensor | None = None,
+        object_init_z_override: float | None = None,
+        success_reset: bool = False,
+    ) -> None:
+        n = len(env_ids)
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_pos[:, self.arm_dof_indices] = arm_pos
@@ -2247,17 +2383,23 @@ class PourRightEnv(DirectRLEnv):
         )
         self._warmstart_finger_action_floor[env_ids] = (2.0 * t_finger - 1.0).clamp(-1.0, 1.0)
         self._warmstart_only_close[env_ids] = True
+        self._success_reset_until_step[env_ids] = (
+            self.cfg.episode_hold_steps + self.cfg.success_reset_hold_steps
+            if success_reset
+            else 0
+        )
 
-        warmstart_palm_pose = palm_pose.clone()
-        warmstart_palm_pose[:, :3] = torch.max(
-            torch.min(warmstart_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
+        cached_palm_pose = palm_pose.clone()
+        cached_palm_pose[:, :3] = torch.max(
+            torch.min(cached_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
             self.palm_mins[:3].unsqueeze(0),
         )
-        self.pregrasp_palm_pose_buf[env_ids] = warmstart_palm_pose
-        self.palm_pose_targets[env_ids] = warmstart_palm_pose
+        self.pregrasp_palm_pose_buf[env_ids] = cached_palm_pose
+        self.palm_pose_targets[env_ids] = cached_palm_pose
         self.hand_joint_targets[env_ids] = hand_pos
         self.object_init_pos[env_ids] = cup_pose_local[:, :3]
-        self.object_init_pos[env_ids, 2] = self.cfg.object_spawn_z  # z는 테이블 높이 기준으로 고정 (캐시 lifted z 사용 시 cup_height_delta=0 버그)
+        if object_init_z_override is not None:
+            self.object_init_pos[env_ids, 2] = object_init_z_override
         self._grasp_rel_palm_to_cup_init[env_ids] = cup_pose_local[:, :3] - palm_pose[:, :3]
         self._grasp_cup_height_init[env_ids] = cup_pose_local[:, 2]
         self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = arm_pos
@@ -2268,23 +2410,34 @@ class PourRightEnv(DirectRLEnv):
         self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
         self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        left_cup_pose = self._compute_attached_root_pose(
-            self._left_target_cup_body_id,
-            self._left_target_cup_attach_pos_b,
-            self._left_target_cup_attach_quat_b,
-            env_ids=env_ids,
-        )
-        left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
+        if left_cup_pose_local is None:
+            left_cup_pose = self._compute_attached_root_pose(
+                self._left_target_cup_body_id,
+                self._left_target_cup_attach_pos_b,
+                self._left_target_cup_attach_quat_b,
+                env_ids=env_ids,
+            )
+            left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
+        else:
+            left_cup_pose = left_cup_pose_local.clone()
+            left_cup_pose[:, :3] += self.scene.env_origins[env_ids]
         self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        # 현재 ADR stage의 active bead count 적용 후 spawn
-        _target_count = self._bead_count_stages[self._bead_adr_stage_idx]
-        self._active_bead_count[env_ids] = _target_count
+        if active_bead_count is None:
+            active_bead_count = torch.full(
+                (n,), self._bead_count_stages[self._bead_adr_stage_idx], dtype=torch.long, device=self.device
+            )
+        self._active_bead_count[env_ids] = active_bead_count
         _bead_idx = torch.arange(self.num_beads, device=self.device).unsqueeze(0)
-        self._active_bead_mask[env_ids] = _bead_idx < _target_count
-        bead_state = self._spawn_beads_with_active_mask(cup_pose_world, env_ids)
+        self._active_bead_mask[env_ids] = _bead_idx < active_bead_count.unsqueeze(1)
+
+        if bead_state_local is None:
+            bead_state = self._spawn_beads_with_active_mask(cup_pose_world, env_ids)
+        else:
+            bead_state = bead_state_local.clone()
+            bead_state[..., :3] += self.scene.env_origins[env_ids].unsqueeze(1)
         self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
 
         self.contact_force_raw[env_ids].zero_()
@@ -2299,7 +2452,7 @@ class PourRightEnv(DirectRLEnv):
         self._bead_ever_in_target[env_ids] = False
         self._bead_crossed_target_mouth[env_ids] = False
         self._prev_bead_target_local_z[env_ids].fill_(10.0)
-        self._needs_grasp_init_update[env_ids] = True   # 다음 스텝에 palm local init 갱신
+        self._needs_grasp_init_update[env_ids] = True
         self._bead_cross_count[env_ids] = 0
         self._bead_cross_fraction[env_ids] = 0.0
         self._prev_bead_ever_in_target_count[env_ids] = 0
@@ -2314,9 +2467,8 @@ class PourRightEnv(DirectRLEnv):
         self._source_empty_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._prev_arm_joint_vel[env_ids].zero_()
-        self._prev_arm_joint_acc[env_ids].zero_()   # [Step 6]
-        self._ema_palm_action[env_ids].zero_()       # [Step 7]
-
+        self._prev_arm_joint_acc[env_ids].zero_()
+        self._ema_palm_action[env_ids].zero_()
         self.actions[env_ids, :6] = 0.0
         self.actions[env_ids, 6:] = 1.0
         self.prev_actions[env_ids, :6] = 0.0
@@ -2325,7 +2477,28 @@ class PourRightEnv(DirectRLEnv):
         self._pre_pour_ready_steps[env_ids] = 0
         self.success_flag[env_ids] = False
 
+    def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
+        n = len(env_ids)
+        pick = torch.randint(self._warmstart_cache_count, (n,), device=self.device)
+        arm_pos = self._warmstart_arm_pos[pick]
+        hand_pos = self._warmstart_hand_pos[pick]
+        palm_pose = self._warmstart_palm_pose[pick]
+        cup_pose_local = self._warmstart_cup_pose[pick]
+        self._reset_from_cached_state(
+            env_ids,
+            arm_pos,
+            hand_pos,
+            palm_pose,
+            cup_pose_local,
+            object_init_z_override=self.cfg.object_spawn_z,
+            success_reset=False,
+        )
+
         if not self._warmstart_reset_debug_printed:
+            warmstart_palm_pose = self.palm_pose_targets[env_ids]
+            cup_pose_world = cup_pose_local.clone()
+            cup_pose_world[:, :3] += self.scene.env_origins[env_ids]
+            left_cup_pose = self._left_target_cup_fixed_pose_w[env_ids]
             source_pour_point_w = self._compute_dynamic_source_pour_point_w(
                 cup_pose_world[:, :3],
                 cup_pose_world[:, 3:7],
@@ -2350,3 +2523,18 @@ class PourRightEnv(DirectRLEnv):
                 flush=True,
             )
             self._warmstart_reset_debug_printed = True
+
+    def _reset_from_success_cache(self, env_ids: Sequence[int]) -> None:
+        n = len(env_ids)
+        pick = torch.randint(self._success_cache_count, (n,), device=self.device)
+        self._reset_from_cached_state(
+            env_ids,
+            self._success_cache_arm_pos[pick],
+            self._success_cache_hand_pos[pick],
+            self._success_cache_palm_pose[pick],
+            self._success_cache_cup_pose[pick],
+            left_cup_pose_local=self._success_cache_left_cup_pose[pick],
+            bead_state_local=self._success_cache_bead_state[pick],
+            active_bead_count=self._success_cache_active_bead_count[pick],
+            success_reset=True,
+        )
