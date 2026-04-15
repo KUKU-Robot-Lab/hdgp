@@ -65,7 +65,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
             scale=(1.0, 1.0, 1.0),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),  # 1g 구슬
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬 (1g→5g: 관성 향상, 진동 날림 방지)
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=16,
@@ -77,13 +77,14 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
         )
         # 이 IsaacLab 버전의 UsdFileCfg는 physics_material 생성자 인자를 직접 받지 않는다.
         # spawn_from_usd()는 cfg.physics_material 속성이 있으면 바인딩하므로 생성 후 후첨가한다.
-        # 기본 material 마찰(0.5/0.5)보다 낮춰 컵 내부에서 구슬이 더 쉽게 굴러가게 한다.
+        # test1 분석: restitution_combine_mode="max" → 테이블/컵 restitution 상속으로 bead 팅겨짐.
+        # friction=0.05(min combine) → 컵 내부 과도한 슬라이딩. 물리 안정성 위해 전면 수정.
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
-            static_friction=0.05,
-            dynamic_friction=0.05,
-            restitution=0.1,
-            friction_combine_mode="min",
-            restitution_combine_mode="max",
+            static_friction=0.3,
+            dynamic_friction=0.2,
+            restitution=0.05,
+            friction_combine_mode="average",
+            restitution_combine_mode="min",
         )
         rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
             prim_path=f"/World/envs/env_.*/Bead_{i:02d}",
@@ -364,7 +365,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     }
     spill_adr_num_increments: int = 50
     spill_adr_increment_interval: int = 20000
-    spill_adr_trigger_threshold: float = 0.3
+    spill_adr_trigger_threshold: float = 0.05  # 0.3→0.05: 0% 성공에서 ADR 절대 미진행 문제 해소
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
     # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
@@ -405,7 +406,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # [P3] pour stage binary gate: mouth-to-mouth 정렬 + strict tilt
     # 입구 중심이 거의 겹치고 rim 높이가 비슷할 때만 pour reward를 연다.
-    pour_binary_mouth_xy_thresh: float = 0.03
+    pour_binary_mouth_xy_thresh: float = 0.08  # 0.03→0.08: policy plateau(11cm)에서 gate 도달 불가 해소
     pour_binary_mouth_z_min: float = -0.01
     pour_binary_mouth_z_max: float = 0.03
     pour_binary_tilt_thresh: float = 0.0  # source_up_dot < 0.0 (>90° 기울기)

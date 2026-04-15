@@ -112,15 +112,17 @@ def _tilt_action_gate(mouth_xy_dist: torch.Tensor, near: float, far: float) -> t
 
 
 class TestRewardGateConfig:
-    def test_phase_a_pour_gate_is_tightened(self):
-        assert _parse_float_constant("pour_binary_mouth_xy_thresh", _CFG_TEXT) == pytest.approx(0.03)
+    def test_phase_a_pour_gate_threshold(self):
+        # test1 분석: policy plateau 11cm에서 0.03m gate 도달 불가 → 0.08m으로 완화
+        assert _parse_float_constant("pour_binary_mouth_xy_thresh", _CFG_TEXT) == pytest.approx(0.08)
         assert _parse_float_constant("pour_binary_mouth_z_min", _CFG_TEXT) == pytest.approx(-0.01)
         assert _parse_float_constant("pour_binary_mouth_z_max", _CFG_TEXT) == pytest.approx(0.03)
         assert _parse_float_constant("pour_binary_tilt_thresh", _CFG_TEXT) == pytest.approx(0.0)
 
     def test_phase_b_approach_dead_zone_is_shrunk(self):
+        # approach_xy_off_far=0.03: pour gate threshold(0.08)보다 작아 gate 안쪽에서만 annealing
         assert _parse_float_constant("approach_xy_off_near", _CFG_TEXT) == pytest.approx(0.02)
-        assert _parse_float_constant("approach_xy_off_far", _CFG_TEXT) == pytest.approx(0.06)
+        assert _parse_float_constant("approach_xy_off_far", _CFG_TEXT) == pytest.approx(0.03)
 
     def test_phase_c_tilt_onset_bridge_is_stronger(self):
         assert _parse_float_constant("tilt_onset_dot_threshold", _CFG_TEXT) == pytest.approx(0.17)
@@ -160,14 +162,15 @@ class TestRewardGateBehavior:
         assert point[0].tolist() == pytest.approx([0.041, 0.0, 0.1], abs=1e-6)
 
     def test_pour_gate_requires_mouth_alignment_and_over_ninety_deg_tilt(self):
-        mouth_xy = torch.tensor([0.02, 0.02, 0.04, 0.02, 0.02])
+        # xy_thresh=0.08 (test1 완화값): 8cm 이내 + z 범위 + >90° tilt 동시 충족
+        mouth_xy = torch.tensor([0.07, 0.07, 0.09, 0.07, 0.07])
         mouth_z = torch.tensor([0.02, 0.05, 0.02, -0.02, 0.02])
         tilt = torch.tensor([-0.05, -0.05, -0.05, -0.05, 0.10])
         gate = _gate_pour_binary(
             mouth_xy,
             mouth_z,
             tilt,
-            xy_thresh=0.03,
+            xy_thresh=0.08,
             z_min=-0.01,
             z_max=0.03,
             tilt_thresh=0.0,
