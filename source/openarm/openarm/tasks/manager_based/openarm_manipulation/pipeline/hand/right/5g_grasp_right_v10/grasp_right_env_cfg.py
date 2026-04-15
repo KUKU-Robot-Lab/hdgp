@@ -231,7 +231,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     force_smooth_penalty_cap: float = 2.0
     # 6.5: lift phase 초반 N step 동안 force_smooth 완화 (0: 비활성)
     # lift 시작 직후 grip force 급변을 허용해 과도 패널티 방지
-    force_smooth_lift_warmup_steps: int = 0
+    force_smooth_lift_warmup_steps: int = 20
 
     # R6. lift_reward (v8: 20.0 → v9: 6.0 → v9.2: 20.0, slip local-min 탈출)
     lift_reward_weight: float = 20.0
