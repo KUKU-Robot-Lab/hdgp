@@ -23,7 +23,7 @@ params:
     space:
       continuous:
         mu_activation: None
-        sigma_activation: None
+        sigma_activation: tanh
         mu_init:
           name: default
         sigma_init:

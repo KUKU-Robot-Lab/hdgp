@@ -225,10 +225,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     tilt_action_gate_xy_near: float = 0.06
     tilt_action_gate_xy_far: float = 0.25  # 0.32→0.20→0.25: equilibrium 0.16m에서 gate 28%→47%
 
-    # 접근 보상 앤일링: 6cm까지는 gradient를 유지하고 2cm 이내에서만 꺼준다.
-    # test2에서 5~12cm dead zone에 정책이 고착되어 추가 접근 유인이 사라졌음.
+    # 접근 보상 앤일링: pour gate threshold(3cm)와 일치시켜 reward 절벽 제거.
+    # test4: off_far=0.06m → 6cm→3cm 구간에서 approach 감소+pour gate 미개방으로 reward 절벽 발생.
+    # 수정: off_far=0.03m → 3cm 도달 시 approach 소멸과 pour gate 개방이 동시에 일어나도록.
     approach_xy_off_near: float = 0.02
-    approach_xy_off_far: float = 0.06
+    approach_xy_off_far: float = 0.03
 
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
     left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
