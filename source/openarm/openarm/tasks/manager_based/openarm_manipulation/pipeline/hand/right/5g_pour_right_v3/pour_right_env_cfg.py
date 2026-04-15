@@ -355,7 +355,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_wrist_spin: float = 0.00
 
     # ADR: spill penalty 스케줄 (low→high)
-    enable_spill_adr: bool = False  # True→False: weight_spill=0이므로 ADR 불필요
+    enable_spill_adr: bool = True   # test5: 초반 tilting 탐색 허용 (0.5→8.0), reward hacking 방지
     spill_adr_custom_cfg: dict = {
         "reward": {
             # start small to allow exploration, ramp to 기존 10.0 페널티
