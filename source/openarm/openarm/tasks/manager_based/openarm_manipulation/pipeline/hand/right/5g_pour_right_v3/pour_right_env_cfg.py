@@ -182,6 +182,26 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     source_inside_z_max:  float = 0.100   # 림 높이
     bead_count: int = _DEFAULT_BEAD_COUNT
+
+    # -----------------------------------------------------------------------
+    # Bead count ADR: 1 → 20 단계적 증가 (슬라이딩 윈도우 성공률 기반)
+    # bead N개: success_bonus = weight_success_per_bead × N
+    #           spill_penalty  = weight_spill_per_bead  × N (per step, spill_ratio에 적용)
+    # -----------------------------------------------------------------------
+    enable_bead_count_adr: bool = True
+    bead_count_stages: tuple = (1, 2, 3, 5, 10, 20)     # 진급 단계
+    bead_count_adr_trigger_threshold: float = 0.80       # 80% 성공 시 다음 단계 진급
+    bead_count_adr_window_size: int = 500                # 슬라이딩 윈도우 에피소드 수
+    weight_success_per_bead: float = 10.0                # bead 1개당 성공 보너스
+    weight_spill_per_bead: float = 2.0                   # bead 1개당 스필 패널티 (per step)
+
+    # Hidden parking grid: 비활성 bead를 env 외부에 숨기는 env-local 좌표 오프셋
+    bead_hidden_base_x: float = -1.20
+    bead_hidden_base_y: float = -0.60
+    bead_hidden_z: float = 0.02
+    bead_hidden_cols: int = 5
+    bead_hidden_spacing: float = 0.03
+
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
     success_spill_max: float = 0.20   # curriculum 성공도 과도한 spill은 허용하지 않음
@@ -233,7 +253,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     approach_xy_off_far: float = 0.03
 
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
-    left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
+    left_cup_world_z_offset: float = -0.12   # -0.08→-0.12: target cup 추가 하강 (높은 Z에서 tilt 시 spill 과다)
 
     # stage gate / pre-pour geometry
     # test1에서 mouth_xy≈0.23m일 때 g_align_xy가 1e-3 이하로 죽어 접근 전 stage 신호가 약했음.
@@ -355,8 +375,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_action_rate_finger: float = 0.005  # finger 5D: 채터링 적당히 억제
     weight_wrist_spin: float = 0.00
 
-    # ADR: spill penalty 스케줄 (low→high)
-    enable_spill_adr: bool = True   # test5: 초반 tilting 탐색 허용 (0.5→8.0), reward hacking 방지
+    # ADR: spill penalty 스케줄 (low→high) — bead_count_adr 활성 시 비활성화
+    # spill 가중치는 weight_spill_per_bead × active_count 로 자동 스케일됨
+    enable_spill_adr: bool = False  # bead ADR이 spill 스케일을 담당하므로 비활성화
     spill_adr_custom_cfg: dict = {
         "reward": {
             # start small to allow exploration, ramp to 기존 10.0 페널티

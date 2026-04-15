@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 import sys
+from collections import deque
 from pathlib import Path
 from collections.abc import Sequence
 
@@ -474,8 +475,9 @@ class PourRightEnv(DirectRLEnv):
         self.success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # episode-level 성공 추적 (per-step average 허수 문제 해결)
         self.episode_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._total_episodes: int = 0
-        self._successful_episodes: int = 0
+        # 슬라이딩 윈도우 성공률 (누적 방식 대체: stage 전환 시 이전 성공이 오염되는 문제 해소)
+        _window_size = cfg.bead_count_adr_window_size if cfg.enable_bead_count_adr else 1000
+        self._success_window: deque[int] = deque(maxlen=_window_size)
 
         # ----------------------------------------------------------------
         # Fabrics 초기화
@@ -511,6 +513,34 @@ class PourRightEnv(DirectRLEnv):
         self._source_cup_up_axis_b = to_torch(self.cfg.source_cup_up_axis_b, device=self.device)
         self._target_cup_up_axis_b = to_torch(self.cfg.target_cup_up_axis_b, device=self.device)
         self.num_beads = int(self.cfg.bead_count)
+
+        # ---- Hidden parking grid (비활성 bead를 env 외부로 숨김) ----
+        _hidden_offsets = []
+        for _i in range(self.num_beads):
+            _col = _i % cfg.bead_hidden_cols
+            _row = _i // cfg.bead_hidden_cols
+            _hidden_offsets.append([
+                cfg.bead_hidden_base_x + _col * cfg.bead_hidden_spacing,
+                cfg.bead_hidden_base_y + _row * cfg.bead_hidden_spacing,
+                cfg.bead_hidden_z,
+            ])
+        self._hidden_bead_offsets_b = torch.tensor(_hidden_offsets, dtype=torch.float32, device=self.device)
+
+        # ---- Bead count ADR ----
+        self._bead_count_stages: list[int] = (
+            list(cfg.bead_count_stages) if cfg.enable_bead_count_adr else [self.num_beads]
+        )
+        self._bead_adr_stage_idx: int = 0
+        _initial_count = self._bead_count_stages[0]
+        self._active_bead_count = torch.full(
+            (self.num_envs,), _initial_count, dtype=torch.long, device=self.device
+        )
+        # active mask: 첫 k개 bead가 활성 (나머지는 parking grid에 숨김)
+        self._active_bead_mask = torch.zeros(
+            (self.num_envs, self.num_beads), dtype=torch.bool, device=self.device
+        )
+        self._active_bead_mask[:, :_initial_count] = True
+
         _bead_offsets = []
         beads_per_layer = 5
         for i in range(self.num_beads):
@@ -872,10 +902,22 @@ class PourRightEnv(DirectRLEnv):
             & (pos_in_target[..., 2] <= self.cfg.target_mouth_z)
         )
         self._bead_crossed_target_mouth |= mouth_crossed_now
-        self._bead_cross_count.copy_(self._bead_crossed_target_mouth.sum(dim=-1).long())
-        self._bead_cross_fraction.copy_(self._bead_crossed_target_mouth.float().mean(dim=-1))
-        self._bead_in_target_fraction.copy_(self._bead_in_target.float().mean(dim=-1))
-        self._bead_in_source_fraction.copy_(self._bead_in_source.float().mean(dim=-1))
+        # active mask 기반 분모: inactive bead는 집계에서 제외
+        _active_count_f = self._active_bead_count.clamp(min=1).float()  # (N,)
+        _mask = self._active_bead_mask  # (N, num_beads)
+
+        self._bead_cross_count.copy_(
+            (self._bead_crossed_target_mouth & _mask).sum(dim=-1).long()
+        )
+        self._bead_cross_fraction.copy_(
+            (self._bead_crossed_target_mouth & _mask).float().sum(dim=-1) / _active_count_f
+        )
+        self._bead_in_target_fraction.copy_(
+            (self._bead_in_target & _mask).float().sum(dim=-1) / _active_count_f
+        )
+        self._bead_in_source_fraction.copy_(
+            (self._bead_in_source & _mask).float().sum(dim=-1) / _active_count_f
+        )
 
         bead_env_z = bead_pos_w[..., 2] - self.scene.env_origins[:, 2].unsqueeze(1)
         bead_spilled = (
@@ -883,7 +925,9 @@ class PourRightEnv(DirectRLEnv):
             & (~self._bead_in_source)
             & (bead_env_z < 0.230)
         )
-        self._spill_ratio.copy_(bead_spilled.float().mean(dim=-1))
+        self._spill_ratio.copy_(
+            (bead_spilled & _mask).float().sum(dim=-1) / _active_count_f
+        )
         self._prev_bead_target_local_z.copy_(pos_in_target[..., 2])
 
     # ------------------------------------------------------------------
@@ -1541,11 +1585,18 @@ class PourRightEnv(DirectRLEnv):
             )
             overfill_bonus = self.cfg.weight_success_overfill * overfill
         spill_cost = self._spill_ratio
-        spill_weight = (
-            self.spill_adr.get_param("reward", "spill_weight")
-            if self.spill_adr is not None
-            else self.cfg.weight_spill
-        )
+        # bead count ADR: success/spill 가중치를 active bead 수에 비례 스케일
+        if self.cfg.enable_bead_count_adr:
+            _active_f = self._active_bead_count.float()  # (N,)
+            spill_weight = self.cfg.weight_spill_per_bead * _active_f
+            _success_weight = self.cfg.weight_success_per_bead * _active_f
+        else:
+            spill_weight = (
+                self.spill_adr.get_param("reward", "spill_weight")
+                if self.spill_adr is not None
+                else self.cfg.weight_spill
+            )
+            _success_weight = self.cfg.weight_success
         
         # Smooth premature tilt penalty: only active when far from target (g_ready is low)
         # [test4 분석] 버그 수정: 기존 (1 - dot.clamp(0,1))은 90° 이상 기울면 dot이 음수 → clamp(0)
@@ -1619,7 +1670,7 @@ class PourRightEnv(DirectRLEnv):
             + r_first_capture
             + r_tilt_onset
             + r_terminal_pour
-            + self.cfg.weight_success * r_success
+            + _success_weight * r_success
             + overfill_bonus
             - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
@@ -1632,8 +1683,20 @@ class PourRightEnv(DirectRLEnv):
         self._prev_arm_joint_vel.copy_(arm_qd)
         self._prev_arm_joint_acc.copy_(arm_acc_vec)   # [Step 6] jerk 계산용
 
-        # ---- ADR increment (success-rate 기반) ----
-        _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
+        # ---- ADR increment (슬라이딩 윈도우 성공률 기반) ----
+        _win_len = len(self._success_window)
+        _ep_success_rate = sum(self._success_window) / max(_win_len, 1)
+
+        # bead count ADR: 80% 성공 시 stage 진급 (윈도우가 충분히 찼을 때만 판정)
+        if (
+            self.cfg.enable_bead_count_adr
+            and _win_len >= min(50, self.cfg.bead_count_adr_window_size)
+            and _ep_success_rate >= self.cfg.bead_count_adr_trigger_threshold
+            and self._bead_adr_stage_idx < len(self._bead_count_stages) - 1
+        ):
+            self._bead_adr_stage_idx += 1
+            self._success_window.clear()  # 새 stage 기준으로 재측정
+
         if self.spill_adr is not None:
             self.spill_adr.maybe_increment(_ep_success_rate)
         if self.noise_adr is not None:
@@ -1650,12 +1713,18 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
         self.extras["gate_pour_binary"] = gate_pour_binary.mean()  # [P3] binary gate 활성 비율
         self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
-        self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
+        self.extras["r_success_weighted"] = (_success_weight * r_success).mean()
         self.extras["r_success_overfill"] = (
             overfill_bonus.mean() if isinstance(overfill_bonus, torch.Tensor) else 0.0
         )
         self.extras["cost_spill"] = spill_cost.mean()
-        self.extras["spill_weight"] = torch.tensor(float(spill_weight), device=self.device)
+        self.extras["spill_weight"] = (
+            spill_weight.mean() if isinstance(spill_weight, torch.Tensor)
+            else torch.tensor(float(spill_weight), device=self.device)
+        )
+        self.extras["bead_adr_stage"] = torch.tensor(float(self._bead_adr_stage_idx), device=self.device)
+        self.extras["bead_active_count"] = self._active_bead_count.float().mean()
+        self.extras["bead_adr_success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
         self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
         self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
         self.extras["r_tilt_onset"] = r_tilt_onset.mean()
@@ -1784,9 +1853,9 @@ class PourRightEnv(DirectRLEnv):
 
         n = len(env_ids)
 
-        # ---- episode 성공 집계 후 클리어 ----
-        self._total_episodes += n
-        self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
+        # ---- episode 성공 집계 후 클리어 (슬라이딩 윈도우) ----
+        for _s in self.episode_success_buf[env_ids].tolist():
+            self._success_window.append(int(_s))
         self.episode_success_buf[env_ids] = False
         self._warmstart_only_close[env_ids] = False
         self._warmstart_finger_action_floor[env_ids] = -1.0
@@ -1902,7 +1971,12 @@ class PourRightEnv(DirectRLEnv):
         if self._warmstart_collect_mode:
             self._hide_beads(env_ids)
         else:
-            bead_state = self._sample_bead_states_inside_cup(cup_root_state[:, :7])
+            # 현재 ADR stage의 active bead count 적용 후 spawn
+            _target_count = self._bead_count_stages[self._bead_adr_stage_idx]
+            self._active_bead_count[env_ids] = _target_count
+            _bead_idx = torch.arange(self.num_beads, device=self.device).unsqueeze(0)
+            self._active_bead_mask[env_ids] = _bead_idx < _target_count
+            bead_state = self._spawn_beads_with_active_mask(cup_root_state[:, :7], env_ids)
             self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
 
         # ---- 8. 버퍼 리셋 ----
@@ -2012,6 +2086,39 @@ class PourRightEnv(DirectRLEnv):
         bead_state[..., :3] = bead_pos_w
         bead_state[..., 3:7] = bead_quat_w
         return bead_state
+
+    def _spawn_beads_with_active_mask(
+        self, cup_pose: torch.Tensor, env_ids: Sequence[int]
+    ) -> torch.Tensor:
+        """active bead는 컵 내부에, inactive bead는 hidden parking grid에 배치."""
+        n = len(env_ids)
+        active_counts = self._active_bead_count[env_ids]  # (n,)
+
+        # 모든 bead의 컵-내부 위치 계산 (n, num_beads, 13)
+        all_states = self._sample_bead_states_inside_cup(cup_pose)
+
+        # hidden 위치: env_origin + local offset (n, num_beads, 3)
+        hidden_pos_w = (
+            self.scene.env_origins[env_ids].unsqueeze(1)      # (n, 1, 3)
+            + self._hidden_bead_offsets_b.unsqueeze(0)         # (1, num_beads, 3)
+        )
+
+        # inactive mask: bead i >= active_count → hidden으로 교체
+        bead_idx = torch.arange(self.num_beads, device=self.device).unsqueeze(0)  # (1, num_beads)
+        inactive = bead_idx >= active_counts.unsqueeze(1)                          # (n, num_beads)
+
+        all_states[..., :3] = torch.where(
+            inactive.unsqueeze(-1).expand(n, self.num_beads, 3),
+            hidden_pos_w,
+            all_states[..., :3],
+        )
+        # inactive bead 속도 0 보장
+        all_states[..., 7:] = torch.where(
+            inactive.unsqueeze(-1).expand(n, self.num_beads, 6),
+            torch.zeros_like(all_states[..., 7:]),
+            all_states[..., 7:],
+        )
+        return all_states
 
     def _hide_beads(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
@@ -2172,7 +2279,12 @@ class PourRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        bead_state = self._sample_bead_states_inside_cup(cup_pose_world)
+        # 현재 ADR stage의 active bead count 적용 후 spawn
+        _target_count = self._bead_count_stages[self._bead_adr_stage_idx]
+        self._active_bead_count[env_ids] = _target_count
+        _bead_idx = torch.arange(self.num_beads, device=self.device).unsqueeze(0)
+        self._active_bead_mask[env_ids] = _bead_idx < _target_count
+        bead_state = self._spawn_beads_with_active_mask(cup_pose_world, env_ids)
         self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
 
         self.contact_force_raw[env_ids].zero_()
