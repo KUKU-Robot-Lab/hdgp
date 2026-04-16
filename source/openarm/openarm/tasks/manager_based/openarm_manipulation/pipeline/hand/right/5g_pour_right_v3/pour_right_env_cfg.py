@@ -184,15 +184,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bead_count: int = _DEFAULT_BEAD_COUNT
 
     # -----------------------------------------------------------------------
-    # Bead count ADR: 1 → 20 단계적 증가 (슬라이딩 윈도우 성공률 기반)
+    # bead count ADR: 1 → 20 단계적 증가 (슬라이딩 윈도우 성공률 기반)
     # bead N개: success_bonus = weight_success_per_bead × N
     #           spill_penalty  = weight_spill_per_bead  × N (per step, spill_ratio에 적용)
     # -----------------------------------------------------------------------
     enable_bead_count_adr: bool = True
     bead_count_stages: tuple = (1, 2, 3, 5, 10, 20)     # 진급 단계
     bead_count_adr_trigger_threshold: float = 0.80       # 80% 성공 시 다음 단계 진급
-    bead_count_adr_window_size: int = 500                # 슬라이딩 윈도우 에피소드 수
+    bead_count_adr_window_size: int = 500                # [v4 수정] 200→500: 진급 속도 감소 (초반 too-fast progression 방지)
     weight_success_per_bead: float = 20.0                # bead 1개당 성공 보너스
+
     weight_spill_per_bead: float = 2.0                   # bead 1개당 스필 패널티 (per step)
 
     # Hidden parking grid: 비활성 bead를 env 외부에 숨기는 env-local 좌표 오프셋
@@ -282,14 +283,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
-    # warmstart는 테이블 위에서 막 잡힌 자세가 아니라, 테이블 기준 약 3cm 든 자세에서 시작한다.
-    lift_success_height: float = 0.03
+    # warmstart는 테이블 위에서 막 잡힌 자세가 아니라, 테이블 기준 약 8cm 든 자세에서 시작한다.
+    lift_success_height: float = 0.08   # 0.03→0.08: 리프트 안정성 강화
     enable_success_warmstart_reset: bool = True
     success_warmstart_cache_size: int = 512
-    success_cache_reset_ratio: float = 0.70
-    grasp_warmstart_reset_ratio: float = 0.25
-    success_cache_store_min_bead_cross_fraction: float = 0.0
-    success_cache_store_min_bead_in_target_fraction: float = 0.0
+    # 성공 캐시(mid-pour) 비중을 낮추고, 안정된 파지(grasp-only) 비중을 높여 초기 학습 안정화
+    success_cache_reset_ratio: float = 0.40      # 0.70→0.40: mid-pour 편중 억제
+    grasp_warmstart_reset_ratio: float = 0.40    # 0.25→0.40: grasp-only 시작 유도
+    # 나머지 20%는 테이블에서 직접 파지하는 '완전 리셋'으로 강건성 확보
+    success_cache_store_min_bead_cross_fraction: float = 0.05    # 0.00→0.05: 의미 있는 pour만 저장
+    success_cache_store_min_bead_in_target_fraction: float = 0.02 # 0.00→0.02
     success_reset_hold_steps: int = 20
     success_reset_palm_delta_xyz: float = 0.05
     success_mouth_xy_threshold: float = 0.030
@@ -335,10 +338,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
     weight_first_capture_bonus: float = 40.00
     weight_tilt_onset_bonus: float = 10.00   # 80° 부근 첫 진입에 더 강한 bridge reward
-    tilt_onset_dot_threshold: float = 0.17   # source_up_dot < 0.17 (>80° 기울기) 시 트리거
+    tilt_onset_dot_threshold: float = 0.34   # [v4] 0.17→0.34: source_up_dot < 0.34 (>70° 기울기) 시 트리거 — pour gate(80°)와 충분한 간격 확보
     tilt_onset_dist_threshold: float = 0.08  # success neighborhood 안에서만 onset 보상
     weight_terminal_pour: float = 60.00        # 마지막 step pour pose 유지 보너스
-    terminal_pour_tilt_thresh: float = 0.0     # source_up_dot < 0.0 (>90° tilt)
+    terminal_pour_tilt_thresh: float = 0.17    # [v4] 0.0→0.17: pour_binary_tilt_thresh와 일치 (>80° tilt)
+    weight_terminal_capture: float = 200.0     # [v4 신규] 에피소드 종료 시 bead_in_target_fraction 비례 최종 보너스
     terminal_pour_mouth_xy_thresh: float = 0.03
     terminal_pour_mouth_z_min: float = -0.01
     terminal_pour_mouth_z_max: float = 0.03
@@ -397,17 +401,18 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     spill_adr_trigger_threshold: float = 0.05  # 0.3→0.05: 0% 성공에서 ADR 절대 미진행 문제 해소
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
-    # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
-    # 해당 기준에서 success_rate >= 15%이면 한 단계 올림 (8단계 × 0.0375 = 0.30 range)
+    # [v4 수정] fill_ratio 시작값 0.30→0.80: 초기 bead_count ADR 진급이 fill_ratio=0.30으로 너무 쉬워
+    #          bead 1개 stage에서도 1/1=100%≥0.80 이어야 성공 → 진급 속도 정상화
+    # bead 10개 기준: 0.80=8개, 0.95=19개
     enable_success_adr: bool = True
     success_adr_custom_cfg: dict = {
         "success": {
-            "fill_ratio": (0.20, 0.50),  # 2개→5개 커리큘럼
+            "fill_ratio": (0.80, 0.99),  # [v4 수정] 0.30→0.80 시작: 초반 과빠른 ADR 진급 방지
         }
     }
     success_adr_num_increments: int = 8
     success_adr_increment_interval: int = 20000
-    success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
+    success_adr_trigger_threshold: float = 0.30  # [v4 수정] 0.15→0.30: 30% 성공률 달성 시 상향 (기준 강화)
 
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
@@ -438,7 +443,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_binary_mouth_xy_thresh: float = 0.08  # 0.03→0.08: policy plateau(11cm)에서 gate 도달 불가 해소
     pour_binary_mouth_z_min: float = -0.01
     pour_binary_mouth_z_max: float = 0.03
-    pour_binary_tilt_thresh: float = 0.0  # source_up_dot < 0.0 (>90° 기울기)
+    pour_binary_tilt_thresh: float = 0.17  # [v4] 0.0→0.17: >80° 기울기에서 pour gate 개방 (90° 내리꽂기 전략 억제)
 
     # -----------------------------------------------------------------------
     # 종료 조건

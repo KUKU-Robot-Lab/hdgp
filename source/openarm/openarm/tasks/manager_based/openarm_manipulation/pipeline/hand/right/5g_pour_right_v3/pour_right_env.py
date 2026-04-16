@@ -1581,6 +1581,17 @@ class PourRightEnv(DirectRLEnv):
         )
         r_terminal_pour = self.cfg.weight_terminal_pour * is_last_step.float() * in_terminal_pour_pose.float()
 
+        # [v4 신규] 에피소드 종료(truncated 또는 source about to drain) 시 최종 capture 보너스
+        # success_flag로 즉시 종료를 제거했으므로 에피소드 끝까지 채울수록 더 큰 보상을 받는다.
+        # _source_empty_steps는 _get_dones에서 업데이트되므로 여기서는 hold_steps-1로 검출
+        is_source_ending = self._source_empty_steps >= (self.cfg.source_empty_hold_steps - 1)
+        is_episode_ending = is_last_step | is_source_ending
+        r_terminal_capture = (
+            self.cfg.weight_terminal_capture
+            * self._bead_in_target_fraction
+            * is_episode_ending.float()
+        )
+
         # ---- Outcome and costs ----
         # ADR: success 기준을 낮은 fill_ratio에서 시작해 점진적으로 상향
         success_fill_ratio = (
@@ -1700,6 +1711,7 @@ class PourRightEnv(DirectRLEnv):
             + r_first_capture
             + r_tilt_onset
             + r_terminal_pour
+            + r_terminal_capture         # [v4 신규] 에피소드 종료 시 capture 보너스
             + _success_weight * r_success
             + overfill_bonus
             - spill_weight * spill_cost
@@ -1735,91 +1747,39 @@ class PourRightEnv(DirectRLEnv):
             self.success_adr.maybe_increment(_ep_success_rate)
 
         # ---- Logging to TensorBoard ----
-        self.extras["r_hold"] = r_hold.mean()
-        self.extras["r_lift"] = r_lift.mean()
+        # ── Reward stages ──────────────────────────────────────────────────
+        self.extras["r_hold"]     = r_hold.mean()
         self.extras["r_approach"] = r_approach.mean()
-        self.extras["r_prepour"] = r_prepour_stage.mean()
-        self.extras["r_pour"] = r_pour_stage.mean()
-        self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
-        self.extras["gate_pour_binary"] = gate_pour_binary.mean()  # [P3] binary gate 활성 비율
-        self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
-        self.extras["r_success_weighted"] = (_success_weight * r_success).mean()
-        self.extras["r_success_overfill"] = (
-            overfill_bonus.mean() if isinstance(overfill_bonus, torch.Tensor) else 0.0
-        )
-        self.extras["cost_spill"] = spill_cost.mean()
-        self.extras["spill_weight"] = (
-            spill_weight.mean() if isinstance(spill_weight, torch.Tensor)
-            else torch.tensor(float(spill_weight), device=self.device)
-        )
-        self.extras["bead_adr_stage"] = torch.tensor(float(self._bead_adr_stage_idx), device=self.device)
-        self.extras["bead_active_count"] = self._active_bead_count.float().mean()
+        self.extras["r_prepour"]  = r_prepour_stage.mean()
+        self.extras["r_pour"]     = r_pour_stage.mean()
+        self.extras["r_terminal_capture"] = r_terminal_capture.mean()
+
+        # ── Pour quality ────────────────────────────────────────────────────
+        self.extras["gate_pour_binary"] = gate_pour_binary.mean()   # pour gate 활성 환경 비율
+        self.extras["mouth_xy_dist"]    = self._mouth_xy_distance.mean()
+        self.extras["spill_ratio"]      = self._spill_ratio.mean()
+        self.extras["g_ready"]          = self._g_ready.mean()
+        self.extras["env_frac_near"]    = (self._mouth_xy_distance < 0.08).float().mean()
+
+        # ── 핵심 bead 성과 지표 ─────────────────────────────────────────────
+        # bead_score = Σ(성공 환경의 active_bead_count) / 전체 환경 수
+        # 해석: 평균적으로 환경당 몇 개의 bead가 성공적으로 들어가 있는가
+        bead_score = (self.success_flag.float() * self._active_bead_count.float()).mean()
+        self.extras["bead_score"] = bead_score
+
+        # ── ADR 상태 ────────────────────────────────────────────────────────
+        self.extras["bead_adr_stage"]        = torch.tensor(float(self._bead_adr_stage_idx), device=self.device)
         self.extras["bead_adr_success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
-        self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
-        self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
-        self.extras["r_tilt_onset"] = r_tilt_onset.mean()
-        self.extras["r_terminal_pour"] = r_terminal_pour.mean()
-        self.extras["g_ready"] = self._g_ready.mean()
-        self.extras["curriculum_success"] = success_by_pose_and_fill.float().mean()
-        self.extras["final_success_strict"] = final_success_strict.float().mean()
-        self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
-        self.extras["cup_center_xy_dist"] = self._cup_center_xy_dist.mean()
-        self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
-        self.extras["bead_cross"] = self._bead_cross_fraction.mean()
-        self.extras["spill_ratio"] = self._spill_ratio.mean()
-        self.extras["env_frac_bead_cross_gt_0"] = (self._bead_cross_fraction > 0.0).float().mean()
-        self.extras["env_frac_bead_in_target_gt_0"] = (self._bead_in_target_fraction > 0.0).float().mean()
-        self.extras["env_frac_mouth_xy_lt_0p08"] = (self._mouth_xy_distance < 0.08).float().mean()
-        self.extras["best_bead_in_target_fraction"] = self._bead_in_target_fraction.max()
+        if self.success_adr is not None:
+            self.extras["success_fill_ratio"] = torch.tensor(float(success_fill_ratio), device=self.device)
+
+        # ── 성공 캐시 상태 ──────────────────────────────────────────────────
         self.extras["success_cache_size"] = torch.tensor(float(self._success_cache_count), device=self.device)
-        store_rate = (
-            self._success_cache_store_total / self._success_cache_candidate_total
-            if self._success_cache_candidate_total > 0
-            else 0.0
-        )
         reset_frac = (
             self._success_cache_reset_total / self._total_reset_total
-            if self._total_reset_total > 0
-            else 0.0
+            if self._total_reset_total > 0 else 0.0
         )
-        self.extras["success_cache_store_rate"] = torch.tensor(store_rate, device=self.device)
         self.extras["success_cache_reset_frac"] = torch.tensor(reset_frac, device=self.device)
-        self.extras["last_success_cache_reset_frac"] = torch.tensor(
-            self._last_success_cache_reset_frac, device=self.device
-        )
-        self.extras["last_grasp_cache_reset_frac"] = torch.tensor(
-            self._last_grasp_cache_reset_frac, device=self.device
-        )
-        # Phase-0 진단 메트릭: arm joint velocity / acceleration
-        self.extras["arm_joint_vel_l2_mean"] = arm_qd_l2.mean()
-        self.extras["arm_joint_vel_max_mean"] = arm_qd_max.mean()
-        self.extras["arm_joint_acc_l2_mean"] = arm_acc_vec.norm(dim=-1).mean()
-        self.extras["arm_joint_jerk_l2_mean"] = arm_jerk_vec.norm(dim=-1).mean()
-        self.extras["tilt_phase_arm_vel"] = tilt_phase_arm_vel
-        # Phase-1 Step 4/5/6: arm vel/acc/jerk cost 로깅 (in_tilt_phase gate 포함)
-        self.extras["cost_arm_vel"] = (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum * in_tilt_phase).mean()
-        self.extras["cost_arm_acc"] = (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum * in_tilt_phase).mean()
-        self.extras["cost_arm_jerk"] = (self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum * in_tilt_phase).mean()
-        self.extras["cost_arm_vel_approach"] = (self.cfg.weight_arm_joint_vel_approach * arm_qd_sq_sum * approach_only).mean()
-        # Phase-2 Step 9: action_rate 분리 로깅
-        self.extras["cost_action_rate_palm"] = (self.cfg.weight_action_rate_palm * palm_delta).mean()
-        self.extras["cost_action_rate_finger"] = (self.cfg.weight_action_rate_finger * finger_delta).mean()
-
-        if self.spill_adr is not None:
-            self.extras["adr_spill_progress"] = torch.tensor(
-                self.spill_adr.progress, device=self.device
-            )
-        if self.noise_adr is not None:
-            self.extras["adr_noise_progress"] = torch.tensor(
-                self.noise_adr.progress, device=self.device
-            )
-        if self.success_adr is not None:
-            self.extras["adr_success_progress"] = torch.tensor(
-                self.success_adr.progress, device=self.device
-            )
-            self.extras["success_fill_ratio"] = torch.tensor(
-                float(success_fill_ratio), device=self.device
-            )
 
         return total
 
@@ -1882,14 +1842,26 @@ class PourRightEnv(DirectRLEnv):
             & (self._mouth_z_clearance < self.cfg.pour_binary_mouth_z_max)
             & (self._source_up_dot_world < self.cfg.pour_binary_tilt_thresh)
         )
-        success_by_pose_and_fill = gate_pour_binary.bool() & success_now
+        # [v3 수정] 안정적 파지(grasped) 상태일 때만 성공으로 인정하여 우연한 낙하 성공 배제
+        grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
+        success_by_pose_and_fill = gate_pour_binary.bool() & success_now & grasped
+
         self.success_flag.copy_(success_by_pose_and_fill)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
         self._maybe_store_warmstart_successes()
-        self._maybe_store_success_states(gate_pour_binary.float())
+        self._maybe_store_success_states(gate_pour_binary.float() * grasped.float())
 
-        terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag | source_drained
+        # [v4 수정] success_flag를 terminated에서 제거: 성공해도 에피소드를 계속 진행하여
+        # 더 많은 bead를 넣을 기회를 준다. source_drained (bead 모두 소스에서 나감) 또는
+        # truncated (시간 초과)로만 종료. terminal capture bonus가 "많이 넣을수록 좋다"를 보상.
+        terminated = out_x | out_y | fallen | dropped_by_force | source_drained
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
+
+        # [v4 Phase2] 종료 원인별 로깅
+        self.extras["term_frac_success_flag"]   = self.success_flag.float().mean()   # 성공 조건 달성 비율 (종료 안 함, bead_score와 함께 해석)
+        self.extras["term_frac_source_drained"] = source_drained.float().mean()      # source 고갈 종료 비율 (pour 완료)
+        self.extras["term_frac_dropped"]        = dropped_by_force.float().mean()    # grasp 실패 종료 비율
+        self.extras["mean_episode_length"]      = self.episode_length_buf.float().mean()
 
         return terminated, truncated
 
@@ -2293,9 +2265,14 @@ class PourRightEnv(DirectRLEnv):
         if self._warmstart_collect_mode:
             return
 
-        candidate_mask = gate_pour_binary.bool() & (
-            (self._bead_cross_fraction > self.cfg.success_cache_store_min_bead_cross_fraction)
-            | (self._bead_in_target_fraction > self.cfg.success_cache_store_min_bead_in_target_fraction)
+        # [v3 수정] spilling이 과한 상태는 캐시하지 않음 (start state의 messy함 방지)
+        candidate_mask = (
+            gate_pour_binary.bool()
+            & (self._spill_ratio < 0.10)
+            & (
+                (self._bead_cross_fraction > self.cfg.success_cache_store_min_bead_cross_fraction)
+                | (self._bead_in_target_fraction > self.cfg.success_cache_store_min_bead_in_target_fraction)
+            )
         )
         candidate_env_ids = candidate_mask.nonzero(as_tuple=False).squeeze(-1)
         if candidate_env_ids.numel() == 0:
@@ -2534,7 +2511,7 @@ class PourRightEnv(DirectRLEnv):
             self._success_cache_palm_pose[pick],
             self._success_cache_cup_pose[pick],
             left_cup_pose_local=self._success_cache_left_cup_pose[pick],
-            bead_state_local=self._success_cache_bead_state[pick],
-            active_bead_count=self._success_cache_active_bead_count[pick],
+            bead_state_local=None,          # [v3 수정] 이전 성공 비드 위치를 복원하지 않고 새로 소환
+            active_bead_count=None,         # [v3 수정] 현재 ADR 단계의 비드 개수 적용
             success_reset=True,
         )
