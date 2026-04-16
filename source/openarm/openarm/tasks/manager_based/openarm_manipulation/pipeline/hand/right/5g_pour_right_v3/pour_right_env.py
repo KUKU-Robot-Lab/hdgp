@@ -1858,7 +1858,7 @@ class PourRightEnv(DirectRLEnv):
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         # [CUSTOM] 사용자 요청: bead가 하나라도 들어갔는지 여부 (단순 성공 기준)
-        self.extras["any_bead_in_target"] = self._bead_in_target_count > 0
+        self.extras["any_bead_in_target"] = self._bead_in_target.any(dim=-1)
 
         # [v4 Phase2] 종료 원인별 로깅
         self.extras["term_frac_success_flag"]   = self.success_flag.float().mean()

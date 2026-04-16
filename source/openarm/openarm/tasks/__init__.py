@@ -56,6 +56,7 @@ import openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.both.appro
 
 # bimanual/reach
 import openarm.tasks.manager_based.openarm_manipulation.pipeline.gripper.both.reach.config
+
 # bimanual/grasp,grasp2g
 import openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.both.grasp.config
 import openarm.tasks.manager_based.openarm_manipulation.pipeline.gripper.both.grasp_2g.config

@@ -17,15 +17,22 @@
 # algo_factory 에 등록한다. train.py 수정 없이 yaml 의 algo.name 만으로 동작.
 try:
     from rl_games.torch_runner import Runner as _Runner
+    from rl_games.algos_torch import players as _rl_players
     from .pour_lstm_bc_agent import PourLstmBCAgent as _PourLstmBCAgent
 
     _orig_runner_init = _Runner.__init__
 
     def _patched_runner_init(self, *args, **kwargs):
         _orig_runner_init(self, *args, **kwargs)
+        # 학습용 agent 등록 (algo_factory)
         self.algo_factory.register_builder(
             "a2c_continuous_lstm_bc",
             lambda **kw: _PourLstmBCAgent(**kw),
+        )
+        # 추론/play용 player 등록 (player_factory) — PpoPlayerContinuous가 LSTM 포함한 표준 player
+        self.player_factory.register_builder(
+            "a2c_continuous_lstm_bc",
+            lambda **kw: _rl_players.PpoPlayerContinuous(**kw),
         )
 
     _Runner.__init__ = _patched_runner_init

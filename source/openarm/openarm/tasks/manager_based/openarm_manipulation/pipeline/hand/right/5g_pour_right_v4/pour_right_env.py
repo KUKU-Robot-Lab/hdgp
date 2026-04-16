@@ -1125,15 +1125,20 @@ class PourRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
 
-        # ── hold 기간 컵 절대 좌표 고정 (warmstart/success 캐시 리셋 env 전용) ──
-        # 텔레포트 직후 PhysX 접촉력이 재정립되기 전 중력으로 컵이 낙하하는 문제를 방지.
-        # palm body 추적 오차 없이 캐시 저장 시점의 정확한 world 좌표를 재적용.
-        # episode_hold_steps 동안: arm 고정(palm_action=0) + 손가락 최대 파지(finger=1.0)
-        #   + 컵 위치 고정 → PhysX가 손가락-컵 접촉력을 충분히 쌓을 시간 확보.
+        # ── hold 기간 컵 절대 좌표 고정 (success 캐시 리셋 env 전용) ──
+        # [v2 참고] warmstart(grasp) 캐시 리셋에서는 cup pinning 적용 안 함.
+        #   이유: 텔레포트 직후 컵이 캐시된 위치(손가락이 감싼 위치)에 고정되면,
+        #         손가락도 position-control이라 PhysX가 관통을 해소할 수 없음.
+        #         v2처럼 physics가 자연스럽게 접촉을 재정립하도록 허용해야 함.
+        #         warmstart_stable_hold_steps=30 기준으로 저장된 고품질 grasp state 이므로
+        #         손가락+PD 제어만으로도 hold 기간 중 파지 유지 가능.
+        # success 캐시 리셋(_success_reset_until_step > 0)에만 pinning 적용:
+        #   pour 진행 중 기울어진 컵은 pinning 없이는 제어 불가능한 방향으로 이동할 수 있음.
         if self.cfg.episode_hold_steps > 0:
             pin_mask = (
                 (self.episode_length_buf < self.cfg.episode_hold_steps)
                 & self._warmstart_only_close
+                & (self._success_reset_until_step > 0)   # success 캐시 리셋 전용 (warmstart 제외)
             )
             if pin_mask.any():
                 pin_ids = pin_mask.nonzero(as_tuple=False).squeeze(-1)
@@ -1395,7 +1400,6 @@ class PourRightEnv(DirectRLEnv):
             self._g_ready,
         ], dim=-1)   # (N, 8)
 
-        # tip force (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
         tip_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
         actor_obs = torch.cat([
@@ -1447,7 +1451,6 @@ class PourRightEnv(DirectRLEnv):
             target_opening_clean - source_pour_point_clean,           # 3
             source_pour_axis_clean,                                   # 3
             source_up_axis_clean,                                     # 3
-            # target_up_axis 제거: 항상 [0,0,1], 정보 없음
             torch.stack([                                             # 8
                 self._mouth_distance,
                 self._mouth_xy_distance,
@@ -1554,9 +1557,6 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # ---- Stage B. Transport (Approach) - Always active with smooth gradient ----
-        # [P2] DexPour: "lift reward ceases once cup reaches h_lift"
-        # test4: 컵 0.407m 높이에서도 r_lift 수령 → 컵 올리는 행동 지속 유인
-        # lift_height_cap(0.05m) 이상은 보상 없음
         cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(
             min=0.0, max=self.cfg.lift_height_cap
         )
@@ -1696,26 +1696,12 @@ class PourRightEnv(DirectRLEnv):
             )
             _success_weight = self.cfg.weight_success
         
-        # Smooth premature tilt penalty: only active when far from target (g_ready is low)
-        # [test4 분석] 버그 수정: 기존 (1 - dot.clamp(0,1))은 90° 이상 기울면 dot이 음수 → clamp(0)
-        # → (1-0)=1.0으로 최대 페널티. pour_tilt_target=100°에서 dot=cos(100°)=-0.174 → clamp=0
-        # → 실제 pour 각도가 항상 최대 페널티 구간 → cost_premtilt(0.82/step) >> r_pour(0.06/step)
-        # → 정책이 pour를 시도할수록 손해 → g_tilt Q3=0.535→Q4=0.373으로 급감하며 pour 포기
-        #
-        # 수정: (1-dot.clamp(0,1)) → dot.clamp(0,1)
-        # 직립(dot=1): 페널티 최대 (이동 전 upright 유지 유도, 기존과 동일한 방향)
-        # 90° 수평(dot=0): 페널티 0
-        # 100° pour(dot=-0.174→clamp=0): 페널티 0 ← 핵심: pour 각도에서 페널티 없음
         significant_tilt = torch.clamp(
             self.cfg.tilt_onset_dot_threshold - self._source_up_dot_world,
             min=0.0,
         )
         premature_tilt_cost = (1.0 - self._g_ready) * significant_tilt
-        # grasp quality loss: full_grasp_flag=0 (thumb 없거나 others<2) 매 스텝 즉각 dense penalty
-        # 낙하(episode termination)와 달리 grasp이 흔들리는 구간에서 즉각 gradient 제공
         grasp_loss_cost = 1.0 - full_grasp_flag
-        # [Phase-2 Step 9] action_rate: palm(6D) / finger(5D) 분리
-        # grasp v9의 action_smoothness_palm/finger 패턴과 동일
         palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
         finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
         action_rate_penalty = (
@@ -1723,7 +1709,6 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_action_rate_finger * finger_delta
         )
 
-        # ---- Phase-0 진단 + Phase-1 Step 4: arm joint velocity / acceleration ----
         arm_qd = self.robot.data.joint_vel[:, self.arm_dof_indices]
         arm_qd_l2 = arm_qd.norm(dim=-1)                          # (num_envs,) L2 norm
         arm_qd_max = arm_qd.abs().max(dim=-1).values              # (num_envs,) per-joint max
@@ -1741,10 +1726,6 @@ class PourRightEnv(DirectRLEnv):
         arm_jerk_vec = arm_acc_vec - self._prev_arm_joint_acc    # (N, DOF)
         arm_jerk_sq_sum = arm_jerk_vec.pow(2).sum(dim=-1)
 
-        # [P1] arm vel penalty: approach 구간도 낮은 가중치로 적용 (arm_vel_tilt_gate_only=False)
-        # test4: cost_arm_vel=0.001/step → 사실상 0, approach에서 arm이 너무 빠르게 이동
-        # approach 구간: weight_arm_joint_vel_approach (tilt 구간의 1/4)
-        # tilt 구간: weight_arm_joint_vel (기존 값 유지)
         approach_only = 1.0 - in_tilt_phase   # approach 구간 (cup 멀리 있을 때)
         if self.cfg.arm_vel_tilt_gate_only:
             arm_vel_cost = (
