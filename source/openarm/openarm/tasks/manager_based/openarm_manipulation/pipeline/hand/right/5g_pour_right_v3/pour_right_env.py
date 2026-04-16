@@ -1861,7 +1861,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["term_frac_success_flag"]   = self.success_flag.float().mean()   # 성공 조건 달성 비율 (종료 안 함, bead_score와 함께 해석)
         self.extras["term_frac_source_drained"] = source_drained.float().mean()      # source 고갈 종료 비율 (pour 완료)
         self.extras["term_frac_dropped"]        = dropped_by_force.float().mean()    # grasp 실패 종료 비율
-        self.extras["mean_episode_length"]      = self.episode_length_buf.float().mean()
+        # mean_episode_length 제거: rl_games가 episode_lengths/iter로 동일 값을 자동 로깅함
 
         return terminated, truncated
 
