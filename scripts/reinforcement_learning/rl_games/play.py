@@ -293,33 +293,69 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # note: We simplified the logic in rl-games player.py (:func:`BasePlayer.run()`) function in an
     #   attempt to have complete control over environment stepping. However, this removes other
     #   operations such as masking that is used for multi-agent learning by RL-Games.
+    # [CUSTOM] 리플레이용 변수
+    trajectory_log = [[] for _ in range(env.unwrapped.num_envs)] # 각 환경별 현재 에피소드 기록
+    successful_trajectory = None # 확정된 성공 궤적 (하나만 저장)
+    replay_idx = 0 # 리플레이 현재 프레임 위치
+
     while simulation_app.is_running():
         start_time = time.time()
-        # run everything in inference mode
-        with torch.inference_mode():
-            # convert obs to agent format
-            obs = agent.obs_to_torch(obs)
-            # agent stepping
-            actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
-            # env stepping
-            obs, _, dones, _ = env.step(actions)
+        
+        # [CUSTOM] 리플레이 모드 체크
+        if successful_trajectory is not None:
+            # 성공한 궤적이 있으면 정책을 돌리지 않고 기록된 상태를 강제 주입
+            with torch.inference_mode():
+                # 저장된 궤적에서 현재 프레임 가져오기
+                states = successful_trajectory[replay_idx]
+                # 시뮬레이션 상태 강제 설정 (관절, 물체 등 환경 전체 상태)
+                # env.unwrapped.base_env.scene.write_to_sim() 등을 활용하거나 
+                # 단순히 리플레이용으로 환경의 각 에셋 상태를 직접 set_world_pose 함
+                # 여기서는 환경의 'write_to_sim' 기능을 모사하여 상태를 주입함
+                env.unwrapped.write_to_sim(states)
+                
+                replay_idx += 1
+                if replay_idx >= len(successful_trajectory):
+                    replay_idx = 0 # 무한 반복
+            
+            # 렌더링을 위해 최소한의 시간 지연
+            if args_cli.real_time:
+                time.sleep(dt)
+            continue
 
-            # perform operations for terminated episodes
+        # --- 일반 실행 모드 (성공 장면을 찾을 때까지) ---
+        with torch.inference_mode():
+            # 현재 상태 기록 (리플레이를 위해)
+            # env.unwrapped.read_from_sim()을 통해 현재 전체 상태 스냅샷 저장
+            current_states = env.unwrapped.read_from_sim()
+            for i in range(env.unwrapped.num_envs):
+                trajectory_log[i].append(current_states.clone(i)) # 개별 환경 상태 저장
+
+            obs = agent.obs_to_torch(obs)
+            actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
+            obs, _, dones, extras = env.step(actions)
+
+            # 성공 감지 (bead가 들어갔는지 확인)
+            if "any_bead_in_target" in extras:
+                any_bead = extras["any_bead_in_target"]
+                if torch.any(any_bead) and successful_trajectory is None:
+                    success_idx = torch.where(any_bead)[0][0].item()
+                    # 성공한 환경의 지금까지의 기록을 '성공 궤적'으로 확정!
+                    successful_trajectory = [step for step in trajectory_log[success_idx]]
+                    print(f"\n*** [REPLAY MODE] Success captured from Env {success_idx}! ***")
+                    print("*** Replaying this trajectory infinitely for recording... ***\n")
+                    # 모든 환경을 리플레이 모드로 전환하기 위해 준비
+                    replay_idx = 0
+
+            # 에피소드 종료 시 기록 초기화 (성공 못했으면 버림)
             if len(dones) > 0:
-                # reset rnn state for terminated episodes
+                for i in torch.where(dones)[0]:
+                    trajectory_log[i] = [] 
+
                 if agent.is_rnn and agent.states is not None:
                     for s in agent.states:
                         s[:, dones, :] = 0.0
-        if args_cli.video:
-            timestep += 1
-            # exit the play loop after recording one video
-            if timestep == args_cli.video_length:
-                break
-
-        # time delay for real-time evaluation
-        sleep_time = dt - (time.time() - start_time)
-        if args_cli.real_time and sleep_time > 0:
-            time.sleep(sleep_time)
+        
+        # (기존 시간 지연 로직 생략 가능 - 리플레이 모드에서 처리됨)
 
     # close the simulator
     env.close()

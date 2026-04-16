@@ -64,6 +64,7 @@ from fabrics_sim.utils.utils import initialize_warp
 from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
 
 from .pour_right_env_cfg import PourRightEnvCfg
+from .trajectory_buffer import TrajectoryCapture, SuccessTrajectoryBuffer
 from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
@@ -608,6 +609,9 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
         self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
+        # 연속 안정 hold 카운터 (collect mode 에서만 사용)
+        # warmstart_stable_hold_steps 스텝 연속 유지해야 캐시에 저장
+        self._warmstart_stable_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._success_cache_count = 0
         success_cache_size = max(int(self.cfg.success_warmstart_cache_size), 1)
         self._success_cache_scores = torch.full((success_cache_size,), -1.0e9, device=self.device)
@@ -649,7 +653,31 @@ class PourRightEnv(DirectRLEnv):
         else:
             self._vis_markers = None
 
+        # [v4] _reset_idx 에서 참조되므로 warmstart 캐시 빌드 전에 None 으로 초기화
+        self._trajectory_capture = None
+        self.success_trajectory_buffer = None
+
         self._build_warmstart_reset_cache()
+
+        # [v4] Trajectory capture + Success trajectory buffer (BC loss용)
+        if cfg.enable_trajectory_capture:
+            self._trajectory_capture = TrajectoryCapture(
+                num_envs=self.num_envs,
+                window=cfg.trajectory_capture_window,
+                obs_dim=cfg.num_observations,
+                act_dim=cfg.num_actions,
+                device=self.device,
+            )
+            self.success_trajectory_buffer = SuccessTrajectoryBuffer(
+                capacity=cfg.trajectory_buffer_capacity,
+                max_len=cfg.trajectory_capture_window,
+                obs_dim=cfg.num_observations,
+                act_dim=cfg.num_actions,
+                device=self.device,
+            )
+        else:
+            self._trajectory_capture = None
+            self.success_trajectory_buffer = None
 
     # ------------------------------------------------------------------
     # Scene 설정
@@ -1445,6 +1473,11 @@ class PourRightEnv(DirectRLEnv):
                 f"[pour_v3] Critic obs dim mismatch: {critic_obs.shape[1]} != {NUM_CRITIC_OBSERVATIONS}"
             )
 
+        # [v4] 궤적 캡처: (obs_t, action_t) 기록
+        # action은 _pre_physics_step 에서 self.actions 에 저장됨
+        if self._trajectory_capture is not None:
+            self._trajectory_capture.append(actor_obs.detach(), self.actions.detach())
+
         return {"policy": actor_obs, "critic": critic_obs}
 
     def _get_rewards(self) -> torch.Tensor:
@@ -1773,13 +1806,15 @@ class PourRightEnv(DirectRLEnv):
         if self.success_adr is not None:
             self.extras["success_fill_ratio"] = torch.tensor(float(success_fill_ratio), device=self.device)
 
-        # ── 성공 캐시 상태 ──────────────────────────────────────────────────
-        self.extras["success_cache_size"] = torch.tensor(float(self._success_cache_count), device=self.device)
-        reset_frac = (
-            self._success_cache_reset_total / self._total_reset_total
-            if self._total_reset_total > 0 else 0.0
-        )
-        self.extras["success_cache_reset_frac"] = torch.tensor(reset_frac, device=self.device)
+        # ── [v4] 궤적 버퍼 상태 (mid-pour success_cache 대체) ──────────────
+        if self.success_trajectory_buffer is not None:
+            self.extras["traj_buffer_size"] = torch.tensor(
+                float(len(self.success_trajectory_buffer)), device=self.device
+            )
+            self.extras["traj_buffer_warm"] = torch.tensor(
+                float(self.success_trajectory_buffer.is_warm(self.cfg.bc_min_buffer_size)),
+                device=self.device,
+            )
 
         return total
 
@@ -1857,17 +1892,9 @@ class PourRightEnv(DirectRLEnv):
         terminated = out_x | out_y | fallen | dropped_by_force | source_drained
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
-        # [CUSTOM] 사용자 요청: bead가 하나라도 들어갔는지 여부 (단순 성공 기준)
-        self.extras["any_bead_in_target"] = self._bead_in_target_count > 0
-
         # [v4 Phase2] 종료 원인별 로깅
-        self.extras["term_frac_success_flag"]   = self.success_flag.float().mean()
-        self.extras["success_envs"] = self.success_flag.clone()
-        
-        # [CUSTOM] 에피소드 중 한 번이라도 성공했는지 여부를 play.py에 전달
-        self.extras["episode_success_ever"] = self.episode_success_buf.clone()
-        
-        self.extras["term_frac_source_drained"] = source_drained.float().mean()
+        self.extras["term_frac_success_flag"]   = self.success_flag.float().mean()   # 성공 조건 달성 비율 (종료 안 함, bead_score와 함께 해석)
+        self.extras["term_frac_source_drained"] = source_drained.float().mean()      # source 고갈 종료 비율 (pour 완료)
         self.extras["term_frac_dropped"]        = dropped_by_force.float().mean()    # grasp 실패 종료 비율
         # mean_episode_length 제거: rl_games가 episode_lengths/iter로 동일 값을 자동 로깅함
 
@@ -1885,6 +1912,12 @@ class PourRightEnv(DirectRLEnv):
         if len(env_ids) == 0:
             return
 
+        # [v4] 에피소드 종료 env 의 궤적을 성공 버퍼에 저장 (리셋 전에 수행)
+        if self._trajectory_capture is not None:
+            env_ids_t = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+            self._finalize_episode_trajectories(env_ids_t)
+            self._trajectory_capture.reset_envs(env_ids_t)
+
         n = len(env_ids)
 
         # ---- episode 성공 집계 후 클리어 (슬라이딩 윈도우) ----
@@ -1894,6 +1927,8 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_only_close[env_ids] = False
         self._warmstart_finger_action_floor[env_ids] = -1.0
         self._success_reset_until_step[env_ids] = 0
+        # collect mode 안정 카운터 리셋 (에피소드 종료 = 새 grasp 시작)
+        self._warmstart_stable_steps[env_ids] = 0
         if not self._warmstart_collect_mode:
             env_ids_t = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
             reset_draw = torch.rand(len(env_ids_t), device=self.device)
@@ -2238,19 +2273,46 @@ class PourRightEnv(DirectRLEnv):
         )
 
     def _maybe_store_warmstart_successes(self) -> None:
+        """collect mode 에서 '확실하게 lift' 된 env 만 캐시에 저장.
+
+        저장 조건 (모두 충족해야 함):
+          1. lift height  >= warmstart_cache_min_lift_height   (기본 0.15m: 확실히 들린 상태)
+          2. contacts     >= warmstart_cache_min_contacts       (기본 3개: 견고한 파지)
+          3. upright      source up-axis z > 0.85              (컵이 수직 유지)
+          4. not_falling  cup z-velocity  >= -0.02 m/s         (낙하 중이 아님)
+          5. stable_hold  위 조건을 연속 warmstart_stable_hold_steps 프레임 유지
+        """
         if not self._warmstart_collect_mode:
             return
         if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
             return
 
-        lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
-        upright = self._source_up_axis_w[:, 2] > 0.7
-        warmstart_success = lifted & grasped & upright
+        # ── 조건 1~4: 이번 프레임 품질 기준 ────────────────────────────────
+        min_lift   = self.cfg.warmstart_cache_min_lift_height
+        min_ct     = self.cfg.warmstart_cache_min_contacts
+        stable_req = self.cfg.warmstart_stable_hold_steps
 
-        success_env_ids = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
+        lifted      = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + min_lift)
+        grasped     = self.num_contacts_buf >= min_ct
+        upright     = self._source_up_axis_w[:, 2] > 0.85
+        not_falling = self.cup.data.root_link_lin_vel_w[:, 2] >= -0.02
+        quality_ok  = lifted & grasped & upright & not_falling
+
+        # ── 조건 5: 연속 안정 카운터 갱신 ──────────────────────────────────
+        self._warmstart_stable_steps = torch.where(
+            quality_ok,
+            self._warmstart_stable_steps + 1,
+            torch.zeros_like(self._warmstart_stable_steps),
+        )
+
+        # stable_req 프레임 연속 유지된 env 만 저장 후보
+        stable_ok = self._warmstart_stable_steps >= stable_req
+        success_env_ids = stable_ok.nonzero(as_tuple=False).squeeze(-1)
         if success_env_ids.numel() == 0:
             return
+
+        # 이미 저장된 env 가 다음 스텝에 또 저장되지 않도록 카운터 리셋
+        self._warmstart_stable_steps[success_env_ids] = 0
 
         remaining = self._warmstart_arm_pos.shape[0] - self._warmstart_cache_count
         success_env_ids = success_env_ids[:remaining]
@@ -2259,11 +2321,13 @@ class PourRightEnv(DirectRLEnv):
             return
 
         start = self._warmstart_cache_count
-        end = start + count
-        self._warmstart_arm_pos[start:end] = self.robot.data.joint_pos[success_env_ids][:, self.arm_dof_indices]
-        self._warmstart_hand_pos[start:end] = self.robot.data.joint_pos[success_env_ids][:, self.hand_dof_indices]
-        self._warmstart_palm_pose[start:end] = self.palm_pose_targets[success_env_ids]
-        self._warmstart_cup_pose[start:end, :3] = self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
+        end   = start + count
+        self._warmstart_arm_pos[start:end]       = self.robot.data.joint_pos[success_env_ids][:, self.arm_dof_indices]
+        self._warmstart_hand_pos[start:end]      = self.robot.data.joint_pos[success_env_ids][:, self.hand_dof_indices]
+        self._warmstart_palm_pose[start:end]     = self.palm_pose_targets[success_env_ids]
+        self._warmstart_cup_pose[start:end, :3]  = (
+            self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
+        )
         self._warmstart_cup_pose[start:end, 3:7] = self.cup.data.root_quat_w[success_env_ids]
         self._warmstart_cache_count = end
 
@@ -2461,6 +2525,37 @@ class PourRightEnv(DirectRLEnv):
         self._prev_mouth_xy_distance[env_ids] = 0.0
         self._pre_pour_ready_steps[env_ids] = 0
         self.success_flag[env_ids] = False
+
+    # ------------------------------------------------------------------
+    # [v4] Trajectory finalize helper
+    # ------------------------------------------------------------------
+    def _finalize_episode_trajectories(self, env_ids: torch.Tensor) -> None:
+        """에피소드 종료 env 의 궤적을 성공 조건 검사 후 success_trajectory_buffer 에 저장.
+
+        저장 기준:
+          - bead_in_target_fraction >= cfg.trajectory_success_bead_threshold
+          - spill_ratio < cfg.trajectory_success_spill_max
+          - 캡처된 스텝 수 >= cfg.trajectory_min_steps
+        """
+        if self.success_trajectory_buffer is None:
+            return
+        for env_id in env_ids.tolist():
+            count = self._trajectory_capture.get_count(env_id)
+            if count < self.cfg.trajectory_min_steps:
+                continue
+            bead_frac  = float(self._bead_in_target_fraction[env_id].item())
+            spill_frac = float(self._spill_ratio[env_id].item())
+            if (
+                bead_frac  >= self.cfg.trajectory_success_bead_threshold
+                and spill_frac <= self.cfg.trajectory_success_spill_max
+            ):
+                traj  = self._trajectory_capture.get_trajectory(env_id)
+                # active bead 수를 곱해 ADR 진행에 따라 score 자동 상향.
+                # → 초반 우연성 궤적(bead=1, score≈1)은
+                #   ADR 진행 후 실질 궤적(bead=5, score≈3.5)에 밀려남.
+                active_count = float(self._active_bead_count[env_id].item())
+                score = (bead_frac - 0.5 * spill_frac) * active_count
+                self.success_trajectory_buffer.store(traj, score)
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
