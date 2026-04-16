@@ -456,6 +456,11 @@ class PourRightEnv(DirectRLEnv):
         )
         self._warmstart_only_close = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._success_reset_until_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # warmstart 텔레포트 직후 컵 절대 고정 좌표 (world frame)
+        # hold 기간 동안 이 위치로 컵을 고정하여 PhysX 접촉력 재정립 시간을 확보
+        self._cup_hold_pos_w  = torch.zeros(self.num_envs, 3, device=self.device)
+        self._cup_hold_quat_w = torch.zeros(self.num_envs, 4, device=self.device)
+        self._cup_hold_quat_w[:, 0] = 1.0  # identity quaternion
 
         # ----------------------------------------------------------------
         # 접촉 상태 버퍼
@@ -1119,6 +1124,25 @@ class PourRightEnv(DirectRLEnv):
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
+
+        # ── hold 기간 컵 절대 좌표 고정 (warmstart/success 캐시 리셋 env 전용) ──
+        # 텔레포트 직후 PhysX 접촉력이 재정립되기 전 중력으로 컵이 낙하하는 문제를 방지.
+        # palm body 추적 오차 없이 캐시 저장 시점의 정확한 world 좌표를 재적용.
+        # episode_hold_steps 동안: arm 고정(palm_action=0) + 손가락 최대 파지(finger=1.0)
+        #   + 컵 위치 고정 → PhysX가 손가락-컵 접촉력을 충분히 쌓을 시간 확보.
+        if self.cfg.episode_hold_steps > 0:
+            pin_mask = (
+                (self.episode_length_buf < self.cfg.episode_hold_steps)
+                & self._warmstart_only_close
+            )
+            if pin_mask.any():
+                pin_ids = pin_mask.nonzero(as_tuple=False).squeeze(-1)
+                cup_pose_pinned = torch.cat(
+                    [self._cup_hold_pos_w[pin_ids], self._cup_hold_quat_w[pin_ids]], dim=-1
+                )
+                zero_v = torch.zeros(len(pin_ids), 6, device=self.device)
+                self.cup.write_root_pose_to_sim(cup_pose_pinned, env_ids=pin_ids)
+                self.cup.write_root_velocity_to_sim(zero_v, env_ids=pin_ids)
 
     # ------------------------------------------------------------------
     # Intermediate values
@@ -2458,6 +2482,9 @@ class PourRightEnv(DirectRLEnv):
         zero_vel = torch.zeros(n, 6, device=self.device)
         self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
         self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+        # hold 기간 컵 고정 좌표 저장 (palm body 추적 오차 없는 절대 좌표)
+        self._cup_hold_pos_w[env_ids]  = cup_pose_world[:, :3]
+        self._cup_hold_quat_w[env_ids] = cup_pose_world[:, 3:7]
 
         if left_cup_pose_local is None:
             left_cup_pose = self._compute_attached_root_pose(

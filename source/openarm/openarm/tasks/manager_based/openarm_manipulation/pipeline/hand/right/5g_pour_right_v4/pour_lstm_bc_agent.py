@@ -116,6 +116,26 @@ class PourLstmBCAgent(A2CAgent):
         return None
 
     # ------------------------------------------------------------------
+    def _make_zero_rnn_states(self, batch_size: int, device):
+        """BC forward 용 초기 LSTM/GRU 상태 (zeros) 생성.
+
+        rl_games network_builder 는 rnn_states=None 을 허용하지 않으므로
+        (len(None) → TypeError) 명시적으로 zeros 를 전달해야 한다.
+
+        Returns:
+            LSTM: [h, c] 각 (num_layers, batch_size, hidden_size)
+            GRU : [h]    (num_layers, batch_size, hidden_size)
+        """
+        rnn = getattr(self.model.a2c_network, "rnn", None)
+        if rnn is None:
+            return None
+        num_layers  = int(getattr(rnn, "num_layers", 1))
+        hidden_size = int(getattr(rnn, "hidden_size", 256))
+        rnn_name    = str(getattr(rnn, "rnn_name", "lstm")).lower()
+        z = torch.zeros(num_layers, batch_size, hidden_size, device=device)
+        return [z.clone(), z.clone()] if rnn_name == "lstm" else [z.clone()]
+
+    # ------------------------------------------------------------------
     def _compute_bc_loss(self, demo_batch: dict) -> Tensor:
         """BC NLL loss 계산.
 
@@ -139,17 +159,16 @@ class PourLstmBCAgent(A2CAgent):
         obs_flat = obs_seq.reshape(B * T, -1)
         obs_flat = self._preproc_obs(obs_flat)
 
-        # LSTM forward: seq 축 복원
-        obs_3d   = obs_flat.reshape(B, T, -1)
-
         # rl_games LSTM model 은 (B*T, obs) 입력 + seq_length 파라미터로
-        # 내부에서 reshape 처리함. is_rnn=True 일 때의 batch_dict 구성.
+        # 내부에서 reshape 처리함. is_rnn=True 일 때 rnn_states 를 명시 전달
+        # (None 이면 network_builder 내부 len() 체크에서 TypeError 발생).
         if self.is_rnn:
             batch_dict = {
                 "is_train": True,
                 "obs": obs_flat,
                 "prev_actions": act_seq.reshape(B * T, -1),
                 "seq_length": T,
+                "rnn_states": self._make_zero_rnn_states(B, device),
             }
         else:
             batch_dict = {

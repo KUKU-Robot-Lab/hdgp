@@ -38,7 +38,7 @@ params:
       concat_input: True  # obs 와 LSTM output 을 MLP 입력에 concat
       layer_norm: True
     mlp:
-      units: [256, 128]   # LSTM 포함으로 파라미터 증가 — MLP는 간소화
+      units: [512, 256, 128]   # v3 MLP 용량 유지 (LSTM concat 후 362D 입력 처리)
       activation: elu
       d2rl: False
       initializer:
@@ -114,7 +114,7 @@ params:
           concat_input: True
           layer_norm: True
         mlp:
-          units: [256, 128]
+          units: [512, 256, 128]
           activation: elu
           d2rl: False
           initializer:

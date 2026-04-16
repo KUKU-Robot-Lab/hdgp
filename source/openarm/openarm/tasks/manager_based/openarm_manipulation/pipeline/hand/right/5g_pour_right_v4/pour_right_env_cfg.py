@@ -293,11 +293,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     warmstart_stable_hold_steps:     int   = 30      # 연속 30프레임(0.5s) 유지해야 저장
 
     # [v4] mid-pour 상태 리셋 완전 비활성화 — Markov 가정 위반 + LSTM 시계열 단절 방지
-    # warmstart(파지 완료 상태) 85% + 완전 리셋 15%
+    # warmstart(파지 완료 상태) 100%: 모든 리셋이 v7 grasp 완료 상태에서 시작
     enable_success_warmstart_reset: bool = False   # v3 True → v4 False
     success_warmstart_cache_size: int = 512
     success_cache_reset_ratio: float = 0.0         # v3 0.40 → v4 0.0 (mid-pour 리셋 차단)
-    grasp_warmstart_reset_ratio: float = 0.85      # v3 0.40 → v4 0.85
+    grasp_warmstart_reset_ratio: float = 1.0       # 0.85 → 1.0: 100% warmstart (v7 grasp 완료 상태)
     success_cache_store_min_bead_cross_fraction: float = 0.05
     success_cache_store_min_bead_in_target_fraction: float = 0.02
 
