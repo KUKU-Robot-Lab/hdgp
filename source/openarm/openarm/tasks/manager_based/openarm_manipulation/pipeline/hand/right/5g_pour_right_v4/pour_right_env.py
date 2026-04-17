@@ -1188,9 +1188,9 @@ class PourRightEnv(DirectRLEnv):
             self.cup.data.root_pos_w[:, :2] - self._target_opening_w[:, :2], dim=-1
         )
         self._g_align_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._mouth_xy_distance)
-        self._g_clear = torch.sigmoid(
-            self.cfg.reward_gate_clear_scale
-            * (self._mouth_z_clearance - self.cfg.reward_clearance_min)
+        self._g_clear = (
+            torch.sigmoid(self.cfg.reward_gate_clear_scale * (self._mouth_z_clearance - self.cfg.reward_clearance_min))
+            * torch.sigmoid(self.cfg.reward_gate_clear_scale * (self.cfg.pour_binary_mouth_z_max - self._mouth_z_clearance))
         )
         self._g_tilt = torch.sigmoid(
             self.cfg.reward_gate_tilt_scale

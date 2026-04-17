@@ -6,12 +6,20 @@
 이 버전의 설계 목적은 가장 작은 구현 단위를 만드는 것이다.
 
 ## Observation
-Actor/critic obs는 동일한 35D로 유지한다.
+
+Actor/critic obs는 동일한 134D로 유지한다.
 
 | Group | Dim | Notes |
 | --- | ---: | --- |
-| `left_arm_pos_offset` | 7 | `left_arm_joint_pos - left_arm_rest_pos` |
+| `right_joint_pos` | 27 | 오른팔+오른손 actuated joint position |
+| `right_joint_vel` | 27 | 오른팔+오른손 actuated joint velocity |
+| `left_arm_joint_pos` | 7 | 왼팔 joint position |
 | `left_arm_joint_vel` | 7 | 왼팔 관절 속도 |
+| `fingertip_pos` | 15 | env-local fingertip positions |
+| `cup_pose_vel` | 13 | source cup pos, quat, lin vel, ang vel |
+| `target_opening_pos` | 3 | target cup opening world position의 env-local 값 |
+| `bead_centroid_pos` | 3 | proxy bead centroid env-local position |
+| `prev_actions` | 18 | 직전 policy action 전체 |
 | `mouth_delta` | 3 | `target_opening - source_pour_point` |
 | `mouth_xy_distance` | 1 | opening 간 XY 거리 |
 | `mouth_z_clearance` | 1 | source pour point가 target opening보다 얼마나 위에 있는지 |
@@ -24,8 +32,8 @@ Actor/critic obs는 동일한 35D로 유지한다.
 | `spill_ratio` | 1 | source/target 외부 bead 비율 |
 | `g_ready` | 1 | XY 정렬 + Z clearance 준비 게이트 |
 | `g_pour` | 1 | `g_ready * g_tilt` |
-| `pre_pour_ready_ratio` | 1 | `ready` 유지 스텝 / episode length |
-| `prev_left_arm_action` | 7 | 직전 left arm joint delta |
+
+이 구성은 논문의 observation 카테고리인 `joint positions/velocities`, `fingertip positions`, `cup pose`, `target position`, `proxy sphere centroid`, `previous actions`를 모두 포함한다. 여기에 현재 task에 필요한 mouth geometry와 fill/spill 지표를 추가한 superset이다.
 
 ## Reward
 보상은 DexPour의 4-stage를 현재 task에 맞게 3-stage로 축약한다.

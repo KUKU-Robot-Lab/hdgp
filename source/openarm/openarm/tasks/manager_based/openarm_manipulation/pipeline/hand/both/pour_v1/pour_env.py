@@ -77,7 +77,7 @@ from .pour_preset import (
     HAND_GRASP_POSE,
     OBJECT_GOAL_POS,
 )
-from .pour_utils import scale, to_torch
+from .pour_utils import ACTOR_OBSERVATION_DIM, assemble_actor_observation, scale, to_torch
 
 
 class _WarmstartPolicy(nn.Module):
@@ -1282,7 +1282,7 @@ class PourRightEnv(DirectRLEnv):
         self._intermediate_values_valid = True
 
     # ------------------------------------------------------------------
-    # Observations: Actor 105D | Critic 155D
+    # Observations: Actor/Critic 134D
     # ------------------------------------------------------------------
     def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
 
@@ -1351,35 +1351,50 @@ class PourRightEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         self._compute_intermediate_values()
 
+        right_joint_pos = self.robot.data.joint_pos[:, self.actuated_dof_indices]
+        right_joint_vel = self.robot.data.joint_vel[:, self.actuated_dof_indices]
         left_arm_joint_pos = self.robot.data.joint_pos[:, self.left_arm_dof_indices]
         left_arm_joint_vel = self.robot.data.joint_vel[:, self.left_arm_dof_indices]
-        left_arm_pos_offset = left_arm_joint_pos - self.left_arm_rest_pos
-        prev_left_arm_action = self.prev_actions[:, 11:18]
-        pre_pour_ready_ratio = (
-            self._pre_pour_ready_steps.float() / max(float(self.max_episode_length), 1.0)
-        ).unsqueeze(-1)
-
-        actor_obs = torch.cat(
+        target_opening_local = self._target_opening_w - self.scene.env_origins
+        bead_centroid_local = self._bead_centroid_w - self.scene.env_origins
+        fingertip_pos_flat = self.fingertip_pos.reshape(self.num_envs, -1)
+        cup_pose_and_vel = torch.cat(
             [
-                left_arm_pos_offset,
-                left_arm_joint_vel,
-                self._mouth_delta,
-                self._mouth_xy_distance.unsqueeze(-1),
-                self._mouth_z_clearance.unsqueeze(-1),
-                self._source_up_dot_world.unsqueeze(-1),
-                self._directional_tilt_cos.unsqueeze(-1),
-                self._mouth_alignment_cos.unsqueeze(-1),
-                self._bead_cross_fraction.unsqueeze(-1),
-                self._bead_in_target_fraction.unsqueeze(-1),
-                self._bead_in_source_fraction.unsqueeze(-1),
-                self._spill_ratio.unsqueeze(-1),
-                self._g_ready.unsqueeze(-1),
-                self._g_pour.unsqueeze(-1),
-                pre_pour_ready_ratio,
-                prev_left_arm_action,
+                self.object_pos,
+                self.object_rot,
+                self.cup.data.root_lin_vel_w,
+                self.cup.data.root_ang_vel_w,
             ],
             dim=-1,
         )
+
+        actor_obs = assemble_actor_observation(
+            right_joint_pos=right_joint_pos,
+            right_joint_vel=right_joint_vel,
+            left_arm_joint_pos=left_arm_joint_pos,
+            left_arm_joint_vel=left_arm_joint_vel,
+            fingertip_pos=fingertip_pos_flat,
+            cup_pose_vel=cup_pose_and_vel,
+            target_opening_pos=target_opening_local,
+            bead_centroid_pos=bead_centroid_local,
+            prev_actions=self.prev_actions,
+            mouth_delta=self._mouth_delta,
+            mouth_xy_distance=self._mouth_xy_distance.unsqueeze(-1),
+            mouth_z_clearance=self._mouth_z_clearance.unsqueeze(-1),
+            source_up_dot_world=self._source_up_dot_world.unsqueeze(-1),
+            directional_tilt_cos=self._directional_tilt_cos.unsqueeze(-1),
+            mouth_alignment_cos=self._mouth_alignment_cos.unsqueeze(-1),
+            bead_cross_fraction=self._bead_cross_fraction.unsqueeze(-1),
+            bead_in_target_fraction=self._bead_in_target_fraction.unsqueeze(-1),
+            bead_in_source_fraction=self._bead_in_source_fraction.unsqueeze(-1),
+            spill_ratio=self._spill_ratio.unsqueeze(-1),
+            g_ready=self._g_ready.unsqueeze(-1),
+            g_pour=self._g_pour.unsqueeze(-1),
+        )
+        if self.cfg.num_observations != ACTOR_OBSERVATION_DIM:
+            raise RuntimeError(
+                f"[pour_v1] cfg obs dim mismatch: {self.cfg.num_observations} != {ACTOR_OBSERVATION_DIM}"
+            )
         if actor_obs.shape[1] != self.cfg.num_observations:
             raise RuntimeError(
                 f"[pour_v1] actor obs dim mismatch: {actor_obs.shape[1]} != {self.cfg.num_observations}"

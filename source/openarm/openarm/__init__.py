@@ -13,7 +13,13 @@
 # limitations under the License.
 
 # Register Gym environments.
-from .tasks import *
+try:
+    from .tasks import *
+except ModuleNotFoundError:
+    pass
 
 # Register UI extensions.
-from .ui_extension_example import *
+try:
+    from .ui_extension_example import *
+except ModuleNotFoundError:
+    pass

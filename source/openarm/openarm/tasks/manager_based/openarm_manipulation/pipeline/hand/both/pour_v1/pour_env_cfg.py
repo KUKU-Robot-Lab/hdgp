@@ -27,6 +27,7 @@ import os as _os
 
 from openarm.tasks.manager_based.openarm_manipulation import OPENARM_ROOT_DIR
 from .pour_constants import NUM_ACTIONS
+from .pour_utils import ACTOR_OBSERVATION_DIM
 from .pour_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
@@ -103,20 +104,25 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # -----------------------------------------------------------------------
     # 관측·액션 공간
-    # actor obs:
-    #   left arm pos/vel (14)
+    # actor obs (DexPour-aligned superset):
+    #   right arm+hand joint pos/vel (54)
+    #   left arm joint pos/vel (14)
+    #   fingertip positions (15)
+    #   source cup pose/velocity (13)
+    #   target opening position (3)
+    #   bead centroid position (3)
+    #   previous actions (18)
     #   mouth geometry + fill/spill + gates (14)
-    #   prev left-arm action (7)
-    # = 35D
+    # = 134D
     # critic obs is kept symmetric for now.
     # -----------------------------------------------------------------------
-    observation_space: int = 35
+    observation_space: int = ACTOR_OBSERVATION_DIM
     action_space:      int = NUM_ACTIONS
-    state_space:       int = 35
+    state_space:       int = ACTOR_OBSERVATION_DIM
 
-    num_observations: int = 35
+    num_observations: int = ACTOR_OBSERVATION_DIM
     num_actions:      int = NUM_ACTIONS
-    num_states:       int = 35
+    num_states:       int = ACTOR_OBSERVATION_DIM
 
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
