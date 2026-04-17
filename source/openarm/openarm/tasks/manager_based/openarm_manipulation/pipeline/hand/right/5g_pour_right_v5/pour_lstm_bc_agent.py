@@ -35,8 +35,6 @@ from torch import Tensor
 
 from rl_games.algos_torch.a2c_continuous import A2CAgent
 
-from .recurrent_gate import RecurrentGateState, install_recurrent_gate, resolve_success_rate
-
 
 # ---------------------------------------------------------------------------
 # BC 가중치 스케줄
@@ -96,36 +94,6 @@ class PourLstmBCAgent(A2CAgent):
         self._bc_batch     = int(cfg.get("bc_batch_size", 64))
         self._last_bc_loss = 0.0
         self._traj_buf     = None   # lazy resolve: 첫 calc_gradients 호출 시 탐색
-        self._task_env     = None
-        self._last_recurrent_alpha = 1.0
-        self._last_recurrent_traj_score = 1.0
-        self._last_recurrent_success_score = 1.0
-        self._last_recurrent_success_ema = 0.0
-        self._last_recurrent_epoch = -1
-        self._recurrent_gate_enabled = bool(cfg.get("recurrent_gate_enable", True))
-        self._recurrent_gate = RecurrentGateState(
-            success_ema_tau=float(cfg.get("recurrent_gate_success_ema_tau", 0.95)),
-            success_threshold=float(cfg.get("recurrent_gate_success_threshold", 0.02)),
-            traj_threshold=float(cfg.get("recurrent_gate_traj_min_size", self._bc_min_buf)),
-            ramp_epochs=int(cfg.get("recurrent_gate_ramp_epochs", 500)),
-        )
-        self._install_recurrent_gates()
-
-    def _install_recurrent_gates(self) -> None:
-        if not self._recurrent_gate_enabled:
-            return
-        actor_obs_shape = self.model.obs_shape
-        actor_obs_dim = int(actor_obs_shape[0] if isinstance(actor_obs_shape, (tuple, list)) else actor_obs_shape)
-        install_recurrent_gate(self.model.a2c_network, obs_dim=actor_obs_dim)
-
-        if self.has_central_value:
-            critic_obs_shape = self.central_value_net.model.obs_shape
-            critic_obs_dim = int(
-                critic_obs_shape[0] if isinstance(critic_obs_shape, (tuple, list)) else critic_obs_shape
-            )
-            install_recurrent_gate(self.central_value_net.model.a2c_network, obs_dim=critic_obs_dim)
-
-        self._set_recurrent_alpha(0.0)
 
     # ------------------------------------------------------------------
     def _resolve_traj_buffer(self):
@@ -146,58 +114,6 @@ class PourLstmBCAgent(A2CAgent):
                 return buf
             env = getattr(env, "env", None) or getattr(env, "unwrapped", None)
         return None
-
-    def _resolve_task_env(self):
-        if self._task_env is not None:
-            return self._task_env
-
-        env = getattr(self, "vec_env", None)
-        for _ in range(8):
-            if env is None:
-                break
-            if hasattr(env, "_success_window"):
-                self._task_env = env
-                return env
-            env = getattr(env, "env", None) or getattr(env, "unwrapped", None)
-        return None
-
-    def _set_recurrent_alpha(self, alpha: float) -> None:
-        alpha = float(max(0.0, min(alpha, 1.0)))
-        actor_network = getattr(self.model, "a2c_network", None)
-        if actor_network is not None and hasattr(actor_network, "recurrent_gate_alpha"):
-            actor_network.recurrent_gate_alpha = alpha
-
-        if self.has_central_value:
-            critic_network = getattr(self.central_value_net.model, "a2c_network", None)
-            if critic_network is not None and hasattr(critic_network, "recurrent_gate_alpha"):
-                critic_network.recurrent_gate_alpha = alpha
-
-        self._last_recurrent_alpha = alpha
-
-    def _update_recurrent_gate_if_needed(self) -> None:
-        if not self._recurrent_gate_enabled:
-            return
-        if self._last_recurrent_epoch == int(self.epoch_num):
-            return
-
-        env = self._resolve_task_env()
-        buf = self._resolve_traj_buffer()
-
-        traj_size = float(len(buf)) if buf is not None else 0.0
-        success_rate = 0.0
-        if env is not None:
-            success_rate = resolve_success_rate(getattr(env, "_success_window", ()))
-
-        alpha, traj_score, success_score, success_ema = self._recurrent_gate.update(
-            epoch=int(self.epoch_num),
-            traj_size=traj_size,
-            success_rate=success_rate,
-        )
-        self._last_recurrent_traj_score = traj_score
-        self._last_recurrent_success_score = success_score
-        self._last_recurrent_success_ema = success_ema
-        self._last_recurrent_epoch = int(self.epoch_num)
-        self._set_recurrent_alpha(alpha)
 
     # ------------------------------------------------------------------
     def _make_zero_rnn_states(self, batch_size: int, device):
@@ -290,8 +206,6 @@ class PourLstmBCAgent(A2CAgent):
         """
         from rl_games.algos_torch import torch_ext
         from rl_games.common import common_losses
-
-        self._update_recurrent_gate_if_needed()
 
         value_preds_batch          = input_dict["old_values"]
         old_action_log_probs_batch = input_dict["old_logp_actions"]
@@ -447,10 +361,6 @@ class PourLstmBCAgent(A2CAgent):
             buf = self._resolve_traj_buffer()
             if buf is not None:
                 self.writer.add_scalar("bc/buffer_size", len(buf), frame)
-            self.writer.add_scalar("recurrent/alpha", self._last_recurrent_alpha, frame)
-            self.writer.add_scalar("recurrent/traj_score", self._last_recurrent_traj_score, frame)
-            self.writer.add_scalar("recurrent/success_score", self._last_recurrent_success_score, frame)
-            self.writer.add_scalar("recurrent/success_ema", self._last_recurrent_success_ema, frame)
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
-# 5g_pour_right_v4 — LSTM + BC Aux Loss 설정
-# PourLstmBCAgent (a2c_continuous_lstm_bc) 전용
-# 관측: actor 106D / critic 143D, 액션: 11D
-# Asymmetric Actor-Critic + LSTM policy
+# 5g_pour_right_v3 rl_games PPO 설정
+# reset 은 v7 warmstart cache를 사용하고, 학습 task 이름만 새로 분리한다.
+# 관측: actor 101D / critic 143D (asymmetric), 액션: 11D
+# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:
   seed: 42
@@ -11,7 +11,7 @@ params:
     clip_actions: 1.0
 
   algo:
-    name: a2c_continuous_lstm_bc  # PourLstmBCAgent 등록 이름
+    name: a2c_continuous
 
   model:
     name: continuous_a2c_logstd
@@ -29,16 +29,8 @@ params:
           name: const_initializer
           val: 0
         fixed_sigma: True
-    # LSTM: MLP 이전에 시계열 컨텍스트 인코딩
-    rnn:
-      name: lstm
-      units: 256
-      layers: 1
-      before_mlp: True    # LSTM → MLP 순서 (시계열 → 결정)
-      concat_input: True  # obs 와 LSTM output 을 MLP 입력에 concat
-      layer_norm: True
     mlp:
-      units: [512, 256, 128]   # v3 MLP 용량 유지 (LSTM concat 후 362D 입력 처리)
+      units: [512, 256, 128]
       activation: elu
       d2rl: False
       initializer:
@@ -50,7 +42,7 @@ params:
   load_path: ''
 
   config:
-    name: 5g_pour_right-v4-lstm-bc
+    name: 5g_pour_right-v3
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -66,27 +58,30 @@ params:
     normalize_advantage: True
     gamma: 0.998
     tau: 0.95
-    learning_rate: 1e-4
+    # num_envs별 lr (sqrt scaling 기준):
+    #   128  envs: lr=4e-4  (baseline)
+    #   512  envs: lr=8e-4
+    #   1024 envs: lr=1.1e-3
+    #   2048 envs: lr=1.6e-3
+    learning_rate: 1e-4      # fine-tune: 3e-4→1e-4 (KL 폭주 방지, test3 완료 후 복원)
     lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
-    max_epochs: 10000
+    max_epochs: 10000        # --max_iterations 2000 으로 CLI에서 override
     save_best_after: 100
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.0008
-    recurrent_gate_enable: True
-    recurrent_gate_traj_min_size: 20
-    recurrent_gate_success_threshold: 0.02
-    recurrent_gate_success_ema_tau: 0.95
-    recurrent_gate_ramp_epochs: 500
+    entropy_coef: 0.0008         # 탐색 과잉 완화
     truncate_grads: True
     e_clip: 0.25
     horizon_length: 64
-    # LSTM: seq_length = BPTT truncation 길이 (horizon_length 의 약수여야 함)
-    seq_length: 16
+    # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함 (항상 4 splits)
+    #   128  envs: batch=   8,192 → minibatch=  2,048  lr=4e-4
+    #   512  envs: batch=  32,768 → minibatch=  8,192  lr=8e-4
+    #   1024 envs: batch=  65,536 → minibatch= 16,384  lr=1.1e-3
+    #   2048 envs: batch= 131,072 → minibatch= 32,768  lr=1.6e-3  ← default below
     minibatch_size: 2048      # num_envs 128 기준: batch=8,192 → 4 splits
     mini_epochs: 6
     critic_coef: 4
@@ -95,15 +90,15 @@ params:
     bound_loss_type: regularization
     bounds_loss_coef: 0.005
 
-    # Asymmetric Actor-Critic: critic 은 143D privileged obs
+    # Asymmetric Actor-Critic: critic은 143D privileged obs 사용
     has_central_value: True
     central_value_config:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 2048      # actor와 동일 (num_envs 128 기준)
+      minibatch_size: 2048      # actor와 동일하게 맞출 것 (num_envs 128 기준)
       mini_epochs: 6
-      learning_rate: 1e-4
+      learning_rate: 1e-4      # fine-tune: actor와 동일하게 맞춤
       lr_schedule: linear
       kl_threshold: 0.013
       clip_value: True
@@ -111,13 +106,6 @@ params:
       network:
         name: actor_critic
         central_value: True
-        rnn:
-          name: lstm
-          units: 256
-          layers: 1
-          before_mlp: True
-          concat_input: True
-          layer_norm: True
         mlp:
           units: [512, 256, 128]
           activation: elu
