@@ -76,10 +76,10 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             ),
         )
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
-            static_friction=0.3,
-            dynamic_friction=0.2,
+            static_friction=0.10,
+            dynamic_friction=0.08,
             restitution=0.05,
-            friction_combine_mode="average",
+            friction_combine_mode="min",
             restitution_combine_mode="min",
         )
         rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
