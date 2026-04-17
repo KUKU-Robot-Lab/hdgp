@@ -211,12 +211,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
     warmstart_collect_palm_delta_xyz: float = 0.10
-    palm_delta_rot_deg: float = 120.0  # 45→120: cup 135° tilt 도달 가능하도록 확장
+    palm_delta_rot_deg: float = 120.0  
     tilt_action_gate_xy_near: float = 0.04
     tilt_action_gate_xy_far: float = 0.12
     approach_xy_off_near: float = 0.02
     approach_xy_off_far: float = 0.03
-    left_cup_world_z_offset: float = -0.12   # -0.08→-0.12: target cup 추가 하강 (높은 Z에서 tilt 시 spill 과다)
+    left_cup_world_z_offset: float = -0.12  
     reward_gate_xy_scale: float = 10.0   
     reward_gate_clear_scale: float = 80.0
     reward_gate_tilt_scale: float = 15.0
@@ -402,10 +402,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             gpu_found_lost_pairs_capacity=4 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
-            gpu_max_rigid_patch_count=2**23,
-            gpu_max_rigid_contact_count=2**23,
-            gpu_collision_stack_size=2**26,  # 32MB→64MB: 비드×컵 contact pair overflow 방지
-            gpu_max_num_partitions=32,
+            gpu_max_rigid_patch_count=2**24,
+            gpu_max_rigid_contact_count=2**24,
+            gpu_collision_stack_size=2**26,
+            gpu_max_num_partitions=64,
             friction_correlation_distance=0.00625,
         ),
     )

@@ -44,7 +44,7 @@ from .pour_right_preset import (
     LEFT_ARM_REST_JOINT_POS,
     LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
     LEFT_TARGET_CUP_ATTACH_POS_B,
-    LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B,
+    LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B, 
     RIGHT_ACTUATED_JOINT_NAMES,
     SOURCE_CUP_POUR_AXIS_B,
     SOURCE_CUP_POUR_POINT_POS_B,
@@ -65,8 +65,8 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
             scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.010),  # 1g 구슬
-            rigid_props=RigidBodyPropertiesCfg(
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬 (5g→10g: 관성 향상, 진동 날림 방지)
+            rigid_props=RigidBodyPropertiesCfg( 
                 disable_gravity=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=4,
