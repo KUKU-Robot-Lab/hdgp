@@ -217,7 +217,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     approach_xy_off_near: float = 0.02
     approach_xy_off_far: float = 0.03
     left_cup_world_z_offset: float = -0.12   # -0.08→-0.12: target cup 추가 하강 (높은 Z에서 tilt 시 spill 과다)
-    reward_gate_xy_scale: float = 5.0   # 10.0 → 5.0: g_ready@0.112m=0.57 (10.0은 0.33으로 gate 안 열림)
+    reward_gate_xy_scale: float = 10.0   # 10.0 → 5.0: g_ready@0.112m=0.57 (10.0은 0.33으로 gate 안 열림)
     reward_gate_clear_scale: float = 80.0
     reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015

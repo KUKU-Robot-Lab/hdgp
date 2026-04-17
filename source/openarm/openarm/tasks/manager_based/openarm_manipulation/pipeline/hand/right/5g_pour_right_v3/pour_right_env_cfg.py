@@ -63,28 +63,27 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
     for i in range(_DEFAULT_BEAD_COUNT):
         bead_spawn_cfg = UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
-            scale=(1.0, 1.0, 1.0),
+            scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.010),  # 5g 구슬 (1g→5g: 관성 향상, 진동 날림 방지)
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),  # 1g 구슬
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=4,
-                max_depenetration_velocity=0.5,  # 5.0→0.5: 벽 penetration 시 순간이동 방지
+                max_depenetration_velocity=5.0,
                 max_linear_velocity=10.0,
                 max_angular_velocity=20.0,
             ),
         )
         # 이 IsaacLab 버전의 UsdFileCfg는 physics_material 생성자 인자를 직접 받지 않는다.
         # spawn_from_usd()는 cfg.physics_material 속성이 있으면 바인딩하므로 생성 후 후첨가한다.
-        # test1 분석: restitution_combine_mode="max" → 테이블/컵 restitution 상속으로 bead 팅겨짐.
-        # friction=0.05(min combine) → 컵 내부 과도한 슬라이딩. 물리 안정성 위해 전면 수정.
+        # 기본 material 마찰(0.5/0.5)보다 낮춰 컵 내부에서 구슬이 더 쉽게 굴러가게 한다.
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
-            static_friction=0.3,
-            dynamic_friction=0.2,
-            restitution=0.05,
-            friction_combine_mode="average",
-            restitution_combine_mode="min",
+            static_friction=0.05,
+            dynamic_friction=0.05,
+            restitution=0.1,
+            friction_combine_mode="min",
+            restitution_combine_mode="max",
         )
         rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
             prim_path=f"/World/envs/env_.*/Bead_{i:02d}",
@@ -173,7 +172,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     noise_adr_trigger_threshold: float = 0.3
 
 
-    # bead / cup geometry (cup_big.usd 기준: bottom=-0.077m, rim=+0.100m, inner_r=0.041m)
+    # bead / cup geometry (.usd 기준: bottom=-0.077m, rim=+0.100m, inner_r=0.041m)
     target_inner_radius:  float = 0.041   # 컵 내부 반경
     target_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     target_inside_z_max:  float = 0.100   # 림 높이
@@ -182,33 +181,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     source_inside_z_max:  float = 0.100   # 림 높이
     bead_count: int = _DEFAULT_BEAD_COUNT
-
-    # -----------------------------------------------------------------------
-    # bead count ADR: 1 → 20 단계적 증가 (슬라이딩 윈도우 성공률 기반)
-    # bead N개: success_bonus = weight_success_per_bead × N
-    #           spill_penalty  = weight_spill_per_bead  × N (per step, spill_ratio에 적용)
-    # -----------------------------------------------------------------------
-    enable_bead_count_adr: bool = True
-    bead_count_stages: tuple = (1, 2, 3, 5, 10, 20)     # 진급 단계
-    bead_count_adr_trigger_threshold: float = 0.80       # 80% 성공 시 다음 단계 진급
-    bead_count_adr_window_size: int = 500                # [v4 수정] 200→500: 진급 속도 감소 (초반 too-fast progression 방지)
-    weight_success_per_bead: float = 20.0                # bead 1개당 성공 보너스
-
-    weight_spill_per_bead: float = 2.0                   # bead 1개당 스필 패널티 (per step)
-
-    # Hidden parking grid: 비활성 bead를 env 외부에 숨기는 env-local 좌표 오프셋
-    bead_hidden_base_x: float = -1.20
-    bead_hidden_base_y: float = -0.60
-    bead_hidden_z: float = 0.02
-    bead_hidden_cols: int = 5
-    bead_hidden_spacing: float = 0.03
-
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
-    success_spill_max: float = 0.20   # curriculum 성공도 과도한 spill은 허용하지 않음
-    # 최종 목표 진척도는 curriculum 성공과 별도로 더 엄격하게 측정한다.
-    final_success_target_fill_ratio: float = 0.95
-    final_success_spill_max: float = 0.05
+    success_spill_max: float = 0.40   # 0.20→0.40: [test4] spill=33% > 0.20 → 성공 불가. weight_spill 복활로 spill 억제하면서 기준 완화
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -244,17 +219,15 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #
     #   수정: far=0.20m → 0.22m에서 gate=(0.20-0.22)/(0.20-0.06)=-0.14 → clamp=0
     #   → 0.20m 이내에 도달하기 전에는 tilt action 완전 차단 → 순수 위치 접근만 학습
-    tilt_action_gate_xy_near: float = 0.04
-    tilt_action_gate_xy_far: float = 0.12
+    tilt_action_gate_xy_near: float = 0.06
+    tilt_action_gate_xy_far: float = 0.25  # 0.32→0.20→0.25: equilibrium 0.16m에서 gate 28%→47%
 
-    # 접근 보상 앤일링: pour gate threshold(3cm)와 일치시켜 reward 절벽 제거.
-    # test4: off_far=0.06m → 6cm→3cm 구간에서 approach 감소+pour gate 미개방으로 reward 절벽 발생.
-    # 수정: off_far=0.03m → 3cm 도달 시 approach 소멸과 pour gate 개방이 동시에 일어나도록.
-    approach_xy_off_near: float = 0.02
-    approach_xy_off_far: float = 0.03
+    # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
+    approach_xy_off_near: float = 0.05
+    approach_xy_off_far: float = 0.12
 
     # target cup world_z offset (left arm 자세 유지, cup만 하강)
-    left_cup_world_z_offset: float = -0.12   # -0.08→-0.12: target cup 추가 하강 (높은 Z에서 tilt 시 spill 과다)
+    left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
 
     # stage gate / pre-pour geometry
     # test1에서 mouth_xy≈0.23m일 때 g_align_xy가 1e-3 이하로 죽어 접근 전 stage 신호가 약했음.
@@ -274,7 +247,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #
     #   수정: scale=5 → g_align_xy @ 0.22m = exp(-5×0.22) = 0.33 (4.7배 증가)
     #         g_ready=0.5 달성 거리: ln(2)/5 = 0.14m (workspace 확장 후 달성 가능)
-    reward_gate_xy_scale: float = 10.0
+    reward_gate_xy_scale: float = 5.0   # 12.0→5.0: g_align_xy @ 0.22m: 0.07→0.33, 50%선 0.06→0.14m
     reward_gate_clear_scale: float = 80.0
     reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015
@@ -283,18 +256,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
-    # warmstart는 테이블 위에서 막 잡힌 자세가 아니라, 테이블 기준 약 8cm 든 자세에서 시작한다.
-    lift_success_height: float = 0.08   # 0.03→0.08: 리프트 안정성 강화
-    enable_success_warmstart_reset: bool = True
-    success_warmstart_cache_size: int = 512
-    # 성공 캐시(mid-pour) 비중을 낮추고, 안정된 파지(grasp-only) 비중을 높여 초기 학습 안정화
-    success_cache_reset_ratio: float = 0.40      # 0.70→0.40: mid-pour 편중 억제
-    grasp_warmstart_reset_ratio: float = 0.40    # 0.25→0.40: grasp-only 시작 유도
-    # 나머지 20%는 테이블에서 직접 파지하는 '완전 리셋'으로 강건성 확보
-    success_cache_store_min_bead_cross_fraction: float = 0.05    # 0.00→0.05: 의미 있는 pour만 저장
-    success_cache_store_min_bead_in_target_fraction: float = 0.02 # 0.00→0.02
-    success_reset_hold_steps: int = 20
-    success_reset_palm_delta_xyz: float = 0.05
+    # warmstart는 테이블 위에서 막 잡힌 자세가 아니라, 테이블 기준 약 3cm 든 자세에서 시작한다.
+    lift_success_height: float = 0.03
     success_mouth_xy_threshold: float = 0.030
     success_z_clearance_min: float = 0.015
     success_z_clearance_max: float = 0.050
@@ -329,30 +292,24 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_cup_upright: float = 0.80
     # [test1/3 분석] r_transport_progress = clamp(prev_mouth_xy - mouth_xy, 0): 전진할 때만 보상.
     # r_hold를 낮춰 이동 유인이 생겼을 때 전진 방향 신호를 강화한다.
-    weight_transport_progress: float = 24.00  # 6.00→12.00→24.00: success neighborhood 유입 강화
-    weight_prepour_dir: float = 1.50
-    weight_prepour_align: float = 1.00
+    weight_transport_progress: float = 12.00  # 6.00→12.00: 전진 보상 강화
+    weight_prepour_dir: float = 5.00
+    weight_prepour_align: float = 4.00
     weight_release: float = 0.00    # 제거: spill도 보상하는 문제로 인해 비활성화
-    weight_cross: float = 80.00
-    weight_capture: float = 160.00
+    weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
+    weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
-    weight_first_capture_bonus: float = 40.00
-    weight_tilt_onset_bonus: float = 10.00   # 80° 부근 첫 진입에 더 강한 bridge reward
-    tilt_onset_dot_threshold: float = 0.34   # [v4] 0.17→0.34: source_up_dot < 0.34 (>70° 기울기) 시 트리거 — pour gate(80°)와 충분한 간격 확보
-    tilt_onset_dist_threshold: float = 0.08  # success neighborhood 안에서만 onset 보상
-    weight_terminal_pour: float = 60.00        # 마지막 step pour pose 유지 보너스
-    terminal_pour_tilt_thresh: float = 0.17    # [v4] 0.0→0.17: pour_binary_tilt_thresh와 일치 (>80° tilt)
-    weight_terminal_capture: float = 200.0     # [v4 신규] 에피소드 종료 시 bead_in_target_fraction 비례 최종 보너스
-    terminal_pour_mouth_xy_thresh: float = 0.03
-    terminal_pour_mouth_z_min: float = -0.01
-    terminal_pour_mouth_z_max: float = 0.03
+    weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
+    weight_tilt_onset_bonus: float = 5.00    # tilt 탐색 유도 1회 보너스 (bridge reward)
+    tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
+    tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
     # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 100으로 강화 (300은 과도했음)
     weight_success: float = 100.00  # 30→300→100
     # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
     # 0이면 비활성.
     weight_success_overfill: float = 0.0
-    weight_spill: float = 3.00     # mouth-to-mouth gate 이후에도 overspill 억제를 위해 penalty 강화
+    weight_spill: float = 1.00     # 0→1.0: [test4] spill=33% > success_spill_max(20%) → 성공 불가. 소량 복활로 억제
     # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
     #   premature_tilt_cost = (1 - g_ready) × (1 - source_up_dot_world)
     #   g_ready=0.11, cup 100° tilt 시 source_up_dot_world≈-0.17 → (1-(-0.17))=1.17
@@ -363,7 +320,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
     #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
-    weight_premature_tilt: float = 1.50
+    weight_premature_tilt: float = 0.50   # 4.00→1.50→0.50: tilt_action_gate가 wrist spin 차단하므로 감소
     weight_grasp_loss: float = 0.05      # 0.30→0.05: [test4] cost_grasp_loss=0.73/step (전체 cost 73%) → tilt 억제. DexPour는 contact reward로 대체
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
@@ -387,9 +344,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_action_rate_finger: float = 0.005  # finger 5D: 채터링 적당히 억제
     weight_wrist_spin: float = 0.00
 
-    # ADR: spill penalty 스케줄 (low→high) — bead_count_adr 활성 시 비활성화
-    # spill 가중치는 weight_spill_per_bead × active_count 로 자동 스케일됨
-    enable_spill_adr: bool = False  # bead ADR이 spill 스케일을 담당하므로 비활성화
+    # ADR: spill penalty 스케줄 (low→high)
+    enable_spill_adr: bool = False  # True→False: weight_spill=0이므로 ADR 불필요
     spill_adr_custom_cfg: dict = {
         "reward": {
             # start small to allow exploration, ramp to 기존 10.0 페널티
@@ -398,21 +354,20 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     }
     spill_adr_num_increments: int = 50
     spill_adr_increment_interval: int = 20000
-    spill_adr_trigger_threshold: float = 0.05  # 0.3→0.05: 0% 성공에서 ADR 절대 미진행 문제 해소
+    spill_adr_trigger_threshold: float = 0.3
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
-    # [v4 수정] fill_ratio 시작값 0.30→0.80: 초기 bead_count ADR 진급이 fill_ratio=0.30으로 너무 쉬워
-    #          bead 1개 stage에서도 1/1=100%≥0.80 이어야 성공 → 진급 속도 정상화
-    # bead 10개 기준: 0.80=8개, 0.95=19개
+    # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
+    # 해당 기준에서 success_rate >= 15%이면 한 단계 올림 (8단계 × 0.0375 = 0.30 range)
     enable_success_adr: bool = True
     success_adr_custom_cfg: dict = {
         "success": {
-            "fill_ratio": (0.80, 0.99),  # [v4 수정] 0.30→0.80 시작: 초반 과빠른 ADR 진급 방지
+            "fill_ratio": (0.20, 0.50),  # 2개→5개 커리큘럼
         }
     }
     success_adr_num_increments: int = 8
     success_adr_increment_interval: int = 20000
-    success_adr_trigger_threshold: float = 0.30  # [v4 수정] 0.15→0.30: 30% 성공률 달성 시 상향 (기준 강화)
+    success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
 
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
@@ -424,7 +379,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #
     #   수정: scale=2.5 → 1 - tanh(0.55) = 1 - 0.50 = 0.50 (max의 50%)
     #   gradient = 2.5 × sech²(0.55) = 2.5 × 0.748 = 1.87 → 유사한 gradient, 더 넓은 범위
-    reward_approach_xy_scale: float = 6.0
+    reward_approach_xy_scale: float = 2.5   # 5.0→2.5: 0.22m에서 approach reward 0.20→0.50
     # DexPour-style stage thresholds / shaping
     stage_approach_xy_threshold: float = 0.14
     stage_pour_xy_threshold: float = 0.15
@@ -438,12 +393,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 0.05m 이상은 보상 없음 (warmstart 시작 높이 ~0.03m 기준)
     lift_height_cap: float = 0.05   # DexPour h_lift=0.15m 참고, warmstart 높이에 맞춤
 
-    # [P3] pour stage binary gate: mouth-to-mouth 정렬 + strict tilt
-    # 입구 중심이 거의 겹치고 rim 높이가 비슷할 때만 pour reward를 연다.
-    pour_binary_mouth_xy_thresh: float = 0.08  # 0.03→0.08: policy plateau(11cm)에서 gate 도달 불가 해소
-    pour_binary_mouth_z_min: float = -0.01
-    pour_binary_mouth_z_max: float = 0.03
-    pour_binary_tilt_thresh: float = 0.17  # [v4] 0.0→0.17: >80° 기울기에서 pour gate 개방 (90° 내리꽂기 전략 억제)
+    # [P3] pour stage binary gate: DexPour ρ 방식
+    # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
+    # → "컵 근처에서 기울어야만 pour reward" → 명확한 행동 학습
+    pour_binary_xy_thresh: float = 0.15   # DexPour d_pour=0.17m 참고
+    pour_binary_tilt_thresh: float = 0.50  # source_up_dot < 0.50 (>60° 기울기)
 
     # -----------------------------------------------------------------------
     # 종료 조건
@@ -495,13 +449,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         render_interval=2,
         physx=sim_utils.PhysxCfg(
             bounce_threshold_velocity=0.01,
-            gpu_found_lost_pairs_capacity=4 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
-            gpu_max_rigid_patch_count=2**23,
-            gpu_max_rigid_contact_count=2**23,
-            gpu_collision_stack_size=2**26,  # 32MB→64MB: 비드×컵 contact pair overflow 방지
-            gpu_max_num_partitions=32,
+            gpu_max_rigid_patch_count=2**22,
+            gpu_max_rigid_contact_count=2**22,
+            gpu_collision_stack_size=2**22,
+            gpu_max_num_partitions=8,
             friction_correlation_distance=0.00625,
         ),
     )
@@ -557,7 +510,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             joint_pos={
                 "openarm_right_joint1":  0.5,
                 "openarm_right_joint2":  0.1,
-                "openarm_right_joint3":  0.0,
+                "openarm_right_joint3":  0.4,
                 "openarm_right_joint4":  0.60,
                 "openarm_right_joint5": -0.2,
                 "openarm_right_joint6":  0.0,
@@ -653,7 +606,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             ),
             rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
-                solver_velocity_iteration_count=4,
+                solver_velocity_iteration_count=1,
                 max_angular_velocity=100.0,
                 max_linear_velocity=100.0,
                 max_depenetration_velocity=5.0,
