@@ -399,12 +399,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         render_interval=2,
         physx=sim_utils.PhysxCfg(
             bounce_threshold_velocity=0.01,
+            gpu_found_lost_pairs_capacity=4 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
             gpu_max_rigid_patch_count=2**23,
             gpu_max_rigid_contact_count=2**23,
             gpu_collision_stack_size=2**25,
-            gpu_max_num_partitions=8,
+            gpu_max_num_partitions=32,
             friction_correlation_distance=0.00625,
         ),
     )
