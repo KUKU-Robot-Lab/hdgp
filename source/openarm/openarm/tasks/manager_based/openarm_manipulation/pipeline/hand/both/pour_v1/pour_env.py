@@ -389,6 +389,7 @@ class PourRightEnv(DirectRLEnv):
         self._prev_arm_joint_acc = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
         # [Phase-1 Step 7] EMA palm action 버퍼 (Fabrics IK 입력 smoothing)
         self._ema_palm_action = torch.zeros(self.num_envs, 6, device=self.device)
+        self._intermediate_values_valid = False
 
         # ----------------------------------------------------------------
         # ADR schedulers (spill penalty / noise scaling)
@@ -965,6 +966,7 @@ class PourRightEnv(DirectRLEnv):
     # Physics step
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        self._intermediate_values_valid = False
         if actions.shape[1] == (NUM_PALM_ACTION + NUM_FINGER_ACTION):
             padded_actions = torch.zeros(actions.shape[0], self.cfg.num_actions, device=actions.device, dtype=actions.dtype)
             padded_actions[:, : NUM_PALM_ACTION + NUM_FINGER_ACTION] = actions
@@ -1155,6 +1157,8 @@ class PourRightEnv(DirectRLEnv):
     # Intermediate values
     # ------------------------------------------------------------------
     def _compute_intermediate_values(self) -> None:
+        if self._intermediate_values_valid:
+            return
         # 물체 위치
         self.object_pos = self.cup.data.root_pos_w - self.scene.env_origins
         self.object_rot = self.cup.data.root_quat_w
@@ -1254,6 +1258,19 @@ class PourRightEnv(DirectRLEnv):
         # Bead flags & spill
         self._compute_bead_flags()
 
+        ready_mask = self._g_ready > 0.5
+        self._pre_pour_ready_steps = torch.where(
+            ready_mask,
+            self._pre_pour_ready_steps + 1,
+            torch.zeros_like(self._pre_pour_ready_steps),
+        )
+        source_empty_mask = self._bead_in_source_fraction < 0.05
+        self._source_empty_steps = torch.where(
+            source_empty_mask,
+            self._source_empty_steps + 1,
+            torch.zeros_like(self._source_empty_steps),
+        )
+
         if self._vis_markers is not None:
             _all_pts = torch.cat([self._source_pour_point_w, self._target_opening_w], dim=0)
             _marker_idx = torch.zeros(2 * n, dtype=torch.long, device=self.device)
@@ -1262,6 +1279,7 @@ class PourRightEnv(DirectRLEnv):
 
         # 접촉력 업데이트
         self._update_contact_forces()
+        self._intermediate_values_valid = True
 
     # ------------------------------------------------------------------
     # Observations: Actor 105D | Critic 155D
@@ -1336,13 +1354,123 @@ class PourRightEnv(DirectRLEnv):
         left_arm_joint_pos = self.robot.data.joint_pos[:, self.left_arm_dof_indices]
         left_arm_joint_vel = self.robot.data.joint_vel[:, self.left_arm_dof_indices]
         left_arm_pos_offset = left_arm_joint_pos - self.left_arm_rest_pos
+        prev_left_arm_action = self.prev_actions[:, 11:18]
+        pre_pour_ready_ratio = (
+            self._pre_pour_ready_steps.float() / max(float(self.max_episode_length), 1.0)
+        ).unsqueeze(-1)
 
-        actor_obs = torch.cat([left_arm_pos_offset, left_arm_joint_vel], dim=-1)
+        actor_obs = torch.cat(
+            [
+                left_arm_pos_offset,
+                left_arm_joint_vel,
+                self._mouth_delta,
+                self._mouth_xy_distance.unsqueeze(-1),
+                self._mouth_z_clearance.unsqueeze(-1),
+                self._source_up_dot_world.unsqueeze(-1),
+                self._directional_tilt_cos.unsqueeze(-1),
+                self._mouth_alignment_cos.unsqueeze(-1),
+                self._bead_cross_fraction.unsqueeze(-1),
+                self._bead_in_target_fraction.unsqueeze(-1),
+                self._bead_in_source_fraction.unsqueeze(-1),
+                self._spill_ratio.unsqueeze(-1),
+                self._g_ready.unsqueeze(-1),
+                self._g_pour.unsqueeze(-1),
+                pre_pour_ready_ratio,
+                prev_left_arm_action,
+            ],
+            dim=-1,
+        )
+        if actor_obs.shape[1] != self.cfg.num_observations:
+            raise RuntimeError(
+                f"[pour_v1] actor obs dim mismatch: {actor_obs.shape[1]} != {self.cfg.num_observations}"
+            )
         critic_obs = actor_obs.clone()
         return {"policy": actor_obs, "critic": critic_obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        return torch.zeros(self.num_envs, device=self.device)
+        approach_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._mouth_xy_distance)
+        clearance_score = torch.sigmoid(
+            self.cfg.reward_gate_clear_scale
+            * (self._mouth_z_clearance - self.cfg.reward_clearance_min)
+        )
+        tilt_score = torch.clamp(
+            (self._directional_tilt_cos - self.cfg.reward_tilt_cos_min)
+            / max(1.0 - self.cfg.reward_tilt_cos_min, 1e-6),
+            min=0.0,
+            max=1.0,
+        )
+        align_score = 0.5 * (self._mouth_alignment_cos + 1.0)
+
+        r_approach = self.cfg.assist_reward_approach_xy * approach_xy
+        r_clearance = self.cfg.assist_reward_clearance * self._g_align_xy * clearance_score
+        r_ready = self.cfg.assist_reward_ready * self._g_ready
+        r_prepour = self._g_align_xy * (
+            self.cfg.assist_reward_tilt * tilt_score
+            + self.cfg.assist_reward_align * align_score
+        )
+        r_pour = self._g_pour * (
+            self.cfg.assist_reward_cross * self._bead_cross_fraction
+            + self.cfg.assist_reward_capture * self._bead_in_target_fraction
+        )
+
+        success_now = (
+            (self._bead_in_target_fraction >= self.cfg.assist_success_fill_ratio)
+            & (self._spill_ratio <= self.cfg.assist_success_spill_max)
+            & (self._g_pour > 0.05)
+        )
+        self.success_flag |= success_now
+        self.episode_success_buf |= success_now
+        r_success = self.cfg.assist_reward_success * success_now.float()
+
+        is_last_step = self.episode_length_buf >= (self.max_episode_length - 1)
+        is_source_ending = self._source_empty_steps >= 5
+        episode_ending = is_last_step | is_source_ending
+        r_terminal_capture = (
+            self.cfg.assist_reward_terminal_capture
+            * self._bead_in_target_fraction
+            * episode_ending.float()
+        )
+
+        premature_tilt_cost = (1.0 - self._g_ready) * tilt_score
+        left_action_delta = (self.actions[:, 11:18] - self.prev_actions[:, 11:18]).pow(2).sum(dim=-1)
+        left_joint_vel_cost = self.robot.data.joint_vel[:, self.left_arm_dof_indices].pow(2).sum(dim=-1)
+        spill_cost = self._spill_ratio
+
+        total = (
+            r_approach
+            + r_clearance
+            + r_ready
+            + r_prepour
+            + r_pour
+            + r_success
+            + r_terminal_capture
+            - self.cfg.assist_reward_spill * spill_cost
+            - self.cfg.assist_reward_premature_tilt * premature_tilt_cost
+            - self.cfg.assist_reward_left_action_rate * left_action_delta
+            - self.cfg.assist_reward_left_joint_vel * left_joint_vel_cost
+        )
+
+        self.extras["r_approach"] = r_approach.mean()
+        self.extras["r_clearance"] = r_clearance.mean()
+        self.extras["r_ready"] = r_ready.mean()
+        self.extras["r_prepour"] = r_prepour.mean()
+        self.extras["r_pour"] = r_pour.mean()
+        self.extras["r_success"] = r_success.mean()
+        self.extras["r_terminal_capture"] = r_terminal_capture.mean()
+        self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
+        self.extras["mouth_z_clearance"] = self._mouth_z_clearance.mean()
+        self.extras["mouth_alignment_cos"] = align_score.mean()
+        self.extras["directional_tilt_cos"] = self._directional_tilt_cos.mean()
+        self.extras["bead_cross_fraction"] = self._bead_cross_fraction.mean()
+        self.extras["bead_in_target_fraction"] = self._bead_in_target_fraction.mean()
+        self.extras["spill_ratio"] = self._spill_ratio.mean()
+        self.extras["g_ready"] = self._g_ready.mean()
+        self.extras["g_pour"] = self._g_pour.mean()
+        self.extras["left_action_delta"] = left_action_delta.mean()
+        self.extras["left_joint_vel_cost"] = left_joint_vel_cost.mean()
+        self.extras["success_rate"] = self.success_flag.float().mean()
+
+        return total
 
     def _get_rewards_UNUSED(self) -> torch.Tensor:
         self._compute_intermediate_values()
@@ -1674,6 +1802,7 @@ class PourRightEnv(DirectRLEnv):
     # Reset
     # ------------------------------------------------------------------
     def _reset_idx(self, env_ids: Sequence[int] | None) -> None:
+        self._intermediate_values_valid = False
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
 

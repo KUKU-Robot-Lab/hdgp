@@ -262,10 +262,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 비드 낙하 + 착지에 ~0.3~0.5초 필요 → 60 steps (1.0s @ 60Hz) 여유
     source_empty_hold_steps: int = 60
 
-    weight_grasp_maintain: float = 0.50   # 2.00→0.50: r_hold local optimum 해소
-    weight_contact_maintain: float = 0.30  # 1.00→0.30
-    weight_force_balance: float = 0.30
-    weight_finger_curl: float = 0.50      # 2.00→0.50: r_hold max 5.0→1.3/step
+    weight_grip_pose: float = 1.50        # full-grip-pose L2 유지 리워드
+    grip_pose_sharpness: float = 0.30    # exp(-sharpness * ||q - full_grip||)
     weight_approach_xy: float = 10.00   # cup center 기반 approach → 더 직접적으로 유도 가능
     weight_approach_z: float = 3.00
     weight_cup_upright: float = 0.80
@@ -290,7 +288,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_success: float = 100.00  # 30→300→100
     weight_spill: float = 3.00     # mouth-to-mouth gate 이후에도 overspill 억제를 위해 penalty 강화
     weight_premature_tilt: float = 1.50
-    weight_grasp_loss: float = 0.05      # 0.30→0.05: [test4] cost_grasp_loss=0.73/step (전체 cost 73%) → tilt 억제. DexPour는 contact reward로 대체
 
     weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
     weight_arm_joint_acc: float = 0.0005  # arm 가속도 프록시 페널티
@@ -326,9 +323,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_adr_num_increments: int = 8
     success_adr_increment_interval: int = 20000
     success_adr_trigger_threshold: float = 0.30  # [v4 수정] 0.15→0.30: 30% 성공률 달성 시 상향 (기준 강화)
-    reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
-    contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
-    force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
     reward_approach_xy_scale: float = 6.0
     stage_approach_xy_threshold: float = 0.14
     stage_pour_xy_threshold: float = 0.15

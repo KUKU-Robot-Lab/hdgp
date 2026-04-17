@@ -96,6 +96,7 @@ from .pour_right_preset import (
     RIGHT_ACTUATED_JOINT_NAMES,
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
+    HAND_FULL_GRIP_POSE,
     OBJECT_GOAL_POS,
 )
 from .pour_right_utils import scale, to_torch
@@ -332,8 +333,9 @@ class PourRightEnv(DirectRLEnv):
         # Hand poses (per-finger lerp용)
         # open_pose = HAND_APPROACH_POSE (action=-1), grasp_pose = HAND_GRASP_POSE (action=+1)
         # ----------------------------------------------------------------
-        self.hand_open_pose  = to_torch(HAND_APPROACH_POSE, device=self.device)  # (20,)
-        self.hand_grasp_pose = to_torch(HAND_GRASP_POSE,    device=self.device)  # (20,)
+        self.hand_open_pose       = to_torch(HAND_APPROACH_POSE,  device=self.device)  # (20,)
+        self.hand_grasp_pose      = to_torch(HAND_GRASP_POSE,     device=self.device)  # (20,)
+        self.hand_full_grip_pose  = to_torch(HAND_FULL_GRIP_POSE, device=self.device)  # (20,)
 
         # ----------------------------------------------------------------
         # 로봇 시작 자세 (arm: ARM_START_POSE, hand: HAND_APPROACH_POSE)
@@ -1093,26 +1095,9 @@ class PourRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
 
-        # ── hold 기간 컵 절대 좌표 고정 (success 캐시 리셋 env 전용) ──
-        # [v2 참고] warmstart(grasp) 캐시 리셋에서는 cup pinning 적용 안 함.
-        #   이유: 텔레포트 직후 컵이 캐시된 위치(손가락이 감싼 위치)에 고정되면,
-        #         손가락도 position-control이라 PhysX가 관통을 해소할 수 없음.
-        #         v2처럼 physics가 자연스럽게 접촉을 재정립하도록 허용해야 함.
-        #         warmstart_stable_hold_steps=30 기준으로 저장된 고품질 grasp state 이므로
-        #         손가락+PD 제어만으로도 hold 기간 중 파지 유지 가능.
-        if self.cfg.episode_hold_steps > 0:
-            pin_mask = (
-                (self.episode_length_buf < self.cfg.episode_hold_steps)
-                & self._warmstart_only_close
-            )
-            if pin_mask.any():
-                pin_ids = pin_mask.nonzero(as_tuple=False).squeeze(-1)
-                cup_pose_pinned = torch.cat(
-                    [self._cup_hold_pos_w[pin_ids], self._cup_hold_quat_w[pin_ids]], dim=-1
-                )
-                zero_v = torch.zeros(len(pin_ids), 6, device=self.device)
-                self.cup.write_root_pose_to_sim(cup_pose_pinned, env_ids=pin_ids)
-                self.cup.write_root_velocity_to_sim(zero_v, env_ids=pin_ids)
+        # cup pinning 비활성화: warmstart(grasp) 캐시 리셋에서 컵을 고정하면
+        # 손가락(position-control)과 충돌하여 PhysX가 관통을 해소 못해 컵이 팅겨져 나감.
+        # v3와 동일하게 physics가 자연스럽게 접촉을 재정립하도록 허용.
 
     # ------------------------------------------------------------------
     # Intermediate values
@@ -1475,51 +1460,11 @@ class PourRightEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         self._compute_intermediate_values()
 
-        # ---- 1. Grasp maintenance: cup의 palm local frame 위치 유지 (slip 억제) ----
-        palm_quat_w = self.robot.data.body_quat_w[:, self.palm_body_index]
-        palm_pos_w  = self.robot.data.body_pos_w[:, self.palm_body_index]
-        cup_pos_w   = self.cup.data.root_pos_w
-        cup_in_palm_local = quat_apply_inverse(palm_quat_w, cup_pos_w - palm_pos_w)
-
-        if self._needs_grasp_init_update.any():
-            upd = self._needs_grasp_init_update.nonzero(as_tuple=False).squeeze(-1)
-            self._grasp_cup_pos_palm_local_init[upd] = cup_in_palm_local[upd].detach()
-            self._needs_grasp_init_update[upd] = False
-
-        slip_dist = torch.norm(cup_in_palm_local - self._grasp_cup_pos_palm_local_init, dim=-1)
-        grasp_maintain_reward = torch.exp(-self.cfg.reward_grasp_slip_sharpness * slip_dist)
-
-        # contact_maintain
-        thumb_force = self.contact_force_raw[:, 0]
-        others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)
-        others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)
-        full_grasp_flag = (
-            self.binary_contact_buf[:, 0] & (others_count >= self.cfg.contact_maintain_min_others)
-        ).float()
-        
-        # force_balance
-        has_thumb  = self.binary_contact_buf[:, 0].float()
-        has_others = (others_count >= 1).float()
-        balance_gate = has_thumb * has_others
-        force_balance_err = (thumb_force - others_avg_force).abs()
-        r_force_balance = (
-            self.cfg.weight_force_balance
-            * balance_gate
-            * torch.exp(-self.cfg.force_balance_sharpness * force_balance_err)
-        )
-
-        # finger_curl (닫힘 유도)
-        finger_lerp_min = self.actions[:, 6:11].min(dim=-1).values
-        finger_curl_score = (finger_lerp_min + 1.0) / 2.0
-        r_finger_curl = self.cfg.weight_finger_curl * finger_curl_score
-
-        # Stage A. Hold (grasp 유지)
-        r_hold = (
-            self.cfg.weight_grasp_maintain * grasp_maintain_reward
-            + self.cfg.weight_contact_maintain * full_grasp_flag
-            + r_force_balance
-            + r_finger_curl
-        )
+        # ---- 1. Grasp hold: full-grip-pose L2 유지 ----
+        # warmstart에서 이미 파지 완료 → full-grip-pose 유지만으로 충분
+        hand_q = self.robot.data.joint_pos[:, self.hand_dof_indices]
+        grip_err = (hand_q - self.hand_full_grip_pose).norm(dim=-1)
+        r_hold = self.cfg.weight_grip_pose * torch.exp(-self.cfg.grip_pose_sharpness * grip_err)
 
         # ---- Stage B. Transport (Approach) - Always active with smooth gradient ----
         cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(
@@ -1671,7 +1616,6 @@ class PourRightEnv(DirectRLEnv):
             min=0.0,
         )
         premature_tilt_cost = (1.0 - self._g_ready) * significant_tilt
-        grasp_loss_cost = 1.0 - full_grasp_flag
         palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
         finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
         action_rate_penalty = (
@@ -1724,7 +1668,6 @@ class PourRightEnv(DirectRLEnv):
             + overfill_bonus
             - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
-            - self.cfg.weight_grasp_loss * grasp_loss_cost
             - action_rate_penalty
             - arm_vel_cost
         )

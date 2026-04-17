@@ -102,15 +102,21 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     use_cuda_graph:   bool  = False
 
     # -----------------------------------------------------------------------
-    # 관측·액션 공간 (placeholder — obs/reward는 새로 작성 예정)
+    # 관측·액션 공간
+    # actor obs:
+    #   left arm pos/vel (14)
+    #   mouth geometry + fill/spill + gates (14)
+    #   prev left-arm action (7)
+    # = 35D
+    # critic obs is kept symmetric for now.
     # -----------------------------------------------------------------------
-    observation_space: int = 14
+    observation_space: int = 35
     action_space:      int = NUM_ACTIONS
-    state_space:       int = 14
+    state_space:       int = 35
 
-    num_observations: int = 14
+    num_observations: int = 35
     num_actions:      int = NUM_ACTIONS
-    num_states:       int = 14
+    num_states:       int = 35
 
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
@@ -185,6 +191,27 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015
     reward_tilt_cos_min: float = 0.15
+
+    # -----------------------------------------------------------------------
+    # Left-arm assist obs / reward
+    # right-hand grasp 유지와 source cup handling은 warmstart prior로 간주하고,
+    # left arm target cup alignment + capture shaping에 집중한다.
+    # -----------------------------------------------------------------------
+    assist_reward_approach_xy: float = 1.5
+    assist_reward_clearance: float = 0.75
+    assist_reward_ready: float = 0.5
+    assist_reward_tilt: float = 0.75
+    assist_reward_align: float = 0.5
+    assist_reward_cross: float = 2.0
+    assist_reward_capture: float = 8.0
+    assist_reward_success: float = 5.0
+    assist_reward_terminal_capture: float = 10.0
+    assist_reward_spill: float = 3.0
+    assist_reward_premature_tilt: float = 0.75
+    assist_reward_left_action_rate: float = 0.02
+    assist_reward_left_joint_vel: float = 0.002
+    assist_success_fill_ratio: float = 0.30
+    assist_success_spill_max: float = 0.15
 
     # -----------------------------------------------------------------------
     # Warmstart quality / success

@@ -121,6 +121,16 @@ HAND_GRASP_POSE = [
     0.0,  0.0,  1.5, 1.5,   # pinky
 ]
 
+# 완전 파지 자세 — 홀드 리워드 타겟 (관절 한계의 85~90%)
+# grasp_maintain r_hold의 단일 L2 타겟으로 사용
+HAND_FULL_GRIP_POSE = [
+    0.0, -2.50, 0.20, 1.50,   # thumb:  _2 깊은 curl (-2.5), _3/_4 유지
+    0.0,  1.80, 1.50, 1.50,   # index:  _2 90% of 2.007
+    0.0,  1.75, 1.50, 1.50,   # middle: _2 90% of 1.955
+    0.0,  1.65, 1.50, 1.50,   # ring:   _2 87% of 1.902
+    0.0,  0.00, 1.40, 1.50,   # pinky:  _3 89% of π/2=1.571
+]
+
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
 # Fabrics rollout이 [cup_x-0.167, cup_y-0.09, cup_z+0.04]로 수렴
 # j4=0.60: FK z≈0.282, 테이블 안전, 물리 충돌 없음
