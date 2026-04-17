@@ -82,7 +82,7 @@ params:
     #   512  envs: batch=  32,768 → minibatch=  8,192  lr=8e-4
     #   1024 envs: batch=  65,536 → minibatch= 16,384  lr=1.1e-3
     #   2048 envs: batch= 131,072 → minibatch= 32,768  lr=1.6e-3  ← default below
-    minibatch_size: 32768     # tuned for --num_envs 2048
+    minibatch_size: 2048      # num_envs 128 기준: batch=8,192 → 4 splits
     mini_epochs: 6
     critic_coef: 4
     clip_value: True
@@ -96,7 +96,7 @@ params:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768     # actor와 동일하게 맞출 것 (num_envs 2048 기준)
+      minibatch_size: 2048      # actor와 동일하게 맞출 것 (num_envs 128 기준)
       mini_epochs: 6
       learning_rate: 1e-4      # fine-tune: actor와 동일하게 맞춤
       lr_schedule: linear

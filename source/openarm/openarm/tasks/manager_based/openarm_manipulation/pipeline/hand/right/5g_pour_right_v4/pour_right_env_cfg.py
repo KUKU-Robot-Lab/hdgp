@@ -65,12 +65,12 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
             scale=(1.0, 1.0, 1.0),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬 (1g→5g: 관성 향상, 진동 날림 방지)
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.010),  # 10g 구슬 (5g→10g: 관성 향상, 진동 날림 방지)
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=4,
-                max_depenetration_velocity=5.0,
+                max_depenetration_velocity=0.5,  # 5.0→0.5: 벽 penetration 시 순간이동 방지
                 max_linear_velocity=10.0,
                 max_angular_velocity=20.0,
             ),
@@ -404,7 +404,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
             gpu_max_rigid_patch_count=2**23,
             gpu_max_rigid_contact_count=2**23,
-            gpu_collision_stack_size=2**25,
+            gpu_collision_stack_size=2**26,  # 32MB→64MB: 비드×컵 contact pair overflow 방지
             gpu_max_num_partitions=32,
             friction_correlation_distance=0.00625,
         ),
@@ -549,7 +549,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_sdf.usd"),
             activate_contact_sensors=True,
             scale=(1.0, 1.0, 1.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
@@ -557,7 +557,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             ),
             rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
-                solver_velocity_iteration_count=1,
+                solver_velocity_iteration_count=4,
                 max_angular_velocity=100.0,
                 max_linear_velocity=100.0,
                 max_depenetration_velocity=5.0,
@@ -573,7 +573,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_sdf.usd"),
             activate_contact_sensors=False,
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,

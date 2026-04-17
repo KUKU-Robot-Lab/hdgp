@@ -82,7 +82,7 @@ params:
     horizon_length: 64
     # LSTM: seq_length = BPTT truncation 길이 (horizon_length 의 약수여야 함)
     seq_length: 16
-    minibatch_size: 32768
+    minibatch_size: 2048      # num_envs 128 기준: batch=8,192 → 4 splits
     mini_epochs: 6
     critic_coef: 4
     clip_value: True
@@ -96,7 +96,7 @@ params:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768
+      minibatch_size: 2048      # actor와 동일 (num_envs 128 기준)
       mini_epochs: 6
       learning_rate: 1e-4
       lr_schedule: linear
