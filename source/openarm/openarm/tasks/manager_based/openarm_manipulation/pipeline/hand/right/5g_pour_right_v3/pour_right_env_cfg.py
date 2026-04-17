@@ -65,7 +65,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
             scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),  # 1g 구슬
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.010),  # 1g 구슬
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=16,
@@ -449,12 +449,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         render_interval=2,
         physx=sim_utils.PhysxCfg(
             bounce_threshold_velocity=0.01,
+            gpu_found_lost_pairs_capacity=4 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
-            gpu_max_rigid_patch_count=2**22,
-            gpu_max_rigid_contact_count=2**22,
-            gpu_collision_stack_size=2**22,
-            gpu_max_num_partitions=8,
+            gpu_max_rigid_patch_count=2**24,
+            gpu_max_rigid_contact_count=2**24,
+            gpu_collision_stack_size=2**26,
+            gpu_max_num_partitions=64,
             friction_correlation_distance=0.00625,
         ),
     )
