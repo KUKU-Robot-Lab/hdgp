@@ -15,7 +15,7 @@
 import gymnasium as gym
 
 from . import agents
-from ..pour_right_env_cfg import PourRightEnvCfg
+from ..pour_env_cfg import PourRightEnvCfg
 
 
 class PourRightEnvCfg_PLAY(PourRightEnvCfg):

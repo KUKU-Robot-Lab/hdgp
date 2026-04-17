@@ -1,21 +1,7 @@
 # Copyright 2025 Enactic, Inc.
 # Licensed under the Apache License, Version 2.0
-"""Minimal ADR scheduler used for pour task.
-
-GraspADR from 5g_pour_right_v9 is reused so we can linearly ramp
-parameters (e.g., spill penalty, noise) based on episode success rate.
-"""
 
 class PourADR:
-    """Lightweight ADR parameter scheduler.
-
-    Args:
-        custom_cfg: {group: {param: (initial, final)}}
-        num_increments: number of increments until reaching final value.
-        increment_interval: how often to check (env steps).
-        trigger_threshold: success-rate threshold to increment.
-    """
-
     def __init__(
         self,
         custom_cfg: dict,

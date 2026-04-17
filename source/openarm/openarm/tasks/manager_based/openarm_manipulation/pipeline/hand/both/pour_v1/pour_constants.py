@@ -12,19 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""상수 정의: 5g_pour_right_v5
-
-Action (11D):
-  [0:6]  6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
-  [6:11] 5D per-finger lerp
-
-Episode (10s @ 60Hz = 600 steps):
-  Pour phase: Fabrics arm policy + finger policy
-"""
-
 import math
 
-from .pour_right_preset import (
+from .pour_preset import (
     RIGHT_ARM_JOINT_NAMES,
     RIGHT_HAND_JOINT_NAMES,
     palm_pose_mins,
@@ -45,7 +35,8 @@ NUM_FINGERTIPS = 5
 # ---------------------------------------------------------------------------
 NUM_PALM_ACTION   = 6   # 6D palm pose (Fabrics IK)
 NUM_FINGER_ACTION = 5   # per-finger lerp
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
+NUM_LEFT_ARM_ACTION = 7  # left arm joint-space delta
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION + NUM_LEFT_ARM_ACTION  # 18
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

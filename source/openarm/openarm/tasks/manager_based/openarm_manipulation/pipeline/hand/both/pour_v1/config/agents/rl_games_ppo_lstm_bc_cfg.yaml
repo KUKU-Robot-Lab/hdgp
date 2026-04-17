@@ -38,7 +38,7 @@ params:
       concat_input: True  # obs 와 LSTM output 을 MLP 입력에 concat
       layer_norm: True
     mlp:
-      units: [512, 256, 128]   # v3 MLP 용량 유지 (LSTM concat 후 362D 입력 처리)
+      units: [512, 256, 128]   
       activation: elu
       d2rl: False
       initializer:
@@ -50,7 +50,7 @@ params:
   load_path: ''
 
   config:
-    name: 5g_pour_right-v4-lstm-bc
+    name: pour_v1-lstm-bc
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -78,12 +78,12 @@ params:
     grad_norm: 1.0
     entropy_coef: 0.0008
     truncate_grads: True
-    e_clip: 0.25
+    e_clip: 0.20
     horizon_length: 64
     # LSTM: seq_length = BPTT truncation 길이 (horizon_length 의 약수여야 함)
     seq_length: 16
     minibatch_size: 2048      # num_envs 128 기준: batch=8,192 → 4 splits
-    mini_epochs: 6
+    mini_epochs: 10
     critic_coef: 4
     clip_value: True
     clip_actions: False
@@ -97,12 +97,12 @@ params:
       normalize_value: True
       value_bootstrap: False
       minibatch_size: 2048      # actor와 동일 (num_envs 128 기준)
-      mini_epochs: 6
+      mini_epochs: 10
       learning_rate: 1e-4
       lr_schedule: linear
       kl_threshold: 0.013
       clip_value: True
-      e_clip: 0.25
+      e_clip: 0.20
       network:
         name: actor_critic
         central_value: True

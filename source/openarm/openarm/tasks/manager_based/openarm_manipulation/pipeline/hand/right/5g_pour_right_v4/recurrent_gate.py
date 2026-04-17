@@ -60,7 +60,11 @@ def install_recurrent_gate(network: nn.Module, obs_dim: int) -> bool:
     if not getattr(network, "is_rnn_before_mlp", False):
         return False
 
-    network.recurrent_gate_skip = nn.Linear(int(obs_dim), int(network.rnn_units))
+    try:
+        _device = next(network.parameters()).device
+    except StopIteration:
+        _device = torch.device("cpu")
+    network.recurrent_gate_skip = nn.Linear(int(obs_dim), int(network.rnn_units), device=_device)
     network.recurrent_gate_alpha = 0.0
     network._recurrent_gate_installed = True
 

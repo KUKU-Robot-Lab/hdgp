@@ -12,15 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_pour_right_v3
-
-v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
-- Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 106D / critic 143D (asymmetric)
-- Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
-- Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
-"""
-
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, RigidObjectCfg, RigidObjectCollectionCfg
 from isaaclab.actuators import ImplicitActuatorCfg
@@ -35,12 +26,13 @@ from isaaclab.utils import configclass
 import os as _os
 
 from openarm.tasks.manager_based.openarm_manipulation import OPENARM_ROOT_DIR
-from .pour_right_constants import NUM_ACTIONS
-from .pour_right_preset import (
+from .pour_constants import NUM_ACTIONS
+from .pour_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
     HAND_BODY_NAMES_USD,
-    LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
+    LEFT_ARM_JOINT_NAMES,
+    LEFT_GRIPPER_JOINT_NAMES,
     LEFT_ARM_REST_JOINT_POS,
     LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
     LEFT_TARGET_CUP_ATTACH_POS_B,
@@ -76,11 +68,11 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             ),
         )
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
-            static_friction=0.3,
-            dynamic_friction=0.2,
+            static_friction=0.10,
+            dynamic_friction=0.08,
             restitution=0.05,
-            friction_combine_mode="average",
-            restitution_combine_mode="min",
+            friction_combine_mode="min",
+            restitution_combine_mode="max",
         )
         rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
             prim_path=f"/World/envs/env_.*/Bead_{i:02d}",
@@ -112,13 +104,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간 (placeholder — obs/reward는 새로 작성 예정)
     # -----------------------------------------------------------------------
-    observation_space: int = 1
-    action_space:      int = NUM_ACTIONS               # 11
-    state_space:       int = 1
+    observation_space: int = 14
+    action_space:      int = NUM_ACTIONS
+    state_space:       int = 14
 
-    num_observations: int = 1
+    num_observations: int = 14
     num_actions:      int = NUM_ACTIONS
-    num_states:       int = 1
+    num_states:       int = 14
 
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
@@ -179,15 +171,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Policy action / pouring target
     # -----------------------------------------------------------------------
-    palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
+    palm_delta_xyz: float = 0.5   
     warmstart_collect_palm_delta_xyz: float = 0.10
-    palm_delta_rot_deg: float = 120.0  # 45→120: cup 135° tilt 도달 가능하도록 확장
+    palm_delta_rot_deg: float = 120.0  
+    left_arm_delta_joint: float = 0.35
     tilt_action_gate_xy_near: float = 0.04
     tilt_action_gate_xy_far: float = 0.12
     approach_xy_off_near: float = 0.02
     approach_xy_off_far: float = 0.03
-    left_cup_world_z_offset: float = -0.12   # -0.08→-0.12: target cup 추가 하강 (높은 Z에서 tilt 시 spill 과다)
-    reward_gate_xy_scale: float = 5.0   # 10.0 → 5.0: g_ready@0.112m=0.57 (10.0은 0.33으로 gate 안 열림)
+    left_cup_world_z_offset: float = -0.08   
+    reward_gate_xy_scale: float = 5.0   
     reward_gate_clear_scale: float = 80.0
     reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015
@@ -196,21 +189,17 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
-    lift_success_height: float = 0.08   # 0.03→0.08: 리프트 안정성 강화
+    lift_success_height: float = 0.03   
     warmstart_cache_min_lift_height: float = 0.15   # 테이블 기준 최소 15cm (≈ 컵 절반 높이 이상)
-    warmstart_cache_min_contacts:    int   = 3       # 최소 3손가락 접촉 (기존 2보다 강화)
-    warmstart_stable_hold_steps:     int   = 30      # 연속 30프레임(0.5s) 유지해야 저장
+    warmstart_cache_min_contacts:    int   = 5       # 최소 5손가락 접촉 (기존 2보다 강화)
+    warmstart_stable_hold_steps:     int   = 10      # 연속 10프레임(0.167s) 유지해야 저장
 
-    enable_success_warmstart_reset: bool = False   # v3 True → v4 False
+    enable_success_warmstart_reset: bool = False   
     success_warmstart_cache_size: int = 512
     success_cache_reset_ratio: float = 0.0         # v3 0.40 → v4 0.0 (mid-pour 리셋 차단)
     grasp_warmstart_reset_ratio: float = 1.0       # 0.85 → 1.0: 100% warmstart (v7 grasp 완료 상태)
     success_cache_store_min_bead_cross_fraction: float = 0.05
     success_cache_store_min_bead_in_target_fraction: float = 0.02
-
-    success_reset_hold_steps: int = 20
-    success_reset_palm_delta_xyz: float = 0.05
-    ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
 
     # -----------------------------------------------------------------------
     # Trajectory Capture (BC loss용 궤적 수집)
@@ -218,6 +207,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     enable_trajectory_capture: bool = True
     trajectory_capture_window: int = 200
     trajectory_buffer_capacity: int = 256
+    trajectory_success_bead_threshold: float = 0.50   # bead_in_target >= 50%
+    trajectory_success_spill_max: float = 0.10        # spill < 10%
+    trajectory_min_steps: int = 60            # 최소 궤적 길이 (1s @ 60Hz)
 
     # -----------------------------------------------------------------------
     # 종료 조건
@@ -272,10 +264,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             gpu_found_lost_pairs_capacity=4 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
-            gpu_max_rigid_patch_count=2**23,
-            gpu_max_rigid_contact_count=2**23,
-            gpu_collision_stack_size=2**26,  # 32MB→64MB: 비드×컵 contact pair overflow 방지
-            gpu_max_num_partitions=32,
+            gpu_max_rigid_patch_count=2**24,
+            gpu_max_rigid_contact_count=2**24,
+            gpu_collision_stack_size=2**26,
+            gpu_max_num_partitions=64,
             friction_correlation_distance=0.00625,
         ),
     )
@@ -463,4 +455,5 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     hand_body_names:      list = HAND_BODY_NAMES_USD
     actuated_joint_names: list = RIGHT_ACTUATED_JOINT_NAMES
-    left_arm_joint_names: list = LEFT_ARM_AND_GRIPPER_JOINT_NAMES
+    left_arm_joint_names: list = LEFT_ARM_JOINT_NAMES
+    left_gripper_joint_names: list = LEFT_GRIPPER_JOINT_NAMES

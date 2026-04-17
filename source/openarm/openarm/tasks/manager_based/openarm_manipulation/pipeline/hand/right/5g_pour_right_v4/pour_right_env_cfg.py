@@ -226,17 +226,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
-    lift_success_height: float = 0.08   # 0.03→0.08: 리프트 안정성 강화
+    lift_success_height: float = 0.03   
     warmstart_cache_min_lift_height: float = 0.15   # 테이블 기준 최소 15cm (≈ 컵 절반 높이 이상)
-    warmstart_cache_min_contacts:    int   = 3       # 최소 3손가락 접촉 (기존 2보다 강화)
+    warmstart_cache_min_contacts:    int   = 5       # 최소 5손가락 접촉 (기존 2보다 강화)
     warmstart_stable_hold_steps:     int   = 30      # 연속 30프레임(0.5s) 유지해야 저장
 
-    enable_success_warmstart_reset: bool = False   # v3 True → v4 False
-    success_warmstart_cache_size: int = 512
-    success_cache_reset_ratio: float = 0.0         # v3 0.40 → v4 0.0 (mid-pour 리셋 차단)
-    grasp_warmstart_reset_ratio: float = 1.0       # 0.85 → 1.0: 100% warmstart (v7 grasp 완료 상태)
-    success_cache_store_min_bead_cross_fraction: float = 0.05
-    success_cache_store_min_bead_in_target_fraction: float = 0.02
+    grasp_warmstart_reset_ratio: float = 1.0       # 100% warmstart (v7 grasp 완료 상태)
 
     # -----------------------------------------------------------------------
     # [v4 신규] Trajectory Capture — 성공 에피소드 궤적 수집 (BC loss용)
@@ -258,12 +253,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bc_loss_warmup_epochs: int = 500
     bc_loss_decay_epochs: int = 3000
     bc_min_buffer_size: int = 20   # 이 이하이면 BC 비활성
-    success_reset_hold_steps: int = 20
-    success_reset_palm_delta_xyz: float = 0.05
     success_mouth_xy_threshold: float = 0.030
     success_z_clearance_min: float = 0.015
     success_z_clearance_max: float = 0.050
-    success_hold_steps: int = 10
+    success_hold_steps: int = 30
     drop_force_hold_steps: int = 10
     # 소스 컵이 비어있는 상태가 N 스텝 연속 지속되면 에피소드 종료
     # 비드 낙하 + 착지에 ~0.3~0.5초 필요 → 60 steps (1.0s @ 60Hz) 여유

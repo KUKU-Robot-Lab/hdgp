@@ -12,23 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 클래스: 5g_pour_right_v7
-
-v7: Fabrics 팔 학습 + per-finger lerp 5D + Contact sensor 없는 FK 기반 근접도 리워드
-
-핵심 개선 (v1/v6 대비):
-  - v1 문제: fabric_q/qd obs → sim2real 불가, palm_dist 기반 자동 닫힘 → 충돌 충격
-  - v6 문제: 팔 고정 → cup 위치 오차 대응 불가, per-finger 5D 협응 학습 부족
-
-Action (11D):
-  [0:6]  6D palm pose → Fabrics IK → arm 7 DOF (학습, cup 위치 오차 대응)
-  [6:11] 5D per-finger lerp: -1 → HAND_APPROACH_POSE, +1 → HAND_GRASP_POSE
-
-Episode (10s @ 60Hz):
-  Grasp phase (0~479): Fabrics arm + per-finger 정책
-  Lift  phase (480~599): scripted arm prelift + frozen hand
-"""
-
 from __future__ import annotations
 
 import math
@@ -63,13 +46,14 @@ from fabrics_sim.integrator.integrators import DisplacementIntegrator
 from fabrics_sim.utils.utils import initialize_warp
 from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
 
-from .pour_right_env_cfg import PourRightEnvCfg
+from .pour_env_cfg import PourRightEnvCfg
 from .trajectory_buffer import TrajectoryCapture, SuccessTrajectoryBuffer
-from .pour_right_constants import (
+from .pour_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
     NUM_FINGER_ACTION,
     NUM_FINGERTIPS,
+    NUM_LEFT_ARM_ACTION,
     EPISODE_STEPS,
     PREGRASP_FABRICS_STEPS,
     CUP_RADIUS_APPROX,
@@ -79,9 +63,11 @@ from .pour_right_constants import (
 )
 from .pour_adr import PourADR
 from .pour_adr import PourADR as GraspADR
-from .pour_right_preset import (
+from .pour_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
+    LEFT_ARM_JOINT_NAMES,
+    LEFT_GRIPPER_JOINT_NAMES,
     LEFT_ARM_REST_JOINT_POS,
     LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
     LEFT_TARGET_CUP_ATTACH_POS_B,
@@ -91,9 +77,7 @@ from .pour_right_preset import (
     HAND_GRASP_POSE,
     OBJECT_GOAL_POS,
 )
-from .pour_right_utils import scale, to_torch
-
-
+from .pour_utils import scale, to_torch
 
 
 class _WarmstartPolicy(nn.Module):
@@ -122,19 +106,6 @@ class _WarmstartPolicy(nn.Module):
 
 
 class PourRightEnv(DirectRLEnv):
-    """OpenArm+Teosllo 오른손 물붓기 환경 v1.
-
-    Warmstart(v7 grasp policy)로 컵이 이미 파지·들린 상태로 시작.
-    Policy는 transport → tilt → pour 모션을 학습.
-
-    Action: 11D
-      [0:6]  palm pose (x,y,z,ez,ey,ex), 정규화 [-1,1] → Fabrics IK
-      [6:11] per-finger lerp (freeze_grasp=True → 항상 grasp_hold 유지)
-
-    Episode (6s @ 60Hz = 360 steps):
-      Pour phase (step 0~359): Fabrics arm policy + frozen hand
-    """
-
     cfg: GraspRightEnvCfg
 
     @staticmethod
@@ -248,6 +219,10 @@ class PourRightEnv(DirectRLEnv):
             + delta_local[:, 2:3] * tilt_ortho_axis
         )
 
+    @staticmethod
+    def _quat_xyzw_to_wxyz(quat_xyzw: torch.Tensor) -> torch.Tensor:
+        return quat_xyzw[:, [3, 0, 1, 2]]
+
     def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -262,6 +237,10 @@ class PourRightEnv(DirectRLEnv):
         for name in cfg.left_arm_joint_names:
             if name in self.robot.joint_names:
                 self.left_arm_dof_indices.append(self.robot.joint_names.index(name))
+        self.left_gripper_dof_indices: list[int] = []
+        for name in cfg.left_gripper_joint_names:
+            if name in self.robot.joint_names:
+                self.left_gripper_dof_indices.append(self.robot.joint_names.index(name))
 
         self.arm_dof_indices  = self.actuated_dof_indices[:NUM_ARM_DOF]    # list[int]
         self.hand_dof_indices = self.actuated_dof_indices[NUM_ARM_DOF:]    # list[int]
@@ -341,18 +320,37 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # ----------------------------------------------------------------
-        # 왼팔 고정 자세
+        # 왼팔/그리퍼 기준 자세
         # ----------------------------------------------------------------
-        left_vals = [
+        left_arm_vals = [
             LEFT_ARM_REST_JOINT_POS.get(self.robot.joint_names[idx], 0.0)
             for idx in self.left_arm_dof_indices
         ]
-        self.left_arm_zero_pos = (
-            to_torch(left_vals, device=self.device)
+        left_gripper_vals = [
+            LEFT_ARM_REST_JOINT_POS.get(self.robot.joint_names[idx], 0.0)
+            for idx in self.left_gripper_dof_indices
+        ]
+        self.left_arm_rest_pos = (
+            to_torch(left_arm_vals, device=self.device)
             .unsqueeze(0).repeat(self.num_envs, 1)
         )
-        self.left_arm_zero_vel = torch.zeros(
+        self.left_arm_rest_vel = torch.zeros(
             self.num_envs, len(self.left_arm_dof_indices), device=self.device
+        )
+        self.left_gripper_closed_pos = (
+            to_torch(left_gripper_vals, device=self.device)
+            .unsqueeze(0).repeat(self.num_envs, 1)
+        )
+        self.left_gripper_zero_vel = torch.zeros(
+            self.num_envs, len(self.left_gripper_dof_indices), device=self.device
+        )
+        self.left_arm_joint_targets = self.left_arm_rest_pos.clone()
+        self.left_arm_joint_limits = self.robot.data.soft_joint_pos_limits[0, self.left_arm_dof_indices, :].clone()
+        self.left_arm_delta_mins = torch.full(
+            (NUM_LEFT_ARM_ACTION,), -float(cfg.left_arm_delta_joint), device=self.device
+        )
+        self.left_arm_delta_maxs = torch.full(
+            (NUM_LEFT_ARM_ACTION,), float(cfg.left_arm_delta_joint), device=self.device
         )
 
         # ----------------------------------------------------------------
@@ -479,8 +477,7 @@ class PourRightEnv(DirectRLEnv):
         # 초기 액션: 0 → palm pose workspace 중심 (접근 자세 유지)
         self.actions.zero_()
 
-        # Left target cup는 reset 시점 attach pose를 스냅샷으로 저장하고,
-        # 에피소드 중에는 그 월드 pose를 고정 유지한다.
+        # Left target cup는 왼손 frame에 live-attach된다.
         self._left_target_cup_attach_pos_b = to_torch(
             self.cfg.left_target_cup_attach_pos_b, device=self.device
         )
@@ -968,11 +965,16 @@ class PourRightEnv(DirectRLEnv):
     # Physics step
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        if actions.shape[1] == (NUM_PALM_ACTION + NUM_FINGER_ACTION):
+            padded_actions = torch.zeros(actions.shape[0], self.cfg.num_actions, device=actions.device, dtype=actions.dtype)
+            padded_actions[:, : NUM_PALM_ACTION + NUM_FINGER_ACTION] = actions
+            actions = padded_actions
         self.prev_actions.copy_(self.actions)
         self.actions = actions.clone()
 
         palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
         finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
+        left_arm_action = actions[:, 11:18]
 
         # ---- Pour phase: Fabrics arm 제어 ----
         # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
@@ -984,6 +986,7 @@ class PourRightEnv(DirectRLEnv):
         if self.cfg.episode_hold_steps > 0:
             hold_mask = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
             palm_action = torch.where(hold_mask, torch.zeros_like(palm_action), palm_action)
+            left_arm_action = torch.where(hold_mask, torch.zeros_like(left_arm_action), left_arm_action)
             if not self._warmstart_collect_mode:
                 finger_action = torch.where(hold_mask, torch.ones_like(finger_action), finger_action)
         if not self._warmstart_collect_mode:
@@ -994,6 +997,15 @@ class PourRightEnv(DirectRLEnv):
                 finger_action,
             )
             self.actions[:, 6:11] = finger_action
+
+        left_arm_delta = scale(left_arm_action, self.left_arm_delta_mins, self.left_arm_delta_maxs)
+        self.left_arm_joint_targets.copy_(self.left_arm_rest_pos + left_arm_delta)
+        self.left_arm_joint_targets.copy_(
+            torch.max(
+                torch.min(self.left_arm_joint_targets, self.left_arm_joint_limits[:, 1].unsqueeze(0)),
+                self.left_arm_joint_limits[:, 0].unsqueeze(0),
+            )
+        )
 
         # [Phase-1 Step 7] EMA palm action smoothing: Fabrics에 smooth 궤적 전달
         # action_rate_penalty는 raw self.actions 기반 유지 (training gradient 보존)
@@ -1064,7 +1076,7 @@ class PourRightEnv(DirectRLEnv):
 
         # ---- 오른손 파지 유지 (pour 중 항상 grasp pose freeze) ----
         if self.cfg.freeze_grasp_hand_during_episode and (not self._warmstart_collect_mode):
-            self.actions[:, 6:] = 1.0
+            self.actions[:, 6:11] = 1.0
             hand_target = self.grasp_hold_hand_pos_buf
         else:
             delta_20   = self.hand_grasp_pose - self.hand_open_pose                # (20,)
@@ -1093,13 +1105,24 @@ class PourRightEnv(DirectRLEnv):
 
         # ---- 왼팔: 고정 자세 ----
         self.robot.set_joint_position_target(
-            self.left_arm_zero_pos, joint_ids=self.left_arm_dof_indices
+            self.left_arm_joint_targets, joint_ids=self.left_arm_dof_indices
         )
         self.robot.set_joint_velocity_target(
-            self.left_arm_zero_vel, joint_ids=self.left_arm_dof_indices
+            self.left_arm_rest_vel, joint_ids=self.left_arm_dof_indices
+        )
+        self.robot.set_joint_position_target(
+            self.left_gripper_closed_pos, joint_ids=self.left_gripper_dof_indices
+        )
+        self.robot.set_joint_velocity_target(
+            self.left_gripper_zero_vel, joint_ids=self.left_gripper_dof_indices
         )
 
-        left_cup_pose = self._get_left_target_cup_fixed_pose()
+        left_cup_pose = self._compute_attached_root_pose(
+            self._left_target_cup_body_id,
+            self._left_target_cup_attach_pos_b,
+            self._left_target_cup_attach_quat_b,
+        )
+        left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
@@ -1244,14 +1267,7 @@ class PourRightEnv(DirectRLEnv):
     # Observations: Actor 105D | Critic 155D
     # ------------------------------------------------------------------
     def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
-        """Build the legacy actor observation expected by the warmstart checkpoint.
 
-        Supported warmstart actor observation layouts:
-          106D: v7 grasp checkpoint
-          107D: v8 grasp checkpoint (106D + bead_mass_normalized)
-          112D: future-proof fallback (107D + tip_force_norm)
-          113D: v8 grasp checkpoint (112D + phase_step_ratio)
-        """
 
         arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
         arm_joint_vel = self.robot.data.joint_vel[:, self.arm_dof_indices]
@@ -1315,13 +1331,17 @@ class PourRightEnv(DirectRLEnv):
         )
 
     def _get_observations(self) -> dict:
-        # TODO: obs 구조를 여기서 새로 작성하세요.
-        actor_obs  = torch.zeros(self.num_envs, self.cfg.num_observations, device=self.device)
-        critic_obs = torch.zeros(self.num_envs, self.cfg.num_states, device=self.device)
+        self._compute_intermediate_values()
+
+        left_arm_joint_pos = self.robot.data.joint_pos[:, self.left_arm_dof_indices]
+        left_arm_joint_vel = self.robot.data.joint_vel[:, self.left_arm_dof_indices]
+        left_arm_pos_offset = left_arm_joint_pos - self.left_arm_rest_pos
+
+        actor_obs = torch.cat([left_arm_pos_offset, left_arm_joint_vel], dim=-1)
+        critic_obs = actor_obs.clone()
         return {"policy": actor_obs, "critic": critic_obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        # TODO: reward 구조를 여기서 새로 작성하세요.
         return torch.zeros(self.num_envs, device=self.device)
 
     def _get_rewards_UNUSED(self) -> torch.Tensor:
@@ -1644,7 +1664,8 @@ class PourRightEnv(DirectRLEnv):
     # Dones
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # TODO: done 조건을 여기서 새로 작성하세요.
+        self._compute_intermediate_values()
+        self._maybe_store_warmstart_successes()
         terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
@@ -1709,7 +1730,8 @@ class PourRightEnv(DirectRLEnv):
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_pos[:, self.actuated_dof_indices] = self.robot_start_joint_pos[0]
-        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_rest_pos[0]
+        full_pos[:, self.left_gripper_dof_indices] = self.left_gripper_closed_pos[0]
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
         # ---- 2. Fabrics 상태 리셋 ----
@@ -1788,7 +1810,8 @@ class PourRightEnv(DirectRLEnv):
         pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         pregrasp_full_pos[:, self.arm_dof_indices]  = q_pregrasp[:, :NUM_ARM_DOF]
         pregrasp_full_pos[:, self.hand_dof_indices] = approach_hand
-        pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_rest_pos[0]
+        pregrasp_full_pos[:, self.left_gripper_dof_indices] = self.left_gripper_closed_pos[0]
         self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
 
         # ---- 7. 컵 spawn ----
@@ -1806,7 +1829,6 @@ class PourRightEnv(DirectRLEnv):
             env_ids=env_ids,
         )
         left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
-        self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
@@ -1857,417 +1879,15 @@ class PourRightEnv(DirectRLEnv):
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
         # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)
         self.actions[env_ids, :6] = 0.0
-        self.actions[env_ids, 6:] = -1.0
+        self.actions[env_ids, 6:11] = -1.0
+        self.actions[env_ids, 11:18] = 0.0
         self.prev_actions[env_ids, :6] = 0.0
-        self.prev_actions[env_ids, 6:] = -1.0
+        self.prev_actions[env_ids, 6:11] = -1.0
+        self.prev_actions[env_ids, 11:18] = 0.0
         self._prev_mouth_xy_distance[env_ids] = 0.0
-
-
-    def _resolve_attachment_body(self, requested_body_name: str, attach_pos_b: torch.Tensor) -> tuple[int, torch.Tensor]:
-        body_names = self.robot.data.body_names
-        alias_offsets: dict[str, list[tuple[str, tuple[float, float, float]]]] = {
-            "openarm_left_hand": [
-                ("openarm_left_hand", (0.0, 0.0, 0.0)),
-                ("openarm_left_hand_tcp", (0.0, 0.0, -0.08)),
-                ("ll_dg_ee", (0.0, 0.0, -0.08)),
-            ],
-            "ll_dg_ee": [
-                ("ll_dg_ee", (0.0, 0.0, 0.0)),
-                ("openarm_left_hand_tcp", (0.0, 0.0, -0.08)),
-                ("openarm_left_hand", (0.0, 0.0, 0.0)),
-            ],
-        }
-        candidates = alias_offsets.get(requested_body_name, [(requested_body_name, (0.0, 0.0, 0.0))])
-        for body_name, desired_origin_in_body in candidates:
-            if body_name in body_names:
-                resolved_pos_b = attach_pos_b + torch.tensor(
-                    desired_origin_in_body, dtype=attach_pos_b.dtype, device=attach_pos_b.device
-                )
-                return body_names.index(body_name), resolved_pos_b
-        raise ValueError(f"Attachment frame '{requested_body_name}' was not found.")
-
-    def _get_left_target_cup_fixed_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
-        if env_ids is None:
-            return self._left_target_cup_fixed_pose_w
-        return self._left_target_cup_fixed_pose_w[env_ids]
-
-    def _compute_attached_root_pose(
-        self,
-        body_id: int,
-        attach_pos_b: torch.Tensor,
-        attach_quat_b: torch.Tensor,
-        env_ids: Sequence[int] | None = None,
-    ) -> torch.Tensor:
-        if env_ids is None:
-            body_pos_w = self.robot.data.body_pos_w[:, body_id]
-            body_quat_w = self.robot.data.body_quat_w[:, body_id]
-        else:
-            body_pos_w = self.robot.data.body_pos_w[env_ids, body_id]
-            body_quat_w = self.robot.data.body_quat_w[env_ids, body_id]
-
-        attach_pos_w = body_pos_w + quat_apply(body_quat_w, attach_pos_b.unsqueeze(0).expand_as(body_pos_w))
-        attach_quat_w = quat_mul(body_quat_w, attach_quat_b.unsqueeze(0).expand(body_quat_w.shape[0], -1))
-        return torch.cat([attach_pos_w, attach_quat_w], dim=-1)
-
-    def _sample_bead_states_inside_cup(self, cup_pose: torch.Tensor) -> torch.Tensor:
-        cup_pos_w = cup_pose[:, :3]
-        cup_quat_w = cup_pose[:, 3:7]
-        n = cup_pose.shape[0]
-        base_offset = self._bead_spawn_pos_source_cup_b.unsqueeze(0).unsqueeze(1).expand(n, self.num_beads, -1)
-        local_offsets = base_offset + self._bead_offsets_source_cup_b.unsqueeze(0).expand(n, -1, -1)
-        cup_quat_expanded = cup_quat_w.unsqueeze(1).expand(-1, self.num_beads, -1)
-        bead_pos_w = cup_pos_w.unsqueeze(1) + quat_apply(
-            cup_quat_expanded.reshape(-1, 4),
-            local_offsets.reshape(-1, 3),
-        ).reshape(n, self.num_beads, 3)
-        bead_quat_w = quat_mul(
-            cup_quat_expanded.reshape(-1, 4),
-            self._bead_spawn_quat_source_cup.unsqueeze(0).unsqueeze(1).expand(n, self.num_beads, -1).reshape(-1, 4),
-        ).reshape(n, self.num_beads, 4)
-        bead_state = torch.zeros(n, self.num_beads, 13, device=self.device)
-        bead_state[..., :3] = bead_pos_w
-        bead_state[..., 3:7] = bead_quat_w
-        return bead_state
-
-    def _spawn_beads_with_active_mask(
-        self, cup_pose: torch.Tensor, env_ids: Sequence[int]
-    ) -> torch.Tensor:
-        """active bead는 컵 내부에, inactive bead는 hidden parking grid에 배치."""
-        n = len(env_ids)
-        active_counts = self._active_bead_count[env_ids]  # (n,)
-
-        # 모든 bead의 컵-내부 위치 계산 (n, num_beads, 13)
-        all_states = self._sample_bead_states_inside_cup(cup_pose)
-
-        # hidden 위치: env_origin + local offset (n, num_beads, 3)
-        hidden_pos_w = (
-            self.scene.env_origins[env_ids].unsqueeze(1)      # (n, 1, 3)
-            + self._hidden_bead_offsets_b.unsqueeze(0)         # (1, num_beads, 3)
-        )
-
-        # inactive mask: bead i >= active_count → hidden으로 교체
-        bead_idx = torch.arange(self.num_beads, device=self.device).unsqueeze(0)  # (1, num_beads)
-        inactive = bead_idx >= active_counts.unsqueeze(1)                          # (n, num_beads)
-
-        all_states[..., :3] = torch.where(
-            inactive.unsqueeze(-1).expand(n, self.num_beads, 3),
-            hidden_pos_w,
-            all_states[..., :3],
-        )
-        # inactive bead 속도 0 보장
-        all_states[..., 7:] = torch.where(
-            inactive.unsqueeze(-1).expand(n, self.num_beads, 6),
-            torch.zeros_like(all_states[..., 7:]),
-            all_states[..., 7:],
-        )
-        return all_states
-
-    def _hide_beads(self, env_ids: Sequence[int]) -> None:
-        n = len(env_ids)
-        bead_state = torch.zeros(n, self.num_beads, 13, device=self.device)
-        bead_state[..., 2] = -10.0
-        bead_state[..., 3] = 1.0
-        self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
-
-    def _build_warmstart_reset_cache(self) -> None:
-        if not self.cfg.enable_warmstart_reset:
-            return
-
-        ckpt = self.cfg.warmstart_checkpoint_path
-        if not ckpt:
-            return
-
-        try:
-            self._warmstart_policy = _WarmstartPolicy(ckpt, self.device).to(self.device)
-        except Exception as exc:
-            print(f"[5g_pour_right_v3] warmstart policy load failed: {exc}", flush=True)
-            self._warmstart_policy = None
-            return
-
-        self._warmstart_collect_mode = True
-
-        try:
-            self.reset()
-            with torch.no_grad():
-                for _ in range(int(self.cfg.warmstart_max_rollout_steps)):
-                    if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
-                        break
-                    actions = self._warmstart_policy(self._get_legacy_warmstart_policy_obs())
-                    self.step(actions)
-        finally:
-            self._warmstart_collect_mode = False
-
-        if self._warmstart_cache_count == 0:
-            raise RuntimeError(
-                "[5g_pour_right_v3] warmstart cache is empty. "
-                "The v7 checkpoint rollout did not produce any lift-success state, so this task cannot start "
-                "from the requested play-like grasp state."
-            )
-
-        print(
-            f"[5g_pour_right_v3] collected {self._warmstart_cache_count} warmstart success states.",
-            flush=True,
-        )
-
-    def _maybe_store_warmstart_successes(self) -> None:
-        """collect mode 에서 '확실하게 lift' 된 env 만 캐시에 저장.
-
-        저장 조건 (모두 충족해야 함):
-          1. lift height  >= warmstart_cache_min_lift_height   (기본 0.15m: 확실히 들린 상태)
-          2. contacts     >= warmstart_cache_min_contacts       (기본 3개: 견고한 파지)
-          3. upright      source up-axis z > 0.85              (컵이 수직 유지)
-          4. not_falling  cup z-velocity  >= -0.02 m/s         (낙하 중이 아님)
-          5. stable_hold  위 조건을 연속 warmstart_stable_hold_steps 프레임 유지
-        """
-        if not self._warmstart_collect_mode:
-            return
-        if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
-            return
-
-        # ── 조건 1~4: 이번 프레임 품질 기준 ────────────────────────────────
-        min_lift   = self.cfg.warmstart_cache_min_lift_height
-        min_ct     = self.cfg.warmstart_cache_min_contacts
-        stable_req = self.cfg.warmstart_stable_hold_steps
-
-        lifted      = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + min_lift)
-        grasped     = self.num_contacts_buf >= min_ct
-        upright     = self._source_up_axis_w[:, 2] > 0.85
-        not_falling = self.cup.data.root_link_lin_vel_w[:, 2] >= -0.02
-        quality_ok  = lifted & grasped & upright & not_falling
-
-        # ── 조건 5: 연속 안정 카운터 갱신 ──────────────────────────────────
-        self._warmstart_stable_steps = torch.where(
-            quality_ok,
-            self._warmstart_stable_steps + 1,
-            torch.zeros_like(self._warmstart_stable_steps),
-        )
-
-        # stable_req 프레임 연속 유지된 env 만 저장 후보
-        stable_ok = self._warmstart_stable_steps >= stable_req
-        success_env_ids = stable_ok.nonzero(as_tuple=False).squeeze(-1)
-        if success_env_ids.numel() == 0:
-            return
-
-        # 이미 저장된 env 가 다음 스텝에 또 저장되지 않도록 카운터 리셋
-        self._warmstart_stable_steps[success_env_ids] = 0
-
-        remaining = self._warmstart_arm_pos.shape[0] - self._warmstart_cache_count
-        success_env_ids = success_env_ids[:remaining]
-        count = success_env_ids.numel()
-        if count == 0:
-            return
-
-        start = self._warmstart_cache_count
-        end   = start + count
-        self._warmstart_arm_pos[start:end]       = self.robot.data.joint_pos[success_env_ids][:, self.arm_dof_indices]
-        self._warmstart_hand_pos[start:end]      = self.robot.data.joint_pos[success_env_ids][:, self.hand_dof_indices]
-        self._warmstart_palm_pose[start:end]     = self.palm_pose_targets[success_env_ids]
-        self._warmstart_cup_pose[start:end, :3]  = (
-            self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
-        )
-        self._warmstart_cup_pose[start:end, 3:7] = self.cup.data.root_quat_w[success_env_ids]
-        self._warmstart_cache_count = end
-
-    def _maybe_store_success_states(self, gate_pour_binary: torch.Tensor) -> None:
-        if not self.cfg.enable_success_warmstart_reset:
-            return
-        if self._warmstart_collect_mode:
-            return
-
-        # [v3 수정] spilling이 과한 상태는 캐시하지 않음 (start state의 messy함 방지)
-        candidate_mask = (
-            gate_pour_binary.bool()
-            & (self._spill_ratio < 0.10)
-            & (
-                (self._bead_cross_fraction > self.cfg.success_cache_store_min_bead_cross_fraction)
-                | (self._bead_in_target_fraction > self.cfg.success_cache_store_min_bead_in_target_fraction)
-            )
-        )
-        candidate_env_ids = candidate_mask.nonzero(as_tuple=False).squeeze(-1)
-        if candidate_env_ids.numel() == 0:
-            return
-
-        self._success_cache_candidate_total += int(candidate_env_ids.numel())
-        candidate_scores = (
-            1000.0 * self._bead_in_target_fraction[candidate_env_ids]
-            + 100.0 * self._bead_cross_fraction[candidate_env_ids]
-            - self._mouth_xy_distance[candidate_env_ids]
-        )
-        for env_id, score in zip(candidate_env_ids.tolist(), candidate_scores.tolist(), strict=False):
-            if self._success_cache_count < self._success_cache_scores.shape[0]:
-                slot = self._success_cache_count
-                self._success_cache_count += 1
-            else:
-                min_score, min_slot = torch.min(self._success_cache_scores[: self._success_cache_count], dim=0)
-                if score <= float(min_score.item()):
-                    continue
-                slot = int(min_slot.item())
-
-            self._success_cache_scores[slot] = score
-            self._success_cache_store_total += 1
-            self._success_cache_arm_pos[slot] = self.robot.data.joint_pos[env_id, self.arm_dof_indices]
-            self._success_cache_hand_pos[slot] = self.robot.data.joint_pos[env_id, self.hand_dof_indices]
-            self._success_cache_palm_pose[slot] = self.palm_pose_targets[env_id]
-            self._success_cache_cup_pose[slot, :3] = (
-                self.cup.data.root_pos_w[env_id] - self.scene.env_origins[env_id]
-            )
-            self._success_cache_cup_pose[slot, 3:7] = self.cup.data.root_quat_w[env_id]
-            self._success_cache_left_cup_pose[slot, :3] = (
-                self._left_target_cup_fixed_pose_w[env_id, :3] - self.scene.env_origins[env_id]
-            )
-            self._success_cache_left_cup_pose[slot, 3:7] = self._left_target_cup_fixed_pose_w[env_id, 3:7]
-            self._success_cache_bead_state[slot, :, :3] = (
-                self.beads.data.object_pos_w[env_id] - self.scene.env_origins[env_id]
-            )
-            self._success_cache_bead_state[slot, :, 3:7] = self.beads.data.object_quat_w[env_id]
-            self._success_cache_bead_state[slot, :, 7:10] = self.beads.data.object_lin_vel_w[env_id]
-            self._success_cache_bead_state[slot, :, 10:13] = self.beads.data.object_ang_vel_w[env_id]
-            self._success_cache_active_bead_count[slot] = self._active_bead_count[env_id]
-
-    def _reset_from_cached_state(
-        self,
-        env_ids: Sequence[int],
-        arm_pos: torch.Tensor,
-        hand_pos: torch.Tensor,
-        palm_pose: torch.Tensor,
-        cup_pose_local: torch.Tensor,
-        *,
-        left_cup_pose_local: torch.Tensor | None = None,
-        bead_state_local: torch.Tensor | None = None,
-        active_bead_count: torch.Tensor | None = None,
-        object_init_z_override: float | None = None,
-        success_reset: bool = False,
-    ) -> None:
-        n = len(env_ids)
-        full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
-        full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
-        full_pos[:, self.arm_dof_indices] = arm_pos
-        full_pos[:, self.hand_dof_indices] = hand_pos
-        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
-        self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
-
-        self.fabric_q[env_ids].zero_()
-        self.fabric_q[env_ids, :NUM_ARM_DOF] = arm_pos
-        self.fabric_q[env_ids, NUM_ARM_DOF:] = hand_pos
-        self.fabric_qd[env_ids].zero_()
-        self.fabric_qdd[env_ids].zero_()
-
-        self.pregrasp_arm_pos_buf[env_ids] = arm_pos
-        self.grasp_hold_hand_pos_buf[env_ids] = hand_pos
-        delta_20 = (self.hand_grasp_pose - self.hand_open_pose).unsqueeze(0).expand(n, -1)
-        open_20 = self.hand_open_pose.unsqueeze(0).expand(n, -1)
-        valid = torch.abs(delta_20) > 1e-6
-        t_20 = torch.where(valid, (hand_pos - open_20) / delta_20, torch.zeros_like(hand_pos))
-        t_20 = t_20.clamp(0.0, 1.0)
-        valid_f = valid.view(n, NUM_FINGER_ACTION, 4).float()
-        t_f = t_20.view(n, NUM_FINGER_ACTION, 4)
-        valid_count = valid_f.sum(dim=-1)
-        t_finger = torch.where(
-            valid_count > 0,
-            (t_f * valid_f).sum(dim=-1) / valid_count.clamp(min=1.0),
-            torch.zeros_like(valid_count),
-        )
-        self._warmstart_finger_action_floor[env_ids] = (2.0 * t_finger - 1.0).clamp(-1.0, 1.0)
-        self._warmstart_only_close[env_ids] = True
-        self._success_reset_until_step[env_ids] = (
-            self.cfg.episode_hold_steps + self.cfg.success_reset_hold_steps
-            if success_reset
-            else 0
-        )
-
-        cached_palm_pose = palm_pose.clone()
-        cached_palm_pose[:, :3] = torch.max(
-            torch.min(cached_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
-            self.palm_mins[:3].unsqueeze(0),
-        )
-        self.pregrasp_palm_pose_buf[env_ids] = cached_palm_pose
-        self.palm_pose_targets[env_ids] = cached_palm_pose
-        self.hand_joint_targets[env_ids] = hand_pos
-        self.object_init_pos[env_ids] = cup_pose_local[:, :3]
-        if object_init_z_override is not None:
-            self.object_init_pos[env_ids, 2] = object_init_z_override
-        self._grasp_rel_palm_to_cup_init[env_ids] = cup_pose_local[:, :3] - palm_pose[:, :3]
-        self._grasp_cup_height_init[env_ids] = cup_pose_local[:, 2]
-        self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = arm_pos
-
-        cup_pose_world = cup_pose_local.clone()
-        cup_pose_world[:, :3] += self.scene.env_origins[env_ids]
-        zero_vel = torch.zeros(n, 6, device=self.device)
-        self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
-        self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
-        # hold 기간 컵 고정 좌표 저장 (palm body 추적 오차 없는 절대 좌표)
-        self._cup_hold_pos_w[env_ids]  = cup_pose_world[:, :3]
-        self._cup_hold_quat_w[env_ids] = cup_pose_world[:, 3:7]
-
-        if left_cup_pose_local is None:
-            left_cup_pose = self._compute_attached_root_pose(
-                self._left_target_cup_body_id,
-                self._left_target_cup_attach_pos_b,
-                self._left_target_cup_attach_quat_b,
-                env_ids=env_ids,
-            )
-            left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
-        else:
-            left_cup_pose = left_cup_pose_local.clone()
-            left_cup_pose[:, :3] += self.scene.env_origins[env_ids]
-        self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
-        self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
-        self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
-
-        if active_bead_count is None:
-            active_bead_count = torch.full(
-                (n,), self._bead_count_stages[self._bead_adr_stage_idx], dtype=torch.long, device=self.device
-            )
-        self._active_bead_count[env_ids] = active_bead_count
-        _bead_idx = torch.arange(self.num_beads, device=self.device).unsqueeze(0)
-        self._active_bead_mask[env_ids] = _bead_idx < active_bead_count.unsqueeze(1)
-
-        if bead_state_local is None:
-            bead_state = self._spawn_beads_with_active_mask(cup_pose_world, env_ids)
-        else:
-            bead_state = bead_state_local.clone()
-            bead_state[..., :3] += self.scene.env_origins[env_ids].unsqueeze(1)
-        self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
-
-        self.contact_force_raw[env_ids].zero_()
-        self.binary_contact_buf[env_ids] = False
-        self.num_contacts_buf[env_ids] = 0
-        self.distal_contact_force_raw[env_ids].zero_()
-        self.distal_binary_contact_buf[env_ids] = False
-        self.middle_contact_force_raw[env_ids].zero_()
-        self.middle_binary_contact_buf[env_ids] = False
-        self._bead_in_target[env_ids] = False
-        self._bead_in_source[env_ids] = False
-        self._bead_ever_in_target[env_ids] = False
-        self._bead_crossed_target_mouth[env_ids] = False
-        self._prev_bead_target_local_z[env_ids].fill_(10.0)
-        self._needs_grasp_init_update[env_ids] = True
-        self._bead_cross_count[env_ids] = 0
-        self._bead_cross_fraction[env_ids] = 0.0
-        self._prev_bead_ever_in_target_count[env_ids] = 0
-        self._bead_in_target_fraction[env_ids] = 0.0
-        self._bead_in_source_fraction[env_ids] = 0.0
-        self._bead_centroid_w[env_ids].zero_()
-        self._spill_ratio[env_ids] = 0.0
-        self._all_beads_bonus_paid[env_ids] = False
-        self._first_capture_bonus_paid[env_ids] = False
-        self._tilt_onset_bonus_paid[env_ids] = False
-        self._no_tip_force_steps[env_ids] = 0
-        self._source_empty_steps[env_ids] = 0
-        self.success_flag[env_ids] = False
-        self._prev_arm_joint_vel[env_ids].zero_()
-        self._prev_arm_joint_acc[env_ids].zero_()
-        self._ema_palm_action[env_ids].zero_()
-        self.actions[env_ids, :6] = 0.0
-        self.actions[env_ids, 6:] = 1.0
-        self.prev_actions[env_ids, :6] = 0.0
-        self.prev_actions[env_ids, 6:] = 1.0
-        self._prev_mouth_xy_distance[env_ids] = 0.0
-        self._pre_pour_ready_steps[env_ids] = 0
-        self.success_flag[env_ids] = False
 
     # ------------------------------------------------------------------
-    # [v4] Trajectory finalize helper
+    #  Trajectory finalize helper
     # ------------------------------------------------------------------
     def _finalize_episode_trajectories(self, env_ids: torch.Tensor) -> None:
         """에피소드 종료 env 의 궤적을 성공 조건 검사 후 success_trajectory_buffer 에 저장.
@@ -2358,3 +1978,266 @@ class PourRightEnv(DirectRLEnv):
             active_bead_count=None,         # [v3 수정] 현재 ADR 단계의 비드 개수 적용
             success_reset=True,
         )
+
+    def _resolve_attachment_body(self, requested_body_name: str, attach_pos_b: torch.Tensor) -> tuple[int, torch.Tensor]:
+        body_names = self.robot.data.body_names
+        alias_offsets: dict[str, list[tuple[str, tuple[float, float, float]]]] = {
+            "openarm_left_hand": [
+                ("openarm_left_hand", (0.0, 0.0, 0.0)),
+                ("openarm_left_hand_tcp", (0.0, 0.0, -0.08)),
+                ("ll_dg_ee", (0.0, 0.0, -0.08)),
+            ],
+            "ll_dg_ee": [
+                ("ll_dg_ee", (0.0, 0.0, 0.0)),
+                ("openarm_left_hand_tcp", (0.0, 0.0, -0.08)),
+                ("openarm_left_hand", (0.0, 0.0, 0.0)),
+            ],
+        }
+        candidates = alias_offsets.get(requested_body_name, [(requested_body_name, (0.0, 0.0, 0.0))])
+        for body_name, desired_origin_in_body in candidates:
+            if body_name in body_names:
+                resolved_pos_b = attach_pos_b + torch.tensor(
+                    desired_origin_in_body, dtype=attach_pos_b.dtype, device=attach_pos_b.device
+                )
+                return body_names.index(body_name), resolved_pos_b
+        raise ValueError(f"Attachment frame '{requested_body_name}' was not found.")
+
+    def _get_left_target_cup_fixed_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
+        pose = self._compute_attached_root_pose(
+            self._left_target_cup_body_id,
+            self._left_target_cup_attach_pos_b,
+            self._left_target_cup_attach_quat_b,
+            env_ids=env_ids,
+        )
+        pose[:, 2] += self.cfg.left_cup_world_z_offset
+        return pose
+
+    def _compute_attached_root_pose(
+        self,
+        body_id: int,
+        attach_pos_b: torch.Tensor,
+        attach_quat_b: torch.Tensor,
+        env_ids: Sequence[int] | None = None,
+    ) -> torch.Tensor:
+        if env_ids is None:
+            body_pos_w = self.robot.data.body_pos_w[:, body_id]
+            body_quat_w = self.robot.data.body_quat_w[:, body_id]
+        else:
+            body_pos_w = self.robot.data.body_pos_w[env_ids, body_id]
+            body_quat_w = self.robot.data.body_quat_w[env_ids, body_id]
+
+        attach_pos_w = body_pos_w + quat_apply(body_quat_w, attach_pos_b.unsqueeze(0).expand_as(body_pos_w))
+        attach_quat_w = quat_mul(body_quat_w, attach_quat_b.unsqueeze(0).expand(body_quat_w.shape[0], -1))
+        return torch.cat([attach_pos_w, attach_quat_w], dim=-1)
+
+    def _sample_bead_states_inside_cup(self, cup_pose: torch.Tensor) -> torch.Tensor:
+        cup_pos_w = cup_pose[:, :3]
+        cup_quat_w = cup_pose[:, 3:7]
+        n = cup_pose.shape[0]
+        bead_state = torch.zeros(n, self.num_beads, 13, device=self.device)
+        base_offset = self._bead_spawn_pos_source_cup_b.unsqueeze(0).unsqueeze(1).expand(n, self.num_beads, -1)
+        bead_pos_w = cup_pos_w.unsqueeze(1) + quat_apply(
+            cup_quat_w.unsqueeze(1).expand(-1, self.num_beads, -1).reshape(-1, 4),
+            base_offset.reshape(-1, 3),
+        ).reshape(n, self.num_beads, 3)
+        bead_quat_w = quat_mul(
+            cup_quat_w.unsqueeze(1).expand(-1, self.num_beads, -1).reshape(-1, 4),
+            self._bead_spawn_quat_source_cup.unsqueeze(0).unsqueeze(1).expand(n, self.num_beads, -1).reshape(-1, 4),
+        ).reshape(n, self.num_beads, 4)
+        bead_state[..., :3] = bead_pos_w
+        bead_state[..., 3:7] = bead_quat_w
+        return bead_state
+
+    def _spawn_beads_with_active_mask(self, cup_pose: torch.Tensor, env_ids: Sequence[int]) -> torch.Tensor:
+        n = len(env_ids)
+        active_counts = self._active_bead_count[env_ids]
+        all_states = self._sample_bead_states_inside_cup(cup_pose)
+        hidden_pos_w = self.scene.env_origins[env_ids].unsqueeze(1) + self._hidden_bead_offsets_b.unsqueeze(0)
+        bead_idx = torch.arange(self.num_beads, device=self.device).unsqueeze(0)
+        inactive = bead_idx >= active_counts.unsqueeze(1)
+        all_states[..., :3] = torch.where(
+            inactive.unsqueeze(-1).expand(n, self.num_beads, 3),
+            hidden_pos_w,
+            all_states[..., :3],
+        )
+        all_states[..., 7:] = torch.where(
+            inactive.unsqueeze(-1).expand(n, self.num_beads, 6),
+            torch.zeros_like(all_states[..., 7:]),
+            all_states[..., 7:],
+        )
+        return all_states
+
+    def _hide_beads(self, env_ids: Sequence[int]) -> None:
+        n = len(env_ids)
+        bead_state = torch.zeros(n, self.num_beads, 13, device=self.device)
+        bead_state[..., 2] = -10.0
+        bead_state[..., 3] = 1.0
+        self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
+
+    def _build_warmstart_reset_cache(self) -> None:
+        if not self.cfg.enable_warmstart_reset:
+            return
+
+        ckpt = self.cfg.warmstart_checkpoint_path
+        if not ckpt:
+            return
+
+        try:
+            self._warmstart_policy = _WarmstartPolicy(ckpt, self.device).to(self.device)
+        except Exception as exc:
+            print(f"[pour_v1] warmstart policy load failed: {exc}", flush=True)
+            self._warmstart_policy = None
+            return
+
+        self._warmstart_collect_mode = True
+        try:
+            self.reset()
+            with torch.no_grad():
+                for _ in range(int(self.cfg.warmstart_max_rollout_steps)):
+                    if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
+                        break
+                    actions = self._warmstart_policy(self._get_legacy_warmstart_policy_obs())
+                    self.step(actions)
+        finally:
+            self._warmstart_collect_mode = False
+
+        if self._warmstart_cache_count == 0:
+            raise RuntimeError(
+                "[pour_v1] warmstart cache is empty. "
+                "The 5g_grasp_right-v7 checkpoint rollout did not produce any cached grasp state."
+            )
+
+        print(
+            f"[pour_v1] collected {self._warmstart_cache_count} warmstart states from 5g_grasp_right-v7.",
+            flush=True,
+        )
+
+    def _maybe_store_warmstart_successes(self) -> None:
+        if not self._warmstart_collect_mode:
+            return
+        if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
+            return
+
+        min_lift = self.cfg.warmstart_cache_min_lift_height
+        min_ct = self.cfg.warmstart_cache_min_contacts
+        stable_req = self.cfg.warmstart_stable_hold_steps
+
+        lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + min_lift)
+        grasped = self.num_contacts_buf >= min_ct
+        upright = self._source_up_axis_w[:, 2] > 0.85
+        not_falling = self.cup.data.root_link_lin_vel_w[:, 2] >= -0.02
+        quality_ok = lifted & grasped & upright & not_falling
+
+        self._warmstart_stable_steps = torch.where(
+            quality_ok,
+            self._warmstart_stable_steps + 1,
+            torch.zeros_like(self._warmstart_stable_steps),
+        )
+
+        success_env_ids = (self._warmstart_stable_steps >= stable_req).nonzero(as_tuple=False).squeeze(-1)
+        if success_env_ids.numel() == 0:
+            return
+
+        self._warmstart_stable_steps[success_env_ids] = 0
+        remaining = self._warmstart_arm_pos.shape[0] - self._warmstart_cache_count
+        success_env_ids = success_env_ids[:remaining]
+        count = success_env_ids.numel()
+        if count == 0:
+            return
+
+        start = self._warmstart_cache_count
+        end = start + count
+        self._warmstart_arm_pos[start:end] = self.robot.data.joint_pos[success_env_ids][:, self.arm_dof_indices]
+        self._warmstart_hand_pos[start:end] = self.robot.data.joint_pos[success_env_ids][:, self.hand_dof_indices]
+        self._warmstart_palm_pose[start:end] = self.palm_pose_targets[success_env_ids]
+        self._warmstart_cup_pose[start:end, :3] = (
+            self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
+        )
+        self._warmstart_cup_pose[start:end, 3:7] = self.cup.data.root_quat_w[success_env_ids]
+        self._warmstart_cache_count = end
+
+    def _reset_from_cached_state(
+        self,
+        env_ids: Sequence[int],
+        arm_pos: torch.Tensor,
+        hand_pos: torch.Tensor,
+        palm_pose: torch.Tensor,
+        cup_pose_local: torch.Tensor,
+        *,
+        left_cup_pose_local: torch.Tensor | None = None,
+        bead_state_local: torch.Tensor | None = None,
+        active_bead_count: torch.Tensor | None = None,
+        object_init_z_override: float | None = None,
+        success_reset: bool = False,
+    ) -> None:
+        n = len(env_ids)
+        full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
+        full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
+        full_pos[:, self.arm_dof_indices] = arm_pos
+        full_pos[:, self.hand_dof_indices] = hand_pos
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_rest_pos[0]
+        full_pos[:, self.left_gripper_dof_indices] = self.left_gripper_closed_pos[0]
+        self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
+
+        self.fabric_q[env_ids].zero_()
+        self.fabric_q[env_ids, :NUM_ARM_DOF] = arm_pos
+        self.fabric_q[env_ids, NUM_ARM_DOF:] = hand_pos
+        self.fabric_qd[env_ids].zero_()
+        self.fabric_qdd[env_ids].zero_()
+
+        self.pregrasp_arm_pos_buf[env_ids] = arm_pos
+        self.grasp_hold_hand_pos_buf[env_ids] = hand_pos
+        self.left_arm_joint_targets[env_ids] = self.left_arm_rest_pos[env_ids]
+        cached_palm_pose = palm_pose.clone()
+        cached_palm_pose[:, :3] = torch.max(
+            torch.min(cached_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
+        )
+        self.pregrasp_palm_pose_buf[env_ids] = cached_palm_pose
+        self.palm_pose_targets[env_ids] = cached_palm_pose
+        self.hand_joint_targets[env_ids] = hand_pos
+        self.object_init_pos[env_ids] = cup_pose_local[:, :3]
+        if object_init_z_override is not None:
+            self.object_init_pos[env_ids, 2] = object_init_z_override
+        self._grasp_rel_palm_to_cup_init[env_ids] = cup_pose_local[:, :3] - palm_pose[:, :3]
+        self._grasp_cup_height_init[env_ids] = cup_pose_local[:, 2]
+        self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = arm_pos
+
+        cup_pose_world = cup_pose_local.clone()
+        cup_pose_world[:, :3] += self.scene.env_origins[env_ids]
+        zero_vel = torch.zeros(n, 6, device=self.device)
+        self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
+        self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+        self._cup_hold_pos_w[env_ids] = cup_pose_world[:, :3]
+        self._cup_hold_quat_w[env_ids] = cup_pose_world[:, 3:7]
+
+        if left_cup_pose_local is None:
+            left_cup_pose = self._get_left_target_cup_fixed_pose(env_ids=env_ids)
+        else:
+            left_cup_pose = left_cup_pose_local.clone()
+            left_cup_pose[:, :3] += self.scene.env_origins[env_ids]
+        self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
+        self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+
+        if active_bead_count is None:
+            active_bead_count = torch.full(
+                (n,), self._bead_count_stages[self._bead_adr_stage_idx], dtype=torch.long, device=self.device
+            )
+        self._active_bead_count[env_ids] = active_bead_count
+        bead_idx = torch.arange(self.num_beads, device=self.device).unsqueeze(0)
+        self._active_bead_mask[env_ids] = bead_idx < active_bead_count.unsqueeze(1)
+
+        if bead_state_local is None:
+            bead_state = self._spawn_beads_with_active_mask(cup_pose_world, env_ids)
+        else:
+            bead_state = bead_state_local.clone()
+            bead_state[..., :3] += self.scene.env_origins[env_ids].unsqueeze(1)
+        self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
+
+        self._warmstart_only_close[env_ids] = not success_reset
+        self.actions[env_ids, :6] = 0.0
+        self.actions[env_ids, 6:11] = 1.0
+        self.actions[env_ids, 11:18] = 0.0
+        self.prev_actions[env_ids, :6] = 0.0
+        self.prev_actions[env_ids, 6:11] = 1.0
+        self.prev_actions[env_ids, 11:18] = 0.0

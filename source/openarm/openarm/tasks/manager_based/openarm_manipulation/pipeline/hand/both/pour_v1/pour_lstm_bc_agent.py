@@ -12,21 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PourLstmBCAgent: LSTM PPO + Behavioral Cloning auxiliary loss.
-
-성공 에피소드 궤적(SuccessTrajectoryBuffer) 에서 (obs, action) 시퀀스를 샘플링하여
-BC aux loss 를 PPO loss 에 더한다.
-
-L_total = L_PPO + λ_BC(t) × L_BC
-  L_BC  = -E_{(s,a)~D_success}[log π_θ(a|s)]  (NLL over padded-masked sequence)
-  λ_BC(t): warmup → decay 스케줄
-
-등록:
-  rl_games Runner 의 algo_factory 에 'a2c_continuous_lstm_bc' 이름으로 등록.
-  이 파일의 register_pour_lstm_bc_agent(runner) 를 train 스크립트에서 호출하거나,
-  v4 __init__.py 의 Runner monkeypatch 를 통해 자동 등록된다.
-"""
-
 from __future__ import annotations
 
 import math
