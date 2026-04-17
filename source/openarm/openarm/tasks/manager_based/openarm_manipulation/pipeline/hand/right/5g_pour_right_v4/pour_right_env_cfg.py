@@ -65,7 +65,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
             scale=(1.0, 1.0, 1.0),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.010),  # 10g 구슬 (5g→10g: 관성 향상, 진동 날림 방지)
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=16,
@@ -80,7 +80,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             dynamic_friction=0.08,
             restitution=0.05,
             friction_combine_mode="min",
-            restitution_combine_mode="min",
+            restitution_combine_mode="max",
         )
         rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
             prim_path=f"/World/envs/env_.*/Bead_{i:02d}",
@@ -213,11 +213,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     warmstart_collect_palm_delta_xyz: float = 0.10
     palm_delta_rot_deg: float = 120.0  
     tilt_action_gate_xy_near: float = 0.04
-    tilt_action_gate_xy_far: float = 0.12
+    tilt_action_gate_xy_far: float = 0.2
     approach_xy_off_near: float = 0.02
-    approach_xy_off_far: float = 0.03
-    left_cup_world_z_offset: float = -0.12  
-    reward_gate_xy_scale: float = 10.0   
+    approach_xy_off_far: float = 0.10
+    left_cup_world_z_offset: float = -0.08  
+    reward_gate_xy_scale: float = 5.0   
     reward_gate_clear_scale: float = 80.0
     reward_gate_tilt_scale: float = 15.0
     reward_clearance_min: float = 0.015
@@ -277,9 +277,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_approach_z: float = 3.00
     weight_cup_upright: float = 0.80
 
-    weight_transport_progress: float = 24.00  # 6.00→12.00→24.00: success neighborhood 유입 강화
-    weight_prepour_dir: float = 1.50
-    weight_prepour_align: float = 1.00
+    weight_transport_progress: float = 12.00  
+    weight_prepour_dir: float = 2.50
+    weight_prepour_align: float = 2.00
     weight_cross: float = 80.00
     weight_capture: float = 160.00
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
@@ -346,7 +346,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     lift_height_cap: float = 0.05 
     pour_binary_mouth_xy_thresh: float = 0.08  # 0.03→0.08: policy plateau(11cm)에서 gate 도달 불가 해소
     pour_binary_mouth_z_min: float = -0.01
-    pour_binary_mouth_z_max: float = 0.03
+    pour_binary_mouth_z_max: float = 0.15
     pour_binary_tilt_thresh: float = 0.17  # [v4] 0.0→0.17: >80° 기울기에서 pour gate 개방 (90° 내리꽂기 전략 억제)
 
     # -----------------------------------------------------------------------
