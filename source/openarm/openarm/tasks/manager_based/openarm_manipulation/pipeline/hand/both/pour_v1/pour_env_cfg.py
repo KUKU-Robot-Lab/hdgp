@@ -87,8 +87,8 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
 
 
 @configclass
-class PourRightEnvCfg(DirectRLEnvCfg):
-    """5g_pour_right_v3 환경 설정."""
+class PourEnvCfg(DirectRLEnvCfg):
+    """Bimanual pour_v1 environment configuration."""
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
@@ -491,3 +491,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     actuated_joint_names: list = RIGHT_ACTUATED_JOINT_NAMES
     left_arm_joint_names: list = LEFT_ARM_JOINT_NAMES
     left_gripper_joint_names: list = LEFT_GRIPPER_JOINT_NAMES
+
+
+# Backward-compatible aliases for older task wiring.
+PourRightEnvCfg = PourEnvCfg

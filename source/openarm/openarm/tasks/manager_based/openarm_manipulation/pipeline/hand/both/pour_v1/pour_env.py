@@ -46,7 +46,7 @@ from fabrics_sim.integrator.integrators import DisplacementIntegrator
 from fabrics_sim.utils.utils import initialize_warp
 from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
 
-from .pour_env_cfg import PourRightEnvCfg
+from .pour_env_cfg import PourEnvCfg
 from .trajectory_buffer import TrajectoryCapture, SuccessTrajectoryBuffer
 from .pour_constants import (
     NUM_ARM_DOF,
@@ -107,8 +107,8 @@ class _WarmstartPolicy(nn.Module):
         return torch.nn.functional.linear(x, self.mu_w, self.mu_b)
 
 
-class PourRightEnv(DirectRLEnv):
-    cfg: GraspRightEnvCfg
+class PourEnv(DirectRLEnv):
+    cfg: PourEnvCfg
 
     @staticmethod
     def _quat_xyzw_from_euler_zyx(euler_zyx: torch.Tensor) -> torch.Tensor:
@@ -225,7 +225,7 @@ class PourRightEnv(DirectRLEnv):
     def _quat_xyzw_to_wxyz(quat_xyzw: torch.Tensor) -> torch.Tensor:
         return quat_xyzw[:, [3, 0, 1, 2]]
 
-    def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: PourEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         # ----------------------------------------------------------------
@@ -2304,3 +2304,7 @@ class PourRightEnv(DirectRLEnv):
         self.prev_actions[env_ids, :6] = 0.0
         self.prev_actions[env_ids, 6:11] = 1.0
         self.prev_actions[env_ids, 11:18] = 0.0
+
+
+# Backward-compatible alias for older task wiring.
+PourRightEnv = PourEnv

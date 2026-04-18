@@ -15,10 +15,10 @@
 import gymnasium as gym
 
 from . import agents
-from ..pour_env_cfg import PourRightEnvCfg
+from ..pour_env_cfg import PourEnvCfg
 
 
-class PourRightEnvCfg_PLAY(PourRightEnvCfg):
+class PourEnvCfgPlay(PourEnvCfg):
     """플레이용 설정 (소규모 환경)."""
 
     def __post_init__(self):
@@ -26,60 +26,64 @@ class PourRightEnvCfg_PLAY(PourRightEnvCfg):
         self.scene.env_spacing = 2.5
 
 
-# ── MLP PPO (기존 방식, 하위 호환) ──────────────────────────────────────
+# Backward-compatible aliases for older task wiring.
+PourRightEnvCfg_PLAY = PourEnvCfgPlay
+
+
+# ── MLP PPO ──────────────────────────────────────────────────────────────
 gym.register(
-    id="5g_pour_right-v5",
+    id="pour_v1",
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
-        ".pipeline.hand.right.5g_pour_right_v5"
-        ".pour_right_env:PourRightEnv"
+        ".pipeline.hand.both.pour_v1"
+        ".pour_env:PourEnv"
     ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}:PourRightEnvCfg",
+        "env_cfg_entry_point": f"{__name__}:PourEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
     },
 )
 
 gym.register(
-    id="5g_pour_right-play-v5",
+    id="pour_v1-play",
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
-        ".pipeline.hand.right.5g_pour_right_v5"
-        ".pour_right_env:PourRightEnv"
+        ".pipeline.hand.both.pour_v1"
+        ".pour_env:PourEnv"
     ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}:PourRightEnvCfg_PLAY",
+        "env_cfg_entry_point": f"{__name__}:PourEnvCfgPlay",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
     },
 )
 
 # ── LSTM + BC Aux Loss (PourLstmBCAgent) ────────────────────────────────
 gym.register(
-    id="5g_pour_right-v5-lstm-bc",
+    id="pour_v1-lstm-bc",
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
-        ".pipeline.hand.right.5g_pour_right_v5"
-        ".pour_right_env:PourRightEnv"
+        ".pipeline.hand.both.pour_v1"
+        ".pour_env:PourEnv"
     ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}:PourRightEnvCfg",
+        "env_cfg_entry_point": f"{__name__}:PourEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_bc_cfg.yaml",
     },
 )
 
 gym.register(
-    id="5g_pour_right-play-v5-lstm-bc",
+    id="pour_v1-play-lstm-bc",
     entry_point=(
         "openarm.tasks.manager_based.openarm_manipulation"
-        ".pipeline.hand.right.5g_pour_right_v5"
-        ".pour_right_env:PourRightEnv"
+        ".pipeline.hand.both.pour_v1"
+        ".pour_env:PourEnv"
     ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}:PourRightEnvCfg_PLAY",
+        "env_cfg_entry_point": f"{__name__}:PourEnvCfgPlay",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_bc_cfg.yaml",
     },
 )
