@@ -39,22 +39,22 @@ Actor/critic obs는 동일한 134D로 유지한다.
 보상은 DexPour의 4-stage를 현재 task에 맞게 3-stage로 축약한다.
 
 1. `approach`
-   - `r_approach = w_xy * exp(-k_xy * mouth_xy_distance)`
-   - `r_clearance = w_clear * g_align_xy * sigmoid(k_clear * (mouth_z_clearance - z_min))`
+   - `r_approach = assist_reward_approach_xy * exp(-reward_gate_xy_scale * mouth_xy_distance)`
+   - `r_clearance = assist_reward_clearance * g_align_xy * sigmoid(reward_gate_clear_scale * (mouth_z_clearance - reward_clearance_min))`
 2. `pre-pour alignment`
-   - `r_ready = w_ready * g_ready`
-   - `r_prepour = g_align_xy * (w_tilt * tilt_score + w_align * align_score)`
+   - `r_ready = assist_reward_ready * g_ready`
+   - `r_prepour = g_align_xy * (assist_reward_tilt * tilt_score + assist_reward_align * align_score)`
 3. `pour / capture`
-   - `r_pour = g_pour * (w_cross * bead_cross_fraction + w_capture * bead_in_target_fraction)`
-   - `r_success`는 `fill >= 0.30`, `spill <= 0.15`, `g_pour > 0.05`일 때 부여
-   - `r_terminal_capture`는 episode 종료 또는 source cup 비움 감지 시 최종 capture 비율에 비례
+   - `r_pour = g_pour * (assist_reward_cross * bead_cross_fraction + assist_reward_capture * bead_in_target_fraction)`
+   - `r_success`는 `bead_in_target_fraction >= assist_success_fill_ratio`, `spill_ratio <= assist_success_spill_max`, `g_pour > 0.05`일 때 `assist_reward_success`만큼 부여
+   - `r_terminal_capture`는 episode 종료 또는 source cup 비움 감지 시 `assist_reward_terminal_capture * bead_in_target_fraction`으로 부여
 
 비용 항목:
 
-- `spill_cost`
-- `premature_tilt_cost = (1 - g_ready) * tilt_score`
-- `left_action_rate_cost`
-- `left_joint_vel_cost`
+- `spill_cost = assist_reward_spill * spill_ratio`
+- `premature_tilt_cost = assist_reward_premature_tilt * (1 - g_ready) * tilt_score`
+- `left_action_rate_cost = assist_reward_left_action_rate * left_action_delta`
+- `left_joint_vel_cost = assist_reward_left_joint_vel * left_joint_vel_cost`
 
 ## Gate / Success
 - `g_align_xy = exp(-reward_gate_xy_scale * mouth_xy_distance)`
@@ -64,6 +64,12 @@ Actor/critic obs는 동일한 134D로 유지한다.
 - `g_pour = g_ready * g_tilt`
 
 Success는 per-step 즉시 종료 대신 episode-level success latch로 기록한다.
+
+현재 cfg 이름:
+
+- reward gate 파라미터: `reward_gate_xy_scale`, `reward_gate_clear_scale`, `reward_gate_tilt_scale`, `reward_clearance_min`, `reward_tilt_cos_min`
+- reward weight 파라미터: `assist_reward_approach_xy`, `assist_reward_clearance`, `assist_reward_ready`, `assist_reward_tilt`, `assist_reward_align`, `assist_reward_cross`, `assist_reward_capture`, `assist_reward_success`, `assist_reward_terminal_capture`, `assist_reward_spill`, `assist_reward_premature_tilt`, `assist_reward_left_action_rate`, `assist_reward_left_joint_vel`
+- success threshold 파라미터: `assist_success_fill_ratio`, `assist_success_spill_max`
 
 ## Logging
 필수 로그:
@@ -85,6 +91,11 @@ Success는 per-step 즉시 종료 대신 episode-level success latch로 기록�
 - `g_ready`
 - `g_pour`
 - `success_rate`
+
+현재 구현 추가 로그:
+
+- `left_action_delta`
+- `left_joint_vel_cost`
 
 ## Deferred Work
 - right arm action space를 policy에서 완전히 제거하는 일

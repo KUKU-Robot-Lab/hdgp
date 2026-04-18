@@ -218,6 +218,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     assist_reward_left_joint_vel: float = 0.002
     assist_success_fill_ratio: float = 0.30
     assist_success_spill_max: float = 0.15
+    source_empty_hold_steps: int = 5
 
     # -----------------------------------------------------------------------
     # Warmstart quality / success

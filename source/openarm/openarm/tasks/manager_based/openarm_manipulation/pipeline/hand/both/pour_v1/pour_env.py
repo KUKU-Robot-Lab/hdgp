@@ -77,7 +77,9 @@ from .pour_preset import (
     HAND_GRASP_POSE,
     OBJECT_GOAL_POS,
 )
-from .pour_utils import ACTOR_OBSERVATION_DIM, assemble_actor_observation, scale, to_torch
+from .pour_observation import build_actor_observation, compute_pour_observation_metrics
+from .pour_reward import compute_assist_reward_terms
+from .pour_utils import ACTOR_OBSERVATION_DIM, scale, to_torch
 
 
 class _WarmstartPolicy(nn.Module):
@@ -1203,57 +1205,26 @@ class PourRightEnv(DirectRLEnv):
             left_target_quat_w,
             self._target_cup_up_axis_b.unsqueeze(0).expand(n, -1),
         )
-        self._mouth_delta = self._target_opening_w - self._source_pour_point_w
-        self._mouth_distance = torch.norm(self._mouth_delta, dim=-1)
-
-        # ---- Pour 기하학 계산 (bi_pouring_v1 패턴) ----
-        self._mouth_xy_distance = torch.norm(self._mouth_delta[:, :2], dim=-1)
-        self._mouth_z_clearance = self._source_pour_point_w[:, 2] - self._target_opening_w[:, 2]
-        self._source_up_dot_world = self._source_up_axis_w[:, 2].clamp(-1.0, 1.0)
-
-        # Directional tilt: 원통 컵의 실제 pouring side는 cup root +Z 축이 기울어진 반대편 림이다.
-        # 따라서 낮아지는 림 방향 = -project(source_up_axis, XY) 로 정의하고,
-        # 그 방향이 target opening의 XY 방향을 향하도록 보상한다.
-        _mouth_delta_xy = self._mouth_delta[:, :2]   # (N, 2): target - source XY
-        _mouth_dir_xy = _mouth_delta_xy / (_mouth_delta_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
-        # cup up axis XY = mouth 방향 XY. 올바른 pour = mouth가 target 방향 → 양수
-        _mouth_tilt_dir_xy = self._source_up_axis_w[:, :2]
-        _mouth_tilt_dir_xy = _mouth_tilt_dir_xy / (_mouth_tilt_dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
-        self._directional_tilt_cos = (_mouth_tilt_dir_xy * _mouth_dir_xy).sum(dim=-1).clamp(-1.0, 1.0)
-
-        # Mouth alignment: a cylindrical cup has no meaningful yaw axis at the rim.
-        # If we align a fixed local axis (e.g. [-1, 0, 0]) to the target, the policy can exploit
-        # wrist yaw / joint7-only spin without improving actual pouring geometry.
-        # Therefore use only the XY heading induced by the current tilt. When nearly upright,
-        # there is no valid pour heading, so keep the alignment cosine at 0 (neutral / no reward).
-        _mouth_dir = self._mouth_delta / self._mouth_distance.unsqueeze(1).clamp(min=1e-6)
-        _pour_heading_xy = self._source_up_axis_w[:, :2]
-        _pour_heading_xy_norm = _pour_heading_xy.norm(dim=-1, keepdim=True)
-        _effective_heading_xy = torch.where(
-            _pour_heading_xy_norm > 1e-4,
-            _pour_heading_xy / _pour_heading_xy_norm.clamp(min=1e-6),
-            torch.zeros_like(_pour_heading_xy),
+        metrics = compute_pour_observation_metrics(
+            cup_pos_w=self.cup.data.root_pos_w,
+            source_pour_point_w=self._source_pour_point_w,
+            target_opening_w=self._target_opening_w,
+            source_up_axis_w=self._source_up_axis_w,
+            cfg=self.cfg,
         )
-        _effective_pour_heading = torch.cat(
-            [_effective_heading_xy, torch.zeros(n, 1, device=self.device)], dim=-1
-        )
-        self._mouth_alignment_cos = (_effective_pour_heading * _mouth_dir).sum(dim=-1).clamp(-1.0, 1.0)
-
-        # dense shaping도 mouth geometry를 직접 따른다. 그렇지 않으면 root 정렬만 학습한다.
-        self._cup_center_xy_dist = torch.norm(
-            self.cup.data.root_pos_w[:, :2] - self._target_opening_w[:, :2], dim=-1
-        )
-        self._g_align_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._mouth_xy_distance)
-        self._g_clear = torch.sigmoid(
-            self.cfg.reward_gate_clear_scale
-            * (self._mouth_z_clearance - self.cfg.reward_clearance_min)
-        )
-        self._g_tilt = torch.sigmoid(
-            self.cfg.reward_gate_tilt_scale
-            * (self._directional_tilt_cos - self.cfg.reward_tilt_cos_min)
-        )
-        self._g_ready = self._g_align_xy * self._g_clear
-        self._g_pour = self._g_ready * self._g_tilt
+        self._mouth_delta = metrics["mouth_delta"]
+        self._mouth_distance = metrics["mouth_distance"]
+        self._mouth_xy_distance = metrics["mouth_xy_distance"]
+        self._mouth_z_clearance = metrics["mouth_z_clearance"]
+        self._source_up_dot_world = metrics["source_up_dot_world"]
+        self._directional_tilt_cos = metrics["directional_tilt_cos"]
+        self._mouth_alignment_cos = metrics["mouth_alignment_cos"]
+        self._cup_center_xy_dist = metrics["cup_center_xy_dist"]
+        self._g_align_xy = metrics["g_align_xy"]
+        self._g_clear = metrics["g_clear"]
+        self._g_tilt = metrics["g_tilt"]
+        self._g_ready = metrics["g_ready"]
+        self._g_pour = metrics["g_pour"]
 
         # Bead flags & spill
         self._compute_bead_flags()
@@ -1355,126 +1326,74 @@ class PourRightEnv(DirectRLEnv):
         right_joint_vel = self.robot.data.joint_vel[:, self.actuated_dof_indices]
         left_arm_joint_pos = self.robot.data.joint_pos[:, self.left_arm_dof_indices]
         left_arm_joint_vel = self.robot.data.joint_vel[:, self.left_arm_dof_indices]
-        target_opening_local = self._target_opening_w - self.scene.env_origins
-        bead_centroid_local = self._bead_centroid_w - self.scene.env_origins
-        fingertip_pos_flat = self.fingertip_pos.reshape(self.num_envs, -1)
-        cup_pose_and_vel = torch.cat(
-            [
-                self.object_pos,
-                self.object_rot,
-                self.cup.data.root_lin_vel_w,
-                self.cup.data.root_ang_vel_w,
-            ],
-            dim=-1,
-        )
-
-        actor_obs = assemble_actor_observation(
+        actor_obs = build_actor_observation(
             right_joint_pos=right_joint_pos,
             right_joint_vel=right_joint_vel,
             left_arm_joint_pos=left_arm_joint_pos,
             left_arm_joint_vel=left_arm_joint_vel,
-            fingertip_pos=fingertip_pos_flat,
-            cup_pose_vel=cup_pose_and_vel,
-            target_opening_pos=target_opening_local,
-            bead_centroid_pos=bead_centroid_local,
+            fingertip_pos=self.fingertip_pos,
+            cup_pos_w=self.object_pos,
+            cup_quat_w=self.object_rot,
+            cup_lin_vel_w=self.cup.data.root_lin_vel_w,
+            cup_ang_vel_w=self.cup.data.root_ang_vel_w,
+            target_opening_w=self._target_opening_w,
+            bead_centroid_w=self._bead_centroid_w,
+            env_origins=self.scene.env_origins,
             prev_actions=self.prev_actions,
             mouth_delta=self._mouth_delta,
-            mouth_xy_distance=self._mouth_xy_distance.unsqueeze(-1),
-            mouth_z_clearance=self._mouth_z_clearance.unsqueeze(-1),
-            source_up_dot_world=self._source_up_dot_world.unsqueeze(-1),
-            directional_tilt_cos=self._directional_tilt_cos.unsqueeze(-1),
-            mouth_alignment_cos=self._mouth_alignment_cos.unsqueeze(-1),
-            bead_cross_fraction=self._bead_cross_fraction.unsqueeze(-1),
-            bead_in_target_fraction=self._bead_in_target_fraction.unsqueeze(-1),
-            bead_in_source_fraction=self._bead_in_source_fraction.unsqueeze(-1),
-            spill_ratio=self._spill_ratio.unsqueeze(-1),
-            g_ready=self._g_ready.unsqueeze(-1),
-            g_pour=self._g_pour.unsqueeze(-1),
+            mouth_xy_distance=self._mouth_xy_distance,
+            mouth_z_clearance=self._mouth_z_clearance,
+            source_up_dot_world=self._source_up_dot_world,
+            directional_tilt_cos=self._directional_tilt_cos,
+            mouth_alignment_cos=self._mouth_alignment_cos,
+            bead_cross_fraction=self._bead_cross_fraction,
+            bead_in_target_fraction=self._bead_in_target_fraction,
+            bead_in_source_fraction=self._bead_in_source_fraction,
+            spill_ratio=self._spill_ratio,
+            g_ready=self._g_ready,
+            g_pour=self._g_pour,
+            num_observations=self.cfg.num_observations,
         )
-        if self.cfg.num_observations != ACTOR_OBSERVATION_DIM:
-            raise RuntimeError(
-                f"[pour_v1] cfg obs dim mismatch: {self.cfg.num_observations} != {ACTOR_OBSERVATION_DIM}"
-            )
-        if actor_obs.shape[1] != self.cfg.num_observations:
-            raise RuntimeError(
-                f"[pour_v1] actor obs dim mismatch: {actor_obs.shape[1]} != {self.cfg.num_observations}"
-            )
         critic_obs = actor_obs.clone()
         return {"policy": actor_obs, "critic": critic_obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        approach_xy = torch.exp(-self.cfg.reward_gate_xy_scale * self._mouth_xy_distance)
-        clearance_score = torch.sigmoid(
-            self.cfg.reward_gate_clear_scale
-            * (self._mouth_z_clearance - self.cfg.reward_clearance_min)
-        )
-        tilt_score = torch.clamp(
-            (self._directional_tilt_cos - self.cfg.reward_tilt_cos_min)
-            / max(1.0 - self.cfg.reward_tilt_cos_min, 1e-6),
-            min=0.0,
-            max=1.0,
-        )
-        align_score = 0.5 * (self._mouth_alignment_cos + 1.0)
-
-        r_approach = self.cfg.assist_reward_approach_xy * approach_xy
-        r_clearance = self.cfg.assist_reward_clearance * self._g_align_xy * clearance_score
-        r_ready = self.cfg.assist_reward_ready * self._g_ready
-        r_prepour = self._g_align_xy * (
-            self.cfg.assist_reward_tilt * tilt_score
-            + self.cfg.assist_reward_align * align_score
-        )
-        r_pour = self._g_pour * (
-            self.cfg.assist_reward_cross * self._bead_cross_fraction
-            + self.cfg.assist_reward_capture * self._bead_in_target_fraction
-        )
-
-        success_now = (
-            (self._bead_in_target_fraction >= self.cfg.assist_success_fill_ratio)
-            & (self._spill_ratio <= self.cfg.assist_success_spill_max)
-            & (self._g_pour > 0.05)
-        )
-        self.success_flag |= success_now
-        self.episode_success_buf |= success_now
-        r_success = self.cfg.assist_reward_success * success_now.float()
-
-        is_last_step = self.episode_length_buf >= (self.max_episode_length - 1)
-        is_source_ending = self._source_empty_steps >= 5
-        episode_ending = is_last_step | is_source_ending
-        r_terminal_capture = (
-            self.cfg.assist_reward_terminal_capture
-            * self._bead_in_target_fraction
-            * episode_ending.float()
-        )
-
-        premature_tilt_cost = (1.0 - self._g_ready) * tilt_score
         left_action_delta = (self.actions[:, 11:18] - self.prev_actions[:, 11:18]).pow(2).sum(dim=-1)
         left_joint_vel_cost = self.robot.data.joint_vel[:, self.left_arm_dof_indices].pow(2).sum(dim=-1)
-        spill_cost = self._spill_ratio
 
-        total = (
-            r_approach
-            + r_clearance
-            + r_ready
-            + r_prepour
-            + r_pour
-            + r_success
-            + r_terminal_capture
-            - self.cfg.assist_reward_spill * spill_cost
-            - self.cfg.assist_reward_premature_tilt * premature_tilt_cost
-            - self.cfg.assist_reward_left_action_rate * left_action_delta
-            - self.cfg.assist_reward_left_joint_vel * left_joint_vel_cost
+        reward_terms = compute_assist_reward_terms(
+            cfg=self.cfg,
+            mouth_xy_distance=self._mouth_xy_distance,
+            mouth_z_clearance=self._mouth_z_clearance,
+            directional_tilt_cos=self._directional_tilt_cos,
+            mouth_alignment_cos=self._mouth_alignment_cos,
+            g_align_xy=self._g_align_xy,
+            g_ready=self._g_ready,
+            g_pour=self._g_pour,
+            bead_cross_fraction=self._bead_cross_fraction,
+            bead_in_target_fraction=self._bead_in_target_fraction,
+            spill_ratio=self._spill_ratio,
+            left_action_delta=left_action_delta,
+            left_joint_vel_cost=left_joint_vel_cost,
+            episode_length_buf=self.episode_length_buf,
+            max_episode_length=self.max_episode_length,
+            source_empty_steps=self._source_empty_steps,
         )
+        success_now = reward_terms["success_now"].bool()
+        self.success_flag |= success_now
+        self.episode_success_buf |= success_now
+        total = reward_terms["total"]
 
-        self.extras["r_approach"] = r_approach.mean()
-        self.extras["r_clearance"] = r_clearance.mean()
-        self.extras["r_ready"] = r_ready.mean()
-        self.extras["r_prepour"] = r_prepour.mean()
-        self.extras["r_pour"] = r_pour.mean()
-        self.extras["r_success"] = r_success.mean()
-        self.extras["r_terminal_capture"] = r_terminal_capture.mean()
+        self.extras["r_approach"] = reward_terms["r_approach"].mean()
+        self.extras["r_clearance"] = reward_terms["r_clearance"].mean()
+        self.extras["r_ready"] = reward_terms["r_ready"].mean()
+        self.extras["r_prepour"] = reward_terms["r_prepour"].mean()
+        self.extras["r_pour"] = reward_terms["r_pour"].mean()
+        self.extras["r_success"] = reward_terms["r_success"].mean()
+        self.extras["r_terminal_capture"] = reward_terms["r_terminal_capture"].mean()
         self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
         self.extras["mouth_z_clearance"] = self._mouth_z_clearance.mean()
-        self.extras["mouth_alignment_cos"] = align_score.mean()
+        self.extras["mouth_alignment_cos"] = self._mouth_alignment_cos.mean()
         self.extras["directional_tilt_cos"] = self._directional_tilt_cos.mean()
         self.extras["bead_cross_fraction"] = self._bead_cross_fraction.mean()
         self.extras["bead_in_target_fraction"] = self._bead_in_target_fraction.mean()
