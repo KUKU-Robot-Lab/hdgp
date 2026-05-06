@@ -16,6 +16,8 @@ import torch
 from isaaclab.managers import ActionTerm, ActionTermCfg
 from isaaclab.utils import configclass
 
+from .pour_mimic_math import LEFT_ARM_DELTA_JOINT_SCALE
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
@@ -31,7 +33,7 @@ class LeftArmDeltaActionTermCfg(ActionTermCfg):
     asset_name: str = "robot"
 
     # Maximum per-step joint delta [rad] (un-normalised)
-    left_arm_delta_joint: float = 0.10
+    left_arm_delta_joint: float = LEFT_ARM_DELTA_JOINT_SCALE
 
     # Joint names for the left arm (7D) and gripper (2D)
     left_arm_joint_names: tuple = (
@@ -137,13 +139,13 @@ class LeftArmDeltaActionTerm(ActionTerm):
         """Decode 18D action slice [11:18] and update arm targets."""
         self._resolve_ids()
 
-        delta = actions[:, 11:18] * self._delta_scale
+        delta = actions[:, : self.action_dim] * self._delta_scale
         self._arm_targets = torch.clamp(
             self._arm_targets + delta,
             self._arm_limits[:, 0].unsqueeze(0),
             self._arm_limits[:, 1].unsqueeze(0),
         )
-        self._raw_actions.copy_(actions[:, 11:18])
+        self._raw_actions.copy_(actions[:, : self.action_dim])
         self._processed.copy_(self._arm_targets)
 
     def apply_actions(self) -> None:

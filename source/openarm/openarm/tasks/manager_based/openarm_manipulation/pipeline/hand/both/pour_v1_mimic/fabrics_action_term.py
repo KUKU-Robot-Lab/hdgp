@@ -46,6 +46,8 @@ from fabrics_sim.integrator.integrators import DisplacementIntegrator  # noqa: E
 from fabrics_sim.utils.utils import initialize_warp  # noqa: E402
 from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel  # noqa: E402
 
+from .pour_mimic_math import RIGHT_PALM_DELTA_ROT_SCALE, RIGHT_PALM_DELTA_XYZ_SCALE
+
 
 _NUM_ARM_DOF = 7
 _NUM_HAND_DOF = 20
@@ -71,8 +73,8 @@ class FabricsRightArmActionTermCfg(ActionTermCfg):
     palm_xyz_max: tuple = (1.00,  0.10, 0.95)
 
     # Per-step delta scales (un-normalised world units)
-    delta_xyz_scale: float = 0.30     # m  per action unit
-    delta_rot_scale: float = 0.30     # rad per action unit
+    delta_xyz_scale: float = RIGHT_PALM_DELTA_XYZ_SCALE     # m  per action unit
+    delta_rot_scale: float = RIGHT_PALM_DELTA_ROT_SCALE     # rad per action unit
 
     # Open / grasp hand poses (20D HAND joint order from preset)
     hand_open_pose: tuple | None = None   # filled from pour_preset at init
@@ -99,17 +101,19 @@ class FabricsRightArmActionTerm(ActionTerm):
         num_envs = env.num_envs
 
         # ---------------- Fabrics setup ----------------
-        initialize_warp()
+        initialize_warp("pour_mimic_action")
         world_model = WorldMeshesModel(
-            num_envs=num_envs,
+            batch_size=num_envs,
             max_objects_per_env=cfg.fabric_num_obstacles,
             device=self._device,
         )
+        self._obj_ids, self._obj_ind = world_model.get_object_ids()
         self._fabric = OpenArmTeoslloPoseFabric(
-            num_envs=num_envs,
-            world=world_model,
-            use_hand_fabric=False,
+            batch_size=num_envs,
             device=self._device,
+            timestep=cfg.fabric_dt,
+            graph_capturable=False,
+            use_hand_fabric=False,
         )
         self._integrator = DisplacementIntegrator(self._fabric)
         self._timestep = cfg.fabric_dt
@@ -125,10 +129,6 @@ class FabricsRightArmActionTerm(ActionTerm):
 
         # Dummy PCA (zeros = no hand fabric target)
         self._hand_pca = torch.zeros(num_envs, 5, device=self._device)
-
-        # Obstacle ids
-        self._obj_ids = torch.zeros(num_envs, 1, dtype=torch.long, device=self._device)
-        self._obj_ind = torch.zeros(num_envs, 1, dtype=torch.long, device=self._device)
 
         # Palm pose buffer (absolute) [x,y,z,qx,qy,qz,qw]
         self._palm_pose_buf = torch.zeros(num_envs, 7, device=self._device)

@@ -34,8 +34,8 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
         eef_name: str = "right",
         env_ids: Sequence[int] | None = None,
     ) -> torch.Tensor:
-        """Return right palm pose as (N, 4, 4) from obs_buf."""
-        if eef_name not in ("right", "palm", "right_palm"):
+        """Return requested end-effector pose as (N, 4, 4)."""
+        if eef_name not in ("right", "palm", "right_palm", "left", "left_hand"):
             raise KeyError(f"unsupported eef_name {eef_name!r}")
 
         ids = slice(None) if env_ids is None else env_ids
@@ -46,18 +46,31 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
             # we need the raw body pose from the articulation instead.
             pass
 
+        body_candidates = (
+            ("rl_dg_palm", "right_hand", "openarm_right_hand")
+            if eef_name in ("right", "palm", "right_palm")
+            else ("openarm_left_hand", "left_hand", "openarm_left_link7")
+        )
+        return self._get_body_pose_matrix(body_candidates, ids, env_ids)
+
+    def _get_body_pose_matrix(self, body_candidates: tuple[str, ...], ids, env_ids) -> torch.Tensor:
         robot = self.scene["robot"]
-        try:
-            palm_idx = robot.data.body_names.index("rl_dg_palm")
-        except ValueError:
-            # fallback: return identity
+        body_idx = None
+        for body_name in body_candidates:
+            try:
+                body_idx = robot.data.body_names.index(body_name)
+                break
+            except ValueError:
+                continue
+
+        if body_idx is None:
             n = len(env_ids) if env_ids is not None else self.num_envs
             return torch.eye(4, device=self.device).unsqueeze(0).expand(n, -1, -1)
 
-        pos = robot.data.body_pos_w[ids, palm_idx, :]
+        pos = robot.data.body_pos_w[ids, body_idx, :]
         if hasattr(self.scene, "env_origins"):
             pos = pos - self.scene.env_origins[ids]
-        quat_wxyz = robot.data.body_quat_w[ids, palm_idx, :]
+        quat_wxyz = robot.data.body_quat_w[ids, body_idx, :]
         quat_xyzw = quat_wxyz[:, [1, 2, 3, 0]]
         pose7 = torch.cat([pos, quat_xyzw], dim=-1)
         return pose7_xyzw_to_matrix(pose7)
@@ -143,6 +156,8 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
         max_tip_force = torch.stack(tip_forces, dim=-1).max(dim=-1).values
         contact_ok = max_tip_force >= float(cfg.grasp_force_threshold)
         cup_z = source.data.root_pos_w[ids, 2]
+        if not hasattr(self, "_source_cup_init_z"):
+            self._source_cup_init_z = source.data.root_pos_w[:, 2].clone()
         grasp_done = contact_ok & (cup_z >= self._source_cup_init_z[ids] + 0.01)
 
         # --- lift_done ---

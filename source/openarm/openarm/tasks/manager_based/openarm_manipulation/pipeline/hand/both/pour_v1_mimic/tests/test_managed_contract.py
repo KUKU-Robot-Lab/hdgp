@@ -62,6 +62,13 @@ def test_managed_env_exposes_all_required_mimic_methods() -> None:
         assert method in t, f"missing: {method}"
 
 
+def test_managed_env_supports_left_and_right_eef_names() -> None:
+    t = _text("pour_mimic_managed_env.py")
+    assert '"left"' in t
+    assert "openarm_left_hand" in t
+    assert "rl_dg_palm" in t
+
+
 def test_managed_env_has_start_signal_method() -> None:
     t = _text("pour_mimic_managed_env.py")
     assert "def get_subtask_start_signals(" in t

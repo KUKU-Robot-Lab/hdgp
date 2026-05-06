@@ -16,13 +16,12 @@ from isaaclab.envs.mimic_env_cfg import (
 )
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.managers import ActionGroupCfg
 from isaaclab.utils import configclass
 
 import isaaclab.envs.mdp as mdp
 
-from .fabrics_action_term import FabricsRightArmActionTermCfg
-from .left_arm_action_term import LeftArmDeltaActionTermCfg
+from .fabrics_action_term import FabricsRightArmActionTerm, FabricsRightArmActionTermCfg
+from .left_arm_action_term import LeftArmDeltaActionTerm, LeftArmDeltaActionTermCfg
 from .pour_mimic_obs_cfg import PourMimicObservationsCfg
 from .pour_mimic_scene_cfg import PourMimicSceneCfg
 
@@ -37,9 +36,11 @@ class PourMimicActionsCfg:
     """18D action space split into two ActionTerms."""
 
     right_arm_hand: FabricsRightArmActionTermCfg = FabricsRightArmActionTermCfg(
+        class_type=FabricsRightArmActionTerm,
         asset_name="robot",
     )
     left_arm: LeftArmDeltaActionTermCfg = LeftArmDeltaActionTermCfg(
+        class_type=LeftArmDeltaActionTerm,
         asset_name="robot",
     )
 

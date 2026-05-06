@@ -28,9 +28,9 @@ def test_pour_mimic_package_registers_eval_and_generation_tasks() -> None:
 
     assert 'id="Pour-Mimic-V1-v0"' in init_text
     assert 'id="Pour-Mimic-V1-Mimic-v0"' in init_text
-    assert ".pour_mimic_env:PourMimicEnv" in init_text
-    assert 'env_cfg_entry_point": f"{__name__}:PourMimicEnvCfg"' in init_text
-    assert 'env_cfg_entry_point": f"{__name__}:PourMimicMimicEnvCfg"' in init_text
+    assert ".pour_mimic_managed_env:PourMimicManagedEnv" in init_text
+    assert 'env_cfg_entry_point": f"{__name__}:PourMimicManagedEnvCfg"' in init_text
+    assert 'env_cfg_entry_point": f"{__name__}:PourMimicManagedMimicEnvCfg"' in init_text
 
 
 def test_pour_mimic_cfg_matches_phase_1_contract() -> None:
@@ -88,6 +88,21 @@ def test_action_pose_round_trip_preserves_delta_and_gripper_contract() -> None:
     assert recovered.shape == (2, 18)
     torch.testing.assert_close(recovered[:, :11], action[:, :11], atol=1e-5, rtol=1e-5)
     torch.testing.assert_close(recovered[:, 11:], torch.zeros(2, 7), atol=0.0, rtol=0.0)
+
+
+def test_action_pose_mapping_applies_env_delta_scale() -> None:
+    math_mod = _load_math_module()
+
+    current_pose = torch.eye(4, dtype=torch.float32).unsqueeze(0)
+    action = torch.zeros(1, 18, dtype=torch.float32)
+    action[0, 0] = 1.0
+    action[0, 5] = 1.0
+
+    target_pose = math_mod.action_to_target_pose(current_pose, action)
+
+    assert abs(target_pose[0, 0, 3].item() - math_mod.RIGHT_PALM_DELTA_XYZ_SCALE) < 1e-6
+    recovered = math_mod.target_pose_to_action(current_pose, target_pose, action[:, 6:11])
+    torch.testing.assert_close(recovered[:, :6], action[:, :6], atol=1e-5, rtol=1e-5)
 
 
 def test_actions_to_gripper_actions_keeps_batch_or_sequence_shape() -> None:

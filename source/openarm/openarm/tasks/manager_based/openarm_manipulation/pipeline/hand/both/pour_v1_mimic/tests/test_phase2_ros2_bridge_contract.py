@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import h5py
 import numpy as np
 
 
@@ -49,10 +50,10 @@ def test_demo_recorder_builds_18d_action_from_joint_targets() -> None:
     )
 
     assert action.shape == (18,)
-    np.testing.assert_allclose(action[:3], [0.01, -0.02, 0.03], atol=1e-7)
+    np.testing.assert_allclose(action[:3], np.array([0.01, -0.02, 0.03]) / 0.30, atol=1e-7)
     np.testing.assert_allclose(action[3:6], [0.0, 0.0, 0.0], atol=1e-7)
     np.testing.assert_allclose(action[6:11], np.ones(5), atol=1e-7)
-    np.testing.assert_allclose(action[11:18], np.ones(7) * 0.2, atol=1e-7)
+    np.testing.assert_allclose(action[11:18], np.ones(7) * 2.0, atol=1e-7)
 
 
 def test_demo_recorder_rejects_bad_command_dimensions() -> None:
@@ -69,6 +70,41 @@ def test_demo_recorder_rejects_bad_command_dimensions() -> None:
         assert "right_arm expects 7 values" in str(exc)
     else:
         raise AssertionError("TeleopCommandState accepted a malformed right arm command")
+
+
+def test_demo_recorder_writes_mimic_hdf5_minimum_structure(tmp_path) -> None:
+    recorder = _load_script("ros2_demo_recorder")
+    output = tmp_path / "pour_one_demo.hdf5"
+
+    episode = recorder.EpisodeBuffer()
+    episode.set_initial_state(
+        {
+            "articulation": {
+                "robot": {
+                    "joint_pos": np.zeros((1, 7), dtype=np.float32),
+                },
+            },
+        }
+    )
+    episode.append(
+        obs=np.zeros(91, dtype=np.float32),
+        action=np.ones(18, dtype=np.float32),
+        reward=0.0,
+        done=False,
+    )
+
+    writer = recorder.HDF5DemoWriter(output, env_name="Pour-Mimic-V1-Mimic-v0")
+    writer.set_env_args({"dt": 1.0 / 300.0, "decimation": 5, "num_envs": 1})
+    writer.write_episode(episode, success=True)
+    writer.close()
+
+    with h5py.File(output, "r") as handle:
+        assert "data" in handle
+        assert "Pour-Mimic-V1-Mimic-v0" in handle["data"].attrs["env_args"]
+        demo_name = next(iter(handle["data"].keys()))
+        demo = handle["data"][demo_name]
+        assert "initial_state" in demo
+        assert demo["actions"].shape == (1, 18)
 
 
 def test_ros2_teleop_device_returns_isaaclab_se3_tuple() -> None:

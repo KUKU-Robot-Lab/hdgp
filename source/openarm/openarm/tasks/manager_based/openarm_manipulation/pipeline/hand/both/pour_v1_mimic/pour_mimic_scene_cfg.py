@@ -11,7 +11,7 @@ import os as _os
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.sim.schemas.schemas_cfg import CollisionPropertiesCfg, RigidBodyPropertiesCfg
@@ -39,7 +39,7 @@ class PourMimicSceneCfg(InteractiveSceneCfg):
     # ------------------------------------------------------------------ #
     ground = sim_utils.GroundPlaneCfg() if False else None  # set via spawn
 
-    light = sim_utils.AssetBaseCfg(
+    light = AssetBaseCfg(
         prim_path="/World/light",
         spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
     )

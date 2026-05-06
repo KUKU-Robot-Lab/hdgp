@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import torch
 
+RIGHT_PALM_DELTA_XYZ_SCALE = 0.30
+RIGHT_PALM_DELTA_ROT_SCALE = 0.30
+LEFT_ARM_DELTA_JOINT_SCALE = 0.10
+
 
 def _skew(vec: torch.Tensor) -> torch.Tensor:
     zeros = torch.zeros_like(vec[..., 0])
@@ -71,8 +75,8 @@ def action_to_target_pose(current_pose: torch.Tensor, action: torch.Tensor) -> t
     if action.shape[-1] != 18:
         raise ValueError(f"expected action last dimension 18, got {action.shape[-1]}")
     target_pose = current_pose.clone()
-    target_pose[..., :3, 3] = current_pose[..., :3, 3] + action[..., :3]
-    delta_rot = axis_angle_to_matrix(action[..., 3:6])
+    target_pose[..., :3, 3] = current_pose[..., :3, 3] + action[..., :3] * RIGHT_PALM_DELTA_XYZ_SCALE
+    delta_rot = axis_angle_to_matrix(action[..., 3:6] * RIGHT_PALM_DELTA_ROT_SCALE)
     target_pose[..., :3, :3] = torch.matmul(delta_rot, current_pose[..., :3, :3])
     return target_pose
 
@@ -91,9 +95,9 @@ def target_pose_to_action(
         raise ValueError(f"expected gripper action last dimension 1 or 5, got {gripper_action.shape[-1]}")
 
     action = torch.zeros(current_pose.shape[:-2] + (18,), dtype=current_pose.dtype, device=current_pose.device)
-    action[..., :3] = target_pose[..., :3, 3] - current_pose[..., :3, 3]
+    action[..., :3] = (target_pose[..., :3, 3] - current_pose[..., :3, 3]) / RIGHT_PALM_DELTA_XYZ_SCALE
     delta_rot = torch.matmul(target_pose[..., :3, :3], current_pose[..., :3, :3].transpose(-1, -2))
-    action[..., 3:6] = matrix_to_axis_angle(delta_rot)
+    action[..., 3:6] = matrix_to_axis_angle(delta_rot) / RIGHT_PALM_DELTA_ROT_SCALE
     action[..., 6:11] = curl
     return action
 
