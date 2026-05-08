@@ -44,11 +44,86 @@ LEFT_ARM_REST_JOINT_POS = {
     "openarm_left_finger_joint2": 0.044,
 }
 
+# ---------------------------------------------------------------------------
+# Left target cup — FK 자동 계산
+# ---------------------------------------------------------------------------
+# LEFT_ARM_REST_JOINT_POS를 수정하면 아래 상수가 자동으로 재계산됨.
+# URDF: openarm_modular_dual.urdf 기준 (body_link0 → left_link0~7 → hand).
+
+def _left_arm_fk_hand_pose(joint_pos_dict: dict) -> tuple:
+    """openarm_left_hand body의 robot-base-local 위치(3,)와 회전행렬(3,3)을 반환."""
+    import numpy as np
+
+    def _Rx(a): c,s=math.cos(a),math.sin(a); return np.array([[1,0,0],[0,c,-s],[0,s,c]])
+    def _Ry(a): c,s=math.cos(a),math.sin(a); return np.array([[c,0,s],[0,1,0],[-s,0,c]])
+    def _Rz(a): c,s=math.cos(a),math.sin(a); return np.array([[c,-s,0],[s,c,0],[0,0,1]])
+    def _rpy(r,p,y): return _Rz(y) @ _Ry(p) @ _Rx(r)
+    def _T(R, p): M = np.eye(4); M[:3,:3] = R; M[:3,3] = p; return M
+    def _Tf(xyz, rpy): return _T(_rpy(*rpy), np.array(xyz, float))
+    def _Tj(xyz, rpy, ax, q):
+        a = np.array(ax, float); a /= np.linalg.norm(a)
+        c, s = math.cos(q), math.sin(q)
+        K = np.array([[0,-a[2],a[1]],[a[2],0,-a[0]],[-a[1],a[0],0]])
+        return _T(_rpy(*rpy) @ (np.eye(3) + s*K + (1-c)*(K@K)), np.array(xyz, float))
+
+    g = lambda k: joint_pos_dict.get(k, 0.0)
+    Tc = np.eye(4)
+    Tc = Tc @ _Tf([0, .031, .698],     [-math.pi/2, 0, 0])
+    Tc = Tc @ _Tj([0, 0, .0625],       [0,0,0], [0,0,1],   g("openarm_left_joint1"))
+    Tc = Tc @ _Tj([-.0301,0,.06],      [-math.pi/2,0,0], [-1,0,0], g("openarm_left_joint2"))
+    Tc = Tc @ _Tj([.0301,0,.06625],    [0,0,0], [0,0,1],   g("openarm_left_joint3"))
+    Tc = Tc @ _Tj([0,.0315,.15375],    [0,0,0], [0,1,0],   g("openarm_left_joint4"))
+    Tc = Tc @ _Tj([0,-.0315,.0955],    [0,0,0], [0,0,1],   g("openarm_left_joint5"))
+    Tc = Tc @ _Tj([.0375,0,.1205],     [0,0,0], [1,0,0],   g("openarm_left_joint6"))
+    Tc = Tc @ _Tj([-.0375,0,0],        [0,0,0], [0,-1,0],  g("openarm_left_joint7"))
+    Tc = Tc @ _Tf([0, 0, .1001],       [0,0,0])
+    return Tc[:3, 3], Tc[:3, :3]
+
+
+def compute_left_cup_pose_from_fk(joint_pos_dict: dict, local_z: float = 0.04) -> tuple:
+    """
+    left arm 관절 위치로부터 target cup의 robot-base-local 위치와 쿼터니언을 계산.
+
+    local_z: openarm_left_hand body frame Z 방향 offset
+             0.0 = hand origin, 0.08 = tcp, 0.04(default) = midpoint
+    Returns:
+        pos_env_local: list[float, 3]   robot base(=env origin) 기준 위치
+        quat_wxyz:     list[float, 4]   cup Z ≈ world Z (upright)
+    """
+    import numpy as np
+
+    def _R_to_quat_wxyz(R):
+        t = R[0,0]+R[1,1]+R[2,2]
+        if t > 0:
+            s=2*np.sqrt(t+1); w=.25*s; x=(R[2,1]-R[1,2])/s; y=(R[0,2]-R[2,0])/s; z=(R[1,0]-R[0,1])/s
+        elif R[0,0] > R[1,1] and R[0,0] > R[2,2]:
+            s=2*np.sqrt(1+R[0,0]-R[1,1]-R[2,2]); w=(R[2,1]-R[1,2])/s; x=.25*s; y=(R[0,1]+R[1,0])/s; z=(R[0,2]+R[2,0])/s
+        elif R[1,1] > R[2,2]:
+            s=2*np.sqrt(1+R[1,1]-R[0,0]-R[2,2]); w=(R[0,2]-R[2,0])/s; x=(R[0,1]+R[1,0])/s; y=.25*s; z=(R[1,2]+R[2,1])/s
+        else:
+            s=2*np.sqrt(1+R[2,2]-R[0,0]-R[1,1]); w=(R[1,0]-R[0,1])/s; x=(R[0,2]+R[2,0])/s; y=(R[1,2]+R[2,1])/s; z=.25*s
+        q = np.array([w, x, y, z]); return (q / np.linalg.norm(q)).tolist()
+
+    c, s = math.cos(math.pi / 2), math.sin(math.pi / 2)
+    R_y90 = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+
+    p_hand, R_hand = _left_arm_fk_hand_pose(joint_pos_dict)
+    cup_pos  = (p_hand + R_hand @ np.array([0.0, 0.0, local_z])).tolist()
+    cup_quat = _R_to_quat_wxyz(R_hand @ R_y90)
+    return cup_pos, cup_quat
+
+
+# LEFT_ARM_REST_JOINT_POS 변경 시 자동 반영 : local_z=0.05m에서 컵 위치 계산 (hand origin에서 5cm 앞)
+LEFT_TARGET_CUP_POS_ENV_LOCAL, LEFT_TARGET_CUP_QUAT_WXYZ = compute_left_cup_pose_from_fk(
+    LEFT_ARM_REST_JOINT_POS, local_z=0.05
+)
+
+# 기존 attach 상수 (레거시 — env.py에서 더 이상 사용 안 함)
 LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "openarm_left_hand"
 LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.10]
 LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]
 
-BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.065]
+BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.04]
 BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ = [1.0, 0.0, 0.0, 0.0]
 SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
 TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)

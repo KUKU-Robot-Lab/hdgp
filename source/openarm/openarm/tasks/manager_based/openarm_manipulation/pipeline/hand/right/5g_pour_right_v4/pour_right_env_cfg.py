@@ -45,6 +45,8 @@ from .pour_right_preset import (
     LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
     LEFT_TARGET_CUP_ATTACH_POS_B,
     LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B,
+    LEFT_TARGET_CUP_POS_ENV_LOCAL,
+    LEFT_TARGET_CUP_QUAT_WXYZ,
     RIGHT_ACTUATED_JOINT_NAMES,
     SOURCE_CUP_POUR_AXIS_B,
     SOURCE_CUP_POUR_POINT_POS_B,
@@ -372,6 +374,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     left_target_cup_attach_quat_wxyz_b: tuple[float, float, float, float] = tuple(
         LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B
     )
+    # FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS에서 hand local_z=0.04 midpoint)
+    # stale body_pos_w 문제 없이 모든 env에서 동일하게 배치됨
+    left_target_cup_pos_env_local: tuple[float, float, float] = tuple(LEFT_TARGET_CUP_POS_ENV_LOCAL)
+    left_target_cup_quat_wxyz: tuple[float, float, float, float] = tuple(LEFT_TARGET_CUP_QUAT_WXYZ)
     source_cup_pour_point_pos_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_POINT_POS_B)
     target_cup_opening_pos_b: tuple[float, float, float] = tuple(TARGET_CUP_OPENING_POS_B)
     source_cup_pour_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_AXIS_B)
@@ -391,7 +397,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
             gpu_max_rigid_patch_count=2**24,
             gpu_max_rigid_contact_count=2**24,
-            gpu_collision_stack_size=2**26,
+            gpu_collision_stack_size=2**28,
             gpu_max_num_partitions=64,
             friction_correlation_distance=0.00625,
         ),

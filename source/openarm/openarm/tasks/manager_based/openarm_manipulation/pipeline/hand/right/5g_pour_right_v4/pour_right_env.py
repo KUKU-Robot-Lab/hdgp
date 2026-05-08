@@ -93,6 +93,8 @@ from .pour_right_preset import (
     LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
     LEFT_TARGET_CUP_ATTACH_POS_B,
     LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B,
+    LEFT_TARGET_CUP_POS_ENV_LOCAL,
+    LEFT_TARGET_CUP_QUAT_WXYZ,
     RIGHT_ACTUATED_JOINT_NAMES,
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
@@ -499,18 +501,14 @@ class PourRightEnv(DirectRLEnv):
         # 초기 액션: 0 → palm pose workspace 중심 (접근 자세 유지)
         self.actions.zero_()
 
-        # Left target cup는 reset 시점 attach pose를 스냅샷으로 저장하고,
-        # 에피소드 중에는 그 월드 pose를 고정 유지한다.
-        self._left_target_cup_attach_pos_b = to_torch(
-            self.cfg.left_target_cup_attach_pos_b, device=self.device
-        )
-        self._left_target_cup_attach_quat_b = to_torch(
-            self.cfg.left_target_cup_attach_quat_wxyz_b, device=self.device
-        )
-        self._left_target_cup_body_id, self._left_target_cup_attach_pos_b = self._resolve_attachment_body(
-            self.cfg.left_target_cup_attach_frame_name,
-            self._left_target_cup_attach_pos_b,
-        )
+        # Left target cup — FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS hand local_z=0.04)
+        # stale body_pos_w 대신 미리 계산된 상수로 배치 → env 간 일관성 보장
+        self._left_cup_pos_env_local = to_torch(
+            self.cfg.left_target_cup_pos_env_local, device=self.device
+        )  # shape (3,) — robot base(=env origin) 기준
+        self._left_cup_quat_wxyz = to_torch(
+            self.cfg.left_target_cup_quat_wxyz, device=self.device
+        )  # shape (4,)
         self._left_target_cup_fixed_pose_w = torch.zeros(self.num_envs, 7, device=self.device)
         self._bead_spawn_pos_source_cup_b = to_torch(self.cfg.bead_spawn_pos_source_cup_b, device=self.device)
         self._bead_spawn_quat_source_cup = to_torch(self.cfg.bead_spawn_quat_source_cup_wxyz, device=self.device)
@@ -1955,13 +1953,7 @@ class PourRightEnv(DirectRLEnv):
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
-        left_cup_pose = self._compute_attached_root_pose(
-            self._left_target_cup_body_id,
-            self._left_target_cup_attach_pos_b,
-            self._left_target_cup_attach_quat_b,
-            env_ids=env_ids,
-        )
-        left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
+        left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
         self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
@@ -2018,6 +2010,17 @@ class PourRightEnv(DirectRLEnv):
         self.prev_actions[env_ids, 6:] = -1.0
         self._prev_mouth_xy_distance[env_ids] = 0.0
 
+
+    def _get_left_cup_fk_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
+        """FK 상수로 left target cup의 world pose를 반환. stale body_pos_w 불사용."""
+        if env_ids is None:
+            origins = self.scene.env_origins
+        else:
+            origins = self.scene.env_origins[env_ids]
+        n = origins.shape[0]
+        pos_w = origins + self._left_cup_pos_env_local.unsqueeze(0).expand(n, -1)
+        quat_w = self._left_cup_quat_wxyz.unsqueeze(0).expand(n, -1)
+        return torch.cat([pos_w, quat_w], dim=-1)
 
     def _resolve_attachment_body(self, requested_body_name: str, attach_pos_b: torch.Tensor) -> tuple[int, torch.Tensor]:
         body_names = self.robot.data.body_names
@@ -2306,13 +2309,7 @@ class PourRightEnv(DirectRLEnv):
         self._cup_hold_quat_w[env_ids] = cup_pose_world[:, 3:7]
 
         if left_cup_pose_local is None:
-            left_cup_pose = self._compute_attached_root_pose(
-                self._left_target_cup_body_id,
-                self._left_target_cup_attach_pos_b,
-                self._left_target_cup_attach_quat_b,
-                env_ids=env_ids,
-            )
-            left_cup_pose[:, 2] += self.cfg.left_cup_world_z_offset
+            left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
         else:
             left_cup_pose = left_cup_pose_local.clone()
             left_cup_pose[:, :3] += self.scene.env_origins[env_ids]
