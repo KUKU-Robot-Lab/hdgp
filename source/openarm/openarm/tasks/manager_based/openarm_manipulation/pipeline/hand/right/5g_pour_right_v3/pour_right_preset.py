@@ -33,13 +33,13 @@ LEFT_GRIPPER_JOINT_NAMES = ["openarm_left_finger_joint1", "openarm_left_finger_j
 LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
-    "openarm_left_joint1": 0.0,
-    "openarm_left_joint2": 0.0,
-    "openarm_left_joint3": 0.0,
-    "openarm_left_joint4": 1.5,
-    "openarm_left_joint5": 0.0,
-    "openarm_left_joint6": 0.0,
-    "openarm_left_joint7": 0.0,
+    "openarm_left_joint1": -0.315,
+    "openarm_left_joint2": -0.084,
+    "openarm_left_joint3":  0.217,
+    "openarm_left_joint4":  0.513,
+    "openarm_left_joint5":  0.666,
+    "openarm_left_joint6": -0.729,
+    "openarm_left_joint7": -0.957,
     "openarm_left_finger_joint1": 0.044,
     "openarm_left_finger_joint2": 0.044,
 }
