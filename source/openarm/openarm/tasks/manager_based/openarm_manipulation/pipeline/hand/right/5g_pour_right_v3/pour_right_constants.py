@@ -42,30 +42,20 @@ Actor Observation (108D) — sim2real 가능:
   spill_ratio:              1  (유출 비율 — spill_cost weight=10 대응)
   Total:                  110
 
-Critic Extra (45D) — sim-only privileged:
+Critic Extra (33D) — sim-only privileged:
   left_arm_joint_pos:       9
   left_arm_joint_vel:       9
   distal_contact_binary:    5  (rl_dg_*_4)
   distal_contact_norm:      5
   cup_height_delta:         1
-  mouth_distance:           1
-  mouth_xy_distance:        1
-  mouth_z_clearance:        1
-  source_up_dot_world:      1
-  directional_tilt_cos:     1
-  mouth_alignment_cos:      1
   g_align_xy:               1
   g_clear:                  1
   g_tilt:                   1
-  g_ready:                  1
   g_pour:                   1
-  bead_cross_fraction:      1
-  bead_in_source_fraction:  1
-  bead_in_target_fraction:  1
-  spill_ratio:              1
-  Total:                   45
+  Total:                   33
+  (mouth_dist/xy/z, up_dot, tilt_cos, align_cos, g_ready, bead/spill fracs 제거 — actor_obs_clean에 중복)
 
-Critic Total: 110 + 45 = 155D
+Critic Total: 110 + 33 = 143D
 
 Episode (10s @ 60Hz = 600 steps):
   Pour phase: Fabrics arm policy + frozen hand
@@ -99,17 +89,16 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 110        # Actor: 106 + bead_in_source(1) + bead_in_target(1) + bead_cross(1) + spill_ratio(1)
+NUM_OBSERVATIONS = 110        # Actor: 7+7+20+20+3+4+3+4+3+3+3+8+5+5+11+4 = 110
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 45      # stage gate + bead/spill + distal sensors
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 155
+NUM_CRITIC_EXTRAS   = 33      # left_arm(18) + distal(10) + cup_h(1) + g_align/clear/tilt/pour(4)
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 143
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
 POUR_EPISODE_STEPS = 600    # 10s: transport + tilt + pour
-EPISODE_STEPS = POUR_EPISODE_STEPS
 
 # ---------------------------------------------------------------------------
 # Contact
@@ -117,16 +106,6 @@ EPISODE_STEPS = POUR_EPISODE_STEPS
 CONTACT_FORCE_THRESHOLD  = 0.1    # N  binary contact 판정
 CONTACT_FORCE_MAX        = 10.0   # N  정규화 분모
 MIN_CONTACTS_FOR_SUCCESS = 2      # 성공 판정 최소 접촉 손가락 수
-
-# ---------------------------------------------------------------------------
-# FABRICS pregrasp
-# ---------------------------------------------------------------------------
-PREGRASP_FABRICS_STEPS = 60
-
-# ---------------------------------------------------------------------------
-# Cup geometry
-# ---------------------------------------------------------------------------
-CUP_RADIUS_APPROX = 0.045  # m, cup_big 반경 (enclosure target 계산용)
 
 # ---------------------------------------------------------------------------
 # Aliases

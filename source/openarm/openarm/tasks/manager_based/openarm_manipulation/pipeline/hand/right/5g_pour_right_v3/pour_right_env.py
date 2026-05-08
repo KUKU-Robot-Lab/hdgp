@@ -72,12 +72,9 @@ from .pour_right_constants import (
     NUM_DISTAL_SENSORS,
     NUM_MIDDLE_SENSORS,
     NUM_CRITIC_OBSERVATIONS,
-    EPISODE_STEPS,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
     MIN_CONTACTS_FOR_SUCCESS,
-    PREGRASP_FABRICS_STEPS,
-    CUP_RADIUS_APPROX,
     ARM_START_POSE,
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
@@ -88,9 +85,6 @@ from .pour_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
     LEFT_ARM_REST_JOINT_POS,
-    LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
-    LEFT_TARGET_CUP_ATTACH_POS_B,
-    LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B,
     LEFT_TARGET_CUP_POS_ENV_LOCAL,
     LEFT_TARGET_CUP_QUAT_WXYZ,
     RIGHT_ACTUATED_JOINT_NAMES,
@@ -1106,7 +1100,7 @@ class PourRightEnv(DirectRLEnv):
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 105D | Critic 155D
+    # Observations: Actor 110D | Critic 143D
     # ------------------------------------------------------------------
     def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
         """Build the legacy actor observation expected by the warmstart checkpoint.
@@ -1283,7 +1277,7 @@ class PourRightEnv(DirectRLEnv):
         distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
 
-        # critic actor_obs_clean (106D) — clean state 재조합, actor_obs 구조와 동일
+        # critic actor_obs_clean (110D) — clean state 재조합, actor_obs 구조와 동일
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,                                      # 7
             arm_joint_vel_clean,                                      # 7
@@ -1317,29 +1311,17 @@ class PourRightEnv(DirectRLEnv):
         ], dim=-1)   # 110D
 
         critic_obs = torch.cat([
-            actor_obs_clean,                                    # 110
+            actor_obs_clean,                                    # 110 (transport_summary 8D + bead/spill 4D 포함)
             left_arm_joint_pos_clean,                          # 9
             left_arm_joint_vel_clean,                          # 9
             distal_binary,                                     # 5
             distal_force_norm,                                 # 5
             cup_height_delta,                                  # 1
-            self._mouth_distance.unsqueeze(1),                 # 1
-            self._mouth_xy_distance.unsqueeze(1),              # 1
-            self._cup_center_xy_dist.unsqueeze(1),             # 1
-            self._mouth_z_clearance.unsqueeze(1),              # 1
-            self._source_up_dot_world.unsqueeze(1),            # 1
-            self._directional_tilt_cos.unsqueeze(1),           # 1
-            self._mouth_alignment_cos.unsqueeze(1),            # 1
             self._g_align_xy.unsqueeze(1),                     # 1
             self._g_clear.unsqueeze(1),                        # 1
             self._g_tilt.unsqueeze(1),                         # 1
-            self._g_ready.unsqueeze(1),                        # 1
             self._g_pour.unsqueeze(1),                         # 1
-            self._bead_cross_fraction.unsqueeze(1),            # 1
-            self._bead_in_source_fraction.unsqueeze(1),        # 1
-            self._bead_in_target_fraction.unsqueeze(1),        # 1
-            self._spill_ratio.unsqueeze(1),                    # 1
-        ], dim=-1)   # 155D
+        ], dim=-1)   # 143D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -1897,51 +1879,10 @@ class PourRightEnv(DirectRLEnv):
         quat_w = self._left_cup_quat_wxyz.unsqueeze(0).expand(n, -1)
         return torch.cat([pos_w, quat_w], dim=-1)
 
-    def _resolve_attachment_body(self, requested_body_name: str, attach_pos_b: torch.Tensor) -> tuple[int, torch.Tensor]:
-        body_names = self.robot.data.body_names
-        alias_offsets: dict[str, list[tuple[str, tuple[float, float, float]]]] = {
-            "openarm_left_hand": [
-                ("openarm_left_hand", (0.0, 0.0, 0.0)),
-                ("openarm_left_hand_tcp", (0.0, 0.0, -0.08)),
-                ("ll_dg_ee", (0.0, 0.0, -0.08)),
-            ],
-            "ll_dg_ee": [
-                ("ll_dg_ee", (0.0, 0.0, 0.0)),
-                ("openarm_left_hand_tcp", (0.0, 0.0, -0.08)),
-                ("openarm_left_hand", (0.0, 0.0, 0.0)),
-            ],
-        }
-        candidates = alias_offsets.get(requested_body_name, [(requested_body_name, (0.0, 0.0, 0.0))])
-        for body_name, desired_origin_in_body in candidates:
-            if body_name in body_names:
-                resolved_pos_b = attach_pos_b + torch.tensor(
-                    desired_origin_in_body, dtype=attach_pos_b.dtype, device=attach_pos_b.device
-                )
-                return body_names.index(body_name), resolved_pos_b
-        raise ValueError(f"Attachment frame '{requested_body_name}' was not found.")
-
     def _get_left_target_cup_fixed_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
         if env_ids is None:
             return self._left_target_cup_fixed_pose_w
         return self._left_target_cup_fixed_pose_w[env_ids]
-
-    def _compute_attached_root_pose(
-        self,
-        body_id: int,
-        attach_pos_b: torch.Tensor,
-        attach_quat_b: torch.Tensor,
-        env_ids: Sequence[int] | None = None,
-    ) -> torch.Tensor:
-        if env_ids is None:
-            body_pos_w = self.robot.data.body_pos_w[:, body_id]
-            body_quat_w = self.robot.data.body_quat_w[:, body_id]
-        else:
-            body_pos_w = self.robot.data.body_pos_w[env_ids, body_id]
-            body_quat_w = self.robot.data.body_quat_w[env_ids, body_id]
-
-        attach_pos_w = body_pos_w + quat_apply(body_quat_w, attach_pos_b.unsqueeze(0).expand_as(body_pos_w))
-        attach_quat_w = quat_mul(body_quat_w, attach_quat_b.unsqueeze(0).expand(body_quat_w.shape[0], -1))
-        return torch.cat([attach_pos_w, attach_quat_w], dim=-1)
 
     def _sample_bead_states_inside_cup(self, cup_pose: torch.Tensor) -> torch.Tensor:
         cup_pos_w = cup_pose[:, :3]

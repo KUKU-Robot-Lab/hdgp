@@ -42,9 +42,6 @@ from .pour_right_preset import (
     HAND_BODY_NAMES_USD,
     LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
     LEFT_ARM_REST_JOINT_POS,
-    LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
-    LEFT_TARGET_CUP_ATTACH_POS_B,
-    LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B,
     LEFT_TARGET_CUP_POS_ENV_LOCAL,
     LEFT_TARGET_CUP_QUAT_WXYZ,
     RIGHT_ACTUATED_JOINT_NAMES,
@@ -119,7 +116,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 106 (actor)
+    observation_space: int = NUM_OBSERVATIONS          # 110 (actor)
     action_space:      int = NUM_ACTIONS               # 11
     state_space:       int = NUM_CRITIC_OBSERVATIONS   # 143 (critic, privileged)
 
@@ -230,9 +227,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     approach_xy_off_near: float = 0.05
     approach_xy_off_far: float = 0.12
 
-    # target cup world_z offset (left arm 자세 유지, cup만 하강)
-    left_cup_world_z_offset: float = -0.08   # world_z -0.08m (test3: cup 높이 조정)
-
     # stage gate / pre-pour geometry
     # test1에서 mouth_xy≈0.23m일 때 g_align_xy가 1e-3 이하로 죽어 접근 전 stage 신호가 약했음.
     # xy gate/approach를 넓혀 먼 거리에서도 target 방향 gradient를 유지한다.
@@ -299,7 +293,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_transport_progress: float = 12.00  # 6.00→12.00: 전진 보상 강화
     weight_prepour_dir: float = 5.00
     weight_prepour_align: float = 4.00
-    weight_release: float = 0.00    # 제거: spill도 보상하는 문제로 인해 비활성화
     weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
     weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
@@ -346,7 +339,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 기존 단일 weight_action_rate=0.01 → palm 강화, finger 완화
     weight_action_rate_palm: float = 0.02    # palm 6D: arm jerk 억제 강화
     weight_action_rate_finger: float = 0.005  # finger 5D: 채터링 적당히 억제
-    weight_wrist_spin: float = 0.00
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = False  # True→False: weight_spill=0이므로 ADR 불필요
@@ -434,12 +426,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
         BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ
     )
-    left_target_cup_attach_frame_name: str = LEFT_TARGET_CUP_ATTACH_FRAME_NAME
-    left_target_cup_attach_pos_b: tuple[float, float, float] = tuple(LEFT_TARGET_CUP_ATTACH_POS_B)
-    left_target_cup_attach_quat_wxyz_b: tuple[float, float, float, float] = tuple(
-        LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B
-    )
-    # FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS에서 hand local_z=0.04 midpoint)
+    # FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS에서 hand local_z=0.05)
     left_target_cup_pos_env_local: tuple[float, float, float] = tuple(LEFT_TARGET_CUP_POS_ENV_LOCAL)
     left_target_cup_quat_wxyz: tuple[float, float, float, float] = tuple(LEFT_TARGET_CUP_QUAT_WXYZ)
     source_cup_pour_point_pos_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_POINT_POS_B)
