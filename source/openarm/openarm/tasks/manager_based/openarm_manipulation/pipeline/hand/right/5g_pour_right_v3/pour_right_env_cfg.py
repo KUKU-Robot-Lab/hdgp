@@ -70,6 +70,8 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
                 disable_gravity=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=4,
+                linear_damping=0.1,   # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
+                angular_damping=0.1,  # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
                 max_depenetration_velocity=5.0,
                 max_linear_velocity=10.0,
                 max_angular_velocity=20.0,
@@ -79,8 +81,8 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
         # spawn_from_usd()는 cfg.physics_material 속성이 있으면 바인딩하므로 생성 후 후첨가한다.
         # 기본 material 마찰(0.5/0.5)보다 낮춰 컵 내부에서 구슬이 더 쉽게 굴러가게 한다.
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
-            static_friction=0.05,
-            dynamic_friction=0.05,
+            static_friction=0.1,
+            dynamic_friction=0.08,
             restitution=0.1,
             friction_combine_mode="min",
             restitution_combine_mode="max",
