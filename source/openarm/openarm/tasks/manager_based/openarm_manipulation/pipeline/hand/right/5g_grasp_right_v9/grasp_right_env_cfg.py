@@ -303,7 +303,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
             gpu_max_rigid_patch_count=2**22,
             gpu_max_rigid_contact_count=2**22,
-            gpu_collision_stack_size=2**22,
+            gpu_collision_stack_size=2**27,
             gpu_max_num_partitions=8,
             friction_correlation_distance=0.00625,
         ),
@@ -446,7 +446,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_sdf.usd"),
             activate_contact_sensors=True,
             scale=(1.0, 1.0, 1.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
