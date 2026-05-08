@@ -448,7 +448,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
             gpu_max_rigid_patch_count=2**24,
             gpu_max_rigid_contact_count=2**24,
-            gpu_collision_stack_size=2**28,
+            gpu_collision_stack_size=2**30,
             gpu_max_num_partitions=64,
             friction_correlation_distance=0.00625,
         ),

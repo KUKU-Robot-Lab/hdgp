@@ -1,6 +1,6 @@
 # 5g_pour_right_v4 — LSTM + BC Aux Loss 설정
 # PourLstmBCAgent (a2c_continuous_lstm_bc) 전용
-# 관측: actor 106D / critic 143D, 액션: 11D
+# 관측: actor 110D / critic 143D, 액션: 11D
 # Asymmetric Actor-Critic + LSTM policy
 
 params:

@@ -3,7 +3,7 @@
 This test stays Isaac-Sim free and verifies:
 1. Config thresholds were tightened as planned.
 2. The narrowed approach gate keeps gradient alive until 6 cm.
-3. Pour gate now requires mouth-to-mouth alignment plus >90 deg tilt.
+3. Pour gate now requires mouth-to-mouth alignment plus >80 deg tilt.
 4. First capture / success are also guarded by the same pour pose.
 5. Terminal pour bonus exists and only activates on the last step in pour pose.
 """
@@ -113,24 +113,24 @@ def _tilt_action_gate(mouth_xy_dist: torch.Tensor, near: float, far: float) -> t
 
 class TestRewardGateConfig:
     def test_phase_a_pour_gate_threshold(self):
-        # test1 분석: policy plateau 11cm에서 0.03m gate 도달 불가 → 0.08m으로 완화
+        # V4 keeps the mouth-to-mouth gate relaxed enough for the current policy plateau.
         assert _parse_float_constant("pour_binary_mouth_xy_thresh", _CFG_TEXT) == pytest.approx(0.08)
         assert _parse_float_constant("pour_binary_mouth_z_min", _CFG_TEXT) == pytest.approx(-0.01)
-        assert _parse_float_constant("pour_binary_mouth_z_max", _CFG_TEXT) == pytest.approx(0.03)
-        assert _parse_float_constant("pour_binary_tilt_thresh", _CFG_TEXT) == pytest.approx(0.0)
+        assert _parse_float_constant("pour_binary_mouth_z_max", _CFG_TEXT) == pytest.approx(0.15)
+        assert _parse_float_constant("pour_binary_tilt_thresh", _CFG_TEXT) == pytest.approx(0.17)
 
     def test_phase_b_approach_dead_zone_is_shrunk(self):
-        # approach_xy_off_far=0.03: pour gate threshold(0.08)보다 작아 gate 안쪽에서만 annealing
+        # V4 keeps approach shaping active until 10cm to support LSTM+BC warm starts.
         assert _parse_float_constant("approach_xy_off_near", _CFG_TEXT) == pytest.approx(0.02)
-        assert _parse_float_constant("approach_xy_off_far", _CFG_TEXT) == pytest.approx(0.03)
+        assert _parse_float_constant("approach_xy_off_far", _CFG_TEXT) == pytest.approx(0.10)
 
     def test_phase_c_tilt_onset_bridge_is_stronger(self):
-        assert _parse_float_constant("tilt_onset_dot_threshold", _CFG_TEXT) == pytest.approx(0.17)
+        assert _parse_float_constant("tilt_onset_dot_threshold", _CFG_TEXT) == pytest.approx(0.34)
         assert _parse_float_constant("weight_tilt_onset_bonus", _CFG_TEXT) == pytest.approx(10.0)
 
     def test_phase_d_terminal_pour_params_exist(self):
-        assert _parse_float_constant("weight_terminal_pour", _CFG_TEXT) == pytest.approx(30.0)
-        assert _parse_float_constant("terminal_pour_tilt_thresh", _CFG_TEXT) == pytest.approx(0.0)
+        assert _parse_float_constant("weight_terminal_pour", _CFG_TEXT) == pytest.approx(60.0)
+        assert _parse_float_constant("terminal_pour_tilt_thresh", _CFG_TEXT) == pytest.approx(0.17)
         assert _parse_float_constant("terminal_pour_mouth_xy_thresh", _CFG_TEXT) == pytest.approx(0.03)
         assert _parse_float_constant("terminal_pour_mouth_z_min", _CFG_TEXT) == pytest.approx(-0.01)
         assert _parse_float_constant("terminal_pour_mouth_z_max", _CFG_TEXT) == pytest.approx(0.03)
@@ -161,19 +161,19 @@ class TestRewardGateBehavior:
         point = _dynamic_rim_point(mouth_center, cup_up, fallback_axis, radius=0.041)
         assert point[0].tolist() == pytest.approx([0.041, 0.0, 0.1], abs=1e-6)
 
-    def test_pour_gate_requires_mouth_alignment_and_over_ninety_deg_tilt(self):
-        # xy_thresh=0.08 (test1 완화값): 8cm 이내 + z 범위 + >90° tilt 동시 충족
+    def test_pour_gate_requires_mouth_alignment_and_over_eighty_deg_tilt(self):
+        # xy_thresh=0.08: 8cm 이내 + z 범위 + >80° tilt 동시 충족
         mouth_xy = torch.tensor([0.07, 0.07, 0.09, 0.07, 0.07])
-        mouth_z = torch.tensor([0.02, 0.05, 0.02, -0.02, 0.02])
-        tilt = torch.tensor([-0.05, -0.05, -0.05, -0.05, 0.10])
+        mouth_z = torch.tensor([0.02, 0.16, 0.02, -0.02, 0.02])
+        tilt = torch.tensor([0.10, 0.10, 0.10, 0.10, 0.20])
         gate = _gate_pour_binary(
             mouth_xy,
             mouth_z,
             tilt,
             xy_thresh=0.08,
             z_min=-0.01,
-            z_max=0.03,
-            tilt_thresh=0.0,
+            z_max=0.15,
+            tilt_thresh=0.17,
         )
         assert gate.tolist() == pytest.approx([1.0, 0.0, 0.0, 0.0, 0.0])
 
@@ -216,9 +216,9 @@ class TestRewardGateBehavior:
         cost = _premature_tilt_cost(
             g_ready=torch.tensor([0.1, 0.1, 0.9]),
             source_up_dot=torch.tensor([-0.2, 1.0, -0.2]),
-            tilt_onset_dot_threshold=0.17,
+            tilt_onset_dot_threshold=0.34,
         )
-        assert cost.tolist() == pytest.approx([0.333, 0.0, 0.037], abs=1e-3)
+        assert cost.tolist() == pytest.approx([0.486, 0.0, 0.054], abs=1e-3)
 
     def test_tilt_action_gate_is_based_on_mouth_distance(self):
         gate = _tilt_action_gate(torch.tensor([0.30, 0.20, 0.06, 0.03]), near=0.06, far=0.25)

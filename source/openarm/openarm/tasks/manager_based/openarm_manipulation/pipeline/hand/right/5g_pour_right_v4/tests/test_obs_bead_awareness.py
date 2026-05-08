@@ -61,21 +61,21 @@ class TestObsDimensions:
     def test_actor_obs_includes_bead_fractions(self):
         """Actor obs는 bead_in_source_fraction(1D) + bead_in_target_fraction(1D)를 포함해야 한다.
 
-        RED: 현재 NUM_OBSERVATIONS=106이면 FAIL.
-        GREEN: 108로 올리면 PASS.
+        RED: NUM_OBSERVATIONS가 bead/spill fraction을 빠뜨리면 FAIL.
+        GREEN: actor 110D 구조면 PASS.
         """
         # bead_in_source + bead_in_target = 2D 포함 최소 요구
         assert NUM_OBSERVATIONS >= 110, (
             f"Actor obs({NUM_OBSERVATIONS}D)에 bead_in_source_fraction(1D) + "
-            f"bead_in_target_fraction(1D)가 없음. 최소 108D 필요."
+            f"bead_in_target_fraction(1D)가 없음. 최소 110D 필요."
         )
 
     def test_critic_obs_includes_bead_fractions(self):
-        """Critic extras는 bead 상태 fractions + stage gates + distal sensors를 포함해야 한다."""
-        # extras: left_arm(18) + distal(10) + cup_height(1) + scalars(16) = 45
-        assert NUM_CRITIC_EXTRAS == 45, (
-            f"Critic extras({NUM_CRITIC_EXTRAS}D) != 45. "
-            f"bead pos 6D 제거 후 기대값: 45D."
+        """Critic extras는 actor 중복 scalar를 제외한 privileged 값만 포함해야 한다."""
+        # extras: left_arm(18) + distal(10) + cup_height(1) + gates(4) = 33
+        assert NUM_CRITIC_EXTRAS == 33, (
+            f"Critic extras({NUM_CRITIC_EXTRAS}D) != 33. "
+            f"actor 중복 scalar/bead/spill fraction 제거 후 기대값: 33D."
         )
 
     def test_critic_total_dim_consistent(self):
@@ -154,27 +154,33 @@ class TestActorObsBeadPosition:
       [85:90] binary_contact
       [90:95] tip_force_norm
       [95:106] last_actions
-      [106]   bead_in_source_fraction  ← NEW
-      [107]   bead_in_target_fraction  ← NEW
-      Total: 108D
+      [106]   bead_in_source_fraction
+      [107]   bead_in_target_fraction
+      [108]   bead_cross_fraction
+      [109]   spill_ratio
+      Total: 110D
     """
 
     def _build_mock_actor_obs(
         self,
         bead_in_source_fraction: float,
         bead_in_target_fraction: float,
+        bead_cross_fraction: float = 0.0,
+        spill_ratio: float = 0.0,
     ) -> torch.Tensor:
         """실제 환경 없이 obs tensor를 mock으로 조립."""
         N = 4  # batch size
         base = torch.zeros(N, 106)         # 기존 106D
         bead_source = torch.full((N, 1), bead_in_source_fraction)
         bead_target = torch.full((N, 1), bead_in_target_fraction)
-        return torch.cat([base, bead_source, bead_target], dim=-1)  # 108D
+        bead_cross = torch.full((N, 1), bead_cross_fraction)
+        spill = torch.full((N, 1), spill_ratio)
+        return torch.cat([base, bead_source, bead_target, bead_cross, spill], dim=-1)  # 110D
 
-    def test_actor_obs_dim_108(self):
-        """mock obs 차원이 108D인지 확인."""
+    def test_actor_obs_dim_110(self):
+        """mock obs 차원이 110D인지 확인."""
         obs = self._build_mock_actor_obs(1.0, 0.0)
-        assert obs.shape == (4, 108)
+        assert obs.shape == (4, 110)
 
     def test_bead_source_fraction_at_index_106(self):
         """bead_in_source_fraction이 index 106에 위치."""
@@ -191,3 +197,14 @@ class TestActorObsBeadPosition:
         obs = self._build_mock_actor_obs(bead_in_source_fraction=0.0, bead_in_target_fraction=0.3)
         assert obs[:, 106].mean().item() == pytest.approx(0.0)   # source empty
         assert obs[:, 107].mean().item() == pytest.approx(0.3)   # target partial
+
+    def test_bead_cross_and_spill_fraction_positions(self):
+        """bead_cross_fraction/spill_ratio가 actor obs 끝에 위치."""
+        obs = self._build_mock_actor_obs(
+            bead_in_source_fraction=0.0,
+            bead_in_target_fraction=0.3,
+            bead_cross_fraction=0.6,
+            spill_ratio=0.1,
+        )
+        assert obs[:, 108].mean().item() == pytest.approx(0.6)
+        assert obs[:, 109].mean().item() == pytest.approx(0.1)

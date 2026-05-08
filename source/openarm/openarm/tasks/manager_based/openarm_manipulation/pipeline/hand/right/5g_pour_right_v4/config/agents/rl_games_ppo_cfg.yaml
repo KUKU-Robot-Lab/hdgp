@@ -1,6 +1,6 @@
-# 5g_pour_right_v3 rl_games PPO 설정
-# reset 은 v7 warmstart cache를 사용하고, 학습 task 이름만 새로 분리한다.
-# 관측: actor 101D / critic 143D (asymmetric), 액션: 11D
+# 5g_pour_right_v4 rl_games PPO 설정
+# V3 reward/obs baseline에 V4 task 설정을 적용한다.
+# 관측: actor 110D / critic 143D (asymmetric), 액션: 11D
 # Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:

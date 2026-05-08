@@ -97,8 +97,8 @@ class TestInstallRecurrentGate:
                 "rnn_states": (torch.zeros(1, 1, 2), torch.zeros(1, 1, 2)),
             }
         )
-        assert mu.tolist() == pytest.approx([[1.0, 2.0]])
-        assert sigma.tolist() == pytest.approx([1.0, 1.0])
+        torch.testing.assert_close(mu, torch.tensor([[1.0, 2.0]]))
+        torch.testing.assert_close(sigma, torch.tensor([[1.0, 1.0]]))
         assert value.shape == (1, 1)
         assert len(states) == 2
 
@@ -116,4 +116,4 @@ class TestInstallRecurrentGate:
                 "rnn_states": (torch.zeros(1, 1, 2), torch.zeros(1, 1, 2)),
             }
         )
-        assert mu.tolist() == pytest.approx([[11.0, 12.0]])
+        torch.testing.assert_close(mu, torch.tensor([[11.0, 12.0]]))

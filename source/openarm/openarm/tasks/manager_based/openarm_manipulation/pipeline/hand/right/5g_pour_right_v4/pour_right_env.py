@@ -1210,7 +1210,7 @@ class PourRightEnv(DirectRLEnv):
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 105D | Critic 155D
+    # Observations: Actor 110D | Critic 143D
     # ------------------------------------------------------------------
     def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
         """Build the legacy actor observation expected by the warmstart checkpoint.
@@ -1379,14 +1379,14 @@ class PourRightEnv(DirectRLEnv):
                 f"[pour_v3] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
             )
 
-        # ==== Critic extra obs (50D) ====
+        # ==== Critic extra obs (33D) ====
         cup_height_delta = (right_cup_pos_clean[:, 2] - self.object_init_pos[:, 2]).unsqueeze(1)
 
         distal_binary     = self.distal_binary_contact_buf.float()
         distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
 
-        # critic actor_obs_clean (106D) — clean state 재조합, actor_obs 구조와 동일
+        # critic actor_obs_clean (110D) — clean state 재조합, actor_obs 구조와 동일
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,                                      # 7
             arm_joint_vel_clean,                                      # 7
@@ -1419,33 +1419,21 @@ class PourRightEnv(DirectRLEnv):
         ], dim=-1)   # 110D
 
         critic_obs = torch.cat([
-            actor_obs_clean,                                    # 110
+            actor_obs_clean,                                    # 110 (transport_summary 8D + bead/spill 4D 포함)
             left_arm_joint_pos_clean,                          # 9
             left_arm_joint_vel_clean,                          # 9
             distal_binary,                                     # 5
             distal_force_norm,                                 # 5
             cup_height_delta,                                  # 1
-            self._mouth_distance.unsqueeze(1),                 # 1
-            self._mouth_xy_distance.unsqueeze(1),              # 1
-            self._cup_center_xy_dist.unsqueeze(1),             # 1
-            self._mouth_z_clearance.unsqueeze(1),              # 1
-            self._source_up_dot_world.unsqueeze(1),            # 1
-            self._directional_tilt_cos.unsqueeze(1),           # 1
-            self._mouth_alignment_cos.unsqueeze(1),            # 1
             self._g_align_xy.unsqueeze(1),                     # 1
             self._g_clear.unsqueeze(1),                        # 1
             self._g_tilt.unsqueeze(1),                         # 1
-            self._g_ready.unsqueeze(1),                        # 1
             self._g_pour.unsqueeze(1),                         # 1
-            self._bead_cross_fraction.unsqueeze(1),            # 1
-            self._bead_in_source_fraction.unsqueeze(1),        # 1
-            self._bead_in_target_fraction.unsqueeze(1),        # 1
-            self._spill_ratio.unsqueeze(1),                    # 1
-        ], dim=-1)   # 155D
+        ], dim=-1)   # 143D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
-                f"[pour_v3] Critic obs dim mismatch: {critic_obs.shape[1]} != {NUM_CRITIC_OBSERVATIONS}"
+                f"[pour_v4] Critic obs dim mismatch: {critic_obs.shape[1]} != {NUM_CRITIC_OBSERVATIONS}"
             )
 
         # [v4] 궤적 캡처: (obs_t, action_t) 기록
@@ -1701,6 +1689,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_approach"] = r_approach.mean()
         self.extras["r_prepour"]  = r_prepour_stage.mean()
         self.extras["r_pour"]     = r_pour_stage.mean()
+        self.extras["r_terminal_pour"] = r_terminal_pour.mean()
         self.extras["r_terminal_capture"] = r_terminal_capture.mean()
 
         # ── Pour quality ────────────────────────────────────────────────────
@@ -1709,6 +1698,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["spill_ratio"]      = self._spill_ratio.mean()
         self.extras["g_ready"]          = self._g_ready.mean()
         self.extras["env_frac_near"]    = (self._mouth_xy_distance < 0.08).float().mean()
+        self.extras["final_success_strict"] = final_success_strict.float().mean()
 
         # ── 핵심 bead 성과 지표 ─────────────────────────────────────────────
         # bead_score = Σ(성공 환경의 active_bead_count) / 전체 환경 수
@@ -2445,4 +2435,3 @@ class PourRightEnv(DirectRLEnv):
                 flush=True,
             )
             self._warmstart_reset_debug_printed = True
-

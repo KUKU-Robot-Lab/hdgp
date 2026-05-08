@@ -19,7 +19,7 @@
   → 실제 구슬이 타겟에 안 들어가는지, 아니면 계산 버그인지 확인 필요.
 
 테스트 범위 (Isaac Sim 불필요, 순수 torch 계산):
-  1. Critic obs extras 45D 구성 검증 (constants.py 기준)
+  1. Critic obs extras 33D 구성 검증 (constants.py 기준)
   2. mouth crossing 감지 로직 (prev_z/curr_z/radius 조건)
   3. bead_in_target 감지 로직 (z-bounds + radius 조건)
   4. 초기화 값(prev_z=10.0)의 first-frame 동작 확인
@@ -63,38 +63,32 @@ PREV_Z_INIT = 10.0          # _prev_bead_target_local_z 초기값
 
 
 # ===========================================================================
-# 1. Critic obs extras 45D 구성 검증
+# 1. Critic obs extras 33D 구성 검증
 # ===========================================================================
 
 class TestCriticObsDim:
-    """pour_right_constants.py의 NUM_CRITIC_EXTRAS=45가 실제 구성과 일치하는지 확인."""
+    """pour_right_constants.py의 NUM_CRITIC_EXTRAS=33이 실제 구성과 일치하는지 확인."""
 
     def test_critic_extras_count_by_component(self):
-        """extras 항목을 직접 합산해 45D 인지 검증.
+        """extras 항목을 직접 합산해 33D 인지 검증.
 
         constants.py 도큐스트링에 열거된 항목 기준:
           left_arm_joint_pos(9) + left_arm_joint_vel(9)
           + distal_contact_binary(5) + distal_contact_norm(5)
           + cup_height_delta(1)
-          + mouth_distance(1) + mouth_xy_distance(1) + mouth_z_clearance(1)
-          + source_up_dot_world(1) + directional_tilt_cos(1) + mouth_alignment_cos(1)
-          + g_align_xy(1) + g_clear(1) + g_tilt(1) + g_ready(1) + g_pour(1)
-          + bead_cross_fraction(1) + bead_in_source_fraction(1)
-          + bead_in_target_fraction(1) + spill_ratio(1)
-          = 45
+          + g_align_xy(1) + g_clear(1) + g_tilt(1) + g_pour(1)
+          = 33
 
-        NOTE: pour_right_env.py 1309-1332줄 critic_obs cat 구성과 동일해야 함.
+        NOTE: critic_obs cat 구성과 동일해야 함.
         """
         left_arm = 9 + 9            # pos + vel
         distal = 5 + 5              # binary + norm
         cup_height_delta = 1
-        mouth_scalars = 1 + 1 + 1 + 1 + 1 + 1  # dist, xy_dist, z_clear, up_dot, tilt_cos, align_cos
-        gates = 1 + 1 + 1 + 1 + 1  # g_align_xy, g_clear, g_tilt, g_ready, g_pour
-        bead_fracs = 1 + 1 + 1 + 1  # cross, source, target, spill
+        gates = 1 + 1 + 1 + 1  # g_align_xy, g_clear, g_tilt, g_pour
 
-        total = left_arm + distal + cup_height_delta + mouth_scalars + gates + bead_fracs
-        assert total == 45, f"직접 합산 결과 {total}D ≠ 45D"
-        assert NUM_CRITIC_EXTRAS == 45
+        total = left_arm + distal + cup_height_delta + gates
+        assert total == 33, f"직접 합산 결과 {total}D != 33D"
+        assert NUM_CRITIC_EXTRAS == 33
 
     def test_critic_total_is_actor_plus_extras(self):
         """NUM_CRITIC_OBSERVATIONS == NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS."""
@@ -102,9 +96,9 @@ class TestCriticObsDim:
             f"{NUM_CRITIC_OBSERVATIONS} != {NUM_OBSERVATIONS} + {NUM_CRITIC_EXTRAS}"
         )
 
-    def test_critic_total_is_155(self):
-        """절대값으로 155D 확인 (110 actor + 45 extras)."""
-        assert NUM_CRITIC_OBSERVATIONS == 155
+    def test_critic_total_is_143(self):
+        """절대값으로 143D 확인 (110 actor + 33 extras)."""
+        assert NUM_CRITIC_OBSERVATIONS == 143
 
 
 # ===========================================================================

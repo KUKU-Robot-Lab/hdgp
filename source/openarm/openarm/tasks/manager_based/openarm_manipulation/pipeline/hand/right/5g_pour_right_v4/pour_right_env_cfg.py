@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_pour_right_v3
+"""환경 설정: 5g_pour_right_v4
 
-v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
+V4: V3 reward/obs baseline + LSTM/BC agent, trajectory capture, bead-count ADR
 - Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 106D / critic 143D (asymmetric)
-- Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
+- Observation: actor 110D / critic 143D (asymmetric)
+- Episode: Pour phase (Fabrics arm + frozen hand)
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
 
@@ -97,7 +97,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
 
 @configclass
 class PourRightEnvCfg(DirectRLEnvCfg):
-    """5g_pour_right_v3 환경 설정."""
+    """5g_pour_right_v4 환경 설정."""
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
@@ -114,7 +114,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 106 (actor)
+    observation_space: int = NUM_OBSERVATIONS          # 110 (actor)
     action_space:      int = NUM_ACTIONS               # 11
     state_space:       int = NUM_CRITIC_OBSERVATIONS   # 143 (critic, privileged)
 
