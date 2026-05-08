@@ -1,4 +1,4 @@
-"""InteractiveSceneCfg for pour_v1_mimic.
+"""InteractiveSceneCfg for pre_pour_bc.
 
 Reuses the same assets as pour_v1 (openarm_tesollo_sensor.usd, cup_big_sdf.usd)
 and wires up the 5 per-fingertip ContactSensors that provide real-compatible
@@ -23,7 +23,7 @@ from openarm.tasks.manager_based.openarm_manipulation import OPENARM_ROOT_DIR
 _HDGP_ROOT = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
-# HDF5 pour_v1_test1 demo-0 step-0 joint positions (100 Hz teleop data)
+# HDF5 pour_v1_a1 demo-0 step-0 joint positions (100 Hz teleop data).
 _HDF5_LEFT_ARM_JOINT_POS = {
     "openarm_left_joint1":  0.093,
     "openarm_left_joint2": -0.236,
@@ -38,8 +38,8 @@ _HDF5_LEFT_ARM_JOINT_POS = {
 
 
 @configclass
-class PourMimicSceneCfg(InteractiveSceneCfg):
-    """Scene for bimanual pour Mimic data collection.
+class PrePourBCSceneCfg(InteractiveSceneCfg):
+    """Scene for bimanual pre-pour BC rollout/evaluation.
 
     Robot: openarm_tesollo_sensor.usd (activate_contact_sensors=True)
     Objects: source cup (dynamic), target cup (kinematic)
@@ -96,7 +96,7 @@ class PourMimicSceneCfg(InteractiveSceneCfg):
             pos=[0.0, 0.0, 0.0],
             rot=[1.0, 0.0, 0.0, 0.0],
             joint_pos={
-                # Right arm — HDF5 pour_v1_test1 demo-0 step-0
+                # Right arm — HDF5 pour_v1_a1 demo-0 step-0
                 "openarm_right_joint1": -0.072,
                 "openarm_right_joint2":  0.007,
                 "openarm_right_joint3": -0.004,
@@ -104,7 +104,7 @@ class PourMimicSceneCfg(InteractiveSceneCfg):
                 "openarm_right_joint5": -0.168,
                 "openarm_right_joint6":  0.041,
                 "openarm_right_joint7":  0.869,
-                # Right hand — HDF5 pour_v1_test1 demo-0 step-0 (verified from robot_replay_joint_pos)
+                # Right hand — HDF5 pour_v1_a1 demo-0 step-0.
                 "rj_dg_1_1": -0.019, "rj_dg_1_2": -1.578, "rj_dg_1_3": -0.471, "rj_dg_1_4":  0.065,
                 "rj_dg_2_1":  0.016, "rj_dg_2_2":  0.040, "rj_dg_2_3":  0.033, "rj_dg_2_4":  0.051,
                 "rj_dg_3_1": -0.003, "rj_dg_3_2":  0.026, "rj_dg_3_3":  0.031, "rj_dg_3_4":  0.024,

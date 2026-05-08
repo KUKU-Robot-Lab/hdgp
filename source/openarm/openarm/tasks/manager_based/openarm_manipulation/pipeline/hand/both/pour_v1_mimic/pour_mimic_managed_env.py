@@ -11,12 +11,10 @@ in the Mimic env — those are privileged PPO-only quantities).
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 
 import torch
 from isaaclab.envs import ManagerBasedRLMimicEnv
-from isaaclab.sensors import ContactSensor
 import isaaclab.utils.math as PoseUtils
 
 from .pour_mimic_math import pose7_xyzw_to_matrix
@@ -139,43 +137,72 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
     def get_subtask_term_signals(
         self, env_ids: Sequence[int] | None = None
     ) -> dict[str, torch.Tensor]:
-        """Derive phase completion flags from scene state (no bead physics)."""
+        """Derive phase completion flags from palm kinematics (both arms).
+
+        All grasp/lift signals are palm-position-based so they fire correctly
+        during sim replay even without physical contact.
+        Signal firing order: left_grasp → left_lift → grasp → lift → align.
+        """
         ids = slice(None) if env_ids is None else env_ids
-        n = self.num_envs if env_ids is None else len(env_ids)
 
         source = self.scene["source_cup"]
+        target = self.scene["target_cup"]
         cfg = self.cfg  # type: PourMimicManagedEnvCfg
+        robot = self.scene["robot"]
 
-        # --- grasp_done: at least one fingertip has force > threshold ---
-        tip_names = ("tip1_sensor", "tip2_sensor", "tip3_sensor", "tip4_sensor", "tip5_sensor")
-        tip_forces = []
-        for name in tip_names:
-            sensor: ContactSensor = self.scene[name]
-            f = sensor.data.force_matrix_w[ids, 0, 0, :].norm(dim=-1)  # (N,)
-            tip_forces.append(f)
-        max_tip_force = torch.stack(tip_forces, dim=-1).max(dim=-1).values
-        contact_ok = max_tip_force >= float(cfg.grasp_force_threshold)
-        cup_z = source.data.root_pos_w[ids, 2]
-        if not hasattr(self, "_source_cup_init_z"):
-            self._source_cup_init_z = source.data.root_pos_w[:, 2].clone()
-        grasp_done = contact_ok & (cup_z >= self._source_cup_init_z[ids] + 0.01)
+        # --- right palm position ---
+        palm_idx = None
+        for candidate in ("rl_dg_palm", "right_hand", "openarm_right_hand"):
+            try:
+                palm_idx = robot.data.body_names.index(candidate)
+                break
+            except ValueError:
+                continue
+        if palm_idx is not None:
+            palm_pos = robot.data.body_pos_w[ids, palm_idx, :]
+        else:
+            palm_pos = source.data.root_pos_w[ids]
 
-        # --- lift_done ---
-        lift_done = cup_z >= float(cfg.lift_threshold_z)
+        # --- left palm position ---
+        left_palm_idx = None
+        for candidate in ("openarm_left_hand", "left_hand", "openarm_left_link7"):
+            try:
+                left_palm_idx = robot.data.body_names.index(candidate)
+                break
+            except ValueError:
+                continue
+        if left_palm_idx is not None:
+            left_palm_pos = robot.data.body_pos_w[ids, left_palm_idx, :]
+        else:
+            left_palm_pos = target.data.root_pos_w[ids]
 
-        # --- align_done (source cup mouth XY distance to target cup opening) ---
-        align_done = self._compute_mouth_xy_distance(ids) <= float(cfg.align_threshold_xy)
+        # --- left_grasp_done: left palm within 0.12 m of target cup ---
+        tgt_pos = target.data.root_pos_w[ids]
+        left_grasp_done = torch.norm(left_palm_pos - tgt_pos, dim=-1) <= 0.12
 
-        # --- pour_done (cup tilt angle) ---
-        tilt_threshold = math.cos(math.radians(float(cfg.pour_threshold_tilt_deg)))
-        up_dot = self._compute_source_up_dot(ids)
-        pour_done = up_dot <= tilt_threshold
+        # --- left_lift_done: left palm z >= 0.325 m ---
+        # Derived from real-robot FK: left EEF z starts ~0.309 m, rises to ~0.345 m during lift.
+        left_lift_done = left_palm_pos[:, 2] >= float(cfg.left_lift_threshold_z)
+
+        # --- grasp_done: right palm within 0.12 m of source cup ---
+        src_pos = source.data.root_pos_w[ids]
+        grasp_done = torch.norm(palm_pos - src_pos, dim=-1) <= 0.12
+
+        # --- lift_done: right palm z raised above lift threshold ---
+        lift_done = palm_pos[:, 2] >= float(cfg.lift_threshold_z)
+
+        # --- align_done: right palm raised to pre-pour height ---
+        # Using palm Z threshold is more reliable than cup-to-cup XY distance,
+        # which requires physical grasping. Threshold 0.43 m fires after lift_done
+        # and in the second half of the demo across all recorded demonstrations.
+        align_done = palm_pos[:, 2] >= float(cfg.align_threshold_z)
 
         return {
+            "left_grasp_done": left_grasp_done,
+            "left_lift_done": left_lift_done,
             "grasp_done": grasp_done,
             "lift_done": lift_done,
             "align_done": align_done,
-            "pour_done": pour_done,
         }
 
     def get_subtask_start_signals(
@@ -184,7 +211,9 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
         terms = self.get_subtask_term_signals(env_ids)
         n = self.num_envs if env_ids is None else len(env_ids)
         return {
-            "grasp_start": torch.zeros(n, dtype=torch.bool, device=self.device),
+            "left_grasp_start": torch.zeros(n, dtype=torch.bool, device=self.device),
+            "left_lift_start": terms["left_grasp_done"],
+            "grasp_start": terms["left_lift_done"],
             "lift_start": terms["grasp_done"],
             "align_start": terms["lift_done"],
             "pour_start": terms["align_done"],
@@ -194,43 +223,6 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
     # ManagerBasedRLEnv lifecycle hooks                                   #
     # ------------------------------------------------------------------ #
 
-    def _setup_scene(self) -> None:
-        super()._setup_scene()
-        self._source_cup_init_z = torch.zeros(self.num_envs, device=self.device)
-
     def _reset_idx(self, env_ids: torch.Tensor) -> None:
         super()._reset_idx(env_ids)
-        source = self.scene["source_cup"]
-        self._source_cup_init_z[env_ids] = source.data.root_pos_w[env_ids, 2]
 
-    # ------------------------------------------------------------------ #
-    # Helpers                                                              #
-    # ------------------------------------------------------------------ #
-
-    def _compute_mouth_xy_distance(self, ids) -> torch.Tensor:
-        """XY distance from source cup mouth to target cup opening.
-
-        Approximated as horizontal distance between cup roots.
-        """
-        src_pos = self.scene["source_cup"].data.root_pos_w[ids]
-        tgt_pos = self.scene["target_cup"].data.root_pos_w[ids]
-        return torch.norm(src_pos[:, :2] - tgt_pos[:, :2], dim=-1)
-
-    def _compute_source_up_dot(self, ids) -> torch.Tensor:
-        """Dot product of source cup +Z axis with world +Z.
-
-        Returns ~1.0 when upright, ~0 or negative when tilted/inverted.
-        Uses cup root quaternion (wxyz from Isaac Lab).
-        """
-        quat_wxyz = self.scene["source_cup"].data.root_quat_w[ids]
-        # cup body Z in world frame = rotate [0,0,1] by quat
-        w, x, y, z = quat_wxyz.unbind(-1)
-        cup_z_world = torch.stack(
-            [
-                2.0 * (x * z + w * y),
-                2.0 * (y * z - w * x),
-                1.0 - 2.0 * (x * x + y * y),
-            ],
-            dim=-1,
-        )  # (N, 3)
-        return cup_z_world[:, 2]  # dot with world Z = cup_z_world.z component

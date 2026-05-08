@@ -138,6 +138,22 @@ class GraspRightEnv(DirectRLEnv):
 
         self.arm_dof_indices  = self.actuated_dof_indices[:NUM_ARM_DOF]
         self.hand_dof_indices = self.actuated_dof_indices[NUM_ARM_DOF:]
+        self.real2sim_actuator_group_indices = {
+            "openarm_right_arm": self.arm_dof_indices,
+            "tesollo_hand_abduction": [
+                idx for idx in self.hand_dof_indices if self.robot.joint_names[idx].endswith("_1")
+            ],
+            "tesollo_hand_curl": [
+                idx for idx in self.hand_dof_indices if self.robot.joint_names[idx].endswith("_2")
+            ],
+            "tesollo_hand_pip": [
+                idx for idx in self.hand_dof_indices if self.robot.joint_names[idx].endswith("_3")
+            ],
+            "tesollo_hand_dip": [
+                idx for idx in self.hand_dof_indices if self.robot.joint_names[idx].endswith("_4")
+            ],
+            "openarm_left_arm": self.left_arm_dof_indices,
+        }
 
         # body indices
         _tip_names = [f"rl_dg_{i}_tip" for i in range(1, 6)]
@@ -1366,6 +1382,8 @@ class GraspRightEnv(DirectRLEnv):
         if len(env_ids) == 0:
             return
 
+        self._apply_real2sim_actuator_randomization(env_ids)
+
         n = len(env_ids)
         started_n = int(had_started.sum().item())
 
@@ -1616,3 +1634,40 @@ class GraspRightEnv(DirectRLEnv):
         self.prev_actions[env_ids, :6] = 0.0
         self.prev_actions[env_ids, 6:] = 0.0
         self.lift_palm_start_pose_buf[env_ids] = self.pregrasp_palm_pose_buf[env_ids]
+
+    def _uniform_scale(self, shape: tuple[int, int], value_range: tuple[float, float]) -> torch.Tensor:
+        low, high = value_range
+        return torch.empty(shape, device=self.device).uniform_(float(low), float(high))
+
+    def _apply_real2sim_actuator_randomization(self, env_ids: Sequence[int]) -> None:
+        if not self.cfg.real2sim_actuator_randomization_enabled:
+            return
+
+        env_ids_tensor = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        if env_ids_tensor.numel() == 0:
+            return
+
+        for joint_ids in self.real2sim_actuator_group_indices.values():
+            if not joint_ids:
+                continue
+            shape = (int(env_ids_tensor.numel()), len(joint_ids))
+            default_stiffness = self.robot.data.default_joint_stiffness[env_ids_tensor][:, joint_ids]
+            default_damping = self.robot.data.default_joint_damping[env_ids_tensor][:, joint_ids]
+            default_friction = self.robot.data.default_joint_friction_coeff[env_ids_tensor][:, joint_ids]
+
+            self.robot.write_joint_stiffness_to_sim(
+                default_stiffness * self._uniform_scale(shape, self.cfg.real2sim_stiffness_scale_range),
+                joint_ids=joint_ids,
+                env_ids=env_ids_tensor,
+            )
+            self.robot.write_joint_damping_to_sim(
+                default_damping * self._uniform_scale(shape, self.cfg.real2sim_damping_scale_range),
+                joint_ids=joint_ids,
+                env_ids=env_ids_tensor,
+            )
+            if torch.any(default_friction != 0.0):
+                self.robot.write_joint_friction_coefficient_to_sim(
+                    default_friction * self._uniform_scale(shape, self.cfg.real2sim_friction_scale_range),
+                    joint_ids=joint_ids,
+                    env_ids=env_ids_tensor,
+                )

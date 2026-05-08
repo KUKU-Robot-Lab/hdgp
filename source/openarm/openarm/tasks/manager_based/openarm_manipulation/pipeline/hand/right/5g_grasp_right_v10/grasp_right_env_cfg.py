@@ -43,13 +43,26 @@ from .grasp_right_preset import (
     LEFT_ARM_REST_JOINT_POS,
     RIGHT_ACTUATED_JOINT_NAMES,
 )
+from .real2sim_actuator_cfg import get_actuator_params, load_real2sim_calibration
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
+_REAL2SIM_CALIBRATION = load_real2sim_calibration(
+    _os.environ.get("OPENARM_REAL2SIM_ACTUATOR_CALIBRATION", "")
+)
 
 # 비드 4단계 이산 질량: {0, 10, 20, 30}개 × 10g = {0, 100, 200, 300}g
 # mesh scale=0.5x (크기 절반), mass는 그대로 10g (밀도 8배)
 _DEFAULT_BEAD_COUNT = 30
+
+
+def _actuator_params(group_name: str, default_stiffness: float, default_damping: float) -> dict:
+    return get_actuator_params(
+        group_name,
+        _REAL2SIM_CALIBRATION,
+        default_stiffness=default_stiffness,
+        default_damping=default_damping,
+    )
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
@@ -132,6 +145,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obs_noise_joint_vel: float = 0.05
     obs_noise_body_pos:  float = 0.005
     obs_noise_cup_pos:   float = 0.015
+
+    # -----------------------------------------------------------------------
+    # Real2Sim actuator randomization
+    # -----------------------------------------------------------------------
+    real2sim_actuator_randomization_enabled: bool = bool(_REAL2SIM_CALIBRATION)
+    real2sim_stiffness_scale_range: tuple[float, float] = (0.8, 1.25)
+    real2sim_damping_scale_range: tuple[float, float] = (0.7, 1.5)
+    real2sim_friction_scale_range: tuple[float, float] = (0.7, 1.3)
 
     # -----------------------------------------------------------------------
     # 접촉 감지
@@ -409,38 +430,31 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         actuators={
             "openarm_right_arm": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_right_joint[1-7]"],
-                stiffness=400.0,
-                damping=80.0,
+                **_actuator_params("openarm_right_arm", 400.0, 80.0),
             ),
             "openarm_left_arm": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_joint[1-7]"],
-                stiffness=400.0,
-                damping=80.0,
+                **_actuator_params("openarm_left_arm", 400.0, 80.0),
             ),
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
-                stiffness=30.0,
-                damping=5.0,
+                **_actuator_params("tesollo_hand_abduction", 30.0, 5.0),
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                stiffness=30.0,
-                damping=5.0,
+                **_actuator_params("tesollo_hand_curl", 30.0, 5.0),
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                stiffness=30.0,
-                damping=5.0,
+                **_actuator_params("tesollo_hand_pip", 30.0, 5.0),
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                stiffness=30.0,
-                damping=5.0,
+                **_actuator_params("tesollo_hand_dip", 30.0, 5.0),
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],
-                stiffness=400.0,
-                damping=80.0,
+                **_actuator_params("openarm_left_gripper", 400.0, 80.0),
             ),
         },
         soft_joint_pos_limit_factor=1.0,
