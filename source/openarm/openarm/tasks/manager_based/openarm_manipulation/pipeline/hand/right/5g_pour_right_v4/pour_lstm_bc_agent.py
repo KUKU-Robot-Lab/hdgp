@@ -36,6 +36,7 @@ from torch import Tensor
 from rl_games.algos_torch.a2c_continuous import A2CAgent
 
 from .recurrent_gate import RecurrentGateState, install_recurrent_gate, resolve_success_rate
+from .real_demo_bc import DEFAULT_REAL_DEMO_PATHS, RealDemoBCBuffer, load_real_demo_episodes
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +96,26 @@ class PourLstmBCAgent(A2CAgent):
         self._bc_seq_len   = int(cfg.get("bc_seq_len", 16))
         self._bc_batch     = int(cfg.get("bc_batch_size", 64))
         self._last_bc_loss = 0.0
+        self._last_bc_success_sim_loss = 0.0
+        self._last_bc_real_demo_loss = 0.0
+        self._last_real_demo_weight = 0.0
+        self._last_demo_pour_phase_ratio = 0.0
+        self._last_demo_action_reconstruction_error = 0.0
         self._traj_buf     = None   # lazy resolve: 첫 calc_gradients 호출 시 탐색
+        self._real_demo_buf = None
+        self._real_demo_load_error = ""
+        self._real_demo_enabled = bool(cfg.get("real_demo_bc_enable", False))
+        self._real_demo_paths = tuple(cfg.get("real_demo_bc_paths", [str(p) for p in DEFAULT_REAL_DEMO_PATHS]))
+        self._real_demo_stride = int(cfg.get("real_demo_stride", cfg.get("demo_stride", 2)))
+        self._real_demo_pour_sample_ratio = float(cfg.get("real_demo_pour_sample_ratio", 0.6))
+        self._real_demo_min_buf = int(cfg.get("real_demo_bc_min_buffer_size", 1))
+        self._real_demo_warmup = int(cfg.get("real_demo_bc_warmup_epochs", 100))
+        self._real_demo_decay = int(cfg.get("real_demo_bc_decay_epochs", 3000))
+        self._real_demo_w_init = float(cfg.get("real_demo_bc_weight_init", 0.5))
+        self._real_demo_w_final = float(cfg.get("real_demo_bc_weight_final", 0.05))
+        self._real_demo_obs_mismatch_policy = str(
+            cfg.get("real_demo_bc_obs_mismatch_policy", "pad_or_crop")
+        )
         self._task_env     = None
         self._last_recurrent_alpha = 1.0
         self._last_recurrent_traj_score = 1.0
@@ -146,6 +166,31 @@ class PourLstmBCAgent(A2CAgent):
                 return buf
             env = getattr(env, "env", None) or getattr(env, "unwrapped", None)
         return None
+
+    def _resolve_real_demo_buffer(self):
+        """Lazily load external HDF5 real-demo BC episodes."""
+        if not self._real_demo_enabled:
+            return None
+        if self._real_demo_buf is not None:
+            return self._real_demo_buf
+        if self._real_demo_load_error:
+            return None
+
+        try:
+            episodes = load_real_demo_episodes(
+                self._real_demo_paths,
+                demo_stride=self._real_demo_stride,
+                device=self.ppo_device,
+            )
+            self._real_demo_buf = RealDemoBCBuffer(
+                episodes,
+                device=self.ppo_device,
+                pour_sample_ratio=self._real_demo_pour_sample_ratio,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep PPO running if external demos are unavailable.
+            self._real_demo_load_error = str(exc)
+            self._real_demo_buf = None
+        return self._real_demo_buf
 
     def _resolve_task_env(self):
         if self._task_env is not None:
@@ -236,6 +281,8 @@ class PourLstmBCAgent(A2CAgent):
         act_seq  = demo_batch["actions"]  # (B, T, act_dim)
         mask     = demo_batch["mask"]     # (B, T)
 
+        obs_seq = self._adapt_bc_obs_to_model(obs_seq)
+
         B, T, _ = obs_seq.shape
         device   = obs_seq.device
 
@@ -276,6 +323,30 @@ class PourLstmBCAgent(A2CAgent):
         valid_sum = mask_f.sum().clamp(min=1.0)
         loss = (nll_per_step * mask_f).sum() / valid_sum
         return loss
+
+    def _adapt_bc_obs_to_model(self, obs_seq: Tensor) -> Tensor:
+        """Adapt external 91D demo observations to the current policy input dim.
+
+        The preferred training mode is a 91D actor.  During transition, this
+        keeps old 110D configs runnable while making the mismatch explicit via
+        config and TensorBoard metrics.
+        """
+        model_shape = self.model.obs_shape
+        model_dim = int(model_shape[0] if isinstance(model_shape, (tuple, list)) else model_shape)
+        obs_dim = int(obs_seq.shape[-1])
+        if obs_dim == model_dim:
+            return obs_seq
+        if self._real_demo_obs_mismatch_policy == "error":
+            raise RuntimeError(
+                f"Real demo obs dim {obs_dim} does not match policy obs dim {model_dim}. "
+                "Use a 91D actor or set real_demo_bc_obs_mismatch_policy=pad_or_crop."
+            )
+        if self._real_demo_obs_mismatch_policy != "pad_or_crop":
+            raise RuntimeError(f"Unsupported real_demo_bc_obs_mismatch_policy={self._real_demo_obs_mismatch_policy!r}")
+        if obs_dim > model_dim:
+            return obs_seq[..., :model_dim]
+        pad = torch.zeros(*obs_seq.shape[:-1], model_dim - obs_dim, device=obs_seq.device, dtype=obs_seq.dtype)
+        return torch.cat([obs_seq, pad], dim=-1)
 
     # ------------------------------------------------------------------
     def calc_gradients(self, input_dict: dict) -> None:
@@ -369,6 +440,8 @@ class PourLstmBCAgent(A2CAgent):
 
             # ── BC auxiliary loss ─────────────────────────────────────
             bc_loss_val = 0.0
+            bc_success_sim_loss_val = 0.0
+            bc_real_demo_loss_val = 0.0
             buf = self._resolve_traj_buffer()
             lam = _bc_weight(
                 self.epoch_num,
@@ -381,8 +454,31 @@ class PourLstmBCAgent(A2CAgent):
                     bc_loss = self._compute_bc_loss(demo)
                     loss    = loss + lam * bc_loss
                     bc_loss_val = float(bc_loss.detach().item())
+                    bc_success_sim_loss_val = bc_loss_val
+
+            real_lam = _bc_weight(
+                self.epoch_num,
+                self._real_demo_warmup, self._real_demo_decay,
+                self._real_demo_w_init, self._real_demo_w_final,
+            )
+            real_buf = self._resolve_real_demo_buffer()
+            if real_lam > 0.0 and real_buf is not None and real_buf.is_warm(self._real_demo_min_buf):
+                real_demo = real_buf.sample(self._bc_batch, self._bc_seq_len)
+                if real_demo is not None:
+                    real_bc_loss = self._compute_bc_loss(real_demo)
+                    loss = loss + real_lam * real_bc_loss
+                    bc_real_demo_loss_val = float(real_bc_loss.detach().item())
+                    bc_loss_val += bc_real_demo_loss_val
+                    self._last_demo_pour_phase_ratio = float(real_buf.last_pour_phase_ratio)
+                    # Reconstruction diagnostic: converted real-demo actions are already
+                    # normalized to v4's 11D action contract; clipping error catches bad HDF5 data.
+                    recon_err = torch.relu(real_demo["actions"].abs() - 1.0)
+                    self._last_demo_action_reconstruction_error = float(recon_err.mean().detach().item())
 
         self._last_bc_loss = bc_loss_val
+        self._last_bc_success_sim_loss = bc_success_sim_loss_val
+        self._last_bc_real_demo_loss = bc_real_demo_loss_val
+        self._last_real_demo_weight = real_lam
 
         # ── backward ─────────────────────────────────────────────────
         if self.multi_gpu:
@@ -438,12 +534,24 @@ class PourLstmBCAgent(A2CAgent):
         frame     = args[11] if len(args) > 11 else kwargs.get("frame", 0)
         if hasattr(self, "writer") and self.writer is not None:
             self.writer.add_scalar("bc/loss", self._last_bc_loss, frame)
+            self.writer.add_scalar("bc/loss_success_sim", self._last_bc_success_sim_loss, frame)
+            self.writer.add_scalar("bc/loss_real_demo", self._last_bc_real_demo_loss, frame)
             self.writer.add_scalar(
                 "bc/weight",
                 _bc_weight(epoch_num, self._bc_warmup, self._bc_decay,
                            self._bc_w_init, self._bc_w_final),
                 frame,
             )
+            self.writer.add_scalar("bc/weight_real_demo", self._last_real_demo_weight, frame)
+            self.writer.add_scalar("demo/pour_phase_ratio", self._last_demo_pour_phase_ratio, frame)
+            self.writer.add_scalar(
+                "demo/action_reconstruction_error",
+                self._last_demo_action_reconstruction_error,
+                frame,
+            )
+            real_buf = self._resolve_real_demo_buffer()
+            if real_buf is not None:
+                self.writer.add_scalar("demo/real_buffer_size", len(real_buf), frame)
             buf = self._resolve_traj_buffer()
             if buf is not None:
                 self.writer.add_scalar("bc/buffer_size", len(buf), frame)

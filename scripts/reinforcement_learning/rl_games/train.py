@@ -76,6 +76,7 @@ import re
 
 import omni
 from rl_games.common import env_configurations, vecenv
+from rl_games.common import a2c_common
 from rl_games.common.algo_observer import IsaacAlgoObserver
 from rl_games.torch_runner import Runner
 
@@ -141,9 +142,45 @@ def _resolve_pipeline_log_components(task_name: str) -> tuple[str, str]:
     return "left", fallback_folder
 
 
+def _patch_optimizer_restore() -> None:
+    """Make rl_games checkpoint restore tolerate optimizer-state shape drift.
+
+    For BC-pretrained checkpoints we want to reuse actor / critic weights but do
+    not require the exact optimizer slot layout from the offline pretraining run.
+    """
+    if getattr(a2c_common.A2CBase, "_hdgp_optimizer_restore_patched", False):
+        return
+
+    original = a2c_common.A2CBase.set_full_state_weights
+
+    def _set_full_state_weights(self, weights, set_epoch=True):
+        self.set_weights(weights)
+        if set_epoch:
+            self.epoch_num = weights["epoch"]
+            self.frame = weights["frame"]
+
+        if self.has_central_value:
+            self.central_value_net.load_state_dict(weights["assymetric_vf_nets"])
+
+        try:
+            self.optimizer.load_state_dict(weights["optimizer"])
+        except ValueError as exc:
+            print(f"[WARN] Skipping optimizer state restore: {exc}")
+
+        self.last_mean_rewards = weights.get("last_mean_rewards", -1000000000)
+
+        if self.vec_env is not None:
+            env_state = weights.get("env_state", None)
+            self.vec_env.set_env_state(env_state)
+
+    a2c_common.A2CBase.set_full_state_weights = _set_full_state_weights
+    a2c_common.A2CBase._hdgp_optimizer_restore_patched = True
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Train with RL-Games agent."""
+    _patch_optimizer_restore()
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device

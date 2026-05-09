@@ -69,8 +69,8 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
                 disable_gravity=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=4,
-                linear_damping=0.1,   # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
-                angular_damping=0.1,  # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
+                linear_damping=0.5,   # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
+                angular_damping=0.5,  # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
                 max_depenetration_velocity=5.0,
                 max_linear_velocity=10.0,
                 max_angular_velocity=20.0,
@@ -339,6 +339,21 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 기존 단일 weight_action_rate=0.01 → palm 강화, finger 완화
     weight_action_rate_palm: float = 0.02    # palm 6D: arm jerk 억제 강화
     weight_action_rate_finger: float = 0.005  # finger 5D: 채터링 적당히 억제
+
+    # -----------------------------------------------------------------------
+    # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
+    # -----------------------------------------------------------------------
+    enable_demo_pose_reward: bool = True
+    demo_pose_paths: tuple[str, ...] = tuple(
+        f"/home/user/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)
+    )
+    demo_pose_phase: str = "pour"
+    weight_demo_arm_pose: float = 1.50
+    weight_demo_palm_pose: float = 1.00
+    weight_demo_smooth: float = 0.20
+    weight_thumb_grip_pose: float = 0.50
+    demo_pose_warmup_steps: int = 20000
+    demo_pose_near_gate_xy: float = 0.16
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = False  # True→False: weight_spill=0이므로 ADR 불필요

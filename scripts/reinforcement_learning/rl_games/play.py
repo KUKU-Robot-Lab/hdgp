@@ -45,7 +45,13 @@ parser.add_argument(
     "--bead_fixed",
     type=int,
     default=None,
-    help="Fix bead count for tasks that support bead_count_min/max. If unset, use configured random range.",
+    help="Fix bead count for playback. Supports bead_count_min/max and single bead_count curriculum tasks.",
+)
+parser.add_argument(
+    "--freeze_grasp_hand",
+    action="store_true",
+    default=False,
+    help="Freeze grasp-hand joints during playback for stable rendering/evaluation.",
 )
 parser.add_argument(
     "--use_pretrained_checkpoint",
@@ -78,12 +84,14 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import math
 import os
+from pathlib import Path
 import random
 import re
 import time
 import torch
 
 from rl_games.common import env_configurations, vecenv
+from rl_games.common import a2c_common
 from rl_games.common.player import BasePlayer
 from rl_games.torch_runner import Runner
 
@@ -142,7 +150,7 @@ import openarm.tasks  # noqa: F401,E402
 
 def _resolve_pipeline_log_components(task_name: str) -> tuple[str, str]:
     """Resolve <side>/<folder> under pipeline from the registered task config path."""
-    task_key = task_name.split(":")[-1].replace("-Play", "")
+    task_key = _strip_play_task_name(task_name)
     fallback_folder = task_key.replace("-", "_")
     try:
         spec = gym.spec(task_key)
@@ -160,12 +168,90 @@ def _resolve_pipeline_log_components(task_name: str) -> tuple[str, str]:
     return "left", fallback_folder
 
 
+def _strip_play_task_name(task_name: str) -> str:
+    """Map play task ids back to their train task id."""
+    task_key = task_name.split(":")[-1]
+    return (
+        task_key
+        .replace("-Play-", "-")
+        .replace("-play-", "-")
+        .replace("-Play", "")
+        .replace("-play", "")
+    )
+
+
+def _checkpoint_sort_key(path: Path) -> tuple[float, int, float]:
+    """Prefer higher reward, then later epoch, then newer mtime for prefix matches."""
+    match = re.search(r"_ep_(\d+)_rew_([-+]?\d+(?:\.\d+)?)", path.name)
+    if match:
+        return (float(match.group(2)), int(match.group(1)), path.stat().st_mtime)
+    return (float("-inf"), -1, path.stat().st_mtime)
+
+
+def _resolve_checkpoint_path(checkpoint: str) -> str:
+    """Resolve checkpoint paths and common truncated-prefix CLI input."""
+    try:
+        return retrieve_file_path(checkpoint)
+    except FileNotFoundError:
+        pass
+
+    candidate = Path(checkpoint).expanduser()
+    search_candidates = [candidate]
+    if not candidate.is_absolute():
+        sbm_root = Path(__file__).resolve().parents[3]
+        search_candidates.append((sbm_root / candidate).resolve())
+
+    prefix_matches: list[Path] = []
+    for candidate in search_candidates:
+        if candidate.is_file():
+            return str(candidate)
+        if candidate.parent.is_dir():
+            prefix_matches.extend(sorted(candidate.parent.glob(candidate.name + "*.pth")))
+
+    if prefix_matches:
+        resolved = max(prefix_matches, key=_checkpoint_sort_key)
+        print(f"[INFO] Parsed partial checkpoint prefix: {checkpoint} -> {resolved}")
+        return str(resolved)
+
+    raise FileNotFoundError(f"Unable to find the checkpoint file or prefix: {checkpoint}")
+
+
+def _patch_optimizer_restore() -> None:
+    """Make checkpoint restore match train.py for BC-pretrained weights."""
+    if getattr(a2c_common.A2CBase, "_hdgp_optimizer_restore_patched", False):
+        return
+
+    def _set_full_state_weights(self, weights, set_epoch=True):
+        self.set_weights(weights)
+        if set_epoch:
+            self.epoch_num = weights["epoch"]
+            self.frame = weights["frame"]
+
+        if self.has_central_value:
+            self.central_value_net.load_state_dict(weights["assymetric_vf_nets"])
+
+        try:
+            self.optimizer.load_state_dict(weights["optimizer"])
+        except ValueError as exc:
+            print(f"[WARN] Skipping optimizer state restore: {exc}")
+
+        self.last_mean_rewards = weights.get("last_mean_rewards", -1000000000)
+
+        if self.vec_env is not None:
+            env_state = weights.get("env_state", None)
+            self.vec_env.set_env_state(env_state)
+
+    a2c_common.A2CBase.set_full_state_weights = _set_full_state_weights
+    a2c_common.A2CBase._hdgp_optimizer_restore_patched = True
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Play with RL-Games agent."""
+    _patch_optimizer_restore()
     # grab task name for checkpoint path
     task_name = args_cli.task.split(":")[-1]
-    train_task_name = task_name.replace("-Play", "")
+    train_task_name = _strip_play_task_name(task_name)
 
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
@@ -181,17 +267,44 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg["params"]["seed"]
 
     # Optional playback overrides for ADR / bead count visualization
-    if args_cli.disable_adr and hasattr(env_cfg, "enable_adr"):
-        env_cfg.enable_adr = False
-        print("[INFO] ADR disabled for playback.")
+    if args_cli.disable_adr:
+        disabled_attrs = []
+        for adr_attr in (
+            "enable_adr",
+            "enable_noise_adr",
+            "enable_bead_count_adr",
+            "enable_success_adr",
+            "enable_spill_adr",
+        ):
+            if hasattr(env_cfg, adr_attr):
+                setattr(env_cfg, adr_attr, False)
+                disabled_attrs.append(adr_attr)
+        if disabled_attrs:
+            print(f"[INFO] ADR disabled for playback: {', '.join(disabled_attrs)}")
+        else:
+            print("[WARN] --disable_adr ignored: env does not expose ADR flags")
 
     if args_cli.bead_fixed is not None:
         if hasattr(env_cfg, "bead_count_min") and hasattr(env_cfg, "bead_count_max"):
             env_cfg.bead_count_min = args_cli.bead_fixed
             env_cfg.bead_count_max = args_cli.bead_fixed
             print(f"[INFO] bead count fixed for playback: {args_cli.bead_fixed}")
+        elif hasattr(env_cfg, "bead_count"):
+            env_cfg.bead_count = args_cli.bead_fixed
+            if hasattr(env_cfg, "bead_count_stages"):
+                env_cfg.bead_count_stages = (args_cli.bead_fixed,)
+            if hasattr(env_cfg, "enable_bead_count_adr"):
+                env_cfg.enable_bead_count_adr = False
+            print(f"[INFO] bead count fixed for playback: {args_cli.bead_fixed}")
         else:
-            print("[WARN] --bead_fixed ignored: env does not expose bead_count_min/max")
+            print("[WARN] --bead_fixed ignored: env does not expose bead count settings")
+
+    if args_cli.freeze_grasp_hand:
+        if hasattr(env_cfg, "freeze_grasp_hand_during_episode"):
+            env_cfg.freeze_grasp_hand_during_episode = True
+            print("[INFO] grasp hand frozen during playback.")
+        else:
+            print("[WARN] --freeze_grasp_hand ignored: env does not expose freeze_grasp_hand_during_episode")
 
     # CHECKPOINT SEARCH ROOT RULE:
     #   <sbm_root>/log/rl_games/pipeline/<left|right|both>/<task_dir_name>
@@ -220,7 +333,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # get path to previous checkpoint
         resume_path = get_checkpoint_path(log_root_path, run_dir, checkpoint_file, other_dirs=["nn"])
     else:
-        resume_path = retrieve_file_path(args_cli.checkpoint)
+        resume_path = _resolve_checkpoint_path(args_cli.checkpoint)
     log_dir = os.path.dirname(os.path.dirname(resume_path))
 
     # set the log directory for the environment (works for all environment types)
@@ -289,69 +402,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # initialize RNN states if used
     if agent.is_rnn:
         agent.init_rnn()
-    # simulate environment
-    # note: We simplified the logic in rl-games player.py (:func:`BasePlayer.run()`) function in an
-    #   attempt to have complete control over environment stepping. However, this removes other
-    #   operations such as masking that is used for multi-agent learning by RL-Games.
-    # [CUSTOM] 리플레이용 변수
-    _has_replay_support = (
-        hasattr(env.unwrapped, "read_from_sim") and hasattr(env.unwrapped, "write_to_sim")
-    )
-    trajectory_log = [[] for _ in range(env.unwrapped.num_envs)] # 각 환경별 현재 에피소드 기록
-    successful_trajectory = None # 확정된 성공 궤적 (하나만 저장)
-    replay_idx = 0 # 리플레이 현재 프레임 위치
-
     while simulation_app.is_running():
         start_time = time.time()
-        
-        # [CUSTOM] 리플레이 모드 체크
-        if _has_replay_support and successful_trajectory is not None:
-            # 성공한 궤적이 있으면 정책을 돌리지 않고 기록된 상태를 강제 주입
-            with torch.inference_mode():
-                states = successful_trajectory[replay_idx]
-                env.unwrapped.write_to_sim(states)
-                replay_idx += 1
-                if replay_idx >= len(successful_trajectory):
-                    replay_idx = 0 # 무한 반복
-
-            # 렌더링을 위해 최소한의 시간 지연
-            if args_cli.real_time:
-                time.sleep(dt)
-            continue
-
-        # --- 일반 실행 모드 ---
         with torch.inference_mode():
-            # 현재 상태 기록 (리플레이 지원 환경만)
-            if _has_replay_support:
-                current_states = env.unwrapped.read_from_sim()
-                for i in range(env.unwrapped.num_envs):
-                    trajectory_log[i].append(current_states.clone(i))
-
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
-            obs, _, dones, extras = env.step(actions)
+            obs, _, dones, _ = env.step(actions)
 
-            # 성공 감지 (bead가 들어갔는지 확인)
-            if _has_replay_support and "any_bead_in_target" in extras:
-                any_bead = extras["any_bead_in_target"]
-                if torch.any(any_bead) and successful_trajectory is None:
-                    success_idx = torch.where(any_bead)[0][0].item()
-                    successful_trajectory = [step for step in trajectory_log[success_idx]]
-                    print(f"\n*** [REPLAY MODE] Success captured from Env {success_idx}! ***")
-                    print("*** Replaying this trajectory infinitely for recording... ***\n")
-                    replay_idx = 0
-
-            # 에피소드 종료 시 기록 초기화
             if len(dones) > 0:
-                if _has_replay_support:
-                    for i in torch.where(dones)[0]:
-                        trajectory_log[i] = []
-
                 if agent.is_rnn and agent.states is not None:
                     for s in agent.states:
                         s[:, dones, :] = 0.0
-        
-        # (기존 시간 지연 로직 생략 가능 - 리플레이 모드에서 처리됨)
+
+        if args_cli.video:
+            timestep += 1
+            if timestep == args_cli.video_length:
+                break
+
+        sleep_time = dt - (time.time() - start_time)
+        if args_cli.real_time and sleep_time > 0:
+            time.sleep(sleep_time)
 
     # close the simulator
     env.close()

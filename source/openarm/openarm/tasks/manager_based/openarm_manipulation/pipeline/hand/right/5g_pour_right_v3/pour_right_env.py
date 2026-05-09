@@ -93,6 +93,7 @@ from .pour_right_preset import (
     OBJECT_GOAL_POS,
 )
 from .pour_right_utils import scale, to_torch
+from .demo_pose_reference import DemoPoseReferenceBank
 
 
 
@@ -460,6 +461,19 @@ class PourRightEnv(DirectRLEnv):
 
         # 초기 액션: 0 → palm pose workspace 중심 (접근 자세 유지)
         self.actions.zero_()
+
+        self.demo_pose_reference = None
+        if self.cfg.enable_demo_pose_reward:
+            self.demo_pose_reference = DemoPoseReferenceBank.from_hdf5_paths(
+                self.cfg.demo_pose_paths,
+                phase=self.cfg.demo_pose_phase,
+                device=self.device,
+            )
+            print(
+                "[5g_pour_right_v3] loaded demo pose reference bank: "
+                f"{self.demo_pose_reference.num_frames} frames from {len(self.demo_pose_reference.source_paths)} files",
+                flush=True,
+            )
 
         # Left target cup — FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS hand local_z=0.04)
         self._left_cup_pos_env_local = to_torch(
@@ -1330,6 +1344,64 @@ class PourRightEnv(DirectRLEnv):
 
         return {"policy": actor_obs, "critic": critic_obs}
 
+    def _get_demo_pose_reward_terms(
+        self,
+        *,
+        arm_qd_l2: torch.Tensor,
+        arm_jerk_l2: torch.Tensor,
+        palm_delta: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        zero = torch.zeros(self.num_envs, device=self.device)
+        if self.demo_pose_reference is None:
+            return {
+                "r_demo_arm_pose": zero,
+                "r_demo_palm_pose": zero,
+                "cost_demo_smooth": zero,
+                "cost_thumb_grip": zero,
+                "demo_arm_joint_err": zero,
+                "demo_palm_pos_err": zero,
+                "demo_palm_rot_err": zero,
+            }
+
+        ref = self.demo_pose_reference
+        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]
+        arm_norm_err = torch.norm((arm_q - ref.arm_joint_mean) / ref.arm_joint_std, dim=-1)
+        demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
+        r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
+
+        palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
+        palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
+        palm_pos_norm_err = torch.norm((palm_pos_w - ref.palm_pos_mean) / ref.palm_pos_std, dim=-1)
+        ref_quat_wxyz = ref.palm_quat_mean[[3, 0, 1, 2]].unsqueeze(0).expand_as(palm_quat_wxyz)
+        quat_dot = torch.abs((palm_quat_wxyz * ref_quat_wxyz).sum(dim=-1)).clamp(max=1.0)
+        demo_palm_rot_err = 2.0 * torch.acos(quat_dot)
+        demo_palm_pos_err = torch.norm(palm_pos_w - ref.palm_pos_mean, dim=-1)
+        r_demo_palm_pose = torch.exp(-palm_pos_norm_err - demo_palm_rot_err)
+
+        hand_q = self.robot.data.joint_pos[:, self.hand_dof_indices]
+        thumb_norm_err = torch.norm((hand_q[:, :4] - ref.thumb_joint_mean) / ref.thumb_joint_std, dim=-1)
+        cost_thumb_grip = thumb_norm_err / 2.0
+
+        vel_excess = torch.relu(arm_qd_l2 - ref.arm_vel_l2_p95) / ref.arm_vel_l2_p95
+        jerk_excess = torch.relu(arm_jerk_l2 - ref.arm_jerk_l2_p95) / ref.arm_jerk_l2_p95
+        cost_demo_smooth = vel_excess.pow(2) + jerk_excess.pow(2) + 0.1 * palm_delta
+
+        near_gate = torch.exp(-torch.square(self._cup_center_xy_dist / max(self.cfg.demo_pose_near_gate_xy, 1e-6)))
+        warmup_steps = max(int(self.cfg.demo_pose_warmup_steps), 1)
+        step_count = float(getattr(self, "common_step_counter", 0))
+        warmup = min(step_count / float(warmup_steps), 1.0)
+        gate = near_gate * warmup
+
+        return {
+            "r_demo_arm_pose": gate * self.cfg.weight_demo_arm_pose * r_demo_arm_pose,
+            "r_demo_palm_pose": gate * self.cfg.weight_demo_palm_pose * r_demo_palm_pose,
+            "cost_demo_smooth": gate * self.cfg.weight_demo_smooth * cost_demo_smooth,
+            "cost_thumb_grip": gate * self.cfg.weight_thumb_grip_pose * cost_thumb_grip,
+            "demo_arm_joint_err": demo_arm_joint_err,
+            "demo_palm_pos_err": demo_palm_pos_err,
+            "demo_palm_rot_err": demo_palm_rot_err,
+        }
+
     def _get_rewards(self) -> torch.Tensor:
         self._compute_intermediate_values()
 
@@ -1528,6 +1600,13 @@ class PourRightEnv(DirectRLEnv):
         # [Phase-1 Step 6] jerk = d(acc)/dt (acc 벡터 변화량)
         arm_jerk_vec = arm_acc_vec - self._prev_arm_joint_acc    # (N, DOF)
         arm_jerk_sq_sum = arm_jerk_vec.pow(2).sum(dim=-1)
+        arm_jerk_l2 = arm_jerk_vec.norm(dim=-1)
+
+        demo_terms = self._get_demo_pose_reward_terms(
+            arm_qd_l2=arm_qd_l2,
+            arm_jerk_l2=arm_jerk_l2,
+            palm_delta=palm_delta,
+        )
 
         # [P1] arm vel penalty: approach 구간도 낮은 가중치로 적용 (arm_vel_tilt_gate_only=False)
         # test4: cost_arm_vel=0.001/step → 사실상 0, approach에서 arm이 너무 빠르게 이동
@@ -1555,6 +1634,8 @@ class PourRightEnv(DirectRLEnv):
             + r_pour_stage
             + r_first_capture
             + r_tilt_onset
+            + demo_terms["r_demo_arm_pose"]
+            + demo_terms["r_demo_palm_pose"]
             + self.cfg.weight_success * r_success
             + overfill_bonus
             - spill_weight * spill_cost
@@ -1562,6 +1643,8 @@ class PourRightEnv(DirectRLEnv):
             - self.cfg.weight_grasp_loss * grasp_loss_cost
             - action_rate_penalty
             - arm_vel_cost
+            - demo_terms["cost_demo_smooth"]
+            - demo_terms["cost_thumb_grip"]
         )
 
         self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
@@ -1606,8 +1689,15 @@ class PourRightEnv(DirectRLEnv):
         self.extras["arm_joint_vel_l2_mean"] = arm_qd_l2.mean()
         self.extras["arm_joint_vel_max_mean"] = arm_qd_max.mean()
         self.extras["arm_joint_acc_l2_mean"] = arm_acc_vec.norm(dim=-1).mean()
-        self.extras["arm_joint_jerk_l2_mean"] = arm_jerk_vec.norm(dim=-1).mean()
+        self.extras["arm_joint_jerk_l2_mean"] = arm_jerk_l2.mean()
         self.extras["tilt_phase_arm_vel"] = tilt_phase_arm_vel
+        self.extras["r_demo_arm_pose"] = demo_terms["r_demo_arm_pose"].mean()
+        self.extras["r_demo_palm_pose"] = demo_terms["r_demo_palm_pose"].mean()
+        self.extras["cost_demo_smooth"] = demo_terms["cost_demo_smooth"].mean()
+        self.extras["cost_thumb_grip"] = demo_terms["cost_thumb_grip"].mean()
+        self.extras["demo_arm_joint_err"] = demo_terms["demo_arm_joint_err"].mean()
+        self.extras["demo_palm_pos_err"] = demo_terms["demo_palm_pos_err"].mean()
+        self.extras["demo_palm_rot_err"] = demo_terms["demo_palm_rot_err"].mean()
         # Phase-1 Step 4/5/6: arm vel/acc/jerk cost 로깅 (in_tilt_phase gate 포함)
         self.extras["cost_arm_vel"] = (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum * in_tilt_phase).mean()
         self.extras["cost_arm_acc"] = (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum * in_tilt_phase).mean()

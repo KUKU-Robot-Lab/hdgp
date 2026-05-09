@@ -65,11 +65,13 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
     for i in range(_DEFAULT_BEAD_COUNT):
         bead_spawn_cfg = UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
-            scale=(1.0, 1.0, 1.0),
+            scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
             mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
+                linear_damping=0.5,
+                angular_damping=0.5,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=4,
                 max_depenetration_velocity=0.5,  # 5.0→0.5: 벽 penetration 시 순간이동 방지
@@ -80,7 +82,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
             static_friction=0.10,
             dynamic_friction=0.08,
-            restitution=0.05,
+            restitution=0.1,
             friction_combine_mode="min",
             restitution_combine_mode="max",
         )
@@ -397,7 +399,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
             gpu_max_rigid_patch_count=2**24,
             gpu_max_rigid_contact_count=2**24,
-            gpu_collision_stack_size=2**28,
+            gpu_collision_stack_size=2**30,
             gpu_max_num_partitions=64,
             friction_correlation_distance=0.00625,
         ),
