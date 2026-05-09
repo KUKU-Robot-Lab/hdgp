@@ -82,6 +82,7 @@ simulation_app = app_launcher.app
 
 
 import gymnasium as gym
+import importlib
 import math
 import os
 from pathlib import Path
@@ -209,8 +210,15 @@ def _resolve_checkpoint_path(checkpoint: str) -> str:
             prefix_matches.extend(sorted(candidate.parent.glob(candidate.name + "*.pth")))
 
     if prefix_matches:
-        resolved = max(prefix_matches, key=_checkpoint_sort_key)
-        print(f"[INFO] Parsed partial checkpoint prefix: {checkpoint} -> {resolved}")
+        unique_matches = sorted(set(prefix_matches), key=_checkpoint_sort_key, reverse=True)
+        if len(unique_matches) > 1:
+            preview = "\n".join(f"  - {path}" for path in unique_matches[:10])
+            raise FileNotFoundError(
+                f"Multiple checkpoint files match prefix: {checkpoint}\n"
+                f"Use the full checkpoint path. Top matches:\n{preview}"
+            )
+        resolved = unique_matches[0]
+        print(f"[INFO] Parsed unique checkpoint prefix: {checkpoint} -> {resolved}")
         return str(resolved)
 
     raise FileNotFoundError(f"Unable to find the checkpoint file or prefix: {checkpoint}")
@@ -243,6 +251,27 @@ def _patch_optimizer_restore() -> None:
 
     a2c_common.A2CBase.set_full_state_weights = _set_full_state_weights
     a2c_common.A2CBase._hdgp_optimizer_restore_patched = True
+
+
+def _install_player_recurrent_gate(agent: BasePlayer, agent_cfg: dict) -> None:
+    """Install v4 recurrent gate modules before loading gated checkpoints."""
+    cfg = agent_cfg.get("params", {}).get("config", {})
+    if not bool(cfg.get("recurrent_gate_enable", False)):
+        return
+
+    try:
+        recurrent_gate = importlib.import_module(
+            "openarm.tasks.manager_based.openarm_manipulation"
+            ".pipeline.hand.right.5g_pour_right_v4.recurrent_gate"
+        )
+    except Exception as exc:  # noqa: BLE001 - keep non-v4 playback usable.
+        print(f"[WARN] Unable to import recurrent gate for player restore: {exc}")
+        return
+
+    actor_obs_shape = agent.model.obs_shape
+    actor_obs_dim = int(actor_obs_shape[0] if isinstance(actor_obs_shape, (tuple, list)) else actor_obs_shape)
+    install_recurrent_gate = recurrent_gate.install_recurrent_gate
+    install_recurrent_gate(agent.model.a2c_network, obs_dim=actor_obs_dim)
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -387,6 +416,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     runner.load(agent_cfg)
     # obtain the agent from the runner
     agent: BasePlayer = runner.create_player()
+    _install_player_recurrent_gate(agent, agent_cfg)
     agent.restore(resume_path)
     agent.reset()
 

@@ -7,6 +7,7 @@ demonstrations. It does not expose actions or behavior-cloning targets.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -57,8 +58,9 @@ class DemoPoseReferenceBank:
         phase: str = "pour",
         device: str | torch.device = "cpu",
     ) -> "DemoPoseReferenceBank":
-        arrays = [_load_path(Path(path), phase=phase) for path in paths]
-        if not arrays:
+        resolved_paths = _resolve_demo_paths(paths)
+        arrays = [_load_path(path, phase=phase) for path in resolved_paths]
+        if not resolved_paths:
             raise ValueError("demo_pose_paths is empty; provide at least one HDF5 path.")
 
         merged: dict[str, np.ndarray] = {}
@@ -106,8 +108,48 @@ class DemoPoseReferenceBank:
             thumb_joint_std=thumb_std,
             arm_vel_l2_p95=torch.tensor(max(arm_vel_p95, 1e-3), dtype=torch.float32, device=device),
             arm_jerk_l2_p95=torch.tensor(max(arm_jerk_p95, 1e-3), dtype=torch.float32, device=device),
-            source_paths=tuple(str(Path(path)) for path in paths),
+            source_paths=tuple(str(path) for path in resolved_paths),
         )
+
+
+def _resolve_demo_paths(paths: Iterable[str | Path]) -> tuple[Path, ...]:
+    requested = tuple(Path(path) for path in paths)
+    if not requested:
+        return ()
+
+    search_dirs = []
+    for env_name in ("POUR_V1_DATASET_DIR", "DEMO_POSE_DATASET_DIR"):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            search_dirs.append(Path(env_value))
+    search_dirs.extend(
+        [
+            Path("/home/user/rl_ws/datasets"),
+            Path("/home/user/rl_ws/teleopration_openarm_tesollo/datasets"),
+        ]
+    )
+
+    resolved = []
+    missing = []
+    for path in requested:
+        if path.exists():
+            resolved.append(path)
+            continue
+        replacement = next((base / path.name for base in search_dirs if (base / path.name).exists()), None)
+        if replacement is not None:
+            resolved.append(replacement)
+        else:
+            missing.append(path)
+
+    if missing:
+        candidates = ", ".join(str(base) for base in search_dirs)
+        missing_text = ", ".join(str(path) for path in missing)
+        raise FileNotFoundError(
+            "demo reference HDF5 file(s) do not exist: "
+            f"{missing_text}. Searched fallback dataset dirs: {candidates}. "
+            "Set POUR_V1_DATASET_DIR or DEMO_POSE_DATASET_DIR to the directory containing pour_v1_a11.hdf5 ... pour_v1_a20.hdf5."
+        )
+    return tuple(resolved)
 
 
 def _load_path(path: Path, *, phase: str) -> dict[str, np.ndarray]:

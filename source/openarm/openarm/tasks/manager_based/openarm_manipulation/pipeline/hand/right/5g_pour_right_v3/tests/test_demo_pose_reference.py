@@ -80,3 +80,17 @@ def test_demo_pose_reference_missing_key_error_is_explicit(tmp_path: Path) -> No
 
     with pytest.raises(KeyError, match="missing required key"):
         DemoPoseReferenceBank.from_hdf5_paths([path], phase="pour", device="cpu")
+
+
+def test_demo_pose_reference_resolves_dataset_dir_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    dataset_dir = Path("/home/user/rl_ws/datasets")
+    monkeypatch.setenv("POUR_V1_DATASET_DIR", str(dataset_dir))
+
+    bank = DemoPoseReferenceBank.from_hdf5_paths(
+        ["/missing/datasets/pour_v1_a11.hdf5"],
+        phase="pour",
+        device="cpu",
+    )
+
+    assert bank.num_frames > 0
+    assert bank.source_paths == (str(dataset_dir / "pour_v1_a11.hdf5"),)

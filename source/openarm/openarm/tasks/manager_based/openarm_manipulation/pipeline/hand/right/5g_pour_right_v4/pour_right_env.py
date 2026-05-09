@@ -2129,7 +2129,7 @@ class PourRightEnv(DirectRLEnv):
         try:
             self._warmstart_policy = _WarmstartPolicy(ckpt, self.device).to(self.device)
         except Exception as exc:
-            print(f"[5g_pour_right_v3] warmstart policy load failed: {exc}", flush=True)
+            print(f"[5g_pour_right_v4] warmstart policy load failed: {exc}", flush=True)
             self._warmstart_policy = None
             return
 
@@ -2160,13 +2160,13 @@ class PourRightEnv(DirectRLEnv):
 
         if self._warmstart_cache_count == 0:
             raise RuntimeError(
-                "[5g_pour_right_v3] warmstart cache is empty. "
+                "[5g_pour_right_v4] warmstart cache is empty. "
                 "The v7 checkpoint rollout did not produce any lift-success state, so this task cannot start "
                 "from the requested play-like grasp state."
             )
 
         print(
-            f"[5g_pour_right_v3] collected {self._warmstart_cache_count} warmstart success states.",
+            f"[5g_pour_right_v4] collected {self._warmstart_cache_count} warmstart success states.",
             flush=True,
         )
 
@@ -2424,7 +2424,7 @@ class PourRightEnv(DirectRLEnv):
             mouth_z_clearance = source_pour_point_w[:, 2] - target_opening_w[:, 2]
             cup_z_local = cup_pose_local[:, 2]
             print(
-                "[5g_pour_right_v3][warmstart_reset] "
+                "[5g_pour_right_v4][warmstart_reset] "
                 f"cup_z_local mean={cup_z_local.mean().item():.4f} "
                 f"min={cup_z_local.min().item():.4f} max={cup_z_local.max().item():.4f} | "
                 f"mouth_xy mean={mouth_xy_distance.mean().item():.4f} "

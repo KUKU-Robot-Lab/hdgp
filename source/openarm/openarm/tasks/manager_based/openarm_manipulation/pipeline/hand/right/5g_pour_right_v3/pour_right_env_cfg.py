@@ -55,6 +55,7 @@ from .pour_right_preset import (
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 _DEFAULT_BEAD_COUNT = 20
+_DEFAULT_DEMO_POSE_DATASET_DIR = "/home/user/rl_ws/datasets"
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
@@ -344,8 +345,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
     # -----------------------------------------------------------------------
     enable_demo_pose_reward: bool = True
+    demo_pose_dataset_dir: str = _DEFAULT_DEMO_POSE_DATASET_DIR
     demo_pose_paths: tuple[str, ...] = tuple(
-        f"/home/user/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)
+        _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "pour"
     weight_demo_arm_pose: float = 1.50

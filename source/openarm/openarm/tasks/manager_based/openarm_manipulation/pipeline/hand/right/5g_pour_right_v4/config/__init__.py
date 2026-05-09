@@ -24,6 +24,8 @@ class PourRightEnvCfg_PLAY(PourRightEnvCfg):
     def __post_init__(self):
         self.scene.num_envs = 50
         self.scene.env_spacing = 2.5
+        self.warmstart_cache_size = 1
+        self.warmstart_max_rollout_steps = 6000
 
 
 # ── MLP PPO (기존 방식, 하위 호환) ──────────────────────────────────────
