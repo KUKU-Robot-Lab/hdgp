@@ -76,10 +76,10 @@ params:
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.0008
+    entropy_coef: 0.005
     recurrent_gate_enable: True
     recurrent_gate_traj_min_size: 20
-    recurrent_gate_success_threshold: 0.02
+    recurrent_gate_success_threshold: 0.001
     recurrent_gate_success_ema_tau: 0.95
     recurrent_gate_ramp_epochs: 500
     truncate_grads: True

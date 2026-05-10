@@ -280,10 +280,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
     weight_first_capture_bonus: float = 40.00
     weight_tilt_onset_bonus: float = 10.00   # 80° 부근 첫 진입에 더 강한 bridge reward
-    tilt_onset_dot_threshold: float = 0.34   # [v4] 0.17→0.34: source_up_dot < 0.34 (>70° 기울기) 시 트리거 — pour gate(80°)와 충분한 간격 확보
-    tilt_onset_dist_threshold: float = 0.08  # success neighborhood 안에서만 onset 보상
+    tilt_onset_dot_threshold: float = 0.71   # 0.34→0.71: cos(45°); pour gate(60°=0.50) 이전에 트리거되도록 수정
+    tilt_onset_dist_threshold: float = 0.15  # 0.08→0.15: pour_binary_mouth_xy_thresh와 일치
     weight_terminal_pour: float = 60.00        # 마지막 step pour pose 유지 보너스
-    terminal_pour_tilt_thresh: float = 0.17    # [v4] 0.0→0.17: pour_binary_tilt_thresh와 일치 (>80° tilt)
+    terminal_pour_tilt_thresh: float = 0.50    # 0.17→0.50: pour_binary_tilt_thresh(60°)와 일치
     weight_terminal_capture: float = 200.0     # [v4 신규] 에피소드 종료 시 bead_in_target_fraction 비례 최종 보너스
     terminal_pour_mouth_xy_thresh: float = 0.03
     terminal_pour_mouth_z_min: float = -0.01
@@ -335,10 +335,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_tilt_target_deg: float = 100.0  # 135→100: 물리적으로 달성 가능한 각도 (비드 쏟기 충분)
     pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
     lift_height_cap: float = 0.05 
-    pour_binary_mouth_xy_thresh: float = 0.08  # 0.03→0.08: policy plateau(11cm)에서 gate 도달 불가 해소
+    pour_binary_mouth_xy_thresh: float = 0.15  # 0.03→0.08→0.15: v3 수준으로 완화 (gate 폐쇄 문제 해소)
     pour_binary_mouth_z_min: float = -0.01
     pour_binary_mouth_z_max: float = 0.15
-    pour_binary_tilt_thresh: float = 0.17  # [v4] 0.0→0.17: >80° 기울기에서 pour gate 개방 (90° 내리꽂기 전략 억제)
+    pour_binary_tilt_thresh: float = 0.50  # 0.17→0.50: cos(60°)=v3 수준으로 완화 (BC 깨진 상태에서 80° 달성 불가 문제 해소)
 
     # -----------------------------------------------------------------------
     # 종료 조건
