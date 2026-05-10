@@ -1512,8 +1512,14 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_pour_align * r_pour_align
         )
 
-        # 첫 비드 유입 시 1회성 보너스로 탐색을 유도
-        first_capture = (self._bead_in_target_fraction > 0.0) & (~self._first_capture_bonus_paid)
+        # 첫 비드 유입 시 1회성 보너스: target cup 근처(< pour_binary_xy_thresh)에서만 인정
+        # [P1] 멀리서 우연히 굴러든 비드 캡처는 보너스에서 제외 → 우연성 방지
+        near_for_capture = self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh
+        first_capture = (
+            (self._bead_in_target_fraction > 0.0)
+            & near_for_capture
+            & (~self._first_capture_bonus_paid)
+        )
         r_first_capture = self.cfg.weight_first_capture_bonus * first_capture.float()
         self._first_capture_bonus_paid |= first_capture
 
@@ -1535,9 +1541,11 @@ class PourRightEnv(DirectRLEnv):
             else self.cfg.success_target_fill_ratio
         )
 
+        # [P1] success도 target cup 근처(< pour_binary_xy_thresh)에서 달성해야 인정
         success_now = (
             (self._bead_in_target_fraction >= success_fill_ratio)
             & (self._spill_ratio <= self.cfg.success_spill_max)
+            & (self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh)
         )
 
         # 기본 성공 보상(바이너리)
@@ -1561,16 +1569,16 @@ class PourRightEnv(DirectRLEnv):
         )
         
         # Smooth premature tilt penalty: only active when far from target (g_ready is low)
-        # [test4 분석] 버그 수정: 기존 (1 - dot.clamp(0,1))은 90° 이상 기울면 dot이 음수 → clamp(0)
-        # → (1-0)=1.0으로 최대 페널티. pour_tilt_target=100°에서 dot=cos(100°)=-0.174 → clamp=0
-        # → 실제 pour 각도가 항상 최대 페널티 구간 → cost_premtilt(0.82/step) >> r_pour(0.06/step)
-        # → 정책이 pour를 시도할수록 손해 → g_tilt Q3=0.535→Q4=0.373으로 급감하며 pour 포기
-        #
-        # 수정: (1-dot.clamp(0,1)) → dot.clamp(0,1)
-        # 직립(dot=1): 페널티 최대 (이동 전 upright 유지 유도, 기존과 동일한 방향)
-        # 90° 수평(dot=0): 페널티 0
-        # 100° pour(dot=-0.174→clamp=0): 페널티 0 ← 핵심: pour 각도에서 페널티 없음
-        premature_tilt_cost = (1.0 - self._g_ready) * self._source_up_dot_world.clamp(0.0, 1.0)
+        # [P0] tilt_amount = (1 - dot) / 2, clamped to [0, 1]
+        # 직립(dot=1):   tilt_amount=0 → 페널티 0     (직립은 안전)
+        # 60°(dot=0.5):  tilt_amount=0.25
+        # 90°(dot=0):    tilt_amount=0.5
+        # 100°(dot≈-0.17): tilt_amount=0.585          (pour 각도에도 페널티 부과)
+        # 180°(dot=-1):  tilt_amount=1.0 (최대)
+        # → 기울기가 클수록, 멀리 있을수록(g_ready 낮을수록) 페널티 증가
+        # [test2 분석] 이전 dot.clamp(0,1) 방식: 90° 이상에서 페널티=0 → 멀리서도 마음대로 쏟아붓기 허용
+        tilt_amount = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
+        premature_tilt_cost = (1.0 - self._g_ready) * tilt_amount
         # grasp quality loss: full_grasp_flag=0 (thumb 없거나 others<2) 매 스텝 즉각 dense penalty
         # 낙하(episode termination)와 달리 grasp이 흔들리는 구간에서 즉각 gradient 제공
         grasp_loss_cost = 1.0 - full_grasp_flag

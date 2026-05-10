@@ -253,7 +253,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bc_seq_len: int = 16           # LSTM BPTT sequence length
     bc_batch_size: int = 64
     bc_loss_weight_init: float = 1.0
-    bc_loss_weight_final: float = 0.1
+    bc_loss_weight_final: float = 0.2
     bc_loss_warmup_epochs: int = 500
     bc_loss_decay_epochs: int = 3000
     bc_min_buffer_size: int = 20   # 이 이하이면 BC 비활성
@@ -293,14 +293,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_spill: float = 3.00     # mouth-to-mouth gate 이후에도 overspill 억제를 위해 penalty 강화
     weight_premature_tilt: float = 1.50
 
-    weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
-    weight_arm_joint_acc: float = 0.0005  # arm 가속도 프록시 페널티
+    weight_arm_joint_vel: float = 0.004   # arm_qd 제곱합 페널티
+    weight_arm_joint_acc: float = 0.0010  # arm 가속도 프록시 페널티
     arm_joint_vel_sq_clip: float = 64.0   # (arm_qd L2 norm)^2 클리핑 상한 (8 rad/s L2 기준)
     arm_vel_tilt_gate_only: bool = False   # True→False
-    weight_arm_joint_vel_approach: float = 0.0005  # approach 구간 (tilt 구간 0.002의 1/4)
-    weight_arm_joint_jerk: float = 0.0002
+    weight_arm_joint_vel_approach: float = 0.0010  # approach 구간 arm 속도 억제
+    weight_arm_joint_jerk: float = 0.0004
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
-    weight_action_rate_palm: float = 0.02    # palm 6D: arm jerk 억제 강화
+    weight_action_rate_palm: float = 0.06    # palm 6D: pour 중 흔들림 억제 강화
     weight_action_rate_finger: float = 0.005  # finger 5D: 채터링 적당히 억제
 
     enable_spill_adr: bool = False  # bead ADR이 spill 스케일을 담당하므로 비활성화
@@ -366,7 +366,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
-    freeze_grasp_hand_during_episode: bool = False
+    freeze_grasp_hand_during_episode: bool = True
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
         BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ

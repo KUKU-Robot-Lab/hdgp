@@ -28,6 +28,12 @@ def _parse_float_constant(name: str, text: str) -> float:
     return float(match.group(1))
 
 
+def _parse_bool_constant(name: str, text: str) -> bool:
+    match = re.search(rf"^\s*{name}\s*:\s*bool\s*=\s*(True|False)", text, re.MULTILINE)
+    assert match is not None, f"{name} not found"
+    return match.group(1) == "True"
+
+
 def _approach_gate(mouth_xy_dist: torch.Tensor, near: float, far: float) -> torch.Tensor:
     den = max(far - near, 1e-6)
     return torch.clamp((mouth_xy_dist - near) / den, min=0.0, max=1.0)
@@ -139,6 +145,15 @@ class TestRewardGateConfig:
     def test_strict_success_metrics_exist(self):
         assert _parse_float_constant("final_success_target_fill_ratio", _CFG_TEXT) == pytest.approx(0.95)
         assert _parse_float_constant("final_success_spill_max", _CFG_TEXT) == pytest.approx(0.05)
+
+    def test_finetune_stability_defaults(self):
+        assert _parse_bool_constant("freeze_grasp_hand_during_episode", _CFG_TEXT) is True
+        assert _parse_float_constant("weight_action_rate_palm", _CFG_TEXT) == pytest.approx(0.06)
+        assert _parse_float_constant("weight_arm_joint_vel", _CFG_TEXT) == pytest.approx(0.004)
+        assert _parse_float_constant("weight_arm_joint_acc", _CFG_TEXT) == pytest.approx(0.001)
+        assert _parse_float_constant("weight_arm_joint_vel_approach", _CFG_TEXT) == pytest.approx(0.001)
+        assert _parse_float_constant("weight_arm_joint_jerk", _CFG_TEXT) == pytest.approx(0.0004)
+        assert _parse_float_constant("bc_loss_weight_final", _CFG_TEXT) == pytest.approx(0.2)
 
 
 class TestRewardGateBehavior:

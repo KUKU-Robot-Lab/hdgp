@@ -185,7 +185,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
-    success_spill_max: float = 0.40   # 0.20→0.40: [test4] spill=33% > 0.20 → 성공 불가. weight_spill 복활로 spill 억제하면서 기준 완화
+    success_spill_max: float = 0.20   # [test3] 0.40→0.20: spill 기준 강화 (P2)
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -307,7 +307,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
     # 0이면 비활성.
     weight_success_overfill: float = 0.0
-    weight_spill: float = 1.00     # 0→1.0: [test4] spill=33% > success_spill_max(20%) → 성공 불가. 소량 복활로 억제
+    weight_spill: float = 5.00     # [test3] 1.0→5.0: spill 패널티 강화 (P2) — spill_ratio=0.2 → cost=1.0/step
     # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
     #   premature_tilt_cost = (1 - g_ready) × (1 - source_up_dot_world)
     #   g_ready=0.11, cup 100° tilt 시 source_up_dot_world≈-0.17 → (1-(-0.17))=1.17
@@ -318,7 +318,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
     #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
-    weight_premature_tilt: float = 0.50   # 4.00→1.50→0.50: tilt_action_gate가 wrist spin 차단하므로 감소
+    weight_premature_tilt: float = 2.00   # [test3] 0.50→2.00: P0 tilt_amount 식 변경에 맞춰 상향 — dist=0.4m, 100° tilt → cost=1.11/step
     weight_grasp_loss: float = 0.05      # 0.30→0.05: [test4] cost_grasp_loss=0.73/step (전체 cost 73%) → tilt 억제. DexPour는 contact reward로 대체
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
@@ -358,11 +358,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_pose_near_gate_xy: float = 0.16
 
     # ADR: spill penalty 스케줄 (low→high)
-    enable_spill_adr: bool = False  # True→False: weight_spill=0이므로 ADR 불필요
+    enable_spill_adr: bool = True   # [test3] False→True: spill 점진적 억제 (5.0→8.0 ADR)
     spill_adr_custom_cfg: dict = {
         "reward": {
             # start small to allow exploration, ramp to 기존 10.0 페널티
-            "spill_weight": (0.5, 8.0),  # 초기 허용도 ↑ (pour 시도 장려)
+            "spill_weight": (1.0, 8.0),  # [test3] 0.5→1.0: 초기 spill 기준 상향
         }
     }
     spill_adr_num_increments: int = 50

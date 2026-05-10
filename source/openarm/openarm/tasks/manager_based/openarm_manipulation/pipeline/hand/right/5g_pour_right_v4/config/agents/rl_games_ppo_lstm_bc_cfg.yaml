@@ -99,7 +99,7 @@ params:
     bc_seq_len: 16
     bc_batch_size: 64
     bc_loss_weight_init: 1.0
-    bc_loss_weight_final: 0.1
+    bc_loss_weight_final: 0.2
     bc_loss_warmup_epochs: 500
     bc_loss_decay_epochs: 3000
     bc_min_buffer_size: 20
@@ -119,12 +119,12 @@ params:
       - /home/user/rl_ws/datasets/pour_v1_a19.hdf5
       - /home/user/rl_ws/datasets/pour_v1_a20.hdf5
     real_demo_stride: 2
-    real_demo_pour_sample_ratio: 0.6
+    real_demo_pour_sample_ratio: 0.8
     real_demo_bc_min_buffer_size: 1
-    real_demo_bc_weight_init: 0.5
-    real_demo_bc_weight_final: 0.05
+    real_demo_bc_weight_init: 2.0
+    real_demo_bc_weight_final: 0.3
     real_demo_bc_warmup_epochs: 100
-    real_demo_bc_decay_epochs: 3000
+    real_demo_bc_decay_epochs: 5000
     # Set to "error" once the env actor has been switched to native 91D.
     real_demo_bc_obs_mismatch_policy: pad_or_crop
 

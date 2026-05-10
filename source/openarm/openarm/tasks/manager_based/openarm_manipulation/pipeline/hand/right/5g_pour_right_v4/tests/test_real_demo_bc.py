@@ -19,7 +19,14 @@ _AGENT_CFG_TEXT = (_TASK_DIR / "config/agents/rl_games_ppo_lstm_bc_cfg.yaml").re
 
 
 def test_real_demo_bc_weight_init_matches_finetune_plan() -> None:
-    assert "real_demo_bc_weight_init: 0.5" in _AGENT_CFG_TEXT
+    assert "real_demo_bc_weight_init: 2.0" in _AGENT_CFG_TEXT
+
+
+def test_bc_schedule_matches_finetune_plan() -> None:
+    assert "bc_loss_weight_final: 0.2" in _AGENT_CFG_TEXT
+    assert "real_demo_pour_sample_ratio: 0.8" in _AGENT_CFG_TEXT
+    assert "real_demo_bc_weight_final: 0.3" in _AGENT_CFG_TEXT
+    assert "real_demo_bc_decay_epochs: 5000" in _AGENT_CFG_TEXT
 
 
 def test_a11_a20_hdf5_contract_and_timing() -> None:
