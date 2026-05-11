@@ -299,7 +299,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
     weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
-    weight_tilt_onset_bonus: float = 0.00    # [test4] 5.00→0.00: 방향 무관 local optimum 제거 (r_dir_tilt로 대체)
+    weight_tilt_onset_bonus: float = 0.00    # [test5] demo shaping 대체로 onset 제거
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
@@ -351,12 +351,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "pour"
-    weight_demo_arm_pose: float = 1.50
-    weight_demo_palm_pose: float = 1.00
+    weight_demo_arm_pose: float = 6.00   # [test5] 1.50→6.00: onset 제거 대신 demo shaping 주도
+    weight_demo_palm_pose: float = 3.00  # [test5] 1.00→3.00
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.50
     demo_pose_warmup_steps: int = 20000
-    demo_pose_near_gate_xy: float = 0.16
+    demo_pose_near_gate_xy: float = 0.20  # [test5] 0.16→0.20: gate 확대 (approach 단계 진입 빨리)
+    demo_nn_lookahead_frames: int = 10    # [test5] NN look-ahead: 현재 자세에서 K 프레임 앞 자세를 타겟으로
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = True   # [test3] False→True: spill 점진적 억제 (5.0→8.0 ADR)

@@ -1364,18 +1364,41 @@ class PourRightEnv(DirectRLEnv):
             }
 
         ref = self.demo_pose_reference
-        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]
-        arm_norm_err = torch.norm((arm_q - ref.arm_joint_mean) / ref.arm_joint_std, dim=-1)
+        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
+
+        # --- Nearest-Neighbor in joint space + look-ahead ---
+        # 현재 joint 상태와 가장 가까운 demo 프레임을 찾고 K 프레임 앞 자세를 타겟으로
+        # 효율적 L2: ||a-b||^2 = ||a||^2 + ||b||^2 - 2·a·bT (중간 (N,T,7) 텐서 생략)
+        demo_arm = ref.arm_joint_pos  # (T, 7)
+        T_demo = demo_arm.shape[0]
+        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)          # (N, 1)
+        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)     # (1, T)
+        ab = arm_q @ demo_arm.T                                  # (N, T)
+        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)            # (N,)
+        K = int(self.cfg.demo_nn_lookahead_frames)
+        target_idx = (nn_idx + K).clamp(max=T_demo - 1)         # (N,)
+        target_arm_q = demo_arm[target_idx]                      # (N, 7)
+
+        arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
         demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
         r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
 
+        # --- Palm: 동일한 target_idx로 일관성 있게 참조 ---
         palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
-        palm_pos_norm_err = torch.norm((palm_pos_w - ref.palm_pos_mean) / ref.palm_pos_std, dim=-1)
-        ref_quat_wxyz = ref.palm_quat_mean[[3, 0, 1, 2]].unsqueeze(0).expand_as(palm_quat_wxyz)
-        quat_dot = torch.abs((palm_quat_wxyz * ref_quat_wxyz).sum(dim=-1)).clamp(max=1.0)
+
+        demo_palm = ref.palm_pose  # (T, 7): [x,y,z, qx,qy,qz,qw]
+        target_palm = demo_palm[target_idx]                              # (N, 7)
+        target_palm_pos = target_palm[:, :3]                             # (N, 3)
+        target_palm_quat_xyzw = target_palm[:, 3:7]                     # (N, 4) xyzw
+        target_palm_quat_wxyz = torch.cat(
+            [target_palm_quat_xyzw[:, 3:4], target_palm_quat_xyzw[:, :3]], dim=-1
+        )                                                                # (N, 4) wxyz
+
+        palm_pos_norm_err = torch.norm((palm_pos_w - target_palm_pos) / ref.palm_pos_std, dim=-1)
+        quat_dot = torch.abs((palm_quat_wxyz * target_palm_quat_wxyz).sum(dim=-1)).clamp(max=1.0)
         demo_palm_rot_err = 2.0 * torch.acos(quat_dot)
-        demo_palm_pos_err = torch.norm(palm_pos_w - ref.palm_pos_mean, dim=-1)
+        demo_palm_pos_err = torch.norm(palm_pos_w - target_palm_pos, dim=-1)
         r_demo_palm_pose = torch.exp(-palm_pos_norm_err - demo_palm_rot_err)
 
         hand_q = self.robot.data.joint_pos[:, self.hand_dof_indices]
@@ -1530,7 +1553,14 @@ class PourRightEnv(DirectRLEnv):
             & (self._cup_center_xy_dist < self.cfg.tilt_onset_dist_threshold)
             & (~self._tilt_onset_bonus_paid)
         )
-        r_tilt_onset = self.cfg.weight_tilt_onset_bonus * tilt_onset.float()
+        # [test5] directional onset bonus: 올바른 방향으로 기울어야만 보상 (방향 cos 가중치)
+        # dir_cos.clamp(0,1): 0=수직/반대방향(보상 없음), 1=완벽한 target 방향(전액 보상)
+        # test3의 방향 무관 onset → 틀린 방향 tilting 문제 수정
+        r_tilt_onset = (
+            self.cfg.weight_tilt_onset_bonus
+            * self._directional_tilt_cos.clamp(0.0, 1.0)
+            * tilt_onset.float()
+        )
         self._tilt_onset_bonus_paid |= tilt_onset
 
         # ---- [test4] Directional tilt reward ----
