@@ -28,7 +28,115 @@ REAL_DEMO_ACTION_DIM = 11
 SIM_OBS_DIM = 110  # v4 actor obs 차원
 
 
-def _remap_hdf5_obs_to_sim_layout(obs: Tensor) -> Tensor:
+_BINARY_CONTACT_NORM_THRESHOLD: float = 0.01  # CONTACT_FORCE_THRESHOLD(0.1N) / CONTACT_FORCE_MAX(10N)
+
+# transport_summary g_ready 계산에 사용하는 env 기본 상수 (pour_right_env_cfg.py 기준)
+_REWARD_GATE_XY_SCALE:    float = 5.0
+_REWARD_GATE_CLEAR_SCALE: float = 80.0
+_REWARD_CLEARANCE_MIN:    float = 0.015
+_POUR_BINARY_MOUTH_Z_MAX: float = 0.15
+
+
+def _compute_pour_geometry(
+    source_cup_mat: Tensor,
+    target_cup_mat: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """HDF5 컵 포즈에서 pour geometry obs [68:85]을 계산.
+
+    env의 _post_physics_step 로직을 미러링:
+      - _compute_dynamic_source_pour_point_w
+      - _source_pour_axis_w / _source_up_axis_w
+      - transport_summary (8D)
+
+    Args:
+        source_cup_mat: (T, 4, 4) 소스 컵 월드 변환 행렬
+        target_cup_mat: (T, 4, 4) 타겟 컵 월드 변환 행렬
+
+    Returns:
+        pour_point_to_opening: (T, 3)
+        source_pour_axis_w:    (T, 3)
+        source_up_axis_w:      (T, 3)
+        transport_summary:     (T, 8)
+    """
+    T   = source_cup_mat.shape[0]
+    dev = source_cup_mat.device
+    dt  = source_cup_mat.dtype
+
+    source_cup_pos  = source_cup_mat[:, :3, 3]
+    source_cup_quat = _quat_xyzw_from_matrix(source_cup_mat[:, :3, :3])
+    target_cup_pos  = target_cup_mat[:, :3, 3]
+    target_cup_quat = _quat_xyzw_from_matrix(target_cup_mat[:, :3, :3])
+
+    pour_pt_b = torch.tensor(_SOURCE_CUP_POUR_POINT_POS_B, dtype=dt, device=dev).expand(T, -1)
+    pour_ax_b = torch.tensor(_SOURCE_CUP_POUR_AXIS_B,      dtype=dt, device=dev).expand(T, -1)
+    up_ax_b   = torch.tensor(_SOURCE_CUP_UP_AXIS_B,        dtype=dt, device=dev).expand(T, -1)
+    tgt_op_b  = torch.tensor(_TARGET_CUP_OPENING_POS_B,    dtype=dt, device=dev).expand(T, -1)
+
+    source_pour_axis_w = _quat_apply_xyzw(source_cup_quat, pour_ax_b)
+    source_up_axis_w   = _quat_apply_xyzw(source_cup_quat, up_ax_b)
+
+    # Dynamic source pour point (env의 _compute_dynamic_source_pour_point_w 미러)
+    mouth_center_w = source_cup_pos + _quat_apply_xyzw(source_cup_quat, pour_pt_b)
+    gravity_down   = source_up_axis_w.new_tensor([0.0, 0.0, -1.0]).expand_as(source_up_axis_w)
+    downhill = gravity_down - (gravity_down * source_up_axis_w).sum(-1, keepdim=True) * source_up_axis_w
+    downhill = _safe_normalize_bc(downhill, source_pour_axis_w)
+    source_pour_point_w = mouth_center_w + _SOURCE_INNER_RADIUS * downhill
+
+    target_opening_w    = target_cup_pos + _quat_apply_xyzw(target_cup_quat, tgt_op_b)
+    mouth_delta         = target_opening_w - source_pour_point_w
+    pour_point_to_opening = mouth_delta
+
+    # transport_summary 8개 항목 (env 순서와 동일)
+    mouth_distance    = torch.norm(mouth_delta, dim=-1)
+    mouth_xy_distance = torch.norm(mouth_delta[:, :2], dim=-1)
+    cup_center_xy_dist = torch.norm(target_cup_pos[:, :2] - source_cup_pos[:, :2], dim=-1)
+    mouth_z_clearance  = source_pour_point_w[:, 2] - target_opening_w[:, 2]
+    source_up_dot_world = source_up_axis_w[:, 2].clamp(-1.0, 1.0)
+
+    # directional_tilt_cos: cup up-axis XY가 target 방향 XY와 일치하는 정도
+    mouth_dir_xy = mouth_delta[:, :2] / (mouth_delta[:, :2].norm(dim=-1, keepdim=True).clamp(min=1e-6))
+    up_xy_norm   = source_up_axis_w[:, :2] / (source_up_axis_w[:, :2].norm(dim=-1, keepdim=True).clamp(min=1e-6))
+    directional_tilt_cos = (up_xy_norm * mouth_dir_xy).sum(dim=-1).clamp(-1.0, 1.0)
+
+    # mouth_alignment_cos: pour heading 3D와 mouth direction 3D의 정렬
+    mouth_dir_3d = mouth_delta / mouth_distance.unsqueeze(1).clamp(min=1e-6)
+    pour_heading_xy      = source_up_axis_w[:, :2]
+    pour_heading_xy_norm = pour_heading_xy.norm(dim=-1, keepdim=True)
+    eff_heading_xy = torch.where(
+        pour_heading_xy_norm > 1e-4,
+        pour_heading_xy / pour_heading_xy_norm.clamp(min=1e-6),
+        torch.zeros_like(pour_heading_xy),
+    )
+    eff_pour_heading = torch.cat([eff_heading_xy, torch.zeros(T, 1, device=dev, dtype=dt)], dim=-1)
+    mouth_alignment_cos  = (eff_pour_heading * mouth_dir_3d).sum(dim=-1).clamp(-1.0, 1.0)
+
+    # g_ready = g_align_xy × g_clear (env 기본 상수 사용)
+    g_align_xy = torch.exp(-_REWARD_GATE_XY_SCALE * mouth_xy_distance)
+    g_clear = (
+        torch.sigmoid(_REWARD_GATE_CLEAR_SCALE * (mouth_z_clearance - _REWARD_CLEARANCE_MIN))
+        * torch.sigmoid(_REWARD_GATE_CLEAR_SCALE * (_POUR_BINARY_MOUTH_Z_MAX - mouth_z_clearance))
+    )
+    g_ready = g_align_xy * g_clear
+
+    transport_summary = torch.stack([
+        mouth_distance,
+        mouth_xy_distance,
+        cup_center_xy_dist,
+        mouth_z_clearance,
+        source_up_dot_world,
+        directional_tilt_cos,
+        mouth_alignment_cos,
+        g_ready,
+    ], dim=-1)
+
+    return pour_point_to_opening, source_pour_axis_w, source_up_axis_w, transport_summary
+
+
+def _remap_hdf5_obs_to_sim_layout(
+    obs: Tensor,
+    source_cup_mat: Tensor | None = None,
+    target_cup_mat: Tensor | None = None,
+) -> Tensor:
     """HDF5 real-demo obs(91D)를 sim actor_obs(110D) 레이아웃으로 재배치.
 
     HDF5 레이아웃 (실측):
@@ -48,13 +156,15 @@ def _remap_hdf5_obs_to_sim_layout(obs: Tensor) -> Tensor:
       [14:34] hand_joint_pos
       [34:54] hand_joint_vel
       [54:68] cup geometry
-      [68:77] pour geometry (pour_point_to_opening 3 + source_pour_axis 3 + source_up_axis 3) — HDF5 없음 → 0
-      [77:85] transport_summary — HDF5 없음 → 0
-      [85:90] binary_contact   — HDF5 없음 → 0
+      [68:71] pour_point_to_opening (3) — cup_mat 있으면 계산, 없으면 0
+      [71:74] source_pour_axis_w    (3) — cup_mat 있으면 계산, 없으면 0
+      [74:77] source_up_axis_w      (3) — cup_mat 있으면 계산, 없으면 0
+      [77:85] transport_summary     (8) — cup_mat 있으면 계산, 없으면 0
+      [85:90] binary_contact        (5) — tip_force_norm > 0.01 (CONTACT_THRESHOLD/MAX)
       [90:95] tip_force_norm
       [95:106] last_actions
       [106]   bead_in_source_fraction → 1.0 (에피소드 시작 시 가득 참)
-      [107:110] bead_in_target/cross/spill → 0
+      [107:110] bead_in_target/cross/spill → 0 (BC 시점에는 아직 붓기 전)
     """
     T = obs.shape[0]
     out = torch.zeros(T, SIM_OBS_DIM, dtype=obs.dtype, device=obs.device)
@@ -63,10 +173,24 @@ def _remap_hdf5_obs_to_sim_layout(obs: Tensor) -> Tensor:
     out[:, 14:34] = obs[:, 7:27]   # hand_joint_pos (HDF5 7:27  → sim 14:34)
     out[:, 34:54] = obs[:, 34:54]  # hand_joint_vel
     out[:, 54:68] = obs[:, 54:68]  # cup geometry
-    # [68:90]: pour_geometry/transport/contact — HDF5 미포함, 0으로 유지
-    out[:, 90:95] = obs[:, 68:73]  # tip_force_norm (HDF5 68:73 → sim 90:95)
-    out[:, 95:106] = obs[:, 79:90] # last_actions   (HDF5 79:90 → sim 95:106)
-    out[:, 106]   = 1.0            # bead_in_source_fraction (소스컵 가득 참)
+
+    if source_cup_mat is not None and target_cup_mat is not None:
+        # Phase 2: pour geometry를 HDF5 컵 포즈에서 계산
+        sc = source_cup_mat.to(device=obs.device, dtype=obs.dtype)
+        tc = target_cup_mat.to(device=obs.device, dtype=obs.dtype)
+        pour_pt, pour_ax, up_ax, transport = _compute_pour_geometry(sc, tc)
+        out[:, 68:71] = pour_pt      # pour_point_to_opening
+        out[:, 71:74] = pour_ax      # source_pour_axis_w
+        out[:, 74:77] = up_ax        # source_up_axis_w
+        out[:, 77:85] = transport    # transport_summary
+    # else: [68:85] = 0 (컵 포즈 미제공 시 이전 동작 유지)
+
+    # binary_contact: tip_force_norm(HDF5 68:73) 임계값 초과 여부
+    out[:, 85:90] = (obs[:, 68:73] > _BINARY_CONTACT_NORM_THRESHOLD).to(dtype=obs.dtype)
+
+    out[:, 90:95]  = obs[:, 68:73]  # tip_force_norm (HDF5 68:73 → sim 90:95)
+    out[:, 95:106] = obs[:, 79:90]  # last_actions   (HDF5 79:90 → sim 95:106)
+    out[:, 106]    = 1.0             # bead_in_source_fraction (소스컵 가득 참)
     # [107:110]: bead_in_target/cross/spill = 0 (기본값)
     return out
 DEFAULT_REAL_DEMO_PATHS = tuple(
@@ -412,7 +536,8 @@ def load_real_demo_episodes(
             )
 
         _validate_episode(path, obs, raw_actions, timestamps)
-        obs = _remap_hdf5_obs_to_sim_layout(obs)  # HDF5 91D → sim 110D 레이아웃으로 재배치
+        # Phase 2: 컵 포즈를 전달하여 [68:85] pour geometry obs를 합성
+        obs = _remap_hdf5_obs_to_sim_layout(obs, source_cup, target_cup)
         right_pose = pose_from_matrix(right_eef)
         target_pose = pose_from_matrix(right_target)
         delta_mins, delta_maxs = _default_delta_bounds(device)

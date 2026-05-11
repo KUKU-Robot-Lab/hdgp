@@ -21,6 +21,9 @@ class RecurrentGateState:
     success_threshold: float = 0.02
     traj_threshold: float = 20.0
     ramp_epochs: int = 500
+    # ramp_start_epoch >= 0: epoch-based schedule (success/traj 무관, 단순 선형 ramp)
+    # ramp_start_epoch < 0: 원래 success+traj 기반 활성화 조건 사용
+    ramp_start_epoch: int = -1
     success_ema: float = 0.0
     activation_epoch: int | None = None
 
@@ -32,7 +35,14 @@ class RecurrentGateState:
         traj_score = readiness_score(traj_size, self.traj_threshold)
         success_score = readiness_score(self.success_ema, self.success_threshold)
 
-        if traj_score >= 1.0 and success_score >= 1.0:
+        if self.ramp_start_epoch >= 0:
+            # 에포크 기반 스케줄: 성공/궤적 요건 없이 일정 epoch 이후 선형 ramp
+            elapsed = max(int(epoch) - self.ramp_start_epoch, 0)
+            if self.ramp_epochs <= 0:
+                alpha = 1.0 if int(epoch) >= self.ramp_start_epoch else 0.0
+            else:
+                alpha = max(0.0, min(elapsed / float(self.ramp_epochs), 1.0))
+        elif traj_score >= 1.0 and success_score >= 1.0:
             if self.activation_epoch is None:
                 self.activation_epoch = int(epoch)
             elapsed = max(int(epoch) - self.activation_epoch + 1, 0)

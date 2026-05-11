@@ -128,6 +128,7 @@ class PourLstmBCAgent(A2CAgent):
             success_threshold=float(cfg.get("recurrent_gate_success_threshold", 0.02)),
             traj_threshold=float(cfg.get("recurrent_gate_traj_min_size", self._bc_min_buf)),
             ramp_epochs=int(cfg.get("recurrent_gate_ramp_epochs", 500)),
+            ramp_start_epoch=int(cfg.get("recurrent_gate_ramp_start_epoch", -1)),
         )
         self._install_recurrent_gates()
 

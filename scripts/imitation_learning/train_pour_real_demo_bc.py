@@ -54,7 +54,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--policy_obs_dim", type=int, default=110)
     parser.add_argument("--critic_obs_dim", type=int, default=143)
     parser.add_argument("--action_dim", type=int, default=11)
-    parser.add_argument("--pour_sample_ratio", type=float, default=0.6)
+    parser.add_argument("--pour_sample_ratio", type=float, default=0.8)
     parser.add_argument("--grad_norm", type=float, default=1.0)
     parser.add_argument("--save_every", type=int, default=50)
     return parser.parse_args()

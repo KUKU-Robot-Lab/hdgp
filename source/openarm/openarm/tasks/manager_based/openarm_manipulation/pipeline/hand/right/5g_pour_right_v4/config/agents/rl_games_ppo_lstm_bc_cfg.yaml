@@ -78,10 +78,11 @@ params:
     grad_norm: 1.0
     entropy_coef: 0.005
     recurrent_gate_enable: True
-    recurrent_gate_traj_min_size: 20
-    recurrent_gate_success_threshold: 0.001
+    recurrent_gate_ramp_start_epoch: 100   # epoch-based: 100 epoch부터 LSTM ramp-in 시작
+    recurrent_gate_ramp_epochs: 400        # 100~500 epoch 구간에서 alpha 0→1 선형 증가
+    recurrent_gate_traj_min_size: 20       # 로깅 전용 (epoch-based 모드에서 활성화 조건 미사용)
+    recurrent_gate_success_threshold: 0.001  # 로깅 전용
     recurrent_gate_success_ema_tau: 0.95
-    recurrent_gate_ramp_epochs: 500
     truncate_grads: True
     e_clip: 0.25
     horizon_length: 64
