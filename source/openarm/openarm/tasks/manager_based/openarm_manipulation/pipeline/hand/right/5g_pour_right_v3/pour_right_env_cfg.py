@@ -293,12 +293,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # r_hold를 낮춰 이동 유인이 생겼을 때 전진 방향 신호를 강화한다.
     weight_transport_progress: float = 12.00  # 6.00→12.00: 전진 보상 강화
     weight_prepour_dir: float = 5.00
-    weight_prepour_align: float = 4.00
+    weight_prepour_align: float = 5.00  # [test4] 4.00→5.00: 방향 정렬 신호 소폭 강화
+    weight_dir_tilt: float = 3.00       # [test4] NEW: 올바른 방향 tilt 연속 보상 (directional_tilt_cos 기반)
     weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
     weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
     weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
-    weight_tilt_onset_bonus: float = 5.00    # tilt 탐색 유도 1회 보너스 (bridge reward)
+    weight_tilt_onset_bonus: float = 0.00    # [test4] 5.00→0.00: 방향 무관 local optimum 제거 (r_dir_tilt로 대체)
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
@@ -409,7 +410,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [P3] pour stage binary gate: DexPour ρ 방식
     # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
     # → "컵 근처에서 기울어야만 pour reward" → 명확한 행동 학습
-    pour_binary_xy_thresh: float = 0.15   # DexPour d_pour=0.17m 참고
+    pour_binary_xy_thresh: float = 0.18   # [test4] 0.15→0.18: FK 확인 source-target XY gap ≈ 0.20m, 여유 포함
     pour_binary_tilt_thresh: float = 0.50  # source_up_dot < 0.50 (>60° 기울기)
 
     # -----------------------------------------------------------------------

@@ -1533,6 +1533,15 @@ class PourRightEnv(DirectRLEnv):
         r_tilt_onset = self.cfg.weight_tilt_onset_bonus * tilt_onset.float()
         self._tilt_onset_bonus_paid |= tilt_onset
 
+        # ---- [test4] Directional tilt reward ----
+        # cup을 target 방향으로 기울일 때만 보상 → 방향 gradient 제공
+        # tilt_strength: 기울기 크기 (0=직립, 1=180°)  — upright일 때 directional_tilt_cos 불안정 방지
+        # dir_cos_reward: [0,1]  1=target 방향 완벽 정렬, 0=반대 방향
+        # g_ready gate: target 근처에서만 활성 (먼 거리에서 방향 무관 tilting 방지)
+        tilt_strength = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
+        dir_cos_reward = 0.5 * (self._directional_tilt_cos + 1.0)
+        r_dir_tilt = self._g_ready * self.cfg.weight_dir_tilt * tilt_strength * dir_cos_reward
+
         # ---- Outcome and costs ----
         # ADR: success 기준을 낮은 fill_ratio에서 시작해 점진적으로 상향
         success_fill_ratio = (
@@ -1642,6 +1651,7 @@ class PourRightEnv(DirectRLEnv):
             + r_pour_stage
             + r_first_capture
             + r_tilt_onset
+            + r_dir_tilt
             + demo_terms["r_demo_arm_pose"]
             + demo_terms["r_demo_palm_pose"]
             + self.cfg.weight_success * r_success
@@ -1693,6 +1703,9 @@ class PourRightEnv(DirectRLEnv):
         self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
         self.extras["bead_cross"] = self._bead_cross_fraction.mean()
         self.extras["spill_ratio"] = self._spill_ratio.mean()
+        # [test4] directional tilt 진단
+        self.extras["r_dir_tilt"] = r_dir_tilt.mean()
+        self.extras["directional_tilt_cos"] = self._directional_tilt_cos.mean()
         # Phase-0 진단 메트릭: arm joint velocity / acceleration
         self.extras["arm_joint_vel_l2_mean"] = arm_qd_l2.mean()
         self.extras["arm_joint_vel_max_mean"] = arm_qd_max.mean()

@@ -367,6 +367,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
     freeze_grasp_hand_during_episode: bool = True
+    # BC 체크포인트 play용: True 이면 BC 학습 시 zeros였던 obs 슬롯을 0으로 마스킹
+    # actor_obs[68:90] = pour_geometry/transport/contact (BC 훈련에 없었음)
+    # actor_obs[107:110] = bead_in_target/cross/spill    (BC 훈련에 없었음, 초기엔 ~0)
+    zero_bc_missing_obs: bool = False
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
         BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ

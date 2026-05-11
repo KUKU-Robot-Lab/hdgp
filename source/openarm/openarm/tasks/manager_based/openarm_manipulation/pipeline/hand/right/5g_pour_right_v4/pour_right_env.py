@@ -1003,6 +1003,29 @@ class PourRightEnv(DirectRLEnv):
             delta = scale(self._ema_palm_action, self.delta_mins_warmstart_collect, self.delta_maxs_warmstart_collect)
         else:
             delta = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
+            # [진단] hold 종료 직후 첫 5스텝 동안 BC action / delta 출력
+            _step = int(self.episode_length_buf[0].item())
+            _hold = self.cfg.episode_hold_steps
+            if _hold < _step <= _hold + 5:
+                _act6 = self.actions[0, :6].cpu()
+                _ema6 = self._ema_palm_action[0].cpu()
+                _d6   = delta[0].cpu()
+                _pregrasp = self.pregrasp_palm_pose_buf[0, :3].cpu()
+                _tgt_raw  = _pregrasp + _d6[:3]
+                _tgt_clamped = _tgt_raw.clamp(
+                    torch.tensor([self.palm_mins[0].item(), self.palm_mins[1].item(), self.palm_mins[2].item()]),
+                    torch.tensor([self.palm_maxs[0].item(), self.palm_maxs[1].item(), self.palm_maxs[2].item()]),
+                )
+                _fq_before = self.fabric_q[0, :4].cpu()
+                _rq_before = self.robot.data.joint_pos[0, self.arm_dof_indices[:4]].cpu()
+                print(
+                    f"[BC-diag] step={_step}  raw_action={_act6.tolist()}\n"
+                    f"          ema={_ema6.tolist()}\n"
+                    f"          delta_m={_d6.tolist()}\n"
+                    f"          pregrasp={_pregrasp.tolist()}  target_raw={_tgt_raw.tolist()}  target_clamped={_tgt_clamped.tolist()}\n"
+                    f"          fabric_q_before={_fq_before.tolist()}  robot_q={_rq_before.tolist()}",
+                    flush=True,
+                )
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
             gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
             tilt_gate = torch.clamp(
@@ -1050,6 +1073,22 @@ class PourRightEnv(DirectRLEnv):
                 self.fabric_qdd.detach(),
                 self.timestep,
             )
+
+        # [진단] Fabrics 루프 후 fabric_q 변화 확인 (hold 이후 30스텝, 10스텝마다 출력)
+        if not self._warmstart_collect_mode:
+            _step2 = int(self.episode_length_buf[0].item())
+            _hold2 = self.cfg.episode_hold_steps
+            if _hold2 < _step2 <= _hold2 + 30 and (_step2 - _hold2) % 5 == 1:
+                _fq_after = self.fabric_q[0, :4].cpu()
+                _fqd      = self.fabric_qd[0, :4].cpu()
+                _palm_tgt = self.palm_pose_targets[0, :3].cpu()
+                _rq_now   = self.robot.data.joint_pos[0, self.arm_dof_indices[:4]].cpu()
+                print(
+                    f"[BC-diag-fab] step={_step2}  fabric_q_after={_fq_after.tolist()}\n"
+                    f"              fabric_qd={_fqd.tolist()}\n"
+                    f"              palm_tgt={_palm_tgt.tolist()}  robot_q={_rq_now.tolist()}",
+                    flush=True,
+                )
 
         # ---- 오른손 파지 유지 (pour 중 항상 grasp pose freeze) ----
         if self.cfg.freeze_grasp_hand_during_episode and (not self._warmstart_collect_mode):
@@ -1373,6 +1412,13 @@ class PourRightEnv(DirectRLEnv):
             self._bead_cross_fraction.unsqueeze(1),      # 1 (mouth 통과율, r_cross weight=20 대응)
             self._spill_ratio.unsqueeze(1),              # 1 (유출율, spill_cost weight=10 대응)
         ], dim=-1)   # 110D
+
+        if self.cfg.zero_bc_missing_obs:
+            # BC 훈련 시 zeros였던 슬롯을 0으로 강제 → 훈련 분포와 일치
+            # [68:90] = pour_geometry(9D) + transport_summary(8D) + binary_contact(5D)
+            # [107:110] = bead_in_target / cross / spill
+            actor_obs[:, 68:90] = 0.0
+            actor_obs[:, 107:110] = 0.0
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(

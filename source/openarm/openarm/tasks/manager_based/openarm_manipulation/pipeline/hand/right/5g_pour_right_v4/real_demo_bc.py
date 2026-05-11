@@ -25,6 +25,50 @@ from torch import Tensor
 REAL_DEMO_OBS_DIM = 91
 REAL_DEMO_RAW_ACTION_DIM = 18
 REAL_DEMO_ACTION_DIM = 11
+SIM_OBS_DIM = 110  # v4 actor obs 차원
+
+
+def _remap_hdf5_obs_to_sim_layout(obs: Tensor) -> Tensor:
+    """HDF5 real-demo obs(91D)를 sim actor_obs(110D) 레이아웃으로 재배치.
+
+    HDF5 레이아웃 (실측):
+      [0:7]   arm_joint_pos
+      [7:27]  hand_joint_pos   ← sim에서는 14:34 위치
+      [27:34] arm_joint_vel    ← sim에서는 7:14 위치
+      [34:54] hand_joint_vel
+      [54:68] cup geometry (right_cup_pos_rel_palm 3 + quat 4 + left_cup 7)
+      [68:73] tip_force_norm   ← sim에서는 90:95 위치
+      [73:79] near-zero field (미사용)
+      [79:90] prev_actions(11D) ← sim에서는 95:106 위치 (last_actions)
+      [90:91] unknown(1D)
+
+    Sim 레이아웃 (110D):
+      [0:7]   arm_joint_pos
+      [7:14]  arm_joint_vel
+      [14:34] hand_joint_pos
+      [34:54] hand_joint_vel
+      [54:68] cup geometry
+      [68:77] pour geometry (pour_point_to_opening 3 + source_pour_axis 3 + source_up_axis 3) — HDF5 없음 → 0
+      [77:85] transport_summary — HDF5 없음 → 0
+      [85:90] binary_contact   — HDF5 없음 → 0
+      [90:95] tip_force_norm
+      [95:106] last_actions
+      [106]   bead_in_source_fraction → 1.0 (에피소드 시작 시 가득 참)
+      [107:110] bead_in_target/cross/spill → 0
+    """
+    T = obs.shape[0]
+    out = torch.zeros(T, SIM_OBS_DIM, dtype=obs.dtype, device=obs.device)
+    out[:, 0:7]   = obs[:, 0:7]    # arm_joint_pos
+    out[:, 7:14]  = obs[:, 27:34]  # arm_joint_vel  (HDF5 27:34 → sim 7:14)
+    out[:, 14:34] = obs[:, 7:27]   # hand_joint_pos (HDF5 7:27  → sim 14:34)
+    out[:, 34:54] = obs[:, 34:54]  # hand_joint_vel
+    out[:, 54:68] = obs[:, 54:68]  # cup geometry
+    # [68:90]: pour_geometry/transport/contact — HDF5 미포함, 0으로 유지
+    out[:, 90:95] = obs[:, 68:73]  # tip_force_norm (HDF5 68:73 → sim 90:95)
+    out[:, 95:106] = obs[:, 79:90] # last_actions   (HDF5 79:90 → sim 95:106)
+    out[:, 106]   = 1.0            # bead_in_source_fraction (소스컵 가득 참)
+    # [107:110]: bead_in_target/cross/spill = 0 (기본값)
+    return out
 DEFAULT_REAL_DEMO_PATHS = tuple(
     Path(f"/home/user/rl_ws/datasets/pour_v1_a{i}.hdf5") for i in range(11, 21)
 )
@@ -157,6 +201,133 @@ def _default_delta_bounds(device: torch.device | str = "cpu") -> tuple[Tensor, T
     return mins, maxs
 
 
+# ---------------------------------------------------------------------------
+# Cup-local rotation basis helpers  (Phase-1: rotation label re-mapping)
+# ---------------------------------------------------------------------------
+# Constants mirroring pour_right_preset.py — single source of truth lives there.
+_SOURCE_CUP_POUR_POINT_POS_B: list[float] = [0.0, 0.0, 0.100]
+_SOURCE_CUP_POUR_AXIS_B: list[float]      = [1.0, 0.0, 0.0]
+_SOURCE_CUP_UP_AXIS_B: list[float]        = [0.0, 0.0, 1.0]
+_TARGET_CUP_OPENING_POS_B: list[float]    = [0.0, 0.0, 0.100]
+_SOURCE_INNER_RADIUS: float               = 0.041
+
+
+def _safe_normalize_bc(v: Tensor, fallback: Tensor, eps: float = 1.0e-6) -> Tensor:
+    """Safe normalize matching env's PourRightEnv._safe_normalize."""
+    norm = torch.norm(v, dim=-1, keepdim=True)
+    fallback_norm = torch.norm(fallback, dim=-1, keepdim=True).clamp(min=eps)
+    return torch.where(norm > eps, v / norm.clamp(min=eps), fallback / fallback_norm)
+
+
+def _quat_apply_xyzw(q: Tensor, v: Tensor) -> Tensor:
+    """Rotate vector v by xyzw quaternion q.  Handles arbitrary batch dims."""
+    qxyz = q[..., :3]
+    qw   = q[..., 3:4]
+    return v + 2.0 * qw * torch.cross(qxyz, v, dim=-1) + 2.0 * torch.cross(qxyz, torch.cross(qxyz, v, dim=-1), dim=-1)
+
+
+def _build_cup_local_basis(
+    source_cup_mat: Tensor,
+    target_cup_mat: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Compute the cup-local rotation basis used by the env's _build_cup_local_tilt_rotvec.
+
+    Args:
+        source_cup_mat: (T, 4, 4) homogeneous transforms of the source cup.
+        target_cup_mat: (T, 4, 4) homogeneous transforms of the target cup.
+
+    Returns:
+        (spin_axis, tilt_toward_axis, tilt_ortho_axis), each (T, 3) unit vectors
+        forming an orthonormal basis in world space at each timestep.
+
+    The mapping matches _pre_physics_step exactly:
+        rotvec_world = spin*spin_axis + tilt_toward*tilt_toward_axis + tilt_ortho*tilt_ortho_axis
+    """
+    T   = source_cup_mat.shape[0]
+    dev = source_cup_mat.device
+    dt  = source_cup_mat.dtype
+
+    source_cup_pos  = source_cup_mat[:, :3, 3]
+    source_cup_quat = _quat_xyzw_from_matrix(source_cup_mat[:, :3, :3])
+    target_cup_pos  = target_cup_mat[:, :3, 3]
+    target_cup_quat = _quat_xyzw_from_matrix(target_cup_mat[:, :3, :3])
+
+    pour_pt_b = torch.tensor(_SOURCE_CUP_POUR_POINT_POS_B, dtype=dt, device=dev).expand(T, -1)
+    pour_ax_b = torch.tensor(_SOURCE_CUP_POUR_AXIS_B,      dtype=dt, device=dev).expand(T, -1)
+    up_ax_b   = torch.tensor(_SOURCE_CUP_UP_AXIS_B,        dtype=dt, device=dev).expand(T, -1)
+    tgt_op_b  = torch.tensor(_TARGET_CUP_OPENING_POS_B,    dtype=dt, device=dev).expand(T, -1)
+
+    cup_up_axis_w   = _quat_apply_xyzw(source_cup_quat, up_ax_b)
+    cup_pour_axis_w = _quat_apply_xyzw(source_cup_quat, pour_ax_b)
+
+    # Dynamic source pour point (mirrors _compute_dynamic_source_pour_point_w)
+    mouth_center_w = source_cup_pos + _quat_apply_xyzw(source_cup_quat, pour_pt_b)
+    gravity_down   = cup_up_axis_w.new_tensor([0.0, 0.0, -1.0]).expand_as(cup_up_axis_w)
+    downhill = gravity_down - (gravity_down * cup_up_axis_w).sum(-1, keepdim=True) * cup_up_axis_w
+    downhill = _safe_normalize_bc(downhill, cup_pour_axis_w)
+    source_pour_point_w = mouth_center_w + _SOURCE_INNER_RADIUS * downhill
+
+    # Target cup opening
+    target_opening_w = target_cup_pos + _quat_apply_xyzw(target_cup_quat, tgt_op_b)
+
+    # Tilt basis (mirrors _build_cup_local_tilt_rotvec)
+    mouth_delta     = target_opening_w - source_pour_point_w
+    pour_axis_plane = cup_pour_axis_w - (cup_pour_axis_w * cup_up_axis_w).sum(-1, keepdim=True) * cup_up_axis_w
+    target_dir      = mouth_delta - (mouth_delta * cup_up_axis_w).sum(-1, keepdim=True) * cup_up_axis_w
+    target_dir      = _safe_normalize_bc(target_dir, pour_axis_plane)
+
+    tilt_toward_axis = _safe_normalize_bc(
+        torch.cross(target_dir, cup_up_axis_w, dim=-1),
+        torch.cross(pour_axis_plane, cup_up_axis_w, dim=-1),
+    )
+    tilt_ortho_axis = _safe_normalize_bc(
+        torch.cross(cup_up_axis_w, tilt_toward_axis, dim=-1),
+        pour_axis_plane,
+    )
+    spin_axis = _safe_normalize_bc(
+        cup_up_axis_w,
+        cup_up_axis_w.new_tensor([0.0, 0.0, 1.0]).expand_as(cup_up_axis_w),
+    )
+    return spin_axis, tilt_toward_axis, tilt_ortho_axis
+
+
+def target_pose_to_pose_action_cup_local(
+    target_pose: Tensor,
+    base_pose: Tensor,
+    source_cup_mat: Tensor,
+    target_cup_mat: Tensor,
+    delta_mins: Tensor,
+    delta_maxs: Tensor,
+) -> Tensor:
+    """Convert target palm pose to v4 6D action using cup-local rotation semantics.
+
+    Rotation is decomposed into [spin, tilt_toward_target, tilt_ortho] by projecting
+    the world-frame rotation delta onto the cup-local orthonormal basis produced by
+    _build_cup_local_basis.  This matches _pre_physics_step's interpretation of the
+    rotation portion of the action vector, eliminating the label/env mismatch that
+    previously made BC labels meaningless for RL fine-tuning.
+    """
+    target_pose = target_pose.to(dtype=torch.float32)
+    base_pose   = base_pose.to(device=target_pose.device, dtype=target_pose.dtype)
+    delta_mins  = delta_mins.to(device=target_pose.device, dtype=target_pose.dtype)
+    delta_maxs  = delta_maxs.to(device=target_pose.device, dtype=target_pose.dtype)
+
+    pos_delta = target_pose[..., :3] - base_pose[..., :3]
+
+    # World-frame rotation delta
+    delta_quat = _quat_mul_xyzw(target_pose[..., 3:7], _quat_conj_xyzw(base_pose[..., 3:7]))
+    rotvec_w   = _axis_angle_from_quat_xyzw(delta_quat)
+
+    # Project onto cup-local orthonormal basis
+    spin_ax, tilt_toward_ax, tilt_ortho_ax = _build_cup_local_basis(source_cup_mat, target_cup_mat)
+    spin        = (rotvec_w * spin_ax).sum(-1, keepdim=True)
+    tilt_toward = (rotvec_w * tilt_toward_ax).sum(-1, keepdim=True)
+    tilt_ortho  = (rotvec_w * tilt_ortho_ax).sum(-1, keepdim=True)
+
+    delta = torch.cat([pos_delta, spin, tilt_toward, tilt_ortho], dim=-1)
+    return _unscale(delta, delta_mins, delta_maxs).clamp(-1.0, 1.0)
+
+
 def _pour_phase_mask(
     source_cup_pose: Tensor,
     right_eef_pose: Tensor,
@@ -241,6 +412,7 @@ def load_real_demo_episodes(
             )
 
         _validate_episode(path, obs, raw_actions, timestamps)
+        obs = _remap_hdf5_obs_to_sim_layout(obs)  # HDF5 91D → sim 110D 레이아웃으로 재배치
         right_pose = pose_from_matrix(right_eef)
         target_pose = pose_from_matrix(right_target)
         delta_mins, delta_maxs = _default_delta_bounds(device)
@@ -248,8 +420,16 @@ def load_real_demo_episodes(
         # teleop deltas.  The first right EEF pose is the closest HDF5 proxy for
         # the warmstarted pregrasp palm pose.
         base_pose = right_pose[:1].expand_as(target_pose)
-        palm_action = target_pose_to_pose_action(target_pose, base_pose, delta_mins, delta_maxs)
-        actions = torch.cat([palm_action, raw_actions[:, 6:11].clamp(-1.0, 1.0)], dim=-1)
+        # Phase-1: use cup-local rotation basis so the rotation label matches
+        # _pre_physics_step's interpretation of delta[:, 3:6].
+        palm_action = target_pose_to_pose_action_cup_local(
+            target_pose, base_pose, source_cup, target_cup, delta_mins, delta_maxs,
+        )
+        # freeze_grasp_hand_during_episode=True means the env always overrides
+        # finger actions with 1.0 (full grasp).  Supervising BC on raw teleop
+        # finger values wastes gradient on a signal the env discards.
+        finger_action = torch.ones(target_pose.shape[0], 5, dtype=torch.float32, device=device)
+        actions = torch.cat([palm_action, finger_action], dim=-1)
         episodes.append(
             RealDemoEpisode(
                 path=path,
@@ -317,7 +497,7 @@ class RealDemoBCBuffer:
         if batch_size <= 0 or seq_len <= 0:
             raise ValueError("batch_size and seq_len must be positive")
 
-        obs_batch = torch.zeros(batch_size, seq_len, REAL_DEMO_OBS_DIM, device=self.device)
+        obs_batch = torch.zeros(batch_size, seq_len, SIM_OBS_DIM, device=self.device)
         act_batch = torch.zeros(batch_size, seq_len, REAL_DEMO_ACTION_DIM, device=self.device)
         mask_batch = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=self.device)
         pour_samples = 0

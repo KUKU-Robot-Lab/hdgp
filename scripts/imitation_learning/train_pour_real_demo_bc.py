@@ -125,18 +125,15 @@ def _build_central_value_state(params: dict, *, critic_obs_dim: int, action_dim:
 
 
 def _adapt_obs(obs: torch.Tensor, obs_dim: int) -> torch.Tensor:
+    # real_demo_bc._remap_hdf5_obs_to_sim_layout()에서 이미 110D sim layout으로 변환됨.
+    # obs_dim과 일치하면 그대로, 초과하면 자름. 부족한 경우는 없어야 함.
     current_dim = int(obs.shape[-1])
     if current_dim == obs_dim:
         return obs
     if current_dim > obs_dim:
         return obs[..., :obs_dim]
-    # obs layout (110D): [...(91D real obs) | tip_force_norm[1-4](4D) | last_actions(11D)
-    #                      | bead_in_source(1D) | bead_in_target(1D) | bead_cross(1D) | spill(1D)]
-    # bead_in_source_fraction: pad index 15 (global index 106)
-    # RL 에피소드 시작 시 소스컵은 가득 차 있으므로 1.0으로 패딩 (zero-pad 시 distribution shift 발생)
+    # 이 경로는 더 이상 발생하지 않아야 함 (remap 후 110D = obs_dim)
     pad = torch.zeros(*obs.shape[:-1], obs_dim - current_dim, dtype=obs.dtype, device=obs.device)
-    if obs_dim - current_dim > 15:
-        pad[..., 15] = 1.0  # bead_in_source_fraction = 1.0 (컵 가득 참)
     return torch.cat([obs, pad], dim=-1)
 
 
