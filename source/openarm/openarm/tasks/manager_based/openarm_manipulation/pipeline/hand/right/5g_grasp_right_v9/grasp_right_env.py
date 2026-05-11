@@ -1178,6 +1178,16 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["force_ratio_mean"]       = force_ratio.mean()
         if light_mask.any() and heavy_mask.any():
             self.extras["force_ratio_delta"]  = force_ratio[heavy_mask].mean() - force_ratio[light_mask].mean()
+        # 질량 bin별 force ratio 로깅 (v8/v10과 동일 비교 축)
+        _bin_defs = [
+            ("0b",  self._bead_mass_normalized < 0.17),
+            ("10b", (self._bead_mass_normalized >= 0.17) & (self._bead_mass_normalized < 0.50)),
+            ("20b", (self._bead_mass_normalized >= 0.50) & (self._bead_mass_normalized < 0.84)),
+            ("30b", self._bead_mass_normalized >= 0.84),
+        ]
+        for _tag, _mask in _bin_defs:
+            if _mask.any():
+                self.extras[f"bin_{_tag}_f_ratio"] = force_ratio[_mask].mean()
 
         return total
 

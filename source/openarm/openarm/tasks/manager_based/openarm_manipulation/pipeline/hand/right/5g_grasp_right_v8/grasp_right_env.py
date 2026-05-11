@@ -1088,9 +1088,9 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["num_contacts"]           = self.num_contacts_buf.float().mean()
         self.extras["episode_success_rate"]   = torch.tensor(_ep_success_rate, device=self.device)
         # [mass별 조건부 지표] adaptive grasping 확인용
-        # light(0~33%): 0~6 beads, heavy(66~100%): 14~20 beads
-        light_mask = (self._bead_mass_normalized < 0.33)
-        heavy_mask = (self._bead_mass_normalized > 0.66)
+        # v9/v10과 동일 기준: light(<0.5) vs heavy(>0.5)
+        light_mask = (self._bead_mass_normalized < 0.5)
+        heavy_mask = (self._bead_mass_normalized > 0.5)
         grip_norm_light = grip_normalized[light_mask].mean() if light_mask.any() else grip_normalized.mean()
         grip_norm_heavy = grip_normalized[heavy_mask].mean() if heavy_mask.any() else grip_normalized.mean()
         if light_mask.any():
@@ -1101,6 +1101,29 @@ class GraspRightEnv(DirectRLEnv):
             self.extras["tip_force_norm_heavy"]  = avg_tip_force_normalized[heavy_mask].mean()
         # adaptive grasping 핵심 지표: 양수여야 heavy를 더 강하게 잡는 것
         self.extras["grip_adaptive_delta"]    = grip_norm_heavy - grip_norm_light
+
+        # v9/v10와 직접 비교를 위한 force-ratio 기반 mass-bin KPI
+        total_grip_force = self.contact_force_raw.sum(dim=-1)
+        mass_total = (
+            self.cfg.cup_base_mass
+            + self._bead_mass_normalized * self.cfg.bead_count_max * self.cfg.bead_single_mass
+        )
+        force_ratio = total_grip_force / (mass_total * 9.81 + 1e-6)
+        self.extras["f_ratio"] = force_ratio.mean()
+        if light_mask.any() and heavy_mask.any():
+            self.extras["f_ratio_delta"] = (
+                force_ratio[heavy_mask].mean() - force_ratio[light_mask].mean()
+            )
+
+        _bin_defs = [
+            ("0b",  self._bead_mass_normalized < 0.17),
+            ("10b", (self._bead_mass_normalized >= 0.17) & (self._bead_mass_normalized < 0.50)),
+            ("20b", (self._bead_mass_normalized >= 0.50) & (self._bead_mass_normalized < 0.84)),
+            ("30b", self._bead_mass_normalized >= 0.84),
+        ]
+        for _tag, _mask in _bin_defs:
+            if _mask.any():
+                self.extras[f"bin_{_tag}_f_ratio"] = force_ratio[_mask].mean()
         if self.grasp_adr is not None:
             self.extras["adr_progress"]          = torch.tensor(self.grasp_adr.progress, device=self.device)
             self.extras["adr_spawn_xy_range"]    = torch.tensor(self.grasp_adr.get_param("spawn",  "object_spawn_xy_range"), device=self.device)
@@ -1326,11 +1349,9 @@ class GraspRightEnv(DirectRLEnv):
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
-        # ---- 7b. Bead 스폰 (에피소드마다 0~MAX 균등 랜덤) ----
-        bead_count = torch.randint(
-            self.cfg.bead_count_min, self.cfg.bead_count_max + 1,
-            (n,), device=self.device
-        )  # 각 env당 활성 bead 수 (0 ~ bead_count_max)
+        # ---- 7b. Bead 스폰 (이산 4단계: {0, 10, 20, 30}) ----
+        _bead_lvl = torch.randint(0, 4, (n,), device=self.device)  # 0~3
+        bead_count = _bead_lvl * 10
 
         bead_state = torch.zeros(n, self.cfg.num_beads, 13, device=self.device)
         hidden_pos = self.scene.env_origins[env_ids].unsqueeze(1) + self._hidden_bead_offsets_b.unsqueeze(0)

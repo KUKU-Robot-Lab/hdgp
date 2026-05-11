@@ -17,7 +17,7 @@
 v8: v7 기반 + Bead 무게 랜덤화
 - Action: 11D (6D palm pose + 5D per-finger lerp)
 - Observation: actor 107D / critic 144D (asymmetric)
-- Bead: 컵 안에 0~10개 랜덤 스폰 (×10g = 최대 +100g), bead_mass_normalized obs 추가
+- Bead: 컵 안에 이산 4단계 {0, 10, 20, 30}개 스폰 (×10g), bead_mass_normalized obs 추가
 - Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
@@ -49,11 +49,11 @@ from .grasp_right_preset import (
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
-_DEFAULT_BEAD_COUNT = 20
+_DEFAULT_BEAD_COUNT = 30
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
-    """컵 내부 무게 도메인 랜덤화용 bead 설정 (10개, 각 10g)."""
+    """컵 내부 무게 도메인 랜덤화용 bead 설정 (30개, 각 10g)."""
     rigid_objects: dict = {}
     for i in range(_DEFAULT_BEAD_COUNT):
         rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
@@ -414,15 +414,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # -----------------------------------------------------------------------
     # Bead 무게 도메인 랜덤화
-    # 에피소드마다 0~bead_count_max개 bead를 컵 안에 랜덤 스폰
-    # 각 bead = 10g → 최대 100g 추가 무게
+    # 에피소드마다 {0,10,20,30}개 bead를 컵 안에 이산 랜덤 스폰
+    # 각 bead = 10g → 최대 300g 추가 무게
     # bead_mass_normalized obs로 정책에 현재 하중 전달
     # -----------------------------------------------------------------------
     beads_cfg: RigidObjectCollectionCfg = field(default_factory=_make_beads_cfg)
     num_beads: int = _DEFAULT_BEAD_COUNT
     bead_count_min: int = 0     # 에피소드당 최소 bead 수
-    bead_count_max: int = 20    # 에피소드당 최대 bead 수
+    bead_count_max: int = 30    # 이산: {0, 10, 20, 30}개
     bead_spawn_z_offset: float = 0.035  # 컵 내부 base z 오프셋 (m)
+    cup_base_mass: float = 0.170        # kg (빈 컵 질량)
+    bead_single_mass: float = 0.010     # kg per bead
 
     # -----------------------------------------------------------------------
     # Hand / joint 이름
