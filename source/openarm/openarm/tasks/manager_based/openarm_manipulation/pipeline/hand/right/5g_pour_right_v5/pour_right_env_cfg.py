@@ -432,6 +432,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
 
     # -----------------------------------------------------------------------
+    # 궤적 캡처 + 성공 궤적 버퍼 (LSTM BC auxiliary loss 학습용)
+    # -----------------------------------------------------------------------
+    enable_trajectory_capture: bool = True
+    trajectory_capture_window: int = 200       # 에피소드 마지막 N 스텝 캡처
+    trajectory_buffer_capacity: int = 256      # 성공 궤적 최대 저장 개수
+    trajectory_min_steps: int = 20             # 이 미만이면 저장 skip
+    trajectory_success_bead_threshold: float = 0.5   # bead_in_target_fraction 하한
+    trajectory_success_spill_max: float = 0.2        # spill_ratio 상한
+
+    # -----------------------------------------------------------------------
     # Warmstart reset cache
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True

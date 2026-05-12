@@ -94,6 +94,7 @@ from .pour_right_preset import (
 )
 from .pour_right_utils import scale, to_torch
 from .demo_pose_reference import DemoPoseReferenceBank
+from .success_traj_buffer import SuccessTrajBuffer
 
 
 
@@ -473,6 +474,26 @@ class PourRightEnv(DirectRLEnv):
                 "[5g_pour_right_v5] loaded demo pose reference bank: "
                 f"{self.demo_pose_reference.num_frames} frames from {len(self.demo_pose_reference.source_paths)} files",
                 flush=True,
+            )
+
+        # ----------------------------------------------------------------
+        # 궤적 캡처 버퍼 + 성공 궤적 ring buffer (BC loss 학습용)
+        # ----------------------------------------------------------------
+        self.success_trajectory_buffer = None
+        self._cap_obs  = None
+        self._cap_act  = None
+        self._cap_step = None
+        if cfg.enable_trajectory_capture:
+            _cap_w = cfg.trajectory_capture_window
+            self._cap_obs  = torch.zeros(self.num_envs, _cap_w, cfg.num_observations, device=self.device)
+            self._cap_act  = torch.zeros(self.num_envs, _cap_w, cfg.num_actions,      device=self.device)
+            self._cap_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+            self.success_trajectory_buffer = SuccessTrajBuffer(
+                capacity=cfg.trajectory_buffer_capacity,
+                max_len=_cap_w,
+                obs_dim=cfg.num_observations,
+                act_dim=cfg.num_actions,
+                device=self.device,
             )
 
         # Left target cup — FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS hand local_z=0.04)
@@ -1284,6 +1305,17 @@ class PourRightEnv(DirectRLEnv):
                 f"[pour_v5] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
             )
 
+        # ==== 궤적 캡처: (obs_t, action_t) 기록 ====
+        if self._cap_obs is not None:
+            _cap_w  = self._cap_obs.shape[1]
+            _active = self._cap_step < _cap_w          # (N,) bool
+            if _active.any():
+                _ids  = _active.nonzero(as_tuple=False).squeeze(1)
+                _slots = self._cap_step[_ids]
+                self._cap_obs[_ids, _slots] = actor_obs[_ids].detach()
+                self._cap_act[_ids, _slots] = self.actions[_ids].detach()
+            self._cap_step += 1
+
         # ==== Critic extra obs (50D) ====
         cup_height_delta = (right_cup_pos_clean[:, 2] - self.object_init_pos[:, 2]).unsqueeze(1)
 
@@ -1854,9 +1886,20 @@ class PourRightEnv(DirectRLEnv):
         # ---- episode 성공 집계 후 클리어 ----
         self._total_episodes += n
         self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
+
+        # ---- 성공 궤적 저장 (BC 버퍼, reset 전 호출) ----
+        self._finalize_episode_trajectories(env_ids)
+
         self.episode_success_buf[env_ids] = False
         self._warmstart_only_close[env_ids] = False
         self._warmstart_finger_action_floor[env_ids] = -1.0
+
+        # 캡처 버퍼 리셋 (warmstart 경로 포함)
+        if self._cap_obs is not None:
+            self._cap_obs[env_ids]  = 0.0
+            self._cap_act[env_ids]  = 0.0
+            self._cap_step[env_ids] = 0
+
         if (not self._warmstart_collect_mode) and self._warmstart_cache_count > 0:
             self._reset_from_warmstart_cache(env_ids)
             return
@@ -2007,6 +2050,33 @@ class PourRightEnv(DirectRLEnv):
         self.prev_actions[env_ids, 6:] = -1.0
         self._prev_mouth_xy_distance[env_ids] = 0.0
 
+
+    def _finalize_episode_trajectories(self, env_ids) -> None:
+        """성공 에피소드 궤적을 success_trajectory_buffer 에 저장.
+
+        저장 조건:
+          - bead_in_target_fraction >= trajectory_success_bead_threshold
+          - spill_ratio <= trajectory_success_spill_max
+          - 캡처된 스텝 수 >= trajectory_min_steps
+        score = bead_frac - 0.5 * spill_frac (낮은 score 궤적은 이후 교체됨)
+        """
+        if self.success_trajectory_buffer is None or self._cap_obs is None:
+            return
+        _cap_w = self._cap_obs.shape[1]
+        for env_id in (env_ids.tolist() if hasattr(env_ids, "tolist") else list(env_ids)):
+            count = min(int(self._cap_step[env_id].item()), _cap_w)
+            if count < self.cfg.trajectory_min_steps:
+                continue
+            bead_frac  = float(self._bead_in_target_fraction[env_id].item())
+            spill_frac = float(self._spill_ratio[env_id].item())
+            if (
+                bead_frac  >= self.cfg.trajectory_success_bead_threshold
+                and spill_frac <= self.cfg.trajectory_success_spill_max
+            ):
+                obs_seq = self._cap_obs[env_id, :count]   # (T, obs_dim)
+                act_seq = self._cap_act[env_id, :count]   # (T, act_dim)
+                score   = bead_frac - 0.5 * spill_frac
+                self.success_trajectory_buffer.store(obs_seq, act_seq, score)
 
     def _get_left_cup_fk_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
         """FK 상수로 left target cup의 world pose를 반환. stale body_pos_w 불사용."""

@@ -1,7 +1,7 @@
-# 5g_pour_right_v5 rl_games PPO 설정
-# reset 은 v7 warmstart cache를 사용하고, 학습 task 이름만 새로 분리한다.
-# 관측: actor 101D / critic 143D (asymmetric), 액션: 11D
-# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
+# 5g_pour_right_v5 rl_games LSTM PPO + BC 설정
+# 관측: actor 110D / critic 143D (asymmetric), 액션: 11D
+# LSTM before_mlp=True, Asymmetric Actor-Critic (has_central_value: True)
+# BC: sim success trajectories + real HDF5 demo (DemoBCBuffer)
 
 params:
   seed: 42
@@ -11,7 +11,7 @@ params:
     clip_actions: 1.0
 
   algo:
-    name: a2c_continuous
+    name: a2c_continuous_lstm_bc
 
   model:
     name: continuous_a2c_logstd
@@ -37,6 +37,13 @@ params:
         name: default
       regularizer:
         name: None
+    rnn:
+      name: lstm
+      units: 256
+      layers: 1
+      before_mlp: True
+      concat_input: True
+      layer_norm: True
 
   load_checkpoint: False
   load_path: ''
@@ -58,31 +65,25 @@ params:
     normalize_advantage: True
     gamma: 0.998
     tau: 0.95
-    # num_envs별 lr (sqrt scaling 기준):
-    #   128  envs: lr=4e-4  (baseline)
-    #   512  envs: lr=8e-4
-    #   1024 envs: lr=1.1e-3
-    #   2048 envs: lr=1.6e-3
-    learning_rate: 1e-4      # fine-tune: 3e-4→1e-4 (KL 폭주 방지, test3 완료 후 복원)
+    learning_rate: 1e-4
     lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
-    max_epochs: 10000        # --max_iterations 2000 으로 CLI에서 override
+    max_epochs: 10000
     save_best_after: 100
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.0008         # 탐색 과잉 완화
+    entropy_coef: 0.0008
     truncate_grads: True
     e_clip: 0.25
     horizon_length: 64
-    # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함 (항상 4 splits)
-    #   128  envs: batch=   8,192 → minibatch=  2,048  lr=4e-4
-    #   512  envs: batch=  32,768 → minibatch=  8,192  lr=8e-4
-    #   1024 envs: batch=  65,536 → minibatch= 16,384  lr=1.1e-3
-    #   2048 envs: batch= 131,072 → minibatch= 32,768  lr=1.6e-3  ← default below
-    minibatch_size: 32768     # tuned for --num_envs 2048
+    # LSTM: seq_length は horizon_length の約数であること
+    # 64 = 4 × 16 → seq_length=16 (BPTT window 약 0.27s @ 60Hz)
+    seq_length: 16
+    zero_rnn_on_done: True
+    minibatch_size: 32768
     mini_epochs: 6
     critic_coef: 4
     clip_value: True
@@ -90,15 +91,15 @@ params:
     bound_loss_type: regularization
     bounds_loss_coef: 0.005
 
-    # Asymmetric Actor-Critic: critic은 143D privileged obs 사용
+    # Asymmetric Actor-Critic: critic 은 143D privileged obs 사용
     has_central_value: True
     central_value_config:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768     # actor와 동일하게 맞출 것 (num_envs 2048 기준)
+      minibatch_size: 32768
       mini_epochs: 6
-      learning_rate: 1e-4      # fine-tune: actor와 동일하게 맞춤
+      learning_rate: 1e-4
       lr_schedule: linear
       kl_threshold: 0.013
       clip_value: True
@@ -114,3 +115,23 @@ params:
             name: default
           regularizer:
             name: None
+
+    # ── BC 하이퍼파라미터 ─────────────────────────────────────────────
+    # sim 성공 궤적 BC (SuccessTrajBuffer)
+    bc_loss_warmup_epochs: 500
+    bc_loss_decay_epochs: 3000
+    bc_loss_weight_init: 1.0
+    bc_loss_weight_final: 0.1
+    bc_min_buffer_size: 20
+    bc_seq_len: 16
+    bc_batch_size: 64
+
+    # 실제 HDF5 데모 BC (DemoBCBuffer)
+    real_demo_bc_enable: True
+    real_demo_bc_warmup_epochs: 50
+    real_demo_bc_decay_epochs: 2000
+    real_demo_bc_weight_init: 0.5
+    real_demo_bc_weight_final: 0.05
+    real_demo_bc_min_buffer_size: 1
+    real_demo_stride: 2
+    real_demo_pour_sample_ratio: 0.6
