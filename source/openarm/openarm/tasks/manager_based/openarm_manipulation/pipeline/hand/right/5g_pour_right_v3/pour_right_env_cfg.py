@@ -286,15 +286,15 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_contact_maintain: float = 0.30  # 1.00→0.30
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 0.50      # 2.00→0.50: r_hold max 5.0→1.3/step
-    weight_approach_xy: float = 10.00   # cup center 기반 approach → 더 직접적으로 유도 가능
-    weight_approach_z: float = 3.00
-    weight_cup_upright: float = 0.80
-    # [test1/3 분석] r_transport_progress = clamp(prev_mouth_xy - mouth_xy, 0): 전진할 때만 보상.
-    # r_hold를 낮춰 이동 유인이 생겼을 때 전진 방향 신호를 강화한다.
-    weight_transport_progress: float = 12.00  # 6.00→12.00: 전진 보상 강화
-    weight_prepour_dir: float = 5.00
-    weight_prepour_align: float = 5.00  # [test4] 4.00→5.00: 방향 정렬 신호 소폭 강화
-    weight_dir_tilt: float = 3.00       # [test4] NEW: 올바른 방향 tilt 연속 보상 (directional_tilt_cos 기반)
+    # [test6] approach/pre-pour reward 전부 제거 → demo shaping(all phase)이 대체
+    # demo trajectory(j7: 1.15→0.65)가 approach→pour 전체 경로를 가르쳐줌
+    weight_approach_xy: float = 0.00
+    weight_approach_z: float = 0.00
+    weight_cup_upright: float = 0.00
+    weight_transport_progress: float = 0.00
+    weight_prepour_dir: float = 0.00
+    weight_prepour_align: float = 0.00
+    weight_dir_tilt: float = 0.00
     weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
     weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
@@ -319,7 +319,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
     #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
-    weight_premature_tilt: float = 2.00   # [test3] 0.50→2.00: P0 tilt_amount 식 변경에 맞춰 상향 — dist=0.4m, 100° tilt → cost=1.11/step
+    # [test6] demo shaping이 올바른 tilting 시점을 가르쳐주므로 premature_tilt penalty 제거
+    weight_premature_tilt: float = 0.00
     weight_grasp_loss: float = 0.05      # 0.30→0.05: [test4] cost_grasp_loss=0.73/step (전체 cost 73%) → tilt 억제. DexPour는 contact reward로 대체
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
@@ -350,14 +351,19 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_pose_paths: tuple[str, ...] = tuple(
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
-    demo_pose_phase: str = "pour"
-    weight_demo_arm_pose: float = 6.00   # [test5] 1.50→6.00: onset 제거 대신 demo shaping 주도
-    weight_demo_palm_pose: float = 3.00  # [test5] 1.00→3.00
+    # [test6] demo all phase: 전체 trajectory(j7: 1.15→0.65) 사용
+    # - pour phase only 사용 시: j7 std=0.050 (clamp min) → j7 오차 과대 반영 → 외회전 학습
+    # - all phase 사용 시: j7 std=0.224 → j7 영향 자연스럽게 감소, 10개 파일 평균 내회전 유도
+    demo_pose_phase: str = "all"
+    weight_demo_arm_pose: float = 6.00
+    weight_demo_palm_pose: float = 3.00
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.50
     demo_pose_warmup_steps: int = 20000
-    demo_pose_near_gate_xy: float = 0.20  # [test5] 0.16→0.20: gate 확대 (approach 단계 진입 빨리)
-    demo_nn_lookahead_frames: int = 10    # [test5] NN look-ahead: 현재 자세에서 K 프레임 앞 자세를 타겟으로
+    # [test6] near_gate 비활성화: approach 구간에서도 demo shaping 활성화
+    # near_gate = exp(-(dist/9999)^2) ≈ 1.0 (항상 열린 상태)
+    demo_pose_near_gate_xy: float = 9999.0
+    demo_nn_lookahead_frames: int = 10
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = True   # [test3] False→True: spill 점진적 억제 (5.0→8.0 ADR)
@@ -528,7 +534,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                 "openarm_right_joint4":  0.60,
                 "openarm_right_joint5": -0.2,
                 "openarm_right_joint6":  0.0,
-                "openarm_right_joint7":  0.0,
+                "openarm_right_joint7":  1.1,   # [test6] 0.0→1.1: demo j7 시작 범위에 맞춤
                 "rj_dg_1_1": 0.0, "rj_dg_1_2": -1.57, "rj_dg_1_3": -0.5, "rj_dg_1_4": 0.0,
                 "rj_dg_2_1": 0.0, "rj_dg_2_2":  0.0,  "rj_dg_2_3":  0.0, "rj_dg_2_4": 0.0,
                 "rj_dg_3_1": 0.0, "rj_dg_3_2":  0.0,  "rj_dg_3_3":  0.0, "rj_dg_3_4": 0.0,
