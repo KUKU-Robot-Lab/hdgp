@@ -169,10 +169,12 @@ def _bc_loss(model, batch: dict, *, obs_dim: int, seq_len: int, device: torch.de
 
 
 def _make_checkpoint(model, optimizer, *, epoch: int, frame: int, central_value_state: dict | None) -> dict:
+    # epoch=0 으로 저장: RL 학습이 epoch 1부터 시작해 RecurrentGate ramp-in(100~500)이 정상 동작.
+    # BC 학습 epoch(=500)을 그대로 저장하면 RL 시작 즉시 LSTM alpha=1.0이 되어 불안정.
     checkpoint = {
         "model": model.state_dict(),
-        "epoch": int(epoch),
-        "frame": int(frame),
+        "epoch": 0,
+        "frame": 0,
         "optimizer": optimizer.state_dict(),
         "last_mean_rewards": torch.tensor(-1.0e9).cpu().numpy(),
         "env_state": None,
