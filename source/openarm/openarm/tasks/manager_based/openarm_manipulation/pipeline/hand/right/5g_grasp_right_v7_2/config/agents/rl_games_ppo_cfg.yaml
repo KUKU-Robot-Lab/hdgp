@@ -1,7 +1,7 @@
-# 5g_pour_right_v5 rl_games LSTM PPO + BC 설정
-# 관측: actor 110D / critic 143D (asymmetric), 액션: 11D
-# LSTM before_mlp=True, Asymmetric Actor-Critic (has_central_value: True)
-# BC: sim success trajectories + real HDF5 demo (DemoBCBuffer)
+# 5g_grasp_right_v7-2 rl_games PPO 설정
+# v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
+# 관측: actor 106D / critic 143D (asymmetric), 액션: 11D
+# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:
   seed: 42
@@ -11,7 +11,7 @@ params:
     clip_actions: 1.0
 
   algo:
-    name: a2c_continuous_lstm_bc
+    name: a2c_continuous
 
   model:
     name: continuous_a2c_logstd
@@ -37,19 +37,13 @@ params:
         name: default
       regularizer:
         name: None
-    rnn:
-      name: lstm
-      units: 256
-      layers: 1
-      before_mlp: True
-      concat_input: True
-      layer_norm: True
 
   load_checkpoint: False
-  load_path: ''
+  load_path: '/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth'
 
   config:
-    name: 5g_pour_right-v5
+    name: 5g_grasp_right-v7-2
+    full_experiment_name: test2
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -65,7 +59,7 @@ params:
     normalize_advantage: True
     gamma: 0.998
     tau: 0.95
-    learning_rate: 1e-4
+    learning_rate: 3e-4
     lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
@@ -75,35 +69,34 @@ params:
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.003   # [test2] 0.0008→0.003: entropy 붕괴 방지, grasp slip 회복력 확보
+    entropy_coef: 0.002
     truncate_grads: True
-    e_clip: 0.25
+    e_clip: 0.2
     horizon_length: 64
-    # LSTM: seq_length は horizon_length の約数であること
-    # 64 = 4 × 16 → seq_length=16 (BPTT window 약 0.27s @ 60Hz)
-    seq_length: 16
-    zero_rnn_on_done: True
-    minibatch_size: 32768
-    mini_epochs: 6
+    # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
+    #   128  envs: batch=   8192 → minibatch= 2048 (4 splits)
+    #   2048 envs: batch= 131072 → minibatch=32768 (4 splits)  ← 학습 권장
+    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 2048로 변경
+    mini_epochs: 4
     critic_coef: 4
     clip_value: True
     clip_actions: False
     bound_loss_type: regularization
     bounds_loss_coef: 0.005
 
-    # Asymmetric Actor-Critic: critic 은 143D privileged obs 사용
+    # Asymmetric Actor-Critic: critic은 143D privileged obs 사용
     has_central_value: True
     central_value_config:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768
-      mini_epochs: 6
-      learning_rate: 1e-4
+      minibatch_size: 32768     # actor와 동일하게 맞출 것
+      mini_epochs: 4
+      learning_rate: 3e-4
       lr_schedule: linear
       kl_threshold: 0.013
       clip_value: True
-      e_clip: 0.25
+      e_clip: 0.2
       network:
         name: actor_critic
         central_value: True
@@ -115,23 +108,3 @@ params:
             name: default
           regularizer:
             name: None
-
-    # ── BC 하이퍼파라미터 ─────────────────────────────────────────────
-    # sim 성공 궤적 BC (SuccessTrajBuffer)
-    bc_loss_warmup_epochs: 500
-    bc_loss_decay_epochs: 3000
-    bc_loss_weight_init: 1.0
-    bc_loss_weight_final: 0.1
-    bc_min_buffer_size: 20
-    bc_seq_len: 16
-    bc_batch_size: 64
-
-    # 실제 HDF5 데모 BC (DemoBCBuffer)
-    real_demo_bc_enable: True
-    real_demo_bc_warmup_epochs: 50
-    real_demo_bc_decay_epochs: 2000
-    real_demo_bc_weight_init: 0.5
-    real_demo_bc_weight_final: 0.05
-    real_demo_bc_min_buffer_size: 1
-    real_demo_stride: 2
-    real_demo_pour_sample_ratio: 0.6

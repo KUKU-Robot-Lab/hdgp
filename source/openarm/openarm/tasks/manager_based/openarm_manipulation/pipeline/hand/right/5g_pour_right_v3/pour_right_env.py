@@ -1535,6 +1535,12 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_pour_align * r_pour_align
         )
 
+        # [test8] Source drain reward: pour gate 활성 중 소스 비우기 incentive
+        # 소스에 비드가 남을수록 낮은 reward → 에이전트가 pour 자세를 유지해 완전 배출 유도
+        r_source_drain = (
+            gate_pour_binary * self.cfg.weight_source_drain * (1.0 - self._bead_in_source_fraction)
+        )
+
         # 첫 비드 유입 시 1회성 보너스: target cup 근처(< pour_binary_xy_thresh)에서만 인정
         # [P1] 멀리서 우연히 굴러든 비드 캡처는 보너스에서 제외 → 우연성 방지
         near_for_capture = self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh
@@ -1569,7 +1575,8 @@ class PourRightEnv(DirectRLEnv):
         # dir_cos_reward: [0,1]  1=target 방향 완벽 정렬, 0=반대 방향
         # g_ready gate: target 근처에서만 활성 (먼 거리에서 방향 무관 tilting 방지)
         tilt_strength = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
-        dir_cos_reward = 0.5 * (self._directional_tilt_cos + 1.0)
+        # [test8] 방향 반전 수정: cos=-1(올바른 내회전)에서 max, cos=+1(틀린 방향)에서 0
+        dir_cos_reward = 0.5 * (1.0 - self._directional_tilt_cos)
         r_dir_tilt = self._g_ready * self.cfg.weight_dir_tilt * tilt_strength * dir_cos_reward
 
         # ---- Outcome and costs ----
@@ -1679,6 +1686,7 @@ class PourRightEnv(DirectRLEnv):
             + r_approach
             + r_prepour_stage
             + r_pour_stage
+            + r_source_drain
             + r_first_capture
             + r_tilt_onset
             + r_dir_tilt
@@ -1714,6 +1722,8 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_approach"] = r_approach.mean()
         self.extras["r_prepour"] = r_prepour_stage.mean()
         self.extras["r_pour"] = r_pour_stage.mean()
+        self.extras["r_source_drain"] = r_source_drain.mean()
+        self.extras["bead_in_source"] = self._bead_in_source_fraction.mean()
         self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
         self.extras["gate_pour_binary"] = gate_pour_binary.mean()  # [P3] binary gate 활성 비율
         self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
@@ -2112,7 +2122,7 @@ class PourRightEnv(DirectRLEnv):
 
         lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
-        upright = self._source_up_axis_w[:, 2] > 0.7
+        upright = self._source_up_axis_w[:, 2] > 0.90  # [test8] 0.7→0.90: 최대 ~26° 기울기로 제한 (비드 탈출 방지)
         warmstart_success = lifted & grasped & upright
 
         success_env_ids = warmstart_success.nonzero(as_tuple=False).squeeze(-1)

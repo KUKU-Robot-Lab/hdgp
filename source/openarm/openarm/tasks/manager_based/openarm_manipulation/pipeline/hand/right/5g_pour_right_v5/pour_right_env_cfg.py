@@ -286,12 +286,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_contact_maintain: float = 0.30  # 1.00→0.30
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 0.50      # 2.00→0.50: r_hold max 5.0→1.3/step
-    weight_approach_xy: float = 0.00   # demo_pose_phase="all"이 approach를 대체
+    weight_approach_xy: float = 2.00   # [test2] 0.0→2.0: cup 위치 gradient 복원 (arm 시계열만으로는 부족)
     weight_approach_z: float = 0.00
     weight_cup_upright: float = 0.00
     # [test1/3 분석] r_transport_progress = clamp(prev_mouth_xy - mouth_xy, 0): 전진할 때만 보상.
     # r_hold를 낮춰 이동 유인이 생겼을 때 전진 방향 신호를 강화한다.
-    weight_transport_progress: float = 0.00  # demo_pose_phase="all"이 transport를 대체
+    weight_transport_progress: float = 1.00  # [test2] 0.0→1.0: 전진 누적 신호 복원
     weight_prepour_dir: float = 0.00
     weight_prepour_align: float = 0.00
     weight_dir_tilt: float = 0.00
@@ -351,13 +351,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "all"
-    weight_demo_arm_pose: float = 6.00   # [test5] 1.50→6.00: onset 제거 대신 demo shaping 주도
-    weight_demo_palm_pose: float = 3.00  # [test5] 1.00→3.00
+    weight_demo_arm_pose: float = 6.00   # [test2] 유지: arm 시계열이 핵심 신호
+    weight_demo_palm_pose: float = 0.50  # [test2] 3.0→0.5: palm sim2real gap 최소화, arm 집중
     weight_demo_smooth: float = 0.20
-    weight_thumb_grip_pose: float = 0.50
+    weight_thumb_grip_pose: float = 0.00  # [test2] 0.5→0.0: hand pose 제거, arm 시계열만
     demo_pose_warmup_steps: int = 20000
     demo_pose_near_gate_xy: float = 0.20  # unused: demo_pose_phase="all"은 거리 gate 없이 항상 참조
-    demo_nn_lookahead_frames: int = 10    # [test5] NN look-ahead: 현재 자세에서 K 프레임 앞 자세를 타겟으로
+    demo_nn_lookahead_frames: int = 30    # [test2] 10→30: 시계열 방향성 강화 (0.5초 앞 목표)
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = True   # [test3] False→True: spill 점진적 억제 (5.0→8.0 ADR)
@@ -446,7 +446,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7/test1/nn/5g_grasp_right-v7.pth"
+        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test1/nn/5g_grasp_right-v7-2.pth"  # [test2] v7→v7_2: pour demo 시작 자세 정렬
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000

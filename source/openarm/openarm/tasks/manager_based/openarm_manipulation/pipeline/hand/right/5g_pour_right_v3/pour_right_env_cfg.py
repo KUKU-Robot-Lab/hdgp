@@ -294,7 +294,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_transport_progress: float = 6.00  # 복원 (test5: 12.00 → test7: 6.00)
     weight_prepour_dir: float = 3.00   # 복원 (test5: 5.00 → test7: 3.00)
     weight_prepour_align: float = 3.00  # 복원 (test5: 5.00 → test7: 3.00)
-    weight_dir_tilt: float = 2.00      # 복원 (test5: 3.00 → test7: 2.00)
+    weight_dir_tilt: float = 2.00      # 복원 (test5: 3.00 → test7: 2.00) [test8] 방향 수식 반전으로 올바른 gradient
+    weight_source_drain: float = 20.0  # [test8] 신규: pour gate 중 소스 배출 incentive
     weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
     weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
@@ -356,7 +357,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # - all phase 사용 시: j7 std=0.224 → j7 영향 자연스럽게 감소, 10개 파일 평균 내회전 유도
     demo_pose_phase: str = "all"   # [test6/7] 유지: j7 내회전 방향 학습 효과 확인됨
     weight_demo_arm_pose: float = 4.00   # [test7] 6.00→4.00: 과도한 demo 추적 완화
-    weight_demo_palm_pose: float = 2.00  # [test7] 3.00→2.00
+    weight_demo_palm_pose: float = 0.0   # [test8] 2.00→0.0: demo_palm_pos_err=0.27m → useless gradient
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.50
     demo_pose_warmup_steps: int = 20000
@@ -369,13 +370,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     enable_spill_adr: bool = True   # [test3] False→True: spill 점진적 억제 (5.0→8.0 ADR)
     spill_adr_custom_cfg: dict = {
         "reward": {
-            # start small to allow exploration, ramp to 기존 10.0 페널티
-            "spill_weight": (1.0, 8.0),  # [test3] 0.5→1.0: 초기 spill 기준 상향
+            # [test8] 4.0→10.0: 초기 penalty 4배 강화 (ADR trigger 전에도 spill 억제)
+            "spill_weight": (4.0, 10.0),
         }
     }
     spill_adr_num_increments: int = 50
     spill_adr_increment_interval: int = 20000
-    spill_adr_trigger_threshold: float = 0.3
+    spill_adr_trigger_threshold: float = 0.10  # [test8] 0.30→0.10: 낮은 성공률에서도 ADR 진행
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
     # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
@@ -406,7 +407,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     stage_pour_xy_threshold: float = 0.15
     transport_dist_exp_scale: float = 8.0
     transport_tilt_penalty_weight: float = 2.0
-    pour_tilt_target_deg: float = 100.0  # 135→100: 물리적으로 달성 가능한 각도 (비드 쏟기 충분)
+    pour_tilt_target_deg: float = 120.0  # 135→100→120: 더 강한 기울기로 소스 완전 배출 유도
     pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
 
     # [P2] r_lift 상한: DexPour "Once cup reaches h_lift, lift reward ceases"
@@ -442,12 +443,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7/test1/nn/5g_grasp_right-v7.pth"
+        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test1/nn/5g_grasp_right-v7-2.pth"
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
     freeze_grasp_hand_during_episode: bool = False
-    bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)
+    # [test8] 0.04→0.015: 최상위 비드 z=0.088→0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
+    bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
         BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ
     )
