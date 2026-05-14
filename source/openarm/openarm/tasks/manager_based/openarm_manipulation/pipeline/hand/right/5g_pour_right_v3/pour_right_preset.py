@@ -199,10 +199,10 @@ HAND_GRASP_POSE = [
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
 # Fabrics rollout이 [cup_x-0.167, cup_y-0.09, cup_z+0.04]로 수렴
 # j4=0.60: FK z≈0.282, 테이블 안전, 물리 충돌 없음
-# [test6] j7: 0.0→1.1 (demo approach 시작 j7≈1.15에 맞춤)
-# 이유: j7=0.0 시작 시 demo pour j7≈0.65~1.07이 모두 현재값보다 크므로
-#       NN이 항상 j7 증가(외회전) 방향을 유도함. j7=1.1로 올리면 내회전 방향 학습.
-RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 1.1]
+# [test9] j7: 1.1→0.0 (grasp v7-2 학습 시작점 j7=0.0과 일치시켜 warmstart rollout OOD 방지)
+# test6에서 1.1로 올렸으나, warmstart rollout 시 grasp v7-2가 OOD 상태에서 실행돼
+# cache 자세가 v7-2 정상 분포와 달라지는 문제 발생. demo shaping이 j7 방향을 안내함.
+RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0]
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +235,14 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     #   palm_delta_xyz=0.5m → max palm y = min(-0.22+0.50, 0.22) = 0.22m
     #   target cup y = 0.031m → workspace 내에 충분히 포함됨
     #   y_max=0.22m: 탐색 여유 확보 (왼팔 손목 y=0.076m에서 14cm 여유, 충돌 안전)
+    #
+    # [test9] z_max: 0.65 → 0.48
+    #   target cup rim ≈ z=0.44m. palm z=0.48 → cup center ≈ 0.45m → cup rim ≈ 0.55m
+    #   clearance ≈ 0.11m (붓기에 충분). 이전 z_max=0.65는 rim=0.75m → clearance=0.31m (너무 높음)
+    #   g_clear gradient가 cup을 과도하게 올리는 문제 방지.
     d = math.pi / 180.0
     return [
-        0.65, 0.22, 0.65,   # y_max=0.22m: target cup y=0.031m 기준 충분한 여유
+        0.65, 0.22, 0.48,   # z_max: 0.65→0.48 (과도한 높이 억제)
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

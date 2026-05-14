@@ -212,11 +212,10 @@ class PourLstmBCAgent(A2CAgent):
 
         res   = self.model(batch_dict)
         mu    = res["mus"]    # (B*T, act_dim)
-        sigma = res["sigmas"] # (B*T, act_dim)
 
         act_flat  = act_seq.reshape(B * T, -1)
-        nll       = 0.5 * ((act_flat - mu) / (sigma + 1e-8)).pow(2) + (sigma + 1e-8).log()
-        nll_steps = nll.sum(dim=-1).reshape(B, T)   # (B, T)
+        # MSE loss: sigma collapse 없이 안정적 (NLL은 sigma→0 시 -log(sigma) 발산)
+        nll_steps = 0.5 * (act_flat - mu).pow(2).sum(dim=-1).reshape(B, T)  # (B, T)
 
         mask_f    = mask.float()
         valid     = mask_f.sum().clamp(min=1.0)

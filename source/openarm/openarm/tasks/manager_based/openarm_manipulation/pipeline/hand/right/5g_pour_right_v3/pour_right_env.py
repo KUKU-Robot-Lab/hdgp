@@ -1502,6 +1502,15 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_transport_progress * r_transport_progress
         )
 
+        # [test9] z-height approach: source rim을 target rim 위 4cm로 유도 (gate 없이 항상 활성)
+        # source_rim_z = source_pour_point_w[:, 2], target_rim_z = target_opening_w[:, 2]
+        # 이상적 clearance = 4cm → policy가 cup을 target cup 높이에 맞춰 운반하도록 유도
+        z_rim_ideal = self._target_opening_w[:, 2] + self.cfg.approach_z_rim_target_clearance
+        z_rim_err = (self._source_pour_point_w[:, 2] - z_rim_ideal).abs()
+        r_approach_z_rim = self.cfg.weight_approach_z_rim * torch.exp(
+            -self.cfg.approach_z_rim_sharpness * z_rim_err
+        )
+
         # ---- Stage C. Pre-pour (using soft g_ready gate) ----
         target_tilt_cos = math.cos(math.radians(self.cfg.pour_tilt_target_deg))
         r_tilt = torch.exp(
@@ -1684,6 +1693,7 @@ class PourRightEnv(DirectRLEnv):
             r_hold
             + r_lift
             + r_approach
+            + r_approach_z_rim
             + r_prepour_stage
             + r_pour_stage
             + r_source_drain
@@ -1720,6 +1730,8 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_hold"] = r_hold.mean()
         self.extras["r_lift"] = r_lift.mean()
         self.extras["r_approach"] = r_approach.mean()
+        self.extras["r_approach_z_rim"] = r_approach_z_rim.mean()
+        self.extras["z_rim_err_m"] = z_rim_err.mean()
         self.extras["r_prepour"] = r_prepour_stage.mean()
         self.extras["r_pour"] = r_pour_stage.mean()
         self.extras["r_source_drain"] = r_source_drain.mean()

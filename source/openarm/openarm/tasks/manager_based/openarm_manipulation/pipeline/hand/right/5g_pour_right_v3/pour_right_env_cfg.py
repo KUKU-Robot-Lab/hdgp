@@ -289,7 +289,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [test7] approach/pre-pour reward 복원 (test6 교훈: demo shaping만으로는 approach gradient 대체 불가)
     # demo shaping은 방향/자세 가이드 역할, approach gradient는 이동 유인 역할 → 병행 필요
     weight_approach_xy: float = 5.00   # 복원 (test5: 10.00 → test7: 5.00, 절반으로 낮춤)
-    weight_approach_z: float = 1.50    # 복원 (test5: 3.00 → test7: 1.50)
+    weight_approach_z: float = 0.50    # [test9] 1.50→0.50: r_approach_z_rim으로 z 가이드 대체
+    # [test9] z-height approach: source cup rim을 target cup rim 바로 위로 유도
+    # target_rim_z ≈ 0.44m (left cup center z=0.34m + rim_height=0.10m)
+    # approach_z_rim_target_clearance=0.04m → ideal source_rim_z = 0.48m → cup_center_z ≈ 0.38m
+    # lift from spawn(0.297m) = 0.083m → lift_height_cap(0.10m) 내에서 달성 가능
+    weight_approach_z_rim: float = 3.0
+    approach_z_rim_target_clearance: float = 0.04  # target rim 위 4cm: 너무 낮지도 높지도 않은 pouring 높이
+    approach_z_rim_sharpness: float = 15.0          # σ ≈ 6.7cm (±10cm 범위에서 gradient 유지)
     weight_cup_upright: float = 0.40   # 복원 (test5: 0.80 → test7: 0.40)
     weight_transport_progress: float = 6.00  # 복원 (test5: 12.00 → test7: 6.00)
     weight_prepour_dir: float = 3.00   # 복원 (test5: 5.00 → test7: 3.00)
@@ -411,9 +418,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
 
     # [P2] r_lift 상한: DexPour "Once cup reaches h_lift, lift reward ceases"
-    # test4: 컵이 0.407m 들린 채로 r_lift 계속 수령 → 컵을 올리는 행동 유인
-    # 0.05m 이상은 보상 없음 (warmstart 시작 높이 ~0.03m 기준)
-    lift_height_cap: float = 0.05   # DexPour h_lift=0.15m 참고, warmstart 높이에 맞춤
+    # [test9] 0.05 → 0.10: approach_z_rim_target=4cm에서 ideal cup_z=0.38m → lift=0.083m
+    # 기존 cap=0.05m은 ideal 높이(0.083m)에 못 미쳐 r_lift가 너무 일찍 포화됨
+    lift_height_cap: float = 0.10
 
     # [P3] pour stage binary gate: DexPour ρ 방식
     # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
@@ -536,7 +543,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                 "openarm_right_joint4":  0.60,
                 "openarm_right_joint5": -0.2,
                 "openarm_right_joint6":  0.0,
-                "openarm_right_joint7":  1.1,   # [test6] 0.0→1.1: demo j7 시작 범위에 맞춤
+                "openarm_right_joint7":  0.0,   # [test9] 1.1→0.0: grasp v7-2 start pose 맞춤 (warmstart OOD 방지)
                 "rj_dg_1_1": 0.0, "rj_dg_1_2": -1.57, "rj_dg_1_3": -0.5, "rj_dg_1_4": 0.0,
                 "rj_dg_2_1": 0.0, "rj_dg_2_2":  0.0,  "rj_dg_2_3":  0.0, "rj_dg_2_4": 0.0,
                 "rj_dg_3_1": 0.0, "rj_dg_3_2":  0.0,  "rj_dg_3_3":  0.0, "rj_dg_3_4": 0.0,

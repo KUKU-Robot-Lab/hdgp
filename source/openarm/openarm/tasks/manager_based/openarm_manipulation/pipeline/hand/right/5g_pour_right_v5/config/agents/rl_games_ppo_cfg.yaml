@@ -75,7 +75,7 @@ params:
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.003   # [test2] 0.0008→0.003: entropy 붕괴 방지, grasp slip 회복력 확보
+    entropy_coef: 0.005   # [test3] 0.003→0.005: BC에 의한 entropy 단조 붕괴 대응
     truncate_grads: True
     e_clip: 0.25
     horizon_length: 64
@@ -122,16 +122,16 @@ params:
     bc_loss_decay_epochs: 3000
     bc_loss_weight_init: 1.0
     bc_loss_weight_final: 0.1
-    bc_min_buffer_size: 20
+    bc_min_buffer_size: 5   # [test3] 20→5: sim BC 조기 활성화
     bc_seq_len: 16
     bc_batch_size: 64
 
     # 실제 HDF5 데모 BC (DemoBCBuffer)
     real_demo_bc_enable: True
     real_demo_bc_warmup_epochs: 50
-    real_demo_bc_decay_epochs: 2000
-    real_demo_bc_weight_init: 0.5
-    real_demo_bc_weight_final: 0.05
+    real_demo_bc_decay_epochs: 1000  # [test3] 2000→1000: 더 빨리 소멸
+    real_demo_bc_weight_init: 0.1   # [test3] 0.5→0.1: entropy 붕괴 주범 약화
+    real_demo_bc_weight_final: 0.01 # [test3] 0.05→0.01
     real_demo_bc_min_buffer_size: 1
     real_demo_stride: 2
     real_demo_pour_sample_ratio: 0.6

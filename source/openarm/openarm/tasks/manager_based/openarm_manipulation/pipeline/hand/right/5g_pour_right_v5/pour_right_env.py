@@ -518,8 +518,8 @@ class PourRightEnv(DirectRLEnv):
             layer = i // beads_per_layer
             slot = i % beads_per_layer
             angle = (2.0 * math.pi * slot / beads_per_layer) + (0.35 * layer)
-            radius = 0.014 + 0.004 * (layer % 2)
-            z = 0.006 + 0.014 * layer
+            radius = 0.020
+            z = 0.022 * layer
             _bead_offsets.append([radius * math.cos(angle), radius * math.sin(angle), z])
         self._bead_offsets_source_cup_b = torch.tensor(_bead_offsets, device=self.device)
         self._source_pour_point_w = torch.zeros(self.num_envs, 3, device=self.device)
@@ -1740,54 +1740,38 @@ class PourRightEnv(DirectRLEnv):
             self.success_adr.maybe_increment(_ep_success_rate)
 
         # ---- Logging to TensorBoard ----
-        self.extras["r_hold"] = r_hold.mean()
-        self.extras["r_lift"] = r_lift.mean()
-        self.extras["r_approach"] = r_approach.mean()
-        self.extras["r_prepour"] = r_prepour_stage.mean()
-        self.extras["r_pour"] = r_pour_stage.mean()
-        self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
-        self.extras["gate_pour_binary"] = gate_pour_binary.mean()  # [P3] binary gate 활성 비율
-        self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
-        self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
-        self.extras["r_success_overfill"] = (
-            overfill_bonus.mean() if isinstance(overfill_bonus, torch.Tensor) else 0.0
-        )
-        self.extras["cost_spill"] = spill_cost.mean()
-        self.extras["spill_weight"] = torch.tensor(float(spill_weight), device=self.device)
-        self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
-        self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
-        self.extras["r_tilt_onset"] = r_tilt_onset.mean()
-        self.extras["g_ready"] = self._g_ready.mean()
-        self.extras["g_pour"] = self._g_pour.mean()
-        self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
-        self.extras["cup_center_xy_dist"] = self._cup_center_xy_dist.mean()
-        self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
-        self.extras["bead_cross"] = self._bead_cross_fraction.mean()
-        self.extras["spill_ratio"] = self._spill_ratio.mean()
-        # [test4] directional tilt 진단
-        self.extras["r_dir_tilt"] = r_dir_tilt.mean()
-        self.extras["directional_tilt_cos"] = self._directional_tilt_cos.mean()
-        # Phase-0 진단 메트릭: arm joint velocity / acceleration
-        self.extras["arm_joint_vel_l2_mean"] = arm_qd_l2.mean()
-        self.extras["arm_joint_vel_max_mean"] = arm_qd_max.mean()
-        self.extras["arm_joint_acc_l2_mean"] = arm_acc_vec.norm(dim=-1).mean()
-        self.extras["arm_joint_jerk_l2_mean"] = arm_jerk_l2.mean()
-        self.extras["tilt_phase_arm_vel"] = tilt_phase_arm_vel
+        # Demo signal
         self.extras["r_demo_arm_pose"] = demo_terms["r_demo_arm_pose"].mean()
         self.extras["r_demo_palm_pose"] = demo_terms["r_demo_palm_pose"].mean()
         self.extras["cost_demo_smooth"] = demo_terms["cost_demo_smooth"].mean()
-        self.extras["cost_thumb_grip"] = demo_terms["cost_thumb_grip"].mean()
         self.extras["demo_arm_joint_err"] = demo_terms["demo_arm_joint_err"].mean()
         self.extras["demo_palm_pos_err"] = demo_terms["demo_palm_pos_err"].mean()
         self.extras["demo_palm_rot_err"] = demo_terms["demo_palm_rot_err"].mean()
-        # Phase-1 Step 4/5/6: arm vel/acc/jerk cost 로깅 (in_tilt_phase gate 포함)
+        # Outcome
+        self.extras["r_pour"] = r_pour_stage.mean()
+        self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
+        self.extras["gate_pour_binary"] = gate_pour_binary.mean()
+        self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
+        self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
+        self.extras["bead_cross"] = self._bead_cross_fraction.mean()
+        self.extras["spill_ratio"] = self._spill_ratio.mean()
+        self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
+        # Cost
+        self.extras["cost_spill"] = spill_cost.mean()
+        self.extras["spill_weight"] = torch.tensor(float(spill_weight), device=self.device)
+        self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
         self.extras["cost_arm_vel"] = (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum * in_tilt_phase).mean()
         self.extras["cost_arm_acc"] = (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum * in_tilt_phase).mean()
         self.extras["cost_arm_jerk"] = (self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum * in_tilt_phase).mean()
         self.extras["cost_arm_vel_approach"] = (self.cfg.weight_arm_joint_vel_approach * arm_qd_sq_sum * approach_only).mean()
-        # Phase-2 Step 9: action_rate 분리 로깅
         self.extras["cost_action_rate_palm"] = (self.cfg.weight_action_rate_palm * palm_delta).mean()
         self.extras["cost_action_rate_finger"] = (self.cfg.weight_action_rate_finger * finger_delta).mean()
+        # Diagnostic
+        self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
+        self.extras["cup_center_xy_dist"] = self._cup_center_xy_dist.mean()
+        self.extras["arm_joint_vel_l2_mean"] = arm_qd_l2.mean()
+        self.extras["tilt_phase_arm_vel"] = tilt_phase_arm_vel
+        # ADR
 
         if self.spill_adr is not None:
             self.extras["adr_spill_progress"] = torch.tensor(

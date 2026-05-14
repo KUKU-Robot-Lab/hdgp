@@ -282,16 +282,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   원인: 안 움직이면 step당 5.0을 안정적으로 받음. 이동 시 grasp slip → grasp_maintain 감소.
     #         이동으로 얻는 r_approach 증분보다 잃는 r_hold가 크면 이동하지 않는 게 유리.
     #   수정: r_hold max → 0.5+0.3+0.5 = 1.3/step (75% 감소) → 이동 유인 상대적 강화
-    weight_grasp_maintain: float = 0.50   # 2.00→0.50: r_hold local optimum 해소
-    weight_contact_maintain: float = 0.30  # 1.00→0.30
-    weight_force_balance: float = 0.30
-    weight_finger_curl: float = 0.50      # 2.00→0.50: r_hold max 5.0→1.3/step
-    weight_approach_xy: float = 2.00   # [test2] 0.0→2.0: cup 위치 gradient 복원 (arm 시계열만으로는 부족)
+    weight_grasp_maintain: float = 0.0    # [test4] 0.50→0.0: r_hold local optimum 완전 제거
+    weight_contact_maintain: float = 0.0  # [test4] 0.30→0.0
+    weight_force_balance: float = 0.0     # [test4] 0.30→0.0
+    weight_finger_curl: float = 0.0       # [test4] 0.50→0.0: demo가 finger 자세 가르침
+    weight_approach_xy: float = 0.0       # [test4] 2.00→0.0: demo arm pose가 접근 가르침
     weight_approach_z: float = 0.00
     weight_cup_upright: float = 0.00
     # [test1/3 분석] r_transport_progress = clamp(prev_mouth_xy - mouth_xy, 0): 전진할 때만 보상.
     # r_hold를 낮춰 이동 유인이 생겼을 때 전진 방향 신호를 강화한다.
-    weight_transport_progress: float = 1.00  # [test2] 0.0→1.0: 전진 누적 신호 복원
+    weight_transport_progress: float = 0.0   # [test4] 1.00→0.0: demo가 방향 가르침
     weight_prepour_dir: float = 0.00
     weight_prepour_align: float = 0.00
     weight_dir_tilt: float = 0.00
@@ -319,8 +319,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
     #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
-    weight_premature_tilt: float = 2.00   # [test3] 0.50→2.00: P0 tilt_amount 식 변경에 맞춰 상향 — dist=0.4m, 100° tilt → cost=1.11/step
-    weight_grasp_loss: float = 0.05      # 0.30→0.05: [test4] cost_grasp_loss=0.73/step (전체 cost 73%) → tilt 억제. DexPour는 contact reward로 대체
+    weight_premature_tilt: float = 0.0    # [test4] 2.00→0.0: demo가 tilt 타이밍 가르침
+    weight_grasp_loss: float = 0.20      # [test4] 0.05→0.20: 유일한 grasp safety net 강화
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
     weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
@@ -351,13 +351,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "all"
-    weight_demo_arm_pose: float = 6.00   # [test2] 유지: arm 시계열이 핵심 신호
+    weight_demo_arm_pose: float = 9.00   # [test4] 6.00→9.00: 공간 접근 gradient 보강
     weight_demo_palm_pose: float = 0.50  # [test2] 3.0→0.5: palm sim2real gap 최소화, arm 집중
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.00  # [test2] 0.5→0.0: hand pose 제거, arm 시계열만
     demo_pose_warmup_steps: int = 20000
     demo_pose_near_gate_xy: float = 0.20  # unused: demo_pose_phase="all"은 거리 gate 없이 항상 참조
-    demo_nn_lookahead_frames: int = 30    # [test2] 10→30: 시계열 방향성 강화 (0.5초 앞 목표)
+    demo_nn_lookahead_frames: int = 15    # [test3] 30→15: K=30이 demo 추종 방해 (0.5s→0.25s)
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = True   # [test3] False→True: spill 점진적 억제 (5.0→8.0 ADR)
