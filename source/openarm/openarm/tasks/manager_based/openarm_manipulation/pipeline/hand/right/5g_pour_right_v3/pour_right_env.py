@@ -1502,11 +1502,17 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_transport_progress * r_transport_progress
         )
 
-        # [test9] z-height approach: source rim을 target rim 위 4cm로 유도 (gate 없이 항상 활성)
-        # source_rim_z = source_pour_point_w[:, 2], target_rim_z = target_opening_w[:, 2]
-        # 이상적 clearance = 4cm → policy가 cup을 target cup 높이에 맞춰 운반하도록 유도
-        z_rim_ideal = self._target_opening_w[:, 2] + self.cfg.approach_z_rim_target_clearance
-        z_rim_err = (self._source_pour_point_w[:, 2] - z_rim_ideal).abs()
+        # [test10] z-height approach: source cup CENTER z (tilt-invariant) 기반으로 수정
+        # 버그(test9): _source_pour_point_w[:, 2]는 cup 기울기에 따라 변화 → 120° tilt 시 -5cm
+        #   → r_approach_z_rim이 올바른 tilting을 패널티화 (직립 3.0/step, 120° tilt 0.32/step)
+        # 수정: cup.data.root_pos_w[:, 2] (cup center, tilt-invariant) 사용
+        #   z_cup_center_ideal = target_rim + clearance(4cm) - cup_rim_offset(10cm) = target_rim - 6cm
+        z_cup_center_ideal = (
+            self._target_opening_w[:, 2]
+            + self.cfg.approach_z_rim_target_clearance
+            - self.cfg.source_cup_rim_z_offset
+        )
+        z_rim_err = (self.cup.data.root_pos_w[:, 2] - z_cup_center_ideal).abs()
         r_approach_z_rim = self.cfg.weight_approach_z_rim * torch.exp(
             -self.cfg.approach_z_rim_sharpness * z_rim_err
         )
@@ -1731,7 +1737,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_lift"] = r_lift.mean()
         self.extras["r_approach"] = r_approach.mean()
         self.extras["r_approach_z_rim"] = r_approach_z_rim.mean()
-        self.extras["z_rim_err_m"] = z_rim_err.mean()
+        self.extras["z_cup_center_err_m"] = z_rim_err.mean()  # cup center z vs ideal (tilt-invariant)
         self.extras["r_prepour"] = r_prepour_stage.mean()
         self.extras["r_pour"] = r_pour_stage.mean()
         self.extras["r_source_drain"] = r_source_drain.mean()

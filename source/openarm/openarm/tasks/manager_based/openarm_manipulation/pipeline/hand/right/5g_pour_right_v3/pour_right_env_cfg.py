@@ -290,13 +290,15 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # demo shaping은 방향/자세 가이드 역할, approach gradient는 이동 유인 역할 → 병행 필요
     weight_approach_xy: float = 5.00   # 복원 (test5: 10.00 → test7: 5.00, 절반으로 낮춤)
     weight_approach_z: float = 0.50    # [test9] 1.50→0.50: r_approach_z_rim으로 z 가이드 대체
-    # [test9] z-height approach: source cup rim을 target cup rim 바로 위로 유도
-    # target_rim_z ≈ 0.44m (left cup center z=0.34m + rim_height=0.10m)
-    # approach_z_rim_target_clearance=0.04m → ideal source_rim_z = 0.48m → cup_center_z ≈ 0.38m
-    # lift from spawn(0.297m) = 0.083m → lift_height_cap(0.10m) 내에서 달성 가능
+    # [test10] z-height approach: source cup CENTER z (tilt-invariant) 기반 수정
+    # 버그(test9): pour_point_w[:, 2] → tilt 시 z 감소 → tilting 패널티
+    # 수정: cup center z 사용. ideal cup_center_z = target_rim + clearance - cup_rim_z_offset
+    # target_rim_z ≈ 0.44m → cup_center_ideal = 0.44 + 0.04 - 0.10 = 0.38m ✓
+    # lift from spawn(~0.297m) = 0.083m → lift_height_cap(0.10m) 내에서 달성 가능
     weight_approach_z_rim: float = 3.0
-    approach_z_rim_target_clearance: float = 0.04  # target rim 위 4cm: 너무 낮지도 높지도 않은 pouring 높이
-    approach_z_rim_sharpness: float = 15.0          # σ ≈ 6.7cm (±10cm 범위에서 gradient 유지)
+    approach_z_rim_target_clearance: float = 0.04   # target rim 위 4cm (source cup center 기준)
+    approach_z_rim_sharpness: float = 15.0           # σ ≈ 6.7cm (±10cm 범위에서 gradient 유지)
+    source_cup_rim_z_offset: float = 0.10            # SOURCE_CUP_POUR_POINT_POS_B[2]: cup center→rim z offset
     weight_cup_upright: float = 0.40   # 복원 (test5: 0.80 → test7: 0.40)
     weight_transport_progress: float = 6.00  # 복원 (test5: 12.00 → test7: 6.00)
     weight_prepour_dir: float = 3.00   # 복원 (test5: 5.00 → test7: 3.00)
