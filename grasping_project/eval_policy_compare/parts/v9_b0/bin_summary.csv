@@ -1,0 +1,2 @@
+version,policy_label,bead_count,mass_kg,n,success_rate,success_mean,success_std,grip_mean,grip_std,contact_count_mean,contact_count_std,lift_height_m_mean,lift_height_m_std,total_force_n_mean,total_force_n_std,force_ratio_mean,force_ratio_std,slip_proxy_mean,slip_proxy_std
+v9,full_joint,0,0.17,4,0.0,0.0,0.0,1.0,0.0,4.0,0.0,0.01282557100057602,0.008402940183214693,2.163189113140106,0.2531035551313588,1.297108482359911,0.15176794589159498,0.0,0.0

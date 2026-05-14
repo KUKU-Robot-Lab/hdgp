@@ -1,0 +1,2 @@
+version,policy_label,bead_count,mass_kg,n,success_rate,success_mean,success_std,grip_mean,grip_std,contact_count_mean,contact_count_std,lift_height_m_mean,lift_height_m_std,total_force_n_mean,total_force_n_std,force_ratio_mean,force_ratio_std,slip_proxy_mean,slip_proxy_std
+v8,synergy_mass_aware,30,0.47,4,1.0,1.0,0.0,0.6272915005683899,0.14000991383191377,2.75,0.5,0.23821189999580383,0.005725055738790708,10.289867758750916,3.631641567667358,2.231736076303997,0.7876549721327317,nan,nan
