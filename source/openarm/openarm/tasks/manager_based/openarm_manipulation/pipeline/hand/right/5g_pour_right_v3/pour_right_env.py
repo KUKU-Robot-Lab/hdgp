@@ -2049,7 +2049,7 @@ class PourRightEnv(DirectRLEnv):
             bead_state = self._sample_bead_states_inside_cup(cup_root_state[:, :7])
             self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
         # 일반 reset은 비드를 즉시 소환 (또는 collect mode에서는 숨김)
-        self._beads_spawned[list(env_ids)] = True
+        self._beads_spawned[env_ids] = True
 
         # ---- 8. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand
@@ -2293,7 +2293,7 @@ class PourRightEnv(DirectRLEnv):
         # hold phase 동안 비드를 숨겨서 physics 초기화 충돌 방지.
         # 실제 소환은 _pre_physics_step 에서 hold 종료 시점에 수행.
         self._hide_beads(env_ids)
-        self._beads_spawned[list(env_ids)] = False
+        self._beads_spawned[env_ids] = False
 
         self.contact_force_raw[env_ids].zero_()
         self.binary_contact_buf[env_ids] = False
