@@ -2345,10 +2345,14 @@ class PourRightEnv(DirectRLEnv):
             mouth_delta = target_opening_w - source_pour_point_w
             mouth_xy_distance = torch.norm(mouth_delta[:, :2], dim=-1)
             mouth_z_clearance = source_pour_point_w[:, 2] - target_opening_w[:, 2]
+            cup_x_local = cup_pose_local[:, 0]
+            cup_y_local = cup_pose_local[:, 1]
             cup_z_local = cup_pose_local[:, 2]
             j7_reset = arm_pos[:, 6]
             print(
                 "[5g_pour_right_v3][warmstart_reset] "
+                f"cup_x_local mean={cup_x_local.mean().item():.4f} "
+                f"cup_y_local mean={cup_y_local.mean().item():.4f} min={cup_y_local.min().item():.4f} max={cup_y_local.max().item():.4f} | "
                 f"cup_z_local mean={cup_z_local.mean().item():.4f} "
                 f"min={cup_z_local.min().item():.4f} max={cup_z_local.max().item():.4f} | "
                 f"mouth_xy mean={mouth_xy_distance.mean().item():.4f} "
