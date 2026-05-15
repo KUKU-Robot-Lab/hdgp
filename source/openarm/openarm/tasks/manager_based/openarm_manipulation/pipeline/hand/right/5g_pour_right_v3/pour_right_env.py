@@ -424,6 +424,8 @@ class PourRightEnv(DirectRLEnv):
             (self.num_envs, NUM_FINGER_ACTION), -1.0, device=self.device
         )
         self._warmstart_only_close = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # warmstart reset 후 비드가 아직 소환되지 않은 env 추적 (hold phase 동안 숨김)
+        self._beads_spawned = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
         # 접촉 상태 버퍼
@@ -880,15 +882,47 @@ class PourRightEnv(DirectRLEnv):
         # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
         # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
 
-        # 에피소드 시작 직후 N스텝: warmstart pose를 강제 유지 (물리 안착)
-        # warmstart 캐시에서 텔레포트한 직후 contact force가 안정화되기 전에
-        # 랜덤 action이 arm/hand를 움직이면 손가락이 먼저 풀리거나 컵이 낙하함.
-        if self.cfg.episode_hold_steps > 0:
-            hold_mask = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
-            palm_action = torch.where(hold_mask, torch.zeros_like(palm_action), palm_action)
-            if not self._warmstart_collect_mode:
-                finger_action = torch.where(hold_mask, torch.ones_like(finger_action), finger_action)
+        # ---- warmstart hold phase: action freeze + 비드 지연 소환 + action ramp-up ----
         if not self._warmstart_collect_mode:
+            hold_end   = self.cfg.episode_hold_steps
+            ramp_end   = hold_end + self.cfg.episode_ramp_steps
+
+            # [1] hold: action 완전 억제 (텔레포트 직후 physics 안착)
+            if hold_end > 0:
+                hold_mask_1d = self.episode_length_buf < hold_end
+                hold_mask    = hold_mask_1d.unsqueeze(1)
+                palm_action   = torch.where(hold_mask, torch.zeros_like(palm_action),   palm_action)
+                finger_action = torch.where(hold_mask, torch.ones_like(finger_action),  finger_action)
+
+            # [2] 비드 지연 소환: hold 종료 첫 스텝에 현재 컵 위치로 소환
+            # (physics 안정 후 소환하면 관통/폭발 현상 없음)
+            if hold_end > 0:
+                just_ended_hold = (self.episode_length_buf == hold_end) & ~self._beads_spawned
+                spawn_ids_tensor = just_ended_hold.nonzero(as_tuple=False).squeeze(-1)
+                if spawn_ids_tensor.numel() > 0:
+                    spawn_ids = spawn_ids_tensor.tolist()
+                    cup_pose_now = torch.cat([
+                        self.cup.data.root_pos_w[spawn_ids_tensor],
+                        self.cup.data.root_quat_w[spawn_ids_tensor],
+                    ], dim=-1)
+                    bead_state = self._sample_bead_states_inside_cup(cup_pose_now)
+                    self.beads.write_object_state_to_sim(bead_state, env_ids=spawn_ids)
+                    self._beads_spawned[spawn_ids_tensor] = True
+
+            # [3] ramp-up: hold 종료 후 ramp_steps 동안 warmstart env의 palm action 점진 스케일업
+            # untrained policy의 첫 대형 action이 j7을 limit으로 몰아붙이는 것을 방지
+            if self.cfg.episode_ramp_steps > 0:
+                steps_since_hold = (self.episode_length_buf - hold_end).float()
+                ramp_t = (steps_since_hold / self.cfg.episode_ramp_steps).clamp(0.0, 1.0)
+                in_ramp = (self.episode_length_buf >= hold_end) & (self.episode_length_buf < ramp_end)
+                ramp_scale = torch.where(
+                    in_ramp & self._warmstart_only_close,
+                    ramp_t,
+                    torch.ones_like(ramp_t),
+                ).unsqueeze(1)
+                palm_action = palm_action * ramp_scale
+
+            # [4] finger: warmstart env는 파지 열기 금지
             close_only = self._warmstart_only_close.unsqueeze(1)
             finger_action = torch.where(
                 close_only,
@@ -896,6 +930,11 @@ class PourRightEnv(DirectRLEnv):
                 finger_action,
             )
             self.actions[:, 6:11] = finger_action
+        else:
+            # warmstart collect mode: hold + ramp 없이 단순 적용
+            if self.cfg.episode_hold_steps > 0:
+                hold_mask = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
+                palm_action = torch.where(hold_mask, torch.zeros_like(palm_action), palm_action)
 
         # [Phase-1 Step 7] EMA palm action smoothing: Fabrics에 smooth 궤적 전달
         # action_rate_penalty는 raw self.actions 기반 유지 (training gradient 보존)
@@ -965,6 +1004,18 @@ class PourRightEnv(DirectRLEnv):
             t          = (finger_action + 1.0) / 2.0                               # (N,5) ∈ [0,1]
             t_expanded = t.repeat_interleave(4, dim=1)                             # (N,20)
             hand_target = self.hand_open_pose.unsqueeze(0) + t_expanded * delta_20.unsqueeze(0)
+
+        # warmstart hold phase: 저장된 grasp 자세 그대로 유지 (finger_action=1.0→hand_grasp_pose가
+        # warmstart 저장 자세보다 열릴 경우 컵이 떨어지는 문제 방지)
+        if self.cfg.episode_hold_steps > 0 and not self._warmstart_collect_mode:
+            hold_mask_1d = self.episode_length_buf < self.cfg.episode_hold_steps
+            warmstart_hold = hold_mask_1d & self._warmstart_only_close
+            hand_target = torch.where(
+                warmstart_hold.unsqueeze(1),
+                self.grasp_hold_hand_pos_buf,
+                hand_target,
+            )
+
         self.hand_joint_targets.copy_(hand_target)
 
         # fabric_q hand 부분 동기화 (FK 계산에 활용)
@@ -1998,6 +2049,8 @@ class PourRightEnv(DirectRLEnv):
         else:
             bead_state = self._sample_bead_states_inside_cup(cup_root_state[:, :7])
             self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
+        # 일반 reset은 비드를 즉시 소환 (또는 collect mode에서는 숨김)
+        self._beads_spawned[list(env_ids)] = True
 
         # ---- 8. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand
@@ -2238,8 +2291,10 @@ class PourRightEnv(DirectRLEnv):
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        bead_state = self._sample_bead_states_inside_cup(cup_pose_world)
-        self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
+        # hold phase 동안 비드를 숨겨서 physics 초기화 충돌 방지.
+        # 실제 소환은 _pre_physics_step 에서 hold 종료 시점에 수행.
+        self._hide_beads(env_ids)
+        self._beads_spawned[list(env_ids)] = False
 
         self.contact_force_raw[env_ids].zero_()
         self.binary_contact_buf[env_ids] = False

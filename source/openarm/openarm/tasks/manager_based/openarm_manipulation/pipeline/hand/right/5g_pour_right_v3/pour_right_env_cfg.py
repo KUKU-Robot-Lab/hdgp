@@ -138,6 +138,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 200
     episode_hold_steps:    int   = 60   # 텔레포트 후 contact 재정립 대기 (1s @ 60Hz)
+    episode_ramp_steps:    int   = 60   # hold 종료 후 action 점진 스케일업 (warmstart env 전용)
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
     pregrasp_offset_x:     float = -0.06
