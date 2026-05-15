@@ -900,13 +900,12 @@ class PourRightEnv(DirectRLEnv):
                 just_ended_hold = (self.episode_length_buf == hold_end) & ~self._beads_spawned
                 spawn_ids_tensor = just_ended_hold.nonzero(as_tuple=False).squeeze(-1)
                 if spawn_ids_tensor.numel() > 0:
-                    spawn_ids = spawn_ids_tensor.tolist()
                     cup_pose_now = torch.cat([
                         self.cup.data.root_pos_w[spawn_ids_tensor],
                         self.cup.data.root_quat_w[spawn_ids_tensor],
                     ], dim=-1)
                     bead_state = self._sample_bead_states_inside_cup(cup_pose_now)
-                    self.beads.write_object_state_to_sim(bead_state, env_ids=spawn_ids)
+                    self.beads.write_object_state_to_sim(bead_state, env_ids=spawn_ids_tensor)
                     self._beads_spawned[spawn_ids_tensor] = True
 
             # [3] ramp-up: hold 종료 후 ramp_steps 동안 warmstart env의 palm action 점진 스케일업
