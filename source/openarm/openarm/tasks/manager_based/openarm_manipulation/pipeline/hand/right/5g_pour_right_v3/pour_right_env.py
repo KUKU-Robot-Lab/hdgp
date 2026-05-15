@@ -1785,6 +1785,10 @@ class PourRightEnv(DirectRLEnv):
         # Phase-2 Step 9: action_rate 분리 로깅
         self.extras["cost_action_rate_palm"] = (self.cfg.weight_action_rate_palm * palm_delta).mean()
         self.extras["cost_action_rate_finger"] = (self.cfg.weight_action_rate_finger * finger_delta).mean()
+        # j7 진단 로깅 (warmstart 자세 일관성 확인)
+        j7_cur = self.robot.data.joint_pos[:, self.arm_dof_indices[6]]
+        self.extras["arm_j7_mean"] = j7_cur.mean()
+        self.extras["arm_j7_abs_max"] = j7_cur.abs().max()
 
         if self.spill_adr is not None:
             self.extras["adr_spill_progress"] = torch.tensor(
@@ -2127,8 +2131,12 @@ class PourRightEnv(DirectRLEnv):
                 "from the requested play-like grasp state."
             )
 
+        # warmstart cache j7 분포 확인 (j7 = arm index 6)
+        j7_vals = self._warmstart_arm_pos[:self._warmstart_cache_count, 6]
         print(
-            f"[5g_pour_right_v3] collected {self._warmstart_cache_count} warmstart success states.",
+            f"[5g_pour_right_v3] collected {self._warmstart_cache_count} warmstart success states. "
+            f"j7: min={j7_vals.min().item():.3f} max={j7_vals.max().item():.3f} "
+            f"mean={j7_vals.mean().item():.3f} std={j7_vals.std().item():.3f}",
             flush=True,
         )
 
@@ -2141,7 +2149,11 @@ class PourRightEnv(DirectRLEnv):
         lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
         upright = self._source_up_axis_w[:, 2] > 0.90  # [test8] 0.7→0.90: 최대 ~26° 기울기로 제한 (비드 탈출 방지)
-        warmstart_success = lifted & grasped & upright
+        # demo 분포 기반 j7 필터: pour_v1_a11~a20 lifted phase j7 ∈ [0.319, 1.340]
+        # 극단값(j7<0.20 or j7>1.50)은 OOD로 제거 → pour 정책이 near-zero action 출력하는 상태 방지
+        j7 = self.robot.data.joint_pos[:, self.arm_dof_indices[6]]
+        j7_in_range = (j7 >= 0.20) & (j7 <= 1.50)
+        warmstart_success = lifted & grasped & upright & j7_in_range
 
         success_env_ids = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
         if success_env_ids.numel() == 0:
@@ -2280,6 +2292,7 @@ class PourRightEnv(DirectRLEnv):
             mouth_xy_distance = torch.norm(mouth_delta[:, :2], dim=-1)
             mouth_z_clearance = source_pour_point_w[:, 2] - target_opening_w[:, 2]
             cup_z_local = cup_pose_local[:, 2]
+            j7_reset = arm_pos[:, 6]
             print(
                 "[5g_pour_right_v3][warmstart_reset] "
                 f"cup_z_local mean={cup_z_local.mean().item():.4f} "
@@ -2288,7 +2301,9 @@ class PourRightEnv(DirectRLEnv):
                 f"min={mouth_xy_distance.min().item():.4f} max={mouth_xy_distance.max().item():.4f} | "
                 f"mouth_z_clearance mean={mouth_z_clearance.mean().item():.4f} "
                 f"min={mouth_z_clearance.min().item():.4f} max={mouth_z_clearance.max().item():.4f} | "
-                f"warmstart_palm_z mean={warmstart_palm_pose[:, 2].mean().item():.4f}",
+                f"warmstart_palm_z mean={warmstart_palm_pose[:, 2].mean().item():.4f} | "
+                f"j7 min={j7_reset.min().item():.3f} max={j7_reset.max().item():.3f} "
+                f"mean={j7_reset.mean().item():.3f} std={j7_reset.std().item():.3f}",
                 flush=True,
             )
             self._warmstart_reset_debug_printed = True

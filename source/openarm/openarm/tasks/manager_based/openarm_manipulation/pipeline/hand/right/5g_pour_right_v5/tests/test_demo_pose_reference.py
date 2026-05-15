@@ -57,6 +57,42 @@ def test_demo_pose_reference_loads_a11_to_a20_contract() -> None:
         assert torch.isfinite(tensor).all()
 
 
+def test_demo_pose_reference_transport_phase_excludes_grasp_segment() -> None:
+    """transport phase must contain lift_start→pour_start frames only.
+
+    Expected: transport < all (grasp excluded) but transport >> pour (hundreds of frames).
+    Arm joint mean must be near demo lift_start, far from ARM_START_POSE=[0.5,0.1,0.4,0.60,-0.2,0,0].
+    """
+    paths = [f"/home/user/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)]
+
+    pour_bank = DemoPoseReferenceBank.from_hdf5_paths(paths, phase="pour", device="cpu")
+    transport_bank = DemoPoseReferenceBank.from_hdf5_paths(paths, phase="transport", device="cpu")
+    all_bank = DemoPoseReferenceBank.from_hdf5_paths(paths, phase="all", device="cpu")
+
+    # transport must exclude grasp frames → fewer than all
+    assert transport_bank.num_frames < all_bank.num_frames, (
+        f"transport ({transport_bank.num_frames}) should be < all ({all_bank.num_frames})"
+    )
+    # transport must include at least 500 frames (lift→pour spans 683-886 frames per demo × 10 demos)
+    assert transport_bank.num_frames > 500, (
+        f"transport bank has too few frames: {transport_bank.num_frames}"
+    )
+    # transport arm mean must be near demo lift_start, not ARM_START_POSE
+    # demo lift_start mean ≈ [-0.111, 0.179, -0.206, 0.657, 0.097, 0.103, 1.031]
+    # ARM_START_POSE      =  [0.5,   0.1,   0.4,   0.60, -0.2,  0.0,  0.0]
+    arm_mean = transport_bank.arm_joint_mean.numpy()
+    demo_lift_start_mean = np.array([-0.111, 0.179, -0.206, 0.657, 0.097, 0.103, 1.031])
+    arm_start_pose = np.array([0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0])
+    dist_to_lift = np.linalg.norm(arm_mean - demo_lift_start_mean)
+    dist_to_start = np.linalg.norm(arm_mean - arm_start_pose)
+    assert dist_to_lift < dist_to_start, (
+        f"transport arm mean should be closer to lift_start ({dist_to_lift:.3f}) "
+        f"than ARM_START_POSE ({dist_to_start:.3f})"
+    )
+    assert all_bank.arm_joint_pos.shape[1] == 7
+    assert transport_bank.arm_joint_pos.shape[1] == 7
+
+
 def test_demo_pose_reference_all_phase_expands_beyond_pour_segment() -> None:
     paths = [f"/home/user/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)]
 

@@ -66,12 +66,12 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
             mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬 (5g→10g: 관성 향상, 진동 날림 방지)
-            rigid_props=RigidBodyPropertiesCfg( 
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=4,
-                linear_damping=0.5,   # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
-                angular_damping=0.5,  # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
+                linear_damping=0.05,   # 0.5→0.05: τ=m/d=0.005/0.5=0.01s(과도 감쇠) → 0.1s(자연 낙하 허용)
+                angular_damping=0.05,  # 0.5→0.05: 비드가 림을 넘어 굴러 떨어지도록
                 max_depenetration_velocity=5.0,
                 max_linear_velocity=10.0,
                 max_angular_velocity=20.0,
@@ -83,7 +83,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
             static_friction=0.1,
             dynamic_friction=0.08,
-            restitution=0.1,
+            restitution=0.2,   # 0.1→0.2: 림에서 튕겨 넘어가도록 (rim 걸림 완화)
             friction_combine_mode="min",
             restitution_combine_mode="max",
         )
@@ -452,7 +452,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test1/nn/5g_grasp_right-v7-2.pth"
+        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth"
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
