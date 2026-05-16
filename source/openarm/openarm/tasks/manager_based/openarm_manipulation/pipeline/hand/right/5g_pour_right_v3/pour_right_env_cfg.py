@@ -177,7 +177,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # bead / cup geometry (.usd 기준: bottom=-0.077m, rim=+0.100m, inner_r=0.041m)
     target_inner_radius:  float = 0.041   # 컵 내부 반경
-    target_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
+    # [fix] -0.070 → -0.060: 테이블 위 bead spill 포착
+    # target cup root z=0.323m, 테이블 bead z=0.257m → local_z=-0.066m
+    # -0.070 기준 시 -0.066 > -0.070 → ghost (spill 미감지, 패널티 없음)
+    # -0.060 기준 시 -0.066 < -0.060 → spill ✓ (공중 transit bead: local_z>0, 영향 없음)
+    target_inside_z_min:  float = -0.060  # bottom(-0.077) + bead_radius + table clearance
     target_inside_z_max:  float = 0.100   # 림 높이
     target_mouth_z:       float = 0.100   # 림 높이 (bead crossing 기준)
     source_inner_radius:  float = 0.041   # 컵 내부 반경

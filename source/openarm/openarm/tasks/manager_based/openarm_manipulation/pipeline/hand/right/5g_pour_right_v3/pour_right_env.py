@@ -860,10 +860,9 @@ class PourRightEnv(DirectRLEnv):
         self._bead_in_source_fraction.copy_(self._bead_in_source.float().mean(dim=-1))
 
         # [v5 방식] target cup 로컬 프레임 z 기준으로 spill 판정 (world z threshold 제거)
-        # - local_z < target_inside_z_min(-0.070m): target 바닥 아래 = 영구 손실
-        # - transit bead (공중 낙하): local_z > -0.070m → spill 아님 (false positive 제거)
-        # - 테이블 위 비드: world_z≈0.257m → local_z≈-0.066m > -0.070m → ghost (penalty 없음)
-        # - 테이블 밖 낙하: local_z < -0.070m → spill ✓
+        # target cup root z=0.323m, 테이블 bead local_z=0.257-0.323=-0.066m
+        # threshold=-0.060m: -0.066 < -0.060 → spill ✓ (테이블 낙하 bead 포착)
+        # transit bead (공중 낙하): local_z > 0 → spill 아님 (false positive 제거)
         bead_spilled = (
             (~self._bead_in_source)
             & (pos_in_target[..., 2] < self.cfg.target_inside_z_min)
