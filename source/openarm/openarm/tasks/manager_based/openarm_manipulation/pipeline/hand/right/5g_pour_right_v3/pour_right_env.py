@@ -863,7 +863,7 @@ class PourRightEnv(DirectRLEnv):
         bead_spilled = (
             (~self._bead_in_target)
             & (~self._bead_in_source)
-            & (bead_env_z < 0.230)
+            & (bead_env_z < 0.27)   # [fix] 0.230→0.27: 테이블 z≈0.25이므로 테이블 위 비드(z≈0.26) 검출
         )
         self._spill_ratio.copy_(bead_spilled.float().mean(dim=-1))
         self._prev_bead_target_local_z.copy_(pos_in_target[..., 2])
@@ -1101,7 +1101,10 @@ class PourRightEnv(DirectRLEnv):
 
         # ---- Pour 기하학 계산 (bi_pouring_v1 패턴) ----
         self._mouth_xy_distance = torch.norm(self._mouth_delta[:, :2], dim=-1)
-        self._mouth_z_clearance = self._source_pour_point_w[:, 2] - self._target_opening_w[:, 2]
+        # [fix] tilt-invariant clearance: pour_point_w_z는 120° tilt 시 target 아래로 내려가 g_clear 붕괴.
+        # 컵이 직립했을 때의 rim z (cup_root_z + rim_offset)를 기준으로 계산 → tilting 중에도 g_clear 유지.
+        _cup_rim_z_upright = self.cup.data.root_pos_w[:, 2] + self.cfg.source_cup_rim_z_offset
+        self._mouth_z_clearance = _cup_rim_z_upright - self._target_opening_w[:, 2]
         self._source_up_dot_world = self._source_up_axis_w[:, 2].clamp(-1.0, 1.0)
 
         # Directional tilt: 원통 컵의 실제 pouring side는 cup root +Z 축이 기울어진 반대편 림이다.
