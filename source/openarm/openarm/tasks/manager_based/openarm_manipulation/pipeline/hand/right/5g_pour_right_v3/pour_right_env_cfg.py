@@ -305,10 +305,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_prepour_dir: float = 3.00   # 복원 (test5: 5.00 → test7: 3.00)
     weight_prepour_align: float = 3.00  # 복원 (test5: 5.00 → test7: 3.00)
     weight_dir_tilt: float = 2.00      # 복원 (test5: 3.00 → test7: 2.00) [test8] 방향 수식 반전으로 올바른 gradient
-    weight_source_drain: float = 20.0  # [test8] 신규: pour gate 중 소스 배출 incentive
-    weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
-    weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
+    weight_source_drain: float = 35.0  # 20→35: 소스 완전 배출 incentive 강화
+    weight_cross: float = 0.00     # [fix] 0: 비드가 rim 위(world_z>0.423m)에서 진입 불가 → 항상 0
+    # 비드는 pour_point(z≈0.33m)에서 테이블(z≈0.25m)로 낙하; target rim(0.423m)을 위에서 통과 안 함
+    weight_capture: float = 80.00  # 40→80: bead_in_target_fraction (즉각적 기하 감지, 정확)
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
+    # pour point aim: 120° tilt 시 pour_point가 target 위로 이동 (8.7cm 오프셋)
+    # cup center XY alone으로는 bead 정밀도 보장 불가 (target r=4.1cm vs gate 18cm)
+    # → pour_point_w XY가 target_opening_w XY에 가까울수록 보상 → 위치+방향 통합 gradient
+    weight_pour_aim: float = 30.0   # pour_point XY ≈ target_opening XY (pour 정밀도)
+    pour_aim_sharpness: float = 15.0  # exp(-15*dist): σ≈6.7cm, dist=0→1.0, dist=10cm→0.22
     weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
     weight_tilt_onset_bonus: float = 0.00    # [test5] demo shaping 대체로 onset 제거
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거

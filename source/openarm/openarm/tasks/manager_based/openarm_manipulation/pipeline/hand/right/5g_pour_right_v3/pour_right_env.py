@@ -859,11 +859,14 @@ class PourRightEnv(DirectRLEnv):
         self._bead_in_target_fraction.copy_(self._bead_in_target.float().mean(dim=-1))
         self._bead_in_source_fraction.copy_(self._bead_in_source.float().mean(dim=-1))
 
-        bead_env_z = bead_pos_w[..., 2] - self.scene.env_origins[:, 2].unsqueeze(1)
+        # [v5 방식] target cup 로컬 프레임 z 기준으로 spill 판정 (world z threshold 제거)
+        # - local_z < target_inside_z_min(-0.070m): target 바닥 아래 = 영구 손실
+        # - transit bead (공중 낙하): local_z > -0.070m → spill 아님 (false positive 제거)
+        # - 테이블 위 비드: world_z≈0.257m → local_z≈-0.066m > -0.070m → ghost (penalty 없음)
+        # - 테이블 밖 낙하: local_z < -0.070m → spill ✓
         bead_spilled = (
-            (~self._bead_in_target)
-            & (~self._bead_in_source)
-            & (bead_env_z < 0.27)   # [fix] 0.230→0.27: 테이블 z≈0.25이므로 테이블 위 비드(z≈0.26) 검출
+            (~self._bead_in_source)
+            & (pos_in_target[..., 2] < self.cfg.target_inside_z_min)
         )
         self._spill_ratio.copy_(bead_spilled.float().mean(dim=-1))
         self._prev_bead_target_local_z.copy_(pos_in_target[..., 2])
@@ -1597,10 +1600,20 @@ class PourRightEnv(DirectRLEnv):
         ).float()
 
         r_pour_align = 0.5 * (self._mouth_alignment_cos + 1.0)
+
+        # pour point aim: source 컵 rim의 XY 위치가 target opening XY에 가까울수록 보상
+        # 120° tilt 시 pour_point는 cup_center에서 ~8.7cm 이동 → cup_center XY만으론 정밀도 보장 불가
+        # 이 reward는 (1) cup을 target 위에 위치시키고 (2) target 방향 tilting을 동시에 유도
+        _pour_point_xy_dist = torch.norm(
+            self._source_pour_point_w[:, :2] - self._target_opening_w[:, :2], dim=-1
+        )
+        r_pour_aim = torch.exp(-self.cfg.pour_aim_sharpness * _pour_point_xy_dist)
+
         r_pour_stage = gate_pour_binary * (
             self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
             + self.cfg.weight_pour_align * r_pour_align
+            + self.cfg.weight_pour_aim * r_pour_aim
         )
 
         # [test8] Source drain reward: pour gate 활성 중 소스 비우기 incentive
@@ -1796,6 +1809,8 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_source_drain"] = r_source_drain.mean()
         self.extras["bead_in_source"] = self._bead_in_source_fraction.mean()
         self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
+        self.extras["r_pour_aim"] = (self.cfg.weight_pour_aim * r_pour_aim).mean()
+        self.extras["pour_point_xy_dist"] = _pour_point_xy_dist.mean()  # pour_point→target XY (m)
         self.extras["gate_pour_binary"] = gate_pour_binary.mean()  # [P3] binary gate 활성 비율
         self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
         self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()

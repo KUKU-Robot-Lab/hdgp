@@ -879,11 +879,12 @@ class PourRightEnv(DirectRLEnv):
         self._bead_in_target_fraction.copy_(self._bead_in_target.float().mean(dim=-1))
         self._bead_in_source_fraction.copy_(self._bead_in_source.float().mean(dim=-1))
 
-        bead_env_z = bead_pos_w[..., 2] - self.scene.env_origins[:, 2].unsqueeze(1)
+        # source 컵 밖 + target 컵 바닥면(local z < z_min) 아래로 떨어진 bead = 영구 손실
+        # transit bead (공중 이동 중): target local z > 0 → spill 아님
+        # 테이블/바닥 낙하: target local z < -0.070 → spill
         bead_spilled = (
-            (~self._bead_in_target)
-            & (~self._bead_in_source)
-            & (bead_env_z < 0.230)
+            (~self._bead_in_source)
+            & (pos_in_target[..., 2] < self.cfg.target_inside_z_min)
         )
         self._spill_ratio.copy_(bead_spilled.float().mean(dim=-1))
         self._prev_bead_target_local_z.copy_(pos_in_target[..., 2])

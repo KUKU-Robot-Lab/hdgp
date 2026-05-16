@@ -370,7 +370,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     }
     spill_adr_num_increments: int = 50
     spill_adr_increment_interval: int = 20000
-    spill_adr_trigger_threshold: float = 0.3
+    spill_adr_trigger_threshold: float = 0.10  # [test6] 0.30→0.10: 초기부터 spill ADR 진행 (v3 test8 수준)
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
     # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
