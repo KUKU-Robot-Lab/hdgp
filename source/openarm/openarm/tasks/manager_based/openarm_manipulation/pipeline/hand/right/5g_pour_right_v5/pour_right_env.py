@@ -283,17 +283,18 @@ class PourRightEnv(DirectRLEnv):
             cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
             _delta_rad, _delta_rad, _delta_rad,
         ], device=self.device)
+        _warmstart_delta_rad = math.radians(cfg.warmstart_collect_palm_delta_rot_deg)
         self.delta_mins_warmstart_collect = to_torch([
             -cfg.warmstart_collect_palm_delta_xyz,
             -cfg.warmstart_collect_palm_delta_xyz,
             -cfg.warmstart_collect_palm_delta_xyz,
-            -_delta_rad, -_delta_rad, -_delta_rad,
+            -_warmstart_delta_rad, -_warmstart_delta_rad, -_warmstart_delta_rad,
         ], device=self.device)
         self.delta_maxs_warmstart_collect = to_torch([
             cfg.warmstart_collect_palm_delta_xyz,
             cfg.warmstart_collect_palm_delta_xyz,
             cfg.warmstart_collect_palm_delta_xyz,
-            _delta_rad, _delta_rad, _delta_rad,
+            _warmstart_delta_rad, _warmstart_delta_rad, _warmstart_delta_rad,
         ], device=self.device)
 
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
@@ -2197,8 +2198,11 @@ class PourRightEnv(DirectRLEnv):
 
         lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
-        upright = self._source_up_axis_w[:, 2] > 0.7
-        warmstart_success = lifted & grasped & upright
+        upright = self._source_up_axis_w[:, 2] > 0.90  # 0.7→0.90: 최대 ~26° 기울기로 제한 (bead 탈출 방지)
+        # j7 필터: OOD 팔 자세 제거 → pour 정책이 near-zero action 출력하는 상태 방지
+        j7 = self.robot.data.joint_pos[:, self.arm_dof_indices[6]]
+        j7_in_range = (j7 >= 0.20) & (j7 <= 1.50)
+        warmstart_success = lifted & grasped & upright & j7_in_range
 
         success_env_ids = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
         if success_env_ids.numel() == 0:
@@ -2216,7 +2220,10 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos[start:end] = self.robot.data.joint_pos[success_env_ids][:, self.hand_dof_indices]
         self._warmstart_palm_pose[start:end] = self.palm_pose_targets[success_env_ids]
         self._warmstart_cup_pose[start:end, :3] = self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
-        self._warmstart_cup_pose[start:end, 3:7] = self.cup.data.root_quat_w[success_env_ids]
+        # cup orientation은 upright(identity)로 저장
+        # 기울어진 채 저장 시 hold 단계에서 더 기울어져 bead 소환 위치가 틀어지는 문제 방지
+        self._warmstart_cup_pose[start:end, 3] = 1.0   # w=1 (upright)
+        self._warmstart_cup_pose[start:end, 4:7] = 0.0  # x,y,z=0
         self._warmstart_cache_count = end
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:

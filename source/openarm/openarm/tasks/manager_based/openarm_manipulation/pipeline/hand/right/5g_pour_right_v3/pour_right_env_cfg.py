@@ -321,9 +321,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # pour point aim: 120° tilt 시 pour_point가 target 위로 이동 (8.7cm 오프셋)
     # cup center XY alone으로는 bead 정밀도 보장 불가 (target r=4.1cm vs gate 18cm)
     # → pour_point_w XY가 target_opening_w XY에 가까울수록 보상 → 위치+방향 통합 gradient
-    weight_pour_aim: float = 30.0   # pour_point XY ≈ target_opening XY (pour 정밀도)
-    pour_aim_sharpness: float = 15.0  # exp(-15*dist): σ≈6.7cm, dist=0→1.0, dist=10cm→0.22
-    weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
+    weight_pour_aim: float = 0.0    # [fix] 비활성: pour_point XY가 90°에서 local max → 120° gradient 역행
+    pour_aim_sharpness: float = 15.0
+    # [fix] cup CENTER가 target 위에 올수록 보상 (각도 무관, monotonic, 90° local max 없음)
+    # r_pour_aim 대체: rim 위치 대신 cup center XY 기반 → 어떤 tilt 각도에서도 단조 증가
+    weight_cup_center_pour: float = 60.0
+    pour_center_xy_scale: float = 8.0   # exp(-8*dist): 0.18m→14/step, 0.05m→40/step
+    weight_first_capture_bonus: float = 50.00  # 20→50: 첫 비드 유입 탐색 신호 강화
     weight_tilt_onset_bonus: float = 0.00    # [test5] demo shaping 대체로 onset 제거
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건

@@ -208,7 +208,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm xyz delta.
     # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
-    warmstart_collect_palm_delta_xyz: float = 0.10
+    warmstart_collect_palm_delta_xyz: float = 0.15
+    warmstart_collect_palm_delta_rot_deg: float = 20.0  # grasp v7-2 학습 스케일과 일치 (pour 90°와 분리)
     palm_delta_rot_deg: float = 90.0   # 45→120→90: demo ey_max≈76° 이상 유지, j7 한계 도달 방지
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
@@ -256,8 +257,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
-    # warmstart는 테이블 위에서 막 잡힌 자세가 아니라, 테이블 기준 약 3cm 든 자세에서 시작한다.
-    lift_success_height: float = 0.03
+    # pour 가능 높이 기준: target cup z≈0.323m, source cup 입구가 그 이상이어야 pour 가능
+    # 0.03(3cm)이면 grasp 막 시작 시점도 통과 → 잘못된 상태가 캐시에 혼입됨
+    lift_success_height: float = 0.10
     success_mouth_xy_threshold: float = 0.030
     success_z_clearance_min: float = 0.015
     success_z_clearance_max: float = 0.050

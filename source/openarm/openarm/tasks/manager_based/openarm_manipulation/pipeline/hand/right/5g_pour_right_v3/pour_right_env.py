@@ -1603,19 +1603,25 @@ class PourRightEnv(DirectRLEnv):
 
         r_pour_align = 0.5 * (self._mouth_alignment_cos + 1.0)
 
-        # pour point aim: source 컵 rim의 XY 위치가 target opening XY에 가까울수록 보상
-        # 120° tilt 시 pour_point는 cup_center에서 ~8.7cm 이동 → cup_center XY만으론 정밀도 보장 불가
-        # 이 reward는 (1) cup을 target 위에 위치시키고 (2) target 방향 tilting을 동시에 유도
+        # [fix] r_pour_aim 제거: pour_point XY는 90° tilt에서 target 방향 최대 → 90° local optimum 생성
+        # 90°→120° 진행 시 r_pour_aim 감소 → r_prepour tilt gradient 역행 → 에이전트 90°에 정지
+        # 진단용 계산은 유지 (logging / weight=0으로 비활성)
         _pour_point_xy_dist = torch.norm(
             self._source_pour_point_w[:, :2] - self._target_opening_w[:, :2], dim=-1
         )
         r_pour_aim = torch.exp(-self.cfg.pour_aim_sharpness * _pour_point_xy_dist)
 
+        # [fix] cup CENTER XY ← target 기반 pour 위치 보상 (각도 무관, monotonic, local max 없음)
+        # pour_point(rim) 대신 cup center 사용: tilt 각도에 상관없이 cup이 target 위에 올수록 단조 증가
+        # 자연스럽게 소스컵 center가 타겟컵 위로 이동 → 어떤 각도에서도 비드가 흘러 들어가게 됨
+        r_cup_center_pour = torch.exp(-self.cfg.pour_center_xy_scale * self._cup_center_xy_dist)
+
         r_pour_stage = gate_pour_binary * (
             self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
+            + self.cfg.weight_cup_center_pour * r_cup_center_pour
             + self.cfg.weight_pour_align * r_pour_align
-            + self.cfg.weight_pour_aim * r_pour_aim
+            + self.cfg.weight_pour_aim * r_pour_aim  # weight=0, 진단용 계산만 유지
         )
 
         # [fix] Source drain reward: target에 들어간 비율만큼만 보상
@@ -1813,8 +1819,9 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_source_drain"] = r_source_drain.mean()
         self.extras["bead_in_source"] = self._bead_in_source_fraction.mean()
         self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
-        self.extras["r_pour_aim"] = (self.cfg.weight_pour_aim * r_pour_aim).mean()
-        self.extras["pour_point_xy_dist"] = _pour_point_xy_dist.mean()  # pour_point→target XY (m)
+        self.extras["r_pour_aim"] = (self.cfg.weight_pour_aim * r_pour_aim).mean()  # weight=0, 진단용
+        self.extras["pour_point_xy_dist"] = _pour_point_xy_dist.mean()
+        self.extras["r_cup_center_pour"] = (self.cfg.weight_cup_center_pour * r_cup_center_pour * gate_pour_binary).mean()
         self.extras["gate_pour_binary"] = gate_pour_binary.mean()  # [P3] binary gate 활성 비율
         self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
         self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
@@ -2245,11 +2252,7 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos[start:end] = self.robot.data.joint_pos[success_env_ids][:, self.hand_dof_indices]
         self._warmstart_palm_pose[start:end] = self.palm_pose_targets[success_env_ids]
         self._warmstart_cup_pose[start:end, :3] = self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
-        # [fix] 컵 orientation은 항상 upright (identity)로 저장
-        # 캐시된 기울기(최대 ~26°)가 reset 후 hold 단계에서 더 기울어져 step 60 bead 소환 시
-        # 컵이 이미 기울어진 상태 → bead가 기울어진 방향으로 소환되는 문제 수정
-        self._warmstart_cup_pose[start:end, 3] = 1.0   # w=1 (upright)
-        self._warmstart_cup_pose[start:end, 4:7] = 0.0  # x,y,z=0
+        self._warmstart_cup_pose[start:end, 3:7] = self.cup.data.root_quat_w[success_env_ids]
         self._warmstart_cache_count = end
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:

@@ -233,9 +233,13 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     #   target cup y = 0.031m → y_max=+0.08m으로도 충분히 포함됨
     #   y_max=0.08m: 왼팔 elbow(y=+0.141m)까지 6cm 여유, 소스컵이 왼팔 구조물에 충돌하는 문제 방지
     #   (이전 y_max=0.22m: 왼팔 joint2(y=+0.154m)까지 도달 → 초기 학습 시 소스컵이 왼팔로 날아가는 문제)
+    #   z_max: 0.65 → 0.48
+    #   target cup rim ≈ z=0.44m. palm z=0.48 → cup center ≈ 0.45m → cup rim ≈ 0.55m
+    #   clearance ≈ 0.11m (붓기에 충분). 이전 z_max=0.65는 rim=0.75m → clearance=0.31m (너무 높음)
+    #   warmstart 캐시에 prelift 목표(z=0.65m)가 그대로 저장되어 pour phase 시작 시 팔이 위로 당겨지는 문제 방지
     d = math.pi / 180.0
     return [
-        0.65, 0.08, 0.65,   # y_max: 0.22→0.08 (왼팔 elbow y=0.141m까지 6cm 여유, 소스컵 충돌 방지)
+        0.65, 0.08, 0.48,   # z_max: 0.65→0.48 (warmstart palm z 클램프, 붓기 clearance 0.11m 확보)
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,
