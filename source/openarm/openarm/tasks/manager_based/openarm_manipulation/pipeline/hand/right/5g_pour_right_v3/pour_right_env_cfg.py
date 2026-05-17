@@ -212,7 +212,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm xyz delta.
     # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
-    warmstart_collect_palm_delta_xyz: float = 0.10
+    # [fix] 0.10 → 0.15: grasp v7-2 학습 시 palm_delta_xyz=0.15 와 일치시킴
+    warmstart_collect_palm_delta_xyz: float = 0.15
+    # [fix] 신규: grasp v7-2 학습 시 palm_delta_rot_deg=20.0 과 일치시킴
+    # 기존에는 pour env의 120° 사용 → action=0.5가 의도한 10° 대신 60° 회전 유발 → 캐시 오염
+    warmstart_collect_palm_delta_rot_deg: float = 20.0
     palm_delta_rot_deg: float = 120.0  # 45→120: cup 135° tilt 도달 가능하도록 확장
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.

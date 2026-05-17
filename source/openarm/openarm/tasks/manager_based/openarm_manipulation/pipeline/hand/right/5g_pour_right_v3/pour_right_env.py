@@ -282,17 +282,20 @@ class PourRightEnv(DirectRLEnv):
             cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
             _delta_rad, _delta_rad, _delta_rad,
         ], device=self.device)
+        # [fix] warmstart 수집 시 grasp v7-2 학습 스케일(xyz=0.15, rot=20°)로 분리
+        # 기존: pour env의 _delta_rad(120°) 재사용 → action=0.5가 60° 회전 유발 → 캐시 오염
+        _warmstart_delta_rad = math.radians(cfg.warmstart_collect_palm_delta_rot_deg)
         self.delta_mins_warmstart_collect = to_torch([
             -cfg.warmstart_collect_palm_delta_xyz,
             -cfg.warmstart_collect_palm_delta_xyz,
             -cfg.warmstart_collect_palm_delta_xyz,
-            -_delta_rad, -_delta_rad, -_delta_rad,
+            -_warmstart_delta_rad, -_warmstart_delta_rad, -_warmstart_delta_rad,
         ], device=self.device)
         self.delta_maxs_warmstart_collect = to_torch([
             cfg.warmstart_collect_palm_delta_xyz,
             cfg.warmstart_collect_palm_delta_xyz,
             cfg.warmstart_collect_palm_delta_xyz,
-            _delta_rad, _delta_rad, _delta_rad,
+            _warmstart_delta_rad, _warmstart_delta_rad, _warmstart_delta_rad,
         ], device=self.device)
 
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
@@ -1615,10 +1618,12 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_pour_aim * r_pour_aim
         )
 
-        # [test8] Source drain reward: pour gate 활성 중 소스 비우기 incentive
-        # 소스에 비드가 남을수록 낮은 reward → 에이전트가 pour 자세를 유지해 완전 배출 유도
+        # [fix] Source drain reward: target에 들어간 비율만큼만 보상
+        # 기존: (1-bead_in_source_fraction) 사용 → 테이블에 버려도 source_drain=17.5/step 획득
+        #       → spill_cost(2.0/step)보다 훨씬 크므로 테이블 덤프가 local optimum
+        # 수정: bead_in_target_fraction 기반 → target에 넣어야만 보상 (테이블 덤프 불가)
         r_source_drain = (
-            gate_pour_binary * self.cfg.weight_source_drain * (1.0 - self._bead_in_source_fraction)
+            gate_pour_binary * self.cfg.weight_source_drain * self._bead_in_target_fraction
         )
 
         # 첫 비드 유입 시 1회성 보너스: target cup 근처(< pour_binary_xy_thresh)에서만 인정
@@ -2240,7 +2245,11 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos[start:end] = self.robot.data.joint_pos[success_env_ids][:, self.hand_dof_indices]
         self._warmstart_palm_pose[start:end] = self.palm_pose_targets[success_env_ids]
         self._warmstart_cup_pose[start:end, :3] = self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
-        self._warmstart_cup_pose[start:end, 3:7] = self.cup.data.root_quat_w[success_env_ids]
+        # [fix] 컵 orientation은 항상 upright (identity)로 저장
+        # 캐시된 기울기(최대 ~26°)가 reset 후 hold 단계에서 더 기울어져 step 60 bead 소환 시
+        # 컵이 이미 기울어진 상태 → bead가 기울어진 방향으로 소환되는 문제 수정
+        self._warmstart_cup_pose[start:end, 3] = 1.0   # w=1 (upright)
+        self._warmstart_cup_pose[start:end, 4:7] = 0.0  # x,y,z=0
         self._warmstart_cache_count = end
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
