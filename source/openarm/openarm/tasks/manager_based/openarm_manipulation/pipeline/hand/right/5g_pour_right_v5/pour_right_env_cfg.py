@@ -354,11 +354,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "transport"  # "all"→"transport": grasp phase 제외, warmstart 자세 불일치 해소
-    weight_demo_arm_pose: float = 9.00   # [test4] 6.00→9.00: 공간 접근 gradient 보강
+    weight_demo_arm_pose: float = 12.00  # task-space demo 추종 gradient 강화
     weight_demo_palm_pose: float = 0.50  # [test2] 3.0→0.5: palm sim2real gap 최소화, arm 집중
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.00  # [test2] 0.5→0.0: hand pose 제거, arm 시계열만
-    demo_pose_warmup_steps: int = 20000
+    demo_pose_warmup_steps: int = 10000
     demo_pose_near_gate_xy: float = 0.20  # unused: demo_pose_phase="all"은 거리 gate 없이 항상 참조
     demo_nn_lookahead_frames: int = 15    # [test3] 30→15: K=30이 demo 추종 방해 (0.5s→0.25s)
 

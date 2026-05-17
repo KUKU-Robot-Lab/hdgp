@@ -92,7 +92,7 @@ from .pour_right_preset import (
     HAND_GRASP_POSE,
     OBJECT_GOAL_POS,
 )
-from .pour_right_utils import scale, to_torch
+from .pour_right_utils import map_delta_pos_to_world, scale, to_torch
 from .demo_pose_reference import DemoPoseReferenceBank
 from .success_traj_buffer import SuccessTrajBuffer
 
@@ -971,8 +971,13 @@ class PourRightEnv(DirectRLEnv):
         # Rotation action is interpreted in a cup-local basis:
         # [spin around cup-up, tilt toward target opening, orthogonal tilt].
         delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
+        delta_pos_w = map_delta_pos_to_world(
+            delta[:, :3],
+            self.cup.data.root_quat_w,
+            warmstart_collect_mode=self._warmstart_collect_mode,
+        )
         palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
-        palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3]
+        palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta_pos_w
         palm_pose[:, :3] = torch.max(
             torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
             self.palm_mins[:3].unsqueeze(0),
@@ -1422,6 +1427,7 @@ class PourRightEnv(DirectRLEnv):
                 "cost_demo_smooth": zero,
                 "cost_thumb_grip": zero,
                 "demo_arm_joint_err": zero,
+                "demo_task_pos_err": zero,
                 "demo_palm_pos_err": zero,
                 "demo_palm_rot_err": zero,
             }
@@ -1456,6 +1462,7 @@ class PourRightEnv(DirectRLEnv):
 
         # 진단용 (TensorBoard): joint-space 오류 대신 task-space 오류 보고
         demo_arm_joint_err = pos_err_m                  # 의미 변경: cup-local palm position error [m]
+        demo_task_pos_err = pos_err_m
 
         # --- Palm orientation: cup-local task space NN의 target_idx로 동일 참조 ---
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
@@ -1493,6 +1500,7 @@ class PourRightEnv(DirectRLEnv):
             "cost_demo_smooth": gate * self.cfg.weight_demo_smooth * cost_demo_smooth,
             "cost_thumb_grip": gate * self.cfg.weight_thumb_grip_pose * cost_thumb_grip,
             "demo_arm_joint_err": demo_arm_joint_err,
+            "demo_task_pos_err": demo_task_pos_err,
             "demo_palm_pos_err": demo_palm_pos_err,
             "demo_palm_rot_err": demo_palm_rot_err,
         }
@@ -1786,6 +1794,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_demo_palm_pose"] = demo_terms["r_demo_palm_pose"].mean()
         self.extras["cost_demo_smooth"] = demo_terms["cost_demo_smooth"].mean()
         self.extras["demo_arm_joint_err"] = demo_terms["demo_arm_joint_err"].mean()
+        self.extras["demo_task_pos_err"] = demo_terms["demo_task_pos_err"].mean()
         self.extras["demo_palm_pos_err"] = demo_terms["demo_palm_pos_err"].mean()
         self.extras["demo_palm_rot_err"] = demo_terms["demo_palm_rot_err"].mean()
         # Outcome

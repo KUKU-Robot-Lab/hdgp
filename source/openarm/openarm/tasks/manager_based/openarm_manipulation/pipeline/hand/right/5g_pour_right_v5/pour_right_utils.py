@@ -30,3 +30,27 @@ def tensor_clamp(t: torch.Tensor, min_t: torch.Tensor, max_t: torch.Tensor) -> t
 
 def to_torch(x, dtype=torch.float, device: str = "cuda:0", requires_grad: bool = False) -> torch.Tensor:
     return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)
+
+
+def _quat_apply_wxyz(quat_wxyz: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    """Rotate vector by quaternion in wxyz order."""
+    q_xyz = quat_wxyz[:, 1:4]
+    q_w = quat_wxyz[:, 0:1]
+    t = 2.0 * torch.cross(q_xyz, vec, dim=-1)
+    return vec + q_w * t + torch.cross(q_xyz, t, dim=-1)
+
+
+def map_delta_pos_to_world(
+    delta_pos: torch.Tensor,
+    cup_quat_wxyz: torch.Tensor,
+    *,
+    warmstart_collect_mode: bool,
+) -> torch.Tensor:
+    """Map policy xyz action to world frame.
+
+    Normal mode interprets xyz action in source-cup-local frame.
+    Warmstart collect mode keeps legacy world-frame interpretation.
+    """
+    if warmstart_collect_mode:
+        return delta_pos
+    return _quat_apply_wxyz(cup_quat_wxyz, delta_pos)

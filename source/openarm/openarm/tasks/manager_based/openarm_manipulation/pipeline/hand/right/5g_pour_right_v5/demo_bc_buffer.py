@@ -31,7 +31,7 @@ Obs 110D 레이아웃 (pour_right_constants.py 기준):
   [107:110] bead fractions         (= 0.0)
 
 Action 11D:
-  [0:3]  normalized pos delta from episode-base palm pose
+  [0:3]  normalized source-cup-local pos delta from episode-base palm pose
   [3:6]  cup-local rotation: spin, tilt_toward, tilt_ortho (normalized)
   [6:11] per-finger lerp = 1.0 (grasp 유지)
 """
@@ -350,7 +350,10 @@ def _load_episode(
     tgt_pos_act  = tgt_mat[:, :3, 3]
     tgt_quat_act = _quat_xyzw_from_matrix(tgt_mat[:, :3, :3])
 
-    pos_delta  = tgt_pos_act - base_pos                              # (T, 3)
+    # Position action is cup-local: R_source_cup^T @ (target_eef_pos - base_eef_pos)
+    # so BC targets stay spawn-invariant under global translation/yaw shifts.
+    pos_delta_world = tgt_pos_act - base_pos                         # (T, 3)
+    pos_delta = torch.einsum("tji,tj->ti", src_cup[:, :3, :3], pos_delta_world)
     dq         = _quat_mul(tgt_quat_act, _quat_conj(base_quat))     # (T, 4)
     rotvec_w   = _axis_angle_from_quat(dq)                          # (T, 3)
 
