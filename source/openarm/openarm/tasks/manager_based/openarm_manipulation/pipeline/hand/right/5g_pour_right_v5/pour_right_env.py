@@ -1427,27 +1427,37 @@ class PourRightEnv(DirectRLEnv):
             }
 
         ref = self.demo_pose_reference
-        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
 
-        # --- Nearest-Neighbor in joint space + look-ahead ---
-        # 현재 joint 상태와 가장 가까운 demo 프레임을 찾고 K 프레임 앞 자세를 타겟으로
-        # 효율적 L2: ||a-b||^2 = ||a||^2 + ||b||^2 - 2·a·bT (중간 (N,T,7) 텐서 생략)
-        demo_arm = ref.arm_joint_pos  # (T, 7)
-        T_demo = demo_arm.shape[0]
-        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)          # (N, 1)
-        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)     # (1, T)
-        ab = arm_q @ demo_arm.T                                  # (N, T)
-        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)            # (N,)
+        # --- cup-local frame에서 현재 palm 위치 계산 ---
+        # R_cup^T @ (palm_pos_w - cup_pos_w): spawn 위치 무관 task-space 표현
+        cup_pos_w  = self.cup.data.root_pos_w                                   # (N, 3) world
+        cup_quat_w = self.cup.data.root_quat_w                                  # (N, 4) wxyz
+        palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index]        # (N, 3) world
+        palm_in_cup_now = quat_apply_inverse(cup_quat_w, palm_pos_w - cup_pos_w)  # (N, 3) cup-local
+
+        # --- Nearest-Neighbor in cup-local task space + look-ahead ---
+        # joint-space NN 대체: spawn ±6cm 위치 무관, warmstart grasp 자세에서 항상 동일한 cup-relative 위치
+        demo_cup_pos = ref.palm_in_cup_pos   # (T, 3)
+        T_demo = demo_cup_pos.shape[0]
+        aa = (palm_in_cup_now ** 2).sum(dim=-1, keepdim=True)      # (N, 1)
+        bb = (demo_cup_pos ** 2).sum(dim=-1).unsqueeze(0)          # (1, T)
+        ab = palm_in_cup_now @ demo_cup_pos.T                       # (N, T)
+        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)               # (N,)
         K = int(self.cfg.demo_nn_lookahead_frames)
-        target_idx = (nn_idx + K).clamp(max=T_demo - 1)         # (N,)
-        target_arm_q = demo_arm[target_idx]                      # (N, 7)
+        target_idx = (nn_idx + K).clamp(max=T_demo - 1)            # (N,)
 
-        arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
-        demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
-        r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
+        # cup-local 타겟 → world frame으로 역변환 → task-space 거리 reward
+        target_cup_local = ref.palm_in_cup_pos[target_idx]                      # (N, 3)
+        target_palm_pos_w = cup_pos_w + quat_apply(cup_quat_w, target_cup_local)  # (N, 3)
+        pos_err_m = torch.norm(palm_pos_w - target_palm_pos_w, dim=-1)          # (N,) [m]
+        # σ: cup-local 위치 표준편차의 평균 (isotropic 근사, 단위 [m])
+        sigma = ref.palm_in_cup_pos_std.mean().clamp(min=0.02)
+        r_demo_arm_pose = torch.exp(-pos_err_m / sigma)
 
-        # --- Palm: 동일한 target_idx로 일관성 있게 참조 ---
-        palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
+        # 진단용 (TensorBoard): joint-space 오류 대신 task-space 오류 보고
+        demo_arm_joint_err = pos_err_m                  # 의미 변경: cup-local palm position error [m]
+
+        # --- Palm orientation: cup-local task space NN의 target_idx로 동일 참조 ---
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
 
         demo_palm = ref.palm_pose  # (T, 7): [x,y,z, qx,qy,qz,qw]
@@ -1458,10 +1468,10 @@ class PourRightEnv(DirectRLEnv):
             [target_palm_quat_xyzw[:, 3:4], target_palm_quat_xyzw[:, :3]], dim=-1
         )                                                                # (N, 4) wxyz
 
-        palm_pos_norm_err = torch.norm((palm_pos_w - target_palm_pos) / ref.palm_pos_std, dim=-1)
+        demo_palm_pos_err = pos_err_m
+        palm_pos_norm_err = pos_err_m / sigma
         quat_dot = torch.abs((palm_quat_wxyz * target_palm_quat_wxyz).sum(dim=-1)).clamp(max=1.0)
         demo_palm_rot_err = 2.0 * torch.acos(quat_dot)
-        demo_palm_pos_err = torch.norm(palm_pos_w - target_palm_pos, dim=-1)
         r_demo_palm_pose = torch.exp(-palm_pos_norm_err - demo_palm_rot_err)
 
         hand_q = self.robot.data.joint_pos[:, self.hand_dof_indices]

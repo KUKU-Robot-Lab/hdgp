@@ -541,6 +541,7 @@ class PourRightEnv(DirectRLEnv):
         self._bead_cross_fraction = torch.zeros(self.num_envs, device=self.device)
         self._prev_bead_ever_in_target_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._bead_in_target_fraction = torch.zeros(self.num_envs, device=self.device)
+        self._prev_bead_in_target_fraction = torch.zeros(self.num_envs, device=self.device)
         self._bead_in_source_fraction = torch.zeros(self.num_envs, device=self.device)
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
@@ -1595,6 +1596,11 @@ class PourRightEnv(DirectRLEnv):
         # → "컵 근처에서 기울어야만 pour reward" → transport + tilt 순서 명확히 학습
         r_cross = self._bead_cross_fraction
         r_capture = self._bead_in_target_fraction
+        # task progress signal: target 유입량 증가분(전이)을 직접 보상
+        r_capture_gain = torch.clamp(
+            self._bead_in_target_fraction - self._prev_bead_in_target_fraction,
+            min=0.0,
+        )
 
         gate_pour_binary = (
             (self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh)
@@ -1616,11 +1622,13 @@ class PourRightEnv(DirectRLEnv):
         # 자연스럽게 소스컵 center가 타겟컵 위로 이동 → 어떤 각도에서도 비드가 흘러 들어가게 됨
         r_cup_center_pour = torch.exp(-self.cfg.pour_center_xy_scale * self._cup_center_xy_dist)
 
+        posture_guidance_scale = self.cfg.pour_posture_guidance_scale
         r_pour_stage = gate_pour_binary * (
             self.cfg.weight_cross * r_cross
             + self.cfg.weight_capture * r_capture
-            + self.cfg.weight_cup_center_pour * r_cup_center_pour
-            + self.cfg.weight_pour_align * r_pour_align
+            + self.cfg.weight_capture_flow * r_capture_gain
+            + posture_guidance_scale * self.cfg.weight_cup_center_pour * r_cup_center_pour
+            + posture_guidance_scale * self.cfg.weight_pour_align * r_pour_align
             + self.cfg.weight_pour_aim * r_pour_aim  # weight=0, 진단용 계산만 유지
         )
 
@@ -1628,9 +1636,7 @@ class PourRightEnv(DirectRLEnv):
         # 기존: (1-bead_in_source_fraction) 사용 → 테이블에 버려도 source_drain=17.5/step 획득
         #       → spill_cost(2.0/step)보다 훨씬 크므로 테이블 덤프가 local optimum
         # 수정: bead_in_target_fraction 기반 → target에 넣어야만 보상 (테이블 덤프 불가)
-        r_source_drain = (
-            gate_pour_binary * self.cfg.weight_source_drain * self._bead_in_target_fraction
-        )
+        r_source_drain = gate_pour_binary * self.cfg.weight_source_drain * r_capture_gain
 
         # 첫 비드 유입 시 1회성 보너스: target cup 근처(< pour_binary_xy_thresh)에서만 인정
         # [P1] 멀리서 우연히 굴러든 비드 캡처는 보너스에서 제외 → 우연성 방지
@@ -1716,9 +1722,20 @@ class PourRightEnv(DirectRLEnv):
         # [test2 분석] 이전 dot.clamp(0,1) 방식: 90° 이상에서 페널티=0 → 멀리서도 마음대로 쏟아붓기 허용
         tilt_amount = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
         premature_tilt_cost = (1.0 - self._g_ready) * tilt_amount
-        # grasp quality loss: full_grasp_flag=0 (thumb 없거나 others<2) 매 스텝 즉각 dense penalty
-        # 낙하(episode termination)와 달리 grasp이 흔들리는 구간에서 즉각 gradient 제공
-        grasp_loss_cost = 1.0 - full_grasp_flag
+        # grasp quality loss는 hold 직후/원거리에서 즉시 벌점하지 않고,
+        # hold 종료 후 지연 + g_ready gate를 통과한 구간에서만 적용한다.
+        grasp_loss_cost_raw = 1.0 - full_grasp_flag
+        grasp_loss_step_gate = (
+            self.episode_length_buf
+            >= (self.cfg.episode_hold_steps + self.cfg.grasp_loss_hold_off_steps)
+        ).float()
+        grasp_ready_den = max(1.0 - self.cfg.grasp_loss_ready_gate_min, 1e-6)
+        grasp_loss_ready_gate = torch.clamp(
+            (self._g_ready - self.cfg.grasp_loss_ready_gate_min) / grasp_ready_den,
+            min=0.0,
+            max=1.0,
+        )
+        grasp_loss_cost = grasp_loss_cost_raw * grasp_loss_step_gate * grasp_loss_ready_gate
         # [Phase-2 Step 9] action_rate: palm(6D) / finger(5D) 분리
         # grasp v9의 action_smoothness_palm/finger 패턴과 동일
         palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
@@ -1796,6 +1813,7 @@ class PourRightEnv(DirectRLEnv):
         )
 
         self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
+        self._prev_bead_in_target_fraction.copy_(self._bead_in_target_fraction)
         self._prev_arm_joint_vel.copy_(arm_qd)
         self._prev_arm_joint_acc.copy_(arm_acc_vec)   # [Step 6] jerk 계산용
 
@@ -1817,6 +1835,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_prepour"] = r_prepour_stage.mean()
         self.extras["r_pour"] = r_pour_stage.mean()
         self.extras["r_source_drain"] = r_source_drain.mean()
+        self.extras["r_capture_gain"] = r_capture_gain.mean()
         self.extras["bead_in_source"] = self._bead_in_source_fraction.mean()
         self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
         self.extras["r_pour_aim"] = (self.cfg.weight_pour_aim * r_pour_aim).mean()  # weight=0, 진단용
@@ -1831,6 +1850,9 @@ class PourRightEnv(DirectRLEnv):
         self.extras["cost_spill"] = spill_cost.mean()
         self.extras["spill_weight"] = torch.tensor(float(spill_weight), device=self.device)
         self.extras["cost_premature_tilt"] = premature_tilt_cost.mean()
+        self.extras["cost_grasp_loss_raw"] = grasp_loss_cost_raw.mean()
+        self.extras["grasp_loss_step_gate"] = grasp_loss_step_gate.mean()
+        self.extras["grasp_loss_ready_gate"] = grasp_loss_ready_gate.mean()
         self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
         self.extras["r_tilt_onset"] = r_tilt_onset.mean()
         self.extras["g_ready"] = self._g_ready.mean()
@@ -2099,6 +2121,7 @@ class PourRightEnv(DirectRLEnv):
         self._bead_cross_fraction[env_ids] = 0.0
         self._prev_bead_ever_in_target_count[env_ids] = 0
         self._bead_in_target_fraction[env_ids] = 0.0
+        self._prev_bead_in_target_fraction[env_ids] = 0.0
         self._bead_in_source_fraction[env_ids] = 0.0
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
@@ -2341,6 +2364,7 @@ class PourRightEnv(DirectRLEnv):
         self._bead_cross_fraction[env_ids] = 0.0
         self._prev_bead_ever_in_target_count[env_ids] = 0
         self._bead_in_target_fraction[env_ids] = 0.0
+        self._prev_bead_in_target_fraction[env_ids] = 0.0
         self._bead_in_source_fraction[env_ids] = 0.0
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0

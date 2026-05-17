@@ -327,6 +327,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # r_pour_aim 대체: rim 위치 대신 cup center XY 기반 → 어떤 tilt 각도에서도 단조 증가
     weight_cup_center_pour: float = 60.0
     pour_center_xy_scale: float = 8.0   # exp(-8*dist): 0.18m→14/step, 0.05m→40/step
+    # task-first pour shaping:
+    # - bead_in_target "증가량"을 추가로 보상해 정적 자세 유지보다 실제 유입 전이를 우선 학습
+    # - cup_center/pour_align은 약한 가이드로만 사용
+    weight_capture_flow: float = 120.0
+    pour_posture_guidance_scale: float = 0.20
     weight_first_capture_bonus: float = 50.00  # 20→50: 첫 비드 유입 탐색 신호 강화
     weight_tilt_onset_bonus: float = 0.00    # [test5] demo shaping 대체로 onset 제거
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
@@ -351,6 +356,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [test7] premature_tilt 약하게 복원 (demo shaping이 타이밍 가르치지만 안전장치로 유지)
     weight_premature_tilt: float = 1.00  # test5: 2.00 → test7: 1.00
     weight_grasp_loss: float = 0.05      # 0.30→0.05: [test4] cost_grasp_loss=0.73/step (전체 cost 73%) → tilt 억제. DexPour는 contact reward로 대체
+    # grasp_loss는 reset 직후/원거리에서 즉시 벌점하면 학습 초반 불안정해짐.
+    # hold 종료 후 N step 지연 + g_ready 기반 gate를 통과한 뒤부터만 적용.
+    grasp_loss_hold_off_steps: int = 30
+    grasp_loss_ready_gate_min: float = 0.25
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
     weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
