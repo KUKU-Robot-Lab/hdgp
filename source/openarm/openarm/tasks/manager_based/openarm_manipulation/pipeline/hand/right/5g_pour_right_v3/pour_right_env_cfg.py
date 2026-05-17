@@ -484,7 +484,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
-    freeze_grasp_hand_during_episode: bool = False
+    freeze_grasp_hand_during_episode: bool = True
     # [test8] 0.04→0.015: 최상위 비드 z=0.088→0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
