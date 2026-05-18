@@ -67,7 +67,7 @@ _SOURCE_INNER_R  = 0.041
 # Action delta 범위 (pour_right_env_cfg.py 기준)
 # ---------------------------------------------------------------------------
 _DELTA_XYZ = 0.5
-_DELTA_RAD  = math.radians(90.0)   # env palm_delta_rot_deg=90° 와 통일
+_DELTA_RAD  = math.radians(120.0)
 
 # ---------------------------------------------------------------------------
 # Pour phase 검출: cup 기울기 임계값 (source_up_axis z < cos(threshold))

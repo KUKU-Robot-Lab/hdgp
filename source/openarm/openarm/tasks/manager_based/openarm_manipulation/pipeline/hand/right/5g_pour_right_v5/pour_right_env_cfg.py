@@ -138,7 +138,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 200
     episode_hold_steps:    int   = 60   # 텔레포트 후 contact 재정립 대기 (1s @ 60Hz)
-    episode_ramp_steps:    int   = 60   # hold 종료 후 action 점진 스케일업 (warmstart env 전용)
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
     pregrasp_offset_x:     float = -0.06
@@ -208,9 +207,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm xyz delta.
     # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
-    warmstart_collect_palm_delta_xyz: float = 0.15
-    warmstart_collect_palm_delta_rot_deg: float = 20.0  # grasp v7-2 학습 스케일과 일치 (pour 90°와 분리)
-    palm_delta_rot_deg: float = 90.0   # 45→120→90: demo ey_max≈76° 이상 유지, j7 한계 도달 방지
+    warmstart_collect_palm_delta_xyz: float = 0.10
+    palm_delta_rot_deg: float = 120.0  # 45→120: cup 135° tilt 도달 가능하도록 확장
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
     # near < far 여야 선형 보간이 성립하므로 작은 값(가까움) → 1, 큰 값(멀어짐) → 0 순서로 둔다.
@@ -224,7 +222,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   수정: far=0.20m → 0.22m에서 gate=(0.20-0.22)/(0.20-0.06)=-0.14 → clamp=0
     #   → 0.20m 이내에 도달하기 전에는 tilt action 완전 차단 → 순수 위치 접근만 학습
     tilt_action_gate_xy_near: float = 0.06
-    tilt_action_gate_xy_far: float = 0.12
+    tilt_action_gate_xy_far: float = 0.25  # 0.32→0.20→0.25: equilibrium 0.16m에서 gate 28%→47%
 
     # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
     approach_xy_off_near: float = 0.05
@@ -257,9 +255,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
-    # pour 가능 높이 기준: target cup z≈0.323m, source cup 입구가 그 이상이어야 pour 가능
-    # 0.03(3cm)이면 grasp 막 시작 시점도 통과 → 잘못된 상태가 캐시에 혼입됨
-    lift_success_height: float = 0.10
+    # warmstart는 테이블 위에서 막 잡힌 자세가 아니라, 테이블 기준 약 3cm 든 자세에서 시작한다.
+    lift_success_height: float = 0.03
     success_mouth_xy_threshold: float = 0.030
     success_z_clearance_min: float = 0.015
     success_z_clearance_max: float = 0.050
@@ -323,7 +320,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
     weight_premature_tilt: float = 0.0    # [test4] 2.00→0.0: demo가 tilt 타이밍 가르침
-    weight_grasp_loss: float = 1.00      # [test5] 0.20→1.00: grasp loss 93% → 강력한 safety net 필요
+    weight_grasp_loss: float = 0.20      # [test4] 0.05→0.20: 유일한 grasp safety net 강화
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
     weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
@@ -354,7 +351,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "all"
-    weight_demo_arm_pose: float = 9.00
+    weight_demo_arm_pose: float = 9.00   # [test4] 6.00→9.00: 공간 접근 gradient 보강
     weight_demo_palm_pose: float = 0.50  # [test2] 3.0→0.5: palm sim2real gap 최소화, arm 집중
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.00  # [test2] 0.5→0.0: hand pose 제거, arm 시계열만
@@ -372,7 +369,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     }
     spill_adr_num_increments: int = 50
     spill_adr_increment_interval: int = 20000
-    spill_adr_trigger_threshold: float = 0.10  # [test6] 0.30→0.10: 초기부터 spill ADR 진행 (v3 test8 수준)
+    spill_adr_trigger_threshold: float = 0.3
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
     # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
@@ -414,7 +411,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [P3] pour stage binary gate: DexPour ρ 방식
     # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
     # → "컵 근처에서 기울어야만 pour reward" → 명확한 행동 학습
-    pour_binary_xy_thresh: float = 0.12
+    pour_binary_xy_thresh: float = 0.18   # [test4] 0.15→0.18: FK 확인 source-target XY gap ≈ 0.20m, 여유 포함
     pour_binary_tilt_thresh: float = 0.50  # source_up_dot < 0.50 (>60° 기울기)
 
     # -----------------------------------------------------------------------
@@ -449,7 +446,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth"  # [test6] test1(ep1850)→test2(ep10000): v7_2 완전 수렴 체크포인트로 교체
+        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test1/nn/5g_grasp_right-v7-2.pth"  # [test2] v7→v7_2: pour demo 시작 자세 정렬
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000

@@ -174,8 +174,7 @@ def _load_path(path: Path, *, phase: str) -> dict[str, np.ndarray]:
             arm = np.asarray(demo["obs/right_arm_joint_pos"][selector], dtype=np.float32)
             hand = np.asarray(demo["obs/right_hand_joint_pos"][selector], dtype=np.float32)
             hand_ref = np.asarray(demo["obs/right_hand_reference_joint_pos"][selector], dtype=np.float32)
-            palm_mat = np.asarray(demo["obs/datagen_info/eef_pose/right"][selector], dtype=np.float32)
-            palm = _pose_matrix_to_pos_quat(palm_mat)
+            palm = _pose_matrix_to_pos_quat(np.asarray(demo["obs/datagen_info/eef_pose/right"][selector]))
             target_palm = _pose_matrix_to_pos_quat(
                 np.asarray(demo["obs/datagen_info/target_eef_pose/right"][selector])
             )
@@ -200,11 +199,8 @@ def _load_path(path: Path, *, phase: str) -> dict[str, np.ndarray]:
 
 
 def _select_phase_indices(demo: h5py.Group, *, phase: str, n: int) -> np.ndarray:
-    if phase == "all":
+    if phase != "pour":
         return np.arange(n, dtype=np.int64)
-
-    if phase == "transport":
-        return _transport_phase_indices(demo, n)
 
     start_key = "obs/datagen_info/subtask_start_signals/pour_start"
     done_keys = (
@@ -239,45 +235,6 @@ def _select_phase_indices(demo: h5py.Group, *, phase: str, n: int) -> np.ndarray
 
     start = max(0, int(round(n * 0.75)))
     return np.arange(start, n, dtype=np.int64)
-
-
-def _transport_phase_indices(demo: h5py.Group, n: int) -> np.ndarray:
-    """Return frame indices from lift_start (grasp done) to pour_start (exclusive).
-
-    lift_start marks the first frame after the grasp is complete — this is where
-    the robot transitions from grasping to transporting the cup. pour_start fires
-    at the very last frame of each demo, so we exclude it to keep transport-only
-    frames in the bank.
-
-    Fallback priority:
-      1. lift_start signal → pour_start signal
-      2. grasp_done signal → pour_start signal
-      3. First half of demo → all frames (last resort)
-    """
-    lift_key = "obs/datagen_info/subtask_start_signals/lift_start"
-    grasp_done_key = "obs/datagen_info/subtask_term_signals/grasp_done"
-    pour_key = "obs/datagen_info/subtask_start_signals/pour_start"
-
-    start = None
-    for key in (lift_key, grasp_done_key):
-        if key in demo:
-            idxs = np.flatnonzero(np.asarray(demo[key], dtype=bool))
-            if idxs.size:
-                start = int(idxs[0])
-                break
-
-    end = n
-    if pour_key in demo:
-        idxs = np.flatnonzero(np.asarray(demo[pour_key], dtype=bool))
-        if idxs.size:
-            end = int(idxs[0])  # exclude pour_start frame itself
-
-    if start is None:
-        start = n // 2
-
-    start = max(0, min(start, n - 1))
-    end = max(start + 1, min(end, n))
-    return np.arange(start, end, dtype=np.int64)
 
 
 def _tilt_fallback_indices(demo: h5py.Group, n: int) -> np.ndarray:
