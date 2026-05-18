@@ -1423,42 +1423,51 @@ class PourRightEnv(DirectRLEnv):
             }
 
         ref = self.demo_pose_reference
-        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
+        demo_palm = ref.palm_pose  # (T, 7): [x,y,z, qx,qy,qz,qw] — palm_link 프레임
+        T_demo = demo_palm.shape[0]
 
-        # --- Nearest-Neighbor in joint space + look-ahead ---
-        # 현재 joint 상태와 가장 가까운 demo 프레임을 찾고 K 프레임 앞 자세를 타겟으로
-        # 효율적 L2: ||a-b||^2 = ||a||^2 + ||b||^2 - 2·a·bT (중간 (N,T,7) 텐서 생략)
-        demo_arm = ref.arm_joint_pos  # (T, 7)
-        T_demo = demo_arm.shape[0]
-        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)          # (N, 1)
-        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)     # (1, T)
-        ab = arm_q @ demo_arm.T                                  # (N, T)
-        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)            # (N,)
+        # --- Nearest-Neighbor in palm pos space + look-ahead ---
+        # palm_pose_targets는 정책이 직접 제어하는 palm_link 프레임 위치 (xyzw).
+        # demo eef_pose/right도 palm_link 프레임 → 동일 공간에서 직접 비교 가능.
+        # joint space NN 대비: task stage가 palm 위치에 더 직접 반영되어 mis-stage 매칭 감소.
+        current_palm_pos = self.palm_pose_targets[:, :3]            # (N, 3)
+        demo_palm_pos_all = demo_palm[:, :3]                         # (T, 3)
+        aa = (current_palm_pos * current_palm_pos).sum(dim=-1, keepdim=True)    # (N, 1)
+        bb = (demo_palm_pos_all * demo_palm_pos_all).sum(dim=-1).unsqueeze(0)   # (1, T)
+        ab = current_palm_pos @ demo_palm_pos_all.T                             # (N, T)
+        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)               # (N,)
         K = int(self.cfg.demo_nn_lookahead_frames)
-        target_idx = (nn_idx + K).clamp(max=T_demo - 1)         # (N,)
-        target_arm_q = demo_arm[target_idx]                      # (N, 7)
+        target_idx = (nn_idx + K).clamp(max=T_demo - 1)            # (N,)
 
+        # --- Palm pose reward ---
+        # palm_pose_targets quat은 xyzw (palm_link 프레임).
+        # demo palm_pose quat도 xyzw (palm_link 프레임) → 프레임 일치, 직접 비교.
+        # 이전: body_quat_w[rl_dg_palm] 사용 → rl_dg_palm은 palm_link와 rpy 0,0,-90° 차이 → wrong frame
+        target_palm = demo_palm[target_idx]                          # (N, 7)
+        target_palm_pos = target_palm[:, :3]                         # (N, 3)
+        target_palm_quat_xyzw = target_palm[:, 3:7]                  # (N, 4) xyzw
+        target_palm_quat_wxyz = torch.cat(
+            [target_palm_quat_xyzw[:, 3:4], target_palm_quat_xyzw[:, :3]], dim=-1
+        )                                                            # (N, 4) wxyz
+
+        current_palm_quat_xyzw = self.palm_pose_targets[:, 3:7]     # (N, 4) xyzw
+        current_palm_quat_wxyz = torch.cat(
+            [current_palm_quat_xyzw[:, 3:4], current_palm_quat_xyzw[:, :3]], dim=-1
+        )                                                            # (N, 4) wxyz
+
+        palm_pos_norm_err = torch.norm((current_palm_pos - target_palm_pos) / ref.palm_pos_std, dim=-1)
+        quat_dot = torch.abs((current_palm_quat_wxyz * target_palm_quat_wxyz).sum(dim=-1)).clamp(max=1.0)
+        demo_palm_rot_err = 2.0 * torch.acos(quat_dot)
+        demo_palm_pos_err = torch.norm(current_palm_pos - target_palm_pos, dim=-1)
+        r_demo_palm_pose = torch.exp(-palm_pos_norm_err - demo_palm_rot_err)
+
+        # --- Arm joint error (diagnostic metric, weight=0으로 비활성) ---
+        # palm_pos NN이 올바른 task stage를 매칭하는지 교차 확인용.
+        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
+        target_arm_q = ref.arm_joint_pos[target_idx]                 # (N, 7)
         arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
         demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
         r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
-
-        # --- Palm: 동일한 target_idx로 일관성 있게 참조 ---
-        palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
-        palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
-
-        demo_palm = ref.palm_pose  # (T, 7): [x,y,z, qx,qy,qz,qw]
-        target_palm = demo_palm[target_idx]                              # (N, 7)
-        target_palm_pos = target_palm[:, :3]                             # (N, 3)
-        target_palm_quat_xyzw = target_palm[:, 3:7]                     # (N, 4) xyzw
-        target_palm_quat_wxyz = torch.cat(
-            [target_palm_quat_xyzw[:, 3:4], target_palm_quat_xyzw[:, :3]], dim=-1
-        )                                                                # (N, 4) wxyz
-
-        palm_pos_norm_err = torch.norm((palm_pos_w - target_palm_pos) / ref.palm_pos_std, dim=-1)
-        quat_dot = torch.abs((palm_quat_wxyz * target_palm_quat_wxyz).sum(dim=-1)).clamp(max=1.0)
-        demo_palm_rot_err = 2.0 * torch.acos(quat_dot)
-        demo_palm_pos_err = torch.norm(palm_pos_w - target_palm_pos, dim=-1)
-        r_demo_palm_pose = torch.exp(-palm_pos_norm_err - demo_palm_rot_err)
 
         hand_q = self.robot.data.joint_pos[:, self.hand_dof_indices]
         thumb_norm_err = torch.norm((hand_q[:, :4] - ref.thumb_joint_mean) / ref.thumb_joint_std, dim=-1)

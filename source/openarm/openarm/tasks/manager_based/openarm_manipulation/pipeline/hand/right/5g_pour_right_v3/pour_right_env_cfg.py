@@ -393,8 +393,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # - pour phase only 사용 시: j7 std=0.050 (clamp min) → j7 오차 과대 반영 → 외회전 학습
     # - all phase 사용 시: j7 std=0.224 → j7 영향 자연스럽게 감소, 10개 파일 평균 내회전 유도
     demo_pose_phase: str = "all"   # [test6/7] 유지: j7 내회전 방향 학습 효과 확인됨
-    weight_demo_arm_pose: float = 4.00   # [test7] 6.00→4.00: 과도한 demo 추적 완화
-    weight_demo_palm_pose: float = 0.0   # [test8] 2.00→0.0: demo_palm_pos_err=0.27m → useless gradient
+    weight_demo_arm_pose: float = 0.0    # [test4] 비활성: NN을 palm pos space로 교체, joint space reward 제거
+    weight_demo_palm_pose: float = 2.0   # [test4] palm_link 프레임 직접 비교 (eef_pose/right = palm_link 확인됨)
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.50
     demo_pose_warmup_steps: int = 20000
