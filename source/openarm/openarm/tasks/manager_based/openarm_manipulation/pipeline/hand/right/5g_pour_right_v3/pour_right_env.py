@@ -1118,10 +1118,10 @@ class PourRightEnv(DirectRLEnv):
         # 그 방향이 target opening의 XY 방향을 향하도록 보상한다.
         _mouth_delta_xy = self._mouth_delta[:, :2]   # (N, 2): target - source XY
         _mouth_dir_xy = _mouth_delta_xy / (_mouth_delta_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
-        # cup up axis XY = mouth 방향 XY. 올바른 pour = mouth가 target 방향 → 양수
-        _mouth_tilt_dir_xy = self._source_up_axis_w[:, :2]
-        _mouth_tilt_dir_xy = _mouth_tilt_dir_xy / (_mouth_tilt_dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
-        self._directional_tilt_cos = (_mouth_tilt_dir_xy * _mouth_dir_xy).sum(dim=-1).clamp(-1.0, 1.0)
+        # 저하강 림 방향(-up_axis_xy)이 target 방향과 일치할수록 +1.
+        _low_rim_dir_xy = -self._source_up_axis_w[:, :2]
+        _low_rim_dir_xy = _low_rim_dir_xy / (_low_rim_dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
+        self._directional_tilt_cos = (_low_rim_dir_xy * _mouth_dir_xy).sum(dim=-1).clamp(-1.0, 1.0)
 
         # Mouth alignment: a cylindrical cup has no meaningful yaw axis at the rim.
         # If we align a fixed local axis (e.g. [-1, 0, 0]) to the target, the policy can exploit
@@ -1129,7 +1129,7 @@ class PourRightEnv(DirectRLEnv):
         # Therefore use only the XY heading induced by the current tilt. When nearly upright,
         # there is no valid pour heading, so keep the alignment cosine at 0 (neutral / no reward).
         _mouth_dir = self._mouth_delta / self._mouth_distance.unsqueeze(1).clamp(min=1e-6)
-        _pour_heading_xy = self._source_up_axis_w[:, :2]
+        _pour_heading_xy = _low_rim_dir_xy
         _pour_heading_xy_norm = _pour_heading_xy.norm(dim=-1, keepdim=True)
         _effective_heading_xy = torch.where(
             _pour_heading_xy_norm > 1e-4,
@@ -1427,10 +1427,30 @@ class PourRightEnv(DirectRLEnv):
         T_demo = demo_palm.shape[0]
 
         # --- Nearest-Neighbor in palm pos space + look-ahead ---
-        # palm_pose_targets는 정책이 직접 제어하는 palm_link 프레임 위치 (xyzw).
-        # demo eef_pose/right도 palm_link 프레임 → 동일 공간에서 직접 비교 가능.
+        # demo eef_pose/right가 palm_link 기준이므로 현재 palm도 실제 robot 상태에서 같은 기준으로 계산한다.
+        if self.palm_body_index >= 0:
+            current_palm_pos = (
+                self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
+            )  # (N, 3)
+            palm_body_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]  # (N, 4)
+            # rl_dg_palm -> palm_link 고정 오프셋(rpy 0,0,-90deg) 보정.
+            # demo eef_pose/right(palm_link)와 동일 프레임에서 회전 오차를 계산한다.
+            q_palm_body_to_link = palm_body_quat_wxyz.new_tensor(
+                [math.cos(-math.pi / 4.0), 0.0, 0.0, math.sin(-math.pi / 4.0)]
+            ).unsqueeze(0).expand(self.num_envs, -1)
+            current_palm_quat_wxyz = quat_mul(palm_body_quat_wxyz, q_palm_body_to_link)
+            current_palm_quat_wxyz = torch.nn.functional.normalize(current_palm_quat_wxyz, dim=-1)
+            current_palm_quat_xyzw = torch.cat(
+                [current_palm_quat_wxyz[:, 1:4], current_palm_quat_wxyz[:, 0:1]], dim=-1
+            )  # (N, 4) xyzw
+        else:
+            current_palm_pos = self.palm_pose_targets[:, :3]
+            current_palm_quat_xyzw = self.palm_pose_targets[:, 3:7]
+            current_palm_quat_wxyz = torch.cat(
+                [current_palm_quat_xyzw[:, 3:4], current_palm_quat_xyzw[:, :3]], dim=-1
+            )
+
         # joint space NN 대비: task stage가 palm 위치에 더 직접 반영되어 mis-stage 매칭 감소.
-        current_palm_pos = self.palm_pose_targets[:, :3]            # (N, 3)
         demo_palm_pos_all = demo_palm[:, :3]                         # (T, 3)
         aa = (current_palm_pos * current_palm_pos).sum(dim=-1, keepdim=True)    # (N, 1)
         bb = (demo_palm_pos_all * demo_palm_pos_all).sum(dim=-1).unsqueeze(0)   # (1, T)
@@ -1440,19 +1460,12 @@ class PourRightEnv(DirectRLEnv):
         target_idx = (nn_idx + K).clamp(max=T_demo - 1)            # (N,)
 
         # --- Palm pose reward ---
-        # palm_pose_targets quat은 xyzw (palm_link 프레임).
-        # demo palm_pose quat도 xyzw (palm_link 프레임) → 프레임 일치, 직접 비교.
-        # 이전: body_quat_w[rl_dg_palm] 사용 → rl_dg_palm은 palm_link와 rpy 0,0,-90° 차이 → wrong frame
+        # demo palm_pose quat은 xyzw(palm_link). 위에서 현재 palm도 동일 프레임으로 보정함.
         target_palm = demo_palm[target_idx]                          # (N, 7)
         target_palm_pos = target_palm[:, :3]                         # (N, 3)
         target_palm_quat_xyzw = target_palm[:, 3:7]                  # (N, 4) xyzw
         target_palm_quat_wxyz = torch.cat(
             [target_palm_quat_xyzw[:, 3:4], target_palm_quat_xyzw[:, :3]], dim=-1
-        )                                                            # (N, 4) wxyz
-
-        current_palm_quat_xyzw = self.palm_pose_targets[:, 3:7]     # (N, 4) xyzw
-        current_palm_quat_wxyz = torch.cat(
-            [current_palm_quat_xyzw[:, 3:4], current_palm_quat_xyzw[:, :3]], dim=-1
         )                                                            # (N, 4) wxyz
 
         palm_pos_norm_err = torch.norm((current_palm_pos - target_palm_pos) / ref.palm_pos_std, dim=-1)

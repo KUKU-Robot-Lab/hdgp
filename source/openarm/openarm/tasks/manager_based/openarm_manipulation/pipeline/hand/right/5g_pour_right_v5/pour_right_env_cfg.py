@@ -224,7 +224,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   수정: far=0.20m → 0.22m에서 gate=(0.20-0.22)/(0.20-0.06)=-0.14 → clamp=0
     #   → 0.20m 이내에 도달하기 전에는 tilt action 완전 차단 → 순수 위치 접근만 학습
     tilt_action_gate_xy_near: float = 0.06
-    tilt_action_gate_xy_far: float = 0.12  # 0.25→0.12: pour_binary_xy_thresh와 통일, 0.12m 이내만 tilt 허용
+    tilt_action_gate_xy_far: float = 0.25  # test6 롤백: tilt 허용 범위 복원
 
     # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
     approach_xy_off_near: float = 0.05
@@ -414,7 +414,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [P3] pour stage binary gate: DexPour ρ 방식
     # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
     # → "컵 근처에서 기울어야만 pour reward" → 명확한 행동 학습
-    pour_binary_xy_thresh: float = 0.12   # [test5] 0.18→0.12: tilt_gate_far와 통일 (0.12~0.18 사이 tilt zone 제거)
+    pour_binary_xy_thresh: float = 0.18   # test6 롤백: pour binary gate 거리 복원
     pour_binary_tilt_thresh: float = 0.50  # source_up_dot < 0.50 (>60° 기울기)
 
     # -----------------------------------------------------------------------
