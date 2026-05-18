@@ -574,6 +574,8 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_policy = None
         self._warmstart_cache_count = 0
         self._warmstart_reset_debug_printed = False
+        # 매 스텝 캡처 시 같은 env가 에피소드 내에서 중복 저장되는 것을 방지
+        self._warmstart_env_captured = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         cache_size = max(int(self.cfg.warmstart_cache_size), 1)
         self._warmstart_arm_pos = torch.zeros(cache_size, NUM_ARM_DOF, device=self.device)
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
@@ -1899,8 +1901,11 @@ class PourRightEnv(DirectRLEnv):
         # ---- 성공 궤적 저장 (BC 버퍼, reset 전 호출) ----
         self._finalize_episode_trajectories(env_ids)
 
-        # ---- warmstart cache 저장: 에피소드 종료 시 terminal 상태만 저장 ----
+        # ---- warmstart cache 저장: 에피소드 종료 시에도 체크 (mid-step 캡처 놓친 경우 보완) ----
         self._maybe_store_warmstart_successes(env_ids)
+        # 에피소드 종료 → 다음 에피소드에서 다시 캡처 가능하도록 플래그 초기화
+        env_ids_t_reset = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+        self._warmstart_env_captured[env_ids_t_reset] = False
 
         self.episode_success_buf[env_ids] = False
         self._warmstart_only_close[env_ids] = False
@@ -2160,6 +2165,7 @@ class PourRightEnv(DirectRLEnv):
         self.cfg.obs_noise_cup_pos = 0.0
         self._warmstart_collect_mode = True
 
+        _all_env_ids = list(range(self.num_envs))
         try:
             self.reset()
             with torch.no_grad():
@@ -2168,6 +2174,9 @@ class PourRightEnv(DirectRLEnv):
                         break
                     actions = self._warmstart_policy(self._get_legacy_warmstart_policy_obs())
                     self.step(actions)
+                    # 에피소드 종료뿐 아니라 매 스텝에서 전체 env를 체크.
+                    # 에피소드 끝에서만 체크하면 v7-2가 컵을 들고 있는 mid-episode 상태를 놓침.
+                    self._maybe_store_warmstart_successes(_all_env_ids)
         finally:
             self._warmstart_collect_mode = False
             self.cfg.obs_noise_joint_pos = obs_noise_joint_pos
@@ -2188,7 +2197,12 @@ class PourRightEnv(DirectRLEnv):
         )
 
     def _maybe_store_warmstart_successes(self, env_ids: Sequence[int]) -> None:
-        """에피소드 종료(reset) 시 terminal 상태가 조건을 만족하는 env만 캐시에 저장."""
+        """조건을 만족하는 env 상태를 warmstart 캐시에 저장.
+
+        매 스텝 + 에피소드 종료 두 곳에서 호출됨.
+        _warmstart_env_captured 플래그로 에피소드 내 중복 저장을 방지.
+        에피소드 종료(_reset_idx)에서 플래그가 초기화되어 다음 에피소드에서 다시 저장 가능.
+        """
         if not self._warmstart_collect_mode:
             return
         if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
@@ -2197,6 +2211,12 @@ class PourRightEnv(DirectRLEnv):
             return
 
         env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+
+        # 이번 에피소드에서 이미 캡처된 env는 제외
+        not_captured = ~self._warmstart_env_captured[env_ids_t]
+        if not not_captured.any():
+            return
+        env_ids_t = env_ids_t[not_captured]
 
         lifted = self.object_pos[env_ids_t, 2] > (self.object_init_pos[env_ids_t, 2] + self.cfg.lift_success_height)
         grasped = self.num_contacts_buf[env_ids_t] >= MIN_CONTACTS_FOR_SUCCESS
@@ -2228,6 +2248,8 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_cup_pose[start:end, 3] = 1.0   # w=1 (upright)
         self._warmstart_cup_pose[start:end, 4:7] = 0.0  # x,y,z=0
         self._warmstart_cache_count = end
+        # 이번 에피소드에서 이미 캡처된 것으로 표시 (에피소드 종료 시 _reset_idx에서 초기화)
+        self._warmstart_env_captured[success_env_ids] = True
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
