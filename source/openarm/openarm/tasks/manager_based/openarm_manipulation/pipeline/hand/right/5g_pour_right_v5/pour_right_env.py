@@ -92,7 +92,7 @@ from .pour_right_preset import (
     HAND_GRASP_POSE,
     OBJECT_GOAL_POS,
 )
-from .pour_right_utils import map_delta_pos_to_world, scale, to_torch
+from .pour_right_utils import scale, to_torch
 from .demo_pose_reference import DemoPoseReferenceBank
 from .success_traj_buffer import SuccessTrajBuffer
 
@@ -971,13 +971,8 @@ class PourRightEnv(DirectRLEnv):
         # Rotation action is interpreted in a cup-local basis:
         # [spin around cup-up, tilt toward target opening, orthogonal tilt].
         delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
-        delta_pos_w = map_delta_pos_to_world(
-            delta[:, :3],
-            self.cup.data.root_quat_w,
-            warmstart_collect_mode=self._warmstart_collect_mode,
-        )
         palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
-        palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta_pos_w
+        palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3]
         palm_pose[:, :3] = torch.max(
             torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
             self.palm_mins[:3].unsqueeze(0),
@@ -1427,44 +1422,30 @@ class PourRightEnv(DirectRLEnv):
                 "cost_demo_smooth": zero,
                 "cost_thumb_grip": zero,
                 "demo_arm_joint_err": zero,
-                "demo_task_pos_err": zero,
                 "demo_palm_pos_err": zero,
                 "demo_palm_rot_err": zero,
             }
 
         ref = self.demo_pose_reference
+        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
 
-        # --- cup-local frame에서 현재 palm 위치 계산 ---
-        # R_cup^T @ (palm_pos_w - cup_pos_w): spawn 위치 무관 task-space 표현
-        cup_pos_w  = self.cup.data.root_pos_w                                   # (N, 3) world
-        cup_quat_w = self.cup.data.root_quat_w                                  # (N, 4) wxyz
-        palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index]        # (N, 3) world
-        palm_in_cup_now = quat_apply_inverse(cup_quat_w, palm_pos_w - cup_pos_w)  # (N, 3) cup-local
-
-        # --- Nearest-Neighbor in cup-local task space + look-ahead ---
-        # joint-space NN 대체: spawn ±6cm 위치 무관, warmstart grasp 자세에서 항상 동일한 cup-relative 위치
-        demo_cup_pos = ref.palm_in_cup_pos   # (T, 3)
-        T_demo = demo_cup_pos.shape[0]
-        aa = (palm_in_cup_now ** 2).sum(dim=-1, keepdim=True)      # (N, 1)
-        bb = (demo_cup_pos ** 2).sum(dim=-1).unsqueeze(0)          # (1, T)
-        ab = palm_in_cup_now @ demo_cup_pos.T                       # (N, T)
-        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)               # (N,)
+        # --- Nearest-Neighbor in joint space + look-ahead ---
+        demo_arm = ref.arm_joint_pos  # (T, 7)
+        T_demo = demo_arm.shape[0]
+        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)          # (N, 1)
+        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)     # (1, T)
+        ab = arm_q @ demo_arm.T                                  # (N, T)
+        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)            # (N,)
         K = int(self.cfg.demo_nn_lookahead_frames)
-        target_idx = (nn_idx + K).clamp(max=T_demo - 1)            # (N,)
+        target_idx = (nn_idx + K).clamp(max=T_demo - 1)         # (N,)
+        target_arm_q = demo_arm[target_idx]                      # (N, 7)
 
-        # cup-local 타겟 → world frame으로 역변환 → task-space 거리 reward
-        target_cup_local = ref.palm_in_cup_pos[target_idx]                      # (N, 3)
-        target_palm_pos_w = cup_pos_w + quat_apply(cup_quat_w, target_cup_local)  # (N, 3)
-        pos_err_m = torch.norm(palm_pos_w - target_palm_pos_w, dim=-1)          # (N,) [m]
-        # σ: cup-local 위치 표준편차의 평균 (isotropic 근사, 단위 [m])
-        sigma = ref.palm_in_cup_pos_std.mean().clamp(min=0.02)
-        r_demo_arm_pose = torch.exp(-pos_err_m / sigma)
+        arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
+        demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
+        r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
 
-        # 진단용 (TensorBoard): joint-space 오류 대신 task-space 오류 보고
-        demo_arm_joint_err = pos_err_m                  # 의미 변경: cup-local palm position error [m]
-        demo_task_pos_err = pos_err_m
-
-        # --- Palm orientation: cup-local task space NN의 target_idx로 동일 참조 ---
+        # --- Palm: 동일한 target_idx로 일관성 있게 참조 ---
+        palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
 
         demo_palm = ref.palm_pose  # (T, 7): [x,y,z, qx,qy,qz,qw]
@@ -1475,10 +1456,10 @@ class PourRightEnv(DirectRLEnv):
             [target_palm_quat_xyzw[:, 3:4], target_palm_quat_xyzw[:, :3]], dim=-1
         )                                                                # (N, 4) wxyz
 
-        demo_palm_pos_err = pos_err_m
-        palm_pos_norm_err = pos_err_m / sigma
+        palm_pos_norm_err = torch.norm((palm_pos_w - target_palm_pos) / ref.palm_pos_std, dim=-1)
         quat_dot = torch.abs((palm_quat_wxyz * target_palm_quat_wxyz).sum(dim=-1)).clamp(max=1.0)
         demo_palm_rot_err = 2.0 * torch.acos(quat_dot)
+        demo_palm_pos_err = torch.norm(palm_pos_w - target_palm_pos, dim=-1)
         r_demo_palm_pose = torch.exp(-palm_pos_norm_err - demo_palm_rot_err)
 
         hand_q = self.robot.data.joint_pos[:, self.hand_dof_indices]
@@ -1500,7 +1481,6 @@ class PourRightEnv(DirectRLEnv):
             "cost_demo_smooth": gate * self.cfg.weight_demo_smooth * cost_demo_smooth,
             "cost_thumb_grip": gate * self.cfg.weight_thumb_grip_pose * cost_thumb_grip,
             "demo_arm_joint_err": demo_arm_joint_err,
-            "demo_task_pos_err": demo_task_pos_err,
             "demo_palm_pos_err": demo_palm_pos_err,
             "demo_palm_rot_err": demo_palm_rot_err,
         }
@@ -1794,7 +1774,6 @@ class PourRightEnv(DirectRLEnv):
         self.extras["r_demo_palm_pose"] = demo_terms["r_demo_palm_pose"].mean()
         self.extras["cost_demo_smooth"] = demo_terms["cost_demo_smooth"].mean()
         self.extras["demo_arm_joint_err"] = demo_terms["demo_arm_joint_err"].mean()
-        self.extras["demo_task_pos_err"] = demo_terms["demo_task_pos_err"].mean()
         self.extras["demo_palm_pos_err"] = demo_terms["demo_palm_pos_err"].mean()
         self.extras["demo_palm_rot_err"] = demo_terms["demo_palm_rot_err"].mean()
         # Outcome
@@ -1896,7 +1875,6 @@ class PourRightEnv(DirectRLEnv):
         )
         self.success_flag.copy_(success_by_fill)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
-        self._maybe_store_warmstart_successes()
 
         terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag | source_drained
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
@@ -1923,6 +1901,9 @@ class PourRightEnv(DirectRLEnv):
 
         # ---- 성공 궤적 저장 (BC 버퍼, reset 전 호출) ----
         self._finalize_episode_trajectories(env_ids)
+
+        # ---- warmstart cache 저장: 에피소드 종료 시 terminal 상태만 저장 ----
+        self._maybe_store_warmstart_successes(env_ids)
 
         self.episode_success_buf[env_ids] = False
         self._warmstart_only_close[env_ids] = False
@@ -2209,23 +2190,29 @@ class PourRightEnv(DirectRLEnv):
             flush=True,
         )
 
-    def _maybe_store_warmstart_successes(self) -> None:
+    def _maybe_store_warmstart_successes(self, env_ids: Sequence[int]) -> None:
+        """에피소드 종료(reset) 시 terminal 상태가 조건을 만족하는 env만 캐시에 저장."""
         if not self._warmstart_collect_mode:
             return
         if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
             return
+        if len(env_ids) == 0:
+            return
 
-        lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
-        upright = self._source_up_axis_w[:, 2] > 0.90  # 0.7→0.90: 최대 ~26° 기울기로 제한 (bead 탈출 방지)
-        # j7 필터: OOD 팔 자세 제거 → pour 정책이 near-zero action 출력하는 상태 방지
-        j7 = self.robot.data.joint_pos[:, self.arm_dof_indices[6]]
+        env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+
+        lifted = self.object_pos[env_ids_t, 2] > (self.object_init_pos[env_ids_t, 2] + self.cfg.lift_success_height)
+        grasped = self.num_contacts_buf[env_ids_t] >= MIN_CONTACTS_FOR_SUCCESS
+        upright = self._source_up_axis_w[env_ids_t, 2] > 0.90
+        j7 = self.robot.data.joint_pos[env_ids_t, self.arm_dof_indices[6]]
         j7_in_range = (j7 >= 0.20) & (j7 <= 1.50)
         warmstart_success = lifted & grasped & upright & j7_in_range
 
-        success_env_ids = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
-        if success_env_ids.numel() == 0:
+        success_local = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
+        if success_local.numel() == 0:
             return
+
+        success_env_ids = env_ids_t[success_local]
 
         remaining = self._warmstart_arm_pos.shape[0] - self._warmstart_cache_count
         success_env_ids = success_env_ids[:remaining]

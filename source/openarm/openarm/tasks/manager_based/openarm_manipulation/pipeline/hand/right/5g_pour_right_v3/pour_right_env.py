@@ -1672,8 +1672,9 @@ class PourRightEnv(DirectRLEnv):
         # dir_cos_reward: [0,1]  1=target 방향 완벽 정렬, 0=반대 방향
         # g_ready gate: target 근처에서만 활성 (먼 거리에서 방향 무관 tilting 방지)
         tilt_strength = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
-        # [test8] 방향 반전 수정: cos=-1(올바른 내회전)에서 max, cos=+1(틀린 방향)에서 0
-        dir_cos_reward = 0.5 * (1.0 - self._directional_tilt_cos)
+        # cos=+1(target 방향 올바른 기울기)=reward 1, cos<=0(수직/반대방향)=reward 0
+        # r_tilt_onset과 동일한 패턴: clamp(0,1) 사용
+        dir_cos_reward = self._directional_tilt_cos.clamp(0.0, 1.0)
         r_dir_tilt = self._g_ready * self.cfg.weight_dir_tilt * tilt_strength * dir_cos_reward
 
         # ---- Outcome and costs ----
@@ -1964,7 +1965,6 @@ class PourRightEnv(DirectRLEnv):
         )
         self.success_flag.copy_(success_by_fill)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
-        self._maybe_store_warmstart_successes()
 
         terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag | source_drained
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
@@ -1977,6 +1977,9 @@ class PourRightEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: Sequence[int] | None) -> None:
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
+
+        # 에피소드 종료 시점(reset 직전)의 terminal state를 warmstart 캐시에 저장
+        self._maybe_store_warmstart_successes(env_ids)
 
         super()._reset_idx(env_ids)
 
@@ -2244,24 +2247,36 @@ class PourRightEnv(DirectRLEnv):
             flush=True,
         )
 
-    def _maybe_store_warmstart_successes(self) -> None:
+    def _maybe_store_warmstart_successes(self, env_ids: Sequence[int]) -> None:
+        """에피소드 종료 env_ids에 대해 terminal state를 warmstart 캐시에 저장.
+
+        _get_dones() 매 step 호출이 아닌 _reset_idx() 초입(reset 직전)에서만 호출되므로,
+        안정적인 hold 상태(에피소드 최종 프레임)만 캐시에 쌓인다.
+        """
         if not self._warmstart_collect_mode:
             return
         if self._warmstart_cache_count >= self._warmstart_arm_pos.shape[0]:
             return
+        if len(env_ids) == 0:
+            return
 
-        lifted = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        grasped = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
-        upright = self._source_up_axis_w[:, 2] > 0.90  # [test8] 0.7→0.90: 최대 ~26° 기울기로 제한 (비드 탈출 방지)
-        # demo 분포 기반 j7 필터: pour_v1_a11~a20 lifted phase j7 ∈ [0.319, 1.340]
-        # 극단값(j7<0.20 or j7>1.50)은 OOD로 제거 → pour 정책이 near-zero action 출력하는 상태 방지
-        j7 = self.robot.data.joint_pos[:, self.arm_dof_indices[6]]
+        if not isinstance(env_ids, torch.Tensor):
+            ids = torch.tensor(env_ids, device=self.device, dtype=torch.long)
+        else:
+            ids = env_ids.long()
+
+        lifted = self.object_pos[ids, 2] > (self.object_init_pos[ids, 2] + self.cfg.lift_success_height)
+        grasped = self.num_contacts_buf[ids] >= MIN_CONTACTS_FOR_SUCCESS
+        upright = self._source_up_axis_w[ids, 2] > 0.90
+        j7 = self.robot.data.joint_pos[ids, self.arm_dof_indices[6]]
         j7_in_range = (j7 >= 0.20) & (j7 <= 1.50)
         warmstart_success = lifted & grasped & upright & j7_in_range
 
-        success_env_ids = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
-        if success_env_ids.numel() == 0:
+        local_ok = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
+        if local_ok.numel() == 0:
             return
+
+        success_env_ids = ids[local_ok]
 
         remaining = self._warmstart_arm_pos.shape[0] - self._warmstart_cache_count
         success_env_ids = success_env_ids[:remaining]

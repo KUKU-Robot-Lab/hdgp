@@ -22,7 +22,6 @@ _REQUIRED_KEYS = (
     "obs/right_hand_reference_joint_pos",
     "obs/datagen_info/eef_pose/right",
     "obs/datagen_info/target_eef_pose/right",
-    "obs/datagen_info/object_pose/source_cup",
     "timestamps_ns",
 )
 
@@ -45,9 +44,6 @@ class DemoPoseReferenceBank:
     thumb_joint_std: torch.Tensor
     arm_vel_l2_p95: torch.Tensor
     arm_jerk_l2_p95: torch.Tensor
-    # cup-local frame palm 궤적 (spawn 위치 무관 task-space NN/reward 용)
-    palm_in_cup_pos: torch.Tensor   # (T, 3) — source cup local frame에서의 palm 위치
-    palm_in_cup_pos_std: torch.Tensor  # (3,) — 정규화 σ
     source_paths: tuple[str, ...]
 
     @property
@@ -68,7 +64,7 @@ class DemoPoseReferenceBank:
             raise ValueError("demo_pose_paths is empty; provide at least one HDF5 path.")
 
         merged: dict[str, np.ndarray] = {}
-        for key in ("arm", "hand", "hand_ref", "palm", "target_palm", "palm_in_cup"):
+        for key in ("arm", "hand", "hand_ref", "palm", "target_palm"):
             merged[key] = np.concatenate([arr[key] for arr in arrays], axis=0)
             _require_finite(key, merged[key])
         if merged["arm"].shape[0] == 0:
@@ -79,11 +75,9 @@ class DemoPoseReferenceBank:
         hand_ref = torch.as_tensor(merged["hand_ref"], dtype=torch.float32, device=device)
         palm = torch.as_tensor(merged["palm"], dtype=torch.float32, device=device)
         target_palm = torch.as_tensor(merged["target_palm"], dtype=torch.float32, device=device)
-        palm_in_cup = torch.as_tensor(merged["palm_in_cup"], dtype=torch.float32, device=device)
 
         arm_std = arm.std(dim=0, unbiased=False).clamp(min=0.05)
         palm_pos_std = palm[:, :3].std(dim=0, unbiased=False).clamp(min=0.01)
-        palm_in_cup_pos_std = palm_in_cup.std(dim=0, unbiased=False).clamp(min=0.01)
         thumb_ref = hand_ref[:, :4]
         # Teleop thumb references are nearly constant in the pour segment. A small
         # statistical std would turn the grip term into a hard supervised target,
@@ -114,8 +108,6 @@ class DemoPoseReferenceBank:
             thumb_joint_std=thumb_std,
             arm_vel_l2_p95=torch.tensor(max(arm_vel_p95, 1e-3), dtype=torch.float32, device=device),
             arm_jerk_l2_p95=torch.tensor(max(arm_jerk_p95, 1e-3), dtype=torch.float32, device=device),
-            palm_in_cup_pos=palm_in_cup,
-            palm_in_cup_pos_std=palm_in_cup_pos_std,
             source_paths=tuple(str(path) for path in resolved_paths),
         )
 
@@ -188,15 +180,6 @@ def _load_path(path: Path, *, phase: str) -> dict[str, np.ndarray]:
                 np.asarray(demo["obs/datagen_info/target_eef_pose/right"][selector])
             )
 
-            # cup-local frame에서의 palm 위치: R_cup^T @ (palm_pos - cup_pos)
-            # spawn 위치 무관 task-space NN/reward 계산용
-            cup_mat = np.asarray(demo["obs/datagen_info/object_pose/source_cup"][selector], dtype=np.float32)
-            R_cup = cup_mat[:, :3, :3]                         # (T, 3, 3)
-            t_cup = cup_mat[:, :3, 3]                          # (T, 3)
-            t_palm = palm_mat[:, :3, 3]                        # (T, 3)
-            # einsum: (T,3,3)^T @ (T,3) → (T,3)
-            palm_in_cup = np.einsum("tij,tj->ti", R_cup.transpose(0, 2, 1), t_palm - t_cup)  # (T, 3)
-
             timestamps = np.asarray(demo["timestamps_ns"][selector], dtype=np.float64)
             arm_vel_l2, arm_jerk_l2 = _motion_stats(arm, timestamps)
             chunks.append(
@@ -206,7 +189,6 @@ def _load_path(path: Path, *, phase: str) -> dict[str, np.ndarray]:
                     "hand_ref": hand_ref,
                     "palm": palm,
                     "target_palm": target_palm,
-                    "palm_in_cup": palm_in_cup,
                     "arm_vel_l2": arm_vel_l2,
                     "arm_jerk_l2": arm_jerk_l2,
                 }
