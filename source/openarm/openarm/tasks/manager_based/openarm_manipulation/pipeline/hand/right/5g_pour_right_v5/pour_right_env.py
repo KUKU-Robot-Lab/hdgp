@@ -1427,28 +1427,22 @@ class PourRightEnv(DirectRLEnv):
             }
 
         ref = self.demo_pose_reference
-        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
 
-        # --- Nearest-Neighbor in joint space + look-ahead ---
-        demo_arm = ref.arm_joint_pos  # (T, 7)
-        T_demo = demo_arm.shape[0]
-        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)          # (N, 1)
-        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)     # (1, T)
-        ab = arm_q @ demo_arm.T                                  # (N, T)
-        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)            # (N,)
-        K = int(self.cfg.demo_nn_lookahead_frames)
-        target_idx = (nn_idx + K).clamp(max=T_demo - 1)         # (N,)
-        target_arm_q = demo_arm[target_idx]                      # (N, 7)
-
-        arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
-        demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
-        r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
-
-        # --- Palm: 동일한 target_idx로 일관성 있게 참조 ---
+        # --- Palm task-space Nearest-Neighbor + look-ahead ---
+        # fabrics가 end-effector(palm)를 직접 제어하므로 joint-space 대신 palm position으로 NN
         palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
 
-        demo_palm = ref.palm_pose  # (T, 7): [x,y,z, qx,qy,qz,qw]
+        demo_palm = ref.palm_pose                    # (T, 7): [x,y,z, qx,qy,qz,qw]
+        demo_palm_pos = demo_palm[:, :3]             # (T, 3)
+        T_demo = demo_palm_pos.shape[0]
+        aa = (palm_pos_w ** 2).sum(dim=-1, keepdim=True)         # (N, 1)
+        bb = (demo_palm_pos ** 2).sum(dim=-1).unsqueeze(0)       # (1, T)
+        ab = palm_pos_w @ demo_palm_pos.T                         # (N, T)
+        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)             # (N,)
+        K = int(self.cfg.demo_nn_lookahead_frames)
+        target_idx = (nn_idx + K).clamp(max=T_demo - 1)          # (N,)
+
         target_palm = demo_palm[target_idx]                              # (N, 7)
         target_palm_pos = target_palm[:, :3]                             # (N, 3)
         target_palm_quat_xyzw = target_palm[:, 3:7]                     # (N, 4) xyzw
@@ -1457,10 +1451,13 @@ class PourRightEnv(DirectRLEnv):
         )                                                                # (N, 4) wxyz
 
         palm_pos_norm_err = torch.norm((palm_pos_w - target_palm_pos) / ref.palm_pos_std, dim=-1)
+        demo_arm_joint_err = palm_pos_norm_err                           # 진단: palm position error
+        r_demo_arm_pose = torch.exp(-palm_pos_norm_err)
+
         quat_dot = torch.abs((palm_quat_wxyz * target_palm_quat_wxyz).sum(dim=-1)).clamp(max=1.0)
         demo_palm_rot_err = 2.0 * torch.acos(quat_dot)
         demo_palm_pos_err = torch.norm(palm_pos_w - target_palm_pos, dim=-1)
-        r_demo_palm_pose = torch.exp(-palm_pos_norm_err - demo_palm_rot_err)
+        r_demo_palm_pose = torch.exp(-demo_palm_rot_err)
 
         hand_q = self.robot.data.joint_pos[:, self.hand_dof_indices]
         thumb_norm_err = torch.norm((hand_q[:, :4] - ref.thumb_joint_mean) / ref.thumb_joint_std, dim=-1)
