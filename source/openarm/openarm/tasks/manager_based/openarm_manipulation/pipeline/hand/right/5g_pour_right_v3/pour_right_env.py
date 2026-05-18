@@ -557,6 +557,7 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_policy = None
         self._warmstart_cache_count = 0
         self._warmstart_reset_debug_printed = False
+        self._warmstart_relaxed_collect_logged = False
         cache_size = max(int(self.cfg.warmstart_cache_size), 1)
         self._warmstart_arm_pos = torch.zeros(cache_size, NUM_ARM_DOF, device=self.device)
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
@@ -2254,11 +2255,15 @@ class PourRightEnv(DirectRLEnv):
             self.cfg.obs_noise_cup_pos = obs_noise_cup_pos
 
         if self._warmstart_cache_count == 0:
-            raise RuntimeError(
+            # Warmstart 수집 실패 시 학습을 중단하지 않고 pregrasp reset으로 폴백.
+            print(
                 "[5g_pour_right_v3] warmstart cache is empty. "
-                "The v7 checkpoint rollout did not produce any lift-success state, so this task cannot start "
-                "from the requested play-like grasp state."
+                "Falling back to pregrasp resets (warmstart disabled for this run).",
+                flush=True,
             )
+            self.cfg.enable_warmstart_reset = False
+            self._warmstart_policy = None
+            return
 
         # warmstart cache j7 분포 확인 (j7 = arm index 6)
         j7_vals = self._warmstart_arm_pos[:self._warmstart_cache_count, 6]
@@ -2292,9 +2297,22 @@ class PourRightEnv(DirectRLEnv):
         upright = self._source_up_axis_w[ids, 2] > 0.90
         j7 = self.robot.data.joint_pos[ids, self.arm_dof_indices[6]]
         j7_in_range = (j7 >= 0.20) & (j7 <= 1.50)
-        warmstart_success = lifted & grasped & upright & j7_in_range
+        warmstart_success_strict = lifted & grasped & upright & j7_in_range
+        local_ok = warmstart_success_strict.nonzero(as_tuple=False).squeeze(-1)
 
-        local_ok = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
+        # strict 필터로 하나도 안 모이면 완화 기준으로 최소 샘플 확보.
+        if local_ok.numel() == 0:
+            upright_relaxed = self._source_up_axis_w[ids, 2] > 0.75
+            warmstart_success_relaxed = lifted & grasped & upright_relaxed
+            local_ok = warmstart_success_relaxed.nonzero(as_tuple=False).squeeze(-1)
+            if local_ok.numel() > 0 and not self._warmstart_relaxed_collect_logged:
+                print(
+                    "[5g_pour_right_v3] warmstart collect fallback: strict filter produced no sample, "
+                    "using relaxed filter (lifted & grasped & upright>0.75).",
+                    flush=True,
+                )
+                self._warmstart_relaxed_collect_logged = True
+
         if local_ok.numel() == 0:
             return
 
