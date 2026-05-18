@@ -231,11 +231,10 @@ def palm_pose_mins(max_pose_angle: float) -> list:
 
 def palm_pose_maxs(max_pose_angle: float) -> list:
     # LEFT_ARM_REST_JOINT_POS FK 기준 target cup pos (env-local): x=0.291, y=0.031, z=0.323
-    #   pregrasp palm y = spawn_center_y(-0.15) + PREGRASP_OFFSET_y(-0.12) = -0.27m
-    #   palm_delta_xyz=0.5m → max palm y = min(-0.27+0.50, y_max) = min(+0.23, y_max)
-    #   target cup y = 0.031m → y_max=+0.08m으로도 충분히 포함됨
-    #   y_max=0.08m: 왼팔 elbow(y=+0.141m)까지 6cm 여유, 소스컵이 왼팔 구조물에 충돌하는 문제 방지
-    #   (이전 y_max=0.22m: 왼팔 joint2(y=+0.154m)까지 도달 → 초기 학습 시 소스컵이 왼팔로 날아가는 문제)
+    #   pregrasp palm y = spawn_center_y(-0.15) + offset_y(-0.07) = -0.22m
+    #   palm_delta_xyz=0.5m → max palm y = min(-0.22+0.50, 0.22) = 0.22m
+    #   target cup y = 0.031m → workspace 내에 충분히 포함됨
+    #   y_max=0.22m: 탐색 여유 확보 (왼팔 손목 y=0.076m에서 14cm 여유, 충돌 안전)
     #
     # [test9] z_max: 0.65 → 0.48
     #   target cup rim ≈ z=0.44m. palm z=0.48 → cup center ≈ 0.45m → cup rim ≈ 0.55m
@@ -243,7 +242,7 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     #   g_clear gradient가 cup을 과도하게 올리는 문제 방지.
     d = math.pi / 180.0
     return [
-        0.65, 0.08, 0.48,   # y_max: 0.22→0.08 (왼팔 elbow y=0.141m까지 6cm 여유, 소스컵 충돌 방지)
+        0.65, 0.22, 0.48,   # z_max: 0.65→0.48 (과도한 높이 억제)
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

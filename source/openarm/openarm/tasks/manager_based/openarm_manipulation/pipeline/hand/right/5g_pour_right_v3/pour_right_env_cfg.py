@@ -66,12 +66,12 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
             mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬 (5g→10g: 관성 향상, 진동 날림 방지)
-            rigid_props=RigidBodyPropertiesCfg(
+            rigid_props=RigidBodyPropertiesCfg( 
                 disable_gravity=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=4,
-                linear_damping=0.05,   # 0.5→0.05: τ=m/d=0.005/0.5=0.01s(과도 감쇠) → 0.1s(자연 낙하 허용)
-                angular_damping=0.05,  # 0.5→0.05: 비드가 림을 넘어 굴러 떨어지도록
+                linear_damping=0.5,   # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
+                angular_damping=0.5,  # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
                 max_depenetration_velocity=5.0,
                 max_linear_velocity=10.0,
                 max_angular_velocity=20.0,
@@ -83,7 +83,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
             static_friction=0.1,
             dynamic_friction=0.08,
-            restitution=0.2,   # 0.1→0.2: 림에서 튕겨 넘어가도록 (rim 걸림 완화)
+            restitution=0.1,
             friction_combine_mode="min",
             restitution_combine_mode="max",
         )
@@ -138,7 +138,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 200
     episode_hold_steps:    int   = 60   # 텔레포트 후 contact 재정립 대기 (1s @ 60Hz)
-    episode_ramp_steps:    int   = 0    # [fix] 0: hold 60step 후 즉시 full action (EMA α=0.7이 자체 스무딩 제공)
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
     pregrasp_offset_x:     float = -0.06
@@ -177,11 +176,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # bead / cup geometry (.usd 기준: bottom=-0.077m, rim=+0.100m, inner_r=0.041m)
     target_inner_radius:  float = 0.041   # 컵 내부 반경
-    # [fix] -0.070 → -0.060: 테이블 위 bead spill 포착
-    # target cup root z=0.323m, 테이블 bead z=0.257m → local_z=-0.066m
-    # -0.070 기준 시 -0.066 > -0.070 → ghost (spill 미감지, 패널티 없음)
-    # -0.060 기준 시 -0.066 < -0.060 → spill ✓ (공중 transit bead: local_z>0, 영향 없음)
-    target_inside_z_min:  float = -0.060  # bottom(-0.077) + bead_radius + table clearance
+    target_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     target_inside_z_max:  float = 0.100   # 림 높이
     target_mouth_z:       float = 0.100   # 림 높이 (bead crossing 기준)
     source_inner_radius:  float = 0.041   # 컵 내부 반경
@@ -212,11 +207,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm xyz delta.
     # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
-    # [fix] 0.10 → 0.15: grasp v7-2 학습 시 palm_delta_xyz=0.15 와 일치시킴
-    warmstart_collect_palm_delta_xyz: float = 0.15
-    # [fix] 신규: grasp v7-2 학습 시 palm_delta_rot_deg=20.0 과 일치시킴
-    # 기존에는 pour env의 120° 사용 → action=0.5가 의도한 10° 대신 60° 회전 유발 → 캐시 오염
-    warmstart_collect_palm_delta_rot_deg: float = 20.0
+    warmstart_collect_palm_delta_xyz: float = 0.10
     palm_delta_rot_deg: float = 120.0  # 45→120: cup 135° tilt 도달 가능하도록 확장
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
@@ -313,26 +304,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_prepour_dir: float = 3.00   # 복원 (test5: 5.00 → test7: 3.00)
     weight_prepour_align: float = 3.00  # 복원 (test5: 5.00 → test7: 3.00)
     weight_dir_tilt: float = 2.00      # 복원 (test5: 3.00 → test7: 2.00) [test8] 방향 수식 반전으로 올바른 gradient
-    weight_source_drain: float = 35.0  # 20→35: 소스 완전 배출 incentive 강화
-    weight_cross: float = 0.00     # [fix] 0: 비드가 rim 위(world_z>0.423m)에서 진입 불가 → 항상 0
-    # 비드는 pour_point(z≈0.33m)에서 테이블(z≈0.25m)로 낙하; target rim(0.423m)을 위에서 통과 안 함
-    weight_capture: float = 80.00  # 40→80: bead_in_target_fraction (즉각적 기하 감지, 정확)
+    weight_source_drain: float = 20.0  # [test8] 신규: pour gate 중 소스 배출 incentive
+    weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
+    weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
-    # pour point aim: 120° tilt 시 pour_point가 target 위로 이동 (8.7cm 오프셋)
-    # cup center XY alone으로는 bead 정밀도 보장 불가 (target r=4.1cm vs gate 18cm)
-    # → pour_point_w XY가 target_opening_w XY에 가까울수록 보상 → 위치+방향 통합 gradient
-    weight_pour_aim: float = 0.0    # [fix] 비활성: pour_point XY가 90°에서 local max → 120° gradient 역행
-    pour_aim_sharpness: float = 15.0
-    # [fix] cup CENTER가 target 위에 올수록 보상 (각도 무관, monotonic, 90° local max 없음)
-    # r_pour_aim 대체: rim 위치 대신 cup center XY 기반 → 어떤 tilt 각도에서도 단조 증가
-    weight_cup_center_pour: float = 60.0
-    pour_center_xy_scale: float = 8.0   # exp(-8*dist): 0.18m→14/step, 0.05m→40/step
-    # task-first pour shaping:
-    # - bead_in_target "증가량"을 추가로 보상해 정적 자세 유지보다 실제 유입 전이를 우선 학습
-    # - cup_center/pour_align은 약한 가이드로만 사용
-    weight_capture_flow: float = 120.0
-    pour_posture_guidance_scale: float = 0.20
-    weight_first_capture_bonus: float = 50.00  # 20→50: 첫 비드 유입 탐색 신호 강화
+    weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
     weight_tilt_onset_bonus: float = 0.00    # [test5] demo shaping 대체로 onset 제거
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
@@ -356,10 +332,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [test7] premature_tilt 약하게 복원 (demo shaping이 타이밍 가르치지만 안전장치로 유지)
     weight_premature_tilt: float = 1.00  # test5: 2.00 → test7: 1.00
     weight_grasp_loss: float = 0.05      # 0.30→0.05: [test4] cost_grasp_loss=0.73/step (전체 cost 73%) → tilt 억제. DexPour는 contact reward로 대체
-    # grasp_loss는 reset 직후/원거리에서 즉시 벌점하면 학습 초반 불안정해짐.
-    # hold 종료 후 N step 지연 + g_ready 기반 gate를 통과한 뒤부터만 적용.
-    grasp_loss_hold_off_steps: int = 30
-    grasp_loss_ready_gate_min: float = 0.25
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
     weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
@@ -393,8 +365,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # - pour phase only 사용 시: j7 std=0.050 (clamp min) → j7 오차 과대 반영 → 외회전 학습
     # - all phase 사용 시: j7 std=0.224 → j7 영향 자연스럽게 감소, 10개 파일 평균 내회전 유도
     demo_pose_phase: str = "all"   # [test6/7] 유지: j7 내회전 방향 학습 효과 확인됨
-    weight_demo_arm_pose: float = 0.0    # [test4] 비활성: NN을 palm pos space로 교체, joint space reward 제거
-    weight_demo_palm_pose: float = 2.0   # [test4] palm_link 프레임 직접 비교 (eef_pose/right = palm_link 확인됨)
+    weight_demo_arm_pose: float = 4.00   # [test7] 6.00→4.00: 과도한 demo 추적 완화
+    weight_demo_palm_pose: float = 0.0   # [test8] 2.00→0.0: demo_palm_pos_err=0.27m → useless gradient
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.50
     demo_pose_warmup_steps: int = 20000
@@ -480,11 +452,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth"
+        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test1/nn/5g_grasp_right-v7-2.pth"
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
-    freeze_grasp_hand_during_episode: bool = True
+    freeze_grasp_hand_during_episode: bool = False
     # [test8] 0.04→0.015: 최상위 비드 z=0.088→0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
