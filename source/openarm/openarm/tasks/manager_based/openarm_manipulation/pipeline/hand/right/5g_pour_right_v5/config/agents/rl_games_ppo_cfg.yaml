@@ -2,6 +2,12 @@
 # 관측: actor 110D / critic 143D (asymmetric), 액션: 11D
 # LSTM before_mlp=True, Asymmetric Actor-Critic (has_central_value: True)
 # BC: sim success trajectories + real HDF5 demo (DemoBCBuffer)
+#
+# 구조 설계 근거 (v3 LSTM 구조 채택):
+#   - actor LSTM 1024: 1200-step 장기 에피소드에서 phase(이송→기울기→붓기) 기억
+#   - critic LSTM 2048 (before_mlp=False): value 추정에서 시간 의존성 보완
+#   - mixed_precision=False: LSTM + AMP 수치 불안정 회피
+#   - horizon=32, minibatch=16384: BPTT 시계열 포착 + 배치 정합
 
 params:
   seed: 42
@@ -30,7 +36,7 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [512, 256, 128]
+      units: [512, 512]
       activation: elu
       d2rl: False
       initializer:
@@ -39,11 +45,12 @@ params:
         name: None
     rnn:
       name: lstm
-      units: 256
+      units: 1024
       layers: 1
-      before_mlp: True
-      concat_input: True
+      before_mlp: True    # raw obs → LSTM(상태추정) → MLP(정책사상): 부분관측 task 정석
       layer_norm: True
+      concat_input: True
+      concat_output: True
 
   load_checkpoint: False
   load_path: ''
@@ -55,7 +62,7 @@ params:
     device_name: 'cuda:0'
     multi_gpu: False
     ppo: True
-    mixed_precision: True
+    mixed_precision: False    # LSTM 수치 안정 필수 (AMP 비활성)
     normalize_input: True
     normalize_value: True
     value_bootstrap: False
@@ -65,7 +72,7 @@ params:
     normalize_advantage: True
     gamma: 0.998
     tau: 0.95
-    learning_rate: 1e-4
+    learning_rate: 2e-4
     lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
@@ -75,16 +82,16 @@ params:
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.005   # [test3] 0.003→0.005: BC에 의한 entropy 단조 붕괴 대응
+    entropy_coef: 0.0015
     truncate_grads: True
-    e_clip: 0.25
-    horizon_length: 64
-    # LSTM: seq_length は horizon_length の約数であること
-    # 64 = 4 × 16 → seq_length=16 (BPTT window 약 0.27s @ 60Hz)
-    seq_length: 16
+    e_clip: 0.2
+    # horizon=32: 1200-step 장기 에피소드에서 BPTT가 더 긴 시계열 포착
+    # batch = 2048 envs × 32 = 65536 → minibatch 16384 = 4 splits (정합)
+    horizon_length: 32
+    seq_length: 16            # BPTT truncation 윈도우 (horizon 32 = 2 seq 청크)
     zero_rnn_on_done: True
-    minibatch_size: 32768
-    mini_epochs: 6
+    minibatch_size: 16384
+    mini_epochs: 4
     critic_coef: 4
     clip_value: True
     clip_actions: False
@@ -97,24 +104,33 @@ params:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768
-      mini_epochs: 6
-      learning_rate: 1e-4
+      minibatch_size: 16384
+      mini_epochs: 4
+      learning_rate: 5e-5
       lr_schedule: linear
-      kl_threshold: 0.013
+      kl_threshold: 0.016
       clip_value: True
-      e_clip: 0.25
+      e_clip: 0.2
+      truncate_grads: True
       network:
         name: actor_critic
         central_value: True
         mlp:
-          units: [512, 256, 128]
+          units: [1024, 512]
           activation: elu
           d2rl: False
           initializer:
             name: default
           regularizer:
             name: None
+        rnn:
+          name: lstm
+          units: 2048
+          layers: 1
+          before_mlp: False   # critic: MLP→LSTM (값 추정 보조)
+          layer_norm: True
+          concat_input: True
+          concat_output: True
 
     # ── BC 하이퍼파라미터 ─────────────────────────────────────────────
     # sim 성공 궤적 BC (SuccessTrajBuffer)
@@ -122,16 +138,16 @@ params:
     bc_loss_decay_epochs: 3000
     bc_loss_weight_init: 1.0
     bc_loss_weight_final: 0.1
-    bc_min_buffer_size: 5   # [test3] 20→5: sim BC 조기 활성화
+    bc_min_buffer_size: 5
     bc_seq_len: 16
     bc_batch_size: 64
 
     # 실제 HDF5 데모 BC (DemoBCBuffer)
     real_demo_bc_enable: True
     real_demo_bc_warmup_epochs: 50
-    real_demo_bc_decay_epochs: 1000  # [test3] 2000→1000: 더 빨리 소멸
-    real_demo_bc_weight_init: 0.1   # [test3] 0.5→0.1: entropy 붕괴 주범 약화
-    real_demo_bc_weight_final: 0.01 # [test3] 0.05→0.01
+    real_demo_bc_decay_epochs: 1000
+    real_demo_bc_weight_init: 0.1
+    real_demo_bc_weight_final: 0.01
     real_demo_bc_min_buffer_size: 1
     real_demo_stride: 2
     real_demo_pour_sample_ratio: 0.6

@@ -39,6 +39,7 @@ Action 11D:
 from __future__ import annotations
 
 import math
+import os as _os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -47,12 +48,17 @@ import h5py
 import torch
 from torch import Tensor
 
+from openarm.tasks.manager_based.openarm_manipulation import OPENARM_ROOT_DIR
+
 from .pour_right_constants import (
     NUM_OBSERVATIONS,
     NUM_ACTIONS,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
 )
+
+_HDGP_ROOT = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
+_DATASETS_DIR = _os.path.normpath(_os.path.join(_HDGP_ROOT, "..", "datasets"))
 
 # ---------------------------------------------------------------------------
 # Cup geometry constants (pour_right_preset.py 와 동일)
@@ -78,7 +84,7 @@ _POUR_PHASE_TILT_DEG = 70.0
 # HDF5 경로 기본값
 # ---------------------------------------------------------------------------
 DEFAULT_DEMO_PATHS = tuple(
-    Path(f"/home/user/rl_ws/datasets/pour_v1_a{i}.hdf5") for i in range(11, 21)
+    Path(_os.path.join(_DATASETS_DIR, f"pour_v1_a{i}.hdf5")) for i in range(11, 21)
 )
 
 

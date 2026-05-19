@@ -582,6 +582,10 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
         self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
+        # v7-2 lift phase 미러: step 480에 팔/손 캡처 → 120 step 선형보간으로 들어올림
+        self._warmstart_lift_arm_start  = torch.zeros(self.num_envs, NUM_ARM_DOF,  device=self.device)
+        self._warmstart_lift_finger_start = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
+        self._warmstart_prelift_arm_pos = torch.zeros(self.num_envs, NUM_ARM_DOF,  device=self.device)
         # GUI target visualization: source pour point (red) + target opening (blue)
         # 비활성화 가능 (cfg.enable_visual_markers)
         if cfg.enable_visual_markers:
@@ -1011,18 +1015,66 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_q[:, NUM_ARM_DOF:] = hand_target
         self.fabric_qd[:, NUM_ARM_DOF:].zero_()
 
+        # warmstart lift phase (v7-2 lift logic 미러):
+        #   step 480: 팔/손 자세 캡처 + prelift 목표 산정 (j4 +0.31)
+        #   step 480+: Fabrics arm 동결 (integrator 값 무시, 실제 관절로 덮어쓰기)
+        # → _apply_action 에서 선형보간으로 들어올림
+        if self._warmstart_collect_mode:
+            _LIFT_START = 480
+            just_entering = (self.episode_length_buf == _LIFT_START)
+            if just_entering.any():
+                actual_arm    = self.robot.data.joint_pos[:, self.arm_dof_indices]
+                actual_finger = self.robot.data.joint_pos[:, self.hand_dof_indices]
+                self._warmstart_lift_arm_start = torch.where(
+                    just_entering.unsqueeze(1), actual_arm, self._warmstart_lift_arm_start
+                )
+                self._warmstart_lift_finger_start = torch.where(
+                    just_entering.unsqueeze(1), actual_finger, self._warmstart_lift_finger_start
+                )
+                prelift = actual_arm.clone()
+                prelift[:, 3] = (actual_arm[:, 3] + 0.31).clamp(max=3.14)
+                self._warmstart_prelift_arm_pos = torch.where(
+                    just_entering.unsqueeze(1), prelift, self._warmstart_prelift_arm_pos
+                )
+            is_lift = (self.episode_length_buf >= _LIFT_START)
+            if is_lift.any():
+                actual_arm = self.robot.data.joint_pos[:, self.arm_dof_indices]
+                self.fabric_q[is_lift, :NUM_ARM_DOF] = actual_arm[is_lift]
+                self.fabric_qd[is_lift, :NUM_ARM_DOF].zero_()
+                self.fabric_qdd[is_lift, :NUM_ARM_DOF].zero_()
+
     def _apply_action(self) -> None:
-        # ---- 오른팔: Fabrics arm target (pour phase 전체) ----
+        # ---- 오른팔 ----
         arm_target = self.fabric_q[:, :NUM_ARM_DOF]
+        finger_target = self.hand_joint_targets
+
+        # warmstart lift phase: v7-2 hardcoded linear interpolation 미러
+        if self._warmstart_collect_mode:
+            _LIFT_START = 480
+            _LIFT_STEPS = 120
+            is_lift = (self.episode_length_buf >= _LIFT_START)
+            if is_lift.any():
+                prog = (
+                    (self.episode_length_buf - _LIFT_START).clamp(min=0).float() / _LIFT_STEPS
+                ).clamp(max=1.0).unsqueeze(1)
+                arm_interp = (
+                    self._warmstart_lift_arm_start * (1.0 - prog)
+                    + self._warmstart_prelift_arm_pos * prog
+                )
+                arm_target = torch.where(is_lift.unsqueeze(1), arm_interp, arm_target)
+                finger_target = torch.where(
+                    is_lift.unsqueeze(1), self._warmstart_lift_finger_start, finger_target
+                )
+
         self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_dof_indices)
         self.robot.set_joint_velocity_target(
             torch.zeros_like(arm_target), joint_ids=self.arm_dof_indices
         )
 
-        # ---- 오른손: grasp_hold 유지 ----
-        self.robot.set_joint_position_target(self.hand_joint_targets, joint_ids=self.hand_dof_indices)
+        # ---- 오른손 ----
+        self.robot.set_joint_position_target(finger_target, joint_ids=self.hand_dof_indices)
         self.robot.set_joint_velocity_target(
-            torch.zeros_like(self.hand_joint_targets), joint_ids=self.hand_dof_indices
+            torch.zeros_like(finger_target), joint_ids=self.hand_dof_indices
         )
 
         # ---- 왼팔: 고정 자세 ----
@@ -2155,6 +2207,15 @@ class PourRightEnv(DirectRLEnv):
         self.cfg.obs_noise_cup_pos = 0.0
         self._warmstart_collect_mode = True
 
+        # warmstart 에피소드는 v7-2 길이(600 steps)에 맞춰 자름:
+        # lift phase가 480-599 이므로 600 steps 이후는 v7-2가 학습하지 않은 구간.
+        # 그 이후에도 policy를 계속 실행하면 cup이 낙하하거나 OOB로 조기 종료돼
+        # success check가 누락되는 문제가 생김.
+        _WARMSTART_EP_STEPS = 600
+        # max_episode_length는 setter 없는 property: cfg.episode_length_s를 임시 변경
+        _step_dt = self.cfg.sim.dt * self.cfg.decimation
+        _orig_episode_length_s = self.cfg.episode_length_s
+        self.cfg.episode_length_s = _WARMSTART_EP_STEPS * _step_dt
         try:
             self.reset()
             with torch.no_grad():
@@ -2164,6 +2225,7 @@ class PourRightEnv(DirectRLEnv):
                     actions = self._warmstart_policy(self._get_legacy_warmstart_policy_obs())
                     self.step(actions)
         finally:
+            self.cfg.episode_length_s = _orig_episode_length_s
             self._warmstart_collect_mode = False
             self.cfg.obs_noise_joint_pos = obs_noise_joint_pos
             self.cfg.obs_noise_joint_vel = obs_noise_joint_vel

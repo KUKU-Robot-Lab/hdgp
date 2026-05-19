@@ -453,7 +453,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        _os.path.join(_HDGP_ROOT, "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth")
+        _os.path.join(_HDGP_ROOT, "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test3/nn/5g_grasp_right-v7-2.pth")
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
