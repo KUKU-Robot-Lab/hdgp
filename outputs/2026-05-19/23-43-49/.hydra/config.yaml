@@ -1,0 +1,801 @@
+env:
+  viewer:
+    eye:
+    - 7.5
+    - 7.5
+    - 7.5
+    lookat:
+    - 0.0
+    - 0.0
+    - 0.0
+    cam_prim_path: /OmniverseKit_Persp
+    resolution:
+    - 1280
+    - 720
+    origin_type: world
+    env_index: 0
+    asset_name: null
+    body_name: null
+  sim:
+    physics_prim_path: /physicsScene
+    device: cuda:0
+    dt: 0.008333333333333333
+    render_interval: 2
+    gravity:
+    - 0.0
+    - 0.0
+    - -9.81
+    enable_scene_query_support: false
+    use_fabric: true
+    physx:
+      solver_type: 1
+      min_position_iteration_count: 1
+      max_position_iteration_count: 255
+      min_velocity_iteration_count: 0
+      max_velocity_iteration_count: 255
+      enable_ccd: false
+      enable_stabilization: false
+      enable_external_forces_every_iteration: false
+      enable_enhanced_determinism: false
+      bounce_threshold_velocity: 0.01
+      friction_offset_threshold: 0.04
+      friction_correlation_distance: 0.00625
+      gpu_max_rigid_contact_count: 4194304
+      gpu_max_rigid_patch_count: 4194304
+      gpu_found_lost_pairs_capacity: 2097152
+      gpu_found_lost_aggregate_pairs_capacity: 8388608
+      gpu_total_aggregate_pairs_capacity: 2097152
+      gpu_collision_stack_size: 268435456
+      gpu_heap_capacity: 67108864
+      gpu_temp_buffer_capacity: 16777216
+      gpu_max_num_partitions: 8
+      gpu_max_soft_body_contacts: 1048576
+      gpu_max_particle_contacts: 1048576
+      solve_articulation_contact_last: false
+    physics_material:
+      func: isaaclab.sim.spawners.materials.physics_materials:spawn_rigid_body_material
+      static_friction: 0.5
+      dynamic_friction: 0.5
+      restitution: 0.0
+      friction_combine_mode: average
+      restitution_combine_mode: average
+      compliant_contact_stiffness: 0.0
+      compliant_contact_damping: 0.0
+    render:
+      enable_translucency: null
+      enable_reflections: null
+      enable_global_illumination: null
+      antialiasing_mode: null
+      enable_dlssg: null
+      enable_dl_denoiser: null
+      dlss_mode: null
+      enable_direct_lighting: null
+      samples_per_pixel: null
+      enable_shadows: null
+      enable_ambient_occlusion: null
+      dome_light_upper_lower_strategy: null
+      carb_settings: null
+      rendering_mode: null
+    create_stage_in_memory: false
+    logging_level: WARNING
+    save_logs_to_file: true
+  ui_window_class_type: isaaclab.envs.ui.base_env_window:BaseEnvWindow
+  seed: null
+  decimation: 2
+  is_finite_horizon: false
+  episode_length_s: 10.0
+  scene:
+    num_envs: 128
+    env_spacing: 2.5
+    lazy_sensor_update: true
+    replicate_physics: true
+    filter_collisions: true
+    clone_in_fabric: false
+  events: null
+  observation_space: '{"type": "python", "space": "Box", "value": 106}'
+  num_observations: 106
+  state_space: '{"type": "python", "space": "Box", "value": 143}'
+  num_states: 143
+  observation_noise_model: null
+  action_space: '{"type": "python", "space": "Box", "value": 11}'
+  num_actions: 11
+  action_noise_model: null
+  rerender_on_reset: false
+  num_rerenders_on_reset: 0
+  wait_for_textures: true
+  xr: null
+  log_dir: null
+  fabrics_dt: 0.016666666666666666
+  fabric_decimation: 2
+  use_cuda_graph: false
+  use_hand_fabric: false
+  max_pose_angle: 45.0
+  fabrics_max_objects_per_env: 6
+  fabrics_damping_gain: 20.0
+  pregrasp_fabric_steps: 60
+  reset_fabric_chunk_size: 128
+  cache_pregrasp_reset: true
+  pregrasp_offset_x: -0.06
+  pregrasp_offset_y: -0.07
+  pregrasp_offset_z: 0.0
+  pregrasp_noise_x: 0.01
+  pregrasp_noise_y: 0.01
+  pregrasp_noise_z: 0.005
+  enable_demo_grasp_reset: true
+  demo_grasp_pose_paths:
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a11.hdf5
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a12.hdf5
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a13.hdf5
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a14.hdf5
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a15.hdf5
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a16.hdf5
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a17.hdf5
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a18.hdf5
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a19.hdf5
+  - /home/user/rl_ws/hdgp/../datasets/pour_v1_a20.hdf5
+  obs_noise_joint_pos: 0.01
+  obs_noise_joint_vel: 0.05
+  obs_noise_body_pos: 0.005
+  obs_noise_cup_pos: 0.015
+  cup_grasp_z_offset: 0.06
+  lift_success_height: 0.04
+  palm_delta_xyz: 0.15
+  palm_delta_rot_deg: 20.0
+  palm_approach_weight: 1.0
+  palm_approach_sharpness: 10.0
+  enclosure_weight: 10.0
+  enclosure_sharpness: 15.0
+  cup_radius_approx: 0.045
+  enclosure_thumb_weight: 0.6
+  force_balance_weight: 3.0
+  force_balance_sharpness: 8.0
+  full_grasp_bonus_weight: 8.0
+  thumb_force_ratio_min: 0.5
+  tip_approach_bonus_weight: 1.0
+  lift_reward_weight: 30.0
+  action_smoothness_palm_weight: -0.02
+  action_smoothness_finger_weight: -0.01
+  grasp_quality_lift_weight: 40.0
+  grasp_quality_lift_sharpness: 10.0
+  enable_adr: true
+  adr_num_increments: 50
+  adr_increment_interval: 200
+  adr_trigger_threshold: 0.02
+  adr_custom_cfg:
+    reward_weights:
+      enclosure_weight:
+      - 10.0
+      - 20.0
+  cup_tipping_max_deg: 60.0
+  obj_out_x_min: 0.05
+  obj_out_x_max: 0.85
+  obj_out_y_min: -0.6
+  obj_out_y_max: 0.25
+  obj_fallen_z: 0.2
+  object_spawn_x_center: 0.27
+  object_spawn_y_center: -0.1
+  object_spawn_z: 0.297
+  object_spawn_xy_range: 0.06
+  enable_warm_state_export: true
+  warm_state_export_path: /home/user/rl_ws/datasets/grasp_warm_v7_2.hdf5
+  warm_state_target_count: 2048
+  warm_cup_upright_min: 0.9
+  warm_j7_min: 0.2
+  warm_j7_max: 1.5
+  table_cfg:
+    class_type: isaaclab.assets.rigid_object.rigid_object:RigidObject
+    prim_path: /World/envs/env_.*/Table
+    spawn:
+      func: isaaclab.sim.spawners.from_files.from_files:spawn_from_usd
+      visible: true
+      semantic_tags: null
+      copy_from_source: true
+      mass_props: null
+      deformable_props: null
+      rigid_props:
+        rigid_body_enabled: null
+        kinematic_enabled: true
+        disable_gravity: true
+        linear_damping: null
+        angular_damping: null
+        max_linear_velocity: null
+        max_angular_velocity: null
+        max_depenetration_velocity: null
+        max_contact_impulse: null
+        enable_gyroscopic_forces: null
+        retain_accelerations: null
+        solver_position_iteration_count: null
+        solver_velocity_iteration_count: null
+        sleep_threshold: null
+        stabilization_threshold: null
+      collision_props: null
+      activate_contact_sensors: false
+      scale: null
+      articulation_props: null
+      fixed_tendons_props: null
+      spatial_tendons_props: null
+      joint_drive_props: null
+      visual_material_path: material
+      visual_material: null
+      usd_path: /home/user/rl_ws/hdgp/assets/scene_objects/table.usd
+      variants: null
+    init_state:
+      pos:
+      - 0.5725
+      - 0.003
+      - 0.2
+      rot:
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      lin_vel:
+      - 0.0
+      - 0.0
+      - 0.0
+      ang_vel:
+      - 0.0
+      - 0.0
+      - 0.0
+    collision_group: 0
+    debug_vis: false
+  robot_cfg:
+    class_type: isaaclab.assets.articulation.articulation:Articulation
+    prim_path: /World/envs/env_.*/Robot
+    spawn:
+      func: isaaclab.sim.spawners.from_files.from_files:spawn_from_usd
+      visible: true
+      semantic_tags: null
+      copy_from_source: true
+      mass_props: null
+      deformable_props: null
+      rigid_props:
+        rigid_body_enabled: null
+        kinematic_enabled: null
+        disable_gravity: true
+        linear_damping: null
+        angular_damping: null
+        max_linear_velocity: null
+        max_angular_velocity: null
+        max_depenetration_velocity: 5.0
+        max_contact_impulse: null
+        enable_gyroscopic_forces: null
+        retain_accelerations: null
+        solver_position_iteration_count: null
+        solver_velocity_iteration_count: null
+        sleep_threshold: null
+        stabilization_threshold: null
+      collision_props: null
+      activate_contact_sensors: true
+      scale: null
+      articulation_props:
+        articulation_enabled: null
+        enabled_self_collisions: false
+        solver_position_iteration_count: 16
+        solver_velocity_iteration_count: 1
+        sleep_threshold: null
+        stabilization_threshold: null
+        fix_root_link: null
+      fixed_tendons_props: null
+      spatial_tendons_props: null
+      joint_drive_props: null
+      visual_material_path: material
+      visual_material: null
+      usd_path: /home/user/rl_ws/hdgp/assets/openarm_tesollo_sensor/openarm_tesollo_sensor.usd
+      variants: null
+    init_state:
+      pos:
+      - 0.0
+      - 0.0
+      - 0.0
+      rot:
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      lin_vel:
+      - 0.0
+      - 0.0
+      - 0.0
+      ang_vel:
+      - 0.0
+      - 0.0
+      - 0.0
+      joint_pos:
+        openarm_right_joint1: 0.5
+        openarm_right_joint2: 0.1
+        openarm_right_joint3: 0.4
+        openarm_right_joint4: 0.6
+        openarm_right_joint5: -0.2
+        openarm_right_joint6: 0.0
+        openarm_right_joint7: 0.0
+        rj_dg_1_1: 0.0
+        rj_dg_1_2: -1.57
+        rj_dg_1_3: -0.5
+        rj_dg_1_4: 0.0
+        rj_dg_2_1: 0.0
+        rj_dg_2_2: 0.0
+        rj_dg_2_3: 0.0
+        rj_dg_2_4: 0.0
+        rj_dg_3_1: 0.0
+        rj_dg_3_2: 0.0
+        rj_dg_3_3: 0.0
+        rj_dg_3_4: 0.0
+        rj_dg_4_1: 0.0
+        rj_dg_4_2: 0.0
+        rj_dg_4_3: 0.0
+        rj_dg_4_4: 0.0
+        rj_dg_5_1: 0.0
+        rj_dg_5_2: 0.0
+        rj_dg_5_3: 0.0
+        rj_dg_5_4: 0.0
+        openarm_left_joint1: -0.315
+        openarm_left_joint2: -0.29
+        openarm_left_joint3: 0.4
+        openarm_left_joint4: 0.513
+        openarm_left_joint5: 0.666
+        openarm_left_joint6: -0.729
+        openarm_left_joint7: -0.957
+        openarm_left_finger_joint1: 0.044
+        openarm_left_finger_joint2: 0.044
+      joint_vel:
+        .*: 0.0
+    collision_group: 0
+    debug_vis: false
+    articulation_root_prim_path: null
+    soft_joint_pos_limit_factor: 1.0
+    actuators:
+      openarm_right_arm:
+        class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+        joint_names_expr:
+        - openarm_right_joint[1-7]
+        effort_limit: null
+        velocity_limit: null
+        effort_limit_sim: null
+        velocity_limit_sim: null
+        stiffness: 400.0
+        damping: 80.0
+        armature: null
+        friction: null
+        dynamic_friction: null
+        viscous_friction: null
+      openarm_left_arm:
+        class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+        joint_names_expr:
+        - openarm_left_joint[1-7]
+        effort_limit: null
+        velocity_limit: null
+        effort_limit_sim: null
+        velocity_limit_sim: null
+        stiffness: 400.0
+        damping: 80.0
+        armature: null
+        friction: null
+        dynamic_friction: null
+        viscous_friction: null
+      tesollo_hand_abduction:
+        class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+        joint_names_expr:
+        - rj_dg_[1-5]_1
+        effort_limit: null
+        velocity_limit: null
+        effort_limit_sim: null
+        velocity_limit_sim: null
+        stiffness: 30.0
+        damping: 5.0
+        armature: null
+        friction: null
+        dynamic_friction: null
+        viscous_friction: null
+      tesollo_hand_curl:
+        class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+        joint_names_expr:
+        - rj_dg_[1-5]_2
+        effort_limit: null
+        velocity_limit: null
+        effort_limit_sim: null
+        velocity_limit_sim: null
+        stiffness: 30.0
+        damping: 5.0
+        armature: null
+        friction: null
+        dynamic_friction: null
+        viscous_friction: null
+      tesollo_hand_pip:
+        class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+        joint_names_expr:
+        - rj_dg_[1-5]_3
+        effort_limit: null
+        velocity_limit: null
+        effort_limit_sim: null
+        velocity_limit_sim: null
+        stiffness: 30.0
+        damping: 5.0
+        armature: null
+        friction: null
+        dynamic_friction: null
+        viscous_friction: null
+      tesollo_hand_dip:
+        class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+        joint_names_expr:
+        - rj_dg_[1-5]_4
+        effort_limit: null
+        velocity_limit: null
+        effort_limit_sim: null
+        velocity_limit_sim: null
+        stiffness: 30.0
+        damping: 5.0
+        armature: null
+        friction: null
+        dynamic_friction: null
+        viscous_friction: null
+      openarm_left_gripper:
+        class_type: isaaclab.actuators.actuator_pd:ImplicitActuator
+        joint_names_expr:
+        - openarm_left_finger_joint[1-2]
+        effort_limit: null
+        velocity_limit: null
+        effort_limit_sim: null
+        velocity_limit_sim: null
+        stiffness: 400.0
+        damping: 80.0
+        armature: null
+        friction: null
+        dynamic_friction: null
+        viscous_friction: null
+    actuator_value_resolution_debug_print: false
+  right_tip_contact_links:
+  - rl_dg_1_tip
+  - rl_dg_2_tip
+  - rl_dg_3_tip
+  - rl_dg_4_tip
+  - rl_dg_5_tip
+  distal_sensor_cfg:
+    class_type: isaaclab.sensors.contact_sensor.contact_sensor:ContactSensor
+    prim_path: /World/envs/env_.*/Robot/rl_dg_[1-5]_4
+    update_period: 0.0
+    history_length: 1
+    debug_vis: false
+    track_pose: false
+    track_contact_points: false
+    track_friction_forces: false
+    max_contact_data_count_per_prim: 4
+    track_air_time: false
+    force_threshold: 1.0
+    filter_prim_paths_expr: []
+    visualizer_cfg:
+      prim_path: /Visuals/ContactSensor
+      markers:
+        contact:
+          func: isaaclab.sim.spawners.shapes.shapes:spawn_sphere
+          visible: true
+          semantic_tags: null
+          copy_from_source: true
+          mass_props: null
+          rigid_props: null
+          collision_props: null
+          activate_contact_sensors: false
+          visual_material_path: material
+          visual_material:
+            func: isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface
+            diffuse_color:
+            - 1.0
+            - 0.0
+            - 0.0
+            emissive_color:
+            - 0.0
+            - 0.0
+            - 0.0
+            roughness: 0.5
+            metallic: 0.0
+            opacity: 1.0
+          physics_material_path: material
+          physics_material: null
+          radius: 0.02
+        no_contact:
+          func: isaaclab.sim.spawners.shapes.shapes:spawn_sphere
+          visible: false
+          semantic_tags: null
+          copy_from_source: true
+          mass_props: null
+          rigid_props: null
+          collision_props: null
+          activate_contact_sensors: false
+          visual_material_path: material
+          visual_material:
+            func: isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface
+            diffuse_color:
+            - 0.0
+            - 1.0
+            - 0.0
+            emissive_color:
+            - 0.0
+            - 0.0
+            - 0.0
+            roughness: 0.5
+            metallic: 0.0
+            opacity: 1.0
+          physics_material_path: material
+          physics_material: null
+          radius: 0.02
+  middle_sensor_cfg:
+    class_type: isaaclab.sensors.contact_sensor.contact_sensor:ContactSensor
+    prim_path: /World/envs/env_.*/Robot/rl_dg_[1-5]_3
+    update_period: 0.0
+    history_length: 1
+    debug_vis: false
+    track_pose: false
+    track_contact_points: false
+    track_friction_forces: false
+    max_contact_data_count_per_prim: 4
+    track_air_time: false
+    force_threshold: 1.0
+    filter_prim_paths_expr: []
+    visualizer_cfg:
+      prim_path: /Visuals/ContactSensor
+      markers:
+        contact:
+          func: isaaclab.sim.spawners.shapes.shapes:spawn_sphere
+          visible: true
+          semantic_tags: null
+          copy_from_source: true
+          mass_props: null
+          rigid_props: null
+          collision_props: null
+          activate_contact_sensors: false
+          visual_material_path: material
+          visual_material:
+            func: isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface
+            diffuse_color:
+            - 1.0
+            - 0.0
+            - 0.0
+            emissive_color:
+            - 0.0
+            - 0.0
+            - 0.0
+            roughness: 0.5
+            metallic: 0.0
+            opacity: 1.0
+          physics_material_path: material
+          physics_material: null
+          radius: 0.02
+        no_contact:
+          func: isaaclab.sim.spawners.shapes.shapes:spawn_sphere
+          visible: false
+          semantic_tags: null
+          copy_from_source: true
+          mass_props: null
+          rigid_props: null
+          collision_props: null
+          activate_contact_sensors: false
+          visual_material_path: material
+          visual_material:
+            func: isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface
+            diffuse_color:
+            - 0.0
+            - 1.0
+            - 0.0
+            emissive_color:
+            - 0.0
+            - 0.0
+            - 0.0
+            roughness: 0.5
+            metallic: 0.0
+            opacity: 1.0
+          physics_material_path: material
+          physics_material: null
+          radius: 0.02
+  cup_cfg:
+    class_type: isaaclab.assets.rigid_object.rigid_object:RigidObject
+    prim_path: /World/envs/env_.*/Cup
+    spawn:
+      func: isaaclab.sim.spawners.from_files.from_files:spawn_from_usd
+      visible: true
+      semantic_tags: null
+      copy_from_source: true
+      mass_props: null
+      deformable_props: null
+      rigid_props:
+        rigid_body_enabled: null
+        kinematic_enabled: null
+        disable_gravity: false
+        linear_damping: null
+        angular_damping: null
+        max_linear_velocity: 100.0
+        max_angular_velocity: 100.0
+        max_depenetration_velocity: 5.0
+        max_contact_impulse: null
+        enable_gyroscopic_forces: null
+        retain_accelerations: null
+        solver_position_iteration_count: 16
+        solver_velocity_iteration_count: 1
+        sleep_threshold: null
+        stabilization_threshold: null
+      collision_props: null
+      activate_contact_sensors: true
+      scale:
+      - 1.0
+      - 1.0
+      - 1.0
+      articulation_props:
+        articulation_enabled: false
+        enabled_self_collisions: null
+        solver_position_iteration_count: null
+        solver_velocity_iteration_count: null
+        sleep_threshold: null
+        stabilization_threshold: null
+        fix_root_link: null
+      fixed_tendons_props: null
+      spatial_tendons_props: null
+      joint_drive_props: null
+      visual_material_path: material
+      visual_material: null
+      usd_path: /home/user/rl_ws/hdgp/assets/cup/cup_big_sdf.usd
+      variants: null
+    init_state:
+      pos:
+      - 0.5
+      - 0.0
+      - 0.25
+      rot:
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      lin_vel:
+      - 0.0
+      - 0.0
+      - 0.0
+      ang_vel:
+      - 0.0
+      - 0.0
+      - 0.0
+    collision_group: 0
+    debug_vis: false
+  hand_body_names:
+  - rl_dg_palm
+  - rl_dg_1_4
+  - rl_dg_2_4
+  - rl_dg_3_4
+  - rl_dg_4_4
+  - rl_dg_5_4
+  actuated_joint_names:
+  - openarm_right_joint1
+  - openarm_right_joint2
+  - openarm_right_joint3
+  - openarm_right_joint4
+  - openarm_right_joint5
+  - openarm_right_joint6
+  - openarm_right_joint7
+  - rj_dg_1_1
+  - rj_dg_1_2
+  - rj_dg_1_3
+  - rj_dg_1_4
+  - rj_dg_2_1
+  - rj_dg_2_2
+  - rj_dg_2_3
+  - rj_dg_2_4
+  - rj_dg_3_1
+  - rj_dg_3_2
+  - rj_dg_3_3
+  - rj_dg_3_4
+  - rj_dg_4_1
+  - rj_dg_4_2
+  - rj_dg_4_3
+  - rj_dg_4_4
+  - rj_dg_5_1
+  - rj_dg_5_2
+  - rj_dg_5_3
+  - rj_dg_5_4
+  left_arm_joint_names:
+  - openarm_left_joint1
+  - openarm_left_joint2
+  - openarm_left_joint3
+  - openarm_left_joint4
+  - openarm_left_joint5
+  - openarm_left_joint6
+  - openarm_left_joint7
+  - openarm_left_finger_joint1
+  - openarm_left_finger_joint2
+agent:
+  params:
+    seed: 42
+    env:
+      clip_observations: 5.0
+      clip_actions: 1.0
+    algo:
+      name: a2c_continuous
+    model:
+      name: continuous_a2c_logstd
+    network:
+      name: actor_critic
+      separate: false
+      space:
+        continuous:
+          mu_activation: None
+          sigma_activation: None
+          mu_init:
+            name: default
+          sigma_init:
+            name: const_initializer
+            val: 0
+          fixed_sigma: true
+      mlp:
+        units:
+        - 512
+        - 256
+        - 128
+        activation: elu
+        d2rl: false
+        initializer:
+          name: default
+        regularizer:
+          name: None
+    load_checkpoint: false
+    load_path: /home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth
+    config:
+      name: 5g_grasp_right-v7-2
+      full_experiment_name: test2
+      env_name: rlgpu
+      device: cuda:0
+      device_name: cuda:0
+      multi_gpu: false
+      ppo: true
+      mixed_precision: true
+      normalize_input: true
+      normalize_value: true
+      value_bootstrap: false
+      num_actors: -1
+      reward_shaper:
+        scale_value: 0.01
+      normalize_advantage: true
+      gamma: 0.998
+      tau: 0.95
+      learning_rate: '3e-4'
+      lr_schedule: linear
+      schedule_type: standard
+      kl_threshold: 0.013
+      score_to_win: 100000000
+      max_epochs: 10000
+      save_best_after: 100
+      save_frequency: 50
+      print_stats: true
+      grad_norm: 1.0
+      entropy_coef: 0.002
+      truncate_grads: true
+      e_clip: 0.2
+      horizon_length: 64
+      minibatch_size: 32768
+      mini_epochs: 4
+      critic_coef: 4
+      clip_value: true
+      clip_actions: false
+      bound_loss_type: regularization
+      bounds_loss_coef: 0.005
+      has_central_value: true
+      central_value_config:
+        normalize_input: true
+        normalize_value: true
+        value_bootstrap: false
+        minibatch_size: 32768
+        mini_epochs: 4
+        learning_rate: '3e-4'
+        lr_schedule: linear
+        kl_threshold: 0.013
+        clip_value: true
+        e_clip: 0.2
+        network:
+          name: actor_critic
+          central_value: true
+          mlp:
+            units:
+            - 512
+            - 256
+            - 128
+            activation: elu
+            d2rl: false
+            initializer:
+              name: default
+            regularizer:
+              name: None

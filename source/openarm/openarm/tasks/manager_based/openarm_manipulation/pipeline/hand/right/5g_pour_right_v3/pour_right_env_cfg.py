@@ -457,6 +457,19 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
+    # warmstart 초기 상태 소스:
+    #   "disk"   : grasp 가 디스크에 저장한 캐시(grasp_warm_v7_2.hdf5) 로드 (권장).
+    #              startup 시 grasp policy rollout 불필요 → 분포/포맷 불일치 제거.
+    #   "rollout": (레거시 fallback) 기존처럼 startup 에서 v7-2 체크포인트를
+    #              pour env 안에서 rollout 해 캐시 수집.
+    #   "preset" : 캐시 없이 preset/pregrasp 합성 시작 (디버그용).
+    # disk 로드 실패(파일 없음/검증 실패) 시 rollout 으로 안전하게 degrade한다.
+    # 기본 "disk": train.py 가 override 없이도 grasp_warm_v7_2.hdf5 를 로드.
+    # 파일이 없으면 자동으로 rollout 으로 fallback 하므로 안전.
+    warm_state_source: str = "disk"
+    warm_state_paths: tuple[str, ...] = (
+        _os.path.normpath(_os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, "grasp_warm_v7_2.hdf5")),
+    )
     freeze_grasp_hand_during_episode: bool = False
     # [test8] 0.04→0.015: 최상위 비드 z=0.088→0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)

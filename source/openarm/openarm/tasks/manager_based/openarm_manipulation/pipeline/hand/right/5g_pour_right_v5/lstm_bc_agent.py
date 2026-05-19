@@ -159,7 +159,7 @@ class PourLstmBCAgent(A2CAgent):
     # LSTM 초기 상태 생성
     # ------------------------------------------------------------------
 
-    def _make_zero_rnn_states(self, batch_size: int, device) -> list[Tensor] | None:
+    def _make_zero_rnn_states(self, batch_size: int, device) -> tuple[Tensor, ...] | None:
         """BC forward 용 zero LSTM/GRU 상태 생성.
 
         rl_games network_builder 는 rnn_states=None 허용 안 함.
@@ -167,11 +167,17 @@ class PourLstmBCAgent(A2CAgent):
         rnn = getattr(self.model.a2c_network, "rnn", None)
         if rnn is None:
             return None
-        num_layers  = int(getattr(rnn, "num_layers", 1))
-        hidden_size = int(getattr(rnn, "hidden_size", 256))
-        rnn_name    = str(getattr(rnn, "rnn_name", "lstm")).lower()
+        # rl_games wraps torch RNN modules inside RnnWithDones as `rnn.rnn`.
+        core_rnn = getattr(rnn, "rnn", rnn)
+        num_layers = int(
+            getattr(core_rnn, "num_layers", getattr(self.model.a2c_network, "rnn_layers", 1))
+        )
+        hidden_size = int(
+            getattr(core_rnn, "hidden_size", getattr(self.model.a2c_network, "rnn_units", 256))
+        )
+        rnn_name = str(getattr(self.model.a2c_network, "rnn_name", "lstm")).lower()
         z = torch.zeros(num_layers, batch_size, hidden_size, device=device)
-        return [z.clone(), z.clone()] if rnn_name == "lstm" else [z.clone()]
+        return (z.clone(), z.clone()) if rnn_name == "lstm" else (z.clone(),)
 
     # ------------------------------------------------------------------
     # BC NLL loss

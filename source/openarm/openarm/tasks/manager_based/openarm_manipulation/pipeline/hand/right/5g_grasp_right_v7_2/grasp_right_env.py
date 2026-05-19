@@ -92,6 +92,7 @@ from .grasp_right_preset import (
 )
 from .grasp_right_utils import scale, to_torch
 from .demo_grasp_reset import DemoGraspResetBank, compute_demo_cup_spawn_local
+from .warm_state_cache import GraspWarmStateCache
 
 
 class GraspRightEnv(DirectRLEnv):
@@ -1035,12 +1036,78 @@ class GraspRightEnv(DirectRLEnv):
         self.success_flag.copy_(in_or_past_lift & lifted & grasped)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
 
+        if self.cfg.enable_warm_state_export:
+            # success 시 에피소드가 곧 종료(terminated)되므로 이 스텝의 상태가
+            # 곧 terminal grasp 상태. cup_z_world 는 위에서 이미 계산됨.
+            self._maybe_export_warm_states(cup_z_world[:, 2])
+
         terminated = out_x | out_y | fallen | tipped | self.success_flag
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         self.extras["object_z"] = self.object_pos[:, 2].mean()
 
         return terminated, truncated
+
+    # ------------------------------------------------------------------
+    # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart)
+    # ------------------------------------------------------------------
+    def _maybe_export_warm_states(self, cup_up_z: torch.Tensor) -> None:
+        """grasp 성공 종료 상태를 디스크 캐시에 누적, 목표치 도달 시 1회 저장.
+
+        cup_up_z: cup local +Z 축의 world z 성분 (uprightness). 호출부에서
+        이미 계산된 값을 재사용한다.
+        """
+        if getattr(self, "warm_export_done", False):
+            return
+
+        if not hasattr(self, "_warm_export_cache"):
+            self._warm_export_cache = GraspWarmStateCache(
+                capacity=int(self.cfg.warm_state_target_count),
+                device=self.device,
+                source_meta={
+                    "object_spawn_z": self.cfg.object_spawn_z,
+                    "lift_success_height": self.cfg.lift_success_height,
+                    "object_spawn_x_center": self.cfg.object_spawn_x_center,
+                    "object_spawn_y_center": self.cfg.object_spawn_y_center,
+                    "object_spawn_xy_range": self.cfg.object_spawn_xy_range,
+                    "palm_min_x": float(self.palm_mins[0]),
+                    "palm_min_y": float(self.palm_mins[1]),
+                    "palm_min_z": float(self.palm_mins[2]),
+                    "palm_max_x": float(self.palm_maxs[0]),
+                    "palm_max_y": float(self.palm_maxs[1]),
+                    "palm_max_z": float(self.palm_maxs[2]),
+                },
+            )
+            self.warm_export_done = False
+
+        j7 = self.robot.data.joint_pos[:, self.arm_dof_indices[6]]
+        j7_in_range = (j7 >= self.cfg.warm_j7_min) & (j7 <= self.cfg.warm_j7_max)
+        upright = cup_up_z > self.cfg.warm_cup_upright_min
+        warm_ok = self.success_flag & upright & j7_in_range
+
+        ids = warm_ok.nonzero(as_tuple=False).squeeze(-1)
+        if ids.numel() == 0:
+            return
+
+        joint_pos = self.robot.data.joint_pos[ids]
+        self._warm_export_cache.append(
+            arm=joint_pos[:, self.arm_dof_indices],
+            hand=joint_pos[:, self.hand_dof_indices],
+            palm_euler=self.palm_pose_targets[ids],
+            cup_pos_local=self.object_pos[ids],
+            cup_quat_wxyz=self.object_rot[ids],
+            num_contacts=self.num_contacts_buf[ids],
+        )
+
+        if self._warm_export_cache.is_full:
+            path = self.cfg.warm_state_export_path
+            self._warm_export_cache.save_hdf5(path)
+            self.warm_export_done = True
+            print(
+                f"[5g_grasp_right_v7_2] warm-state export complete: "
+                f"{len(self._warm_export_cache)} states → {path}",
+                flush=True,
+            )
 
     # ------------------------------------------------------------------
     # Reset

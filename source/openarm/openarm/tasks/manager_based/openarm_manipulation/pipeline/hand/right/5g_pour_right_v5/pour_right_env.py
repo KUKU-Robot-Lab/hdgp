@@ -35,6 +35,7 @@ import math
 import sys
 from pathlib import Path
 from collections.abc import Sequence
+from importlib import import_module
 
 import torch
 import torch.nn as nn
@@ -95,6 +96,15 @@ from .pour_right_preset import (
 from .pour_right_utils import scale, to_torch
 from .demo_pose_reference import DemoPoseReferenceBank
 from .success_traj_buffer import SuccessTrajBuffer
+from .warmstart_logic import select_warmstart_success
+from .warm_state_bank import PourWarmStateBank
+
+_demo_grasp_reset = import_module(
+    "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right."
+    "5g_grasp_right_v7_2.demo_grasp_reset"
+)
+DemoGraspResetBank = _demo_grasp_reset.DemoGraspResetBank
+compute_demo_cup_spawn_local = _demo_grasp_reset.compute_demo_cup_spawn_local
 
 
 
@@ -302,6 +312,19 @@ class PourRightEnv(DirectRLEnv):
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
         # [x, y, z, qx, qy, qz, qw]
         self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 7, device=self.device)
+        # warmstart 수집 전용: euler ZYX 형식 (v7-2 학습과 동일한 직접 덧셈 방식)
+        # [x, y, z, ez, ey, ex]
+        self.pregrasp_palm_pose_buf_euler = torch.zeros(self.num_envs, 6, device=self.device)
+        self.demo_grasp_reset_bank = (
+            DemoGraspResetBank.from_hdf5_paths(cfg.demo_grasp_pose_paths, device=self.device)
+            if cfg.enable_demo_grasp_reset
+            else None
+        )
+        self.demo_lift_arm_target = (
+            self.demo_grasp_reset_bank.lift_medoid_arm_joint_pos
+            if self.demo_grasp_reset_bank is not None
+            else None
+        )
 
         # ----------------------------------------------------------------
         # Hand poses (per-finger lerp용)
@@ -949,7 +972,33 @@ class PourRightEnv(DirectRLEnv):
         )
 
         if self._warmstart_collect_mode:
+            # v7-2 학습과 동일한 파이프라인: euler 직접 덧셈 + euler_zyx Fabrics
             delta = scale(self._ema_palm_action, self.delta_mins_warmstart_collect, self.delta_maxs_warmstart_collect)
+            palm_pose_euler = self.pregrasp_palm_pose_buf_euler + delta   # (N, 6)
+            palm_mins = torch.minimum(self.palm_mins.unsqueeze(0), self.pregrasp_palm_pose_buf_euler)
+            palm_maxs = torch.maximum(self.palm_maxs.unsqueeze(0), self.pregrasp_palm_pose_buf_euler)
+            palm_pose_euler = torch.max(
+                torch.min(palm_pose_euler, palm_maxs),
+                palm_mins,
+            )
+            # palm_pose_targets에는 quaternion으로 변환 저장 (캐시 캡처용)
+            palm_pose_quat = torch.zeros_like(self.pregrasp_palm_pose_buf)
+            palm_pose_quat[:, :3] = palm_pose_euler[:, :3]
+            palm_pose_quat[:, 3:7] = self._quat_xyzw_from_euler_zyx(palm_pose_euler[:, 3:6])
+            self.palm_pose_targets.copy_(palm_pose_quat)
+            self.hand_pca_targets.zero_()
+            self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
+
+            self.open_tesollo_fabric.set_features(
+                self.hand_pca_targets,
+                palm_pose_euler,
+                "euler_zyx",
+                self.fabric_q.detach(),
+                self.fabric_qd.detach(),
+                self.object_ids,
+                self.object_indicator,
+                self.fabric_damping_gain,
+            )
         else:
             delta = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
@@ -960,38 +1009,38 @@ class PourRightEnv(DirectRLEnv):
                 1.0,
             )
             delta[:, 3:6] = delta[:, 3:6] * tilt_gate.unsqueeze(1)
-        # Rotation action is interpreted in a cup-local basis:
-        # [spin around cup-up, tilt toward target opening, orthogonal tilt].
-        delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
-        palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
-        palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3]
-        palm_pose[:, :3] = torch.max(
-            torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
-            self.palm_mins[:3].unsqueeze(0),
-        )
-        palm_pose[:, 3:7] = self._compose_world_delta_quat_xyzw(
-            self.pregrasp_palm_pose_buf[:, 3:7],
-            delta_rotvec_world,
-        )
-        self.palm_pose_targets.copy_(palm_pose)
-        self.hand_pca_targets.zero_()
+            # Rotation action is interpreted in a cup-local basis:
+            # [spin around cup-up, tilt toward target opening, orthogonal tilt].
+            delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
+            palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
+            palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3]
+            palm_pose[:, :3] = torch.max(
+                torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
+                self.palm_mins[:3].unsqueeze(0),
+            )
+            palm_pose[:, 3:7] = self._compose_world_delta_quat_xyzw(
+                self.pregrasp_palm_pose_buf[:, 3:7],
+                delta_rotvec_world,
+            )
+            self.palm_pose_targets.copy_(palm_pose)
+            self.hand_pca_targets.zero_()
 
-        # null-space attractor를 현재 관절 위치로 추적:
-        # default_config가 warmstart grasp pose로 고정되면 pour transport 방향으로
-        # 이동할 때 매 step 파지 위치로 당기는 저항이 발생함.
-        # 현재 fabric_q를 default_config로 덮어써서 null-space 당김 제거.
-        self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
+            # null-space attractor를 현재 관절 위치로 추적:
+            # default_config가 warmstart grasp pose로 고정되면 pour transport 방향으로
+            # 이동할 때 매 step 파지 위치로 당기는 저항이 발생함.
+            # 현재 fabric_q를 default_config로 덮어써서 null-space 당김 제거.
+            self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
 
-        self.open_tesollo_fabric.set_features(
-            self.hand_pca_targets,
-            self.palm_pose_targets,
-            "quaternion",
-            self.fabric_q.detach(),
-            self.fabric_qd.detach(),
-            self.object_ids,
-            self.object_indicator,
-            self.fabric_damping_gain,
-        )
+            self.open_tesollo_fabric.set_features(
+                self.hand_pca_targets,
+                self.palm_pose_targets,
+                "quaternion",
+                self.fabric_q.detach(),
+                self.fabric_qd.detach(),
+                self.object_ids,
+                self.object_indicator,
+                self.fabric_damping_gain,
+            )
         for _ in range(self.cfg.fabric_decimation):
             self.fabric_q, self.fabric_qd, self.fabric_qdd = self.open_tesollo_integrator.step(
                 self.fabric_q.detach(),
@@ -1016,7 +1065,7 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_qd[:, NUM_ARM_DOF:].zero_()
 
         # warmstart lift phase (v7-2 lift logic 미러):
-        #   step 480: 팔/손 자세 캡처 + prelift 목표 산정 (j4 +0.31)
+        #   step 480: 팔/손 자세 캡처 + demo prelift 목표 산정 (fallback: j4 +0.31)
         #   step 480+: Fabrics arm 동결 (integrator 값 무시, 실제 관절로 덮어쓰기)
         # → _apply_action 에서 선형보간으로 들어올림
         if self._warmstart_collect_mode:
@@ -1031,8 +1080,11 @@ class PourRightEnv(DirectRLEnv):
                 self._warmstart_lift_finger_start = torch.where(
                     just_entering.unsqueeze(1), actual_finger, self._warmstart_lift_finger_start
                 )
-                prelift = actual_arm.clone()
-                prelift[:, 3] = (actual_arm[:, 3] + 0.31).clamp(max=3.14)
+                if self.demo_lift_arm_target is not None:
+                    prelift = self.demo_lift_arm_target.unsqueeze(0).expand(self.num_envs, -1)
+                else:
+                    prelift = actual_arm.clone()
+                    prelift[:, 3] = (actual_arm[:, 3] + 0.31).clamp(max=3.14)
                 self._warmstart_prelift_arm_pos = torch.where(
                     just_entering.unsqueeze(1), prelift, self._warmstart_prelift_arm_pos
                 )
@@ -1975,53 +2027,78 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
 
-        # ---- 3. 컵 spawn 위치 계산 (±0.06m 랜덤) ----
-        obj_x = self.cfg.object_spawn_x_center + (
-            torch.rand(n, device=self.device) - 0.5
-        ) * 2.0 * self.cfg.object_spawn_xy_range
-        obj_y = self.cfg.object_spawn_y_center + (
-            torch.rand(n, device=self.device) - 0.5
-        ) * 2.0 * self.cfg.object_spawn_xy_range
-        obj_pos_local = torch.stack(
-            [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
-        )
+        use_demo_grasp_reset = self._warmstart_collect_mode and self.demo_grasp_reset_bank is not None
+        if use_demo_grasp_reset:
+            demo_indices = torch.randint(
+                self.demo_grasp_reset_bank.num_demos,
+                (n,),
+                device=self.device,
+            )
+            start_arm = self.demo_grasp_reset_bank.start_arm_joint_pos[demo_indices]
+            start_hand = self.demo_grasp_reset_bank.start_hand_joint_pos[demo_indices]
+            pregrasp_palm_pose_euler = (
+                self.demo_grasp_reset_bank.start_palm_pose_euler_zyx[demo_indices].clone()
+            )
+            pregrasp_palm_pose_euler[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
+            q_pregrasp = torch.cat([start_arm, start_hand], dim=1)
+            approach_hand = start_hand
+
+            noise_xy = torch.stack([
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
+            ], dim=1)
+            obj_pos_local = compute_demo_cup_spawn_local(
+                pregrasp_palm_pose_euler,
+                self.pregrasp_offset[:2],
+                self.cfg.object_spawn_z,
+                noise_xy,
+            )
+        else:
+            # ---- 3. 컵 spawn 위치 계산 (±0.06m 랜덤) ----
+            obj_x = self.cfg.object_spawn_x_center + (
+                torch.rand(n, device=self.device) - 0.5
+            ) * 2.0 * self.cfg.object_spawn_xy_range
+            obj_y = self.cfg.object_spawn_y_center + (
+                torch.rand(n, device=self.device) - 0.5
+            ) * 2.0 * self.cfg.object_spawn_xy_range
+            obj_pos_local = torch.stack(
+                [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
+            )
+
+            # ---- 4. FABRICS pregrasp rollout ----
+            noise = torch.stack([
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
+            ], dim=1)
+            pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
+
+            pregrasp_palm_pose_euler = torch.zeros(n, 6, device=self.device)
+            pregrasp_palm_pose_euler[:, :3] = pregrasp_pos
+            pregrasp_palm_pose_euler[:, 3] = math.radians(90.0)
+            pregrasp_palm_pose_euler[:, 4] = math.radians(0.0)
+            pregrasp_palm_pose_euler[:, 5] = math.radians(90.0)
+            pregrasp_palm_pose_euler = torch.max(
+                torch.min(pregrasp_palm_pose_euler, self.palm_maxs.unsqueeze(0)),
+                self.palm_mins.unsqueeze(0),
+            )
+
+            # ---- cache lookup: spawn 위치 → 가장 가까운 grid point arm IK ----
+            xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
+            yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
+            q_pregrasp = self.fabric_q[env_ids].clone()
+            q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[xi, yi]
+            approach_hand = self.hand_open_pose.unsqueeze(0).expand(n, -1)
+            q_pregrasp[:, NUM_ARM_DOF:] = approach_hand
+
         self.object_init_pos[env_ids] = obj_pos_local
-
-        # ---- 4. FABRICS pregrasp rollout ----
-        noise = torch.stack([
-            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
-            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
-            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
-        ], dim=1)
-        pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
-
-        pregrasp_palm_pose_euler = torch.zeros(n, 6, device=self.device)
-        pregrasp_palm_pose_euler[:, :3] = pregrasp_pos
-        pregrasp_palm_pose_euler[:, 3] = math.radians(90.0)
-        pregrasp_palm_pose_euler[:, 4] = math.radians(0.0)
-        pregrasp_palm_pose_euler[:, 5] = math.radians(90.0)
-        pregrasp_palm_pose_euler = torch.max(
-            torch.min(pregrasp_palm_pose_euler, self.palm_maxs.unsqueeze(0)),
-            self.palm_mins.unsqueeze(0),
-        )
         pregrasp_palm_pose = torch.zeros(n, 7, device=self.device)
         pregrasp_palm_pose[:, :3] = pregrasp_palm_pose_euler[:, :3]
         pregrasp_palm_pose[:, 3:7] = self._quat_xyzw_from_euler_zyx(pregrasp_palm_pose_euler[:, 3:6])
 
-        # ---- cache lookup: spawn 위치 → 가장 가까운 grid point arm IK ----
-        xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
-        yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
-        q_pregrasp = self.fabric_q[env_ids].clone()
-        q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[xi, yi]
-
         self.fabric_q[env_ids] = q_pregrasp
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
-
-        # hand는 APPROACH_POSE로 강제
-        approach_hand = self.hand_open_pose.unsqueeze(0).expand(n, -1)
-        self.fabric_q[env_ids, NUM_ARM_DOF:] = approach_hand
-        self.fabric_qd[env_ids, NUM_ARM_DOF:].zero_()
 
         # ---- 5. pregrasp / prelift 버퍼 저장 ----
         self.pregrasp_arm_pos_buf[env_ids] = q_pregrasp[:, :NUM_ARM_DOF]
@@ -2031,6 +2108,8 @@ class PourRightEnv(DirectRLEnv):
 
         # delta action 기준점: action=0 → pregrasp 위치 유지
         self.pregrasp_palm_pose_buf[env_ids] = pregrasp_palm_pose
+        # warmstart 수집용 euler 버퍼 (v7-2 학습 형식과 동일)
+        self.pregrasp_palm_pose_buf_euler[env_ids] = pregrasp_palm_pose_euler
         self._grasp_rel_palm_to_cup_init[env_ids] = obj_pos_local - pregrasp_palm_pose[:, :3]
         self._grasp_cup_height_init[env_ids] = obj_pos_local[:, 2]
 
@@ -2182,9 +2261,80 @@ class PourRightEnv(DirectRLEnv):
         bead_state[..., 3] = 1.0
         self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
 
+    def _load_warmstart_cache_from_disk(self) -> bool:
+        """grasp 디스크 캐시를 로드해 _warmstart_* 버퍼를 직접 채운다.
+
+        성공 시 True. 파일 없음/검증 실패 등은 False 를 반환해 호출부가
+        rollout 으로 안전하게 degrade 하게 한다 (silent fail 금지: 로그 출력).
+        """
+        palm_bounds = (
+            float(self.palm_mins[0]),
+            float(self.palm_mins[1]),
+            float(self.palm_mins[2]),
+            float(self.palm_maxs[0]),
+            float(self.palm_maxs[1]),
+            float(self.palm_maxs[2]),
+        )
+        try:
+            bank = PourWarmStateBank.from_hdf5_paths(
+                self.cfg.warm_state_paths,
+                device=self.device,
+                expected_object_spawn_z=self.cfg.object_spawn_z,
+                expected_palm_bounds=palm_bounds,
+            )
+        except (FileNotFoundError, KeyError, ValueError) as exc:
+            print(f"[5g_pour_right_v5] warm-state disk load error: {exc}", flush=True)
+            return False
+
+        n = len(bank)
+        if n == 0:
+            print("[5g_pour_right_v5] warm-state cache is empty on disk.", flush=True)
+            return False
+
+        # 버퍼를 디스크 캐시 크기로 재할당 (warmstart_cache_size 무관, 전량 활용)
+        self._warmstart_arm_pos = bank.arm_joint_pos.clone()
+        self._warmstart_hand_pos = bank.hand_joint_pos.clone()
+        self._warmstart_palm_pose = bank.palm_pose_quat_xyzw.clone()  # (n,7) pos+quat_xyzw
+        # cup 은 grasp 성공 당시의 실제 자세로 텔레포트한다.
+        # upright(identity) 강제는 손-컵 상대 자세를 깨뜨려(손가락이 컵 벽을
+        # 파고듦) hold 중 컵 이탈/손가락 끼임을 유발한다. bead 는 hold 종료
+        # 후 안정화된 컵 위치에서 소환되므로 upright 강제는 불필요하다.
+        cup_pose = torch.zeros(n, 7, device=self.device)
+        cup_pose[:, :3] = bank.cup_pos_local
+        cup_pose[:, 3:7] = bank.cup_quat_wxyz  # 실제 grasp cup orientation (wxyz)
+        self._warmstart_cup_pose = cup_pose
+        self._warmstart_cache_count = n
+
+        print(
+            f"[5g_pour_right_v5] loaded {n} warmstart states from disk "
+            f"({', '.join(bank.source_paths)}).",
+            flush=True,
+        )
+        return True
+
     def _build_warmstart_reset_cache(self) -> None:
         if not self.cfg.enable_warmstart_reset:
             return
+
+        source = getattr(self.cfg, "warm_state_source", "rollout")
+
+        if source == "preset":
+            # 캐시 없이 시작 → _reset_idx 가 일반 pregrasp 경로 사용 (디버그용)
+            print(
+                "[5g_pour_right_v5] warm_state_source='preset': "
+                "skipping warmstart cache (using pregrasp reset).",
+                flush=True,
+            )
+            return
+
+        if source == "disk":
+            if self._load_warmstart_cache_from_disk():
+                return
+            print(
+                "[5g_pour_right_v5] disk warm-state load failed; "
+                "falling back to checkpoint rollout.",
+                flush=True,
+            )
 
         ckpt = self.cfg.warmstart_checkpoint_path
         if not ckpt:
@@ -2266,10 +2416,35 @@ class PourRightEnv(DirectRLEnv):
 
         lifted = self.object_pos[env_ids_t, 2] > (self.object_init_pos[env_ids_t, 2] + self.cfg.lift_success_height)
         grasped = self.num_contacts_buf[env_ids_t] >= MIN_CONTACTS_FOR_SUCCESS
-        upright = self._source_up_axis_w[env_ids_t, 2] > 0.90
+        up_z = self._source_up_axis_w[env_ids_t, 2]
         j7 = self.robot.data.joint_pos[env_ids_t, self.arm_dof_indices[6]]
-        j7_in_range = (j7 >= 0.20) & (j7 <= 1.50)
-        warmstart_success = lifted & grasped & upright & j7_in_range
+        warmstart_success, warmstart_diag = select_warmstart_success(lifted, grasped, up_z, j7)
+        j7_in_range = warmstart_diag["j7_in_range"]
+        upright_0_7 = warmstart_diag["upright_0_7"]
+        upright_0_9 = warmstart_diag["upright_0_9"]
+
+        # 디버그: 조건별 통과율을 주기적으로 출력
+        if not hasattr(self, '_warmstart_debug_ep_count'):
+            self._warmstart_debug_ep_count = 0
+        self._warmstart_debug_ep_count += len(env_ids_t)
+        if self._warmstart_debug_ep_count % (self.num_envs * 2) < len(env_ids_t):
+            cup_z = self.object_pos[env_ids_t, 2]
+            init_z = self.object_init_pos[env_ids_t, 2]
+            print(
+                f"[warmstart debug] envs={len(env_ids_t)}"
+                f" lifted={lifted.sum().item()}/{len(env_ids_t)}"
+                f" (cup_z~{cup_z.mean():.3f} init_z~{init_z.mean():.3f})"
+                f" grasped={grasped.sum().item()}/{len(env_ids_t)}"
+                f" (contacts~{self.num_contacts_buf[env_ids_t].float().mean():.1f})"
+                f" upright_0.7={upright_0_7.sum().item()}/{len(env_ids_t)}"
+                f" upright_0.9={upright_0_9.sum().item()}/{len(env_ids_t)}"
+                f" (up_z min/mean/max={up_z.min():.3f}/{up_z.mean():.3f}/{up_z.max():.3f})"
+                f" j7_ok={j7_in_range.sum().item()}/{len(env_ids_t)}"
+                f" (j7~{j7.mean():.3f})"
+                f" success={warmstart_success.sum().item()}"
+                f" cache_count={self._warmstart_cache_count}/{self._warmstart_arm_pos.shape[0]}",
+                flush=True,
+            )
 
         success_local = warmstart_success.nonzero(as_tuple=False).squeeze(-1)
         if success_local.numel() == 0:
@@ -2339,6 +2514,9 @@ class PourRightEnv(DirectRLEnv):
             torch.min(warmstart_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
             self.palm_mins[:3].unsqueeze(0),
         )
+        # palm pos 가 pour workspace 로 잘리면 palm target ↔ 실제 arm 자세가
+        # 괴리될 수 있다. 1회 진단 로그용 최대 클램프량 기록.
+        _ws_clamp_delta = (warmstart_palm_pose[:, :3] - palm_pose[:, :3]).abs().max().item()
         self.pregrasp_palm_pose_buf[env_ids] = warmstart_palm_pose
         self.palm_pose_targets[env_ids] = warmstart_palm_pose
         self.hand_joint_targets[env_ids] = hand_pos
@@ -2422,7 +2600,15 @@ class PourRightEnv(DirectRLEnv):
                 f"min={mouth_xy_distance.min().item():.4f} max={mouth_xy_distance.max().item():.4f} | "
                 f"mouth_z_clearance mean={mouth_z_clearance.mean().item():.4f} "
                 f"min={mouth_z_clearance.min().item():.4f} max={mouth_z_clearance.max().item():.4f} | "
-                f"warmstart_palm_z mean={warmstart_palm_pose[:, 2].mean().item():.4f}",
+                f"warmstart_palm_z mean={warmstart_palm_pose[:, 2].mean().item():.4f} | "
+                f"palm_pos_clamp_max={_ws_clamp_delta:.4f}",
                 flush=True,
             )
+            if _ws_clamp_delta > 0.02:
+                print(
+                    "[5g_pour_right_v5][warmstart_reset][WARN] palm pos clamped by "
+                    f"{_ws_clamp_delta:.4f}m → palm target may decouple from arm pose. "
+                    "Check grasp/pour workspace alignment.",
+                    flush=True,
+                )
             self._warmstart_reset_debug_printed = True

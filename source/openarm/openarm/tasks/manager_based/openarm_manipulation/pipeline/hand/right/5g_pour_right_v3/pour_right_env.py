@@ -94,6 +94,7 @@ from .pour_right_preset import (
 )
 from .pour_right_utils import scale, to_torch
 from .demo_pose_reference import DemoPoseReferenceBank
+from .warm_state_bank import PourWarmStateBank
 
 
 
@@ -2132,9 +2133,80 @@ class PourRightEnv(DirectRLEnv):
         bead_state[..., 3] = 1.0
         self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
 
+    def _load_warmstart_cache_from_disk(self) -> bool:
+        """grasp 디스크 캐시를 로드해 _warmstart_* 버퍼를 직접 채운다.
+
+        성공 시 True. 파일 없음/검증 실패 등은 False 를 반환해 호출부가
+        rollout 으로 안전하게 degrade 하게 한다 (silent fail 금지: 로그 출력).
+        """
+        palm_bounds = (
+            float(self.palm_mins[0]),
+            float(self.palm_mins[1]),
+            float(self.palm_mins[2]),
+            float(self.palm_maxs[0]),
+            float(self.palm_maxs[1]),
+            float(self.palm_maxs[2]),
+        )
+        try:
+            bank = PourWarmStateBank.from_hdf5_paths(
+                self.cfg.warm_state_paths,
+                device=self.device,
+                expected_object_spawn_z=self.cfg.object_spawn_z,
+                expected_palm_bounds=palm_bounds,
+            )
+        except (FileNotFoundError, KeyError, ValueError) as exc:
+            print(f"[5g_pour_right_v3] warm-state disk load error: {exc}", flush=True)
+            return False
+
+        n = len(bank)
+        if n == 0:
+            print("[5g_pour_right_v3] warm-state cache is empty on disk.", flush=True)
+            return False
+
+        # 버퍼를 디스크 캐시 크기로 재할당 (warmstart_cache_size 무관, 전량 활용)
+        self._warmstart_arm_pos = bank.arm_joint_pos.clone()
+        self._warmstart_hand_pos = bank.hand_joint_pos.clone()
+        self._warmstart_palm_pose = bank.palm_pose_quat_xyzw.clone()  # (n,7) pos+quat_xyzw
+        # cup 은 grasp 성공 당시의 실제 자세로 텔레포트한다.
+        # upright(identity) 강제는 손-컵 상대 자세를 깨뜨려(손가락이 컵 벽을
+        # 파고듦) hold 중 컵 이탈/손가락 끼임을 유발한다. bead 는 hold 종료
+        # 후 안정화된 컵 위치에서 소환되므로 upright 강제는 불필요하다.
+        cup_pose = torch.zeros(n, 7, device=self.device)
+        cup_pose[:, :3] = bank.cup_pos_local
+        cup_pose[:, 3:7] = bank.cup_quat_wxyz  # 실제 grasp cup orientation (wxyz)
+        self._warmstart_cup_pose = cup_pose
+        self._warmstart_cache_count = n
+
+        print(
+            f"[5g_pour_right_v3] loaded {n} warmstart states from disk "
+            f"({', '.join(bank.source_paths)}).",
+            flush=True,
+        )
+        return True
+
     def _build_warmstart_reset_cache(self) -> None:
         if not self.cfg.enable_warmstart_reset:
             return
+
+        source = getattr(self.cfg, "warm_state_source", "rollout")
+
+        if source == "preset":
+            # 캐시 없이 시작 → _reset_idx 가 일반 pregrasp 경로 사용 (디버그용)
+            print(
+                "[5g_pour_right_v3] warm_state_source='preset': "
+                "skipping warmstart cache (using pregrasp reset).",
+                flush=True,
+            )
+            return
+
+        if source == "disk":
+            if self._load_warmstart_cache_from_disk():
+                return
+            print(
+                "[5g_pour_right_v3] disk warm-state load failed; "
+                "falling back to checkpoint rollout.",
+                flush=True,
+            )
 
         ckpt = self.cfg.warmstart_checkpoint_path
         if not ckpt:
@@ -2280,6 +2352,9 @@ class PourRightEnv(DirectRLEnv):
             torch.min(warmstart_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
             self.palm_mins[:3].unsqueeze(0),
         )
+        # palm pos 가 pour workspace 로 잘리면 palm target ↔ 실제 arm 자세가
+        # 괴리될 수 있다. 1회 진단 로그용 최대 클램프량 기록.
+        _ws_clamp_delta = (warmstart_palm_pose[:, :3] - palm_pose[:, :3]).abs().max().item()
         self.pregrasp_palm_pose_buf[env_ids] = warmstart_palm_pose
         self.palm_pose_targets[env_ids] = warmstart_palm_pose
         self.hand_joint_targets[env_ids] = hand_pos
@@ -2363,7 +2438,15 @@ class PourRightEnv(DirectRLEnv):
                 f"min={mouth_xy_distance.min().item():.4f} max={mouth_xy_distance.max().item():.4f} | "
                 f"mouth_z_clearance mean={mouth_z_clearance.mean().item():.4f} "
                 f"min={mouth_z_clearance.min().item():.4f} max={mouth_z_clearance.max().item():.4f} | "
-                f"warmstart_palm_z mean={warmstart_palm_pose[:, 2].mean().item():.4f}",
+                f"warmstart_palm_z mean={warmstart_palm_pose[:, 2].mean().item():.4f} | "
+                f"palm_pos_clamp_max={_ws_clamp_delta:.4f}",
                 flush=True,
             )
+            if _ws_clamp_delta > 0.02:
+                print(
+                    "[5g_pour_right_v3][warmstart_reset][WARN] palm pos clamped by "
+                    f"{_ws_clamp_delta:.4f}m → palm target may decouple from arm pose. "
+                    "Check grasp/pour workspace alignment.",
+                    flush=True,
+                )
             self._warmstart_reset_debug_printed = True

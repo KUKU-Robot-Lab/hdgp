@@ -148,6 +148,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pregrasp_noise_z:      float = 0.005
 
     # -----------------------------------------------------------------------
+    # Demo reset (match 5g_grasp_right_v7_2/test3 warmstart collection)
+    # -----------------------------------------------------------------------
+    enable_demo_grasp_reset: bool = True
+    demo_grasp_pose_paths: tuple[str, ...] = tuple(
+        _os.path.join(_HDGP_ROOT, "..", "datasets", f"pour_v1_a{i}.hdf5") for i in range(11, 21)
+    )
+
+    # -----------------------------------------------------------------------
     # Observation noise (sim2real domain randomization)
     # actor obs에만 적용; critic obs는 privileged clean state 유지
     # -----------------------------------------------------------------------
@@ -450,6 +458,17 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
+    # warmstart 초기 상태 소스 (5g_pour_right_v3 와 동일):
+    #   "disk"   : grasp 가 저장한 grasp_warm_v7_2.hdf5 로드 (기본, 권장).
+    #              startup 시 grasp policy rollout 불필요 → 분포/포맷 불일치 제거.
+    #   "rollout": (레거시 fallback) startup 에서 v7-2 체크포인트를 pour env
+    #              안에서 rollout 해 캐시 수집.
+    #   "preset" : 캐시 없이 preset/pregrasp 합성 시작 (디버그용).
+    # disk 로드 실패(파일 없음/검증 실패) 시 rollout 으로 안전 degrade.
+    warm_state_source: str = "disk"
+    warm_state_paths: tuple[str, ...] = (
+        _os.path.normpath(_os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, "grasp_warm_v7_2.hdf5")),
+    )
     freeze_grasp_hand_during_episode: bool = False
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(

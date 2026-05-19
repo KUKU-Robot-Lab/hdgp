@@ -202,6 +202,23 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
 
     # -----------------------------------------------------------------------
+    # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart 재사용)
+    # -----------------------------------------------------------------------
+    # 학습 루프에는 영향 없음 (기본 False). collect 스크립트/play 에서만 True.
+    # grasp 는 success 시 에피소드가 즉시 종료되므로, success_flag 가 True 가 되는
+    # 그 스텝의 상태가 곧 terminal grasp 상태(약 lift_success_height 만큼 들린 상태).
+    # pour 의 기존 warmstart store 기준(upright + j7 range)과 동일하게 맞춰
+    # 캐시 편향/포맷 불일치를 grasp 저장 시점 한 곳으로 수렴시킨다.
+    enable_warm_state_export: bool = False
+    warm_state_export_path: str = _os.path.normpath(
+        _os.path.join(_HDGP_ROOT, "..", "datasets", "grasp_warm_v7_2.hdf5")
+    )
+    warm_state_target_count: int = 2048
+    warm_cup_upright_min: float = 0.90   # cup_z_world[:,2] 최소 (pour store와 동일)
+    warm_j7_min: float = 0.20            # arm joint7 하한 (pour store와 동일)
+    warm_j7_max: float = 1.50            # arm joint7 상한 (pour store와 동일)
+
+    # -----------------------------------------------------------------------
     # 시뮬레이션 설정
     # -----------------------------------------------------------------------
     sim: SimulationCfg = SimulationCfg(
