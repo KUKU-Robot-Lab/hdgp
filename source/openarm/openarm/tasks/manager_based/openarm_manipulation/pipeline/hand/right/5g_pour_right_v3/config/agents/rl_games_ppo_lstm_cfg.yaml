@@ -1,0 +1,136 @@
+# 5g_pour_right_v3 LSTM PPO config
+# Actor 110D / critic 143D asymmetric observations, action 11D.
+# LSTM architecture is incompatible with the MLP checkpoint (rl_games_ppo_cfg.yaml).
+# Must train from scratch (load_checkpoint: False).
+#
+# 설계 근거:
+#   - 부분관측(actor obs에 노이즈 + 18D left_arm/4D gate 제외) → RNN 시간적 필터링 유리
+#   - 1200-step 장기 순차 단계(이송→기울기→붓기) → hidden state phase 누적
+#   - warmstart cold-start: episode_hold_steps=60이 자연 완충 → blocker 아님
+#   - mixed_precision: False 필수 (LSTM + AMP 수치 불안정 회피, v10-3 동일)
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [512, 512]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    rnn:
+      name: lstm
+      units: 1024
+      layers: 1
+      before_mlp: True    # raw obs → LSTM(상태추정) → MLP(정책사상): 부분관측 task 정석
+      layer_norm: True
+      concat_input: True
+      concat_output: True
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: 5g_pour_right-v3-lstm
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False    # LSTM 수치 안정 필수 (AMP 비활성)
+    normalize_input: True
+    normalize_value: True
+    value_bootstrap: False
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    learning_rate: 2e-4       # MLP fine-tune(1e-4)보다 높게 + v10-3(3e-4)보다 낮게 절충
+    lr_schedule: linear
+    schedule_type: standard
+    kl_threshold: 0.013
+    score_to_win: 100000000
+    max_epochs: 10000
+    save_best_after: 100
+    save_frequency: 50
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.0015      # scratch 탐색 + KL 안정 절충 (MLP 0.0008 / v10-3 0.002 사이)
+    truncate_grads: True
+    e_clip: 0.2               # LSTM scratch 안정성 우선 (MLP 0.25에서 하향)
+    # horizon=32: 1200-step 장기 에피소드에서 BPTT가 더 긴 시계열 포착
+    # batch = 2048 envs × 32 = 65536 → minibatch 16384 = 4 splits (정합)
+    horizon_length: 32
+    minibatch_size: 16384
+    mini_epochs: 4
+    critic_coef: 4
+    clip_value: True
+    seq_length: 16            # BPTT truncation 윈도우 (horizon 32 = 2 seq 청크)
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005
+    zero_rnn_on_done: True    # episode done 시 hidden state 리셋 (cold-start는 hold_step=60 완충)
+
+    has_central_value: True
+    central_value_config:
+      normalize_input: True
+      normalize_value: True
+      value_bootstrap: False
+      minibatch_size: 16384   # actor와 동일 (2048 envs 기준 4 splits)
+      mini_epochs: 4
+      learning_rate: 5e-5     # critic 안정 우선 (v10-3 동일)
+      lr_schedule: linear
+      kl_threshold: 0.016
+      clip_value: True
+      e_clip: 0.2
+      truncate_grads: True
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [1024, 512]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
+        rnn:
+          name: lstm
+          units: 2048
+          layers: 1
+          before_mlp: False   # critic: MLP→LSTM (값 추정 보조, v10-3 동일)
+          layer_norm: True
+          concat_input: True
+          concat_output: True
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True
