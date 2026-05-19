@@ -12,11 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Hand/robot preset metadata for 5g_grasp_right_v4.
-
-v3와 동일한 joint/body 구성. v4에서 재사용.
-"""
-
 import math
 import math as _math
 
@@ -89,27 +84,37 @@ HAND_START_POSE = [
 
 # FABRICS 접근 자세 (Approach pose)
 # FABRICS pregrasp rollout 동안 유지 + episode 시작 초기 손 자세 + per-finger lerp 기준점
-# rj_dg_1_2 (thumb, Z-axis curl, range [-π, 0]) = -1.57 rad
+# rj_dg_1_1 (thumb abduction, X축) = 0.0 고정 (v10: -0.283 → 0.0)
+#   → 0으로 고정 시 엄지가 neutral opposition 위치를 유지 (새끼손가락 방향으로 치우치는 현상 방지)
+# rj_dg_1_2 (thumb, Z-axis curl, range [-π, 0]) = -1.241 rad
 #   → thumb을 opposition 방향으로 pre-curl하여 접근 시 컵과의 collision 방지
-#   → episode 중 action[0]=1 → lerp → HAND_GRASP_POSE (thumb_2 = -1.5, ≈ 유지)
-#   → 나머지 손가락(1~4)은 0에서 시작하여 lerp로 curl
 HAND_APPROACH_POSE = [
-    0.0, -1.57, -0.5, 0.0,   # thumb: _2=-1.57(opposition 유지), _3=-0.5(PIP curl → _3 부분이 컵에 먼저 닿는 문제 방지)
-    0.0,  0.0,   0.0, 0.0,   # index: fully open
-    0.0,  0.0,   0.0, 0.0,   # middle: fully open
-    0.0,  0.0,   0.0, 0.0,   # ring: fully open
-    0.0,  0.0,   0.0, 0.0,   # pinky: fully open
+    +0.000, -1.241, +0.104, +0.790,   # thumb  (v10: rj_dg_1_1 -0.283→0.0 고정)
+    +0.016, +0.527, +0.502, +0.674,   # index
+    +0.004, +0.775, +0.170, +1.090,   # middle
+    -0.000, +0.668, +0.387, +1.013,   # ring
+    +0.000, -0.000, +0.716, +0.889,   # pinky
 ]
 
-# 파지 자세 (per-finger lerp action=+1 목표)
-# index/middle/ring _2: 0.7→1.6 rad (관절 한계 ~2.0 rad의 80%)
-# thumb _3/_4: 0.5→0.8 (더 강한 curl)
+# 파지 자세 — v7 test* 학습 결과에서 추출 후 thumb_1 수동 보정
+# rj_dg_*_1 = 0.0 고정 
 HAND_GRASP_POSE = [
-    0.0, -1.57, 1.5, 1.5,   # thumb
-    0.0,  1.6,  1.5, 1.5,   # index
-    0.0,  1.6,  1.5, 1.5,   # middle
-    0.0,  1.6,  1.5, 1.5,   # ring
-    0.0,  0.0,  1.5, 1.5,   # pinky
+    +0.000, -1.570, +0.130, +0.988,   # thumb  (v10: rj_dg_1_1=0.0 고정)
+    +0.000, +0.659, +0.628, +0.843,   # index
+    +0.000, +0.969, +0.213, +1.363,   # middle
+    -0.000, +0.835, +0.484, +1.266,   # ring
+    +0.000, -0.000, +0.895, +1.111,   # pinky
+]
+
+# 완전 파지 자세 — HAND_GRASP_POSE 기준 약 20% 더 닫힌 상한/방향
+# policy imitation target이 아니라 adaptive closure의 bounded limit로만 사용한다.
+# rj_*_1 및 thumb rj_dg_1_2는 HAND_GRASP_POSE와 동일하게 유지한다.
+HAND_FULL_GRIP_POSE = [
+    +0.000, -1.570, +0.156, +1.186,   # thumb
+    +0.000, +0.791, +0.754, +1.012,   # index
+    +0.000, +1.163, +0.256, +1.636,   # middle
+    -0.000, +1.002, +0.581, +1.519,   # ring
+    +0.000, -0.000, +1.074, +1.333,   # pinky
 ]
 
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))

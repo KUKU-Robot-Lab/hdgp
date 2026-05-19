@@ -34,8 +34,8 @@ LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAM
 
 LEFT_ARM_REST_JOINT_POS = {
     "openarm_left_joint1": -0.315,
-    "openarm_left_joint2": -0.084,
-    "openarm_left_joint3":  0.217,
+    "openarm_left_joint2": -0.290,  # j2/j3 수정: target cup y≈0.10 (demo 데이터와 일치)
+    "openarm_left_joint3":  0.400,  # FK 결과: [0.268, 0.100, 0.291]
     "openarm_left_joint4":  0.513,
     "openarm_left_joint5":  0.666,
     "openarm_left_joint6": -0.729,
@@ -208,10 +208,10 @@ RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0]
 # ---------------------------------------------------------------------------
 # Workspace / goal
 # ---------------------------------------------------------------------------
-# cup spawn center (local frame)
-OBJECT_SPAWN_CENTER = [0.40, -0.15, 0.38]
+# cup spawn center (local frame) — demo 데이터와 일치: source=[0.27,-0.10]
+OBJECT_SPAWN_CENTER = [0.27, -0.10, 0.38]
 OBJECT_SPAWN_RANGE_XY = 0.06
-OBJECT_GOAL_POS = [0.40, -0.15, 0.65]
+OBJECT_GOAL_POS = [0.27, -0.10, 0.65]
 
 # Pregrasp offset: cup 옆(-Y 방향)에서 접근 (palm_link 기준)
 # orientation: ez=90°, ey=0°, ex=90° → palm +X(손바닥 법선)=world +Y, palm +Z(손가락)=world +X
@@ -230,11 +230,11 @@ def palm_pose_mins(max_pose_angle: float) -> list:
 
 
 def palm_pose_maxs(max_pose_angle: float) -> list:
-    # LEFT_ARM_REST_JOINT_POS FK 기준 target cup pos (env-local): x=0.291, y=0.031, z=0.323
-    #   pregrasp palm y = spawn_center_y(-0.15) + offset_y(-0.07) = -0.22m
+    # LEFT_ARM_REST_JOINT_POS FK 기준 target cup pos (env-local): x=0.268, y=0.100, z=0.291
+    #   pregrasp palm y = spawn_center_y(-0.10) + offset_y(-0.12) = -0.22m
     #   palm_delta_xyz=0.5m → max palm y = min(-0.22+0.50, 0.22) = 0.22m
-    #   target cup y = 0.031m → workspace 내에 충분히 포함됨
-    #   y_max=0.22m: 탐색 여유 확보 (왼팔 손목 y=0.076m에서 14cm 여유, 충돌 안전)
+    #   target cup y = 0.100m → workspace 내에 충분히 포함됨
+    #   y_max=0.22m: 탐색 여유 확보 (왼팔 손목 y≈0.10에서 12cm 여유, 충돌 안전)
     #
     # [test9] z_max: 0.65 → 0.48
     #   target cup rim ≈ z=0.44m. palm z=0.48 → cup center ≈ 0.45m → cup rim ≈ 0.55m

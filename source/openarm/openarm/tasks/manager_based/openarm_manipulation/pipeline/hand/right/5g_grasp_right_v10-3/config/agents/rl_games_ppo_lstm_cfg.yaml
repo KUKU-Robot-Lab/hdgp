@@ -1,0 +1,128 @@
+# 5g_grasp_right_v10-3 DEXTRAH-style recurrent teacher config
+# Actor 132D / critic 169D asymmetric observations, action 26D.
+# This is a separate non-warm-start config because the LSTM architecture
+# is incompatible with the v10-2 MLP checkpoint.
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [512, 512]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    rnn:
+      name: lstm
+      units: 1024
+      layers: 1
+      before_mlp: True
+      layer_norm: True
+      concat_input: True
+      concat_output: True
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: 5g_grasp_right-v10-3-lstm
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False
+    normalize_input: True
+    normalize_value: True
+    value_bootstrap: False
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    learning_rate: 3e-4
+    lr_schedule: linear
+    schedule_type: standard
+    kl_threshold: 0.013
+    score_to_win: 100000000
+    max_epochs: 20000
+    save_best_after: 100
+    save_frequency: 200
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.002
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 16
+    minibatch_size: 16384
+    mini_epochs: 4
+    critic_coef: 4
+    clip_value: True
+    seq_length: 16
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005
+    zero_rnn_on_done: True
+
+    has_central_value: True
+    central_value_config:
+      normalize_input: True
+      normalize_value: True
+      value_bootstrap: False
+      minibatch_size: 16384
+      mini_epochs: 4
+      learning_rate: 5e-5
+      lr_schedule: linear
+      kl_threshold: 0.016
+      clip_value: True
+      e_clip: 0.2
+      truncate_grads: True
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [1024, 512]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
+        rnn:
+          name: lstm
+          units: 2048
+          layers: 1
+          before_mlp: False
+          layer_norm: True
+          concat_input: True
+          concat_output: True
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True

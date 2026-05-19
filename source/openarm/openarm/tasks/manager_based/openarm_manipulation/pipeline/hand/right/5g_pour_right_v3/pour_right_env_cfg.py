@@ -194,11 +194,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 타겟컵 근처까지 도달 불가하다. transport 여유를 키운다.
     #
     # [test1/3 분석] Workspace-Target 거리 불일치:
-    #   pregrasp palm y = cup_y_spawn(-0.15) + pregrasp_offset_y(-0.07) = -0.22m
-    #   delta=0.3m → max palm y = -0.22 + 0.30 = +0.08m (workspace y_max=0.18 이전에 delta 소진)
-    #   타겟 컵 y ≈ 왼팔 end-effector y ≈ +0.27m
-    #   → 최소 cup-target XY gap = 0.27 - 0.08 = 0.19m (달성 불가)
-    #   → TB 관찰 cup_center_xy_dist 0.22~0.25m plateau 원인
+    #   pregrasp palm y = cup_y_spawn(-0.10) + pregrasp_offset_y(-0.12) = -0.22m
+    #   delta=0.3m → max palm y = -0.22 + 0.30 = +0.08m (workspace y_max=0.22 이전에 delta 소진)
+    #   타겟 컵 y ≈ 0.10m (demo 데이터 기준, LEFT_ARM_REST FK 기준)
+    #   → 최소 cup-target XY gap = 0.10 - 0.08 = 0.02m (달성 가능)
     #
     #   수정: delta=0.5m + y_max=0.22m(preset.py 동시 수정)
     #   max palm y = min(-0.22+0.50, 0.22) = 0.22m
@@ -367,7 +366,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # - pour phase only 사용 시: j7 std=0.050 (clamp min) → j7 오차 과대 반영 → 외회전 학습
     # - all phase 사용 시: j7 std=0.224 → j7 영향 자연스럽게 감소, 10개 파일 평균 내회전 유도
     demo_pose_phase: str = "all"   # [test6/7] 유지: j7 내회전 방향 학습 효과 확인됨
-    weight_demo_arm_pose: float = 4.00   # [test7] 6.00→4.00: 과도한 demo 추적 완화
+    weight_demo_arm_pose: float = 0.0    # [test3] 4.00→0.0: cup 위치 불일치(demo x=0.27/sim x=0.40)로 arm IK 해가 달라 역방향 gradient 발생. test4+: sim x=0.27로 정렬됨, 재활성화 검토 가능
     weight_demo_palm_pose: float = 0.0   # [test8] 2.00→0.0: demo_palm_pos_err=0.27m → useless gradient
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.50
@@ -444,8 +443,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.40
-    object_spawn_y_center: float = -0.15
+    object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
+    object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
     object_spawn_z:        float = 0.297
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
 

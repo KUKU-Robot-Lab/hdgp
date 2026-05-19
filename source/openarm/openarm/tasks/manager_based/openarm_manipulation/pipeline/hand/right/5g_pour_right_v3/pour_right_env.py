@@ -301,6 +301,9 @@ class PourRightEnv(DirectRLEnv):
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
         # [x, y, z, qx, qy, qz, qw]
         self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 7, device=self.device)
+        # warmstart 수집 전용: euler ZYX 형식 (v7-2 학습과 동일한 직접 덧셈 방식)
+        # [x, y, z, ez, ey, ex]
+        self.pregrasp_palm_pose_buf_euler = torch.zeros(self.num_envs, 6, device=self.device)
 
         # ----------------------------------------------------------------
         # Hand poses (per-finger lerp용)
@@ -924,7 +927,30 @@ class PourRightEnv(DirectRLEnv):
         )
 
         if self._warmstart_collect_mode:
+            # v7-2 학습과 동일한 파이프라인: euler 직접 덧셈 + euler_zyx Fabrics
             delta = scale(self._ema_palm_action, self.delta_mins_warmstart_collect, self.delta_maxs_warmstart_collect)
+            palm_pose_euler = self.pregrasp_palm_pose_buf_euler + delta   # (N, 6)
+            palm_pose_euler = torch.max(
+                torch.min(palm_pose_euler, self.palm_maxs.unsqueeze(0)),
+                self.palm_mins.unsqueeze(0),
+            )
+            # palm_pose_targets에는 quaternion으로 변환 저장 (캐시 캡처용)
+            palm_pose_quat = torch.zeros_like(self.pregrasp_palm_pose_buf)
+            palm_pose_quat[:, :3] = palm_pose_euler[:, :3]
+            palm_pose_quat[:, 3:7] = self._quat_xyzw_from_euler_zyx(palm_pose_euler[:, 3:6])
+            self.palm_pose_targets.copy_(palm_pose_quat)
+            self.hand_pca_targets.zero_()
+            self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
+            self.open_tesollo_fabric.set_features(
+                self.hand_pca_targets,
+                palm_pose_euler,
+                "euler_zyx",
+                self.fabric_q.detach(),
+                self.fabric_qd.detach(),
+                self.object_ids,
+                self.object_indicator,
+                self.fabric_damping_gain,
+            )
         else:
             delta = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
@@ -935,38 +961,36 @@ class PourRightEnv(DirectRLEnv):
                 1.0,
             )
             delta[:, 3:6] = delta[:, 3:6] * tilt_gate.unsqueeze(1)
-        # Rotation action is interpreted in a cup-local basis:
-        # [spin around cup-up, tilt toward target opening, orthogonal tilt].
-        delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
-        palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
-        palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3]
-        palm_pose[:, :3] = torch.max(
-            torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
-            self.palm_mins[:3].unsqueeze(0),
-        )
-        palm_pose[:, 3:7] = self._compose_world_delta_quat_xyzw(
-            self.pregrasp_palm_pose_buf[:, 3:7],
-            delta_rotvec_world,
-        )
-        self.palm_pose_targets.copy_(palm_pose)
-        self.hand_pca_targets.zero_()
-
-        # null-space attractor를 현재 관절 위치로 추적:
-        # default_config가 warmstart grasp pose로 고정되면 pour transport 방향으로
-        # 이동할 때 매 step 파지 위치로 당기는 저항이 발생함.
-        # 현재 fabric_q를 default_config로 덮어써서 null-space 당김 제거.
-        self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
-
-        self.open_tesollo_fabric.set_features(
-            self.hand_pca_targets,
-            self.palm_pose_targets,
-            "quaternion",
-            self.fabric_q.detach(),
-            self.fabric_qd.detach(),
-            self.object_ids,
-            self.object_indicator,
-            self.fabric_damping_gain,
-        )
+            # Rotation action is interpreted in a cup-local basis:
+            # [spin around cup-up, tilt toward target opening, orthogonal tilt].
+            delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
+            palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
+            palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3]
+            palm_pose[:, :3] = torch.max(
+                torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
+                self.palm_mins[:3].unsqueeze(0),
+            )
+            palm_pose[:, 3:7] = self._compose_world_delta_quat_xyzw(
+                self.pregrasp_palm_pose_buf[:, 3:7],
+                delta_rotvec_world,
+            )
+            self.palm_pose_targets.copy_(palm_pose)
+            self.hand_pca_targets.zero_()
+            # null-space attractor를 현재 관절 위치로 추적:
+            # default_config가 warmstart grasp pose로 고정되면 pour transport 방향으로
+            # 이동할 때 매 step 파지 위치로 당기는 저항이 발생함.
+            # 현재 fabric_q를 default_config로 덮어써서 null-space 당김 제거.
+            self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
+            self.open_tesollo_fabric.set_features(
+                self.hand_pca_targets,
+                self.palm_pose_targets,
+                "quaternion",
+                self.fabric_q.detach(),
+                self.fabric_qd.detach(),
+                self.object_ids,
+                self.object_indicator,
+                self.fabric_damping_gain,
+            )
         for _ in range(self.cfg.fabric_decimation):
             self.fabric_q, self.fabric_qd, self.fabric_qdd = self.open_tesollo_integrator.step(
                 self.fabric_q.detach(),
@@ -1982,6 +2006,8 @@ class PourRightEnv(DirectRLEnv):
 
         # delta action 기준점: action=0 → pregrasp 위치 유지
         self.pregrasp_palm_pose_buf[env_ids] = pregrasp_palm_pose
+        # warmstart 수집용 euler 버퍼 (v7-2 학습 형식과 동일)
+        self.pregrasp_palm_pose_buf_euler[env_ids] = pregrasp_palm_pose_euler
         self._grasp_rel_palm_to_cup_init[env_ids] = obj_pos_local - pregrasp_palm_pose[:, :3]
         self._grasp_cup_height_init[env_ids] = obj_pos_local[:, 2]
 
