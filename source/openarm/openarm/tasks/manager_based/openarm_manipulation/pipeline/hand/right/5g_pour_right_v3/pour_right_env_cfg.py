@@ -55,7 +55,7 @@ from .pour_right_preset import (
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 _DEFAULT_BEAD_COUNT = 20
-_DEFAULT_DEMO_POSE_DATASET_DIR = "/home/user/rl_ws/datasets"
+_DEFAULT_DEMO_POSE_DATASET_DIR = _os.path.normpath(_os.path.join(_HDGP_ROOT, "..", "datasets"))
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
@@ -453,7 +453,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth"
+        _os.path.join(_HDGP_ROOT, "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth")
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000

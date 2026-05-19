@@ -102,7 +102,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_demo_grasp_reset: bool = True
     demo_grasp_pose_paths: tuple[str, ...] = tuple(
-        f"/home/oem/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)
+        _os.path.join(_HDGP_ROOT, "..", "datasets", f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
 
     # -----------------------------------------------------------------------

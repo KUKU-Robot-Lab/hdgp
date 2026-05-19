@@ -55,7 +55,7 @@ from .pour_right_preset import (
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 _DEFAULT_BEAD_COUNT = 20
-_DEFAULT_DEMO_POSE_DATASET_DIR = "/home/user/rl_ws/datasets"
+_DEFAULT_DEMO_POSE_DATASET_DIR = _os.path.normpath(_os.path.join(_HDGP_ROOT, "..", "datasets"))
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
@@ -194,11 +194,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 타겟컵 근처까지 도달 불가하다. transport 여유를 키운다.
     #
     # [test1/3 분석] Workspace-Target 거리 불일치:
-    #   pregrasp palm y = cup_y_spawn(-0.15) + pregrasp_offset_y(-0.07) = -0.22m
-    #   delta=0.3m → max palm y = -0.22 + 0.30 = +0.08m (workspace y_max=0.18 이전에 delta 소진)
-    #   타겟 컵 y ≈ 왼팔 end-effector y ≈ +0.27m
-    #   → 최소 cup-target XY gap = 0.27 - 0.08 = 0.19m (달성 불가)
-    #   → TB 관찰 cup_center_xy_dist 0.22~0.25m plateau 원인
+    #   pregrasp palm y = cup_y_spawn(-0.10) + pregrasp_offset_y(-0.07) = -0.17m
+    #   delta=0.3m → max palm y = -0.17 + 0.30 = +0.13m (workspace y_max=0.22 이전에 delta 소진)
+    #   타겟 컵 y ≈ LEFT_ARM_REST FK 기준 ≈ +0.27m
+    #   → 최소 cup-target XY gap = 0.27 - 0.13 = 0.14m (delta=0.5 시 달성 가능)
     #
     #   수정: delta=0.5m + y_max=0.22m(preset.py 동시 수정)
     #   max palm y = min(-0.22+0.50, 0.22) = 0.22m
@@ -427,8 +426,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.40
-    object_spawn_y_center: float = -0.15
+    object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
+    object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
     object_spawn_z:        float = 0.297
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
 
@@ -447,7 +446,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth"  # [test2] v7→v7_2: pour demo 시작 자세 정렬
+        _os.path.join(_HDGP_ROOT, "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth")
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
