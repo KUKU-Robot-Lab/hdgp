@@ -205,9 +205,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   → cup-target gap ≈ 0.27 - 0.22 = 0.05m → g_align_xy(scale=5) = exp(-5×0.05) = 0.78
     #   → pre-pour reward 완전 활성화 가능
     palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
-    # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm xyz delta.
-    # 본 학습 에피소드의 palm_delta_xyz와 분리해 독립적으로 조정할 수 있다.
-    warmstart_collect_palm_delta_xyz: float = 0.10
+    # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm delta.
+    # v7-2 grasp checkpoint 학습 조건과 반드시 일치해야 한다:
+    #   5g_grasp_right_v7_2: palm_delta_xyz=0.15m, palm_delta_rot_deg=20°
+    warmstart_collect_palm_delta_xyz: float = 0.15   # v7-2 학습 값과 일치
+    warmstart_collect_palm_delta_rot_deg: float = 20.0  # v7-2 학습 값과 일치 (≠ pour 120°)
     palm_delta_rot_deg: float = 120.0  # 45→120: cup 135° tilt 도달 가능하도록 확장
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
@@ -452,7 +454,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test1/nn/5g_grasp_right-v7-2.pth"
+        "/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth"
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000

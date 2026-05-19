@@ -282,17 +282,20 @@ class PourRightEnv(DirectRLEnv):
             cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
             _delta_rad, _delta_rad, _delta_rad,
         ], device=self.device)
+        # warmstart 수집 시 delta는 v7-2 학습 조건과 일치해야 함:
+        # palm_delta_rot_deg=20° (pour 120°와 다름)
+        _warmstart_delta_rad = math.radians(cfg.warmstart_collect_palm_delta_rot_deg)
         self.delta_mins_warmstart_collect = to_torch([
             -cfg.warmstart_collect_palm_delta_xyz,
             -cfg.warmstart_collect_palm_delta_xyz,
             -cfg.warmstart_collect_palm_delta_xyz,
-            -_delta_rad, -_delta_rad, -_delta_rad,
+            -_warmstart_delta_rad, -_warmstart_delta_rad, -_warmstart_delta_rad,
         ], device=self.device)
         self.delta_maxs_warmstart_collect = to_torch([
             cfg.warmstart_collect_palm_delta_xyz,
             cfg.warmstart_collect_palm_delta_xyz,
             cfg.warmstart_collect_palm_delta_xyz,
-            _delta_rad, _delta_rad, _delta_rad,
+            _warmstart_delta_rad, _warmstart_delta_rad, _warmstart_delta_rad,
         ], device=self.device)
 
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
