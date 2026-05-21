@@ -67,6 +67,7 @@ from .pour_right_env_cfg import PourRightEnvCfg
 from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
+    NUM_PALM_ACTION,
     NUM_FINGER_ACTION,
     NUM_FINGERTIPS,
     NUM_OBSERVATIONS,
@@ -585,6 +586,10 @@ class PourRightEnv(DirectRLEnv):
         self._prev_bead_ever_in_target_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._bead_in_target_fraction = torch.zeros(self.num_envs, device=self.device)
         self._bead_in_source_fraction = torch.zeros(self.num_envs, device=self.device)
+        self._bead_in_source_delta = torch.zeros(self.num_envs, device=self.device)
+        self._bead_in_target_delta = torch.zeros(self.num_envs, device=self.device)
+        self._bead_cross_delta = torch.zeros(self.num_envs, device=self.device)
+        self._spill_delta = torch.zeros(self.num_envs, device=self.device)
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
         self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -906,9 +911,9 @@ class PourRightEnv(DirectRLEnv):
         )
         self._bead_crossed_target_mouth |= mouth_crossed_now
         self._bead_cross_count.copy_(self._bead_crossed_target_mouth.sum(dim=-1).long())
-        self._bead_cross_fraction.copy_(self._bead_crossed_target_mouth.float().mean(dim=-1))
-        self._bead_in_target_fraction.copy_(self._bead_in_target.float().mean(dim=-1))
-        self._bead_in_source_fraction.copy_(self._bead_in_source.float().mean(dim=-1))
+        bead_cross_fraction = self._bead_crossed_target_mouth.float().mean(dim=-1)
+        bead_in_target_fraction = self._bead_in_target.float().mean(dim=-1)
+        bead_in_source_fraction = self._bead_in_source.float().mean(dim=-1)
 
         # source 컵 밖 + target 컵 로컬 z < z_min 아래로 떨어진 bead = 영구 손실
         # transit bead (공중 이동 중): target local z > z_min → spill 아님
@@ -916,7 +921,16 @@ class PourRightEnv(DirectRLEnv):
             (~self._bead_in_source)
             & (pos_in_target[..., 2] < self.cfg.target_inside_z_min)
         )
-        self._spill_ratio.copy_(bead_spilled.float().mean(dim=-1))
+        spill_ratio = bead_spilled.float().mean(dim=-1)
+
+        self._bead_in_source_delta.copy_(bead_in_source_fraction - self._bead_in_source_fraction)
+        self._bead_in_target_delta.copy_(bead_in_target_fraction - self._bead_in_target_fraction)
+        self._bead_cross_delta.copy_(bead_cross_fraction - self._bead_cross_fraction)
+        self._spill_delta.copy_(spill_ratio - self._spill_ratio)
+        self._bead_cross_fraction.copy_(bead_cross_fraction)
+        self._bead_in_target_fraction.copy_(bead_in_target_fraction)
+        self._bead_in_source_fraction.copy_(bead_in_source_fraction)
+        self._spill_ratio.copy_(spill_ratio)
         self._prev_bead_target_local_z.copy_(pos_in_target[..., 2])
 
     # ------------------------------------------------------------------
@@ -1258,7 +1272,7 @@ class PourRightEnv(DirectRLEnv):
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 110D | Critic 143D
+    # Observations: Actor 60D | Critic 143D
     # ------------------------------------------------------------------
     def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
         """Build the legacy actor observation expected by the warmstart checkpoint.
@@ -1331,6 +1345,23 @@ class PourRightEnv(DirectRLEnv):
             "Expected one of {106, 107, 112, 113}."
         )
 
+    def _finger_grasp_progress(self, finger_joint_pos: torch.Tensor) -> torch.Tensor:
+        """Return per-finger progress from approach pose to grasp pose in [0, 1]."""
+        delta = self.hand_grasp_pose - self.hand_open_pose
+        valid = delta.abs() > 1e-6
+        denom = torch.where(valid, delta, torch.ones_like(delta))
+        progress_20 = (
+            (finger_joint_pos - self.hand_open_pose.unsqueeze(0)) / denom.unsqueeze(0)
+        ).clamp(0.0, 1.0)
+        progress_20 = progress_20 * valid.unsqueeze(0).to(progress_20.dtype)
+        valid_counts = (
+            valid.view(NUM_FINGER_ACTION, 4).sum(dim=-1).clamp(min=1).to(progress_20.dtype)
+        )
+        return (
+            progress_20.view(-1, NUM_FINGER_ACTION, 4).sum(dim=-1)
+            / valid_counts.unsqueeze(0)
+        )
+
     def _get_observations(self) -> dict:
         # ==== 공통 clean state (critic용, 물리 정확값) ====
         arm_joint_pos_clean = self.robot.data.joint_pos[:, self.arm_dof_indices]
@@ -1381,8 +1412,10 @@ class PourRightEnv(DirectRLEnv):
         left_cup_pos_rel_palm = left_cup_pos - palm_center_pos
         pour_point_to_opening = target_opening - source_pour_point
 
+        finger_grasp_progress = self._finger_grasp_progress(finger_joint_pos)
         binary_contact = self.binary_contact_buf.float()
         last_actions = self.actions
+        last_palm_actions = self.actions[:, :NUM_PALM_ACTION]
 
         # transport_summary (8D): pour 기하학 + stage readiness
         transport_summary = torch.stack([
@@ -1396,32 +1429,36 @@ class PourRightEnv(DirectRLEnv):
             self._g_ready,
         ], dim=-1)   # (N, 8)
 
+        flow_summary = torch.stack([
+            self._bead_in_source_delta,
+            self._bead_in_target_delta,
+            self._bead_cross_delta,
+            self._spill_delta,
+        ], dim=-1)   # (N, 4)
+
         # tip force (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
         tip_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
         actor_obs = torch.cat([
             arm_joint_pos,              # 7
             arm_joint_vel,              # 7
-            finger_joint_pos,           # 20
-            finger_joint_vel,           # 20
+            finger_grasp_progress,      # 5
             right_cup_pos_rel_palm,     # 3
             right_cup_quat_clean,       # 4
             left_cup_pos_rel_palm,      # 3
-            left_cup_quat_clean,        # 4
             pour_point_to_opening,      # 3
             source_pour_axis_clean,     # 3
             source_up_axis_clean,       # 3
             # target_up_axis 제거: 타겟 컵은 항상 직립 → 항상 [0,0,1], 정보 없음
             transport_summary,          # 8
-            binary_contact,             # 5
-            tip_force_norm,             # 5 (fingertip force, sim2real 가능)
-            last_actions,               # 11
+            last_palm_actions,          # 6
             # bead 상태: actor가 pour 결과를 직접 관측 (reward 항목 대응)
             self._bead_in_source_fraction.unsqueeze(1),  # 1 (소스 잔량)
             self._bead_in_target_fraction.unsqueeze(1),  # 1 (타겟 유입량, r_capture 대응)
             self._bead_cross_fraction.unsqueeze(1),      # 1 (mouth 통과율, r_cross weight=20 대응)
             self._spill_ratio.unsqueeze(1),              # 1 (유출율, spill_cost weight=10 대응)
-        ], dim=-1)   # 110D
+            flow_summary,               # 4 (source/target/cross/spill step delta)
+        ], dim=-1)   # 60D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -1439,14 +1476,14 @@ class PourRightEnv(DirectRLEnv):
                 self._cap_act[_ids, _slots] = self.actions[_ids].detach()
             self._cap_step += 1
 
-        # ==== Critic extra obs (50D) ====
+        # ==== Critic extra obs (33D) ====
         cup_height_delta = (right_cup_pos_clean[:, 2] - self.object_init_pos[:, 2]).unsqueeze(1)
 
         distal_binary     = self.distal_binary_contact_buf.float()
         distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
 
-        # critic actor_obs_clean (110D) — clean state 재조합, actor_obs 구조와 동일
+        # critic base obs (110D) — full-state value estimation, actor LSTM layout과 분리
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,                                      # 7
             arm_joint_vel_clean,                                      # 7
@@ -1775,6 +1812,13 @@ class PourRightEnv(DirectRLEnv):
         # grasp quality loss: full_grasp_flag=0 (thumb 없거나 others<2) 매 스텝 즉각 dense penalty
         # 낙하(episode termination)와 달리 grasp이 흔들리는 구간에서 즉각 gradient 제공
         grasp_loss_cost = 1.0 - full_grasp_flag
+        # [test2] cup-cup collision penalty: 두 컵 중심 거리 < margin 이면 dense penalty
+        # margin = cup_external_radius_sum(~0.09m) + safety(0.03m) = 0.12m
+        # cost = clamp((margin - dist)/margin, 0, 1) → margin부터 선형 증가, dist=0에서 1.0
+        cup_collision_cost = (
+            (self.cfg.cup_collision_margin - self._cup_center_xy_dist)
+            / max(self.cfg.cup_collision_margin, 1e-6)
+        ).clamp(0.0, 1.0)
         # [Phase-2 Step 9] action_rate: palm(6D) / finger(5D) 분리
         # grasp v9의 action_smoothness_palm/finger 패턴과 동일
         palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
@@ -1843,6 +1887,7 @@ class PourRightEnv(DirectRLEnv):
             - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
             - self.cfg.weight_grasp_loss * grasp_loss_cost
+            - self.cfg.weight_cup_collision * cup_collision_cost
             - action_rate_penalty
             - arm_vel_cost
             - demo_terms["cost_demo_smooth"]
@@ -1883,6 +1928,7 @@ class PourRightEnv(DirectRLEnv):
         self.extras["cost_spill"] = spill_cost.mean()
         self.extras["spill_weight"] = torch.tensor(float(spill_weight), device=self.device)
         self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
+        self.extras["cost_cup_collision"] = cup_collision_cost.mean()
         self.extras["cost_arm_vel"] = (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum * in_tilt_phase).mean()
         self.extras["cost_arm_acc"] = (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum * in_tilt_phase).mean()
         self.extras["cost_arm_jerk"] = (self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum * in_tilt_phase).mean()
@@ -2169,6 +2215,10 @@ class PourRightEnv(DirectRLEnv):
         self._prev_bead_ever_in_target_count[env_ids] = 0
         self._bead_in_target_fraction[env_ids] = 0.0
         self._bead_in_source_fraction[env_ids] = 0.0
+        self._bead_in_source_delta[env_ids] = 0.0
+        self._bead_in_target_delta[env_ids] = 0.0
+        self._bead_cross_delta[env_ids] = 0.0
+        self._spill_delta[env_ids] = 0.0
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False
@@ -2559,6 +2609,10 @@ class PourRightEnv(DirectRLEnv):
         self._prev_bead_ever_in_target_count[env_ids] = 0
         self._bead_in_target_fraction[env_ids] = 0.0
         self._bead_in_source_fraction[env_ids] = 0.0
+        self._bead_in_source_delta[env_ids] = 0.0
+        self._bead_in_target_delta[env_ids] = 0.0
+        self._bead_cross_delta[env_ids] = 0.0
+        self._spill_delta[env_ids] = 0.0
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False

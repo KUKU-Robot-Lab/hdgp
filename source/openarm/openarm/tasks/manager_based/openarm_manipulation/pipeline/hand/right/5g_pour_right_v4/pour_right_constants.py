@@ -12,50 +12,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""상수 정의: 5g_pour_right_v3
+"""상수 정의: 5g_pour_right_v4
 
 Action (11D):
   [0:6]  6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
   [6:11] 5D per-finger lerp (freeze_grasp=True → 항상 1.0 강제)
 
-Actor Observation (110D) — sim2real 가능:
+Actor Observation (60D) — pour-flow 중심:
   arm_joint_pos:            7
   arm_joint_vel:            7
-  finger_joint_pos:        20
-  finger_joint_vel:        20
+  finger_grasp_progress:    5  (per-finger grasp 유지 요약)
   right_cup_pos_rel_palm:   3
   right_cup_quat:           4
   left_cup_pos_rel_palm:    3
-  left_cup_quat:            4
   pour_point_to_opening:    3
   source_pour_axis:         3
   source_up_axis:           3
   transport_summary:        8  [mouth_dist, mouth_xy_dist, cup_center_xy_dist,
                                 z_clearance, source_up_dot, dir_tilt_cos,
-                                mouth_alignment_cos, g_ready]
-  fingertip_contact_binary: 5
-  tip_force_norm:           5  (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
-  last_actions:            11
+                                mouth_alignment_cos, rho]
+  last_palm_actions:        6
   bead_in_source_fraction:  1  (소스 컵 잔량 — "다 쏟았나" 인식)
   bead_in_target_fraction:  1  (타겟 컵 유입량 — "얼마나 넣었나" 인식)
   bead_cross_fraction:      1  (mouth 통과 비율 — r_cross weight=20 대응)
   spill_ratio:              1  (유출 비율 — spill_cost weight=10 대응)
-  Total:                  110
+  flow_summary:             4  (source/target/cross/spill fraction step delta)
+  Total:                   60
 
-Critic Extra (33D) — sim-only privileged:
+Critic Base (110D) — sim-only full-state:
+  기존 actor full-state layout 유지: hand pos/vel, fingertip contact/force,
+  last_actions 포함. Actor LSTM에는 넣지 않지만 critic value 추정에는 유지한다.
+
+Critic Extra (30D) — sim-only privileged:
   left_arm_joint_pos:       9
   left_arm_joint_vel:       9
   distal_contact_binary:    5  (rl_dg_*_4)
   distal_contact_norm:      5
   cup_height_delta:         1
-  g_align_xy:               1
-  g_clear:                  1
-  g_tilt:                   1
-  g_pour:                   1
-  Total:                   33
-  (mouth_dist/xy/z, up_dot, tilt_cos, align_cos, g_ready, bead/spill fracs 제거 — actor_obs_clean에 중복)
+  rho:                      1  (binary pour gate)
+  Total:                   30
+  (mouth_dist/xy/z, up_dot, tilt_cos, align_cos, rho, bead/spill fracs 제거 — actor_obs_clean에 중복)
 
-Critic Total: 110 + 33 = 143D
+Critic Total: 110 + 30 = 140D
 
 Episode (10s @ 60Hz = 600 steps):
   Pour phase: Fabrics arm policy + frozen hand
@@ -89,17 +87,17 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 110        # Actor: 7+7+20+20+3+4+3+4+3+3+3+8+5+5+11+4 = 110
+NUM_OBSERVATIONS = 60         # Actor: 7+7+5+3+4+3+3+3+3+8+6+4+4 = 60
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 33      # left_arm(18) + distal(10) + cup_h(1) + g_align/clear/tilt/pour(4)
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 143
+NUM_CRITIC_BASE_OBSERVATIONS = 110
+NUM_CRITIC_EXTRAS   = 30      # left_arm(18) + distal(10) + cup_h(1) + rho(1)
+NUM_CRITIC_OBSERVATIONS = NUM_CRITIC_BASE_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 140
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
 POUR_EPISODE_STEPS = 600    # 10s: transport + tilt + pour
-EPISODE_STEPS = POUR_EPISODE_STEPS
 
 # ---------------------------------------------------------------------------
 # Contact
@@ -107,16 +105,6 @@ EPISODE_STEPS = POUR_EPISODE_STEPS
 CONTACT_FORCE_THRESHOLD  = 0.1    # N  binary contact 판정
 CONTACT_FORCE_MAX        = 10.0   # N  정규화 분모
 MIN_CONTACTS_FOR_SUCCESS = 2      # 성공 판정 최소 접촉 손가락 수
-
-# ---------------------------------------------------------------------------
-# FABRICS pregrasp
-# ---------------------------------------------------------------------------
-PREGRASP_FABRICS_STEPS = 60
-
-# ---------------------------------------------------------------------------
-# Cup geometry
-# ---------------------------------------------------------------------------
-CUP_RADIUS_APPROX = 0.045  # m, cup_big 반경 (enclosure target 계산용)
 
 # ---------------------------------------------------------------------------
 # Aliases

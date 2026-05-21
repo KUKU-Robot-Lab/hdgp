@@ -16,9 +16,9 @@
 
 v5: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 106D / critic 143D (asymmetric)
+- Observation: actor 60D / critic 143D (asymmetric)
 - Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
-- Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
+- Contact: fingertip/distal/middle sensors are kept in critic full-state, not actor LSTM input
 """
 
 import isaaclab.sim as sim_utils
@@ -117,7 +117,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 110 (actor)
+    observation_space: int = NUM_OBSERVATIONS          # 60 (actor)
     action_space:      int = NUM_ACTIONS               # 11
     state_space:       int = NUM_CRITIC_OBSERVATIONS   # 143 (critic, privileged)
 
@@ -192,8 +192,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_inside_z_max:  float = 0.100   # 림 높이
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
-    success_target_fill_ratio: float = 0.50
-    success_spill_max: float = 0.20   # [test3] 0.40→0.20: spill 기준 강화 (P2)
+    success_target_fill_ratio: float = 0.30   # [test2] 0.50→0.30: ADR 통과 허들 낮춤
+    success_spill_max: float = 0.35   # [test2] 0.20→0.35: spill 30% > 20% 항상 실패 차단 해제
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -290,10 +290,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   원인: 안 움직이면 step당 5.0을 안정적으로 받음. 이동 시 grasp slip → grasp_maintain 감소.
     #         이동으로 얻는 r_approach 증분보다 잃는 r_hold가 크면 이동하지 않는 게 유리.
     #   수정: r_hold max → 0.5+0.3+0.5 = 1.3/step (75% 감소) → 이동 유인 상대적 강화
-    weight_grasp_maintain: float = 0.0    # [test4] 0.50→0.0: r_hold local optimum 완전 제거
+    weight_grasp_maintain: float = 0.5    # [test2] 0.0→0.5: 엄지 붕괴 방지 grasp slip 억제
     weight_contact_maintain: float = 0.0  # [test4] 0.30→0.0
     weight_force_balance: float = 0.0     # [test4] 0.30→0.0
-    weight_finger_curl: float = 0.0       # [test4] 0.50→0.0: demo가 finger 자세 가르침
+    weight_finger_curl: float = 0.3       # [test2] 0.0→0.3: 손가락 닫힘 유지 (curl 자세 유지)
     weight_approach_xy: float = 0.0       # [test4] 2.00→0.0: demo arm pose가 접근 가르침
     weight_approach_z: float = 0.00
     weight_cup_upright: float = 0.00
@@ -304,9 +304,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_prepour_align: float = 0.00
     weight_dir_tilt: float = 0.00
     weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
-    weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
+    weight_capture: float = 50.00  # [test2] 80→50: ramming 유도 약화 (충돌 방지)
     weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
-    weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
+    weight_first_capture_bonus: float = 10.00  # [test2] 20→10: 첫 capture 보너스 완화 (ramming 유도 약화)
     weight_tilt_onset_bonus: float = 0.00    # [test5] demo shaping 대체로 onset 제거
     tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
     tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
@@ -327,8 +327,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
     #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
     #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
-    weight_premature_tilt: float = 0.0    # [test4] 2.00→0.0: demo가 tilt 타이밍 가르침
+    weight_premature_tilt: float = 1.5    # [test2] 0.0→1.5: 원거리 tilt 페널티 복원 (충돌 방지)
     weight_grasp_loss: float = 0.20      # [test4] 0.05→0.20: 유일한 grasp safety net 강화
+    # [test2] cup-cup 외경 충돌 방지: 두 컵 중심 거리가 margin 미만이면 페널티
+    # cup_external_radius_sum ≈ 0.09m, margin=0.12m → 3cm 안전 여유
+    weight_cup_collision: float = 5.0     # cup-cup collision penalty weight
+    cup_collision_margin: float = 0.12    # cup-cup XY dist threshold (m)
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
     weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
@@ -362,7 +366,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_demo_arm_pose: float = 9.00   # [test4] 6.00→9.00: 공간 접근 gradient 보강
     weight_demo_palm_pose: float = 0.50  # [test2] 3.0→0.5: palm sim2real gap 최소화, arm 집중
     weight_demo_smooth: float = 0.20
-    weight_thumb_grip_pose: float = 0.00  # [test2] 0.5→0.0: hand pose 제거, arm 시계열만
+    weight_thumb_grip_pose: float = 1.00  # [test2] 0.0→1.0: 엄지 demo 평균 자세 복원 (엄지 붕괴 방지)
     demo_pose_warmup_steps: int = 20000
     demo_pose_near_gate_xy: float = 0.20  # unused: demo_pose_phase="all"은 거리 gate 없이 항상 참조
     demo_nn_lookahead_frames: int = 15    # [test3] 30→15: K=30이 demo 추종 방해 (0.5s→0.25s)

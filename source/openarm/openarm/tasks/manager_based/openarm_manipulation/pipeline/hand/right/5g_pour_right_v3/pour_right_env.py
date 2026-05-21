@@ -66,6 +66,7 @@ from .pour_right_env_cfg import PourRightEnvCfg
 from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
+    NUM_PALM_ACTION,
     NUM_FINGER_ACTION,
     NUM_FINGERTIPS,
     NUM_OBSERVATIONS,
@@ -540,6 +541,10 @@ class PourRightEnv(DirectRLEnv):
         self._prev_bead_ever_in_target_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._bead_in_target_fraction = torch.zeros(self.num_envs, device=self.device)
         self._bead_in_source_fraction = torch.zeros(self.num_envs, device=self.device)
+        self._bead_in_source_delta = torch.zeros(self.num_envs, device=self.device)
+        self._bead_in_target_delta = torch.zeros(self.num_envs, device=self.device)
+        self._bead_cross_delta = torch.zeros(self.num_envs, device=self.device)
+        self._spill_delta = torch.zeros(self.num_envs, device=self.device)
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
         self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -856,9 +861,9 @@ class PourRightEnv(DirectRLEnv):
         )
         self._bead_crossed_target_mouth |= mouth_crossed_now
         self._bead_cross_count.copy_(self._bead_crossed_target_mouth.sum(dim=-1).long())
-        self._bead_cross_fraction.copy_(self._bead_crossed_target_mouth.float().mean(dim=-1))
-        self._bead_in_target_fraction.copy_(self._bead_in_target.float().mean(dim=-1))
-        self._bead_in_source_fraction.copy_(self._bead_in_source.float().mean(dim=-1))
+        bead_cross_fraction = self._bead_crossed_target_mouth.float().mean(dim=-1)
+        bead_in_target_fraction = self._bead_in_target.float().mean(dim=-1)
+        bead_in_source_fraction = self._bead_in_source.float().mean(dim=-1)
 
         # source 컵 밖 + target 컵 로컬 z < z_min 아래로 떨어진 bead = 영구 손실
         # transit bead (공중 이동 중): target local z > z_min → spill 아님
@@ -866,7 +871,16 @@ class PourRightEnv(DirectRLEnv):
             (~self._bead_in_source)
             & (pos_in_target[..., 2] < self.cfg.target_inside_z_min)
         )
-        self._spill_ratio.copy_(bead_spilled.float().mean(dim=-1))
+        spill_ratio = bead_spilled.float().mean(dim=-1)
+
+        self._bead_in_source_delta.copy_(bead_in_source_fraction - self._bead_in_source_fraction)
+        self._bead_in_target_delta.copy_(bead_in_target_fraction - self._bead_in_target_fraction)
+        self._bead_cross_delta.copy_(bead_cross_fraction - self._bead_cross_fraction)
+        self._spill_delta.copy_(spill_ratio - self._spill_ratio)
+        self._bead_cross_fraction.copy_(bead_cross_fraction)
+        self._bead_in_target_fraction.copy_(bead_in_target_fraction)
+        self._bead_in_source_fraction.copy_(bead_in_source_fraction)
+        self._spill_ratio.copy_(spill_ratio)
         self._prev_bead_target_local_z.copy_(pos_in_target[..., 2])
 
     # ------------------------------------------------------------------
@@ -1208,6 +1222,23 @@ class PourRightEnv(DirectRLEnv):
             "Expected one of {106, 107, 112, 113}."
         )
 
+    def _finger_grasp_progress(self, finger_joint_pos: torch.Tensor) -> torch.Tensor:
+        """Return per-finger progress from approach pose to grasp pose in [0, 1]."""
+        delta = self.hand_grasp_pose - self.hand_open_pose
+        valid = delta.abs() > 1e-6
+        denom = torch.where(valid, delta, torch.ones_like(delta))
+        progress_20 = (
+            (finger_joint_pos - self.hand_open_pose.unsqueeze(0)) / denom.unsqueeze(0)
+        ).clamp(0.0, 1.0)
+        progress_20 = progress_20 * valid.unsqueeze(0).to(progress_20.dtype)
+        valid_counts = (
+            valid.view(NUM_FINGER_ACTION, 4).sum(dim=-1).clamp(min=1).to(progress_20.dtype)
+        )
+        return (
+            progress_20.view(-1, NUM_FINGER_ACTION, 4).sum(dim=-1)
+            / valid_counts.unsqueeze(0)
+        )
+
     def _get_observations(self) -> dict:
         # ==== 공통 clean state (critic용, 물리 정확값) ====
         arm_joint_pos_clean = self.robot.data.joint_pos[:, self.arm_dof_indices]
@@ -1258,8 +1289,10 @@ class PourRightEnv(DirectRLEnv):
         left_cup_pos_rel_palm = left_cup_pos - palm_center_pos
         pour_point_to_opening = target_opening - source_pour_point
 
+        finger_grasp_progress = self._finger_grasp_progress(finger_joint_pos)
         binary_contact = self.binary_contact_buf.float()
         last_actions = self.actions
+        last_palm_actions = self.actions[:, :NUM_PALM_ACTION]
 
         # transport_summary (8D): pour 기하학 + ρ gate
         transport_summary = torch.stack([
@@ -1273,46 +1306,50 @@ class PourRightEnv(DirectRLEnv):
             self._rho,                     # binary pour gate (cup_center_xy_dist < thresh)
         ], dim=-1)   # (N, 8)
 
+        flow_summary = torch.stack([
+            self._bead_in_source_delta,
+            self._bead_in_target_delta,
+            self._bead_cross_delta,
+            self._spill_delta,
+        ], dim=-1)   # (N, 4)
+
         # tip force (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
         tip_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
         actor_obs = torch.cat([
             arm_joint_pos,              # 7
             arm_joint_vel,              # 7
-            finger_joint_pos,           # 20
-            finger_joint_vel,           # 20
+            finger_grasp_progress,      # 5
             right_cup_pos_rel_palm,     # 3
             right_cup_quat_clean,       # 4
             left_cup_pos_rel_palm,      # 3
-            left_cup_quat_clean,        # 4
             pour_point_to_opening,      # 3
             source_pour_axis_clean,     # 3
             source_up_axis_clean,       # 3
             # target_up_axis 제거: 타겟 컵은 항상 직립 → 항상 [0,0,1], 정보 없음
             transport_summary,          # 8
-            binary_contact,             # 5
-            tip_force_norm,             # 5 (fingertip force, sim2real 가능)
-            last_actions,               # 11
+            last_palm_actions,          # 6
             # bead 상태: actor가 pour 결과를 직접 관측 (reward 항목 대응)
             self._bead_in_source_fraction.unsqueeze(1),  # 1 (소스 잔량)
             self._bead_in_target_fraction.unsqueeze(1),  # 1 (타겟 유입량, r_capture 대응)
             self._bead_cross_fraction.unsqueeze(1),      # 1 (mouth 통과율, r_cross weight=20 대응)
             self._spill_ratio.unsqueeze(1),              # 1 (유출율, spill_cost weight=10 대응)
-        ], dim=-1)   # 110D
+            flow_summary,               # 4 (source/target/cross/spill step delta)
+        ], dim=-1)   # 60D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
                 f"[pour_v3] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
             )
 
-        # ==== Critic extra obs (50D) ====
+        # ==== Critic extra obs (30D) ====
         cup_height_delta = (right_cup_pos_clean[:, 2] - self.object_init_pos[:, 2]).unsqueeze(1)
 
         distal_binary     = self.distal_binary_contact_buf.float()
         distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
 
-        # critic actor_obs_clean (110D) — clean state 재조합, actor_obs 구조와 동일
+        # critic base obs (110D) — full-state value estimation, actor LSTM layout과 분리
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,                                      # 7
             arm_joint_vel_clean,                                      # 7
@@ -1481,11 +1518,18 @@ class PourRightEnv(DirectRLEnv):
         finger_curl_score = (finger_lerp_min + 1.0) / 2.0
         r_finger_curl = self.cfg.weight_finger_curl * finger_curl_score
 
-        # Hold: grasp 유지
+        # tilt-phase aware hold:
+        # transport(직립) → full grip 요구, active pour(120°) → contact 요구 완화
+        # tilt_level: 0=직립(cup up), 1=완전 도립
+        tilt_amount = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
+        contact_gate = (1.0 - 0.7 * tilt_amount)   # 직립=1.0, 120°tilt≈0.3
+        upright_gate = (1.0 - tilt_amount).clamp(0.0, 1.0)
+
+        # Hold: grasp 유지 (tilt-phase aware)
         r_hold = (
             self.cfg.weight_grasp_maintain * grasp_maintain_reward
-            + self.cfg.weight_contact_maintain * full_grasp_flag
-            + r_force_balance
+            + self.cfg.weight_contact_maintain * full_grasp_flag * contact_gate
+            + r_force_balance * upright_gate
             + r_finger_curl
         )
 
@@ -1505,25 +1549,19 @@ class PourRightEnv(DirectRLEnv):
         r_align = 0.5 * (1.0 + self._directional_tilt_cos)
 
         # ρ gate: cup이 target 근처일 때만 pour 보상 활성
-        r_cross = self._bead_cross_fraction
-        r_capture = self._bead_in_target_fraction
+        # Progressive bead reward: fraction^2 → 40% fill=0.16, 80%=0.64, 100%=1.0
+        # 40% trap 방지: 동일 weight에서 40% fill 보상은 100% fill의 16%뿐
+        r_bead_progressive = self.cfg.weight_bead_progressive * (self._bead_in_target_fraction ** 2)
+        # Step-delta reward: bead가 들어오는 매 step 즉각 피드백 (LSTM temporal signal 강화)
+        r_bead_delta = self.cfg.weight_bead_entry_delta * self._bead_in_target_delta.clamp(min=0.0)
+
         r_pour_stage = self._rho * (
             self.cfg.weight_tilt * r_tilt
             + self.cfg.weight_align * r_align
-            + self.cfg.weight_cross * r_cross
-            + self.cfg.weight_capture * r_capture
+            + r_bead_progressive
+            + r_bead_delta
         )
         r_source_drain = self._rho * self.cfg.weight_source_drain * (1.0 - self._bead_in_source_fraction)
-
-        # 첫 비드 유입 1회 보너스: ρ 조건(근접) 내에서만 인정
-        near_for_capture = self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh
-        first_capture = (
-            (self._bead_in_target_fraction > 0.0)
-            & near_for_capture
-            & (~self._first_capture_bonus_paid)
-        )
-        r_first_capture = self.cfg.weight_first_capture_bonus * first_capture.float()
-        self._first_capture_bonus_paid |= first_capture
 
         # Success
         success_fill_ratio = (
@@ -1548,13 +1586,14 @@ class PourRightEnv(DirectRLEnv):
             overfill_bonus = self.cfg.weight_success_overfill * overfill
 
         # Costs
-        spill_cost = self._spill_ratio
+        # spill_cost: sqrt penalty → 초기 소량 spill에서도 강하게 패널티
+        # spill=0.10 → cost=0.316, spill=0.40 → cost=0.632 (linear보다 초기 억제 강함)
+        spill_cost = self._spill_ratio.clamp(min=0.0).sqrt()
         spill_weight = (
             self.spill_adr.get_param("reward", "spill_weight")
             if self.spill_adr is not None
             else self.cfg.weight_spill
         )
-        tilt_amount = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
         premature_tilt_cost = (1.0 - self._rho) * tilt_amount
         palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
         finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
@@ -1582,7 +1621,6 @@ class PourRightEnv(DirectRLEnv):
             + r_dist_to_target
             + r_pour_stage
             + r_source_drain
-            + r_first_capture
             + demo_terms["r_demo_arm_pose"]
             + demo_terms["r_demo_palm_pose"]
             + self.cfg.weight_success * r_success
@@ -1611,15 +1649,17 @@ class PourRightEnv(DirectRLEnv):
         # → "Episode/<key>" 태그로 iter(epoch) 기준 1회만 기록 (frame/iter/time 3중 중복 제거)
         ep_log: dict = {
             # reward/
-            "reward/hold":         r_hold.mean(),
-            "reward/dist":         r_dist_to_target.mean(),
-            "reward/pour":         r_pour_stage.mean(),
-            "reward/pour_tilt":    (self.cfg.weight_tilt * r_tilt * self._rho).mean(),
-            "reward/pour_align":   (self.cfg.weight_align * r_align * self._rho).mean(),
-            "reward/source_drain": r_source_drain.mean(),
-            "reward/success":      (self.cfg.weight_success * r_success).mean(),
-            "reward/demo_arm":     demo_terms["r_demo_arm_pose"].mean(),
-            "reward/demo_palm":    demo_terms["r_demo_palm_pose"].mean(),
+            "reward/hold":              r_hold.mean(),
+            "reward/dist":              r_dist_to_target.mean(),
+            "reward/pour":              r_pour_stage.mean(),
+            "reward/pour_tilt":         (self.cfg.weight_tilt * r_tilt * self._rho).mean(),
+            "reward/pour_align":        (self.cfg.weight_align * r_align * self._rho).mean(),
+            "reward/bead_progressive":  (self._rho * r_bead_progressive).mean(),
+            "reward/bead_delta":        (self._rho * r_bead_delta).mean(),
+            "reward/source_drain":      r_source_drain.mean(),
+            "reward/success":           (self.cfg.weight_success * r_success).mean(),
+            "reward/demo_arm":          demo_terms["r_demo_arm_pose"].mean(),
+            "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
             # cost/
             "cost/spill":              (spill_weight * spill_cost).mean(),
             "cost/premature_tilt":     (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),
@@ -1636,6 +1676,7 @@ class PourRightEnv(DirectRLEnv):
             "log/mouth_xy_dist":        self._mouth_xy_distance.mean(),
             "log/directional_tilt_cos": self._directional_tilt_cos.mean(),
             "log/rho":                  self._rho.mean(),
+            "log/contact_gate":         contact_gate.mean(),
             "log/arm_vel_l2":           arm_qd_l2.mean(),
             "log/arm_acc_l2":           arm_acc_vec.norm(dim=-1).mean(),
             "log/arm_jerk_l2":          arm_jerk_l2.mean(),
@@ -1884,6 +1925,10 @@ class PourRightEnv(DirectRLEnv):
         self._prev_bead_ever_in_target_count[env_ids] = 0
         self._bead_in_target_fraction[env_ids] = 0.0
         self._bead_in_source_fraction[env_ids] = 0.0
+        self._bead_in_source_delta[env_ids] = 0.0
+        self._bead_in_target_delta[env_ids] = 0.0
+        self._bead_cross_delta[env_ids] = 0.0
+        self._spill_delta[env_ids] = 0.0
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False
@@ -2211,6 +2256,10 @@ class PourRightEnv(DirectRLEnv):
         self._prev_bead_ever_in_target_count[env_ids] = 0
         self._bead_in_target_fraction[env_ids] = 0.0
         self._bead_in_source_fraction[env_ids] = 0.0
+        self._bead_in_source_delta[env_ids] = 0.0
+        self._bead_in_target_delta[env_ids] = 0.0
+        self._bead_cross_delta[env_ids] = 0.0
+        self._spill_delta[env_ids] = 0.0
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False

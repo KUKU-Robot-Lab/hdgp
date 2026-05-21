@@ -16,7 +16,7 @@
 
 v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 110D / critic 140D (asymmetric)
+- Observation: actor 60D / critic 140D (asymmetric)
 - Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
@@ -117,7 +117,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 110 (actor)
+    observation_space: int = NUM_OBSERVATIONS          # 60 (actor)
     action_space:      int = NUM_ACTIONS               # 11
     state_space:       int = NUM_CRITIC_OBSERVATIONS   # 140 (critic, privileged)
 
@@ -244,17 +244,22 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_empty_hold_steps: int = 60
 
     # -----------------------------------------------------------------------
-    # Reward weights (DexPour 기반 단순화 — test2)
+    # Reward weights
     # total = r_hold + r_dist + ρ*(r_tilt+r_align+r_bead+r_drain) + r_success
     #         - p_tilt - p_spill - p_action - demo_costs
     #
     # ρ = (cup_center_xy_dist < pour_binary_xy_thresh).float()
     # r_align = 0.5*(1 + directional_tilt_cos)  ← DexPour eq.2
+    #
+    # Bead reward 설계 (40% trap 방지):
+    #   r_bead_progressive = w * fraction^2  : 40%→0.16w, 80%→0.64w, 100%→w (비선형 가속)
+    #   r_bead_delta       = w * delta.clamp(0) : bead 유입 즉각 피드백 (LSTM temporal)
+    #   spill_cost         = w * sqrt(spill) : 초기 spill 강하게 패널티
     # -----------------------------------------------------------------------
 
-    # Grasp maintain (r_hold)
+    # Grasp maintain (r_hold) — tilt-phase aware
     weight_grasp_maintain: float = 0.50
-    weight_contact_maintain: float = 0.30
+    weight_contact_maintain: float = 0.50   # 0.30→0.50 소폭 강화
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 0.50
 
@@ -265,15 +270,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Pour: Stage 4 (ρ gate — binary)
     weight_tilt: float = 3.00             # exp tilt angle reward (peaks at pour_tilt_target_deg)
     weight_align: float = 3.00            # DexPour r_align = 0.5*(1+cos), 올바른 방향
-    weight_cross: float = 40.00           # bead_cross_fraction
-    weight_capture: float = 80.00         # bead_in_target_fraction
-    weight_first_capture_bonus: float = 20.00  # 첫 비드 유입 시 1회성 보너스
+    weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
+    weight_bead_entry_delta: float = 50.0    # step-delta: bead 유입 즉각 피드백
     weight_source_drain: float = 20.0     # pour gate 중 소스 배출 incentive
 
     # Outcome
     weight_success: float = 100.00
     weight_success_overfill: float = 0.0
-    weight_spill: float = 5.00
+    weight_spill: float = 40.0            # 5.0→40.0: spill 강하게 패널티 (40% trap 방지)
 
     # Premature tilt penalty (ρ=0 일 때만): 멀리서 기울기 패널티
     weight_premature_tilt: float = 1.00
@@ -309,11 +313,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_nn_lookahead_frames: int = 10
 
     # ADR: spill penalty 스케줄 (low→high)
-    enable_spill_adr: bool = True   # [test3] False→True: spill 점진적 억제 (5.0→8.0 ADR)
+    enable_spill_adr: bool = True
     spill_adr_custom_cfg: dict = {
         "reward": {
-            # [test8] 4.0→10.0: 초기 penalty 4배 강화 (ADR trigger 전에도 spill 억제)
-            "spill_weight": (4.0, 10.0),
+            # spill weight ADR: 초기 10.0 → 최대 40.0 (weight_spill 기본값과 동기화)
+            "spill_weight": (10.0, 40.0),
         }
     }
     spill_adr_num_increments: int = 50

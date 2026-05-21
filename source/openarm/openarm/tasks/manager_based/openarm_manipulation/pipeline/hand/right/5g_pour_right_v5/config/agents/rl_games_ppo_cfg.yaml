@@ -1,13 +1,14 @@
-# 5g_pour_right_v5 rl_games LSTM PPO + BC 설정
-# 관측: actor 110D / critic 143D (asymmetric), 액션: 11D
-# LSTM before_mlp=True, Asymmetric Actor-Critic (has_central_value: True)
+# 5g_pour_right_v5 rl_games LSTM(actor) + MLP(critic) PPO + BC 설정
+# 관측: actor 60D / critic 143D (asymmetric), 액션: 11D
+# Asymmetric Actor-Critic (has_central_value: True)
 # BC: sim success trajectories + real HDF5 demo (DemoBCBuffer)
 #
-# 구조 설계 근거 (v3 LSTM 구조 채택):
-#   - actor LSTM 1024: 1200-step 장기 에피소드에서 phase(이송→기울기→붓기) 기억
-#   - critic LSTM 2048 (before_mlp=False): value 추정에서 시간 의존성 보완
-#   - mixed_precision=False: LSTM + AMP 수치 불안정 회피
-#   - horizon=32, minibatch=16384: BPTT 시계열 포착 + 배치 정합
+# 구조 설계 근거 (v3 critic MLP 구조 채택):
+#   - actor obs에서 hand contact/force를 제거하고 bead flow + arm trajectory 중심으로 축약
+#   - MLP encoder → LSTM: noisy raw obs가 아니라 per-step feature를 시간축으로 누적
+#   - critic MLP [1024, 512]: LSTM 제거 (v3처럼). privileged obs로 시간 의존성 없이 추정
+#   - mixed_precision=False: actor LSTM + AMP 수치 불안정 회피
+#   - horizon=32, minibatch=8192: BPTT 시계열 포착 + VRAM 완화
 
 params:
   seed: 42
@@ -36,7 +37,7 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [512, 512]
+      units: [256]
       activation: elu
       d2rl: False
       initializer:
@@ -45,12 +46,12 @@ params:
         name: None
     rnn:
       name: lstm
-      units: 1024
+      units: 512
       layers: 1
-      before_mlp: True    # raw obs → LSTM(상태추정) → MLP(정책사상): 부분관측 task 정석
+      before_mlp: False   # obs → MLP encoder → LSTM: pour-flow feature만 시계열화
       layer_norm: True
-      concat_input: True
-      concat_output: True
+      concat_input: False
+      concat_output: False
 
   load_checkpoint: False
   load_path: ''
@@ -79,18 +80,18 @@ params:
     score_to_win: 100000000
     max_epochs: 10000
     save_best_after: 100
-    save_frequency: 50
+    save_frequency: 500
     print_stats: True
     grad_norm: 1.0
     entropy_coef: 0.0015
     truncate_grads: True
     e_clip: 0.2
     # horizon=32: 1200-step 장기 에피소드에서 BPTT가 더 긴 시계열 포착
-    # batch = 2048 envs × 32 = 65536 → minibatch 16384 = 4 splits (정합)
+    # batch = 2048 envs × 32 = 65536 → minibatch 8192 = 8 splits (VRAM 완화)
     horizon_length: 32
-    seq_length: 16            # BPTT truncation 윈도우 (horizon 32 = 2 seq 청크)
+    seq_length: 8             # BPTT truncation 윈도우 (horizon 32 = 4 seq 청크)
     zero_rnn_on_done: True
-    minibatch_size: 16384
+    minibatch_size: 8192
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
@@ -104,7 +105,7 @@ params:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 16384
+      minibatch_size: 8192
       mini_epochs: 4
       learning_rate: 5e-5
       lr_schedule: linear
@@ -123,14 +124,10 @@ params:
             name: default
           regularizer:
             name: None
-        rnn:
-          name: lstm
-          units: 2048
-          layers: 1
-          before_mlp: False   # critic: MLP→LSTM (값 추정 보조)
-          layer_norm: True
-          concat_input: True
-          concat_output: True
+        # [test2] critic LSTM 제거 (v3처럼 MLP only):
+        #   - critic은 privileged obs (143D)로 충분히 정보가 있음
+        #   - actor만 LSTM으로 시간 의존성 처리
+        #   - LSTM 제거로 학습 안정성/속도 개선
 
     # ── BC 하이퍼파라미터 ─────────────────────────────────────────────
     # sim 성공 궤적 BC (SuccessTrajBuffer)
@@ -139,7 +136,7 @@ params:
     bc_loss_weight_init: 1.0
     bc_loss_weight_final: 0.1
     bc_min_buffer_size: 5
-    bc_seq_len: 16
+    bc_seq_len: 8
     bc_batch_size: 64
 
     # 실제 HDF5 데모 BC (DemoBCBuffer)

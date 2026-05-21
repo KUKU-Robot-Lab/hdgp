@@ -6,10 +6,10 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""HDF5 실제 데모 → v5 (obs 60D, action 11D) 변환 및 BC 배치 샘플러.
+"""HDF5 실제 데모 → v4 (obs 60D, action 11D) 변환 및 BC 배치 샘플러.
 
 HDF5 파일(pour_v1_a11~a20.hdf5)에서 관절/포즈 데이터를 직접 읽어
-v5 환경의 actor obs 레이아웃(60D)과 action 컨벤션(11D)으로 변환한다.
+v4 환경의 actor obs 레이아웃(60D)과 action 컨벤션(11D)으로 변환한다.
 
 Obs 60D 레이아웃 (pour_right_constants.py 기준):
   [0:7]   arm_joint_pos

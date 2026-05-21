@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Hand/robot preset metadata for 5g_pour_right_v3.
+"""Hand/robot preset metadata for 5g_pour_right_v5.
 
-v3와 동일한 joint/body 구성. v4에서 재사용.
+v5 joint/body configuration.
 """
 
 import math
@@ -68,7 +68,7 @@ def _left_arm_fk_hand_pose(joint_pos_dict: dict) -> tuple:
 
     g = lambda k: joint_pos_dict.get(k, 0.0)
     Tc = np.eye(4)
-    Tc = Tc @ _Tf([0, .031, .698],     [-math.pi/2, 0, 0])           # body→left_link0
+    Tc = Tc @ _Tf([0, .031, .698],     [-math.pi/2, 0, 0])
     Tc = Tc @ _Tj([0, 0, .0625],       [0,0,0], [0,0,1],   g("openarm_left_joint1"))
     Tc = Tc @ _Tj([-.0301,0,.06],      [-math.pi/2,0,0], [-1,0,0], g("openarm_left_joint2"))
     Tc = Tc @ _Tj([.0301,0,.06625],    [0,0,0], [0,0,1],   g("openarm_left_joint3"))
@@ -76,7 +76,7 @@ def _left_arm_fk_hand_pose(joint_pos_dict: dict) -> tuple:
     Tc = Tc @ _Tj([0,-.0315,.0955],    [0,0,0], [0,0,1],   g("openarm_left_joint5"))
     Tc = Tc @ _Tj([.0375,0,.1205],     [0,0,0], [1,0,0],   g("openarm_left_joint6"))
     Tc = Tc @ _Tj([-.0375,0,0],        [0,0,0], [0,-1,0],  g("openarm_left_joint7"))
-    Tc = Tc @ _Tf([0, 0, .1001],       [0,0,0])                       # →openarm_left_hand
+    Tc = Tc @ _Tf([0, 0, .1001],       [0,0,0])
     return Tc[:3, 3], Tc[:3, :3]
 
 
@@ -113,17 +113,17 @@ def compute_left_cup_pose_from_fk(joint_pos_dict: dict, local_z: float = 0.04) -
     return cup_pos, cup_quat
 
 
-# LEFT_ARM_REST_JOINT_POS 변경 시 자동 반영
+# LEFT_ARM_REST_JOINT_POS 변경 시 자동 반영 : local_z=0.05m에서 컵 위치 계산 (hand origin에서 5cm 앞)
 LEFT_TARGET_CUP_POS_ENV_LOCAL, LEFT_TARGET_CUP_QUAT_WXYZ = compute_left_cup_pose_from_fk(
-    LEFT_ARM_REST_JOINT_POS ,local_z=0.05
+    LEFT_ARM_REST_JOINT_POS, local_z=0.05
 )
 
 # 기존 attach 상수 (레거시 — env.py에서 더 이상 사용 안 함)
 LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "openarm_left_hand"
-LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.06]
+LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.10]
 LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]
 
-BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.04]
+BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.01]
 BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ = [1.0, 0.0, 0.0, 0.0]
 SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
 TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
@@ -196,20 +196,10 @@ HAND_GRASP_POSE = [
     0.0,  0.0,  1.5, 1.5,   # pinky
 ]
 
-# 완전 파지 자세 — 홀드 리워드 타겟 (관절 한계의 85~90%)
-# grasp_maintain r_hold의 단일 L2 타겟으로 사용
-HAND_FULL_GRIP_POSE = [
-    0.0, -2.50, 0.20, 1.50,   # thumb:  _2 깊은 curl (-2.5), _3/_4 유지
-    0.0,  1.80, 1.50, 1.50,   # index:  _2 90% of 2.007
-    0.0,  1.75, 1.50, 1.50,   # middle: _2 90% of 1.955
-    0.0,  1.65, 1.50, 1.50,   # ring:   _2 87% of 1.902
-    0.0,  0.00, 1.40, 1.50,   # pinky:  _3 89% of π/2=1.571
-]
-
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
 # Fabrics rollout이 [cup_x-0.167, cup_y-0.09, cup_z+0.04]로 수렴
 # j4=0.60: FK z≈0.282, 테이블 안전, 물리 충돌 없음
-RIGHT_ARM_START_POSE = [0.5, 0.1, 0.0, 0.60, -0.2, 0.0, 0.0]
+RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0]
 
 
 # ---------------------------------------------------------------------------
@@ -237,23 +227,14 @@ def palm_pose_mins(max_pose_angle: float) -> list:
 
 
 def palm_pose_maxs(max_pose_angle: float) -> list:
-    # [test1/3 분석] y_max=0.18m 이 workspace 병목:
+    # LEFT_ARM_REST_JOINT_POS FK 기준 target cup pos (env-local): x=0.291, y=0.031, z=0.323
     #   pregrasp palm y = spawn_center_y(-0.15) + offset_y(-0.07) = -0.22m
-    #   env_cfg.py palm_delta_xyz=0.3m → max palm y = -0.22 + 0.30 = +0.08m
-    #   → workspace clamp(y_max=0.18)은 이미 0.08m보다 크므로 clamp 발생 안함
-    #   → 실질적 병목은 delta=0.3m 부족 + y_max=0.18m의 조합
-    #
-    #   palm_delta_xyz=0.5m(env_cfg.py 동시 수정) 후 계산:
-    #   max palm y = -0.22 + 0.50 = +0.28m → y_max=0.22m clamp 작동
-    #   → 실제 달성 palm y = 0.22m → cup y ≈ 0.22m
-    #   타겟 컵 y ≈ 왼팔 end-effector y ≈ +0.27m (LEFT_ARM_REST_JOINT_POS j4=1.5 기준)
-    #   → cup-target gap ≈ 0.27 - 0.22 = 0.05m
-    #   g_align_xy(scale=5) = exp(-5 × 0.05) = exp(-0.25) = 0.78 → pre-pour 완전 활성화
-    #
-    #   y_max=0.22m: 왼팔 y≈0.27m에서 5cm 여유 (기존 0.18m 대비 4cm 더 접근, 충돌 위험 낮음)
+    #   palm_delta_xyz=0.5m → max palm y = min(-0.22+0.50, 0.22) = 0.22m
+    #   target cup y = 0.031m → workspace 내에 충분히 포함됨
+    #   y_max=0.22m: 탐색 여유 확보 (왼팔 손목 y=0.076m에서 14cm 여유, 충돌 안전)
     d = math.pi / 180.0
     return [
-        0.65, 0.22, 0.65,   # y_max: 0.18→0.22 (왼팔 y≈0.27m 기준 5cm 여유, cup-target 0.05m 달성)
+        0.65, 0.22, 0.65,   # y_max=0.22m: target cup y=0.031m 기준 충분한 여유
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,
