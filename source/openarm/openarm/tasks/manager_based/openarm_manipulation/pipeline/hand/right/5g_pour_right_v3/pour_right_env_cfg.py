@@ -16,7 +16,7 @@
 
 v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 106D / critic 143D (asymmetric)
+- Observation: actor 110D / critic 140D (asymmetric)
 - Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
@@ -119,7 +119,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     observation_space: int = NUM_OBSERVATIONS          # 110 (actor)
     action_space:      int = NUM_ACTIONS               # 11
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 143 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 140 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -225,33 +225,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     tilt_action_gate_xy_near: float = 0.06
     tilt_action_gate_xy_far: float = 0.25  # 0.32→0.20→0.25: equilibrium 0.16m에서 gate 28%→47%
 
-    # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
-    approach_xy_off_near: float = 0.05
-    approach_xy_off_far: float = 0.12
-
-    # stage gate / pre-pour geometry
-    # test1에서 mouth_xy≈0.23m일 때 g_align_xy가 1e-3 이하로 죽어 접근 전 stage 신호가 약했음.
-    # xy gate/approach를 넓혀 먼 거리에서도 target 방향 gradient를 유지한다.
-    #
-    # [test1/3 분석] g_ready Gate 너무 엄격 → Stage C/D 학습 완전 차단:
-    #   g_align_xy = exp(-scale × cup_center_xy_dist)
-    #   scale=12, dist=0.22m → exp(-12×0.22) = exp(-2.64) = 0.071 (7.1%)
-    #   g_ready = g_align_xy × g_clear ≈ 0.071 × g_clear → TB 관찰값 g_ready≈0.11과 일치
-    #
-    #   g_ready=0.5가 되려면: exp(-12×d)=0.5 → d = ln(2)/12 = 0.058m
-    #   그런데 workspace 제한으로 cup-target gap 최소 0.19m → 물리적으로 달성 불가
-    #
-    #   결과: r_prepour = g_ready(0.11) × 9.0 = 0.99/step
-    #         premature_tilt_cost = (1-0.11) × 4.0 = 3.56/step
-    #         tilt 시 cost > reward → policy가 tilt 학습 자체를 포기
-    #
-    #   수정: scale=5 → g_align_xy @ 0.22m = exp(-5×0.22) = 0.33 (4.7배 증가)
-    #         g_ready=0.5 달성 거리: ln(2)/5 = 0.14m (workspace 확장 후 달성 가능)
-    reward_gate_xy_scale: float = 5.0   # 12.0→5.0: g_align_xy @ 0.22m: 0.07→0.33, 50%선 0.06→0.14m
-    reward_gate_clear_scale: float = 80.0
-    reward_gate_tilt_scale: float = 15.0
-    reward_clearance_min: float = 0.015
-    reward_tilt_cos_min: float = 0.15
+    # [test2] DexPour 단순화: g_align_xy/g_clear/g_tilt/g_ready/g_pour 제거
+    # → ρ binary gate (cup_center_xy_dist < pour_binary_xy_thresh) 로 대체
+    # → premature_tilt_cost gate도 ρ 기반으로 단순화
 
     # -----------------------------------------------------------------------
     # Warmstart quality / success
@@ -268,83 +244,39 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_empty_hold_steps: int = 60
 
     # -----------------------------------------------------------------------
-    # Reward weights
-    # reward_v3 =
-    #   approach_stage + g_ready * pre_pour_stage + g_pour * pour_stage + outcome
-    #   + grasp/contact/force/finger 유지 보상
-    #   - spill/premature_tilt/grasp_loss/action_rate/wrist_spin 비용
+    # Reward weights (DexPour 기반 단순화 — test2)
+    # total = r_hold + r_dist + ρ*(r_tilt+r_align+r_bead+r_drain) + r_success
+    #         - p_tilt - p_spill - p_action - demo_costs
+    #
+    # ρ = (cup_center_xy_dist < pour_binary_xy_thresh).float()
+    # r_align = 0.5*(1 + directional_tilt_cos)  ← DexPour eq.2
     # -----------------------------------------------------------------------
-    # 유지계는 패널티형 reward로 바꿨으므로 과도한 상수항이 되지 않게 낮추고,
-    # transport/capture/success 쪽 가중치를 상대적으로 키운다.
-    #
-    # [test1/3 분석] r_hold Local Optimum → 안 움직임:
-    #   r_hold max = grasp_maintain(2.0) + contact_maintain(1.0) + finger_curl(2.0) = 5.0/step
-    #   TB 관찰: r_hold≈4.87/step (포화), cup_center_xy_dist=0.22m 에서 8756 epoch 내내 plateau
-    #   원인: 안 움직이면 step당 5.0을 안정적으로 받음. 이동 시 grasp slip → grasp_maintain 감소.
-    #         이동으로 얻는 r_approach 증분보다 잃는 r_hold가 크면 이동하지 않는 게 유리.
-    #   수정: r_hold max → 0.5+0.3+0.5 = 1.3/step (75% 감소) → 이동 유인 상대적 강화
-    weight_grasp_maintain: float = 0.50   # 2.00→0.50: r_hold local optimum 해소
-    weight_contact_maintain: float = 0.30  # 1.00→0.30
+
+    # Grasp maintain (r_hold)
+    weight_grasp_maintain: float = 0.50
+    weight_contact_maintain: float = 0.30
     weight_force_balance: float = 0.30
-    weight_finger_curl: float = 0.50      # 2.00→0.50: r_hold max 5.0→1.3/step
-    # [test7] approach/pre-pour reward 복원 (test6 교훈: demo shaping만으로는 approach gradient 대체 불가)
-    # demo shaping은 방향/자세 가이드 역할, approach gradient는 이동 유인 역할 → 병행 필요
-    weight_approach_xy: float = 5.00   # 복원 (test5: 10.00 → test7: 5.00, 절반으로 낮춤)
-    weight_approach_z: float = 0.50    # [test9] 1.50→0.50: r_approach_z_rim으로 z 가이드 대체
-    # [test10] z-height approach: source cup CENTER z (tilt-invariant) 기반 수정
-    # 버그(test9): pour_point_w[:, 2] → tilt 시 z 감소 → tilting 패널티
-    # 수정: cup center z 사용. ideal cup_center_z = target_rim + clearance - cup_rim_z_offset
-    # target_rim_z ≈ 0.44m → cup_center_ideal = 0.44 + 0.04 - 0.10 = 0.38m ✓
-    # lift from spawn(~0.297m) = 0.083m → lift_height_cap(0.10m) 내에서 달성 가능
-    weight_approach_z_rim: float = 3.0
-    approach_z_rim_target_clearance: float = 0.04   # target rim 위 4cm (source cup center 기준)
-    approach_z_rim_sharpness: float = 15.0           # σ ≈ 6.7cm (±10cm 범위에서 gradient 유지)
-    source_cup_rim_z_offset: float = 0.10            # SOURCE_CUP_POUR_POINT_POS_B[2]: cup center→rim z offset
-    weight_cup_upright: float = 0.40   # 복원 (test5: 0.80 → test7: 0.40)
-    weight_transport_progress: float = 6.00  # 복원 (test5: 12.00 → test7: 6.00)
-    weight_prepour_dir: float = 3.00   # 복원 (test5: 5.00 → test7: 3.00)
-    weight_prepour_align: float = 3.00  # 복원 (test5: 5.00 → test7: 3.00)
-    weight_dir_tilt: float = 2.00      # 복원 (test5: 3.00 → test7: 2.00) [test8] 방향 수식 반전으로 올바른 gradient
-    weight_source_drain: float = 20.0  # [test8] 신규: pour gate 중 소스 배출 incentive
-    weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
-    weight_capture: float = 80.00  # 40→80: 동일. "하나라도 들어가면 gradient"
-    weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
-    weight_first_capture_bonus: float = 20.00  # 8→20: 첫 비드 1개 유입 시 강한 탐색 신호
-    weight_tilt_onset_bonus: float = 0.00    # [test5] demo shaping 대체로 onset 제거
-    tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
-    tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
-    # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
-    # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 100으로 강화 (300은 과도했음)
-    weight_success: float = 100.00  # 30→300→100
-    # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
-    # 0이면 비활성.
+    weight_finger_curl: float = 0.50
+
+    # Transport: Stage 3 (always active)
+    weight_dist_to_target: float = 5.00   # exp(-k * cup_center_xy_dist), DexPour eq.1
+    dist_to_target_exp_scale: float = 5.0 # k in exp(-k*dist)
+
+    # Pour: Stage 4 (ρ gate — binary)
+    weight_tilt: float = 3.00             # exp tilt angle reward (peaks at pour_tilt_target_deg)
+    weight_align: float = 3.00            # DexPour r_align = 0.5*(1+cos), 올바른 방향
+    weight_cross: float = 40.00           # bead_cross_fraction
+    weight_capture: float = 80.00         # bead_in_target_fraction
+    weight_first_capture_bonus: float = 20.00  # 첫 비드 유입 시 1회성 보너스
+    weight_source_drain: float = 20.0     # pour gate 중 소스 배출 incentive
+
+    # Outcome
+    weight_success: float = 100.00
     weight_success_overfill: float = 0.0
-    weight_spill: float = 5.00     # [test3] 1.0→5.0: spill 패널티 강화 (P2) — spill_ratio=0.2 → cost=1.0/step
-    # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
-    #   premature_tilt_cost = (1 - g_ready) × (1 - source_up_dot_world)
-    #   g_ready=0.11, cup 100° tilt 시 source_up_dot_world≈-0.17 → (1-(-0.17))=1.17
-    #   cost = 0.89 × 1.17 × 4.0 = 4.17/step
-    #   r_prepour = 0.11 × (5.0+4.0) = 0.99/step
-    #   → cost(4.17) >> reward(0.99) → policy가 tilt 절대 시도하지 않음
-    #
-    #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
-    #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
-    #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
-    # [test7] premature_tilt 약하게 복원 (demo shaping이 타이밍 가르치지만 안전장치로 유지)
-    weight_premature_tilt: float = 1.00  # test5: 2.00 → test7: 1.00
-    weight_grasp_loss: float = 0.05      # 0.30→0.05: [test4] cost_grasp_loss=0.73/step (전체 cost 73%) → tilt 억제. DexPour는 contact reward로 대체
-    # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
-    # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
-    weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
-    weight_arm_joint_acc: float = 0.0005  # arm 가속도 프록시 페널티
-    arm_joint_vel_sq_clip: float = 64.0   # (arm_qd L2 norm)^2 클리핑 상한 (8 rad/s L2 기준)
-    # [Phase-1 Step 5] arm vel penalty gate
-    # [test4] cost_arm_vel=0.001/step (사실상 0) → approach 구간 빠른 이동 억제 없음
-    # → arm_vel_tilt_gate_only=False: approach 구간에도 낮은 가중치로 적용
-    arm_vel_tilt_gate_only: bool = False   # True→False
-    weight_arm_joint_vel_approach: float = 0.0005  # approach 구간 (tilt 구간 0.002의 1/4)
-    # [Phase-1 Step 6] arm joint jerk penalty (acc 변화율, 흔들림 급변 억제)
-    weight_arm_joint_jerk: float = 0.0002
+    weight_spill: float = 5.00
+
+    # Premature tilt penalty (ρ=0 일 때만): 멀리서 기울기 패널티
+    weight_premature_tilt: float = 1.00
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
     # action_rate_penalty는 raw action 기반 유지 (training gradient 보존)
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
@@ -401,35 +333,15 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_adr_increment_interval: int = 20000
     success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
 
-    reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
-    contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
-    force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
-    # [test1/3 분석] approach tanh 포화 → 0.22m에서 gradient 약화:
-    #   r_approach_xy = 1 - tanh(scale × dist)
-    #   scale=5.0, dist=0.22m → 1 - tanh(1.10) = 1 - 0.80 = 0.20 (max의 20%만 남음)
-    #   gradient = 5 × sech²(1.10) = 5 × 0.358 = 1.79 → 완만해서 전진 유인 약함
-    #
-    #   수정: scale=2.5 → 1 - tanh(0.55) = 1 - 0.50 = 0.50 (max의 50%)
-    #   gradient = 2.5 × sech²(0.55) = 2.5 × 0.748 = 1.87 → 유사한 gradient, 더 넓은 범위
-    reward_approach_xy_scale: float = 2.5   # 5.0→2.5: 0.22m에서 approach reward 0.20→0.50
-    # DexPour-style stage thresholds / shaping
-    stage_approach_xy_threshold: float = 0.14
-    stage_pour_xy_threshold: float = 0.15
-    transport_dist_exp_scale: float = 8.0
-    transport_tilt_penalty_weight: float = 2.0
-    pour_tilt_target_deg: float = 120.0  # 135→100→120: 더 강한 기울기로 소스 완전 배출 유도
-    pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
+    reward_grasp_slip_sharpness: float = 3.0
+    contact_maintain_min_others: int = 2
+    force_balance_sharpness: float = 2.0
+    pour_tilt_target_deg: float = 120.0
+    pour_tilt_sharpness: float = 2.0
 
-    # [P2] r_lift 상한: DexPour "Once cup reaches h_lift, lift reward ceases"
-    # [test9] 0.05 → 0.10: approach_z_rim_target=4cm에서 ideal cup_z=0.38m → lift=0.083m
-    # 기존 cap=0.05m은 ideal 높이(0.083m)에 못 미쳐 r_lift가 너무 일찍 포화됨
-    lift_height_cap: float = 0.10
-
-    # [P3] pour stage binary gate: DexPour ρ 방식
-    # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
-    # → "컵 근처에서 기울어야만 pour reward" → 명확한 행동 학습
-    pour_binary_xy_thresh: float = 0.18   # [test4] 0.15→0.18: FK 확인 source-target XY gap ≈ 0.20m, 여유 포함
-    pour_binary_tilt_thresh: float = 0.50  # source_up_dot < 0.50 (>60° 기울기)
+    # ρ binary pour gate: cup_center_xy_dist < thresh → pour stage 활성
+    pour_binary_xy_thresh: float = 0.18
+    pour_binary_tilt_thresh: float = 0.50  # gate_pour_binary 진단용 (ρ에는 미사용)
 
     # -----------------------------------------------------------------------
     # 종료 조건

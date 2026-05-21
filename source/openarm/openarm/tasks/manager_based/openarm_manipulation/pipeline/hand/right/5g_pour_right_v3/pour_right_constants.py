@@ -92,8 +92,8 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 NUM_OBSERVATIONS = 110        # Actor: 7+7+20+20+3+4+3+4+3+3+3+8+5+5+11+4 = 110
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 33      # left_arm(18) + distal(10) + cup_h(1) + g_align/clear/tilt/pour(4)
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 143
+NUM_CRITIC_EXTRAS   = 30      # left_arm(18) + distal(10) + cup_h(1) + rho(1)
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 140
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
