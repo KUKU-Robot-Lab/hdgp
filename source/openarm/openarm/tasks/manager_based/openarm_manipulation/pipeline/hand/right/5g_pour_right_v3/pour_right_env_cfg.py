@@ -66,15 +66,15 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
             mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬 (5g→10g: 관성 향상, 진동 날림 방지)
-            rigid_props=RigidBodyPropertiesCfg( 
+            rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
-                solver_position_iteration_count=16,
-                solver_velocity_iteration_count=4,
-                linear_damping=0.5,   # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
-                angular_damping=0.5,  # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
-                max_depenetration_velocity=5.0,
-                max_linear_velocity=10.0,
-                max_angular_velocity=20.0,
+                solver_position_iteration_count=8,   # 16→8: GPU contact stage 연산 부하 감소
+                solver_velocity_iteration_count=2,   # 4→2: 동일 이유
+                linear_damping=0.5,
+                angular_damping=0.5,
+                max_depenetration_velocity=1.0,      # 5.0→1.0: 침투 보정 폭발 방지 (PhysX crash 주원인)
+                max_linear_velocity=5.0,             # 10.0→5.0: 비드 날림 속도 제한
+                max_angular_velocity=10.0,           # 20.0→10.0: 비드 회전 제한
             ),
         )
         # 이 IsaacLab 버전의 UsdFileCfg는 physics_material 생성자 인자를 직접 받지 않는다.
