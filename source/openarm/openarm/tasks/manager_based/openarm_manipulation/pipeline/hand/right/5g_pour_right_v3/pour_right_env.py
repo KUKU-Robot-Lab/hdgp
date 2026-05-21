@@ -1710,11 +1710,11 @@ class PourRightEnv(DirectRLEnv):
         self.success_flag.copy_(success_by_fill)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
 
-        # 비드 이상 감지: 비드 z가 바닥 아래로 떨어지면 즉시 종료 → GPU 씬 오염 방지
-        # 월드 z는 env 위치와 무관하게 절대값이므로 그대로 사용
-        # (lateral 방향은 env origin이 수백m까지 달라지므로 월드좌표 threshold 사용 불가)
+        # 비드 이상 감지: 비드 소환 상태에서 z < -0.5 이면 물리 폭발로 판단 → 즉시 종료
+        # _hide_beads()는 z=-10.0에 숨기므로, _beads_spawned=False인 env는 체크 제외
+        # (월드 z 사용: z방향 env_origin은 모두 0이므로 절대값 유효)
         bead_pos_w = self.beads.data.object_pos_w  # (N, num_beads, 3)
-        bead_fallen = (bead_pos_w[..., 2] < -0.5).any(dim=-1)
+        bead_fallen = self._beads_spawned & (bead_pos_w[..., 2] < -0.5).any(dim=-1)
 
         terminated = (
             out_x | out_y | fallen | dropped_by_force
