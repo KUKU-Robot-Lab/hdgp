@@ -1710,7 +1710,17 @@ class PourRightEnv(DirectRLEnv):
         self.success_flag.copy_(success_by_fill)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
 
-        terminated = out_x | out_y | fallen | dropped_by_force | self.success_flag | source_drained
+        # 비드 이상 감지: 비드가 바닥 아래로 떨어지거나 극단적 위치가 되면 즉시 종료
+        # → GPU 씬 오염(PhysX CUDA error) 방지
+        bead_pos_w = self.beads.data.object_pos_w  # (N, num_beads, 3)
+        bead_fallen = (bead_pos_w[..., 2] < -0.5).any(dim=-1)
+        bead_exploded = (bead_pos_w.abs() > 5.0).any(dim=-1).any(dim=-1)
+
+        terminated = (
+            out_x | out_y | fallen | dropped_by_force
+            | self.success_flag | source_drained
+            | bead_fallen | bead_exploded
+        )
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         return terminated, truncated

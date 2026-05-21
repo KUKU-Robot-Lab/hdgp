@@ -404,7 +404,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         dt=1.0 / 120.0,
         render_interval=2,
         physx=sim_utils.PhysxCfg(
-            bounce_threshold_velocity=0.01,
+            bounce_threshold_velocity=0.2,   # 0.01→0.2: 표준값. 0.01은 active contact 폭발 유발
             gpu_found_lost_pairs_capacity=4 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
