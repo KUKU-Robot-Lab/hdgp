@@ -1490,9 +1490,10 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # Transport: dist (DexPour eq.1, always active)
-        # warmstart가 이미 lifted 상태이므로 r_lift 불필요
+        # _mouth_xy_distance: source pour point(rim) → target opening XY 거리
+        # cup center 기반이면 거리 0 = 몸통 충돌 → mouth 기반으로 수정
         r_dist_to_target = self.cfg.weight_dist_to_target * torch.exp(
-            -self.cfg.dist_to_target_exp_scale * self._cup_center_xy_dist
+            -self.cfg.dist_to_target_exp_scale * self._mouth_xy_distance
         )
 
         # Pour (ρ gate 내부): tilt + align + bead
@@ -1606,48 +1607,50 @@ class PourRightEnv(DirectRLEnv):
             self.success_adr.maybe_increment(_ep_success_rate)
 
         # ---- TensorBoard logging ----
-        # reward/
-        self.extras["reward/hold"]         = r_hold.mean()
-        self.extras["reward/dist"]         = r_dist_to_target.mean()
-        self.extras["reward/pour"]         = r_pour_stage.mean()
-        self.extras["reward/pour_tilt"]    = (self.cfg.weight_tilt * r_tilt * self._rho).mean()
-        self.extras["reward/pour_align"]   = (self.cfg.weight_align * r_align * self._rho).mean()
-        self.extras["reward/source_drain"] = r_source_drain.mean()
-        self.extras["reward/success"]      = (self.cfg.weight_success * r_success).mean()
-        self.extras["reward/demo_arm"]     = demo_terms["r_demo_arm_pose"].mean()
-        self.extras["reward/demo_palm"]    = demo_terms["r_demo_palm_pose"].mean()
-
-        # cost/
-        self.extras["cost/spill"]              = (spill_weight * spill_cost).mean()
-        self.extras["cost/premature_tilt"]     = (self.cfg.weight_premature_tilt * premature_tilt_cost).mean()
-        self.extras["cost/action_rate_palm"]   = (self.cfg.weight_action_rate_palm * palm_delta).mean()
-        self.extras["cost/action_rate_finger"] = (self.cfg.weight_action_rate_finger * finger_delta).mean()
-        self.extras["cost/demo_smooth"]        = demo_terms["cost_demo_smooth"].mean()
-        self.extras["cost/thumb_grip"]         = demo_terms["cost_thumb_grip"].mean()
-
-        # log/
-        self.extras["log/bead_in_target"]      = self._bead_in_target_fraction.mean()
-        self.extras["log/bead_in_source"]      = self._bead_in_source_fraction.mean()
-        self.extras["log/bead_cross"]          = self._bead_cross_fraction.mean()
-        self.extras["log/spill_ratio"]         = self._spill_ratio.mean()
-        self.extras["log/cup_center_xy_dist"]  = self._cup_center_xy_dist.mean()
-        self.extras["log/mouth_xy_dist"]       = self._mouth_xy_distance.mean()
-        self.extras["log/directional_tilt_cos"]= self._directional_tilt_cos.mean()
-        self.extras["log/rho"]                 = self._rho.mean()
-        self.extras["log/arm_vel_l2"]          = arm_qd_l2.mean()
-        self.extras["log/arm_acc_l2"]          = arm_acc_vec.norm(dim=-1).mean()
-        self.extras["log/arm_jerk_l2"]         = arm_jerk_l2.mean()
-        self.extras["log/demo_arm_joint_err"]  = demo_terms["demo_arm_joint_err"].mean()
-        self.extras["log/demo_palm_pos_err"]   = demo_terms["demo_palm_pos_err"].mean()
-        self.extras["log/demo_palm_rot_err"]   = demo_terms["demo_palm_rot_err"].mean()
-
+        # extras["log"]에 nested dict로 기록 → IsaacAlgoObserver가 infos["episode"]로 매핑
+        # → "Episode/<key>" 태그로 iter(epoch) 기준 1회만 기록 (frame/iter/time 3중 중복 제거)
+        ep_log: dict = {
+            # reward/
+            "reward/hold":         r_hold.mean(),
+            "reward/dist":         r_dist_to_target.mean(),
+            "reward/pour":         r_pour_stage.mean(),
+            "reward/pour_tilt":    (self.cfg.weight_tilt * r_tilt * self._rho).mean(),
+            "reward/pour_align":   (self.cfg.weight_align * r_align * self._rho).mean(),
+            "reward/source_drain": r_source_drain.mean(),
+            "reward/success":      (self.cfg.weight_success * r_success).mean(),
+            "reward/demo_arm":     demo_terms["r_demo_arm_pose"].mean(),
+            "reward/demo_palm":    demo_terms["r_demo_palm_pose"].mean(),
+            # cost/
+            "cost/spill":              (spill_weight * spill_cost).mean(),
+            "cost/premature_tilt":     (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),
+            "cost/action_rate_palm":   (self.cfg.weight_action_rate_palm * palm_delta).mean(),
+            "cost/action_rate_finger": (self.cfg.weight_action_rate_finger * finger_delta).mean(),
+            "cost/demo_smooth":        demo_terms["cost_demo_smooth"].mean(),
+            "cost/thumb_grip":         demo_terms["cost_thumb_grip"].mean(),
+            # log/
+            "log/bead_in_target":       self._bead_in_target_fraction.mean(),
+            "log/bead_in_source":       self._bead_in_source_fraction.mean(),
+            "log/bead_cross":           self._bead_cross_fraction.mean(),
+            "log/spill_ratio":          self._spill_ratio.mean(),
+            "log/cup_center_xy_dist":   self._cup_center_xy_dist.mean(),
+            "log/mouth_xy_dist":        self._mouth_xy_distance.mean(),
+            "log/directional_tilt_cos": self._directional_tilt_cos.mean(),
+            "log/rho":                  self._rho.mean(),
+            "log/arm_vel_l2":           arm_qd_l2.mean(),
+            "log/arm_acc_l2":           arm_acc_vec.norm(dim=-1).mean(),
+            "log/arm_jerk_l2":          arm_jerk_l2.mean(),
+            "log/demo_arm_joint_err":   demo_terms["demo_arm_joint_err"].mean(),
+            "log/demo_palm_pos_err":    demo_terms["demo_palm_pos_err"].mean(),
+            "log/demo_palm_rot_err":    demo_terms["demo_palm_rot_err"].mean(),
+        }
         if self.spill_adr is not None:
-            self.extras["log/adr_spill"] = torch.tensor(self.spill_adr.progress, device=self.device)
+            ep_log["log/adr_spill"] = torch.tensor(self.spill_adr.progress, device=self.device)
         if self.noise_adr is not None:
-            self.extras["log/adr_noise"] = torch.tensor(self.noise_adr.progress, device=self.device)
+            ep_log["log/adr_noise"] = torch.tensor(self.noise_adr.progress, device=self.device)
         if self.success_adr is not None:
-            self.extras["log/adr_success"]       = torch.tensor(self.success_adr.progress, device=self.device)
-            self.extras["log/success_fill_ratio"] = torch.tensor(float(success_fill_ratio), device=self.device)
+            ep_log["log/adr_success"]       = torch.tensor(self.success_adr.progress, device=self.device)
+            ep_log["log/success_fill_ratio"] = torch.tensor(float(success_fill_ratio), device=self.device)
+        self.extras["log"] = ep_log
 
         return total
 
