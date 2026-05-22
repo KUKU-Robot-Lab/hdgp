@@ -1754,12 +1754,15 @@ class PourRightEnv(DirectRLEnv):
             palm_delta=palm_delta,
         )
 
+        # demo_arm은 approach phase(ρ=0)에서만 활성, pour phase(ρ=1)에서 꺼서 tilt 탐색 허용
+        r_demo_arm_gated = demo_terms["r_demo_arm_pose"] * (1.0 - self._rho)
+
         total = (
             r_hold
             + r_dist_to_target
             + r_pour_stage
             + r_source_drain
-            + demo_terms["r_demo_arm_pose"]
+            + r_demo_arm_gated
             + demo_terms["r_demo_palm_pose"]
             + self.cfg.weight_success * r_success
             + overfill_bonus
@@ -1796,7 +1799,7 @@ class PourRightEnv(DirectRLEnv):
             "reward/bead_delta":        (pour_gate * self._rho * r_bead_delta).mean(),
             "reward/source_drain":      r_source_drain.mean(),
             "reward/success":           (self.cfg.weight_success * r_success).mean(),
-            "reward/demo_arm":          demo_terms["r_demo_arm_pose"].mean(),
+            "reward/demo_arm":          r_demo_arm_gated.mean(),
             "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
             "cost/spill":               (spill_weight * spill_cost).mean(),
             "cost/premature_tilt":      (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),

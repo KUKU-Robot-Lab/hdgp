@@ -293,7 +293,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Pour 보상 (v3 스타일, pour_reward_start_step 이후 warmup으로 점진 활성)
     weight_dist_to_target: float = 5.0      # transport: source→target XY exp reward
     dist_to_target_exp_scale: float = 5.0
-    weight_tilt: float = 3.0               # pour stage: tilt 각도 정밀도
+    weight_tilt: float = 8.0               # [test2] 3.0→8.0: v3 값 복원, tilt gradient 강화
     weight_align: float = 3.0              # pour stage: 방향 정렬
     weight_bead_progressive: float = 200.0  # pour stage: bead fraction^2
     weight_bead_entry_delta: float = 50.0   # pour stage: 매 step bead 유입 즉각 피드백
@@ -302,15 +302,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [0, start)          → demo만 활성 (approach/grasp 학습)
     # [start, start+ramp) → pour 0→1 선형 증가
     # [start+ramp, ∞)     → demo + pour 풀 활성
-    pour_reward_start_step: int = 50_000
-    pour_reward_warmup_steps: int = 50_000
+    # [test2] start=0: approach 과적합 방지, pour reward 즉시 활성
+    pour_reward_start_step: int = 0
+    pour_reward_warmup_steps: int = 10_000  # [test2] 50,000→10,000: 빠른 pour 활성
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
     # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 100으로 강화 (300은 과도했음)
     weight_success: float = 100.00  # 30→300→100
     # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
     # 0이면 비활성.
     weight_success_overfill: float = 0.0
-    weight_spill: float = 5.00
+    weight_spill: float = 10.00  # [test2] 5.0→10.0: spill ADR 초기값 상향
     weight_premature_tilt: float = 1.5    # (1 - ρ) × tilt_amount: 원거리 tilt 페널티
     weight_grasp_loss: float = 0.20      # [test4] 0.05→0.20: 유일한 grasp safety net 강화
     # [test2] cup-cup 외경 충돌 방지: 두 컵 중심 거리가 margin 미만이면 페널티
@@ -347,7 +348,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "all"
-    weight_demo_arm_pose: float = 9.00   # [test4] 6.00→9.00: 공간 접근 gradient 보강
+    weight_demo_arm_pose: float = 6.00   # [test2] 9.00→6.00: rho-gate 추가로 approach에서만 활성 (pour에서 자동 꺼짐)
     weight_demo_palm_pose: float = 0.50  # [test2] 3.0→0.5: palm sim2real gap 최소화, arm 집중
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 1.00  # [test2] 0.0→1.0: 엄지 demo 평균 자세 복원 (엄지 붕괴 방지)
@@ -383,9 +384,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
-    pour_tilt_target_deg: float = 100.0  # 135→100: 물리적으로 달성 가능한 각도 (비드 쏟기 충분)
+    pour_tilt_target_deg: float = 120.0  # [test2] 100→120: v3 값 복원, 더 강한 tilt 유도
     pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
-    pour_binary_xy_thresh: float = 0.18   # ρ gate: cup_center_xy_dist < thresh 시 pour 활성
+    pour_binary_xy_thresh: float = 0.22   # [test2] 0.18→0.22: v3 값. tilt 중 cup 이동으로 rho 불안정 방지
 
     # -----------------------------------------------------------------------
     # 종료 조건
