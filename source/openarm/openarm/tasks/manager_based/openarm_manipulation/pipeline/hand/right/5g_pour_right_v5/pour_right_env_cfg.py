@@ -232,10 +232,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     tilt_action_gate_xy_near: float = 0.06
     tilt_action_gate_xy_far: float = 0.25  # 0.32→0.20→0.25: equilibrium 0.16m에서 gate 28%→47%
 
-    # 접근 보상 앤일링: 가까워지면 천천히 꺼준다 (5~12cm 구간)
-    approach_xy_off_near: float = 0.05
-    approach_xy_off_far: float = 0.12
-
     # stage gate / pre-pour geometry
     # test1에서 mouth_xy≈0.23m일 때 g_align_xy가 1e-3 이하로 죽어 접근 전 stage 신호가 약했음.
     # xy gate/approach를 넓혀 먼 거리에서도 target 방향 gradient를 유지한다.
@@ -294,40 +290,28 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_contact_maintain: float = 0.0  # [test4] 0.30→0.0
     weight_force_balance: float = 0.0     # [test4] 0.30→0.0
     weight_finger_curl: float = 0.3       # [test2] 0.0→0.3: 손가락 닫힘 유지 (curl 자세 유지)
-    weight_approach_xy: float = 0.0       # [test4] 2.00→0.0: demo arm pose가 접근 가르침
-    weight_approach_z: float = 0.00
-    weight_cup_upright: float = 0.00
-    # [test1/3 분석] r_transport_progress = clamp(prev_mouth_xy - mouth_xy, 0): 전진할 때만 보상.
-    # r_hold를 낮춰 이동 유인이 생겼을 때 전진 방향 신호를 강화한다.
-    weight_transport_progress: float = 0.0   # [test4] 1.00→0.0: demo가 방향 가르침
-    weight_prepour_dir: float = 0.00
-    weight_prepour_align: float = 0.00
-    weight_dir_tilt: float = 0.00
-    weight_cross: float = 40.00    # 20→40: bead 20개 기준 1개=0.05 signal, 10개 동등 수준 복원
-    weight_capture: float = 50.00  # [test2] 80→50: ramming 유도 약화 (충돌 방지)
-    weight_pour_align: float = 2.00  # pour stage 중 방향 정렬 유지 (0→2.0)
-    weight_first_capture_bonus: float = 10.00  # [test2] 20→10: 첫 capture 보너스 완화 (ramming 유도 약화)
-    weight_tilt_onset_bonus: float = 0.00    # [test5] demo shaping 대체로 onset 제거
-    tilt_onset_dot_threshold: float = 0.50   # source_up_dot < 0.50 (>60° 기울기) 시 트리거
-    tilt_onset_dist_threshold: float = 0.20  # cup_center_xy < 0.20m 조건
+    # Pour 보상 (v3 스타일, pour_reward_start_step 이후 warmup으로 점진 활성)
+    weight_dist_to_target: float = 5.0      # transport: source→target XY exp reward
+    dist_to_target_exp_scale: float = 5.0
+    weight_tilt: float = 3.0               # pour stage: tilt 각도 정밀도
+    weight_align: float = 3.0              # pour stage: 방향 정렬
+    weight_bead_progressive: float = 200.0  # pour stage: bead fraction^2
+    weight_bead_entry_delta: float = 50.0   # pour stage: 매 step bead 유입 즉각 피드백
+    weight_source_drain: float = 20.0       # pour stage: source cup 비우기
+    # Pour 보상 step-based curriculum
+    # [0, start)          → demo만 활성 (approach/grasp 학습)
+    # [start, start+ramp) → pour 0→1 선형 증가
+    # [start+ramp, ∞)     → demo + pour 풀 활성
+    pour_reward_start_step: int = 50_000
+    pour_reward_warmup_steps: int = 50_000
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
     # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 100으로 강화 (300은 과도했음)
     weight_success: float = 100.00  # 30→300→100
     # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
     # 0이면 비활성.
     weight_success_overfill: float = 0.0
-    weight_spill: float = 5.00     # [test3] 1.0→5.0: spill 패널티 강화 (P2) — spill_ratio=0.2 → cost=1.0/step
-    # [test1/3 분석] premature_tilt_cost 과도 → tilt 학습 불가:
-    #   premature_tilt_cost = (1 - g_ready) × (1 - source_up_dot_world)
-    #   g_ready=0.11, cup 100° tilt 시 source_up_dot_world≈-0.17 → (1-(-0.17))=1.17
-    #   cost = 0.89 × 1.17 × 4.0 = 4.17/step
-    #   r_prepour = 0.11 × (5.0+4.0) = 0.99/step
-    #   → cost(4.17) >> reward(0.99) → policy가 tilt 절대 시도하지 않음
-    #
-    #   수정: weight=1.50 → cost = 0.89×1.17×1.5 = 1.56/step
-    #   reward_gate_xy_scale=5 수정 후 g_ready@0.14m≈0.50:
-    #   → cost = 0.50×1.17×1.5 = 0.88/step, reward = 0.50×9.0 = 4.5/step → reward > cost
-    weight_premature_tilt: float = 1.5    # [test2] 0.0→1.5: 원거리 tilt 페널티 복원 (충돌 방지)
+    weight_spill: float = 5.00
+    weight_premature_tilt: float = 1.5    # (1 - ρ) × tilt_amount: 원거리 tilt 페널티
     weight_grasp_loss: float = 0.20      # [test4] 0.05→0.20: 유일한 grasp safety net 강화
     # [test2] cup-cup 외경 충돌 방지: 두 컵 중심 거리가 margin 미만이면 페널티
     # cup_external_radius_sum ≈ 0.09m, margin=0.12m → 3cm 안전 여유
@@ -399,32 +383,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     reward_grasp_slip_sharpness: float = 3.0   # grasp_maintain 감쇠율 [5→3: tilt 중 slip 허용]
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
-    # [test1/3 분석] approach tanh 포화 → 0.22m에서 gradient 약화:
-    #   r_approach_xy = 1 - tanh(scale × dist)
-    #   scale=5.0, dist=0.22m → 1 - tanh(1.10) = 1 - 0.80 = 0.20 (max의 20%만 남음)
-    #   gradient = 5 × sech²(1.10) = 5 × 0.358 = 1.79 → 완만해서 전진 유인 약함
-    #
-    #   수정: scale=2.5 → 1 - tanh(0.55) = 1 - 0.50 = 0.50 (max의 50%)
-    #   gradient = 2.5 × sech²(0.55) = 2.5 × 0.748 = 1.87 → 유사한 gradient, 더 넓은 범위
-    reward_approach_xy_scale: float = 2.5   # 5.0→2.5: 0.22m에서 approach reward 0.20→0.50
-    # DexPour-style stage thresholds / shaping
-    stage_approach_xy_threshold: float = 0.14
-    stage_pour_xy_threshold: float = 0.15
-    transport_dist_exp_scale: float = 8.0
-    transport_tilt_penalty_weight: float = 2.0
     pour_tilt_target_deg: float = 100.0  # 135→100: 물리적으로 달성 가능한 각도 (비드 쏟기 충분)
     pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
-
-    # [P2] r_lift 상한: DexPour "Once cup reaches h_lift, lift reward ceases"
-    # test4: 컵이 0.407m 들린 채로 r_lift 계속 수령 → 컵을 올리는 행동 유인
-    # 0.05m 이상은 보상 없음 (warmstart 시작 높이 ~0.03m 기준)
-    lift_height_cap: float = 0.05   # DexPour h_lift=0.15m 참고, warmstart 높이에 맞춤
-
-    # [P3] pour stage binary gate: DexPour ρ 방식
-    # r_cross / r_capture는 cup_center_xy_dist < pour_binary_xy_thresh AND tilted 시에만 활성
-    # → "컵 근처에서 기울어야만 pour reward" → 명확한 행동 학습
-    pour_binary_xy_thresh: float = 0.18   # [test4] 0.15→0.18: FK 확인 source-target XY gap ≈ 0.20m, 여유 포함
-    pour_binary_tilt_thresh: float = 0.50  # source_up_dot < 0.50 (>60° 기울기)
+    pour_binary_xy_thresh: float = 0.18   # ρ gate: cup_center_xy_dist < thresh 시 pour 활성
 
     # -----------------------------------------------------------------------
     # 종료 조건

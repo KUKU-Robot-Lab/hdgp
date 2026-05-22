@@ -185,7 +185,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
-    success_spill_max: float = 0.20   # [test3] 0.40→0.20: spill 기준 강화 (P2)
+    success_spill_max: float = 0.40   # [test2] 0.20→0.40: tilt 탐색 중 spill 허용 (ADR로 점진 강화)
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -268,7 +268,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     dist_to_target_exp_scale: float = 5.0 # k in exp(-k*dist)
 
     # Pour: Stage 4 (ρ gate — binary)
-    weight_tilt: float = 3.00             # exp tilt angle reward (peaks at pour_tilt_target_deg)
+    weight_tilt: float = 8.00             # [test2] 3.0→8.0: 50°→120° gradient 강화 (local opt 탈출)
     weight_align: float = 3.00            # DexPour r_align = 0.5*(1+cos), 올바른 방향
     weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
     weight_bead_entry_delta: float = 50.0    # step-delta: bead 유입 즉각 피드백
@@ -316,8 +316,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     enable_spill_adr: bool = True
     spill_adr_custom_cfg: dict = {
         "reward": {
-            # spill weight ADR: 초기 10.0 → 최대 40.0 (weight_spill 기본값과 동기화)
-            "spill_weight": (10.0, 40.0),
+            # [test2] spill weight ADR: 초기 3.0 → 최대 30.0 (tilt 탐색 초기 spill 허용)
+            "spill_weight": (3.0, 30.0),
         }
     }
     spill_adr_num_increments: int = 50
@@ -344,7 +344,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_tilt_sharpness: float = 2.0
 
     # ρ binary pour gate: cup_center_xy_dist < thresh → pour stage 활성
-    pour_binary_xy_thresh: float = 0.18
+    # [test2] 0.18→0.22: tilt 중 cup body 이동(최대 0.182m 관측)으로 ρ=0 전환 방지
+    pour_binary_xy_thresh: float = 0.22
     pour_binary_tilt_thresh: float = 0.50  # gate_pour_binary 진단용 (ρ에는 미사용)
 
     # -----------------------------------------------------------------------

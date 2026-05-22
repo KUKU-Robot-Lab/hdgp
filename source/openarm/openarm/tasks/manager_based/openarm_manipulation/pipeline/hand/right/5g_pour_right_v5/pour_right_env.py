@@ -570,6 +570,7 @@ class PourRightEnv(DirectRLEnv):
         self._g_tilt = torch.zeros(self.num_envs, device=self.device)
         self._g_ready = torch.zeros(self.num_envs, device=self.device)
         self._g_pour = torch.zeros(self.num_envs, device=self.device)
+        self._rho = torch.zeros(self.num_envs, device=self.device)
         self._bead_in_target = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
         self._bead_in_source = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
         self._bead_ever_in_target = torch.zeros(
@@ -593,8 +594,6 @@ class PourRightEnv(DirectRLEnv):
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
         self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._first_capture_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._tilt_onset_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._no_tip_force_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._source_empty_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -1258,6 +1257,7 @@ class PourRightEnv(DirectRLEnv):
         )
         self._g_ready = self._g_align_xy * self._g_clear
         self._g_pour = self._g_ready * self._g_tilt
+        self._rho = (self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh).float()
 
         # Bead flags & spill
         self._compute_bead_flags()
@@ -1619,7 +1619,7 @@ class PourRightEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         self._compute_intermediate_values()
 
-        # ---- 1. Grasp maintenance: cup의 palm local frame 위치 유지 (slip 억제) ----
+        # ---- 1. Grasp maintenance ----
         palm_quat_w = self.robot.data.body_quat_w[:, self.palm_body_index]
         palm_pos_w  = self.robot.data.body_pos_w[:, self.palm_body_index]
         cup_pos_w   = self.cup.data.root_pos_w
@@ -1633,155 +1633,67 @@ class PourRightEnv(DirectRLEnv):
         slip_dist = torch.norm(cup_in_palm_local - self._grasp_cup_pos_palm_local_init, dim=-1)
         grasp_maintain_reward = torch.exp(-self.cfg.reward_grasp_slip_sharpness * slip_dist)
 
-        # contact_maintain
-        thumb_force = self.contact_force_raw[:, 0]
-        others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)
         others_count = self.binary_contact_buf[:, 1:].sum(dim=-1)
         full_grasp_flag = (
             self.binary_contact_buf[:, 0] & (others_count >= self.cfg.contact_maintain_min_others)
         ).float()
-        
-        # force_balance
-        has_thumb  = self.binary_contact_buf[:, 0].float()
-        has_others = (others_count >= 1).float()
-        balance_gate = has_thumb * has_others
-        force_balance_err = (thumb_force - others_avg_force).abs()
-        r_force_balance = (
-            self.cfg.weight_force_balance
-            * balance_gate
-            * torch.exp(-self.cfg.force_balance_sharpness * force_balance_err)
-        )
 
-        # finger_curl (닫힘 유도)
         finger_lerp_min = self.actions[:, 6:11].min(dim=-1).values
         finger_curl_score = (finger_lerp_min + 1.0) / 2.0
         r_finger_curl = self.cfg.weight_finger_curl * finger_curl_score
 
-        # Stage A. Hold (grasp 유지)
+        tilt_amount = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
+        contact_gate = (1.0 - 0.7 * tilt_amount)
+
         r_hold = (
             self.cfg.weight_grasp_maintain * grasp_maintain_reward
-            + self.cfg.weight_contact_maintain * full_grasp_flag
-            + r_force_balance
+            + self.cfg.weight_contact_maintain * full_grasp_flag * contact_gate
             + r_finger_curl
         )
 
-        # ---- Stage B. Transport (Approach) - Always active with smooth gradient ----
-        # [P2] DexPour: "lift reward ceases once cup reaches h_lift"
-        # test4: 컵 0.407m 높이에서도 r_lift 수령 → 컵 올리는 행동 지속 유인
-        # lift_height_cap(0.05m) 이상은 보상 없음
-        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(
-            min=0.0, max=self.cfg.lift_height_cap
-        )
-        r_lift = self.cfg.weight_approach_z * cup_height_delta
-        
-        # Smooth approach reward using tanh (0 at infinity, 1 at 0)
-        # cup center 기반: tilt 시 pour_point이 이동해도 approach reward가 흔들리지 않음
-        r_approach_xy = 1.0 - torch.tanh(self.cfg.reward_approach_xy_scale * self._cup_center_xy_dist)
-        r_transport_progress = torch.clamp(
-            self._prev_mouth_xy_distance - self._mouth_xy_distance,
-            min=0.0,
-        )
-        # 가까이 다가오면(≈3cm) 접근 보상을 끄고 pour 신호를 강조
-        approach_gate_den = max(self.cfg.approach_xy_off_far - self.cfg.approach_xy_off_near, 1e-6)
-        approach_gate = torch.clamp(
-            (self._cup_center_xy_dist - self.cfg.approach_xy_off_near) / approach_gate_den,
-            min=0.0,
-            max=1.0,
-        )
-        r_approach = approach_gate * (
-            self.cfg.weight_approach_xy * r_approach_xy
-            + self.cfg.weight_transport_progress * r_transport_progress
+        # ---- Pour warmup gate ----
+        # demo만으로 approach 학습 후 pour reward 점진 활성
+        step_count = float(getattr(self, "common_step_counter", 0))
+        pour_gate = min(
+            max(step_count - float(self.cfg.pour_reward_start_step), 0.0)
+            / max(float(self.cfg.pour_reward_warmup_steps), 1.0),
+            1.0,
         )
 
-        # ---- Stage C. Pre-pour (using soft g_ready gate) ----
+        # ---- 2. Transport (pour_gate로 점진 활성) ----
+        r_dist_to_target = pour_gate * self.cfg.weight_dist_to_target * torch.exp(
+            -self.cfg.dist_to_target_exp_scale * self._mouth_xy_distance
+        )
+
+        # ---- 3. Pour stage (ρ gate + pour_gate) ----
         target_tilt_cos = math.cos(math.radians(self.cfg.pour_tilt_target_deg))
         r_tilt = torch.exp(
             -self.cfg.pour_tilt_sharpness * torch.abs(self._source_up_dot_world - target_tilt_cos)
         )
-        r_align = 0.5 * (self._mouth_alignment_cos + 1.0)
-        
-        # Pre-pour signals (g_ready gate: tilt reward only active near target)
-        r_prepour_stage = self._g_ready * (
-            self.cfg.weight_prepour_dir * r_tilt
-            + self.cfg.weight_prepour_align * r_align
+        r_align = 0.5 * (1.0 + self._directional_tilt_cos)
+        r_bead_progressive = self.cfg.weight_bead_progressive * (self._bead_in_target_fraction ** 2)
+        r_bead_delta = self.cfg.weight_bead_entry_delta * self._bead_in_target_delta.clamp(min=0.0)
+
+        r_pour_stage = pour_gate * self._rho * (
+            self.cfg.weight_tilt * r_tilt
+            + self.cfg.weight_align * r_align
+            + r_bead_progressive
+            + r_bead_delta
         )
+        r_source_drain = pour_gate * self._rho * self.cfg.weight_source_drain * (1.0 - self._bead_in_source_fraction)
 
-        # ---- Stage D. Pour (DexPour-style binary gate: ρ) ----
-        # [P3] DexPour ρ = (cup_target_dist < d_pour) AND (prior stages complete)
-        # 기존 soft g_pour: g_pour=0.128 → pour reward 항상 희미하게 활성 → 멀리서도 bead 흘러도 reward
-        # binary gate: cup_center_xy_dist < 0.15m AND source_up_dot < 0.50(>60° tilt) 동시 충족 시에만 활성
-        # → "컵 근처에서 기울어야만 pour reward" → transport + tilt 순서 명확히 학습
-        r_cross = self._bead_cross_fraction
-        r_capture = self._bead_in_target_fraction
-
-        gate_pour_binary = (
-            (self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh)
-            & (self._source_up_dot_world < self.cfg.pour_binary_tilt_thresh)
-        ).float()
-
-        r_pour_align = 0.5 * (self._mouth_alignment_cos + 1.0)
-        r_pour_stage = gate_pour_binary * (
-            self.cfg.weight_cross * r_cross
-            + self.cfg.weight_capture * r_capture
-            + self.cfg.weight_pour_align * r_pour_align
-        )
-
-        # 첫 비드 유입 시 1회성 보너스: target cup 근처(< pour_binary_xy_thresh)에서만 인정
-        # [P1] 멀리서 우연히 굴러든 비드 캡처는 보너스에서 제외 → 우연성 방지
-        near_for_capture = self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh
-        first_capture = (
-            (self._bead_in_target_fraction > 0.0)
-            & near_for_capture
-            & (~self._first_capture_bonus_paid)
-        )
-        r_first_capture = self.cfg.weight_first_capture_bonus * first_capture.float()
-        self._first_capture_bonus_paid |= first_capture
-
-        # tilt onset bonus: >60° 기울기 + 근접 조건 첫 달성 시 1회 bridge reward
-        # "안전한 직립 유지" 로컬 최적을 벗어나 tilt 탐색을 유도
-        tilt_onset = (
-            (self._source_up_dot_world < self.cfg.tilt_onset_dot_threshold)
-            & (self._cup_center_xy_dist < self.cfg.tilt_onset_dist_threshold)
-            & (~self._tilt_onset_bonus_paid)
-        )
-        # [test5] directional onset bonus: 올바른 방향으로 기울어야만 보상 (방향 cos 가중치)
-        # dir_cos.clamp(0,1): 0=수직/반대방향(보상 없음), 1=완벽한 target 방향(전액 보상)
-        # test3의 방향 무관 onset → 틀린 방향 tilting 문제 수정
-        r_tilt_onset = (
-            self.cfg.weight_tilt_onset_bonus
-            * self._directional_tilt_cos.clamp(0.0, 1.0)
-            * tilt_onset.float()
-        )
-        self._tilt_onset_bonus_paid |= tilt_onset
-
-        # ---- [test4] Directional tilt reward ----
-        # cup을 target 방향으로 기울일 때만 보상 → 방향 gradient 제공
-        # tilt_strength: 기울기 크기 (0=직립, 1=180°)  — upright일 때 directional_tilt_cos 불안정 방지
-        # dir_cos_reward: [0,1]  1=target 방향 완벽 정렬, 0=반대 방향
-        # g_ready gate: target 근처에서만 활성 (먼 거리에서 방향 무관 tilting 방지)
-        tilt_strength = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
-        dir_cos_reward = 0.5 * (self._directional_tilt_cos + 1.0)
-        r_dir_tilt = self._g_ready * self.cfg.weight_dir_tilt * tilt_strength * dir_cos_reward
-
-        # ---- Outcome and costs ----
-        # ADR: success 기준을 낮은 fill_ratio에서 시작해 점진적으로 상향
+        # ---- 4. Success ----
         success_fill_ratio = (
             self.success_adr.get_param("success", "fill_ratio")
             if self.success_adr is not None
             else self.cfg.success_target_fill_ratio
         )
-
-        # [P1] success도 target cup 근처(< pour_binary_xy_thresh)에서 달성해야 인정
         success_now = (
             (self._bead_in_target_fraction >= success_fill_ratio)
             & (self._spill_ratio <= self.cfg.success_spill_max)
             & (self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh)
         )
-
-        # 기본 성공 보상(바이너리)
         r_success = success_now.float()
-
-        # 성공 기준을 넘은 양에 비례한 오버필 보너스 (옵션)
         overfill_bonus = 0.0
         if self.cfg.weight_success_overfill > 0.0:
             overfill = torch.clamp(
@@ -1791,36 +1703,20 @@ class PourRightEnv(DirectRLEnv):
                 max=1.0,
             )
             overfill_bonus = self.cfg.weight_success_overfill * overfill
-        spill_cost = self._spill_ratio
+
+        # ---- 5. Costs ----
+        spill_cost = self._spill_ratio.clamp(min=0.0).sqrt()
         spill_weight = (
             self.spill_adr.get_param("reward", "spill_weight")
             if self.spill_adr is not None
             else self.cfg.weight_spill
         )
-        
-        # Smooth premature tilt penalty: only active when far from target (g_ready is low)
-        # [P0] tilt_amount = (1 - dot) / 2, clamped to [0, 1]
-        # 직립(dot=1):   tilt_amount=0 → 페널티 0     (직립은 안전)
-        # 60°(dot=0.5):  tilt_amount=0.25
-        # 90°(dot=0):    tilt_amount=0.5
-        # 100°(dot≈-0.17): tilt_amount=0.585          (pour 각도에도 페널티 부과)
-        # 180°(dot=-1):  tilt_amount=1.0 (최대)
-        # → 기울기가 클수록, 멀리 있을수록(g_ready 낮을수록) 페널티 증가
-        # [test2 분석] 이전 dot.clamp(0,1) 방식: 90° 이상에서 페널티=0 → 멀리서도 마음대로 쏟아붓기 허용
-        tilt_amount = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
-        premature_tilt_cost = (1.0 - self._g_ready) * tilt_amount
-        # grasp quality loss: full_grasp_flag=0 (thumb 없거나 others<2) 매 스텝 즉각 dense penalty
-        # 낙하(episode termination)와 달리 grasp이 흔들리는 구간에서 즉각 gradient 제공
+        premature_tilt_cost = (1.0 - self._rho) * tilt_amount
         grasp_loss_cost = 1.0 - full_grasp_flag
-        # [test2] cup-cup collision penalty: 두 컵 중심 거리 < margin 이면 dense penalty
-        # margin = cup_external_radius_sum(~0.09m) + safety(0.03m) = 0.12m
-        # cost = clamp((margin - dist)/margin, 0, 1) → margin부터 선형 증가, dist=0에서 1.0
         cup_collision_cost = (
             (self.cfg.cup_collision_margin - self._cup_center_xy_dist)
             / max(self.cfg.cup_collision_margin, 1e-6)
         ).clamp(0.0, 1.0)
-        # [Phase-2 Step 9] action_rate: palm(6D) / finger(5D) 분리
-        # grasp v9의 action_smoothness_palm/finger 패턴과 동일
         palm_delta   = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
         finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
         action_rate_penalty = (
@@ -1828,36 +1724,17 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_action_rate_finger * finger_delta
         )
 
-        # ---- Phase-0 진단 + Phase-1 Step 4: arm joint velocity / acceleration ----
         arm_qd = self.robot.data.joint_vel[:, self.arm_dof_indices]
-        arm_qd_l2 = arm_qd.norm(dim=-1)                          # (num_envs,) L2 norm
-        arm_qd_max = arm_qd.abs().max(dim=-1).values              # (num_envs,) per-joint max
-        arm_qacc = (arm_qd - self._prev_arm_joint_vel).norm(dim=-1)  # (num_envs,) acc proxy
-        # pouring phase에서의 arm vel (cup이 가까울 때)
-        in_tilt_phase = (self._cup_center_xy_dist < self.cfg.tilt_action_gate_xy_far).float()
-        tilt_phase_arm_vel = (arm_qd_l2 * in_tilt_phase).sum() / (in_tilt_phase.sum() + 1e-6)
-
-        # [Phase-1 Step 4] arm joint vel^2 sum penalty (clipped)
+        arm_qd_l2 = arm_qd.norm(dim=-1)
         arm_qd_sq_sum = arm_qd.pow(2).sum(dim=-1).clamp_max(self.cfg.arm_joint_vel_sq_clip)
-        arm_acc_vec = arm_qd - self._prev_arm_joint_vel          # 현재 acc 벡터 (N, DOF)
+        arm_acc_vec = arm_qd - self._prev_arm_joint_vel
         arm_qacc_sq_sum = arm_acc_vec.pow(2).sum(dim=-1)
-
-        # [Phase-1 Step 6] jerk = d(acc)/dt (acc 벡터 변화량)
-        arm_jerk_vec = arm_acc_vec - self._prev_arm_joint_acc    # (N, DOF)
+        arm_jerk_vec = arm_acc_vec - self._prev_arm_joint_acc
         arm_jerk_sq_sum = arm_jerk_vec.pow(2).sum(dim=-1)
         arm_jerk_l2 = arm_jerk_vec.norm(dim=-1)
 
-        demo_terms = self._get_demo_pose_reward_terms(
-            arm_qd_l2=arm_qd_l2,
-            arm_jerk_l2=arm_jerk_l2,
-            palm_delta=palm_delta,
-        )
-
-        # [P1] arm vel penalty: approach 구간도 낮은 가중치로 적용 (arm_vel_tilt_gate_only=False)
-        # test4: cost_arm_vel=0.001/step → 사실상 0, approach에서 arm이 너무 빠르게 이동
-        # approach 구간: weight_arm_joint_vel_approach (tilt 구간의 1/4)
-        # tilt 구간: weight_arm_joint_vel (기존 값 유지)
-        approach_only = 1.0 - in_tilt_phase   # approach 구간 (cup 멀리 있을 때)
+        in_tilt_phase = (self._cup_center_xy_dist < self.cfg.tilt_action_gate_xy_far).float()
+        approach_only = 1.0 - in_tilt_phase
         if self.cfg.arm_vel_tilt_gate_only:
             arm_vel_cost = (
                 self.cfg.weight_arm_joint_vel  * arm_qd_sq_sum
@@ -1871,15 +1748,17 @@ class PourRightEnv(DirectRLEnv):
                 + self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum
             ) * in_tilt_phase + self.cfg.weight_arm_joint_vel_approach * arm_qd_sq_sum * approach_only
 
+        demo_terms = self._get_demo_pose_reward_terms(
+            arm_qd_l2=arm_qd_l2,
+            arm_jerk_l2=arm_jerk_l2,
+            palm_delta=palm_delta,
+        )
+
         total = (
             r_hold
-            + r_lift
-            + r_approach
-            + r_prepour_stage
+            + r_dist_to_target
             + r_pour_stage
-            + r_first_capture
-            + r_tilt_onset
-            + r_dir_tilt
+            + r_source_drain
             + demo_terms["r_demo_arm_pose"]
             + demo_terms["r_demo_palm_pose"]
             + self.cfg.weight_success * r_success
@@ -1894,11 +1773,10 @@ class PourRightEnv(DirectRLEnv):
             - demo_terms["cost_thumb_grip"]
         )
 
-        self._prev_mouth_xy_distance.copy_(self._mouth_xy_distance)
         self._prev_arm_joint_vel.copy_(arm_qd)
-        self._prev_arm_joint_acc.copy_(arm_acc_vec)   # [Step 6] jerk 계산용
+        self._prev_arm_joint_acc.copy_(arm_acc_vec)
 
-        # ---- ADR increment (success-rate 기반) ----
+        # ---- ADR increment ----
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         if self.spill_adr is not None:
             self.spill_adr.maybe_increment(_ep_success_rate)
@@ -1908,55 +1786,57 @@ class PourRightEnv(DirectRLEnv):
             self.success_adr.maybe_increment(_ep_success_rate)
 
         # ---- Logging to TensorBoard ----
-        # Demo signal
-        self.extras["r_demo_arm_pose"] = demo_terms["r_demo_arm_pose"].mean()
-        self.extras["r_demo_palm_pose"] = demo_terms["r_demo_palm_pose"].mean()
-        self.extras["cost_demo_smooth"] = demo_terms["cost_demo_smooth"].mean()
-        self.extras["demo_arm_joint_err"] = demo_terms["demo_arm_joint_err"].mean()
-        self.extras["demo_palm_pos_err"] = demo_terms["demo_palm_pos_err"].mean()
-        self.extras["demo_palm_rot_err"] = demo_terms["demo_palm_rot_err"].mean()
-        # Outcome
-        self.extras["r_pour"] = r_pour_stage.mean()
-        self.extras["r_pour_align"] = (self.cfg.weight_pour_align * r_pour_align).mean()
-        self.extras["gate_pour_binary"] = gate_pour_binary.mean()
-        self.extras["r_success_weighted"] = (self.cfg.weight_success * r_success).mean()
-        self.extras["bead_in_target"] = self._bead_in_target_fraction.mean()
-        self.extras["bead_cross"] = self._bead_cross_fraction.mean()
-        self.extras["spill_ratio"] = self._spill_ratio.mean()
-        self.extras["source_empty_steps"] = self._source_empty_steps.float().mean()
-        # Cost
-        self.extras["cost_spill"] = spill_cost.mean()
-        self.extras["spill_weight"] = torch.tensor(float(spill_weight), device=self.device)
-        self.extras["cost_grasp_loss"] = grasp_loss_cost.mean()
-        self.extras["cost_cup_collision"] = cup_collision_cost.mean()
-        self.extras["cost_arm_vel"] = (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum * in_tilt_phase).mean()
-        self.extras["cost_arm_acc"] = (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum * in_tilt_phase).mean()
-        self.extras["cost_arm_jerk"] = (self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum * in_tilt_phase).mean()
-        self.extras["cost_arm_vel_approach"] = (self.cfg.weight_arm_joint_vel_approach * arm_qd_sq_sum * approach_only).mean()
-        self.extras["cost_action_rate_palm"] = (self.cfg.weight_action_rate_palm * palm_delta).mean()
-        self.extras["cost_action_rate_finger"] = (self.cfg.weight_action_rate_finger * finger_delta).mean()
-        # Diagnostic
-        self.extras["mouth_xy_dist"] = self._mouth_xy_distance.mean()
-        self.extras["cup_center_xy_dist"] = self._cup_center_xy_dist.mean()
-        self.extras["arm_joint_vel_l2_mean"] = arm_qd_l2.mean()
-        self.extras["tilt_phase_arm_vel"] = tilt_phase_arm_vel
-        # ADR
-
+        ep_log: dict = {
+            "reward/hold":              r_hold.mean(),
+            "reward/dist":              r_dist_to_target.mean(),
+            "reward/pour":              r_pour_stage.mean(),
+            "reward/pour_tilt":         (pour_gate * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
+            "reward/pour_align":        (pour_gate * self.cfg.weight_align * r_align * self._rho).mean(),
+            "reward/bead_progressive":  (pour_gate * self._rho * r_bead_progressive).mean(),
+            "reward/bead_delta":        (pour_gate * self._rho * r_bead_delta).mean(),
+            "reward/source_drain":      r_source_drain.mean(),
+            "reward/success":           (self.cfg.weight_success * r_success).mean(),
+            "reward/demo_arm":          demo_terms["r_demo_arm_pose"].mean(),
+            "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
+            "cost/spill":               (spill_weight * spill_cost).mean(),
+            "cost/premature_tilt":      (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),
+            "cost/grasp_loss":          (self.cfg.weight_grasp_loss * grasp_loss_cost).mean(),
+            "cost/cup_collision":       (self.cfg.weight_cup_collision * cup_collision_cost).mean(),
+            "cost/arm_vel":             (self.cfg.weight_arm_joint_vel * arm_qd_sq_sum * in_tilt_phase).mean(),
+            "cost/arm_acc":             (self.cfg.weight_arm_joint_acc * arm_qacc_sq_sum * in_tilt_phase).mean(),
+            "cost/arm_jerk":            (self.cfg.weight_arm_joint_jerk * arm_jerk_sq_sum * in_tilt_phase).mean(),
+            "cost/arm_vel_approach":    (self.cfg.weight_arm_joint_vel_approach * arm_qd_sq_sum * approach_only).mean(),
+            "cost/action_rate_palm":    (self.cfg.weight_action_rate_palm * palm_delta).mean(),
+            "cost/action_rate_finger":  (self.cfg.weight_action_rate_finger * finger_delta).mean(),
+            "cost/demo_smooth":         demo_terms["cost_demo_smooth"].mean(),
+            "cost/thumb_grip":          demo_terms["cost_thumb_grip"].mean(),
+            "log/bead_in_target":       self._bead_in_target_fraction.mean(),
+            "log/bead_in_source":       self._bead_in_source_fraction.mean(),
+            "log/bead_cross":           self._bead_cross_fraction.mean(),
+            "log/spill_ratio":          self._spill_ratio.mean(),
+            "log/spill_weight":         torch.tensor(float(spill_weight), device=self.device),
+            "log/cup_center_xy_dist":   self._cup_center_xy_dist.mean(),
+            "log/mouth_xy_dist":        self._mouth_xy_distance.mean(),
+            "log/directional_tilt_cos": self._directional_tilt_cos.mean(),
+            "log/rho":                  self._rho.mean(),
+            "log/pour_gate":            torch.tensor(pour_gate, device=self.device),
+            "log/contact_gate":         contact_gate.mean(),
+            "log/source_empty_steps":   self._source_empty_steps.float().mean(),
+            "log/arm_vel_l2":           arm_qd_l2.mean(),
+            "log/arm_acc_l2":           arm_acc_vec.norm(dim=-1).mean(),
+            "log/arm_jerk_l2":          arm_jerk_l2.mean(),
+            "log/demo_arm_joint_err":   demo_terms["demo_arm_joint_err"].mean(),
+            "log/demo_palm_pos_err":    demo_terms["demo_palm_pos_err"].mean(),
+            "log/demo_palm_rot_err":    demo_terms["demo_palm_rot_err"].mean(),
+        }
         if self.spill_adr is not None:
-            self.extras["adr_spill_progress"] = torch.tensor(
-                self.spill_adr.progress, device=self.device
-            )
+            ep_log["log/adr_spill"] = torch.tensor(self.spill_adr.progress, device=self.device)
         if self.noise_adr is not None:
-            self.extras["adr_noise_progress"] = torch.tensor(
-                self.noise_adr.progress, device=self.device
-            )
+            ep_log["log/adr_noise"] = torch.tensor(self.noise_adr.progress, device=self.device)
         if self.success_adr is not None:
-            self.extras["adr_success_progress"] = torch.tensor(
-                self.success_adr.progress, device=self.device
-            )
-            self.extras["success_fill_ratio"] = torch.tensor(
-                float(success_fill_ratio), device=self.device
-            )
+            ep_log["log/adr_success"]        = torch.tensor(self.success_adr.progress, device=self.device)
+            ep_log["log/success_fill_ratio"] = torch.tensor(float(success_fill_ratio), device=self.device)
+        self.extras["log"] = ep_log
 
         return total
 
@@ -2222,8 +2102,6 @@ class PourRightEnv(DirectRLEnv):
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False
-        self._first_capture_bonus_paid[env_ids] = False
-        self._tilt_onset_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
         self.success_flag[env_ids] = False
@@ -2616,8 +2494,6 @@ class PourRightEnv(DirectRLEnv):
         self._bead_centroid_w[env_ids].zero_()
         self._spill_ratio[env_ids] = 0.0
         self._all_beads_bonus_paid[env_ids] = False
-        self._first_capture_bonus_paid[env_ids] = False
-        self._tilt_onset_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
         self.success_flag[env_ids] = False
