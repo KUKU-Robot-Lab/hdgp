@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_grasp_right_v7
+"""환경 설정: 5g_grasp_right_v7_3
 
-v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
+v7-3: v7-2 11D grasp/lift task extended with stabilize/transport phases
 - Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 106D / critic 143D (asymmetric)
-- Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
+- Observation: actor 110D / critic 146D (asymmetric)
+- Episode: Grasp + Lift + Stabilize + Transport
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
 
@@ -37,7 +37,12 @@ from isaaclab.utils import configclass
 import os as _os
 
 from openarm.tasks.manager_based.openarm_manipulation import OPENARM_ROOT_DIR
-from .grasp_right_constants import NUM_OBSERVATIONS, NUM_ACTIONS, NUM_CRITIC_OBSERVATIONS
+from .grasp_right_constants import (
+    LIFT_Z_DELTA,
+    NUM_OBSERVATIONS,
+    NUM_ACTIONS,
+    NUM_CRITIC_OBSERVATIONS,
+)
 from .grasp_right_preset import (
     HAND_BODY_NAMES_USD,
     LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
@@ -51,15 +56,15 @@ _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
 @configclass
 class GraspRightEnvCfg(DirectRLEnvCfg):
-    """5g_grasp_right_v7 환경 설정."""
+    """5g_grasp_right_v7_3 환경 설정."""
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
     # 물리: 120 Hz, 정책: 60 Hz (decimation=2)
     # Fabrics: fabrics_dt=1/60 × fabric_decimation=2 → 120 Hz
-    # Episode: 10s = 600 steps @ 60Hz (8s grasp + 2s lift)
+    # Episode: 18s = 1080 steps @ 60Hz (8s grasp + 4s lift + 2s stabilize + 4s transport)
     # -----------------------------------------------------------------------
-    episode_length_s: float = 10.0
+    episode_length_s: float = 18.0
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -68,9 +73,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 106 (actor)
+    observation_space: int = NUM_OBSERVATIONS          # 110 (actor)
     action_space:      int = NUM_ACTIONS               # 11
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 143 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 146 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -119,6 +124,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
+    success_upright_max_deg: float = 25.0
+    transport_goal_dist_threshold: float = 0.04
 
     # -----------------------------------------------------------------------
     # Delta palm action (pregrasp 기준 상대 오프셋)
@@ -126,6 +133,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     palm_delta_xyz:     float = 0.15   # ±0.15m per axis
     palm_delta_rot_deg: float = 20.0   # ±20° per axis
+    lift_palm_z_delta:  float = LIFT_Z_DELTA
+
+    # -----------------------------------------------------------------------
+    # Transport goal sampling
+    # -----------------------------------------------------------------------
+    transport_goal_x_center: float = 0.27
+    transport_goal_y_center: float = 0.10
+    transport_goal_xy_range: float = 0.04
+    transport_goal_z_offset: float = LIFT_Z_DELTA
+    transport_goal_z_range:  float = 0.01
 
     # -----------------------------------------------------------------------
     # Reward 파라미터
@@ -169,6 +186,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_quality_lift_weight:     float = 40.0
     grasp_quality_lift_sharpness:  float = 10.0
 
+    # R6. stabilize: cup velocity/contact/action changes should stay small
+    stabilize_reward_weight: float = 4.0
+    stabilize_cup_lin_vel_threshold: float = 0.04
+    stabilize_cup_ang_vel_threshold: float = 0.50
+    stabilize_force_delta_threshold: float = 0.35
+    stabilize_contact_delta_threshold: float = 1.0
+    stabilize_action_delta_threshold: float = 0.40
+
+    # R7. transport: lifted/upright/grasped cup center should approach sampled goal
+    transport_reward_weight: float = 18.0
+
     # -----------------------------------------------------------------------
     # ADR
     # -----------------------------------------------------------------------
@@ -196,8 +224,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.40
-    object_spawn_y_center: float = -0.15
+    object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
+    object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
     object_spawn_z:        float = 0.297
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
 

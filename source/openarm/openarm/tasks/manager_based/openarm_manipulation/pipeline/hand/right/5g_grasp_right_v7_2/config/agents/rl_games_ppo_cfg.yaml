@@ -39,10 +39,11 @@ params:
         name: None
 
   load_checkpoint: False
-  load_path: '/home/oem/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7-2/test1/nn/5g_grasp_right-v7-2.pth'
+  load_path: '/home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test2/nn/5g_grasp_right-v7-2.pth'
 
   config:
     name: 5g_grasp_right-v7-2
+    full_experiment_name: test2
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'

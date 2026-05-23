@@ -28,15 +28,18 @@ LEFT_GRIPPER_JOINT_NAMES = ["openarm_left_finger_joint1", "openarm_left_finger_j
 LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
-    "openarm_left_joint1": -0.5,
-    "openarm_left_joint2": -0.5,
-    "openarm_left_joint3": 0.6,
-    "openarm_left_joint4": 0.7,
-    "openarm_left_joint5": 0.0,
-    "openarm_left_joint6": 0.0,
-    "openarm_left_joint7": -1.0,
-    "openarm_left_finger_joint1": 0.0,
-    "openarm_left_finger_joint2": 0.0,
+    # pour_right_v3 LEFT_ARM_REST_JOINT_POS와 일치시킴:
+    # warmstart collection 시 pour env가 이 자세를 사용하므로 OOD 방지
+    # FK 결과: target cup pos ≈ [0.268, 0.100, 0.291] (demo target=[0.27, 0.10])
+    "openarm_left_joint1": -0.315,
+    "openarm_left_joint2": -0.290,
+    "openarm_left_joint3":  0.400,
+    "openarm_left_joint4":  0.513,
+    "openarm_left_joint5":  0.666,
+    "openarm_left_joint6": -0.729,
+    "openarm_left_joint7": -0.957,
+    "openarm_left_finger_joint1": 0.044,
+    "openarm_left_finger_joint2": 0.044,
 }
 
 
@@ -123,10 +126,10 @@ RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0]
 # ---------------------------------------------------------------------------
 # Workspace / goal
 # ---------------------------------------------------------------------------
-# cup spawn center (local frame)
-OBJECT_SPAWN_CENTER = [0.40, -0.15, 0.38]
+# cup spawn center (local frame) — demo 데이터와 일치: source=[0.27,-0.10]
+OBJECT_SPAWN_CENTER = [0.27, -0.10, 0.38]
 OBJECT_SPAWN_RANGE_XY = 0.06
-OBJECT_GOAL_POS = [0.40, -0.15, 0.65]
+OBJECT_GOAL_POS = [0.27, 0.10, 0.65]  # target cup xy와 일치 (demo target=[0.27,0.10])
 
 # Pregrasp offset: cup 옆(-Y 방향)에서 접근 (palm_link 기준)
 # orientation: ez=90°, ey=0°, ex=90° → palm +X(손바닥 법선)=world +Y, palm +Z(손가락)=world +X
@@ -145,9 +148,10 @@ def palm_pose_mins(max_pose_angle: float) -> list:
 
 
 def palm_pose_maxs(max_pose_angle: float) -> list:
+    # y_max: -0.02 → 0.22 (source cup y=-0.10에서 target cup y=0.10으로 이송 허용)
     d = math.pi / 180.0
     return [
-        0.65, -0.02, 0.65,
+        0.65, 0.22, 0.65,
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

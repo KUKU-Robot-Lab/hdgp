@@ -36,7 +36,7 @@ from isaaclab.utils import configclass
 import os as _os
 
 from openarm.tasks.manager_based.openarm_manipulation import OPENARM_ROOT_DIR
-from .grasp_right_constants import NUM_OBSERVATIONS, NUM_ACTIONS, NUM_CRITIC_OBSERVATIONS
+from .grasp_right_constants import NUM_OBSERVATIONS, NUM_ACTIONS, NUM_CRITIC_OBSERVATIONS, LIFT_PHASE_STEPS
 from .grasp_right_preset import (
     HAND_BODY_NAMES_USD,
     LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
@@ -201,9 +201,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     force_balance_weight:    float = 3.5
     force_balance_sharpness: float = 8.0
 
-    # R1c. multi_phalanx_contact (v10: 8.0 → v10.1: 12.0)
-    # 증가 이유: tip-only local optimum 탈출, r1d_middle_guide와 함께 deep envelope 강화
-    multi_phalanx_weight: float = 12.0
+    # R1c. multi_phalanx_contact (v10.2: 12.0 → 16.0)
+    # 증가 이유: tip-only local optimum 탈출, r1d/e와 함께 deep envelope 강화
+    multi_phalanx_weight: float = 16.0
 
     # R1d. middle_phalanx_guide (v10.1 신규)
     # middle phalanx → cup 거리 기반 exp reward (enclosure와 동일 구조, 항상 활성)
@@ -215,7 +215,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # middle_norm 단독 reward — tip contact 여부와 무관 (접촉 단계)
     # finger_depth(tip×middle 곱)와 달리 tip-only 상태에서도 gradient 살아있음
     # tip-only 초반 고착 이후 middle contact 탐색을 독립적으로 유도
-    middle_contact_weight: float = 3.0
+    middle_contact_weight: float = 6.0
+    middle_contact_envelope_bonus_weight: float = 4.0
+    min_middle_contacts_for_success: int = 4
+
+    # Grasp phase에서 컵을 세운 채 감싸도록 유도한다.
+    grasp_upright_weight: float = 6.0
 
     # R2. slip_reward (v9 신규): cup 수평 속도 기반 slip proxy
     # gate: grasp phase AND contact 시 활성
@@ -252,8 +257,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # R_ft. fingertip_guide: fingertip → cup 거리 기반 (항상 gradient, seed 분산 방지)
     # sim2real 영향 없음: fingertip_pos는 FK 또는 FT 센서로 실 로봇에서도 획득 가능
     # cup_pos: 관측 노이즈 처리된 값 사용 (σ_cp 적용됨)
-    fingertip_guide_weight:    float = 0.5
+    fingertip_guide_weight:    float = 0.1
     fingertip_guide_sharpness: float = 5.0
+
+    # R_ft2. thumb_tip_direction: 엄지 distal->tip 축이 컵 중심을 향하도록 유도
+    # HAND_GRASP_POSE anchor와 별개로, 접촉 위치는 맞지만 엄지가 돌아가는 local optimum을 억제
+    thumb_tip_direction_weight: float = 4.0
+    thumb_tip_direction_sharpness: float = 4.0
+    thumb_tip_direction_distance_scale: float = 0.08
 
     # R5. force_smooth (v9 신규): 파지력 변화율 억제 (sim2real 안정성)
     force_smooth_weight: float = 1.5
@@ -271,19 +282,26 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # R9. full_contact_bonus: 5손가락 전체 접촉 보너스 (sim2real envelope grip 유도)
     # step당 보너스 → 유지할수록 누적 (grasp + lift phase 모두)
     # v10.1: 5.0 → 8.0, middle_guide와 함께 5-contact envelope 강화
-    full_contact_bonus_weight: float = 8.0
+    full_contact_bonus_weight: float = 12.0
 
     # R10. thumb pose / grasp shape consistency
     # v10.1: thumb_pose_anchor_weight 1.2 → 2.5 (엄지 미끄러짐 방지)
     # v10.2: thumb_pose_anchor_weight 2.5 → 4.0 (test3/4 분석: anchor_error 단조증가 확인)
     # v10.1: thumb_pose_anchor_sharpness 8.0 → 10.0 (error plateau 좁히기)
-    # v10.1: grasp_shape_consistency_weight 1.0 → 1.5 (전체 hand shape 유지 보조)
+    # 전체 hand pose imitation은 adaptive closure를 방해하므로 고정 관절 anchor 수준으로만 둔다.
     thumb_pose_anchor_weight: float = 4.0
     thumb_pose_anchor_sharpness: float = 10.0
     thumb_slide_penalty_weight: float = 2.0
     thumb_slide_z_margin: float = 0.01
-    grasp_shape_consistency_weight: float = 1.5
+    grasp_shape_consistency_weight: float = 0.25
     grasp_shape_consistency_sharpness: float = 6.0
+
+    # Lift 후반 hold 안정화: 컵 속도와 action 변화를 낮게 유지
+    lift_hold_stability_weight: float = 2.0
+    lift_hold_stability_start_step: int = LIFT_PHASE_STEPS - 90
+    lift_hold_cup_vel_sharpness: float = 15.0
+    lift_hold_cup_ang_vel_sharpness: float = 2.0
+    lift_hold_action_sharpness: float = 2.0
 
     # Thumb downward shortcut 억제
     thumb_curl_downward_action_scale: float = 0.25
@@ -338,7 +356,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 종료 조건
     # -----------------------------------------------------------------------
-    cup_tipping_max_deg: float = 60.0
+    cup_tipping_max_deg: float = 35.0
+    success_upright_max_deg: float = 20.0
     obj_out_x_min:  float = 0.05
     obj_out_x_max:  float = 0.85
     obj_out_y_min:  float = -0.60
@@ -348,8 +367,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.40
-    object_spawn_y_center: float = -0.15
+    object_spawn_x_center: float = 0.27
+    object_spawn_y_center: float = -0.10
     object_spawn_z:        float = 0.297
     object_spawn_xy_range: float = 0.06
 

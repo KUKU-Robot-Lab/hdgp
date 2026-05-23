@@ -53,3 +53,32 @@ gym.register(
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
     },
 )
+
+# LSTM PPO variant — MLP 체크포인트와 비호환, scratch 학습 전용
+gym.register(
+    id="5g_pour_right-v3-lstm",
+    entry_point=(
+        "openarm.tasks.manager_based.openarm_manipulation"
+        ".pipeline.hand.right.5g_pour_right_v3"
+        ".pour_right_env:PourRightEnv"
+    ),
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}:PourRightEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="5g_pour_right-play-v3-lstm",
+    entry_point=(
+        "openarm.tasks.manager_based.openarm_manipulation"
+        ".pipeline.hand.right.5g_pour_right_v3"
+        ".pour_right_env:PourRightEnv"
+    ),
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}:PourRightEnvCfg_PLAY",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
+    },
+)

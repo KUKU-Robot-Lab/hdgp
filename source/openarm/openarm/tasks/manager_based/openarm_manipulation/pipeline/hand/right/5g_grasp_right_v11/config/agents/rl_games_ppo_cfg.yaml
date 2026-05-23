@@ -1,0 +1,110 @@
+# 5g_grasp_right_v11 rl_games PPO 설정
+# v9.1: 관측 138D (tip_force 5D→15D xyz), 비드 이산 4단계 {0,10,20,30}×10g
+#        컵 마찰계수 DR μ~Uniform[0.15, 0.60], 썸 외전 열림, contact ADR
+# 관측: actor 136D / critic 172D (asymmetric), 액션: 26D
+# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: tanh
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [512, 256, 128]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: 5g_grasp_right-v11
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: True
+    normalize_input: True
+    normalize_value: True
+    value_bootstrap: False
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    learning_rate: 3e-4
+    lr_schedule: adaptive
+    schedule_type: standard
+    kl_threshold: 0.013
+    score_to_win: 100000000
+    max_epochs: 10000
+    save_best_after: 100
+    save_frequency: 500
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.001
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 64
+    # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
+    #   128  envs: batch=   8192 → minibatch= 2048 (4 splits)
+    #   2048 envs: batch= 131072 → minibatch=32768 (4 splits)  ← 학습 권장
+    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 2048으로 변경
+    mini_epochs: 4
+    critic_coef: 4
+    clip_value: True
+    clip_actions: False
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005
+
+    # Asymmetric Actor-Critic: critic은 172D privileged obs 사용
+    has_central_value: True
+    central_value_config:
+      normalize_input: True
+      normalize_value: True
+      value_bootstrap: False
+      minibatch_size: 32768
+      mini_epochs: 4
+      learning_rate: 3e-4
+      lr_schedule: adaptive
+      kl_threshold: 0.013
+      clip_value: True
+      e_clip: 0.2
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [512, 256, 128]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
