@@ -1000,7 +1000,12 @@ class PourRightEnv(DirectRLEnv):
             palm_pose_quat[:, 3:7] = self._quat_xyzw_from_euler_zyx(palm_pose_euler[:, 3:6])
             self.palm_pose_targets.copy_(palm_pose_quat)
             self.hand_pca_targets.zero_()
-            self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
+            _null_cfg = self.fabric_q.detach().clone()
+            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, min=-0.29, max=0.46)
+            _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
+            _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
+            _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
+            self.open_tesollo_fabric.default_config.copy_(_null_cfg)
 
             self.open_tesollo_fabric.set_features(
                 self.hand_pca_targets,
@@ -1038,11 +1043,17 @@ class PourRightEnv(DirectRLEnv):
             self.palm_pose_targets.copy_(palm_pose)
             self.hand_pca_targets.zero_()
 
-            # null-space attractor를 현재 관절 위치로 추적:
-            # default_config가 warmstart grasp pose로 고정되면 pour transport 방향으로
-            # 이동할 때 매 step 파지 위치로 당기는 저항이 발생함.
-            # 현재 fabric_q를 default_config로 덮어써서 null-space 당김 제거.
-            self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
+            # null-space attractor: j1/j2/j3/j7을 데모(a11-a20) 통계 기반 target으로 당김.
+            # alpha=0.05(5%/step): Fabrics IK 동작 유지하면서 warmstart 편류 보정.
+            # j1: warmstart -0.54 → demo mean +0.09 (방향 반전 보정)
+            # j3: warmstart +0.14 → demo mean -0.24 (부호 반전 보정)
+            # j7: pour 후반 평균 0.63, 상한 1.13 (외회전 편류 차단)
+            _null_cfg = self.fabric_q.detach().clone()
+            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, min=-0.29, max=0.46)
+            _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
+            _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
+            _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
+            self.open_tesollo_fabric.default_config.copy_(_null_cfg)
 
             self.open_tesollo_fabric.set_features(
                 self.hand_pca_targets,
