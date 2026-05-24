@@ -42,7 +42,7 @@ fabric_params:
     body_repulsion:
       max_depth: 2.
       min_depth: 0.01
-      engage_depth: 0.15
+      engage_depth: 0.30
       breakaway_depth: 0.0
       breakaway_velocity: 0.
       metric_scalar: 1.
@@ -52,8 +52,8 @@ fabric_params:
       rescaled_min_dist: .01
       forcing_metric_scalar: .01
       geom_metric_scalar: .01
-      constant_accel: 1.
-      constant_accel_geom: 1.5
+      constant_accel: 2.
+      constant_accel_geom: 3.0
       damping_gain: 0.
       collision_sphere_frames:
           ["openarm_right_link2", "openarm_right_link2_sphere2", "openarm_right_link2_sphere3",

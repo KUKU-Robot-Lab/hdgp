@@ -25,12 +25,13 @@ Action (11D):
   [6:11] 5D per-finger lerp: -1 → HAND_APPROACH_POSE, +1 → HAND_GRASP_POSE
 
 Episode (10s @ 60Hz):
-  Grasp phase (0~479): Fabrics arm + per-finger 정책
-  Lift  phase (480~599): scripted arm prelift + frozen hand
+  Grasp phase   (0~479): Fabrics arm + per-finger 정책
+  Transfer phase (480~599): scripted arm → demo frame-0 + frozen hand
 """
 
 from __future__ import annotations
 
+import json
 import math
 import sys
 from pathlib import Path
@@ -92,7 +93,7 @@ from .grasp_right_preset import (
 )
 from .grasp_right_utils import scale, to_torch
 from .demo_grasp_reset import DemoGraspResetBank, compute_demo_cup_spawn_local
-from .warm_state_cache import GraspWarmStateCache
+from .warm_state_cache import GraspWarmStateCache, compute_demo_frame0_match
 
 
 class GraspRightEnv(DirectRLEnv):
@@ -105,7 +106,7 @@ class GraspRightEnv(DirectRLEnv):
 
     Episode:
       Grasp phase (step 0~479):  Fabrics arm + 정책 손가락
-      Lift  phase (step 480~599): scripted arm prelift + frozen hand
+      Transfer phase (step 480~599): scripted arm → demo frame-0 + frozen hand
     """
 
     cfg: GraspRightEnvCfg
@@ -175,10 +176,9 @@ class GraspRightEnv(DirectRLEnv):
             if cfg.enable_demo_grasp_reset
             else None
         )
-        self.demo_lift_arm_target = (
-            self.demo_grasp_reset_bank.lift_medoid_arm_joint_pos
-            if self.demo_grasp_reset_bank is not None
-            else None
+        # env 별로 마지막으로 배정된 demo 인덱스 (-1 = 미배정)
+        self._env_assigned_demo_idx = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
         )
 
         # ----------------------------------------------------------------
@@ -242,11 +242,11 @@ class GraspRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         # Pregrasp / Lift 버퍼 (reset에서 계산)
         # ----------------------------------------------------------------
-        self.pregrasp_arm_pos_buf  = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.prelift_arm_pos_buf   = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.lift_arm_start_buf    = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.lift_finger_pos_buf   = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
-        self.is_lift_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.pregrasp_arm_pos_buf      = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        self.prelift_arm_pos_buf       = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        self.lift_arm_start_buf        = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        self.lift_finger_pos_buf       = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
+        self.is_lift_phase             = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
         # Hand joint targets (per-finger lerp 결과)
@@ -260,6 +260,10 @@ class GraspRightEnv(DirectRLEnv):
         self.contact_force_raw     = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)
         self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
         self.num_contacts_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.warm_contact_stable_steps_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.demo_frame0_match_hold_steps_buf = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
 
         self.distal_contact_force_raw  = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, device=self.device)
         self.distal_binary_contact_buf = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, dtype=torch.bool, device=self.device)
@@ -277,6 +281,9 @@ class GraspRightEnv(DirectRLEnv):
         self.episode_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._total_episodes: int = 0
         self._successful_episodes: int = 0
+        # warm export diagnostics
+        self._warm_diag_step: int = 0
+        self._warm_diag_terminated_early: int = 0  # transfer phase 중 early termination 횟수
 
         # ----------------------------------------------------------------
         # ADR
@@ -541,10 +548,10 @@ class GraspRightEnv(DirectRLEnv):
         finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
 
         # ---- Phase 판정 ----
-        is_lift = (self.episode_length_buf >= LIFT_START_STEP)
+        is_lift       = self.episode_length_buf >= LIFT_START_STEP
         self.is_lift_phase.copy_(is_lift)
 
-        # ---- Lift 진입 시 finger/arm joint pos 캡처 ----
+        # ---- Transfer 진입 시 finger/arm joint pos 캡처 ----
         just_entering_lift = (self.episode_length_buf == LIFT_START_STEP)
 
         # Finger: 진입 시점 자세로 고정
@@ -563,9 +570,10 @@ class GraspRightEnv(DirectRLEnv):
             actual_arm_pos,
             self.lift_arm_start_buf,
         )
-        # prelift = demo-derived fixed target when demo reset is enabled, else legacy j4 lift.
-        if self.demo_lift_arm_target is not None:
-            actual_prelift = self.demo_lift_arm_target.unsqueeze(0).expand(self.num_envs, -1)
+        # Target = assigned demo frame-0 arm pose. Without a demo bank, keep legacy j4 lift.
+        if self.demo_grasp_reset_bank is not None:
+            demo_idx = self._env_assigned_demo_idx.clamp(min=0) % self.demo_grasp_reset_bank.num_demos
+            actual_prelift = self.demo_grasp_reset_bank.start_arm_joint_pos[demo_idx]
         else:
             actual_prelift = actual_arm_pos.clone()
             actual_prelift[:, 3] = (actual_arm_pos[:, 3] + 0.31).clamp(max=3.14)
@@ -615,33 +623,32 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_q[:, NUM_ARM_DOF:] = hand_target
         self.fabric_qd[:, NUM_ARM_DOF:].zero_()
 
-        # ---- Lift phase: Fabrics arm 상태 동결 ----
-        # lift 중에도 Fabrics integrator가 계속 실행되면 palm target과 실제 arm 위치가
-        # 괴리되면서 fabric_qd가 발산 → arm에 전달되지 않더라도 상태 불안정 초래
-        # 실제 arm joint 위치로 동기화 + 속도 제로 → lift phase 좌우 흔들림 제거
-        if self.is_lift_phase.any():
-            lift_mask = self.is_lift_phase
-            self.fabric_q[lift_mask, :NUM_ARM_DOF] = (
-                self.robot.data.joint_pos[lift_mask][:, self.arm_dof_indices]
+        # ---- Transfer phase: Fabrics arm 상태 동결 ----
+        # scripted arm 제어 중 Fabrics integrator 발산 방지
+        freeze_mask = self.is_lift_phase
+        if freeze_mask.any():
+            self.fabric_q[freeze_mask, :NUM_ARM_DOF] = (
+                self.robot.data.joint_pos[freeze_mask][:, self.arm_dof_indices]
             )
-            self.fabric_qd[lift_mask, :NUM_ARM_DOF].zero_()
-            self.fabric_qdd[lift_mask, :NUM_ARM_DOF].zero_()
+            self.fabric_qd[freeze_mask, :NUM_ARM_DOF].zero_()
+            self.fabric_qdd[freeze_mask, :NUM_ARM_DOF].zero_()
 
     def _apply_action(self) -> None:
-        is_lift = self.is_lift_phase   # (N,) bool
+        is_lift       = self.is_lift_phase        # (N,) bool
 
         # ---- 오른팔 ----
-        # Grasp phase: Fabrics arm target
-        # Lift  phase: pregrasp → prelift 선형 보간
+        # Grasp phase:    Fabrics arm target
+        # Transfer phase: actual grasp arm → demo frame-0 선형 보간
         lift_progress = (
             (self.episode_length_buf - LIFT_START_STEP).clamp(min=0).float()
-            / LIFT_PHASE_STEPS
-        ).clamp(max=1.0).unsqueeze(1)   # (N, 1) ∈ [0, 1]
+            / max(1, LIFT_PHASE_STEPS - 1)
+        ).clamp(max=1.0).unsqueeze(1)
 
         arm_target_lift = (
             self.lift_arm_start_buf * (1.0 - lift_progress)
             + self.prelift_arm_pos_buf * lift_progress
         )
+
         arm_target = torch.where(
             is_lift.unsqueeze(1),
             arm_target_lift,
@@ -654,8 +661,8 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ---- 오른손 ----
-        # Grasp phase: per-finger lerp target
-        # Lift  phase: 진입 시점 캡처값 고정
+        # Grasp phase:               per-finger lerp target
+        # Transfer phase:            진입 시점 캡처값 고정
         finger_target = torch.where(
             is_lift.unsqueeze(1),
             self.lift_finger_pos_buf,
@@ -1037,12 +1044,21 @@ class GraspRightEnv(DirectRLEnv):
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
 
         if self.cfg.enable_warm_state_export:
-            # success 시 에피소드가 곧 종료(terminated)되므로 이 스텝의 상태가
-            # 곧 terminal grasp 상태. cup_z_world 는 위에서 이미 계산됨.
             self._maybe_export_warm_states(cup_z_world[:, 2])
 
-        terminated = out_x | out_y | fallen | tipped | self.success_flag
+        # scripted transfer 중에는 tipped 로 종료하지 않음.
+        # arm 이동으로 cup 이 일시적으로 기울 수 있으나 warm-state 저장은
+        # demo frame-0 도달과 접촉 조건으로 필터링한다.
+        is_scripted_phase = self.is_lift_phase
+        tipped_active = tipped & ~is_scripted_phase
+        terminated = out_x | out_y | fallen | tipped_active
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
+
+        # warm export 진단: scripted phase 중 (tipped 제외) 조기 종료 추적
+        if self.cfg.enable_warm_state_export:
+            early_term = (out_x | out_y | fallen) & is_scripted_phase
+            if early_term.any():
+                self._warm_diag_terminated_early += int(early_term.sum().item())
 
         self.extras["object_z"] = self.object_pos[:, 2].mean()
 
@@ -1051,18 +1067,18 @@ class GraspRightEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart)
     # ------------------------------------------------------------------
-    def _maybe_export_warm_states(self, cup_up_z: torch.Tensor) -> None:
+    def _maybe_export_warm_states(self, _cup_up_z: torch.Tensor) -> None:
         """grasp 성공 종료 상태를 디스크 캐시에 누적, 목표치 도달 시 1회 저장.
 
-        cup_up_z: cup local +Z 축의 world z 성분 (uprightness). 호출부에서
-        이미 계산된 값을 재사용한다.
+        Warm export now waits for demo frame-0 arm match plus retained grasp contact.
         """
         if getattr(self, "warm_export_done", False):
             return
 
         if not hasattr(self, "_warm_export_cache"):
+            target_count = int(self.cfg.warm_state_target_count)
             self._warm_export_cache = GraspWarmStateCache(
-                capacity=int(self.cfg.warm_state_target_count),
+                capacity=target_count,
                 device=self.device,
                 source_meta={
                     "object_spawn_z": self.cfg.object_spawn_z,
@@ -1070,6 +1086,13 @@ class GraspRightEnv(DirectRLEnv):
                     "object_spawn_x_center": self.cfg.object_spawn_x_center,
                     "object_spawn_y_center": self.cfg.object_spawn_y_center,
                     "object_spawn_xy_range": self.cfg.object_spawn_xy_range,
+                    "export_mode": "demo_frame0_match_actual_grasp",
+                    "cup_z_mode": "actual_lifted",
+                    "demo_frame0_aligned": 1.0,
+                    "warm_min_contacts": self.cfg.warm_min_contacts,
+                    "warm_contact_stable_steps": self.cfg.warm_contact_stable_steps,
+                    "warm_demo_frame0_arm_tol": self.cfg.warm_demo_frame0_arm_tol,
+                    "warm_demo_frame0_hold_steps": self.cfg.warm_demo_frame0_hold_steps,
                     "palm_min_x": float(self.palm_mins[0]),
                     "palm_min_y": float(self.palm_mins[1]),
                     "palm_min_z": float(self.palm_mins[2]),
@@ -1079,35 +1102,151 @@ class GraspRightEnv(DirectRLEnv):
                 },
             )
             self.warm_export_done = False
+            self._warm_export_log_interval = max(1, (target_count + 19) // 20)
+            self._warm_export_next_log_count = 1
+            self._write_warm_export_progress(
+                count=0,
+                target=target_count,
+                added=0,
+                status="running",
+            )
 
-        j7 = self.robot.data.joint_pos[:, self.arm_dof_indices[6]]
-        j7_in_range = (j7 >= self.cfg.warm_j7_min) & (j7 <= self.cfg.warm_j7_max)
-        upright = cup_up_z > self.cfg.warm_cup_upright_min
-        warm_ok = self.success_flag & upright & j7_in_range
+        warm_min_contacts = max(int(self.cfg.warm_min_contacts), MIN_CONTACTS_FOR_SUCCESS)
+        warm_stable_steps = max(int(self.cfg.warm_contact_stable_steps), 1)
+        grasped = self.num_contacts_buf >= warm_min_contacts
+        self.warm_contact_stable_steps_buf = torch.where(
+            grasped,
+            self.warm_contact_stable_steps_buf + 1,
+            torch.zeros_like(self.warm_contact_stable_steps_buf),
+        )
+        stable_grasp = self.warm_contact_stable_steps_buf >= warm_stable_steps
+        actual_arm_pos_all = self.robot.data.joint_pos[:, self.arm_dof_indices]
+        demo_frame0_matched, self.demo_frame0_match_hold_steps_buf = compute_demo_frame0_match(
+            actual_arm_pos_all,
+            self.prelift_arm_pos_buf,
+            tol=self.cfg.warm_demo_frame0_arm_tol,
+            previous_hold_steps=self.demo_frame0_match_hold_steps_buf,
+            required_hold_steps=self.cfg.warm_demo_frame0_hold_steps,
+        )
+        warm_ok = (
+            demo_frame0_matched
+            & self.episode_success_buf
+            & stable_grasp
+        )
+
+        # ---- 진단 출력 (매 300 스텝) ----
+        self._warm_diag_step += 1
+        if self._warm_diag_step % 300 == 0:
+            n = self.num_envs
+            pct = lambda t: float(t.sum()) / n * 100.0
+            print(
+                f"[warm_diag step={self._warm_diag_step}] "
+                "mode=demo_frame0_match "
+                f"demo_frame0_matched={pct(demo_frame0_matched):.1f}% "
+                f"ep_success={pct(self.episode_success_buf):.1f}% "
+                f"grasped{warm_min_contacts}+={pct(grasped):.1f}% "
+                f"stable{warm_stable_steps}={pct(stable_grasp):.1f}% "
+                f"warm_ok={pct(warm_ok):.1f}% "
+                f"contacts_mean={self.num_contacts_buf.float().mean():.2f} "
+                f"early_term_in_transfer={self._warm_diag_terminated_early} "
+                f"ep_len_mean={self.episode_length_buf.float().mean():.1f}",
+                flush=True,
+            )
 
         ids = warm_ok.nonzero(as_tuple=False).squeeze(-1)
         if ids.numel() == 0:
             return
 
         joint_pos = self.robot.data.joint_pos[ids]
-        self._warm_export_cache.append(
-            arm=joint_pos[:, self.arm_dof_indices],
+        arm_export = joint_pos[:, self.arm_dof_indices].clone()
+        cup_pos_export = self.object_pos[ids]
+        # arm/palm 은 canonical demo frame-0 로 저장하고, 손/cup/contact 는 실제 sim 상태를 유지한다.
+        palm_euler_export = self.palm_pose_targets[ids].clone()
+        palm_euler_export[:, :3] = self.palm_center_pos[ids]
+        demo_idx = self._env_assigned_demo_idx[ids]
+        if self.demo_grasp_reset_bank is not None:
+            valid_demo = demo_idx >= 0
+            if valid_demo.any():
+                mapped_demo_idx = demo_idx[valid_demo] % self.demo_grasp_reset_bank.num_demos
+                demo_palm = self.demo_grasp_reset_bank.start_palm_pose_euler_zyx[mapped_demo_idx]
+                arm_export[valid_demo] = self.demo_grasp_reset_bank.start_arm_joint_pos[mapped_demo_idx]
+                palm_euler_export[valid_demo] = demo_palm
+        added = self._warm_export_cache.append(
+            arm=arm_export,
             hand=joint_pos[:, self.hand_dof_indices],
-            palm_euler=self.palm_pose_targets[ids],
-            cup_pos_local=self.object_pos[ids],
+            palm_euler=palm_euler_export,
+            cup_pos_local=cup_pos_export,
             cup_quat_wxyz=self.object_rot[ids],
             num_contacts=self.num_contacts_buf[ids],
+            per_finger_contact=self.binary_contact_buf[ids],
+            stable_contact_steps=self.warm_contact_stable_steps_buf[ids],
+            demo_file_idx=demo_idx,
         )
+        if added <= 0:
+            return
+
+        count = len(self._warm_export_cache)
+        target = int(self.cfg.warm_state_target_count)
+        self._write_warm_export_progress(
+            count=count,
+            target=target,
+            added=added,
+            status="running",
+        )
+        if count >= self._warm_export_next_log_count or self._warm_export_cache.is_full:
+            percent = min(100.0, 100.0 * count / max(1, target))
+            print(
+                f"[5g_grasp_right_v7_2] warm-state progress: "
+                f"mode=demo_frame0_match {count}/{target} ({percent:.1f}%, +{added})",
+                flush=True,
+            )
+            interval = self._warm_export_log_interval
+            self._warm_export_next_log_count = min(
+                target,
+                ((count // interval) + 1) * interval,
+            )
 
         if self._warm_export_cache.is_full:
             path = self.cfg.warm_state_export_path
             self._warm_export_cache.save_hdf5(path)
             self.warm_export_done = True
+            self._write_warm_export_progress(
+                count=len(self._warm_export_cache),
+                target=target,
+                added=0,
+                status="complete",
+            )
             print(
                 f"[5g_grasp_right_v7_2] warm-state export complete: "
-                f"{len(self._warm_export_cache)} states → {path}",
+                f"mode=demo_frame0_match {len(self._warm_export_cache)} states → {path}",
                 flush=True,
             )
+
+    def _write_warm_export_progress(
+        self,
+        *,
+        count: int,
+        target: int,
+        added: int,
+        status: str,
+    ) -> None:
+        path = Path(str(self.cfg.warm_state_export_path) + ".progress.json")
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        data = {
+            "count": int(count),
+            "target": int(target),
+            "added": int(added),
+            "status": status,
+            "mode": "demo_frame0_match",
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(data, f, sort_keys=True)
+                f.write("\n")
+            tmp.replace(path)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # Reset
@@ -1130,11 +1269,10 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 1. Reset source 선택 ----
         if self.demo_grasp_reset_bank is not None:
-            demo_indices = torch.randint(
-                self.demo_grasp_reset_bank.num_demos,
-                (n,),
-                device=self.device,
-            )
+            # 순환 배정: env_id % num_demos → warmstart 와 demo 간 1:1 대응 보장
+            env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+            demo_indices = env_ids_t % self.demo_grasp_reset_bank.num_demos
+            self._env_assigned_demo_idx[env_ids_t] = demo_indices
             start_arm = self.demo_grasp_reset_bank.start_arm_joint_pos[demo_indices]
             start_hand = self.demo_grasp_reset_bank.start_hand_joint_pos[demo_indices]
             start_palm_pose = self.demo_grasp_reset_bank.start_palm_pose_euler_zyx[demo_indices].clone()
@@ -1209,7 +1347,7 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qdd[env_ids].zero_()
         self.object_init_pos[env_ids] = obj_pos_local
 
-        # ---- 5. pregrasp / prelift 버퍼 저장 ----
+        # ---- 5. pregrasp / transfer-target 버퍼 저장 ----
         self.pregrasp_arm_pos_buf[env_ids] = q_pregrasp[:, :NUM_ARM_DOF]
 
         # palm_pose_targets를 pregrasp로 동기화 (첫 Fabrics 스텝 타겟 일관성)
@@ -1223,8 +1361,8 @@ class GraspRightEnv(DirectRLEnv):
         # pregrasp arm pos로 설정 → 에피소드 시작 시 null-space 항 ≈ 0 → 안정
         self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = q_pregrasp[:, :NUM_ARM_DOF]
 
-        if self.demo_lift_arm_target is not None:
-            prelift_arm = self.demo_lift_arm_target.unsqueeze(0).expand(n, -1)
+        if self.demo_grasp_reset_bank is not None:
+            prelift_arm = start_arm
         else:
             prelift_arm = q_pregrasp[:, :NUM_ARM_DOF].clone()
             prelift_arm[:, 3] = (prelift_arm[:, 3] + 0.31).clamp(max=3.14)
@@ -1245,6 +1383,8 @@ class GraspRightEnv(DirectRLEnv):
         self.contact_force_raw[env_ids].zero_()
         self.binary_contact_buf[env_ids] = False
         self.num_contacts_buf[env_ids]   = 0
+        self.warm_contact_stable_steps_buf[env_ids] = 0
+        self.demo_frame0_match_hold_steps_buf[env_ids] = 0
         self.distal_contact_force_raw[env_ids].zero_()
         self.distal_binary_contact_buf[env_ids] = False
         self.middle_contact_force_raw[env_ids].zero_()

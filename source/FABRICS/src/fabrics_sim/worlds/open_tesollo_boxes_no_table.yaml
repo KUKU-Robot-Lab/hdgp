@@ -27,5 +27,29 @@ top_wall:
   transform: 0.45 0.08 1.30 0. 0. 0. 1.
 
 
-# Left arm static obstacle spheres: REMOVED
-# The object spawns in the right-hand workspace, so extra left-arm avoidance is unnecessary here.
+# Robot torso column: covers world_body_sphere1/2/3 positions (z=0.15/0.45/0.70, r=0.18/0.15/0.12)
+# World mesh box supplements body_repulsion spheres via WorldMeshesModel SDF path.
+# Robot base at env-local (0,0,0) → torso column along Z axis.
+robot_torso:
+  env_index: all
+  type: box
+  scaling: 0.10 0.10 1.0
+  transform: 0. 0. 0.5 0. 0. 0. 1.
+
+# Left arm static obstacle: approximate body position (fixed pose, y > 0 region)
+# Prevents right arm from entering left arm workspace.
+left_arm_body:
+  env_index: all
+  type: sphere
+  scaling: 0.15 0.15 0.15
+  transform: 0.25 0.20 0.55 0. 0. 0. 1.
+
+# Target cup held by left arm (fixed position each episode)
+# LEFT_TARGET_CUP_POS_ENV_LOCAL = [0.268, 0.100, 0.291]
+# cup_big: ~14cm diameter, ~22cm tall. Center z slightly above base (0.291→0.310).
+# Prevents Teosllo hand from passing through cup walls, blocking j0 external rotation path.
+left_target_cup:
+  env_index: all
+  type: box
+  scaling: 0.16 0.16 0.22
+  transform: 0.268 0.100 0.310 0. 0. 0. 1.

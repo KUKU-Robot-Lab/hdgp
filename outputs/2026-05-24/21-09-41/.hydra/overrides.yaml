@@ -1,0 +1,5 @@
+- env.enable_warm_state_export=true
+- env.warm_state_export_path=/home/user/rl_ws/datasets/grasp_warm_v7_2.hdf5
+- env.warm_state_target_count=2048
+- env.warm_min_contacts=4
+- env.warm_contact_stable_steps=12

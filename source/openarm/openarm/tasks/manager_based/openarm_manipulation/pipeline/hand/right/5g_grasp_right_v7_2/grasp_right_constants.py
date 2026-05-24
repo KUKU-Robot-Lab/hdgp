@@ -51,7 +51,7 @@ Critic Total: 106 + 37 = 143D
 
 Episode (10s @ 60Hz = 600 steps):
   Grasp phase (0~479):  Fabrics arm + per-finger policy
-  Lift  phase (480~599): scripted arm prelift + frozen hand
+  Transfer phase (480~599): scripted arm → demo frame-0 + frozen hand
 """
 
 import math
@@ -91,10 +91,11 @@ NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 143
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
-GRASP_PHASE_STEPS = 480    # 8s: Fabrics arm + per-finger policy
-LIFT_PHASE_STEPS  = 120    # 2s: scripted arm + frozen hand
-LIFT_START_STEP   = GRASP_PHASE_STEPS    # 480
-EPISODE_STEPS     = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS  # 600
+GRASP_PHASE_STEPS      = 480    # 8s: Fabrics arm + per-finger policy
+DEMO_FRAME0_TRANSFER_STEPS = 120  # 2s: scripted arm → demo frame-0 position (cup kept in hand)
+LIFT_PHASE_STEPS       = DEMO_FRAME0_TRANSFER_STEPS
+LIFT_START_STEP        = GRASP_PHASE_STEPS                              # 480
+EPISODE_STEPS          = GRASP_PHASE_STEPS + DEMO_FRAME0_TRANSFER_STEPS # 600
 
 LIFT_Z_DELTA = 0.10    # 10cm 수직 상승 (j4 += 0.31 근사)
 

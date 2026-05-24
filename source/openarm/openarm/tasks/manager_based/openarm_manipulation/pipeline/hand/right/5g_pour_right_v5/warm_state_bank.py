@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import h5py
 import numpy as np
@@ -41,6 +41,8 @@ _DATASETS = (
     "cup_quat_wxyz",
     "num_contacts",
 )
+# 구 HDF5 에는 없을 수 있으므로 선택적으로 로드
+_OPTIONAL_DATASETS = ("demo_file_idx", "per_finger_contact", "stable_contact_steps")
 # grasp 저장 spawn z 와 pour cfg object_spawn_z 허용 오차 (geometry critical)
 _SPAWN_Z_TOL = 1e-4
 
@@ -60,7 +62,11 @@ class PourWarmStateBank:
     cup_pos_local: torch.Tensor        # (N, 3)
     cup_quat_wxyz: torch.Tensor        # (N, 4)
     num_contacts: torch.Tensor         # (N,)
-    source_meta: dict[str, float]
+    # 이 warmstart 를 생성한 demo 파일 인덱스. 구 HDF5 에는 없으므로 None 가능.
+    demo_file_idx: torch.Tensor | None  # (N,) int64, -1=미태깅
+    per_finger_contact: torch.Tensor | None  # (N, 5) bool, 구 HDF5 에는 없음
+    stable_contact_steps: torch.Tensor | None  # (N,) int64, 구 HDF5 에는 없음
+    source_meta: dict[str, Any]
     source_paths: tuple[str, ...]
 
     @property
@@ -92,6 +98,10 @@ class PourWarmStateBank:
         for key, value in merged.items():
             if not np.isfinite(value).all():
                 raise ValueError(f"warm-state '{key}' contains NaN or Inf")
+        # optional: 모든 chunk 에 있을 때만 병합 (구 HDF5 혼용 시 skip)
+        for key in _OPTIONAL_DATASETS:
+            if all(key in chunk for chunk in chunks):
+                merged[key] = np.concatenate([chunk[key] for chunk in chunks], axis=0)
 
         # 메타데이터는 첫 파일 기준 (collect 는 단일 grasp cfg 산출이므로 동질)
         meta = chunks[0]["__meta__"]
@@ -108,6 +118,20 @@ class PourWarmStateBank:
         if expected_palm_bounds is not None:
             _warn_on_workspace_mismatch(meta, expected_palm_bounds, resolved)
 
+        # demo_file_idx: 구 HDF5 에 없으면 None (하위 호환)
+        raw_demo_idx = merged.get("demo_file_idx")
+        demo_file_idx_t: torch.Tensor | None = None
+        if raw_demo_idx is not None:
+            demo_file_idx_t = torch.as_tensor(raw_demo_idx, dtype=torch.long, device=device)
+        raw_per_finger = merged.get("per_finger_contact")
+        per_finger_contact_t: torch.Tensor | None = None
+        if raw_per_finger is not None:
+            per_finger_contact_t = torch.as_tensor(raw_per_finger, dtype=torch.bool, device=device)
+        raw_stable_steps = merged.get("stable_contact_steps")
+        stable_contact_steps_t: torch.Tensor | None = None
+        if raw_stable_steps is not None:
+            stable_contact_steps_t = torch.as_tensor(raw_stable_steps, dtype=torch.long, device=device)
+
         return cls(
             arm_joint_pos=_to_t(merged["arm_joint_pos"], device),
             hand_joint_pos=_to_t(merged["hand_joint_pos"], device),
@@ -116,7 +140,10 @@ class PourWarmStateBank:
             cup_pos_local=_to_t(merged["cup_pos_local"], device),
             cup_quat_wxyz=_to_t(merged["cup_quat_wxyz"], device),
             num_contacts=_to_t(merged["num_contacts"], device),
-            source_meta={k: float(v) for k, v in meta.items()},
+            demo_file_idx=demo_file_idx_t,
+            per_finger_contact=per_finger_contact_t,
+            stable_contact_steps=stable_contact_steps_t,
+            source_meta=dict(meta),
             source_paths=tuple(str(p) for p in resolved),
         )
 
@@ -182,17 +209,25 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
         out: dict[str, np.ndarray] = {
             key: np.asarray(grp[key], dtype=np.float32) for key in _DATASETS
         }
-        meta = {
-            str(k).split("meta/", 1)[1]: float(v)
-            for k, v in h5.attrs.items()
-            if str(k).startswith("meta/")
-        }
+        for key in _OPTIONAL_DATASETS:
+            if key in grp:
+                out[key] = np.asarray(grp[key])
+        meta = {}
+        for key, value in h5.attrs.items():
+            key = str(key)
+            if not key.startswith("meta/"):
+                continue
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+            elif isinstance(value, np.generic):
+                value = value.item()
+            meta[key.split("meta/", 1)[1]] = value
         out["__meta__"] = meta  # type: ignore[assignment]
         return out
 
 
 def _warn_on_workspace_mismatch(
-    meta: dict[str, float],
+    meta: dict[str, Any],
     expected_palm_bounds: tuple[float, float, float, float, float, float],
     resolved: tuple[Path, ...],
 ) -> None:

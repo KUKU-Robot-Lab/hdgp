@@ -27,13 +27,33 @@ palm pose 는 pour 가 직접 소비하는 7D (pos3 + quat_xyzw4) 와, 추적/�
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import h5py
 import torch
 from isaaclab.utils.math import quat_from_angle_axis, quat_mul
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 WARM_STATE_GROUP = "warm_states"
+
+
+def compute_demo_frame0_match(
+    actual_arm: torch.Tensor,
+    target_arm: torch.Tensor,
+    *,
+    tol: float,
+    previous_hold_steps: torch.Tensor,
+    required_hold_steps: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return demo-frame-0 arm match mask and updated consecutive hold counts."""
+    arm_close = (actual_arm - target_arm).abs().amax(dim=1) <= float(tol)
+    next_hold = torch.where(
+        arm_close,
+        previous_hold_steps + 1,
+        torch.zeros_like(previous_hold_steps),
+    )
+    matched = next_hold >= max(int(required_hold_steps), 1)
+    return matched, next_hold
 
 
 def euler_zyx_to_quat_xyzw(euler_zyx: torch.Tensor) -> torch.Tensor:
@@ -61,7 +81,7 @@ class GraspWarmStateCache:
     spawn/workspace 정합성을 검증할 수 있게 한다.
     """
 
-    def __init__(self, capacity: int, device, source_meta: dict[str, float]) -> None:
+    def __init__(self, capacity: int, device, source_meta: dict[str, Any]) -> None:
         if capacity <= 0:
             raise ValueError(f"capacity must be positive, got {capacity}")
         self._cap = int(capacity)
@@ -77,6 +97,8 @@ class GraspWarmStateCache:
         self.cup_pos_local = torch.zeros(self._cap, 3, device=device)
         self.cup_quat_wxyz = torch.zeros(self._cap, 4, device=device)
         self.num_contacts = torch.zeros(self._cap, device=device)
+        self.per_finger_contact = torch.zeros(self._cap, 5, dtype=torch.bool, device=device)
+        self.stable_contact_steps = torch.zeros(self._cap, dtype=torch.long, device=device)
         # 이 warmstart 를 생성한 demo 파일 인덱스 (0-based; -1 = 미태깅)
         self.demo_file_idx = torch.full((self._cap,), -1, dtype=torch.long, device=device)
 
@@ -96,6 +118,8 @@ class GraspWarmStateCache:
         cup_pos_local: torch.Tensor,
         cup_quat_wxyz: torch.Tensor,
         num_contacts: torch.Tensor,
+        per_finger_contact: torch.Tensor,
+        stable_contact_steps: torch.Tensor,
         demo_file_idx: torch.Tensor | None = None,
     ) -> int:
         """성공 env 배치를 추가. 실제 저장한 개수(capacity 한정)를 반환."""
@@ -115,6 +139,8 @@ class GraspWarmStateCache:
         self.cup_pos_local[s:e] = cup_pos_local[:n]
         self.cup_quat_wxyz[s:e] = cup_quat_wxyz[:n]
         self.num_contacts[s:e] = num_contacts[:n].float()
+        self.per_finger_contact[s:e] = per_finger_contact[:n].bool()
+        self.stable_contact_steps[s:e] = stable_contact_steps[:n].long()
         if demo_file_idx is not None:
             self.demo_file_idx[s:e] = demo_file_idx[:n].long()
         self._count = e
@@ -132,7 +158,14 @@ class GraspWarmStateCache:
             h5.attrs["schema_version"] = SCHEMA_VERSION
             h5.attrs["count"] = c
             for key, value in self.source_meta.items():
-                h5.attrs[f"meta/{key}"] = float(value)
+                attr_key = f"meta/{key}"
+                if isinstance(value, (str, bytes)):
+                    h5.attrs[attr_key] = value
+                else:
+                    try:
+                        h5.attrs[attr_key] = float(value)
+                    except (TypeError, ValueError):
+                        h5.attrs[attr_key] = str(value)
             grp = h5.create_group(WARM_STATE_GROUP)
             grp.create_dataset("arm_joint_pos", data=self.arm[:c].cpu().numpy())
             grp.create_dataset("hand_joint_pos", data=self.hand[:c].cpu().numpy())
@@ -141,5 +174,13 @@ class GraspWarmStateCache:
             grp.create_dataset("cup_pos_local", data=self.cup_pos_local[:c].cpu().numpy())
             grp.create_dataset("cup_quat_wxyz", data=self.cup_quat_wxyz[:c].cpu().numpy())
             grp.create_dataset("num_contacts", data=self.num_contacts[:c].cpu().numpy())
+            grp.create_dataset(
+                "per_finger_contact",
+                data=self.per_finger_contact[:c].to(torch.uint8).cpu().numpy(),
+            )
+            grp.create_dataset(
+                "stable_contact_steps",
+                data=self.stable_contact_steps[:c].cpu().numpy(),
+            )
             grp.create_dataset("demo_file_idx", data=self.demo_file_idx[:c].cpu().numpy())
         tmp.replace(path)

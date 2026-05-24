@@ -614,6 +614,8 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
         self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
+        # demo-tagged warmstart: 각 warmstart 상태를 생성한 demo 인덱스 (None = 구 HDF5)
+        self._warmstart_demo_file_idx: torch.Tensor | None = None
         # v7-2 lift phase 미러: step 480에 팔/손 캡처 → 120 step 선형보간으로 들어올림
         self._warmstart_lift_arm_start  = torch.zeros(self.num_envs, NUM_ARM_DOF,  device=self.device)
         self._warmstart_lift_finger_start = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
@@ -2259,9 +2261,24 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_cup_pose = cup_pose
         self._warmstart_cache_count = n
 
+        # demo-tagged: 있으면 저장, 없으면 None (구 HDF5 하위 호환)
+        self._warmstart_demo_file_idx = bank.demo_file_idx  # Tensor(n,) or None
+
+        tagged = self._warmstart_demo_file_idx is not None
+        quality = ""
+        if bank.per_finger_contact is not None:
+            per_finger_mean = bank.per_finger_contact.float().mean(dim=0)
+            quality += ", per_finger_contact_mean=[" + ", ".join(
+                f"{float(v):.2f}" for v in per_finger_mean
+            ) + "]"
+        if bank.stable_contact_steps is not None:
+            quality += (
+                f", stable_steps_min={int(bank.stable_contact_steps.min().item())}"
+                f", stable_steps_mean={float(bank.stable_contact_steps.float().mean().item()):.1f}"
+            )
         print(
             f"[5g_pour_right_v5] loaded {n} warmstart states from disk "
-            f"({', '.join(bank.source_paths)}).",
+            f"(demo_tagged={tagged}{quality}, {', '.join(bank.source_paths)}).",
             flush=True,
         )
         return True
@@ -2431,6 +2448,24 @@ class PourRightEnv(DirectRLEnv):
         hand_pos = self._warmstart_hand_pos[pick]
         palm_pose = self._warmstart_palm_pose[pick]
         cup_pose_local = self._warmstart_cup_pose[pick]
+
+        # demo-tagged warmstart: 해당 warmstart 를 생성한 demo 를 이 env 에 배정
+        if (
+            self._warmstart_demo_file_idx is not None
+            and self.demo_pose_reference is not None
+        ):
+            env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+            tagged = self._warmstart_demo_file_idx[pick]
+            # -1(미태깅) 항목은 랜덤 배정으로 fallback
+            valid = tagged >= 0
+            assigned = torch.where(
+                valid,
+                tagged % self.demo_pose_reference.num_demos,
+                torch.randint(
+                    self.demo_pose_reference.num_demos, (n,), device=self.device
+                ),
+            )
+            self._demo_pose_ids[env_ids_t] = assigned
 
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)

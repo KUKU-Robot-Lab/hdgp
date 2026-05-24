@@ -17,7 +17,7 @@
 v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Action: 11D (6D palm pose + 5D per-finger lerp)
 - Observation: actor 106D / critic 143D (asymmetric)
-- Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
+- Episode: Grasp phase (Fabrics arm + finger 정책) + demo frame-0 transfer (frozen hand)
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
 
@@ -205,18 +205,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart 재사용)
     # -----------------------------------------------------------------------
     # 학습 루프에는 영향 없음 (기본 False). collect 스크립트/play 에서만 True.
-    # grasp 는 success 시 에피소드가 즉시 종료되므로, success_flag 가 True 가 되는
-    # 그 스텝의 상태가 곧 terminal grasp 상태(약 lift_success_height 만큼 들린 상태).
-    # pour 의 기존 warmstart store 기준(upright + j7 range)과 동일하게 맞춰
-    # 캐시 편향/포맷 불일치를 grasp 저장 시점 한 곳으로 수렴시킨다.
+    # success 이후 잡은 컵을 유지하며 demo frame-0 arm pose 로 이동한 상태를 저장한다.
+    # pour_v5 reset 에서 같은 demo_file_idx 의 데모를 따라가도록 초기 오른팔/palm
+    # 기준을 demo frame-0 에 맞추고, 손/컵 grasp 결과는 유지한다.
+    # 손가락 접촉은 기본 2개 이상, demo frame-0 arm match 는 기본 1 step 만 요구한다.
     enable_warm_state_export: bool = False
     warm_state_export_path: str = _os.path.normpath(
         _os.path.join(_HDGP_ROOT, "..", "datasets", "grasp_warm_v7_2.hdf5")
     )
     warm_state_target_count: int = 2048
-    warm_cup_upright_min: float = 0.90   # cup_z_world[:,2] 최소 (pour store와 동일)
-    warm_j7_min: float = 0.20            # arm joint7 하한 (pour store와 동일)
-    warm_j7_max: float = 1.50            # arm joint7 상한 (pour store와 동일)
+    warm_min_contacts: int = 2
+    warm_contact_stable_steps: int = 1
+    warm_demo_frame0_arm_tol: float = 0.035
+    warm_demo_frame0_hold_steps: int = 1
+    warm_cup_upright_min: float = 0.90   # legacy override 호환용; demo_frame0 export 에서는 미사용
+    warm_j7_min: float = 0.20            # legacy override 호환용; demo_frame0 export 에서는 미사용
+    warm_j7_max: float = 1.50            # legacy override 호환용; demo_frame0 export 에서는 미사용
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 설정

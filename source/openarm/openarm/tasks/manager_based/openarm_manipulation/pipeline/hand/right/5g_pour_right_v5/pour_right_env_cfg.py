@@ -148,7 +148,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pregrasp_noise_z:      float = 0.005
 
     # -----------------------------------------------------------------------
-    # Demo reset (match 5g_grasp_right_v7_2/test3 warmstart collection)
+    # Demo reset (match 5g_grasp_right_v7_2/test4 warmstart collection)
     # -----------------------------------------------------------------------
     enable_demo_grasp_reset: bool = True
     demo_grasp_pose_paths: tuple[str, ...] = tuple(
@@ -348,12 +348,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "all"           # tag 무시: 전체 trajectory 로드, 리샘플링으로 구간 결정
-    # [test4] step-indexed temporal alignment:
-    #   demo_start_fraction=0.46: warmstart 상태(palm_z≈0.447) ≈ demo frame 525/1130 (z=0.461)
-    #   reset마다 env별 demo id를 랜덤 샘플링하고, 각 env는 해당 demo의 step-indexed target을 추종
-    #   episode step t → demo[round(t × N_demo_seg / episode_steps)]
-    #   phase gate 불필요: step 초반=demo lift 완료, 후반=demo pour 완료 → 시계열 자동 구분
-    demo_start_fraction: float = 0.46     # demo 시작 위치 (0~1): warmstart 상태와 매칭
+    # [test5] step-indexed temporal alignment:
+    #   demo_start_fraction=0.0: warmstart 상태(arm at demo frame-0, cup in hand)
+    #   grasp_v7_2 reposition phase 후 저장된 HDF5 → arm=demo[0] pos, cup grasped
+    #   reset마다 demo_file_idx 태그 기반 1:1 demo 배정 (랜덤 아님)
+    demo_start_fraction: float = 0.0      # demo 시작 위치: warmstart=demo frame-0 arm pos
     demo_episode_steps: int = 1200        # episode_length_s(20s) × 60Hz
     weight_demo_arm_pose: float = 2.00   # [test4] 6.0→2.0: step-indexed로 soft guide만 필요
     weight_demo_palm_pose: float = 2.00  # [test4] 0.5→2.0: pour palm 방향 유도 강화
@@ -426,7 +425,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
-        _os.path.join(_HDGP_ROOT, "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test3/nn/5g_grasp_right-v7-2.pth")
+        _os.path.join(_HDGP_ROOT, "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test4/nn/5g_grasp_right-v7-2.pth")
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
