@@ -77,6 +77,8 @@ class GraspWarmStateCache:
         self.cup_pos_local = torch.zeros(self._cap, 3, device=device)
         self.cup_quat_wxyz = torch.zeros(self._cap, 4, device=device)
         self.num_contacts = torch.zeros(self._cap, device=device)
+        # 이 warmstart 를 생성한 demo 파일 인덱스 (0-based; -1 = 미태깅)
+        self.demo_file_idx = torch.full((self._cap,), -1, dtype=torch.long, device=device)
 
     def __len__(self) -> int:
         return self._count
@@ -94,6 +96,7 @@ class GraspWarmStateCache:
         cup_pos_local: torch.Tensor,
         cup_quat_wxyz: torch.Tensor,
         num_contacts: torch.Tensor,
+        demo_file_idx: torch.Tensor | None = None,
     ) -> int:
         """성공 env 배치를 추가. 실제 저장한 개수(capacity 한정)를 반환."""
         if self.is_full:
@@ -112,6 +115,8 @@ class GraspWarmStateCache:
         self.cup_pos_local[s:e] = cup_pos_local[:n]
         self.cup_quat_wxyz[s:e] = cup_quat_wxyz[:n]
         self.num_contacts[s:e] = num_contacts[:n].float()
+        if demo_file_idx is not None:
+            self.demo_file_idx[s:e] = demo_file_idx[:n].long()
         self._count = e
         return n
 
@@ -136,4 +141,5 @@ class GraspWarmStateCache:
             grp.create_dataset("cup_pos_local", data=self.cup_pos_local[:c].cpu().numpy())
             grp.create_dataset("cup_quat_wxyz", data=self.cup_quat_wxyz[:c].cpu().numpy())
             grp.create_dataset("num_contacts", data=self.num_contacts[:c].cpu().numpy())
+            grp.create_dataset("demo_file_idx", data=self.demo_file_idx[:c].cpu().numpy())
         tmp.replace(path)

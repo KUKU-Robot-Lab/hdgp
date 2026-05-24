@@ -279,6 +279,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_success_overfill: float = 0.0
     weight_spill: float = 40.0            # 5.0→40.0: spill 강하게 패널티 (40% trap 방지)
 
+    # [test5] j0 외회전 패널티: j0 < 0 시 relu(-j0) 패널티 (외회전 방지)
+    # j0=-0.3 → cost=0.3, weight=3.0 → 패널티=0.9/step
+    weight_j0_ext_rot: float = 3.0
+
     # Premature tilt penalty (ρ=0 일 때만): 멀리서 기울기 패널티
     weight_premature_tilt: float = 1.00
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
