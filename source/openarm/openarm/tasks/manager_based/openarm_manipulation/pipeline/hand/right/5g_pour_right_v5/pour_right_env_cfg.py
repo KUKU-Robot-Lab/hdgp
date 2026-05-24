@@ -350,6 +350,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_pose_phase: str = "all"           # tag 무시: 전체 trajectory 로드, 리샘플링으로 구간 결정
     # [test4] step-indexed temporal alignment:
     #   demo_start_fraction=0.46: warmstart 상태(palm_z≈0.447) ≈ demo frame 525/1130 (z=0.461)
+    #   reset마다 env별 demo id를 랜덤 샘플링하고, 각 env는 해당 demo의 step-indexed target을 추종
     #   episode step t → demo[round(t × N_demo_seg / episode_steps)]
     #   phase gate 불필요: step 초반=demo lift 완료, 후반=demo pour 완료 → 시계열 자동 구분
     demo_start_fraction: float = 0.46     # demo 시작 위치 (0~1): warmstart 상태와 매칭

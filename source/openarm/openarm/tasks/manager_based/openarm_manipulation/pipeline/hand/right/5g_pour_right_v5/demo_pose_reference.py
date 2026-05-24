@@ -48,6 +48,10 @@ class DemoPoseReferenceBank:
 
     @property
     def num_frames(self) -> int:
+        return int(self.arm_joint_pos.shape[1])
+
+    @property
+    def num_demos(self) -> int:
         return int(self.arm_joint_pos.shape[0])
 
     @classmethod
@@ -94,34 +98,42 @@ class DemoPoseReferenceBank:
         arm_vel_p95  = float(np.percentile(vel_l2,  95)) if vel_l2.size  else 1.0
         arm_jerk_p95 = float(np.percentile(jerk_l2, 95)) if jerk_l2.size else 1.0
 
-        # demo_start_fraction 지점부터 끝까지 잘라낸 뒤 episode_steps 길이로 선형 리샘플링.
+        # 각 demo를 독립적으로 demo_start_fraction 지점부터 끝까지 잘라낸 뒤
+        # episode_steps 길이로 선형 리샘플링한다.
         # warmstart 에피소드 시작 상태(컵 들린 직후)와 demo의 해당 시점을 정렬.
         # phase tag를 쓰지 않고 단순 시간 비율로 구분.
         keys_to_resample = ("arm", "hand", "hand_ref", "palm", "target_palm")
-        resampled: dict[str, np.ndarray] = {}
-        for key in keys_to_resample:
-            raw = merged[key]
-            N = raw.shape[0]
-            start_i = int(round(N * demo_start_fraction))
-            start_i = min(start_i, N - 2)
-            seg = raw[start_i:]
-            M = len(seg)
-            src = np.linspace(0.0, M - 1, episode_steps)
-            lo  = np.floor(src).astype(np.int64).clip(0, M - 2)
-            hi  = lo + 1
-            w   = (src - lo)[:, None]
-            resampled[key] = (seg[lo] * (1.0 - w) + seg[hi] * w).astype(np.float32)
+        resampled: dict[str, list[np.ndarray]] = {key: [] for key in keys_to_resample}
+        segment_lengths: list[int] = []
+        start_indices: list[int] = []
+        for arr in arrays:
+            raw_len = int(arr["arm"].shape[0])
+            if raw_len < 2:
+                raise ValueError("demo trajectory must contain at least 2 frames after phase selection.")
+            start_i = int(round(raw_len * demo_start_fraction))
+            start_i = max(0, min(start_i, raw_len - 2))
+            start_indices.append(start_i)
+            segment_lengths.append(raw_len - start_i)
+            for key in keys_to_resample:
+                resampled[key].append(_resample_array(arr[key][start_i:], episode_steps))
 
-        arm        = torch.as_tensor(resampled["arm"],        dtype=torch.float32, device=device)
-        hand       = torch.as_tensor(resampled["hand"],       dtype=torch.float32, device=device)
-        hand_ref   = torch.as_tensor(resampled["hand_ref"],   dtype=torch.float32, device=device)
-        palm       = torch.as_tensor(resampled["palm"],       dtype=torch.float32, device=device)
-        target_palm = torch.as_tensor(resampled["target_palm"], dtype=torch.float32, device=device)
+        stacked = {key: np.stack(values, axis=0) for key, values in resampled.items()}
+        for key in keys_to_resample:
+            _require_finite(key, stacked[key])
+
+        arm        = torch.as_tensor(stacked["arm"],        dtype=torch.float32, device=device)
+        hand       = torch.as_tensor(stacked["hand"],       dtype=torch.float32, device=device)
+        hand_ref   = torch.as_tensor(stacked["hand_ref"],   dtype=torch.float32, device=device)
+        palm       = torch.as_tensor(stacked["palm"],       dtype=torch.float32, device=device)
+        target_palm = torch.as_tensor(stacked["target_palm"], dtype=torch.float32, device=device)
 
         print(
-            f"[DemoPoseReferenceBank] resampled: raw={merged['arm'].shape[0]} frames, "
-            f"start_fraction={demo_start_fraction:.2f} → seg={int(merged['arm'].shape[0]*(1-demo_start_fraction))} frames "
-            f"→ episode_steps={episode_steps}",
+            f"[DemoPoseReferenceBank] resampled: demos={len(arrays)}, "
+            f"raw_total={merged['arm'].shape[0]} frames, "
+            f"start_fraction={demo_start_fraction:.2f}, "
+            f"start_i_range={min(start_indices)}..{max(start_indices)}, "
+            f"seg_len_range={min(segment_lengths)}..{max(segment_lengths)}, "
+            f"episode_steps={episode_steps}",
             flush=True,
         )
 
@@ -228,6 +240,19 @@ def _load_path(path: Path, *, phase: str) -> dict[str, np.ndarray]:
     if not chunks:
         raise ValueError(f"{path}: no demo groups found")
     return {key: np.concatenate([chunk[key] for chunk in chunks], axis=0) for key in chunks[0]}
+
+
+def _resample_array(raw: np.ndarray, episode_steps: int) -> np.ndarray:
+    if episode_steps <= 0:
+        raise ValueError(f"episode_steps must be positive, got {episode_steps}")
+    if raw.shape[0] < 2:
+        raise ValueError("cannot resample a trajectory with fewer than 2 frames")
+
+    src = np.linspace(0.0, raw.shape[0] - 1, episode_steps)
+    lo = np.floor(src).astype(np.int64).clip(0, raw.shape[0] - 2)
+    hi = lo + 1
+    w = (src - lo)[:, None]
+    return (raw[lo] * (1.0 - w) + raw[hi] * w).astype(np.float32)
 
 
 def _select_phase_indices(demo: h5py.Group, *, phase: str, n: int) -> np.ndarray:

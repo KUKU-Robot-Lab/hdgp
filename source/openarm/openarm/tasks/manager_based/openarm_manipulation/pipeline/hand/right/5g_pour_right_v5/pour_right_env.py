@@ -502,10 +502,12 @@ class PourRightEnv(DirectRLEnv):
             )
             print(
                 "[5g_pour_right_v5] loaded demo pose reference bank: "
+                f"{self.demo_pose_reference.num_demos} demos x "
                 f"{self.demo_pose_reference.num_frames} frames (resampled) "
                 f"from {len(self.demo_pose_reference.source_paths)} files",
                 flush=True,
             )
+        self._demo_pose_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # ----------------------------------------------------------------
         # 궤적 캡처 버퍼 + 성공 궤적 ring buffer (BC loss 학습용)
@@ -1576,10 +1578,11 @@ class PourRightEnv(DirectRLEnv):
         # demo는 warmstart 시작 시점부터 에피소드 길이로 리샘플링되어 있음.
         # episode_length_buf[i] = 현재 env i의 step 수 → demo[step] 직접 참조.
         # "t번째 step에서는 demo의 t번째 자세가 타겟" → 시계열 구조 자동 반영.
-        demo_arm = ref.arm_joint_pos   # (episode_steps, 7) - resampled
-        T_demo = demo_arm.shape[0]
+        demo_arm = ref.arm_joint_pos   # (D, episode_steps, 7) - resampled
+        T_demo = demo_arm.shape[1]
         demo_idx = self.episode_length_buf.long().clamp(0, T_demo - 1)  # (N,)
-        target_arm_q = demo_arm[demo_idx]                                # (N, 7)
+        demo_ids = self._demo_pose_ids.clamp(0, ref.num_demos - 1)
+        target_arm_q = demo_arm[demo_ids, demo_idx]                       # (N, 7)
 
         arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
         demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
@@ -1589,8 +1592,8 @@ class PourRightEnv(DirectRLEnv):
         palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
 
-        demo_palm = ref.palm_pose   # (episode_steps, 7): [x,y,z, qx,qy,qz,qw] - resampled
-        target_palm = demo_palm[demo_idx]                                # (N, 7)
+        demo_palm = ref.palm_pose   # (D, episode_steps, 7): [x,y,z, qx,qy,qz,qw] - resampled
+        target_palm = demo_palm[demo_ids, demo_idx]                      # (N, 7)
         target_palm_pos = target_palm[:, :3]                             # (N, 3)
         target_palm_quat_xyzw = target_palm[:, 3:7]                     # (N, 4) xyzw
         target_palm_quat_wxyz = torch.cat(
@@ -1814,6 +1817,7 @@ class PourRightEnv(DirectRLEnv):
             "reward/demo_arm":          r_demo_arm_gated.mean(),
             "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
             "log/demo_step_idx":        self.episode_length_buf.float().mean(),
+            "log/demo_pose_id":         self._demo_pose_ids.float().mean(),
             "cost/spill":               (spill_weight * spill_cost).mean(),
             "cost/premature_tilt":      (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),
             "cost/grasp_loss":          (self.cfg.weight_grasp_loss * grasp_loss_cost).mean(),
@@ -1942,6 +1946,12 @@ class PourRightEnv(DirectRLEnv):
         self._maybe_store_warmstart_successes(env_ids)
         env_ids_t_reset = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
         self._warmstart_env_captured[env_ids_t_reset] = False
+        if self.demo_pose_reference is not None:
+            self._demo_pose_ids[env_ids_t_reset] = torch.randint(
+                self.demo_pose_reference.num_demos,
+                (n,),
+                device=self.device,
+            )
 
         self.episode_success_buf[env_ids] = False
         self._warmstart_only_close[env_ids] = False

@@ -32,12 +32,13 @@ def test_demo_pose_reference_loads_a11_to_a20_contract() -> None:
 
     bank = DemoPoseReferenceBank.from_hdf5_paths(paths, phase="pour", device="cpu")
 
-    assert bank.num_frames > 0
-    assert bank.arm_joint_pos.shape[1] == 7
-    assert bank.hand_joint_pos.shape[1] == 20
-    assert bank.hand_reference_joint_pos.shape[1] == 20
-    assert bank.palm_pose.shape[1] == 7
-    assert bank.target_palm_pose.shape[1] == 7
+    assert bank.num_demos == 10
+    assert bank.num_frames == 1200
+    assert bank.arm_joint_pos.shape == (10, 1200, 7)
+    assert bank.hand_joint_pos.shape == (10, 1200, 20)
+    assert bank.hand_reference_joint_pos.shape == (10, 1200, 20)
+    assert bank.palm_pose.shape == (10, 1200, 7)
+    assert bank.target_palm_pose.shape == (10, 1200, 7)
     for tensor in (
         bank.arm_joint_pos,
         bank.hand_joint_pos,
@@ -63,9 +64,28 @@ def test_demo_pose_reference_all_phase_expands_beyond_pour_segment() -> None:
     pour_bank = DemoPoseReferenceBank.from_hdf5_paths(paths, phase="pour", device="cpu")
     all_bank = DemoPoseReferenceBank.from_hdf5_paths(paths, phase="all", device="cpu")
 
-    assert all_bank.num_frames > pour_bank.num_frames
-    assert all_bank.arm_joint_pos.shape[1] == 7
-    assert all_bank.palm_pose.shape[1] == 7
+    assert all_bank.num_demos == pour_bank.num_demos == 10
+    assert all_bank.num_frames == pour_bank.num_frames == 1200
+    assert all_bank.arm_joint_pos.shape == (10, 1200, 7)
+    assert all_bank.palm_pose.shape == (10, 1200, 7)
+    assert not torch.allclose(all_bank.arm_joint_pos[0], all_bank.arm_joint_pos[1])
+
+
+def test_demo_pose_reference_resamples_each_demo_independently() -> None:
+    paths = [f"/home/user/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 13)]
+
+    bank = DemoPoseReferenceBank.from_hdf5_paths(
+        paths,
+        phase="all",
+        device="cpu",
+        episode_steps=37,
+        demo_start_fraction=0.46,
+    )
+
+    assert bank.num_demos == 2
+    assert bank.num_frames == 37
+    assert bank.arm_joint_pos.shape == (2, 37, 7)
+    assert bank.palm_pose.shape == (2, 37, 7)
 
 
 def test_demo_thumb_cost_is_compatible_with_v5_grip_presets() -> None:
