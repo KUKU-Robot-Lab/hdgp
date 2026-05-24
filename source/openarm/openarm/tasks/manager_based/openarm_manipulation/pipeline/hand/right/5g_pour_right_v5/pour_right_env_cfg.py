@@ -293,8 +293,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Pour 보상 (v3 스타일, pour_reward_start_step 이후 warmup으로 점진 활성)
     weight_dist_to_target: float = 5.0      # transport: source→target XY exp reward
     dist_to_target_exp_scale: float = 5.0
-    weight_tilt: float = 8.0               # [test2] 3.0→8.0: v3 값 복원, tilt gradient 강화
-    weight_align: float = 3.0              # pour stage: 방향 정렬
+    weight_tilt: float = 5.0               # [test4] 8.0→5.0: step-indexed demo가 tilt 방향 가이드 → 무방향 tilt 낮춤
+    weight_align: float = 10.0             # [test4] 3.0→10.0: 올바른 방향 정렬 우선
     weight_bead_progressive: float = 200.0  # pour stage: bead fraction^2
     weight_bead_entry_delta: float = 50.0   # pour stage: 매 step bead 유입 즉각 피드백
     weight_source_drain: float = 20.0       # pour stage: source cup 비우기
@@ -347,21 +347,26 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_pose_paths: tuple[str, ...] = tuple(
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
-    demo_pose_phase: str = "all"
-    weight_demo_arm_pose: float = 6.00   # [test2] 9.00→6.00: rho-gate 추가로 approach에서만 활성 (pour에서 자동 꺼짐)
-    weight_demo_palm_pose: float = 0.50  # [test2] 3.0→0.5: palm sim2real gap 최소화, arm 집중
+    demo_pose_phase: str = "all"           # tag 무시: 전체 trajectory 로드, 리샘플링으로 구간 결정
+    # [test4] step-indexed temporal alignment:
+    #   demo_start_fraction=0.46: warmstart 상태(palm_z≈0.447) ≈ demo frame 525/1130 (z=0.461)
+    #   episode step t → demo[round(t × N_demo_seg / episode_steps)]
+    #   phase gate 불필요: step 초반=demo lift 완료, 후반=demo pour 완료 → 시계열 자동 구분
+    demo_start_fraction: float = 0.46     # demo 시작 위치 (0~1): warmstart 상태와 매칭
+    demo_episode_steps: int = 1200        # episode_length_s(20s) × 60Hz
+    weight_demo_arm_pose: float = 2.00   # [test4] 6.0→2.0: step-indexed로 soft guide만 필요
+    weight_demo_palm_pose: float = 2.00  # [test4] 0.5→2.0: pour palm 방향 유도 강화
     weight_demo_smooth: float = 0.20
-    weight_thumb_grip_pose: float = 1.00  # [test2] 0.0→1.0: 엄지 demo 평균 자세 복원 (엄지 붕괴 방지)
+    weight_thumb_grip_pose: float = 1.00
     demo_pose_warmup_steps: int = 20000
-    demo_pose_near_gate_xy: float = 0.20  # unused: demo_pose_phase="all"은 거리 gate 없이 항상 참조
-    demo_nn_lookahead_frames: int = 15    # [test3] 30→15: K=30이 demo 추종 방해 (0.5s→0.25s)
+    demo_pose_near_gate_xy: float = 0.20  # unused
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = True   # [test3] False→True: spill 점진적 억제 (5.0→8.0 ADR)
     spill_adr_custom_cfg: dict = {
         "reward": {
-            # start small to allow exploration, ramp to 기존 10.0 페널티
-            "spill_weight": (1.0, 8.0),  # [test3] 0.5→1.0: 초기 spill 기준 상향
+            # [test4] 0.1→8.0: 초기 pour 탐색 시 spill 허용, 점진 상향
+            "spill_weight": (0.1, 8.0),
         }
     }
     spill_adr_num_increments: int = 50

@@ -55,8 +55,10 @@ class DemoPoseReferenceBank:
         cls,
         paths: Iterable[str | Path],
         *,
-        phase: str = "pour",
+        phase: str = "all",
         device: str | torch.device = "cpu",
+        episode_steps: int = 1200,
+        demo_start_fraction: float = 0.46,
     ) -> "DemoPoseReferenceBank":
         resolved_paths = _resolve_demo_paths(paths)
         arrays = [_load_path(path, phase=phase) for path in resolved_paths]
@@ -70,28 +72,58 @@ class DemoPoseReferenceBank:
         if merged["arm"].shape[0] == 0:
             raise ValueError("demo reference bank is empty after phase selection.")
 
-        arm = torch.as_tensor(merged["arm"], dtype=torch.float32, device=device)
-        hand = torch.as_tensor(merged["hand"], dtype=torch.float32, device=device)
-        hand_ref = torch.as_tensor(merged["hand_ref"], dtype=torch.float32, device=device)
-        palm = torch.as_tensor(merged["palm"], dtype=torch.float32, device=device)
-        target_palm = torch.as_tensor(merged["target_palm"], dtype=torch.float32, device=device)
+        # stats는 리샘플링 전 원본 데이터로 계산 (분포 통계는 전체 기준)
+        arm_raw  = torch.as_tensor(merged["arm"],  dtype=torch.float32)
+        palm_raw = torch.as_tensor(merged["palm"], dtype=torch.float32)
+        hand_ref_raw = torch.as_tensor(merged["hand_ref"], dtype=torch.float32)
 
-        arm_std = arm.std(dim=0, unbiased=False).clamp(min=0.05)
-        palm_pos_std = palm[:, :3].std(dim=0, unbiased=False).clamp(min=0.01)
-        thumb_ref = hand_ref[:, :4]
+        arm_std      = arm_raw.std(dim=0, unbiased=False).clamp(min=0.05)
+        palm_pos_std = palm_raw[:, :3].std(dim=0, unbiased=False).clamp(min=0.01)
+        thumb_ref    = hand_ref_raw[:, :4]
         # Teleop thumb references are nearly constant in the pour segment. A small
         # statistical std would turn the grip term into a hard supervised target,
         # so use a broad floor and keep it as shaping.
         thumb_std = thumb_ref.std(dim=0, unbiased=False).clamp(min=0.5)
 
-        quat = palm[:, 3:7]
+        quat = palm_raw[:, 3:7]
         quat = torch.where((quat[:, 3:4] < 0.0), -quat, quat)
         quat_mean = torch.nn.functional.normalize(quat.mean(dim=0), dim=0)
 
         vel_l2 = np.concatenate([arr["arm_vel_l2"] for arr in arrays], axis=0)
         jerk_l2 = np.concatenate([arr["arm_jerk_l2"] for arr in arrays], axis=0)
-        arm_vel_p95 = float(np.percentile(vel_l2, 95)) if vel_l2.size else 1.0
+        arm_vel_p95  = float(np.percentile(vel_l2,  95)) if vel_l2.size  else 1.0
         arm_jerk_p95 = float(np.percentile(jerk_l2, 95)) if jerk_l2.size else 1.0
+
+        # demo_start_fraction 지점부터 끝까지 잘라낸 뒤 episode_steps 길이로 선형 리샘플링.
+        # warmstart 에피소드 시작 상태(컵 들린 직후)와 demo의 해당 시점을 정렬.
+        # phase tag를 쓰지 않고 단순 시간 비율로 구분.
+        keys_to_resample = ("arm", "hand", "hand_ref", "palm", "target_palm")
+        resampled: dict[str, np.ndarray] = {}
+        for key in keys_to_resample:
+            raw = merged[key]
+            N = raw.shape[0]
+            start_i = int(round(N * demo_start_fraction))
+            start_i = min(start_i, N - 2)
+            seg = raw[start_i:]
+            M = len(seg)
+            src = np.linspace(0.0, M - 1, episode_steps)
+            lo  = np.floor(src).astype(np.int64).clip(0, M - 2)
+            hi  = lo + 1
+            w   = (src - lo)[:, None]
+            resampled[key] = (seg[lo] * (1.0 - w) + seg[hi] * w).astype(np.float32)
+
+        arm        = torch.as_tensor(resampled["arm"],        dtype=torch.float32, device=device)
+        hand       = torch.as_tensor(resampled["hand"],       dtype=torch.float32, device=device)
+        hand_ref   = torch.as_tensor(resampled["hand_ref"],   dtype=torch.float32, device=device)
+        palm       = torch.as_tensor(resampled["palm"],       dtype=torch.float32, device=device)
+        target_palm = torch.as_tensor(resampled["target_palm"], dtype=torch.float32, device=device)
+
+        print(
+            f"[DemoPoseReferenceBank] resampled: raw={merged['arm'].shape[0]} frames, "
+            f"start_fraction={demo_start_fraction:.2f} → seg={int(merged['arm'].shape[0]*(1-demo_start_fraction))} frames "
+            f"→ episode_steps={episode_steps}",
+            flush=True,
+        )
 
         return cls(
             arm_joint_pos=arm,
@@ -99,14 +131,14 @@ class DemoPoseReferenceBank:
             hand_reference_joint_pos=hand_ref,
             palm_pose=palm,
             target_palm_pose=target_palm,
-            arm_joint_mean=arm.mean(dim=0),
-            arm_joint_std=arm_std,
-            palm_pos_mean=palm[:, :3].mean(dim=0),
-            palm_pos_std=palm_pos_std,
-            palm_quat_mean=quat_mean,
-            thumb_joint_mean=thumb_ref.mean(dim=0),
-            thumb_joint_std=thumb_std,
-            arm_vel_l2_p95=torch.tensor(max(arm_vel_p95, 1e-3), dtype=torch.float32, device=device),
+            arm_joint_mean=arm_raw.mean(dim=0).to(device),
+            arm_joint_std=arm_std.to(device),
+            palm_pos_mean=palm_raw[:, :3].mean(dim=0).to(device),
+            palm_pos_std=palm_pos_std.to(device),
+            palm_quat_mean=quat_mean.to(device),
+            thumb_joint_mean=thumb_ref.mean(dim=0).to(device),
+            thumb_joint_std=thumb_std.to(device),
+            arm_vel_l2_p95=torch.tensor(max(arm_vel_p95,  1e-3), dtype=torch.float32, device=device),
             arm_jerk_l2_p95=torch.tensor(max(arm_jerk_p95, 1e-3), dtype=torch.float32, device=device),
             source_paths=tuple(str(path) for path in resolved_paths),
         )

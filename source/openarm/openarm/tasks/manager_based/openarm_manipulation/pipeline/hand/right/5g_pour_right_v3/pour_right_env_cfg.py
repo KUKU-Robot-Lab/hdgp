@@ -269,7 +269,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # Pour: Stage 4 (ρ gate — binary)
     weight_tilt: float = 8.00             # [test2] 3.0→8.0: 50°→120° gradient 강화 (local opt 탈출)
-    weight_align: float = 3.00            # DexPour r_align = 0.5*(1+cos), 올바른 방향
+    weight_align: float = 6.00            # [test4] 3.0→6.0: 방향 신호 강화 (r_source_drain 방향 게이팅과 병행)
     weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
     weight_bead_entry_delta: float = 50.0    # step-delta: bead 유입 즉각 피드백
     weight_source_drain: float = 20.0     # pour gate 중 소스 배출 incentive

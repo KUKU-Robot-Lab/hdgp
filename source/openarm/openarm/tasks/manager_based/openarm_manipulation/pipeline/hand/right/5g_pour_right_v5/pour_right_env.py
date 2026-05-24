@@ -497,10 +497,13 @@ class PourRightEnv(DirectRLEnv):
                 self.cfg.demo_pose_paths,
                 phase=self.cfg.demo_pose_phase,
                 device=self.device,
+                episode_steps=self.cfg.demo_episode_steps,
+                demo_start_fraction=self.cfg.demo_start_fraction,
             )
             print(
                 "[5g_pour_right_v5] loaded demo pose reference bank: "
-                f"{self.demo_pose_reference.num_frames} frames from {len(self.demo_pose_reference.source_paths)} files",
+                f"{self.demo_pose_reference.num_frames} frames (resampled) "
+                f"from {len(self.demo_pose_reference.source_paths)} files",
                 flush=True,
             )
 
@@ -1569,29 +1572,25 @@ class PourRightEnv(DirectRLEnv):
         ref = self.demo_pose_reference
         arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
 
-        # --- Nearest-Neighbor in joint space + look-ahead ---
-        # 현재 joint 상태와 가장 가까운 demo 프레임을 찾고 K 프레임 앞 자세를 타겟으로
-        # 효율적 L2: ||a-b||^2 = ||a||^2 + ||b||^2 - 2·a·bT (중간 (N,T,7) 텐서 생략)
-        demo_arm = ref.arm_joint_pos  # (T, 7)
+        # --- Step-indexed temporal alignment (NN search 제거) ---
+        # demo는 warmstart 시작 시점부터 에피소드 길이로 리샘플링되어 있음.
+        # episode_length_buf[i] = 현재 env i의 step 수 → demo[step] 직접 참조.
+        # "t번째 step에서는 demo의 t번째 자세가 타겟" → 시계열 구조 자동 반영.
+        demo_arm = ref.arm_joint_pos   # (episode_steps, 7) - resampled
         T_demo = demo_arm.shape[0]
-        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)          # (N, 1)
-        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)     # (1, T)
-        ab = arm_q @ demo_arm.T                                  # (N, T)
-        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)            # (N,)
-        K = int(self.cfg.demo_nn_lookahead_frames)
-        target_idx = (nn_idx + K).clamp(max=T_demo - 1)         # (N,)
-        target_arm_q = demo_arm[target_idx]                      # (N, 7)
+        demo_idx = self.episode_length_buf.long().clamp(0, T_demo - 1)  # (N,)
+        target_arm_q = demo_arm[demo_idx]                                # (N, 7)
 
         arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
         demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
         r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
 
-        # --- Palm: 동일한 target_idx로 일관성 있게 참조 ---
+        # --- Palm: 동일한 step index로 참조 ---
         palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
 
-        demo_palm = ref.palm_pose  # (T, 7): [x,y,z, qx,qy,qz,qw]
-        target_palm = demo_palm[target_idx]                              # (N, 7)
+        demo_palm = ref.palm_pose   # (episode_steps, 7): [x,y,z, qx,qy,qz,qw] - resampled
+        target_palm = demo_palm[demo_idx]                                # (N, 7)
         target_palm_pos = target_palm[:, :3]                             # (N, 3)
         target_palm_quat_xyzw = target_palm[:, 3:7]                     # (N, 4) xyzw
         target_palm_quat_wxyz = torch.cat(
@@ -1765,8 +1764,10 @@ class PourRightEnv(DirectRLEnv):
             palm_delta=palm_delta,
         )
 
-        # demo_arm은 approach phase(ρ=0)에서만 활성, pour phase(ρ=1)에서 꺼서 tilt 탐색 허용
-        r_demo_arm_gated = demo_terms["r_demo_arm_pose"] * (1.0 - self._rho)
+        # step-indexed alignment: phase gate 불필요.
+        # 에피소드 초반 step → demo lift 완료 자세, 후반 step → demo pour 완료 자세.
+        # warmup gate만 유지 (학습 초기 demo reward 점진 활성).
+        r_demo_arm_gated = demo_terms["r_demo_arm_pose"]
 
         total = (
             r_hold
@@ -1812,6 +1813,7 @@ class PourRightEnv(DirectRLEnv):
             "reward/success":           (self.cfg.weight_success * r_success).mean(),
             "reward/demo_arm":          r_demo_arm_gated.mean(),
             "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
+            "log/demo_step_idx":        self.episode_length_buf.float().mean(),
             "cost/spill":               (spill_weight * spill_cost).mean(),
             "cost/premature_tilt":      (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),
             "cost/grasp_loss":          (self.cfg.weight_grasp_loss * grasp_loss_cost).mean(),

@@ -950,7 +950,7 @@ class PourRightEnv(DirectRLEnv):
             self.palm_pose_targets.copy_(palm_pose_quat)
             self.hand_pca_targets.zero_()
             _null_cfg = self.fabric_q.detach().clone()
-            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, max=0.46)
+            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, min=-0.29, max=0.46)
             _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
             _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
             _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
@@ -996,7 +996,7 @@ class PourRightEnv(DirectRLEnv):
             # j3: warmstart +0.14 → demo mean -0.24 (부호 반전 보정)
             # j7: pour 후반 평균 0.63, 상한 1.13 (외회전 편류 차단)
             _null_cfg = self.fabric_q.detach().clone()
-            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, max=0.46)
+            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, min=-0.29, max=0.46)
             _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
             _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
             _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
@@ -1572,7 +1572,10 @@ class PourRightEnv(DirectRLEnv):
             + r_bead_progressive
             + r_bead_delta
         )
-        r_source_drain = self._rho * self.cfg.weight_source_drain * (1.0 - self._bead_in_source_fraction)
+        # [test4] directional gate: 타겟 방향으로 배출할 때만 drain 보상 (sideways drain 차단)
+        # cos=+1(타겟 방향)→gate=1.0, cos=0(옆)→gate=0.5, cos=-1(반대)→gate=0
+        _drain_dir_gate = 0.5 * (1.0 + self._directional_tilt_cos)
+        r_source_drain = self._rho * _drain_dir_gate * self.cfg.weight_source_drain * (1.0 - self._bead_in_source_fraction)
 
         # Success
         success_fill_ratio = (
