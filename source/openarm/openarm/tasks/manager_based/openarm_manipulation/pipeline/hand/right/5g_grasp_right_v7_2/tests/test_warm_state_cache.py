@@ -52,7 +52,7 @@ sys.modules[SPEC.name] = warm_state_cache
 SPEC.loader.exec_module(warm_state_cache)
 
 GraspWarmStateCache = warm_state_cache.GraspWarmStateCache
-compute_demo_frame0_match = warm_state_cache.compute_demo_frame0_match
+compute_arm_joint_match = warm_state_cache.compute_arm_joint_match
 
 
 def test_warm_state_cache_persists_demo0_export_quality_fields(tmp_path: Path) -> None:
@@ -61,7 +61,7 @@ def test_warm_state_cache_persists_demo0_export_quality_fields(tmp_path: Path) -
         device="cpu",
         source_meta={
             "object_spawn_z": 0.297,
-            "export_mode": "demo_frame0_match_actual_grasp",
+            "export_mode": "right_grip_lift_wait_actual_grasp",
             "warm_min_contacts": 2,
             "warm_contact_stable_steps": 1,
         },
@@ -87,7 +87,7 @@ def test_warm_state_cache_persists_demo0_export_quality_fields(tmp_path: Path) -
 
     with h5py.File(path, "r") as h5:
         assert h5.attrs["schema_version"] == 2
-        assert h5.attrs["meta/export_mode"] == "demo_frame0_match_actual_grasp"
+        assert h5.attrs["meta/export_mode"] == "right_grip_lift_wait_actual_grasp"
         grp = h5["warm_states"]
         assert np.asarray(grp["per_finger_contact"]).tolist() == [
             [1, 1, 1, 1, 0],
@@ -97,7 +97,7 @@ def test_warm_state_cache_persists_demo0_export_quality_fields(tmp_path: Path) -
         assert np.asarray(grp["num_contacts"]).tolist() == [4.0, 5.0]
 
 
-def test_compute_demo_frame0_match_tracks_arm_tolerance_and_hold_steps() -> None:
+def test_compute_arm_joint_match_tracks_tolerance_and_hold_steps() -> None:
     actual = torch.tensor(
         [
             [0.0, 0.01, -0.02, 0.03, 0.0, 0.0, 0.034],
@@ -108,7 +108,7 @@ def test_compute_demo_frame0_match_tracks_arm_tolerance_and_hold_steps() -> None
     target = torch.zeros(3, 7)
     previous_hold = torch.tensor([0, 3, 1])
 
-    matched, hold = compute_demo_frame0_match(
+    matched, hold = compute_arm_joint_match(
         actual,
         target,
         tol=0.035,

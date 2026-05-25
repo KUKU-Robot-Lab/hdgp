@@ -242,7 +242,7 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     #   g_clear gradient가 cup을 과도하게 올리는 문제 방지.
     d = math.pi / 180.0
     return [
-        0.65, 0.22, 0.48,   # z_max: 0.65→0.48 (과도한 높이 억제)
+        0.65, 0.22, 0.48,   # z_max: 0.48 (warmstart z_boost 0.12m → 실제 palm ≤ 0.60m)
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

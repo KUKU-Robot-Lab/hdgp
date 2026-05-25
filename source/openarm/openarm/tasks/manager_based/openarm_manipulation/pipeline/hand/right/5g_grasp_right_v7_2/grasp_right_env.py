@@ -26,7 +26,7 @@ Action (11D):
 
 Episode (10s @ 60Hz):
   Grasp phase   (0~479): Fabrics arm + per-finger 정책
-  Transfer phase (480~599): scripted arm → demo frame-0 + frozen hand
+  Lift-wait phase (480~599): scripted joint7-only lift-wait + frozen hand
 """
 
 from __future__ import annotations
@@ -91,9 +91,9 @@ from .grasp_right_preset import (
     HAND_GRASP_POSE,
     OBJECT_GOAL_POS,
 )
-from .grasp_right_utils import scale, to_torch
+from .grasp_right_utils import compute_joint7_lift_wait_target, scale, to_torch
 from .demo_grasp_reset import DemoGraspResetBank, compute_demo_cup_spawn_local
-from .warm_state_cache import GraspWarmStateCache, compute_demo_frame0_match
+from .warm_state_cache import GraspWarmStateCache, compute_arm_joint_match
 
 
 class GraspRightEnv(DirectRLEnv):
@@ -106,7 +106,7 @@ class GraspRightEnv(DirectRLEnv):
 
     Episode:
       Grasp phase (step 0~479):  Fabrics arm + 정책 손가락
-      Transfer phase (step 480~599): scripted arm → demo frame-0 + frozen hand
+      Lift-wait phase (step 480~599): scripted joint7-only lift-wait + frozen hand
     """
 
     cfg: GraspRightEnvCfg
@@ -261,7 +261,7 @@ class GraspRightEnv(DirectRLEnv):
         self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
         self.num_contacts_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.warm_contact_stable_steps_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self.demo_frame0_match_hold_steps_buf = torch.zeros(
+        self.lift_wait_match_hold_steps_buf = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
         )
 
@@ -279,11 +279,14 @@ class GraspRightEnv(DirectRLEnv):
         self._cup_tipping_cos = math.cos(math.radians(cfg.cup_tipping_max_deg))
         # episode-level 성공 추적 (per-step average 허수 문제 해결)
         self.episode_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.transfer_entry_grasp_success_buf = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
         self._total_episodes: int = 0
         self._successful_episodes: int = 0
         # warm export diagnostics
         self._warm_diag_step: int = 0
-        self._warm_diag_terminated_early: int = 0  # transfer phase 중 early termination 횟수
+        self._warm_diag_terminated_early: int = 0  # lift-wait phase 중 early termination 횟수
 
         # ----------------------------------------------------------------
         # ADR
@@ -551,7 +554,7 @@ class GraspRightEnv(DirectRLEnv):
         is_lift       = self.episode_length_buf >= LIFT_START_STEP
         self.is_lift_phase.copy_(is_lift)
 
-        # ---- Transfer 진입 시 finger/arm joint pos 캡처 ----
+        # ---- Lift-wait 진입 시 finger/arm joint pos 캡처 ----
         just_entering_lift = (self.episode_length_buf == LIFT_START_STEP)
 
         # Finger: 진입 시점 자세로 고정
@@ -570,13 +573,13 @@ class GraspRightEnv(DirectRLEnv):
             actual_arm_pos,
             self.lift_arm_start_buf,
         )
-        # Target = assigned demo frame-0 arm pose. Without a demo bank, keep legacy j4 lift.
-        if self.demo_grasp_reset_bank is not None:
-            demo_idx = self._env_assigned_demo_idx.clamp(min=0) % self.demo_grasp_reset_bank.num_demos
-            actual_prelift = self.demo_grasp_reset_bank.start_arm_joint_pos[demo_idx]
-        else:
-            actual_prelift = actual_arm_pos.clone()
-            actual_prelift[:, 3] = (actual_arm_pos[:, 3] + 0.31).clamp(max=3.14)
+        # Target = actual grasp arm pose with only joint7 moved into lift-wait.
+        actual_prelift = compute_joint7_lift_wait_target(
+            actual_arm_pos,
+            joint7_delta=getattr(self.cfg, "lift_wait_joint7_delta", 0.31),
+            joint7_min=self.cfg.warm_j7_min,
+            joint7_max=self.cfg.warm_j7_max,
+        )
         self.prelift_arm_pos_buf = torch.where(
             just_entering_lift.unsqueeze(1),
             actual_prelift,
@@ -623,7 +626,7 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_q[:, NUM_ARM_DOF:] = hand_target
         self.fabric_qd[:, NUM_ARM_DOF:].zero_()
 
-        # ---- Transfer phase: Fabrics arm 상태 동결 ----
+        # ---- Lift-wait phase: Fabrics arm 상태 동결 ----
         # scripted arm 제어 중 Fabrics integrator 발산 방지
         freeze_mask = self.is_lift_phase
         if freeze_mask.any():
@@ -638,7 +641,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 오른팔 ----
         # Grasp phase:    Fabrics arm target
-        # Transfer phase: actual grasp arm → demo frame-0 선형 보간
+        # Lift-wait phase: actual grasp arm → joint7-only lift-wait 선형 보간
         lift_progress = (
             (self.episode_length_buf - LIFT_START_STEP).clamp(min=0).float()
             / max(1, LIFT_PHASE_STEPS - 1)
@@ -662,7 +665,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 오른손 ----
         # Grasp phase:               per-finger lerp target
-        # Transfer phase:            진입 시점 캡처값 고정
+        # Lift-wait phase:           진입 시점 캡처값 고정
         finger_target = torch.where(
             is_lift.unsqueeze(1),
             self.lift_finger_pos_buf,
@@ -1036,19 +1039,20 @@ class GraspRightEnv(DirectRLEnv):
         cup_z_world = quat_apply(self.object_rot, z_local)
         tipped = cup_z_world[:, 2] < self._cup_tipping_cos
 
-        # success: lift phase 이후 + cup 들림 + contact 유지
-        in_or_past_lift = (self.episode_length_buf >= LIFT_START_STEP)
-        lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
+        # success bookkeeping: lift-wait 진입 시 오른손 grasp 가 있었는지 기록한다.
         grasped = (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
-        self.success_flag.copy_(in_or_past_lift & lifted & grasped)
-        self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
+        at_lift_wait_entry = self.episode_length_buf == LIFT_START_STEP
+        valid_cup = ~(out_x | out_y | fallen)
+        self.success_flag.copy_(at_lift_wait_entry & grasped & valid_cup)
+        self.transfer_entry_grasp_success_buf |= self.success_flag
+        self.episode_success_buf |= self.success_flag
 
         if self.cfg.enable_warm_state_export:
             self._maybe_export_warm_states(cup_z_world[:, 2])
 
-        # scripted transfer 중에는 tipped 로 종료하지 않음.
-        # arm 이동으로 cup 이 일시적으로 기울 수 있으나 warm-state 저장은
-        # demo frame-0 도달과 접촉 조건으로 필터링한다.
+        # scripted lift-wait 중에는 tipped 로 종료하지 않음.
+        # joint7 이동으로 cup 이 일시적으로 기울 수 있으나 warm-state 저장은
+        # lift-wait 도달과 접촉 조건으로 필터링한다.
         is_scripted_phase = self.is_lift_phase
         tipped_active = tipped & ~is_scripted_phase
         terminated = out_x | out_y | fallen | tipped_active
@@ -1068,9 +1072,9 @@ class GraspRightEnv(DirectRLEnv):
     # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart)
     # ------------------------------------------------------------------
     def _maybe_export_warm_states(self, _cup_up_z: torch.Tensor) -> None:
-        """grasp 성공 종료 상태를 디스크 캐시에 누적, 목표치 도달 시 1회 저장.
+        """right-grip lift-wait 상태를 디스크 캐시에 누적, 목표치 도달 시 1회 저장.
 
-        Warm export now waits for demo frame-0 arm match plus retained grasp contact.
+        Warm export waits for joint7-only lift-wait arm match plus retained grasp contact.
         """
         if getattr(self, "warm_export_done", False):
             return
@@ -1086,13 +1090,14 @@ class GraspRightEnv(DirectRLEnv):
                     "object_spawn_x_center": self.cfg.object_spawn_x_center,
                     "object_spawn_y_center": self.cfg.object_spawn_y_center,
                     "object_spawn_xy_range": self.cfg.object_spawn_xy_range,
-                    "export_mode": "demo_frame0_match_actual_grasp",
+                    "export_mode": "right_grip_lift_wait_actual_grasp",
                     "cup_z_mode": "actual_lifted",
-                    "demo_frame0_aligned": 1.0,
+                    "lift_wait_joint7_only": 1.0,
                     "warm_min_contacts": self.cfg.warm_min_contacts,
                     "warm_contact_stable_steps": self.cfg.warm_contact_stable_steps,
-                    "warm_demo_frame0_arm_tol": self.cfg.warm_demo_frame0_arm_tol,
-                    "warm_demo_frame0_hold_steps": self.cfg.warm_demo_frame0_hold_steps,
+                    "warm_lift_wait_arm_tol": self.cfg.warm_lift_wait_arm_tol,
+                    "warm_lift_wait_hold_steps": self.cfg.warm_lift_wait_hold_steps,
+                    "lift_wait_joint7_delta": self.cfg.lift_wait_joint7_delta,
                     "palm_min_x": float(self.palm_mins[0]),
                     "palm_min_y": float(self.palm_mins[1]),
                     "palm_min_z": float(self.palm_mins[2]),
@@ -1121,16 +1126,16 @@ class GraspRightEnv(DirectRLEnv):
         )
         stable_grasp = self.warm_contact_stable_steps_buf >= warm_stable_steps
         actual_arm_pos_all = self.robot.data.joint_pos[:, self.arm_dof_indices]
-        demo_frame0_matched, self.demo_frame0_match_hold_steps_buf = compute_demo_frame0_match(
+        lift_wait_matched, self.lift_wait_match_hold_steps_buf = compute_arm_joint_match(
             actual_arm_pos_all,
             self.prelift_arm_pos_buf,
-            tol=self.cfg.warm_demo_frame0_arm_tol,
-            previous_hold_steps=self.demo_frame0_match_hold_steps_buf,
-            required_hold_steps=self.cfg.warm_demo_frame0_hold_steps,
+            tol=self.cfg.warm_lift_wait_arm_tol,
+            previous_hold_steps=self.lift_wait_match_hold_steps_buf,
+            required_hold_steps=self.cfg.warm_lift_wait_hold_steps,
         )
         warm_ok = (
-            demo_frame0_matched
-            & self.episode_success_buf
+            lift_wait_matched
+            & self.transfer_entry_grasp_success_buf
             & stable_grasp
         )
 
@@ -1141,14 +1146,14 @@ class GraspRightEnv(DirectRLEnv):
             pct = lambda t: float(t.sum()) / n * 100.0
             print(
                 f"[warm_diag step={self._warm_diag_step}] "
-                "mode=demo_frame0_match "
-                f"demo_frame0_matched={pct(demo_frame0_matched):.1f}% "
-                f"ep_success={pct(self.episode_success_buf):.1f}% "
+                "mode=right_grip_lift_wait "
+                f"lift_wait_matched={pct(lift_wait_matched):.1f}% "
+                f"entry_grasp={pct(self.transfer_entry_grasp_success_buf):.1f}% "
                 f"grasped{warm_min_contacts}+={pct(grasped):.1f}% "
                 f"stable{warm_stable_steps}={pct(stable_grasp):.1f}% "
                 f"warm_ok={pct(warm_ok):.1f}% "
                 f"contacts_mean={self.num_contacts_buf.float().mean():.2f} "
-                f"early_term_in_transfer={self._warm_diag_terminated_early} "
+                f"early_term_in_lift_wait={self._warm_diag_terminated_early} "
                 f"ep_len_mean={self.episode_length_buf.float().mean():.1f}",
                 flush=True,
             )
@@ -1160,17 +1165,10 @@ class GraspRightEnv(DirectRLEnv):
         joint_pos = self.robot.data.joint_pos[ids]
         arm_export = joint_pos[:, self.arm_dof_indices].clone()
         cup_pos_export = self.object_pos[ids]
-        # arm/palm 은 canonical demo frame-0 로 저장하고, 손/cup/contact 는 실제 sim 상태를 유지한다.
+        # arm/hand/cup/contact 모두 실제 sim 의 right-grip lift-wait 상태를 저장한다.
         palm_euler_export = self.palm_pose_targets[ids].clone()
         palm_euler_export[:, :3] = self.palm_center_pos[ids]
         demo_idx = self._env_assigned_demo_idx[ids]
-        if self.demo_grasp_reset_bank is not None:
-            valid_demo = demo_idx >= 0
-            if valid_demo.any():
-                mapped_demo_idx = demo_idx[valid_demo] % self.demo_grasp_reset_bank.num_demos
-                demo_palm = self.demo_grasp_reset_bank.start_palm_pose_euler_zyx[mapped_demo_idx]
-                arm_export[valid_demo] = self.demo_grasp_reset_bank.start_arm_joint_pos[mapped_demo_idx]
-                palm_euler_export[valid_demo] = demo_palm
         added = self._warm_export_cache.append(
             arm=arm_export,
             hand=joint_pos[:, self.hand_dof_indices],
@@ -1197,7 +1195,7 @@ class GraspRightEnv(DirectRLEnv):
             percent = min(100.0, 100.0 * count / max(1, target))
             print(
                 f"[5g_grasp_right_v7_2] warm-state progress: "
-                f"mode=demo_frame0_match {count}/{target} ({percent:.1f}%, +{added})",
+                f"mode=right_grip_lift_wait {count}/{target} ({percent:.1f}%, +{added})",
                 flush=True,
             )
             interval = self._warm_export_log_interval
@@ -1218,7 +1216,7 @@ class GraspRightEnv(DirectRLEnv):
             )
             print(
                 f"[5g_grasp_right_v7_2] warm-state export complete: "
-                f"mode=demo_frame0_match {len(self._warm_export_cache)} states → {path}",
+                f"mode=right_grip_lift_wait {len(self._warm_export_cache)} states → {path}",
                 flush=True,
             )
 
@@ -1237,7 +1235,7 @@ class GraspRightEnv(DirectRLEnv):
             "target": int(target),
             "added": int(added),
             "status": status,
-            "mode": "demo_frame0_match",
+            "mode": "right_grip_lift_wait",
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1347,7 +1345,7 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qdd[env_ids].zero_()
         self.object_init_pos[env_ids] = obj_pos_local
 
-        # ---- 5. pregrasp / transfer-target 버퍼 저장 ----
+        # ---- 5. pregrasp / lift-wait-target 버퍼 저장 ----
         self.pregrasp_arm_pos_buf[env_ids] = q_pregrasp[:, :NUM_ARM_DOF]
 
         # palm_pose_targets를 pregrasp로 동기화 (첫 Fabrics 스텝 타겟 일관성)
@@ -1361,11 +1359,12 @@ class GraspRightEnv(DirectRLEnv):
         # pregrasp arm pos로 설정 → 에피소드 시작 시 null-space 항 ≈ 0 → 안정
         self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = q_pregrasp[:, :NUM_ARM_DOF]
 
-        if self.demo_grasp_reset_bank is not None:
-            prelift_arm = start_arm
-        else:
-            prelift_arm = q_pregrasp[:, :NUM_ARM_DOF].clone()
-            prelift_arm[:, 3] = (prelift_arm[:, 3] + 0.31).clamp(max=3.14)
+        prelift_arm = compute_joint7_lift_wait_target(
+            q_pregrasp[:, :NUM_ARM_DOF],
+            joint7_delta=getattr(self.cfg, "lift_wait_joint7_delta", 0.31),
+            joint7_min=self.cfg.warm_j7_min,
+            joint7_max=self.cfg.warm_j7_max,
+        )
         self.prelift_arm_pos_buf[env_ids] = prelift_arm
 
         self.lift_finger_pos_buf[env_ids] = approach_hand
@@ -1384,12 +1383,13 @@ class GraspRightEnv(DirectRLEnv):
         self.binary_contact_buf[env_ids] = False
         self.num_contacts_buf[env_ids]   = 0
         self.warm_contact_stable_steps_buf[env_ids] = 0
-        self.demo_frame0_match_hold_steps_buf[env_ids] = 0
+        self.lift_wait_match_hold_steps_buf[env_ids] = 0
         self.distal_contact_force_raw[env_ids].zero_()
         self.distal_binary_contact_buf[env_ids] = False
         self.middle_contact_force_raw[env_ids].zero_()
         self.middle_binary_contact_buf[env_ids] = False
         self.success_flag[env_ids] = False
+        self.transfer_entry_grasp_success_buf[env_ids] = False
 
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
         # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)

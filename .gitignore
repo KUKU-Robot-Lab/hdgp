@@ -17,7 +17,9 @@ __pycache__/
 .idea/
 log/
 runs/
+outputs/
 **/__pycache__/
+
 
 # Ignore all contents of the log directory by default
 log/*

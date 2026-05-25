@@ -1092,10 +1092,24 @@ class PourRightEnv(DirectRLEnv):
             )   # (N, 5, 3)
 
         n = self.num_envs
-        self._source_pour_point_w = self.cup.data.root_pos_w + quat_apply(
+        # rim center (world)
+        _rim_center_w = self.cup.data.root_pos_w + quat_apply(
             self.cup.data.root_quat_w,
             self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
         )
+        # cup up axis (world)
+        _cup_up_w = quat_apply(
+            self.cup.data.root_quat_w,
+            self._source_cup_up_axis_b.unsqueeze(0).expand(n, -1),
+        )
+        # gravity direction perpendicular to cup up → points toward lowest rim
+        _world_down = _cup_up_w.new_zeros(n, 3)
+        _world_down[:, 2] = -1.0
+        _dot = (_world_down * _cup_up_w).sum(dim=-1, keepdim=True)
+        _gravity_perp = _world_down - _dot * _cup_up_w
+        _gravity_perp_norm = _gravity_perp.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        _gravity_perp_hat = _gravity_perp / _gravity_perp_norm
+        self._source_pour_point_w = _rim_center_w + self.cfg.source_outer_radius * _gravity_perp_hat
         self._target_opening_w = left_target_pos_w + quat_apply(
             left_target_quat_w,
             self._target_cup_opening_pos_b.unsqueeze(0).expand(n, -1),
@@ -2231,6 +2245,8 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_only_close[env_ids] = True
 
         warmstart_palm_pose = palm_pose.clone()
+        if self.cfg.warmstart_palm_z_boost > 0.0:
+            warmstart_palm_pose[:, 2] = warmstart_palm_pose[:, 2] + self.cfg.warmstart_palm_z_boost
         warmstart_palm_pose[:, :3] = torch.max(
             torch.min(warmstart_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
             self.palm_mins[:3].unsqueeze(0),

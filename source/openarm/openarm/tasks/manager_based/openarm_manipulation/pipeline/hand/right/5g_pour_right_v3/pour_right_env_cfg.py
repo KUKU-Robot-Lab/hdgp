@@ -137,7 +137,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 200
-    episode_hold_steps:    int   = 60   # 텔레포트 후 contact 재정립 대기 (1s @ 60Hz)
+    episode_hold_steps:    int   = 120  # [test7] 60→120: warmstart prelift 2s 확보 (컵 높이 0.12m 리프트)
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
     pregrasp_offset_x:     float = -0.06
@@ -180,6 +180,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     target_inside_z_max:  float = 0.100   # 림 높이
     target_mouth_z:       float = 0.100   # 림 높이 (bead crossing 기준)
     source_inner_radius:  float = 0.041   # 컵 내부 반경
+    source_outer_radius:  float = 0.045   # 컵 외부 반경 (최하단 림 점 계산용)
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     source_inside_z_max:  float = 0.100   # 림 높이
     bead_count: int = _DEFAULT_BEAD_COUNT
@@ -233,6 +234,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Warmstart quality / success
     # -----------------------------------------------------------------------
     # warmstart는 테이블 위에서 막 잡힌 자세가 아니라, 테이블 기준 약 3cm 든 자세에서 시작한다.
+    # [test7] warmstart_palm_z_boost: 리셋 시 palm target z를 0.12m 올림 → hold phase(2s) 동안
+    # Fabrics가 팔을 올리면서 컵도 같이 올라감. 120° tilt 시 pour point가 target rim(0.391m) 위에 위치.
+    # 계산: warmstart cup_z ≈ 0.327m → boost → 0.447m → pour_point_z ≈ 0.397m > 0.391m ✓
+    warmstart_palm_z_boost: float = 0.12
     lift_success_height: float = 0.03
     success_mouth_xy_threshold: float = 0.030
     success_z_clearance_min: float = 0.015
@@ -268,10 +273,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     dist_to_target_exp_scale: float = 5.0 # k in exp(-k*dist)
 
     # Pour: Stage 4 (ρ gate — binary)
-    weight_tilt: float = 8.00             # [test2] 3.0→8.0: 50°→120° gradient 강화 (local opt 탈출)
+    weight_tilt: float = 8.00             # 120° 타겟 gradient
     weight_align: float = 6.00            # [test4] 3.0→6.0: 방향 신호 강화 (r_source_drain 방향 게이팅과 병행)
     weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
-    weight_bead_entry_delta: float = 50.0    # step-delta: bead 유입 즉각 피드백
+    weight_bead_entry_delta: float = 300.0   # 비드 유입 즉각 피드백 강화
     weight_source_drain: float = 20.0     # pour gate 중 소스 배출 incentive
 
     # Outcome
@@ -320,8 +325,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     enable_spill_adr: bool = True
     spill_adr_custom_cfg: dict = {
         "reward": {
-            # [test2] spill weight ADR: 초기 3.0 → 최대 30.0 (tilt 탐색 초기 spill 허용)
-            "spill_weight": (3.0, 30.0),
+            # 초기 1.0→최대 15.0: 초반 spill 허용 폭 확대 (비드 유입 탐색 촉진)
+            "spill_weight": (1.0, 15.0),
         }
     }
     spill_adr_num_increments: int = 50
@@ -345,7 +350,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     contact_maintain_min_others: int = 2
     force_balance_sharpness: float = 2.0
     pour_tilt_target_deg: float = 120.0
-    pour_tilt_sharpness: float = 2.0
+    pour_tilt_sharpness: float = 2.0   # 120° 목표 집중도
 
     # ρ binary pour gate: cup_center_xy_dist < thresh → pour stage 활성
     # [test2] 0.18→0.22: tilt 중 cup body 이동(최대 0.182m 관측)으로 ρ=0 전환 방지

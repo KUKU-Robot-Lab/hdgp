@@ -499,6 +499,8 @@ class PourRightEnv(DirectRLEnv):
                 device=self.device,
                 episode_steps=self.cfg.demo_episode_steps,
                 demo_start_fraction=self.cfg.demo_start_fraction,
+                demo_pose_start_mode=self.cfg.demo_pose_start_mode,
+                warm_state_paths=self.cfg.warm_state_paths,
             )
             print(
                 "[5g_pour_right_v5] loaded demo pose reference bank: "

@@ -44,6 +44,9 @@ class DemoPoseReferenceBank:
     thumb_joint_std: torch.Tensor
     arm_vel_l2_p95: torch.Tensor
     arm_jerk_l2_p95: torch.Tensor
+    demo_start_indices: torch.Tensor
+    demo_start_match_linf: torch.Tensor
+    demo_start_mode: str
     source_paths: tuple[str, ...]
 
     @property
@@ -63,6 +66,8 @@ class DemoPoseReferenceBank:
         device: str | torch.device = "cpu",
         episode_steps: int = 1200,
         demo_start_fraction: float = 0.46,
+        demo_pose_start_mode: str = "fraction",
+        warm_state_paths: Iterable[str | Path] | None = None,
     ) -> "DemoPoseReferenceBank":
         resolved_paths = _resolve_demo_paths(paths)
         arrays = [_load_path(path, phase=phase) for path in resolved_paths]
@@ -105,14 +110,16 @@ class DemoPoseReferenceBank:
         keys_to_resample = ("arm", "hand", "hand_ref", "palm", "target_palm")
         resampled: dict[str, list[np.ndarray]] = {key: [] for key in keys_to_resample}
         segment_lengths: list[int] = []
-        start_indices: list[int] = []
-        for arr in arrays:
+        start_indices, start_match_linf = _resolve_demo_start_indices(
+            arrays,
+            demo_start_fraction=demo_start_fraction,
+            demo_pose_start_mode=demo_pose_start_mode,
+            warm_state_paths=warm_state_paths,
+        )
+        for arr, start_i in zip(arrays, start_indices, strict=True):
             raw_len = int(arr["arm"].shape[0])
             if raw_len < 2:
                 raise ValueError("demo trajectory must contain at least 2 frames after phase selection.")
-            start_i = int(round(raw_len * demo_start_fraction))
-            start_i = max(0, min(start_i, raw_len - 2))
-            start_indices.append(start_i)
             segment_lengths.append(raw_len - start_i)
             for key in keys_to_resample:
                 resampled[key].append(_resample_array(arr[key][start_i:], episode_steps))
@@ -130,9 +137,11 @@ class DemoPoseReferenceBank:
         print(
             f"[DemoPoseReferenceBank] resampled: demos={len(arrays)}, "
             f"raw_total={merged['arm'].shape[0]} frames, "
+            f"start_mode={demo_pose_start_mode}, "
             f"start_fraction={demo_start_fraction:.2f}, "
             f"start_i_range={min(start_indices)}..{max(start_indices)}, "
             f"seg_len_range={min(segment_lengths)}..{max(segment_lengths)}, "
+            f"match_linf_range={min(start_match_linf):.4f}..{max(start_match_linf):.4f}, "
             f"episode_steps={episode_steps}",
             flush=True,
         )
@@ -152,8 +161,133 @@ class DemoPoseReferenceBank:
             thumb_joint_std=thumb_std.to(device),
             arm_vel_l2_p95=torch.tensor(max(arm_vel_p95,  1e-3), dtype=torch.float32, device=device),
             arm_jerk_l2_p95=torch.tensor(max(arm_jerk_p95, 1e-3), dtype=torch.float32, device=device),
+            demo_start_indices=torch.as_tensor(start_indices, dtype=torch.long, device=device),
+            demo_start_match_linf=torch.as_tensor(start_match_linf, dtype=torch.float32, device=device),
+            demo_start_mode=demo_pose_start_mode,
             source_paths=tuple(str(path) for path in resolved_paths),
         )
+
+
+def _resolve_demo_start_indices(
+    arrays: list[dict[str, np.ndarray]],
+    *,
+    demo_start_fraction: float,
+    demo_pose_start_mode: str,
+    warm_state_paths: Iterable[str | Path] | None,
+) -> tuple[list[int], list[float]]:
+    mode = str(demo_pose_start_mode).strip().lower()
+    if mode in ("fraction", "time_fraction"):
+        start_indices: list[int] = []
+        for arr in arrays:
+            raw_len = int(arr["arm"].shape[0])
+            start_i = int(round(raw_len * demo_start_fraction))
+            start_indices.append(max(0, min(start_i, raw_len - 2)))
+        return start_indices, [0.0 for _ in start_indices]
+
+    if mode != "warm_state_match":
+        raise ValueError(
+            "demo_pose_start_mode must be 'fraction' or 'warm_state_match', "
+            f"got {demo_pose_start_mode!r}"
+        )
+
+    warm_arm_by_demo = _load_warm_arm_median_by_demo(warm_state_paths, num_demos=len(arrays))
+    start_indices = []
+    match_linf = []
+    for demo_id, arr in enumerate(arrays):
+        raw_len = int(arr["arm"].shape[0])
+        arm = arr["arm"]
+        target = warm_arm_by_demo[demo_id]
+        err = np.max(np.abs(arm - target[None, :]), axis=1)
+        matched_i = int(np.argmin(err))
+        start_i = max(0, min(matched_i, raw_len - 2))
+        start_indices.append(start_i)
+        match_linf.append(float(err[start_i]))
+    return start_indices, match_linf
+
+
+def _load_warm_arm_median_by_demo(
+    paths: Iterable[str | Path] | None,
+    *,
+    num_demos: int,
+) -> list[np.ndarray]:
+    if paths is None:
+        raise ValueError("warm_state_paths is required when demo_pose_start_mode='warm_state_match'")
+
+    resolved = _resolve_warm_state_paths(paths)
+    if not resolved:
+        raise ValueError("warm_state_paths is empty when demo_pose_start_mode='warm_state_match'")
+
+    arm_chunks: list[np.ndarray] = []
+    demo_idx_chunks: list[np.ndarray] = []
+    for path in resolved:
+        with h5py.File(path, "r") as h5:
+            if "warm_states" not in h5:
+                raise KeyError(f"{path}: missing top-level 'warm_states' group")
+            grp = h5["warm_states"]
+            for key in ("arm_joint_pos", "demo_file_idx"):
+                if key not in grp:
+                    raise KeyError(f"{path}: missing warm_states/{key}")
+            arm = np.asarray(grp["arm_joint_pos"], dtype=np.float32)
+            demo_idx = np.asarray(grp["demo_file_idx"], dtype=np.int64)
+            if arm.ndim != 2 or arm.shape[1] != 7:
+                raise ValueError(f"{path}: warm_states/arm_joint_pos must have shape (N, 7), got {arm.shape}")
+            if demo_idx.shape != (arm.shape[0],):
+                raise ValueError(
+                    f"{path}: warm_states/demo_file_idx shape {demo_idx.shape} "
+                    f"does not match arm rows {arm.shape[0]}"
+                )
+            arm_chunks.append(arm)
+            demo_idx_chunks.append(demo_idx)
+
+    warm_arm = np.concatenate(arm_chunks, axis=0)
+    demo_idx = np.concatenate(demo_idx_chunks, axis=0)
+    medians = []
+    for demo_id in range(num_demos):
+        valid = demo_idx >= 0
+        mask = valid & ((demo_idx % num_demos) == demo_id)
+        if not np.any(mask):
+            raise ValueError(
+                "warm-state cache does not contain a valid demo_file_idx "
+                f"for demo_id={demo_id}"
+            )
+        medians.append(np.median(warm_arm[mask], axis=0).astype(np.float32))
+    return medians
+
+
+def _resolve_warm_state_paths(paths: Iterable[str | Path]) -> tuple[Path, ...]:
+    requested = tuple(Path(path) for path in paths)
+    search_dirs = []
+    for env_name in ("POUR_V1_DATASET_DIR", "DEMO_POSE_DATASET_DIR"):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            search_dirs.append(Path(env_value))
+    search_dirs.extend(
+        [
+            Path("/home/user/rl_ws/datasets"),
+            Path("/home/user/rl_ws/teleopration_openarm_tesollo/datasets"),
+        ]
+    )
+
+    resolved = []
+    missing = []
+    for path in requested:
+        if path.exists():
+            resolved.append(path)
+            continue
+        replacement = next((base / path.name for base in search_dirs if (base / path.name).exists()), None)
+        if replacement is not None:
+            resolved.append(replacement)
+        else:
+            missing.append(path)
+
+    if missing:
+        candidates = ", ".join(str(base) for base in search_dirs)
+        missing_text = ", ".join(str(path) for path in missing)
+        raise FileNotFoundError(
+            "warm-state HDF5 file(s) do not exist: "
+            f"{missing_text}. Searched fallback dataset dirs: {candidates}."
+        )
+    return tuple(resolved)
 
 
 def _resolve_demo_paths(paths: Iterable[str | Path]) -> tuple[Path, ...]:

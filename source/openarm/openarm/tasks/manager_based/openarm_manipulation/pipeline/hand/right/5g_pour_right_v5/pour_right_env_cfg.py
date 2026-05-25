@@ -130,7 +130,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
     max_pose_angle:             float = 45.0  # 180.0 -> 45.0: 접근/이동 중 기괴한 손목 회전 억제
-    fabrics_max_objects_per_env: int  = 6
+    fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
 
     # -----------------------------------------------------------------------
@@ -348,11 +348,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "all"           # tag 무시: 전체 trajectory 로드, 리샘플링으로 구간 결정
-    # [test5] step-indexed temporal alignment:
-    #   demo_start_fraction=0.0: warmstart 상태(arm at demo frame-0, cup in hand)
-    #   grasp_v7_2 reposition phase 후 저장된 HDF5 → arm=demo[0] pos, cup grasped
-    #   reset마다 demo_file_idx 태그 기반 1:1 demo 배정 (랜덤 아님)
-    demo_start_fraction: float = 0.0      # demo 시작 위치: warmstart=demo frame-0 arm pos
+    # warm_state_match: warm HDF5의 demo_file_idx별 arm pose와 가장 가까운
+    # converted demo frame부터 reference를 시작한다.
+    demo_pose_start_mode: str = "warm_state_match"
+    demo_start_fraction: float = 0.0      # fraction mode fallback
     demo_episode_steps: int = 1200        # episode_length_s(20s) × 60Hz
     weight_demo_arm_pose: float = 2.00   # [test4] 6.0→2.0: step-indexed로 soft guide만 필요
     weight_demo_palm_pose: float = 2.00  # [test4] 0.5→2.0: pour palm 방향 유도 강화
@@ -438,7 +437,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # disk 로드 실패(파일 없음/검증 실패) 시 rollout 으로 안전 degrade.
     warm_state_source: str = "disk"
     warm_state_paths: tuple[str, ...] = (
-        _os.path.normpath(_os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, "grasp_warm_v7_2.hdf5")),
+        _os.path.normpath(
+            _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, "grasp_warm_v7_2_contact4_balanced_400x10.hdf5")
+        ),
     )
     freeze_grasp_hand_during_episode: bool = False
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)

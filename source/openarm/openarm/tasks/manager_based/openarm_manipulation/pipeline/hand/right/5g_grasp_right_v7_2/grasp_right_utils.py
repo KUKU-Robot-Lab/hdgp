@@ -28,5 +28,21 @@ def tensor_clamp(t: torch.Tensor, min_t: torch.Tensor, max_t: torch.Tensor) -> t
     return torch.max(torch.min(t, max_t), min_t)
 
 
+def compute_joint7_lift_wait_target(
+    actual_arm: torch.Tensor,
+    *,
+    joint7_delta: float,
+    joint7_min: float,
+    joint7_max: float,
+) -> torch.Tensor:
+    """Keep the grasp arm pose and move only right joint7 into lift-wait."""
+    target = actual_arm.clone()
+    target[:, 6] = (target[:, 6] + float(joint7_delta)).clamp(
+        min=float(joint7_min),
+        max=float(joint7_max),
+    )
+    return target
+
+
 def to_torch(x, dtype=torch.float, device: str = "cuda:0", requires_grad: bool = False) -> torch.Tensor:
     return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)

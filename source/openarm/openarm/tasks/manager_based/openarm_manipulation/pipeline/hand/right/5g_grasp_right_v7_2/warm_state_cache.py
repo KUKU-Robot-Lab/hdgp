@@ -37,7 +37,7 @@ SCHEMA_VERSION = 2
 WARM_STATE_GROUP = "warm_states"
 
 
-def compute_demo_frame0_match(
+def compute_arm_joint_match(
     actual_arm: torch.Tensor,
     target_arm: torch.Tensor,
     *,
@@ -45,7 +45,7 @@ def compute_demo_frame0_match(
     previous_hold_steps: torch.Tensor,
     required_hold_steps: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return demo-frame-0 arm match mask and updated consecutive hold counts."""
+    """Return arm target match mask and updated consecutive hold counts."""
     arm_close = (actual_arm - target_arm).abs().amax(dim=1) <= float(tol)
     next_hold = torch.where(
         arm_close,
@@ -54,6 +54,9 @@ def compute_demo_frame0_match(
     )
     matched = next_hold >= max(int(required_hold_steps), 1)
     return matched, next_hold
+
+
+compute_demo_frame0_match = compute_arm_joint_match
 
 
 def euler_zyx_to_quat_xyzw(euler_zyx: torch.Tensor) -> torch.Tensor:
