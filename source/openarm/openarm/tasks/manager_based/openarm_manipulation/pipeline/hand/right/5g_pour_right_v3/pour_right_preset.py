@@ -199,9 +199,6 @@ HAND_GRASP_POSE = [
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
 # Fabrics rollout이 [cup_x-0.167, cup_y-0.09, cup_z+0.04]로 수렴
 # j4=0.60: FK z≈0.282, 테이블 안전, 물리 충돌 없음
-# [test9] j7: 1.1→0.0 (grasp v7-2 학습 시작점 j7=0.0과 일치시켜 warmstart rollout OOD 방지)
-# test6에서 1.1로 올렸으나, warmstart rollout 시 grasp v7-2가 OOD 상태에서 실행돼
-# cache 자세가 v7-2 정상 분포와 달라지는 문제 발생. demo shaping이 j7 방향을 안내함.
 RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0]
 
 
@@ -236,8 +233,7 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     #   target cup y = 0.100m → workspace 내에 충분히 포함됨
     #   y_max=0.22m: 탐색 여유 확보 (왼팔 손목 y≈0.10에서 12cm 여유, 충돌 안전)
     #
-    # [test9] z_max: 0.65 → 0.48
-    #   target cup rim ≈ z=0.44m. palm z=0.48 → cup center ≈ 0.45m → cup rim ≈ 0.55m
+    # target cup rim ≈ z=0.44m. palm z=0.48 → cup center ≈ 0.45m → cup rim ≈ 0.55m
     #   clearance ≈ 0.11m (붓기에 충분). 이전 z_max=0.65는 rim=0.75m → clearance=0.31m (너무 높음)
     #   g_clear gradient가 cup을 과도하게 올리는 문제 방지.
     d = math.pi / 180.0

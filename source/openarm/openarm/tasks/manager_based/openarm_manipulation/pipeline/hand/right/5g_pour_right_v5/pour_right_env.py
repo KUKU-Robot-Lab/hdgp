@@ -16,10 +16,6 @@
 
 v7: Fabrics 팔 학습 + per-finger lerp 5D + Contact sensor 없는 FK 기반 근접도 리워드
 
-핵심 개선 (v1/v6 대비):
-  - v1 문제: fabric_q/qd obs → sim2real 불가, palm_dist 기반 자동 닫힘 → 충돌 충격
-  - v6 문제: 팔 고정 → cup 위치 오차 대응 불가, per-finger 5D 협응 학습 부족
-
 Action (11D):
   [0:6]  6D palm pose → Fabrics IK → arm 7 DOF (학습, cup 위치 오차 대응)
   [6:11] 5D per-finger lerp: -1 → HAND_APPROACH_POSE, +1 → HAND_GRASP_POSE
@@ -2330,10 +2326,6 @@ class PourRightEnv(DirectRLEnv):
         self.cfg.obs_noise_cup_pos = 0.0
         self._warmstart_collect_mode = True
 
-        # warmstart 에피소드는 v7-2 길이(600 steps)에 맞춰 자름:
-        # lift phase가 480-599 이므로 600 steps 이후는 v7-2가 학습하지 않은 구간.
-        # 그 이후에도 policy를 계속 실행하면 cup이 낙하하거나 OOB로 조기 종료돼
-        # success check가 누락되는 문제가 생김.
         _WARMSTART_EP_STEPS = 600
         # max_episode_length는 setter 없는 property: cfg.episode_length_s를 임시 변경
         _step_dt = self.cfg.sim.dt * self.cfg.decimation
@@ -2396,7 +2388,6 @@ class PourRightEnv(DirectRLEnv):
         upright_0_7 = warmstart_diag["upright_0_7"]
         upright_0_9 = warmstart_diag["upright_0_9"]
 
-        # 디버그: 조건별 통과율을 주기적으로 출력
         if not hasattr(self, '_warmstart_debug_ep_count'):
             self._warmstart_debug_ep_count = 0
         self._warmstart_debug_ep_count += len(env_ids_t)

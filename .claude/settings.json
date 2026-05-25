@@ -1,0 +1,17 @@
+{
+  "allowedTools": [
+    "Bash(git log*)",
+    "Bash(git diff*)",
+    "Bash(git show*)",
+    "Bash(git status*)",
+    "Bash(find /home/user/rl_ws/hdgp/log*)",
+    "Bash(find /home/user/rl_ws/hdgp/source*)",
+    "Bash(ls /home/user/rl_ws/hdgp*)",
+    "Bash(python3 /home/user/rl_ws/hdgp/scripts/tools/parse_tfevents.py*)",
+    "Bash(python3 /home/user/rl_ws/hdgp/scripts/tools/record_test_snapshot.py*)",
+    "Bash(python3 -c*)",
+    "Bash(date*)",
+    "Bash(cat /home/user/rl_ws/hdgp/log*)",
+    "Bash(cat /home/user/rl_ws/hdgp/source*)"
+  ]
+}

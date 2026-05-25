@@ -124,11 +124,6 @@ params:
             name: default
           regularizer:
             name: None
-        # [test2] critic LSTM 제거 (v3처럼 MLP only):
-        #   - critic은 privileged obs (143D)로 충분히 정보가 있음
-        #   - actor만 LSTM으로 시간 의존성 처리
-        #   - LSTM 제거로 학습 안정성/속도 개선
-
     # ── BC 하이퍼파라미터 ─────────────────────────────────────────────
     # sim 성공 궤적 BC (SuccessTrajBuffer)
     bc_loss_warmup_epochs: 500

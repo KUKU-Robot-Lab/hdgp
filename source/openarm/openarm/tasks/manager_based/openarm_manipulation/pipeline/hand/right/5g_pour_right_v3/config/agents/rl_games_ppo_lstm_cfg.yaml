@@ -73,7 +73,7 @@ params:
     normalize_advantage: True
     gamma: 0.998
     tau: 0.95
-    learning_rate: 2e-4       # MLP fine-tune(1e-4)보다 높게 + v10-3(3e-4)보다 낮게 절충
+    learning_rate: 2e-4
     lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
