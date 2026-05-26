@@ -70,11 +70,11 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
                 disable_gravity=False,
                 solver_position_iteration_count=8,   # 16→8: GPU contact stage 연산 부하 감소
                 solver_velocity_iteration_count=2,   # 4→2: 동일 이유
-                linear_damping=0.1,
-                angular_damping=0.1,
+                linear_damping=0.0,                  # 0.1→0.0: 인위 공기저항 제거 (컵 벽 자연 흐름)
+                angular_damping=0.0,                 # 0.1→0.0: 구름 방해 제거
                 max_depenetration_velocity=1.0,      # 5.0→1.0: 침투 보정 폭발 방지 (PhysX crash 주원인)
                 max_linear_velocity=5.0,             # 10.0→5.0: 비드 날림 속도 제한
-                max_angular_velocity=10.0,           # 20.0→10.0: 비드 회전 제한
+                max_angular_velocity=100.0,          # 10.0→100.0: 회전 제한 완화 (자연 굴림)
             ),
         )
         # 이 IsaacLab 버전의 UsdFileCfg는 physics_material 생성자 인자를 직접 받지 않는다.
@@ -83,7 +83,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
         bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
             static_friction=0.1,
             dynamic_friction=0.08,
-            restitution=0.1,
+            restitution=0.3,                         # 0.1→0.3: 반발력 증가 (표면 접착 완화)
             friction_combine_mode="min",
             restitution_combine_mode="max",
         )
@@ -416,7 +416,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         dt=1.0 / 120.0,
         render_interval=2,
         physx=sim_utils.PhysxCfg(
-            bounce_threshold_velocity=0.2,   # 0.01→0.2: 표준값. 0.01은 active contact 폭발 유발
+            bounce_threshold_velocity=0.05,  # 0.2→0.05: 낮은 속도 충돌도 바운스 허용 (비드 자연 반발)
             gpu_found_lost_pairs_capacity=4 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
