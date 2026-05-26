@@ -136,10 +136,10 @@ params:
 
     # 실제 HDF5 데모 BC (DemoBCBuffer)
     real_demo_bc_enable: True
-    real_demo_bc_warmup_epochs: 50
-    real_demo_bc_decay_epochs: 1000
-    real_demo_bc_weight_init: 0.1
-    real_demo_bc_weight_final: 0.01
+    real_demo_bc_warmup_epochs: 300
+    real_demo_bc_decay_epochs: 5000
+    real_demo_bc_weight_init: 1.0
+    real_demo_bc_weight_final: 0.05
     real_demo_bc_min_buffer_size: 1
     real_demo_stride: 2
     real_demo_pour_sample_ratio: 0.6

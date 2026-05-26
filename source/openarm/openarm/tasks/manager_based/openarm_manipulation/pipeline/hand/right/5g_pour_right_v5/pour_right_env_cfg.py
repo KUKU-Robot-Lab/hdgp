@@ -262,19 +262,19 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_force_balance: float = 0.0
     weight_finger_curl: float = 0.3
     # Pour 보상 (v3 스타일, pour_reward_start_step 이후 warmup으로 점진 활성)
-    weight_dist_to_target: float = 5.0      # transport: source→target XY exp reward
+    weight_dist_to_target: float = 5.0      # pour-point → target XY exp reward
     dist_to_target_exp_scale: float = 5.0
-    weight_tilt: float = 5.0
-    weight_align: float = 10.0
+    weight_tilt: float = 0.0               # demo가 tilt 처리 → 비활성
+    weight_align: float = 0.0              # demo가 alignment 처리 → 비활성
     weight_bead_progressive: float = 200.0  # pour stage: bead fraction^2
     weight_bead_entry_delta: float = 50.0   # pour stage: 매 step bead 유입 즉각 피드백
     weight_source_drain: float = 20.0       # pour stage: source cup 비우기
     # Pour 보상 step-based curriculum
-    # [0, start)          → demo만 활성 (approach/grasp 학습)
-    # [start, start+ramp) → pour 0→1 선형 증가
+    # [0, start)          → demo arm만 활성 (모션 학습)
+    # [start, start+ramp) → pour 0→1 선형 증가 (demo 자세 기반 fine-tuning)
     # [start+ramp, ∞)     → demo + pour 풀 활성
-    pour_reward_start_step: int = 0
-    pour_reward_warmup_steps: int = 10_000
+    pour_reward_start_step: int = 30_000
+    pour_reward_warmup_steps: int = 40_000
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
     # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 100으로 강화 (300은 과도했음)
     weight_success: float = 100.00  # 30→300→100
@@ -321,8 +321,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_pose_start_mode: str = "warm_state_match"
     demo_start_fraction: float = 0.0      # fraction mode fallback
     demo_episode_steps: int = 1200        # episode_length_s(20s) × 60Hz
-    weight_demo_arm_pose: float = 2.00
-    weight_demo_palm_pose: float = 2.00
+    weight_demo_arm_pose: float = 40.0
+    weight_demo_palm_pose: float = 0.0
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 1.00
     demo_pose_warmup_steps: int = 20000
