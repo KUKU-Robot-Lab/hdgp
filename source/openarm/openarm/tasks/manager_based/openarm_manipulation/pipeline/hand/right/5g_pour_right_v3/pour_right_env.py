@@ -964,9 +964,13 @@ class PourRightEnv(DirectRLEnv):
         else:
             delta = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
+            # rim-pivot 후에는 cup_center_xy_dist 대신 mouth_xy_distance 사용:
+            # tilt 시 cup root는 rim 반대쪽으로 이동하지만 rim(pour point)은 고정되므로
+            # cup_center_xy_dist는 tilt 깊어질수록 증가 → gate=0 (tilt 완전 차단 버그).
+            # mouth_xy_distance: rim 기반이므로 tilt 중에도 target 근처 유지 → 일관된 gate.
             gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
             tilt_gate = torch.clamp(
-                (self.cfg.tilt_action_gate_xy_far - self._cup_center_xy_dist) / gate_den,
+                (self.cfg.tilt_action_gate_xy_far - self._mouth_xy_distance) / gate_den,
                 0.0,
                 1.0,
             )
@@ -975,7 +979,21 @@ class PourRightEnv(DirectRLEnv):
             # [spin around cup-up, tilt toward target opening, orthogonal tilt].
             delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
             palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
-            palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3]
+
+            # Rim-pivot: rotation pivots around the cup rim (pour point), not the palm.
+            # Without this, rotation around the palm moves the rim away from the target.
+            _angle = delta_rotvec_world.norm(dim=-1)
+            _axis = torch.where(
+                _angle.unsqueeze(-1) > 1e-8,
+                delta_rotvec_world / _angle.unsqueeze(-1).clamp(min=1e-8),
+                delta_rotvec_world.new_tensor([1.0, 0.0, 0.0]).expand(self.num_envs, -1),
+            )
+            _delta_quat_wxyz = quat_from_angle_axis(_angle, _axis)
+            rim_env = self._source_pour_point_w - self.scene.env_origins  # (N,3) env-local
+            rim_rel = rim_env - self.palm_center_pos                       # vec: palm→rim
+            rim_comp = rim_rel - quat_apply(_delta_quat_wxyz, rim_rel)    # palm offset to fix rim
+
+            palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3] + rim_comp
             palm_pose[:, :3] = torch.max(
                 torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
                 self.palm_mins[:3].unsqueeze(0),

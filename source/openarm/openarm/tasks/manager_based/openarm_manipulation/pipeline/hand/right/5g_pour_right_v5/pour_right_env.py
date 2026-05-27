@@ -79,6 +79,7 @@ from .pour_right_constants import (
 )
 from .pour_adr import PourADR
 from .pour_adr import PourADR as GraspADR
+from .reward_terms import compute_simple_pour_reward
 from .pour_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
@@ -1687,13 +1688,20 @@ class PourRightEnv(DirectRLEnv):
         r_bead_progressive = self.cfg.weight_bead_progressive * (self._bead_in_target_fraction ** 2)
         r_bead_delta = self.cfg.weight_bead_entry_delta * self._bead_in_target_delta.clamp(min=0.0)
 
-        r_pour_stage = pour_gate * self._rho * (
-            self.cfg.weight_tilt * r_tilt
-            + self.cfg.weight_align * r_align
-            + r_bead_progressive
-            + r_bead_delta
-        )
         r_source_drain = pour_gate * self._rho * self.cfg.weight_source_drain * (1.0 - self._bead_in_source_fraction)
+        simple_reward_terms = compute_simple_pour_reward(
+            mouth_xy_distance=self._mouth_xy_distance,
+            bead_in_target_fraction=self._bead_in_target_fraction,
+            spill_ratio=self._spill_ratio,
+            rho=self._rho * pour_gate,
+            xy_weight=self.cfg.weight_pour_xy,
+            xy_sharpness=self.cfg.pour_xy_sharpness,
+            capture_weight=self.cfg.weight_capture_spill,
+            spill_weight=self.cfg.weight_simple_spill,
+            spill_capture_coupling=self.cfg.spill_capture_coupling,
+            all_beads_bonus_weight=self.cfg.weight_all_beads_bonus,
+        )
+        r_pour_stage = simple_reward_terms["total"]
 
         # ---- 4. Success ----
         success_fill_ratio = (
@@ -1774,21 +1782,11 @@ class PourRightEnv(DirectRLEnv):
 
         total = (
             r_hold
-            + r_dist_to_target
             + r_pour_stage
-            + r_source_drain
-            + r_demo_arm_gated
-            + demo_terms["r_demo_palm_pose"]
-            + self.cfg.weight_success * r_success
             + overfill_bonus
-            - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
             - self.cfg.weight_grasp_loss * grasp_loss_cost
-            - self.cfg.weight_cup_collision * cup_collision_cost
             - action_rate_penalty
-            - arm_vel_cost
-            - demo_terms["cost_demo_smooth"]
-            - demo_terms["cost_thumb_grip"]
         )
 
         self._prev_arm_joint_vel.copy_(arm_qd)
@@ -1808,6 +1806,9 @@ class PourRightEnv(DirectRLEnv):
             "reward/hold":              r_hold.mean(),
             "reward/dist":              r_dist_to_target.mean(),
             "reward/pour":              r_pour_stage.mean(),
+            "reward/pour_xy":           simple_reward_terms["r_pour_xy"].mean(),
+            "reward/capture_spill":     simple_reward_terms["r_capture_spill"].mean(),
+            "reward/all_beads_bonus":   simple_reward_terms["all_beads_bonus"].mean(),
             "reward/pour_tilt":         (pour_gate * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
             "reward/pour_align":        (pour_gate * self.cfg.weight_align * r_align * self._rho).mean(),
             "reward/bead_progressive":  (pour_gate * self._rho * r_bead_progressive).mean(),
@@ -1831,6 +1832,7 @@ class PourRightEnv(DirectRLEnv):
             "cost/demo_smooth":         demo_terms["cost_demo_smooth"].mean(),
             "cost/thumb_grip":          demo_terms["cost_thumb_grip"].mean(),
             "log/bead_in_target":       self._bead_in_target_fraction.mean(),
+            "log/all_beads_success":    (self._bead_in_target_fraction >= 1.0 - 1e-4).float().mean(),
             "log/bead_in_source":       self._bead_in_source_fraction.mean(),
             "log/bead_cross":           self._bead_cross_fraction.mean(),
             "log/spill_ratio":          self._spill_ratio.mean(),
