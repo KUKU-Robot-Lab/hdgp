@@ -20,6 +20,9 @@ _REQUIRED_KEYS = (
     "obs/right_arm_joint_pos",
     "obs/right_hand_joint_pos",
     "obs/right_hand_reference_joint_pos",
+    "obs/left_arm_joint_pos",
+    "obs/left_gripper_joint_pos",
+    "obs/datagen_info/eef_pose/left",
     "obs/datagen_info/eef_pose/right",
     "obs/datagen_info/target_eef_pose/right",
     "timestamps_ns",
@@ -33,8 +36,10 @@ class DemoPoseReferenceBank:
     arm_joint_pos: torch.Tensor
     hand_joint_pos: torch.Tensor
     hand_reference_joint_pos: torch.Tensor
+    left_joint_pos: torch.Tensor
     palm_pose: torch.Tensor
     target_palm_pose: torch.Tensor
+    target_cup_pose: torch.Tensor
     arm_joint_mean: torch.Tensor
     arm_joint_std: torch.Tensor
     palm_pos_mean: torch.Tensor
@@ -75,7 +80,7 @@ class DemoPoseReferenceBank:
             raise ValueError("demo_pose_paths is empty; provide at least one HDF5 path.")
 
         merged: dict[str, np.ndarray] = {}
-        for key in ("arm", "hand", "hand_ref", "palm", "target_palm"):
+        for key in ("arm", "hand", "hand_ref", "left", "palm", "target_palm", "target_cup"):
             merged[key] = np.concatenate([arr[key] for arr in arrays], axis=0)
             _require_finite(key, merged[key])
         if merged["arm"].shape[0] == 0:
@@ -107,7 +112,7 @@ class DemoPoseReferenceBank:
         # episode_steps 길이로 선형 리샘플링한다.
         # warmstart 에피소드 시작 상태(컵 들린 직후)와 demo의 해당 시점을 정렬.
         # phase tag를 쓰지 않고 단순 시간 비율로 구분.
-        keys_to_resample = ("arm", "hand", "hand_ref", "palm", "target_palm")
+        keys_to_resample = ("arm", "hand", "hand_ref", "left", "palm", "target_palm", "target_cup")
         resampled: dict[str, list[np.ndarray]] = {key: [] for key in keys_to_resample}
         segment_lengths: list[int] = []
         start_indices, start_match_linf = _resolve_demo_start_indices(
@@ -131,8 +136,10 @@ class DemoPoseReferenceBank:
         arm        = torch.as_tensor(stacked["arm"],        dtype=torch.float32, device=device)
         hand       = torch.as_tensor(stacked["hand"],       dtype=torch.float32, device=device)
         hand_ref   = torch.as_tensor(stacked["hand_ref"],   dtype=torch.float32, device=device)
+        left       = torch.as_tensor(stacked["left"],       dtype=torch.float32, device=device)
         palm       = torch.as_tensor(stacked["palm"],       dtype=torch.float32, device=device)
         target_palm = torch.as_tensor(stacked["target_palm"], dtype=torch.float32, device=device)
+        target_cup = torch.as_tensor(stacked["target_cup"], dtype=torch.float32, device=device)
 
         print(
             f"[DemoPoseReferenceBank] resampled: demos={len(arrays)}, "
@@ -150,8 +157,10 @@ class DemoPoseReferenceBank:
             arm_joint_pos=arm,
             hand_joint_pos=hand,
             hand_reference_joint_pos=hand_ref,
+            left_joint_pos=left,
             palm_pose=palm,
             target_palm_pose=target_palm,
+            target_cup_pose=target_cup,
             arm_joint_mean=arm_raw.mean(dim=0).to(device),
             arm_joint_std=arm_std.to(device),
             palm_pos_mean=palm_raw[:, :3].mean(dim=0).to(device),
@@ -352,9 +361,15 @@ def _load_path(path: Path, *, phase: str) -> dict[str, np.ndarray]:
             arm = np.asarray(demo["obs/right_arm_joint_pos"][selector], dtype=np.float32)
             hand = np.asarray(demo["obs/right_hand_joint_pos"][selector], dtype=np.float32)
             hand_ref = np.asarray(demo["obs/right_hand_reference_joint_pos"][selector], dtype=np.float32)
+            left_arm = np.asarray(demo["obs/left_arm_joint_pos"][selector], dtype=np.float32)
+            left_gripper = np.asarray(demo["obs/left_gripper_joint_pos"][selector], dtype=np.float32)
+            left = np.concatenate([left_arm, left_gripper], axis=-1)
             palm = _pose_matrix_to_pos_quat(np.asarray(demo["obs/datagen_info/eef_pose/right"][selector]))
             target_palm = _pose_matrix_to_pos_quat(
                 np.asarray(demo["obs/datagen_info/target_eef_pose/right"][selector])
+            )
+            target_cup = _left_eef_matrix_to_cup_pose(
+                np.asarray(demo["obs/datagen_info/eef_pose/left"][selector])
             )
 
             timestamps = np.asarray(demo["timestamps_ns"][selector], dtype=np.float64)
@@ -364,8 +379,10 @@ def _load_path(path: Path, *, phase: str) -> dict[str, np.ndarray]:
                     "arm": arm,
                     "hand": hand,
                     "hand_ref": hand_ref,
+                    "left": left,
                     "palm": palm,
                     "target_palm": target_palm,
+                    "target_cup": target_cup,
                     "arm_vel_l2": arm_vel_l2,
                     "arm_jerk_l2": arm_jerk_l2,
                 }
@@ -447,6 +464,21 @@ def _pose_matrix_to_pos_quat(mats: np.ndarray) -> np.ndarray:
     out = np.zeros((mats.shape[0], 7), dtype=np.float32)
     out[:, :3] = mats[:, :3, 3]
     out[:, 3:7] = _matrix_to_quat_xyzw(mats[:, :3, :3])
+    return out
+
+
+def _left_eef_matrix_to_cup_pose(mats: np.ndarray, local_z: float = 0.05) -> np.ndarray:
+    mats = np.asarray(mats, dtype=np.float32)
+    if mats.ndim != 3 or mats.shape[1:] != (4, 4):
+        raise ValueError(f"expected left EEF matrices with shape (N, 4, 4), got {mats.shape}")
+    rot = mats[:, :3, :3]
+    pos = mats[:, :3, 3] + rot @ np.asarray([0.0, 0.0, local_z], dtype=np.float32)
+    c, s = np.cos(np.pi / 2.0), np.sin(np.pi / 2.0)
+    r_y90 = np.asarray([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], dtype=np.float32)
+    cup_rot = rot @ r_y90
+    out = np.zeros((mats.shape[0], 7), dtype=np.float32)
+    out[:, :3] = pos
+    out[:, 3:7] = _matrix_to_quat_xyzw(cup_rot)
     return out
 
 

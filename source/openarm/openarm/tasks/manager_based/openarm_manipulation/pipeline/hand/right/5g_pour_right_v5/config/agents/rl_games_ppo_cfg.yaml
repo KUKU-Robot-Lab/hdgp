@@ -136,10 +136,14 @@ params:
 
     # 실제 HDF5 데모 BC (DemoBCBuffer)
     real_demo_bc_enable: True
-    real_demo_bc_warmup_epochs: 300
-    real_demo_bc_decay_epochs: 5000
-    real_demo_bc_weight_init: 1.0
-    real_demo_bc_weight_final: 0.05
+    real_demo_bc_warmup_epochs: 10
+    real_demo_bc_decay_epochs: 3000
+    real_demo_bc_weight_init: 30.0
+    real_demo_bc_weight_final: 1.0
     real_demo_bc_min_buffer_size: 1
     real_demo_stride: 2
-    real_demo_pour_sample_ratio: 0.6
+    real_demo_bc_start_mode: warm_state_match
+    real_demo_bc_start_fraction: 0.0
+    real_demo_bc_warm_state_paths:
+      - /home/user/rl_ws/datasets/grasp_warm_v7_2_contact4_balanced_400x10.hdf5
+    real_demo_pour_sample_ratio: 0.0

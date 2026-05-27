@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_grasp_right_v10-3
+"""환경 설정: 5g_grasp_right_v11
 
 v10: v9 기반 + 버그 수정
 - Fix 1: rj_dg_1_1 (thumb abduction) = 0.0 고정 (v9: -0.283 → 엄지 새끼손가락 방향 치우침 수정)
@@ -42,6 +42,8 @@ from .grasp_right_constants import (
     NUM_ACTIONS,
     NUM_CRITIC_OBSERVATIONS,
     LIFT_PHASE_STEPS,
+    LIFT_Z_DELTA,
+    STABILIZE_START_STEP,
 )
 from .grasp_right_preset import (
     HAND_BODY_NAMES_USD,
@@ -60,6 +62,7 @@ _REAL2SIM_CALIBRATION = load_real2sim_calibration(
 # 비드 4단계 이산 질량: {0, 10, 20, 30}개 × 10g = {0, 100, 200, 300}g
 # mesh scale=0.5x (크기 절반), mass는 그대로 10g (밀도 8배)
 _DEFAULT_BEAD_COUNT = 30
+_DEFAULT_BEAD_MASS = 0.010
 
 
 def _actuator_params(group_name: str, default_stiffness: float, default_damping: float) -> dict:
@@ -75,38 +78,48 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
     """컵 내부 무게 도메인 랜덤화용 bead 설정 (30개, 각 10g, mesh 0.5x)."""
     rigid_objects: dict = {}
     for i in range(_DEFAULT_BEAD_COUNT):
+        bead_spawn_cfg = UsdFileCfg(
+            usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
+            scale=(0.5, 0.5, 0.5),
+            activate_contact_sensors=False,
+            mass_props=sim_utils.MassPropertiesCfg(mass=_DEFAULT_BEAD_MASS),
+            rigid_props=RigidBodyPropertiesCfg(
+                disable_gravity=False,
+                solver_position_iteration_count=16,
+                solver_velocity_iteration_count=4,
+                linear_damping=0.5,
+                angular_damping=0.5,
+                max_depenetration_velocity=5.0,
+                max_linear_velocity=10.0,
+                max_angular_velocity=20.0,
+            ),
+        )
+        bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
+            static_friction=0.1,
+            dynamic_friction=0.08,
+            restitution=0.1,
+            friction_combine_mode="min",
+            restitution_combine_mode="max",
+        )
         rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
             prim_path=f"/World/envs/env_.*/Bead_{i:02d}",
             init_state=RigidObjectCfg.InitialStateCfg(
                 pos=[0.42, -0.15, 0.38],
                 rot=[1.0, 0.0, 0.0, 0.0],
             ),
-            spawn=UsdFileCfg(
-                usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
-                scale=(0.5, 0.5, 0.5),          # mesh 절반 크기, mass는 10g 유지
-                activate_contact_sensors=False,
-                mass_props=sim_utils.MassPropertiesCfg(mass=0.01),
-                rigid_props=RigidBodyPropertiesCfg(
-                    disable_gravity=False,
-                    solver_position_iteration_count=16,
-                    solver_velocity_iteration_count=4,
-                    max_depenetration_velocity=5.0,
-                    max_linear_velocity=10.0,
-                    max_angular_velocity=20.0,
-                ),
-            ),
+            spawn=bead_spawn_cfg,
         )
     return RigidObjectCollectionCfg(rigid_objects=rigid_objects)
 
 
 @configclass
 class GraspRightEnvCfg(DirectRLEnvCfg):
-    """5g_grasp_right_v10-3 환경 설정."""
+    """5g_grasp_right_v11 환경 설정."""
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
     # -----------------------------------------------------------------------
-    episode_length_s: float = 12.0   # v10: 10→12s (grasp 8s + lift 4s = 720 steps @ 60Hz)
+    episode_length_s: float = 18.0   # grasp 8s + lift 4s + stabilize 2s + transport 4s
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -115,14 +128,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 133 (중복 제거: -cup_to_fingertip 15D, -binary_contact 5D, +middle_to_cup 15D)
+    observation_space: int = NUM_OBSERVATIONS          # 136 (+cup_to_goal 3D)
     action_space:      int = NUM_ACTIONS               # 26
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 169 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 172 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
     num_states:       int = NUM_CRITIC_OBSERVATIONS
     actor_observe_bead_mass: bool = True
+
+    # -----------------------------------------------------------------------
+    # Pour warm-state export (play/collector only)
+    # -----------------------------------------------------------------------
+    enable_warm_state_export: bool = False
+    warm_state_export_path: str = "/home/oem/rl_ws/datasets/grasp_warm_v11_pour.hdf5"
+    warm_state_target_count: int = 2048
+    warm_state_success_source: str = "transport"
 
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
@@ -146,7 +167,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     pregrasp_noise_z:      float = 0.005
 
     # -----------------------------------------------------------------------
-    # Demo reset (pour_v1_a11~a20 grasp start and pour_start lift target)
+    # Demo reset (optional): pour_v1_a11~a20 grasp start and pour_start lift target
     # -----------------------------------------------------------------------
     enable_demo_grasp_reset: bool = True
     demo_grasp_pose_paths: tuple[str, ...] = tuple(
@@ -172,9 +193,20 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
-    cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
+    lift_target_z_delta: float = LIFT_Z_DELTA
     success_hold_steps: int = 90
+    transport_goal_dist_threshold: float = 0.04
+    transport_success_hold_steps: int = 90
+
+    # Phase curriculum:
+    # 0 = grasp/lift only, 1 = add stabilize + dynamic beads, 2 = full transport.
+    enable_phase_curriculum: bool = True
+    phase_curriculum_initial_stage: int = 0
+    phase_curriculum_min_episodes: int = 100
+    phase_curriculum_lift_success_threshold: float = 0.70
+    phase_curriculum_stabilize_success_threshold: float = 0.70
+    terminate_on_lift_failure: bool = True
 
     # -----------------------------------------------------------------------
     # Delta palm action
@@ -190,140 +222,62 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_finger_delta_scale: float = 0.08   # lift phase: ±0.08 rad micro-delta
 
     # -----------------------------------------------------------------------
-    # Reward 파라미터
+    # Reward 파라미터 (HTML: Mass-Adaptive Enveloping Grip Reward Design)
     # -----------------------------------------------------------------------
-    # R0. palm_approach
-    palm_approach_weight:    float = 0.5
-    palm_approach_sharpness: float = 10.0
+    # r_height: exp(-α_h * (z_cup - z*)²)  — lift phase에서만 활성
+    r_height_weight:    float = 10.0
+    r_height_sharpness: float = 100.0  # z* = lift_target_z_delta (0.10m). 3cm error → 0.91
 
-    # R1. fingertip_enclosure (v8: 4.0 → v9: 3.0, slip/efficiency 강화로 비중 완화)
-    enclosure_weight:       float = 3.0
-    enclosure_sharpness:    float = 15.0
-    cup_radius_approx:      float = 0.045
-    enclosure_thumb_weight: float = 0.6
+    # r_ori: exp(-α_R * tilt_rad²)  — 컵 수직 자세 유지
+    r_ori_weight:    float = 4.0
+    r_ori_sharpness: float = 4.0   # 30° → 0.33, 10° → 0.89
 
-    # R1b. force_balance (v8: 8.0 → v9: 6.0 → v9.4: 3.5)
-    # 축소 이유: 과포화 시 force_balance local-min → multi_phalanx 저하 (test3 붕괴 원인)
-    # 역할은 보조 제약 수준으로 유지 (엄지 대립 약화 방지)
-    force_balance_weight:    float = 3.5
-    force_balance_sharpness: float = 8.0
+    # r_slip: -w_s * Σᵢ 1_{cᵢ} * v_cup_xy²  — 수평 슬립 억제
+    r_slip_weight: float = 5.0   # 10 contacts @ 0.05m/s → 0.125 penalty
 
-    # R1c. multi_phalanx_contact (v10.2: 12.0 → 16.0)
-    # 증가 이유: tip-only local optimum 탈출, r1d/e와 함께 deep envelope 강화
-    multi_phalanx_weight: float = 16.0
+    # r_margin: -w_m * [max(0, s·mg - μ·ΣFn)]²  — 마찰 안전마진 (lift phase에서만 활성)
+    r_margin_weight:       float = 5.0
+    friction_safety_factor: float = 1.2  # grip ≥ 1.2×mg friction support
 
-    # R1d. middle_phalanx_guide (v10.1 신규)
-    # middle phalanx → cup 거리 기반 exp reward (enclosure와 동일 구조, 항상 활성)
-    # actor obs middle_to_cup 15D에 직접 대응하는 reward gradient 제공 (위치 단계)
-    middle_guide_weight:    float = 2.0
-    middle_guide_sharpness: float = 10.0
+    # r_contact: w_tip·Σtip + w_phalanx·Σphalanx + w_palm·palm  — enveloping contact 유도
+    # HTML: w_palm > w_phalanx >= w_tip
+    r_contact_tip_weight:     float = 0.2   # 5 tips max → 1.0
+    r_contact_phalanx_weight: float = 0.5   # 10 phalanx max → 5.0
+    r_contact_palm_weight:    float = 1.0   # palm 1개 — phalanx보다 높게 설정
 
-    # R1e. middle_contact (v10.2 신규)
-    # middle_norm 단독 reward — tip contact 여부와 무관 (접촉 단계)
-    # finger_depth(tip×middle 곱)와 달리 tip-only 상태에서도 gradient 살아있음
-    # tip-only 초반 고착 이후 middle contact 탐색을 독립적으로 유도
-    middle_contact_weight: float = 8.0
-    middle_contact_envelope_bonus_weight: float = 6.0
+    # r_force: -w_f · Σ fn²  — 과도 grip force 억제 (max-grip 방지)
+    r_force_weight: float = 0.002  # 5N×15 contacts → ~0.75 penalty
+
+    # r_deltaf: -w_Δf · Σ (fn,t - fn,t-1)²  — 급격한 force 변화 억제
+    r_deltaf_weight: float = 0.002
+
+    # 질량 파라미터 (r_margin 계산용 privileged variable)
+    cup_base_mass:  float = 0.170          # kg (빈 컵 질량)
+    bead_single_mass: float = _DEFAULT_BEAD_MASS  # kg per bead
+
     min_middle_contacts_for_success: int = 4
 
-    # Grasp phase에서 컵을 세운 채 감싸도록 유도한다.
-    grasp_upright_weight: float = 6.0
+    # Lift-entry grip readiness gate (state tracking용, reward가 아님)
+    lift_contact_hold_steps: int = 30
+    full_grip_hold_steps:    int = 30
+    lift_min_force_ratio:    float = 1.8
 
-    # Grasp phase에서 컵을 밀거나 과도하게 파고드는 접근을 억제한다.
-    grasp_cup_xy_penalty_weight: float = 4.0
-    grasp_cup_xy_penalty_margin: float = 0.01
-    grasp_cup_tilt_penalty_weight: float = 0.08
-    grasp_cup_tilt_penalty_margin_deg: float = 8.0
-    grasp_palm_overshoot_penalty_weight: float = 4.0
+    # Slip proxy (no_slip_gate 계산용, 게임로직용)
+    slip_proxy_threshold:                float = 1.0
+    slip_proxy_contact_delta_weight:     float = 0.5
+    slip_proxy_middle_contact_delta_weight: float = 0.5
+    slip_proxy_tilt_delta_weight:        float = 0.5
+    slip_proxy_tilt_delta_scale:         float = 8.0
 
-    # R2. slip_reward (v9 신규): cup 수평 속도 기반 slip proxy
-    # gate: grasp phase AND contact 시 활성
-    # R_slip = slip_weight * gate * exp(-slip_sharpness * cup_horiz_vel)
-    slip_weight:    float = 8.0
-    slip_sharpness: float = 20.0
-
-    # R_preload. under-grip penalty (grasp phase 후반 80 step: PRELOAD_START_STEP~LIFT_START_STEP)
-    # 설계: -w * has_contact * relu(target_ratio - force_ratio)
-    #   → 목표 ratio 미달 시 선형 패널티 (상한이 없으므로 과도 grip은 억제 안 함)
-    #   → R3(adaptive_force)의 상한 억제와 쌍으로 동작
-    # target_ratio=1.6: 탐색 시작점 (권장 sweep 범위 1.2~2.0)
-    preload_penalty_weight:     float = 3.0
-    preload_force_target_ratio: float = 1.6
-    preload_start_step:         int   = 400
-
-    # R3. Adaptive Force Reward (v10: 단조감소 → Gaussian target 방식으로 변경)
-    # 설계 철학:
-    #   기존(v9): exp(-decay × ratio) — 단조감소, slip과 상충하여 붕괴 유발
-    #   변경(v10): exp(-sharpness × (ratio - target)²) — Gaussian, target ratio에 sweet spot
-    #
-    #   → policy가 bead_mass_normalized 관측을 활용해 target ratio 유지하는 adaptive grip 학습
-    #   → force가 부족해도(ratio<target) 페널티, 과해도(ratio>target) 페널티
-    #   → slip_reward와 방향 일치: target ratio(2.5×mg)는 slip 방지에 충분한 수준
-    #
-    # R_af = weight * is_lift * contact * exp(-sharpness * (ratio - target)²)
-    #   target=2.5: ratio=0→0.04, ratio=1→0.33, ratio=2.5→1.0(최대), ratio=4→0.33, ratio=6→0.04
-    adaptive_force_weight:     float = 5.0
-    af_target_ratio:           float = 2.5   # 최적 grip = 2.5 × mg
-    af_sharpness:              float = 0.5   # Gaussian 폭 (클수록 좁은 sweet spot)
-    cup_base_mass:             float = 0.170  # kg (빈 컵 질량)
-    bead_single_mass:          float = 0.010  # kg per bead
-
-    # R_ft. fingertip_guide: fingertip → cup 거리 기반 (항상 gradient, seed 분산 방지)
-    # sim2real 영향 없음: fingertip_pos는 FK 또는 FT 센서로 실 로봇에서도 획득 가능
-    # cup_pos: 관측 노이즈 처리된 값 사용 (σ_cp 적용됨)
-    fingertip_guide_weight:    float = 0.1
-    fingertip_guide_sharpness: float = 5.0
-
-    # R_ft2. thumb_tip_direction: 엄지 distal->tip 축이 컵 중심을 향하도록 유도
-    # HAND_GRASP_POSE anchor와 별개로, 접촉 위치는 맞지만 엄지가 돌아가는 local optimum을 억제
-    thumb_tip_direction_weight: float = 4.0
-    thumb_tip_direction_sharpness: float = 4.0
-    thumb_tip_direction_distance_scale: float = 0.08
-
-    # R5. force_smooth (v9 신규): 파지력 변화율 억제 (sim2real 안정성)
-    force_smooth_weight: float = 1.5
-    force_smooth_penalty_cap: float = 2.0
-    # 6.5: lift phase 초반 N step 동안 force_smooth 완화 (0: 비활성)
-    # lift 시작 직후 grip force 급변을 허용해 과도 패널티 방지
-    force_smooth_lift_warmup_steps: int = 20
-
-    # R6. lift_reward (v8: 20.0 → v9: 6.0 → v9.2: 20.0, slip local-min 탈출)
-    lift_reward_weight: float = 20.0
-
-    # R8. success_bonus: lift 성공 유지 중 step당 보너스 (slip local-min 탈출)
-    success_bonus_weight: float = 20.0
-
-    # R9. full_contact_bonus: 5손가락 전체 접촉 보너스 (sim2real envelope grip 유도)
-    # step당 보너스 → 유지할수록 누적 (grasp + lift phase 모두)
-    # v10.1: 5.0 → 8.0, middle_guide와 함께 5-contact envelope 강화
-    full_contact_bonus_weight: float = 16.0
-
-    # R10. thumb pose / grasp shape consistency
-    # v10.1: thumb_pose_anchor_weight 1.2 → 2.5 (엄지 미끄러짐 방지)
-    # v10.2: thumb_pose_anchor_weight 2.5 → 4.0 (test3/4 분석: anchor_error 단조증가 확인)
-    # v10.1: thumb_pose_anchor_sharpness 8.0 → 10.0 (error plateau 좁히기)
-    # 전체 hand pose imitation은 adaptive closure를 방해하므로 고정 관절 anchor 수준으로만 둔다.
-    thumb_pose_anchor_weight: float = 4.0
-    thumb_pose_anchor_sharpness: float = 10.0
-    thumb_slide_penalty_weight: float = 2.0
-    thumb_slide_z_margin: float = 0.01
-    grasp_shape_consistency_weight: float = 0.25
-    grasp_shape_consistency_sharpness: float = 6.0
-
-    # Lift 후반 hold 안정화: 컵 속도와 action 변화를 낮게 유지
-    lift_hold_stability_weight: float = 2.0
-    lift_hold_stability_start_step: int = LIFT_PHASE_STEPS - 90
-    lift_hold_cup_vel_sharpness: float = 15.0
-    lift_hold_cup_ang_vel_sharpness: float = 2.0
-    lift_hold_action_sharpness: float = 2.0
+    # Stabilize/transport 판정 임계값 (full_grip_ready gate용)
+    stabilize_cup_lin_vel_threshold:  float = 0.04
+    stabilize_cup_ang_vel_threshold:  float = 0.50
+    stabilize_force_delta_threshold:  float = 0.35
+    stabilize_contact_delta_threshold: float = 1.0
 
     # Thumb downward shortcut 억제
     thumb_curl_downward_action_scale: float = 0.25
-    thumb_curl_max_downward_delta: float = 0.05
-
-    # R7. action_smoothness
-    action_smoothness_palm_weight:   float = -0.01
-    action_smoothness_finger_weight: float = -0.01   # v9.2: v8 수준 복원 (entropy explosion 억제)
+    thumb_curl_max_downward_delta:    float = 0.05
 
     # -----------------------------------------------------------------------
     # ADR — contact curriculum (threshold=0.1, 먼저 진행)
@@ -377,6 +331,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obj_out_y_min:  float = -0.60
     obj_out_y_max:  float = 0.25
     obj_fallen_z:   float = 0.20
+
+    # -----------------------------------------------------------------------
+    # Transport goal sampling
+    # -----------------------------------------------------------------------
+    # min=max on each axis gives a fixed deployment target.
+    transport_goal_x_range: tuple[float, float] = (0.22, 0.42)
+    transport_goal_y_range: tuple[float, float] = (-0.02, 0.18)
+    transport_goal_z_range: tuple[float, float] = (0.42, 0.58)
 
     # -----------------------------------------------------------------------
     # 물체 spawn
@@ -524,6 +486,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         track_air_time=False,
     )
 
+    palm_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/rl_dg_palm",
+        history_length=1,
+        track_air_time=False,
+    )
+
     # -----------------------------------------------------------------------
     # 컵 설정
     # -----------------------------------------------------------------------
@@ -571,6 +539,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     bead_count_min: int = 0
     bead_count_max: int = 30                           # 이산: {0, 10, 20, 30}개
     bead_spawn_z_offset: float = 0.035
+
+    # Stabilize phase 중 숨겨둔 bead를 컵에 추가해 load-shift/slip disturbance를 만든다.
+    dynamic_bead_spawn_enabled: bool = True
+    dynamic_bead_spawn_step: int = STABILIZE_START_STEP + 30
+    bead_initial_count_min: int = 0
+    bead_initial_count_max: int = 10
+    dynamic_bead_add_count_min: int = 10
+    dynamic_bead_add_count_max: int = 20
 
     # Eval-only: lift 중 oracle/effective mass만 바꿔 force 반응을 측정한다.
     eval_mass_shift_enabled: bool = False

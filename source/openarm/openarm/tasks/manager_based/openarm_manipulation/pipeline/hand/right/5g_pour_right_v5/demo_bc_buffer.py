@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Sequence
 
 import h5py
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -86,6 +87,9 @@ _POUR_PHASE_TILT_DEG = 70.0
 # ---------------------------------------------------------------------------
 DEFAULT_DEMO_PATHS = tuple(
     Path(_os.path.join(_DATASETS_DIR, f"pour_v1_a{i}.hdf5")) for i in range(11, 21)
+)
+DEFAULT_WARM_STATE_PATHS = (
+    Path(_os.path.join(_DATASETS_DIR, "grasp_warm_v7_2_contact4_balanced_400x10.hdf5")),
 )
 
 
@@ -321,10 +325,13 @@ def _load_episode(
     path: Path,
     stride: int,
     device: torch.device,
+    start_index: int = 0,
 ) -> DemoEpisode:
     with h5py.File(path, "r") as h5:
         demo = h5["data"]["demo_0"]
-        s = slice(None, None, stride)
+        n_raw = int(demo["obs"]["right_arm_joint_pos"].shape[0])
+        start = max(0, min(int(start_index), n_raw - 2))
+        s = slice(start, None, stride)
 
         arm_pos   = torch.as_tensor(demo["obs"]["right_arm_joint_pos"][s],  dtype=torch.float32, device=device)
         hand_pos  = torch.as_tensor(demo["obs"]["right_hand_joint_pos"][s], dtype=torch.float32, device=device)
@@ -437,16 +444,31 @@ class DemoBCBuffer:
         paths: Sequence[str | Path] = DEFAULT_DEMO_PATHS,
         stride: int = 2,
         device: str | torch.device = "cpu",
-        pour_ratio: float = 0.6,
+        pour_ratio: float = 0.0,
+        start_mode: str = "warm_state_match",
+        start_fraction: float = 0.0,
+        warm_state_paths: Sequence[str | Path] | None = DEFAULT_WARM_STATE_PATHS,
     ) -> None:
         self.device = torch.device(device)
         self.pour_ratio = float(pour_ratio)
+        resolved_paths = tuple(Path(p) for p in paths)
+        start_indices = _resolve_start_indices(
+            resolved_paths,
+            start_mode=start_mode,
+            start_fraction=start_fraction,
+            warm_state_paths=warm_state_paths,
+        )
 
         self.episodes: list[DemoEpisode] = []
         errors: list[str] = []
-        for p in paths:
+        for p, start_index in zip(resolved_paths, start_indices, strict=True):
             try:
-                ep = _load_episode(Path(p), stride=max(1, stride), device=self.device)
+                ep = _load_episode(
+                    Path(p),
+                    stride=max(1, stride),
+                    device=self.device,
+                    start_index=start_index,
+                )
                 self.episodes.append(ep)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{p}: {exc}")
@@ -459,7 +481,12 @@ class DemoBCBuffer:
         if not self.episodes:
             raise RuntimeError("DemoBCBuffer: no episodes loaded successfully.")
 
-        print(f"[DemoBCBuffer] loaded {len(self.episodes)} episodes.", flush=True)
+        print(
+            f"[DemoBCBuffer] loaded {len(self.episodes)} episodes "
+            f"(start_mode={start_mode}, start_i_range={min(start_indices)}..{max(start_indices)}, "
+            f"pour_ratio={self.pour_ratio:.2f}).",
+            flush=True,
+        )
         self._last_pour_ratio: float = 0.0
 
     def __len__(self) -> int:
@@ -494,8 +521,73 @@ class DemoBCBuffer:
             obs_out[i, :cnt] = ep.obs[start:stop]
             act_out[i, :cnt] = ep.actions[start:stop]
             mask[i, :cnt]    = True
-            if prefer_pour and ep.pour_mask[start:stop].any():
+            if ep.pour_mask[start:stop].any():
                 pour_samples += 1
 
         self._last_pour_ratio = pour_samples / float(batch_size)
         return {"obs": obs_out, "actions": act_out, "mask": mask}
+
+
+def _resolve_start_indices(
+    paths: Sequence[Path],
+    *,
+    start_mode: str,
+    start_fraction: float,
+    warm_state_paths: Sequence[str | Path] | None,
+) -> list[int]:
+    mode = str(start_mode).strip().lower()
+    if mode in ("fraction", "time_fraction"):
+        return [_fraction_start_index(path, start_fraction) for path in paths]
+    if mode != "warm_state_match":
+        raise ValueError(
+            "DemoBCBuffer start_mode must be 'warm_state_match' or 'fraction', "
+            f"got {start_mode!r}"
+        )
+
+    warm_arm_by_demo = _load_warm_arm_median_by_demo(warm_state_paths, num_demos=len(paths))
+    start_indices: list[int] = []
+    for demo_id, path in enumerate(paths):
+        with h5py.File(path, "r") as h5:
+            arm = np.asarray(h5["data"]["demo_0"]["obs"]["right_arm_joint_pos"], dtype=np.float32)
+        raw_len = int(arm.shape[0])
+        target = warm_arm_by_demo[demo_id]
+        err = np.max(np.abs(arm - target[None, :]), axis=1)
+        matched_i = int(np.argmin(err))
+        start_indices.append(max(0, min(matched_i, raw_len - 2)))
+    return start_indices
+
+
+def _fraction_start_index(path: Path, start_fraction: float) -> int:
+    with h5py.File(path, "r") as h5:
+        raw_len = int(h5["data"]["demo_0"]["obs"]["right_arm_joint_pos"].shape[0])
+    start_i = int(round(raw_len * float(start_fraction)))
+    return max(0, min(start_i, raw_len - 2))
+
+
+def _load_warm_arm_median_by_demo(
+    paths: Sequence[str | Path] | None,
+    *,
+    num_demos: int,
+) -> list[np.ndarray]:
+    if paths is None:
+        raise ValueError("warm_state_paths is required when start_mode='warm_state_match'")
+
+    arm_chunks: list[np.ndarray] = []
+    demo_idx_chunks: list[np.ndarray] = []
+    for path_like in paths:
+        path = Path(path_like)
+        with h5py.File(path, "r") as h5:
+            grp = h5["warm_states"]
+            arm_chunks.append(np.asarray(grp["arm_joint_pos"], dtype=np.float32))
+            demo_idx_chunks.append(np.asarray(grp["demo_file_idx"], dtype=np.int64))
+
+    warm_arm = np.concatenate(arm_chunks, axis=0)
+    demo_idx = np.concatenate(demo_idx_chunks, axis=0)
+    medians = []
+    for demo_id in range(num_demos):
+        valid = demo_idx >= 0
+        mask = valid & ((demo_idx % num_demos) == demo_id)
+        if not np.any(mask):
+            raise ValueError(f"warm-state cache has no valid demo_file_idx for demo_id={demo_id}")
+        medians.append(np.median(warm_arm[mask], axis=0).astype(np.float32))
+    return medians

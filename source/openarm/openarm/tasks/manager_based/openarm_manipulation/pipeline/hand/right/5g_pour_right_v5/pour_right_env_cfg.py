@@ -257,10 +257,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   + grasp/contact/force/finger 유지 보상
     #   - spill/premature_tilt/grasp_loss/action_rate/wrist_spin 비용
     # -----------------------------------------------------------------------
-    weight_grasp_maintain: float = 0.5
+    weight_grasp_maintain: float = 0.0
     weight_contact_maintain: float = 0.0
     weight_force_balance: float = 0.0
-    weight_finger_curl: float = 0.3
+    weight_finger_curl: float = 0.0
     # Simple v5 reward: BC/LSTM은 motion prior, RL reward는 pour-point XY + capture/spill만 담당
     weight_pour_xy: float = 8.0
     pour_xy_sharpness: float = 80.0
@@ -286,8 +286,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 0이면 비활성.
     weight_success_overfill: float = 0.0
     weight_spill: float = 10.00
-    weight_premature_tilt: float = 1.5    # (1 - ρ) × tilt_amount: 원거리 tilt 페널티
-    weight_grasp_loss: float = 0.20
+    weight_premature_tilt: float = 0.0    # diagnostic only: total reward uses capture/spill instead
+    weight_grasp_loss: float = 0.0        # diagnostic only: hand pose is frozen from warmstart
     # cup-cup 외경 충돌 방지: 두 컵 중심 거리가 margin 미만이면 페널티
     # cup_external_radius_sum ≈ 0.09m, margin=0.12m → 3cm 안전 여유
     weight_cup_collision: float = 5.0     # cup-cup collision penalty weight
@@ -305,11 +305,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
     # action_rate_penalty는 raw action 기반 유지 (training gradient 보존)
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
-    # [Phase-2 Step 9] action_rate를 palm(6D) / finger(5D) 분리
-    # grasp v9 패턴과 동일 (action_smoothness_palm/finger_weight)
-    # 기존 단일 weight_action_rate=0.01 → palm 강화, finger 완화
-    weight_action_rate_palm: float = 0.02    # palm 6D: arm jerk 억제 강화
-    weight_action_rate_finger: float = 0.005  # finger 5D: 채터링 적당히 억제
+    # Action-rate costs are logged for diagnosis only; total reward is bead outcome driven.
+    weight_action_rate_palm: float = 0.0    # diagnostic only
+    weight_action_rate_finger: float = 0.0  # diagnostic only
 
     # -----------------------------------------------------------------------
     # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
@@ -417,6 +415,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
         BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ
     )
+    # Demo별 target cup pose를 우선 사용한다. 없거나 비활성화되면 FK 고정 배치로 fallback.
+    use_demo_left_target_pose: bool = True
     # FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS에서 hand local_z=0.05)
     left_target_cup_pos_env_local: tuple[float, float, float] = tuple(LEFT_TARGET_CUP_POS_ENV_LOCAL)
     left_target_cup_quat_wxyz: tuple[float, float, float, float] = tuple(LEFT_TARGET_CUP_QUAT_WXYZ)

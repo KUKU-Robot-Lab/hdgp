@@ -86,6 +86,7 @@ from .pour_right_preset import (
     LEFT_ARM_REST_JOINT_POS,
     LEFT_TARGET_CUP_POS_ENV_LOCAL,
     LEFT_TARGET_CUP_QUAT_WXYZ,
+    LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
     RIGHT_ACTUATED_JOINT_NAMES,
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
@@ -263,6 +264,11 @@ class PourRightEnv(DirectRLEnv):
             if _palm_name in self.robot.data.body_names
             else -1
         )
+        self.left_hand_body_index: int = (
+            self.robot.data.body_names.index(LEFT_TARGET_CUP_ATTACH_FRAME_NAME)
+            if LEFT_TARGET_CUP_ATTACH_FRAME_NAME in self.robot.data.body_names
+            else -1
+        )
         # distal phalanx body indices (rl_dg_*_4)
         _distal4_names = [f"rl_dg_{i}_4" for i in range(1, 6)]
         self.distal4_body_indices: list[int] = [
@@ -352,6 +358,7 @@ class PourRightEnv(DirectRLEnv):
             to_torch(left_vals, device=self.device)
             .unsqueeze(0).repeat(self.num_envs, 1)
         )
+        self.left_arm_target_pos = self.left_arm_zero_pos.clone()
         self.left_arm_zero_vel = torch.zeros(
             self.num_envs, len(self.left_arm_dof_indices), device=self.device
         )
@@ -534,6 +541,10 @@ class PourRightEnv(DirectRLEnv):
         )
         self._left_cup_quat_wxyz = to_torch(
             self.cfg.left_target_cup_quat_wxyz, device=self.device
+        )
+        self._left_cup_attach_pos_b = to_torch([0.0, 0.0, 0.05], device=self.device)
+        self._left_cup_attach_quat_wxyz = to_torch(
+            [0.70710678, 0.0, 0.70710678, 0.0], device=self.device
         )
         self._left_target_cup_fixed_pose_w = torch.zeros(self.num_envs, 7, device=self.device)
         self._bead_spawn_pos_source_cup_b = to_torch(self.cfg.bead_spawn_pos_source_cup_b, device=self.device)
@@ -1126,6 +1137,8 @@ class PourRightEnv(DirectRLEnv):
                 self.fabric_qdd[is_lift, :NUM_ARM_DOF].zero_()
 
     def _apply_action(self) -> None:
+        self._update_left_demo_reference_for_current_step()
+
         # ---- 오른팔 ----
         arm_target = self.fabric_q[:, :NUM_ARM_DOF]
         finger_target = self.hand_joint_targets
@@ -1161,13 +1174,14 @@ class PourRightEnv(DirectRLEnv):
 
         # ---- 왼팔: 고정 자세 ----
         self.robot.set_joint_position_target(
-            self.left_arm_zero_pos, joint_ids=self.left_arm_dof_indices
+            self.left_arm_target_pos, joint_ids=self.left_arm_dof_indices
         )
         self.robot.set_joint_velocity_target(
             self.left_arm_zero_vel, joint_ids=self.left_arm_dof_indices
         )
 
-        left_cup_pose = self._get_left_target_cup_fixed_pose()
+        left_cup_pose = self._get_left_cup_attached_pose()
+        self._left_target_cup_fixed_pose_w.copy_(left_cup_pose)
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
@@ -1780,14 +1794,7 @@ class PourRightEnv(DirectRLEnv):
         # warmup gate만 유지 (학습 초기 demo reward 점진 활성).
         r_demo_arm_gated = demo_terms["r_demo_arm_pose"]
 
-        total = (
-            r_hold
-            + r_pour_stage
-            + overfill_bonus
-            - self.cfg.weight_premature_tilt * premature_tilt_cost
-            - self.cfg.weight_grasp_loss * grasp_loss_cost
-            - action_rate_penalty
-        )
+        total = r_pour_stage
 
         self._prev_arm_joint_vel.copy_(arm_qd)
         self._prev_arm_joint_acc.copy_(arm_acc_vec)
@@ -1843,6 +1850,8 @@ class PourRightEnv(DirectRLEnv):
             "log/rho":                  self._rho.mean(),
             "log/pour_gate":            torch.tensor(pour_gate, device=self.device),
             "log/contact_gate":         contact_gate.mean(),
+            "log/slip_dist":            slip_dist.mean(),
+            "log/full_grasp_rate":      full_grasp_flag.mean(),
             "log/source_empty_steps":   self._source_empty_steps.float().mean(),
             "log/arm_vel_l2":           arm_qd_l2.mean(),
             "log/arm_acc_l2":           arm_acc_vec.norm(dim=-1).mean(),
@@ -1969,11 +1978,13 @@ class PourRightEnv(DirectRLEnv):
             self._reset_from_warmstart_cache(env_ids)
             return
 
+        left_cup_pose = self._set_left_demo_reference(env_ids)
+
         # ---- 1. 로봇 관절 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_pos[:, self.actuated_dof_indices] = self.robot_start_joint_pos[0]
-        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_target_pos[env_ids]
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
         # ---- 2. Fabrics 상태 리셋 ----
@@ -2079,7 +2090,7 @@ class PourRightEnv(DirectRLEnv):
         pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         pregrasp_full_pos[:, self.arm_dof_indices]  = q_pregrasp[:, :NUM_ARM_DOF]
         pregrasp_full_pos[:, self.hand_dof_indices] = approach_hand
-        pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_target_pos[env_ids]
         self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
 
         # ---- 7. 컵 spawn ----
@@ -2090,7 +2101,6 @@ class PourRightEnv(DirectRLEnv):
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
-        left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
         self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
@@ -2184,6 +2194,63 @@ class PourRightEnv(DirectRLEnv):
         pos_w = origins + self._left_cup_pos_env_local.unsqueeze(0).expand(n, -1)
         quat_w = self._left_cup_quat_wxyz.unsqueeze(0).expand(n, -1)
         return torch.cat([pos_w, quat_w], dim=-1)
+
+    def _get_left_cup_attached_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
+        """Return target cup pose attached to the current left hand body pose."""
+        if self.left_hand_body_index < 0:
+            return self._get_left_target_cup_fixed_pose(env_ids)
+
+        if env_ids is None:
+            hand_pos_w = self.robot.data.body_pos_w[:, self.left_hand_body_index]
+            hand_quat_w = self.robot.data.body_quat_w[:, self.left_hand_body_index]
+        else:
+            hand_pos_w = self.robot.data.body_pos_w[env_ids, self.left_hand_body_index]
+            hand_quat_w = self.robot.data.body_quat_w[env_ids, self.left_hand_body_index]
+        n = hand_pos_w.shape[0]
+        cup_pos_w = hand_pos_w + quat_apply(
+            hand_quat_w,
+            self._left_cup_attach_pos_b.unsqueeze(0).expand(n, -1),
+        )
+        cup_quat_w = quat_mul(
+            hand_quat_w,
+            self._left_cup_attach_quat_wxyz.unsqueeze(0).expand(n, -1),
+        )
+        return torch.cat([cup_pos_w, cup_quat_w], dim=-1)
+
+    def _update_left_demo_reference_for_current_step(self) -> None:
+        if (
+            not self.cfg.use_demo_left_target_pose
+            or self.demo_pose_reference is None
+        ):
+            self.left_arm_target_pos.copy_(self.left_arm_zero_pos)
+            return
+
+        ref = self.demo_pose_reference
+        demo_ids = self._demo_pose_ids.clamp(0, ref.num_demos - 1)
+        demo_idx = self.episode_length_buf.long().clamp(0, ref.num_frames - 1)
+        self.left_arm_target_pos.copy_(ref.left_joint_pos[demo_ids, demo_idx])
+
+    def _set_left_demo_reference(self, env_ids: Sequence[int]) -> torch.Tensor:
+        """Set per-env left arm and target cup references from the assigned demo."""
+        env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+        if (
+            not self.cfg.use_demo_left_target_pose
+            or self.demo_pose_reference is None
+        ):
+            self.left_arm_target_pos[env_ids_t] = self.left_arm_zero_pos[env_ids_t]
+            return self._get_left_cup_fk_pose(env_ids=env_ids)
+
+        ref = self.demo_pose_reference
+        demo_ids = self._demo_pose_ids[env_ids_t].clamp(0, ref.num_demos - 1)
+        demo_idx = self.episode_length_buf[env_ids_t].long().clamp(0, ref.num_frames - 1)
+        target_left = ref.left_joint_pos[demo_ids, demo_idx]
+        self.left_arm_target_pos[env_ids_t] = target_left
+
+        target_cup_local_xyzw = ref.target_cup_pose[demo_ids, demo_idx]
+        target_cup_pose_w = torch.zeros(env_ids_t.numel(), 7, device=self.device)
+        target_cup_pose_w[:, :3] = self.scene.env_origins[env_ids_t] + target_cup_local_xyzw[:, :3]
+        target_cup_pose_w[:, 3:7] = target_cup_local_xyzw[:, [6, 3, 4, 5]]
+        return target_cup_pose_w
 
     def _get_left_target_cup_fixed_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
         if env_ids is None:
@@ -2462,11 +2529,13 @@ class PourRightEnv(DirectRLEnv):
             )
             self._demo_pose_ids[env_ids_t] = assigned
 
+        left_cup_pose = self._set_left_demo_reference(env_ids)
+
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_pos[:, self.arm_dof_indices] = arm_pos
         full_pos[:, self.hand_dof_indices] = hand_pos
-        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_target_pos[env_ids]
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
         self.fabric_q[env_ids].zero_()
@@ -2516,7 +2585,6 @@ class PourRightEnv(DirectRLEnv):
         self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
         self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
         self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)

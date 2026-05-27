@@ -37,14 +37,18 @@ def test_demo_pose_reference_loads_a11_to_a20_contract() -> None:
     assert bank.arm_joint_pos.shape == (10, 1200, 7)
     assert bank.hand_joint_pos.shape == (10, 1200, 20)
     assert bank.hand_reference_joint_pos.shape == (10, 1200, 20)
+    assert bank.left_joint_pos.shape == (10, 1200, 9)
+    assert bank.target_cup_pose.shape == (10, 1200, 7)
     assert bank.palm_pose.shape == (10, 1200, 7)
     assert bank.target_palm_pose.shape == (10, 1200, 7)
     for tensor in (
         bank.arm_joint_pos,
         bank.hand_joint_pos,
         bank.hand_reference_joint_pos,
+        bank.left_joint_pos,
         bank.palm_pose,
         bank.target_palm_pose,
+        bank.target_cup_pose,
         bank.arm_joint_mean,
         bank.arm_joint_std,
         bank.palm_pos_mean,
@@ -99,8 +103,11 @@ def _write_demo_reference(path: Path, arm: np.ndarray) -> None:
         obs.create_dataset("right_arm_joint_pos", data=arm.astype(np.float32))
         obs.create_dataset("right_hand_joint_pos", data=np.zeros((n, 20), dtype=np.float32))
         obs.create_dataset("right_hand_reference_joint_pos", data=np.zeros((n, 20), dtype=np.float32))
+        obs.create_dataset("left_arm_joint_pos", data=np.zeros((n, 7), dtype=np.float32))
+        obs.create_dataset("left_gripper_joint_pos", data=np.zeros((n, 2), dtype=np.float32))
         datagen = obs.create_group("datagen_info")
         eef_pose = datagen.create_group("eef_pose")
+        eef_pose.create_dataset("left", data=pose)
         eef_pose.create_dataset("right", data=pose)
         target_eef_pose = datagen.create_group("target_eef_pose")
         target_eef_pose.create_dataset("right", data=pose)
