@@ -93,3 +93,50 @@ def test_v5_real_demo_bc_is_rollout_conditioned_by_default() -> None:
     assert "weight_demo_arm_pose: float = 1.0" in env_cfg
     assert "weight_demo_palm_pose: float = 1.0" in env_cfg
     assert "weight_demo_smooth: float = 0.02" in env_cfg
+
+
+def test_v5_non_demo_reward_settings_match_v3() -> None:
+    env_cfg = _read("pour_right_env_cfg.py")
+
+    expected = [
+        "success_target_fill_ratio: float = 0.50",
+        "success_spill_max: float = 0.40",
+        "weight_grasp_maintain: float = 0.50",
+        "weight_contact_maintain: float = 0.50",
+        "weight_force_balance: float = 0.30",
+        "weight_finger_curl: float = 0.50",
+        "weight_dist_to_target: float = 10.0",
+        "weight_pour_dist: float = 12.0",
+        "weight_tilt: float = 40.0",
+        "weight_align: float = 6.0",
+        "weight_bead_progressive: float = 200.0",
+        "weight_bead_entry_delta: float = 300.0",
+        "weight_source_drain: float = 20.0",
+        "curriculum_pour_warmup_steps: int = 40000",
+        "curriculum_bead_warmup_start: int = 0",
+        "weight_spill: float = 40.0",
+        "weight_j0_ext_rot: float = 3.0",
+        "weight_premature_tilt: float = 1.00",
+        "weight_action_rate_palm: float = 0.02",
+        "weight_action_rate_finger: float = 0.005",
+        '"spill_weight": (1.0, 15.0)',
+        "spill_adr_trigger_threshold: float = 0.10",
+        "pour_tilt_sharpness: float = 4.0",
+        "pour_binary_xy_thresh: float = 0.20",
+    ]
+    for text in expected:
+        assert text in env_cfg
+
+    disabled_v5_only_terms = [
+        "weight_pour_xy: float = 0.0",
+        "weight_capture_spill: float = 0.0",
+        "weight_simple_spill: float = 0.0",
+        "weight_all_beads_bonus: float = 0.0",
+        "weight_cup_collision: float = 0.0",
+        "weight_arm_joint_vel: float = 0.0",
+        "weight_arm_joint_acc: float = 0.0",
+        "weight_arm_joint_vel_approach: float = 0.0",
+        "weight_arm_joint_jerk: float = 0.0",
+    ]
+    for text in disabled_v5_only_terms:
+        assert text in env_cfg

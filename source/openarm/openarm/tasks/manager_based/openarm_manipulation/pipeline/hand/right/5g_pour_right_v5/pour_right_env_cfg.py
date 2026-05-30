@@ -192,8 +192,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_inside_z_max:  float = 0.100   # 림 높이
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
-    success_target_fill_ratio: float = 0.30
-    success_spill_max: float = 0.35
+    success_target_fill_ratio: float = 0.50
+    success_spill_max: float = 0.40   # v3 match: tilt 탐색 중 spill 허용 (ADR로 점진 강화)
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -257,66 +257,66 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   + grasp/contact/force/finger 유지 보상
     #   - spill/premature_tilt/grasp_loss/action_rate/wrist_spin 비용
     # -----------------------------------------------------------------------
-    weight_grasp_maintain: float = 0.0
-    weight_contact_maintain: float = 0.0
-    weight_force_balance: float = 0.0
-    weight_finger_curl: float = 0.0
-    # v3-style cascaded reward + simple pour XY/capture (BC/LSTM = motion prior)
-    weight_pour_xy: float = 8.0
-    pour_xy_sharpness: float = 20.0        # Fix C: 80→20 (0.2m 거리에서도 gradient 확보)
-    weight_capture_spill: float = 300.0
-    weight_simple_spill: float = 80.0
+    weight_grasp_maintain: float = 0.50
+    weight_contact_maintain: float = 0.50
+    weight_force_balance: float = 0.30
+    weight_finger_curl: float = 0.50
+    # v3에는 없는 v5 simple reward 항목. v3 reward 세팅과 맞추기 위해 비활성화.
+    weight_pour_xy: float = 0.0
+    pour_xy_sharpness: float = 20.0
+    weight_capture_spill: float = 0.0
+    weight_simple_spill: float = 0.0
     spill_capture_coupling: float = 2.0
-    weight_all_beads_bonus: float = 200.0
+    weight_all_beads_bonus: float = 0.0
     # Stage 1: Transport (항상 활성 — cup_center_xy_dist 기반, saturation)
-    weight_dist_to_target: float = 5.0
+    weight_dist_to_target: float = 10.0
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # 이하: transport max (포화)
     # Stage 2: Pour distance (ρ × pour_warmup × r_tilt.detach() × z_gate)
-    weight_pour_dist: float = 8.0
+    weight_pour_dist: float = 12.0
     pour_dist_exp_scale: float = 8.0
     # Stage 3: Tilt + Align (ρ × pour_warmup)
-    weight_tilt: float = 4.0
-    weight_align: float = 3.0
+    weight_tilt: float = 40.0
+    weight_align: float = 6.0
     # Bead outcome (ρ × bead_warmup)
-    weight_bead_progressive: float = 100.0
-    weight_bead_entry_delta: float = 150.0
-    weight_source_drain: float = 10.0
+    weight_bead_progressive: float = 200.0
+    weight_bead_entry_delta: float = 300.0
+    weight_source_drain: float = 20.0
     # Curriculum warmup (step 기반 선형)
-    curriculum_pour_warmup_steps: int = 30000  # 0→30k: pour_dist + tilt + align 점진 활성
-    curriculum_bead_warmup_start: int = 10000  # 10k 이후: bead + drain 점진 활성
-    curriculum_bead_warmup_steps: int = 60000  # 10k→70k: bead reward 0→max
+    curriculum_pour_warmup_steps: int = 40000
+    curriculum_bead_warmup_start: int = 0
+    curriculum_bead_warmup_steps: int = 60000
     pour_reward_start_step: int = 0
     pour_reward_warmup_steps: int = 1
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
     # dense r_pour 에피소드 누적 수백 대비 success 30은 noise 수준 → 100으로 강화 (300은 과도했음)
-    weight_success: float = 100.00  # 30→300→100
+    weight_success: float = 100.00
     # 성공 기준을 넘은 뒤 추가로 더 많이 채우면 보너스를 주어 과도기 구간의 탐색을 돕는다.
     # 0이면 비활성.
     weight_success_overfill: float = 0.0
-    weight_spill: float = 10.00
-    weight_premature_tilt: float = 0.0    # diagnostic only: total reward uses capture/spill instead
+    weight_spill: float = 40.0
+    weight_j0_ext_rot: float = 3.0
+    weight_premature_tilt: float = 1.00
     weight_grasp_loss: float = 0.0        # diagnostic only: hand pose is frozen from warmstart
     # cup-cup 외경 충돌 방지: 두 컵 중심 거리가 margin 미만이면 페널티
     # cup_external_radius_sum ≈ 0.09m, margin=0.12m → 3cm 안전 여유
-    weight_cup_collision: float = 5.0     # cup-cup collision penalty weight
+    weight_cup_collision: float = 0.0     # v3 match: no cup-cup collision term
     cup_collision_margin: float = 0.12    # cup-cup XY dist threshold (m)
     # [Phase-1 Step 4] arm joint velocity / acceleration penalty (grasp v9 미존재, pour 신규 추가)
     # arm_qd^2 sum의 clamp 후 패널티 → pouring 직전 arm 흔들림 직접 억제
-    weight_arm_joint_vel: float = 0.002   # arm_qd 제곱합 페널티 (작은 값으로 시작)
-    weight_arm_joint_acc: float = 0.0005  # arm 가속도 프록시 페널티
+    weight_arm_joint_vel: float = 0.0     # v3 match: no arm velocity cost
+    weight_arm_joint_acc: float = 0.0
     arm_joint_vel_sq_clip: float = 64.0   # (arm_qd L2 norm)^2 클리핑 상한 (8 rad/s L2 기준)
     # [Phase-1 Step 5] arm vel penalty gate
     arm_vel_tilt_gate_only: bool = False   # True→False
-    weight_arm_joint_vel_approach: float = 0.0005  # approach 구간 (tilt 구간 0.002의 1/4)
+    weight_arm_joint_vel_approach: float = 0.0
     # [Phase-1 Step 6] arm joint jerk penalty (acc 변화율, 흔들림 급변 억제)
-    weight_arm_joint_jerk: float = 0.0002
+    weight_arm_joint_jerk: float = 0.0
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
     # action_rate_penalty는 raw action 기반 유지 (training gradient 보존)
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
-    # Action-rate costs are logged for diagnosis only; total reward is bead outcome driven.
-    weight_action_rate_palm: float = 0.0    # diagnostic only
-    weight_action_rate_finger: float = 0.0  # diagnostic only
+    weight_action_rate_palm: float = 0.02
+    weight_action_rate_finger: float = 0.005
 
     # -----------------------------------------------------------------------
     # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
@@ -343,12 +343,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     enable_spill_adr: bool = True
     spill_adr_custom_cfg: dict = {
         "reward": {
-            "spill_weight": (0.1, 8.0),
+            "spill_weight": (1.0, 15.0),
         }
     }
     spill_adr_num_increments: int = 50
     spill_adr_increment_interval: int = 20000
-    spill_adr_trigger_threshold: float = 0.3
+    spill_adr_trigger_threshold: float = 0.10
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
     # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
@@ -367,8 +367,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
     pour_tilt_target_deg: float = 120.0
-    pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
-    pour_binary_xy_thresh: float = 0.22   # tilt 중 cup 이동으로 rho 불안정 방지
+    pour_tilt_sharpness: float = 4.0
+    pour_binary_xy_thresh: float = 0.20
 
     # -----------------------------------------------------------------------
     # 종료 조건

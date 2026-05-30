@@ -360,7 +360,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     contact_maintain_min_others: int = 2
     force_balance_sharpness: float = 2.0
     pour_tilt_target_deg: float = 120.0
-    pour_tilt_sharpness: float = 2.0   # 120° 목표 집중도
+    pour_tilt_sharpness: float = 4.0   # 120° 목표 집중도 (test8: 2→4, 90° local min 탈출)
 
     # ρ binary pour gate: cup_center_xy_dist < thresh → pour stage 활성
     # transport saturate 기준(cup_transport_saturate_xy=0.20)과 일치
