@@ -991,9 +991,16 @@ class PourRightEnv(DirectRLEnv):
             _delta_quat_wxyz = quat_from_angle_axis(_angle, _axis)
             rim_env = self._source_pour_point_w - self.scene.env_origins  # (N,3) env-local
             rim_rel = rim_env - self.palm_center_pos                       # vec: palm→rim
-            rim_comp = rim_rel - quat_apply(_delta_quat_wxyz, rim_rel)    # palm offset to fix rim
 
-            palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3] + rim_comp
+            # Pour-point action: delta.xy = pour_point XY 이동량 (palm XY가 아님).
+            # 회전 R 후 pour_point 위치: palm + quat_apply(R, rim_rel)
+            # 원하는 pour_point XY = 현재 rim XY + delta.xy
+            # → palm.xy = pour_point_target.xy - quat_apply(R, rim_rel).xy
+            pour_point_target_xy = rim_env[:, :2] + delta[:, :2]
+            expected_offset_xy = quat_apply(_delta_quat_wxyz, rim_rel)[:, :2]
+
+            palm_pose[:, 2] = self.palm_center_pos[:, 2] + delta[:, 2]   # Z: 현재 위치 기준 delta
+            palm_pose[:, :2] = pour_point_target_xy - expected_offset_xy  # XY: pour_point 기준
             palm_pose[:, :3] = torch.max(
                 torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
                 self.palm_mins[:3].unsqueeze(0),
@@ -1593,18 +1600,31 @@ class PourRightEnv(DirectRLEnv):
 
         # Pour: Stage 3 (r_pour_dist soft gate로 먼저 계산)
         target_tilt_cos = math.cos(math.radians(self.cfg.pour_tilt_target_deg))
-        r_tilt = torch.exp(
-            -self.cfg.pour_tilt_sharpness * torch.abs(self._source_up_dot_world - target_tilt_cos)
+        # pour_aligned_gate: pour_point 정렬도 → r_tilt 증폭 (pour_point pivot 유도)
+        pour_aligned_gate = torch.exp(
+            -self.cfg.pour_align_gate_scale * self._mouth_xy_distance
+        )
+        r_tilt = (
+            pour_aligned_gate
+            * torch.exp(-self.cfg.pour_tilt_sharpness * torch.abs(self._source_up_dot_world - target_tilt_cos))
         )
 
         # Pour distance: Stage 2 (ρ gate + pour_warmup)
-        # pour point(rim 최하단) → target center XY 거리
-        # cup이 충분히 가까운 상태(rho=1)에서 pour_warmup 증가에 따라 활성화
-        # r_tilt.detach(): 기울기 낮을 때 r_pour_dist 억제 → 30° local minimum 제거
+        # initial_tilt_gate: 15° 이상 tilt 후 활성 → r_tilt와 충돌 제거
+        # z_window: pour_point Z soft gate — 1~5cm 활성 구역, 정책이 hinge 위치 탐색
+        _tilt_threshold_norm = (1.0 - math.cos(math.radians(self.cfg.pour_point_tilt_threshold_deg))) / 2.0
+        initial_tilt_gate = (tilt_amount / max(_tilt_threshold_norm, 1e-6)).clamp(0.0, 1.0)
+        z_lower = torch.clamp(self._mouth_z_clearance / self.cfg.z_window_lower_ramp, 0.0, 1.0)
+        z_upper = torch.clamp(
+            (self.cfg.z_window_upper_end - self._mouth_z_clearance) / self.cfg.z_window_upper_ramp,
+            0.0, 1.0,
+        )
+        z_window = z_lower * z_upper
         r_pour_dist = (
             self._rho
             * pour_warmup
-            * r_tilt.detach()
+            * z_window
+            * initial_tilt_gate
             * self.cfg.weight_pour_dist
             * torch.exp(-self.cfg.pour_dist_exp_scale * self._mouth_xy_distance)
         )
@@ -1672,18 +1692,12 @@ class PourRightEnv(DirectRLEnv):
         arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
         cost_j0_ext_rot = torch.relu(-arm_joint_pos[:, 0])
 
-        # arm kinematics (demo_terms 및 log용)
+        # arm kinematics (log용)
         arm_qd     = self.robot.data.joint_vel[:, self.arm_dof_indices]
         arm_qd_l2  = arm_qd.norm(dim=-1)
         arm_acc_vec = arm_qd - self._prev_arm_joint_vel
         arm_jerk_vec = arm_acc_vec - self._prev_arm_joint_acc
         arm_jerk_l2  = arm_jerk_vec.norm(dim=-1)
-
-        demo_terms = self._get_demo_pose_reward_terms(
-            arm_qd_l2=arm_qd_l2,
-            arm_jerk_l2=arm_jerk_l2,
-            palm_delta=palm_delta,
-        )
 
         # total = r_hold + r_dist(transport) + r_pour_dist(mouth_xy) + ρ*(tilt+align+bead+drain) + r_success - costs
         total = (
@@ -1692,15 +1706,11 @@ class PourRightEnv(DirectRLEnv):
             + r_pour_dist
             + r_pour_stage
             + r_source_drain
-            + demo_terms["r_demo_arm_pose"]
-            + demo_terms["r_demo_palm_pose"]
             + self.cfg.weight_success * r_success
             + overfill_bonus
             - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
             - action_rate_penalty
-            - demo_terms["cost_demo_smooth"]
-            - demo_terms["cost_thumb_grip"]
             - self.cfg.weight_j0_ext_rot * cost_j0_ext_rot
         )
 
@@ -1731,15 +1741,11 @@ class PourRightEnv(DirectRLEnv):
             "reward/bead_delta":        (self._rho * bead_warmup * r_bead_delta).mean(),
             "reward/source_drain":      r_source_drain.mean(),
             "reward/success":           (self.cfg.weight_success * r_success).mean(),
-            "reward/demo_arm":          demo_terms["r_demo_arm_pose"].mean(),
-            "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
             # cost/
             "cost/spill":              (spill_weight * spill_cost).mean(),
             "cost/premature_tilt":     (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),
             "cost/action_rate_palm":   (self.cfg.weight_action_rate_palm * palm_delta).mean(),
             "cost/action_rate_finger": (self.cfg.weight_action_rate_finger * finger_delta).mean(),
-            "cost/demo_smooth":        demo_terms["cost_demo_smooth"].mean(),
-            "cost/thumb_grip":         demo_terms["cost_thumb_grip"].mean(),
             "cost/j0_ext_rot":         (self.cfg.weight_j0_ext_rot * cost_j0_ext_rot).mean(),
             # log/
             "log/bead_in_target":       self._bead_in_target_fraction.mean(),
@@ -1750,15 +1756,15 @@ class PourRightEnv(DirectRLEnv):
             "log/mouth_xy_dist":        self._mouth_xy_distance.mean(),
             "log/pour_warmup":          torch.tensor(pour_warmup, device=self.device),
             "log/bead_warmup":          torch.tensor(bead_warmup, device=self.device),
+            "log/initial_tilt_gate":    initial_tilt_gate.mean(),
+            "log/pour_aligned_gate":    pour_aligned_gate.mean(),
+            "log/z_window":             z_window.mean(),
             "log/directional_tilt_cos": self._directional_tilt_cos.mean(),
             "log/rho":                  self._rho.mean(),
             "log/contact_gate":         contact_gate.mean(),
             "log/arm_vel_l2":           arm_qd_l2.mean(),
             "log/arm_acc_l2":           arm_acc_vec.norm(dim=-1).mean(),
             "log/arm_jerk_l2":          arm_jerk_l2.mean(),
-            "log/demo_arm_joint_err":   demo_terms["demo_arm_joint_err"].mean(),
-            "log/demo_palm_pos_err":    demo_terms["demo_palm_pos_err"].mean(),
-            "log/demo_palm_rot_err":    demo_terms["demo_palm_rot_err"].mean(),
             "log/j0":                   arm_joint_pos[:, 0].mean(),
         }
         if self.spill_adr is not None:

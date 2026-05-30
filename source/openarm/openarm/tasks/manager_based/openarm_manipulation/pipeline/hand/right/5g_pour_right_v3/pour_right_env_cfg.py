@@ -73,7 +73,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
                 linear_damping=0.0,                  # 0.1→0.0: 인위 공기저항 제거 (컵 벽 자연 흐름)
                 angular_damping=0.0,                 # 0.1→0.0: 구름 방해 제거
                 max_depenetration_velocity=1.0,      # 5.0→1.0: 침투 보정 폭발 방지 (PhysX crash 주원인)
-                max_linear_velocity=5.0,             # 10.0→5.0: 비드 날림 속도 제한
+                max_linear_velocity=10.0,            # 5.0→10.0: 속도 제한 완화 (깊은 tilt 시 비드 흐름)
                 max_angular_velocity=100.0,          # 10.0→100.0: 회전 제한 완화 (자연 굴림)
             ),
         )
@@ -264,10 +264,22 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 가까울수록 bead가 target에 들어갈 확률 높아짐
     weight_pour_dist: float = 12.0
     pour_dist_exp_scale: float = 8.0
+    # z_window: pour_point Z soft gate (1~5cm 활성 구역, 정책이 최적 위치 탐색)
+    # z_lower_ramp: 0→lower_ramp 구간에서 0→1 상승 (하한)
+    # z_upper_end:  이 높이에서 완전히 0 (상한)
+    # z_upper_ramp: upper_end 기준으로 이 폭만큼 앞에서 하강 시작
+    z_window_lower_ramp: float = 0.01   # 0~1cm: 하한 ramp
+    z_window_upper_end:  float = 0.08   # 8cm에서 완전 소멸
+    z_window_upper_ramp: float = 0.03   # 5~8cm: 상한 ramp (8-3=5cm부터 하강)
 
     # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
-    weight_tilt: float = 8.00             # 120° 타겟 gradient
+    weight_tilt: float = 40.0             # 120° 타겟 gradient (test5: 8→40, approach local min 탈출)
     weight_align: float = 6.00            # 방향 신호 강화
+    # pour-point pivot gates (test6)
+    # initial_tilt_gate: pour_dist는 이 각도 이상 tilt 후 활성 → r_tilt와 충돌 제거
+    pour_point_tilt_threshold_deg: float = 15.0
+    # pour_aligned_gate: pour_point 정렬도 비례로 r_tilt 증폭 → pour_point pivot 행동 유도
+    pour_align_gate_scale: float = 8.0
     weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
     weight_bead_entry_delta: float = 300.0   # 비드 유입 즉각 피드백 강화
     weight_source_drain: float = 20.0     # pour gate 중 소스 배출 incentive
@@ -304,7 +316,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
     # -----------------------------------------------------------------------
-    enable_demo_pose_reward: bool = True
+    enable_demo_pose_reward: bool = False
     demo_pose_dataset_dir: str = _DEFAULT_DEMO_POSE_DATASET_DIR
     demo_pose_paths: tuple[str, ...] = tuple(
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
