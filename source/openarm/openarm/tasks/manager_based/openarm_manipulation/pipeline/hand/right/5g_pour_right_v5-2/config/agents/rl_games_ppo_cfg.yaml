@@ -1,0 +1,150 @@
+# 5g_pour_right_v5 rl_games LSTM(actor) + MLP(critic) PPO + BC 설정
+# 관측: actor 60D / critic 143D (asymmetric), 액션: 11D
+# Asymmetric Actor-Critic (has_central_value: True)
+# BC: sim success trajectories + real HDF5 demo (DemoBCBuffer)
+#
+# 구조 설계 근거 (v3 critic MLP 구조 채택):
+#   - actor obs에서 hand contact/force를 제거하고 bead flow + arm trajectory 중심으로 축약
+#   - MLP encoder → LSTM: noisy raw obs가 아니라 per-step feature를 시간축으로 누적
+#   - critic MLP [1024, 512]: LSTM 제거 (v3처럼). privileged obs로 시간 의존성 없이 추정
+#   - mixed_precision=False: actor LSTM + AMP 수치 불안정 회피
+#   - horizon=32, minibatch=8192: BPTT 시계열 포착 + VRAM 완화
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous_lstm_bc
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [256]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    rnn:
+      name: lstm
+      units: 512
+      layers: 1
+      before_mlp: False   # obs → MLP encoder → LSTM: pour-flow feature만 시계열화
+      layer_norm: True
+      concat_input: False
+      concat_output: False
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: 5g_pour_right-v5-2
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False    # LSTM 수치 안정 필수 (AMP 비활성)
+    normalize_input: True
+    normalize_value: True
+    value_bootstrap: False
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    learning_rate: 2e-4
+    lr_schedule: linear
+    schedule_type: standard
+    kl_threshold: 0.013
+    score_to_win: 100000000
+    max_epochs: 10000
+    save_best_after: 100
+    save_frequency: 500
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.0015
+    truncate_grads: True
+    e_clip: 0.2
+    # horizon=32: 1200-step 장기 에피소드에서 BPTT가 더 긴 시계열 포착
+    # batch = 2048 envs × 32 = 65536 → minibatch 8192 = 8 splits (VRAM 완화)
+    horizon_length: 32
+    seq_length: 8             # BPTT truncation 윈도우 (horizon 32 = 4 seq 청크)
+    zero_rnn_on_done: True
+    minibatch_size: 8192
+    mini_epochs: 4
+    critic_coef: 4
+    clip_value: True
+    clip_actions: False
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005
+
+    # Asymmetric Actor-Critic: critic 은 143D privileged obs 사용
+    has_central_value: True
+    central_value_config:
+      normalize_input: True
+      normalize_value: True
+      value_bootstrap: False
+      minibatch_size: 8192
+      mini_epochs: 4
+      learning_rate: 5e-5
+      lr_schedule: linear
+      kl_threshold: 0.016
+      clip_value: True
+      e_clip: 0.2
+      truncate_grads: True
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [1024, 512]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
+        # [test2] critic LSTM 제거 (v3처럼 MLP only):
+        #   - critic은 privileged obs (143D)로 충분히 정보가 있음
+        #   - actor만 LSTM으로 시간 의존성 처리
+        #   - LSTM 제거로 학습 안정성/속도 개선
+
+    # ── BC 하이퍼파라미터 ─────────────────────────────────────────────
+    # sim 성공 궤적 BC (SuccessTrajBuffer)
+    bc_loss_warmup_epochs: 500
+    bc_loss_decay_epochs: 3000
+    bc_loss_weight_init: 1.0
+    bc_loss_weight_final: 0.1
+    bc_min_buffer_size: 5
+    bc_seq_len: 8
+    bc_batch_size: 64
+
+    # 실제 HDF5 데모 BC (DemoBCBuffer)
+    real_demo_bc_enable: True
+    real_demo_bc_warmup_epochs: 50
+    real_demo_bc_decay_epochs: 1000
+    real_demo_bc_weight_init: 0.1
+    real_demo_bc_weight_final: 0.01
+    real_demo_bc_min_buffer_size: 1
+    real_demo_stride: 2
+    real_demo_pour_sample_ratio: 0.6

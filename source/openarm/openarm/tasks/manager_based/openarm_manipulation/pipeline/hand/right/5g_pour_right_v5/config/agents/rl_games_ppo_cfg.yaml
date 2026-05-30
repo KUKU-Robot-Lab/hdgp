@@ -89,7 +89,7 @@ params:
     # horizon=32: 1200-step 장기 에피소드에서 BPTT가 더 긴 시계열 포착
     # batch = 2048 envs × 32 = 65536 → minibatch 8192 = 8 splits (VRAM 완화)
     horizon_length: 32
-    seq_length: 8             # BPTT truncation 윈도우 (horizon 32 = 4 seq 청크)
+    seq_length: 32            # BPTT truncation 윈도우 (horizon=seq: 전체 rollout 한 번에 역전파)
     zero_rnn_on_done: True
     minibatch_size: 8192
     mini_epochs: 4
@@ -124,11 +124,6 @@ params:
             name: default
           regularizer:
             name: None
-        # [test2] critic LSTM 제거 (v3처럼 MLP only):
-        #   - critic은 privileged obs (143D)로 충분히 정보가 있음
-        #   - actor만 LSTM으로 시간 의존성 처리
-        #   - LSTM 제거로 학습 안정성/속도 개선
-
     # ── BC 하이퍼파라미터 ─────────────────────────────────────────────
     # sim 성공 궤적 BC (SuccessTrajBuffer)
     bc_loss_warmup_epochs: 500
@@ -136,15 +131,20 @@ params:
     bc_loss_weight_init: 1.0
     bc_loss_weight_final: 0.1
     bc_min_buffer_size: 5
-    bc_seq_len: 8
+    bc_seq_len: 32
     bc_batch_size: 64
 
     # 실제 HDF5 데모 BC (DemoBCBuffer)
     real_demo_bc_enable: True
-    real_demo_bc_warmup_epochs: 50
-    real_demo_bc_decay_epochs: 1000
-    real_demo_bc_weight_init: 0.1
-    real_demo_bc_weight_final: 0.01
+    real_demo_bc_warmup_epochs: 10
+    real_demo_bc_decay_epochs: 8000
+    real_demo_bc_weight_init: 30.0
+    real_demo_bc_weight_final: 1.0
     real_demo_bc_min_buffer_size: 1
     real_demo_stride: 2
-    real_demo_pour_sample_ratio: 0.6
+    real_demo_bc_start_mode: warm_state_match
+    real_demo_bc_start_fraction: 0.0
+    real_demo_bc_warm_state_paths:
+      - /home/user/rl_ws/datasets/grasp_warm_v7_2_contact4_balanced_400x10.hdf5
+    real_demo_pour_sample_ratio: 0.0
+    real_demo_time_bin_weights: [0.20, 0.20, 0.25, 0.35]

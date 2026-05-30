@@ -26,7 +26,7 @@ from torch import Tensor
 
 from rl_games.algos_torch.a2c_continuous import A2CAgent
 
-from .demo_bc_buffer import DEFAULT_DEMO_PATHS, DemoBCBuffer
+from .demo_bc_buffer import DEFAULT_DEMO_PATHS, DEFAULT_WARM_STATE_PATHS, DemoBCBuffer
 
 
 # ---------------------------------------------------------------------------
@@ -93,13 +93,21 @@ class PourLstmBCAgent(A2CAgent):
 
         # real demo BC 하이퍼파라미터
         self._demo_enabled     = bool(cfg.get("real_demo_bc_enable",               True))
-        self._demo_warmup      = int(cfg.get("real_demo_bc_warmup_epochs",           50))
-        self._demo_decay       = int(cfg.get("real_demo_bc_decay_epochs",          2000))
-        self._demo_w_init      = float(cfg.get("real_demo_bc_weight_init",          0.5))
-        self._demo_w_final     = float(cfg.get("real_demo_bc_weight_final",        0.05))
+        self._demo_warmup      = int(cfg.get("real_demo_bc_warmup_epochs",            10))
+        self._demo_decay       = int(cfg.get("real_demo_bc_decay_epochs",          3000))
+        self._demo_w_init      = float(cfg.get("real_demo_bc_weight_init",          30.0))
+        self._demo_w_final     = float(cfg.get("real_demo_bc_weight_final",        1.0))
         self._demo_min_buf     = int(cfg.get("real_demo_bc_min_buffer_size",          1))
         self._demo_stride      = int(cfg.get("real_demo_stride",                      2))
-        self._demo_pour_ratio  = float(cfg.get("real_demo_pour_sample_ratio",       0.6))
+        self._demo_pour_ratio  = float(cfg.get("real_demo_pour_sample_ratio",       0.0))
+        self._demo_time_bin_weights = list(
+            cfg.get("real_demo_time_bin_weights", [0.20, 0.20, 0.25, 0.35])
+        )
+        self._demo_start_mode  = str(cfg.get("real_demo_bc_start_mode", "warm_state_match"))
+        self._demo_start_fraction = float(cfg.get("real_demo_bc_start_fraction", 0.0))
+        self._demo_warm_state_paths = list(
+            cfg.get("real_demo_bc_warm_state_paths", [str(p) for p in DEFAULT_WARM_STATE_PATHS])
+        )
         self._demo_paths       = list(
             cfg.get("real_demo_bc_paths", [str(p) for p in DEFAULT_DEMO_PATHS])
         )
@@ -111,6 +119,7 @@ class PourLstmBCAgent(A2CAgent):
         self._last_bc_sim_loss    = 0.0
         self._last_bc_demo_loss   = 0.0
         self._last_demo_pour_ratio = 0.0
+        self._last_demo_bin_ratios = [0.0 for _ in self._demo_time_bin_weights]
 
     # ------------------------------------------------------------------
     # 버퍼 lazy resolve
@@ -145,6 +154,10 @@ class PourLstmBCAgent(A2CAgent):
                 stride=self._demo_stride,
                 device=self.ppo_device,
                 pour_ratio=self._demo_pour_ratio,
+                time_bin_weights=self._demo_time_bin_weights,
+                start_mode=self._demo_start_mode,
+                start_fraction=self._demo_start_fraction,
+                warm_state_paths=self._demo_warm_state_paths,
             )
         except Exception as exc:  # noqa: BLE001 — demo 로드 실패 시 BC만 비활성
             self._demo_load_error = str(exc)
@@ -326,6 +339,7 @@ class PourLstmBCAgent(A2CAgent):
                 loss       = loss + demo_lam * demo_loss
                 bc_demo_loss_v = float(demo_loss.detach().item())
                 self._last_demo_pour_ratio = float(getattr(demo_buf, "_last_pour_ratio", 0.0))
+                self._last_demo_bin_ratios = list(getattr(demo_buf, "_last_bin_ratios", self._last_demo_bin_ratios))
 
         self._last_bc_sim_loss  = bc_sim_loss_v
         self._last_bc_demo_loss = bc_demo_loss_v
@@ -387,6 +401,8 @@ class PourLstmBCAgent(A2CAgent):
         self.writer.add_scalar("bc/weight_sim",        sim_w,                      frame)
         self.writer.add_scalar("bc/weight_demo",       demo_w,                     frame)
         self.writer.add_scalar("demo/pour_phase_ratio", self._last_demo_pour_ratio, frame)
+        for i, ratio in enumerate(self._last_demo_bin_ratios):
+            self.writer.add_scalar(f"demo/sample_bin_{i}_ratio", float(ratio), frame)
 
         traj_buf = self._resolve_traj_buffer()
         if traj_buf is not None:

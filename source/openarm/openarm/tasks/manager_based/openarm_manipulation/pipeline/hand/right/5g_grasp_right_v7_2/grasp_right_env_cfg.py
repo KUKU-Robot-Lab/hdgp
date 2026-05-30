@@ -17,7 +17,7 @@
 v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Action: 11D (6D palm pose + 5D per-finger lerp)
 - Observation: actor 106D / critic 143D (asymmetric)
-- Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
+- Episode: Grasp phase (Fabrics arm + finger 정책) + right-grip lift-wait (frozen hand)
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
 
@@ -81,7 +81,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
     max_pose_angle:             float = 45.0
-    fabrics_max_objects_per_env: int  = 6
+    fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
 
     # -----------------------------------------------------------------------
@@ -102,7 +102,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     enable_demo_grasp_reset: bool = True
     demo_grasp_pose_paths: tuple[str, ...] = tuple(
-        f"/home/oem/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)
+        _os.path.join(_HDGP_ROOT, "..", "datasets", f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
 
     # -----------------------------------------------------------------------
@@ -200,6 +200,27 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
     object_spawn_z:        float = 0.297
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
+
+    # -----------------------------------------------------------------------
+    # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart 재사용)
+    # -----------------------------------------------------------------------
+    # 학습 루프에는 영향 없음 (기본 False). collect 스크립트/play 에서만 True.
+    # success 이후 오른손 grasp arm pose 를 유지하고 joint7 만 lift-wait 로 이동한 상태를 저장한다.
+    # demo cup/phase 구분을 신뢰하지 않고 실제 sim 손/컵 grasp 결과를 그대로 유지한다.
+    # 손가락 접촉은 기본 2개 이상, lift-wait arm match 는 기본 1 step 만 요구한다.
+    enable_warm_state_export: bool = False
+    warm_state_export_path: str = _os.path.normpath(
+        _os.path.join(_HDGP_ROOT, "..", "datasets", "grasp_warm_v7_2.hdf5")
+    )
+    warm_state_target_count: int = 2048
+    warm_min_contacts: int = 2
+    warm_contact_stable_steps: int = 1
+    warm_lift_wait_arm_tol: float = 0.035
+    warm_lift_wait_hold_steps: int = 1
+    lift_wait_joint7_delta: float = 0.31
+    warm_cup_upright_min: float = 0.90   # legacy override 호환용; lift-wait export 에서는 미사용
+    warm_j7_min: float = 0.20
+    warm_j7_max: float = 1.50
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 설정

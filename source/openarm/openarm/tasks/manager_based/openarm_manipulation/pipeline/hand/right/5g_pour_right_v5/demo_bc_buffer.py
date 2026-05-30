@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Sequence
 
 import h5py
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -86,6 +87,9 @@ _POUR_PHASE_TILT_DEG = 70.0
 # ---------------------------------------------------------------------------
 DEFAULT_DEMO_PATHS = tuple(
     Path(_os.path.join(_DATASETS_DIR, f"pour_v1_a{i}.hdf5")) for i in range(11, 21)
+)
+DEFAULT_WARM_STATE_PATHS = (
+    Path(_os.path.join(_DATASETS_DIR, "grasp_warm_v7_2_contact4_balanced_400x10.hdf5")),
 )
 
 
@@ -321,10 +325,13 @@ def _load_episode(
     path: Path,
     stride: int,
     device: torch.device,
+    start_index: int = 0,
 ) -> DemoEpisode:
     with h5py.File(path, "r") as h5:
         demo = h5["data"]["demo_0"]
-        s = slice(None, None, stride)
+        n_raw = int(demo["obs"]["right_arm_joint_pos"].shape[0])
+        start = max(0, min(int(start_index), n_raw - 2))
+        s = slice(start, None, stride)
 
         arm_pos   = torch.as_tensor(demo["obs"]["right_arm_joint_pos"][s],  dtype=torch.float32, device=device)
         hand_pos  = torch.as_tensor(demo["obs"]["right_hand_joint_pos"][s], dtype=torch.float32, device=device)
@@ -437,16 +444,33 @@ class DemoBCBuffer:
         paths: Sequence[str | Path] = DEFAULT_DEMO_PATHS,
         stride: int = 2,
         device: str | torch.device = "cpu",
-        pour_ratio: float = 0.6,
+        pour_ratio: float = 0.0,
+        time_bin_weights: Sequence[float] | None = None,
+        start_mode: str = "warm_state_match",
+        start_fraction: float = 0.0,
+        warm_state_paths: Sequence[str | Path] | None = DEFAULT_WARM_STATE_PATHS,
     ) -> None:
         self.device = torch.device(device)
         self.pour_ratio = float(pour_ratio)
+        self.time_bin_weights = _normalize_time_bin_weights(time_bin_weights)
+        resolved_paths = tuple(Path(p) for p in paths)
+        start_indices = _resolve_start_indices(
+            resolved_paths,
+            start_mode=start_mode,
+            start_fraction=start_fraction,
+            warm_state_paths=warm_state_paths,
+        )
 
         self.episodes: list[DemoEpisode] = []
         errors: list[str] = []
-        for p in paths:
+        for p, start_index in zip(resolved_paths, start_indices, strict=True):
             try:
-                ep = _load_episode(Path(p), stride=max(1, stride), device=self.device)
+                ep = _load_episode(
+                    Path(p),
+                    stride=max(1, stride),
+                    device=self.device,
+                    start_index=start_index,
+                )
                 self.episodes.append(ep)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{p}: {exc}")
@@ -459,8 +483,15 @@ class DemoBCBuffer:
         if not self.episodes:
             raise RuntimeError("DemoBCBuffer: no episodes loaded successfully.")
 
-        print(f"[DemoBCBuffer] loaded {len(self.episodes)} episodes.", flush=True)
+        print(
+            f"[DemoBCBuffer] loaded {len(self.episodes)} episodes "
+            f"(start_mode={start_mode}, start_i_range={min(start_indices)}..{max(start_indices)}, "
+            f"pour_ratio={self.pour_ratio:.2f}, "
+            f"time_bin_weights={tuple(round(v, 3) for v in self.time_bin_weights)}).",
+            flush=True,
+        )
         self._last_pour_ratio: float = 0.0
+        self._last_bin_ratios: list[float] = [0.0 for _ in self.time_bin_weights]
 
     def __len__(self) -> int:
         return len(self.episodes)
@@ -477,16 +508,34 @@ class DemoBCBuffer:
             return max(0, min(pick - seq_len // 2, max_start))
         return int(torch.randint(max_start + 1, (1,), device=self.device).item())
 
+    def _sample_time_bin_start(self, ep: DemoEpisode, seq_len: int, bin_idx: int) -> int:
+        T = int(ep.obs.shape[0])
+        max_start = max(T - seq_len, 0)
+        n_bins = max(len(self.time_bin_weights), 1)
+        lo = int(math.floor(max_start * (bin_idx / n_bins)))
+        hi = int(math.floor(max_start * ((bin_idx + 1) / n_bins)))
+        hi = max(lo, min(hi, max_start))
+        if hi <= lo:
+            return lo
+        return int(torch.randint(hi - lo + 1, (1,), device=self.device).item()) + lo
+
     def sample(self, batch_size: int, seq_len: int) -> dict:
         obs_out = torch.zeros(batch_size, seq_len, NUM_OBSERVATIONS, device=self.device)
         act_out = torch.zeros(batch_size, seq_len, NUM_ACTIONS, device=self.device)
         mask    = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=self.device)
         pour_samples = 0
+        bin_counts = torch.zeros(len(self.time_bin_weights), dtype=torch.float32, device=self.device)
+        bin_choices = _time_bin_choices(self.time_bin_weights, batch_size, self.device)
 
         for i in range(batch_size):
             ep = self.episodes[int(torch.randint(len(self.episodes), (1,), device=self.device).item())]
-            prefer_pour = torch.rand((), device=self.device).item() < self.pour_ratio
-            start = self._sample_start(ep, seq_len, prefer_pour)
+            bin_idx = int(bin_choices[i].item())
+            bin_counts[bin_idx] += 1.0
+            if self.time_bin_weights:
+                start = self._sample_time_bin_start(ep, seq_len, bin_idx)
+            else:
+                prefer_pour = torch.rand((), device=self.device).item() < self.pour_ratio
+                start = self._sample_start(ep, seq_len, prefer_pour)
             stop  = min(start + seq_len, int(ep.obs.shape[0]))
             cnt   = stop - start
             if cnt <= 0:
@@ -494,8 +543,99 @@ class DemoBCBuffer:
             obs_out[i, :cnt] = ep.obs[start:stop]
             act_out[i, :cnt] = ep.actions[start:stop]
             mask[i, :cnt]    = True
-            if prefer_pour and ep.pour_mask[start:stop].any():
+            if ep.pour_mask[start:stop].any():
                 pour_samples += 1
 
         self._last_pour_ratio = pour_samples / float(batch_size)
+        self._last_bin_ratios = (bin_counts / float(batch_size)).detach().cpu().tolist()
         return {"obs": obs_out, "actions": act_out, "mask": mask}
+
+
+def _normalize_time_bin_weights(weights: Sequence[float] | None) -> list[float]:
+    if weights is None:
+        weights = (0.20, 0.20, 0.25, 0.35)
+    out = [max(float(w), 0.0) for w in weights]
+    total = sum(out)
+    if not out or total <= 0.0:
+        return [1.0]
+    return [w / total for w in out]
+
+
+def _time_bin_choices(weights: Sequence[float], batch_size: int, device: torch.device) -> torch.Tensor:
+    raw = torch.as_tensor(weights, dtype=torch.float32, device=device) * float(batch_size)
+    counts = torch.floor(raw).long()
+    remainder = int(batch_size - counts.sum().item())
+    if remainder > 0:
+        frac_order = torch.argsort(raw - counts.float(), descending=True)
+        counts[frac_order[:remainder]] += 1
+    choices = torch.repeat_interleave(torch.arange(len(weights), device=device), counts)
+    if choices.numel() < batch_size:
+        pad = torch.zeros(batch_size - choices.numel(), dtype=torch.long, device=device)
+        choices = torch.cat([choices, pad], dim=0)
+    choices = choices[:batch_size]
+    return choices[torch.randperm(batch_size, device=device)]
+
+
+def _resolve_start_indices(
+    paths: Sequence[Path],
+    *,
+    start_mode: str,
+    start_fraction: float,
+    warm_state_paths: Sequence[str | Path] | None,
+) -> list[int]:
+    mode = str(start_mode).strip().lower()
+    if mode in ("fraction", "time_fraction"):
+        return [_fraction_start_index(path, start_fraction) for path in paths]
+    if mode != "warm_state_match":
+        raise ValueError(
+            "DemoBCBuffer start_mode must be 'warm_state_match' or 'fraction', "
+            f"got {start_mode!r}"
+        )
+
+    warm_arm_by_demo = _load_warm_arm_median_by_demo(warm_state_paths, num_demos=len(paths))
+    start_indices: list[int] = []
+    for demo_id, path in enumerate(paths):
+        with h5py.File(path, "r") as h5:
+            arm = np.asarray(h5["data"]["demo_0"]["obs"]["right_arm_joint_pos"], dtype=np.float32)
+        raw_len = int(arm.shape[0])
+        target = warm_arm_by_demo[demo_id]
+        err = np.max(np.abs(arm - target[None, :]), axis=1)
+        matched_i = int(np.argmin(err))
+        start_indices.append(max(0, min(matched_i, raw_len - 2)))
+    return start_indices
+
+
+def _fraction_start_index(path: Path, start_fraction: float) -> int:
+    with h5py.File(path, "r") as h5:
+        raw_len = int(h5["data"]["demo_0"]["obs"]["right_arm_joint_pos"].shape[0])
+    start_i = int(round(raw_len * float(start_fraction)))
+    return max(0, min(start_i, raw_len - 2))
+
+
+def _load_warm_arm_median_by_demo(
+    paths: Sequence[str | Path] | None,
+    *,
+    num_demos: int,
+) -> list[np.ndarray]:
+    if paths is None:
+        raise ValueError("warm_state_paths is required when start_mode='warm_state_match'")
+
+    arm_chunks: list[np.ndarray] = []
+    demo_idx_chunks: list[np.ndarray] = []
+    for path_like in paths:
+        path = Path(path_like)
+        with h5py.File(path, "r") as h5:
+            grp = h5["warm_states"]
+            arm_chunks.append(np.asarray(grp["arm_joint_pos"], dtype=np.float32))
+            demo_idx_chunks.append(np.asarray(grp["demo_file_idx"], dtype=np.int64))
+
+    warm_arm = np.concatenate(arm_chunks, axis=0)
+    demo_idx = np.concatenate(demo_idx_chunks, axis=0)
+    medians = []
+    for demo_id in range(num_demos):
+        valid = demo_idx >= 0
+        mask = valid & ((demo_idx % num_demos) == demo_id)
+        if not np.any(mask):
+            raise ValueError(f"warm-state cache has no valid demo_file_idx for demo_id={demo_id}")
+        medians.append(np.median(warm_arm[mask], axis=0).astype(np.float32))
+    return medians

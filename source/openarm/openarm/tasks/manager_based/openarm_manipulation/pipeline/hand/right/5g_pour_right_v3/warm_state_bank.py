@@ -41,19 +41,8 @@ _DATASETS = (
     "cup_quat_wxyz",
     "num_contacts",
 )
-_V2_DATASETS = (
-    "bead_state_local",
-    "bead_count_initial",
-    "bead_count_current",
-    "bead_count_target",
-    "dynamic_bead_spawned",
-    "cup_friction_static",
-    "object_goal_local",
-)
 # grasp 저장 spawn z 와 pour cfg object_spawn_z 허용 오차 (geometry critical)
 _SPAWN_Z_TOL = 1e-4
-_BEAD_MASS_TOL = 1e-6
-_MetaValue = float | str
 
 
 @dataclass(frozen=True)
@@ -71,16 +60,8 @@ class PourWarmStateBank:
     cup_pos_local: torch.Tensor        # (N, 3)
     cup_quat_wxyz: torch.Tensor        # (N, 4)
     num_contacts: torch.Tensor         # (N,)
-    source_meta: dict[str, _MetaValue]
+    source_meta: dict[str, float]
     source_paths: tuple[str, ...]
-    schema_version: int = 1
-    bead_state_local: torch.Tensor | None = None       # (N, num_beads, 13), positions env-local
-    bead_count_initial: torch.Tensor | None = None     # (N,)
-    bead_count_current: torch.Tensor | None = None     # (N,)
-    bead_count_target: torch.Tensor | None = None      # (N,)
-    dynamic_bead_spawned: torch.Tensor | None = None   # (N,)
-    cup_friction_static: torch.Tensor | None = None    # (N,)
-    object_goal_local: torch.Tensor | None = None      # (N, 3)
 
     @property
     def num_states(self) -> int:
@@ -88,10 +69,6 @@ class PourWarmStateBank:
 
     def __len__(self) -> int:
         return self.num_states
-
-    @property
-    def has_bead_state(self) -> bool:
-        return self.schema_version >= 2 and self.bead_state_local is not None
 
     @classmethod
     def from_hdf5_paths(
@@ -101,8 +78,6 @@ class PourWarmStateBank:
         device: str | torch.device = "cpu",
         expected_object_spawn_z: float | None = None,
         expected_palm_bounds: tuple[float, float, float, float, float, float] | None = None,
-        expected_num_beads: int | None = None,
-        expected_bead_single_mass: float | None = None,
     ) -> "PourWarmStateBank":
         """HDF5 경로들을 로드/병합. spawn z 불일치는 hard fail, workspace 는 warn."""
         resolved = _resolve_paths(paths)
@@ -110,17 +85,9 @@ class PourWarmStateBank:
             raise ValueError("warm_state_paths is empty; provide at least one HDF5 path.")
 
         chunks = [_load_path(path) for path in resolved]
-        schema_versions = {int(chunk["__schema_version__"]) for chunk in chunks}
-        if len(schema_versions) != 1:
-            raise ValueError(
-                "cannot merge warm-state files with different schema versions: "
-                f"{sorted(schema_versions)}"
-            )
-        schema_version = schema_versions.pop()
-        data_keys = _DATASETS + (_V2_DATASETS if schema_version >= 2 else ())
         merged: dict[str, np.ndarray] = {
             key: np.concatenate([chunk[key] for chunk in chunks], axis=0)
-            for key in data_keys
+            for key in _DATASETS
         }
         for key, value in merged.items():
             if not np.isfinite(value).all():
@@ -141,21 +108,6 @@ class PourWarmStateBank:
         if expected_palm_bounds is not None:
             _warn_on_workspace_mismatch(meta, expected_palm_bounds, resolved)
 
-        if schema_version >= 2:
-            _validate_v2_meta(meta, expected_num_beads, expected_bead_single_mass)
-
-        kwargs = {}
-        if schema_version >= 2:
-            kwargs = {
-                "bead_state_local": _to_t(merged["bead_state_local"], device),
-                "bead_count_initial": _to_long_t(merged["bead_count_initial"], device),
-                "bead_count_current": _to_long_t(merged["bead_count_current"], device),
-                "bead_count_target": _to_long_t(merged["bead_count_target"], device),
-                "dynamic_bead_spawned": _to_bool_t(merged["dynamic_bead_spawned"], device),
-                "cup_friction_static": _to_t(merged["cup_friction_static"], device),
-                "object_goal_local": _to_t(merged["object_goal_local"], device),
-            }
-
         return cls(
             arm_joint_pos=_to_t(merged["arm_joint_pos"], device),
             hand_joint_pos=_to_t(merged["hand_joint_pos"], device),
@@ -164,23 +116,13 @@ class PourWarmStateBank:
             cup_pos_local=_to_t(merged["cup_pos_local"], device),
             cup_quat_wxyz=_to_t(merged["cup_quat_wxyz"], device),
             num_contacts=_to_t(merged["num_contacts"], device),
-            source_meta=meta,
+            source_meta={k: float(v) for k, v in meta.items()},
             source_paths=tuple(str(p) for p in resolved),
-            schema_version=schema_version,
-            **kwargs,
         )
 
 
 def _to_t(arr: np.ndarray, device) -> torch.Tensor:
     return torch.as_tensor(arr, dtype=torch.float32, device=device)
-
-
-def _to_long_t(arr: np.ndarray, device) -> torch.Tensor:
-    return torch.as_tensor(arr, dtype=torch.long, device=device)
-
-
-def _to_bool_t(arr: np.ndarray, device) -> torch.Tensor:
-    return torch.as_tensor(arr, dtype=torch.bool, device=device)
 
 
 def _resolve_paths(paths: Iterable[str | Path]) -> tuple[Path, ...]:
@@ -219,7 +161,7 @@ def _resolve_paths(paths: Iterable[str | Path]) -> tuple[Path, ...]:
         raise FileNotFoundError(
             f"warm-state HDF5 file(s) do not exist: {missing_text}. "
             f"Searched fallback dirs: {candidates}. "
-            "Run scripts/tools/collect_grasp_v11_pour_warm_states.py first."
+            "Run scripts/tools/collect_grasp_warm_states.py first."
         )
     return tuple(resolved)
 
@@ -229,10 +171,7 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
         if _GROUP not in h5:
             raise KeyError(f"{path}: missing '{_GROUP}' group (wrong schema?)")
         grp = h5[_GROUP]
-        meta = _read_meta(h5)
-        schema_version = int(float(meta.get("schema_version", 1)))
-        required = _DATASETS + (_V2_DATASETS if schema_version >= 2 else ())
-        missing = [key for key in required if key not in grp]
+        missing = [key for key in _DATASETS if key not in grp]
         if missing:
             raise KeyError(f"{path}: missing dataset(s): {', '.join(missing)}")
 
@@ -241,62 +180,19 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
             raise ValueError(f"{path}: warm-state cache is empty")
 
         out: dict[str, np.ndarray] = {
-            key: np.asarray(grp[key]) for key in required
+            key: np.asarray(grp[key], dtype=np.float32) for key in _DATASETS
+        }
+        meta = {
+            str(k).split("meta/", 1)[1]: float(v)
+            for k, v in h5.attrs.items()
+            if str(k).startswith("meta/")
         }
         out["__meta__"] = meta  # type: ignore[assignment]
-        out["__schema_version__"] = schema_version  # type: ignore[assignment]
         return out
 
 
-def _read_meta(h5: h5py.File) -> dict[str, _MetaValue]:
-    meta: dict[str, _MetaValue] = {}
-    for key, value in h5.attrs.items():
-        key = str(key)
-        if not key.startswith("meta/"):
-            continue
-        name = key.split("meta/", 1)[1]
-        if isinstance(value, bytes):
-            meta[name] = value.decode("utf-8")
-        elif isinstance(value, str):
-            meta[name] = value
-        elif isinstance(value, np.generic):
-            meta[name] = float(value)
-        else:
-            try:
-                meta[name] = float(value)
-            except (TypeError, ValueError):
-                meta[name] = str(value)
-    return meta
-
-
-def _validate_v2_meta(
-    meta: dict[str, _MetaValue],
-    expected_num_beads: int | None,
-    expected_bead_single_mass: float | None,
-) -> None:
-    if expected_num_beads is not None:
-        if "num_beads" not in meta:
-            raise ValueError("schema v2 warm-state cache is missing meta/num_beads")
-        cached_num_beads = int(float(meta["num_beads"]))
-        if cached_num_beads != int(expected_num_beads):
-            raise ValueError(
-                "warm-state cache num_beads mismatch: "
-                f"cache={cached_num_beads} vs pour cfg={expected_num_beads}."
-            )
-
-    if expected_bead_single_mass is not None:
-        if "bead_single_mass" not in meta:
-            raise ValueError("schema v2 warm-state cache is missing meta/bead_single_mass")
-        cached_mass = float(meta["bead_single_mass"])
-        if abs(cached_mass - float(expected_bead_single_mass)) > _BEAD_MASS_TOL:
-            raise ValueError(
-                "warm-state cache bead_single_mass mismatch: "
-                f"cache={cached_mass} vs pour cfg={expected_bead_single_mass}."
-            )
-
-
 def _warn_on_workspace_mismatch(
-    meta: dict[str, _MetaValue],
+    meta: dict[str, float],
     expected_palm_bounds: tuple[float, float, float, float, float, float],
     resolved: tuple[Path, ...],
 ) -> None:

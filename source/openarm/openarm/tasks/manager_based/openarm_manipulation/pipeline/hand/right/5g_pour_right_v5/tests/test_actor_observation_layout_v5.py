@@ -48,9 +48,9 @@ def test_v5_lstm_config_encodes_then_recurrs() -> None:
     assert "before_mlp: False" in cfg
     assert "concat_input: False" in cfg
     assert "concat_output: False" in cfg
-    assert "seq_length: 8" in cfg
+    assert "seq_length: 32" in cfg
     assert "minibatch_size: 8192" in cfg
-    assert "bc_seq_len: 8" in cfg
+    assert "bc_seq_len: 32" in cfg
 
 
 def test_v5_real_demo_bc_buffer_matches_actor_observation_contract() -> None:
@@ -62,3 +62,15 @@ def test_v5_real_demo_bc_buffer_matches_actor_observation_contract() -> None:
     assert "flow_zero" in obs_block
     assert "binary_contact" not in obs_block
     assert "tip_norm" not in obs_block
+
+
+def test_v5_real_demo_bc_uses_warm_aligned_full_trajectory() -> None:
+    cfg = _read("config/agents/rl_games_ppo_cfg.yaml")
+    demo = _read("demo_bc_buffer.py")
+
+    assert "real_demo_bc_start_mode: warm_state_match" in cfg
+    assert "real_demo_pour_sample_ratio: 0.0" in cfg
+    assert "real_demo_time_bin_weights: [0.20, 0.20, 0.25, 0.35]" in cfg
+    assert 'start_mode: str = "warm_state_match"' in demo
+    assert "start_index" in demo
+    assert "time_bin_weights" in demo

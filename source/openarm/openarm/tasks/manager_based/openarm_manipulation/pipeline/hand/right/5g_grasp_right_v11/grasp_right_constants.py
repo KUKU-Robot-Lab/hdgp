@@ -26,7 +26,7 @@ Action (26D):
   [6:26] 20D per-joint finger delta (±finger_delta_scale rad)
          rj_dg_1_1~4, rj_dg_2_1~4, rj_dg_3_1~4, rj_dg_4_1~4, rj_dg_5_1~4
 
-Actor Observation (136D) — sim2real 가능:
+Actor Observation (144D) — sim2real 가능, oracle mass 제외:
   arm_joint_pos:            7
   arm_joint_vel:            7
   finger_joint_pos:        20
@@ -35,29 +35,32 @@ Actor Observation (136D) — sim2real 가능:
   fingertip_pos_rel_palm:  15  (5 × 3D)
   palm_to_cup_pos:          3
   cup_to_goal:              3
+  cup_ang_vel:              3
+  cup_rot (quat):           4
   last_actions:            26  (v8: 11D → v9: 26D)
-  bead_mass_normalized:     1  (0=빈 컵, 1=최대 하중)
   tip_force_xyz_norm:      15  (5 × 3D 법선 방향 힘 벡터, v9.1: 5D norm → 15D vector)
   middle_to_cup_xyz:       15  (5 × 3D FK 기반, sim2real 가능: joint encoder → FK)
   phase_step_ratio:         1  (step counter 기반, 실 로봇 가능)
+  palm_binary:              1
+  palm_force_norm:          1
   [제거] cup_to_fingertip  15D → fingertip_pos_rel_palm - palm_to_cup 항등식 (완전 중복)
   [제거] binary_contact     5D → tip_force_xyz_norm norm의 하위 집합 (함수적 중복)
-  Total:                  136
+  Total:                  144
 
-Critic Extra (36D) — sim-only privileged:
+Actor Observation with oracle mass: 145D
+
+Critic Extra (30D) — sim-only privileged:
+  bead_mass_normalized:     1  (critic-only oracle mass)
   cup_lin_vel:              3
-  cup_ang_vel:              3
-  cup_rot (quat):           4
   cup_height_delta:         1
   distal_contact_binary:    5  (rl_dg_*_4)
   distal_contact_norm:      5
   middle_contact_binary:    5  (rl_dg_*_3)
   middle_contact_norm:      5
   fingertip_to_cup_signed_dist: 5
-  Total:                   36
+  Total:                   30
 
-Actor Observation without oracle mass: 135D
-Critic Total: 136 + 36 = 172D
+Critic Total: 144 + 30 = 174D
 
 Episode (18s @ 60Hz = 1080 steps):
   Grasp     phase (0~479):    Fabrics arm + per-joint finger delta
@@ -94,21 +97,24 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 26
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-# Actor obs (136D):
+# Actor obs (144D, no oracle mass):
 #   arm_joint_pos        7  | arm_joint_vel          7
 #   finger_joint_pos    20  | finger_joint_vel       20
 #   palm_center_pos      3  | fingertip_pos_rel_palm 15
 #   palm_to_cup          3  | cup_to_goal             3
-#   last_actions        26  | bead_mass_normalized    1
+#   cup_ang_vel          3  | cup_rot                 4
+#   last_actions        26
 #   tip_force_xyz_norm  15
 #   middle_to_cup_xyz   15  | phase_step_ratio        1
-#   [제거] cup_to_fingertip 15D (항등식), binary_contact 5D (tip_force 하위집합)
-NUM_OBSERVATIONS = 136
-NUM_OBSERVATIONS_NO_MASS = 135
+#   palm_binary          1  | palm_force_norm         1
+NUM_OBSERVATIONS = 144
+NUM_OBSERVATIONS_WITH_MASS = 145
+NUM_OBSERVATIONS_NO_MASS = NUM_OBSERVATIONS
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 36
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 172
+NUM_PALM_SENSORS    = 1       # rl_dg_palm
+NUM_CRITIC_EXTRAS   = 30
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 174
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

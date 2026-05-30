@@ -16,10 +16,6 @@
 
 v7: Fabrics 팔 학습 + per-finger lerp 5D + Contact sensor 없는 FK 기반 근접도 리워드
 
-핵심 개선 (v1/v6 대비):
-  - v1 문제: fabric_q/qd obs → sim2real 불가, palm_dist 기반 자동 닫힘 → 충돌 충격
-  - v6 문제: 팔 고정 → cup 위치 오차 대응 불가, per-finger 5D 협응 학습 부족
-
 Action (11D):
   [0:6]  6D palm pose → Fabrics IK → arm 7 DOF (학습, cup 위치 오차 대응)
   [6:11] 5D per-finger lerp: -1 → HAND_APPROACH_POSE, +1 → HAND_GRASP_POSE
@@ -83,12 +79,14 @@ from .pour_right_constants import (
 )
 from .pour_adr import PourADR
 from .pour_adr import PourADR as GraspADR
+from .reward_terms import compute_simple_pour_reward
 from .pour_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
     LEFT_ARM_REST_JOINT_POS,
     LEFT_TARGET_CUP_POS_ENV_LOCAL,
     LEFT_TARGET_CUP_QUAT_WXYZ,
+    LEFT_TARGET_CUP_ATTACH_FRAME_NAME,
     RIGHT_ACTUATED_JOINT_NAMES,
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
@@ -266,6 +264,11 @@ class PourRightEnv(DirectRLEnv):
             if _palm_name in self.robot.data.body_names
             else -1
         )
+        self.left_hand_body_index: int = (
+            self.robot.data.body_names.index(LEFT_TARGET_CUP_ATTACH_FRAME_NAME)
+            if LEFT_TARGET_CUP_ATTACH_FRAME_NAME in self.robot.data.body_names
+            else -1
+        )
         # distal phalanx body indices (rl_dg_*_4)
         _distal4_names = [f"rl_dg_{i}_4" for i in range(1, 6)]
         self.distal4_body_indices: list[int] = [
@@ -355,6 +358,7 @@ class PourRightEnv(DirectRLEnv):
             to_torch(left_vals, device=self.device)
             .unsqueeze(0).repeat(self.num_envs, 1)
         )
+        self.left_arm_target_pos = self.left_arm_zero_pos.clone()
         self.left_arm_zero_vel = torch.zeros(
             self.num_envs, len(self.left_arm_dof_indices), device=self.device
         )
@@ -497,12 +501,19 @@ class PourRightEnv(DirectRLEnv):
                 self.cfg.demo_pose_paths,
                 phase=self.cfg.demo_pose_phase,
                 device=self.device,
+                episode_steps=self.cfg.demo_episode_steps,
+                demo_start_fraction=self.cfg.demo_start_fraction,
+                demo_pose_start_mode=self.cfg.demo_pose_start_mode,
+                warm_state_paths=self.cfg.warm_state_paths,
             )
             print(
                 "[5g_pour_right_v5] loaded demo pose reference bank: "
-                f"{self.demo_pose_reference.num_frames} frames from {len(self.demo_pose_reference.source_paths)} files",
+                f"{self.demo_pose_reference.num_demos} demos x "
+                f"{self.demo_pose_reference.num_frames} frames (resampled) "
+                f"from {len(self.demo_pose_reference.source_paths)} files",
                 flush=True,
             )
+        self._demo_pose_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # ----------------------------------------------------------------
         # 궤적 캡처 버퍼 + 성공 궤적 ring buffer (BC loss 학습용)
@@ -530,6 +541,10 @@ class PourRightEnv(DirectRLEnv):
         )
         self._left_cup_quat_wxyz = to_torch(
             self.cfg.left_target_cup_quat_wxyz, device=self.device
+        )
+        self._left_cup_attach_pos_b = to_torch([0.0, 0.0, 0.05], device=self.device)
+        self._left_cup_attach_quat_wxyz = to_torch(
+            [0.70710678, 0.0, 0.70710678, 0.0], device=self.device
         )
         self._left_target_cup_fixed_pose_w = torch.zeros(self.num_envs, 7, device=self.device)
         self._bead_spawn_pos_source_cup_b = to_torch(self.cfg.bead_spawn_pos_source_cup_b, device=self.device)
@@ -573,7 +588,6 @@ class PourRightEnv(DirectRLEnv):
         self._rho = torch.zeros(self.num_envs, device=self.device)
         self._bead_in_target = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
         self._bead_in_source = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
-        self._bead_active_mask = torch.ones(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
         self._bead_ever_in_target = torch.zeros(
             self.num_envs, self.num_beads, dtype=torch.bool, device=self.device
         )
@@ -610,8 +624,8 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
         self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
-        self._warmstart_bead_state_local: torch.Tensor | None = None
-        self._warmstart_bead_count_current: torch.Tensor | None = None
+        # demo-tagged warmstart: 각 warmstart 상태를 생성한 demo 인덱스 (None = 구 HDF5)
+        self._warmstart_demo_file_idx: torch.Tensor | None = None
         # v7-2 lift phase 미러: step 480에 팔/손 캡처 → 120 step 선형보간으로 들어올림
         self._warmstart_lift_arm_start  = torch.zeros(self.num_envs, NUM_ARM_DOF,  device=self.device)
         self._warmstart_lift_finger_start = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
@@ -889,7 +903,6 @@ class PourRightEnv(DirectRLEnv):
             (bead_xy_to_target <= self.cfg.target_inner_radius)
             & (pos_in_target[..., 2] >= self.cfg.target_inside_z_min)
             & (pos_in_target[..., 2] <= self.cfg.target_inside_z_max)
-            & self._bead_active_mask
         )
         self._bead_in_target.copy_(bead_in_target)
         self._bead_ever_in_target |= bead_in_target
@@ -904,7 +917,6 @@ class PourRightEnv(DirectRLEnv):
             (bead_xy_to_source <= self.cfg.source_inner_radius)
             & (pos_in_source[..., 2] >= self.cfg.source_inside_z_min)
             & (pos_in_source[..., 2] <= self.cfg.source_inside_z_max)
-            & self._bead_active_mask
         )
         self._bead_in_source.copy_(bead_in_source)
 
@@ -912,23 +924,20 @@ class PourRightEnv(DirectRLEnv):
             (bead_xy_to_target <= self.cfg.target_inner_radius)
             & (self._prev_bead_target_local_z > self.cfg.target_mouth_z)
             & (pos_in_target[..., 2] <= self.cfg.target_mouth_z)
-            & self._bead_active_mask
         )
         self._bead_crossed_target_mouth |= mouth_crossed_now
         self._bead_cross_count.copy_(self._bead_crossed_target_mouth.sum(dim=-1).long())
-        active_count = self._bead_active_mask.float().sum(dim=-1).clamp(min=1.0)
-        bead_cross_fraction = self._bead_crossed_target_mouth.float().sum(dim=-1) / active_count
-        bead_in_target_fraction = self._bead_in_target.float().sum(dim=-1) / active_count
-        bead_in_source_fraction = self._bead_in_source.float().sum(dim=-1) / active_count
+        bead_cross_fraction = self._bead_crossed_target_mouth.float().mean(dim=-1)
+        bead_in_target_fraction = self._bead_in_target.float().mean(dim=-1)
+        bead_in_source_fraction = self._bead_in_source.float().mean(dim=-1)
 
         # source 컵 밖 + target 컵 로컬 z < z_min 아래로 떨어진 bead = 영구 손실
         # transit bead (공중 이동 중): target local z > z_min → spill 아님
         bead_spilled = (
-            self._bead_active_mask
-            & (~self._bead_in_source)
+            (~self._bead_in_source)
             & (pos_in_target[..., 2] < self.cfg.target_inside_z_min)
         )
-        spill_ratio = bead_spilled.float().sum(dim=-1) / active_count
+        spill_ratio = bead_spilled.float().mean(dim=-1)
 
         self._bead_in_source_delta.copy_(bead_in_source_fraction - self._bead_in_source_fraction)
         self._bead_in_target_delta.copy_(bead_in_target_fraction - self._bead_in_target_fraction)
@@ -1008,7 +1017,12 @@ class PourRightEnv(DirectRLEnv):
             palm_pose_quat[:, 3:7] = self._quat_xyzw_from_euler_zyx(palm_pose_euler[:, 3:6])
             self.palm_pose_targets.copy_(palm_pose_quat)
             self.hand_pca_targets.zero_()
-            self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
+            _null_cfg = self.fabric_q.detach().clone()
+            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, max=0.46)
+            _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
+            _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
+            _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
+            self.open_tesollo_fabric.default_config.copy_(_null_cfg)
 
             self.open_tesollo_fabric.set_features(
                 self.hand_pca_targets,
@@ -1046,11 +1060,17 @@ class PourRightEnv(DirectRLEnv):
             self.palm_pose_targets.copy_(palm_pose)
             self.hand_pca_targets.zero_()
 
-            # null-space attractor를 현재 관절 위치로 추적:
-            # default_config가 warmstart grasp pose로 고정되면 pour transport 방향으로
-            # 이동할 때 매 step 파지 위치로 당기는 저항이 발생함.
-            # 현재 fabric_q를 default_config로 덮어써서 null-space 당김 제거.
-            self.open_tesollo_fabric.default_config.copy_(self.fabric_q.detach())
+            # null-space attractor: j1/j2/j3/j7을 데모(a11-a20) 통계 기반 target으로 당김.
+            # alpha=0.05(5%/step): Fabrics IK 동작 유지하면서 warmstart 편류 보정.
+            # j1: warmstart -0.54 → demo mean +0.09 (방향 반전 보정)
+            # j3: warmstart +0.14 → demo mean -0.24 (부호 반전 보정)
+            # j7: pour 후반 평균 0.63, 상한 1.13 (외회전 편류 차단)
+            _null_cfg = self.fabric_q.detach().clone()
+            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, max=0.46)
+            _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
+            _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
+            _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
+            self.open_tesollo_fabric.default_config.copy_(_null_cfg)
 
             self.open_tesollo_fabric.set_features(
                 self.hand_pca_targets,
@@ -1117,6 +1137,8 @@ class PourRightEnv(DirectRLEnv):
                 self.fabric_qdd[is_lift, :NUM_ARM_DOF].zero_()
 
     def _apply_action(self) -> None:
+        self._update_left_demo_reference_for_current_step()
+
         # ---- 오른팔 ----
         arm_target = self.fabric_q[:, :NUM_ARM_DOF]
         finger_target = self.hand_joint_targets
@@ -1152,13 +1174,17 @@ class PourRightEnv(DirectRLEnv):
 
         # ---- 왼팔: 고정 자세 ----
         self.robot.set_joint_position_target(
-            self.left_arm_zero_pos, joint_ids=self.left_arm_dof_indices
+            self.left_arm_target_pos, joint_ids=self.left_arm_dof_indices
         )
         self.robot.set_joint_velocity_target(
             self.left_arm_zero_vel, joint_ids=self.left_arm_dof_indices
         )
 
-        left_cup_pose = self._get_left_target_cup_fixed_pose()
+        if self.cfg.use_demo_left_target_pose and self.demo_pose_reference is not None:
+            left_cup_pose = self._left_target_cup_fixed_pose_w
+        else:
+            left_cup_pose = self._get_left_cup_attached_pose()
+        self._left_target_cup_fixed_pose_w.copy_(left_cup_pose)
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
         self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
@@ -1566,29 +1592,26 @@ class PourRightEnv(DirectRLEnv):
         ref = self.demo_pose_reference
         arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
 
-        # --- Nearest-Neighbor in joint space + look-ahead ---
-        # 현재 joint 상태와 가장 가까운 demo 프레임을 찾고 K 프레임 앞 자세를 타겟으로
-        # 효율적 L2: ||a-b||^2 = ||a||^2 + ||b||^2 - 2·a·bT (중간 (N,T,7) 텐서 생략)
-        demo_arm = ref.arm_joint_pos  # (T, 7)
-        T_demo = demo_arm.shape[0]
-        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)          # (N, 1)
-        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)     # (1, T)
-        ab = arm_q @ demo_arm.T                                  # (N, T)
-        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)            # (N,)
-        K = int(self.cfg.demo_nn_lookahead_frames)
-        target_idx = (nn_idx + K).clamp(max=T_demo - 1)         # (N,)
-        target_arm_q = demo_arm[target_idx]                      # (N, 7)
+        # --- Step-indexed temporal alignment (NN search 제거) ---
+        # demo는 warmstart 시작 시점부터 에피소드 길이로 리샘플링되어 있음.
+        # episode_length_buf[i] = 현재 env i의 step 수 → demo[step] 직접 참조.
+        # "t번째 step에서는 demo의 t번째 자세가 타겟" → 시계열 구조 자동 반영.
+        demo_arm = ref.arm_joint_pos   # (D, episode_steps, 7) - resampled
+        T_demo = demo_arm.shape[1]
+        demo_idx = self.episode_length_buf.long().clamp(0, T_demo - 1)  # (N,)
+        demo_ids = self._demo_pose_ids.clamp(0, ref.num_demos - 1)
+        target_arm_q = demo_arm[demo_ids, demo_idx]                       # (N, 7)
 
         arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
         demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
         r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
 
-        # --- Palm: 동일한 target_idx로 일관성 있게 참조 ---
+        # --- Palm: 동일한 step index로 참조 ---
         palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
 
-        demo_palm = ref.palm_pose  # (T, 7): [x,y,z, qx,qy,qz,qw]
-        target_palm = demo_palm[target_idx]                              # (N, 7)
+        demo_palm = ref.palm_pose   # (D, episode_steps, 7): [x,y,z, qx,qy,qz,qw] - resampled
+        target_palm = demo_palm[demo_ids, demo_idx]                      # (N, 7)
         target_palm_pos = target_palm[:, :3]                             # (N, 3)
         target_palm_quat_xyzw = target_palm[:, 3:7]                     # (N, 4) xyzw
         target_palm_quat_wxyz = torch.cat(
@@ -1659,36 +1682,66 @@ class PourRightEnv(DirectRLEnv):
             + r_finger_curl
         )
 
-        # ---- Pour warmup gate ----
-        # demo만으로 approach 학습 후 pour reward 점진 활성
+        # ---- Curriculum warmup (v3-style cascaded reward) ----
         step_count = float(getattr(self, "common_step_counter", 0))
-        pour_gate = min(
-            max(step_count - float(self.cfg.pour_reward_start_step), 0.0)
-            / max(float(self.cfg.pour_reward_warmup_steps), 1.0),
+        pour_warmup = min(step_count / max(self.cfg.curriculum_pour_warmup_steps, 1), 1.0)
+        bead_warmup = min(
+            max(step_count - self.cfg.curriculum_bead_warmup_start, 0.0)
+            / max(self.cfg.curriculum_bead_warmup_steps, 1),
             1.0,
         )
 
-        # ---- 2. Transport (pour_gate로 점진 활성) ----
-        r_dist_to_target = pour_gate * self.cfg.weight_dist_to_target * torch.exp(
-            -self.cfg.dist_to_target_exp_scale * self._mouth_xy_distance
+        # ---- Stage 1: Transport (always active, saturation at cup_transport_saturate_xy) ----
+        _transport_dist = (self._cup_center_xy_dist - self.cfg.cup_transport_saturate_xy).clamp(min=0.0)
+        r_dist_to_target = self.cfg.weight_dist_to_target * torch.exp(
+            -self.cfg.dist_to_target_exp_scale * _transport_dist
         )
 
-        # ---- 3. Pour stage (ρ gate + pour_gate) ----
+        # ---- Stage 3: Tilt (pour_dist gate용 먼저 계산) ----
         target_tilt_cos = math.cos(math.radians(self.cfg.pour_tilt_target_deg))
         r_tilt = torch.exp(
             -self.cfg.pour_tilt_sharpness * torch.abs(self._source_up_dot_world - target_tilt_cos)
         )
+
+        # ---- Stage 2: Pour distance (ρ × pour_warmup × r_tilt.detach() × z_gate) ----
+        z_gate = torch.clamp(self._mouth_z_clearance / 0.03, 0.0, 1.0)
+        r_pour_dist = (
+            self._rho
+            * pour_warmup
+            * r_tilt.detach()
+            * z_gate
+            * self.cfg.weight_pour_dist
+            * torch.exp(-self.cfg.pour_dist_exp_scale * self._mouth_xy_distance)
+        )
+
         r_align = 0.5 * (1.0 + self._directional_tilt_cos)
         r_bead_progressive = self.cfg.weight_bead_progressive * (self._bead_in_target_fraction ** 2)
         r_bead_delta = self.cfg.weight_bead_entry_delta * self._bead_in_target_delta.clamp(min=0.0)
 
-        r_pour_stage = pour_gate * self._rho * (
-            self.cfg.weight_tilt * r_tilt
-            + self.cfg.weight_align * r_align
-            + r_bead_progressive
-            + r_bead_delta
+        r_pour_stage = self._rho * (
+            pour_warmup * (self.cfg.weight_tilt * r_tilt + self.cfg.weight_align * r_align)
+            + bead_warmup * (r_bead_progressive + r_bead_delta)
         )
-        r_source_drain = pour_gate * self._rho * self.cfg.weight_source_drain * (1.0 - self._bead_in_source_fraction)
+        _drain_dir_gate = 0.5 * (1.0 + self._directional_tilt_cos)
+        r_source_drain = (
+            self._rho
+            * _drain_dir_gate
+            * bead_warmup
+            * self.cfg.weight_source_drain
+            * (1.0 - self._bead_in_source_fraction)
+        )
+        simple_reward_terms = compute_simple_pour_reward(
+            mouth_xy_distance=self._mouth_xy_distance,
+            bead_in_target_fraction=self._bead_in_target_fraction,
+            spill_ratio=self._spill_ratio,
+            rho=self._rho * pour_warmup,
+            xy_weight=self.cfg.weight_pour_xy,
+            xy_sharpness=self.cfg.pour_xy_sharpness,
+            capture_weight=self.cfg.weight_capture_spill,
+            spill_weight=self.cfg.weight_simple_spill,
+            spill_capture_coupling=self.cfg.spill_capture_coupling,
+            all_beads_bonus_weight=self.cfg.weight_all_beads_bonus,
+        )
 
         # ---- 4. Success ----
         success_fill_ratio = (
@@ -1762,14 +1815,19 @@ class PourRightEnv(DirectRLEnv):
             palm_delta=palm_delta,
         )
 
-        # demo_arm은 approach phase(ρ=0)에서만 활성, pour phase(ρ=1)에서 꺼서 tilt 탐색 허용
-        r_demo_arm_gated = demo_terms["r_demo_arm_pose"] * (1.0 - self._rho)
+        # step-indexed alignment: phase gate 불필요.
+        # 에피소드 초반 step → demo lift 완료 자세, 후반 step → demo pour 완료 자세.
+        # warmup gate만 유지 (학습 초기 demo reward 점진 활성).
+        r_demo_arm_gated = demo_terms["r_demo_arm_pose"]
 
         total = (
             r_hold
             + r_dist_to_target
+            + r_pour_dist
             + r_pour_stage
             + r_source_drain
+            + simple_reward_terms["r_pour_xy"]
+            + simple_reward_terms["all_beads_bonus"]
             + r_demo_arm_gated
             + demo_terms["r_demo_palm_pose"]
             + self.cfg.weight_success * r_success
@@ -1801,14 +1859,25 @@ class PourRightEnv(DirectRLEnv):
             "reward/hold":              r_hold.mean(),
             "reward/dist":              r_dist_to_target.mean(),
             "reward/pour":              r_pour_stage.mean(),
-            "reward/pour_tilt":         (pour_gate * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
-            "reward/pour_align":        (pour_gate * self.cfg.weight_align * r_align * self._rho).mean(),
-            "reward/bead_progressive":  (pour_gate * self._rho * r_bead_progressive).mean(),
-            "reward/bead_delta":        (pour_gate * self._rho * r_bead_delta).mean(),
+            "reward/pour_xy":           simple_reward_terms["r_pour_xy"].mean(),
+            "reward/capture_spill":     simple_reward_terms["r_capture_spill"].mean(),
+            "reward/all_beads_bonus":   simple_reward_terms["all_beads_bonus"].mean(),
+            "reward/pour_tilt":         (pour_warmup * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
+            "reward/pour_align":        (pour_warmup * self.cfg.weight_align * r_align * self._rho).mean(),
+            "reward/bead_progressive":  (bead_warmup * self._rho * r_bead_progressive).mean(),
+            "reward/bead_delta":        (bead_warmup * self._rho * r_bead_delta).mean(),
+            "reward/pour_dist":         r_pour_dist.mean(),
             "reward/source_drain":      r_source_drain.mean(),
             "reward/success":           (self.cfg.weight_success * r_success).mean(),
             "reward/demo_arm":          r_demo_arm_gated.mean(),
             "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
+            "log/demo_step_idx":        self.episode_length_buf.float().mean(),
+            "log/demo_time_aligned_index": self.episode_length_buf.float().mean(),
+            "log/demo_pose_id":         self._demo_pose_ids.float().mean(),
+            "log/target_replay_enabled": torch.tensor(
+                float(self.cfg.use_demo_left_target_pose and self.demo_pose_reference is not None),
+                device=self.device,
+            ),
             "cost/spill":               (spill_weight * spill_cost).mean(),
             "cost/premature_tilt":      (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),
             "cost/grasp_loss":          (self.cfg.weight_grasp_loss * grasp_loss_cost).mean(),
@@ -1822,6 +1891,7 @@ class PourRightEnv(DirectRLEnv):
             "cost/demo_smooth":         demo_terms["cost_demo_smooth"].mean(),
             "cost/thumb_grip":          demo_terms["cost_thumb_grip"].mean(),
             "log/bead_in_target":       self._bead_in_target_fraction.mean(),
+            "log/all_beads_success":    (self._bead_in_target_fraction >= 1.0 - 1e-4).float().mean(),
             "log/bead_in_source":       self._bead_in_source_fraction.mean(),
             "log/bead_cross":           self._bead_cross_fraction.mean(),
             "log/spill_ratio":          self._spill_ratio.mean(),
@@ -1830,8 +1900,11 @@ class PourRightEnv(DirectRLEnv):
             "log/mouth_xy_dist":        self._mouth_xy_distance.mean(),
             "log/directional_tilt_cos": self._directional_tilt_cos.mean(),
             "log/rho":                  self._rho.mean(),
-            "log/pour_gate":            torch.tensor(pour_gate, device=self.device),
+            "log/pour_warmup":          torch.tensor(pour_warmup, device=self.device),
+            "log/bead_warmup":          torch.tensor(bead_warmup, device=self.device),
             "log/contact_gate":         contact_gate.mean(),
+            "log/slip_dist":            slip_dist.mean(),
+            "log/full_grasp_rate":      full_grasp_flag.mean(),
             "log/source_empty_steps":   self._source_empty_steps.float().mean(),
             "log/arm_vel_l2":           arm_qd_l2.mean(),
             "log/arm_acc_l2":           arm_acc_vec.norm(dim=-1).mean(),
@@ -1937,6 +2010,12 @@ class PourRightEnv(DirectRLEnv):
         self._maybe_store_warmstart_successes(env_ids)
         env_ids_t_reset = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
         self._warmstart_env_captured[env_ids_t_reset] = False
+        if self.demo_pose_reference is not None:
+            self._demo_pose_ids[env_ids_t_reset] = torch.randint(
+                self.demo_pose_reference.num_demos,
+                (n,),
+                device=self.device,
+            )
 
         self.episode_success_buf[env_ids] = False
         self._warmstart_only_close[env_ids] = False
@@ -1952,11 +2031,13 @@ class PourRightEnv(DirectRLEnv):
             self._reset_from_warmstart_cache(env_ids)
             return
 
+        left_cup_pose = self._set_left_demo_reference(env_ids)
+
         # ---- 1. 로봇 관절 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_pos[:, self.actuated_dof_indices] = self.robot_start_joint_pos[0]
-        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_target_pos[env_ids]
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
         # ---- 2. Fabrics 상태 리셋 ----
@@ -2062,7 +2143,7 @@ class PourRightEnv(DirectRLEnv):
         pregrasp_full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         pregrasp_full_pos[:, self.arm_dof_indices]  = q_pregrasp[:, :NUM_ARM_DOF]
         pregrasp_full_pos[:, self.hand_dof_indices] = approach_hand
-        pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        pregrasp_full_pos[:, self.left_arm_dof_indices] = self.left_arm_target_pos[env_ids]
         self.robot.write_joint_state_to_sim(pregrasp_full_pos, pregrasp_full_vel, env_ids=env_ids)
 
         # ---- 7. 컵 spawn ----
@@ -2073,7 +2154,6 @@ class PourRightEnv(DirectRLEnv):
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
-        left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
         self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
@@ -2085,7 +2165,6 @@ class PourRightEnv(DirectRLEnv):
             bead_state = self._sample_bead_states_inside_cup(cup_root_state[:, :7])
             self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
             self._beads_spawned[env_ids] = True
-        self._bead_active_mask[env_ids] = True
 
         # ---- 8. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand
@@ -2169,6 +2248,90 @@ class PourRightEnv(DirectRLEnv):
         quat_w = self._left_cup_quat_wxyz.unsqueeze(0).expand(n, -1)
         return torch.cat([pos_w, quat_w], dim=-1)
 
+    def _get_left_cup_attached_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
+        """Return target cup pose attached to the current left hand body pose."""
+        if self.left_hand_body_index < 0:
+            return self._get_left_target_cup_fixed_pose(env_ids)
+
+        if env_ids is None:
+            hand_pos_w = self.robot.data.body_pos_w[:, self.left_hand_body_index]
+            hand_quat_w = self.robot.data.body_quat_w[:, self.left_hand_body_index]
+        else:
+            hand_pos_w = self.robot.data.body_pos_w[env_ids, self.left_hand_body_index]
+            hand_quat_w = self.robot.data.body_quat_w[env_ids, self.left_hand_body_index]
+        n = hand_pos_w.shape[0]
+        cup_pos_w = hand_pos_w + quat_apply(
+            hand_quat_w,
+            self._left_cup_attach_pos_b.unsqueeze(0).expand(n, -1),
+        )
+        cup_quat_w = quat_mul(
+            hand_quat_w,
+            self._left_cup_attach_quat_wxyz.unsqueeze(0).expand(n, -1),
+        )
+        return torch.cat([cup_pos_w, cup_quat_w], dim=-1)
+
+    def _update_left_demo_reference_for_current_step(self) -> None:
+        if (
+            not self.cfg.use_demo_left_target_pose
+            or self.demo_pose_reference is None
+        ):
+            self.left_arm_target_pos.copy_(self.left_arm_zero_pos)
+            return
+
+        ref = self.demo_pose_reference
+        demo_ids = self._demo_pose_ids.clamp(0, ref.num_demos - 1)
+        demo_idx = self.episode_length_buf.long().clamp(0, ref.num_frames - 1)
+        self.left_arm_target_pos.copy_(ref.left_joint_pos[demo_ids, demo_idx])
+        target_cup_pose_w = self._get_demo_target_cup_pose_w(
+            demo_ids=demo_ids,
+            demo_idx=demo_idx,
+            env_ids_t=None,
+        )
+        self._left_target_cup_fixed_pose_w.copy_(target_cup_pose_w)
+        self.left_target_cup.write_root_pose_to_sim(target_cup_pose_w)
+        self.left_target_cup.write_root_velocity_to_sim(
+            torch.zeros(self.num_envs, 6, device=self.device)
+        )
+
+    def _set_left_demo_reference(self, env_ids: Sequence[int]) -> torch.Tensor:
+        """Set per-env left arm and target cup references from the assigned demo."""
+        env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+        if (
+            not self.cfg.use_demo_left_target_pose
+            or self.demo_pose_reference is None
+        ):
+            self.left_arm_target_pos[env_ids_t] = self.left_arm_zero_pos[env_ids_t]
+            return self._get_left_cup_fk_pose(env_ids=env_ids)
+
+        ref = self.demo_pose_reference
+        demo_ids = self._demo_pose_ids[env_ids_t].clamp(0, ref.num_demos - 1)
+        demo_idx = self.episode_length_buf[env_ids_t].long().clamp(0, ref.num_frames - 1)
+        target_left = ref.left_joint_pos[demo_ids, demo_idx]
+        self.left_arm_target_pos[env_ids_t] = target_left
+
+        return self._get_demo_target_cup_pose_w(
+            demo_ids=demo_ids,
+            demo_idx=demo_idx,
+            env_ids_t=env_ids_t,
+        )
+
+    def _get_demo_target_cup_pose_w(
+        self,
+        *,
+        demo_ids: torch.Tensor,
+        demo_idx: torch.Tensor,
+        env_ids_t: torch.Tensor | None,
+    ) -> torch.Tensor:
+        ref = self.demo_pose_reference
+        if ref is None:
+            return self._get_left_target_cup_fixed_pose(env_ids_t)
+        target_cup_local_xyzw = ref.target_cup_pose[demo_ids, demo_idx]
+        origins = self.scene.env_origins if env_ids_t is None else self.scene.env_origins[env_ids_t]
+        target_cup_pose_w = torch.zeros(target_cup_local_xyzw.shape[0], 7, device=self.device)
+        target_cup_pose_w[:, :3] = origins + target_cup_local_xyzw[:, :3]
+        target_cup_pose_w[:, 3:7] = target_cup_local_xyzw[:, [6, 3, 4, 5]]
+        return target_cup_pose_w
+
     def _get_left_target_cup_fixed_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
         if env_ids is None:
             return self._left_target_cup_fixed_pose_w
@@ -2221,8 +2384,6 @@ class PourRightEnv(DirectRLEnv):
                 device=self.device,
                 expected_object_spawn_z=self.cfg.object_spawn_z,
                 expected_palm_bounds=palm_bounds,
-                expected_num_beads=self.num_beads,
-                expected_bead_single_mass=self.cfg.bead_single_mass,
             )
         except (FileNotFoundError, KeyError, ValueError) as exc:
             print(f"[5g_pour_right_v5] warm-state disk load error: {exc}", flush=True)
@@ -2245,17 +2406,26 @@ class PourRightEnv(DirectRLEnv):
         cup_pose[:, :3] = bank.cup_pos_local
         cup_pose[:, 3:7] = bank.cup_quat_wxyz  # 실제 grasp cup orientation (wxyz)
         self._warmstart_cup_pose = cup_pose
-        self._warmstart_bead_state_local = (
-            bank.bead_state_local.clone() if bank.bead_state_local is not None else None
-        )
-        self._warmstart_bead_count_current = (
-            bank.bead_count_current.clone() if bank.bead_count_current is not None else None
-        )
         self._warmstart_cache_count = n
 
+        # demo-tagged: 있으면 저장, 없으면 None (구 HDF5 하위 호환)
+        self._warmstart_demo_file_idx = bank.demo_file_idx  # Tensor(n,) or None
+
+        tagged = self._warmstart_demo_file_idx is not None
+        quality = ""
+        if bank.per_finger_contact is not None:
+            per_finger_mean = bank.per_finger_contact.float().mean(dim=0)
+            quality += ", per_finger_contact_mean=[" + ", ".join(
+                f"{float(v):.2f}" for v in per_finger_mean
+            ) + "]"
+        if bank.stable_contact_steps is not None:
+            quality += (
+                f", stable_steps_min={int(bank.stable_contact_steps.min().item())}"
+                f", stable_steps_mean={float(bank.stable_contact_steps.float().mean().item()):.1f}"
+            )
         print(
             f"[5g_pour_right_v5] loaded {n} warmstart states from disk "
-            f"({', '.join(bank.source_paths)}).",
+            f"(demo_tagged={tagged}{quality}, {', '.join(bank.source_paths)}).",
             flush=True,
         )
         return True
@@ -2305,10 +2475,6 @@ class PourRightEnv(DirectRLEnv):
         self.cfg.obs_noise_cup_pos = 0.0
         self._warmstart_collect_mode = True
 
-        # warmstart 에피소드는 v7-2 길이(600 steps)에 맞춰 자름:
-        # lift phase가 480-599 이므로 600 steps 이후는 v7-2가 학습하지 않은 구간.
-        # 그 이후에도 policy를 계속 실행하면 cup이 낙하하거나 OOB로 조기 종료돼
-        # success check가 누락되는 문제가 생김.
         _WARMSTART_EP_STEPS = 600
         # max_episode_length는 setter 없는 property: cfg.episode_length_s를 임시 변경
         _step_dt = self.cfg.sim.dt * self.cfg.decimation
@@ -2371,7 +2537,6 @@ class PourRightEnv(DirectRLEnv):
         upright_0_7 = warmstart_diag["upright_0_7"]
         upright_0_9 = warmstart_diag["upright_0_9"]
 
-        # 디버그: 조건별 통과율을 주기적으로 출력
         if not hasattr(self, '_warmstart_debug_ep_count'):
             self._warmstart_debug_ep_count = 0
         self._warmstart_debug_ep_count += len(env_ids_t)
@@ -2426,11 +2591,31 @@ class PourRightEnv(DirectRLEnv):
         palm_pose = self._warmstart_palm_pose[pick]
         cup_pose_local = self._warmstart_cup_pose[pick]
 
+        # demo-tagged warmstart: 해당 warmstart 를 생성한 demo 를 이 env 에 배정
+        if (
+            self._warmstart_demo_file_idx is not None
+            and self.demo_pose_reference is not None
+        ):
+            env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+            tagged = self._warmstart_demo_file_idx[pick]
+            # -1(미태깅) 항목은 랜덤 배정으로 fallback
+            valid = tagged >= 0
+            assigned = torch.where(
+                valid,
+                tagged % self.demo_pose_reference.num_demos,
+                torch.randint(
+                    self.demo_pose_reference.num_demos, (n,), device=self.device
+                ),
+            )
+            self._demo_pose_ids[env_ids_t] = assigned
+
+        left_cup_pose = self._set_left_demo_reference(env_ids)
+
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_pos[:, self.arm_dof_indices] = arm_pos
         full_pos[:, self.hand_dof_indices] = hand_pos
-        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_target_pos[env_ids]
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
         self.fabric_q[env_ids].zero_()
@@ -2480,27 +2665,13 @@ class PourRightEnv(DirectRLEnv):
         self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
         self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
         self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        if self._warmstart_bead_state_local is not None:
-            bead_state = self._warmstart_bead_state_local[pick].clone()
-            bead_state[..., :3] += self.scene.env_origins[env_ids].unsqueeze(1)
-            self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
-            self._beads_spawned[env_ids] = True
-            if self._warmstart_bead_count_current is None:
-                self._bead_active_mask[env_ids] = True
-            else:
-                active_count = self._warmstart_bead_count_current[pick].clamp(0, self.num_beads)
-                bead_ids = torch.arange(self.num_beads, device=self.device).unsqueeze(0)
-                self._bead_active_mask[env_ids] = bead_ids < active_count.unsqueeze(1)
-        else:
-            # legacy v7 cache: bead state was not saved, so keep delayed spawn behavior.
-            self._hide_beads(env_ids)
-            self._beads_spawned[env_ids] = False
-            self._bead_active_mask[env_ids] = True
+        # 비드는 즉시 소환하지 않고 episode_hold_steps 후 물리 안정화된 컵 위치에 소환
+        self._hide_beads(env_ids)
+        self._beads_spawned[env_ids] = False
 
         self.contact_force_raw[env_ids].zero_()
         self.binary_contact_buf[env_ids] = False
