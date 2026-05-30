@@ -1,7 +1,7 @@
 # 5g_pour_right_v5 rl_games LSTM(actor) + MLP(critic) PPO + BC 설정
 # 관측: actor 60D / critic 143D (asymmetric), 액션: 11D
 # Asymmetric Actor-Critic (has_central_value: True)
-# BC: sim success trajectories + real HDF5 demo (DemoBCBuffer)
+# BC: sim success trajectories + rollout-conditioned real-demo teacher loss
 #
 # 구조 설계 근거 (v3 critic MLP 구조 채택):
 #   - actor obs에서 hand contact/force를 제거하고 bead flow + arm trajectory 중심으로 축약
@@ -89,7 +89,7 @@ params:
     # horizon=32: 1200-step 장기 에피소드에서 BPTT가 더 긴 시계열 포착
     # batch = 2048 envs × 32 = 65536 → minibatch 8192 = 8 splits (VRAM 완화)
     horizon_length: 32
-    seq_length: 8             # BPTT truncation 윈도우 (horizon 32 = 4 seq 청크)
+    seq_length: 32            # BPTT truncation 윈도우 (horizon=seq: 전체 rollout 한 번에 역전파)
     zero_rnn_on_done: True
     minibatch_size: 8192
     mini_epochs: 4
@@ -131,15 +131,20 @@ params:
     bc_loss_weight_init: 1.0
     bc_loss_weight_final: 0.1
     bc_min_buffer_size: 5
-    bc_seq_len: 8
+    bc_seq_len: 32
     bc_batch_size: 64
 
-    # 실제 HDF5 데모 BC (DemoBCBuffer)
+    # 실제 데모 BC: rollout env의 demo_id/time/base에 맞춘 teacher action loss
     real_demo_bc_enable: True
+    real_demo_offline_bc_enable: False
     real_demo_bc_warmup_epochs: 10
-    real_demo_bc_decay_epochs: 3000
+    real_demo_bc_decay_epochs: 8000
     real_demo_bc_weight_init: 30.0
     real_demo_bc_weight_final: 1.0
+    real_demo_teacher_palm_weight: 1.0
+    real_demo_teacher_finger_weight: 0.0
+
+    # Legacy HDF5 offline BC fallback (default off; kept for debugging)
     real_demo_bc_min_buffer_size: 1
     real_demo_stride: 2
     real_demo_bc_start_mode: warm_state_match
@@ -147,3 +152,4 @@ params:
     real_demo_bc_warm_state_paths:
       - /home/user/rl_ws/datasets/grasp_warm_v7_2_contact4_balanced_400x10.hdf5
     real_demo_pour_sample_ratio: 0.0
+    real_demo_time_bin_weights: [0.20, 0.20, 0.25, 0.35]

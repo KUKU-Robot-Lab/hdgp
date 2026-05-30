@@ -48,9 +48,9 @@ def test_v5_lstm_config_encodes_then_recurrs() -> None:
     assert "before_mlp: False" in cfg
     assert "concat_input: False" in cfg
     assert "concat_output: False" in cfg
-    assert "seq_length: 8" in cfg
+    assert "seq_length: 32" in cfg
     assert "minibatch_size: 8192" in cfg
-    assert "bc_seq_len: 8" in cfg
+    assert "bc_seq_len: 32" in cfg
 
 
 def test_v5_real_demo_bc_buffer_matches_actor_observation_contract() -> None:
@@ -68,7 +68,28 @@ def test_v5_real_demo_bc_uses_warm_aligned_full_trajectory() -> None:
     cfg = _read("config/agents/rl_games_ppo_cfg.yaml")
     demo = _read("demo_bc_buffer.py")
 
+    assert "real_demo_offline_bc_enable: False" in cfg
     assert "real_demo_bc_start_mode: warm_state_match" in cfg
     assert "real_demo_pour_sample_ratio: 0.0" in cfg
+    assert "real_demo_time_bin_weights: [0.20, 0.20, 0.25, 0.35]" in cfg
     assert 'start_mode: str = "warm_state_match"' in demo
     assert "start_index" in demo
+    assert "time_bin_weights" in demo
+
+
+def test_v5_real_demo_bc_is_rollout_conditioned_by_default() -> None:
+    cfg = _read("config/agents/rl_games_ppo_cfg.yaml")
+    agent = _read("lstm_bc_agent.py")
+    env = _read("pour_right_env.py")
+    env_cfg = _read("pour_right_env_cfg.py")
+
+    assert "rollout-conditioned real-demo teacher loss" in cfg
+    assert "real_demo_teacher_palm_weight: 1.0" in cfg
+    assert "real_demo_teacher_finger_weight: 0.0" in cfg
+    assert 'res_dict["demo_teacher_actions"]' in agent
+    assert 'input_dict.get("demo_teacher_actions"' in agent
+    assert "get_demo_teacher_actions" in env
+    assert "_demo_pose_id_valid" in env
+    assert "weight_demo_arm_pose: float = 1.0" in env_cfg
+    assert "weight_demo_palm_pose: float = 1.0" in env_cfg
+    assert "weight_demo_smooth: float = 0.02" in env_cfg

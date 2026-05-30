@@ -105,6 +105,7 @@ from isaaclab.envs import (
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
+from isaaclab.utils.io import load_yaml
 try:
     from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 except ModuleNotFoundError:
@@ -224,6 +225,127 @@ def _resolve_checkpoint_path(checkpoint: str) -> str:
     raise FileNotFoundError(f"Unable to find the checkpoint file or prefix: {checkpoint}")
 
 
+def _rebase_logged_paths(value, *, workspace_root: str):
+    """Map absolute paths from another machine's logged cfg onto this workspace."""
+    if isinstance(value, dict):
+        return {k: _rebase_logged_paths(v, workspace_root=workspace_root) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_rebase_logged_paths(v, workspace_root=workspace_root) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_rebase_logged_paths(v, workspace_root=workspace_root) for v in value)
+    if not isinstance(value, str) or os.path.exists(value):
+        return value
+
+    marker = "/rl_ws/"
+    if marker not in value:
+        return value
+    rel = value.split(marker, 1)[1]
+    candidate = os.path.join(workspace_root, rel)
+    return candidate if os.path.exists(candidate) else value
+
+
+def _apply_logged_env_cfg(target, logged: dict) -> None:
+    """Recursively copy logged env config values onto the Hydra config object."""
+    if not isinstance(logged, dict):
+        return
+    for key, value in logged.items():
+        if key == "func":
+            continue
+        if isinstance(target, dict):
+            if key not in target:
+                continue
+            current = target[key]
+        elif hasattr(target, key):
+            current = getattr(target, key)
+        else:
+            continue
+        if callable(current):
+            continue
+
+        if isinstance(value, dict) and (isinstance(current, dict) or hasattr(current, "__dict__")):
+            _apply_logged_env_cfg(current, value)
+        else:
+            try:
+                if isinstance(target, dict):
+                    target[key] = value
+                else:
+                    setattr(target, key, value)
+            except Exception:
+                pass
+
+
+def _restore_run_cfg_if_available(env_cfg, agent_cfg: dict, *, resume_path: str, workspace_root: str) -> dict:
+    """Use params saved next to the checkpoint so playback matches training."""
+    run_dir = os.path.dirname(os.path.dirname(resume_path))
+    params_dir = os.path.join(run_dir, "params")
+    env_yaml = os.path.join(params_dir, "env.yaml")
+    agent_yaml = os.path.join(params_dir, "agent.yaml")
+
+    if os.path.exists(env_yaml):
+        logged_env = _rebase_logged_paths(load_yaml(env_yaml), workspace_root=workspace_root)
+        _apply_logged_env_cfg(env_cfg, logged_env)
+        print(f"[INFO] Restored playback env cfg from: {env_yaml}")
+    else:
+        print(f"[WARN] Run env cfg not found; using current source cfg: {env_yaml}")
+
+    if os.path.exists(agent_yaml):
+        logged_agent = _rebase_logged_paths(load_yaml(agent_yaml), workspace_root=workspace_root)
+        if isinstance(logged_agent, dict) and "params" in logged_agent:
+            print(f"[INFO] Restored playback agent cfg from: {agent_yaml}")
+            return logged_agent
+        print(f"[WARN] Ignoring malformed run agent cfg: {agent_yaml}")
+    else:
+        print(f"[WARN] Run agent cfg not found; using current source cfg: {agent_yaml}")
+    return agent_cfg
+
+
+def _apply_playback_env_overrides(env_cfg) -> None:
+    """Apply CLI-only playback overrides after any logged cfg restore."""
+    if args_cli.num_envs is not None:
+        env_cfg.scene.num_envs = args_cli.num_envs
+    if args_cli.device is not None:
+        env_cfg.sim.device = args_cli.device
+
+    if args_cli.disable_adr:
+        disabled_attrs = []
+        for adr_attr in (
+            "enable_adr",
+            "enable_noise_adr",
+            "enable_bead_count_adr",
+            "enable_success_adr",
+            "enable_spill_adr",
+        ):
+            if hasattr(env_cfg, adr_attr):
+                setattr(env_cfg, adr_attr, False)
+                disabled_attrs.append(adr_attr)
+        if disabled_attrs:
+            print(f"[INFO] ADR disabled for playback: {', '.join(disabled_attrs)}")
+        else:
+            print("[WARN] --disable_adr ignored: env does not expose ADR flags")
+
+    if args_cli.bead_fixed is not None:
+        if hasattr(env_cfg, "bead_count_min") and hasattr(env_cfg, "bead_count_max"):
+            env_cfg.bead_count_min = args_cli.bead_fixed
+            env_cfg.bead_count_max = args_cli.bead_fixed
+            print(f"[INFO] bead count fixed for playback: {args_cli.bead_fixed}")
+        elif hasattr(env_cfg, "bead_count"):
+            env_cfg.bead_count = args_cli.bead_fixed
+            if hasattr(env_cfg, "bead_count_stages"):
+                env_cfg.bead_count_stages = (args_cli.bead_fixed,)
+            if hasattr(env_cfg, "enable_bead_count_adr"):
+                env_cfg.enable_bead_count_adr = False
+            print(f"[INFO] bead count fixed for playback: {args_cli.bead_fixed}")
+        else:
+            print("[WARN] --bead_fixed ignored: env does not expose bead count settings")
+
+    if args_cli.freeze_grasp_hand:
+        if hasattr(env_cfg, "freeze_grasp_hand_during_episode"):
+            env_cfg.freeze_grasp_hand_during_episode = True
+            print("[INFO] grasp hand frozen during playback.")
+        else:
+            print("[WARN] --freeze_grasp_hand ignored: env does not expose freeze_grasp_hand_during_episode")
+
+
 def _patch_optimizer_restore() -> None:
     """Make checkpoint restore match train.py for BC-pretrained weights."""
     if getattr(a2c_common.A2CBase, "_hdgp_optimizer_restore_patched", False):
@@ -282,10 +404,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     task_name = args_cli.task.split(":")[-1]
     train_task_name = _strip_play_task_name(task_name)
 
-    # override configurations with non-hydra CLI arguments
-    env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
-    env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
-
     # randomly sample a seed if seed = -1
     if args_cli.seed == -1:
         args_cli.seed = random.randint(0, 10000)
@@ -294,46 +412,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the environment seed (after multi-gpu config for updated rank from agent seed)
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg["params"]["seed"]
-
-    # Optional playback overrides for ADR / bead count visualization
-    if args_cli.disable_adr:
-        disabled_attrs = []
-        for adr_attr in (
-            "enable_adr",
-            "enable_noise_adr",
-            "enable_bead_count_adr",
-            "enable_success_adr",
-            "enable_spill_adr",
-        ):
-            if hasattr(env_cfg, adr_attr):
-                setattr(env_cfg, adr_attr, False)
-                disabled_attrs.append(adr_attr)
-        if disabled_attrs:
-            print(f"[INFO] ADR disabled for playback: {', '.join(disabled_attrs)}")
-        else:
-            print("[WARN] --disable_adr ignored: env does not expose ADR flags")
-
-    if args_cli.bead_fixed is not None:
-        if hasattr(env_cfg, "bead_count_min") and hasattr(env_cfg, "bead_count_max"):
-            env_cfg.bead_count_min = args_cli.bead_fixed
-            env_cfg.bead_count_max = args_cli.bead_fixed
-            print(f"[INFO] bead count fixed for playback: {args_cli.bead_fixed}")
-        elif hasattr(env_cfg, "bead_count"):
-            env_cfg.bead_count = args_cli.bead_fixed
-            if hasattr(env_cfg, "bead_count_stages"):
-                env_cfg.bead_count_stages = (args_cli.bead_fixed,)
-            if hasattr(env_cfg, "enable_bead_count_adr"):
-                env_cfg.enable_bead_count_adr = False
-            print(f"[INFO] bead count fixed for playback: {args_cli.bead_fixed}")
-        else:
-            print("[WARN] --bead_fixed ignored: env does not expose bead count settings")
-
-    if args_cli.freeze_grasp_hand:
-        if hasattr(env_cfg, "freeze_grasp_hand_during_episode"):
-            env_cfg.freeze_grasp_hand_during_episode = True
-            print("[INFO] grasp hand frozen during playback.")
-        else:
-            print("[WARN] --freeze_grasp_hand ignored: env does not expose freeze_grasp_hand_during_episode")
 
     # CHECKPOINT SEARCH ROOT RULE:
     #   <sbm_root>/log/rl_games/pipeline/<left|right|both>/<task_dir_name>
@@ -364,6 +442,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     else:
         resume_path = _resolve_checkpoint_path(args_cli.checkpoint)
     log_dir = os.path.dirname(os.path.dirname(resume_path))
+    workspace_root = os.path.abspath(os.path.join(sbm_root, ".."))
+    agent_cfg = _restore_run_cfg_if_available(
+        env_cfg,
+        agent_cfg,
+        resume_path=resume_path,
+        workspace_root=workspace_root,
+    )
+    agent_cfg["params"]["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["params"]["seed"]
+    env_cfg.seed = agent_cfg["params"]["seed"]
+    _apply_playback_env_overrides(env_cfg)
 
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir

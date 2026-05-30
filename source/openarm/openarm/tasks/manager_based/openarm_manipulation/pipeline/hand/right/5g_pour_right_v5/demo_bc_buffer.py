@@ -445,12 +445,14 @@ class DemoBCBuffer:
         stride: int = 2,
         device: str | torch.device = "cpu",
         pour_ratio: float = 0.0,
+        time_bin_weights: Sequence[float] | None = None,
         start_mode: str = "warm_state_match",
         start_fraction: float = 0.0,
         warm_state_paths: Sequence[str | Path] | None = DEFAULT_WARM_STATE_PATHS,
     ) -> None:
         self.device = torch.device(device)
         self.pour_ratio = float(pour_ratio)
+        self.time_bin_weights = _normalize_time_bin_weights(time_bin_weights)
         resolved_paths = tuple(Path(p) for p in paths)
         start_indices = _resolve_start_indices(
             resolved_paths,
@@ -484,10 +486,12 @@ class DemoBCBuffer:
         print(
             f"[DemoBCBuffer] loaded {len(self.episodes)} episodes "
             f"(start_mode={start_mode}, start_i_range={min(start_indices)}..{max(start_indices)}, "
-            f"pour_ratio={self.pour_ratio:.2f}).",
+            f"pour_ratio={self.pour_ratio:.2f}, "
+            f"time_bin_weights={tuple(round(v, 3) for v in self.time_bin_weights)}).",
             flush=True,
         )
         self._last_pour_ratio: float = 0.0
+        self._last_bin_ratios: list[float] = [0.0 for _ in self.time_bin_weights]
 
     def __len__(self) -> int:
         return len(self.episodes)
@@ -504,16 +508,34 @@ class DemoBCBuffer:
             return max(0, min(pick - seq_len // 2, max_start))
         return int(torch.randint(max_start + 1, (1,), device=self.device).item())
 
+    def _sample_time_bin_start(self, ep: DemoEpisode, seq_len: int, bin_idx: int) -> int:
+        T = int(ep.obs.shape[0])
+        max_start = max(T - seq_len, 0)
+        n_bins = max(len(self.time_bin_weights), 1)
+        lo = int(math.floor(max_start * (bin_idx / n_bins)))
+        hi = int(math.floor(max_start * ((bin_idx + 1) / n_bins)))
+        hi = max(lo, min(hi, max_start))
+        if hi <= lo:
+            return lo
+        return int(torch.randint(hi - lo + 1, (1,), device=self.device).item()) + lo
+
     def sample(self, batch_size: int, seq_len: int) -> dict:
         obs_out = torch.zeros(batch_size, seq_len, NUM_OBSERVATIONS, device=self.device)
         act_out = torch.zeros(batch_size, seq_len, NUM_ACTIONS, device=self.device)
         mask    = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=self.device)
         pour_samples = 0
+        bin_counts = torch.zeros(len(self.time_bin_weights), dtype=torch.float32, device=self.device)
+        bin_choices = _time_bin_choices(self.time_bin_weights, batch_size, self.device)
 
         for i in range(batch_size):
             ep = self.episodes[int(torch.randint(len(self.episodes), (1,), device=self.device).item())]
-            prefer_pour = torch.rand((), device=self.device).item() < self.pour_ratio
-            start = self._sample_start(ep, seq_len, prefer_pour)
+            bin_idx = int(bin_choices[i].item())
+            bin_counts[bin_idx] += 1.0
+            if self.time_bin_weights:
+                start = self._sample_time_bin_start(ep, seq_len, bin_idx)
+            else:
+                prefer_pour = torch.rand((), device=self.device).item() < self.pour_ratio
+                start = self._sample_start(ep, seq_len, prefer_pour)
             stop  = min(start + seq_len, int(ep.obs.shape[0]))
             cnt   = stop - start
             if cnt <= 0:
@@ -525,7 +547,33 @@ class DemoBCBuffer:
                 pour_samples += 1
 
         self._last_pour_ratio = pour_samples / float(batch_size)
+        self._last_bin_ratios = (bin_counts / float(batch_size)).detach().cpu().tolist()
         return {"obs": obs_out, "actions": act_out, "mask": mask}
+
+
+def _normalize_time_bin_weights(weights: Sequence[float] | None) -> list[float]:
+    if weights is None:
+        weights = (0.20, 0.20, 0.25, 0.35)
+    out = [max(float(w), 0.0) for w in weights]
+    total = sum(out)
+    if not out or total <= 0.0:
+        return [1.0]
+    return [w / total for w in out]
+
+
+def _time_bin_choices(weights: Sequence[float], batch_size: int, device: torch.device) -> torch.Tensor:
+    raw = torch.as_tensor(weights, dtype=torch.float32, device=device) * float(batch_size)
+    counts = torch.floor(raw).long()
+    remainder = int(batch_size - counts.sum().item())
+    if remainder > 0:
+        frac_order = torch.argsort(raw - counts.float(), descending=True)
+        counts[frac_order[:remainder]] += 1
+    choices = torch.repeat_interleave(torch.arange(len(weights), device=device), counts)
+    if choices.numel() < batch_size:
+        pad = torch.zeros(batch_size - choices.numel(), dtype=torch.long, device=device)
+        choices = torch.cat([choices, pad], dim=0)
+    choices = choices[:batch_size]
+    return choices[torch.randperm(batch_size, device=device)]
 
 
 def _resolve_start_indices(

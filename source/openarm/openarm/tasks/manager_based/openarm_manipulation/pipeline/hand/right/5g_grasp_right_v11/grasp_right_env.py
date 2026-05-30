@@ -1326,7 +1326,7 @@ class GraspRightEnv(DirectRLEnv):
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 136D | Critic 172D
+    # Observations: Actor 144D | Critic 174D
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
         # ==== 공통 clean state (critic용) ====
@@ -1380,6 +1380,14 @@ class GraspRightEnv(DirectRLEnv):
             self.episode_length_buf.float() / EPISODE_STEPS
         ).unsqueeze(1)
 
+        cup_lin_vel  = self.cup.data.root_lin_vel_w
+        cup_ang_vel  = self.cup.data.root_ang_vel_w
+        cup_rot      = self.object_rot
+        palm_binary_obs = self.palm_binary_contact_buf.float().unsqueeze(-1)
+        palm_force_obs = (
+            self.palm_contact_force_raw / CONTACT_FORCE_MAX
+        ).clamp(0.0, 1.0).unsqueeze(-1)
+
         actor_obs_parts = [
             arm_joint_pos,          # 7
             arm_joint_vel,          # 7
@@ -1389,6 +1397,8 @@ class GraspRightEnv(DirectRLEnv):
             fingertip_pos_rel_palm, # 15
             palm_to_cup,            # 3
             cup_to_goal,            # 3
+            cup_ang_vel,            # 3
+            cup_rot,                # 4
             last_actions,           # 26
         ]
         if self.cfg.actor_observe_bead_mass:
@@ -1397,6 +1407,8 @@ class GraspRightEnv(DirectRLEnv):
             tip_force_xyz_norm,     # 15
             middle_to_cup,          # 15
             phase_step_ratio,       # 1
+            palm_binary_obs,        # 1
+            palm_force_obs,         # 1
         ])
         actor_obs = torch.cat(actor_obs_parts, dim=-1)
 
@@ -1407,10 +1419,7 @@ class GraspRightEnv(DirectRLEnv):
                 f"[v11] Actor obs dim mismatch: {actor_obs.shape[1]} != {self.cfg.num_observations}"
             )
 
-        # ==== Critic extra obs (36D) ====
-        cup_lin_vel  = self.cup.data.root_lin_vel_w
-        cup_ang_vel  = self.cup.data.root_ang_vel_w
-        cup_rot      = self.object_rot
+        # ==== Critic extra obs (30D) ====
         cup_height_delta = (
             cup_pos_clean[:, 2] - self.object_init_pos[:, 2]
         ).unsqueeze(1)
@@ -1430,9 +1439,6 @@ class GraspRightEnv(DirectRLEnv):
         ).view(self.num_envs, -1)   # (N, 15)
         cup_to_goal_clean = self.object_goal - cup_pos_clean
 
-        palm_binary_obs    = self.palm_binary_contact_buf.float().unsqueeze(-1)             # (N, 1)
-        palm_force_obs     = (self.palm_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0).unsqueeze(-1)  # (N, 1)
-
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,
             arm_joint_vel_clean,
@@ -1442,20 +1448,20 @@ class GraspRightEnv(DirectRLEnv):
             (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
             cup_pos_clean - palm_center_pos_clean,
             cup_to_goal_clean,
+            cup_ang_vel,
+            cup_rot,
             last_actions,
-            self._bead_mass_normalized.unsqueeze(-1),
             tip_force_xyz_norm,     # 15D
             middle_to_cup_clean,    # 15D
             phase_step_ratio,
             palm_binary_obs,        # 1D
             palm_force_obs,         # 1D
-        ], dim=-1)   # 138D
+        ], dim=-1)   # 144D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 138
+            actor_obs_clean,        # 144
+            self._bead_mass_normalized.unsqueeze(-1),  # 1
             cup_lin_vel,            # 3
-            cup_ang_vel,            # 3
-            cup_rot,                # 4
             cup_height_delta,       # 1
             distal_binary,          # 5
             distal_force_norm,      # 5
@@ -1670,14 +1676,18 @@ class GraspRightEnv(DirectRLEnv):
             ("30b", self._bead_mass_normalized >= 0.84),
         ]
         for _lvl, (_tag, _mask) in enumerate(_bin_defs):
+            self.extras[f"bin_{_tag}_sr"] = torch.tensor(
+                self._successful_episodes_bin[_lvl]
+                / max(self._total_episodes_bin[_lvl], 1),
+                device=self.device,
+            )
             if _mask.any():
                 self.extras[f"bin_{_tag}_f_ratio"] = force_ratio[_mask].mean()
-                self.extras[f"bin_{_tag}_sr"] = torch.tensor(
-                    self._successful_episodes_bin[_lvl]
-                    / max(self._total_episodes_bin[_lvl], 1),
-                    device=self.device,
-                )
                 self.extras[f"bin_{_tag}_contacts"] = self.num_contacts_buf[_mask].float().mean()
+            else:
+                _zero = torch.zeros((), device=self.device)
+                self.extras[f"bin_{_tag}_f_ratio"] = _zero
+                self.extras[f"bin_{_tag}_contacts"] = _zero
 
         # ================================================================
         # 7-term Mass-Adaptive Enveloping Grip Reward

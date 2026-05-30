@@ -261,22 +261,31 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_contact_maintain: float = 0.0
     weight_force_balance: float = 0.0
     weight_finger_curl: float = 0.0
-    # Simple v5 reward: BC/LSTM은 motion prior, RL reward는 pour-point XY + capture/spill만 담당
+    # v3-style cascaded reward + simple pour XY/capture (BC/LSTM = motion prior)
     weight_pour_xy: float = 8.0
-    pour_xy_sharpness: float = 80.0
+    pour_xy_sharpness: float = 20.0        # Fix C: 80→20 (0.2m 거리에서도 gradient 확보)
     weight_capture_spill: float = 300.0
     weight_simple_spill: float = 80.0
     spill_capture_coupling: float = 2.0
     weight_all_beads_bonus: float = 200.0
-    # Legacy log-only terms. Keep them at zero so tilt/align/source-drain do not steer learning.
-    weight_dist_to_target: float = 0.0
+    # Stage 1: Transport (항상 활성 — cup_center_xy_dist 기반, saturation)
+    weight_dist_to_target: float = 5.0
     dist_to_target_exp_scale: float = 5.0
-    weight_tilt: float = 0.0               # demo가 tilt 처리 → 비활성
-    weight_align: float = 0.0              # demo가 alignment 처리 → 비활성
-    weight_bead_progressive: float = 0.0
-    weight_bead_entry_delta: float = 0.0
-    weight_source_drain: float = 0.0
-    # Pour reward starts immediately; BC/LSTM supplies the trajectory prior.
+    cup_transport_saturate_xy: float = 0.17  # 이하: transport max (포화)
+    # Stage 2: Pour distance (ρ × pour_warmup × r_tilt.detach() × z_gate)
+    weight_pour_dist: float = 8.0
+    pour_dist_exp_scale: float = 8.0
+    # Stage 3: Tilt + Align (ρ × pour_warmup)
+    weight_tilt: float = 4.0
+    weight_align: float = 3.0
+    # Bead outcome (ρ × bead_warmup)
+    weight_bead_progressive: float = 100.0
+    weight_bead_entry_delta: float = 150.0
+    weight_source_drain: float = 10.0
+    # Curriculum warmup (step 기반 선형)
+    curriculum_pour_warmup_steps: int = 30000  # 0→30k: pour_dist + tilt + align 점진 활성
+    curriculum_bead_warmup_start: int = 10000  # 10k 이후: bead + drain 점진 활성
+    curriculum_bead_warmup_steps: int = 60000  # 10k→70k: bead reward 0→max
     pour_reward_start_step: int = 0
     pour_reward_warmup_steps: int = 1
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
@@ -323,9 +332,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_pose_start_mode: str = "warm_state_match"
     demo_start_fraction: float = 0.0      # fraction mode fallback
     demo_episode_steps: int = 1200        # episode_length_s(20s) × 60Hz
-    weight_demo_arm_pose: float = 0.0
-    weight_demo_palm_pose: float = 0.0
-    weight_demo_smooth: float = 0.0
+    weight_demo_arm_pose: float = 1.0
+    weight_demo_palm_pose: float = 1.0
+    weight_demo_smooth: float = 0.02
     weight_thumb_grip_pose: float = 0.0
     demo_pose_warmup_steps: int = 20000
     demo_pose_near_gate_xy: float = 0.20  # unused

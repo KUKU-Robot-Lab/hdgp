@@ -122,7 +122,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
     max_pose_angle:             float = 45.0
-    fabrics_max_objects_per_env: int  = 8
+    fabrics_max_objects_per_env: int  = 6
     fabrics_damping_gain:       float = 20.0
 
     # -----------------------------------------------------------------------
@@ -340,8 +340,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.40
-    object_spawn_y_center: float = -0.15
+    object_spawn_x_center: float = 0.27
+    object_spawn_y_center: float = -0.10
     object_spawn_z:        float = 0.297
     object_spawn_xy_range: float = 0.06
 

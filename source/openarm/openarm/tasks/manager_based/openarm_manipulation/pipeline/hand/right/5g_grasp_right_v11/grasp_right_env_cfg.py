@@ -128,14 +128,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 136 (+cup_to_goal 3D)
+    observation_space: int = NUM_OBSERVATIONS          # 144 (no oracle mass, includes cup orientation)
     action_space:      int = NUM_ACTIONS               # 26
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 172 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 174 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
     num_states:       int = NUM_CRITIC_OBSERVATIONS
-    actor_observe_bead_mass: bool = True
+    actor_observe_bead_mass: bool = False
 
     # -----------------------------------------------------------------------
     # Pour warm-state export (play/collector only)
@@ -200,7 +200,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     transport_success_hold_steps: int = 90
 
     # Phase curriculum:
-    # 0 = grasp/lift only, 1 = add stabilize + dynamic beads, 2 = full transport.
+    # 0 = grasp/lift only, 1 = add stabilize, 2 = full transport.
     enable_phase_curriculum: bool = True
     phase_curriculum_initial_stage: int = 0
     phase_curriculum_min_episodes: int = 100
@@ -537,14 +537,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     beads_cfg: RigidObjectCollectionCfg = field(default_factory=_make_beads_cfg)
     num_beads: int = _DEFAULT_BEAD_COUNT              # 30
     bead_count_min: int = 0
-    bead_count_max: int = 30                           # 이산: {0, 10, 20, 30}개
+    bead_count_max: int = 30                           # Static mass-adaptive bins: {0, 10, 20, 30}.
     bead_spawn_z_offset: float = 0.035
 
-    # Stabilize phase 중 숨겨둔 bead를 컵에 추가해 load-shift/slip disturbance를 만든다.
-    dynamic_bead_spawn_enabled: bool = True
+    # Keep dynamic insertion disabled for hidden-mass static-bin grasp/lift training.
+    dynamic_bead_spawn_enabled: bool = False
     dynamic_bead_spawn_step: int = STABILIZE_START_STEP + 30
     bead_initial_count_min: int = 0
-    bead_initial_count_max: int = 10
+    bead_initial_count_max: int = 0
     dynamic_bead_add_count_min: int = 10
     dynamic_bead_add_count_max: int = 20
 

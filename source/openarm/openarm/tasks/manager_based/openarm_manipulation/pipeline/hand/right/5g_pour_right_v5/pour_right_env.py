@@ -179,20 +179,44 @@ class PourRightEnv(DirectRLEnv):
         return torch.nn.functional.normalize(target_quat_xyzw, dim=-1)
 
     @staticmethod
+    def _quat_conj_wxyz(quat_wxyz: torch.Tensor) -> torch.Tensor:
+        return torch.cat([quat_wxyz[:, :1], -quat_wxyz[:, 1:4]], dim=-1)
+
+    @staticmethod
+    def _axis_angle_from_quat_wxyz(quat_wxyz: torch.Tensor) -> torch.Tensor:
+        quat_wxyz = torch.nn.functional.normalize(quat_wxyz, dim=-1)
+        quat_wxyz = torch.where(quat_wxyz[:, :1] < 0.0, -quat_wxyz, quat_wxyz)
+        xyz = quat_wxyz[:, 1:4]
+        sin_half = torch.norm(xyz, dim=-1, keepdim=True)
+        angle = 2.0 * torch.atan2(sin_half, quat_wxyz[:, :1].clamp(min=1e-8))
+        axis = torch.where(
+            sin_half > 1e-8,
+            xyz / sin_half.clamp(min=1e-8),
+            torch.zeros_like(xyz),
+        )
+        return axis * angle
+
+    @staticmethod
+    def _unscale_action(delta: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor) -> torch.Tensor:
+        return 2.0 * (delta - lo) / (hi - lo).clamp(min=1e-8) - 1.0
+
+    @staticmethod
     def _safe_normalize(vec: torch.Tensor, fallback: torch.Tensor) -> torch.Tensor:
         norm = torch.norm(vec, dim=-1, keepdim=True)
         fallback_norm = torch.norm(fallback, dim=-1, keepdim=True).clamp(min=1e-6)
         fallback_unit = fallback / fallback_norm
         return torch.where(norm > 1e-6, vec / norm.clamp(min=1e-6), fallback_unit)
 
-    def _build_cup_local_tilt_rotvec(self, delta_local: torch.Tensor) -> torch.Tensor:
-        """Map local tilt commands to a world-frame rotvec.
+    def _tilt_action_gate(self) -> torch.Tensor:
+        gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
+        return torch.clamp(
+            (self.cfg.tilt_action_gate_xy_far - self._cup_center_xy_dist) / gate_den,
+            0.0,
+            1.0,
+        )
 
-        delta_local[:, 0]: spin around current cup up-axis
-        delta_local[:, 1]: tilt toward target opening
-        delta_local[:, 2]: tilt in the orthogonal in-plane direction
-        """
-        n = delta_local.shape[0]
+    def _cup_local_tilt_basis(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        n = self.num_envs
         cup_quat_w = self.cup.data.root_quat_w
         left_target_pos_w = self.left_target_cup.data.root_pos_w
         left_target_quat_w = self.left_target_cup.data.root_quat_w
@@ -228,6 +252,16 @@ class PourRightEnv(DirectRLEnv):
             pour_axis_plane,
         )
         spin_axis = self._safe_normalize(cup_up_axis_w, cup_up_axis_w.new_tensor([0.0, 0.0, 1.0]).expand_as(cup_up_axis_w))
+        return spin_axis, tilt_toward_axis, tilt_ortho_axis
+
+    def _build_cup_local_tilt_rotvec(self, delta_local: torch.Tensor) -> torch.Tensor:
+        """Map local tilt commands to a world-frame rotvec.
+
+        delta_local[:, 0]: spin around current cup up-axis
+        delta_local[:, 1]: tilt toward target opening
+        delta_local[:, 2]: tilt in the orthogonal in-plane direction
+        """
+        spin_axis, tilt_toward_axis, tilt_ortho_axis = self._cup_local_tilt_basis()
 
         return (
             delta_local[:, 0:1] * spin_axis
@@ -514,6 +548,7 @@ class PourRightEnv(DirectRLEnv):
                 flush=True,
             )
         self._demo_pose_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._demo_pose_id_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
         # 궤적 캡처 버퍼 + 성공 궤적 ring buffer (BC loss 학습용)
@@ -1037,12 +1072,7 @@ class PourRightEnv(DirectRLEnv):
         else:
             delta = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
-            gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
-            tilt_gate = torch.clamp(
-                (self.cfg.tilt_action_gate_xy_far - self._cup_center_xy_dist) / gate_den,
-                0.0,
-                1.0,
-            )
+            tilt_gate = self._tilt_action_gate()
             delta[:, 3:6] = delta[:, 3:6] * tilt_gate.unsqueeze(1)
             # Rotation action is interpreted in a cup-local basis:
             # [spin around cup-up, tilt toward target opening, orthogonal tilt].
@@ -1180,7 +1210,10 @@ class PourRightEnv(DirectRLEnv):
             self.left_arm_zero_vel, joint_ids=self.left_arm_dof_indices
         )
 
-        left_cup_pose = self._get_left_cup_attached_pose()
+        if self.cfg.use_demo_left_target_pose and self.demo_pose_reference is not None:
+            left_cup_pose = self._left_target_cup_fixed_pose_w
+        else:
+            left_cup_pose = self._get_left_cup_attached_pose()
         self._left_target_cup_fixed_pose_w.copy_(left_cup_pose)
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
@@ -1644,6 +1677,58 @@ class PourRightEnv(DirectRLEnv):
             "demo_palm_rot_err": demo_palm_rot_err,
         }
 
+    def get_demo_teacher_actions(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return rollout-state teacher actions aligned to the assigned demo id/time."""
+        teacher = torch.zeros_like(self.actions)
+        mask = torch.zeros(self.num_envs, 1, device=self.device)
+        if self.demo_pose_reference is None or self._warmstart_collect_mode:
+            return teacher, mask
+
+        ref = self.demo_pose_reference
+        demo_ids = self._demo_pose_ids.clamp(0, ref.num_demos - 1)
+        demo_idx = self.episode_length_buf.long().clamp(0, ref.num_frames - 1)
+        target_palm = ref.palm_pose[demo_ids, demo_idx]
+
+        base_palm = self.pregrasp_palm_pose_buf
+        pos_delta = target_palm[:, :3] - base_palm[:, :3]
+
+        target_quat_wxyz = target_palm[:, [6, 3, 4, 5]]
+        base_quat_wxyz = base_palm[:, [6, 3, 4, 5]]
+        delta_quat_wxyz = quat_mul(target_quat_wxyz, self._quat_conj_wxyz(base_quat_wxyz))
+        rotvec_w = self._axis_angle_from_quat_wxyz(delta_quat_wxyz)
+
+        spin_axis, tilt_toward_axis, tilt_ortho_axis = self._cup_local_tilt_basis()
+        rot_local = torch.cat(
+            [
+                (rotvec_w * spin_axis).sum(dim=-1, keepdim=True),
+                (rotvec_w * tilt_toward_axis).sum(dim=-1, keepdim=True),
+                (rotvec_w * tilt_ortho_axis).sum(dim=-1, keepdim=True),
+            ],
+            dim=-1,
+        )
+
+        tilt_gate = self._tilt_action_gate().unsqueeze(1)
+        rot_action_delta = torch.where(
+            tilt_gate > 1e-4,
+            rot_local / tilt_gate.clamp(min=1e-4),
+            torch.zeros_like(rot_local),
+        )
+
+        delta_6d = torch.cat([pos_delta, rot_action_delta], dim=-1)
+        teacher[:, :NUM_PALM_ACTION] = self._unscale_action(
+            delta_6d,
+            self.delta_mins,
+            self.delta_maxs,
+        ).clamp(-1.0, 1.0)
+        teacher[:, NUM_PALM_ACTION:] = 1.0
+
+        valid = (
+            self._demo_pose_id_valid
+            & (self.episode_length_buf >= self.cfg.episode_hold_steps)
+        )
+        mask[:, 0] = valid.float()
+        return teacher, mask
+
     def _get_rewards(self) -> torch.Tensor:
         self._compute_intermediate_values()
 
@@ -1679,35 +1764,59 @@ class PourRightEnv(DirectRLEnv):
             + r_finger_curl
         )
 
-        # ---- Pour warmup gate ----
-        # demo만으로 approach 학습 후 pour reward 점진 활성
+        # ---- Curriculum warmup (v3-style cascaded reward) ----
         step_count = float(getattr(self, "common_step_counter", 0))
-        pour_gate = min(
-            max(step_count - float(self.cfg.pour_reward_start_step), 0.0)
-            / max(float(self.cfg.pour_reward_warmup_steps), 1.0),
+        pour_warmup = min(step_count / max(self.cfg.curriculum_pour_warmup_steps, 1), 1.0)
+        bead_warmup = min(
+            max(step_count - self.cfg.curriculum_bead_warmup_start, 0.0)
+            / max(self.cfg.curriculum_bead_warmup_steps, 1),
             1.0,
         )
 
-        # ---- 2. Transport (pour_gate로 점진 활성) ----
-        r_dist_to_target = pour_gate * self.cfg.weight_dist_to_target * torch.exp(
-            -self.cfg.dist_to_target_exp_scale * self._mouth_xy_distance
+        # ---- Stage 1: Transport (always active, saturation at cup_transport_saturate_xy) ----
+        _transport_dist = (self._cup_center_xy_dist - self.cfg.cup_transport_saturate_xy).clamp(min=0.0)
+        r_dist_to_target = self.cfg.weight_dist_to_target * torch.exp(
+            -self.cfg.dist_to_target_exp_scale * _transport_dist
         )
 
-        # ---- 3. Pour stage (ρ gate + pour_gate) ----
+        # ---- Stage 3: Tilt (pour_dist gate용 먼저 계산) ----
         target_tilt_cos = math.cos(math.radians(self.cfg.pour_tilt_target_deg))
         r_tilt = torch.exp(
             -self.cfg.pour_tilt_sharpness * torch.abs(self._source_up_dot_world - target_tilt_cos)
         )
+
+        # ---- Stage 2: Pour distance (ρ × pour_warmup × r_tilt.detach() × z_gate) ----
+        z_gate = torch.clamp(self._mouth_z_clearance / 0.03, 0.0, 1.0)
+        r_pour_dist = (
+            self._rho
+            * pour_warmup
+            * r_tilt.detach()
+            * z_gate
+            * self.cfg.weight_pour_dist
+            * torch.exp(-self.cfg.pour_dist_exp_scale * self._mouth_xy_distance)
+        )
+
         r_align = 0.5 * (1.0 + self._directional_tilt_cos)
         r_bead_progressive = self.cfg.weight_bead_progressive * (self._bead_in_target_fraction ** 2)
         r_bead_delta = self.cfg.weight_bead_entry_delta * self._bead_in_target_delta.clamp(min=0.0)
 
-        r_source_drain = pour_gate * self._rho * self.cfg.weight_source_drain * (1.0 - self._bead_in_source_fraction)
+        r_pour_stage = self._rho * (
+            pour_warmup * (self.cfg.weight_tilt * r_tilt + self.cfg.weight_align * r_align)
+            + bead_warmup * (r_bead_progressive + r_bead_delta)
+        )
+        _drain_dir_gate = 0.5 * (1.0 + self._directional_tilt_cos)
+        r_source_drain = (
+            self._rho
+            * _drain_dir_gate
+            * bead_warmup
+            * self.cfg.weight_source_drain
+            * (1.0 - self._bead_in_source_fraction)
+        )
         simple_reward_terms = compute_simple_pour_reward(
             mouth_xy_distance=self._mouth_xy_distance,
             bead_in_target_fraction=self._bead_in_target_fraction,
             spill_ratio=self._spill_ratio,
-            rho=self._rho * pour_gate,
+            rho=self._rho * pour_warmup,
             xy_weight=self.cfg.weight_pour_xy,
             xy_sharpness=self.cfg.pour_xy_sharpness,
             capture_weight=self.cfg.weight_capture_spill,
@@ -1715,7 +1824,6 @@ class PourRightEnv(DirectRLEnv):
             spill_capture_coupling=self.cfg.spill_capture_coupling,
             all_beads_bonus_weight=self.cfg.weight_all_beads_bonus,
         )
-        r_pour_stage = simple_reward_terms["total"]
 
         # ---- 4. Success ----
         success_fill_ratio = (
@@ -1794,7 +1902,27 @@ class PourRightEnv(DirectRLEnv):
         # warmup gate만 유지 (학습 초기 demo reward 점진 활성).
         r_demo_arm_gated = demo_terms["r_demo_arm_pose"]
 
-        total = r_pour_stage
+        total = (
+            r_hold
+            + r_dist_to_target
+            + r_pour_dist
+            + r_pour_stage
+            + r_source_drain
+            + simple_reward_terms["r_pour_xy"]
+            + simple_reward_terms["all_beads_bonus"]
+            + r_demo_arm_gated
+            + demo_terms["r_demo_palm_pose"]
+            + self.cfg.weight_success * r_success
+            + overfill_bonus
+            - spill_weight * spill_cost
+            - self.cfg.weight_premature_tilt * premature_tilt_cost
+            - self.cfg.weight_grasp_loss * grasp_loss_cost
+            - self.cfg.weight_cup_collision * cup_collision_cost
+            - action_rate_penalty
+            - arm_vel_cost
+            - demo_terms["cost_demo_smooth"]
+            - demo_terms["cost_thumb_grip"]
+        )
 
         self._prev_arm_joint_vel.copy_(arm_qd)
         self._prev_arm_joint_acc.copy_(arm_acc_vec)
@@ -1816,16 +1944,23 @@ class PourRightEnv(DirectRLEnv):
             "reward/pour_xy":           simple_reward_terms["r_pour_xy"].mean(),
             "reward/capture_spill":     simple_reward_terms["r_capture_spill"].mean(),
             "reward/all_beads_bonus":   simple_reward_terms["all_beads_bonus"].mean(),
-            "reward/pour_tilt":         (pour_gate * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
-            "reward/pour_align":        (pour_gate * self.cfg.weight_align * r_align * self._rho).mean(),
-            "reward/bead_progressive":  (pour_gate * self._rho * r_bead_progressive).mean(),
-            "reward/bead_delta":        (pour_gate * self._rho * r_bead_delta).mean(),
+            "reward/pour_tilt":         (pour_warmup * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
+            "reward/pour_align":        (pour_warmup * self.cfg.weight_align * r_align * self._rho).mean(),
+            "reward/bead_progressive":  (bead_warmup * self._rho * r_bead_progressive).mean(),
+            "reward/bead_delta":        (bead_warmup * self._rho * r_bead_delta).mean(),
+            "reward/pour_dist":         r_pour_dist.mean(),
             "reward/source_drain":      r_source_drain.mean(),
             "reward/success":           (self.cfg.weight_success * r_success).mean(),
             "reward/demo_arm":          r_demo_arm_gated.mean(),
             "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
             "log/demo_step_idx":        self.episode_length_buf.float().mean(),
+            "log/demo_time_aligned_index": self.episode_length_buf.float().mean(),
             "log/demo_pose_id":         self._demo_pose_ids.float().mean(),
+            "log/demo_pose_id_valid":   self._demo_pose_id_valid.float().mean(),
+            "log/target_replay_enabled": torch.tensor(
+                float(self.cfg.use_demo_left_target_pose and self.demo_pose_reference is not None),
+                device=self.device,
+            ),
             "cost/spill":               (spill_weight * spill_cost).mean(),
             "cost/premature_tilt":      (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),
             "cost/grasp_loss":          (self.cfg.weight_grasp_loss * grasp_loss_cost).mean(),
@@ -1848,7 +1983,8 @@ class PourRightEnv(DirectRLEnv):
             "log/mouth_xy_dist":        self._mouth_xy_distance.mean(),
             "log/directional_tilt_cos": self._directional_tilt_cos.mean(),
             "log/rho":                  self._rho.mean(),
-            "log/pour_gate":            torch.tensor(pour_gate, device=self.device),
+            "log/pour_warmup":          torch.tensor(pour_warmup, device=self.device),
+            "log/bead_warmup":          torch.tensor(bead_warmup, device=self.device),
             "log/contact_gate":         contact_gate.mean(),
             "log/slip_dist":            slip_dist.mean(),
             "log/full_grasp_rate":      full_grasp_flag.mean(),
@@ -1963,6 +2099,7 @@ class PourRightEnv(DirectRLEnv):
                 (n,),
                 device=self.device,
             )
+            self._demo_pose_id_valid[env_ids_t_reset] = False
 
         self.episode_success_buf[env_ids] = False
         self._warmstart_only_close[env_ids] = False
@@ -2229,6 +2366,16 @@ class PourRightEnv(DirectRLEnv):
         demo_ids = self._demo_pose_ids.clamp(0, ref.num_demos - 1)
         demo_idx = self.episode_length_buf.long().clamp(0, ref.num_frames - 1)
         self.left_arm_target_pos.copy_(ref.left_joint_pos[demo_ids, demo_idx])
+        target_cup_pose_w = self._get_demo_target_cup_pose_w(
+            demo_ids=demo_ids,
+            demo_idx=demo_idx,
+            env_ids_t=None,
+        )
+        self._left_target_cup_fixed_pose_w.copy_(target_cup_pose_w)
+        self.left_target_cup.write_root_pose_to_sim(target_cup_pose_w)
+        self.left_target_cup.write_root_velocity_to_sim(
+            torch.zeros(self.num_envs, 6, device=self.device)
+        )
 
     def _set_left_demo_reference(self, env_ids: Sequence[int]) -> torch.Tensor:
         """Set per-env left arm and target cup references from the assigned demo."""
@@ -2246,9 +2393,26 @@ class PourRightEnv(DirectRLEnv):
         target_left = ref.left_joint_pos[demo_ids, demo_idx]
         self.left_arm_target_pos[env_ids_t] = target_left
 
+        return self._get_demo_target_cup_pose_w(
+            demo_ids=demo_ids,
+            demo_idx=demo_idx,
+            env_ids_t=env_ids_t,
+        )
+
+    def _get_demo_target_cup_pose_w(
+        self,
+        *,
+        demo_ids: torch.Tensor,
+        demo_idx: torch.Tensor,
+        env_ids_t: torch.Tensor | None,
+    ) -> torch.Tensor:
+        ref = self.demo_pose_reference
+        if ref is None:
+            return self._get_left_target_cup_fixed_pose(env_ids_t)
         target_cup_local_xyzw = ref.target_cup_pose[demo_ids, demo_idx]
-        target_cup_pose_w = torch.zeros(env_ids_t.numel(), 7, device=self.device)
-        target_cup_pose_w[:, :3] = self.scene.env_origins[env_ids_t] + target_cup_local_xyzw[:, :3]
+        origins = self.scene.env_origins if env_ids_t is None else self.scene.env_origins[env_ids_t]
+        target_cup_pose_w = torch.zeros(target_cup_local_xyzw.shape[0], 7, device=self.device)
+        target_cup_pose_w[:, :3] = origins + target_cup_local_xyzw[:, :3]
         target_cup_pose_w[:, 3:7] = target_cup_local_xyzw[:, [6, 3, 4, 5]]
         return target_cup_pose_w
 
@@ -2528,6 +2692,10 @@ class PourRightEnv(DirectRLEnv):
                 ),
             )
             self._demo_pose_ids[env_ids_t] = assigned
+            self._demo_pose_id_valid[env_ids_t] = valid
+        elif self.demo_pose_reference is not None:
+            env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+            self._demo_pose_id_valid[env_ids_t] = False
 
         left_cup_pose = self._set_left_demo_reference(env_ids)
 
