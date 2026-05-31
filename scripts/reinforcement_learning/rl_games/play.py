@@ -515,6 +515,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(obs, dict):
         obs = obs["obs"]
     timestep = 0
+    _episode_step = 0
+    _episode_joint_buf = []
     # required: enables the flag for batched observations
     _ = agent.get_batch_size(obs, 1)
     # initialize RNN states if used
@@ -527,10 +529,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
             obs, _, dones, _ = env.step(actions)
 
+            # --- joint logging (env 0 기준) ---
+            _raw_env = env.unwrapped
+            if hasattr(_raw_env, 'env'):
+                _raw_env = _raw_env.env.unwrapped
+            _arm_idx = getattr(_raw_env, 'arm_dof_indices', None)
+            if _arm_idx is not None:
+                _jpos = _raw_env.robot.data.joint_pos[0, _arm_idx].cpu().tolist()
+                _episode_joint_buf.append(_jpos)
+            # ---
+
             if len(dones) > 0:
                 if agent.is_rnn and agent.states is not None:
                     for s in agent.states:
                         s[:, dones, :] = 0.0
+                if dones[0]:
+                    # 에피소드 종료: 마지막 100 frame 출력
+                    tail = _episode_joint_buf[-100:]
+                    print(f"\n=== episode done (len={len(_episode_joint_buf)}) — last {len(tail)} frames ===")
+                    print(f"{'frame':>6}  {'j0':>7} {'j1':>7} {'j2':>7} {'j3':>7} {'j4':>7} {'j5':>7} {'j6':>7}")
+                    offset = len(_episode_joint_buf) - len(tail)
+                    for fi, jv in enumerate(tail):
+                        vals = "  ".join(f"{v:+.4f}" for v in jv[:7])
+                        print(f"{offset+fi:>6}  {vals}")
+                    _episode_joint_buf = []
 
         if args_cli.video:
             timestep += 1

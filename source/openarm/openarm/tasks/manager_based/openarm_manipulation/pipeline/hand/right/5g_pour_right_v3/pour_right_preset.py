@@ -34,8 +34,8 @@ LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAM
 
 LEFT_ARM_REST_JOINT_POS = {
     "openarm_left_joint1": -0.315,
-    "openarm_left_joint2": -0.290,  # j2/j3 수정: target cup y≈0.10 (demo 데이터와 일치)
-    "openarm_left_joint3":  0.400,  # FK 결과: [0.268, 0.100, 0.291]
+    "openarm_left_joint2": -0.079,  # test10: demo a11-a20 pour 구간 평균값으로 변경 (기존 -0.290)
+    "openarm_left_joint3":  0.217,  # test10: demo a11-a20 pour 구간 평균값으로 변경 (기존 +0.400)
     "openarm_left_joint4":  0.513,
     "openarm_left_joint5":  0.666,
     "openarm_left_joint6": -0.729,
