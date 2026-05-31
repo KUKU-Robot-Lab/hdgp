@@ -300,7 +300,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # j0 외회전 패널티: j0 < 0 시 relu(-j0) 패널티
     # j0=-0.3 → cost=0.3, weight=3.0 → 패널티=0.9/step
-    weight_j0_ext_rot: float = 3.0
+    weight_j0_ext_rot: float = 0.0   # test9: 제거 (j0 kinematic bottleneck 해소)
 
     # Premature tilt penalty (ρ=0 일 때만): 멀리서 기울기 패널티
     weight_premature_tilt: float = 1.00

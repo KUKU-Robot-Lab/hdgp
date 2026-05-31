@@ -1017,9 +1017,9 @@ class PourRightEnv(DirectRLEnv):
             # j3: warmstart +0.14 → demo mean -0.24 (부호 반전 보정)
             # j7: pour 후반 평균 0.63, 상한 1.13 (외회전 편류 차단)
             _null_cfg = self.fabric_q.detach().clone()
-            # j0<0일 때 null-space target도 음수(외회전)로 고정되지 않게 보정.
-            # min=0.0 → j0가 얼마나 음수여도 null-space target은 0 이상 유지.
-            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.85 + 0.09 * 0.15, min=0.0, max=0.46)
+            # j0 null-space target: 데모 pour 자세 j0=+0.37 방향으로 당김 (test9)
+            # weight 0.15 → 0.30으로 올려 수렴 속도 높임, min=0.0 유지
+            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.70 + 0.37 * 0.30, min=0.0, max=0.46)
             _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
             _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
             _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
