@@ -530,6 +530,8 @@ class PourRightEnv(DirectRLEnv):
         self.actions.zero_()
 
         self.demo_pose_reference = None
+        self._transport_arm_target = None
+        self._transport_arm_std = None
         if self.cfg.enable_demo_pose_reward:
             self.demo_pose_reference = DemoPoseReferenceBank.from_hdf5_paths(
                 self.cfg.demo_pose_paths,
@@ -545,6 +547,16 @@ class PourRightEnv(DirectRLEnv):
                 f"{self.demo_pose_reference.num_demos} demos x "
                 f"{self.demo_pose_reference.num_frames} frames (resampled) "
                 f"from {len(self.demo_pose_reference.source_paths)} files",
+                flush=True,
+            )
+            # Transport 타겟: demo pour 최종 프레임 j0~4(USD j1~5)의 demo 평균 고정값.
+            # j5/6은 데카르트 pour/tilt가 자유 조작하므로 타겟에서 제외.
+            ref = self.demo_pose_reference
+            self._transport_arm_target = ref.arm_joint_pos[:, -1, :5].mean(dim=0)  # (5,)
+            self._transport_arm_std = ref.arm_joint_std[:5].clamp(min=1e-3)        # (5,)
+            print(
+                "[5g_pour_right_v5] transport j0~4 fixed target: "
+                f"{self._transport_arm_target.tolist()}",
                 flush=True,
             )
         self._demo_pose_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -1610,33 +1622,24 @@ class PourRightEnv(DirectRLEnv):
         zero = torch.zeros(self.num_envs, device=self.device)
         if self.demo_pose_reference is None:
             return {
-                "r_demo_arm_pose": zero,
                 "r_demo_palm_pose": zero,
                 "cost_demo_smooth": zero,
                 "cost_thumb_grip": zero,
-                "demo_arm_joint_err": zero,
                 "demo_palm_pos_err": zero,
                 "demo_palm_rot_err": zero,
             }
 
         ref = self.demo_pose_reference
-        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
 
         # --- Step-indexed temporal alignment (NN search 제거) ---
         # demo는 warmstart 시작 시점부터 에피소드 길이로 리샘플링되어 있음.
         # episode_length_buf[i] = 현재 env i의 step 수 → demo[step] 직접 참조.
-        # "t번째 step에서는 demo의 t번째 자세가 타겟" → 시계열 구조 자동 반영.
-        demo_arm = ref.arm_joint_pos   # (D, episode_steps, 7) - resampled
-        T_demo = demo_arm.shape[1]
+        # arm pose(j0~4)는 transport 고정 타겟이 담당하므로 여기선 palm만 추종.
+        T_demo = ref.num_frames
         demo_idx = self.episode_length_buf.long().clamp(0, T_demo - 1)  # (N,)
         demo_ids = self._demo_pose_ids.clamp(0, ref.num_demos - 1)
-        target_arm_q = demo_arm[demo_ids, demo_idx]                       # (N, 7)
 
-        arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
-        demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
-        r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
-
-        # --- Palm: 동일한 step index로 참조 ---
+        # --- Palm: step index로 참조 ---
         palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
 
@@ -1668,11 +1671,9 @@ class PourRightEnv(DirectRLEnv):
         gate = warmup
 
         return {
-            "r_demo_arm_pose": gate * self.cfg.weight_demo_arm_pose * r_demo_arm_pose,
             "r_demo_palm_pose": gate * self.cfg.weight_demo_palm_pose * r_demo_palm_pose,
             "cost_demo_smooth": gate * self.cfg.weight_demo_smooth * cost_demo_smooth,
             "cost_thumb_grip": gate * self.cfg.weight_thumb_grip_pose * cost_thumb_grip,
-            "demo_arm_joint_err": demo_arm_joint_err,
             "demo_palm_pos_err": demo_palm_pos_err,
             "demo_palm_rot_err": demo_palm_rot_err,
         }
@@ -1773,10 +1774,15 @@ class PourRightEnv(DirectRLEnv):
             1.0,
         )
 
-        # ---- Stage 1: Transport (always active, saturation at cup_transport_saturate_xy) ----
-        _transport_dist = (self._cup_center_xy_dist - self.cfg.cup_transport_saturate_xy).clamp(min=0.0)
-        r_dist_to_target = self.cfg.weight_dist_to_target * torch.exp(
-            -self.cfg.dist_to_target_exp_scale * _transport_dist
+        # ---- Stage 1: Transport (always active — j0~4(USD j1~5) demo pour 고정 자세 수렴) ----
+        # 데카르트 거리 대신 조인트 공간 수렴: j0~4를 limit 내 적정 자세로 맞춰
+        # j5/6이 pour-point 회전을 limit 내에서 수행할 수 있게 한다.
+        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
+        transport_err = torch.norm(
+            (arm_q[:, :5] - self._transport_arm_target) / self._transport_arm_std, dim=-1
+        ) / math.sqrt(5.0)
+        r_transport_joint = self.cfg.weight_transport_joint * torch.exp(
+            -self.cfg.transport_joint_exp_scale * transport_err
         )
 
         # ---- Stage 3: Tilt (pour_dist gate용 먼저 계산) ----
@@ -1897,20 +1903,14 @@ class PourRightEnv(DirectRLEnv):
             palm_delta=palm_delta,
         )
 
-        # step-indexed alignment: phase gate 불필요.
-        # 에피소드 초반 step → demo lift 완료 자세, 후반 step → demo pour 완료 자세.
-        # warmup gate만 유지 (학습 초기 demo reward 점진 활성).
-        r_demo_arm_gated = demo_terms["r_demo_arm_pose"]
-
         total = (
             r_hold
-            + r_dist_to_target
+            + r_transport_joint
             + r_pour_dist
             + r_pour_stage
             + r_source_drain
             + simple_reward_terms["r_pour_xy"]
             + simple_reward_terms["all_beads_bonus"]
-            + r_demo_arm_gated
             + demo_terms["r_demo_palm_pose"]
             + self.cfg.weight_success * r_success
             + overfill_bonus
@@ -1939,7 +1939,7 @@ class PourRightEnv(DirectRLEnv):
         # ---- Logging to TensorBoard ----
         ep_log: dict = {
             "reward/hold":              r_hold.mean(),
-            "reward/dist":              r_dist_to_target.mean(),
+            "reward/transport":         r_transport_joint.mean(),
             "reward/pour":              r_pour_stage.mean(),
             "reward/pour_xy":           simple_reward_terms["r_pour_xy"].mean(),
             "reward/capture_spill":     simple_reward_terms["r_capture_spill"].mean(),
@@ -1951,7 +1951,7 @@ class PourRightEnv(DirectRLEnv):
             "reward/pour_dist":         r_pour_dist.mean(),
             "reward/source_drain":      r_source_drain.mean(),
             "reward/success":           (self.cfg.weight_success * r_success).mean(),
-            "reward/demo_arm":          r_demo_arm_gated.mean(),
+            "log/transport_joint_err":  transport_err.mean(),
             "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
             "log/demo_step_idx":        self.episode_length_buf.float().mean(),
             "log/demo_time_aligned_index": self.episode_length_buf.float().mean(),
@@ -1992,7 +1992,6 @@ class PourRightEnv(DirectRLEnv):
             "log/arm_vel_l2":           arm_qd_l2.mean(),
             "log/arm_acc_l2":           arm_acc_vec.norm(dim=-1).mean(),
             "log/arm_jerk_l2":          arm_jerk_l2.mean(),
-            "log/demo_arm_joint_err":   demo_terms["demo_arm_joint_err"].mean(),
             "log/demo_palm_pos_err":    demo_terms["demo_palm_pos_err"].mean(),
             "log/demo_palm_rot_err":    demo_terms["demo_palm_rot_err"].mean(),
         }

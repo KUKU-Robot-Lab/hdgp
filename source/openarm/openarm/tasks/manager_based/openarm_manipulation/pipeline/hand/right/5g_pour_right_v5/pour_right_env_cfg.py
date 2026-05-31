@@ -268,10 +268,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_simple_spill: float = 0.0
     spill_capture_coupling: float = 2.0
     weight_all_beads_bonus: float = 0.0
-    # Stage 1: Transport (항상 활성 — cup_center_xy_dist 기반, saturation)
-    weight_dist_to_target: float = 10.0
-    dist_to_target_exp_scale: float = 5.0
-    cup_transport_saturate_xy: float = 0.17  # 이하: transport max (포화)
+    # Stage 1: Transport (항상 활성 — j0~4(USD j1~5) demo pour 고정 자세 수렴)
+    weight_transport_joint: float = 10.0
+    transport_joint_exp_scale: float = 2.0
     # Stage 2: Pour distance (ρ × pour_warmup × r_tilt.detach() × z_gate)
     weight_pour_dist: float = 12.0
     pour_dist_exp_scale: float = 8.0
@@ -332,7 +331,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_pose_start_mode: str = "warm_state_match"
     demo_start_fraction: float = 0.0      # fraction mode fallback
     demo_episode_steps: int = 1200        # episode_length_s(20s) × 60Hz
-    weight_demo_arm_pose: float = 1.0
     weight_demo_palm_pose: float = 1.0
     weight_demo_smooth: float = 0.02
     weight_thumb_grip_pose: float = 0.0

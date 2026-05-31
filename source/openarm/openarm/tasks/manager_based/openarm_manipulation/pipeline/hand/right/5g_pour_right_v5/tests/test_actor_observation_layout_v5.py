@@ -90,7 +90,6 @@ def test_v5_real_demo_bc_is_rollout_conditioned_by_default() -> None:
     assert 'input_dict.get("demo_teacher_actions"' in agent
     assert "get_demo_teacher_actions" in env
     assert "_demo_pose_id_valid" in env
-    assert "weight_demo_arm_pose: float = 1.0" in env_cfg
     assert "weight_demo_palm_pose: float = 1.0" in env_cfg
     assert "weight_demo_smooth: float = 0.02" in env_cfg
 
@@ -105,7 +104,7 @@ def test_v5_non_demo_reward_settings_match_v3() -> None:
         "weight_contact_maintain: float = 0.50",
         "weight_force_balance: float = 0.30",
         "weight_finger_curl: float = 0.50",
-        "weight_dist_to_target: float = 10.0",
+        "weight_transport_joint: float = 10.0",
         "weight_pour_dist: float = 12.0",
         "weight_tilt: float = 40.0",
         "weight_align: float = 6.0",

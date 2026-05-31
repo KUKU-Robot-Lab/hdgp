@@ -252,12 +252,18 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 0.50
 
-    # Transport: Stage 1 (always active, cup_center_xy_dist 기반)
-    # cup_center_xy_dist <= cup_transport_saturate_xy 이면 max reward (saturate)
-    # 그 이상에서는 exp(-k * (dist - saturate)) 로 감소
+    # Transport Stage 1a: Cartesian 근접 (cup_center_xy 기반, 거친 approach gradient)
     weight_dist_to_target: float = 10.0
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # 이 이하: transport max (saturate)
+
+    # Transport Stage 1b: "좋은 arm+palm 자세" — demo pour palm pose 추종 (a11~a20 평균)
+    # palm pose가 맞으면 Fabrics IK가 j0~4를 demo 자세로 자동 수렴시킴 (redundancy 1DOF).
+    transport_palm_pos: tuple[float, ...] = (0.2938, -0.0781, 0.5629)
+    transport_palm_quat_xyzw: tuple[float, ...] = (-0.4532, 0.5712, 0.2235, 0.6469)
+    weight_palm_pose: float = 10.0
+    palm_pose_pos_sharpness: float = 8.0
+    palm_pose_rot_sharpness: float = 1.0
 
     # Pour distance: Stage 2 (ρ gate + pour_warmup)
     # pour point(rim 최하단) → target center XY 거리 기반
@@ -298,9 +304,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_success_overfill: float = 0.0
     weight_spill: float = 40.0            # 5.0→40.0: spill 강하게 패널티 (40% trap 방지)
 
-    # j0 외회전 패널티: j0 < 0 시 relu(-j0) 패널티
-    # j0=-0.3 → cost=0.3, weight=3.0 → 패널티=0.9/step
-    weight_j0_ext_rot: float = 0.0   # test9: 제거 (j0 kinematic bottleneck 해소)
 
     # Premature tilt penalty (ρ=0 일 때만): 멀리서 기울기 패널티
     weight_premature_tilt: float = 1.00
@@ -363,7 +366,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_tilt_sharpness: float = 4.0   # 120° 목표 집중도 (test8: 2→4, 90° local min 탈출)
 
     # ρ binary pour gate: cup_center_xy_dist < thresh → pour stage 활성
-    # transport saturate 기준(cup_transport_saturate_xy=0.20)과 일치
     pour_binary_xy_thresh: float = 0.20
     pour_binary_tilt_thresh: float = 0.50  # gate_pour_binary 진단용 (ρ에는 미사용)
 

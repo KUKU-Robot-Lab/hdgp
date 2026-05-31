@@ -479,6 +479,13 @@ class PourRightEnv(DirectRLEnv):
                 flush=True,
             )
 
+        # Transport 고정 타겟: demo pour palm pose (a11~a20 평균, env-local 프레임).
+        # 정책이 "좋은 arm+palm 자세"에 도달하게 하는 신호. j0~4는 IK가 자동으로 따라옴.
+        # quat은 xyzw(cfg) → wxyz(Isaac body_quat_w)로 변환 저장.
+        self._transport_palm_pos = to_torch(self.cfg.transport_palm_pos, device=self.device)
+        _q_xyzw = to_torch(self.cfg.transport_palm_quat_xyzw, device=self.device)
+        self._transport_palm_quat_wxyz = torch.cat([_q_xyzw[3:4], _q_xyzw[:3]], dim=0)
+
         # Left target cup — FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS hand local_z=0.04)
         self._left_cup_pos_env_local = to_torch(
             self.cfg.left_target_cup_pos_env_local, device=self.device
@@ -1590,12 +1597,25 @@ class PourRightEnv(DirectRLEnv):
             1.0,
         )
 
-        # Transport: Stage 1 (always active, cup_center_xy_dist 기반)
-        # cup_center_xy_dist <= cup_transport_saturate_xy: exp(0)=1.0 (saturate)
-        # 그 이상: exp(-k*(dist - saturate)) 로 감소 → approach gradient 존재
+        # Transport Stage 1a: Cartesian 근접 (cup_center_xy 기반, 거친 approach gradient)
         _transport_dist = (self._cup_center_xy_dist - self.cfg.cup_transport_saturate_xy).clamp(min=0.0)
         r_dist_to_target = self.cfg.weight_dist_to_target * torch.exp(
             -self.cfg.dist_to_target_exp_scale * _transport_dist
+        )
+
+        # Transport Stage 1b: "좋은 arm+palm 자세" — demo pour palm pose 추종.
+        # palm pose(pos+rot)가 demo pour 자세에 가까울수록 보상. Fabrics IK가 j0~4를 따라가게 함.
+        palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
+        palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
+        palm_pos_err = torch.norm(palm_pos_w - self._transport_palm_pos, dim=-1)
+        _quat_dot = torch.abs(
+            (palm_quat_wxyz * self._transport_palm_quat_wxyz).sum(dim=-1)
+        ).clamp(max=1.0)
+        palm_rot_err = 2.0 * torch.acos(_quat_dot)
+        palm_pose_err = palm_pos_err + palm_rot_err
+        r_palm_pose = self.cfg.weight_palm_pose * torch.exp(
+            -self.cfg.palm_pose_pos_sharpness * palm_pos_err
+            - self.cfg.palm_pose_rot_sharpness * palm_rot_err
         )
 
         # Pour: Stage 3 (r_pour_dist soft gate로 먼저 계산)
@@ -1688,9 +1708,7 @@ class PourRightEnv(DirectRLEnv):
             + self.cfg.weight_action_rate_finger * finger_delta
         )
 
-        # j0 외회전 패널티: j0 < 0이면 패널티
-        arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
-        cost_j0_ext_rot = torch.relu(-arm_joint_pos[:, 0])
+        arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]  # log/j0용
 
         # arm kinematics (log용)
         arm_qd     = self.robot.data.joint_vel[:, self.arm_dof_indices]
@@ -1703,6 +1721,7 @@ class PourRightEnv(DirectRLEnv):
         total = (
             r_hold
             + r_dist_to_target
+            + r_palm_pose
             + r_pour_dist
             + r_pour_stage
             + r_source_drain
@@ -1711,7 +1730,6 @@ class PourRightEnv(DirectRLEnv):
             - spill_weight * spill_cost
             - self.cfg.weight_premature_tilt * premature_tilt_cost
             - action_rate_penalty
-            - self.cfg.weight_j0_ext_rot * cost_j0_ext_rot
         )
 
         self._prev_arm_joint_vel.copy_(arm_qd)
@@ -1733,6 +1751,10 @@ class PourRightEnv(DirectRLEnv):
             # reward/
             "reward/hold":              r_hold.mean(),
             "reward/transport":         r_dist_to_target.mean(),
+            "reward/palm_pose":         r_palm_pose.mean(),
+            "log/palm_pose_err":        palm_pose_err.mean(),
+            "log/palm_pos_err":         palm_pos_err.mean(),
+            "log/palm_rot_err":         palm_rot_err.mean(),
             "reward/pour_dist":         r_pour_dist.mean(),
             "reward/pour":              r_pour_stage.mean(),
             "reward/pour_tilt":         (pour_warmup * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
@@ -1746,7 +1768,6 @@ class PourRightEnv(DirectRLEnv):
             "cost/premature_tilt":     (self.cfg.weight_premature_tilt * premature_tilt_cost).mean(),
             "cost/action_rate_palm":   (self.cfg.weight_action_rate_palm * palm_delta).mean(),
             "cost/action_rate_finger": (self.cfg.weight_action_rate_finger * finger_delta).mean(),
-            "cost/j0_ext_rot":         (self.cfg.weight_j0_ext_rot * cost_j0_ext_rot).mean(),
             # log/
             "log/bead_in_target":       self._bead_in_target_fraction.mean(),
             "log/bead_in_source":       self._bead_in_source_fraction.mean(),
@@ -1765,7 +1786,12 @@ class PourRightEnv(DirectRLEnv):
             "log/arm_vel_l2":           arm_qd_l2.mean(),
             "log/arm_acc_l2":           arm_acc_vec.norm(dim=-1).mean(),
             "log/arm_jerk_l2":          arm_jerk_l2.mean(),
-            "log/j0":                   arm_joint_pos[:, 0].mean(),
+            # robot 명칭 j1~j7 = openarm_right_joint1~7 (배열 인덱스 0~6).
+            "log/j1":                   arm_joint_pos[:, 0].mean(),
+            "log/j2":                   arm_joint_pos[:, 1].mean(),
+            "log/j3":                   arm_joint_pos[:, 2].mean(),
+            "log/j4":                   arm_joint_pos[:, 3].mean(),
+            "log/j5":                   arm_joint_pos[:, 4].mean(),
         }
         if self.spill_adr is not None:
             ep_log["log/adr_spill"] = torch.tensor(self.spill_adr.progress, device=self.device)
