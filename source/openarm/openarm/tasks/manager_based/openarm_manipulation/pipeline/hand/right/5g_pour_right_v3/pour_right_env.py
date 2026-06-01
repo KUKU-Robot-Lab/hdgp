@@ -1023,11 +1023,11 @@ class PourRightEnv(DirectRLEnv):
             # j6: 정책이 tilt 제어 (nullspace 제외)
             # j7: tilt 제어, 내회전 방지 (min=0.20 유지)
             _null_cfg = self.fabric_q.detach().clone()
-            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.70 + 0.37 * 0.30, min=0.0, max=0.46)
+            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.55 + 0.37 * 0.45, max=0.46)   # j1: alpha 0.45 (min clamp 제거)
             _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
             _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
             _null_cfg[:, 3] = _null_cfg[:, 3] * 0.95 + 1.84 * 0.05   # j4: demo mean +1.84
-            _null_cfg[:, 4] = _null_cfg[:, 4] * 0.90 + (-1.16) * 0.10  # j5: demo mean -1.16 (branch switch)
+            _null_cfg[:, 4] = _null_cfg[:, 4] * 0.75 + (-1.16) * 0.25  # j5: alpha 0.25 (branch switch 강화)
             _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
             self.open_tesollo_fabric.default_config.copy_(_null_cfg)
             self.open_tesollo_fabric.set_features(
@@ -1453,74 +1453,30 @@ class PourRightEnv(DirectRLEnv):
 
         return {"policy": actor_obs, "critic": critic_obs}
 
-    def _get_demo_pose_reward_terms(
-        self,
-        *,
-        arm_qd_l2: torch.Tensor,
-        arm_jerk_l2: torch.Tensor,
-        palm_delta: torch.Tensor,
-    ) -> dict[str, torch.Tensor]:
+    def _get_demo_pose_reward_terms(self) -> dict[str, torch.Tensor]:
         zero = torch.zeros(self.num_envs, device=self.device)
         if self.demo_pose_reference is None:
-            return {
-                "r_demo_arm_pose": zero,
-                "r_demo_palm_pose": zero,
-                "cost_demo_smooth": zero,
-                "cost_thumb_grip": zero,
-                "demo_arm_joint_err": zero,
-                "demo_palm_pos_err": zero,
-                "demo_palm_rot_err": zero,
-                "target_arm_q": torch.zeros(self.num_envs, 7, device=self.device),
-            }
+            return {"r_demo_arm_pose": zero, "demo_arm_joint_err": zero}
 
         ref = self.demo_pose_reference
         arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
 
-        # --- Nearest-Neighbor in joint space + look-ahead ---
-        # 현재 joint 상태와 가장 가까운 demo 프레임을 찾고 K 프레임 앞 자세를 타겟으로
-        # 효율적 L2: ||a-b||^2 = ||a||^2 + ||b||^2 - 2·a·bT (중간 (N,T,7) 텐서 생략)
+        # Nearest-Neighbor in joint space + look-ahead
         demo_arm = ref.arm_joint_pos  # (T, 7)
         T_demo = demo_arm.shape[0]
-        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)          # (N, 1)
-        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)     # (1, T)
-        ab = arm_q @ demo_arm.T                                  # (N, T)
-        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)            # (N,)
+        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)
+        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)
+        ab = arm_q @ demo_arm.T
+        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)
         K = int(self.cfg.demo_nn_lookahead_frames)
-        target_idx = (nn_idx + K).clamp(max=T_demo - 1)         # (N,)
-        target_arm_q = demo_arm[target_idx]                      # (N, 7)
+        target_idx = (nn_idx + K).clamp(max=T_demo - 1)
+        target_arm_q = demo_arm[target_idx]  # (N, 7)
 
-        # j1~j5(idx 0~4)만 branch 결정에 사용. j6/j7은 정책의 tilt 자유도.
-        # min_std=0.20: warmstart→demo branch 전환 구간에서 gradient 유지
+        # j1~j5(idx 0~4)만 branch 결정에 사용. j6/j7은 tilt 자유도.
         arm_std5 = ref.arm_joint_std[:5].clamp(min=0.20)
         arm_norm_err = torch.norm((arm_q[:, :5] - target_arm_q[:, :5]) / arm_std5, dim=-1)
         demo_arm_joint_err = arm_norm_err / math.sqrt(5.0)
         r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
-
-        # --- Palm: 동일한 target_idx로 일관성 있게 참조 ---
-        palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
-        palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
-
-        demo_palm = ref.palm_pose  # (T, 7): [x,y,z, qx,qy,qz,qw]
-        target_palm = demo_palm[target_idx]                              # (N, 7)
-        target_palm_pos = target_palm[:, :3]                             # (N, 3)
-        target_palm_quat_xyzw = target_palm[:, 3:7]                     # (N, 4) xyzw
-        target_palm_quat_wxyz = torch.cat(
-            [target_palm_quat_xyzw[:, 3:4], target_palm_quat_xyzw[:, :3]], dim=-1
-        )                                                                # (N, 4) wxyz
-
-        palm_pos_norm_err = torch.norm((palm_pos_w - target_palm_pos) / ref.palm_pos_std, dim=-1)
-        quat_dot = torch.abs((palm_quat_wxyz * target_palm_quat_wxyz).sum(dim=-1)).clamp(max=1.0)
-        demo_palm_rot_err = 2.0 * torch.acos(quat_dot)
-        demo_palm_pos_err = torch.norm(palm_pos_w - target_palm_pos, dim=-1)
-        r_demo_palm_pose = torch.exp(-palm_pos_norm_err - demo_palm_rot_err)
-
-        hand_q = self.robot.data.joint_pos[:, self.hand_dof_indices]
-        thumb_norm_err = torch.norm((hand_q[:, :4] - ref.thumb_joint_mean) / ref.thumb_joint_std, dim=-1)
-        cost_thumb_grip = thumb_norm_err / 2.0
-
-        vel_excess = torch.relu(arm_qd_l2 - ref.arm_vel_l2_p95) / ref.arm_vel_l2_p95
-        jerk_excess = torch.relu(arm_jerk_l2 - ref.arm_jerk_l2_p95) / ref.arm_jerk_l2_p95
-        cost_demo_smooth = vel_excess.pow(2) + jerk_excess.pow(2) + 0.1 * palm_delta
 
         near_gate = torch.exp(-torch.square(self._cup_center_xy_dist / max(self.cfg.demo_pose_near_gate_xy, 1e-6)))
         warmup_steps = max(int(self.cfg.demo_pose_warmup_steps), 1)
@@ -1530,13 +1486,7 @@ class PourRightEnv(DirectRLEnv):
 
         return {
             "r_demo_arm_pose": gate * self.cfg.weight_demo_arm_pose * r_demo_arm_pose,
-            "r_demo_palm_pose": gate * self.cfg.weight_demo_palm_pose * r_demo_palm_pose,
-            "cost_demo_smooth": gate * self.cfg.weight_demo_smooth * cost_demo_smooth,
-            "cost_thumb_grip": gate * self.cfg.weight_thumb_grip_pose * cost_thumb_grip,
             "demo_arm_joint_err": demo_arm_joint_err,
-            "demo_palm_pos_err": demo_palm_pos_err,
-            "demo_palm_rot_err": demo_palm_rot_err,
-            "target_arm_q": target_arm_q,
         }
 
     def _get_rewards(self) -> torch.Tensor:
@@ -1702,21 +1652,9 @@ class PourRightEnv(DirectRLEnv):
             if self.spill_adr is not None
             else self.cfg.weight_spill
         )
-        palm_delta = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
-
         arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
 
-        arm_qd      = self.robot.data.joint_vel[:, self.arm_dof_indices]
-        arm_qd_l2   = arm_qd.norm(dim=-1)
-        arm_acc_vec  = arm_qd - self._prev_arm_joint_vel
-        arm_jerk_vec = arm_acc_vec - self._prev_arm_joint_acc
-        arm_jerk_l2  = arm_jerk_vec.norm(dim=-1)
-
-        demo_terms = self._get_demo_pose_reward_terms(
-            arm_qd_l2=arm_qd_l2,
-            arm_jerk_l2=arm_jerk_l2,
-            palm_delta=palm_delta,
-        )
+        demo_terms = self._get_demo_pose_reward_terms()
 
         total = (
             r_hold
@@ -1743,10 +1681,9 @@ class PourRightEnv(DirectRLEnv):
         if self.success_adr is not None:
             self.success_adr.maybe_increment(_ep_success_rate)
 
-        tgt_q = demo_terms["target_arm_q"]  # (N, 7) NN-matched demo joints
         # ---- TensorBoard logging ----
-        ep_log: dict = {
-            # reward/ — 학습 신호 (가중치 적용된 값)
+        # Episode/reward/* — 학습 신호 (가중치 적용된 값)
+        reward_log: dict = {
             "reward/hold":             r_hold.mean(),
             "reward/transport":        r_dist_to_target.mean(),
             "reward/palm_pose":        r_palm_pose.mean(),
@@ -1758,9 +1695,12 @@ class PourRightEnv(DirectRLEnv):
             "reward/bead_delta":       (self._rho * bead_warmup * r_bead_delta).mean(),
             "reward/source_drain":     r_source_drain.mean(),
             "reward/success":          (self.cfg.weight_success * r_success).mean(),
-            # cost/ — 패널티
             "cost/spill":              (spill_weight * spill_cost).mean(),
-            # log/ — 실제 조인트 vs demo NN 타겟 (j1~j5: branch, j6/j7: pour tilt)
+        }
+        self.extras["log"] = reward_log
+
+        # log/* — 진단 지표 (Episode 접두사 없이 log/* 로 기록)
+        diag: dict = {
             "log/j1":                  arm_joint_pos[:, 0].mean(),
             "log/j2":                  arm_joint_pos[:, 1].mean(),
             "log/j3":                  arm_joint_pos[:, 2].mean(),
@@ -1768,18 +1708,8 @@ class PourRightEnv(DirectRLEnv):
             "log/j5":                  arm_joint_pos[:, 4].mean(),
             "log/j6":                  arm_joint_pos[:, 5].mean(),
             "log/j7":                  arm_joint_pos[:, 6].mean(),
-            "demo/j1":                 tgt_q[:, 0].mean(),
-            "demo/j2":                 tgt_q[:, 1].mean(),
-            "demo/j3":                 tgt_q[:, 2].mean(),
-            "demo/j4":                 tgt_q[:, 3].mean(),
-            "demo/j5":                 tgt_q[:, 4].mean(),
-            "demo/j6":                 tgt_q[:, 5].mean(),
-            "demo/j7":                 tgt_q[:, 6].mean(),
             "log/demo_arm_joint_err":  demo_terms["demo_arm_joint_err"].mean(),
-            # log/palm
-            "log/palm_pos_err":        palm_pos_err.mean(),
             "log/palm_rot_err":        palm_rot_err.mean(),
-            # log/pour
             "log/bead_in_target":      self._bead_in_target_fraction.mean(),
             "log/bead_in_source":      self._bead_in_source_fraction.mean(),
             "log/spill_ratio":         self._spill_ratio.mean(),
@@ -1787,21 +1717,19 @@ class PourRightEnv(DirectRLEnv):
             "log/mouth_xy_dist":       self._mouth_xy_distance.mean(),
             "log/directional_tilt_cos": self._directional_tilt_cos.mean(),
             "log/rho":                 self._rho.mean(),
-            # log/gate
-            "log/initial_tilt_gate":   initial_tilt_gate.mean(),
             "log/pour_aligned_gate":   pour_aligned_gate.mean(),
-            "log/z_window":            z_window.mean(),
             "log/pour_warmup":         torch.tensor(pour_warmup, device=self.device),
             "log/bead_warmup":         torch.tensor(bead_warmup, device=self.device),
         }
         if self.spill_adr is not None:
-            ep_log["log/adr_spill"] = torch.tensor(self.spill_adr.progress, device=self.device)
+            diag["log/adr_spill"] = torch.tensor(self.spill_adr.progress, device=self.device)
         if self.noise_adr is not None:
-            ep_log["log/adr_noise"] = torch.tensor(self.noise_adr.progress, device=self.device)
+            diag["log/adr_noise"] = torch.tensor(self.noise_adr.progress, device=self.device)
         if self.success_adr is not None:
-            ep_log["log/adr_success"]        = torch.tensor(self.success_adr.progress, device=self.device)
-            ep_log["log/success_fill_ratio"] = torch.tensor(float(success_fill_ratio), device=self.device)
-        self.extras["log"] = ep_log
+            diag["log/adr_success"]        = torch.tensor(self.success_adr.progress, device=self.device)
+            diag["log/success_fill_ratio"] = torch.tensor(float(success_fill_ratio), device=self.device)
+        for k, v in diag.items():
+            self.extras[k] = v.mean() if isinstance(v, torch.Tensor) and v.dim() > 0 else v
 
         return total
 

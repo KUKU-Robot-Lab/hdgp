@@ -253,7 +253,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_finger_curl: float = 0.50
 
     # Transport Stage 1a: Cartesian 근접 (cup_center_xy 기반, 거친 approach gradient)
-    weight_dist_to_target: float = 10.0
+    weight_dist_to_target: float = 5.0
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # 이 이하: transport max (saturate)
 
@@ -296,8 +296,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # bead_warmup: bead progressive/delta + source_drain 을 0→max 로 점진 증가
     # -----------------------------------------------------------------------
     curriculum_pour_warmup_steps: int = 40000   # 0~40k: pour stage 탐색 유도
-    curriculum_bead_warmup_start: int = 0       # 처음부터 bead warmup 시작
-    curriculum_bead_warmup_steps: int = 60000   # 20k~80k: bead reward 0→max
+    curriculum_bead_warmup_start: int = 6400    # 100 에포크 (100 × horizon 64) 이후 활성
+    curriculum_bead_warmup_steps: int = 1       # start 즉시 1.0으로 활성
 
     # Outcome
     weight_success: float = 100.00
@@ -305,16 +305,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_spill: float = 40.0            # 5.0→40.0: spill 강하게 패널티 (40% trap 방지)
 
 
-    # Premature tilt penalty (ρ=0 일 때만): 멀리서 기울기 패널티
-    weight_premature_tilt: float = 1.00
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
-    # action_rate_penalty는 raw action 기반 유지 (training gradient 보존)
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
-    # [Phase-2 Step 9] action_rate를 palm(6D) / finger(5D) 분리
-    # grasp v9 패턴과 동일 (action_smoothness_palm/finger_weight)
-    # 기존 단일 weight_action_rate=0.01 → palm 강화, finger 완화
-    weight_action_rate_palm: float = 0.02    # palm 6D: arm jerk 억제 강화
-    weight_action_rate_finger: float = 0.005  # finger 5D: 채터링 적당히 억제
 
     # -----------------------------------------------------------------------
     # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
@@ -325,10 +317,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "pour"
-    weight_demo_arm_pose: float = 5.0
-    weight_demo_palm_pose: float = 0.0
-    weight_demo_smooth: float = 0.20
-    weight_thumb_grip_pose: float = 0.50
+    weight_demo_arm_pose: float = 20.0
     demo_pose_warmup_steps: int = 1
     # near_gate = exp(-(dist/9999)^2) ≈ 1.0 (항상 열린 상태)
     demo_pose_near_gate_xy: float = 9999.0

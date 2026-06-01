@@ -224,7 +224,7 @@ def _select_phase_indices(demo: h5py.Group, *, phase: str, n: int) -> np.ndarray
     if "timestamps_ns" in demo and n > 1:
         ts = np.asarray(demo["timestamps_ns"], dtype=np.int64)
         end_ns = int(ts[-1])
-        start_ns = end_ns - 4_000_000_000
+        start_ns = end_ns - 2_000_000_000
         idx = np.flatnonzero(ts >= start_ns)
         if idx.size:
             return idx.astype(np.int64)
