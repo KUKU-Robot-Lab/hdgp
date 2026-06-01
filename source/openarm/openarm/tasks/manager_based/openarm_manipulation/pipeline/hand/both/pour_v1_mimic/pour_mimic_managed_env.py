@@ -137,11 +137,12 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
     def get_subtask_term_signals(
         self, env_ids: Sequence[int] | None = None
     ) -> dict[str, torch.Tensor]:
-        """Derive phase completion flags from palm kinematics (both arms).
+        """Derive phase completion flags from scene state.
 
-        All grasp/lift signals are palm-position-based so they fire correctly
-        during sim replay even without physical contact.
-        Signal firing order: left_grasp → left_lift → grasp → lift → align.
+        The term signals are intentionally based on robot/cup state available
+        during sim replay.  Final success is stricter than annotation: cups must
+        physically lift, while subtask boundaries still include palm proximity so
+        old teleop demonstrations can be segmented for diagnosis.
         """
         ids = slice(None) if env_ids is None else env_ids
 
@@ -180,16 +181,22 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
         tgt_pos = target.data.root_pos_w[ids]
         left_grasp_done = torch.norm(left_palm_pos - tgt_pos, dim=-1) <= 0.12
 
-        # --- left_lift_done: left palm z >= 0.325 m ---
-        # Derived from real-robot FK: left EEF z starts ~0.309 m, rises to ~0.345 m during lift.
-        left_lift_done = left_palm_pos[:, 2] >= float(cfg.left_lift_threshold_z)
+        source_init_z = getattr(self, "_source_cup_init_z", source.data.root_pos_w[:, 2])
+        target_init_z = getattr(self, "_target_cup_init_z", target.data.root_pos_w[:, 2])
+        lift_delta = float(getattr(cfg, "physical_lift_success_height", 0.04))
+
+        source_lifted = source.data.root_pos_w[ids, 2] >= source_init_z[ids] + lift_delta
+        target_lifted = target.data.root_pos_w[ids, 2] >= target_init_z[ids] + lift_delta
+
+        # --- left_lift_done: physical lift, with palm-height fallback for annotation diagnostics ---
+        left_lift_done = target_lifted | (left_palm_pos[:, 2] >= float(cfg.left_lift_threshold_z))
 
         # --- grasp_done: right palm within 0.12 m of source cup ---
         src_pos = source.data.root_pos_w[ids]
         grasp_done = torch.norm(palm_pos - src_pos, dim=-1) <= 0.12
 
-        # --- lift_done: right palm z raised above lift threshold ---
-        lift_done = palm_pos[:, 2] >= float(cfg.lift_threshold_z)
+        # --- lift_done: physical lift, with palm-height fallback for annotation diagnostics ---
+        lift_done = source_lifted | (palm_pos[:, 2] >= float(cfg.lift_threshold_z))
 
         # --- align_done: right palm raised to pre-pour height ---
         # Using palm Z threshold is more reliable than cup-to-cup XY distance,
@@ -197,12 +204,22 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
         # and in the second half of the demo across all recorded demonstrations.
         align_done = palm_pos[:, 2] >= float(cfg.align_threshold_z)
 
+        # --- pour_done: pre-pour terminal gate ---
+        # This Mimic env does not model liquid/beads.  The terminal "pour" phase
+        # means the right palm reached the pre-pour pose while the source cup is
+        # physically lifted, or the replay reached the stricter pose-only gate
+        # used for dataset triage.
+        pour_done = align_done & (
+            source_lifted | (palm_pos[:, 2] >= float(cfg.pour_ready_threshold_z))
+        )
+
         return {
             "left_grasp_done": left_grasp_done,
             "left_lift_done": left_lift_done,
             "grasp_done": grasp_done,
             "lift_done": lift_done,
             "align_done": align_done,
+            "pour_done": pour_done,
         }
 
     def get_subtask_start_signals(
@@ -225,4 +242,13 @@ class PourMimicManagedEnv(ManagerBasedRLMimicEnv):
 
     def _reset_idx(self, env_ids: torch.Tensor) -> None:
         super()._reset_idx(env_ids)
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
 
+        source = self.scene["source_cup"]
+        target = self.scene["target_cup"]
+        if not hasattr(self, "_source_cup_init_z"):
+            self._source_cup_init_z = source.data.root_pos_w[:, 2].clone()
+            self._target_cup_init_z = target.data.root_pos_w[:, 2].clone()
+        self._source_cup_init_z[env_ids] = source.data.root_pos_w[env_ids, 2]
+        self._target_cup_init_z[env_ids] = target.data.root_pos_w[env_ids, 2]

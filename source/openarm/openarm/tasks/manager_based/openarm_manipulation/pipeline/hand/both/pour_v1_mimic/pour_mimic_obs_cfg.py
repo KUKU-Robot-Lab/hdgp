@@ -1,14 +1,16 @@
 """Observation configuration for pour_v1_mimic (ManagerBased).
 
-Policy obs (91D, deploy-compatible):
+Policy obs (105D, sim-aware):
   right_joint_pos  27  arm7 + hand20
   right_joint_vel  27
   left_joint_pos    7
   left_joint_vel    7
   tip_force_norm    5  norm of 3D force per fingertip, clamped [0,1]
   prev_actions     18
+  source_cup_pose   7  xyz + quat(wxyz), relative to env origin
+  target_cup_pose   7  xyz + quat(wxyz), relative to env origin
   ─────────────────────
-  total            91
+  total           105
 
 subtask_terms group (4 bool): grasp_done, lift_done, align_done, pour_done
   Used by IsaacLab Mimic annotate_demos.py; not fed to the policy.
@@ -66,6 +68,22 @@ def tip_force_norm(env: "ManagerBasedEnv") -> torch.Tensor:
     return (raw / _CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
 
+def _cup_pose(env: "ManagerBasedEnv", asset_name: str) -> torch.Tensor:
+    cup = env.scene[asset_name]
+    pos = cup.data.root_pos_w
+    if hasattr(env.scene, "env_origins"):
+        pos = pos - env.scene.env_origins
+    return torch.cat([pos, cup.data.root_quat_w], dim=-1)
+
+
+def source_cup_pose(env: "ManagerBasedEnv") -> torch.Tensor:
+    return _cup_pose(env, "source_cup")
+
+
+def target_cup_pose(env: "ManagerBasedEnv") -> torch.Tensor:
+    return _cup_pose(env, "target_cup")
+
+
 def grasp_done_signal(env: "ManagerBasedEnv") -> torch.Tensor:
     """Cup is in contact with fingertips and above init z."""
     return _get_term_signal(env, "grasp_done")
@@ -99,7 +117,7 @@ def _get_term_signal(env: "ManagerBasedEnv", name: str) -> torch.Tensor:
 
 @configclass
 class PolicyObsGroupCfg(ObsGroup):
-    """Deploy-compatible 91D policy observation."""
+    """Sim-aware 105D policy observation."""
 
     right_joint_pos = ObsTerm(func=joint_pos, params={"asset_cfg": _RIGHT_JOINT_CFG})
     right_joint_vel = ObsTerm(func=joint_vel, params={"asset_cfg": _RIGHT_JOINT_CFG})
@@ -107,6 +125,8 @@ class PolicyObsGroupCfg(ObsGroup):
     left_joint_vel = ObsTerm(func=joint_vel, params={"asset_cfg": _LEFT_JOINT_CFG})
     tip_force_norm = ObsTerm(func=tip_force_norm)
     prev_actions = ObsTerm(func=last_action)
+    source_cup_pose = ObsTerm(func=source_cup_pose)
+    target_cup_pose = ObsTerm(func=target_cup_pose)
 
     def __post_init__(self) -> None:
         self.enable_corruption = False

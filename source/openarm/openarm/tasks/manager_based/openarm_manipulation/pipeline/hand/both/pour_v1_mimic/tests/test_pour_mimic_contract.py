@@ -26,11 +26,11 @@ def _load_math_module():
 def test_pour_mimic_package_registers_eval_and_generation_tasks() -> None:
     init_text = _INIT.read_text(encoding="utf-8")
 
-    assert 'id="Pour-Mimic-V1-v0"' in init_text
-    assert 'id="Pour-Mimic-V1-Mimic-v0"' in init_text
+    assert '_register("Pour-Mimic"' in init_text
+    assert '_register("Pour-Mimic-Mimic"' in init_text
     assert ".pour_mimic_managed_env:PourMimicManagedEnv" in init_text
-    assert 'env_cfg_entry_point": f"{__name__}:PourMimicManagedEnvCfg"' in init_text
-    assert 'env_cfg_entry_point": f"{__name__}:PourMimicManagedMimicEnvCfg"' in init_text
+    assert 'f"{__name__}:PourMimicManagedEnvCfg"' in init_text
+    assert 'f"{__name__}:PourMimicManagedMimicEnvCfg"' in init_text
 
 
 def test_pour_mimic_cfg_matches_phase_1_contract() -> None:

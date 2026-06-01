@@ -188,12 +188,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     target_inside_z_max:  float = 0.100   # 림 높이
     target_mouth_z:       float = 0.100   # 림 높이 (bead crossing 기준)
     source_inner_radius:  float = 0.041   # 컵 내부 반경
+    source_outer_radius:  float = 0.045   # 컵 외부 반경 (최하단 림 점 계산용)
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     source_inside_z_max:  float = 0.100   # 림 높이
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
-    success_target_fill_ratio: float = 0.30
-    success_spill_max: float = 0.35
+    success_target_fill_ratio: float = 0.50
+    success_spill_max: float = 0.40   # tilt 탐색 중 spill 허용 (ADR로 점진 강화)
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -265,9 +266,19 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_dist_to_target: float = 10.0
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # 이하: transport max (포화)
+    # Transport Stage 1b: demo pour palm pose 추종.
+    # palm pose가 맞으면 Fabrics IK가 j0~4를 demo 자세로 자동 수렴시킴.
+    transport_palm_pos: tuple[float, ...] = (0.2938, -0.0781, 0.5629)
+    transport_palm_quat_xyzw: tuple[float, ...] = (-0.4532, 0.5712, 0.2235, 0.6469)
+    weight_palm_pose: float = 10.0
+    palm_pose_pos_sharpness: float = 8.0
+    palm_pose_rot_sharpness: float = 1.0
     # Stage 2: Pour distance (v3: ρ × pour_warmup × initial_tilt_gate × z_gate)
     weight_pour_dist: float = 12.0
     pour_dist_exp_scale: float = 8.0
+    z_window_lower_ramp: float = 0.01
+    z_window_upper_end:  float = 0.08
+    z_window_upper_ramp: float = 0.03
     pour_point_tilt_threshold_deg: float = 15.0   # 이 각도 이상 tilt 후 r_pour_dist 활성
     # Stage 3: Tilt + Align (v3: pour_aligned_gate × exp, ρ × pour_warmup)
     weight_tilt: float = 40.0
@@ -278,9 +289,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_bead_entry_delta: float = 300.0
     weight_source_drain: float = 20.0
     # Curriculum warmup (step 기반 선형)
-    curriculum_pour_warmup_steps: int = 30000  # 0→30k: pour_dist + tilt + align 점진 활성
-    curriculum_bead_warmup_start: int = 10000  # 10k 이후: bead + drain 점진 활성
-    curriculum_bead_warmup_steps: int = 60000  # 10k→70k: bead reward 0→max
+    curriculum_pour_warmup_steps: int = 40000  # 0→40k: pour stage 탐색 유도
+    curriculum_bead_warmup_start: int = 0      # 처음부터 bead warmup 시작
+    curriculum_bead_warmup_steps: int = 60000
     pour_reward_start_step: int = 0
     pour_reward_warmup_steps: int = 1
     # gamma=0.998, ep~500 step → terminal discount ≈ 0.37 → success 현재가치 충분히 크려면 500+ 필요
@@ -307,9 +318,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
     # action_rate_penalty는 raw action 기반 유지 (training gradient 보존)
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
-    # Action-rate costs are logged for diagnosis only; total reward is bead outcome driven.
-    weight_action_rate_palm: float = 0.0    # diagnostic only
-    weight_action_rate_finger: float = 0.0  # diagnostic only
+    weight_action_rate_palm: float = 0.02
+    weight_action_rate_finger: float = 0.005
 
     # -----------------------------------------------------------------------
     # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
@@ -325,23 +335,24 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_pose_start_mode: str = "warm_state_match"
     demo_start_fraction: float = 0.0      # fraction mode fallback
     demo_episode_steps: int = 1200        # episode_length_s(20s) × 60Hz
-    weight_demo_arm_pose: float = 0.0
+    weight_demo_arm_pose: float = 5.0
     weight_demo_palm_pose: float = 0.0
-    weight_demo_smooth: float = 0.0
-    weight_thumb_grip_pose: float = 0.0
-    demo_pose_warmup_steps: int = 20000
-    demo_pose_near_gate_xy: float = 0.20  # unused
+    weight_demo_smooth: float = 0.20
+    weight_thumb_grip_pose: float = 0.50
+    demo_pose_warmup_steps: int = 1
+    demo_pose_near_gate_xy: float = 9999.0
+    demo_nn_lookahead_frames: int = 10
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = True
     spill_adr_custom_cfg: dict = {
         "reward": {
-            "spill_weight": (0.1, 8.0),
+            "spill_weight": (1.0, 15.0),
         }
     }
     spill_adr_num_increments: int = 50
     spill_adr_increment_interval: int = 20000
-    spill_adr_trigger_threshold: float = 0.3
+    spill_adr_trigger_threshold: float = 0.10
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
     # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
@@ -360,8 +371,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     contact_maintain_min_others: int = 2       # contact_maintain: others 최소 접촉 수
     force_balance_sharpness: float = 2.0       # force_balance exp 감쇠율 (v8=2.0)
     pour_tilt_target_deg: float = 120.0
-    pour_tilt_sharpness: float = 2.0    # 6→2: gradient 범위 확대 (45°부터 학습 신호 확보)
-    pour_binary_xy_thresh: float = 0.22   # tilt 중 cup 이동으로 rho 불안정 방지
+    pour_tilt_sharpness: float = 4.0
+    pour_binary_xy_thresh: float = 0.20
+    pour_binary_tilt_thresh: float = 0.50
 
     # -----------------------------------------------------------------------
     # 종료 조건

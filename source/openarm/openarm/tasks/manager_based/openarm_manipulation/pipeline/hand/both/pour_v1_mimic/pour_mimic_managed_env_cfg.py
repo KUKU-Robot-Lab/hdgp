@@ -63,12 +63,7 @@ class PourMimicEventsCfg:
 
 
 def _check_prepour_success(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Annotation-quality check using right palm kinematics (sim replay compatible).
-
-    Sim replay does not physically grasp the cup, so cup position stays on the
-    table. Instead we check that the right palm ended above the table AND moved
-    toward the target cup — both are achievable from action replay alone.
-    """
+    """Physical success check: both cups must lift and right palm reaches pre-pour."""
     robot = env.scene["robot"]
     palm_idx = None
     for candidate in ("rl_dg_palm", "right_hand", "openarm_right_hand"):
@@ -78,13 +73,20 @@ def _check_prepour_success(env: ManagerBasedRLEnv) -> torch.Tensor:
         except ValueError:
             continue
     if palm_idx is None:
-        return torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
     palm_pos = robot.data.body_pos_w[:, palm_idx, :]
-    tgt = env.scene["target_cup"].data.root_pos_w
-    xy_dist = (palm_pos[:, :2] - tgt[:, :2]).norm(dim=-1)
-    palm_lifted = palm_pos[:, 2] > 0.28  # arm raised above table top
-    return palm_lifted & (xy_dist <= 0.30)  # arm moved toward target cup
+    source = env.scene["source_cup"]
+    target = env.scene["target_cup"]
+
+    source_init_z = getattr(env, "_source_cup_init_z", source.data.root_pos_w[:, 2])
+    target_init_z = getattr(env, "_target_cup_init_z", target.data.root_pos_w[:, 2])
+    lift_delta = float(getattr(env.cfg, "physical_lift_success_height", 0.04))
+
+    source_lifted = source.data.root_pos_w[:, 2] >= source_init_z + lift_delta
+    target_lifted = target.data.root_pos_w[:, 2] >= target_init_z + lift_delta
+    pre_pour_ready = palm_pos[:, 2] >= float(getattr(env.cfg, "pour_ready_threshold_z", 0.43))
+    return source_lifted & target_lifted & pre_pour_ready
 
 
 @configclass
@@ -118,6 +120,8 @@ class PourMimicManagedEnvCfg(ManagerBasedRLEnvCfg):
     lift_threshold_z: float = 0.30       # m  (right palm; cup spawns at z=0.277)
     align_threshold_xy: float = 0.05     # m  (kept for backward compat; not used by align_done)
     align_threshold_z: float = 0.43      # m  (right palm Z; fires after lift, in pre-pour phase)
+    pour_ready_threshold_z: float = 0.43 # m  (right palm Z for terminal pre-pour gate)
+    physical_lift_success_height: float = 0.04
     pour_threshold_tilt_deg: float = 70.0
 
     def __post_init__(self) -> None:
@@ -141,7 +145,7 @@ class PourMimicManagedMimicEnvCfg(PourMimicManagedEnvCfg, MimicEnvCfg):
 
         self.scene.num_envs = 20
 
-        self.datagen_config.name = "Pour-Mimic-V1"
+        self.datagen_config.name = "Pour-Mimic"
         self.datagen_config.generation_guarantee = True
         self.datagen_config.generation_keep_failed = True
         self.datagen_config.generation_num_trials = 1000
@@ -177,7 +181,7 @@ class PourMimicManagedMimicEnvCfg(PourMimicManagedEnvCfg, MimicEnvCfg):
             ),
         ]
 
-        # Right arm: grasp source cup → lift source cup → align over target cup
+        # Right arm: grasp source cup → lift source cup → align → pre-pour terminal
         self.subtask_configs["right"] = [
             SubTaskConfig(
                 object_ref="source_cup",
@@ -204,13 +208,24 @@ class PourMimicManagedMimicEnvCfg(PourMimicManagedEnvCfg, MimicEnvCfg):
             SubTaskConfig(
                 object_ref="target_cup",
                 subtask_term_signal="align_done",
-                subtask_term_offset_range=(0, 0),
+                subtask_term_offset_range=(0, 10),
                 selection_strategy="nearest_neighbor_object",
                 selection_strategy_kwargs={"nn_k": 3},
                 action_noise=0.015,
                 num_interpolation_steps=15,
                 apply_noise_during_interpolation=False,
                 description="Align source cup over target cup",
+            ),
+            SubTaskConfig(
+                object_ref="source_cup",
+                subtask_term_signal="pour_done",
+                subtask_term_offset_range=(0, 0),
+                selection_strategy="nearest_neighbor_object",
+                selection_strategy_kwargs={"nn_k": 3},
+                action_noise=0.01,
+                num_interpolation_steps=5,
+                apply_noise_during_interpolation=False,
+                description="Reach pre-pour terminal pose",
             ),
         ]
 

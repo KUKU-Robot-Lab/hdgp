@@ -68,13 +68,13 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬 (5g→10g: 관성 향상, 진동 날림 방지)
             rigid_props=RigidBodyPropertiesCfg( 
                 disable_gravity=False,
-                solver_position_iteration_count=16,
-                solver_velocity_iteration_count=4,
-                linear_damping=0.5,   # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
-                angular_damping=0.5,  # 0.0→0.1: 구슬이 컵 안에서 너무 활발히 튀는 현상 완화
-                max_depenetration_velocity=5.0,
-                max_linear_velocity=10.0,
-                max_angular_velocity=20.0,
+                solver_position_iteration_count=8,
+                solver_velocity_iteration_count=2,
+                linear_damping=0.1,
+                angular_damping=0.1,
+                max_depenetration_velocity=1.0,      # 5.0→1.0: 침투 보정 폭발 방지
+                max_linear_velocity=5.0,
+                max_angular_velocity=10.0,
             ),
         )
         # 이 IsaacLab 버전의 UsdFileCfg는 physics_material 생성자 인자를 직접 받지 않는다.
@@ -418,7 +418,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         ),
     )
     freeze_grasp_hand_during_episode: bool = True
-    bead_spawn_pos_source_cup_b: tuple[float, float, float] = tuple(BEAD_SPAWN_POS_SOURCE_CUP_B)
+    bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
         BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ
     )
@@ -440,7 +440,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         dt=1.0 / 120.0,
         render_interval=2,
         physx=sim_utils.PhysxCfg(
-            bounce_threshold_velocity=0.01,
+            bounce_threshold_velocity=0.2,   # 0.01은 active contact 폭발 유발
             gpu_found_lost_pairs_capacity=4 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,

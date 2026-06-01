@@ -79,7 +79,7 @@ from .pour_right_constants import (
 )
 from .pour_adr import PourADR
 from .pour_adr import PourADR as GraspADR
-from .reward_terms import compute_simple_pour_reward, compute_v3_tilt_reward, compute_v3_pour_dist_reward
+from .reward_terms import compute_v3_tilt_reward, compute_v3_pour_dist_reward
 from .pour_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
@@ -514,6 +514,11 @@ class PourRightEnv(DirectRLEnv):
                 flush=True,
             )
         self._demo_pose_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
+        # Transport fixed target: demo pour palm pose in env-local frame.
+        self._transport_palm_pos = to_torch(self.cfg.transport_palm_pos, device=self.device)
+        _q_xyzw = to_torch(self.cfg.transport_palm_quat_xyzw, device=self.device)
+        self._transport_palm_quat_wxyz = torch.cat([_q_xyzw[3:4], _q_xyzw[:3]], dim=0)
 
         # ----------------------------------------------------------------
         # 궤적 캡처 버퍼 + 성공 궤적 ring buffer (BC loss 학습용)
@@ -1039,7 +1044,7 @@ class PourRightEnv(DirectRLEnv):
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
             gate_den = max(self.cfg.tilt_action_gate_xy_far - self.cfg.tilt_action_gate_xy_near, 1e-6)
             tilt_gate = torch.clamp(
-                (self.cfg.tilt_action_gate_xy_far - self._cup_center_xy_dist) / gate_den,
+                (self.cfg.tilt_action_gate_xy_far - self._mouth_xy_distance) / gate_den,
                 0.0,
                 1.0,
             )
@@ -1048,7 +1053,23 @@ class PourRightEnv(DirectRLEnv):
             # [spin around cup-up, tilt toward target opening, orthogonal tilt].
             delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
             palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
-            palm_pose[:, :3] = self.pregrasp_palm_pose_buf[:, :3] + delta[:, :3]
+
+            # Rim-pivot: rotation pivots around the cup rim (pour point), not the palm.
+            _angle = delta_rotvec_world.norm(dim=-1)
+            _axis = torch.where(
+                _angle.unsqueeze(-1) > 1e-8,
+                delta_rotvec_world / _angle.unsqueeze(-1).clamp(min=1e-8),
+                delta_rotvec_world.new_tensor([1.0, 0.0, 0.0]).expand(self.num_envs, -1),
+            )
+            _delta_quat_wxyz = quat_from_angle_axis(_angle, _axis)
+            rim_env = self._source_pour_point_w - self.scene.env_origins
+            rim_rel = rim_env - self.palm_center_pos
+
+            pour_point_target_xy = rim_env[:, :2] + delta[:, :2]
+            expected_offset_xy = quat_apply(_delta_quat_wxyz, rim_rel)[:, :2]
+
+            palm_pose[:, 2] = self.palm_center_pos[:, 2] + delta[:, 2]
+            palm_pose[:, :2] = pour_point_target_xy - expected_offset_xy
             palm_pose[:, :3] = torch.max(
                 torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
                 self.palm_mins[:3].unsqueeze(0),
@@ -1066,9 +1087,11 @@ class PourRightEnv(DirectRLEnv):
             # j3: warmstart +0.14 → demo mean -0.24 (부호 반전 보정)
             # j7: pour 후반 평균 0.63, 상한 1.13 (외회전 편류 차단)
             _null_cfg = self.fabric_q.detach().clone()
-            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, max=0.46)
+            _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.70 + 0.37 * 0.30, min=0.0, max=0.46)
             _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
             _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
+            _null_cfg[:, 3] = _null_cfg[:, 3] * 0.95 + 1.84 * 0.05
+            _null_cfg[:, 4] = _null_cfg[:, 4] * 0.90 + (-1.16) * 0.10
             _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
             self.open_tesollo_fabric.default_config.copy_(_null_cfg)
 
@@ -1214,10 +1237,21 @@ class PourRightEnv(DirectRLEnv):
             )   # (N, 5, 3)
 
         n = self.num_envs
-        self._source_pour_point_w = self.cup.data.root_pos_w + quat_apply(
+        _rim_center_w = self.cup.data.root_pos_w + quat_apply(
             self.cup.data.root_quat_w,
             self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
         )
+        _cup_up_w = quat_apply(
+            self.cup.data.root_quat_w,
+            self._source_cup_up_axis_b.unsqueeze(0).expand(n, -1),
+        )
+        _world_down = _cup_up_w.new_zeros(n, 3)
+        _world_down[:, 2] = -1.0
+        _dot = (_world_down * _cup_up_w).sum(dim=-1, keepdim=True)
+        _gravity_perp = _world_down - _dot * _cup_up_w
+        _gravity_perp_norm = _gravity_perp.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        _gravity_perp_hat = _gravity_perp / _gravity_perp_norm
+        self._source_pour_point_w = _rim_center_w + self.cfg.source_outer_radius * _gravity_perp_hat
         self._target_opening_w = left_target_pos_w + quat_apply(
             left_target_quat_w,
             self._target_cup_opening_pos_b.unsqueeze(0).expand(n, -1),
@@ -1590,33 +1624,37 @@ class PourRightEnv(DirectRLEnv):
                 "demo_arm_joint_err": zero,
                 "demo_palm_pos_err": zero,
                 "demo_palm_rot_err": zero,
+                "target_arm_q": torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device),
             }
 
         ref = self.demo_pose_reference
         arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
 
-        # --- Step-indexed temporal alignment (NN search 제거) ---
-        # demo는 warmstart 시작 시점부터 에피소드 길이로 리샘플링되어 있음.
-        # episode_length_buf[i] = 현재 env i의 step 수 → demo[step] 직접 참조.
-        # "t번째 step에서는 demo의 t번째 자세가 타겟" → 시계열 구조 자동 반영.
-        demo_arm = ref.arm_joint_pos   # (D, episode_steps, 7) - resampled
-        T_demo = demo_arm.shape[1]
-        demo_idx = self.episode_length_buf.long().clamp(0, T_demo - 1)  # (N,)
+        # v3-style nearest-neighbor in joint space + look-ahead within assigned demo.
+        demo_arm_all = ref.arm_joint_pos
         demo_ids = self._demo_pose_ids.clamp(0, ref.num_demos - 1)
-        target_arm_q = demo_arm[demo_ids, demo_idx]                       # (N, 7)
+        demo_arm = demo_arm_all[demo_ids]  # (N, T, 7)
+        T_demo = demo_arm.shape[1]
+        err = (demo_arm - arm_q.unsqueeze(1)).pow(2).sum(dim=-1)
+        nn_idx = err.argmin(dim=-1)
+        lookahead = int(self.cfg.demo_nn_lookahead_frames)
+        target_idx = (nn_idx + lookahead).clamp(max=T_demo - 1)
+        batch_idx = torch.arange(self.num_envs, device=self.device)
+        target_arm_q = demo_arm[batch_idx, target_idx]
 
-        arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
-        demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
+        arm_std5 = ref.arm_joint_std[:5].clamp(min=0.20)
+        arm_norm_err = torch.norm((arm_q[:, :5] - target_arm_q[:, :5]) / arm_std5, dim=-1)
+        demo_arm_joint_err = arm_norm_err / math.sqrt(5.0)
         r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
 
-        # --- Palm: 동일한 step index로 참조 ---
+        # Palm: 동일한 target_idx로 참조.
         palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
         palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
 
-        demo_palm = ref.palm_pose   # (D, episode_steps, 7): [x,y,z, qx,qy,qz,qw] - resampled
-        target_palm = demo_palm[demo_ids, demo_idx]                      # (N, 7)
-        target_palm_pos = target_palm[:, :3]                             # (N, 3)
-        target_palm_quat_xyzw = target_palm[:, 3:7]                     # (N, 4) xyzw
+        demo_palm = ref.palm_pose[demo_ids]
+        target_palm = demo_palm[batch_idx, target_idx]
+        target_palm_pos = target_palm[:, :3]
+        target_palm_quat_xyzw = target_palm[:, 3:7]
         target_palm_quat_wxyz = torch.cat(
             [target_palm_quat_xyzw[:, 3:4], target_palm_quat_xyzw[:, :3]], dim=-1
         )                                                                # (N, 4) wxyz
@@ -1635,10 +1673,11 @@ class PourRightEnv(DirectRLEnv):
         jerk_excess = torch.relu(arm_jerk_l2 - ref.arm_jerk_l2_p95) / ref.arm_jerk_l2_p95
         cost_demo_smooth = vel_excess.pow(2) + jerk_excess.pow(2) + 0.1 * palm_delta
 
+        near_gate = torch.exp(-torch.square(self._cup_center_xy_dist / max(self.cfg.demo_pose_near_gate_xy, 1e-6)))
         warmup_steps = max(int(self.cfg.demo_pose_warmup_steps), 1)
         step_count = float(getattr(self, "common_step_counter", 0))
         warmup = min(step_count / float(warmup_steps), 1.0)
-        gate = warmup
+        gate = near_gate * warmup
 
         return {
             "r_demo_arm_pose": gate * self.cfg.weight_demo_arm_pose * r_demo_arm_pose,
@@ -1648,6 +1687,7 @@ class PourRightEnv(DirectRLEnv):
             "demo_arm_joint_err": demo_arm_joint_err,
             "demo_palm_pos_err": demo_palm_pos_err,
             "demo_palm_rot_err": demo_palm_rot_err,
+            "target_arm_q": target_arm_q,
         }
 
     def _get_rewards(self) -> torch.Tensor:
@@ -1715,6 +1755,18 @@ class PourRightEnv(DirectRLEnv):
             -self.cfg.dist_to_target_exp_scale * _transport_dist
         )
 
+        palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
+        palm_quat_wxyz = self.robot.data.body_quat_w[:, self.palm_body_index]
+        palm_pos_err = torch.norm(palm_pos_w - self._transport_palm_pos, dim=-1)
+        _quat_dot = torch.abs(
+            (palm_quat_wxyz * self._transport_palm_quat_wxyz).sum(dim=-1)
+        ).clamp(max=1.0)
+        palm_rot_err = 2.0 * torch.acos(_quat_dot)
+        r_palm_pose = self.cfg.weight_palm_pose * torch.exp(
+            -self.cfg.palm_pose_pos_sharpness * palm_pos_err
+            - self.cfg.palm_pose_rot_sharpness * palm_rot_err
+        )
+
         # ---- Stage 3: Tilt (v3: pour_aligned_gate × exp) ----
         v3_tilt = compute_v3_tilt_reward(
             source_up_dot_world=self._source_up_dot_world,
@@ -1726,12 +1778,18 @@ class PourRightEnv(DirectRLEnv):
         r_tilt = v3_tilt["r_tilt"]
 
         # ---- Stage 2: Pour distance (v3: initial_tilt_gate 대신 r_tilt.detach() 제거) ----
-        z_gate = torch.clamp(self._mouth_z_clearance / 0.03, 0.0, 1.0)
+        z_lower = torch.clamp(self._mouth_z_clearance / self.cfg.z_window_lower_ramp, 0.0, 1.0)
+        z_upper = torch.clamp(
+            (self.cfg.z_window_upper_end - self._mouth_z_clearance) / self.cfg.z_window_upper_ramp,
+            0.0,
+            1.0,
+        )
+        z_window = z_lower * z_upper
         r_pour_dist = compute_v3_pour_dist_reward(
             rho=self._rho,
             pour_warmup=pour_warmup,
             tilt_amount=tilt_amount,
-            z_gate=z_gate,
+            z_gate=z_window,
             mouth_xy_distance=self._mouth_xy_distance,
             pour_dist_exp_scale=self.cfg.pour_dist_exp_scale,
             weight_pour_dist=self.cfg.weight_pour_dist,
@@ -1753,18 +1811,6 @@ class PourRightEnv(DirectRLEnv):
             * bead_warmup
             * self.cfg.weight_source_drain
             * (1.0 - self._bead_in_source_fraction)
-        )
-        simple_reward_terms = compute_simple_pour_reward(
-            mouth_xy_distance=self._mouth_xy_distance,
-            bead_in_target_fraction=self._bead_in_target_fraction,
-            spill_ratio=self._spill_ratio,
-            rho=self._rho * pour_warmup,
-            xy_weight=self.cfg.weight_pour_xy,
-            xy_sharpness=self.cfg.pour_xy_sharpness,
-            capture_weight=self.cfg.weight_capture_spill,
-            spill_weight=self.cfg.weight_simple_spill,
-            spill_capture_coupling=self.cfg.spill_capture_coupling,
-            all_beads_bonus_weight=self.cfg.weight_all_beads_bonus,
         )
 
         # ---- 4. Success ----
@@ -1839,29 +1885,17 @@ class PourRightEnv(DirectRLEnv):
             palm_delta=palm_delta,
         )
 
-        # step-indexed alignment: phase gate 불필요.
-        # 에피소드 초반 step → demo lift 완료 자세, 후반 step → demo pour 완료 자세.
-        # warmup gate만 유지 (학습 초기 demo reward 점진 활성).
-        r_demo_arm_gated = demo_terms["r_demo_arm_pose"]
-
         total = (
             r_hold
             + r_dist_to_target
+            + r_palm_pose
             + r_pour_dist
             + r_pour_stage
             + r_source_drain
-            + r_demo_arm_gated
-            + demo_terms["r_demo_palm_pose"]
+            + demo_terms["r_demo_arm_pose"]
             + self.cfg.weight_success * r_success
             + overfill_bonus
             - spill_weight * spill_cost
-            - self.cfg.weight_premature_tilt * premature_tilt_cost
-            - self.cfg.weight_grasp_loss * grasp_loss_cost
-            - self.cfg.weight_cup_collision * cup_collision_cost
-            - action_rate_penalty
-            - arm_vel_cost
-            - demo_terms["cost_demo_smooth"]
-            - demo_terms["cost_thumb_grip"]
         )
 
         self._prev_arm_joint_vel.copy_(arm_qd)
@@ -1880,6 +1914,7 @@ class PourRightEnv(DirectRLEnv):
         ep_log: dict = {
             "reward/hold":              r_hold.mean(),
             "reward/dist":              r_dist_to_target.mean(),
+            "reward/palm_pose":         r_palm_pose.mean(),
             "reward/pour":              r_pour_stage.mean(),
             "reward/pour_aligned_gate":  v3_tilt["pour_aligned_gate"].mean(),
             "reward/pour_tilt":         (pour_warmup * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
@@ -1889,7 +1924,7 @@ class PourRightEnv(DirectRLEnv):
             "reward/pour_dist":         r_pour_dist.mean(),
             "reward/source_drain":      r_source_drain.mean(),
             "reward/success":           (self.cfg.weight_success * r_success).mean(),
-            "reward/demo_arm":          r_demo_arm_gated.mean(),
+            "reward/demo_arm":          demo_terms["r_demo_arm_pose"].mean(),
             "reward/demo_palm":         demo_terms["r_demo_palm_pose"].mean(),
             "log/demo_step_idx":        self.episode_length_buf.float().mean(),
             "log/demo_pose_id":         self._demo_pose_ids.float().mean(),
@@ -1917,6 +1952,7 @@ class PourRightEnv(DirectRLEnv):
             "log/rho":                  self._rho.mean(),
             "log/pour_warmup":          torch.tensor(pour_warmup, device=self.device),
             "log/bead_warmup":          torch.tensor(bead_warmup, device=self.device),
+            "log/z_window":             z_window.mean(),
             "log/contact_gate":         contact_gate.mean(),
             "log/slip_dist":            slip_dist.mean(),
             "log/full_grasp_rate":      full_grasp_flag.mean(),

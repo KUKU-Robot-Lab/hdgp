@@ -109,7 +109,7 @@ hdgp/source/openarm/openarm/tasks/manager_based/openarm_manipulation/
       [x] __init__.py
 ```
 
-> 진행 메모(2026-04-22): `Pour-Mimic-V1-v0`, `Pour-Mimic-V1-Mimic-v0` gym 등록 및 IsaacLab cfg parse smoke 통과.
+> 진행 메모(2026-04-22): `Pour-Mimic`, `Pour-Mimic-Mimic` gym 등록 및 IsaacLab cfg parse smoke 통과.
 > 미완성/보류: 전체 env reset/step acceptance는 현재 머신의 CUDA driver 미탑재 및 CPU fallback scene setup 오류(`spawn_ground_plane` PhysX material binding)로 막혀 있음. `pour_v1` 런타임/Isaac 환경 정리 후 재검증 필요.
 
 #### `__init__.py` — 필수 내용
@@ -117,12 +117,12 @@ hdgp/source/openarm/openarm/tasks/manager_based/openarm_manipulation/
 import gymnasium as gym
 
 gym.register(
-    id="Pour-Mimic-V1-v0",              # BC 평가용 (Mimic 없음)
+    id="Pour-Mimic",                    # BC 평가용 (Mimic 없음)
     entry_point="...pour_mimic_env:PourMimicEnv",
     kwargs={"cfg": PourMimicEnvCfg()},
 )
 gym.register(
-    id="Pour-Mimic-V1-Mimic-v0",        # 데이터 증강용
+    id="Pour-Mimic-Mimic",              # 데이터 증강용
     entry_point="...pour_mimic_env:PourMimicEnv",
     kwargs={"cfg": PourMimicMimicEnvCfg()},
 )
@@ -264,7 +264,7 @@ class PourMimicEnvCfg(ManagerBasedRLEnvCfg):
 class PourMimicMimicEnvCfg(PourMimicEnvCfg):
     """IsaacLab Mimic 데이터 생성 전용 설정 (MimicEnvCfg 추가)"""
     mimic: MimicEnvCfg = MimicEnvCfg(
-        name="Pour-Mimic-V1",
+        name="Pour-Mimic",
         num_substeps=2,
         # subtask 정의 (pour_mimic_subtask.py 참조)
         subtask_configs={
@@ -598,7 +598,7 @@ ros2 launch integrated_control openarm_left_gripper_right_dg5_real.launch.py \
 
 # terminal 2: 데모 수집 브리지
 python sim2real/scripts/ros2_demo_recorder.py \
-  --task Pour-Mimic-V1-Mimic-v0 \
+  --task Pour-Mimic-Mimic \
   --output_file ./datasets/pour_demos.hdf5 \
   --num_demos 35 \
   --headless false
@@ -607,7 +607,7 @@ python sim2real/scripts/ros2_demo_recorder.py \
 ### Step 3: Subtask 어노테이션
 ```bash
 ./isaaclab.sh -p scripts/imitation_learning/isaaclab_mimic/annotate_demos.py \
-  --task Pour-Mimic-V1-Mimic-v0 --auto \
+  --task Pour-Mimic-Mimic --auto \
   --input_file ./datasets/pour_demos.hdf5 \
   --output_file ./datasets/pour_annotated.hdf5
 ```
@@ -624,7 +624,7 @@ python sim2real/scripts/ros2_demo_recorder.py \
 ### Step 5: BC-RNN 학습
 ```bash
 ./isaaclab.sh -p scripts/imitation_learning/robomimic/train.py \
-  --task Pour-Mimic-V1-v0 --algo bc_rnn \
+  --task Pour-Mimic --algo bc_rnn \
   --normalize_training_actions \
   --dataset ./datasets/pour_generated_1k.hdf5
 ```
@@ -632,7 +632,7 @@ python sim2real/scripts/ros2_demo_recorder.py \
 ### Step 6: BC 평가
 ```bash
 ./isaaclab.sh -p scripts/imitation_learning/robomimic/play.py \
-  --task Pour-Mimic-V1-v0 --num_rollouts 50 \
+  --task Pour-Mimic --num_rollouts 50 \
   --horizon 600 \
   --checkpoint /PATH/TO/best_checkpoint.pth
 ```
@@ -665,7 +665,7 @@ Phase 0 (2~3일): 환경 검증
   │      TODO: 현재 작업 범위에서는 미실행. Mimic 기본 예제 acceptance 필요.
   ├─ [ ] pour_v1 정상 실행 확인
   │      TODO: CUDA driver 미탑재/CPU scene setup 오류로 전체 reset/step 검증 보류.
-  └─ [x] Pour-Mimic-V1 registry/cfg parse smoke 확인
+  └─ [x] Pour-Mimic registry/cfg parse smoke 확인
 
 Phase 1 (7~10일): PourMimicEnv 구현  ← 핵심 병목
   ├─ [x] pour_v1_mimic/__init__.py

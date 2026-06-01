@@ -53,7 +53,7 @@ class PourMimicMimicEnvCfg(PourMimicEnvCfg, MimicEnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        self.datagen_config.name = "Pour-Mimic-V1"
+        self.datagen_config.name = "Pour-Mimic"
         self.datagen_config.generation_guarantee = True
         self.datagen_config.generation_keep_failed = True
         self.datagen_config.generation_num_trials = 1000

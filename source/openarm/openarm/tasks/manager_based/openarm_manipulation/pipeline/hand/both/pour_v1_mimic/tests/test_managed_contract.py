@@ -27,15 +27,26 @@ def _text(filename: str) -> str:
 
 def test_init_registers_managed_env_for_eval_id() -> None:
     t = _text("__init__.py")
-    assert 'id="Pour-Mimic-V1-v0"' in t
+    assert '_register("Pour-Mimic"' in t
     assert "pour_mimic_managed_env:PourMimicManagedEnv" in t
     assert "PourMimicManagedEnvCfg" in t
+    assert "robomimic_bc_cfg_entry_point" in t
 
 
 def test_init_registers_managed_env_for_mimic_id() -> None:
     t = _text("__init__.py")
-    assert 'id="Pour-Mimic-V1-Mimic-v0"' in t
+    assert '_register("Pour-Mimic-Mimic"' in t
     assert "PourMimicManagedMimicEnvCfg" in t
+    assert "robomimic_bc_cfg_entry_point" in t
+
+
+def test_robomimic_bc_config_exists_and_uses_policy_obs() -> None:
+    path = _ROOT / "config/agents/robomimic/bc_rnn_policy.json"
+    assert path.exists()
+    t = path.read_text(encoding="utf-8")
+    assert '"algo_name": "bc"' in t
+    assert '"policy"' in t
+    assert '"seq_length": 32' in t
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +141,9 @@ def test_mimic_env_cfg_covers_all_four_right_subtasks() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_obs_cfg_policy_group_has_91d_components() -> None:
+def test_obs_cfg_policy_group_has_105d_robot_and_object_components() -> None:
     t = _text("pour_mimic_obs_cfg.py")
+    assert "105D" in t
     # 27D right joint pos/vel
     assert "right_joint_pos" in t
     assert "right_joint_vel" in t
@@ -142,6 +154,9 @@ def test_obs_cfg_policy_group_has_91d_components() -> None:
     assert "tip_force_norm" in t
     # 18D prev actions
     assert "prev_actions" in t
+    # 14D sim-visible object state
+    assert "source_cup_pose" in t
+    assert "target_cup_pose" in t
 
 
 def test_obs_cfg_subtask_terms_group_not_concatenated() -> None:

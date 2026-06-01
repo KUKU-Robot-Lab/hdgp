@@ -93,14 +93,14 @@ def test_demo_recorder_writes_mimic_hdf5_minimum_structure(tmp_path) -> None:
         done=False,
     )
 
-    writer = recorder.HDF5DemoWriter(output, env_name="Pour-Mimic-V1-Mimic-v0")
+    writer = recorder.HDF5DemoWriter(output, env_name="Pour-Mimic-Mimic")
     writer.set_env_args({"dt": 1.0 / 300.0, "decimation": 5, "num_envs": 1})
     writer.write_episode(episode, success=True)
     writer.close()
 
     with h5py.File(output, "r") as handle:
         assert "data" in handle
-        assert "Pour-Mimic-V1-Mimic-v0" in handle["data"].attrs["env_args"]
+        assert "Pour-Mimic-Mimic" in handle["data"].attrs["env_args"]
         demo_name = next(iter(handle["data"].keys()))
         demo = handle["data"][demo_name]
         assert "initial_state" in demo
