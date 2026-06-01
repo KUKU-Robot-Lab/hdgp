@@ -1654,6 +1654,10 @@ class PourRightEnv(DirectRLEnv):
         )
         arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
 
+        arm_qd      = self.robot.data.joint_vel[:, self.arm_dof_indices]
+        arm_acc_vec  = arm_qd - self._prev_arm_joint_vel
+        arm_jerk_vec = arm_acc_vec - self._prev_arm_joint_acc  # noqa: F841
+
         demo_terms = self._get_demo_pose_reward_terms()
 
         total = (
