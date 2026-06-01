@@ -319,17 +319,17 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
     # -----------------------------------------------------------------------
-    enable_demo_pose_reward: bool = False
+    enable_demo_pose_reward: bool = True
     demo_pose_dataset_dir: str = _DEFAULT_DEMO_POSE_DATASET_DIR
     demo_pose_paths: tuple[str, ...] = tuple(
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
-    demo_pose_phase: str = "all"
-    weight_demo_arm_pose: float = 0.0
+    demo_pose_phase: str = "pour"
+    weight_demo_arm_pose: float = 5.0
     weight_demo_palm_pose: float = 0.0
     weight_demo_smooth: float = 0.20
     weight_thumb_grip_pose: float = 0.50
-    demo_pose_warmup_steps: int = 20000
+    demo_pose_warmup_steps: int = 1
     # near_gate = exp(-(dist/9999)^2) ≈ 1.0 (항상 열린 상태)
     demo_pose_near_gate_xy: float = 9999.0
     demo_nn_lookahead_frames: int = 10

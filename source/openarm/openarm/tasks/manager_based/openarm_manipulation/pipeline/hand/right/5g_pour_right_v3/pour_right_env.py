@@ -1488,8 +1488,11 @@ class PourRightEnv(DirectRLEnv):
         target_idx = (nn_idx + K).clamp(max=T_demo - 1)         # (N,)
         target_arm_q = demo_arm[target_idx]                      # (N, 7)
 
-        arm_norm_err = torch.norm((arm_q - target_arm_q) / ref.arm_joint_std, dim=-1)
-        demo_arm_joint_err = arm_norm_err / math.sqrt(float(NUM_ARM_DOF))
+        # j1~j5(idx 0~4)만 branch 결정에 사용. j6/j7은 정책의 tilt 자유도.
+        # min_std=0.20: warmstart→demo branch 전환 구간에서 gradient 유지
+        arm_std5 = ref.arm_joint_std[:5].clamp(min=0.20)
+        arm_norm_err = torch.norm((arm_q[:, :5] - target_arm_q[:, :5]) / arm_std5, dim=-1)
+        demo_arm_joint_err = arm_norm_err / math.sqrt(5.0)
         r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
 
         # --- Palm: 동일한 target_idx로 일관성 있게 참조 ---
