@@ -423,7 +423,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ
     )
     # Demo별 target cup pose를 우선 사용한다. 없거나 비활성화되면 FK 고정 배치로 fallback.
-    use_demo_left_target_pose: bool = True
+    use_demo_left_target_pose: bool = False  # v3 match: left arm/cup stays at FK rest pose
     # FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS에서 hand local_z=0.05)
     left_target_cup_pos_env_local: tuple[float, float, float] = tuple(LEFT_TARGET_CUP_POS_ENV_LOCAL)
     left_target_cup_quat_wxyz: tuple[float, float, float, float] = tuple(LEFT_TARGET_CUP_QUAT_WXYZ)

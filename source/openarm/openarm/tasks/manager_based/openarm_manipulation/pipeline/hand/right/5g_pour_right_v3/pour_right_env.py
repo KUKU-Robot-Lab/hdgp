@@ -1018,17 +1018,16 @@ class PourRightEnv(DirectRLEnv):
             )
             self.palm_pose_targets.copy_(palm_pose)
             self.hand_pca_targets.zero_()
-            # null-space attractor: j1/j2/j3/j7을 데모(a11-a20) 통계 기반 target으로 당김.
-            # alpha=0.05(5%/step): Fabrics IK 동작 유지하면서 warmstart 편류 보정.
-            # j1: warmstart -0.54 → demo mean +0.09 (방향 반전 보정)
-            # j3: warmstart +0.14 → demo mean -0.24 (부호 반전 보정)
-            # j7: pour 후반 평균 0.63, 상한 1.13 (외회전 편류 차단)
+            # null-space attractor: j1~j5를 데모(a11-a20) 통계 기반 target으로 당김.
+            # j1~j5: arm configuration (pour 자세 branch 결정)
+            # j6: 정책이 tilt 제어 (nullspace 제외)
+            # j7: tilt 제어, 내회전 방지 (min=0.20 유지)
             _null_cfg = self.fabric_q.detach().clone()
-            # j0 null-space target: 데모 pour 자세 j0=+0.37 방향으로 당김 (test9)
-            # weight 0.15 → 0.30으로 올려 수렴 속도 높임, min=0.0 유지
             _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.70 + 0.37 * 0.30, min=0.0, max=0.46)
             _null_cfg[:, 1] = torch.clamp(_null_cfg[:, 1] * 0.95 + 0.39 * 0.05, min=0.00, max=1.05)
             _null_cfg[:, 2] = torch.clamp(_null_cfg[:, 2] * 0.95 + (-0.24) * 0.05, min=-0.74, max=0.38)
+            _null_cfg[:, 3] = _null_cfg[:, 3] * 0.95 + 1.84 * 0.05   # j4: demo mean +1.84
+            _null_cfg[:, 4] = _null_cfg[:, 4] * 0.90 + (-1.16) * 0.10  # j5: demo mean -1.16 (branch switch)
             _null_cfg[:, 6] = torch.clamp(_null_cfg[:, 6] * 0.95 + 0.63 * 0.05, min=0.20, max=1.13)
             self.open_tesollo_fabric.default_config.copy_(_null_cfg)
             self.open_tesollo_fabric.set_features(

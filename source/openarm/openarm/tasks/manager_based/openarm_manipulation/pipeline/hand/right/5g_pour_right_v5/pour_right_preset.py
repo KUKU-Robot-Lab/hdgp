@@ -34,7 +34,7 @@ LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAM
 
 LEFT_ARM_REST_JOINT_POS = {
     "openarm_left_joint1": -0.315,
-    "openarm_left_joint2": -0.084,
+    "openarm_left_joint2": -0.079,  # v3 match
     "openarm_left_joint3":  0.217,
     "openarm_left_joint4":  0.513,
     "openarm_left_joint5":  0.666,

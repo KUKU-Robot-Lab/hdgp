@@ -1225,7 +1225,7 @@ class PourRightEnv(DirectRLEnv):
         if self.cfg.use_demo_left_target_pose and self.demo_pose_reference is not None:
             left_cup_pose = self._left_target_cup_fixed_pose_w
         else:
-            left_cup_pose = self._get_left_cup_attached_pose()
+            left_cup_pose = self._get_left_target_cup_fixed_pose()  # v3 match: FK-based fixed pose
         self._left_target_cup_fixed_pose_w.copy_(left_cup_pose)
         zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
