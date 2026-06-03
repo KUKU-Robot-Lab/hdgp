@@ -97,6 +97,22 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 
+class SingleAxisIsaacObserver(IsaacAlgoObserver):
+    """env의 log/* 진단 지표를 frame/iter/time 3중 대신 iter(epoch) 1개만 기록.
+
+    IsaacAlgoObserver는 direct_info를 3개 x축(frame/iter/time)에 모두 쓴다.
+    여기서는 super()가 direct_info를 건너뛰게 한 뒤 iter 축에만 한 번 기록한다.
+    (Episode/* 는 원래 1축, scores/episode_lengths/rewards 3중은 rl_games 코어 소관.)
+    """
+
+    def after_print_stats(self, frame, epoch_num, total_time):
+        saved = self.direct_info
+        self.direct_info = {}
+        super().after_print_stats(frame, epoch_num, total_time)
+        for k, v in saved.items():
+            self.writer.add_scalar(f"{k}/iter", v, epoch_num)
+
+
 def _force_local_openarm_path() -> str:
     """Force import path to hdgp/source/openarm so openarm resolves to local source only."""
     hdgp_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -303,10 +319,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # create runner from rl-games
 
     if "pbt" in agent_cfg and agent_cfg["pbt"]["enabled"]:
-        observers = MultiObserver([IsaacAlgoObserver(), PbtAlgoObserver(agent_cfg, args_cli)])
+        observers = MultiObserver([SingleAxisIsaacObserver(), PbtAlgoObserver(agent_cfg, args_cli)])
         runner = Runner(observers)
     else:
-        runner = Runner(IsaacAlgoObserver())
+        runner = Runner(SingleAxisIsaacObserver())
 
     runner.load(agent_cfg)
 
