@@ -261,15 +261,15 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # palm pose가 맞으면 Fabrics IK가 j0~4를 demo 자세로 자동 수렴시킴 (redundancy 1DOF).
     transport_palm_pos: tuple[float, ...] = (0.2938, -0.0781, 0.5629)
     transport_palm_quat_xyzw: tuple[float, ...] = (-0.4532, 0.5712, 0.2235, 0.6469)
-    weight_palm_pose: float = 10.0
+    weight_palm_pose: float = 5.0   # test6: 10→5, demo-palm anchor 완화 (pour_point 9cm 짧게 고정 해소)
     palm_pose_pos_sharpness: float = 8.0
     palm_pose_rot_sharpness: float = 1.0
 
     # Pour distance: Stage 2 (ρ gate + pour_warmup)
     # pour point(rim 최하단) → target center XY 거리 기반
     # 가까울수록 bead가 target에 들어갈 확률 높아짐
-    weight_pour_dist: float = 12.0
-    pour_dist_exp_scale: float = 8.0
+    weight_pour_dist: float = 25.0   # test6: 12→25, aim gradient 강화 (mouth_xy 0.097 plateau 탈출)
+    pour_dist_exp_scale: float = 5.0   # test6: 8→5, 0.10m 거리에서도 gradient 살림 (gate 0.46→0.62)
     # z_window: pour_point Z soft gate (1~5cm 활성 구역, 정책이 최적 위치 탐색)
     # z_lower_ramp: 0→lower_ramp 구간에서 0→1 상승 (하한)
     # z_upper_end:  이 높이에서 완전히 0 (상한)
