@@ -410,16 +410,12 @@ class PourRightEnv(DirectRLEnv):
         # posture-gated crossover: demo/palm 자세 weight 감쇠 + pour 활성(pour_warmup 대체)을
         # 동시 구동하는 alpha(0→1). demo_arm_joint_err(j1-5)가 threshold 안에 든 env 비율이
         # trigger_rate 이상이면 한 칸 전진(ratchet). success-ADR의 chicken-egg 회피.
-        self.crossover_adr = (
-            PourADR(
-                custom_cfg={"crossover": {"alpha": (0.0, 1.0)}},
-                num_increments=cfg.crossover_num_increments,
-                increment_interval=cfg.crossover_increment_interval,
-                trigger_threshold=cfg.crossover_trigger_rate,
-            )
-            if cfg.enable_weight_crossover
-            else None
-        )
+        # 래치-후-단조 상태: 래치 전 alpha=0, 래치 후 시간 단조 ramp.
+        self._crossover_alpha = 0.0
+        self._pour_latched = False
+        self._pour_latch_step = 0.0
+        self._posture_above_count = 0
+        self._last_latch_check = 0.0
 
         self._noise_base_joint_pos = cfg.obs_noise_joint_pos
         self._noise_base_joint_vel = cfg.obs_noise_joint_vel
@@ -1559,19 +1555,20 @@ class PourRightEnv(DirectRLEnv):
 
         # Curriculum warmup (common_step_counter 기반 선형 증가)
         step_count = float(getattr(self, "common_step_counter", 0))
-        # posture-gated crossover: alpha(0→1)가 자세 weight 감쇠 + pour 활성을 동시 구동.
-        # crossover 비활성 시 기존 step 기반 pour_warmup 사용 + 자세 weight 정적.
-        if self.crossover_adr is not None:
-            self._crossover_alpha = self.crossover_adr.get_param("crossover", "alpha")
-            a = self._crossover_alpha
-            self._demo_arm_pose_w = (
-                self.cfg.weight_demo_arm_pose * (1.0 - a)
-                + self.cfg.weight_demo_arm_pose_floor * a
-            )
-            self._palm_pose_w = (
-                self.cfg.weight_palm_pose * (1.0 - a)
-                + self.cfg.weight_palm_pose_floor * a
-            )
+        # 래치-후-단조: 래치 전 alpha=0(Stage A 자세 학습만), 래치 후 시간 단조 ramp.
+        # demo/palm weight는 정적 유지 → j1-5 자세를 Stage B 내내 hold (감쇠 폐기).
+        if self.cfg.enable_weight_crossover:
+            if self._pour_latched:
+                a = min(
+                    (step_count - self._pour_latch_step)
+                    / max(self.cfg.crossover_monotonic_steps, 1),
+                    1.0,
+                )
+            else:
+                a = 0.0
+            self._crossover_alpha = a
+            self._demo_arm_pose_w = self.cfg.weight_demo_arm_pose
+            self._palm_pose_w = self.cfg.weight_palm_pose
             pour_warmup = a
         else:
             self._crossover_alpha = 1.0
@@ -1726,13 +1723,22 @@ class PourRightEnv(DirectRLEnv):
             self.noise_adr.maybe_increment(_ep_success_rate)
         if self.success_adr is not None:
             self.success_adr.maybe_increment(_ep_success_rate)
-        # crossover: j1-5 자세가 threshold 안에 든 env 비율로 ratchet 전진
+        # 래치 판정: j1-5 자세 진입 비율(posture_rate)이 trigger를 interval 간격으로
+        # latch_sustain회 연속 충족하면 래치 → 이후 단조. 래치는 한 번만(전진 재게이팅 없음).
         _posture_rate = (
             (demo_terms["demo_arm_joint_err"] < self.cfg.crossover_posture_threshold)
             .float().mean().item()
         )
-        if self.crossover_adr is not None:
-            self.crossover_adr.maybe_increment(_posture_rate)
+        if self.cfg.enable_weight_crossover and not self._pour_latched:
+            if step_count - self._last_latch_check >= self.cfg.crossover_increment_interval:
+                self._last_latch_check = step_count
+                if _posture_rate >= self.cfg.crossover_trigger_rate:
+                    self._posture_above_count += 1
+                else:
+                    self._posture_above_count = 0
+                if self._posture_above_count >= self.cfg.crossover_latch_sustain:
+                    self._pour_latched = True
+                    self._pour_latch_step = step_count
 
         # ---- TensorBoard logging ----
         # Episode/reward/* — 학습 신호 (가중치 적용된 값)
@@ -1757,6 +1763,7 @@ class PourRightEnv(DirectRLEnv):
         diag: dict = {
             "log/crossover_alpha":     torch.tensor(self._crossover_alpha, device=self.device),
             "log/posture_rate":        torch.tensor(_posture_rate, device=self.device),
+            "log/pour_latched":        torch.tensor(float(self._pour_latched), device=self.device),
             "log/j1":                  arm_joint_pos[:, 0].mean(),
             "log/j2":                  arm_joint_pos[:, 1].mean(),
             "log/j3":                  arm_joint_pos[:, 2].mean(),

@@ -328,14 +328,20 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_nn_lookahead_frames: int = 10
 
     # Posture-gated weight crossover: 자세(demo/palm) → pour-point 전환.
-    # demo_arm_joint_err(j1-5)가 threshold 안에 든 env 비율 ≥ trigger_rate 이면
-    # crossover_alpha 한 칸 전진(ratchet). alpha가 자세 weight 감쇠 + pour 활성(pour_warmup 대체) 동시 구동.
+    # 래치-후-단조(latch-then-monotonic): posture_rate(demo_arm_joint_err<threshold 비율)가
+    # trigger_rate를 latch_sustain회 연속(interval 간격) 충족하면 "래치" → 그 시점부터
+    # alpha=min((step-latch_step)/monotonic_steps, 1)로 자세조건 무관하게 단조 증가.
+    # 게이트는 "시작 트리거" 1회만 사용 → 전진이 게이트를 재확인하지 않아 진동 없음.
+    # demo/palm weight는 감쇠하지 않고 정적 유지(j1-5 자세 hold = Stage A 유지).
     enable_weight_crossover: bool = True
     crossover_posture_threshold: float = 1.3   # test4 자세 도달치(~1.2) 기준
-    crossover_trigger_rate: float = 0.5        # env 절반 자세 진입 시 전진
+    crossover_trigger_rate: float = 0.5        # env 절반 자세 진입 시 래치 후보
+    crossover_increment_interval: int = 1500   # 래치 조건 점검 간격(step)
+    crossover_latch_sustain: int = 2           # trigger를 2회 연속 충족 시 래치(노이즈 방지)
+    crossover_monotonic_steps: int = 40000     # 래치 후 alpha 0→1 단조 구간(≈625ep)
+    # (미사용: 래치-후-단조 전환으로 weight 감쇠 폐기, 호환성 위해 보존)
     crossover_num_increments: int = 50
-    crossover_increment_interval: int = 1500   # 50×1500 ≈ 1170ep 전환
-    weight_demo_arm_pose_floor: float = 5.0    # Phase B 최저 (자세 prior 잔류)
+    weight_demo_arm_pose_floor: float = 5.0
     weight_palm_pose_floor: float = 3.0
 
     # ADR: spill penalty 스케줄 (low→high)
