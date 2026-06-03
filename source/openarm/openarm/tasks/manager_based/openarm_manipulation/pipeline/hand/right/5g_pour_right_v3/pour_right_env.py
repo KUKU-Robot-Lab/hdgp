@@ -1636,6 +1636,13 @@ class PourRightEnv(DirectRLEnv):
             * self.cfg.weight_pour_dist
             * torch.exp(-self.cfg.pour_dist_exp_scale * self._mouth_xy_distance)
         )
+        # Stage B z-barrier: pour_point가 림 아래(clearance<margin)로 가라앉는 것만 막는
+        # 단방향 penalty. 림 위(clearance≥margin)에서는 0 → 높이는 beads가 결정.
+        z_violation = (self.cfg.pour_z_margin - self._mouth_z_clearance).clamp(min=0.0)
+        r_pour_z = -(
+            self._rho * pour_warmup * self.cfg.weight_pour_z * z_violation
+        )
+
         # DexPour eq.2: 올바른 방향(cos>0)에서 최대, 반대 방향(cos<0)에서 0
         r_align = 0.5 * (1.0 + self._directional_tilt_cos)
 
@@ -1700,6 +1707,7 @@ class PourRightEnv(DirectRLEnv):
             + r_palm_pose
             + demo_terms["r_demo_arm_pose"]
             + r_pour_dist
+            + r_pour_z
             + r_pour_stage
             + r_source_drain
             + self.cfg.weight_success * r_success
@@ -1734,6 +1742,7 @@ class PourRightEnv(DirectRLEnv):
             "reward/palm_pose":        r_palm_pose.mean(),
             "reward/demo_arm_pose":    demo_terms["r_demo_arm_pose"].mean(),
             "reward/pour_dist":        r_pour_dist.mean(),
+            "reward/pour_z":           r_pour_z.mean(),
             "reward/pour_tilt":        (pour_warmup * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
             "reward/pour_align":       (pour_warmup * self.cfg.weight_align * r_align * self._rho).mean(),
             "reward/bead_progressive": (self._rho * bead_warmup * r_bead_progressive).mean(),

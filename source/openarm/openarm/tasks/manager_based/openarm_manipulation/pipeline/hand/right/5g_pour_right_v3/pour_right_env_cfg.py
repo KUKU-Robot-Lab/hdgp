@@ -277,6 +277,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     z_window_lower_ramp: float = 0.01   # 0~1cm: 하한 ramp
     z_window_upper_end:  float = 0.08   # 8cm에서 완전 소멸
     z_window_upper_ramp: float = 0.03   # 5~8cm: 상한 ramp (8-3=5cm부터 하강)
+    # Stage B z-barrier: pour_point가 림 아래(clearance<margin)로 내려가는 것만 막음.
+    # 단방향 penalty — 림 위 높이는 강제하지 않고 beads가 결정하게 둠 (test7: ram 방지).
+    weight_pour_z: float = 300.0        # 1cm 위반 ≈ 3.0 penalty
+    pour_z_margin: float = 0.01         # 림에서 1cm 위가 하한
 
     # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
     weight_tilt: float = 40.0             # 120° 타겟 gradient (test5: 8→40, approach local min 탈출)
