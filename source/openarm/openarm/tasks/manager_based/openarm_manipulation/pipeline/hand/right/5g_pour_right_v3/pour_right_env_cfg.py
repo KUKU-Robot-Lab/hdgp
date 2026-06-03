@@ -261,7 +261,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # palm pose가 맞으면 Fabrics IK가 j0~4를 demo 자세로 자동 수렴시킴 (redundancy 1DOF).
     transport_palm_pos: tuple[float, ...] = (0.2938, -0.0781, 0.5629)
     transport_palm_quat_xyzw: tuple[float, ...] = (-0.4532, 0.5712, 0.2235, 0.6469)
-    weight_palm_pose: float = 5.0   # test6: 10→5, demo-palm anchor 완화 (pour_point 9cm 짧게 고정 해소)
+    weight_palm_pose: float = 10.0   # crossover Phase A 시작값 (→ floor 3). test6의 정적 5는 crossover로 대체
     palm_pose_pos_sharpness: float = 8.0
     palm_pose_rot_sharpness: float = 1.0
 
@@ -317,11 +317,22 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "pour"
-    weight_demo_arm_pose: float = 20.0
+    weight_demo_arm_pose: float = 20.0   # crossover Phase A 시작값 (→ floor 5)
     demo_pose_warmup_steps: int = 1
     # near_gate = exp(-(dist/9999)^2) ≈ 1.0 (항상 열린 상태)
     demo_pose_near_gate_xy: float = 9999.0
     demo_nn_lookahead_frames: int = 10
+
+    # Posture-gated weight crossover: 자세(demo/palm) → pour-point 전환.
+    # demo_arm_joint_err(j1-5)가 threshold 안에 든 env 비율 ≥ trigger_rate 이면
+    # crossover_alpha 한 칸 전진(ratchet). alpha가 자세 weight 감쇠 + pour 활성(pour_warmup 대체) 동시 구동.
+    enable_weight_crossover: bool = True
+    crossover_posture_threshold: float = 1.3   # test4 자세 도달치(~1.2) 기준
+    crossover_trigger_rate: float = 0.5        # env 절반 자세 진입 시 전진
+    crossover_num_increments: int = 50
+    crossover_increment_interval: int = 1500   # 50×1500 ≈ 1170ep 전환
+    weight_demo_arm_pose_floor: float = 5.0    # Phase B 최저 (자세 prior 잔류)
+    weight_palm_pose_floor: float = 3.0
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = True
