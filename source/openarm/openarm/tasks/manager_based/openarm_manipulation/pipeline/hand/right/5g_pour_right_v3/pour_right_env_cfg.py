@@ -280,7 +280,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Stage B z-barrier: pour_point가 림 아래(clearance<margin)로 내려가는 것만 막음.
     # 단방향 penalty — 림 위 높이는 강제하지 않고 beads가 결정하게 둠 (test7: ram 방지).
     weight_pour_z: float = 300.0        # 1cm 위반 ≈ 3.0 penalty
-    pour_z_margin: float = 0.01         # 림에서 1cm 위가 하한
+    pour_z_margin: float = 0.03         # test11: 1cm→3cm. clearance 1.7cm에 안착→source cup이 rim에 닿음. 여유 확보
 
     # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
     weight_tilt: float = 40.0             # 120° 타겟 gradient (test5: 8→40, approach local min 탈출)
@@ -291,7 +291,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # pour_aligned_gate: pour_point 정렬도 비례로 r_tilt 증폭 → pour_point pivot 행동 유도
     pour_align_gate_scale: float = 8.0
     weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
-    weight_bead_entry_delta: float = 300.0   # 비드 유입 즉각 피드백 강화
+    weight_bead_entry_delta: float = 300.0   # 비드 유입 즉각 피드백 (체류-Δ, 비드 안 쌓이면 ≈0)
+    weight_bead_cross: float = 150.0   # test11: 입구 관통(latch) 즉시 보상 → 새 비드 유입 강화(의도 복원). 체류와 무관
     weight_source_drain: float = 20.0     # pour gate 중 소스 배출 incentive
 
     # -----------------------------------------------------------------------

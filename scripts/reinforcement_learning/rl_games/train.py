@@ -37,6 +37,13 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
+parser.add_argument(
+    "--reset_epoch",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="On --checkpoint resume, load weights only and reset epoch/frame to 0 (default). "
+    "Use --no-reset_epoch to continue the checkpoint's epoch count.",
+)
 parser.add_argument("--sigma", type=str, default=None, help="The policy's initial standard deviation.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--wandb-project-name", type=str, default=None, help="the wandb's project name")
@@ -171,7 +178,8 @@ def _patch_optimizer_restore() -> None:
 
     def _set_full_state_weights(self, weights, set_epoch=True):
         self.set_weights(weights)
-        if set_epoch:
+        # --reset_epoch(기본 on): 가중치만 받고 epoch/frame은 0 유지 → max_epochs를 처음부터.
+        if set_epoch and not getattr(args_cli, "reset_epoch", False):
             self.epoch_num = weights["epoch"]
             self.frame = weights["frame"]
 

@@ -534,6 +534,9 @@ class PourRightEnv(DirectRLEnv):
         self._mouth_xy_distance = torch.zeros(self.num_envs, device=self.device)
         self._cup_center_xy_dist = torch.zeros(self.num_envs, device=self.device)
         self._mouth_z_clearance = torch.zeros(self.num_envs, device=self.device)
+        # 3a 진단: rim-pivot 해가 workspace 클램프로 깨지는 정도(클램프 전후 palm 차이)
+        self._palm_clamp_viol_xy = torch.zeros(self.num_envs, device=self.device)
+        self._palm_clamp_viol_z = torch.zeros(self.num_envs, device=self.device)
         self._source_up_dot_world = torch.zeros(self.num_envs, device=self.device)
         self._directional_tilt_cos = torch.zeros(self.num_envs, device=self.device)
         self._mouth_alignment_cos = torch.zeros(self.num_envs, device=self.device)
@@ -1018,10 +1021,18 @@ class PourRightEnv(DirectRLEnv):
 
             palm_pose[:, 2] = self.palm_center_pos[:, 2] + delta[:, 2]   # Z: 현재 위치 기준 delta
             palm_pose[:, :2] = pour_point_target_xy - expected_offset_xy  # XY: pour_point 기준
+            # 3a 진단: 클램프가 rim-pivot 해를 깨뜨리는지 측정 (클램프 전 palm 보존)
+            _palm_xyz_preclamp = palm_pose[:, :3].clone()
             palm_pose[:, :3] = torch.max(
                 torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
                 self.palm_mins[:3].unsqueeze(0),
             )
+            # 클램프로 잘려나간 양 = rim-pivot이 보정하려던 palm 이동이 막힌 정도
+            # → 0보다 크면 pour_point가 명령 위치에 안 옴(hinge 기계적 파손)
+            self._palm_clamp_viol_xy = torch.norm(
+                palm_pose[:, :2] - _palm_xyz_preclamp[:, :2], dim=-1
+            )
+            self._palm_clamp_viol_z = (palm_pose[:, 2] - _palm_xyz_preclamp[:, 2]).abs()
             palm_pose[:, 3:7] = self._compose_world_delta_quat_xyzw(
                 self.pregrasp_palm_pose_buf[:, 3:7],
                 delta_rotvec_world,
@@ -1646,10 +1657,13 @@ class PourRightEnv(DirectRLEnv):
         # bead: bead_warmup 별도 스케줄 (bead_warmup_start 이후 점진 활성)
         r_bead_progressive = self.cfg.weight_bead_progressive * (self._bead_in_target_fraction ** 2)
         r_bead_delta = self.cfg.weight_bead_entry_delta * self._bead_in_target_delta.clamp(min=0.0)
+        # r_cross: 입구 관통(latch) 즉시 보상. bead_cross_delta는 단조(비드당 1회) → farming 불가.
+        # 체류 안 해도 "입구로 들어간 사건" 자체를 보상 → 저-fill gradient 부활(의도 복원).
+        r_cross = self.cfg.weight_bead_cross * self._bead_cross_delta.clamp(min=0.0)
 
         r_pour_stage = self._rho * (
             pour_warmup * (self.cfg.weight_tilt * r_tilt + self.cfg.weight_align * r_align)
-            + bead_warmup * (r_bead_progressive + r_bead_delta)
+            + bead_warmup * (r_bead_progressive + r_bead_delta + r_cross)
         )
         # directional gate: 타겟 방향으로 배출할 때만 drain 보상 (bead_warmup 연동)
         _drain_dir_gate = 0.5 * (1.0 + self._directional_tilt_cos)
@@ -1753,6 +1767,7 @@ class PourRightEnv(DirectRLEnv):
             "reward/pour_align":       (pour_warmup * self.cfg.weight_align * r_align * self._rho).mean(),
             "reward/bead_progressive": (self._rho * bead_warmup * r_bead_progressive).mean(),
             "reward/bead_delta":       (self._rho * bead_warmup * r_bead_delta).mean(),
+            "reward/cross":            (self._rho * bead_warmup * r_cross).mean(),
             "reward/source_drain":     r_source_drain.mean(),
             "reward/success":          (self.cfg.weight_success * r_success).mean(),
             "cost/spill":              (spill_weight * spill_cost).mean(),
@@ -1774,11 +1789,17 @@ class PourRightEnv(DirectRLEnv):
             "log/demo_arm_joint_err":  demo_terms["demo_arm_joint_err"].mean(),
             "log/palm_rot_err":        palm_rot_err.mean(),
             "log/bead_in_target":      self._bead_in_target_fraction.mean(),
+            # 진단: 입구 관통(latch) vs 체류 분리. cross >> in_target면 "통과는 하나 안 쌓임"
+            "log/bead_cross":          self._bead_cross_fraction.mean(),
+            "log/bead_cross_delta":    self._bead_cross_delta.clamp(min=0.0).mean(),
             "log/bead_in_source":      self._bead_in_source_fraction.mean(),
             "log/spill_ratio":         self._spill_ratio.mean(),
             "log/cup_center_xy_dist":  self._cup_center_xy_dist.mean(),
             "log/mouth_xy_dist":       self._mouth_xy_distance.mean(),
             "log/mouth_z_clearance":   self._mouth_z_clearance.mean(),
+            # 3a: rim-pivot 클램프 파손 진단 (>0 = hinge가 workspace 한계로 깨짐)
+            "log/palm_clamp_viol_xy":  self._palm_clamp_viol_xy.mean(),
+            "log/palm_clamp_viol_z":   self._palm_clamp_viol_z.mean(),
             # pour-point 절대 위치(env-local) — target_opening 대비 어디에 잡고 있는지 직접 관찰
             "log/pour_point_x":        (self._source_pour_point_w[:, 0] - self.scene.env_origins[:, 0]).mean(),
             "log/pour_point_y":        (self._source_pour_point_w[:, 1] - self.scene.env_origins[:, 1]).mean(),
