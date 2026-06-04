@@ -268,8 +268,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Pour distance: Stage 2 (ρ gate + pour_warmup)
     # pour point(rim 최하단) → target center XY 거리 기반
     # 가까울수록 bead가 target에 들어갈 확률 높아짐
-    weight_pour_dist: float = 25.0   # test6: 12→25, aim gradient 강화 (mouth_xy 0.097 plateau 탈출)
-    pour_dist_exp_scale: float = 5.0   # test6: 8→5, 0.10m 거리에서도 gradient 살림 (gate 0.46→0.62)
+    weight_pour_dist: float = 12.0   # test9: 25→12 복귀. test6 강화가 demo_arm_pose(20) 압도→자세붕괴(err 1.2→2.6)
+    pour_dist_exp_scale: float = 8.0   # test9: 5→8 복귀. test4 값(demo posture가 이미 mouth_xy 0.054로 잘 조준됨)
     # z_window: pour_point Z soft gate (1~5cm 활성 구역, 정책이 최적 위치 탐색)
     # z_lower_ramp: 0→lower_ramp 구간에서 0→1 상승 (하한)
     # z_upper_end:  이 높이에서 완전히 0 (상한)
@@ -333,7 +333,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # alpha=min((step-latch_step)/monotonic_steps, 1)로 자세조건 무관하게 단조 증가.
     # 게이트는 "시작 트리거" 1회만 사용 → 전진이 게이트를 재확인하지 않아 진동 없음.
     # demo/palm weight는 감쇠하지 않고 정적 유지(j1-5 자세 hold = Stage A 유지).
-    enable_weight_crossover: bool = True
+    enable_weight_crossover: bool = False   # test9: True→False. crossover는 pour_dist=25가 만든 자세↔조준 충돌의 밴드에이드였음. step-warmup(test4) 경로로 복귀
     crossover_posture_threshold: float = 1.3   # test4 자세 도달치(~1.2) 기준
     crossover_trigger_rate: float = 0.5        # env 절반 자세 진입 시 래치 후보
     crossover_increment_interval: int = 1500   # 래치 조건 점검 간격(step)
