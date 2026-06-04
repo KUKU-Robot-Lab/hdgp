@@ -1,0 +1,106 @@
+# OpenArm + RH56F1 right arm pose params
+# 7 DOF OpenArm right arm + 6 actuated RH56F1 right hand = 13 DOF total
+# Based on openarm_tesollo_pose_params.yaml (팔 파라미터 동일, 손 13 DOF 로 축소)
+
+fabric_params:
+    cspace_attractor:
+        min_isotropic_mass: 1.
+        max_isotropic_mass: 1.
+        mass_sharpness: 20.0
+        mass_switch_offset: 1.
+        conical_sharpness: 20.
+        conical_gain: 1.
+    joint_limit_repulsion:
+        velocity_gate: True
+        breakaway_distance: 0.0
+        breakaway_velocity: 0.
+        soft_relu_gain: 8.
+        metric_scalar: 0.02
+        metric_exploder_offset: 0.1
+        max_metric: 100.
+        damping_gain: 8.
+    hand_attractor:
+        min_isotropic_mass: 8.
+        max_isotropic_mass: 8.
+        mass_sharpness: 20.
+        mass_switch_offset: 0.5
+        conical_sharpness: 40.
+        conical_gain: 50.
+        damping: 50.
+        damping_sharpness: 10.
+        damping_radius: 0.2
+    palm_attractor:
+        min_isotropic_mass: 1.
+        max_isotropic_mass: 1.
+        mass_sharpness: 10.
+        mass_switch_offset: 0.5
+        conical_sharpness: 40.
+        conical_gain: 80.
+        damping: 50.
+        damping_sharpness: 10.
+        damping_radius: .2
+    body_repulsion:
+      max_depth: 2.
+      min_depth: 0.01
+      engage_depth: 0.30
+      breakaway_depth: 0.0
+      breakaway_velocity: 0.
+      metric_scalar: 1.
+      velocity_gate: True
+      velocity_gate_sharpness: 1000.
+      velocity_gate_offset: 0.002
+      rescaled_min_dist: .01
+      forcing_metric_scalar: .01
+      geom_metric_scalar: .01
+      constant_accel: 2.
+      constant_accel_geom: 3.0
+      damping_gain: 0.
+      collision_sphere_frames:
+          ["openarm_right_link2", "openarm_right_link2_sphere2", "openarm_right_link2_sphere3",
+           "openarm_right_link4", "openarm_right_link4_sphere2", "openarm_right_link4_sphere3",
+           "openarm_right_link6_sphere2",
+           "openarm_right_link7", "palm_link", "palm_link_sphere2",
+           "rh56f1_sphere_thumb", "rh56f1_sphere_index", "rh56f1_sphere_middle",
+           "rh56f1_sphere_ring", "rh56f1_sphere_little",
+           "world_body_sphere1", "world_body_sphere2", "world_body_sphere3"]
+      collision_sphere_radii: [0.12, 0.10, 0.10,
+                               0.125, 0.10, 0.10,
+                               0.10,
+                               0.075, 0.05, 0.075,
+                               0.025, 0.022, 0.022, 0.022, 0.022,
+                               0.18, 0.15, 0.12]
+      collision_sphere_pairs: []
+      collision_link_prefix_pairs: [
+                                    # 손가락/palm vs link2 (상완)
+                                    ["palm_link", "openarm_right_link2"],
+                                    ["rh56f1_sphere_thumb", "openarm_right_link2"],
+                                    ["rh56f1_sphere_index", "openarm_right_link2"],
+                                    ["rh56f1_sphere_middle", "openarm_right_link2"],
+                                    ["rh56f1_sphere_ring", "openarm_right_link2"],
+                                    ["rh56f1_sphere_little", "openarm_right_link2"],
+                                    # 손가락/palm vs body (link0/world)
+                                    ["palm_link", "world_body"],
+                                    ["rh56f1_sphere_thumb", "world_body"],
+                                    ["rh56f1_sphere_index", "world_body"],
+                                    ["rh56f1_sphere_middle", "world_body"],
+                                    ["rh56f1_sphere_ring", "world_body"],
+                                    ["rh56f1_sphere_little", "world_body"],
+                                    # arm link vs world_body
+                                    ["openarm_right_link2", "world_body"],
+                                    ["openarm_right_link4", "world_body"],
+                                    ["openarm_right_link6", "world_body"],
+                                    ["openarm_right_link7", "world_body"]]
+    cspace_damping:
+      gain: 10.
+    speed_control:
+      active: False
+      energy_target: 10.
+      damping: 100.
+    joint_limits:
+      active: True
+      # 13 DOF: 7 arm (openarm_right_joint1~7) + 6 hand
+      #   (thumb_1, thumb_2, index_1, middle_1, ring_1, little_1)
+      acceleration: [7.5, 7.5, 10., 10., 10., 20., 20.,
+                     22.5, 22.5, 22.5, 22.5, 22.5, 22.5]
+      jerk: [3750., 3750., 5000., 5000., 5000., 10000., 10000.,
+             2250., 2250., 2250., 2250., 2250., 2250.]

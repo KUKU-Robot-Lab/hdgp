@@ -153,7 +153,8 @@ def _resolve_pipeline_log_components(task_name: str) -> tuple[str, str]:
         spec = gym.spec(task_key)
         env_cfg_entry = spec.kwargs.get("env_cfg_entry_point", "")
         if isinstance(env_cfg_entry, str):
-            match = re.search(r"\.pipeline\.(?:gripper|hand)\.(left|right|both)\.([A-Za-z0-9_]+)\.", env_cfg_entry)
+            # group(1)=variant (left/right/both 또는 inspire_r 등 명명형 hand), group(2)=task 폴더
+            match = re.search(r"\.pipeline\.(?:gripper|hand)\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\.", env_cfg_entry)
             if match:
                 return match.group(1), match.group(2)
     except Exception:
@@ -238,12 +239,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg["params"]["seed"]
 
     # LOG PATH RULE:
-    #   <sbm_root>/log/rl_games/pipeline/<left|right|both>/<task_dir_name>/testN
+    #   legacy side(left|right|both): <sbm_root>/log/rl_games/pipeline/<side>/<task_dir_name>/testN
+    #   명명형 hand variant(inspire_r 등): <sbm_root>/log/rl_games/<variant>/<task_dir_name>/testN
     # side/folder are auto-resolved from task's env_cfg_entry_point (pipeline module path).
     task_name = args_cli.task
     side_dir, task_dir_name = _resolve_pipeline_log_components(task_name)
     sbm_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    log_root_path = os.path.join(sbm_root, "log", "rl_games", "pipeline", side_dir, task_dir_name)
+    if side_dir in ("left", "right", "both"):
+        log_root_path = os.path.join(sbm_root, "log", "rl_games", "pipeline", side_dir, task_dir_name)
+    else:
+        # 예: inspire_r → log/rl_games/inspire_r/grasp_r_v1
+        log_root_path = os.path.join(sbm_root, "log", "rl_games", side_dir, task_dir_name)
     if "pbt" in agent_cfg:
         if agent_cfg["pbt"]["directory"] == ".":
             log_root_path = os.path.abspath(log_root_path)
