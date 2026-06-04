@@ -169,9 +169,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     pregrasp_noise_z:      float = 0.005
 
     # -----------------------------------------------------------------------
-    # Demo reset (optional): pour_v1_a11~a20 grasp start and pour_start lift target
+    # Demo reset (optional): Tesollo 20-DOF demo 데이터(pour_v1_a*) → RH56F1(6-DOF)엔 무효.
+    # RH56F1 포팅: 비활성화하고 절차적 13-DOF 리셋(robot_start_joint_pos) 사용.
     # -----------------------------------------------------------------------
-    enable_demo_grasp_reset: bool = True
+    enable_demo_grasp_reset: bool = False
     demo_grasp_pose_paths: tuple[str, ...] = tuple(
         f"/home/oem/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)
     )
