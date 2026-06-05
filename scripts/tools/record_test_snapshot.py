@@ -2,11 +2,11 @@
 """학습 시작 전 현재 코드 상태를 test_history.md에 스냅샷으로 기록.
 
 Usage:
-    python record_test_snapshot.py --task 5g_pour_right_v5 --test test6
-    python record_test_snapshot.py --task 5g_pour_right_v3 --test test7
+    python record_test_snapshot.py --task open-tesol_r_pour_v3 --test test8
+    python record_test_snapshot.py --task open-tesol_r_grasp_v11 --test test3
 
 실행 위치: /home/user/rl_ws/hdgp (git 루트)
-출력: <LOG_ROOT>/<task>/test_history.md 에 새 항목 append
+출력: log/rl_games/<robot>/<side>/<task-ver>/test_history.md 에 새 항목 append
 """
 
 import argparse
@@ -16,12 +16,36 @@ import subprocess
 from pathlib import Path
 
 GIT_ROOT = Path("/home/user/rl_ws/hdgp")
-LOG_ROOT = GIT_ROOT / "log/rl_games/pipeline/right"
-SRC_ROOT = GIT_ROOT / "source/openarm/openarm/tasks/manager_based/openarm_manipulation/pipeline/hand/right"
+SRC_BASE = GIT_ROOT / "source/openarm/openarm"
+LOG_BASE  = GIT_ROOT / "log/rl_games"
+
+# gym ID → (robot_dir, side_dir, task_dir) 파싱
+_ROBOT_MAP = {"tesol": "tesollo", "rh56f1": "rh56f1", "gripper": "gripper"}
+_SIDE_MAP  = {"r": "right", "l": "left", "b": "both"}
+_SUFFIX_RE = re.compile(r"-(lstm|play|bc|il2?|diffusion|nobias).*$")
+
+def parse_task_id(task_id: str) -> tuple[str, str, str, str]:
+    """gym task ID → (robot_dir, side_dir, task_dir, log_subpath).
+
+    open-tesol_r_pour_v3       → (tesollo, right, pour_v3,  open-tesol/right/pour-v3)
+    open-tesol_r_pour_v3-lstm  → (tesollo, right, pour_v3,  open-tesol/right/pour-v3)
+    open-rh56f1_r_grasp_v1    → (rh56f1,  right, grasp_v1, open-rh56f1/right/grasp-v1)
+    """
+    name = task_id.removeprefix("open-")
+    name = _SUFFIX_RE.sub("", name)          # 접미사 제거
+    parts = name.split("_")                  # ['tesol', 'r', 'pour', 'v3']
+    robot_short = parts[0]
+    side_short  = parts[1]
+    task        = "_".join(parts[2:])        # pour_v3
+
+    robot_dir = _ROBOT_MAP.get(robot_short, robot_short)
+    side_dir  = _SIDE_MAP.get(side_short, side_short)
+    log_sub   = f"open-{robot_short}/{side_dir}/{task.replace('_', '-', 1)}"
+    return robot_dir, side_dir, task, log_sub
+
 
 # 추출할 핵심 하이퍼파라미터 패턴 (env_cfg.py 기준)
 def _param_pattern(name: str, is_bool: bool = False) -> str:
-    """Python dataclass 및 일반 대입 형식 모두 처리."""
     val = r"(True|False)" if is_bool else r"([0-9._]+)"
     return rf"{name}\s*(?::\s*\S+\s*)?=\s*{val}"
 
@@ -49,14 +73,12 @@ def run(cmd: list[str], cwd: Path = GIT_ROOT) -> str:
 
 
 def get_git_head() -> tuple[str, str]:
-    """(short_hash, message)"""
     short = run(["git", "rev-parse", "--short", "HEAD"])
-    msg = run(["git", "log", "-1", "--format=%s"])
+    msg   = run(["git", "log", "-1", "--format=%s"])
     return short, msg
 
 
 def get_git_diff_summary(task_dir: str) -> str:
-    """현재 HEAD 기준 uncommitted changes (staged+unstaged) 요약."""
     diff = run(["git", "diff", "HEAD", "--", task_dir])
     if not diff:
         diff = run(["git", "diff", "--cached", "--", task_dir])
@@ -64,7 +86,6 @@ def get_git_diff_summary(task_dir: str) -> str:
         return "(uncommitted 변경 없음)"
 
     lines = diff.splitlines()
-    summary_lines = []
     current_file = None
     add_count = del_count = 0
     changed_files: dict[str, dict] = {}
@@ -72,7 +93,7 @@ def get_git_diff_summary(task_dir: str) -> str:
     for line in lines:
         if line.startswith("diff --git"):
             if current_file and (add_count or del_count):
-                changed_files[current_file] = {"add": add_count, "del": del_count, "hunks": []}
+                changed_files[current_file] = {"add": add_count, "del": del_count}
             m = re.search(r"b/(.+)$", line)
             current_file = m.group(1).split("/")[-1] if m else "unknown"
             add_count = del_count = 0
@@ -87,64 +108,50 @@ def get_git_diff_summary(task_dir: str) -> str:
     if not changed_files:
         return "(uncommitted 변경 없음)"
 
-    for fname, counts in changed_files.items():
-        summary_lines.append(f"  - {fname}: +{counts['add']} -{counts['del']}")
-
-    return "\n".join(summary_lines)
+    return "\n".join(f"  - {f}: +{c['add']} -{c['del']}" for f, c in changed_files.items())
 
 
-def get_git_diff_vs_prev_test(task_dir: str, prev_test_commit: str | None) -> str:
-    """이전 테스트 커밋 대비 현재 HEAD diff (핵심 변경만)."""
-    if not prev_test_commit:
+def get_git_diff_vs_prev_test(task_dir: str, prev_commit: str | None) -> str:
+    if not prev_commit:
         return "(이전 기록 없음)"
-    diff = run(["git", "diff", f"{prev_test_commit}..HEAD", "--", task_dir])
-    if not diff:
-        return "(이전 커밋과 동일)"
-
-    # 변경된 파일별 통계
-    stat = run(["git", "diff", "--stat", f"{prev_test_commit}..HEAD", "--", task_dir])
-    return stat if stat else "(diff 있음)"
+    stat = run(["git", "diff", "--stat", f"{prev_commit}..HEAD", "--", task_dir])
+    return stat if stat else "(이전 커밋과 동일)"
 
 
-def extract_key_params(cfg_file: Path) -> dict[str, str]:
-    """env_cfg.py에서 핵심 하이퍼파라미터 추출."""
-    if not cfg_file.exists():
-        return {}
-    text = cfg_file.read_text(encoding="utf-8")
-    params = {}
-    for pattern in KEY_PARAM_PATTERNS:
-        m = re.search(pattern, text)
-        if m:
-            key_m = re.match(r"\w+", pattern)
-            if key_m:
-                params[key_m.group(0)] = m.group(1)
-    return params
+def extract_key_params(src_dir: Path) -> dict[str, str]:
+    for name in ("pour_right_env_cfg.py", "grasp_right_env_cfg.py", "env_cfg.py"):
+        cfg_file = src_dir / name
+        if cfg_file.exists():
+            text = cfg_file.read_text(encoding="utf-8")
+            params = {}
+            for pattern in KEY_PARAM_PATTERNS:
+                m = re.search(pattern, text)
+                if m:
+                    key_m = re.match(r"\w+", pattern)
+                    if key_m:
+                        params[key_m.group(0)] = m.group(1)
+            return params
+    return {}
 
 
 def get_previous_test_info(history_file: Path) -> tuple[str | None, dict[str, str]]:
-    """test_history.md에서 마지막 test의 (commit_hash, params) 추출."""
     if not history_file.exists():
         return None, {}
 
     text = history_file.read_text(encoding="utf-8")
-    # 마지막 commit 해시
-    commit_m = re.findall(r"\*\*Commit\*\*: `([0-9a-f]+)`", text)
-    last_commit = commit_m[-1] if commit_m else None
+    commits = re.findall(r"\*\*Commit\*\*: `([0-9a-f]+)`", text)
+    last_commit = commits[-1] if commits else None
 
-    # 마지막 params 테이블
     params: dict[str, str] = {}
-    param_section = re.findall(r"\| (\w+) \| [^|]+ \| ([^|]+) \|", text)
-    for key, val in param_section[-20:]:
+    for key, val in re.findall(r"\| (\w+) \| [^|]+ \| ([^|]+) \|", text)[-20:]:
         params[key.strip()] = val.strip()
 
     return last_commit, params
 
 
 def build_param_table(current: dict[str, str], previous: dict[str, str]) -> str:
-    """현재/이전 파라미터 비교 테이블."""
     all_keys = list(dict.fromkeys(list(previous.keys()) + list(current.keys())))
-    rows = ["| 파라미터 | 이전 | 현재 | 변경 |",
-            "|---------|------|------|------|"]
+    rows = ["| 파라미터 | 이전 | 현재 | 변경 |", "|---------|------|------|------|"]
     for key in all_keys:
         prev_val = previous.get(key, "-")
         curr_val = current.get(key, "-")
@@ -167,26 +174,26 @@ def append_to_history(history_file: Path, entry: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", required=True, help="Task name, e.g. 5g_pour_right_v5")
-    ap.add_argument("--test", required=True, help="Test name, e.g. test6")
+    ap.add_argument("--task", required=True, help="Gym task ID, e.g. open-tesol_r_pour_v3")
+    ap.add_argument("--test", required=True, help="Test name, e.g. test8")
     ap.add_argument("--note", default="", help="Optional note about this test")
     args = ap.parse_args()
 
-    task_dir = f"source/openarm/openarm/tasks/manager_based/openarm_manipulation/pipeline/hand/right/{args.task}"
-    log_dir = LOG_ROOT / args.task
+    robot_dir, side_dir, task_dir_name, log_sub = parse_task_id(args.task)
+
+    src_dir      = SRC_BASE / robot_dir / side_dir / task_dir_name
+    log_dir      = LOG_BASE / log_sub
     history_file = log_dir / "test_history.md"
-    cfg_file = SRC_ROOT / args.task / "pour_right_env_cfg.py"
-    if not cfg_file.exists():
-        cfg_file = SRC_ROOT / args.task / "grasp_right_env_cfg.py"
+    task_rel     = str(src_dir.relative_to(GIT_ROOT))
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     short_hash, commit_msg = get_git_head()
     prev_commit, prev_params = get_previous_test_info(history_file)
 
-    current_params = extract_key_params(cfg_file)
-    diff_vs_prev = get_git_diff_vs_prev_test(task_dir, prev_commit)
-    uncommitted = get_git_diff_summary(task_dir)
-    param_table = build_param_table(current_params, prev_params)
+    current_params = extract_key_params(src_dir)
+    diff_vs_prev   = get_git_diff_vs_prev_test(task_rel, prev_commit)
+    uncommitted    = get_git_diff_summary(task_rel)
+    param_table    = build_param_table(current_params, prev_params)
 
     entry = f"""## {args.test}
 

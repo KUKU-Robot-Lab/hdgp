@@ -146,14 +146,32 @@ import openarm.tasks  # noqa: F401,E402
 
 
 def _resolve_pipeline_log_components(task_name: str) -> tuple[str, str]:
-    """Resolve <side>/<folder> under pipeline from the registered task config path."""
-    task_key = task_name.split(":")[-1].replace("-Play", "")
-    fallback_folder = task_key.replace("-", "_")
+    """Resolve <robot>/<side>/<task-ver> or <side>/<folder> from task name.
+
+    신규 형식 open-<robot>_<side>_<task>_<ver>  →  (robot, side, task-ver)
+      예: open-tesol_r_pour_v3  →  log/rl_games/open-tesol/right/pour-v3/
+    레거시 형식은 env_cfg_entry_point 경로에서 파싱.
+    """
+    SIDE_MAP = {"r": "right", "l": "left", "b": "both"}
+    task_key = task_name.split(":")[-1]
+
+    # 신규 형식 감지: open-<robot>_<side>_<task>_... 패턴
+    new_fmt = re.match(r"^(open-[A-Za-z0-9]+)_([rbl])_(.+?)(?:-play|-lstm|-bc|-il.*|-diffusion)?$", task_key, re.IGNORECASE)
+    if new_fmt:
+        robot = new_fmt.group(1)          # open-tesol
+        side = SIDE_MAP.get(new_fmt.group(2), new_fmt.group(2))   # right
+        task_ver = new_fmt.group(3).replace("_", "-")             # pour-v3
+        # log path: <robot>/<side>/<task-ver>  — 반환값 재사용을 위해 (side_dir, task_dir_name) 형태 유지
+        # side_dir에 robot/side를 담고 task_dir_name에 task-ver를 담는다
+        return f"{robot}/{side}", task_ver
+
+    # 레거시 형식: env_cfg_entry_point 경로 파싱
+    task_key_legacy = task_key.replace("-Play", "")
+    fallback_folder = task_key_legacy.replace("-", "_")
     try:
-        spec = gym.spec(task_key)
+        spec = gym.spec(task_key_legacy)
         env_cfg_entry = spec.kwargs.get("env_cfg_entry_point", "")
         if isinstance(env_cfg_entry, str):
-            # group(1)=variant (left/right/both 또는 inspire_r 등 명명형 hand), group(2)=task 폴더
             match = re.search(r"\.pipeline\.(?:gripper|hand)\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\.", env_cfg_entry)
             if match:
                 return match.group(1), match.group(2)
@@ -239,16 +257,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg["params"]["seed"]
 
     # LOG PATH RULE:
-    #   legacy side(left|right|both): <sbm_root>/log/rl_games/pipeline/<side>/<task_dir_name>/testN
-    #   명명형 hand variant(inspire_r 등): <sbm_root>/log/rl_games/<variant>/<task_dir_name>/testN
-    # side/folder are auto-resolved from task's env_cfg_entry_point (pipeline module path).
+    #   신규 형식: log/rl_games/<robot>/<side>/<task-ver>/testN
+    #     예: open-tesol_r_pour_v3 → log/rl_games/open-tesol/right/pour-v3/
+    #   레거시 side(left|right|both): log/rl_games/pipeline/<side>/<task_dir_name>/testN
+    #   레거시 명명형(inspire_r 등): log/rl_games/<variant>/<task_dir_name>/testN
     task_name = args_cli.task
     side_dir, task_dir_name = _resolve_pipeline_log_components(task_name)
     sbm_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    if side_dir in ("left", "right", "both"):
+    if "/" in side_dir:
+        # 신규 형식: side_dir = "<robot>/<side>"
+        log_root_path = os.path.join(sbm_root, "log", "rl_games", side_dir, task_dir_name)
+    elif side_dir in ("left", "right", "both"):
         log_root_path = os.path.join(sbm_root, "log", "rl_games", "pipeline", side_dir, task_dir_name)
     else:
-        # 예: inspire_r → log/rl_games/inspire_r/grasp_r_v1
+        # 레거시 명명형: inspire_r 등
         log_root_path = os.path.join(sbm_root, "log", "rl_games", side_dir, task_dir_name)
     if "pbt" in agent_cfg:
         if agent_cfg["pbt"]["directory"] == ".":

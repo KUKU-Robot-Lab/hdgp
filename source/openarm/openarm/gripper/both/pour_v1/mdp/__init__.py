@@ -12,24 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os as _os
+from isaaclab.envs.mdp import *
 
-_env_root = _os.environ.get("OPENARM_ROOT_DIR")
-if _env_root:
-    OPENARM_ROOT_DIR = _os.path.abspath(_os.path.expanduser(_env_root))
-else:
-    OPENARM_ROOT_DIR = _os.path.dirname(_os.path.abspath(__file__))
+from openarm.gripper.both.grasp_v0.mdp import *
 
-__all__ = ["OPENARM_ROOT_DIR"]
-
-# Register Gym environments.
-try:
-    from .tasks import *
-except ModuleNotFoundError:
-    pass
-
-# Register UI extensions.
-try:
-    from .ui_extension_example import *
-except ModuleNotFoundError:
-    pass
+from .rewards import *
+from .terminations import *

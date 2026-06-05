@@ -20,11 +20,6 @@ import importlib
 import sys
 from pathlib import Path
 
-try:
-    from isaaclab_tasks.utils import import_packages
-except ModuleNotFoundError:
-    import_packages = None
-
 # Prefer vendored FABRICS under this repository to avoid external path dependency.
 _SRC_ROOT = Path(__file__).resolve().parents[3]
 _VENDORED_FABRICS_SRC = _SRC_ROOT / "FABRICS" / "src"
@@ -33,77 +28,27 @@ if _VENDORED_FABRICS_SRC.exists():
     if vendored_path not in sys.path:
         sys.path.insert(0, vendored_path)
 
-if import_packages is not None:
-    # Register SkillBlender custom policies with RSL-RL if available.
+# Register SkillBlender custom policies/networks if available.
+try:
+    from sbm.rl import register_rsl_rl
+    register_rsl_rl()
+except ImportError:
+    pass
+
+try:
+    from sbm.rl import register_rl_games_dualhead
+    register_rl_games_dualhead()
+except ImportError:
+    pass
+
+# Auto-discover all task configs: <robot>/<side>/<task>/config/__init__.py
+_TASKS_ROOT = Path(__file__).resolve().parent.parent
+for _cfg_init in sorted(_TASKS_ROOT.glob("*/*/*/config/__init__.py")):
+    _module_path = _cfg_init.parent.as_posix()
+    if "openarm/openarm/" not in _module_path:
+        continue
+    _rel = _module_path.split("openarm/openarm/", 1)[1].replace("/", ".")
     try:
-        from sbm.rl import register_rsl_rl
-
-        register_rsl_rl()
-    except ImportError:
+        importlib.import_module(f"openarm.{_rel}")
+    except (ModuleNotFoundError, ImportError):
         pass
-
-    # Register SkillBlender custom networks with rl_games if available.
-    try:
-        from sbm.rl import register_rl_games_dualhead
-
-        register_rl_games_dualhead()
-    except ImportError:
-        pass
-
-    # The blacklist is used to prevent importing configs from sub-packages
-    _BLACKLIST_PKGS = ["utils", ".mdp"]
-    # Import all configs in this package
-    import_packages(__name__, _BLACKLIST_PKGS)
-
-    # Explicitly import the new 'approach' task config to ensure registration
-    import openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.both.approach.config
-
-    # bimanual/reach
-    import openarm.tasks.manager_based.openarm_manipulation.pipeline.gripper.both.reach.config
-
-    # bimanual/grasp,grasp2g
-    import openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.both.grasp.config
-    import openarm.tasks.manager_based.openarm_manipulation.pipeline.gripper.both.grasp_2g.config
-    import openarm.tasks.manager_based.openarm_manipulation.pipeline.gripper.both.grasp_2g.grasp_2g_env_cfg
-
-    # Explicit right-hand pipeline task imports (numeric module segments require importlib).
-    for _mod in [
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_grasp_right_v7.config",
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_grasp_right_v8.config",
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_grasp_right_v9.config",
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_grasp_right_v10.config",
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_pour_right_v1.config",
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_pour_right_v2.config",
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.hand.right.5g_pour_right_v3.config",
-    ]:
-        try:
-            importlib.import_module(_mod)
-        except (ModuleNotFoundError, ImportError):
-            pass
-
-    # pipeline/gripper/left/2g_grasp_left_v1
-    # NOTE: module segment starts with a digit, so standard `import ...` syntax is invalid.
-    for _mod in [
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.gripper.left.2g_grasp_left_v1.config",
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.gripper.right.2g_grasp_right_v1.config",
-        "openarm.tasks.manager_based.openarm_manipulation.pipeline.gripper.both.2g_pouring_v1.config",
-    ]:
-        try:
-            importlib.import_module(_mod)
-        except (ModuleNotFoundError, ImportError):
-            pass
-
-    # pipeline/hand/*: auto import all task config modules
-    _TASKS_ROOT = Path(__file__).resolve().parent
-    _HAND_ROOT = _TASKS_ROOT / "manager_based" / "openarm_manipulation" / "pipeline" / "hand"
-    for cfg_init in sorted(_HAND_ROOT.glob("**/config/__init__.py")):
-        module_path = cfg_init.parent.as_posix()
-        marker = "openarm/tasks/"
-        if marker not in module_path:
-            continue
-        rel_module = module_path.split(marker, 1)[1].replace("/", ".")
-        module_name = f"openarm.tasks.{rel_module}"
-        try:
-            importlib.import_module(module_name)
-        except (ModuleNotFoundError, ImportError):
-            pass
