@@ -1587,7 +1587,10 @@ class PourRightEnv(DirectRLEnv):
             self._crossover_alpha = 1.0
             self._demo_arm_pose_w = self.cfg.weight_demo_arm_pose
             self._palm_pose_w = self.cfg.weight_palm_pose
-            pour_warmup = min(step_count / max(self.cfg.curriculum_pour_warmup_steps, 1), 1.0)
+            if self.cfg.force_pour_warmup >= 0.0:
+                pour_warmup = self.cfg.force_pour_warmup
+            else:
+                pour_warmup = min(step_count / max(self.cfg.curriculum_pour_warmup_steps, 1), 1.0)
         bead_warmup = min(
             max(step_count - self.cfg.curriculum_bead_warmup_start, 0.0)
             / max(self.cfg.curriculum_bead_warmup_steps, 1),

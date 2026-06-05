@@ -283,7 +283,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_z_margin: float = 0.03         # test11: 1cm→3cm. clearance 1.7cm에 안착→source cup이 rim에 닿음. 여유 확보
 
     # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
-    weight_tilt: float = 40.0             # 120° 타겟 gradient (test5: 8→40, approach local min 탈출)
+    weight_tilt: float = 60.0             # 120° 타겟 gradient (test5: 8→40, test4: 40→60 j5 local min 탈출 강화)
     weight_align: float = 6.00            # 방향 신호 강화
     # pour-point pivot gates (test6)
     # initial_tilt_gate: pour_dist는 이 각도 이상 tilt 후 활성 → r_tilt와 충돌 제거
@@ -301,6 +301,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # bead_warmup: bead progressive/delta + source_drain 을 0→max 로 점진 증가
     # -----------------------------------------------------------------------
     curriculum_pour_warmup_steps: int = 40000   # 0~40k: pour stage 탐색 유도
+    force_pour_warmup: float = 1.0              # >=0 이면 step-based 램프 무시하고 고정값 사용. fresh start 시 -1.0으로 변경
     curriculum_bead_warmup_start: int = 6400    # 100 에포크 (100 × horizon 64) 이후 활성
     curriculum_bead_warmup_steps: int = 1       # start 즉시 1.0으로 활성
 
