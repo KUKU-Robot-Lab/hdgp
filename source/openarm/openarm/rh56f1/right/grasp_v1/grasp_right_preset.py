@@ -151,32 +151,32 @@ HAND_START_POSE = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # FABRICS 접근 자세 (pregrasp): thumb opposition pre-rotate + 약한 굽힘
 HAND_APPROACH_POSE = [
-    0.60,   # thumb_1 abduction → opposition 방향
-    0.15,   # thumb_2 약한 굽힘
-    0.30,   # index_1
-    0.30,   # middle_1
-    0.30,   # ring_1
-    0.30,   # little_1
+    1.57,   # thumb_1 abduction → opposition 방향
+    0.0,   # thumb_2 약한 굽힘
+    0.00,   # index_1
+    0.00,   # middle_1
+    0.00,   # ring_1
+    0.00,   # little_1
 ]
 
 # 파지 자세 (grasp): thumb opposition + 손가락 굽힘
 HAND_GRASP_POSE = [
-    0.60,   # thumb_1
-    0.40,   # thumb_2 (한계 0.475 의 84%)
-    0.90,   # index_1
-    0.90,   # middle_1
-    0.90,   # ring_1
-    0.90,   # little_1
+    1.57,   # thumb_1
+    0.30,   # thumb_2 (한계 0.475 의 84%)
+    0.50,   # index_1
+    0.50,   # middle_1
+    0.50,   # ring_1
+    0.50,   # little_1
 ]
 
 # 완전 파지 자세 (adaptive closure 상한)
 HAND_FULL_GRIP_POSE = [
-    0.70,   # thumb_1
+    1.57,   # thumb_1
     0.4745, # thumb_2 (한계)
-    1.30,   # index_1
-    1.30,   # middle_1
-    1.30,   # ring_1
-    1.30,   # little_1
+    1.50,   # index_1
+    1.50,   # middle_1
+    1.50,   # ring_1
+    1.50,   # little_1
 ]
 
 

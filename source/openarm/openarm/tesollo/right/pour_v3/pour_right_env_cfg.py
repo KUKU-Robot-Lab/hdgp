@@ -310,6 +310,34 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_success_overfill: float = 0.0
     weight_spill: float = 40.0            # 5.0→40.0: spill 강하게 패널티 (40% trap 방지)
 
+    # =====================================================================
+    # [REDESIGN v4 / test5] 인과사슬 기반 보상 (gate 5중곱 → 가산 구조)
+    #   Stage A: r_demo(j1-4 NN, 졸업감쇠) + r_approach(saturate, 기존 dist_to_target)
+    #   Stage B: g_ready · (r_pour_xy + r_zband + r_release)   ← pour-point 기하
+    #   Stage C: r_bead_near(dense) + r_bead_in(linear) + r_bead_cross + r_success
+    # 제거: weight_tilt(120° 추상목표), pour_warmup step-ramp, z_window 곱셈,
+    #       weight_crossover, r_palm_pose(고정 palm 앵커), r_align(부호의심)
+    # =====================================================================
+    use_redesign_reward: bool = True
+    # 졸업(graduate): flow EMA가 target 도달 시 demo 비중 floor로 단조 감쇠
+    graduate_flow_target: float = 0.10
+    graduate_ema_alpha: float = 0.002
+    # 단일 ready gate (binary rho 대체 — 부드러운 sigmoid)
+    g_ready_center: float = 0.20    # cup_center_xy_dist 기준 (=기존 pour_binary_xy_thresh)
+    g_ready_width: float = 0.03
+    # Stage B: pour-point → target 기하 (정책이 직접 제어하는 rim-pivot 공간)
+    weight_pour_xy: float = 15.0    # pour-point를 target 위로 (항상 gradient, z_window 곱 없음)
+    pour_xy_scale: float = 8.0
+    weight_pour_zband: float = 8.0  # pour-point 적정 높이 band (가산, 단방향 barrier 아님)
+    pour_zband_target: float = 0.05
+    pour_zband_sigma: float = 0.05
+    weight_release: float = 20.0    # over-target일 때만 tilt 유도 (tilt·exp(-k·d_xy))
+    # Stage C: bead dense (4.1cm binary → 연속 근접)
+    weight_bead_near: float = 30.0  # 방출된 bead가 target 축 근처면 보상 (sparse→dense 다리)
+    bead_near_scale: float = 12.0
+    weight_bead_in: float = 200.0   # 실제 채움 (linear fill fraction)
+    # r_bead_cross = weight_bead_cross(150) 재사용, 안전 barrier = weight_pour_z/pour_z_margin 재사용
+
 
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%

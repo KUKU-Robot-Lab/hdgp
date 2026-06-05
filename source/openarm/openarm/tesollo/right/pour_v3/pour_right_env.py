@@ -416,6 +416,8 @@ class PourRightEnv(DirectRLEnv):
         self._pour_latch_step = 0.0
         self._posture_above_count = 0
         self._last_latch_check = 0.0
+        # [REDESIGN v4] 졸업 감쇠용 flow EMA (전역 스칼라, reset 불필요 — 커리큘럼 신호)
+        self._graduate_ema = 0.0
 
         self._noise_base_joint_pos = cfg.obs_noise_joint_pos
         self._noise_base_joint_vel = cfg.obs_noise_joint_vel
@@ -563,6 +565,8 @@ class PourRightEnv(DirectRLEnv):
         self._spill_delta = torch.zeros(self.num_envs, device=self.device)
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
+        # [REDESIGN v4] dense bead 보상: 방출된 bead의 target 축 근접 점수 (N,)
+        self._bead_near_score = torch.zeros(self.num_envs, device=self.device)
         self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._first_capture_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -888,6 +892,16 @@ class PourRightEnv(DirectRLEnv):
             & (pos_in_target[..., 2] < self.cfg.target_inside_z_min)
         )
         spill_ratio = bead_spilled.float().mean(dim=-1)
+
+        # [REDESIGN v4] dense bead 근접 점수: 소스에서 방출(released)되고 아직 손실되지
+        # 않은(바닥 위) bead가 target 축(중심)에 가까울수록 보상. 4.1cm binary가 만드는
+        # sparse 0→0 자기참조를 끊는 다리. captured bead(xy≈0)도 높은 점수 → 채움 유지.
+        # anti-hacking: 소스 안 bead는 제외(실제로 따라야 점수) + 바닥 아래(spill) 제외.
+        _released = ~self._bead_in_source
+        _not_lost = pos_in_target[..., 2] >= self.cfg.target_inside_z_min
+        _xy_score = torch.exp(-self.cfg.bead_near_scale * bead_xy_to_target)
+        _near = _xy_score * (_released & _not_lost).float()
+        self._bead_near_score.copy_(_near.mean(dim=-1))
 
         self._bead_in_source_delta.copy_(bead_in_source_fraction - self._bead_in_source_fraction)
         self._bead_in_target_delta.copy_(bead_in_target_fraction - self._bead_in_target_fraction)
@@ -1482,12 +1496,17 @@ class PourRightEnv(DirectRLEnv):
         ref = self.demo_pose_reference
         arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
 
-        # Nearest-Neighbor in joint space + look-ahead
+        # [REDESIGN v4] NN-trap 제거: frame 선택을 j1-4(gross 위치)로만 수행한다.
+        # 기존엔 7관절 전체로 매칭 → stuck j5(-0.82)가 "얕은 틸트 frame"을 nearest로
+        # 골라 j1-4를 그 frame에 앵커 → 현 자세 강화 루프(개선 차단). j5-7을 매칭에서
+        # 빼면 stuck j5가 frame 선택을 오염시키지 못한다. j5-7은 reward 대상도 아님(free).
         demo_arm = ref.arm_joint_pos  # (T, 7)
         T_demo = demo_arm.shape[0]
-        aa = (arm_q * arm_q).sum(dim=-1, keepdim=True)
-        bb = (demo_arm * demo_arm).sum(dim=-1).unsqueeze(0)
-        ab = arm_q @ demo_arm.T
+        arm_q4 = arm_q[:, :4]
+        demo_arm4 = demo_arm[:, :4]
+        aa = (arm_q4 * arm_q4).sum(dim=-1, keepdim=True)
+        bb = (demo_arm4 * demo_arm4).sum(dim=-1).unsqueeze(0)
+        ab = arm_q4 @ demo_arm4.T
         nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)
         K = int(self.cfg.demo_nn_lookahead_frames)
         target_idx = (nn_idx + K).clamp(max=T_demo - 1)
@@ -1566,35 +1585,23 @@ class PourRightEnv(DirectRLEnv):
             + r_finger_curl
         )
 
-        # Curriculum warmup (common_step_counter 기반 선형 증가)
-        step_count = float(getattr(self, "common_step_counter", 0))
-        # 래치-후-단조: 래치 전 alpha=0(Stage A 자세 학습만), 래치 후 시간 단조 ramp.
-        # demo/palm weight는 정적 유지 → j1-5 자세를 Stage B 내내 hold (감쇠 폐기).
-        if self.cfg.enable_weight_crossover:
-            if self._pour_latched:
-                a = min(
-                    (step_count - self._pour_latch_step)
-                    / max(self.cfg.crossover_monotonic_steps, 1),
-                    1.0,
-                )
-            else:
-                a = 0.0
-            self._crossover_alpha = a
-            self._demo_arm_pose_w = self.cfg.weight_demo_arm_pose
-            self._palm_pose_w = self.cfg.weight_palm_pose
-            pour_warmup = a
-        else:
-            self._crossover_alpha = 1.0
-            self._demo_arm_pose_w = self.cfg.weight_demo_arm_pose
-            self._palm_pose_w = self.cfg.weight_palm_pose
-            if self.cfg.force_pour_warmup >= 0.0:
-                pour_warmup = self.cfg.force_pour_warmup
-            else:
-                pour_warmup = min(step_count / max(self.cfg.curriculum_pour_warmup_steps, 1), 1.0)
-        bead_warmup = min(
-            max(step_count - self.cfg.curriculum_bead_warmup_start, 0.0)
-            / max(self.cfg.curriculum_bead_warmup_steps, 1),
-            1.0,
+        # [REDESIGN v4] 상태 기반 커리큘럼 (step-ramp/crossover 폐기 → fresh/checkpoint 동일 동작)
+        step_count = float(getattr(self, "common_step_counter", 0))  # noqa: F841 (latch 블록 호환)
+        # 졸업(graduate): flow EMA가 target 도달 시 demo 비중 floor로 단조 감쇠.
+        # demo가 "개선을 막지" 못하게 — flow가 생기면 Stage A에서 졸업시킨다.
+        flow_signal = float(
+            (self._bead_cross_fraction + self._bead_in_target_fraction).mean().item()
+        )
+        a_ema = self.cfg.graduate_ema_alpha
+        self._graduate_ema = (1.0 - a_ema) * self._graduate_ema + a_ema * flow_signal
+        graduate = 1.0 - min(self._graduate_ema / max(self.cfg.graduate_flow_target, 1e-6), 1.0)
+        demo_floor = self.cfg.weight_demo_arm_pose_floor
+        self._demo_arm_pose_w = demo_floor + (self.cfg.weight_demo_arm_pose - demo_floor) * graduate
+        self._palm_pose_w = self.cfg.weight_palm_pose  # (r_palm_pose는 total에서 제외, 로깅 호환만)
+        self._crossover_alpha = graduate
+        # 단일 ready gate: cup이 target 근처일 때만 pour 보상 (binary rho 대체, 부드러운 sigmoid)
+        g_ready = torch.sigmoid(
+            (self.cfg.g_ready_center - self._cup_center_xy_dist) / max(self.cfg.g_ready_width, 1e-6)
         )
 
         # Transport Stage 1a: Cartesian 근접 (cup_center_xy 기반, 거친 approach gradient)
@@ -1619,66 +1626,38 @@ class PourRightEnv(DirectRLEnv):
             - self.cfg.palm_pose_rot_sharpness * palm_rot_err
         )
 
-        # Pour: Stage 3 (r_pour_dist soft gate로 먼저 계산)
-        target_tilt_cos = math.cos(math.radians(self.cfg.pour_tilt_target_deg))
-        # pour_aligned_gate: pour_point 정렬도 → r_tilt 증폭 (pour_point pivot 유도)
-        pour_aligned_gate = torch.exp(
-            -self.cfg.pour_align_gate_scale * self._mouth_xy_distance
+        # =========================================================
+        # [REDESIGN v4] Stage B: pour-point 기하 (정책이 rim-pivot으로 직접 제어하는 공간)
+        #   gate는 단일 g_ready만. z_window/initial_tilt/pour_aligned 곱셈 사슬 폐기.
+        # =========================================================
+        # r_pour_xy: pour-point를 target 위로 — 항상 살아있는 gradient (z_window 곱 제거)
+        r_pour_xy = self.cfg.weight_pour_xy * torch.exp(
+            -self.cfg.pour_xy_scale * self._mouth_xy_distance
         )
-        r_tilt = (
-            pour_aligned_gate
-            * torch.exp(-self.cfg.pour_tilt_sharpness * torch.abs(self._source_up_dot_world - target_tilt_cos))
+        # r_zband: pour-point 적정 높이 band (가산 gaussian, 단방향 barrier 아님)
+        _dz_err = (self._mouth_z_clearance - self.cfg.pour_zband_target) / max(
+            self.cfg.pour_zband_sigma, 1e-6
         )
+        r_zband = self.cfg.weight_pour_zband * torch.exp(-_dz_err * _dz_err)
+        # r_release: over-target일 때만 tilt 유도 (고정 120° 목표 폐기 → 깊이는 bead가 결정)
+        r_release = (
+            self.cfg.weight_release
+            * tilt_amount
+            * torch.exp(-self.cfg.pour_xy_scale * self._mouth_xy_distance)
+        )
+        r_pour_geo = g_ready * (r_pour_xy + r_zband + r_release)
 
-        # Pour distance: Stage 2 (ρ gate + pour_warmup)
-        # initial_tilt_gate: 15° 이상 tilt 후 활성 → r_tilt와 충돌 제거
-        # z_window: pour_point Z soft gate — 1~5cm 활성 구역, 정책이 hinge 위치 탐색
-        _tilt_threshold_norm = (1.0 - math.cos(math.radians(self.cfg.pour_point_tilt_threshold_deg))) / 2.0
-        initial_tilt_gate = (tilt_amount / max(_tilt_threshold_norm, 1e-6)).clamp(0.0, 1.0)
-        z_lower = torch.clamp(self._mouth_z_clearance / self.cfg.z_window_lower_ramp, 0.0, 1.0)
-        z_upper = torch.clamp(
-            (self.cfg.z_window_upper_end - self._mouth_z_clearance) / self.cfg.z_window_upper_ramp,
-            0.0, 1.0,
-        )
-        z_window = z_lower * z_upper
-        r_pour_dist = (
-            self._rho
-            * pour_warmup
-            * z_window
-            * initial_tilt_gate
-            * self.cfg.weight_pour_dist
-            * torch.exp(-self.cfg.pour_dist_exp_scale * self._mouth_xy_distance)
-        )
-        # Stage B z-barrier: pour_point가 림 아래(clearance<margin)로 가라앉는 것만 막는
-        # 단방향 penalty. 림 위(clearance≥margin)에서는 0 → 높이는 beads가 결정.
+        # 안전 barrier: pour-point가 림 아래로 박히는 것만 단방향 차단 (컵 충돌 방지)
         z_violation = (self.cfg.pour_z_margin - self._mouth_z_clearance).clamp(min=0.0)
-        r_pour_z = -(
-            self._rho * pour_warmup * self.cfg.weight_pour_z * z_violation
-        )
+        r_pour_z = -(g_ready * self.cfg.weight_pour_z * z_violation)
 
-        # DexPour eq.2: 올바른 방향(cos>0)에서 최대, 반대 방향(cos<0)에서 0
-        r_align = 0.5 * (1.0 + self._directional_tilt_cos)
-
-        # bead: bead_warmup 별도 스케줄 (bead_warmup_start 이후 점진 활성)
-        r_bead_progressive = self.cfg.weight_bead_progressive * (self._bead_in_target_fraction ** 2)
-        r_bead_delta = self.cfg.weight_bead_entry_delta * self._bead_in_target_delta.clamp(min=0.0)
-        # r_cross: 입구 관통(latch) 즉시 보상. bead_cross_delta는 단조(비드당 1회) → farming 불가.
-        # 체류 안 해도 "입구로 들어간 사건" 자체를 보상 → 저-fill gradient 부활(의도 복원).
-        r_cross = self.cfg.weight_bead_cross * self._bead_cross_delta.clamp(min=0.0)
-
-        r_pour_stage = self._rho * (
-            pour_warmup * (self.cfg.weight_tilt * r_tilt + self.cfg.weight_align * r_align)
-            + bead_warmup * (r_bead_progressive + r_bead_delta + r_cross)
-        )
-        # directional gate: 타겟 방향으로 배출할 때만 drain 보상 (bead_warmup 연동)
-        _drain_dir_gate = 0.5 * (1.0 + self._directional_tilt_cos)
-        r_source_drain = (
-            self._rho
-            * _drain_dir_gate
-            * bead_warmup
-            * self.cfg.weight_source_drain
-            * (1.0 - self._bead_in_source_fraction)
-        )
+        # =========================================================
+        # [REDESIGN v4] Stage C: bead dense (4.1cm binary → 연속 근접 → 실제 채움)
+        # =========================================================
+        r_bead_near = self.cfg.weight_bead_near * self._bead_near_score           # 방출 bead 근접(다리)
+        r_bead_in = self.cfg.weight_bead_in * self._bead_in_target_fraction       # 실제 채움(linear)
+        r_cross = self.cfg.weight_bead_cross * self._bead_cross_delta.clamp(min=0.0)  # 입구 관통 즉시
+        r_pour_stage = g_ready * (r_bead_near + r_bead_in + r_cross)
 
         # Success
         success_fill_ratio = (
@@ -1717,15 +1696,15 @@ class PourRightEnv(DirectRLEnv):
 
         demo_terms = self._get_demo_pose_reward_terms()
 
+        # [REDESIGN v4] 가산 구조: Stage A(hold+approach+demo) + Stage B(geo) + Stage C(bead) + outcome
+        # 제거: r_palm_pose(고정 palm 앵커 → pour-point 탐색 방해), r_pour_dist/r_source_drain(흡수)
         total = (
             r_hold
             + r_dist_to_target
-            + r_palm_pose
             + demo_terms["r_demo_arm_pose"]
-            + r_pour_dist
+            + r_pour_geo
             + r_pour_z
             + r_pour_stage
-            + r_source_drain
             + self.cfg.weight_success * r_success
             + overfill_bonus
             - spill_weight * spill_cost
@@ -1764,16 +1743,14 @@ class PourRightEnv(DirectRLEnv):
         reward_log: dict = {
             "reward/hold":             r_hold.mean(),
             "reward/transport":        r_dist_to_target.mean(),
-            "reward/palm_pose":        r_palm_pose.mean(),
             "reward/demo_arm_pose":    demo_terms["r_demo_arm_pose"].mean(),
-            "reward/pour_dist":        r_pour_dist.mean(),
+            "reward/pour_xy":          (g_ready * r_pour_xy).mean(),
+            "reward/pour_zband":       (g_ready * r_zband).mean(),
+            "reward/release":          (g_ready * r_release).mean(),
             "reward/pour_z":           r_pour_z.mean(),
-            "reward/pour_tilt":        (pour_warmup * self.cfg.weight_tilt * r_tilt * self._rho).mean(),
-            "reward/pour_align":       (pour_warmup * self.cfg.weight_align * r_align * self._rho).mean(),
-            "reward/bead_progressive": (self._rho * bead_warmup * r_bead_progressive).mean(),
-            "reward/bead_delta":       (self._rho * bead_warmup * r_bead_delta).mean(),
-            "reward/cross":            (self._rho * bead_warmup * r_cross).mean(),
-            "reward/source_drain":     r_source_drain.mean(),
+            "reward/bead_near":        (g_ready * r_bead_near).mean(),
+            "reward/bead_in":          (g_ready * r_bead_in).mean(),
+            "reward/cross":            (g_ready * r_cross).mean(),
             "reward/success":          (self.cfg.weight_success * r_success).mean(),
             "cost/spill":              (spill_weight * spill_cost).mean(),
         }
@@ -1813,10 +1790,14 @@ class PourRightEnv(DirectRLEnv):
             "log/target_open_y":       (self._target_opening_w[:, 1] - self.scene.env_origins[:, 1]).mean(),
             "log/target_open_z":       (self._target_opening_w[:, 2] - self.scene.env_origins[:, 2]).mean(),
             "log/directional_tilt_cos": self._directional_tilt_cos.mean(),
+            "log/source_up_dot":       self._source_up_dot_world.mean(),
             "log/rho":                 self._rho.mean(),
-            "log/pour_aligned_gate":   pour_aligned_gate.mean(),
-            "log/pour_warmup":         torch.tensor(pour_warmup, device=self.device),
-            "log/bead_warmup":         torch.tensor(bead_warmup, device=self.device),
+            # [REDESIGN v4] 신규 진단
+            "log/graduate":            torch.tensor(graduate, device=self.device),
+            "log/graduate_ema":        torch.tensor(self._graduate_ema, device=self.device),
+            "log/g_ready":             g_ready.mean(),
+            "log/demo_arm_pose_w":     torch.tensor(self._demo_arm_pose_w, device=self.device),
+            "log/bead_near_score":     self._bead_near_score.mean(),
         }
         if self.spill_adr is not None:
             diag["log/adr_spill"] = torch.tensor(self.spill_adr.progress, device=self.device)
