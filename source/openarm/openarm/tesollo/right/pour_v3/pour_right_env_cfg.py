@@ -338,6 +338,28 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_bead_in: float = 200.0   # 실제 채움 (linear fill fraction)
     # r_bead_cross = weight_bead_cross(150) 재사용, 안전 barrier = weight_pour_z/pour_z_margin 재사용
 
+    # =====================================================================
+    # [REDESIGN v5] 2축 재설계: (1) pour 보상 도달성 + (2) plateau deadlock 제거
+    #   진단(test4): shaping(pour_xy 10 + zband 6.5 + transport 4.8 + demo 5.1 ≈ 27/step)이
+    #   tilt 없이 최대화 → 정책이 tilt를 적극적으로 unlearn(directional_tilt_cos -0.76→+0.48).
+    #   bead_in(200x)은 한 번도 경험 못 함(도달 불가) → gradient 없음. graduate는
+    #   flow=0이라 영구 deadlock(demo weight 영구 full).
+    # ---------------------------------------------------------------------
+    # 축1: pour-start reset curriculum — 일부 env를 "이미 target 위로 기운 pour 자세"로
+    #   reset → 정책이 step 1부터 bead 흐름/보상을 경험. 진행에 따라 upright start로 anneal.
+    enable_pour_start_curriculum: bool = True
+    pour_start_ratio_init: float = 0.5         # 초기 pour-ready reset 비율
+    pour_start_ratio_final: float = 0.05       # 최종(거의 전부 upright grasp start)
+    pour_start_anneal_start_step: int = 96000  # ~1500ep(×64) 후 anneal 시작(그 전엔 비율 유지)
+    pour_start_anneal_steps: int = 256000      # 이후 ~4000ep 동안 final로 선형 감쇠
+    pour_start_tilt_deg: float = 105.0         # demo j5≈-1.2 ↔ up_dot≈cos(105°)≈-0.26
+    pour_start_zband: float = 0.05             # pour-point를 target 위 (=pour_zband_target)
+
+    # 축2: demo 졸업을 flow EMA가 아니라 curriculum 비율에 연동(graduate 순환 deadlock 제거).
+    #   demo_arm_pose_w = floor + (full-floor)·(ratio/ratio_init)
+    #   → pour-start 비율↓(정책 자립)일수록 demo anchor↓. flow 의존 X.
+    demo_decay_follows_curriculum: bool = True
+
 
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%

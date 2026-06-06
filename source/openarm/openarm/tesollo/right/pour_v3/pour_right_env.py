@@ -92,6 +92,7 @@ from .pour_right_preset import (
 from .pour_right_utils import scale, to_torch
 from .demo_pose_reference import DemoPoseReferenceBank
 from .warm_state_bank import PourWarmStateBank
+from .pour_start_curriculum import compute_pour_start_pose, pour_start_ratio
 
 
 
@@ -418,6 +419,9 @@ class PourRightEnv(DirectRLEnv):
         self._last_latch_check = 0.0
         # [REDESIGN v4] 졸업 감쇠용 flow EMA (전역 스칼라, reset 불필요 — 커리큘럼 신호)
         self._graduate_ema = 0.0
+        # [REDESIGN v5] pour-start reset curriculum 비율(전역 스칼라, reset마다 갱신)
+        self._pour_start_ratio = float(self.cfg.pour_start_ratio_init)
+        self._pour_start_debug_printed = False
 
         self._noise_base_joint_pos = cfg.obs_noise_joint_pos
         self._noise_base_joint_vel = cfg.obs_noise_joint_vel
@@ -1594,7 +1598,14 @@ class PourRightEnv(DirectRLEnv):
         )
         a_ema = self.cfg.graduate_ema_alpha
         self._graduate_ema = (1.0 - a_ema) * self._graduate_ema + a_ema * flow_signal
-        graduate = 1.0 - min(self._graduate_ema / max(self.cfg.graduate_flow_target, 1e-6), 1.0)
+        if self.cfg.demo_decay_follows_curriculum and self.cfg.enable_pour_start_curriculum:
+            # [REDESIGN v5] graduate를 flow EMA가 아닌 curriculum 비율에 연동.
+            # 기존 graduate는 flow=0이면 영구 1(demo full) → deadlock. curriculum ratio가
+            # init→final로 감쇠하면 graduate 1→~0 → demo anchor full→floor (flow 의존 X).
+            _init = max(self.cfg.pour_start_ratio_init, 1e-6)
+            graduate = min(max(self._pour_start_ratio / _init, 0.0), 1.0)
+        else:
+            graduate = 1.0 - min(self._graduate_ema / max(self.cfg.graduate_flow_target, 1e-6), 1.0)
         demo_floor = self.cfg.weight_demo_arm_pose_floor
         self._demo_arm_pose_w = demo_floor + (self.cfg.weight_demo_arm_pose - demo_floor) * graduate
         self._palm_pose_w = self.cfg.weight_palm_pose  # (r_palm_pose는 total에서 제외, 로깅 호환만)
@@ -1794,6 +1805,7 @@ class PourRightEnv(DirectRLEnv):
             "log/rho":                 self._rho.mean(),
             # [REDESIGN v4] 신규 진단
             "log/graduate":            torch.tensor(graduate, device=self.device),
+            "log/pour_start_ratio":    torch.tensor(self._pour_start_ratio, device=self.device),
             "log/graduate_ema":        torch.tensor(self._graduate_ema, device=self.device),
             "log/g_ready":             g_ready.mean(),
             "log/demo_arm_pose_w":     torch.tensor(self._demo_arm_pose_w, device=self.device),
@@ -2285,6 +2297,15 @@ class PourRightEnv(DirectRLEnv):
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
+        # [REDESIGN v5] pour-start curriculum 비율 갱신(전역 step 기반 anneal)
+        if self.cfg.enable_pour_start_curriculum:
+            self._pour_start_ratio = pour_start_ratio(
+                int(getattr(self, "common_step_counter", 0)),
+                self.cfg.pour_start_ratio_init,
+                self.cfg.pour_start_ratio_final,
+                anneal_start_step=self.cfg.pour_start_anneal_start_step,
+                anneal_steps=self.cfg.pour_start_anneal_steps,
+            )
         pick = torch.randint(self._warmstart_cache_count, (n,), device=self.device)
         arm_pos = self._warmstart_arm_pos[pick]
         hand_pos = self._warmstart_hand_pos[pick]
@@ -2396,6 +2417,21 @@ class PourRightEnv(DirectRLEnv):
         self._pre_pour_ready_steps[env_ids] = 0
         self.success_flag[env_ids] = False
 
+        # [REDESIGN v5] pour-start curriculum: 일부 env를 target 위로 기운 pour 자세로 override.
+        # warmstart 캐시(직립 grasp) 상태를 받은 직후, 선택된 subset만 pour-ready로 덮어쓴다.
+        if self.cfg.enable_pour_start_curriculum and self._pour_start_ratio > 0.0:
+            env_ids_t = torch.as_tensor(list(env_ids), dtype=torch.long, device=self.device)
+            sel = torch.rand(n, device=self.device) < self._pour_start_ratio
+            if bool(sel.any()):
+                self._apply_pour_start_override(
+                    env_ids_t[sel],
+                    cup_pose_local[sel],
+                    palm_pose[sel],
+                    arm_pos[sel],
+                    hand_pos[sel],
+                    left_cup_pose[sel],
+                )
+
         if not self._warmstart_reset_debug_printed:
             source_pour_point_w = cup_pose_world[:, :3] + quat_apply(
                 cup_pose_world[:, 3:7],
@@ -2429,3 +2465,132 @@ class PourRightEnv(DirectRLEnv):
                     flush=True,
                 )
             self._warmstart_reset_debug_printed = True
+
+    def _apply_pour_start_override(
+        self,
+        g_env_ids: torch.Tensor,      # (m,) global env ids (선택된 subset)
+        cup_pose_local: torch.Tensor, # (m,7) 캐시 upright cup pose (env-local)
+        palm_pose: torch.Tensor,      # (m,7) 캐시 palm pose (env-local, xyzw)
+        arm_pos: torch.Tensor,        # (m,7) 캐시 arm joints (IK warm-start)
+        hand_pos: torch.Tensor,       # (m,20) 캐시 hand joints (grasp 유지)
+        left_cup_pose: torch.Tensor,  # (m,7) target cup world pose
+    ) -> None:
+        """선택된 env를 "target 위로 기운 pour 자세"로 강체 변환 후 sim에 기록.
+
+        강체 변환이라 finger↔cup grasp 관계는 보존된다. 기운 palm pose에 대해
+        Fabrics IK로 arm joints를 풀고, cup은 기하적으로 직접 기록한다.
+        """
+        m = g_env_ids.shape[0]
+        origins = self.scene.env_origins[g_env_ids]
+
+        # target opening (env-local)
+        target_opening_w = left_cup_pose[:, :3] + quat_apply(
+            left_cup_pose[:, 3:7],
+            self._target_cup_opening_pos_b.unsqueeze(0).expand(m, -1),
+        )
+        target_opening_local = target_opening_w - origins
+
+        out = compute_pour_start_pose(
+            cup_pose_local[:, :3],
+            palm_pose[:, :3],
+            palm_pose[:, 3:7],
+            self._source_cup_pour_point_pos_b,
+            target_opening_local,
+            tilt_deg=self.cfg.pour_start_tilt_deg,
+            z_clearance=self.cfg.pour_start_zband,
+        )
+        new_cup_pos = out["cup_pos"]
+        new_cup_quat_wxyz = out["cup_quat_wxyz"]
+        new_palm_pos = out["palm_pos"]
+        new_palm_quat_xyzw = out["palm_quat_xyzw"]
+
+        # palm pos를 workspace로 클램프(도달성 안전). 큰 클램프는 진단 경고.
+        palm_pos_clamped = torch.max(
+            torch.min(new_palm_pos, self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
+        )
+        _clamp_vec = (palm_pos_clamped - new_palm_pos).abs()
+        clamp_delta = _clamp_vec.max().item()
+        clamp_per_axis = _clamp_vec.max(dim=0).values  # (3,) x,y,z 최대 초과량
+        new_palm_pose7 = torch.cat([palm_pos_clamped, new_palm_quat_xyzw], dim=-1)
+
+        # 기운 palm pose → Fabrics IK로 arm joints (hand는 grasp 유지).
+        # cup은 기하적 위치에 쓰고 arm은 IK 해로 가므로, IK 오차 ε만큼 손↔컵이 어긋난다
+        # (ε 큰 env에서 컵 놓침/손가락 관통 발생). ε를 줄이기 위해:
+        #   (1) seed를 직립 grasp가 아닌 demo pour 자세로 → 기운 해 근방에서 출발
+        #   (2) 정밀화 패스 추가 → 수렴 향상
+        q_init = torch.zeros(m, self.fabric_q.shape[1], device=self.device)
+        if getattr(self, "demo_pose_reference", None) is not None:
+            q_init[:, :NUM_ARM_DOF] = self.demo_pose_reference.arm_joint_mean.to(
+                self.device
+            ).unsqueeze(0)
+        else:
+            q_init[:, :NUM_ARM_DOF] = arm_pos
+        q_init[:, NUM_ARM_DOF:] = hand_pos
+        q_solved = self._run_reset_fabric(g_env_ids, new_palm_pose7, q_init)
+        # 정밀화: 직전 해를 seed로 1회 더 rollout (Fabrics 수렴 향상)
+        q_solved = self._run_reset_fabric(g_env_ids, new_palm_pose7, q_solved)
+        arm_new = q_solved[:, :NUM_ARM_DOF]
+
+        # 로봇 관절 기록
+        full_pos = torch.zeros(m, self.robot.num_joints, device=self.device)
+        full_vel = torch.zeros(m, self.robot.num_joints, device=self.device)
+        full_pos[:, self.arm_dof_indices] = arm_new
+        full_pos[:, self.hand_dof_indices] = hand_pos
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=g_env_ids)
+
+        self.fabric_q[g_env_ids].zero_()
+        self.fabric_q[g_env_ids, :NUM_ARM_DOF] = arm_new
+        self.fabric_q[g_env_ids, NUM_ARM_DOF:] = hand_pos
+        self.fabric_qd[g_env_ids].zero_()
+        self.fabric_qdd[g_env_ids].zero_()
+
+        # cup을 기운 pour 자세로 기록
+        cup_pose_world = torch.cat([new_cup_pos + origins, new_cup_quat_wxyz], dim=-1)
+        zero_vel = torch.zeros(m, 6, device=self.device)
+        self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=g_env_ids)
+        self.cup.write_root_velocity_to_sim(zero_vel, env_ids=g_env_ids)
+
+        # action 기준점 override: action=0 → 기운 자세 유지 (안 그러면 즉시 직립으로 복귀)
+        self.pregrasp_arm_pos_buf[g_env_ids] = arm_new
+        self.pregrasp_palm_pose_buf[g_env_ids] = new_palm_pose7
+        self.palm_pose_targets[g_env_ids] = new_palm_pose7
+        self.open_tesollo_fabric.default_config[g_env_ids, :NUM_ARM_DOF] = arm_new
+        # cup init 버퍼: xy는 새 위치, z는 테이블 기준 고정(cup_height_delta 의미 유지)
+        self.object_init_pos[g_env_ids, :2] = new_cup_pos[:, :2]
+        self.object_init_pos[g_env_ids, 2] = self.cfg.object_spawn_z
+        self._grasp_rel_palm_to_cup_init[g_env_ids] = new_cup_pos - new_palm_pose7[:, :3]
+        self._grasp_cup_height_init[g_env_ids] = new_cup_pos[:, 2]
+
+        if not self._pour_start_debug_printed:
+            pour_point_w = cup_pose_world[:, :3] + quat_apply(
+                cup_pose_world[:, 3:7],
+                self._source_cup_pour_point_pos_b.unsqueeze(0).expand(m, -1),
+            )
+            mouth_xy = torch.norm((pour_point_w - target_opening_w)[:, :2], dim=-1)
+            mouth_z = pour_point_w[:, 2] - target_opening_w[:, 2]
+            cup_up_w = quat_apply(
+                cup_pose_world[:, 3:7],
+                self._source_cup_up_axis_b.unsqueeze(0).expand(m, -1),
+            )
+            print(
+                "[5g_pour_right_v3][pour_start] "
+                f"n={m} ratio={self._pour_start_ratio:.3f} | "
+                f"up_dot mean={cup_up_w[:, 2].mean().item():.3f} "
+                f"min={cup_up_w[:, 2].min().item():.3f} max={cup_up_w[:, 2].max().item():.3f} | "
+                f"mouth_xy mean={mouth_xy.mean().item():.4f} max={mouth_xy.max().item():.4f} | "
+                f"mouth_z mean={mouth_z.mean().item():.4f} | "
+                f"palm_clamp_max={clamp_delta:.4f} "
+                f"(x={clamp_per_axis[0].item():.3f} y={clamp_per_axis[1].item():.3f} "
+                f"z={clamp_per_axis[2].item():.3f})",
+                flush=True,
+            )
+            if clamp_delta > 0.03:
+                print(
+                    "[5g_pour_right_v3][pour_start][WARN] palm pos clamped by "
+                    f"{clamp_delta:.4f}m → 기운 pour 자세가 workspace를 벗어남. "
+                    "pour_start_tilt_deg/zband 또는 target 위치 확인 필요.",
+                    flush=True,
+                )
+            self._pour_start_debug_printed = True

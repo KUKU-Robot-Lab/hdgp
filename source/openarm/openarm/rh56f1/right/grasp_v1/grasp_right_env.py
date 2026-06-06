@@ -254,11 +254,11 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_joint_upper_limits = self.hand_joint_upper_limits.contiguous()
 
         # ----------------------------------------------------------------
-        # 로봇 시작 자세 (arm: ARM_START_POSE, hand: HAND_GRASP_POSE)
-        # HAND_GRASP_POSE에서 시작 → 20D delta 탐색 공간 축소 (파지 포즈 근처 미세 조정)
+        # 로봇 시작 자세 (arm: ARM_START_POSE, hand: HAND_APPROACH_POSE)
+        # 열린 approach 자세에서 시작해 컵 spawn 시 손가락 관통을 피한다.
         # ----------------------------------------------------------------
         arm_start   = to_torch(ARM_START_POSE,   device=self.device)
-        hand_start  = to_torch(HAND_GRASP_POSE,  device=self.device)
+        hand_start  = to_torch(HAND_APPROACH_POSE,  device=self.device)
         robot_start = torch.cat([arm_start, hand_start], dim=0)
         self.robot_start_joint_pos = (
             robot_start.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
@@ -499,9 +499,9 @@ class GraspRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         self._setup_geometric_fabrics()
 
-        # cspace attractor: hand는 grasp pose 방향
+        # cspace attractor: reset warm-start hand pose와 일치
         cspace_default = self.fabric.default_config.clone()
-        cspace_default[:, NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self.num_envs, -1)
+        cspace_default[:, NUM_ARM_DOF:] = self.hand_approach_pose.unsqueeze(0).expand(self.num_envs, -1)
         self.fabric.default_config.copy_(cspace_default)
 
         # 초기 액션: 0 → palm pose workspace 중심, finger delta = 0
@@ -587,7 +587,7 @@ class GraspRightEnv(DirectRLEnv):
         self._reset_integrator = DisplacementIntegrator(self._reset_fabric)
 
         reset_cspace = self._reset_fabric.default_config.clone()
-        reset_cspace[:, NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self._reset_chunk, -1)
+        reset_cspace[:, NUM_ARM_DOF:] = self.hand_approach_pose.unsqueeze(0).expand(self._reset_chunk, -1)
         self._reset_fabric.default_config.copy_(reset_cspace)
 
         self._reset_pca     = torch.zeros(self._reset_chunk, NUM_HAND_DOF, device=self.device)

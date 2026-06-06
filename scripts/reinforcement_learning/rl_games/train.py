@@ -184,6 +184,12 @@ def _resolve_pipeline_log_components(task_name: str) -> tuple[str, str]:
     return "left", fallback_folder
 
 
+def _resolve_checkpoint_name(task_name: str) -> str:
+    """Use the Gym task id as the rl-games checkpoint basename."""
+    task_key = task_name.split(":")[-1]
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", task_key)
+
+
 def _patch_optimizer_restore() -> None:
     """Make rl_games checkpoint restore tolerate optimizer-state shape drift.
 
@@ -295,6 +301,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # logging directory path: <train_dir>/<full_experiment_name>
     agent_cfg["params"]["config"]["train_dir"] = log_root_path
     agent_cfg["params"]["config"]["full_experiment_name"] = log_dir
+    agent_cfg["params"]["config"]["name"] = _resolve_checkpoint_name(task_name)
     config_name = agent_cfg["params"]["config"]["name"]
     wandb_project = config_name if args_cli.wandb_project_name is None else args_cli.wandb_project_name
     experiment_name = log_dir if args_cli.wandb_name is None else args_cli.wandb_name

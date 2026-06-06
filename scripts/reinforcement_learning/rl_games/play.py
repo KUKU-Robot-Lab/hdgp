@@ -151,8 +151,17 @@ import openarm.tasks  # noqa: F401,E402
 
 
 def _resolve_pipeline_log_components(task_name: str) -> tuple[str, str]:
-    """Resolve <side>/<folder> under pipeline from the registered task config path."""
+    """Resolve <robot>/<side>/<task-ver> or <side>/<folder> from task name."""
+    side_map = {"r": "right", "l": "left", "b": "both"}
     task_key = _strip_play_task_name(task_name)
+
+    new_fmt = re.match(r"^(open-[A-Za-z0-9]+)_([rbl])_(.+?)(?:-lstm|-bc|-il.*|-diffusion)?$", task_key, re.IGNORECASE)
+    if new_fmt:
+        robot = new_fmt.group(1)
+        side = side_map.get(new_fmt.group(2), new_fmt.group(2))
+        task_ver = new_fmt.group(3).replace("_", "-")
+        return f"{robot}/{side}", task_ver
+
     fallback_folder = task_key.replace("-", "_")
     try:
         spec = gym.spec(task_key)
@@ -414,11 +423,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg["params"]["seed"]
 
     # CHECKPOINT SEARCH ROOT RULE:
-    #   <sbm_root>/log/rl_games/pipeline/<left|right|both>/<task_dir_name>
-    # side/folder are auto-resolved from task's env_cfg_entry_point (pipeline module path).
+    #   new:    <sbm_root>/log/rl_games/<robot>/<side>/<task-ver>
+    #   legacy: <sbm_root>/log/rl_games/pipeline/<left|right|both>/<task_dir_name>
     side_dir, task_dir_name = _resolve_pipeline_log_components(train_task_name)
     sbm_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    log_root_path = os.path.join(sbm_root, "log", "rl_games", "pipeline", side_dir, task_dir_name)
+    if "/" in side_dir:
+        log_root_path = os.path.join(sbm_root, "log", "rl_games", side_dir, task_dir_name)
+    elif side_dir in ("left", "right", "both"):
+        log_root_path = os.path.join(sbm_root, "log", "rl_games", "pipeline", side_dir, task_dir_name)
+    else:
+        log_root_path = os.path.join(sbm_root, "log", "rl_games", side_dir, task_dir_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
     # find checkpoint

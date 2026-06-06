@@ -219,7 +219,9 @@ PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
-        0.00, -0.55, 0.20,  # x_min: 0.20→0.00 (target cup이 x≈0.0에 있어 더 들어가야 함)
+        # [REDESIGN v5] 깊은 pour tilt 시 palm이 target 너머/아래로 스윙 → x_min/z_min 완화.
+        # (rotation은 _apply_action 위치 클램프 대상 아님 → tilt 자유, 위치 박스만 병목)
+        -0.15, -0.55, 0.10,  # x_min 0.00→-0.15, z_min 0.20→0.10
         (90.0 - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,
         (90.0 - max_pose_angle) * d,
@@ -238,7 +240,11 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     #   g_clear gradient가 cup을 과도하게 올리는 문제 방지.
     d = math.pi / 180.0
     return [
-        0.65, 0.22, 0.48,   # z_max: 0.48 (warmstart z_boost 0.12m → 실제 palm ≤ 0.60m)
+        # [REDESIGN v5] z_max 0.48→0.72: test4에서 palm_clamp_viol_z가 전 구간 ~0.2 지속
+        #   (정책이 tilt-pour로 palm을 z≈0.66~0.75로 올리려다 z_max=0.48에 계속 잘림 = 깊은
+        #   pour 차단의 근본 병목). 데모는 이 자세를 실제로 도달 → 박스가 인위적 한계였음.
+        #   과상승은 pour_zband(target 0.05)+pour_z barrier로 억제.
+        0.65, 0.22, 0.72,
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,
