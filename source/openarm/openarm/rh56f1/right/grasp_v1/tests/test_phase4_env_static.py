@@ -60,6 +60,24 @@ def test_obs_layout_4d():
     assert "middle_force_norm =" not in s
 
 
+def test_pregrasp_ik_targets_palm_sensor_reference():
+    """Reset pregrasp should define cup offset at the palm sensor, then convert to Fabric palm_link."""
+    s = _src()
+    assert "_PALM_SENSOR_OFFSET_IN_FABRIC_PALM" in s
+    assert "def _fabric_palm_pose_from_sensor_target" in s
+    assert "palm_sensor[:, 0] = flat_x + self.cfg.pregrasp_offset_x" in s
+    assert "pregrasp_sensor_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise" in s
+    assert s.count("_fabric_palm_pose_from_sensor_target(") >= 3
+
+
+def test_reward_has_precontact_approach_term_and_total_log():
+    """RH56F1 needs dense pre-contact reward because separate phalanx contacts do not exist."""
+    s = _src()
+    assert "r_tip_approach" in s
+    assert 'self.extras["rew_tip_approach"]' in s
+    assert 'self.extras["rew_total"] = reward.mean()' in s
+
+
 if __name__ == "__main__":
     test_syntax_valid()
     test_no_tesollo_fabric_tokens()
@@ -67,4 +85,6 @@ if __name__ == "__main__":
     test_no_tesollo_hand_dims_4b()
     test_sensors_consolidated_4c()
     test_obs_layout_4d()
-    print("Phase 4a/4b/4c/4d env static: 6 checks passed (GREEN)")
+    test_pregrasp_ik_targets_palm_sensor_reference()
+    test_reward_has_precontact_approach_term_and_total_log()
+    print("Phase 4a/4b/4c/4d env static: 8 checks passed (GREEN)")

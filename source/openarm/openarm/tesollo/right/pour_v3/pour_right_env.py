@@ -422,6 +422,9 @@ class PourRightEnv(DirectRLEnv):
         # [REDESIGN v5] pour-start reset curriculum 비율(전역 스칼라, reset마다 갱신)
         self._pour_start_ratio = float(self.cfg.pour_start_ratio_init)
         self._pour_start_debug_printed = False
+        self._grip_dbg_printed = False
+        # 이번 에피소드가 pour-start(hold 동안 tilt 주입) env인지 마스크
+        self._pour_start_env = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         self._noise_base_joint_pos = cfg.obs_noise_joint_pos
         self._noise_base_joint_vel = cfg.obs_noise_joint_vel
@@ -937,6 +940,25 @@ class PourRightEnv(DirectRLEnv):
         if self.cfg.episode_hold_steps > 0:
             hold_mask = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
             palm_action = torch.where(hold_mask, torch.zeros_like(palm_action), palm_action)
+            # [REDESIGN v5] pour-start env: hold 동안 rim-pivot tilt를 스크립트로 주입.
+            #   teleport로 upright-over-target에 놓인 컵을, hold 단계에서 정책과 동일한
+            #   rim-pivot 액션(tilt-toward-target 채널=idx4)으로 물리적으로 기울인다.
+            #   → grasp 정합을 물리가 보장, 자연스러운 on-manifold pour 자세 생성.
+            if (
+                self.cfg.enable_pour_start_curriculum
+                and self.cfg.pour_start_hold_tilt
+                and not self._warmstart_collect_mode
+                and bool(self._pour_start_env.any())
+            ):
+                ramp = (
+                    self.episode_length_buf.float()
+                    / max(self.cfg.pour_start_tilt_ramp_steps, 1)
+                ).clamp(0.0, 1.0)
+                tilt_cmd = ramp * self.cfg.pour_start_tilt_action
+                apply = self._pour_start_env & (
+                    self.episode_length_buf < self.cfg.episode_hold_steps
+                )
+                palm_action[:, 4] = torch.where(apply, tilt_cmd, palm_action[:, 4])
             if not self._warmstart_collect_mode:
                 finger_action = torch.where(hold_mask, torch.ones_like(finger_action), finger_action)
         if not self._warmstart_collect_mode:
@@ -961,6 +983,41 @@ class PourRightEnv(DirectRLEnv):
                 bead_state = self._sample_bead_states_inside_cup(cup_pose_now)
                 self.beads.write_object_state_to_sim(bead_state, env_ids=spawn_ids_tensor)
                 self._beads_spawned[spawn_ids_tensor] = True
+
+                # [REDESIGN v5][grip_check] hold 안착 후 실제 컵 자세 1회 측정 진단.
+                #   cup이 grip에서 어느 방향으로 기울어 잡히는지(손등 lean) → pour-point/축 보정 근거.
+                if not self._grip_dbg_printed:
+                    cq = self.cup.data.root_quat_w[spawn_ids_tensor]
+                    pq = self.robot.data.body_quat_w[spawn_ids_tensor, self.palm_body_index]
+                    upb = self._source_cup_up_axis_b.unsqueeze(0).expand(cq.shape[0], -1)
+                    paxb = self._source_cup_pour_axis_b.unsqueeze(0).expand(cq.shape[0], -1)
+                    cup_up_w = quat_apply(cq, upb)            # 컵 up축 (월드)
+                    cup_pour_w = quat_apply(cq, paxb)         # 컵 pour축 (월드)
+                    pq_conj = torch.cat([pq[:, :1], -pq[:, 1:]], dim=-1)
+                    cup_up_in_palm = quat_apply(pq_conj, cup_up_w)     # palm 프레임 기준 컵 up
+                    cup_pour_in_palm = quat_apply(pq_conj, cup_pour_w)
+                    ps = self._pour_start_env[spawn_ids_tensor]
+                    def _m(t):
+                        return [round(float(v), 3) for v in t.mean(dim=0).tolist()]
+                    if int((~ps).sum().item()) > 0:  # 일반 grip(스크립트 tilt 없음) = grip lean 측정
+                        g = ~ps
+                        print(
+                            "[5g_pour_right_v3][grip_check][warmstart] "
+                            f"n={int(g.sum().item())} | "
+                            f"cup_up_world={_m(cup_up_w[g])} (직립이면 ~[0,0,1]) | "
+                            f"cup_up_in_palm={_m(cup_up_in_palm[g])} | "
+                            f"cup_pour_in_palm={_m(cup_pour_in_palm[g])}",
+                            flush=True,
+                        )
+                    if int(ps.sum().item()) > 0:  # pour_start(스크립트 tilt 후) = tilt 방향 확인
+                        print(
+                            "[5g_pour_right_v3][grip_check][pour_start] "
+                            f"n={int(ps.sum().item())} | "
+                            f"cup_up_world={_m(cup_up_w[ps])} (target쪽 tilt면 xy가 target방향) | "
+                            f"cup_up_in_palm={_m(cup_up_in_palm[ps])}",
+                            flush=True,
+                        )
+                    self._grip_dbg_printed = True
 
         # [Phase-1 Step 7] EMA palm action smoothing: Fabrics에 smooth 궤적 전달
         # action_rate_penalty는 raw self.actions 기반 유지 (training gradient 보존)
@@ -2416,6 +2473,7 @@ class PourRightEnv(DirectRLEnv):
         self.prev_actions[env_ids, 6:] = 1.0
         self._pre_pour_ready_steps[env_ids] = 0
         self.success_flag[env_ids] = False
+        self._pour_start_env[env_ids] = False  # 기본 비활성 (아래 curriculum에서 subset만 활성)
 
         # [REDESIGN v5] pour-start curriculum: 일부 env를 target 위로 기운 pour 자세로 override.
         # warmstart 캐시(직립 grasp) 상태를 받은 직후, 선택된 subset만 pour-ready로 덮어쓴다.
@@ -2496,7 +2554,8 @@ class PourRightEnv(DirectRLEnv):
             palm_pose[:, 3:7],
             self._source_cup_pour_point_pos_b,
             target_opening_local,
-            tilt_deg=self.cfg.pour_start_tilt_deg,
+            # hold_tilt 모드: teleport는 upright-over-target(병진)까지만, tilt은 hold에서 물리로.
+            tilt_deg=(0.0 if self.cfg.pour_start_hold_tilt else self.cfg.pour_start_tilt_deg),
             z_clearance=self.cfg.pour_start_zband,
         )
         new_cup_pos = out["cup_pos"]
@@ -2514,22 +2573,13 @@ class PourRightEnv(DirectRLEnv):
         clamp_per_axis = _clamp_vec.max(dim=0).values  # (3,) x,y,z 최대 초과량
         new_palm_pose7 = torch.cat([palm_pos_clamped, new_palm_quat_xyzw], dim=-1)
 
-        # 기운 palm pose → Fabrics IK로 arm joints (hand는 grasp 유지).
-        # cup은 기하적 위치에 쓰고 arm은 IK 해로 가므로, IK 오차 ε만큼 손↔컵이 어긋난다
-        # (ε 큰 env에서 컵 놓침/손가락 관통 발생). ε를 줄이기 위해:
-        #   (1) seed를 직립 grasp가 아닌 demo pour 자세로 → 기운 해 근방에서 출발
-        #   (2) 정밀화 패스 추가 → 수렴 향상
+        # palm pose → Fabrics IK로 arm joints (hand는 grasp 유지).
+        # hold_tilt 모드에서는 teleport가 병진뿐이라 grasp seed로도 IK 오차가 작다
+        # (회전 없음 → 자연스러운 transport 자세, on-manifold). tilt은 hold에서 물리로 생성.
         q_init = torch.zeros(m, self.fabric_q.shape[1], device=self.device)
-        if getattr(self, "demo_pose_reference", None) is not None:
-            q_init[:, :NUM_ARM_DOF] = self.demo_pose_reference.arm_joint_mean.to(
-                self.device
-            ).unsqueeze(0)
-        else:
-            q_init[:, :NUM_ARM_DOF] = arm_pos
+        q_init[:, :NUM_ARM_DOF] = arm_pos
         q_init[:, NUM_ARM_DOF:] = hand_pos
         q_solved = self._run_reset_fabric(g_env_ids, new_palm_pose7, q_init)
-        # 정밀화: 직전 해를 seed로 1회 더 rollout (Fabrics 수렴 향상)
-        q_solved = self._run_reset_fabric(g_env_ids, new_palm_pose7, q_solved)
         arm_new = q_solved[:, :NUM_ARM_DOF]
 
         # 로봇 관절 기록
@@ -2546,13 +2596,13 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_qd[g_env_ids].zero_()
         self.fabric_qdd[g_env_ids].zero_()
 
-        # cup을 기운 pour 자세로 기록
+        # cup을 over-target 자세로 기록 (hold_tilt 모드: 직립, tilt은 hold에서 물리로 생성)
         cup_pose_world = torch.cat([new_cup_pos + origins, new_cup_quat_wxyz], dim=-1)
         zero_vel = torch.zeros(m, 6, device=self.device)
         self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=g_env_ids)
         self.cup.write_root_velocity_to_sim(zero_vel, env_ids=g_env_ids)
 
-        # action 기준점 override: action=0 → 기운 자세 유지 (안 그러면 즉시 직립으로 복귀)
+        # action 기준점 override: action=0 → over-target 자세 유지 (transport 되돌림 방지)
         self.pregrasp_arm_pos_buf[g_env_ids] = arm_new
         self.pregrasp_palm_pose_buf[g_env_ids] = new_palm_pose7
         self.palm_pose_targets[g_env_ids] = new_palm_pose7
@@ -2562,6 +2612,8 @@ class PourRightEnv(DirectRLEnv):
         self.object_init_pos[g_env_ids, 2] = self.cfg.object_spawn_z
         self._grasp_rel_palm_to_cup_init[g_env_ids] = new_cup_pos - new_palm_pose7[:, :3]
         self._grasp_cup_height_init[g_env_ids] = new_cup_pos[:, 2]
+        # 이 env들은 hold 동안 tilt 주입 대상
+        self._pour_start_env[g_env_ids] = True
 
         if not self._pour_start_debug_printed:
             pour_point_w = cup_pose_world[:, :3] + quat_apply(
@@ -2574,11 +2626,11 @@ class PourRightEnv(DirectRLEnv):
                 cup_pose_world[:, 3:7],
                 self._source_cup_up_axis_b.unsqueeze(0).expand(m, -1),
             )
+            _mode = "hold_tilt(직립 teleport→hold tilt)" if self.cfg.pour_start_hold_tilt else "teleport tilt"
             print(
                 "[5g_pour_right_v3][pour_start] "
-                f"n={m} ratio={self._pour_start_ratio:.3f} | "
-                f"up_dot mean={cup_up_w[:, 2].mean().item():.3f} "
-                f"min={cup_up_w[:, 2].min().item():.3f} max={cup_up_w[:, 2].max().item():.3f} | "
+                f"mode={_mode} n={m} ratio={self._pour_start_ratio:.3f} | "
+                f"teleport up_dot mean={cup_up_w[:, 2].mean().item():.3f} (hold_tilt=1.0 정상) | "
                 f"mouth_xy mean={mouth_xy.mean().item():.4f} max={mouth_xy.max().item():.4f} | "
                 f"mouth_z mean={mouth_z.mean().item():.4f} | "
                 f"palm_clamp_max={clamp_delta:.4f} "
@@ -2589,8 +2641,8 @@ class PourRightEnv(DirectRLEnv):
             if clamp_delta > 0.03:
                 print(
                     "[5g_pour_right_v3][pour_start][WARN] palm pos clamped by "
-                    f"{clamp_delta:.4f}m → 기운 pour 자세가 workspace를 벗어남. "
-                    "pour_start_tilt_deg/zband 또는 target 위치 확인 필요.",
+                    f"{clamp_delta:.4f}m → over-target 자세가 workspace를 벗어남. "
+                    "zband 또는 target 위치 확인 필요.",
                     flush=True,
                 )
             self._pour_start_debug_printed = True

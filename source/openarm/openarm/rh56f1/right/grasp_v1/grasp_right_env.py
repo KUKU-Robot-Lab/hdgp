@@ -130,6 +130,8 @@ class GraspRightEnv(DirectRLEnv):
 
     cfg: GraspRightEnvCfg
 
+    _PALM_SENSOR_OFFSET_IN_FABRIC_PALM = (0.0, 0.03, 0.04)
+
     @staticmethod
     def _quat_xyzw_from_euler_zyx(euler_zyx: torch.Tensor) -> torch.Tensor:
         """Convert ZYX Euler angles to quaternion ordered as (x, y, z, w)."""
@@ -142,6 +144,22 @@ class GraspRightEnv(DirectRLEnv):
         qx = quat_from_angle_axis(euler_zyx[:, 2], unit_x)
         quat_wxyz = quat_mul(quat_mul(qz, qy), qx)
         return quat_wxyz[:, [1, 2, 3, 0]]
+
+    def _fabric_palm_pose_from_sensor_target(self, palm_sensor_pose: torch.Tensor) -> torch.Tensor:
+        """Convert desired palm sensor pose to the Fabric palm_link pose target."""
+        batch = palm_sensor_pose.shape[0]
+        unit_x = palm_sensor_pose.new_tensor([1.0, 0.0, 0.0]).expand(batch, -1)
+        unit_y = palm_sensor_pose.new_tensor([0.0, 1.0, 0.0]).expand(batch, -1)
+        unit_z = palm_sensor_pose.new_tensor([0.0, 0.0, 1.0]).expand(batch, -1)
+        qz = quat_from_angle_axis(palm_sensor_pose[:, 3], unit_z)
+        qy = quat_from_angle_axis(palm_sensor_pose[:, 4], unit_y)
+        qx = quat_from_angle_axis(palm_sensor_pose[:, 5], unit_x)
+        palm_quat_wxyz = quat_mul(quat_mul(qz, qy), qx)
+        sensor_offset = palm_sensor_pose.new_tensor(self._PALM_SENSOR_OFFSET_IN_FABRIC_PALM).expand(batch, -1)
+
+        fabric_palm_pose = palm_sensor_pose.clone()
+        fabric_palm_pose[:, :3] = palm_sensor_pose[:, :3] - quat_apply(palm_quat_wxyz, sensor_offset)
+        return fabric_palm_pose
 
     def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
@@ -533,7 +551,7 @@ class GraspRightEnv(DirectRLEnv):
             self._tip_sensors.append(sensor)
             self.scene.sensors[f"tip_sensor_{link_name}"] = sensor
 
-        # RH56F1: 별도 distal/middle 센서 없음. distal = tip(5 fingertip), middle = zeros.
+        # RH56F1: 별도 distal/middle phalanx 접촉 센서 없음. reward에서는 fingertip/palm만 사용.
         # tip 센서(위 _tip_sensors)가 force_sensor 패드 접촉을 포착한다.
         self._palm_sensor = ContactSensor(self.cfg.palm_sensor_cfg)
         self.scene.sensors["palm_sensor"] = self._palm_sensor
@@ -622,13 +640,14 @@ class GraspRightEnv(DirectRLEnv):
         flat_x, flat_y = gx.flatten(), gy.flatten()
         M = flat_x.shape[0]
 
-        palm = torch.zeros(M, 6, device=self.device)
-        palm[:, 0] = flat_x + self.cfg.pregrasp_offset_x
-        palm[:, 1] = flat_y + self.cfg.pregrasp_offset_y
-        palm[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
-        palm[:, 3] = math.radians(90.0)
-        palm[:, 4] = math.radians(0.0)
-        palm[:, 5] = math.radians(90.0)
+        palm_sensor = torch.zeros(M, 6, device=self.device)
+        palm_sensor[:, 0] = flat_x + self.cfg.pregrasp_offset_x
+        palm_sensor[:, 1] = flat_y + self.cfg.pregrasp_offset_y
+        palm_sensor[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
+        palm_sensor[:, 3] = math.radians(90.0)
+        palm_sensor[:, 4] = math.radians(0.0)
+        palm_sensor[:, 5] = math.radians(90.0)
+        palm = self._fabric_palm_pose_from_sensor_target(palm_sensor)
         palm = torch.max(
             torch.min(palm, self.palm_maxs.unsqueeze(0)),
             self.palm_mins.unsqueeze(0),
@@ -959,10 +978,10 @@ class GraspRightEnv(DirectRLEnv):
         # friction_forces_w: track_friction_forces 비활성화로 미사용
         # (get_friction_data()의 buffer overflow 문제로 제거)
 
-        # RH56F1: distal = tip (fingertip 센서와 동일 말단 링크). 별도 distal 센서 없음.
-        self.distal_contact_force_xyz.copy_(tip_xyz)
-        self.distal_contact_force_raw.copy_(tip_norms)
-        self.distal_binary_contact_buf.copy_(self.binary_contact_buf)
+        # RH56F1: 별도 distal phalanx 센서 없음. tip과 중복 계산하지 않는다.
+        self.distal_contact_force_xyz.zero_()
+        self.distal_contact_force_raw.zero_()
+        self.distal_binary_contact_buf.zero_()
 
         # RH56F1: middle phalanx 센서 없음 → 항상 zeros (reward 의 middle 항목은 무기여).
         self.middle_contact_force_xyz.zero_()
@@ -1385,8 +1404,8 @@ class GraspRightEnv(DirectRLEnv):
             cup_pos_clean[:, 2] - self.object_init_pos[:, 2]
         ).unsqueeze(1)
 
-        # tip_contact_binary: fingertip 접촉 flag (distal=tip). 정밀 접촉 신호(privileged).
-        tip_contact_binary = self.distal_binary_contact_buf.float()   # (N, 5)
+        # tip_contact_binary: fingertip 접촉 flag. 정밀 접촉 신호(privileged).
+        tip_contact_binary = self.binary_contact_buf.float()   # (N, 5)
 
         tip_to_cup_dist = (
             fingertip_pos_clean - cup_pos_clean.unsqueeze(1)
@@ -1660,6 +1679,14 @@ class GraspRightEnv(DirectRLEnv):
         tilt_rad = torch.acos(cup_z_world[:, 2].clamp(-1.0, 1.0))
         r_ori = torch.exp(-self.cfg.r_ori_sharpness * tilt_rad ** 2)
 
+        # ---- r_tip_approach: contact 전 손가락을 컵 표면 shell로 유도 ----
+        tip_to_cup_dist = (self.fingertip_pos - self.object_pos.unsqueeze(1)).norm(dim=-1)
+        tip_shell_error = (tip_to_cup_dist - CUP_RADIUS_APPROX).abs()
+        r_tip_approach = (
+            torch.exp(-self.cfg.r_tip_approach_sharpness * tip_shell_error ** 2).mean(dim=-1)
+            * self.is_grasp_phase.float()
+        )
+
         # ---- r_slip: -w_s * Σᵢ∈C 1_{cᵢ} * ||v_rel,i||²  (HTML exact formula) ----
         # v_rel,i = (v_cup + ω_cup × r_i) - v_finger_i
         cup_lin_vel_w = self.cup.data.root_lin_vel_w          # (N, 3)
@@ -1788,6 +1815,7 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 리워드 로깅 ----
         self.extras["rew_height"]  = r_height.mean()
         self.extras["rew_ori"]     = r_ori.mean()
+        self.extras["rew_tip_approach"] = r_tip_approach.mean()
         self.extras["rew_slip"]    = r_slip.mean()
         self.extras["rew_margin"]  = r_margin.mean()
         self.extras["rew_contact"] = r_contact.mean()
@@ -1802,12 +1830,14 @@ class GraspRightEnv(DirectRLEnv):
         reward = (
             self.cfg.r_height_weight  * r_height
             + self.cfg.r_ori_weight   * r_ori
+            + self.cfg.r_tip_approach_weight * r_tip_approach
             + r_slip
             + r_margin
             + r_contact
             + r_force
             + r_deltaf
         )
+        self.extras["rew_total"] = reward.mean()
         return reward
 
     # ------------------------------------------------------------------
@@ -2180,13 +2210,14 @@ class GraspRightEnv(DirectRLEnv):
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
             ], dim=1)
-            pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
+            pregrasp_sensor_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
 
-            pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
-            pregrasp_palm_pose[:, :3] = pregrasp_pos
-            pregrasp_palm_pose[:, 3] = math.radians(90.0)
-            pregrasp_palm_pose[:, 4] = math.radians(0.0)
-            pregrasp_palm_pose[:, 5] = math.radians(90.0)
+            pregrasp_sensor_pose = torch.zeros(n, 6, device=self.device)
+            pregrasp_sensor_pose[:, :3] = pregrasp_sensor_pos
+            pregrasp_sensor_pose[:, 3] = math.radians(90.0)
+            pregrasp_sensor_pose[:, 4] = math.radians(0.0)
+            pregrasp_sensor_pose[:, 5] = math.radians(90.0)
+            pregrasp_palm_pose = self._fabric_palm_pose_from_sensor_target(pregrasp_sensor_pose)
             pregrasp_palm_pose = torch.max(
                 torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
                 self.palm_mins.unsqueeze(0),

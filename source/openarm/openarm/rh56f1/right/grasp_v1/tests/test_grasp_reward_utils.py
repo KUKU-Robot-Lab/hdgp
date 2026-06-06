@@ -43,6 +43,14 @@ def test_middle_contact_gate_requires_four_middle_contacts() -> None:
     assert gate.tolist() == [False, True, True]
 
 
+def test_middle_contact_gate_can_be_disabled_for_hands_without_middle_sensors() -> None:
+    middle_binary = torch.zeros(2, 5, dtype=torch.bool)
+
+    gate = compute_middle_contact_gate(middle_binary, min_middle_contacts=0)
+
+    assert gate.tolist() == [True, True]
+
+
 def test_slip_proxy_increases_with_velocity_tilt_and_contact_churn() -> None:
     baseline = compute_slip_proxy(
         cup_xy_velocity=torch.tensor([0.01]),

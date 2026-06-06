@@ -157,12 +157,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
+    # pregrasp_offset_* is the desired palm sensor offset from the cup.
+    # The environment converts it to the Fabric palm_link target before IK.
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 60
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True
     pregrasp_offset_x:     float = -0.06
-    pregrasp_offset_y:     float = -0.07
+    pregrasp_offset_y:     float = -0.12
     pregrasp_offset_z:     float = 0.00
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
@@ -235,6 +237,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     r_ori_weight:    float = 4.0
     r_ori_sharpness: float = 4.0   # 30° → 0.33, 10° → 0.89
 
+    # r_tip_approach: grasp phase에서 fingertip이 컵 표면 반경 shell로 접근하도록 유도
+    r_tip_approach_weight:    float = 6.0
+    r_tip_approach_sharpness: float = 120.0
+
     # r_slip: -w_s * Σᵢ 1_{cᵢ} * v_cup_xy²  — 수평 슬립 억제
     r_slip_weight: float = 5.0   # 10 contacts @ 0.05m/s → 0.125 penalty
 
@@ -258,7 +264,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     cup_base_mass:  float = 0.170          # kg (빈 컵 질량)
     bead_single_mass: float = _DEFAULT_BEAD_MASS  # kg per bead
 
-    min_middle_contacts_for_success: int = 4
+    min_middle_contacts_for_success: int = 0
 
     # Lift-entry grip readiness gate (state tracking용, reward가 아님)
     lift_contact_hold_steps: int = 30
@@ -346,7 +352,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.27
+    object_spawn_x_center: float = 0.40
     object_spawn_y_center: float = -0.10
     object_spawn_z:        float = 0.297
     object_spawn_xy_range: float = 0.06
@@ -505,6 +511,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # palm 힘센서 (실 plam_force_sensor)
     palm_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/rh56f1_right_plam_force_sensor",
+        filter_prim_paths_expr=["/World/envs/env_.*/Cup"],
         history_length=1,
         track_air_time=False,
     )

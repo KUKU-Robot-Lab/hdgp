@@ -149,10 +149,10 @@ HAND_JOINT_LIMITS_MAX = [
 # 완전히 열린 자세
 HAND_START_POSE = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-# FABRICS 접근 자세 (pregrasp): thumb opposition pre-rotate + 약한 굽힘
+# FABRICS 접근 자세 (pregrasp): thumb opposition 유지 + thumb_2를 살짝 벌려 컵 spawn clearance 확보
 HAND_APPROACH_POSE = [
     1.57,   # thumb_1 abduction → opposition 방향
-    0.0,   # thumb_2 약한 굽힘
+    0.15,   # thumb_2: reset에서 엄지 말단 링크 clearance 확보
     0.00,   # index_1
     0.00,   # middle_1
     0.00,   # ring_1

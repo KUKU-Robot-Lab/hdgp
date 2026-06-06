@@ -17,6 +17,12 @@ def compute_middle_contact_gate(
     middle_binary_contact: torch.Tensor,
     min_middle_contacts: int,
 ) -> torch.Tensor:
+    if int(min_middle_contacts) <= 0:
+        return torch.ones(
+            middle_binary_contact.shape[0],
+            dtype=torch.bool,
+            device=middle_binary_contact.device,
+        )
     return middle_binary_contact.sum(dim=-1) >= int(min_middle_contacts)
 
 

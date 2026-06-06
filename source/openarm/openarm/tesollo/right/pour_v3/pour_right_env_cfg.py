@@ -347,18 +347,30 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # ---------------------------------------------------------------------
     # 축1: pour-start reset curriculum — 일부 env를 "이미 target 위로 기운 pour 자세"로
     #   reset → 정책이 step 1부터 bead 흐름/보상을 경험. 진행에 따라 upright start로 anneal.
-    enable_pour_start_curriculum: bool = True
+    # [TEST] 박스 수정(z_max 0.48→0.72) 단독 효과 검증을 위해 curriculum OFF.
+    #   envelope grip이 compliant해 palm 강체 tilt로 컵이 안 따라옴(데이터 확인) → teleport/
+    #   scripted-tilt curriculum은 보류. 진짜 하드 병목이던 palm 박스만 풀고 정상 학습이
+    #   tilt/pour를 배우는지 먼저 확인.
+    enable_pour_start_curriculum: bool = False
     pour_start_ratio_init: float = 0.5         # 초기 pour-ready reset 비율
     pour_start_ratio_final: float = 0.05       # 최종(거의 전부 upright grasp start)
     pour_start_anneal_start_step: int = 96000  # ~1500ep(×64) 후 anneal 시작(그 전엔 비율 유지)
     pour_start_anneal_steps: int = 256000      # 이후 ~4000ep 동안 final로 선형 감쇠
     pour_start_tilt_deg: float = 105.0         # demo j5≈-1.2 ↔ up_dot≈cos(105°)≈-0.26
     pour_start_zband: float = 0.05             # pour-point를 target 위 (=pour_zband_target)
+    # tilt를 teleport(강체회전+IK)가 아니라 hold 단계에서 rim-pivot 액션으로 물리적으로 생성.
+    #   teleport는 upright-over-target까지만(병진 → IK 오차 작고 자세 자연), tilt는 물리로 →
+    #   grasp 정합을 물리가 보장(컵 놓침/손가락 관통 방지), 정책 manifold 위의 자연스러운 자세.
+    pour_start_hold_tilt: bool = True
+    pour_start_tilt_action: float = -0.875     # 부호 -: 렌더 검증상 +는 target 반대로 기울어 음수로 교정 (≈105°)
+    pour_start_tilt_ramp_steps: int = 60       # hold 동안 0→tilt_action 선형 램프(컵 튕김 방지)
 
     # 축2: demo 졸업을 flow EMA가 아니라 curriculum 비율에 연동(graduate 순환 deadlock 제거).
     #   demo_arm_pose_w = floor + (full-floor)·(ratio/ratio_init)
     #   → pour-start 비율↓(정책 자립)일수록 demo anchor↓. flow 의존 X.
-    demo_decay_follows_curriculum: bool = True
+    # curriculum OFF 테스트에서는 원래(flow-EMA) graduate로 복귀(test4와 동일 보상).
+    #   박스가 풀려 tilt→pour→flow가 생기면 graduate deadlock도 자연 해소되는지 확인.
+    demo_decay_follows_curriculum: bool = False
 
 
     # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
