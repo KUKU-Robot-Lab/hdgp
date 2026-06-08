@@ -1707,21 +1707,20 @@ class PourRightEnv(DirectRLEnv):
             self.cfg.pour_zband_sigma, 1e-6
         )
         r_zband = self.cfg.weight_pour_zband * torch.exp(-_dz_err * _dz_err)
+        # [test7] dir_gate: 틸트를 '타겟 방향'으로만 보상. test6는 깊이/하강은 풀었으나
+        #   방향 항이 없어 외회전(dir_cos<0, 타겟 반대로 기울임)으로 ~1% plateau(렌더 확인).
+        #   smooth: dir_cos=0→0.5(부트스트랩 유지), +1→1, -1→0 → 외회전은 보상 0.
+        dir_gate = (0.5 * (1.0 + self._directional_tilt_cos)).clamp(0.0, 1.0)
+        xy_gate = torch.exp(-self.cfg.pour_xy_scale * self._mouth_xy_distance)
         # r_release: over-target일 때만 tilt 유도 (고정 120° 목표 폐기 → 깊이는 bead가 결정)
-        r_release = (
-            self.cfg.weight_release
-            * tilt_amount
-            * torch.exp(-self.cfg.pour_xy_scale * self._mouth_xy_distance)
-        )
+        r_release = self.cfg.weight_release * tilt_amount * xy_gate * dir_gate
         # [test6] r_tilt_depth: j5를 demo 깊이(≈120°, up_dot≈-0.5)로 직접 유도.
         #   demo는 j1-4(높이)만 앵커하고 j5는 release(targetless)뿐이라 -0.1 정체 → pour 0.
         #   tilt_progress: 목표 깊이까지 선형↑ 후 1.0 포화 → 얕은 틸트서도 gradient(부트스트랩),
-        #   full-flip 과도 틸트는 억제(spill 방지). xy_gate로 over-target만, g_ready로 근접 게이트.
+        #   full-flip 과도 틸트는 억제(spill 방지). xy_gate로 over-target만, [test7] dir_gate로 타겟 방향만.
         tilt_target = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0  # 120°→0.75
         tilt_progress = (tilt_amount / max(tilt_target, 1e-6)).clamp(0.0, 1.0)
-        r_tilt_depth = self.cfg.weight_tilt * tilt_progress * torch.exp(
-            -self.cfg.pour_xy_scale * self._mouth_xy_distance
-        )
+        r_tilt_depth = self.cfg.weight_tilt * tilt_progress * xy_gate * dir_gate
         r_pour_geo = g_ready * (r_pour_xy + r_zband + r_release + r_tilt_depth)
 
         # 안전 barrier: pour-point가 림 아래로 박히는 것만 단방향 차단 (컵 충돌 방지)
