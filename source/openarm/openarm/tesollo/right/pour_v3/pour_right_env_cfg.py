@@ -332,7 +332,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_zband_target: float = 0.05
     pour_zband_sigma: float = 0.05
     weight_release: float = 20.0    # [test8] 사장: r_release 제거(r_dir+r_depth로 대체)
-    weight_dir: float = 20.0        # [test8] 앵커 분리 방향항 r_dir(cup-center 앵커). 수치검증 w=20서 전달경로 co-reinforce. 구 weight_align(6.0) 대체
+    weight_dir: float = 50.0        # [test9] 20→50 조준 강화 (시뮬: w20은 r_depth보다 3~5배 약함 → 정책이 안 겨눔). [test8] 앵커 분리 방향항 r_dir(cup-center 앵커)
+    # [test9] j5(틸트 주역) demo 앵커 — Stage B서만 활성, flow 생기면 감쇠. 텔레포트 없는 틸트 부트스트랩.
+    weight_demo_j5: float = 15.0
+    weight_demo_j5_floor: float = 3.0
+    demo_j5_sharpness: float = 2.0
+    # [test9] Stage-B 래치 (텔레포트 없는 2단계: 자세 확립 → 틸트/pour 활성). fallback으로 하방 보호.
+    stageB_d_ready: float = 0.10       # cup_center_xy_dist < 이 값 = 타겟 위 자리잡음
+    stageB_up_min: float = 0.70        # source_up_dot > 이 값 = 아직 직립(틸트 前)
+    stageB_sustain_k: int = 20         # K스텝 연속 충족 → 래치(단방향, 에피소드 리셋)
+    stageB_fallback_step: int = 240    # 미충족이어도 episode_length 이 스텝 후 강제 활성(최악도 test8+j5로 degrade)
     weight_tilt: float = 40.0       # [test6] j5를 demo 깊이(pour_tilt_target_deg=120°)로 직접 유도. 과거 lineage가 j5 local min 탈출에 40~60 필요(8은 실패) → 40 시작. [test8] ungated r_depth 계수로 사용
     # Stage C: bead dense (4.1cm binary → 연속 근접)
     weight_bead_near: float = 30.0  # 방출된 bead가 target 축 근처면 보상 (sparse→dense 다리)

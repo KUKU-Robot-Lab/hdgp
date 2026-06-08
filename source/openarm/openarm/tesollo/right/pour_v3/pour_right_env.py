@@ -425,6 +425,10 @@ class PourRightEnv(DirectRLEnv):
         self._grip_dbg_printed = False
         # 이번 에피소드가 pour-start(hold 동안 tilt 주입) env인지 마스크
         self._pour_start_env = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # [test9] Stage-B 래치: pre-pour 자세(타겟 위+직립+K스텝) 도달 시 틸트/pour 활성. 단방향, 에피소드 리셋.
+        self._stageB = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._stageB_cnt = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._demo_j5_w = 0.0
 
         self._noise_base_joint_pos = cfg.obs_noise_joint_pos
         self._noise_base_joint_vel = cfg.obs_noise_joint_vel
@@ -1561,7 +1565,7 @@ class PourRightEnv(DirectRLEnv):
     def _get_demo_pose_reward_terms(self) -> dict[str, torch.Tensor]:
         zero = torch.zeros(self.num_envs, device=self.device)
         if self.demo_pose_reference is None:
-            return {"r_demo_arm_pose": zero, "demo_arm_joint_err": zero}
+            return {"r_demo_arm_pose": zero, "r_demo_j5": zero, "demo_arm_joint_err": zero}
 
         ref = self.demo_pose_reference
         arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
@@ -1597,8 +1601,22 @@ class PourRightEnv(DirectRLEnv):
         gate = near_gate * warmup
 
         demo_w = getattr(self, "_demo_arm_pose_w", self.cfg.weight_demo_arm_pose)
+
+        # [test9] j5(틸트 주역) demo 앵커 — Stage B(_stageB)서만, 감쇠(_demo_j5_w).
+        #   NN 매칭은 j1-4(현행)라 매칭 오염 없음; 타깃값 target_arm_q[:,4](NN-phased≈-1.16)만 사용.
+        #   목적: +쪽에 갇힌 손목(test8 j5≈+1.0)을 demo pour 회전으로 끌어 틸트 부트스트랩(텔레포트 無).
+        j5_std = ref.arm_joint_std[4].clamp(min=0.20)
+        j5_err = torch.abs(arm_q[:, 4] - target_arm_q[:, 4]) / j5_std
+        _sB = getattr(self, "_stageB", None)
+        _j5_w = getattr(self, "_demo_j5_w", 0.0)
+        if _sB is not None:
+            r_demo_j5 = _sB.float() * _j5_w * torch.exp(-self.cfg.demo_j5_sharpness * j5_err)
+        else:
+            r_demo_j5 = torch.zeros_like(demo_arm_joint_err)
+
         return {
             "r_demo_arm_pose": gate * demo_w * r_demo_arm_pose,
+            "r_demo_j5": r_demo_j5,
             "demo_arm_joint_err": demo_arm_joint_err,
         }
 
@@ -1676,10 +1694,29 @@ class PourRightEnv(DirectRLEnv):
         self._demo_arm_pose_w = demo_floor + (self.cfg.weight_demo_arm_pose - demo_floor) * graduate
         self._palm_pose_w = self.cfg.weight_palm_pose  # (r_palm_pose는 total에서 제외, 로깅 호환만)
         self._crossover_alpha = graduate
+
+        # [test9] Stage-B 래치: "타겟 위(cup_center<d_ready) + 직립(up_dot>up_min)"을 K스텝 연속
+        #   충족하면 단방향 래치 → 틸트/pour 활성. 래치 前(Stage A)엔 hold/approach/demo(j1-4)만 →
+        #   plateau에 안 빠지고 자세 확립. 시간 fallback으로 래치 미발동 시에도 강제 활성(하방 보호).
+        _ready_now = (
+            (self._cup_center_xy_dist < self.cfg.stageB_d_ready)
+            & (self._source_up_dot_world > self.cfg.stageB_up_min)
+        )
+        self._stageB_cnt = torch.where(
+            _ready_now, self._stageB_cnt + 1, torch.zeros_like(self._stageB_cnt)
+        )
+        _fallback = self.episode_length_buf >= self.cfg.stageB_fallback_step
+        self._stageB = self._stageB | (self._stageB_cnt >= self.cfg.stageB_sustain_k) | _fallback
+        # j5 앵커 weight: 부트스트랩(full) → flow 생기면 floor로 감쇠(graduate 재사용)
+        self._demo_j5_w = self.cfg.weight_demo_j5_floor + (
+            self.cfg.weight_demo_j5 - self.cfg.weight_demo_j5_floor
+        ) * graduate
         # 단일 ready gate: cup이 target 근처일 때만 pour 보상 (binary rho 대체, 부드러운 sigmoid)
         g_ready = torch.sigmoid(
             (self.cfg.g_ready_center - self._cup_center_xy_dist) / max(self.cfg.g_ready_width, 1e-6)
         )
+        # [test9] pour 항 게이트 = Stage-B 래치 × g_ready. 래치 前엔 0(틸트/pour OFF), 後엔 g_ready로 스무딩.
+        pour_gate = self._stageB.float() * g_ready
 
         # Transport Stage 1a: Cartesian 근접 (cup_center_xy 기반, 거친 approach gradient)
         _transport_dist = (self._cup_center_xy_dist - self.cfg.cup_transport_saturate_xy).clamp(min=0.0)
@@ -1725,11 +1762,11 @@ class PourRightEnv(DirectRLEnv):
         tilt_target = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0  # 120°→0.75
         tilt_progress = (tilt_amount / max(tilt_target, 1e-6)).clamp(0.0, 1.0)
         r_depth = self.cfg.weight_tilt * tilt_progress
-        r_pour_geo = g_ready * (r_pour_xy + r_dir + r_depth)
+        r_pour_geo = pour_gate * (r_pour_xy + r_dir + r_depth)
 
         # 안전 barrier: pour-point가 림 아래로 박히는 것만 단방향 차단 (컵 충돌 방지)
         z_violation = (self.cfg.pour_z_margin - self._mouth_z_clearance).clamp(min=0.0)
-        r_pour_z = -(g_ready * self.cfg.weight_pour_z * z_violation)
+        r_pour_z = -(pour_gate * self.cfg.weight_pour_z * z_violation)
 
         # =========================================================
         # [REDESIGN v4] Stage C: bead dense (4.1cm binary → 연속 근접 → 실제 채움)
@@ -1737,7 +1774,7 @@ class PourRightEnv(DirectRLEnv):
         r_bead_near = self.cfg.weight_bead_near * self._bead_near_score           # 방출 bead 근접(다리)
         r_bead_in = self.cfg.weight_bead_in * self._bead_in_target_fraction       # 실제 채움(linear)
         r_cross = self.cfg.weight_bead_cross * self._bead_cross_delta.clamp(min=0.0)  # 입구 관통 즉시
-        r_pour_stage = g_ready * (r_bead_near + r_bead_in + r_cross)
+        r_pour_stage = pour_gate * (r_bead_near + r_bead_in + r_cross)
 
         # Success
         success_fill_ratio = (
@@ -1782,6 +1819,7 @@ class PourRightEnv(DirectRLEnv):
             r_hold
             + r_dist_to_target
             + demo_terms["r_demo_arm_pose"]
+            + demo_terms["r_demo_j5"]
             + r_pour_geo
             + r_pour_z
             + r_pour_stage
@@ -1824,13 +1862,14 @@ class PourRightEnv(DirectRLEnv):
             "reward/hold":             r_hold.mean(),
             "reward/transport":        r_dist_to_target.mean(),
             "reward/demo_arm_pose":    demo_terms["r_demo_arm_pose"].mean(),
-            "reward/pour_xy":          (g_ready * r_pour_xy).mean(),
-            "reward/dir":              (g_ready * r_dir).mean(),
-            "reward/depth":            (g_ready * r_depth).mean(),
+            "reward/demo_j5":          demo_terms["r_demo_j5"].mean(),
+            "reward/pour_xy":          (pour_gate * r_pour_xy).mean(),
+            "reward/dir":              (pour_gate * r_dir).mean(),
+            "reward/depth":            (pour_gate * r_depth).mean(),
             "reward/pour_z":           r_pour_z.mean(),
-            "reward/bead_near":        (g_ready * r_bead_near).mean(),
-            "reward/bead_in":          (g_ready * r_bead_in).mean(),
-            "reward/cross":            (g_ready * r_cross).mean(),
+            "reward/bead_near":        (pour_gate * r_bead_near).mean(),
+            "reward/bead_in":          (pour_gate * r_bead_in).mean(),
+            "reward/cross":            (pour_gate * r_cross).mean(),
             "reward/success":          (self.cfg.weight_success * r_success).mean(),
             "cost/spill":              (spill_weight * spill_cost).mean(),
         }
@@ -1841,6 +1880,7 @@ class PourRightEnv(DirectRLEnv):
             "log/crossover_alpha":     torch.tensor(self._crossover_alpha, device=self.device),
             "log/posture_rate":        torch.tensor(_posture_rate, device=self.device),
             "log/pour_latched":        torch.tensor(float(self._pour_latched), device=self.device),
+            "log/stageB_ratio":        self._stageB.float().mean(),
             "log/j1":                  arm_joint_pos[:, 0].mean(),
             "log/j2":                  arm_joint_pos[:, 1].mean(),
             "log/j3":                  arm_joint_pos[:, 2].mean(),
@@ -2487,6 +2527,8 @@ class PourRightEnv(DirectRLEnv):
         self._pre_pour_ready_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._pour_start_env[env_ids] = False  # 기본 비활성 (아래 curriculum에서 subset만 활성)
+        self._stageB[env_ids] = False          # [test9] Stage-B 래치 에피소드 리셋
+        self._stageB_cnt[env_ids] = 0
 
         # [REDESIGN v5] pour-start curriculum: 일부 env를 target 위로 기운 pour 자세로 override.
         # warmstart 캐시(직립 grasp) 상태를 받은 직후, 선택된 subset만 pour-ready로 덮어쓴다.
