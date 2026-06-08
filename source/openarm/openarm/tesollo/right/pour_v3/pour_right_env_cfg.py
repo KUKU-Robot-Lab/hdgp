@@ -283,8 +283,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_z_margin: float = 0.03         # test11: 1cm→3cm. clearance 1.7cm에 안착→source cup이 rim에 닿음. 여유 확보
 
     # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
-    weight_tilt: float = 60.0             # 120° 타겟 gradient (test5: 8→40, test4: 40→60 j5 local min 탈출 강화)
-    weight_align: float = 6.00            # 방향 신호 강화
+    # weight_tilt는 v4에서 r_tilt 항 제거로 사장됨 → test6에서 r_tilt_depth용으로 아래(Stage B)에 단일 정의로 이전
+    weight_align: float = 6.00            # 방향 신호 강화 (주: v4에서 r_align 제거됨 — 사장 config)
     # pour-point pivot gates (test6)
     # initial_tilt_gate: pour_dist는 이 각도 이상 tilt 후 활성 → r_tilt와 충돌 제거
     pour_point_tilt_threshold_deg: float = 15.0
@@ -308,7 +308,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Outcome
     weight_success: float = 100.00
     weight_success_overfill: float = 0.0
-    weight_spill: float = 40.0            # 5.0→40.0: spill 강하게 패널티 (40% trap 방지)
+    weight_spill: float = 0.0             # [test6] spill 패널티 OFF: 틸트 시작 시 항상 음수 신호로 부트스트랩 억제 → 끔. 기록은 log/spill_ratio 유지. (success는 여전히 spill≤success_spill_max 요구)
 
     # =====================================================================
     # [REDESIGN v4 / test5] 인과사슬 기반 보상 (gate 5중곱 → 가산 구조)
@@ -332,6 +332,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_zband_target: float = 0.05
     pour_zband_sigma: float = 0.05
     weight_release: float = 20.0    # over-target일 때만 tilt 유도 (tilt·exp(-k·d_xy))
+    weight_tilt: float = 40.0       # [test6] j5를 demo 깊이(pour_tilt_target_deg=120°)로 직접 유도. 과거 lineage가 j5 local min 탈출에 40~60 필요(8은 실패) → 40 시작. (구 286번 중복 정의 통합)
     # Stage C: bead dense (4.1cm binary → 연속 근접)
     weight_bead_near: float = 30.0  # 방출된 bead가 target 축 근처면 보상 (sparse→dense 다리)
     bead_near_scale: float = 12.0
@@ -409,7 +410,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_palm_pose_floor: float = 3.0
 
     # ADR: spill penalty 스케줄 (low→high)
-    enable_spill_adr: bool = True
+    enable_spill_adr: bool = False   # [test6] spill 패널티 OFF와 함께 ADR도 끔 (weight_spill=0 사용, ADR이 덮어쓰지 않게)
     spill_adr_custom_cfg: dict = {
         "reward": {
             # 초기 1.0→최대 15.0: 초반 spill 허용 폭 확대 (비드 유입 탐색 촉진)

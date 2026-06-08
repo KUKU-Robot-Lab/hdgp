@@ -206,7 +206,7 @@ def test_v11_declares_pour_warm_state_export_contract() -> None:
         assert name in env
 
 
-def test_v11_phase_curriculum_starts_lift_by_time_and_gates_late_phases() -> None:
+def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases() -> None:
     env = _text("grasp_right_env.py")
 
     assert "self._phase_curriculum_stage = min(max(int(cfg.phase_curriculum_initial_stage), 0), 2)" in env
@@ -215,8 +215,7 @@ def test_v11_phase_curriculum_starts_lift_by_time_and_gates_late_phases() -> Non
     assert "self._episode_curriculum_stage_buf >= 2" in env
     assert "transport_disabled = self._episode_curriculum_stage_buf[env_ids] < 2" in env
     assert "self.object_goal[env_ids_tensor[transport_disabled]] = obj_pos_local[transport_disabled]" in env
-    assert "time_lift_ready = self.episode_length_buf >= LIFT_START_STEP" in env
-    assert "just_entering_lift = time_lift_ready & (~self._lift_started_buf)" in env
+    assert "just_entering_lift = self._lift_contact_ready_latched_buf & (~self._lift_started_buf)" in env
     assert "self._lift_start_step_buf[just_entering_lift] = self.episode_length_buf[just_entering_lift]" in env
     assert "just_entering_stabilize = (" in env
     assert "& self._full_grip_ready_latched_buf" in env
@@ -225,20 +224,27 @@ def test_v11_phase_curriculum_starts_lift_by_time_and_gates_late_phases() -> Non
     assert "& self._full_grip_ready_buf" in env
     assert "curriculum_lift_horizon" in env
     assert "curriculum_stabilize_horizon" in env
+    assert "grasp_timeout_failed = (" in env
+    assert "(self.episode_length_buf >= LIFT_START_STEP)" in env
+    assert "& (~self._lift_contact_ready_latched_buf)" in env
     assert "lift_failed = (" in env
     assert 'self.extras["stat_curriculum_stage"]' in env
     assert 'self.extras["stat_lift_success_rate"]' in env
     assert 'self.extras["stat_stabilize_success_rate"]' in env
     assert 'self.extras["stat_lift_contact_ready_rate"]' in env
+    assert 'self.extras["stat_grasp_ready_for_lift"]' in env
     assert 'self.extras["stat_lift_started_rate"]' in env
     assert 'self.extras["stat_full_grip_ready_rate"]' in env
+    assert 'self.extras["stat_grasp_timeout_fail_rate"]' in env
+    assert 'self.extras["stat_contacts_at_lift_start"]' in env
+    assert 'self.extras["stat_force_ratio_at_lift_start"]' in env
 
 
 def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
     env = _text("grasp_right_env.py")
 
     assert "lift_contact_now = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS" in env
-    assert "lift_contact_phase = self.is_grasp_phase | self.is_lift_phase" in env
+    assert "lift_contact_phase = self.is_grasp_phase" in env
     assert "self._lift_contact_hold_count >= int(self.cfg.lift_contact_hold_steps)" in env
     assert "self._lift_contact_ready_latched_buf |= lift_contact_ready_now" in env
     assert "full_grip_ready_now = (" in env

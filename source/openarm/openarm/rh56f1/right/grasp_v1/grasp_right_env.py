@@ -21,11 +21,13 @@ v10: v9 기반 버그 수정
 
 Action (12D):
   [0:6]  6D palm pose → Fabrics IK → arm 7 DOF
-  [6:12] 6D per-joint hand delta (RH56F1 drive: thumb_1,thumb_2,index_1,middle_1,ring_1,little_1)
+  [6:12] 6D absolute hand synergy target
+         grasp:     APPROACH_POSE(-1) ~ GRASP_POSE(+1)
+         post-grasp: GRASP_POSE(-1) ~ FULL_GRIP_POSE(+1)
 
 Episode (18s @ 60Hz):
-  Grasp     phase (0~479):    Fabrics arm + per-joint finger delta
-  Lift      phase (480~719):  goal-pose lift + micro-delta hand
+  Grasp     phase (0~479):    Fabrics arm + absolute finger target
+  Lift      phase (480~719):  goal-pose lift + full-grip target refinement
   Stabilize phase (720~839):  hold/re-grip stabilization
   Transport phase (840~1079): goal-pose transport + grasp maintenance
 """
@@ -102,7 +104,6 @@ from .grasp_right_preset import (
 from .finger_action_utils import (
     compute_grasp_finger_targets,
     compute_lift_finger_targets,
-    resolve_grasp_delta_scale,
 )
 from .grasp_reward_utils import (
     compute_middle_contact_gate,
@@ -119,11 +120,13 @@ class GraspRightEnv(DirectRLEnv):
 
     Action: 12D
       [0:6]  palm pose (x,y,z,ez,ey,ex), 정규화 [-1,1] → Fabrics IK
-      [6:12] 6D per-joint hand delta (RH56F1 drive 6): reference_pose + action × delta_scale [rad]
+      [6:12] 6D absolute hand synergy target (RH56F1 drive 6)
+             grasp: APPROACH_POSE(-1) ~ GRASP_POSE(+1)
+             post-grasp: GRASP_POSE(-1) ~ FULL_GRIP_POSE(+1)
 
     Episode:
-      Grasp     phase (step 0~479):    Fabrics arm + per-joint finger delta
-      Lift      phase (step 480~719):  goal-pose lift + micro-delta hand
+      Grasp     phase (step 0~479):    Fabrics arm + absolute finger target
+      Lift      phase (step 480~719):  goal-pose lift + full-grip target refinement
       Stabilize phase (step 720~839):  hold/re-grip stabilization
       Transport phase (step 840~1079): goal-pose transport + grasp maintenance
     """
@@ -244,7 +247,7 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ----------------------------------------------------------------
-        # Hand 관절 한계 (per-joint delta 클램프용)
+        # Hand 관절 한계 (absolute synergy target 클램프용)
         # soft_joint_pos_limits: (num_envs, num_joints, 2) — [lower, upper]
         # ----------------------------------------------------------------
         hand_limits = self.robot.data.soft_joint_pos_limits[0, self.hand_dof_indices, :]  # (6, 2)
@@ -253,8 +256,6 @@ class GraspRightEnv(DirectRLEnv):
 
         # RH56F1 6D 직접 제어: 모든 drive 관절(thumb_1,thumb_2,index_1,middle_1,ring_1,little_1)
         # 을 RL 이 제어한다. (Tesollo 의 abduction 고정 마스크 불필요)
-        self.finger_delta_mask = torch.ones(NUM_HAND_DOF, device=self.device)  # (6,) 전부 제어
-
         # ----------------------------------------------------------------
         # 접근/파지 자세 (reset 및 reference pose 용). RH56F1 6D.
         # ----------------------------------------------------------------
@@ -263,9 +264,6 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_full_grip_pose  = to_torch(HAND_FULL_GRIP_POSE,  device=self.device)  # (6,)
         # 6D action 내 thumb 관절 인덱스: [thumb_1(abduction)=0, thumb_2(flexion)=1]
         self.thumb_joint_indices = torch.tensor([0, 1], dtype=torch.long, device=self.device)
-        # thumb 특수 downward-curl 로직 비활성화 (RH56F1 thumb_2 는 양수 curl, 직접 제어)
-        self.thumb_curl_index = None
-
         # 관절 한계: USD soft_joint_pos_limits (RH56F1 raw 한계) 를 그대로 사용.
         # (Tesollo 의 approach 기반 closure 재조정 제거 — KISS, 추후 튜닝)
         self.hand_joint_lower_limits = self.hand_joint_lower_limits.contiguous()
@@ -339,7 +337,7 @@ class GraspRightEnv(DirectRLEnv):
         self.is_post_grasp_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
-        # Hand joint targets (per-joint delta 결과)
+        # Hand joint targets (absolute synergy 결과)
         # ----------------------------------------------------------------
         self.hand_joint_targets = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
 
@@ -377,6 +375,8 @@ class GraspRightEnv(DirectRLEnv):
         self._lift_contact_ready_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._lift_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._lift_start_step_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._contacts_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
+        self._force_ratio_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self._full_grip_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._full_grip_ready_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._full_grip_ready_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -410,7 +410,7 @@ class GraspRightEnv(DirectRLEnv):
         self._successful_episodes: int = 0
 
         # ----------------------------------------------------------------
-        # Eval 로깅 (v9: 20D finger action)
+        # Eval 로깅
         # ----------------------------------------------------------------
         self._eval_grip_at_lift = torch.zeros(self.num_envs, device=self.device)
         self._eval_finger_actions_at_lift = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
@@ -522,7 +522,7 @@ class GraspRightEnv(DirectRLEnv):
         cspace_default[:, NUM_ARM_DOF:] = self.hand_approach_pose.unsqueeze(0).expand(self.num_envs, -1)
         self.fabric.default_config.copy_(cspace_default)
 
-        # 초기 액션: 0 → palm pose workspace 중심, finger delta = 0
+        # 초기 액션: 0 → palm pose workspace 중심, finger target은 approach/grasp 중간점
         self.actions.zero_()
 
     # ------------------------------------------------------------------
@@ -1002,7 +1002,7 @@ class GraspRightEnv(DirectRLEnv):
         self.actions = actions.clone()
 
         palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
-        finger_action = actions[:, 6:NUM_ACTIONS]  # (N, 6) ∈ [-1, 1] — per-joint delta (drive 6)
+        finger_action = actions[:, 6:NUM_ACTIONS]  # (N, 6) ∈ [-1, 1] — absolute synergy target
 
         # ---- Phase 판정 ----
         stabilize_curriculum_enabled = (
@@ -1016,11 +1016,12 @@ class GraspRightEnv(DirectRLEnv):
             else self._episode_curriculum_stage_buf >= 2
         )
 
-        time_lift_ready = self.episode_length_buf >= LIFT_START_STEP
-        just_entering_lift = time_lift_ready & (~self._lift_started_buf)
+        just_entering_lift = self._lift_contact_ready_latched_buf & (~self._lift_started_buf)
         if just_entering_lift.any():
             prev_finger_action = self._last_grasp_finger_action[just_entering_lift]
-            self._eval_grip_at_lift[just_entering_lift] = prev_finger_action.abs().mean(dim=-1)
+            self._eval_grip_at_lift[just_entering_lift] = (
+                0.5 * (prev_finger_action + 1.0)
+            ).mean(dim=-1)
             self._eval_finger_actions_at_lift[just_entering_lift] = prev_finger_action
             self._eval_lift_snapshot_valid[just_entering_lift] = True
             self._lift_start_step_buf[just_entering_lift] = self.episode_length_buf[just_entering_lift]
@@ -1208,28 +1209,13 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # ---- Grasp phase finger delta target ----
-        # grasp/lift 모두 "reference pose + bounded delta" semantics를 사용한다.
-        current_finger_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
-        grasp_delta_scale = resolve_grasp_delta_scale(
-            default_scale=self.cfg.finger_delta_scale,
-            adr_delta_scale=(
-                self.grasp_adr.get_param("finger", "delta_scale")
-                if self.grasp_adr is not None
-                else None
-            ),
-        )
+        # ---- Grasp phase absolute synergy target ----
         hand_target = compute_grasp_finger_targets(
-            current_pos=current_finger_pos,
             finger_action=finger_action,
+            approach_pose=self.hand_approach_pose,
+            grasp_pose=self.hand_grasp_pose,
             lower_limits=self.hand_joint_lower_limits,
             upper_limits=self.hand_joint_upper_limits,
-            delta_scale=grasp_delta_scale,
-            delta_mask=self.finger_delta_mask,
-            thumb_curl_index=self.thumb_curl_index,
-            thumb_downward_action_scale=self.cfg.thumb_curl_downward_action_scale,
-            thumb_anchor_pose=self.hand_grasp_pose,
-            thumb_curl_max_downward_delta=self.cfg.thumb_curl_max_downward_delta,
         )
         self.hand_joint_targets.copy_(hand_target)
 
@@ -1247,18 +1233,13 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ---- 오른손 ----
-        # Grasp/Lift 모두 reference pose + bounded delta semantics 사용
+        # Lift/Stabilize/Transport에서는 grasp -> full-grip absolute synergy target 사용
         lift_finger_target = compute_lift_finger_targets(
-            lift_reference_pos=self.lift_finger_pos_buf,
             finger_action=self.actions[:, 6:NUM_ACTIONS],
+            grasp_pose=self.hand_grasp_pose,
+            full_grip_pose=self.hand_full_grip_pose,
             lower_limits=self.hand_joint_lower_limits,
             upper_limits=self.hand_joint_upper_limits,
-            delta_scale=self.cfg.lift_finger_delta_scale,
-            delta_mask=self.finger_delta_mask,
-            thumb_curl_index=self.thumb_curl_index,
-            thumb_downward_action_scale=self.cfg.thumb_curl_downward_action_scale,
-            thumb_anchor_pose=self.hand_grasp_pose,
-            thumb_curl_max_downward_delta=self.cfg.thumb_curl_max_downward_delta,
         )
         finger_target = torch.where(
             is_post_grasp.unsqueeze(1),
@@ -1504,7 +1485,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- lift contact hold 추적 ----
         lift_contact_now = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
-        lift_contact_phase = self.is_grasp_phase | self.is_lift_phase
+        lift_contact_phase = self.is_grasp_phase
         self._lift_contact_hold_count = torch.where(
             lift_contact_now & lift_contact_phase,
             self._lift_contact_hold_count + 1,
@@ -1519,6 +1500,14 @@ class GraspRightEnv(DirectRLEnv):
         )
         self._lift_contact_ready_latched_buf |= lift_contact_ready_now
         lift_contact_ready_gate = self._lift_contact_ready_latched_buf.float()
+        lift_started_now = self._lift_started_buf & (
+            self.episode_length_buf == self._lift_start_step_buf
+        )
+        if lift_started_now.any():
+            self._contacts_at_lift_start_buf[lift_started_now] = (
+                self.num_contacts_buf[lift_started_now].float()
+            )
+            self._force_ratio_at_lift_start_buf[lift_started_now] = force_ratio[lift_started_now]
 
         # ---- contact persistence 추적 ----
         has_5_contact_bool = self.num_contacts_buf >= NUM_FINGERTIPS
@@ -1599,6 +1588,7 @@ class GraspRightEnv(DirectRLEnv):
         )
         self.extras["stat_grip_ready_rate"] = grip_ready_gate.mean()
         self.extras["stat_lift_contact_ready_rate"] = lift_contact_ready_gate.mean()
+        self.extras["stat_grasp_ready_for_lift"] = lift_contact_ready_gate.mean()
         self.extras["stat_lift_started_rate"] = self._lift_started_buf.float().mean()
         self.extras["stat_full_grip_ready_rate"] = full_grip_ready_gate.mean()
         self.extras["stat_pre_lift_full_contact_rate"] = (
@@ -1631,6 +1621,18 @@ class GraspRightEnv(DirectRLEnv):
             self._window_success_rate(self._success_window), device=self.device
         )
         self.extras["stat_success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
+        lift_start_mask = self._eval_lift_snapshot_valid
+        if lift_start_mask.any():
+            self.extras["stat_contacts_at_lift_start"] = self._contacts_at_lift_start_buf[
+                lift_start_mask
+            ].mean()
+            self.extras["stat_force_ratio_at_lift_start"] = self._force_ratio_at_lift_start_buf[
+                lift_start_mask
+            ].mean()
+        else:
+            zero = torch.zeros((), device=self.device)
+            self.extras["stat_contacts_at_lift_start"] = zero
+            self.extras["stat_force_ratio_at_lift_start"] = zero
         self.extras["stat_dynamic_bead_added"] = (
             self._bead_count_current - self._bead_count_initial
         ).clamp_min(0).float().mean()
@@ -1682,8 +1684,10 @@ class GraspRightEnv(DirectRLEnv):
         # ---- r_tip_approach: contact 전 손가락을 컵 표면 shell로 유도 ----
         tip_to_cup_dist = (self.fingertip_pos - self.object_pos.unsqueeze(1)).norm(dim=-1)
         tip_shell_error = (tip_to_cup_dist - CUP_RADIUS_APPROX).abs()
+        tip_shell_reward = torch.exp(-self.cfg.r_tip_approach_sharpness * tip_shell_error ** 2)
+        tip_shell_topk = tip_shell_reward.topk(k=min(3, NUM_FINGERTIPS), dim=-1).values
         r_tip_approach = (
-            torch.exp(-self.cfg.r_tip_approach_sharpness * tip_shell_error ** 2).mean(dim=-1)
+            tip_shell_topk.mean(dim=-1)
             * self.is_grasp_phase.float()
         )
 
@@ -1763,9 +1767,14 @@ class GraspRightEnv(DirectRLEnv):
         friction_support = self._cup_friction_static * total_fn
         required_support = self.cfg.friction_safety_factor * effective_mass * (9.81 + cup_az)
         margin_deficit = torch.relu(required_support - friction_support)
+        margin_active = (
+            self._lift_started_buf
+            & self._lift_contact_ready_latched_buf
+            & (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
+        )
         r_margin = (
             -self.cfg.r_margin_weight * margin_deficit ** 2
-            * self._lift_started_buf.float()
+            * margin_active.float()
         )
 
         # ---- r_contact: w_tip·Σtip + w_phalanx·Σphalanx ----
@@ -1976,16 +1985,18 @@ class GraspRightEnv(DirectRLEnv):
         success_held = self._success_hold_count >= hold_steps
 
         if self.cfg.terminate_on_lift_failure:
-            lift_wait_failed = (
-                (self.episode_length_buf >= STABILIZE_START_STEP)
+            grasp_timeout_failed = (
+                (self.episode_length_buf >= LIFT_START_STEP)
+                & (~self._lift_contact_ready_latched_buf)
                 & (~self._lift_started_buf)
             )
             lift_failed = (
                 self._lift_started_buf
                 & (lift_elapsed_steps >= LIFT_PHASE_STEPS)
                 & (~self._lift_success_latched_buf)
-            ) | lift_wait_failed
+            ) | grasp_timeout_failed
         else:
+            grasp_timeout_failed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
             lift_failed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         curriculum_lift_horizon = (
             stage0_lift_only
@@ -2010,6 +2021,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["stat_stabilize_success_now"] = stabilize_success_now.float().mean()
         self.extras["stat_transport_success_now"] = success_now.float().mean()
         self.extras["stat_curriculum_success_now"] = stage_success_now.float().mean()
+        self.extras["stat_grasp_timeout_fail_rate"] = grasp_timeout_failed.float().mean()
 
         return terminated, truncated
 
@@ -2355,6 +2367,8 @@ class GraspRightEnv(DirectRLEnv):
         self._lift_contact_ready_latched_buf[env_ids] = False
         self._lift_started_buf[env_ids] = False
         self._lift_start_step_buf[env_ids] = 0
+        self._contacts_at_lift_start_buf[env_ids] = 0.0
+        self._force_ratio_at_lift_start_buf[env_ids] = 0.0
         self._full_grip_hold_count[env_ids] = 0
         self._full_grip_ready_buf[env_ids] = False
         self._full_grip_ready_latched_buf[env_ids] = False
@@ -2402,7 +2416,7 @@ class GraspRightEnv(DirectRLEnv):
         self._eval_lift_action_count[env_ids] = 0
         self._eval_lift_snapshot_valid[env_ids] = False
 
-        # actions 리셋: delta=0 = 현재 자세 유지
+        # actions 리셋: absolute synergy action=0 = approach/grasp 중간값
         self.actions[env_ids, :6] = 0.0
         self.actions[env_ids, 6:] = 0.0
         self.prev_actions[env_ids, :6] = 0.0

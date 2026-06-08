@@ -1713,7 +1713,16 @@ class PourRightEnv(DirectRLEnv):
             * tilt_amount
             * torch.exp(-self.cfg.pour_xy_scale * self._mouth_xy_distance)
         )
-        r_pour_geo = g_ready * (r_pour_xy + r_zband + r_release)
+        # [test6] r_tilt_depth: j5를 demo 깊이(≈120°, up_dot≈-0.5)로 직접 유도.
+        #   demo는 j1-4(높이)만 앵커하고 j5는 release(targetless)뿐이라 -0.1 정체 → pour 0.
+        #   tilt_progress: 목표 깊이까지 선형↑ 후 1.0 포화 → 얕은 틸트서도 gradient(부트스트랩),
+        #   full-flip 과도 틸트는 억제(spill 방지). xy_gate로 over-target만, g_ready로 근접 게이트.
+        tilt_target = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0  # 120°→0.75
+        tilt_progress = (tilt_amount / max(tilt_target, 1e-6)).clamp(0.0, 1.0)
+        r_tilt_depth = self.cfg.weight_tilt * tilt_progress * torch.exp(
+            -self.cfg.pour_xy_scale * self._mouth_xy_distance
+        )
+        r_pour_geo = g_ready * (r_pour_xy + r_zband + r_release + r_tilt_depth)
 
         # 안전 barrier: pour-point가 림 아래로 박히는 것만 단방향 차단 (컵 충돌 방지)
         z_violation = (self.cfg.pour_z_margin - self._mouth_z_clearance).clamp(min=0.0)
@@ -1815,6 +1824,7 @@ class PourRightEnv(DirectRLEnv):
             "reward/pour_xy":          (g_ready * r_pour_xy).mean(),
             "reward/pour_zband":       (g_ready * r_zband).mean(),
             "reward/release":          (g_ready * r_release).mean(),
+            "reward/tilt_depth":       (g_ready * r_tilt_depth).mean(),
             "reward/pour_z":           r_pour_z.mean(),
             "reward/bead_near":        (g_ready * r_bead_near).mean(),
             "reward/bead_in":          (g_ready * r_bead_in).mean(),

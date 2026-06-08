@@ -220,11 +220,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     palm_delta_rot_deg: float = 20.0
 
     # -----------------------------------------------------------------------
-    # Finger joint delta 제어 (v9 신규)
-    # action ∈ [-1,1] → ±finger_delta_scale rad per step
+    # Finger action semantics
+    # RH56F1 v1은 6D absolute synergy target을 사용한다.
+    # grasp:      HAND_APPROACH_POSE(-1) ~ HAND_GRASP_POSE(+1)
+    # post-grasp: HAND_GRASP_POSE(-1)    ~ HAND_FULL_GRIP_POSE(+1)
+    # 아래 delta_scale 항목은 이전 run/config 호환을 위해 유지되며 현재 env에서는 사용하지 않는다.
     # -----------------------------------------------------------------------
-    finger_delta_scale:      float = 0.08   # grasp phase: ±0.08 rad/step (grasp_pose 근처 미세 조정)
-    lift_finger_delta_scale: float = 0.08   # lift phase: ±0.08 rad micro-delta
+    finger_delta_scale:      float = 0.08
+    lift_finger_delta_scale: float = 0.08
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 (HTML: Mass-Adaptive Enveloping Grip Reward Design)
@@ -284,7 +287,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_force_delta_threshold:  float = 0.35
     stabilize_contact_delta_threshold: float = 1.0
 
-    # Thumb downward shortcut 억제
+    # Legacy delta-control knob (absolute synergy semantics에서는 미사용)
     thumb_curl_downward_action_scale: float = 0.25
     thumb_curl_max_downward_delta:    float = 0.05
 
@@ -354,7 +357,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     object_spawn_x_center: float = 0.40
     object_spawn_y_center: float = -0.10
-    object_spawn_z:        float = 0.297
+    object_spawn_z:        float = 0.2773
     object_spawn_xy_range: float = 0.06
 
     # -----------------------------------------------------------------------
@@ -526,7 +529,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_sdf.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_middle.usd"),
             activate_contact_sensors=True,
             scale=(1.0, 1.0, 1.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
