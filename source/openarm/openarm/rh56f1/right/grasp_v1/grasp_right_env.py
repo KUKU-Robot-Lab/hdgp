@@ -106,6 +106,7 @@ from .finger_action_utils import (
     compute_lift_finger_targets,
 )
 from .grasp_reward_utils import (
+    compute_lift_readiness,
     compute_middle_contact_gate,
     compute_slip_proxy,
     compute_transport_success_mask,
@@ -1484,21 +1485,15 @@ class GraspRightEnv(DirectRLEnv):
         no_slip_gate = (slip_proxy <= self.cfg.slip_proxy_threshold).float()
 
         # ---- lift contact hold 추적 ----
-        lift_contact_now = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS
         lift_contact_phase = self.is_grasp_phase
-        self._lift_contact_hold_count = torch.where(
-            lift_contact_now & lift_contact_phase,
-            self._lift_contact_hold_count + 1,
-            torch.where(
-                self._lift_contact_ready_latched_buf,
-                self._lift_contact_hold_count,
-                torch.zeros_like(self._lift_contact_hold_count),
-            ),
+        self._lift_contact_hold_count, lift_contact_ready_now, self._lift_contact_ready_latched_buf = compute_lift_readiness(
+            num_contacts=self.num_contacts_buf,
+            is_grasp_phase=lift_contact_phase,
+            previous_hold_count=self._lift_contact_hold_count,
+            previous_latched=self._lift_contact_ready_latched_buf,
+            min_contacts=self.cfg.stage0_lift_start_min_contacts,
+            hold_steps=self.cfg.stage0_lift_start_hold_steps,
         )
-        lift_contact_ready_now = (
-            self._lift_contact_hold_count >= int(self.cfg.lift_contact_hold_steps)
-        )
-        self._lift_contact_ready_latched_buf |= lift_contact_ready_now
         lift_contact_ready_gate = self._lift_contact_ready_latched_buf.float()
         lift_started_now = self._lift_started_buf & (
             self.episode_length_buf == self._lift_start_step_buf
@@ -1696,7 +1691,7 @@ class GraspRightEnv(DirectRLEnv):
         # ---- v7_2 palm approach + RH56F1 middle guide: arm 접근 gradient 복구 ----
         approach_reward_gate = (
             self.is_grasp_phase
-            & (self.num_contacts_buf < MIN_CONTACTS_FOR_SUCCESS)
+            & (self.num_contacts_buf < self.cfg.stage0_lift_start_min_contacts)
             & (~self._lift_contact_ready_latched_buf)
         ).float()
         r_palm_approach = (
@@ -1715,7 +1710,7 @@ class GraspRightEnv(DirectRLEnv):
         tip_shell_topk = tip_shell_reward.topk(k=min(3, NUM_FINGERTIPS), dim=-1).values
         r_tip_approach = (
             tip_shell_topk.mean(dim=-1)
-            * self.is_grasp_phase.float()
+            * approach_reward_gate
         )
 
         # ---- r_slip: -w_s * Σᵢ∈C 1_{cᵢ} * ||v_rel,i||²  (HTML exact formula) ----

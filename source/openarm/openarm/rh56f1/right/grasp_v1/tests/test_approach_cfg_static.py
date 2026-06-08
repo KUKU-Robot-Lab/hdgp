@@ -17,7 +17,8 @@ def test_cfg_declares_rh56f1_adapted_pregrasp_and_approach_weights() -> None:
     assert "pregrasp_offset_y:     float = -0.07" in cfg
     assert "pregrasp_offset_z:     float = 0.03" in cfg
     assert "cup_grasp_z_offset:  float = 0.06" in cfg
-    assert "r_palm_approach_weight:    float = 1.0" in cfg
+    assert "palm_delta_xyz:     float = 0.03" in cfg
+    assert "r_palm_approach_weight:    float = 0.5" in cfg
     assert "r_palm_approach_sharpness: float = 10.0" in cfg
-    assert "r_middle_guide_weight:     float = 2.0" in cfg
+    assert "r_middle_guide_weight:     float = 0.5" in cfg
     assert "r_middle_guide_sharpness:  float = 10.0" in cfg

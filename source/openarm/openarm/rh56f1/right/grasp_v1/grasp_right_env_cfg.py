@@ -221,7 +221,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Delta palm action
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.01
+    palm_delta_xyz:     float = 0.03
     palm_delta_rot_deg: float = 20.0
 
     # -----------------------------------------------------------------------
@@ -242,17 +242,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     r_height_sharpness: float = 100.0  # z* = lift_target_z_delta (0.10m). 3cm error → 0.91
 
     # r_ori: exp(-α_R * tilt_rad²)  — 컵 수직 자세 유지
-    r_ori_weight:    float = 4.0
+    r_ori_weight:    float = 1.0
     r_ori_sharpness: float = 4.0   # 30° → 0.33, 10° → 0.89
 
     # r_tip_approach: grasp phase에서 fingertip이 컵 표면 반경 shell로 접근하도록 유도
-    r_tip_approach_weight:    float = 6.0
+    r_tip_approach_weight:    float = 2.0
     r_tip_approach_sharpness: float = 120.0
 
     # r_palm_approach / r_middle_guide: grasp phase 초기 palm/proximal link 접근 gradient 보강
-    r_palm_approach_weight:    float = 1.0
+    r_palm_approach_weight:    float = 0.5
     r_palm_approach_sharpness: float = 10.0
-    r_middle_guide_weight:     float = 2.0
+    r_middle_guide_weight:     float = 0.5
     r_middle_guide_sharpness:  float = 10.0
 
     # r_slip: -w_s * Σᵢ 1_{cᵢ} * v_cup_xy²  — 수평 슬립 억제
@@ -264,9 +264,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # r_contact: w_tip·Σtip + w_phalanx·Σphalanx + w_palm·palm  — enveloping contact 유도
     # HTML: w_palm > w_phalanx >= w_tip
-    r_contact_tip_weight:     float = 0.2   # 5 tips max → 1.0
+    r_contact_tip_weight:     float = 1.0   # 5 tips max → 5.0
     r_contact_phalanx_weight: float = 0.5   # 10 phalanx max → 5.0
-    r_contact_palm_weight:    float = 1.0   # palm 1개 — phalanx보다 높게 설정
+    r_contact_palm_weight:    float = 2.0   # palm 1개 — phalanx보다 높게 설정
 
     # r_force: -w_f · Σ fn²  — 과도 grip force 억제 (max-grip 방지)
     r_force_weight: float = 0.002  # 5N×15 contacts → ~0.75 penalty
@@ -281,6 +281,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     min_middle_contacts_for_success: int = 0
 
     # Lift-entry grip readiness gate (state tracking용, reward가 아님)
+    stage0_lift_start_min_contacts: int = 2
+    stage0_lift_start_hold_steps:   int = 8
     lift_contact_hold_steps: int = 30
     full_grip_hold_steps:    int = 30
     lift_min_force_ratio:    float = 1.8

@@ -52,6 +52,29 @@ def compute_slip_proxy(
     return torch.nan_to_num(proxy, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def compute_lift_readiness(
+    num_contacts: torch.Tensor,
+    is_grasp_phase: torch.Tensor,
+    previous_hold_count: torch.Tensor,
+    previous_latched: torch.Tensor,
+    min_contacts: int,
+    hold_steps: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    lift_contact_now = num_contacts >= int(min_contacts)
+    next_hold_count = torch.where(
+        lift_contact_now & is_grasp_phase,
+        previous_hold_count + 1,
+        torch.where(
+            previous_latched,
+            previous_hold_count,
+            torch.zeros_like(previous_hold_count),
+        ),
+    )
+    lift_contact_ready_now = next_hold_count >= int(hold_steps)
+    next_latched = previous_latched | lift_contact_ready_now
+    return next_hold_count, lift_contact_ready_now, next_latched
+
+
 def compute_transport_success_mask(
     goal_dist: torch.Tensor,
     upright_success: torch.Tensor,

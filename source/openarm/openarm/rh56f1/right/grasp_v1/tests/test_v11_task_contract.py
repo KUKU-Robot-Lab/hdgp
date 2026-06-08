@@ -59,6 +59,8 @@ def test_v11_declares_four_phase_episode_and_transport_params() -> None:
         "transport_goal_z_range",
         "transport_success_hold_steps",
         "lift_target_z_delta",
+        "stage0_lift_start_min_contacts",
+        "stage0_lift_start_hold_steps",
         "lift_contact_hold_steps",
         "full_grip_hold_steps",
         "lift_min_force_ratio",
@@ -243,10 +245,10 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
 def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
     env = _text("grasp_right_env.py")
 
-    assert "lift_contact_now = self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS" in env
     assert "lift_contact_phase = self.is_grasp_phase" in env
-    assert "self._lift_contact_hold_count >= int(self.cfg.lift_contact_hold_steps)" in env
-    assert "self._lift_contact_ready_latched_buf |= lift_contact_ready_now" in env
+    assert "compute_lift_readiness(" in env
+    assert "min_contacts=self.cfg.stage0_lift_start_min_contacts" in env
+    assert "hold_steps=self.cfg.stage0_lift_start_hold_steps" in env
     assert "full_grip_ready_now = (" in env
     assert "& has_5_contact_bool" in env
     assert "& middle_envelope_gate.bool()" in env
@@ -261,7 +263,7 @@ def test_v11_tracks_pre_lift_full_contact_rate() -> None:
     env = _text("grasp_right_env.py")
 
     assert 'self.extras["stat_pre_lift_full_contact_rate"]' in env
-    assert "pre_lift_full_contact" in env
+    assert "full_tip_middle_contact & self.is_grasp_phase" in env
 
 
 def test_v11_rl_games_config_uses_v11_name() -> None:

@@ -15,6 +15,7 @@ sys.modules[SPEC.name] = grasp_reward_utils
 SPEC.loader.exec_module(grasp_reward_utils)
 
 compute_middle_contact_gate = grasp_reward_utils.compute_middle_contact_gate
+compute_lift_readiness = grasp_reward_utils.compute_lift_readiness
 compute_slip_proxy = grasp_reward_utils.compute_slip_proxy
 compute_transport_success_mask = grasp_reward_utils.compute_transport_success_mask
 compute_upright_success_mask = grasp_reward_utils.compute_upright_success_mask
@@ -49,6 +50,36 @@ def test_middle_contact_gate_can_be_disabled_for_hands_without_middle_sensors() 
     gate = compute_middle_contact_gate(middle_binary, min_middle_contacts=0)
 
     assert gate.tolist() == [True, True]
+
+
+def test_lift_readiness_uses_relaxed_stage0_gate() -> None:
+    hold_count, ready_now, latched = compute_lift_readiness(
+        num_contacts=torch.tensor([2, 1], dtype=torch.long),
+        is_grasp_phase=torch.tensor([True, True]),
+        previous_hold_count=torch.tensor([7, 7], dtype=torch.long),
+        previous_latched=torch.tensor([False, False]),
+        min_contacts=2,
+        hold_steps=8,
+    )
+
+    assert hold_count.tolist() == [8, 0]
+    assert ready_now.tolist() == [True, False]
+    assert latched.tolist() == [True, False]
+
+
+def test_lift_readiness_preserves_latched_state_after_contact_drops() -> None:
+    hold_count, ready_now, latched = compute_lift_readiness(
+        num_contacts=torch.tensor([0], dtype=torch.long),
+        is_grasp_phase=torch.tensor([True]),
+        previous_hold_count=torch.tensor([8], dtype=torch.long),
+        previous_latched=torch.tensor([True]),
+        min_contacts=2,
+        hold_steps=8,
+    )
+
+    assert hold_count.tolist() == [8]
+    assert ready_now.tolist() == [True]
+    assert latched.tolist() == [True]
 
 
 def test_slip_proxy_increases_with_velocity_tilt_and_contact_churn() -> None:
@@ -117,3 +148,19 @@ def test_transport_success_requires_goal_upright_contacts_and_no_slip() -> None:
     )
 
     assert success.tolist() == [True, False, False, False, False]
+
+
+def test_rebalanced_stage0_reward_prefers_contact_over_hovering() -> None:
+    no_contact_reward = (
+        1.0 * 1.0
+        + 0.5 * 1.0
+        + 0.5 * 1.0
+        + 2.0 * 1.0
+    )
+    two_contact_reward = (
+        1.0 * 1.0
+        + 1.0 * 2.0
+        + 2.0 * 1.0
+    )
+
+    assert two_contact_reward > no_contact_reward
