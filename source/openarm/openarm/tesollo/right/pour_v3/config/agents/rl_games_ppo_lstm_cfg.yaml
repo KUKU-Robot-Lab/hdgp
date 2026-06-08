@@ -57,7 +57,7 @@ params:
   load_path: ''
 
   config:
-    name: 5g_pour_right-v3-lstm
+    name: open-tesol_r_pour_v3-lstm
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'

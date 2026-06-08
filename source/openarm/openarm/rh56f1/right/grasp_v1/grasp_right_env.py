@@ -1621,6 +1621,18 @@ class GraspRightEnv(DirectRLEnv):
             self._window_success_rate(self._success_window), device=self.device
         )
         self.extras["stat_success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
+        grasp_center = self.object_pos.clone()
+        grasp_center[:, 2] += self.cfg.cup_grasp_z_offset
+        palm_to_cup_dist = (self.palm_center_pos - grasp_center).norm(dim=-1)
+        middle_to_cup_dist = (
+            self.middle3_pos - grasp_center.unsqueeze(1)
+        ).norm(dim=-1).mean(dim=-1)
+        tip_to_cup_dist_top3 = (
+            self.fingertip_pos - grasp_center.unsqueeze(1)
+        ).norm(dim=-1).topk(k=min(3, NUM_FINGERTIPS), dim=-1, largest=False).values.mean(dim=-1)
+        self.extras["stat_palm_to_cup_dist"] = palm_to_cup_dist.mean()
+        self.extras["stat_middle_to_cup_dist"] = middle_to_cup_dist.mean()
+        self.extras["stat_tip_to_cup_dist_top3"] = tip_to_cup_dist_top3.mean()
         lift_start_mask = self._eval_lift_snapshot_valid
         if lift_start_mask.any():
             self.extras["stat_contacts_at_lift_start"] = self._contacts_at_lift_start_buf[
@@ -1681,8 +1693,23 @@ class GraspRightEnv(DirectRLEnv):
         tilt_rad = torch.acos(cup_z_world[:, 2].clamp(-1.0, 1.0))
         r_ori = torch.exp(-self.cfg.r_ori_sharpness * tilt_rad ** 2)
 
+        # ---- v7_2 palm approach + RH56F1 middle guide: arm 접근 gradient 복구 ----
+        approach_reward_gate = (
+            self.is_grasp_phase
+            & (self.num_contacts_buf < MIN_CONTACTS_FOR_SUCCESS)
+            & (~self._lift_contact_ready_latched_buf)
+        ).float()
+        r_palm_approach = (
+            torch.exp(-self.cfg.r_palm_approach_sharpness * palm_to_cup_dist)
+            * approach_reward_gate
+        )
+        r_middle_guide = (
+            torch.exp(-self.cfg.r_middle_guide_sharpness * middle_to_cup_dist)
+            * approach_reward_gate
+        )
+
         # ---- r_tip_approach: contact 전 손가락을 컵 표면 shell로 유도 ----
-        tip_to_cup_dist = (self.fingertip_pos - self.object_pos.unsqueeze(1)).norm(dim=-1)
+        tip_to_cup_dist = (self.fingertip_pos - grasp_center.unsqueeze(1)).norm(dim=-1)
         tip_shell_error = (tip_to_cup_dist - CUP_RADIUS_APPROX).abs()
         tip_shell_reward = torch.exp(-self.cfg.r_tip_approach_sharpness * tip_shell_error ** 2)
         tip_shell_topk = tip_shell_reward.topk(k=min(3, NUM_FINGERTIPS), dim=-1).values
@@ -1824,6 +1851,8 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 리워드 로깅 ----
         self.extras["rew_height"]  = r_height.mean()
         self.extras["rew_ori"]     = r_ori.mean()
+        self.extras["rew_palm_approach"] = r_palm_approach.mean()
+        self.extras["rew_middle_guide"] = r_middle_guide.mean()
         self.extras["rew_tip_approach"] = r_tip_approach.mean()
         self.extras["rew_slip"]    = r_slip.mean()
         self.extras["rew_margin"]  = r_margin.mean()
@@ -1839,6 +1868,8 @@ class GraspRightEnv(DirectRLEnv):
         reward = (
             self.cfg.r_height_weight  * r_height
             + self.cfg.r_ori_weight   * r_ori
+            + self.cfg.r_palm_approach_weight * r_palm_approach
+            + self.cfg.r_middle_guide_weight * r_middle_guide
             + self.cfg.r_tip_approach_weight * r_tip_approach
             + r_slip
             + r_margin

@@ -548,6 +548,8 @@ class PourRightEnv(DirectRLEnv):
         self._palm_clamp_viol_z = torch.zeros(self.num_envs, device=self.device)
         self._source_up_dot_world = torch.zeros(self.num_envs, device=self.device)
         self._directional_tilt_cos = torch.zeros(self.num_envs, device=self.device)
+        # [test8] cup-center 앵커 방향 cosine (전달 자세서 안정 → 상충 제거)
+        self._directional_tilt_cos_c = torch.zeros(self.num_envs, device=self.device)
         self._mouth_alignment_cos = torch.zeros(self.num_envs, device=self.device)
         self._rho = torch.zeros(self.num_envs, device=self.device)  # binary pour gate
         self._bead_in_target = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
@@ -1263,6 +1265,13 @@ class PourRightEnv(DirectRLEnv):
         _mouth_tilt_dir_xy = _mouth_tilt_dir_xy / (_mouth_tilt_dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
         self._directional_tilt_cos = (_mouth_tilt_dir_xy * _mouth_dir_xy).sum(dim=-1).clamp(-1.0, 1.0)
 
+        # [test8] dir_cos_c: 방향 앵커를 pour_point가 아닌 cup-center로.
+        #   pour_point→target은 전달 자세(pour_point가 타겟 위)서 부호가 뒤집혀 방향·위치가 상충하지만,
+        #   cup-center→target은 두 컵이 겹칠 수 없어 항상 안정 → 깊은 전달 자세서도 방향이 +로 보상됨.
+        _cc_dir_xy = self._target_opening_w[:, :2] - self.cup.data.root_pos_w[:, :2]
+        _cc_dir_xy = _cc_dir_xy / (_cc_dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6))
+        self._directional_tilt_cos_c = (_mouth_tilt_dir_xy * _cc_dir_xy).sum(dim=-1).clamp(-1.0, 1.0)
+
         # mouth_alignment_cos: tilt XY heading 기반 (고정 로컬축 사용 시 wrist yaw 착취 가능하므로 제외)
         # 직립에 가까우면 heading 불안정 → 0으로 처리
         _mouth_dir = self._mouth_delta / self._mouth_distance.unsqueeze(1).clamp(min=1e-6)
@@ -1702,26 +1711,21 @@ class PourRightEnv(DirectRLEnv):
         r_pour_xy = self.cfg.weight_pour_xy * torch.exp(
             -self.cfg.pour_xy_scale * self._mouth_xy_distance
         )
-        # r_zband: pour-point 적정 높이 band (가산 gaussian, 단방향 barrier 아님)
-        _dz_err = (self._mouth_z_clearance - self.cfg.pour_zband_target) / max(
-            self.cfg.pour_zband_sigma, 1e-6
-        )
-        r_zband = self.cfg.weight_pour_zband * torch.exp(-_dz_err * _dz_err)
-        # [test7] dir_gate: 틸트를 '타겟 방향'으로만 보상. test6는 깊이/하강은 풀었으나
-        #   방향 항이 없어 외회전(dir_cos<0, 타겟 반대로 기울임)으로 ~1% plateau(렌더 확인).
-        #   smooth: dir_cos=0→0.5(부트스트랩 유지), +1→1, -1→0 → 외회전은 보상 0.
-        dir_gate = (0.5 * (1.0 + self._directional_tilt_cos)).clamp(0.0, 1.0)
-        xy_gate = torch.exp(-self.cfg.pour_xy_scale * self._mouth_xy_distance)
-        # r_release: over-target일 때만 tilt 유도 (고정 120° 목표 폐기 → 깊이는 bead가 결정)
-        r_release = self.cfg.weight_release * tilt_amount * xy_gate * dir_gate
-        # [test6] r_tilt_depth: j5를 demo 깊이(≈120°, up_dot≈-0.5)로 직접 유도.
-        #   demo는 j1-4(높이)만 앵커하고 j5는 release(targetless)뿐이라 -0.1 정체 → pour 0.
-        #   tilt_progress: 목표 깊이까지 선형↑ 후 1.0 포화 → 얕은 틸트서도 gradient(부트스트랩),
-        #   full-flip 과도 틸트는 억제(spill 방지). xy_gate로 over-target만, [test7] dir_gate로 타겟 방향만.
+        # [test8] 앵커 분리 재설계: 방향(r_dir)·깊이(r_depth)를 독립 가산항으로.
+        #   구 r_release/r_tilt_depth는 dir_gate(pour_point 앵커)·xy_gate 곱셈 → 비드를 실제로 부으려
+        #   pour_point를 타겟 위로 옮기면 dir_cos가 음수(-0.42)로 뒤집혀 깊이 보상이 71% 처벌됨
+        #   → 정책이 dir_cos>0 경계(타겟 8.5cm 앞)에 주차, 영원히 전달 실패(수치검증 완료).
+        # r_dir: cup-center 앵커 방향(전달 자세서 +0.91 유지). tilt_amount 가중 → 직립 시 heading이
+        #   무의미하므로 0(wrist-yaw 착취 차단).
+        r_dir = self.cfg.weight_dir * tilt_amount * (
+            0.5 * (1.0 + self._directional_tilt_cos_c)
+        ).clamp(0.0, 1.0)
+        # r_depth: ungated 깊이 유도(목표 깊이까지 선형↑ 후 포화 → 과도 full-flip 억제).
+        #   xy_gate/dir_gate 곱셈 제거 → 전달하려 전진할 때도 깊이 gradient가 살아남음(2.5× 강).
         tilt_target = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0  # 120°→0.75
         tilt_progress = (tilt_amount / max(tilt_target, 1e-6)).clamp(0.0, 1.0)
-        r_tilt_depth = self.cfg.weight_tilt * tilt_progress * xy_gate * dir_gate
-        r_pour_geo = g_ready * (r_pour_xy + r_zband + r_release + r_tilt_depth)
+        r_depth = self.cfg.weight_tilt * tilt_progress
+        r_pour_geo = g_ready * (r_pour_xy + r_dir + r_depth)
 
         # 안전 barrier: pour-point가 림 아래로 박히는 것만 단방향 차단 (컵 충돌 방지)
         z_violation = (self.cfg.pour_z_margin - self._mouth_z_clearance).clamp(min=0.0)
@@ -1821,9 +1825,8 @@ class PourRightEnv(DirectRLEnv):
             "reward/transport":        r_dist_to_target.mean(),
             "reward/demo_arm_pose":    demo_terms["r_demo_arm_pose"].mean(),
             "reward/pour_xy":          (g_ready * r_pour_xy).mean(),
-            "reward/pour_zband":       (g_ready * r_zband).mean(),
-            "reward/release":          (g_ready * r_release).mean(),
-            "reward/tilt_depth":       (g_ready * r_tilt_depth).mean(),
+            "reward/dir":              (g_ready * r_dir).mean(),
+            "reward/depth":            (g_ready * r_depth).mean(),
             "reward/pour_z":           r_pour_z.mean(),
             "reward/bead_near":        (g_ready * r_bead_near).mean(),
             "reward/bead_in":          (g_ready * r_bead_in).mean(),
@@ -1867,6 +1870,7 @@ class PourRightEnv(DirectRLEnv):
             "log/target_open_y":       (self._target_opening_w[:, 1] - self.scene.env_origins[:, 1]).mean(),
             "log/target_open_z":       (self._target_opening_w[:, 2] - self.scene.env_origins[:, 2]).mean(),
             "log/directional_tilt_cos": self._directional_tilt_cos.mean(),
+            "log/directional_tilt_cos_c": self._directional_tilt_cos_c.mean(),
             "log/source_up_dot":       self._source_up_dot_world.mean(),
             "log/rho":                 self._rho.mean(),
             # [REDESIGN v4] 신규 진단

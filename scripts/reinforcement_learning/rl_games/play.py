@@ -191,6 +191,16 @@ def _strip_play_task_name(task_name: str) -> str:
     )
 
 
+def _resolve_checkpoint_name(task_name: str) -> str:
+    """Use the Gym task id as the rl-games checkpoint basename.
+
+    Must stay identical to train.py so play.py's default ("best") lookup matches
+    the file train.py actually saved (`{name}.pth`).
+    """
+    task_key = task_name.split(":")[-1]
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", task_key)
+
+
 def _checkpoint_sort_key(path: Path) -> tuple[float, int, float]:
     """Prefer higher reward, then later epoch, then newer mtime for prefix matches."""
     match = re.search(r"_ep_(\d+)_rew_([-+]?\d+(?:\.\d+)?)", path.name)
@@ -449,8 +459,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.use_last_checkpoint:
             checkpoint_file = ".*"
         else:
-            # this loads the best checkpoint
-            checkpoint_file = f"{agent_cfg['params']['config']['name']}.pth"
+            # this loads the best checkpoint — resolve the basename exactly like
+            # train.py (it overwrites config.name at runtime), since the source yaml
+            # config.name can be stale after a task rename.
+            checkpoint_file = f"{_resolve_checkpoint_name(train_task_name)}.pth"
         # get path to previous checkpoint
         resume_path = get_checkpoint_path(log_root_path, run_dir, checkpoint_file, other_dirs=["nn"])
     else:

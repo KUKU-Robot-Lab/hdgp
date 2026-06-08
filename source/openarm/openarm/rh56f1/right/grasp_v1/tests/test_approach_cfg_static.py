@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_cfg_declares_rh56f1_adapted_pregrasp_and_approach_weights() -> None:
+    cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
+
+    assert "실제 RH56F1/cup 기하 기준" in cfg
+    assert "palm sensor는 palm_link 기준 (0.00, 0.03, 0.04)" in cfg
+    assert "cup 반경은 약 0.035m" in cfg
+    assert "thumb_1 루트가 palm sensor보다도 +x 방향으로 더 앞으로 나온다" in cfg
+    assert "pregrasp_offset_x:     float = -0.05" in cfg
+    assert "pregrasp_offset_y:     float = -0.07" in cfg
+    assert "pregrasp_offset_z:     float = 0.03" in cfg
+    assert "cup_grasp_z_offset:  float = 0.06" in cfg
+    assert "r_palm_approach_weight:    float = 1.0" in cfg
+    assert "r_palm_approach_sharpness: float = 10.0" in cfg
+    assert "r_middle_guide_weight:     float = 2.0" in cfg
+    assert "r_middle_guide_sharpness:  float = 10.0" in cfg

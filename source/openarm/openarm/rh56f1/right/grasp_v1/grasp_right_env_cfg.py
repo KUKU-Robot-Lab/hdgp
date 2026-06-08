@@ -163,9 +163,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     pregrasp_fabric_steps: int   = 60
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True
-    pregrasp_offset_x:     float = -0.06
-    pregrasp_offset_y:     float = -0.12
-    pregrasp_offset_z:     float = 0.00
+    # RH56F1 pregrasp는 Tesollo 값을 복사하지 않고, 실제 RH56F1/cup 기하 기준으로 둔다.
+    # palm sensor는 palm_link 기준 (0.00, 0.03, 0.04) 오프셋이고, cup 반경은 약 0.035m다.
+    # reset orientation에서 thumb_1 루트가 palm sensor보다도 +x 방향으로 더 앞으로 나온다.
+    # 따라서 x도 뒤로 빼서 엄지 관통을 먼저 방지한다.
+    pregrasp_offset_x:     float = -0.05
+    pregrasp_offset_y:     float = -0.07
+    pregrasp_offset_z:     float = 0.03
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005
@@ -198,6 +202,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
+    cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
     lift_target_z_delta: float = LIFT_Z_DELTA
     success_hold_steps: int = 90
@@ -243,6 +248,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # r_tip_approach: grasp phase에서 fingertip이 컵 표면 반경 shell로 접근하도록 유도
     r_tip_approach_weight:    float = 6.0
     r_tip_approach_sharpness: float = 120.0
+
+    # r_palm_approach / r_middle_guide: grasp phase 초기 palm/proximal link 접근 gradient 보강
+    r_palm_approach_weight:    float = 1.0
+    r_palm_approach_sharpness: float = 10.0
+    r_middle_guide_weight:     float = 2.0
+    r_middle_guide_sharpness:  float = 10.0
 
     # r_slip: -w_s * Σᵢ 1_{cᵢ} * v_cup_xy²  — 수평 슬립 억제
     r_slip_weight: float = 5.0   # 10 contacts @ 0.05m/s → 0.125 penalty

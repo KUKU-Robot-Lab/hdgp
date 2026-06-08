@@ -331,8 +331,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_pour_zband: float = 8.0  # pour-point 적정 높이 band (가산, 단방향 barrier 아님)
     pour_zband_target: float = 0.05
     pour_zband_sigma: float = 0.05
-    weight_release: float = 20.0    # over-target일 때만 tilt 유도 (tilt·exp(-k·d_xy))
-    weight_tilt: float = 40.0       # [test6] j5를 demo 깊이(pour_tilt_target_deg=120°)로 직접 유도. 과거 lineage가 j5 local min 탈출에 40~60 필요(8은 실패) → 40 시작. (구 286번 중복 정의 통합)
+    weight_release: float = 20.0    # [test8] 사장: r_release 제거(r_dir+r_depth로 대체)
+    weight_dir: float = 20.0        # [test8] 앵커 분리 방향항 r_dir(cup-center 앵커). 수치검증 w=20서 전달경로 co-reinforce. 구 weight_align(6.0) 대체
+    weight_tilt: float = 40.0       # [test6] j5를 demo 깊이(pour_tilt_target_deg=120°)로 직접 유도. 과거 lineage가 j5 local min 탈출에 40~60 필요(8은 실패) → 40 시작. [test8] ungated r_depth 계수로 사용
     # Stage C: bead dense (4.1cm binary → 연속 근접)
     weight_bead_near: float = 30.0  # 방출된 bead가 target 축 근처면 보상 (sparse→dense 다리)
     bead_near_scale: float = 12.0

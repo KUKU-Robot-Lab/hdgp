@@ -73,8 +73,18 @@ def test_pregrasp_ik_targets_palm_sensor_reference():
 def test_reward_has_precontact_approach_term_and_total_log():
     """RH56F1 needs dense pre-contact reward because separate phalanx contacts do not exist."""
     s = _src()
+    assert "grasp_center = self.object_pos.clone()" in s
+    assert "grasp_center[:, 2] += self.cfg.cup_grasp_z_offset" in s
+    assert "approach_reward_gate = (" in s
+    assert "r_palm_approach = (" in s
+    assert "r_middle_guide = (" in s
     assert "r_tip_approach" in s
+    assert 'self.extras["rew_palm_approach"]' in s
+    assert 'self.extras["rew_middle_guide"]' in s
     assert 'self.extras["rew_tip_approach"]' in s
+    assert 'self.extras["stat_palm_to_cup_dist"]' in s
+    assert 'self.extras["stat_middle_to_cup_dist"]' in s
+    assert 'self.extras["stat_tip_to_cup_dist_top3"]' in s
     assert 'self.extras["rew_total"] = reward.mean()' in s
 
 
