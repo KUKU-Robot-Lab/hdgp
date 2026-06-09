@@ -59,6 +59,14 @@ def test_v11_declares_four_phase_episode_and_transport_params() -> None:
         "transport_goal_z_range",
         "transport_success_hold_steps",
         "lift_target_z_delta",
+        "enable_grasp_phase_full_grip_blend",
+        "grasp_phase_full_grip_contact_threshold",
+        "grasp_phase_full_grip_progress_threshold",
+        "force_balance_weight",
+        "force_balance_sharpness",
+        "full_grasp_bonus_weight",
+        "thumb_force_ratio_min",
+        "grasp_quality_late_bonus_weight",
         "stage0_lift_start_min_contacts",
         "stage0_lift_start_hold_steps",
         "lift_contact_hold_steps",
@@ -71,7 +79,7 @@ def test_v11_declares_four_phase_episode_and_transport_params() -> None:
         "terminate_on_lift_failure",
     ):
         assert name in cfg
-    assert "enable_demo_grasp_reset: bool = True" in cfg
+    assert "enable_demo_grasp_reset: bool = False" in cfg
     assert "compute_transport_success_mask" in env
     assert "compute_slip_proxy" in env
     assert "transport_palm_target_pose_buf" in env
@@ -246,6 +254,10 @@ def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
     env = _text("grasp_right_env.py")
 
     assert "lift_contact_phase = self.is_grasp_phase" in env
+    assert "compute_grasp_phase_finger_targets(" in env
+    assert "compute_late_grasp_full_grip_mask(" in env
+    assert "full_grip_pose=self.hand_full_grip_pose" in env
+    assert "late_grasp_mask=late_grasp_full_grip_mask" in env
     assert "compute_lift_readiness(" in env
     assert "min_contacts=self.cfg.stage0_lift_start_min_contacts" in env
     assert "hold_steps=self.cfg.stage0_lift_start_hold_steps" in env
@@ -264,6 +276,12 @@ def test_v11_tracks_pre_lift_full_contact_rate() -> None:
 
     assert 'self.extras["stat_pre_lift_full_contact_rate"]' in env
     assert "full_tip_middle_contact & self.is_grasp_phase" in env
+    assert 'self.extras["stat_late_grasp_full_grip_mode_rate"]' in env
+    assert 'self.extras["stat_contact_to_full_grip_transition_rate"]' in env
+    assert 'self.extras["stat_prelift_force_ratio"]' in env
+    assert 'self.extras["stat_prelift_thumb_force"]' in env
+    assert 'self.extras["stat_prelift_others_avg_force"]' in env
+    assert 'self.extras["stat_prelift_full_grip_rate"]' in env
 
 
 def test_v11_rl_games_config_uses_v11_name() -> None:

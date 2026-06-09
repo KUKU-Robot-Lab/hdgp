@@ -16,6 +16,7 @@ SPEC.loader.exec_module(grasp_reward_utils)
 
 compute_middle_contact_gate = grasp_reward_utils.compute_middle_contact_gate
 compute_lift_readiness = grasp_reward_utils.compute_lift_readiness
+compute_late_grasp_full_grip_mask = grasp_reward_utils.compute_late_grasp_full_grip_mask
 compute_slip_proxy = grasp_reward_utils.compute_slip_proxy
 compute_transport_success_mask = grasp_reward_utils.compute_transport_success_mask
 compute_upright_success_mask = grasp_reward_utils.compute_upright_success_mask
@@ -80,6 +81,19 @@ def test_lift_readiness_preserves_latched_state_after_contact_drops() -> None:
     assert hold_count.tolist() == [8]
     assert ready_now.tolist() == [True]
     assert latched.tolist() == [True]
+
+
+def test_late_grasp_full_grip_mask_activates_on_contact_or_progress() -> None:
+    mask = compute_late_grasp_full_grip_mask(
+        num_contacts=torch.tensor([1, 2, 0], dtype=torch.long),
+        is_grasp_phase=torch.tensor([True, True, True]),
+        episode_length_buf=torch.tensor([10, 10, 300], dtype=torch.long),
+        grasp_phase_steps=480,
+        contact_threshold=2,
+        progress_threshold=0.5,
+    )
+
+    assert mask.tolist() == [False, True, True]
 
 
 def test_slip_proxy_increases_with_velocity_tilt_and_contact_churn() -> None:

@@ -121,7 +121,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
     # -----------------------------------------------------------------------
-    episode_length_s: float = 18.0   # grasp 8s + lift 4s + stabilize 2s + transport 4s
+    episode_length_s: float = 10.0   # grasp 7s + lift 2s + stabilize 1s
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -205,14 +205,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
     lift_target_z_delta: float = LIFT_Z_DELTA
-    success_hold_steps: int = 90
+    success_hold_steps: int = 30
     transport_goal_dist_threshold: float = 0.04
     transport_success_hold_steps: int = 90
 
     # Phase curriculum:
     # 0 = grasp/lift only, 1 = add stabilize, 2 = full transport.
     enable_phase_curriculum: bool = True
-    phase_curriculum_initial_stage: int = 0
+    phase_curriculum_initial_stage: int = 1
     phase_curriculum_min_episodes: int = 100
     phase_curriculum_lift_success_threshold: float = 0.70
     phase_curriculum_stabilize_success_threshold: float = 0.70
@@ -233,6 +233,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     finger_delta_scale:      float = 0.08
     lift_finger_delta_scale: float = 0.08
+    enable_grasp_phase_full_grip_blend: bool = True
+    grasp_phase_full_grip_contact_threshold: int = 2
+    grasp_phase_full_grip_progress_threshold: float = 0.5
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 (HTML: Mass-Adaptive Enveloping Grip Reward Design)
@@ -267,6 +270,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     r_contact_tip_weight:     float = 1.0   # 5 tips max → 5.0
     r_contact_phalanx_weight: float = 0.5   # 10 phalanx max → 5.0
     r_contact_palm_weight:    float = 2.0   # palm 1개 — phalanx보다 높게 설정
+    force_balance_weight:     float = 3.0
+    force_balance_sharpness:  float = 8.0
+    full_grasp_bonus_weight:  float = 8.0
+    thumb_force_ratio_min:    float = 0.5
+    grasp_quality_late_bonus_weight: float = 4.0
 
     # r_force: -w_f · Σ fn²  — 과도 grip force 억제 (max-grip 방지)
     r_force_weight: float = 0.002  # 5N×15 contacts → ~0.75 penalty

@@ -56,8 +56,8 @@ Critic Extra (15D) — sim-only privileged:
 
 Critic Total: 102 + 15 = 117D
 
-Episode (18s @ 60Hz = 1080 steps):
-  Grasp / Lift / Stabilize / Transport (Tesollo 와 동일 구조)
+Episode (10s @ 60Hz = 600 steps):
+  Grasp / Lift / Stabilize
 """
 
 from .grasp_right_preset import (
@@ -98,10 +98,10 @@ NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 117
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
-GRASP_PHASE_STEPS     = 480    # 8s
-LIFT_PHASE_STEPS      = 240    # 4s
-STABILIZE_PHASE_STEPS = 120    # 2s
-TRANSPORT_PHASE_STEPS = 240    # 4s
+GRASP_PHASE_STEPS     = 420    # 7s
+LIFT_PHASE_STEPS      = 120    # 2s
+STABILIZE_PHASE_STEPS = 60     # 1s
+TRANSPORT_PHASE_STEPS = 0      # disabled
 LIFT_START_STEP       = GRASP_PHASE_STEPS
 STABILIZE_START_STEP  = LIFT_START_STEP + LIFT_PHASE_STEPS
 TRANSPORT_START_STEP  = STABILIZE_START_STEP + STABILIZE_PHASE_STEPS
@@ -111,7 +111,7 @@ EPISODE_STEPS         = (
     + STABILIZE_PHASE_STEPS
     + TRANSPORT_PHASE_STEPS
 )
-PRELOAD_START_STEP = 400    # lift 직전 80 step
+PRELOAD_START_STEP = 340    # lift 직전 80 step
 
 LIFT_Z_DELTA = 0.10    # 10cm 수직 상승
 

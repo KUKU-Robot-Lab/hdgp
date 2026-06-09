@@ -15,6 +15,7 @@ sys.modules[SPEC.name] = finger_action_utils
 SPEC.loader.exec_module(finger_action_utils)
 
 compute_grasp_finger_targets = finger_action_utils.compute_grasp_finger_targets
+compute_grasp_phase_finger_targets = finger_action_utils.compute_grasp_phase_finger_targets
 compute_lift_finger_targets = finger_action_utils.compute_lift_finger_targets
 
 
@@ -52,3 +53,26 @@ def test_lift_finger_targets_clamp_to_joint_limits() -> None:
     )
 
     assert target.squeeze(0).tolist() == pytest.approx([1.0, 1.2])
+
+
+def test_grasp_phase_finger_targets_switch_to_full_grip_in_late_grasp_mode() -> None:
+    action = torch.tensor([[-1.0, 1.0], [-1.0, 1.0]], dtype=torch.float32)
+    approach = torch.tensor([0.0, 0.0], dtype=torch.float32)
+    grasp = torch.tensor([1.0, 1.0], dtype=torch.float32)
+    full_grip = torch.tensor([2.0, 2.0], dtype=torch.float32)
+    lower = torch.zeros(2, dtype=torch.float32)
+    upper = torch.full((2,), 3.0, dtype=torch.float32)
+    late_mask = torch.tensor([False, True], dtype=torch.bool)
+
+    target = compute_grasp_phase_finger_targets(
+        finger_action=action,
+        approach_pose=approach,
+        grasp_pose=grasp,
+        full_grip_pose=full_grip,
+        lower_limits=lower,
+        upper_limits=upper,
+        late_grasp_mask=late_mask,
+    )
+
+    assert target[0].tolist() == pytest.approx([0.0, 1.0])
+    assert target[1].tolist() == pytest.approx([1.0, 2.0])

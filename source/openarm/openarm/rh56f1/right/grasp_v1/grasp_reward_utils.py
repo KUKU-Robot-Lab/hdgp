@@ -75,6 +75,23 @@ def compute_lift_readiness(
     return next_hold_count, lift_contact_ready_now, next_latched
 
 
+def compute_late_grasp_full_grip_mask(
+    num_contacts: torch.Tensor,
+    is_grasp_phase: torch.Tensor,
+    episode_length_buf: torch.Tensor,
+    grasp_phase_steps: int,
+    contact_threshold: int,
+    progress_threshold: float,
+) -> torch.Tensor:
+    grasp_progress = (
+        episode_length_buf.float() / max(float(grasp_phase_steps), 1.0)
+    ).clamp(min=0.0, max=1.0)
+    return is_grasp_phase & (
+        (num_contacts >= int(contact_threshold))
+        | (grasp_progress >= float(progress_threshold))
+    )
+
+
 def compute_transport_success_mask(
     goal_dist: torch.Tensor,
     upright_success: torch.Tensor,
