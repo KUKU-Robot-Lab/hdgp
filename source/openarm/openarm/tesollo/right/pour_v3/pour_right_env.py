@@ -1768,6 +1768,17 @@ class PourRightEnv(DirectRLEnv):
         z_violation = (self.cfg.pour_z_margin - self._mouth_z_clearance).clamp(min=0.0)
         r_pour_z = -(pour_gate * self.cfg.weight_pour_z * z_violation)
 
+        # [test10] r_descend: pour_point를 타겟 입구 z(배리어 위 z_target)로 끌어내림.
+        #   test9서 clearance 0.17m 고공 부유 → 살포·전달 미미. 하강 견인항 부재가 원인.
+        #   aim_gate(dir_cos_c>0 & tilt>min): 조준+틸트 시에만 → 직립/미조준 조기 다이빙 차단.
+        z_target = self.cfg.pour_z_margin + self.cfg.descend_target_offset
+        aim_gate_z = (
+            (self._directional_tilt_cos_c > 0.0) & (tilt_amount > self.cfg.descend_tilt_min)
+        ).float()
+        r_descend = pour_gate * aim_gate_z * self.cfg.weight_descend * torch.exp(
+            -self.cfg.descend_scale * (self._mouth_z_clearance - z_target).abs()
+        )
+
         # =========================================================
         # [REDESIGN v4] Stage C: bead dense (4.1cm binary → 연속 근접 → 실제 채움)
         # =========================================================
@@ -1775,6 +1786,16 @@ class PourRightEnv(DirectRLEnv):
         r_bead_in = self.cfg.weight_bead_in * self._bead_in_target_fraction       # 실제 채움(linear)
         r_cross = self.cfg.weight_bead_cross * self._bead_cross_delta.clamp(min=0.0)  # 입구 관통 즉시
         r_pour_stage = pour_gate * (r_bead_near + r_bead_in + r_cross)
+
+        # [test12-C'] sustained 배출 보상: 빈 컵(=비드가 소스 밖)일수록 매 step 지속 보상.
+        #   rate형(test11)은 ~0.025/step로 dense basin(~63/step) 못 이김 → spill 골짜기 못 건넘.
+        #   sustained는 dump 상태를 직접 보상해 basin과 경쟁. aim-gate(dir_cos_c>0)로 조준된 배출만.
+        #   bead_in(200)이 여전히 지배 → 착지>spill.
+        _aim_gate_drain = (self._directional_tilt_cos_c > 0.0).float()
+        r_source_drain = (
+            pour_gate * _aim_gate_drain * self.cfg.weight_source_drain
+            * (1.0 - self._bead_in_source_fraction)
+        )
 
         # Success
         success_fill_ratio = (
@@ -1822,7 +1843,9 @@ class PourRightEnv(DirectRLEnv):
             + demo_terms["r_demo_j5"]
             + r_pour_geo
             + r_pour_z
+            + r_descend
             + r_pour_stage
+            + r_source_drain
             + self.cfg.weight_success * r_success
             + overfill_bonus
             - spill_weight * spill_cost
@@ -1867,6 +1890,8 @@ class PourRightEnv(DirectRLEnv):
             "reward/dir":              (pour_gate * r_dir).mean(),
             "reward/depth":            (pour_gate * r_depth).mean(),
             "reward/pour_z":           r_pour_z.mean(),
+            "reward/descend":          r_descend.mean(),
+            "reward/source_drain":     r_source_drain.mean(),
             "reward/bead_near":        (pour_gate * r_bead_near).mean(),
             "reward/bead_in":          (pour_gate * r_bead_in).mean(),
             "reward/cross":            (pour_gate * r_cross).mean(),
@@ -1995,12 +2020,17 @@ class PourRightEnv(DirectRLEnv):
         bead_pos_w = self.beads.data.object_pos_w  # (N, num_beads, 3)
         bead_fallen = self._beads_spawned & (bead_pos_w[..., 2] < -0.5).any(dim=-1)
 
+        # [test11-A] 완료 절벽 제거: source_drained·success는 "실패"가 아니라 "과제 완료/타임아웃"이므로
+        #   terminated(V=0)이 아닌 truncated(미래가치 부트스트랩)로 분류. terminated엔 실패 사건만 남김.
+        #   → 비드를 다 부으면 보상 스트림이 V=0으로 절단되던 park-farming 유인 제거.
         terminated = (
             out_x | out_y | fallen | dropped_by_force
-            | self.success_flag | source_drained
             | bead_fallen
         )
-        truncated  = self.episode_length_buf >= self.max_episode_length - 1
+        truncated  = (
+            (self.episode_length_buf >= self.max_episode_length - 1)
+            | source_drained | self.success_flag
+        )
 
         return terminated, truncated
 

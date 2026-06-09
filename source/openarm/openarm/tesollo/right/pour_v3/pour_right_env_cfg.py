@@ -281,6 +281,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 단방향 penalty — 림 위 높이는 강제하지 않고 beads가 결정하게 둠 (test7: ram 방지).
     weight_pour_z: float = 300.0        # 1cm 위반 ≈ 3.0 penalty
     pour_z_margin: float = 0.03         # test11: 1cm→3cm. clearance 1.7cm에 안착→source cup이 rim에 닿음. 여유 확보
+    # [test10] 하강 보상: pour_point를 타겟 입구 z(배리어 위 z_target)로 끌어내림.
+    #   test9서 mouth_z_clearance 0.17m 고공 부유 → 고공 살포(spill 0.22)·전달 미미. 하강 견인항 전무가 원인.
+    #   aim_gate(dir_cos_c>0 & tilt>min)로 조준+틸트 시에만 활성 → 직립/미조준 조기 다이빙 차단.
+    weight_descend: float = 10.0   # [test13-B1] 25→10: dense basin 축소(farming이 bead_in 압도 → landing 동기 회복)
+    descend_target_offset: float = 0.02   # z_target = pour_z_margin + offset ≈ 5cm (3cm 배리어 위, 충돌 안전)
+    descend_scale: float = 10.0
+    descend_tilt_min: float = 0.25        # tilt_amount > 이 값(up_dot<0.5,≈60°)일 때만 하강 허용
 
     # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
     # weight_tilt는 v4에서 r_tilt 항 제거로 사장됨 → test6에서 r_tilt_depth용으로 아래(Stage B)에 단일 정의로 이전
@@ -293,7 +300,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
     weight_bead_entry_delta: float = 300.0   # 비드 유입 즉각 피드백 (체류-Δ, 비드 안 쌓이면 ≈0)
     weight_bead_cross: float = 150.0   # test11: 입구 관통(latch) 즉시 보상 → 새 비드 유입 강화(의도 복원). 체류와 무관
-    weight_source_drain: float = 20.0     # pour gate 중 소스 배출 incentive
+    weight_source_drain: float = 40.0     # [test12-C'] sustained 배출보상 계수. r=W·pour_gate·(dir_cos_c>0)·(1-bead_in_source). 빈 컵일수록 지속 보상→dense basin과 경쟁. (test11 rate형 0.025/step로 너무 약해 실패)
 
     # -----------------------------------------------------------------------
     # Curriculum warmup (step 기반 선형 증가)
@@ -326,13 +333,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     g_ready_center: float = 0.20    # cup_center_xy_dist 기준 (=기존 pour_binary_xy_thresh)
     g_ready_width: float = 0.03
     # Stage B: pour-point → target 기하 (정책이 직접 제어하는 rim-pivot 공간)
-    weight_pour_xy: float = 15.0    # pour-point를 target 위로 (항상 gradient, z_window 곱 없음)
+    weight_pour_xy: float = 8.0     # [test13-B1] 15→8: dense basin 축소. (pour-point를 target 위로)
     pour_xy_scale: float = 8.0
     weight_pour_zband: float = 8.0  # pour-point 적정 높이 band (가산, 단방향 barrier 아님)
     pour_zband_target: float = 0.05
     pour_zband_sigma: float = 0.05
     weight_release: float = 20.0    # [test8] 사장: r_release 제거(r_dir+r_depth로 대체)
-    weight_dir: float = 50.0        # [test9] 20→50 조준 강화 (시뮬: w20은 r_depth보다 3~5배 약함 → 정책이 안 겨눔). [test8] 앵커 분리 방향항 r_dir(cup-center 앵커)
+    weight_dir: float = 15.0        # [test13-B1] 50→15: dense basin 축소. [test9] 조준 r_dir(cup-center 앵커)
     # [test9] j5(틸트 주역) demo 앵커 — Stage B서만 활성, flow 생기면 감쇠. 텔레포트 없는 틸트 부트스트랩.
     weight_demo_j5: float = 15.0
     weight_demo_j5_floor: float = 3.0
@@ -342,12 +349,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     stageB_up_min: float = 0.70        # source_up_dot > 이 값 = 아직 직립(틸트 前)
     stageB_sustain_k: int = 20         # K스텝 연속 충족 → 래치(단방향, 에피소드 리셋)
     stageB_fallback_step: int = 240    # 미충족이어도 episode_length 이 스텝 후 강제 활성(최악도 test8+j5로 degrade)
-    weight_tilt: float = 40.0       # [test6] j5를 demo 깊이(pour_tilt_target_deg=120°)로 직접 유도. 과거 lineage가 j5 local min 탈출에 40~60 필요(8은 실패) → 40 시작. [test8] ungated r_depth 계수로 사용
+    weight_tilt: float = 15.0       # [test13-B1] 50→15: dense basin 축소(r_depth 계수). landing이 farming 압도하도록
     # Stage C: bead dense (4.1cm binary → 연속 근접)
     weight_bead_near: float = 30.0  # 방출된 bead가 target 축 근처면 보상 (sparse→dense 다리)
     bead_near_scale: float = 12.0
     weight_bead_in: float = 200.0   # 실제 채움 (linear fill fraction)
     # r_bead_cross = weight_bead_cross(150) 재사용, 안전 barrier = weight_pour_z/pour_z_margin 재사용
+    # [test11-C] weight_source_drain은 위(line 303)에 정의됨 — 60.0으로 재활성
 
     # =====================================================================
     # [REDESIGN v5] 2축 재설계: (1) pour 보상 도달성 + (2) plateau deadlock 제거
@@ -447,7 +455,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     reward_grasp_slip_sharpness: float = 3.0
     contact_maintain_min_others: int = 2
     force_balance_sharpness: float = 2.0
-    pour_tilt_target_deg: float = 120.0
+    pour_tilt_target_deg: float = 135.0   # [test10] 120→135: 수평(90°) 너머 dump까지 r_depth gradient 유지
     pour_tilt_sharpness: float = 4.0   # 120° 목표 집중도 (test8: 2→4, 90° local min 탈출)
 
     # ρ binary pour gate: cup_center_xy_dist < thresh → pour stage 활성
