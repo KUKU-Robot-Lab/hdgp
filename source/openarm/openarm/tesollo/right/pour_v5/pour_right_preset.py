@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Hand/robot preset metadata for 5g_pour_right_v5.
+"""Hand/robot preset metadata for 5g_pour_right_v3.
 
-v5 joint/body configuration.
+v3와 동일한 joint/body 구성. v4에서 재사용.
 """
 
 import math
@@ -34,8 +34,8 @@ LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAM
 
 LEFT_ARM_REST_JOINT_POS = {
     "openarm_left_joint1": -0.315,
-    "openarm_left_joint2": -0.079,  # v3 match
-    "openarm_left_joint3":  0.217,
+    "openarm_left_joint2": -0.079,  # test10: demo a11-a20 pour 구간 평균값으로 변경 (기존 -0.290)
+    "openarm_left_joint3":  0.217,  # test10: demo a11-a20 pour 구간 평균값으로 변경 (기존 +0.400)
     "openarm_left_joint4":  0.513,
     "openarm_left_joint5":  0.666,
     "openarm_left_joint6": -0.729,
@@ -123,7 +123,7 @@ LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "openarm_left_hand"
 LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.10]
 LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]
 
-BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.01]
+BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.04]
 BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ = [1.0, 0.0, 0.0, 0.0]
 SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
 TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
@@ -205,10 +205,10 @@ RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0]
 # ---------------------------------------------------------------------------
 # Workspace / goal
 # ---------------------------------------------------------------------------
-# cup spawn center (local frame)
-OBJECT_SPAWN_CENTER = [0.40, -0.15, 0.38]
+# cup spawn center (local frame) — demo 데이터와 일치: source=[0.27,-0.10]
+OBJECT_SPAWN_CENTER = [0.27, -0.10, 0.38]
 OBJECT_SPAWN_RANGE_XY = 0.06
-OBJECT_GOAL_POS = [0.40, -0.15, 0.65]
+OBJECT_GOAL_POS = [0.27, -0.10, 0.65]
 
 # Pregrasp offset: cup 옆(-Y 방향)에서 접근 (palm_link 기준)
 # orientation: ez=90°, ey=0°, ex=90° → palm +X(손바닥 법선)=world +Y, palm +Z(손가락)=world +X
@@ -219,7 +219,9 @@ PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
-        0.00, -0.55, 0.20,  # x_min: 0.20→0.00 (target cup이 x≈0.0에 있어 더 들어가야 함)
+        # [REDESIGN v5] 깊은 pour tilt 시 palm이 target 너머/아래로 스윙 → x_min/z_min 완화.
+        # (rotation은 _apply_action 위치 클램프 대상 아님 → tilt 자유, 위치 박스만 병목)
+        -0.15, -0.55, 0.10,  # x_min 0.00→-0.15, z_min 0.20→0.10
         (90.0 - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,
         (90.0 - max_pose_angle) * d,
@@ -227,14 +229,22 @@ def palm_pose_mins(max_pose_angle: float) -> list:
 
 
 def palm_pose_maxs(max_pose_angle: float) -> list:
-    # LEFT_ARM_REST_JOINT_POS FK 기준 target cup pos (env-local): x=0.291, y=0.031, z=0.323
-    #   pregrasp palm y = spawn_center_y(-0.15) + offset_y(-0.07) = -0.22m
+    # LEFT_ARM_REST_JOINT_POS FK 기준 target cup pos (env-local): x=0.268, y=0.100, z=0.291
+    #   pregrasp palm y = spawn_center_y(-0.10) + offset_y(-0.12) = -0.22m
     #   palm_delta_xyz=0.5m → max palm y = min(-0.22+0.50, 0.22) = 0.22m
-    #   target cup y = 0.031m → workspace 내에 충분히 포함됨
-    #   y_max=0.22m: 탐색 여유 확보 (왼팔 손목 y=0.076m에서 14cm 여유, 충돌 안전)
+    #   target cup y = 0.100m → workspace 내에 충분히 포함됨
+    #   y_max=0.22m: 탐색 여유 확보 (왼팔 손목 y≈0.10에서 12cm 여유, 충돌 안전)
+    #
+    # target cup rim ≈ z=0.44m. palm z=0.48 → cup center ≈ 0.45m → cup rim ≈ 0.55m
+    #   clearance ≈ 0.11m (붓기에 충분). 이전 z_max=0.65는 rim=0.75m → clearance=0.31m (너무 높음)
+    #   g_clear gradient가 cup을 과도하게 올리는 문제 방지.
     d = math.pi / 180.0
     return [
-        0.65, 0.22, 0.65,   # y_max=0.22m: target cup y=0.031m 기준 충분한 여유
+        # [REDESIGN v5] z_max 0.48→0.72: test4에서 palm_clamp_viol_z가 전 구간 ~0.2 지속
+        #   (정책이 tilt-pour로 palm을 z≈0.66~0.75로 올리려다 z_max=0.48에 계속 잘림 = 깊은
+        #   pour 차단의 근본 병목). 데모는 이 자세를 실제로 도달 → 박스가 인위적 한계였음.
+        #   과상승은 pour_zband(target 0.05)+pour_z barrier로 억제.
+        0.65, 0.22, 0.72,
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

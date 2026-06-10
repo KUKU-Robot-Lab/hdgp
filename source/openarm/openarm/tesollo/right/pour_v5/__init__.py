@@ -5,30 +5,3 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
-
-# ── PourLstmBCAgent 자동 등록 ──────────────────────────────────────────────
-# rl_games Runner 가 생성될 때마다 'a2c_continuous_lstm_bc' 알고리즘을
-# algo_factory 와 player_factory 에 자동 등록한다.
-# train.py 수정 없이 yaml 의 algo.name 만으로 동작.
-try:
-    from rl_games.torch_runner import Runner as _Runner
-    from rl_games.algos_torch import players as _rl_players
-    from .lstm_bc_agent import PourLstmBCAgent as _Agent
-
-    _orig_runner_init = _Runner.__init__
-
-    def _patched_runner_init(self, *args, **kwargs):
-        _orig_runner_init(self, *args, **kwargs)
-        self.algo_factory.register_builder(
-            "a2c_continuous_lstm_bc",
-            lambda **kw: _Agent(**kw),
-        )
-        self.player_factory.register_builder(
-            "a2c_continuous_lstm_bc",
-            lambda **kw: _rl_players.PpoPlayerContinuous(**kw),
-        )
-
-    _Runner.__init__ = _patched_runner_init
-except Exception:
-    # rl_games 미설치 환경(unit test 등)에서는 조용히 무시
-    pass
