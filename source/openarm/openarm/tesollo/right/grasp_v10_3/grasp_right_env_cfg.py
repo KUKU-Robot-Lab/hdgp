@@ -188,6 +188,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     finger_delta_scale:      float = 0.08   # grasp phase: ±0.08 rad/step (grasp_pose 근처 미세 조정)
     lift_finger_delta_scale: float = 0.08   # lift phase: ±0.08 rad micro-delta
+    thumb_lift_max_delta: float = 0.02      # lift phase: keep rj_1 near lift reference
 
     # -----------------------------------------------------------------------
     # Reward 파라미터

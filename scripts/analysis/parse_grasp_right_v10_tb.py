@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 import re
 import struct
 from dataclasses import dataclass
@@ -33,55 +32,57 @@ CHECKPOINT_RE = re.compile(r"last_5g_grasp_right-v10_ep_(\d+)_rew_(-?\d+(?:\.\d+
 
 CORE_METRICS = [
     "rewards",
-    "stat_success_rate",
-    "stat_num_contacts",
-    "f_ratio",
-    "f_ratio_delta",
-    "r_adaptive_grip",
-    "r_slip",
-    "r_multi_phalanx",
-    "r_full_contact",
-    "r_lift",
-    "r_success_bonus",
-    "r_thumb_pose_anchor",
-    "r_thumb_slide_penalty",
-    "r_grasp_shape_consistency",
-    "thumb_anchor_error",
-    "thumb_downward_delta",
-    "grasp_shape_error",
+    "object_stat/success_rate",
+    "hand_contact/contact_count",
+    "hand_contact/middle_contacts",
+    "hand_force/f_ratio",
+    "hand_force/f_ratio_delta",
+    "reward/adaptive_grip",
+    "reward/slip",
+    "reward/multi_phalanx",
+    "reward/full_contact",
+    "reward/lift",
+    "reward/success_bonus",
+    "reward/thumb_pose_anchor",
+    "reward/thumb_slide_penalty",
+    "reward/grasp_shape_consistency",
+    "hand_joint/rj_1/thumb_anchor_error",
+    "hand_joint/rj_1/thumb_downward_delta",
+    "hand_joint/rj_1/thumb_tip_direction_cos",
+    "hand_joint/rj_1/grasp_shape_error",
     "adr_difficulty_progress",
     "adr_success_min",
 ]
 
 BIN_METRICS = [
-    "bin_0b_sr",
-    "bin_10b_sr",
-    "bin_20b_sr",
-    "bin_30b_sr",
-    "bin_0b_f_ratio",
-    "bin_10b_f_ratio",
-    "bin_20b_f_ratio",
-    "bin_30b_f_ratio",
-    "bin_0b_contacts",
-    "bin_10b_contacts",
-    "bin_20b_contacts",
-    "bin_30b_contacts",
-    "bin_0b_lift",
-    "bin_10b_lift",
-    "bin_20b_lift",
-    "bin_30b_lift",
-    "bin_0b_adaptive_grip",
-    "bin_10b_adaptive_grip",
-    "bin_20b_adaptive_grip",
-    "bin_30b_adaptive_grip",
-    "bin_0b_full_contact",
-    "bin_10b_full_contact",
-    "bin_20b_full_contact",
-    "bin_30b_full_contact",
-    "bin_0b_multi_phalanx",
-    "bin_10b_multi_phalanx",
-    "bin_20b_multi_phalanx",
-    "bin_30b_multi_phalanx",
+    "mass_bin/0b/sr",
+    "mass_bin/10b/sr",
+    "mass_bin/20b/sr",
+    "mass_bin/30b/sr",
+    "mass_bin/0b/f_ratio",
+    "mass_bin/10b/f_ratio",
+    "mass_bin/20b/f_ratio",
+    "mass_bin/30b/f_ratio",
+    "mass_bin/0b/contacts",
+    "mass_bin/10b/contacts",
+    "mass_bin/20b/contacts",
+    "mass_bin/30b/contacts",
+    "mass_bin/0b/lift",
+    "mass_bin/10b/lift",
+    "mass_bin/20b/lift",
+    "mass_bin/30b/lift",
+    "mass_bin/0b/adaptive_grip",
+    "mass_bin/10b/adaptive_grip",
+    "mass_bin/20b/adaptive_grip",
+    "mass_bin/30b/adaptive_grip",
+    "mass_bin/0b/full_contact",
+    "mass_bin/10b/full_contact",
+    "mass_bin/20b/full_contact",
+    "mass_bin/30b/full_contact",
+    "mass_bin/0b/multi_phalanx",
+    "mass_bin/10b/multi_phalanx",
+    "mass_bin/20b/multi_phalanx",
+    "mass_bin/30b/multi_phalanx",
 ]
 
 LOSS_TAGS = [
@@ -306,9 +307,9 @@ def plot_overview(run_artifacts: list[RunArtifacts], out_path: Path, smooth_wind
 
     metrics = [
         ("rewards", "Episode Reward", "reward"),
-        ("stat_success_rate", "Success Rate", "ratio"),
-        ("f_ratio", "Force Ratio", "ratio"),
-        ("stat_num_contacts", "Num Contacts", "count"),
+        ("object_stat/success_rate", "Success Rate", "ratio"),
+        ("hand_force/f_ratio", "Force Ratio", "ratio"),
+        ("hand_contact/contact_count", "Num Contacts", "count"),
     ]
 
     for ax, (metric, title, ylabel) in zip(axes.flatten(), metrics):
@@ -330,10 +331,10 @@ def plot_adaptive_grip(run_artifacts: list[RunArtifacts], out_path: Path, smooth
     colors = ["steelblue", "darkorange"]
     labels = [artifact.name for artifact in run_artifacts]
     metric_groups = [
-        (["f_ratio", "f_ratio_light", "f_ratio_heavy"], "Force Ratio Mean/Light/Heavy", "ratio"),
-        (["f_ratio_delta", "r_adaptive_grip"], "Adaptivity Gap + Reward", "value"),
-        (["bin_0b_f_ratio", "bin_10b_f_ratio", "bin_20b_f_ratio", "bin_30b_f_ratio"], "Per-Mass Force Ratio", "ratio"),
-        (["bin_0b_sr", "bin_10b_sr", "bin_20b_sr", "bin_30b_sr"], "Per-Mass Success Rate", "ratio"),
+        (["hand_force/f_ratio", "f_ratio_light", "f_ratio_heavy"], "Force Ratio Mean/Light/Heavy", "ratio"),
+        (["hand_force/f_ratio_delta", "reward/adaptive_grip"], "Adaptivity Gap + Reward", "value"),
+        (["mass_bin/0b/f_ratio", "mass_bin/10b/f_ratio", "mass_bin/20b/f_ratio", "mass_bin/30b/f_ratio"], "Per-Mass Force Ratio", "ratio"),
+        (["mass_bin/0b/sr", "mass_bin/10b/sr", "mass_bin/20b/sr", "mass_bin/30b/sr"], "Per-Mass Success Rate", "ratio"),
     ]
 
     for ax, (metrics, title, ylabel) in zip(axes.flatten(), metric_groups):
@@ -364,10 +365,10 @@ def plot_contact_success(run_artifacts: list[RunArtifacts], out_path: Path, smoo
     colors = ["steelblue", "darkorange"]
     labels = [artifact.name for artifact in run_artifacts]
     metric_groups = [
-        (["stat_num_contacts", "r_multi_phalanx", "r_full_contact"], "Contact Quality", "value"),
-        (["r_slip", "r_preload", "r_force_smooth"], "Lift Stability", "value"),
-        (["r_lift", "r_success_bonus"], "Lift/Success Bonus", "value"),
-        (["r_thumb_pose_anchor", "r_thumb_slide_penalty", "r_grasp_shape_consistency"], "Thumb / Shape Control", "value"),
+        (["hand_contact/contact_count", "reward/multi_phalanx", "reward/full_contact"], "Contact Quality", "value"),
+        (["reward/slip", "reward/preload", "reward/force_smooth"], "Lift Stability", "value"),
+        (["reward/lift", "reward/success_bonus"], "Lift/Success Bonus", "value"),
+        (["reward/thumb_pose_anchor", "reward/thumb_slide_penalty", "reward/grasp_shape_consistency"], "Thumb / Shape Control", "value"),
     ]
 
     for ax, (metrics, title, ylabel) in zip(axes.flatten(), metric_groups):
@@ -399,8 +400,8 @@ def plot_adr_diagnostics(run_artifacts: list[RunArtifacts], out_path: Path, smoo
     metric_groups = [
         (["adr_difficulty_progress", "adr_success_min"], "ADR Progress / Success Min", "value"),
         (["episode_lengths", "shaped_rewards"], "Episode Length / Shaped Reward", "value"),
-        (["bin_0b_lift", "bin_10b_lift", "bin_20b_lift", "bin_30b_lift"], "Per-Mass Lift", "value"),
-        (["bin_0b_adaptive_grip", "bin_10b_adaptive_grip", "bin_20b_adaptive_grip", "bin_30b_adaptive_grip"], "Per-Mass Adaptive Grip", "value"),
+        (["mass_bin/0b/lift", "mass_bin/10b/lift", "mass_bin/20b/lift", "mass_bin/30b/lift"], "Per-Mass Lift", "value"),
+        (["mass_bin/0b/adaptive_grip", "mass_bin/10b/adaptive_grip", "mass_bin/20b/adaptive_grip", "mass_bin/30b/adaptive_grip"], "Per-Mass Adaptive Grip", "value"),
     ]
 
     for ax, (metrics, title, ylabel) in zip(axes.flatten(), metric_groups):
@@ -555,10 +556,10 @@ def generate_findings(
 
     metric_map = final_comparison.set_index("metric")
     for metric, label in [
-        ("stat_success_rate", "final success rate"),
-        ("stat_num_contacts", "final contact count"),
-        ("r_lift", "final lift reward"),
-        ("r_success_bonus", "final success bonus"),
+        ("object_stat/success_rate", "final success rate"),
+        ("hand_contact/contact_count", "final contact count"),
+        ("reward/lift", "final lift reward"),
+        ("reward/success_bonus", "final success bonus"),
     ]:
         if metric in metric_map.index:
             a_val = metric_map.at[metric, run_a.name]
@@ -566,14 +567,14 @@ def generate_findings(
             better = run_a.name if a_val > b_val else run_b.name
             findings.append(f"{label}는 {better} 쪽이 더 높다 ({a_val:.3f} vs {b_val:.3f}).")
 
-    if "f_ratio_delta" in metric_map.index:
-        a_val = metric_map.at["f_ratio_delta", run_a.name]
-        b_val = metric_map.at["f_ratio_delta", run_b.name]
+    if "hand_force/f_ratio_delta" in metric_map.index:
+        a_val = metric_map.at["hand_force/f_ratio_delta", run_a.name]
+        b_val = metric_map.at["hand_force/f_ratio_delta", run_b.name]
         findings.append(
-            f"heavy-light force ratio gap(f_ratio_delta)은 {run_a.name}={a_val:.3f}, {run_b.name}={b_val:.3f}다."
+            f"heavy-light force ratio gap(hand_force/f_ratio_delta)은 {run_a.name}={a_val:.3f}, {run_b.name}={b_val:.3f}다."
         )
 
-    for metric, label in [("bin_30b_sr", "30b success"), ("bin_0b_sr", "0b success")]:
+    for metric, label in [("mass_bin/30b/sr", "30b success"), ("mass_bin/0b/sr", "0b success")]:
         if metric in metric_map.index:
             a_val = metric_map.at[metric, run_a.name]
             b_val = metric_map.at[metric, run_b.name]
@@ -646,11 +647,11 @@ def render_markdown_report(
             "## 5. 해석 포인트",
             "",
             f"- 이번 비교에서는 `adr_success_min` 최종값이 {config_summary.get('adr_success_min_final_a')} / {config_summary.get('adr_success_min_final_b')}인지 함께 본다.",
-            "- `f_ratio`, `f_ratio_light/heavy`, `bin_*_f_ratio`는 질량 적응 성향을 직접 보여준다.",
-            "- `stat_num_contacts`, `r_multi_phalanx`, `r_full_contact`는 deep-envelope grasp 유지력을 보여준다.",
-            "- `r_slip`, `r_preload`, `r_force_smooth`, `r_lift`는 lift 단계 failure mode를 분해한다.",
-            "- `r_thumb_pose_anchor`, `r_thumb_slide_penalty`, `r_grasp_shape_consistency`와 `thumb_*_error`는 grasp form 유지 여부를 보여준다.",
-            "- bin 로깅은 `bin_*_f_ratio`와 bin별 success/contact/lift/adaptive_grip/full_contact/multi_phalanx만 유지한다.",
+            "- `hand_force/f_ratio`, `f_ratio_light/heavy`, `mass_bin/*/f_ratio`는 질량 적응 성향을 직접 보여준다.",
+            "- `hand_contact/contact_count`, `reward/multi_phalanx`, `reward/full_contact`는 deep-envelope grasp 유지력을 보여준다.",
+            "- `reward/slip`, `reward/preload`, `reward/force_smooth`, `reward/lift`는 lift 단계 failure mode를 분해한다.",
+            "- `reward/thumb_pose_anchor`, `reward/thumb_slide_penalty`, `reward/grasp_shape_consistency`와 `hand_joint/rj_1/*`는 grasp form 유지 여부를 보여준다.",
+            "- mass-bin 로깅은 `mass_bin/*/f_ratio`와 bin별 success/contact/lift/adaptive_grip/full_contact/multi_phalanx만 유지한다.",
             "",
         ]
     )

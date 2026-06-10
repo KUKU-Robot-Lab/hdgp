@@ -839,6 +839,8 @@ class GraspRightEnv(DirectRLEnv):
             thumb_downward_action_scale=self.cfg.thumb_curl_downward_action_scale,
             thumb_anchor_pose=self.hand_grasp_pose,
             thumb_curl_max_downward_delta=self.cfg.thumb_curl_max_downward_delta,
+            thumb_lift_indices=self.thumb_joint_indices,
+            thumb_lift_max_delta=self.cfg.thumb_lift_max_delta,
         )
         finger_target = torch.where(
             is_lift.unsqueeze(1),
@@ -1368,29 +1370,28 @@ class GraspRightEnv(DirectRLEnv):
             self.grasp_adr.maybe_increment(_ep_success_rate)     # threshold=0.8
 
         # ---- 로깅 ----
-        # r_*   : reward 성분별 값
-        self.extras["r_palm"]            = r0_palm_approach.mean()
-        self.extras["r_enclosure"]       = r1_enclosure.mean()
-        self.extras["r_force_balance"]   = r1b_force_balance.mean()
-        self.extras["r_multi_phalanx"]   = r1c_multi_phalanx.mean()
-        self.extras["r_middle_guide"]    = r1d_middle_guide.mean()
-        self.extras["r_middle_contact"]  = r1e_middle_contact.mean()
-        self.extras["r_slip"]            = r2_slip.mean()
-        self.extras["r_adaptive_grip"]   = r3_adaptive_force.mean()
-        self.extras["r_preload"]         = r_preload.mean()
-        self.extras["r_grasp_cup_disturbance"] = r_grasp_cup_disturbance.mean()
-        self.extras["r_grasp_upright"]   = r_upright.mean()
-        self.extras["r_force_smooth"]    = r5_force_smooth.mean()
-        self.extras["r_lift"]            = r6_lift.mean()
-        self.extras["r_hold_stability"]  = r_hold_stability.mean()
-        self.extras["r_success_bonus"]   = r8_success.mean()
-        self.extras["r_full_contact"]    = r9_full_contact.mean()
-        self.extras["r_fingertip_guide"] = r_ft_guide.mean()
-        self.extras["r_thumb_tip_direction"] = torch.nan_to_num(r_thumb_tip_dir, nan=0.0).mean()
-        self.extras["r_action_smooth"]   = r7_action_smooth.mean()
-        self.extras["r_thumb_pose_anchor"] = torch.nan_to_num(r10_thumb_anchor, nan=0.0).mean()
-        self.extras["r_thumb_slide_penalty"] = torch.nan_to_num(r10_thumb_slide, nan=0.0).mean()
-        self.extras["r_grasp_shape_consistency"] = torch.nan_to_num(r10_shape_consistency, nan=0.0).mean()
+        self.extras["reward/palm"]            = r0_palm_approach.mean()
+        self.extras["reward/enclosure"]       = r1_enclosure.mean()
+        self.extras["reward/force_balance"]   = r1b_force_balance.mean()
+        self.extras["reward/multi_phalanx"]   = r1c_multi_phalanx.mean()
+        self.extras["reward/middle_guide"]    = r1d_middle_guide.mean()
+        self.extras["reward/middle_contact"]  = r1e_middle_contact.mean()
+        self.extras["reward/slip"]            = r2_slip.mean()
+        self.extras["reward/adaptive_grip"]   = r3_adaptive_force.mean()
+        self.extras["reward/preload"]         = r_preload.mean()
+        self.extras["reward/grasp_cup_disturbance"] = r_grasp_cup_disturbance.mean()
+        self.extras["reward/grasp_upright"]   = r_upright.mean()
+        self.extras["reward/force_smooth"]    = r5_force_smooth.mean()
+        self.extras["reward/lift"]            = r6_lift.mean()
+        self.extras["reward/hold_stability"]  = r_hold_stability.mean()
+        self.extras["reward/success_bonus"]   = r8_success.mean()
+        self.extras["reward/full_contact"]    = r9_full_contact.mean()
+        self.extras["reward/fingertip_guide"] = r_ft_guide.mean()
+        self.extras["reward/thumb_tip_direction"] = torch.nan_to_num(r_thumb_tip_dir, nan=0.0).mean()
+        self.extras["reward/action_smooth"]   = r7_action_smooth.mean()
+        self.extras["reward/thumb_pose_anchor"] = torch.nan_to_num(r10_thumb_anchor, nan=0.0).mean()
+        self.extras["reward/thumb_slide_penalty"] = torch.nan_to_num(r10_thumb_slide, nan=0.0).mean()
+        self.extras["reward/grasp_shape_consistency"] = torch.nan_to_num(r10_shape_consistency, nan=0.0).mean()
 
         # adr_* : ADR 진행 상태
         if self.contact_adr is not None:
@@ -1402,10 +1403,9 @@ class GraspRightEnv(DirectRLEnv):
                 self.grasp_adr.progress, device=self.device
             )
 
-        # f_*   : 파지력 지표
-        self.extras["f_thumb"]  = thumb_force.mean()
-        self.extras["f_others"] = others_avg_force.mean()
-        self.extras["f_ratio"]  = force_ratio.mean()
+        self.extras["hand_force/f_thumb"]  = thumb_force.mean()
+        self.extras["hand_force/f_others"] = others_avg_force.mean()
+        self.extras["hand_force/f_ratio"]  = force_ratio.mean()
         force_delta_abs = (total_grip_force - self._prev_total_grip_force_buf).abs()
         contact_delta_abs = (self.num_contacts_buf.float() - self._prev_num_contacts_buf).abs()
         middle_contact_delta_abs = (
@@ -1414,37 +1414,49 @@ class GraspRightEnv(DirectRLEnv):
         lift_mask = self.is_lift_phase
         if lift_mask.any():
             lift_actions = self.actions[lift_mask, 6:]
-            self.extras["stat_lift_finger_action_mean"] = lift_actions.mean()
-            self.extras["stat_lift_finger_action_std"] = lift_actions.std(unbiased=False)
-            self.extras["stat_lift_finger_action_abs_mean"] = lift_actions.abs().mean()
-            self.extras["stat_lift_force_delta"] = force_delta_abs[lift_mask].mean()
-            self.extras["stat_lift_contact_delta"] = contact_delta_abs[lift_mask].mean()
-            self.extras["stat_lift_middle_contact_delta"] = middle_contact_delta_abs[lift_mask].mean()
+            self.extras["hand_action/lift/finger_action_mean"] = lift_actions.mean()
+            self.extras["hand_action/lift/finger_action_std"] = lift_actions.std(unbiased=False)
+            self.extras["hand_action/lift/finger_action_abs_mean"] = lift_actions.abs().mean()
+            self.extras["hand_force/lift/force_delta"] = force_delta_abs[lift_mask].mean()
+            self.extras["hand_contact/lift/contact_delta"] = contact_delta_abs[lift_mask].mean()
+            self.extras["hand_contact/lift/middle_contact_delta"] = middle_contact_delta_abs[lift_mask].mean()
             self._eval_lift_force_delta_sum[lift_mask] += force_delta_abs[lift_mask]
             self._eval_lift_contact_delta_sum[lift_mask] += contact_delta_abs[lift_mask]
-        self.extras["thumb_anchor_error"]   = torch.nan_to_num(thumb_anchor_error, nan=0.0).mean()
-        self.extras["thumb_downward_delta"] = torch.nan_to_num(thumb_downward_delta, nan=0.0).mean()
-        self.extras["thumb_tip_direction_cos"] = torch.nan_to_num(thumb_tip_dir_cos, nan=0.0).mean()
-        self.extras["thumb_tip_direction_error"] = torch.nan_to_num(thumb_tip_dir_error, nan=0.0).mean()
-        self.extras["grasp_shape_error"]    = torch.nan_to_num(grasp_shape_error, nan=0.0).mean()
+        self.extras["hand_joint/rj_1/thumb_anchor_error"]   = torch.nan_to_num(thumb_anchor_error, nan=0.0).mean()
+        self.extras["hand_joint/rj_1/thumb_downward_delta"] = torch.nan_to_num(thumb_downward_delta, nan=0.0).mean()
+        self.extras["hand_joint/rj_1/thumb_tip_direction_cos"] = torch.nan_to_num(thumb_tip_dir_cos, nan=0.0).mean()
+        self.extras["hand_joint/rj_1/thumb_tip_direction_error"] = torch.nan_to_num(thumb_tip_dir_error, nan=0.0).mean()
+        self.extras["hand_joint/rj_1/grasp_shape_error"]    = torch.nan_to_num(grasp_shape_error, nan=0.0).mean()
+        finger_actions = self.actions[:, 6:26].reshape(self.num_envs, 5, 4)
+        finger_joint_delta = (
+            self.robot.data.joint_pos[:, self.hand_dof_indices].reshape(self.num_envs, 5, 4)
+            - self.lift_finger_pos_buf.reshape(self.num_envs, 5, 4)
+        )
+        finger_contacts = self.binary_contact_buf.float()
+        finger_forces = self.contact_force_raw
+        for _finger_idx in range(5):
+            _joint_tag = f"hand_joint/rj_{_finger_idx + 1}"
+            self.extras[f"{_joint_tag}/action_abs_mean"] = finger_actions[:, _finger_idx, :].abs().mean()
+            self.extras[f"{_joint_tag}/joint_delta_abs_mean"] = finger_joint_delta[:, _finger_idx, :].abs().mean()
+            self.extras[f"{_joint_tag}/contact"] = finger_contacts[:, _finger_idx].mean()
+            self.extras[f"{_joint_tag}/force"] = finger_forces[:, _finger_idx].mean()
         light_mask = (self._bead_mass_normalized < 0.5)
         heavy_mask = (self._bead_mass_normalized > 0.5)
         if light_mask.any() and heavy_mask.any():
-            self.extras["f_ratio_delta"] = (
+            self.extras["hand_force/f_ratio_delta"] = (
                 force_ratio[heavy_mask].mean() - force_ratio[light_mask].mean()
             )
 
-        # stat_ : 학습 진행 지표
-        self.extras["stat_num_contacts"] = self.num_contacts_buf.float().mean()
-        self.extras["stat_middle_contacts"] = (
+        self.extras["hand_contact/contact_count"] = self.num_contacts_buf.float().mean()
+        self.extras["hand_contact/middle_contacts"] = (
             self.middle_binary_contact_buf.float().sum(dim=-1).mean()
         )
-        self.extras["stat_grasp_cup_xy_displacement"] = cup_xy_displacement[~self.is_lift_phase].mean() if (~self.is_lift_phase).any() else cup_xy_displacement.mean()
-        self.extras["stat_grasp_palm_overshoot"] = palm_overshoot[~self.is_lift_phase].mean() if (~self.is_lift_phase).any() else palm_overshoot.mean()
-        self.extras["stat_cup_uprightness"] = cup_uprightness.mean()
-        self.extras["stat_cup_tilt_deg"] = cup_tilt_deg.mean()
-        self.extras["stat_grasp_cup_tilt_deg"] = cup_tilt_deg[~self.is_lift_phase].mean() if (~self.is_lift_phase).any() else cup_tilt_deg.mean()
-        self.extras["stat_success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
+        self.extras["object_stat/grasp_cup_xy_displacement"] = cup_xy_displacement[~self.is_lift_phase].mean() if (~self.is_lift_phase).any() else cup_xy_displacement.mean()
+        self.extras["object_stat/grasp_palm_overshoot"] = palm_overshoot[~self.is_lift_phase].mean() if (~self.is_lift_phase).any() else palm_overshoot.mean()
+        self.extras["object_stat/cup_uprightness"] = cup_uprightness.mean()
+        self.extras["object_stat/cup_tilt_deg"] = cup_tilt_deg.mean()
+        self.extras["object_stat/grasp_cup_tilt_deg"] = cup_tilt_deg[~self.is_lift_phase].mean() if (~self.is_lift_phase).any() else cup_tilt_deg.mean()
+        self.extras["object_stat/success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
 
         self._prev_total_grip_force_buf.copy_(total_grip_force)
         self._prev_num_contacts_buf.copy_(self.num_contacts_buf.float())
@@ -1460,17 +1472,17 @@ class GraspRightEnv(DirectRLEnv):
         ]
         for _lvl, (_tag, _mask) in enumerate(_bin_defs):
             if _mask.any():
-                self.extras[f"bin_{_tag}_f_ratio"] = force_ratio[_mask].mean()
-                self.extras[f"bin_{_tag}_sr"] = torch.tensor(
+                self.extras[f"mass_bin/{_tag}/f_ratio"] = force_ratio[_mask].mean()
+                self.extras[f"mass_bin/{_tag}/sr"] = torch.tensor(
                     self._successful_episodes_bin[_lvl]
                     / max(self._total_episodes_bin[_lvl], 1),
                     device=self.device,
                 )
-                self.extras[f"bin_{_tag}_contacts"] = self.num_contacts_buf[_mask].float().mean()
-                self.extras[f"bin_{_tag}_lift"] = r6_lift[_mask].mean()
-                self.extras[f"bin_{_tag}_adaptive_grip"] = r3_adaptive_force[_mask].mean()
-                self.extras[f"bin_{_tag}_full_contact"] = r9_full_contact[_mask].mean()
-                self.extras[f"bin_{_tag}_multi_phalanx"] = r1c_multi_phalanx[_mask].mean()
+                self.extras[f"mass_bin/{_tag}/contacts"] = self.num_contacts_buf[_mask].float().mean()
+                self.extras[f"mass_bin/{_tag}/lift"] = r6_lift[_mask].mean()
+                self.extras[f"mass_bin/{_tag}/adaptive_grip"] = r3_adaptive_force[_mask].mean()
+                self.extras[f"mass_bin/{_tag}/full_contact"] = r9_full_contact[_mask].mean()
+                self.extras[f"mass_bin/{_tag}/multi_phalanx"] = r1c_multi_phalanx[_mask].mean()
 
         return total
 
@@ -1530,7 +1542,7 @@ class GraspRightEnv(DirectRLEnv):
         terminated = out_x | out_y | fallen | tipped | success_held
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
-        self.extras["stat_obj_z"] = self.object_pos[:, 2].mean()
+        self.extras["object_stat/obj_z"] = self.object_pos[:, 2].mean()
 
         return terminated, truncated
 

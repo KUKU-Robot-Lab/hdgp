@@ -41,7 +41,7 @@ def test_build_window_summary_splits_dataframe_into_four_ranges():
     df = pd.DataFrame(
         {
             "rewards": [1.0, 2.0, 3.0, 4.0],
-            "stat_success_rate": [0.1, 0.2, 0.3, 0.4],
+            "object_stat/success_rate": [0.1, 0.2, 0.3, 0.4],
         },
         index=pd.Index([100, 200, 300, 400], name="iter"),
     )
@@ -49,13 +49,13 @@ def test_build_window_summary_splits_dataframe_into_four_ranges():
     windows = [(1, 100), (101, 200), (201, 300), (301, 400)]
     summary = module.build_window_summary(
         df,
-        metrics=["rewards", "stat_success_rate"],
+        metrics=["rewards", "object_stat/success_rate"],
         windows=windows,
     )
 
     assert list(summary["window"]) == ["idx 1-100", "idx 101-200", "idx 201-300", "idx 301-400"]
     assert list(summary["rewards"]) == [1.0, 2.0, 3.0, 4.0]
-    assert list(summary["stat_success_rate"]) == [0.1, 0.2, 0.3, 0.4]
+    assert list(summary["object_stat/success_rate"]) == [0.1, 0.2, 0.3, 0.4]
 
 
 def test_render_markdown_includes_missing_metrics_section():
@@ -80,11 +80,11 @@ def test_render_markdown_includes_missing_metrics_section():
             "test8 keeps lower final reward than test7.",
             "Both runs differ only by seed.",
         ],
-        missing_metrics=["bin_20b_sr", "bin_30b_sr"],
+        missing_metrics=["mass_bin/20b/sr", "mass_bin/30b/sr"],
     )
 
     assert "# 5g_grasp_right_v10 test7/test8" in report
-    assert "bin_20b_sr" in report
+    assert "mass_bin/20b/sr" in report
     assert "Both runs differ only by seed." in report
 
 
@@ -92,51 +92,55 @@ def test_bin_metrics_whitelist_matches_reduced_logging():
     module = load_module()
 
     expected_metrics = {
-        "bin_0b_sr",
-        "bin_10b_sr",
-        "bin_20b_sr",
-        "bin_30b_sr",
-        "bin_0b_f_ratio",
-        "bin_10b_f_ratio",
-        "bin_20b_f_ratio",
-        "bin_30b_f_ratio",
-        "bin_0b_contacts",
-        "bin_10b_contacts",
-        "bin_20b_contacts",
-        "bin_30b_contacts",
-        "bin_0b_lift",
-        "bin_10b_lift",
-        "bin_20b_lift",
-        "bin_30b_lift",
-        "bin_0b_adaptive_grip",
-        "bin_10b_adaptive_grip",
-        "bin_20b_adaptive_grip",
-        "bin_30b_adaptive_grip",
-        "bin_0b_full_contact",
-        "bin_10b_full_contact",
-        "bin_20b_full_contact",
-        "bin_30b_full_contact",
-        "bin_0b_multi_phalanx",
-        "bin_10b_multi_phalanx",
-        "bin_20b_multi_phalanx",
-        "bin_30b_multi_phalanx",
+        "mass_bin/0b/sr",
+        "mass_bin/10b/sr",
+        "mass_bin/20b/sr",
+        "mass_bin/30b/sr",
+        "mass_bin/0b/f_ratio",
+        "mass_bin/10b/f_ratio",
+        "mass_bin/20b/f_ratio",
+        "mass_bin/30b/f_ratio",
+        "mass_bin/0b/contacts",
+        "mass_bin/10b/contacts",
+        "mass_bin/20b/contacts",
+        "mass_bin/30b/contacts",
+        "mass_bin/0b/lift",
+        "mass_bin/10b/lift",
+        "mass_bin/20b/lift",
+        "mass_bin/30b/lift",
+        "mass_bin/0b/adaptive_grip",
+        "mass_bin/10b/adaptive_grip",
+        "mass_bin/20b/adaptive_grip",
+        "mass_bin/30b/adaptive_grip",
+        "mass_bin/0b/full_contact",
+        "mass_bin/10b/full_contact",
+        "mass_bin/20b/full_contact",
+        "mass_bin/30b/full_contact",
+        "mass_bin/0b/multi_phalanx",
+        "mass_bin/10b/multi_phalanx",
+        "mass_bin/20b/multi_phalanx",
+        "mass_bin/30b/multi_phalanx",
     }
 
     assert expected_metrics.issubset(set(module.BIN_METRICS))
-    assert "bin_0b_slip" not in module.BIN_METRICS
-    assert "bin_10b_f_smooth" not in module.BIN_METRICS
+    assert "mass_bin/0b/slip" not in module.BIN_METRICS
+    assert "mass_bin/10b/f_smooth" not in module.BIN_METRICS
+    assert "bin_0b_sr" not in module.BIN_METRICS
 
 
 def test_core_metrics_include_thumb_and_shape_rewards():
     module = load_module()
 
     expected_metrics = {
-        "r_thumb_pose_anchor",
-        "r_thumb_slide_penalty",
-        "r_grasp_shape_consistency",
-        "thumb_anchor_error",
-        "thumb_downward_delta",
-        "grasp_shape_error",
+        "reward/thumb_pose_anchor",
+        "reward/thumb_slide_penalty",
+        "reward/grasp_shape_consistency",
+        "hand_joint/rj_1/thumb_anchor_error",
+        "hand_joint/rj_1/thumb_downward_delta",
+        "hand_joint/rj_1/thumb_tip_direction_cos",
+        "hand_joint/rj_1/grasp_shape_error",
     }
 
     assert expected_metrics.issubset(set(module.CORE_METRICS))
+    assert "r_thumb_pose_anchor" not in module.CORE_METRICS
+    assert "thumb_anchor_error" not in module.CORE_METRICS

@@ -8,8 +8,8 @@ import torch
 
 
 UTILS_PATH = Path(
-    "/home/user/rl_ws/hdgp/source/openarm/openarm/tasks/manager_based/"
-    "openarm_manipulation/pipeline/hand/right/5g_grasp_right_v10/finger_action_utils.py"
+    "/home/user/rl_ws/hdgp/source/openarm/openarm/tesollo/right/grasp_v10_3/"
+    "finger_action_utils.py"
 )
 
 
@@ -88,4 +88,34 @@ def test_thumb_downward_constraint_scales_negative_thumb_curl_and_clamps_floor()
     assert torch.allclose(
         grasp_target,
         torch.tensor([[-0.1, -1.60, 0.20, 0.90]], dtype=torch.float32),
+    )
+
+
+def test_lift_targets_clamp_thumb_joints_while_other_fingers_keep_full_delta():
+    module = load_module()
+
+    action = torch.ones((1, 20), dtype=torch.float32)
+    action[:, :4] = torch.tensor([[-1.0, 1.0, -1.0, 1.0]], dtype=torch.float32)
+    lift_ref = torch.full((1, 20), 0.50, dtype=torch.float32)
+    lower = torch.zeros(20, dtype=torch.float32)
+    upper = torch.ones(20, dtype=torch.float32)
+    mask = torch.ones(20, dtype=torch.float32)
+    mask[[0, 4, 8, 12, 16, 17]] = 0.0
+
+    target = module.compute_lift_finger_targets(
+        lift_reference_pos=lift_ref,
+        finger_action=action,
+        lower_limits=lower,
+        upper_limits=upper,
+        delta_scale=0.08,
+        delta_mask=mask,
+        thumb_lift_indices=torch.tensor([0, 1, 2, 3], dtype=torch.long),
+        thumb_lift_max_delta=0.02,
+    )
+
+    assert torch.all(target[:, :4] <= lift_ref[:, :4] + 0.02)
+    assert torch.all(target[:, :4] >= lift_ref[:, :4] - 0.02)
+    assert torch.allclose(
+        target[:, :8],
+        torch.tensor([[0.50, 0.52, 0.48, 0.52, 0.50, 0.58, 0.58, 0.58]], dtype=torch.float32),
     )

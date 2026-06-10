@@ -48,6 +48,21 @@ def _compute_reference_plus_delta_target(
     return target
 
 
+def _clamp_indices_to_reference_delta(
+    target: torch.Tensor,
+    reference_pos: torch.Tensor,
+    indices: torch.Tensor,
+    max_delta: float,
+) -> torch.Tensor:
+    selected_ref = reference_pos[:, indices]
+    selected_target = target[:, indices].clamp(
+        selected_ref - float(max_delta),
+        selected_ref + float(max_delta),
+    )
+    target[:, indices] = selected_target
+    return target
+
+
 def compute_grasp_finger_targets(
     current_pos: torch.Tensor,
     finger_action: torch.Tensor,
@@ -85,8 +100,10 @@ def compute_lift_finger_targets(
     thumb_downward_action_scale: float = 1.0,
     thumb_anchor_pose: torch.Tensor | None = None,
     thumb_curl_max_downward_delta: float | None = None,
+    thumb_lift_indices: torch.Tensor | None = None,
+    thumb_lift_max_delta: float | None = None,
 ) -> torch.Tensor:
-    return _compute_reference_plus_delta_target(
+    target = _compute_reference_plus_delta_target(
         reference_pos=lift_reference_pos,
         finger_action=finger_action,
         lower_limits=lower_limits,
@@ -98,3 +115,11 @@ def compute_lift_finger_targets(
         thumb_anchor_pose=thumb_anchor_pose,
         thumb_curl_max_downward_delta=thumb_curl_max_downward_delta,
     )
+    if thumb_lift_indices is not None and thumb_lift_max_delta is not None:
+        target = _clamp_indices_to_reference_delta(
+            target=target,
+            reference_pos=lift_reference_pos,
+            indices=thumb_lift_indices.to(device=target.device, dtype=torch.long),
+            max_delta=thumb_lift_max_delta,
+        )
+    return target
