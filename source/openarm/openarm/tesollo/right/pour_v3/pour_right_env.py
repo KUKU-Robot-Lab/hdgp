@@ -1789,15 +1789,12 @@ class PourRightEnv(DirectRLEnv):
 
         # [test12-C'] sustained 배출 보상: 빈 컵(=비드가 소스 밖)일수록 매 step 지속 보상.
         #   rate형(test11)은 ~0.025/step로 dense basin(~63/step) 못 이김 → spill 골짜기 못 건넘.
-        #   sustained는 dump 상태를 직접 보상해 basin과 경쟁.
-        # [test14] anti-spill 재게이트: 구 게이트(dir_cos_c>0, 컵중심)는 cos_c≈0.42로 항상 충족 →
-        #   테이블로 흘려도(spill 0.48) full 보상 = spill-farming(26.9/step, bead_in의 76%).
-        #   → cos_c 게이트 제거하고 (1-spill_ratio)로 직접 게이트: "빼고 + 안 흘림"에만 지급.
-        #   spill→0이면 full 회복(dump-돌파 보존), spill→1이면 0(farming 차단).
+        #   sustained는 dump 상태를 직접 보상해 basin과 경쟁. aim-gate(dir_cos_c>0)로 조준된 배출만.
+        #   bead_in(200)이 여전히 지배 → 착지>spill.
+        _aim_gate_drain = (self._directional_tilt_cos_c > 0.0).float()
         r_source_drain = (
-            pour_gate * self.cfg.weight_source_drain
+            pour_gate * _aim_gate_drain * self.cfg.weight_source_drain
             * (1.0 - self._bead_in_source_fraction)
-            * (1.0 - self._spill_ratio).clamp(0.0, 1.0)
         )
 
         # Success

@@ -78,7 +78,6 @@ from .pour_right_constants import (
 )
 from .pour_adr import PourADR
 from .pour_adr import PourADR as GraspADR
-from .bead_curriculum import BeadCountCurriculum
 from .pour_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
@@ -526,21 +525,6 @@ class PourRightEnv(DirectRLEnv):
         self._source_cup_up_axis_b = to_torch(self.cfg.source_cup_up_axis_b, device=self.device)
         self._target_cup_up_axis_b = to_torch(self.cfg.target_cup_up_axis_b, device=self.device)
         self.num_beads = int(self.cfg.bead_count)
-        # [v5] bead-count 커리큘럼: 물리는 num_beads(=30) 고정, 활성 N만 사용(앞 N 슬라이스).
-        if self.cfg.enable_bead_curriculum:
-            self.bead_curriculum = BeadCountCurriculum(
-                schedule=tuple(self.cfg.bead_count_curriculum),
-                success_threshold=self.cfg.bead_curriculum_success_threshold,
-                min_updates_per_stage=self.cfg.bead_curriculum_min_updates,
-            )
-            self._active_bead_count = self.bead_curriculum.current_count
-        else:
-            self.bead_curriculum = None
-            self._active_bead_count = self.num_beads
-        # stage-windowed success 집계(advance마다 리셋) — 누적 rate는 쉬운 초기 stage에 지배됨
-        self._bead_curric_successes: int = 0
-        self._bead_curric_episodes: int = 0
-        self._bead_curric_last_step: float = 0.0
         _bead_offsets = []
         beads_per_layer = 5
         for i in range(self.num_beads):
@@ -871,9 +855,7 @@ class PourRightEnv(DirectRLEnv):
     def _compute_bead_flags(self) -> None:
         """beads가 source/target cup 내부 또는 target mouth를 통과했는지 계산."""
         bead_pos_w = self.beads.data.object_pos_w
-        # [v5] 커리큘럼: centroid도 활성 N개만 (hidden 비드 z=-10이 obs 오염 방지)
-        _a0 = int(self._active_bead_count)
-        self._bead_centroid_w.copy_(bead_pos_w[:, :_a0].mean(dim=1))
+        self._bead_centroid_w.copy_(bead_pos_w.mean(dim=1))
 
         n = bead_pos_w.shape[0]
         k = bead_pos_w.shape[1]
@@ -911,13 +893,10 @@ class PourRightEnv(DirectRLEnv):
             & (pos_in_target[..., 2] <= self.cfg.target_mouth_z)
         )
         self._bead_crossed_target_mouth |= mouth_crossed_now
-        # [v5] 커리큘럼: 활성 비드 N개(앞 N 슬라이스)로만 fraction 정규화.
-        #   비활성 비드는 hide(z=-10)라 그대로 포함하면 spill로 오계산됨 → 슬라이스로 제외.
-        a = int(self._active_bead_count)
-        self._bead_cross_count.copy_(self._bead_crossed_target_mouth[:, :a].sum(dim=-1).long())
-        bead_cross_fraction = self._bead_crossed_target_mouth[:, :a].float().mean(dim=-1)
-        bead_in_target_fraction = self._bead_in_target[:, :a].float().mean(dim=-1)
-        bead_in_source_fraction = self._bead_in_source[:, :a].float().mean(dim=-1)
+        self._bead_cross_count.copy_(self._bead_crossed_target_mouth.sum(dim=-1).long())
+        bead_cross_fraction = self._bead_crossed_target_mouth.float().mean(dim=-1)
+        bead_in_target_fraction = self._bead_in_target.float().mean(dim=-1)
+        bead_in_source_fraction = self._bead_in_source.float().mean(dim=-1)
 
         # source 컵 밖 + target 컵 로컬 z < z_min 아래로 떨어진 bead = 영구 손실
         # transit bead (공중 이동 중): target local z > z_min → spill 아님
@@ -925,7 +904,7 @@ class PourRightEnv(DirectRLEnv):
             (~self._bead_in_source)
             & (pos_in_target[..., 2] < self.cfg.target_inside_z_min)
         )
-        spill_ratio = bead_spilled[:, :a].float().mean(dim=-1)
+        spill_ratio = bead_spilled.float().mean(dim=-1)
 
         # [REDESIGN v4] dense bead 근접 점수: 소스에서 방출(released)되고 아직 손실되지
         # 않은(바닥 위) bead가 target 축(중심)에 가까울수록 보상. 4.1cm binary가 만드는
@@ -935,7 +914,7 @@ class PourRightEnv(DirectRLEnv):
         _not_lost = pos_in_target[..., 2] >= self.cfg.target_inside_z_min
         _xy_score = torch.exp(-self.cfg.bead_near_scale * bead_xy_to_target)
         _near = _xy_score * (_released & _not_lost).float()
-        self._bead_near_score.copy_(_near[:, :a].mean(dim=-1))
+        self._bead_near_score.copy_(_near.mean(dim=-1))
 
         self._bead_in_source_delta.copy_(bead_in_source_fraction - self._bead_in_source_fraction)
         self._bead_in_target_delta.copy_(bead_in_target_fraction - self._bead_in_target_fraction)
@@ -1809,12 +1788,9 @@ class PourRightEnv(DirectRLEnv):
         r_pour_stage = pour_gate * (r_bead_near + r_bead_in + r_cross)
 
         # [test12-C'] sustained 배출 보상: 빈 컵(=비드가 소스 밖)일수록 매 step 지속 보상.
-        #   sustained는 dump 상태를 직접 보상해 basin과 경쟁.
-        # [v5] test3 OLD 복원: fresh bootstrap엔 "기울여 쏟는 행동"의 breadcrumb이 필수.
-        #   test14 anti-spill (1-spill)은 warmstart-refine엔 맞으나 fresh엔 독 — messy-dump 시
-        #   drain≈0이라 정책이 dump commit을 못 배움(v5 600ep 64°정체). cos_c>0 게이트만 둔 OLD는
-        #   흘려도 "비우는 행동" 보상 → 틸트/dump 부트스트랩. 착지는 bead_in(200)이 steering.
-        #   ※고비드 단계서 spill-farming 시 anti-spill 재도입 예정(bead-count 연동).
+        #   rate형(test11)은 ~0.025/step로 dense basin(~63/step) 못 이김 → spill 골짜기 못 건넘.
+        #   sustained는 dump 상태를 직접 보상해 basin과 경쟁. aim-gate(dir_cos_c>0)로 조준된 배출만.
+        #   bead_in(200)이 여전히 지배 → 착지>spill.
         _aim_gate_drain = (self._directional_tilt_cos_c > 0.0).float()
         r_source_drain = (
             pour_gate * _aim_gate_drain * self.cfg.weight_source_drain
@@ -1886,17 +1862,6 @@ class PourRightEnv(DirectRLEnv):
             self.noise_adr.maybe_increment(_ep_success_rate)
         if self.success_adr is not None:
             self.success_adr.maybe_increment(_ep_success_rate)
-        # [v5] bead-count 커리큘럼: interval마다 stage-windowed success로 advance 판정.
-        if self.bead_curriculum is not None:
-            _step = float(getattr(self, "common_step_counter", 0))
-            if _step - self._bead_curric_last_step >= self.cfg.bead_curriculum_increment_interval:
-                _win_rate = self._bead_curric_successes / max(self._bead_curric_episodes, 1)
-                advanced = self.bead_curriculum.update(_win_rate)
-                if advanced:
-                    self._active_bead_count = self.bead_curriculum.current_count
-                    self._bead_curric_successes = 0   # 새 stage는 fresh 측정
-                    self._bead_curric_episodes = 0
-                self._bead_curric_last_step = _step
         # 래치 판정: j1-5 자세 진입 비율(posture_rate)이 trigger를 interval 간격으로
         # latch_sustain회 연속 충족하면 래치 → 이후 단조. 래치는 한 번만(전진 재게이팅 없음).
         _posture_rate = (
@@ -1937,10 +1902,6 @@ class PourRightEnv(DirectRLEnv):
 
         # log/* — 진단 지표 (Episode 접두사 없이 log/* 로 기록)
         diag: dict = {
-            "log/active_bead_count":   torch.tensor(float(self._active_bead_count), device=self.device),
-            "log/bead_curric_winrate": torch.tensor(
-                self._bead_curric_successes / max(self._bead_curric_episodes, 1), device=self.device
-            ),
             "log/crossover_alpha":     torch.tensor(self._crossover_alpha, device=self.device),
             "log/posture_rate":        torch.tensor(_posture_rate, device=self.device),
             "log/pour_latched":        torch.tensor(float(self._pour_latched), device=self.device),
@@ -2057,9 +2018,7 @@ class PourRightEnv(DirectRLEnv):
         # _hide_beads()는 z=-10.0에 숨기므로, _beads_spawned=False인 env는 체크 제외
         # (월드 z 사용: z방향 env_origin은 모두 0이므로 절대값 유효)
         bead_pos_w = self.beads.data.object_pos_w  # (N, num_beads, 3)
-        # [v5] 커리큘럼: 비활성 비드는 hide(z=-10)라 항상 <-0.5 → 활성 N개만 검사(오종료 방지)
-        _af = int(self._active_bead_count)
-        bead_fallen = self._beads_spawned & (bead_pos_w[:, :_af, 2] < -0.5).any(dim=-1)
+        bead_fallen = self._beads_spawned & (bead_pos_w[..., 2] < -0.5).any(dim=-1)
 
         # [test11-A] 완료 절벽 제거: source_drained·success는 "실패"가 아니라 "과제 완료/타임아웃"이므로
         #   terminated(V=0)이 아닌 truncated(미래가치 부트스트랩)로 분류. terminated엔 실패 사건만 남김.
@@ -2091,11 +2050,7 @@ class PourRightEnv(DirectRLEnv):
 
         # ---- episode 성공 집계 후 클리어 ----
         self._total_episodes += n
-        _ep_succ = int(self.episode_success_buf[env_ids].sum().item())
-        self._successful_episodes += _ep_succ
-        # [v5] bead 커리큘럼: stage-windowed 집계 (advance마다 리셋)
-        self._bead_curric_episodes += n
-        self._bead_curric_successes += _ep_succ
+        self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
 
         # warmstart cache 저장: 에피소드 종료(final state)에만 체크
         self._maybe_store_warmstart_successes(env_ids)
@@ -2296,13 +2251,6 @@ class PourRightEnv(DirectRLEnv):
         bead_state = torch.zeros(n, self.num_beads, 13, device=self.device)
         bead_state[..., :3] = bead_pos_w
         bead_state[..., 3:7] = bead_quat_w
-        # [v5] 커리큘럼: 활성 N개만 컵 내부에 소환, 비활성(인덱스 ≥ N)은 hide(z=-10).
-        a = int(self._active_bead_count)
-        if a < self.num_beads:
-            bead_state[:, a:, :3] = 0.0
-            bead_state[:, a:, 2] = -10.0
-            bead_state[:, a:, 3] = 1.0   # 단위 quaternion(w=1)
-            bead_state[:, a:, 4:] = 0.0
         return bead_state
 
     def _hide_beads(self, env_ids: Sequence[int]) -> None:

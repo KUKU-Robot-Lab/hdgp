@@ -83,7 +83,7 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.003       # [test14] 0.0015→0.003: test13 checkpoint 동결(KL 0.0001) 재탐험. reward 구조 변경 후 spill-pose 탈출용. ⚠️소폭만(과하면 손가락 채터→grasp 붕괴, test11 sigma 0.2 전례)
+    entropy_coef: 0.0015      # scratch 탐색 + KL 안정 절충 (MLP 0.0008 / v10-3 0.002 사이)
     truncate_grads: True
     e_clip: 0.2               # LSTM scratch 안정성 우선 (MLP 0.25에서 하향)
     # horizon=32: 600-step 장기 에피소드에서 BPTT가 더 긴 시계열 포착

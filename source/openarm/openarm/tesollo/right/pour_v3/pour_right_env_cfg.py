@@ -333,7 +333,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     g_ready_center: float = 0.20    # cup_center_xy_dist 기준 (=기존 pour_binary_xy_thresh)
     g_ready_width: float = 0.03
     # Stage B: pour-point → target 기하 (정책이 직접 제어하는 rim-pivot 공간)
-    weight_pour_xy: float = 15.0    # [test14] 8→15: 정조준 강화(lip-over-target gradient). test13서 basin축소로 낮췄으나 source_drain anti-spill 재게이트가 basin 보호 → 15 안전 복원
+    weight_pour_xy: float = 8.0     # [test13-B1] 15→8: dense basin 축소. (pour-point를 target 위로)
     pour_xy_scale: float = 8.0
     weight_pour_zband: float = 8.0  # pour-point 적정 높이 band (가산, 단방향 barrier 아님)
     pour_zband_target: float = 0.05
