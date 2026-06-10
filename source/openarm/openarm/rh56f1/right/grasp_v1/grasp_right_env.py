@@ -858,7 +858,7 @@ class GraspRightEnv(DirectRLEnv):
             attrs["meta/object_spawn_xy_range"] = float(self.cfg.object_spawn_xy_range)
             attrs["meta/num_beads"] = int(self.cfg.num_beads)
             attrs["meta/bead_single_mass"] = float(self.cfg.bead_single_mass)
-            attrs["meta/bead_scale"] = 0.5
+            attrs["meta/bead_scale"] = float(self.cfg.bead_scale)
             attrs["meta/cup_base_mass"] = float(self.cfg.cup_base_mass)
             attrs["meta/palm_min_x"] = float(self.palm_mins[0])
             attrs["meta/palm_min_y"] = float(self.palm_mins[1])
@@ -1715,140 +1715,43 @@ class GraspRightEnv(DirectRLEnv):
                 self.extras[f"bin_{_tag}_contacts"] = _zero
 
         # ================================================================
-        # 7-term Mass-Adaptive Enveloping Grip Reward
+        # Tesollo grasp_v7_2-style dense enclosure reward
         # ================================================================
-
-        # ---- r_height: exp(-α_h * (z_cup - z*)²), lift phase에서만 ----
-        cup_height_delta = self.object_pos[:, 2] - self.object_init_pos[:, 2]
-        r_height = torch.exp(
-            -self.cfg.r_height_sharpness * (cup_height_delta - self.cfg.lift_target_z_delta) ** 2
-        ) * self._lift_started_buf.float()
-
-        # ---- r_ori: exp(-α_R * tilt_rad²) ----
-        tilt_rad = torch.acos(cup_z_world[:, 2].clamp(-1.0, 1.0))
-        r_ori = torch.exp(-self.cfg.r_ori_sharpness * tilt_rad ** 2)
-
-        # ---- v7_2 palm approach + RH56F1 middle guide: arm 접근 gradient 복구 ----
-        approach_reward_gate = (
-            self.is_grasp_phase
-            & (self.num_contacts_buf < self.cfg.stage0_lift_start_min_contacts)
-            & (~self._lift_contact_ready_latched_buf)
-        ).float()
-        r_palm_approach = (
-            torch.exp(-self.cfg.r_palm_approach_sharpness * palm_to_cup_dist)
-            * approach_reward_gate
-        )
-        r_middle_guide = (
-            torch.exp(-self.cfg.r_middle_guide_sharpness * middle_to_cup_dist)
-            * approach_reward_gate
-        )
-
-        # ---- r_tip_approach: contact 전 손가락을 컵 표면 shell로 유도 ----
-        tip_to_cup_dist = (self.fingertip_pos - grasp_center.unsqueeze(1)).norm(dim=-1)
-        tip_shell_error = (tip_to_cup_dist - CUP_RADIUS_APPROX).abs()
-        tip_shell_reward = torch.exp(-self.cfg.r_tip_approach_sharpness * tip_shell_error ** 2)
-        tip_shell_topk = tip_shell_reward.topk(k=min(3, NUM_FINGERTIPS), dim=-1).values
-        r_tip_approach = (
-            tip_shell_topk.mean(dim=-1)
-            * approach_reward_gate
-        )
-
-        # ---- r_slip: -w_s * Σᵢ∈C 1_{cᵢ} * ||v_rel,i||²  (HTML exact formula) ----
-        # v_rel,i = (v_cup + ω_cup × r_i) - v_finger_i
-        cup_lin_vel_w = self.cup.data.root_lin_vel_w          # (N, 3)
-        cup_ang_vel_w = self.cup.data.root_ang_vel_w          # (N, 3)
-
-        def _tangential_sq(v_rel: torch.Tensor, f_xyz: torch.Tensor) -> torch.Tensor:
-            """||v_t||² = ||v_rel||² - (v_rel·n̂)²,  n̂ = f_xyz/||f_xyz||"""
-            n_hat = f_xyz / (f_xyz.norm(dim=-1, keepdim=True) + 1e-6)
-            v_dot_n = (v_rel * n_hat).sum(dim=-1)
-            return (v_rel.pow(2).sum(dim=-1) - v_dot_n ** 2).clamp(min=0.0)
-
-        # tip
-        r_tip = self.fingertip_pos - self.object_pos.unsqueeze(1)   # (N, 5, 3)
-        cup_surf_vel_tip = (
-            cup_lin_vel_w.unsqueeze(1)
-            + torch.linalg.cross(cup_ang_vel_w.unsqueeze(1).expand(-1, NUM_FINGERTIPS, -1), r_tip)
-        )
-        finger_tip_vel = self.robot.data.body_lin_vel_w[:, self.fingertip_body_indices, :]
-        v_rel_tip = cup_surf_vel_tip - finger_tip_vel                # (N, 5, 3)
-        tip_slip = (self.binary_contact_buf.float()
-                    * _tangential_sq(v_rel_tip, self.contact_force_xyz_raw)).sum(dim=-1)
-
-        # distal
-        if len(self.distal4_body_indices) == NUM_FINGERTIPS:
-            r_distal = self.distal4_pos - self.object_pos.unsqueeze(1)
-            cup_surf_vel_distal = (
-                cup_lin_vel_w.unsqueeze(1)
-                + torch.linalg.cross(cup_ang_vel_w.unsqueeze(1).expand(-1, NUM_FINGERTIPS, -1), r_distal)
-            )
-            finger_distal_vel = self.robot.data.body_lin_vel_w[:, self.distal4_body_indices, :]
-            v_rel_distal = cup_surf_vel_distal - finger_distal_vel
-            distal_slip = (self.distal_binary_contact_buf.float()
-                           * _tangential_sq(v_rel_distal, self.distal_contact_force_xyz)).sum(dim=-1)
+        if self.grasp_adr is not None:
+            enclosure_weight = self.grasp_adr.get_param("reward_weights", "enclosure_weight")
         else:
-            distal_slip = torch.zeros(self.num_envs, device=self.device)
+            enclosure_weight = self.cfg.enclosure_weight
 
-        # middle
-        if len(self.middle3_body_indices) == NUM_FINGERTIPS:
-            r_middle = self.middle3_pos - self.object_pos.unsqueeze(1)
-            cup_surf_vel_middle = (
-                cup_lin_vel_w.unsqueeze(1)
-                + torch.linalg.cross(cup_ang_vel_w.unsqueeze(1).expand(-1, NUM_FINGERTIPS, -1), r_middle)
-            )
-            finger_middle_vel = self.robot.data.body_lin_vel_w[:, self.middle3_body_indices, :]
-            v_rel_middle = cup_surf_vel_middle - finger_middle_vel
-            middle_slip = (self.middle_binary_contact_buf.float()
-                           * _tangential_sq(v_rel_middle, self.middle_contact_force_xyz)).sum(dim=-1)
-        else:
-            middle_slip = torch.zeros(self.num_envs, device=self.device)
+        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
+        cup_uprightness = cup_z_world[:, 2].clamp(min=0.0)
 
-        # palm
-        if self.palm_body_index >= 0:
-            r_palm_vec = self.palm_center_pos - self.object_pos
-            cup_surf_vel_palm = cup_lin_vel_w + torch.linalg.cross(cup_ang_vel_w, r_palm_vec)
-            finger_palm_vel = self.robot.data.body_lin_vel_w[:, self.palm_body_index, :]
-            v_rel_palm = cup_surf_vel_palm - finger_palm_vel
-            palm_slip = (
-                self.palm_binary_contact_buf.float()
-                * _tangential_sq(v_rel_palm, self.palm_contact_force_xyz)
-            )
-        else:
-            palm_slip = torch.zeros(self.num_envs, device=self.device)
-
-        r_slip = -self.cfg.r_slip_weight * (tip_slip + distal_slip + middle_slip + palm_slip)
-
-        # ---- r_margin: -w_m * [max(0, s·mg - μ·ΣFn)]², lift phase에서만 ----
-        total_fn = (
-            (self.binary_contact_buf.float() * self.contact_force_raw).sum(dim=-1)
-            + (self.distal_binary_contact_buf.float() * self.distal_contact_force_raw).sum(dim=-1)
-            + (self.middle_binary_contact_buf.float() * self.middle_contact_force_raw).sum(dim=-1)
-            + self.palm_binary_contact_buf.float() * self.palm_contact_force_raw
-        )
-        cup_az = self.cup.data.body_com_acc_w[:, 0, 2].clamp(min=0.0)
-        friction_support = self._cup_friction_static * total_fn
-        required_support = self.cfg.friction_safety_factor * effective_mass * (9.81 + cup_az)
-        margin_deficit = torch.relu(required_support - friction_support)
-        margin_active = (
-            self._lift_started_buf
-            & self._lift_contact_ready_latched_buf
-            & (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
-        )
-        r_margin = (
-            -self.cfg.r_margin_weight * margin_deficit ** 2
-            * margin_active.float()
+        r0_palm_approach = self.cfg.palm_approach_weight * torch.exp(
+            -self.cfg.palm_approach_sharpness * palm_to_cup_dist
         )
 
-        # ---- r_contact: w_tip·Σtip + w_phalanx·Σphalanx ----
-        tip_count     = self.binary_contact_buf.float().sum(dim=-1)
-        phalanx_count = (
-            self.distal_binary_contact_buf.float().sum(dim=-1)
-            + self.middle_binary_contact_buf.float().sum(dim=-1)
+        cup_to_palm_xy = self.palm_center_pos[:, :2] - grasp_center[:, :2]
+        approach_dir_xy = cup_to_palm_xy / cup_to_palm_xy.norm(
+            dim=-1, keepdim=True
+        ).clamp(min=1e-6)
+        perp_dir_xy = torch.stack(
+            [-approach_dir_xy[:, 1], approach_dir_xy[:, 0]], dim=1
         )
-        r_contact = (
-            self.cfg.r_contact_tip_weight * tip_count
-            + self.cfg.r_contact_phalanx_weight * phalanx_count
-            + self.cfg.r_contact_palm_weight * self.palm_binary_contact_buf.float()
+        enclosure_axis = torch.zeros(self.num_envs, 3, device=self.device)
+        enclosure_axis[:, :2] = perp_dir_xy
+
+        radius = float(self.cfg.cup_radius_approx)
+        thumb_target = grasp_center + enclosure_axis * radius
+        others_target = grasp_center - enclosure_axis * radius
+
+        thumb_dist = (self.fingertip_pos[:, 0, :] - thumb_target).norm(dim=-1)
+        others_dist = (
+            self.fingertip_pos[:, 1:, :] - others_target.unsqueeze(1)
+        ).norm(dim=-1).mean(dim=-1)
+
+        thumb_weight = float(self.cfg.enclosure_thumb_weight)
+        r1_enclosure = enclosure_weight * (
+            thumb_weight * torch.exp(-self.cfg.enclosure_sharpness * thumb_dist)
+            + (1.0 - thumb_weight) * torch.exp(-self.cfg.enclosure_sharpness * others_dist)
         )
 
         thumb_force      = self.contact_force_raw[:, 0]
@@ -1858,7 +1761,7 @@ class GraspRightEnv(DirectRLEnv):
         has_others_contact = (others_count >= 1).float()
         balance_gate = has_thumb_contact * has_others_contact
         force_balance_err = (thumb_force - others_avg_force).abs()
-        r_force_balance = (
+        r1b_force_balance = (
             self.cfg.force_balance_weight
             * balance_gate
             * torch.exp(-self.cfg.force_balance_sharpness * force_balance_err)
@@ -1869,73 +1772,68 @@ class GraspRightEnv(DirectRLEnv):
         full_grasp_flag = (
             self.binary_contact_buf[:, 0] & (others_count >= 3)
         ).float() * thumb_force_adequate
-        late_grasp_full_grip_gate = late_grasp_full_grip_mask.float()
-        r_full_grasp_bonus = (
-            self.cfg.full_grasp_bonus_weight
-            * late_grasp_full_grip_gate
-            * full_grasp_flag
-        )
-        late_force_gate = late_grasp_full_grip_gate * balance_gate
-        normalized_force_ratio = (
-            force_ratio / max(float(self.cfg.lift_min_force_ratio), 1e-6)
-        ).clamp(min=0.0, max=1.0)
-        r_grasp_quality_late_bonus = (
-            self.cfg.grasp_quality_late_bonus_weight
-            * late_force_gate
-            * normalized_force_ratio
+        is_grasp_phase = ~self.is_lift_phase
+        r1c_full_grasp = (
+            self.cfg.full_grasp_bonus_weight * is_grasp_phase.float() * full_grasp_flag
         )
 
-        # ---- r_force: -w_f · Σ fn²  (과도 grip force 억제) ----
-        tip_fn_sq    = (self.binary_contact_buf.float()        * self.contact_force_raw ** 2).sum(dim=-1)
-        distal_fn_sq = (self.distal_binary_contact_buf.float() * self.distal_contact_force_raw ** 2).sum(dim=-1)
-        middle_fn_sq = (self.middle_binary_contact_buf.float() * self.middle_contact_force_raw ** 2).sum(dim=-1)
-        palm_fn_sq   = self.palm_binary_contact_buf.float() * self.palm_contact_force_raw ** 2
-        r_force = -self.cfg.r_force_weight * (tip_fn_sq + distal_fn_sq + middle_fn_sq + palm_fn_sq)
+        tip_surf_dist = (
+            self.fingertip_pos - grasp_center.unsqueeze(1)
+        ).norm(dim=-1) - radius
+        distal_surf_dist = (
+            self.distal4_pos - grasp_center.unsqueeze(1)
+        ).norm(dim=-1) - radius
+        tip_lead = (distal_surf_dist - tip_surf_dist).clamp(min=0.0).mean(dim=-1)
+        r2_tip_bonus = self.cfg.tip_approach_bonus_weight * tip_lead
 
-        # ---- r_deltaf: -w_Δf · Σ (fn,t - fn,t-1)²  (급격한 force 변화 억제) ----
-        tip_delta_sq = (
-            self.binary_contact_buf.float()
-            * (self.contact_force_raw    - self._prev_tip_force_buf) ** 2
-        ).sum(dim=-1)
-        distal_delta_sq = (
-            self.distal_binary_contact_buf.float()
-            * (self.distal_contact_force_raw - self._prev_distal_force_buf) ** 2
-        ).sum(dim=-1)
-        middle_delta_sq = (
-            self.middle_binary_contact_buf.float()
-            * (self.middle_contact_force_raw - self._prev_middle_force_buf) ** 2
-        ).sum(dim=-1)
-        palm_delta_sq = (
-            self.palm_binary_contact_buf.float()
-            * (self.palm_contact_force_raw - self._prev_palm_force_buf) ** 2
+        r3_lift = self.cfg.lift_reward_weight * cup_height_delta * cup_uprightness
+
+        palm_delta = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
+        finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
+        r4_smooth = (
+            self.cfg.action_smoothness_palm_weight * palm_delta
+            + self.cfg.action_smoothness_finger_weight * finger_delta
         )
-        r_deltaf = -self.cfg.r_deltaf_weight * (tip_delta_sq + distal_delta_sq + middle_delta_sq + palm_delta_sq)
 
-        # ---- prev per-link force 갱신 ----
-        self._prev_tip_force_buf.copy_(self.contact_force_raw)
-        self._prev_distal_force_buf.copy_(self.distal_contact_force_raw)
-        self._prev_middle_force_buf.copy_(self.middle_contact_force_raw)
-        self._prev_palm_force_buf.copy_(self.palm_contact_force_raw)
+        min_tip_dist = (
+            self.fingertip_pos - grasp_center.unsqueeze(1)
+        ).norm(dim=-1).min(dim=-1).values
+        enclosure_quality = torch.exp(
+            -self.cfg.grasp_quality_lift_sharpness * min_tip_dist
+        ).clamp(max=1.0)
+        r5_quality_lift = (
+            self.cfg.grasp_quality_lift_weight
+            * cup_height_delta
+            * enclosure_quality
+            * cup_uprightness
+        )
 
-        # ---- 리워드 로깅 ----
-        self.extras["rew_height"]  = r_height.mean()
-        self.extras["rew_ori"]     = r_ori.mean()
-        self.extras["rew_palm_approach"] = r_palm_approach.mean()
-        self.extras["rew_middle_guide"] = r_middle_guide.mean()
-        self.extras["rew_tip_approach"] = r_tip_approach.mean()
-        self.extras["rew_slip"]    = r_slip.mean()
-        self.extras["rew_margin"]  = r_margin.mean()
-        self.extras["rew_contact"] = r_contact.mean()
-        self.extras["rew_force_balance"] = r_force_balance.mean()
-        self.extras["rew_full_grasp_bonus"] = r_full_grasp_bonus.mean()
-        self.extras["rew_grasp_quality_late_bonus"] = r_grasp_quality_late_bonus.mean()
-        self.extras["rew_force"]   = r_force.mean()
-        self.extras["rew_deltaf"]  = r_deltaf.mean()
-        self.extras["stat_friction_support"] = friction_support.mean()
-        self.extras["stat_required_support"] = required_support.mean()
-        self.extras["stat_margin_deficit"]   = margin_deficit.mean()
+        total = (
+            r0_palm_approach
+            + r1_enclosure
+            + r1b_force_balance
+            + r1c_full_grasp
+            + r2_tip_bonus
+            + r3_lift
+            + r4_smooth
+            + r5_quality_lift
+        )
+
+        self.extras["palm_approach_reward"] = r0_palm_approach.mean()
+        self.extras["enclosure_reward"] = r1_enclosure.mean()
+        self.extras["force_balance_reward"] = r1b_force_balance.mean()
+        self.extras["force_balance_err"] = force_balance_err.mean()
+        self.extras["full_grasp_bonus"] = r1c_full_grasp.mean()
+        self.extras["full_grasp_rate"] = full_grasp_flag.mean()
+        self.extras["thumb_force_adequate"] = thumb_force_adequate.mean()
+        self.extras["tip_approach_bonus"] = r2_tip_bonus.mean()
+        self.extras["lift_reward"] = r3_lift.mean()
+        self.extras["action_smoothness"] = r4_smooth.mean()
+        self.extras["grasp_quality_lift"] = r5_quality_lift.mean()
+        self.extras["thumb_dist"] = thumb_dist.mean()
+        self.extras["others_dist"] = others_dist.mean()
+        self.extras["adr_enclosure_w"] = torch.tensor(enclosure_weight, device=self.device)
         self.extras["stat_cup_height_delta"] = cup_height_delta.mean()
-        self.extras["stat_tilt_deg"]         = torch.rad2deg(tilt_rad).mean()
         self.extras["stat_prelift_force_ratio"] = (
             force_ratio * self.is_grasp_phase.float()
         ).sum() / self.is_grasp_phase.float().sum().clamp(min=1.0)
@@ -1948,24 +1846,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["stat_prelift_full_grip_rate"] = (
             full_grasp_flag * self.is_grasp_phase.float()
         ).sum() / self.is_grasp_phase.float().sum().clamp(min=1.0)
-
-        reward = (
-            self.cfg.r_height_weight  * r_height
-            + self.cfg.r_ori_weight   * r_ori
-            + self.cfg.r_palm_approach_weight * r_palm_approach
-            + self.cfg.r_middle_guide_weight * r_middle_guide
-            + self.cfg.r_tip_approach_weight * r_tip_approach
-            + r_slip
-            + r_margin
-            + r_contact
-            + r_force_balance
-            + r_full_grasp_bonus
-            + r_grasp_quality_late_bonus
-            + r_force
-            + r_deltaf
-        )
-        self.extras["rew_total"] = reward.mean()
-        return reward
+        self.extras["rew_total"] = total.mean()
+        return total
 
     # ------------------------------------------------------------------
     # Dones

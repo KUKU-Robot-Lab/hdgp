@@ -11,9 +11,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 def _load_preset():
     spec = importlib.util.spec_from_file_location("_rh56f1_grasp_preset", _ROOT / "grasp_right_preset.py")
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 
@@ -27,18 +28,20 @@ def _load_constants_and_cfg_text() -> tuple[types.ModuleType, str]:
         f"{pkg.__name__}.grasp_right_preset",
         _ROOT / "grasp_right_preset.py",
     )
+    assert preset_spec is not None
+    assert preset_spec.loader is not None
     preset = importlib.util.module_from_spec(preset_spec)
     sys.modules[preset_spec.name] = preset
-    assert preset_spec.loader is not None
     preset_spec.loader.exec_module(preset)
 
     const_spec = importlib.util.spec_from_file_location(
         f"{pkg.__name__}.grasp_right_constants",
         _ROOT / "grasp_right_constants.py",
     )
+    assert const_spec is not None
+    assert const_spec.loader is not None
     constants = importlib.util.module_from_spec(const_spec)
     sys.modules[const_spec.name] = constants
-    assert const_spec.loader is not None
     const_spec.loader.exec_module(constants)
 
     return constants, (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")

@@ -66,7 +66,7 @@ def test_v11_declares_four_phase_episode_and_transport_params() -> None:
         "force_balance_sharpness",
         "full_grasp_bonus_weight",
         "thumb_force_ratio_min",
-        "grasp_quality_late_bonus_weight",
+        "grasp_quality_lift_weight",
         "stage0_lift_start_min_contacts",
         "stage0_lift_start_hold_steps",
         "lift_contact_hold_steps",
@@ -184,7 +184,8 @@ def test_v11_bead_spawn_uses_pour_material_contract() -> None:
     cfg = _text("grasp_right_env_cfg.py")
 
     assert "_DEFAULT_BEAD_MASS = 0.010" in cfg
-    assert "scale=(0.5, 0.5, 0.5)" in cfg
+    assert "_DEFAULT_BEAD_SCALE = 0.35" in cfg
+    assert "scale=(_DEFAULT_BEAD_SCALE, _DEFAULT_BEAD_SCALE, _DEFAULT_BEAD_SCALE)" in cfg
     assert "mass_props=sim_utils.MassPropertiesCfg(mass=_DEFAULT_BEAD_MASS)" in cfg
     assert "linear_damping=0.5" in cfg
     assert "angular_damping=0.5" in cfg
@@ -210,10 +211,13 @@ def test_v11_declares_pour_warm_state_export_contract() -> None:
         "object_goal_local",
         "meta/schema_version",
         "meta/bead_single_mass",
+        "meta/bead_scale",
         "def _maybe_export_warm_states",
         "def _write_warm_state_export_file",
     ):
         assert name in env
+    assert "bead_scale: float = _DEFAULT_BEAD_SCALE" in cfg
+    assert 'attrs["meta/bead_scale"] = float(self.cfg.bead_scale)' in env
 
 
 def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases() -> None:

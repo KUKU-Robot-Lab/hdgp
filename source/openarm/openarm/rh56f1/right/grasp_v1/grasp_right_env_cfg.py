@@ -62,9 +62,10 @@ _REAL2SIM_CALIBRATION = load_real2sim_calibration(
 )
 
 # 비드 4단계 이산 질량: {0, 10, 20, 30}개 × 10g = {0, 100, 200, 300}g
-# mesh scale=0.5x (크기 절반), mass는 그대로 10g (밀도 8배)
+# cup_middle용 소형 bead. mass는 그대로 10g으로 유지해 hidden-mass bin을 바꾸지 않는다.
 _DEFAULT_BEAD_COUNT = 30
 _DEFAULT_BEAD_MASS = 0.010
+_DEFAULT_BEAD_SCALE = 0.35
 
 
 def _actuator_params(group_name: str, default_stiffness: float, default_damping: float) -> dict:
@@ -77,12 +78,12 @@ def _actuator_params(group_name: str, default_stiffness: float, default_damping:
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
-    """컵 내부 무게 도메인 랜덤화용 bead 설정 (30개, 각 10g, mesh 0.5x)."""
+    """컵 내부 무게 도메인 랜덤화용 bead 설정 (30개, 각 10g, mesh 0.35x)."""
     rigid_objects: dict = {}
     for i in range(_DEFAULT_BEAD_COUNT):
         bead_spawn_cfg = UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
-            scale=(0.5, 0.5, 0.5),
+            scale=(_DEFAULT_BEAD_SCALE, _DEFAULT_BEAD_SCALE, _DEFAULT_BEAD_SCALE),
             activate_contact_sensors=False,
             mass_props=sim_utils.MassPropertiesCfg(mass=_DEFAULT_BEAD_MASS),
             rigid_props=RigidBodyPropertiesCfg(
@@ -166,10 +167,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # RH56F1 pregrasp는 Tesollo 값을 복사하지 않고, 실제 RH56F1/cup 기하 기준으로 둔다.
     # palm sensor는 palm_link 기준 (0.00, 0.03, 0.04) 오프셋이고, cup 반경은 약 0.035m다.
     # reset orientation에서 thumb_1 루트가 palm sensor보다도 +x 방향으로 더 앞으로 나온다.
-    # 따라서 x도 뒤로 빼서 엄지 관통을 먼저 방지한다.
-    pregrasp_offset_x:     float = -0.05
-    pregrasp_offset_y:     float = -0.07
-    pregrasp_offset_z:     float = 0.03
+    # test3의 top3 fingertip shell error가 컵 반경보다 약 2cm 멀어서 y/z 오프셋을 줄인다.
+    pregrasp_offset_x:     float = -0.045
+    pregrasp_offset_y:     float = -0.055
+    pregrasp_offset_z:     float = 0.015
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005
@@ -221,7 +222,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Delta palm action
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.03
+    palm_delta_xyz:     float = 0.08
     palm_delta_rot_deg: float = 20.0
 
     # -----------------------------------------------------------------------
@@ -238,58 +239,40 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_phase_full_grip_progress_threshold: float = 0.5
 
     # -----------------------------------------------------------------------
-    # Reward 파라미터 (HTML: Mass-Adaptive Enveloping Grip Reward Design)
+    # Reward 파라미터: Tesollo grasp_v7_2 스타일 dense enclosure reward
     # -----------------------------------------------------------------------
-    # r_height: exp(-α_h * (z_cup - z*)²)  — lift phase에서만 활성
-    r_height_weight:    float = 10.0
-    r_height_sharpness: float = 100.0  # z* = lift_target_z_delta (0.10m). 3cm error → 0.91
+    palm_approach_weight:    float = 1.0
+    palm_approach_sharpness: float = 10.0
 
-    # r_ori: exp(-α_R * tilt_rad²)  — 컵 수직 자세 유지
-    r_ori_weight:    float = 1.0
-    r_ori_sharpness: float = 4.0   # 30° → 0.33, 10° → 0.89
+    enclosure_weight:       float = 10.0
+    enclosure_sharpness:    float = 15.0
+    cup_radius_approx:      float = 0.035
+    enclosure_thumb_weight: float = 0.6
 
-    # r_tip_approach: grasp phase에서 fingertip이 컵 표면 반경 shell로 접근하도록 유도
-    r_tip_approach_weight:    float = 2.0
-    r_tip_approach_sharpness: float = 120.0
-
-    # r_palm_approach / r_middle_guide: grasp phase 초기 palm/proximal link 접근 gradient 보강
-    r_palm_approach_weight:    float = 0.5
-    r_palm_approach_sharpness: float = 10.0
-    r_middle_guide_weight:     float = 0.5
-    r_middle_guide_sharpness:  float = 10.0
-
-    # r_slip: -w_s * Σᵢ 1_{cᵢ} * v_cup_xy²  — 수평 슬립 억제
-    r_slip_weight: float = 5.0   # 10 contacts @ 0.05m/s → 0.125 penalty
-
-    # r_margin: -w_m * [max(0, s·mg - μ·ΣFn)]²  — 마찰 안전마진 (lift phase에서만 활성)
-    r_margin_weight:       float = 5.0
-    friction_safety_factor: float = 1.2  # grip ≥ 1.2×mg friction support
-
-    # r_contact: w_tip·Σtip + w_phalanx·Σphalanx + w_palm·palm  — enveloping contact 유도
-    # HTML: w_palm > w_phalanx >= w_tip
-    r_contact_tip_weight:     float = 1.0   # 5 tips max → 5.0
-    r_contact_phalanx_weight: float = 0.5   # 10 phalanx max → 5.0
-    r_contact_palm_weight:    float = 2.0   # palm 1개 — phalanx보다 높게 설정
     force_balance_weight:     float = 3.0
     force_balance_sharpness:  float = 8.0
     full_grasp_bonus_weight:  float = 8.0
     thumb_force_ratio_min:    float = 0.5
-    grasp_quality_late_bonus_weight: float = 4.0
 
-    # r_force: -w_f · Σ fn²  — 과도 grip force 억제 (max-grip 방지)
-    r_force_weight: float = 0.002  # 5N×15 contacts → ~0.75 penalty
+    tip_approach_bonus_weight: float = 1.0
 
-    # r_deltaf: -w_Δf · Σ (fn,t - fn,t-1)²  — 급격한 force 변화 억제
-    r_deltaf_weight: float = 0.002
+    lift_reward_weight: float = 30.0
 
-    # 질량 파라미터 (r_margin 계산용 privileged variable)
+    action_smoothness_palm_weight:   float = -0.02
+    action_smoothness_finger_weight: float = -0.01
+
+    grasp_quality_lift_weight:    float = 40.0
+    grasp_quality_lift_sharpness: float = 10.0
+
+    # 질량 파라미터 (force-ratio/bin logging용 privileged variable)
     cup_base_mass:  float = 0.170          # kg (빈 컵 질량)
     bead_single_mass: float = _DEFAULT_BEAD_MASS  # kg per bead
+    bead_scale: float = _DEFAULT_BEAD_SCALE
 
     min_middle_contacts_for_success: int = 0
 
     # Lift-entry grip readiness gate (state tracking용, reward가 아님)
-    stage0_lift_start_min_contacts: int = 2
+    stage0_lift_start_min_contacts: int = 3
     stage0_lift_start_hold_steps:   int = 8
     lift_contact_hold_steps: int = 30
     full_grip_hold_steps:    int = 30
@@ -351,7 +334,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         "finger": {
             "delta_scale": (0.05, 0.15),
         },
-        # adaptive_force_weight는 ADR에서 제거 (v10: Gaussian target 방식으로 변경, 가중치 고정)
+        "reward_weights": {
+            "enclosure_weight": (10.0, 20.0),
+        },
     })
 
     # -----------------------------------------------------------------------

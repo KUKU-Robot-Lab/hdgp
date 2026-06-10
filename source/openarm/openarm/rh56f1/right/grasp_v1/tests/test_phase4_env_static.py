@@ -77,19 +77,22 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert "compute_late_grasp_full_grip_mask(" in s
     assert "grasp_center = self.object_pos.clone()" in s
     assert "grasp_center[:, 2] += self.cfg.cup_grasp_z_offset" in s
-    assert "approach_reward_gate = (" in s
-    assert "r_palm_approach = (" in s
-    assert "r_middle_guide = (" in s
-    assert "r_tip_approach" in s
-    assert "r_force_balance" in s
-    assert "r_full_grasp_bonus" in s
-    assert "r_grasp_quality_late_bonus" in s
-    assert 'self.extras["rew_palm_approach"]' in s
-    assert 'self.extras["rew_middle_guide"]' in s
-    assert 'self.extras["rew_tip_approach"]' in s
-    assert 'self.extras["rew_force_balance"]' in s
-    assert 'self.extras["rew_full_grasp_bonus"]' in s
-    assert 'self.extras["rew_grasp_quality_late_bonus"]' in s
+    assert "r0_palm_approach" in s
+    assert "r1_enclosure" in s
+    assert "r1b_force_balance" in s
+    assert "r1c_full_grasp" in s
+    assert "r2_tip_bonus" in s
+    assert "r3_lift" in s
+    assert "r4_smooth" in s
+    assert "r5_quality_lift" in s
+    assert 'self.extras["palm_approach_reward"]' in s
+    assert 'self.extras["enclosure_reward"]' in s
+    assert 'self.extras["force_balance_reward"]' in s
+    assert 'self.extras["full_grasp_bonus"]' in s
+    assert 'self.extras["tip_approach_bonus"]' in s
+    assert 'self.extras["lift_reward"]' in s
+    assert 'self.extras["action_smoothness"]' in s
+    assert 'self.extras["grasp_quality_lift"]' in s
     assert 'self.extras["stat_palm_to_cup_dist"]' in s
     assert 'self.extras["stat_middle_to_cup_dist"]' in s
     assert 'self.extras["stat_tip_to_cup_dist_top3"]' in s
@@ -97,7 +100,7 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert 'self.extras["stat_contact_to_full_grip_transition_rate"]' in s
     assert 'self.extras["stat_prelift_force_ratio"]' in s
     assert 'self.extras["stat_prelift_full_grip_rate"]' in s
-    assert 'self.extras["rew_total"] = reward.mean()' in s
+    assert 'self.extras["rew_total"] = total.mean()' in s
 
 
 if __name__ == "__main__":
