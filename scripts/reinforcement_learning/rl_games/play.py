@@ -201,6 +201,11 @@ def _resolve_checkpoint_name(task_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", task_key)
 
 
+def _resolve_run_dir_prefix(task_name: str) -> str:
+    task_key = task_name.split(":")[-1]
+    return "lstm_test" if task_key.endswith("-lstm") else "test"
+
+
 def _checkpoint_sort_key(path: Path) -> tuple[float, int, float]:
     """Prefer higher reward, then later epoch, then newer mtime for prefix matches."""
     match = re.search(r"_ep_(\d+)_rew_([-+]?\d+(?:\.\d+)?)", path.name)
@@ -454,7 +459,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     elif args_cli.checkpoint is None:
         # specify directory for logging runs
         # Default: search test-style runs. Change run_dir pattern here if needed.
-        run_dir = agent_cfg["params"]["config"].get("full_experiment_name", "test.*")
+        run_prefix = _resolve_run_dir_prefix(train_task_name)
+        run_dir = agent_cfg["params"]["config"].get("full_experiment_name", f"{run_prefix}.*")
         # specify name of checkpoint
         if args_cli.use_last_checkpoint:
             checkpoint_file = ".*"

@@ -106,7 +106,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
     # -----------------------------------------------------------------------
-    episode_length_s: float = 12.0   # v10: 10→12s (grasp 8s + lift 4s = 720 steps @ 60Hz)
+    episode_length_s: float = 14.0   # grasp 8s + raise 2s + stabilize 4s = 840 steps @ 60Hz
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -181,6 +181,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     palm_delta_xyz:     float = 0.01
     palm_delta_rot_deg: float = 20.0
+    stabilize_palm_delta_xyz: float = 0.01
+    stabilize_palm_delta_rot_deg: float = 10.0
 
     # -----------------------------------------------------------------------
     # Finger joint delta 제어 (v9 신규)

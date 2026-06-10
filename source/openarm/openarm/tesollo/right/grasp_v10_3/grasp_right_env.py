@@ -23,9 +23,10 @@ Action (26D):
   [0:6]  6D palm pose → Fabrics IK → arm 7 DOF
   [6:26] 20D per-joint finger delta: reference_pose + action × finger_delta_scale [rad]
 
-Episode (10s @ 60Hz):
+Episode (14s @ 60Hz):
   Grasp phase (0~479): Fabrics arm + per-joint finger delta
-  Lift  phase (480~599): scripted task-space lift + micro-delta hand
+  Raise phase (480~599): scripted 5cm lift + micro-delta hand
+  Stabilize phase (600~839): bounded palm action + micro-delta hand
 """
 
 from __future__ import annotations
@@ -72,6 +73,8 @@ from .grasp_right_constants import (
     GRASP_PHASE_STEPS,
     LIFT_PHASE_STEPS,
     LIFT_START_STEP,
+    STABILIZE_START_STEP,
+    LIFT_RAISE_PHASE_STEPS,
     EPISODE_STEPS,
     PRELOAD_START_STEP,
     LIFT_Z_DELTA,
@@ -97,6 +100,7 @@ from .finger_action_utils import (
     compute_lift_finger_targets,
     resolve_grasp_delta_scale,
 )
+from .palm_action_utils import compute_lift_stabilize_palm_targets
 from .grasp_reward_utils import (
     compute_bounded_force_smooth_penalty,
     compute_grasp_shape_consistency_reward,
@@ -119,7 +123,8 @@ class GraspRightEnv(DirectRLEnv):
 
     Episode:
       Grasp phase (step 0~479):  Fabrics arm + per-joint finger delta
-      Lift  phase (step 480~599): scripted task-space lift + micro-delta hand
+      Raise phase (step 480~599): scripted 5cm lift + micro-delta hand
+      Stabilize phase (step 600~839): bounded palm action + micro-delta hand
     """
 
     cfg: GraspRightEnvCfg
@@ -200,6 +205,15 @@ class GraspRightEnv(DirectRLEnv):
         self.delta_maxs = to_torch([
             cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
             _delta_rad, _delta_rad, _delta_rad,
+        ], device=self.device)
+        _stabilize_delta_rad = math.radians(cfg.stabilize_palm_delta_rot_deg)
+        self.stabilize_delta_mins = to_torch([
+            -cfg.stabilize_palm_delta_xyz, -cfg.stabilize_palm_delta_xyz, -cfg.stabilize_palm_delta_xyz,
+            -_stabilize_delta_rad, -_stabilize_delta_rad, -_stabilize_delta_rad,
+        ], device=self.device)
+        self.stabilize_delta_maxs = to_torch([
+            cfg.stabilize_palm_delta_xyz, cfg.stabilize_palm_delta_xyz, cfg.stabilize_palm_delta_xyz,
+            _stabilize_delta_rad, _stabilize_delta_rad, _stabilize_delta_rad,
         ], device=self.device)
 
         # pregrasp palm pose 버퍼
@@ -739,10 +753,6 @@ class GraspRightEnv(DirectRLEnv):
         palm_maxs = torch.maximum(self.palm_maxs.unsqueeze(0), self.pregrasp_palm_pose_buf)
         grasp_palm_pose = torch.max(torch.min(grasp_palm_pose, palm_maxs), palm_mins)
 
-        lift_progress = (
-            (self.episode_length_buf - LIFT_START_STEP).clamp(min=0).float()
-            / LIFT_PHASE_STEPS
-        ).clamp(max=1.0).unsqueeze(1)
         if self.cfg.eval_mass_shift_enabled:
             shift_step = LIFT_START_STEP + int(self.cfg.eval_mass_shift_step)
             shift_mask = self.episode_length_buf == shift_step
@@ -754,19 +764,23 @@ class GraspRightEnv(DirectRLEnv):
                 self._bead_mass_normalized[shift_mask] = (
                     float(target_count) / max(float(self.cfg.num_beads), 1.0)
                 )
-        if self.demo_grasp_reset_bank is not None:
-            lift_palm_pose = torch.lerp(
-                self.lift_palm_start_pose_buf,
-                self.demo_lift_palm_target_buf,
-                lift_progress,
-            )
-            lift_palm_pose[:, 3:] = self.lift_palm_start_pose_buf[:, 3:]
-        else:
-            lift_palm_pose = self.lift_palm_start_pose_buf.clone()
-            lift_palm_pose[:, 2] = lift_palm_pose[:, 2] + LIFT_Z_DELTA * lift_progress.squeeze(1)
-        lift_palm_pose = torch.max(torch.min(lift_palm_pose, self.palm_maxs), self.palm_mins)
-
-        palm_pose = torch.where(is_lift.unsqueeze(1), lift_palm_pose, grasp_palm_pose)
+        stabilize_delta = scale(
+            palm_action,
+            self.stabilize_delta_mins,
+            self.stabilize_delta_maxs,
+        )
+        palm_pose = compute_lift_stabilize_palm_targets(
+            episode_length_buf=self.episode_length_buf,
+            grasp_palm_pose=grasp_palm_pose,
+            lift_start_pose=self.lift_palm_start_pose_buf,
+            stabilize_delta=stabilize_delta,
+            palm_mins=self.palm_mins,
+            palm_maxs=self.palm_maxs,
+            lift_start_step=LIFT_START_STEP,
+            stabilize_start_step=STABILIZE_START_STEP,
+            lift_raise_steps=LIFT_RAISE_PHASE_STEPS,
+            lift_raise_z_delta=LIFT_Z_DELTA,
+        )
         self.palm_pose_targets.copy_(palm_pose)
         self.hand_pca_targets.zero_()
 

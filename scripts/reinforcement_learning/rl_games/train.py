@@ -190,6 +190,11 @@ def _resolve_checkpoint_name(task_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", task_key)
 
 
+def _resolve_run_dir_prefix(task_name: str) -> str:
+    task_key = task_name.split(":")[-1]
+    return "lstm_test" if task_key.endswith("-lstm") else "test"
+
+
 def _patch_optimizer_restore() -> None:
     """Make rl_games checkpoint restore tolerate optimizer-state shape drift.
 
@@ -287,16 +292,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     os.makedirs(log_root_path, exist_ok=True)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
     # LOG RUN-NAME RULE:
-    #   auto-increment "test1", "test2", ...
+    #   auto-increment "test1", "test2", ... for feed-forward tasks
+    #   auto-increment "lstm_test1", "lstm_test2", ... for recurrent tasks
     # Modify this if you prefer timestamp/custom run names.
+    run_prefix = _resolve_run_dir_prefix(task_name)
     existing = []
     for name in os.listdir(log_root_path):
-        if name.startswith("test"):
-            suffix = name[4:]
+        if name.startswith(run_prefix):
+            suffix = name[len(run_prefix):]
             if suffix.isdigit():
                 existing.append(int(suffix))
     next_idx = (max(existing) + 1) if existing else 1
-    log_dir = f"test{next_idx}"
+    log_dir = f"{run_prefix}{next_idx}"
     # set directory into agent config
     # logging directory path: <train_dir>/<full_experiment_name>
     agent_cfg["params"]["config"]["train_dir"] = log_root_path

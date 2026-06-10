@@ -58,9 +58,10 @@ Critic Extra (36D) — sim-only privileged:
 Actor Observation without oracle mass: 132D
 Critic Total: 133 + 36 = 169D
 
-Episode (10s @ 60Hz = 600 steps):
+Episode (14s @ 60Hz = 840 steps):
   Grasp phase (0~479):  Fabrics arm + per-joint finger delta
-  Lift  phase (480~599): scripted arm prelift + micro-delta hand
+  Raise phase (480~599): scripted 5cm vertical prelift + micro-delta hand
+  Stabilize phase (600~839): bounded arm action + micro-delta hand
 """
 
 import math
@@ -109,13 +110,16 @@ NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 169
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
-GRASP_PHASE_STEPS  = 480    # 8s: Fabrics arm + per-joint finger delta
-LIFT_PHASE_STEPS   = 240    # 4s: scripted arm + micro-delta hand
-LIFT_START_STEP    = GRASP_PHASE_STEPS    # 480
-EPISODE_STEPS      = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS  # 720
+GRASP_PHASE_STEPS       = 480    # 8s: Fabrics arm + per-joint finger delta
+LIFT_RAISE_PHASE_STEPS  = 120    # 2s: scripted 5cm vertical prelift
+STABILIZE_PHASE_STEPS   = 240    # 4s: bounded arm action while holding lift height
+LIFT_PHASE_STEPS        = LIFT_RAISE_PHASE_STEPS + STABILIZE_PHASE_STEPS
+LIFT_START_STEP         = GRASP_PHASE_STEPS
+STABILIZE_START_STEP    = LIFT_START_STEP + LIFT_RAISE_PHASE_STEPS
+EPISODE_STEPS           = GRASP_PHASE_STEPS + LIFT_PHASE_STEPS  # 840
 PRELOAD_START_STEP = 400    # lift 직전 80 step: under-grip penalty 활성 구간 (400~479)
 
-LIFT_Z_DELTA = 0.10    # 10cm 수직 상승
+LIFT_Z_DELTA = 0.05    # 5cm 수직 상승 후 stabilize phase에서 높이 유지
 
 # ---------------------------------------------------------------------------
 # Contact

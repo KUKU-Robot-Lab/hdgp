@@ -1791,7 +1791,11 @@ class PourRightEnv(DirectRLEnv):
         #   rate형(test11)은 ~0.025/step로 dense basin(~63/step) 못 이김 → spill 골짜기 못 건넘.
         #   sustained는 dump 상태를 직접 보상해 basin과 경쟁. aim-gate(dir_cos_c>0)로 조준된 배출만.
         #   bead_in(200)이 여전히 지배 → 착지>spill.
-        _aim_gate_drain = (self._directional_tilt_cos_c > 0.0).float()
+        # [lip-gate] drain이 lip 위치 무관 farming(spill 0.48) → pour_xy와 동일 lip 게이트 부여.
+        #   corr(mouth_xy,spill)=+0.53: lip 안 맞추면 drain 소멸 → lip 정렬 유도. drain·pour_xy 동작점 동등화.
+        _aim_gate_drain = (self._directional_tilt_cos_c > 0.0).float() * torch.exp(
+            -self.cfg.pour_xy_scale * self._mouth_xy_distance
+        )
         r_source_drain = (
             pour_gate * _aim_gate_drain * self.cfg.weight_source_drain
             * (1.0 - self._bead_in_source_fraction)

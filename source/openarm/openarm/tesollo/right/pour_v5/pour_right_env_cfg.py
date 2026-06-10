@@ -300,7 +300,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
     weight_bead_entry_delta: float = 300.0   # 비드 유입 즉각 피드백 (체류-Δ, 비드 안 쌓이면 ≈0)
     weight_bead_cross: float = 150.0   # test11: 입구 관통(latch) 즉시 보상 → 새 비드 유입 강화(의도 복원). 체류와 무관
-    weight_source_drain: float = 40.0     # [test12-C'] sustained 배출보상 계수. r=W·pour_gate·(dir_cos_c>0)·(1-bead_in_source). 빈 컵일수록 지속 보상→dense basin과 경쟁. (test11 rate형 0.025/step로 너무 약해 실패)
+    weight_source_drain: float = 21.0     # [lip-gate] 40→21: drain에 lip 게이트 exp(-pour_xy_scale·mouth_xy) 부여 + pour_xy(15)와 동작점 동등화(5.5≈5.8). lip 무관 spill farming(동작점 22.1) 차단. ([test12-C'] sustained 배출: r=W·pour_gate·(dir_cos_c>0)·lip_gate·(1-bead_in_source))
 
     # -----------------------------------------------------------------------
     # Curriculum warmup (step 기반 선형 증가)
@@ -333,7 +333,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     g_ready_center: float = 0.20    # cup_center_xy_dist 기준 (=기존 pour_binary_xy_thresh)
     g_ready_width: float = 0.03
     # Stage B: pour-point → target 기하 (정책이 직접 제어하는 rim-pivot 공간)
-    weight_pour_xy: float = 8.0     # [test13-B1] 15→8: dense basin 축소. (pour-point를 target 위로)
+    weight_pour_xy: float = 15.0    # [lip-gate] 8→15: lip(pour-point) 정렬 강화(drain과 동작점 동등). corr(mouth_xy,bead_in_target)=-0.43. (test13 이전 검증값, test14 audit max)
     pour_xy_scale: float = 8.0
     weight_pour_zband: float = 8.0  # pour-point 적정 높이 band (가산, 단방향 barrier 아님)
     pour_zband_target: float = 0.05
