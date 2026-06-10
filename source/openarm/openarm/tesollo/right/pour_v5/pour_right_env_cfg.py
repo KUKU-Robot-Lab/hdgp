@@ -511,7 +511,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     warm_state_paths: tuple[str, ...] = (
         _os.path.normpath(_os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, "grasp_warm_v7_2.hdf5")),
     )
-    freeze_grasp_hand_during_episode: bool = False
+    freeze_grasp_hand_during_episode: bool = True   # [v5] 엄지 드리프트 차단: pour 중 손 전체를 grasp_hold(warm-state 실제 파지자세)로 고정. 손가락 DOF를 학습서 제거→6D palm만 학습(fresh 단순화). ※warm_state_bank 로드 필수(아니면 open 고정→낙하)
     # 최상위 비드 z=0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
