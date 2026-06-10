@@ -54,7 +54,7 @@ from .pour_right_preset import (
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
-_DEFAULT_BEAD_COUNT = 20   # [v5] spawn 물리 최대(=bead_count_curriculum 마지막). 커리큘럼이 활성 N만 사용
+_DEFAULT_BEAD_COUNT = 20
 _DEFAULT_DEMO_POSE_DATASET_DIR = _os.path.normpath(_os.path.join(_HDGP_ROOT, "..", "datasets"))
 
 
@@ -184,14 +184,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     source_inside_z_max:  float = 0.100   # 림 높이
     bead_count: int = _DEFAULT_BEAD_COUNT
-    # [v5] bead-count 커리큘럼: 활성 비드 수를 success 기반으로 1→...→max 증가.
-    #   물리 비드는 _DEFAULT_BEAD_COUNT(=30)개 고정 spawn, 비활성은 hide(z=-10).
-    #   sparse bead_in(200)을 reachable하게 만들어 tilt 부트스트랩 (DexPour ablation 근거).
-    enable_bead_curriculum: bool = True
-    bead_count_curriculum: tuple = (1, 5, 8, 10, 20)
-    bead_curriculum_success_threshold: float = 0.5
-    bead_curriculum_min_updates: int = 5
-    bead_curriculum_increment_interval: int = 20000   # 이 step마다 stage-windowed success 평가
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
     success_spill_max: float = 0.40   # tilt 탐색 중 spill 허용 (ADR로 점진 강화)
@@ -341,7 +333,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     g_ready_center: float = 0.20    # cup_center_xy_dist 기준 (=기존 pour_binary_xy_thresh)
     g_ready_width: float = 0.03
     # Stage B: pour-point → target 기하 (정책이 직접 제어하는 rim-pivot 공간)
-    weight_pour_xy: float = 8.0     # [v5] 15→8 test3 복원: test14의 15는 warmstart-refine용. fresh bootstrap은 test3(8)로 성공 → 재현
+    weight_pour_xy: float = 8.0     # [test13-B1] 15→8: dense basin 축소. (pour-point를 target 위로)
     pour_xy_scale: float = 8.0
     weight_pour_zband: float = 8.0  # pour-point 적정 높이 band (가산, 단방향 barrier 아님)
     pour_zband_target: float = 0.05
@@ -450,9 +442,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
     # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
     # 해당 기준에서 success_rate >= 15%이면 한 단계 올림 (8단계 × 0.0375 = 0.30 range)
-    # [v5] OFF: 난이도 축을 bead-count 커리큘럼 하나로 단일화(이중 success-ADR compound 방지).
-    #   success_target_fill_ratio(0.50) 고정 → "활성 N개 중 절반 이상 부으면 성공".
-    enable_success_adr: bool = False
+    enable_success_adr: bool = True
     success_adr_custom_cfg: dict = {
         "success": {
             "fill_ratio": (0.20, 0.50),  # 2개→5개 커리큘럼
@@ -511,7 +501,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     warm_state_paths: tuple[str, ...] = (
         _os.path.normpath(_os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, "grasp_warm_v7_2.hdf5")),
     )
-    freeze_grasp_hand_during_episode: bool = True   # [v5] 엄지 드리프트 차단: pour 중 손 전체를 grasp_hold(warm-state 실제 파지자세)로 고정. 손가락 DOF를 학습서 제거→6D palm만 학습(fresh 단순화). ※warm_state_bank 로드 필수(아니면 open 고정→낙하)
+    freeze_grasp_hand_during_episode: bool = False
     # 최상위 비드 z=0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
