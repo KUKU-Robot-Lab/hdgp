@@ -155,6 +155,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     max_pose_angle:             float = 45.0
     fabrics_max_objects_per_env: int  = 8   # open_tesollo_boxes_no_table 객체 7개 → ≥7 필요
     fabrics_damping_gain:       float = 20.0
+    post_lift_arm_stiffness_scale: float = 0.12
+    post_lift_arm_damping_scale: float = 0.25
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
@@ -566,11 +568,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # -----------------------------------------------------------------------
     # Bead 무게 도메인 랜덤화
+    # cup_middle에서는 물리 bead가 컵을 관통/튕김시키므로 기본 비활성화한다.
     # -----------------------------------------------------------------------
     beads_cfg: RigidObjectCollectionCfg = field(default_factory=_make_beads_cfg)
     num_beads: int = _DEFAULT_BEAD_COUNT              # 30
+    physical_beads_enabled: bool = False
     bead_count_min: int = 0
-    bead_count_max: int = 30                           # Static mass-adaptive bins: {0, 10, 20, 30}.
+    bead_count_max: int = 0
     bead_spawn_z_offset: float = 0.035
 
     # Keep dynamic insertion disabled for hidden-mass static-bin grasp/lift training.

@@ -133,11 +133,12 @@ def test_v11_samples_transport_goal_per_reset_env() -> None:
     assert "goal_delta = self.object_goal[just_entering_transport] - current_object" in env
 
 
-def test_v11_samples_static_bead_bins_and_keeps_dynamic_spawn_disabled() -> None:
+def test_v11_disables_physical_beads_for_small_cup_grasp() -> None:
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
 
     for name in (
+        "physical_beads_enabled",
         "bead_count_min",
         "bead_count_max",
         "dynamic_bead_spawn_enabled",
@@ -149,16 +150,17 @@ def test_v11_samples_static_bead_bins_and_keeps_dynamic_spawn_disabled() -> None
     ):
         assert name in cfg
     assert "bead_count_min: int = 0" in cfg
-    assert "bead_count_max: int = 30" in cfg
+    assert "bead_count_max: int = 0" in cfg
+    assert "physical_beads_enabled: bool = False" in cfg
     assert "dynamic_bead_spawn_enabled: bool = False" in cfg
     assert "bead_initial_count_max: int = 0" in cfg
-    assert "_bead_lvl = torch.randint(min_level, max_level + 1, (n,), device=self.device)" in env
-    assert "bead_count = _bead_lvl * 10  # {0, 10, 20, 30}" in env
-    assert "target_bead_count = bead_count" in env
+    assert "if not self.cfg.physical_beads_enabled:" in env
+    assert "bead_count = torch.zeros(n, dtype=torch.long, device=self.device)" in env
+    assert "target_bead_count = torch.zeros(n, dtype=torch.long, device=self.device)" in env
+    assert "if self.cfg.physical_beads_enabled and active.any():" in env
     assert "self._bead_mass_normalized[env_ids] = bead_count.float() / self.cfg.num_beads" in env
     assert "self._bead_mass_normalized * self.cfg.num_beads * self.cfg.bead_single_mass" in env
-    assert "dynamic_bead_mask = (" in env
-    assert "& is_stabilize" in env
+    assert "if self.cfg.physical_beads_enabled and self.cfg.dynamic_bead_spawn_enabled:" in env
     assert "dynamic_bead_delay = max(int(self.cfg.dynamic_bead_spawn_step) - STABILIZE_START_STEP, 0)" in env
     assert "(stabilize_elapsed == dynamic_bead_delay)" in env
     assert "& self._lift_success_latched_buf" in env
@@ -180,7 +182,7 @@ def test_v11_samples_static_bead_bins_and_keeps_dynamic_spawn_disabled() -> None
     assert 'self.extras[f"bin_{_tag}_contacts"] = _zero' in env
 
 
-def test_v11_bead_spawn_uses_pour_material_contract() -> None:
+def test_v11_keeps_bead_asset_hidden_when_physical_beads_disabled() -> None:
     cfg = _text("grasp_right_env_cfg.py")
 
     assert "_DEFAULT_BEAD_MASS = 0.010" in cfg
@@ -192,6 +194,21 @@ def test_v11_bead_spawn_uses_pour_material_contract() -> None:
     assert "static_friction=0.1" in cfg
     assert "dynamic_friction=0.08" in cfg
     assert "restitution=0.1" in cfg
+
+
+def test_v11_relaxes_right_arm_after_lift_for_upright_settling() -> None:
+    cfg = _text("grasp_right_env_cfg.py")
+    env = _text("grasp_right_env.py")
+
+    assert "post_lift_arm_stiffness_scale: float = 0.12" in cfg
+    assert "post_lift_arm_damping_scale: float = 0.25" in cfg
+    assert "def _apply_post_lift_arm_compliance" in env
+    assert "relax_mask = self.is_stabilize_phase | self.is_transport_phase" in env
+    assert "self.cfg.post_lift_arm_stiffness_scale" in env
+    assert "self.cfg.post_lift_arm_damping_scale" in env
+    assert "self.robot.write_joint_stiffness_to_sim(arm_stiffness, joint_ids=self.arm_dof_indices)" in env
+    assert "self.robot.write_joint_damping_to_sim(arm_damping, joint_ids=self.arm_dof_indices)" in env
+    assert "self._apply_post_lift_arm_compliance()" in env
 
 
 def test_v11_declares_pour_warm_state_export_contract() -> None:

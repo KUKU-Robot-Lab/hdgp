@@ -366,11 +366,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # ---------------------------------------------------------------------
     # 축1: pour-start reset curriculum — 일부 env를 "이미 target 위로 기운 pour 자세"로
     #   reset → 정책이 step 1부터 bead 흐름/보상을 경험. 진행에 따라 upright start로 anneal.
-    # [TEST] 박스 수정(z_max 0.48→0.72) 단독 효과 검증을 위해 curriculum OFF.
-    #   envelope grip이 compliant해 palm 강체 tilt로 컵이 안 따라옴(데이터 확인) → teleport/
-    #   scripted-tilt curriculum은 보류. 진짜 하드 병목이던 palm 박스만 풀고 정상 학습이
-    #   tilt/pour를 배우는지 먼저 확인.
-    enable_pour_start_curriculum: bool = False
+    # [test6] lip-gate(drain→mouth_xy 게이트) 후 Z 0.167m 고착 확인 → drain 인센티브가 없어
+    #   tilt/aim_gate_z 충족 안 됨 → r_descend fires 안 함 → Z 순환 deadlock.
+    #   pour_start curriculum 재활성: 50% envs가 105° pre-tilted+target 위로 reset
+    #   → step 1부터 aim_gate_z 충족+drain fires → Z 하강 bootstrap.
+    enable_pour_start_curriculum: bool = True
     pour_start_ratio_init: float = 0.5         # 초기 pour-ready reset 비율
     pour_start_ratio_final: float = 0.05       # 최종(거의 전부 upright grasp start)
     pour_start_anneal_start_step: int = 96000  # ~1500ep(×64) 후 anneal 시작(그 전엔 비율 유지)

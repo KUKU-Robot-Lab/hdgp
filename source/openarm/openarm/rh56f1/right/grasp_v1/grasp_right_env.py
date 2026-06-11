@@ -470,6 +470,12 @@ class GraspRightEnv(DirectRLEnv):
         self._dynamic_bead_add_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._dynamic_bead_spawned = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._cup_friction_static = torch.zeros(self.num_envs, device=self.device)
+        self._arm_joint_stiffness_nominal = (
+            self.robot.data.default_joint_stiffness[:, self.arm_dof_indices].clone()
+        )
+        self._arm_joint_damping_nominal = (
+            self.robot.data.default_joint_damping[:, self.arm_dof_indices].clone()
+        )
 
         self._warm_state_export: dict[str, torch.Tensor] | None = None
         self._warm_state_export_count = 0
@@ -933,6 +939,9 @@ class GraspRightEnv(DirectRLEnv):
             self._success_window.clear()
 
     def _spawn_dynamic_beads(self, env_mask: torch.Tensor) -> None:
+        if not self.cfg.physical_beads_enabled:
+            return
+
         env_ids = env_mask.nonzero(as_tuple=False).squeeze(-1)
         if env_ids.numel() == 0:
             return
@@ -1094,7 +1103,7 @@ class GraspRightEnv(DirectRLEnv):
         self.is_transport_phase.copy_(is_transport)
         self.is_post_grasp_phase.copy_(is_post_grasp)
 
-        if self.cfg.dynamic_bead_spawn_enabled:
+        if self.cfg.physical_beads_enabled and self.cfg.dynamic_bead_spawn_enabled:
             stabilize_elapsed = (
                 self.episode_length_buf - self._stabilize_start_step_buf
             ).clamp(min=0)
@@ -1247,6 +1256,7 @@ class GraspRightEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         is_post_grasp = self.is_post_grasp_phase
+        self._apply_post_lift_arm_compliance()
 
         # ---- 오른팔 ----
         self.robot.set_joint_position_target(self.fabric_q[:, :NUM_ARM_DOF], joint_ids=self.arm_dof_indices)
@@ -1277,6 +1287,23 @@ class GraspRightEnv(DirectRLEnv):
         self.robot.set_joint_position_target(
             self.left_arm_zero_pos, joint_ids=self.left_arm_dof_indices
         )
+
+    def _apply_post_lift_arm_compliance(self) -> None:
+        relax_mask = self.is_stabilize_phase | self.is_transport_phase
+        stiffness_scale = torch.where(
+            relax_mask.unsqueeze(1),
+            torch.full_like(self._arm_joint_stiffness_nominal, self.cfg.post_lift_arm_stiffness_scale),
+            torch.ones_like(self._arm_joint_stiffness_nominal),
+        )
+        damping_scale = torch.where(
+            relax_mask.unsqueeze(1),
+            torch.full_like(self._arm_joint_damping_nominal, self.cfg.post_lift_arm_damping_scale),
+            torch.ones_like(self._arm_joint_damping_nominal),
+        )
+        arm_stiffness = self._arm_joint_stiffness_nominal * stiffness_scale
+        arm_damping = self._arm_joint_damping_nominal * damping_scale
+        self.robot.write_joint_stiffness_to_sim(arm_stiffness, joint_ids=self.arm_dof_indices)
+        self.robot.write_joint_damping_to_sim(arm_damping, joint_ids=self.arm_dof_indices)
 
     # ------------------------------------------------------------------
     # Intermediate values
@@ -2305,7 +2332,11 @@ class GraspRightEnv(DirectRLEnv):
         self._cup_friction_static[env_ids] = _friction_vals.to(self.device)
 
         # ---- 7b. Bead 스폰 ----
-        if self.cfg.dynamic_bead_spawn_enabled:
+        if not self.cfg.physical_beads_enabled:
+            bead_count = torch.zeros(n, dtype=torch.long, device=self.device)
+            dynamic_add_count = torch.zeros(n, dtype=torch.long, device=self.device)
+            target_bead_count = torch.zeros(n, dtype=torch.long, device=self.device)
+        elif self.cfg.dynamic_bead_spawn_enabled:
             bead_count = self._sample_bead_counts(
                 n,
                 self.cfg.bead_initial_count_min,
@@ -2333,7 +2364,7 @@ class GraspRightEnv(DirectRLEnv):
 
         for bi in range(self.cfg.num_beads):
             active = bead_count > bi
-            if active.any():
+            if self.cfg.physical_beads_enabled and active.any():
                 bead_pos = obj_pos_world + self._bead_offsets_b[bi].unsqueeze(0)
                 bead_state[active, bi, :3] = bead_pos[active]
                 bead_state[active, bi, 3]  = 1.0
@@ -2444,16 +2475,25 @@ class GraspRightEnv(DirectRLEnv):
             default_damping = self.robot.data.default_joint_damping[env_ids_tensor][:, joint_ids]
             default_friction = self.robot.data.default_joint_friction_coeff[env_ids_tensor][:, joint_ids]
 
+            stiffness = default_stiffness * self._uniform_scale(
+                shape, self.cfg.real2sim_stiffness_scale_range
+            )
+            damping = default_damping * self._uniform_scale(
+                shape, self.cfg.real2sim_damping_scale_range
+            )
             self.robot.write_joint_stiffness_to_sim(
-                default_stiffness * self._uniform_scale(shape, self.cfg.real2sim_stiffness_scale_range),
+                stiffness,
                 joint_ids=joint_ids,
                 env_ids=env_ids_tensor,
             )
             self.robot.write_joint_damping_to_sim(
-                default_damping * self._uniform_scale(shape, self.cfg.real2sim_damping_scale_range),
+                damping,
                 joint_ids=joint_ids,
                 env_ids=env_ids_tensor,
             )
+            if joint_ids == self.arm_dof_indices:
+                self._arm_joint_stiffness_nominal[env_ids_tensor] = stiffness
+                self._arm_joint_damping_nominal[env_ids_tensor] = damping
             if torch.any(default_friction != 0.0):
                 self.robot.write_joint_friction_coefficient_to_sim(
                     default_friction * self._uniform_scale(shape, self.cfg.real2sim_friction_scale_range),
