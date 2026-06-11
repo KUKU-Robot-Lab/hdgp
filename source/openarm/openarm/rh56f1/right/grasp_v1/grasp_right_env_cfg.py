@@ -252,15 +252,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     palm_approach_weight:    float = 1.0
     palm_approach_sharpness: float = 10.0
 
-    enclosure_weight:       float = 10.0
+    enclosure_weight:       float = 3.0
     enclosure_sharpness:    float = 15.0
     cup_radius_approx:      float = 0.035
     enclosure_thumb_weight: float = 0.6
 
     align_upright_reward_weight: float = 2.0
     lift_reward_weight: float = 30.0
-    grasp_five_tip_contact_reward_weight: float = 3.0
-    grasp_five_tip_hold_reward_weight: float = 5.0
+    grasp_five_tip_contact_reward_weight: float = 6.0
+    grasp_five_tip_hold_reward_weight: float = 10.0
     grasp_contact_persistence_reward_steps: int = 30
     stabilize_upright_reward_weight: float = 10.0
     stabilize_upright_reward_scale_deg: float = 5.0

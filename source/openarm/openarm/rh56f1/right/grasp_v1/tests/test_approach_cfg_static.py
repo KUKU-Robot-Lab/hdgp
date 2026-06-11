@@ -21,5 +21,7 @@ def test_cfg_declares_rh56f1_adapted_pregrasp_and_approach_weights() -> None:
     assert "palm_delta_xyz:     float = 0.08" in cfg
     assert "palm_approach_weight:    float = 1.0" in cfg
     assert "palm_approach_sharpness: float = 10.0" in cfg
-    assert "enclosure_weight:       float = 10.0" in cfg
+    assert "enclosure_weight:       float = 3.0" in cfg
     assert "enclosure_sharpness:    float = 15.0" in cfg
+    assert "grasp_five_tip_contact_reward_weight: float = 6.0" in cfg
+    assert "grasp_five_tip_hold_reward_weight: float = 10.0" in cfg
