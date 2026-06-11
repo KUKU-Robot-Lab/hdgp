@@ -1,0 +1,752 @@
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/><title>Sim-to-Real Reinforcement Learning for Vision-Based Dexterous Manipulation on Humanoids
+[UC Berkeley, NVIDIA, UT Austin]</title><style>
+/* cspell:disable-file */
+/* webkit printing magic: print all background colors */
+html {
+	-webkit-print-color-adjust: exact;
+}
+* {
+	box-sizing: border-box;
+	-webkit-print-color-adjust: exact;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+}
+@media only screen {
+	body {
+		margin: 2em auto;
+		max-width: 900px;
+		color: rgb(55, 53, 47);
+	}
+}
+
+body {
+	line-height: 1.5;
+	white-space: pre-wrap;
+}
+
+a,
+a.visited {
+	color: inherit;
+	text-decoration: underline;
+}
+
+.pdf-relative-link-path {
+	font-size: 80%;
+	color: #444;
+}
+
+h1,
+h2,
+h3 {
+	letter-spacing: -0.01em;
+	line-height: 1.2;
+	font-weight: 600;
+	margin-bottom: 0;
+}
+
+/* Override strong tags inside headings to maintain consistent weight */
+h1 strong,
+h2 strong,
+h3 strong {
+	font-weight: 600;
+}
+
+.page-title {
+	font-size: 2.5rem;
+	font-weight: 700;
+	margin-top: 0;
+	margin-bottom: 0.75em;
+}
+
+h1 {
+	font-size: 1.875rem;
+	margin-top: 1.875rem;
+}
+
+h2 {
+	font-size: 1.5rem;
+	margin-top: 1.5rem;
+}
+
+h3 {
+	font-size: 1.25rem;
+	margin-top: 1.25rem;
+}
+
+.source {
+	border: 1px solid #ddd;
+	border-radius: 3px;
+	padding: 1.5em;
+	word-break: break-all;
+}
+
+.callout {
+	border-radius: 10px;
+	padding: 1rem;
+}
+
+figure {
+	margin: 1.25em 0;
+	page-break-inside: avoid;
+}
+
+figcaption {
+	opacity: 0.5;
+	font-size: 85%;
+	margin-top: 0.5em;
+}
+
+mark {
+	background-color: transparent;
+}
+
+.indented {
+	padding-left: 1.5em;
+}
+
+hr {
+	background: transparent;
+	display: block;
+	width: 100%;
+	height: 1px;
+	visibility: visible;
+	border: none;
+	border-bottom: 1px solid rgba(55, 53, 47, 0.09);
+}
+
+img {
+	max-width: 100%;
+}
+
+@media only print {
+	img {
+		max-height: 100vh;
+		object-fit: contain;
+	}
+
+	table.collection-content {
+		width: 100%;
+		table-layout: fixed;
+	}
+
+	table.collection-content th,
+	table.collection-content td {
+		overflow-wrap: anywhere;
+	}
+
+	table.collection-content td > .user,
+	table.collection-content td > time {
+		white-space: pre-wrap;
+	}
+}
+
+@page {
+	margin: 1in;
+}
+
+.collection-content-wrapper {
+	overflow-x: auto;
+}
+
+@media only print {
+	.collection-content-wrapper {
+		overflow-x: visible;
+	}
+}
+
+.collection-content {
+	font-size: 0.875rem;
+}
+
+.collection-content td {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.column-list {
+	display: flex;
+	gap: 46px;
+}
+
+.column {
+	min-width: 0;
+	overflow: hidden;
+}
+
+.column > *:first-child {
+	margin-top: 0;
+}
+
+.table_of_contents-item {
+	display: block;
+	font-size: 0.875rem;
+	line-height: 1.3;
+	padding: 0.125rem;
+}
+
+.table_of_contents-indent-1 {
+	margin-left: 1.5rem;
+}
+
+.table_of_contents-indent-2 {
+	margin-left: 3rem;
+}
+
+.table_of_contents-indent-3 {
+	margin-left: 4.5rem;
+}
+
+.table_of_contents-link {
+	text-decoration: none;
+	opacity: 0.7;
+	border-bottom: 1px solid rgba(55, 53, 47, 0.18);
+}
+
+table,
+th,
+td {
+	border: 1px solid rgba(55, 53, 47, 0.09);
+}
+
+table {
+	border-collapse: collapse;
+	border-left: none;
+	border-right: none;
+}
+
+th,
+td {
+	font-weight: normal;
+	padding: 0.25em 0.5em;
+	line-height: 1.5;
+	min-height: 1.5em;
+	text-align: left;
+}
+
+th {
+	color: rgba(55, 53, 47, 0.6);
+}
+
+ol,
+ul {
+	margin: 0;
+	margin-block-start: 0.6em;
+	margin-block-end: 0.6em;
+}
+
+li > ol:first-child,
+li > ul:first-child {
+	margin-block-start: 0.6em;
+}
+
+ul > li {
+	list-style: disc;
+}
+
+ul.to-do-list {
+	padding-inline-start: 0;
+}
+
+ul.to-do-list > li {
+	list-style: none;
+}
+
+.to-do-children-checked {
+	text-decoration: line-through;
+	opacity: 0.375;
+}
+
+ul.toggle > li {
+	list-style: none;
+}
+
+ul {
+	padding-inline-start: 1.7em;
+}
+
+ul > li {
+	padding-left: 0.1em;
+}
+
+ol {
+	padding-inline-start: 1.6em;
+}
+
+ol.numbered-list.numbered-list-digits-2 {
+	padding-inline-start: 2em;
+}
+
+ol.numbered-list.numbered-list-digits-3plus {
+	padding-inline-start: 2.4em;
+}
+
+ol > li {
+	padding-left: 0.2em;
+}
+
+.mono ol {
+	padding-inline-start: 2em;
+}
+
+.mono ol > li {
+	text-indent: -0.4em;
+}
+
+.toggle {
+	padding-inline-start: 0em;
+	list-style-type: none;
+}
+
+/* Indent toggle children */
+.toggle > li > details {
+	padding-left: 1.7em;
+}
+
+.toggle > li > details > summary {
+	margin-left: -1.1em;
+}
+
+.selected-value {
+	display: inline-block;
+	padding: 0 0.5em;
+	background: rgba(206, 205, 202, 0.5);
+	border-radius: 3px;
+	margin-right: 0.5em;
+	margin-top: 0.3em;
+	margin-bottom: 0.3em;
+	white-space: nowrap;
+}
+
+.collection-title {
+	display: inline-block;
+	margin-right: 1em;
+}
+
+.page-description {
+	margin-bottom: 2em;
+}
+
+.simple-table {
+	margin-top: 1em;
+	font-size: 0.875rem;
+	empty-cells: show;
+}
+.simple-table td {
+	height: 29px;
+	min-width: 120px;
+}
+
+.simple-table th {
+	height: 29px;
+	min-width: 120px;
+}
+
+.simple-table-header-color {
+	background: rgb(247, 246, 243);
+	color: black;
+}
+.simple-table-header {
+	font-weight: 500;
+}
+
+time {
+	opacity: 0.5;
+}
+
+.icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	max-width: 1.2em;
+	max-height: 1.2em;
+	text-decoration: none;
+	vertical-align: text-bottom;
+	margin-right: 0.5em;
+}
+
+img.icon {
+	border-radius: 3px;
+}
+
+.callout img.notion-static-icon {
+	width: 1em;
+	height: 1em;
+}
+
+.callout p {
+	margin: 0;
+}
+
+.callout h1,
+.callout h2,
+.callout h3 {
+	margin: 0 0 0.6rem;
+}
+
+.user-icon {
+	width: 1.5em;
+	height: 1.5em;
+	border-radius: 100%;
+	margin-right: 0.5rem;
+}
+
+.user-icon-inner {
+	font-size: 0.8em;
+}
+
+.text-icon {
+	border: 1px solid #000;
+	text-align: center;
+}
+
+.page-cover-image {
+	display: block;
+	object-fit: cover;
+	width: 100%;
+	max-height: 30vh;
+}
+
+.page-header-icon {
+	font-size: 3rem;
+	margin-bottom: 1rem;
+}
+
+.page-header-icon-with-cover {
+	margin-top: -0.72em;
+	margin-left: 0.07em;
+}
+
+.page-header-icon img {
+	border-radius: 3px;
+}
+
+.link-to-page {
+	margin: 1em 0;
+	padding: 0;
+	border: none;
+	font-weight: 500;
+}
+
+p > .user {
+	opacity: 0.5;
+}
+
+td > .user,
+td > time {
+	white-space: nowrap;
+}
+
+input[type="checkbox"] {
+	transform: scale(1.5);
+	margin-right: 0.6em;
+	vertical-align: middle;
+}
+
+p {
+	margin-top: 0.5em;
+	margin-bottom: 0.5em;
+}
+
+.image {
+	border: none;
+	margin: 1.5em 0;
+	padding: 0;
+	border-radius: 0;
+	text-align: center;
+}
+
+.code,
+code {
+	background: rgba(135, 131, 120, 0.15);
+	border-radius: 3px;
+	padding: 0.2em 0.4em;
+	border-radius: 3px;
+	font-size: 85%;
+	tab-size: 2;
+}
+
+code {
+	color: #eb5757;
+}
+
+.code {
+	padding: 1.5em 1em;
+}
+
+.code-wrap {
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+
+.code > code {
+	background: none;
+	padding: 0;
+	font-size: 100%;
+	color: inherit;
+}
+
+blockquote {
+	font-size: 1em;
+	margin: 1em 0;
+	padding-left: 1em;
+	border-left: 3px solid rgb(55, 53, 47);
+}
+
+blockquote.quote-large {
+	font-size: 1.25em;
+}
+
+.bookmark {
+	text-decoration: none;
+	max-height: 8em;
+	padding: 0;
+	display: flex;
+	width: 100%;
+	align-items: stretch;
+}
+
+.bookmark-title {
+	font-size: 0.85em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	height: 1.75em;
+	white-space: nowrap;
+}
+
+.bookmark-text {
+	display: flex;
+	flex-direction: column;
+}
+
+.bookmark-info {
+	flex: 4 1 180px;
+	padding: 12px 14px 14px;
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+}
+
+.bookmark-image {
+	width: 33%;
+	flex: 1 1 180px;
+	display: block;
+	position: relative;
+	object-fit: cover;
+	border-radius: 1px;
+}
+
+.bookmark-description {
+	color: rgba(55, 53, 47, 0.6);
+	font-size: 0.75em;
+	overflow: hidden;
+	max-height: 4.5em;
+	word-break: break-word;
+}
+
+.bookmark-href {
+	font-size: 0.75em;
+	margin-top: 0.25em;
+}
+
+.sans { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol"; }
+.code { font-family: "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace; }
+.serif { font-family: Lyon-Text, Georgia, ui-serif, serif; }
+.mono { font-family: iawriter-mono, Nitti, Menlo, Courier, monospace; }
+.pdf .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK JP'; }
+.pdf:lang(zh-CN) .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK SC'; }
+.pdf:lang(zh-TW) .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK TC'; }
+.pdf:lang(ko-KR) .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK KR'; }
+.pdf .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK JP'; }
+.pdf:lang(zh-CN) .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK SC'; }
+.pdf:lang(zh-TW) .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK TC'; }
+.pdf:lang(ko-KR) .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK KR'; }
+.pdf .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK JP'; }
+.pdf:lang(zh-CN) .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK SC'; }
+.pdf:lang(zh-TW) .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK TC'; }
+.pdf:lang(ko-KR) .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK KR'; }
+.pdf .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK JP'; }
+.pdf:lang(zh-CN) .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK SC'; }
+.pdf:lang(zh-TW) .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK TC'; }
+.pdf:lang(ko-KR) .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK KR'; }
+.highlight-default {
+	color: rgba(44, 44, 43, 1);
+}
+.highlight-gray {
+	color: rgba(125, 122, 117, 1);
+	fill: rgba(125, 122, 117, 1);
+}
+.highlight-brown {
+	color: rgba(159, 118, 90, 1);
+	fill: rgba(159, 118, 90, 1);
+}
+.highlight-orange {
+	color: rgba(210, 123, 45, 1);
+	fill: rgba(210, 123, 45, 1);
+}
+.highlight-yellow {
+	color: rgba(203, 148, 52, 1);
+	fill: rgba(203, 148, 52, 1);
+}
+.highlight-teal {
+	color: rgba(80, 148, 110, 1);
+	fill: rgba(80, 148, 110, 1);
+}
+.highlight-blue {
+	color: rgba(56, 125, 201, 1);
+	fill: rgba(56, 125, 201, 1);
+}
+.highlight-purple {
+	color: rgba(154, 107, 180, 1);
+	fill: rgba(154, 107, 180, 1);
+}
+.highlight-pink {
+	color: rgba(193, 76, 138, 1);
+	fill: rgba(193, 76, 138, 1);
+}
+.highlight-red {
+	color: rgba(207, 81, 72, 1);
+	fill: rgba(207, 81, 72, 1);
+}
+.highlight-default_background {
+	color: rgba(44, 44, 43, 1);
+}
+.highlight-gray_background {
+	background: rgba(42, 28, 0, 0.07);
+}
+.highlight-brown_background {
+	background: rgba(139, 46, 0, 0.086);
+}
+.highlight-orange_background {
+	background: rgba(224, 101, 1, 0.129);
+}
+.highlight-yellow_background {
+	background: rgba(211, 168, 0, 0.137);
+}
+.highlight-teal_background {
+	background: rgba(0, 100, 45, 0.09);
+}
+.highlight-blue_background {
+	background: rgba(0, 124, 215, 0.094);
+}
+.highlight-purple_background {
+	background: rgba(102, 0, 178, 0.078);
+}
+.highlight-pink_background {
+	background: rgba(197, 0, 93, 0.086);
+}
+.highlight-red_background {
+	background: rgba(223, 22, 0, 0.094);
+}
+.block-color-default {
+	color: inherit;
+	fill: inherit;
+}
+.block-color-gray {
+	color: rgba(125, 122, 117, 1);
+	fill: rgba(125, 122, 117, 1);
+}
+.block-color-brown {
+	color: rgba(159, 118, 90, 1);
+	fill: rgba(159, 118, 90, 1);
+}
+.block-color-orange {
+	color: rgba(210, 123, 45, 1);
+	fill: rgba(210, 123, 45, 1);
+}
+.block-color-yellow {
+	color: rgba(203, 148, 52, 1);
+	fill: rgba(203, 148, 52, 1);
+}
+.block-color-teal {
+	color: rgba(80, 148, 110, 1);
+	fill: rgba(80, 148, 110, 1);
+}
+.block-color-blue {
+	color: rgba(56, 125, 201, 1);
+	fill: rgba(56, 125, 201, 1);
+}
+.block-color-purple {
+	color: rgba(154, 107, 180, 1);
+	fill: rgba(154, 107, 180, 1);
+}
+.block-color-pink {
+	color: rgba(193, 76, 138, 1);
+	fill: rgba(193, 76, 138, 1);
+}
+.block-color-red {
+	color: rgba(207, 81, 72, 1);
+	fill: rgba(207, 81, 72, 1);
+}
+.block-color-default_background {
+	color: inherit;
+	fill: inherit;
+}
+.block-color-gray_background {
+	background: rgba(240, 239, 237, 1);
+}
+.block-color-brown_background {
+	background: rgba(245, 237, 233, 1);
+}
+.block-color-orange_background {
+	background: rgba(251, 235, 222, 1);
+}
+.block-color-yellow_background {
+	background: rgba(249, 243, 220, 1);
+}
+.block-color-teal_background {
+	background: rgba(232, 241, 236, 1);
+}
+.block-color-blue_background {
+	background: rgba(229, 242, 252, 1);
+}
+.block-color-purple_background {
+	background: rgba(243, 235, 249, 1);
+}
+.block-color-pink_background {
+	background: rgba(250, 233, 241, 1);
+}
+.block-color-red_background {
+	background: rgba(252, 233, 231, 1);
+}
+.select-value-color-default { background-color: rgba(42, 28, 0, 0.07); }
+.select-value-color-gray { background-color: rgba(28, 19, 1, 0.11); }
+.select-value-color-brown { background-color: rgba(127, 51, 0, 0.156); }
+.select-value-color-orange { background-color: rgba(196, 88, 0, 0.203); }
+.select-value-color-yellow { background-color: rgba(209, 156, 0, 0.282); }
+.select-value-color-green { background-color: rgba(0, 96, 38, 0.156); }
+.select-value-color-blue { background-color: rgba(0, 118, 217, 0.203); }
+.select-value-color-purple { background-color: rgba(92, 0, 163, 0.141); }
+.select-value-color-pink { background-color: rgba(183, 0, 78, 0.152); }
+.select-value-color-red { background-color: rgba(206, 24, 0, 0.164); }
+
+.checkbox {
+	display: inline-flex;
+	vertical-align: text-bottom;
+	width: 16;
+	height: 16;
+	background-size: 16px;
+	margin-left: 2px;
+	margin-right: 5px;
+}
+
+.checkbox-on {
+	background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Crect%20width%3D%2216%22%20height%3D%2216%22%20fill%3D%22%2358A9D7%22%2F%3E%0A%3Cpath%20d%3D%22M6.71429%2012.2852L14%204.9995L12.7143%203.71436L6.71429%209.71378L3.28571%206.2831L2%207.57092L6.71429%2012.2852Z%22%20fill%3D%22white%22%2F%3E%0A%3C%2Fsvg%3E");
+}
+
+.checkbox-off {
+	background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Crect%20x%3D%220.75%22%20y%3D%220.75%22%20width%3D%2214.5%22%20height%3D%2214.5%22%20fill%3D%22white%22%20stroke%3D%22%2336352F%22%20stroke-width%3D%221.5%22%2F%3E%0A%3C%2Fsvg%3E");
+}
+	
+</style></head><body><article id="30b93e67-6f21-8063-9496-e9e627368f4b" class="page sans"><header><h1 class="page-title" dir="auto"><strong>Sim-to-Real Reinforcement Learning for Vision-Based Dexterous Manipulation on Humanoids<br/>[UC Berkeley, NVIDIA, UT Austin]</strong></h1><p class="page-description" dir="auto"></p></header><div class="page-body"><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-805c-b2e6-fb0b9ffbcfb1" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image.png"><img style="width:709.9609375px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image.png"/></a></figure></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0">Abstract</summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80f2-af92-eb54e052cb61" class="">강화학습은 다양한 문제 영역에서 인간 수준 또는 그 이상의 성능을 달성하는 데 있어 유망한 성과를 보여 왔으나, 정교한 로봇 조작(dexterous robot manipulation) 분야에서는 여전히 성공이 제한적이다. 본 연구는 휴머노이드 형태의 로봇에서 <strong>접촉이 빈번하게 발생하는(contact-rich) 조작 과제 집합</strong>을 <span style="border-bottom:0.05em solid">강화학습으로 해결하는 데 따르는 핵심적인 어려움들을 분석</span>하고, 이를 <span style="border-bottom:0.05em solid">극복하기 위한 새로운 기법</span>들을 제안하며 실험적으로 검증한다. 본 논문의 주요 기여는 다음과 같다. <mark class="highlight-purple">실제 환경과 시뮬레이션 간의 차이를 줄이기 위한 </mark><mark class="highlight-purple"><strong><span style="border-bottom:0.05em solid">자동화된 real-to-sim 튜닝 모듈</span></strong></mark>, <mark class="highlight-purple">장기 시계열의 접촉 기반 조작 과제에서 보상 설계를 단순화하는</mark><mark class="highlight-purple"><strong><span style="border-bottom:0.05em solid"> 일반화된 보상 설계 방식</span></strong></mark>, <mark class="highlight-purple">어려운 탐색 문제에서 샘플 효율성을 향상시키면서도</mark><mark class="highlight-purple"><strong><span style="border-bottom:0.05em solid"> sim-to-real 성능을 유지하는 분할 정복 기반 증류(divide-and-conquer distillation) 절차</span></strong></mark>, 그리고 <mark class="highlight-purple">sim-to-real 인지 격차를 완화하기 위한 </mark><mark class="highlight-purple"><strong><span style="border-bottom:0.05em solid">희소(sparse) 및 밀집(dense) 객체 표현의 혼합 기법</span></strong></mark>이다. <strong>우리는 세 가지 휴머노이드 정교 조작 과제에서 유망한 결과를 보이며</strong>, 각 기법에 대한 <strong>소거 실험(ablation study)을 통해 그 효과를 검증</strong>한다. <mark class="highlight-purple"><strong>본 연구는 인간 시연 없이도 sim-to-real 강화학습을 통해 휴머노이드 정교 조작을 학습할 수 있는 성공적인 접근법을 제시하며, 높은 성능과 강건한 일반화를 달성함을 보여준다.</strong></mark></p></div></div></details></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0">Introduction</summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8028-93a1-eb6f636e1121" class="">심층 강화학습(Reinforcement Learning, RL)은 최근 수년간 다양한 응용 분야에서 인상적인 성과를 거두어 왔다. 예를 들어 고전 보드게임 [48], 경쟁적 다중 사용자 온라인 게임 [6, 56], 대규모 언어 모델 [1, 14], 실제 환경 로봇 보행 [21, 26], 자율 드론 레이싱 [24] 등이 그 사례이다. 이러한 성과들은 RL이 다양한 과제에서 인간 수준에 도달하거나 이를 능가할 수 있는 잠재력을 지녔음을 보여줄 뿐 아니라, 자율적 탐색을 통해 확장성과 일반화를 달성할 수 있는 고유한 능력을 부각시킨다. 이러한 내재적 특성으로 인해 RL은 인간의 사전 지식이나 시연에 의존하기 어려운 과제들을 해결하기 위한 고성능의 장기적 접근법으로 자리매김하고 있다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80c2-b945-e0f895dd51bf" class="">이러한 가능성에 착안하여, 우리는 <strong>시각 입력 기반의 난이도 높은 정교한 조작 과제를 해결하기 위해 RL을 탐구</strong>한다. 그러나 이 문제 영역에서 심층 RL이 거둔 성공은 아직 제한적이다.<mark class="highlight-red"><strong> 기존 연구들은</strong></mark> 인간이 단순히 프로그래밍하거나 원격 조작으로는 달성하기 어려운 고도의 정교한 조작 능력을 보여주었다 [2, 17, 31]. 다만 이러한 접근법들은 대체로<mark class="highlight-red"><strong> 단일 조작 기술에 특화되어 있어, 폭넓은 적용 가능성에는 한계</strong></mark>를 지닌다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80af-90be-c3a711a8d2c0" class=""><mark class="highlight-brown"><strong>그렇다면 무엇이 RL이 시각 기반 정교한 조작에 보다 일반적으로 적용되는 것을 가로막고 있는가?</strong></mark> 이를 규명하기 위해, 우리는 먼저<strong> 정교한 조작이 다른 응용 분야와 구별되는 고유한 특성을 분석</strong>한다. 이후 이러한 특성들이 RL 알고리즘 적용에<strong> 어떤 도전 과제를 야기하는지를 살펴보고</strong>, 이를 해결하기 위한 <strong>일련의 새로운 기법들을 개발</strong>한다. 우리의 경험과 기법들을 종합하여, <strong><span style="border-bottom:0.05em solid">시각 기반 휴머노이드 조작 과제에 sim-to-real RL을 적용하기 위한 하나의 레시피를 제시하고 유망한 결과를 보여준다. </span></strong>아래에서는 핵심적인 도전 과제들과 이를 해결하기 위한 우리의 전략을 정리한다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80c0-8bc5-f218156c3a5f" class=""><strong>환경 모델링의 도전 과제.</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8040-bf37-ec485d9354fc" class="">정교한 조작에 RL을 적용하는 데 있어 첫 번째 도전은 <mark class="highlight-red"><strong>시뮬레이션 환경을 실제 환경과 일치시키는 것이 매우 어렵거나 사실상 불가능하다는 점</strong></mark>이다. 실제 환경에서 직접 RL을 수행하면 이러한 문제를 회피할 수 있지만, 물리적 하드웨어를 활용한 학습은 하드웨어 품질, 유지보수 지원, 제어기의 강건성, 안전성 측면에서 막대한 요구를 수반한다. <strong>다자유도 손을 포함한 휴머노이드와 같이 고차원 시스템의 경우, 실제 환경에서의 탐색은 더욱 현실성이 떨어진다</strong>. 반면 시뮬레이션은 가상 샌드박스에서 무제한의 시행착오를 허용하므로, sim-to-real RL 접근법의 개발을 강하게 동기부여한다. <strong>RL 기반 보행</strong> [16, 21, 26, 43]에서의 기존 성공 사례들은 고무적이지만<mark class="highlight-red">, 정교한 조작 분야에서의 기존 성공들은 과제 또는 하드웨어에 특화된, 매우 많은 인력과 노력이 요구되는 real-to-sim 엔지니어링에 의존</mark>해 왔다 [2, 17, 31]. 시뮬레이션과 실제 환경을 보다 잘 정합하기 위해, <mark class="highlight-purple"><strong>우리는 환경 모델링 격차를 줄이는 데 필요한 엔지니어링 노력을 크게 완화하는 자동화된 real-to-sim 튜닝 모듈을 제안</strong></mark>한다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-804a-9286-c0cdd279083c" class=""><strong>보상 설계의 도전 과제.</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80f7-80d7-c89b7d7fc01c" class="">보상 함수는 일반적으로 강화학습 정책을 학습시키기 위한 과제를 명시하는 범용 인터페이스로 사용되지만, 조작 과제—<mark class="highlight-blue_background"><strong>특히 접촉이 빈번하거나 장기 시계열(long-horizon)을 갖는 과제</strong></mark>—에 대해 <mark class="highlight-red">일반화 가능한 보상을 설계하는 것은 악명 높을 정도로 어렵다</mark>. 기존 연구들은 종<strong>종 인간 전문가의 지식에 기반한 수작업 설계에 의존</strong>해 왔으며 [40, 61], 이는 장기적으로 확장성이 제한적이다. 이러한 점은 많은 관심 과제가 단일 “보행” 보상의 변형으로 표현 가능한 보행 문제와 조작 문제를 구별짓는 핵심 차이이다. 우리는<mark class="highlight-purple"><strong> 정교한 조작 과제를 위한 보상 설계의 일반 원칙을 제안</strong></mark>한다. 즉, 전체 과제를 중간 수준의 “<span style="border-bottom:0.05em solid">접촉 목표</span>(contact goals)”와 “<span style="border-bottom:0.05em solid">물체 목표(</span>object goals)”로 분해하는 것이다. <strong>접촉 목표</strong>를 명시하기 위해<strong> 새로운 키포인트 기반 상태 표현을 사용</strong>한다. 이러한 보상 설계 기법을 따르면, <strong>양손 물체 전달(bimanual handover)과 같이 장기 시계열이면서 접촉이 풍부한 과제도 완전 무지(tabula rasa) 상태에서 강화학습으로 학습할 수 있다.</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8032-9aa2-cbc5585955e3" class=""><strong>정책 학습의 도전 과제.</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8056-a41f-de820268ea75" class="">잘 정의된 보상 함수가 존재하더라도, <strong>고차원 공간에서의 탐색은 높은 샘플 복잡도와 보상 희소성으로 인해 강화학습 정책의 성공적인 학습을 보장하지 않는다.</strong> 다지 손을 사용하는 정교한 조작에서 나타나는 접촉 패턴의 다양성과 복잡성은 이러한 문제를 더욱 악화시킨다. 새로운 상태 방문을 장려하는 비지도 방법들 [7, 30, 39]이 제안되었지만, 이들은 근본적으로 어려운 탐색 문제의 난이도를 낮추지는 못한다. 우리는 <mark class="highlight-purple">두 가지 실용적인 기법을 도입하여 이 도전에 대응</mark>한다. (1) <mark class="highlight-orange_background"><strong>과제 인식(task-aware) 손 자세로 과제를 초기화하는 방법</strong></mark>, (2) <mark class="highlight-teal_background"><strong>고난도의 탐색 문제를 차원이 크게 축소된 하위 과제로 분해하고, 각 하위 과제에 대해 전문가 정책을 학습한 뒤 이를 전체 과제를 위한 범용 정책으로 증류(distillation)하는 방법</strong></mark>이다. 실험을 통해 이러한 기법들이 <mark class="highlight-blue"><strong>학습의 샘플 효율을 향상시킴을 검증하고, 다양한 분할 정복(divide-and-conquer) 방식이 효과성 측면에서 어떻게 다른지 분석</strong></mark>한다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-803e-a1e3-c5ef8a954974" class=""><strong>물체 인식의 도전 과제.</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8051-a88c-d7dfff7d4f43" class="">다른 로봇 과제들과 비교할 때, 조작에서는 물체와의 상호작용이 필연적으로 수반되기 때문에 물체 인식이 특히 중요하다. 물체는 형태, 크기, 질량, 색상, 질감 등 수많은 속성에서 사실상 무한한 다양성을 지니므로, <mark class="highlight-red">물체 인식은 오랜 난제로 남아 있다</mark>.<mark class="highlight-red"><strong> sim-to-real 강화학습을 정교한 조작에 적용하는 연구는 이 딜레마에 의해 병목에 직면</strong></mark>한다. 즉, 더 풍부하고 정보 밀<span style="border-bottom:0.05em solid">도가 높은 물체 표현은 학습된 정책의 정교함과 능력을 향상시킬 수 있지만, 동시에 sim-to-real 간 인식 격차를 확대</span>한다. 이를 극복하기 위해, 우리는 <mark class="highlight-purple"><strong>저차원 및 고차원 물체 표현을 혼합하여 사용하는 방법을 제안하고, 고차원 특징에 대해서는 모달리티별 데이터 증강을 적용해 sim-to-real 인식 격차를 줄인다. </strong></mark>우리는 이러한 조합이 정교한 조작 정책 학습과 실제 로봇 하드웨어로의 신뢰성 있는 전이를 어떻게 균형 있게 달성하는지 체계적으로 분석한다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8032-83c5-f6886b0dd5cb" class="">위에서 제시한 전략들은 시각 기반 정교한 조작을 위한 sim-to-real 강화학습의 완전한 레시피를 이룬다. 우리는 휴머노이드에서 세 가지 정교한 조작 과제를 학습하는 데 성공적인 결과를 보이며, 체계적인 소거 실험을 수행한다.</p></div></div></details></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0">II. BACKGROUND</summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8018-9e17-ca7eaf30877c" class=""><strong>A. 로보틱스에 대한 심층 강화학습 응용</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-803e-86e0-c477c35915a2" class="">심층 강화학습(deep RL)은 다양한 응용 분야에서의 성공 사례들 [1, 6, 14, 21, 24, 26, 48, 56]로 인해 최근 수년간 큰 주목을 받아왔다. 그러나 그간의 연구들은 이 패러다임이 지니는 취약성도 함께 지적해 왔는데, 대표적으로 <mark class="highlight-red">하이퍼파라미터에 대한 민감성 [19]</mark>과 강화학습 알고리즘에 내재된 <mark class="highlight-red">높은 분산으로 인한 재현성 문제 [23]</mark>가 있다. 강화학습의 미해결 문제들 가운데 가장 중요하고 오래된 문제는 <strong><span style="border-bottom:0.05em solid">탐색(exploration)</span></strong>이다. 지도학습에서는 일반적으로 데이터가 주어져 있다고 가정하지만, <strong>강화학습에서는 에이전트가 스스로 데이터를 수집하고, 그 데이터를 기반으로 정책을 업데이트해야 한다</strong>. <span style="border-bottom:0.05em solid">데이터가 어떻게 수집되는가에 대한 문제가 바로 탐색 문제</span>이다. 고차원 관측과 동역학, 그리고 종종 희소한 보상을 갖는 실제 로봇 환경은 강화학습에 특히 어려운 탐색 문제를 제시한다. 새로운 상태 방문을 장려함으로써 고차원 입력에서의 탐색을 알고리즘적으로 확장하려는 연구들 [4, 7, 30, 38, 39, 50, 53]이 존재하지만, 이들은 탐색 문제의 근본적인 어려움을 완전히 해결하지는 못한다. 또한 실제 로봇 문제에 강화학습을 적용할 때는 표준 강화학습 벤치마크 [5, 54]가 포착하지 못하는 중요한 도전 과제들이 드러난다. 즉,<mark class="highlight-red"><strong> (1) 완전하거나 정확하게 모델링된 환경의 부재, (2) 관심 과제에 대해 잘 정의된 보상 함수의 부재</strong></mark>이다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8014-b865-cefb24ed69ff" class="">로보틱스와 강화학습의 접점에서 수행된 기존 연구들은 이러한 문제를 완화하기 위해 다양한 실용적 기법들을 제안해 왔다. 예를 들어 인간 동작 데이터나 <strong>원격조작 시연</strong>으로부터의 학습 [9, 45, 60, 65], <strong>물체 및 시각 환경을 모델링하기 위한 real-to-sim 기법</strong> [2, 16, 17, 31, 55], 그리고 보다<strong> 원칙적인 보상 설계 방법</strong>들 [37, 62]이 있다. 이들 중 일부는 특정 과제나 설정에 과적합되는 경향이 있으나, 본 연구가 기반으로 삼는 유망한 방향성을 제시한다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8070-82a6-fedfca7feba0" class=""><strong>B. 휴머노이드에서의 시각 기반 정교한 조작</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80f2-bcba-edf84cb03791" class=""><em>모방학습 및 고전적 접근법.</em></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-809a-8b7f-c793e736964d" class=""><strong>원격조작 기술</strong> [10, 32, 58, 63]과 <strong>시연 학습</strong> [11, 28]의 발전은 최근 <strong>시각 기반 정교한 조작 분야</strong>에서 많은 진전을 이끌어냈다 [10, 28, 32, 64]. 그러나 실제로 <mark class="highlight-red">고품질의 정교한 조작 데이터를 수집하기 위해 원격조작자를 투입하는 과정은 여전히 비용이 크며</mark>,<mark class="highlight-red"> 실제 환경에서 수집된 원격조작 데이터만으로 성능을 확장한 결과들 [27, 29, 64]은 인간 수준의 성능에 도달하는 데 필요한 비용이 지나치게 클 수 있음을 시사</mark>한다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-803d-a585-c514446db129" class=""><em>강화학습 기반 접근법.</em></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80d8-b2ad-f6bdd251b7d1" class="">다수의 기존 연구들은 다지 손을 사용하는 정교한 조작 문제를 강화학습으로 성공적으로 해결해 왔지만, 단일 손 설정을 가정하거나 [2, 8, 17, 35, 42, 49, 57], 객체 표현으로 픽셀 입력을 사용하지 않는 경우가 많다 [9, 20, 31]. 또한 대부분의 연구는 손 안에서의 재배치(in-hand reorientation) [2, 17, 42, 57], 파지 [35, 49], 비틀기 [31], 동적 전달 [20]과 같은 단일 조작 기술에 초점을 맞추고 있다. 본 연구와 가장 유사한 작업은 Chen 등 [9]이지만, 이 방법은 손–팔 전체 관절 제어를 처음부터 학습하는 대신 인간 손 동작 모션 캡처 데이터를 사용해 손목 제어기를 학습한다. 더 나아가, <strong>기존 연구들은 물리 시뮬레이션에서 모델이 충분히 검증된 하드웨어를 주로 다루는 경향</strong>이 있다. 본 연구는 <strong><span style="border-bottom:0.05em solid">다지 손을 갖춘 새로운 휴머노이드 하드웨어에 대해 시각 기반 정교한 조작 정책을 sim-to-real 강화학습으로 성공적으로 전이한 최초의 사례를 제시</span></strong>한다.</p></div></div></details></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0">III. CHALLENGES AND APPROACHES</summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80da-b791-c2df19c14d41" class="">I절에서는 sim-to-real 강화학습을 정교한 조작에 적용할 때 직면하는 네 가지 도전 영역을 식별하고, 각 영역에 대한 대응 전략을 간략히 설명하였다. 아래에서는 각 접근법을 구체적으로 상세히 기술한다. 그림 2는 이러한 도전 과제와 접근법의 개요를 보여준다.</p></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0"><strong>A. Real-to-Sim 모델링</strong></summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8066-ba1a-c41613786b9d" class="">시뮬레이터는 강화학습에 필요한 탐색을 수행하기 위해 무제한의 시행착오 기회를 제공한다. 그러나 시뮬레이션에서 학습된 정책이 실제 환경으로 신뢰성 있게 전이될 수 있는지는 로봇 자체와 환경 모두에 대한 모델링의 충실도에 크게 의존한다. <mark class="highlight-red"><strong>sim-to-real 강화학습을 정교한 조작 문제에 적용할 때는, 물체를 모델링해야 한다는 요구로 인해 이러한 real-to-sim 모델링 문제가 더욱 심화</strong></mark>된다. 물체는 변동성이 매우 크며, 물리적 속성을 완전히 정량화하기가 어렵기 때문이다. 설령 실제 물리 파라미터의 정답값이 알려져 있다고 가정하더라도, 시뮬레이션과 실제 세계를 정량적으로 일치시키는 것은 쉽지 않다. 이는 <strong>물리 엔진의 한계로 인해 시뮬레이션과 실제 세계에서 동일한 물리 상수 값이 반드시 동일한 운동학적·동역학적 관계를 의미하지 않기 때문이다.</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80e6-8d16-cbc7ab013871" class=""><strong>자동 튜닝된 로봇 모델링(Autotuned robot modeling).</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8000-9afb-c5301b02c063" class="">로봇 제조사는<strong> 종종 자사 하드웨어에 대한 독점 모델 파일을 제공</strong>하지만, 이러한 모델은 수정 없이 그대로 사용할 수 있는 정답 모델이라기보다는<strong> real-to-sim 작업을 위한 출발점에 가깝다</strong>. 모델링 정확도를 높이기 위한 경험적 해결책으로는 로봇 모델 상수와 시뮬레이션 가능한 물리 파라미터를 수작업으로 조정하는 방법 [2], 또는 특정 운동학 구조(예: 사절 링크)를 사용하는 시뮬레이터에 맞게 재구성하는 방법 [44] 등이 있다. 그러나 <mark class="highlight-red">실제 세계와 시뮬레이션 세계 사이에 “정답” 대응 관계가 존재하지 않기 때문에 이러한 과정은 매우 노동 집약적</mark>이다. 우리는 <mark class="highlight-purple"><strong>“오토튠(autotune)” 모듈을 통해 real-to-sim 모델링 과정을 가속하는 실용적인 기법을 제안</strong></mark>한다. 이 오토튠 모듈은 <strong><span style="border-bottom:0.05em solid">파라미터 공간을 자동으로 탐색하여 시뮬레이터 물리 파라미터와 로봇 모델 상수에 대한 최적 값을 식별함으로써, 실제 로봇의 거동에 맞게 시뮬레이터 파라미터를 4분 이내(10Hz 기준 2000 시뮬레이션 스텝)로 신속하게 보정</span></strong>한다. 해당 모듈은 <strong><span style="border-bottom:0.05em solid">그림 2A와 알고리즘 1에 제시</span></strong>되어 있다. 이 모듈은 <mark class="highlight-blue">두 종류의 파라미터를 대상으로 동작</mark>한다. 하나는 <mark class="highlight-blue"><strong>운동학과 동역학에 영향을 미치는 시뮬레이터 물리 파라미터</strong></mark>이며, 다른 하나는<mark class="highlight-blue"><strong> URDF 파일에 포함된 로봇 모델 상수(링크 관성값, 관절 제한, 관절/링크 자세 등)</strong></mark>이다. <mark class="highlight-brown_background">보정 과정은 제조사가 제공한 로봇 모델 파일을 기반으로, 파라미터 공간에서 무작위로 샘플링한 조합을 사용해 다수의 시뮬레이션 환경을 초기화하는 것으로 시작</mark>된다. 이후 <mark class="highlight-orange_background">실제 로봇 하드웨어에서는 한 번의 실행으로, 시뮬레이션 환경에서는 병렬로 동일한 관절 위치 목표로 구성된 (N)개의 보정 시퀀스를 실행</mark>한다. <mark class="highlight-yellow_background">동일한 관절 목표를 추종할 때 각 시뮬레이션 환경과 실제 로봇 사이의 추종 오차를 비교하여, 추종 성능의 평균제곱오차를 최소화하는 파라미터 집합을 선택</mark>한다. 이 접근법은 실제 로봇에서 단 한 번의 보정 실행만으로 반복적인 수작업 튜닝을 제거하고, 전통적으로 조정이 어려웠던 URDF 파라미터를 자동으로 최적화하며, 다수의 파라미터 조합을 병렬로 평가할 수 있게 한다. 또한 이 방법은 운동학적 거동에 영향을 미치는 시뮬레이터 또는 로봇 모델의 노출된 모든 파라미터를 튜닝할 수 있을 만큼 범용적이다.</p></div><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-80a4-82ff-d47060e0e666" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%201.png"><img style="width:681.9921875px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%201.png"/></a></figure></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8016-a3ca-e757e71dca5f" class=""><strong>근사적 물체 모델링(Approximate object modeling).</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80b3-8300-ca8219034b25" class="">기존 연구들 [31, 41]에서 보인 바와 같이, <strong>물체를 무작위화된 파라미터를 갖는 원통과 같은 기본 기하 형태로 모델링하는 것만으로도 sim-to-real 전이가 가능한 정교한 조작 정책을 학습</strong>할 수 있다. 본 연구의 접근법 또한 이러한 방법을 채택하며, 그 효과성을 확인하였다.</p></div></div></details></div><div style="display:contents" dir="auto"><hr id="30b93e67-6f21-80c3-bce8-f320994b8afe"/></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0"><strong>B. 일반화 가능한 보상 설계(Generalizable Reward Design)</strong></summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8071-847d-e1c6474096be" class="">강화학습의 표준 정식화 [51]에서 보상 함수는 에이전트의 행동을 규정하는 유일한 요소이기 때문에 핵심적인 구성 요소이다. 그럼에도 불구하고, 강화학습 연구의 주류는 학습 알고리즘의 개발과 분석에 집중해 왔으며, 보상 신호는 주어지는 것으로 간주되어 변경 대상이 아닌 경우가 많았다 [13]. 그러나 관심 과제가 점점 일반화될수록, 원하는 행동을 유도하는 보상 메커니즘을 설계하는 일은 더욱 중요해지는 동시에 더 어려워진다 [12]. 이는 로보틱스 응용에서 특히 두드러진다. 다지 손을 사용하는 정교한 조작의 경우, 접촉 패턴과 물체 기하의 다양성으로 인해 보상 설계의 난이도는 더욱 커진다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-805b-afe2-e2793931ccb5" class=""><strong>접촉 목표와 물체 목표로서의 조작.</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8005-bce8-d6599aea1fc5" class="">다양한 인간 조작 활동 [15]을 관찰한 결과,<strong> 우리는 정교한 조작에서 공통적인 패턴을 확인</strong>하였다. 즉, 하나의 작업을 수행하기 위한 <strong><span style="border-bottom:0.05em solid">각 동작 시퀀스는 </span></strong><mark class="highlight-teal"><strong><span style="border-bottom:0.05em solid">손–물체 접촉 상태</span></strong></mark><strong><span style="border-bottom:0.05em solid">와 </span></strong><mark class="highlight-blue"><strong><span style="border-bottom:0.05em solid">물체 상태</span></strong></mark><strong><span style="border-bottom:0.05em solid">의 조합으로 정의</span></strong>될 수 있다. 이러한 직관에 기반하여, 우리는 <strong>장기 시계열이면서 접촉이 풍부한 조작 과제</strong>에도 <mark class="highlight-purple">적용 가능한 일반적인 보상 설계 방식을 제안</mark>한다. 각 관심 과제에 대해, 먼저 이를 <mark class="highlight-pink_background"><strong>접촉 상태와 물체 상태가 번갈아 나타나는 시퀀스로 분해</strong></mark>한다. 예를 들어, 물체 전달(handover) 과제는 다음 단계들로 나눌 수 있다. (1) 한 손이 물체에 접촉함, (2) 물체가 다른 손 근처 위치로 들어 올려짐, (3) 다른 손이 물체에 접촉함, (4) 물체가 최종 목표 위치로 전달됨. 이후 보상은 오직<mark class="highlight-pink_background"> </mark><mark class="highlight-pink_background"><strong>“접촉 목표(contact goals)”와 “물체 목표(object goals)”에 기반해 정</strong></mark><mark class="highlight-pink_background">의</mark>할 수 있다. 각 <mark class="highlight-teal_background"><strong>접촉 목표</strong></mark>는 <span style="border-bottom:0.05em solid">손가락과 바람직한 접촉 지점 간의 거리를 패널티로 주거나, 단순히 물체의 질량 중심 위치를 기준으로 정의</span>할 수 있다. 각 <mark class="highlight-blue_background"><strong>물체 목표</strong></mark>는<span style="border-bottom:0.05em solid"> 물체의 현재 상태(예: 현재 xyz 위치)와 목표 상태(예: 목표 xyz 위치) 간의 거리를 패널티로 주어 정의</span>할 수 있다. <mark class="highlight-teal_background">접촉 목표</mark>를 정의하는 난이도를 낮추기 위해, 우리는 다음과 같은 <strong>새로운 키포인트 기반 기법을 제안</strong>한다. 각 시뮬레이션 자산에 대해, 물체 표면에 절차적으로 <strong>“접촉 스티커(contact stickers)” 집합을 생성</strong>하는데, 각 스티커는 <strong>잠재적으로 바람직한 접촉 지점을 나타낸다</strong>. 이때 보상 관점에서의 접촉 목표는 다음과 같이 정의된다.</p></div><div style="display:contents" dir="auto"><figure id="30b93e67-6f21-80d3-bbda-d430b14f3d29" class="equation"><style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style><div class="equation-container"><span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>r</mi><mtext>contact</mtext></msub><mo>=</mo><munder><mo>∑</mo><mi>i</mi></munder><mrow><mo fence="true">[</mo><mfrac><mn>1</mn><mrow><mn>1</mn><mo>+</mo><mi>α</mi><mtext> </mtext><mi>d</mi><mo stretchy="false">(</mo><msup><mi>X</mi><mi>L</mi></msup><mo separator="true">,</mo><msubsup><mi>F</mi><mi>i</mi><mi>L</mi></msubsup><mo stretchy="false">)</mo></mrow></mfrac><mo>+</mo><mfrac><mn>1</mn><mrow><mn>1</mn><mo>+</mo><mi>β</mi><mtext> </mtext><mi>d</mi><mo stretchy="false">(</mo><msup><mi>X</mi><mi>R</mi></msup><mo separator="true">,</mo><msubsup><mi>F</mi><mi>i</mi><mi>R</mi></msubsup><mo stretchy="false">)</mo></mrow></mfrac><mo fence="true">]</mo></mrow><mo separator="true">,</mo></mrow><annotation encoding="application/x-tex">r_{\text{contact}} =
+\sum_i
+\left[
+\frac{1}{1 + \alpha\, d(X^L, F^L_{ i})}
++
+\frac{1}{1 + \beta\, d(X^R, F^R_{i})}
+\right],</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.5806em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.02778em;">r</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.2806em;"><span style="top:-2.55em;margin-left:-0.0278em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">contact</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.7277em;vertical-align:-1.2777em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.05em;"><span style="top:-1.8723em;margin-left:0em;"><span class="pstrut" style="height:3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span><span style="top:-3.05em;"><span class="pstrut" style="height:3.05em;"></span><span><span class="mop op-symbol large-op">∑</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.2777em;"><span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="minner"><span class="mopen delimcenter" style="top:0em;"><span class="delimsizing size3">[</span></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.3214em;"><span style="top:-2.2869em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">1</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">d</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.7673em;"><span style="top:-2.989em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">L</span></span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.8231em;"><span style="top:-2.4231em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span style="top:-3.0448em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">L</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2769em;"><span></span></span></span></span></span></span><span class="mclose">)</span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.99em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.3214em;"><span style="top:-2.2869em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">1</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord mathnormal" style="margin-right:0.05278em;">β</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">d</span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.7673em;"><span style="top:-2.989em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.00773em;">R</span></span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.8231em;"><span style="top:-2.4231em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span style="top:-3.0448em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.00773em;">R</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2769em;"><span></span></span></span></span></span></span><span class="mclose">)</span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.99em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mclose delimcenter" style="top:0em;"><span class="delimsizing size3">]</span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mpunct">,</span></span></span></span></span></div></figure></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8036-88de-e95b2763fb7c" class="">여기서 <style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style><span data-token-index="0" contenteditable="false" class="notion-text-equation-token" style="user-select:all;-webkit-user-select:all;-moz-user-select:all"><span></span><span><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>X</mi><mi>L</mi></msub><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mi>n</mi><mo>×</mo><mn>3</mn></mrow></msup></mrow><annotation encoding="application/x-tex">X_L \in \mathbb{R}^{n \times 3}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0785em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">L</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.8141em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8141em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">n</span><span class="mbin mtight">×</span><span class="mord mtight">3</span></span></span></span></span></span></span></span></span></span></span></span></span></span>와 <style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style><span data-token-index="0" contenteditable="false" class="notion-text-equation-token" style="user-select:all;-webkit-user-select:all;-moz-user-select:all"><span></span><span><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>X</mi><mi>R</mi></msub><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mi>m</mi><mo>×</mo><mn>3</mn></mrow></msup></mrow><annotation encoding="application/x-tex">X_R \in \mathbb{R}^{m \times 3}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0785em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.00773em;">R</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.8141em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8141em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">m</span><span class="mbin mtight">×</span><span class="mord mtight">3</span></span></span></span></span></span></span></span></span></span></span></span></span></span>는 각각 왼손과 오른손에 대해 지정된 <span style="border-bottom:0.05em solid">접촉 마커들의 위치</span>를 나타내며, <style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style><span data-token-index="0" contenteditable="false" class="notion-text-equation-token" style="user-select:all;-webkit-user-select:all;-moz-user-select:all"><span></span><span><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>F</mi><mi>L</mi></msub><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mn>4</mn><mo>×</mo><mn>3</mn></mrow></msup></mrow><annotation encoding="application/x-tex">F_L \in \mathbb{R}^{4 \times 3}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">L</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.8141em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8141em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">4</span><span class="mbin mtight">×</span><span class="mord mtight">3</span></span></span></span></span></span></span></span></span></span></span></span></span></span>와 <style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style><span data-token-index="0" contenteditable="false" class="notion-text-equation-token" style="user-select:all;-webkit-user-select:all;-moz-user-select:all"><span></span><span><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>F</mi><mi>R</mi></msub><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mn>4</mn><mo>×</mo><mn>3</mn></mrow></msup></mrow><annotation encoding="application/x-tex">F_R \in \mathbb{R}^{4 \times 3}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.13889em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.00773em;">R</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.8141em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8141em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">4</span><span class="mbin mtight">×</span><span class="mord mtight">3</span></span></span></span></span></span></span></span></span></span></span></span></span></span>는 왼손과 오른손의 <span style="border-bottom:0.05em solid">손끝 위치를 의미</span>한다. <style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style><span data-token-index="0" contenteditable="false" class="notion-text-equation-token" style="user-select:all;-webkit-user-select:all;-moz-user-select:all"><span></span><span><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>α</mi></mrow><annotation encoding="application/x-tex">\alpha</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.4306em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span></span></span></span></span></span>와 <style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style><span data-token-index="0" contenteditable="false" class="notion-text-equation-token" style="user-select:all;-webkit-user-select:all;-moz-user-select:all"><span></span><span><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>β</mi></mrow><annotation encoding="application/x-tex">\beta</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.05278em;">β</span></span></span></span></span></span>는 스케일링 하이퍼파라미터이며, 거리 함수 <style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style><span data-token-index="0" contenteditable="false" class="notion-text-equation-token" style="user-select:all;-webkit-user-select:all;-moz-user-select:all"><span></span><span><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>d</mi></mrow><annotation encoding="application/x-tex">d</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">d</span></span></span></span></span></span>는 다음과 같이 정의된다.</p></div><div style="display:contents" dir="auto"><figure id="30b93e67-6f21-804a-8974-e8cfca716f57" class="equation"><style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style><div class="equation-container"><span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>d</mi><mo stretchy="false">(</mo><mi>A</mi><mo separator="true">,</mo><mi>x</mi><mo stretchy="false">)</mo><mo>=</mo><munder><mrow><mi>min</mi><mo>⁡</mo></mrow><mi>i</mi></munder><mo stretchy="false">∥</mo><msub><mi>A</mi><mi>i</mi></msub><mo>−</mo><mi>x</mi><msub><mo stretchy="false">∥</mo><mn>2</mn></msub><mi mathvariant="normal">.</mi></mrow><annotation encoding="application/x-tex">d(A, x) = \min_i \lVert A_i - x \rVert_2.</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal">d</span><span class="mopen">(</span><span class="mord mathnormal">A</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">x</span><span class="mclose">)</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.4777em;vertical-align:-0.7277em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.6679em;"><span style="top:-2.3723em;margin-left:0em;"><span class="pstrut" style="height:3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span><span class="mop">min</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.7277em;"><span></span></span></span></span></span><span class="mopen">∥</span><span class="mord"><span class="mord mathnormal">A</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3117em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal">x</span><span class="mclose"><span class="mclose">∥</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3011em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord">.</span></span></span></span></span></div></figure></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8028-b730-dc9ec0a28272" class="">그림 2B에는 접촉 마커의 시각화 예시를 제시하였으며, 이 기법의 효과에 대한 실험 결과는 IV절에서 보고한다.</p></div></div></details></div><div style="display:contents" dir="auto"><hr id="30b93e67-6f21-8036-a180-c73062324911"/></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0"><strong>C. 샘플 효율적인 정책 학습(Sample Efficient Policy Learning)</strong></summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-808e-90d7-fd77d4dd1978" class="">고차원 공간에서의 탐색은 높은 샘플 복잡도와 보상 희소성을 수반하며, 특히 다지 손을 갖춘 휴머노이드 형태에서는 잘 정의된 보상 함수가 존재하더라도 정책 학습에 과도하게 긴 시간이 소요될 수 있다. 우리는 <mark class="highlight-purple"><strong>정책 학습의 샘플 효율을 보다 효과적으로 향상시키기 위한 두 가지 기법을 제안</strong></mark>한다. (1) <mark class="highlight-teal_background">과제 인식(task-aware) 손 자세를 이용한 초기화</mark>, (2) <mark class="highlight-blue_background">어려운 과제를 더 쉬운 하위 과제로 분해한 뒤, 하위 과제 전문가 정책들을 범용 정책으로 증류(distillation)하는 방법</mark>이다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80bf-9659-ca86a26b9a1c" class=""><mark class="highlight-teal_background"><strong>과제 인식 손 자세를 활용한 초기화(Task-aware hand poses for initialization).</strong></mark></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80a8-b1af-e60142e5c5d8" class="">우리는 <strong>인간으로부터 과제 인식 손 자세 데이터를 수집함으로써 탐색의 난이도를 낮춘다</strong>. 이는 <strong>양손 다지 손 원격조작 시스템을 임의의 시뮬레이터에 연결함으로써 수행</strong>할 수 있다. 이렇게 <span style="border-bottom:0.05em solid">수집된 물체 자세와 로봇 관절 위치를 포함한 상태들</span>은 시뮬레이션에서 <strong>과제 초기 상태로 무작위 샘플링</strong>된다. 전체 시연 궤적을 요구하는 기존 연구들 [3]과 달리, 우리는 <span style="border-bottom:0.05em solid">원격조작자가 과제를 완수할 필요가 없으며, 단지 과제 목표를 염두에 두고 자유롭게 조작하는 동안 환경 상태를 수집하면 충분함을 확인</span>하였다. 이 접근법은 고품질 데이터를 수집하기 위해 인간 조작자가 숙련도를 끌어올리는 데 소요되는 시간을 요구하지 않기 때문에, 원격조작에 필요한 시간을 대폭 줄인다. <strong>실제 실험에서 각 과제는 충분한 손 자세 데이터를 수집하는 데 30초 미만의 시간만을 필요</strong>로 하였다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80a0-aba7-ce948bf8d16d" class=""><mark class="highlight-blue_background"><strong>분할 정복 기반 증류(Divide-and-conquer distillation).</strong></mark></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-803e-a19b-cb2c00fd80cd" class="">정책 학습의 샘플 효율을 향상시키기 위한 기존 방법들은 주로 상태 공간을 보다 효율적으로 탐색하는 데 초점을 맞추어 왔다 [7, 30, 39, 52]. 그러나 이러한 방법들은 탐색 문제의 근본적인 난이도를 낮추지는 못한다. 즉,<mark class="highlight-red"> “올바른” 상태를 탐색하여 학습 신호를 얻을 확률 자체는 변하지 않는다</mark>. 이러한 관찰에 기반하여, 우리는 희소 보상 환경에서 탐색 문제를 완화하는 보다 쉬운 방법은 <mark class="highlight-blue"><strong>탐색 대상이 되는 상태 공간 자체를 분해하는 것이라고 판단</strong></mark>한다. 예를 들어, <strong>다중 물체 조작 과제는 여러 개의 단일 물체 조작 과제로 분해</strong>할 수 있다. 복잡한 과제를 더 쉬운 하위 과제로 나눈 뒤,<mark class="highlight-purple"><strong> 각 하위 과제에 대해 전문화된 정책을 학습하고 이를 하나의 범용 정책으로 증류</strong></mark>할 수 있다. 이 접근법의 또 다른 장점은<strong> 하위 과제 정책들로부터 생성된 궤적 데이터를 최적성 기준에 따라 선택적으로 필터링하여, 고품질 샘플만을 학습에 사용할 수 있다는 점</strong>이다. 이는 강화학습을 <strong>시연 학습에 더욱 가깝게 만들며</strong>, 하위 과제 정책들은<strong> 시뮬레이션 환경에서 과제 데이터 수집을 수행하는 원격조작자 역할</strong>을 하고, 범용 정책은 <strong>선별된 데이터로 학습되는 중앙화된 모델 역할</strong>을 하게 된다.</p></div></div></details></div><div style="display:contents" dir="auto"><hr id="30b93e67-6f21-80c6-8545-f4da0043584e"/></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0"><strong>D. 시각 기반 Sim-to-Real 전이(Vision-Based Sim-to-Real Transfer)</strong></summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8006-8df9-e8cde1ea81d4" class="">시뮬레이션에서 학습된 정책을 실제 환경으로 전이하는 것은 sim-to-real 격차로 인해 어렵다. 시각 기반 정교한 조작의 경우, sim-to-real 격차는 동역학과 시각 인지 모두에서 기인하며, 이 두 요소 모두 해결하기 어려운 개방형 연구 문제이다. 우리는 이 격차를 줄이기 위해 적용한 두 가지 핵심 기법을 설명한다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8004-8cf9-e2ffd5b7aaf5" class=""><strong>물체 표현의 혼합(Mixing object representations).</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8034-a96a-d059298a33eb" class="">정교한 조작에서는 물체와의 상호작용이 필연적이므로<strong> 물체 인식이 매우 중요하다.</strong> 조작 정책의 sim-to-real 전이에 성공한 기존 연구들은 (차원 및 복잡도가 증가하는 순서로) 3D 물체 위치 [31], 6D 물체 자세 [2], 깊이 영상 [35, 42], 점군 [33], RGB 영상 [17] 등 다양한 물체 표현을 탐구해 왔다. 이러한 <mark class="highlight-red"><strong>물체 표현들 사이에는 미묘한 트레이드오프가 존재</strong></mark>한다. <strong>고차원 표현</strong>은 물체에 대한 더 풍부한 정보를 담고 있지만, 해당 <strong>데이터 모달리티에서의 sim-to-real 격차가 커져 학습된 정책의 전이가 어려워진다</strong>. 반대로 <strong>저차원 물체 표현은</strong> 정보량이 제한되어 <strong>최적 정책을 학습하기가 어렵다</strong>. 이에 우리는<mark class="highlight-purple"><strong> 두 유형의 물체 표현을 결합하여 트레이드오프를 균형 있게 조절하는 방안을 제안</strong></mark>한다. 즉, <mark class="highlight-teal"><strong>저차원의 3D 물체 위치</strong></mark>와 <mark class="highlight-blue"><strong>고차원의 깊이 영상을 함께 사용</strong></mark>한다. 특히<mark class="highlight-teal"><strong> 3D 물체 위치</strong></mark>는<strong><span style="border-bottom:0.05em solid"> 제3 시점 카메라로부터 획득하여, 물체가 항상 카메라 시야에 포함되고 노이즈가 있는 위치 정보도 일관되게 추적될 수 있도록 한다</span></strong>. <mark class="highlight-blue"><strong>깊이 영상</strong></mark>은 <strong><span style="border-bottom:0.05em solid">물체의 기하 정보에 대한 보완적 정보를 제공</span></strong>한다. 이 접근법의 효과에 대한 추가적인 실증 결과는 IV절에서 제시한다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80b4-8281-d5aed4ca3d5d" class=""><strong>동역학 및 인지를 위한 도메인 랜덤화(Domain randomization for dynamics and perception).</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-801f-93be-d32a5b02aab6" class="">신뢰성 있는 sim-to-real 전이를 보장하기 위해, 우리는 동역학과 시각 인지 전반에 걸쳐 <strong>다양한 도메인 랜덤화를 적용</strong>한다. 구체적인 설정은<strong> 부록 C</strong>에 제시한다.</p></div></div></details></div></div></details></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0">IV. EXPERIMENTS</summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-805d-ae37-e584781b5891" class="">우리의 제안 기법들은 휴머노이드 로봇에서 정교한 조작(dexterous manipulation)을 해결하기 위해 강화학습(RL)을 <strong>실용적으로 적용할 수 있는 일반적인 레시피</strong>를 구성한다. 본 절에서는 각 제안 기법에 대한 <strong>과업 수행 능력 실험 결과</strong>와 <strong>어블레이션 스터디</strong>를 제시한다. 관련 영상은 프로젝트 웹사이트에서 확인할 수 있다.</p></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-80fe-a6f8-e0ef00e0c1bb" class="">A. 실제 로봇 및 시뮬레이터 설정</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8078-8bba-f54066e4addd" class="">우리는 <strong>Fourier GR1 휴머노이드 로봇</strong>을 사용하며, 이 로봇은 두 개의 팔과 두 개의 다지(hand) 손을 갖는다. 각 팔은 7 자유도(DoF)를 가진다. 대부분의 실험에서는 <mark class="highlight-purple_background"><strong>Fourier 손</strong></mark>을 사용하며, 각 손은 <strong>6개의 구동(Actuated) DoF</strong>와 <strong>5개의 언더액추에이티드(Underactuated) DoF</strong>를 갖는다. 신체 구조 간 일반화(cross-embodiment generalization)를 보이기 위해, <mark class="highlight-purple_background"><strong>Inspire 손</strong></mark>을 사용한 결과도 포함한다. Inspire 손은 각 손당 <strong>6개의 구동 DoF</strong>와 <strong>6개의 언더액추에이티드 DoF</strong>를 갖는다. 두 손 하드웨어는 질량 특성, 표면 마찰, 손가락 및 손바닥 형태, 엄지 구동 방식 등에서 <strong>상당히 다른 물리적 특성</strong>을 가진다. 그림 1은 두 로봇 손의 시각화를 보여준다. 시뮬레이션은 <strong>NVIDIA Isaac Gym</strong> [36]을 사용한다.</p></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-8076-ae7c-cdaf7248a903" class="">지각(Perception)</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8011-880b-c56cc7afc7f0" class="">III-D절에서 설명한 바와 같이, 우리는 시뮬레이션과 실제 전이 모두에서 <mark class="highlight-orange"><strong>조밀(dense) 특징</strong></mark><strong>과 </strong><mark class="highlight-yellow"><strong>희소(sparse) 물체 특징</strong></mark><strong>을 결합</strong>하여 <mark class="highlight-blue">정책 학습에 사용</mark>한다. 실제 환경에서는 휴머노이드 로봇의 머리에 <mark class="highlight-purple_background"><strong>RealSense D435 깊이 카메라</strong></mark>를 부착하여 <mark class="highlight-orange_background"><strong>자기 시점</strong></mark><strong>(egocentric-view) 카메라</strong>를 구성하고, 로봇 앞 삼각대에 또 하나의 <strong>RealSense D435 깊이 카메라</strong>를 설치하여 <mark class="highlight-purple_background"><strong>제3 시점(third-view) 카메라</strong></mark><mark class="highlight-purple_background">를 구성</mark>한다(그림 1 참조). <mark class="highlight-blue"><strong>시뮬레이션에서도 실제 카메라 자세에 맞춰 보정하여 동일하게 자기 시점 및 제3 시점 카메라를 설정</strong></mark>한다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80b7-af6f-df667c6761a1" class=""><mark class="highlight-orange">조밀한 물체 특징</mark>은<mark class="highlight-orange_background"> </mark><mark class="highlight-orange_background"><strong>자기 시점 카메라</strong></mark><strong>로부터</strong> 직접 얻은 깊이 영상을 사용한다. <mark class="highlight-yellow">희소한 특징</mark>은 Lin 등[31]과 유사한 방법으로<mark class="highlight-yellow_background"> </mark><mark class="highlight-yellow_background"><strong>제3 시점 카메라</strong></mark>를 이용해 <span style="border-bottom:0.05em solid">물체의 질량중심(center-of-mass)을 근사</span>하여 얻는다. 그림 2에 나타난 바와 같이, 각 궤적 시퀀스의 첫 프레임에서 <mark class="highlight-purple_background"><strong>Segment Anything Model 2 (SAM2)</strong></mark><mark class="highlight-purple_background"> [46]</mark>를 사용해<strong><span style="border-bottom:0.05em solid"> 관심 물체의 분할 마스크를 생성</span></strong>하고, 이후 프레임 전체에 대해<strong><span style="border-bottom:0.05em solid"> SAM2의 추적 기능으로 해당 마스크를 추적</span></strong>한다. <mark class="highlight-yellow">물체의 3D 질량중심 좌표를 근사</mark>하기 위해, 이미지 평면에서 마스크의 중심 위치를 계산한 뒤 깊이 카메라의 <strong>노이즈가 포함된 깊이 값</strong>을 사용해 대응되는 3D 위치를 복원한다. 이 지각 파이프라인은 <strong>신경망 정책의 제어 주기와 맞추기 위해 5 Hz</strong>로 동작한다.</p></div><div style="display:contents" dir="auto"><hr id="30f93e67-6f21-808f-acd8-dc238e12036f"/></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-8000-b2ce-ec164a66e4af" class="">B. 과업 정의</h3></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-80e4-90b0-fc729d3dda9c" class="">Grasp-and-reach</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-803b-ab4b-df0e73f86e83" class="">이 과업에서 로봇은 한 손을 사용해 테이블 위의 물체를 집어 올린 뒤 들어 올려 <strong>목표 위치로 이동</strong>해야 한다. 과업 초기화 시, 스크립트 기반 시각 모듈이 <strong>물체에 더 가까운 손</strong>을 판단하여 해당 손을 사용하도록 지시한다. 테스트 물체들은 기하 형상, 질량, 부피, 표면 마찰, 색상, 텍스처가 서로 다르며, 모든 물체의 시각화는 그림 1에 제시되어 있다. 각 시도(trial)마다 물체의 초기 위치와 자세, 그리고 목표 위치를 무작위로 변화시킨다.</p></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-807e-be85-fbe52b3211cc" class="">Box lift</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-800e-ba04-cd5a98ae72df" class="">이 과업에서 로봇은 <strong>한 손으로는 집을 수 없을 만큼 큰 상자</strong>를 들어 올려야 한다. 상자의 색상, 크기, 질량은 다양하게 변화된다. 각 시도에서 상자의 초기 위치와 <strong>수직축에 대한 방향</strong>을 무작위로 설정한다.</p></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-80d9-a15d-dab76c656bb7" class="">Bimanual handover</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-806e-bbf4-c7002d92caef" class="">이 과업에서 로봇은 테이블 한쪽에 있는 블록 물체를 <strong>한 손으로 집은 뒤</strong>(다른 손으로는 닿지 않는 거리), <strong>다른 손으로 전달(handover)</strong>해야 한다. 물체는 색상, 크기, 질량이 다양한 블록들로 구성되며, 각 시도마다 블록의 초기 위치와 자세를 무작위로 변화시킨다.</p></div><div style="display:contents" dir="auto"><hr id="30f93e67-6f21-8067-8a03-da1debb67de7"/></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-8018-b854-eadc37b437ca" class="">C. 실제–시뮬레이션 모델링 평가</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-806a-ae14-dfabb42fa6ba" class=""><strong>자동 튜닝된 로봇 모델링의 효과성</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80f7-9acd-c343b81d45c5" class="">III-A절에서 개요를 제시한<strong> 자동 튜닝 모듈을 적용하여 로봇 모델링을 위한 최적의 파라미터 집합을 찾는다.</strong> 그 효과를 평가하기 위해, 세 가지 정책 체크포인트 집합의 <strong><span style="border-bottom:0.05em solid">시뮬레이션→실세계(sim-to-real) 전이 성공률을 비교</span></strong>한다. 모든 정책은 동일한 작업과 강화학습 설정으로 학습되었으나, 각 정책 집합은 자동 튜닝을 통해 얻은<strong> 서로 다른 MSE를 갖는 로봇 모델링 파라미터를 사용</strong>하며, 이는<strong> 가장 낮은 값(즉, 실제–시뮬레이션 간 격차가 가장 작은 경우)부터 가장 높은 값(격차가 가장 큰 경우)까지 범위</strong>가 있다. 표 I의 정량적 결과는 <mark class="highlight-blue">자동 튜닝된 로봇 모델링이 sim-to-real 전이를 향상시킴을 보여준다</mark>. 또한 영상에서는 Inspire 핸드에 대해 파지-도달(grasp-and-reach) 정책이 성공적으로 sim-to-real 전이되는 정성적 결과를 제시하며, 이를 통해 자동 튜닝 모듈의 일반화 성능을 입증한다.</p></div><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-8071-bc92-f1f4c9b171d0" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%202.png"><img style="width:681.9921875px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%202.png"/></a></figure></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-803b-8485-c2f1d428565c" class=""><strong>근사 물체 모델링의 효과성</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8072-a1d4-deee10e8d995" class="">경험적으로, <strong>단순 형상(원기둥, 정육면체, 구)은 학습 효율성과 sim-to-real 전이 성능 사이에서 좋은 균형을 이룬다</strong>. 그림 4(왼쪽)에서는 단순 형상을 사용한 파지-도달 정책과 복잡한 형상을 사용한 경우의 학습 곡선을 비교하며, 전자가 샘플 효율성이 더 높음을 보여준다. 더 중요한 점은, <mark class="highlight-purple"><mark class="highlight-default_background"><strong>무작위화된 단순 형상으로 학습된 정책이 다양한 미관측 물체로도 일반화될 수 있다는 사실이며, 이는 영상에서 확인할 수 있다.</strong></mark></mark></p></div><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-80ae-ba88-ce1b76d713c6" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%203.png"><img style="width:681.9921875px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%203.png"/></a></figure></div><div style="display:contents" dir="auto"><hr id="30f93e67-6f21-80b5-b8f6-cec3ba9757f1"/></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-80f8-add1-c87702700548" class="">D. 보상 설계 평가</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8012-a190-e739191b41cd" class=""><strong>작업 수행 능력</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80f5-9791-ce266e5a6f95" class="">제안한 보상 설계 원칙을 통해, 그림 3과 영상에서 보이듯이 순수 강화학습만으로도 다양한 장기 시계열(contact-rich) 작업을 수행할 수 있다. 학습된 정책은 높은 수준의 기민성(dexterity)과 무작위 힘 교란에 대한 강인성을 보인다.</p></div><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-8048-915e-f6eda832cec4" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%204.png"><img style="width:681.9921875px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%204.png"/></a></figure></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80bd-8773-c0f80abf8a65" class=""><strong>접촉 기반 보상의 효과성</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80d9-a548-d1e93bf7e81f" class="">그림 5에서는 상자 들어올리기 작업을 예로 들어, <strong>서로 다른 배치나 접촉 마커에서 발생한 다양한 접촉 행동을 시각화</strong>한다. 접촉 행동이 지정된 접촉 위치와 밀접하게 정렬됨을 확인할 수 있으며, 이는 접촉 마커를 사용해 접촉 목표를 명시하는 방법의 효과성을 보여준다.</p></div><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-8059-8fda-c76ab215b860" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%205.png"><img style="width:681.9921875px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%205.png"/></a></figure></div><div style="display:contents" dir="auto"><hr id="30f93e67-6f21-80fe-b115-f65769499ece"/></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-8004-8cb6-ca95035ec58e" class="">E. 정책 학습 평가</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-806d-b872-fb0ea87e4441" class=""><strong>작업 인지형 손 자세 초기화의 효과성</strong></p></div><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-804c-8b33-e59ac2803b37" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%206.png"><img style="width:681.9921875px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%206.png"/></a></figure></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-804e-9690-da5ab0213c88" class="">표 II에서는<strong> 작업 인지형 손 자세 초기화의 유무에 따라</strong> 각 작업에서 성공적으로 학습된 정책의 비율을 비교한다. 실험 결과, 초기화 단계에서<strong> </strong><mark class="highlight-purple"><strong>인간 사전 지식을 부여하는 것이 난이도 높은 강화학습 작업에서 탐색 효율을 크게 향상시킴을 보여준다.</strong></mark></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-806e-b1d2-f1720660ba2f" class=""><strong>분할정복 증류(Divide-and-conquer distillation)</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8031-99ee-d885ffd94989" class="">우리는 두 가지 어블레이션 실험을 통해 분할정복 증류 기법을 평가한다. 첫째, 분할정복의 <mark class="highlight-teal"><strong>세분화 수준이 학습 효율에 미치는 영향을 분석</strong></mark>한다. 구체적으로, 다물체 grasp-and-reach 과제를 서로 다른 개수의 물체를 다루는 하위 과제로 분할하는 실험을 수행한다. 총 10개의 물체를 기준으로 다음 네 가지 과제 설계를 비교한다: <strong>(1)</strong> 모든 물체를 하나의 정책으로 학습(all),<strong> (2)</strong> 유사한 형상의 물체를 세 그룹으로 나누어 세 개의 정책으로 학습(shape), <strong>(3)</strong> 서로 다른 형상의 물체를 세 그룹으로 나누어 세 개의 정책으로 학습(mix), <strong>(4)</strong> 물체 하나당 하나의 정책으로 학습(single). 그림 4에서 보이듯이,<mark class="highlight-blue"><strong> 샘플 효율은 single이 가장 높고, 그 다음이 shape, all, mix 순</strong></mark>이다. 각 과제의 평균 성공률에서도 뚜렷한 차이가 나타나며, 이는 과제 난이도의 지표로 해석할 수 있다. 흥미롭게도, 물체 집합을 줄여 학습한 경우에는 최종 성능이 동일한 수준에 도달하는 반면, 모든 물체를 하나의 정책으로 학습한 경우에는 일관되게 더 낮은 성능을 보인다.</p></div><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-8044-91d5-cb3efd0e67f3" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%207.png"><img style="width:681.9921875px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%207.png"/></a></figure></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-805c-bbf6-d4dc6118e544" class="">둘째<mark class="highlight-default"><strong>, </strong></mark><mark class="highlight-teal"><strong>각 정책 유형의 sim-to-real 전이 성공률을 분석</strong></mark>한다. 분포 내(in-distribution) 물체에 대해 각 정책을 30회씩 시험한 결과, <mark class="highlight-blue"><strong>mix 정책의 sim-to-real 성능이 가장 높았으며(90.0%)</strong></mark>, 그 다음이 shape(63.3%), single(40.0%), all(23.3%) 순이었다. 정책의 정성적 거동을 바탕으로, mix와 single 정책의 <strong><span style="border-bottom:0.05em solid">낮은 성공률은 특정 기하 구조에 대한 과적합에서 비롯</span></strong>되고, all 정책의 <strong><span style="border-bottom:0.05em solid">낮은 성능은 강화학습 학습 단계에서의 열악한 성능과 연관</span></strong>되어 있다고 가설을 세운다. 이러한 결과는 분할정복 증류가 정책 학습 성능과 sim-to-real 전이 성능 사이에서 좋은 균형을 달성하는 데 도움이 됨을 시사한다.</p></div><div style="display:contents" dir="auto"><hr id="30f93e67-6f21-8083-bfbf-c6563327fef0"/></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-805a-8b05-c68d6ecdb1bb" class="">F. 시각 기반 Sim-to-Real 전이 평가</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8084-8dcc-f799e99d359a" class=""><strong>물체 표현 혼합의 효과성 (Effectiveness of mixing object representations.)</strong></p></div><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-80eb-8984-d4b346795371" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%208.png"><img style="width:681.9921875px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%208.png"/></a></figure></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8045-b417-c0847d81632b" class="">서로 다른 물체 표현을 사용하는 효과를 분석하고, sim-to-real 전이 비교 결과를 표 III에 제시한다. 결과는<mark class="highlight-purple"><strong> 밀집 물체 표현(분할된 깊이 영상)과 희소 물체 표현(3D 물체 질량중심 위치)을 결합하는 것이 sim-to-real 전이를 향상시킴을 시사</strong></mark>한다. 특히, 물체의 전체 기하 구조에 대한 지식이 과제 성공에 더 중요해질수록, 깊이+위치 정책과 깊이 전용 정책 간의 성공률 격차가 더욱 커진다.</p></div><div style="display:contents" dir="auto"><hr id="30f93e67-6f21-807c-b18e-cc56d80e250a"/></div><div style="display:contents" dir="auto"><h3 id="30b93e67-6f21-80ff-812f-eb528ff04f22" class="">G. 시스템 성능 System Capabilities</h3></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80e9-838f-c855b2df3a52" class=""><strong>과제 수행 성능, 일반화, 강인성</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8017-98bc-d7c578633663" class="">최고 성능의 과제 정책을 기준으로 시스템의 전반적인 성능을 평가한다. 각 과제에 대해 테스트 물체마다 10회씩 실험을 수행하고, 모든 물체에 대한 평균 성공률을 보고한다. 파지-도달 과제에서는 62.3%, 상자 들어올리기 과제에서는 80%, 양손 핸드오버 과제에서는 52.5%의 성공률을 달성하였다. 또한 파지-도달 정책이 분포 외(out-of-distribution) 물체로 일반화되는 능력을 평가하고, 영상에서 성공적인 제로샷 일반화의 정성적 결과를 제시한다. 모든 과제에 대해 학습된 정책의 힘 교란에 대한 강인성을 그림 6과 영상에서 보여준다. 각 과제에 사용된 물체 집합에 대한 자세한 정보는 그림 1에 제시되어 있다.</p></div><div style="display:contents" dir="ltr"><figure id="30f93e67-6f21-80e3-8d5e-f2653d45d091" class="image"><a href="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%209.png"><img style="width:681.9791259765625px" src="Sim-to-Real%20Reinforcement%20Learning%20for%20Vision-Base/image%209.png"/></a></figure></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-8046-a0c7-ed64145bbf78" class=""><strong>더 높은 성능의 시스템으로의 확장</strong></p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80d2-a998-cd0f52ab60e5" class="">학습된 강화학습 정책은 유한 상태 기계, 텔레오퍼레이션 등과 유연하게 결합되어, 기민성·강인성·일반화를 유지하면서 더 장기적인 과제를 수행할 수 있다. 예시로, 영상에서는 파지-도달 정책을 활용하여 스크립트 방식으로 구성된 범용 픽앤드롭(pick-and-drop) 시스템을 제시한다.</p></div></div></details></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0">V. LIMITATIONS</summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80a7-80d2-c65d92d314fe" class="">본 연구에서는 로봇 조작에 강화학습을 적용할 때의 핵심적인 도전 과제들을 분석하고, 이를 극복하기 위한 실용적이고 원칙적인 기법들을 제시하였다. 제안한 기법들을 바탕으로, 일반화 성능, 강인성, 그리고 기민성을 입증하는<strong> sim-to-real 강화학습 파이프라인을 구축</strong>하였으며,<strong> 로봇 조작 문제를 해결하기 위한 실현 가능한 경로를 제시</strong>하였다. 그러나 본 연구에서 달성한 성능은 인간이 수행할 수 있는 수준의 <mark class="highlight-red">“범용(general-purpose)” 조작 능력과는 여전히 큰 차이</mark>가 있다. sim-to-real 강화학습의 잠재력을 온전히 실현하기 위해서는 이 파이프라인을 구성하는 각 요소를 더욱 개선하기 위한 많은 연구가 필요하다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80d4-8b70-de2dfb2bee4d" class="">예를 들어, <strong>보상 설계</strong>는 텔레오퍼레이션을 통해 수집된 작업 시연과 같은 보다 <strong>강력한 인간 사전 지식을 통합함으로써 개선</strong>될 수 있다. 또한 본 연구에서 다루지 못한 중요한 미해결 문제들도 존재한다. 예컨대, 본 연구에서는 단순한 도메인 랜덤화 외에 <mark class="highlight-red">동역학 측면에서 sim-to-real 격차를 줄이기 위한 새로운 기법을 사용하지 않았다.</mark> 우리는 이것이 본 연구에서 다룬 과제들 중 가장 동적인 양손 핸드오버 과제에서 낮은 성공률을 보인 원인 중 하나일 수 있다고 가설을 세운다.</p></div><div style="display:contents" dir="auto"><p id="30b93e67-6f21-809b-902b-c18ff3a17833" class="">마지막으로, 우리는 기민한 조작을 위한<mark class="highlight-red"> 신뢰할 수 있는 하드웨어의 부족으로 인해 큰 제약</mark>을 받고 있음을 확인하였다. 다지 핑거 로봇 핸드를 사용하였음에도 불구하고, <mark class="highlight-red"><strong>능동 자유도 측면에서 이들 로봇 핸드의 기민성은 인간 손에 비해 현저히 낮다</strong></mark>. 우리는 <strong>학습된 정책의 기민성이 접근법 자체의 한계에서 비롯된 것은 아니라고 판단하며, 향후 보다 정교한 설계를 갖춘 로봇 핸드로 본 프레임워크를 확장해 나가기를 기대</strong>한다.</p></div></div></details></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0">VI. CONCLUSION</summary><div class="indented"><div style="display:contents" dir="auto"><p id="30b93e67-6f21-80fc-867e-dde7cc211493" class="">우리는 휴머노이드에서 시각 기반 기민 조작을 위한 sim-to-real 강화학습 적용에 대한 종합적인 레시피를 제시한다. 환경 모델링, 보상 설계, 정책 학습, 그리고 sim-to-real 전이의 핵심 과제들을 해결함으로써, 대규모 인간 시연 없이도 강화학습이 매우 유용한 조작 기술을 학습하는 강력한 도구가 될 수 있음을 보인다. 학습된 정책들은 미관측 물체에 대한 강한 일반화 성능, 힘 교란에 대한 강인성, 그리고 장기 시계열의 접촉 중심 과제를 수행할 수 있는 능력을 보여준다.</p></div></div></details></div><div style="display:contents" dir="auto"><details open=""><summary style="font-weight:600;font-size:1.25em;line-height:1.3;margin:0">Reference</summary><div class="indented"><div style="display:contents" dir="auto"><p id="30f93e67-6f21-8097-9287-f1afcb8a3917" class="">심층 강화학습(deep RL)은 다양한 응용 분야에서의 성공 사례들 [1, 6, 14, 21, 24, 26, 48, 56]</p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-8074-b7c9-c502f838cb11" class="">원격조작 기술 [10, 32, 58, 63]</p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-805c-be0b-e26511c17ee7" class="">시연 학습 [11, 28]</p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-80a5-bc0b-c8ef6f37ad64" class=""><strong>시각 기반 정교한 조작 분야 </strong>[10, 28, 32, 64]</p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-800c-8b1b-c891490845bd" class="">단일 손 설정을 가정하거나 [2, 8, 17, 35, 42, 49, 57]</p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-8001-9eb6-eb9e1d5c2959" class="">손 안에서의 재배치(in-hand reorientation) [2, 17, 42, 57] : 파지 [35, 49], 비틀기 [31], 동적 전달 [20]과 같은 단일 조작 기술에 초점</p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-8069-97a5-c764baeb4500" class=""><strong>Approximate object modeling : [31,41]</strong></p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-801f-a6ee-c3f9677ea645" class="">강화학습의 표준 정식화 [51]</p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-8039-a566-cd39cd20fcbd" class="">Lin 등[31]과 유사한 방법으로<mark class="highlight-yellow_background"> </mark><mark class="highlight-yellow_background"><strong>제3 시점 카메라</strong></mark>를 이용해 <span style="border-bottom:0.05em solid">물체의 질량중심(center-of-mass)을 근사</span></p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-80c8-a7f9-cca20f1990e5" class="">각 궤적 시퀀스의 첫 프레임에서 <mark class="highlight-purple_background"><strong>Segment Anything Model 2 (SAM2)</strong></mark><mark class="highlight-purple_background"> [46]</mark>를 사용</p></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-8061-8b07-e20d815adaa3" class="">
+</p></div></div></details></div><div style="display:contents" dir="auto"><p id="30f93e67-6f21-80f3-afb0-db2e58931731" class=""><a href="https://toruowo.github.io/recipe/">https://toruowo.github.io/recipe/</a></p></div><div style="display:contents" dir="auto"><p id="31f93e67-6f21-80c9-a026-fec34a27e8fc" class="">
+</p></div></div></article><span class="sans" style="font-size:14px;padding-top:2em"></span></body></html>

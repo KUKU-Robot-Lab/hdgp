@@ -1548,6 +1548,8 @@ class GraspRightEnv(DirectRLEnv):
     # Rewards
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
+        self.extras.clear()
+
         # ---- 접촉력 / 질량 ----
         total_grip_force = self.contact_force_raw.sum(dim=-1)
         effective_mass = (
@@ -1682,66 +1684,124 @@ class GraspRightEnv(DirectRLEnv):
         if self.grasp_adr is not None:
             self.grasp_adr.maybe_increment(_ep_success_rate)
 
+        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
+        cup_uprightness = cup_z_world[:, 2].clamp(min=0.0)
+
         # ---- prev buffer 갱신 ----
         self._prev_total_grip_force_buf.copy_(total_grip_force)
         self._prev_num_contacts_buf.copy_(self.num_contacts_buf.float())
         self._prev_middle_contacts_buf.copy_(self.middle_binary_contact_buf.float().sum(dim=-1))
         self._prev_cup_tilt_deg_buf.copy_(cup_tilt_deg)
 
-        # ---- 상태 로깅 ----
-        self.extras["f_ratio"] = force_ratio.mean()
-        light_mask = self._bead_mass_normalized < 0.5
-        heavy_mask = self._bead_mass_normalized > 0.5
-        if light_mask.any() and heavy_mask.any():
-            self.extras["f_ratio_delta"] = (
-                force_ratio[heavy_mask].mean() - force_ratio[light_mask].mean()
+        # ---- 진단 로깅: sensor / joint / cup / task ----
+        zero = torch.zeros((), device=self.device)
+
+        def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            return values[mask].mean() if mask.any() else zero
+
+        tip_names = ("thumb", "index", "middle", "ring", "little")
+        for tip_idx, tip_name in enumerate(tip_names):
+            tip_xyz = self.contact_force_xyz_raw[:, tip_idx, :]
+            self.extras[f"sensor/tip/{tip_name}/force_x"] = tip_xyz[:, 0].mean()
+            self.extras[f"sensor/tip/{tip_name}/force_y"] = tip_xyz[:, 1].mean()
+            self.extras[f"sensor/tip/{tip_name}/force_z"] = tip_xyz[:, 2].mean()
+            self.extras[f"sensor/tip/{tip_name}/force_norm"] = (
+                self.contact_force_raw[:, tip_idx].mean()
             )
-        self.extras["stat_num_contacts"] = self.num_contacts_buf.float().mean()
-        self.extras["stat_middle_contacts"] = (
-            self.middle_binary_contact_buf.float().sum(dim=-1).mean()
+            self.extras[f"sensor/tip/{tip_name}/contact"] = (
+                self.binary_contact_buf[:, tip_idx].float().mean()
+            )
+        self.extras["sensor/tip/force_norm_mean"] = self.contact_force_raw.mean()
+        self.extras["sensor/tip/force_norm_max"] = self.contact_force_raw.max()
+        self.extras["sensor/contact_count"] = self.num_contacts_buf.float().mean()
+        self.extras["sensor/palm/force_x"] = self.palm_contact_force_xyz[:, 0].mean()
+        self.extras["sensor/palm/force_y"] = self.palm_contact_force_xyz[:, 1].mean()
+        self.extras["sensor/palm/force_z"] = self.palm_contact_force_xyz[:, 2].mean()
+        self.extras["sensor/palm/force_norm"] = self.palm_contact_force_raw.mean()
+        self.extras["sensor/palm/contact"] = self.palm_binary_contact_buf.float().mean()
+
+        joint_pos = self.robot.data.joint_pos
+        joint_vel = self.robot.data.joint_vel
+        for joint_id in self.arm_dof_indices + self.hand_dof_indices:
+            joint_name = self.robot.joint_names[joint_id]
+            self.extras[f"joint/{joint_name}/pos"] = joint_pos[:, joint_id].mean()
+            self.extras[f"joint/{joint_name}/vel"] = joint_vel[:, joint_id].mean()
+
+        cup_pos = self.object_pos
+        cup_quat = self.object_rot
+        cup_lin_vel = self.cup.data.root_lin_vel_w
+        cup_ang_vel = self.cup.data.root_ang_vel_w
+        self.extras["cup/pos_x"] = cup_pos[:, 0].mean()
+        self.extras["cup/pos_y"] = cup_pos[:, 1].mean()
+        self.extras["cup/pos_z"] = cup_pos[:, 2].mean()
+        self.extras["cup/init_dx"] = (cup_pos[:, 0] - self.object_init_pos[:, 0]).mean()
+        self.extras["cup/init_dy"] = (cup_pos[:, 1] - self.object_init_pos[:, 1]).mean()
+        self.extras["cup/height_delta"] = cup_height_delta.mean()
+        self.extras["cup/quat_w"] = cup_quat[:, 0].mean()
+        self.extras["cup/quat_x"] = cup_quat[:, 1].mean()
+        self.extras["cup/quat_y"] = cup_quat[:, 2].mean()
+        self.extras["cup/quat_z"] = cup_quat[:, 3].mean()
+        self.extras["cup/lin_vel_x"] = cup_lin_vel[:, 0].mean()
+        self.extras["cup/lin_vel_y"] = cup_lin_vel[:, 1].mean()
+        self.extras["cup/lin_vel_z"] = cup_lin_vel[:, 2].mean()
+        self.extras["cup/lin_vel_norm"] = cup_lin_vel.norm(dim=-1).mean()
+        self.extras["cup/ang_vel_x"] = cup_ang_vel[:, 0].mean()
+        self.extras["cup/ang_vel_y"] = cup_ang_vel[:, 1].mean()
+        self.extras["cup/ang_vel_z"] = cup_ang_vel[:, 2].mean()
+        self.extras["cup/ang_vel_norm"] = cup_ang_vel.norm(dim=-1).mean()
+        self.extras["cup/uprightness"] = cup_uprightness.mean()
+        self.extras["cup/tilt_deg"] = cup_tilt_deg.mean()
+        self.extras["cup/tilt_grasp_deg"] = _masked_mean(cup_tilt_deg, self.is_grasp_phase)
+        self.extras["cup/tilt_lift_deg"] = _masked_mean(cup_tilt_deg, self.is_lift_phase)
+        self.extras["cup/tilt_stabilize_deg"] = _masked_mean(
+            cup_tilt_deg, self.is_stabilize_phase
         )
-        self.extras["stat_grip_ready_rate"] = grip_ready_gate.mean()
-        self.extras["stat_lift_contact_ready_rate"] = lift_contact_ready_gate.mean()
-        self.extras["stat_grasp_ready_for_lift"] = lift_contact_ready_gate.mean()
-        self.extras["stat_lift_started_rate"] = self._lift_started_buf.float().mean()
-        self.extras["stat_full_grip_ready_rate"] = full_grip_ready_gate.mean()
-        self.extras["stat_pre_lift_full_contact_rate"] = (
+        self.extras["cup/friction"] = self._cup_friction_static.mean()
+
+        self.extras["task/force_ratio"] = force_ratio.mean()
+        self.extras["task/grip_ready_rate"] = grip_ready_gate.mean()
+        self.extras["task/lift_contact_ready_rate"] = lift_contact_ready_gate.mean()
+        self.extras["task/lift_started_rate"] = self._lift_started_buf.float().mean()
+        self.extras["task/full_grip_ready_rate"] = full_grip_ready_gate.mean()
+        self.extras["task/pre_lift_full_contact_rate"] = (
             full_tip_middle_contact & self.is_grasp_phase
         ).float().mean()
-        self.extras["stat_slip_proxy"] = slip_proxy.mean()
-        self.extras["stat_lift_contact_hold"] = self._lift_contact_hold_count.float().mean()
-        self.extras["stat_contact_persistence"] = self._contact_persistence_buf.float().mean()
-        self.extras["stat_grip_ready_hold"] = self._grip_ready_hold_count.float().mean()
-        self.extras["stat_cup_uprightness"] = cup_z_world[:, 2].clamp(min=0.0).mean()
-        self.extras["stat_cup_tilt_deg"] = cup_tilt_deg.mean()
-        self.extras["stat_late_grasp_full_grip_mode_rate"] = late_grasp_full_grip_mask.float().mean()
+        self.extras["task/slip_proxy"] = slip_proxy.mean()
+        self.extras["task/lift_contact_hold"] = self._lift_contact_hold_count.float().mean()
+        self.extras["task/contact_persistence"] = self._contact_persistence_buf.float().mean()
+        self.extras["task/grip_ready_hold"] = self._grip_ready_hold_count.float().mean()
+        self.extras["task/late_grasp_full_grip_mode_rate"] = (
+            late_grasp_full_grip_mask.float().mean()
+        )
         transition_mask = (
             late_grasp_full_grip_mask
             & self.is_grasp_phase
             & (self.num_contacts_buf >= self.cfg.grasp_phase_full_grip_contact_threshold)
         )
-        self.extras["stat_contact_to_full_grip_transition_rate"] = transition_mask.float().mean()
-        self.extras["stat_phase_grasp"] = self.is_grasp_phase.float().mean()
-        self.extras["stat_phase_lift"] = self.is_lift_phase.float().mean()
-        self.extras["stat_phase_stabilize"] = self.is_stabilize_phase.float().mean()
-        self.extras["stat_phase_transport"] = self.is_transport_phase.float().mean()
-        self.extras["stat_curriculum_stage"] = torch.tensor(
+        self.extras["task/contact_to_full_grip_transition_rate"] = (
+            transition_mask.float().mean()
+        )
+        self.extras["task/phase_grasp"] = self.is_grasp_phase.float().mean()
+        self.extras["task/phase_lift"] = self.is_lift_phase.float().mean()
+        self.extras["task/phase_stabilize"] = self.is_stabilize_phase.float().mean()
+        self.extras["task/phase_transport"] = self.is_transport_phase.float().mean()
+        self.extras["task/curriculum_stage"] = torch.tensor(
             float(2 if not self.cfg.enable_phase_curriculum else self._phase_curriculum_stage),
             device=self.device,
         )
-        self.extras["stat_curriculum_window_len"] = torch.tensor(
+        self.extras["task/curriculum_window_len"] = torch.tensor(
             float(_ep_success_window_len), device=self.device
         )
-        self.extras["stat_lift_success_rate"] = torch.tensor(
+        self.extras["task/lift_success_rate"] = torch.tensor(
             self._window_success_rate(self._lift_success_window), device=self.device
         )
-        self.extras["stat_stabilize_success_rate"] = torch.tensor(
+        self.extras["task/stabilize_success_rate"] = torch.tensor(
             self._window_success_rate(self._stabilize_success_window), device=self.device
         )
-        self.extras["stat_transport_success_rate"] = torch.tensor(
+        self.extras["task/transport_success_rate"] = torch.tensor(
             self._window_success_rate(self._success_window), device=self.device
         )
-        self.extras["stat_success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
+        self.extras["task/success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
         grasp_center = self.object_pos.clone()
         grasp_center[:, 2] += self.cfg.cup_grasp_z_offset
         palm_to_cup_dist = (self.palm_center_pos - grasp_center).norm(dim=-1)
@@ -1751,54 +1811,28 @@ class GraspRightEnv(DirectRLEnv):
         tip_to_cup_dist_top3 = (
             self.fingertip_pos - grasp_center.unsqueeze(1)
         ).norm(dim=-1).topk(k=min(3, NUM_FINGERTIPS), dim=-1, largest=False).values.mean(dim=-1)
-        self.extras["stat_palm_to_cup_dist"] = palm_to_cup_dist.mean()
-        self.extras["stat_middle_to_cup_dist"] = middle_to_cup_dist.mean()
-        self.extras["stat_tip_to_cup_dist_top3"] = tip_to_cup_dist_top3.mean()
+        self.extras["task/palm_to_cup_dist"] = palm_to_cup_dist.mean()
+        self.extras["task/middle_to_cup_dist"] = middle_to_cup_dist.mean()
+        self.extras["task/tip_to_cup_dist_top3"] = tip_to_cup_dist_top3.mean()
         lift_start_mask = self._eval_lift_snapshot_valid
         if lift_start_mask.any():
-            self.extras["stat_contacts_at_lift_start"] = self._contacts_at_lift_start_buf[
+            self.extras["task/contacts_at_lift_start"] = self._contacts_at_lift_start_buf[
                 lift_start_mask
             ].mean()
-            self.extras["stat_force_ratio_at_lift_start"] = self._force_ratio_at_lift_start_buf[
+            self.extras["task/force_ratio_at_lift_start"] = self._force_ratio_at_lift_start_buf[
                 lift_start_mask
             ].mean()
         else:
-            zero = torch.zeros((), device=self.device)
-            self.extras["stat_contacts_at_lift_start"] = zero
-            self.extras["stat_force_ratio_at_lift_start"] = zero
-        self.extras["stat_dynamic_bead_added"] = (
-            self._bead_count_current - self._bead_count_initial
-        ).clamp_min(0).float().mean()
-        self.extras["stat_bead_count_initial"] = self._bead_count_initial.float().mean()
-        self.extras["stat_bead_count_current"] = self._bead_count_current.float().mean()
-        self.extras["stat_cup_friction"] = self._cup_friction_static.mean()
+            self.extras["task/contacts_at_lift_start"] = zero
+            self.extras["task/force_ratio_at_lift_start"] = zero
         if self.contact_adr is not None:
-            self.extras["adr_min_contacts"] = torch.tensor(
+            self.extras["task/adr_min_contacts"] = torch.tensor(
                 float(_adr_min_contacts), device=self.device
             )
         if self.grasp_adr is not None:
-            self.extras["adr_difficulty_progress"] = torch.tensor(
+            self.extras["task/adr_difficulty_progress"] = torch.tensor(
                 self.grasp_adr.progress, device=self.device
             )
-        _bin_defs = [
-            ("0b",  self._bead_mass_normalized < 0.17),
-            ("10b", (self._bead_mass_normalized >= 0.17) & (self._bead_mass_normalized < 0.50)),
-            ("20b", (self._bead_mass_normalized >= 0.50) & (self._bead_mass_normalized < 0.84)),
-            ("30b", self._bead_mass_normalized >= 0.84),
-        ]
-        for _lvl, (_tag, _mask) in enumerate(_bin_defs):
-            self.extras[f"bin_{_tag}_sr"] = torch.tensor(
-                self._successful_episodes_bin[_lvl]
-                / max(self._total_episodes_bin[_lvl], 1),
-                device=self.device,
-            )
-            if _mask.any():
-                self.extras[f"bin_{_tag}_f_ratio"] = force_ratio[_mask].mean()
-                self.extras[f"bin_{_tag}_contacts"] = self.num_contacts_buf[_mask].float().mean()
-            else:
-                _zero = torch.zeros((), device=self.device)
-                self.extras[f"bin_{_tag}_f_ratio"] = _zero
-                self.extras[f"bin_{_tag}_contacts"] = _zero
 
         # ================================================================
         # Tesollo grasp_v7_2-style dense enclosure reward
@@ -1807,9 +1841,6 @@ class GraspRightEnv(DirectRLEnv):
             enclosure_weight = self.grasp_adr.get_param("reward_weights", "enclosure_weight")
         else:
             enclosure_weight = self.cfg.enclosure_weight
-
-        cup_height_delta = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
-        cup_uprightness = cup_z_world[:, 2].clamp(min=0.0)
 
         r0_palm_approach = self.cfg.palm_approach_weight * torch.exp(
             -self.cfg.palm_approach_sharpness * palm_to_cup_dist
@@ -1905,34 +1936,33 @@ class GraspRightEnv(DirectRLEnv):
             + r5_quality_lift
         )
 
-        self.extras["palm_approach_reward"] = r0_palm_approach.mean()
-        self.extras["enclosure_reward"] = r1_enclosure.mean()
-        self.extras["force_balance_reward"] = r1b_force_balance.mean()
-        self.extras["force_balance_err"] = force_balance_err.mean()
-        self.extras["full_grasp_bonus"] = r1c_full_grasp.mean()
-        self.extras["full_grasp_rate"] = full_grasp_flag.mean()
-        self.extras["thumb_force_adequate"] = thumb_force_adequate.mean()
-        self.extras["tip_approach_bonus"] = r2_tip_bonus.mean()
-        self.extras["lift_reward"] = r3_lift.mean()
-        self.extras["action_smoothness"] = r4_smooth.mean()
-        self.extras["grasp_quality_lift"] = r5_quality_lift.mean()
-        self.extras["thumb_dist"] = thumb_dist.mean()
-        self.extras["others_dist"] = others_dist.mean()
-        self.extras["adr_enclosure_w"] = torch.tensor(enclosure_weight, device=self.device)
-        self.extras["stat_cup_height_delta"] = cup_height_delta.mean()
-        self.extras["stat_prelift_force_ratio"] = (
+        self.extras["reward/palm_approach"] = r0_palm_approach.mean()
+        self.extras["reward/enclosure"] = r1_enclosure.mean()
+        self.extras["reward/force_balance"] = r1b_force_balance.mean()
+        self.extras["reward/full_grasp_bonus"] = r1c_full_grasp.mean()
+        self.extras["reward/tip_approach_bonus"] = r2_tip_bonus.mean()
+        self.extras["reward/lift"] = r3_lift.mean()
+        self.extras["reward/action_smoothness"] = r4_smooth.mean()
+        self.extras["reward/grasp_quality_lift"] = r5_quality_lift.mean()
+        self.extras["reward/total"] = total.mean()
+        self.extras["task/force_balance_err"] = force_balance_err.mean()
+        self.extras["task/full_grasp_rate"] = full_grasp_flag.mean()
+        self.extras["task/thumb_force_adequate"] = thumb_force_adequate.mean()
+        self.extras["task/thumb_dist"] = thumb_dist.mean()
+        self.extras["task/others_dist"] = others_dist.mean()
+        self.extras["task/adr_enclosure_w"] = torch.tensor(enclosure_weight, device=self.device)
+        self.extras["task/prelift_force_ratio"] = (
             force_ratio * self.is_grasp_phase.float()
         ).sum() / self.is_grasp_phase.float().sum().clamp(min=1.0)
-        self.extras["stat_prelift_thumb_force"] = (
+        self.extras["task/prelift_thumb_force"] = (
             thumb_force * self.is_grasp_phase.float()
         ).sum() / self.is_grasp_phase.float().sum().clamp(min=1.0)
-        self.extras["stat_prelift_others_avg_force"] = (
+        self.extras["task/prelift_others_avg_force"] = (
             others_avg_force * self.is_grasp_phase.float()
         ).sum() / self.is_grasp_phase.float().sum().clamp(min=1.0)
-        self.extras["stat_prelift_full_grip_rate"] = (
+        self.extras["task/prelift_full_grip_rate"] = (
             full_grasp_flag * self.is_grasp_phase.float()
         ).sum() / self.is_grasp_phase.float().sum().clamp(min=1.0)
-        self.extras["rew_total"] = total.mean()
         return total
 
     # ------------------------------------------------------------------
@@ -2103,12 +2133,12 @@ class GraspRightEnv(DirectRLEnv):
             | curriculum_stabilize_horizon
         )
 
-        self.extras["stat_obj_z"] = self.object_pos[:, 2].mean()
-        self.extras["stat_lift_success_now"] = lift_success_now.float().mean()
-        self.extras["stat_stabilize_success_now"] = stabilize_success_now.float().mean()
-        self.extras["stat_transport_success_now"] = success_now.float().mean()
-        self.extras["stat_curriculum_success_now"] = stage_success_now.float().mean()
-        self.extras["stat_grasp_timeout_fail_rate"] = grasp_timeout_failed.float().mean()
+        self.extras["cup/obj_z"] = self.object_pos[:, 2].mean()
+        self.extras["task/lift_success_now"] = lift_success_now.float().mean()
+        self.extras["task/stabilize_success_now"] = stabilize_success_now.float().mean()
+        self.extras["task/transport_success_now"] = success_now.float().mean()
+        self.extras["task/curriculum_success_now"] = stage_success_now.float().mean()
+        self.extras["task/grasp_timeout_fail_rate"] = grasp_timeout_failed.float().mean()
 
         return terminated, truncated
 

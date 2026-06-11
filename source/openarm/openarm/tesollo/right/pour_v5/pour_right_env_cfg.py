@@ -287,7 +287,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_descend: float = 10.0   # [test13-B1] 25→10: dense basin 축소(farming이 bead_in 압도 → landing 동기 회복)
     descend_target_offset: float = 0.02   # z_target = pour_z_margin + offset ≈ 5cm (3cm 배리어 위, 충돌 안전)
     descend_scale: float = 3.0   # [lstm_test2] 10→3: z_clearance=0.37m에서 exp(-10*0.32)≈0.04 → 신호 없음. 3으로 낮춰 먼 거리 gradient 확보 exp(-3*0.32)≈0.38
-    descend_tilt_min: float = 0.25        # tilt_amount > 이 값(up_dot<0.5,≈60°)일 때만 하강 허용
+    descend_tilt_min: float = 0.05        # [lstm_test2] 0.25→0.05: up_dot=0.873→tilt_amount=0.064>0.05 → gate 즉시 개방. 0.25는 60°+ 필요로 사실상 영구 차단이었음
 
     # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
     # weight_tilt는 v4에서 r_tilt 항 제거로 사장됨 → test6에서 r_tilt_depth용으로 아래(Stage B)에 단일 정의로 이전
@@ -370,13 +370,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   tilt/aim_gate_z 충족 안 됨 → r_descend fires 안 함 → Z 순환 deadlock.
     #   pour_start curriculum 재활성: 50% envs가 105° pre-tilted+target 위로 reset
     #   → step 1부터 aim_gate_z 충족+drain fires → Z 하강 bootstrap.
-    enable_pour_start_curriculum: bool = True
+    enable_pour_start_curriculum: bool = False
     pour_start_ratio_init: float = 0.5         # 초기 pour-ready reset 비율
     pour_start_ratio_final: float = 0.05       # 최종(거의 전부 upright grasp start)
     pour_start_anneal_start_step: int = 96000  # ~1500ep(×64) 후 anneal 시작(그 전엔 비율 유지)
     pour_start_anneal_steps: int = 256000      # 이후 ~4000ep 동안 final로 선형 감쇠
     pour_start_tilt_deg: float = 105.0         # demo j5≈-1.2 ↔ up_dot≈cos(105°)≈-0.26
-    pour_start_zband: float = 0.05             # pour-point를 target 위 (=pour_zband_target)
+    pour_start_zband: float = 0.20             # [lstm_test2] 0.05→0.20: hold_tilt=True(직립 teleport)에서 컵 높이≈0.12m가 타겟컵에 침투(rim+0.05-0.12=-0.07m). 0.20으로 컵 바닥=+0.08m 확보
     # tilt를 teleport(강체회전+IK)가 아니라 hold 단계에서 rim-pivot 액션으로 물리적으로 생성.
     #   teleport는 upright-over-target까지만(병진 → IK 오차 작고 자세 자연), tilt는 물리로 →
     #   grasp 정합을 물리가 보장(컵 놓침/손가락 관통 방지), 정책 manifold 위의 자연스러운 자세.

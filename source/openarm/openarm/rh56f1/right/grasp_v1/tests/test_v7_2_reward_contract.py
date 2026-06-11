@@ -55,15 +55,15 @@ def test_reward_impl_matches_v7_2_term_shape() -> None:
         assert term in reward_body
 
     for log_name in (
-        "palm_approach_reward",
-        "enclosure_reward",
-        "force_balance_reward",
-        "full_grasp_bonus",
-        "tip_approach_bonus",
-        "lift_reward",
-        "action_smoothness",
-        "grasp_quality_lift",
-        "rew_total",
+        "reward/palm_approach",
+        "reward/enclosure",
+        "reward/force_balance",
+        "reward/full_grasp_bonus",
+        "reward/tip_approach_bonus",
+        "reward/lift",
+        "reward/action_smoothness",
+        "reward/grasp_quality_lift",
+        "reward/total",
     ):
         assert f'self.extras["{log_name}"]' in reward_body
 

@@ -85,22 +85,22 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert "r3_lift" in s
     assert "r4_smooth" in s
     assert "r5_quality_lift" in s
-    assert 'self.extras["palm_approach_reward"]' in s
-    assert 'self.extras["enclosure_reward"]' in s
-    assert 'self.extras["force_balance_reward"]' in s
-    assert 'self.extras["full_grasp_bonus"]' in s
-    assert 'self.extras["tip_approach_bonus"]' in s
-    assert 'self.extras["lift_reward"]' in s
-    assert 'self.extras["action_smoothness"]' in s
-    assert 'self.extras["grasp_quality_lift"]' in s
-    assert 'self.extras["stat_palm_to_cup_dist"]' in s
-    assert 'self.extras["stat_middle_to_cup_dist"]' in s
-    assert 'self.extras["stat_tip_to_cup_dist_top3"]' in s
-    assert 'self.extras["stat_late_grasp_full_grip_mode_rate"]' in s
-    assert 'self.extras["stat_contact_to_full_grip_transition_rate"]' in s
-    assert 'self.extras["stat_prelift_force_ratio"]' in s
-    assert 'self.extras["stat_prelift_full_grip_rate"]' in s
-    assert 'self.extras["rew_total"] = total.mean()' in s
+    assert 'self.extras["reward/palm_approach"]' in s
+    assert 'self.extras["reward/enclosure"]' in s
+    assert 'self.extras["reward/force_balance"]' in s
+    assert 'self.extras["reward/full_grasp_bonus"]' in s
+    assert 'self.extras["reward/tip_approach_bonus"]' in s
+    assert 'self.extras["reward/lift"]' in s
+    assert 'self.extras["reward/action_smoothness"]' in s
+    assert 'self.extras["reward/grasp_quality_lift"]' in s
+    assert 'self.extras["task/palm_to_cup_dist"]' in s
+    assert 'self.extras["task/middle_to_cup_dist"]' in s
+    assert 'self.extras["task/tip_to_cup_dist_top3"]' in s
+    assert 'self.extras["task/late_grasp_full_grip_mode_rate"]' in s
+    assert 'self.extras["task/contact_to_full_grip_transition_rate"]' in s
+    assert 'self.extras["task/prelift_force_ratio"]' in s
+    assert 'self.extras["task/prelift_full_grip_rate"]' in s
+    assert 'self.extras["reward/total"] = total.mean()' in s
 
 
 if __name__ == "__main__":

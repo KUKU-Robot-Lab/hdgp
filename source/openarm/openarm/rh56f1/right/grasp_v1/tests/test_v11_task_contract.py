@@ -168,18 +168,11 @@ def test_v11_disables_physical_beads_for_small_cup_grasp() -> None:
     assert "self._bead_count_current" in env
     assert "self._bead_count_target" in env
     assert "quat_apply(cup_quat_w[activate], local_offset)" in env
-    assert 'self.extras["stat_dynamic_bead_added"]' in env
-    assert 'self.extras["stat_bead_count_initial"]' in env
-    assert 'self.extras["stat_bead_count_current"]' in env
-    assert 'self.extras["stat_cup_friction"]' in env
-    for tag in ("0b", "10b", "20b", "30b"):
-        assert f'"{tag}"' in env
-    assert 'self.extras[f"bin_{_tag}_f_ratio"] = force_ratio[_mask].mean()' in env
-    assert 'self.extras[f"bin_{_tag}_sr"]' in env
-    assert 'self.extras[f"bin_{_tag}_contacts"] = self.num_contacts_buf[_mask].float().mean()' in env
-    assert "_zero = torch.zeros((), device=self.device)" in env
-    assert 'self.extras[f"bin_{_tag}_f_ratio"] = _zero' in env
-    assert 'self.extras[f"bin_{_tag}_contacts"] = _zero' in env
+    assert '"stat_bead_count_initial"' not in env
+    assert '"stat_bead_count_current"' not in env
+    assert '"stat_dynamic_bead_added"' not in env
+    assert "bin_" not in env
+    assert 'self.extras["cup/friction"]' in env
 
 
 def test_v11_keeps_bead_asset_hidden_when_physical_beads_disabled() -> None:
@@ -270,16 +263,15 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
     assert "(self.episode_length_buf >= LIFT_START_STEP)" in env
     assert "& (~self._lift_contact_ready_latched_buf)" in env
     assert "lift_failed = (" in env
-    assert 'self.extras["stat_curriculum_stage"]' in env
-    assert 'self.extras["stat_lift_success_rate"]' in env
-    assert 'self.extras["stat_stabilize_success_rate"]' in env
-    assert 'self.extras["stat_lift_contact_ready_rate"]' in env
-    assert 'self.extras["stat_grasp_ready_for_lift"]' in env
-    assert 'self.extras["stat_lift_started_rate"]' in env
-    assert 'self.extras["stat_full_grip_ready_rate"]' in env
-    assert 'self.extras["stat_grasp_timeout_fail_rate"]' in env
-    assert 'self.extras["stat_contacts_at_lift_start"]' in env
-    assert 'self.extras["stat_force_ratio_at_lift_start"]' in env
+    assert 'self.extras["task/curriculum_stage"]' in env
+    assert 'self.extras["task/lift_success_rate"]' in env
+    assert 'self.extras["task/stabilize_success_rate"]' in env
+    assert 'self.extras["task/lift_contact_ready_rate"]' in env
+    assert 'self.extras["task/lift_started_rate"]' in env
+    assert 'self.extras["task/full_grip_ready_rate"]' in env
+    assert 'self.extras["task/grasp_timeout_fail_rate"]' in env
+    assert 'self.extras["task/contacts_at_lift_start"]' in env
+    assert 'self.extras["task/force_ratio_at_lift_start"]' in env
 
 
 def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
@@ -306,14 +298,49 @@ def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
 def test_v11_tracks_pre_lift_full_contact_rate() -> None:
     env = _text("grasp_right_env.py")
 
-    assert 'self.extras["stat_pre_lift_full_contact_rate"]' in env
+    assert 'self.extras["task/pre_lift_full_contact_rate"]' in env
     assert "full_tip_middle_contact & self.is_grasp_phase" in env
-    assert 'self.extras["stat_late_grasp_full_grip_mode_rate"]' in env
-    assert 'self.extras["stat_contact_to_full_grip_transition_rate"]' in env
-    assert 'self.extras["stat_prelift_force_ratio"]' in env
-    assert 'self.extras["stat_prelift_thumb_force"]' in env
-    assert 'self.extras["stat_prelift_others_avg_force"]' in env
-    assert 'self.extras["stat_prelift_full_grip_rate"]' in env
+    assert 'self.extras["task/late_grasp_full_grip_mode_rate"]' in env
+    assert 'self.extras["task/contact_to_full_grip_transition_rate"]' in env
+    assert 'self.extras["task/prelift_force_ratio"]' in env
+    assert 'self.extras["task/prelift_thumb_force"]' in env
+    assert 'self.extras["task/prelift_others_avg_force"]' in env
+    assert 'self.extras["task/prelift_full_grip_rate"]' in env
+
+
+def test_v11_logs_only_curated_sensor_joint_cup_task_reward_groups() -> None:
+    env = _text("grasp_right_env.py")
+
+    for name in (
+        "sensor/palm/force_x",
+        "sensor/palm/force_norm",
+        "sensor/contact_count",
+        "cup/pos_x",
+        "cup/pos_y",
+        "cup/pos_z",
+        "cup/quat_w",
+        "cup/lin_vel_norm",
+        "cup/ang_vel_norm",
+        "cup/tilt_deg",
+        "cup/tilt_lift_deg",
+        "cup/tilt_stabilize_deg",
+        "task/lift_success_now",
+        "task/stabilize_success_now",
+        "task/full_grip_ready_rate",
+        "task/force_ratio",
+        "reward/total",
+    ):
+        assert f'self.extras["{name}"]' in env
+
+    assert 'self.extras.clear()' in env
+    assert '"thumb", "index", "middle", "ring", "little"' in env
+    assert 'self.extras[f"sensor/tip/{tip_name}/force_x"]' in env
+    assert 'self.extras[f"sensor/tip/{tip_name}/force_norm"]' in env
+    assert 'self.extras[f"sensor/tip/{tip_name}/contact"]' in env
+    assert 'self.extras[f"joint/{joint_name}/pos"]' in env
+    assert 'self.extras[f"joint/{joint_name}/vel"]' in env
+    assert '"stat_' not in env
+    assert '"bin_' not in env
 
 
 def test_v11_rl_games_config_uses_v11_name() -> None:
