@@ -328,7 +328,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     use_redesign_reward: bool = True
     # 졸업(graduate): flow EMA가 target 도달 시 demo 비중 floor로 단조 감쇠
     graduate_flow_target: float = 0.03   # [lstm_test4] 0.10→0.03: 현재 flow(ema≈0.06)로 graduate=0 달성 가능하도록
-    graduate_ema_alpha: float = 0.002
+    graduate_ema_alpha: float = 0.008  # [lstm_test5] 0.002→0.008: pour burst 시 EMA 4배 빠르게 flow_target 도달
     # 단일 ready gate (binary rho 대체 — 부드러운 sigmoid)
     g_ready_center: float = 0.20    # cup_center_xy_dist 기준 (=기존 pour_binary_xy_thresh)
     g_ready_width: float = 0.03

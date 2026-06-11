@@ -186,7 +186,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
-    success_spill_max: float = 0.40   # tilt 탐색 중 spill 허용 (ADR로 점진 강화)
+    success_spill_max: float = 1.0    # spill 조건 비활성: bead_in_target↑ 자체가 spill↓ 보장
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
@@ -315,7 +315,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Outcome
     weight_success: float = 100.00
     weight_success_overfill: float = 0.0
-    weight_spill: float = 0.0             # [test6] spill 패널티 OFF: 틸트 시작 시 항상 음수 신호로 부트스트랩 억제 → 끔. 기록은 log/spill_ratio 유지. (success는 여전히 spill≤success_spill_max 요구)
+    weight_spill: float = 0.0             # [test6] spill 패널티 OFF: 틸트 시작 시 항상 음수 신호로 부트스트랩 억제 → 끔. 기록은 log/spill_ratio 유지.
 
     # =====================================================================
     # [REDESIGN v4 / test5] 인과사슬 기반 보상 (gate 5중곱 → 가산 구조)
@@ -440,16 +440,18 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     spill_adr_trigger_threshold: float = 0.10
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
-    # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
-    # 해당 기준에서 success_rate >= 15%이면 한 단계 올림 (8단계 × 0.0375 = 0.30 range)
+    # bead 10개 기준: 0.20=2개, 0.40=4개, 0.60=6개, 0.80=8개, 1.0=10개
+    # 해당 기준에서 success_rate >= 15%이면 한 단계 올림 (40단계 × 0.02 = 0.80 range)
+    # [test6] interval 20000→200000: ADR 5ep에 max 도달→policy 못 따라옴 수정
+    #         num_increments 8→40, range (0.20,0.50)→(0.20,1.0): 전 비드 투입 커리큘럼
     enable_success_adr: bool = True
     success_adr_custom_cfg: dict = {
         "success": {
-            "fill_ratio": (0.20, 0.50),  # 2개→5개 커리큘럼
+            "fill_ratio": (0.20, 1.0),  # 2개→10개 전체 커리큘럼
         }
     }
-    success_adr_num_increments: int = 8
-    success_adr_increment_interval: int = 20000
+    success_adr_num_increments: int = 40
+    success_adr_increment_interval: int = 200000
     success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
 
     reward_grasp_slip_sharpness: float = 3.0
