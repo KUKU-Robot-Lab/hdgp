@@ -157,9 +157,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     fabrics_max_objects_per_env: int  = 8   # open_tesollo_boxes_no_table 객체 7개 → ≥7 필요
     fabrics_damping_gain:       float = 20.0
     stabilize_upright_orientation_enabled: bool = True
-    stabilize_upright_orientation_gain: float = 0.8
-    stabilize_upright_orientation_max_deg: float = 15.0
-    stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS
+    stabilize_upright_orientation_gain: float = 1.5
+    stabilize_upright_orientation_max_deg: float = 25.0
+    stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2
     stabilize_spawn_xy_hold_enabled: bool = True
     stabilize_spawn_xy_hold_gain: float = 1.0
     stabilize_spawn_xy_hold_max_delta: float = 0.05
@@ -257,20 +257,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     cup_radius_approx:      float = 0.035
     enclosure_thumb_weight: float = 0.6
 
-    force_balance_weight:     float = 3.0
-    force_balance_sharpness:  float = 8.0
-    full_grasp_bonus_weight:  float = 8.0
-    thumb_force_ratio_min:    float = 0.5
-
-    tip_approach_bonus_weight: float = 1.0
-
+    align_upright_reward_weight: float = 2.0
     lift_reward_weight: float = 30.0
+    grasp_five_tip_contact_reward_weight: float = 3.0
+    grasp_five_tip_hold_reward_weight: float = 5.0
+    grasp_contact_persistence_reward_steps: int = 30
+    stabilize_upright_reward_weight: float = 10.0
+    stabilize_upright_reward_scale_deg: float = 5.0
 
     action_smoothness_palm_weight:   float = -0.02
     action_smoothness_finger_weight: float = -0.01
-
-    grasp_quality_lift_weight:    float = 40.0
-    grasp_quality_lift_sharpness: float = 10.0
 
     # 질량 파라미터 (force-ratio/bin logging용 privileged variable)
     cup_base_mass:  float = 0.170          # kg (빈 컵 질량)
@@ -306,7 +302,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # ADR — contact curriculum (threshold=0.1, 먼저 진행)
     # -----------------------------------------------------------------------
-    # force_balance gate의 최소 others 접촉 수: 1 → 4 (thumb+1 → thumb+4)
     # slip/adaptive/full_contact gate의 최소 총 접촉 수: 2 → 5
     enable_contact_adr:             bool  = True
     contact_adr_num_increments:     int   = 50
@@ -352,6 +347,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     cup_tipping_max_deg: float = 35.0
     success_upright_max_deg: float = 20.0
+    stabilize_upright_max_deg: float = 5.0
     obj_out_x_min:  float = 0.05
     obj_out_x_max:  float = 0.85
     obj_out_y_min:  float = -0.60

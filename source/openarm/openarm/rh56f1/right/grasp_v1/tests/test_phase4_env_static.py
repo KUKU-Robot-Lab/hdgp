@@ -79,20 +79,30 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert "grasp_center[:, 2] += self.cfg.cup_grasp_z_offset" in s
     assert "r0_palm_approach" in s
     assert "r1_enclosure" in s
-    assert "r1b_force_balance" in s
-    assert "r1c_full_grasp" in s
-    assert "r2_tip_bonus" in s
+    assert "r_align_upright" in s
     assert "r3_lift" in s
+    assert "r_grasp_contact_dense" in s
+    assert "r_grasp_five_tip_hold" in s
+    assert "r_grasp_five_tip_contact" in s
+    assert "r_stabilize_upright" in s
     assert "r4_smooth" in s
-    assert "r5_quality_lift" in s
+    assert "r1c_full_grasp" not in s
+    assert "r1b_force_balance" not in s
+    assert "r2_tip_bonus" not in s
+    assert "r5_quality_lift" not in s
     assert 'self.extras["reward/palm_approach"]' in s
     assert 'self.extras["reward/enclosure"]' in s
-    assert 'self.extras["reward/force_balance"]' in s
-    assert 'self.extras["reward/full_grasp_bonus"]' in s
-    assert 'self.extras["reward/tip_approach_bonus"]' in s
+    assert 'self.extras["reward/align_upright"]' in s
     assert 'self.extras["reward/lift"]' in s
+    assert 'self.extras["reward/grasp_contact_dense"]' in s
+    assert 'self.extras["reward/grasp_five_tip_hold"]' in s
+    assert 'self.extras["reward/grasp_five_tip_contact"]' in s
+    assert 'self.extras["reward/stabilize_upright"]' in s
     assert 'self.extras["reward/action_smoothness"]' in s
-    assert 'self.extras["reward/grasp_quality_lift"]' in s
+    assert 'self.extras["reward/full_grasp_bonus"]' not in s
+    assert 'self.extras["reward/force_balance"]' not in s
+    assert 'self.extras["reward/tip_approach_bonus"]' not in s
+    assert 'self.extras["reward/grasp_quality_lift"]' not in s
     assert 'self.extras["task/palm_to_cup_dist"]' in s
     assert 'self.extras["task/middle_to_cup_dist"]' in s
     assert 'self.extras["task/tip_to_cup_dist_top3"]' in s

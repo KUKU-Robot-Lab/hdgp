@@ -1,6 +1,6 @@
 # 5g_grasp_right_v11 rl_games PPO 설정
 # v11: actor는 oracle mass 없이 cup orientation/angular velocity와 contact force를 관측
-# 관측: actor 144D / critic 174D (asymmetric), 액션: 26D
+# 관측: actor 102D / critic 117D (asymmetric), 액션: 12D
 # Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:
@@ -83,7 +83,7 @@ params:
     bound_loss_type: regularization
     bounds_loss_coef: 0.005
 
-    # Asymmetric Actor-Critic: critic은 174D privileged obs 사용
+    # Asymmetric Actor-Critic: critic은 117D privileged obs 사용
     has_central_value: True
     central_value_config:
       normalize_input: True

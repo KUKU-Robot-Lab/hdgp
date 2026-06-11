@@ -1,5 +1,5 @@
 # 5g_grasp_right_v11 recurrent actor / MLP critic config
-# Actor 144D MLP [512, 512] -> LSTM 1024 / critic 174D MLP [512, 512, 256, 128], action 26D.
+# Actor 102D MLP [512, 512] -> LSTM 1024 / critic 117D MLP [512, 512, 256, 128], action 12D.
 # This is a separate non-warm-start config because the LSTM architecture
 # is incompatible with the v10-2 MLP checkpoint.
 
