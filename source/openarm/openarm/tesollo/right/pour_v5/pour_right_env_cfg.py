@@ -286,7 +286,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   aim_gate(dir_cos_c>0 & tilt>min)로 조준+틸트 시에만 활성 → 직립/미조준 조기 다이빙 차단.
     weight_descend: float = 10.0   # [test13-B1] 25→10: dense basin 축소(farming이 bead_in 압도 → landing 동기 회복)
     descend_target_offset: float = 0.02   # z_target = pour_z_margin + offset ≈ 5cm (3cm 배리어 위, 충돌 안전)
-    descend_scale: float = 10.0
+    descend_scale: float = 3.0   # [lstm_test2] 10→3: z_clearance=0.37m에서 exp(-10*0.32)≈0.04 → 신호 없음. 3으로 낮춰 먼 거리 gradient 확보 exp(-3*0.32)≈0.38
     descend_tilt_min: float = 0.25        # tilt_amount > 이 값(up_dot<0.5,≈60°)일 때만 하강 허용
 
     # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
