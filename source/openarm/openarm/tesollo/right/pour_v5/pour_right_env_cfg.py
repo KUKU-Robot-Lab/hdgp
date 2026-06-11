@@ -327,7 +327,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # =====================================================================
     use_redesign_reward: bool = True
     # 졸업(graduate): flow EMA가 target 도달 시 demo 비중 floor로 단조 감쇠
-    graduate_flow_target: float = 0.10
+    graduate_flow_target: float = 0.03   # [lstm_test4] 0.10→0.03: 현재 flow(ema≈0.06)로 graduate=0 달성 가능하도록
     graduate_ema_alpha: float = 0.002
     # 단일 ready gate (binary rho 대체 — 부드러운 sigmoid)
     g_ready_center: float = 0.20    # cup_center_xy_dist 기준 (=기존 pour_binary_xy_thresh)
@@ -343,7 +343,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [test9] j5(틸트 주역) demo 앵커 — Stage B서만 활성, flow 생기면 감쇠. 텔레포트 없는 틸트 부트스트랩.
     weight_demo_j5: float = 15.0
     weight_demo_j5_floor: float = 3.0
-    demo_j5_sharpness: float = 2.0
+    demo_j5_sharpness: float = 0.5    # [lstm_test4] 2.0→0.5: err=3.3에서 gradient 0.001→0.19 (190x), j5 -0.5→-1.16 학습 가능
     # [test9] Stage-B 래치 (텔레포트 없는 2단계: 자세 확립 → 틸트/pour 활성). fallback으로 하방 보호.
     stageB_d_ready: float = 0.10       # cup_center_xy_dist < 이 값 = 타겟 위 자리잡음
     stageB_up_min: float = 0.70        # source_up_dot > 이 값 = 아직 직립(틸트 前)
