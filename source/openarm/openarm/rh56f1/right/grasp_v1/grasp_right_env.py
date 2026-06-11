@@ -470,12 +470,6 @@ class GraspRightEnv(DirectRLEnv):
         self._dynamic_bead_add_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._dynamic_bead_spawned = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._cup_friction_static = torch.zeros(self.num_envs, device=self.device)
-        self._arm_joint_stiffness_nominal = (
-            self.robot.data.default_joint_stiffness[:, self.arm_dof_indices].clone()
-        )
-        self._arm_joint_damping_nominal = (
-            self.robot.data.default_joint_damping[:, self.arm_dof_indices].clone()
-        )
 
         self._warm_state_export: dict[str, torch.Tensor] | None = None
         self._warm_state_export_count = 0
@@ -1199,6 +1193,36 @@ class GraspRightEnv(DirectRLEnv):
             torch.min(transport_palm_pose, self.palm_maxs),
             self.palm_mins,
         )
+        upright_blend_steps = max(int(self.cfg.stabilize_upright_orientation_blend_steps), 1)
+        stabilize_elapsed_steps = (
+            self.episode_length_buf - self._stabilize_start_step_buf
+        ).clamp(min=0)
+        stabilize_upright_progress = (
+            stabilize_elapsed_steps.float() / float(upright_blend_steps)
+        ).clamp(max=1.0).unsqueeze(1)
+        transport_upright_progress = torch.ones_like(stabilize_upright_progress)
+        if self.cfg.stabilize_upright_orientation_enabled:
+            lift_palm_pose = self._apply_upright_palm_orientation_correction(
+                lift_palm_pose,
+                is_stabilize,
+                stabilize_upright_progress,
+            )
+            transport_palm_pose = self._apply_upright_palm_orientation_correction(
+                transport_palm_pose,
+                is_transport,
+                transport_upright_progress,
+            )
+        if self.cfg.stabilize_spawn_xy_hold_enabled:
+            lift_palm_pose = self._apply_spawn_xy_palm_correction(
+                lift_palm_pose,
+                is_stabilize,
+                stabilize_upright_progress,
+            )
+            transport_palm_pose = self._apply_spawn_xy_palm_correction(
+                transport_palm_pose,
+                is_transport,
+                torch.ones_like(stabilize_upright_progress),
+            )
 
         palm_pose = torch.where(
             is_transport.unsqueeze(1),
@@ -1256,7 +1280,6 @@ class GraspRightEnv(DirectRLEnv):
 
     def _apply_action(self) -> None:
         is_post_grasp = self.is_post_grasp_phase
-        self._apply_post_lift_arm_compliance()
 
         # ---- 오른팔 ----
         self.robot.set_joint_position_target(self.fabric_q[:, :NUM_ARM_DOF], joint_ids=self.arm_dof_indices)
@@ -1288,22 +1311,58 @@ class GraspRightEnv(DirectRLEnv):
             self.left_arm_zero_pos, joint_ids=self.left_arm_dof_indices
         )
 
-    def _apply_post_lift_arm_compliance(self) -> None:
-        relax_mask = self.is_stabilize_phase | self.is_transport_phase
-        stiffness_scale = torch.where(
-            relax_mask.unsqueeze(1),
-            torch.full_like(self._arm_joint_stiffness_nominal, self.cfg.post_lift_arm_stiffness_scale),
-            torch.ones_like(self._arm_joint_stiffness_nominal),
+    def _apply_upright_palm_orientation_correction(
+        self,
+        palm_pose: torch.Tensor,
+        phase_mask: torch.Tensor,
+        phase_progress: torch.Tensor,
+    ) -> torch.Tensor:
+        if not phase_mask.any():
+            return palm_pose
+
+        z_local = torch.zeros(self.num_envs, 3, device=self.device)
+        z_local[:, 2] = 1.0
+        cup_z_world = quat_apply(self.object_rot, z_local)
+        max_correction = math.radians(float(self.cfg.stabilize_upright_orientation_max_deg))
+        gain = float(self.cfg.stabilize_upright_orientation_gain)
+        pitch_roll_correction = torch.stack(
+            [
+                -cup_z_world[:, 0],
+                cup_z_world[:, 1],
+            ],
+            dim=1,
         )
-        damping_scale = torch.where(
-            relax_mask.unsqueeze(1),
-            torch.full_like(self._arm_joint_damping_nominal, self.cfg.post_lift_arm_damping_scale),
-            torch.ones_like(self._arm_joint_damping_nominal),
-        )
-        arm_stiffness = self._arm_joint_stiffness_nominal * stiffness_scale
-        arm_damping = self._arm_joint_damping_nominal * damping_scale
-        self.robot.write_joint_stiffness_to_sim(arm_stiffness, joint_ids=self.arm_dof_indices)
-        self.robot.write_joint_damping_to_sim(arm_damping, joint_ids=self.arm_dof_indices)
+        pitch_roll_correction = (
+            gain * pitch_roll_correction
+        ).clamp(min=-max_correction, max=max_correction)
+        pitch_roll_correction = pitch_roll_correction * phase_progress
+
+        corrected = palm_pose.clone()
+        corrected[:, 4] = corrected[:, 4] + pitch_roll_correction[:, 0]
+        corrected[:, 5] = corrected[:, 5] + pitch_roll_correction[:, 1]
+        corrected = torch.max(torch.min(corrected, self.palm_maxs), self.palm_mins)
+        return torch.where(phase_mask.unsqueeze(1), corrected, palm_pose)
+
+    def _apply_spawn_xy_palm_correction(
+        self,
+        palm_pose: torch.Tensor,
+        phase_mask: torch.Tensor,
+        phase_progress: torch.Tensor,
+    ) -> torch.Tensor:
+        if not phase_mask.any():
+            return palm_pose
+
+        xy_error = self.object_init_pos[:, :2] - self.object_pos[:, :2]
+        max_delta = float(self.cfg.stabilize_spawn_xy_hold_max_delta)
+        xy_correction = (
+            float(self.cfg.stabilize_spawn_xy_hold_gain) * xy_error
+        ).clamp(min=-max_delta, max=max_delta)
+        xy_correction = xy_correction * phase_progress
+
+        corrected = palm_pose.clone()
+        corrected[:, :2] = corrected[:, :2] + xy_correction
+        corrected = torch.max(torch.min(corrected, self.palm_maxs), self.palm_mins)
+        return torch.where(phase_mask.unsqueeze(1), corrected, palm_pose)
 
     # ------------------------------------------------------------------
     # Intermediate values
@@ -2491,9 +2550,6 @@ class GraspRightEnv(DirectRLEnv):
                 joint_ids=joint_ids,
                 env_ids=env_ids_tensor,
             )
-            if joint_ids == self.arm_dof_indices:
-                self._arm_joint_stiffness_nominal[env_ids_tensor] = stiffness
-                self._arm_joint_damping_nominal[env_ids_tensor] = damping
             if torch.any(default_friction != 0.0):
                 self.robot.write_joint_friction_coefficient_to_sim(
                     default_friction * self._uniform_scale(shape, self.cfg.real2sim_friction_scale_range),

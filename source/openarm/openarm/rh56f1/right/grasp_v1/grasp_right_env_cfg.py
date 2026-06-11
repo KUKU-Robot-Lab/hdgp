@@ -43,6 +43,7 @@ from .grasp_right_constants import (
     NUM_CRITIC_OBSERVATIONS,
     LIFT_PHASE_STEPS,
     LIFT_Z_DELTA,
+    STABILIZE_PHASE_STEPS,
     STABILIZE_START_STEP,
 )
 from .grasp_right_preset import (
@@ -155,8 +156,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     max_pose_angle:             float = 45.0
     fabrics_max_objects_per_env: int  = 8   # open_tesollo_boxes_no_table 객체 7개 → ≥7 필요
     fabrics_damping_gain:       float = 20.0
-    post_lift_arm_stiffness_scale: float = 0.12
-    post_lift_arm_damping_scale: float = 0.25
+    stabilize_upright_orientation_enabled: bool = True
+    stabilize_upright_orientation_gain: float = 0.8
+    stabilize_upright_orientation_max_deg: float = 15.0
+    stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS
+    stabilize_spawn_xy_hold_enabled: bool = True
+    stabilize_spawn_xy_hold_gain: float = 1.0
+    stabilize_spawn_xy_hold_max_delta: float = 0.05
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)

@@ -196,19 +196,30 @@ def test_v11_keeps_bead_asset_hidden_when_physical_beads_disabled() -> None:
     assert "restitution=0.1" in cfg
 
 
-def test_v11_relaxes_right_arm_after_lift_for_upright_settling() -> None:
+def test_v11_actively_levels_cup_after_lift_with_movable_arm() -> None:
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
 
-    assert "post_lift_arm_stiffness_scale: float = 0.12" in cfg
-    assert "post_lift_arm_damping_scale: float = 0.25" in cfg
-    assert "def _apply_post_lift_arm_compliance" in env
-    assert "relax_mask = self.is_stabilize_phase | self.is_transport_phase" in env
-    assert "self.cfg.post_lift_arm_stiffness_scale" in env
-    assert "self.cfg.post_lift_arm_damping_scale" in env
-    assert "self.robot.write_joint_stiffness_to_sim(arm_stiffness, joint_ids=self.arm_dof_indices)" in env
-    assert "self.robot.write_joint_damping_to_sim(arm_damping, joint_ids=self.arm_dof_indices)" in env
-    assert "self._apply_post_lift_arm_compliance()" in env
+    assert "post_lift_arm_stiffness_scale" not in cfg
+    assert "post_lift_arm_damping_scale" not in cfg
+    assert "_apply_post_lift_arm_compliance" not in env
+    assert "stabilize_upright_orientation_enabled: bool = True" in cfg
+    assert "stabilize_upright_orientation_gain: float = 0.8" in cfg
+    assert "stabilize_upright_orientation_max_deg: float = 15.0" in cfg
+    assert "stabilize_spawn_xy_hold_enabled: bool = True" in cfg
+    assert "stabilize_spawn_xy_hold_gain: float = 1.0" in cfg
+    assert "stabilize_spawn_xy_hold_max_delta: float = 0.05" in cfg
+    assert "def _apply_upright_palm_orientation_correction" in env
+    assert "def _apply_spawn_xy_palm_correction" in env
+    assert "xy_error = self.object_init_pos[:, :2] - self.object_pos[:, :2]" in env
+    assert "lift_palm_pose = self._apply_spawn_xy_palm_correction(" in env
+    assert "transport_palm_pose = self._apply_spawn_xy_palm_correction(" in env
+    assert "cup_z_world = quat_apply(self.object_rot, z_local)" in env
+    assert "cup_z_world[:, 1]" in env
+    assert "-cup_z_world[:, 0]" in env
+    assert "lift_palm_pose = self._apply_upright_palm_orientation_correction(" in env
+    assert "transport_palm_pose = self._apply_upright_palm_orientation_correction(" in env
+    assert "self.robot.set_joint_position_target(self.fabric_q[:, :NUM_ARM_DOF], joint_ids=self.arm_dof_indices)" in env
 
 
 def test_v11_declares_pour_warm_state_export_contract() -> None:
