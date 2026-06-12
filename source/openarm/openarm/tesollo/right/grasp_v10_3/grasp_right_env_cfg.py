@@ -115,9 +115,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 133 (중복 제거: -cup_to_fingertip 15D, -binary_contact 5D, +middle_to_cup 15D)
-    action_space:      int = NUM_ACTIONS               # 26
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 169 (critic, privileged)
+    observation_space: int = NUM_OBSERVATIONS          # 134 (last_actions 27D)
+    action_space:      int = NUM_ACTIONS               # 27
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 170 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -177,24 +177,25 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     success_hold_steps: int = 90
 
     # -----------------------------------------------------------------------
-    # Delta palm action
+    # Policy-driven reward/gate 파라미터
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.01
-    palm_delta_rot_deg: float = 20.0
-    stabilize_palm_delta_xyz: float = 0.01
-    stabilize_palm_delta_rot_deg: float = 10.0
+    grasp_ready_hold_steps: int = 12
+    grasp_upright_threshold_deg: float = 8.0
+    grasp_xy_threshold: float = 0.025
+    approach_weight: float = 2.0
+    approach_sharpness: float = 8.0
+    approach_xy_penalty_weight: float = 5.0
+    approach_tilt_penalty_weight: float = 0.08
+    grasp_weight: float = 12.0
+    stabilize_weight: float = 6.0
+    stabilize_ang_vel_sharpness: float = 2.0
+    stabilize_lin_vel_sharpness: float = 10.0
+    stabilize_action_sharpness: float = 1.5
+    action_smooth_weight: float = -0.02
+    hand_residual_magnitude_weight: float = -0.005
+    hand_residual_scale: float = 0.15
 
-    # -----------------------------------------------------------------------
-    # Finger joint delta 제어 (v9 신규)
-    # action ∈ [-1,1] → ±finger_delta_scale rad per step
-    # -----------------------------------------------------------------------
-    finger_delta_scale:      float = 0.08   # grasp phase: ±0.08 rad/step (grasp_pose 근처 미세 조정)
-    lift_finger_delta_scale: float = 0.08   # lift phase: ±0.08 rad micro-delta
-    thumb_lift_max_delta: float = 0.02      # lift phase: keep rj_1 near lift reference
-
-    # -----------------------------------------------------------------------
-    # Reward 파라미터
-    # -----------------------------------------------------------------------
+    # Legacy names kept for compatibility with older launch overrides.
     # R0. palm_approach
     palm_approach_weight:    float = 0.5
     palm_approach_sharpness: float = 10.0
@@ -245,7 +246,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     slip_weight:    float = 8.0
     slip_sharpness: float = 20.0
 
-    # R_preload. under-grip penalty (grasp phase 후반 80 step: PRELOAD_START_STEP~LIFT_START_STEP)
+    # Legacy preload fields kept only for older launch overrides.
     # 설계: -w * has_contact * relu(target_ratio - force_ratio)
     #   → 목표 ratio 미달 시 선형 패널티 (상한이 없으므로 과도 grip은 억제 안 함)
     #   → R3(adaptive_force)의 상한 억제와 쌍으로 동작
@@ -523,6 +524,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     middle_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/rl_dg_[1-5]_3",
+        history_length=1,
+        track_air_time=False,
+    )
+
+    palm_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/rl_dg_palm",
         history_length=1,
         track_air_time=False,
     )

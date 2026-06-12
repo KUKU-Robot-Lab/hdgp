@@ -15,7 +15,6 @@ sys.modules[SPEC.name] = grasp_reward_utils
 SPEC.loader.exec_module(grasp_reward_utils)
 
 compute_thumb_tip_direction_reward = grasp_reward_utils.compute_thumb_tip_direction_reward
-compute_middle_contact_gate = grasp_reward_utils.compute_middle_contact_gate
 compute_upright_success_mask = grasp_reward_utils.compute_upright_success_mask
 
 
@@ -66,42 +65,21 @@ def test_upright_success_mask_requires_configured_tilt_margin() -> None:
     assert mask.tolist() == [True, True, False]
 
 
-def test_middle_contact_gate_requires_four_middle_contacts() -> None:
-    middle_binary = torch.tensor(
-        [
-            [True, True, True, False, False],
-            [True, True, True, True, False],
-            [True, True, True, True, True],
-        ],
-        dtype=torch.bool,
-    )
-
-    gate = compute_middle_contact_gate(middle_binary, min_middle_contacts=4)
-
-    assert gate.tolist() == [False, True, True]
-
-
-def test_envelope_success_rejects_tip_only_contact() -> None:
-    tip_contact_count = torch.tensor([5, 5], dtype=torch.long)
-    middle_binary = torch.tensor(
-        [
-            [False, False, False, False, False],
-            [True, True, True, True, False],
-        ],
-        dtype=torch.bool,
-    )
+def test_envelope_success_requires_full_tip_contact_and_palm_contact() -> None:
+    tip_contact_count = torch.tensor([5, 4, 5], dtype=torch.long)
+    palm_contact = torch.tensor([False, True, True], dtype=torch.bool)
     upright = compute_upright_success_mask(
-        torch.tensor([1.0, 1.0], dtype=torch.float32),
+        torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32),
         threshold_deg=20.0,
     )
 
     success = (
         (tip_contact_count >= 5)
-        & compute_middle_contact_gate(middle_binary, 4)
+        & palm_contact
         & upright
     )
 
-    assert success.tolist() == [False, True]
+    assert success.tolist() == [False, False, True]
 
 
 def test_full_grip_pose_is_relaxed_closure_bound_from_grasp_pose() -> None:

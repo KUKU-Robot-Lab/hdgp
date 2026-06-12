@@ -1863,14 +1863,19 @@ class GraspRightEnv(DirectRLEnv):
         others_target = grasp_center - enclosure_axis * radius
 
         thumb_dist = (self.fingertip_pos[:, 0, :] - thumb_target).norm(dim=-1)
-        others_dist = (
+        others_dist_per_finger = (
             self.fingertip_pos[:, 1:, :] - others_target.unsqueeze(1)
-        ).norm(dim=-1).mean(dim=-1)
+        ).norm(dim=-1)
+        others_enclosure = torch.exp(-self.cfg.enclosure_sharpness * others_dist_per_finger)
+        others_enclosure = 0.5 * (
+            others_enclosure.mean(dim=-1) + others_enclosure.min(dim=-1).values
+        )
+        others_dist = others_dist_per_finger.mean(dim=-1)
 
         thumb_weight = float(self.cfg.enclosure_thumb_weight)
         r1_enclosure = enclosure_weight * (
             thumb_weight * torch.exp(-self.cfg.enclosure_sharpness * thumb_dist)
-            + (1.0 - thumb_weight) * torch.exp(-self.cfg.enclosure_sharpness * others_dist)
+            + (1.0 - thumb_weight) * others_enclosure
         )
 
         thumb_force = self.contact_force_raw[:, 0]

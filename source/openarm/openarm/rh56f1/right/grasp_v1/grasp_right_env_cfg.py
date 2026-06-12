@@ -243,8 +243,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     finger_delta_scale:      float = 0.08
     lift_finger_delta_scale: float = 0.08
     enable_grasp_phase_full_grip_blend: bool = True
-    grasp_phase_full_grip_contact_threshold: int = 2
-    grasp_phase_full_grip_progress_threshold: float = 0.5
+    grasp_phase_full_grip_contact_threshold: int = 5
+    grasp_phase_full_grip_progress_threshold: float = 1.1
 
     # -----------------------------------------------------------------------
     # Reward 파라미터: Tesollo grasp_v7_2 스타일 dense enclosure reward
@@ -276,8 +276,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     min_middle_contacts_for_success: int = 0
 
     # Lift-entry grip readiness gate (state tracking용, reward가 아님)
-    stage0_lift_start_min_contacts: int = 3
-    stage0_lift_start_hold_steps:   int = 8
+    stage0_lift_start_min_contacts: int = 5
+    stage0_lift_start_hold_steps:   int = 30
     lift_contact_hold_steps: int = 30
     full_grip_hold_steps:    int = 30
     lift_min_force_ratio:    float = 1.8

@@ -1,5 +1,5 @@
 # 5g_grasp_right_v10-3 recurrent actor / MLP critic config
-# Actor 132D MLP [512, 512] -> LSTM 1024 / critic 169D MLP [512, 512, 256, 128], action 26D.
+# Actor 133D MLP [512, 512] -> LSTM 1024 / critic 170D MLP [512, 512, 256, 128], action 27D palm target + hand residual.
 # This is a separate non-warm-start config because the LSTM architecture
 # is incompatible with the v10-2 MLP checkpoint.
 
@@ -50,7 +50,7 @@ params:
   load_path: ''
 
   config:
-    name: 5g_grasp_right-v10-3-lstm
+    name: 5g_grasp_right-v10-3-target27-lstm
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
