@@ -10,25 +10,27 @@ def _text(filename: str) -> str:
     return (_ROOT / filename).read_text(encoding="utf-8")
 
 
-def test_reward_cfg_uses_v7_2_dense_enclosure_terms() -> None:
+def test_reward_cfg_uses_shared_grasp_core_terms() -> None:
     cfg = _text("grasp_right_env_cfg.py")
 
     for name in (
-        "palm_approach_weight",
-        "palm_approach_sharpness",
+        "approach_weight",
+        "approach_sharpness",
+        "approach_xy_penalty_weight",
+        "approach_tilt_penalty_weight",
+        "grasp_weight",
+        "lift_reward_weight",
+        "stabilize_weight",
+        "success_bonus_weight",
+        "action_smooth_weight",
         "enclosure_weight",
         "enclosure_sharpness",
         "cup_radius_approx",
         "enclosure_thumb_weight",
-        "align_upright_reward_weight",
-        "lift_reward_weight",
-        "grasp_five_tip_contact_reward_weight",
-        "grasp_five_tip_hold_reward_weight",
-        "grasp_contact_persistence_reward_steps",
-        "stabilize_upright_reward_weight",
         "stabilize_upright_reward_scale_deg",
-        "action_smoothness_palm_weight",
-        "action_smoothness_finger_weight",
+        "stage0_lift_start_min_contacts: int = 4",
+        "grasp_phase_full_grip_contact_threshold: int = 4",
+        "grasp_phase_full_grip_progress_threshold: float = 0.65",
     ):
         assert name in cfg
 
@@ -47,20 +49,18 @@ def test_reward_cfg_uses_v7_2_dense_enclosure_terms() -> None:
     assert "r_height_weight" not in cfg
 
 
-def test_reward_impl_matches_v7_2_term_shape() -> None:
+def test_reward_impl_uses_shared_core_term_shape() -> None:
     env = _text("grasp_right_env.py")
     reward_body = env.split("def _get_rewards", 1)[1].split("return total", 1)[0]
 
     for term in (
-        "r0_palm_approach",
-        "r1_enclosure",
-        "r_align_upright",
-        "r3_lift",
-        "r_grasp_contact_dense",
-        "r_grasp_five_tip_hold",
-        "r_grasp_five_tip_contact",
-        "r_stabilize_upright",
-        "r4_smooth",
+        "compute_grasp_reward_terms(",
+        'reward_terms["approach"]',
+        'reward_terms["grasp"]',
+        'reward_terms["lift"]',
+        'reward_terms["stabilize"]',
+        'reward_terms["success_bonus"]',
+        'reward_terms["action_smooth"]',
     ):
         assert term in reward_body
 
@@ -73,15 +73,12 @@ def test_reward_impl_matches_v7_2_term_shape() -> None:
         assert removed_term not in reward_body
 
     for log_name in (
-        "reward/palm_approach",
-        "reward/enclosure",
-        "reward/align_upright",
+        "reward/approach",
+        "reward/grasp",
         "reward/lift",
-        "reward/grasp_contact_dense",
-        "reward/grasp_five_tip_hold",
-        "reward/grasp_five_tip_contact",
-        "reward/stabilize_upright",
-        "reward/action_smoothness",
+        "reward/stabilize",
+        "reward/success_bonus",
+        "reward/action_smooth",
         "reward/total",
     ):
         assert f'self.extras["{log_name}"]' in reward_body

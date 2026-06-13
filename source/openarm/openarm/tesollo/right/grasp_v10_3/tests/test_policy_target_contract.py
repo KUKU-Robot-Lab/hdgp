@@ -117,17 +117,21 @@ def test_palm_contact_sensor_uses_palm_link_net_force_without_actor_obs_growth()
     assert NUM_CRITIC_OBSERVATIONS == 170
 
 
-def test_reward_gate_success_contract_uses_tip5_and_palm_not_middle_or_pose_filters() -> None:
+def test_reward_gate_success_contract_uses_lift4_tip5_not_palm_or_middle_filters() -> None:
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
+    cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
 
-    assert "grasp_ready_now = full_tip_contact_bool & palm_contact_bool" in env
+    assert "stage0_lift_start_min_contacts: int = 4" in cfg
+    assert "grasp_ready_now = num_tip_contacts >= self.cfg.stage0_lift_start_min_contacts" in env
     latch_block = env.split("grasp_ready_now =", 1)[1].split("self.grasp_ready_hold_buf", 1)[0]
     assert "middle" not in latch_block
     assert "cup_tilt" not in latch_block
     assert "cup_xy_displacement" not in latch_block
+    assert "palm" not in latch_block
 
-    assert "* lift_gate\n            * envelope_grasp" in env
-    assert "success_now = in_or_past_lift & lifted & full_tip_contact & palm_contact & upright_success" in env
+    assert "compute_grasp_reward_terms(" in env
+    assert "full_tip_contact=full_tip_contact" in env
+    assert "success_now = in_or_past_lift & lifted & full_tip_contact & upright_success" in env
     assert "finger_depth =" not in env
     assert "middle_contact_ready" not in env
     assert 'self.extras["contact/middle_count"]' not in env
@@ -178,10 +182,11 @@ def test_state_based_reward_gates_and_upright_quality() -> None:
 
     assert "stabilize_upright_reward_scale_deg: float = 10.0" in cfg
     assert "upright_quality = torch.exp(" in env
-    assert "r_grasp = self.cfg.grasp_weight * pre_lift_gate" in env
-    assert "* lift_gate\n            * envelope_grasp\n            * cup_height_delta\n            * upright_quality" in env
-    assert "* lift_gate\n            * lifted_gate\n            * envelope_grasp\n            * upright_quality" in env
-    assert "r_success_bonus = self.cfg.success_bonus_weight * success_now.float()" in env
+    assert "compute_grasp_reward_terms(" in env
+    assert 'reward_terms["grasp"]' in env
+    assert 'reward_terms["lift"]' in env
+    assert 'reward_terms["stabilize"]' in env
+    assert 'reward_terms["success_bonus"]' in env
     assert "r_time_penalty" not in env
     assert "time_penalty_weight" not in cfg
     assert 'self.extras["phase/approach"] = (\n            (~self.lift_ready_latched_buf) & (~meaningful_contact)' in env

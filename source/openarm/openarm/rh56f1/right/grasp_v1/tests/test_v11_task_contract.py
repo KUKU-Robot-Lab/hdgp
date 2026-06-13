@@ -196,11 +196,13 @@ def test_v11_actively_levels_cup_after_lift_with_movable_arm() -> None:
     assert "stabilize_upright_orientation_max_deg: float = 25.0" in cfg
     assert "stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2" in cfg
     assert "stabilize_spawn_xy_hold_enabled: bool = True" in cfg
-    assert "stabilize_spawn_xy_hold_gain: float = 1.0" in cfg
-    assert "stabilize_spawn_xy_hold_max_delta: float = 0.05" in cfg
+    assert "stabilize_spawn_xy_hold_gain: float = 2.0" in cfg
+    assert "stabilize_spawn_xy_hold_max_delta: float = 0.10" in cfg
     assert "def _apply_upright_palm_orientation_correction" in env
     assert "def _apply_spawn_xy_palm_correction" in env
     assert "xy_error = self.object_init_pos[:, :2] - self.object_pos[:, :2]" in env
+    assert "self._spawn_xy_palm_correction_buf[phase_mask] = xy_correction[phase_mask]" in env
+    assert 'self.extras["task/spawn_xy_palm_correction"]' in env
     assert "lift_palm_pose = self._apply_spawn_xy_palm_correction(" in env
     assert "transport_palm_pose = self._apply_spawn_xy_palm_correction(" in env
     assert "cup_z_world = quat_apply(self.object_rot, z_local)" in env
@@ -319,13 +321,20 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     env = _text("grasp_right_env.py")
 
     for name in (
-        "align_upright_reward_weight",
-        "grasp_five_tip_contact_reward_weight",
-        "grasp_five_tip_hold_reward_weight",
-        "grasp_contact_persistence_reward_steps",
-        "stabilize_upright_reward_weight",
+        "approach_weight",
+        "approach_sharpness",
+        "approach_xy_penalty_weight",
+        "approach_tilt_penalty_weight",
+        "grasp_weight",
+        "lift_reward_weight",
+        "stabilize_weight",
+        "success_bonus_weight",
+        "action_smooth_weight",
         "stabilize_upright_max_deg: float = 5.0",
         "stabilize_upright_reward_scale_deg",
+        "stage0_lift_start_min_contacts: int = 4",
+        "grasp_phase_full_grip_contact_threshold: int = 4",
+        "grasp_phase_full_grip_progress_threshold: float = 0.65",
     ):
         assert name in cfg
 
@@ -343,24 +352,21 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     ):
         assert removed_name not in cfg
 
-    assert "r_align_upright" in env
-    assert "contact_hold_progress" in env
+    assert "compute_grasp_reward_terms(" in env
     assert "self.cfg.stage0_lift_start_hold_steps" in env
-    assert "r_grasp_contact_dense" in env
-    assert "r_grasp_five_tip_hold" in env
-    assert "r_grasp_five_tip_contact" in env
-    assert "contact_persistence_progress" in env
-    assert "* contact_persistence_progress" in env
-    assert "* contact_hold_progress" in env
-    assert "r_stabilize_upright" in env
-    assert "r3_lift = (" in env
-    assert "* self.is_lift_phase.float()" in env
-    assert 'self.extras["reward/align_upright"]' in env
-    assert 'self.extras["reward/grasp_contact_dense"]' in env
-    assert 'self.extras["reward/grasp_five_tip_hold"]' in env
-    assert 'self.extras["reward/grasp_five_tip_contact"]' in env
-    assert 'self.extras["reward/stabilize_upright"]' in env
+    assert "lift_latched=self._lift_started_buf" in env
+    assert "full_tip_contact=five_tip_contact" in env
+    assert 'self.extras["reward/approach"]' in env
+    assert 'self.extras["reward/grasp"]' in env
+    assert 'self.extras["reward/lift"]' in env
+    assert 'self.extras["reward/stabilize"]' in env
+    assert 'self.extras["reward/success_bonus"]' in env
     for removed_term in (
+        "r_align_upright",
+        "r_grasp_contact_dense",
+        "r_grasp_five_tip_hold",
+        "r_grasp_five_tip_contact",
+        "r_stabilize_upright",
         "r1c_full_grasp",
         "r1b_force_balance",
         "r2_tip_bonus",

@@ -51,11 +51,18 @@ def test_rh56f1_grasp_pose_biases_non_thumb_closure_before_lift() -> None:
     preset = _load_preset()
 
     thumb_2 = preset.HAND_GRASP_POSE[1]
-    non_thumb_curl = preset.HAND_GRASP_POSE[2:]
+    index_curl = preset.HAND_GRASP_POSE[2]
+    middle_curl = preset.HAND_GRASP_POSE[3]
+    ring_curl = preset.HAND_GRASP_POSE[4]
+    little_curl = preset.HAND_GRASP_POSE[5]
 
     assert thumb_2 <= 0.25
-    assert min(non_thumb_curl) >= 0.85
-    assert max(non_thumb_curl) <= 1.05
+    assert index_curl > ring_curl
+    assert middle_curl > little_curl
+    assert 1.05 <= index_curl <= 1.10
+    assert 1.05 <= middle_curl <= 1.10
+    assert 0.80 <= ring_curl <= 0.90
+    assert 0.80 <= little_curl <= 0.90
 
 
 def test_rh56f1_procedural_pregrasp_starts_closer_and_has_recovery_range() -> None:
@@ -64,11 +71,15 @@ def test_rh56f1_procedural_pregrasp_starts_closer_and_has_recovery_range() -> No
     assert "pregrasp_offset_x:     float = -0.045" in cfg
     assert "pregrasp_offset_y:     float = -0.055" in cfg
     assert "pregrasp_offset_z:     float = 0.015" in cfg
-    assert "palm_delta_xyz:     float = 0.08" in cfg
+    assert "palm_delta_xyz:     float = 0.04" in cfg
+    assert "grasp_palm_delta_scale: float = 1.0" in cfg
+    assert "grasp_palm_inward_offset: float = 0.025" in cfg
 
 
 def test_rh56f1_lift_start_requires_success_contact_count() -> None:
     constants, cfg = _load_constants_and_cfg_text()
 
-    assert constants.MIN_CONTACTS_FOR_SUCCESS == 3
-    assert "stage0_lift_start_min_contacts: int = 3" in cfg
+    assert constants.NUM_FINGERTIPS == 5
+    assert "stage0_lift_start_min_contacts: int = 4" in cfg
+    assert "grasp_phase_full_grip_contact_threshold: int = 4" in cfg
+    assert "grasp_phase_full_grip_progress_threshold: float = 0.65" in cfg

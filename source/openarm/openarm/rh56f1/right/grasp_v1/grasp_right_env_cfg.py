@@ -161,8 +161,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_upright_orientation_max_deg: float = 25.0
     stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2
     stabilize_spawn_xy_hold_enabled: bool = True
-    stabilize_spawn_xy_hold_gain: float = 1.0
-    stabilize_spawn_xy_hold_max_delta: float = 0.05
+    stabilize_spawn_xy_hold_gain: float = 2.0
+    stabilize_spawn_xy_hold_max_delta: float = 0.10
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
@@ -229,7 +229,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Delta palm action
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.01
+    palm_delta_xyz:     float = 0.04
     palm_delta_rot_deg: float = 5.0
     approach_min_steps: int = 10
     approach_timeout_steps: int = 90
@@ -240,7 +240,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_max_tip_contacts: int = 2
     approach_upright_max_deg: float = 20.0
     approach_timeout_grasp_reward_scale: float = 0.25
-    grasp_palm_delta_scale: float = 0.15
+    grasp_palm_delta_scale: float = 1.0
+    grasp_palm_inward_offset: float = 0.025
     lift_palm_delta_xyz: float = 0.12
     lift_palm_delta_rot_deg: float = 15.0
 
@@ -254,12 +255,26 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     finger_delta_scale:      float = 0.08
     lift_finger_delta_scale: float = 0.08
     enable_grasp_phase_full_grip_blend: bool = True
-    grasp_phase_full_grip_contact_threshold: int = 5
-    grasp_phase_full_grip_progress_threshold: float = 1.1
+    grasp_phase_full_grip_contact_threshold: int = 4
+    grasp_phase_full_grip_progress_threshold: float = 0.65
 
     # -----------------------------------------------------------------------
-    # Reward 파라미터: Tesollo grasp_v7_2 스타일 dense enclosure reward
+    # Shared 5-tip grasp reward parameters
     # -----------------------------------------------------------------------
+    grasp_upright_threshold_deg: float = 8.0
+    grasp_xy_threshold: float = 0.025
+    approach_weight: float = 2.0
+    approach_sharpness: float = 8.0
+    approach_xy_penalty_weight: float = 5.0
+    approach_tilt_penalty_weight: float = 0.08
+    grasp_weight: float = 12.0
+    stabilize_weight: float = 10.0
+    stabilize_upright_reward_scale_deg: float = 5.0
+    stabilize_action_sharpness: float = 1.5
+    success_bonus_weight: float = 20.0
+    action_smooth_weight: float = -0.02
+
+    # Legacy names kept for compatibility with older launch overrides.
     palm_approach_weight:    float = 1.0
     palm_approach_sharpness: float = 10.0
 
@@ -268,13 +283,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     cup_radius_approx:      float = 0.035
     enclosure_thumb_weight: float = 0.6
 
-    align_upright_reward_weight: float = 2.0
     lift_reward_weight: float = 30.0
-    grasp_five_tip_contact_reward_weight: float = 6.0
-    grasp_five_tip_hold_reward_weight: float = 10.0
     grasp_contact_persistence_reward_steps: int = 30
-    stabilize_upright_reward_weight: float = 10.0
-    stabilize_upright_reward_scale_deg: float = 5.0
     approach_tip_contact_penalty_weight: float = -4.0
     grasp_palm_anchor_penalty_weight: float = -8.0
     palm_target_motion_penalty_weight: float = -2.0
@@ -291,7 +301,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     min_middle_contacts_for_success: int = 0
 
     # Lift-entry grip readiness gate (state tracking용, reward가 아님)
-    stage0_lift_start_min_contacts: int = 5
+    stage0_lift_start_min_contacts: int = 4
     stage0_lift_start_hold_steps:   int = 10
     lift_contact_hold_steps: int = 30
     full_grip_hold_steps:    int = 30

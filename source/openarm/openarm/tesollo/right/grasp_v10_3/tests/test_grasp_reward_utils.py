@@ -65,7 +65,7 @@ def test_upright_success_mask_requires_configured_tilt_margin() -> None:
     assert mask.tolist() == [True, True, False]
 
 
-def test_envelope_success_requires_full_tip_contact_and_palm_contact() -> None:
+def test_envelope_success_requires_full_tip_contact_not_palm_contact() -> None:
     tip_contact_count = torch.tensor([5, 4, 5], dtype=torch.long)
     palm_contact = torch.tensor([False, True, True], dtype=torch.bool)
     upright = compute_upright_success_mask(
@@ -75,11 +75,11 @@ def test_envelope_success_requires_full_tip_contact_and_palm_contact() -> None:
 
     success = (
         (tip_contact_count >= 5)
-        & palm_contact
         & upright
     )
 
-    assert success.tolist() == [False, False, True]
+    assert palm_contact.tolist() == [False, True, True]
+    assert success.tolist() == [True, False, True]
 
 
 def test_full_grip_pose_is_relaxed_closure_bound_from_grasp_pose() -> None:

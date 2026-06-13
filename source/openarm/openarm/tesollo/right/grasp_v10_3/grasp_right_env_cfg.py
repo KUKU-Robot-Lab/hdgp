@@ -180,6 +180,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Policy-driven reward/gate 파라미터
     # -----------------------------------------------------------------------
+    stage0_lift_start_min_contacts: int = 4
     grasp_ready_hold_steps: int = 6
     grasp_upright_threshold_deg: float = 8.0
     grasp_xy_threshold: float = 0.025

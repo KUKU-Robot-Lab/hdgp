@@ -61,6 +61,7 @@ from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_from_angle_axis, quat_mul
 
+from openarm.common.grasp_reward_core import compute_grasp_reward_terms
 from fabrics_sim.fabrics.openarm_rh56f1_pose_fabric import OpenArmRh56f1PoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
 from fabrics_sim.utils.utils import initialize_warp
@@ -87,7 +88,6 @@ from .grasp_right_constants import (
     PRELOAD_START_STEP,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
-    MIN_CONTACTS_FOR_SUCCESS,
     PREGRASP_FABRICS_STEPS,
     CUP_RADIUS_APPROX,
     ARM_START_POSE,
@@ -383,6 +383,7 @@ class GraspRightEnv(DirectRLEnv):
         self._prev_num_contacts_buf = torch.zeros(self.num_envs, device=self.device)
         self._prev_middle_contacts_buf = torch.zeros(self.num_envs, device=self.device)
         self._prev_cup_tilt_deg_buf = torch.zeros(self.num_envs, device=self.device)
+        self._spawn_xy_palm_correction_buf = torch.zeros(self.num_envs, 2, device=self.device)
         self._contact_persistence_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._lift_contact_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._grasp_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -394,6 +395,8 @@ class GraspRightEnv(DirectRLEnv):
         self._lift_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._lift_start_step_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._contacts_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
+        self._palm_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
+        self._grasp_tilt_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self._force_ratio_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self._full_grip_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._full_grip_ready_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -1206,6 +1209,12 @@ class GraspRightEnv(DirectRLEnv):
 
         grasp_delta = delta * float(self.cfg.grasp_palm_delta_scale)
         grasp_palm_pose = self.grasp_anchor_palm_pose_buf + grasp_delta
+        cup_inward_xy = self.object_pos[:, :2] - self.grasp_anchor_palm_pose_buf[:, :2]
+        cup_inward_xy = cup_inward_xy / cup_inward_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        grasp_palm_pose[:, :2] = (
+            grasp_palm_pose[:, :2]
+            + cup_inward_xy * float(self.cfg.grasp_palm_inward_offset)
+        )
         grasp_palm_pose = torch.max(torch.min(grasp_palm_pose, palm_maxs), palm_mins)
 
         lift_elapsed_steps = torch.where(
@@ -1439,12 +1448,14 @@ class GraspRightEnv(DirectRLEnv):
         if not phase_mask.any():
             return palm_pose
 
+        # Move the grasped cup back to its original spawn XY by translating the palm target.
         xy_error = self.object_init_pos[:, :2] - self.object_pos[:, :2]
         max_delta = float(self.cfg.stabilize_spawn_xy_hold_max_delta)
         xy_correction = (
             float(self.cfg.stabilize_spawn_xy_hold_gain) * xy_error
         ).clamp(min=-max_delta, max=max_delta)
         xy_correction = xy_correction * phase_progress
+        self._spawn_xy_palm_correction_buf[phase_mask] = xy_correction[phase_mask]
 
         corrected = palm_pose.clone()
         corrected[:, :2] = corrected[:, :2] + xy_correction
@@ -1697,6 +1708,10 @@ class GraspRightEnv(DirectRLEnv):
             self._contacts_at_lift_start_buf[lift_started_now] = (
                 self.num_contacts_buf[lift_started_now].float()
             )
+            self._palm_at_lift_start_buf[lift_started_now] = (
+                self.palm_binary_contact_buf[lift_started_now].float()
+            )
+            self._grasp_tilt_at_lift_start_buf[lift_started_now] = cup_tilt_deg[lift_started_now]
             self._force_ratio_at_lift_start_buf[lift_started_now] = force_ratio[lift_started_now]
 
         # ---- contact persistence 추적 ----
@@ -1772,9 +1787,6 @@ class GraspRightEnv(DirectRLEnv):
             -cup_tilt_deg / max(float(self.cfg.stabilize_upright_reward_scale_deg), 1e-6)
         )
         spawn_xy_dist = (self.object_pos[:, :2] - self.object_init_pos[:, :2]).norm(dim=-1)
-        stabilize_spawn_xy_quality = torch.exp(
-            -spawn_xy_dist / max(float(self.cfg.stabilize_spawn_xy_success_threshold), 1e-6)
-        )
 
         # ---- prev buffer 갱신 ----
         self._prev_total_grip_force_buf.copy_(total_grip_force)
@@ -1945,27 +1957,6 @@ class GraspRightEnv(DirectRLEnv):
                 self.grasp_adr.progress, device=self.device
             )
 
-        # ================================================================
-        # Tesollo grasp_v7_2-style dense enclosure reward
-        # ================================================================
-        if self.grasp_adr is not None:
-            enclosure_weight = self.grasp_adr.get_param("reward_weights", "enclosure_weight")
-        else:
-            enclosure_weight = self.cfg.enclosure_weight
-
-        approach_no_tip_contact = (1.0 - tip_contact_progress).clamp(min=0.0)
-        timeout_grasp_reward_scale = torch.where(
-            close_grasp_mask & self._grasp_from_timeout_buf,
-            torch.full_like(tip_contact_progress, float(self.cfg.approach_timeout_grasp_reward_scale)),
-            torch.ones_like(tip_contact_progress),
-        )
-        r0_palm_approach = (
-            self.cfg.palm_approach_weight
-            * approach_mask.float()
-            * torch.exp(-self.cfg.palm_approach_sharpness * palm_to_cup_dist)
-            * approach_no_tip_contact
-        )
-
         cup_to_palm_xy = self.palm_center_pos[:, :2] - cup_center[:, :2]
         approach_dir_xy = cup_to_palm_xy / cup_to_palm_xy.norm(
             dim=-1, keepdim=True
@@ -1984,134 +1975,48 @@ class GraspRightEnv(DirectRLEnv):
         others_dist_per_finger = (
             self.fingertip_pos[:, 1:, :] - others_target.unsqueeze(1)
         ).norm(dim=-1)
-        others_enclosure = torch.exp(-self.cfg.enclosure_sharpness * others_dist_per_finger)
-        others_enclosure = 0.5 * (
-            others_enclosure.mean(dim=-1) + others_enclosure.min(dim=-1).values
-        )
         others_dist = others_dist_per_finger.mean(dim=-1)
-
         thumb_weight = float(self.cfg.enclosure_thumb_weight)
-        r1_enclosure = close_grasp_mask.float() * timeout_grasp_reward_scale * enclosure_weight * (
-            thumb_weight * torch.exp(-self.cfg.enclosure_sharpness * thumb_dist)
-            + (1.0 - thumb_weight) * others_enclosure
-        )
+        fingertip_side_dist = thumb_weight * thumb_dist + (1.0 - thumb_weight) * others_dist
 
         thumb_force = self.contact_force_raw[:, 0]
         others_avg_force = self.contact_force_raw[:, 1:].mean(dim=-1)
-        contact_persistence_progress = (
-            self._contact_persistence_buf.float()
-            / max(float(self.cfg.grasp_contact_persistence_reward_steps), 1.0)
-        ).clamp(max=1.0)
-        contact_hold_progress = (
-            self._lift_contact_hold_count.float()
-            / max(float(self.cfg.stage0_lift_start_hold_steps), 1.0)
-        ).clamp(max=1.0)
-        r_align_upright = (
-            self.cfg.align_upright_reward_weight
-            * timeout_grasp_reward_scale
-            * cup_uprightness
-            * contact_hold_progress
-        )
-        r3_lift = (
-            self.cfg.lift_reward_weight
-            * self.is_lift_phase.float()
-            * (cup_height_delta / max(float(self.cfg.lift_target_z_delta), 1e-6)).clamp(max=1.0)
-            * stabilize_upright_quality
-        )
-        r_grasp_contact_dense = (
-            self.cfg.grasp_five_tip_contact_reward_weight
-            * close_grasp_mask.float()
-            * timeout_grasp_reward_scale
-            * tip_contact_progress
-        )
-        r_grasp_five_tip_hold = (
-            self.cfg.grasp_five_tip_hold_reward_weight
-            * close_grasp_mask.float()
-            * timeout_grasp_reward_scale
-            * five_tip_contact
-            * contact_persistence_progress
-        )
-        r_grasp_five_tip_contact = r_grasp_contact_dense + r_grasp_five_tip_hold
-        r_approach_tip_contact_penalty = (
-            self.cfg.approach_tip_contact_penalty_weight
-            * approach_mask.float()
-            * tip_contact_progress
-        )
-        palm_anchor_delta = (
-            self.palm_pose_targets[:, :3] - self.grasp_anchor_palm_pose_buf[:, :3]
-        ).norm(dim=-1)
-        r_grasp_palm_anchor = (
-            self.cfg.grasp_palm_anchor_penalty_weight
-            * close_grasp_mask.float()
-            * palm_anchor_delta
-        )
-        r_palm_target_motion = (
-            self.cfg.palm_target_motion_penalty_weight
-            * self._palm_target_delta_buf.pow(2).sum(dim=-1)
-        )
-        r_stabilize_spawn_xy = (
-            self.cfg.stabilize_spawn_xy_reward_weight
-            * self.is_stabilize_phase.float()
-            * stabilize_spawn_xy_quality
-            * stabilize_upright_quality
-            * lifted_for_full_grip.float()
-        )
-        r_stabilize_upright = (
-            self.cfg.stabilize_upright_reward_weight
-            * self.is_stabilize_phase.float()
-            * stabilize_upright_quality
-            * lifted_for_full_grip.float()
-            * stabilize_spawn_xy_quality
-        )
 
         palm_delta = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
         finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
-        r4_smooth = (
-            self.cfg.action_smoothness_palm_weight * palm_delta
-            + self.cfg.action_smoothness_finger_weight * finger_delta
+        action_delta_norm = torch.sqrt(palm_delta + finger_delta).clamp(min=0.0)
+        total, reward_terms, reward_gates = compute_grasp_reward_terms(
+            num_tip_contacts=self.num_contacts_buf,
+            tip_contact_frac=tip_contact_progress,
+            full_tip_contact=five_tip_contact,
+            palm_to_cup_dist=palm_to_cup_dist,
+            fingertip_side_dist=fingertip_side_dist,
+            cup_height_delta=cup_height_delta,
+            cup_xy_displacement=spawn_xy_dist,
+            cup_tilt_deg=cup_tilt_deg,
+            upright_quality=stabilize_upright_quality,
+            lift_latched=self._lift_started_buf,
+            action_delta_norm=action_delta_norm,
+            cfg=self.cfg,
         )
 
-        total = (
-            r0_palm_approach
-            + r1_enclosure
-            + r_align_upright
-            + r3_lift
-            + r_grasp_five_tip_contact
-            + r_approach_tip_contact_penalty
-            + r_grasp_palm_anchor
-            + r_palm_target_motion
-            + r_stabilize_spawn_xy
-            + r_stabilize_upright
-            + r4_smooth
-        )
-
-        self.extras["reward/palm_approach"] = r0_palm_approach.mean()
-        self.extras["reward/enclosure"] = r1_enclosure.mean()
-        self.extras["reward/align_upright"] = r_align_upright.mean()
-        self.extras["reward/lift"] = r3_lift.mean()
-        self.extras["reward/grasp_contact_dense"] = r_grasp_contact_dense.mean()
-        self.extras["reward/grasp_five_tip_hold"] = r_grasp_five_tip_hold.mean()
-        self.extras["reward/grasp_five_tip_contact"] = r_grasp_five_tip_contact.mean()
-        self.extras["reward/approach_tip_contact_penalty"] = r_approach_tip_contact_penalty.mean()
-        self.extras["reward/grasp_palm_anchor"] = r_grasp_palm_anchor.mean()
-        self.extras["reward/palm_target_motion"] = r_palm_target_motion.mean()
-        self.extras["reward/stabilize_spawn_xy"] = r_stabilize_spawn_xy.mean()
-        self.extras["reward/stabilize_upright"] = r_stabilize_upright.mean()
-        self.extras["reward/action_smoothness"] = r4_smooth.mean()
+        self.extras["reward/approach"] = reward_terms["approach"].mean()
+        self.extras["reward/grasp"] = reward_terms["grasp"].mean()
+        self.extras["reward/lift"] = reward_terms["lift"].mean()
+        self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
+        self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
+        self.extras["reward/action_smooth"] = reward_terms["action_smooth"].mean()
+        self.extras["reward/action_delta"] = reward_terms["action_smooth"].mean()
         self.extras["reward/total"] = total.mean()
-        self.extras["task/timeout_grasp_reward_scale"] = _masked_mean(
-            timeout_grasp_reward_scale, close_grasp_mask
-        )
         self.extras["task/thumb_dist"] = thumb_dist.mean()
         self.extras["task/others_dist"] = others_dist.mean()
-        self.extras["task/grasp_palm_anchor_delta"] = (
-            palm_anchor_delta * close_grasp_mask.float()
-        ).sum() / close_grasp_mask.float().sum().clamp(min=1.0)
         self.extras["task/palm_target_motion"] = self._palm_target_delta_buf[:, :3].norm(dim=-1).mean()
+        self.extras["task/grasp_palm_inward_offset"] = torch.tensor(
+            float(self.cfg.grasp_palm_inward_offset), device=self.device
+        )
         self.extras["task/approach_tip_contact_rate"] = (
             five_tip_contact * approach_mask.float()
         ).sum() / approach_mask.float().sum().clamp(min=1.0)
-        self.extras["task/adr_enclosure_w"] = torch.tensor(enclosure_weight, device=self.device)
         self.extras["task/prelift_force_ratio"] = (
             force_ratio * self.is_grasp_phase.float()
         ).sum() / self.is_grasp_phase.float().sum().clamp(min=1.0)
@@ -2124,6 +2029,44 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/prelift_full_grip_rate"] = self.extras[
             "task/prelift_five_tip_contact_rate"
         ]
+        self.extras["contact/count"] = self.num_contacts_buf.float().mean()
+        self.extras["contact/palm"] = self.palm_binary_contact_buf.float().mean()
+        self.extras["contact/palm_force"] = self.palm_contact_force_raw.mean()
+        self.extras["contact/grasp_ready_hold"] = self._lift_contact_hold_count.float().mean()
+        self.extras["contact/contacts_at_lift_start"] = self._contacts_at_lift_start_buf.mean()
+        self.extras["contact/palm_at_lift_start"] = self._palm_at_lift_start_buf.mean()
+        lifted_for_common_log = cup_height_delta >= self.cfg.lift_success_height
+        meaningful_contact = self.num_contacts_buf > 0
+        self.extras["phase/approach"] = (
+            (~self._lift_started_buf) & (~meaningful_contact)
+        ).float().mean()
+        self.extras["phase/grasp"] = (
+            (~self._lift_started_buf) & meaningful_contact
+        ).float().mean()
+        self.extras["phase/lift"] = (
+            self._lift_started_buf & (~lifted_for_common_log)
+        ).float().mean()
+        self.extras["phase/stabilize"] = (
+            self._lift_started_buf & lifted_for_common_log
+        ).float().mean()
+        self.extras["cup/upright_quality"] = stabilize_upright_quality.mean()
+        self.extras["cup/grasp_tilt_deg"] = self._grasp_tilt_at_lift_start_buf.mean()
+        lift_tilt_for_common_log = cup_tilt_deg[self._lift_started_buf]
+        self.extras["cup/lift_tilt_deg"] = (
+            lift_tilt_for_common_log.mean()
+            if lift_tilt_for_common_log.numel() > 0
+            else cup_tilt_deg.mean()
+        )
+        self.extras["cup/xy_displacement"] = spawn_xy_dist.mean()
+        self.extras["task/spawn_xy_error"] = spawn_xy_dist.mean()
+        self.extras["task/spawn_xy_palm_correction"] = (
+            self._spawn_xy_palm_correction_buf.norm(dim=-1).mean()
+        )
+        self.extras["task/grasp_ready_rate"] = (
+            self.num_contacts_buf >= self.cfg.stage0_lift_start_min_contacts
+        ).float().mean()
+        self.extras["task/common_success_now"] = reward_gates["success_now"].mean()
+        self.extras["object_stat/obj_z"] = self.object_pos[:, 2].mean()
         return total
 
     # ------------------------------------------------------------------
@@ -2169,7 +2112,7 @@ class GraspRightEnv(DirectRLEnv):
             stage1_stabilize_only = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
             stage2_transport = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        _lift_min_contacts = MIN_CONTACTS_FOR_SUCCESS
+        _lift_min_contacts = NUM_FINGERTIPS
         lift_grasped = self.num_contacts_buf >= _lift_min_contacts
         contact_grasped = self.num_contacts_buf >= NUM_FINGERTIPS
         middle_grasped = compute_middle_contact_gate(
@@ -2658,6 +2601,7 @@ class GraspRightEnv(DirectRLEnv):
         self._prev_num_contacts_buf[env_ids] = 0.0
         self._prev_middle_contacts_buf[env_ids] = 0.0
         self._prev_cup_tilt_deg_buf[env_ids] = 0.0
+        self._spawn_xy_palm_correction_buf[env_ids] = 0.0
         self._contact_persistence_buf[env_ids] = 0
         self._lift_contact_hold_count[env_ids] = 0
         self._grasp_started_buf[env_ids] = False
@@ -2669,6 +2613,8 @@ class GraspRightEnv(DirectRLEnv):
         self._lift_started_buf[env_ids] = False
         self._lift_start_step_buf[env_ids] = 0
         self._contacts_at_lift_start_buf[env_ids] = 0.0
+        self._palm_at_lift_start_buf[env_ids] = 0.0
+        self._grasp_tilt_at_lift_start_buf[env_ids] = 0.0
         self._force_ratio_at_lift_start_buf[env_ids] = 0.0
         self._full_grip_hold_count[env_ids] = 0
         self._full_grip_ready_buf[env_ids] = False

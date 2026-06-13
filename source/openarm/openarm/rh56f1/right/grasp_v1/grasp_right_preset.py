@@ -160,15 +160,15 @@ HAND_APPROACH_POSE = [
 ]
 
 # 파지 자세 (grasp): thumb opposition + non-thumb 우선 굽힘.
-# test3에서는 thumb force만 커지고 others_avg_force가 거의 0에 머물렀으므로,
-# lift 전 grasp target은 엄지 말단 curl을 낮추고 네 손가락 closure를 앞당긴다.
+# test5에서는 index/middle 접촉이 거의 0에 머물렀으므로,
+# lift 전 grasp target은 index/middle closure를 ring/little보다 앞당긴다.
 HAND_GRASP_POSE = [
     1.57,   # thumb_1
     0.24,   # thumb_2
-    0.90,   # index_1
-    0.90,   # middle_1
-    0.90,   # ring_1
-    0.90,   # little_1
+    1.08,   # index_1
+    1.08,   # middle_1
+    0.85,   # ring_1
+    0.85,   # little_1
 ]
 
 # 완전 파지 자세 (adaptive closure 상한)
