@@ -24,8 +24,8 @@ Action (27D):
   [3:7]   palm quaternion target (x, y, z, w), normalized by env
   [7:27]  20D residual around HAND_GRASP_POSE
 
-Episode (14s @ 60Hz):
-  Phase state is used for reward/gate/diagnostics only.
+Episode (4s @ 60Hz):
+  Phase state is latched from contact/lift state for reward/gate/diagnostics only.
 """
 
 from __future__ import annotations
@@ -69,7 +69,6 @@ from .grasp_right_constants import (
     NUM_DISTAL_SENSORS,
     NUM_MIDDLE_SENSORS,
     NUM_CRITIC_OBSERVATIONS,
-    GRASP_PHASE_STEPS,
     EPISODE_STEPS,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
@@ -93,7 +92,7 @@ from .finger_action_utils import (
     compute_preset_residual_finger_targets,
 )
 from .grasp_reward_utils import compute_upright_success_mask
-from .grasp_right_utils import scale, to_torch
+from .grasp_right_utils import to_torch
 from .demo_grasp_reset import DemoGraspResetBank, compute_demo_cup_spawn_local
 
 
@@ -314,6 +313,7 @@ class GraspRightEnv(DirectRLEnv):
         self.palm_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self.grasp_tilt_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self.lift_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._eval_mass_shift_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
         # Hand joint targets (per-joint delta 결과)
@@ -686,8 +686,20 @@ class GraspRightEnv(DirectRLEnv):
         palm_quat_action = self.actions[:, PALM_QUAT_ACTION_SLICE]
         finger_action = self.actions[:, FINGER_ACTION_SLICE]
 
-        # ---- Palm target: absolute policy target ----
-        palm_pos = scale(palm_pos_action, self.palm_mins[:3], self.palm_maxs[:3])
+        # ---- Palm target: reset-local policy target with per-step rate limit ----
+        palm_pos_raw = (
+            self.pregrasp_palm_pose_buf[:, :3]
+            + palm_pos_action * float(self.cfg.palm_local_workspace_radius)
+        )
+        palm_pos_raw = torch.max(
+            torch.min(palm_pos_raw, self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
+        )
+        palm_pos_delta = (palm_pos_raw - self.palm_pose_targets[:, :3]).clamp(
+            min=-float(self.cfg.palm_target_max_delta),
+            max=float(self.cfg.palm_target_max_delta),
+        )
+        palm_pos = self.palm_pose_targets[:, :3] + palm_pos_delta
         palm_quat = torch.nn.functional.normalize(palm_quat_action, dim=-1, eps=1e-6)
         fallback_quat = self.palm_pose_targets[:, 3:7]
         fallback_quat = torch.nn.functional.normalize(fallback_quat, dim=-1, eps=1e-6)
@@ -695,8 +707,7 @@ class GraspRightEnv(DirectRLEnv):
         palm_quat = torch.where(invalid_quat, fallback_quat, palm_quat)
 
         if self.cfg.eval_mass_shift_enabled:
-            shift_step = GRASP_PHASE_STEPS + int(self.cfg.eval_mass_shift_step)
-            shift_mask = self.episode_length_buf == shift_step
+            shift_mask = self.lift_ready_latched_buf & ~self._eval_mass_shift_done
             if shift_mask.any():
                 target_count = min(
                     max(int(self.cfg.eval_mass_shift_target_bead_count), 0),
@@ -705,6 +716,7 @@ class GraspRightEnv(DirectRLEnv):
                 self._bead_mass_normalized[shift_mask] = (
                     float(target_count) / max(float(self.cfg.num_beads), 1.0)
                 )
+                self._eval_mass_shift_done[shift_mask] = True
 
         self.palm_pose_targets[:, :3] = palm_pos
         self.palm_pose_targets[:, 3:7] = palm_quat
@@ -790,7 +802,7 @@ class GraspRightEnv(DirectRLEnv):
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 134D | Critic 170D
+    # Observations: Actor 133D no-mass (134D optional mass/debug) | Critic 170D
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
         # ==== 공통 clean state (critic용) ====
@@ -869,7 +881,7 @@ class GraspRightEnv(DirectRLEnv):
                 f"[v10-3] Actor obs dim mismatch: {actor_obs.shape[1]} != {self.cfg.num_observations}"
             )
 
-        # ==== Critic extra obs (36D) ====
+        # ==== Critic extra obs (37D, including oracle mass) ====
         cup_lin_vel  = self.cup.data.root_lin_vel_w
         cup_ang_vel  = self.cup.data.root_ang_vel_w
         cup_rot      = self.object_rot
@@ -900,14 +912,14 @@ class GraspRightEnv(DirectRLEnv):
             (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
             cup_pos_clean - palm_center_pos_clean,
             last_actions,
-            self._bead_mass_normalized.unsqueeze(-1),
             tip_force_xyz_norm,     # 15D (critic도 동일 변환)
             middle_to_cup_clean,    # 15D
             phase_step_ratio,
-        ], dim=-1)   # 134D
+        ], dim=-1)   # 133D
 
         critic_obs = torch.cat([
             actor_obs_clean,        # 133
+            self._bead_mass_normalized.unsqueeze(-1),  # 1
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4
@@ -938,13 +950,14 @@ class GraspRightEnv(DirectRLEnv):
         z_local = torch.zeros(self.num_envs, 3, device=self.device)
         z_local[:, 2] = 1.0
         cup_z_world = quat_apply(self.object_rot, z_local)
-        cup_uprightness = cup_z_world[:, 2].clamp(min=0.0)
         cup_tilt_deg = torch.rad2deg(
             torch.acos(cup_z_world[:, 2].clamp(min=-1.0, max=1.0))
         )
+        upright_quality = torch.exp(
+            -cup_tilt_deg / max(float(self.cfg.stabilize_upright_reward_scale_deg), 1e-6)
+        )
 
-        grasp_center = self.object_pos.clone()
-        grasp_center[:, 2] += self.cfg.cup_grasp_z_offset
+        grasp_center = self.object_pos
         palm_to_cup_dist = (self.palm_center_pos - grasp_center).norm(dim=-1)
         cup_to_palm_xy = self.palm_center_pos[:, :2] - grasp_center[:, :2]
         approach_dir_xy = cup_to_palm_xy / cup_to_palm_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6)
@@ -987,17 +1000,28 @@ class GraspRightEnv(DirectRLEnv):
         self.lift_started_buf |= self.lift_ready_latched_buf
         self.is_lift_phase.copy_(self.lift_ready_latched_buf)
 
-        time_ratio = (self.episode_length_buf.float() / max(float(EPISODE_STEPS), 1.0)).clamp(0.0, 1.0)
-        early_gate = (1.0 - time_ratio).clamp(0.2, 1.0)
         lift_gate = self.lift_ready_latched_buf.float()
         lifted_gate = (cup_height_delta >= self.cfg.lift_success_height).float()
         pre_lift_gate = 1.0 - lift_gate
+        meaningful_contact = (num_tip_contacts > 0) | palm_contact_bool
+        lifted_bool = lifted_gate > 0.0
+        full_tip_contact = full_tip_contact_bool.float()
+        upright_success = compute_upright_success_mask(
+            cup_z_world[:, 2],
+            self.cfg.success_upright_max_deg,
+        )
+        success_now = (
+            self.lift_ready_latched_buf
+            & lifted_bool
+            & full_tip_contact_bool
+            & palm_contact_bool
+            & upright_success
+        )
 
         r_approach = (
             pre_lift_gate
             * (
                 self.cfg.approach_weight
-                * early_gate
                 * torch.exp(-self.cfg.approach_sharpness * (palm_to_cup_dist + fingertip_side_dist))
                 - (
                     self.cfg.approach_xy_penalty_weight
@@ -1007,7 +1031,7 @@ class GraspRightEnv(DirectRLEnv):
                 )
             )
         )
-        r_grasp = self.cfg.grasp_weight * (
+        r_grasp = self.cfg.grasp_weight * pre_lift_gate * (
             0.4 * tip_contact_frac
             + 0.6 * envelope_grasp
         )
@@ -1016,7 +1040,7 @@ class GraspRightEnv(DirectRLEnv):
             * lift_gate
             * envelope_grasp
             * cup_height_delta
-            * cup_uprightness
+            * upright_quality
         )
         cup_ang_speed = torch.nan_to_num(self.cup.data.root_ang_vel_w.norm(dim=-1), nan=0.0)
         cup_lin_speed = torch.nan_to_num(self.cup.data.root_lin_vel_w.norm(dim=-1), nan=0.0)
@@ -1026,11 +1050,12 @@ class GraspRightEnv(DirectRLEnv):
             * lift_gate
             * lifted_gate
             * envelope_grasp
-            * cup_uprightness
+            * upright_quality
             * torch.exp(-self.cfg.stabilize_ang_vel_sharpness * cup_ang_speed)
             * torch.exp(-self.cfg.stabilize_lin_vel_sharpness * cup_lin_speed)
             * torch.exp(-self.cfg.stabilize_action_sharpness * action_delta_norm)
         )
+        r_success_bonus = self.cfg.success_bonus_weight * success_now.float()
         action_delta = (self.actions - self.prev_actions).pow(2).mean(dim=-1)
         hand_residual_magnitude = self.actions[:, FINGER_ACTION_SLICE].pow(2).mean(dim=-1)
         r_action_delta = self.cfg.action_smooth_weight * action_delta
@@ -1040,7 +1065,14 @@ class GraspRightEnv(DirectRLEnv):
         r_action_smooth = r_action_delta + r_hand_residual_magnitude
 
         total = torch.nan_to_num(
-            r_approach + r_grasp + r_lift + r_stabilize + r_action_smooth,
+            (
+                r_approach
+                + r_grasp
+                + r_lift
+                + r_stabilize
+                + r_success_bonus
+                + r_action_smooth
+            ),
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
@@ -1051,14 +1083,19 @@ class GraspRightEnv(DirectRLEnv):
         else:
             _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
 
-        self.extras["phase/approach"] = ((~self.lift_ready_latched_buf) & (time_ratio < 0.5)).float().mean()
-        self.extras["phase/grasp"] = ((~self.lift_ready_latched_buf) & (time_ratio >= 0.5)).float().mean()
-        self.extras["phase/lift"] = (self.lift_ready_latched_buf & (lifted_gate <= 0.0)).float().mean()
-        self.extras["phase/stabilize"] = (self.lift_ready_latched_buf & (lifted_gate > 0.0)).float().mean()
+        self.extras["phase/approach"] = (
+            (~self.lift_ready_latched_buf) & (~meaningful_contact)
+        ).float().mean()
+        self.extras["phase/grasp"] = (
+            (~self.lift_ready_latched_buf) & meaningful_contact
+        ).float().mean()
+        self.extras["phase/lift"] = (self.lift_ready_latched_buf & (~lifted_bool)).float().mean()
+        self.extras["phase/stabilize"] = (self.lift_ready_latched_buf & lifted_bool).float().mean()
         self.extras["reward/approach"] = r_approach.mean()
         self.extras["reward/grasp"] = r_grasp.mean()
         self.extras["reward/lift"] = r_lift.mean()
         self.extras["reward/stabilize"] = r_stabilize.mean()
+        self.extras["reward/success_bonus"] = r_success_bonus.mean()
         self.extras["reward/action_smooth"] = r_action_smooth.mean()
         self.extras["reward/action_delta"] = r_action_delta.mean()
         self.extras["reward/hand_residual_magnitude"] = r_hand_residual_magnitude.mean()
@@ -1069,6 +1106,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["contact/contacts_at_lift_start"] = self.contacts_at_lift_start_buf.mean()
         self.extras["contact/palm_at_lift_start"] = self.palm_at_lift_start_buf.mean()
         self.extras["cup/tilt_deg"] = cup_tilt_deg.mean()
+        self.extras["cup/upright_quality"] = upright_quality.mean()
         self.extras["cup/grasp_tilt_deg"] = self.grasp_tilt_at_lift_start_buf.mean()
         lift_tilt = cup_tilt_deg[self.lift_ready_latched_buf]
         self.extras["cup/lift_tilt_deg"] = lift_tilt.mean() if lift_tilt.numel() > 0 else cup_tilt_deg.mean()
@@ -1356,6 +1394,7 @@ class GraspRightEnv(DirectRLEnv):
         self.lift_ready_latched_buf[env_ids] = False
         self.lift_started_buf[env_ids] = False
         self.is_lift_phase[env_ids] = False
+        self._eval_mass_shift_done[env_ids] = False
         self.contacts_at_lift_start_buf[env_ids] = 0.0
         self.palm_at_lift_start_buf[env_ids] = 0.0
         self.grasp_tilt_at_lift_start_buf[env_ids] = 0.0

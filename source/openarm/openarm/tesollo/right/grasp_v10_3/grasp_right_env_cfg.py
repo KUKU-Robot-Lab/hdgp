@@ -106,7 +106,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
     # -----------------------------------------------------------------------
-    episode_length_s: float = 14.0   # grasp 8s + raise 2s + stabilize 4s = 840 steps @ 60Hz
+    episode_length_s: float = 4.0
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -115,7 +115,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 134 (last_actions 27D)
+    observation_space: int = NUM_OBSERVATIONS          # 134 optional mass/debug actor
     action_space:      int = NUM_ACTIONS               # 27
     state_space:       int = NUM_CRITIC_OBSERVATIONS   # 170 (critic, privileged)
 
@@ -129,6 +129,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
     max_pose_angle:             float = 45.0
+    palm_local_workspace_radius: float = 0.10
+    palm_target_max_delta:       float = 0.01
     fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0
 
@@ -172,14 +174,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
-    cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
-    success_hold_steps: int = 90
+    success_hold_steps: int = 30
 
     # -----------------------------------------------------------------------
     # Policy-driven reward/gate 파라미터
     # -----------------------------------------------------------------------
-    grasp_ready_hold_steps: int = 12
+    grasp_ready_hold_steps: int = 6
     grasp_upright_threshold_deg: float = 8.0
     grasp_xy_threshold: float = 0.025
     approach_weight: float = 2.0
@@ -188,6 +189,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     stabilize_weight: float = 6.0
+    stabilize_upright_reward_scale_deg: float = 10.0
     stabilize_ang_vel_sharpness: float = 2.0
     stabilize_lin_vel_sharpness: float = 10.0
     stabilize_action_sharpness: float = 1.5

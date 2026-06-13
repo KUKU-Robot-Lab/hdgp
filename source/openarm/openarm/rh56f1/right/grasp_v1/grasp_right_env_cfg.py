@@ -132,7 +132,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 102 (actor, with oracle mass=103)
+    observation_space: int = NUM_OBSERVATIONS          # 99 (actor, with oracle mass=100)
     action_space:      int = NUM_ACTIONS               # 12 (palm 6 + hand 6)
     state_space:       int = NUM_CRITIC_OBSERVATIONS   # 117 (critic, privileged)
 
@@ -211,7 +211,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
-    cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
     lift_target_z_delta: float = LIFT_Z_DELTA
     success_hold_steps: int = 30
@@ -230,8 +229,20 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Delta palm action
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.08
-    palm_delta_rot_deg: float = 20.0
+    palm_delta_xyz:     float = 0.01
+    palm_delta_rot_deg: float = 5.0
+    approach_min_steps: int = 10
+    approach_timeout_steps: int = 90
+    approach_palm_radial_min: float = 0.025
+    approach_palm_radial_max: float = 0.105
+    approach_palm_local_z_min: float = -0.015
+    approach_palm_local_z_max: float = 0.095
+    approach_max_tip_contacts: int = 2
+    approach_upright_max_deg: float = 20.0
+    approach_timeout_grasp_reward_scale: float = 0.25
+    grasp_palm_delta_scale: float = 0.15
+    lift_palm_delta_xyz: float = 0.12
+    lift_palm_delta_rot_deg: float = 15.0
 
     # -----------------------------------------------------------------------
     # Finger action semantics
@@ -264,8 +275,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_contact_persistence_reward_steps: int = 30
     stabilize_upright_reward_weight: float = 10.0
     stabilize_upright_reward_scale_deg: float = 5.0
+    approach_tip_contact_penalty_weight: float = -4.0
+    grasp_palm_anchor_penalty_weight: float = -8.0
+    palm_target_motion_penalty_weight: float = -2.0
+    stabilize_spawn_xy_reward_weight: float = 12.0
 
-    action_smoothness_palm_weight:   float = -0.02
+    action_smoothness_palm_weight:   float = -0.10
     action_smoothness_finger_weight: float = -0.01
 
     # 질량 파라미터 (force-ratio/bin logging용 privileged variable)
@@ -277,7 +292,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # Lift-entry grip readiness gate (state tracking용, reward가 아님)
     stage0_lift_start_min_contacts: int = 5
-    stage0_lift_start_hold_steps:   int = 30
+    stage0_lift_start_hold_steps:   int = 10
     lift_contact_hold_steps: int = 30
     full_grip_hold_steps:    int = 30
     lift_min_force_ratio:    float = 1.8
@@ -294,6 +309,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_cup_ang_vel_threshold:  float = 0.50
     stabilize_force_delta_threshold:  float = 0.35
     stabilize_contact_delta_threshold: float = 1.0
+    stabilize_spawn_xy_success_threshold: float = 0.01
 
     # Legacy delta-control knob (absolute synergy semantics에서는 미사용)
     thumb_curl_downward_action_scale: float = 0.25

@@ -8,6 +8,10 @@ from openarm.tesollo.right.grasp_v10_3.finger_action_utils import (
 from openarm.tesollo.right.grasp_v10_3.grasp_right_constants import (
     FINGER_ACTION_SLICE,
     NUM_ACTIONS,
+    NUM_CRITIC_EXTRAS,
+    NUM_CRITIC_OBSERVATIONS,
+    NUM_OBSERVATIONS,
+    NUM_OBSERVATIONS_NO_MASS,
     PALM_POS_ACTION_SLICE,
     PALM_QUAT_ACTION_SLICE,
 )
@@ -82,6 +86,18 @@ def test_live_fabrics_uses_quaternion_target_without_scripted_lift() -> None:
     assert "compute_preset_residual_finger_targets" in env
 
 
+def test_palm_position_action_is_reset_local_and_rate_limited() -> None:
+    cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
+    env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
+
+    assert "palm_local_workspace_radius: float = 0.10" in cfg
+    assert "palm_target_max_delta:       float = 0.01" in cfg
+    assert "self.pregrasp_palm_pose_buf[:, :3]" in env
+    assert "palm_pos_action * float(self.cfg.palm_local_workspace_radius)" in env
+    assert "self.cfg.palm_target_max_delta" in env
+    assert "palm_pos = scale(palm_pos_action" not in env
+
+
 def test_palm_contact_sensor_uses_palm_link_net_force_without_actor_obs_growth() -> None:
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
@@ -95,6 +111,10 @@ def test_palm_contact_sensor_uses_palm_link_net_force_without_actor_obs_growth()
     assert "quat_apply_inverse" in env
     assert "palm_force = torch.relu(-palm_force_local[:, 0])" in env
     assert "NUM_OBSERVATIONS = 134" in constants
+    assert NUM_OBSERVATIONS_NO_MASS == 133
+    assert NUM_OBSERVATIONS == 134
+    assert NUM_CRITIC_EXTRAS == 37
+    assert NUM_CRITIC_OBSERVATIONS == 170
 
 
 def test_reward_gate_success_contract_uses_tip5_and_palm_not_middle_or_pose_filters() -> None:
@@ -111,3 +131,68 @@ def test_reward_gate_success_contract_uses_tip5_and_palm_not_middle_or_pose_filt
     assert "finger_depth =" not in env
     assert "middle_contact_ready" not in env
     assert 'self.extras["contact/middle_count"]' not in env
+
+
+def test_state_latched_fast_episode_and_default_training_no_actor_mass() -> None:
+    cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
+    constants = (_ROOT / "grasp_right_constants.py").read_text(encoding="utf-8")
+    task_cfg = (_ROOT / "config" / "__init__.py").read_text(encoding="utf-8")
+
+    assert "episode_length_s: float = 4.0" in cfg
+    assert "success_hold_steps: int = 30" in cfg
+    assert "grasp_ready_hold_steps: int = 6" in cfg
+    assert "EPISODE_STEPS           = 240" in constants
+    assert 'env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgNoActorMass"' in task_cfg
+
+
+def test_critic_mass_is_privileged_not_actor_clean_base() -> None:
+    env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
+
+    clean_block = env.split("actor_obs_clean = torch.cat([", 1)[1].split("], dim=-1)   # 133D", 1)[0]
+    critic_block = env.split("critic_obs = torch.cat([", 1)[1].split("], dim=-1)   # 170D", 1)[0]
+
+    assert "self._bead_mass_normalized" not in clean_block
+    assert "self._bead_mass_normalized.unsqueeze(-1),  # 1" in critic_block
+    assert "actor_obs_clean,        # 133" in critic_block
+
+
+def test_phase_step_ratio_is_observation_only_not_reward_or_latch_gate() -> None:
+    env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
+
+    assert "phase_step_ratio = (" in env
+    assert "phase_step_ratio,       # 1" in env
+    reward_block = env.split("def _get_rewards", 1)[1].split("def _get_dones", 1)[0]
+    latch_block = reward_block.split("grasp_ready_now =", 1)[1].split("if just_latched.any():", 1)[0]
+
+    assert "phase_step_ratio" not in reward_block
+    assert "time_ratio" not in reward_block
+    assert "early_gate" not in reward_block
+    assert "episode_length_buf" not in latch_block
+    assert "EPISODE_STEPS" not in reward_block
+    assert "GRASP_PHASE_STEPS" not in env
+
+
+def test_state_based_reward_gates_and_upright_quality() -> None:
+    env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
+    cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
+
+    assert "stabilize_upright_reward_scale_deg: float = 10.0" in cfg
+    assert "upright_quality = torch.exp(" in env
+    assert "r_grasp = self.cfg.grasp_weight * pre_lift_gate" in env
+    assert "* lift_gate\n            * envelope_grasp\n            * cup_height_delta\n            * upright_quality" in env
+    assert "* lift_gate\n            * lifted_gate\n            * envelope_grasp\n            * upright_quality" in env
+    assert "r_success_bonus = self.cfg.success_bonus_weight * success_now.float()" in env
+    assert "r_time_penalty" not in env
+    assert "time_penalty_weight" not in cfg
+    assert 'self.extras["phase/approach"] = (\n            (~self.lift_ready_latched_buf) & (~meaningful_contact)' in env
+    assert 'self.extras["phase/grasp"] = (\n            (~self.lift_ready_latched_buf) & meaningful_contact' in env
+
+
+def test_approach_reward_uses_cup_origin_not_z_offset_target() -> None:
+    env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
+    cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
+    reward_block = env.split("def _get_rewards", 1)[1].split("num_tip_contacts =", 1)[0]
+
+    assert "grasp_center = self.object_pos" in reward_block
+    assert "cup_grasp_z_offset" not in reward_block
+    assert "cup_grasp_z_offset" not in cfg
