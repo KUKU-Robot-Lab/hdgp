@@ -39,6 +39,7 @@ def _reward(
         num_tip_contacts=contacts,
         tip_contact_frac=contacts.float() / 5.0,
         full_tip_contact=(contacts >= 5).float(),
+        contact_persistence_frac=(contacts >= 4).float(),
         palm_to_cup_dist=torch.full_like(contacts.float(), 0.02),
         fingertip_side_dist=torch.full_like(contacts.float(), 0.02),
         cup_height_delta=torch.full_like(contacts.float(), height),
@@ -95,6 +96,7 @@ def test_stabilize_reward_prefers_spawn_xy_recovery() -> None:
         num_tip_contacts=contacts,
         tip_contact_frac=torch.ones(2),
         full_tip_contact=torch.ones(2),
+        contact_persistence_frac=torch.ones(2),
         palm_to_cup_dist=torch.zeros(2),
         fingertip_side_dist=torch.zeros(2),
         cup_height_delta=torch.full((2,), 0.06),
@@ -108,5 +110,5 @@ def test_stabilize_reward_prefers_spawn_xy_recovery() -> None:
 
     assert gates["spawn_xy_quality"][0] > gates["spawn_xy_quality"][1]
     assert terms["stabilize"][0] > terms["stabilize"][1]
-    assert terms["success_bonus"][0] > terms["success_bonus"][1]
+    assert terms["success_bonus"][0] == terms["success_bonus"][1]
     assert total[0] > total[1]

@@ -131,7 +131,9 @@ def test_reward_gate_success_contract_uses_lift4_tip5_not_palm_or_middle_filters
 
     assert "compute_grasp_reward_terms(" in env
     assert "full_tip_contact=full_tip_contact" in env
-    assert "success_now = in_or_past_lift & lifted & full_tip_contact & upright_success" in env
+    assert "lift_success_candidate = in_or_past_lift & lifted & full_tip_contact & upright_success" in env
+    assert "self._lift_success_hold_count = torch.where(" in env
+    assert "success_now = self._lift_success_hold_count >= int(self.cfg.full_grip_hold_steps)" in env
     assert "finger_depth =" not in env
     assert "middle_contact_ready" not in env
     assert 'self.extras["contact/middle_count"]' not in env
@@ -144,7 +146,8 @@ def test_state_latched_fast_episode_and_default_training_no_actor_mass() -> None
 
     assert "episode_length_s: float = 4.0" in cfg
     assert "success_hold_steps: int = 30" in cfg
-    assert "grasp_ready_hold_steps: int = 6" in cfg
+    assert "grasp_ready_hold_steps: int = 20" in cfg
+    assert "full_grip_hold_steps: int = 30" in cfg
     assert "EPISODE_STEPS           = 240" in constants
     assert 'env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgNoActorMass"' in task_cfg
 

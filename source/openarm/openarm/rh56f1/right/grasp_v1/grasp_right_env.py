@@ -390,6 +390,7 @@ class GraspRightEnv(DirectRLEnv):
         self._grasp_tilt_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self._force_ratio_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self._full_grip_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._lift_success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._full_grip_ready_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._full_grip_ready_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._stabilize_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -1772,6 +1773,10 @@ class GraspRightEnv(DirectRLEnv):
         tip_contact_progress = (
             self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
         ).clamp(max=1.0)
+        contact_persistence_progress = (
+            self._lift_contact_hold_count.float()
+            / max(float(self.cfg.grasp_contact_persistence_reward_steps), 1.0)
+        ).clamp(max=1.0)
         five_tip_contact = has_5_contact_bool.float()
         stabilize_upright_quality = torch.exp(
             -cup_tilt_deg / max(float(self.cfg.stabilize_upright_reward_scale_deg), 1e-6)
@@ -1938,6 +1943,7 @@ class GraspRightEnv(DirectRLEnv):
             num_tip_contacts=self.num_contacts_buf,
             tip_contact_frac=tip_contact_progress,
             full_tip_contact=five_tip_contact,
+            contact_persistence_frac=contact_persistence_progress,
             palm_to_cup_dist=palm_to_cup_dist,
             fingertip_side_dist=fingertip_side_dist,
             cup_height_delta=cup_height_delta,
@@ -2090,7 +2096,13 @@ class GraspRightEnv(DirectRLEnv):
             & (force_ratio >= self.cfg.lift_min_force_ratio)
             & force_stable
         )
-        lift_success_now = in_or_past_lift & lifted & lift_grasped & upright_success
+        lift_success_candidate = in_or_past_lift & lifted & lift_grasped & upright_success
+        self._lift_success_hold_count = torch.where(
+            lift_success_candidate,
+            self._lift_success_hold_count + 1,
+            torch.zeros_like(self._lift_success_hold_count),
+        )
+        lift_success_now = self._lift_success_hold_count >= int(self.cfg.full_grip_hold_steps)
         goal_dist = (self.object_pos - self.object_goal).norm(dim=-1)
         transport_success = compute_transport_success_mask(
             goal_dist=goal_dist,
@@ -2536,6 +2548,7 @@ class GraspRightEnv(DirectRLEnv):
         self._grasp_tilt_at_lift_start_buf[env_ids] = 0.0
         self._force_ratio_at_lift_start_buf[env_ids] = 0.0
         self._full_grip_hold_count[env_ids] = 0
+        self._lift_success_hold_count[env_ids] = 0
         self._full_grip_ready_buf[env_ids] = False
         self._full_grip_ready_latched_buf[env_ids] = False
         self._stabilize_started_buf[env_ids] = False

@@ -298,7 +298,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # Lift-entry grip readiness gate (state tracking용, reward가 아님)
     stage0_lift_start_min_contacts: int = 4
-    stage0_lift_start_hold_steps:   int = 10
+    stage0_lift_start_hold_steps:   int = 20
     lift_contact_hold_steps: int = 30
     full_grip_hold_steps:    int = 30
     lift_min_force_ratio:    float = 1.8

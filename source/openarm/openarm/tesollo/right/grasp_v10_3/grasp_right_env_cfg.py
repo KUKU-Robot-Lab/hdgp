@@ -181,7 +181,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Policy-driven reward/gate 파라미터
     # -----------------------------------------------------------------------
     stage0_lift_start_min_contacts: int = 4
-    grasp_ready_hold_steps: int = 6
+    grasp_ready_hold_steps: int = 20
+    grasp_contact_persistence_reward_steps: int = 30
+    full_grip_hold_steps: int = 30
     grasp_upright_threshold_deg: float = 8.0
     grasp_xy_threshold: float = 0.025
     approach_weight: float = 2.0
@@ -189,13 +191,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_xy_penalty_weight: float = 5.0
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
-    stabilize_weight: float = 6.0
+    stabilize_weight: float = 10.0
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 10.0
     stabilize_ang_vel_sharpness: float = 2.0
     stabilize_lin_vel_sharpness: float = 10.0
     stabilize_action_sharpness: float = 1.5
     action_smooth_weight: float = -0.02
+    post_lift_contact_loss_weight: float = -8.0
     hand_residual_magnitude_weight: float = -0.005
     hand_residual_scale: float = 0.15
 
@@ -296,7 +299,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     force_smooth_lift_warmup_steps: int = 20
 
     # R6. lift_reward (v8: 20.0 → v9: 6.0 → v9.2: 20.0, slip local-min 탈출)
-    lift_reward_weight: float = 20.0
+    lift_reward_weight: float = 30.0
 
     # R8. success_bonus: lift 성공 유지 중 step당 보너스 (slip local-min 탈출)
     success_bonus_weight: float = 20.0

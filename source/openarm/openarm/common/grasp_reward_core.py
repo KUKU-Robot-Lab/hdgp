@@ -12,6 +12,7 @@ def compute_grasp_reward_terms(
     num_tip_contacts: torch.Tensor,
     tip_contact_frac: torch.Tensor,
     full_tip_contact: torch.Tensor,
+    contact_persistence_frac: torch.Tensor,
     palm_to_cup_dist: torch.Tensor,
     fingertip_side_dist: torch.Tensor,
     cup_height_delta: torch.Tensor,
@@ -28,6 +29,7 @@ def compute_grasp_reward_terms(
     pre_lift_gate = 1.0 - lift_gate
     full_tip = full_tip_contact.float()
     full_tip_bool = full_tip_contact.bool()
+    contact_persistence_frac = contact_persistence_frac.clamp(0.0, 1.0)
 
     lifted_bool = cup_height_delta >= _cfg_float(cfg, "lift_success_height", 0.04)
     lifted_gate = lifted_bool.float()
@@ -48,7 +50,7 @@ def compute_grasp_reward_terms(
         * torch.relu(cup_tilt_deg - tilt_margin)
     )
     grasp = _cfg_float(cfg, "grasp_weight", 0.0) * pre_lift_gate * (
-        0.4 * tip_contact_frac + 0.6 * full_tip
+        0.25 * tip_contact_frac + 0.35 * full_tip + 0.40 * contact_persistence_frac
     )
     lift = (
         _cfg_float(cfg, "lift_reward_weight", 0.0)
@@ -85,12 +87,7 @@ def compute_grasp_reward_terms(
         * spawn_xy_quality
         * action_quality
     )
-    success_quality = spawn_xy_quality * action_quality
-    success_bonus = (
-        _cfg_float(cfg, "success_bonus_weight", 0.0)
-        * success_now.float()
-        * success_quality
-    )
+    success_bonus = _cfg_float(cfg, "success_bonus_weight", 0.0) * success_now.float()
     action_smooth = _cfg_float(cfg, "action_smooth_weight", 0.0) * action_delta_norm
 
     terms = {
@@ -107,12 +104,12 @@ def compute_grasp_reward_terms(
         "lift": lift_gate,
         "lifted": lifted_gate,
         "full_tip_contact": full_tip,
+        "contact_persistence": contact_persistence_frac,
         "upright_success": upright_success.float(),
         "success_now": success_now.float(),
         "spawn_xy_quality": spawn_xy_quality,
         "stability_quality": spawn_xy_quality,
         "action_quality": action_quality,
-        "success_quality": success_quality,
     }
     total = torch.nan_to_num(
         sum(terms.values()),

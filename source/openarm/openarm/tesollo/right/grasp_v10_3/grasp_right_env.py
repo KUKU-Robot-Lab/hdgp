@@ -314,6 +314,8 @@ class GraspRightEnv(DirectRLEnv):
         self.palm_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self.grasp_tilt_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self.lift_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._lift_success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._lift_success_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._eval_mass_shift_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
@@ -1005,10 +1007,15 @@ class GraspRightEnv(DirectRLEnv):
         meaningful_contact = num_tip_contacts > 0
         lifted_bool = lifted_gate > 0.0
         action_delta_norm = torch.nan_to_num((self.actions - self.prev_actions).norm(dim=-1), nan=0.0)
+        contact_persistence_frac = (
+            self.grasp_ready_hold_buf.float()
+            / max(float(self.cfg.grasp_contact_persistence_reward_steps), 1.0)
+        ).clamp(max=1.0)
         total, reward_terms, reward_gates = compute_grasp_reward_terms(
             num_tip_contacts=num_tip_contacts,
             tip_contact_frac=tip_contact_frac,
             full_tip_contact=full_tip_contact,
+            contact_persistence_frac=contact_persistence_frac,
             palm_to_cup_dist=palm_to_cup_dist,
             fingertip_side_dist=fingertip_side_dist,
             cup_height_delta=cup_height_delta,
@@ -1049,6 +1056,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/approach"] = reward_terms["approach"].mean()
         self.extras["reward/grasp"] = reward_terms["grasp"].mean()
         self.extras["reward/lift"] = reward_terms["lift"].mean()
+        self.extras["reward/post_lift_contact_loss"] = reward_terms["post_lift_contact_loss"].mean()
         self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
         self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
         self.extras["reward/action_smooth"] = r_action_smooth.mean()
@@ -1071,7 +1079,16 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/spawn_xy_error"] = cup_xy_displacement.mean()
         self.extras["task/spawn_xy_quality"] = reward_gates["spawn_xy_quality"].mean()
         self.extras["task/grasp_ready_rate"] = grasp_ready_now.float().mean()
+        self.extras["task/five_tip_contact_rate"] = full_tip_contact.mean()
+        self.extras["task/prelift_five_tip_contact_rate"] = (
+            full_tip_contact * (~self.lift_ready_latched_buf).float()
+        ).sum() / (~self.lift_ready_latched_buf).float().sum().clamp(min=1.0)
+        self.extras["task/lift_five_tip_contact_rate"] = (
+            full_tip_contact * self.lift_ready_latched_buf.float()
+        ).sum() / self.lift_ready_latched_buf.float().sum().clamp(min=1.0)
+        self.extras["task/contact_persistence"] = self.grasp_ready_hold_buf.float().mean()
         self.extras["task/lift_started_rate"] = self.lift_started_buf.float().mean()
+        self.extras["task/lift_success_rate"] = self._lift_success_latched_buf.float().mean()
         self.extras["task/success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
         self.extras["task/common_success_now"] = reward_gates["success_now"].mean()
         self.extras["object_stat/obj_z"] = self.object_pos[:, 2].mean()
@@ -1110,7 +1127,14 @@ class GraspRightEnv(DirectRLEnv):
             cup_z_world[:, 2],
             self.cfg.success_upright_max_deg,
         )
-        success_now = in_or_past_lift & lifted & full_tip_contact & upright_success
+        lift_success_candidate = in_or_past_lift & lifted & full_tip_contact & upright_success
+        self._lift_success_hold_count = torch.where(
+            lift_success_candidate,
+            self._lift_success_hold_count + 1,
+            torch.zeros_like(self._lift_success_hold_count),
+        )
+        success_now = self._lift_success_hold_count >= int(self.cfg.full_grip_hold_steps)
+        self._lift_success_latched_buf |= success_now
         self.success_flag.copy_(success_now)
         self.episode_success_buf |= success_now
 
@@ -1351,6 +1375,8 @@ class GraspRightEnv(DirectRLEnv):
         self.grasp_ready_hold_buf[env_ids] = 0
         self.lift_ready_latched_buf[env_ids] = False
         self.lift_started_buf[env_ids] = False
+        self._lift_success_hold_count[env_ids] = 0
+        self._lift_success_latched_buf[env_ids] = False
         self.is_lift_phase[env_ids] = False
         self._eval_mass_shift_done[env_ids] = False
         self.contacts_at_lift_start_buf[env_ids] = 0.0

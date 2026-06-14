@@ -70,11 +70,11 @@ params:
     entropy_coef: 0.001
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: 64
+    horizon_length: 32
     # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
-    #   128  envs: batch=   8192 → minibatch= 2048 (4 splits)
-    #   2048 envs: batch= 131072 → minibatch=32768 (4 splits)  ← 학습 권장
-    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 2048으로 변경
+    #   128  envs: batch=  4096 → minibatch= 1024 (4 splits)
+    #   2048 envs: batch= 65536 → minibatch=16384 (4 splits)  ← 학습 권장
+    minibatch_size: 16384     # --num_envs 2048 기준. 128 envs 사용 시 1024으로 변경
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
@@ -88,7 +88,7 @@ params:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768
+      minibatch_size: 16384
       mini_epochs: 4
       learning_rate: 3e-4
       lr_schedule: adaptive
