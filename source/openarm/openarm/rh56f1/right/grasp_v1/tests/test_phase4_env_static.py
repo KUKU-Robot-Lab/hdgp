@@ -119,8 +119,13 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert 'self.extras["cup/grasp_tilt_deg"]' in s
     assert 'self.extras["cup/lift_tilt_deg"]' in s
     assert 'self.extras["cup/xy_displacement"]' in s
+    assert 'self.extras["task/transport_xyz_error"]' in s
+    assert 'self.extras["task/transport_xyz_quality"]' in s
+    assert 'self.extras["task/transport_height_quality"]' in s
+    assert 'self.extras["task/transport_posture_quality"]' in s
     assert 'self.extras["task/spawn_xy_error"]' in s
     assert 'self.extras["task/spawn_xy_quality"]' in s
+    assert 'self.extras["task/transport_xyz_palm_correction"]' in s
     assert 'self.extras["task/spawn_xy_palm_correction"]' in s
     assert 'self.extras["reward/total"] = total.mean()' in s
 

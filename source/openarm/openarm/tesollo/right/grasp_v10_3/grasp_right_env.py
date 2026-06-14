@@ -1058,6 +1058,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/lift"] = reward_terms["lift"].mean()
         self.extras["reward/post_lift_contact_loss"] = reward_terms["post_lift_contact_loss"].mean()
         self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
+        self.extras["reward/transport_xyz"] = reward_terms["transport_xyz"].mean()
         self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
         self.extras["reward/action_smooth"] = r_action_smooth.mean()
         self.extras["reward/action_delta"] = r_action_delta.mean()
@@ -1076,6 +1077,14 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["cup/lift_tilt_deg"] = lift_tilt.mean() if lift_tilt.numel() > 0 else cup_tilt_deg.mean()
         self.extras["cup/height_delta"] = cup_height_delta.mean()
         self.extras["cup/xy_displacement"] = cup_xy_displacement.mean()
+        self.extras["task/transport_xyz_error"] = cup_xy_displacement.mean()
+        self.extras["task/transport_xyz_quality"] = reward_gates["transport_xyz_quality"].mean()
+        self.extras["task/transport_height_quality"] = reward_gates[
+            "transport_height_quality"
+        ].mean()
+        self.extras["task/transport_posture_quality"] = reward_gates[
+            "transport_posture_quality"
+        ].mean()
         self.extras["task/spawn_xy_error"] = cup_xy_displacement.mean()
         self.extras["task/spawn_xy_quality"] = reward_gates["spawn_xy_quality"].mean()
         self.extras["task/grasp_ready_rate"] = grasp_ready_now.float().mean()

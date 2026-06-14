@@ -71,7 +71,8 @@ def test_rh56f1_procedural_pregrasp_starts_closer_and_has_recovery_range() -> No
     assert "pregrasp_offset_x:     float = -0.045" in cfg
     assert "pregrasp_offset_y:     float = -0.055" in cfg
     assert "pregrasp_offset_z:     float = 0.015" in cfg
-    assert "palm_delta_xyz:     float = 0.04" in cfg
+    assert "palm_delta_xyz:     float = 0.03" in cfg
+    assert "ema_action_alpha: float = 0.7" in cfg
     assert "grasp_palm_delta_scale: float = 1.0" in cfg
     assert "grasp_palm_inward_offset: float = 0.025" in cfg
 

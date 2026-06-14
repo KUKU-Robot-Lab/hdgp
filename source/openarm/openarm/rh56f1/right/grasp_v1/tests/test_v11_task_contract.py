@@ -88,7 +88,12 @@ def test_v11_lift_uses_policy_delta_and_caps_demo_target_near_ten_cm() -> None:
     assert "lift_elapsed_steps = torch.where(" in env
     assert "self._lift_started_buf," in env
     assert "self.episode_length_buf - self._lift_start_step_buf" in env
-    assert "lift_policy_delta = scale(palm_action, self.lift_delta_mins, self.lift_delta_maxs)" in env
+    assert "ema_action_alpha: float = 0.7" in cfg
+    assert "lift_palm_delta_xyz: float = 0.03" in cfg
+    assert "self._ema_palm_action = torch.zeros(self.num_envs, 6, device=self.device)" in env
+    assert "self._ema_palm_action[env_ids] = 0.0" in env
+    assert "fabric_palm_action = self._ema_palm_action" in env
+    assert "lift_policy_delta = scale(fabric_palm_action, self.lift_delta_mins, self.lift_delta_maxs)" in env
     assert "lift_palm_pose = self.lift_palm_start_pose_buf + lift_policy_delta" in env
     assert "demo_lift_target[:, 2] = torch.minimum(" in env
     assert "pregrasp_palm_pose[:, 2] + float(self.cfg.lift_target_z_delta)" in env
@@ -196,16 +201,21 @@ def test_v11_actively_levels_cup_after_lift_with_movable_arm() -> None:
     assert "stabilize_upright_orientation_gain: float = 1.5" in cfg
     assert "stabilize_upright_orientation_max_deg: float = 25.0" in cfg
     assert "stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2" in cfg
+    assert "transport_xyz_hold_enabled: bool = True" in cfg
+    assert "transport_xyz_hold_gain: float = 4.0" in cfg
+    assert "transport_xyz_hold_max_delta: float = 0.12" in cfg
     assert "stabilize_spawn_xy_hold_enabled: bool = True" in cfg
-    assert "stabilize_spawn_xy_hold_gain: float = 2.0" in cfg
-    assert "stabilize_spawn_xy_hold_max_delta: float = 0.10" in cfg
     assert "def _apply_upright_palm_orientation_correction" in env
-    assert "def _apply_spawn_xy_palm_correction" in env
+    assert "def _apply_transport_xyz_palm_correction" in env
+    assert "def _transport_xyz_cfg" in env
     assert "xy_error = self.object_init_pos[:, :2] - self.object_pos[:, :2]" in env
-    assert "self._spawn_xy_palm_correction_buf[phase_mask] = xy_correction[phase_mask]" in env
+    assert '"transport_xyz_hold_gain"' in env
+    assert '"stabilize_spawn_xy_hold_gain"' in env
+    assert "self._transport_xyz_palm_correction_buf[phase_mask] = xy_correction[phase_mask]" in env
+    assert 'self.extras["task/transport_xyz_palm_correction"]' in env
     assert 'self.extras["task/spawn_xy_palm_correction"]' in env
-    assert "lift_palm_pose = self._apply_spawn_xy_palm_correction(" in env
-    assert "transport_palm_pose = self._apply_spawn_xy_palm_correction(" in env
+    assert "lift_palm_pose = self._apply_transport_xyz_palm_correction(" in env
+    assert "transport_palm_pose = self._apply_transport_xyz_palm_correction(" in env
     assert "cup_z_world = quat_apply(self.object_rot, z_local)" in env
     assert "cup_z_world[:, 1]" in env
     assert "-cup_z_world[:, 0]" in env
@@ -329,10 +339,18 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
         "grasp_weight",
         "lift_reward_weight",
         "stabilize_weight",
+        "transport_xyz_scale",
+        "transport_xyz_reward_weight",
+        "transport_height_target_delta",
+        "transport_height_quality_power",
+        "transport_upright_quality_power",
+        "transport_xyz_success_threshold",
         "stabilize_spawn_xy_scale",
         "success_bonus_weight",
         "post_lift_contact_loss_weight",
         "action_smooth_weight",
+        "palm_action_delta_reward_scale",
+        "finger_action_delta_reward_scale",
         "stabilize_upright_max_deg: float = 5.0",
         "stabilize_upright_reward_scale_deg",
         "stage0_lift_start_min_contacts: int = 4",
@@ -359,11 +377,16 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     assert "self.cfg.stage0_lift_start_hold_steps" in env
     assert "lift_latched=self._lift_started_buf" in env
     assert "full_tip_contact=five_tip_contact" in env
+    assert "self.cfg.palm_action_delta_reward_scale" in env
+    assert "self.cfg.finger_action_delta_reward_scale" in env
     assert 'self.extras["reward/approach"]' in env
     assert 'self.extras["reward/grasp"]' in env
     assert 'self.extras["reward/lift"]' in env
     assert 'self.extras["reward/post_lift_contact_loss"]' in env
     assert 'self.extras["reward/stabilize"]' in env
+    assert 'self.extras["reward/transport_xyz"]' in env
+    assert 'self.extras["task/transport_height_quality"]' in env
+    assert 'self.extras["task/transport_posture_quality"]' in env
     assert 'self.extras["reward/success_bonus"]' in env
     for removed_term in (
         "r_align_upright",

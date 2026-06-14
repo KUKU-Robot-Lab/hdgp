@@ -332,6 +332,7 @@ class GraspRightEnv(DirectRLEnv):
         self.actions         = torch.zeros(self.num_envs, cfg.num_actions, device=self.device)
         self.prev_actions    = torch.full((self.num_envs, cfg.num_actions), 0.0, device=self.device)
         self._palm_target_delta_buf = torch.zeros(self.num_envs, 6, device=self.device)
+        self._ema_palm_action = torch.zeros(self.num_envs, 6, device=self.device)
 
         # ----------------------------------------------------------------
         # Pregrasp / Lift 버퍼
@@ -374,7 +375,7 @@ class GraspRightEnv(DirectRLEnv):
         self._prev_num_contacts_buf = torch.zeros(self.num_envs, device=self.device)
         self._prev_middle_contacts_buf = torch.zeros(self.num_envs, device=self.device)
         self._prev_cup_tilt_deg_buf = torch.zeros(self.num_envs, device=self.device)
-        self._spawn_xy_palm_correction_buf = torch.zeros(self.num_envs, 2, device=self.device)
+        self._transport_xyz_palm_correction_buf = torch.zeros(self.num_envs, 2, device=self.device)
         self._contact_persistence_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._lift_contact_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._grasp_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -1023,6 +1024,11 @@ class GraspRightEnv(DirectRLEnv):
 
         palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
         finger_action = actions[:, 6:NUM_ACTIONS]  # (N, 6) ∈ [-1, 1] — absolute synergy target
+        self._ema_palm_action.copy_(
+            float(self.cfg.ema_action_alpha) * palm_action
+            + (1.0 - float(self.cfg.ema_action_alpha)) * self._ema_palm_action
+        )
+        fabric_palm_action = self._ema_palm_action
 
         # ---- Phase 판정 ----
         stabilize_curriculum_enabled = (
@@ -1193,7 +1199,7 @@ class GraspRightEnv(DirectRLEnv):
             self._eval_lift_action_count[lift_mask] += 1
 
         # ---- Palm pose 계산 ----
-        delta = scale(palm_action, self.delta_mins, self.delta_maxs)
+        delta = scale(fabric_palm_action, self.delta_mins, self.delta_maxs)
         approach_palm_pose = self.pregrasp_palm_pose_buf + delta
         palm_mins = torch.minimum(self.palm_mins.unsqueeze(0), self.pregrasp_palm_pose_buf)
         palm_maxs = torch.maximum(self.palm_maxs.unsqueeze(0), self.pregrasp_palm_pose_buf)
@@ -1230,7 +1236,7 @@ class GraspRightEnv(DirectRLEnv):
                     float(target_count) / max(float(self.cfg.num_beads), 1.0)
                 )
                 self._bead_count_current[shift_mask] = target_count
-        lift_policy_delta = scale(palm_action, self.lift_delta_mins, self.lift_delta_maxs)
+        lift_policy_delta = scale(fabric_palm_action, self.lift_delta_mins, self.lift_delta_maxs)
         lift_palm_pose = self.lift_palm_start_pose_buf + lift_policy_delta
         if self.demo_grasp_reset_bank is not None:
             demo_lift_palm_pose = torch.lerp(
@@ -1283,13 +1289,13 @@ class GraspRightEnv(DirectRLEnv):
                 is_transport,
                 transport_upright_progress,
             )
-        if self.cfg.stabilize_spawn_xy_hold_enabled:
-            lift_palm_pose = self._apply_spawn_xy_palm_correction(
+        if self._transport_xyz_cfg("transport_xyz_hold_enabled", "stabilize_spawn_xy_hold_enabled", True):
+            lift_palm_pose = self._apply_transport_xyz_palm_correction(
                 lift_palm_pose,
                 is_stabilize,
                 stabilize_upright_progress,
             )
-            transport_palm_pose = self._apply_spawn_xy_palm_correction(
+            transport_palm_pose = self._apply_transport_xyz_palm_correction(
                 transport_palm_pose,
                 is_transport,
                 torch.ones_like(stabilize_upright_progress),
@@ -1431,7 +1437,7 @@ class GraspRightEnv(DirectRLEnv):
         corrected = torch.max(torch.min(corrected, self.palm_maxs), self.palm_mins)
         return torch.where(phase_mask.unsqueeze(1), corrected, palm_pose)
 
-    def _apply_spawn_xy_palm_correction(
+    def _apply_transport_xyz_palm_correction(
         self,
         palm_pose: torch.Tensor,
         phase_mask: torch.Tensor,
@@ -1440,19 +1446,38 @@ class GraspRightEnv(DirectRLEnv):
         if not phase_mask.any():
             return palm_pose
 
-        # Move the grasped cup back to its original spawn XY by translating the palm target.
+        # Current transport target uses the original cup XY; the name leaves room for XYZ transport.
         xy_error = self.object_init_pos[:, :2] - self.object_pos[:, :2]
-        max_delta = float(self.cfg.stabilize_spawn_xy_hold_max_delta)
+        max_delta = float(
+            self._transport_xyz_cfg(
+                "transport_xyz_hold_max_delta",
+                "stabilize_spawn_xy_hold_max_delta",
+                0.12,
+            )
+        )
         xy_correction = (
-            float(self.cfg.stabilize_spawn_xy_hold_gain) * xy_error
+            float(
+                self._transport_xyz_cfg(
+                    "transport_xyz_hold_gain",
+                    "stabilize_spawn_xy_hold_gain",
+                    4.0,
+                )
+            )
+            * xy_error
         ).clamp(min=-max_delta, max=max_delta)
         xy_correction = xy_correction * phase_progress
-        self._spawn_xy_palm_correction_buf[phase_mask] = xy_correction[phase_mask]
+        self._transport_xyz_palm_correction_buf[phase_mask] = xy_correction[phase_mask]
 
         corrected = palm_pose.clone()
         corrected[:, :2] = corrected[:, :2] + xy_correction
         corrected = torch.max(torch.min(corrected, self.palm_maxs), self.palm_mins)
         return torch.where(phase_mask.unsqueeze(1), corrected, palm_pose)
+
+    def _transport_xyz_cfg(self, new_name: str, legacy_name: str, default):
+        new_value = getattr(self.cfg, new_name, default)
+        if new_value != default:
+            return new_value
+        return getattr(self.cfg, legacy_name, default)
 
     # ------------------------------------------------------------------
     # Intermediate values
@@ -1938,7 +1963,10 @@ class GraspRightEnv(DirectRLEnv):
 
         palm_delta = (self.actions[:, :6] - self.prev_actions[:, :6]).pow(2).sum(dim=-1)
         finger_delta = (self.actions[:, 6:] - self.prev_actions[:, 6:]).pow(2).sum(dim=-1)
-        action_delta_norm = torch.sqrt(palm_delta + finger_delta).clamp(min=0.0)
+        action_delta_norm = torch.sqrt(
+            float(self.cfg.palm_action_delta_reward_scale) * palm_delta
+            + float(self.cfg.finger_action_delta_reward_scale) * finger_delta
+        ).clamp(min=0.0)
         total, reward_terms, reward_gates = compute_grasp_reward_terms(
             num_tip_contacts=self.num_contacts_buf,
             tip_contact_frac=tip_contact_progress,
@@ -1961,6 +1989,7 @@ class GraspRightEnv(DirectRLEnv):
         post_lift_contact_loss = reward_terms["post_lift_contact_loss"]
         self.extras["reward/post_lift_contact_loss"] = post_lift_contact_loss.mean()
         self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
+        self.extras["reward/transport_xyz"] = reward_terms["transport_xyz"].mean()
         self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
         self.extras["reward/action_smooth"] = reward_terms["action_smooth"].mean()
         self.extras["reward/action_delta"] = reward_terms["action_smooth"].mean()
@@ -1986,10 +2015,21 @@ class GraspRightEnv(DirectRLEnv):
             else cup_tilt_deg.mean()
         )
         self.extras["cup/xy_displacement"] = spawn_xy_dist.mean()
+        self.extras["task/transport_xyz_error"] = spawn_xy_dist.mean()
+        self.extras["task/transport_xyz_quality"] = reward_gates["transport_xyz_quality"].mean()
+        self.extras["task/transport_height_quality"] = reward_gates[
+            "transport_height_quality"
+        ].mean()
+        self.extras["task/transport_posture_quality"] = reward_gates[
+            "transport_posture_quality"
+        ].mean()
         self.extras["task/spawn_xy_error"] = spawn_xy_dist.mean()
         self.extras["task/spawn_xy_quality"] = reward_gates["spawn_xy_quality"].mean()
+        self.extras["task/transport_xyz_palm_correction"] = (
+            self._transport_xyz_palm_correction_buf.norm(dim=-1).mean()
+        )
         self.extras["task/spawn_xy_palm_correction"] = (
-            self._spawn_xy_palm_correction_buf.norm(dim=-1).mean()
+            self._transport_xyz_palm_correction_buf.norm(dim=-1).mean()
         )
         self.extras["task/grasp_ready_rate"] = (
             self.num_contacts_buf >= self.cfg.stage0_lift_start_min_contacts
@@ -2070,8 +2110,15 @@ class GraspRightEnv(DirectRLEnv):
         ).abs()
         cup_horiz_vel = torch.nan_to_num(self.cup.data.root_lin_vel_w[:, :2].norm(dim=-1), nan=0.0)
         cup_ang_speed = torch.nan_to_num(self.cup.data.root_ang_vel_w.norm(dim=-1), nan=0.0)
-        spawn_xy_dist = (self.object_pos[:, :2] - self.object_init_pos[:, :2]).norm(dim=-1)
-        spawn_xy_success = spawn_xy_dist <= self.cfg.stabilize_spawn_xy_success_threshold
+        transport_xyz_dist = (self.object_pos[:, :2] - self.object_init_pos[:, :2]).norm(dim=-1)
+        transport_xyz_success_threshold = float(
+            self._transport_xyz_cfg(
+                "transport_xyz_success_threshold",
+                "stabilize_spawn_xy_success_threshold",
+                0.01,
+            )
+        )
+        transport_xyz_success = transport_xyz_dist <= transport_xyz_success_threshold
         no_slip = (
             (cup_horiz_vel <= self.cfg.stabilize_cup_lin_vel_threshold)
             & (cup_ang_speed <= self.cfg.stabilize_cup_ang_vel_threshold)
@@ -2092,7 +2139,7 @@ class GraspRightEnv(DirectRLEnv):
             & middle_grasped
             & no_slip
             & stabilize_upright_success
-            & spawn_xy_success
+            & transport_xyz_success
             & (force_ratio >= self.cfg.lift_min_force_ratio)
             & force_stable
         )
@@ -2185,7 +2232,8 @@ class GraspRightEnv(DirectRLEnv):
 
         self.extras["object_stat/obj_z"] = self.object_pos[:, 2].mean()
         self.extras["cup/obj_z"] = self.extras["object_stat/obj_z"]
-        self.extras["task/stabilize_spawn_xy_success_rate"] = spawn_xy_success.float().mean()
+        self.extras["task/transport_xyz_success_rate"] = transport_xyz_success.float().mean()
+        self.extras["task/stabilize_spawn_xy_success_rate"] = transport_xyz_success.float().mean()
         self.extras["task/lift_success_now"] = lift_success_now.float().mean()
         self.extras["task/stabilize_success_now"] = stabilize_success_now.float().mean()
         self.extras["task/transport_success_now"] = success_now.float().mean()
@@ -2532,7 +2580,7 @@ class GraspRightEnv(DirectRLEnv):
         self._prev_num_contacts_buf[env_ids] = 0.0
         self._prev_middle_contacts_buf[env_ids] = 0.0
         self._prev_cup_tilt_deg_buf[env_ids] = 0.0
-        self._spawn_xy_palm_correction_buf[env_ids] = 0.0
+        self._transport_xyz_palm_correction_buf[env_ids] = 0.0
         self._contact_persistence_buf[env_ids] = 0
         self._lift_contact_hold_count[env_ids] = 0
         self._grasp_started_buf[env_ids] = False
@@ -2601,6 +2649,7 @@ class GraspRightEnv(DirectRLEnv):
         self.prev_actions[env_ids, :6] = 0.0
         self.prev_actions[env_ids, 6:] = 0.0
         self._palm_target_delta_buf[env_ids] = 0.0
+        self._ema_palm_action[env_ids] = 0.0
         self.lift_palm_start_pose_buf[env_ids] = self.pregrasp_palm_pose_buf[env_ids]
 
     def _uniform_scale(self, shape: tuple[int, int], value_range: tuple[float, float]) -> torch.Tensor:

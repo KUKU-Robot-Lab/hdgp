@@ -154,6 +154,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_upright_orientation_gain: float = 1.5
     stabilize_upright_orientation_max_deg: float = 25.0
     stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2
+    transport_xyz_hold_enabled: bool = True
+    transport_xyz_hold_gain: float = 4.0
+    transport_xyz_hold_max_delta: float = 0.12
+    # Backward-compatible aliases for older launch overrides.
     stabilize_spawn_xy_hold_enabled: bool = True
     stabilize_spawn_xy_hold_gain: float = 2.0
     stabilize_spawn_xy_hold_max_delta: float = 0.10
@@ -223,8 +227,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Delta palm action
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.04
+    palm_delta_xyz:     float = 0.03
     palm_delta_rot_deg: float = 5.0
+    ema_action_alpha: float = 0.7
     approach_min_steps: int = 10
     approach_timeout_steps: int = 90
     approach_palm_radial_min: float = 0.025
@@ -236,7 +241,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_timeout_grasp_reward_scale: float = 0.25
     grasp_palm_delta_scale: float = 1.0
     grasp_palm_inward_offset: float = 0.025
-    lift_palm_delta_xyz: float = 0.12
+    lift_palm_delta_xyz: float = 0.03
     lift_palm_delta_rot_deg: float = 15.0
 
     # -----------------------------------------------------------------------
@@ -263,12 +268,20 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     stabilize_weight: float = 10.0
+    transport_xyz_scale: float = 0.06
+    transport_xyz_reward_weight: float = 40.0
+    transport_height_target_delta: float = 0.09
+    transport_height_quality_power: float = 1.0
+    transport_upright_quality_power: float = 1.0
+    # Backward-compatible alias. New code should prefer transport_xyz_scale.
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 5.0
     stabilize_action_sharpness: float = 1.5
     success_bonus_weight: float = 20.0
     post_lift_contact_loss_weight: float = -8.0
     action_smooth_weight: float = -0.02
+    palm_action_delta_reward_scale: float = 0.25
+    finger_action_delta_reward_scale: float = 1.0
 
     # Legacy names kept for compatibility with older launch overrides.
     palm_approach_weight:    float = 1.0
@@ -284,7 +297,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tip_contact_penalty_weight: float = -4.0
     grasp_palm_anchor_penalty_weight: float = -8.0
     palm_target_motion_penalty_weight: float = -2.0
-    stabilize_spawn_xy_reward_weight: float = 12.0
+    # Backward-compatible alias. New code should prefer transport_xyz_reward_weight.
+    stabilize_spawn_xy_reward_weight: float = 40.0
 
     action_smoothness_palm_weight:   float = -0.10
     action_smoothness_finger_weight: float = -0.01
@@ -315,6 +329,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_cup_ang_vel_threshold:  float = 0.50
     stabilize_force_delta_threshold:  float = 0.35
     stabilize_contact_delta_threshold: float = 1.0
+    transport_xyz_success_threshold: float = 0.01
+    # Backward-compatible alias. New code should prefer transport_xyz_success_threshold.
     stabilize_spawn_xy_success_threshold: float = 0.01
 
     # Legacy delta-control knob (absolute synergy semantics에서는 미사용)

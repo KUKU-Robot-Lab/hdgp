@@ -192,6 +192,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     stabilize_weight: float = 10.0
+    transport_xyz_scale: float = 0.03
+    transport_xyz_reward_weight: float = 12.0
+    transport_height_target_delta: float = 0.04
+    transport_height_quality_power: float = 1.0
+    transport_upright_quality_power: float = 1.0
+    # Backward-compatible alias. New code should prefer transport_xyz_scale.
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 10.0
     stabilize_ang_vel_sharpness: float = 2.0

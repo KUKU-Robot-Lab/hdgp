@@ -59,16 +59,37 @@ def compute_grasp_reward_terms(
         * cup_height_delta
         * upright_quality
     )
-    stability_xy_scale = _cfg_float(
+    transport_xyz_scale = _cfg_float(
         cfg,
-        "stabilize_spawn_xy_scale",
+        "transport_xyz_scale",
         _cfg_float(
             cfg,
-            "stabilize_xy_scale",
-            max(_cfg_float(cfg, "grasp_xy_threshold", 0.025), 1e-6),
+            "stabilize_spawn_xy_scale",
+            _cfg_float(
+                cfg,
+                "stabilize_xy_scale",
+                max(_cfg_float(cfg, "grasp_xy_threshold", 0.025), 1e-6),
+            ),
         ),
     )
-    spawn_xy_quality = torch.exp(-cup_xy_displacement / max(stability_xy_scale, 1e-6))
+    transport_xyz_quality = torch.exp(-cup_xy_displacement / max(transport_xyz_scale, 1e-6))
+    transport_height_target = max(
+        _cfg_float(
+            cfg,
+            "transport_height_target_delta",
+            _cfg_float(cfg, "lift_success_height", 0.04),
+        ),
+        1e-6,
+    )
+    transport_height_quality = (
+        cup_height_delta.clamp(min=0.0) / transport_height_target
+    ).clamp(max=1.0)
+    transport_height_quality = transport_height_quality.pow(
+        _cfg_float(cfg, "transport_height_quality_power", 1.0)
+    )
+    transport_posture_quality = upright_quality.clamp(min=0.0, max=1.0).pow(
+        _cfg_float(cfg, "transport_upright_quality_power", 1.0)
+    )
     action_quality = torch.exp(
         -_cfg_float(cfg, "stabilize_action_sharpness", 1.0) * action_delta_norm
     )
@@ -84,8 +105,22 @@ def compute_grasp_reward_terms(
         * lifted_gate
         * full_tip
         * upright_quality
-        * spawn_xy_quality
+        * transport_xyz_quality
+        * transport_height_quality
         * action_quality
+    )
+    transport_xyz = (
+        _cfg_float(
+            cfg,
+            "transport_xyz_reward_weight",
+            _cfg_float(cfg, "stabilize_spawn_xy_reward_weight", 0.0),
+        )
+        * lift_gate
+        * lifted_gate
+        * full_tip
+        * transport_xyz_quality
+        * transport_height_quality
+        * transport_posture_quality
     )
     success_bonus = _cfg_float(cfg, "success_bonus_weight", 0.0) * success_now.float()
     action_smooth = _cfg_float(cfg, "action_smooth_weight", 0.0) * action_delta_norm
@@ -96,6 +131,7 @@ def compute_grasp_reward_terms(
         "lift": lift,
         "post_lift_contact_loss": post_lift_contact_loss,
         "stabilize": stabilize,
+        "transport_xyz": transport_xyz,
         "success_bonus": success_bonus,
         "action_smooth": action_smooth,
     }
@@ -107,8 +143,11 @@ def compute_grasp_reward_terms(
         "contact_persistence": contact_persistence_frac,
         "upright_success": upright_success.float(),
         "success_now": success_now.float(),
-        "spawn_xy_quality": spawn_xy_quality,
-        "stability_quality": spawn_xy_quality,
+        "transport_xyz_quality": transport_xyz_quality,
+        "transport_height_quality": transport_height_quality,
+        "transport_posture_quality": transport_posture_quality,
+        "spawn_xy_quality": transport_xyz_quality,
+        "stability_quality": transport_xyz_quality,
         "action_quality": action_quality,
     }
     total = torch.nan_to_num(
