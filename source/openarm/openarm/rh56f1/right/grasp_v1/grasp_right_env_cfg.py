@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_grasp_right_v11
-
-v10: v9 기반 + 버그 수정
-- Fix 1: rj_dg_1_1 (thumb abduction) = 0.0 고정 (v9: -0.283 → 엄지 새끼손가락 방향 치우침 수정)
-- Fix 2: MIN_CONTACTS_FOR_SUCCESS = 4 (v9: 2, ADR 연동 → 2접촉으로 success 오판정 수정)
-- Fix 3: has_5_contact = num_contacts>=5 고정 (v9: has_4_contact와 동일 식 버그 수정)
-"""
+"""환경 설정: open-rh56f1_r_grasp_v1."""
 
 from dataclasses import MISSING, field
 
@@ -269,9 +263,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     stabilize_weight: float = 10.0
+    stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 5.0
     stabilize_action_sharpness: float = 1.5
     success_bonus_weight: float = 20.0
+    post_lift_contact_loss_weight: float = -8.0
     action_smooth_weight: float = -0.02
 
     # Legacy names kept for compatibility with older launch overrides.
@@ -547,7 +543,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         track_air_time=False,
     )
 
-    # palm 힘센서 (실 plam_force_sensor)
+    # palm force sensor body. USD asset name is rh56f1_right_plam_force_sensor.
     palm_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/rh56f1_right_plam_force_sensor",
         filter_prim_paths_expr=["/World/envs/env_.*/Cup"],

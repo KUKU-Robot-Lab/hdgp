@@ -21,8 +21,10 @@ class RewardCfg:
     lift_success_height: float = 0.04
     success_upright_max_deg: float = 20.0
     grasp_xy_threshold: float = 0.025
+    stabilize_spawn_xy_scale: float = 0.03
     grasp_upright_threshold_deg: float = 8.0
     stabilize_action_sharpness: float = 1.5
+    post_lift_contact_loss_weight: float = -8.0
 
 
 def _reward(
@@ -62,6 +64,8 @@ def test_lift_and_success_require_full_tip_contact_when_lifted() -> None:
 
     assert terms["lift"][0].item() == 0.0
     assert terms["lift"][1].item() > 0.0
+    assert terms["post_lift_contact_loss"][0].item() < 0.0
+    assert terms["post_lift_contact_loss"][1].item() == 0.0
     assert terms["success_bonus"][0].item() == 0.0
     assert terms["success_bonus"][1].item() > 0.0
     assert gates["success_now"].tolist() == [0.0, 1.0]
@@ -83,3 +87,26 @@ def test_tilted_lift_loses_success_bonus_and_upright_quality() -> None:
     assert tilted_gates["success_now"].item() == 0.0
     assert upright_gates["success_now"].item() == 1.0
     assert tilted_total.item() < upright_total.item()
+
+
+def test_stabilize_reward_prefers_spawn_xy_recovery() -> None:
+    contacts = torch.tensor([5, 5], dtype=torch.long)
+    total, terms, gates = compute_grasp_reward_terms(
+        num_tip_contacts=contacts,
+        tip_contact_frac=torch.ones(2),
+        full_tip_contact=torch.ones(2),
+        palm_to_cup_dist=torch.zeros(2),
+        fingertip_side_dist=torch.zeros(2),
+        cup_height_delta=torch.full((2,), 0.06),
+        cup_xy_displacement=torch.tensor([0.01, 0.05]),
+        cup_tilt_deg=torch.zeros(2),
+        upright_quality=torch.ones(2),
+        lift_latched=torch.ones(2, dtype=torch.bool),
+        action_delta_norm=torch.zeros(2),
+        cfg=RewardCfg(),
+    )
+
+    assert gates["spawn_xy_quality"][0] > gates["spawn_xy_quality"][1]
+    assert terms["stabilize"][0] > terms["stabilize"][1]
+    assert terms["success_bonus"][0] > terms["success_bonus"][1]
+    assert total[0] > total[1]

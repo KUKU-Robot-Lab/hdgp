@@ -91,7 +91,7 @@ LEFT_HAND_REST_JOINT_POS = {name: 0.0 for name in LEFT_HAND_JOINT_NAMES}
 # ---------------------------------------------------------------------------
 # 보상/관측에 쓰는 USD body (palm + 5 말단 손가락 링크).
 # Phase 0 검증: fingertip force_sensor 링크는 병합 소멸 → 생존 말단 링크 사용.
-#   [0]=palm(plam_force_sensor, 실 센서 body)
+#   [0]=palm force sensor body (USD name is rh56f1_right_plam_force_sensor)
 #   [1:6]=thumb_4, index_2, middle_2, ring_2, little_2
 HAND_BODY_NAMES_USD = [
     "rh56f1_right_plam_force_sensor",

@@ -18,7 +18,7 @@ Tesollo 20-DOF(action 26D, obs 144D) → RH56F1 6 actuated DOF 포팅.
 
 Action (12D):
   [0:6]  6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
-  [6:12] 6D per-joint hand delta (drive 6관절)
+  [6:12] 6D absolute hand synergy target (drive 6관절)
          thumb_1, thumb_2, index_1, middle_1, ring_1, little_1
 
 Actor Observation (99D) — sim2real 가능 (실 센서 + FK):
@@ -80,7 +80,7 @@ NUM_FINGERTIPS = 5
 # Action space
 # ---------------------------------------------------------------------------
 NUM_PALM_ACTION   = 6    # 6D palm pose (Fabrics IK)
-NUM_FINGER_ACTION = 6    # 6D per-joint hand delta (drive 6)
+NUM_FINGER_ACTION = 6    # 6D absolute hand synergy target (drive 6)
 NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 12
 
 # ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ NUM_OBSERVATIONS_WITH_MASS = 100
 NUM_OBSERVATIONS_NO_MASS = NUM_OBSERVATIONS
 
 NUM_TIP_SENSORS   = 5     # fingertip 힘센서 (실 센서, actor) — *_force_sensor → 말단 링크
-NUM_PALM_SENSORS  = 1     # palm 힘센서 (실 센서, actor) — plam_force_sensor
+NUM_PALM_SENSORS  = 1     # palm 힘센서 (실 센서, actor) — palm_force_sensor
 NUM_CRITIC_EXTRAS = 18
 NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 117
 
@@ -120,7 +120,7 @@ LIFT_Z_DELTA = 0.10    # 10cm 수직 상승
 # ---------------------------------------------------------------------------
 CONTACT_FORCE_THRESHOLD  = 0.1    # N  binary contact 판정
 CONTACT_FORCE_MAX        = 10.0   # N  정규화 분모
-MIN_CONTACTS_FOR_SUCCESS = 3      # 성공 판정 최소 접촉 손가락 수 (5지 중 3, RH56F1 기준)
+MIN_CONTACTS_FOR_SUCCESS = 3      # legacy constant; runtime success uses cfg gates.
 
 # ---------------------------------------------------------------------------
 # FABRICS pregrasp

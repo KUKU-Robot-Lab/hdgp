@@ -59,12 +59,22 @@ def compute_grasp_reward_terms(
     )
     stability_xy_scale = _cfg_float(
         cfg,
-        "stabilize_xy_scale",
-        max(_cfg_float(cfg, "grasp_xy_threshold", 0.025), 1e-6),
+        "stabilize_spawn_xy_scale",
+        _cfg_float(
+            cfg,
+            "stabilize_xy_scale",
+            max(_cfg_float(cfg, "grasp_xy_threshold", 0.025), 1e-6),
+        ),
     )
-    stability_quality = torch.exp(-cup_xy_displacement / max(stability_xy_scale, 1e-6))
+    spawn_xy_quality = torch.exp(-cup_xy_displacement / max(stability_xy_scale, 1e-6))
     action_quality = torch.exp(
         -_cfg_float(cfg, "stabilize_action_sharpness", 1.0) * action_delta_norm
+    )
+    post_lift_contact_loss = (
+        _cfg_float(cfg, "post_lift_contact_loss_weight", 0.0)
+        * lift_gate
+        * lifted_gate
+        * torch.relu(1.0 - tip_contact_frac)
     )
     stabilize = (
         _cfg_float(cfg, "stabilize_weight", 0.0)
@@ -72,16 +82,22 @@ def compute_grasp_reward_terms(
         * lifted_gate
         * full_tip
         * upright_quality
-        * stability_quality
+        * spawn_xy_quality
         * action_quality
     )
-    success_bonus = _cfg_float(cfg, "success_bonus_weight", 0.0) * success_now.float()
+    success_quality = spawn_xy_quality * action_quality
+    success_bonus = (
+        _cfg_float(cfg, "success_bonus_weight", 0.0)
+        * success_now.float()
+        * success_quality
+    )
     action_smooth = _cfg_float(cfg, "action_smooth_weight", 0.0) * action_delta_norm
 
     terms = {
         "approach": approach,
         "grasp": grasp,
         "lift": lift,
+        "post_lift_contact_loss": post_lift_contact_loss,
         "stabilize": stabilize,
         "success_bonus": success_bonus,
         "action_smooth": action_smooth,
@@ -93,8 +109,10 @@ def compute_grasp_reward_terms(
         "full_tip_contact": full_tip,
         "upright_success": upright_success.float(),
         "success_now": success_now.float(),
-        "stability_quality": stability_quality,
+        "spawn_xy_quality": spawn_xy_quality,
+        "stability_quality": spawn_xy_quality,
         "action_quality": action_quality,
+        "success_quality": success_quality,
     }
     total = torch.nan_to_num(
         sum(terms.values()),

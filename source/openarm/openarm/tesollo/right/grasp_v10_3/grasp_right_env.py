@@ -1068,6 +1068,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["cup/lift_tilt_deg"] = lift_tilt.mean() if lift_tilt.numel() > 0 else cup_tilt_deg.mean()
         self.extras["cup/height_delta"] = cup_height_delta.mean()
         self.extras["cup/xy_displacement"] = cup_xy_displacement.mean()
+        self.extras["task/spawn_xy_error"] = cup_xy_displacement.mean()
+        self.extras["task/spawn_xy_quality"] = reward_gates["spawn_xy_quality"].mean()
         self.extras["task/grasp_ready_rate"] = grasp_ready_now.float().mean()
         self.extras["task/lift_started_rate"] = self.lift_started_buf.float().mean()
         self.extras["task/success_rate"] = torch.tensor(_ep_success_rate, device=self.device)

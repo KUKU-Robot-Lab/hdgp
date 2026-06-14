@@ -190,6 +190,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     stabilize_weight: float = 6.0
+    stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 10.0
     stabilize_ang_vel_sharpness: float = 2.0
     stabilize_lin_vel_sharpness: float = 10.0

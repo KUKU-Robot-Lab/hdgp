@@ -1,7 +1,7 @@
 """Phase 2 차원 정합성 검증 (GPU 불필요, 순수 import).
 
 preset/constants 의 차원이 확정 레이아웃과 일치하는지 단언.
-  Action 12D, Actor 87D, Critic 117D, 손 6 DOF.
+  Action 12D, Actor 99D, Critic 117D, 손 6 DOF.
 """
 import importlib.util
 import sys
@@ -41,22 +41,22 @@ def test_dims():
     assert c.NUM_PALM_ACTION == 6
     assert c.NUM_FINGER_ACTION == 6
     assert c.NUM_ACTIONS == 12
-    assert c.NUM_OBSERVATIONS == 102
-    assert c.NUM_OBSERVATIONS_WITH_MASS == 103
-    assert c.NUM_CRITIC_EXTRAS == 15
+    assert c.NUM_OBSERVATIONS == 99
+    assert c.NUM_OBSERVATIONS_WITH_MASS == 100
+    assert c.NUM_CRITIC_EXTRAS == 18
     assert c.NUM_CRITIC_OBSERVATIONS == 117
 
 
 def test_actor_obs_components_sum():
-    """Actor 102D 구성요소 합 검증 (tip_force 실센서 15D 포함)."""
-    comp = [7, 7, 6, 6, 3, 15, 3, 3, 3, 4, 12, 15, 1, 1, 1, 15]
-    assert sum(comp) == 102
+    """Actor 99D 구성요소 합 검증 (tip_force 실센서 15D 포함)."""
+    comp = [7, 7, 6, 6, 3, 15, 3, 3, 4, 12, 15, 15, 1, 1, 1]
+    assert sum(comp) == 99
 
 
 def test_critic_extra_components_sum():
-    """Critic extra 15D 구성요소 합 검증 (fingertip 은 actor 로 이동, 여기는 privileged 만)."""
-    comp = [1, 3, 1, 5, 5]  # bead_mass, cup_lin_vel, cup_height, tip_contact_binary, tip_to_cup
-    assert sum(comp) == 15
+    """Critic extra 18D 구성요소 합 검증."""
+    comp = [1, 3, 3, 1, 5, 5]  # bead_mass, cup_lin_vel, cup_ang_vel, cup_height, tip contact/dist
+    assert sum(comp) == 18
 
 
 def test_hand_pose_lengths():

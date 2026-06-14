@@ -49,10 +49,10 @@ def test_sensors_consolidated_4c():
 
 
 def test_obs_layout_4d():
-    """4d: obs 빌더 102/117. Tesollo 144/174 주석/critic extra 제거."""
+    """4d: obs 빌더 99/117. Tesollo 144/174 주석/critic extra 제거."""
     s = _src()
     assert "144D" not in s and "174D" not in s, "stale 144/174 주석 잔재"
-    assert "Actor 102D" in s and "Critic 117D" in s
+    assert "Observations: Actor 99D" in s and "Critic 117D" in s
     assert "tip_contact_binary" in s          # critic privileged
     assert "tip_force_xyz_norm" in s          # actor 실 fingertip 센서
     # critic 에서 distal_force_norm/middle_force_norm 제거됨 (obs 에서 미사용)
@@ -82,6 +82,7 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert 'reward_terms["approach"]' in s
     assert 'reward_terms["grasp"]' in s
     assert 'reward_terms["lift"]' in s
+    assert 'reward_terms["post_lift_contact_loss"]' in s
     assert 'reward_terms["stabilize"]' in s
     assert 'reward_terms["success_bonus"]' in s
     assert "r1c_full_grasp" not in s
@@ -91,6 +92,7 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert 'self.extras["reward/approach"]' in s
     assert 'self.extras["reward/grasp"]' in s
     assert 'self.extras["reward/lift"]' in s
+    assert 'self.extras["reward/post_lift_contact_loss"]' in s
     assert 'self.extras["reward/stabilize"]' in s
     assert 'self.extras["reward/success_bonus"]' in s
     assert 'self.extras["reward/action_smooth"]' in s
@@ -100,29 +102,26 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert 'self.extras["reward/tip_approach_bonus"]' not in s
     assert 'self.extras["reward/grasp_quality_lift"]' not in s
     assert 'self.extras["task/palm_to_cup_dist"]' in s
-    assert 'self.extras["task/grasp_palm_inward_offset"]' in s
     assert 'self.extras["task/middle_to_cup_dist"]' in s
     assert 'self.extras["task/tip_to_cup_dist_top3"]' in s
     assert 'self.extras["task/late_grasp_full_grip_mode_rate"]' in s
     assert 'self.extras["task/contact_to_full_grip_transition_rate"]' in s
     assert 'self.extras["task/prelift_force_ratio"]' in s
     assert 'self.extras["task/prelift_full_grip_rate"]' in s
-    assert 'self.extras["phase/approach"]' in s
-    assert 'self.extras["phase/grasp"]' in s
-    assert 'self.extras["phase/lift"]' in s
-    assert 'self.extras["phase/stabilize"]' in s
+    assert 'self.extras["task/phase_approach"]' in s
+    assert 'self.extras["task/phase_close_grasp"]' in s
+    assert 'self.extras["task/phase_lift"]' in s
+    assert 'self.extras["task/phase_stabilize"]' in s
     assert 'self.extras["contact/palm"]' in s
-    assert 'self.extras["contact/palm_force"]' in s
     assert 'self.extras["contact/grasp_ready_hold"]' in s
     assert 'self.extras["contact/contacts_at_lift_start"]' in s
-    assert 'self.extras["contact/palm_at_lift_start"]' in s
     assert 'self.extras["cup/upright_quality"]' in s
     assert 'self.extras["cup/grasp_tilt_deg"]' in s
     assert 'self.extras["cup/lift_tilt_deg"]' in s
     assert 'self.extras["cup/xy_displacement"]' in s
     assert 'self.extras["task/spawn_xy_error"]' in s
+    assert 'self.extras["task/spawn_xy_quality"]' in s
     assert 'self.extras["task/spawn_xy_palm_correction"]' in s
-    assert 'self.extras["object_stat/obj_z"]' in s
     assert 'self.extras["reward/total"] = total.mean()' in s
 
 

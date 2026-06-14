@@ -29,8 +29,8 @@ def test_v11_keeps_actor_and_critic_observation_shapes() -> None:
     constants = _text("grasp_right_constants.py")
     cfg = _text("grasp_right_env_cfg.py")
 
-    assert "NUM_OBSERVATIONS = 102" in constants
-    assert "NUM_OBSERVATIONS_WITH_MASS = 103" in constants
+    assert "NUM_OBSERVATIONS = 99" in constants
+    assert "NUM_OBSERVATIONS_WITH_MASS = 100" in constants
     assert "NUM_OBSERVATIONS_NO_MASS = NUM_OBSERVATIONS" in constants
     assert "NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 117" in constants
     assert "observation_space: int = NUM_OBSERVATIONS" in cfg
@@ -80,7 +80,7 @@ def test_v11_declares_four_phase_episode_and_transport_params() -> None:
     assert "transport_palm_target_pose_buf" in env
 
 
-def test_v11_lift_target_is_capped_near_ten_cm_for_demo_and_non_demo() -> None:
+def test_v11_lift_uses_policy_delta_and_caps_demo_target_near_ten_cm() -> None:
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
 
@@ -88,7 +88,8 @@ def test_v11_lift_target_is_capped_near_ten_cm_for_demo_and_non_demo() -> None:
     assert "lift_elapsed_steps = torch.where(" in env
     assert "self._lift_started_buf," in env
     assert "self.episode_length_buf - self._lift_start_step_buf" in env
-    assert "+ float(self.cfg.lift_target_z_delta) * lift_progress.squeeze(1)" in env
+    assert "lift_policy_delta = scale(palm_action, self.lift_delta_mins, self.lift_delta_maxs)" in env
+    assert "lift_palm_pose = self.lift_palm_start_pose_buf + lift_policy_delta" in env
     assert "demo_lift_target[:, 2] = torch.minimum(" in env
     assert "pregrasp_palm_pose[:, 2] + float(self.cfg.lift_target_z_delta)" in env
 
@@ -104,15 +105,15 @@ def test_v11_actor_and_critic_observe_cup_to_goal() -> None:
     assert "cup_to_goal_clean," in env
 
 
-def test_v11_actor_observes_cup_orientation_and_angular_velocity() -> None:
+def test_v11_actor_observes_cup_orientation_and_critic_observes_angular_velocity() -> None:
     constants = _text("grasp_right_constants.py")
     env = _text("grasp_right_env.py")
 
-    assert "cup_ang_vel:              3" in constants
+    assert "cup_ang_vel:" in constants
     assert "cup_rot (quat):           4" in constants
     assert "cup_ang_vel  = self.cup.data.root_ang_vel_w" in env
     assert "cup_rot      = self.object_rot" in env
-    assert "cup_ang_vel,            # 3" in env
+    assert "cup_ang_vel," in env
     assert "cup_rot,                # 4" in env
 
 
@@ -167,7 +168,7 @@ def test_v11_disables_physical_beads_for_small_cup_grasp() -> None:
     assert '"stat_bead_count_current"' not in env
     assert '"stat_dynamic_bead_added"' not in env
     assert "bin_" not in env
-    assert 'self.extras["cup/friction"]' in env
+    assert 'self.extras["cup/friction"]' not in env
 
 
 def test_v11_keeps_bead_asset_hidden_when_physical_beads_disabled() -> None:
@@ -280,7 +281,7 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
 def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
     env = _text("grasp_right_env.py")
 
-    assert "lift_contact_phase = self.is_grasp_phase" in env
+    assert "lift_contact_phase = close_grasp_mask" in env
     assert "compute_grasp_phase_finger_targets(" in env
     assert "compute_late_grasp_full_grip_mask(" in env
     assert "full_grip_pose=self.hand_full_grip_pose" in env
@@ -311,8 +312,6 @@ def test_v11_tracks_pre_lift_full_contact_rate() -> None:
     assert 'self.extras["task/late_grasp_full_grip_mode_rate"]' in env
     assert 'self.extras["task/contact_to_full_grip_transition_rate"]' in env
     assert 'self.extras["task/prelift_force_ratio"]' in env
-    assert 'self.extras["task/prelift_thumb_force"]' in env
-    assert 'self.extras["task/prelift_others_avg_force"]' in env
     assert 'self.extras["task/prelift_full_grip_rate"]' in env
 
 
@@ -328,7 +327,9 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
         "grasp_weight",
         "lift_reward_weight",
         "stabilize_weight",
+        "stabilize_spawn_xy_scale",
         "success_bonus_weight",
+        "post_lift_contact_loss_weight",
         "action_smooth_weight",
         "stabilize_upright_max_deg: float = 5.0",
         "stabilize_upright_reward_scale_deg",
@@ -359,6 +360,7 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     assert 'self.extras["reward/approach"]' in env
     assert 'self.extras["reward/grasp"]' in env
     assert 'self.extras["reward/lift"]' in env
+    assert 'self.extras["reward/post_lift_contact_loss"]' in env
     assert 'self.extras["reward/stabilize"]' in env
     assert 'self.extras["reward/success_bonus"]' in env
     for removed_term in (
@@ -394,19 +396,18 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     assert "& stabilize_upright_success" in env
 
 
-def test_v11_logs_only_curated_sensor_joint_cup_task_reward_groups() -> None:
+def test_v11_logs_only_curated_cup_task_reward_groups() -> None:
     env = _text("grasp_right_env.py")
 
     for name in (
-        "sensor/palm/force_x",
-        "sensor/palm/force_norm",
-        "sensor/contact_count",
-        "cup/pos_x",
-        "cup/pos_y",
-        "cup/pos_z",
-        "cup/quat_w",
-        "cup/lin_vel_norm",
-        "cup/ang_vel_norm",
+        "phase/approach",
+        "phase/grasp",
+        "phase/lift",
+        "phase/stabilize",
+        "contact/palm_force",
+        "contact/palm_at_lift_start",
+        "object_stat/obj_z",
+        "cup/height_delta",
         "cup/tilt_deg",
         "cup/tilt_lift_deg",
         "cup/tilt_stabilize_deg",
@@ -419,12 +420,18 @@ def test_v11_logs_only_curated_sensor_joint_cup_task_reward_groups() -> None:
         assert f'self.extras["{name}"]' in env
 
     assert 'self.extras.clear()' in env
-    assert '"thumb", "index", "middle", "ring", "little"' in env
-    assert 'self.extras[f"sensor/tip/{tip_name}/force_x"]' in env
-    assert 'self.extras[f"sensor/tip/{tip_name}/force_norm"]' in env
-    assert 'self.extras[f"sensor/tip/{tip_name}/contact"]' in env
-    assert 'self.extras[f"joint/{joint_name}/pos"]' in env
-    assert 'self.extras[f"joint/{joint_name}/vel"]' in env
+    for removed_name in (
+        "sensor/palm/force_x",
+        "sensor/palm/force_norm",
+        "sensor/contact_count",
+        "cup/pos_x",
+        "cup/quat_w",
+        "cup/lin_vel_norm",
+        "cup/ang_vel_norm",
+    ):
+        assert f'self.extras["{removed_name}"]' not in env
+    assert 'self.extras[f"sensor/tip/{tip_name}/force_x"]' not in env
+    assert 'self.extras[f"joint/{joint_name}/pos"]' not in env
     assert '"stat_' not in env
     assert '"bin_' not in env
 
@@ -440,10 +447,14 @@ def test_v11_lstm_rl_games_config_uses_no_actor_mass_recurrent_name() -> None:
     t = (_ROOT / "config" / "agents" / "rl_games_ppo_lstm_cfg.yaml").read_text(encoding="utf-8")
 
     assert "name: inspire_r_grasp_v1-lstm" in t
-    assert "Actor 102D MLP [512, 512] -> LSTM 1024 / critic 117D MLP [512, 512, 256, 128]" in t
+    assert "Actor 99D MLP [512, 512] -> LSTM 1024 / critic 117D MLP [512, 512, 256, 128]" in t
     assert "name: lstm" in t
     assert "before_mlp: False" in t
     assert "units: [512, 512, 256, 128]" in t
+    assert "entropy_coef: 0.0005" in t
+    assert "horizon_length: 16" in t
+    assert "minibatch_size: 16384" in t
+    assert "seq_length: 16" in t
     central_value = t.split("central_value_config:", 1)[1]
     assert "rnn:" not in central_value
     assert "load_checkpoint: False" in t

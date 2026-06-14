@@ -37,7 +37,8 @@ MIMIC_HAND_JOINTS = [
     "rh56f1_right_right_little_2_joint",
 ]
 # Phase 0 발견: fingertip *_force_sensor / *_tip 링크는 USD에서 fixed-joint 병합으로 소멸.
-# → 생존하는 말단 손가락 링크에 ContactSensor를 매핑한다 (palm은 plam_force_sensor 생존).
+# → 생존하는 말단 손가락 링크에 ContactSensor를 매핑한다.
+#   Palm sensor USD body name is intentionally rh56f1_right_plam_force_sensor.
 PALM_SENSOR_BODY = "rh56f1_right_plam_force_sensor"
 FINGERTIP_SENSOR_BODIES = [
     "rh56f1_right_right_thumb_4",

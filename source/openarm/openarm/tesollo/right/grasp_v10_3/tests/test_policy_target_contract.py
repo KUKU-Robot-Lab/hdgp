@@ -181,12 +181,14 @@ def test_state_based_reward_gates_and_upright_quality() -> None:
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
 
     assert "stabilize_upright_reward_scale_deg: float = 10.0" in cfg
+    assert "stabilize_spawn_xy_scale: float = 0.03" in cfg
     assert "upright_quality = torch.exp(" in env
     assert "compute_grasp_reward_terms(" in env
     assert 'reward_terms["grasp"]' in env
     assert 'reward_terms["lift"]' in env
     assert 'reward_terms["stabilize"]' in env
     assert 'reward_terms["success_bonus"]' in env
+    assert 'self.extras["task/spawn_xy_quality"]' in env
     assert "r_time_penalty" not in env
     assert "time_penalty_weight" not in cfg
     assert 'self.extras["phase/approach"] = (\n            (~self.lift_ready_latched_buf) & (~meaningful_contact)' in env

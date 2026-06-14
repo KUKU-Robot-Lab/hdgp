@@ -1,5 +1,5 @@
-# 5g_grasp_right_v11 recurrent actor / MLP critic config
-# Actor 102D MLP [512, 512] -> LSTM 1024 / critic 117D MLP [512, 512, 256, 128], action 12D.
+# open-rh56f1_r_grasp_v1 recurrent actor / MLP critic config
+# Actor 99D MLP [512, 512] -> LSTM 1024 / critic 117D MLP [512, 512, 256, 128], action 12D.
 # This is a separate non-warm-start config because the LSTM architecture
 # is incompatible with the v10-2 MLP checkpoint.
 
@@ -76,7 +76,7 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.002
+    entropy_coef: 0.0005
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 16
