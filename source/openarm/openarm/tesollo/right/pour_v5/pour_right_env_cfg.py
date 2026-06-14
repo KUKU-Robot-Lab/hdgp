@@ -263,8 +263,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_dist_to_target: float = 5.0
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # (레거시, 미사용 — rim_approach_saturate로 대체)
-    rim_approach_scale: float = 5.0          # rim_xy 거리 exp 민감도
-    rim_approach_saturate: float = 0.05      # rim_xy 이 이하: 거리항 max (정밀 정렬 요구)
+    rim_approach_scale: float = 5.0          # mouth_xy 거리 exp 민감도
+    rim_approach_saturate: float = 0.03      # [H12] mouth_xy(pour_point) 이 이하: 거리항 max. rim 반경(0.041) 안쪽으로 견인 (이전 0.05는 rim 밖에서 포화)
     approach_anti_floor: float = 0.4         # 직립·원거리 transport gradient 보존 (anti=0서도 0.4)
 
     # Stage A→B 공간 게이트 (단일 sigmoid, latch 없음)

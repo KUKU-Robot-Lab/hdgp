@@ -273,6 +273,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     #   레거시 side(left|right|both): log/rl_games/pipeline/<side>/<task_dir_name>/testN
     #   레거시 명명형(inspire_r 등): log/rl_games/<variant>/<task_dir_name>/testN
     task_name = args_cli.task
+    # pour 태스크 한정: pour_point(빨강) 마커 표시 (렌더링 확인용, --headless 아닐 때만 보임).
+    if "pour" in task_name.lower() and hasattr(env_cfg, "enable_visual_markers"):
+        env_cfg.enable_visual_markers = True
+        print("[INFO] pour training: visual marker (pour_point=red) enabled.")
     side_dir, task_dir_name = _resolve_pipeline_log_components(task_name)
     sbm_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     if "/" in side_dir:

@@ -565,18 +565,8 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
         self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
-        # GUI target visualization: source pour point (red) + target opening (blue)
-        # 비활성화 가능 (cfg.enable_visual_markers)
+        # GUI 시각화: pour_point(빨강)만 표시 (cfg.enable_visual_markers)
         if cfg.enable_visual_markers:
-            # Fabrics collision obstacle 파싱 — 실제 위치/설정 직접 확인용
-            _wf = "open_tesollo_boxes_pour_v5"
-            _, _box_center, _box_quat, _box_size = self._parse_fabrics_obstacle(_wf, "left_target_cup")
-            _, _torso_center, _, _torso_size = self._parse_fabrics_obstacle(_wf, "robot_torso")
-            _, _arm_center, _, _arm_size = self._parse_fabrics_obstacle(_wf, "left_arm_body")
-            self._fabrics_box_local = torch.tensor(_box_center, device=self.device, dtype=torch.float32)
-            self._fabrics_box_quat = torch.tensor(_box_quat, device=self.device, dtype=torch.float32)  # wxyz
-            self._fabrics_torso_local = torch.tensor(_torso_center, device=self.device, dtype=torch.float32)
-            self._fabrics_arm_local = torch.tensor(_arm_center, device=self.device, dtype=torch.float32)
             self._vis_markers = VisualizationMarkers(
                 VisualizationMarkersCfg(
                     prim_path="/Visuals/FiveGPourRightMarkers",
@@ -585,50 +575,11 @@ class PourRightEnv(DirectRLEnv):
                             radius=0.018,
                             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.2, 0.2)),
                         ),
-                        "target_opening": sim_utils.SphereCfg(
-                            radius=0.018,
-                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 1.0)),
-                        ),
-                        # Fabrics collision box (반투명 노랑) — target cup, yaml scaling=full extent 가정
-                        "fabrics_cup_box": sim_utils.CuboidCfg(
-                            size=tuple(_box_size),
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(1.0, 1.0, 0.0), opacity=0.3
-                            ),
-                        ),
-                        # palm +z(손가락) 끝점 (초록)
-                        "palm_finger_tip": sim_utils.SphereCfg(
-                            radius=0.015,
-                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.9, 0.1)),
-                        ),
-                        # palm +y(내회전 roll축) 끝점 (주황)
-                        "palm_y_tip": sim_utils.SphereCfg(
-                            radius=0.015,
-                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.55, 0.0)),
-                        ),
-                        # Fabrics robot_torso collision (반투명 회색) — 로봇 몸통 충돌 영역
-                        "fabrics_torso": sim_utils.CuboidCfg(
-                            size=tuple(_torso_size),
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(0.5, 0.5, 0.5), opacity=0.2
-                            ),
-                        ),
-                        # Fabrics left_arm_body collision (반투명 보라) — 왼팔 충돌 영역(sphere)
-                        "fabrics_left_arm": sim_utils.SphereCfg(
-                            radius=float(_arm_size[0]),
-                            visual_material=sim_utils.PreviewSurfaceCfg(
-                                diffuse_color=(0.6, 0.2, 0.8), opacity=0.25
-                            ),
-                        ),
                     },
                 )
             )
         else:
             self._vis_markers = None
-            self._fabrics_box_local = None
-            self._fabrics_box_quat = None
-            self._fabrics_torso_local = None
-            self._fabrics_arm_local = None
 
         self._build_warmstart_reset_cache()
 
@@ -1287,42 +1238,8 @@ class PourRightEnv(DirectRLEnv):
         self._compute_bead_flags()
 
         if self._vis_markers is not None:
-            # box(노랑)는 env_origin + 고정 local 위치 (Fabrics collision 위치 그대로)
-            _box_w = self.scene.env_origins + self._fabrics_box_local.unsqueeze(0)  # (N,3)
-            # palm +z(손가락) 끝점 (초록): palm origin + 0.15·palm_z_world
-            _palm_pos_v = self.robot.data.body_pos_w[:, self.palm_body_index]
-            _palm_quat_v = self.robot.data.body_quat_w[:, self.palm_body_index]
-            _palm_fz_w = quat_apply(
-                _palm_quat_v, _palm_quat_v.new_tensor([0.0, 0.0, 1.0]).expand(n, -1)
-            )
-            _palm_fy_w = quat_apply(
-                _palm_quat_v, _palm_quat_v.new_tensor([0.0, 1.0, 0.0]).expand(n, -1)
-            )
-            _palm_tip_w = _palm_pos_v + 0.15 * _palm_fz_w   # +z 손가락 (초록)
-            _palm_ytip_w = _palm_pos_v + 0.15 * _palm_fy_w  # +y roll축 (주황)
-            # Fabrics robot collision (정적): torso(회색), left_arm(보라)
-            _torso_w = self.scene.env_origins + self._fabrics_torso_local.unsqueeze(0)
-            _arm_w = self.scene.env_origins + self._fabrics_arm_local.unsqueeze(0)
-            _all_pts = torch.cat(
-                [self._source_pour_point_w, self._target_opening_w, _box_w,
-                 _palm_tip_w, _palm_ytip_w, _torso_w, _arm_w], dim=0
-            )
-            _marker_idx = torch.zeros(7 * n, dtype=torch.long, device=self.device)
-            _marker_idx[n:2 * n] = 1       # target_opening (파랑)
-            _marker_idx[2 * n:3 * n] = 2   # fabrics_cup_box (노랑)
-            _marker_idx[3 * n:4 * n] = 3   # palm_finger_tip +z (초록)
-            _marker_idx[4 * n:5 * n] = 4   # palm_y_tip +y (주황)
-            _marker_idx[5 * n:6 * n] = 5   # fabrics_torso (회색)
-            _marker_idx[6 * n:] = 6        # fabrics_left_arm (보라)
-            # orientations: cup_box(idx 2)만 cup quat 반영(기울기), 나머지 identity
-            _ident = self._fabrics_box_quat.new_tensor([1.0, 0.0, 0.0, 0.0]).expand(n, -1)
-            _box_q = self._fabrics_box_quat.unsqueeze(0).expand(n, -1)
-            _oris = torch.cat(
-                [_ident, _ident, _box_q, _ident, _ident, _ident, _ident], dim=0
-            )
-            self._vis_markers.visualize(
-                translations=_all_pts, orientations=_oris, marker_indices=_marker_idx
-            )
+            # pour_point(빨강)만 마킹 (단일 마커 → marker_indices 기본 0)
+            self._vis_markers.visualize(translations=self._source_pour_point_w)
 
         # 접촉력 업데이트
         self._update_contact_forces()
@@ -1672,19 +1589,33 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # ============================================================
-        # [H11] Stage A — Approach: rim_center xy 거리 × anti-parallel
-        #   "rim 평면을 target rim에 마주대러 간다"(사용자). cup_center(바닥) 기준 폐기.
+        # [H13] Stage A — Approach: tilt로 rim_center↔pour_point blend × anti-parallel
+        #   [H12 실패] approach 전체를 pour_point로 바꿨더니 직립 transport가 깨짐(test4 mouth_xy 0.40 고착,
+        #   source_up_dot 0.96, g_ready 미점화). 원인: 직립이면 림 수평→"최하단 점" 부재→gravity_perp≈0
+        #   →pour_point 방향 불안정(16° wobble 방위로 ±4.5cm 흔들림). pour 전 이송구간 전체가 직립이라
+        #   approach가 흔들리는 점을 쫓아 손목 wobble로 착취·이송 실패.
+        #   [H11 plateau] 반대로 rim_center만 쓰면 기울임 후 pour_point가 rim+4.5cm 밖에서 포화(8.8cm).
+        #   → blend: 직립=rim_center(안정 이송, test3 검증), 기울수록=pour_point(정밀, 8.8cm plateau 회피).
         #   anti_neg: source rim+z·target rim+z가 anti-parallel(뒤집힘)일수록 1 → 입구 마주봄 유도.
         # ============================================================
         self._rim_center_xy_dist = torch.norm(
             self._source_rim_center_w[:, :2] - self._target_opening_w[:, :2], dim=-1
+        )  # 로깅 유지(origin 진단용)
+        _tilt_target_approach = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
+        _tilt_blend = (tilt_amount / max(_tilt_target_approach, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
+        _approach_pt_xy = (
+            (1.0 - _tilt_blend) * self._source_rim_center_w[:, :2]
+            + _tilt_blend * self._source_pour_point_w[:, :2]
+        )
+        self._approach_xy_dist = torch.norm(
+            _approach_pt_xy - self._target_opening_w[:, :2], dim=-1
         )
         self._rim_antiparallel = (
             self._source_up_axis_w * self._target_up_axis_w
         ).sum(dim=-1)
         _anti_neg = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)
         _rim_approach_dist = (
-            self._rim_center_xy_dist - self.cfg.rim_approach_saturate
+            self._approach_xy_dist - self.cfg.rim_approach_saturate
         ).clamp(min=0.0)
         r_approach = (
             self.cfg.weight_dist_to_target
@@ -1849,7 +1780,8 @@ class PourRightEnv(DirectRLEnv):
             "log/internal_rot_gate":     self._internal_rot_gate.mean(),
             "log/rim_antiparallel":      self._rim_antiparallel.mean(),  # [H11] source·target rim+z (음수=마주봄)
             # 위치
-            "log/rim_center_xy_dist":    self._rim_center_xy_dist.mean(),  # [H11] approach 기준
+            "log/rim_center_xy_dist":    self._rim_center_xy_dist.mean(),  # origin 진단
+            "log/approach_xy_dist":      self._approach_xy_dist.mean(),    # [H13] blend(rim_center↔pour_point) 거리
             "log/cup_center_xy_dist":    self._cup_center_xy_dist.mean(),
             "log/mouth_xy_dist":         self._mouth_xy_distance.mean(),
             "log/mouth_z_clearance":     self._mouth_z_clearance.mean(),
