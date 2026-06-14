@@ -12,16 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""상수 정의: 5g_pour_right_v3
+"""상수 정의: 5g_pour_right_v5 (전면 재설계)
 
-Action (11D):
+Action (6D) — palm pose만 (손은 grasp_hold freeze):
   [0:6]  6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
-  [6:11] 5D per-finger lerp (freeze_grasp=True → 항상 1.0 강제)
 
-Actor Observation (60D) — pour-flow 중심:
+Actor Observation (60D) — pour-flow 중심 (demo 무관, 순수 상태):
   arm_joint_pos:            7
   arm_joint_vel:            7
-  finger_grasp_progress:    5  (per-finger grasp 유지 요약)
+  finger_grasp_progress:    5  (per-finger grasp 유지 요약, freeze지만 호환 유지)
   right_cup_pos_rel_palm:   3
   right_cup_quat:           4
   left_cup_pos_rel_palm:    3
@@ -34,31 +33,31 @@ Actor Observation (60D) — pour-flow 중심:
   last_palm_actions:        6
   bead_in_source_fraction:  1  (소스 컵 잔량 — "다 쏟았나" 인식)
   bead_in_target_fraction:  1  (타겟 컵 유입량 — "얼마나 넣었나" 인식)
-  bead_cross_fraction:      1  (mouth 통과 비율 — r_cross weight=20 대응)
-  spill_ratio:              1  (유출 비율 — spill_cost weight=10 대응)
+  bead_cross_fraction:      1  (mouth 통과 비율)
+  spill_ratio:              1  (유출 비율)
   flow_summary:             4  (source/target/cross/spill fraction step delta)
   Total:                   60
 
-Critic Base (110D) — sim-only full-state:
-  기존 actor full-state layout 유지: hand pos/vel, fingertip contact/force,
-  last_actions 포함. Actor LSTM에는 넣지 않지만 critic value 추정에는 유지한다.
+Critic Base (105D) — sim-only full-state:
+  actor full-state layout: hand pos/vel, fingertip contact/force, last_actions(6) 포함.
 
-Critic Extra (30D) — sim-only privileged:
+Critic Extra (39D) — sim-only privileged:
   left_arm_joint_pos:       9
   left_arm_joint_vel:       9
   distal_contact_binary:    5  (rl_dg_*_4)
   distal_contact_norm:      5
   cup_height_delta:         1
   rho:                      1
-  Total:                   30
+  demo_arm_joint_err:       1  (privileged: 현재 j1-4 ↔ demo pour 자세 거리)
+  demo_j5_err:              1  (privileged: 현재 j5 ↔ demo tilt 자세 거리)
+  demo_target_arm_q:        7  (privileged: NN-매칭된 demo pour arm 7DOF 목표)
+  Total:                   39
 
-Critic Total: 110 + 30 = 140D
+Critic Total: 105 + 39 = 144D
 
-Episode (10s @ 60Hz = 600 steps):
-  Pour phase: Fabrics arm policy + frozen hand
+Episode (20s @ 60Hz):
+  Pour phase: Fabrics arm policy (6D palm) + frozen hand. warmstart 컵-든-자세 시작.
 """
-
-import math
 
 from .pour_right_preset import (
     RIGHT_ARM_JOINT_NAMES,
@@ -77,11 +76,10 @@ NUM_ROBOT_DOF = NUM_ARM_DOF + NUM_HAND_DOF     # 27
 NUM_FINGERTIPS = 5
 
 # ---------------------------------------------------------------------------
-# Action space
+# Action space (palm pose만 — 손은 grasp_hold freeze)
 # ---------------------------------------------------------------------------
-NUM_PALM_ACTION   = 6   # 6D palm pose (Fabrics IK)
-NUM_FINGER_ACTION = 5   # per-finger lerp
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
+NUM_PALM_ACTION = 6   # 6D palm pose (Fabrics IK)
+NUM_ACTIONS = NUM_PALM_ACTION  # 6
 
 # ---------------------------------------------------------------------------
 # Observation space
@@ -89,9 +87,9 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 NUM_OBSERVATIONS = 60         # Actor: 7+7+5+3+4+3+3+3+3+8+6+4+4 = 60
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_BASE_OBSERVATIONS = 110
-NUM_CRITIC_EXTRAS   = 30      # left_arm(18) + distal(10) + cup_h(1) + rho(1)
-NUM_CRITIC_OBSERVATIONS = NUM_CRITIC_BASE_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 140
+NUM_CRITIC_BASE_OBSERVATIONS = 105   # last_actions 11→6 반영 (110-5)
+NUM_CRITIC_EXTRAS = 39   # left_arm(18)+distal(10)+cup_h(1)+rho(1)+demo(arm_err1+j5_err1+target_q7=9)
+NUM_CRITIC_OBSERVATIONS = NUM_CRITIC_BASE_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 144
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

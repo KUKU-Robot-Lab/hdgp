@@ -200,7 +200,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   max palm y = min(-0.22+0.50, 0.22) = 0.22m
     #   → cup-target gap ≈ 0.27 - 0.22 = 0.05m → g_align_xy(scale=5) = exp(-5×0.05) = 0.78
     #   → pre-pour reward 완전 활성화 가능
-    palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
+    palm_delta_xyz: float = 0.03  # [H9] 0.1→0.03: policy step(60Hz)당 최대 target 오프셋(=속도 cap).
+                                  #   0.1은 max 6m/s로 급이동→극단/외회전 귀결. 0.03(max 1.8m/s)+EMA 0.7로
+                                  #   demo(0.025m/s)에 가까운 천천한 이동. 도달은 palm_mins/maxs 박스가 누적 보장.
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm delta.
     # v7-2 grasp checkpoint 학습 조건과 반드시 일치해야 한다:
     #   5g_grasp_right_v7_2: palm_delta_xyz=0.15m, palm_delta_rot_deg=20°
@@ -232,200 +234,105 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # 비드 낙하 + 착지에 ~0.3~0.5초 필요 → 60 steps (1.0s @ 60Hz) 여유
     source_empty_hold_steps: int = 60
 
-    # -----------------------------------------------------------------------
-    # Reward weights
-    # total = r_hold + r_dist + ρ*(r_tilt+r_align+r_bead+r_drain) + r_success
-    #         - p_tilt - p_spill - p_action - demo_costs
+    # =====================================================================
+    # Reward weights — [전면 재설계] 2-Stage 가산 (정책·목표 분리)
+    #   total = r_hold + r_approach
+    #           + g_ready·( r_tilt + r_align + r_pour_z
+    #                       + align_gate·r_bead_in + align_gate·r_cross
+    #                       + align_gate·aim_gate·r_drain )
+    #           + w_success·r_success − w_spill·sqrt(spill)
     #
-    # ρ = (cup_center_xy_dist < pour_binary_xy_thresh).float()
-    # r_align = 0.5*(1 + directional_tilt_cos)  ← DexPour eq.2
-    #
-    # Bead reward 설계 (40% trap 방지):
-    #   r_bead_progressive = w * fraction^2  : 40%→0.16w, 80%→0.64w, 100%→w (비선형 가속)
-    #   r_bead_delta       = w * delta.clamp(0) : bead 유입 즉각 피드백 (LSTM temporal)
-    #   spill_cost         = w * sqrt(spill) : 초기 spill 강하게 패널티
-    # -----------------------------------------------------------------------
+    #   g_ready    = sigmoid((center − cup_center_xy_dist)/width)   # Stage A→B 공간 게이트
+    #   tilt_progress = (tilt_amount / tilt_target).clamp(0,1)      # tilt 강제(직립 farming 차단)
+    #   r_align    = tilt_progress·W·exp(−k·||pour_point − (target_opening+[0,0,z_margin])||_3d)
+    #   align_gate = exp(−align_gate_scale·mouth_xy)                # bead = 정밀 조준 종속
+    #   aim_gate   = (dir_cos_c>0) & (tilt_amount>drain_tilt_min)
+    #   demo는 reward에 없음 — critic privileged obs로만 (deadlock 제거).
+    # =====================================================================
 
-    # Grasp maintain (r_hold) — tilt-phase aware
+    # Stage A — Grasp maintain (r_hold), tilt-phase aware
     weight_grasp_maintain: float = 0.50
-    weight_contact_maintain: float = 0.50   # 0.30→0.50 소폭 강화
+    weight_contact_maintain: float = 0.50
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 0.50
 
-    # Transport Stage 1a: Cartesian 근접 (cup_center_xy 기반, 거친 approach gradient)
+    # [H11] Stage A — Approach: rim_center xy 거리 × anti-parallel(source rim+z · target rim+z).
+    #   기존 cup_center(바닥) 기준 폐기 — "rim 평면을 target rim에 마주대러 간다"(사용자).
+    #   r_approach = W·exp(-k·(rim_xy - sat))·(anti_floor + (1-anti_floor)·anti_neg)
+    #   anti_neg = ((1 - source_up·target_up)/2): 직립(=+1)→0, 뒤집힘(=-1)→1. anti_floor로 부트스트랩.
     weight_dist_to_target: float = 5.0
     dist_to_target_exp_scale: float = 5.0
-    cup_transport_saturate_xy: float = 0.17  # 이 이하: transport max (saturate)
+    cup_transport_saturate_xy: float = 0.17  # (레거시, 미사용 — rim_approach_saturate로 대체)
+    rim_approach_scale: float = 5.0          # rim_xy 거리 exp 민감도
+    rim_approach_saturate: float = 0.05      # rim_xy 이 이하: 거리항 max (정밀 정렬 요구)
+    approach_anti_floor: float = 0.4         # 직립·원거리 transport gradient 보존 (anti=0서도 0.4)
 
-    # Transport Stage 1b: "좋은 arm+palm 자세" — demo pour palm pose 추종 (a11~a20 평균)
-    # palm pose가 맞으면 Fabrics IK가 j0~4를 demo 자세로 자동 수렴시킴 (redundancy 1DOF).
-    transport_palm_pos: tuple[float, ...] = (0.2938, -0.0781, 0.5629)
-    transport_palm_quat_xyzw: tuple[float, ...] = (-0.4532, 0.5712, 0.2235, 0.6469)
-    weight_palm_pose: float = 10.0   # crossover Phase A 시작값 (→ floor 3). test6의 정적 5는 crossover로 대체
-    palm_pose_pos_sharpness: float = 8.0
-    palm_pose_rot_sharpness: float = 1.0
+    # Stage A→B 공간 게이트 (단일 sigmoid, latch 없음)
+    g_ready_center: float = 0.20   # [H1] mouth_xy_distance(pour_point) 기준 (입구 위 자리잡음)
+    g_ready_width: float = 0.03
 
-    # Pour distance: Stage 2 (ρ gate + pour_warmup)
-    # pour point(rim 최하단) → target center XY 거리 기반
-    # 가까울수록 bead가 target에 들어갈 확률 높아짐
-    weight_pour_dist: float = 12.0   # test9: 25→12 복귀. test6 강화가 demo_arm_pose(20) 압도→자세붕괴(err 1.2→2.6)
-    pour_dist_exp_scale: float = 8.0   # test9: 5→8 복귀. test4 값(demo posture가 이미 mouth_xy 0.054로 잘 조준됨)
-    # z_window: pour_point Z soft gate (1~5cm 활성 구역, 정책이 최적 위치 탐색)
-    # z_lower_ramp: 0→lower_ramp 구간에서 0→1 상승 (하한)
-    # z_upper_end:  이 높이에서 완전히 0 (상한)
-    # z_upper_ramp: upper_end 기준으로 이 폭만큼 앞에서 하강 시작
-    z_window_lower_ramp: float = 0.01   # 0~1cm: 하한 ramp
-    z_window_upper_end:  float = 0.08   # 8cm에서 완전 소멸
-    z_window_upper_ramp: float = 0.03   # 5~8cm: 상한 ramp (8-3=5cm부터 하강)
-    # Stage B z-barrier: pour_point가 림 아래(clearance<margin)로 내려가는 것만 막음.
-    # 단방향 penalty — 림 위 높이는 강제하지 않고 beads가 결정하게 둠 (test7: ram 방지).
-    weight_pour_z: float = 300.0        # 1cm 위반 ≈ 3.0 penalty
-    pour_z_margin: float = 0.03         # test11: 1cm→3cm. clearance 1.7cm에 안착→source cup이 rim에 닿음. 여유 확보
-    # [test10] 하강 보상: pour_point를 타겟 입구 z(배리어 위 z_target)로 끌어내림.
-    #   test9서 mouth_z_clearance 0.17m 고공 부유 → 고공 살포(spill 0.22)·전달 미미. 하강 견인항 전무가 원인.
-    #   aim_gate(dir_cos_c>0 & tilt>min)로 조준+틸트 시에만 활성 → 직립/미조준 조기 다이빙 차단.
-    weight_descend: float = 10.0   # [test13-B1] 25→10: dense basin 축소(farming이 bead_in 압도 → landing 동기 회복)
-    descend_target_offset: float = 0.02   # z_target = pour_z_margin + offset ≈ 5cm (3cm 배리어 위, 충돌 안전)
-    descend_scale: float = 3.0   # [lstm_test2] 10→3: z_clearance=0.37m에서 exp(-10*0.32)≈0.04 → 신호 없음. 3으로 낮춰 먼 거리 gradient 확보 exp(-3*0.32)≈0.38
-    descend_tilt_min: float = 0.05        # [lstm_test2] 0.25→0.05: up_dot=0.873→tilt_amount=0.064>0.05 → gate 즉시 개방. 0.25는 60°+ 필요로 사실상 영구 차단이었음
+    # Stage B — tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
+    weight_tilt: float = 15.0      # audit Check1: ≤15 (과대 시 "target 위 뒤집기" 수렴)
+    # [H10] 상시 내회전 유도 — r_tilt(곱)는 tilt 전엔 회전 gradient=0(chicken-and-egg) →
+    #   tilt 비종속 항으로 "내회전이 옳다"를 직접 학습. g_ready 게이트(접근 후만). w_tilt(15)보다
+    #   작아 "회전만 park" 아닌 "회전 후 tilt(+15)"로 견인. lstm_test2 internal_rot_gate 자발하락 대응.
+    weight_introt: float = 5.0
+    pour_tilt_target_deg: float = 135.0   # 수평(90°) 너머 dump까지 tilt_progress gradient 유지
 
-    # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
-    # weight_tilt는 v4에서 r_tilt 항 제거로 사장됨 → test6에서 r_tilt_depth용으로 아래(Stage B)에 단일 정의로 이전
-    weight_align: float = 6.00            # 방향 신호 강화 (주: v4에서 r_align 제거됨 — 사장 config)
-    # pour-point pivot gates (test6)
-    # initial_tilt_gate: pour_dist는 이 각도 이상 tilt 후 활성 → r_tilt와 충돌 제거
-    pour_point_tilt_threshold_deg: float = 15.0
-    # pour_aligned_gate: pour_point 정렬도 비례로 r_tilt 증폭 → pour_point pivot 행동 유도
-    pour_align_gate_scale: float = 8.0
-    weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
-    weight_bead_entry_delta: float = 300.0   # 비드 유입 즉각 피드백 (체류-Δ, 비드 안 쌓이면 ≈0)
-    weight_bead_cross: float = 150.0   # test11: 입구 관통(latch) 즉시 보상 → 새 비드 유입 강화(의도 복원). 체류와 무관
-    weight_source_drain: float = 21.0     # [lip-gate] 40→21: drain에 lip 게이트 exp(-pour_xy_scale·mouth_xy) 부여 + pour_xy(15)와 동작점 동등화(5.5≈5.8). lip 무관 spill farming(동작점 22.1) 차단. ([test12-C'] sustained 배출: r=W·pour_gate·(dir_cos_c>0)·lip_gate·(1-bead_in_source))
+    # Stage B — pour-point 3D 정렬 (tilt_progress 게이트 종속 → 직립 farming 차단)
+    weight_align: float = 25.0
+    pour_align_scale: float = 15.0  # [H3] 8→15: 입구 근처(4~7cm) gradient 강화. scale 8은 너무 완만해
+                                    #   (6.8 vs 4cm가 score .58 vs .73) mouth_xy가 입구반경(4.1cm) 밖에서 천장 → bead_in=0.
+                                    #   sharp화로 마지막 4cm 파고들어 bead_in 개통 유도.
+    pour_align_z_margin: float = 0.05  # target opening 위 목표점(충돌 방지)
 
-    # -----------------------------------------------------------------------
-    # Curriculum warmup (step 기반 선형 증가)
-    # pour_warmup: pour_dist + tilt + align 을 0→max 로 점진 증가
-    # bead_warmup: bead progressive/delta + source_drain 을 0→max 로 점진 증가
-    # -----------------------------------------------------------------------
-    curriculum_pour_warmup_steps: int = 40000   # 0~40k: pour stage 탐색 유도
-    force_pour_warmup: float = 1.0              # >=0 이면 step-based 램프 무시하고 고정값 사용. fresh start 시 -1.0으로 변경
-    curriculum_bead_warmup_start: int = 6400    # 100 에포크 (100 × horizon 64) 이후 활성
-    curriculum_bead_warmup_steps: int = 1       # start 즉시 1.0으로 활성
+    # Stage B — pour-point 높이: 단방향 barrier(림 아래 차단)
+    weight_pour_z: float = 300.0   # 1cm 위반 ≈ 3.0 penalty
+    pour_z_margin: float = 0.03    # clearance 여유 (source cup이 rim에 닿지 않게)
+
+    # Stage B — bead (정밀 조준 종속 — "높은 데서 대충 부어 넣기" 차단)
+    weight_bead_in: float = 200.0  # 실제 채움 (linear fill fraction) × align_gate
+    weight_bead_cross: float = 150.0  # 입구 관통(latch) 즉시 × align_gate
+    weight_source_drain: float = 21.0  # 배출(빈 컵 유도) × align_gate × aim_gate
+    drain_tilt_min: float = 0.05   # aim_gate tilt 임계 (직립 조기 drain 차단)
+    align_gate_scale: float = 15.0    # [H2] bead 게이트 = pour_alignment_score(3D, scale=15): xyz 정밀 조준일수록 1
+    bead_near_scale: float = 12.0     # _compute_bead_flags의 _bead_near_score 계산용 (진단 버퍼)
+
+    # [H4] 내회전 게이트 — 붓는 방향(source→target) 대비 손바닥 법선 chirality (2D 외적)
+    #   rot_cross = pour_dir × palm_normal. demo(내회전) -0.74~-1.0, 외회전 >-0.2 (완벽 분리).
+    #   r_align·bead에 곱 → 외회전이면 자세/pour 보상 0 → 내회전으로만 보상. r_tilt는 제외(부트스트랩).
+    # [H11] 내회전 판정 = rl_dg_palm +y · world +x < thresh (cos<0=둔각 90~270°, 손바닥 roll).
+    #   기존 palm+z(손가락축, H10b)는 roll 무감지(cos≈1 고정) → drift 못 막음. sim 렌더링 확인.
+    #   gate = sigmoid((thresh - cos)/temp).
+    internal_rot_thresh: float = 0.0   # cos<thresh → 내회전. (경계 cos=0=90°)
+    internal_rot_temp: float = 0.1     # 0.2→0.1 가파름: drift(cos→0)시 gate 급감 → 내회전 유지 강제
+    # [H5] roll 방향성을 r_tilt에 결합 (별도 r_introt 가산은 자세 압도 부작용 → 폐기).
+    #   r_tilt *= rot_tilt_floor + (1-rot_tilt_floor)*internal_rot_gate.
+    # [H10] floor 0.3 → 0.0 (lstm_test2 분석): floor=0.3이 외회전(gate≈0) tilt에 30% 보상 →
+    #   "외회전으로 살짝 기울여 받기"가 가장 쉬운 tilt local min (rim_facing_cos 0.21→0.42 외회전 심화,
+    #   j5 demo −1.16과 정반대 +1.02). 외회전 유도 불필요 → floor=0으로 내회전 시에만 tilt 보상.
+    #   rot_dir = internal_rot_gate. bootstrap은 초기 gate 분포(0.13~0.5)에 의존.
+    rot_tilt_floor: float = 0.0
 
     # Outcome
     weight_success: float = 100.00
-    weight_success_overfill: float = 0.0
-    weight_spill: float = 0.0             # [test6] spill 패널티 OFF: 틸트 시작 시 항상 음수 신호로 부트스트랩 억제 → 끔. 기록은 log/spill_ratio 유지. (success는 여전히 spill≤success_spill_max 요구)
+    weight_spill: float = 0.0      # spill 직접 페널티(기본 OFF). success는 spill≤success_spill_max 요구
 
-    # =====================================================================
-    # [REDESIGN v4 / test5] 인과사슬 기반 보상 (gate 5중곱 → 가산 구조)
-    #   Stage A: r_demo(j1-4 NN, 졸업감쇠) + r_approach(saturate, 기존 dist_to_target)
-    #   Stage B: g_ready · (r_pour_xy + r_zband + r_release)   ← pour-point 기하
-    #   Stage C: r_bead_near(dense) + r_bead_in(linear) + r_bead_cross + r_success
-    # 제거: weight_tilt(120° 추상목표), pour_warmup step-ramp, z_window 곱셈,
-    #       weight_crossover, r_palm_pose(고정 palm 앵커), r_align(부호의심)
-    # =====================================================================
-    use_redesign_reward: bool = True
-    # 졸업(graduate): flow EMA가 target 도달 시 demo 비중 floor로 단조 감쇠
-    graduate_flow_target: float = 0.03   # [lstm_test4] 0.10→0.03: 현재 flow(ema≈0.06)로 graduate=0 달성 가능하도록
-    graduate_ema_alpha: float = 0.008  # [lstm_test5] 0.002→0.008: pour burst 시 EMA 4배 빠르게 flow_target 도달
-    # 단일 ready gate (binary rho 대체 — 부드러운 sigmoid)
-    g_ready_center: float = 0.20    # cup_center_xy_dist 기준 (=기존 pour_binary_xy_thresh)
-    g_ready_width: float = 0.03
-    # Stage B: pour-point → target 기하 (정책이 직접 제어하는 rim-pivot 공간)
-    weight_pour_xy: float = 15.0    # [lip-gate] 8→15: lip(pour-point) 정렬 강화(drain과 동작점 동등). corr(mouth_xy,bead_in_target)=-0.43. (test13 이전 검증값, test14 audit max)
-    pour_xy_scale: float = 8.0
-    weight_pour_zband: float = 8.0  # pour-point 적정 높이 band (가산, 단방향 barrier 아님)
-    pour_zband_target: float = 0.05
-    pour_zband_sigma: float = 0.05
-    weight_release: float = 20.0    # [test8] 사장: r_release 제거(r_dir+r_depth로 대체)
-    weight_dir: float = 15.0        # [test13-B1] 50→15: dense basin 축소. [test9] 조준 r_dir(cup-center 앵커)
-    # [test9] j5(틸트 주역) demo 앵커 — Stage B서만 활성, flow 생기면 감쇠. 텔레포트 없는 틸트 부트스트랩.
-    weight_demo_j5: float = 15.0
-    weight_demo_j5_floor: float = 3.0
-    demo_j5_sharpness: float = 0.5    # [lstm_test4] 2.0→0.5: err=3.3에서 gradient 0.001→0.19 (190x), j5 -0.5→-1.16 학습 가능
-    # [test9] Stage-B 래치 (텔레포트 없는 2단계: 자세 확립 → 틸트/pour 활성). fallback으로 하방 보호.
-    stageB_d_ready: float = 0.10       # cup_center_xy_dist < 이 값 = 타겟 위 자리잡음
-    stageB_up_min: float = 0.70        # source_up_dot > 이 값 = 아직 직립(틸트 前)
-    stageB_sustain_k: int = 20         # K스텝 연속 충족 → 래치(단방향, 에피소드 리셋)
-    stageB_fallback_step: int = 240    # 미충족이어도 episode_length 이 스텝 후 강제 활성(최악도 test8+j5로 degrade)
-    weight_tilt: float = 15.0       # [test13-B1] 50→15: dense basin 축소(r_depth 계수). landing이 farming 압도하도록
-    # Stage C: bead dense (4.1cm binary → 연속 근접)
-    weight_bead_near: float = 30.0  # 방출된 bead가 target 축 근처면 보상 (sparse→dense 다리)
-    bead_near_scale: float = 12.0
-    weight_bead_in: float = 200.0   # 실제 채움 (linear fill fraction)
-    # r_bead_cross = weight_bead_cross(150) 재사용, 안전 barrier = weight_pour_z/pour_z_margin 재사용
-    # [test11-C] weight_source_drain은 위(line 303)에 정의됨 — 60.0으로 재활성
-
-    # =====================================================================
-    # [REDESIGN v5] 2축 재설계: (1) pour 보상 도달성 + (2) plateau deadlock 제거
-    #   진단(test4): shaping(pour_xy 10 + zband 6.5 + transport 4.8 + demo 5.1 ≈ 27/step)이
-    #   tilt 없이 최대화 → 정책이 tilt를 적극적으로 unlearn(directional_tilt_cos -0.76→+0.48).
-    #   bead_in(200x)은 한 번도 경험 못 함(도달 불가) → gradient 없음. graduate는
-    #   flow=0이라 영구 deadlock(demo weight 영구 full).
-    # ---------------------------------------------------------------------
-    # 축1: pour-start reset curriculum — 일부 env를 "이미 target 위로 기운 pour 자세"로
-    #   reset → 정책이 step 1부터 bead 흐름/보상을 경험. 진행에 따라 upright start로 anneal.
-    # [test6] lip-gate(drain→mouth_xy 게이트) 후 Z 0.167m 고착 확인 → drain 인센티브가 없어
-    #   tilt/aim_gate_z 충족 안 됨 → r_descend fires 안 함 → Z 순환 deadlock.
-    #   pour_start curriculum 재활성: 50% envs가 105° pre-tilted+target 위로 reset
-    #   → step 1부터 aim_gate_z 충족+drain fires → Z 하강 bootstrap.
-    enable_pour_start_curriculum: bool = False
-    pour_start_ratio_init: float = 0.5         # 초기 pour-ready reset 비율
-    pour_start_ratio_final: float = 0.05       # 최종(거의 전부 upright grasp start)
-    pour_start_anneal_start_step: int = 96000  # ~1500ep(×64) 후 anneal 시작(그 전엔 비율 유지)
-    pour_start_anneal_steps: int = 256000      # 이후 ~4000ep 동안 final로 선형 감쇠
-    pour_start_tilt_deg: float = 105.0         # demo j5≈-1.2 ↔ up_dot≈cos(105°)≈-0.26
-    pour_start_zband: float = 0.20             # [lstm_test2] 0.05→0.20: hold_tilt=True(직립 teleport)에서 컵 높이≈0.12m가 타겟컵에 침투(rim+0.05-0.12=-0.07m). 0.20으로 컵 바닥=+0.08m 확보
-    # tilt를 teleport(강체회전+IK)가 아니라 hold 단계에서 rim-pivot 액션으로 물리적으로 생성.
-    #   teleport는 upright-over-target까지만(병진 → IK 오차 작고 자세 자연), tilt는 물리로 →
-    #   grasp 정합을 물리가 보장(컵 놓침/손가락 관통 방지), 정책 manifold 위의 자연스러운 자세.
-    pour_start_hold_tilt: bool = True
-    pour_start_tilt_action: float = -0.875     # 부호 -: 렌더 검증상 +는 target 반대로 기울어 음수로 교정 (≈105°)
-    pour_start_tilt_ramp_steps: int = 60       # hold 동안 0→tilt_action 선형 램프(컵 튕김 방지)
-
-    # 축2: demo 졸업을 flow EMA가 아니라 curriculum 비율에 연동(graduate 순환 deadlock 제거).
-    #   demo_arm_pose_w = floor + (full-floor)·(ratio/ratio_init)
-    #   → pour-start 비율↓(정책 자립)일수록 demo anchor↓. flow 의존 X.
-    # curriculum OFF 테스트에서는 원래(flow-EMA) graduate로 복귀(test4와 동일 보상).
-    #   박스가 풀려 tilt→pour→flow가 생기면 graduate deadlock도 자연 해소되는지 확인.
-    demo_decay_follows_curriculum: bool = False
-
-
-    # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
+    # EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
 
     # -----------------------------------------------------------------------
-    # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
+    # Demo (critic privileged obs 전용 — 정책 reward에 사용하지 않음)
+    #   "현재자세 ↔ demo pour 자세" 거리를 critic obs로만 제공 → value 추정 가속,
+    #   초기 탐색 감소. 정책은 demo를 못 봄(reward hacking·deadlock 제거).
     # -----------------------------------------------------------------------
-    enable_demo_pose_reward: bool = True
+    enable_demo_critic_obs: bool = True
     demo_pose_dataset_dir: str = _DEFAULT_DEMO_POSE_DATASET_DIR
     demo_pose_paths: tuple[str, ...] = tuple(
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "pour"
-    weight_demo_arm_pose: float = 20.0   # crossover Phase A 시작값 (→ floor 5)
-    demo_pose_warmup_steps: int = 1
-    # near_gate = exp(-(dist/9999)^2) ≈ 1.0 (항상 열린 상태)
-    demo_pose_near_gate_xy: float = 9999.0
     demo_nn_lookahead_frames: int = 10
-
-    # Posture-gated weight crossover: 자세(demo/palm) → pour-point 전환.
-    # 래치-후-단조(latch-then-monotonic): posture_rate(demo_arm_joint_err<threshold 비율)가
-    # trigger_rate를 latch_sustain회 연속(interval 간격) 충족하면 "래치" → 그 시점부터
-    # alpha=min((step-latch_step)/monotonic_steps, 1)로 자세조건 무관하게 단조 증가.
-    # 게이트는 "시작 트리거" 1회만 사용 → 전진이 게이트를 재확인하지 않아 진동 없음.
-    # demo/palm weight는 감쇠하지 않고 정적 유지(j1-5 자세 hold = Stage A 유지).
-    enable_weight_crossover: bool = False   # test9: True→False. crossover는 pour_dist=25가 만든 자세↔조준 충돌의 밴드에이드였음. step-warmup(test4) 경로로 복귀
-    crossover_posture_threshold: float = 1.3   # test4 자세 도달치(~1.2) 기준
-    crossover_trigger_rate: float = 0.5        # env 절반 자세 진입 시 래치 후보
-    crossover_increment_interval: int = 1500   # 래치 조건 점검 간격(step)
-    crossover_latch_sustain: int = 2           # trigger를 2회 연속 충족 시 래치(노이즈 방지)
-    crossover_monotonic_steps: int = 40000     # 래치 후 alpha 0→1 단조 구간(≈625ep)
-    # (미사용: 래치-후-단조 전환으로 weight 감쇠 폐기, 호환성 위해 보존)
-    crossover_num_increments: int = 50
-    weight_demo_arm_pose_floor: float = 5.0
-    weight_palm_pose_floor: float = 3.0
 
     # ADR: spill penalty 스케줄 (low→high)
     enable_spill_adr: bool = False   # [test6] spill 패널티 OFF와 함께 ADR도 끔 (weight_spill=0 사용, ADR이 덮어쓰지 않게)
@@ -455,12 +362,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     reward_grasp_slip_sharpness: float = 3.0
     contact_maintain_min_others: int = 2
     force_balance_sharpness: float = 2.0
-    pour_tilt_target_deg: float = 135.0   # [test10] 120→135: 수평(90°) 너머 dump까지 r_depth gradient 유지
-    pour_tilt_sharpness: float = 4.0   # 120° 목표 집중도 (test8: 2→4, 90° local min 탈출)
 
-    # ρ binary pour gate: cup_center_xy_dist < thresh → pour stage 활성
+    # success 판정용 게이트: cup_center_xy_dist < thresh
     pour_binary_xy_thresh: float = 0.20
-    pour_binary_tilt_thresh: float = 0.50  # gate_pour_binary 진단용 (ρ에는 미사용)
 
     # -----------------------------------------------------------------------
     # 종료 조건

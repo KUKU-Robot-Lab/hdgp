@@ -28,7 +28,7 @@ def test_v3_lstm_actor_uses_pour_flow_observation_contract() -> None:
     env = _read("pour_right_env.py")
 
     assert _int_constant(constants, "NUM_OBSERVATIONS") == 60
-    assert _int_constant(constants, "NUM_CRITIC_OBSERVATIONS") == 140
+    assert _int_constant(constants, "NUM_CRITIC_OBSERVATIONS") == 144
     assert "finger_grasp_progress" in env
     assert "flow_summary" in env
 

@@ -1,0 +1,55 @@
+# World mesh for OpenArm + Teosllo right arm — POUR_V5 전용
+# open_tesollo_boxes_no_table.yaml 복사본. 차이: left_target_cup box를 실제 cup pose에 정렬.
+#   공유 파일(no_table)은 grasp_v7~v11/pour_v3(불변)/both/rh56f1 등이 쓰므로 건드리지 않음.
+#   pour_v5만 이 파일을 world_filename으로 사용 → box 수정이 다른 태스크에 영향 없음.
+
+left_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 .03 1.1
+  transform: 0.45 -.45 .75 0. 0. 0. 1.
+
+right_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 .03 1.1
+  transform: 0.45 .60 .75 0. 0. 0. 1.
+
+back_wall:
+  env_index: all
+  type: box
+  scaling: .03 1.1 1.1
+  transform: -0.4 0.075 .75 0. 0. 0. 1.
+
+top_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 1.1 .03
+  transform: 0.45 0.08 1.30 0. 0. 0. 1.
+
+
+# Robot torso column: covers world_body_sphere1/2/3 positions (z=0.15/0.45/0.70, r=0.18/0.15/0.12)
+# World mesh box supplements body_repulsion spheres via WorldMeshesModel SDF path.
+# Robot base at env-local (0,0,0) → torso column along Z axis.
+robot_torso:
+  env_index: all
+  type: box
+  scaling: 0.10 0.10 1.0
+  transform: 0. 0. 0.5 0. 0. 0. 1.
+
+# Left arm static obstacle: approximate body position (fixed pose, y > 0 region)
+# Prevents right arm from entering left arm workspace.
+left_arm_body:
+  env_index: all
+  type: sphere
+  scaling: 0.15 0.15 0.15
+  transform: 0.25 0.20 0.55 0. 0. 0. 1.
+
+# Target cup held by left arm — [H11/pour_v5] 실제 cup pose 정렬 (위치+회전).
+#   center = FK(sim 검증) env-local [0.2904, 0.029, 0.3238], quat = cup 실제 orientation(xyzw).
+#   기존 공유 [0.268, 0.100, 0.310, identity]는 옛 LEFT_ARM_REST → 실제 cup보다 y +7cm 어긋남 + 회전 무시.
+left_target_cup:
+  env_index: all
+  type: box
+  scaling: 0.10 0.10 0.22
+  transform: 0.2904 0.0290 0.3238 0.061817 -0.011943 0.847019 0.527820

@@ -83,7 +83,7 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.0015      # scratch 탐색 + KL 안정 절충 (MLP 0.0008 / v10-3 0.002 사이)
+    entropy_coef: 0.0          # [lstm_test3] σ 폭주 차단. lstm_test2서 coef=0.0015가 dense-plateau의 약한 advantage를 이겨 logσ를 무한정 키워 entropy 8.3→20.2(σ≈0.97→7.0) 폭주 → action[-1,1]서 항상 clip → 정책 무작위화 → 전 지표 진동(수렴 곡선 부재). entropy bonus 제거 → σ가 advantage gradient로만 갱신되어 수축.
     truncate_grads: True
     e_clip: 0.2               # LSTM scratch 안정성 우선 (MLP 0.25에서 하향)
     # horizon=32: 600-step 장기 에피소드에서 BPTT가 더 긴 시계열 포착

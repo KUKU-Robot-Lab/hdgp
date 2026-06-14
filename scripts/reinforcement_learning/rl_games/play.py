@@ -485,6 +485,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg["params"]["seed"]
     _apply_playback_env_overrides(env_cfg)
 
+    # pour 태스크 한정: pour_point(빨강)/target_opening(파랑) 마커 강제 표시.
+    #   logged env.yaml이 enable_visual_markers=False로 덮어쓰므로 cfg 복원 이후에 주입.
+    if "pour" in train_task_name.lower() and hasattr(env_cfg, "enable_visual_markers"):
+        env_cfg.enable_visual_markers = True
+        print("[INFO] pour playback: visual markers (pour_point=red, target_opening=blue) enabled.")
+
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 

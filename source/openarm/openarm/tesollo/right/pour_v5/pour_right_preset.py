@@ -240,11 +240,11 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     #   g_clear gradient가 cup을 과도하게 올리는 문제 방지.
     d = math.pi / 180.0
     return [
-        # [REDESIGN v5] z_max 0.48→0.72: test4에서 palm_clamp_viol_z가 전 구간 ~0.2 지속
-        #   (정책이 tilt-pour로 palm을 z≈0.66~0.75로 올리려다 z_max=0.48에 계속 잘림 = 깊은
-        #   pour 차단의 근본 병목). 데모는 이 자세를 실제로 도달 → 박스가 인위적 한계였음.
-        #   과상승은 pour_zband(target 0.05)+pour_z barrier로 억제.
-        0.65, 0.22, 0.72,
+        # [H9] 상한 축소: demo a20 sim 측정 palm 도달범위(world) x 0.21~0.33, y -0.20~-0.10, z 0.30~0.58.
+        #   기존 박스가 demo 폭의 x6.7·y7.7·z2.2배라 palm이 극단(z_max 0.72→j4 한계, xy 사방)으로
+        #   이동해 외회전 귀결. 상한을 demo max + 여유로 축소 (min은 시작점 보호 위해 유지).
+        #   x 0.65→0.45, y 0.22→0.10, z 0.72→0.62 (demo z끝 0.58 + 4cm).
+        0.45, 0.10, 0.62,
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,
