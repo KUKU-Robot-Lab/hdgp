@@ -48,8 +48,11 @@ left_arm_body:
 # Target cup held by left arm — [H11/pour_v5] 실제 cup pose 정렬 (위치+회전).
 #   center = FK(sim 검증) env-local [0.2904, 0.029, 0.3238], quat = cup 실제 orientation(xyzw).
 #   기존 공유 [0.268, 0.100, 0.310, identity]는 옛 LEFT_ARM_REST → 실제 cup보다 y +7cm 어긋남 + 회전 무시.
+# [H14] 컵보다 작게 축소: 기존 0.10×0.10×0.22(half 5/5/11cm)는 cup(반경5cm,높이~17.7cm)을
+#   완전히 감싸 source lip이 입구 위로 못 옴 → mouth_xy/pour_point_z 0.11/0.54 고착.
+#   0.07×0.07×0.16(half 3.5/3.5/8cm): cup보다 작아 림 주변 clearance 확보, 입구 위 접근 허용.
 left_target_cup:
   env_index: all
   type: box
-  scaling: 0.10 0.10 0.22
+  scaling: 0.07 0.07 0.16
   transform: 0.2904 0.0290 0.3238 0.061817 -0.011943 0.847019 0.527820

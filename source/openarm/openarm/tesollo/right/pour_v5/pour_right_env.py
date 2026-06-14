@@ -1598,9 +1598,6 @@ class PourRightEnv(DirectRLEnv):
         #   → blend: 직립=rim_center(안정 이송, test3 검증), 기울수록=pour_point(정밀, 8.8cm plateau 회피).
         #   anti_neg: source rim+z·target rim+z가 anti-parallel(뒤집힘)일수록 1 → 입구 마주봄 유도.
         # ============================================================
-        self._rim_center_xy_dist = torch.norm(
-            self._source_rim_center_w[:, :2] - self._target_opening_w[:, :2], dim=-1
-        )  # 로깅 유지(origin 진단용)
         _tilt_target_approach = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
         _tilt_blend = (tilt_amount / max(_tilt_target_approach, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
         _approach_pt_xy = (
@@ -1685,9 +1682,7 @@ class PourRightEnv(DirectRLEnv):
             self.cfg.align_gate_scale,
         )
         r_bead_in = align_gate * self.cfg.weight_bead_in * self._bead_in_target_fraction
-        r_cross = (
-            align_gate * self.cfg.weight_bead_cross * self._bead_cross_delta.clamp(min=0.0)
-        )
+        # [H14] r_cross 제거: bead_cross_delta≈0(전 구간) → 항상 0 기여. bead_in_target가 결과 포착.
         r_drain = (
             align_gate
             * aim_gate
@@ -1696,7 +1691,7 @@ class PourRightEnv(DirectRLEnv):
         )
 
         r_stageB = g_ready * (
-            r_tilt + r_align + r_bead_in + r_cross + r_drain + r_pour_z
+            r_tilt + r_align + r_bead_in + r_drain + r_pour_z
         )
 
 
@@ -1727,7 +1722,7 @@ class PourRightEnv(DirectRLEnv):
             + r_introt
             + r_stageB
             + self.cfg.weight_success * r_success
-            - spill_weight * spill_cost
+            - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
         )
 
         # ---- ADR increment ----
@@ -1757,10 +1752,9 @@ class PourRightEnv(DirectRLEnv):
             "reward/align":    (g_ready * r_align).mean(),
             "reward/pour_z":   (g_ready * r_pour_z).mean(),
             "reward/bead_in":  (g_ready * r_bead_in).mean(),
-            "reward/cross":    (g_ready * r_cross).mean(),
             "reward/drain":    (g_ready * r_drain).mean(),
             "reward/success":  (self.cfg.weight_success * r_success).mean(),
-            "cost/spill":      (spill_weight * spill_cost).mean(),
+            "cost/spill":      (g_ready * spill_weight * spill_cost).mean(),
         }
         self.extras["log"] = reward_log
 
@@ -1780,8 +1774,7 @@ class PourRightEnv(DirectRLEnv):
             "log/internal_rot_gate":     self._internal_rot_gate.mean(),
             "log/rim_antiparallel":      self._rim_antiparallel.mean(),  # [H11] source·target rim+z (음수=마주봄)
             # 위치
-            "log/rim_center_xy_dist":    self._rim_center_xy_dist.mean(),  # origin 진단
-            "log/approach_xy_dist":      self._approach_xy_dist.mean(),    # [H13] blend(rim_center↔pour_point) 거리
+            "log/approach_xy_dist":      self._approach_xy_dist.mean(),    # [H13] blend(rim_center↔pour_point) 거리 (rim_center_xy 통합)
             "log/cup_center_xy_dist":    self._cup_center_xy_dist.mean(),
             "log/mouth_xy_dist":         self._mouth_xy_distance.mean(),
             "log/mouth_z_clearance":     self._mouth_z_clearance.mean(),
@@ -2044,7 +2037,7 @@ class PourRightEnv(DirectRLEnv):
         self._bead_in_source[env_ids] = False
         self._bead_ever_in_target[env_ids] = False
         self._bead_crossed_target_mouth[env_ids] = False
-        self._prev_bead_target_local_z[env_ids].fill_(10.0)
+        self._prev_bead_target_local_z[env_ids] = 10.0  # [H14] fix: [env_ids].fill_()는 복사본 채우는 no-op였음
         self._needs_grasp_init_update[env_ids] = True   # 다음 스텝에 palm local init 갱신
         self._bead_cross_count[env_ids] = 0
         self._bead_cross_fraction[env_ids] = 0.0
@@ -2359,7 +2352,7 @@ class PourRightEnv(DirectRLEnv):
         self._bead_in_source[env_ids] = False
         self._bead_ever_in_target[env_ids] = False
         self._bead_crossed_target_mouth[env_ids] = False
-        self._prev_bead_target_local_z[env_ids].fill_(10.0)
+        self._prev_bead_target_local_z[env_ids] = 10.0  # [H14] fix: [env_ids].fill_()는 복사본 채우는 no-op였음
         self._needs_grasp_init_update[env_ids] = True   # 다음 스텝에 palm local init 갱신
         self._bead_cross_count[env_ids] = 0
         self._bead_cross_fraction[env_ids] = 0.0

@@ -260,7 +260,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   기존 cup_center(바닥) 기준 폐기 — "rim 평면을 target rim에 마주대러 간다"(사용자).
     #   r_approach = W·exp(-k·(rim_xy - sat))·(anti_floor + (1-anti_floor)·anti_neg)
     #   anti_neg = ((1 - source_up·target_up)/2): 직립(=+1)→0, 뒤집힘(=-1)→1. anti_floor로 부트스트랩.
-    weight_dist_to_target: float = 5.0
+    weight_dist_to_target: float = 8.0   # [H14] 5→8: box 축소 후 마지막 거리 견인 강화
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # (레거시, 미사용 — rim_approach_saturate로 대체)
     rim_approach_scale: float = 5.0          # mouth_xy 거리 exp 민감도
@@ -280,7 +280,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_tilt_target_deg: float = 135.0   # 수평(90°) 너머 dump까지 tilt_progress gradient 유지
 
     # Stage B — pour-point 3D 정렬 (tilt_progress 게이트 종속 → 직립 farming 차단)
-    weight_align: float = 25.0
+    weight_align: float = 35.0   # [H14] 25→35: pour_point 3D 정밀 조준 강화 (bead_in 200 대비 비율 유지)
     pour_align_scale: float = 15.0  # [H3] 8→15: 입구 근처(4~7cm) gradient 강화. scale 8은 너무 완만해
                                     #   (6.8 vs 4cm가 score .58 vs .73) mouth_xy가 입구반경(4.1cm) 밖에서 천장 → bead_in=0.
                                     #   sharp화로 마지막 4cm 파고들어 bead_in 개통 유도.
@@ -316,7 +316,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # Outcome
     weight_success: float = 100.00
-    weight_spill: float = 0.0      # spill 직접 페널티(기본 OFF). success는 spill≤success_spill_max 요구
+    weight_spill: float = 0.0      # [test7] 2→0: lstm_test6 bead_in/spill 동조 붕괴 → spill 페널티 OFF (pour 회피 local min 제거)
 
     # EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
     ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
