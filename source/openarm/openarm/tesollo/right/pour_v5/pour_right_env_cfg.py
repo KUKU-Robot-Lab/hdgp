@@ -268,11 +268,15 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     approach_anti_floor: float = 0.4         # 직립·원거리 transport gradient 보존 (anti=0서도 0.4)
 
     # Stage A→B 공간 게이트 (단일 sigmoid, latch 없음)
-    g_ready_center: float = 0.20   # [H1] mouth_xy_distance(pour_point) 기준 (입구 위 자리잡음)
-    g_ready_width: float = 0.03
+    g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)
+    g_ready_width: float = 0.02    # [test_lstm3 재설계] 0.03→0.02: 더 sharp (rim 밖 90° 기울이기 차단)
+
+    # [2단 tilt 재설계] Stage A=0→85°(pre-pour) 세우기(always-on), Stage B=85→135° hinge 쏟기(g_ready)
+    tilt_pre_amount: float = 0.456   # 85° pre-pour tilt_amount = (1-cos85°)/2. Stage A 목표 자세(쏟기 직전)
+    weight_tilt_pre: float = 8.0     # Stage A r_tilt_A: 0→85° 세우기 (introt5·approach8 수준, park 억제)
 
     # Stage B — tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
-    weight_tilt: float = 15.0      # audit Check1: ≤15 (과대 시 "target 위 뒤집기" 수렴)
+    weight_tilt: float = 15.0      # [2단] Stage B r_tilt_B: 85→135° hinge 쏟기 (× g_ready). audit Check1: ≤15
     # [H10] 상시 내회전 유도 — r_tilt(곱)는 tilt 전엔 회전 gradient=0(chicken-and-egg) →
     #   tilt 비종속 항으로 "내회전이 옳다"를 직접 학습. g_ready 게이트(접근 후만). w_tilt(15)보다
     #   작아 "회전만 park" 아닌 "회전 후 tilt(+15)"로 견인. lstm_test2 internal_rot_gate 자발하락 대응.

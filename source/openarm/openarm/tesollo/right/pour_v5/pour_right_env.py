@@ -1643,7 +1643,14 @@ class PourRightEnv(DirectRLEnv):
         #   rot_dir = floor + (1-floor)·gate. floor=0.0(H10) → rot_dir = internal_rot_gate:
         #   외회전(gate~0)이면 tilt 보상 0, 내회전(gate~1) 가면 100%. 외회전 tilt local min 차단.
         rot_dir = self.cfg.rot_tilt_floor + (1.0 - self.cfg.rot_tilt_floor) * self._internal_rot_gate
-        r_tilt = self.cfg.weight_tilt * tilt_progress * rot_dir
+        # [2단 tilt] Stage A: 0→85°(pre-pour) 세우기, always-on(total 직접 가산, g_ready 무관).
+        #   pre-pour 자세를 정조준 전에 형성 → pour_point 안정화(직립 wobble 회피) → approach가 정조준 가능.
+        tilt_pre = self.cfg.tilt_pre_amount
+        tilt_progress_A = (tilt_amount / max(tilt_pre, 1e-6)).clamp(0.0, 1.0)
+        r_tilt_A = self.cfg.weight_tilt_pre * tilt_progress_A * rot_dir
+        # [2단 tilt] Stage B: 85→135° hinge 쏟기, × g_ready(정조준 후만).
+        tilt_progress_B = ((tilt_amount - tilt_pre) / max(tilt_target - tilt_pre, 1e-6)).clamp(0.0, 1.0)
+        r_tilt = self.cfg.weight_tilt * tilt_progress_B * rot_dir
         # [H10] 상시 내회전 유도 (tilt 비종속, Stage A always-on): "내회전이 옳다"를 직접 보상.
         #   r_tilt(곱)는 tilt 전엔 회전 gradient=0 → chicken-and-egg. r_introt가 tilt 없이도,
         #   접근 전(g_ready 무관)부터 내회전 gradient 제공(Stage B는 늦음). w_introt(5)<w_tilt(15)+
@@ -1720,6 +1727,7 @@ class PourRightEnv(DirectRLEnv):
             r_hold
             + r_approach
             + r_introt
+            + r_tilt_A          # [2단 tilt] Stage A: pre-pour(0→85°) 세우기 always-on
             + r_stageB
             + self.cfg.weight_success * r_success
             - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
@@ -1748,7 +1756,10 @@ class PourRightEnv(DirectRLEnv):
             "reward/approach": r_approach.mean(),
             "reward/tilt_rot_dir": rot_dir.mean(),
             "reward/introt":   r_introt.mean(),
-            "reward/tilt":     (g_ready * r_tilt).mean(),
+            "reward/tilt_pre": r_tilt_A.mean(),              # [2단] Stage A: 0→85° 세우기 (always-on)
+            "reward/tilt":     (g_ready * r_tilt).mean(),    # [2단] Stage B: 85→135° hinge 쏟기
+            "log/tilt_progress_A": tilt_progress_A.mean(),
+            "log/tilt_progress_B": tilt_progress_B.mean(),
             "reward/align":    (g_ready * r_align).mean(),
             "reward/pour_z":   (g_ready * r_pour_z).mean(),
             "reward/bead_in":  (g_ready * r_bead_in).mean(),
