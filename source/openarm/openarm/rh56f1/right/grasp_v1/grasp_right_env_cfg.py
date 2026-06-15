@@ -218,7 +218,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Phase curriculum:
     # 0 = grasp/lift only, 1 = add stabilize, 2 = full transport.
     enable_phase_curriculum: bool = True
-    phase_curriculum_initial_stage: int = 1
+    phase_curriculum_initial_stage: int = 2
     phase_curriculum_min_episodes: int = 100
     phase_curriculum_lift_success_threshold: float = 0.70
     phase_curriculum_stabilize_success_threshold: float = 0.70
@@ -273,6 +273,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_weight: float = 10.0
     transport_xyz_scale: float = 0.06
     transport_xyz_reward_weight: float = 40.0
+    transport_progress_reward_weight: float = 200.0
+    transport_progress_reward_cap: float = 0.02
     transport_height_target_delta: float = 0.09
     transport_height_quality_power: float = 1.0
     transport_upright_quality_power: float = 1.0

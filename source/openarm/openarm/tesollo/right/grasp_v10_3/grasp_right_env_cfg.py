@@ -194,6 +194,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_weight: float = 10.0
     transport_xyz_scale: float = 0.06          # v1 도너 값 (cup→goal 거리 reward)
     transport_xyz_reward_weight: float = 40.0  # v1 도너 값
+    transport_progress_reward_weight: float = 200.0
+    transport_progress_reward_cap: float = 0.02
     transport_height_target_delta: float = 0.09  # v1 도너 값 (transport 상승 목표)
     transport_height_quality_power: float = 1.0
     transport_upright_quality_power: float = 1.0
@@ -242,6 +244,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     middle_contact_weight: float = 8.0
     middle_contact_envelope_bonus_weight: float = 6.0
     min_middle_contacts_for_success: int = 4
+
+    # Final transport success upright gate.
+    stabilize_upright_max_deg: float = 5.0
 
     # Grasp phase에서 컵을 세운 채 감싸도록 유도한다.
     grasp_upright_weight: float = 6.0
