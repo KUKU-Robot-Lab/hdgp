@@ -1670,9 +1670,8 @@ class PourRightEnv(DirectRLEnv):
             * align_score
         )
 
-        # pour-point 높이: 림 아래 단방향 barrier
-        z_violation = (self.cfg.pour_z_margin - self._mouth_z_clearance).clamp(min=0.0)
-        r_pour_z = -(self.cfg.weight_pour_z * z_violation)
+        # [r_pour_z 제거] z barrier가 hinge pour와 상충(기울이면 pour_point 자연 하강→페널티→주기적 붕괴).
+        #   z 정렬은 align_gate(3D, z_margin 포함)가 담당. 충돌은 mouth_z_clearance/termination으로 모니터링.
         aim_gate = (
             (self._directional_tilt_cos_c > 0.0) & (tilt_amount > self.cfg.drain_tilt_min)
         ).float()
@@ -1698,7 +1697,7 @@ class PourRightEnv(DirectRLEnv):
         )
 
         r_stageB = g_ready * (
-            r_tilt + r_align + r_bead_in + r_drain + r_pour_z
+            r_tilt + r_align + r_bead_in + r_drain
         )
 
 
@@ -1759,7 +1758,6 @@ class PourRightEnv(DirectRLEnv):
             "reward/tilt_pre": r_tilt_A.mean(),              # [2단] Stage A: 0→85° 세우기 (always-on)
             "reward/tilt":     (g_ready * r_tilt).mean(),    # [2단] Stage B: 85→135° hinge 쏟기
             "reward/align":    (g_ready * r_align).mean(),
-            "reward/pour_z":   (g_ready * r_pour_z).mean(),
             "reward/bead_in":  (g_ready * r_bead_in).mean(),
             "reward/drain":    (g_ready * r_drain).mean(),
             "reward/success":  (self.cfg.weight_success * r_success).mean(),

@@ -236,13 +236,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # =====================================================================
     # Reward weights — [전면 재설계] 2-Stage 가산 (정책·목표 분리)
-    #   total = r_hold + r_approach
-    #           + g_ready·( r_tilt + r_align + r_pour_z
-    #                       + align_gate·r_bead_in + align_gate·r_cross
+    #   total = r_hold + r_approach + r_introt
+    #           + r_tilt_A                                  # [2단] Stage A: 0→85°(pre-pour) 세우기, always-on
+    #           + g_ready·( r_tilt + r_align               # [2단] r_tilt = Stage B 85→135° hinge. [r_pour_z 제거]
+    #                       + align_gate·r_bead_in
     #                       + align_gate·aim_gate·r_drain )
-    #           + w_success·r_success − w_spill·sqrt(spill)
+    #           + w_success·r_success − w_spill·sqrt(spill)  # w_spill=0
     #
-    #   g_ready    = sigmoid((center − cup_center_xy_dist)/width)   # Stage A→B 공간 게이트
+    #   g_ready    = sigmoid((center − mouth_xy_distance)/width)    # Stage A→B 정조준 게이트(pour_point)
     #   tilt_progress = (tilt_amount / tilt_target).clamp(0,1)      # tilt 강제(직립 farming 차단)
     #   r_align    = tilt_progress·W·exp(−k·||pour_point − (target_opening+[0,0,z_margin])||_3d)
     #   align_gate = exp(−align_gate_scale·mouth_xy)                # bead = 정밀 조준 종속
@@ -290,9 +291,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                                     #   sharp화로 마지막 4cm 파고들어 bead_in 개통 유도.
     pour_align_z_margin: float = 0.05  # target opening 위 목표점(충돌 방지)
 
-    # Stage B — pour-point 높이: 단방향 barrier(림 아래 차단)
-    weight_pour_z: float = 300.0   # 1cm 위반 ≈ 3.0 penalty
-    pour_z_margin: float = 0.03    # clearance 여유 (source cup이 rim에 닿지 않게)
+    # [제거] weight_pour_z / pour_z_margin: z barrier가 hinge pour와 상충하여 삭제 (lstm_test4 주기적 붕괴 원인)
 
     # Stage B — bead (정밀 조준 종속 — "높은 데서 대충 부어 넣기" 차단)
     weight_bead_in: float = 200.0  # 실제 채움 (linear fill fraction) × align_gate
