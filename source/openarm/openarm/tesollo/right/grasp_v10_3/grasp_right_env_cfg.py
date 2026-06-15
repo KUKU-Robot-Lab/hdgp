@@ -401,9 +401,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # tesollo spawn(0.27, -0.10, 0.297) 기준으로 설정 (v1 spawn 0.40 대비 x 하향).
     # min=max면 고정 goal.
     # -----------------------------------------------------------------------
-    transport_goal_x_range: tuple[float, float] = (0.20, 0.36)
-    transport_goal_y_range: tuple[float, float] = (0.00, 0.18)
-    transport_goal_z_range: tuple[float, float] = (0.42, 0.58)
+    transport_goal_x_range: tuple[float, float] = (0.25, 0.40)
+    transport_goal_y_range: tuple[float, float] = (-0.20, 0.00)   # ENV_WORLD -Y 방향
+    transport_goal_z_range: tuple[float, float] = (0.30, 0.55)
     transport_goal_dist_threshold: float = 0.04   # cup→goal 성공 임계 (v1 동일)
     transport_success_hold_steps: int = 30        # transport 성공 유지 step (v1 동일)
     enable_transport_goal_marker: bool = True

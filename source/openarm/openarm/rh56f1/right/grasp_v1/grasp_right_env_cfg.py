@@ -399,9 +399,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Transport goal sampling
     # -----------------------------------------------------------------------
     # min=max on each axis gives a fixed deployment target.
-    transport_goal_x_range: tuple[float, float] = (0.22, 0.42)
-    transport_goal_y_range: tuple[float, float] = (-0.02, 0.18)
-    transport_goal_z_range: tuple[float, float] = (0.42, 0.58)
+    transport_goal_x_range: tuple[float, float] = (0.25, 0.40)   # ENV_WORLD +X 방향 (테이블 앞쪽)
+    transport_goal_y_range: tuple[float, float] = (-0.20, 0.00)   # ENV_WORLD -Y 방향
+    transport_goal_z_range: tuple[float, float] = (0.30, 0.55)
     # 렌더링 시 랜덤 transport goal 위치 마커 (v10_3 동일)
     enable_transport_goal_marker: bool = True
     transport_goal_marker_radius: float = 0.025

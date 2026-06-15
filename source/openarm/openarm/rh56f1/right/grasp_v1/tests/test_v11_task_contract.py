@@ -128,7 +128,7 @@ def test_v11_samples_transport_goal_per_reset_env() -> None:
     env = _text("grasp_right_env.py")
 
     assert "transport_goal_x_range: tuple[float, float] = (0.22, 0.42)" in cfg
-    assert "transport_goal_y_range: tuple[float, float] = (-0.02, 0.18)" in cfg
+    assert "transport_goal_y_range: tuple[float, float] = (-0.18, 0.02)" in cfg
     assert "transport_goal_z_range: tuple[float, float] = (0.42, 0.58)" in cfg
     assert "def _sample_transport_goals" in env
     assert "self.object_goal[env_ids] = self._sample_transport_goals(n)" in env
