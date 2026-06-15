@@ -132,7 +132,9 @@ def test_v11_samples_transport_goal_per_reset_env() -> None:
     assert "transport_goal_z_range: tuple[float, float] = (0.42, 0.58)" in cfg
     assert "def _sample_transport_goals" in env
     assert "self.object_goal[env_ids] = self._sample_transport_goals(n)" in env
-    assert "goal_delta = self.object_goal[just_entering_transport] - current_object" in env
+    # 정책구동 transport: scripted lerp 제거, start 앵커 + action·radius reach 사용
+    assert "transport_palm_pose = torch.lerp(" not in env
+    assert "self.cfg.transport_palm_workspace_radius" in env
     assert "goal_delta[:, 2] = 0.0" not in env
 
 
@@ -217,7 +219,8 @@ def test_v11_actively_levels_cup_after_lift_with_movable_arm() -> None:
     assert 'self.extras["task/transport_xyz_palm_correction"]' in env
     assert 'self.extras["task/spawn_xy_palm_correction"]' in env
     assert "lift_palm_pose = self._apply_transport_xyz_palm_correction(" not in env
-    assert "transport_palm_pose = self._apply_transport_xyz_palm_correction(" in env
+    # 정책구동 transport: scripted xy hold 보정 호출 제거 (메서드 정의는 보존)
+    assert "transport_palm_pose = self._apply_transport_xyz_palm_correction(" not in env
     assert "cup_z_world = quat_apply(self.object_rot, z_local)" in env
     assert "cup_z_world[:, 1]" in env
     assert "-cup_z_world[:, 0]" in env

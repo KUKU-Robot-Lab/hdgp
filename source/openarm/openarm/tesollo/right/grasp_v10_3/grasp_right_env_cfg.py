@@ -406,6 +406,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     transport_goal_z_range: tuple[float, float] = (0.42, 0.58)
     transport_goal_dist_threshold: float = 0.04   # cup→goal 성공 임계 (v1 동일)
     transport_success_hold_steps: int = 30        # transport 성공 유지 step (v1 동일)
+    enable_transport_goal_marker: bool = True
+    transport_goal_marker_radius: float = 0.025
+    transport_goal_marker_color: tuple[float, float, float] = (1.0, 0.85, 0.05)
 
     # -----------------------------------------------------------------------
     # 물체 spawn

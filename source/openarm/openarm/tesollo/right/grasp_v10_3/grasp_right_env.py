@@ -51,6 +51,7 @@ for _parent in Path(__file__).resolve().parents:
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCollection
 from isaaclab.envs import DirectRLEnv
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_apply_inverse
@@ -285,6 +286,22 @@ class GraspRightEnv(DirectRLEnv):
             to_torch(OBJECT_GOAL_POS, device=self.device)
             .unsqueeze(0).repeat(self.num_envs, 1)
         )
+        if cfg.enable_transport_goal_marker:
+            self._transport_goal_marker = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/FiveGGraspRightTransportGoal",
+                    markers={
+                        "transport_goal": sim_utils.SphereCfg(
+                            radius=cfg.transport_goal_marker_radius,
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=cfg.transport_goal_marker_color
+                            ),
+                        ),
+                    },
+                )
+            )
+        else:
+            self._transport_goal_marker = None
         self.pregrasp_offset = to_torch(
             [cfg.pregrasp_offset_x, cfg.pregrasp_offset_y, cfg.pregrasp_offset_z],
             device=self.device,
@@ -806,6 +823,9 @@ class GraspRightEnv(DirectRLEnv):
             self.middle3_pos = (
                 self.robot.data.body_pos_w[:, self.middle3_body_indices, :] - env_origins.unsqueeze(1)
             )
+
+        if self._transport_goal_marker is not None:
+            self._transport_goal_marker.visualize(translations=self.object_goal + env_origins)
 
         self._update_contact_forces()
 

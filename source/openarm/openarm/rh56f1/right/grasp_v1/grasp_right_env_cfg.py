@@ -243,6 +243,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_palm_inward_offset: float = 0.025
     lift_palm_delta_xyz: float = 0.03
     lift_palm_delta_rot_deg: float = 15.0
+    # Transport: policy-driven palm xyz (v10_3 방식). start 앵커 + action·radius, rate-limit.
+    transport_palm_workspace_radius: float = 0.18   # goal 변위 커버용 reach 반경 (m)
+    transport_palm_target_max_delta: float = 0.01   # step당 palm target 이동 제한 (v10_3 동일)
 
     # -----------------------------------------------------------------------
     # Finger action semantics
@@ -399,6 +402,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     transport_goal_x_range: tuple[float, float] = (0.22, 0.42)
     transport_goal_y_range: tuple[float, float] = (-0.02, 0.18)
     transport_goal_z_range: tuple[float, float] = (0.42, 0.58)
+    # 렌더링 시 랜덤 transport goal 위치 마커 (v10_3 동일)
+    enable_transport_goal_marker: bool = True
+    transport_goal_marker_radius: float = 0.025
+    transport_goal_marker_color: tuple[float, float, float] = (1.0, 0.85, 0.05)
 
     # -----------------------------------------------------------------------
     # 물체 spawn

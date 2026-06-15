@@ -52,6 +52,7 @@ for _parent in Path(__file__).resolve().parents:
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCollection
 from isaaclab.envs import DirectRLEnv
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_from_angle_axis, quat_mul
@@ -314,6 +315,22 @@ class GraspRightEnv(DirectRLEnv):
             to_torch(_goal_mid, device=self.device)
             .unsqueeze(0).repeat(self.num_envs, 1)
         )
+        if cfg.enable_transport_goal_marker:
+            self._transport_goal_marker = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/FiveGGraspRightTransportGoal",
+                    markers={
+                        "transport_goal": sim_utils.SphereCfg(
+                            radius=cfg.transport_goal_marker_radius,
+                            visual_material=sim_utils.PreviewSurfaceCfg(
+                                diffuse_color=cfg.transport_goal_marker_color
+                            ),
+                        ),
+                    },
+                )
+            )
+        else:
+            self._transport_goal_marker = None
         self.pregrasp_offset = to_torch(
             [cfg.pregrasp_offset_x, cfg.pregrasp_offset_y, cfg.pregrasp_offset_z],
             device=self.device,
@@ -1086,19 +1103,10 @@ class GraspRightEnv(DirectRLEnv):
             self._transport_start_step_buf[just_entering_transport] = (
                 self.episode_length_buf[just_entering_transport]
             )
-            current_palm = self.palm_pose_targets[just_entering_transport]
-            current_object = self.object_pos[just_entering_transport]
-            goal_delta = self.object_goal[just_entering_transport] - current_object
-            transport_target = current_palm.clone()
-            transport_target[:, :3] = transport_target[:, :3] + goal_delta
-            transport_target[:, 3:] = current_palm[:, 3:]
-            transport_target = torch.max(
-                torch.min(transport_target, self.palm_maxs.unsqueeze(0)),
-                self.palm_mins.unsqueeze(0),
+            # 정책구동 transport: 진입 시점 palm을 reach 앵커로만 캡처 (scripted target 제거)
+            self.transport_palm_start_pose_buf[just_entering_transport] = (
+                self.palm_pose_targets[just_entering_transport]
             )
-            self.transport_palm_start_pose_buf[just_entering_transport] = current_palm
-            self.transport_palm_target_pose_buf[just_entering_transport] = transport_target
-            self.transport_object_start_pos_buf[just_entering_transport] = current_object
         self._transport_started_buf |= just_entering_transport
 
         is_transport = self._transport_started_buf
@@ -1251,19 +1259,22 @@ class GraspRightEnv(DirectRLEnv):
             )
         lift_palm_pose = torch.max(torch.min(lift_palm_pose, self.palm_maxs), self.palm_mins)
 
-        transport_elapsed_steps = torch.where(
-            self._transport_started_buf,
-            (self.episode_length_buf - self._transport_start_step_buf).clamp(min=0),
-            torch.zeros_like(self.episode_length_buf),
+        # 정책구동 transport (v10_3 방식): start 앵커 + action·radius를 절대 target으로,
+        # 직전 target 대비 rate-limit. 위치는 정책이, 방향은 아래 upright 보정이 담당.
+        transport_pos_raw = (
+            self.transport_palm_start_pose_buf[:, :3]
+            + fabric_palm_action[:, :3] * float(self.cfg.transport_palm_workspace_radius)
         )
-        transport_progress = (
-            transport_elapsed_steps.float() / max(TRANSPORT_PHASE_STEPS, 1)
-        ).clamp(max=1.0).unsqueeze(1)
-        transport_palm_pose = torch.lerp(
-            self.transport_palm_start_pose_buf,
-            self.transport_palm_target_pose_buf,
-            transport_progress,
+        transport_pos_raw = torch.max(
+            torch.min(transport_pos_raw, self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
         )
+        transport_pos_delta = (transport_pos_raw - self.palm_pose_targets[:, :3]).clamp(
+            min=-float(self.cfg.transport_palm_target_max_delta),
+            max=float(self.cfg.transport_palm_target_max_delta),
+        )
+        transport_palm_pose = self.transport_palm_start_pose_buf.clone()
+        transport_palm_pose[:, :3] = self.palm_pose_targets[:, :3] + transport_pos_delta
         transport_palm_pose[:, 3:] = self.transport_palm_start_pose_buf[:, 3:]
         transport_palm_pose = torch.max(
             torch.min(transport_palm_pose, self.palm_maxs),
@@ -1288,12 +1299,7 @@ class GraspRightEnv(DirectRLEnv):
                 is_transport,
                 transport_upright_progress,
             )
-        if self._transport_xyz_cfg("transport_xyz_hold_enabled", "stabilize_spawn_xy_hold_enabled", True):
-            transport_palm_pose = self._apply_transport_xyz_palm_correction(
-                transport_palm_pose,
-                is_transport,
-                torch.ones_like(stabilize_upright_progress),
-            )
+        # scripted xy hold 보정 제거: transport 위치는 정책이 담당 (정책구동)
 
         palm_pose = torch.where(
             is_transport.unsqueeze(1),
@@ -1499,6 +1505,9 @@ class GraspRightEnv(DirectRLEnv):
             self.middle3_pos = (
                 self.robot.data.body_pos_w[:, self.middle3_body_indices, :] - env_origins.unsqueeze(1)
             )
+
+        if self._transport_goal_marker is not None:
+            self._transport_goal_marker.visualize(translations=self.object_goal + env_origins)
 
         self._update_contact_forces()
 
