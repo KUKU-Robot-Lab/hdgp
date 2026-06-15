@@ -1758,14 +1758,11 @@ class PourRightEnv(DirectRLEnv):
             "reward/introt":   r_introt.mean(),
             "reward/tilt_pre": r_tilt_A.mean(),              # [2단] Stage A: 0→85° 세우기 (always-on)
             "reward/tilt":     (g_ready * r_tilt).mean(),    # [2단] Stage B: 85→135° hinge 쏟기
-            "log/tilt_progress_A": tilt_progress_A.mean(),
-            "log/tilt_progress_B": tilt_progress_B.mean(),
             "reward/align":    (g_ready * r_align).mean(),
             "reward/pour_z":   (g_ready * r_pour_z).mean(),
             "reward/bead_in":  (g_ready * r_bead_in).mean(),
             "reward/drain":    (g_ready * r_drain).mean(),
             "reward/success":  (self.cfg.weight_success * r_success).mean(),
-            "cost/spill":      (g_ready * spill_weight * spill_cost).mean(),
         }
         self.extras["log"] = reward_log
 
@@ -1777,10 +1774,10 @@ class PourRightEnv(DirectRLEnv):
             "log/aim_gate":              aim_gate.mean(),
             # tilt / 정렬
             "log/tilt_amount":           tilt_amount.mean(),
-            "log/tilt_progress":         tilt_progress.mean(),
+            "log/tilt_progress_A":       tilt_progress_A.mean(),   # [2단] 0→85° 진행도
+            "log/tilt_progress_B":       tilt_progress_B.mean(),   # [2단] 85→135° 진행도
             "log/pour_align_score":      align_score.mean(),
             "log/source_up_dot":         self._source_up_dot_world.mean(),
-            "log/directional_tilt_cos_c": self._directional_tilt_cos_c.mean(),
             "log/rim_facing_cos":        self._rim_facing_cos.mean(),  # [H11] palm+y·worldX (음수=내회전)
             "log/internal_rot_gate":     self._internal_rot_gate.mean(),
             "log/rim_antiparallel":      self._rim_antiparallel.mean(),  # [H11] source·target rim+z (음수=마주봄)
@@ -1806,12 +1803,7 @@ class PourRightEnv(DirectRLEnv):
             # bead flow
             "log/bead_in_target":        self._bead_in_target_fraction.mean(),
             "log/bead_in_source":        self._bead_in_source_fraction.mean(),
-            "log/bead_cross":            self._bead_cross_fraction.mean(),
-            "log/bead_cross_delta":      self._bead_cross_delta.clamp(min=0.0).mean(),
             "log/spill_ratio":           self._spill_ratio.mean(),
-            # critic privileged demo 진단
-            "log/demo_arm_joint_err":    demo_feat["demo_arm_joint_err"].mean(),
-            "log/demo_j5_err":           demo_feat["demo_j5_err"].mean(),
         }
         if self.spill_adr is not None:
             diag["log/adr_spill"] = torch.tensor(self.spill_adr.progress, device=self.device)
