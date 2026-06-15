@@ -1143,24 +1143,37 @@ class PourRightEnv(DirectRLEnv):
             self.cup.data.root_quat_w,
             self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
         )
+        self._source_rim_center_w = _rim_center_w  # rim 입구 중심 (approach rim-xy 거리용)
         # cup up axis (world)
         _cup_up_w = quat_apply(
             self.cup.data.root_quat_w,
             self._source_cup_up_axis_b.unsqueeze(0).expand(n, -1),
         )
-        # gravity direction perpendicular to cup up → points toward lowest rim
+        # target opening — pour_point xy 방향 계산에 선행 필요 (순서 이동)
+        self._target_opening_w = left_target_pos_w + quat_apply(
+            left_target_quat_w,
+            self._target_cup_opening_pos_b.unsqueeze(0).expand(n, -1),
+        )
+        # gravity direction perpendicular to cup up → points toward lowest rim (실시간)
         _world_down = _cup_up_w.new_zeros(n, 3)
         _world_down[:, 2] = -1.0
         _dot = (_world_down * _cup_up_w).sum(dim=-1, keepdim=True)
         _gravity_perp = _world_down - _dot * _cup_up_w
         _gravity_perp_norm = _gravity_perp.norm(dim=-1, keepdim=True).clamp(min=1e-6)
         _gravity_perp_hat = _gravity_perp / _gravity_perp_norm
-        self._source_pour_point_w = _rim_center_w + self.cfg.source_outer_radius * _gravity_perp_hat
-        self._source_rim_center_w = _rim_center_w  # rim 입구 중심 (approach rim-xy 거리용)
-        self._target_opening_w = left_target_pos_w + quat_apply(
-            left_target_quat_w,
-            self._target_cup_opening_pos_b.unsqueeze(0).expand(n, -1),
-        )
+        # [(a) pour_point xy 방향 안정화] xy 방향 = 두 컵 위치(target방향, 자세 무관) → wobble 제거.
+        #   기존 gravity_perp xy는 자세-민감(직립 근처 ≈0, 16° wobble) → approach 추종 시 mouth_xy 진동
+        #   → g_ready(width 0.02) 절벽 붕괴(test5). introt가 컵을 target으로 회전시키므로
+        #   gravity_perp≈target방향(올바른 자세선 일치). xy 크기(기울임 깊이=|perp_xy|)와 z는
+        #   실시간 gravity_perp 유지(물리 정확). z는 g_ready 미사용·align z_margin 완화로 wobble 영향 작음.
+        _perp_xy_mag = _gravity_perp_hat[:, :2].norm(dim=-1, keepdim=True)
+        _pour_dir_xy = self._target_opening_w[:, :2] - _rim_center_w[:, :2]
+        _pour_dir_hat = _pour_dir_xy / _pour_dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        _pp_xy = _rim_center_w[:, :2] + self.cfg.source_outer_radius * _perp_xy_mag * _pour_dir_hat
+        _pp_z = (
+            _rim_center_w[:, 2] + self.cfg.source_outer_radius * _gravity_perp_hat[:, 2]
+        ).unsqueeze(-1)
+        self._source_pour_point_w = torch.cat([_pp_xy, _pp_z], dim=-1)
         self._source_pour_axis_w = quat_apply(
             self.cup.data.root_quat_w,
             self._source_cup_pour_axis_b.unsqueeze(0).expand(n, -1),
@@ -1598,10 +1611,8 @@ class PourRightEnv(DirectRLEnv):
         #   → blend: 직립=rim_center(안정 이송, test3 검증), 기울수록=pour_point(정밀, 8.8cm plateau 회피).
         #   anti_neg: source rim+z·target rim+z가 anti-parallel(뒤집힘)일수록 1 → 입구 마주봄 유도.
         # ============================================================
-        # [tilt-align trade-off 해소] blend 분모 135°→85°(tilt_pre): 중간~깊은 tilt에서
-        #   approach가 pour_point를 더 빨리 100% 추종 → 기울여도 pour_point가 target 입구 위 유지
-        #   → align 손실 없이 tilt 85°+ 진행 가능. 직립(tilt≈0)은 여전히 blend≈0=rim_center(H12 wobble 회피).
-        _tilt_blend = (tilt_amount / max(self.cfg.tilt_pre_amount, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
+        _tilt_target_approach = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
+        _tilt_blend = (tilt_amount / max(_tilt_target_approach, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
         _approach_pt_xy = (
             (1.0 - _tilt_blend) * self._source_rim_center_w[:, :2]
             + _tilt_blend * self._source_pour_point_w[:, :2]
