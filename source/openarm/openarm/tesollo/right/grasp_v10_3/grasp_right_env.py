@@ -317,6 +317,11 @@ class GraspRightEnv(DirectRLEnv):
         self._lift_success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._lift_success_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._eval_mass_shift_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # Transport phase 버퍼 (stabilize 성공 latch → 정책 구동 transport)
+        self.is_stabilize_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.is_transport_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.transport_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.episode_transport_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
         # Hand joint targets (per-joint delta 결과)
@@ -807,6 +812,19 @@ class GraspRightEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     # Observations: Actor 133D no-mass (134D optional mass/debug) | Critic 170D
     # ------------------------------------------------------------------
+    def _sample_transport_goals(self, n: int) -> torch.Tensor:
+        """에피소드별 랜덤 transport goal 샘플링 (v1과 동일). min=max면 고정 goal."""
+        def _axis(value_range: tuple[float, float]) -> torch.Tensor:
+            low, high = float(value_range[0]), float(value_range[1])
+            if low == high:
+                return torch.full((n,), low, device=self.device)
+            return torch.empty(n, device=self.device).uniform_(low, high)
+
+        x = _axis(self.cfg.transport_goal_x_range)
+        y = _axis(self.cfg.transport_goal_y_range)
+        z = _axis(self.cfg.transport_goal_z_range)
+        return torch.stack([x, y, z], dim=1)
+
     def _get_observations(self) -> dict:
         # ==== 공통 clean state (critic용) ====
         arm_joint_pos_clean    = self.robot.data.joint_pos[:, self.arm_dof_indices]
@@ -840,6 +858,7 @@ class GraspRightEnv(DirectRLEnv):
         ).view(self.num_envs, -1)
 
         palm_to_cup = cup_pos_noisy - palm_center_pos
+        cup_to_goal = self.object_goal - cup_pos_noisy   # transport: 정책이 goal 인지
 
         # middle phalanx → cup 벡터 (FK 기반, sim2real 가능)
         middle3_pos_noisy = self.middle3_pos + torch.randn_like(self.middle3_pos) * σ_bp
@@ -866,6 +885,7 @@ class GraspRightEnv(DirectRLEnv):
             palm_center_pos,        # 3
             fingertip_pos_rel_palm, # 15
             palm_to_cup,            # 3
+            cup_to_goal,            # 3  (transport)
             last_actions,           # 27
         ]
         if self.cfg.actor_observe_bead_mass:
@@ -905,6 +925,7 @@ class GraspRightEnv(DirectRLEnv):
         middle_to_cup_clean = (
             self.middle3_pos - cup_pos_clean.unsqueeze(1)
         ).view(self.num_envs, -1)   # (N, 15)
+        cup_to_goal_clean = self.object_goal - cup_pos_clean   # transport (clean)
 
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,
@@ -914,14 +935,15 @@ class GraspRightEnv(DirectRLEnv):
             palm_center_pos_clean,
             (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
             cup_pos_clean - palm_center_pos_clean,
+            cup_to_goal_clean,      # 3D (transport)
             last_actions,
             tip_force_xyz_norm,     # 15D (critic도 동일 변환)
             middle_to_cup_clean,    # 15D
             phase_step_ratio,
-        ], dim=-1)   # 133D
+        ], dim=-1)   # 136D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 133
+            actor_obs_clean,        # 136
             self._bead_mass_normalized.unsqueeze(-1),  # 1
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
@@ -932,7 +954,7 @@ class GraspRightEnv(DirectRLEnv):
             middle_binary,          # 5
             middle_force_norm,      # 5
             fingertip_signed_dist,  # 5
-        ], dim=-1)   # 170D
+        ], dim=-1)   # 173D
 
         critic_obs = torch.nan_to_num(critic_obs, nan=0.0, posinf=5.0, neginf=-5.0)
 
@@ -1006,6 +1028,15 @@ class GraspRightEnv(DirectRLEnv):
         lifted_gate = (cup_height_delta >= self.cfg.lift_success_height).float()
         meaningful_contact = num_tip_contacts > 0
         lifted_bool = lifted_gate > 0.0
+
+        # Transport phase: stabilize 성공(=lift success, _get_dones에서 latch) 시
+        # 자동 승급. 정책이 직접 컵을 goal로 이송 (scripted lerp 없음).
+        self.transport_started_buf |= self._lift_success_latched_buf
+        self.is_stabilize_phase.copy_(
+            self.lift_ready_latched_buf & lifted_bool & (~self.transport_started_buf)
+        )
+        self.is_transport_phase.copy_(self.transport_started_buf)
+        transport_xyz_dist = (self.object_pos - self.object_goal).norm(dim=-1)
         action_delta_norm = torch.nan_to_num((self.actions - self.prev_actions).norm(dim=-1), nan=0.0)
         contact_persistence_frac = (
             self.grasp_ready_hold_buf.float()
@@ -1020,6 +1051,8 @@ class GraspRightEnv(DirectRLEnv):
             fingertip_side_dist=fingertip_side_dist,
             cup_height_delta=cup_height_delta,
             cup_xy_displacement=cup_xy_displacement,
+            transport_xyz_dist=transport_xyz_dist,
+            transport_reward_gate=self.is_transport_phase,
             cup_tilt_deg=cup_tilt_deg,
             upright_quality=upright_quality,
             lift_latched=self.lift_ready_latched_buf,
@@ -1052,7 +1085,8 @@ class GraspRightEnv(DirectRLEnv):
             (~self.lift_ready_latched_buf) & meaningful_contact
         ).float().mean()
         self.extras["phase/lift"] = (self.lift_ready_latched_buf & (~lifted_bool)).float().mean()
-        self.extras["phase/stabilize"] = (self.lift_ready_latched_buf & lifted_bool).float().mean()
+        self.extras["phase/stabilize"] = self.is_stabilize_phase.float().mean()
+        self.extras["phase/transport"] = self.is_transport_phase.float().mean()
         self.extras["reward/approach"] = reward_terms["approach"].mean()
         self.extras["reward/grasp"] = reward_terms["grasp"].mean()
         self.extras["reward/lift"] = reward_terms["lift"].mean()
@@ -1077,7 +1111,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["cup/lift_tilt_deg"] = lift_tilt.mean() if lift_tilt.numel() > 0 else cup_tilt_deg.mean()
         self.extras["cup/height_delta"] = cup_height_delta.mean()
         self.extras["cup/xy_displacement"] = cup_xy_displacement.mean()
-        self.extras["task/transport_xyz_error"] = cup_xy_displacement.mean()
+        self.extras["task/transport_xyz_error"] = transport_xyz_dist.mean()
         self.extras["task/transport_xyz_quality"] = reward_gates["transport_xyz_quality"].mean()
         self.extras["task/transport_height_quality"] = reward_gates[
             "transport_height_quality"
@@ -1142,22 +1176,35 @@ class GraspRightEnv(DirectRLEnv):
             self._lift_success_hold_count + 1,
             torch.zeros_like(self._lift_success_hold_count),
         )
-        success_now = self._lift_success_hold_count >= int(self.cfg.full_grip_hold_steps)
-        self._lift_success_latched_buf |= success_now
-        self.success_flag.copy_(success_now)
-        self.episode_success_buf |= success_now
+        lift_success_now = self._lift_success_hold_count >= int(self.cfg.full_grip_hold_steps)
+        self._lift_success_latched_buf |= lift_success_now
+        # ADR/success_rate는 grasp+lift+stabilize 견고성(=lift success)에 keyed 유지.
+        # lift 성공으로 종료하지 않고 transport phase로 자동 승급한다.
+        self.success_flag.copy_(lift_success_now)
+        self.episode_success_buf |= lift_success_now
 
+        # Transport 성공: stabilize latch 후 컵이 goal 임계 이내 + 파지/자세 유지
+        goal_dist = (self.object_pos - self.object_goal).norm(dim=-1)
+        at_goal = goal_dist <= self.cfg.transport_goal_dist_threshold
+        transport_success_now = (
+            self.transport_started_buf & lifted & full_tip_contact & upright_success & at_goal
+        )
+        self.episode_transport_success_buf |= transport_success_now
         self._success_hold_count = torch.where(
-            success_now,
+            transport_success_now,
             self._success_hold_count + 1,
             torch.zeros_like(self._success_hold_count),
         )
-        success_held = self._success_hold_count >= self.cfg.success_hold_steps
+        transport_success_held = self._success_hold_count >= int(self.cfg.transport_success_hold_steps)
 
-        terminated = out_x | out_y | fallen | tipped | success_held
+        terminated = out_x | out_y | fallen | tipped | transport_success_held
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         self.extras["object_stat/obj_z"] = self.object_pos[:, 2].mean()
+        self.extras["task/lift_success_now"] = lift_success_now.float().mean()
+        self.extras["task/transport_success_now"] = transport_success_now.float().mean()
+        self.extras["task/transport_success_rate"] = self.episode_transport_success_buf.float().mean()
+        self.extras["task/transport_goal_dist"] = goal_dist.mean()
 
         return terminated, truncated
 
@@ -1387,6 +1434,12 @@ class GraspRightEnv(DirectRLEnv):
         self._lift_success_hold_count[env_ids] = 0
         self._lift_success_latched_buf[env_ids] = False
         self.is_lift_phase[env_ids] = False
+        # Transport phase 버퍼 + 에피소드별 랜덤 goal 재샘플링
+        self.is_stabilize_phase[env_ids] = False
+        self.is_transport_phase[env_ids] = False
+        self.transport_started_buf[env_ids] = False
+        self.episode_transport_success_buf[env_ids] = False
+        self.object_goal[env_ids] = self._sample_transport_goals(n)
         self._eval_mass_shift_done[env_ids] = False
         self.contacts_at_lift_start_buf[env_ids] = 0.0
         self.palm_at_lift_start_buf[env_ids] = 0.0

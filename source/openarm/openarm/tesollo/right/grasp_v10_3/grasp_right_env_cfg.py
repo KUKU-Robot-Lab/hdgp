@@ -106,7 +106,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
     # -----------------------------------------------------------------------
-    episode_length_s: float = 4.0
+    episode_length_s: float = 6.0   # grasp/lift/stabilize + transport (state-latched)
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -115,9 +115,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 134 optional mass/debug actor
+    observation_space: int = NUM_OBSERVATIONS          # 137 optional mass/debug actor (+3 cup_to_goal)
     action_space:      int = NUM_ACTIONS               # 27
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 170 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 173 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -180,7 +180,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Policy-driven reward/gate 파라미터
     # -----------------------------------------------------------------------
-    stage0_lift_start_min_contacts: int = 4
+    stage0_lift_start_min_contacts: int = 5   # lift latch: 5접촉(전 손가락) 유지 시 진입
     grasp_ready_hold_steps: int = 20
     grasp_contact_persistence_reward_steps: int = 30
     full_grip_hold_steps: int = 30
@@ -192,9 +192,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     stabilize_weight: float = 10.0
-    transport_xyz_scale: float = 0.03
-    transport_xyz_reward_weight: float = 12.0
-    transport_height_target_delta: float = 0.04
+    transport_xyz_scale: float = 0.06          # v1 도너 값 (cup→goal 거리 reward)
+    transport_xyz_reward_weight: float = 40.0  # v1 도너 값
+    transport_height_target_delta: float = 0.09  # v1 도너 값 (transport 상승 목표)
     transport_height_quality_power: float = 1.0
     transport_upright_quality_power: float = 1.0
     # Backward-compatible alias. New code should prefer transport_xyz_scale.
@@ -394,6 +394,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obj_out_y_min:  float = -0.60
     obj_out_y_max:  float = 0.25
     obj_fallen_z:   float = 0.20
+
+    # -----------------------------------------------------------------------
+    # Transport goal sampling (v1 네이밍 동일)
+    # stabilize 성공 latch 후 정책이 컵을 이 랜덤 goal로 이송한다.
+    # tesollo spawn(0.27, -0.10, 0.297) 기준으로 설정 (v1 spawn 0.40 대비 x 하향).
+    # min=max면 고정 goal.
+    # -----------------------------------------------------------------------
+    transport_goal_x_range: tuple[float, float] = (0.20, 0.36)
+    transport_goal_y_range: tuple[float, float] = (0.00, 0.18)
+    transport_goal_z_range: tuple[float, float] = (0.42, 0.58)
+    transport_goal_dist_threshold: float = 0.04   # cup→goal 성공 임계 (v1 동일)
+    transport_success_hold_steps: int = 30        # transport 성공 유지 step (v1 동일)
 
     # -----------------------------------------------------------------------
     # 물체 spawn
