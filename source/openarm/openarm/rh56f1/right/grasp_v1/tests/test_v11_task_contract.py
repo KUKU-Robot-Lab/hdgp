@@ -52,6 +52,7 @@ def test_v11_declares_four_phase_episode_and_transport_params() -> None:
         "TRANSPORT_START_STEP",
     ):
         assert name in constants
+    assert "TRANSPORT_PHASE_STEPS = 120" in constants
     for name in (
         "transport_goal_dist_threshold",
         "transport_goal_x_range",
@@ -132,6 +133,7 @@ def test_v11_samples_transport_goal_per_reset_env() -> None:
     assert "def _sample_transport_goals" in env
     assert "self.object_goal[env_ids] = self._sample_transport_goals(n)" in env
     assert "goal_delta = self.object_goal[just_entering_transport] - current_object" in env
+    assert "goal_delta[:, 2] = 0.0" not in env
 
 
 def test_v11_disables_physical_beads_for_small_cup_grasp() -> None:
@@ -208,13 +210,13 @@ def test_v11_actively_levels_cup_after_lift_with_movable_arm() -> None:
     assert "def _apply_upright_palm_orientation_correction" in env
     assert "def _apply_transport_xyz_palm_correction" in env
     assert "def _transport_xyz_cfg" in env
-    assert "xy_error = self.object_init_pos[:, :2] - self.object_pos[:, :2]" in env
+    assert "xy_error = self.object_goal[:, :2] - self.object_pos[:, :2]" in env
     assert '"transport_xyz_hold_gain"' in env
     assert '"stabilize_spawn_xy_hold_gain"' in env
     assert "self._transport_xyz_palm_correction_buf[phase_mask] = xy_correction[phase_mask]" in env
     assert 'self.extras["task/transport_xyz_palm_correction"]' in env
     assert 'self.extras["task/spawn_xy_palm_correction"]' in env
-    assert "lift_palm_pose = self._apply_transport_xyz_palm_correction(" in env
+    assert "lift_palm_pose = self._apply_transport_xyz_palm_correction(" not in env
     assert "transport_palm_pose = self._apply_transport_xyz_palm_correction(" in env
     assert "cup_z_world = quat_apply(self.object_rot, z_local)" in env
     assert "cup_z_world[:, 1]" in env
@@ -257,8 +259,8 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
     assert "def _maybe_update_phase_curriculum" in env
     assert "self._episode_curriculum_stage_buf >= 1" in env
     assert "self._episode_curriculum_stage_buf >= 2" in env
-    assert "transport_disabled = self._episode_curriculum_stage_buf[env_ids] < 2" in env
-    assert "self.object_goal[env_ids_tensor[transport_disabled]] = obj_pos_local[transport_disabled]" in env
+    assert "transport_disabled = self._episode_curriculum_stage_buf[env_ids] < 2" not in env
+    assert "self.object_goal[env_ids_tensor[transport_disabled]] = obj_pos_local[transport_disabled]" not in env
     assert "just_entering_lift = self._lift_contact_ready_latched_buf & (~self._lift_started_buf)" in env
     assert "self._lift_start_step_buf[just_entering_lift] = self.episode_length_buf[just_entering_lift]" in env
     assert "just_entering_stabilize = (" in env
@@ -270,7 +272,7 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
     assert "just_entering_transport = (" in env
     assert "& self._stabilize_success_latched_buf" in env
     assert "& self._full_grip_ready_buf" not in env
-    assert "goal_delta[:, 2] = 0.0" in env
+    assert "goal_delta[:, 2] = 0.0" not in env
     assert "curriculum_lift_horizon" in env
     assert "curriculum_stabilize_horizon" in env
     assert "grasp_timeout_failed = (" in env

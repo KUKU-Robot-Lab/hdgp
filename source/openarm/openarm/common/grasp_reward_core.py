@@ -17,10 +17,12 @@ def compute_grasp_reward_terms(
     fingertip_side_dist: torch.Tensor,
     cup_height_delta: torch.Tensor,
     cup_xy_displacement: torch.Tensor,
+    transport_xyz_dist: torch.Tensor | None = None,
     cup_tilt_deg: torch.Tensor,
     upright_quality: torch.Tensor,
     lift_latched: torch.Tensor,
     action_delta_norm: torch.Tensor,
+    transport_reward_gate: torch.Tensor | None = None,
     cfg: object,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """Shared 5-tip grasp reward used by Tesollo and RH56F1 grasp tasks."""
@@ -72,7 +74,13 @@ def compute_grasp_reward_terms(
             ),
         ),
     )
-    transport_xyz_quality = torch.exp(-cup_xy_displacement / max(transport_xyz_scale, 1e-6))
+    if transport_xyz_dist is None:
+        transport_xyz_dist = cup_xy_displacement
+    if transport_reward_gate is None:
+        transport_reward_gate_f = torch.ones_like(cup_height_delta)
+    else:
+        transport_reward_gate_f = transport_reward_gate.float()
+    transport_xyz_quality = torch.exp(-transport_xyz_dist / max(transport_xyz_scale, 1e-6))
     transport_height_target = max(
         _cfg_float(
             cfg,
@@ -105,7 +113,6 @@ def compute_grasp_reward_terms(
         * lifted_gate
         * full_tip
         * upright_quality
-        * transport_xyz_quality
         * transport_height_quality
         * action_quality
     )
@@ -116,6 +123,7 @@ def compute_grasp_reward_terms(
             _cfg_float(cfg, "stabilize_spawn_xy_reward_weight", 0.0),
         )
         * lift_gate
+        * transport_reward_gate_f
         * lifted_gate
         * full_tip
         * transport_xyz_quality
@@ -146,6 +154,7 @@ def compute_grasp_reward_terms(
         "transport_xyz_quality": transport_xyz_quality,
         "transport_height_quality": transport_height_quality,
         "transport_posture_quality": transport_posture_quality,
+        "transport_reward_gate": transport_reward_gate_f,
         "spawn_xy_quality": transport_xyz_quality,
         "stability_quality": transport_xyz_quality,
         "action_quality": action_quality,

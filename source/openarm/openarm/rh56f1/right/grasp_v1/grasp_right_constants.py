@@ -56,8 +56,8 @@ Critic Extra (18D) — sim-only privileged:
 
 Critic Total: 99 + 18 = 117D
 
-Episode (10s @ 60Hz = 600 steps):
-  Grasp / Lift / Stabilize
+Episode (12s @ 60Hz = 720 steps):
+  Grasp / Lift / Stabilize / Transport
 """
 
 from .grasp_right_preset import (
@@ -101,7 +101,7 @@ NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 117
 GRASP_PHASE_STEPS     = 420    # 7s
 LIFT_PHASE_STEPS      = 120    # 2s
 STABILIZE_PHASE_STEPS = 60     # 1s
-TRANSPORT_PHASE_STEPS = 0      # disabled
+TRANSPORT_PHASE_STEPS = 120    # 2s
 LIFT_START_STEP       = GRASP_PHASE_STEPS
 STABILIZE_START_STEP  = LIFT_START_STEP + LIFT_PHASE_STEPS
 TRANSPORT_START_STEP  = STABILIZE_START_STEP + STABILIZE_PHASE_STEPS

@@ -1089,7 +1089,6 @@ class GraspRightEnv(DirectRLEnv):
             current_palm = self.palm_pose_targets[just_entering_transport]
             current_object = self.object_pos[just_entering_transport]
             goal_delta = self.object_goal[just_entering_transport] - current_object
-            goal_delta[:, 2] = 0.0
             transport_target = current_palm.clone()
             transport_target[:, :3] = transport_target[:, :3] + goal_delta
             transport_target[:, 3:] = current_palm[:, 3:]
@@ -1290,11 +1289,6 @@ class GraspRightEnv(DirectRLEnv):
                 transport_upright_progress,
             )
         if self._transport_xyz_cfg("transport_xyz_hold_enabled", "stabilize_spawn_xy_hold_enabled", True):
-            lift_palm_pose = self._apply_transport_xyz_palm_correction(
-                lift_palm_pose,
-                is_stabilize,
-                stabilize_upright_progress,
-            )
             transport_palm_pose = self._apply_transport_xyz_palm_correction(
                 transport_palm_pose,
                 is_transport,
@@ -1446,8 +1440,7 @@ class GraspRightEnv(DirectRLEnv):
         if not phase_mask.any():
             return palm_pose
 
-        # Current transport target uses the original cup XY; the name leaves room for XYZ transport.
-        xy_error = self.object_init_pos[:, :2] - self.object_pos[:, :2]
+        xy_error = self.object_goal[:, :2] - self.object_pos[:, :2]
         max_delta = float(
             self._transport_xyz_cfg(
                 "transport_xyz_hold_max_delta",
@@ -1807,6 +1800,7 @@ class GraspRightEnv(DirectRLEnv):
             -cup_tilt_deg / max(float(self.cfg.stabilize_upright_reward_scale_deg), 1e-6)
         )
         spawn_xy_dist = (self.object_pos[:, :2] - self.object_init_pos[:, :2]).norm(dim=-1)
+        transport_xyz_dist = (self.object_pos - self.object_goal).norm(dim=-1)
 
         # ---- prev buffer 갱신 ----
         self._prev_total_grip_force_buf.copy_(total_grip_force)
@@ -1976,10 +1970,12 @@ class GraspRightEnv(DirectRLEnv):
             fingertip_side_dist=fingertip_side_dist,
             cup_height_delta=cup_height_delta,
             cup_xy_displacement=spawn_xy_dist,
+            transport_xyz_dist=transport_xyz_dist,
             cup_tilt_deg=cup_tilt_deg,
             upright_quality=stabilize_upright_quality,
             lift_latched=self._lift_started_buf,
             action_delta_norm=action_delta_norm,
+            transport_reward_gate=self.is_transport_phase,
             cfg=self.cfg,
         )
 
@@ -2015,7 +2011,7 @@ class GraspRightEnv(DirectRLEnv):
             else cup_tilt_deg.mean()
         )
         self.extras["cup/xy_displacement"] = spawn_xy_dist.mean()
-        self.extras["task/transport_xyz_error"] = spawn_xy_dist.mean()
+        self.extras["task/transport_xyz_error"] = transport_xyz_dist.mean()
         self.extras["task/transport_xyz_quality"] = reward_gates["transport_xyz_quality"].mean()
         self.extras["task/transport_height_quality"] = reward_gates[
             "transport_height_quality"
@@ -2110,7 +2106,7 @@ class GraspRightEnv(DirectRLEnv):
         ).abs()
         cup_horiz_vel = torch.nan_to_num(self.cup.data.root_lin_vel_w[:, :2].norm(dim=-1), nan=0.0)
         cup_ang_speed = torch.nan_to_num(self.cup.data.root_ang_vel_w.norm(dim=-1), nan=0.0)
-        transport_xyz_dist = (self.object_pos[:, :2] - self.object_init_pos[:, :2]).norm(dim=-1)
+        transport_xyz_dist = (self.object_pos - self.object_goal).norm(dim=-1)
         transport_xyz_success_threshold = float(
             self._transport_xyz_cfg(
                 "transport_xyz_success_threshold",
@@ -2139,7 +2135,6 @@ class GraspRightEnv(DirectRLEnv):
             & middle_grasped
             & no_slip
             & stabilize_upright_success
-            & transport_xyz_success
             & (force_ratio >= self.cfg.lift_min_force_ratio)
             & force_stable
         )
@@ -2460,11 +2455,6 @@ class GraspRightEnv(DirectRLEnv):
                 q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_pregrasp)
             q_pregrasp[:, NUM_ARM_DOF:] = approach_hand
             self.demo_lift_palm_target_buf[env_ids] = pregrasp_palm_pose
-
-        if self.cfg.enable_phase_curriculum:
-            transport_disabled = self._episode_curriculum_stage_buf[env_ids] < 2
-            if transport_disabled.any():
-                self.object_goal[env_ids_tensor[transport_disabled]] = obj_pos_local[transport_disabled]
 
         # ---- 2. 로봇/Fabrics 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)

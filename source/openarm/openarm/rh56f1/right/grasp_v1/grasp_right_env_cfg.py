@@ -213,7 +213,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_target_z_delta: float = LIFT_Z_DELTA
     success_hold_steps: int = 30
     transport_goal_dist_threshold: float = 0.04
-    transport_success_hold_steps: int = 90
+    transport_success_hold_steps: int = 30
 
     # Phase curriculum:
     # 0 = grasp/lift only, 1 = add stabilize, 2 = full transport.

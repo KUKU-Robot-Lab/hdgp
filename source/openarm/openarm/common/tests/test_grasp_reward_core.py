@@ -94,7 +94,7 @@ def test_tilted_lift_loses_success_bonus_and_upright_quality() -> None:
     assert tilted_total.item() < upright_total.item()
 
 
-def test_stabilize_reward_prefers_transport_xyz_recovery() -> None:
+def test_transport_xyz_reward_prefers_goal_recovery_without_changing_stabilize() -> None:
     contacts = torch.tensor([5, 5], dtype=torch.long)
     total, terms, gates = compute_grasp_reward_terms(
         num_tip_contacts=contacts,
@@ -104,7 +104,8 @@ def test_stabilize_reward_prefers_transport_xyz_recovery() -> None:
         palm_to_cup_dist=torch.zeros(2),
         fingertip_side_dist=torch.zeros(2),
         cup_height_delta=torch.full((2,), 0.06),
-        cup_xy_displacement=torch.tensor([0.01, 0.05]),
+        cup_xy_displacement=torch.zeros(2),
+        transport_xyz_dist=torch.tensor([0.01, 0.05]),
         cup_tilt_deg=torch.zeros(2),
         upright_quality=torch.ones(2),
         lift_latched=torch.ones(2, dtype=torch.bool),
@@ -114,7 +115,7 @@ def test_stabilize_reward_prefers_transport_xyz_recovery() -> None:
 
     assert gates["transport_xyz_quality"][0] > gates["transport_xyz_quality"][1]
     assert terms["transport_xyz"][0] > terms["transport_xyz"][1]
-    assert terms["stabilize"][0] > terms["stabilize"][1]
+    assert torch.allclose(terms["stabilize"][0], terms["stabilize"][1])
     assert terms["success_bonus"][0] == terms["success_bonus"][1]
     assert total[0] > total[1]
 
@@ -130,6 +131,7 @@ def test_transport_xyz_reward_requires_height_and_posture_quality() -> None:
         fingertip_side_dist=torch.zeros(3),
         cup_height_delta=torch.tensor([0.06, 0.04, 0.06]),
         cup_xy_displacement=torch.zeros(3),
+        transport_xyz_dist=torch.zeros(3),
         cup_tilt_deg=torch.tensor([0.0, 0.0, 0.0]),
         upright_quality=torch.tensor([1.0, 1.0, 0.25]),
         lift_latched=torch.ones(3, dtype=torch.bool),
