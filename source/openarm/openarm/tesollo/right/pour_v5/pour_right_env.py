@@ -1598,8 +1598,10 @@ class PourRightEnv(DirectRLEnv):
         #   → blend: 직립=rim_center(안정 이송, test3 검증), 기울수록=pour_point(정밀, 8.8cm plateau 회피).
         #   anti_neg: source rim+z·target rim+z가 anti-parallel(뒤집힘)일수록 1 → 입구 마주봄 유도.
         # ============================================================
-        _tilt_target_approach = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
-        _tilt_blend = (tilt_amount / max(_tilt_target_approach, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
+        # [tilt-align trade-off 해소] blend 분모 135°→85°(tilt_pre): 중간~깊은 tilt에서
+        #   approach가 pour_point를 더 빨리 100% 추종 → 기울여도 pour_point가 target 입구 위 유지
+        #   → align 손실 없이 tilt 85°+ 진행 가능. 직립(tilt≈0)은 여전히 blend≈0=rim_center(H12 wobble 회피).
+        _tilt_blend = (tilt_amount / max(self.cfg.tilt_pre_amount, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
         _approach_pt_xy = (
             (1.0 - _tilt_blend) * self._source_rim_center_w[:, :2]
             + _tilt_blend * self._source_pour_point_w[:, :2]
