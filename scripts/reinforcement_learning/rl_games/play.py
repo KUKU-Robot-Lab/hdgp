@@ -554,7 +554,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         obs = obs["obs"]
     timestep = 0
     _episode_step = 0
-    _episode_joint_buf = []
+    _episode_buf = []
     # required: enables the flag for batched observations
     _ = agent.get_batch_size(obs, 1)
     # initialize RNN states if used
@@ -567,30 +567,148 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
             obs, _, dones, _ = env.step(actions)
 
-            # --- joint logging (env 0 기준) ---
+            # --- 진단 로깅 (env 0 기준) ---
+            # 주의: env.step()은 done인 env를 내부에서 자동 reset한다. done frame의 self.* 는
+            #   reset 후 값(비드 hidden=z-10, bead_in=0)이므로, done이 아닌 frame만 기록하고
+            #   done 시점엔 직전까지 쌓인 buf(=done 직전 유효 frame)를 출력한다.
             _raw_env = env.unwrapped
             if hasattr(_raw_env, 'env'):
                 _raw_env = _raw_env.env.unwrapped
-            _arm_idx = getattr(_raw_env, 'arm_dof_indices', None)
-            if _arm_idx is not None:
-                _jpos = _raw_env.robot.data.joint_pos[0, _arm_idx].cpu().tolist()
-                _episode_joint_buf.append(_jpos)
-            # ---
+            _done0 = (len(dones) > 0 and bool(dones[0]))
 
-            if len(dones) > 0:
-                if agent.is_rnn and agent.states is not None:
-                    for s in agent.states:
-                        s[:, dones, :] = 0.0
-                if dones[0]:
-                    # 에피소드 종료: 마지막 100 frame 출력
-                    tail = _episode_joint_buf[-100:]
-                    print(f"\n=== episode done (len={len(_episode_joint_buf)}) — last {len(tail)} frames ===")
-                    print(f"{'frame':>6}  {'j0':>7} {'j1':>7} {'j2':>7} {'j3':>7} {'j4':>7} {'j5':>7} {'j6':>7}")
-                    offset = len(_episode_joint_buf) - len(tail)
-                    for fi, jv in enumerate(tail):
-                        vals = "  ".join(f"{v:+.4f}" for v in jv[:7])
+            if agent.is_rnn and agent.states is not None and len(dones) > 0:
+                for s in agent.states:
+                    s[:, dones, :] = 0.0
+
+            if not _done0:
+                def _g0(attr):
+                    """env 0의 텐서 값을 python(float/list)으로. 없으면 None."""
+                    t = getattr(_raw_env, attr, None)
+                    if t is None:
+                        return None
+                    try:
+                        v = t[0]
+                        return v.cpu().tolist() if hasattr(v, "cpu") else float(v)
+                    except Exception:
+                        return None
+
+                try:
+                    _origin = _raw_env.scene.env_origins[0].cpu().tolist()
+                except Exception:
+                    _origin = [0.0, 0.0, 0.0]
+
+                _pp = _g0("_source_pour_point_w")
+                _to = _g0("_target_opening_w")
+                _sud = _g0("_source_up_dot_world")
+                _arm_idx = getattr(_raw_env, "arm_dof_indices", None)
+                _jpos = None
+                if _arm_idx is not None:
+                    try:
+                        _jpos = _raw_env.robot.data.joint_pos[0, _arm_idx].cpu().tolist()
+                    except Exception:
+                        _jpos = None
+
+                # 비드 per-bead local 좌표 (done 아닌 유효 frame에서 계산)
+                _bead_rows = None
+                _beads = getattr(_raw_env, "beads", None)
+                if _beads is not None:
+                    try:
+                        from isaaclab.utils.math import quat_apply_inverse as _qai
+                        bp = _beads.data.object_pos_w[0]
+                        kk = bp.shape[0]
+                        cq = _raw_env.cup.data.root_quat_w[0].unsqueeze(0).expand(kk, -1)
+                        cp = _raw_env.cup.data.root_pos_w[0].unsqueeze(0)
+                        sl = _qai(cq, bp - cp)
+                        lq = _raw_env.left_target_cup.data.root_quat_w[0].unsqueeze(0).expand(kk, -1)
+                        lp = _raw_env.left_target_cup.data.root_pos_w[0].unsqueeze(0)
+                        tl = _qai(lq, bp - lp)
+                        sxy = sl[:, :2].norm(dim=-1); txy = tl[:, :2].norm(dim=-1)
+                        _bead_rows = [
+                            (sxy[bi].item(), sl[bi, 2].item(), txy[bi].item(), tl[bi, 2].item(), bp[bi, 2].item())
+                            for bi in range(kk)
+                        ]
+                    except Exception:
+                        _bead_rows = None
+
+                _episode_buf.append({
+                    "pp": [_pp[i] - _origin[i] for i in range(3)] if _pp else None,
+                    "to": [_to[i] - _origin[i] for i in range(3)] if _to else None,
+                    "cup_up_dot": _sud,
+                    "tilt_deg": math.degrees(math.acos(max(-1.0, min(1.0, _sud)))) if _sud is not None else None,
+                    "mouth_xy": _g0("_mouth_xy_distance"),
+                    "mouth_z": _g0("_mouth_z_clearance"),
+                    "bead_in": _g0("_bead_in_target_fraction"),
+                    "bead_src": _g0("_bead_in_source_fraction"),
+                    "spill": _g0("_spill_ratio"),
+                    "joints": _jpos,
+                    "beads": _bead_rows,
+                })
+            elif _episode_buf:
+                # 에피소드 종료: buf 마지막 = done 직전 유효 frame
+                tail = _episode_buf[-100:]
+                offset = len(_episode_buf) - len(tail)
+                n = len(_episode_buf)
+                print(f"\n=== episode done (유효 frame {n}개, done 직전 기준) — last {len(tail)} ===")
+
+                def _f(v, p="+.4f"):
+                    return ("{:" + p + "}").format(v) if v is not None else "   --  "
+
+                # [1] pour/bead 진단 표
+                print(f"{'frame':>6} {'pp_x':>8} {'pp_y':>8} {'pp_z':>8} "
+                      f"{'cupUpDot':>8} {'tilt°':>6} {'mouthXY':>8} {'mouthZ':>8} "
+                      f"{'beadIn':>7} {'beadSrc':>7} {'spill':>6}")
+                for fi, r in enumerate(tail):
+                    pp = r["pp"] or [None, None, None]
+                    print(f"{offset+fi:>6} {_f(pp[0]):>8} {_f(pp[1]):>8} {_f(pp[2]):>8} "
+                          f"{_f(r['cup_up_dot'],'+.3f'):>8} {_f(r['tilt_deg'],'5.1f'):>6} "
+                          f"{_f(r['mouth_xy'],'.4f'):>8} {_f(r['mouth_z'],'+.4f'):>8} "
+                          f"{_f(r['bead_in'],'.3f'):>7} {_f(r['bead_src'],'.3f'):>7} "
+                          f"{_f(r['spill'],'.3f'):>6}")
+
+                # [2] joint 표
+                if any(r["joints"] for r in tail):
+                    print(f"\n{'frame':>6}  {'j0':>7} {'j1':>7} {'j2':>7} {'j3':>7} {'j4':>7} {'j5':>7} {'j6':>7}")
+                    for fi, r in enumerate(tail):
+                        jv = r["joints"]
+                        if jv is None:
+                            continue
+                        vals = " ".join(f"{v:+.4f}" for v in jv[:7])
                         print(f"{offset+fi:>6}  {vals}")
-                    _episode_joint_buf = []
+
+                # [3] 마지막 유효 frame 요약
+                last = tail[-1]
+                print(f"\n--- final (done 직전) frame summary ---")
+                print(f"  tilt={_f(last['tilt_deg'],'5.1f')}°  cup_up_dot={_f(last['cup_up_dot'],'+.3f')}  "
+                      f"mouth_xy={_f(last['mouth_xy'],'.4f')}  mouth_z={_f(last['mouth_z'],'+.4f')}")
+                print(f"  bead_in_target={_f(last['bead_in'],'.3f')}  bead_in_source={_f(last['bead_src'],'.3f')}  "
+                      f"spill={_f(last['spill'],'.3f')}")
+
+                # [4] 비드별 로컬좌표 분포 (done 직전 유효 frame 기준)
+                _cfg = _raw_env.cfg
+                rows = last.get("beads")
+                if rows:
+                    print(f"\n--- 비드 분포 (경계 r<{_cfg.source_inner_radius} "
+                          f"z∈[{_cfg.source_inside_z_min},{_cfg.source_inside_z_max}]) ---")
+                    print(f"{'bead':>4} {'srcXY':>7} {'srcZ':>8} {'inSrc':>5} "
+                          f"{'tgtXY':>7} {'tgtZ':>8} {'inTgt':>5} {'status':>10}")
+                    n_in_src = n_in_tgt = n_void = n_hidden = 0
+                    for bi, (sxv, szv, txv, tzv, wz) in enumerate(rows):
+                        if wz < -5.0:
+                            n_hidden += 1
+                            continue
+                        insrc = (sxv <= _cfg.source_inner_radius
+                                 and _cfg.source_inside_z_min <= szv <= _cfg.source_inside_z_max)
+                        intgt = (txv <= _cfg.target_inner_radius
+                                 and _cfg.target_inside_z_min <= tzv <= _cfg.target_inside_z_max)
+                        spl = (not insrc) and (tzv < _cfg.target_inside_z_min)
+                        if insrc: st = "SOURCE"; n_in_src += 1
+                        elif intgt: st = "TARGET"; n_in_tgt += 1
+                        elif spl: st = "spill"
+                        else: st = "**VOID**"; n_void += 1
+                        print(f"{bi:>4} {sxv:>7.4f} {szv:>+8.4f} {str(insrc):>5} "
+                              f"{txv:>7.4f} {tzv:>+8.4f} {str(intgt):>5} {st:>10}")
+                    print(f"  요약: SOURCE={n_in_src} TARGET={n_in_tgt} VOID(사각지대)={n_void} hidden={n_hidden}")
+                _episode_buf = []
 
         if args_cli.video:
             timestep += 1

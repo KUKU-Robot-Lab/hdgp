@@ -1709,8 +1709,12 @@ class PourRightEnv(DirectRLEnv):
             * (1.0 - self._bead_in_source_fraction)
         )
 
+        # [bead_in 게이트 분리] bead_in_target_fraction은 비드가 target 컵 안(3D)에 실제 착지한
+        #   결과 → g_ready(mouth_xy) 곱은 깊은 tilt 과도기(비드가 막 나오는 순간 arm 동작으로 xy
+        #   흔들림)에 보상을 죽이는 닭-달걀 유발. g_ready에서 빼고 total 직접 가산.
+        #   align_gate(3D 정렬)는 유지 → "고공/나쁜 자세 흘려넣기"는 계속 차단.
         r_stageB = g_ready * (
-            r_tilt + r_align + r_bead_in + r_drain
+            r_tilt + r_align + r_drain
         )
 
 
@@ -1741,6 +1745,7 @@ class PourRightEnv(DirectRLEnv):
             + r_introt
             + r_tilt_A          # [2단 tilt] Stage A: pre-pour(0→85°) 세우기 always-on
             + r_stageB
+            + r_bead_in         # [게이트 분리] g_ready 무관, align_gate만 통과한 실제 착지 보상
             + self.cfg.weight_success * r_success
             - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
         )
@@ -1771,7 +1776,7 @@ class PourRightEnv(DirectRLEnv):
             "reward/tilt_pre": r_tilt_A.mean(),              # [2단] Stage A: 0→85° 세우기 (always-on)
             "reward/tilt":     (g_ready * r_tilt).mean(),    # [2단] Stage B: 85→135° hinge 쏟기
             "reward/align":    (g_ready * r_align).mean(),
-            "reward/bead_in":  (g_ready * r_bead_in).mean(),
+            "reward/bead_in":  r_bead_in.mean(),    # [게이트 분리] g_ready 무관 (total 직접 가산값과 일치)
             "reward/drain":    (g_ready * r_drain).mean(),
             "reward/success":  (self.cfg.weight_success * r_success).mean(),
         }

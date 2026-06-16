@@ -270,7 +270,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # Stage A→B 공간 게이트 (단일 sigmoid, latch 없음)
     g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)
-    g_ready_width: float = 0.02    # [test_lstm3 재설계] 0.03→0.02: 더 sharp (rim 밖 90° 기울이기 차단)
+    g_ready_width: float = 0.04    # [test7] 0.02→0.04: (a)로 정조준 완벽(mouth_xy~0.003)→sharp 불필요. 깊은 tilt 과도기 mouth_xy 흔들림에 stageB(tilt/align) 절벽 완화 (bead_in은 이미 g_ready 분리)
 
     # [2단 tilt 재설계] Stage A=0→85°(pre-pour) 세우기(always-on), Stage B=85→135° hinge 쏟기(g_ready)
     tilt_pre_amount: float = 0.456   # 85° pre-pour tilt_amount = (1-cos85°)/2. Stage A 목표 자세(쏟기 직전)
