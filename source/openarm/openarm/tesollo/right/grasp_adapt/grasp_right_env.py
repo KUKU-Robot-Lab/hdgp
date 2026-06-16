@@ -56,6 +56,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_apply_inverse
 
 from openarm.common.grasp_reward_core import compute_grasp_reward_terms
+from openarm.common.grasp_adaptive_core import compute_adaptive_grip_terms
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
 from fabrics_sim.utils.utils import initialize_warp
@@ -94,7 +95,6 @@ from .finger_action_utils import (
 )
 from .grasp_reward_utils import compute_upright_success_mask
 from .grasp_right_utils import to_torch
-from .demo_grasp_reset import DemoGraspResetBank, compute_demo_cup_spawn_local
 
 
 class GraspRightEnv(DirectRLEnv):
@@ -137,8 +137,9 @@ class GraspRightEnv(DirectRLEnv):
             "reward/lift": ("reward/summary", "lift"),
             "reward/stabilize": ("reward/summary", "stabilize"),
             "reward/success_bonus": ("reward/summary", "success_bonus"),
-            "reward/adaptive_force": ("reward/summary", "adaptive_force"),
-            "reward/no_slip": ("reward/summary", "no_slip"),
+            "reward/secure": ("reward/summary", "secure"),
+            "reward/efficient": ("reward/summary", "efficient"),
+            "reward/drop": ("reward/summary", "drop"),
             "reward/action_smooth": ("reward/summary", "action_smooth"),
             "contact/count": ("task/contact", "tip_count"),
             "contact/palm": ("task/contact", "palm_rate"),
@@ -156,6 +157,8 @@ class GraspRightEnv(DirectRLEnv):
             "task/grip_ratio_hold": ("task/grip", "ratio_hold"),
             "task/slip_ratio": ("task/slip_ratio", "mean"),
             "task/slip_ratio_hold": ("task/slip_ratio", "hold"),
+            "task/cup_slip_speed": ("task/slip", "cup_slip_speed"),
+            "task/secure_quality_hold": ("task/slip", "secure_quality_hold"),
         }
         for bin_idx, bead_count in enumerate((0, 10, 20, 30)):
             tag = f"task/grip_ratio_hold/mass_bin_{bin_idx}"
@@ -242,12 +245,6 @@ class GraspRightEnv(DirectRLEnv):
 
         # pregrasp palm pose 버퍼
         self.pregrasp_palm_pose_buf   = torch.zeros(self.num_envs, 6, device=self.device)
-        self.demo_lift_palm_target_buf = torch.zeros(self.num_envs, 6, device=self.device)
-        self.demo_grasp_reset_bank = (
-            DemoGraspResetBank.from_hdf5_paths(cfg.demo_grasp_pose_paths, device=self.device)
-            if cfg.enable_demo_grasp_reset
-            else None
-        )
 
         # ----------------------------------------------------------------
         # Hand 관절 한계 (per-joint delta 클램프용)
@@ -301,8 +298,8 @@ class GraspRightEnv(DirectRLEnv):
         # 로봇 시작 자세 (arm: ARM_START_POSE, hand: HAND_GRASP_POSE)
         # HAND_GRASP_POSE에서 시작 → 20D delta 탐색 공간 축소 (파지 포즈 근처 미세 조정)
         # ----------------------------------------------------------------
-        arm_start   = to_torch(ARM_START_POSE,   device=self.device)
-        hand_start  = to_torch(HAND_GRASP_POSE,  device=self.device)
+        arm_start   = to_torch(ARM_START_POSE,      device=self.device)
+        hand_start  = to_torch(HAND_APPROACH_POSE,  device=self.device)
         robot_start = torch.cat([arm_start, hand_start], dim=0)
         self.robot_start_joint_pos = (
             robot_start.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
@@ -587,7 +584,7 @@ class GraspRightEnv(DirectRLEnv):
         )
         self._reset_obj_ids, self._reset_obj_indicator = self._reset_world.get_object_ids()
 
-        if self.cfg.cache_pregrasp_reset and self.demo_grasp_reset_bank is None:
+        if self.cfg.cache_pregrasp_reset:
             self._build_pregrasp_cache()
 
     # ------------------------------------------------------------------
@@ -794,7 +791,7 @@ class GraspRightEnv(DirectRLEnv):
             )
 
         hand_target = compute_preset_residual_finger_targets(
-            preset_pos=self.hand_grasp_pose,
+            preset_pos=self.hand_approach_pose,
             finger_action=finger_action,
             lower_limits=self.hand_joint_lower_limits,
             upper_limits=self.hand_joint_upper_limits,
@@ -1091,8 +1088,7 @@ class GraspRightEnv(DirectRLEnv):
             posinf=0.0,
             neginf=0.0,
         )
-        # ---- Mass-adaptive force grip & shear 기반 slip (lift/hold 구간 전용) ----
-        # normal/shear는 fingertip↔cup 기하 분해 (pad-normal 축 추측 불필요, sim2real: FK+cup추정).
+        # ---- 접촉 법선/접선력 분해 (grip force 합 + 진단 KPI) ----
         # 접촉 반력은 컵 반대 방향(cup→fingertip)을 향하므로 grip_axis = normalize(fingertip - cup).
         grip_axis = self.fingertip_pos - self.object_pos.unsqueeze(1)                 # (N,5,3) cup→fingertip
         grip_axis = grip_axis / grip_axis.norm(dim=-1, keepdim=True).clamp(min=1e-6)
@@ -1103,53 +1099,55 @@ class GraspRightEnv(DirectRLEnv):
         contact_mask = self.binary_contact_buf.float()
         num_c = contact_mask.sum(dim=-1).clamp(min=1.0)
 
-        # 적정 grip force: 질량은 reward 계산에만 쓰는 privileged 값 (actor obs는 무게 hidden)
+        # 질량은 reward 전용 privileged 값 (actor obs는 무게 hidden — tactile 추론)
         bead_count = (self._bead_mass_normalized * float(self.cfg.num_beads)).round()
         cup_weight = (
             float(self.cfg.cup_base_mass) + bead_count * float(self.cfg.bead_single_mass)
         ) * GRAVITY
         grip_normal_force = (f_n * contact_mask).sum(dim=-1)                          # ΣF_n
-        force_ratio = grip_normal_force / cup_weight.clamp(min=1e-6)
-        force_quality = torch.exp(
-            -float(self.cfg.af_sharpness) * (force_ratio - float(self.cfg.af_target_ratio)) ** 2
-        )                                                                            # [0,1], target=2.5×mg
+        force_ratio = grip_normal_force / cup_weight.clamp(min=1e-6)                  # KPI
 
+        # slip proxy: 컵-손바닥 상대 속도 (의도된 lift 이동과 slip을 분리 — 같이 움직이면 slip 0)
+        cup_lin_vel = self.cup.data.root_lin_vel_w
+        palm_lin_vel = self.robot.data.body_lin_vel_w[:, self.palm_body_index]
+        cup_slip_speed = (cup_lin_vel - palm_lin_vel).norm(dim=-1)
+
+        # shear severity (진단 KPI 전용, 보상 미사용)
         shear_ratio = (f_t / (f_n + float(self.cfg.slip_shear_eps))).clamp(0.0, 1.0)
         slip_severity = (shear_ratio * contact_mask).sum(dim=-1) / num_c             # [0,1]
-        no_slip_quality = (1.0 - slip_severity).clamp(0.0, 1.0)
 
-        # lift off + 5tip 유지 구간에서만 force/slip 신호 활성 (들기 전엔 무게 미관측)
-        hold_gate = lift_gate * lifted_gate * full_tip_contact
+        # ---- 목적함수: friction-aware no-slip 최소 힘 (지배항) ----
+        # 안 미끄러지는(secure) 최소 힘으로 압박 → mass·friction 적응이 emergent.
+        r_objective, adaptive_terms = compute_adaptive_grip_terms(
+            grip_normal_force=grip_normal_force,
+            cup_weight=cup_weight,
+            cup_speed=cup_slip_speed,
+            tip_contact_frac=tip_contact_frac,
+            lift_gate=lift_gate,
+            lifted_gate=lifted_gate,
+            full_tip_contact=full_tip_contact,
+            cfg=self.cfg,
+        )
+        hold_gate = adaptive_terms["hold_gate"]
 
-        # Success bonus: 컵을 lift_target_height(10cm)까지 올려 full-contact·upright로 유지 시 step 보너스.
-        # 코어의 lift_success_height(4cm) 기반 success_bonus를 10cm 목표 기준으로 대체한다.
-        # 조건1(force_quality)·조건2(no_slip_quality)는 게이트가 아닌 곱셈계수(+floor) — 종료조건은 불변.
+        # 평가 bonus (Fork C): 10cm·upright·5접촉 유지 시 보너스. 축소·force-quality 비결합.
+        # lift/stabilize는 적응을 "평가"하는 gate일 뿐, 목적이 아니다 (weight는 cfg에서 축소).
         base_success_bonus = reward_terms["success_bonus"]
         reached_target_gate = (cup_height_delta >= float(self.cfg.lift_target_height)).float()
         final_upright = (
             cup_tilt_deg <= float(self.cfg.stabilize_upright_max_deg)
         ).float()
-        quality_mult = (
-            float(self.cfg.success_quality_floor)
-            + (1.0 - float(self.cfg.success_quality_floor)) * force_quality * no_slip_quality
-        )
         height_hold_success_bonus = (
             float(self.cfg.success_bonus_weight)
             * lift_gate
             * reached_target_gate
             * full_tip_contact
             * final_upright
-            * quality_mult
         )
         reward_terms["success_bonus"] = height_hold_success_bonus
 
-        # 연속 shaping: success까지의 gradient 공급 (sparse-conjunction 방지)
-        r_adaptive_force = float(self.cfg.adaptive_force_weight) * hold_gate * force_quality
-        r_no_slip = float(self.cfg.no_slip_weight) * hold_gate * no_slip_quality
-
         total = torch.nan_to_num(
-            total - base_success_bonus + height_hold_success_bonus
-            + r_adaptive_force + r_no_slip,
+            total - base_success_bonus + height_hold_success_bonus + r_objective,
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
@@ -1165,9 +1163,10 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/lift"] = reward_terms["lift"].mean()
         self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
         self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
-        self.extras["reward/adaptive_force"] = r_adaptive_force.mean()
-        self.extras["reward/no_slip"] = r_no_slip.mean()
-        # 조건1(mass-adaptive force) 검증: grip_ratio가 mass bin별로 분기해야 함
+        self.extras["reward/secure"] = adaptive_terms["r_secure"].mean()
+        self.extras["reward/efficient"] = adaptive_terms["r_efficient"].mean()
+        self.extras["reward/drop"] = adaptive_terms["r_drop"].mean()
+        # 적응 검증: grip_ratio가 mass bin별로 공통값에 수렴해야 함 (force ∝ mass)
         self.extras["task/grip_force_n"] = grip_normal_force.mean()
         self.extras["task/grip_ratio"] = force_ratio.mean()
         _hold_n = hold_gate.sum().clamp(min=1.0)
@@ -1178,7 +1177,11 @@ class GraspRightEnv(DirectRLEnv):
             self.extras[f"task/grip_ratio_hold/mass_bin_{bin_idx}"] = (
                 force_ratio * bin_hold
             ).sum() / bin_hold.sum().clamp(min=1.0)
-        # 조건2(no-slip) 검증: shear/normal severity
+        # no-slip 검증: 주 지표 = 컵-손 상대속도(secure), 보조 = shear severity
+        self.extras["task/cup_slip_speed"] = cup_slip_speed.mean()
+        self.extras["task/secure_quality_hold"] = (
+            adaptive_terms["secure_quality"] * hold_gate
+        ).sum() / _hold_n
         self.extras["task/slip_ratio"] = slip_severity.mean()
         self.extras["task/slip_ratio_hold"] = (slip_severity * hold_gate).sum() / _hold_n
         self.extras["reward/action_smooth"] = r_action_smooth.mean()
@@ -1343,78 +1346,49 @@ class GraspRightEnv(DirectRLEnv):
         self.episode_lift_success_buf[env_ids] = False
         self.episode_stabilize_success_buf[env_ids] = False
 
-        # ---- 1. Reset source 선택 ----
-        if self.demo_grasp_reset_bank is not None:
-            demo_indices = torch.randint(
-                self.demo_grasp_reset_bank.num_demos,
-                (n,),
-                device=self.device,
-            )
-            start_arm = self.demo_grasp_reset_bank.start_arm_joint_pos[demo_indices]
-            start_hand = self.demo_grasp_reset_bank.start_hand_joint_pos[demo_indices]
-            pregrasp_palm_pose = self.demo_grasp_reset_bank.start_palm_pose_euler_zyx[demo_indices].clone()
-            pregrasp_palm_pose[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
-            self.demo_lift_palm_target_buf[env_ids] = (
-                self.demo_grasp_reset_bank.lift_palm_pose_euler_zyx[demo_indices]
-            )
+        # ---- 1. Reset source: pregrasp grid + Fabrics IK (approach pose에서 시작) ----
+        q_pregrasp = self.robot_start_joint_pos[env_ids].clone()
+        approach_hand = self.hand_approach_pose.unsqueeze(0).expand(n, -1)
 
-            q_pregrasp = torch.cat([start_arm, start_hand], dim=1)
-            approach_hand = start_hand
+        _xy_range = (
+            self.grasp_adr.get_param("spawn", "object_spawn_xy_range")
+            if self.grasp_adr is not None
+            else self.cfg.object_spawn_xy_range
+        )
+        obj_x = self.cfg.object_spawn_x_center + (
+            torch.rand(n, device=self.device) - 0.5
+        ) * 2.0 * _xy_range
+        obj_y = self.cfg.object_spawn_y_center + (
+            torch.rand(n, device=self.device) - 0.5
+        ) * 2.0 * _xy_range
+        obj_pos_local = torch.stack(
+            [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
+        )
 
-            noise_xy = torch.stack([
-                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
-                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
-            ], dim=1)
-            obj_pos_local = compute_demo_cup_spawn_local(
-                pregrasp_palm_pose,
-                self.pregrasp_offset[:2],
-                self.cfg.object_spawn_z,
-                noise_xy,
-            )
+        noise = torch.stack([
+            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
+            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
+            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
+        ], dim=1)
+        pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
+
+        pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
+        pregrasp_palm_pose[:, :3] = pregrasp_pos
+        pregrasp_palm_pose[:, 3] = math.radians(90.0)
+        pregrasp_palm_pose[:, 4] = math.radians(0.0)
+        pregrasp_palm_pose[:, 5] = math.radians(90.0)
+        pregrasp_palm_pose = torch.max(
+            torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
+            self.palm_mins.unsqueeze(0),
+        )
+
+        if self.cfg.cache_pregrasp_reset:
+            xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
+            yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
+            q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[xi, yi]
         else:
-            q_pregrasp = self.robot_start_joint_pos[env_ids].clone()
-            approach_hand = self.hand_approach_pose.unsqueeze(0).expand(n, -1)
-
-            _xy_range = (
-                self.grasp_adr.get_param("spawn", "object_spawn_xy_range")
-                if self.grasp_adr is not None
-                else self.cfg.object_spawn_xy_range
-            )
-            obj_x = self.cfg.object_spawn_x_center + (
-                torch.rand(n, device=self.device) - 0.5
-            ) * 2.0 * _xy_range
-            obj_y = self.cfg.object_spawn_y_center + (
-                torch.rand(n, device=self.device) - 0.5
-            ) * 2.0 * _xy_range
-            obj_pos_local = torch.stack(
-                [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
-            )
-
-            noise = torch.stack([
-                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
-                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
-                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
-            ], dim=1)
-            pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
-
-            pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
-            pregrasp_palm_pose[:, :3] = pregrasp_pos
-            pregrasp_palm_pose[:, 3] = math.radians(90.0)
-            pregrasp_palm_pose[:, 4] = math.radians(0.0)
-            pregrasp_palm_pose[:, 5] = math.radians(90.0)
-            pregrasp_palm_pose = torch.max(
-                torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
-                self.palm_mins.unsqueeze(0),
-            )
-
-            if self.cfg.cache_pregrasp_reset:
-                xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
-                yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
-                q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[xi, yi]
-            else:
-                q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_pregrasp)
-            q_pregrasp[:, NUM_ARM_DOF:] = approach_hand
-            self.demo_lift_palm_target_buf[env_ids] = pregrasp_palm_pose
+            q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_pregrasp)
+        q_pregrasp[:, NUM_ARM_DOF:] = approach_hand
 
         # ---- 2. 로봇/Fabrics 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
