@@ -272,12 +272,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)
     g_ready_width: float = 0.04    # [test7] 0.02→0.04: (a)로 정조준 완벽(mouth_xy~0.003)→sharp 불필요. 깊은 tilt 과도기 mouth_xy 흔들림에 stageB(tilt/align) 절벽 완화 (bead_in은 이미 g_ready 분리)
 
-    # [2단 tilt 재설계] Stage A=0→85°(pre-pour) 세우기(always-on), Stage B=85→135° hinge 쏟기(g_ready)
-    tilt_pre_amount: float = 0.456   # 85° pre-pour tilt_amount = (1-cos85°)/2. Stage A 목표 자세(쏟기 직전)
-    weight_tilt_pre: float = 8.0     # Stage A r_tilt_A: 0→85° 세우기 (introt5·approach8 수준, park 억제)
+    # [tilt 식 교체/test8] 2단 A/B 폐기 → 0→135° 단일 연속 ramp, always-on(aim_floor 부분종속).
+    #   test7 진단: A는 85°(tilt_pre)서 saturate(grad→0), B는 85° 넘어야 시작 → 82-85° dead spot에서
+    #   정책 정지(peak 0.43<0.456) → tilt_progress_B 영구 미발현. 끊김 없는 단일 gradient로 교체.
+    tilt_pre_amount: float = 0.456   # [test8] 로깅 전용(85° 돌파 추적, tilt_progress_B). 보상 미사용
+    weight_tilt_pre: float = 8.0     # [test8] 미사용(r_tilt_A 폐기). 구 기록 참조용 유지
 
-    # Stage B — tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
-    weight_tilt: float = 15.0      # [2단] Stage B r_tilt_B: 85→135° hinge 쏟기 (× g_ready). audit Check1: ≤15
+    # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
+    weight_tilt: float = 23.0      # [test8] 15→23: 구 ceiling(r_tilt_A 8 + r_tilt_B 15) 보존. 단일 연속 ramp
+    tilt_aim_floor: float = 0.35   # [test8] r_tilt aim 부분종속 floor: r_tilt=w·progress·rot_dir·(floor+(1-floor)·g_ready)
+    #   깊은 tilt 과도기 mouth_xy wobble→g_ready 절벽으로 gradient 소멸 방지(35% 생존). 미정조준 ceiling=23×0.35=8≈구 r_tilt_A
     # [H10] 상시 내회전 유도 — r_tilt(곱)는 tilt 전엔 회전 gradient=0(chicken-and-egg) →
     #   tilt 비종속 항으로 "내회전이 옳다"를 직접 학습. g_ready 게이트(접근 후만). w_tilt(15)보다
     #   작아 "회전만 park" 아닌 "회전 후 tilt(+15)"로 견인. lstm_test2 internal_rot_gate 자발하락 대응.

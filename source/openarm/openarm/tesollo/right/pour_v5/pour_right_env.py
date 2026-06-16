@@ -1656,14 +1656,18 @@ class PourRightEnv(DirectRLEnv):
         #   rot_dir = floor + (1-floor)·gate. floor=0.0(H10) → rot_dir = internal_rot_gate:
         #   외회전(gate~0)이면 tilt 보상 0, 내회전(gate~1) 가면 100%. 외회전 tilt local min 차단.
         rot_dir = self.cfg.rot_tilt_floor + (1.0 - self.cfg.rot_tilt_floor) * self._internal_rot_gate
-        # [2단 tilt] Stage A: 0→85°(pre-pour) 세우기, always-on(total 직접 가산, g_ready 무관).
-        #   pre-pour 자세를 정조준 전에 형성 → pour_point 안정화(직립 wobble 회피) → approach가 정조준 가능.
+        # [tilt 식 교체/test8] 2단 A/B → 0→135° 단일 연속 ramp, always-on.
+        #   진단: 구 r_tilt_A는 85°(tilt_pre)서 saturate(grad→0), r_tilt_B는 85° 넘어야 시작 →
+        #   82-85° dead spot에서 정책 정지(peak 0.43<0.456) → tilt_progress_B 영구 미발현.
+        #   교체: tilt_target(135°)까지 끊김 없는 단일 gradient(=tilt_progress). 85° dead spot 제거.
+        # aim 부분종속(floor): 깊은 tilt 과도기 mouth_xy wobble→g_ready 절벽으로 gradient 소멸 방지.
+        #   floor(0.35)만큼은 정조준 없이도 받음 → gradient 생존. full은 정조준 필요(파밍 억제).
+        aim_soft = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * g_ready
+        r_tilt = self.cfg.weight_tilt * tilt_progress * rot_dir * aim_soft   # total 직접 가산(아래)
+        # [로깅 전용] 85° 돌파 추적 (보상 미사용). tilt_progress_A=전체 진행도, B=깊은 구간(85→135°)
         tilt_pre = self.cfg.tilt_pre_amount
-        tilt_progress_A = (tilt_amount / max(tilt_pre, 1e-6)).clamp(0.0, 1.0)
-        r_tilt_A = self.cfg.weight_tilt_pre * tilt_progress_A * rot_dir
-        # [2단 tilt] Stage B: 85→135° hinge 쏟기, × g_ready(정조준 후만).
+        tilt_progress_A = tilt_progress
         tilt_progress_B = ((tilt_amount - tilt_pre) / max(tilt_target - tilt_pre, 1e-6)).clamp(0.0, 1.0)
-        r_tilt = self.cfg.weight_tilt * tilt_progress_B * rot_dir
         # [H10] 상시 내회전 유도 (tilt 비종속, Stage A always-on): "내회전이 옳다"를 직접 보상.
         #   r_tilt(곱)는 tilt 전엔 회전 gradient=0 → chicken-and-egg. r_introt가 tilt 없이도,
         #   접근 전(g_ready 무관)부터 내회전 gradient 제공(Stage B는 늦음). w_introt(5)<w_tilt(15)+
@@ -1714,7 +1718,7 @@ class PourRightEnv(DirectRLEnv):
         #   흔들림)에 보상을 죽이는 닭-달걀 유발. g_ready에서 빼고 total 직접 가산.
         #   align_gate(3D 정렬)는 유지 → "고공/나쁜 자세 흘려넣기"는 계속 차단.
         r_stageB = g_ready * (
-            r_tilt + r_align + r_drain
+            r_align + r_drain
         )
 
 
@@ -1743,7 +1747,7 @@ class PourRightEnv(DirectRLEnv):
             r_hold
             + r_approach
             + r_introt
-            + r_tilt_A          # [2단 tilt] Stage A: pre-pour(0→85°) 세우기 always-on
+            + r_tilt            # [tilt 식 교체/test8] 0→135° 단일 연속 ramp, always-on(aim_floor 부분종속)
             + r_stageB
             + r_bead_in         # [게이트 분리] g_ready 무관, align_gate만 통과한 실제 착지 보상
             + self.cfg.weight_success * r_success
@@ -1773,8 +1777,8 @@ class PourRightEnv(DirectRLEnv):
             "reward/approach": r_approach.mean(),
             "reward/tilt_rot_dir": rot_dir.mean(),
             "reward/introt":   r_introt.mean(),
-            "reward/tilt_pre": r_tilt_A.mean(),              # [2단] Stage A: 0→85° 세우기 (always-on)
-            "reward/tilt":     (g_ready * r_tilt).mean(),    # [2단] Stage B: 85→135° hinge 쏟기
+            "reward/tilt_pre": torch.zeros((), device=self.device),  # [test8] r_tilt_A 폐기 (0 고정, 대시보드 호환)
+            "reward/tilt":     r_tilt.mean(),                # [test8] 0→135° 단일 연속 ramp (always-on, total 가산값과 일치)
             "reward/align":    (g_ready * r_align).mean(),
             "reward/bead_in":  r_bead_in.mean(),    # [게이트 분리] g_ready 무관 (total 직접 가산값과 일치)
             "reward/drain":    (g_ready * r_drain).mean(),
