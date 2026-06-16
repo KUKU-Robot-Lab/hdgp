@@ -128,8 +128,50 @@ class GraspRightEnv(DirectRLEnv):
         palm_quat[:, 3:7] = self._quat_xyzw_from_euler_zyx(palm_euler[:, 3:6])
         return palm_quat
 
+    @staticmethod
+    def _build_tb_scalar_groups() -> dict[str, tuple[str, str]]:
+        groups = {
+            "reward/total": ("reward/summary", "total"),
+            "reward/approach": ("reward/summary", "approach"),
+            "reward/grasp": ("reward/summary", "grasp"),
+            "reward/lift": ("reward/summary", "lift"),
+            "reward/stabilize": ("reward/summary", "stabilize"),
+            "reward/success_bonus": ("reward/summary", "success_bonus"),
+            "reward/adaptive_force": ("reward/summary", "adaptive_force"),
+            "reward/no_slip": ("reward/summary", "no_slip"),
+            "reward/action_smooth": ("reward/summary", "action_smooth"),
+            "contact/count": ("task/contact", "tip_count"),
+            "contact/palm": ("task/contact", "palm_rate"),
+            "contact/palm_force": ("task/contact", "palm_force"),
+            "cup/tilt_deg": ("task/cup", "tilt_deg"),
+            "cup/height_delta": ("task/cup", "height_delta"),
+            "cup/xy_displacement": ("task/cup", "xy_displacement"),
+            "task/five_tip_contact_rate": ("task/progress", "five_tip_contact_rate"),
+            "task/lift_started_rate": ("task/progress", "lift_started_rate"),
+            "task/lift_success_rate": ("task/success", "lift_success_rate"),
+            "task/stabilize_success_rate": ("task/success", "stabilize_success_rate"),
+            "task/success_rate": ("task/success", "success_rate"),
+            "task/grip_force_n": ("task/grip", "force_n"),
+            "task/grip_ratio": ("task/grip", "ratio"),
+            "task/grip_ratio_hold": ("task/grip", "ratio_hold"),
+            "task/slip_ratio": ("task/slip_ratio", "mean"),
+            "task/slip_ratio_hold": ("task/slip_ratio", "hold"),
+        }
+        for tip_idx in range(NUM_FINGERTIPS):
+            tip_tag = f"sensor/tip_{tip_idx + 1}"
+            groups[f"{tip_tag}/x"] = (tip_tag, "x")
+            groups[f"{tip_tag}/y"] = (tip_tag, "y")
+            groups[f"{tip_tag}/z"] = (tip_tag, "z")
+        for joint_idx in range(NUM_HAND_DOF):
+            finger_idx = joint_idx // 4 + 1
+            local_joint_idx = joint_idx % 4 + 1
+            joint_tag = f"joint/hand/f{finger_idx}/j{local_joint_idx}"
+            groups[joint_tag] = (f"joint/hand/f{finger_idx}", f"j{local_joint_idx}")
+        return groups
+
     def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
+        self.tb_scalar_groups = self._build_tb_scalar_groups()
 
         # ----------------------------------------------------------------
         # DOF index 설정
@@ -1009,7 +1051,6 @@ class GraspRightEnv(DirectRLEnv):
 
         lift_gate = self.lift_ready_latched_buf.float()
         lifted_gate = (cup_height_delta >= self.cfg.lift_success_height).float()
-        meaningful_contact = num_tip_contacts > 0
         lifted_bool = lifted_gate > 0.0
 
         # Stabilize(height-hold) phase: lift off 이후 컵을 세운 채 10cm까지 유지.
@@ -1019,7 +1060,7 @@ class GraspRightEnv(DirectRLEnv):
             self.grasp_ready_hold_buf.float()
             / max(float(self.cfg.grasp_contact_persistence_reward_steps), 1.0)
         ).clamp(max=1.0)
-        total, reward_terms, reward_gates = compute_grasp_reward_terms(
+        total, reward_terms, _ = compute_grasp_reward_terms(
             num_tip_contacts=num_tip_contacts,
             tip_contact_frac=tip_contact_frac,
             full_tip_contact=full_tip_contact,
@@ -1116,18 +1157,9 @@ class GraspRightEnv(DirectRLEnv):
         else:
             _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
 
-        self.extras["phase/approach"] = (
-            (~self.lift_ready_latched_buf) & (~meaningful_contact)
-        ).float().mean()
-        self.extras["phase/grasp"] = (
-            (~self.lift_ready_latched_buf) & meaningful_contact
-        ).float().mean()
-        self.extras["phase/lift"] = (self.lift_ready_latched_buf & (~lifted_bool)).float().mean()
-        self.extras["phase/stabilize"] = self.is_stabilize_phase.float().mean()
         self.extras["reward/approach"] = reward_terms["approach"].mean()
         self.extras["reward/grasp"] = reward_terms["grasp"].mean()
         self.extras["reward/lift"] = reward_terms["lift"].mean()
-        self.extras["reward/post_lift_contact_loss"] = reward_terms["post_lift_contact_loss"].mean()
         self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
         self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
         self.extras["reward/adaptive_force"] = r_adaptive_force.mean()
@@ -1137,46 +1169,22 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/grip_ratio"] = force_ratio.mean()
         _hold_n = hold_gate.sum().clamp(min=1.0)
         self.extras["task/grip_ratio_hold"] = (force_ratio * hold_gate).sum() / _hold_n
-        self.extras["task/force_quality"] = force_quality.mean()
         # 조건2(no-slip) 검증: shear/normal severity
         self.extras["task/slip_ratio"] = slip_severity.mean()
         self.extras["task/slip_ratio_hold"] = (slip_severity * hold_gate).sum() / _hold_n
         self.extras["reward/action_smooth"] = r_action_smooth.mean()
-        self.extras["reward/action_delta"] = r_action_delta.mean()
-        self.extras["reward/hand_residual_magnitude"] = r_hand_residual_magnitude.mean()
         self.extras["reward/total"] = total.mean()
         self.extras["contact/count"] = num_tip_contacts.float().mean()
         self.extras["contact/palm"] = palm_contact.mean()
         self.extras["contact/palm_force"] = self.palm_contact_force_raw.mean()
-        self.extras["contact/grasp_ready_hold"] = self.grasp_ready_hold_buf.float().mean()
-        self.extras["contact/contacts_at_lift_start"] = self.contacts_at_lift_start_buf.mean()
-        self.extras["contact/palm_at_lift_start"] = self.palm_at_lift_start_buf.mean()
         self.extras["cup/tilt_deg"] = cup_tilt_deg.mean()
-        self.extras["cup/upright_quality"] = upright_quality.mean()
-        self.extras["cup/grasp_tilt_deg"] = self.grasp_tilt_at_lift_start_buf.mean()
-        lift_tilt = cup_tilt_deg[self.lift_ready_latched_buf]
-        self.extras["cup/lift_tilt_deg"] = lift_tilt.mean() if lift_tilt.numel() > 0 else cup_tilt_deg.mean()
         self.extras["cup/height_delta"] = cup_height_delta.mean()
         self.extras["cup/xy_displacement"] = cup_xy_displacement.mean()
-        self.extras["task/height_quality"] = reward_gates[
-            "transport_height_quality"
-        ].mean()
-        self.extras["task/posture_quality"] = reward_gates[
-            "transport_posture_quality"
-        ].mean()
-        self.extras["task/grasp_ready_rate"] = grasp_ready_now.float().mean()
         self.extras["task/five_tip_contact_rate"] = full_tip_contact.mean()
-        self.extras["task/prelift_five_tip_contact_rate"] = (
-            full_tip_contact * (~self.lift_ready_latched_buf).float()
-        ).sum() / (~self.lift_ready_latched_buf).float().sum().clamp(min=1.0)
-        self.extras["task/lift_five_tip_contact_rate"] = (
-            full_tip_contact * self.lift_ready_latched_buf.float()
-        ).sum() / self.lift_ready_latched_buf.float().sum().clamp(min=1.0)
-        self.extras["task/contact_persistence"] = self.grasp_ready_hold_buf.float().mean()
         self.extras["task/lift_started_rate"] = self.lift_started_buf.float().mean()
         self.extras["task/lift_success_rate"] = self._lift_success_latched_buf.float().mean()
+        self.extras["task/stabilize_success_rate"] = self.episode_stabilize_success_buf.float().mean()
         self.extras["task/success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
-        self.extras["task/common_success_now"] = reward_gates["success_now"].mean()
 
         tip_force_mean = self.tip_force_local.mean(dim=0)
         for tip_idx in range(NUM_FINGERTIPS):
@@ -1261,11 +1269,6 @@ class GraspRightEnv(DirectRLEnv):
 
         terminated = out_x | out_y | fallen | tipped | final_success_held
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
-
-        self.extras["task/lift_success_now"] = lift_success_now.float().mean()
-        self.extras["task/stabilize_success_now"] = stabilize_success_now.float().mean()
-        self.extras["task/final_success_now"] = final_success_now.float().mean()
-        self.extras["task/stabilize_success_rate"] = self.episode_stabilize_success_buf.float().mean()
 
         return terminated, truncated
 
