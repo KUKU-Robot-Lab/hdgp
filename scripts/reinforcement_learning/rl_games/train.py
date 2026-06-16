@@ -115,21 +115,37 @@ class SingleAxisIsaacObserver(IsaacAlgoObserver):
     def __init__(self, scalar_groups: dict[str, tuple[str, str]] | None = None):
         super().__init__()
         self.scalar_groups = scalar_groups or {}
+        self.custom_scalar_layout = self._build_custom_scalar_layout(self.scalar_groups)
+        self._custom_scalar_layout_written = False
+
+    @staticmethod
+    def _build_custom_scalar_layout(
+        scalar_groups: dict[str, tuple[str, str]]
+    ) -> dict[str, dict[str, list]] | None:
+        if not scalar_groups:
+            return None
+
+        grouped_tags: dict[str, list[str]] = {}
+        for tag, (chart_tag, _) in scalar_groups.items():
+            grouped_tags.setdefault(chart_tag, []).append(f"{tag}/iter")
+
+        layout: dict[str, dict[str, list]] = {}
+        for chart_tag, tags in grouped_tags.items():
+            category, _, chart_name = chart_tag.partition("/")
+            if not chart_name:
+                category, chart_name = "custom", category
+            layout.setdefault(category, {})[chart_name] = ["Multiline", sorted(tags)]
+        return layout
 
     def after_print_stats(self, frame, epoch_num, total_time):
         saved = self.direct_info
         self.direct_info = {}
         super().after_print_stats(frame, epoch_num, total_time)
-        grouped_scalars = {}
+        if self.custom_scalar_layout and not self._custom_scalar_layout_written:
+            self.writer.add_custom_scalars(self.custom_scalar_layout)
+            self._custom_scalar_layout_written = True
         for k, v in saved.items():
-            group = self.scalar_groups.get(k)
-            if group is None:
-                self.writer.add_scalar(f"{k}/iter", v, epoch_num)
-                continue
-            main_tag, series_tag = group
-            grouped_scalars.setdefault(main_tag, {})[series_tag] = v
-        for main_tag, values in grouped_scalars.items():
-            self.writer.add_scalars(f"{main_tag}/iter", values, epoch_num)
+            self.writer.add_scalar(f"{k}/iter", v, epoch_num)
 
 
 def _force_local_openarm_path() -> str:

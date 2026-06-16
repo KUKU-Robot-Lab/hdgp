@@ -244,7 +244,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_palm_delta_xyz: float = 0.03
     lift_palm_delta_rot_deg: float = 15.0
     # Transport: policy-driven palm xyz (v10_3 방식). start 앵커 + action·radius, rate-limit.
-    transport_palm_workspace_radius: float = 0.18   # goal 변위 커버용 reach 반경 (m)
+    transport_palm_workspace_radius: float = 0.30   # goal 변위 커버용 reach 반경 (m). lift후 cup→goal 평균 0.275m라 0.18은 도달 불가 → 상향.
     transport_palm_target_max_delta: float = 0.01   # step당 palm target 이동 제한 (v10_3 동일)
 
     # -----------------------------------------------------------------------

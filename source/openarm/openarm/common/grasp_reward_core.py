@@ -78,8 +78,12 @@ def compute_grasp_reward_terms(
         transport_xyz_dist = cup_xy_displacement
     if transport_reward_gate is None:
         transport_reward_gate_f = torch.ones_like(cup_height_delta)
+        # transport 개념이 없는 호출자(grasp_adapt 등)는 stabilize 보상을 그대로 유지.
+        stabilize_phase_gate = torch.ones_like(cup_height_delta)
     else:
         transport_reward_gate_f = transport_reward_gate.float()
+        # transport phase에서는 stabilize(정지+자세) 보상을 끈다 → 이동 유도.
+        stabilize_phase_gate = 1.0 - transport_reward_gate_f
     transport_xyz_quality = torch.exp(-transport_xyz_dist / max(transport_xyz_scale, 1e-6))
     transport_height_target = max(
         _cfg_float(
@@ -115,6 +119,7 @@ def compute_grasp_reward_terms(
         * upright_quality
         * transport_height_quality
         * action_quality
+        * stabilize_phase_gate
     )
     transport_xyz = (
         _cfg_float(
