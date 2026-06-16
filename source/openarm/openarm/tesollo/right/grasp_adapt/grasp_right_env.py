@@ -1133,14 +1133,14 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/adaptive_force"] = r_adaptive_force.mean()
         self.extras["reward/no_slip"] = r_no_slip.mean()
         # 조건1(mass-adaptive force) 검증: grip_ratio가 mass bin별로 분기해야 함
-        self.extras["force/grip_normal"] = grip_normal_force.mean()
-        self.extras["force/grip_ratio"] = force_ratio.mean()
+        self.extras["task/grip_force_n"] = grip_normal_force.mean()
+        self.extras["task/grip_ratio"] = force_ratio.mean()
         _hold_n = hold_gate.sum().clamp(min=1.0)
-        self.extras["force/grip_ratio_hold"] = (force_ratio * hold_gate).sum() / _hold_n
-        self.extras["force/quality"] = force_quality.mean()
+        self.extras["task/grip_ratio_hold"] = (force_ratio * hold_gate).sum() / _hold_n
+        self.extras["task/force_quality"] = force_quality.mean()
         # 조건2(no-slip) 검증: shear/normal severity
-        self.extras["slip/severity"] = slip_severity.mean()
-        self.extras["slip/severity_hold"] = (slip_severity * hold_gate).sum() / _hold_n
+        self.extras["task/slip_ratio"] = slip_severity.mean()
+        self.extras["task/slip_ratio_hold"] = (slip_severity * hold_gate).sum() / _hold_n
         self.extras["reward/action_smooth"] = r_action_smooth.mean()
         self.extras["reward/action_delta"] = r_action_delta.mean()
         self.extras["reward/hand_residual_magnitude"] = r_hand_residual_magnitude.mean()
@@ -1177,7 +1177,19 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/lift_success_rate"] = self._lift_success_latched_buf.float().mean()
         self.extras["task/success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
         self.extras["task/common_success_now"] = reward_gates["success_now"].mean()
-        self.extras["object_stat/obj_z"] = self.object_pos[:, 2].mean()
+
+        tip_force_mean = self.tip_force_local.mean(dim=0)
+        for tip_idx in range(NUM_FINGERTIPS):
+            tip_tag = f"sensor/tip_{tip_idx + 1}"
+            self.extras[f"{tip_tag}/x"] = tip_force_mean[tip_idx, 0]
+            self.extras[f"{tip_tag}/y"] = tip_force_mean[tip_idx, 1]
+            self.extras[f"{tip_tag}/z"] = tip_force_mean[tip_idx, 2]
+
+        hand_joint_pos_mean = self.robot.data.joint_pos[:, self.hand_dof_indices].mean(dim=0)
+        for joint_idx in range(NUM_HAND_DOF):
+            finger_idx = joint_idx // 4 + 1
+            local_joint_idx = joint_idx % 4 + 1
+            self.extras[f"joint/hand/f{finger_idx}/j{local_joint_idx}"] = hand_joint_pos_mean[joint_idx]
 
         self._prev_total_grip_force_buf.copy_(self.contact_force_raw.sum(dim=-1))
         self._prev_num_contacts_buf.copy_(num_tip_contacts.float())
@@ -1189,6 +1201,7 @@ class GraspRightEnv(DirectRLEnv):
     # Dones
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        self.extras.clear()
         self._compute_intermediate_values()
 
         out_x = (
@@ -1249,7 +1262,6 @@ class GraspRightEnv(DirectRLEnv):
         terminated = out_x | out_y | fallen | tipped | final_success_held
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
-        self.extras["object_stat/obj_z"] = self.object_pos[:, 2].mean()
         self.extras["task/lift_success_now"] = lift_success_now.float().mean()
         self.extras["task/stabilize_success_now"] = stabilize_success_now.float().mean()
         self.extras["task/final_success_now"] = final_success_now.float().mean()

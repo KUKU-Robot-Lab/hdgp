@@ -112,12 +112,88 @@ class SingleAxisIsaacObserver(IsaacAlgoObserver):
     (Episode/* 는 원래 1축, scores/episode_lengths/rewards 3중은 rl_games 코어 소관.)
     """
 
+    _GROUPED_SCALARS = {
+        "phase/approach": ("task/phase", "approach"),
+        "phase/grasp": ("task/phase", "grasp"),
+        "phase/lift": ("task/phase", "lift"),
+        "phase/stabilize": ("task/phase", "stabilize"),
+        "reward/total": ("reward/summary", "total"),
+        "reward/approach": ("reward/summary", "approach"),
+        "reward/grasp": ("reward/summary", "grasp"),
+        "reward/lift": ("reward/summary", "lift"),
+        "reward/stabilize": ("reward/summary", "stabilize"),
+        "reward/success_bonus": ("reward/summary", "success_bonus"),
+        "reward/adaptive_force": ("reward/aux", "adaptive_force"),
+        "reward/no_slip": ("reward/aux", "no_slip"),
+        "reward/post_lift_contact_loss": ("reward/aux", "post_lift_contact_loss"),
+        "reward/action_smooth": ("reward/regularization", "action_smooth"),
+        "reward/action_delta": ("reward/regularization", "action_delta"),
+        "reward/hand_residual_magnitude": ("reward/regularization", "hand_residual_magnitude"),
+        "contact/count": ("task/contact", "tip_count"),
+        "contact/palm": ("task/contact", "palm"),
+        "contact/grasp_ready_hold": ("task/contact", "grasp_ready_hold"),
+        "contact/contacts_at_lift_start": ("task/contact", "contacts_at_lift_start"),
+        "contact/palm_at_lift_start": ("task/contact", "palm_at_lift_start"),
+        "contact/palm_force": ("task/contact_force", "palm_force"),
+        "cup/tilt_deg": ("task/cup", "tilt_deg"),
+        "cup/upright_quality": ("task/cup", "upright_quality"),
+        "cup/grasp_tilt_deg": ("task/cup", "grasp_tilt_deg"),
+        "cup/lift_tilt_deg": ("task/cup", "lift_tilt_deg"),
+        "cup/height_delta": ("task/cup", "height_delta"),
+        "cup/xy_displacement": ("task/cup", "xy_displacement"),
+        "task/height_quality": ("task/quality", "height"),
+        "task/posture_quality": ("task/quality", "posture"),
+        "task/force_quality": ("task/quality", "force"),
+        "task/grasp_ready_rate": ("task/contact_rate", "grasp_ready"),
+        "task/five_tip_contact_rate": ("task/contact_rate", "five_tip"),
+        "task/prelift_five_tip_contact_rate": ("task/contact_rate", "prelift_five_tip"),
+        "task/lift_five_tip_contact_rate": ("task/contact_rate", "lift_five_tip"),
+        "task/contact_persistence": ("task/contact_rate", "persistence"),
+        "task/lift_started_rate": ("task/success", "lift_started_rate"),
+        "task/lift_success_rate": ("task/success", "lift_success_rate"),
+        "task/stabilize_success_rate": ("task/success", "stabilize_success_rate"),
+        "task/success_rate": ("task/success", "success_rate"),
+        "task/common_success_now": ("task/success", "common_success_now"),
+        "task/lift_success_now": ("task/success_now", "lift"),
+        "task/stabilize_success_now": ("task/success_now", "stabilize"),
+        "task/final_success_now": ("task/success_now", "final"),
+        "task/grip_force_n": ("task/grip", "force_n"),
+        "task/grip_ratio": ("task/grip", "ratio"),
+        "task/grip_ratio_hold": ("task/grip", "ratio_hold"),
+        "task/slip_ratio": ("task/slip_ratio", "mean"),
+        "task/slip_ratio_hold": ("task/slip_ratio", "hold"),
+    }
+
+    @classmethod
+    def _scalar_group(cls, tag: str) -> tuple[str, str] | None:
+        group = cls._GROUPED_SCALARS.get(tag)
+        if group is not None:
+            return group
+
+        match = re.fullmatch(r"sensor/(tip_[1-5])/(x|y|z)", tag)
+        if match:
+            return f"sensor/{match.group(1)}", match.group(2)
+
+        match = re.fullmatch(r"joint/hand/(f[1-5])/(j[1-4])", tag)
+        if match:
+            return f"joint/hand/{match.group(1)}", match.group(2)
+
+        return None
+
     def after_print_stats(self, frame, epoch_num, total_time):
         saved = self.direct_info
         self.direct_info = {}
         super().after_print_stats(frame, epoch_num, total_time)
+        grouped_scalars = {}
         for k, v in saved.items():
-            self.writer.add_scalar(f"{k}/iter", v, epoch_num)
+            group = self._scalar_group(k)
+            if group is None:
+                self.writer.add_scalar(f"{k}/iter", v, epoch_num)
+                continue
+            main_tag, series_tag = group
+            grouped_scalars.setdefault(main_tag, {})[series_tag] = v
+        for main_tag, values in grouped_scalars.items():
+            self.writer.add_scalars(f"{main_tag}/iter", values, epoch_num)
 
 
 def _force_local_openarm_path() -> str:
