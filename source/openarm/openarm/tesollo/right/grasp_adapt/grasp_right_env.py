@@ -157,6 +157,9 @@ class GraspRightEnv(DirectRLEnv):
             "task/slip_ratio": ("task/slip_ratio", "mean"),
             "task/slip_ratio_hold": ("task/slip_ratio", "hold"),
         }
+        for bin_idx, bead_count in enumerate((0, 10, 20, 30)):
+            tag = f"task/grip_ratio_hold/mass_bin_{bin_idx}"
+            groups[tag] = ("task/grip_ratio_hold_by_mass", f"{bead_count}beads")
         for tip_idx in range(NUM_FINGERTIPS):
             tip_tag = f"sensor/tip_{tip_idx + 1}"
             groups[f"{tip_tag}/x"] = (tip_tag, "x")
@@ -1169,6 +1172,12 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/grip_ratio"] = force_ratio.mean()
         _hold_n = hold_gate.sum().clamp(min=1.0)
         self.extras["task/grip_ratio_hold"] = (force_ratio * hold_gate).sum() / _hold_n
+        mass_bin = (self._bead_mass_normalized * 3.0).round().long().clamp(0, 3)
+        for bin_idx in range(4):
+            bin_hold = hold_gate * (mass_bin == bin_idx).float()
+            self.extras[f"task/grip_ratio_hold/mass_bin_{bin_idx}"] = (
+                force_ratio * bin_hold
+            ).sum() / bin_hold.sum().clamp(min=1.0)
         # 조건2(no-slip) 검증: shear/normal severity
         self.extras["task/slip_ratio"] = slip_severity.mean()
         self.extras["task/slip_ratio_hold"] = (slip_severity * hold_gate).sum() / _hold_n

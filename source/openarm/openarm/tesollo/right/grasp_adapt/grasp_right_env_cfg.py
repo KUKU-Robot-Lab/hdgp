@@ -509,15 +509,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                **_actuator_params("tesollo_hand_curl", 30.0, 5.0),
+                **_actuator_params("tesollo_hand_curl", 90.0, 5.0),
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                **_actuator_params("tesollo_hand_pip", 30.0, 5.0),
+                **_actuator_params("tesollo_hand_pip", 90.0, 5.0),
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                **_actuator_params("tesollo_hand_dip", 30.0, 5.0),
+                **_actuator_params("tesollo_hand_dip", 90.0, 5.0),
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],
