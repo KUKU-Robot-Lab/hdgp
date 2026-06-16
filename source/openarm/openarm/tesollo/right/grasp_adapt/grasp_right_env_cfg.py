@@ -281,11 +281,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #
     # R_af = weight * is_lift * contact * exp(-sharpness * (ratio - target)²)
     #   target=2.5: ratio=0→0.04, ratio=1→0.33, ratio=2.5→1.0(최대), ratio=4→0.33, ratio=6→0.04
-    adaptive_force_weight:     float = 5.0
+    adaptive_force_weight:     float = 5.0   # lift/hold 연속 shaping: w·hold·force_quality
     af_target_ratio:           float = 2.5   # 최적 grip = 2.5 × mg
     af_sharpness:              float = 0.5   # Gaussian 폭 (클수록 좁은 sweet spot)
     cup_base_mass:             float = 0.170  # kg (빈 컵 질량)
     bead_single_mass:          float = 0.010  # kg per bead
+
+    # Shear 기반 no-slip (조건2): slip_severity = mean(‖f_t‖ / (f_n + eps))
+    # f_n/f_t는 fingertip→cup 기하 분해. μ 불필요 → friction DR 무관하게 shear 최소화 gradient.
+    no_slip_weight:            float = 4.0   # lift/hold 연속 shaping: w·hold·no_slip_quality
+    slip_shear_eps:            float = 0.5   # N, 저접촉력 구간 ratio 폭주 방지 분모 오프셋
+    # success_bonus 곱셈계수 하한 (조건1·2가 0이어도 lift 신호 소멸 방지)
+    success_quality_floor:     float = 0.1
 
     # R_ft. fingertip_guide: fingertip → cup 거리 기반 (항상 gradient, seed 분산 방지)
     # sim2real 영향 없음: fingertip_pos는 FK 또는 FT 센서로 실 로봇에서도 획득 가능

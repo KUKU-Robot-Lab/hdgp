@@ -74,6 +74,7 @@ from .grasp_right_constants import (
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
     CUP_RADIUS_APPROX,
+    GRAVITY,
     ARM_START_POSE,
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
@@ -322,6 +323,8 @@ class GraspRightEnv(DirectRLEnv):
         # 접촉 상태 버퍼
         # ----------------------------------------------------------------
         self.contact_force_xyz_raw   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
+        # fingertip body-local 힘 (fx,fy=shear, fz=normal) — obs용 sensor-faithful 표현
+        self.tip_force_local         = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.contact_force_raw       = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)
         self.contact_friction_xyz_raw = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
@@ -641,6 +644,12 @@ class GraspRightEnv(DirectRLEnv):
         tip_norms = tip_xyz.norm(dim=-1)
 
         self.contact_force_xyz_raw.copy_(tip_xyz)
+        # world-frame tip force → fingertip body-local frame (실 tactile 센서 출력 정합)
+        tip_quat = self.robot.data.body_quat_w[:, self.fingertip_body_indices]  # (N, 5, 4)
+        tip_force_local = quat_apply_inverse(
+            tip_quat.reshape(-1, 4), tip_xyz.reshape(-1, 3)
+        ).view(self.num_envs, NUM_FINGERTIPS, 3)
+        self.tip_force_local.copy_(torch.nan_to_num(tip_force_local, nan=0.0, posinf=0.0, neginf=0.0))
         self.contact_force_raw.copy_(tip_norms)
         self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
         self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
@@ -845,9 +854,9 @@ class GraspRightEnv(DirectRLEnv):
 
         last_actions = self.actions  # (N, 27)
 
-        # tip force: 3D 법선 방향 벡터 (5 × 3D = 15D)
-        tip_force_xyz_norm = (
-            self.contact_force_xyz_raw / CONTACT_FORCE_MAX
+        # tip force: fingertip body-local 3D 벡터 (fx,fy=shear, fz=normal; 5 × 3D = 15D)
+        tip_force_local_norm = (
+            self.tip_force_local / CONTACT_FORCE_MAX
         ).clamp(-1.0, 1.0).view(self.num_envs, -1)  # (N, 15)
 
         phase_step_ratio = (
@@ -867,7 +876,7 @@ class GraspRightEnv(DirectRLEnv):
         if self.cfg.actor_observe_bead_mass:
             actor_obs_parts.append(self._bead_mass_normalized.unsqueeze(-1))  # 1
         actor_obs_parts.extend([
-            tip_force_xyz_norm,     # 15
+            tip_force_local_norm,   # 15 (fingertip body-local: fx,fy shear + fz normal)
             middle_to_cup,          # 15
             phase_step_ratio,       # 1
         ])
@@ -911,7 +920,7 @@ class GraspRightEnv(DirectRLEnv):
             (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
             cup_pos_clean - palm_center_pos_clean,
             last_actions,
-            tip_force_xyz_norm,     # 15D (critic도 동일 변환)
+            tip_force_local_norm,   # 15D (critic도 동일 fingertip-local 표현)
             middle_to_cup_clean,    # 15D
             phase_step_ratio,
         ], dim=-1)   # 133D
@@ -1038,23 +1047,65 @@ class GraspRightEnv(DirectRLEnv):
             posinf=0.0,
             neginf=0.0,
         )
+        # ---- Mass-adaptive force grip & shear 기반 slip (lift/hold 구간 전용) ----
+        # normal/shear는 fingertip↔cup 기하 분해 (pad-normal 축 추측 불필요, sim2real: FK+cup추정).
+        # 접촉 반력은 컵 반대 방향(cup→fingertip)을 향하므로 grip_axis = normalize(fingertip - cup).
+        grip_axis = self.fingertip_pos - self.object_pos.unsqueeze(1)                 # (N,5,3) cup→fingertip
+        grip_axis = grip_axis / grip_axis.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        f_world = self.contact_force_xyz_raw                                          # (N,5,3) world
+        f_proj = (f_world * grip_axis).sum(dim=-1)                                    # (N,5) 부호 있는 법선 투영
+        f_n = f_proj.clamp(min=0.0)                                                   # (N,5) 압축 법선력
+        f_t = (f_world - f_proj.unsqueeze(-1) * grip_axis).norm(dim=-1)               # (N,5) 접선력(shear)
+        contact_mask = self.binary_contact_buf.float()
+        num_c = contact_mask.sum(dim=-1).clamp(min=1.0)
+
+        # 적정 grip force: 질량은 reward 계산에만 쓰는 privileged 값 (actor obs는 무게 hidden)
+        bead_count = (self._bead_mass_normalized * float(self.cfg.num_beads)).round()
+        cup_weight = (
+            float(self.cfg.cup_base_mass) + bead_count * float(self.cfg.bead_single_mass)
+        ) * GRAVITY
+        grip_normal_force = (f_n * contact_mask).sum(dim=-1)                          # ΣF_n
+        force_ratio = grip_normal_force / cup_weight.clamp(min=1e-6)
+        force_quality = torch.exp(
+            -float(self.cfg.af_sharpness) * (force_ratio - float(self.cfg.af_target_ratio)) ** 2
+        )                                                                            # [0,1], target=2.5×mg
+
+        shear_ratio = (f_t / (f_n + float(self.cfg.slip_shear_eps))).clamp(0.0, 1.0)
+        slip_severity = (shear_ratio * contact_mask).sum(dim=-1) / num_c             # [0,1]
+        no_slip_quality = (1.0 - slip_severity).clamp(0.0, 1.0)
+
+        # lift off + 5tip 유지 구간에서만 force/slip 신호 활성 (들기 전엔 무게 미관측)
+        hold_gate = lift_gate * lifted_gate * full_tip_contact
+
         # Success bonus: 컵을 lift_target_height(10cm)까지 올려 full-contact·upright로 유지 시 step 보너스.
         # 코어의 lift_success_height(4cm) 기반 success_bonus를 10cm 목표 기준으로 대체한다.
+        # 조건1(force_quality)·조건2(no_slip_quality)는 게이트가 아닌 곱셈계수(+floor) — 종료조건은 불변.
         base_success_bonus = reward_terms["success_bonus"]
         reached_target_gate = (cup_height_delta >= float(self.cfg.lift_target_height)).float()
         final_upright = (
             cup_tilt_deg <= float(self.cfg.stabilize_upright_max_deg)
         ).float()
+        quality_mult = (
+            float(self.cfg.success_quality_floor)
+            + (1.0 - float(self.cfg.success_quality_floor)) * force_quality * no_slip_quality
+        )
         height_hold_success_bonus = (
             float(self.cfg.success_bonus_weight)
             * lift_gate
             * reached_target_gate
             * full_tip_contact
             * final_upright
+            * quality_mult
         )
         reward_terms["success_bonus"] = height_hold_success_bonus
+
+        # 연속 shaping: success까지의 gradient 공급 (sparse-conjunction 방지)
+        r_adaptive_force = float(self.cfg.adaptive_force_weight) * hold_gate * force_quality
+        r_no_slip = float(self.cfg.no_slip_weight) * hold_gate * no_slip_quality
+
         total = torch.nan_to_num(
-            total - base_success_bonus + height_hold_success_bonus,
+            total - base_success_bonus + height_hold_success_bonus
+            + r_adaptive_force + r_no_slip,
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
@@ -1079,6 +1130,17 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/post_lift_contact_loss"] = reward_terms["post_lift_contact_loss"].mean()
         self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
         self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
+        self.extras["reward/adaptive_force"] = r_adaptive_force.mean()
+        self.extras["reward/no_slip"] = r_no_slip.mean()
+        # 조건1(mass-adaptive force) 검증: grip_ratio가 mass bin별로 분기해야 함
+        self.extras["force/grip_normal"] = grip_normal_force.mean()
+        self.extras["force/grip_ratio"] = force_ratio.mean()
+        _hold_n = hold_gate.sum().clamp(min=1.0)
+        self.extras["force/grip_ratio_hold"] = (force_ratio * hold_gate).sum() / _hold_n
+        self.extras["force/quality"] = force_quality.mean()
+        # 조건2(no-slip) 검증: shear/normal severity
+        self.extras["slip/severity"] = slip_severity.mean()
+        self.extras["slip/severity_hold"] = (slip_severity * hold_gate).sum() / _hold_n
         self.extras["reward/action_smooth"] = r_action_smooth.mean()
         self.extras["reward/action_delta"] = r_action_delta.mean()
         self.extras["reward/hand_residual_magnitude"] = r_hand_residual_magnitude.mean()
@@ -1405,6 +1467,7 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 8. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand
         self.contact_force_raw[env_ids] = 0.0
+        self.tip_force_local[env_ids] = 0.0
         self.contact_friction_xyz_raw[env_ids] = 0.0
         self.binary_contact_buf[env_ids] = False
         self.num_contacts_buf[env_ids]   = 0

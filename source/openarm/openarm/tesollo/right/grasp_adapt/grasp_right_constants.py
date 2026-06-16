@@ -33,7 +33,8 @@ Actor Observation (133D, no oracle mass) — sim2real 가능:
   fingertip_pos_rel_palm:  15  (5 × 3D)
   palm_to_cup_pos:          3
   last_actions:            27  (v10.3 policy target action)
-  tip_force_xyz_norm:      15  (5 × 3D 법선 방향 힘 벡터, v9.1: 5D norm → 15D vector)
+  tip_force_local_norm:    15  (5 × 3D fingertip body-local 힘 벡터: fx,fy=shear, fz=normal,
+                                실 tactile 센서 출력과 정합. grasp_adapt: world→local 변환)
   middle_to_cup_xyz:       15  (5 × 3D FK 기반, sim2real 가능: joint encoder → FK)
   phase_step_ratio:         1  (step counter 기반, 실 로봇 가능)
   [제거] cup_to_goal       3D → transport 단계 제거 (grasp_adapt: grasp/lift만)
@@ -63,6 +64,12 @@ Episode (6s @ 60Hz = 360 steps):
   approach/grasp/lift/stabilize(height-hold) phase는 상태 기반 reward/gate/diagnostic label이다.
   action override나 scripted lift 없이 policy target만 적용한다.
   lift off 후 컵을 세운 채 lift_target_height(10cm)까지 상승·유지하면 성공이다.
+
+Mass-adaptive force grip (lift/hold 구간 전용):
+  - force_quality: grip 법선력 합 / (질량·g) 가 af_target_ratio에 가까울수록 1 (Gaussian).
+    질량은 reward 계산에만 쓰는 privileged 값 — actor obs는 무게 hidden (정성적 추론).
+  - no_slip_quality: 1 - mean(shear/normal). fingertip→cup 기하 분해로 접선력(shear) 산출.
+  - 두 quality는 success_bonus 곱셈계수(+floor) + lift/hold 연속 shaping. done 성공조건은 불변.
 """
 
 import math
@@ -140,6 +147,11 @@ PREGRASP_FABRICS_STEPS = 60
 # Cup geometry
 # ---------------------------------------------------------------------------
 CUP_RADIUS_APPROX = 0.045  # m, cup_big 반경 (enclosure target 계산용)
+
+# ---------------------------------------------------------------------------
+# Physics
+# ---------------------------------------------------------------------------
+GRAVITY = 9.81  # m/s², adaptive force ratio = ΣF_n / (mass·GRAVITY)
 
 # ---------------------------------------------------------------------------
 # Aliases
