@@ -293,7 +293,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_align_scale: float = 15.0  # [H3] 8→15: 입구 근처(4~7cm) gradient 강화. scale 8은 너무 완만해
                                     #   (6.8 vs 4cm가 score .58 vs .73) mouth_xy가 입구반경(4.1cm) 밖에서 천장 → bead_in=0.
                                     #   sharp화로 마지막 4cm 파고들어 bead_in 개통 유도.
-    pour_align_z_margin: float = 0.05  # target opening 위 목표점(충돌 방지)
+    pour_align_z_margin: float = 0.10  # [test10] 0.05→0.10: z 상한 완화. pour_point z는 palm.z로
+                                       #   정책이 독립 제어(rim-pivot, env.py L1028)인데, z 상한 5cm가
+                                       #   깊은 tilt(따르기 자세 mouthZ 6~8cm)에 페널티를 줘 ~80° park 유발.
+                                       #   10cm까지 z 무관·xy만 강제 → 깊은 tilt gradient 생존,
+                                       #   10cm↑ 고공 살포만 차단(흘림 방지). delta_z.clamp(min=0)은 유지.
 
     # [제거] weight_pour_z / pour_z_margin: z barrier가 hinge pour와 상충하여 삭제 (lstm_test4 주기적 붕괴 원인)
 
