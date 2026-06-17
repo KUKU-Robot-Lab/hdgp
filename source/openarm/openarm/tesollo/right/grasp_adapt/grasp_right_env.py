@@ -57,6 +57,7 @@ from isaaclab.utils.math import quat_apply, quat_apply_inverse
 
 from openarm.common.grasp_reward_core import compute_grasp_reward_terms
 from openarm.common.grasp_adaptive_core import compute_adaptive_grip_terms
+from .demo_grasp_reset import DemoGraspResetBank, compute_demo_cup_spawn_local
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
 from fabrics_sim.utils.utils import initialize_warp
@@ -245,6 +246,12 @@ class GraspRightEnv(DirectRLEnv):
 
         # pregrasp palm pose 버퍼
         self.pregrasp_palm_pose_buf   = torch.zeros(self.num_envs, 6, device=self.device)
+        self.demo_lift_palm_target_buf = torch.zeros(self.num_envs, 6, device=self.device)
+        self.demo_grasp_reset_bank = (
+            DemoGraspResetBank.from_hdf5_paths(cfg.demo_grasp_pose_paths, device=self.device)
+            if cfg.enable_demo_grasp_reset
+            else None
+        )
 
         # ----------------------------------------------------------------
         # Hand 관절 한계 (per-joint delta 클램프용)
@@ -298,8 +305,8 @@ class GraspRightEnv(DirectRLEnv):
         # 로봇 시작 자세 (arm: ARM_START_POSE, hand: HAND_GRASP_POSE)
         # HAND_GRASP_POSE에서 시작 → 20D delta 탐색 공간 축소 (파지 포즈 근처 미세 조정)
         # ----------------------------------------------------------------
-        arm_start   = to_torch(ARM_START_POSE,      device=self.device)
-        hand_start  = to_torch(HAND_APPROACH_POSE,  device=self.device)
+        arm_start   = to_torch(ARM_START_POSE,   device=self.device)
+        hand_start  = to_torch(HAND_GRASP_POSE,  device=self.device)
         robot_start = torch.cat([arm_start, hand_start], dim=0)
         self.robot_start_joint_pos = (
             robot_start.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
@@ -584,7 +591,7 @@ class GraspRightEnv(DirectRLEnv):
         )
         self._reset_obj_ids, self._reset_obj_indicator = self._reset_world.get_object_ids()
 
-        if self.cfg.cache_pregrasp_reset:
+        if self.cfg.cache_pregrasp_reset and self.demo_grasp_reset_bank is None:
             self._build_pregrasp_cache()
 
     # ------------------------------------------------------------------
@@ -791,7 +798,7 @@ class GraspRightEnv(DirectRLEnv):
             )
 
         hand_target = compute_preset_residual_finger_targets(
-            preset_pos=self.hand_approach_pose,
+            preset_pos=self.hand_grasp_pose,
             finger_action=finger_action,
             lower_limits=self.hand_joint_lower_limits,
             upper_limits=self.hand_joint_upper_limits,
@@ -1346,49 +1353,78 @@ class GraspRightEnv(DirectRLEnv):
         self.episode_lift_success_buf[env_ids] = False
         self.episode_stabilize_success_buf[env_ids] = False
 
-        # ---- 1. Reset source: pregrasp grid + Fabrics IK (approach pose에서 시작) ----
-        q_pregrasp = self.robot_start_joint_pos[env_ids].clone()
-        approach_hand = self.hand_approach_pose.unsqueeze(0).expand(n, -1)
+        # ---- 1. Reset source 선택 ----
+        if self.demo_grasp_reset_bank is not None:
+            demo_indices = torch.randint(
+                self.demo_grasp_reset_bank.num_demos,
+                (n,),
+                device=self.device,
+            )
+            start_arm = self.demo_grasp_reset_bank.start_arm_joint_pos[demo_indices]
+            start_hand = self.demo_grasp_reset_bank.start_hand_joint_pos[demo_indices]
+            pregrasp_palm_pose = self.demo_grasp_reset_bank.start_palm_pose_euler_zyx[demo_indices].clone()
+            pregrasp_palm_pose[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
+            self.demo_lift_palm_target_buf[env_ids] = (
+                self.demo_grasp_reset_bank.lift_palm_pose_euler_zyx[demo_indices]
+            )
 
-        _xy_range = (
-            self.grasp_adr.get_param("spawn", "object_spawn_xy_range")
-            if self.grasp_adr is not None
-            else self.cfg.object_spawn_xy_range
-        )
-        obj_x = self.cfg.object_spawn_x_center + (
-            torch.rand(n, device=self.device) - 0.5
-        ) * 2.0 * _xy_range
-        obj_y = self.cfg.object_spawn_y_center + (
-            torch.rand(n, device=self.device) - 0.5
-        ) * 2.0 * _xy_range
-        obj_pos_local = torch.stack(
-            [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
-        )
+            q_pregrasp = torch.cat([start_arm, start_hand], dim=1)
+            approach_hand = start_hand
 
-        noise = torch.stack([
-            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
-            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
-            (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
-        ], dim=1)
-        pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
-
-        pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
-        pregrasp_palm_pose[:, :3] = pregrasp_pos
-        pregrasp_palm_pose[:, 3] = math.radians(90.0)
-        pregrasp_palm_pose[:, 4] = math.radians(0.0)
-        pregrasp_palm_pose[:, 5] = math.radians(90.0)
-        pregrasp_palm_pose = torch.max(
-            torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
-            self.palm_mins.unsqueeze(0),
-        )
-
-        if self.cfg.cache_pregrasp_reset:
-            xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
-            yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
-            q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[xi, yi]
+            noise_xy = torch.stack([
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
+            ], dim=1)
+            obj_pos_local = compute_demo_cup_spawn_local(
+                pregrasp_palm_pose,
+                self.pregrasp_offset[:2],
+                self.cfg.object_spawn_z,
+                noise_xy,
+            )
         else:
-            q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_pregrasp)
-        q_pregrasp[:, NUM_ARM_DOF:] = approach_hand
+            q_pregrasp = self.robot_start_joint_pos[env_ids].clone()
+            approach_hand = self.hand_approach_pose.unsqueeze(0).expand(n, -1)
+
+            _xy_range = (
+                self.grasp_adr.get_param("spawn", "object_spawn_xy_range")
+                if self.grasp_adr is not None
+                else self.cfg.object_spawn_xy_range
+            )
+            obj_x = self.cfg.object_spawn_x_center + (
+                torch.rand(n, device=self.device) - 0.5
+            ) * 2.0 * _xy_range
+            obj_y = self.cfg.object_spawn_y_center + (
+                torch.rand(n, device=self.device) - 0.5
+            ) * 2.0 * _xy_range
+            obj_pos_local = torch.stack(
+                [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
+            )
+
+            noise = torch.stack([
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
+                (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
+            ], dim=1)
+            pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
+
+            pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
+            pregrasp_palm_pose[:, :3] = pregrasp_pos
+            pregrasp_palm_pose[:, 3] = math.radians(90.0)
+            pregrasp_palm_pose[:, 4] = math.radians(0.0)
+            pregrasp_palm_pose[:, 5] = math.radians(90.0)
+            pregrasp_palm_pose = torch.max(
+                torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
+                self.palm_mins.unsqueeze(0),
+            )
+
+            if self.cfg.cache_pregrasp_reset:
+                xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
+                yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
+                q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[xi, yi]
+            else:
+                q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_pregrasp)
+            q_pregrasp[:, NUM_ARM_DOF:] = approach_hand
+            self.demo_lift_palm_target_buf[env_ids] = pregrasp_palm_pose
 
         # ---- 2. 로봇/Fabrics 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)

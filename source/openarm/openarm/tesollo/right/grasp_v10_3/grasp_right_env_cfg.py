@@ -193,7 +193,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_weight: float = 12.0
     stabilize_weight: float = 10.0
     transport_xyz_scale: float = 0.06          # v1 도너 값 (cup→goal 거리 reward)
-    transport_xyz_reward_weight: float = 40.0  # v1 도너 값
+    transport_xyz_reward_weight: float = 0.0   # exp-potential 비활성. reach식 추종(transport_track)으로 대체.
+    # reach(IsaacLab) position_command_error 대응: 거리에 선형 패널티(기울기 일정) + tanh 근거리 정밀.
+    # exp-potential과 달리 멀어도 동일 세기로 goal쪽으로 당김 → 먼 거리에서도 이동 유도.
+    transport_track_weight: float = 20.0       # 선형 추종항 가중치(=0 거리에서 최대)
+    transport_track_ref_dist: float = 0.35     # 선형항이 0이 되는 기준 거리(reach span). cup→goal 최대 커버
+    transport_track_tanh_weight: float = 10.0  # 근거리 정밀 추종(reach _tanh 대응)
+    transport_track_tanh_std: float = 0.1      # tanh kernel std (reach 동일)
     transport_progress_reward_weight: float = 200.0
     transport_progress_reward_cap: float = 0.02
     transport_height_target_delta: float = 0.09  # v1 도너 값 (transport 상승 목표)

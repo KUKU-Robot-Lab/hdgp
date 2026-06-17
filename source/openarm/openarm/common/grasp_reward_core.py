@@ -38,6 +38,15 @@ def compute_grasp_reward_terms(
     upright_success = cup_tilt_deg <= _cfg_float(cfg, "success_upright_max_deg", 20.0)
     success_now = lift_latched & lifted_bool & full_tip_bool & upright_success
 
+    # transport phase에서는 정지/유지 계열 보상(stabilize, lift)을 끈다 → 이동만이 보상.
+    # transport 개념이 없는 호출자(grasp_adapt 등, gate=None)는 그대로 유지.
+    if transport_reward_gate is None:
+        transport_reward_gate_f = torch.ones_like(cup_height_delta)
+        transport_off_gate = torch.ones_like(cup_height_delta)
+    else:
+        transport_reward_gate_f = transport_reward_gate.float()
+        transport_off_gate = 1.0 - transport_reward_gate_f
+
     xy_margin = _cfg_float(cfg, "grasp_xy_threshold", 0.0)
     tilt_margin = _cfg_float(cfg, "grasp_upright_threshold_deg", 0.0)
     approach = pre_lift_gate * (
@@ -60,6 +69,7 @@ def compute_grasp_reward_terms(
         * full_tip
         * cup_height_delta
         * upright_quality
+        * transport_off_gate
     )
     transport_xyz_scale = _cfg_float(
         cfg,
@@ -76,14 +86,6 @@ def compute_grasp_reward_terms(
     )
     if transport_xyz_dist is None:
         transport_xyz_dist = cup_xy_displacement
-    if transport_reward_gate is None:
-        transport_reward_gate_f = torch.ones_like(cup_height_delta)
-        # transport 개념이 없는 호출자(grasp_adapt 등)는 stabilize 보상을 그대로 유지.
-        stabilize_phase_gate = torch.ones_like(cup_height_delta)
-    else:
-        transport_reward_gate_f = transport_reward_gate.float()
-        # transport phase에서는 stabilize(정지+자세) 보상을 끈다 → 이동 유도.
-        stabilize_phase_gate = 1.0 - transport_reward_gate_f
     transport_xyz_quality = torch.exp(-transport_xyz_dist / max(transport_xyz_scale, 1e-6))
     transport_height_target = max(
         _cfg_float(
@@ -119,7 +121,7 @@ def compute_grasp_reward_terms(
         * upright_quality
         * transport_height_quality
         * action_quality
-        * stabilize_phase_gate
+        * transport_off_gate
     )
     transport_xyz = (
         _cfg_float(

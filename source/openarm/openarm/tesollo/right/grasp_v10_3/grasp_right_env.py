@@ -1135,8 +1135,29 @@ class GraspRightEnv(DirectRLEnv):
             * transport_upright
             * transport_progress
         )
+        # reach식 절대거리 추종(transport_track): 선형(기울기 일정) + tanh(근거리 정밀).
+        transport_track_linear = (
+            1.0 - transport_xyz_dist / max(float(self.cfg.transport_track_ref_dist), 1e-6)
+        ).clamp(min=0.0, max=1.0)
+        transport_track_tanh = 1.0 - torch.tanh(
+            transport_xyz_dist / max(float(self.cfg.transport_track_tanh_std), 1e-6)
+        )
+        r_transport_track = (
+            transport_phase
+            * lifted_gate
+            * full_tip_contact
+            * transport_upright
+            * (
+                float(self.cfg.transport_track_weight) * transport_track_linear
+                + float(self.cfg.transport_track_tanh_weight) * transport_track_tanh
+            )
+        )
         total = torch.nan_to_num(
-            total - base_success_bonus + reward_terms["success_bonus"] + r_transport_progress,
+            total
+            - base_success_bonus
+            + reward_terms["success_bonus"]
+            + r_transport_progress
+            + r_transport_track,
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
@@ -1164,6 +1185,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/post_lift_contact_loss"] = reward_terms["post_lift_contact_loss"].mean()
         self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
         self.extras["reward/transport_xyz"] = reward_terms["transport_xyz"].mean()
+        self.extras["reward/transport_track"] = r_transport_track.mean()
         self.extras["reward/transport_progress"] = r_transport_progress.mean()
         self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
         self.extras["reward/action_smooth"] = r_action_smooth.mean()

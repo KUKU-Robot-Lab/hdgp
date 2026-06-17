@@ -145,6 +145,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     pregrasp_noise_z:      float = 0.005
 
     # -----------------------------------------------------------------------
+    # Demo reset (pour_v1_a11~a20 grasp start and pour_start lift target)
+    # 로더가 /home/oem → /home/user/rl_ws/datasets 자동 폴백 (v10_3와 동일)
+    # -----------------------------------------------------------------------
+    enable_demo_grasp_reset: bool = True
+    demo_grasp_pose_paths: tuple[str, ...] = tuple(
+        f"/home/oem/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)
+    )
+
+    # -----------------------------------------------------------------------
     # Observation noise (sim2real domain randomization)
     # -----------------------------------------------------------------------
     obs_noise_joint_pos: float = 0.01
@@ -192,7 +201,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     action_smooth_weight: float = -0.02
     post_lift_contact_loss_weight: float = -8.0
     hand_residual_magnitude_weight: float = -0.005
-    hand_residual_scale: float = 0.55   # approach 앵커→full_grip 완전 폐포 도달 (최대 gap 0.546)
+    hand_residual_scale: float = 0.15
 
     # approach term의 fingertip_side_dist 기하 계산용
     cup_radius_approx:      float = 0.045
