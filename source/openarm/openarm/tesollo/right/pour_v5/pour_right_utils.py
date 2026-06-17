@@ -41,7 +41,11 @@ def pour_alignment_score(
     완벽 조준 시 1, 멀수록 0으로 단조 감소(항상 양수 gradient).
     """
     delta = pour_point - target_opening
-    delta_z = delta[:, 2] - z_margin
+    # [z-trade-off 해소] pour_point가 목표 z(입구 위 z_margin)보다 위로 뜨면 페널티 유지
+    #   (고공 살포·두 컵 충돌 방지 = 원래 목적). 아래(입구로 내려오는 깊은 tilt 쏟기 자세)면
+    #   z 페널티 면제 → 더 기울여도 align/bead가 안 깨짐 → 80° park(z trade-off) 해소.
+    #   xy 정렬은 그대로 강제(spill 방지). 과한 침투는 컵 충돌 termination이 가드.
+    delta_z = (delta[:, 2] - z_margin).clamp(min=0.0)
     dist = torch.sqrt(
         delta[:, 0] * delta[:, 0]
         + delta[:, 1] * delta[:, 1]

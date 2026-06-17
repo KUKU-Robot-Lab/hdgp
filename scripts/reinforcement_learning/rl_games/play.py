@@ -640,6 +640,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     "bead_in": _g0("_bead_in_target_fraction"),
                     "bead_src": _g0("_bead_in_source_fraction"),
                     "spill": _g0("_spill_ratio"),
+                    "clamp_xy": _g0("_palm_clamp_viol_xy"),
+                    "clamp_z": _g0("_palm_clamp_viol_z"),
+                    "introt_gate": _g0("_internal_rot_gate"),
+                    "rim_cos": _g0("_rim_facing_cos"),
                     "joints": _jpos,
                     "beads": _bead_rows,
                 })
@@ -656,14 +660,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 # [1] pour/bead 진단 표
                 print(f"{'frame':>6} {'pp_x':>8} {'pp_y':>8} {'pp_z':>8} "
                       f"{'cupUpDot':>8} {'tilt°':>6} {'mouthXY':>8} {'mouthZ':>8} "
-                      f"{'beadIn':>7} {'beadSrc':>7} {'spill':>6}")
+                      f"{'beadIn':>7} {'beadSrc':>7} {'spill':>6} {'clampXY':>8} {'clampZ':>8} "
+                      f"{'introtG':>8} {'rimCos':>8}")
                 for fi, r in enumerate(tail):
                     pp = r["pp"] or [None, None, None]
                     print(f"{offset+fi:>6} {_f(pp[0]):>8} {_f(pp[1]):>8} {_f(pp[2]):>8} "
                           f"{_f(r['cup_up_dot'],'+.3f'):>8} {_f(r['tilt_deg'],'5.1f'):>6} "
                           f"{_f(r['mouth_xy'],'.4f'):>8} {_f(r['mouth_z'],'+.4f'):>8} "
                           f"{_f(r['bead_in'],'.3f'):>7} {_f(r['bead_src'],'.3f'):>7} "
-                          f"{_f(r['spill'],'.3f'):>6}")
+                          f"{_f(r['spill'],'.3f'):>6} {_f(r['clamp_xy'],'.4f'):>8} {_f(r['clamp_z'],'.4f'):>8} "
+                          f"{_f(r['introt_gate'],'.3f'):>8} {_f(r['rim_cos'],'+.3f'):>8}")
 
                 # [2] joint 표
                 if any(r["joints"] for r in tail):
@@ -682,6 +688,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                       f"mouth_xy={_f(last['mouth_xy'],'.4f')}  mouth_z={_f(last['mouth_z'],'+.4f')}")
                 print(f"  bead_in_target={_f(last['bead_in'],'.3f')}  bead_in_source={_f(last['bead_src'],'.3f')}  "
                       f"spill={_f(last['spill'],'.3f')}")
+                # palm 위치 박스 클램프(rim-pivot hinge 파손) + joint 한계 포화도
+                print(f"  palm_clamp_viol_xy={_f(last['clamp_xy'],'.4f')}  palm_clamp_viol_z={_f(last['clamp_z'],'.4f')}"
+                      f"   (>0 → rim-pivot hinge 기계적 파손 = palm 박스가 틸트 벽)")
+                print(f"  internal_rot_gate={_f(last['introt_gate'],'.3f')}  rim_facing_cos={_f(last['rim_cos'],'+.3f')}"
+                      f"   (gate가 깊은 tilt에서 급락 → rot_dir 곱이 r_tilt를 깎아 tilt 정지)")
+                if last.get("joints"):
+                    _jl = [(-1.40, 3.49), (-0.17, 3.32), (-1.57, 1.57), (-1e-6, 2.44),
+                           (-1.57, 1.57), (-0.79, 0.79), (-1.57, 1.57)]
+                    _sat = [max(j / _up, j / _lo) for j, (_lo, _up) in zip(last["joints"][:7], _jl)]
+                    print("  joint_sat(|j|/limit, 1.0=포화): "
+                          + "  ".join(f"j{k + 1}={s:+.2f}" for k, s in enumerate(_sat)))
 
                 # [4] 비드별 로컬좌표 분포 (done 직전 유효 frame 기준)
                 _cfg = _raw_env.cfg

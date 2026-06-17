@@ -1824,6 +1824,30 @@ class PourRightEnv(DirectRLEnv):
             "log/bead_in_target":        self._bead_in_target_fraction.mean(),
             "log/bead_in_source":        self._bead_in_source_fraction.mean(),
             "log/spill_ratio":           self._spill_ratio.mean(),
+            # [Phase0] rim-pivot hinge 기계적 파손 측정: palm 위치 박스(palm_mins/maxs)가
+            #   rim-pivot 보정 palm 이동을 클램프한 양 = pour_point가 명령 위치를 벗어난 정도.
+            #   tilt 정지(~83°)와 동시에 상승하면 → 박스가 틸트 벽(reward 아님) 확정.
+            "log/palm_clamp_viol_xy":    self._palm_clamp_viol_xy.mean(),
+            "log/palm_clamp_viol_z":     self._palm_clamp_viol_z.mean(),
+            "log/palm_clamp_active":     (self._palm_clamp_viol_xy + self._palm_clamp_viol_z > 1e-4).float().mean(),
+            # 깊은 tilt(>0.4≈78°) env에서만 본 clamp 위반 (평균 희석 제거 → binding 직접 포착)
+            "log/palm_clamp_viol_deep":  torch.where(
+                tilt_amount > 0.4,
+                self._palm_clamp_viol_xy + self._palm_clamp_viol_z,
+                torch.zeros_like(self._palm_clamp_viol_xy),
+            ).sum() / (tilt_amount > 0.4).float().sum().clamp(min=1.0),
+            # j1~j7 한계 포화도: 1.0이면 관절 한계 도달 → arm joint 벽 후보.
+            #   부호별 limit 적용(양수=upper, 음수=lower). limits:
+            #   j1[-1.40,3.49] j2[-0.17,3.32] j3[±1.57] j4[0,2.44] j5[±1.57] j6[±0.79] j7[±1.57]
+            **{
+                f"log/j{_i + 1}_sat": torch.maximum(
+                    arm_joint_pos[:, _i] / _up, arm_joint_pos[:, _i] / _lo
+                ).mean()
+                for _i, (_lo, _up) in enumerate([
+                    (-1.40, 3.49), (-0.17, 3.32), (-1.57, 1.57), (-1e-6, 2.44),
+                    (-1.57, 1.57), (-0.79, 0.79), (-1.57, 1.57),
+                ])
+            },
         }
         if self.spill_adr is not None:
             diag["log/adr_spill"] = torch.tensor(self.spill_adr.progress, device=self.device)
