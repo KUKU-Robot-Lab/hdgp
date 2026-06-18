@@ -221,7 +221,10 @@ def palm_pose_mins(max_pose_angle: float) -> list:
     return [
         # [REDESIGN v5] 깊은 pour tilt 시 palm이 target 너머/아래로 스윙 → x_min/z_min 완화.
         # (rotation은 _apply_action 위치 클램프 대상 아님 → tilt 자유, 위치 박스만 병목)
-        -0.15, -0.55, 0.10,  # x_min 0.00→-0.15, z_min 0.20→0.10
+        # [test11] x_min -0.15→-0.30: rim-pivot이 80°↑ 깊은 tilt에서 pour_point 고정 위해
+        #   palm.xy를 박스 밖으로 스윙해야 하나 클램프(palm_clamp_active 0.15→0.30)가 막아 tilt 80° plateau.
+        #   외회전(박스 축소 사유)은 internal_rot_gate=0.98로 해결됨 → 박스 완화 안전.
+        -0.30, -0.55, 0.10,  # x_min -0.15→-0.30 [test11], z_min 0.10
         (90.0 - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,
         (90.0 - max_pose_angle) * d,
@@ -244,7 +247,10 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
         #   기존 박스가 demo 폭의 x6.7·y7.7·z2.2배라 palm이 극단(z_max 0.72→j4 한계, xy 사방)으로
         #   이동해 외회전 귀결. 상한을 demo max + 여유로 축소 (min은 시작점 보호 위해 유지).
         #   x 0.65→0.45, y 0.22→0.10, z 0.72→0.62 (demo z끝 0.58 + 4cm).
-        0.45, 0.10, 0.62,
+        # [test11] x_max 0.45→0.65, y_max 0.10→0.25 (H9 이전 복원): 깊은 tilt rim-pivot 스윙 여유.
+        #   H9 축소는 외회전 억제 목적이었으나 internal_rot_gate=0.98로 해결 → 박스가 tilt 벽으로 작동.
+        #   per-axis 클램프 로깅으로 binding bound 확정 후 안 쓰는 방향은 재축소 예정.
+        0.65, 0.25, 0.62,
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

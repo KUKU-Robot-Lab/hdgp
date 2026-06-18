@@ -516,6 +516,10 @@ class PourRightEnv(DirectRLEnv):
         # 3a 진단: rim-pivot 해가 workspace 클램프로 깨지는 정도(클램프 전후 palm 차이)
         self._palm_clamp_viol_xy = torch.zeros(self.num_envs, device=self.device)
         self._palm_clamp_viol_z = torch.zeros(self.num_envs, device=self.device)
+        # per-axis 클램프 진단: 어느 bound가 rim-pivot 스윙을 막는지 확정 (binding bound 식별)
+        #   부호 있는 위반량(clamp 후 - clamp 전): x_max/y_max binding이면 음수, x_min/y_min이면 양수.
+        self._palm_clamp_viol_x = torch.zeros(self.num_envs, device=self.device)
+        self._palm_clamp_viol_y = torch.zeros(self.num_envs, device=self.device)
         self._source_up_dot_world = torch.zeros(self.num_envs, device=self.device)
         self._directional_tilt_cos = torch.zeros(self.num_envs, device=self.device)
         # [test8] cup-center 앵커 방향 cosine (전달 자세서 안정 → 상충 제거)
@@ -1039,6 +1043,10 @@ class PourRightEnv(DirectRLEnv):
                 palm_pose[:, :2] - _palm_xyz_preclamp[:, :2], dim=-1
             )
             self._palm_clamp_viol_z = (palm_pose[:, 2] - _palm_xyz_preclamp[:, 2]).abs()
+            # per-axis 부호 있는 위반량: 어느 bound가 binding인지 식별
+            #   <0 → x_max/y_max가 잘림(palm이 상한 너머로 가려 함), >0 → x_min/y_min이 잘림
+            self._palm_clamp_viol_x = palm_pose[:, 0] - _palm_xyz_preclamp[:, 0]
+            self._palm_clamp_viol_y = palm_pose[:, 1] - _palm_xyz_preclamp[:, 1]
             palm_pose[:, 3:7] = self._compose_world_delta_quat_xyzw(
                 self.pregrasp_palm_pose_buf[:, 3:7],
                 delta_rotvec_world,
@@ -1830,6 +1838,13 @@ class PourRightEnv(DirectRLEnv):
             "log/palm_clamp_viol_xy":    self._palm_clamp_viol_xy.mean(),
             "log/palm_clamp_viol_z":     self._palm_clamp_viol_z.mean(),
             "log/palm_clamp_active":     (self._palm_clamp_viol_xy + self._palm_clamp_viol_z > 1e-4).float().mean(),
+            # per-axis binding 식별: 깊은 tilt env에서 어느 bound가 잘리는지 (음수=max bound, 양수=min bound)
+            "log/palm_clamp_viol_x_deep": torch.where(
+                tilt_amount > 0.4, self._palm_clamp_viol_x, torch.zeros_like(self._palm_clamp_viol_x),
+            ).sum() / (tilt_amount > 0.4).float().sum().clamp(min=1.0),
+            "log/palm_clamp_viol_y_deep": torch.where(
+                tilt_amount > 0.4, self._palm_clamp_viol_y, torch.zeros_like(self._palm_clamp_viol_y),
+            ).sum() / (tilt_amount > 0.4).float().sum().clamp(min=1.0),
             # 깊은 tilt(>0.4≈78°) env에서만 본 clamp 위반 (평균 희석 제거 → binding 직접 포착)
             "log/palm_clamp_viol_deep":  torch.where(
                 tilt_amount > 0.4,
