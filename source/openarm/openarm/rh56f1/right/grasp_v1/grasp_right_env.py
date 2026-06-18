@@ -1213,6 +1213,7 @@ class GraspRightEnv(DirectRLEnv):
             self._eval_lift_action_count[lift_mask] += 1
 
         # ---- Palm pose 계산 ----
+        approach_mask = is_grasp & (~self._grasp_started_buf)
         delta = scale(fabric_palm_action, self.delta_mins, self.delta_maxs)
         approach_palm_pose = self.pregrasp_palm_pose_buf + delta
         palm_mins = torch.minimum(self.palm_mins.unsqueeze(0), self.pregrasp_palm_pose_buf)
