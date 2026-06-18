@@ -12,8 +12,8 @@ LSTM_YAML = ROOT / "config" / "agents" / "rl_games_ppo_lstm_cfg.yaml"
 TRAIN_REGEX = r"\.pipeline\.(?:gripper|hand)\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\."
 
 ENTRY = (
-    "openarm.tasks.manager_based.openarm_manipulation"
-    ".pipeline.hand.inspire_r.grasp_r_v1"
+    "openarm.rh56f1.right"
+    ".grasp_v1"
     ".grasp_right_env:GraspRightEnv"
 )
 
@@ -21,13 +21,11 @@ ENTRY = (
 def test_config_init_syntax_and_ids():
     s = CONFIG_INIT.read_text()
     ast.parse(s)
-    for gid in ['id="inspire_r_grasp_v1"', 'id="inspire_r_grasp_v1-lstm"',
-                'id="inspire_r_grasp_v1-play"', 'id="inspire_r_grasp_v1-play-lstm"']:
+    for gid in ['id="open-rh56f1_r_grasp_v1"', 'id="open-rh56f1_r_grasp_v1-lstm"',
+                'id="open-rh56f1_r_grasp_v1-play"', 'id="open-rh56f1_r_grasp_v1-play-lstm"']:
         assert gid in s, gid
-    # entry_point 이 현재 경로(inspire_r.grasp_r_v1)를 가리켜야 (옛 right.5g_grasp_right_v11 아님)
-    assert "pipeline.hand.inspire_r.grasp_r_v1" in s
+    assert "openarm.rh56f1.right.grasp_v1.grasp_right_env:GraspRightEnv" in s
     assert "5g_grasp_right_v11" not in s
-    assert "right.5g_grasp" not in s
 
 
 def test_agents_yaml_names():
@@ -36,22 +34,18 @@ def test_agents_yaml_names():
     assert "5g_grasp_right-v11" not in PPO_YAML.read_text()
 
 
-def test_train_regex_resolves_inspire_r():
-    """train.py 정규식이 entry_point 에서 variant=inspire_r, folder=grasp_r_v1 추출."""
-    m = re.search(TRAIN_REGEX, ENTRY)
-    assert m is not None
-    assert m.group(1) == "inspire_r"
-    assert m.group(2) == "grasp_r_v1"
+def test_entry_points_to_current_package():
+    assert ENTRY == "openarm.rh56f1.right.grasp_v1.grasp_right_env:GraspRightEnv"
 
 
 def test_log_path_branch():
-    """명명형 variant 는 pipeline 접두 없이 log/rl_games/<variant>/<folder>."""
-    side_dir, folder = "inspire_r", "grasp_r_v1"
+    """RH56F1 right grasp logs under the hand-specific variant/folder."""
+    side_dir, folder = "rh56f1_r", "grasp_v1"
     if side_dir in ("left", "right", "both"):
         path = f"log/rl_games/pipeline/{side_dir}/{folder}"
     else:
         path = f"log/rl_games/{side_dir}/{folder}"
-    assert path == "log/rl_games/inspire_r/grasp_r_v1"
+    assert path == "log/rl_games/rh56f1_r/grasp_v1"
 
 
 def test_train_regex_legacy_still_works():
@@ -64,7 +58,7 @@ def test_train_regex_legacy_still_works():
 if __name__ == "__main__":
     test_config_init_syntax_and_ids()
     test_agents_yaml_names()
-    test_train_regex_resolves_inspire_r()
+    test_entry_points_to_current_package()
     test_log_path_branch()
     test_train_regex_legacy_still_works()
     print("Phase 5 registration/logging: 5 checks passed (GREEN)")

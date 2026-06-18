@@ -214,10 +214,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     success_hold_steps: int = 30
     transport_goal_dist_threshold: float = 0.04
     transport_success_hold_steps: int = 30
+    stability_cup_lin_vel_threshold: float = 0.04
+    stability_cup_ang_vel_threshold: float = 0.5
+    stability_contact_delta_threshold: float = 1.0
+    stability_action_delta_threshold: float = 0.2
 
     # Phase curriculum:
     # 0 = grasp/lift only, 1 = add stabilize, 2 = full transport.
-    enable_phase_curriculum: bool = True
+    enable_phase_curriculum: bool = False
     phase_curriculum_initial_stage: int = 2
     phase_curriculum_min_episodes: int = 100
     phase_curriculum_lift_success_threshold: float = 0.70
@@ -288,6 +292,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 5.0
     stabilize_action_sharpness: float = 1.5
+    stability_reward_weight: float = 1.0
     success_bonus_weight: float = 20.0
     post_lift_contact_loss_weight: float = -8.0
     action_smooth_weight: float = -0.02

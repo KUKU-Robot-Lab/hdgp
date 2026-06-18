@@ -15,6 +15,7 @@ sys.modules[SPEC.name] = grasp_reward_utils
 SPEC.loader.exec_module(grasp_reward_utils)
 
 compute_thumb_tip_direction_reward = grasp_reward_utils.compute_thumb_tip_direction_reward
+compute_tesollo_prelift_lift_readiness = grasp_reward_utils.compute_tesollo_prelift_lift_readiness
 compute_upright_success_mask = grasp_reward_utils.compute_upright_success_mask
 
 
@@ -80,6 +81,81 @@ def test_envelope_success_requires_full_tip_contact_not_palm_contact() -> None:
 
     assert palm_contact.tolist() == [False, True, True]
     assert success.tolist() == [True, False, True]
+
+
+def test_prelift_lift_readiness_rejects_rim_height_contact() -> None:
+    hold_count, ready_now, latched, gates = compute_tesollo_prelift_lift_readiness(
+        num_contacts=torch.tensor([5], dtype=torch.long),
+        is_close_grasp_phase=torch.tensor([True]),
+        tip_local_z_mean=torch.tensor([0.08]),
+        cup_height_delta=torch.tensor([0.0]),
+        cup_lin_vel_norm=torch.tensor([0.0]),
+        previous_hold_count=torch.tensor([7], dtype=torch.long),
+        previous_latched=torch.tensor([False]),
+        min_contacts=5,
+        hold_steps=8,
+        body_local_z_min=-0.04,
+        body_local_z_max=0.05,
+        max_cup_height_delta=0.01,
+        cup_lin_vel_threshold=0.04,
+    )
+
+    assert hold_count.tolist() == [0]
+    assert ready_now.tolist() == [False]
+    assert latched.tolist() == [False]
+    assert gates["body_band"].tolist() == [False]
+    assert gates["rim_contact_proxy"].tolist() == [1.0]
+
+
+def test_prelift_lift_readiness_rejects_premature_lift_or_motion() -> None:
+    hold_count, ready_now, latched, gates = compute_tesollo_prelift_lift_readiness(
+        num_contacts=torch.tensor([5, 5], dtype=torch.long),
+        is_close_grasp_phase=torch.tensor([True, True]),
+        tip_local_z_mean=torch.tensor([0.0, 0.0]),
+        cup_height_delta=torch.tensor([0.02, 0.0]),
+        cup_lin_vel_norm=torch.tensor([0.0, 0.08]),
+        previous_hold_count=torch.tensor([7, 7], dtype=torch.long),
+        previous_latched=torch.tensor([False, False]),
+        min_contacts=5,
+        hold_steps=8,
+        body_local_z_min=-0.04,
+        body_local_z_max=0.05,
+        max_cup_height_delta=0.01,
+        cup_lin_vel_threshold=0.04,
+    )
+
+    assert hold_count.tolist() == [0, 0]
+    assert ready_now.tolist() == [False, False]
+    assert latched.tolist() == [False, False]
+    assert gates["prelift_height_ok"].tolist() == [0.0, 1.0]
+    assert gates["prelift_velocity_ok"].tolist() == [1.0, 0.0]
+
+
+def test_prelift_lift_readiness_latches_on_body_contact_and_stable_cup() -> None:
+    hold_count, ready_now, latched, gates = compute_tesollo_prelift_lift_readiness(
+        num_contacts=torch.tensor([5], dtype=torch.long),
+        is_close_grasp_phase=torch.tensor([True]),
+        tip_local_z_mean=torch.tensor([0.0]),
+        cup_height_delta=torch.tensor([0.005]),
+        cup_lin_vel_norm=torch.tensor([0.02]),
+        previous_hold_count=torch.tensor([7], dtype=torch.long),
+        previous_latched=torch.tensor([False]),
+        min_contacts=5,
+        hold_steps=8,
+        body_local_z_min=-0.04,
+        body_local_z_max=0.05,
+        max_cup_height_delta=0.01,
+        cup_lin_vel_threshold=0.04,
+    )
+
+    assert hold_count.tolist() == [8]
+    assert ready_now.tolist() == [True]
+    assert latched.tolist() == [True]
+    assert gates["full_contact"].tolist() == [1.0]
+    assert gates["body_band"].tolist() == [1.0]
+    assert gates["prelift_height_ok"].tolist() == [1.0]
+    assert gates["prelift_velocity_ok"].tolist() == [1.0]
+    assert gates["rim_contact_proxy"].tolist() == [0.0]
 
 
 def test_full_grip_pose_is_relaxed_closure_bound_from_grasp_pose() -> None:

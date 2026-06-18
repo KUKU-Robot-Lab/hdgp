@@ -70,8 +70,11 @@ def test_reward_impl_uses_shared_core_term_shape() -> None:
         'reward_terms["lift"]',
         'reward_terms["post_lift_contact_loss"]',
         'reward_terms["stabilize"]',
+        'reward_terms["transport_track"]',
+        'reward_terms["transport_progress"]',
         'reward_terms["success_bonus"]',
         'reward_terms["action_smooth"]',
+        'reward_terms["stability"]',
     ):
         assert term in reward_body
 
@@ -89,11 +92,14 @@ def test_reward_impl_uses_shared_core_term_shape() -> None:
         "reward/lift",
         "reward/post_lift_contact_loss",
         "reward/stabilize",
+        "reward/transport_track",
+        "reward/transport_progress",
         "reward/success_bonus",
         "reward/action_smooth",
+        "reward/stability",
         "reward/total",
     ):
-        assert f'self.extras["{log_name}"]' in reward_body
+        assert f'"{log_name}"' in reward_body
 
     for removed_log in (
         "reward/full_grasp_bonus",

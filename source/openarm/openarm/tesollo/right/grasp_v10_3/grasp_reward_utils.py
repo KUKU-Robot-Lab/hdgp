@@ -24,6 +24,60 @@ def compute_upright_success_mask(
     return cup_z_cos >= threshold_cos
 
 
+def compute_tesollo_prelift_lift_readiness(
+    *,
+    num_contacts: torch.Tensor,
+    is_close_grasp_phase: torch.Tensor,
+    tip_local_z_mean: torch.Tensor,
+    cup_height_delta: torch.Tensor,
+    cup_lin_vel_norm: torch.Tensor,
+    previous_hold_count: torch.Tensor,
+    previous_latched: torch.Tensor,
+    min_contacts: int,
+    hold_steps: int,
+    body_local_z_min: float,
+    body_local_z_max: float,
+    max_cup_height_delta: float,
+    cup_lin_vel_threshold: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+    """Gate Tesollo lift entry on body-height contact, not rim-hook lifting."""
+
+    full_contact = num_contacts >= int(min_contacts)
+    body_band = (
+        (tip_local_z_mean >= float(body_local_z_min))
+        & (tip_local_z_mean <= float(body_local_z_max))
+    )
+    prelift_height_ok = cup_height_delta <= float(max_cup_height_delta)
+    prelift_velocity_ok = cup_lin_vel_norm <= float(cup_lin_vel_threshold)
+    ready_candidate = (
+        is_close_grasp_phase.bool()
+        & full_contact
+        & body_band
+        & prelift_height_ok
+        & prelift_velocity_ok
+    )
+    next_hold_count = torch.where(
+        ready_candidate,
+        previous_hold_count + 1,
+        torch.where(
+            previous_latched,
+            previous_hold_count,
+            torch.zeros_like(previous_hold_count),
+        ),
+    )
+    ready_now = next_hold_count >= int(hold_steps)
+    next_latched = previous_latched | ready_now
+    gates = {
+        "full_contact": full_contact.float(),
+        "body_band": body_band.float(),
+        "prelift_height_ok": prelift_height_ok.float(),
+        "prelift_velocity_ok": prelift_velocity_ok.float(),
+        "rim_contact_proxy": (tip_local_z_mean > float(body_local_z_max)).float(),
+        "ready_candidate": ready_candidate.float(),
+    }
+    return next_hold_count, ready_now, next_latched, gates
+
+
 def compute_middle_contact_gate(
     middle_binary_contact: torch.Tensor,
     min_middle_contacts: int,

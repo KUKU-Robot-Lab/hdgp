@@ -59,9 +59,9 @@ Critic Extra (37D) — sim-only privileged:
 Actor Observation without oracle mass: 136D
 Critic Total: 136 + 37 = 173D
 
-Episode (6s @ 60Hz = 360 steps):
-  approach/grasp/lift/stabilize/transport phase는 상태 기반 reward/gate/diagnostic label이다.
-  action override나 scripted lift 없이 policy target만 적용한다 (transport도 정책 구동).
+Episode (10s @ 60Hz = 600 steps):
+  approach/close-grasp/lift/stabilize/transport phase는 상태 기반 reward/gate/diagnostic label이다.
+  approach는 reset-local policy target, close-grasp/lift는 captured palm anchor 주변 target을 쓴다.
   stabilize 성공이 latch되면 transport phase로 자동 승급, 랜덤 goal로 컵을 이송한다.
 """
 
@@ -117,7 +117,7 @@ NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS_NO_MASS + NUM_CRITIC_EXTRAS  # 173
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
-EPISODE_STEPS           = 360    # 6s @ 60Hz (grasp/lift/stabilize/transport)
+EPISODE_STEPS           = 600    # 10s @ 60Hz (grasp/lift/stabilize/transport)
 GRASP_PHASE_STEPS       = EPISODE_STEPS  # legacy compatibility only
 LIFT_RAISE_PHASE_STEPS  = 0      # state-latched, not step-gated
 STABILIZE_PHASE_STEPS   = 0      # state-latched, not step-gated

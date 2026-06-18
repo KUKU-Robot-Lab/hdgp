@@ -76,7 +76,8 @@ def test_v11_declares_four_phase_episode_and_transport_params() -> None:
     ):
         assert name in cfg
     assert "enable_demo_grasp_reset: bool = False" in cfg
-    assert "compute_transport_success_mask" in env
+    assert "compute_grasp_v2_success" in env
+    assert "compute_grasp_v2_stability" in env
     assert "compute_slip_proxy" in env
     assert "transport_palm_target_pose_buf" in env
 
@@ -127,9 +128,9 @@ def test_v11_samples_transport_goal_per_reset_env() -> None:
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
 
-    assert "transport_goal_x_range: tuple[float, float] = (0.22, 0.42)" in cfg
-    assert "transport_goal_y_range: tuple[float, float] = (-0.18, 0.02)" in cfg
-    assert "transport_goal_z_range: tuple[float, float] = (0.42, 0.58)" in cfg
+    assert "transport_goal_x_range: tuple[float, float] = (0.25, 0.40)" in cfg
+    assert "transport_goal_y_range: tuple[float, float] = (-0.20, 0.00)" in cfg
+    assert "transport_goal_z_range: tuple[float, float] = (0.30, 0.55)" in cfg
     assert "def _sample_transport_goals" in env
     assert "self.object_goal[env_ids] = self._sample_transport_goals(n)" in env
     # 정책구동 transport: scripted lerp 제거, start 앵커 + action·radius reach 사용
@@ -216,8 +217,7 @@ def test_v11_actively_levels_cup_after_lift_with_movable_arm() -> None:
     assert '"transport_xyz_hold_gain"' in env
     assert '"stabilize_spawn_xy_hold_gain"' in env
     assert "self._transport_xyz_palm_correction_buf[phase_mask] = xy_correction[phase_mask]" in env
-    assert 'self.extras["task/transport_xyz_palm_correction"]' in env
-    assert 'self.extras["task/spawn_xy_palm_correction"]' in env
+    assert 'self.extras["debug/rh56f1/task/transport_xyz_palm_correction"]' in env
     assert "lift_palm_pose = self._apply_transport_xyz_palm_correction(" not in env
     # 정책구동 transport: scripted xy hold 보정 호출 제거 (메서드 정의는 보존)
     assert "transport_palm_pose = self._apply_transport_xyz_palm_correction(" not in env
@@ -273,7 +273,7 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
     assert "& self._lift_success_latched_buf" in stabilize_gate
     assert "_full_grip_ready" not in stabilize_gate
     assert "just_entering_transport = (" in env
-    assert "& self._stabilize_success_latched_buf" in env
+    assert "& self._lift_success_latched_buf" in env
     assert "& self._full_grip_ready_buf" not in env
     assert "goal_delta[:, 2] = 0.0" not in env
     assert "curriculum_lift_horizon" in env
@@ -282,15 +282,10 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
     assert "(self.episode_length_buf >= LIFT_START_STEP)" in env
     assert "& (~self._lift_contact_ready_latched_buf)" in env
     assert "lift_failed = (" in env
-    assert 'self.extras["task/curriculum_stage"]' in env
-    assert 'self.extras["task/lift_success_rate"]' in env
-    assert 'self.extras["task/stabilize_success_rate"]' in env
-    assert 'self.extras["task/lift_contact_ready_rate"]' in env
-    assert 'self.extras["task/lift_started_rate"]' in env
-    assert 'self.extras["task/full_grip_ready_rate"]' in env
-    assert 'self.extras["task/grasp_timeout_fail_rate"]' in env
-    assert 'self.extras["task/contacts_at_lift_start"]' in env
-    assert 'self.extras["task/force_ratio_at_lift_start"]' in env
+    assert '"task/lift_success_rate"' in env
+    assert '"task/stabilize_success_rate"' in env
+    assert '"task/lift_started_rate"' in env
+    assert 'self.extras["debug/rh56f1/task/grasp_timeout_fail_rate"]' in env
 
 
 def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
@@ -311,8 +306,7 @@ def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
     assert "& no_slip_gate.bool()" not in env
     assert "force_delta_ratio_abs_for_ready <= self.cfg.stabilize_force_delta_threshold" not in env
     assert "self._full_grip_ready_latched_buf |= full_grip_ready_now" in env
-    assert "stable_grasped = (" in env
-    assert "& full_grip_ready_now" not in env
+    assert "compute_grasp_v2_success(" in env
     assert "lift_success_candidate = in_or_past_lift & lifted & lift_grasped & upright_success" in env
     assert "self._lift_success_hold_count = torch.where(" in env
     assert "lift_success_now = self._lift_success_hold_count >= int(self.cfg.full_grip_hold_steps)" in env
@@ -321,15 +315,11 @@ def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
 def test_v11_tracks_pre_lift_full_contact_rate() -> None:
     env = _text("grasp_right_env.py")
 
-    assert 'self.extras["task/pre_lift_full_contact_rate"]' in env
-    assert 'self.extras["task/five_tip_contact_rate"]' in env
-    assert 'self.extras["task/prelift_five_tip_contact_rate"]' in env
-    assert 'self.extras["task/lift_five_tip_contact_rate"]' in env
+    assert '"task/five_tip_contact_rate"' in env
+    assert '"task/prelift_five_tip_contact_rate"' in env
+    assert '"task/lift_five_tip_contact_rate"' in env
     assert "full_tip_middle_contact & self.is_grasp_phase" in env
-    assert 'self.extras["task/late_grasp_full_grip_mode_rate"]' in env
-    assert 'self.extras["task/contact_to_full_grip_transition_rate"]' in env
-    assert 'self.extras["task/prelift_force_ratio"]' in env
-    assert 'self.extras["task/prelift_full_grip_rate"]' in env
+    assert 'self.extras["debug/rh56f1/task/prelift_force_ratio"]' in env
 
 
 def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
@@ -349,13 +339,16 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
         "transport_height_target_delta",
         "transport_height_quality_power",
         "transport_upright_quality_power",
-        "transport_xyz_success_threshold",
+        "transport_success_hold_steps",
         "stabilize_spawn_xy_scale",
         "success_bonus_weight",
         "post_lift_contact_loss_weight",
         "action_smooth_weight",
-        "palm_action_delta_reward_scale",
-        "finger_action_delta_reward_scale",
+        "stability_reward_weight",
+        "stability_cup_lin_vel_threshold",
+        "stability_cup_ang_vel_threshold",
+        "stability_contact_delta_threshold",
+        "stability_action_delta_threshold",
         "stabilize_upright_max_deg: float = 5.0",
         "stabilize_upright_reward_scale_deg",
         "stage0_lift_start_min_contacts: int = 4",
@@ -382,17 +375,18 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     assert "self.cfg.stage0_lift_start_hold_steps" in env
     assert "lift_latched=self._lift_started_buf" in env
     assert "full_tip_contact=five_tip_contact" in env
-    assert "self.cfg.palm_action_delta_reward_scale" in env
-    assert "self.cfg.finger_action_delta_reward_scale" in env
-    assert 'self.extras["reward/approach"]' in env
-    assert 'self.extras["reward/grasp"]' in env
-    assert 'self.extras["reward/lift"]' in env
-    assert 'self.extras["reward/post_lift_contact_loss"]' in env
-    assert 'self.extras["reward/stabilize"]' in env
-    assert 'self.extras["reward/transport_xyz"]' in env
-    assert 'self.extras["task/transport_height_quality"]' in env
-    assert 'self.extras["task/transport_posture_quality"]' in env
-    assert 'self.extras["reward/success_bonus"]' in env
+    assert "compute_action_delta_norm(self.actions, self.prev_actions)" in env
+    assert '"reward/approach"' in env
+    assert '"reward/grasp"' in env
+    assert '"reward/lift"' in env
+    assert '"reward/post_lift_contact_loss"' in env
+    assert '"reward/stabilize"' in env
+    assert '"reward/transport_track"' in env
+    assert '"reward/transport_progress"' in env
+    assert '"reward/stability"' in env
+    assert '"task/transport_height_quality"' in env
+    assert '"task/transport_posture_quality"' in env
+    assert '"reward/success_bonus"' in env
     for removed_term in (
         "r_align_upright",
         "r_grasp_contact_dense",
@@ -420,10 +414,9 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
         'task/force_balance_err',
     ):
         assert removed_term not in env
-    assert "stabilize_upright_success = compute_upright_success_mask(" in env
-    assert "self.cfg.stabilize_upright_max_deg" in env
-    assert "stable_grasped = (" in env
-    assert "& stabilize_upright_success" in env
+    assert "compute_grasp_v2_success(" in env
+    assert "stabilize_upright_max_deg: float = 5.0" in cfg
+    assert "stable=stability.stable" in env
 
 
 def test_v11_logs_only_curated_cup_task_reward_groups() -> None:
@@ -434,20 +427,25 @@ def test_v11_logs_only_curated_cup_task_reward_groups() -> None:
         "phase/grasp",
         "phase/lift",
         "phase/stabilize",
-        "contact/palm_force",
-        "contact/palm_at_lift_start",
-        "object_stat/obj_z",
-        "cup/height_delta",
-        "cup/tilt_deg",
-        "cup/tilt_lift_deg",
-        "cup/tilt_stabilize_deg",
-        "task/lift_success_now",
-        "task/stabilize_success_now",
-        "task/full_grip_ready_rate",
-        "task/force_ratio",
-        "reward/total",
-    ):
-        assert f'self.extras["{name}"]' in env
+            "contact/palm_force",
+            "contact/palm_at_lift_start",
+            "object_stat/obj_z",
+            "cup/height_delta",
+            "cup/tilt_deg",
+            "cup/lift_tilt_deg",
+            "task/stable_rate",
+            "task/cup_lin_vel",
+            "task/cup_ang_vel",
+            "task/action_delta_norm",
+            "task/lift_success_now",
+            "task/stabilize_success_now",
+            "task/transport_success_now",
+            "reward/total",
+        ):
+        if name == "object_stat/obj_z":
+            assert f'self.extras["{name}"]' in env
+        else:
+            assert f'"{name}"' in env
 
     assert 'self.extras.clear()' in env
     for removed_name in (

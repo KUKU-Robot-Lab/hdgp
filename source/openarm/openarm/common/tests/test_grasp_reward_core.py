@@ -23,12 +23,21 @@ class RewardCfg:
     grasp_xy_threshold: float = 0.025
     transport_xyz_scale: float = 0.03
     transport_xyz_reward_weight: float = 12.0
+    transport_track_weight: float = 20.0
+    transport_track_ref_dist: float = 0.35
+    transport_track_tanh_weight: float = 10.0
+    transport_track_tanh_std: float = 0.1
+    transport_progress_reward_weight: float = 200.0
+    transport_progress_reward_cap: float = 0.02
     transport_height_target_delta: float = 0.06
     transport_height_quality_power: float = 1.0
     transport_upright_quality_power: float = 1.0
     grasp_upright_threshold_deg: float = 8.0
     stabilize_action_sharpness: float = 1.5
     post_lift_contact_loss_weight: float = -8.0
+    stabilize_upright_max_deg: float = 5.0
+    transport_goal_dist_threshold: float = 0.04
+    stability_reward_weight: float = 1.0
 
 
 def _reward(
@@ -72,8 +81,8 @@ def test_lift_and_success_require_full_tip_contact_when_lifted() -> None:
     assert terms["post_lift_contact_loss"][0].item() < 0.0
     assert terms["post_lift_contact_loss"][1].item() == 0.0
     assert terms["success_bonus"][0].item() == 0.0
-    assert terms["success_bonus"][1].item() > 0.0
-    assert gates["success_now"].tolist() == [0.0, 1.0]
+    assert terms["success_bonus"][1].item() == 0.0
+    assert gates["success_now"].tolist() == [0.0, 0.0]
     assert total[1] > total[0]
 
 
@@ -90,11 +99,11 @@ def test_tilted_lift_loses_success_bonus_and_upright_quality() -> None:
 
     assert tilted_terms["lift"].item() < upright_terms["lift"].item()
     assert tilted_gates["success_now"].item() == 0.0
-    assert upright_gates["success_now"].item() == 1.0
+    assert upright_gates["success_now"].item() == 0.0
     assert tilted_total.item() < upright_total.item()
 
 
-def test_transport_xyz_reward_prefers_goal_recovery_without_changing_stabilize() -> None:
+def test_transport_track_reward_prefers_goal_recovery() -> None:
     contacts = torch.tensor([5, 5], dtype=torch.long)
     total, terms, gates = compute_grasp_reward_terms(
         num_tip_contacts=contacts,
@@ -106,21 +115,26 @@ def test_transport_xyz_reward_prefers_goal_recovery_without_changing_stabilize()
         cup_height_delta=torch.full((2,), 0.06),
         cup_xy_displacement=torch.zeros(2),
         transport_xyz_dist=torch.tensor([0.01, 0.05]),
+        previous_transport_xyz_dist=torch.tensor([0.02, 0.06]),
         cup_tilt_deg=torch.zeros(2),
         upright_quality=torch.ones(2),
         lift_latched=torch.ones(2, dtype=torch.bool),
         action_delta_norm=torch.zeros(2),
+        transport_reward_gate=torch.ones(2, dtype=torch.bool),
+        stable=torch.ones(2, dtype=torch.bool),
+        stability_quality=torch.ones(2),
         cfg=RewardCfg(),
     )
 
     assert gates["transport_xyz_quality"][0] > gates["transport_xyz_quality"][1]
-    assert terms["transport_xyz"][0] > terms["transport_xyz"][1]
-    assert torch.allclose(terms["stabilize"][0], terms["stabilize"][1])
-    assert terms["success_bonus"][0] == terms["success_bonus"][1]
+    assert gates["transport_track_quality"][0] > gates["transport_track_quality"][1]
+    assert terms["transport_track"][0] > terms["transport_track"][1]
+    assert torch.allclose(terms["transport_progress"], terms["transport_progress"][0].expand_as(terms["transport_progress"]))
+    assert terms["success_bonus"][0] > terms["success_bonus"][1]
     assert total[0] > total[1]
 
 
-def test_transport_xyz_reward_requires_height_and_posture_quality() -> None:
+def test_transport_track_reward_requires_height_and_posture_quality() -> None:
     contacts = torch.tensor([5, 5, 5], dtype=torch.long)
     total, terms, gates = compute_grasp_reward_terms(
         num_tip_contacts=contacts,
@@ -132,10 +146,14 @@ def test_transport_xyz_reward_requires_height_and_posture_quality() -> None:
         cup_height_delta=torch.tensor([0.06, 0.04, 0.06]),
         cup_xy_displacement=torch.zeros(3),
         transport_xyz_dist=torch.zeros(3),
+        previous_transport_xyz_dist=torch.full((3,), 0.01),
         cup_tilt_deg=torch.tensor([0.0, 0.0, 0.0]),
         upright_quality=torch.tensor([1.0, 1.0, 0.25]),
         lift_latched=torch.ones(3, dtype=torch.bool),
         action_delta_norm=torch.zeros(3),
+        transport_reward_gate=torch.ones(3, dtype=torch.bool),
+        stable=torch.ones(3, dtype=torch.bool),
+        stability_quality=torch.ones(3),
         cfg=RewardCfg(),
     )
 
@@ -147,7 +165,7 @@ def test_transport_xyz_reward_requires_height_and_posture_quality() -> None:
         gates["transport_posture_quality"],
         torch.tensor([1.0, 1.0, 0.25]),
     )
-    assert terms["transport_xyz"][0] > terms["transport_xyz"][1]
-    assert terms["transport_xyz"][0] > terms["transport_xyz"][2]
+    assert terms["transport_track"][0] > terms["transport_track"][1]
+    assert terms["transport_track"][0] > terms["transport_track"][2]
     assert total[0] > total[1]
     assert total[0] > total[2]
