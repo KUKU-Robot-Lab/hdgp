@@ -236,18 +236,19 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # =====================================================================
     # Reward weights — [전면 재설계] 2-Stage 가산 (정책·목표 분리)
-    #   total = r_hold + r_approach + r_introt
-    #           + r_tilt_A                                  # [2단] Stage A: 0→85°(pre-pour) 세우기, always-on
-    #           + g_ready·( r_tilt + r_align               # [2단] r_tilt = Stage B 85→135° hinge. [r_pour_z 제거]
-    #                       + align_gate·r_bead_in
-    #                       + align_gate·aim_gate·r_drain )
-    #           + w_success·r_success − w_spill·sqrt(spill)  # w_spill=0
+    #   total = r_hold + r_approach + r_introt + r_tilt
+    #           + r_align
+    #           + release_context·aim_gate·r_source_release
+    #           + r_target_capture
+    #           + w_success·r_success − ready_context·w_spill·sqrt(spill)  # w_spill=0
     #
-    #   g_ready    = sigmoid((center − mouth_xy_distance)/width)    # Stage A→B 정조준 게이트(pour_point)
+    #   corridor_score = 1 inside target inlet corridor, exp falloff only outside
+    #   ready_context = max(corridor_score, ready_latched·latch_floor)
     #   tilt_progress = (tilt_amount / tilt_target).clamp(0,1)      # tilt 강제(직립 farming 차단)
-    #   r_align    = tilt_progress·W·exp(−k·||pour_point − (target_opening+[0,0,z_margin])||_3d)
-    #   align_gate = exp(−align_gate_scale·mouth_xy)                # bead = 정밀 조준 종속
+    #   r_align    = tilt_progress·W·corridor_score
     #   aim_gate   = (dir_cos_c>0) & (tilt_amount>drain_tilt_min)
+    #   r_source_release = W·clamp(prev_source_fraction − current_source_fraction, 0)
+    #   r_target_capture = W·clamp(current_target_fraction − prev_target_fraction, 0)
     #   demo는 reward에 없음 — critic privileged obs로만 (deadlock 제거).
     # =====================================================================
 
@@ -268,9 +269,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     rim_approach_saturate: float = 0.03      # [H12] mouth_xy(pour_point) 이 이하: 거리항 max. rim 반경(0.041) 안쪽으로 견인 (이전 0.05는 rim 밖에서 포화)
     approach_anti_floor: float = 0.4         # 직립·원거리 transport gradient 보존 (anti=0서도 0.4)
 
-    # Stage A→B 공간 게이트 (단일 sigmoid, latch 없음)
+    # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
     g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)
     g_ready_width: float = 0.04    # [test7] 0.02→0.04: (a)로 정조준 완벽(mouth_xy~0.003)→sharp 불필요. 깊은 tilt 과도기 mouth_xy 흔들림에 stageB(tilt/align) 절벽 완화 (bead_in은 이미 g_ready 분리)
+    pour_corridor_xy_margin: float = 0.015
+    pour_corridor_z_min: float = -0.02
+    pour_corridor_z_max: float = 0.12
+    pour_corridor_scale: float = 20.0
+    ready_latch_threshold: float = 0.60
+    ready_latch_floor: float = 0.50
+    release_gate_floor_after_ready: float = 0.40
 
     # [tilt 식 교체/test8] 2단 A/B 폐기 → 0→135° 단일 연속 ramp, always-on(aim_floor 부분종속).
     #   test7 진단: A는 85°(tilt_pre)서 saturate(grad→0), B는 85° 넘어야 시작 → 82-85° dead spot에서
@@ -302,9 +310,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [제거] weight_pour_z / pour_z_margin: z barrier가 hinge pour와 상충하여 삭제 (lstm_test4 주기적 붕괴 원인)
 
     # Stage B — bead (정밀 조준 종속 — "높은 데서 대충 부어 넣기" 차단)
-    weight_bead_in: float = 200.0  # 실제 채움 (linear fill fraction) × align_gate
+    weight_bead_in: float = 0.0  # [release-delta probe] 누적 target 상태 reward 제거
+    weight_source_release: float = 100.0  # 소스 잔량 감소분만 transient 보상
+    weight_target_capture_delta: float = 200.0  # target 컵으로 새로 들어온 bead delta 보상
     weight_bead_cross: float = 150.0  # 입구 관통(latch) 즉시 × align_gate
-    weight_source_drain: float = 21.0  # 배출(빈 컵 유도) × align_gate × aim_gate
+    weight_source_drain: float = 0.0  # [release-delta probe] 누적 source-empty 상태 reward 제거
     drain_tilt_min: float = 0.05   # aim_gate tilt 임계 (직립 조기 drain 차단)
     align_gate_scale: float = 15.0    # [H2] bead 게이트 = pour_alignment_score(3D, scale=15): xyz 정밀 조준일수록 1
     bead_near_scale: float = 12.0     # _compute_bead_flags의 _bead_near_score 계산용 (진단 버퍼)
@@ -326,7 +336,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     rot_tilt_floor: float = 0.0
 
     # Outcome
-    weight_success: float = 100.00
+    weight_success: float = 0.0
     weight_spill: float = 0.0      # [test7] 2→0: lstm_test6 bead_in/spill 동조 붕괴 → spill 페널티 OFF (pour 회피 local min 제거)
 
     # EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달

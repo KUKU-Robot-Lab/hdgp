@@ -88,7 +88,7 @@ from .pour_right_preset import (
     HAND_GRASP_POSE,
     OBJECT_GOAL_POS,
 )
-from .pour_right_utils import pour_alignment_score, scale, to_torch
+from .pour_right_utils import pour_corridor_score, scale, to_torch
 from .demo_pose_reference import DemoPoseReferenceBank
 from .warm_state_bank import PourWarmStateBank
 
@@ -508,6 +508,7 @@ class PourRightEnv(DirectRLEnv):
         self._target_up_axis_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._mouth_delta = torch.zeros(self.num_envs, 3, device=self.device)
         self._mouth_distance = torch.zeros(self.num_envs, device=self.device)
+        self._intermediate_values_step = -1
 
         # ---- Pour 중간값 버퍼 ----
         self._mouth_xy_distance = torch.zeros(self.num_envs, device=self.device)
@@ -557,6 +558,7 @@ class PourRightEnv(DirectRLEnv):
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._no_tip_force_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._source_empty_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._pour_ready_latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._world_up = torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
 
         self._warmstart_collect_mode = False
@@ -1122,6 +1124,12 @@ class PourRightEnv(DirectRLEnv):
     # Intermediate values
     # ------------------------------------------------------------------
     def _compute_intermediate_values(self) -> None:
+        # DirectRLEnv.step() calls _get_dones() before _get_rewards().
+        # Keep bead deltas from being recomputed and zeroed within the same env step.
+        if self._intermediate_values_step == int(self.common_step_counter):
+            return
+        self._intermediate_values_step = int(self.common_step_counter)
+
         # 물체 위치
         self.object_pos = self.cup.data.root_pos_w - self.scene.env_origins
         self.object_rot = self.cup.data.root_quat_w
@@ -1642,17 +1650,28 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # ============================================================
-        # Stage A→B 공간 게이트 (단일 sigmoid, latch 없음)
+        # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
         # ============================================================
-        # [H1] 게이트 기준 = pour_point(mouth_xy). origin(cup_center) 기준은
-        #   "origin만 target 위에 두면 Stage B 만점" 회피해를 허용 → pour_point가
-        #   입구 반경 2배(8cm) 밖이어도 보상 → spill 0.50. 비드는 pour_point에서
-        #   나오므로 게이트도 pour_point 기준이어야 정밀 정렬 동기가 생긴다.
-        #   (transport는 r_approach가 cup_center로 계속 견인 → 부트스트랩 유지)
-        g_ready = torch.sigmoid(
-            (self.cfg.g_ready_center - self._mouth_xy_distance)
-            / max(self.cfg.g_ready_width, 1e-6)
+        corridor_radius = self.cfg.target_inner_radius + self.cfg.pour_corridor_xy_margin
+        corridor_score = pour_corridor_score(
+            self._source_pour_point_w,
+            self._target_opening_w,
+            corridor_radius,
+            self.cfg.pour_corridor_z_min,
+            self.cfg.pour_corridor_z_max,
+            self.cfg.pour_corridor_scale,
         )
+        self._pour_ready_latched |= corridor_score >= self.cfg.ready_latch_threshold
+        latched_ready = self._pour_ready_latched.float()
+        ready_context = torch.maximum(
+            corridor_score,
+            latched_ready * self.cfg.ready_latch_floor,
+        )
+        release_context = torch.maximum(
+            corridor_score,
+            latched_ready * self.cfg.release_gate_floor_after_ready,
+        )
+        g_ready = ready_context
 
         # ============================================================
         # Stage B — pour-point / tilt / bead (× g_ready)
@@ -1668,9 +1687,9 @@ class PourRightEnv(DirectRLEnv):
         #   진단: 구 r_tilt_A는 85°(tilt_pre)서 saturate(grad→0), r_tilt_B는 85° 넘어야 시작 →
         #   82-85° dead spot에서 정책 정지(peak 0.43<0.456) → tilt_progress_B 영구 미발현.
         #   교체: tilt_target(135°)까지 끊김 없는 단일 gradient(=tilt_progress). 85° dead spot 제거.
-        # aim 부분종속(floor): 깊은 tilt 과도기 mouth_xy wobble→g_ready 절벽으로 gradient 소멸 방지.
+        # aim 부분종속(floor): ready 이후 corridor wobble→tilt gradient 절벽을 latch floor로 완화.
         #   floor(0.35)만큼은 정조준 없이도 받음 → gradient 생존. full은 정조준 필요(파밍 억제).
-        aim_soft = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * g_ready
+        aim_soft = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * ready_context
         r_tilt = self.cfg.weight_tilt * tilt_progress * rot_dir * aim_soft   # total 직접 가산(아래)
         # [로깅 전용] 85° 돌파 추적 (보상 미사용). tilt_progress_A=전체 진행도, B=깊은 구간(85→135°)
         tilt_pre = self.cfg.tilt_pre_amount
@@ -1682,17 +1701,12 @@ class PourRightEnv(DirectRLEnv):
         #   r_approach(5) → 회전만 park 아닌 회전+접근+tilt 단계 상승. total에 직접 가산(아래).
         r_introt = self.cfg.weight_introt * self._internal_rot_gate
 
-        # pour-point 3D 정렬 — target opening 위 z_margin 지점으로 xy+z 동시 정렬
-        align_score = pour_alignment_score(
-            self._source_pour_point_w,
-            self._target_opening_w,
-            self.cfg.pour_align_z_margin,
-            self.cfg.pour_align_scale,
-        )
+        # pour-point 입구 corridor 정렬 — corridor 내부는 flat, 중심축 추가 보상 없음.
+        align_score = corridor_score
         r_align = (
             tilt_progress
             * self.cfg.weight_align
-            * align_score
+            * corridor_score
         )
 
         # [r_pour_z 제거] z barrier가 hinge pour와 상충(기울이면 pour_point 자연 하강→페널티→주기적 붕괴).
@@ -1701,33 +1715,25 @@ class PourRightEnv(DirectRLEnv):
             (self._directional_tilt_cos_c > 0.0) & (tilt_amount > self.cfg.drain_tilt_min)
         ).float()
 
-        # bead — 정밀 조준 종속 (align_gate): "높은 데서 대충 부어 넣기" 차단
-        # [H2] gate를 xy-only → 3D(z 포함)로. bead_in은 상태기반(fraction) 보상이라
-        #   xy-only gate면 z 고공의 나쁜 자세서도 통과 → 그 자세에 최적화(z=16cm 고착).
-        #   pour_point xyz가 제대로 정렬돼야 bead_in이 발현되도록 3D로 막는다.
-        #   (r_align과 동일한 pour_alignment_score, scale만 더 sharp하게)
-        align_gate = pour_alignment_score(
-            self._source_pour_point_w,
-            self._target_opening_w,
-            self.cfg.pour_align_z_margin,
-            self.cfg.align_gate_scale,
-        )
-        r_bead_in = align_gate * self.cfg.weight_bead_in * self._bead_in_target_fraction
-        # [H14] r_cross 제거: bead_cross_delta≈0(전 구간) → 항상 0 기여. bead_in_target가 결과 포착.
-        r_drain = (
-            align_gate
+        # bead — release는 ready 이후 wobble에 hard-block되지 않는 release_context 종속.
+        align_gate = corridor_score
+        source_release_delta = (-self._bead_in_source_delta).clamp(min=0.0)
+        r_source_release = (
+            release_context
             * aim_gate
-            * self.cfg.weight_source_drain
-            * (1.0 - self._bead_in_source_fraction)
+            * self.cfg.weight_source_release
+            * source_release_delta
         )
+        target_capture_delta = self._bead_in_target_delta.clamp(min=0.0)
+        r_target_capture = self.cfg.weight_target_capture_delta * target_capture_delta
+        # [release-delta probe] 누적 target 상태 reward는 1-bead park를 만들 수 있어 제거.
+        # 실제 배출 유도는 source_release_delta의 transient reward로만 본다.
+        r_bead_in = torch.zeros_like(self._bead_in_target_fraction)
+        # [release-delta probe] source-empty 누적 상태 reward도 제거.
+        r_drain = torch.zeros_like(source_release_delta)
 
-        # [bead_in 게이트 분리] bead_in_target_fraction은 비드가 target 컵 안(3D)에 실제 착지한
-        #   결과 → g_ready(mouth_xy) 곱은 깊은 tilt 과도기(비드가 막 나오는 순간 arm 동작으로 xy
-        #   흔들림)에 보상을 죽이는 닭-달걀 유발. g_ready에서 빼고 total 직접 가산.
-        #   align_gate(3D 정렬)는 유지 → "고공/나쁜 자세 흘려넣기"는 계속 차단.
-        r_stageB = g_ready * (
-            r_align + r_drain
-        )
+        # [corridor probe] r_align은 이미 corridor_score를 포함한다. g_ready 이중 hard-gate 제거.
+        r_stageB = r_align
 
 
         # ============================================================
@@ -1757,7 +1763,9 @@ class PourRightEnv(DirectRLEnv):
             + r_introt
             + r_tilt            # [tilt 식 교체/test8] 0→135° 단일 연속 ramp, always-on(aim_floor 부분종속)
             + r_stageB
-            + r_bead_in         # [게이트 분리] g_ready 무관, align_gate만 통과한 실제 착지 보상
+            + r_source_release  # [probe] g_ready 무관, 실제 소스 잔량 감소분만 transient 보상
+            + r_target_capture  # [probe] target에 새로 capture된 bead delta만 outcome 보상
+            + r_bead_in         # [probe] 누적 bead-in 상태 reward는 0 고정
             + self.cfg.weight_success * r_success
             - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
         )
@@ -1787,8 +1795,10 @@ class PourRightEnv(DirectRLEnv):
             "reward/introt":   r_introt.mean(),
             "reward/tilt_pre": torch.zeros((), device=self.device),  # [test8] r_tilt_A 폐기 (0 고정, 대시보드 호환)
             "reward/tilt":     r_tilt.mean(),                # [test8] 0→135° 단일 연속 ramp (always-on, total 가산값과 일치)
-            "reward/align":    (g_ready * r_align).mean(),
+            "reward/align":    r_align.mean(),
             "reward/bead_in":  r_bead_in.mean(),    # [게이트 분리] g_ready 무관 (total 직접 가산값과 일치)
+            "reward/source_release":  r_source_release.mean(),
+            "reward/target_capture":  r_target_capture.mean(),
             "reward/drain":    (g_ready * r_drain).mean(),
             "reward/success":  (self.cfg.weight_success * r_success).mean(),
         }
@@ -1800,10 +1810,17 @@ class PourRightEnv(DirectRLEnv):
             "log/stageB_active":         (g_ready > 0.5).float().mean(),
             "log/align_gate":            align_gate.mean(),
             "log/aim_gate":              aim_gate.mean(),
+            "log/corridor_score":        corridor_score.mean(),
+            "log/ready_latched":         self._pour_ready_latched.float().mean(),
+            "log/release_context":       release_context.mean(),
             # tilt / 정렬
             "log/tilt_amount":           tilt_amount.mean(),
             "log/tilt_progress_A":       tilt_progress_A.mean(),   # [2단] 0→85° 진행도
             "log/tilt_progress_B":       tilt_progress_B.mean(),   # [2단] 85→135° 진행도
+            "log/tilt_frac_90":          (tilt_amount >= 0.5).float().mean(),
+            "log/tilt_frac_110":         (tilt_amount >= ((1.0 - math.cos(math.radians(110.0))) / 2.0)).float().mean(),
+            "log/tilt_frac_120":         (tilt_amount >= 0.75).float().mean(),
+            "log/tilt_frac_135":         (tilt_amount >= ((1.0 - math.cos(math.radians(135.0))) / 2.0)).float().mean(),
             "log/pour_align_score":      align_score.mean(),
             "log/source_up_dot":         self._source_up_dot_world.mean(),
             "log/rim_facing_cos":        self._rim_facing_cos.mean(),  # [H11] palm+y·worldX (음수=내회전)
@@ -1831,6 +1848,8 @@ class PourRightEnv(DirectRLEnv):
             # bead flow
             "log/bead_in_target":        self._bead_in_target_fraction.mean(),
             "log/bead_in_source":        self._bead_in_source_fraction.mean(),
+            "log/source_release_delta":  source_release_delta.mean(),
+            "log/target_capture_delta":  target_capture_delta.mean(),
             "log/spill_ratio":           self._spill_ratio.mean(),
             # [Phase0] rim-pivot hinge 기계적 파손 측정: palm 위치 박스(palm_mins/maxs)가
             #   rim-pivot 보정 palm 이동을 클램프한 양 = pour_point가 명령 위치를 벗어난 정도.
@@ -2116,6 +2135,7 @@ class PourRightEnv(DirectRLEnv):
         self._first_capture_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
+        self._pour_ready_latched[env_ids] = False
         self.success_flag[env_ids] = False
         self._pre_pour_ready_steps[env_ids] = 0
         self._prev_arm_joint_vel[env_ids].zero_()
@@ -2125,6 +2145,7 @@ class PourRightEnv(DirectRLEnv):
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치 (6D palm)
         self.actions[env_ids, :] = 0.0
         self.prev_actions[env_ids, :] = 0.0
+        self._intermediate_values_step = -1
 
 
     def _get_left_cup_fk_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
@@ -2431,6 +2452,7 @@ class PourRightEnv(DirectRLEnv):
         self._first_capture_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
+        self._pour_ready_latched[env_ids] = False
         self.success_flag[env_ids] = False
         self._prev_arm_joint_vel[env_ids].zero_()
         self._prev_arm_joint_acc[env_ids].zero_()   # [Step 6]
@@ -2440,6 +2462,7 @@ class PourRightEnv(DirectRLEnv):
         self.prev_actions[env_ids, :] = 0.0
         self._pre_pour_ready_steps[env_ids] = 0
         self.success_flag[env_ids] = False
+        self._intermediate_values_step = -1
 
         if not self._warmstart_reset_debug_printed:
             source_pour_point_w = cup_pose_world[:, :3] + quat_apply(

@@ -55,5 +55,30 @@ def pour_alignment_score(
     return torch.exp(-scale * dist)
 
 
+@torch.jit.script
+def pour_corridor_score(
+    pour_point: torch.Tensor,      # (N, 3) env-local 또는 world 동일 프레임
+    target_opening: torch.Tensor,  # (N, 3) 동일 프레임
+    radius: float,                 # 허용 xy corridor 반경
+    z_min: float,                  # target_opening z 기준 허용 하한
+    z_max: float,                  # target_opening z 기준 허용 상한
+    scale: float,                  # corridor 밖 초과거리 민감도
+) -> torch.Tensor:
+    """Target 입구 corridor score.
+
+    Corridor 내부에서는 score=1로 평평하게 유지해 중심축 정렬 파밍을 막고,
+    xy 반경 또는 z 범위를 벗어난 초과분에만 exponential penalty를 준다.
+    """
+    delta = pour_point - target_opening
+    xy_dist = torch.sqrt(delta[:, 0] * delta[:, 0] + delta[:, 1] * delta[:, 1])
+    xy_excess = (xy_dist - radius).clamp(min=0.0)
+    z_rel = delta[:, 2]
+    z_low_excess = (z_min - z_rel).clamp(min=0.0)
+    z_high_excess = (z_rel - z_max).clamp(min=0.0)
+    z_excess = z_low_excess + z_high_excess
+    excess = torch.sqrt(xy_excess * xy_excess + z_excess * z_excess)
+    return torch.exp(-scale * excess)
+
+
 def to_torch(x, dtype=torch.float, device: str = "cuda:0", requires_grad: bool = False) -> torch.Tensor:
     return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)

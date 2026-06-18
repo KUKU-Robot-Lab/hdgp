@@ -10,7 +10,7 @@ from pathlib import Path
 
 import torch
 
-from openarm.tesollo.right.pour_v5.pour_right_utils import pour_alignment_score
+from openarm.tesollo.right.pour_v5.pour_right_utils import pour_alignment_score, pour_corridor_score
 
 
 TASK_DIR = Path(__file__).resolve().parents[1]
@@ -78,7 +78,75 @@ def test_batch_shape() -> None:
     assert score.shape == (4,)
 
 
-def test_stage_b_reward_uses_single_3d_align_term() -> None:
+def test_corridor_score_is_flat_inside_entry_corridor() -> None:
+    target_opening = torch.zeros(4, 3)
+    pour_point = torch.tensor(
+        [
+            [0.000, 0.000, 0.000],
+            [0.030, 0.000, 0.050],
+            [0.000, -0.055, 0.110],
+            [0.020, 0.020, -0.015],
+        ]
+    )
+
+    score = pour_corridor_score(
+        pour_point,
+        target_opening,
+        radius=0.056,
+        z_min=-0.020,
+        z_max=0.120,
+        scale=20.0,
+    )
+
+    assert torch.allclose(score, torch.ones(4), atol=1e-5)
+
+
+def test_corridor_score_does_not_prefer_center_over_inside_rim_side() -> None:
+    target_opening = torch.zeros(2, 3)
+    pour_point = torch.tensor(
+        [
+            [0.000, 0.000, 0.050],
+            [0.055, 0.000, 0.050],
+        ]
+    )
+
+    score = pour_corridor_score(
+        pour_point,
+        target_opening,
+        radius=0.056,
+        z_min=-0.020,
+        z_max=0.120,
+        scale=20.0,
+    )
+
+    assert torch.allclose(score[0], score[1], atol=1e-5)
+
+
+def test_corridor_score_penalizes_only_excess_outside_corridor() -> None:
+    target_opening = torch.zeros(3, 3)
+    pour_point = torch.tensor(
+        [
+            [0.056, 0.000, 0.050],
+            [0.086, 0.000, 0.050],
+            [0.056, 0.000, 0.160],
+        ]
+    )
+
+    score = pour_corridor_score(
+        pour_point,
+        target_opening,
+        radius=0.056,
+        z_min=-0.020,
+        z_max=0.120,
+        scale=20.0,
+    )
+
+    assert torch.allclose(score[0], torch.tensor(1.0), atol=1e-5)
+    assert score[1] < score[0]
+    assert score[2] < score[0]
+
+
+def test_stage_b_reward_uses_corridor_not_center_alignment() -> None:
     env = _read("pour_right_env.py")
     cfg = _read("pour_right_env_cfg.py")
 
@@ -87,44 +155,118 @@ def test_stage_b_reward_uses_single_3d_align_term() -> None:
         maxsplit=1,
     )[0]
 
-    assert "pour_alignment_score" in env
+    assert "pour_corridor_score" in env
     assert "r_align = (" in stage_b
+    assert "* corridor_score" in stage_b
     assert "r_pour_xy" not in stage_b
     assert "r_descend" not in stage_b
     assert "weight_align" in cfg
-    assert "pour_align_scale" in cfg
-    assert "pour_align_z_margin" in cfg
+    assert "pour_corridor_xy_margin: float = 0.015" in cfg
+    assert "pour_corridor_z_min: float = -0.02" in cfg
+    assert "pour_corridor_z_max: float = 0.12" in cfg
+    assert "pour_corridor_scale: float = 20.0" in cfg
 
 
-def test_g_ready_gate_uses_pour_point_not_origin() -> None:
-    """[H1] Stage B 게이트 g_ready는 origin(cup_center)이 아닌 pour_point(mouth_xy) 기준.
+def test_g_ready_gate_uses_corridor_latch_not_center_distance() -> None:
+    """Stage B context is corridor based and latches after first ready entry.
 
-    origin 기준이면 "origin만 target 위에 두면 Stage B 만점" 회피해 → pour_point가
-    입구 밖이어도 보상(spill). 비드는 pour_point에서 나오므로 게이트도 pour_point 기준이어야.
+    A pure center-distance sigmoid makes deep-tilt wobble erase release/tilt rewards.
     """
     env = _read("pour_right_env.py")
+    cfg = _read("pour_right_env_cfg.py")
 
-    gate = env.split("g_ready = torch.sigmoid(", maxsplit=1)[1].split(")", maxsplit=1)[0]
-
-    # 게이트 입력은 mouth_xy_distance(pour_point), cup_center가 아님
-    assert "_mouth_xy_distance" in gate
-    assert "_cup_center_xy_dist" not in gate
+    assert "self._pour_ready_latched = torch.zeros(" in env
+    assert "self._pour_ready_latched |= corridor_score >= self.cfg.ready_latch_threshold" in env
+    assert "ready_context = torch.maximum(" in env
+    assert "ready_latch_floor: float = 0.50" in cfg
+    assert "ready_latch_threshold: float = 0.60" in cfg
+    assert "g_ready = torch.sigmoid(" not in env
+    assert "(self.cfg.g_ready_center - self._mouth_xy_distance)" not in env
     # transport(r_approach)는 여전히 cup_center 기준 유지 (단일 변경 범위 확인)
-    assert "_cup_center_xy_dist - self.cfg.cup_transport_saturate_xy" in env
+    assert "self._approach_xy_dist - self.cfg.rim_approach_saturate" in env
 
 
-def test_align_gate_is_3d_not_xy_only() -> None:
-    """[H2] bead align_gate는 xy-only가 아닌 3D(z 포함) 정렬 종속.
+def test_source_release_uses_release_context_not_align_gate() -> None:
+    env = _read("pour_right_env.py")
+    cfg = _read("pour_right_env_cfg.py")
 
-    bead_in은 상태기반(fraction) 보상이라 xy-only gate면 z 고공 나쁜 자세서도 통과 →
-    그 자세에 최적화(z=16cm 고착). pour_point xyz 정렬돼야 bead_in 발현되도록 3D로 막는다.
-    """
+    assert "release_gate_floor_after_ready: float = 0.40" in cfg
+    assert "release_context = torch.maximum(" in env
+    assert "r_source_release = (" in env
+    assert "release_context\n            * aim_gate\n            * self.cfg.weight_source_release" in env
+    assert "align_gate\n            * aim_gate\n            * self.cfg.weight_source_release" not in env
+
+
+def test_bead_in_state_reward_is_disabled_for_release_delta_probe() -> None:
+    """누적 bead_in_target_fraction 보상은 1-bead park를 만들 수 있어 probe에서 제거한다."""
+    env = _read("pour_right_env.py")
+    cfg = _read("pour_right_env_cfg.py")
+
+    assert "weight_bead_in: float = 0.0" in cfg
+    assert "weight_source_drain: float = 0.0" in cfg
+    assert "r_bead_in = torch.zeros_like(self._bead_in_target_fraction)" in env
+    assert "r_drain = torch.zeros_like(source_release_delta)" in env
+    assert "r_bead_in = align_gate * self.cfg.weight_bead_in * self._bead_in_target_fraction" not in env
+
+
+def test_source_release_delta_reward_drives_active_pouring() -> None:
+    """소스 잔량 감소분만 reward로 써서 멈춰 있는 상태 보상을 제거한다."""
+    env = _read("pour_right_env.py")
+    cfg = _read("pour_right_env_cfg.py")
+
+    assert "weight_source_release: float = 100.0" in cfg
+    assert "source_release_delta = (-self._bead_in_source_delta).clamp(min=0.0)" in env
+    assert "r_source_release = (" in env
+    assert "* self.cfg.weight_source_release" in env
+    assert "* source_release_delta" in env
+    assert "+ r_source_release" in env
+    assert '"reward/source_release":  r_source_release.mean()' in env
+    assert '"log/source_release_delta":  source_release_delta.mean()' in env
+
+
+def test_target_capture_delta_reward_drives_outcome() -> None:
+    env = _read("pour_right_env.py")
+    cfg = _read("pour_right_env_cfg.py")
+
+    assert "weight_target_capture_delta: float = 200.0" in cfg
+    assert "weight_success: float = 0.0" in cfg
+    assert "target_capture_delta = self._bead_in_target_delta.clamp(min=0.0)" in env
+    assert "r_target_capture = self.cfg.weight_target_capture_delta * target_capture_delta" in env
+    assert "+ r_target_capture" in env
+    assert '"reward/target_capture":  r_target_capture.mean()' in env
+    assert '"log/target_capture_delta":  target_capture_delta.mean()' in env
+
+
+def test_intermediate_values_are_cached_per_step_to_preserve_release_delta() -> None:
+    """DirectRLEnv calls _get_dones before _get_rewards, so deltas must survive both calls."""
     env = _read("pour_right_env.py")
 
-    gate_block = env.split("align_gate = ", maxsplit=1)[1].split("\n        r_bead_in", maxsplit=1)[0]
+    compute_block = env.split("def _compute_intermediate_values(self) -> None:", maxsplit=1)[1].split(
+        "def _get_observations(self) -> dict:",
+        maxsplit=1,
+    )[0]
 
-    # gate가 3D 정렬 score(pour_alignment_score) 기반, xy-only exp가 아님
-    assert "pour_alignment_score" in gate_block
-    assert "torch.exp(-self.cfg.align_gate_scale * self._mouth_xy_distance)" not in env
-    # bead_in / drain이 이 3D gate에 종속
-    assert "r_bead_in = align_gate" in env
+    assert "self._intermediate_values_step = -1" in env
+    assert "if self._intermediate_values_step == int(self.common_step_counter):" in compute_block
+    assert "return" in compute_block.split("if self._intermediate_values_step == int(self.common_step_counter):", maxsplit=1)[1].split(
+        "self._intermediate_values_step = int(self.common_step_counter)",
+        maxsplit=1,
+    )[0]
+    assert "self._intermediate_values_step = int(self.common_step_counter)" in compute_block
+
+
+def test_tilt_threshold_diagnostics_track_90_plus_degree_probe() -> None:
+    env = _read("pour_right_env.py")
+
+    assert '"log/tilt_frac_90"' in env
+    assert '"log/tilt_frac_110"' in env
+    assert '"log/tilt_frac_120"' in env
+    assert '"log/tilt_frac_135"' in env
+
+
+def test_corridor_diagnostics_are_logged() -> None:
+    env = _read("pour_right_env.py")
+
+    assert '"log/corridor_score":        corridor_score.mean()' in env
+    assert '"log/ready_latched":         self._pour_ready_latched.float().mean()' in env
+    assert '"log/release_context":       release_context.mean()' in env
