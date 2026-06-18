@@ -143,6 +143,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     prelift_rim_lift_penalty_weight: float = 1.0
     grasp_palm_delta_scale: float = 0.25
     lift_palm_delta_xyz: float = 0.03
+    transport_palm_workspace_radius: float = 0.30
+    transport_palm_target_max_delta: float = 0.01
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
@@ -198,6 +200,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_ready_hold_steps: int = 20
     grasp_contact_persistence_reward_steps: int = 30
     full_grip_hold_steps: int = 30
+    lift_to_transport_hold_steps: int = 15
+    transport_to_stabilize_hold_steps: int = 1
     grasp_upright_threshold_deg: float = 8.0
     grasp_xy_threshold: float = 0.025
     approach_weight: float = 2.0

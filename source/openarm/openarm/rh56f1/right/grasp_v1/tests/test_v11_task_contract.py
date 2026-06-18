@@ -270,10 +270,15 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
     stabilize_gate = env.split("just_entering_stabilize = (", 1)[1].split(
         "if just_entering_stabilize.any():", 1
     )[0]
-    assert "& self._lift_success_latched_buf" in stabilize_gate
+    assert "& self._transport_arrived_latched_buf" in stabilize_gate
+    assert "& self._lift_success_latched_buf" not in stabilize_gate
     assert "_full_grip_ready" not in stabilize_gate
     assert "just_entering_transport = (" in env
-    assert "& self._lift_success_latched_buf" in env
+    transport_gate = env.split("just_entering_transport = (", 1)[1].split(
+        "if just_entering_transport.any():", 1
+    )[0]
+    assert "& self._transport_ready_latched_buf" in transport_gate
+    assert "& self._lift_success_latched_buf" not in transport_gate
     assert "& self._full_grip_ready_buf" not in env
     assert "goal_delta[:, 2] = 0.0" not in env
     assert "curriculum_lift_horizon" in env
@@ -286,6 +291,22 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
     assert '"task/stabilize_success_rate"' in env
     assert '"task/lift_started_rate"' in env
     assert 'self.extras["debug/rh56f1/task/grasp_timeout_fail_rate"]' in env
+
+
+def test_v11_transport_and_success_do_not_start_directly_from_lift_success() -> None:
+    env = _text("grasp_right_env.py")
+    cfg = _text("grasp_right_env_cfg.py")
+
+    assert "lift_to_transport_hold_steps: int = 15" in cfg
+    assert "transport_to_stabilize_hold_steps: int = 1" in cfg
+    assert "self._transport_ready_hold_count = torch.zeros" in env
+    assert "self._transport_arrived_hold_count = torch.zeros" in env
+    assert "self._transport_ready_latched_buf |= transport_ready_now" in env
+    assert "self._transport_arrived_latched_buf |= transport_arrived_now" in env
+    assert "transport_control_mask = is_transport | is_stabilize" in env
+    assert "transport_control_mask.unsqueeze(1)" in env
+    assert "transport_started=in_stabilize" in env
+    assert "transport_started=in_transport" not in env
 
 
 def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:

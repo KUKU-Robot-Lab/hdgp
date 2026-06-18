@@ -214,6 +214,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     success_hold_steps: int = 30
     transport_goal_dist_threshold: float = 0.04
     transport_success_hold_steps: int = 30
+    lift_to_transport_hold_steps: int = 15
+    transport_to_stabilize_hold_steps: int = 1
     stability_cup_lin_vel_threshold: float = 0.04
     stability_cup_ang_vel_threshold: float = 0.5
     stability_contact_delta_threshold: float = 1.0

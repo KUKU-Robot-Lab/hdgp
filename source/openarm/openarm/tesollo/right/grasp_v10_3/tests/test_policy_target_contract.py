@@ -97,6 +97,11 @@ def test_live_fabrics_uses_anchored_close_grasp_and_lift_targets() -> None:
     assert "approach_palm_local_z_max: float = 0.08" in cfg
     assert "grasp_palm_delta_scale: float = 0.25" in cfg
     assert "lift_palm_delta_xyz: float = 0.03" in cfg
+    assert "transport_palm_workspace_radius: float = 0.30" in cfg
+    assert "transport_palm_target_max_delta: float = 0.01" in cfg
+    assert "self.transport_palm_start_pose_buf = torch.zeros(self.num_envs, 7" in env
+    assert "transport_palm_pose = self.transport_palm_start_pose_buf.clone()" in env
+    assert "transport_control_mask = self.is_transport_phase | self.is_stabilize_phase" in env
 
 
 def test_palm_position_action_is_reset_local_only_during_approach() -> None:
@@ -156,10 +161,29 @@ def test_reward_gate_success_contract_uses_common_v2_tip5_body_band_stability_go
     assert "full_tip_contact=full_tip_contact" in env
     assert "lift_success_candidate = in_or_past_lift & lifted & full_tip_contact & upright_success" in env
     assert "self._lift_success_hold_count = torch.where(" in env
+    assert "lift_to_transport_hold_steps: int = 15" in cfg
+    assert "transport_to_stabilize_hold_steps: int = 1" in cfg
+    assert "self._transport_ready_hold_count = torch.zeros" in env
+    assert "self._transport_arrived_hold_count = torch.zeros" in env
+    assert "self.transport_palm_start_pose_buf[just_entering_transport]" in env
+    assert "self.transport_started_buf |= self._transport_ready_latched_buf" in env
+    assert "self.transport_started_buf |= self._lift_success_latched_buf" not in env
+    assert "self.is_transport_phase.copy_(self.transport_started_buf & (~self._transport_arrived_latched_buf))" in env
+    assert "self.is_stabilize_phase.copy_(self._transport_arrived_latched_buf)" in env
     assert "previous_success_hold_count=self._success_hold_count" in env
     assert "finger_depth =" not in env
     assert "middle_contact_ready" not in env
     assert 'self.extras["contact/middle_count"]' not in env
+
+
+def test_final_success_is_gated_by_final_stabilize_not_immediate_transport() -> None:
+    env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
+
+    done_block = env.split("transport_success = compute_grasp_v2_success(", 1)[1].split(
+        "transport_success_now = transport_success.success_now", 1
+    )[0]
+    assert "transport_started=self.is_stabilize_phase" in done_block
+    assert "transport_started=self.transport_started_buf" not in done_block
 
 
 def test_tesollo_debug_logs_are_namespaced_and_cover_rim_hook_diagnostics() -> None:

@@ -422,8 +422,12 @@ class GraspRightEnv(DirectRLEnv):
         self._full_grip_ready_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._stabilize_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._stabilize_start_step_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._transport_ready_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._transport_ready_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._transport_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._transport_start_step_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._transport_arrived_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._transport_arrived_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._grip_ready_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._grip_ready_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
@@ -1090,22 +1094,28 @@ class GraspRightEnv(DirectRLEnv):
         )
         self._lift_started_buf |= just_entering_lift
 
-        just_entering_stabilize = (
-            (STABILIZE_PHASE_STEPS > 0)
-            & stabilize_curriculum_enabled
-            & self._lift_success_latched_buf
-            & (~self._stabilize_started_buf)
+        lifted_for_transport = (
+            self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         )
-        if just_entering_stabilize.any():
-            self._stabilize_start_step_buf[just_entering_stabilize] = (
-                self.episode_length_buf[just_entering_stabilize]
-            )
-        self._stabilize_started_buf |= just_entering_stabilize
+        transport_ready_candidate = (
+            self._lift_success_latched_buf
+            & lifted_for_transport
+            & (~self._transport_started_buf)
+        )
+        self._transport_ready_hold_count = torch.where(
+            transport_ready_candidate,
+            self._transport_ready_hold_count + 1,
+            torch.zeros_like(self._transport_ready_hold_count),
+        )
+        transport_ready_now = (
+            self._transport_ready_hold_count >= int(self.cfg.lift_to_transport_hold_steps)
+        )
+        self._transport_ready_latched_buf |= transport_ready_now
 
         just_entering_transport = (
             (TRANSPORT_PHASE_STEPS > 0)
             & transport_curriculum_enabled
-            & self._lift_success_latched_buf
+            & self._transport_ready_latched_buf
             & (~self._transport_started_buf)
         )
         if just_entering_transport.any():
@@ -1118,9 +1128,37 @@ class GraspRightEnv(DirectRLEnv):
             )
         self._transport_started_buf |= just_entering_transport
 
-        is_transport = self._transport_started_buf
-        is_stabilize = self._stabilize_started_buf & (~is_transport)
-        is_lift = self._lift_started_buf & (~self._stabilize_started_buf) & (~is_transport)
+        transport_arrived_candidate = (
+            self._transport_started_buf
+            & lifted_for_transport
+            & ((self.object_pos - self.object_goal).norm(dim=-1) <= float(self.cfg.transport_goal_dist_threshold))
+            & (~self._stabilize_started_buf)
+        )
+        self._transport_arrived_hold_count = torch.where(
+            transport_arrived_candidate,
+            self._transport_arrived_hold_count + 1,
+            torch.zeros_like(self._transport_arrived_hold_count),
+        )
+        transport_arrived_now = (
+            self._transport_arrived_hold_count >= int(self.cfg.transport_to_stabilize_hold_steps)
+        )
+        self._transport_arrived_latched_buf |= transport_arrived_now
+
+        just_entering_stabilize = (
+            (STABILIZE_PHASE_STEPS > 0)
+            & stabilize_curriculum_enabled
+            & self._transport_arrived_latched_buf
+            & (~self._stabilize_started_buf)
+        )
+        if just_entering_stabilize.any():
+            self._stabilize_start_step_buf[just_entering_stabilize] = (
+                self.episode_length_buf[just_entering_stabilize]
+            )
+        self._stabilize_started_buf |= just_entering_stabilize
+
+        is_stabilize = self._stabilize_started_buf
+        is_transport = self._transport_started_buf & (~is_stabilize)
+        is_lift = self._lift_started_buf & (~self._transport_started_buf)
         is_grasp = ~self._lift_started_buf
         is_post_grasp = self._lift_started_buf
         approach_elapsed_ok = self.episode_length_buf >= int(self.cfg.approach_min_steps)
@@ -1296,6 +1334,7 @@ class GraspRightEnv(DirectRLEnv):
             stabilize_elapsed_steps.float() / float(upright_blend_steps)
         ).clamp(max=1.0).unsqueeze(1)
         transport_upright_progress = torch.ones_like(stabilize_upright_progress)
+        transport_control_mask = is_transport | is_stabilize
         if self.cfg.stabilize_upright_orientation_enabled:
             lift_palm_pose = self._apply_upright_palm_orientation_correction(
                 lift_palm_pose,
@@ -1304,13 +1343,13 @@ class GraspRightEnv(DirectRLEnv):
             )
             transport_palm_pose = self._apply_upright_palm_orientation_correction(
                 transport_palm_pose,
-                is_transport,
+                transport_control_mask,
                 transport_upright_progress,
             )
         # scripted xy hold 보정 제거: transport 위치는 정책이 담당 (정책구동)
 
         palm_pose = torch.where(
-            is_transport.unsqueeze(1),
+            transport_control_mask.unsqueeze(1),
             transport_palm_pose,
             torch.where(
                 is_post_grasp.unsqueeze(1),
@@ -2003,7 +2042,7 @@ class GraspRightEnv(DirectRLEnv):
             upright_quality=stabilize_upright_quality,
             lift_latched=self._lift_started_buf,
             action_delta_norm=action_delta_norm,
-            transport_reward_gate=self.is_transport_phase,
+            transport_reward_gate=self.is_transport_phase | self.is_stabilize_phase,
             stable=stability.stable,
             stability_quality=stability.quality,
             cfg=self.cfg,
@@ -2137,7 +2176,7 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         in_or_past_lift = self._lift_started_buf
-        in_transport = self._transport_started_buf
+        in_stabilize = self.is_stabilize_phase
         if self.cfg.enable_phase_curriculum:
             stage0_lift_only = self._episode_curriculum_stage_buf <= 0
             stage1_stabilize_only = self._episode_curriculum_stage_buf == 1
@@ -2183,7 +2222,7 @@ class GraspRightEnv(DirectRLEnv):
             cfg=self.cfg,
         )
         transport_success = compute_grasp_v2_success(
-            transport_started=in_transport,
+            transport_started=in_stabilize,
             cup_height_delta=self.object_pos[:, 2] - self.object_init_pos[:, 2],
             full_contact=contact_grasped,
             cup_tilt_deg=cup_tilt_deg,
@@ -2194,10 +2233,11 @@ class GraspRightEnv(DirectRLEnv):
         )
         success_now = transport_success.success_now
         stabilize_success_now = (
-            self._lift_success_latched_buf
+            in_stabilize
             & lifted
             & contact_grasped
             & upright_success
+            & stability.stable
         )
         self._lift_success_latched_buf |= lift_success_now
         self._stabilize_success_latched_buf |= stabilize_success_now
@@ -2622,8 +2662,12 @@ class GraspRightEnv(DirectRLEnv):
         self._full_grip_ready_latched_buf[env_ids] = False
         self._stabilize_started_buf[env_ids] = False
         self._stabilize_start_step_buf[env_ids] = 0
+        self._transport_ready_hold_count[env_ids] = 0
+        self._transport_ready_latched_buf[env_ids] = False
         self._transport_started_buf[env_ids] = False
         self._transport_start_step_buf[env_ids] = 0
+        self._transport_arrived_hold_count[env_ids] = 0
+        self._transport_arrived_latched_buf[env_ids] = False
         self._grip_ready_hold_count[env_ids] = 0
         self._grip_ready_latched_buf[env_ids] = False
         self._lift_success_latched_buf[env_ids] = False

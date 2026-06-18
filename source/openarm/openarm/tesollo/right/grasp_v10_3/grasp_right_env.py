@@ -209,6 +209,7 @@ class GraspRightEnv(DirectRLEnv):
         self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 6, device=self.device)
         self.grasp_anchor_palm_pose_buf = torch.zeros(self.num_envs, 7, device=self.device)
         self.lift_palm_start_pose_buf = torch.zeros(self.num_envs, 7, device=self.device)
+        self.transport_palm_start_pose_buf = torch.zeros(self.num_envs, 7, device=self.device)
         self.demo_lift_palm_target_buf = torch.zeros(self.num_envs, 6, device=self.device)
         self.demo_grasp_reset_bank = (
             DemoGraspResetBank.from_hdf5_paths(cfg.demo_grasp_pose_paths, device=self.device)
@@ -350,7 +351,11 @@ class GraspRightEnv(DirectRLEnv):
         self._eval_mass_shift_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._grasp_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._grasp_anchor_set_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        # Transport phase 버퍼 (stabilize 성공 latch → 정책 구동 transport)
+        # Transport phase buffers: lift hold -> transport -> final stabilize.
+        self._transport_ready_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._transport_ready_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._transport_arrived_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._transport_arrived_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.is_stabilize_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.is_transport_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.transport_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -761,7 +766,7 @@ class GraspRightEnv(DirectRLEnv):
             self._grasp_anchor_set_buf[just_entering_close_grasp] = True
         self._grasp_started_buf |= just_entering_close_grasp
 
-        just_entering_lift = self.lift_ready_latched_buf & (~self.is_lift_phase)
+        just_entering_lift = self.lift_ready_latched_buf & (~self.lift_started_buf)
         if just_entering_lift.any():
             self.lift_palm_start_pose_buf[just_entering_lift] = (
                 self.palm_pose_targets[just_entering_lift]
@@ -776,7 +781,8 @@ class GraspRightEnv(DirectRLEnv):
             & self._grasp_anchor_set_buf
         )
         approach_mask = (~self.lift_ready_latched_buf) & (~close_grasp_mask)
-        lift_mask = self.lift_ready_latched_buf
+        transport_control_mask = self.is_transport_phase | self.is_stabilize_phase
+        lift_mask = self.lift_ready_latched_buf & (~transport_control_mask)
         self.is_approach_phase.copy_(approach_mask)
         self.is_close_grasp_phase.copy_(close_grasp_mask)
         self.is_lift_phase.copy_(lift_mask)
@@ -852,6 +858,27 @@ class GraspRightEnv(DirectRLEnv):
             eps=1e-6,
         )
 
+        # ---- Transport palm target: policy-driven transfer from the lift hold anchor ----
+        transport_palm_pose = self.transport_palm_start_pose_buf.clone()
+        transport_pos_raw = (
+            self.transport_palm_start_pose_buf[:, :3]
+            + palm_pos_action * float(self.cfg.transport_palm_workspace_radius)
+        )
+        transport_pos_raw = torch.max(
+            torch.min(transport_pos_raw, self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
+        )
+        transport_pos_delta = (transport_pos_raw - self.palm_pose_targets[:, :3]).clamp(
+            min=-float(self.cfg.transport_palm_target_max_delta),
+            max=float(self.cfg.transport_palm_target_max_delta),
+        )
+        transport_palm_pose[:, :3] = self.palm_pose_targets[:, :3] + transport_pos_delta
+        transport_palm_pose[:, 3:7] = torch.nn.functional.normalize(
+            self.transport_palm_start_pose_buf[:, 3:7],
+            dim=-1,
+            eps=1e-6,
+        )
+
         if self.cfg.eval_mass_shift_enabled:
             shift_mask = self.lift_ready_latched_buf & ~self._eval_mass_shift_done
             if shift_mask.any():
@@ -865,12 +892,16 @@ class GraspRightEnv(DirectRLEnv):
                 self._eval_mass_shift_done[shift_mask] = True
 
         palm_pose = torch.where(
-            lift_mask.unsqueeze(1),
-            lift_palm_pose,
+            transport_control_mask.unsqueeze(1),
+            transport_palm_pose,
             torch.where(
-                close_grasp_mask.unsqueeze(1),
-                grasp_palm_pose,
-                approach_palm_pose,
+                lift_mask.unsqueeze(1),
+                lift_palm_pose,
+                torch.where(
+                    close_grasp_mask.unsqueeze(1),
+                    grasp_palm_pose,
+                    approach_palm_pose,
+                ),
             ),
         )
         self.palm_pose_targets.copy_(palm_pose)
@@ -1240,15 +1271,50 @@ class GraspRightEnv(DirectRLEnv):
         lifted_gate = (cup_height_delta >= self.cfg.lift_success_height).float()
         meaningful_contact = num_tip_contacts > 0
         lifted_bool = lifted_gate > 0.0
-
-        # Transport phase: lift success latch 이후 자동 승급.
-        # 정책이 직접 컵을 goal로 이송 (scripted lerp 없음).
-        self.transport_started_buf |= self._lift_success_latched_buf
-        self.is_stabilize_phase.copy_(
-            self.lift_ready_latched_buf & lifted_bool & (~self.transport_started_buf)
-        )
-        self.is_transport_phase.copy_(self.transport_started_buf)
         transport_xyz_dist = (self.object_pos - self.object_goal).norm(dim=-1)
+
+        # Phase order: close-grasp -> lift/hold -> policy transport -> final stabilize.
+        transport_ready_candidate = (
+            self._lift_success_latched_buf
+            & lifted_bool
+            & full_tip_contact_bool
+            & (cup_tilt_deg <= float(self.cfg.success_upright_max_deg))
+            & (~self.transport_started_buf)
+        )
+        self._transport_ready_hold_count = torch.where(
+            transport_ready_candidate,
+            self._transport_ready_hold_count + 1,
+            torch.zeros_like(self._transport_ready_hold_count),
+        )
+        transport_ready_now = (
+            self._transport_ready_hold_count >= int(self.cfg.lift_to_transport_hold_steps)
+        )
+        self._transport_ready_latched_buf |= transport_ready_now
+        just_entering_transport = self._transport_ready_latched_buf & (~self.transport_started_buf)
+        if just_entering_transport.any():
+            self.transport_palm_start_pose_buf[just_entering_transport] = (
+                self.palm_pose_targets[just_entering_transport]
+            )
+        self.transport_started_buf |= self._transport_ready_latched_buf
+
+        transport_arrived_candidate = (
+            self.transport_started_buf
+            & lifted_bool
+            & full_tip_contact_bool
+            & (cup_tilt_deg <= float(self.cfg.stabilize_upright_max_deg))
+            & (transport_xyz_dist <= float(self.cfg.transport_goal_dist_threshold))
+        )
+        self._transport_arrived_hold_count = torch.where(
+            transport_arrived_candidate,
+            self._transport_arrived_hold_count + 1,
+            torch.zeros_like(self._transport_arrived_hold_count),
+        )
+        transport_arrived_now = (
+            self._transport_arrived_hold_count >= int(self.cfg.transport_to_stabilize_hold_steps)
+        )
+        self._transport_arrived_latched_buf |= transport_arrived_now
+        self.is_transport_phase.copy_(self.transport_started_buf & (~self._transport_arrived_latched_buf))
+        self.is_stabilize_phase.copy_(self._transport_arrived_latched_buf)
         action_delta_norm = compute_action_delta_norm(self.actions, self.prev_actions)
         contact_delta_abs = (num_tip_contacts.float() - self._prev_num_contacts_buf).abs()
         stability = compute_grasp_v2_stability(
@@ -1278,7 +1344,7 @@ class GraspRightEnv(DirectRLEnv):
             cup_xy_displacement=cup_xy_displacement,
             transport_xyz_dist=transport_xyz_dist,
             previous_transport_xyz_dist=prev_goal_dist,
-            transport_reward_gate=self.is_transport_phase,
+            transport_reward_gate=self.is_transport_phase | self.is_stabilize_phase,
             cup_tilt_deg=cup_tilt_deg,
             upright_quality=upright_quality,
             lift_latched=self.lift_ready_latched_buf,
@@ -1322,7 +1388,7 @@ class GraspRightEnv(DirectRLEnv):
             {
                 "phase/approach": ((~self.lift_ready_latched_buf) & (~meaningful_contact)).float().mean(),
                 "phase/grasp": ((~self.lift_ready_latched_buf) & meaningful_contact).float().mean(),
-                "phase/lift": (self.lift_ready_latched_buf & (~lifted_bool)).float().mean(),
+                "phase/lift": self.is_lift_phase.float().mean(),
                 "phase/stabilize": self.is_stabilize_phase.float().mean(),
                 "phase/transport": self.is_transport_phase.float().mean(),
                 "reward/approach": reward_terms["approach"].mean(),
@@ -1449,8 +1515,6 @@ class GraspRightEnv(DirectRLEnv):
         lift_success_now = self._lift_success_hold_count >= int(self.cfg.full_grip_hold_steps)
         self._lift_success_latched_buf |= lift_success_now
         self.episode_lift_success_buf |= lift_success_now
-        stabilize_success_now = self._lift_success_latched_buf & lifted & full_tip_contact & upright_success
-        self.episode_stabilize_success_buf |= stabilize_success_now
 
         goal_dist = (self.object_pos - self.object_goal).norm(dim=-1)
         action_delta_norm = compute_action_delta_norm(self.actions, self.prev_actions)
@@ -1462,8 +1526,16 @@ class GraspRightEnv(DirectRLEnv):
             action_delta_norm=action_delta_norm,
             cfg=self.cfg,
         )
+        stabilize_success_now = (
+            self.is_stabilize_phase
+            & lifted
+            & full_tip_contact
+            & upright_success
+            & stability.stable
+        )
+        self.episode_stabilize_success_buf |= stabilize_success_now
         transport_success = compute_grasp_v2_success(
-            transport_started=self.transport_started_buf,
+            transport_started=self.is_stabilize_phase,
             cup_height_delta=self.object_pos[:, 2] - self.object_init_pos[:, 2],
             full_contact=full_tip_contact,
             cup_tilt_deg=torch.rad2deg(
@@ -1648,6 +1720,7 @@ class GraspRightEnv(DirectRLEnv):
         self.pregrasp_palm_pose_buf[env_ids] = pregrasp_palm_pose
         self.grasp_anchor_palm_pose_buf[env_ids] = reset_palm_pose
         self.lift_palm_start_pose_buf[env_ids] = reset_palm_pose
+        self.transport_palm_start_pose_buf[env_ids] = reset_palm_pose
 
         self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = q_pregrasp[:, :NUM_ARM_DOF]
 
@@ -1738,6 +1811,10 @@ class GraspRightEnv(DirectRLEnv):
         self.is_close_grasp_phase[env_ids] = False
         self.is_lift_phase[env_ids] = False
         # Transport phase 버퍼 + 에피소드별 랜덤 goal 재샘플링
+        self._transport_ready_hold_count[env_ids] = 0
+        self._transport_ready_latched_buf[env_ids] = False
+        self._transport_arrived_hold_count[env_ids] = 0
+        self._transport_arrived_latched_buf[env_ids] = False
         self.is_stabilize_phase[env_ids] = False
         self.is_transport_phase[env_ids] = False
         self.transport_started_buf[env_ids] = False
@@ -1764,6 +1841,7 @@ class GraspRightEnv(DirectRLEnv):
         self.palm_pose_targets[env_ids] = self._euler_pose_to_quat_pose(self.pregrasp_palm_pose_buf[env_ids])
         self.grasp_anchor_palm_pose_buf[env_ids] = self.palm_pose_targets[env_ids]
         self.lift_palm_start_pose_buf[env_ids] = self.palm_pose_targets[env_ids]
+        self.transport_palm_start_pose_buf[env_ids] = self.palm_pose_targets[env_ids]
 
         self._eval_episode_started[env_ids] = False
 
