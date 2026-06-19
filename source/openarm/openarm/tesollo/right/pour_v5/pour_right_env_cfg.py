@@ -208,7 +208,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   5g_grasp_right_v7_2: palm_delta_xyz=0.15m, palm_delta_rot_deg=20°
     warmstart_collect_palm_delta_xyz: float = 0.15   # v7-2 학습 값과 일치
     warmstart_collect_palm_delta_rot_deg: float = 20.0  # v7-2 학습 값과 일치 (≠ pour 120°)
-    palm_delta_rot_deg: float = 120.0  # 45→120: cup 135° tilt 도달 가능하도록 확장
+    palm_delta_rot_deg: float = 15.0  # current-palm incremental target. 120° absolute target은 Fabrics tracking을 깨뜨림.
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
     # near < far 여야 선형 보간이 성립하므로 작은 값(가까움) → 1, 큰 값(멀어짐) → 0 순서로 둔다.
@@ -246,6 +246,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   ready_context = max(corridor_score, ready_latched·latch_floor)
     #   tilt_ready_factor = tilt_aim_floor + (1 - tilt_aim_floor)·ready_latched
     #   tilt_progress = (tilt_amount / tilt_target).clamp(0,1)      # tilt 강제(직립 farming 차단)
+    #   r_approach = −before_ready·(1−approach_corridor_score) − after_ready·(1−corridor_score)
     #   r_align    = 0  # pour_point 고정 local min 제거
     #   aim_gate   = (dir_cos_c>0) & (tilt_amount>drain_tilt_min)
     #   r_source_release = W·clamp(prev_source_fraction − current_source_fraction, 0)
@@ -259,16 +260,17 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 0.50
 
-    # [H11] Stage A — Approach: blended rim_center→pour_point xyz corridor × anti-parallel.
+    # [H11] Stage A — Approach: blended rim_center→pour_point xyz corridor miss penalty.
     #   기존 cup_center(바닥) 기준 폐기 — "rim 평면을 target rim에 마주대러 간다"(사용자).
-    #   r_approach = W·corridor_score(blended_xyz)·(anti_floor + (1-anti_floor)·anti_neg)
-    #   anti_neg = ((1 - source_up·target_up)/2): 직립(=+1)→0, 뒤집힘(=-1)→1. anti_floor로 부트스트랩.
+    #   before ready: r_approach = -W·(1 - corridor_score(blended_xyz)).
+    #   after ready: positive precision reward off; actual pour_point corridor miss remains as penalty.
+    #   score=1이면 penalty=0. corridor 정밀조준은 reward farming이 아니라 constraint로 둔다.
     weight_dist_to_target: float = 45.0  # [corridor-approach probe] 정밀 조준은 approach가 담당. tilt(35)보다 우선.
+    weight_corridor_escape_after_ready: float = 20.0  # ready 이후 정렬 파밍 제거: corridor miss만 페널티.
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # (레거시, 미사용 — rim_approach_saturate로 대체)
     rim_approach_scale: float = 5.0          # mouth_xy 거리 exp 민감도
     rim_approach_saturate: float = 0.03      # [H12] mouth_xy(pour_point) 이 이하: 거리항 max. rim 반경(0.041) 안쪽으로 견인 (이전 0.05는 rim 밖에서 포화)
-    approach_anti_floor: float = 0.4         # 직립·원거리 transport gradient 보존 (anti=0서도 0.4)
 
     # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
     g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)

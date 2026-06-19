@@ -165,6 +165,17 @@ class PourRightEnv(DirectRLEnv):
         return torch.nn.functional.normalize(target_quat_xyzw, dim=-1)
 
     @staticmethod
+    def _quat_conjugate_wxyz(quat_wxyz: torch.Tensor) -> torch.Tensor:
+        return torch.cat([quat_wxyz[:, :1], -quat_wxyz[:, 1:]], dim=-1)
+
+    @staticmethod
+    def _quat_angle_error_wxyz(quat_a_wxyz: torch.Tensor, quat_b_wxyz: torch.Tensor) -> torch.Tensor:
+        quat_a_wxyz = torch.nn.functional.normalize(quat_a_wxyz, dim=-1)
+        quat_b_wxyz = torch.nn.functional.normalize(quat_b_wxyz, dim=-1)
+        dot = (quat_a_wxyz * quat_b_wxyz).sum(dim=-1).abs().clamp(0.0, 1.0)
+        return 2.0 * torch.acos(dot)
+
+    @staticmethod
     def _safe_normalize(vec: torch.Tensor, fallback: torch.Tensor) -> torch.Tensor:
         norm = torch.norm(vec, dim=-1, keepdim=True)
         fallback_norm = torch.norm(fallback, dim=-1, keepdim=True).clamp(min=1e-6)
@@ -265,9 +276,9 @@ class PourRightEnv(DirectRLEnv):
         self.palm_maxs = to_torch(PALM_POSE_MAXS_FUNC(cfg.max_pose_angle), device=self.device)
 
         # ----------------------------------------------------------------
-        # Delta palm action 범위 (pregrasp 기준 상대 오프셋)
-        # action=0 → pregrasp 위치 유지, action=±1 → ±delta 이동
-        # scale(0) = pregrasp 이므로 초기 정책(출력≈0) = 안정된 pregrasp 위치
+        # Palm action 범위.
+        # xyz는 rim-pivot target의 one-step 이동량, rot는 current palm 기준 incremental 회전량.
+        # action=0이면 현재 rim/palm pose를 유지하므로 큰 absolute target을 만들지 않는다.
         # ----------------------------------------------------------------
         _delta_rad = math.radians(cfg.palm_delta_rot_deg)
         self.delta_mins = to_torch([
@@ -294,7 +305,7 @@ class PourRightEnv(DirectRLEnv):
             _warmstart_delta_rad, _warmstart_delta_rad, _warmstart_delta_rad,
         ], device=self.device)
 
-        # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
+        # pregrasp palm pose 버퍼 (reset/warmstart 동기화용; normal pour 회전 기준점은 current palm)
         # [x, y, z, qx, qy, qz, qw]
         self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 7, device=self.device)
         # warmstart 수집 전용: euler ZYX 형식 (v7-2 학습과 동일한 직접 덧셈 방식)
@@ -368,6 +379,15 @@ class PourRightEnv(DirectRLEnv):
         self._prev_arm_joint_acc = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
         # [Phase-1 Step 7] EMA palm action 버퍼 (Fabrics IK 입력 smoothing)
         self._ema_palm_action = torch.zeros(self.num_envs, 6, device=self.device)
+        # Action/kinematics diagnostics: policy command vs gate/Fabrics result 분리.
+        self._raw_palm_action = torch.zeros(self.num_envs, 6, device=self.device)
+        self._applied_palm_action = torch.zeros(self.num_envs, 6, device=self.device)
+        self._action_tilt_gate = torch.ones(self.num_envs, device=self.device)
+        self._cmd_delta_pre_gate = torch.zeros(self.num_envs, 6, device=self.device)
+        self._cmd_delta_post_gate = torch.zeros(self.num_envs, 6, device=self.device)
+        self._cmd_delta_rotvec_world = torch.zeros(self.num_envs, 3, device=self.device)
+        self._cmd_palm_target_delta = torch.zeros(self.num_envs, 3, device=self.device)
+        self._prev_tilt_amount_log = torch.zeros(self.num_envs, device=self.device)
 
         # ----------------------------------------------------------------
         # ADR schedulers (spill penalty / noise scaling)
@@ -527,6 +547,11 @@ class PourRightEnv(DirectRLEnv):
         self._mouth_alignment_cos = torch.zeros(self.num_envs, device=self.device)
         self._rim_facing_cos = torch.zeros(self.num_envs, device=self.device)       # [H10b] palm_ee +z · world +x (cos>0=내회전)
         self._internal_rot_gate = torch.zeros(self.num_envs, device=self.device)    # 내회전 게이트
+        self._grasp_cup_quat_palm_init = torch.zeros(self.num_envs, 4, device=self.device)
+        self._grasp_cup_quat_palm_init[:, 0] = 1.0
+        self._palm_target_rot_error_deg = torch.zeros(self.num_envs, device=self.device)
+        self._cup_rel_drift_deg = torch.zeros(self.num_envs, device=self.device)
+        self._cmd_minus_actual_tilt_deg = torch.zeros(self.num_envs, device=self.device)
         self._rho = torch.zeros(self.num_envs, device=self.device)  # binary pour gate
         self._bead_in_target = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
         self._bead_in_source = torch.zeros(self.num_envs, self.num_beads, dtype=torch.bool, device=self.device)
@@ -930,9 +955,10 @@ class PourRightEnv(DirectRLEnv):
         self.actions = actions.clone()
 
         palm_action = actions[:, :6]    # (N, 6) ∈ [-1, 1] — 손은 grasp_hold freeze
+        self._raw_palm_action.copy_(palm_action)
 
         # ---- Pour phase: Fabrics arm 제어 ----
-        # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
+        # xyz: rim-pivot target 이동량, rot: current-palm incremental target.
         # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
         # 에피소드 시작 직후 N스텝: warmstart pose를 강제 유지 (물리 안착)
         # warmstart 캐시에서 텔레포트한 직후 contact force가 안정화되기 전에
@@ -940,6 +966,7 @@ class PourRightEnv(DirectRLEnv):
         if self.cfg.episode_hold_steps > 0:
             hold_mask = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
             palm_action = torch.where(hold_mask, torch.zeros_like(palm_action), palm_action)
+        self._applied_palm_action.copy_(palm_action)
 
         # 비드 지연 소환: hold 종료 첫 스텝에 physics 안정화된 컵 위치로 소환
         if self.cfg.episode_hold_steps > 0 and not self._warmstart_collect_mode:
@@ -965,6 +992,10 @@ class PourRightEnv(DirectRLEnv):
         if self._warmstart_collect_mode:
             # v7-2 학습과 동일한 파이프라인: euler 직접 덧셈 + euler_zyx Fabrics
             delta = scale(self._ema_palm_action, self.delta_mins_warmstart_collect, self.delta_maxs_warmstart_collect)
+            self._action_tilt_gate.fill_(1.0)
+            self._cmd_delta_pre_gate.copy_(delta)
+            self._cmd_delta_post_gate.copy_(delta)
+            self._cmd_delta_rotvec_world.zero_()
             palm_pose_euler = self.pregrasp_palm_pose_buf_euler + delta   # (N, 6)
             palm_pose_euler = torch.max(
                 torch.min(palm_pose_euler, self.palm_maxs.unsqueeze(0)),
@@ -975,6 +1006,7 @@ class PourRightEnv(DirectRLEnv):
             palm_pose_quat[:, :3] = palm_pose_euler[:, :3]
             palm_pose_quat[:, 3:7] = self._quat_xyzw_from_euler_zyx(palm_pose_euler[:, 3:6])
             self.palm_pose_targets.copy_(palm_pose_quat)
+            self._cmd_palm_target_delta.copy_(self.palm_pose_targets[:, :3] - self.palm_center_pos)
             self.hand_pca_targets.zero_()
             _null_cfg = self.fabric_q.detach().clone()
             _null_cfg[:, 0] = torch.clamp(_null_cfg[:, 0] * 0.95 + 0.09 * 0.05, min=-0.29, max=0.46)
@@ -993,7 +1025,8 @@ class PourRightEnv(DirectRLEnv):
                 self.fabric_damping_gain,
             )
         else:
-            delta = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
+            delta_pre_gate = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
+            delta = delta_pre_gate.clone()
             # 멀리 있을 때는 회전/tilt action을 억제해서 "원거리 tilt"를 방지한다.
             # rim-pivot 후에는 cup_center_xy_dist 대신 mouth_xy_distance 사용:
             # tilt 시 cup root는 rim 반대쪽으로 이동하지만 rim(pour point)은 고정되므로
@@ -1009,6 +1042,10 @@ class PourRightEnv(DirectRLEnv):
             # Rotation action is interpreted in a cup-local basis:
             # [spin around cup-up, tilt toward target opening, orthogonal tilt].
             delta_rotvec_world = self._build_cup_local_tilt_rotvec(delta[:, 3:6])
+            self._action_tilt_gate.copy_(tilt_gate)
+            self._cmd_delta_pre_gate.copy_(delta_pre_gate)
+            self._cmd_delta_post_gate.copy_(delta)
+            self._cmd_delta_rotvec_world.copy_(delta_rotvec_world)
             palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
 
             # Rim-pivot: rotation pivots around the cup rim (pour point), not the palm.
@@ -1048,11 +1085,13 @@ class PourRightEnv(DirectRLEnv):
             #   <0 → x_max/y_max가 잘림(palm이 상한 너머로 가려 함), >0 → x_min/y_min이 잘림
             self._palm_clamp_viol_x = palm_pose[:, 0] - _palm_xyz_preclamp[:, 0]
             self._palm_clamp_viol_y = palm_pose[:, 1] - _palm_xyz_preclamp[:, 1]
+            current_palm_quat_xyzw = self.robot.data.body_quat_w[:, self.palm_body_index][:, [1, 2, 3, 0]]
             palm_pose[:, 3:7] = self._compose_world_delta_quat_xyzw(
-                self.pregrasp_palm_pose_buf[:, 3:7],
+                current_palm_quat_xyzw,
                 delta_rotvec_world,
             )
             self.palm_pose_targets.copy_(palm_pose)
+            self._cmd_palm_target_delta.copy_(self.palm_pose_targets[:, :3] - self.palm_center_pos)
             self.hand_pca_targets.zero_()
             # null-space attractor: j1~j4(arm config = pour 위치)만 demo 통계로 당김.
             # [H6] j5,6,7(손목 = roll+tilt) null-space 제외 → 정책 palm pose가 동적 제어.
@@ -1552,11 +1591,25 @@ class PourRightEnv(DirectRLEnv):
         palm_quat_w = self.robot.data.body_quat_w[:, self.palm_body_index]
         palm_pos_w = self.robot.data.body_pos_w[:, self.palm_body_index]
         cup_pos_w = self.cup.data.root_pos_w
+        cup_quat_w = self.cup.data.root_quat_w
         cup_in_palm_local = quat_apply_inverse(palm_quat_w, cup_pos_w - palm_pos_w)
+        cup_quat_in_palm = quat_mul(self._quat_conjugate_wxyz(palm_quat_w), cup_quat_w)
         if self._needs_grasp_init_update.any():
             upd = self._needs_grasp_init_update.nonzero(as_tuple=False).squeeze(-1)
             self._grasp_cup_pos_palm_local_init[upd] = cup_in_palm_local[upd].detach()
+            self._grasp_cup_quat_palm_init[upd] = cup_quat_in_palm[upd].detach()
             self._needs_grasp_init_update[upd] = False
+        palm_target_quat_w = self.palm_pose_targets[:, 3:7][:, [3, 0, 1, 2]]
+        self._palm_target_rot_error_deg.copy_(
+            torch.rad2deg(self._quat_angle_error_wxyz(palm_target_quat_w, palm_quat_w))
+        )
+        self._cup_rel_drift_deg.copy_(
+            torch.rad2deg(self._quat_angle_error_wxyz(self._grasp_cup_quat_palm_init, cup_quat_in_palm))
+        )
+        actual_tilt_rad = torch.acos(self._source_up_dot_world.clamp(-1.0, 1.0))
+        self._cmd_minus_actual_tilt_deg.copy_(
+            torch.rad2deg(self._cmd_delta_rotvec_world.norm(dim=-1) - actual_tilt_rad)
+        )
         slip_dist = torch.norm(cup_in_palm_local - self._grasp_cup_pos_palm_local_init, dim=-1)
         grasp_maintain_reward = torch.exp(-self.cfg.reward_grasp_slip_sharpness * slip_dist)
 
@@ -1596,7 +1649,7 @@ class PourRightEnv(DirectRLEnv):
         #   approach가 흔들리는 점을 쫓아 손목 wobble로 착취·이송 실패.
         #   [H11 plateau] 반대로 rim_center만 쓰면 기울임 후 pour_point가 rim+4.5cm 밖에서 포화(8.8cm).
         #   → blend: 직립=rim_center(안정 이송, test3 검증), 기울수록=pour_point(정밀, 8.8cm plateau 회피).
-        #   anti_neg: source rim+z·target rim+z가 anti-parallel(뒤집힘)일수록 1 → 입구 마주봄 유도.
+        #   approach penalty: corridor를 찾으면 0, 못 찾으면 음수. positive approach farming 제거.
         # ============================================================
         _tilt_target_approach = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
         _tilt_blend = (tilt_amount / max(_tilt_target_approach, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
@@ -1619,12 +1672,8 @@ class PourRightEnv(DirectRLEnv):
         self._rim_antiparallel = (
             self._source_up_axis_w * self._target_up_axis_w
         ).sum(dim=-1)
-        _anti_neg = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)
-        r_approach = (
-            self.cfg.weight_dist_to_target
-            * _approach_corridor_score
-            * (self.cfg.approach_anti_floor + (1.0 - self.cfg.approach_anti_floor) * _anti_neg)
-        )
+        approach_corridor_miss = (1.0 - _approach_corridor_score).clamp(min=0.0)
+        r_approach_pre_ready = -self.cfg.weight_dist_to_target * approach_corridor_miss
 
         # ============================================================
         # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
@@ -1648,6 +1697,12 @@ class PourRightEnv(DirectRLEnv):
             latched_ready * self.cfg.release_gate_floor_after_ready,
         )
         g_ready = ready_context
+        corridor_escape = (1.0 - corridor_score).clamp(min=0.0)
+        r_corridor_escape = -self.cfg.weight_corridor_escape_after_ready * corridor_escape
+        r_approach = (
+            (1.0 - latched_ready) * r_approach_pre_ready
+            + latched_ready * r_corridor_escape
+        )
 
         # ============================================================
         # Stage B — tilt / bead. Corridor is phase context, not direct align reward.
@@ -1655,6 +1710,7 @@ class PourRightEnv(DirectRLEnv):
         # tilt 직접 유도 — v6 ALIGN 실패 교훈: tilt를 직접 보상해 "직립 회피해" 차단
         tilt_target = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
         tilt_progress = (tilt_amount / max(tilt_target, 1e-6)).clamp(0.0, 1.0)
+        tilt_amount_delta = tilt_amount - self._prev_tilt_amount_log
         # [H5/H10] tilt에 내회전 방향성 결합: "내회전하면서 기울일 때만" tilt 보상.
         #   rot_dir = floor + (1-floor)·gate. floor=0.0(H10) → rot_dir = internal_rot_gate:
         #   외회전(gate~0)이면 tilt 보상 0, 내회전(gate~1) 가면 100%. 외회전 tilt local min 차단.
@@ -1777,6 +1833,57 @@ class PourRightEnv(DirectRLEnv):
             self.extras[k] = v
         for k, v in reward_w0_log.items():
             self.extras[k] = v
+        action_kinematics_log: dict = {
+            "Action_Kinematics/raw_action/x": self._raw_palm_action[:, 0].mean(),
+            "Action_Kinematics/raw_action/y": self._raw_palm_action[:, 1].mean(),
+            "Action_Kinematics/raw_action/z": self._raw_palm_action[:, 2].mean(),
+            "Action_Kinematics/raw_action/spin": self._raw_palm_action[:, 3].mean(),
+            "Action_Kinematics/raw_action/tilt_toward": self._raw_palm_action[:, 4].mean(),
+            "Action_Kinematics/raw_action/tilt_ortho": self._raw_palm_action[:, 5].mean(),
+            "Action_Kinematics/applied_action/x": self._applied_palm_action[:, 0].mean(),
+            "Action_Kinematics/applied_action/y": self._applied_palm_action[:, 1].mean(),
+            "Action_Kinematics/applied_action/z": self._applied_palm_action[:, 2].mean(),
+            "Action_Kinematics/applied_action/spin": self._applied_palm_action[:, 3].mean(),
+            "Action_Kinematics/applied_action/tilt_toward": self._applied_palm_action[:, 4].mean(),
+            "Action_Kinematics/applied_action/tilt_ortho": self._applied_palm_action[:, 5].mean(),
+            "Action_Kinematics/ema_action/x": self._ema_palm_action[:, 0].mean(),
+            "Action_Kinematics/ema_action/y": self._ema_palm_action[:, 1].mean(),
+            "Action_Kinematics/ema_action/z": self._ema_palm_action[:, 2].mean(),
+            "Action_Kinematics/ema_action/spin": self._ema_palm_action[:, 3].mean(),
+            "Action_Kinematics/ema_action/tilt_toward": self._ema_palm_action[:, 4].mean(),
+            "Action_Kinematics/ema_action/tilt_ortho": self._ema_palm_action[:, 5].mean(),
+            "Action_Kinematics/command_pre_gate/x": self._cmd_delta_pre_gate[:, 0].mean(),
+            "Action_Kinematics/command_pre_gate/y": self._cmd_delta_pre_gate[:, 1].mean(),
+            "Action_Kinematics/command_pre_gate/z": self._cmd_delta_pre_gate[:, 2].mean(),
+            "Action_Kinematics/command_pre_gate/spin": self._cmd_delta_pre_gate[:, 3].mean(),
+            "Action_Kinematics/command_pre_gate/tilt_toward": self._cmd_delta_pre_gate[:, 4].mean(),
+            "Action_Kinematics/command_pre_gate/tilt_ortho": self._cmd_delta_pre_gate[:, 5].mean(),
+            "Action_Kinematics/command_post_gate/x": self._cmd_delta_post_gate[:, 0].mean(),
+            "Action_Kinematics/command_post_gate/y": self._cmd_delta_post_gate[:, 1].mean(),
+            "Action_Kinematics/command_post_gate/z": self._cmd_delta_post_gate[:, 2].mean(),
+            "Action_Kinematics/command_post_gate/spin": self._cmd_delta_post_gate[:, 3].mean(),
+            "Action_Kinematics/command_post_gate/tilt_toward": self._cmd_delta_post_gate[:, 4].mean(),
+            "Action_Kinematics/command_post_gate/tilt_ortho": self._cmd_delta_post_gate[:, 5].mean(),
+            "Action_Kinematics/gate/tilt_action": self._action_tilt_gate.mean(),
+            "Action_Kinematics/command/rot_norm_pre_gate": self._cmd_delta_pre_gate[:, 3:6].norm(dim=-1).mean(),
+            "Action_Kinematics/command/rot_norm": self._cmd_delta_rotvec_world.norm(dim=-1).mean(),
+            "Action_Kinematics/command/palm_target_dx": self._cmd_palm_target_delta[:, 0].mean(),
+            "Action_Kinematics/command/palm_target_dy": self._cmd_palm_target_delta[:, 1].mean(),
+            "Action_Kinematics/command/palm_target_dz": self._cmd_palm_target_delta[:, 2].mean(),
+            "Action_Kinematics/tracking/palm_target_rot_error_deg": self._palm_target_rot_error_deg.mean(),
+            "Action_Kinematics/tracking/cup_rel_drift_deg": self._cup_rel_drift_deg.mean(),
+            "Action_Kinematics/tracking/cmd_minus_actual_tilt_deg": self._cmd_minus_actual_tilt_deg.mean(),
+            "Action_Kinematics/kinematics/tilt_amount": tilt_amount.mean(),
+            "Action_Kinematics/kinematics/tilt_delta": tilt_amount_delta.mean(),
+            "Action_Kinematics/kinematics/mouth_xy_dist": self._mouth_xy_distance.mean(),
+            "Action_Kinematics/kinematics/approach_xy_dist": self._approach_xy_dist.mean(),
+            "Action_Kinematics/kinematics/corridor_score": corridor_score.mean(),
+            "Action_Kinematics/clamp/palm_xy": self._palm_clamp_viol_xy.mean(),
+            "Action_Kinematics/clamp/palm_z": self._palm_clamp_viol_z.mean(),
+            "Action_Kinematics/clamp/palm_active": (self._palm_clamp_viol_xy + self._palm_clamp_viol_z > 1e-4).float().mean(),
+        }
+        for k, v in action_kinematics_log.items():
+            self.extras[k] = v
 
         diag: dict = {
             # Stage 게이트
@@ -1785,6 +1892,10 @@ class PourRightEnv(DirectRLEnv):
             "log/aim_gate":              aim_gate.mean(),
             "log/corridor_score":        corridor_score.mean(),
             "log/approach_corridor_score": _approach_corridor_score.mean(),
+            "log/approach_corridor_miss": approach_corridor_miss.mean(),
+            "log/corridor_miss":         corridor_escape.mean(),
+            "log/approach_pre_ready":    r_approach_pre_ready.mean(),
+            "log/corridor_escape":       r_corridor_escape.mean(),
             "log/ready_latched":         self._pour_ready_latched.float().mean(),
             "log/release_context":       release_context.mean(),
             "log/tilt_ready_factor":     tilt_ready_factor.mean(),
@@ -1869,6 +1980,7 @@ class PourRightEnv(DirectRLEnv):
         for k, v in diag.items():
             self.extras[k] = v.mean() if isinstance(v, torch.Tensor) and v.dim() > 0 else v
 
+        self._prev_tilt_amount_log.copy_(tilt_amount)
         return total
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -2038,7 +2150,7 @@ class PourRightEnv(DirectRLEnv):
         # palm_pose_targets를 pregrasp로 동기화 (첫 Fabrics 스텝 타겟 일관성)
         self.palm_pose_targets[env_ids] = pregrasp_palm_pose
 
-        # delta action 기준점: action=0 → pregrasp 위치 유지
+        # reset/warmstart pose cache. normal pour 회전 action은 current palm 기준.
         self.pregrasp_palm_pose_buf[env_ids] = pregrasp_palm_pose
         # warmstart 수집용 euler 버퍼 (v7-2 학습 형식과 동일)
         self.pregrasp_palm_pose_buf_euler[env_ids] = pregrasp_palm_pose_euler
@@ -2117,8 +2229,21 @@ class PourRightEnv(DirectRLEnv):
         self._prev_arm_joint_vel[env_ids].zero_()
         self._prev_arm_joint_acc[env_ids].zero_()   # [Step 6]
         self._ema_palm_action[env_ids].zero_()       # [Step 7]
+        self._raw_palm_action[env_ids].zero_()
+        self._applied_palm_action[env_ids].zero_()
+        self._action_tilt_gate[env_ids] = 1.0
+        self._cmd_delta_pre_gate[env_ids].zero_()
+        self._cmd_delta_post_gate[env_ids].zero_()
+        self._cmd_delta_rotvec_world[env_ids].zero_()
+        self._cmd_palm_target_delta[env_ids].zero_()
+        self._grasp_cup_quat_palm_init[env_ids].zero_()
+        self._grasp_cup_quat_palm_init[env_ids, 0] = 1.0
+        self._palm_target_rot_error_deg[env_ids].zero_()
+        self._cup_rel_drift_deg[env_ids].zero_()
+        self._cmd_minus_actual_tilt_deg[env_ids].zero_()
+        self._prev_tilt_amount_log[env_ids].zero_()
 
-        # actions 리셋: delta action 방식 → action=0 = pregrasp 위치 (6D palm)
+        # actions 리셋: action=0 = current rim/palm pose 유지.
         self.actions[env_ids, :] = 0.0
         self.prev_actions[env_ids, :] = 0.0
         self._intermediate_values_step = -1
@@ -2433,6 +2558,19 @@ class PourRightEnv(DirectRLEnv):
         self._prev_arm_joint_vel[env_ids].zero_()
         self._prev_arm_joint_acc[env_ids].zero_()   # [Step 6]
         self._ema_palm_action[env_ids].zero_()       # [Step 7]
+        self._raw_palm_action[env_ids].zero_()
+        self._applied_palm_action[env_ids].zero_()
+        self._action_tilt_gate[env_ids] = 1.0
+        self._cmd_delta_pre_gate[env_ids].zero_()
+        self._cmd_delta_post_gate[env_ids].zero_()
+        self._cmd_delta_rotvec_world[env_ids].zero_()
+        self._cmd_palm_target_delta[env_ids].zero_()
+        self._grasp_cup_quat_palm_init[env_ids].zero_()
+        self._grasp_cup_quat_palm_init[env_ids, 0] = 1.0
+        self._palm_target_rot_error_deg[env_ids].zero_()
+        self._cup_rel_drift_deg[env_ids].zero_()
+        self._cmd_minus_actual_tilt_deg[env_ids].zero_()
+        self._prev_tilt_amount_log[env_ids].zero_()
 
         self.actions[env_ids, :] = 0.0
         self.prev_actions[env_ids, :] = 0.0

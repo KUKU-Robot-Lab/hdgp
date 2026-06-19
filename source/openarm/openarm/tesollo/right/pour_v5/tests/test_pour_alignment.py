@@ -168,7 +168,7 @@ def test_align_reward_is_disabled_while_corridor_context_remains() -> None:
     assert "pour_corridor_scale: float = 20.0" in cfg
 
 
-def test_approach_reward_uses_blended_xyz_corridor_score() -> None:
+def test_approach_reward_is_pre_ready_and_post_ready_corridor_miss_penalty() -> None:
     env = _read("pour_right_env.py")
     cfg = _read("pour_right_env_cfg.py")
 
@@ -178,12 +178,21 @@ def test_approach_reward_uses_blended_xyz_corridor_score() -> None:
     )[0]
 
     assert "weight_dist_to_target: float = 45.0" in cfg
+    assert "weight_corridor_escape_after_ready: float = 20.0" in cfg
+    assert "corridor_escape_floor_after_ready" not in cfg
+    assert "approach_anti_floor" not in cfg
     assert "_approach_pt_w = (" in approach_block
     assert "(1.0 - _tilt_blend) * self._source_rim_center_w" in approach_block
     assert "_tilt_blend * self._source_pour_point_w" in approach_block
     assert "_approach_corridor_score = pour_corridor_score(" in approach_block
-    assert "r_approach = (" in approach_block
-    assert "* _approach_corridor_score" in approach_block
+    assert "approach_corridor_miss = (1.0 - _approach_corridor_score).clamp(min=0.0)" in env
+    assert "r_approach_pre_ready = -self.cfg.weight_dist_to_target * approach_corridor_miss" in env
+    assert "corridor_escape = (1.0 - corridor_score).clamp(min=0.0)" in env
+    assert "r_corridor_escape = -self.cfg.weight_corridor_escape_after_ready * corridor_escape" in env
+    assert "r_approach = (" in env
+    assert "(1.0 - latched_ready) * r_approach_pre_ready" in env
+    assert "+ latched_ready * r_corridor_escape" in env
+    assert "self.cfg.weight_corridor_escape_after_ready" in env
     assert "self._approach_xy_dist - self.cfg.rim_approach_saturate" not in approach_block
 
 
@@ -220,7 +229,7 @@ def test_g_ready_gate_uses_corridor_latch_not_center_distance() -> None:
     assert "ready_latch_threshold: float = 0.60" in cfg
     assert "g_ready = torch.sigmoid(" not in env
     assert "(self.cfg.g_ready_center - self._mouth_xy_distance)" not in env
-    # r_approach handles continuous xyz corridor keeping; g_ready remains latch/context.
+    # r_approach uses xyz corridor miss penalty before ready; g_ready remains latch/context.
     assert "_approach_corridor_score = pour_corridor_score(" in env
 
 
@@ -307,6 +316,10 @@ def test_corridor_diagnostics_are_logged() -> None:
 
     assert '"log/corridor_score":        corridor_score.mean()' in env
     assert '"log/approach_corridor_score": _approach_corridor_score.mean()' in env
+    assert '"log/approach_corridor_miss": approach_corridor_miss.mean()' in env
+    assert '"log/corridor_miss":         corridor_escape.mean()' in env
+    assert '"log/approach_pre_ready":    r_approach_pre_ready.mean()' in env
+    assert '"log/corridor_escape":       r_corridor_escape.mean()' in env
     assert '"log/ready_latched":         self._pour_ready_latched.float().mean()' in env
     assert '"log/release_context":       release_context.mean()' in env
     assert '"log/tilt_ready_factor":     tilt_ready_factor.mean()' in env
@@ -336,3 +349,37 @@ def test_reward_and_joint_logs_are_grouped_by_dashboard_namespace() -> None:
     assert '"log/j1"' not in env
     assert 'f"log/j{_i + 1}_sat"' not in env
     assert '"log/palm_clamp_viol_xy"' not in env
+
+
+def test_action_kinematics_logs_are_grouped_separately() -> None:
+    env = _read("pour_right_env.py")
+    cfg = _read("pour_right_env_cfg.py")
+
+    assert "palm_delta_rot_deg: float = 15.0" in cfg
+    assert "current_palm_quat_xyzw = self.robot.data.body_quat_w[:, self.palm_body_index][:, [1, 2, 3, 0]]" in env
+    assert "self.pregrasp_palm_pose_buf[:, 3:7],\n                delta_rotvec_world" not in env
+    assert "self._raw_palm_action = torch.zeros(self.num_envs, 6, device=self.device)" in env
+    assert "self._applied_palm_action = torch.zeros(self.num_envs, 6, device=self.device)" in env
+    assert "self._action_tilt_gate = torch.ones(self.num_envs, device=self.device)" in env
+    assert "self._cmd_delta_pre_gate = torch.zeros(self.num_envs, 6, device=self.device)" in env
+    assert "self._cmd_delta_post_gate = torch.zeros(self.num_envs, 6, device=self.device)" in env
+    assert "self._cmd_delta_rotvec_world = torch.zeros(self.num_envs, 3, device=self.device)" in env
+    assert "self._palm_target_rot_error_deg = torch.zeros(self.num_envs, device=self.device)" in env
+    assert "self._cup_rel_drift_deg = torch.zeros(self.num_envs, device=self.device)" in env
+    assert "self._cmd_minus_actual_tilt_deg = torch.zeros(self.num_envs, device=self.device)" in env
+    assert "self._prev_tilt_amount_log = torch.zeros(self.num_envs, device=self.device)" in env
+    assert "self._raw_palm_action.copy_(palm_action)" in env
+    assert "self._applied_palm_action.copy_(palm_action)" in env
+    assert "delta_pre_gate = scale(self._ema_palm_action, self.delta_mins, self.delta_maxs)" in env
+    assert "self._action_tilt_gate.copy_(tilt_gate)" in env
+    assert "self._cmd_delta_pre_gate.copy_(delta_pre_gate)" in env
+    assert "self._cmd_delta_post_gate.copy_(delta)" in env
+    assert "self._cmd_delta_rotvec_world.copy_(delta_rotvec_world)" in env
+    assert '"Action_Kinematics/gate/tilt_action": self._action_tilt_gate.mean()' in env
+    assert '"Action_Kinematics/applied_action/tilt_toward": self._applied_palm_action[:, 4].mean()' in env
+    assert '"Action_Kinematics/command/rot_norm": self._cmd_delta_rotvec_world.norm(dim=-1).mean()' in env
+    assert '"Action_Kinematics/tracking/palm_target_rot_error_deg": self._palm_target_rot_error_deg.mean()' in env
+    assert '"Action_Kinematics/tracking/cup_rel_drift_deg": self._cup_rel_drift_deg.mean()' in env
+    assert '"Action_Kinematics/tracking/cmd_minus_actual_tilt_deg": self._cmd_minus_actual_tilt_deg.mean()' in env
+    assert '"Action_Kinematics/kinematics/tilt_delta": tilt_amount_delta.mean()' in env
+    assert '"Action_Kinematics/clamp/palm_active": (self._palm_clamp_viol_xy + self._palm_clamp_viol_z > 1e-4).float().mean()' in env
