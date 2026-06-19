@@ -14,9 +14,9 @@
 
 """환경 설정: 5g_pour_right_v3
 
-v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
-- Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 60D / critic 140D (asymmetric)
+v7: Fabrics 팔 학습(6D palm) + frozen grasp + sim2real 가능 obs
+- Action: 6D (6D palm pose)
+- Observation: actor 55D / critic 144D (asymmetric)
 - Episode: Grasp phase (Fabrics arm + finger 정책) + Lift phase (scripted arm + frozen hand)
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
 """
@@ -117,9 +117,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 60 (actor)
-    action_space:      int = NUM_ACTIONS               # 11
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 140 (critic, privileged)
+    observation_space: int = NUM_OBSERVATIONS          # 55 (actor)
+    action_space:      int = NUM_ACTIONS               # 6
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 144 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -237,15 +237,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # =====================================================================
     # Reward weights — [전면 재설계] 2-Stage 가산 (정책·목표 분리)
     #   total = r_hold + r_approach + r_introt + r_tilt
-    #           + r_align
+    #           + r_align(0, dashboard compatibility)
     #           + release_context·aim_gate·r_source_release
     #           + r_target_capture
     #           + w_success·r_success − ready_context·w_spill·sqrt(spill)  # w_spill=0
     #
     #   corridor_score = 1 inside target inlet corridor, exp falloff only outside
     #   ready_context = max(corridor_score, ready_latched·latch_floor)
+    #   tilt_ready_factor = tilt_aim_floor + (1 - tilt_aim_floor)·ready_latched
     #   tilt_progress = (tilt_amount / tilt_target).clamp(0,1)      # tilt 강제(직립 farming 차단)
-    #   r_align    = tilt_progress·W·corridor_score
+    #   r_align    = 0  # pour_point 고정 local min 제거
     #   aim_gate   = (dir_cos_c>0) & (tilt_amount>drain_tilt_min)
     #   r_source_release = W·clamp(prev_source_fraction − current_source_fraction, 0)
     #   r_target_capture = W·clamp(current_target_fraction − prev_target_fraction, 0)
@@ -258,11 +259,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 0.50
 
-    # [H11] Stage A — Approach: rim_center xy 거리 × anti-parallel(source rim+z · target rim+z).
+    # [H11] Stage A — Approach: blended rim_center→pour_point xyz corridor × anti-parallel.
     #   기존 cup_center(바닥) 기준 폐기 — "rim 평면을 target rim에 마주대러 간다"(사용자).
-    #   r_approach = W·exp(-k·(rim_xy - sat))·(anti_floor + (1-anti_floor)·anti_neg)
+    #   r_approach = W·corridor_score(blended_xyz)·(anti_floor + (1-anti_floor)·anti_neg)
     #   anti_neg = ((1 - source_up·target_up)/2): 직립(=+1)→0, 뒤집힘(=-1)→1. anti_floor로 부트스트랩.
-    weight_dist_to_target: float = 8.0   # [H14] 5→8: box 축소 후 마지막 거리 견인 강화
+    weight_dist_to_target: float = 45.0  # [corridor-approach probe] 정밀 조준은 approach가 담당. tilt(35)보다 우선.
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # (레거시, 미사용 — rim_approach_saturate로 대체)
     rim_approach_scale: float = 5.0          # mouth_xy 거리 exp 민감도
@@ -287,21 +288,21 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_tilt_pre: float = 8.0     # [test8] 미사용(r_tilt_A 폐기). 구 기록 참조용 유지
 
     # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
-    weight_tilt: float = 23.0      # [test8] 15→23: 구 ceiling(r_tilt_A 8 + r_tilt_B 15) 보존. 단일 연속 ramp
-    tilt_aim_floor: float = 0.35   # [test8] r_tilt aim 부분종속 floor: r_tilt=w·progress·rot_dir·(floor+(1-floor)·g_ready)
-    #   깊은 tilt 과도기 mouth_xy wobble→g_ready 절벽으로 gradient 소멸 방지(35% 생존). 미정조준 ceiling=23×0.35=8≈구 r_tilt_A
+    weight_tilt: float = 35.0      # [align-off probe] tilt를 주 drive로 격상. align(35)은 0으로 제거.
+    tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·ready_latched)
+    #   ready_latched 이후에는 live corridor wobble이 tilt reward를 끄지 않음. 미정조준 ceiling=35×0.35=12.25.
     # [H10] 상시 내회전 유도 — r_tilt(곱)는 tilt 전엔 회전 gradient=0(chicken-and-egg) →
-    #   tilt 비종속 항으로 "내회전이 옳다"를 직접 학습. g_ready 게이트(접근 후만). w_tilt(15)보다
-    #   작아 "회전만 park" 아닌 "회전 후 tilt(+15)"로 견인. lstm_test2 internal_rot_gate 자발하락 대응.
+    #   tilt 비종속 항으로 "내회전이 옳다"를 직접 학습. w_tilt보다 작아
+    #   "회전만 park" 아닌 "회전 후 tilt"로 견인. lstm_test2 internal_rot_gate 자발하락 대응.
     weight_introt: float = 5.0
     pour_tilt_target_deg: float = 135.0   # 수평(90°) 너머 dump까지 tilt_progress gradient 유지
 
-    # Stage B — pour-point 3D 정렬 (tilt_progress 게이트 종속 → 직립 farming 차단)
-    weight_align: float = 35.0   # [H14] 25→35: pour_point 3D 정밀 조준 강화 (bead_in 200 대비 비율 유지)
-    pour_align_scale: float = 15.0  # [H3] 8→15: 입구 근처(4~7cm) gradient 강화. scale 8은 너무 완만해
+    # Stage B — direct pour-point 정렬 reward 제거. Corridor는 phase/release/logging context로만 사용.
+    weight_align: float = 0.0
+    pour_align_scale: float = 15.0  # 레거시 pour_alignment_score config. 현재 reward path 미사용.
                                     #   (6.8 vs 4cm가 score .58 vs .73) mouth_xy가 입구반경(4.1cm) 밖에서 천장 → bead_in=0.
                                     #   sharp화로 마지막 4cm 파고들어 bead_in 개통 유도.
-    pour_align_z_margin: float = 0.10  # [test10] 0.05→0.10: z 상한 완화. pour_point z는 palm.z로
+    pour_align_z_margin: float = 0.10  # 레거시 pour_alignment_score config. 현재 reward path 미사용.
                                        #   정책이 독립 제어(rim-pivot, env.py L1028)인데, z 상한 5cm가
                                        #   깊은 tilt(따르기 자세 mouthZ 6~8cm)에 페널티를 줘 ~80° park 유발.
                                        #   10cm까지 z 무관·xy만 강제 → 깊은 tilt gradient 생존,
@@ -313,15 +314,15 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_bead_in: float = 0.0  # [release-delta probe] 누적 target 상태 reward 제거
     weight_source_release: float = 100.0  # 소스 잔량 감소분만 transient 보상
     weight_target_capture_delta: float = 200.0  # target 컵으로 새로 들어온 bead delta 보상
-    weight_bead_cross: float = 150.0  # 입구 관통(latch) 즉시 × align_gate
+    weight_bead_cross: float = 150.0  # 레거시 입구 관통 reward config. 현재 reward path 미사용.
     weight_source_drain: float = 0.0  # [release-delta probe] 누적 source-empty 상태 reward 제거
     drain_tilt_min: float = 0.05   # aim_gate tilt 임계 (직립 조기 drain 차단)
-    align_gate_scale: float = 15.0    # [H2] bead 게이트 = pour_alignment_score(3D, scale=15): xyz 정밀 조준일수록 1
+    align_gate_scale: float = 15.0    # 레거시 align gate config. 현재 reward path 미사용.
     bead_near_scale: float = 12.0     # _compute_bead_flags의 _bead_near_score 계산용 (진단 버퍼)
 
     # [H4] 내회전 게이트 — 붓는 방향(source→target) 대비 손바닥 법선 chirality (2D 외적)
     #   rot_cross = pour_dir × palm_normal. demo(내회전) -0.74~-1.0, 외회전 >-0.2 (완벽 분리).
-    #   r_align·bead에 곱 → 외회전이면 자세/pour 보상 0 → 내회전으로만 보상. r_tilt는 제외(부트스트랩).
+    #   r_tilt에 곱해 외회전 tilt local min 차단. r_introt는 부트스트랩.
     # [H11] 내회전 판정 = rl_dg_palm +y · world +x < thresh (cos<0=둔각 90~270°, 손바닥 roll).
     #   기존 palm+z(손가락축, H10b)는 roll 무감지(cos≈1 고정) → drift 못 막음. sim 렌더링 확인.
     #   gate = sigmoid((thresh - cos)/temp).

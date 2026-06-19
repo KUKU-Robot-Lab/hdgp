@@ -1,8 +1,7 @@
-"""pour_point 3D 정렬 score 단위 테스트 (Stage B r_pour_xy+r_descend 통합).
+"""pour_point/corridor reward structure tests.
 
-설계: r_align = exp(-scale · ‖pour_point − (target_opening + [0,0,z_margin])‖₃ᴅ)
-  - xy(빗나감)와 z(높이)를 단일 3D 거리로 동시 처리.
-  - 목표점은 target 입구가 아니라 그 z_margin 위 (두 컵 충돌 방지).
+Legacy pour_alignment_score is preserved as a utility, but current reward uses
+target inlet corridor context and disables direct align reward.
 """
 from __future__ import annotations
 
@@ -146,25 +145,64 @@ def test_corridor_score_penalizes_only_excess_outside_corridor() -> None:
     assert score[2] < score[0]
 
 
-def test_stage_b_reward_uses_corridor_not_center_alignment() -> None:
+def test_align_reward_is_disabled_while_corridor_context_remains() -> None:
     env = _read("pour_right_env.py")
     cfg = _read("pour_right_env_cfg.py")
 
-    stage_b = env.split("# Stage B — pour-point / tilt / bead", maxsplit=1)[1].split(
+    stage_b = env.split("# Stage B — tilt / bead. Corridor is phase context, not direct align reward.", maxsplit=1)[1].split(
         "# ============================================================\n        # Outcome",
         maxsplit=1,
     )[0]
 
     assert "pour_corridor_score" in env
-    assert "r_align = (" in stage_b
-    assert "* corridor_score" in stage_b
+    assert "r_align = torch.zeros_like(corridor_score)" in stage_b
+    assert "r_stageB = r_align" in stage_b
+    assert "r_align = (\n            tilt_progress" not in stage_b
+    assert "r_precision" not in env
     assert "r_pour_xy" not in stage_b
     assert "r_descend" not in stage_b
-    assert "weight_align" in cfg
+    assert "weight_align: float = 0.0" in cfg
     assert "pour_corridor_xy_margin: float = 0.015" in cfg
     assert "pour_corridor_z_min: float = -0.02" in cfg
     assert "pour_corridor_z_max: float = 0.12" in cfg
     assert "pour_corridor_scale: float = 20.0" in cfg
+
+
+def test_approach_reward_uses_blended_xyz_corridor_score() -> None:
+    env = _read("pour_right_env.py")
+    cfg = _read("pour_right_env_cfg.py")
+
+    approach_block = env.split("[H13] Stage A — Approach", maxsplit=1)[1].split(
+        "# ============================================================\n        # Stage A→B 공간 게이트",
+        maxsplit=1,
+    )[0]
+
+    assert "weight_dist_to_target: float = 45.0" in cfg
+    assert "_approach_pt_w = (" in approach_block
+    assert "(1.0 - _tilt_blend) * self._source_rim_center_w" in approach_block
+    assert "_tilt_blend * self._source_pour_point_w" in approach_block
+    assert "_approach_corridor_score = pour_corridor_score(" in approach_block
+    assert "r_approach = (" in approach_block
+    assert "* _approach_corridor_score" in approach_block
+    assert "self._approach_xy_dist - self.cfg.rim_approach_saturate" not in approach_block
+
+
+def test_tilt_reward_uses_ready_latch_not_live_corridor_context() -> None:
+    env = _read("pour_right_env.py")
+    cfg = _read("pour_right_env_cfg.py")
+
+    stage_b = env.split("# Stage B — tilt / bead. Corridor is phase context, not direct align reward.", maxsplit=1)[1].split(
+        "# [H10] 상시 내회전 유도",
+        maxsplit=1,
+    )[0]
+
+    assert "weight_tilt: float = 35.0" in cfg
+    assert "tilt_aim_floor: float = 0.35" in cfg
+    assert "tilt_ready_factor = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * latched_ready" in stage_b
+    assert "r_tilt = self.cfg.weight_tilt * tilt_progress * rot_dir * tilt_ready_factor" in stage_b
+    assert "* ready_context" not in stage_b
+    assert "* corridor_score" not in stage_b
+    assert "aim_soft" not in stage_b
 
 
 def test_g_ready_gate_uses_corridor_latch_not_center_distance() -> None:
@@ -182,8 +220,8 @@ def test_g_ready_gate_uses_corridor_latch_not_center_distance() -> None:
     assert "ready_latch_threshold: float = 0.60" in cfg
     assert "g_ready = torch.sigmoid(" not in env
     assert "(self.cfg.g_ready_center - self._mouth_xy_distance)" not in env
-    # transport(r_approach)는 여전히 cup_center 기준 유지 (단일 변경 범위 확인)
-    assert "self._approach_xy_dist - self.cfg.rim_approach_saturate" in env
+    # r_approach handles continuous xyz corridor keeping; g_ready remains latch/context.
+    assert "_approach_corridor_score = pour_corridor_score(" in env
 
 
 def test_source_release_uses_release_context_not_align_gate() -> None:
@@ -220,7 +258,7 @@ def test_source_release_delta_reward_drives_active_pouring() -> None:
     assert "* self.cfg.weight_source_release" in env
     assert "* source_release_delta" in env
     assert "+ r_source_release" in env
-    assert '"reward/source_release":  r_source_release.mean()' in env
+    assert '"Reward/source_release":  r_source_release.mean()' in env
     assert '"log/source_release_delta":  source_release_delta.mean()' in env
 
 
@@ -233,7 +271,7 @@ def test_target_capture_delta_reward_drives_outcome() -> None:
     assert "target_capture_delta = self._bead_in_target_delta.clamp(min=0.0)" in env
     assert "r_target_capture = self.cfg.weight_target_capture_delta * target_capture_delta" in env
     assert "+ r_target_capture" in env
-    assert '"reward/target_capture":  r_target_capture.mean()' in env
+    assert '"Reward/target_capture":  r_target_capture.mean()' in env
     assert '"log/target_capture_delta":  target_capture_delta.mean()' in env
 
 
@@ -268,5 +306,33 @@ def test_corridor_diagnostics_are_logged() -> None:
     env = _read("pour_right_env.py")
 
     assert '"log/corridor_score":        corridor_score.mean()' in env
+    assert '"log/approach_corridor_score": _approach_corridor_score.mean()' in env
     assert '"log/ready_latched":         self._pour_ready_latched.float().mean()' in env
     assert '"log/release_context":       release_context.mean()' in env
+    assert '"log/tilt_ready_factor":     tilt_ready_factor.mean()' in env
+    assert '"log/tilt_latched_phase":    latched_ready.mean()' in env
+    assert '"log/align_gate"' not in env
+    assert '"log/pour_align_score"' not in env
+    assert '"Reward_w0/align":    r_align.mean()' in env
+
+
+def test_reward_and_joint_logs_are_grouped_by_dashboard_namespace() -> None:
+    env = _read("pour_right_env.py")
+
+    assert '"Reward/tilt":     r_tilt.mean()' in env
+    assert '"Reward/approach": r_approach.mean()' in env
+    assert '"Reward_w0/tilt_pre": torch.zeros((), device=self.device)' in env
+    assert '"Reward_w0/bead_in":  r_bead_in.mean()' in env
+    assert '"Reward_w0/drain":    (g_ready * r_drain).mean()' in env
+    assert '"Reward_w0/success":  (self.cfg.weight_success * r_success).mean()' in env
+    assert 'self.extras["log"] = reward_log' not in env
+    assert '"reward/tilt"' not in env
+    assert '"reward/align"' not in env
+
+    assert '"joint_State/j1": arm_joint_pos[:, 0].mean()' in env
+    assert 'f"joint_State/j{_i + 1}_sat": torch.maximum(' in env
+    assert '"joint_State/palm_clamp_viol_xy": self._palm_clamp_viol_xy.mean()' in env
+    assert '"joint_State/palm_clamp_viol_deep": torch.where(' in env
+    assert '"log/j1"' not in env
+    assert 'f"log/j{_i + 1}_sat"' not in env
+    assert '"log/palm_clamp_viol_xy"' not in env

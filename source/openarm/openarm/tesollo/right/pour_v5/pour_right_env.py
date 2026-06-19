@@ -126,9 +126,8 @@ class PourRightEnv(DirectRLEnv):
     Warmstart(v7 grasp policy)로 컵이 이미 파지·들린 상태로 시작.
     Policy는 transport → tilt → pour 모션을 학습.
 
-    Action: 11D
+    Action: 6D
       [0:6]  palm pose (x,y,z,ez,ey,ex), 정규화 [-1,1] → Fabrics IK
-      [6:11] per-finger lerp (freeze_grasp=True → 항상 grasp_hold 유지)
 
     Episode (6s @ 60Hz = 360 steps):
       Pour phase (step 0~359): Fabrics arm policy + frozen hand
@@ -1274,7 +1273,7 @@ class PourRightEnv(DirectRLEnv):
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 110D | Critic 140D
+    # Legacy warmstart policy observations (grasp checkpoint compatibility)
     # ------------------------------------------------------------------
     def _get_legacy_warmstart_policy_obs(self) -> torch.Tensor:
         """Build the legacy actor observation expected by the warmstart checkpoint.
@@ -1404,14 +1403,11 @@ class PourRightEnv(DirectRLEnv):
         arm_joint_vel = arm_joint_vel_clean + torch.randn_like(arm_joint_vel_clean) * σ_qv
         finger_joint_pos = finger_joint_pos_clean + torch.randn_like(finger_joint_pos_clean) * σ_qp
         finger_joint_vel = finger_joint_vel_clean + torch.randn_like(finger_joint_vel_clean) * σ_qv
-        palm_center_pos = palm_center_pos_clean + torch.randn_like(palm_center_pos_clean) * σ_bp
-        right_cup_pos = right_cup_pos_clean + torch.randn_like(right_cup_pos_clean) * σ_cp
-        left_cup_pos = left_cup_pos_clean + torch.randn_like(left_cup_pos_clean) * σ_cp
+        left_arm_joint_pos = left_arm_joint_pos_clean + torch.randn_like(left_arm_joint_pos_clean) * σ_qp
+        left_arm_joint_vel = left_arm_joint_vel_clean + torch.randn_like(left_arm_joint_vel_clean) * σ_qv
         source_pour_point = source_pour_point_clean + torch.randn_like(source_pour_point_clean) * σ_cp
         target_opening = target_opening_clean + torch.randn_like(target_opening_clean) * σ_cp
 
-        right_cup_pos_rel_palm = right_cup_pos - palm_center_pos
-        left_cup_pos_rel_palm = left_cup_pos - palm_center_pos
         pour_point_to_opening = target_opening - source_pour_point
 
         finger_grasp_progress = self._finger_grasp_progress(finger_joint_pos)
@@ -1419,48 +1415,23 @@ class PourRightEnv(DirectRLEnv):
         last_actions = self.actions
         last_palm_actions = self.actions[:, :NUM_PALM_ACTION]
 
-        # transport_summary (8D): pour 기하학 + ρ gate
-        transport_summary = torch.stack([
-            self._mouth_distance,
-            self._mouth_xy_distance,       # pour point 기반 (pour phase 정밀도)
-            self._cup_center_xy_dist,      # cup center 기반 (approach 기준, tilt-invariant)
-            self._mouth_z_clearance,
-            self._source_up_dot_world,
-            self._directional_tilt_cos,
-            self._mouth_alignment_cos,
-            self._rho,                     # binary pour gate (cup_center_xy_dist < thresh)
-        ], dim=-1)   # (N, 8)
-
-        flow_summary = torch.stack([
-            self._bead_in_source_delta,
-            self._bead_in_target_delta,
-            self._bead_cross_delta,
-            self._spill_delta,
-        ], dim=-1)   # (N, 4)
-
         # tip force (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
         tip_force_norm = (self.contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
 
+        # Actor는 실기에서 재현 가능한 proprio/FK/target-relative 입력만 사용한다.
+        # Bead outcome, flow delta, handcrafted transport gate는 critic/reward/logging 전용이다.
         actor_obs = torch.cat([
             arm_joint_pos,              # 7
             arm_joint_vel,              # 7
             finger_grasp_progress,      # 5
-            right_cup_pos_rel_palm,     # 3
-            right_cup_quat_clean,       # 4
-            left_cup_pos_rel_palm,      # 3
+            left_arm_joint_pos,         # 9
+            left_arm_joint_vel,         # 9
             pour_point_to_opening,      # 3
             source_pour_axis_clean,     # 3
             source_up_axis_clean,       # 3
-            # target_up_axis 제거: 타겟 컵은 항상 직립 → 항상 [0,0,1], 정보 없음
-            transport_summary,          # 8
+            target_up_axis_clean,       # 3
             last_palm_actions,          # 6
-            # bead 상태: actor가 pour 결과를 직접 관측 (reward 항목 대응)
-            self._bead_in_source_fraction.unsqueeze(1),  # 1 (소스 잔량)
-            self._bead_in_target_fraction.unsqueeze(1),  # 1 (타겟 유입량, r_capture 대응)
-            self._bead_cross_fraction.unsqueeze(1),      # 1 (mouth 통과율, r_cross weight=20 대응)
-            self._spill_ratio.unsqueeze(1),              # 1 (유출율, spill_cost weight=10 대응)
-            flow_summary,               # 4 (source/target/cross/spill step delta)
-        ], dim=-1)   # 60D
+        ], dim=-1)   # 55D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -1629,30 +1600,35 @@ class PourRightEnv(DirectRLEnv):
         # ============================================================
         _tilt_target_approach = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
         _tilt_blend = (tilt_amount / max(_tilt_target_approach, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
-        _approach_pt_xy = (
-            (1.0 - _tilt_blend) * self._source_rim_center_w[:, :2]
-            + _tilt_blend * self._source_pour_point_w[:, :2]
+        corridor_radius = self.cfg.target_inner_radius + self.cfg.pour_corridor_xy_margin
+        _approach_pt_w = (
+            (1.0 - _tilt_blend) * self._source_rim_center_w
+            + _tilt_blend * self._source_pour_point_w
         )
         self._approach_xy_dist = torch.norm(
-            _approach_pt_xy - self._target_opening_w[:, :2], dim=-1
+            _approach_pt_w[:, :2] - self._target_opening_w[:, :2], dim=-1
+        )
+        _approach_corridor_score = pour_corridor_score(
+            _approach_pt_w,
+            self._target_opening_w,
+            corridor_radius,
+            self.cfg.pour_corridor_z_min,
+            self.cfg.pour_corridor_z_max,
+            self.cfg.pour_corridor_scale,
         )
         self._rim_antiparallel = (
             self._source_up_axis_w * self._target_up_axis_w
         ).sum(dim=-1)
         _anti_neg = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)
-        _rim_approach_dist = (
-            self._approach_xy_dist - self.cfg.rim_approach_saturate
-        ).clamp(min=0.0)
         r_approach = (
             self.cfg.weight_dist_to_target
-            * torch.exp(-self.cfg.rim_approach_scale * _rim_approach_dist)
+            * _approach_corridor_score
             * (self.cfg.approach_anti_floor + (1.0 - self.cfg.approach_anti_floor) * _anti_neg)
         )
 
         # ============================================================
         # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
         # ============================================================
-        corridor_radius = self.cfg.target_inner_radius + self.cfg.pour_corridor_xy_margin
         corridor_score = pour_corridor_score(
             self._source_pour_point_w,
             self._target_opening_w,
@@ -1674,7 +1650,7 @@ class PourRightEnv(DirectRLEnv):
         g_ready = ready_context
 
         # ============================================================
-        # Stage B — pour-point / tilt / bead (× g_ready)
+        # Stage B — tilt / bead. Corridor is phase context, not direct align reward.
         # ============================================================
         # tilt 직접 유도 — v6 ALIGN 실패 교훈: tilt를 직접 보상해 "직립 회피해" 차단
         tilt_target = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
@@ -1687,10 +1663,10 @@ class PourRightEnv(DirectRLEnv):
         #   진단: 구 r_tilt_A는 85°(tilt_pre)서 saturate(grad→0), r_tilt_B는 85° 넘어야 시작 →
         #   82-85° dead spot에서 정책 정지(peak 0.43<0.456) → tilt_progress_B 영구 미발현.
         #   교체: tilt_target(135°)까지 끊김 없는 단일 gradient(=tilt_progress). 85° dead spot 제거.
-        # aim 부분종속(floor): ready 이후 corridor wobble→tilt gradient 절벽을 latch floor로 완화.
-        #   floor(0.35)만큼은 정조준 없이도 받음 → gradient 생존. full은 정조준 필요(파밍 억제).
-        aim_soft = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * ready_context
-        r_tilt = self.cfg.weight_tilt * tilt_progress * rot_dir * aim_soft   # total 직접 가산(아래)
+        # Latch phase gate: once target inlet corridor was reached, deep tilt stays rewarded
+        # even if the pour point moves during the physically correct pouring posture.
+        tilt_ready_factor = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * latched_ready
+        r_tilt = self.cfg.weight_tilt * tilt_progress * rot_dir * tilt_ready_factor
         # [로깅 전용] 85° 돌파 추적 (보상 미사용). tilt_progress_A=전체 진행도, B=깊은 구간(85→135°)
         tilt_pre = self.cfg.tilt_pre_amount
         tilt_progress_A = tilt_progress
@@ -1701,22 +1677,16 @@ class PourRightEnv(DirectRLEnv):
         #   r_approach(5) → 회전만 park 아닌 회전+접근+tilt 단계 상승. total에 직접 가산(아래).
         r_introt = self.cfg.weight_introt * self._internal_rot_gate
 
-        # pour-point 입구 corridor 정렬 — corridor 내부는 flat, 중심축 추가 보상 없음.
-        align_score = corridor_score
-        r_align = (
-            tilt_progress
-            * self.cfg.weight_align
-            * corridor_score
-        )
+        # Direct align reward is disabled. Corridor remains as phase/release context only.
+        r_align = torch.zeros_like(corridor_score)
 
         # [r_pour_z 제거] z barrier가 hinge pour와 상충(기울이면 pour_point 자연 하강→페널티→주기적 붕괴).
-        #   z 정렬은 align_gate(3D, z_margin 포함)가 담당. 충돌은 mouth_z_clearance/termination으로 모니터링.
+        #   충돌은 mouth_z_clearance/termination으로 모니터링.
         aim_gate = (
             (self._directional_tilt_cos_c > 0.0) & (tilt_amount > self.cfg.drain_tilt_min)
         ).float()
 
         # bead — release는 ready 이후 wobble에 hard-block되지 않는 release_context 종속.
-        align_gate = corridor_score
         source_release_delta = (-self._bead_in_source_delta).clamp(min=0.0)
         r_source_release = (
             release_context
@@ -1732,7 +1702,7 @@ class PourRightEnv(DirectRLEnv):
         # [release-delta probe] source-empty 누적 상태 reward도 제거.
         r_drain = torch.zeros_like(source_release_delta)
 
-        # [corridor probe] r_align은 이미 corridor_score를 포함한다. g_ready 이중 hard-gate 제거.
+        # [align-off probe] direct align reward is kept as zero for dashboard compatibility.
         r_stageB = r_align
 
 
@@ -1761,7 +1731,7 @@ class PourRightEnv(DirectRLEnv):
             r_hold
             + r_approach
             + r_introt
-            + r_tilt            # [tilt 식 교체/test8] 0→135° 단일 연속 ramp, always-on(aim_floor 부분종속)
+            + r_tilt            # latch phase 기반 0→135° 단일 연속 ramp
             + r_stageB
             + r_source_release  # [probe] g_ready 무관, 실제 소스 잔량 감소분만 transient 보상
             + r_target_capture  # [probe] target에 새로 capture된 bead delta만 outcome 보상
@@ -1789,30 +1759,36 @@ class PourRightEnv(DirectRLEnv):
         arm_joint_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
         demo_feat = self._demo_critic_feat
         reward_log: dict = {
-            "reward/hold":     r_hold.mean(),
-            "reward/approach": r_approach.mean(),
-            "reward/tilt_rot_dir": rot_dir.mean(),
-            "reward/introt":   r_introt.mean(),
-            "reward/tilt_pre": torch.zeros((), device=self.device),  # [test8] r_tilt_A 폐기 (0 고정, 대시보드 호환)
-            "reward/tilt":     r_tilt.mean(),                # [test8] 0→135° 단일 연속 ramp (always-on, total 가산값과 일치)
-            "reward/align":    r_align.mean(),
-            "reward/bead_in":  r_bead_in.mean(),    # [게이트 분리] g_ready 무관 (total 직접 가산값과 일치)
-            "reward/source_release":  r_source_release.mean(),
-            "reward/target_capture":  r_target_capture.mean(),
-            "reward/drain":    (g_ready * r_drain).mean(),
-            "reward/success":  (self.cfg.weight_success * r_success).mean(),
+            "Reward/hold":     r_hold.mean(),
+            "Reward/approach": r_approach.mean(),
+            "Reward/introt":   r_introt.mean(),
+            "Reward/tilt":     r_tilt.mean(),                # latch phase 기반 0→135° 단일 연속 ramp
+            "Reward/source_release":  r_source_release.mean(),
+            "Reward/target_capture":  r_target_capture.mean(),
         }
-        self.extras["log"] = reward_log
+        reward_w0_log: dict = {
+            "Reward_w0/tilt_pre": torch.zeros((), device=self.device),  # [test8] r_tilt_A 폐기 (0 고정, 대시보드 호환)
+            "Reward_w0/align":    r_align.mean(),
+            "Reward_w0/bead_in":  r_bead_in.mean(),    # [게이트 분리] g_ready 무관 (total 직접 가산값과 일치)
+            "Reward_w0/drain":    (g_ready * r_drain).mean(),
+            "Reward_w0/success":  (self.cfg.weight_success * r_success).mean(),
+        }
+        for k, v in reward_log.items():
+            self.extras[k] = v
+        for k, v in reward_w0_log.items():
+            self.extras[k] = v
 
         diag: dict = {
             # Stage 게이트
             "log/g_ready":               g_ready.mean(),
             "log/stageB_active":         (g_ready > 0.5).float().mean(),
-            "log/align_gate":            align_gate.mean(),
             "log/aim_gate":              aim_gate.mean(),
             "log/corridor_score":        corridor_score.mean(),
+            "log/approach_corridor_score": _approach_corridor_score.mean(),
             "log/ready_latched":         self._pour_ready_latched.float().mean(),
             "log/release_context":       release_context.mean(),
+            "log/tilt_ready_factor":     tilt_ready_factor.mean(),
+            "log/tilt_latched_phase":    latched_ready.mean(),
             # tilt / 정렬
             "log/tilt_amount":           tilt_amount.mean(),
             "log/tilt_progress_A":       tilt_progress_A.mean(),   # [2단] 0→85° 진행도
@@ -1821,10 +1797,10 @@ class PourRightEnv(DirectRLEnv):
             "log/tilt_frac_110":         (tilt_amount >= ((1.0 - math.cos(math.radians(110.0))) / 2.0)).float().mean(),
             "log/tilt_frac_120":         (tilt_amount >= 0.75).float().mean(),
             "log/tilt_frac_135":         (tilt_amount >= ((1.0 - math.cos(math.radians(135.0))) / 2.0)).float().mean(),
-            "log/pour_align_score":      align_score.mean(),
             "log/source_up_dot":         self._source_up_dot_world.mean(),
             "log/rim_facing_cos":        self._rim_facing_cos.mean(),  # [H11] palm+y·worldX (음수=내회전)
             "log/internal_rot_gate":     self._internal_rot_gate.mean(),
+            "log/tilt_rot_dir":          rot_dir.mean(),
             "log/rim_antiparallel":      self._rim_antiparallel.mean(),  # [H11] source·target rim+z (음수=마주봄)
             # 위치
             "log/approach_xy_dist":      self._approach_xy_dist.mean(),    # [H13] blend(rim_center↔pour_point) 거리 (rim_center_xy 통합)
@@ -1838,13 +1814,13 @@ class PourRightEnv(DirectRLEnv):
             "log/target_open_y":         (self._target_opening_w[:, 1] - self.scene.env_origins[:, 1]).mean(),
             "log/target_open_z":         (self._target_opening_w[:, 2] - self.scene.env_origins[:, 2]).mean(),
             # joints
-            "log/j1": arm_joint_pos[:, 0].mean(),
-            "log/j2": arm_joint_pos[:, 1].mean(),
-            "log/j3": arm_joint_pos[:, 2].mean(),
-            "log/j4": arm_joint_pos[:, 3].mean(),
-            "log/j5": arm_joint_pos[:, 4].mean(),
-            "log/j6": arm_joint_pos[:, 5].mean(),
-            "log/j7": arm_joint_pos[:, 6].mean(),
+            "joint_State/j1": arm_joint_pos[:, 0].mean(),
+            "joint_State/j2": arm_joint_pos[:, 1].mean(),
+            "joint_State/j3": arm_joint_pos[:, 2].mean(),
+            "joint_State/j4": arm_joint_pos[:, 3].mean(),
+            "joint_State/j5": arm_joint_pos[:, 4].mean(),
+            "joint_State/j6": arm_joint_pos[:, 5].mean(),
+            "joint_State/j7": arm_joint_pos[:, 6].mean(),
             # bead flow
             "log/bead_in_target":        self._bead_in_target_fraction.mean(),
             "log/bead_in_source":        self._bead_in_source_fraction.mean(),
@@ -1854,18 +1830,18 @@ class PourRightEnv(DirectRLEnv):
             # [Phase0] rim-pivot hinge 기계적 파손 측정: palm 위치 박스(palm_mins/maxs)가
             #   rim-pivot 보정 palm 이동을 클램프한 양 = pour_point가 명령 위치를 벗어난 정도.
             #   tilt 정지(~83°)와 동시에 상승하면 → 박스가 틸트 벽(reward 아님) 확정.
-            "log/palm_clamp_viol_xy":    self._palm_clamp_viol_xy.mean(),
-            "log/palm_clamp_viol_z":     self._palm_clamp_viol_z.mean(),
-            "log/palm_clamp_active":     (self._palm_clamp_viol_xy + self._palm_clamp_viol_z > 1e-4).float().mean(),
+            "joint_State/palm_clamp_viol_xy": self._palm_clamp_viol_xy.mean(),
+            "joint_State/palm_clamp_viol_z":  self._palm_clamp_viol_z.mean(),
+            "joint_State/palm_clamp_active":  (self._palm_clamp_viol_xy + self._palm_clamp_viol_z > 1e-4).float().mean(),
             # per-axis binding 식별: 깊은 tilt env에서 어느 bound가 잘리는지 (음수=max bound, 양수=min bound)
-            "log/palm_clamp_viol_x_deep": torch.where(
+            "joint_State/palm_clamp_viol_x_deep": torch.where(
                 tilt_amount > 0.4, self._palm_clamp_viol_x, torch.zeros_like(self._palm_clamp_viol_x),
             ).sum() / (tilt_amount > 0.4).float().sum().clamp(min=1.0),
-            "log/palm_clamp_viol_y_deep": torch.where(
+            "joint_State/palm_clamp_viol_y_deep": torch.where(
                 tilt_amount > 0.4, self._palm_clamp_viol_y, torch.zeros_like(self._palm_clamp_viol_y),
             ).sum() / (tilt_amount > 0.4).float().sum().clamp(min=1.0),
             # 깊은 tilt(>0.4≈78°) env에서만 본 clamp 위반 (평균 희석 제거 → binding 직접 포착)
-            "log/palm_clamp_viol_deep":  torch.where(
+            "joint_State/palm_clamp_viol_deep": torch.where(
                 tilt_amount > 0.4,
                 self._palm_clamp_viol_xy + self._palm_clamp_viol_z,
                 torch.zeros_like(self._palm_clamp_viol_xy),
@@ -1874,7 +1850,7 @@ class PourRightEnv(DirectRLEnv):
             #   부호별 limit 적용(양수=upper, 음수=lower). limits:
             #   j1[-1.40,3.49] j2[-0.17,3.32] j3[±1.57] j4[0,2.44] j5[±1.57] j6[±0.79] j7[±1.57]
             **{
-                f"log/j{_i + 1}_sat": torch.maximum(
+                f"joint_State/j{_i + 1}_sat": torch.maximum(
                     arm_joint_pos[:, _i] / _up, arm_joint_pos[:, _i] / _lo
                 ).mean()
                 for _i, (_lo, _up) in enumerate([

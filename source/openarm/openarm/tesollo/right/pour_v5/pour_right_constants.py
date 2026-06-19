@@ -17,26 +17,18 @@
 Action (6D) — palm pose만 (손은 grasp_hold freeze):
   [0:6]  6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
 
-Actor Observation (60D) — pour-flow 중심 (demo 무관, 순수 상태):
+Actor Observation (55D) — sim2real 가능한 proprio/FK/target-relative 상태:
   arm_joint_pos:            7
   arm_joint_vel:            7
   finger_grasp_progress:    5  (per-finger grasp 유지 요약, freeze지만 호환 유지)
-  right_cup_pos_rel_palm:   3
-  right_cup_quat:           4
-  left_cup_pos_rel_palm:    3
+  left_arm_joint_pos:       9  (target cup FK 원천, real encoder)
+  left_arm_joint_vel:       9
   pour_point_to_opening:    3
   source_pour_axis:         3
   source_up_axis:           3
-  transport_summary:        8  [mouth_dist, mouth_xy_dist, cup_center_xy_dist,
-                                z_clearance, source_up_dot, dir_tilt_cos,
-                                mouth_alignment_cos, rho]
+  target_up_axis:           3
   last_palm_actions:        6
-  bead_in_source_fraction:  1  (소스 컵 잔량 — "다 쏟았나" 인식)
-  bead_in_target_fraction:  1  (타겟 컵 유입량 — "얼마나 넣었나" 인식)
-  bead_cross_fraction:      1  (mouth 통과 비율)
-  spill_ratio:              1  (유출 비율)
-  flow_summary:             4  (source/target/cross/spill fraction step delta)
-  Total:                   60
+  Total:                   55
 
 Critic Base (105D) — sim-only full-state:
   actor full-state layout: hand pos/vel, fingertip contact/force, last_actions(6) 포함.
@@ -84,7 +76,7 @@ NUM_ACTIONS = NUM_PALM_ACTION  # 6
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 60         # Actor: 7+7+5+3+4+3+3+3+3+8+6+4+4 = 60
+NUM_OBSERVATIONS = 55         # Actor: 7+7+5+9+9+3+3+3+3+6 = 55
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_BASE_OBSERVATIONS = 105   # last_actions 11→6 반영 (110-5)

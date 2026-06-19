@@ -1,10 +1,11 @@
 # 5g_pour_right_v3 LSTM PPO config
-# Actor 60D pour-flow / critic 140D asymmetric observations, action 11D.
+# Actor 55D sim2real proprio/FK / critic 144D asymmetric observations, action 6D.
 # LSTM architecture is incompatible with the MLP checkpoint (rl_games_ppo_cfg.yaml).
 # Must train from scratch (load_checkpoint: False).
 #
 # 설계 근거:
-#   - actor obs에서 hand contact/force를 제거하고 bead flow + arm trajectory 중심으로 축약
+#   - actor obs에서 hand contact/force, bead flow, handcrafted transport summary를 제거
+#   - 오른팔/왼팔 proprio + FK 기반 target-relative geometry 중심으로 축약
 #   - MLP encoder → LSTM: noisy raw obs가 아니라 per-step feature를 시간축으로 누적
 #   - 600-step 장기 순차 단계(이송→기울기→붓기) → hidden state phase 누적
 #   - warmstart cold-start: episode_hold_steps=60이 자연 완충 → blocker 아님

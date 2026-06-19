@@ -1,6 +1,6 @@
 # 5g_pour_right_v3 rl_games PPO 설정
 # reset 은 v7 warmstart cache를 사용하고, 학습 task 이름만 새로 분리한다.
-# 관측: actor 101D / critic 143D (asymmetric), 액션: 11D
+# 관측: actor 55D / critic 144D (asymmetric), 액션: 6D
 # Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:
@@ -90,7 +90,7 @@ params:
     bound_loss_type: regularization
     bounds_loss_coef: 0.005
 
-    # Asymmetric Actor-Critic: critic은 143D privileged obs 사용
+    # Asymmetric Actor-Critic: critic은 144D privileged obs 사용
     has_central_value: True
     central_value_config:
       normalize_input: True
