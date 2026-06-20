@@ -1079,15 +1079,17 @@ class PourRightEnv(DirectRLEnv):
             rim_env = self._source_pour_point_w - self.scene.env_origins  # (N,3) env-local
             rim_rel = rim_env - self.palm_center_pos                       # vec: palm→rim
 
-            # Pour-point action: delta.xy = pour_point XY 이동량 (palm XY가 아님).
+            # Pour-point action: delta = pour_point 이동량 (palm 이동량이 아님).
             # 회전 R 후 pour_point 위치: palm + quat_apply(R, rim_rel)
-            # 원하는 pour_point XY = 현재 rim XY + delta.xy
-            # → palm.xy = pour_point_target.xy - quat_apply(R, rim_rel).xy
-            pour_point_target_xy = rim_env[:, :2] + delta[:, :2]
-            expected_offset_xy = quat_apply(_delta_quat_wxyz, rim_rel)[:, :2]
+            # 원하는 pour_point = 현재 rim + delta
+            # → palm = pour_point_target - quat_apply(R, rim_rel)
+            # [Phase1] Z까지 3D 보정: 기존엔 Z만 palm+delta_z(회전 swing 무보정)라
+            #   deep tilt 시 pour_point Z가 정책 통제 밖에서 drift(mouth_z 0.024→0.118).
+            #   delta_z 의미를 "palm Z 이동" → "pour_point Z 이동"으로 재해석(차원 불변).
+            pour_point_target = rim_env + delta[:, :3]
+            expected_offset = quat_apply(_delta_quat_wxyz, rim_rel)
 
-            palm_pose[:, 2] = self.palm_center_pos[:, 2] + delta[:, 2]   # Z: 현재 위치 기준 delta
-            palm_pose[:, :2] = pour_point_target_xy - expected_offset_xy  # XY: pour_point 기준
+            palm_pose[:, :3] = pour_point_target - expected_offset  # XYZ: pour_point 기준 rim-pivot
             # 3a 진단: 클램프가 rim-pivot 해를 깨뜨리는지 측정 (클램프 전 palm 보존)
             _palm_xyz_preclamp = palm_pose[:, :3].clone()
             palm_pose[:, :3] = torch.max(
@@ -1119,7 +1121,12 @@ class PourRightEnv(DirectRLEnv):
             #   j5-7(손목)은 robot_start 유지 → 정책 palm orientation이 제어(approach 중 cup pre-tilt 방지).
             _null_cfg = self.fabric_q.detach().clone()                       # hand(grasp)는 현재 유지
             _null_cfg[:, :NUM_ARM_DOF] = self.robot_start_joint_pos[:, :NUM_ARM_DOF]
-            _null_cfg[:, :4] = self._demo_pour_arm_pose[:4].unsqueeze(0)     # j1-4만 demo (팔꿈치 up)
+            _null_cfg[:, :4] = self._demo_pour_arm_pose[:4].unsqueeze(0)     # j1-4: approach 위치 (항상)
+            # [Phase2] pour ready latch 후 j5(롤=틸트 주역)도 demo 바이어스 → j2,3,5가 틸트 주도, rim 낮게.
+            #   기존엔 j5-7=robot_start로 고정돼 틸트가 j6/j7 손목으로 새 손목 포화→rim Z 상승.
+            #   pre-ready엔 j5=robot_start 유지(approach 중 cup pre-tilt 방지). j6,7은 정책 손목 제어로 잔류.
+            _ready_pour = self._pour_ready_latched                          # (N,) bool, 직전 step latch
+            _null_cfg[_ready_pour, 4] = self._demo_pour_arm_pose[4]
             self.open_tesollo_fabric.default_config.copy_(_null_cfg)
             self.open_tesollo_fabric.set_features(
                 self.hand_pca_targets,

@@ -1060,15 +1060,17 @@ class PourRightEnv(DirectRLEnv):
             rim_env = self._source_pour_point_w - self.scene.env_origins  # (N,3) env-local
             rim_rel = rim_env - self.palm_center_pos                       # vec: palm→rim
 
-            # Pour-point action: delta.xy = pour_point XY 이동량 (palm XY가 아님).
+            # Pour-point action: delta = pour_point 이동량 (palm 이동량이 아님).
             # 회전 R 후 pour_point 위치: palm + quat_apply(R, rim_rel)
-            # 원하는 pour_point XY = 현재 rim XY + delta.xy
-            # → palm.xy = pour_point_target.xy - quat_apply(R, rim_rel).xy
-            pour_point_target_xy = rim_env[:, :2] + delta[:, :2]
-            expected_offset_xy = quat_apply(_delta_quat_wxyz, rim_rel)[:, :2]
+            # 원하는 pour_point = 현재 rim + delta
+            # → palm = pour_point_target - quat_apply(R, rim_rel)
+            # [Phase1] Z까지 3D 보정: 기존엔 Z만 palm+delta_z(회전 swing 무보정)라
+            #   deep tilt 시 pour_point Z가 정책 통제 밖에서 drift(mouth_z 0.024→0.118).
+            #   delta_z 의미를 "palm Z 이동" → "pour_point Z 이동"으로 재해석(차원 불변).
+            pour_point_target = rim_env + delta[:, :3]
+            expected_offset = quat_apply(_delta_quat_wxyz, rim_rel)
 
-            palm_pose[:, 2] = self.palm_center_pos[:, 2] + delta[:, 2]   # Z: 현재 위치 기준 delta
-            palm_pose[:, :2] = pour_point_target_xy - expected_offset_xy  # XY: pour_point 기준
+            palm_pose[:, :3] = pour_point_target - expected_offset  # XYZ: pour_point 기준 rim-pivot
             # 3a 진단: 클램프가 rim-pivot 해를 깨뜨리는지 측정 (클램프 전 palm 보존)
             _palm_xyz_preclamp = palm_pose[:, :3].clone()
             palm_pose[:, :3] = torch.max(
