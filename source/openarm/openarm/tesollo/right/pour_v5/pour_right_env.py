@@ -388,6 +388,7 @@ class PourRightEnv(DirectRLEnv):
         self._cmd_delta_rotvec_world = torch.zeros(self.num_envs, 3, device=self.device)
         self._cmd_palm_target_delta = torch.zeros(self.num_envs, 3, device=self.device)
         self._prev_tilt_amount_log = torch.zeros(self.num_envs, device=self.device)
+        self._prev_phi_approach = torch.zeros(self.num_envs, device=self.device)  # [approach potential] Φ_prev
 
         # ----------------------------------------------------------------
         # ADR schedulers (spill penalty / noise scaling)
@@ -1675,7 +1676,19 @@ class PourRightEnv(DirectRLEnv):
             self._source_up_axis_w * self._target_up_axis_w
         ).sum(dim=-1)
         approach_corridor_miss = (1.0 - _approach_corridor_score).clamp(min=0.0)
-        r_approach_pre_ready = -self.cfg.weight_dist_to_target * approach_corridor_miss
+        # [approach potential] corridor miss penalty(먼 거리 gradient 소실, V5 park 원인) →
+        #   potential-difference positive pull. Φ=exp(−k·approach_xy_dist): 가까울수록 1(saturate).
+        #   progress = w·(Φ_cur − Φ_prev): 가까이=+, 머묾=0(farming 불가), 멀어짐=−(positive 자동 회수).
+        #   reset 직후 첫 step은 0(Φ_prev=0 스파이크 방지). approach_corridor_miss는 로깅 유지.
+        _phi_approach = torch.exp(-self.cfg.approach_potential_k * self._approach_xy_dist)
+        r_approach_progress = self.cfg.weight_approach_progress * (_phi_approach - self._prev_phi_approach)
+        r_approach_progress = torch.where(
+            self.episode_length_buf <= 1,
+            torch.zeros_like(r_approach_progress),
+            r_approach_progress,
+        )
+        self._prev_phi_approach = _phi_approach.detach()
+        r_approach_pre_ready = r_approach_progress
 
         # ============================================================
         # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
@@ -1701,8 +1714,10 @@ class PourRightEnv(DirectRLEnv):
         g_ready = ready_context
         corridor_escape = (1.0 - corridor_score).clamp(min=0.0)
         r_corridor_escape = -self.cfg.weight_corridor_escape_after_ready * corridor_escape
+        # [approach potential] progress는 pre/post 공통(멀어지면 자동 회수).
+        #   post-ready엔 corridor escape penalty 추가로 corridor 유지 강화.
         r_approach = (
-            (1.0 - latched_ready) * r_approach_pre_ready
+            r_approach_pre_ready
             + latched_ready * r_corridor_escape
         )
 
@@ -2244,6 +2259,7 @@ class PourRightEnv(DirectRLEnv):
         self._cup_rel_drift_deg[env_ids].zero_()
         self._cmd_minus_actual_tilt_deg[env_ids].zero_()
         self._prev_tilt_amount_log[env_ids].zero_()
+        self._prev_phi_approach[env_ids].zero_()
 
         # actions 리셋: action=0 = current rim/palm pose 유지.
         self.actions[env_ids, :] = 0.0
@@ -2573,6 +2589,7 @@ class PourRightEnv(DirectRLEnv):
         self._cup_rel_drift_deg[env_ids].zero_()
         self._cmd_minus_actual_tilt_deg[env_ids].zero_()
         self._prev_tilt_amount_log[env_ids].zero_()
+        self._prev_phi_approach[env_ids].zero_()
 
         self.actions[env_ids, :] = 0.0
         self.prev_actions[env_ids, :] = 0.0
