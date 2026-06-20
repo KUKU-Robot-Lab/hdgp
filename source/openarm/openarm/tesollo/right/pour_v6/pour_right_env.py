@@ -73,6 +73,7 @@ from .pour_right_constants import (
     CONTACT_FORCE_MAX,
     MIN_CONTACTS_FOR_SUCCESS,
     ARM_START_POSE,
+    DEMO_POUR_ARM_POSE,
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
 )
@@ -329,6 +330,8 @@ class PourRightEnv(DirectRLEnv):
         self.robot_start_joint_pos = (
             robot_start.unsqueeze(0).repeat(self.num_envs, 1).contiguous()
         )
+        # [pour_v4] demo pour 팔 자세 (nullspace default_config 바이어스용, j1-4만 사용).
+        self._demo_pour_arm_pose = to_torch(DEMO_POUR_ARM_POSE, device=self.device)  # (7,)
 
         # ----------------------------------------------------------------
         # 왼팔 고정 자세
@@ -494,19 +497,29 @@ class PourRightEnv(DirectRLEnv):
         # 초기 액션: 0 → palm pose workspace 중심 (접근 자세 유지)
         self.actions.zero_()
 
-        # Demo pose bank — critic privileged obs 전용 (정책 reward에 사용 안 함).
+        # Demo pose bank — critic privileged obs + (pour_v4) 정책 demo pose reward.
         self.demo_pose_reference = None
-        if self.cfg.enable_demo_critic_obs:
+        if self.cfg.enable_demo_critic_obs or self.cfg.enable_demo_pose_reward:
             self.demo_pose_reference = DemoPoseReferenceBank.from_hdf5_paths(
                 self.cfg.demo_pose_paths,
                 phase=self.cfg.demo_pose_phase,
                 device=self.device,
             )
+            _uses = []
+            if self.cfg.enable_demo_critic_obs:
+                _uses.append("critic-obs")
+            if self.cfg.enable_demo_pose_reward:
+                _uses.append("policy-reward")
             print(
-                "[5g_pour_right_v5] loaded demo pose reference bank (critic-only): "
+                f"[5g_pour_right_v4] loaded demo pose reference bank ({'+'.join(_uses)}): "
                 f"{self.demo_pose_reference.num_frames} frames from {len(self.demo_pose_reference.source_paths)} files",
                 flush=True,
             )
+
+        # Demo pose reward graduation state (flow EMA로 weight를 floor까지 감쇠).
+        self._demo_arm_pose_w: float = self.cfg.weight_demo_arm_pose
+        self._demo_j5_w: float = self.cfg.weight_demo_j5
+        self._demo_graduate_ema: float = 0.0
 
         # Left target cup — FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS hand local_z=0.04)
         self._left_cup_pos_env_local = to_torch(
@@ -721,6 +734,12 @@ class PourRightEnv(DirectRLEnv):
             graph_capturable=False,
             use_hand_fabric=False,
         )
+        # [lstm_test5] nullspace(cspace) 어트랙터 무게 강화 — demo j1-4(elbow-up) default_config를
+        #   palm-pose task에 덜 밀리게 유지. params는 Attractor가 매 step live로 읽음(스칼라 float).
+        #   공유 YAML 대신 이 fabric 인스턴스만 per-task override (다른 태스크 영향 없음).
+        _csa = self.open_tesollo_fabric.fabric_params['cspace_attractor']
+        _csa['min_isotropic_mass'] = self.cfg.cspace_attractor_mass
+        _csa['max_isotropic_mass'] = self.cfg.cspace_attractor_mass
         num_joints = self.open_tesollo_fabric.num_joints   # 27
 
         self.open_tesollo_integrator = DisplacementIntegrator(self.open_tesollo_fabric)
@@ -1101,18 +1120,18 @@ class PourRightEnv(DirectRLEnv):
             self.palm_pose_targets.copy_(palm_pose)
             self._cmd_palm_target_delta.copy_(self.palm_pose_targets[:, :3] - self.palm_center_pos)
             self.hand_pca_targets.zero_()
-            # null-space attractor: j1~j4(arm config = pour 위치)만 demo 통계로 당김.
-            # [H6] j5,6,7(손목 = roll+tilt) null-space 제외 → 정책 palm pose가 동적 제어.
-            #   근거: demo 통계는 trajectory가 아니라 pour 완료 시점 static 평균.
-            #   손목은 시점별로 크게 변하는데(approach 직립 → pour 내회전+tilt) static 값으로 당기면
-            #   시작부터 pour 자세 강제 → 왜곡 + fabric_q(현재 외회전) 추종으로 외회전 자기강화.
-            #   손목은 fabric_q 그대로(현재 유지) → 정책 rotation action + r_tilt 방향성이 제어.
-            # [H9] arm default_config baseline = robot_start(고정 중립).
-            # [2b] 잉여 1-DOF를 정책이 제어: baseline + scale·α·(demo−start) self-motion 축으로 이동.
-            #   α(=_ema_null_action)가 "손목으로 vs 팔꿈치로 기울일지"를 연속 선택. palm task는 불변,
-            #   nullspace에서만 실현. arm hard-limit clamp. v5 baseline=robot_start(=ablation: prior 없음).
+            # [v6 ablation] nullspace baseline(α=0 지점)을 cfg flag로 선택 (demo prior hard 경로).
+            #   "demo"        : j1-4 = demo pour 자세(팔꿈치 up, 항상) + j5 = demo(ready latch 후, 틸트 주역 롤).
+            #                   j6,7 = robot_start. demo j4=1.87로 deep tilt 시 j6 이완. (=v4)
+            #   "robot_start" : 중립 baseline 그대로 (demo prior 없음). (=v5 순수 DRL)
             _null_cfg = self.fabric_q.detach().clone()                       # hand(grasp)는 현재 유지
-            _baseline_arm = self.robot_start_joint_pos[:, :NUM_ARM_DOF]
+            _baseline_arm = self.robot_start_joint_pos[:, :NUM_ARM_DOF].clone()
+            if self.cfg.nullspace_baseline == "demo":
+                _baseline_arm[:, :4] = self._demo_pour_arm_pose[:4].unsqueeze(0)  # j1-4: approach 위치 (항상)
+                _ready_pour = self._pour_ready_latched                          # (N,) bool, 직전 step latch
+                _baseline_arm[_ready_pour, 4] = self._demo_pour_arm_pose[4]      # j5: ready 후 demo 롤
+            # [2b] 잉여 1-DOF를 정책이 제어: baseline + scale·α·(demo−start). baseline과 무관하게
+            #   offset·α·clamp는 공통(ablation 불변). palm task 불변, nullspace에서만 실현, hard-limit clamp.
             _coeff = (self.cfg.nullspace_action_scale * self._ema_null_action).unsqueeze(-1)  # (N,1)
             _null_ref_arm = _baseline_arm + _coeff * self._nullspace_offset_arm               # (N,7)
             _null_ref_arm = torch.max(torch.min(_null_ref_arm, self._arm_joint_max), self._arm_joint_min)
@@ -1488,7 +1507,7 @@ class PourRightEnv(DirectRLEnv):
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
-                f"[pour_v5] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
+                f"[pour_v4] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
             )
 
         # ==== Critic extra obs (39D: 기존 30 + demo privileged 9) ====
@@ -1551,7 +1570,7 @@ class PourRightEnv(DirectRLEnv):
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
-                f"[pour_v5] Critic obs dim mismatch: {critic_obs.shape[1]} != {NUM_CRITIC_OBSERVATIONS}"
+                f"[pour_v4] Critic obs dim mismatch: {critic_obs.shape[1]} != {NUM_CRITIC_OBSERVATIONS}"
             )
 
         return {"policy": actor_obs, "critic": critic_obs}
@@ -1592,6 +1611,67 @@ class PourRightEnv(DirectRLEnv):
             "demo_arm_joint_err": demo_arm_joint_err,
             "demo_j5_err": demo_j5_err,
             "demo_target_arm_q": target_arm_q,
+        }
+
+    def _get_demo_pose_reward_terms(self) -> dict[str, torch.Tensor]:
+        """v3 이식: a11~a20 pour 분포로 팔 자세(j1-4) + j5(틸트 주역)를 앵커.
+
+        frame 선택은 j1-4(gross 위치)로만 수행 — stuck 손목(j5-7)이 "얕은 틸트 frame"을
+        nearest로 골라 현 자세를 강화하는 루프를 막는다. j5 앵커는 ready latch 이후에만
+        활성(v5 stage), weight는 _demo_*_w로 감쇠.
+        """
+        zero = torch.zeros(self.num_envs, device=self.device)
+        if self.demo_pose_reference is None or not self.cfg.enable_demo_pose_reward:
+            return {"r_demo_arm_pose": zero, "r_demo_j5": zero, "demo_arm_joint_err": zero}
+
+        ref = self.demo_pose_reference
+        arm_q = self.robot.data.joint_pos[:, self.arm_dof_indices]  # (N, 7)
+
+        demo_arm = ref.arm_joint_pos  # (T, 7)
+        T_demo = demo_arm.shape[0]
+        arm_q4 = arm_q[:, :4]
+        demo_arm4 = demo_arm[:, :4]
+        aa = (arm_q4 * arm_q4).sum(dim=-1, keepdim=True)
+        bb = (demo_arm4 * demo_arm4).sum(dim=-1).unsqueeze(0)
+        ab = arm_q4 @ demo_arm4.T
+        nn_idx = (aa + bb - 2.0 * ab).argmin(dim=-1)
+        K = int(self.cfg.demo_nn_lookahead_frames)
+        target_idx = (nn_idx + K).clamp(max=T_demo - 1)
+        target_arm_q = demo_arm[target_idx]  # (N, 7)
+
+        arm_std4 = ref.arm_joint_std[:4].clamp(min=0.20)
+        arm_norm_err = torch.norm((arm_q[:, :4] - target_arm_q[:, :4]) / arm_std4, dim=-1)
+        demo_arm_joint_err = arm_norm_err / math.sqrt(4.0)
+        r_demo_arm_pose = torch.exp(-demo_arm_joint_err)
+
+        near_gate = torch.exp(
+            -torch.square(self._cup_center_xy_dist / max(self.cfg.demo_pose_near_gate_xy, 1e-6))
+        )
+        warmup_steps = max(int(self.cfg.demo_pose_warmup_steps), 1)
+        step_count = float(getattr(self, "common_step_counter", 0))
+        warmup = min(step_count / float(warmup_steps), 1.0)
+        # [lstm_test3] r_demo_arm_pose도 ready latch 이후로 게이트.
+        #   lstm_test1/2: demo arm 앵커(j1-4)가 ready 이전부터 활성 → corridor approach(먼 거리
+        #   gradient≈0)와 상쇄 → Stage-A park(corridor 0.02 정지). approach(j1-4 gross 위치)는
+        #   corridor 영역이므로 demo는 over-target(ready) 이후 pour joint_state만 유도해야 한다.
+        gate = near_gate * warmup * self._pour_ready_latched.float()
+
+        demo_w = getattr(self, "_demo_arm_pose_w", self.cfg.weight_demo_arm_pose)
+
+        # j5(틸트 주역) 앵커 — ready latch 이후만 (v5 stageB 대응), 감쇠 _demo_j5_w.
+        j5_std = ref.arm_joint_std[4].clamp(min=0.20)
+        j5_err = torch.abs(arm_q[:, 4] - target_arm_q[:, 4]) / j5_std
+        j5_w = getattr(self, "_demo_j5_w", 0.0)
+        r_demo_j5 = (
+            self._pour_ready_latched.float()
+            * j5_w
+            * torch.exp(-self.cfg.demo_j5_sharpness * j5_err)
+        )
+
+        return {
+            "r_demo_arm_pose": gate * demo_w * r_demo_arm_pose,
+            "r_demo_j5": r_demo_j5,
+            "demo_arm_joint_err": demo_arm_joint_err,
         }
 
     def _get_rewards(self) -> torch.Tensor:
@@ -1809,6 +1889,25 @@ class PourRightEnv(DirectRLEnv):
             else self.cfg.weight_spill
         )
 
+        # ---- demo pose reward (pour_v4): flow EMA로 weight 감쇠 후 j1-4/j5 앵커 ----
+        flow_signal = float(
+            (self._bead_cross_fraction + self._bead_in_target_fraction).mean().item()
+        )
+        a_ema = self.cfg.demo_graduate_ema_alpha
+        self._demo_graduate_ema = (1.0 - a_ema) * self._demo_graduate_ema + a_ema * flow_signal
+        graduate = 1.0 - min(
+            self._demo_graduate_ema / max(self.cfg.demo_graduate_flow_target, 1e-6), 1.0
+        )
+        self._demo_arm_pose_w = self.cfg.weight_demo_arm_pose_floor + (
+            self.cfg.weight_demo_arm_pose - self.cfg.weight_demo_arm_pose_floor
+        ) * graduate
+        self._demo_j5_w = self.cfg.weight_demo_j5_floor + (
+            self.cfg.weight_demo_j5 - self.cfg.weight_demo_j5_floor
+        ) * graduate
+        demo_terms = self._get_demo_pose_reward_terms()
+        r_demo_arm_pose = demo_terms["r_demo_arm_pose"]
+        r_demo_j5 = demo_terms["r_demo_j5"]
+
         total = (
             r_hold
             + r_approach
@@ -1818,6 +1917,8 @@ class PourRightEnv(DirectRLEnv):
             + r_source_release  # [probe] g_ready 무관, 실제 소스 잔량 감소분만 transient 보상
             + r_target_capture  # [probe] target에 새로 capture된 bead delta만 outcome 보상
             + r_bead_in         # [probe] 누적 bead-in 상태 reward는 0 고정
+            + r_demo_arm_pose   # [pour_v4] a11~a20 pour 분포 j1-4 앵커 (감쇠, floor 유지)
+            + r_demo_j5         # [pour_v4] j5(틸트 주역) 앵커 — ready latch 이후만
             + self.cfg.weight_success * r_success
             - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
         )
@@ -1847,6 +1948,8 @@ class PourRightEnv(DirectRLEnv):
             "Reward/tilt":     r_tilt.mean(),                # latch phase 기반 0→135° 단일 연속 ramp
             "Reward/source_release":  r_source_release.mean(),
             "Reward/target_capture":  r_target_capture.mean(),
+            "Reward/demo_arm_pose":   r_demo_arm_pose.mean(),
+            "Reward/demo_j5":         r_demo_j5.mean(),
         }
         reward_w0_log: dict = {
             "Reward_w0/tilt_pre": torch.zeros((), device=self.device),  # [test8] r_tilt_A 폐기 (0 고정, 대시보드 호환)
@@ -1927,6 +2030,11 @@ class PourRightEnv(DirectRLEnv):
             "log/approach_pre_ready":    r_approach_pre_ready.mean(),
             "log/corridor_escape":       r_corridor_escape.mean(),
             "log/ready_latched":         self._pour_ready_latched.float().mean(),
+            # demo pose reward (pour_v4)
+            "log/demo_arm_joint_err":    demo_terms["demo_arm_joint_err"].mean(),
+            "log/demo_arm_pose_w":       torch.tensor(self._demo_arm_pose_w, device=self.device),
+            "log/demo_j5_w":             torch.tensor(self._demo_j5_w, device=self.device),
+            "log/demo_graduate_ema":     torch.tensor(self._demo_graduate_ema, device=self.device),
             "log/release_context":       release_context.mean(),
             "log/tilt_ready_factor":     tilt_ready_factor.mean(),
             "log/tilt_latched_phase":    latched_ready.mean(),
@@ -2346,12 +2454,12 @@ class PourRightEnv(DirectRLEnv):
                 expected_palm_bounds=palm_bounds,
             )
         except (FileNotFoundError, KeyError, ValueError) as exc:
-            print(f"[5g_pour_right_v3] warm-state disk load error: {exc}", flush=True)
+            print(f"[5g_pour_right_v4] warm-state disk load error: {exc}", flush=True)
             return False
 
         n = len(bank)
         if n == 0:
-            print("[5g_pour_right_v3] warm-state cache is empty on disk.", flush=True)
+            print("[5g_pour_right_v4] warm-state cache is empty on disk.", flush=True)
             return False
 
         # 버퍼를 디스크 캐시 크기로 재할당 (warmstart_cache_size 무관, 전량 활용)
@@ -2369,7 +2477,7 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_cache_count = n
 
         print(
-            f"[5g_pour_right_v3] loaded {n} warmstart states from disk "
+            f"[5g_pour_right_v4] loaded {n} warmstart states from disk "
             f"({', '.join(bank.source_paths)}).",
             flush=True,
         )
@@ -2384,7 +2492,7 @@ class PourRightEnv(DirectRLEnv):
         if source == "preset":
             # 캐시 없이 시작 → _reset_idx 가 일반 pregrasp 경로 사용 (디버그용)
             print(
-                "[5g_pour_right_v3] warm_state_source='preset': "
+                "[5g_pour_right_v4] warm_state_source='preset': "
                 "skipping warmstart cache (using pregrasp reset).",
                 flush=True,
             )
@@ -2394,7 +2502,7 @@ class PourRightEnv(DirectRLEnv):
             if self._load_warmstart_cache_from_disk():
                 return
             print(
-                "[5g_pour_right_v3] disk warm-state load failed; "
+                "[5g_pour_right_v4] disk warm-state load failed; "
                 "falling back to checkpoint rollout.",
                 flush=True,
             )
@@ -2406,7 +2514,7 @@ class PourRightEnv(DirectRLEnv):
         try:
             self._warmstart_policy = _WarmstartPolicy(ckpt, self.device).to(self.device)
         except Exception as exc:
-            print(f"[5g_pour_right_v3] warmstart policy load failed: {exc}", flush=True)
+            print(f"[5g_pour_right_v4] warmstart policy load failed: {exc}", flush=True)
             self._warmstart_policy = None
             return
 
@@ -2437,13 +2545,13 @@ class PourRightEnv(DirectRLEnv):
 
         if self._warmstart_cache_count == 0:
             raise RuntimeError(
-                "[5g_pour_right_v3] warmstart cache is empty. "
+                "[5g_pour_right_v4] warmstart cache is empty. "
                 "The v7 checkpoint rollout did not produce any lift-success state, so this task cannot start "
                 "from the requested play-like grasp state."
             )
 
         print(
-            f"[5g_pour_right_v3] collected {self._warmstart_cache_count} warmstart success states.",
+            f"[5g_pour_right_v4] collected {self._warmstart_cache_count} warmstart success states.",
             flush=True,
         )
 
@@ -2626,7 +2734,7 @@ class PourRightEnv(DirectRLEnv):
             mouth_z_clearance = source_pour_point_w[:, 2] - target_opening_w[:, 2]
             cup_z_local = cup_pose_local[:, 2]
             print(
-                "[5g_pour_right_v3][warmstart_reset] "
+                "[5g_pour_right_v4][warmstart_reset] "
                 f"cup_z_local mean={cup_z_local.mean().item():.4f} "
                 f"min={cup_z_local.min().item():.4f} max={cup_z_local.max().item():.4f} | "
                 f"mouth_xy mean={mouth_xy_distance.mean().item():.4f} "
@@ -2639,7 +2747,7 @@ class PourRightEnv(DirectRLEnv):
             )
             if _ws_clamp_delta > 0.02:
                 print(
-                    "[5g_pour_right_v3][warmstart_reset][WARN] palm pos clamped by "
+                    "[5g_pour_right_v4][warmstart_reset][WARN] palm pos clamped by "
                     f"{_ws_clamp_delta:.4f}m → palm target may decouple from arm pose. "
                     "Check grasp/pour workspace alignment.",
                     flush=True,

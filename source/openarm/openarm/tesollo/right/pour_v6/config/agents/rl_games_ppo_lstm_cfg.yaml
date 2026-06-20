@@ -1,0 +1,130 @@
+# 5g_pour_right_v4 LSTM PPO config
+# Actor 55D sim2real proprio/FK / critic 144D asymmetric observations, action 6D.
+# LSTM architecture is incompatible with the MLP checkpoint (rl_games_ppo_cfg.yaml).
+# Must train from scratch (load_checkpoint: False).
+#
+# 설계 근거:
+#   - actor obs에서 hand contact/force, bead flow, handcrafted transport summary를 제거
+#   - 오른팔/왼팔 proprio + FK 기반 target-relative geometry 중심으로 축약
+#   - MLP encoder → LSTM: noisy raw obs가 아니라 per-step feature를 시간축으로 누적
+#   - 600-step 장기 순차 단계(이송→기울기→붓기) → hidden state phase 누적
+#   - warmstart cold-start: episode_hold_steps=60이 자연 완충 → blocker 아님
+#   - mixed_precision: False 필수 (LSTM + AMP 수치 불안정 회피, v10-3 동일)
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [256]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    rnn:
+      name: lstm
+      units: 512
+      layers: 1
+      before_mlp: False   # obs → MLP encoder → LSTM: pour-flow feature만 시계열화
+      layer_norm: True
+      concat_input: False
+      concat_output: False
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: open-tesol_r_pour_v6-lstm
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False    # LSTM 수치 안정 필수 (AMP 비활성)
+    normalize_input: True
+    normalize_value: True
+    value_bootstrap: False
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.007  # 보상 최대값 증가(~150→~260) 대응: normalized total 유지
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    learning_rate: 2e-4
+    lr_schedule: linear
+    schedule_type: standard
+    kl_threshold: 0.013
+    score_to_win: 100000000
+    max_epochs: 10000
+    save_best_after: 100
+    save_frequency: 500
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.0          # [lstm_test3] σ 폭주 차단. lstm_test2서 coef=0.0015가 dense-plateau의 약한 advantage를 이겨 logσ를 무한정 키워 entropy 8.3→20.2(σ≈0.97→7.0) 폭주 → action[-1,1]서 항상 clip → 정책 무작위화 → 전 지표 진동(수렴 곡선 부재). entropy bonus 제거 → σ가 advantage gradient로만 갱신되어 수축.
+    truncate_grads: True
+    e_clip: 0.2               # LSTM scratch 안정성 우선 (MLP 0.25에서 하향)
+    # horizon=32: 600-step 장기 에피소드에서 BPTT가 더 긴 시계열 포착
+    # batch = 2048 envs × 32 = 65536 → minibatch 8192 = 8 splits (VRAM 완화)
+    horizon_length: 32
+    minibatch_size: 8192
+    mini_epochs: 4
+    critic_coef: 4
+    clip_value: True
+    seq_length: 8             # BPTT truncation 윈도우 (horizon 32 = 4 seq 청크)
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005
+    zero_rnn_on_done: True    # episode done 시 hidden state 리셋 (cold-start는 hold_step=60 완충)
+
+    has_central_value: True
+    central_value_config:
+      normalize_input: True
+      normalize_value: True
+      value_bootstrap: False
+      minibatch_size: 8192
+      mini_epochs: 4
+      learning_rate: 5e-5
+      lr_schedule: linear
+      kl_threshold: 0.016
+      clip_value: True
+      e_clip: 0.2
+      truncate_grads: True
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [1024, 512]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True

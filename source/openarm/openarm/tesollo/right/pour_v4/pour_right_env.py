@@ -1089,29 +1089,13 @@ class PourRightEnv(DirectRLEnv):
             self._cmd_delta_rotvec_world.copy_(delta_rotvec_world)
             palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
 
-            # Rim-pivot: rotation pivots around the cup rim (pour point), not the palm.
-            # Without this, rotation around the palm moves the rim away from the target.
-            _angle = delta_rotvec_world.norm(dim=-1)
-            _axis = torch.where(
-                _angle.unsqueeze(-1) > 1e-8,
-                delta_rotvec_world / _angle.unsqueeze(-1).clamp(min=1e-8),
-                delta_rotvec_world.new_tensor([1.0, 0.0, 0.0]).expand(self.num_envs, -1),
-            )
-            _delta_quat_wxyz = quat_from_angle_axis(_angle, _axis)
-            rim_env = self._source_pour_point_w - self.scene.env_origins  # (N,3) env-local
-            rim_rel = rim_env - self.palm_center_pos                       # vec: palm→rim
-
-            # Pour-point action: delta = pour_point 이동량 (palm 이동량이 아님).
-            # 회전 R 후 pour_point 위치: palm + quat_apply(R, rim_rel)
-            # 원하는 pour_point = 현재 rim + delta
-            # → palm = pour_point_target - quat_apply(R, rim_rel)
-            # [Phase1] Z까지 3D 보정: 기존엔 Z만 palm+delta_z(회전 swing 무보정)라
-            #   deep tilt 시 pour_point Z가 정책 통제 밖에서 drift(mouth_z 0.024→0.118).
-            #   delta_z 의미를 "palm Z 이동" → "pour_point Z 이동"으로 재해석(차원 불변).
-            pour_point_target = rim_env + delta[:, :3]
-            expected_offset = quat_apply(_delta_quat_wxyz, rim_rel)
-
-            palm_pose[:, :3] = pour_point_target - expected_offset  # XYZ: pour_point 기준 rim-pivot
+            # [direct-palm] rim-pivot 역산 제거: action delta[:3] = palm 직접 이동량.
+            #   기존 pour_point 역산은 비정상(non-stationary) 역모델 — pour_point가 tilt에
+            #   종속(source_outer_radius swing)·rim_rel이 컵 자세 따라 변동 → action→palm 매핑이
+            #   매 스텝 바뀌어 정책이 역모델을 못 만듦(clamp 11~67%, corridor seating/holding 실패).
+            #   회전은 아래(_compose_world_delta_quat_xyzw)에서 palm 기준으로 합성 → palm-pivot.
+            #   pour_point는 reward(corridor/approach)에만 사용, 제어 경로에선 분리.
+            palm_pose[:, :3] = self.palm_center_pos + delta[:, :3]
             # 3a 진단: 클램프가 rim-pivot 해를 깨뜨리는지 측정 (클램프 전 palm 보존)
             _palm_xyz_preclamp = palm_pose[:, :3].clone()
             palm_pose[:, :3] = torch.max(
