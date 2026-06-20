@@ -265,17 +265,17 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   before ready: r_approach = -W·(1 - corridor_score(blended_xyz)).
     #   after ready: positive precision reward off; actual pour_point corridor miss remains as penalty.
     #   score=1이면 penalty=0. corridor 정밀조준은 reward farming이 아니라 constraint로 둔다.
-    weight_dist_to_target: float = 45.0  # [corridor-approach probe] 정밀 조준은 approach가 담당. tilt(35)보다 우선.
+    weight_dist_to_target: float = 8.0   # [06.18 복원] approach positive exp 당김 weight (이동 잘됨)
     weight_corridor_escape_after_ready: float = 20.0  # ready 이후 정렬 파밍 제거: corridor miss만 페널티.
-    # [approach potential] corridor miss penalty(먼 거리 gradient 소실)를 potential-difference
-    #   positive pull로 교체. r = w·(Φ_cur − Φ_prev), Φ=exp(−k·approach_xy_dist).
-    #   가까이 갈 때만 +, 머물면 0(farming 불가), 멀어지면 자동 음수(positive 회수).
-    weight_approach_progress: float = 45.0   # progress(telescoping) 스케일 — 기존 dist weight와 동일
-    approach_potential_k: float = 6.0        # Φ 민감도. 작을수록 먼 거리 gradient 강함(0.30m서도 생존)
+    approach_anti_floor: float = 0.4         # [06.18 복원] 직립·원거리 transport gradient 보존 (anti=0서도 0.4)
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # (레거시, 미사용 — rim_approach_saturate로 대체)
     rim_approach_scale: float = 5.0          # mouth_xy 거리 exp 민감도
     rim_approach_saturate: float = 0.03      # [H12] mouth_xy(pour_point) 이 이하: 거리항 max. rim 반경(0.041) 안쪽으로 견인 (이전 0.05는 rim 밖에서 포화)
+
+    # [2b] nullspace 잉여 1-DOF action(α) 스케일: null_ref = baseline + scale·α·(demo−start).
+    #   1.0 → α=±1이 ±full demo변위 (v5: α=1에서 정확히 demo 자세 도달).
+    nullspace_action_scale: float = 1.0
 
     # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
     g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)

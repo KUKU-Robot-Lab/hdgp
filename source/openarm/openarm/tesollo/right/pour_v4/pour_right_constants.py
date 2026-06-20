@@ -71,7 +71,8 @@ NUM_FINGERTIPS = 5
 # Action space (palm pose만 — 손은 grasp_hold freeze)
 # ---------------------------------------------------------------------------
 NUM_PALM_ACTION = 6   # 6D palm pose (Fabrics IK)
-NUM_ACTIONS = NUM_PALM_ACTION  # 6
+NUM_NULLSPACE_ACTION = 1   # [2b] arm 잉여 1-DOF (팔꿈치↔손목 self-motion) 정책 제어
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_NULLSPACE_ACTION  # 7
 
 # ---------------------------------------------------------------------------
 # Observation space
@@ -108,3 +109,7 @@ PALM_POSE_MAXS_FUNC = palm_pose_maxs
 #   안 쓰고(sat 0.05) 달성. robot_start(j4=0.60)로 nullspace를 풀면 j6가 포화되어 tilt 막힘.
 #   pour_v4는 j1-4만 이 값으로 nullspace를 바이어스(팔꿈치 up), j5-7은 robot_start 유지.
 DEMO_POUR_ARM_POSE  = [0.216, 0.633, -0.371, 1.868, -1.217, 0.038, 0.604]
+
+# [2b] nullspace self-motion 축 = demo − robot_start. 7번째 action α가 default_config를
+#   이 축으로 이동. v5와 동일 상수(ablation 공통). v4 baseline=demo, v5 baseline=robot_start.
+NULLSPACE_OFFSET_ARM = [d - s for d, s in zip(DEMO_POUR_ARM_POSE, ARM_START_POSE)]

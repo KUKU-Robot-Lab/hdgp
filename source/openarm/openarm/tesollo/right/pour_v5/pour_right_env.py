@@ -63,6 +63,7 @@ from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
     NUM_PALM_ACTION,
+    NULLSPACE_OFFSET_ARM,
     NUM_FINGERTIPS,
     NUM_OBSERVATIONS,
     NUM_DISTAL_SENSORS,
@@ -383,12 +384,24 @@ class PourRightEnv(DirectRLEnv):
         self._raw_palm_action = torch.zeros(self.num_envs, 6, device=self.device)
         self._applied_palm_action = torch.zeros(self.num_envs, 6, device=self.device)
         self._action_tilt_gate = torch.ones(self.num_envs, device=self.device)
+        # [2b] 7번째 action α = arm 잉여 1-DOF (팔꿈치↔손목 self-motion). nullspace 기준자 변조.
+        self._raw_null_action = torch.zeros(self.num_envs, device=self.device)
+        self._ema_null_action = torch.zeros(self.num_envs, device=self.device)
+        self._null_ref_arm = self.robot_start_joint_pos[:, :NUM_ARM_DOF].clone()   # 로깅용 직전 기준자
+        self._nullspace_offset_arm = torch.tensor(
+            NULLSPACE_OFFSET_ARM, device=self.device
+        ).unsqueeze(0)                                                              # (1,7) demo−start 축
+        _arm_limits = getattr(self.robot.data, "soft_joint_pos_limits", None)
+        if _arm_limits is None:
+            _arm_limits = self.robot.data.joint_pos_limits
+        _arm_lim = _arm_limits[0, self.arm_dof_indices]                            # (7,2) hard-limit
+        self._arm_joint_min = _arm_lim[:, 0].unsqueeze(0).clone()
+        self._arm_joint_max = _arm_lim[:, 1].unsqueeze(0).clone()
         self._cmd_delta_pre_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_post_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_rotvec_world = torch.zeros(self.num_envs, 3, device=self.device)
         self._cmd_palm_target_delta = torch.zeros(self.num_envs, 3, device=self.device)
         self._prev_tilt_amount_log = torch.zeros(self.num_envs, device=self.device)
-        self._prev_phi_approach = torch.zeros(self.num_envs, device=self.device)  # [approach potential] Φ_prev
 
         # ----------------------------------------------------------------
         # ADR schedulers (spill penalty / noise scaling)
@@ -957,6 +970,8 @@ class PourRightEnv(DirectRLEnv):
 
         palm_action = actions[:, :6]    # (N, 6) ∈ [-1, 1] — 손은 grasp_hold freeze
         self._raw_palm_action.copy_(palm_action)
+        alpha_action = actions[:, 6]    # (N,) ∈ [-1, 1] — [2b] arm 잉여 1-DOF (nullspace self-motion)
+        self._raw_null_action.copy_(alpha_action)
 
         # ---- Pour phase: Fabrics arm 제어 ----
         # xyz: rim-pivot target 이동량, rot: current-palm incremental target.
@@ -967,6 +982,8 @@ class PourRightEnv(DirectRLEnv):
         if self.cfg.episode_hold_steps > 0:
             hold_mask = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
             palm_action = torch.where(hold_mask, torch.zeros_like(palm_action), palm_action)
+            # hold 중엔 nullspace도 baseline 유지(α=0) → 물리 안착 중 arm 자세 흔들림 방지
+            alpha_action = torch.where(hold_mask.squeeze(1), torch.zeros_like(alpha_action), alpha_action)
         self._applied_palm_action.copy_(palm_action)
 
         # 비드 지연 소환: hold 종료 첫 스텝에 physics 안정화된 컵 위치로 소환
@@ -988,6 +1005,10 @@ class PourRightEnv(DirectRLEnv):
         self._ema_palm_action.copy_(
             self.cfg.ema_action_alpha * palm_action
             + (1.0 - self.cfg.ema_action_alpha) * self._ema_palm_action
+        )
+        self._ema_null_action.copy_(
+            self.cfg.ema_action_alpha * alpha_action
+            + (1.0 - self.cfg.ema_action_alpha) * self._ema_null_action
         )
 
         if self._warmstart_collect_mode:
@@ -1102,11 +1123,17 @@ class PourRightEnv(DirectRLEnv):
             #   손목은 시점별로 크게 변하는데(approach 직립 → pour 내회전+tilt) static 값으로 당기면
             #   시작부터 pour 자세 강제 → 왜곡 + fabric_q(현재 외회전) 추종으로 외회전 자기강화.
             #   손목은 fabric_q 그대로(현재 유지) → 정책 rotation action + r_tilt 방향성이 제어.
-            # [H9] arm default_config = robot_start(고정 중립). fabric_q(현재) 추종은
-            #   "현재 자세 자기강화 고정"(극단 j4 고착 → 외회전 귀결)이라 제거.
-            #   고정 중립 attractor → 약한 복원 + 정책 task(palm pose)가 자유 이동. 손목 포함 arm 전체.
+            # [H9] arm default_config baseline = robot_start(고정 중립).
+            # [2b] 잉여 1-DOF를 정책이 제어: baseline + scale·α·(demo−start) self-motion 축으로 이동.
+            #   α(=_ema_null_action)가 "손목으로 vs 팔꿈치로 기울일지"를 연속 선택. palm task는 불변,
+            #   nullspace에서만 실현. arm hard-limit clamp. v5 baseline=robot_start(=ablation: prior 없음).
             _null_cfg = self.fabric_q.detach().clone()                       # hand(grasp)는 현재 유지
-            _null_cfg[:, :NUM_ARM_DOF] = self.robot_start_joint_pos[:, :NUM_ARM_DOF]
+            _baseline_arm = self.robot_start_joint_pos[:, :NUM_ARM_DOF]
+            _coeff = (self.cfg.nullspace_action_scale * self._ema_null_action).unsqueeze(-1)  # (N,1)
+            _null_ref_arm = _baseline_arm + _coeff * self._nullspace_offset_arm               # (N,7)
+            _null_ref_arm = torch.max(torch.min(_null_ref_arm, self._arm_joint_max), self._arm_joint_min)
+            self._null_ref_arm.copy_(_null_ref_arm)
+            _null_cfg[:, :NUM_ARM_DOF] = _null_ref_arm
             self.open_tesollo_fabric.default_config.copy_(_null_cfg)
             self.open_tesollo_fabric.set_features(
                 self.hand_pca_targets,
@@ -1335,7 +1362,7 @@ class PourRightEnv(DirectRLEnv):
         fingertip_pos = self.fingertip_pos
         cup_pos = self.object_pos
         binary_contact = self.binary_contact_buf.float()
-        last_actions = self.actions
+        last_actions = self.actions[:, :NUM_PALM_ACTION]   # [2b] obs는 palm 6채널만 (α 제외, obs 차원 불변)
 
         fingertip_pos_rel_palm = (fingertip_pos - palm_center_pos.unsqueeze(1)).view(self.num_envs, -1)
         palm_to_cup = cup_pos - palm_center_pos
@@ -1454,7 +1481,7 @@ class PourRightEnv(DirectRLEnv):
 
         finger_grasp_progress = self._finger_grasp_progress(finger_joint_pos)
         binary_contact = self.binary_contact_buf.float()
-        last_actions = self.actions
+        last_actions = self.actions[:, :NUM_PALM_ACTION]   # [2b] critic obs도 palm 6채널만 (α 제외)
         last_palm_actions = self.actions[:, :NUM_PALM_ACTION]
 
         # tip force (v8처럼, 실로봇 FT 센서 직결, sim2real 가능)
@@ -1652,7 +1679,7 @@ class PourRightEnv(DirectRLEnv):
         #   approach가 흔들리는 점을 쫓아 손목 wobble로 착취·이송 실패.
         #   [H11 plateau] 반대로 rim_center만 쓰면 기울임 후 pour_point가 rim+4.5cm 밖에서 포화(8.8cm).
         #   → blend: 직립=rim_center(안정 이송, test3 검증), 기울수록=pour_point(정밀, 8.8cm plateau 회피).
-        #   approach penalty: corridor를 찾으면 0, 못 찾으면 음수. positive approach farming 제거.
+        #   approach = positive exp-거리 당김(06.18 복원): 멀어도 target쪽 slope 생존 → 이동 부트스트랩.
         # ============================================================
         _tilt_target_approach = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
         _tilt_blend = (tilt_amount / max(_tilt_target_approach, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
@@ -1676,19 +1703,17 @@ class PourRightEnv(DirectRLEnv):
             self._source_up_axis_w * self._target_up_axis_w
         ).sum(dim=-1)
         approach_corridor_miss = (1.0 - _approach_corridor_score).clamp(min=0.0)
-        # [approach potential] corridor miss penalty(먼 거리 gradient 소실, V5 park 원인) →
-        #   potential-difference positive pull. Φ=exp(−k·approach_xy_dist): 가까울수록 1(saturate).
-        #   progress = w·(Φ_cur − Φ_prev): 가까이=+, 머묾=0(farming 불가), 멀어짐=−(positive 자동 회수).
-        #   reset 직후 첫 step은 0(Φ_prev=0 스파이크 방지). approach_corridor_miss는 로깅 유지.
-        _phi_approach = torch.exp(-self.cfg.approach_potential_k * self._approach_xy_dist)
-        r_approach_progress = self.cfg.weight_approach_progress * (_phi_approach - self._prev_phi_approach)
-        r_approach_progress = torch.where(
-            self.episode_length_buf <= 1,
-            torch.zeros_like(r_approach_progress),
-            r_approach_progress,
+        # [06.18 복원] approach = positive exp-거리 당김 (06.19 corridor_score / potential-diff 회귀 revert).
+        #   exp(-scale·dist)는 0.3m 밖에서도 target쪽 slope 생존 → 이동 부트스트랩(V5 park 원인 = 먼거리 grad 소실).
+        #   anti_neg = 입구 마주봄(anti-parallel) 보너스, anti_floor로 직립·원거리 transport gradient 보존.
+        #   approach_corridor_miss는 로깅 유지. farming은 post-ready corridor_escape penalty로 억제.
+        _anti_neg = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)
+        _rim_approach_dist = (self._approach_xy_dist - self.cfg.rim_approach_saturate).clamp(min=0.0)
+        r_approach_pre_ready = (
+            self.cfg.weight_dist_to_target
+            * torch.exp(-self.cfg.rim_approach_scale * _rim_approach_dist)
+            * (self.cfg.approach_anti_floor + (1.0 - self.cfg.approach_anti_floor) * _anti_neg)
         )
-        self._prev_phi_approach = _phi_approach.detach()
-        r_approach_pre_ready = r_approach_progress
 
         # ============================================================
         # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
@@ -1857,6 +1882,10 @@ class PourRightEnv(DirectRLEnv):
             "Action_Kinematics/raw_action/spin": self._raw_palm_action[:, 3].mean(),
             "Action_Kinematics/raw_action/tilt_toward": self._raw_palm_action[:, 4].mean(),
             "Action_Kinematics/raw_action/tilt_ortho": self._raw_palm_action[:, 5].mean(),
+            "Action_Kinematics/raw_action/nullspace": self._raw_null_action.mean(),
+            "Action_Kinematics/ema_action/nullspace": self._ema_null_action.mean(),
+            "joint_State/null_ref_j4": self._null_ref_arm[:, 3].mean(),
+            "joint_State/null_ref_j5": self._null_ref_arm[:, 4].mean(),
             "Action_Kinematics/applied_action/x": self._applied_palm_action[:, 0].mean(),
             "Action_Kinematics/applied_action/y": self._applied_palm_action[:, 1].mean(),
             "Action_Kinematics/applied_action/z": self._applied_palm_action[:, 2].mean(),
@@ -2259,11 +2288,12 @@ class PourRightEnv(DirectRLEnv):
         self._cup_rel_drift_deg[env_ids].zero_()
         self._cmd_minus_actual_tilt_deg[env_ids].zero_()
         self._prev_tilt_amount_log[env_ids].zero_()
-        self._prev_phi_approach[env_ids].zero_()
 
         # actions 리셋: action=0 = current rim/palm pose 유지.
         self.actions[env_ids, :] = 0.0
         self.prev_actions[env_ids, :] = 0.0
+        self._raw_null_action[env_ids] = 0.0
+        self._ema_null_action[env_ids] = 0.0
         self._intermediate_values_step = -1
 
 
@@ -2589,10 +2619,11 @@ class PourRightEnv(DirectRLEnv):
         self._cup_rel_drift_deg[env_ids].zero_()
         self._cmd_minus_actual_tilt_deg[env_ids].zero_()
         self._prev_tilt_amount_log[env_ids].zero_()
-        self._prev_phi_approach[env_ids].zero_()
 
         self.actions[env_ids, :] = 0.0
         self.prev_actions[env_ids, :] = 0.0
+        self._raw_null_action[env_ids] = 0.0
+        self._ema_null_action[env_ids] = 0.0
         self._pre_pour_ready_steps[env_ids] = 0
         self.success_flag[env_ids] = False
         self._intermediate_values_step = -1
