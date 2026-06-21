@@ -160,17 +160,16 @@ def build_param_table(current: dict[str, str], previous: dict[str, str]) -> str:
     return "\n".join(rows)
 
 
-def build_single_param_table(current: dict[str, str]) -> str:
-    rows = ["| 파라미터 | 값 |", "|---------|------|"]
-    for key, val in current.items():
-        rows.append(f"| {key} | {val} |")
-    return "\n".join(rows)
+# /rl-diag가 학습 후 분석을 덧붙이는 앵커. 이 토큰을 바꾸면 rl-diag 커맨드도 같이 바꿀 것.
+ANALYSIS_ANCHOR = "<!-- rl-diag-analysis -->"
 
 
 def write_run_snapshot(task_id: str, run_dir: Path, test_label: str = "", note: str = "") -> Path:
-    """run 폴더 안에 self-contained test_history.md를 1개 생성(per-run).
+    """run 폴더 안에 self-contained 실험 기록(test_history.md)을 생성(per-run).
 
-    누적 파일과 달리 이 run의 코드 상태만 담는다 → 폴더 통째 이동 시 함께 따라감.
+    상단 = 코드 스냅샷(학습 시작 시점), 하단 = rl-diag 분석 앵커(학습 후 /rl-diag가 채움).
+    전체 cfg(seed·num_envs·모든 weight)는 같은 폴더의 params/env.yaml·agent.yaml이
+    authoritative → 여기선 중복하지 않고 포인터만 둔다. 폴더 통째 이동 시 가설+코드+결과가 함께 따라감.
     """
     robot_dir, side_dir, task_dir_name, _ = parse_task_id(task_id)
     src_dir  = SRC_BASE / robot_dir / side_dir / task_dir_name
@@ -178,25 +177,27 @@ def write_run_snapshot(task_id: str, run_dir: Path, test_label: str = "", note: 
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     short_hash, commit_msg = get_git_head()
-    current_params = extract_key_params(src_dir)
     uncommitted    = get_git_diff_summary(task_rel)
     label = test_label or run_dir.name
 
-    entry = f"""# {run_dir.name} — 코드 스냅샷
+    entry = f"""# {run_dir.name} — 실험 기록
 
+## 코드 스냅샷 (학습 시작 시점)
 - **라벨**: {label}
 - **Date**: {now}
 - **Task**: {task_id}
 - **Commit**: `{short_hash}` — {commit_msg}
+- **전체 설정**: `params/env.yaml` (seed·num_envs·모든 weight) · `params/agent.yaml`
 
-### Uncommitted 변경 (학습 시작 시점)
+### Uncommitted 변경
 {uncommitted}
 
-### 핵심 하이퍼파라미터
-{build_single_param_table(current_params)}
+### Note (가설)
+{note or "(없음)"}
+
+## 분석 (rl-diag) — 학습 후 `/rl-diag {run_dir}` 가 채움
+{ANALYSIS_ANCHOR}
 """
-    if note:
-        entry += f"\n### Note\n{note}\n"
 
     out = run_dir / "test_history.md"
     out.parent.mkdir(parents=True, exist_ok=True)
