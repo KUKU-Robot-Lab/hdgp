@@ -86,14 +86,14 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 12
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 99
-NUM_OBSERVATIONS_WITH_MASS = 100
+NUM_OBSERVATIONS = 96
+NUM_OBSERVATIONS_WITH_MASS = 97
 NUM_OBSERVATIONS_NO_MASS = NUM_OBSERVATIONS
 
 NUM_TIP_SENSORS   = 5     # fingertip 힘센서 (실 센서, actor) — *_force_sensor → 말단 링크
 NUM_PALM_SENSORS  = 1     # palm 힘센서 (실 센서, actor) — palm_force_sensor
 NUM_CRITIC_EXTRAS = 18
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 117
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 114
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
@@ -101,16 +101,9 @@ NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 117
 GRASP_PHASE_STEPS     = 420    # 7s
 LIFT_PHASE_STEPS      = 120    # 2s
 STABILIZE_PHASE_STEPS = 60     # 1s
-TRANSPORT_PHASE_STEPS = 120    # 2s
 LIFT_START_STEP       = GRASP_PHASE_STEPS
 STABILIZE_START_STEP  = LIFT_START_STEP + LIFT_PHASE_STEPS
-TRANSPORT_START_STEP  = STABILIZE_START_STEP + STABILIZE_PHASE_STEPS
-EPISODE_STEPS         = (
-    GRASP_PHASE_STEPS
-    + LIFT_PHASE_STEPS
-    + STABILIZE_PHASE_STEPS
-    + TRANSPORT_PHASE_STEPS
-)
+EPISODE_STEPS = 600
 PRELOAD_START_STEP = 340    # lift 직전 80 step
 
 LIFT_Z_DELTA = 0.10    # 10cm 수직 상승

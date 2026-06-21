@@ -29,17 +29,17 @@ def test_v11_keeps_actor_and_critic_observation_shapes() -> None:
     constants = _text("grasp_right_constants.py")
     cfg = _text("grasp_right_env_cfg.py")
 
-    assert "NUM_OBSERVATIONS = 99" in constants
-    assert "NUM_OBSERVATIONS_WITH_MASS = 100" in constants
+    assert "NUM_OBSERVATIONS = 96" in constants
+    assert "NUM_OBSERVATIONS_WITH_MASS = 97" in constants
     assert "NUM_OBSERVATIONS_NO_MASS = NUM_OBSERVATIONS" in constants
-    assert "NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 117" in constants
+    assert "NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 114" in constants
     assert "observation_space: int = NUM_OBSERVATIONS" in cfg
     assert "state_space:       int = NUM_CRITIC_OBSERVATIONS" in cfg
     assert "observation_space: int = NUM_OBSERVATIONS_NO_MASS" in cfg
     assert "actor_observe_bead_mass: bool = False" in cfg
 
 
-def test_v11_declares_four_phase_episode_and_transport_params() -> None:
+def test_v11_declares_three_phase_stationary_episode() -> None:
     constants = _text("grasp_right_constants.py")
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
@@ -48,17 +48,10 @@ def test_v11_declares_four_phase_episode_and_transport_params() -> None:
         "GRASP_PHASE_STEPS",
         "LIFT_PHASE_STEPS",
         "STABILIZE_PHASE_STEPS",
-        "TRANSPORT_PHASE_STEPS",
-        "TRANSPORT_START_STEP",
     ):
         assert name in constants
-    assert "TRANSPORT_PHASE_STEPS = 120" in constants
+    assert "EPISODE_STEPS = 600" in constants
     for name in (
-        "transport_goal_dist_threshold",
-        "transport_goal_x_range",
-        "transport_goal_y_range",
-        "transport_goal_z_range",
-        "transport_success_hold_steps",
         "lift_target_z_delta",
         "enable_grasp_phase_full_grip_blend",
         "grasp_phase_full_grip_contact_threshold",
@@ -76,10 +69,26 @@ def test_v11_declares_four_phase_episode_and_transport_params() -> None:
     ):
         assert name in cfg
     assert "enable_demo_grasp_reset: bool = False" in cfg
-    assert "compute_grasp_v2_success" in env
+    assert "compute_stationary_grasp_success" in env
     assert "compute_grasp_v2_stability" in env
     assert "compute_slip_proxy" in env
-    assert "transport_palm_target_pose_buf" in env
+    assert "transport" not in env
+
+
+def test_stationary_task_contract_keeps_12d_control_without_transport() -> None:
+    constants = _text("grasp_right_constants.py")
+    env = _text("grasp_right_env.py")
+    cfg = _text("grasp_right_env_cfg.py")
+
+    assert "NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 12" in constants
+    assert "NUM_OBSERVATIONS = 96" in constants
+    assert "NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 114" in constants
+    assert "EPISODE_STEPS = 600" in constants
+    assert "cup_to_goal" not in env
+    assert "transport_goal" not in env
+    assert "is_transport_phase" not in env
+    assert "compute_stationary_grasp_success(" in env
+    assert "transport_" not in cfg
 
 
 def test_v11_lift_uses_policy_delta_and_caps_demo_target_near_ten_cm() -> None:
@@ -101,13 +110,12 @@ def test_v11_lift_uses_policy_delta_and_caps_demo_target_near_ten_cm() -> None:
     assert "pregrasp_palm_pose[:, 2] + float(self.cfg.lift_target_z_delta)" in env
 
 
-def test_v11_actor_and_critic_observe_cup_to_goal() -> None:
+def test_v11_actor_and_critic_drop_cup_to_goal() -> None:
     constants = _text("grasp_right_constants.py")
     env = _text("grasp_right_env.py")
 
-    assert "cup_to_goal:              3" in constants
-    assert "cup_to_goal = self.object_goal - cup_pos_noisy" in env
-    assert "cup_to_goal_clean = self.object_goal - cup_pos_clean" in env
+    assert "cup_to_goal" not in constants
+    assert "cup_to_goal" not in env
     assert "cup_to_goal," in env
     assert "cup_to_goal_clean," in env
 
@@ -124,18 +132,12 @@ def test_v11_actor_observes_cup_orientation_and_critic_observes_angular_velocity
     assert "cup_rot,                # 4" in env
 
 
-def test_v11_samples_transport_goal_per_reset_env() -> None:
+def test_v11_has_no_transport_goal() -> None:
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
 
-    assert "transport_goal_x_range: tuple[float, float] = (0.25, 0.40)" in cfg
-    assert "transport_goal_y_range: tuple[float, float] = (-0.20, 0.00)" in cfg
-    assert "transport_goal_z_range: tuple[float, float] = (0.30, 0.55)" in cfg
-    assert "def _sample_transport_goals" in env
-    assert "self.object_goal[env_ids] = self._sample_transport_goals(n)" in env
-    # 정책구동 transport: scripted lerp 제거, start 앵커 + action·radius reach 사용
-    assert "transport_palm_pose = torch.lerp(" not in env
-    assert "self.cfg.transport_palm_workspace_radius" in env
+    assert "transport" not in cfg
+    assert "transport" not in env
     assert "goal_delta[:, 2] = 0.0" not in env
 
 

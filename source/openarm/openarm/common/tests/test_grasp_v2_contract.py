@@ -11,7 +11,7 @@ from openarm.common.grasp_v2_contract import (
     GRASP_V2_REWARD_TERMS,
     compute_action_delta_norm,
     compute_grasp_v2_stability,
-    compute_grasp_v2_success,
+    compute_stationary_grasp_success,
 )
 
 
@@ -24,15 +24,6 @@ class RewardCfg:
     grasp_weight: float = 12.0
     lift_reward_weight: float = 30.0
     stabilize_weight: float = 10.0
-    transport_track_weight: float = 20.0
-    transport_track_ref_dist: float = 0.35
-    transport_track_tanh_weight: float = 10.0
-    transport_track_tanh_std: float = 0.1
-    transport_progress_reward_weight: float = 200.0
-    transport_progress_reward_cap: float = 0.02
-    transport_height_target_delta: float = 0.09
-    transport_height_quality_power: float = 1.0
-    transport_upright_quality_power: float = 1.0
     stability_reward_weight: float = 1.0
     success_bonus_weight: float = 20.0
     action_smooth_weight: float = -0.02
@@ -40,8 +31,7 @@ class RewardCfg:
     lift_success_height: float = 0.04
     success_upright_max_deg: float = 20.0
     stabilize_upright_max_deg: float = 5.0
-    transport_goal_dist_threshold: float = 0.04
-    transport_success_hold_steps: int = 30
+    success_hold_steps: int = 30
     grasp_xy_threshold: float = 0.025
     grasp_upright_threshold_deg: float = 8.0
     stabilize_action_sharpness: float = 1.5
@@ -53,11 +43,10 @@ class RewardCfg:
 
 def _success_inputs(cfg: RewardCfg, **overrides: torch.Tensor) -> dict[str, torch.Tensor]:
     values = {
-        "transport_started": torch.ones(1, dtype=torch.bool),
+        "stabilize_started": torch.ones(1, dtype=torch.bool),
         "cup_height_delta": torch.tensor([cfg.lift_success_height]),
         "full_contact": torch.ones(1, dtype=torch.bool),
         "cup_tilt_deg": torch.tensor([cfg.stabilize_upright_max_deg]),
-        "transport_goal_dist": torch.tensor([cfg.transport_goal_dist_threshold]),
         "stable": torch.ones(1, dtype=torch.bool),
         "previous_success_hold_count": torch.zeros(1, dtype=torch.long),
     }
@@ -65,30 +54,30 @@ def _success_inputs(cfg: RewardCfg, **overrides: torch.Tensor) -> dict[str, torc
     return values
 
 
-def test_success_gate_requires_stability_and_goal() -> None:
+def test_success_gate_requires_stabilize_phase_and_stability() -> None:
     cfg = RewardCfg()
 
-    high_velocity = compute_grasp_v2_success(
+    high_velocity = compute_stationary_grasp_success(
         cfg=cfg,
         **_success_inputs(cfg, stable=torch.zeros(1, dtype=torch.bool)),
     )
-    away_from_goal = compute_grasp_v2_success(
+    before_stabilize = compute_stationary_grasp_success(
         cfg=cfg,
-        **_success_inputs(cfg, transport_goal_dist=torch.tensor([0.041])),
+        **_success_inputs(cfg, stabilize_started=torch.zeros(1, dtype=torch.bool)),
     )
 
     assert high_velocity.success_now.tolist() == [False]
     assert high_velocity.success_held.tolist() == [False]
-    assert away_from_goal.success_now.tolist() == [False]
-    assert away_from_goal.gates["at_goal"].tolist() == [0.0]
+    assert before_stabilize.success_now.tolist() == [False]
+    assert "at_goal" not in before_stabilize.gates
 
 
-def test_success_gate_holds_for_thirty_stable_transport_steps() -> None:
+def test_success_gate_holds_for_thirty_stable_steps() -> None:
     cfg = RewardCfg()
     hold_count = torch.zeros(1, dtype=torch.long)
 
-    for _ in range(cfg.transport_success_hold_steps - 1):
-        success = compute_grasp_v2_success(
+    for _ in range(cfg.success_hold_steps - 1):
+        success = compute_stationary_grasp_success(
             cfg=cfg,
             **_success_inputs(cfg, previous_success_hold_count=hold_count),
         )
@@ -96,12 +85,12 @@ def test_success_gate_holds_for_thirty_stable_transport_steps() -> None:
         assert success.success_now.tolist() == [True]
         assert success.success_held.tolist() == [False]
 
-    success = compute_grasp_v2_success(
+    success = compute_stationary_grasp_success(
         cfg=cfg,
         **_success_inputs(cfg, previous_success_hold_count=hold_count),
     )
 
-    assert success.hold_count.item() == cfg.transport_success_hold_steps
+    assert success.hold_count.item() == cfg.success_hold_steps
     assert success.success_held.tolist() == [True]
 
 
@@ -142,13 +131,12 @@ def test_reward_terms_are_exact_common_v2_contract() -> None:
         fingertip_side_dist=torch.zeros(1),
         cup_height_delta=torch.tensor([0.06]),
         cup_xy_displacement=torch.zeros(1),
-        transport_xyz_dist=torch.tensor([0.02]),
-        previous_transport_xyz_dist=torch.tensor([0.03]),
         cup_tilt_deg=torch.zeros(1),
         upright_quality=torch.ones(1),
         lift_latched=torch.ones(1, dtype=torch.bool),
         action_delta_norm=torch.zeros(1),
-        transport_reward_gate=torch.ones(1, dtype=torch.bool),
+        stabilize_reward_gate=torch.ones(1, dtype=torch.bool),
+        success_now=torch.ones(1, dtype=torch.bool),
         stable=torch.ones(1, dtype=torch.bool),
         stability_quality=torch.ones(1),
         cfg=cfg,
@@ -160,15 +148,11 @@ def test_reward_terms_are_exact_common_v2_contract() -> None:
         "grasp",
         "lift",
         "stabilize",
-        "transport_track",
-        "transport_progress",
         "success_bonus",
         "post_lift_contact_loss",
         "action_smooth",
         "stability",
     }
-    assert terms["transport_track"].item() > 0.0
-    assert terms["transport_progress"].item() > 0.0
     assert terms["stability"].item() > 0.0
     assert gates["success_now"].item() == 1.0
     assert total.item() > 0.0
@@ -192,8 +176,8 @@ def test_target_env_sources_use_common_v2_helpers_and_common_tags() -> None:
     for cfg in (tesollo_cfg, rh_cfg):
         assert "episode_length_s: float = 10.0" in cfg
         assert "lift_success_height: float = 0.04" in cfg
-        assert "transport_goal_dist_threshold: float = 0.04" in cfg
-        assert "transport_success_hold_steps: int = 30" in cfg
+        assert "success_hold_steps: int = 30" in cfg
+        assert "transport_goal_dist_threshold" not in cfg
         assert "stabilize_upright_max_deg: float = 5.0" in cfg
         assert "stability_cup_lin_vel_threshold: float = 0.04" in cfg
         assert "stability_cup_ang_vel_threshold: float = 0.5" in cfg
@@ -202,10 +186,10 @@ def test_target_env_sources_use_common_v2_helpers_and_common_tags() -> None:
 
     for env in (tesollo_env, rh_env):
         assert "compute_grasp_v2_stability(" in env
-        assert "compute_grasp_v2_success(" in env
+        assert "compute_stationary_grasp_success(" in env
         assert "compute_action_delta_norm(" in env
         assert "log_grasp_v2_common_scalars(" in env
-        assert 'self.extras["reward/transport_xyz"]' not in env
+        assert "transport_goal" not in env
         assert 'self.extras["reward/hand_residual_magnitude"]' not in env
         for tag in GRASP_V2_COMMON_SCALAR_TAGS:
             assert f'"{tag}"' in env

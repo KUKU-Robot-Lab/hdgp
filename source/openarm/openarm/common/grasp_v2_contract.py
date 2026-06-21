@@ -11,8 +11,6 @@ GRASP_V2_REWARD_TERMS: tuple[str, ...] = (
     "grasp",
     "lift",
     "stabilize",
-    "transport_track",
-    "transport_progress",
     "success_bonus",
     "post_lift_contact_loss",
     "action_smooth",
@@ -24,13 +22,10 @@ GRASP_V2_COMMON_SCALAR_TAGS: tuple[str, ...] = (
     "phase/grasp",
     "phase/lift",
     "phase/stabilize",
-    "phase/transport",
     "reward/approach",
     "reward/grasp",
     "reward/lift",
     "reward/stabilize",
-    "reward/transport_track",
-    "reward/transport_progress",
     "reward/success_bonus",
     "reward/post_lift_contact_loss",
     "reward/action_smooth",
@@ -51,17 +46,11 @@ GRASP_V2_COMMON_SCALAR_TAGS: tuple[str, ...] = (
     "cup/xy_displacement",
     "task/lifted_rate",
     "task/upright_rate",
-    "task/at_goal_rate",
     "task/stable_rate",
     "task/cup_lin_vel",
     "task/cup_ang_vel",
     "task/action_delta_norm",
     "task/contact_delta",
-    "task/transport_goal_dist",
-    "task/transport_progress",
-    "task/transport_track_quality",
-    "task/transport_height_quality",
-    "task/transport_posture_quality",
     "task/grasp_ready_rate",
     "task/five_tip_contact_rate",
     "task/prelift_five_tip_contact_rate",
@@ -69,10 +58,8 @@ GRASP_V2_COMMON_SCALAR_TAGS: tuple[str, ...] = (
     "task/lift_started_rate",
     "task/lift_success_now",
     "task/stabilize_success_now",
-    "task/transport_success_now",
     "task/lift_success_rate",
     "task/stabilize_success_rate",
-    "task/transport_success_rate",
     "task/success_rate",
     "task/common_success_now",
     "task/success_held_rate",
@@ -99,7 +86,7 @@ class GraspV2Stability:
 
 
 @dataclass(frozen=True)
-class GraspV2Success:
+class StationaryGraspSuccess:
     success_now: torch.Tensor
     success_held: torch.Tensor
     hold_count: torch.Tensor
@@ -171,28 +158,25 @@ def compute_grasp_v2_stability(
     )
 
 
-def compute_grasp_v2_success(
+def compute_stationary_grasp_success(
     *,
-    transport_started: torch.Tensor,
+    stabilize_started: torch.Tensor,
     cup_height_delta: torch.Tensor,
     full_contact: torch.Tensor,
     cup_tilt_deg: torch.Tensor,
-    transport_goal_dist: torch.Tensor,
     stable: torch.Tensor,
     previous_success_hold_count: torch.Tensor,
     cfg: object,
-) -> GraspV2Success:
+) -> StationaryGraspSuccess:
     lifted = cup_height_delta >= _cfg_float(cfg, "lift_success_height", 0.04)
     full_contact_bool = full_contact.bool()
     upright = cup_tilt_deg <= _cfg_float(cfg, "stabilize_upright_max_deg", 5.0)
-    at_goal = transport_goal_dist <= _cfg_float(cfg, "transport_goal_dist_threshold", 0.04)
     stable_bool = stable.bool()
     success_now = (
-        transport_started.bool()
+        stabilize_started.bool()
         & lifted
         & full_contact_bool
         & upright
-        & at_goal
         & stable_bool
     )
     hold_count = torch.where(
@@ -200,17 +184,16 @@ def compute_grasp_v2_success(
         previous_success_hold_count + 1,
         torch.zeros_like(previous_success_hold_count),
     )
-    success_held = hold_count >= _cfg_int(cfg, "transport_success_hold_steps", 30)
+    success_held = hold_count >= _cfg_int(cfg, "success_hold_steps", 30)
     gates = {
         "lifted": lifted.float(),
         "full_contact": full_contact_bool.float(),
         "upright": upright.float(),
-        "at_goal": at_goal.float(),
         "stable": stable_bool.float(),
         "success_now": success_now.float(),
         "success_held": success_held.float(),
     }
-    return GraspV2Success(
+    return StationaryGraspSuccess(
         success_now=success_now,
         success_held=success_held,
         hold_count=hold_count,

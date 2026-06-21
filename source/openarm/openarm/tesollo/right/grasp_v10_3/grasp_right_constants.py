@@ -18,10 +18,10 @@ Policy-driven cup-aware grasp 계약:
   정책은 매 step 다음 palm pose와 손 관절 목표를 직접 출력한다.
   arm 7축은 action에 포함하지 않고 Fabrics IK가 palm target에서 계산한다.
 
-Action (27D):
-  [0:3]   palm xyz target, normalized [-1, 1] → workspace clamp
-  [3:7]   palm quaternion target (x, y, z, w), env에서 unit normalize
-  [7:27]  20D hand residual around HAND_GRASP_POSE, normalized [-1, 1] → ±scale rad
+Action (26D):
+  [0:3]   incremental palm xyz command
+  [3:6]   incremental palm rotation-vector command
+  [6:26]  20D hand residual around HAND_GRASP_POSE
          rj_dg_1_1~4, rj_dg_2_1~4, rj_dg_3_1~4, rj_dg_4_1~4, rj_dg_5_1~4
 
 Actor Observation (133D, no oracle mass) — sim2real 가능:
@@ -32,7 +32,6 @@ Actor Observation (133D, no oracle mass) — sim2real 가능:
   palm_center_pos (world):  3
   fingertip_pos_rel_palm:  15  (5 × 3D)
   palm_to_cup_pos:          3
-  cup_to_goal:              3  (transport: object_goal - cup, v1과 동일)
   last_actions:            27  (v10.3 policy target action)
   tip_force_xyz_norm:      15  (5 × 3D 법선 방향 힘 벡터, v9.1: 5D norm → 15D vector)
   middle_to_cup_xyz:       15  (5 × 3D FK 기반, sim2real 가능: joint encoder → FK)
@@ -60,9 +59,9 @@ Actor Observation without oracle mass: 136D
 Critic Total: 136 + 37 = 173D
 
 Episode (10s @ 60Hz = 600 steps):
-  approach/close-grasp/lift/stabilize/transport phase는 상태 기반 reward/gate/diagnostic label이다.
+  approach/close-grasp/lift/stabilize phase는 상태 기반 reward/gate/diagnostic label이다.
   approach는 reset-local policy target, close-grasp/lift는 captured palm anchor 주변 target을 쓴다.
-  stabilize 성공이 latch되면 transport phase로 자동 승급, 랜덤 goal로 컵을 이송한다.
+  lift 성공이 latch되면 제자리 stabilize phase로 승급한다.
 """
 
 import math
@@ -87,13 +86,13 @@ NUM_FINGERTIPS = 5
 # Action space
 # ---------------------------------------------------------------------------
 NUM_PALM_POS_ACTION  = 3
-NUM_PALM_QUAT_ACTION = 4
-NUM_PALM_ACTION      = NUM_PALM_POS_ACTION + NUM_PALM_QUAT_ACTION
+NUM_PALM_ROT_ACTION  = 3
+NUM_PALM_ACTION      = NUM_PALM_POS_ACTION + NUM_PALM_ROT_ACTION
 NUM_FINGER_ACTION    = 20
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 27
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 26
 PALM_POS_ACTION_SLICE = slice(0, 3)
-PALM_QUAT_ACTION_SLICE = slice(3, 7)
-FINGER_ACTION_SLICE = slice(7, 27)
+PALM_ROT_ACTION_SLICE = slice(3, 6)
+FINGER_ACTION_SLICE = slice(6, 26)
 
 # ---------------------------------------------------------------------------
 # Observation space
@@ -107,17 +106,17 @@ FINGER_ACTION_SLICE = slice(7, 27)
 #   middle_to_cup_xyz   15  | phase_step_ratio        1
 #   [optional] bead_mass_normalized 1
 #   [제거] cup_to_fingertip 15D (항등식), binary_contact 5D (tip_force 하위집합)
-NUM_OBSERVATIONS_NO_MASS = 136   # +3 cup_to_goal (transport)
-NUM_OBSERVATIONS = 137           # +3 cup_to_goal (transport)
+NUM_OBSERVATIONS_NO_MASS = 132
+NUM_OBSERVATIONS = 133
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 37
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS_NO_MASS + NUM_CRITIC_EXTRAS  # 173
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS_NO_MASS + NUM_CRITIC_EXTRAS  # 169
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
 # ---------------------------------------------------------------------------
-EPISODE_STEPS           = 600    # 10s @ 60Hz (grasp/lift/stabilize/transport)
+EPISODE_STEPS           = 600    # 10s @ 60Hz (grasp/lift/stabilize)
 GRASP_PHASE_STEPS       = EPISODE_STEPS  # legacy compatibility only
 LIFT_RAISE_PHASE_STEPS  = 0      # state-latched, not step-gated
 STABILIZE_PHASE_STEPS   = 0      # state-latched, not step-gated

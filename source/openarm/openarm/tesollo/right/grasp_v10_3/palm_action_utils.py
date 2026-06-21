@@ -3,6 +3,50 @@ from __future__ import annotations
 import torch
 
 
+def _quat_multiply_xyzw(lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+    lx, ly, lz, lw = lhs.unbind(dim=-1)
+    rx, ry, rz, rw = rhs.unbind(dim=-1)
+    return torch.stack(
+        (
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+            lw * rw - lx * rx - ly * ry - lz * rz,
+        ),
+        dim=-1,
+    )
+
+
+def compose_incremental_palm_pose(
+    current_pose: torch.Tensor,
+    delta_position: torch.Tensor,
+    delta_rotation_vector: torch.Tensor,
+    position_mins: torch.Tensor,
+    position_maxs: torch.Tensor,
+) -> torch.Tensor:
+    """Compose a bounded world-frame delta with an XYZW palm pose."""
+
+    target = current_pose.clone()
+    target[:, :3] = torch.max(
+        torch.min(current_pose[:, :3] + delta_position, position_maxs.unsqueeze(0)),
+        position_mins.unsqueeze(0),
+    )
+    angle = delta_rotation_vector.norm(dim=-1, keepdim=True)
+    half_angle = 0.5 * angle
+    scale = torch.where(
+        angle > 1e-8,
+        torch.sin(half_angle) / angle.clamp(min=1e-8),
+        torch.full_like(angle, 0.5),
+    )
+    delta_quat = torch.cat(
+        (delta_rotation_vector * scale, torch.cos(half_angle)), dim=-1
+    )
+    target[:, 3:7] = torch.nn.functional.normalize(
+        _quat_multiply_xyzw(delta_quat, current_pose[:, 3:7]), dim=-1, eps=1e-6
+    )
+    return target
+
+
 def compute_lift_stabilize_palm_targets(
     episode_length_buf: torch.Tensor,
     grasp_palm_pose: torch.Tensor,

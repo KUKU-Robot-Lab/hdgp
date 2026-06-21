@@ -126,9 +126,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 99 (actor, with oracle mass=100)
+    observation_space: int = NUM_OBSERVATIONS          # 96 (actor, with oracle mass=97)
     action_space:      int = NUM_ACTIONS               # 12 (palm 6 + hand 6)
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 117 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 114 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -141,7 +141,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     enable_warm_state_export: bool = False
     warm_state_export_path: str = "/home/oem/rl_ws/datasets/grasp_warm_v11_pour.hdf5"
     warm_state_target_count: int = 2048
-    warm_state_success_source: str = "transport"
+    warm_state_success_source: str = "stabilize"
 
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
@@ -154,9 +154,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_upright_orientation_gain: float = 1.5
     stabilize_upright_orientation_max_deg: float = 25.0
     stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2
-    transport_xyz_hold_enabled: bool = True
-    transport_xyz_hold_gain: float = 4.0
-    transport_xyz_hold_max_delta: float = 0.12
     # Backward-compatible aliases for older launch overrides.
     stabilize_spawn_xy_hold_enabled: bool = True
     stabilize_spawn_xy_hold_gain: float = 2.0
@@ -212,19 +209,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_success_height: float = 0.04
     lift_target_z_delta: float = LIFT_Z_DELTA
     success_hold_steps: int = 30
-    transport_goal_dist_threshold: float = 0.04
-    transport_success_hold_steps: int = 30
-    lift_to_transport_hold_steps: int = 15
-    transport_to_stabilize_hold_steps: int = 1
     stability_cup_lin_vel_threshold: float = 0.04
     stability_cup_ang_vel_threshold: float = 0.5
     stability_contact_delta_threshold: float = 1.0
     stability_action_delta_threshold: float = 0.2
 
     # Phase curriculum:
-    # 0 = grasp/lift only, 1 = add stabilize, 2 = full transport.
+    # 0 = grasp/lift only, 1 = add stabilize.
     enable_phase_curriculum: bool = False
-    phase_curriculum_initial_stage: int = 2
+    phase_curriculum_initial_stage: int = 1
     phase_curriculum_min_episodes: int = 100
     phase_curriculum_lift_success_threshold: float = 0.70
     phase_curriculum_stabilize_success_threshold: float = 0.70
@@ -249,9 +242,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_palm_inward_offset: float = 0.025
     lift_palm_delta_xyz: float = 0.03
     lift_palm_delta_rot_deg: float = 15.0
-    # Transport: policy-driven palm xyz (v10_3 방식). start 앵커 + action·radius, rate-limit.
-    transport_palm_workspace_radius: float = 0.30   # goal 변위 커버용 reach 반경 (m). lift후 cup→goal 평균 0.275m라 0.18은 도달 불가 → 상향.
-    transport_palm_target_max_delta: float = 0.01   # step당 palm target 이동 제한 (v10_3 동일)
 
     # -----------------------------------------------------------------------
     # Finger action semantics
@@ -277,20 +267,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     stabilize_weight: float = 10.0
-    transport_xyz_scale: float = 0.06
-    transport_xyz_reward_weight: float = 0.0   # exp-potential 비활성. reach식 추종(transport_track)으로 대체.
-    # reach(IsaacLab) position_command_error 대응: 거리에 선형 패널티(기울기 일정) + tanh 근거리 정밀.
-    # exp-potential과 달리 멀어도 동일 세기로 goal쪽으로 당김 → 먼 거리(v1 cup→goal ~0.28)에서도 이동 유도.
-    transport_track_weight: float = 20.0       # 선형 추종항 가중치(=0 거리에서 최대)
-    transport_track_ref_dist: float = 0.35     # 선형항이 0이 되는 기준 거리(reach span). cup→goal 최대 커버
-    transport_track_tanh_weight: float = 10.0  # 근거리 정밀 추종(reach _tanh 대응)
-    transport_track_tanh_std: float = 0.1      # tanh kernel std (reach 동일)
-    transport_progress_reward_weight: float = 200.0
-    transport_progress_reward_cap: float = 0.02
-    transport_height_target_delta: float = 0.09
-    transport_height_quality_power: float = 1.0
-    transport_upright_quality_power: float = 1.0
-    # Backward-compatible alias. New code should prefer transport_xyz_scale.
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 5.0
     stabilize_action_sharpness: float = 1.5
@@ -315,7 +291,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tip_contact_penalty_weight: float = -4.0
     grasp_palm_anchor_penalty_weight: float = -8.0
     palm_target_motion_penalty_weight: float = -2.0
-    # Backward-compatible alias. New code should prefer transport_xyz_reward_weight.
     stabilize_spawn_xy_reward_weight: float = 40.0
 
     action_smoothness_palm_weight:   float = -0.10
@@ -342,13 +317,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     slip_proxy_tilt_delta_weight:        float = 0.5
     slip_proxy_tilt_delta_scale:         float = 8.0
 
-    # Stabilize/transport 판정 임계값 (full_grip_ready gate용)
+    # Stabilize 판정 임계값 (full_grip_ready gate용)
     stabilize_cup_lin_vel_threshold:  float = 0.04
     stabilize_cup_ang_vel_threshold:  float = 0.50
     stabilize_force_delta_threshold:  float = 0.35
     stabilize_contact_delta_threshold: float = 1.0
-    transport_xyz_success_threshold: float = 0.01
-    # Backward-compatible alias. New code should prefer transport_xyz_success_threshold.
     stabilize_spawn_xy_success_threshold: float = 0.01
 
     # Legacy delta-control knob (absolute synergy semantics에서는 미사용)
@@ -409,18 +382,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obj_out_y_min:  float = -0.60
     obj_out_y_max:  float = 0.25
     obj_fallen_z:   float = 0.20
-
-    # -----------------------------------------------------------------------
-    # Transport goal sampling
-    # -----------------------------------------------------------------------
-    # min=max on each axis gives a fixed deployment target.
-    transport_goal_x_range: tuple[float, float] = (0.25, 0.40)   # ENV_WORLD +X 방향 (테이블 앞쪽)
-    transport_goal_y_range: tuple[float, float] = (-0.20, 0.00)   # ENV_WORLD -Y 방향
-    transport_goal_z_range: tuple[float, float] = (0.30, 0.55)
-    # 렌더링 시 랜덤 transport goal 위치 마커 (v10_3 동일)
-    enable_transport_goal_marker: bool = True
-    transport_goal_marker_radius: float = 0.025
-    transport_goal_marker_color: tuple[float, float, float] = (1.0, 0.85, 0.05)
 
     # -----------------------------------------------------------------------
     # 물체 spawn

@@ -13,7 +13,7 @@ from openarm.tesollo.right.grasp_v10_3.grasp_right_constants import (
     NUM_OBSERVATIONS,
     NUM_OBSERVATIONS_NO_MASS,
     PALM_POS_ACTION_SLICE,
-    PALM_QUAT_ACTION_SLICE,
+    PALM_ROT_ACTION_SLICE,
 )
 from openarm.tesollo.right.grasp_v10_3.grasp_right_preset import HAND_GRASP_POSE
 
@@ -21,17 +21,11 @@ from openarm.tesollo.right.grasp_v10_3.grasp_right_preset import HAND_GRASP_POSE
 _ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_action_contract_is_27d_target_action() -> None:
-    assert NUM_ACTIONS == 27
+def test_action_contract_is_26d_incremental_action() -> None:
+    assert NUM_ACTIONS == 26
     assert PALM_POS_ACTION_SLICE == slice(0, 3)
-    assert PALM_QUAT_ACTION_SLICE == slice(3, 7)
-    assert FINGER_ACTION_SLICE == slice(7, 27)
-
-
-def test_quaternion_action_normalizes_to_unit_norm() -> None:
-    quat_action = torch.tensor([[0.2, -0.4, 0.1, 0.5], [0.0, 0.0, 0.0, 2.0]])
-    quat = torch.nn.functional.normalize(quat_action, dim=-1, eps=1e-6)
-    assert torch.allclose(quat.norm(dim=-1), torch.ones(2), atol=1e-6)
+    assert PALM_ROT_ACTION_SLICE == slice(3, 6)
+    assert FINGER_ACTION_SLICE == slice(6, 26)
 
 
 def test_finger_action_is_small_residual_around_preset() -> None:
@@ -88,36 +82,29 @@ def test_live_fabrics_uses_anchored_close_grasp_and_lift_targets() -> None:
     assert "self.lift_palm_start_pose_buf = torch.zeros(self.num_envs, 7" in env
     assert "self.lift_finger_pos_buf = torch.zeros(self.num_envs, NUM_HAND_DOF" in env
     assert "self.is_close_grasp_phase" in env
-    assert "grasp_palm_pose = self.grasp_anchor_palm_pose_buf.clone()" in env
-    assert "lift_palm_pose = self.lift_palm_start_pose_buf.clone()" in env
+    assert "compose_incremental_palm_pose(" in env
+    assert "current_pose[:, 3:7] = self.robot.data.body_quat_w" in env
     assert "compute_preset_residual_finger_targets" in env
     assert "compute_lift_finger_targets" in env
     assert "approach_min_steps: int = 10" in cfg
     assert "approach_palm_local_z_min: float = -0.02" in cfg
     assert "approach_palm_local_z_max: float = 0.08" in cfg
     assert "grasp_palm_delta_scale: float = 0.25" in cfg
-    assert "lift_palm_delta_xyz: float = 0.03" in cfg
-    assert "transport_palm_workspace_radius: float = 0.30" in cfg
-    assert "transport_palm_target_max_delta: float = 0.01" in cfg
-    assert "self.transport_palm_start_pose_buf = torch.zeros(self.num_envs, 7" in env
-    assert "transport_palm_pose = self.transport_palm_start_pose_buf.clone()" in env
-    assert "transport_control_mask = self.is_transport_phase | self.is_stabilize_phase" in env
+    assert "palm_delta_xyz: float = 0.03" in cfg
+    assert "palm_delta_rot_deg: float = 15.0" in cfg
+    assert "ema_action_alpha: float = 0.7" in cfg
+    assert "transport" not in env
 
 
-def test_palm_position_action_is_reset_local_only_during_approach() -> None:
+def test_palm_action_is_current_pose_incremental() -> None:
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
 
-    assert "palm_local_workspace_radius: float = 0.10" in cfg
-    assert "palm_target_max_delta:       float = 0.01" in cfg
-    approach_block = env.split("# ---- Approach palm target", 1)[1].split("# ---- Close-grasp palm target", 1)[0]
-    close_block = env.split("# ---- Close-grasp palm target", 1)[1].split("# ---- Lift palm target", 1)[0]
-    assert "self.pregrasp_palm_pose_buf[:, :3]" in approach_block
-    assert "palm_pos_action * float(self.cfg.palm_local_workspace_radius)" in env
-    assert "self.pregrasp_palm_pose_buf[:, :3]" not in close_block
-    assert "grasp_palm_pose[:, 2] = torch.minimum(" in close_block
-    assert "self.cfg.palm_target_max_delta" in env
-    assert "palm_pos = scale(palm_pos_action" not in env
+    assert "palm_delta_xyz: float = 0.03" in cfg
+    assert "palm_delta_rot_deg: float = 15.0" in cfg
+    assert "delta_position = self._ema_palm_action[:, :3]" in env
+    assert "delta_rotation = self._ema_palm_action[:, 3:6]" in env
+    assert "current_pose=current_pose" in env
 
 
 def test_palm_contact_sensor_uses_palm_link_net_force_without_actor_obs_growth() -> None:
@@ -132,14 +119,14 @@ def test_palm_contact_sensor_uses_palm_link_net_force_without_actor_obs_growth()
     assert "self._palm_sensor.data.net_forces_w[:, 0, :]" in env
     assert "quat_apply_inverse" in env
     assert "palm_force = torch.relu(-palm_force_local[:, 0])" in env
-    assert "NUM_OBSERVATIONS = 137" in constants
-    assert NUM_OBSERVATIONS_NO_MASS == 136
-    assert NUM_OBSERVATIONS == 137
+    assert "NUM_OBSERVATIONS = 133" in constants
+    assert NUM_OBSERVATIONS_NO_MASS == 132
+    assert NUM_OBSERVATIONS == 133
     assert NUM_CRITIC_EXTRAS == 37
-    assert NUM_CRITIC_OBSERVATIONS == 173
+    assert NUM_CRITIC_OBSERVATIONS == 169
 
 
-def test_reward_gate_success_contract_uses_common_v2_tip5_body_band_stability_goal() -> None:
+def test_reward_gate_success_contract_uses_tip5_body_band_and_stationary_stability() -> None:
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
 
@@ -157,33 +144,24 @@ def test_reward_gate_success_contract_uses_common_v2_tip5_body_band_stability_go
 
     assert "compute_grasp_reward_terms(" in env
     assert "compute_grasp_v2_stability(" in env
-    assert "compute_grasp_v2_success(" in env
+    assert "compute_stationary_grasp_success(" in env
     assert "full_tip_contact=full_tip_contact" in env
     assert "lift_success_candidate = in_or_past_lift & lifted & full_tip_contact & upright_success" in env
     assert "self._lift_success_hold_count = torch.where(" in env
-    assert "lift_to_transport_hold_steps: int = 15" in cfg
-    assert "transport_to_stabilize_hold_steps: int = 1" in cfg
-    assert "self._transport_ready_hold_count = torch.zeros" in env
-    assert "self._transport_arrived_hold_count = torch.zeros" in env
-    assert "self.transport_palm_start_pose_buf[just_entering_transport]" in env
-    assert "self.transport_started_buf |= self._transport_ready_latched_buf" in env
-    assert "self.transport_started_buf |= self._lift_success_latched_buf" not in env
-    assert "self.is_transport_phase.copy_(self.transport_started_buf & (~self._transport_arrived_latched_buf))" in env
-    assert "self.is_stabilize_phase.copy_(self._transport_arrived_latched_buf)" in env
+    assert "self.is_stabilize_phase.copy_(self._lift_success_latched_buf)" in env
+    assert "transport" not in env
     assert "previous_success_hold_count=self._success_hold_count" in env
     assert "finger_depth =" not in env
     assert "middle_contact_ready" not in env
     assert 'self.extras["contact/middle_count"]' not in env
 
 
-def test_final_success_is_gated_by_final_stabilize_not_immediate_transport() -> None:
+def test_final_success_is_gated_by_stationary_stabilize() -> None:
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
 
-    done_block = env.split("transport_success = compute_grasp_v2_success(", 1)[1].split(
-        "transport_success_now = transport_success.success_now", 1
-    )[0]
-    assert "transport_started=self.is_stabilize_phase" in done_block
-    assert "transport_started=self.transport_started_buf" not in done_block
+    done_block = env.split("stationary_success = compute_stationary_grasp_success(", 1)[1]
+    assert "stabilize_started=self.is_stabilize_phase" in done_block
+    assert "previous_success_hold_count=self._success_hold_count" in done_block
 
 
 def test_tesollo_debug_logs_are_namespaced_and_cover_rim_hook_diagnostics() -> None:
@@ -206,7 +184,7 @@ def test_state_latched_fast_episode_and_default_training_no_actor_mass() -> None
     assert "success_hold_steps: int = 30" in cfg
     assert "grasp_ready_hold_steps: int = 20" in cfg
     assert "full_grip_hold_steps: int = 30" in cfg
-    assert "transport_success_hold_steps: int = 30" in cfg
+    assert "transport" not in cfg
     assert "EPISODE_STEPS           = 600" in constants
     assert 'env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgNoActorMass"' in task_cfg
 
@@ -214,12 +192,12 @@ def test_state_latched_fast_episode_and_default_training_no_actor_mass() -> None
 def test_critic_mass_is_privileged_not_actor_clean_base() -> None:
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
 
-    clean_block = env.split("actor_obs_clean = torch.cat([", 1)[1].split("], dim=-1)   # 136D", 1)[0]
-    critic_block = env.split("critic_obs = torch.cat([", 1)[1].split("], dim=-1)   # 173D", 1)[0]
+    clean_block = env.split("actor_obs_clean = torch.cat([", 1)[1].split("], dim=-1)   # 132D", 1)[0]
+    critic_block = env.split("critic_obs = torch.cat([", 1)[1].split("], dim=-1)   # 169D", 1)[0]
 
     assert "self._bead_mass_normalized" not in clean_block
     assert "self._bead_mass_normalized.unsqueeze(-1),  # 1" in critic_block
-    assert "actor_obs_clean,        # 136" in critic_block
+    assert "actor_obs_clean,        # 132" in critic_block
 
 
 def test_phase_step_ratio_is_observation_only_not_reward_or_latch_gate() -> None:
@@ -243,11 +221,6 @@ def test_state_based_reward_gates_and_upright_quality() -> None:
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
 
     assert "stabilize_upright_reward_scale_deg: float = 10.0" in cfg
-    assert "transport_xyz_scale: float = 0.06" in cfg
-    assert "transport_xyz_reward_weight: float = 0.0" in cfg
-    assert "transport_height_target_delta: float = 0.09" in cfg
-    assert "transport_height_quality_power: float = 1.0" in cfg
-    assert "transport_upright_quality_power: float = 1.0" in cfg
     assert "stability_reward_weight: float = 1.0" in cfg
     assert "stabilize_spawn_xy_scale: float = 0.03" in cfg
     assert "upright_quality = torch.exp(" in env
@@ -256,13 +229,9 @@ def test_state_based_reward_gates_and_upright_quality() -> None:
     assert 'reward_terms["grasp"]' in env
     assert 'reward_terms["lift"]' in env
     assert 'reward_terms["stabilize"]' in env
-    assert 'reward_terms["transport_track"]' in env
-    assert 'reward_terms["transport_progress"]' in env
     assert 'reward_terms["stability"]' in env
     assert 'reward_terms["success_bonus"]' in env
-    assert '"task/transport_track_quality"' in env
-    assert '"task/transport_height_quality"' in env
-    assert '"task/transport_posture_quality"' in env
+    assert "transport" not in env
     assert '"task/stable_rate"' in env
     assert "r_time_penalty" not in env
     assert "time_penalty_weight" not in cfg

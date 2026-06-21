@@ -24,6 +24,35 @@ def load_module():
     return module
 
 
+def test_incremental_pose_zero_action_holds_current_pose():
+    module = load_module()
+    pose = torch.tensor([[0.3, -0.1, 0.4, 0.0, 0.0, 0.0, 1.0]])
+    target = module.compose_incremental_palm_pose(
+        current_pose=pose,
+        delta_position=torch.zeros(1, 3),
+        delta_rotation_vector=torch.zeros(1, 3),
+        position_mins=torch.tensor([0.0, -1.0, 0.0]),
+        position_maxs=torch.tensor([1.0, 1.0, 1.0]),
+    )
+    assert torch.allclose(target, pose)
+
+
+def test_incremental_pose_composes_normalized_rotation_and_clamps_position():
+    module = load_module()
+    pose = torch.tensor([[0.99, 0.0, 0.4, 0.0, 0.0, 0.0, 1.0]])
+    target = module.compose_incremental_palm_pose(
+        current_pose=pose,
+        delta_position=torch.tensor([[0.03, 0.0, 0.0]]),
+        delta_rotation_vector=torch.tensor([[0.0, 0.0, torch.pi / 12]]),
+        position_mins=torch.tensor([0.0, -1.0, 0.0]),
+        position_maxs=torch.tensor([1.0, 1.0, 1.0]),
+    )
+    assert target[0, 0].item() == 1.0
+    assert torch.allclose(target[:, 3:7].norm(dim=-1), torch.ones(1), atol=1e-6)
+    expected = torch.tensor([[0.0, 0.0, 0.1305262, 0.9914449]])
+    assert torch.allclose(target[:, 3:7], expected, atol=1e-6)
+
+
 def test_raise_phase_ignores_arm_action_and_stops_at_five_centimeters():
     module = load_module()
 

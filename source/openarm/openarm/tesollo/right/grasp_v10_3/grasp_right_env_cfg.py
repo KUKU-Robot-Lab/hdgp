@@ -106,7 +106,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
     # -----------------------------------------------------------------------
-    episode_length_s: float = 10.0  # grasp/lift/stabilize + transport (common v2)
+    episode_length_s: float = 10.0  # grasp/lift/stabilize
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
@@ -115,9 +115,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 137 optional mass/debug actor (+3 cup_to_goal)
-    action_space:      int = NUM_ACTIONS               # 27
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 173 (critic, privileged)
+    observation_space: int = NUM_OBSERVATIONS          # 133 optional mass/debug actor
+    action_space:      int = NUM_ACTIONS               # 26
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 169 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -129,8 +129,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
     max_pose_angle:             float = 45.0
-    palm_local_workspace_radius: float = 0.10
-    palm_target_max_delta:       float = 0.01
+    palm_delta_xyz: float = 0.03
+    palm_delta_rot_deg: float = 15.0
+    ema_action_alpha: float = 0.7
     fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0
     approach_min_steps: int = 10
@@ -142,9 +143,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     prelift_cup_lin_vel_threshold: float = 0.04
     prelift_rim_lift_penalty_weight: float = 1.0
     grasp_palm_delta_scale: float = 0.25
-    lift_palm_delta_xyz: float = 0.03
-    transport_palm_workspace_radius: float = 0.30
-    transport_palm_target_max_delta: float = 0.01
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
@@ -200,8 +198,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_ready_hold_steps: int = 20
     grasp_contact_persistence_reward_steps: int = 30
     full_grip_hold_steps: int = 30
-    lift_to_transport_hold_steps: int = 15
-    transport_to_stabilize_hold_steps: int = 1
     grasp_upright_threshold_deg: float = 8.0
     grasp_xy_threshold: float = 0.025
     approach_weight: float = 2.0
@@ -210,20 +206,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     stabilize_weight: float = 10.0
-    transport_xyz_scale: float = 0.06          # v1 도너 값 (cup→goal 거리 reward)
-    transport_xyz_reward_weight: float = 0.0   # exp-potential 비활성. reach식 추종(transport_track)으로 대체.
-    # reach(IsaacLab) position_command_error 대응: 거리에 선형 패널티(기울기 일정) + tanh 근거리 정밀.
-    # exp-potential과 달리 멀어도 동일 세기로 goal쪽으로 당김 → 먼 거리에서도 이동 유도.
-    transport_track_weight: float = 20.0       # 선형 추종항 가중치(=0 거리에서 최대)
-    transport_track_ref_dist: float = 0.35     # 선형항이 0이 되는 기준 거리(reach span). cup→goal 최대 커버
-    transport_track_tanh_weight: float = 10.0  # 근거리 정밀 추종(reach _tanh 대응)
-    transport_track_tanh_std: float = 0.1      # tanh kernel std (reach 동일)
-    transport_progress_reward_weight: float = 200.0
-    transport_progress_reward_cap: float = 0.02
-    transport_height_target_delta: float = 0.09  # v1 도너 값 (transport 상승 목표)
-    transport_height_quality_power: float = 1.0
-    transport_upright_quality_power: float = 1.0
-    # Backward-compatible alias. New code should prefer transport_xyz_scale.
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 10.0
     stabilize_ang_vel_sharpness: float = 2.0
@@ -270,7 +252,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     middle_contact_envelope_bonus_weight: float = 0.0
     min_middle_contacts_for_success: int = 4
 
-    # Final transport success upright gate.
+    # Final stationary stabilization upright gate.
     stabilize_upright_max_deg: float = 5.0
 
     # Grasp phase에서 컵을 세운 채 감싸도록 유도한다.
@@ -424,21 +406,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obj_out_y_min:  float = -0.60
     obj_out_y_max:  float = 0.25
     obj_fallen_z:   float = 0.20
-
-    # -----------------------------------------------------------------------
-    # Transport goal sampling (v1 네이밍 동일)
-    # stabilize 성공 latch 후 정책이 컵을 이 랜덤 goal로 이송한다.
-    # tesollo spawn(0.27, -0.10, 0.297) 기준으로 설정 (v1 spawn 0.40 대비 x 하향).
-    # min=max면 고정 goal.
-    # -----------------------------------------------------------------------
-    transport_goal_x_range: tuple[float, float] = (0.25, 0.40)
-    transport_goal_y_range: tuple[float, float] = (-0.20, 0.00)   # ENV_WORLD -Y 방향
-    transport_goal_z_range: tuple[float, float] = (0.30, 0.55)
-    transport_goal_dist_threshold: float = 0.04   # cup→goal 성공 임계 (v1 동일)
-    transport_success_hold_steps: int = 30        # transport 성공 유지 step (v1 동일)
-    enable_transport_goal_marker: bool = True
-    transport_goal_marker_radius: float = 0.025
-    transport_goal_marker_color: tuple[float, float, float] = (1.0, 0.85, 0.05)
 
     # -----------------------------------------------------------------------
     # 물체 spawn
