@@ -29,21 +29,20 @@ def load_constants():
     return module
 
 
-def test_episode_splits_raise_and_stabilize_after_grasp():
+def test_episode_uses_state_latched_lift_and_stabilize():
     constants = load_constants()
 
-    assert constants.GRASP_PHASE_STEPS == 480
-    assert constants.LIFT_RAISE_PHASE_STEPS == 120
-    assert constants.STABILIZE_PHASE_STEPS == 240
-    assert constants.LIFT_START_STEP == 480
-    assert constants.STABILIZE_START_STEP == 600
-    assert constants.EPISODE_STEPS == 840
-    assert constants.LIFT_Z_DELTA == 0.05
+    assert constants.GRASP_PHASE_STEPS == 600
+    assert constants.LIFT_RAISE_PHASE_STEPS == 0
+    assert constants.STABILIZE_PHASE_STEPS == 0
+    assert constants.EPISODE_STEPS == 600
 
 
-def test_env_config_documents_fourteen_second_episode_and_stabilize_bounds():
+def test_env_config_documents_ten_second_incremental_control():
     source = CFG_PATH.read_text(encoding="utf-8")
 
-    assert "episode_length_s: float = 14.0" in source
-    assert "stabilize_palm_delta_xyz: float = 0.01" in source
-    assert "stabilize_palm_delta_rot_deg: float = 10.0" in source
+    assert "episode_length_s: float = 10.0" in source
+    assert "palm_delta_xyz: float = 0.03" in source
+    assert "palm_delta_rot_deg: float = 15.0" in source
+    assert "ema_action_alpha: float = 0.7" in source
+    assert "transport" not in source

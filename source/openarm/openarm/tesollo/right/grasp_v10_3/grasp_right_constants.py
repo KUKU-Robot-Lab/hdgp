@@ -40,7 +40,7 @@ Actor Observation (133D, no oracle mass) — sim2real 가능:
   [제거] binary_contact     5D → tip_force_xyz_norm norm의 하위 집합 (함수적 중복)
   Total:                  136
 
-Optional actor debug observation with oracle mass: 137D
+Optional actor debug observation with oracle mass: 133D
 
 Critic Extra (37D) — sim-only privileged:
   bead_mass_normalized:     1  (0=빈 컵, 1=최대 하중)
@@ -56,7 +56,7 @@ Critic Extra (37D) — sim-only privileged:
   Total:                   37
 
 Actor Observation without oracle mass: 136D
-Critic Total: 136 + 37 = 173D
+Critic Total: 132 + 37 = 169D
 
 Episode (10s @ 60Hz = 600 steps):
   approach/close-grasp/lift/stabilize phase는 상태 기반 reward/gate/diagnostic label이다.
@@ -97,12 +97,12 @@ FINGER_ACTION_SLICE = slice(6, 26)
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-# Actor obs (136D no-mass, 137D optional mass/debug):
+# Actor obs (132D no-mass, 133D optional mass/debug):
 #   arm_joint_pos        7  | arm_joint_vel          7
 #   finger_joint_pos    20  | finger_joint_vel       20
 #   palm_center_pos      3  | fingertip_pos_rel_palm 15
-#   palm_to_cup          3  | cup_to_goal             3
-#   last_actions        27  | tip_force_xyz_norm     15
+#   palm_to_cup          3  | last_actions           26
+#   tip_force_xyz_norm  15
 #   middle_to_cup_xyz   15  | phase_step_ratio        1
 #   [optional] bead_mass_normalized 1
 #   [제거] cup_to_fingertip 15D (항등식), binary_contact 5D (tip_force 하위집합)

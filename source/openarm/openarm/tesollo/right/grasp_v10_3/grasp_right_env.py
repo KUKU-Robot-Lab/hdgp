@@ -1163,7 +1163,6 @@ class GraspRightEnv(DirectRLEnv):
 
         lifted_gate = (cup_height_delta >= self.cfg.lift_success_height).float()
         meaningful_contact = num_tip_contacts > 0
-        lifted_bool = lifted_gate > 0.0
         self.is_stabilize_phase.copy_(self._lift_success_latched_buf)
         action_delta_norm = compute_action_delta_norm(self.actions, self.prev_actions)
         contact_delta_abs = (num_tip_contacts.float() - self._prev_num_contacts_buf).abs()
@@ -1301,6 +1300,15 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["debug/tesollo/task/prelift_rim_lift_penalty"] = (
             prelift_rim_lift_penalty * prelift_mask
         ).sum() / prelift_mask.sum().clamp(min=1.0)
+        self.extras["debug/tesollo/control/raw_palm_action_norm"] = (
+            self.actions[:, :6].norm(dim=-1).mean()
+        )
+        self.extras["debug/tesollo/control/ema_palm_action_norm"] = (
+            self._ema_palm_action.norm(dim=-1).mean()
+        )
+        self.extras["debug/tesollo/control/palm_target_position_error"] = (
+            self.palm_pose_targets[:, :3] - self.palm_center_pos
+        ).norm(dim=-1).mean()
         self.extras["object_stat/obj_z"] = self.object_pos[:, 2].mean()
 
         self._prev_total_grip_force_buf.copy_(self.contact_force_raw.sum(dim=-1))

@@ -1,7 +1,7 @@
 # 5g_grasp_right_v10-3 rl_games PPO 설정
 # v9.1: 관측 138D (tip_force 5D→15D xyz), 비드 이산 4단계 {0,10,20,30}×10g
 #        컵 마찰계수 DR μ~Uniform[0.15, 0.60], 썸 외전 열림, contact ADR
-# 관측: actor 133D / critic 170D (asymmetric), 액션: 27D palm target + hand residual
+# 관측: actor 132D / critic 169D (asymmetric), 액션: 26D incremental palm + hand residual
 # Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:
@@ -43,7 +43,7 @@ params:
   load_path: ''
 
   config:
-    name: 5g_grasp_right-v10-3-target27
+    name: 5g_grasp_right-v10-3-target26
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -84,7 +84,7 @@ params:
     bound_loss_type: regularization
     bounds_loss_coef: 0.005
 
-    # Asymmetric Actor-Critic: critic은 170D privileged obs 사용
+    # Asymmetric Actor-Critic: critic은 169D privileged obs 사용
     has_central_value: True
     central_value_config:
       normalize_input: True

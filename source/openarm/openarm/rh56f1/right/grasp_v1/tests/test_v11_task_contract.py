@@ -116,8 +116,6 @@ def test_v11_actor_and_critic_drop_cup_to_goal() -> None:
 
     assert "cup_to_goal" not in constants
     assert "cup_to_goal" not in env
-    assert "cup_to_goal," in env
-    assert "cup_to_goal_clean," in env
 
 
 def test_v11_actor_observes_cup_orientation_and_critic_observes_angular_velocity() -> None:
@@ -208,26 +206,13 @@ def test_v11_actively_levels_cup_after_lift_with_movable_arm() -> None:
     assert "stabilize_upright_orientation_gain: float = 1.5" in cfg
     assert "stabilize_upright_orientation_max_deg: float = 25.0" in cfg
     assert "stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2" in cfg
-    assert "transport_xyz_hold_enabled: bool = True" in cfg
-    assert "transport_xyz_hold_gain: float = 4.0" in cfg
-    assert "transport_xyz_hold_max_delta: float = 0.12" in cfg
     assert "stabilize_spawn_xy_hold_enabled: bool = True" in cfg
     assert "def _apply_upright_palm_orientation_correction" in env
-    assert "def _apply_transport_xyz_palm_correction" in env
-    assert "def _transport_xyz_cfg" in env
-    assert "xy_error = self.object_goal[:, :2] - self.object_pos[:, :2]" in env
-    assert '"transport_xyz_hold_gain"' in env
-    assert '"stabilize_spawn_xy_hold_gain"' in env
-    assert "self._transport_xyz_palm_correction_buf[phase_mask] = xy_correction[phase_mask]" in env
-    assert 'self.extras["debug/rh56f1/task/transport_xyz_palm_correction"]' in env
-    assert "lift_palm_pose = self._apply_transport_xyz_palm_correction(" not in env
-    # 정책구동 transport: scripted xy hold 보정 호출 제거 (메서드 정의는 보존)
-    assert "transport_palm_pose = self._apply_transport_xyz_palm_correction(" not in env
     assert "cup_z_world = quat_apply(self.object_rot, z_local)" in env
     assert "cup_z_world[:, 1]" in env
     assert "-cup_z_world[:, 0]" in env
     assert "lift_palm_pose = self._apply_upright_palm_orientation_correction(" in env
-    assert "transport_palm_pose = self._apply_upright_palm_orientation_correction(" in env
+    assert "transport" not in env
     assert "self.robot.set_joint_position_target(self.fabric_q[:, :NUM_ARM_DOF], joint_ids=self.arm_dof_indices)" in env
 
 
@@ -245,7 +230,6 @@ def test_v11_declares_pour_warm_state_export_contract() -> None:
     for name in (
         "bead_state_local",
         "bead_count_current",
-        "object_goal_local",
         "meta/schema_version",
         "meta/bead_single_mass",
         "meta/bead_scale",
@@ -260,27 +244,17 @@ def test_v11_declares_pour_warm_state_export_contract() -> None:
 def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases() -> None:
     env = _text("grasp_right_env.py")
 
-    assert "self._phase_curriculum_stage = min(max(int(cfg.phase_curriculum_initial_stage), 0), 2)" in env
+    assert "self._phase_curriculum_stage = min(max(int(cfg.phase_curriculum_initial_stage), 0), 1)" in env
     assert "def _maybe_update_phase_curriculum" in env
     assert "self._episode_curriculum_stage_buf >= 1" in env
-    assert "self._episode_curriculum_stage_buf >= 2" in env
-    assert "transport_disabled = self._episode_curriculum_stage_buf[env_ids] < 2" not in env
-    assert "self.object_goal[env_ids_tensor[transport_disabled]] = obj_pos_local[transport_disabled]" not in env
     assert "just_entering_lift = self._lift_contact_ready_latched_buf & (~self._lift_started_buf)" in env
     assert "self._lift_start_step_buf[just_entering_lift] = self.episode_length_buf[just_entering_lift]" in env
     assert "just_entering_stabilize = (" in env
     stabilize_gate = env.split("just_entering_stabilize = (", 1)[1].split(
         "if just_entering_stabilize.any():", 1
     )[0]
-    assert "& self._transport_arrived_latched_buf" in stabilize_gate
-    assert "& self._lift_success_latched_buf" not in stabilize_gate
+    assert "& self._lift_success_latched_buf" in stabilize_gate
     assert "_full_grip_ready" not in stabilize_gate
-    assert "just_entering_transport = (" in env
-    transport_gate = env.split("just_entering_transport = (", 1)[1].split(
-        "if just_entering_transport.any():", 1
-    )[0]
-    assert "& self._transport_ready_latched_buf" in transport_gate
-    assert "& self._lift_success_latched_buf" not in transport_gate
     assert "& self._full_grip_ready_buf" not in env
     assert "goal_delta[:, 2] = 0.0" not in env
     assert "curriculum_lift_horizon" in env
@@ -295,20 +269,13 @@ def test_v11_phase_curriculum_starts_lift_from_readiness_and_gates_late_phases()
     assert 'self.extras["debug/rh56f1/task/grasp_timeout_fail_rate"]' in env
 
 
-def test_v11_transport_and_success_do_not_start_directly_from_lift_success() -> None:
+def test_v11_stationary_success_starts_from_lift_success() -> None:
     env = _text("grasp_right_env.py")
     cfg = _text("grasp_right_env_cfg.py")
 
-    assert "lift_to_transport_hold_steps: int = 15" in cfg
-    assert "transport_to_stabilize_hold_steps: int = 1" in cfg
-    assert "self._transport_ready_hold_count = torch.zeros" in env
-    assert "self._transport_arrived_hold_count = torch.zeros" in env
-    assert "self._transport_ready_latched_buf |= transport_ready_now" in env
-    assert "self._transport_arrived_latched_buf |= transport_arrived_now" in env
-    assert "transport_control_mask = is_transport | is_stabilize" in env
-    assert "transport_control_mask.unsqueeze(1)" in env
-    assert "transport_started=in_stabilize" in env
-    assert "transport_started=in_transport" not in env
+    assert "transport" not in cfg
+    assert "transport" not in env
+    assert "stabilize_started=in_stabilize" in env
 
 
 def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
@@ -329,7 +296,7 @@ def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
     assert "& no_slip_gate.bool()" not in env
     assert "force_delta_ratio_abs_for_ready <= self.cfg.stabilize_force_delta_threshold" not in env
     assert "self._full_grip_ready_latched_buf |= full_grip_ready_now" in env
-    assert "compute_grasp_v2_success(" in env
+    assert "compute_stationary_grasp_success(" in env
     assert "lift_success_candidate = in_or_past_lift & lifted & lift_grasped & upright_success" in env
     assert "self._lift_success_hold_count = torch.where(" in env
     assert "lift_success_now = self._lift_success_hold_count >= int(self.cfg.full_grip_hold_steps)" in env
@@ -357,12 +324,6 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
         "grasp_weight",
         "lift_reward_weight",
         "stabilize_weight",
-        "transport_xyz_scale",
-        "transport_xyz_reward_weight",
-        "transport_height_target_delta",
-        "transport_height_quality_power",
-        "transport_upright_quality_power",
-        "transport_success_hold_steps",
         "stabilize_spawn_xy_scale",
         "success_bonus_weight",
         "post_lift_contact_loss_weight",
@@ -404,11 +365,7 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     assert '"reward/lift"' in env
     assert '"reward/post_lift_contact_loss"' in env
     assert '"reward/stabilize"' in env
-    assert '"reward/transport_track"' in env
-    assert '"reward/transport_progress"' in env
     assert '"reward/stability"' in env
-    assert '"task/transport_height_quality"' in env
-    assert '"task/transport_posture_quality"' in env
     assert '"reward/success_bonus"' in env
     for removed_term in (
         "r_align_upright",
@@ -437,7 +394,7 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
         'task/force_balance_err',
     ):
         assert removed_term not in env
-    assert "compute_grasp_v2_success(" in env
+    assert "compute_stationary_grasp_success(" in env
     assert "stabilize_upright_max_deg: float = 5.0" in cfg
     assert "stable=stability.stable" in env
 
@@ -462,7 +419,6 @@ def test_v11_logs_only_curated_cup_task_reward_groups() -> None:
             "task/action_delta_norm",
             "task/lift_success_now",
             "task/stabilize_success_now",
-            "task/transport_success_now",
             "reward/total",
         ):
         if name == "object_stat/obj_z":
@@ -498,7 +454,7 @@ def test_v11_lstm_rl_games_config_uses_no_actor_mass_recurrent_name() -> None:
     t = (_ROOT / "config" / "agents" / "rl_games_ppo_lstm_cfg.yaml").read_text(encoding="utf-8")
 
     assert "name: inspire_r_grasp_v1-lstm" in t
-    assert "Actor 99D MLP [512, 512] -> LSTM 1024 / critic 117D MLP [512, 512, 256, 128]" in t
+    assert "Actor 96D MLP [512, 512] -> LSTM 1024 / critic 114D MLP [512, 512, 256, 128]" in t
     assert "name: lstm" in t
     assert "before_mlp: False" in t
     assert "units: [512, 512, 256, 128]" in t

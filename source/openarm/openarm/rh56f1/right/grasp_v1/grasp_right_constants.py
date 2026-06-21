@@ -21,7 +21,7 @@ Action (12D):
   [6:12] 6D absolute hand synergy target (drive 6관절)
          thumb_1, thumb_2, index_1, middle_1, ring_1, little_1
 
-Actor Observation (99D) — sim2real 가능 (실 센서 + FK):
+Actor Observation (96D) — sim2real 가능 (실 센서 + FK):
   arm_joint_pos:            7
   arm_joint_vel:            7
   finger_joint_pos:         6   (drive 6)
@@ -29,7 +29,6 @@ Actor Observation (99D) — sim2real 가능 (실 센서 + FK):
   palm_center_pos (world):  3
   fingertip_pos_rel_palm:  15   (5 × 3D, FK)
   palm_to_cup_pos:          3
-  cup_to_goal:              3
   cup_rot (quat):           4
   last_actions:            12
   middle_to_cup_xyz:       15   (5 × 3D, FK)
@@ -37,13 +36,13 @@ Actor Observation (99D) — sim2real 가능 (실 센서 + FK):
   palm_binary:              1   (실 palm 힘센서 접촉)
   palm_force_norm:          1   (실 palm 힘센서 크기)
   tip_force_xyz:           15   (5 × 3D, 실 fingertip 힘센서 — *_force_sensor)
-  Total:                   99
+  Total:                   96
 
   ※ RH56F1 의 *_force_sensor (palm + 5 fingertip) 는 모두 실 하드웨어 센서.
     fingertip force_sensor 링크는 USD 에서 말단 링크(*_2, thumb_4)로 병합되어
     해당 body 의 ContactSensor 가 force_sensor 패드 접촉을 그대로 포착한다.
 
-Actor Observation with oracle mass: 100D
+Actor Observation with oracle mass: 97D
 
 Critic Extra (18D) — sim-only privileged:
   bead_mass_normalized:        1
@@ -54,10 +53,10 @@ Critic Extra (18D) — sim-only privileged:
   fingertip_to_cup_signed_dist: 5
   Total:                      18
 
-Critic Total: 99 + 18 = 117D
+Critic Total: 96 + 18 = 114D
 
-Episode (12s @ 60Hz = 720 steps):
-  Grasp / Lift / Stabilize / Transport
+Episode (10s @ 60Hz = 600 steps):
+  Grasp / Lift / Stabilize
 """
 
 from .grasp_right_preset import (

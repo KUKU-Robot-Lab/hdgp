@@ -76,7 +76,6 @@ from .grasp_right_constants import (
     NUM_ACTIONS,
     NUM_FINGERTIPS,
     NUM_TIP_SENSORS,
-    NUM_PALM_SENSORS,
     NUM_CRITIC_OBSERVATIONS,
     GRASP_PHASE_STEPS,
     LIFT_PHASE_STEPS,
@@ -84,10 +83,8 @@ from .grasp_right_constants import (
     STABILIZE_START_STEP,
     STABILIZE_PHASE_STEPS,
     EPISODE_STEPS,
-    PRELOAD_START_STEP,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
-    PREGRASP_FABRICS_STEPS,
     CUP_RADIUS_APPROX,
     ARM_START_POSE,
     PALM_POSE_MINS_FUNC,
@@ -95,7 +92,6 @@ from .grasp_right_constants import (
 )
 from .grasp_right_preset import (
     LEFT_ARM_REST_JOINT_POS,
-    RIGHT_ACTUATED_JOINT_NAMES,
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
@@ -1453,7 +1449,7 @@ class GraspRightEnv(DirectRLEnv):
             self.middle3_pos - cup_pos_clean.unsqueeze(1)
         ).view(self.num_envs, -1)   # (N, 15)
 
-        # actor 와 동일 구성(noise 없는 clean) — 99D
+        # actor 와 동일 구성(noise 없는 clean) — 96D
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,
             arm_joint_vel_clean,
@@ -1479,7 +1475,7 @@ class GraspRightEnv(DirectRLEnv):
             cup_height_delta,                           # 1
             tip_contact_binary,                         # 5
             fingertip_signed_dist,                      # 5
-        ], dim=-1)   # 117D
+        ], dim=-1)   # 114D
 
         critic_obs = torch.nan_to_num(critic_obs, nan=0.0, posinf=5.0, neginf=-5.0)
 

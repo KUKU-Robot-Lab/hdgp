@@ -175,6 +175,14 @@ def test_tesollo_debug_logs_are_namespaced_and_cover_rim_hook_diagnostics() -> N
     assert 'self.extras["debug/rh56f1/' not in env
 
 
+def test_incremental_fabrics_logs_command_and_tracking_diagnostics() -> None:
+    env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
+
+    assert '"debug/tesollo/control/raw_palm_action_norm"' in env
+    assert '"debug/tesollo/control/ema_palm_action_norm"' in env
+    assert '"debug/tesollo/control/palm_target_position_error"' in env
+
+
 def test_state_latched_fast_episode_and_default_training_no_actor_mass() -> None:
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
     constants = (_ROOT / "grasp_right_constants.py").read_text(encoding="utf-8")

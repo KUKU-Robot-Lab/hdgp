@@ -34,7 +34,6 @@ def compute_grasp_reward_terms(
     lift_gate = lift_latched.float()
     pre_lift_gate = 1.0 - lift_gate
     full_tip = full_tip_contact.float()
-    full_tip_bool = full_tip_contact.bool()
     contact_persistence_frac = contact_persistence_frac.clamp(0.0, 1.0)
 
     lifted_bool = cup_height_delta >= _cfg_float(cfg, "lift_success_height", 0.04)

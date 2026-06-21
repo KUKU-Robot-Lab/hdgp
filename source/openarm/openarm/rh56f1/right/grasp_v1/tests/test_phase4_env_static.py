@@ -49,10 +49,10 @@ def test_sensors_consolidated_4c():
 
 
 def test_obs_layout_4d():
-    """4d: obs 빌더 99/117. Tesollo 144/174 주석/critic extra 제거."""
+    """4d: obs 빌더 96/114. Tesollo 144/174 주석/critic extra 제거."""
     s = _src()
     assert "144D" not in s and "174D" not in s, "stale 144/174 주석 잔재"
-    assert "Observations: Actor 99D" in s and "Critic 117D" in s
+    assert "Observations: Actor 96D" in s and "Critic 114D" in s
     assert "tip_contact_binary" in s          # critic privileged
     assert "tip_force_xyz_norm" in s          # actor 실 fingertip 센서
     # critic 에서 distal_force_norm/middle_force_norm 제거됨 (obs 에서 미사용)
@@ -95,8 +95,6 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert '"reward/lift"' in s
     assert '"reward/post_lift_contact_loss"' in s
     assert '"reward/stabilize"' in s
-    assert '"reward/transport_track"' in s
-    assert '"reward/transport_progress"' in s
     assert '"reward/success_bonus"' in s
     assert '"reward/action_smooth"' in s
     assert '"reward/stability"' in s
@@ -109,11 +107,8 @@ def test_reward_has_precontact_approach_term_and_total_log():
     assert '"task/cup_ang_vel"' in s
     assert '"task/action_delta_norm"' in s
     assert '"task/contact_delta"' in s
-    assert '"task/transport_track_quality"' in s
-    assert '"task/transport_height_quality"' in s
-    assert '"task/transport_posture_quality"' in s
     assert 'self.extras["debug/rh56f1/task/prelift_force_ratio"]' in s
-    assert 'self.extras["debug/rh56f1/task/transport_xyz_palm_correction"]' in s
+    assert "transport" not in s
     assert '"reward/total"' in s
 
 
