@@ -15,7 +15,7 @@ import re
 import subprocess
 from pathlib import Path
 
-GIT_ROOT = Path("/home/user/rl_ws/hdgp")
+GIT_ROOT = Path(__file__).resolve().parents[2]  # hdgp/ (scripts/tools/ 기준)
 SRC_BASE = GIT_ROOT / "source/openarm/openarm"
 LOG_BASE  = GIT_ROOT / "log/rl_games"
 
@@ -160,6 +160,50 @@ def build_param_table(current: dict[str, str], previous: dict[str, str]) -> str:
     return "\n".join(rows)
 
 
+def build_single_param_table(current: dict[str, str]) -> str:
+    rows = ["| 파라미터 | 값 |", "|---------|------|"]
+    for key, val in current.items():
+        rows.append(f"| {key} | {val} |")
+    return "\n".join(rows)
+
+
+def write_run_snapshot(task_id: str, run_dir: Path, test_label: str = "", note: str = "") -> Path:
+    """run 폴더 안에 self-contained test_history.md를 1개 생성(per-run).
+
+    누적 파일과 달리 이 run의 코드 상태만 담는다 → 폴더 통째 이동 시 함께 따라감.
+    """
+    robot_dir, side_dir, task_dir_name, _ = parse_task_id(task_id)
+    src_dir  = SRC_BASE / robot_dir / side_dir / task_dir_name
+    task_rel = str(src_dir.relative_to(GIT_ROOT))
+
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    short_hash, commit_msg = get_git_head()
+    current_params = extract_key_params(src_dir)
+    uncommitted    = get_git_diff_summary(task_rel)
+    label = test_label or run_dir.name
+
+    entry = f"""# {run_dir.name} — 코드 스냅샷
+
+- **라벨**: {label}
+- **Date**: {now}
+- **Task**: {task_id}
+- **Commit**: `{short_hash}` — {commit_msg}
+
+### Uncommitted 변경 (학습 시작 시점)
+{uncommitted}
+
+### 핵심 하이퍼파라미터
+{build_single_param_table(current_params)}
+"""
+    if note:
+        entry += f"\n### Note\n{note}\n"
+
+    out = run_dir / "test_history.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(entry, encoding="utf-8")
+    return out
+
+
 def append_to_history(history_file: Path, entry: str) -> None:
     history_file.parent.mkdir(parents=True, exist_ok=True)
     if history_file.exists():
@@ -177,7 +221,18 @@ def main() -> None:
     ap.add_argument("--task", required=True, help="Gym task ID, e.g. open-tesol_r_pour_v3")
     ap.add_argument("--test", required=True, help="Test name, e.g. test8")
     ap.add_argument("--note", default="", help="Optional note about this test")
+    ap.add_argument(
+        "--run-dir",
+        default=None,
+        help="설정 시 해당 run 폴더 안에 self-contained test_history.md 생성(per-run 모드). "
+        "미설정 시 task 레벨 누적 파일에 append(레거시).",
+    )
     args = ap.parse_args()
+
+    if args.run_dir:
+        out = write_run_snapshot(args.task, Path(args.run_dir), args.test, args.note)
+        print(f"✓ run 스냅샷 기록: {out}")
+        return
 
     robot_dir, side_dir, task_dir_name, log_sub = parse_task_id(args.task)
 

@@ -349,6 +349,27 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_root_path, log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_root_path, log_dir, "params", "agent.yaml"), agent_cfg)
 
+    # run 폴더 안에 코드 스냅샷(test_history.md) 1개 생성 — 폴더 통째 이동 시 함께 따라감.
+    # 라벨/노트는 train.sh가 RUN_LABEL/NOTE env로 전달(직접 실행 시 라벨=폴더명으로 fallback).
+    # 스냅샷 실패가 학습을 막지 않도록 격리.
+    import subprocess
+
+    _snap = os.path.join(os.path.dirname(__file__), "..", "..", "tools", "record_test_snapshot.py")
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                os.path.abspath(_snap),
+                "--task", task_name,
+                "--test", os.environ.get("RUN_LABEL", "") or log_dir,
+                "--note", os.environ.get("NOTE", ""),
+                "--run-dir", os.path.join(log_root_path, log_dir),
+            ],
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001 — 스냅샷은 부가 기능, 학습 차단 금지
+        print(f"[WARN] 코드 스냅샷 기록 실패(학습은 계속): {exc}")
+
     # read configurations about the agent-training
     rl_device = agent_cfg["params"]["config"]["device"]
     clip_obs = agent_cfg["params"]["env"].get("clip_observations", math.inf)
