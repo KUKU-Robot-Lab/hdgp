@@ -266,7 +266,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   after ready: positive precision reward off; actual pour_point corridor miss remains as penalty.
     #   score=1이면 penalty=0. corridor 정밀조준은 reward farming이 아니라 constraint로 둔다.
     weight_dist_to_target: float = 8.0   # [06.18 복원] approach positive exp 당김 weight (이동 잘됨)
-    weight_corridor_escape_after_ready: float = 20.0  # ready 이후 정렬 파밍 제거: corridor miss만 페널티.
+    weight_corridor_escape_after_ready: float = 0.0  # [06.21] tilt-swing 처벌로 approach 음수·진동 → v3식 순수 positive pull 복원(penalty 비활성). farming은 spill/pour_gate로 감시.
     approach_anti_floor: float = 0.4         # [06.18 복원] 직립·원거리 transport gradient 보존 (anti=0서도 0.4)
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # (레거시, 미사용 — rim_approach_saturate로 대체)

@@ -270,7 +270,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   after ready: positive precision reward off; actual pour_point corridor miss remains as penalty.
     #   score=1이면 penalty=0. corridor 정밀조준은 reward farming이 아니라 constraint로 둔다.
     weight_dist_to_target: float = 8.0   # [06.18 복원] approach positive exp 당김 weight (이동 잘됨)
-    weight_corridor_escape_after_ready: float = 20.0  # ready 이후 정렬 파밍 제거: corridor miss만 페널티.
+    weight_corridor_escape_after_ready: float = 0.0  # [06.21] tilt-swing 처벌로 approach 음수·진동 → v3식 순수 positive pull 복원(penalty 비활성). farming은 spill/pour_gate로 감시.
     approach_anti_floor: float = 0.4         # [06.18 복원] 직립·원거리 transport gradient 보존 (anti=0서도 0.4)
     dist_to_target_exp_scale: float = 5.0
     cup_transport_saturate_xy: float = 0.17  # (레거시, 미사용 — rim_approach_saturate로 대체)
@@ -284,7 +284,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [v6 ablation] nullspace baseline(α=0 지점) 선택 — demo prior 주입의 hard 경로.
     #   "robot_start": 중립(=v5 순수 DRL).  "demo": j1-4 항상 + j5 ready 후 demo 구조(=v4).
     #   enable_demo_pose_reward(soft 경로)와 직교 → 둘 조합이 4셀 ablation 매트릭스.
-    nullspace_baseline: str = "robot_start"
+    nullspace_baseline: str = "demo"  # [both 셀] v4 demo nullspace 구조 활성 (j1-4 항상 + j5 ready 후)
 
     # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
     g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)
@@ -380,7 +380,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   당겨 초기에 올바른 joint_state를 빠르게 찾게 한다. weight는 flow EMA로 floor까지 감쇠하되
     #   floor를 남겨 후반 escape도 억제(lstm_test2는 iter 1000+ 후반 붕괴).
     # -----------------------------------------------------------------------
-    enable_demo_pose_reward: bool = False  # [lstm_test4] reward는 컨트롤러를 못 이김(demo_err 상승)이 입증됨. nullspace default_config로 대체.
+    enable_demo_pose_reward: bool = True  # [both 셀/direct-palm 재시도] lstm_test4 negative는 rim-pivot 비정상 역모델 탓일 가능성 → 직접-palm 전환 후 재검증.
     weight_demo_arm_pose: float = 20.0        # j1-4 demo 앵커 시작값
     weight_demo_arm_pose_floor: float = 5.0   # 감쇠 하한 (후반 anchor 유지)
     weight_demo_j5: float = 15.0              # j5(틸트 주역) 앵커 시작값, ready 이후만
