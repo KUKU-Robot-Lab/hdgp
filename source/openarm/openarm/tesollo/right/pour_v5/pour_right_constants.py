@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""상수 정의: 5g_pour_right_v5 (전면 재설계)
+"""상수 정의: 5g_pour_right_v4 (전면 재설계)
 
 Action (6D) — palm pose만 (손은 grasp_hold freeze):
   [0:6]  6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
@@ -103,8 +103,13 @@ ARM_START_POSE      = RIGHT_ARM_START_POSE
 PALM_POSE_MINS_FUNC = palm_pose_mins
 PALM_POSE_MAXS_FUNC = palm_pose_maxs
 
-# [2b] nullspace self-motion 축 = demo pour 자세 − robot_start (팔꿈치↔손목 trade).
-#   7번째 action α가 이 축을 따라 nullspace 기준자(default_config)를 이동.
-#   v4와 동일 상수(ablation 공통 변수) — v5 baseline=robot_start, v4 baseline=demo.
-DEMO_POUR_ARM_POSE   = [0.216, 0.633, -0.371, 1.868, -1.217, 0.038, 0.604]
+# ---------------------------------------------------------------------------
+# Demo pour 자세 (a11~a20 마지막 프레임 joint 평균) — nullspace default_config용
+#   kinematic 검증(2026-06-19): deep pour는 j4=1.87(팔꿈치 up)+j5=-1.22(롤)로 j6를 거의
+#   안 쓰고(sat 0.05) 달성. robot_start(j4=0.60)로 nullspace를 풀면 j6가 포화되어 tilt 막힘.
+#   pour_v4는 j1-4만 이 값으로 nullspace를 바이어스(팔꿈치 up), j5-7은 robot_start 유지.
+DEMO_POUR_ARM_POSE  = [0.216, 0.633, -0.371, 1.868, -1.217, 0.038, 0.604]
+
+# [2b] nullspace self-motion 축 = demo − robot_start. 7번째 action α가 default_config를
+#   이 축으로 이동. v5와 동일 상수(ablation 공통). v4 baseline=demo, v5 baseline=robot_start.
 NULLSPACE_OFFSET_ARM = [d - s for d, s in zip(DEMO_POUR_ARM_POSE, ARM_START_POSE)]

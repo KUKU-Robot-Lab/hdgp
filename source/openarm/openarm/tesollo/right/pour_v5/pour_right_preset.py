@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Hand/robot preset metadata for 5g_pour_right_v3.
+"""Hand/robot preset metadata for 5g_pour_right_v4.
 
 v3와 동일한 joint/body 구성. v4에서 재사용.
 """
@@ -250,7 +250,13 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
         # [test11] x_max 0.45→0.65, y_max 0.10→0.25 (H9 이전 복원): 깊은 tilt rim-pivot 스윙 여유.
         #   H9 축소는 외회전 억제 목적이었으나 internal_rot_gate=0.98로 해결 → 박스가 tilt 벽으로 작동.
         #   per-axis 클램프 로깅으로 binding bound 확정 후 안 쓰는 방향은 재축소 예정.
-        0.65, 0.25, 0.62,
+        # [test4] z_max 0.62→0.68. lstm_test3 진단: palm_clamp_active 0.87(=Z 단독, xy위반≈0),
+        #   viol_z max 0.043m ≈ palm_ee offset Z(0.04). 원인=제어점이 rl_dg_palm(손바닥 아래)이라
+        #   deep tilt 시 palm_ee(컵 중심) offset이 회전하며 보상 상승분이 z_max에 걸림.
+        # [palm_ee 제어] 박스 기준이 이제 rl_dg_palm이 아닌 palm_ee(진짜 손바닥 중심). offset 회전
+        #   binding은 IK가 흡수 → z_max 0.68은 generous 값으로 유지, 첫 palm_ee run의 viol_z로 재보정.
+        #   (0.72는 과거 g_clear 과상승/외회전 유발 → 그 아래 유지, 외회전은 internal_rot_gate로 제어)
+        0.65, 0.25, 0.68,
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,

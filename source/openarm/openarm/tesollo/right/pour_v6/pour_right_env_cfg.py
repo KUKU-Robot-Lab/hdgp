@@ -284,7 +284,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [v6 ablation] nullspace baseline(α=0 지점) 선택 — demo prior 주입의 hard 경로.
     #   "robot_start": 중립(=v5 순수 DRL).  "demo": j1-4 항상 + j5 ready 후 demo 구조(=v4).
     #   enable_demo_pose_reward(soft 경로)와 직교 → 둘 조합이 4셀 ablation 매트릭스.
-    nullspace_baseline: str = "demo"  # [both 셀] v4 demo nullspace 구조 활성 (j1-4 항상 + j5 ready 후)
+    nullspace_baseline: str = "robot_start"  # [06.21 재설계] 중립 baseline 고정 → 정책이 α(잉여 1-DOF)를 자유 제어. demo는 critic 전용(actor hard-prior 제거).
 
     # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
     g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)
@@ -305,7 +305,16 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
     weight_tilt: float = 35.0      # [align-off probe] tilt를 주 drive로 격상. align(35)은 0으로 제거.
-    tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·ready_latched)
+    tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·prox_gate)
+    # [06.21 Phase2] tilt 게이트를 latch(binary)→연속 근접 게이트로 교체(순환 게이트 절단).
+    #   prox_gate = clamp((far - approach_xy_dist)/(far-near), 0, 1). approach_xy_dist=rim_center 기준.
+    tilt_prox_gate_far:  float = 0.25  # 이 거리 밖: prox_gate=0 (floor만)
+    tilt_prox_gate_near: float = 0.06  # 이 거리 안: prox_gate=1 (full tilt)
+    # [06.21 Phase3] pour 정밀 조정텀 r_pour = w_pour·tilt_progress·aim_score. aim_score=관대 radius corridor.
+    #   tilt_progress 스케일 → 회전 시작(흔들림) 구간 자동 억제, 70°+ 안정 구간만 본격 작동.
+    weight_pour:        float = 50.0   # w_boot(=weight_tilt 35) < w_pour → "조준해서 기울이기"가 strictly 우세(tilt-farming 차단)
+    pour_aim_scale:     float = 10.0   # [test_aim2] aim corridor 완만화(공유 pour_corridor_scale=20 절벽 → 10). env서 radius=0(flat-top 제거)와 함께 → target서 부드러운 봉우리(gradient 어디서나) → miss 교정 + 학습 stiffness↓. 부드러운 동작인데 reward 출렁이던 ② 원인 제거.
+    pour_aim_z_max:     float = 0.05   # [test_aim] aim 전용 z 상한(공유 pour_corridor_z_max=0.12와 분리). spout이 입구 위 5cm 넘으면 감점 → release 높이발 산란 차단. z_min은 pour_corridor_z_min(-0.02) 공유(soft band, tilt 자연 하강 허용).
     #   ready_latched 이후에는 live corridor wobble이 tilt reward를 끄지 않음. 미정조준 ceiling=35×0.35=12.25.
     # [H10] 상시 내회전 유도 — r_tilt(곱)는 tilt 전엔 회전 gradient=0(chicken-and-egg) →
     #   tilt 비종속 항으로 "내회전이 옳다"를 직접 학습. w_tilt보다 작아
@@ -343,7 +352,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   기존 palm+z(손가락축, H10b)는 roll 무감지(cos≈1 고정) → drift 못 막음. sim 렌더링 확인.
     #   gate = sigmoid((thresh - cos)/temp).
     internal_rot_thresh: float = 0.0   # cos<thresh → 내회전. (경계 cos=0=90°)
-    internal_rot_temp: float = 0.1     # 0.2→0.1 가파름: drift(cos→0)시 gate 급감 → 내회전 유지 강제
+    internal_rot_temp: float = 0.4     # [test_aim2] 0.1→0.4 완만화: temp 0.1 가파른 sigmoid가 부드러운 rim_facing 변화→gate 급변→r_tilt(×rot_dir) 출렁(학습 진동 ①). 완만화로 reward stiffness↓.
     # [H5] roll 방향성을 r_tilt에 결합 (별도 r_introt 가산은 자세 압도 부작용 → 폐기).
     #   r_tilt *= rot_tilt_floor + (1-rot_tilt_floor)*internal_rot_gate.
     # [H10] floor 0.3 → 0.0 (lstm_test2 분석): floor=0.3이 외회전(gate≈0) tilt에 30% 보상 →
@@ -353,7 +362,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     rot_tilt_floor: float = 0.0
 
     # Outcome
-    weight_success: float = 0.0
+    weight_success: float = 50.0   # [06.21 Phase4] outcome 신호 연결: shaping이 닻 없이 farming하던 문제 해소(이전 0)
     weight_spill: float = 0.0      # [test7] 2→0: lstm_test6 bead_in/spill 동조 붕괴 → spill 페널티 OFF (pour 회피 local min 제거)
 
     # EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
@@ -380,7 +389,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   당겨 초기에 올바른 joint_state를 빠르게 찾게 한다. weight는 flow EMA로 floor까지 감쇠하되
     #   floor를 남겨 후반 escape도 억제(lstm_test2는 iter 1000+ 후반 붕괴).
     # -----------------------------------------------------------------------
-    enable_demo_pose_reward: bool = True  # [both 셀/direct-palm 재시도] lstm_test4 negative는 rim-pivot 비정상 역모델 탓일 가능성 → 직접-palm 전환 후 재검증.
+    enable_demo_pose_reward: bool = False  # [06.21 재설계] actor demo 보상 OFF(r_demo_arm_pose/j5=0). demo는 critic 전용(enable_demo_critic_obs=True)으로만 초기 탐색 축소.
     weight_demo_arm_pose: float = 20.0        # j1-4 demo 앵커 시작값
     weight_demo_arm_pose_floor: float = 5.0   # 감쇠 하한 (후반 anchor 유지)
     weight_demo_j5: float = 15.0              # j5(틸트 주역) 앵커 시작값, ready 이후만

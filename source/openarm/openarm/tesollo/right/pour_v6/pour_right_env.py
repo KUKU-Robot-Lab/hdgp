@@ -263,6 +263,11 @@ class PourRightEnv(DirectRLEnv):
             if _palm_name in self.robot.data.body_names
             else -1
         )
+        # [palm_ee 제어] rl_dg_palm(손바닥 아래쪽)이 아닌 palm_ee(진짜 손바닥 중심)를 제어/관측 기준으로.
+        #   URDF: palm_link_to_ee 고정조인트 origin = (0.028, 0, 0.04) 로컬, rpy=0 → orientation 공유.
+        #   palm_ee_w = rl_dg_palm_pos_w + R(rl_dg_palm_quat)·offset. Fabrics는 palm_link 추종하므로
+        #   target은 palm_ee로 만들고 Fabrics 직전 palm_link로 역변환(origin -= R·offset).
+        self._palm_ee_offset_local = to_torch([0.028, 0.0, 0.04], device=self.device)
         # distal phalanx body indices (rl_dg_*_4)
         _distal4_names = [f"rl_dg_{i}_4" for i in range(1, 6)]
         self.distal4_body_indices: list[int] = [
@@ -567,6 +572,8 @@ class PourRightEnv(DirectRLEnv):
         #   부호 있는 위반량(clamp 후 - clamp 전): x_max/y_max binding이면 음수, x_min/y_min이면 양수.
         self._palm_clamp_viol_x = torch.zeros(self.num_envs, device=self.device)
         self._palm_clamp_viol_y = torch.zeros(self.num_envs, device=self.device)
+        # z도 부호 있는 위반량으로 binding bound 확정: z_max binding이면 음수, z_min이면 양수.
+        self._palm_clamp_viol_z_signed = torch.zeros(self.num_envs, device=self.device)
         self._source_up_dot_world = torch.zeros(self.num_envs, device=self.device)
         self._directional_tilt_cos = torch.zeros(self.num_envs, device=self.device)
         # [test8] cup-center 앵커 방향 cosine (전달 자세서 안정 → 상충 제거)
@@ -1095,8 +1102,8 @@ class PourRightEnv(DirectRLEnv):
             #   매 스텝 바뀌어 정책이 역모델을 못 만듦(clamp 11~67%, corridor seating/holding 실패).
             #   회전은 아래(_compose_world_delta_quat_xyzw)에서 palm 기준으로 합성 → palm-pivot.
             #   pour_point는 reward(corridor/approach)에만 사용, 제어 경로에선 분리.
-            palm_pose[:, :3] = self.palm_center_pos + delta[:, :3]
-            # 3a 진단: 클램프가 rim-pivot 해를 깨뜨리는지 측정 (클램프 전 palm 보존)
+            palm_pose[:, :3] = self.palm_center_pos + delta[:, :3]   # palm_ee target (palm_center_pos=palm_ee)
+            # 진단: 워크스페이스 박스(palm_ee 기준)가 명령을 자르는 양 측정 (클램프 전 palm_ee 보존)
             _palm_xyz_preclamp = palm_pose[:, :3].clone()
             palm_pose[:, :3] = torch.max(
                 torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
@@ -1108,6 +1115,8 @@ class PourRightEnv(DirectRLEnv):
                 palm_pose[:, :2] - _palm_xyz_preclamp[:, :2], dim=-1
             )
             self._palm_clamp_viol_z = (palm_pose[:, 2] - _palm_xyz_preclamp[:, 2]).abs()
+            # 부호 있는 z 위반: <0 → z_max가 잘림(palm이 더 올라가려 함), >0 → z_min이 잘림(더 내려가려 함)
+            self._palm_clamp_viol_z_signed = palm_pose[:, 2] - _palm_xyz_preclamp[:, 2]
             # per-axis 부호 있는 위반량: 어느 bound가 binding인지 식별
             #   <0 → x_max/y_max가 잘림(palm이 상한 너머로 가려 함), >0 → x_min/y_min이 잘림
             self._palm_clamp_viol_x = palm_pose[:, 0] - _palm_xyz_preclamp[:, 0]
@@ -1117,8 +1126,15 @@ class PourRightEnv(DirectRLEnv):
                 current_palm_quat_xyzw,
                 delta_rotvec_world,
             )
+            # 명령/진단 delta는 palm_ee 기준 (clamp 후 palm_ee target − 현재 palm_ee)
+            self._cmd_palm_target_delta.copy_(palm_pose[:, :3] - self.palm_center_pos)
+            # [palm_ee 제어] Fabrics는 palm_link를 추종 → palm_ee target을 palm_link로 역변환.
+            #   orientation 공유(rpy=0)라 quat 불변, origin만 R(target)·offset 만큼 뺌.
+            _tgt_quat_wxyz = palm_pose[:, 3:7][:, [3, 0, 1, 2]]
+            palm_pose[:, :3] = palm_pose[:, :3] - quat_apply(
+                _tgt_quat_wxyz, self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1)
+            )
             self.palm_pose_targets.copy_(palm_pose)
-            self._cmd_palm_target_delta.copy_(self.palm_pose_targets[:, :3] - self.palm_center_pos)
             self.hand_pca_targets.zero_()
             # [v6 ablation] nullspace baseline(α=0 지점)을 cfg flag로 선택 (demo prior hard 경로).
             #   "demo"        : j1-4 = demo pour 자세(팔꿈치 up, 항상) + j5 = demo(ready latch 후, 틸트 주역 롤).
@@ -1211,9 +1227,12 @@ class PourRightEnv(DirectRLEnv):
         env_origins = self.scene.env_origins
 
         if self.palm_body_index >= 0:
-            self.palm_center_pos = (
-                self.robot.data.body_pos_w[:, self.palm_body_index, :] - env_origins
+            # palm_center_pos = palm_ee(진짜 손바닥 중심) world 위치. rl_dg_palm + R·offset.
+            _palm_quat_w = self.robot.data.body_quat_w[:, self.palm_body_index, :]
+            _palm_ee_w = self.robot.data.body_pos_w[:, self.palm_body_index, :] + quat_apply(
+                _palm_quat_w, self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1)
             )
+            self.palm_center_pos = _palm_ee_w - env_origins
 
         self.fingertip_pos = (
             self.robot.data.body_pos_w[:, self.fingertip_body_indices, :] - env_origins.unsqueeze(1)
@@ -1745,13 +1764,11 @@ class PourRightEnv(DirectRLEnv):
         #   → blend: 직립=rim_center(안정 이송, test3 검증), 기울수록=pour_point(정밀, 8.8cm plateau 회피).
         #   approach = positive exp-거리 당김(06.18 복원): 멀어도 target쪽 slope 생존 → 이동 부트스트랩.
         # ============================================================
-        _tilt_target_approach = (1.0 - math.cos(math.radians(self.cfg.pour_tilt_target_deg))) / 2.0
-        _tilt_blend = (tilt_amount / max(_tilt_target_approach, 1e-6)).clamp(0.0, 1.0).unsqueeze(-1)
+        # [06.21 Phase3] approach 기준점을 rim_center로 고정(blend 제거). tilt 시 pour_point가 swing해
+        #   approach가 tilt를 상쇄하던 D3 얽힘 제거 → "컵 이송"(rim_center, tilt-거의불변)과
+        #   "정밀 붓기"(pour_point, r_pour) 분리. introt 예비회전으로 근접 시 rim 충돌 없음.
         corridor_radius = self.cfg.target_inner_radius + self.cfg.pour_corridor_xy_margin
-        _approach_pt_w = (
-            (1.0 - _tilt_blend) * self._source_rim_center_w
-            + _tilt_blend * self._source_pour_point_w
-        )
+        _approach_pt_w = self._source_rim_center_w
         self._approach_xy_dist = torch.norm(
             _approach_pt_w[:, :2] - self._target_opening_w[:, :2], dim=-1
         )
@@ -1827,8 +1844,31 @@ class PourRightEnv(DirectRLEnv):
         #   교체: tilt_target(135°)까지 끊김 없는 단일 gradient(=tilt_progress). 85° dead spot 제거.
         # Latch phase gate: once target inlet corridor was reached, deep tilt stays rewarded
         # even if the pour point moves during the physically correct pouring posture.
-        tilt_ready_factor = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * latched_ready
+        # [06.21 Phase2] tilt 게이트를 latch(binary)→연속 근접 게이트로 교체(순환 게이트 절단).
+        #   corridor latch 없이도 rim_center가 target에 가까워질수록 tilt gradient가 연속으로 켜짐.
+        _prox_den = max(self.cfg.tilt_prox_gate_far - self.cfg.tilt_prox_gate_near, 1e-6)
+        prox_gate = (
+            (self.cfg.tilt_prox_gate_far - self._approach_xy_dist) / _prox_den
+        ).clamp(0.0, 1.0)
+        tilt_ready_factor = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * prox_gate
+        # r_tilt = bootstrap(작게, 조준 무관, prox 게이트). "기울이기 시작" 자체를 견인.
         r_tilt = self.cfg.weight_tilt * tilt_progress * rot_dir * tilt_ready_factor
+        # [06.21 Phase3] r_pour = 정밀 조정텀(크게). tilt_progress·aim_score(관대 radius corridor).
+        #   tilt_progress 스케일 → 회전 시작 흔들림 구간 기여 작음(자동 억제), 안정 구간만 본격.
+        #   w_pour(50) > weight_tilt(35) → 조준 시 순보너스가 커 "조준해 기울이기"가 strictly 우세.
+        # [test_aim2] aim = smooth unimodal: flat-top 제거(radius=0) + 완만 scale(pour_aim_scale=10).
+        #   xy는 target에서 부드러운 봉우리(gradient 어디서나, 절벽 없음 → 정밀 + 학습 stiffness↓).
+        #   z는 soft band[pour_corridor_z_min(-0.02), pour_aim_z_max(0.05)] — 영역만, 과도 제한 없음.
+        #   (구 generous corridor xy0.076·z0.12가 빗나가는 pour를 보상 → miss; 구 scale20 절벽이 진동 ②)
+        aim_score = pour_corridor_score(
+            self._source_pour_point_w,
+            self._target_opening_w,
+            0.0,
+            self.cfg.pour_corridor_z_min,
+            self.cfg.pour_aim_z_max,
+            self.cfg.pour_aim_scale,
+        )
+        r_pour = self.cfg.weight_pour * tilt_progress * aim_score
         # [로깅 전용] 85° 돌파 추적 (보상 미사용). tilt_progress_A=전체 진행도, B=깊은 구간(85→135°)
         tilt_pre = self.cfg.tilt_pre_amount
         tilt_progress_A = tilt_progress
@@ -1912,7 +1952,8 @@ class PourRightEnv(DirectRLEnv):
             r_hold
             + r_approach
             + r_introt
-            + r_tilt            # latch phase 기반 0→135° 단일 연속 ramp
+            + r_tilt            # [Phase2] bootstrap: prox 게이트 0→135° 연속 ramp (조준 무관)
+            + r_pour            # [Phase3] 정밀 조정: tilt_progress·aim_score(관대 radius), 조준 보너스
             + r_stageB
             + r_source_release  # [probe] g_ready 무관, 실제 소스 잔량 감소분만 transient 보상
             + r_target_capture  # [probe] target에 새로 capture된 bead delta만 outcome 보상
@@ -1945,7 +1986,8 @@ class PourRightEnv(DirectRLEnv):
             "Reward/hold":     r_hold.mean(),
             "Reward/approach": r_approach.mean(),
             "Reward/introt":   r_introt.mean(),
-            "Reward/tilt":     r_tilt.mean(),                # latch phase 기반 0→135° 단일 연속 ramp
+            "Reward/tilt":     r_tilt.mean(),                # [Phase2] bootstrap (prox 게이트, 조준 무관)
+            "Reward/pour":     r_pour.mean(),                # [Phase3] 정밀 조정 (tilt_progress·aim_score)
             "Reward/source_release":  r_source_release.mean(),
             "Reward/target_capture":  r_target_capture.mean(),
             "Reward/demo_arm_pose":   r_demo_arm_pose.mean(),
@@ -2036,7 +2078,9 @@ class PourRightEnv(DirectRLEnv):
             "log/demo_j5_w":             torch.tensor(self._demo_j5_w, device=self.device),
             "log/demo_graduate_ema":     torch.tensor(self._demo_graduate_ema, device=self.device),
             "log/release_context":       release_context.mean(),
-            "log/tilt_ready_factor":     tilt_ready_factor.mean(),
+            "log/tilt_ready_factor":     tilt_ready_factor.mean(),   # [Phase2] = floor+(1-floor)·prox_gate
+            "log/prox_gate":             prox_gate.mean(),           # [Phase2] 연속 근접 게이트 (rim_center)
+            "log/aim_score":             aim_score.mean(),           # [Phase3] pour_point 관대-corridor 조준도
             "log/tilt_latched_phase":    latched_ready.mean(),
             # tilt / 정렬
             "log/tilt_amount":           tilt_amount.mean(),
@@ -2088,6 +2132,10 @@ class PourRightEnv(DirectRLEnv):
             ).sum() / (tilt_amount > 0.4).float().sum().clamp(min=1.0),
             "joint_State/palm_clamp_viol_y_deep": torch.where(
                 tilt_amount > 0.4, self._palm_clamp_viol_y, torch.zeros_like(self._palm_clamp_viol_y),
+            ).sum() / (tilt_amount > 0.4).float().sum().clamp(min=1.0),
+            # 깊은 tilt에서 부호 있는 z 위반: <0이면 z_max binding 확정(palm 상승 차단)
+            "joint_State/palm_clamp_viol_z_deep_signed": torch.where(
+                tilt_amount > 0.4, self._palm_clamp_viol_z_signed, torch.zeros_like(self._palm_clamp_viol_z_signed),
             ).sum() / (tilt_amount > 0.4).float().sum().clamp(min=1.0),
             # 깊은 tilt(>0.4≈78°) env에서만 본 clamp 위반 (평균 희석 제거 → binding 직접 포착)
             "joint_State/palm_clamp_viol_deep": torch.where(
