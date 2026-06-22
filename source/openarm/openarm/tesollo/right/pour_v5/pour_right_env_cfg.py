@@ -234,6 +234,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_z_clearance_max: float = 0.050
     success_hold_steps: int = 10
     drop_force_hold_steps: int = 10
+    # [lstm_test4] 파지 붕괴 종료: cup_rel_drift 과대(슬립/타겟충돌로 파지 붕괴)가 지속되면 terminated.
+    #   약한 접촉이 남아 drop_force_hold가 못 잡는 케이스 → 깨진 grasp로 episode 오염 방지.
+    grasp_break_drift_deg: float = 45.0   # 정상 deep tilt drift(~30°) 위 마진 (정상 tilt 안 죽임)
+    grasp_break_hold_steps: int = 15      # 연속 지속 시 종료 (transient spike 무시)
     # 소스 컵이 비어있는 상태가 N 스텝 연속 지속되면 에피소드 종료
     # 비드 낙하 + 착지에 ~0.3~0.5초 필요 → 60 steps (1.0s @ 60Hz) 여유
     source_empty_hold_steps: int = 60
@@ -304,7 +308,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_tilt_pre: float = 8.0     # [test8] 미사용(r_tilt_A 폐기). 구 기록 참조용 유지
 
     # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
-    weight_tilt: float = 20.0      # [lstm_test3] 35→20: dense tilt farm 축소(state bank가 tilt 부트스트랩 담당). pose-farm vs pour 균형.
+    weight_tilt: float = 35.0      # [lstm_test4] test3 20→35 복원: bank 품질 게이트를 단일 변경으로 격리 검증.
     tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·prox_gate)
     # [06.21 Phase2] tilt 게이트를 latch(binary)→연속 근접 게이트로 교체(순환 게이트 절단).
     #   prox_gate = clamp((far - approach_xy_dist)/(far-near), 0, 1). approach_xy_dist=rim_center 기준.
@@ -338,7 +342,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Stage B — bead (정밀 조준 종속 — "높은 데서 대충 부어 넣기" 차단)
     weight_bead_in: float = 0.0  # [release-delta probe] 누적 target 상태 reward 제거
     weight_source_release: float = 100.0  # 소스 잔량 감소분만 transient 보상
-    weight_target_capture_delta: float = 400.0  # [lstm_test3] 200→400: 실제 착지 outcome pull 강화 (dense pose-farm 대비)
+    weight_target_capture_delta: float = 200.0  # [lstm_test4] test3 400→200 복원: bank 품질 게이트 격리 검증.
     weight_bead_cross: float = 150.0  # 레거시 입구 관통 reward config. 현재 reward path 미사용.
     weight_source_drain: float = 0.0  # [release-delta probe] 누적 source-empty 상태 reward 제거
     drain_tilt_min: float = 0.05   # aim_gate tilt 임계 (직립 조기 drain 차단)
@@ -468,6 +472,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     deep_tilt_capture_tilt_min: float = 0.40       # tilt_amount=(1-cosθ)/2; 0.40≈78°
     deep_tilt_capture_src_min: float = 0.80        # 비드 source 보유율 하한 (공짜 pour 방지, audit Check 2)
     deep_tilt_capture_mouth_max: float = 0.08      # pour-point xy 거리 상한 (target 위)
+    # [lstm_test4] grasp 품질 게이트: 슬립 중인 상태 캡처 금지 → bank 자기 오염 방지 (test3 붕괴 원인)
+    deep_tilt_capture_drift_max: float = 12.0      # cup_rel_drift 상한 [deg] (grasp 일관성)
+    deep_tilt_capture_contacts_min: float = 3.0    # 최소 접점 수 (파지 유지)
     deep_tilt_capture_prob: float = 0.05           # qualifying env를 step당 저장할 확률 (중복 억제)
     deep_tilt_boot_min_count: int = 64             # 이 수 이상 쌓여야 부트스트랩 시작
     deep_tilt_f_boot_start: float = 0.5            # 초기 부트스트랩 비율
@@ -595,27 +602,27 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                 stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
                 damping=200.0,
             ),
-            # [lstm_test3] deep tilt grasp slip(28°) 대응: 손 PD stiffness ~2.2× (freeze 유지, action 불변).
-            #   damping은 안정성 위해 ~1.5× (감쇠비 유지). 과증가 시 접촉 jitter 가능 → 검증 필요.
+            # [lstm_test4] test3 stiffness 2.2× 복원(220/200→100/90): drift에 무효과 + bank 게이트 격리 검증.
+            #   슬립이 bank 정화 후에도 남으면 그때 grasp 구조(stiffness/파지 자세)를 격리 변경.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
-                stiffness=200.0,   # 90→200
-                damping=24.0,      # 15→24
+                stiffness=90.0,
+                damping=15.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                stiffness=220.0,   # 100→220
-                damping=28.0,      # 18→28
+                stiffness=100.0,
+                damping=18.0,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                stiffness=220.0,   # 100→220
-                damping=28.0,      # 18→28
+                stiffness=100.0,
+                damping=18.0,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                stiffness=220.0,   # 100→220
-                damping=28.0,      # 18→28
+                stiffness=100.0,
+                damping=18.0,
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],

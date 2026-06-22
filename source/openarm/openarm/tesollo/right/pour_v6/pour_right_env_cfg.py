@@ -234,6 +234,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_z_clearance_max: float = 0.050
     success_hold_steps: int = 10
     drop_force_hold_steps: int = 10
+    # [lstm_test4] 파지 붕괴 종료: cup_rel_drift 과대(슬립/타겟충돌로 파지 붕괴)가 지속되면 terminated.
+    #   약한 접촉이 남아 drop_force_hold가 못 잡는 케이스 → 깨진 grasp로 episode 오염 방지.
+    grasp_break_drift_deg: float = 45.0   # 정상 deep tilt drift(~30°) 위 마진 (정상 tilt 안 죽임)
+    grasp_break_hold_steps: int = 15      # 연속 지속 시 종료 (transient spike 무시)
     # 소스 컵이 비어있는 상태가 N 스텝 연속 지속되면 에피소드 종료
     # 비드 낙하 + 착지에 ~0.3~0.5초 필요 → 60 steps (1.0s @ 60Hz) 여유
     source_empty_hold_steps: int = 60
@@ -304,7 +308,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_tilt_pre: float = 8.0     # [test8] 미사용(r_tilt_A 폐기). 구 기록 참조용 유지
 
     # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
-    weight_tilt: float = 35.0      # [align-off probe] tilt를 주 drive로 격상. align(35)은 0으로 제거.
+    weight_tilt: float = 35.0      # [lstm_test4] test3 20→35 복원: bank 품질 게이트를 단일 변경으로 격리 검증.
     tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·prox_gate)
     # [06.21 Phase2] tilt 게이트를 latch(binary)→연속 근접 게이트로 교체(순환 게이트 절단).
     #   prox_gate = clamp((far - approach_xy_dist)/(far-near), 0, 1). approach_xy_dist=rim_center 기준.
@@ -338,7 +342,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Stage B — bead (정밀 조준 종속 — "높은 데서 대충 부어 넣기" 차단)
     weight_bead_in: float = 0.0  # [release-delta probe] 누적 target 상태 reward 제거
     weight_source_release: float = 100.0  # 소스 잔량 감소분만 transient 보상
-    weight_target_capture_delta: float = 200.0  # target 컵으로 새로 들어온 bead delta 보상
+    weight_target_capture_delta: float = 200.0  # [lstm_test4] test3 400→200 복원: bank 품질 게이트 격리 검증.
     weight_bead_cross: float = 150.0  # 레거시 입구 관통 reward config. 현재 reward path 미사용.
     weight_source_drain: float = 0.0  # [release-delta probe] 누적 source-empty 상태 reward 제거
     drain_tilt_min: float = 0.05   # aim_gate tilt 임계 (직립 조기 drain 차단)
@@ -458,6 +462,24 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
+
+    # [lstm_test1 §6] deep-tilt 부트스트랩: sparse chicken-and-egg 해소.
+    #   학습 중 정책이 만드는 "deep-tilt + target 위 + 비드 source 보유" 실제 프레임을
+    #   full-snapshot으로 캡처했다가 일부 reset을 그 상태에서 시작 → 정책이 마지막 push만
+    #   학습해 200 캡처 보상을 경험. f_boot anneal로 직립 시작에 전이. (probe로 feasibility 확증)
+    enable_deep_tilt_boot: bool = True
+    deep_tilt_boot_capacity: int = 4096            # ring buffer 용량 (full-snapshot 수)
+    deep_tilt_capture_tilt_min: float = 0.40       # tilt_amount=(1-cosθ)/2; 0.40≈78°
+    deep_tilt_capture_src_min: float = 0.80        # 비드 source 보유율 하한 (공짜 pour 방지, audit Check 2)
+    deep_tilt_capture_mouth_max: float = 0.08      # pour-point xy 거리 상한 (target 위)
+    # [lstm_test4] grasp 품질 게이트: 슬립 중인 상태 캡처 금지 → bank 자기 오염 방지 (test3 붕괴 원인)
+    deep_tilt_capture_drift_max: float = 12.0      # cup_rel_drift 상한 [deg] (grasp 일관성)
+    deep_tilt_capture_contacts_min: float = 3.0    # 최소 접점 수 (파지 유지)
+    deep_tilt_capture_prob: float = 0.05           # qualifying env를 step당 저장할 확률 (중복 억제)
+    deep_tilt_boot_min_count: int = 64             # 이 수 이상 쌓여야 부트스트랩 시작
+    deep_tilt_f_boot_start: float = 0.5            # 초기 부트스트랩 비율
+    deep_tilt_f_boot_end: float = 0.0              # anneal 종착 (직립 전이)
+    deep_tilt_anneal_steps: int = 300_000          # progress = common_step_counter / anneal_steps
     # warmstart 초기 상태 소스:
     #   "disk"   : grasp 가 디스크에 저장한 캐시(grasp_warm_v7_2.hdf5) 로드 (권장).
     #              startup 시 grasp policy rollout 불필요 → 분포/포맷 불일치 제거.
@@ -580,6 +602,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                 stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
                 damping=200.0,
             ),
+            # [lstm_test4] test3 stiffness 2.2× 복원(220/200→100/90): drift에 무효과 + bank 게이트 격리 검증.
+            #   슬립이 bank 정화 후에도 남으면 그때 grasp 구조(stiffness/파지 자세)를 격리 변경.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
                 stiffness=90.0,

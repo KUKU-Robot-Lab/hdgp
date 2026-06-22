@@ -616,6 +616,8 @@ class PourRightEnv(DirectRLEnv):
         self._first_capture_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._no_tip_force_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._grasp_break_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._grasp_broken_rate = torch.zeros((), device=self.device)   # 로깅: 파지붕괴 종료율
         self._source_empty_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._pour_ready_latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._world_up = torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
@@ -2099,6 +2101,7 @@ class PourRightEnv(DirectRLEnv):
                 device=self.device,
             ),
             "log/deep_tilt_f_boot":      torch.tensor(float(self._deep_tilt_f_boot_log), device=self.device),
+            "log/grasp_broken":          self._grasp_broken_rate,
             "log/corridor_score":        corridor_score.mean(),
             "log/approach_corridor_score": _approach_corridor_score.mean(),
             "log/approach_corridor_miss": approach_corridor_miss.mean(),
@@ -2228,6 +2231,21 @@ class PourRightEnv(DirectRLEnv):
         )
         dropped_by_force = drop_force_active & (self._no_tip_force_steps >= self.cfg.drop_force_hold_steps)
 
+        # [lstm_test4] 파지 붕괴 종료: cup_rel_drift 과대(컵이 손 대비 과회전 = 슬립/타겟충돌로 파지 붕괴)가
+        #   지속되면 종료. 약한 접촉이 남아 dropped_by_force가 못 잡는 케이스 → 깨진 grasp episode 오염 방지.
+        grasp_broken_now = (
+            (self._cup_rel_drift_deg > self.cfg.grasp_break_drift_deg)
+            & (self.episode_length_buf >= self.cfg.episode_hold_steps)
+            & (~torch.full_like(no_tip_force, self._warmstart_collect_mode, dtype=torch.bool))
+        )
+        self._grasp_break_steps = torch.where(
+            grasp_broken_now,
+            self._grasp_break_steps + 1,
+            torch.zeros_like(self._grasp_break_steps),
+        )
+        grasp_broken = self._grasp_break_steps >= self.cfg.grasp_break_hold_steps
+        self._grasp_broken_rate = grasp_broken.float().mean()
+
         # 소스 컵이 비어있는 상태가 source_empty_hold_steps 연속 지속되면 종료.
         # hold 버퍼를 두는 이유: 비드가 공중에 있는 동안 종료하면 타겟 컵 착지 전에 에피소드가
         # 끝나 capture 집계가 누락될 수 있음 → 30 steps(0.5s) 대기 후 최종 판정.
@@ -2267,7 +2285,7 @@ class PourRightEnv(DirectRLEnv):
         #   → 비드를 다 부으면 보상 스트림이 V=0으로 절단되던 park-farming 유인 제거.
         terminated = (
             out_x | out_y | fallen | dropped_by_force
-            | bead_fallen
+            | bead_fallen | grasp_broken
         )
         truncated  = (
             (self.episode_length_buf >= self.max_episode_length - 1)
@@ -2447,6 +2465,7 @@ class PourRightEnv(DirectRLEnv):
         self._all_beads_bonus_paid[env_ids] = False
         self._first_capture_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
+        self._grasp_break_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
         self._pour_ready_latched[env_ids] = False
         self.success_flag[env_ids] = False
@@ -2657,9 +2676,13 @@ class PourRightEnv(DirectRLEnv):
             tilt_amount,
             self._bead_in_source_fraction,
             self._mouth_xy_distance,
+            self._cup_rel_drift_deg,            # grasp 품질: 슬립 큰 상태 배제 (자기 오염 방지)
+            self.num_contacts_buf.float(),
             tilt_min=self.cfg.deep_tilt_capture_tilt_min,
             src_min=self.cfg.deep_tilt_capture_src_min,
             mouth_max=self.cfg.deep_tilt_capture_mouth_max,
+            drift_max=self.cfg.deep_tilt_capture_drift_max,
+            contacts_min=self.cfg.deep_tilt_capture_contacts_min,
         )
         # hold 구간(비드 미소환/물리 안착)은 시드로 부적합 → 제외
         active = qual & (self.episode_length_buf >= self.cfg.episode_hold_steps) & self._beads_spawned
@@ -2860,6 +2883,7 @@ class PourRightEnv(DirectRLEnv):
         self._all_beads_bonus_paid[env_ids] = False
         self._first_capture_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
+        self._grasp_break_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
         self._pour_ready_latched[env_ids] = False
         self.success_flag[env_ids] = False

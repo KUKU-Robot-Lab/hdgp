@@ -93,6 +93,7 @@ from .pour_right_preset import (
 from .pour_right_utils import pour_corridor_score, scale, to_torch
 from .demo_pose_reference import DemoPoseReferenceBank
 from .warm_state_bank import PourWarmStateBank
+from .deep_tilt_bank import DeepTiltStateBank, capture_mask, f_boot_ratio
 
 
 
@@ -615,6 +616,8 @@ class PourRightEnv(DirectRLEnv):
         self._first_capture_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._no_tip_force_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._grasp_break_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._grasp_broken_rate = torch.zeros((), device=self.device)   # 로깅: 파지붕괴 종료율
         self._source_empty_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._pour_ready_latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._world_up = torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
@@ -629,6 +632,21 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
         self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
+
+        # [lstm_test1 §6] deep-tilt 부트스트랩 bank (실제 near-pour 프레임 full-snapshot)
+        self._deep_tilt_bank = (
+            DeepTiltStateBank(
+                capacity=int(self.cfg.deep_tilt_boot_capacity),
+                num_arm=NUM_ARM_DOF,
+                num_hand=NUM_HAND_DOF,
+                num_beads=self.num_beads,
+                device=self.device,
+            )
+            if getattr(self.cfg, "enable_deep_tilt_boot", False)
+            else None
+        )
+        self._deep_tilt_f_boot_log = 0.0   # 직전 reset의 f_boot (로깅)
+
         # GUI 시각화: pour_point(빨강)만 표시 (cfg.enable_visual_markers)
         if cfg.enable_visual_markers:
             self._vis_markers = VisualizationMarkers(
@@ -1356,6 +1374,9 @@ class PourRightEnv(DirectRLEnv):
         # Bead flags & spill
         self._compute_bead_flags()
 
+        # [lstm_test1 §6] deep-tilt 부트스트랩 시드 캡처 (bead flags 갱신 후 = 최신 source 보유율)
+        self._maybe_capture_deep_tilt()
+
         if self._vis_markers is not None:
             # pour_point(빨강)만 마킹 (단일 마커 → marker_indices 기본 0)
             self._vis_markers.visualize(translations=self._source_pour_point_w)
@@ -2065,6 +2086,12 @@ class PourRightEnv(DirectRLEnv):
             "log/g_ready":               g_ready.mean(),
             "log/stageB_active":         (g_ready > 0.5).float().mean(),
             "log/aim_gate":              aim_gate.mean(),
+            "log/deep_tilt_bank_count":  torch.tensor(
+                float(self._deep_tilt_bank.count if self._deep_tilt_bank is not None else 0),
+                device=self.device,
+            ),
+            "log/deep_tilt_f_boot":      torch.tensor(float(self._deep_tilt_f_boot_log), device=self.device),
+            "log/grasp_broken":          self._grasp_broken_rate,
             "log/corridor_score":        corridor_score.mean(),
             "log/approach_corridor_score": _approach_corridor_score.mean(),
             "log/approach_corridor_miss": approach_corridor_miss.mean(),
@@ -2194,6 +2221,21 @@ class PourRightEnv(DirectRLEnv):
         )
         dropped_by_force = drop_force_active & (self._no_tip_force_steps >= self.cfg.drop_force_hold_steps)
 
+        # [lstm_test4] 파지 붕괴 종료: cup_rel_drift 과대(컵이 손 대비 과회전 = 슬립/타겟충돌로 파지 붕괴)가
+        #   지속되면 종료. 약한 접촉이 남아 dropped_by_force가 못 잡는 케이스 → 깨진 grasp episode 오염 방지.
+        grasp_broken_now = (
+            (self._cup_rel_drift_deg > self.cfg.grasp_break_drift_deg)
+            & (self.episode_length_buf >= self.cfg.episode_hold_steps)
+            & (~torch.full_like(no_tip_force, self._warmstart_collect_mode, dtype=torch.bool))
+        )
+        self._grasp_break_steps = torch.where(
+            grasp_broken_now,
+            self._grasp_break_steps + 1,
+            torch.zeros_like(self._grasp_break_steps),
+        )
+        grasp_broken = self._grasp_break_steps >= self.cfg.grasp_break_hold_steps
+        self._grasp_broken_rate = grasp_broken.float().mean()
+
         # 소스 컵이 비어있는 상태가 source_empty_hold_steps 연속 지속되면 종료.
         # hold 버퍼를 두는 이유: 비드가 공중에 있는 동안 종료하면 타겟 컵 착지 전에 에피소드가
         # 끝나 capture 집계가 누락될 수 있음 → 30 steps(0.5s) 대기 후 최종 판정.
@@ -2233,7 +2275,7 @@ class PourRightEnv(DirectRLEnv):
         #   → 비드를 다 부으면 보상 스트림이 V=0으로 절단되던 park-farming 유인 제거.
         terminated = (
             out_x | out_y | fallen | dropped_by_force
-            | bead_fallen
+            | bead_fallen | grasp_broken
         )
         truncated  = (
             (self.episode_length_buf >= self.max_episode_length - 1)
@@ -2267,7 +2309,12 @@ class PourRightEnv(DirectRLEnv):
 
         self.episode_success_buf[env_ids] = False
         if (not self._warmstart_collect_mode) and self._warmstart_cache_count > 0:
-            self._reset_from_warmstart_cache(env_ids)
+            # [lstm_test1 §6] f_boot 비율은 deep-tilt bank에서, 나머지는 직립 warmstart에서 시작.
+            boot_ids, ws_ids = self._split_deep_tilt_boot(env_ids_t_reset)
+            if ws_ids.numel() > 0:
+                self._reset_from_warmstart_cache(ws_ids)
+            if boot_ids.numel() > 0:
+                self._reset_from_deep_tilt_bank(boot_ids)
             return
 
         # ---- 1. 로봇 관절 상태 리셋 ----
@@ -2408,6 +2455,7 @@ class PourRightEnv(DirectRLEnv):
         self._all_beads_bonus_paid[env_ids] = False
         self._first_capture_bonus_paid[env_ids] = False
         self._no_tip_force_steps[env_ids] = 0
+        self._grasp_break_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
         self._pour_ready_latched[env_ids] = False
         self.success_flag[env_ids] = False
@@ -2603,6 +2651,49 @@ class PourRightEnv(DirectRLEnv):
             flush=True,
         )
 
+    def _maybe_capture_deep_tilt(self) -> None:
+        """deep-tilt 부트스트랩 시드 캡처 (analysis.md lstm_test1 §6).
+
+        "tilt 충분히 깊음 + 비드 source 보유 + pour-point target 위" 상태의 env를
+        full-snapshot(arm/hand joint, palm 제어기준, cup 실제 pose, bead state)으로 bank에 저장.
+        hold 구간 제외, 확률 subsample로 중복 억제. (reward 불변; 시작 상태 분포만 변경)
+        """
+        bank = self._deep_tilt_bank
+        if bank is None or self._warmstart_collect_mode:
+            return
+        tilt_amount = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
+        qual = capture_mask(
+            tilt_amount,
+            self._bead_in_source_fraction,
+            self._mouth_xy_distance,
+            self._cup_rel_drift_deg,            # grasp 품질: 슬립 큰 상태 배제 (자기 오염 방지)
+            self.num_contacts_buf.float(),
+            tilt_min=self.cfg.deep_tilt_capture_tilt_min,
+            src_min=self.cfg.deep_tilt_capture_src_min,
+            mouth_max=self.cfg.deep_tilt_capture_mouth_max,
+            drift_max=self.cfg.deep_tilt_capture_drift_max,
+            contacts_min=self.cfg.deep_tilt_capture_contacts_min,
+        )
+        # hold 구간(비드 미소환/물리 안착)은 시드로 부적합 → 제외
+        active = qual & (self.episode_length_buf >= self.cfg.episode_hold_steps) & self._beads_spawned
+        if self.cfg.deep_tilt_capture_prob < 1.0:
+            active = active & (
+                torch.rand(self.num_envs, device=self.device) < self.cfg.deep_tilt_capture_prob
+            )
+        ids = active.nonzero(as_tuple=False).squeeze(-1)
+        if ids.numel() == 0:
+            return
+        m = ids.numel()
+        arm = self.robot.data.joint_pos[ids][:, self.arm_dof_indices]
+        hand = self.robot.data.joint_pos[ids][:, self.hand_dof_indices]
+        palm_pose = self.palm_pose_targets[ids].clone()          # 제어 기준 (pos + quat_xyzw)
+        cup_pose = torch.zeros(m, 7, device=self.device)
+        cup_pose[:, :3] = self.cup.data.root_pos_w[ids] - self.scene.env_origins[ids]  # env-local pos
+        cup_pose[:, 3:7] = self.cup.data.root_quat_w[ids]        # 실제 quat (upright 강제 안 함)
+        bead_state = self.beads.data.object_state_w[ids].clone()  # (m, num_beads, 13)
+        bead_state[:, :, :3] = bead_state[:, :, :3] - self.scene.env_origins[ids].unsqueeze(1)  # env-local
+        bank.store(arm, hand, palm_pose, cup_pose, bead_state)
+
     def _maybe_store_warmstart_successes(self, env_ids: Sequence[int]) -> None:
         """에피소드 종료 시 v7-2 final state를 warmstart 캐시에 저장.
 
@@ -2713,60 +2804,7 @@ class PourRightEnv(DirectRLEnv):
         self._hide_beads(env_ids)
         self._beads_spawned[env_ids] = False
 
-        self.contact_force_raw[env_ids].zero_()
-        self.binary_contact_buf[env_ids] = False
-        self.num_contacts_buf[env_ids] = 0
-        self.distal_contact_force_raw[env_ids].zero_()
-        self.distal_binary_contact_buf[env_ids] = False
-        self.middle_contact_force_raw[env_ids].zero_()
-        self.middle_binary_contact_buf[env_ids] = False
-        self._bead_in_target[env_ids] = False
-        self._bead_in_source[env_ids] = False
-        self._bead_ever_in_target[env_ids] = False
-        self._bead_crossed_target_mouth[env_ids] = False
-        self._prev_bead_target_local_z[env_ids] = 10.0  # [H14] fix: [env_ids].fill_()는 복사본 채우는 no-op였음
-        self._needs_grasp_init_update[env_ids] = True   # 다음 스텝에 palm local init 갱신
-        self._bead_cross_count[env_ids] = 0
-        self._bead_cross_fraction[env_ids] = 0.0
-        self._prev_bead_ever_in_target_count[env_ids] = 0
-        self._bead_in_target_fraction[env_ids] = 0.0
-        self._bead_in_source_fraction[env_ids] = 0.0
-        self._bead_in_source_delta[env_ids] = 0.0
-        self._bead_in_target_delta[env_ids] = 0.0
-        self._bead_cross_delta[env_ids] = 0.0
-        self._spill_delta[env_ids] = 0.0
-        self._bead_centroid_w[env_ids].zero_()
-        self._spill_ratio[env_ids] = 0.0
-        self._all_beads_bonus_paid[env_ids] = False
-        self._first_capture_bonus_paid[env_ids] = False
-        self._no_tip_force_steps[env_ids] = 0
-        self._source_empty_steps[env_ids] = 0
-        self._pour_ready_latched[env_ids] = False
-        self.success_flag[env_ids] = False
-        self._prev_arm_joint_vel[env_ids].zero_()
-        self._prev_arm_joint_acc[env_ids].zero_()   # [Step 6]
-        self._ema_palm_action[env_ids].zero_()       # [Step 7]
-        self._raw_palm_action[env_ids].zero_()
-        self._applied_palm_action[env_ids].zero_()
-        self._action_tilt_gate[env_ids] = 1.0
-        self._cmd_delta_pre_gate[env_ids].zero_()
-        self._cmd_delta_post_gate[env_ids].zero_()
-        self._cmd_delta_rotvec_world[env_ids].zero_()
-        self._cmd_palm_target_delta[env_ids].zero_()
-        self._grasp_cup_quat_palm_init[env_ids].zero_()
-        self._grasp_cup_quat_palm_init[env_ids, 0] = 1.0
-        self._palm_target_rot_error_deg[env_ids].zero_()
-        self._cup_rel_drift_deg[env_ids].zero_()
-        self._cmd_minus_actual_tilt_deg[env_ids].zero_()
-        self._prev_tilt_amount_log[env_ids].zero_()
-
-        self.actions[env_ids, :] = 0.0
-        self.prev_actions[env_ids, :] = 0.0
-        self._raw_null_action[env_ids] = 0.0
-        self._ema_null_action[env_ids] = 0.0
-        self._pre_pour_ready_steps[env_ids] = 0
-        self.success_flag[env_ids] = False
-        self._intermediate_values_step = -1
+        self._clear_episode_buffers(env_ids)
 
         if not self._warmstart_reset_debug_printed:
             source_pour_point_w = cup_pose_world[:, :3] + quat_apply(
@@ -2801,3 +2839,154 @@ class PourRightEnv(DirectRLEnv):
                     flush=True,
                 )
             self._warmstart_reset_debug_printed = True
+
+    def _clear_episode_buffers(self, env_ids: Sequence[int]) -> None:
+        """리셋 시 per-env episode 버퍼 초기화 (warmstart/deep-tilt 복원 공통).
+
+        bead flags·접촉·action·드리프트 로그 등 시작 상태와 무관하게 항상 0으로
+        리셋해야 하는 버퍼만 다룬다. (joint/cup/bead 물리 상태 쓰기는 호출부가 담당)
+        """
+        self.contact_force_raw[env_ids].zero_()
+        self.binary_contact_buf[env_ids] = False
+        self.num_contacts_buf[env_ids] = 0
+        self.distal_contact_force_raw[env_ids].zero_()
+        self.distal_binary_contact_buf[env_ids] = False
+        self.middle_contact_force_raw[env_ids].zero_()
+        self.middle_binary_contact_buf[env_ids] = False
+        self._bead_in_target[env_ids] = False
+        self._bead_in_source[env_ids] = False
+        self._bead_ever_in_target[env_ids] = False
+        self._bead_crossed_target_mouth[env_ids] = False
+        self._prev_bead_target_local_z[env_ids] = 10.0  # [H14] fix: [env_ids].fill_()는 복사본 채우는 no-op였음
+        self._needs_grasp_init_update[env_ids] = True   # 다음 스텝에 palm local init 갱신
+        self._bead_cross_count[env_ids] = 0
+        self._bead_cross_fraction[env_ids] = 0.0
+        self._prev_bead_ever_in_target_count[env_ids] = 0
+        self._bead_in_target_fraction[env_ids] = 0.0
+        self._bead_in_source_fraction[env_ids] = 0.0
+        self._bead_in_source_delta[env_ids] = 0.0
+        self._bead_in_target_delta[env_ids] = 0.0
+        self._bead_cross_delta[env_ids] = 0.0
+        self._spill_delta[env_ids] = 0.0
+        self._bead_centroid_w[env_ids].zero_()
+        self._spill_ratio[env_ids] = 0.0
+        self._all_beads_bonus_paid[env_ids] = False
+        self._first_capture_bonus_paid[env_ids] = False
+        self._no_tip_force_steps[env_ids] = 0
+        self._grasp_break_steps[env_ids] = 0
+        self._source_empty_steps[env_ids] = 0
+        self._pour_ready_latched[env_ids] = False
+        self.success_flag[env_ids] = False
+        self._prev_arm_joint_vel[env_ids].zero_()
+        self._prev_arm_joint_acc[env_ids].zero_()   # [Step 6]
+        self._ema_palm_action[env_ids].zero_()       # [Step 7]
+        self._raw_palm_action[env_ids].zero_()
+        self._applied_palm_action[env_ids].zero_()
+        self._action_tilt_gate[env_ids] = 1.0
+        self._cmd_delta_pre_gate[env_ids].zero_()
+        self._cmd_delta_post_gate[env_ids].zero_()
+        self._cmd_delta_rotvec_world[env_ids].zero_()
+        self._cmd_palm_target_delta[env_ids].zero_()
+        self._grasp_cup_quat_palm_init[env_ids].zero_()
+        self._grasp_cup_quat_palm_init[env_ids, 0] = 1.0
+        self._palm_target_rot_error_deg[env_ids].zero_()
+        self._cup_rel_drift_deg[env_ids].zero_()
+        self._cmd_minus_actual_tilt_deg[env_ids].zero_()
+        self._prev_tilt_amount_log[env_ids].zero_()
+
+        self.actions[env_ids, :] = 0.0
+        self.prev_actions[env_ids, :] = 0.0
+        self._raw_null_action[env_ids] = 0.0
+        self._ema_null_action[env_ids] = 0.0
+        self._pre_pour_ready_steps[env_ids] = 0
+        self.success_flag[env_ids] = False
+        self._intermediate_values_step = -1
+
+    def _split_deep_tilt_boot(self, env_ids_t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """리셋 env를 deep-tilt 부트스트랩(boot)과 직립 warmstart(ws)로 분할.
+
+        bank이 준비(min_count 이상)되고 f_boot>0일 때만 f_boot 비율을 boot로 보낸다.
+        f_boot는 common_step_counter / anneal_steps progress로 start→end 선형 감쇠.
+        """
+        bank = self._deep_tilt_bank
+        empty = env_ids_t[:0]
+        if bank is None or not bank.is_ready(self.cfg.deep_tilt_boot_min_count):
+            self._deep_tilt_f_boot_log = 0.0
+            return empty, env_ids_t
+        progress = float(self.common_step_counter) / max(int(self.cfg.deep_tilt_anneal_steps), 1)
+        f_boot = f_boot_ratio(
+            progress,
+            f_start=self.cfg.deep_tilt_f_boot_start,
+            f_end=self.cfg.deep_tilt_f_boot_end,
+        )
+        self._deep_tilt_f_boot_log = f_boot
+        if f_boot <= 0.0:
+            return empty, env_ids_t
+        pick = torch.rand(env_ids_t.numel(), device=self.device) < f_boot
+        return env_ids_t[pick], env_ids_t[~pick]
+
+    def _reset_from_deep_tilt_bank(self, env_ids: torch.Tensor) -> None:
+        """deep-tilt bank의 실제 near-pour 프레임에서 시작 (full-snapshot 복원).
+
+        _reset_from_warmstart_cache를 미러링하되 (a) cup을 실제 tilt quat로 복원,
+        (b) 비드를 재소환 대신 캡처값으로 복원, (c) palm z_boost 미적용. 컵을 재배치하지
+        않고 캡처된 일관 프레임을 그대로 되살려 텔레포트 튕김을 회피한다.
+        """
+        bank = self._deep_tilt_bank
+        n = len(env_ids)
+        pick = bank.sample(n)
+        arm_pos = bank.arm[pick]
+        hand_pos = bank.hand[pick]
+        palm_pose = bank.palm_pose[pick]
+        cup_pose_local = bank.cup_pose[pick]          # pos(env-local) + 실제 quat_wxyz
+        bead_state_local = bank.bead_state[pick]      # (n, num_beads, 13), pos env-local
+
+        full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
+        full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
+        full_pos[:, self.arm_dof_indices] = arm_pos
+        full_pos[:, self.hand_dof_indices] = hand_pos
+        full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
+
+        self.fabric_q[env_ids].zero_()
+        self.fabric_q[env_ids, :NUM_ARM_DOF] = arm_pos
+        self.fabric_q[env_ids, NUM_ARM_DOF:] = hand_pos
+        self.fabric_qd[env_ids].zero_()
+        self.fabric_qdd[env_ids].zero_()
+
+        self.pregrasp_arm_pos_buf[env_ids] = arm_pos
+        self.grasp_hold_hand_pos_buf[env_ids] = hand_pos
+
+        boot_palm_pose = palm_pose.clone()
+        boot_palm_pose[:, :3] = torch.max(
+            torch.min(boot_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
+        )
+        self.pregrasp_palm_pose_buf[env_ids] = boot_palm_pose
+        self.palm_pose_targets[env_ids] = boot_palm_pose
+        self.hand_joint_targets[env_ids] = hand_pos
+        self.object_init_pos[env_ids] = cup_pose_local[:, :3]
+        self.object_init_pos[env_ids, 2] = self.cfg.object_spawn_z  # 테이블 높이 기준 (warmstart와 동일)
+        self._grasp_rel_palm_to_cup_init[env_ids] = cup_pose_local[:, :3] - palm_pose[:, :3]
+        self._grasp_cup_height_init[env_ids] = cup_pose_local[:, 2]
+        self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = arm_pos
+
+        cup_pose_world = cup_pose_local.clone()
+        cup_pose_world[:, :3] += self.scene.env_origins[env_ids]
+        zero_vel = torch.zeros(n, 6, device=self.device)
+        self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
+        self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+
+        left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
+        self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
+        self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
+        self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+
+        # 비드: 캡처값 복원 (재소환 금지). pos를 대상 env 원점으로 옮기고 속도는 0으로 안정화.
+        bead_state_world = bead_state_local.clone()
+        bead_state_world[:, :, :3] = bead_state_world[:, :, :3] + self.scene.env_origins[env_ids].unsqueeze(1)
+        bead_state_world[:, :, 7:13] = 0.0
+        self.beads.write_object_state_to_sim(bead_state_world, env_ids=env_ids)
+        self._beads_spawned[env_ids] = True   # hold 종료 시 재소환 방지 (이미 컵 안에 있음)
+
+        self._clear_episode_buffers(env_ids)
