@@ -1325,10 +1325,7 @@ class GraspRightEnv(DirectRLEnv):
             prelift_rim_lift_penalty * prelift_mask
         ).sum() / prelift_mask.sum().clamp(min=1.0)
         self.extras["debug/tesollo/control/raw_palm_action_norm"] = (
-            self.actions[:, :6].norm(dim=-1).mean()
-        )
-        self.extras["debug/tesollo/control/ema_palm_action_norm"] = (
-            self._ema_palm_action.norm(dim=-1).mean()
+            self.actions[:, :7].norm(dim=-1).mean()
         )
         self.extras["debug/tesollo/control/palm_target_position_error"] = (
             self.palm_pose_targets[:, :3] - self.palm_center_pos

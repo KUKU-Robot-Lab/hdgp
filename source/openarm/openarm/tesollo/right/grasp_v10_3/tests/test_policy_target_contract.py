@@ -167,11 +167,13 @@ def test_tesollo_debug_logs_are_namespaced_and_cover_rim_hook_diagnostics() -> N
     assert 'self.extras["debug/rh56f1/' not in env
 
 
-def test_incremental_fabrics_logs_command_and_tracking_diagnostics() -> None:
+def test_absolute_fabrics_logs_command_and_tracking_diagnostics() -> None:
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
 
     assert '"debug/tesollo/control/raw_palm_action_norm"' in env
-    assert '"debug/tesollo/control/ema_palm_action_norm"' in env
+    assert "self.actions[:, :7].norm(dim=-1).mean()" in env
+    assert "_ema_palm_action" not in env
+    assert '"debug/tesollo/control/ema_palm_action_norm"' not in env
     assert '"debug/tesollo/control/palm_target_position_error"' in env
 
 
