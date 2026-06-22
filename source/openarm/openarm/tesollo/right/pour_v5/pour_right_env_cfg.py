@@ -304,7 +304,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_tilt_pre: float = 8.0     # [test8] 미사용(r_tilt_A 폐기). 구 기록 참조용 유지
 
     # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
-    weight_tilt: float = 35.0      # [align-off probe] tilt를 주 drive로 격상. align(35)은 0으로 제거.
+    weight_tilt: float = 20.0      # [lstm_test3] 35→20: dense tilt farm 축소(state bank가 tilt 부트스트랩 담당). pose-farm vs pour 균형.
     tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·prox_gate)
     # [06.21 Phase2] tilt 게이트를 latch(binary)→연속 근접 게이트로 교체(순환 게이트 절단).
     #   prox_gate = clamp((far - approach_xy_dist)/(far-near), 0, 1). approach_xy_dist=rim_center 기준.
@@ -338,7 +338,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Stage B — bead (정밀 조준 종속 — "높은 데서 대충 부어 넣기" 차단)
     weight_bead_in: float = 0.0  # [release-delta probe] 누적 target 상태 reward 제거
     weight_source_release: float = 100.0  # 소스 잔량 감소분만 transient 보상
-    weight_target_capture_delta: float = 200.0  # target 컵으로 새로 들어온 bead delta 보상
+    weight_target_capture_delta: float = 400.0  # [lstm_test3] 200→400: 실제 착지 outcome pull 강화 (dense pose-farm 대비)
     weight_bead_cross: float = 150.0  # 레거시 입구 관통 reward config. 현재 reward path 미사용.
     weight_source_drain: float = 0.0  # [release-delta probe] 누적 source-empty 상태 reward 제거
     drain_tilt_min: float = 0.05   # aim_gate tilt 임계 (직립 조기 drain 차단)
@@ -458,6 +458,21 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
+
+    # [lstm_test1 §6] deep-tilt 부트스트랩: sparse chicken-and-egg 해소.
+    #   학습 중 정책이 만드는 "deep-tilt + target 위 + 비드 source 보유" 실제 프레임을
+    #   full-snapshot으로 캡처했다가 일부 reset을 그 상태에서 시작 → 정책이 마지막 push만
+    #   학습해 200 캡처 보상을 경험. f_boot anneal로 직립 시작에 전이. (probe로 feasibility 확증)
+    enable_deep_tilt_boot: bool = True
+    deep_tilt_boot_capacity: int = 4096            # ring buffer 용량 (full-snapshot 수)
+    deep_tilt_capture_tilt_min: float = 0.40       # tilt_amount=(1-cosθ)/2; 0.40≈78°
+    deep_tilt_capture_src_min: float = 0.80        # 비드 source 보유율 하한 (공짜 pour 방지, audit Check 2)
+    deep_tilt_capture_mouth_max: float = 0.08      # pour-point xy 거리 상한 (target 위)
+    deep_tilt_capture_prob: float = 0.05           # qualifying env를 step당 저장할 확률 (중복 억제)
+    deep_tilt_boot_min_count: int = 64             # 이 수 이상 쌓여야 부트스트랩 시작
+    deep_tilt_f_boot_start: float = 0.5            # 초기 부트스트랩 비율
+    deep_tilt_f_boot_end: float = 0.0              # anneal 종착 (직립 전이)
+    deep_tilt_anneal_steps: int = 300_000          # progress = common_step_counter / anneal_steps
     # warmstart 초기 상태 소스:
     #   "disk"   : grasp 가 디스크에 저장한 캐시(grasp_warm_v7_2.hdf5) 로드 (권장).
     #              startup 시 grasp policy rollout 불필요 → 분포/포맷 불일치 제거.
@@ -580,25 +595,27 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                 stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
                 damping=200.0,
             ),
+            # [lstm_test3] deep tilt grasp slip(28°) 대응: 손 PD stiffness ~2.2× (freeze 유지, action 불변).
+            #   damping은 안정성 위해 ~1.5× (감쇠비 유지). 과증가 시 접촉 jitter 가능 → 검증 필요.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
-                stiffness=90.0,
-                damping=15.0,
+                stiffness=200.0,   # 90→200
+                damping=24.0,      # 15→24
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                stiffness=100.0,
-                damping=18.0,
+                stiffness=220.0,   # 100→220
+                damping=28.0,      # 18→28
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                stiffness=100.0,
-                damping=18.0,
+                stiffness=220.0,   # 100→220
+                damping=28.0,      # 18→28
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                stiffness=100.0,
-                damping=18.0,
+                stiffness=220.0,   # 100→220
+                damping=28.0,      # 18→28
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],
