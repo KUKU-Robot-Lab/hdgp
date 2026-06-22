@@ -130,44 +130,33 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Reward 파라미터
     # -----------------------------------------------------------------------
-    # R0. palm_to_cup: arm 접근 유도 (v1 hand_to_object 동일 역할)
-    # 초기 정책(출력≈0) → workspace 중심 이동 방지, arm approach 1차 gradient 제공
-    palm_approach_weight:    float = 1.0
-    palm_approach_sharpness: float = 10.0
-
-    # R1. fingertip_enclosure (ADR: 10→20) — Grasp phase 핵심 리워드
-    # max ≈ 10.0 (palm 접근보다 10×, 손가락 파지가 지배적 gradient)
-    enclosure_weight:       float = 10.0
-    enclosure_sharpness:    float = 15.0
-    cup_radius_approx:      float = 0.045
-    enclosure_thumb_weight: float = 0.6   # 엄지 유도 비중 (0.5→0.6): 비대칭 강화
-
-    # R1b. force_balance_reward: |F_thumb - F_others_avg| → 0 (컵 기울임 방지 핵심)
-    # [contact_bonus 대체] binary count → 힘 균형 직접 측정 (sim2real 호환)
-    # gate: 엄지 + 나머지 1개 이상 접촉 시에만 활성 (무접촉 err=0 오보상 방지)
-    # gaussian: 균형점(err=0)에서 최대, 불균형 커질수록 급감
-    force_balance_weight:    float = 3.0
-    force_balance_sharpness: float = 8.0   # 1/8N 오차 → e^-1
-
-    # R1c. full_grasp_bonus: Grasp phase per-step
-    # 조건: 엄지 contact AND 나머지 3개 이상 AND F_thumb >= F_others_avg × ratio_min
-    # → 엄지가 0.1N 살짝 닿기만 해서 조건 충족하던 허점 제거
-    full_grasp_bonus_weight: float = 8.0
-    thumb_force_ratio_min:   float = 0.5   # 엄지 힘 ≥ others 평균 × 0.5
-
-    # R2. tip_approach_bonus: distal보다 tip이 먼저 닿도록 유도
-    tip_approach_bonus_weight: float = 1.0
-
-    # R3. lift_reward: 선형 height delta
+    # RH56F1 shared grasp-v2 reward contract.
+    approach_weight: float = 2.0
+    approach_sharpness: float = 8.0
+    approach_xy_penalty_weight: float = 5.0
+    approach_tilt_penalty_weight: float = 0.08
+    grasp_weight: float = 12.0
     lift_reward_weight: float = 30.0
-
-    # R4. action_smoothness
-    action_smoothness_palm_weight:   float = -0.02
-    action_smoothness_finger_weight: float = -0.01
-
-    # R5. grasp_quality_lift: enclosure_quality × height delta
-    grasp_quality_lift_weight:     float = 40.0
-    grasp_quality_lift_sharpness:  float = 10.0
+    stabilize_weight: float = 10.0
+    stability_reward_weight: float = 1.0
+    success_bonus_weight: float = 20.0
+    post_lift_contact_loss_weight: float = -8.0
+    action_smooth_weight: float = -0.02
+    grasp_xy_threshold: float = 0.025
+    grasp_upright_threshold_deg: float = 8.0
+    success_upright_max_deg: float = 20.0
+    stabilize_upright_max_deg: float = 5.0
+    stabilize_upright_reward_scale_deg: float = 5.0
+    stabilize_action_sharpness: float = 1.5
+    stability_cup_lin_vel_threshold: float = 0.04
+    stability_cup_ang_vel_threshold: float = 0.5
+    stability_contact_delta_threshold: float = 1.0
+    stability_action_delta_threshold: float = 0.2
+    stage0_lift_start_min_contacts: int = 4
+    grasp_contact_persistence_reward_steps: int = 20
+    enclosure_sharpness: float = 15.0
+    cup_radius_approx: float = 0.045
+    enclosure_thumb_weight: float = 0.6
 
     # -----------------------------------------------------------------------
     # ADR
@@ -177,11 +166,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     adr_increment_interval: int  = 200
     adr_trigger_threshold: float = 0.02
 
-    adr_custom_cfg: dict = field(default_factory=lambda: {
-        "reward_weights": {
-            "enclosure_weight": (10.0, 20.0),
-        },
-    })
+    adr_custom_cfg: dict = field(default_factory=dict)
 
     # -----------------------------------------------------------------------
     # 종료 조건

@@ -112,6 +112,17 @@ HAND_GRASP_POSE = [
     0.0,  0.0,  1.5, 1.5,   # pinky
 ]
 
+# Lift-phase absolute closure anchor. Fixed abduction/opposition joints are
+# unchanged; flexion joints close beyond HAND_GRASP_POSE and are clamped to
+# the articulation's runtime soft limits.
+HAND_FULL_GRIP_POSE = [
+    0.0, -1.57, 1.8, 1.8,   # thumb
+    0.0,  1.9,  1.8, 1.8,   # index
+    0.0,  1.9,  1.8, 1.8,   # middle
+    0.0,  1.9,  1.8, 1.8,   # ring
+    0.0,  0.0,  1.8, 1.8,   # pinky
+]
+
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
 # Fabrics rollout이 [cup_x-0.167, cup_y-0.09, cup_z+0.04]로 수렴
 # j4=0.60: FK z≈0.282, 테이블 안전, 물리 충돌 없음
