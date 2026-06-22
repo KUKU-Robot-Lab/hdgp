@@ -55,6 +55,10 @@ from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_apply_inverse
 
+from openarm.common.grasp_logging import (
+    joint_state_scalars,
+    per_finger_contact_scalars,
+)
 from openarm.common.grasp_reward_core import compute_grasp_reward_terms
 from openarm.common.grasp_v2_contract import (
     compute_action_delta_norm,
@@ -180,6 +184,13 @@ class GraspRightEnv(DirectRLEnv):
             self.robot.data.body_names.index(_palm_name)
             if _palm_name in self.robot.data.body_names
             else -1
+        )
+        # [palm_ee 관측] rl_dg_palm(손바닥 아래쪽) 대신 palm_ee(진짜 손바닥 중심)를 관측/reward 기준으로.
+        #   URDF palm_link_to_ee 고정조인트 origin = (0.028, 0, 0.04) 로컬, rpy=0 (orientation 공유).
+        #   palm_ee_w = rl_dg_palm_pos_w + R(rl_dg_palm_quat)·offset.
+        #   제어 target(palm_pose_targets)은 palm_link 기준 그대로 — 관측/reward만 palm_ee로 이동.
+        self._palm_ee_offset_local = torch.tensor(
+            [0.028, 0.0, 0.04], device=self.device
         )
         _distal4_names = [f"rl_dg_{i}_4" for i in range(1, 6)]
         self.distal4_body_indices: list[int] = [
@@ -763,12 +774,15 @@ class GraspRightEnv(DirectRLEnv):
         )
         approach_palm_pose = self.palm_pose_targets.clone()
         approach_palm_pose[:, :3] = self.palm_pose_targets[:, :3] + approach_pos_delta
-        palm_quat = torch.nn.functional.normalize(palm_quat_action, dim=-1, eps=1e-6)
-        fallback_quat = torch.nn.functional.normalize(
-            self.palm_pose_targets[:, 3:7], dim=-1, eps=1e-6
+        # B: approach orientation = 고정 pregrasp 자세(컵 향함) 주변 bounded euler residual.
+        # grasp-v1 방식 — 정책 절대 quaternion 대신 pregrasp euler ± approach_palm_residual_rot_deg.
+        # palm_quat_action 4D 중 앞 3D를 (ez,ey,ex) residual로 사용(나머지 1D inert).
+        _palm_residual_rad = math.radians(float(self.cfg.approach_palm_residual_rot_deg))
+        approach_euler = (
+            self.pregrasp_palm_pose_buf[:, 3:6]
+            + palm_quat_action[:, :3] * _palm_residual_rad
         )
-        invalid_quat = palm_quat_action.norm(dim=-1, keepdim=True) <= 1e-6
-        approach_palm_pose[:, 3:7] = torch.where(invalid_quat, fallback_quat, palm_quat)
+        approach_palm_pose[:, 3:7] = self._quat_xyzw_from_euler_zyx(approach_euler)
 
         grasp_palm_pose = self.grasp_anchor_palm_pose_buf.clone()
         grasp_pos_raw = (
@@ -798,10 +812,18 @@ class GraspRightEnv(DirectRLEnv):
             eps=1e-6,
         )
 
+        # Phase B: stabilize에서 palm freeze — palm action을 무시해 latch된 위치에 고정.
+        # 손가락 residual은 그대로 두어 파지 강화(컵 더 잡기)는 허용한다.
+        # orientation은 lift_palm_start_pose에서 복사되어 이미 고정이므로 position만 freeze.
+        _palm_pos_action_eff = torch.where(
+            self.is_stabilize_phase.unsqueeze(1),
+            torch.zeros_like(palm_pos_action),
+            palm_pos_action,
+        )
         lift_palm_pose = self.lift_palm_start_pose_buf.clone()
         lift_pos_raw = (
             self.lift_palm_start_pose_buf[:, :3]
-            + palm_pos_action * float(self.cfg.lift_palm_delta_xyz)
+            + _palm_pos_action_eff * float(self.cfg.lift_palm_delta_xyz)
         )
         lift_pos_raw = torch.max(
             torch.min(lift_pos_raw, self.palm_maxs[:3].unsqueeze(0)),
@@ -862,12 +884,14 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
+        # close-grasp: envelope grip 유도 — preset을 full_grip(말아쥔 자세)로, residual 확대.
+        # 관절 한계가 [approach, full_grip]로 클램프되어 과침투 없이 cup 접촉에서 멈춤.
         close_hand_target = compute_preset_residual_finger_targets(
-            preset_pos=self.hand_grasp_pose,
+            preset_pos=self.hand_full_grip_pose,
             finger_action=finger_action,
             lower_limits=self.hand_joint_lower_limits,
             upper_limits=self.hand_joint_upper_limits,
-            residual_scale=self.cfg.hand_residual_scale,
+            residual_scale=self.cfg.hand_close_residual_scale,
             residual_mask=self.hand_residual_mask,
         )
         approach_hand_target = self.approach_hand_pose_buf
@@ -925,9 +949,13 @@ class GraspRightEnv(DirectRLEnv):
         env_origins = self.scene.env_origins
 
         if self.palm_body_index >= 0:
-            self.palm_center_pos = (
-                self.robot.data.body_pos_w[:, self.palm_body_index, :] - env_origins
+            # palm_ee = rl_dg_palm 위치 + R(rl_dg_palm_quat)·offset (진짜 손바닥 중심)
+            _palm_quat_w = self.robot.data.body_quat_w[:, self.palm_body_index]
+            _palm_ee_w = self.robot.data.body_pos_w[:, self.palm_body_index, :] + quat_apply(
+                _palm_quat_w,
+                self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1),
             )
+            self.palm_center_pos = _palm_ee_w - env_origins
 
         self.fingertip_pos = (
             self.robot.data.body_pos_w[:, self.fingertip_body_indices, :] - env_origins.unsqueeze(1)
@@ -1149,6 +1177,13 @@ class GraspRightEnv(DirectRLEnv):
             posinf=0.0,
             neginf=0.0,
         )
+        # ---- Phase A: contact_adr 동적 min_contacts (3→4→5 lift 진입 허들) ----
+        _adr_min_contacts = (
+            int(round(self.contact_adr.get_param("contact", "min_contacts")))
+            if self.contact_adr is not None
+            else int(self.cfg.stage0_lift_start_min_contacts)
+        )
+
         close_grasp_mask = self.is_close_grasp_phase & (~self.lift_ready_latched_buf)
         (
             self.grasp_ready_hold_buf,
@@ -1163,7 +1198,7 @@ class GraspRightEnv(DirectRLEnv):
             cup_lin_vel_norm=prelift_cup_lin_vel,
             previous_hold_count=self.grasp_ready_hold_buf,
             previous_latched=self.lift_ready_latched_buf,
-            min_contacts=self.cfg.stage0_lift_start_min_contacts,
+            min_contacts=_adr_min_contacts,
             hold_steps=self.cfg.grasp_ready_hold_steps,
             body_local_z_min=self.cfg.grasp_body_local_z_min,
             body_local_z_max=self.cfg.grasp_body_local_z_max,
@@ -1243,6 +1278,11 @@ class GraspRightEnv(DirectRLEnv):
             _ep_success_rate = sum(self._success_window) / len(self._success_window)
         else:
             _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
+
+        # Phase A: contact ADR을 lift_started_rate로 트리거.
+        # TESOLLO는 success_rate=0이라 success 기반 트리거로는 영원히 허들이 안 오른다.
+        if self.contact_adr is not None:
+            self.contact_adr.maybe_increment(self.lift_started_buf.float().mean())
 
         lift_tilt = cup_tilt_deg[self.lift_ready_latched_buf]
         prelift_mask = (~self.lift_ready_latched_buf).float()
@@ -1327,10 +1367,38 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["debug/tesollo/control/raw_palm_action_norm"] = (
             self.actions[:, :7].norm(dim=-1).mean()
         )
+        # palm_pose_targets는 palm_link 기준 제어 target이므로 palm_link 실제 위치와 비교.
+        # (palm_center_pos는 이제 palm_ee라 추종 오차 진단에 쓰면 offset만큼 왜곡됨)
+        _palm_link_pos = (
+            self.robot.data.body_pos_w[:, self.palm_body_index, :] - self.scene.env_origins
+        )
         self.extras["debug/tesollo/control/palm_target_position_error"] = (
-            self.palm_pose_targets[:, :3] - self.palm_center_pos
+            self.palm_pose_targets[:, :3] - _palm_link_pos
         ).norm(dim=-1).mean()
         self.extras["object_stat/obj_z"] = self.object_pos[:, 2].mean()
+        # Phase A: current contact_adr curriculum hurdle (3→4→5)
+        self.extras["task/adr_min_contacts"] = torch.tensor(
+            float(_adr_min_contacts), device=self.device
+        )
+
+        # ---- Phase C: per-finger contact + joint-state diagnostics ----
+        self.extras.update(
+            per_finger_contact_scalars(
+                tip_force=self.contact_force_raw,
+                tip_binary=self.binary_contact_buf,
+                distal_force=self.distal_contact_force_raw,
+                middle_force=self.middle_contact_force_raw,
+                palm_force=self.palm_contact_force_raw,
+            )
+        )
+        self.extras.update(
+            joint_state_scalars(
+                arm_pos=self.robot.data.joint_pos[:, self.arm_dof_indices],
+                arm_vel=self.robot.data.joint_vel[:, self.arm_dof_indices],
+                finger_pos=self.robot.data.joint_pos[:, self.hand_dof_indices],
+                finger_vel=self.robot.data.joint_vel[:, self.hand_dof_indices],
+            )
+        )
 
         self._prev_total_grip_force_buf.copy_(self.contact_force_raw.sum(dim=-1))
         self._prev_num_contacts_buf.copy_(num_tip_contacts.float())
@@ -1545,6 +1613,19 @@ class GraspRightEnv(DirectRLEnv):
                 torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
                 self.palm_mins.unsqueeze(0),
             )
+
+            # 컵을 palm_ee 앞(palm 프레임 +X, cup_spawn_palm_front_x)에 스폰.
+            # 열린 손 손바닥 정면에 정확히 위치 → 엄지팁 충돌 회피. z는 테이블 높이로 고정.
+            # _quat_xyzw_from_euler_zyx 는 xyzw 반환 → isaaclab quat_apply(wxyz)용으로 재정렬.
+            _pp_quat_xyzw = self._quat_xyzw_from_euler_zyx(pregrasp_palm_pose[:, 3:6])
+            _pp_quat_wxyz = torch.cat([_pp_quat_xyzw[:, 3:4], _pp_quat_xyzw[:, :3]], dim=1)
+            _palm_ee_pos = pregrasp_palm_pose[:, :3] + quat_apply(
+                _pp_quat_wxyz, self._palm_ee_offset_local.unsqueeze(0).expand(n, -1)
+            )
+            _cup_front_local = torch.zeros(n, 3, device=self.device)
+            _cup_front_local[:, 0] = float(self.cfg.cup_spawn_palm_front_x)
+            obj_pos_local = _palm_ee_pos + quat_apply(_pp_quat_wxyz, _cup_front_local)
+            obj_pos_local[:, 2] = self.cfg.object_spawn_z
 
             if self.cfg.cache_pregrasp_reset:
                 xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)

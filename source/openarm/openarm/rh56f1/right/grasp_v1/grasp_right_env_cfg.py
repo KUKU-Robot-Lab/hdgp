@@ -212,7 +212,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stability_cup_lin_vel_threshold: float = 0.04
     stability_cup_ang_vel_threshold: float = 0.5
     stability_contact_delta_threshold: float = 1.0
-    stability_action_delta_threshold: float = 0.2
+    stability_action_delta_threshold: float = 0.4   # Phase B: stable 판정 완화 (0.2는 과도하게 빡빡 → success_held=0)
 
     # Phase curriculum:
     # 0 = grasp/lift only, 1 = add stabilize.
@@ -304,7 +304,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     min_middle_contacts_for_success: int = 0
 
     # Lift-entry grip readiness gate (state tracking용, reward가 아님)
-    stage0_lift_start_min_contacts: int = 4
+    # Phase A: starting hurdle for the contact_adr 3→4→5 curriculum (was fixed 4).
+    stage0_lift_start_min_contacts: int = 3
     stage0_lift_start_hold_steps:   int = 20
     lift_contact_hold_steps: int = 30
     full_grip_hold_steps:    int = 30
@@ -335,7 +336,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     enable_contact_adr:             bool  = True
     contact_adr_num_increments:     int   = 50
     contact_adr_increment_interval: int   = 400
-    contact_adr_trigger_threshold:  float = 0.1   # 10% 성공률에서 진행 (early curriculum)
+    contact_adr_trigger_threshold:  float = 0.5   # Phase A: lift_started_rate 50%에서 다음 허들로 (트리거 신호를 success_rate→lift_started_rate로 교체)
 
     # 6.2: ADR trigger moving-window 크기
     # 최근 N episode 성공률을 ADR trigger에 사용 (0: 기존 cumulative 방식 유지)
@@ -343,8 +344,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     contact_adr_custom_cfg: dict = field(default_factory=lambda: {
         "contact": {
-            # int(round(value)) 로 사용: 2 → 5 (전 손가락)
-            "min_contacts": (2.0, 5.0),
+            # int(round(value)) 로 사용. Phase A: 3 → 5 (전 손가락 FULL-GRASPING)
+            "min_contacts": (3.0, 5.0),
         },
     })
 
@@ -376,7 +377,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     cup_tipping_max_deg: float = 35.0
     success_upright_max_deg: float = 20.0
-    stabilize_upright_max_deg: float = 5.0
+    stabilize_upright_max_deg: float = 12.0   # Phase B: success_now upright 게이트 완화 (5°는 달성 불가 → success_held=0)
     obj_out_x_min:  float = 0.05
     obj_out_x_max:  float = 0.85
     obj_out_y_min:  float = -0.60

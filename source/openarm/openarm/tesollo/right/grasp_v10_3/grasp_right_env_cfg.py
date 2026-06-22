@@ -136,6 +136,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_min_steps: int = 10
     approach_palm_local_z_min: float = -0.02
     approach_palm_local_z_max: float = 0.08
+    # approach orientation: 고정 pregrasp 자세(컵 향함) 주변 bounded euler residual (grasp-v1 방식, ±deg)
+    approach_palm_residual_rot_deg: float = 5.0
     grasp_body_local_z_min: float = -0.04
     grasp_body_local_z_max: float = 0.05
     prelift_max_cup_height_delta: float = 0.01
@@ -160,7 +162,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Demo reset (pour_v1_a11~a20 grasp start and pour_start lift target)
     # -----------------------------------------------------------------------
-    enable_demo_grasp_reset: bool = True
+    enable_demo_grasp_reset: bool = False
     demo_grasp_pose_paths: tuple[str, ...] = tuple(
         f"/home/oem/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)
     )
@@ -194,7 +196,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Policy-driven reward/gate 파라미터
     # -----------------------------------------------------------------------
-    stage0_lift_start_min_contacts: int = 5   # lift latch: 5접촉(전 손가락) 유지 시 진입
+    stage0_lift_start_min_contacts: int = 3   # Phase A: contact_adr 3→4→5 커리큘럼 시작 허들 (기존 고정 5)
     grasp_ready_hold_steps: int = 20
     grasp_contact_persistence_reward_steps: int = 30
     full_grip_hold_steps: int = 30
@@ -216,6 +218,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     post_lift_contact_loss_weight: float = -8.0
     hand_residual_magnitude_weight: float = 0.0
     hand_residual_scale: float = 0.15
+    # close-grasp 전용 residual 확대 — envelope grip(full_grip까지 말아쥐기) 가능하게.
+    # lift는 hand_residual_scale(0.15) 유지해 hold 안정성 보존.
+    hand_close_residual_scale: float = 0.5
 
     # Legacy names kept for compatibility with older launch overrides.
     # R0. palm_approach
@@ -362,7 +367,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     enable_contact_adr:             bool  = True
     contact_adr_num_increments:     int   = 50
     contact_adr_increment_interval: int   = 400
-    contact_adr_trigger_threshold:  float = 0.1   # 10% 성공률에서 진행 (early curriculum)
+    contact_adr_trigger_threshold:  float = 0.5   # Phase A: lift_started_rate 50%에서 다음 허들로 (트리거 신호를 success_rate→lift_started_rate로 교체)
 
     # 6.2: ADR trigger moving-window 크기
     # 최근 N episode 성공률을 ADR trigger에 사용 (0: 기존 cumulative 방식 유지)
@@ -370,8 +375,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     contact_adr_custom_cfg: dict = field(default_factory=lambda: {
         "contact": {
-            # int(round(value)) 로 사용: 2 → 5 (전 손가락)
-            "min_contacts": (2.0, 5.0),
+            # int(round(value)) 로 사용. Phase A: 3 → 5 (전 손가락 FULL-GRASPING)
+            "min_contacts": (3.0, 5.0),
         },
     })
 
@@ -414,6 +419,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_spawn_y_center: float = -0.10
     object_spawn_z:        float = 0.297
     object_spawn_xy_range: float = 0.06
+    # 컵 스폰 위치: palm_ee 프레임 +X(손바닥 정면)로 이만큼 앞에 스폰 (열린 손 정면, 엄지 충돌 회피)
+    cup_spawn_palm_front_x: float = 0.05
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 설정

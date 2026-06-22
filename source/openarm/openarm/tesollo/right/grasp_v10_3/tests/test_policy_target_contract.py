@@ -122,7 +122,7 @@ def test_reward_gate_success_contract_uses_tip5_body_band_and_stationary_stabili
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
 
-    assert "stage0_lift_start_min_contacts: int = 5" in cfg
+    assert "stage0_lift_start_min_contacts: int = 3" in cfg
     assert "grasp_body_local_z_min: float = -0.04" in cfg
     assert "grasp_body_local_z_max: float = 0.05" in cfg
     assert "prelift_max_cup_height_delta: float = 0.01" in cfg

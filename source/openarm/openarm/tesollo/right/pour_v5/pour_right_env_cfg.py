@@ -283,7 +283,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # [2b] nullspace 잉여 1-DOF action(α) 스케일: null_ref = baseline + scale·α·(demo−start).
     #   1.0 → α=±1이 ±full demo변위. v4 baseline=demo, v5 baseline=robot_start (offset·scale 공통).
-    nullspace_action_scale: float = 1.0
+    nullspace_action_scale: float = 0.0   # [Phase5a] 1.0→0.0: nullspace α freeze (차원 불변). palm 6D pose만으로 arm 결정 → deep tilt 협응 탐색공간 축소. scale=0이라 즉시 롤백 가능.
 
     # [v6 ablation] nullspace baseline(α=0 지점) 선택 — demo prior 주입의 hard 경로.
     #   "robot_start": 중립(=v5 순수 DRL).  "demo": j1-4 항상 + j5 ready 후 demo 구조(=v4).
@@ -316,7 +316,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     tilt_prox_gate_near: float = 0.06  # 이 거리 안: prox_gate=1 (full tilt)
     # [06.21 Phase3] pour 정밀 조정텀 r_pour = w_pour·tilt_progress·aim_score. aim_score=관대 radius corridor.
     #   tilt_progress 스케일 → 회전 시작(흔들림) 구간 자동 억제, 70°+ 안정 구간만 본격 작동.
-    weight_pour:        float = 50.0   # w_boot(=weight_tilt 35) < w_pour → "조준해서 기울이기"가 strictly 우세(tilt-farming 차단)
+    weight_pour:        float = 50.0   # [Phase1 미사용] 구 r_pour=w_pour·progress·aim 곱셈 → 덧셈(transport+align)로 분해. 참조용 유지.
+    # [Phase1] DexPour additive 분해: 곱셈 r_pour(progress×aim saddle) → r_transport(aim, tilt무관) + r_align(dir_cos, tilt무관).
+    #   진단: deep tilt 시 pour_point가 target에서 이탈(pp_z +14cm)해도 곱셈이 둘 다 높을 때만 보상→saddle.
+    #   덧셈이면 위치(transport)와 기울임(tilt)을 독립 보상 → "위치 유지하며 deep tilt"가 합 최대.
+    #   aim_score는 z corridor(z_max=0.05) 내장 → r_transport가 pp_z 솟음을 자동 페널티(Phase2 포함).
+    weight_transport:   float = 30.0   # r_transport = w_transport · aim_score (위치/조준, tilt 무관). 구 weight_pour를 transport+align로 분배(합≈50 보존).
     pour_aim_scale:     float = 10.0   # [test_aim2] aim corridor 완만화(공유 pour_corridor_scale=20 절벽 → 10). env서 radius=0(flat-top 제거)와 함께 → target서 부드러운 봉우리(gradient 어디서나) → miss 교정 + 학습 stiffness↓. 부드러운 동작인데 reward 출렁이던 ② 원인 제거.
     pour_aim_z_max:     float = 0.05   # [test_aim] aim 전용 z 상한(공유 pour_corridor_z_max=0.12와 분리). spout이 입구 위 5cm 넘으면 감점 → release 높이발 산란 차단. z_min은 pour_corridor_z_min(-0.02) 공유(soft band, tilt 자연 하강 허용).
     #   ready_latched 이후에는 live corridor wobble이 tilt reward를 끄지 않음. 미정조준 ceiling=35×0.35=12.25.
@@ -327,7 +332,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_tilt_target_deg: float = 135.0   # 수평(90°) 너머 dump까지 tilt_progress gradient 유지
 
     # Stage B — direct pour-point 정렬 reward 제거. Corridor는 phase/release/logging context로만 사용.
-    weight_align: float = 0.0
+    weight_align: float = 20.0   # [Phase1] 0→20: DexPour r_align=(1+cosθ)/2 활성화. cosθ=directional_tilt_cos_c(cup→target XY 방향, deep tilt서도 안정). tilt 무관 덧셈 → 깊은 전달 자세 방향 정렬 직접 보상.
     pour_align_scale: float = 15.0  # 레거시 pour_alignment_score config. 현재 reward path 미사용.
                                     #   (6.8 vs 4cm가 score .58 vs .73) mouth_xy가 입구반경(4.1cm) 밖에서 천장 → bead_in=0.
                                     #   sharp화로 마지막 4cm 파고들어 bead_in 개통 유도.

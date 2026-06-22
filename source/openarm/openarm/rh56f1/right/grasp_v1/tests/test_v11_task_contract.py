@@ -458,7 +458,7 @@ def test_v11_lstm_rl_games_config_uses_no_actor_mass_recurrent_name() -> None:
     assert "name: lstm" in t
     assert "before_mlp: False" in t
     assert "units: [512, 512, 256, 128]" in t
-    assert "entropy_coef: 0.0005" in t
+    assert "entropy_coef: 0.003" in t
     assert "horizon_length: 32" in t
     assert "minibatch_size: 16384" in t
     assert "seq_length: 16" in t

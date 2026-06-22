@@ -145,7 +145,9 @@ def test_corridor_score_penalizes_only_excess_outside_corridor() -> None:
     assert score[2] < score[0]
 
 
-def test_align_reward_is_disabled_while_corridor_context_remains() -> None:
+def test_align_reward_is_active_additive_dexpour() -> None:
+    # [Phase1] DexPour additive 분해: r_align을 (1+dir_cos)/2로 활성화(구: disabled=0).
+    #   r_pour도 곱셈(w_pour·progress·aim) → 덧셈 r_transport(w_transport·aim)로 분해.
     env = _read("pour_right_env.py")
     cfg = _read("pour_right_env_cfg.py")
 
@@ -155,13 +157,16 @@ def test_align_reward_is_disabled_while_corridor_context_remains() -> None:
     )[0]
 
     assert "pour_corridor_score" in env
-    assert "r_align = torch.zeros_like(corridor_score)" in stage_b
+    # r_align: DexPour (1+cosθ)/2 활성화 (tilt 무관 방향 정렬 덧셈)
+    assert "r_align = self.cfg.weight_align * (1.0 + self._directional_tilt_cos_c) / 2.0" in stage_b
     assert "r_stageB = r_align" in stage_b
-    assert "r_align = (\n            tilt_progress" not in stage_b
+    # r_pour: 곱셈 saddle 해체 → r_transport(w_transport·aim, tilt 무관)
+    assert "r_pour = self.cfg.weight_transport * aim_score" in stage_b
     assert "r_precision" not in env
     assert "r_pour_xy" not in stage_b
     assert "r_descend" not in stage_b
-    assert "weight_align: float = 0.0" in cfg
+    assert "weight_align: float = 20.0" in cfg
+    assert "weight_transport:   float = 30.0" in cfg
     assert "pour_corridor_xy_margin: float = 0.015" in cfg
     assert "pour_corridor_z_min: float = -0.02" in cfg
     assert "pour_corridor_z_max: float = 0.12" in cfg

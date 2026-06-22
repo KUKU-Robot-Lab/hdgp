@@ -89,11 +89,11 @@ HAND_START_POSE = [
 # rj_dg_1_2 (thumb, Z-axis curl, range [-π, 0]) = -1.241 rad
 #   → thumb을 opposition 방향으로 pre-curl하여 접근 시 컵과의 collision 방지
 HAND_APPROACH_POSE = [
-    +0.000, -1.241, +0.104, +0.790,   # thumb  (v10: rj_dg_1_1 -0.283→0.0 고정)
-    +0.016, +0.527, +0.502, +0.674,   # index
-    +0.004, +0.775, +0.170, +1.090,   # middle
-    -0.000, +0.668, +0.387, +1.013,   # ring
-    +0.000, -0.000, +0.716, +0.889,   # pinky
+    0.0, -1.57, -0.5, 0.0,   # thumb: _2=-1.57(opposition 유지), _3=-0.5(PIP curl → _3 부분이 컵에 먼저 닿는 문제 방지)
+    0.0,  0.0,  0.0, 0.0,    # index: fully open
+    0.0,  0.0,  0.0, 0.0,    # middle: fully open
+    0.0,  0.0,  0.0, 0.0,    # ring: fully open
+    0.0,  0.0,  0.0, 0.0,    # pinky: fully open
 ]
 
 # 파지 자세 — v7 test* 학습 결과에서 추출 후 thumb_1 수동 보정

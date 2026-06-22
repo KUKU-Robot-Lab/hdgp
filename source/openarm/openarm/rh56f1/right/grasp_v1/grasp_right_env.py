@@ -56,6 +56,10 @@ from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_from_angle_axis, quat_mul
 
+from openarm.common.grasp_logging import (
+    joint_state_scalars,
+    per_finger_contact_scalars,
+)
 from openarm.common.grasp_reward_core import compute_grasp_reward_terms
 from openarm.common.grasp_v2_contract import (
     compute_action_delta_norm,
@@ -1150,6 +1154,13 @@ class GraspRightEnv(DirectRLEnv):
                 )
                 self._bead_count_current[shift_mask] = target_count
         lift_policy_delta = scale(fabric_palm_action, self.lift_delta_mins, self.lift_delta_maxs)
+        # Phase B: stabilize에서 palm freeze — policy delta를 무시해 latch된 위치에 고정.
+        # orientation은 아래 upright correction이 처리, 손가락 residual은 그대로(파지 강화 허용).
+        lift_policy_delta = torch.where(
+            is_stabilize.unsqueeze(1),
+            torch.zeros_like(lift_policy_delta),
+            lift_policy_delta,
+        )
         lift_palm_pose = self.lift_palm_start_pose_buf + lift_policy_delta
         if self.demo_grasp_reset_bank is not None:
             demo_lift_palm_pose = torch.lerp(
@@ -1535,6 +1546,13 @@ class GraspRightEnv(DirectRLEnv):
         approach_mask = self.is_grasp_phase & (~self._grasp_started_buf)
         close_grasp_mask = self.is_grasp_phase & self._grasp_started_buf
 
+        # ---- Phase A: contact_adr 동적 min_contacts (3→4→5 lift 진입 허들) ----
+        _adr_min_contacts = (
+            int(round(self.contact_adr.get_param("contact", "min_contacts")))
+            if self.contact_adr is not None
+            else int(self.cfg.stage0_lift_start_min_contacts)
+        )
+
         # ---- lift contact hold 추적 ----
         lift_contact_phase = close_grasp_mask
         self._lift_contact_hold_count, lift_contact_ready_now, self._lift_contact_ready_latched_buf = compute_lift_readiness(
@@ -1542,7 +1560,7 @@ class GraspRightEnv(DirectRLEnv):
             is_grasp_phase=lift_contact_phase,
             previous_hold_count=self._lift_contact_hold_count,
             previous_latched=self._lift_contact_ready_latched_buf,
-            min_contacts=self.cfg.stage0_lift_start_min_contacts,
+            min_contacts=_adr_min_contacts,
             hold_steps=self.cfg.stage0_lift_start_hold_steps,
         )
         lift_contact_ready_gate = self._lift_contact_ready_latched_buf.float()
@@ -1609,16 +1627,13 @@ class GraspRightEnv(DirectRLEnv):
         full_grip_ready_gate = self._full_grip_ready_buf.float()
         grip_ready_gate = self._full_grip_ready_latched_buf.float()
 
-        # ---- ADR ----
-        _adr_min_contacts = (
-            int(round(self.contact_adr.get_param("contact", "min_contacts")))
-            if self.contact_adr is not None
-            else 2
-        )
+        # ---- ADR (min_contacts는 위 lift 게이트에서 이미 계산됨) ----
         self._maybe_update_phase_curriculum()
         _ep_success_rate, _ep_success_window_len = self._curriculum_success_rate()
         if self.contact_adr is not None:
-            self.contact_adr.maybe_increment(_ep_success_rate)
+            # Phase A: contact ADR을 lift_started_rate로 트리거.
+            # success_rate 기반은 lift 진입이 안 되면 영원히 0이라 허들 상승이 막힌다.
+            self.contact_adr.maybe_increment(self._lift_started_buf.float().mean())
         if self.grasp_adr is not None:
             self.grasp_adr.maybe_increment(_ep_success_rate)
 
@@ -1668,6 +1683,25 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/lift_five_tip_contact_rate"] = _masked_mean(
             five_tip_contact, self.is_lift_phase
         )
+
+        # ---- Phase C: per-finger contact + joint-state diagnostics ----
+        # RH56F1 has no distal/middle phalanx sensors (those buffers stay zero),
+        # so only fingertip + palm scalars are exposed.
+        self.extras.update(
+            per_finger_contact_scalars(
+                tip_force=self.contact_force_raw,
+                tip_binary=self.binary_contact_buf,
+                palm_force=self.palm_contact_force_raw,
+            )
+        )
+        self.extras.update(
+            joint_state_scalars(
+                arm_pos=self.robot.data.joint_pos[:, self.arm_dof_indices],
+                arm_vel=self.robot.data.joint_vel[:, self.arm_dof_indices],
+                finger_pos=self.robot.data.joint_pos[:, self.hand_dof_indices],
+                finger_vel=self.robot.data.joint_vel[:, self.hand_dof_indices],
+            )
+        )
         self.extras["task/pre_lift_full_contact_rate"] = (
             full_tip_middle_contact & self.is_grasp_phase
         ).float().mean()
@@ -1688,18 +1722,10 @@ class GraspRightEnv(DirectRLEnv):
         )
         meaningful_contact = self.num_contacts_buf > 0
         lifted_bool = cup_height_delta >= self.cfg.lift_success_height
-        self.extras["phase/approach"] = (
-            (~self._lift_started_buf) & (~meaningful_contact)
-        ).float().mean()
-        self.extras["phase/grasp"] = (
-            (~self._lift_started_buf) & meaningful_contact
-        ).float().mean()
-        self.extras["phase/lift"] = (
-            self._lift_started_buf & (~lifted_bool)
-        ).float().mean()
-        self.extras["phase/stabilize"] = (
-            self._lift_started_buf & lifted_bool
-        ).float().mean()
+        # NOTE: phase/{approach,grasp,lift,stabilize} are emitted canonically via
+        # log_grasp_v2_common_scalars() below (it clear()s then re-sets the common
+        # tag set), so assigning them here is dead — the helper overwrites them.
+        # Removed to keep the phase/* tags single-sourced and identical to Teosllo.
         self.extras["task/phase_grasp"] = self.is_grasp_phase.float().mean()
         self.extras["task/phase_approach"] = approach_mask.float().mean()
         self.extras["task/phase_close_grasp"] = close_grasp_mask.float().mean()

@@ -76,7 +76,7 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.0005
+    entropy_coef: 0.003   # Phase B: entropy collapse(-5.4) 방지 — 0.0005는 너무 약해 60→80% 정책 붕괴
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 32

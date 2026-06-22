@@ -1899,7 +1899,11 @@ class PourRightEnv(DirectRLEnv):
             self.cfg.pour_aim_z_max,
             self.cfg.pour_aim_scale,
         )
-        r_pour = self.cfg.weight_pour * tilt_progress * aim_score
+        # [Phase1] 곱셈 r_pour(=w_pour·tilt_progress·aim_score) → 덧셈 분해.
+        #   r_transport = w_transport·aim_score (tilt 무관 위치/조준). progress 곱 제거로 saddle 해소.
+        #   진단: deep tilt 시 pour_point가 target 이탈(pp_z +14cm)해도, aim_score z corridor(z_max=0.05)가
+        #   tilt 무관하게 "주둥이를 입구 위에 유지"를 보상 → 위치 협응 유도(Phase2 내장).
+        r_pour = self.cfg.weight_transport * aim_score
         # [로깅 전용] 85° 돌파 추적 (보상 미사용). tilt_progress_A=전체 진행도, B=깊은 구간(85→135°)
         tilt_pre = self.cfg.tilt_pre_amount
         tilt_progress_A = tilt_progress
@@ -1910,8 +1914,10 @@ class PourRightEnv(DirectRLEnv):
         #   r_approach(5) → 회전만 park 아닌 회전+접근+tilt 단계 상승. total에 직접 가산(아래).
         r_introt = self.cfg.weight_introt * self._internal_rot_gate
 
-        # Direct align reward is disabled. Corridor remains as phase/release context only.
-        r_align = torch.zeros_like(corridor_score)
+        # [Phase1] DexPour r_align=(1+cosθ)/2 활성화 (구: disabled=0).
+        #   cosθ = directional_tilt_cos_c (cup-center→target XY 방향과 기울임 방향 XY cos, [-1,1]).
+        #   deep tilt(깊은 전달 자세)서도 안정(+) → tilt 무관 덧셈으로 방향 정렬 직접 보상.
+        r_align = self.cfg.weight_align * (1.0 + self._directional_tilt_cos_c) / 2.0
 
         # [r_pour_z 제거] z barrier가 hinge pour와 상충(기울이면 pour_point 자연 하강→페널티→주기적 붕괴).
         #   충돌은 mouth_z_clearance/termination으로 모니터링.
