@@ -115,9 +115,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 133 optional mass/debug actor
-    action_space:      int = NUM_ACTIONS               # 26
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 169 (critic, privileged)
+    observation_space: int = NUM_OBSERVATIONS          # 134 optional mass/debug actor
+    action_space:      int = NUM_ACTIONS               # 27
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 170 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -129,9 +129,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
     max_pose_angle:             float = 45.0
-    palm_delta_xyz: float = 0.03
-    palm_delta_rot_deg: float = 15.0
-    ema_action_alpha: float = 0.7
+    palm_local_workspace_radius: float = 0.1
+    palm_target_max_delta: float = 0.01
     fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0
     approach_min_steps: int = 10
@@ -143,6 +142,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     prelift_cup_lin_vel_threshold: float = 0.04
     prelift_rim_lift_penalty_weight: float = 1.0
     grasp_palm_delta_scale: float = 0.25
+    lift_palm_delta_xyz: float = 0.03
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)

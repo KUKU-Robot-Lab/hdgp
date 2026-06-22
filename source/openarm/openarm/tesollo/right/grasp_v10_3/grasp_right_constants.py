@@ -18,10 +18,10 @@ Policy-driven cup-aware grasp 계약:
   정책은 매 step 다음 palm pose와 손 관절 목표를 직접 출력한다.
   arm 7축은 action에 포함하지 않고 Fabrics IK가 palm target에서 계산한다.
 
-Action (26D):
-  [0:3]   incremental palm xyz command
-  [3:6]   incremental palm rotation-vector command
-  [6:26]  20D hand residual around HAND_GRASP_POSE
+Action (27D):
+  [0:3]   palm xyz target, normalized [-1, 1] around the phase anchor
+  [3:7]   palm quaternion target (x, y, z, w)
+  [7:27]  20D hand residual around HAND_GRASP_POSE
          rj_dg_1_1~4, rj_dg_2_1~4, rj_dg_3_1~4, rj_dg_4_1~4, rj_dg_5_1~4
 
 Actor Observation (133D, no oracle mass) — sim2real 가능:
@@ -38,9 +38,9 @@ Actor Observation (133D, no oracle mass) — sim2real 가능:
   phase_step_ratio:         1  (step counter 기반, 실 로봇 가능)
   [제거] cup_to_fingertip  15D → fingertip_pos_rel_palm - palm_to_cup 항등식 (완전 중복)
   [제거] binary_contact     5D → tip_force_xyz_norm norm의 하위 집합 (함수적 중복)
-  Total:                  136
+  Total:                  133
 
-Optional actor debug observation with oracle mass: 133D
+Optional actor debug observation with oracle mass: 134D
 
 Critic Extra (37D) — sim-only privileged:
   bead_mass_normalized:     1  (0=빈 컵, 1=최대 하중)
@@ -55,8 +55,8 @@ Critic Extra (37D) — sim-only privileged:
   fingertip_to_cup_signed_dist: 5
   Total:                   37
 
-Actor Observation without oracle mass: 136D
-Critic Total: 132 + 37 = 169D
+Actor Observation without oracle mass: 133D
+Critic Total: 133 + 37 = 170D
 
 Episode (10s @ 60Hz = 600 steps):
   approach/close-grasp/lift/stabilize phase는 상태 기반 reward/gate/diagnostic label이다.
@@ -86,32 +86,32 @@ NUM_FINGERTIPS = 5
 # Action space
 # ---------------------------------------------------------------------------
 NUM_PALM_POS_ACTION  = 3
-NUM_PALM_ROT_ACTION  = 3
-NUM_PALM_ACTION      = NUM_PALM_POS_ACTION + NUM_PALM_ROT_ACTION
+NUM_PALM_QUAT_ACTION = 4
+NUM_PALM_ACTION      = NUM_PALM_POS_ACTION + NUM_PALM_QUAT_ACTION
 NUM_FINGER_ACTION    = 20
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 26
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 27
 PALM_POS_ACTION_SLICE = slice(0, 3)
-PALM_ROT_ACTION_SLICE = slice(3, 6)
-FINGER_ACTION_SLICE = slice(6, 26)
+PALM_QUAT_ACTION_SLICE = slice(3, 7)
+FINGER_ACTION_SLICE = slice(7, 27)
 
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-# Actor obs (132D no-mass, 133D optional mass/debug):
+# Actor obs (133D no-mass, 134D optional mass/debug):
 #   arm_joint_pos        7  | arm_joint_vel          7
 #   finger_joint_pos    20  | finger_joint_vel       20
 #   palm_center_pos      3  | fingertip_pos_rel_palm 15
-#   palm_to_cup          3  | last_actions           26
-#   tip_force_xyz_norm  15
-#   middle_to_cup_xyz   15  | phase_step_ratio        1
+#   palm_to_cup          3  | last_actions           27
+#   tip_force_xyz_norm  15  | middle_to_cup_xyz      15
+#   phase_step_ratio     1
 #   [optional] bead_mass_normalized 1
 #   [제거] cup_to_fingertip 15D (항등식), binary_contact 5D (tip_force 하위집합)
-NUM_OBSERVATIONS_NO_MASS = 132
-NUM_OBSERVATIONS = 133
+NUM_OBSERVATIONS_NO_MASS = 133
+NUM_OBSERVATIONS = 134
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 37
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS_NO_MASS + NUM_CRITIC_EXTRAS  # 169
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS_NO_MASS + NUM_CRITIC_EXTRAS  # 170
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

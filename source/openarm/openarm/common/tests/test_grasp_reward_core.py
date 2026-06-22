@@ -74,6 +74,32 @@ def test_lift_and_success_require_full_tip_contact_when_lifted() -> None:
     assert total[1] > total[0]
 
 
+def test_lift_reward_is_normalized_to_success_height_and_bounded() -> None:
+    cfg = RewardCfg()
+    heights = torch.tensor([0.0, 0.02, 0.04, 0.08])
+
+    _, terms, _ = compute_grasp_reward_terms(
+        num_tip_contacts=torch.full((4,), 5, dtype=torch.long),
+        tip_contact_frac=torch.ones(4),
+        full_tip_contact=torch.ones(4),
+        contact_persistence_frac=torch.ones(4),
+        palm_to_cup_dist=torch.zeros(4),
+        fingertip_side_dist=torch.zeros(4),
+        cup_height_delta=heights,
+        cup_xy_displacement=torch.zeros(4),
+        cup_tilt_deg=torch.zeros(4),
+        upright_quality=torch.ones(4),
+        lift_latched=torch.ones(4, dtype=torch.bool),
+        action_delta_norm=torch.zeros(4),
+        cfg=cfg,
+    )
+
+    assert torch.allclose(
+        terms["lift"],
+        torch.tensor([0.0, 10.0, 20.0, 20.0]),
+    )
+
+
 def test_tilted_lift_loses_success_bonus_and_upright_quality() -> None:
     upright_total, upright_terms, upright_gates = _reward(
         torch.tensor([5], dtype=torch.long),

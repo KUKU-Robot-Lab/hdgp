@@ -5,27 +5,18 @@ import torch
 from openarm.tesollo.right.grasp_v10_3.finger_action_utils import (
     compute_preset_residual_finger_targets,
 )
-from openarm.tesollo.right.grasp_v10_3.grasp_right_constants import (
-    FINGER_ACTION_SLICE,
-    NUM_ACTIONS,
-    NUM_CRITIC_EXTRAS,
-    NUM_CRITIC_OBSERVATIONS,
-    NUM_OBSERVATIONS,
-    NUM_OBSERVATIONS_NO_MASS,
-    PALM_POS_ACTION_SLICE,
-    PALM_ROT_ACTION_SLICE,
-)
+from openarm.tesollo.right.grasp_v10_3 import grasp_right_constants as constants
 from openarm.tesollo.right.grasp_v10_3.grasp_right_preset import HAND_GRASP_POSE
 
 
 _ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_action_contract_is_26d_incremental_action() -> None:
-    assert NUM_ACTIONS == 26
-    assert PALM_POS_ACTION_SLICE == slice(0, 3)
-    assert PALM_ROT_ACTION_SLICE == slice(3, 6)
-    assert FINGER_ACTION_SLICE == slice(6, 26)
+def test_action_contract_is_restored_27d_absolute_target() -> None:
+    assert constants.NUM_ACTIONS == 27
+    assert constants.PALM_POS_ACTION_SLICE == slice(0, 3)
+    assert getattr(constants, "PALM_QUAT_ACTION_SLICE", None) == slice(3, 7)
+    assert constants.FINGER_ACTION_SLICE == slice(7, 27)
 
 
 def test_finger_action_is_small_residual_around_preset() -> None:
@@ -82,35 +73,36 @@ def test_live_fabrics_uses_anchored_close_grasp_and_lift_targets() -> None:
     assert "self.lift_palm_start_pose_buf = torch.zeros(self.num_envs, 7" in env
     assert "self.lift_finger_pos_buf = torch.zeros(self.num_envs, NUM_HAND_DOF" in env
     assert "self.is_close_grasp_phase" in env
-    assert "compose_incremental_palm_pose(" in env
-    assert "current_pose[:, 3:7] = self.robot.data.body_quat_w" in env
+    assert "compose_incremental_palm_pose(" not in env
+    assert "palm_quat_action = self.actions[:, PALM_QUAT_ACTION_SLICE]" in env
     assert "compute_preset_residual_finger_targets" in env
     assert "compute_lift_finger_targets" in env
     assert "approach_min_steps: int = 10" in cfg
     assert "approach_palm_local_z_min: float = -0.02" in cfg
     assert "approach_palm_local_z_max: float = 0.08" in cfg
     assert "grasp_palm_delta_scale: float = 0.25" in cfg
-    assert "palm_delta_xyz: float = 0.03" in cfg
-    assert "palm_delta_rot_deg: float = 15.0" in cfg
-    assert "ema_action_alpha: float = 0.7" in cfg
+    assert "palm_local_workspace_radius: float = 0.1" in cfg
+    assert "palm_target_max_delta: float = 0.01" in cfg
+    assert "lift_palm_delta_xyz: float = 0.03" in cfg
     assert "transport" not in env
 
 
-def test_palm_action_is_current_pose_incremental() -> None:
+def test_palm_action_is_absolute_target_with_per_step_rate_limit() -> None:
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
 
-    assert "palm_delta_xyz: float = 0.03" in cfg
-    assert "palm_delta_rot_deg: float = 15.0" in cfg
-    assert "delta_position = self._ema_palm_action[:, :3]" in env
-    assert "delta_rotation = self._ema_palm_action[:, 3:6]" in env
-    assert "current_pose=current_pose" in env
+    assert "palm_local_workspace_radius: float = 0.1" in cfg
+    assert "palm_target_max_delta: float = 0.01" in cfg
+    assert "palm_pos_action = self.actions[:, PALM_POS_ACTION_SLICE]" in env
+    assert "palm_quat_action = self.actions[:, PALM_QUAT_ACTION_SLICE]" in env
+    assert "approach_pos_raw = (" in env
+    assert "lift_pos_raw = (" in env
 
 
 def test_palm_contact_sensor_uses_palm_link_net_force_without_actor_obs_growth() -> None:
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
-    constants = (_ROOT / "grasp_right_constants.py").read_text(encoding="utf-8")
+    constants_text = (_ROOT / "grasp_right_constants.py").read_text(encoding="utf-8")
 
     assert "palm_sensor_cfg" in cfg
     palm_cfg = cfg.split("palm_sensor_cfg", 1)[1]
@@ -119,11 +111,11 @@ def test_palm_contact_sensor_uses_palm_link_net_force_without_actor_obs_growth()
     assert "self._palm_sensor.data.net_forces_w[:, 0, :]" in env
     assert "quat_apply_inverse" in env
     assert "palm_force = torch.relu(-palm_force_local[:, 0])" in env
-    assert "NUM_OBSERVATIONS = 133" in constants
-    assert NUM_OBSERVATIONS_NO_MASS == 132
-    assert NUM_OBSERVATIONS == 133
-    assert NUM_CRITIC_EXTRAS == 37
-    assert NUM_CRITIC_OBSERVATIONS == 169
+    assert "NUM_OBSERVATIONS = 134" in constants_text
+    assert constants.NUM_OBSERVATIONS_NO_MASS == 133
+    assert constants.NUM_OBSERVATIONS == 134
+    assert constants.NUM_CRITIC_EXTRAS == 37
+    assert constants.NUM_CRITIC_OBSERVATIONS == 170
 
 
 def test_reward_gate_success_contract_uses_tip5_body_band_and_stationary_stability() -> None:
@@ -200,12 +192,12 @@ def test_state_latched_fast_episode_and_default_training_no_actor_mass() -> None
 def test_critic_mass_is_privileged_not_actor_clean_base() -> None:
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
 
-    clean_block = env.split("actor_obs_clean = torch.cat([", 1)[1].split("], dim=-1)   # 132D", 1)[0]
-    critic_block = env.split("critic_obs = torch.cat([", 1)[1].split("], dim=-1)   # 169D", 1)[0]
+    clean_block = env.split("actor_obs_clean = torch.cat([", 1)[1].split("], dim=-1)   # 133D", 1)[0]
+    critic_block = env.split("critic_obs = torch.cat([", 1)[1].split("], dim=-1)   # 170D", 1)[0]
 
     assert "self._bead_mass_normalized" not in clean_block
     assert "self._bead_mass_normalized.unsqueeze(-1),  # 1" in critic_block
-    assert "actor_obs_clean,        # 132" in critic_block
+    assert "actor_obs_clean,        # 133" in critic_block
 
 
 def test_phase_step_ratio_is_observation_only_not_reward_or_latch_gate() -> None:

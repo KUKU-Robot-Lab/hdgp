@@ -19,10 +19,10 @@ v10: v9 기반 버그 수정
 - Fix 2: MIN_CONTACTS_FOR_SUCCESS = 4, ADR과 분리 (v9: 2접촉 success 오판정 수정)
 - Fix 3: has_5_contact = num_contacts>=5 고정 (v9: has_4_contact와 동일 식 버그 수정)
 
-Action (26D):
-  [0:3]   incremental palm xyz command
-  [3:6]   incremental palm rotation-vector command
-  [6:26]  20D residual around HAND_GRASP_POSE
+Action (27D):
+  [0:3]   normalized palm xyz target around the phase anchor
+  [3:7]   palm quaternion target (x, y, z, w)
+  [7:27]  20D residual around HAND_GRASP_POSE
 
 Episode (10s @ 60Hz):
   Phase state separates approach, close-grasp anchor, lift, and stabilize.
@@ -84,7 +84,7 @@ from .grasp_right_constants import (
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
     PALM_POS_ACTION_SLICE,
-    PALM_ROT_ACTION_SLICE,
+    PALM_QUAT_ACTION_SLICE,
     FINGER_ACTION_SLICE,
 )
 from .grasp_right_preset import (
@@ -93,7 +93,6 @@ from .grasp_right_preset import (
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
 )
-from .palm_action_utils import compose_incremental_palm_pose
 from .finger_action_utils import (
     compute_lift_finger_targets,
     compute_preset_residual_finger_targets,
@@ -109,10 +108,10 @@ from .demo_grasp_reset import DemoGraspResetBank, compute_demo_cup_spawn_local
 class GraspRightEnv(DirectRLEnv):
     """OpenArm+Teosllo 오른손 파지 환경 v10.3.
 
-    Action: 26D
-      [0:3]  incremental palm xyz command
-      [3:6]  incremental palm rotation-vector command
-      [6:26] 20D residual around HAND_GRASP_POSE
+    Action: 27D
+      [0:3]  normalized palm xyz target around the phase anchor
+      [3:7]  palm quaternion target
+      [7:27] 20D residual around HAND_GRASP_POSE
 
     Phase labels select approach, close-grasp anchor, and lift-anchor palm targets.
     """
@@ -328,7 +327,6 @@ class GraspRightEnv(DirectRLEnv):
         self._grasp_anchor_set_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.is_stabilize_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.episode_stabilize_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._ema_palm_action = torch.zeros(self.num_envs, 6, device=self.device)
 
         # ----------------------------------------------------------------
         # Hand joint targets (per-joint delta 결과)
@@ -700,13 +698,8 @@ class GraspRightEnv(DirectRLEnv):
         self._eval_episode_started[:] = True
 
         palm_pos_action = self.actions[:, PALM_POS_ACTION_SLICE]
-        palm_rot_action = self.actions[:, PALM_ROT_ACTION_SLICE]
+        palm_quat_action = self.actions[:, PALM_QUAT_ACTION_SLICE]
         finger_action = self.actions[:, FINGER_ACTION_SLICE]
-        palm_action = torch.cat((palm_pos_action, palm_rot_action), dim=-1)
-        self._ema_palm_action.copy_(
-            float(self.cfg.ema_action_alpha) * palm_action
-            + (1.0 - float(self.cfg.ema_action_alpha)) * self._ema_palm_action
-        )
 
         cup_quat = self.object_rot
         identity_quat = torch.zeros_like(cup_quat)
@@ -756,41 +749,72 @@ class GraspRightEnv(DirectRLEnv):
         self.is_close_grasp_phase.copy_(close_grasp_mask)
         self.is_lift_phase.copy_(lift_mask)
 
-        current_pose = torch.zeros_like(self.palm_pose_targets)
-        current_pose[:, :3] = (
-            self.robot.data.body_pos_w[:, self.palm_body_index] - self.scene.env_origins
+        approach_pos_raw = (
+            self.pregrasp_palm_pose_buf[:, :3]
+            + palm_pos_action * float(self.cfg.palm_local_workspace_radius)
         )
-        current_pose[:, 3:7] = self.robot.data.body_quat_w[:, self.palm_body_index][:, [1, 2, 3, 0]]
-        delta_position = self._ema_palm_action[:, :3] * float(self.cfg.palm_delta_xyz)
-        delta_rotation = self._ema_palm_action[:, 3:6] * math.radians(
-            float(self.cfg.palm_delta_rot_deg)
+        approach_pos_raw = torch.max(
+            torch.min(approach_pos_raw, self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
         )
-        incremental_pose = compose_incremental_palm_pose(
-            current_pose=current_pose,
-            delta_position=delta_position,
-            delta_rotation_vector=delta_rotation,
-            position_mins=self.palm_mins[:3],
-            position_maxs=self.palm_maxs[:3],
+        approach_pos_delta = (approach_pos_raw - self.palm_pose_targets[:, :3]).clamp(
+            min=-float(self.cfg.palm_target_max_delta),
+            max=float(self.cfg.palm_target_max_delta),
         )
-        approach_palm_pose = incremental_pose
-        grasp_palm_pose = compose_incremental_palm_pose(
-            current_pose=current_pose,
-            delta_position=delta_position * float(self.cfg.grasp_palm_delta_scale),
-            delta_rotation_vector=torch.zeros_like(delta_rotation),
-            position_mins=self.palm_mins[:3],
-            position_maxs=self.palm_maxs[:3],
+        approach_palm_pose = self.palm_pose_targets.clone()
+        approach_palm_pose[:, :3] = self.palm_pose_targets[:, :3] + approach_pos_delta
+        palm_quat = torch.nn.functional.normalize(palm_quat_action, dim=-1, eps=1e-6)
+        fallback_quat = torch.nn.functional.normalize(
+            self.palm_pose_targets[:, 3:7], dim=-1, eps=1e-6
         )
+        invalid_quat = palm_quat_action.norm(dim=-1, keepdim=True) <= 1e-6
+        approach_palm_pose[:, 3:7] = torch.where(invalid_quat, fallback_quat, palm_quat)
+
+        grasp_palm_pose = self.grasp_anchor_palm_pose_buf.clone()
+        grasp_pos_raw = (
+            self.grasp_anchor_palm_pose_buf[:, :3]
+            + palm_pos_action
+            * float(self.cfg.palm_local_workspace_radius)
+            * float(self.cfg.grasp_palm_delta_scale)
+        )
+        grasp_pos_raw = torch.max(
+            torch.min(grasp_pos_raw, self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
+        )
+        grasp_palm_pose[:, :3] = grasp_pos_raw
         grasp_palm_pose[:, 2] = torch.minimum(
             grasp_palm_pose[:, 2],
             self.grasp_anchor_palm_pose_buf[:, 2]
             + float(self.cfg.prelift_max_cup_height_delta),
         )
+        grasp_pos_delta = (grasp_palm_pose[:, :3] - self.palm_pose_targets[:, :3]).clamp(
+            min=-float(self.cfg.palm_target_max_delta),
+            max=float(self.cfg.palm_target_max_delta),
+        )
+        grasp_palm_pose[:, :3] = self.palm_pose_targets[:, :3] + grasp_pos_delta
         grasp_palm_pose[:, 3:7] = torch.nn.functional.normalize(
             self.grasp_anchor_palm_pose_buf[:, 3:7],
             dim=-1,
             eps=1e-6,
         )
-        lift_palm_pose = incremental_pose
+
+        lift_palm_pose = self.lift_palm_start_pose_buf.clone()
+        lift_pos_raw = (
+            self.lift_palm_start_pose_buf[:, :3]
+            + palm_pos_action * float(self.cfg.lift_palm_delta_xyz)
+        )
+        lift_pos_raw = torch.max(
+            torch.min(lift_pos_raw, self.palm_maxs[:3].unsqueeze(0)),
+            self.palm_mins[:3].unsqueeze(0),
+        )
+        lift_pos_delta = (lift_pos_raw - self.palm_pose_targets[:, :3]).clamp(
+            min=-float(self.cfg.palm_target_max_delta),
+            max=float(self.cfg.palm_target_max_delta),
+        )
+        lift_palm_pose[:, :3] = self.palm_pose_targets[:, :3] + lift_pos_delta
+        lift_palm_pose[:, 3:7] = torch.nn.functional.normalize(
+            self.lift_palm_start_pose_buf[:, 3:7], dim=-1, eps=1e-6
+        )
 
         if self.cfg.eval_mass_shift_enabled:
             shift_mask = self.lift_ready_latched_buf & ~self._eval_mass_shift_done
@@ -806,7 +830,7 @@ class GraspRightEnv(DirectRLEnv):
 
         palm_pose = torch.where(
             self.is_stabilize_phase.unsqueeze(1),
-            incremental_pose,
+            lift_palm_pose,
             torch.where(
                 lift_mask.unsqueeze(1),
                 lift_palm_pose,
@@ -964,7 +988,7 @@ class GraspRightEnv(DirectRLEnv):
             middle3_pos_noisy - cup_pos_noisy.unsqueeze(1)
         ).view(self.num_envs, -1)   # (N, 15)
 
-        last_actions = self.actions  # (N, 26)
+        last_actions = self.actions  # (N, 27)
 
         # tip force: 3D 법선 방향 벡터 (5 × 3D = 15D)
         tip_force_xyz_norm = (
@@ -983,7 +1007,7 @@ class GraspRightEnv(DirectRLEnv):
             palm_center_pos,        # 3
             fingertip_pos_rel_palm, # 15
             palm_to_cup,            # 3
-            last_actions,           # 26
+            last_actions,           # 27
         ]
         if self.cfg.actor_observe_bead_mass:
             actor_obs_parts.append(self._bead_mass_normalized.unsqueeze(-1))  # 1
@@ -1035,10 +1059,10 @@ class GraspRightEnv(DirectRLEnv):
             tip_force_xyz_norm,     # 15D (critic도 동일 변환)
             middle_to_cup_clean,    # 15D
             phase_step_ratio,
-        ], dim=-1)   # 132D
+        ], dim=-1)   # 133D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 132
+            actor_obs_clean,        # 133
             self._bead_mass_normalized.unsqueeze(-1),  # 1
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
@@ -1049,7 +1073,7 @@ class GraspRightEnv(DirectRLEnv):
             middle_binary,          # 5
             middle_force_norm,      # 5
             fingertip_signed_dist,  # 5
-        ], dim=-1)   # 169D
+        ], dim=-1)   # 170D
 
         critic_obs = torch.nan_to_num(critic_obs, nan=0.0, posinf=5.0, neginf=-5.0)
 
@@ -1642,7 +1666,6 @@ class GraspRightEnv(DirectRLEnv):
         self.is_lift_phase[env_ids] = False
         self.is_stabilize_phase[env_ids] = False
         self.episode_stabilize_success_buf[env_ids] = False
-        self._ema_palm_action[env_ids] = 0.0
         self._eval_mass_shift_done[env_ids] = False
         self.contacts_at_lift_start_buf[env_ids] = 0.0
         self.palm_at_lift_start_buf[env_ids] = 0.0
@@ -1666,9 +1689,14 @@ class GraspRightEnv(DirectRLEnv):
 
         self._eval_episode_started[env_ids] = False
 
-        # Incremental action: zero holds the current palm pose and finger preset.
-        self.actions[env_ids] = 0.0
-        self.prev_actions[env_ids] = 0.0
+        palm_pos = self.palm_pose_targets[env_ids, :3]
+        palm_action = 2.0 * (
+            palm_pos - self.palm_mins[:3]
+        ) / (self.palm_maxs[:3] - self.palm_mins[:3]).clamp(min=1e-6) - 1.0
+        self.actions[env_ids, PALM_POS_ACTION_SLICE] = palm_action.clamp(-1.0, 1.0)
+        self.actions[env_ids, PALM_QUAT_ACTION_SLICE] = self.palm_pose_targets[env_ids, 3:7]
+        self.actions[env_ids, FINGER_ACTION_SLICE] = 0.0
+        self.prev_actions[env_ids] = self.actions[env_ids]
 
     def _uniform_scale(self, shape: tuple[int, int], value_range: tuple[float, float]) -> torch.Tensor:
         low, high = value_range

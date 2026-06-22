@@ -61,11 +61,15 @@ def compute_grasp_reward_terms(
     grasp = _cfg_float(cfg, "grasp_weight", 0.0) * pre_lift_gate * (
         0.25 * tip_contact_frac + 0.35 * full_tip + 0.40 * contact_persistence_frac
     )
+    lift_height_quality = (
+        cup_height_delta
+        / max(_cfg_float(cfg, "lift_success_height", 0.04), 1e-6)
+    ).clamp(min=0.0, max=1.0)
     lift = (
         _cfg_float(cfg, "lift_reward_weight", 0.0)
         * lift_gate
         * full_tip
-        * cup_height_delta
+        * lift_height_quality
         * upright_quality
     )
     action_quality = torch.exp(
