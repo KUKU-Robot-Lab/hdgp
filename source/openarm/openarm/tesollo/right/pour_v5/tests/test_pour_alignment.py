@@ -161,11 +161,12 @@ def test_align_reward_is_active_additive_dexpour() -> None:
     assert "r_align = self.cfg.weight_align * (1.0 + self._directional_tilt_cos_c) / 2.0" in stage_b
     assert "r_stageB = r_align" in stage_b
     # r_pour: 곱셈 saddle 해체 → r_transport(w_transport·aim, tilt 무관)
-    assert "r_pour = self.cfg.weight_transport * aim_score" in stage_b
+    assert "torch.exp(-self.cfg.pour_z_scale * (self._mouth_z_clearance - self.cfg.pour_z_target).abs())" in stage_b
     assert "r_precision" not in env
     assert "r_pour_xy" not in stage_b
     assert "r_descend" not in stage_b
     assert "weight_align: float = 20.0" in cfg
+    # [Phase1-rev] r_transport(주둥이 aim corridor) 제거: deep tilt 억제 항. 위치는 approach(컵 중심)가 담당.
     assert "weight_transport:   float = 30.0" in cfg
     assert "pour_corridor_xy_margin: float = 0.015" in cfg
     assert "pour_corridor_z_min: float = -0.02" in cfg

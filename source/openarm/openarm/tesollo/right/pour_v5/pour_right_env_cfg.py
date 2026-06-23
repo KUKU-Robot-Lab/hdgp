@@ -309,6 +309,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
     weight_tilt: float = 35.0      # [lstm_test4] test3 20→35 복원: bank 품질 게이트를 단일 변경으로 격리 검증.
+    weight_tilt_delta: float = 100.0   # [test4] tilt 증분(delta) 보상 가중. 더 기울이는 순간만(relu)→75° 너머 deep tilt 유도. 위치(z/xy) 맞춰진 test3 위에서 deep tilt 점프 유발.
     tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·prox_gate)
     # [06.21 Phase2] tilt 게이트를 latch(binary)→연속 근접 게이트로 교체(순환 게이트 절단).
     #   prox_gate = clamp((far - approach_xy_dist)/(far-near), 0, 1). approach_xy_dist=rim_center 기준.
@@ -321,7 +322,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   진단: deep tilt 시 pour_point가 target에서 이탈(pp_z +14cm)해도 곱셈이 둘 다 높을 때만 보상→saddle.
     #   덧셈이면 위치(transport)와 기울임(tilt)을 독립 보상 → "위치 유지하며 deep tilt"가 합 최대.
     #   aim_score는 z corridor(z_max=0.05) 내장 → r_transport가 pp_z 솟음을 자동 페널티(Phase2 포함).
-    weight_transport:   float = 30.0   # r_transport = w_transport · aim_score (위치/조준, tilt 무관). 구 weight_pour를 transport+align로 분배(합≈50 보존).
+    weight_transport:   float = 30.0   # [test3] 0→30: z-clearance 보정 r_pour 재활성. deep tilt 시 주둥이 z-overshoot(+10~17cm) 보정해 bead가 target 입구 진입 → outcome 발화 + deep_tilt_bank 부트스트랩 연쇄.
+    pour_z_target:      float = 0.03   # [test3] 주둥이를 target 입구 위 3cm로 유도 (충돌회피 마진 + bead 진입 높이)
+    pour_z_scale:       float = 20.0   # [test3] z-clearance 오차 exp 민감도 (3.5cm서 반감)
     pour_aim_scale:     float = 10.0   # [test_aim2] aim corridor 완만화(공유 pour_corridor_scale=20 절벽 → 10). env서 radius=0(flat-top 제거)와 함께 → target서 부드러운 봉우리(gradient 어디서나) → miss 교정 + 학습 stiffness↓. 부드러운 동작인데 reward 출렁이던 ② 원인 제거.
     pour_aim_z_max:     float = 0.05   # [test_aim] aim 전용 z 상한(공유 pour_corridor_z_max=0.12와 분리). spout이 입구 위 5cm 넘으면 감점 → release 높이발 산란 차단. z_min은 pour_corridor_z_min(-0.02) 공유(soft band, tilt 자연 하강 허용).
     #   ready_latched 이후에는 live corridor wobble이 tilt reward를 끄지 않음. 미정조준 ceiling=35×0.35=12.25.

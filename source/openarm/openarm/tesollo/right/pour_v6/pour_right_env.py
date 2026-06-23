@@ -1872,8 +1872,12 @@ class PourRightEnv(DirectRLEnv):
             (self.cfg.tilt_prox_gate_far - self._approach_xy_dist) / _prox_den
         ).clamp(0.0, 1.0)
         tilt_ready_factor = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * prox_gate
-        # r_tilt = bootstrap(작게, 조준 무관, prox 게이트). "기울이기 시작" 자체를 견인.
-        r_tilt = self.cfg.weight_tilt * tilt_progress * rot_dir * tilt_ready_factor
+        # [Phase1-simple] 연속 곱셈 게이트(rot_dir·tilt_ready_factor) → binary stage gate(latched_ready). v5와 동기화.
+        #   latched_ready는 corridor 1회 진입 후 episode 내내 1 → deep tilt 중 안 꺼지고 tilt_progress 0→135° 단일 ramp.
+        #   외회전 방지는 always-on 덧셈 r_introt가 담당. rot_dir/tilt_ready_factor는 로깅 위해 계산만 유지.
+        r_tilt = self.cfg.weight_tilt * tilt_progress * latched_ready
+        # [test4] tilt 증분(delta) 보상: 더 기울이는 순간만(relu)→75° 너머 deep tilt 유도. v5와 동기화.
+        r_tilt_delta = self.cfg.weight_tilt_delta * tilt_amount_delta.clamp(min=0.0) * latched_ready
         # [06.21 Phase3] r_pour = 정밀 조정텀(크게). tilt_progress·aim_score(관대 radius corridor).
         #   tilt_progress 스케일 → 회전 시작 흔들림 구간 기여 작음(자동 억제), 안정 구간만 본격.
         #   w_pour(50) > weight_tilt(35) → 조준 시 순보너스가 커 "조준해 기울이기"가 strictly 우세.
@@ -1889,7 +1893,13 @@ class PourRightEnv(DirectRLEnv):
             self.cfg.pour_aim_z_max,
             self.cfg.pour_aim_scale,
         )
-        r_pour = self.cfg.weight_pour * tilt_progress * aim_score
+        # [Phase1] 곱셈 r_pour(progress×aim, deep tilt saddle) → 덧셈 r_transport(w_transport·aim). w_transport=0이라 무력. v5와 동기화.
+        # [test3] outcome 도달성: deep tilt 시 주둥이 z-overshoot 보정 (z-only, deep tilt 억제 안함). v5와 동기화.
+        r_pour = (
+            self.cfg.weight_transport
+            * tilt_progress
+            * torch.exp(-self.cfg.pour_z_scale * (self._mouth_z_clearance - self.cfg.pour_z_target).abs())
+        )
         # [로깅 전용] 85° 돌파 추적 (보상 미사용). tilt_progress_A=전체 진행도, B=깊은 구간(85→135°)
         tilt_pre = self.cfg.tilt_pre_amount
         tilt_progress_A = tilt_progress
@@ -1900,8 +1910,8 @@ class PourRightEnv(DirectRLEnv):
         #   r_approach(5) → 회전만 park 아닌 회전+접근+tilt 단계 상승. total에 직접 가산(아래).
         r_introt = self.cfg.weight_introt * self._internal_rot_gate
 
-        # Direct align reward is disabled. Corridor remains as phase/release context only.
-        r_align = torch.zeros_like(corridor_score)
+        # [Phase1] DexPour r_align=(1+cosθ)/2 활성화 (방향 정렬, deep tilt서 안정, 덧셈). v5와 동기화.
+        r_align = self.cfg.weight_align * (1.0 + self._directional_tilt_cos_c) / 2.0
 
         # [r_pour_z 제거] z barrier가 hinge pour와 상충(기울이면 pour_point 자연 하강→페널티→주기적 붕괴).
         #   충돌은 mouth_z_clearance/termination으로 모니터링.
@@ -1974,6 +1984,7 @@ class PourRightEnv(DirectRLEnv):
             + r_approach
             + r_introt
             + r_tilt            # [Phase2] bootstrap: prox 게이트 0→135° 연속 ramp (조준 무관)
+            + r_tilt_delta      # [test4] tilt 증분 보상 (75° 너머 deep tilt 유도)
             + r_pour            # [Phase3] 정밀 조정: tilt_progress·aim_score(관대 radius), 조준 보너스
             + r_stageB
             + r_source_release  # [probe] g_ready 무관, 실제 소스 잔량 감소분만 transient 보상
@@ -2008,6 +2019,7 @@ class PourRightEnv(DirectRLEnv):
             "Reward/approach": r_approach.mean(),
             "Reward/introt":   r_introt.mean(),
             "Reward/tilt":     r_tilt.mean(),                # [Phase2] bootstrap (prox 게이트, 조준 무관)
+            "Reward/tilt_delta": r_tilt_delta.mean(),        # [test4] tilt 증분 보상
             "Reward/pour":     r_pour.mean(),                # [Phase3] 정밀 조정 (tilt_progress·aim_score)
             "Reward/source_release":  r_source_release.mean(),
             "Reward/target_capture":  r_target_capture.mean(),
