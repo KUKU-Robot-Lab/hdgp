@@ -2131,9 +2131,6 @@ class PourRightEnv(DirectRLEnv):
             "log/corridor_escape":       r_corridor_escape.mean(),
             "log/ready_latched":         self._pour_ready_latched.float().mean(),
             # demo pose reward (pour_v4)
-            "log/demo_arm_joint_err":    demo_terms["demo_arm_joint_err"].mean(),
-            "log/demo_arm_pose_w":       torch.tensor(self._demo_arm_pose_w, device=self.device),
-            "log/demo_j5_w":             torch.tensor(self._demo_j5_w, device=self.device),
             "log/demo_graduate_ema":     torch.tensor(self._demo_graduate_ema, device=self.device),
             "log/release_context":       release_context.mean(),
             "log/tilt_ready_factor":     tilt_ready_factor.mean(),   # [Phase2] = floor+(1-floor)·prox_gate
