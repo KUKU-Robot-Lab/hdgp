@@ -81,6 +81,6 @@ def test_rh56f1_lift_start_requires_success_contact_count() -> None:
     constants, cfg = _load_constants_and_cfg_text()
 
     assert constants.NUM_FINGERTIPS == 5
-    assert "stage0_lift_start_min_contacts: int = 4" in cfg
+    assert "stage0_lift_start_min_contacts: int = 3" in cfg
     assert "grasp_phase_full_grip_contact_threshold: int = 4" in cfg
     assert "grasp_phase_full_grip_progress_threshold: float = 0.65" in cfg

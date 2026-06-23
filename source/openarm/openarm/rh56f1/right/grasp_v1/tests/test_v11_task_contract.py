@@ -287,7 +287,7 @@ def test_v11_grip_first_curriculum_uses_split_readiness_gates() -> None:
     assert "full_grip_pose=self.hand_full_grip_pose" in env
     assert "late_grasp_mask=late_grasp_full_grip_mask" in env
     assert "compute_lift_readiness(" in env
-    assert "min_contacts=self.cfg.stage0_lift_start_min_contacts" in env
+    assert "min_contacts=_adr_min_contacts" in env  # Phase A: 정적 cfg값 대신 contact ADR 동적값 사용
     assert "hold_steps=self.cfg.stage0_lift_start_hold_steps" in env
     assert "full_grip_ready_now = (" in env
     assert "& has_5_contact_bool" in env
@@ -333,9 +333,9 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
         "stability_cup_ang_vel_threshold",
         "stability_contact_delta_threshold",
         "stability_action_delta_threshold",
-        "stabilize_upright_max_deg: float = 5.0",
+        "stabilize_upright_max_deg: float = 12.0",
         "stabilize_upright_reward_scale_deg",
-        "stage0_lift_start_min_contacts: int = 4",
+        "stage0_lift_start_min_contacts: int = 3",
         "grasp_phase_full_grip_contact_threshold: int = 4",
         "grasp_phase_full_grip_progress_threshold: float = 0.65",
     ):
@@ -395,7 +395,7 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     ):
         assert removed_term not in env
     assert "compute_stationary_grasp_success(" in env
-    assert "stabilize_upright_max_deg: float = 5.0" in cfg
+    assert "stabilize_upright_max_deg: float = 12.0" in cfg
     assert "stable=stability.stable" in env
 
 
@@ -458,7 +458,7 @@ def test_v11_lstm_rl_games_config_uses_no_actor_mass_recurrent_name() -> None:
     assert "name: lstm" in t
     assert "before_mlp: False" in t
     assert "units: [512, 512, 256, 128]" in t
-    assert "entropy_coef: 0.003" in t
+    assert "entropy_coef: 0.001" in t
     assert "horizon_length: 32" in t
     assert "minibatch_size: 16384" in t
     assert "seq_length: 16" in t

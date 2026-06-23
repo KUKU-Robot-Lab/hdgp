@@ -32,7 +32,7 @@ def test_reward_cfg_uses_shared_grasp_core_terms() -> None:
         "cup_radius_approx",
         "enclosure_thumb_weight",
         "stabilize_upright_reward_scale_deg",
-        "stage0_lift_start_min_contacts: int = 4",
+        "stage0_lift_start_min_contacts: int = 3",
         "grasp_phase_full_grip_contact_threshold: int = 4",
         "grasp_phase_full_grip_progress_threshold: float = 0.65",
     ):

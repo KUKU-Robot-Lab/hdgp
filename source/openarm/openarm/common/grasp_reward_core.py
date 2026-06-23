@@ -35,6 +35,11 @@ def compute_grasp_reward_terms(
     pre_lift_gate = 1.0 - lift_gate
     full_tip = full_tip_contact.float()
     contact_persistence_frac = contact_persistence_frac.clamp(0.0, 1.0)
+    # graded contact factor: hard full_tip(>=5) 곱셈 게이트는 TESOLLO에서 검지가
+    # 구조적으로 미접촉이라 영원히 0 → lift/stabilize/stability 전부 닫힘. 부분 접촉에도
+    # gradient를 주도록 tip_contact_frac(=num_tip/5)로 graded 게이팅한다.
+    # success/termination 판정은 별도로 full_tip>=5를 유지(env에서 처리).
+    graded_contact = tip_contact_frac.clamp(0.0, 1.0)
 
     lifted_bool = cup_height_delta >= _cfg_float(cfg, "lift_success_height", 0.04)
     lifted_gate = lifted_bool.float()
@@ -68,7 +73,7 @@ def compute_grasp_reward_terms(
     lift = (
         _cfg_float(cfg, "lift_reward_weight", 0.0)
         * lift_gate
-        * full_tip
+        * graded_contact
         * lift_height_quality
         * upright_quality
     )
@@ -93,7 +98,7 @@ def compute_grasp_reward_terms(
         _cfg_float(cfg, "stabilize_weight", 0.0)
         * lift_gate
         * lifted_gate
-        * full_tip
+        * graded_contact
         * upright_quality
         * action_quality
     )
@@ -101,7 +106,7 @@ def compute_grasp_reward_terms(
         _cfg_float(cfg, "stability_reward_weight", 0.0)
         * stabilize_gate
         * lifted_gate
-        * full_tip
+        * graded_contact
         * upright_quality
         * stability_quality_f
     )

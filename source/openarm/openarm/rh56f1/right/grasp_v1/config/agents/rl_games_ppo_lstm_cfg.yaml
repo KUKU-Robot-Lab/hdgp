@@ -67,7 +67,7 @@ params:
     gamma: 0.998
     tau: 0.95
     learning_rate: 3e-4
-    lr_schedule: linear
+    lr_schedule: adaptive   # collapse fix: kl 0.10까지 튀어도 linear는 LR 미clamp → 발산. adaptive로 kl_threshold가 실제 LR 제어
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
@@ -76,7 +76,7 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.003   # Phase B: entropy collapse(-5.4) 방지 — 0.0005는 너무 약해 60→80% 정책 붕괴
+    entropy_coef: 0.001   # collapse fix(test9 실측): 0.003은 과대 → entropy 17→36 인플레로 발산. 0.0005(과소,붕괴)↔0.003(과대) 중간값. non-lstm cfg와 정렬
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 32
