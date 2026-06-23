@@ -1886,10 +1886,13 @@ class PourRightEnv(DirectRLEnv):
         #   latched_ready는 corridor 1회 진입(corridor_score≥0.60) 후 episode 내내 1(_reset_idx서만 해제)
         #   → deep tilt 중에도 안 꺼지고 tilt_progress가 0→135° 단일 ramp로 견인.
         #   외회전 방지(rot_dir 목적)는 always-on 덧셈 r_introt가 담당. rot_dir/tilt_ready_factor는 로깅 위해 계산만 유지.
-        r_tilt = self.cfg.weight_tilt * tilt_progress * latched_ready
+        # [deep_tilt_boot1] tilt를 latched_ready(pour_point corridor)에서 분리 → 정조준 무관 deep tilt.
+        #   진단: pour_point 도달불가(rim±outer_radius 4.5cm vs 두 컵 19cm)로 corridor gate가 tilt 원천차단.
+        #   1차목표="못 넣어도 deep tilt 지속" → 순수 자세(tilt_progress)만으로 보상.
+        r_tilt = self.cfg.weight_tilt * tilt_progress
         # [test4] tilt 증분(delta) 보상: 더 기울이는 순간만(relu)→75° 너머 deep tilt 적극 유도.
         #   park 방지(유지=0), latched_ready(stageB). 위치(z/xy) 맞춰진 test3 위에서 deep tilt 점프 유발.
-        r_tilt_delta = self.cfg.weight_tilt_delta * tilt_amount_delta.clamp(min=0.0) * latched_ready
+        r_tilt_delta = self.cfg.weight_tilt_delta * tilt_amount_delta.clamp(min=0.0)
         # [06.21 Phase3] r_pour = 정밀 조정텀(크게). tilt_progress·aim_score(관대 radius corridor).
         #   tilt_progress 스케일 → 회전 시작 흔들림 구간 기여 작음(자동 억제), 안정 구간만 본격.
         #   w_pour(50) > weight_tilt(35) → 조준 시 순보너스가 커 "조준해 기울이기"가 strictly 우세.
