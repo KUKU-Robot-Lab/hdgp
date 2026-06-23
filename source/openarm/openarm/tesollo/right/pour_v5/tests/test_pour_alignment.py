@@ -146,78 +146,36 @@ def test_corridor_score_penalizes_only_excess_outside_corridor() -> None:
 
 
 def test_align_reward_is_active_additive_dexpour() -> None:
-    # [Phase1] DexPour additive 분해: r_align을 (1+dir_cos)/2로 활성화(구: disabled=0).
-    #   r_pour도 곱셈(w_pour·progress·aim) → 덧셈 r_transport(w_transport·aim)로 분해.
+    """[재설계] r_align = DexPour (1+cosθ)/2 (tilt 무관 방향 정렬). weight 20→5 하향(방향-only farming 차단)."""
     env = _read("pour_right_env.py")
     cfg = _read("pour_right_env_cfg.py")
 
-    stage_b = env.split("# Stage B — tilt / bead. Corridor is phase context, not direct align reward.", maxsplit=1)[1].split(
-        "# ============================================================\n        # Outcome",
-        maxsplit=1,
-    )[0]
-
-    assert "pour_corridor_score" in env
-    # r_align: DexPour (1+cosθ)/2 활성화 (tilt 무관 방향 정렬 덧셈)
-    assert "r_align = self.cfg.weight_align * (1.0 + self._directional_tilt_cos_c) / 2.0" in stage_b
-    assert "r_stageB = r_align" in stage_b
-    # r_pour: 곱셈 saddle 해체 → r_transport(w_transport·aim, tilt 무관)
-    assert "torch.exp(-self.cfg.pour_z_scale * (self._mouth_z_clearance - self.cfg.pour_z_target).abs())" in stage_b
-    assert "r_precision" not in env
-    assert "r_pour_xy" not in stage_b
-    assert "r_descend" not in stage_b
-    assert "weight_align: float = 20.0" in cfg
-    # [Phase1-rev] r_transport(주둥이 aim corridor) 제거: deep tilt 억제 항. 위치는 approach(컵 중심)가 담당.
-    assert "weight_transport:   float = 30.0" in cfg
-    assert "pour_corridor_xy_margin: float = 0.015" in cfg
-    assert "pour_corridor_z_min: float = -0.02" in cfg
-    assert "pour_corridor_z_max: float = 0.12" in cfg
+    assert "r_align = self.cfg.weight_align * (1.0 + self._directional_tilt_cos_c) / 2.0" in env
+    assert "r_stageB = r_align" in env
+    assert "weight_align: float = 5.0" in cfg
     assert "pour_corridor_scale: float = 20.0" in cfg
 
 
-def test_approach_reward_is_pre_ready_and_post_ready_corridor_miss_penalty() -> None:
+def test_approach_reward_is_rim_center_based() -> None:
+    """[재설계] approach = rim_center↔target 거리 기반 (pour_point 무관, Stage A 이송). DexPour r_cup_dist."""
     env = _read("pour_right_env.py")
-    cfg = _read("pour_right_env_cfg.py")
 
-    approach_block = env.split("[H13] Stage A — Approach", maxsplit=1)[1].split(
-        "# ============================================================\n        # Stage A→B 공간 게이트",
-        maxsplit=1,
-    )[0]
-
-    assert "weight_dist_to_target: float = 45.0" in cfg
-    assert "weight_corridor_escape_after_ready: float = 20.0" in cfg
-    assert "corridor_escape_floor_after_ready" not in cfg
-    assert "approach_anti_floor" not in cfg
-    assert "_approach_pt_w = (" in approach_block
-    assert "(1.0 - _tilt_blend) * self._source_rim_center_w" in approach_block
-    assert "_tilt_blend * self._source_pour_point_w" in approach_block
-    assert "_approach_corridor_score = pour_corridor_score(" in approach_block
-    assert "approach_corridor_miss = (1.0 - _approach_corridor_score).clamp(min=0.0)" in env
-    assert "r_approach_pre_ready = -self.cfg.weight_dist_to_target * approach_corridor_miss" in env
-    assert "corridor_escape = (1.0 - corridor_score).clamp(min=0.0)" in env
-    assert "r_corridor_escape = -self.cfg.weight_corridor_escape_after_ready * corridor_escape" in env
+    assert "_approach_pt_w = self._source_rim_center_w" in env
     assert "r_approach = (" in env
-    assert "(1.0 - latched_ready) * r_approach_pre_ready" in env
-    assert "+ latched_ready * r_corridor_escape" in env
-    assert "self.cfg.weight_corridor_escape_after_ready" in env
-    assert "self._approach_xy_dist - self.cfg.rim_approach_saturate" not in approach_block
 
 
-def test_tilt_reward_uses_ready_latch_not_live_corridor_context() -> None:
+def test_tilt_reward_uses_rim_antiparallel_target_relative() -> None:
+    """[재설계] tilt 기준 = rim_antiparallel(source_up·target_up, target 상대각). r_tilt always-on(게이트 없음). premature 제거."""
     env = _read("pour_right_env.py")
     cfg = _read("pour_right_env_cfg.py")
 
-    stage_b = env.split("# Stage B — tilt / bead. Corridor is phase context, not direct align reward.", maxsplit=1)[1].split(
-        "# [H10] 상시 내회전 유도",
-        maxsplit=1,
-    )[0]
-
-    assert "weight_tilt: float = 35.0" in cfg
-    assert "tilt_aim_floor: float = 0.35" in cfg
-    assert "tilt_ready_factor = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * latched_ready" in stage_b
-    assert "r_tilt = self.cfg.weight_tilt * tilt_progress * rot_dir * tilt_ready_factor" in stage_b
-    assert "* ready_context" not in stage_b
-    assert "* corridor_score" not in stage_b
-    assert "aim_soft" not in stage_b
+    assert "tilt_amount = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)" in env
+    assert "self._rim_antiparallel = (" in env
+    assert "r_tilt = self.cfg.weight_tilt * tilt_progress" in env
+    assert "weight_tilt: float = 20.0" in cfg
+    assert "pour_tilt_target_deg: float = 135.0" in cfg
+    # premature_tilt_cost 제거 (deep tilt 억제 역효과)
+    assert "premature" not in env
 
 
 def test_g_ready_gate_uses_corridor_latch_not_center_distance() -> None:
@@ -239,17 +197,6 @@ def test_g_ready_gate_uses_corridor_latch_not_center_distance() -> None:
     assert "_approach_corridor_score = pour_corridor_score(" in env
 
 
-def test_source_release_uses_release_context_not_align_gate() -> None:
-    env = _read("pour_right_env.py")
-    cfg = _read("pour_right_env_cfg.py")
-
-    assert "release_gate_floor_after_ready: float = 0.40" in cfg
-    assert "release_context = torch.maximum(" in env
-    assert "r_source_release = (" in env
-    assert "release_context\n            * aim_gate\n            * self.cfg.weight_source_release" in env
-    assert "align_gate\n            * aim_gate\n            * self.cfg.weight_source_release" not in env
-
-
 def test_bead_in_state_reward_is_disabled_for_release_delta_probe() -> None:
     """누적 bead_in_target_fraction 보상은 1-bead park를 만들 수 있어 probe에서 제거한다."""
     env = _read("pour_right_env.py")
@@ -262,32 +209,27 @@ def test_bead_in_state_reward_is_disabled_for_release_delta_probe() -> None:
     assert "r_bead_in = align_gate * self.cfg.weight_bead_in * self._bead_in_target_fraction" not in env
 
 
-def test_source_release_delta_reward_drives_active_pouring() -> None:
-    """소스 잔량 감소분만 reward로 써서 멈춰 있는 상태 보상을 제거한다."""
+def test_source_release_and_target_capture_removed_for_outcome_adr() -> None:
+    """[재설계] bead 보상 단일화: source_release/target_capture/demo/tilt_delta를 total에서 제거 → r_pour(outcome ADR)로 통합."""
+    env = _read("pour_right_env.py")
+
+    assert "+ r_source_release" not in env
+    assert "+ r_target_capture" not in env
+    assert "+ r_demo_arm_pose" not in env
+    assert "+ r_tilt_delta" not in env
+
+
+def test_outcome_adr_curriculum() -> None:
+    """[재설계] DexPour 커리큘럼: 자세 성공률 80%+ 시 bead 보상(weight_pour_bead) 0→50 램프 (outcome ADR)."""
     env = _read("pour_right_env.py")
     cfg = _read("pour_right_env_cfg.py")
 
-    assert "weight_source_release: float = 100.0" in cfg
-    assert "source_release_delta = (-self._bead_in_source_delta).clamp(min=0.0)" in env
-    assert "r_source_release = (" in env
-    assert "* self.cfg.weight_source_release" in env
-    assert "* source_release_delta" in env
-    assert "+ r_source_release" in env
-    assert '"Reward/source_release":  r_source_release.mean()' in env
-    assert '"log/source_release_delta":  source_release_delta.mean()' in env
-
-
-def test_target_capture_delta_reward_drives_outcome() -> None:
-    env = _read("pour_right_env.py")
-    cfg = _read("pour_right_env_cfg.py")
-
-    assert "weight_target_capture_delta: float = 200.0" in cfg
-    assert "weight_success: float = 0.0" in cfg
-    assert "target_capture_delta = self._bead_in_target_delta.clamp(min=0.0)" in env
-    assert "r_target_capture = self.cfg.weight_target_capture_delta * target_capture_delta" in env
-    assert "+ r_target_capture" in env
-    assert '"Reward/target_capture":  r_target_capture.mean()' in env
-    assert '"log/target_capture_delta":  target_capture_delta.mean()' in env
+    assert "self.outcome_adr" in env
+    assert "r_pour = pour_bead_w * corridor_score * self._bead_in_target_fraction" in env
+    assert "self._pose_success_now = (" in env
+    assert "self.outcome_adr.maybe_increment(_pose_success_rate)" in env
+    assert "outcome_adr_trigger_threshold: float = 0.80" in cfg
+    assert "pose_tilt_thresh: float = 0.587" in cfg
 
 
 def test_intermediate_values_are_cached_per_step_to_preserve_release_delta() -> None:

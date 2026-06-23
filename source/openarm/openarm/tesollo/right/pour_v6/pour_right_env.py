@@ -448,6 +448,18 @@ class PourRightEnv(DirectRLEnv):
             else None
         )
 
+        # [재설계 outcome ADR] 자세 성공률 80%+ 시 bead 보상(weight_pour_bead) 0→50 램프. v5와 동기화.
+        self.outcome_adr = (
+            PourADR(
+                custom_cfg=cfg.outcome_adr_custom_cfg,
+                num_increments=cfg.outcome_adr_num_increments,
+                increment_interval=cfg.outcome_adr_increment_interval,
+                trigger_threshold=cfg.outcome_adr_trigger_threshold,
+            )
+            if cfg.enable_outcome_adr
+            else None
+        )
+
         self._noise_base_joint_pos = cfg.obs_noise_joint_pos
         self._noise_base_joint_vel = cfg.obs_noise_joint_vel
         self._noise_base_body_pos  = cfg.obs_noise_body_pos
@@ -489,6 +501,10 @@ class PourRightEnv(DirectRLEnv):
         self.episode_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._total_episodes: int = 0
         self._successful_episodes: int = 0
+        # [재설계 outcome ADR] 자세 성공(corridor+tilt100°+) episode 추적 → outcome_adr trigger. v5와 동기화.
+        self._pose_success_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.episode_pose_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._pose_successful_episodes: int = 0
 
         # ----------------------------------------------------------------
         # Fabrics 초기화
@@ -576,6 +592,7 @@ class PourRightEnv(DirectRLEnv):
         # z도 부호 있는 위반량으로 binding bound 확정: z_max binding이면 음수, z_min이면 양수.
         self._palm_clamp_viol_z_signed = torch.zeros(self.num_envs, device=self.device)
         self._source_up_dot_world = torch.zeros(self.num_envs, device=self.device)
+        self._pour_point_dyn_w = torch.zeros(self.num_envs, device=self.device)  # pour_point 동적 blend weight (0=정적/1=동적)
         self._directional_tilt_cos = torch.zeros(self.num_envs, device=self.device)
         # [test8] cup-center 앵커 방향 cosine (전달 자세서 안정 → 상충 제거)
         self._directional_tilt_cos_c = torch.zeros(self.num_envs, device=self.device)
@@ -1291,8 +1308,23 @@ class PourRightEnv(DirectRLEnv):
         #   gravity_perp≈target방향(올바른 자세선 일치). xy 크기(기울임 깊이=|perp_xy|)와 z는
         #   실시간 gravity_perp 유지(물리 정확). z는 g_ready 미사용·align z_margin 완화로 wobble 영향 작음.
         _perp_xy_mag = _gravity_perp_hat[:, :2].norm(dim=-1, keepdim=True)
+        # [pour_point 동적화] xy 방향 = 정적(target방향) → 동적(gravity_perp 실제 배출구) blend.
+        #   정적: 이송(얕은 tilt)엔 target방향 고정 → 직립 근처 wobble 회피(test4 A단독 실패 교훈).
+        #   동적: deep tilt엔 실제 낮은 rim 방향(gravity_perp xy) = 진짜 배출구 → corridor/z_clear 정조준.
+        #   전환: tilt 깊이 smoothstep(dyn_lo 0.15≈45° → dyn_hi 0.30≈67°). 임계점 점프 없는 연속 blend.
         _pour_dir_xy = self._target_opening_w[:, :2] - _rim_center_w[:, :2]
-        _pour_dir_hat = _pour_dir_xy / _pour_dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        _static_dir_hat = _pour_dir_xy / _pour_dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        _dynamic_dir_hat = _gravity_perp_hat[:, :2] / _perp_xy_mag.clamp(min=1e-6)
+        _su_dot_local = _cup_up_w[:, 2].clamp(-1.0, 1.0)
+        _tilt_amt_local = ((1.0 - _su_dot_local) / 2.0).clamp(0.0, 1.0)
+        _dyn_t = (
+            (_tilt_amt_local - self.cfg.pour_point_dyn_lo)
+            / max(self.cfg.pour_point_dyn_hi - self.cfg.pour_point_dyn_lo, 1e-6)
+        ).clamp(0.0, 1.0)
+        _dyn_w = (_dyn_t * _dyn_t * (3.0 - 2.0 * _dyn_t)).unsqueeze(-1)  # smoothstep
+        self._pour_point_dyn_w = _dyn_w.squeeze(-1)  # 로깅: 0=정적(이송)/1=동적(붓기)
+        _blended_dir = (1.0 - _dyn_w) * _static_dir_hat + _dyn_w * _dynamic_dir_hat
+        _pour_dir_hat = _blended_dir / _blended_dir.norm(dim=-1, keepdim=True).clamp(min=1e-6)
         _pp_xy = _rim_center_w[:, :2] + self.cfg.source_outer_radius * _perp_xy_mag * _pour_dir_hat
         _pp_z = (
             _rim_center_w[:, 2] + self.cfg.source_outer_radius * _gravity_perp_hat[:, 2]
@@ -1316,6 +1348,11 @@ class PourRightEnv(DirectRLEnv):
         self._mouth_xy_distance = torch.norm(self._mouth_delta[:, :2], dim=-1)
         self._mouth_z_clearance = self._source_pour_point_w[:, 2] - self._target_opening_w[:, 2]
         self._source_up_dot_world = self._source_up_axis_w[:, 2].clamp(-1.0, 1.0)
+        # [재설계] pour 각도 = source_up · target_up (두 컵 +z 상대각, target 자세 무관). 1=평행0°, 0=90°, -1=180°.
+        #   tilt/frac 보상이 이걸 기준 → world z(target 직립 가정) 부정확 제거. pour 성공 = rim_antiparallel ≤ 0(90°+). v5와 동기화.
+        self._rim_antiparallel = (
+            self._source_up_axis_w * self._target_up_axis_w
+        ).sum(dim=-1).clamp(-1.0, 1.0)
 
         # directional_tilt_cos: cup up-axis XY와 target 방향 XY의 cosine
         # 컵이 target 방향으로 기울면 cos>0, 반대면 cos<0
@@ -1764,7 +1801,7 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # tilt-phase aware: 직립(tilt=0)일수록 full grip 요구, 깊은 tilt에선 contact 완화
-        tilt_amount = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
+        tilt_amount = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)  # [재설계] target 상대각 기준(rim_antiparallel). v5와 동기화.
         contact_gate = (1.0 - 0.7 * tilt_amount)
         upright_gate = (1.0 - tilt_amount).clamp(0.0, 1.0)
         # 손은 freeze(grasp_hold) → finger_curl은 항상 닫힘(상수 weight 가산)
@@ -1801,9 +1838,6 @@ class PourRightEnv(DirectRLEnv):
             self.cfg.pour_corridor_z_max,
             self.cfg.pour_corridor_scale,
         )
-        self._rim_antiparallel = (
-            self._source_up_axis_w * self._target_up_axis_w
-        ).sum(dim=-1)
         approach_corridor_miss = (1.0 - _approach_corridor_score).clamp(min=0.0)
         # [06.18 복원] approach = positive exp-거리 당김 (06.19 corridor_score / potential-diff 회귀 revert).
         #   exp(-scale·dist)는 0.3m 밖에서도 target쪽 slope 생존 → 이동 부트스트랩(V5 park 원인 = 먼거리 grad 소실).
@@ -1879,8 +1913,6 @@ class PourRightEnv(DirectRLEnv):
         #   진단: pour_point 도달불가로 corridor gate가 tilt 원천차단. 순수 자세(tilt_progress)만 보상.
         #   v5와 동일 reward — v5/v6 차이는 틸팅 방식뿐(대조군), reward 변수 고정.
         r_tilt = self.cfg.weight_tilt * tilt_progress
-        # [test4] tilt 증분(delta) 보상: 더 기울이는 순간만(relu)→75° 너머 deep tilt 유도. v5와 동기화.
-        r_tilt_delta = self.cfg.weight_tilt_delta * tilt_amount_delta.clamp(min=0.0)
         # [06.21 Phase3] r_pour = 정밀 조정텀(크게). tilt_progress·aim_score(관대 radius corridor).
         #   tilt_progress 스케일 → 회전 시작 흔들림 구간 기여 작음(자동 억제), 안정 구간만 본격.
         #   w_pour(50) > weight_tilt(35) → 조준 시 순보너스가 커 "조준해 기울이기"가 strictly 우세.
@@ -1898,10 +1930,19 @@ class PourRightEnv(DirectRLEnv):
         )
         # [Phase1] 곱셈 r_pour(progress×aim, deep tilt saddle) → 덧셈 r_transport(w_transport·aim). w_transport=0이라 무력. v5와 동기화.
         # [test3] outcome 도달성: deep tilt 시 주둥이 z-overshoot 보정 (z-only, deep tilt 억제 안함). v5와 동기화.
-        r_pour = (
-            self.cfg.weight_transport
-            * tilt_progress
-            * torch.exp(-self.cfg.pour_z_scale * (self._mouth_z_clearance - self.cfg.pour_z_target).abs())
+        # [재설계 Phase3] r_pour = g_ready(corridor_score) · 실제 bead 통과. z-only 대리 폐기. v5와 동기화.
+        #   동적 pour_point(Phase2)로 corridor_score가 진짜 배출구 조준 반영. bead_cross=실제 붓기 결과 → deep tilt 간접 유도.
+        # [재설계 outcome ADR] weight = 0(1단계 자세만) → 자세 성공률 80%+ 후 50(2단계 bead 보상). v5와 동기화.
+        pour_bead_w = (
+            self.outcome_adr.get_param("outcome", "weight_pour_bead")
+            if self.outcome_adr is not None
+            else self.cfg.weight_pour_bead
+        )
+        r_pour = pour_bead_w * corridor_score * self._bead_in_target_fraction
+        # 자세 성공: corridor 위치 준비 + tilt 100°+ (outcome_adr trigger 지표).
+        self._pose_success_now = (
+            (corridor_score >= self.cfg.pose_ready_thresh)
+            & (tilt_amount >= self.cfg.pose_tilt_thresh)
         )
         # [로깅 전용] 85° 돌파 추적 (보상 미사용). tilt_progress_A=전체 진행도, B=깊은 구간(85→135°)
         tilt_pre = self.cfg.tilt_pre_amount
@@ -1922,16 +1963,9 @@ class PourRightEnv(DirectRLEnv):
             (self._directional_tilt_cos_c > 0.0) & (tilt_amount > self.cfg.drain_tilt_min)
         ).float()
 
-        # bead — release는 ready 이후 wobble에 hard-block되지 않는 release_context 종속.
+        # [재설계] bead delta는 로깅 전용 (보상은 outcome ADR r_pour로 단일화).
         source_release_delta = (-self._bead_in_source_delta).clamp(min=0.0)
-        r_source_release = (
-            release_context
-            * aim_gate
-            * self.cfg.weight_source_release
-            * source_release_delta
-        )
         target_capture_delta = self._bead_in_target_delta.clamp(min=0.0)
-        r_target_capture = self.cfg.weight_target_capture_delta * target_capture_delta
         # [release-delta probe] 누적 target 상태 reward는 1-bead park를 만들 수 있어 제거.
         # 실제 배출 유도는 source_release_delta의 transient reward로만 본다.
         r_bead_in = torch.zeros_like(self._bead_in_target_fraction)
@@ -1963,38 +1997,15 @@ class PourRightEnv(DirectRLEnv):
             else self.cfg.weight_spill
         )
 
-        # ---- demo pose reward (pour_v4): flow EMA로 weight 감쇠 후 j1-4/j5 앵커 ----
-        flow_signal = float(
-            (self._bead_cross_fraction + self._bead_in_target_fraction).mean().item()
-        )
-        a_ema = self.cfg.demo_graduate_ema_alpha
-        self._demo_graduate_ema = (1.0 - a_ema) * self._demo_graduate_ema + a_ema * flow_signal
-        graduate = 1.0 - min(
-            self._demo_graduate_ema / max(self.cfg.demo_graduate_flow_target, 1e-6), 1.0
-        )
-        self._demo_arm_pose_w = self.cfg.weight_demo_arm_pose_floor + (
-            self.cfg.weight_demo_arm_pose - self.cfg.weight_demo_arm_pose_floor
-        ) * graduate
-        self._demo_j5_w = self.cfg.weight_demo_j5_floor + (
-            self.cfg.weight_demo_j5 - self.cfg.weight_demo_j5_floor
-        ) * graduate
-        demo_terms = self._get_demo_pose_reward_terms()
-        r_demo_arm_pose = demo_terms["r_demo_arm_pose"]
-        r_demo_j5 = demo_terms["r_demo_j5"]
+        # [재설계] demo pose reward(pour_v4) 제거 — 순수 DRL. v5와 동기화.
 
         total = (
             r_hold
             + r_approach
             + r_introt
-            + r_tilt            # [Phase2] bootstrap: prox 게이트 0→135° 연속 ramp (조준 무관)
-            + r_tilt_delta      # [test4] tilt 증분 보상 (75° 너머 deep tilt 유도)
-            + r_pour            # [Phase3] 정밀 조정: tilt_progress·aim_score(관대 radius), 조준 보너스
+            + r_tilt            # [재설계] rim_antiparallel 기준 deep tilt (target 상대, 135°)
+            + r_pour            # [재설계] outcome ADR: weight·corridor·bead_in_target (자세성공 80%+ 후 활성). bead 보상 단일화. v5와 동기화.
             + r_stageB
-            + r_source_release  # [probe] g_ready 무관, 실제 소스 잔량 감소분만 transient 보상
-            + r_target_capture  # [probe] target에 새로 capture된 bead delta만 outcome 보상
-            + r_bead_in         # [probe] 누적 bead-in 상태 reward는 0 고정
-            + r_demo_arm_pose   # [pour_v4] a11~a20 pour 분포 j1-4 앵커 (감쇠, floor 유지)
-            + r_demo_j5         # [pour_v4] j5(틸트 주역) 앵커 — ready latch 이후만
             + self.cfg.weight_success * r_success
             - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
         )
@@ -2007,6 +2018,16 @@ class PourRightEnv(DirectRLEnv):
             self.noise_adr.maybe_increment(_ep_success_rate)
         if self.success_adr is not None:
             self.success_adr.maybe_increment(_ep_success_rate)
+        # [outcome ADR] 자세 성공률 80%+ 시 bead 보상(weight_pour_bead) 램프. v5와 동기화.
+        self.extras["log/pose_success"] = self._pose_success_now.float().mean()
+        _pose_success_rate = self._pose_successful_episodes / max(self._total_episodes, 1)
+        if self.outcome_adr is not None:
+            self.outcome_adr.maybe_increment(_pose_success_rate)
+            self.extras["log/pose_success_rate"] = torch.tensor(float(_pose_success_rate), device=self.device)
+            self.extras["log/outcome_adr_progress"] = torch.tensor(float(self.outcome_adr.progress()), device=self.device)
+            self.extras["log/weight_pour_bead"] = torch.tensor(
+                float(self.outcome_adr.get_param("outcome", "weight_pour_bead")), device=self.device
+            )
 
         # arm vel 추적 버퍼 유지 (진단 호환)
         arm_qd = self.robot.data.joint_vel[:, self.arm_dof_indices]
@@ -2021,13 +2042,8 @@ class PourRightEnv(DirectRLEnv):
             "Reward/hold":     r_hold.mean(),
             "Reward/approach": r_approach.mean(),
             "Reward/introt":   r_introt.mean(),
-            "Reward/tilt":     r_tilt.mean(),                # [Phase2] bootstrap (prox 게이트, 조준 무관)
-            "Reward/tilt_delta": r_tilt_delta.mean(),        # [test4] tilt 증분 보상
-            "Reward/pour":     r_pour.mean(),                # [Phase3] 정밀 조정 (tilt_progress·aim_score)
-            "Reward/source_release":  r_source_release.mean(),
-            "Reward/target_capture":  r_target_capture.mean(),
-            "Reward/demo_arm_pose":   r_demo_arm_pose.mean(),
-            "Reward/demo_j5":         r_demo_j5.mean(),
+            "Reward/tilt":     r_tilt.mean(),                # [재설계] rim_antiparallel deep tilt (target 135°)
+            "Reward/pour":     r_pour.mean(),                # [재설계] outcome ADR: corridor·bead_in_target
         }
         reward_w0_log: dict = {
             "Reward_w0/tilt_pre": torch.zeros((), device=self.device),  # [test8] r_tilt_A 폐기 (0 고정, 대시보드 호환)
@@ -2142,6 +2158,7 @@ class PourRightEnv(DirectRLEnv):
             "log/cup_center_xy_dist":    self._cup_center_xy_dist.mean(),
             "log/mouth_xy_dist":         self._mouth_xy_distance.mean(),
             "log/mouth_z_clearance":     self._mouth_z_clearance.mean(),
+            "log/pour_point_dyn_w":      self._pour_point_dyn_w.mean(),  # 0=정적(이송)/1=동적(붓기) 전환도
             "log/pour_point_x":          (self._source_pour_point_w[:, 0] - self.scene.env_origins[:, 0]).mean(),
             "log/pour_point_y":          (self._source_pour_point_w[:, 1] - self.scene.env_origins[:, 1]).mean(),
             "log/pour_point_z":          (self._source_pour_point_w[:, 2] - self.scene.env_origins[:, 2]).mean(),
@@ -2278,6 +2295,7 @@ class PourRightEnv(DirectRLEnv):
         )
         self.success_flag.copy_(success_by_fill)
         self.episode_success_buf |= self.success_flag   # 에피소드 중 한 번이라도 성공 시 True
+        self.episode_pose_success_buf |= self._pose_success_now  # [outcome ADR] 자세 성공 episode 추적
 
         # 비드 이상 감지: 비드 소환 상태에서 z < -0.5 이면 물리 폭발로 판단 → 즉시 종료
         # _hide_beads()는 z=-10.0에 숨기므로, _beads_spawned=False인 env는 체크 제외
@@ -2316,6 +2334,7 @@ class PourRightEnv(DirectRLEnv):
         # ---- episode 성공 집계 후 클리어 ----
         self._total_episodes += n
         self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
+        self._pose_successful_episodes += int(self.episode_pose_success_buf[env_ids].sum().item())  # [outcome ADR]
 
         # warmstart cache 저장: 에피소드 종료(final state)에만 체크
         self._maybe_store_warmstart_successes(env_ids)
@@ -2323,6 +2342,7 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_env_captured[env_ids_t_reset] = False
 
         self.episode_success_buf[env_ids] = False
+        self.episode_pose_success_buf[env_ids] = False  # [outcome ADR]
         if (not self._warmstart_collect_mode) and self._warmstart_cache_count > 0:
             # [lstm_test1 §6] f_boot 비율은 deep-tilt bank에서, 나머지는 직립 warmstart에서 시작.
             boot_ids, ws_ids = self._split_deep_tilt_boot(env_ids_t_reset)
@@ -2676,7 +2696,7 @@ class PourRightEnv(DirectRLEnv):
         bank = self._deep_tilt_bank
         if bank is None or self._warmstart_collect_mode:
             return
-        tilt_amount = ((1.0 - self._source_up_dot_world) / 2.0).clamp(0.0, 1.0)
+        tilt_amount = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)  # [재설계] target 상대각 기준(rim_antiparallel). v5와 동기화.
         qual = capture_mask(
             tilt_amount,
             self._bead_in_source_fraction,

@@ -187,6 +187,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_outer_radius:  float = 0.045   # 컵 외부 반경 (최하단 림 점 계산용)
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     source_inside_z_max:  float = 0.100   # 림 높이
+    # [pour_point 동적화] xy 방향 정적(target)→동적(gravity_perp 실제배출구) blend 전환 임계 (tilt_amount).
+    pour_point_dyn_lo:    float = 0.15    # ≈45°: 이하 정적(이송, wobble 회피)
+    pour_point_dyn_hi:    float = 0.30    # ≈67°: 이상 동적(deep tilt 정밀 배출구). 사이 smoothstep blend.
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
@@ -322,7 +325,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   진단: deep tilt 시 pour_point가 target에서 이탈(pp_z +14cm)해도 곱셈이 둘 다 높을 때만 보상→saddle.
     #   덧셈이면 위치(transport)와 기울임(tilt)을 독립 보상 → "위치 유지하며 deep tilt"가 합 최대.
     #   aim_score는 z corridor(z_max=0.05) 내장 → r_transport가 pp_z 솟음을 자동 페널티(Phase2 포함).
-    weight_transport:   float = 30.0   # [test3] 0→30: z-clearance 보정 r_pour 재활성. deep tilt 시 주둥이 z-overshoot(+10~17cm) 보정해 bead가 target 입구 진입 → outcome 발화 + deep_tilt_bank 부트스트랩 연쇄.
+    weight_transport:   float = 30.0   # [구 r_pour z-only, 재설계 Phase3서 미사용] 보존(롤백 참조).
+    weight_pour_bead:   float = 50.0   # [재설계 Phase3] r_pour = w·corridor_score·bead_cross_fraction. 실제 붓기 outcome 보상(z-only 대리 폐기).
     pour_z_target:      float = 0.03   # [test3] 주둥이를 target 입구 위 3cm로 유도 (충돌회피 마진 + bead 진입 높이)
     pour_z_scale:       float = 20.0   # [test3] z-clearance 오차 exp 민감도 (3.5cm서 반감)
     pour_aim_scale:     float = 10.0   # [test_aim2] aim corridor 완만화(공유 pour_corridor_scale=20 절벽 → 10). env서 radius=0(flat-top 제거)와 함께 → target서 부드러운 봉우리(gradient 어디서나) → miss 교정 + 학습 stiffness↓. 부드러운 동작인데 reward 출렁이던 ② 원인 제거.
@@ -335,7 +339,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_tilt_target_deg: float = 135.0   # 수평(90°) 너머 dump까지 tilt_progress gradient 유지
 
     # Stage B — direct pour-point 정렬 reward 제거. Corridor는 phase/release/logging context로만 사용.
-    weight_align: float = 20.0   # [Phase1] 0→20: DexPour r_align=(1+cosθ)/2 활성화. cosθ=directional_tilt_cos_c(cup→target XY 방향, deep tilt서도 안정). tilt 무관 덧셈 → 깊은 전달 자세 방향 정렬 직접 보상.
+    weight_align: float = 5.0   # [재설계 Phase3] 20→5 하향: 방향항이 최대 보상(16.8)으로 방향-only farming 유발 → 보조로 축소. cosθ=directional_tilt_cos_c.
     pour_align_scale: float = 15.0  # 레거시 pour_alignment_score config. 현재 reward path 미사용.
                                     #   (6.8 vs 4cm가 score .58 vs .73) mouth_xy가 입구반경(4.1cm) 밖에서 천장 → bead_in=0.
                                     #   sharp화로 마지막 4cm 파고들어 bead_in 개통 유도.
@@ -436,6 +440,20 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_adr_num_increments: int = 8
     success_adr_increment_interval: int = 20000
     success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
+
+    # [재설계 outcome ADR] DexPour 커리큘럼: 자세 성공률 80%+ 시 bead 보상(r_pour) weight 0→50 램프.
+    #   1단계=자세만(approach/tilt/align), bead 로깅만. 2단계=자세 완성 후 bead_in_target 상태보상 활성 → 정밀 pour.
+    enable_outcome_adr: bool = True
+    outcome_adr_custom_cfg: dict = {
+        "outcome": {
+            "weight_pour_bead": (0.0, 50.0),  # 1단계 0(자세만) → 2단계 50(bead 보상)
+        }
+    }
+    outcome_adr_num_increments: int = 8
+    outcome_adr_increment_interval: int = 20000
+    outcome_adr_trigger_threshold: float = 0.80  # 자세 성공률 80%+ 시 outcome 활성
+    pose_ready_thresh: float = 0.60   # 자세 성공 게이트: corridor_score ≥ (위치 준비)
+    pose_tilt_thresh: float = 0.587   # 자세 성공 게이트: tilt_amount ≥ (1-cos100°)/2 → rim_antiparallel ≤ -0.174 (100°+)
 
     reward_grasp_slip_sharpness: float = 3.0
     contact_maintain_min_others: int = 2
