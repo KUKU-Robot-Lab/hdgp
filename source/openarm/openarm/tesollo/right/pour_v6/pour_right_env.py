@@ -64,6 +64,7 @@ from .pour_right_constants import (
     NUM_HAND_DOF,
     NUM_PALM_ACTION,
     NULLSPACE_OFFSET_ARM,
+    N_DEMO_NULLSPACE_OFFSET,
     NUM_FINGERTIPS,
     NUM_OBSERVATIONS,
     NUM_DISTAL_SENSORS,
@@ -397,9 +398,16 @@ class PourRightEnv(DirectRLEnv):
         self._raw_null_action = torch.zeros(self.num_envs, device=self.device)
         self._ema_null_action = torch.zeros(self.num_envs, device=self.device)
         self._null_ref_arm = self.robot_start_joint_pos[:, :NUM_ARM_DOF].clone()   # 로깅용 직전 기준자
+        # [stage2] α offset 축 선택: "true_nullspace"=palm 보존 elbow-swivel(n_demo),
+        #   "demo_minus_start"=기존 tilt 슬라이더. stage2는 true_nullspace로 α가 tilt 안 망침.
+        _offset_vec = (
+            N_DEMO_NULLSPACE_OFFSET
+            if getattr(self.cfg, "nullspace_offset_mode", "demo_minus_start") == "true_nullspace"
+            else NULLSPACE_OFFSET_ARM
+        )
         self._nullspace_offset_arm = torch.tensor(
-            NULLSPACE_OFFSET_ARM, device=self.device
-        ).unsqueeze(0)                                                              # (1,7) demo−start 축
+            _offset_vec, device=self.device
+        ).unsqueeze(0)                                                              # (1,7) α self-motion 축
         _arm_limits = getattr(self.robot.data, "soft_joint_pos_limits", None)
         if _arm_limits is None:
             _arm_limits = self.robot.data.joint_pos_limits

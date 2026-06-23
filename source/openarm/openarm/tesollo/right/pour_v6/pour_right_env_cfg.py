@@ -287,6 +287,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [2b] nullspace 잉여 1-DOF action(α) 스케일: null_ref = baseline + scale·α·(demo−start).
     #   1.0 → α=±1이 ±full demo변위. v4 baseline=demo, v5 baseline=robot_start (offset·scale 공통).
     nullspace_action_scale: float = 0.0   # [stage1 진단] 1.0→0.0: α 핀. baseline=demo 단독이 j5 roll→deep tilt 주는지 검증(test5 재현). 2단계서 n_demo nullspace로 복원. v5와 동기화.
+    # [stage2] α offset 축 모드: "true_nullspace"=palm 보존 elbow-swivel(n_demo, J@n≈0),
+    #   "demo_minus_start"=기존 tilt 슬라이더. true_nullspace면 α가 tilt 안 망치고 잉여 1-DOF만 조절. v5 동기화.
+    nullspace_offset_mode: str = "true_nullspace"
 
     # [v6 ablation] nullspace baseline(α=0 지점) 선택 — demo prior 주입의 hard 경로.
     #   "robot_start": 중립(=v5 순수 DRL).  "demo": j1-4 항상 + j5 ready 후 demo 구조(=v4).
