@@ -58,7 +58,7 @@ def test_two_orthogonal_ablation_flags_exist() -> None:
     cfg = _read("pour_right_env_cfg.py")
     m = re.search(r'^\s*nullspace_baseline\s*:\s*str\s*=\s*"(\w+)"', cfg, flags=re.MULTILINE)
     assert m is not None, "nullspace_baseline str flag 없음"
-    assert m.group(1) == "robot_start", "기본값=robot_start(순수 DRL 컨트롤)이어야 함"
+    assert m.group(1) == "demo", "[stage1/2] 기본값=demo (FK 검증: j5 roll deep tilt 주역, robot_start 순수DRL은 미수렴 회귀). flag·분기 구조는 유지."
     assert re.search(r"^\s*enable_demo_pose_reward\s*:\s*bool\s*=", cfg, flags=re.MULTILINE)
 
 

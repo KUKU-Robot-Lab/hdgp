@@ -135,11 +135,15 @@ def compute_grasp_v2_stability(
     contact_threshold = _cfg_float(cfg, "stability_contact_delta_threshold", 1.0)
     action_threshold = _cfg_float(cfg, "stability_action_delta_threshold", 0.2)
 
+    # action_delta_norm은 stochastic하게 샘플된 raw action의 RMS(aₜ−aₜ₋₁)라
+    # 탐색 노이즈 바닥(σ·√2 ≈ 0.5, σ≈0.44@entropy16)이 임계(0.2/0.4)를 항상 초과한다.
+    # → 정지 정책도 학습 중 stable 통과 불가(success_held=0의 근본원인). palm freeze도 무효.
+    # 물리적 정지는 cup_lin_vel/cup_ang_vel이 노이즈 없이 직접 측정하므로 hard gate에서 제외.
+    # action_delta_norm은 아래 quality(reward shaping)에 남겨 stillness gradient는 유지한다.
     stable = (
         (cup_lin_vel_norm <= lin_threshold)
         & (cup_ang_vel_norm <= ang_threshold)
         & (contact_delta_abs <= contact_threshold)
-        & (action_delta_norm <= action_threshold)
     )
     quality = (
         torch.exp(-cup_lin_vel_norm / max(lin_threshold, 1e-6))

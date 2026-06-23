@@ -94,17 +94,21 @@ def test_success_gate_holds_for_thirty_stable_steps() -> None:
     assert success.success_held.tolist() == [True]
 
 
-def test_stability_uses_shared_velocity_contact_and_normalized_action_thresholds() -> None:
+def test_stability_gate_uses_physical_velocity_not_noisy_action_delta() -> None:
+    # Phase D: action_delta_norm은 stochastic sampled action의 RMS라 탐색 노이즈
+    # 바닥(σ·√2 ≈ 0.5)이 임계를 항상 초과 → stable hard-gate에서 제외됐다.
+    # 물리적 정지는 cup_lin_vel/cup_ang_vel만으로 판정한다.
     cfg = RewardCfg()
     stability = compute_grasp_v2_stability(
-        cup_lin_vel=torch.tensor([[0.01, 0.01, 0.01], [0.10, 0.0, 0.0]]),
-        cup_ang_vel=torch.tensor([[0.1, 0.1, 0.1], [0.1, 0.1, 0.1]]),
-        contact_delta=torch.tensor([0.0, 0.0]),
-        action_delta_norm=torch.tensor([0.05, 0.05]),
+        cup_lin_vel=torch.tensor([[0.01, 0.01, 0.01], [0.10, 0.0, 0.0], [0.01, 0.01, 0.01]]),
+        cup_ang_vel=torch.tensor([[0.1, 0.1, 0.1], [0.1, 0.1, 0.1], [0.1, 0.1, 0.1]]),
+        contact_delta=torch.tensor([0.0, 0.0, 0.0]),
+        # 3번째 케이스: action_delta 큼(0.9)이지만 cup 정지 → stable=True (게이트 제외 증명)
+        action_delta_norm=torch.tensor([0.05, 0.05, 0.9]),
         cfg=cfg,
     )
 
-    assert stability.stable.tolist() == [True, False]
+    assert stability.stable.tolist() == [True, False, True]
     assert stability.cup_lin_vel_norm[1] > cfg.stability_cup_lin_vel_threshold
 
 
@@ -178,11 +182,11 @@ def test_target_env_sources_use_common_v2_helpers_and_common_tags() -> None:
         assert "lift_success_height: float = 0.04" in cfg
         assert "success_hold_steps: int = 30" in cfg
         assert "transport_goal_dist_threshold" not in cfg
-        assert "stabilize_upright_max_deg: float = 5.0" in cfg
+        assert "stabilize_upright_max_deg: float = 12.0" in cfg
         assert "stability_cup_lin_vel_threshold: float = 0.04" in cfg
         assert "stability_cup_ang_vel_threshold: float = 0.5" in cfg
         assert "stability_contact_delta_threshold: float = 1.0" in cfg
-        assert "stability_action_delta_threshold: float = 0.2" in cfg
+        assert "stability_action_delta_threshold: float = 0.4" in cfg
 
     for env in (tesollo_env, rh_env):
         assert "compute_grasp_v2_stability(" in env

@@ -194,7 +194,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stability_cup_lin_vel_threshold: float = 0.04
     stability_cup_ang_vel_threshold: float = 0.5
     stability_contact_delta_threshold: float = 1.0
-    stability_action_delta_threshold: float = 0.2
+    # Phase D: hard gate에서 제외됨(grasp_v2_contract). 이제 quality 셰이핑에만 사용. v1 parity 0.4.
+    stability_action_delta_threshold: float = 0.4
 
     # -----------------------------------------------------------------------
     # Policy-driven reward/gate 파라미터
@@ -261,7 +262,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     min_middle_contacts_for_success: int = 4
 
     # Final stationary stabilization upright gate.
-    stabilize_upright_max_deg: float = 5.0
+    # Phase D: 5°는 tilt 실측 4~6°와 경계라 절반이 탈락 → success_held=0. v1 parity로 12° 완화.
+    stabilize_upright_max_deg: float = 12.0
 
     # Grasp phase에서 컵을 세운 채 감싸도록 유도한다.
     grasp_upright_weight: float = 0.0

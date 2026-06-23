@@ -286,12 +286,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # [2b] nullspace 잉여 1-DOF action(α) 스케일: null_ref = baseline + scale·α·(demo−start).
     #   1.0 → α=±1이 ±full demo변위. v4 baseline=demo, v5 baseline=robot_start (offset·scale 공통).
-    nullspace_action_scale: float = 1.0   # [dexpour_redesign] 0.0→1.0 복원: α(elbow↔wrist self-motion) 풀어 정책이 j1,2,3 협응 deep tilt 탐색. j4(elbow) 포화 우회. α=±1 → robot_start↔demo 변위.
+    nullspace_action_scale: float = 0.0   # [stage1 진단] 1.0→0.0: α 핀. baseline=demo 단독이 j5 roll→deep tilt 주는지 검증(test5 재현). 2단계서 n_demo nullspace로 복원.
 
     # [v6 ablation] nullspace baseline(α=0 지점) 선택 — demo prior 주입의 hard 경로.
     #   "robot_start": 중립(=v5 순수 DRL).  "demo": j1-4 항상 + j5 ready 후 demo 구조(=v4).
     #   enable_demo_pose_reward(soft 경로)와 직교 → 둘 조합이 4셀 ablation 매트릭스.
-    nullspace_baseline: str = "robot_start"  # [06.21 재설계] 중립 baseline 고정 → 정책이 α(잉여 1-DOF)를 자유 제어. demo는 critic 전용(actor hard-prior 제거).
+    nullspace_baseline: str = "demo"  # [stage1 진단] robot_start→demo: j5(deep tilt 주역) roll 복원. FK 검증: demo 비율이 tilt 111° 도달, j4 단독은 max 77°. test5(demo+mass3) tilt 해결 메커니즘 복원.
 
     # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
     g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)
