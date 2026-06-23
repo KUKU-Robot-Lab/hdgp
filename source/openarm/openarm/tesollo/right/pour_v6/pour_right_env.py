@@ -1875,9 +1875,12 @@ class PourRightEnv(DirectRLEnv):
         # [Phase1-simple] 연속 곱셈 게이트(rot_dir·tilt_ready_factor) → binary stage gate(latched_ready). v5와 동기화.
         #   latched_ready는 corridor 1회 진입 후 episode 내내 1 → deep tilt 중 안 꺼지고 tilt_progress 0→135° 단일 ramp.
         #   외회전 방지는 always-on 덧셈 r_introt가 담당. rot_dir/tilt_ready_factor는 로깅 위해 계산만 유지.
-        r_tilt = self.cfg.weight_tilt * tilt_progress * latched_ready
+        # [deep_tilt_boot1] tilt를 latched_ready(pour_point corridor)에서 분리 → 정조준 무관 deep tilt.
+        #   진단: pour_point 도달불가로 corridor gate가 tilt 원천차단. 순수 자세(tilt_progress)만 보상.
+        #   v5와 동일 reward — v5/v6 차이는 틸팅 방식뿐(대조군), reward 변수 고정.
+        r_tilt = self.cfg.weight_tilt * tilt_progress
         # [test4] tilt 증분(delta) 보상: 더 기울이는 순간만(relu)→75° 너머 deep tilt 유도. v5와 동기화.
-        r_tilt_delta = self.cfg.weight_tilt_delta * tilt_amount_delta.clamp(min=0.0) * latched_ready
+        r_tilt_delta = self.cfg.weight_tilt_delta * tilt_amount_delta.clamp(min=0.0)
         # [06.21 Phase3] r_pour = 정밀 조정텀(크게). tilt_progress·aim_score(관대 radius corridor).
         #   tilt_progress 스케일 → 회전 시작 흔들림 구간 기여 작음(자동 억제), 안정 구간만 본격.
         #   w_pour(50) > weight_tilt(35) → 조준 시 순보너스가 커 "조준해 기울이기"가 strictly 우세.

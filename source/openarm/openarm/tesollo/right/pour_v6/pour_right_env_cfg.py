@@ -308,7 +308,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_tilt_pre: float = 8.0     # [test8] 미사용(r_tilt_A 폐기). 구 기록 참조용 유지
 
     # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
-    weight_tilt: float = 35.0      # [lstm_test4] test3 20→35 복원: bank 품질 게이트를 단일 변경으로 격리 검증.
+    weight_tilt: float = 20.0      # [deep_tilt_boot1] tilt 독립(latched_ready 제거) 시 유지보상 축소(35→20). v5와 동일.
     weight_tilt_delta: float = 100.0   # [test4] tilt 증분(delta) 보상 가중. 75° 너머 deep tilt 유도. v5와 동기화.
     tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·prox_gate)
     # [06.21 Phase2] tilt 게이트를 latch(binary)→연속 근접 게이트로 교체(순환 게이트 절단).
