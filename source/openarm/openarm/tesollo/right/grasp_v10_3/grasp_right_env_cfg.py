@@ -144,7 +144,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     prelift_cup_lin_vel_threshold: float = 0.04
     prelift_rim_lift_penalty_weight: float = 1.0
     grasp_palm_delta_scale: float = 0.25
-    lift_palm_delta_xyz: float = 0.03
+    # lift phase palm 상승 한계. 0.03(3cm) < lift_success_height(4cm)이라 컵이 4cm에
+    # 물리적으로 도달 불가 → success_held=0 plateau였음(lstm_test11 진단). 0.07로 키워
+    # palm이 4cm 위로 들 수 있게 함. per-step은 palm_target_max_delta(0.01)로 여전히 rate-limit.
+    lift_palm_delta_xyz: float = 0.07
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)

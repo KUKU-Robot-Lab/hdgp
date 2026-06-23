@@ -83,7 +83,7 @@ def test_live_fabrics_uses_anchored_close_grasp_and_lift_targets() -> None:
     assert "grasp_palm_delta_scale: float = 0.25" in cfg
     assert "palm_local_workspace_radius: float = 0.1" in cfg
     assert "palm_target_max_delta: float = 0.01" in cfg
-    assert "lift_palm_delta_xyz: float = 0.03" in cfg
+    assert "lift_palm_delta_xyz: float = 0.07" in cfg
     assert "transport" not in env
 
 
