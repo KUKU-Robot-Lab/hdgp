@@ -286,7 +286,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # [2b] nullspace 잉여 1-DOF action(α) 스케일: null_ref = baseline + scale·α·(demo−start).
     #   1.0 → α=±1이 ±full demo변위. v4 baseline=demo, v5 baseline=robot_start (offset·scale 공통).
-    nullspace_action_scale: float = 0.0   # [Phase5a] 1.0→0.0: nullspace α freeze (차원 불변). palm 6D pose만으로 arm 결정 → deep tilt 협응 탐색공간 축소. scale=0이라 즉시 롤백 가능.
+    nullspace_action_scale: float = 1.0   # [dexpour_redesign] 0.0→1.0 복원: α(elbow↔wrist self-motion) 풀어 정책이 j1,2,3 협응 deep tilt 탐색. j4(elbow) 포화 우회. α=±1 → robot_start↔demo 변위.
 
     # [v6 ablation] nullspace baseline(α=0 지점) 선택 — demo prior 주입의 hard 경로.
     #   "robot_start": 중립(=v5 순수 DRL).  "demo": j1-4 항상 + j5 ready 후 demo 구조(=v4).
