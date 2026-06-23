@@ -443,6 +443,8 @@ class GraspRightEnv(DirectRLEnv):
             )
         else:
             self.contact_adr = None
+        # success/stabilize 게이트용 동적 min_contacts (커리큘럼 시작값). _get_rewards에서 매 step 갱신.
+        self._adr_min_contacts = int(cfg.stage0_lift_start_min_contacts)
 
         # ----------------------------------------------------------------
         # ADR — 난이도 (threshold=0.8, contact ADR 이후 진행)
@@ -1183,6 +1185,9 @@ class GraspRightEnv(DirectRLEnv):
             if self.contact_adr is not None
             else int(self.cfg.stage0_lift_start_min_contacts)
         )
+        # success/stabilize 게이트가 _get_dones에서 동일 동적 허들을 쓰도록 저장.
+        # (lift-start는 adr인데 success가 하드 5면 불일치 → 커리큘럼 진행 중 success_held=0)
+        self._adr_min_contacts = _adr_min_contacts
 
         close_grasp_mask = self.is_close_grasp_phase & (~self.lift_ready_latched_buf)
         (
@@ -1429,7 +1434,10 @@ class GraspRightEnv(DirectRLEnv):
 
         in_or_past_lift = self.lift_ready_latched_buf
         lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        full_tip_contact = self.num_contacts_buf >= NUM_FINGERTIPS
+        # success/stabilize 접촉 게이트를 lift-start와 동일한 동적 허들(_adr_min_contacts)로 맞춤.
+        # adr 3→4→5로 오르며 success 요구 접촉수도 함께 상승(최종 5접촉). 하드 5 고정 시 커리큘럼
+        # 중간(adr=4)에 success_held=0 정체 → 학습 신호 부재.
+        full_tip_contact = self.num_contacts_buf >= self._adr_min_contacts
         upright_success = compute_upright_success_mask(
             cup_z_world[:, 2],
             self.cfg.success_upright_max_deg,
