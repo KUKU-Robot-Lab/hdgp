@@ -67,7 +67,7 @@ params:
     gamma: 0.998
     tau: 0.95
     learning_rate: 3e-4
-    lr_schedule: linear
+    lr_schedule: adaptive   # lstm_test12: KL 0.08~0.14(threshold 8~10배)인데 linear는 미clamp → five_tip 0.42→0.33 드리프트. adaptive로 kl_threshold가 LR 제어(v1과 동일)
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
