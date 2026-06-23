@@ -135,7 +135,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [lstm_test5] cspace_attractor mass(nullspace 어트랙터 무게). YAML 기본 1.0은 약해서 정책 pour
     #   pose가 elbow를 demo(j4=1.87)에서 0.70으로 무너뜨림. ↑ 하면 demo j1-4 nullspace를 강하게 유지.
     #   주의: 너무 크면 palm-pose 추종(corridor) 침범 → Stage-A 저하. 3부터 시작, 결과 보고 조정.
-    cspace_attractor_mass:      float = 2.0  # [test6] 3→2: test5에서 mass3은 elbow-up·tilt 해결했으나 corridor 0.51로 조준 저하(bead_in=0). elbow-up 유지+corridor 회복 균형.
+    cspace_attractor_mass:      float = 3.0  # [stage2] 2→3: Stage1서 mass2는 full demo(111°) 미도달→90° cap(cmd-actual -50°). mass3=test5 deep tilt 입증값으로 demo 당김 강화. corridor 저하는 bead off(pose 단계)라 무관.
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
@@ -286,7 +286,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # [2b] nullspace 잉여 1-DOF action(α) 스케일: null_ref = baseline + scale·α·(demo−start).
     #   1.0 → α=±1이 ±full demo변위. v4 baseline=demo, v5 baseline=robot_start (offset·scale 공통).
-    nullspace_action_scale: float = 0.0   # [stage1 진단] 1.0→0.0: α 핀. baseline=demo 단독이 j5 roll→deep tilt 주는지 검증(test5 재현). 2단계서 n_demo nullspace로 복원.
+    nullspace_action_scale: float = 1.0   # [stage2] 0.0→1.0 복원: n_demo nullspace(palm 보존)로 α가 잉여 1-DOF(elbow-swivel) 조절. tilt 안 망침(Stage1: 기존 offset은 tilt 슬라이더라 α 미사용).
     # [stage2] α offset 축 모드: "true_nullspace"=palm 보존 elbow-swivel(n_demo, J@n≈0),
     #   "demo_minus_start"=기존 tilt 슬라이더. true_nullspace면 α가 tilt 안 망치고 잉여 1-DOF만 조절.
     nullspace_offset_mode: str = "true_nullspace"
