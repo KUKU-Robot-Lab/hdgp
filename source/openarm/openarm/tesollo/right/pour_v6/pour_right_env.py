@@ -2024,7 +2024,7 @@ class PourRightEnv(DirectRLEnv):
         if self.outcome_adr is not None:
             self.outcome_adr.maybe_increment(_pose_success_rate)
             self.extras["log/pose_success_rate"] = torch.tensor(float(_pose_success_rate), device=self.device)
-            self.extras["log/outcome_adr_progress"] = torch.tensor(float(self.outcome_adr.progress()), device=self.device)
+            self.extras["log/outcome_adr_progress"] = torch.tensor(float(self.outcome_adr.progress), device=self.device)
             self.extras["log/weight_pour_bead"] = torch.tensor(
                 float(self.outcome_adr.get_param("outcome", "weight_pour_bead")), device=self.device
             )
