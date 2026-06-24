@@ -96,7 +96,10 @@ def test_palm_action_is_absolute_target_with_per_step_rate_limit() -> None:
     assert "palm_pos_action = self.actions[:, PALM_POS_ACTION_SLICE]" in env
     assert "palm_quat_action = self.actions[:, PALM_QUAT_ACTION_SLICE]" in env
     assert "approach_pos_raw = (" in env
-    assert "lift_pos_raw = (" in env
+    # Phase F: stabilize에선 현재 들어올린 위치 유지, lift에선 action 상승 (torch.where 분기)
+    assert "lift_pos_raw = torch.where(" in env
+    # 절대 target의 per-step rate limit은 유지 (lift_pos_delta clamp)
+    assert "lift_pos_delta = (lift_pos_raw - self.palm_pose_targets[:, :3]).clamp(" in env
 
 
 def test_palm_contact_sensor_uses_palm_link_net_force_without_actor_obs_growth() -> None:

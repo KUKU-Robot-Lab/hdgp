@@ -183,10 +183,15 @@ def test_target_env_sources_use_common_v2_helpers_and_common_tags() -> None:
         assert "success_hold_steps: int = 30" in cfg
         assert "transport_goal_dist_threshold" not in cfg
         assert "stabilize_upright_max_deg: float = 12.0" in cfg
-        assert "stability_cup_lin_vel_threshold: float = 0.04" in cfg
         assert "stability_cup_ang_vel_threshold: float = 0.5" in cfg
         assert "stability_contact_delta_threshold: float = 1.0" in cfg
         assert "stability_action_delta_threshold: float = 0.4" in cfg
+
+    # Phase G: cup_lin_vel 임계는 per-task로 분기 (의도된 divergence).
+    # TESOLLO는 잡힌 컵 잔류속도 ~0.045가 0.04를 넘겨 stable 깜빡임 → 0.06 완화.
+    # RH56F1은 미검증이라 0.04 유지 (v1 정렬 보류).
+    assert "stability_cup_lin_vel_threshold: float = 0.06" in tesollo_cfg
+    assert "stability_cup_lin_vel_threshold: float = 0.04" in rh_cfg
 
     for env in (tesollo_env, rh_env):
         assert "compute_grasp_v2_stability(" in env

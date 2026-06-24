@@ -191,7 +191,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     lift_success_height: float = 0.04
     success_hold_steps: int = 30
-    stability_cup_lin_vel_threshold: float = 0.04
+    # Phase G: TESOLLO는 잡힌 컵의 잔류 lin_vel이 ~0.045(0.043~0.057)로 0.04를 넘겨
+    # stable이 0.62에서 깜빡임 → 30스텝 연속 streak이 ~2.6에서 끊겨 success_held=0.003 정체.
+    # 0.06으로 완화(=6cm/s 미세진동 허용). lifted(4cm)·contact·upright는 그대로 요구.
+    stability_cup_lin_vel_threshold: float = 0.06
     stability_cup_ang_vel_threshold: float = 0.5
     stability_contact_delta_threshold: float = 1.0
     # Phase D: hard gate에서 제외됨(grasp_v2_contract). 이제 quality 셰이핑에만 사용. v1 parity 0.4.

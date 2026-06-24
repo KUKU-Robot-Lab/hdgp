@@ -814,18 +814,22 @@ class GraspRightEnv(DirectRLEnv):
             eps=1e-6,
         )
 
-        # Phase B: stabilize에서 palm freeze — palm action을 무시해 latch된 위치에 고정.
-        # 손가락 residual은 그대로 두어 파지 강화(컵 더 잡기)는 허용한다.
-        # orientation은 lift_palm_start_pose에서 복사되어 이미 고정이므로 position만 freeze.
-        _palm_pos_action_eff = torch.where(
-            self.is_stabilize_phase.unsqueeze(1),
-            torch.zeros_like(palm_pos_action),
-            palm_pos_action,
+        # Phase F: stabilize에서 palm을 "현재 들어올린 위치"에 고정한다.
+        #   이전 버그: lift_palm_start_pose_buf는 lift '시작'(컵이 테이블 근처) 위치로
+        #   캡처되는데(line 744 just_entering_lift), stabilize에서 action=0으로 두면
+        #   lift_pos_raw = lift_palm_start(낮음)이 되어 palm이 도로 내려가 컵을 떨어뜨렸다.
+        #   → stabilize 진입 후 lifted 0.06~0.19로 붕괴, success_hold_count=0의 직접 원인.
+        #   수정: stabilize에선 현재 palm_pose_targets(=들어올린 높이)를 유지(delta 0).
+        #   lift 단계는 기존대로 action으로 상승. 손가락 residual은 그대로(파지 강화 허용).
+        lift_raw_active = (
+            self.lift_palm_start_pose_buf[:, :3]
+            + palm_pos_action * float(self.cfg.lift_palm_delta_xyz)
         )
         lift_palm_pose = self.lift_palm_start_pose_buf.clone()
-        lift_pos_raw = (
-            self.lift_palm_start_pose_buf[:, :3]
-            + _palm_pos_action_eff * float(self.cfg.lift_palm_delta_xyz)
+        lift_pos_raw = torch.where(
+            self.is_stabilize_phase.unsqueeze(1),
+            self.palm_pose_targets[:, :3],
+            lift_raw_active,
         )
         lift_pos_raw = torch.max(
             torch.min(lift_pos_raw, self.palm_maxs[:3].unsqueeze(0)),
