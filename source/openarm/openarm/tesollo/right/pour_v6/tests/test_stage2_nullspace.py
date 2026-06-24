@@ -82,7 +82,7 @@ def test_pour_phase_clamp_cfg() -> None:
     hi = [float(x) for x in mhi.group(1).split(",")]
     assert len(lo) == 7 and len(hi) == 7, "7-DOF band 아님"
     assert hi[4] == 0.0, "j5 상한=0(거꾸로 roll 금지)이어야"
-    assert lo[5] == -0.2 and hi[5] == 0.2, "j6 [-0.2,0.2](leak 차단)이어야"
+    assert lo[5] <= -0.25 and hi[5] >= 0.30, "j6 밴드=demo 자연범위(±0.3, 문서검증). 구 [-0.2,0.2] 폐기"
 
 
 def test_pour_phase_clamp_gated_on_ready() -> None:
@@ -90,3 +90,29 @@ def test_pour_phase_clamp_gated_on_ready() -> None:
     env = _read("pour_right_env.py")
     assert "pour_phase_clamp_enable" in env, "env가 클램프 미적용"
     assert "_pour_ready_latched" in env and "_pour_clamp_lo" in env, "ready 게이트/band 미사용"
+
+
+def test_b_trajectory_mode_cfg() -> None:
+    """[B-trajectory] action 모드·β 채널 cfg."""
+    cfg = _read("pour_right_env_cfg.py")
+    m = re.search(r'pour_action_mode\s*:\s*str\s*=\s*"(\w+)"', cfg)
+    assert m and m.group(1) == "b_trajectory", "pour_action_mode=b_trajectory 기본값"
+    assert re.search(r'beta_action_index\s*:\s*int\s*=\s*\d', cfg), "beta_action_index 없음"
+
+
+def test_b_trajectory_env_wiring() -> None:
+    """env: R(β) import·lookup·β구동·j5 하드구동."""
+    env = _read("pour_right_env.py")
+    assert "RBETA_ARM" in env and "_rbeta_arm_lookup" in env, "R(β) lookup 미구현"
+    assert "_beta_cmd" in env and 'pour_action_mode == "b_trajectory"' in env, "b_trajectory 분기 없음"
+    assert "_rbeta_arm_lookup(self._beta_cmd)" in env, "j5 하드구동(R(β)) 없음"
+
+
+def test_j6_band_natural_range() -> None:
+    """j6 밴드는 demo 자연범위(±0.3) — 문서검증 후 Stage3 [-0.2,0.2] 폐기."""
+    cfg = _read("pour_right_env_cfg.py")
+    mlo = re.search(r'pour_phase_arm_lo\s*:\s*tuple\s*=\s*\(([^)]*)\)', cfg)
+    mhi = re.search(r'pour_phase_arm_hi\s*:\s*tuple\s*=\s*\(([^)]*)\)', cfg)
+    lo = [float(x) for x in mlo.group(1).split(",")]
+    hi = [float(x) for x in mhi.group(1).split(",")]
+    assert lo[5] <= -0.25 and hi[5] >= 0.30, "j6 밴드가 demo 자연범위(±0.3) 반영해야"

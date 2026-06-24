@@ -78,6 +78,7 @@ from .pour_right_constants import (
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
 )
+from .r_beta_trajectory import RBETA_BETA, RBETA_ARM, RBETA_N
 from .pour_adr import PourADR
 from .pour_adr import PourADR as GraspADR
 from .pour_right_preset import (
@@ -421,6 +422,10 @@ class PourRightEnv(DirectRLEnv):
         self._pour_clamp_hi = torch.tensor(
             self.cfg.pour_phase_arm_hi, device=self.device
         ).unsqueeze(0)
+        # [B-trajectory] canonical R(β) 테이블: β 인덱싱으로 demo 전신 협응 자세 lookup.
+        self._rbeta_knots = torch.tensor(RBETA_BETA, device=self.device)            # (K,)
+        self._rbeta_arm = torch.tensor(RBETA_ARM, device=self.device)               # (K,7)
+        self._beta_cmd = torch.zeros(self.num_envs, device=self.device)             # 현 β (로깅·obs)
         self._cmd_delta_pre_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_post_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_rotvec_world = torch.zeros(self.num_envs, 3, device=self.device)
@@ -1040,6 +1045,15 @@ class PourRightEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     # Physics step
     # ------------------------------------------------------------------
+    def _rbeta_arm_lookup(self, beta: torch.Tensor) -> torch.Tensor:
+        """[B-trajectory] β∈[0,1] (N,) → demo 전신 협응 자세 R(β) (N,7) 선형보간.
+        knot는 등간격(linspace 0..1)이라 인덱스 직접 계산."""
+        b = beta.clamp(0.0, 1.0)
+        k = b * (RBETA_N - 1)
+        lo = k.floor().long().clamp(0, RBETA_N - 2)
+        frac = (k - lo.float()).unsqueeze(-1)
+        return self._rbeta_arm[lo] * (1.0 - frac) + self._rbeta_arm[lo + 1] * frac
+
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.prev_actions.copy_(self.actions)
         self.actions = actions.clone()
@@ -1202,7 +1216,14 @@ class PourRightEnv(DirectRLEnv):
             #   "robot_start" : 중립 baseline 그대로 (demo prior 없음). (=v5 순수 DRL)
             _null_cfg = self.fabric_q.detach().clone()                       # hand(grasp)는 현재 유지
             _baseline_arm = self.robot_start_joint_pos[:, :NUM_ARM_DOF].clone()
-            if self.cfg.nullspace_baseline == "demo":
+            if self.cfg.pour_action_mode == "b_trajectory":
+                # [B-trajectory] β=action[idx]→[0,1] → cspace baseline=R(β) 전신 협응 분포.
+                #   정책이 못 찾던 j4↑+j5 roll+어깨 recruit 동시협응을 R(β)로 부과(soft bias).
+                #   j5 하드구동은 post-Fabrics에서. introt(spin)은 palm orientation에 유지.
+                _beta = (self._ema_palm_action[:, self.cfg.beta_action_index] * 0.5 + 0.5).clamp(0.0, 1.0)
+                self._beta_cmd.copy_(_beta)
+                _baseline_arm = self._rbeta_arm_lookup(_beta)                    # (N,7) demo 협응
+            elif self.cfg.nullspace_baseline == "demo":
                 _baseline_arm[:, :4] = self._demo_pour_arm_pose[:4].unsqueeze(0)  # j1-4: approach 위치 (항상)
                 _ready_pour = self._pour_ready_latched                          # (N,) bool, 직전 step latch
                 _baseline_arm[_ready_pour, 4] = self._demo_pour_arm_pose[4]      # j5: ready 후 demo 롤
@@ -1232,17 +1253,30 @@ class PourRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # [stage3] phase별 차등 관절 클램프: ready(pour)일 때만 arm joint를 band로 하드 클램프.
-        #   approach(미ready)는 무영향(full range). j6 leak 차단+j5 음수 강제 → deep tilt 유도(FK).
-        #   cspace 소프트 어트랙터가 못 막는 실제 관절을 하드 제한(j5 타겟 -1.13인데 실제 -0.5 방지).
-        if self.cfg.pour_phase_clamp_enable:
+        # [B-trajectory] ready(pour)일 때 j5(roll 엔진)를 R(β)로 하드 구동 + j6 작은밴드.
+        #   FK: j5는 위치-safe(3.7cm), 소프트로 못 굴린 유일 관절 → set으로 강제. j4·어깨는
+        #   cspace R(β) bias+위치task가 담당(soft로 도달 확인). j6는 leak 방지 밴드(자연범위 ±0.3).
+        if self.cfg.pour_action_mode == "b_trajectory":
+            _ready = self._pour_ready_latched                                       # (N,) bool
+            _rbeta = self._rbeta_arm_lookup(self._beta_cmd)                         # (N,7)
+            _arm_q = self.fabric_q[:, :NUM_ARM_DOF].clone()
+            # j5 하드 구동
+            _arm_q[_ready, 4] = _rbeta[_ready, 4]
+            # j6 작은밴드 클램프(leak 방지)
+            _j6 = _arm_q[:, 5].clamp(self._pour_clamp_lo[0, 5], self._pour_clamp_hi[0, 5])
+            _arm_q[_ready, 5] = _j6[_ready]
+            self.fabric_q[:, :NUM_ARM_DOF] = _arm_q
+            self.fabric_qd[_ready, 4] = 0.0                                          # j5 windup 방지
+            self.fabric_qd[_ready, 5] = 0.0
+        elif self.cfg.pour_phase_clamp_enable:
+            # [stage3 legacy] ready 시 arm joint를 band로 하드 클램프(j5/j6 band).
             _ready = self._pour_ready_latched.unsqueeze(-1)                         # (N,1) bool
             _arm_q = self.fabric_q[:, :NUM_ARM_DOF]
             _clamped = torch.max(torch.min(_arm_q, self._pour_clamp_hi), self._pour_clamp_lo)
             _new_arm = torch.where(_ready, _clamped, _arm_q)
-            _hit = _ready & (_new_arm != _arm_q)                                    # 클램프로 값 변경된 관절
+            _hit = _ready & (_new_arm != _arm_q)
             self.fabric_q[:, :NUM_ARM_DOF] = _new_arm
-            self.fabric_qd[:, :NUM_ARM_DOF] = torch.where(                          # windup 방지: 속도 0
+            self.fabric_qd[:, :NUM_ARM_DOF] = torch.where(
                 _hit, torch.zeros_like(_arm_q), self.fabric_qd[:, :NUM_ARM_DOF]
             )
 
@@ -2198,6 +2232,7 @@ class PourRightEnv(DirectRLEnv):
             "log/source_up_dot":         self._source_up_dot_world.mean(),
             "log/rim_facing_cos":        self._rim_facing_cos.mean(),  # [H11] palm+y·worldX (음수=내회전)
             "log/internal_rot_gate":     self._internal_rot_gate.mean(),
+            "log/beta_cmd":              self._beta_cmd.mean(),
             "log/tilt_rot_dir":          rot_dir.mean(),
             "log/rim_antiparallel":      self._rim_antiparallel.mean(),  # [H11] source·target rim+z (음수=마주봄)
             # 위치

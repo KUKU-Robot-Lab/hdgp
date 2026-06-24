@@ -901,9 +901,21 @@ class GraspRightEnv(DirectRLEnv):
             residual_mask=self.hand_residual_mask,
         )
         approach_hand_target = self.approach_hand_pose_buf
+        # Phase H: stabilize에서 손가락도 freeze (palm freeze와 동일 원리).
+        #   진단: stabilize 중 컵 진동(cup_lin_vel ~0.045)의 주범은 손가락(finger_vel_max 3.16
+        #   rad/s, arm은 0.08로 안정). 원인 = lift_hand_target에 노이즈 섞인 finger_action
+        #   (fixed_sigma σ~0.44 @ entropy 8.9)이 그대로 들어가 손가락이 잡은 자세 주위로 떨림.
+        #   정책 평균은 firm curl이지만 샘플 노이즈가 grip을 흔들어 stable streak을 끊음.
+        #   수정: stabilize에선 finger_action=0 마스킹 → lift_finger_pos_buf(잡은 자세) 고정.
+        #   lift 단계는 그대로 action으로 파지 조정 허용.
+        finger_action_lift = torch.where(
+            self.is_stabilize_phase.unsqueeze(1),
+            torch.zeros_like(finger_action),
+            finger_action,
+        )
         lift_hand_target = compute_lift_finger_targets(
             lift_reference_pos=self.lift_finger_pos_buf,
-            finger_action=finger_action,
+            finger_action=finger_action_lift,
             lower_limits=self.hand_joint_lower_limits,
             upper_limits=self.hand_joint_upper_limits,
             delta_scale=self.cfg.hand_residual_scale,
