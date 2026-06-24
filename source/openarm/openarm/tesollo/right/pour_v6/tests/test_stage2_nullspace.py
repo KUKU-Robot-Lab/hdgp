@@ -68,3 +68,25 @@ def test_env_selects_n_demo_when_true_nullspace() -> None:
     env = _read("pour_right_env.py")
     assert "N_DEMO_NULLSPACE_OFFSET" in env, "env가 n_demo offset 미사용"
     assert 'nullspace_offset_mode' in env, "env가 offset_mode 분기 없음"
+
+
+def test_pour_phase_clamp_cfg() -> None:
+    """[stage3] phase별 차등 클램프 cfg: j5 상한 0(거꾸로 roll 금지), j6 [-0.2,0.2](leak 차단)."""
+    cfg = _read("pour_right_env_cfg.py")
+    assert re.search(r'pour_phase_clamp_enable\s*:\s*bool\s*=\s*True', cfg), "phase clamp flag 없음"
+    # j5(idx4) 상한 0.0, j6(idx5) [-0.2,0.2]
+    mlo = re.search(r'pour_phase_arm_lo\s*:\s*tuple\s*=\s*\(([^)]*)\)', cfg)
+    mhi = re.search(r'pour_phase_arm_hi\s*:\s*tuple\s*=\s*\(([^)]*)\)', cfg)
+    assert mlo and mhi, "pour_phase_arm_lo/hi 없음"
+    lo = [float(x) for x in mlo.group(1).split(",")]
+    hi = [float(x) for x in mhi.group(1).split(",")]
+    assert len(lo) == 7 and len(hi) == 7, "7-DOF band 아님"
+    assert hi[4] == 0.0, "j5 상한=0(거꾸로 roll 금지)이어야"
+    assert lo[5] == -0.2 and hi[5] == 0.2, "j6 [-0.2,0.2](leak 차단)이어야"
+
+
+def test_pour_phase_clamp_gated_on_ready() -> None:
+    """클램프가 _pour_ready_latched(pour 단계)로 게이트 — approach 무영향."""
+    env = _read("pour_right_env.py")
+    assert "pour_phase_clamp_enable" in env, "env가 클램프 미적용"
+    assert "_pour_ready_latched" in env and "_pour_clamp_lo" in env, "ready 게이트/band 미사용"

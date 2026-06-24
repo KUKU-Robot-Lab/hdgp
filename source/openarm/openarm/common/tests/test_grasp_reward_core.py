@@ -61,11 +61,14 @@ def test_grasp_reward_orders_zero_four_and_five_contacts_before_lift() -> None:
     assert gates["success_now"].tolist() == [0.0, 0.0, 0.0]
 
 
-def test_lift_and_success_require_full_tip_contact_when_lifted() -> None:
+def test_lift_reward_is_graded_by_contact_when_lifted() -> None:
+    # Phase D: lift 게이트가 hard full_tip(>=5) → graded_contact(num/5)로 바뀜.
+    # 검지 미접촉(4접촉)에도 gradient를 주려는 의도. 4접촉도 부분 lift reward,
+    # 5접촉이 더 큼. success_bonus는 stable 등 미충족이라 여전히 0.
     total, terms, gates = _reward(torch.tensor([4, 5], dtype=torch.long), lifted=True)
 
-    assert terms["lift"][0].item() == 0.0
-    assert terms["lift"][1].item() > 0.0
+    assert terms["lift"][0].item() > 0.0
+    assert terms["lift"][1].item() > terms["lift"][0].item()
     assert terms["post_lift_contact_loss"][0].item() < 0.0
     assert terms["post_lift_contact_loss"][1].item() == 0.0
     assert terms["success_bonus"][0].item() == 0.0

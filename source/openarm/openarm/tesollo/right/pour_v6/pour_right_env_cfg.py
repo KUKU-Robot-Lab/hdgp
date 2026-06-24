@@ -291,6 +291,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   "demo_minus_start"=기존 tilt 슬라이더. true_nullspace면 α가 tilt 안 망치고 잉여 1-DOF만 조절. v5 동기화.
     nullspace_offset_mode: str = "true_nullspace"
 
+    # [stage3] phase별 차등 관절 범위(하드 클램프). ready-latch(pour 단계)일 때만 fabric_q를 band로 클램프.
+    #   approach(미ready)=full range(접근/grasp 자유). pour(ready)=아래 lo/hi band(deep tilt 강제).
+    #   FK 검증: j6 클램프(leak 차단)+j5 음수 강제(roll 엔진) 동시필요. j6 단독은 80°뿐, 둘이면 113°.
+    #   None 성분(±9.9)=해당 단계서 사실상 무제한. 점진 적용 위해 j5/j6만 우선 band. v5 동기화.
+    pour_phase_clamp_enable: bool = True
+    pour_phase_arm_lo: tuple = (-9.9, -9.9, -9.9, -9.9, -1.571, -0.2, -9.9)  # j5 하한 full, j6 [-0.2,0.2]
+    pour_phase_arm_hi: tuple = ( 9.9,  9.9,  9.9,  9.9,  0.0,    0.2,  9.9)  # j5 상한 0(거꾸로 roll 금지)
+
     # [v6 ablation] nullspace baseline(α=0 지점) 선택 — demo prior 주입의 hard 경로.
     #   "robot_start": 중립(=v5 순수 DRL).  "demo": j1-4 항상 + j5 ready 후 demo 구조(=v4).
     #   enable_demo_pose_reward(soft 경로)와 직교 → 둘 조합이 4셀 ablation 매트릭스.

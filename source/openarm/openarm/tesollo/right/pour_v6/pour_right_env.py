@@ -414,6 +414,13 @@ class PourRightEnv(DirectRLEnv):
         _arm_lim = _arm_limits[0, self.arm_dof_indices]                            # (7,2) hard-limit
         self._arm_joint_min = _arm_lim[:, 0].unsqueeze(0).clone()
         self._arm_joint_max = _arm_lim[:, 1].unsqueeze(0).clone()
+        # [stage3] phase별(ready=pour) 차등 관절 클램프 band. 미ready(approach)=full range.
+        self._pour_clamp_lo = torch.tensor(
+            self.cfg.pour_phase_arm_lo, device=self.device
+        ).unsqueeze(0)                                                              # (1,7)
+        self._pour_clamp_hi = torch.tensor(
+            self.cfg.pour_phase_arm_hi, device=self.device
+        ).unsqueeze(0)
         self._cmd_delta_pre_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_post_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_rotvec_world = torch.zeros(self.num_envs, 3, device=self.device)
@@ -1213,6 +1220,20 @@ class PourRightEnv(DirectRLEnv):
                 self.fabric_qd.detach(),
                 self.fabric_qdd.detach(),
                 self.timestep,
+            )
+
+        # [stage3] phase별 차등 관절 클램프: ready(pour)일 때만 arm joint를 band로 하드 클램프.
+        #   approach(미ready)는 무영향(full range). j6 leak 차단+j5 음수 강제 → deep tilt 유도(FK).
+        #   cspace 소프트 어트랙터가 못 막는 실제 관절을 하드 제한(j5 타겟 -1.13인데 실제 -0.5 방지).
+        if self.cfg.pour_phase_clamp_enable:
+            _ready = self._pour_ready_latched.unsqueeze(-1)                         # (N,1) bool
+            _arm_q = self.fabric_q[:, :NUM_ARM_DOF]
+            _clamped = torch.max(torch.min(_arm_q, self._pour_clamp_hi), self._pour_clamp_lo)
+            _new_arm = torch.where(_ready, _clamped, _arm_q)
+            _hit = _ready & (_new_arm != _arm_q)                                    # 클램프로 값 변경된 관절
+            self.fabric_q[:, :NUM_ARM_DOF] = _new_arm
+            self.fabric_qd[:, :NUM_ARM_DOF] = torch.where(                          # windup 방지: 속도 0
+                _hit, torch.zeros_like(_arm_q), self.fabric_qd[:, :NUM_ARM_DOF]
             )
 
         # ---- 오른손 파지 유지 (pour 중 항상 grasp pose freeze; 6D action엔 손 채널 없음) ----

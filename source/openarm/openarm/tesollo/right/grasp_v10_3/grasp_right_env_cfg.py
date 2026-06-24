@@ -380,8 +380,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     contact_adr_custom_cfg: dict = field(default_factory=lambda: {
         "contact": {
-            # int(round(value)) 로 사용. Phase A: 3 → 5 (전 손가락 FULL-GRASPING)
-            "min_contacts": (3.0, 5.0),
+            # int(round(value)) 로 사용. Phase E: 3 → 4 로 캡.
+            # success/done 게이트(full_tip = num >= adr)가 5면 5-tip 30스텝 연속 유지가
+            # pinky/ring 간헐 이탈로 불가 → adr=5에서 lift_success 0.05 붕괴, success_hold_count=0.
+            # 4로 캡하면 num_contacts~4라 success 도달 가능. envelope(5손가락) 유도는
+            # reward 셰이핑(tip_contact_frac=num/5, full_tip=num>=5, line 1152-1154)이 adr와
+            # 무관하게 유지하므로 그대로 5손가락 감싸기를 학습한다.
+            "min_contacts": (3.0, 4.0),
         },
     })
 
