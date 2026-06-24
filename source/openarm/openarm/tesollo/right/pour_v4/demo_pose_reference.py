@@ -1,4 +1,4 @@
-"""Demo pose reference bank for 5g_pour_right_v4 reward shaping.
+"""Demo pose reference bank for 5g_pour_right_v3 reward shaping.
 
 This module intentionally only extracts compact pose statistics from HDF5
 demonstrations. It does not expose actions or behavior-cloning targets.

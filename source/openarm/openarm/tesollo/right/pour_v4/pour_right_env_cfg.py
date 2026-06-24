@@ -115,6 +115,18 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     use_cuda_graph:   bool  = False
 
     # -----------------------------------------------------------------------
+    # Arm 제어 방식: "joint"(joint-position PD) | "fabrics"(palm pose IK)
+    #   joint: 7 action → 7 arm joint target = DEMO_POUR_ARM_POSE + scale·action
+    #          (PD = articulation set_joint_position_target). Fabrics IK 우회.
+    #          j1-3(어깨)를 정책이 직접 제어 → deep tilt 시 어깨 협응 학습 가능.
+    #   reward/obs/종료조건은 v5(rim)/v6(palm)과 동일 — 제어 패러다임만 대조.
+    # -----------------------------------------------------------------------
+    arm_control_mode:   str   = "joint"
+    # START→DEMO 축 gain: target = START + gain·action·(DEMO−START).
+    #   action=0=START(hold 안전), action≈1/gain=DEMO(pour), 그 너머=더 깊은 tilt.
+    joint_action_scale: float = 1.3
+
+    # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
     observation_space: int = NUM_OBSERVATIONS          # 55 (actor)
@@ -135,7 +147,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [lstm_test5] cspace_attractor mass(nullspace 어트랙터 무게). YAML 기본 1.0은 약해서 정책 pour
     #   pose가 elbow를 demo(j4=1.87)에서 0.70으로 무너뜨림. ↑ 하면 demo j1-4 nullspace를 강하게 유지.
     #   주의: 너무 크면 palm-pose 추종(corridor) 침범 → Stage-A 저하. 3부터 시작, 결과 보고 조정.
-    cspace_attractor_mass:      float = 2.0  # [test6] 3→2: test5에서 mass3은 elbow-up·tilt 해결했으나 corridor 0.51로 조준 저하(bead_in=0). elbow-up 유지+corridor 회복 균형.
+    cspace_attractor_mass:      float = 3.0  # [stage2] 2→3: Stage1서 mass2는 full demo(111°) 미도달→90° cap(cmd-actual -50°). mass3=test5 deep tilt 입증값으로 demo 당김 강화. corridor 저하는 bead off(pose 단계)라 무관.
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
@@ -187,6 +199,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_outer_radius:  float = 0.045   # 컵 외부 반경 (최하단 림 점 계산용)
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     source_inside_z_max:  float = 0.100   # 림 높이
+    # [pour_point 동적화] xy 방향 정적(target)→동적(gravity_perp 실제배출구) blend 전환 임계 (tilt_amount).
+    pour_point_dyn_lo:    float = 0.15    # ≈45°: 이하 정적(이송, wobble 회피)
+    pour_point_dyn_hi:    float = 0.30    # ≈67°: 이상 동적(deep tilt 정밀 배출구). 사이 smoothstep blend.
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
@@ -234,6 +249,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_z_clearance_max: float = 0.050
     success_hold_steps: int = 10
     drop_force_hold_steps: int = 10
+    # [lstm_test4] 파지 붕괴 종료: cup_rel_drift 과대(슬립/타겟충돌로 파지 붕괴)가 지속되면 terminated.
+    #   약한 접촉이 남아 drop_force_hold가 못 잡는 케이스 → 깨진 grasp로 episode 오염 방지.
+    grasp_break_drift_deg: float = 45.0   # 정상 deep tilt drift(~30°) 위 마진 (정상 tilt 안 죽임)
+    grasp_break_hold_steps: int = 15      # 연속 지속 시 종료 (transient spike 무시)
     # 소스 컵이 비어있는 상태가 N 스텝 연속 지속되면 에피소드 종료
     # 비드 낙하 + 착지에 ~0.3~0.5초 필요 → 60 steps (1.0s @ 60Hz) 여유
     source_empty_hold_steps: int = 60
@@ -279,7 +298,30 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # [2b] nullspace 잉여 1-DOF action(α) 스케일: null_ref = baseline + scale·α·(demo−start).
     #   1.0 → α=±1이 ±full demo변위. v4 baseline=demo, v5 baseline=robot_start (offset·scale 공통).
-    nullspace_action_scale: float = 1.0
+    nullspace_action_scale: float = 1.0   # [stage2] 0.0→1.0 복원: n_demo nullspace(palm 보존)로 α가 잉여 1-DOF(elbow-swivel) 조절. tilt 안 망침(Stage1: 기존 offset은 tilt 슬라이더라 α 미사용).
+    # [stage2] α offset 축 모드: "true_nullspace"=palm 보존 elbow-swivel(n_demo, J@n≈0),
+    #   "demo_minus_start"=기존 tilt 슬라이더. true_nullspace면 α가 tilt 안 망치고 잉여 1-DOF만 조절.
+    nullspace_offset_mode: str = "true_nullspace"
+
+    # [B-trajectory] 액션 모드. "b_trajectory": action[4]=β(pour progress)→R(β) 전신협응 구동
+    #   (cspace baseline=R(β) + ready 시 j5 하드구동). "legacy": 기존 3D tilt 액션.
+    #   설계: 보상은 협응 분포를 못 가르침 → R(β)로 직접 부과(7D탐색→1D β). j5만 하드(위치-safe),
+    #   j4·어깨는 R(β) soft bias+위치task, j6 작은밴드. introt(spin=action[3])는 유지.
+    pour_action_mode: str = "b_trajectory"
+    beta_action_index: int = 4   # action[4](구 tilt-toward) = β 채널
+
+    # [stage3] phase별 차등 관절 범위(하드 클램프). ready-latch(pour 단계)일 때만 fabric_q를 band로 클램프.
+    #   approach(미ready)=full range(접근/grasp 자유). pour(ready)=아래 lo/hi band(deep tilt 강제).
+    #   FK 검증: j6 클램프(leak 차단)+j5 음수 강제(roll 엔진) 동시필요. j6 단독은 80°뿐, 둘이면 113°.
+    #   None 성분(±9.9)=해당 단계서 사실상 무제한. 점진 적용 위해 j5/j6만 우선 band.
+    pour_phase_clamp_enable: bool = True
+    pour_phase_arm_lo: tuple = (-9.9, -9.9, -9.9, -9.9, -1.571, -0.30, -9.9)  # j6 [-0.30,0.35] (demo 자연범위, 문서검증)
+    pour_phase_arm_hi: tuple = ( 9.9,  9.9,  9.9,  9.9,  0.0,    0.35,  9.9)  # j5 상한 0(b_traj는 하드구동이라 무관)
+
+    # [v6 ablation] nullspace baseline(α=0 지점) 선택 — demo prior 주입의 hard 경로.
+    #   "robot_start": 중립(=v5 순수 DRL).  "demo": j1-4 항상 + j5 ready 후 demo 구조(=v4).
+    #   enable_demo_pose_reward(soft 경로)와 직교 → 둘 조합이 4셀 ablation 매트릭스.
+    nullspace_baseline: str = "demo"  # [stage1 진단] robot_start→demo: j5(deep tilt 주역) roll 복원. FK 검증: demo 비율이 tilt 111° 도달, j4 단독은 max 77°. test5(demo+mass3) tilt 해결 메커니즘 복원.
 
     # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
     g_ready_center: float = 0.05   # [test_lstm3 재설계] 0.20→0.05: pour_point(mouth_xy)가 target rim 범위(~5cm) 와야 stageB 개방 (정조준 게이트)
@@ -299,8 +341,26 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_tilt_pre: float = 8.0     # [test8] 미사용(r_tilt_A 폐기). 구 기록 참조용 유지
 
     # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
-    weight_tilt: float = 35.0      # [align-off probe] tilt를 주 drive로 격상. align(35)은 0으로 제거.
-    tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·ready_latched)
+    weight_tilt: float = 20.0      # [deep_tilt_boot1] tilt 독립(latched_ready 제거) 시 유지보상 축소(35→20): 유지 farming 완화, 증분(delta) 위주.
+    weight_tilt_delta: float = 100.0   # [test4] tilt 증분(delta) 보상 가중. 더 기울이는 순간만(relu)→75° 너머 deep tilt 유도. 위치(z/xy) 맞춰진 test3 위에서 deep tilt 점프 유발.
+    tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·prox_gate)
+    # [06.21 Phase2] tilt 게이트를 latch(binary)→연속 근접 게이트로 교체(순환 게이트 절단).
+    #   prox_gate = clamp((far - approach_xy_dist)/(far-near), 0, 1). approach_xy_dist=rim_center 기준.
+    tilt_prox_gate_far:  float = 0.25  # 이 거리 밖: prox_gate=0 (floor만)
+    tilt_prox_gate_near: float = 0.06  # 이 거리 안: prox_gate=1 (full tilt)
+    # [06.21 Phase3] pour 정밀 조정텀 r_pour = w_pour·tilt_progress·aim_score. aim_score=관대 radius corridor.
+    #   tilt_progress 스케일 → 회전 시작(흔들림) 구간 자동 억제, 70°+ 안정 구간만 본격 작동.
+    weight_pour:        float = 50.0   # [Phase1 미사용] 구 r_pour=w_pour·progress·aim 곱셈 → 덧셈(transport+align)로 분해. 참조용 유지.
+    # [Phase1] DexPour additive 분해: 곱셈 r_pour(progress×aim saddle) → r_transport(aim, tilt무관) + r_align(dir_cos, tilt무관).
+    #   진단: deep tilt 시 pour_point가 target에서 이탈(pp_z +14cm)해도 곱셈이 둘 다 높을 때만 보상→saddle.
+    #   덧셈이면 위치(transport)와 기울임(tilt)을 독립 보상 → "위치 유지하며 deep tilt"가 합 최대.
+    #   aim_score는 z corridor(z_max=0.05) 내장 → r_transport가 pp_z 솟음을 자동 페널티(Phase2 포함).
+    weight_transport:   float = 30.0   # [구 r_pour z-only, 재설계 Phase3서 미사용] 보존(롤백 참조).
+    weight_pour_bead:   float = 50.0   # [재설계 Phase3] r_pour = w·corridor_score·bead_cross_fraction. 실제 붓기 outcome 보상(z-only 대리 폐기).
+    pour_z_target:      float = 0.03   # [test3] 주둥이를 target 입구 위 3cm로 유도 (충돌회피 마진 + bead 진입 높이)
+    pour_z_scale:       float = 20.0   # [test3] z-clearance 오차 exp 민감도 (3.5cm서 반감)
+    pour_aim_scale:     float = 10.0   # [test_aim2] aim corridor 완만화(공유 pour_corridor_scale=20 절벽 → 10). env서 radius=0(flat-top 제거)와 함께 → target서 부드러운 봉우리(gradient 어디서나) → miss 교정 + 학습 stiffness↓. 부드러운 동작인데 reward 출렁이던 ② 원인 제거.
+    pour_aim_z_max:     float = 0.05   # [test_aim] aim 전용 z 상한(공유 pour_corridor_z_max=0.12와 분리). spout이 입구 위 5cm 넘으면 감점 → release 높이발 산란 차단. z_min은 pour_corridor_z_min(-0.02) 공유(soft band, tilt 자연 하강 허용).
     #   ready_latched 이후에는 live corridor wobble이 tilt reward를 끄지 않음. 미정조준 ceiling=35×0.35=12.25.
     # [H10] 상시 내회전 유도 — r_tilt(곱)는 tilt 전엔 회전 gradient=0(chicken-and-egg) →
     #   tilt 비종속 항으로 "내회전이 옳다"를 직접 학습. w_tilt보다 작아
@@ -309,7 +369,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_tilt_target_deg: float = 135.0   # 수평(90°) 너머 dump까지 tilt_progress gradient 유지
 
     # Stage B — direct pour-point 정렬 reward 제거. Corridor는 phase/release/logging context로만 사용.
-    weight_align: float = 0.0
+    weight_align: float = 5.0   # [재설계 Phase3] 20→5 하향: 방향항이 최대 보상(16.8)으로 방향-only farming 유발 → 보조로 축소. cosθ=directional_tilt_cos_c.
     pour_align_scale: float = 15.0  # 레거시 pour_alignment_score config. 현재 reward path 미사용.
                                     #   (6.8 vs 4cm가 score .58 vs .73) mouth_xy가 입구반경(4.1cm) 밖에서 천장 → bead_in=0.
                                     #   sharp화로 마지막 4cm 파고들어 bead_in 개통 유도.
@@ -324,7 +384,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Stage B — bead (정밀 조준 종속 — "높은 데서 대충 부어 넣기" 차단)
     weight_bead_in: float = 0.0  # [release-delta probe] 누적 target 상태 reward 제거
     weight_source_release: float = 100.0  # 소스 잔량 감소분만 transient 보상
-    weight_target_capture_delta: float = 200.0  # target 컵으로 새로 들어온 bead delta 보상
+    weight_target_capture_delta: float = 200.0  # [lstm_test4] test3 400→200 복원: bank 품질 게이트 격리 검증.
     weight_bead_cross: float = 150.0  # 레거시 입구 관통 reward config. 현재 reward path 미사용.
     weight_source_drain: float = 0.0  # [release-delta probe] 누적 source-empty 상태 reward 제거
     drain_tilt_min: float = 0.05   # aim_gate tilt 임계 (직립 조기 drain 차단)
@@ -338,7 +398,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   기존 palm+z(손가락축, H10b)는 roll 무감지(cos≈1 고정) → drift 못 막음. sim 렌더링 확인.
     #   gate = sigmoid((thresh - cos)/temp).
     internal_rot_thresh: float = 0.0   # cos<thresh → 내회전. (경계 cos=0=90°)
-    internal_rot_temp: float = 0.1     # 0.2→0.1 가파름: drift(cos→0)시 gate 급감 → 내회전 유지 강제
+    internal_rot_temp: float = 0.4     # [test_aim2] 0.1→0.4 완만화: temp 0.1 가파른 sigmoid가 부드러운 rim_facing 변화→gate 급변→r_tilt(×rot_dir) 출렁(학습 진동 ①). 완만화로 reward stiffness↓.
     # [H5] roll 방향성을 r_tilt에 결합 (별도 r_introt 가산은 자세 압도 부작용 → 폐기).
     #   r_tilt *= rot_tilt_floor + (1-rot_tilt_floor)*internal_rot_gate.
     # [H10] floor 0.3 → 0.0 (lstm_test2 분석): floor=0.3이 외회전(gate≈0) tilt에 30% 보상 →
@@ -348,7 +408,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     rot_tilt_floor: float = 0.0
 
     # Outcome
-    weight_success: float = 0.0
+    weight_success: float = 50.0   # [06.21 Phase4] outcome 신호 연결: shaping이 닻 없이 farming하던 문제 해소(이전 0)
     weight_spill: float = 0.0      # [test7] 2→0: lstm_test6 bead_in/spill 동조 붕괴 → spill 페널티 OFF (pour 회피 local min 제거)
 
     # EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
@@ -375,7 +435,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   당겨 초기에 올바른 joint_state를 빠르게 찾게 한다. weight는 flow EMA로 floor까지 감쇠하되
     #   floor를 남겨 후반 escape도 억제(lstm_test2는 iter 1000+ 후반 붕괴).
     # -----------------------------------------------------------------------
-    enable_demo_pose_reward: bool = False  # [lstm_test4] reward는 컨트롤러를 못 이김(demo_err 상승)이 입증됨. nullspace default_config로 대체.
+    enable_demo_pose_reward: bool = False  # [06.21 재설계] actor demo 보상 OFF(r_demo_arm_pose/j5=0). demo는 critic 전용(enable_demo_critic_obs=True)으로만 초기 탐색 축소.
     weight_demo_arm_pose: float = 20.0        # j1-4 demo 앵커 시작값
     weight_demo_arm_pose_floor: float = 5.0   # 감쇠 하한 (후반 anchor 유지)
     weight_demo_j5: float = 15.0              # j5(틸트 주역) 앵커 시작값, ready 이후만
@@ -411,6 +471,20 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_adr_increment_interval: int = 20000
     success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
 
+    # [재설계 outcome ADR] DexPour 커리큘럼: 자세 성공률 80%+ 시 bead 보상(r_pour) weight 0→50 램프.
+    #   1단계=자세만(approach/tilt/align), bead 로깅만. 2단계=자세 완성 후 bead_in_target 상태보상 활성 → 정밀 pour.
+    enable_outcome_adr: bool = True
+    outcome_adr_custom_cfg: dict = {
+        "outcome": {
+            "weight_pour_bead": (0.0, 50.0),  # 1단계 0(자세만) → 2단계 50(bead 보상)
+        }
+    }
+    outcome_adr_num_increments: int = 8
+    outcome_adr_increment_interval: int = 20000
+    outcome_adr_trigger_threshold: float = 0.80  # 자세 성공률 80%+ 시 outcome 활성
+    pose_ready_thresh: float = 0.60   # 자세 성공 게이트: corridor_score ≥ (위치 준비)
+    pose_tilt_thresh: float = 0.587   # 자세 성공 게이트: tilt_amount ≥ (1-cos100°)/2 → rim_antiparallel ≤ -0.174 (100°+)
+
     reward_grasp_slip_sharpness: float = 3.0
     contact_maintain_min_others: int = 2
     force_balance_sharpness: float = 2.0
@@ -444,6 +518,24 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     )
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
+
+    # [lstm_test1 §6] deep-tilt 부트스트랩: sparse chicken-and-egg 해소.
+    #   학습 중 정책이 만드는 "deep-tilt + target 위 + 비드 source 보유" 실제 프레임을
+    #   full-snapshot으로 캡처했다가 일부 reset을 그 상태에서 시작 → 정책이 마지막 push만
+    #   학습해 200 캡처 보상을 경험. f_boot anneal로 직립 시작에 전이. (probe로 feasibility 확증)
+    enable_deep_tilt_boot: bool = True
+    deep_tilt_boot_capacity: int = 4096            # ring buffer 용량 (full-snapshot 수)
+    deep_tilt_capture_tilt_min: float = 0.40       # tilt_amount=(1-cosθ)/2; 0.40≈78°
+    deep_tilt_capture_src_min: float = 0.80        # 비드 source 보유율 하한 (공짜 pour 방지, audit Check 2)
+    deep_tilt_capture_mouth_max: float = 0.08      # pour-point xy 거리 상한 (target 위)
+    # [lstm_test4] grasp 품질 게이트: 슬립 중인 상태 캡처 금지 → bank 자기 오염 방지 (test3 붕괴 원인)
+    deep_tilt_capture_drift_max: float = 12.0      # cup_rel_drift 상한 [deg] (grasp 일관성)
+    deep_tilt_capture_contacts_min: float = 3.0    # 최소 접점 수 (파지 유지)
+    deep_tilt_capture_prob: float = 0.05           # qualifying env를 step당 저장할 확률 (중복 억제)
+    deep_tilt_boot_min_count: int = 64             # 이 수 이상 쌓여야 부트스트랩 시작
+    deep_tilt_f_boot_start: float = 0.5            # 초기 부트스트랩 비율
+    deep_tilt_f_boot_end: float = 0.0              # anneal 종착 (직립 전이)
+    deep_tilt_anneal_steps: int = 300_000          # progress = common_step_counter / anneal_steps
     # warmstart 초기 상태 소스:
     #   "disk"   : grasp 가 디스크에 저장한 캐시(grasp_warm_v7_2.hdf5) 로드 (권장).
     #              startup 시 grasp policy rollout 불필요 → 분포/포맷 불일치 제거.
@@ -566,6 +658,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                 stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
                 damping=200.0,
             ),
+            # [lstm_test4] test3 stiffness 2.2× 복원(220/200→100/90): drift에 무효과 + bank 게이트 격리 검증.
+            #   슬립이 bank 정화 후에도 남으면 그때 grasp 구조(stiffness/파지 자세)를 격리 변경.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
                 stiffness=90.0,

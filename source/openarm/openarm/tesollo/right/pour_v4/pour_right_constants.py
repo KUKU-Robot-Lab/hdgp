@@ -112,4 +112,12 @@ DEMO_POUR_ARM_POSE  = [0.216, 0.633, -0.371, 1.868, -1.217, 0.038, 0.604]
 
 # [2b] nullspace self-motion 축 = demo − robot_start. 7번째 action α가 default_config를
 #   이 축으로 이동. v5와 동일 상수(ablation 공통). v4 baseline=demo, v5 baseline=robot_start.
+#   ⚠️ 이 축은 palm pose를 보존하지 않음(= tilt 슬라이더). FK 검증: demo−start 방향 이동 시
+#   cup-up tilt가 ±0.09 변함 → α가 사실상 tilt를 직접 바꿔, 정책이 drift 회피로 α를 낮춤.
 NULLSPACE_OFFSET_ARM = [d - s for d, s in zip(DEMO_POUR_ARM_POSE, ARM_START_POSE)]
+
+# [stage2] 진짜 palm-task nullspace 축 (elbow-swivel). demo 자세에서 palm 6D Jacobian을
+#   FK 유한차분 → SVD → 최소 특이벡터(null vec)로 산출. J@n≈0(palm pose 보존).
+#   검증: 이 축으로 이동 시 cup-up tilt 변화 ≤0.016(보존), demo−start와 cos=0.056(직교).
+#   j4 성분=0(어깨/손목 swivel). α가 tilt를 망치지 않고 잉여 1-DOF만 조절 → 2단계 조준/정규화.
+N_DEMO_NULLSPACE_OFFSET = [-0.2321, -0.4811, 0.5291, 0.0000, -0.3976, 0.1821, 0.4935]
