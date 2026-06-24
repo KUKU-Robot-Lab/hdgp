@@ -612,6 +612,8 @@ class PourRightEnv(DirectRLEnv):
         # z도 부호 있는 위반량으로 binding bound 확정: z_max binding이면 음수, z_min이면 양수.
         self._palm_clamp_viol_z_signed = torch.zeros(self.num_envs, device=self.device)
         self._source_up_dot_world = torch.zeros(self.num_envs, device=self.device)
+        # [β setpoint] 첫 _pre_physics_step이 _get_rewards보다 먼저 실행 → 사전 초기화 필수.
+        self._rim_antiparallel = torch.ones(self.num_envs, device=self.device)  # 직립=1(tilt 0)
         self._pour_point_dyn_w = torch.zeros(self.num_envs, device=self.device)  # pour_point 동적 blend weight (0=정적/1=동적)
         self._directional_tilt_cos = torch.zeros(self.num_envs, device=self.device)
         # [test8] cup-center 앵커 방향 cosine (전달 자세서 안정 → 상충 제거)
