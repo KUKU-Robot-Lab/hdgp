@@ -21,7 +21,7 @@ def _read(name: str) -> str:
 
 def _load_constants():
     return importlib.import_module(
-        "openarm.tesollo.right.pour_v6.pour_right_constants"
+        "openarm.tesollo.right.pour_v5.pour_right_constants"
     )
 
 
@@ -70,19 +70,16 @@ def test_env_selects_n_demo_when_true_nullspace() -> None:
     assert 'nullspace_offset_mode' in env, "env가 offset_mode 분기 없음"
 
 
-def test_pour_phase_clamp_cfg() -> None:
-    """[stage3] phase별 차등 클램프 cfg: j5 상한 0(거꾸로 roll 금지), j6 [-0.2,0.2](leak 차단)."""
+def test_post_ik_manipulation_disabled() -> None:
+    """[β 수정] post-IK 관절 클램프/override 전면 비활성화 (pour-point 보존).
+
+    구 stage3 clamp·j5 override는 IK 후 단일관절을 덮어써 end-effector(주둥이) 포즈를 깸.
+    deep tilt는 β-setpoint→rim-pivot 회전으로 구동하므로 post-IK 조작 불필요.
+    """
     cfg = _read("pour_right_env_cfg.py")
-    assert re.search(r'pour_phase_clamp_enable\s*:\s*bool\s*=\s*True', cfg), "phase clamp flag 없음"
-    # j5(idx4) 상한 0.0, j6(idx5) [-0.2,0.2]
-    mlo = re.search(r'pour_phase_arm_lo\s*:\s*tuple\s*=\s*\(([^)]*)\)', cfg)
-    mhi = re.search(r'pour_phase_arm_hi\s*:\s*tuple\s*=\s*\(([^)]*)\)', cfg)
-    assert mlo and mhi, "pour_phase_arm_lo/hi 없음"
-    lo = [float(x) for x in mlo.group(1).split(",")]
-    hi = [float(x) for x in mhi.group(1).split(",")]
-    assert len(lo) == 7 and len(hi) == 7, "7-DOF band 아님"
-    assert hi[4] == 0.0, "j5 상한=0(거꾸로 roll 금지)이어야"
-    assert lo[5] <= -0.25 and hi[5] >= 0.30, "j6 밴드=demo 자연범위(±0.3, 문서검증). 구 [-0.2,0.2] 폐기"
+    assert re.search(r'pour_phase_clamp_enable\s*:\s*bool\s*=\s*False', cfg), (
+        "pour_phase_clamp_enable=False(post-IK 조작 off)이어야"
+    )
 
 
 def test_pour_phase_clamp_gated_on_ready() -> None:
@@ -100,19 +97,20 @@ def test_b_trajectory_mode_cfg() -> None:
     assert re.search(r'beta_action_index\s*:\s*int\s*=\s*\d', cfg), "beta_action_index 없음"
 
 
-def test_b_trajectory_env_wiring() -> None:
-    """env: R(β) import·lookup·β구동·j5 하드구동."""
+def test_beta_setpoint_wiring() -> None:
+    """[β 수정] β=tilt setpoint: delta[:,4](tilt_toward)를 목표 tilt_amount까지 피드백 구동.
+
+    구 j5 하드구동(_rbeta_arm_lookup post-IK overwrite)은 제거 — pour-point를 깸.
+    """
     env = _read("pour_right_env.py")
-    assert "RBETA_ARM" in env and "_rbeta_arm_lookup" in env, "R(β) lookup 미구현"
-    assert "_beta_cmd" in env and 'pour_action_mode == "b_trajectory"' in env, "b_trajectory 분기 없음"
-    assert "_rbeta_arm_lookup(self._beta_cmd)" in env, "j5 하드구동(R(β)) 없음"
-
-
-def test_j6_band_natural_range() -> None:
-    """j6 밴드는 demo 자연범위(±0.3) — 문서검증 후 Stage3 [-0.2,0.2] 폐기."""
     cfg = _read("pour_right_env_cfg.py")
-    mlo = re.search(r'pour_phase_arm_lo\s*:\s*tuple\s*=\s*\(([^)]*)\)', cfg)
-    mhi = re.search(r'pour_phase_arm_hi\s*:\s*tuple\s*=\s*\(([^)]*)\)', cfg)
-    lo = [float(x) for x in mlo.group(1).split(",")]
-    hi = [float(x) for x in mhi.group(1).split(",")]
-    assert lo[5] <= -0.25 and hi[5] >= 0.30, "j6 밴드가 demo 자연범위(±0.3) 반영해야"
+    # β-setpoint cfg
+    assert re.search(r'beta_target_tilt_amount\s*:\s*float', cfg), "beta_target_tilt_amount 없음"
+    assert re.search(r'beta_tilt_kp\s*:\s*float', cfg), "beta_tilt_kp 없음"
+    assert re.search(r'beta_tilt_max_step\s*:\s*float', cfg), "beta_tilt_max_step 없음"
+    # env: β→tilt_toward setpoint 구동
+    assert "_beta_cmd" in env and 'pour_action_mode == "b_trajectory"' in env, "b_trajectory 분기 없음"
+    assert "self.cfg.beta_target_tilt_amount" in env, "β→목표 tilt_amount 매핑 없음"
+    assert "self.cfg.beta_tilt_kp" in env and "delta[:, 4] = _tilt_step" in env, "tilt setpoint 구동 없음"
+    # 구 j5 post-IK override는 제거되어야 (pour-point 보존)
+    assert "_arm_q[_ready, 4] = _rbeta" not in env, "j5 post-IK override가 남아있음(pour-point 깸)"

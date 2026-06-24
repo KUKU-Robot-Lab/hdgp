@@ -298,11 +298,19 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_action_mode: str = "b_trajectory"
     beta_action_index: int = 4   # action[4](구 tilt-toward) = β 채널
 
+    # [β tilt setpoint] β=action[idx]→[0,1]를 목표 tilt_amount로 해석, rim-pivot이 pour-point를
+    #   보존하며 그 목표까지 tilt_toward를 피드백 구동. (구 R(β) cspace 절대바이어스 + j5 override는
+    #   IK 후 단일관절 덮어써 pour-point를 깨뜨려 폐기 — 검증: v6 ready=0.89인데 β억제로 frac_110=0.)
+    beta_target_tilt_amount: float = 0.854  # β=1 목표. (1-cos135°)/2 = 0.854 (135° dump)
+    beta_tilt_kp:           float = 3.0     # 목표-현재 tilt_amount 오차 비례게인
+    beta_tilt_max_step:     float = 0.06    # tilt_toward 회전 증분 상한 [rad/step] (급격 회전 방지)
+
     # [stage3] phase별 차등 관절 범위(하드 클램프). ready-latch(pour 단계)일 때만 fabric_q를 band로 클램프.
     #   approach(미ready)=full range(접근/grasp 자유). pour(ready)=아래 lo/hi band(deep tilt 강제).
     #   FK 검증: j6 클램프(leak 차단)+j5 음수 강제(roll 엔진) 동시필요. j6 단독은 80°뿐, 둘이면 113°.
     #   None 성분(±9.9)=해당 단계서 사실상 무제한. 점진 적용 위해 j5/j6만 우선 band.
-    pour_phase_clamp_enable: bool = True
+    pour_phase_clamp_enable: bool = False  # [β 수정] post-IK 관절 클램프/override 전면 비활성화.
+    #   deep tilt를 단일관절 강제가 아니라 β-setpoint→rim-pivot(pour-point 보존)으로 구동.
     pour_phase_arm_lo: tuple = (-9.9, -9.9, -9.9, -9.9, -1.571, -0.30, -9.9)  # j6 [-0.30,0.35] (demo 자연범위, 문서검증)
     pour_phase_arm_hi: tuple = ( 9.9,  9.9,  9.9,  9.9,  0.0,    0.35,  9.9)  # j5 상한 0(b_traj는 하드구동이라 무관)
 

@@ -1150,6 +1150,18 @@ class PourRightEnv(DirectRLEnv):
                 0.0,
                 1.0,
             )
+            # [β tilt setpoint] β(action[idx])를 목표 tilt_amount로 해석 → tilt_toward(delta[:,4])를
+            #   목표까지 피드백 구동. spin(delta[3])·ortho(delta[5])·xyz(delta[:3])는 정책 유지.
+            #   (v6=palm-pivot이라 pour-point 보존은 v5만큼 구조적이지 않음 — 대조군 변수.)
+            if self.cfg.pour_action_mode == "b_trajectory":
+                _beta = (self._ema_palm_action[:, self.cfg.beta_action_index] * 0.5 + 0.5).clamp(0.0, 1.0)
+                self._beta_cmd.copy_(_beta)
+                _target_ta = _beta * self.cfg.beta_target_tilt_amount
+                _cur_ta = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)
+                _tilt_step = (self.cfg.beta_tilt_kp * (_target_ta - _cur_ta)).clamp(
+                    -self.cfg.beta_tilt_max_step, self.cfg.beta_tilt_max_step
+                )
+                delta[:, 4] = _tilt_step
             delta[:, 3:6] = delta[:, 3:6] * tilt_gate.unsqueeze(1)
             # Rotation action is interpreted in a cup-local basis:
             # [spin around cup-up, tilt toward target opening, orthogonal tilt].
@@ -1206,17 +1218,12 @@ class PourRightEnv(DirectRLEnv):
             #   "robot_start" : 중립 baseline 그대로 (demo prior 없음). (=v5 순수 DRL)
             _null_cfg = self.fabric_q.detach().clone()                       # hand(grasp)는 현재 유지
             _baseline_arm = self.robot_start_joint_pos[:, :NUM_ARM_DOF].clone()
-            if self.cfg.pour_action_mode == "b_trajectory":
-                # [B-trajectory] β=action[idx]→[0,1] → cspace baseline=R(β) 전신 협응 분포.
-                #   정책이 못 찾던 j4↑+j5 roll+어깨 recruit 동시협응을 R(β)로 부과(soft bias).
-                #   j5 하드구동은 post-Fabrics에서. introt(spin)은 palm orientation에 유지.
-                _beta = (self._ema_palm_action[:, self.cfg.beta_action_index] * 0.5 + 0.5).clamp(0.0, 1.0)
-                self._beta_cmd.copy_(_beta)
-                _baseline_arm = self._rbeta_arm_lookup(_beta)                    # (N,7) demo 협응
-            elif self.cfg.nullspace_baseline == "demo":
+            # [β 수정] R(β) 절대 cspace bias 제거 — IK palm task와 경쟁해 pour-point를 끌어내림.
+            #   deep tilt는 β-setpoint가 회전으로 구동. cspace는 demo elbow-up 자세 soft prior만.
+            if self.cfg.nullspace_baseline == "demo":
                 _baseline_arm[:, :4] = self._demo_pour_arm_pose[:4].unsqueeze(0)  # j1-4: approach 위치 (항상)
                 _ready_pour = self._pour_ready_latched                          # (N,) bool, 직전 step latch
-                _baseline_arm[_ready_pour, 4] = self._demo_pour_arm_pose[4]      # j5: ready 후 demo 롤
+                _baseline_arm[_ready_pour, 4] = self._demo_pour_arm_pose[4]      # j5: ready 후 demo 롤(soft)
             # [2b] 잉여 1-DOF를 정책이 제어: baseline + scale·α·(demo−start). baseline과 무관하게
             #   offset·α·clamp는 공통(ablation 불변). palm task 불변, nullspace에서만 실현, hard-limit clamp.
             _coeff = (self.cfg.nullspace_action_scale * self._ema_null_action).unsqueeze(-1)  # (N,1)
@@ -1243,20 +1250,9 @@ class PourRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # [B-trajectory] ready(pour)일 때 j5(roll 엔진)를 R(β)로 하드 구동 + j6 작은밴드.
-        #   FK: j5는 위치-safe(3.7cm), 소프트로 못 굴린 유일 관절 → set으로 강제. j4·어깨는
-        #   cspace R(β) bias+위치task가 담당(soft로 도달 확인). j6는 leak 방지 밴드(자연범위 ±0.3).
-        if self.cfg.pour_action_mode == "b_trajectory":
-            _ready = self._pour_ready_latched                                       # (N,) bool
-            _rbeta = self._rbeta_arm_lookup(self._beta_cmd)                         # (N,7)
-            _arm_q = self.fabric_q[:, :NUM_ARM_DOF].clone()
-            _arm_q[_ready, 4] = _rbeta[_ready, 4]                                    # j5 하드 구동
-            _j6 = _arm_q[:, 5].clamp(self._pour_clamp_lo[0, 5], self._pour_clamp_hi[0, 5])
-            _arm_q[_ready, 5] = _j6[_ready]                                          # j6 작은밴드
-            self.fabric_q[:, :NUM_ARM_DOF] = _arm_q
-            self.fabric_qd[_ready, 4] = 0.0                                          # windup 방지
-            self.fabric_qd[_ready, 5] = 0.0
-        elif self.cfg.pour_phase_clamp_enable:
+        # [β 수정] post-IK j5 override 제거 — IK 후 단일관절 덮어쓰기가 end-effector 포즈를 깨
+        #   pour-point를 이탈시킴(검증됨). deep tilt는 β-setpoint가 회전으로 구동. legacy band 기본 off.
+        if self.cfg.pour_phase_clamp_enable:
             # [stage3 legacy] ready 시 arm joint를 band로 하드 클램프(j5/j6 band).
             _ready = self._pour_ready_latched.unsqueeze(-1)                         # (N,1) bool
             _arm_q = self.fabric_q[:, :NUM_ARM_DOF]
