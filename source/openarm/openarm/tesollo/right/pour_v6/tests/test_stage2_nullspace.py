@@ -129,4 +129,5 @@ def test_b_light_orient_release_wiring() -> None:
     # tilt 단계(ready)만 풀기 — approach는 조준
     assert "torch.where(_rm, _R_cur_xyzw, palm_pose[:, 3:7])" in env, "orientation 풀기가 ready 게이트 아님"
     # β→cspace j5: j5 baseline = β·demo_j5
-    assert "_j5_cmd = self._beta_cmd * self._demo_pour_arm_pose[4]" in env, "β→cspace j5 구동 없음"
+    # [B-full] j5를 β무관 full demo로 강제 (v5는 β-graded)
+    assert "_baseline_arm[_ready_pour, 4] = self._demo_pour_arm_pose[4]" in env, "B-full forced j5 없음"

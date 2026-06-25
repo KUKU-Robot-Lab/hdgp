@@ -427,7 +427,7 @@ class PourRightEnv(DirectRLEnv):
         self._rbeta_arm = torch.tensor(RBETA_ARM, device=self.device)               # (K,7)
         self._beta_cmd = torch.zeros(self.num_envs, device=self.device)             # 현 β (로깅·obs)
         # [B-light] 주둥이의 palm-body-frame offset. approach(미ready) 중 갱신, tilt(ready) 중 동결
-        #   → orientation 풀린 채로도 주둥이 위치를 예측적으로 고정(pour-point 보존). v5와 동기화.
+        #   → orientation 풀린 채로도 주둥이 위치를 예측적으로 고정(pour-point 보존).
         self._spout_offset_body = torch.zeros(self.num_envs, 3, device=self.device)
         self._cmd_delta_pre_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_post_gate = torch.zeros(self.num_envs, 6, device=self.device)
@@ -471,7 +471,7 @@ class PourRightEnv(DirectRLEnv):
             else None
         )
 
-        # [재설계 outcome ADR] 자세 성공률 80%+ 시 bead 보상(weight_pour_bead) 0→50 램프. v5와 동기화.
+        # [재설계 outcome ADR] 자세 성공률 80%+ 시 bead 보상(weight_pour_bead) 0→50 램프.
         self.outcome_adr = (
             PourADR(
                 custom_cfg=cfg.outcome_adr_custom_cfg,
@@ -524,7 +524,7 @@ class PourRightEnv(DirectRLEnv):
         self.episode_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._total_episodes: int = 0
         self._successful_episodes: int = 0
-        # [재설계 outcome ADR] 자세 성공(corridor+tilt100°+) episode 추적 → outcome_adr trigger. v5와 동기화.
+        # [재설계 outcome ADR] 자세 성공(corridor+tilt100°+) episode 추적 → outcome_adr trigger.
         self._pose_success_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.episode_pose_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pose_successful_episodes: int = 0
@@ -1156,8 +1156,9 @@ class PourRightEnv(DirectRLEnv):
                 1.0,
             )
             # [β tilt setpoint] β(action[idx])를 목표 tilt_amount로 해석 → tilt_toward(delta[:,4])를
-            #   목표까지 피드백 구동. spin(delta[3])·ortho(delta[5])·xyz(delta[:3])는 정책 유지.
-            #   (v6=palm-pivot이라 pour-point 보존은 v5만큼 구조적이지 않음 — 대조군 변수.)
+            #   목표까지 피드백 구동. rim-pivot(palm_ee=pour_point−R·rim_rel)이 pour-point를 보존하므로
+            #   tilt가 깊어져도 주둥이가 target 위에 유지됨(=β 본래 의미: pour-point 고정+잉여관절 풀기).
+            #   spin(delta[3])·ortho(delta[5])·xyz(delta[:3])는 정책 유지. tilt_gate가 아래서 함께 적용.
             if self.cfg.pour_action_mode == "b_trajectory":
                 _beta = (self._ema_palm_action[:, self.cfg.beta_action_index] * 0.5 + 0.5).clamp(0.0, 1.0)
                 self._beta_cmd.copy_(_beta)
@@ -1177,47 +1178,63 @@ class PourRightEnv(DirectRLEnv):
             self._cmd_delta_rotvec_world.copy_(delta_rotvec_world)
             palm_pose = torch.zeros_like(self.pregrasp_palm_pose_buf)
 
-            # [direct-palm] rim-pivot 역산 제거: action delta[:3] = palm 직접 이동량.
-            #   기존 pour_point 역산은 비정상(non-stationary) 역모델 — pour_point가 tilt에
-            #   종속(source_outer_radius swing)·rim_rel이 컵 자세 따라 변동 → action→palm 매핑이
-            #   매 스텝 바뀌어 정책이 역모델을 못 만듦(clamp 11~67%, corridor seating/holding 실패).
-            #   회전은 아래(_compose_world_delta_quat_xyzw)에서 palm 기준으로 합성 → palm-pivot.
-            #   pour_point는 reward(corridor/approach)에만 사용, 제어 경로에선 분리.
-            palm_pose[:, :3] = self.palm_center_pos + delta[:, :3]   # palm_ee target (palm_center_pos=palm_ee)
-            # 진단: 워크스페이스 박스(palm_ee 기준)가 명령을 자르는 양 측정 (클램프 전 palm_ee 보존)
-            _palm_xyz_preclamp = palm_pose[:, :3].clone()
-            palm_pose[:, :3] = torch.max(
-                torch.min(palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
+            # [rim-pivot xyz + palm_ee] 회전을 pour_point(rim) 기준으로 pivot → tilt swing을 env가
+            #   xyz 전부 자동 보정. 제어/클램프 기준점 = palm_ee(진짜 손바닥 중심, palm_center_pos).
+            #   action delta[:3] = pour_point XYZ 이동량(palm이 아님), delta[3:6] = tilt(cup-local).
+            #   v3는 XY-only였음 → 여기선 Z swing(−0.045·sinθ)까지 보정. palm_ee 앵커로 rim_rel 레버
+            #   최소화(rl_dg_palm 대비 ~offset 짧음) → clamp 깨짐 감소.
+            _angle = delta_rotvec_world.norm(dim=-1)
+            _axis = torch.where(
+                _angle.unsqueeze(-1) > 1e-8,
+                delta_rotvec_world / _angle.unsqueeze(-1).clamp(min=1e-8),
+                delta_rotvec_world.new_tensor([1.0, 0.0, 0.0]).expand(self.num_envs, -1),
+            )
+            _delta_quat_wxyz = quat_from_angle_axis(_angle, _axis)
+            rim_env = self._source_pour_point_w - self.scene.env_origins      # (N,3) env-local
+            rim_rel = rim_env - self.palm_center_pos                          # palm_ee→rim 레버 (palm_ee 앵커)
+            # 회전 R 후 rim = palm_ee + R·rim_rel → palm_ee = pour_point_target − R·rim_rel (xyz 전부)
+            pour_point_target = rim_env + delta[:, :3]
+            if self.cfg.pour_spout_z_lock:
+                # [robust] approach 단계에도 주둥이 z를 target 위 margin으로 구조 강제.
+                #   (pour 단계만 잠그면 v5는 ready 못 latch해 적용 안 됨 → approach부터 잠가
+                #    corridor↑→ready latch 순환 차단.) xy는 정책 유지.
+                _tgt_z_env_a = self._target_opening_w[:, 2] - self.scene.env_origins[:, 2]
+                pour_point_target[:, 2] = _tgt_z_env_a + self.cfg.pour_z_margin
+            _palm_ee_target = pour_point_target - quat_apply(_delta_quat_wxyz, rim_rel)
+            # 진단: 박스(palm_ee 기준)가 rim-pivot 해를 자르는 양 (클램프 전 palm_ee 보존)
+            _palm_xyz_preclamp = _palm_ee_target.clone()
+            _palm_ee_target = torch.max(
+                torch.min(_palm_ee_target, self.palm_maxs[:3].unsqueeze(0)),
                 self.palm_mins[:3].unsqueeze(0),
             )
-            # 클램프로 잘려나간 양 = rim-pivot이 보정하려던 palm 이동이 막힌 정도
-            # → 0보다 크면 pour_point가 명령 위치에 안 옴(hinge 기계적 파손)
+            # 잘린 양 = rim-pivot 보정이 박스에 막힌 정도 → >0이면 pour_point가 명령 위치 못 옴
             self._palm_clamp_viol_xy = torch.norm(
-                palm_pose[:, :2] - _palm_xyz_preclamp[:, :2], dim=-1
+                _palm_ee_target[:, :2] - _palm_xyz_preclamp[:, :2], dim=-1
             )
-            self._palm_clamp_viol_z = (palm_pose[:, 2] - _palm_xyz_preclamp[:, 2]).abs()
-            # 부호 있는 z 위반: <0 → z_max가 잘림(palm이 더 올라가려 함), >0 → z_min이 잘림(더 내려가려 함)
-            self._palm_clamp_viol_z_signed = palm_pose[:, 2] - _palm_xyz_preclamp[:, 2]
-            # per-axis 부호 있는 위반량: 어느 bound가 binding인지 식별
-            #   <0 → x_max/y_max가 잘림(palm이 상한 너머로 가려 함), >0 → x_min/y_min이 잘림
-            self._palm_clamp_viol_x = palm_pose[:, 0] - _palm_xyz_preclamp[:, 0]
-            self._palm_clamp_viol_y = palm_pose[:, 1] - _palm_xyz_preclamp[:, 1]
+            self._palm_clamp_viol_z = (_palm_ee_target[:, 2] - _palm_xyz_preclamp[:, 2]).abs()
+            # 부호 있는 z 위반: <0 → z_max가 잘림(palm_ee가 더 올라가려 함), >0 → z_min이 잘림
+            self._palm_clamp_viol_z_signed = _palm_ee_target[:, 2] - _palm_xyz_preclamp[:, 2]
+            # per-axis 부호 있는 위반량: <0 → x_max/y_max 잘림, >0 → x_min/y_min 잘림
+            self._palm_clamp_viol_x = _palm_ee_target[:, 0] - _palm_xyz_preclamp[:, 0]
+            self._palm_clamp_viol_y = _palm_ee_target[:, 1] - _palm_xyz_preclamp[:, 1]
+            # orientation target (palm_ee = palm_link 공유): current palm quat에 tilt 증분 합성
             current_palm_quat_xyzw = self.robot.data.body_quat_w[:, self.palm_body_index][:, [1, 2, 3, 0]]
             palm_pose[:, 3:7] = self._compose_world_delta_quat_xyzw(
                 current_palm_quat_xyzw,
                 delta_rotvec_world,
             )
-            # 명령/진단 delta는 palm_ee 기준 (clamp 후 palm_ee target − 현재 palm_ee)
-            self._cmd_palm_target_delta.copy_(palm_pose[:, :3] - self.palm_center_pos)
-            # [palm_ee 제어] Fabrics는 palm_link를 추종 → palm_ee target을 palm_link로 역변환.
+            palm_pose[:, :3] = _palm_ee_target
+            # 명령/진단 delta는 palm_ee 기준
+            self._cmd_palm_target_delta.copy_(_palm_ee_target - self.palm_center_pos)
+            # [palm_ee 제어] Fabrics는 palm_link 추종 → palm_ee target을 palm_link로 역변환.
             #   orientation 공유(rpy=0)라 quat 불변, origin만 R(target)·offset 만큼 뺌.
             _tgt_quat_wxyz = palm_pose[:, 3:7][:, [3, 0, 1, 2]]
-            palm_pose[:, :3] = palm_pose[:, :3] - quat_apply(
+            palm_pose[:, :3] = _palm_ee_target - quat_apply(
                 _tgt_quat_wxyz, self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1)
             )
             if self.cfg.pour_orient_release:
-                # [B-light] orientation 풀기: palm 방향 target=현재 → cspace가 j5 끌게.
-                #   위치는 주둥이(pour-point) 고정: approach 중 body offset 동결→tilt 중 예측 hold. v5 동기화.
+                # [B-light] orientation 풀기: palm 방향 target=현재(틸트 명령 제거) → cspace가 j5 끌게.
+                #   위치는 주둥이(pour-point)를 고정: approach 중 body offset 동결→tilt 중 예측 hold.
                 _R_cur = self.robot.data.body_quat_w[:, self.palm_body_index]          # wxyz
                 _ready = self._pour_ready_latched
                 _rim_env_bl = self._source_pour_point_w - self.scene.env_origins      # (N,3)
@@ -1227,6 +1244,11 @@ class PourRightEnv(DirectRLEnv):
                     _ready.unsqueeze(-1), self._spout_offset_body, _off_now           # ready=동결, 아니면 갱신
                 )
                 _spout_target_bl = _rim_env_bl + delta[:, :3]                         # action xyz로 주둥이 조준
+                if self.cfg.pour_spout_z_lock:
+                    # [robust] 주둥이 z를 정책에서 분리해 target 입구 위 margin으로 구조 강제(env-local).
+                    #   v5 실패모드("주둥이 target 아래→붓기 불가") 원천 차단. xy는 정책 유지.
+                    _tgt_z_env = self._target_opening_w[:, 2] - self.scene.env_origins[:, 2]
+                    _spout_target_bl[:, 2] = _tgt_z_env + self.cfg.pour_z_margin
                 _palm_ee_bl = _spout_target_bl - quat_apply(_R_cur, self._spout_offset_body)
                 _palm_ee_bl = torch.max(
                     torch.min(_palm_ee_bl, self.palm_maxs[:3].unsqueeze(0)),
@@ -1236,7 +1258,9 @@ class PourRightEnv(DirectRLEnv):
                 _bl_pos = _palm_ee_bl - quat_apply(
                     _R_cur, self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1)
                 )
-                # [B-light] orientation 풀기·주둥이 hold는 tilt 단계(ready)만 적용. approach는 조준. v5 동기화.
+                # [B-light] orientation 풀기·주둥이 hold는 tilt 단계(ready)만 적용.
+                #   approach(미ready)는 rim-pivot orientation 제어로 조준 → ready latch → 그제야 풀기.
+                #   (always-release는 접근 중 컵 방향 무통제→corridor 실패→ready 미latch→j5 미구동.)
                 _rm = _ready.unsqueeze(-1)
                 palm_pose[:, 3:7] = torch.where(_rm, _R_cur_xyzw, palm_pose[:, 3:7])
                 palm_pose[:, :3] = torch.where(_rm, _bl_pos, palm_pose[:, :3])
@@ -1252,14 +1276,15 @@ class PourRightEnv(DirectRLEnv):
             _null_cfg = self.fabric_q.detach().clone()                       # hand(grasp)는 현재 유지
             _baseline_arm = self.robot_start_joint_pos[:, :NUM_ARM_DOF].clone()
             # [β 수정] R(β) 절대 cspace bias 제거 — IK palm task와 경쟁해 pour-point를 끌어내림.
-            #   deep tilt는 β-setpoint가 회전으로 구동. cspace는 demo elbow-up 자세 soft prior만.
+            #   deep tilt는 β-setpoint가 rim-pivot 회전으로 구동(pour-point 보존). cspace는 demo
+            #   elbow-up 자세 soft prior만 담당(palm task 우선, nullspace에서만 실현).
             if self.cfg.pour_orient_release:
-                # [B-light] orientation 풀렸으니 cspace가 j5를 deep까지 끌 수 있음.
-                #   j1-4=demo, j5=β-graded demo 롤(0=직립→demo=-1.22)=tilt 구동. v5 동기화.
+                # [B-full] j5를 β 무관 full demo(-1.217)로 강제. orientation 풀려 position task가
+                #   주둥이를 잡으므로(z-lock), cspace가 j5를 demo 깊이까지 nullspace로 끎.
+                #   v5(β-graded, j5 -0.51 정체) 대조군: forced가 demo 깊이→f110→pour 가능한지.
                 _baseline_arm[:, :4] = self._demo_pour_arm_pose[:4].unsqueeze(0)
-                _ready_pour = self._pour_ready_latched
-                _j5_cmd = self._beta_cmd * self._demo_pour_arm_pose[4]
-                _baseline_arm[_ready_pour, 4] = _j5_cmd[_ready_pour]
+                _ready_pour = self._pour_ready_latched                          # (N,) bool
+                _baseline_arm[_ready_pour, 4] = self._demo_pour_arm_pose[4]      # forced full demo j5
             elif self.cfg.nullspace_baseline == "demo":
                 _baseline_arm[:, :4] = self._demo_pour_arm_pose[:4].unsqueeze(0)  # j1-4: approach 위치 (항상)
                 _ready_pour = self._pour_ready_latched                          # (N,) bool, 직전 step latch
@@ -1290,8 +1315,10 @@ class PourRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # [β 수정] post-IK j5 override 제거 — IK 후 단일관절 덮어쓰기가 end-effector 포즈를 깨
-        #   pour-point를 이탈시킴(검증됨). deep tilt는 β-setpoint가 회전으로 구동. legacy band 기본 off.
+        # [β 수정] post-IK j5 override 제거 — IK 후 단일관절(j5) 덮어쓰기가 end-effector 포즈를
+        #   깨 pour-point(주둥이)를 target서 이탈시킴(검증: v6 ready=0.89인데 깊은 tilt 시 corridor
+        #   0.55→0.146 붕괴, bead_in=0). deep tilt는 β-setpoint가 rim-pivot 회전으로 pour-point
+        #   보존하며 구동. j6 leak band는 선택적 legacy(기본 off).
         if self.cfg.pour_phase_clamp_enable:
             # [stage3 legacy] ready 시 arm joint를 band로 하드 클램프(j5/j6 band).
             _ready = self._pour_ready_latched.unsqueeze(-1)                         # (N,1) bool
@@ -1446,7 +1473,7 @@ class PourRightEnv(DirectRLEnv):
         self._mouth_z_clearance = self._source_pour_point_w[:, 2] - self._target_opening_w[:, 2]
         self._source_up_dot_world = self._source_up_axis_w[:, 2].clamp(-1.0, 1.0)
         # [재설계] pour 각도 = source_up · target_up (두 컵 +z 상대각, target 자세 무관). 1=평행0°, 0=90°, -1=180°.
-        #   tilt/frac 보상이 이걸 기준 → world z(target 직립 가정) 부정확 제거. pour 성공 = rim_antiparallel ≤ 0(90°+). v5와 동기화.
+        #   tilt/frac 보상이 이걸 기준 → world z(target 직립 가정) 부정확 제거. pour 성공 = rim_antiparallel ≤ 0(90°+).
         self._rim_antiparallel = (
             self._source_up_axis_w * self._target_up_axis_w
         ).sum(dim=-1).clamp(-1.0, 1.0)
@@ -1898,7 +1925,7 @@ class PourRightEnv(DirectRLEnv):
         )
 
         # tilt-phase aware: 직립(tilt=0)일수록 full grip 요구, 깊은 tilt에선 contact 완화
-        tilt_amount = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)  # [재설계] target 상대각 기준(rim_antiparallel). v5와 동기화.
+        tilt_amount = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)  # [재설계] target 상대각 기준(rim_antiparallel)
         contact_gate = (1.0 - 0.7 * tilt_amount)
         upright_gate = (1.0 - tilt_amount).clamp(0.0, 1.0)
         # 손은 freeze(grasp_hold) → finger_curl은 항상 닫힘(상수 weight 가산)
@@ -2003,12 +2030,13 @@ class PourRightEnv(DirectRLEnv):
             (self.cfg.tilt_prox_gate_far - self._approach_xy_dist) / _prox_den
         ).clamp(0.0, 1.0)
         tilt_ready_factor = self.cfg.tilt_aim_floor + (1.0 - self.cfg.tilt_aim_floor) * prox_gate
-        # [Phase1-simple] 연속 곱셈 게이트(rot_dir·tilt_ready_factor) → binary stage gate(latched_ready). v5와 동기화.
-        #   latched_ready는 corridor 1회 진입 후 episode 내내 1 → deep tilt 중 안 꺼지고 tilt_progress 0→135° 단일 ramp.
-        #   외회전 방지는 always-on 덧셈 r_introt가 담당. rot_dir/tilt_ready_factor는 로깅 위해 계산만 유지.
+        # [Phase1-simple] DexPour 정합: 연속 곱셈 게이트(rot_dir·tilt_ready_factor) → binary stage gate(latched_ready).
+        #   latched_ready는 corridor 1회 진입(corridor_score≥0.60) 후 episode 내내 1(_reset_idx서만 해제)
+        #   → deep tilt 중에도 안 꺼지고 tilt_progress가 0→135° 단일 ramp로 견인.
+        #   외회전 방지(rot_dir 목적)는 always-on 덧셈 r_introt가 담당. rot_dir/tilt_ready_factor는 로깅 위해 계산만 유지.
         # [deep_tilt_boot1] tilt를 latched_ready(pour_point corridor)에서 분리 → 정조준 무관 deep tilt.
-        #   진단: pour_point 도달불가로 corridor gate가 tilt 원천차단. 순수 자세(tilt_progress)만 보상.
-        #   v5와 동일 reward — v5/v6 차이는 틸팅 방식뿐(대조군), reward 변수 고정.
+        #   진단: pour_point 도달불가(rim±outer_radius 4.5cm vs 두 컵 19cm)로 corridor gate가 tilt 원천차단.
+        #   1차목표="못 넣어도 deep tilt 지속" → 순수 자세(tilt_progress)만으로 보상.
         r_tilt = self.cfg.weight_tilt * tilt_progress
         # [06.21 Phase3] r_pour = 정밀 조정텀(크게). tilt_progress·aim_score(관대 radius corridor).
         #   tilt_progress 스케일 → 회전 시작 흔들림 구간 기여 작음(자동 억제), 안정 구간만 본격.
@@ -2025,18 +2053,26 @@ class PourRightEnv(DirectRLEnv):
             self.cfg.pour_aim_z_max,
             self.cfg.pour_aim_scale,
         )
-        # [Phase1] 곱셈 r_pour(progress×aim, deep tilt saddle) → 덧셈 r_transport(w_transport·aim). w_transport=0이라 무력. v5와 동기화.
-        # [test3] outcome 도달성: deep tilt 시 주둥이 z-overshoot 보정 (z-only, deep tilt 억제 안함). v5와 동기화.
-        # [재설계 Phase3] r_pour = g_ready(corridor_score) · 실제 bead 통과. z-only 대리 폐기. v5와 동기화.
-        #   동적 pour_point(Phase2)로 corridor_score가 진짜 배출구 조준 반영. bead_cross=실제 붓기 결과 → deep tilt 간접 유도.
-        # [재설계 outcome ADR] weight = 0(1단계 자세만) → 자세 성공률 80%+ 후 50(2단계 bead 보상). v5와 동기화.
+        # [Phase1] 곱셈 r_pour(=w_pour·tilt_progress·aim_score) → 덧셈 분해.
+        #   r_transport = w_transport·aim_score (tilt 무관 위치/조준). progress 곱 제거로 saddle 해소.
+        #   진단: deep tilt 시 pour_point가 target 이탈(pp_z +14cm)해도, aim_score z corridor(z_max=0.05)가
+        #   tilt 무관하게 "주둥이를 입구 위에 유지"를 보상 → 위치 협응 유도(Phase2 내장).
+        # [test3] outcome 도달성: deep tilt 시 주둥이 z-overshoot(+10~17cm→bead 미진입) 보정.
+        #   z-only(xy aim 아님)라 deep tilt 억제 안함(test1↔test2 딜레마 우회). tilt_progress 곱=deep tilt일때만.
+        #   주둥이를 target 입구 위 pour_z_target으로 유도 → bead 입구 진입 → outcome(200) 발화 + bank 부트스트랩 연쇄.
+        # [재설계 Phase3] r_pour = g_ready(corridor_score) · 실제 bead 통과. z-only 대리(weight_transport·exp) 폐기.
+        #   동적 pour_point(Phase2)로 corridor_score가 진짜 배출구 조준 반영 → 거짓조준 해소.
+        #   bead_cross_fraction = source 주둥이 넘어 target으로 넘어간 bead 비율(실제 붓기). deep tilt해야 증가 → deep tilt 간접 유도.
+        #   (구 z-only는 76° z봉우리 farming 유발. bead outcome은 farming 불가 = 실제 진입만 보상.)
+        # [재설계 outcome ADR] weight = 0(1단계 자세만) → 자세 성공률 80%+ 후 50(2단계 bead 보상).
+        #   bead_in_target 상태기반(사용자): corridor 내에서 실제 target 진입 bead 비율 ↑ 유도 → 정밀 pour.
         pour_bead_w = (
             self.outcome_adr.get_param("outcome", "weight_pour_bead")
             if self.outcome_adr is not None
             else self.cfg.weight_pour_bead
         )
         r_pour = pour_bead_w * corridor_score * self._bead_in_target_fraction
-        # 자세 성공: corridor 위치 준비 + tilt 100°+ (outcome_adr trigger 지표).
+        # 자세 성공: corridor 위치 준비 + tilt 100°+ (outcome_adr trigger 지표). episode buf는 termination서 갱신.
         self._pose_success_now = (
             (corridor_score >= self.cfg.pose_ready_thresh)
             & (tilt_amount >= self.cfg.pose_tilt_thresh)
@@ -2051,7 +2087,9 @@ class PourRightEnv(DirectRLEnv):
         #   r_approach(5) → 회전만 park 아닌 회전+접근+tilt 단계 상승. total에 직접 가산(아래).
         r_introt = self.cfg.weight_introt * self._internal_rot_gate
 
-        # [Phase1] DexPour r_align=(1+cosθ)/2 활성화 (방향 정렬, deep tilt서 안정, 덧셈). v5와 동기화.
+        # [Phase1] DexPour r_align=(1+cosθ)/2 활성화 (구: disabled=0).
+        #   cosθ = directional_tilt_cos_c (cup-center→target XY 방향과 기울임 방향 XY cos, [-1,1]).
+        #   deep tilt(깊은 전달 자세)서도 안정(+) → tilt 무관 덧셈으로 방향 정렬 직접 보상.
         r_align = self.cfg.weight_align * (1.0 + self._directional_tilt_cos_c) / 2.0
 
         # [r_pour_z 제거] z barrier가 hinge pour와 상충(기울이면 pour_point 자연 하강→페널티→주기적 붕괴).
@@ -2094,14 +2132,14 @@ class PourRightEnv(DirectRLEnv):
             else self.cfg.weight_spill
         )
 
-        # [재설계] demo pose reward(pour_v4) 제거 — 순수 DRL. v5와 동기화.
+        # [재설계] demo pose reward(pour_v4) 제거 — 순수 DRL.
 
         total = (
             r_hold
             + r_approach
             + r_introt
             + r_tilt            # [재설계] rim_antiparallel 기준 deep tilt (target 상대, 135°)
-            + r_pour            # [재설계] outcome ADR: weight·corridor·bead_in_target (자세성공 80%+ 후 활성). bead 보상 단일화. v5와 동기화.
+            + r_pour            # [재설계] outcome ADR: weight·corridor·bead_in_target (자세성공 80%+ 후 활성). bead 보상 단일화.
             + r_stageB
             + self.cfg.weight_success * r_success
             - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
@@ -2115,8 +2153,8 @@ class PourRightEnv(DirectRLEnv):
             self.noise_adr.maybe_increment(_ep_success_rate)
         if self.success_adr is not None:
             self.success_adr.maybe_increment(_ep_success_rate)
-        # [outcome ADR] 자세 성공률 80%+ 시 bead 보상(weight_pour_bead) 램프. v5와 동기화.
-        self.extras["log/pose_success"] = self._pose_success_now.float().mean()
+        # [outcome ADR] 자세 성공률 80%+ 시 bead 보상(weight_pour_bead) 램프.
+        self.extras["log/pose_success"] = self._pose_success_now.float().mean()  # step 자세성공 비율
         _pose_success_rate = self._pose_successful_episodes / max(self._total_episodes, 1)
         if self.outcome_adr is not None:
             self.outcome_adr.maybe_increment(_pose_success_rate)
@@ -2791,7 +2829,7 @@ class PourRightEnv(DirectRLEnv):
         bank = self._deep_tilt_bank
         if bank is None or self._warmstart_collect_mode:
             return
-        tilt_amount = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)  # [재설계] target 상대각 기준(rim_antiparallel). v5와 동기화.
+        tilt_amount = ((1.0 - self._rim_antiparallel) / 2.0).clamp(0.0, 1.0)  # [재설계] target 상대각 기준(rim_antiparallel)
         qual = capture_mask(
             tilt_amount,
             self._bead_in_source_fraction,

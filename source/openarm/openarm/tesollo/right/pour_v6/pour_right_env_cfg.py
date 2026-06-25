@@ -135,7 +135,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [lstm_test5] cspace_attractor mass(nullspace 어트랙터 무게). YAML 기본 1.0은 약해서 정책 pour
     #   pose가 elbow를 demo(j4=1.87)에서 0.70으로 무너뜨림. ↑ 하면 demo j1-4 nullspace를 강하게 유지.
     #   주의: 너무 크면 palm-pose 추종(corridor) 침범 → Stage-A 저하. 3부터 시작, 결과 보고 조정.
-    cspace_attractor_mass:      float = 3.0  # [stage2] 2→3: Stage1서 mass2는 full demo(111°) 미도달→90° cap(cmd-actual -50°). mass3=test5 deep tilt 입증값으로 demo 당김 강화. corridor 저하는 bead off(pose 단계)라 무관.
+    cspace_attractor_mass:      float = 6.0  # [B-full] 3→6: j5를 full demo(-1.2)까지 끌도록 cspace 강화. orientation 풀려(B-light) 손목과 경쟁 안 함→position-nullspace서 j5 deep 도달. (구 mass3은 orientation task와 경쟁해 -0.5 cap.)
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
@@ -286,35 +286,44 @@ class PourRightEnvCfg(DirectRLEnvCfg):
 
     # [2b] nullspace 잉여 1-DOF action(α) 스케일: null_ref = baseline + scale·α·(demo−start).
     #   1.0 → α=±1이 ±full demo변위. v4 baseline=demo, v5 baseline=robot_start (offset·scale 공통).
-    nullspace_action_scale: float = 1.0   # [stage2] 0.0→1.0 복원: n_demo nullspace(palm 보존)로 α가 잉여 1-DOF(elbow-swivel) 조절. tilt 안 망침(Stage1: 기존 offset은 tilt 슬라이더라 α 미사용). v5 동기화.
+    nullspace_action_scale: float = 1.0   # [stage2] 0.0→1.0 복원: n_demo nullspace(palm 보존)로 α가 잉여 1-DOF(elbow-swivel) 조절. tilt 안 망침(Stage1: 기존 offset은 tilt 슬라이더라 α 미사용).
     # [stage2] α offset 축 모드: "true_nullspace"=palm 보존 elbow-swivel(n_demo, J@n≈0),
-    #   "demo_minus_start"=기존 tilt 슬라이더. true_nullspace면 α가 tilt 안 망치고 잉여 1-DOF만 조절. v5 동기화.
+    #   "demo_minus_start"=기존 tilt 슬라이더. true_nullspace면 α가 tilt 안 망치고 잉여 1-DOF만 조절.
     nullspace_offset_mode: str = "true_nullspace"
 
     # [B-trajectory] 액션 모드. "b_trajectory": action[4]=β(pour progress)→R(β) 전신협응 구동
-    #   (cspace baseline=R(β) + ready 시 j5 하드구동). "legacy": 기존 3D tilt 액션. v5 동기화.
+    #   (cspace baseline=R(β) + ready 시 j5 하드구동). "legacy": 기존 3D tilt 액션.
+    #   설계: 보상은 협응 분포를 못 가르침 → R(β)로 직접 부과(7D탐색→1D β). j5만 하드(위치-safe),
+    #   j4·어깨는 R(β) soft bias+위치task, j6 작은밴드. introt(spin=action[3])는 유지.
     pour_action_mode: str = "b_trajectory"
     beta_action_index: int = 4   # action[4](구 tilt-toward) = β 채널
 
-    # [β tilt setpoint] β=action[idx]→[0,1]를 목표 tilt_amount로 해석, 회전이 그 목표까지 tilt_toward를
-    #   피드백 구동. (구 R(β) cspace 절대바이어스 + j5 override는 IK 후 단일관절 덮어써 pour-point를
-    #   깸 — 폐기.) 주의: v6=palm-pivot이라 v5(rim)와 달리 pour-point를 구조적으로 보존하진 않음(대조군).
+    # [β tilt setpoint] β=action[idx]→[0,1]를 목표 tilt_amount로 해석, rim-pivot이 pour-point를
+    #   보존하며 그 목표까지 tilt_toward를 피드백 구동. (구 R(β) cspace 절대바이어스 + j5 override는
+    #   IK 후 단일관절 덮어써 pour-point를 깨뜨려 폐기 — 검증: v6 ready=0.89인데 β억제로 frac_110=0.)
     beta_target_tilt_amount: float = 0.854  # β=1 목표. (1-cos135°)/2 = 0.854 (135° dump)
     beta_tilt_kp:           float = 3.0     # 목표-현재 tilt_amount 오차 비례게인
-    beta_tilt_max_step:     float = 0.06    # tilt_toward 회전 증분 상한 [rad/step]
+    beta_tilt_max_step:     float = 0.06    # tilt_toward 회전 증분 상한 [rad/step] (급격 회전 방지)
 
     # [B-light] orientation 풀기: palm 방향 명령 제거(=현재 추종) → orientation task가 cspace j5와
     #   경쟁 안 함 → cspace가 j5를 deep까지 끌어 tilt. β는 cspace j5 타겟을 0→demo로 graded 구동.
-    #   위치는 주둥이(pour-point) 고정(approach 중 body offset 동결→예측 hold). v5와 동기화.
+    #   위치는 주둥이(pour-point) 고정(approach 중 body offset 동결→예측 hold). v5 deep tilt 천장
+    #   원인(IK가 j5 대신 손목 포화)을 "orientation task 제거+cspace j5 직접구동"으로 우회.
     pour_orient_release: bool = True
+
+    # [robust] B-light pour 단계에서 주둥이 z를 정책 학습에 맡기지 않고 target 입구 위 margin으로
+    #   구조적 강제. v5 실패모드("주둥이가 target 11cm 아래 → 붓기 기하 불가") 원천 차단.
+    #   xy 조준은 정책이 유지. (z-barrier 보상은 hinge pour 충돌로 폐기됐으므로 제어로 강제.)
+    pour_spout_z_lock: bool = True
+    pour_z_margin:     float = 0.03   # 주둥이를 target 입구 위 3cm로 (bead 진입 높이)
 
     # [stage3] phase별 차등 관절 범위(하드 클램프). ready-latch(pour 단계)일 때만 fabric_q를 band로 클램프.
     #   approach(미ready)=full range(접근/grasp 자유). pour(ready)=아래 lo/hi band(deep tilt 강제).
     #   FK 검증: j6 클램프(leak 차단)+j5 음수 강제(roll 엔진) 동시필요. j6 단독은 80°뿐, 둘이면 113°.
-    #   None 성분(±9.9)=해당 단계서 사실상 무제한. 점진 적용 위해 j5/j6만 우선 band. v5 동기화.
+    #   None 성분(±9.9)=해당 단계서 사실상 무제한. 점진 적용 위해 j5/j6만 우선 band.
     pour_phase_clamp_enable: bool = False  # [β 수정] post-IK 관절 클램프/override 전면 비활성화.
-    #   deep tilt를 단일관절 강제가 아니라 β-setpoint→회전으로 구동.
-    pour_phase_arm_lo: tuple = (-9.9, -9.9, -9.9, -9.9, -1.571, -0.30, -9.9)  # j6 [-0.30,0.35] (demo 자연범위)
+    #   deep tilt를 단일관절 강제가 아니라 β-setpoint→rim-pivot(pour-point 보존)으로 구동.
+    pour_phase_arm_lo: tuple = (-9.9, -9.9, -9.9, -9.9, -1.571, -0.30, -9.9)  # j6 [-0.30,0.35] (demo 자연범위, 문서검증)
     pour_phase_arm_hi: tuple = ( 9.9,  9.9,  9.9,  9.9,  0.0,    0.35,  9.9)  # j5 상한 0(b_traj는 하드구동이라 무관)
 
     # [v6 ablation] nullspace baseline(α=0 지점) 선택 — demo prior 주입의 hard 경로.
@@ -340,8 +349,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_tilt_pre: float = 8.0     # [test8] 미사용(r_tilt_A 폐기). 구 기록 참조용 유지
 
     # tilt 직접 유도 (v6 ALIGN 실패 교훈: tilt를 직접 보상해 직립 회피해 차단)
-    weight_tilt: float = 20.0      # [deep_tilt_boot1] tilt 독립(latched_ready 제거) 시 유지보상 축소(35→20). v5와 동일.
-    weight_tilt_delta: float = 100.0   # [test4] tilt 증분(delta) 보상 가중. 75° 너머 deep tilt 유도. v5와 동기화.
+    weight_tilt: float = 20.0      # [deep_tilt_boot1] tilt 독립(latched_ready 제거) 시 유지보상 축소(35→20): 유지 farming 완화, 증분(delta) 위주.
+    weight_tilt_delta: float = 100.0   # [test4] tilt 증분(delta) 보상 가중. 더 기울이는 순간만(relu)→75° 너머 deep tilt 유도. 위치(z/xy) 맞춰진 test3 위에서 deep tilt 점프 유발.
     tilt_aim_floor: float = 0.35   # r_tilt pre-ready bootstrap floor: w·progress·rot_dir·(floor+(1-floor)·prox_gate)
     # [06.21 Phase2] tilt 게이트를 latch(binary)→연속 근접 게이트로 교체(순환 게이트 절단).
     #   prox_gate = clamp((far - approach_xy_dist)/(far-near), 0, 1). approach_xy_dist=rim_center 기준.
@@ -349,11 +358,15 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     tilt_prox_gate_near: float = 0.06  # 이 거리 안: prox_gate=1 (full tilt)
     # [06.21 Phase3] pour 정밀 조정텀 r_pour = w_pour·tilt_progress·aim_score. aim_score=관대 radius corridor.
     #   tilt_progress 스케일 → 회전 시작(흔들림) 구간 자동 억제, 70°+ 안정 구간만 본격 작동.
-    weight_pour:        float = 50.0   # [Phase1 미사용] 구 r_pour 곱셈 → 덧셈 분해. 참조용 유지. v5와 동기화.
-    weight_transport:   float = 30.0   # [구 r_pour z-only, 재설계 Phase3서 미사용] 보존(롤백 참조). v5와 동기화.
-    weight_pour_bead:   float = 50.0   # [재설계 Phase3] r_pour = w·corridor_score·bead_cross_fraction. 실제 붓기 outcome. v5와 동기화.
-    pour_z_target:      float = 0.03   # [test3] 주둥이를 target 입구 위 3cm로 유도 (충돌회피 + bead 진입 높이)
-    pour_z_scale:       float = 20.0   # [test3] z-clearance 오차 exp 민감도
+    weight_pour:        float = 50.0   # [Phase1 미사용] 구 r_pour=w_pour·progress·aim 곱셈 → 덧셈(transport+align)로 분해. 참조용 유지.
+    # [Phase1] DexPour additive 분해: 곱셈 r_pour(progress×aim saddle) → r_transport(aim, tilt무관) + r_align(dir_cos, tilt무관).
+    #   진단: deep tilt 시 pour_point가 target에서 이탈(pp_z +14cm)해도 곱셈이 둘 다 높을 때만 보상→saddle.
+    #   덧셈이면 위치(transport)와 기울임(tilt)을 독립 보상 → "위치 유지하며 deep tilt"가 합 최대.
+    #   aim_score는 z corridor(z_max=0.05) 내장 → r_transport가 pp_z 솟음을 자동 페널티(Phase2 포함).
+    weight_transport:   float = 30.0   # [구 r_pour z-only, 재설계 Phase3서 미사용] 보존(롤백 참조).
+    weight_pour_bead:   float = 50.0   # [재설계 Phase3] r_pour = w·corridor_score·bead_cross_fraction. 실제 붓기 outcome 보상(z-only 대리 폐기).
+    pour_z_target:      float = 0.03   # [test3] 주둥이를 target 입구 위 3cm로 유도 (충돌회피 마진 + bead 진입 높이)
+    pour_z_scale:       float = 20.0   # [test3] z-clearance 오차 exp 민감도 (3.5cm서 반감)
     pour_aim_scale:     float = 10.0   # [test_aim2] aim corridor 완만화(공유 pour_corridor_scale=20 절벽 → 10). env서 radius=0(flat-top 제거)와 함께 → target서 부드러운 봉우리(gradient 어디서나) → miss 교정 + 학습 stiffness↓. 부드러운 동작인데 reward 출렁이던 ② 원인 제거.
     pour_aim_z_max:     float = 0.05   # [test_aim] aim 전용 z 상한(공유 pour_corridor_z_max=0.12와 분리). spout이 입구 위 5cm 넘으면 감점 → release 높이발 산란 차단. z_min은 pour_corridor_z_min(-0.02) 공유(soft band, tilt 자연 하강 허용).
     #   ready_latched 이후에는 live corridor wobble이 tilt reward를 끄지 않음. 미정조준 ceiling=35×0.35=12.25.
@@ -364,7 +377,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_tilt_target_deg: float = 135.0   # 수평(90°) 너머 dump까지 tilt_progress gradient 유지
 
     # Stage B — direct pour-point 정렬 reward 제거. Corridor는 phase/release/logging context로만 사용.
-    weight_align: float = 5.0   # [재설계 Phase3] 20→5 하향: 방향-only farming 차단(방향항이 최대보상이던 문제). v5와 동기화.
+    weight_align: float = 5.0   # [재설계 Phase3] 20→5 하향: 방향항이 최대 보상(16.8)으로 방향-only farming 유발 → 보조로 축소. cosθ=directional_tilt_cos_c.
     pour_align_scale: float = 15.0  # 레거시 pour_alignment_score config. 현재 reward path 미사용.
                                     #   (6.8 vs 4cm가 score .58 vs .73) mouth_xy가 입구반경(4.1cm) 밖에서 천장 → bead_in=0.
                                     #   sharp화로 마지막 4cm 파고들어 bead_in 개통 유도.
@@ -464,9 +477,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     }
     success_adr_num_increments: int = 8
     success_adr_increment_interval: int = 20000
-    success_adr_trigger_threshold: float = 0.15
+    success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
 
-    # [재설계 outcome ADR] DexPour 커리큘럼: 자세 성공률 80%+ 시 bead 보상(r_pour) weight 0→50 램프. v5와 동기화.
+    # [재설계 outcome ADR] DexPour 커리큘럼: 자세 성공률 80%+ 시 bead 보상(r_pour) weight 0→50 램프.
+    #   1단계=자세만(approach/tilt/align), bead 로깅만. 2단계=자세 완성 후 bead_in_target 상태보상 활성 → 정밀 pour.
     enable_outcome_adr: bool = True
     outcome_adr_custom_cfg: dict = {
         "outcome": {
@@ -477,7 +491,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     outcome_adr_increment_interval: int = 20000
     outcome_adr_trigger_threshold: float = 0.80  # 자세 성공률 80%+ 시 outcome 활성
     pose_ready_thresh: float = 0.60   # 자세 성공 게이트: corridor_score ≥ (위치 준비)
-    pose_tilt_thresh: float = 0.587   # 자세 성공 게이트: tilt_amount ≥ (1-cos100°)/2 → 100°+  # 현재 기준에서 15% 성공률 달성 시 상향
+    pose_tilt_thresh: float = 0.587   # 자세 성공 게이트: tilt_amount ≥ (1-cos100°)/2 → rim_antiparallel ≤ -0.174 (100°+)
 
     reward_grasp_slip_sharpness: float = 3.0
     contact_maintain_min_others: int = 2
