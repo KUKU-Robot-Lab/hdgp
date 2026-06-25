@@ -1200,7 +1200,16 @@ class PourRightEnv(DirectRLEnv):
                 #    corridor↑→ready latch 순환 차단.) xy는 정책 유지.
                 _tgt_z_env_a = self._target_opening_w[:, 2] - self.scene.env_origins[:, 2]
                 pour_point_target[:, 2] = _tgt_z_env_a + self.cfg.pour_z_margin
-            _palm_ee_target = pour_point_target - quat_apply(_delta_quat_wxyz, rim_rel)
+            if self.cfg.pour_approach_pivot == "palm":
+                # [palm 제어] action xy가 palm을 직접 이동(rim 역산 없음). 주둥이 z-lock은 공통 유지
+                #   (spout=palm+R·rim_rel → palm_z = spout_z−(R·rim_rel)_z로 환산해 주둥이 높이 동일).
+                _palm_ee_target = self.palm_center_pos + delta[:, :3]
+                _palm_ee_target[:, 2] = (
+                    pour_point_target[:, 2] - quat_apply(_delta_quat_wxyz, rim_rel)[:, 2]
+                )
+            else:
+                # [rim-pivot 제어] action xy가 주둥이(pour_point)를 이동, palm을 레버로 역산.
+                _palm_ee_target = pour_point_target - quat_apply(_delta_quat_wxyz, rim_rel)
             # 진단: 박스(palm_ee 기준)가 rim-pivot 해를 자르는 양 (클램프 전 palm_ee 보존)
             _palm_xyz_preclamp = _palm_ee_target.clone()
             _palm_ee_target = torch.max(

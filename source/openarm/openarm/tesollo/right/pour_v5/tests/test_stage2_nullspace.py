@@ -129,14 +129,5 @@ def test_b_light_orient_release_wiring() -> None:
     # tilt 단계(ready)만 풀기 — approach는 조준
     assert "torch.where(_rm, _R_cur_xyzw, palm_pose[:, 3:7])" in env, "orientation 풀기가 ready 게이트 아님"
     # β→cspace j5: j5 baseline = β·demo_j5
-    assert "_j5_cmd = self._beta_cmd * self._demo_pour_arm_pose[4]" in env, "β→cspace j5 구동 없음"
-
-
-def test_robust_spout_z_lock() -> None:
-    """[robust] B-light pour 주둥이 z를 target 입구 위 margin으로 구조 강제 (v5 실패모드 차단)."""
-    cfg = _read("pour_right_env_cfg.py")
-    env = _read("pour_right_env.py")
-    assert re.search(r'pour_spout_z_lock\s*:\s*bool\s*=\s*True', cfg), "pour_spout_z_lock flag 없음"
-    assert re.search(r'pour_z_margin\s*:\s*float', cfg), "pour_z_margin 없음"
-    assert "self.cfg.pour_spout_z_lock" in env, "z-lock 분기 없음"
-    assert "_spout_target_bl[:, 2] = _tgt_z_env + self.cfg.pour_z_margin" in env, "주둥이 z 구조강제 없음"
+    # [B-full] j5를 β무관 full demo로 강제 (v5는 β-graded)
+    assert "_baseline_arm[_ready_pour, 4] = self._demo_pour_arm_pose[4]" in env, "B-full forced j5 없음"

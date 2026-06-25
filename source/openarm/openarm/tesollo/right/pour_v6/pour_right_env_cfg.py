@@ -144,6 +144,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     bfull_step:   float = 0.04   # arm→demo 향한 per-step 관절증분 상한 [rad]
     bfull_lambda: float = 0.05   # DLS pseudo-inverse 댐핑(특이점 방지)
 
+    # [대조군] approach 제어 방식: "rim"(action xy=주둥이 직접) | "palm"(action xy=palm 직접).
+    #   나머지(B-full nullspace·z-lock·orientation release·reward) 전부 공통 → 제어방식만 비교.
+    #   v5="rim", v6="palm".
+    pour_approach_pivot: str = "palm"
+
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
