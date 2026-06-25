@@ -1315,6 +1315,38 @@ class PourRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
+        if self.cfg.pour_bfull_nullspace and self._pour_ready_latched.any():
+            # [B-full] 주둥이 위치를 정확히 고정(J_spout·Δq=0)하며 arm을 demo deep-tilt 자세로 구동.
+            #   cspace(soft)가 못 끈 j5 깊이를 nullspace 투영으로 강제(주둥이 task와 orthogonal).
+            #   J_spout = palm 7점 위치 Jacobian의 선형결합: spout=palm_link+R·off, off=spout_offset_body.
+            #   palm 가상프레임 offset=0.25(URDF) → 단위축 Jacobian=(J_axis−J_palm_link)/0.25.
+            _ready_bf = self._pour_ready_latched
+            _J = self.open_tesollo_fabric.get_taskmap_jacobian("palm").detach()    # (N,21,27)
+            _Jpl = _J[:, 0:3, :NUM_ARM_DOF]                                          # palm_link
+            _Jpx = _J[:, 3:6, :NUM_ARM_DOF]                                          # palm_x (+0.25 X)
+            _Jpy = _J[:, 9:12, :NUM_ARM_DOF]                                         # palm_y (+0.25 Y)
+            _Jpz = _J[:, 15:18, :NUM_ARM_DOF]                                        # palm_z (+0.25 Z)
+            _off = self._spout_offset_body                                           # (N,3) body frame
+            _Jspout = (
+                _Jpl
+                + (_Jpx - _Jpl) * (_off[:, 0:1] * 4.0).unsqueeze(1)
+                + (_Jpy - _Jpl) * (_off[:, 1:2] * 4.0).unsqueeze(1)
+                + (_Jpz - _Jpl) * (_off[:, 2:3] * 4.0).unsqueeze(1)
+            )                                                                        # (N,3,7), 4.0=1/0.25
+            _dq_des = (
+                self._demo_pour_arm_pose.unsqueeze(0) - self.fabric_q[:, :NUM_ARM_DOF]
+            ).clamp(-self.cfg.bfull_step, self.cfg.bfull_step)                       # (N,7) demo 향함
+            _eye3 = torch.eye(3, device=self.device).unsqueeze(0)
+            _JJt = _Jspout @ _Jspout.transpose(1, 2) + (self.cfg.bfull_lambda ** 2) * _eye3
+            _Jpinv = _Jspout.transpose(1, 2) @ torch.linalg.inv(_JJt)                # (N,7,3) DLS
+            _v = (_Jspout @ _dq_des.unsqueeze(-1)).squeeze(-1)                       # (N,3) 주둥이 속도
+            _dq = _dq_des - (_Jpinv @ _v.unsqueeze(-1)).squeeze(-1)                  # (N,7) nullspace 투영
+            _arm_new = self.fabric_q[:, :NUM_ARM_DOF].clone()
+            _arm_new[_ready_bf] = _arm_new[_ready_bf] + _dq[_ready_bf]
+            _arm_new = torch.max(torch.min(_arm_new, self._arm_joint_max), self._arm_joint_min)
+            self.fabric_q[:, :NUM_ARM_DOF] = _arm_new
+            self.fabric_qd[_ready_bf, :NUM_ARM_DOF] = 0.0                            # windup 방지
+
         # [β 수정] post-IK j5 override 제거 — IK 후 단일관절(j5) 덮어쓰기가 end-effector 포즈를
         #   깨 pour-point(주둥이)를 target서 이탈시킴(검증: v6 ready=0.89인데 깊은 tilt 시 corridor
         #   0.55→0.146 붕괴, bead_in=0). deep tilt는 β-setpoint가 rim-pivot 회전으로 pour-point

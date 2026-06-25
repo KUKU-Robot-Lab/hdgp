@@ -135,7 +135,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [lstm_test5] cspace_attractor mass(nullspace 어트랙터 무게). YAML 기본 1.0은 약해서 정책 pour
     #   pose가 elbow를 demo(j4=1.87)에서 0.70으로 무너뜨림. ↑ 하면 demo j1-4 nullspace를 강하게 유지.
     #   주의: 너무 크면 palm-pose 추종(corridor) 침범 → Stage-A 저하. 3부터 시작, 결과 보고 조정.
-    cspace_attractor_mass:      float = 6.0  # [B-full] 3→6: j5를 full demo(-1.2)까지 끌도록 cspace 강화. orientation 풀려(B-light) 손목과 경쟁 안 함→position-nullspace서 j5 deep 도달. (구 mass3은 orientation task와 경쟁해 -0.5 cap.)
+    cspace_attractor_mass:      float = 3.0  # [B-full] 6→3 복원: cspace(soft)는 j5를 못 끔(검증). j5 깊이는 아래 explicit nullspace가 담당.
+
+    # [B-full explicit nullspace] 주둥이 위치를 정확히 고정(J_spout·Δq=0)하며 arm을 demo deep-tilt로 구동.
+    #   J_spout = Fabrics palm 7점 위치 Jacobian의 선형결합(spout=palm_link+R·off). cspace(soft)가 못 한
+    #   j5 깊이를 nullspace 투영으로 강제 — 주둥이 task와 경쟁 안 함(orthogonal). ready 단계만.
+    pour_bfull_nullspace: bool = True
+    bfull_step:   float = 0.04   # arm→demo 향한 per-step 관절증분 상한 [rad]
+    bfull_lambda: float = 0.05   # DLS pseudo-inverse 댐핑(특이점 방지)
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
