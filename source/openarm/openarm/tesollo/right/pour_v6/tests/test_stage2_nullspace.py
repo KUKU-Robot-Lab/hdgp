@@ -114,3 +114,17 @@ def test_beta_setpoint_wiring() -> None:
     assert "self.cfg.beta_tilt_kp" in env and "delta[:, 4] = _tilt_step" in env, "tilt setpoint 구동 없음"
     # 구 j5 post-IK override는 제거되어야 (pour-point 보존)
     assert "_arm_q[_ready, 4] = _rbeta" not in env, "j5 post-IK override가 남아있음(pour-point 깸)"
+
+
+def test_b_light_orient_release_wiring() -> None:
+    """[B-light] orientation 풀기 + 주둥이 hold + β→cspace j5 구동."""
+    cfg = _read("pour_right_env_cfg.py")
+    env = _read("pour_right_env.py")
+    assert re.search(r'pour_orient_release\s*:\s*bool\s*=\s*True', cfg), "pour_orient_release flag 없음"
+    # orientation 풀기: palm 방향 target=현재
+    assert "self.cfg.pour_orient_release" in env, "B-light 분기 없음"
+    assert "_spout_offset_body" in env, "주둥이 body offset 동결 버퍼 없음"
+    assert "quat_apply_inverse" in env, "body frame offset 계산 없음"
+    assert "palm_pose[:, 3:7] = _R_cur_xyzw" in env, "orientation=현재(released) 미설정"
+    # β→cspace j5: j5 baseline = β·demo_j5
+    assert "_j5_cmd = self._beta_cmd * self._demo_pour_arm_pose[4]" in env, "β→cspace j5 구동 없음"

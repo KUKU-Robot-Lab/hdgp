@@ -426,6 +426,9 @@ class PourRightEnv(DirectRLEnv):
         self._rbeta_knots = torch.tensor(RBETA_BETA, device=self.device)            # (K,)
         self._rbeta_arm = torch.tensor(RBETA_ARM, device=self.device)               # (K,7)
         self._beta_cmd = torch.zeros(self.num_envs, device=self.device)             # 현 β (로깅·obs)
+        # [B-light] 주둥이의 palm-body-frame offset. approach(미ready) 중 갱신, tilt(ready) 중 동결
+        #   → orientation 풀린 채로도 주둥이 위치를 예측적으로 고정(pour-point 보존). v5와 동기화.
+        self._spout_offset_body = torch.zeros(self.num_envs, 3, device=self.device)
         self._cmd_delta_pre_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_post_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_rotvec_world = torch.zeros(self.num_envs, 3, device=self.device)
@@ -1212,6 +1215,29 @@ class PourRightEnv(DirectRLEnv):
             palm_pose[:, :3] = palm_pose[:, :3] - quat_apply(
                 _tgt_quat_wxyz, self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1)
             )
+            if self.cfg.pour_orient_release:
+                # [B-light] orientation 풀기: palm 방향 target=현재 → cspace가 j5 끌게.
+                #   위치는 주둥이(pour-point) 고정: approach 중 body offset 동결→tilt 중 예측 hold. v5 동기화.
+                _R_cur = self.robot.data.body_quat_w[:, self.palm_body_index]          # wxyz
+                _ready = self._pour_ready_latched
+                _rim_env_bl = self._source_pour_point_w - self.scene.env_origins      # (N,3)
+                _rim_rel_bl = _rim_env_bl - self.palm_center_pos
+                _off_now = quat_apply_inverse(_R_cur, _rim_rel_bl)                    # body frame offset
+                self._spout_offset_body = torch.where(
+                    _ready.unsqueeze(-1), self._spout_offset_body, _off_now           # ready=동결, 아니면 갱신
+                )
+                _spout_target_bl = _rim_env_bl + delta[:, :3]                         # action xyz로 주둥이 조준
+                _palm_ee_bl = _spout_target_bl - quat_apply(_R_cur, self._spout_offset_body)
+                _palm_ee_bl = torch.max(
+                    torch.min(_palm_ee_bl, self.palm_maxs[:3].unsqueeze(0)),
+                    self.palm_mins[:3].unsqueeze(0),
+                )
+                _R_cur_xyzw = _R_cur[:, [1, 2, 3, 0]]
+                palm_pose[:, 3:7] = _R_cur_xyzw                                       # orientation=현재(released)
+                palm_pose[:, :3] = _palm_ee_bl - quat_apply(
+                    _R_cur, self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1)
+                )
+                self._cmd_palm_target_delta.copy_(_palm_ee_bl - self.palm_center_pos)
             self.palm_pose_targets.copy_(palm_pose)
             self.hand_pca_targets.zero_()
             # [v6 ablation] nullspace baseline(α=0 지점)을 cfg flag로 선택 (demo prior hard 경로).
@@ -1222,7 +1248,14 @@ class PourRightEnv(DirectRLEnv):
             _baseline_arm = self.robot_start_joint_pos[:, :NUM_ARM_DOF].clone()
             # [β 수정] R(β) 절대 cspace bias 제거 — IK palm task와 경쟁해 pour-point를 끌어내림.
             #   deep tilt는 β-setpoint가 회전으로 구동. cspace는 demo elbow-up 자세 soft prior만.
-            if self.cfg.nullspace_baseline == "demo":
+            if self.cfg.pour_orient_release:
+                # [B-light] orientation 풀렸으니 cspace가 j5를 deep까지 끌 수 있음.
+                #   j1-4=demo, j5=β-graded demo 롤(0=직립→demo=-1.22)=tilt 구동. v5 동기화.
+                _baseline_arm[:, :4] = self._demo_pour_arm_pose[:4].unsqueeze(0)
+                _ready_pour = self._pour_ready_latched
+                _j5_cmd = self._beta_cmd * self._demo_pour_arm_pose[4]
+                _baseline_arm[_ready_pour, 4] = _j5_cmd[_ready_pour]
+            elif self.cfg.nullspace_baseline == "demo":
                 _baseline_arm[:, :4] = self._demo_pour_arm_pose[:4].unsqueeze(0)  # j1-4: approach 위치 (항상)
                 _ready_pour = self._pour_ready_latched                          # (N,) bool, 직전 step latch
                 _baseline_arm[_ready_pour, 4] = self._demo_pour_arm_pose[4]      # j5: ready 후 demo 롤(soft)

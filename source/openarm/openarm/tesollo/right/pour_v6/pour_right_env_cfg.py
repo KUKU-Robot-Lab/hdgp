@@ -303,6 +303,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     beta_tilt_kp:           float = 3.0     # 목표-현재 tilt_amount 오차 비례게인
     beta_tilt_max_step:     float = 0.06    # tilt_toward 회전 증분 상한 [rad/step]
 
+    # [B-light] orientation 풀기: palm 방향 명령 제거(=현재 추종) → orientation task가 cspace j5와
+    #   경쟁 안 함 → cspace가 j5를 deep까지 끌어 tilt. β는 cspace j5 타겟을 0→demo로 graded 구동.
+    #   위치는 주둥이(pour-point) 고정(approach 중 body offset 동결→예측 hold). v5와 동기화.
+    pour_orient_release: bool = True
+
     # [stage3] phase별 차등 관절 범위(하드 클램프). ready-latch(pour 단계)일 때만 fabric_q를 band로 클램프.
     #   approach(미ready)=full range(접근/grasp 자유). pour(ready)=아래 lo/hi band(deep tilt 강제).
     #   FK 검증: j6 클램프(leak 차단)+j5 음수 강제(roll 엔진) 동시필요. j6 단독은 80°뿐, 둘이면 113°.
