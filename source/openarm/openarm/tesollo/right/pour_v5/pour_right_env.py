@@ -1238,6 +1238,11 @@ class PourRightEnv(DirectRLEnv):
                     _ready.unsqueeze(-1), self._spout_offset_body, _off_now           # ready=동결, 아니면 갱신
                 )
                 _spout_target_bl = _rim_env_bl + delta[:, :3]                         # action xyz로 주둥이 조준
+                if self.cfg.pour_spout_z_lock:
+                    # [robust] 주둥이 z를 정책에서 분리해 target 입구 위 margin으로 구조 강제(env-local).
+                    #   v5 실패모드("주둥이 target 아래→붓기 불가") 원천 차단. xy는 정책 유지.
+                    _tgt_z_env = self._target_opening_w[:, 2] - self.scene.env_origins[:, 2]
+                    _spout_target_bl[:, 2] = _tgt_z_env + self.cfg.pour_z_margin
                 _palm_ee_bl = _spout_target_bl - quat_apply(_R_cur, self._spout_offset_body)
                 _palm_ee_bl = torch.max(
                     torch.min(_palm_ee_bl, self.palm_maxs[:3].unsqueeze(0)),
