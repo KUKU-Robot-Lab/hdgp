@@ -125,6 +125,8 @@ def test_b_light_orient_release_wiring() -> None:
     assert "self.cfg.pour_orient_release" in env, "B-light 분기 없음"
     assert "_spout_offset_body" in env, "주둥이 body offset 동결 버퍼 없음"
     assert "quat_apply_inverse" in env, "body frame offset 계산 없음"
-    assert "palm_pose[:, 3:7] = _R_cur_xyzw" in env, "orientation=현재(released) 미설정"
+    assert "_R_cur_xyzw" in env, "orientation=현재(released) 계산 없음"
+    # tilt 단계(ready)만 풀기 — approach는 조준
+    assert "torch.where(_rm, _R_cur_xyzw, palm_pose[:, 3:7])" in env, "orientation 풀기가 ready 게이트 아님"
     # β→cspace j5: j5 baseline = β·demo_j5
     assert "_j5_cmd = self._beta_cmd * self._demo_pour_arm_pose[4]" in env, "β→cspace j5 구동 없음"

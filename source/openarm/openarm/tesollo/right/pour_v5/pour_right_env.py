@@ -1244,11 +1244,18 @@ class PourRightEnv(DirectRLEnv):
                     self.palm_mins[:3].unsqueeze(0),
                 )
                 _R_cur_xyzw = _R_cur[:, [1, 2, 3, 0]]
-                palm_pose[:, 3:7] = _R_cur_xyzw                                       # orientation=현재(released)
-                palm_pose[:, :3] = _palm_ee_bl - quat_apply(
+                _bl_pos = _palm_ee_bl - quat_apply(
                     _R_cur, self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1)
                 )
-                self._cmd_palm_target_delta.copy_(_palm_ee_bl - self.palm_center_pos)
+                # [B-light] orientation 풀기·주둥이 hold는 tilt 단계(ready)만 적용.
+                #   approach(미ready)는 rim-pivot orientation 제어로 조준 → ready latch → 그제야 풀기.
+                #   (always-release는 접근 중 컵 방향 무통제→corridor 실패→ready 미latch→j5 미구동.)
+                _rm = _ready.unsqueeze(-1)
+                palm_pose[:, 3:7] = torch.where(_rm, _R_cur_xyzw, palm_pose[:, 3:7])
+                palm_pose[:, :3] = torch.where(_rm, _bl_pos, palm_pose[:, :3])
+                self._cmd_palm_target_delta.copy_(
+                    torch.where(_rm, _palm_ee_bl - self.palm_center_pos, self._cmd_palm_target_delta)
+                )
             self.palm_pose_targets.copy_(palm_pose)
             self.hand_pca_targets.zero_()
             # [v6 ablation] nullspace baseline(α=0 지점)을 cfg flag로 선택 (demo prior hard 경로).
