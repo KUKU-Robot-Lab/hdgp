@@ -1194,6 +1194,12 @@ class PourRightEnv(DirectRLEnv):
             rim_rel = rim_env - self.palm_center_pos                          # palm_ee→rim 레버 (palm_ee 앵커)
             # 회전 R 후 rim = palm_ee + R·rim_rel → palm_ee = pour_point_target − R·rim_rel (xyz 전부)
             pour_point_target = rim_env + delta[:, :3]
+            if self.cfg.pour_spout_z_lock:
+                # [robust] approach 단계에도 주둥이 z를 target 위 margin으로 구조 강제.
+                #   (pour 단계만 잠그면 v5는 ready 못 latch해 적용 안 됨 → approach부터 잠가
+                #    corridor↑→ready latch 순환 차단.) xy는 정책 유지.
+                _tgt_z_env_a = self._target_opening_w[:, 2] - self.scene.env_origins[:, 2]
+                pour_point_target[:, 2] = _tgt_z_env_a + self.cfg.pour_z_margin
             _palm_ee_target = pour_point_target - quat_apply(_delta_quat_wxyz, rim_rel)
             # 진단: 박스(palm_ee 기준)가 rim-pivot 해를 자르는 양 (클램프 전 palm_ee 보존)
             _palm_xyz_preclamp = _palm_ee_target.clone()
