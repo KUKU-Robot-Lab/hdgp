@@ -149,6 +149,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   v5="rim", v6="palm".
     pour_approach_pivot: str = "rim"
 
+    # [aim 정밀화] 주둥이를 target 입구 중심으로 당기는 smooth 보상(aim_score, radius=0 gradient-everywhere).
+    #   진단: corridor flat-top(5.6cm)이 8.7cm서 충족돼 주둥이가 target서 8.7cm 벗어나 plateau→spill 0.3.
+    #   corridor(ready-latch 필수)는 불변, 별도 정밀-aim gradient만 추가해 주둥이를 입구로 수렴.
+    weight_aim_precision: float = 8.0
+
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------

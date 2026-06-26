@@ -2175,12 +2175,16 @@ class PourRightEnv(DirectRLEnv):
 
         # [재설계] demo pose reward(pour_v4) 제거 — 순수 DRL.
 
+        # [aim 정밀화] 주둥이를 target 입구 중심으로 당기는 smooth 보상(corridor 불변, gradient-everywhere).
+        #   8.7cm plateau(corridor flat-top 충족) 해소 → 주둥이가 입구로 수렴해 bead 낙하점 정렬.
+        r_aim = self.cfg.weight_aim_precision * aim_score
         total = (
             r_hold
             + r_approach
             + r_introt
             + r_tilt            # [재설계] rim_antiparallel 기준 deep tilt (target 상대, 135°)
             + r_pour            # [재설계] outcome ADR: weight·corridor·bead_in_target (자세성공 80%+ 후 활성). bead 보상 단일화.
+            + r_aim             # [aim 정밀화] 주둥이→입구 중심 smooth gradient
             + r_stageB
             + self.cfg.weight_success * r_success
             - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
