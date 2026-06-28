@@ -116,8 +116,9 @@ DEMO_POUR_ARM_POSE  = [0.216, 0.633, -0.371, 1.868, -1.217, 0.038, 0.604]
 #   cup-up tilt가 ±0.09 변함 → α가 사실상 tilt를 직접 바꿔, 정책이 drift 회피로 α를 낮춤.
 NULLSPACE_OFFSET_ARM = [d - s for d, s in zip(DEMO_POUR_ARM_POSE, ARM_START_POSE)]
 
-# [stage2] 진짜 palm-task nullspace 축 (elbow-swivel). demo 자세에서 palm 6D Jacobian을
-#   FK 유한차분 → SVD → 최소 특이벡터(null vec)로 산출. J@n≈0(palm pose 보존).
-#   검증: 이 축으로 이동 시 cup-up tilt 변화 ≤0.016(보존), demo−start와 cos=0.056(직교).
-#   j4 성분=0(어깨/손목 swivel). α가 tilt를 망치지 않고 잉여 1-DOF만 조절 → 2단계 조준/정규화.
-N_DEMO_NULLSPACE_OFFSET = [-0.2321, -0.4811, 0.5291, 0.0000, -0.3976, 0.1821, 0.4935]
+# [새 구조 v6] palm 3-DOF position nullspace 축 (j5 deep tilt 방향). palm_link 3×7 Jacobian을
+#   FK 유한차분 → SVD → nullspace(4-DOF)에 demo−start(deep tilt) 투영 → 정규화.
+#   J@offset≈4e-17(palm position 보존) 검증, j5=−0.832 (구 6D 기준 −0.398의 2배).
+#   정책 α가 palm 위치 유지하며 j5/j6/팔을 deep tilt 협응으로 구동.
+#   (구 6D nullspace는 palm-6DOF 기준 → 새 palm-3D 구조와 방향 불일치 → j5 미구동, j6 leak)
+N_DEMO_NULLSPACE_OFFSET = [0.2570, 0.2581, -0.1342, 0.3664, -0.8319, 0.1427, -0.0517]
