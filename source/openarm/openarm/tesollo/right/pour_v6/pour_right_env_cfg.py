@@ -65,7 +65,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
             scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬 (5g→10g: 관성 향상, 진동 날림 방지)
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),  # 1g 구슬 (5g→1g: deep tilt 시 쏠림 토크 감소 → grasp 슬립 완화)
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=8,   # 16→8: GPU contact stage 연산 부하 감소
@@ -140,7 +140,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [B-full explicit nullspace] 주둥이 위치를 정확히 고정(J_spout·Δq=0)하며 arm을 demo deep-tilt로 구동.
     #   J_spout = Fabrics palm 7점 위치 Jacobian의 선형결합(spout=palm_link+R·off). cspace(soft)가 못 한
     #   j5 깊이를 nullspace 투영으로 강제 — 주둥이 task와 경쟁 안 함(orthogonal). ready 단계만.
-    pour_bfull_nullspace: bool = True
+    # [새 구조] palm_position_only=True: palm을 position 3-DOF attractor로만 고정(orientation 자유).
+    #   cspace demo(mass3)가 nullspace에서 j5 roll을 끎(j6 leak 차단). B-full/orient_release 대체.
+    palm_position_only: bool = True
+    pour_bfull_nullspace: bool = False  # [새 구조] explicit nullspace 제거 → Fabrics 네이티브 nullspace로 대체
     bfull_step:   float = 0.04   # arm→demo 향한 per-step 관절증분 상한 [rad]
     bfull_lambda: float = 0.05   # DLS pseudo-inverse 댐핑(특이점 방지)
 
@@ -326,7 +329,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   경쟁 안 함 → cspace가 j5를 deep까지 끌어 tilt. β는 cspace j5 타겟을 0→demo로 graded 구동.
     #   위치는 주둥이(pour-point) 고정(approach 중 body offset 동결→예측 hold). v5 deep tilt 천장
     #   원인(IK가 j5 대신 손목 포화)을 "orientation task 제거+cspace j5 직접구동"으로 우회.
-    pour_orient_release: bool = True
+    pour_orient_release: bool = False  # [새 구조] orientation task 자체 제거(palm_position_only) → orient_release 불필요
 
     # [robust] B-light pour 단계에서 주둥이 z를 정책 학습에 맡기지 않고 target 입구 위 margin으로
     #   구조적 강제. v5 실패모드("주둥이가 target 11cm 아래 → 붓기 기하 불가") 원천 차단.

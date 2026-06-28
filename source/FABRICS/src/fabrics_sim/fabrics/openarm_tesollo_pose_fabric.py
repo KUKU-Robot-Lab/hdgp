@@ -34,8 +34,13 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
       [23-26] rj_dg_5_1~4              (pinky)
     """
 
-    def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=True):
+    def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=True,
+                 palm_position_only=False):
         self._use_hand_fabric = use_hand_fabric
+        # [새 구조] palm_position_only=True: palm_link origin 1점(position 3-DOF)만 attractor로
+        #   고정하고 orientation은 자유(cspace nullspace가 결정). j6 leak 차단 → IK가 j5 roll을
+        #   demo대로 실현. False(기본)=기존 7-point full 6-DOF(v5 대조군 유지).
+        self._palm_position_only = palm_position_only
         fabric_params_filename = "openarm_tesollo_pose_params.yaml"
         super().__init__(device, batch_size, timestep, fabric_params_filename,
                          graph_capturable=graph_capturable)
@@ -236,12 +241,16 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         7-point palm frame attractor (origin + 6 axis points) for full 6-DOF palm control.
         """
         taskmap_name = "palm"
-        control_point_frames = [
-            "palm_link",
-            "palm_x",  "palm_x_neg",
-            "palm_y",  "palm_y_neg",
-            "palm_z",  "palm_z_neg",
-        ]
+        if self._palm_position_only:
+            # [새 구조] palm_link origin 1점만 → position 3-DOF. orientation task 없음.
+            control_point_frames = ["palm_link"]
+        else:
+            control_point_frames = [
+                "palm_link",
+                "palm_x",  "palm_x_neg",
+                "palm_y",  "palm_y_neg",
+                "palm_z",  "palm_z_neg",
+            ]
         taskmap = RobotFrameOriginsTaskMap(self.urdf_path, control_point_frames,
                                            self.batch_size, self.device)
         self.add_taskmap(taskmap_name, taskmap, graph_capturable=self.graph_capturable)
@@ -327,7 +336,12 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
     # ------------------------------------------------------------------
 
     def convert_transform_to_points(self):
-        """Convert palm pose target (origin + rotation matrix) to 7×3D control points."""
+        """Convert palm pose target (origin + rotation matrix) to 7×3D control points.
+
+        palm_position_only=True면 origin 1점(3D)만 반환 (orientation 무시 = position attractor).
+        """
+        if self._palm_position_only:
+            return self._palm_pose_target[:, :3].clone()  # (B, 3) origin only
         palm_transform = torch.zeros(self.batch_size, 4, 4, device=self.device)
         palm_transform[:, 3, 3] = 1.
         palm_transform[:, :3, :3] = torch.transpose(
@@ -367,6 +381,14 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
     def get_palm_pose(self, cspace_position, orientation_convention):
         palm_points, _ = self.get_taskmap("palm")(cspace_position, None)
         palm_origin = palm_points[:, :3]
+        if self._palm_position_only:
+            # 1점 모드: orientation 정보 없음 → identity 반환 (호출측은 position만 사용).
+            if orientation_convention == "quaternion":
+                orientation = torch.zeros(self.batch_size, 4, device=self.device)
+                orientation[:, 3] = 1.0  # qw=1 (xyzw)
+            else:  # euler_zyx
+                orientation = torch.zeros(self.batch_size, 3, device=self.device)
+            return torch.cat([palm_origin, orientation], dim=-1)
         x_point = palm_points[:, 3:6]
         y_point = palm_points[:, 9:12]
         z_point = palm_points[:, 15:18]
