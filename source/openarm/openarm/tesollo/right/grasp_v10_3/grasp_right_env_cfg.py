@@ -138,11 +138,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_palm_local_z_max: float = 0.08
     # approach orientation: 고정 pregrasp 자세(컵 향함) 주변 bounded euler residual (grasp-v1 방식, ±deg)
     approach_palm_residual_rot_deg: float = 5.0
-    grasp_body_local_z_min: float = -0.04
+    # Phase R-env-A2: envelope 그립은 손가락을 마디로 감싸며 tip이 약간 아래(-0.045)에 위치 → 기존 하한
+    # -0.04로 body_band가 막혀(rate 0.15) prelift 래치 미발화→grasp 95% 고착→컵 안 들림/tilt 17°.
+    # palm_local_z(-0.038)는 band 안. tip 기준 하한을 -0.06으로 완화해 envelope 그립의 tip 위치 수용.
+    grasp_body_local_z_min: float = -0.06
     grasp_body_local_z_max: float = 0.05
     prelift_max_cup_height_delta: float = 0.01
-    prelift_cup_lin_vel_threshold: float = 0.04
-    prelift_rim_lift_penalty_weight: float = 1.0
+    # Phase M(test6 진단): grasp_ready_hold가 18/20에서 끊겨 lift_success 0.04로 붕괴. 원인=잡힌 컵
+    # 잔류속도 0.045가 prelift 임계 0.04를 간헐 초과 → ready_candidate 깜빡임으로 20연속 미달.
+    # Phase G에서 stability 게이트는 0.06으로 올렸으나 prelift는 0.04로 방치됨 → 일치시켜 래치 발화.
+    prelift_cup_lin_vel_threshold: float = 0.06
+    prelift_rim_lift_penalty_weight: float = 0.0  # 방향B: band-aid 제거
     grasp_palm_delta_scale: float = 0.25
     # lift phase palm 상승 한계. 0.03(3cm) < lift_success_height(4cm)이라 컵이 4cm에
     # 물리적으로 도달 불가 → success_held=0 plateau였음(lstm_test11 진단). 0.07로 키워
@@ -189,12 +195,26 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
+    # Phase K3: 4cm→3cm. 컵이 견고한 그립(palm 0.76+4지)으로 ~3.15cm까지 들리나, 이 자세/xy
+    # arm 워크스페이스 한계로 4cm 물리적 도달 불가(reward/lift 49로 강하게 유도해도 정체).
+    # success 기준을 실제 도달 높이(3cm)로 맞춰 견고한 grasp+lift를 success로 인정.
+    # Phase K4(test4 회귀 분석): 컵이 2.8cm에 수렴 → 3cm 문턱이 marginal해 success_now 발화가
+    # 드뭄 → success bonus gradient 소멸 → warm-start 사슬 침식(lift_success 0.53→0.037 회귀).
+    # 도달 높이 아래(2.5cm)로 낮춰 success_now를 robust 발화시켜 success gradient를 살린다.
+    # 방향B(v1 정렬): test4~17의 이중 hold·임계값 하향(0.025/0.015)을 폐기, v1 단일 계약(0.04)으로 복원.
+    # lift_success_height = success_lift_height = 0.04 단일 문턱 → 이중 hold pathology 제거.
     lift_success_height: float = 0.04
-    success_hold_steps: int = 30
+    success_lift_height: float = 0.04
+    # Phase O(test4~8 메타패턴): 모든 런에서 lift_success가 warm-start 0.5~0.9→0.05로 침식, success_held
+    # 전구간 0. 근본=사슬에 30스텝 hold가 둘(full_grip_hold_steps=lift_success + success_hold_steps=
+    # success_held), 깜빡이는 그립으로 60스텝 연속 완벽 불가 → success_held 영원히 미발화 → terminal
+    # bonus(20) gradient 부재 → 선행 행동 침식. hold를 15로 줄여 success_held를 도달가능하게 → bonus
+    # 발화 → 사슬 강화로 침식 차단. 사용자 사전승인(성공조건 완화 가능). TESOLLO 한정(RH 30 유지).
+    success_hold_steps: int = 30  # 방향B: v1 parity (test-chasing 15 폐기)
     # Phase G: TESOLLO는 잡힌 컵의 잔류 lin_vel이 ~0.045(0.043~0.057)로 0.04를 넘겨
     # stable이 0.62에서 깜빡임 → 30스텝 연속 streak이 ~2.6에서 끊겨 success_held=0.003 정체.
     # 0.06으로 완화(=6cm/s 미세진동 허용). lifted(4cm)·contact·upright는 그대로 요구.
-    stability_cup_lin_vel_threshold: float = 0.06
+    stability_cup_lin_vel_threshold: float = 0.04  # 방향B: v1 parity (0.06 완화 폐기)
     stability_cup_ang_vel_threshold: float = 0.5
     stability_contact_delta_threshold: float = 1.0
     # Phase D: hard gate에서 제외됨(grasp_v2_contract). 이제 quality 셰이핑에만 사용. v1 parity 0.4.
@@ -206,7 +226,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stage0_lift_start_min_contacts: int = 3   # Phase A: contact_adr 3→4→5 커리큘럼 시작 허들 (기존 고정 5)
     grasp_ready_hold_steps: int = 20
     grasp_contact_persistence_reward_steps: int = 30
-    full_grip_hold_steps: int = 30
+    full_grip_hold_steps: int = 30  # 방향B: v1 parity (test-chasing 15 폐기)
     grasp_upright_threshold_deg: float = 8.0
     grasp_xy_threshold: float = 0.025
     approach_weight: float = 2.0
@@ -216,7 +236,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_weight: float = 12.0
     stabilize_weight: float = 10.0
     stabilize_spawn_xy_scale: float = 0.03
-    stabilize_upright_reward_scale_deg: float = 10.0
+    # 수정②: upright_quality=exp(-tilt/scale). 10°는 12°서도 0.30(약)이라 컵이 lift중 문턱까지 기욺.
+    # 5°로 가파르게(12°서 0.09) → lift/stabilize 보상이 컵을 능동적으로 세우도록 강화.
+    stabilize_upright_reward_scale_deg: float = 5.0
     stabilize_ang_vel_sharpness: float = 2.0
     stabilize_lin_vel_sharpness: float = 10.0
     stabilize_action_sharpness: float = 1.5
@@ -256,27 +278,36 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     middle_guide_weight:    float = 0.0
     middle_guide_sharpness: float = 10.0
 
-    # R1e. middle_contact (v10.2 신규)
+    # R1e. middle_contact (v10.2 신규, Phase L에서 env에 배선+활성화)
     # middle_norm 단독 reward — tip contact 여부와 무관 (접촉 단계)
     # finger_depth(tip×middle 곱)와 달리 tip-only 상태에서도 gradient 살아있음
     # tip-only 초반 고착 이후 middle contact 탐색을 독립적으로 유도
-    middle_contact_weight: float = 0.0
-    middle_contact_envelope_bonus_weight: float = 0.0
+    # Phase L: test4/test5 진단—중지/약지 middle_force=0(끝만 poke, full_contact 0.27).
+    # 이 보상이 cfg에만 있고 env 미배선이라 죽어있었음 → grasp_right_env.py에 배선+활성화.
+    # 손가락이 컵을 실제로 감싸도록(envelope) 유도. pre-lift 단계 한정.
+    middle_contact_weight: float = 3.0
+    middle_contact_envelope_bonus_weight: float = 3.0
     min_middle_contacts_for_success: int = 4
 
     # Final stationary stabilization upright gate.
     # Phase D: 5°는 tilt 실측 4~6°와 경계라 절반이 탈락 → success_held=0. v1 parity로 12° 완화.
+    # 실험A2(test15): tilt 12.3° plateau로 12→15 완화했으나 ★역효과★(컵이 15°로 더 기욺, success_held 0).
+    # tilt가 success 문턱을 추종(약한 upright 유인 탓). 수정②: 12로 복귀하고 upright 유인을 강화
+    # (scale 10→5, grasp_upright 활성화)해 컵을 능동적으로 세움. TESOLLO 한정(RH 12).
     stabilize_upright_max_deg: float = 12.0
 
     # Grasp phase에서 컵을 세운 채 감싸도록 유도한다.
-    grasp_upright_weight: float = 0.0
+    # 수정②: cfg에만 있고 env 미배선(orphan)이던 걸 활성화+배선(env). grasp 중 잡은 채(graded_contact)
+    # 컵을 똑바로 세우면 보상 → 컵을 upright로 유지해 lift에 들어가도록. upright_quality와 함께 약한
+    # upright 유인(컵이 문턱까지 기욺)을 보강. 0→3.
+    grasp_upright_weight: float = 3.0
 
     # Grasp phase에서 컵을 밀거나 과도하게 파고드는 접근을 억제한다.
-    grasp_cup_xy_penalty_weight: float = 4.0
+    grasp_cup_xy_penalty_weight: float = 0.0  # 방향B: band-aid 제거
     grasp_cup_xy_penalty_margin: float = 0.01
-    grasp_cup_tilt_penalty_weight: float = 0.08
+    grasp_cup_tilt_penalty_weight: float = 0.0  # 방향B: band-aid 제거
     grasp_cup_tilt_penalty_margin_deg: float = 8.0
-    grasp_palm_overshoot_penalty_weight: float = 4.0
+    grasp_palm_overshoot_penalty_weight: float = 0.0  # 방향B: band-aid 제거
 
     # R2. slip_reward (v9 신규): cup 수평 속도 기반 slip proxy
     # gate: grasp phase AND contact 시 활성
@@ -331,6 +362,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # R6. lift_reward (v8: 20.0 → v9: 6.0 → v9.2: 20.0, slip local-min 탈출)
     lift_reward_weight: float = 30.0
+    # Phase R1(재설계): contact-독립 height 보상 제거(40→0). Phase K에서 "contact 손해 감수하고
+    # 더 들도록" 넣었으나, 이게 그립 없이 컵을 팜으로 떠받쳐 드는 scoop degenerate를 직접 보상함
+    # (test10: full_contact 0.72→0.04, height 2.8cm, success_held 0). lift 보상을 ①contact-gated
+    # 항(lift_reward_weight×graded_contact×height)만 남겨 "그립 유지 시에만 들기 보상" → scoop 차단.
+    # plateau 재발 시 lift_reward_weight로 대응(여전히 contact-gated). v1/v7-2 기본값(0)으로 회귀.
+    lift_height_bonus_weight: float = 0.0
+    lift_height_bonus_clamp: float = 1.5  # bonus weight 0이라 비활성
 
     # R8. success_bonus: lift 성공 유지 중 step당 보너스 (slip local-min 탈출)
     success_bonus_weight: float = 20.0
@@ -383,12 +421,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     contact_adr_custom_cfg: dict = field(default_factory=lambda: {
         "contact": {
-            # int(round(value)) 로 사용. Phase E: 3 → 4 로 캡.
-            # success/done 게이트(full_tip = num >= adr)가 5면 5-tip 30스텝 연속 유지가
-            # pinky/ring 간헐 이탈로 불가 → adr=5에서 lift_success 0.05 붕괴, success_hold_count=0.
-            # 4로 캡하면 num_contacts~4라 success 도달 가능. envelope(5손가락) 유도는
-            # reward 셰이핑(tip_contact_frac=num/5, full_tip=num>=5, line 1152-1154)이 adr와
-            # 무관하게 유지하므로 그대로 5손가락 감싸기를 학습한다.
+            # int(round(value)) 로 사용. Phase R-env-A: 3 → 4 로.
+            # envelope 그립은 달성(full_envelope≥5 0.78, count 4.59, upright 1°)했으나, success가 요구하는
+            # "≥5 envelope 15스텝 연속"이 action 떨림(fixed σ=1.0)으로 깜빡(0.78^15≈0.02) → lift_success 0.01.
+            # success 요구를 ≥4 envelope로 완화(count 4.59라 ≥4는 ~0.95 → 15스텝 hold 도달 가능). grasp 보상은
+            # 여전히 full_tip=envelope≥5로 5손가락 감싸기 유도(success 판정만 ≥4). 실험 A: 4000ep 이상 판단.
             "min_contacts": (3.0, 4.0),
         },
     })

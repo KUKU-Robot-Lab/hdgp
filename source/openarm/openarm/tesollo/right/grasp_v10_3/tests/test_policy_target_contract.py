@@ -126,16 +126,16 @@ def test_reward_gate_success_contract_uses_tip5_body_band_and_stationary_stabili
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
 
     assert "stage0_lift_start_min_contacts: int = 3" in cfg
-    assert "grasp_body_local_z_min: float = -0.04" in cfg
-    assert "grasp_body_local_z_max: float = 0.05" in cfg
-    assert "prelift_max_cup_height_delta: float = 0.01" in cfg
-    assert "prelift_cup_lin_vel_threshold: float = 0.04" in cfg
-    assert "compute_tesollo_prelift_lift_readiness(" in env
-    latch_block = env.split("compute_tesollo_prelift_lift_readiness(", 1)[1].split("if just_latched.any():", 1)[0]
-    assert "tip_local_z_mean=tip_local_z_mean" in latch_block
-    assert "cup_height_delta=cup_height_delta" in latch_block
-    assert "cup_lin_vel_norm=prelift_cup_lin_vel" in latch_block
-    assert "is_close_grasp_phase=close_grasp_mask" in latch_block
+    # 방향B(v1 정렬): tesollo 4중 게이트(body_band/height/vel) 폐기, v1 접촉+hold 래치로 교체.
+    assert "compute_lift_readiness(" in env
+    assert "compute_tesollo_prelift_lift_readiness(" not in env
+    latch_block = env.split("compute_lift_readiness(", 1)[1].split("if just_latched.any():", 1)[0]
+    assert "is_grasp_phase=close_grasp_mask" in latch_block
+    assert "min_contacts=_adr_min_contacts" in latch_block
+    assert "hold_steps=self.cfg.grasp_ready_hold_steps" in latch_block
+    # body_band/height/vel 게이트 인자가 더는 래치에 쓰이지 않음
+    assert "tip_local_z_mean=" not in latch_block
+    assert "body_local_z_min=" not in latch_block
 
     assert "compute_grasp_reward_terms(" in env
     assert "compute_grasp_v2_stability(" in env
@@ -164,7 +164,8 @@ def test_tesollo_debug_logs_are_namespaced_and_cover_rim_hook_diagnostics() -> N
 
     assert 'self.extras["debug/tesollo/task/palm_local_z"]' in env
     assert 'self.extras["debug/tesollo/task/tip_local_z_mean"]' in env
-    assert 'self.extras["debug/tesollo/task/rim_contact_proxy"]' in env
+    # 방향B: rim_contact_proxy/body_band 게이트 로그 제거(게이트 자체 삭제)
+    assert 'self.extras["debug/tesollo/task/rim_contact_proxy"]' not in env
     assert 'self.extras["debug/tesollo/task/prelift_cup_height_delta"]' in env
     assert 'self.extras["debug/tesollo/task/prelift_cup_lin_vel"]' in env
     assert 'self.extras["debug/rh56f1/' not in env
@@ -186,6 +187,7 @@ def test_state_latched_fast_episode_and_default_training_no_actor_mass() -> None
     task_cfg = (_ROOT / "config" / "__init__.py").read_text(encoding="utf-8")
 
     assert "episode_length_s: float = 10.0" in cfg
+    # 방향B(v1 정렬): test-chasing으로 낮춘 hold(15)를 v1 단일 계약(30)으로 복원.
     assert "success_hold_steps: int = 30" in cfg
     assert "grasp_ready_hold_steps: int = 20" in cfg
     assert "full_grip_hold_steps: int = 30" in cfg
@@ -211,7 +213,7 @@ def test_phase_step_ratio_is_observation_only_not_reward_or_latch_gate() -> None
     assert "phase_step_ratio = (" in env
     assert "phase_step_ratio,       # 1" in env
     reward_block = env.split("def _get_rewards", 1)[1].split("def _get_dones", 1)[0]
-    latch_block = reward_block.split("compute_tesollo_prelift_lift_readiness(", 1)[1].split("if just_latched.any():", 1)[0]
+    latch_block = reward_block.split("compute_lift_readiness(", 1)[1].split("if just_latched.any():", 1)[0]
 
     assert "phase_step_ratio" not in reward_block
     assert "time_ratio" not in reward_block
@@ -225,7 +227,10 @@ def test_state_based_reward_gates_and_upright_quality() -> None:
     env = (_ROOT / "grasp_right_env.py").read_text(encoding="utf-8")
     cfg = (_ROOT / "grasp_right_env_cfg.py").read_text(encoding="utf-8")
 
-    assert "stabilize_upright_reward_scale_deg: float = 10.0" in cfg
+    # 수정②: upright 유인 강화 — scale 10→5(가파르게), grasp_upright_weight 0→3(env 배선).
+    assert "stabilize_upright_reward_scale_deg: float = 5.0" in cfg
+    assert "grasp_upright_weight: float = 3.0" in cfg
+    assert "grasp_upright_reward" in env
     assert "stability_reward_weight: float = 1.0" in cfg
     assert "stabilize_spawn_xy_scale: float = 0.03" in cfg
     assert "upright_quality = torch.exp(" in env

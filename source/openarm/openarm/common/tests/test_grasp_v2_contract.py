@@ -94,6 +94,28 @@ def test_success_gate_holds_for_thirty_stable_steps() -> None:
     assert success.success_held.tolist() == [True]
 
 
+def test_success_lifted_gate_prefers_success_lift_height_when_present() -> None:
+    # Phase N2: success_held도 success_lift_height(있으면)로 lifted 판정 — lift_success_height(보상
+    # saturation)과 분리. 없으면 lift_success_height로 fallback(RH56F1 호환).
+    class CfgWithDecouple(RewardCfg):
+        success_lift_height: float = 0.015
+
+    cfg = CfgWithDecouple()
+    # 컵이 1.6cm: success_lift_height(1.5) 이상이지만 lift_success_height(4.0) 미만 → success_now=True
+    success = compute_stationary_grasp_success(
+        cfg=cfg,
+        **_success_inputs(cfg, cup_height_delta=torch.tensor([0.016])),
+    )
+    assert success.success_now.tolist() == [True]
+
+    # fallback: success_lift_height 없는 cfg는 lift_success_height(0.04) 사용 → 1.6cm는 미달
+    fallback = compute_stationary_grasp_success(
+        cfg=RewardCfg(),
+        **_success_inputs(RewardCfg(), cup_height_delta=torch.tensor([0.016])),
+    )
+    assert fallback.success_now.tolist() == [False]
+
+
 def test_stability_gate_uses_physical_velocity_not_noisy_action_delta() -> None:
     # Phase D: action_delta_norm은 stochastic sampled action의 RMS라 탐색 노이즈
     # 바닥(σ·√2 ≈ 0.5)이 임계를 항상 초과 → stable hard-gate에서 제외됐다.
@@ -179,19 +201,33 @@ def test_target_env_sources_use_common_v2_helpers_and_common_tags() -> None:
 
     for cfg in (tesollo_cfg, rh_cfg):
         assert "episode_length_s: float = 10.0" in cfg
-        assert "lift_success_height: float = 0.04" in cfg
-        assert "success_hold_steps: int = 30" in cfg
         assert "transport_goal_dist_threshold" not in cfg
-        assert "stabilize_upright_max_deg: float = 12.0" in cfg
         assert "stability_cup_ang_vel_threshold: float = 0.5" in cfg
         assert "stability_contact_delta_threshold: float = 1.0" in cfg
         assert "stability_action_delta_threshold: float = 0.4" in cfg
+
+    # Phase K3/K4: lift_success_height per-task. TESOLLO는 arm 워크스페이스 한계로 컵이 ~2.8cm에
+    # 수렴 → 3cm 문턱이 marginal해 success_now 발화가 드물어 사슬이 침식(lift_success 0.53→0.037
+    # 회귀 측정) → 도달 높이 아래 2.5cm로 낮춰 success_now robust 발화. RH56F1은 4cm 유지(v1 정렬 보류).
+    assert "lift_success_height: float = 0.025" in tesollo_cfg
+    assert "lift_success_height: float = 0.04" in rh_cfg
 
     # Phase G: cup_lin_vel 임계는 per-task로 분기 (의도된 divergence).
     # TESOLLO는 잡힌 컵 잔류속도 ~0.045가 0.04를 넘겨 stable 깜빡임 → 0.06 완화.
     # RH56F1은 미검증이라 0.04 유지 (v1 정렬 보류).
     assert "stability_cup_lin_vel_threshold: float = 0.06" in tesollo_cfg
     assert "stability_cup_lin_vel_threshold: float = 0.04" in rh_cfg
+
+    # Phase O: success_held가 60스텝 연속 hold(full_grip 30 + success 30)라 도달불가 → terminal bonus
+    # 미발화로 사슬 침식(test4~8 lift_success 0.5~0.9→0.05 반복). TESOLLO만 두 hold를 15로 완화. RH는 30 유지.
+    assert "success_hold_steps: int = 15" in tesollo_cfg
+    assert "success_hold_steps: int = 30" in rh_cfg
+
+    # 실험A2(test15): envelope 그립으로 컵 tilt가 12.3°에 plateau → 12° 경계 깜빡임으로 upright hold 미달.
+    # TESOLLO만 12→15로 미세완화(컵 12.3°는 사실상 upright). RH는 12 유지.
+    # 수정②: upright 15는 역효과(컵이 더 기욺)라 12 복귀. 대신 upright 유인 강화(scale 10→5, grasp_upright 활성화).
+    assert "stabilize_upright_max_deg: float = 12.0" in tesollo_cfg
+    assert "stabilize_upright_max_deg: float = 12.0" in rh_cfg
 
     for env in (tesollo_env, rh_env):
         assert "compute_grasp_v2_stability(" in env

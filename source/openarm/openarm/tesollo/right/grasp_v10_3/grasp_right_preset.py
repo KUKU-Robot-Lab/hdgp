@@ -106,15 +106,18 @@ HAND_GRASP_POSE = [
     +0.000, -0.000, +0.895, +1.111,   # pinky
 ]
 
-# 완전 파지 자세 — HAND_GRASP_POSE 기준 약 20% 더 닫힌 상한/방향
-# policy imitation target이 아니라 adaptive closure의 bounded limit로만 사용한다.
-# rj_*_1 및 thumb rj_dg_1_2는 HAND_GRASP_POSE와 동일하게 유지한다.
+# 완전 파지 자세 (close-grasp preset center) — Phase J: v7-2 "풀그립" 구조로 변경.
+# v7-2는 grasp pose의 곡 관절(_3/_4)을 1.5(joint limit 1.571 근처)로 완전히 말아두고
+# 물리 접촉이 컵 표면에서 손가락을 멈추게 한다("말기만 하면 잡힘"). v10-3는 _3/_4가
+# 0.6~1.1로 덜 말려 손가락(특히 새끼)이 컵을 끝까지 못 감싸던(pinky mid force=0) 원인.
+# 감싸는 4지(index/mid/ring/pinky)를 풀그립(_2=1.6, _3/_4=1.5)으로. 엄지는 작동 중인
+# opposition 보존(thumb contact 0.89). Phase I(상한 개방)와 합쳐져 자연 envelope 형성.
 HAND_FULL_GRIP_POSE = [
-    +0.000, -1.570, +0.156, +1.186,   # thumb
-    +0.000, +0.791, +0.754, +1.012,   # index
-    +0.000, +1.163, +0.256, +1.636,   # middle
-    -0.000, +1.002, +0.581, +1.519,   # ring
-    +0.000, -0.000, +1.074, +1.333,   # pinky
+    +0.000, -1.570, +0.156, +1.186,   # thumb (opposition 보존)
+    +0.000, +1.600, +1.500, +1.500,   # index (풀그립)
+    +0.000, +1.600, +1.500, +1.500,   # middle (풀그립)
+    +0.000, +1.600, +1.500, +1.500,   # ring (풀그립)
+    +0.000, -0.000, +1.500, +1.500,   # pinky (풀그립)
 ]
 
 # 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))

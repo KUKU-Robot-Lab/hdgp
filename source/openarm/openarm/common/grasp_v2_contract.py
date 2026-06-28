@@ -172,7 +172,12 @@ def compute_stationary_grasp_success(
     previous_success_hold_count: torch.Tensor,
     cfg: object,
 ) -> StationaryGraspSuccess:
-    lifted = cup_height_delta >= _cfg_float(cfg, "lift_success_height", 0.04)
+    # Phase N2: success lifted 게이트도 success_lift_height(있으면)로 — lift 보상 saturation
+    # (lift_success_height)과 분리해 컵이 stabilize서 문턱 위 진동/슬립해도 success가 발화하도록 margin.
+    # RH56F1은 success_lift_height 미정의라 fallback으로 lift_success_height(4cm) 유지.
+    lifted = cup_height_delta >= _cfg_float(
+        cfg, "success_lift_height", _cfg_float(cfg, "lift_success_height", 0.04)
+    )
     full_contact_bool = full_contact.bool()
     upright = cup_tilt_deg <= _cfg_float(cfg, "stabilize_upright_max_deg", 5.0)
     stable_bool = stable.bool()

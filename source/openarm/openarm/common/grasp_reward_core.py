@@ -70,12 +70,27 @@ def compute_grasp_reward_terms(
         cup_height_delta
         / max(_cfg_float(cfg, "lift_success_height", 0.04), 1e-6)
     ).clamp(min=0.0, max=1.0)
+    # Phase K2: lift height bonus는 4cm 위까지 gradient를 살려야 평형이 4cm 이상에 형성된다.
+    # lift_height_quality(4cm clamp)를 그대로 쓰면 4cm 위 gradient=0이라 평형이 ~3.1cm에
+    # 고착(test2 확인). bonus 전용 quality를 lift_height_bonus_clamp(기본 1.0=4cm,
+    # v10-3은 1.5=6cm)까지 열어 컵이 4cm를 안정적으로 넘게 한다.
+    lift_height_bonus_quality = (
+        cup_height_delta
+        / max(_cfg_float(cfg, "lift_success_height", 0.04), 1e-6)
+    ).clamp(min=0.0, max=_cfg_float(cfg, "lift_height_bonus_clamp", 1.0))
     lift = (
         _cfg_float(cfg, "lift_reward_weight", 0.0)
         * lift_gate
         * graded_contact
         * lift_height_quality
         * upright_quality
+        # Phase K: contact-독립 height 보상. 풀그립(Phase J)으로 graded_contact가 0.85까지
+        # 치솟아 lift 보상(=contact×height)이 2.9cm에서 이미 포화 → 정책이 더 들 유인을
+        # 잃고 local optimum 고착. height 자체에 contact와 무관한 보상을 더해 4cm 이상까지
+        # 들도록 유도. v1은 weight 0(기본)이라 영향 없음.
+        + _cfg_float(cfg, "lift_height_bonus_weight", 0.0)
+        * lift_gate
+        * lift_height_bonus_quality
     )
     action_quality = torch.exp(
         -_cfg_float(cfg, "stabilize_action_sharpness", 1.0) * action_delta_norm

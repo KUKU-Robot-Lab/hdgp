@@ -102,7 +102,7 @@ from .finger_action_utils import (
     compute_preset_residual_finger_targets,
 )
 from .grasp_reward_utils import (
-    compute_tesollo_prelift_lift_readiness,
+    compute_lift_readiness,
     compute_upright_success_mask,
 )
 from .grasp_right_utils import to_torch
@@ -251,25 +251,17 @@ class GraspRightEnv(DirectRLEnv):
         # approach_pose 기준 관절 한계 재조정 — 반대 방향 휘어짐 방지
         # curl 양수 관절: lower = max(original, approach)  → approach보다 더 열리는 것 차단
         # curl 음수 관절 (thumb_2, 20D index 1): upper = min(original, approach) → approach보다 더 펴지는 것 차단
-        # full_grip_pose는 imitation target이 아니라 "grasp에서 약간 더 닫히는" closure 상한으로만 사용
+        # Phase I: full_grip_pose 폐쇄 상한(closure cap) 제거 — envelope 그립에 cap은 불필요.
+        #   곡 관절(마스킹 제외)을 joint limit까지 닫을 수 있게 하면, 물리 접촉이 컵 표면에서
+        #   손가락을 멈춰 자연스러운 envelope이 형성된다. 기존 full_grip 상한(예: pinky 5_3=1.074,
+        #   5_4=1.333)이 joint limit(1.571) 한참 전에 막아 새끼가 컵을 못 감싸던(pinky mid force 0,
+        #   tip만 poke) 직접 원인. full_grip_pose는 close-grasp preset center로만 계속 사용(line 896).
         # ----------------------------------------------------------------
         _approach = self.hand_approach_pose  # (20,)
         _new_lower = torch.max(self.hand_joint_lower_limits, _approach)
         _new_upper = self.hand_joint_upper_limits.clone()
         _new_lower[1] = self.hand_joint_lower_limits[1]                          # thumb_2: lower는 원래값 유지
         _new_upper[1] = torch.min(self.hand_joint_upper_limits[1], _approach[1]) # thumb_2: approach 이상으로 펴지는 것 차단
-        _closing_up = self.hand_full_grip_pose > self.hand_grasp_pose
-        _new_upper = torch.where(
-            _closing_up,
-            torch.minimum(_new_upper, self.hand_full_grip_pose),
-            _new_upper,
-        )
-        _closing_down = self.hand_full_grip_pose < self.hand_grasp_pose
-        _new_lower = torch.where(
-            _closing_down,
-            torch.maximum(_new_lower, self.hand_full_grip_pose),
-            _new_lower,
-        )
         self.hand_joint_lower_limits = _new_lower.contiguous()
         self.hand_joint_upper_limits = _new_upper.contiguous()
 
@@ -353,6 +345,10 @@ class GraspRightEnv(DirectRLEnv):
         self.contact_friction_xyz_raw = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
         self.num_contacts_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # Phase R-envelope: 손가락별 envelope 접촉 = tip ∨ middle ∨ distal 중 하나라도 접촉(감싸기).
+        # grasp/lift/success 게이트를 "끝(tip) ≥4" 대신 "감싼 손가락 ≥N"으로 판정(손-컵 기하상 끝이 동시에
+        # 다 닿기 어려움 → 마디 접촉으로 envelope 인정). num_envelope_contacts_buf = engaged 손가락 수.
+        self.num_envelope_contacts_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         self.distal_contact_force_raw  = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, device=self.device)
         self.distal_binary_contact_buf = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, dtype=torch.bool, device=self.device)
@@ -686,6 +682,15 @@ class GraspRightEnv(DirectRLEnv):
         per_middle = torch.nan_to_num(per_middle, nan=0.0, posinf=0.0, neginf=0.0)
         self.middle_contact_force_raw.copy_(per_middle)
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
+
+        # Phase R-envelope: 손가락별 engaged = tip ∨ middle ∨ distal (어떤 마디로든 컵에 닿으면 감쌈).
+        # 세 센서가 동일 5-손가락 인덱스(finger 1~5)로 정렬됨. 감싼 손가락 수를 grasp 판정에 사용.
+        envelope_binary = (
+            self.binary_contact_buf
+            | self.middle_binary_contact_buf
+            | self.distal_binary_contact_buf
+        )
+        self.num_envelope_contacts_buf.copy_(envelope_binary.sum(dim=-1).long())
 
         palm_xyz = torch.nan_to_num(
             self._palm_sensor.data.net_forces_w[:, 0, :],
@@ -1164,7 +1169,11 @@ class GraspRightEnv(DirectRLEnv):
             1.0 - self.cfg.enclosure_thumb_weight
         ) * others_dist
 
-        num_tip_contacts = self.num_contacts_buf
+        # Phase R-envelope: grasp 게이트/보상의 접촉 기준을 tip count → envelope count(감싼 손가락 수)로.
+        # 손-컵 기하상 5끝이 동시에 닿기 어려워(검지 over-curl, 새끼 marginal) ≥4 tip이 깜빡였음.
+        # "어떤 마디로든 감싼 손가락 ≥N"으로 판정해 envelope 파지를 success로 인정(사용자 결정 ⓑ=전부 감싸기).
+        num_tip_only = self.num_contacts_buf  # 진단/로깅용 순수 tip count
+        num_tip_contacts = self.num_envelope_contacts_buf  # ★게이트/보상은 envelope count 사용★
         tip_contact_frac = num_tip_contacts.float() / float(NUM_FINGERTIPS)
         full_tip_contact_bool = num_tip_contacts >= NUM_FINGERTIPS
         full_tip_contact = full_tip_contact_bool.float()
@@ -1206,25 +1215,18 @@ class GraspRightEnv(DirectRLEnv):
         self._adr_min_contacts = _adr_min_contacts
 
         close_grasp_mask = self.is_close_grasp_phase & (~self.lift_ready_latched_buf)
+        # 방향B(v1 정렬): tesollo 4중 게이트(body_band/height/vel) 제거, v1 접촉+hold 래치로 교체.
         (
             self.grasp_ready_hold_buf,
             grasp_ready_now,
             lift_ready_latched,
-            prelift_readiness_gates,
-        ) = compute_tesollo_prelift_lift_readiness(
+        ) = compute_lift_readiness(
             num_contacts=num_tip_contacts,
-            is_close_grasp_phase=close_grasp_mask,
-            tip_local_z_mean=tip_local_z_mean,
-            cup_height_delta=cup_height_delta,
-            cup_lin_vel_norm=prelift_cup_lin_vel,
+            is_grasp_phase=close_grasp_mask,
             previous_hold_count=self.grasp_ready_hold_buf,
             previous_latched=self.lift_ready_latched_buf,
             min_contacts=_adr_min_contacts,
             hold_steps=self.cfg.grasp_ready_hold_steps,
-            body_local_z_min=self.cfg.grasp_body_local_z_min,
-            body_local_z_max=self.cfg.grasp_body_local_z_max,
-            max_cup_height_delta=self.cfg.prelift_max_cup_height_delta,
-            cup_lin_vel_threshold=self.cfg.prelift_cup_lin_vel_threshold,
         )
         just_latched = (
             ~self.lift_ready_latched_buf
@@ -1289,6 +1291,45 @@ class GraspRightEnv(DirectRLEnv):
         )
         total = torch.nan_to_num(
             total + prelift_rim_lift_penalty,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        # R1e (배선): middle-phalanx 접촉 보상 — tip-only poke 탈출, 실제 envelope wrap 유도.
+        # 진단(test4/test5): 중지(3)/약지(4) middle_force=0(끝만 찌름, full_contact 0.27). grasp 보상이
+        # tip_contact_frac만 봐서 wrap 유인이 reward에 없음 → 정책이 손가락을 절반만 curl(finger_pos_mean 0.5).
+        # tip 접촉 여부와 무관하게 중간마디 접촉에 gradient를 줘 손가락이 컵을 감싸도록 유도(grasp 단계 한정).
+        middle_norm = (self.middle_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+        middle_contact_count = self.middle_binary_contact_buf.float().sum(dim=-1)
+        pre_lift_gate_f = (~self.lift_ready_latched_buf).float()
+        middle_contact_reward = (
+            float(self.cfg.middle_contact_weight)
+            * pre_lift_gate_f
+            * middle_norm.sum(dim=-1)
+        )
+        middle_envelope_bonus = (
+            float(self.cfg.middle_contact_envelope_bonus_weight)
+            * pre_lift_gate_f
+            * (middle_contact_count >= int(self.cfg.min_middle_contacts_for_success)).float()
+        )
+        total = torch.nan_to_num(
+            total + middle_contact_reward + middle_envelope_bonus,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        # 수정② (배선): grasp phase에서 컵을 똑바로 세운 채(잡은 채) 유지하도록 보상.
+        # 진단(test16): 컵이 grasp선 upright(0.44°)인데 lift중 13~15°로 기욺. upright_quality(lift/stabilize)
+        # 강화(scale 5)와 함께, grasp 단계에도 upright 보상을 줘 컵을 처음부터 세워 들어가도록.
+        # graded_contact 게이트로 "잡은 채 세우기"만 보상(컵 안 잡고 보상 hack 방지).
+        grasp_upright_reward = (
+            float(self.cfg.grasp_upright_weight)
+            * pre_lift_gate_f
+            * tip_contact_frac
+            * upright_quality
+        )
+        total = torch.nan_to_num(
+            total + grasp_upright_reward,
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
@@ -1370,17 +1411,26 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["debug/tesollo/task/tip_local_z_mean"] = (
             tip_local_z_mean * prelift_mask
         ).sum() / prelift_mask.sum().clamp(min=1.0)
-        self.extras["debug/tesollo/task/rim_contact_proxy"] = (
-            prelift_readiness_gates["rim_contact_proxy"] * prelift_mask
-        ).sum() / prelift_mask.sum().clamp(min=1.0)
+        # 수정②: grasp_upright 보상 진단 (canonical 필터 우회, 직접 기록)
+        self.extras["reward/grasp_upright"] = grasp_upright_reward.mean()
+        # Phase R-envelope: envelope 접촉 진단 (canonical 필터 우회, 직접 기록)
+        self.extras["contact/envelope_count"] = self.num_envelope_contacts_buf.float().mean()
+        self.extras["contact/tip_only_count"] = num_tip_only.float().mean()
+        self.extras["contact/full_envelope_rate"] = (
+            self.num_envelope_contacts_buf >= NUM_FINGERTIPS
+        ).float().mean()
+        # Phase L: middle-phalanx wrap 보상/지표 (canonical 필터 우회, 직접 기록)
+        self.extras["reward/middle_contact"] = middle_contact_reward.mean()
+        self.extras["reward/middle_envelope_bonus"] = middle_envelope_bonus.mean()
+        self.extras["contact/middle_contact_count"] = middle_contact_count.mean()
+        self.extras["contact/middle_envelope_rate"] = (
+            middle_contact_count >= int(self.cfg.min_middle_contacts_for_success)
+        ).float().mean()
         self.extras["debug/tesollo/task/prelift_cup_height_delta"] = (
             cup_height_delta * prelift_mask
         ).sum() / prelift_mask.sum().clamp(min=1.0)
         self.extras["debug/tesollo/task/prelift_cup_lin_vel"] = (
             prelift_cup_lin_vel * prelift_mask
-        ).sum() / prelift_mask.sum().clamp(min=1.0)
-        self.extras["debug/tesollo/task/prelift_body_band_rate"] = (
-            prelift_readiness_gates["body_band"] * prelift_mask
         ).sum() / prelift_mask.sum().clamp(min=1.0)
         self.extras["debug/tesollo/task/prelift_rim_lift_penalty"] = (
             prelift_rim_lift_penalty * prelift_mask
@@ -1449,11 +1499,14 @@ class GraspRightEnv(DirectRLEnv):
         tipped = cup_z_world[:, 2] < self._cup_tipping_cos
 
         in_or_past_lift = self.lift_ready_latched_buf
-        lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
+        # Phase N: success lifted 게이트는 success_lift_height(2.0cm)로 — lift_success_height(2.5cm,
+        # 보상 saturation)와 분리해 컵이 문턱 바로 위에서 진동하지 않도록 margin 확보.
+        lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.success_lift_height)
         # success/stabilize 접촉 게이트를 lift-start와 동일한 동적 허들(_adr_min_contacts)로 맞춤.
         # adr 3→4→5로 오르며 success 요구 접촉수도 함께 상승(최종 5접촉). 하드 5 고정 시 커리큘럼
         # 중간(adr=4)에 success_held=0 정체 → 학습 신호 부재.
-        full_tip_contact = self.num_contacts_buf >= self._adr_min_contacts
+        # Phase R-envelope: tip count → envelope count(감싼 손가락 수). adr이 5에 도달하면 "5손가락 전부 감싸기".
+        full_tip_contact = self.num_envelope_contacts_buf >= self._adr_min_contacts
         upright_success = compute_upright_success_mask(
             cup_z_world[:, 2],
             self.cfg.success_upright_max_deg,
@@ -1469,7 +1522,7 @@ class GraspRightEnv(DirectRLEnv):
         self.episode_lift_success_buf |= lift_success_now
 
         action_delta_norm = compute_action_delta_norm(self.actions, self.prev_actions)
-        contact_delta_abs = (self.num_contacts_buf.float() - self._prev_num_contacts_buf).abs()
+        contact_delta_abs = (self.num_envelope_contacts_buf.float() - self._prev_num_contacts_buf).abs()
         stability = compute_grasp_v2_stability(
             cup_lin_vel=self.cup.data.root_lin_vel_w,
             cup_ang_vel=self.cup.data.root_ang_vel_w,
@@ -1743,6 +1796,7 @@ class GraspRightEnv(DirectRLEnv):
         self.contact_friction_xyz_raw[env_ids] = 0.0
         self.binary_contact_buf[env_ids] = False
         self.num_contacts_buf[env_ids]   = 0
+        self.num_envelope_contacts_buf[env_ids] = 0
         self.distal_contact_force_raw[env_ids] = 0.0
         self.distal_binary_contact_buf[env_ids] = False
         self.middle_contact_force_raw[env_ids] = 0.0

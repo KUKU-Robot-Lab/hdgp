@@ -158,7 +158,9 @@ def test_prelift_lift_readiness_latches_on_body_contact_and_stable_cup() -> None
     assert gates["rim_contact_proxy"].tolist() == [0.0]
 
 
-def test_full_grip_pose_is_relaxed_closure_bound_from_grasp_pose() -> None:
+def test_full_grip_pose_is_full_curl_closure_from_grasp_pose() -> None:
+    # Phase J: full_grip = v7-2 "풀그립"(곡 관절 1.5/1.6). 감싸는 4지를 완전히 말아두고
+    # 물리 접촉이 컵에서 멈추게 한다. 엄지는 opposition 보존.
     preset = _load_preset_module()
 
     grasp = torch.tensor(preset.HAND_GRASP_POSE, dtype=torch.float32)
@@ -166,10 +168,10 @@ def test_full_grip_pose_is_relaxed_closure_bound_from_grasp_pose() -> None:
     expected = torch.tensor(
         [
             +0.000, -1.570, +0.156, +1.186,
-            +0.000, +0.791, +0.754, +1.012,
-            +0.000, +1.163, +0.256, +1.636,
-            -0.000, +1.002, +0.581, +1.519,
-            +0.000, -0.000, +1.074, +1.333,
+            +0.000, +1.600, +1.500, +1.500,
+            +0.000, +1.600, +1.500, +1.500,
+            +0.000, +1.600, +1.500, +1.500,
+            +0.000, -0.000, +1.500, +1.500,
         ],
         dtype=torch.float32,
     )
