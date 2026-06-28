@@ -140,10 +140,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [B-full explicit nullspace] 주둥이 위치를 정확히 고정(J_spout·Δq=0)하며 arm을 demo deep-tilt로 구동.
     #   J_spout = Fabrics palm 7점 위치 Jacobian의 선형결합(spout=palm_link+R·off). cspace(soft)가 못 한
     #   j5 깊이를 nullspace 투영으로 강제 — 주둥이 task와 경쟁 안 함(orthogonal). ready 단계만.
-    # [새 구조] palm_position_only=True: palm을 position 3-DOF attractor로만 고정(orientation 자유).
-    #   cspace demo(mass3)가 nullspace에서 j5 roll을 끎(j6 leak 차단). B-full/orient_release 대체.
-    palm_position_only: bool = True
-    pour_bfull_nullspace: bool = False  # [새 구조] explicit nullspace 제거 → Fabrics 네이티브 nullspace로 대체
+    # [B-full 복귀] 새 구조(soft cspace) 3814ep 완주 검증: j5 미구동(gap 1.6 정체) → soft 불가 확정.
+    #   explicit B-full만 palm 고정+j5 강제 가능 → palm_position_only=False(7-point), bfull=True 복귀.
+    palm_position_only: bool = False
+    pour_bfull_nullspace: bool = True
     bfull_step:   float = 0.04   # arm→demo 향한 per-step 관절증분 상한 [rad]
     bfull_lambda: float = 0.05   # DLS pseudo-inverse 댐핑(특이점 방지)
 
@@ -329,7 +329,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   경쟁 안 함 → cspace가 j5를 deep까지 끌어 tilt. β는 cspace j5 타겟을 0→demo로 graded 구동.
     #   위치는 주둥이(pour-point) 고정(approach 중 body offset 동결→예측 hold). v5 deep tilt 천장
     #   원인(IK가 j5 대신 손목 포화)을 "orientation task 제거+cspace j5 직접구동"으로 우회.
-    pour_orient_release: bool = False  # [새 구조] orientation task 자체 제거(palm_position_only) → orient_release 불필요
+    pour_orient_release: bool = True  # [B-full 복귀] orientation 풀기(B-light) 재활성
 
     # [robust] B-light pour 단계에서 주둥이 z를 정책 학습에 맡기지 않고 target 입구 위 margin으로
     #   구조적 강제. v5 실패모드("주둥이가 target 11cm 아래 → 붓기 기하 불가") 원천 차단.
