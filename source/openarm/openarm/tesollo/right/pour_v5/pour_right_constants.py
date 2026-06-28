@@ -68,11 +68,12 @@ NUM_ROBOT_DOF = NUM_ARM_DOF + NUM_HAND_DOF     # 27
 NUM_FINGERTIPS = 5
 
 # ---------------------------------------------------------------------------
-# Action space (palm pose만 — 손은 grasp_hold freeze)
+# Action space (palm pose + nullspace + per-finger lerp 손가락 제어)
 # ---------------------------------------------------------------------------
 NUM_PALM_ACTION = 6   # 6D palm pose (Fabrics IK)
 NUM_NULLSPACE_ACTION = 1   # [2b] arm 잉여 1-DOF (팔꿈치↔손목 self-motion) 정책 제어
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_NULLSPACE_ACTION  # 7
+NUM_HAND_ACTION = 5   # [v7 복원] per-finger lerp: action[7:12] ∈[-1,1] → open(approach)~grasp 사이
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_NULLSPACE_ACTION + NUM_HAND_ACTION  # 12 (obs는 불변: finger_grasp_progress가 손 상태)
 
 # ---------------------------------------------------------------------------
 # Observation space

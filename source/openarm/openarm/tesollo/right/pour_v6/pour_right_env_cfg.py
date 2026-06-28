@@ -288,6 +288,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Stage A — Grasp maintain (r_hold), tilt-phase aware
     weight_grasp_maintain: float = 0.50
     weight_contact_maintain: float = 0.50
+    # [재설계] per-finger 학습 grasp 보상 (DexPour r_contact+r_grasp 통합): 손가락 action 동기
+    weight_grasp: float = 5.0          # 접촉비율(dense) + 완전파지 보너스(sparse)
+    grasp_full_count: int = 4          # 완전파지 판정 손가락 수 (5중 4)
+    grasp_full_bonus: float = 0.5      # 완전파지 시 추가 (DexPour r_grasp 역할)
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 0.50
 

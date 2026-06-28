@@ -63,6 +63,8 @@ from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
     NUM_PALM_ACTION,
+    NUM_NULLSPACE_ACTION,
+    NUM_HAND_ACTION,
     NULLSPACE_OFFSET_ARM,
     N_DEMO_NULLSPACE_OFFSET,
     NUM_FINGERTIPS,
@@ -1374,8 +1376,20 @@ class PourRightEnv(DirectRLEnv):
                 _hit, torch.zeros_like(_arm_q), self.fabric_qd[:, :NUM_ARM_DOF]
             )
 
-        # ---- 오른손 파지 유지 (pour 중 항상 grasp pose freeze; 6D action엔 손 채널 없음) ----
-        hand_target = self.grasp_hold_hand_pos_buf
+        # ---- 오른손: per-finger lerp 손가락 제어 (v7 복원) ----
+        #   action[7:12] ∈[-1,1] → t∈[0,1] → open(approach)~grasp 사이 per-finger lerp.
+        #   hold phase(물리 안착)엔 warmstart grasp freeze (파지 안정).
+        _hand_action = self.actions[:, NUM_PALM_ACTION + NUM_NULLSPACE_ACTION:]    # (N,5)
+        _t = ((_hand_action + 1.0) * 0.5).clamp(0.0, 1.0)                          # [0,1]
+        _t20 = _t.repeat_interleave(NUM_HAND_DOF // NUM_HAND_ACTION, dim=1)        # (N,20)
+        _lerp_target = self.hand_open_pose.unsqueeze(0) + _t20 * (
+            self.hand_grasp_pose - self.hand_open_pose
+        ).unsqueeze(0)
+        if self.cfg.episode_hold_steps > 0:
+            _hold = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
+            hand_target = torch.where(_hold, self.grasp_hold_hand_pos_buf, _lerp_target)
+        else:
+            hand_target = _lerp_target
         self.hand_joint_targets.copy_(hand_target)
 
         # fabric_q hand 부분 동기화 (FK 계산에 활용)
@@ -2180,8 +2194,14 @@ class PourRightEnv(DirectRLEnv):
         # [aim 정밀화] 주둥이를 target 입구 중심으로 당기는 smooth 보상(corridor 불변, gradient-everywhere).
         #   8.7cm plateau(corridor flat-top 충족) 해소 → 주둥이가 입구로 수렴해 bead 낙하점 정렬.
         r_aim = self.cfg.weight_aim_precision * aim_score
+        # [재설계] grasp 보상 (DexPour r_contact+r_grasp 통합): 손가락 action(per-finger lerp) 학습 동기.
+        #   접촉비율(dense, 손가락 갖다대기) + 완전파지 보너스(sparse, 4지+). stiffness 무효과 대안.
+        _contact_ratio = (self.num_contacts_buf.float() / NUM_FINGERTIPS).clamp(0.0, 1.0)
+        _full_grasp = (self.num_contacts_buf >= self.cfg.grasp_full_count).float()
+        r_grasp = self.cfg.weight_grasp * (_contact_ratio + self.cfg.grasp_full_bonus * _full_grasp)
         total = (
             r_hold
+            + r_grasp           # [재설계] per-finger 학습 grasp (접촉비율+완전파지 보너스)
             + r_approach
             + r_introt
             + r_tilt            # [재설계] rim_antiparallel 기준 deep tilt (target 상대, 135°)
@@ -2222,6 +2242,7 @@ class PourRightEnv(DirectRLEnv):
         demo_feat = self._demo_critic_feat
         reward_log: dict = {
             "Reward/hold":     r_hold.mean(),
+            "Reward/grasp":    r_grasp.mean(),               # [재설계] per-finger 학습 grasp
             "Reward/approach": r_approach.mean(),
             "Reward/introt":   r_introt.mean(),
             "Reward/tilt":     r_tilt.mean(),                # [재설계] rim_antiparallel deep tilt (target 135°)
