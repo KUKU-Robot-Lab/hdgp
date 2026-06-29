@@ -152,7 +152,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [aim 정밀화] 주둥이를 target 입구 중심으로 당기는 smooth 보상(aim_score, radius=0 gradient-everywhere).
     #   진단: corridor flat-top(5.6cm)이 8.7cm서 충족돼 주둥이가 target서 8.7cm 벗어나 plateau→spill 0.3.
     #   corridor(ready-latch 필수)는 불변, 별도 정밀-aim gradient만 추가해 주둥이를 입구로 수렴.
-    weight_aim_precision: float = 8.0
+    weight_aim_precision: float = 18.0  # [A 조준강화] 8->18: arm 조준을 r_grasp(3)보다 우위로 (mouth_xy 18cm 정체 해소)
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
@@ -286,7 +286,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     weight_grasp_maintain: float = 0.50
     weight_contact_maintain: float = 0.50
     # [재설계] per-finger 학습 grasp 보상 (DexPour r_contact+r_grasp 통합): 손가락 action 동기
-    weight_grasp: float = 5.0          # 접촉비율(dense) + 완전파지 보너스(sparse)
+    weight_grasp: float = 3.0          # [A] 5->3: arm 조준 밀림 방지 (cup_drift 유지 확인)
     grasp_full_count: int = 4          # 완전파지 판정 손가락 수 (5중 4)
     grasp_full_bonus: float = 0.5      # 완전파지 시 추가 (DexPour r_grasp 역할)
     weight_force_balance: float = 0.30
