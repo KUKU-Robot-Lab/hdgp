@@ -389,6 +389,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   aim_score는 z corridor(z_max=0.05) 내장 → r_transport가 pp_z 솟음을 자동 페널티(Phase2 포함).
     weight_transport:   float = 30.0   # [구 r_pour z-only, 재설계 Phase3서 미사용] 보존(롤백 참조).
     weight_pour_bead:   float = 50.0   # [재설계 Phase3] r_pour = w·corridor_score·bead_cross_fraction. 실제 붓기 outcome 보상(z-only 대리 폐기).
+    capture_delta_weight: float = 30.0  # [재설계 Phase2b] r_pour에 진입 증분(target_capture_delta) 가중. 자기참조(상태)+증분 혼합 → plateau 해소 + farming 차단.
     pour_z_target:      float = 0.03   # [test3] 주둥이를 target 입구 위 3cm로 유도 (충돌회피 마진 + bead 진입 높이)
     pour_z_scale:       float = 20.0   # [test3] z-clearance 오차 exp 민감도 (3.5cm서 반감)
     pour_aim_scale:     float = 10.0   # [test_aim2] aim corridor 완만화(공유 pour_corridor_scale=20 절벽 → 10). env서 radius=0(flat-top 제거)와 함께 → target서 부드러운 봉우리(gradient 어디서나) → miss 교정 + 학습 stiffness↓. 부드러운 동작인데 reward 출렁이던 ② 원인 제거.

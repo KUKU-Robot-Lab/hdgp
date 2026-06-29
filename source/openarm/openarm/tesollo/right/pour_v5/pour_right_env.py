@@ -2126,7 +2126,12 @@ class PourRightEnv(DirectRLEnv):
             if self.outcome_adr is not None
             else self.cfg.weight_pour_bead
         )
-        r_pour = pour_bead_w * corridor_score * self._bead_in_target_fraction
+        # [재설계 Phase2b] 자기참조(상태) → 상태 + 진입 증분 혼합. 상태(deep tilt 보상, 붕괴 방지) 유지 +
+        #   증분(_bead_in_target_delta, 새로 들어갈 때 보너스) → plateau 해소 + "유지 farming" 차단.
+        _capture_delta = self._bead_in_target_delta.clamp(min=0.0)
+        r_pour = pour_bead_w * corridor_score * (
+            self._bead_in_target_fraction + self.cfg.capture_delta_weight * _capture_delta
+        )
         # 자세 성공: corridor 위치 준비 + tilt 100°+ (outcome_adr trigger 지표). episode buf는 termination서 갱신.
         self._pose_success_now = (
             (corridor_score >= self.cfg.pose_ready_thresh)
