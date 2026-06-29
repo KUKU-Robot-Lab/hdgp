@@ -1376,20 +1376,23 @@ class PourRightEnv(DirectRLEnv):
                 _hit, torch.zeros_like(_arm_q), self.fabric_qd[:, :NUM_ARM_DOF]
             )
 
-        # ---- 오른손: per-finger lerp 손가락 제어 (v7 복원) ----
-        #   action[7:12] ∈[-1,1] → t∈[0,1] → open(approach)~grasp 사이 per-finger lerp.
-        #   hold phase(물리 안착)엔 warmstart grasp freeze (파지 안정).
+        # ---- 오른손: per-finger lerp 손가락 제어 (v7 복원, DexPour stage 순차) ----
+        #   [DexPour 순차] arm 먼저(λ 접근) → 파지(μ). 손가락 학습을 latch 후(deep tilt)에만 활성.
+        #   approach(latch 전)·hold엔 warmstart 파지 freeze → arm 조준/이송에 정책 집중(손가락이 arm
+        #   학습을 밀어내는 것 방지: 진단=손가락 풀기로 mouth_xy 7→18cm 악화). cup_drift(deep tilt 슬립)는
+        #   latch 후 손가락 학습으로 적응. action[7:12]∈[-1,1]→t∈[0,1]→open~grasp lerp.
         _hand_action = self.actions[:, NUM_PALM_ACTION + NUM_NULLSPACE_ACTION:]    # (N,5)
         _t = ((_hand_action + 1.0) * 0.5).clamp(0.0, 1.0)                          # [0,1]
         _t20 = _t.repeat_interleave(NUM_HAND_DOF // NUM_HAND_ACTION, dim=1)        # (N,20)
         _lerp_target = self.hand_open_pose.unsqueeze(0) + _t20 * (
             self.hand_grasp_pose - self.hand_open_pose
         ).unsqueeze(0)
+        _finger_active = self._pour_ready_latched.clone()                          # latch 후만 손가락 학습
         if self.cfg.episode_hold_steps > 0:
-            _hold = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
-            hand_target = torch.where(_hold, self.grasp_hold_hand_pos_buf, _lerp_target)
-        else:
-            hand_target = _lerp_target
+            _finger_active = _finger_active & (self.episode_length_buf >= self.cfg.episode_hold_steps)
+        hand_target = torch.where(
+            _finger_active.unsqueeze(1), _lerp_target, self.grasp_hold_hand_pos_buf
+        )
         self.hand_joint_targets.copy_(hand_target)
 
         # fabric_q hand 부분 동기화 (FK 계산에 활용)
