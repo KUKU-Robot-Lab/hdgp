@@ -662,6 +662,11 @@ class PourRightEnv(DirectRLEnv):
         self._grasp_broken_rate = torch.zeros((), device=self.device)   # 로깅: 파지붕괴 종료율
         self._source_empty_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._pour_ready_latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # [v5 진동 fix] RIM pivot 기하(rim_env·rim_rel)를 latch 시점에 캡처해 고정. cup 회전이
+        #   제어 타겟에 되먹이는 진동 루프 차단 (v6 PALM처럼 palm_target을 cup pose 무관하게).
+        self._rim_env_latched = torch.zeros(self.num_envs, 3, device=self.device)
+        self._rim_rel_latched = torch.zeros(self.num_envs, 3, device=self.device)
+        self._rim_latch_captured = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._world_up = torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
 
         self._warmstart_collect_mode = False
@@ -1190,8 +1195,19 @@ class PourRightEnv(DirectRLEnv):
                 delta_rotvec_world.new_tensor([1.0, 0.0, 0.0]).expand(self.num_envs, -1),
             )
             _delta_quat_wxyz = quat_from_angle_axis(_angle, _axis)
-            rim_env = self._source_pour_point_w - self.scene.env_origins      # (N,3) env-local
-            rim_rel = rim_env - self.palm_center_pos                          # palm_ee→rim 레버 (palm_ee 앵커)
+            rim_env_dyn = self._source_pour_point_w - self.scene.env_origins  # (N,3) env-local (동적)
+            rim_rel_dyn = rim_env_dyn - self.palm_center_pos                  # palm_ee→rim 레버 (동적)
+            # [v5 진동 fix] latch 시점에 rim 기하(rim_env·rim_rel) 캡처 후 고정. freeze로 cup이 손과
+            #   rigid 결합되며 deep tilt 시 cup 회전이 source_pour_point_w→rim_env/rim_rel로 되먹여
+            #   palm_target 진동(up_dot 0.26↔0.65, frac_110 0.08→0.001 붕괴, pose_success 0.30 정체).
+            #   latch 후 rim 기준 고정 → v6 PALM처럼 palm_target이 cup pose 무관해져 진동 차단.
+            _rim_newly = self._pour_ready_latched & (~self._rim_latch_captured)
+            self._rim_env_latched = torch.where(_rim_newly.unsqueeze(1), rim_env_dyn, self._rim_env_latched)
+            self._rim_rel_latched = torch.where(_rim_newly.unsqueeze(1), rim_rel_dyn, self._rim_rel_latched)
+            self._rim_latch_captured = self._rim_latch_captured | self._pour_ready_latched
+            _rim_static = self._pour_ready_latched.unsqueeze(1)
+            rim_env = torch.where(_rim_static, self._rim_env_latched, rim_env_dyn)
+            rim_rel = torch.where(_rim_static, self._rim_rel_latched, rim_rel_dyn)
             # 회전 R 후 rim = palm_ee + R·rim_rel → palm_ee = pour_point_target − R·rim_rel (xyz 전부)
             pour_point_target = rim_env + delta[:, :3]
             if self.cfg.pour_spout_z_lock:
@@ -2689,6 +2705,7 @@ class PourRightEnv(DirectRLEnv):
         self._grasp_break_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
         self._pour_ready_latched[env_ids] = False
+        self._rim_latch_captured[env_ids] = False
         self.success_flag[env_ids] = False
         self._pre_pour_ready_steps[env_ids] = 0
         self._prev_arm_joint_vel[env_ids].zero_()
@@ -3107,6 +3124,7 @@ class PourRightEnv(DirectRLEnv):
         self._grasp_break_steps[env_ids] = 0
         self._source_empty_steps[env_ids] = 0
         self._pour_ready_latched[env_ids] = False
+        self._rim_latch_captured[env_ids] = False
         self.success_flag[env_ids] = False
         self._prev_arm_joint_vel[env_ids].zero_()
         self._prev_arm_joint_acc[env_ids].zero_()   # [Step 6]
