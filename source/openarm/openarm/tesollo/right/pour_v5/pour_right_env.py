@@ -63,8 +63,6 @@ from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
     NUM_PALM_ACTION,
-    NUM_NULLSPACE_ACTION,
-    NUM_HAND_ACTION,
     NULLSPACE_OFFSET_ARM,
     N_DEMO_NULLSPACE_OFFSET,
     NUM_FINGERTIPS,
@@ -1374,23 +1372,14 @@ class PourRightEnv(DirectRLEnv):
                 _hit, torch.zeros_like(_arm_q), self.fabric_qd[:, :NUM_ARM_DOF]
             )
 
-        # ---- 오른손: per-finger lerp 손가락 제어 (v7 복원, DexPour stage 순차) ----
-        #   [DexPour 순차] arm 먼저(λ 접근) → 파지(μ). 손가락 학습을 latch 후(deep tilt)에만 활성.
-        #   approach(latch 전)·hold엔 warmstart 파지 freeze → arm 조준/이송에 정책 집중(손가락이 arm
-        #   학습을 밀어내는 것 방지: 진단=손가락 풀기로 mouth_xy 7→18cm 악화). cup_drift(deep tilt 슬립)는
-        #   latch 후 손가락 학습으로 적응. action[7:12]∈[-1,1]→t∈[0,1]→open~grasp lerp.
-        _hand_action = self.actions[:, NUM_PALM_ACTION + NUM_NULLSPACE_ACTION:]    # (N,5)
-        _t = ((_hand_action + 1.0) * 0.5).clamp(0.0, 1.0)                          # [0,1]
-        _t20 = _t.repeat_interleave(NUM_HAND_DOF // NUM_HAND_ACTION, dim=1)        # (N,20)
-        _lerp_target = self.hand_open_pose.unsqueeze(0) + _t20 * (
-            self.hand_grasp_pose - self.hand_open_pose
-        ).unsqueeze(0)
-        _finger_active = self._pour_ready_latched.clone()                          # latch 후만 손가락 학습
-        if self.cfg.episode_hold_steps > 0:
-            _finger_active = _finger_active & (self.episode_length_buf >= self.cfg.episode_hold_steps)
-        hand_target = torch.where(
-            _finger_active.unsqueeze(1), _lerp_target, self.grasp_hold_hand_pos_buf
-        )
+        # ---- 오른손: warmstart 파지(grasp_hold) 전구간 freeze ----
+        #   [drift fix] 이전(phase 분리)엔 latch 후 손가락을 정책 lerp로 풀었으나, deep tilt 중 action≈0
+        #   →t≈0.5 반개방으로 컵이 손에서 20°(v5)/18°(v6) 슬립(cup_rel_drift) → 손목 j5 회전이 컵에
+        #   100% 전달 안 되고(110° 벽) spout 진동 → bead 0.04 천장. deep tilt(arm)는 이미 90° 풀림
+        #   (frac_90 v5 0.79). 검증된 warmstart 파지를 전구간 유지해 컵-손 rigid 결합 → drift↓·tilt
+        #   전달↑·spout 안정. 손가락 action[7:12]은 미사용(obs/action 차원 유지). r_grasp는 contact
+        #   유지로 상수화 → 정책엔 무영향(advantage baseline 상쇄). reward 식/weight/gate 불변.
+        hand_target = self.grasp_hold_hand_pos_buf
         self.hand_joint_targets.copy_(hand_target)
 
         # fabric_q hand 부분 동기화 (FK 계산에 활용)
