@@ -336,7 +336,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   구조적 강제. v5 실패모드("주둥이가 target 11cm 아래 → 붓기 기하 불가") 원천 차단.
     #   xy 조준은 정책이 유지. (z-barrier 보상은 hinge pour 충돌로 폐기됐으므로 제어로 강제.)
     pour_spout_z_lock: bool = True
-    pour_z_margin:     float = 0.07   # [조준수정 0.03→0.07] 두 컵 0.5cm 간격 → 주둥이를 입구 위 높이 띄워 deep tilt rim 수평충돌 회피 (palm z 여유, clamp_z=0). deep tilt 손실로 실측<명령.
+    pour_z_margin:     float = 0.03   # [zreward 복귀] 0.07→0.03 grip400: z 강제는 latch용 약하게. z clearance는 r_zclear(reward)로 유도.
+    weight_zclear:     float = 3.0    # [z clearance reward] deep-tilt-gated 주둥이 높이 보상 weight (r_tilt 11 안 압도, 보조)
+    zclear_target:     float = 0.04   # [z clearance reward] 목표 clearance 4cm (mouth_z_clearance 이 값까지 선형 보상)
 
     # [stage3] phase별 차등 관절 범위(하드 클램프). ready-latch(pour 단계)일 때만 fabric_q를 band로 클램프.
     #   approach(미ready)=full range(접근/grasp 자유). pour(ready)=아래 lo/hi band(deep tilt 강제).
@@ -389,8 +391,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     capture_delta_weight: float = 30.0  # [재설계 Phase2b] r_pour에 진입 증분(target_capture_delta) 가중. 자기참조(상태)+증분 혼합 → plateau 해소 + farming 차단.
     pour_z_target:      float = 0.03   # [test3] 주둥이를 target 입구 위 3cm로 유도 (충돌회피 마진 + bead 진입 높이)
     pour_z_scale:       float = 20.0   # [test3] z-clearance 오차 exp 민감도 (3.5cm서 반감)
-    pour_aim_scale:     float = 15.0   # [조준수정 10→15] mouth_xy 7.3cm(입구 4.1cm 밖) 안주 해소: 입구 중심으로 더 가파르게. radius=0 유지(flat-top farming 회피). scale 20은 진동 이력 → 15 완화.
-    pour_aim_z_max:     float = 0.10   # [조준수정 0.05→0.10] z clearance↑ 허용: 주둥이가 입구 위 높이여도 aim 보상 (rim 충돌 회피 위해 높이 띄움). 단 너무 높으면 산란 → 측정 모니터링. z_min은 pour_corridor_z_min(-0.02) 공유.
+    pour_aim_scale:     float = 10.0   # [zreward 복귀] 15→10 grip400: xy 조준은 별도 방안에서 다룸 (z 트랙과 분리).
+    pour_aim_z_max:     float = 0.05   # [zreward 복귀] 0.10→0.05 grip400: 높이 farming 제거(z는 r_zclear로). z_min은 pour_corridor_z_min(-0.02) 공유.
     #   ready_latched 이후에는 live corridor wobble이 tilt reward를 끄지 않음. 미정조준 ceiling=35×0.35=12.25.
     # [H10] 상시 내회전 유도 — r_tilt(곱)는 tilt 전엔 회전 gradient=0(chicken-and-egg) →
     #   tilt 비종속 항으로 "내회전이 옳다"를 직접 학습. w_tilt보다 작아
