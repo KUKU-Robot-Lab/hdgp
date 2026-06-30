@@ -691,29 +691,29 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                 stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
                 damping=200.0,
             ),
-            # [grip fix] freeze(position target 고정)에도 deep tilt 외력(컵 무게+관성)이 손가락 curl을
-            #   펴버려 검지/약지/소지 풀림(렌더 관찰) → 컵 slip(tilt 87°에 막힘). stiffness/damping 대폭
-            #   상향으로 actual joint를 warmstart target에 고정. (이전 220 무효는 freeze 전 동적 손가락
-            #   조건 — target 자체가 흔들렸음. freeze로 target 고정된 지금은 stiffness가 직접 유지에 기여.)
+            # [grip fix v2 절충] stiffness 800은 과도 — 손가락이 컵을 너무 꽉 잡아 deep tilt 시 target
+            #   충돌 반력이 팔로 전달돼 tilt 경직(t27/t29: frac_110 0.4→0, pose_succ 0.95→0.2, entropy 발산).
+            #   약한 손가락의 충돌 완충이 사라진 것. 100(deep tilt OK/slip)↔800(grip OK/tilt막힘) 절충=400.
+            #   grip은 원래(100)보다 강화 유지하되 deep tilt 완충 여지 남김.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_1"],
-                stiffness=300.0,
-                damping=50.0,
+                stiffness=200.0,
+                damping=35.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_2"],
-                stiffness=800.0,
-                damping=80.0,
+                stiffness=400.0,
+                damping=60.0,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_3"],
-                stiffness=800.0,
-                damping=80.0,
+                stiffness=400.0,
+                damping=60.0,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["rj_dg_[1-5]_4"],
-                stiffness=800.0,
-                damping=80.0,
+                stiffness=400.0,
+                damping=60.0,
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],
