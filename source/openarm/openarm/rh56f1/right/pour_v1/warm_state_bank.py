@@ -182,11 +182,17 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
         out: dict[str, np.ndarray] = {
             key: np.asarray(grp[key], dtype=np.float32) for key in _DATASETS
         }
-        meta = {
-            str(k).split("meta/", 1)[1]: float(v)
-            for k, v in h5.attrs.items()
-            if str(k).startswith("meta/")
-        }
+        # meta/ attr 중 수치형만 float 파싱. 문자열 attr(source_task, success_source 등)은 건너뛴다
+        # (collect_grasp_v1_warm_states 가 문자열 meta 를 쓰므로 무조건 float() 하면 ValueError).
+        meta = {}
+        for k, v in h5.attrs.items():
+            ks = str(k)
+            if not ks.startswith("meta/"):
+                continue
+            try:
+                meta[ks.split("meta/", 1)[1]] = float(v)
+            except (ValueError, TypeError):
+                pass
         out["__meta__"] = meta  # type: ignore[assignment]
         return out
 

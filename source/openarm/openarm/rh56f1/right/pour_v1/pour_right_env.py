@@ -63,6 +63,7 @@ from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
     NUM_PALM_ACTION,
+    NUM_FINGER_ACTION,
     NULLSPACE_OFFSET_ARM,
     N_DEMO_NULLSPACE_OFFSET,
     NUM_FINGERTIPS,
@@ -269,6 +270,11 @@ class PourRightEnv(DirectRLEnv):
         )
         # distal = fingertip (RH56F1 는 말단 링크가 곧 distal)
         self.distal4_body_indices: list[int] = list(self.fingertip_body_indices)
+
+        # palm_link(=r_hl_palm_sensor) → EE 제어점 offset (로컬). grasp_v1의
+        # _PALM_SENSOR_OFFSET_IN_FABRIC_PALM=(0.0,0.03,0.04)과 동일 (tesollo [0.028,0,0.04]의 rh56f1판).
+        # target을 palm_ee로 만들고 Fabrics 직전 palm_link로 역변환하는 데 사용.
+        self._palm_ee_offset_local = to_torch([0.0, 0.03, 0.04], device=self.device)
 
         # ----------------------------------------------------------------
         # Palm pose 절대 workspace (안전 한계 클램프용)
@@ -692,6 +698,12 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_cache_count = 0
         self._warmstart_reset_debug_printed = False
         self._warmstart_env_captured = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # warmstart 활성 시 _reset_idx 에서 사용 (per-env). enable_warmstart_reset 첫 활성으로 노출된
+        # 미초기화 버그 → __init__ 에서 무조건 생성. (손 freeze라 floor 는 action 미적용이나 존재 필요.)
+        self._warmstart_only_close = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._warmstart_finger_action_floor = torch.full(
+            (self.num_envs,), -1.0, device=self.device
+        )
         cache_size = max(int(self.cfg.warmstart_cache_size), 1)
         self._warmstart_arm_pos = torch.zeros(cache_size, NUM_ARM_DOF, device=self.device)
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
@@ -2748,17 +2760,18 @@ class PourRightEnv(DirectRLEnv):
 
         self.pregrasp_arm_pos_buf[env_ids] = arm_pos
         self.grasp_hold_hand_pos_buf[env_ids] = hand_pos
-        delta_20 = (self.hand_grasp_pose - self.hand_open_pose).unsqueeze(0).expand(n, -1)
-        open_20 = self.hand_open_pose.unsqueeze(0).expand(n, -1)
-        valid = torch.abs(delta_20) > 1e-6
-        t_20 = torch.where(valid, (hand_pos - open_20) / delta_20, torch.zeros_like(hand_pos))
-        t_20 = t_20.clamp(0.0, 1.0)
-        valid_f = valid.view(n, NUM_FINGER_ACTION, 4).float()
-        t_f = t_20.view(n, NUM_FINGER_ACTION, 4)
+        # RH56F1 6-DOF: tesollo 20-DOF (5손가락×4관절) reshape 잔재를 유효 DOF 평균 closure로 대체.
+        # (pour 에피소드는 손 freeze → 이 floor 는 action 미적용, per-env 값 존재만 필요.)
+        delta_hand = (self.hand_grasp_pose - self.hand_open_pose).unsqueeze(0).expand(n, -1)
+        open_hand = self.hand_open_pose.unsqueeze(0).expand(n, -1)
+        valid = torch.abs(delta_hand) > 1e-6
+        t_hand = torch.where(valid, (hand_pos - open_hand) / delta_hand, torch.zeros_like(hand_pos))
+        t_hand = t_hand.clamp(0.0, 1.0)
+        valid_f = valid.float()
         valid_count = valid_f.sum(dim=-1)
         t_finger = torch.where(
             valid_count > 0,
-            (t_f * valid_f).sum(dim=-1) / valid_count.clamp(min=1.0),
+            (t_hand * valid_f).sum(dim=-1) / valid_count.clamp(min=1.0),
             torch.zeros_like(valid_count),
         )
         self._warmstart_finger_action_floor[env_ids] = (2.0 * t_finger - 1.0).clamp(-1.0, 1.0)

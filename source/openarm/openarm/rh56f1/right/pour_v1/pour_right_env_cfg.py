@@ -424,7 +424,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
     object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
-    object_spawn_z:        float = 0.297
+    object_spawn_z:        float = 0.2773  # 07.02: grasp_v1(0.2773)·warm-state와 일치 (구 0.297은 grasp와 2cm 불일치로 warmstart 거부)
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
 
     # -----------------------------------------------------------------------
@@ -435,7 +435,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # warm state(data/grasp_warm_rh56f1.hdf5, collect_grasp_v1_warm_states.py --robot rh56f1)를
     # 생성해 warm_state_paths 로 연결한다. 활성화하려면 아래를 True 로 바꾼다
     # (실제 hdf5 생성·검증 후 학습 시점 결정). 파일 없으면 자동 rollout fallback.
-    enable_warmstart_reset: bool = False
+    # 07.01: grasp_v1 2048 ep3000 best 체크포인트로 grasp_warm_rh56f1.hdf5(2048개, num_contacts 3.92) 생성·검증 완료 → 활성화.
+    enable_warmstart_reset: bool = True
     warmstart_checkpoint_path: str = (
         _os.path.join(_HDGP_ROOT, "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test3/nn/5g_grasp_right-v7-2.pth")
     )
