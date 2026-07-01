@@ -663,7 +663,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     out_path = args_cli.eval_out or os.path.join(log_dir, f"eval_report_{stamp}.md")
 
     lines = []
-    lines.append(f"# pour_v1 play.py 기준 환경별 bead 이송 평가")
+    lines.append(f"# {task_name} play.py 기준 환경별 bead 이송 평가")
     lines.append("")
     lines.append(f"- **task**: `{task_name}`")
     lines.append(f"- **checkpoint**: `{ckpt_name}`")
