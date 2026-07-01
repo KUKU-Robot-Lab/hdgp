@@ -498,10 +498,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_adr_custom_cfg: dict = {
         "success": {
             "fill_ratio": (0.20, 0.50),  # 2개→5개 커리큘럼
+            # [pour_v1 정렬] r_aim 급경사도(pour_aim_scale) 단계 상승 10→15 → 주둥이를 입구 중심으로 점진 유도.
+            "aim_scale": (10.0, 15.0),
         }
     }
     success_adr_num_increments: int = 8
-    success_adr_increment_interval: int = 20000
+    # [pour_v1 정렬] 20000이면 첫 체크가 ~40M프레임(env-step 20000)에서야 발생 → success_adr(aim/fill) 미발동.
+    #   2000으로 낮춰 ~4M프레임마다 1단계 체크 → 8단계 ≈ 32M프레임에 완주.
+    success_adr_increment_interval: int = 2000
     success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
 
     # [재설계 outcome ADR] DexPour 커리큘럼: 자세 성공률 80%+ 시 bead 보상(r_pour) weight 0→50 램프.
