@@ -58,7 +58,7 @@ params:
   load_path: ''
 
   config:
-    name: open-tesol_r_pour_v6-lstm
+    name: open-tesol_b_pour_sensor-lstm
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
