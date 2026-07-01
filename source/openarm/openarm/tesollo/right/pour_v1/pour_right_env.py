@@ -2427,6 +2427,13 @@ class PourRightEnv(DirectRLEnv):
         if self.success_adr is not None:
             diag["log/adr_success"] = torch.tensor(self.success_adr.progress, device=self.device)
             diag["log/success_fill_ratio"] = torch.tensor(float(success_fill_ratio), device=self.device)
+            # [진단] ADR 트리거 판정값(0.15 문턱과 비교)과 현재 aim_scale — ADR 실제 발동 여부 가시화.
+            diag["log/adr_ep_success_rate"] = torch.tensor(
+                self._successful_episodes / max(self._total_episodes, 1), device=self.device
+            )
+            diag["log/adr_aim_scale"] = torch.tensor(
+                float(self.success_adr.get_param("success", "aim_scale")), device=self.device
+            )
         for k, v in diag.items():
             self.extras[k] = v.mean() if isinstance(v, torch.Tensor) and v.dim() > 0 else v
 
