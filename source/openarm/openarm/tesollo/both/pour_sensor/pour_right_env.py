@@ -731,6 +731,10 @@ class PourRightEnv(DirectRLEnv):
         self._spill_delta = torch.zeros(self.num_envs, device=self.device)
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
+        # [pour_v1 정렬] done 순간의 outcome 스냅샷 (렌더 final-frame과 동일) → outcome/* 로깅용
+        self._last_done_bead = torch.zeros(self.num_envs, device=self.device)
+        self._last_done_spill = torch.zeros(self.num_envs, device=self.device)
+        self._last_done_mouth_xy = torch.zeros(self.num_envs, device=self.device)
         # [REDESIGN v4] dense bead 보상: 방출된 bead의 target 축 근접 점수 (N,)
         self._bead_near_score = torch.zeros(self.num_envs, device=self.device)
         self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -2210,13 +2214,19 @@ class PourRightEnv(DirectRLEnv):
         #   xy는 target에서 부드러운 봉우리(gradient 어디서나, 절벽 없음 → 정밀 + 학습 stiffness↓).
         #   z는 soft band[pour_corridor_z_min(-0.02), pour_aim_z_max(0.05)] — 영역만, 과도 제한 없음.
         #   (구 generous corridor xy0.076·z0.12가 빗나가는 pour를 보상 → miss; 구 scale20 절벽이 진동 ②)
+        # [pour_v1 정렬][ADR 조준개선] aim 급경사도(scale)를 success_adr로 10→15 단계 상승 (주둥이→입구 중심 점진 유도).
+        _aim_scale_now = (
+            self.success_adr.get_param("success", "aim_scale")
+            if self.success_adr is not None
+            else self.cfg.pour_aim_scale
+        )
         aim_score = pour_corridor_score(
             self._source_pour_point_w,
             self._target_opening_w,
             0.0,
             self.cfg.pour_corridor_z_min,
             self.cfg.pour_aim_z_max,
-            self.cfg.pour_aim_scale,
+            _aim_scale_now,
         )
         # [Phase1] 곱셈 r_pour(=w_pour·tilt_progress·aim_score) → 덧셈 분해.
         #   r_transport = w_transport·aim_score (tilt 무관 위치/조준). progress 곱 제거로 saddle 해소.
@@ -2493,6 +2503,10 @@ class PourRightEnv(DirectRLEnv):
             "log/source_release_delta":  source_release_delta.mean(),
             "log/target_capture_delta":  target_capture_delta.mean(),
             "log/spill_ratio":           self._spill_ratio.mean(),
+            # [pour_v1 정렬] done 순간 outcome (렌더 final-frame 동일): 에피소드 완료 시점 bead/spill/mouth_xy
+            "outcome/bead_at_done":      self._last_done_bead.mean(),
+            "outcome/spill_at_done":     self._last_done_spill.mean(),
+            "outcome/mouth_xy_at_done":  self._last_done_mouth_xy.mean(),
             # [Phase0] rim-pivot hinge 기계적 파손 측정: palm 위치 박스(palm_mins/maxs)가
             #   rim-pivot 보정 palm 이동을 클램프한 양 = pour_point가 명령 위치를 벗어난 정도.
             #   tilt 정지(~83°)와 동시에 상승하면 → 박스가 틸트 벽(reward 아님) 확정.
@@ -2536,6 +2550,13 @@ class PourRightEnv(DirectRLEnv):
         if self.success_adr is not None:
             diag["log/adr_success"] = torch.tensor(self.success_adr.progress, device=self.device)
             diag["log/success_fill_ratio"] = torch.tensor(float(success_fill_ratio), device=self.device)
+            # [pour_v1 정렬] ADR 트리거 판정값(0.15 문턱)과 현재 aim_scale — success_adr 실제 발동 여부 가시화.
+            diag["log/adr_ep_success_rate"] = torch.tensor(
+                self._successful_episodes / max(self._total_episodes, 1), device=self.device
+            )
+            diag["log/adr_aim_scale"] = torch.tensor(
+                float(self.success_adr.get_param("success", "aim_scale")), device=self.device
+            )
         for k, v in diag.items():
             self.extras[k] = v.mean() if isinstance(v, torch.Tensor) and v.dim() > 0 else v
 
@@ -2631,6 +2652,13 @@ class PourRightEnv(DirectRLEnv):
             #   /timeout까지 붓기 지속. success_flag는 로깅·ADR trigger용으로만 유지(위에서 계산).
             #   근거: full-horizon 측정서 끊으면 bead 0.07 스냅샷 vs 지속 시 0.34(5배). success가 붓기 중간에 발화.
         )
+
+        # [pour_v1 정렬][렌더-동일 로깅] done 순간의 outcome(bead/spill/mouth_xy)을 env별 보존 (리셋 전=에피소드 완료 상태).
+        _done_mask = terminated | truncated
+        if bool(_done_mask.any()):
+            self._last_done_bead[_done_mask] = self._bead_in_target_fraction[_done_mask]
+            self._last_done_spill[_done_mask] = self._spill_ratio[_done_mask]
+            self._last_done_mouth_xy[_done_mask] = self._mouth_xy_distance[_done_mask]
 
         return terminated, truncated
 
