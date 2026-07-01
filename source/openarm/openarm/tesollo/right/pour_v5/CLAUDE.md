@@ -1,7 +1,7 @@
 # pour 프로젝트 전용 규칙 — Tesollo hand pouring
 
-> **v5/v6 공통 메인.** `pour_v6/CLAUDE.md`가 이 파일을 `@import`한다.
-> v5/v6 차이는 **틸팅 방식뿐**(v5=RIM-PIVOT, v6=PALM) — reward는 동일(대조군).
+> **v5/v1 공통 메인.** `pour_v1/CLAUDE.md`가 이 파일을 `@import`한다.
+> v5/v1 차이는 **틸팅 방식뿐**(v5=RIM-PIVOT, v6=PALM) — reward는 동일(대조군).
 > 저장소 공통 규칙(분산 학습 환경·도구·7축 분석 원칙·Notion 기록)은 `hdgp/CLAUDE.md` 참조.
 
 ---
@@ -91,7 +91,7 @@ local minimum·병목의 *원인*을 못 찾는다.
 
 ---
 
-## 틸팅 방식 (v5/v6 대조군)
+## 틸팅 방식 (v5/v1 대조군)
 
 - **v5 = RIM-PIVOT 틸팅** (rim 기준 pivot 회전)
 - **v6 = PALM 틸팅** (palm 기준)
@@ -103,7 +103,7 @@ local minimum·병목의 *원인*을 못 찾는다.
 
 1. reward/gate/weight 변경 전 **reward-audit 필수** (`~/.claude/skills/reward-audit/`).
 2. obs/action 차원 변경 금지 (명시 요청 없이).
-3. v3/v4는 별개(보존) — v5/v6만 수정. **v5/v6는 대조군이므로 reward 변경은 양쪽 동일 적용**(틸팅 방식만 변수 유지).
+3. v3/v4는 별개(보존) — v5/v1만 수정. **v5/v1는 대조군이므로 reward 변경은 양쪽 동일 적용**(틸팅 방식만 변수 유지).
 4. 한 번에 하나의 가설 (사용자가 통합 명시 시 예외).
 5. 변경 후 예상 지표 이동 방향 명시.
 6. 학습 전 `record_test_snapshot.py` (train.sh가 자동 기록).

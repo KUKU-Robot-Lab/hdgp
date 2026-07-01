@@ -36,7 +36,7 @@ Critic Base (105D) — sim-only full-state:
 Critic Extra (39D) — sim-only privileged:
   left_arm_joint_pos:       9
   left_arm_joint_vel:       9
-  distal_contact_binary:    5  (rl_dg_*_4)
+  distal_contact_binary:    5  (r_hl_*_4)
   distal_contact_norm:      5
   cup_height_delta:         1
   rho:                      1
@@ -79,8 +79,8 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_NULLSPACE_ACTION + NUM_HAND_ACTION  # 12 (ob
 # Observation space
 # ---------------------------------------------------------------------------
 NUM_OBSERVATIONS = 55         # Actor: 7+7+5+9+9+3+3+3+3+6 = 55
-NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
-NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
+NUM_DISTAL_SENSORS  = 5       # r_hl_*_4
+NUM_MIDDLE_SENSORS  = 5       # r_hl_*_3
 NUM_CRITIC_BASE_OBSERVATIONS = 105   # last_actions 11→6 반영 (110-5)
 NUM_CRITIC_EXTRAS = 39   # left_arm(18)+distal(10)+cup_h(1)+rho(1)+demo(arm_err1+j5_err1+target_q7=9)
 NUM_CRITIC_OBSERVATIONS = NUM_CRITIC_BASE_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 144

@@ -182,11 +182,18 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
         out: dict[str, np.ndarray] = {
             key: np.asarray(grp[key], dtype=np.float32) for key in _DATASETS
         }
-        meta = {
-            str(k).split("meta/", 1)[1]: float(v)
-            for k, v in h5.attrs.items()
-            if str(k).startswith("meta/")
-        }
+        # 수치 메타만 로드. grasp_v1/v7_2 collector가 기록하는 문자열 메타
+        # (cup_z_mode="actual_lifted", export_mode=...)는 로더 계약상 불필요하므로 건너뛴다.
+        # (float() 강제 변환 시 문자열에서 ValueError → warm-state 로드 전체 실패 방지)
+        meta = {}
+        for k, v in h5.attrs.items():
+            ks = str(k)
+            if not ks.startswith("meta/"):
+                continue
+            try:
+                meta[ks.split("meta/", 1)[1]] = float(v)
+            except (TypeError, ValueError):
+                continue
         out["__meta__"] = meta  # type: ignore[assignment]
         return out
 

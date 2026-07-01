@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-from openarm.tesollo.right.pour_v6.pour_right_utils import pour_alignment_score, pour_corridor_score
+from openarm.tesollo.right.pour_v1.pour_right_utils import pour_alignment_score, pour_corridor_score
 
 
 TASK_DIR = Path(__file__).resolve().parents[1]

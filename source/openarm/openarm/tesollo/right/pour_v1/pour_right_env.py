@@ -256,23 +256,24 @@ class PourRightEnv(DirectRLEnv):
         self.hand_dof_indices = self.actuated_dof_indices[NUM_ARM_DOF:]    # list[int]
 
         # body indices (robot.data.body_pos_w 참조용)
-        _tip_names = [f"rl_dg_{i}_tip" for i in range(1, 6)]
+        _FINGERS = ["thumb", "index", "middle", "ring", "pinky"]  # [rl USD] finger index 1-5 → 이름
+        _tip_names = [f"r_hl_{fn}_tip" for fn in _FINGERS]
         self.fingertip_body_indices: list[int] = [
             self.robot.data.body_names.index(name) for name in _tip_names
         ]
-        _palm_name = "rl_dg_palm"
+        _palm_name = "r_hl_palm"
         self.palm_body_index: int = (
             self.robot.data.body_names.index(_palm_name)
             if _palm_name in self.robot.data.body_names
             else -1
         )
-        # [palm_ee 제어] rl_dg_palm(손바닥 아래쪽)이 아닌 palm_ee(진짜 손바닥 중심)를 제어/관측 기준으로.
+        # [palm_ee 제어] r_hl_palm(손바닥 아래쪽)이 아닌 palm_ee(진짜 손바닥 중심)를 제어/관측 기준으로.
         #   URDF: palm_link_to_ee 고정조인트 origin = (0.028, 0, 0.04) 로컬, rpy=0 → orientation 공유.
-        #   palm_ee_w = rl_dg_palm_pos_w + R(rl_dg_palm_quat)·offset. Fabrics는 palm_link 추종하므로
+        #   palm_ee_w = r_hl_palm_pos_w + R(r_hl_palm_quat)·offset. Fabrics는 palm_link 추종하므로
         #   target은 palm_ee로 만들고 Fabrics 직전 palm_link로 역변환(origin -= R·offset).
         self._palm_ee_offset_local = to_torch([0.028, 0.0, 0.04], device=self.device)
-        # distal phalanx body indices (rl_dg_*_4)
-        _distal4_names = [f"rl_dg_{i}_4" for i in range(1, 6)]
+        # distal phalanx body indices (r_hl_*_4)
+        _distal4_names = [f"r_hl_{fn}_4" for fn in _FINGERS]
         self.distal4_body_indices: list[int] = [
             self.robot.data.body_names.index(name)
             for name in _distal4_names
@@ -652,6 +653,12 @@ class PourRightEnv(DirectRLEnv):
         self._spill_delta = torch.zeros(self.num_envs, device=self.device)
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
+        # [렌더-동일 로깅] 에피소드 완료(done) 시점의 outcome 값 보존 (env별 마지막 완료 에피소드).
+        #   순간 cross-env 평균(리셋직후 bead=0 희석)과 달리, 완료시점 값 = 렌더 final-frame과 동일 측정.
+        #   done 때만 갱신, 리셋에도 유지 → 항상 "각 env의 최근 완료 붓기 결과" 평균을 로깅.
+        self._last_done_bead = torch.zeros(self.num_envs, device=self.device)
+        self._last_done_spill = torch.zeros(self.num_envs, device=self.device)
+        self._last_done_mouth_xy = torch.zeros(self.num_envs, device=self.device)
         # [REDESIGN v4] dense bead 보상: 방출된 bead의 target 축 근접 점수 (N,)
         self._bead_near_score = torch.zeros(self.num_envs, device=self.device)
         self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -1184,7 +1191,7 @@ class PourRightEnv(DirectRLEnv):
             #   xyz 전부 자동 보정. 제어/클램프 기준점 = palm_ee(진짜 손바닥 중심, palm_center_pos).
             #   action delta[:3] = pour_point XYZ 이동량(palm이 아님), delta[3:6] = tilt(cup-local).
             #   v3는 XY-only였음 → 여기선 Z swing(−0.045·sinθ)까지 보정. palm_ee 앵커로 rim_rel 레버
-            #   최소화(rl_dg_palm 대비 ~offset 짧음) → clamp 깨짐 감소.
+            #   최소화(r_hl_palm 대비 ~offset 짧음) → clamp 깨짐 감소.
             _angle = delta_rotvec_world.norm(dim=-1)
             _axis = torch.where(
                 _angle.unsqueeze(-1) > 1e-8,
@@ -1435,7 +1442,7 @@ class PourRightEnv(DirectRLEnv):
         env_origins = self.scene.env_origins
 
         if self.palm_body_index >= 0:
-            # palm_center_pos = palm_ee(진짜 손바닥 중심) world 위치. rl_dg_palm + R·offset.
+            # palm_center_pos = palm_ee(진짜 손바닥 중심) world 위치. r_hl_palm + R·offset.
             _palm_quat_w = self.robot.data.body_quat_w[:, self.palm_body_index, :]
             _palm_ee_w = self.robot.data.body_pos_w[:, self.palm_body_index, :] + quat_apply(
                 _palm_quat_w, self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1)
@@ -1565,7 +1572,7 @@ class PourRightEnv(DirectRLEnv):
         # ρ binary gate: cup이 target 근처에 있을 때만 pour 보상 활성 (DexPour-style)
         self._rho = (self._cup_center_xy_dist < self.cfg.pour_binary_xy_thresh).float()
 
-        # [H11] 내회전 게이트: rl_dg_palm +y(손바닥 roll축) vs world +x 각도.
+        # [H11] 내회전 게이트: r_hl_palm +y(손바닥 roll축) vs world +x 각도.
         #   기존 palm+z(손가락축)는 roll을 못 잼 — 손가락이 +x 유지한 채 손바닥만 roll 가능
         #   → palm+z·worldX는 cos≈1 고정, 내회전 드리프트(lstm_test3 0.92→0.60)를 못 막음.
         #   sim 렌더링 확인(사용자): 손바닥이 내회전될 때 palm +y가 world +x와 둔각(90~270°, cos<0).
@@ -1573,7 +1580,7 @@ class PourRightEnv(DirectRLEnv):
         _palm_quat = self.robot.data.body_quat_w[:, self.palm_body_index]
         _palm_y = quat_apply(
             _palm_quat, _palm_quat.new_tensor([0.0, 1.0, 0.0]).expand(n, -1)
-        )  # rl_dg_palm +y (손바닥 roll축)
+        )  # r_hl_palm +y (손바닥 roll축)
         self._rim_facing_cos = _palm_y[:, 0].clamp(-1.0, 1.0)  # = palm_y · world+x
         # 내회전 = cos<0 (palm+y가 world +x와 둔각) → gate 1. (부호 반전: thresh - cos)
         #   temp=0.1(가파름): drift(cos 음수→0)시 gate 급감 → r_introt 손실 → 내회전 유지 강제.
@@ -2094,13 +2101,19 @@ class PourRightEnv(DirectRLEnv):
         #   xy는 target에서 부드러운 봉우리(gradient 어디서나, 절벽 없음 → 정밀 + 학습 stiffness↓).
         #   z는 soft band[pour_corridor_z_min(-0.02), pour_aim_z_max(0.05)] — 영역만, 과도 제한 없음.
         #   (구 generous corridor xy0.076·z0.12가 빗나가는 pour를 보상 → miss; 구 scale20 절벽이 진동 ②)
+        # [ADR 조준개선] aim 급경사도(scale)를 success_adr로 10→15 단계 상승 (주둥이→입구 중심 점진 유도).
+        _aim_scale_now = (
+            self.success_adr.get_param("success", "aim_scale")
+            if self.success_adr is not None
+            else self.cfg.pour_aim_scale
+        )
         aim_score = pour_corridor_score(
             self._source_pour_point_w,
             self._target_opening_w,
             0.0,
             self.cfg.pour_corridor_z_min,
             self.cfg.pour_aim_z_max,
-            self.cfg.pour_aim_scale,
+            _aim_scale_now,
         )
         # [Phase1] 곱셈 r_pour(=w_pour·tilt_progress·aim_score) → 덧셈 분해.
         #   r_transport = w_transport·aim_score (tilt 무관 위치/조준). progress 곱 제거로 saddle 해소.
@@ -2371,12 +2384,17 @@ class PourRightEnv(DirectRLEnv):
             "joint_State/j5": arm_joint_pos[:, 4].mean(),
             "joint_State/j6": arm_joint_pos[:, 5].mean(),
             "joint_State/j7": arm_joint_pos[:, 6].mean(),
-            # bead flow
-            "log/bead_in_target":        self._bead_in_target_fraction.mean(),
+            # [렌더-동일 로깅] 완료(done)시점 outcome = 렌더 final-frame과 동일 측정.
+            #   성공/붓기 완성도 판단은 반드시 이 outcome/*_at_done 으로 (순간평균 diag/* 아님).
+            "outcome/bead_at_done":      self._last_done_bead.mean(),
+            "outcome/spill_at_done":     self._last_done_spill.mean(),
+            "outcome/mouth_xy_at_done":  self._last_done_mouth_xy.mean(),
+            # bead flow — diag: 순간 cross-env 평균(리셋직후 bead=0 희석). 성공지표 아님, 진단전용.
+            "diag/bead_in_target_inst":  self._bead_in_target_fraction.mean(),
             "log/bead_in_source":        self._bead_in_source_fraction.mean(),
             "log/source_release_delta":  source_release_delta.mean(),
             "log/target_capture_delta":  target_capture_delta.mean(),
-            "log/spill_ratio":           self._spill_ratio.mean(),
+            "diag/spill_inst":           self._spill_ratio.mean(),
             # [Phase0] rim-pivot hinge 기계적 파손 측정: palm 위치 박스(palm_mins/maxs)가
             #   rim-pivot 보정 palm 이동을 클램프한 양 = pour_point가 명령 위치를 벗어난 정도.
             #   tilt 정지(~83°)와 동시에 상승하면 → 박스가 틸트 벽(reward 아님) 확정.
@@ -2515,6 +2533,14 @@ class PourRightEnv(DirectRLEnv):
             #   /timeout까지 붓기 지속. success_flag는 로깅·ADR trigger용으로만 유지(위에서 계산).
             #   근거: full-horizon 측정서 끊으면 bead 0.07 스냅샷 vs 지속 시 0.34(5배). success가 붓기 중간에 발화.
         )
+
+        # [렌더-동일 로깅] done 순간의 outcome(bead/spill/mouth_xy)을 env별로 보존.
+        #   여기서 캡처하는 값은 리셋 전 = 에피소드 완료 상태 = 렌더 final-frame과 동일.
+        _done_mask = terminated | truncated
+        if bool(_done_mask.any()):
+            self._last_done_bead[_done_mask] = self._bead_in_target_fraction[_done_mask]
+            self._last_done_spill[_done_mask] = self._spill_ratio[_done_mask]
+            self._last_done_mouth_xy[_done_mask] = self._mouth_xy_distance[_done_mask]
 
         return terminated, truncated
 

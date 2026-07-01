@@ -427,7 +427,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [H4] 내회전 게이트 — 붓는 방향(source→target) 대비 손바닥 법선 chirality (2D 외적)
     #   rot_cross = pour_dir × palm_normal. demo(내회전) -0.74~-1.0, 외회전 >-0.2 (완벽 분리).
     #   r_tilt에 곱해 외회전 tilt local min 차단. r_introt는 부트스트랩.
-    # [H11] 내회전 판정 = rl_dg_palm +y · world +x < thresh (cos<0=둔각 90~270°, 손바닥 roll).
+    # [H11] 내회전 판정 = r_hl_palm +y · world +x < thresh (cos<0=둔각 90~270°, 손바닥 roll).
     #   기존 palm+z(손가락축, H10b)는 roll 무감지(cos≈1 고정) → drift 못 막음. sim 렌더링 확인.
     #   gate = sigmoid((thresh - cos)/temp).
     internal_rot_thresh: float = 0.0   # cos<thresh → 내회전. (경계 cos=0=90°)
@@ -498,6 +498,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_adr_custom_cfg: dict = {
         "success": {
             "fill_ratio": (0.20, 0.50),  # 2개→5개 커리큘럼
+            # [ADR 조준개선] r_aim 급경사도(pour_aim_scale)를 단계 상승 → 주둥이를 입구 중심으로 점진 유도.
+            #   10(완만) → 15(급경사). scale 20 진동 이력 → 15 상한. fill_ratio와 동일 성공 trigger.
+            "aim_scale": (10.0, 15.0),
         }
     }
     success_adr_num_increments: int = 8
@@ -584,8 +587,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     warm_state_source: str = "disk"
     # [warmstart 롤백] data/grasp_warm_tesollo.hdf5(미생성)→datasets/grasp_warm_v7_2.hdf5(존재) 복원.
     #   tesollo hdf5는 아직 미생성 → cache 로드 실패 시 손가락 펴진 채(파지없이) 학습 → 붕괴(lstm_test31/29).
+    # [rl USD 마이그레이션] 신 USD(조인트 순서/이름 변경)에 맞춘 warmstart 재생성물 사용.
+    #   구 grasp_warm_v7_2.hdf5(구 USD)는 비호환 → data/grasp_warm_tesollo.hdf5 (grasp_v1 tesollo, _rl). pour_sensor와 동일.
     warm_state_paths: tuple[str, ...] = (
-        _os.path.normpath(_os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, "grasp_warm_v7_2.hdf5")),
+        _os.path.normpath(_os.path.join(_HDGP_ROOT, "data", "grasp_warm_tesollo.hdf5")),
     )
     freeze_grasp_hand_during_episode: bool = True
     # 최상위 비드 z=0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
@@ -649,12 +654,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     )
 
     # -----------------------------------------------------------------------
-    # 로봇 설정 (openarm_tesollo_sensor.usd: rl_dg_*_tip ContactSensor 포함)
+    # 로봇 설정 (openarm_tesollo_sensor_rl.usd: r_hl_*_tip ContactSensor 포함, rl 통일 네이밍)
+    # [rl USD 마이그레이션] 구 assets/openarm_tesollo_sensor/ → 신 assets/robot/openarm_tesollo_sensor_rl/
+    #   조인트 r_aj_/r_hj_, 링크 r_hl_ (pour_sensor/rh56f1과 동일 최신 네이밍).
     # -----------------------------------------------------------------------
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "openarm_tesollo_sensor/openarm_tesollo_sensor.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -670,29 +677,29 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             pos=[0.0, 0.0, 0.0],
             rot=[1.0, 0.0, 0.0, 0.0],
             joint_pos={
-                "openarm_right_joint1":  0.5,
-                "openarm_right_joint2":  0.1,
-                "openarm_right_joint3":  0.4,
-                "openarm_right_joint4":  0.60,
-                "openarm_right_joint5": -0.2,
-                "openarm_right_joint6":  0.0,
-                "openarm_right_joint7":  0.0,
-                "rj_dg_1_1": 0.0, "rj_dg_1_2": -1.57, "rj_dg_1_3": -0.5, "rj_dg_1_4": 0.0,
-                "rj_dg_2_1": 0.0, "rj_dg_2_2":  0.0,  "rj_dg_2_3":  0.0, "rj_dg_2_4": 0.0,
-                "rj_dg_3_1": 0.0, "rj_dg_3_2":  0.0,  "rj_dg_3_3":  0.0, "rj_dg_3_4": 0.0,
-                "rj_dg_4_1": 0.0, "rj_dg_4_2":  0.0,  "rj_dg_4_3":  0.0, "rj_dg_4_4": 0.0,
-                "rj_dg_5_1": 0.0, "rj_dg_5_2":  0.0,  "rj_dg_5_3":  0.0, "rj_dg_5_4": 0.0,
+                "r_aj_1":  0.5,
+                "r_aj_2":  0.1,
+                "r_aj_3":  0.4,
+                "r_aj_4":  0.60,
+                "r_aj_5": -0.2,
+                "r_aj_6":  0.0,
+                "r_aj_7":  0.0,
+                "r_hj_thumb_1":  0.0, "r_hj_thumb_2":  -1.57, "r_hj_thumb_3":  -0.5, "r_hj_thumb_4":  0.0,
+                "r_hj_index_1":  0.0, "r_hj_index_2":   0.0,  "r_hj_index_3":   0.0, "r_hj_index_4":  0.0,
+                "r_hj_middle_1": 0.0, "r_hj_middle_2":  0.0,  "r_hj_middle_3":  0.0, "r_hj_middle_4": 0.0,
+                "r_hj_ring_1":   0.0, "r_hj_ring_2":    0.0,  "r_hj_ring_3":    0.0, "r_hj_ring_4":   0.0,
+                "r_hj_pinky_1":  0.0, "r_hj_pinky_2":   0.0,  "r_hj_pinky_3":   0.0, "r_hj_pinky_4":  0.0,
                 **LEFT_ARM_REST_JOINT_POS,
             },
         ),
         actuators={
             "openarm_right_arm": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_right_joint[1-7]"],
+                joint_names_expr=["r_aj_[1-7]"],
                 stiffness=400.0,
                 damping=80.0,
             ),
             "openarm_left_arm": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_left_joint[1-7]"],
+                joint_names_expr=["l_aj_[1-7]"],
                 stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
                 damping=200.0,
             ),
@@ -701,27 +708,27 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             #   약한 손가락의 충돌 완충이 사라진 것. 100(deep tilt OK/slip)↔800(grip OK/tilt막힘) 절충=400.
             #   grip은 원래(100)보다 강화 유지하되 deep tilt 완충 여지 남김.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
-                joint_names_expr=["rj_dg_[1-5]_1"],
+                joint_names_expr=["r_hj_[a-z]+_1"],
                 stiffness=200.0,
                 damping=35.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
-                joint_names_expr=["rj_dg_[1-5]_2"],
+                joint_names_expr=["r_hj_[a-z]+_2"],
                 stiffness=400.0,
                 damping=60.0,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
-                joint_names_expr=["rj_dg_[1-5]_3"],
+                joint_names_expr=["r_hj_[a-z]+_3"],
                 stiffness=400.0,
                 damping=60.0,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
-                joint_names_expr=["rj_dg_[1-5]_4"],
+                joint_names_expr=["r_hj_[a-z]+_4"],
                 stiffness=400.0,
                 damping=60.0,
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_left_finger_joint[1-2]"],
+                joint_names_expr=["l_hj_gripper_[1-2]"],
                 stiffness=400.0,
                 damping=80.0,
             ),
@@ -735,21 +742,21 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Critic: distal + middle 통합 센서 (sim-only)
     # -----------------------------------------------------------------------
     right_tip_contact_links: tuple = (
-        "rl_dg_1_tip",
-        "rl_dg_2_tip",
-        "rl_dg_3_tip",
-        "rl_dg_4_tip",
-        "rl_dg_5_tip",
+        "r_hl_thumb_tip",
+        "r_hl_index_tip",
+        "r_hl_middle_tip",
+        "r_hl_ring_tip",
+        "r_hl_pinky_tip",
     )
 
     distal_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/rl_dg_[1-5]_4",
+        prim_path="/World/envs/env_.*/Robot/r_hl_[a-z]+_4",
         history_length=1,
         track_air_time=False,
     )
 
     middle_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/rl_dg_[1-5]_3",
+        prim_path="/World/envs/env_.*/Robot/r_hl_[a-z]+_3",
         history_length=1,
         track_air_time=False,
     )

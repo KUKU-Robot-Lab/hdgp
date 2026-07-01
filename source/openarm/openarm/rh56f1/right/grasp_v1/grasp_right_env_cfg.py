@@ -544,9 +544,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         track_air_time=False,
     )
 
-    # palm force sensor body. USD asset name is r_al_7.
+    # palm force sensor body = r_hl_palm_sensor (OLD rh56f1_right_plam_force_sensor 대응).
+    # 구 r_al_7(팔 손목)는 palm-cup 접촉 신호가 죽어 파지 저하 → 07.01 복구.
     palm_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/r_al_7",
+        prim_path="/World/envs/env_.*/Robot/r_hl_palm_sensor",
         filter_prim_paths_expr=["/World/envs/env_.*/Cup"],
         history_length=1,
         track_air_time=False,

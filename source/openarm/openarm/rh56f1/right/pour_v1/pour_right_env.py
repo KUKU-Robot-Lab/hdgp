@@ -661,6 +661,11 @@ class PourRightEnv(DirectRLEnv):
         self._spill_delta = torch.zeros(self.num_envs, device=self.device)
         self._bead_centroid_w = torch.zeros(self.num_envs, 3, device=self.device)
         self._spill_ratio = torch.zeros(self.num_envs, device=self.device)
+        # [렌더-동일 로깅] 에피소드 완료(done) 시점의 outcome 값 보존 (env별 마지막 완료 에피소드).
+        #   순간 cross-env 평균(리셋직후 bead=0 희석)과 달리, 완료시점 값 = 렌더 final-frame과 동일 측정.
+        self._last_done_bead = torch.zeros(self.num_envs, device=self.device)
+        self._last_done_spill = torch.zeros(self.num_envs, device=self.device)
+        self._last_done_mouth_xy = torch.zeros(self.num_envs, device=self.device)
         self._all_beads_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._first_capture_bonus_paid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pre_pour_ready_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -2174,11 +2179,17 @@ class PourRightEnv(DirectRLEnv):
             "joint_State/j5": arm_joint_pos[:, 4].mean(),
             "joint_State/j6": arm_joint_pos[:, 5].mean(),
             "joint_State/j7": arm_joint_pos[:, 6].mean(),
-            "log/bead_in_target":        self._bead_in_target_fraction.mean(),
+            # [렌더-동일 로깅] 완료(done)시점 outcome = 렌더 final-frame과 동일 측정.
+            #   성공/붓기 완성도 판단은 반드시 이 outcome/*_at_done 으로 (순간평균 diag/* 아님).
+            "outcome/bead_at_done":      self._last_done_bead.mean(),
+            "outcome/spill_at_done":     self._last_done_spill.mean(),
+            "outcome/mouth_xy_at_done":  self._last_done_mouth_xy.mean(),
+            # bead flow — diag: 순간 cross-env 평균(리셋직후 bead=0 희석). 성공지표 아님, 진단전용.
+            "diag/bead_in_target_inst":  self._bead_in_target_fraction.mean(),
             "log/bead_in_source":        self._bead_in_source_fraction.mean(),
             "log/source_release_delta":  source_release_delta.mean(),
             "log/target_capture_delta":  target_capture_delta.mean(),
-            "log/spill_ratio":           self._spill_ratio.mean(),
+            "diag/spill_inst":           self._spill_ratio.mean(),
             "joint_State/palm_clamp_viol_xy": self._palm_clamp_viol_xy.mean(),
             "joint_State/palm_clamp_viol_z":  self._palm_clamp_viol_z.mean(),
             "joint_State/palm_clamp_active":  (self._palm_clamp_viol_xy + self._palm_clamp_viol_z > 1e-4).float().mean(),
@@ -2307,6 +2318,13 @@ class PourRightEnv(DirectRLEnv):
             (self.episode_length_buf >= self.max_episode_length - 1)
             | source_drained | self.success_flag
         )
+
+        # [렌더-동일 로깅] done 순간의 outcome(bead/spill/mouth_xy)을 env별로 보존 = 렌더 final-frame과 동일.
+        _done_mask = terminated | truncated
+        if bool(_done_mask.any()):
+            self._last_done_bead[_done_mask] = self._bead_in_target_fraction[_done_mask]
+            self._last_done_spill[_done_mask] = self._spill_ratio[_done_mask]
+            self._last_done_mouth_xy[_done_mask] = self._mouth_xy_distance[_done_mask]
 
         return terminated, truncated
 

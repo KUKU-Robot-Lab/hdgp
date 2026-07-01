@@ -91,10 +91,11 @@ LEFT_HAND_REST_JOINT_POS = {name: 0.0 for name in LEFT_HAND_JOINT_NAMES}
 # ---------------------------------------------------------------------------
 # 보상/관측에 쓰는 USD body (palm + 5 말단 손가락 링크).
 # Phase 0 검증: fingertip force_sensor 링크는 병합 소멸 → 생존 말단 링크 사용.
-#   [0]=palm force sensor body (USD name is r_al_7)
+#   [0]=palm force sensor body = r_hl_palm_sensor (OLD의 rh56f1_right_plam_force_sensor 대응).
+#       (구 r_al_7는 팔 손목이라 palm-cup 접촉 신호가 죽어 파지 저하 → 07.01 복구)
 #   [1:6]=thumb_4, index_2, middle_2, ring_2, little_2
 HAND_BODY_NAMES_USD = [
-    "r_al_7",
+    "r_hl_palm_sensor",
     "r_hl_thumb_4",
     "r_hl_index_2",
     "r_hl_middle_2",
@@ -103,8 +104,8 @@ HAND_BODY_NAMES_USD = [
 ]
 
 # RH56F1 의 *_force_sensor 는 모두 실 하드웨어 힘센서 (palm + 5 fingertip) → actor obs.
-# 실 로봇 palm 힘센서 body
-PALM_FORCE_SENSOR_BODY = "r_al_7"
+# 실 로봇 palm 힘센서 body (OLD rh56f1_right_plam_force_sensor 대응)
+PALM_FORCE_SENSOR_BODY = "r_hl_palm_sensor"
 
 # fingertip 힘센서 body — *_force_sensor 링크가 USD 에서 말단 링크로 병합되어,
 # 말단 링크(thumb_4, *_2)의 ContactSensor 가 force_sensor 패드 접촉을 포착한다.

@@ -24,24 +24,25 @@ import math as _math
 # ---------------------------------------------------------------------------
 # Joint groups
 # ---------------------------------------------------------------------------
-RIGHT_ARM_JOINT_NAMES = [f"openarm_right_joint{i}" for i in range(1, 8)]
-RIGHT_HAND_JOINT_NAMES = [f"rj_dg_{f}_{j}" for f in range(1, 6) for j in range(1, 5)]
+_R_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]  # [rl USD] finger index 1-5 → 이름 (thumb..pinky)
+RIGHT_ARM_JOINT_NAMES = [f"r_aj_{i}" for i in range(1, 8)]
+RIGHT_HAND_JOINT_NAMES = [f"r_hj_{f}_{j}" for f in _R_FINGERS for j in range(1, 5)]
 RIGHT_ACTUATED_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAMES
 
-LEFT_ARM_JOINT_NAMES = [f"openarm_left_joint{i}" for i in range(1, 8)]
-LEFT_GRIPPER_JOINT_NAMES = ["openarm_left_finger_joint1", "openarm_left_finger_joint2"]
+LEFT_ARM_JOINT_NAMES = [f"l_aj_{i}" for i in range(1, 8)]
+LEFT_GRIPPER_JOINT_NAMES = ["l_hj_gripper_1", "l_hj_gripper_2"]
 LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
-    "openarm_left_joint1": -0.315,
-    "openarm_left_joint2": -0.079,  # test10: demo a11-a20 pour 구간 평균값으로 변경 (기존 -0.290)
-    "openarm_left_joint3":  0.217,  # test10: demo a11-a20 pour 구간 평균값으로 변경 (기존 +0.400)
-    "openarm_left_joint4":  0.513,
-    "openarm_left_joint5":  0.666,
-    "openarm_left_joint6": -0.729,
-    "openarm_left_joint7": -0.957,
-    "openarm_left_finger_joint1": 0.044,
-    "openarm_left_finger_joint2": 0.044,
+    "l_aj_1": -0.315,
+    "l_aj_2": -0.079,  # test10: demo a11-a20 pour 구간 평균값으로 변경 (기존 -0.290)
+    "l_aj_3":  0.217,  # test10: demo a11-a20 pour 구간 평균값으로 변경 (기존 +0.400)
+    "l_aj_4":  0.513,
+    "l_aj_5":  0.666,
+    "l_aj_6": -0.729,
+    "l_aj_7": -0.957,
+    "l_hj_gripper_1": 0.044,
+    "l_hj_gripper_2": 0.044,
 }
 
 # ---------------------------------------------------------------------------
@@ -69,13 +70,13 @@ def _left_arm_fk_hand_pose(joint_pos_dict: dict) -> tuple:
     g = lambda k: joint_pos_dict.get(k, 0.0)
     Tc = np.eye(4)
     Tc = Tc @ _Tf([0, .031, .698],     [-math.pi/2, 0, 0])
-    Tc = Tc @ _Tj([0, 0, .0625],       [0,0,0], [0,0,1],   g("openarm_left_joint1"))
-    Tc = Tc @ _Tj([-.0301,0,.06],      [-math.pi/2,0,0], [-1,0,0], g("openarm_left_joint2"))
-    Tc = Tc @ _Tj([.0301,0,.06625],    [0,0,0], [0,0,1],   g("openarm_left_joint3"))
-    Tc = Tc @ _Tj([0,.0315,.15375],    [0,0,0], [0,1,0],   g("openarm_left_joint4"))
-    Tc = Tc @ _Tj([0,-.0315,.0955],    [0,0,0], [0,0,1],   g("openarm_left_joint5"))
-    Tc = Tc @ _Tj([.0375,0,.1205],     [0,0,0], [1,0,0],   g("openarm_left_joint6"))
-    Tc = Tc @ _Tj([-.0375,0,0],        [0,0,0], [0,-1,0],  g("openarm_left_joint7"))
+    Tc = Tc @ _Tj([0, 0, .0625],       [0,0,0], [0,0,1],   g("l_aj_1"))
+    Tc = Tc @ _Tj([-.0301,0,.06],      [-math.pi/2,0,0], [-1,0,0], g("l_aj_2"))
+    Tc = Tc @ _Tj([.0301,0,.06625],    [0,0,0], [0,0,1],   g("l_aj_3"))
+    Tc = Tc @ _Tj([0,.0315,.15375],    [0,0,0], [0,1,0],   g("l_aj_4"))
+    Tc = Tc @ _Tj([0,-.0315,.0955],    [0,0,0], [0,0,1],   g("l_aj_5"))
+    Tc = Tc @ _Tj([.0375,0,.1205],     [0,0,0], [1,0,0],   g("l_aj_6"))
+    Tc = Tc @ _Tj([-.0375,0,0],        [0,0,0], [0,-1,0],  g("l_aj_7"))
     Tc = Tc @ _Tf([0, 0, .1001],       [0,0,0])
     return Tc[:3, 3], Tc[:3, :3]
 
@@ -136,26 +137,26 @@ TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 # Hand links (USD / Fabrics)
 # ---------------------------------------------------------------------------
 HAND_BODY_NAMES_USD = [
-    "rl_dg_palm",
-    "rl_dg_1_4",
-    "rl_dg_2_4",
-    "rl_dg_3_4",
-    "rl_dg_4_4",
-    "rl_dg_5_4",
+    "r_hl_palm",
+    "r_hl_thumb_4",
+    "r_hl_index_4",
+    "r_hl_middle_4",
+    "r_hl_ring_4",
+    "r_hl_pinky_4",
 ]
 
 # Fabrics FK taskmap body names (openarm_tesollo_sensor.urdf 기준)
-# [0]=palm_link (= rl_dg_palm alias, Fabrics attractor 기준점)
+# [0]=palm_link (= r_hl_palm alias, Fabrics attractor 기준점)
 # [1]=palm_x    (palm_link +X 방향 기준, 방향 참조용)
-# [2:7]=rl_dg_*_tip (fingertip sensor 링크, 센서 URDF 기준)
+# [2:7]=r_hl_*_tip (fingertip sensor 링크, 센서 URDF 기준)
 FABRIC_HAND_BODY_NAMES = [
     "palm_link",
     "palm_x",
-    "rl_dg_1_tip",
-    "rl_dg_2_tip",
-    "rl_dg_3_tip",
-    "rl_dg_4_tip",
-    "rl_dg_5_tip",
+    "r_hl_thumb_tip",
+    "r_hl_index_tip",
+    "r_hl_middle_tip",
+    "r_hl_ring_tip",
+    "r_hl_pinky_tip",
 ]
 
 
@@ -173,7 +174,7 @@ HAND_START_POSE = [
 
 # FABRICS 접근 자세 (Approach pose)
 # FABRICS pregrasp rollout 동안 유지 + episode 시작 초기 손 자세 + per-finger lerp 기준점
-# rj_dg_1_2 (thumb, Z-axis curl, range [-π, 0]) = -1.57 rad
+# r_hj_thumb_2 (thumb, Z-axis curl, range [-π, 0]) = -1.57 rad
 #   → thumb을 opposition 방향으로 pre-curl하여 접근 시 컵과의 collision 방지
 #   → episode 중 action[0]=1 → lerp → HAND_GRASP_POSE (thumb_2 = -1.5, ≈ 유지)
 #   → 나머지 손가락(1~4)은 0에서 시작하여 lerp로 curl
@@ -251,9 +252,9 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
         #   H9 축소는 외회전 억제 목적이었으나 internal_rot_gate=0.98로 해결 → 박스가 tilt 벽으로 작동.
         #   per-axis 클램프 로깅으로 binding bound 확정 후 안 쓰는 방향은 재축소 예정.
         # [test4] z_max 0.62→0.68. lstm_test3 진단: palm_clamp_active 0.87(=Z 단독, xy위반≈0),
-        #   viol_z max 0.043m ≈ palm_ee offset Z(0.04). 원인=제어점이 rl_dg_palm(손바닥 아래)이라
+        #   viol_z max 0.043m ≈ palm_ee offset Z(0.04). 원인=제어점이 r_hl_palm(손바닥 아래)이라
         #   deep tilt 시 palm_ee(컵 중심) offset이 회전하며 보상 상승분이 z_max에 걸림.
-        # [palm_ee 제어] 박스 기준이 이제 rl_dg_palm이 아닌 palm_ee(진짜 손바닥 중심). offset 회전
+        # [palm_ee 제어] 박스 기준이 이제 r_hl_palm이 아닌 palm_ee(진짜 손바닥 중심). offset 회전
         #   binding은 IK가 흡수 → z_max 0.68은 generous 값으로 유지, 첫 palm_ee run의 viol_z로 재보정.
         #   (0.72는 과거 g_clear 과상승/외회전 유발 → 그 아래 유지, 외회전은 internal_rot_gate로 제어)
         0.65, 0.25, 0.68,
@@ -269,37 +270,37 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
 
 # RL이 직접 제어하는 curl joints (5D action, 손가락당 1D)
 HAND_CURL_JOINT_NAMES = [
-    "rj_dg_1_2",  # thumb curl (Z, range [-π, 0])
-    "rj_dg_2_2",  # index curl (Y, range [0, 2.007])
-    "rj_dg_3_2",  # middle curl (Y, range [0, 1.955])
-    "rj_dg_4_2",  # ring curl (Y, range [0, 1.902])
-    "rj_dg_5_3",  # pinky curl (Y, _1 고정이므로 _3 사용)
+    "r_hj_thumb_2",  # thumb curl (Z, range [-π, 0])
+    "r_hj_index_2",  # index curl (Y, range [0, 2.007])
+    "r_hj_middle_2",  # middle curl (Y, range [0, 1.955])
+    "r_hj_ring_2",  # ring curl (Y, range [0, 1.902])
+    "r_hj_pinky_3",  # pinky curl (Y, _1 고정이므로 _3 사용)
 ]
 
 # 고정 joints (RL 제어 제외)
 HAND_FIXED_JOINT_NAMES = [
-    "rj_dg_1_1",  # thumb abduction: 0.0 고정
-    "rj_dg_2_1",  # index abduction: 0.0 고정
-    "rj_dg_3_1",  # middle abduction: 0.0 고정
-    "rj_dg_4_1",  # ring abduction: 0.0 고정
-    "rj_dg_5_1",  # pinky Z-flex: 0.0 고정
-    "rj_dg_5_2",  # pinky abduction: 0.0 고정
+    "r_hj_thumb_1",  # thumb abduction: 0.0 고정
+    "r_hj_index_1",  # index abduction: 0.0 고정
+    "r_hj_middle_1",  # middle abduction: 0.0 고정
+    "r_hj_ring_1",  # ring abduction: 0.0 고정
+    "r_hj_pinky_1",  # pinky Z-flex: 0.0 고정
+    "r_hj_pinky_2",  # pinky abduction: 0.0 고정
 ]
 HAND_FIXED_JOINT_VALUES = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # iCub distal tendon 커플링 (PIP = _3, DIP = _4)
 HAND_PIP_JOINT_NAMES = [
-    "rj_dg_1_3",  # thumb PIP
-    "rj_dg_2_3",  # index PIP
-    "rj_dg_3_3",  # middle PIP
-    "rj_dg_4_3",  # ring PIP
-    "rj_dg_5_4",  # pinky DIP (pinky _3이 curl이므로 _4가 커플링)
+    "r_hj_thumb_3",  # thumb PIP
+    "r_hj_index_3",  # index PIP
+    "r_hj_middle_3",  # middle PIP
+    "r_hj_ring_3",  # ring PIP
+    "r_hj_pinky_4",  # pinky DIP (pinky _3이 curl이므로 _4가 커플링)
 ]
 HAND_DIP_JOINT_NAMES = [
-    "rj_dg_1_4",  # thumb DIP
-    "rj_dg_2_4",  # index DIP
-    "rj_dg_3_4",  # middle DIP
-    "rj_dg_4_4",  # ring DIP
+    "r_hj_thumb_4",  # thumb DIP
+    "r_hj_index_4",  # index DIP
+    "r_hj_middle_4",  # middle DIP
+    "r_hj_ring_4",  # ring DIP
 ]
 
 # 커플링 비율 (HAND_GRASP_POSE 기준)
