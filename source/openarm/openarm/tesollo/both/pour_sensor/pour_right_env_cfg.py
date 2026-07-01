@@ -596,10 +596,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS에서 hand local_z=0.05)
     left_target_cup_pos_env_local: tuple[float, float, float] = tuple(LEFT_TARGET_CUP_POS_ENV_LOCAL)
     left_target_cup_quat_wxyz: tuple[float, float, float, float] = tuple(LEFT_TARGET_CUP_QUAT_WXYZ)
-    # [both/pour_sensor] 왼팔 action(7-DOF joint delta) + 컵 kinematic-follow 파라미터
-    #   left_arm_action_delta_rad: policy step당 왼팔 관절 최대 이동량[rad] (속도 cap; rest 기준 누적)
-    #   left_cup_follow_local_z:   왼손 body(l_hl_gripper_base) frame Z 방향 컵 offset[m] (고정배치 0.05와 일치)
-    left_arm_action_delta_rad: float = 0.03
+    # [both/pour_sensor] 왼팔 TCP(DifferentialIK) 제어 + 컵 kinematic-follow 파라미터
+    #   left_tcp_action_delta_m:  policy step당 왼팔 TCP 위치 최대 이동량[m] (속도 cap; rest 기준 누적)
+    #   left_tcp_workspace_range: rest TCP 기준 위치 클램프 박스 half-extent [m] (x,y,z)
+    #   left_cup_follow_local_z:  왼손 body(l_hl_gripper_base) frame Z 방향 컵 offset[m] (고정배치 0.05와 일치)
+    left_tcp_action_delta_m: float = 0.02
+    left_tcp_workspace_range: tuple[float, float, float] = (0.20, 0.20, 0.20)
     left_cup_follow_local_z: float = 0.05
     source_cup_pour_point_pos_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_POINT_POS_B)
     target_cup_opening_pos_b: tuple[float, float, float] = tuple(TARGET_CUP_OPENING_POS_B)

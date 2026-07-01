@@ -37,10 +37,10 @@ def _int_constant(source: str, name: str) -> int:
 
 
 def test_action_obs_contract_both_pour_sensor() -> None:
-    """[both/pour_sensor] action = 오른팔 12D + 왼팔 7D = 19D. critic obs 144 유지."""
+    """[both/pour_sensor] action = 오른팔 12D + 왼팔 TCP 3D(DiffIK) = 15D. critic obs 144 유지."""
     constants = _read("pour_right_constants.py")
-    assert _int_constant(constants, "NUM_LEFT_ARM_ACTION") == 7
-    assert _int_constant(constants, "NUM_ACTIONS") == 19
+    assert _int_constant(constants, "NUM_LEFT_TCP_ACTION") == 3
+    assert _int_constant(constants, "NUM_ACTIONS") == 15
     assert _int_constant(constants, "NUM_OBSERVATIONS") == 55
     assert _int_constant(constants, "NUM_CRITIC_OBSERVATIONS") == 144
 

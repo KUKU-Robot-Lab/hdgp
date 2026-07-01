@@ -73,10 +73,11 @@ NUM_FINGERTIPS = 5
 NUM_PALM_ACTION = 6   # 6D palm pose (Fabrics IK)
 NUM_NULLSPACE_ACTION = 1   # [2b] arm 잉여 1-DOF (팔꿈치↔손목 self-motion) 정책 제어
 NUM_HAND_ACTION = 5   # [v7 복원] per-finger lerp: action[7:12] ∈[-1,1] → open(approach)~grasp 사이
-# [both/pour_sensor] 왼팔 7-DOF joint delta (action[12:19]). 왼손 그리퍼는 닫힘 고정(grasp 제외).
-#   target 컵이 왼손에 kinematic-follow → 움직이는 목표. warm/reward 재학습 전제.
-NUM_LEFT_ARM_ACTION = 7
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_NULLSPACE_ACTION + NUM_HAND_ACTION + NUM_LEFT_ARM_ACTION  # 19
+# [both/pour_sensor] 왼팔 TCP 3D 위치 delta (action[12:15]) → DifferentialIK(DLS)로 l_aj target.
+#   왼손 TCP(l_hl_gripper_base) orientation은 rest upright 고정(receiving 컵 세움 유지),
+#   위치만 정책 제어. 그리퍼는 닫힘 고정(grasp 제외). target 컵은 왼손 kinematic-follow.
+NUM_LEFT_TCP_ACTION = 3
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_NULLSPACE_ACTION + NUM_HAND_ACTION + NUM_LEFT_TCP_ACTION  # 15
 
 # ---------------------------------------------------------------------------
 # Observation space

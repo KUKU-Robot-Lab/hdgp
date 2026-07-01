@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 from collections.abc import Sequence
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -47,11 +48,18 @@ for _parent in Path(__file__).resolve().parents:
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCollection
+from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_from_angle_axis, quat_mul
+from isaaclab.utils.math import (
+    quat_apply,
+    quat_apply_inverse,
+    quat_from_angle_axis,
+    quat_mul,
+    subtract_frame_transforms,
+)
 
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
@@ -82,6 +90,7 @@ from .r_beta_trajectory import RBETA_BETA, RBETA_ARM, RBETA_N
 from .pour_adr import PourADR
 from .pour_adr import PourADR as GraspADR
 from .pour_right_preset import (
+    _left_arm_fk_hand_pose,
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
     LEFT_ARM_REST_JOINT_POS,
@@ -369,32 +378,55 @@ class PourRightEnv(DirectRLEnv):
         self.left_gripper_dof_indices = [
             self.robot.joint_names.index(n) for n in _left_names if n.startswith("l_hj_gripper_")
         ]
-        _n_larm = len(self.left_arm_only_dof_indices)
-        # 왼팔 rest(7,) / 그리퍼 rest(gripper,)
-        self.left_arm_rest_only = to_torch(
-            [LEFT_ARM_REST_JOINT_POS.get(self.robot.joint_names[i], 0.0)
-             for i in self.left_arm_only_dof_indices], device=self.device
-        ).unsqueeze(0).repeat(self.num_envs, 1)
+        # 그리퍼 rest (닫힘 고정용)
         self.left_gripper_rest = to_torch(
             [LEFT_ARM_REST_JOINT_POS.get(self.robot.joint_names[i], 0.0)
              for i in self.left_gripper_dof_indices], device=self.device
         ).unsqueeze(0).repeat(self.num_envs, 1)
-        # 왼팔 joint 한계 (delta 누적 클램프용)
-        _limits = getattr(self.robot.data, "soft_joint_pos_limits", None)
-        if _limits is None:
-            _limits = self.robot.data.joint_pos_limits
-        _llim = _limits[0, self.left_arm_only_dof_indices]                          # (7,2)
-        self._left_arm_min = _llim[:, 0].unsqueeze(0).clone()
-        self._left_arm_max = _llim[:, 1].unsqueeze(0).clone()
-        # policy step당 최대 관절 이동량 [rad] (속도 cap; 오른팔 palm_delta와 유사한 보수적 값)
-        self.left_arm_delta = float(self.cfg.left_arm_action_delta_rad)
-        # RL이 누적 제어하는 왼팔 target (reset 시 rest로 초기화)
-        self.left_arm_target = self.left_arm_rest_only.clone()
-        # 왼손 body index + 컵 follow offset (preset FK와 동일: [0,0,local_z] + R_y(+90°))
+        # 왼손 TCP body(l_hl_gripper_base = 컵이 따라가는 body) + jacobian index (fixed base → idx-1)
         self._left_hand_body_index = (
             self.robot.data.body_names.index("l_hl_gripper_base")
             if "l_hl_gripper_base" in self.robot.data.body_names else -1
         )
+        self._left_ee_jacobi_idx = (
+            self._left_hand_body_index - 1 if self.robot.is_fixed_base else self._left_hand_body_index
+        )
+        # DifferentialIK(DLS): 왼팔 TCP pose target → l_aj_* joint target
+        self._left_ik = DifferentialIKController(
+            DifferentialIKControllerCfg(
+                command_type="pose", use_relative_mode=False, ik_method="dls"
+            ),
+            num_envs=self.num_envs,
+            device=self.device,
+        )
+        # rest 왼팔 TCP pose (robot-base-local) — preset FK로 계산(리셋 스테일 body_pos_w 불사용)
+        _p_hand, _R = _left_arm_fk_hand_pose(LEFT_ARM_REST_JOINT_POS)   # (3,), (3,3) base-local
+        _R = np.asarray(_R, dtype=float)
+        _tr = _R[0, 0] + _R[1, 1] + _R[2, 2]
+        if _tr > 0:
+            _s = 2.0 * np.sqrt(_tr + 1.0)
+            _q = [0.25 * _s, (_R[2, 1] - _R[1, 2]) / _s, (_R[0, 2] - _R[2, 0]) / _s, (_R[1, 0] - _R[0, 1]) / _s]
+        elif _R[0, 0] > _R[1, 1] and _R[0, 0] > _R[2, 2]:
+            _s = 2.0 * np.sqrt(1.0 + _R[0, 0] - _R[1, 1] - _R[2, 2])
+            _q = [(_R[2, 1] - _R[1, 2]) / _s, 0.25 * _s, (_R[0, 1] + _R[1, 0]) / _s, (_R[0, 2] + _R[2, 0]) / _s]
+        elif _R[1, 1] > _R[2, 2]:
+            _s = 2.0 * np.sqrt(1.0 + _R[1, 1] - _R[0, 0] - _R[2, 2])
+            _q = [(_R[0, 2] - _R[2, 0]) / _s, (_R[0, 1] + _R[1, 0]) / _s, 0.25 * _s, (_R[1, 2] + _R[2, 1]) / _s]
+        else:
+            _s = 2.0 * np.sqrt(1.0 + _R[2, 2] - _R[0, 0] - _R[1, 1])
+            _q = [(_R[1, 0] - _R[0, 1]) / _s, (_R[0, 2] + _R[2, 0]) / _s, (_R[1, 2] + _R[2, 1]) / _s, 0.25 * _s]
+        _q = np.array(_q, dtype=float)
+        _q = _q / np.linalg.norm(_q)
+        self._left_tcp_rest_pos_b = to_torch([float(x) for x in _p_hand], device=self.device).unsqueeze(0)   # (1,3)
+        self._left_tcp_rest_quat_b = to_torch([float(x) for x in _q], device=self.device).unsqueeze(0)       # (1,4) wxyz
+        # 정책이 누적 제어하는 TCP 위치 target(base) + 고정 upright orientation(=rest)
+        self.left_tcp_target_pos_b = self._left_tcp_rest_pos_b.repeat(self.num_envs, 1).contiguous()
+        self.left_tcp_fixed_quat_b = self._left_tcp_rest_quat_b.repeat(self.num_envs, 1).contiguous()
+        self.left_tcp_delta = float(self.cfg.left_tcp_action_delta_m)
+        _wr = to_torch(list(self.cfg.left_tcp_workspace_range), device=self.device).unsqueeze(0)   # (1,3)
+        self._left_tcp_min = self._left_tcp_rest_pos_b - _wr
+        self._left_tcp_max = self._left_tcp_rest_pos_b + _wr
+        # 컵 follow offset (preset FK와 동일: [0,0,local_z] + R_y(+90°))
         self._left_cup_follow_offset = to_torch(
             [0.0, 0.0, float(self.cfg.left_cup_follow_local_z)], device=self.device
         )
@@ -1117,16 +1149,16 @@ class PourRightEnv(DirectRLEnv):
         alpha_action = actions[:, 6]    # (N,) ∈ [-1, 1] — [2b] arm 잉여 1-DOF (nullspace self-motion)
         self._raw_null_action.copy_(alpha_action)
 
-        # ---- [both/pour_sensor] 왼팔 7-DOF joint delta (action[12:19]) ----
-        # rest 기준 누적 target을 관절 한계로 클램프 (속도 cap = left_arm_delta).
-        # episode_hold_steps 동안은 왼팔도 고정(물리 안착) — 오른팔 hold와 동일.
-        left_action = actions[:, 12:12 + len(self.left_arm_only_dof_indices)]        # (N,7) ∈ [-1,1]
+        # ---- [both/pour_sensor] 왼팔 TCP 3D 위치 delta (action[12:15]) ----
+        # rest TCP 기준 누적 위치 target을 workspace 박스로 클램프 (속도 cap = left_tcp_delta).
+        # orientation은 rest upright 고정. episode_hold_steps 동안은 왼팔도 고정(물리 안착).
+        left_action = actions[:, 12:15]                                              # (N,3) ∈ [-1,1]
         if self.cfg.episode_hold_steps > 0:
             _lhold = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
             left_action = torch.where(_lhold, torch.zeros_like(left_action), left_action)
-        self.left_arm_target = torch.clamp(
-            self.left_arm_target + left_action * self.left_arm_delta,
-            self._left_arm_min, self._left_arm_max,
+        self.left_tcp_target_pos_b = torch.clamp(
+            self.left_tcp_target_pos_b + left_action * self.left_tcp_delta,
+            self._left_tcp_min, self._left_tcp_max,
         )
 
         # ---- Pour phase: Fabrics arm 제어 ----
@@ -1461,12 +1493,29 @@ class PourRightEnv(DirectRLEnv):
             torch.zeros_like(self.hand_joint_targets), joint_ids=self.hand_dof_indices
         )
 
-        # ---- 왼팔: RL joint delta target (그리퍼는 rest 닫힘 고정 = grasp 제외) ----
+        # ---- 왼팔: DifferentialIK(DLS) — TCP pose target → l_aj_* joint target ----
+        # jacobian: (N,6,7) l_hl_gripper_base body ↔ l_aj_* joints (base 프레임).
+        # ee_pose_b: 현재 TCP를 root(base) 프레임으로 변환 (jacobian과 동일 프레임).
+        _jac = self.robot.root_physx_view.get_jacobians()[
+            :, self._left_ee_jacobi_idx, :, self.left_arm_only_dof_indices
+        ]
+        _ee_pos_w = self.robot.data.body_pos_w[:, self._left_hand_body_index]
+        _ee_quat_w = self.robot.data.body_quat_w[:, self._left_hand_body_index]
+        _root_pos_w = self.robot.data.root_pos_w
+        _root_quat_w = self.robot.data.root_quat_w
+        _ee_pos_b, _ee_quat_b = subtract_frame_transforms(
+            _root_pos_w, _root_quat_w, _ee_pos_w, _ee_quat_w
+        )
+        _left_joint_pos = self.robot.data.joint_pos[:, self.left_arm_only_dof_indices]
+        self._left_ik.set_command(
+            torch.cat([self.left_tcp_target_pos_b, self.left_tcp_fixed_quat_b], dim=-1)
+        )
+        _left_joint_des = self._left_ik.compute(_ee_pos_b, _ee_quat_b, _jac, _left_joint_pos)
         self.robot.set_joint_position_target(
-            self.left_arm_target, joint_ids=self.left_arm_only_dof_indices
+            _left_joint_des, joint_ids=self.left_arm_only_dof_indices
         )
         self.robot.set_joint_velocity_target(
-            torch.zeros_like(self.left_arm_target), joint_ids=self.left_arm_only_dof_indices
+            torch.zeros_like(_left_joint_des), joint_ids=self.left_arm_only_dof_indices
         )
         if self.left_gripper_dof_indices:
             self.robot.set_joint_position_target(
@@ -2783,7 +2832,10 @@ class PourRightEnv(DirectRLEnv):
         # actions 리셋: action=0 = current rim/palm pose 유지.
         self.actions[env_ids, :] = 0.0
         self.prev_actions[env_ids, :] = 0.0
-        self.left_arm_target[env_ids] = self.left_arm_rest_only[env_ids]   # 왼팔 target rest 복원
+        # 왼팔 TCP target을 rest로 복원 (위치 + upright orientation), IK 내부상태 리셋
+        self.left_tcp_target_pos_b[env_ids] = self._left_tcp_rest_pos_b
+        self.left_tcp_fixed_quat_b[env_ids] = self._left_tcp_rest_quat_b
+        self._left_ik.reset(env_ids)
         self._raw_null_action[env_ids] = 0.0
         self._ema_null_action[env_ids] = 0.0
         self._intermediate_values_step = -1
@@ -3218,7 +3270,10 @@ class PourRightEnv(DirectRLEnv):
 
         self.actions[env_ids, :] = 0.0
         self.prev_actions[env_ids, :] = 0.0
-        self.left_arm_target[env_ids] = self.left_arm_rest_only[env_ids]   # 왼팔 target rest 복원
+        # 왼팔 TCP target을 rest로 복원 (위치 + upright orientation), IK 내부상태 리셋
+        self.left_tcp_target_pos_b[env_ids] = self._left_tcp_rest_pos_b
+        self.left_tcp_fixed_quat_b[env_ids] = self._left_tcp_rest_quat_b
+        self._left_ik.reset(env_ids)
         self._raw_null_action[env_ids] = 0.0
         self._ema_null_action[env_ids] = 0.0
         self._pre_pour_ready_steps[env_ids] = 0
