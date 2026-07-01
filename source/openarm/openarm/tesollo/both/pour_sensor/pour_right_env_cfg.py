@@ -600,8 +600,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   left_tcp_action_delta_m:  policy step당 왼팔 TCP 위치 최대 이동량[m] (속도 cap; rest 기준 누적)
     #   left_tcp_workspace_range: rest TCP 기준 위치 클램프 박스 half-extent [m] (x,y,z)
     #   left_cup_follow_local_z:  왼손 body(l_hl_gripper_base) frame Z 방향 컵 offset[m] (고정배치 0.05와 일치)
-    left_tcp_action_delta_m: float = 0.02
-    left_tcp_workspace_range: tuple[float, float, float] = (0.20, 0.20, 0.20)
+    left_tcp_action_delta_m: float = 0.01
+    left_tcp_workspace_range: tuple[float, float, float] = (0.08, 0.08, 0.08)
     left_cup_follow_local_z: float = 0.05
     source_cup_pour_point_pos_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_POINT_POS_B)
     target_cup_opening_pos_b: tuple[float, float, float] = tuple(TARGET_CUP_OPENING_POS_B)
@@ -700,8 +700,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             ),
             "openarm_left_arm": ImplicitActuatorCfg(
                 joint_names_expr=["l_aj_[1-7]"],
-                stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
-                damping=200.0,
+                stiffness=400.0,   # 오른팔 arm과 동일 (2000→400: 난폭 snap 완화, source 파지 충돌 impulse↓)
+                damping=80.0,
             ),
             # [grip fix v2 절충] stiffness 800은 과도 — 손가락이 컵을 너무 꽉 잡아 deep tilt 시 target
             #   충돌 반력이 팔로 전달돼 tilt 경직(t27/t29: frac_110 0.4→0, pose_succ 0.95→0.2, entropy 발산).
