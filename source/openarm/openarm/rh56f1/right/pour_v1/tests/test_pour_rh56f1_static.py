@@ -62,7 +62,7 @@ def test_preset_left_hand_rh56f1():
 
 def test_preset_body_names_rh56f1():
     preset, _ = _load_preset_and_constants()
-    assert preset.HAND_BODY_NAMES_USD[0] == "r_al_7"
+    assert preset.HAND_BODY_NAMES_USD[0] == "r_hl_palm_sensor"  # 07.01 palm 매핑 복구 (구 r_al_7 오류)
     assert len(preset.HAND_BODY_NAMES_USD) == 6
     assert all("rl_dg" not in b for b in preset.HAND_BODY_NAMES_USD)
     assert len(preset.FABRIC_HAND_BODY_NAMES) == 7

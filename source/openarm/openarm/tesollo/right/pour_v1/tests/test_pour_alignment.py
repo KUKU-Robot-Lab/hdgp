@@ -283,8 +283,6 @@ def test_reward_and_joint_logs_are_grouped_by_dashboard_namespace() -> None:
     assert '"Reward/tilt":     r_tilt.mean()' in env
     assert '"Reward/approach": r_approach.mean()' in env
     assert '"Reward_w0/tilt_pre": torch.zeros((), device=self.device)' in env
-    assert '"Reward_w0/bead_in":  r_bead_in.mean()' in env
-    assert '"Reward_w0/drain":    (g_ready * r_drain).mean()' in env
     assert '"Reward_w0/success":  (self.cfg.weight_success * r_success).mean()' in env
     assert 'self.extras["log"] = reward_log' not in env
     assert '"reward/tilt"' not in env

@@ -181,10 +181,11 @@ TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 # ---------------------------------------------------------------------------
 # 보상/관측에 쓰는 USD body (palm + 5 말단 손가락 링크).
 # Phase 0 검증: fingertip force_sensor 링크는 병합 소멸 → 생존 말단 링크 사용.
-#   [0]=palm(plam_force_sensor, 실 센서 body)
+#   [0]=palm force sensor body = r_hl_palm_sensor (OLD rh56f1_right_plam_force_sensor 대응).
+#       (구 r_al_7는 팔 손목이라 palm 자세를 오프셋만큼 틀리게 읽음 → 07.01 복구, grasp_v1과 동일)
 #   [1:6]=thumb_4, index_2, middle_2, ring_2, little_2
 HAND_BODY_NAMES_USD = [
-    "r_al_7",
+    "r_hl_palm_sensor",
     "r_hl_thumb_4",
     "r_hl_index_2",
     "r_hl_middle_2",
@@ -193,7 +194,7 @@ HAND_BODY_NAMES_USD = [
 ]
 
 # RH56F1 의 *_force_sensor 는 모두 실 하드웨어 힘센서 (palm + 5 fingertip).
-PALM_FORCE_SENSOR_BODY = "r_al_7"
+PALM_FORCE_SENSOR_BODY = "r_hl_palm_sensor"  # 구 r_al_7 오류 복구 (07.01, grasp_v1과 동일)
 
 # fingertip 힘센서 body — *_force_sensor 링크가 USD 에서 말단 링크로 병합되어,
 # 말단 링크(thumb_4, *_2)의 ContactSensor 가 force_sensor 패드 접촉을 포착한다.

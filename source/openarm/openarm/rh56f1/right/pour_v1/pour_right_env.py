@@ -2032,11 +2032,9 @@ class PourRightEnv(DirectRLEnv):
         if self.success_adr is not None:
             self.success_adr.maybe_increment(_ep_success_rate)
         # [outcome ADR] 자세 성공률 80%+ 시 bead 보상 램프
-        self.extras["log/pose_success"] = self._pose_success_now.float().mean()
         _pose_success_rate = self._pose_successful_episodes / max(self._total_episodes, 1)
         if self.outcome_adr is not None:
             self.outcome_adr.maybe_increment(_pose_success_rate)
-            self.extras["log/pose_success_rate"] = torch.tensor(float(_pose_success_rate), device=self.device)
             self.extras["log/outcome_adr_progress"] = torch.tensor(float(self.outcome_adr.progress), device=self.device)
             self.extras["log/weight_pour_bead"] = torch.tensor(
                 float(self.outcome_adr.get_param("outcome", "weight_pour_bead")), device=self.device
@@ -2061,8 +2059,6 @@ class PourRightEnv(DirectRLEnv):
         reward_w0_log: dict = {
             "Reward_w0/tilt_pre": torch.zeros((), device=self.device),
             "Reward_w0/align":    r_align.mean(),
-            "Reward_w0/bead_in":  r_bead_in.mean(),
-            "Reward_w0/drain":    (g_ready * r_drain).mean(),
             "Reward_w0/success":  (self.cfg.weight_success * r_success).mean(),
         }
         for k, v in reward_log.items():
@@ -2163,7 +2159,6 @@ class PourRightEnv(DirectRLEnv):
             "log/rim_antiparallel":      self._rim_antiparallel.mean(),
             "log/approach_xy_dist":      self._approach_xy_dist.mean(),
             "log/cup_center_xy_dist":    self._cup_center_xy_dist.mean(),
-            "log/mouth_xy_dist":         self._mouth_xy_distance.mean(),
             "log/mouth_z_clearance":     self._mouth_z_clearance.mean(),
             "log/pour_point_dyn_w":      self._pour_point_dyn_w.mean(),
             "log/pour_point_x":          (self._source_pour_point_w[:, 0] - self.scene.env_origins[:, 0]).mean(),
@@ -2184,12 +2179,6 @@ class PourRightEnv(DirectRLEnv):
             "outcome/bead_at_done":      self._last_done_bead.mean(),
             "outcome/spill_at_done":     self._last_done_spill.mean(),
             "outcome/mouth_xy_at_done":  self._last_done_mouth_xy.mean(),
-            # bead flow — diag: 순간 cross-env 평균(리셋직후 bead=0 희석). 성공지표 아님, 진단전용.
-            "diag/bead_in_target_inst":  self._bead_in_target_fraction.mean(),
-            "log/bead_in_source":        self._bead_in_source_fraction.mean(),
-            "log/source_release_delta":  source_release_delta.mean(),
-            "log/target_capture_delta":  target_capture_delta.mean(),
-            "diag/spill_inst":           self._spill_ratio.mean(),
             "joint_State/palm_clamp_viol_xy": self._palm_clamp_viol_xy.mean(),
             "joint_State/palm_clamp_viol_z":  self._palm_clamp_viol_z.mean(),
             "joint_State/palm_clamp_active":  (self._palm_clamp_viol_xy + self._palm_clamp_viol_z > 1e-4).float().mean(),
