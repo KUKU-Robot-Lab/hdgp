@@ -27,7 +27,7 @@ class PourRightEnvCfg_PLAY(PourRightEnvCfg):
 
 
 gym.register(
-    id="open-tesol_both_pour_sensor",
+    id="open-tesol_b_pour_sensor",
     entry_point=(
         "openarm.tesollo.both.pour_sensor.pour_right_env:PourRightEnv"
     ),
@@ -39,7 +39,7 @@ gym.register(
 )
 
 gym.register(
-    id="open-tesol_both_pour_sensor-play",
+    id="open-tesol_b_pour_sensor-play",
     entry_point=(
         "openarm.tesollo.both.pour_sensor.pour_right_env:PourRightEnv"
     ),
@@ -52,7 +52,7 @@ gym.register(
 
 # LSTM PPO variant — MLP 체크포인트와 비호환, scratch 학습 전용
 gym.register(
-    id="open-tesol_both_pour_sensor-lstm",
+    id="open-tesol_b_pour_sensor-lstm",
     entry_point=(
         "openarm.tesollo.both.pour_sensor.pour_right_env:PourRightEnv"
     ),
@@ -64,7 +64,7 @@ gym.register(
 )
 
 gym.register(
-    id="open-tesol_both_pour_sensor-play-lstm",
+    id="open-tesol_b_pour_sensor-play-lstm",
     entry_point=(
         "openarm.tesollo.both.pour_sensor.pour_right_env:PourRightEnv"
     ),
