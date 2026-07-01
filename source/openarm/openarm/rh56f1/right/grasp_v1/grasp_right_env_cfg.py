@@ -208,7 +208,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     lift_success_height: float = 0.04
     lift_target_z_delta: float = LIFT_Z_DELTA
-    success_hold_steps: int = 30
+    success_hold_steps: int = 20   # Phase2-b: 30→20 (decay 0.5/steps 30은 hold_count 4.7서 정체 = success_held ~0). 문턱 완화
+    success_hold_miss_decay: float = 0.25   # Phase2-b: 0.5→0.25 (순증 +0.16→+0.30/step at success_now 0.44). leaky: miss 시 0 리셋 대신 감쇠. -1=기존 hard reset
     stability_cup_lin_vel_threshold: float = 0.04
     stability_cup_ang_vel_threshold: float = 0.5
     stability_contact_delta_threshold: float = 1.0
@@ -443,7 +444,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "openarm_bi_rh56f1/openarm_bi_rh56f1.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_bi_rh56f1_rl/openarm_bi_rh56f1_rl.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -459,65 +460,65 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             pos=[0.0, 0.0, 0.0],
             rot=[1.0, 0.0, 0.0, 0.0],
             joint_pos={
-                "openarm_right_joint1":  0.5,
-                "openarm_right_joint2":  0.1,
-                "openarm_right_joint3":  0.4,
-                "openarm_right_joint4":  0.60,
-                "openarm_right_joint5": -0.2,
-                "openarm_right_joint6":  0.0,
-                "openarm_right_joint7":  0.0,
+                "r_aj_1":  0.5,
+                "r_aj_2":  0.1,
+                "r_aj_3":  0.4,
+                "r_aj_4":  0.60,
+                "r_aj_5": -0.2,
+                "r_aj_6":  0.0,
+                "r_aj_7":  0.0,
                 # RH56F1 우측 손 drive (approach pose)
-                "rh56f1_right_right_thumb_1_joint":  HAND_APPROACH_POSE[0],   # 0.60
-                "rh56f1_right_right_thumb_2_joint":  HAND_APPROACH_POSE[1],   # 0.15
-                "rh56f1_right_right_index_1_joint":  HAND_APPROACH_POSE[2],   # 0.30
-                "rh56f1_right_right_middle_1_joint": HAND_APPROACH_POSE[3],   # 0.30
-                "rh56f1_right_right_ring_1_joint":   HAND_APPROACH_POSE[4],   # 0.30
-                "rh56f1_right_right_little_1_joint": HAND_APPROACH_POSE[5],   # 0.30
+                "r_hj_thumb_1":  HAND_APPROACH_POSE[0],   # 0.60
+                "r_hj_thumb_2":  HAND_APPROACH_POSE[1],   # 0.15
+                "r_hj_index_1":  HAND_APPROACH_POSE[2],   # 0.30
+                "r_hj_middle_1": HAND_APPROACH_POSE[3],   # 0.30
+                "r_hj_ring_1":   HAND_APPROACH_POSE[4],   # 0.30
+                "r_hj_pinky_1": HAND_APPROACH_POSE[5],   # 0.30
                 # mimic 추종 (= drive × multiplier, 결합 init 으로 snap 방지)
-                "rh56f1_right_right_thumb_3_joint":  HAND_APPROACH_POSE[1] * 1.1425,            # 0.171
-                "rh56f1_right_right_thumb_4_joint":  HAND_APPROACH_POSE[1] * 1.1425 * 0.7508,   # 0.129
-                "rh56f1_right_right_index_2_joint":  HAND_APPROACH_POSE[2] * 1.1169,            # 0.335
-                "rh56f1_right_right_middle_2_joint": HAND_APPROACH_POSE[3] * 1.1169,
-                "rh56f1_right_right_ring_2_joint":   HAND_APPROACH_POSE[4] * 1.1169,
-                "rh56f1_right_right_little_2_joint": HAND_APPROACH_POSE[5] * 1.1169,
+                "r_hj_thumb_3":  HAND_APPROACH_POSE[1] * 1.1425,            # 0.171
+                "r_hj_thumb_4":  HAND_APPROACH_POSE[1] * 1.1425 * 0.7508,   # 0.129
+                "r_hj_index_2":  HAND_APPROACH_POSE[2] * 1.1169,            # 0.335
+                "r_hj_middle_2": HAND_APPROACH_POSE[3] * 1.1169,
+                "r_hj_ring_2":   HAND_APPROACH_POSE[4] * 1.1169,
+                "r_hj_pinky_2": HAND_APPROACH_POSE[5] * 1.1169,
                 **LEFT_ARM_REST_JOINT_POS,
                 **LEFT_HAND_REST_JOINT_POS,
             },
         ),
         actuators={
             "openarm_right_arm": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_right_joint[1-7]"],
+                joint_names_expr=["r_aj_[1-7]"],
                 **_actuator_params("openarm_right_arm", 400.0, 80.0),
             ),
             "openarm_left_arm": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_left_joint[1-7]"],
+                joint_names_expr=["l_aj_[1-7]"],
                 **_actuator_params("openarm_left_arm", 400.0, 80.0),
             ),
             # RH56F1 우측 손 drive 6 (RL 위치제어)
             "rh56f1_right_drive": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "rh56f1_right_right_(thumb_[12]|index_1|middle_1|ring_1|little_1)_joint"
+                    "r_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"
                 ],
                 **_actuator_params("rh56f1_right_drive", 30.0, 5.0),
             ),
             # RH56F1 우측 손 mimic 추종 6 (passive — PhysxMimicJoint 가 커플)
             "rh56f1_right_mimic": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "rh56f1_right_right_(thumb_[34]|index_2|middle_2|ring_2|little_2)_joint"
+                    "r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"
                 ],
                 stiffness=0.0, damping=0.0,
             ),
             # RH56F1 좌측 손 drive 6 (학습 비사용 → 0 hold)
             "rh56f1_left_drive": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "rh56f1_left_left_(thumb_[12]|index_1|middle_1|ring_1|little_1)_joint"
+                    "l_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"
                 ],
                 **_actuator_params("rh56f1_left_drive", 30.0, 5.0),
             ),
             # RH56F1 좌측 손 mimic 추종 6 (passive)
             "rh56f1_left_mimic": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "rh56f1_left_left_(thumb_[34]|index_2|middle_2|ring_2|little_2)_joint"
+                    "l_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"
                 ],
                 stiffness=0.0, damping=0.0,
             ),
@@ -530,22 +531,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # fingertip 힘센서 (실 *_force_sensor → 병합된 말단 링크). 순서: thumb,index,middle,ring,little
     right_tip_contact_links: tuple = (
-        "rh56f1_right_right_thumb_4",
-        "rh56f1_right_right_index_2",
-        "rh56f1_right_right_middle_2",
-        "rh56f1_right_right_ring_2",
-        "rh56f1_right_right_little_2",
+        "r_hl_thumb_4",
+        "r_hl_index_2",
+        "r_hl_middle_2",
+        "r_hl_ring_2",
+        "r_hl_pinky_2",
     )
 
     tip_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/rh56f1_right_right_(thumb_4|index_2|middle_2|ring_2|little_2)",
+        prim_path="/World/envs/env_.*/Robot/r_hl_(thumb_4|index_2|middle_2|ring_2|pinky_2)",
         history_length=1,
         track_air_time=False,
     )
 
-    # palm force sensor body. USD asset name is rh56f1_right_plam_force_sensor.
+    # palm force sensor body. USD asset name is r_al_7.
     palm_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/rh56f1_right_plam_force_sensor",
+        prim_path="/World/envs/env_.*/Robot/r_al_7",
         filter_prim_paths_expr=["/World/envs/env_.*/Cup"],
         history_length=1,
         track_air_time=False,

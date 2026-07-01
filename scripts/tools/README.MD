@@ -246,6 +246,28 @@ cd /home/user/rl_ws/IsaacLab
   --headless
 ```
 
+#### `collect_grasp_v1_warm_states.py`
+
+- 목적: `grasp_v1`(rh56f1 / tesollo) 최신 LSTM 체크포인트를 rollout 해
+  grasp 성공 시점 상태를 pour warmstart HDF5(`warm_states` 그룹)로 저장
+- 산출물: `hdgp/data/grasp_warm_<robot>.hdf5` → 해당 로봇 pour `warm_state_paths` 입력
+  - rh56f1 → `rh56f1/right/pour_v1` warm_state_bank
+  - tesollo → `tesollo/right/pour_v5`·`pour_v6` warm_state_bank (동일 hdf5 공유)
+- 동작: `play.py` 를 서브프로세스로 실행하며 `env.enable_warm_state_export=true`
+  등 hydra override 로 export 를 켜고, HDF5 가 원자적으로 생성되면 즉시 종료
+  (검증된 `collect_grasp_warm_states.py` 의 프로세스그룹/폴링 로직 재사용)
+- 주요 옵션: `--robot {rh56f1,tesollo}`(필수), `--checkpoint`, `--out`,
+  `--num_envs`, `--target_count`, `--keep_adr`
+- 예시:
+
+```bash
+cd /home/user/rl_ws/hdgp
+# rh56f1 (기본 ckpt: grasp-v1/lstm_test1 ep2000)
+python3 scripts/tools/collect_grasp_v1_warm_states.py --robot rh56f1
+# tesollo (기본 ckpt: grasp-v1/lstm_test7 ep12500)
+python3 scripts/tools/collect_grasp_v1_warm_states.py --robot tesollo
+```
+
 ### 학습 로그 / 분석 도구
 
 #### `build_run_dataset.py`

@@ -1,5 +1,5 @@
 # 5g_pour_right_v3 LSTM PPO config
-# Actor 60D pour-flow / critic 140D asymmetric observations, action 11D.
+# Actor 51D / critic 112D asymmetric observations, action 12D.
 # LSTM architecture is incompatible with the MLP checkpoint (rl_games_ppo_cfg.yaml).
 # Must train from scratch (load_checkpoint: False).
 #

@@ -188,12 +188,18 @@ def compute_stationary_grasp_success(
         & upright
         & stable_bool
     )
-    hold_count = torch.where(
-        success_now,
-        previous_success_hold_count + 1,
-        torch.zeros_like(previous_success_hold_count),
-    )
-    success_held = hold_count >= _cfg_int(cfg, "success_hold_steps", 30)
+    # leaky hold_count: miss 시 0 리셋 대신 success_hold_miss_decay만큼 감쇠(clamp≥0).
+    # success_now가 0.44(깜빡임)라 hard-reset은 30연속 도달 불가(success_held=0의 근본).
+    # miss_decay<0(기본)이면 기존 hard-reset 유지(grasp_v10_3 보존). RH56F1=0.5로 flicker 허용.
+    hold_steps = _cfg_int(cfg, "success_hold_steps", 30)
+    miss_decay = _cfg_float(cfg, "success_hold_miss_decay", -1.0)
+    if miss_decay < 0.0:
+        decayed = torch.zeros_like(previous_success_hold_count)
+    else:
+        decayed = (previous_success_hold_count - miss_decay).clamp(min=0.0)
+    incremented = (previous_success_hold_count + 1.0).clamp(max=float(hold_steps))
+    hold_count = torch.where(success_now, incremented, decayed)
+    success_held = hold_count >= hold_steps
     gates = {
         "lifted": lifted.float(),
         "full_contact": full_contact_bool.float(),

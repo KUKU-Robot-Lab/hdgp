@@ -53,14 +53,17 @@ def joint_state_scalars(
     arm_vel: torch.Tensor,      # (N, A)
     finger_pos: torch.Tensor,   # (N, H)
     finger_vel: torch.Tensor,   # (N, H)
-    prefix: str = "debug/joint",
+    per_joint: bool = False,
+    prefix: str = "joint_state",
 ) -> dict[str, torch.Tensor]:
     """Summarize arm/finger joint state for training-time observability.
 
     Velocity is the trembling signal of interest, so both mean and max of the
-    absolute velocity are exposed alongside the position mean.
+    absolute velocity are exposed alongside the position mean. ``per_joint``
+    additionally exposes each joint's position/velocity mean so a single drifting
+    joint (e.g. thumb pushed backward) is visible without a render.
     """
-    return {
+    out = {
         f"{prefix}/arm_pos_mean": arm_pos.mean(),
         f"{prefix}/arm_vel_abs_mean": arm_vel.abs().mean(),
         f"{prefix}/arm_vel_abs_max": arm_vel.abs().max(),
@@ -68,3 +71,44 @@ def joint_state_scalars(
         f"{prefix}/finger_vel_abs_mean": finger_vel.abs().mean(),
         f"{prefix}/finger_vel_abs_max": finger_vel.abs().max(),
     }
+    if per_joint:
+        for i in range(arm_pos.shape[1]):
+            out[f"{prefix}/arm/j{i + 1}_pos"] = arm_pos[:, i].mean()
+            out[f"{prefix}/arm/j{i + 1}_vel_abs"] = arm_vel[:, i].abs().mean()
+        for i in range(finger_pos.shape[1]):
+            out[f"{prefix}/finger/q{i}_pos"] = finger_pos[:, i].mean()
+            out[f"{prefix}/finger/q{i}_vel_abs"] = finger_vel[:, i].abs().mean()
+    return out
+
+
+def action_policy_scalars(
+    *,
+    action: torch.Tensor,                 # (N, A) raw policy output ~[-1,1]
+    prev_action: torch.Tensor | None = None,
+    palm_dims: int = 6,
+    palm_names: tuple[str, ...] = ("x", "y", "z", "rx", "ry", "rz"),
+    prefix: str = "action_policy",
+) -> dict[str, torch.Tensor]:
+    """Expose the raw policy action per component for training-time observability.
+
+    palm(앞 palm_dims) = 6D pose action(x/y/z/rx/ry/rz), 나머지 = finger 명령.
+    각 차원 평균 + 그룹 abs_mean/norm + step delta. embodiment-agnostic
+    (차원 수는 tensor shape에서 읽음). RH56F1·Teosllo grasp 공용.
+    """
+    out: dict[str, torch.Tensor] = {}
+    num = action.shape[1]
+    pd = min(int(palm_dims), num)
+    for i in range(pd):
+        nm = palm_names[i] if i < len(palm_names) else f"p{i}"
+        out[f"{prefix}/palm/{nm}_mean"] = action[:, i].mean()
+    out[f"{prefix}/palm/abs_mean"] = action[:, :pd].abs().mean()
+    if num > pd:
+        finger = action[:, pd:]
+        for j in range(finger.shape[1]):
+            out[f"{prefix}/finger/f{j + 1}_mean"] = finger[:, j].mean()
+        out[f"{prefix}/finger/abs_mean"] = finger.abs().mean()
+    out[f"{prefix}/all/abs_mean"] = action.abs().mean()
+    out[f"{prefix}/all/norm_mean"] = action.norm(dim=-1).mean()
+    if prev_action is not None:
+        out[f"{prefix}/all/delta_abs_mean"] = (action - prev_action).abs().mean()
+    return out

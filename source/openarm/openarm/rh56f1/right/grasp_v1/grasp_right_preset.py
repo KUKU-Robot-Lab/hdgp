@@ -27,61 +27,61 @@ import math
 # ---------------------------------------------------------------------------
 # Joint groups
 # ---------------------------------------------------------------------------
-RIGHT_ARM_JOINT_NAMES = [f"openarm_right_joint{i}" for i in range(1, 8)]
+RIGHT_ARM_JOINT_NAMES = [f"r_aj_{i}" for i in range(1, 8)]
 
 # RH56F1 actuated drive 6관절 (USD revolute joint 이름, _joint 접미사 포함)
 RIGHT_HAND_JOINT_NAMES = [
-    "rh56f1_right_right_thumb_1_joint",   # thumb abduction (Z), 0~2.094
-    "rh56f1_right_right_thumb_2_joint",   # thumb flexion drive (Z), 0~0.475
-    "rh56f1_right_right_index_1_joint",   # index flexion (Z), 0~1.529
-    "rh56f1_right_right_middle_1_joint",  # middle flexion
-    "rh56f1_right_right_ring_1_joint",    # ring flexion
-    "rh56f1_right_right_little_1_joint",  # little flexion
+    "r_hj_thumb_1",   # thumb abduction (Z), 0~2.094
+    "r_hj_thumb_2",   # thumb flexion drive (Z), 0~0.475
+    "r_hj_index_1",   # index flexion (Z), 0~1.529
+    "r_hj_middle_1",  # middle flexion
+    "r_hj_ring_1",    # ring flexion
+    "r_hj_pinky_1",  # little flexion
 ]
 RIGHT_ACTUATED_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAMES
 
 # mimic 추종 관절 (RL 비제어, 참고용)
 RIGHT_HAND_MIMIC_JOINT_NAMES = [
-    "rh56f1_right_right_thumb_3_joint",   # = thumb_2 × 1.1425
-    "rh56f1_right_right_thumb_4_joint",   # = thumb_3 × 0.7508
-    "rh56f1_right_right_index_2_joint",   # = index_1 × 1.1169
-    "rh56f1_right_right_middle_2_joint",
-    "rh56f1_right_right_ring_2_joint",
-    "rh56f1_right_right_little_2_joint",
+    "r_hj_thumb_3",   # = thumb_2 × 1.1425
+    "r_hj_thumb_4",   # = thumb_3 × 0.7508
+    "r_hj_index_2",   # = index_1 × 1.1169
+    "r_hj_middle_2",
+    "r_hj_ring_2",
+    "r_hj_pinky_2",
 ]
 
-LEFT_ARM_JOINT_NAMES = [f"openarm_left_joint{i}" for i in range(1, 8)]
+LEFT_ARM_JOINT_NAMES = [f"l_aj_{i}" for i in range(1, 8)]
 
 # 좌측도 RH56F1 손 (12 DOF: drive 6 + mimic 6). 학습 비사용 → 전체 lock.
 # (기존 Tesollo 의 openarm_left_finger_joint1/2 2-DOF 그리퍼는 존재하지 않음)
 LEFT_HAND_DRIVE_JOINT_NAMES = [
-    "rh56f1_left_left_thumb_1_joint",
-    "rh56f1_left_left_thumb_2_joint",
-    "rh56f1_left_left_index_1_joint",
-    "rh56f1_left_left_middle_1_joint",
-    "rh56f1_left_left_ring_1_joint",
-    "rh56f1_left_left_little_1_joint",
+    "l_hj_thumb_1",
+    "l_hj_thumb_2",
+    "l_hj_index_1",
+    "l_hj_middle_1",
+    "l_hj_ring_1",
+    "l_hj_pinky_1",
 ]
 LEFT_HAND_MIMIC_JOINT_NAMES = [
-    "rh56f1_left_left_thumb_3_joint",
-    "rh56f1_left_left_thumb_4_joint",
-    "rh56f1_left_left_index_2_joint",
-    "rh56f1_left_left_middle_2_joint",
-    "rh56f1_left_left_ring_2_joint",
-    "rh56f1_left_left_little_2_joint",
+    "l_hj_thumb_3",
+    "l_hj_thumb_4",
+    "l_hj_index_2",
+    "l_hj_middle_2",
+    "l_hj_ring_2",
+    "l_hj_pinky_2",
 ]
 LEFT_HAND_JOINT_NAMES = LEFT_HAND_DRIVE_JOINT_NAMES + LEFT_HAND_MIMIC_JOINT_NAMES
 LEFT_ARM_AND_HAND_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_HAND_JOINT_NAMES
 
 # 좌팔 rest 자세 (학습 비사용, 우측 작업공간 침범 방지). 좌손은 0(열림)으로 lock.
 LEFT_ARM_REST_JOINT_POS = {
-    "openarm_left_joint1": -0.315,
-    "openarm_left_joint2": -0.290,
-    "openarm_left_joint3":  0.400,
-    "openarm_left_joint4":  0.513,
-    "openarm_left_joint5":  0.666,
-    "openarm_left_joint6": -0.729,
-    "openarm_left_joint7": -0.957,
+    "l_aj_1": -0.315,
+    "l_aj_2": -0.290,
+    "l_aj_3":  0.400,
+    "l_aj_4":  0.513,
+    "l_aj_5":  0.666,
+    "l_aj_6": -0.729,
+    "l_aj_7": -0.957,
 }
 LEFT_HAND_REST_JOINT_POS = {name: 0.0 for name in LEFT_HAND_JOINT_NAMES}
 
@@ -91,29 +91,29 @@ LEFT_HAND_REST_JOINT_POS = {name: 0.0 for name in LEFT_HAND_JOINT_NAMES}
 # ---------------------------------------------------------------------------
 # 보상/관측에 쓰는 USD body (palm + 5 말단 손가락 링크).
 # Phase 0 검증: fingertip force_sensor 링크는 병합 소멸 → 생존 말단 링크 사용.
-#   [0]=palm force sensor body (USD name is rh56f1_right_plam_force_sensor)
+#   [0]=palm force sensor body (USD name is r_al_7)
 #   [1:6]=thumb_4, index_2, middle_2, ring_2, little_2
 HAND_BODY_NAMES_USD = [
-    "rh56f1_right_plam_force_sensor",
-    "rh56f1_right_right_thumb_4",
-    "rh56f1_right_right_index_2",
-    "rh56f1_right_right_middle_2",
-    "rh56f1_right_right_ring_2",
-    "rh56f1_right_right_little_2",
+    "r_al_7",
+    "r_hl_thumb_4",
+    "r_hl_index_2",
+    "r_hl_middle_2",
+    "r_hl_ring_2",
+    "r_hl_pinky_2",
 ]
 
 # RH56F1 의 *_force_sensor 는 모두 실 하드웨어 힘센서 (palm + 5 fingertip) → actor obs.
 # 실 로봇 palm 힘센서 body
-PALM_FORCE_SENSOR_BODY = "rh56f1_right_plam_force_sensor"
+PALM_FORCE_SENSOR_BODY = "r_al_7"
 
 # fingertip 힘센서 body — *_force_sensor 링크가 USD 에서 말단 링크로 병합되어,
 # 말단 링크(thumb_4, *_2)의 ContactSensor 가 force_sensor 패드 접촉을 포착한다.
 FINGERTIP_SENSOR_BODIES = [
-    "rh56f1_right_right_thumb_4",
-    "rh56f1_right_right_index_2",
-    "rh56f1_right_right_middle_2",
-    "rh56f1_right_right_ring_2",
-    "rh56f1_right_right_little_2",
+    "r_hl_thumb_4",
+    "r_hl_index_2",
+    "r_hl_middle_2",
+    "r_hl_ring_2",
+    "r_hl_pinky_2",
 ]
 
 # Fabrics FK taskmap body 이름 (openarm_rh56f1.urdf 기준)

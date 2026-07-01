@@ -2210,12 +2210,6 @@ class PourRightEnv(DirectRLEnv):
         _contact_ratio = (self.num_contacts_buf.float() / NUM_FINGERTIPS).clamp(0.0, 1.0)
         _full_grasp = (self.num_contacts_buf >= self.cfg.grasp_full_count).float()
         r_grasp = self.cfg.weight_grasp * (_contact_ratio + self.cfg.grasp_full_bonus * _full_grasp)
-        # [z clearance reward] z_lock 강제(z_margin)가 deep tilt와 충돌(PALM 즉각 붕괴/RIM 점진 후퇴)
-        #   → 강제 대신 reward 유도. deep tilt 중(tilt_progress 게이트) 주둥이가 입구 위 zclear_target
-        #   높이면 보상 → palm 높이 들며 deep tilt 동시 학습. tilt 게이트가 "z만 높이는 직립 farming"
-        #   (PALM 붕괴 원인) 차단. z_margin은 0.03(grip400 검증, latch용 약한 강제)으로 복귀.
-        _z_clr_norm = (self._mouth_z_clearance / max(self.cfg.zclear_target, 1e-6)).clamp(0.0, 1.0)
-        r_zclear = self.cfg.weight_zclear * tilt_progress * _z_clr_norm
         total = (
             r_hold
             + r_grasp           # [재설계] per-finger 학습 grasp (접촉비율+완전파지 보너스)
@@ -2224,7 +2218,6 @@ class PourRightEnv(DirectRLEnv):
             + r_tilt            # [재설계] rim_antiparallel 기준 deep tilt (target 상대, 135°)
             + r_pour            # [재설계] outcome ADR: weight·corridor·bead_in_target (자세성공 80%+ 후 활성). bead 보상 단일화.
             + r_aim             # [aim 정밀화] 주둥이→입구 중심 smooth gradient
-            + r_zclear          # [z clearance reward] deep tilt 중 주둥이 입구 위 적정 높이 유도(z_lock 강제 대신)
             + r_stageB
             + self.cfg.weight_success * r_success
             - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
@@ -2261,7 +2254,6 @@ class PourRightEnv(DirectRLEnv):
         reward_log: dict = {
             "Reward/hold":     r_hold.mean(),
             "Reward/grasp":    r_grasp.mean(),               # [재설계] per-finger 학습 grasp
-            "Reward/zclear":   r_zclear.mean(),              # [z clearance] deep-tilt-gated 주둥이 높이 reward
             "Reward/approach": r_approach.mean(),
             "Reward/introt":   r_introt.mean(),
             "Reward/tilt":     r_tilt.mean(),                # [재설계] rim_antiparallel deep tilt (target 135°)

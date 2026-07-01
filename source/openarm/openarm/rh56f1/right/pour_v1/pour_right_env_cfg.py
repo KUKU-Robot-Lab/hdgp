@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: inspire_r_pour_v1 (RH56F1 6-DOF 손)
+"""환경 설정: inspire_r_pour_v1 (RH56F1 6-DOF 손, pour_v6 구조 이식)
 
-Tesollo 20-DOF → RH56F1 6 drive DOF 포팅 (grasp_r_v1 과 동일 로봇).
-- Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 60D / critic 132D (asymmetric)
-- Episode: Fabrics arm policy + frozen grasp hand
-- Contact: fingertip FT sensor (actor, real-compatible). RH56F1 별도 distal/middle 센서 없음
+Tesollo pour_v6(20-DOF 손, 27D robot)의 학습 구조를 RH56F1 6 actuated DOF(13D robot)로 이식.
+- Action: 12D (6D palm pose + 1D nullspace α + 5D per-finger lerp)
+- Observation: actor 51D / critic 112D (asymmetric, left_arm=7D)
+- Episode: Fabrics arm policy + frozen grasp hand (pour_v6 구조 동일)
+- Contact: fingertip FT sensor (actor, real-compatible). RH56F1 distal/middle 센서 없음
   → critic distal = tip 재사용, middle = zeros.
 """
 
@@ -102,13 +102,17 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
 
 @configclass
 class PourRightEnvCfg(DirectRLEnvCfg):
-    """5g_pour_right_v3 환경 설정."""
+    """inspire_r_pour_v1 환경 설정 (RH56F1 6-DOF 손, pour_v6 구조 이식).
+
+    Action (12D): [0:6] 6D palm pose → Fabrics IK, [6] 1D nullspace α, [7:12] 5D finger lerp
+    Actor obs (51D): arm_pos/vel(7+7) + finger_progress(5) + left_arm_pos/vel(7+7)
+                     + pour_point_to_opening(3) + source_pour_axis(3) + source_up_axis(3)
+                     + target_up_axis(3) + last_palm_actions(6)
+    Critic (112D): base(77) + extra(35) — left_arm=7D (왼손 rest 고정)
+    """
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
-    # 물리: 120 Hz, 정책: 60 Hz (decimation=2)
-    # Fabrics: fabrics_dt=1/60 × fabric_decimation=2 → 120 Hz
-    # Episode: 20s = 1200 steps @ 60Hz
     # -----------------------------------------------------------------------
     episode_length_s: float = 20.0
     decimation:       int   = 2
@@ -119,9 +123,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 60 (actor)
-    action_space:      int = NUM_ACTIONS               # 11
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 140 (critic, privileged)
+    observation_space: int = NUM_OBSERVATIONS          # 51 (actor)
+    action_space:      int = NUM_ACTIONS               # 12
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 112 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -131,17 +135,28 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
-    max_pose_angle:             float = 45.0  # 180.0 -> 45.0: 접근/이동 중 기괴한 손목 회전 억제
+    max_pose_angle:             float = 45.0
     fabrics_max_objects_per_env: int  = 8
-    fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
+    fabrics_damping_gain:       float = 20.0
+    # cspace attractor mass: nullspace 어트랙터 무게. 너무 크면 palm-pose 추종 침범 주의.
+    cspace_attractor_mass:      float = 3.0
+    # B-full explicit nullspace: 주둥이 위치 고정(J_spout·Δq=0)하며 arm을 demo deep-tilt로 구동.
+    palm_position_only: bool = False
+    pour_bfull_nullspace: bool = True
+    bfull_step:   float = 0.04   # arm→demo 향한 per-step 관절증분 상한 [rad]
+    bfull_lambda: float = 0.05   # DLS pseudo-inverse 댐핑(특이점 방지)
+    # approach 제어 방식: "rim"(action xy=주둥이 직접) | "palm"(action xy=palm 직접).
+    pour_approach_pivot: str = "palm"
+    # aim 정밀화: 주둥이를 target 입구 중심으로 당기는 smooth 보상 weight.
+    weight_aim_precision: float = 18.0
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 200
-    episode_hold_steps:    int   = 120  # warmstart prelift 2s 확보 (컵 높이 0.12m 리프트)
+    episode_hold_steps:    int   = 120
     reset_fabric_chunk_size: int = 128
-    cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
+    cache_pregrasp_reset:  bool  = True
     pregrasp_offset_x:     float = -0.06
     pregrasp_offset_y:     float = -0.07
     pregrasp_offset_z:     float = 0.00
@@ -153,15 +168,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Observation noise (sim2real domain randomization)
     # actor obs에만 적용; critic obs는 privileged clean state 유지
     # -----------------------------------------------------------------------
-    obs_noise_joint_pos: float = 0.01    # joint position σ [rad]
-    obs_noise_joint_vel: float = 0.05    # joint velocity σ [rad/s]
-    obs_noise_body_pos:  float = 0.005   # FK body position σ [m] (palm, fingertip)
-    obs_noise_cup_pos:   float = 0.015   # cup position observation σ [m]
+    obs_noise_joint_pos: float = 0.01
+    obs_noise_joint_vel: float = 0.05
+    obs_noise_body_pos:  float = 0.005
+    obs_noise_cup_pos:   float = 0.015
 
-    # GUI helper
-    enable_visual_markers: bool = False  # 시각화 마커 (붉은/푸른 점) 표시 여부
+    enable_visual_markers: bool = False
 
-    # ADR: noise 스케줄 (low→high) — 성공률이 오르면 강건성 위해 노이즈 증대
+    # ADR: noise 스케줄
     enable_noise_adr: bool = True
     noise_adr_custom_cfg: dict = {
         "noise": {
@@ -175,54 +189,36 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     noise_adr_increment_interval: int = 20000
     noise_adr_trigger_threshold: float = 0.3
 
-
     # bead / cup geometry (.usd 기준: bottom=-0.077m, rim=+0.100m, inner_r=0.041m)
-    target_inner_radius:  float = 0.041   # 컵 내부 반경
-    target_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
-    target_inside_z_max:  float = 0.100   # 림 높이
-    target_mouth_z:       float = 0.100   # 림 높이 (bead crossing 기준)
-    source_inner_radius:  float = 0.041   # 컵 내부 반경
-    source_outer_radius:  float = 0.045   # 컵 외부 반경 (최하단 림 점 계산용)
-    source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
-    source_inside_z_max:  float = 0.100   # 림 높이
+    target_inner_radius:  float = 0.041
+    target_inside_z_min:  float = -0.070
+    target_inside_z_max:  float = 0.100
+    target_mouth_z:       float = 0.100
+    source_inner_radius:  float = 0.041
+    source_outer_radius:  float = 0.045
+    source_inside_z_min:  float = -0.070
+    source_inside_z_max:  float = 0.100
+    # pour_point xy 방향: tilt_amount < dyn_lo → 정적(target 고정), > dyn_hi → 동적(gravity_perp).
+    pour_point_dyn_lo:    float = 0.15    # ≈45°: 이하 정적(이송, wobble 회피)
+    pour_point_dyn_hi:    float = 0.30    # ≈67°: 이상 동적(deep tilt 정밀 배출구). smoothstep blend.
     bead_count: int = _DEFAULT_BEAD_COUNT
     success_bead_cross_count: int = 1
     success_target_fill_ratio: float = 0.50
-    success_spill_max: float = 0.40   # tilt 탐색 중 spill 허용 (ADR로 점진 강화)
+    success_spill_max: float = 0.40
 
     # -----------------------------------------------------------------------
     # Policy action / pouring target
     # -----------------------------------------------------------------------
-    # pregrasp palm y = cup_y_spawn(-0.10) + pregrasp_offset_y(-0.12) = -0.22m
-    #   delta=0.3m → max palm y = -0.22 + 0.30 = +0.08m (workspace y_max=0.22 이전에 delta 소진)
-    #   타겟 컵 y ≈ 0.10m (demo 데이터 기준, LEFT_ARM_REST FK 기준)
-    #   → 최소 cup-target XY gap = 0.10 - 0.08 = 0.02m (달성 가능)
-    #
-    #   delta=0.5m + y_max=0.22m
-    #   max palm y = min(-0.22+0.50, 0.22) = 0.22m
-    #   → cup-target gap ≈ 0.27 - 0.22 = 0.05m → g_align_xy(scale=5) = exp(-5×0.05) = 0.78
-    #   → pre-pour reward 완전 활성화 가능
-    palm_delta_xyz: float = 0.5   # 0.3 → 0.5: workspace-target 거리 불일치 해소
-    # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm delta.
-    # v7-2 grasp checkpoint 학습 조건과 반드시 일치해야 한다:
-    #   5g_grasp_right_v7_2: palm_delta_xyz=0.15m, palm_delta_rot_deg=20°
-    warmstart_collect_palm_delta_xyz: float = 0.15   # v7-2 학습 값과 일치
-    warmstart_collect_palm_delta_rot_deg: float = 20.0  # v7-2 학습 값과 일치 (≠ pour 120°)
-    palm_delta_rot_deg: float = 120.0  # 45→120: cup 135° tilt 도달 가능하도록 확장
-    # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
-    # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
-    # near < far 여야 선형 보간이 성립하므로 작은 값(가까움) → 1, 큰 값(멀어짐) → 0 순서로 둔다.
-    #
+    palm_delta_xyz: float = 0.03  # per-step palm target 오프셋 상한 [m] (속도 cap)
+    warmstart_collect_palm_delta_xyz: float = 0.15
+    warmstart_collect_palm_delta_rot_deg: float = 20.0
+    palm_delta_rot_deg: float = 15.0  # incremental palm orientation target [deg/step]
     tilt_action_gate_xy_near: float = 0.06
-    tilt_action_gate_xy_far: float = 0.25  # 0.32→0.20→0.25: equilibrium 0.16m에서 gate 28%→47%
+    tilt_action_gate_xy_far: float = 0.25
 
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
-    # warmstart는 테이블 위에서 막 잡힌 자세가 아니라, 테이블 기준 약 3cm 든 자세에서 시작한다.
-    # 리셋 시 palm target z를 0.12m 올림 → hold phase(2s) 동안 Fabrics가 팔을 올리면서 컵도 같이 올라감.
-    # 120° tilt 시 pour point가 target rim(0.391m) 위에 위치.
-    # 계산: warmstart cup_z ≈ 0.327m → boost → 0.447m → pour_point_z ≈ 0.397m > 0.391m ✓
     warmstart_palm_z_boost: float = 0.12
     lift_success_height: float = 0.03
     success_mouth_xy_threshold: float = 0.030
@@ -230,128 +226,152 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     success_z_clearance_max: float = 0.050
     success_hold_steps: int = 10
     drop_force_hold_steps: int = 10
-    # 소스 컵이 비어있는 상태가 N 스텝 연속 지속되면 에피소드 종료
-    # 비드 낙하 + 착지에 ~0.3~0.5초 필요 → 60 steps (1.0s @ 60Hz) 여유
+    # 파지 붕괴 종료: cup_rel_drift 과대 상태 지속 시 terminated.
+    grasp_break_drift_deg: float = 45.0   # 정상 deep tilt drift(~30°) 위 마진
+    grasp_break_hold_steps: int = 15      # 연속 지속 시 종료 (transient spike 무시)
     source_empty_hold_steps: int = 60
 
-    # -----------------------------------------------------------------------
-    # Reward weights
-    # total = r_hold + r_dist + ρ*(r_tilt+r_align+r_bead+r_drain) + r_success
-    #         - p_tilt - p_spill - p_action - demo_costs
-    #
-    # ρ = (cup_center_xy_dist < pour_binary_xy_thresh).float()
-    # r_align = 0.5*(1 + directional_tilt_cos)  ← DexPour eq.2
-    #
-    # Bead reward 설계 (40% trap 방지):
-    #   r_bead_progressive = w * fraction^2  : 40%→0.16w, 80%→0.64w, 100%→w (비선형 가속)
-    #   r_bead_delta       = w * delta.clamp(0) : bead 유입 즉각 피드백 (LSTM temporal)
-    #   spill_cost         = w * sqrt(spill) : 초기 spill 강하게 패널티
-    # -----------------------------------------------------------------------
+    # =====================================================================
+    # Reward weights — [pour_v6 구조 이식] 2-Stage 가산
+    #   total = r_hold + r_approach + r_introt + r_tilt
+    #           + release_context·aim_gate·r_source_release
+    #           + r_target_capture + w_success·r_success
+    #           − ready_context·w_spill·sqrt(spill)
+    # =====================================================================
 
-    # Grasp maintain (r_hold) — tilt-phase aware
+    # Stage A — Grasp maintain
     weight_grasp_maintain: float = 0.50
-    weight_contact_maintain: float = 0.50   # 0.30→0.50 소폭 강화
+    weight_contact_maintain: float = 0.50
+    # per-finger grasp 보상 (DexPour r_contact+r_grasp 통합)
+    weight_grasp: float = 3.0
+    grasp_full_count: int = 4          # 완전파지 판정 손가락 수 (5중 4)
+    grasp_full_bonus: float = 0.5
     weight_force_balance: float = 0.30
     weight_finger_curl: float = 0.50
 
-    # Transport Stage 1a: Cartesian 근접 (cup_center_xy 기반, 거친 approach gradient)
-    weight_dist_to_target: float = 5.0
+    # Stage A — Approach: blended rim_center→pour_point xyz corridor
+    weight_dist_to_target: float = 8.0
+    weight_corridor_escape_after_ready: float = 0.0
+    approach_anti_floor: float = 0.4
     dist_to_target_exp_scale: float = 5.0
-    cup_transport_saturate_xy: float = 0.17  # 이 이하: transport max (saturate)
+    cup_transport_saturate_xy: float = 0.17  # 레거시, 미사용
+    rim_approach_scale: float = 5.0
+    rim_approach_saturate: float = 0.03  # mouth_xy 이 이하: 거리항 max
 
-    # Transport Stage 1b: "좋은 arm+palm 자세" — demo pour palm pose 추종 (a11~a20 평균)
-    # palm pose가 맞으면 Fabrics IK가 j0~4를 demo 자세로 자동 수렴시킴 (redundancy 1DOF).
-    transport_palm_pos: tuple[float, ...] = (0.2938, -0.0781, 0.5629)
-    transport_palm_quat_xyzw: tuple[float, ...] = (-0.4532, 0.5712, 0.2235, 0.6469)
-    weight_palm_pose: float = 10.0   # crossover Phase A 시작값 (→ floor 3). test6의 정적 5는 crossover로 대체
-    palm_pose_pos_sharpness: float = 8.0
-    palm_pose_rot_sharpness: float = 1.0
+    # nullspace 잉여 1-DOF action(α) 스케일
+    nullspace_action_scale: float = 1.0
+    # α offset 축 모드: "true_nullspace"=palm 보존 elbow-swivel, "demo_minus_start"=tilt 슬라이더
+    nullspace_offset_mode: str = "true_nullspace"
 
-    # Pour distance: Stage 2 (ρ gate + pour_warmup)
-    # pour point(rim 최하단) → target center XY 거리 기반
-    # 가까울수록 bead가 target에 들어갈 확률 높아짐
-    weight_pour_dist: float = 12.0   # test9: 25→12 복귀. test6 강화가 demo_arm_pose(20) 압도→자세붕괴(err 1.2→2.6)
-    pour_dist_exp_scale: float = 8.0   # test9: 5→8 복귀. test4 값(demo posture가 이미 mouth_xy 0.054로 잘 조준됨)
-    # z_window: pour_point Z soft gate (1~5cm 활성 구역, 정책이 최적 위치 탐색)
-    # z_lower_ramp: 0→lower_ramp 구간에서 0→1 상승 (하한)
-    # z_upper_end:  이 높이에서 완전히 0 (상한)
-    # z_upper_ramp: upper_end 기준으로 이 폭만큼 앞에서 하강 시작
-    z_window_lower_ramp: float = 0.01   # 0~1cm: 하한 ramp
-    z_window_upper_end:  float = 0.08   # 8cm에서 완전 소멸
-    z_window_upper_ramp: float = 0.03   # 5~8cm: 상한 ramp (8-3=5cm부터 하강)
-    # Stage B z-barrier: pour_point가 림 아래(clearance<margin)로 내려가는 것만 막음.
-    # 단방향 penalty — 림 위 높이는 강제하지 않고 beads가 결정하게 둠 (test7: ram 방지).
-    weight_pour_z: float = 300.0        # 1cm 위반 ≈ 3.0 penalty
-    pour_z_margin: float = 0.03         # test11: 1cm→3cm. clearance 1.7cm에 안착→source cup이 rim에 닿음. 여유 확보
+    # B-trajectory action 모드: "b_trajectory"=β(pour progress)→R(β) 전신협응, "legacy"=3D tilt
+    pour_action_mode: str = "b_trajectory"
+    beta_action_index: int = 4   # action[4] = β 채널
+    # β=1 목표 tilt_amount. (1-cos135°)/2 = 0.854 (135° dump)
+    beta_target_tilt_amount: float = 0.854
+    beta_tilt_kp:           float = 3.0
+    beta_tilt_max_step:     float = 0.06   # tilt_toward 회전 증분 상한 [rad/step]
 
-    # Pour: Stage 3 (ρ gate — binary, pour_warmup/bead_warmup 적용)
-    weight_tilt: float = 40.0             # 120° 타겟 gradient (test5: 8→40, approach local min 탈출)
-    weight_align: float = 6.00            # 방향 신호 강화
-    # pour-point pivot gates (test6)
-    # initial_tilt_gate: pour_dist는 이 각도 이상 tilt 후 활성 → r_tilt와 충돌 제거
-    pour_point_tilt_threshold_deg: float = 15.0
-    # pour_aligned_gate: pour_point 정렬도 비례로 r_tilt 증폭 → pour_point pivot 행동 유도
-    pour_align_gate_scale: float = 8.0
-    weight_bead_progressive: float = 200.0   # quadratic fill: fraction^2 → 40% trap 방지
-    weight_bead_entry_delta: float = 300.0   # 비드 유입 즉각 피드백 (체류-Δ, 비드 안 쌓이면 ≈0)
-    weight_bead_cross: float = 150.0   # test11: 입구 관통(latch) 즉시 보상 → 새 비드 유입 강화(의도 복원). 체류와 무관
-    weight_source_drain: float = 20.0     # pour gate 중 소스 배출 incentive
+    # orientation 풀기: ready 단계에서 palm 방향 명령 제거 → cspace가 j5 deep tilt 전담
+    pour_orient_release: bool = True
+    # 주둥이 z를 target 입구 위 margin으로 구조적 강제
+    pour_spout_z_lock: bool = True
+    pour_z_margin:     float = 0.03
 
-    # -----------------------------------------------------------------------
-    # Curriculum warmup (step 기반 선형 증가)
-    # pour_warmup: pour_dist + tilt + align 을 0→max 로 점진 증가
-    # bead_warmup: bead progressive/delta + source_drain 을 0→max 로 점진 증가
-    # -----------------------------------------------------------------------
-    curriculum_pour_warmup_steps: int = 40000   # 0~40k: pour stage 탐색 유도
-    curriculum_bead_warmup_start: int = 6400    # 100 에포크 (100 × horizon 64) 이후 활성
-    curriculum_bead_warmup_steps: int = 1       # start 즉시 1.0으로 활성
+    # phase별 관절 범위 클램프 (현재 비활성)
+    pour_phase_clamp_enable: bool = False
+    pour_phase_arm_lo: tuple = (-9.9, -9.9, -9.9, -9.9, -1.571, -0.30, -9.9)
+    pour_phase_arm_hi: tuple = ( 9.9,  9.9,  9.9,  9.9,  0.0,    0.35,  9.9)
+
+    # nullspace baseline(α=0 지점): "robot_start"=순수DRL, "demo"=hard prior
+    nullspace_baseline: str = "demo"
+
+    # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
+    g_ready_center: float = 0.05
+    g_ready_width: float = 0.04
+    pour_corridor_xy_margin: float = 0.015
+    pour_corridor_z_min: float = -0.02
+    pour_corridor_z_max: float = 0.12
+    pour_corridor_scale: float = 20.0
+    ready_latch_threshold: float = 0.60
+    ready_latch_floor: float = 0.50
+    release_gate_floor_after_ready: float = 0.40
+
+    # tilt: 0→135° 단일 연속 ramp, always-on
+    tilt_pre_amount: float = 0.456   # 로깅 전용(85° 돌파 추적). 보상 미사용
+    weight_tilt_pre: float = 8.0     # 미사용. 구 기록 참조용 유지
+    weight_tilt: float = 20.0        # tilt 직접 유도
+    weight_tilt_delta: float = 100.0  # tilt 증분(delta) 보상 (더 기울이는 순간만)
+    tilt_aim_floor: float = 0.35     # r_tilt pre-ready bootstrap floor
+    # 연속 근접 게이트: prox_gate = clamp((far - approach_xy_dist)/(far-near), 0, 1)
+    tilt_prox_gate_far:  float = 0.25
+    tilt_prox_gate_near: float = 0.06
+
+    # Pour 정밀 조정
+    weight_pour:        float = 50.0
+    weight_transport:   float = 30.0
+    weight_pour_bead:   float = 50.0   # r_pour = w·corridor_score·bead_cross_fraction
+    capture_delta_weight: float = 30.0  # target_capture_delta 가중
+    pour_z_target:      float = 0.03   # 주둥이를 target 입구 위 3cm로 유도
+    pour_z_scale:       float = 20.0
+    pour_aim_scale:     float = 10.0
+    pour_aim_z_max:     float = 0.05
+
+    # 상시 내회전 유도
+    weight_introt: float = 5.0
+    pour_tilt_target_deg: float = 135.0   # 수평(90°) 너머 dump까지
+
+    # Stage B — pour-point 정렬 (보조)
+    weight_align: float = 5.0
+    pour_align_scale: float = 15.0
+    pour_align_z_margin: float = 0.10
+
+    # Stage B — bead
+    weight_bead_in: float = 0.0
+    weight_source_release: float = 100.0  # 소스 잔량 감소분만 transient 보상
+    weight_target_capture_delta: float = 200.0
+    weight_bead_cross: float = 150.0
+    weight_source_drain: float = 0.0
+    drain_tilt_min: float = 0.05   # aim_gate tilt 임계
+    align_gate_scale: float = 15.0
+    bead_near_scale: float = 12.0
+
+    # 내회전 게이트
+    internal_rot_thresh: float = 0.0
+    internal_rot_temp: float = 0.4
+    rot_tilt_floor: float = 0.0
 
     # Outcome
-    weight_success: float = 100.00
-    weight_success_overfill: float = 0.0
-    weight_spill: float = 40.0            # 5.0→40.0: spill 강하게 패널티 (40% trap 방지)
+    weight_success: float = 50.0
+    weight_spill: float = 0.0
 
-
-    # [Phase-1 Step 7] EMA palm action smoothing: Fabrics IK에 smooth 궤적 전달
-    ema_action_alpha: float = 0.7   # 새 action 70% / 이전 EMA 30%
+    # EMA palm action smoothing
+    ema_action_alpha: float = 0.7
 
     # -----------------------------------------------------------------------
-    # Demo-guided pose shaping (pure DRL: no BC loss / no action supervision)
+    # Demo (critic privileged obs 전용 — 정책 reward에 사용하지 않음)
     # -----------------------------------------------------------------------
-    enable_demo_pose_reward: bool = True
+    enable_demo_critic_obs: bool = True
     demo_pose_dataset_dir: str = _DEFAULT_DEMO_POSE_DATASET_DIR
     demo_pose_paths: tuple[str, ...] = tuple(
         _os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
     demo_pose_phase: str = "pour"
-    weight_demo_arm_pose: float = 20.0   # crossover Phase A 시작값 (→ floor 5)
-    demo_pose_warmup_steps: int = 1
-    # near_gate = exp(-(dist/9999)^2) ≈ 1.0 (항상 열린 상태)
-    demo_pose_near_gate_xy: float = 9999.0
     demo_nn_lookahead_frames: int = 10
-
-    # Posture-gated weight crossover: 자세(demo/palm) → pour-point 전환.
-    # 래치-후-단조(latch-then-monotonic): posture_rate(demo_arm_joint_err<threshold 비율)가
-    # trigger_rate를 latch_sustain회 연속(interval 간격) 충족하면 "래치" → 그 시점부터
-    # alpha=min((step-latch_step)/monotonic_steps, 1)로 자세조건 무관하게 단조 증가.
-    # 게이트는 "시작 트리거" 1회만 사용 → 전진이 게이트를 재확인하지 않아 진동 없음.
-    # demo/palm weight는 감쇠하지 않고 정적 유지(j1-5 자세 hold = Stage A 유지).
-    enable_weight_crossover: bool = False   # test9: True→False. crossover는 pour_dist=25가 만든 자세↔조준 충돌의 밴드에이드였음. step-warmup(test4) 경로로 복귀
-    crossover_posture_threshold: float = 1.3   # test4 자세 도달치(~1.2) 기준
-    crossover_trigger_rate: float = 0.5        # env 절반 자세 진입 시 래치 후보
-    crossover_increment_interval: int = 1500   # 래치 조건 점검 간격(step)
-    crossover_latch_sustain: int = 2           # trigger를 2회 연속 충족 시 래치(노이즈 방지)
-    crossover_monotonic_steps: int = 40000     # 래치 후 alpha 0→1 단조 구간(≈625ep)
-    # (미사용: 래치-후-단조 전환으로 weight 감쇠 폐기, 호환성 위해 보존)
-    crossover_num_increments: int = 50
+    enable_demo_pose_reward: bool = False  # critic 전용. actor reward 비활성
+    weight_demo_arm_pose: float = 20.0
     weight_demo_arm_pose_floor: float = 5.0
-    weight_palm_pose_floor: float = 3.0
+    weight_demo_j5: float = 15.0          # j5(틸트 주역) 앵커 시작값, ready 이후만
+    weight_demo_j5_floor: float = 3.0
+    demo_j5_sharpness: float = 2.0
+    demo_pose_near_gate_xy: float = 9999.0
+    demo_pose_warmup_steps: int = 1
+    demo_graduate_flow_target: float = 0.05   # flow EMA 도달 시 weight→floor
+    demo_graduate_ema_alpha: float = 0.001
 
-    # ADR: spill penalty 스케줄 (low→high)
-    enable_spill_adr: bool = True
+    # ADR: spill penalty (pour_v6 기준: OFF)
+    enable_spill_adr: bool = False
     spill_adr_custom_cfg: dict = {
         "reward": {
-            # 초기 1.0→최대 15.0: 초반 spill 허용 폭 확대 (비드 유입 탐색 촉진)
             "spill_weight": (1.0, 15.0),
         }
     }
@@ -359,28 +379,36 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     spill_adr_increment_interval: int = 20000
     spill_adr_trigger_threshold: float = 0.10
 
-    # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
-    # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
-    # 해당 기준에서 success_rate >= 15%이면 한 단계 올림 (8단계 × 0.0375 = 0.30 range)
+    # ADR: success 기준 커리큘럼
     enable_success_adr: bool = True
     success_adr_custom_cfg: dict = {
         "success": {
-            "fill_ratio": (0.20, 0.50),  # 2개→5개 커리큘럼
+            "fill_ratio": (0.20, 0.50),
         }
     }
     success_adr_num_increments: int = 8
     success_adr_increment_interval: int = 20000
-    success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
+    success_adr_trigger_threshold: float = 0.15
+
+    # ADR: outcome (자세 성공률 80%+ 시 bead 보상 활성)
+    enable_outcome_adr: bool = True
+    outcome_adr_custom_cfg: dict = {
+        "outcome": {
+            "weight_pour_bead": (0.0, 50.0),
+        }
+    }
+    outcome_adr_num_increments: int = 8
+    outcome_adr_increment_interval: int = 20000
+    outcome_adr_trigger_threshold: float = 0.80
+    pose_ready_thresh: float = 0.60   # 자세 성공 게이트: corridor_score ≥
+    pose_tilt_thresh: float = 0.587   # 자세 성공 게이트: tilt_amount ≥ (100°+)
 
     reward_grasp_slip_sharpness: float = 3.0
     contact_maintain_min_others: int = 2
     force_balance_sharpness: float = 2.0
-    pour_tilt_target_deg: float = 120.0
-    pour_tilt_sharpness: float = 4.0   # 120° 목표 집중도 (test8: 2→4, 90° local min 탈출)
 
-    # ρ binary pour gate: cup_center_xy_dist < thresh → pour stage 활성
+    # ρ binary pour gate
     pour_binary_xy_thresh: float = 0.20
-    pour_binary_tilt_thresh: float = 0.50  # gate_pour_binary 진단용 (ρ에는 미사용)
 
     # -----------------------------------------------------------------------
     # 종료 조건
@@ -402,8 +430,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Warmstart reset cache
     # -----------------------------------------------------------------------
-    # RH56F1 포팅: warmstart 캐시/체크포인트(5g_grasp_right_v7_2, grasp_warm_v7_2.hdf5)는
-    # 모두 Tesollo 20-DOF 산출물 → RH56F1(6-DOF)엔 무효. 비활성화하고 절차적 pregrasp 리셋 사용.
+    # RH56F1 포팅: 과거 warmstart 캐시(5g_grasp_right_v7_2, grasp_warm_v7_2.hdf5)는
+    # Tesollo 20-DOF 산출물 → RH56F1(6-DOF)엔 무효였다. 이제 RH56F1 전용 grasp_v1
+    # warm state(data/grasp_warm_rh56f1.hdf5, collect_grasp_v1_warm_states.py --robot rh56f1)를
+    # 생성해 warm_state_paths 로 연결한다. 활성화하려면 아래를 True 로 바꾼다
+    # (실제 hdf5 생성·검증 후 학습 시점 결정). 파일 없으면 자동 rollout fallback.
     enable_warmstart_reset: bool = False
     warmstart_checkpoint_path: str = (
         _os.path.join(_HDGP_ROOT, "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test3/nn/5g_grasp_right-v7-2.pth")
@@ -411,19 +442,36 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
     # warmstart 초기 상태 소스:
-    #   "disk"   : grasp 가 디스크에 저장한 캐시(grasp_warm_v7_2.hdf5) 로드 (권장).
+    #   "disk"   : grasp 가 디스크에 저장한 캐시(grasp_warm_rh56f1.hdf5) 로드 (권장).
     #              startup 시 grasp policy rollout 불필요 → 분포/포맷 불일치 제거.
-    #   "rollout": (레거시 fallback) 기존처럼 startup 에서 v7-2 체크포인트를
+    #   "rollout": (레거시 fallback) startup 에서 grasp 체크포인트를
     #              pour env 안에서 rollout 해 캐시 수집.
     #   "preset" : 캐시 없이 preset/pregrasp 합성 시작 (디버그용).
     # disk 로드 실패(파일 없음/검증 실패) 시 rollout 으로 안전하게 degrade한다.
-    # 기본 "disk": train.py 가 override 없이도 grasp_warm_v7_2.hdf5 를 로드.
-    # 파일이 없으면 자동으로 rollout 으로 fallback 하므로 안전.
+    # RH56F1 전용 산출물: data/grasp_warm_rh56f1.hdf5
+    #   (collect_grasp_v1_warm_states.py --robot rh56f1).
+    # deep-tilt 부트스트랩: sparse chicken-and-egg 해소.
+    #   학습 중 정책이 만드는 "deep-tilt + target 위 + 비드 source 보유" 실제 프레임을
+    #   full-snapshot으로 캡처했다가 일부 reset을 그 상태에서 시작 → 정책이 마지막 push만
+    #   학습해 200 캡처 보상을 경험. f_boot anneal로 직립 시작에 전이.
+    enable_deep_tilt_boot: bool = True
+    deep_tilt_boot_capacity: int = 4096
+    deep_tilt_capture_tilt_min: float = 0.40       # tilt_amount=(1-cosθ)/2; 0.40≈78°
+    deep_tilt_capture_src_min: float = 0.80        # 비드 source 보유율 하한
+    deep_tilt_capture_mouth_max: float = 0.08      # pour-point xy 거리 상한
+    deep_tilt_capture_drift_max: float = 12.0      # cup_rel_drift 상한 [deg]
+    deep_tilt_capture_contacts_min: float = 3.0    # 최소 접점 수
+    deep_tilt_capture_prob: float = 0.05           # qualifying env를 step당 저장할 확률
+    deep_tilt_boot_min_count: int = 64             # 이 수 이상 쌓여야 부트스트랩 시작
+    deep_tilt_f_boot_start: float = 0.5
+    deep_tilt_f_boot_end: float = 0.0
+    deep_tilt_anneal_steps: int = 300_000
+
     warm_state_source: str = "disk"
     warm_state_paths: tuple[str, ...] = (
-        _os.path.normpath(_os.path.join(_DEFAULT_DEMO_POSE_DATASET_DIR, "grasp_warm_v7_2.hdf5")),
+        _os.path.normpath(_os.path.join(_HDGP_ROOT, "data", "grasp_warm_rh56f1.hdf5")),
     )
-    freeze_grasp_hand_during_episode: bool = False
+    freeze_grasp_hand_during_episode: bool = True
     # 최상위 비드 z=0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)
     bead_spawn_quat_source_cup_wxyz: tuple[float, float, float, float] = tuple(
@@ -490,7 +538,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "openarm_bi_rh56f1/openarm_bi_rh56f1.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_bi_rh56f1_rl/openarm_bi_rh56f1_rl.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -506,46 +554,46 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             pos=[0.0, 0.0, 0.0],
             rot=[1.0, 0.0, 0.0, 0.0],
             joint_pos={
-                "openarm_right_joint1":  0.5,
-                "openarm_right_joint2":  0.1,
-                "openarm_right_joint3":  0.4,
-                "openarm_right_joint4":  0.60,
-                "openarm_right_joint5": -0.2,
-                "openarm_right_joint6":  0.0,
-                "openarm_right_joint7":  0.0,
+                "r_aj_1":  0.5,
+                "r_aj_2":  0.1,
+                "r_aj_3":  0.4,
+                "r_aj_4":  0.60,
+                "r_aj_5": -0.2,
+                "r_aj_6":  0.0,
+                "r_aj_7":  0.0,
                 # RH56F1 우측 손 drive (approach pose)
-                "rh56f1_right_right_thumb_1_joint":  HAND_APPROACH_POSE[0],   # 0.60
-                "rh56f1_right_right_thumb_2_joint":  HAND_APPROACH_POSE[1],   # 0.15
-                "rh56f1_right_right_index_1_joint":  HAND_APPROACH_POSE[2],   # 0.30
-                "rh56f1_right_right_middle_1_joint": HAND_APPROACH_POSE[3],   # 0.30
-                "rh56f1_right_right_ring_1_joint":   HAND_APPROACH_POSE[4],   # 0.30
-                "rh56f1_right_right_little_1_joint": HAND_APPROACH_POSE[5],   # 0.30
+                "r_hj_thumb_1":  HAND_APPROACH_POSE[0],   # 0.60
+                "r_hj_thumb_2":  HAND_APPROACH_POSE[1],   # 0.15
+                "r_hj_index_1":  HAND_APPROACH_POSE[2],   # 0.30
+                "r_hj_middle_1": HAND_APPROACH_POSE[3],   # 0.30
+                "r_hj_ring_1":   HAND_APPROACH_POSE[4],   # 0.30
+                "r_hj_pinky_1": HAND_APPROACH_POSE[5],   # 0.30
                 # mimic 추종 (= drive × multiplier, 결합 init 으로 snap 방지)
-                "rh56f1_right_right_thumb_3_joint":  HAND_APPROACH_POSE[1] * 1.1425,            # 0.171
-                "rh56f1_right_right_thumb_4_joint":  HAND_APPROACH_POSE[1] * 1.1425 * 0.7508,   # 0.129
-                "rh56f1_right_right_index_2_joint":  HAND_APPROACH_POSE[2] * 1.1169,            # 0.335
-                "rh56f1_right_right_middle_2_joint": HAND_APPROACH_POSE[3] * 1.1169,
-                "rh56f1_right_right_ring_2_joint":   HAND_APPROACH_POSE[4] * 1.1169,
-                "rh56f1_right_right_little_2_joint": HAND_APPROACH_POSE[5] * 1.1169,
+                "r_hj_thumb_3":  HAND_APPROACH_POSE[1] * 1.1425,            # 0.171
+                "r_hj_thumb_4":  HAND_APPROACH_POSE[1] * 1.1425 * 0.7508,   # 0.129
+                "r_hj_index_2":  HAND_APPROACH_POSE[2] * 1.1169,            # 0.335
+                "r_hj_middle_2": HAND_APPROACH_POSE[3] * 1.1169,
+                "r_hj_ring_2":   HAND_APPROACH_POSE[4] * 1.1169,
+                "r_hj_pinky_2": HAND_APPROACH_POSE[5] * 1.1169,
                 **LEFT_ARM_REST_JOINT_POS,
                 **LEFT_HAND_REST_JOINT_POS,
             },
         ),
         actuators={
             "openarm_right_arm": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_right_joint[1-7]"],
+                joint_names_expr=["r_aj_[1-7]"],
                 stiffness=400.0,
                 damping=80.0,
             ),
             "openarm_left_arm": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_left_joint[1-7]"],
+                joint_names_expr=["l_aj_[1-7]"],
                 stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
                 damping=200.0,
             ),
             # RH56F1 우측 손 drive 6 (RL 위치제어 — pour 중 grasp pose freeze)
             "rh56f1_right_drive": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "rh56f1_right_right_(thumb_[12]|index_1|middle_1|ring_1|little_1)_joint"
+                    "r_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"
                 ],
                 stiffness=30.0,
                 damping=5.0,
@@ -553,14 +601,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             # RH56F1 우측 손 mimic 추종 6 (passive — PhysxMimicJoint 가 커플)
             "rh56f1_right_mimic": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "rh56f1_right_right_(thumb_[34]|index_2|middle_2|ring_2|little_2)_joint"
+                    "r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"
                 ],
                 stiffness=0.0, damping=0.0,
             ),
             # RH56F1 좌측 손 drive 6 (학습 비사용 → 0 hold)
             "rh56f1_left_drive": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "rh56f1_left_left_(thumb_[12]|index_1|middle_1|ring_1|little_1)_joint"
+                    "l_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"
                 ],
                 stiffness=30.0,
                 damping=5.0,
@@ -568,7 +616,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             # RH56F1 좌측 손 mimic 추종 6 (passive)
             "rh56f1_left_mimic": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "rh56f1_left_left_(thumb_[34]|index_2|middle_2|ring_2|little_2)_joint"
+                    "l_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"
                 ],
                 stiffness=0.0, damping=0.0,
             ),
@@ -583,11 +631,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # fingertip = 병합된 말단 링크(thumb_4, *_2). 순서: thumb,index,middle,ring,little
     # -----------------------------------------------------------------------
     right_tip_contact_links: tuple = (
-        "rh56f1_right_right_thumb_4",
-        "rh56f1_right_right_index_2",
-        "rh56f1_right_right_middle_2",
-        "rh56f1_right_right_ring_2",
-        "rh56f1_right_right_little_2",
+        "r_hl_thumb_4",
+        "r_hl_index_2",
+        "r_hl_middle_2",
+        "r_hl_ring_2",
+        "r_hl_pinky_2",
     )
 
     # -----------------------------------------------------------------------
@@ -600,7 +648,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_sdf.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_middle.usd"),
             activate_contact_sensors=True,
             scale=(1.0, 1.0, 1.0),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(

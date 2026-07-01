@@ -1,7 +1,7 @@
-# 5g_pour_right_v3 rl_games PPO 설정
-# reset 은 v7 warmstart cache를 사용하고, 학습 task 이름만 새로 분리한다.
-# 관측: actor 51D / critic 112D (asymmetric), 액션: 12D
-# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
+# 5g_grasp_right_v10-3 recurrent actor / MLP critic config
+# Actor 132D MLP [512, 512] -> LSTM 1024 / critic 169D MLP [512, 512, 256, 128], action 26D incremental palm + hand residual.
+# This is a separate non-warm-start config because the LSTM architecture
+# is incompatible with the v10-2 MLP checkpoint.
 
 params:
   seed: 42
@@ -30,25 +30,33 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [512, 256, 128]
+      units: [512, 512]
       activation: elu
       d2rl: False
       initializer:
         name: default
       regularizer:
         name: None
+    rnn:
+      name: lstm
+      units: 1024
+      layers: 1
+      before_mlp: False
+      layer_norm: True
+      concat_input: True
+      concat_output: True
 
   load_checkpoint: False
   load_path: ''
 
   config:
-    name: inspire_r_pour_v1
+    name: 5g_grasp_right-v1-lstm
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
     multi_gpu: False
     ppo: True
-    mixed_precision: True
+    mixed_precision: False
     normalize_input: True
     normalize_value: True
     value_bootstrap: False
@@ -58,59 +66,55 @@ params:
     normalize_advantage: True
     gamma: 0.998
     tau: 0.95
-    # num_envs별 lr (sqrt scaling 기준):
-    #   128  envs: lr=4e-4  (baseline)
-    #   512  envs: lr=8e-4
-    #   1024 envs: lr=1.1e-3
-    #   2048 envs: lr=1.6e-3
-    learning_rate: 1e-4
-    lr_schedule: linear
+    learning_rate: 3e-4
+    lr_schedule: adaptive   # lstm_test12: KL 0.08~0.14(threshold 8~10배)인데 linear는 미clamp → five_tip 0.42→0.33 드리프트. adaptive로 kl_threshold가 LR 제어(v1과 동일)
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
-    max_epochs: 10000        # --max_iterations 2000 으로 CLI에서 override
+    max_epochs: 20000
     save_best_after: 100
-    save_frequency: 50
+    save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.0008         # 탐색 과잉 완화
+    entropy_coef: 0.0005
     truncate_grads: True
-    e_clip: 0.25
-    horizon_length: 64
-    # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함 (항상 4 splits)
-    #   128  envs: batch=   8,192 → minibatch=  2,048  lr=4e-4
-    #   512  envs: batch=  32,768 → minibatch=  8,192  lr=8e-4
-    #   1024 envs: batch=  65,536 → minibatch= 16,384  lr=1.1e-3
-    #   2048 envs: batch= 131,072 → minibatch= 32,768  lr=1.6e-3  ← default below
-    minibatch_size: 32768
-    mini_epochs: 6
+    e_clip: 0.2
+    horizon_length: 32
+    minibatch_size: 16384
+    mini_epochs: 4
     critic_coef: 4
     clip_value: True
-    clip_actions: False
+    seq_length: 16
     bound_loss_type: regularization
     bounds_loss_coef: 0.005
+    zero_rnn_on_done: True
 
-    # Asymmetric Actor-Critic: critic은 143D privileged obs 사용
     has_central_value: True
     central_value_config:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768     # actor와 동일하게 맞출 것 (num_envs 2048 기준)
-      mini_epochs: 6
-      learning_rate: 1e-4
+      minibatch_size: 16384
+      mini_epochs: 4
+      learning_rate: 5e-5
       lr_schedule: linear
-      kl_threshold: 0.013
+      kl_threshold: 0.016
       clip_value: True
-      e_clip: 0.25
+      e_clip: 0.2
+      truncate_grads: True
       network:
         name: actor_critic
         central_value: True
         mlp:
-          units: [512, 256, 128]
+          units: [512, 512, 256, 128]
           activation: elu
           d2rl: False
           initializer:
             name: default
           regularizer:
             name: None
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True

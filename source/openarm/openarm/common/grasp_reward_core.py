@@ -15,6 +15,8 @@ def compute_grasp_reward_terms(
     tip_contact_frac: torch.Tensor,
     full_tip_contact: torch.Tensor,
     contact_persistence_frac: torch.Tensor,
+    envelope_frac: torch.Tensor | None = None,
+    grip_frac: torch.Tensor | None = None,
     palm_to_cup_dist: torch.Tensor,
     fingertip_side_dist: torch.Tensor,
     cup_height_delta: torch.Tensor,
@@ -40,6 +42,12 @@ def compute_grasp_reward_terms(
     # gradient를 주도록 tip_contact_frac(=num_tip/5)로 graded 게이팅한다.
     # success/termination 판정은 별도로 full_tip>=5를 유지(env에서 처리).
     graded_contact = tip_contact_frac.clamp(0.0, 1.0)
+    # envelope-aware 접촉 품질: envelope_frac(중간/원위 마디 wrap 비율)이 주어지면
+    # lift/stabilize 접촉 게이팅을 tip+envelope 혼합으로 → 손끝-only lift를 부드럽게 억제
+    # (hard latch 게이트 대체). RH56F1은 envelope_frac=None → tip-only 기존 동작 유지.
+    if envelope_frac is not None:
+        env_quality = envelope_frac.clamp(0.0, 1.0)
+        graded_contact = 0.5 * graded_contact + 0.5 * env_quality
 
     lifted_bool = cup_height_delta >= _cfg_float(cfg, "lift_success_height", 0.04)
     lifted_gate = lifted_bool.float()
@@ -63,9 +71,21 @@ def compute_grasp_reward_terms(
         - _cfg_float(cfg, "approach_tilt_penalty_weight", 0.0)
         * torch.relu(cup_tilt_deg - tilt_margin)
     )
-    grasp = _cfg_float(cfg, "grasp_weight", 0.0) * pre_lift_gate * (
-        0.25 * tip_contact_frac + 0.35 * full_tip + 0.40 * contact_persistence_frac
-    )
+    if envelope_frac is None:
+        grasp_quality = (
+            0.25 * tip_contact_frac + 0.35 * full_tip + 0.40 * contact_persistence_frac
+        )
+    else:
+        # envelope(중간/원위 wrap)을 grasp 보상에 credit → 지배적 grasp 보상이 wrap을
+        # 당기는 gradient가 됨(tip-farming 차단). pre_lift_gate라 "wrap만 하고 안 듦"
+        # 수렴은 불가(리프트 후 꺼짐).
+        grasp_quality = (
+            0.15 * tip_contact_frac
+            + 0.20 * full_tip
+            + 0.25 * contact_persistence_frac
+            + 0.40 * envelope_frac.clamp(0.0, 1.0)
+        )
+    grasp = _cfg_float(cfg, "grasp_weight", 0.0) * pre_lift_gate * grasp_quality
     lift_height_quality = (
         cup_height_delta
         / max(_cfg_float(cfg, "lift_success_height", 0.04), 1e-6)
@@ -107,7 +127,12 @@ def compute_grasp_reward_terms(
         _cfg_float(cfg, "post_lift_contact_loss_weight", 0.0)
         * lift_gate
         * lifted_gate
-        * torch.relu(1.0 - tip_contact_frac)
+        # envelope-consistent: 임의 마디 접촉(grip_frac)이 주어지면 tip 대신 사용.
+        # envelope wrap이 tip을 mid/dist로 옮겨도 그립 손실로 처벌하지 않음
+        # (tip-only면 wrap을 처벌 → tip↔envelope 진동). RH56F1은 None→tip 유지.
+        * torch.relu(
+            1.0 - (tip_contact_frac if grip_frac is None else grip_frac.clamp(0.0, 1.0))
+        )
     )
     stabilize = (
         _cfg_float(cfg, "stabilize_weight", 0.0)

@@ -29,6 +29,7 @@ Episode (10s @ 60Hz):
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
@@ -57,6 +58,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_from_angle_axis, quat_mul
 
 from openarm.common.grasp_logging import (
+    action_policy_scalars,
     joint_state_scalars,
     per_finger_contact_scalars,
 )
@@ -206,9 +208,9 @@ class GraspRightEnv(DirectRLEnv):
         # middle phalanx: RH56F1 손가락은 2 링크뿐 → 중간 phalanx 대신 proximal 링크(_1) 사용.
         # (middle_to_cup obs 의 기하 의미 유지: 손가락 밑마디→컵 벡터, FK 로 sim2real 가능)
         _proximal_names = [
-            "rh56f1_right_right_thumb_1", "rh56f1_right_right_index_1",
-            "rh56f1_right_right_middle_1", "rh56f1_right_right_ring_1",
-            "rh56f1_right_right_little_1",
+            "r_hl_thumb_1", "r_hl_index_1",
+            "r_hl_middle_1", "r_hl_ring_1",
+            "r_hl_pinky_1",
         ]
         self.middle3_body_indices: list[int] = [
             self.robot.data.body_names.index(name)
@@ -389,7 +391,8 @@ class GraspRightEnv(DirectRLEnv):
         # 기타 버퍼
         # ----------------------------------------------------------------
         self.success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # leaky hold_count(float): miss 시 success_hold_miss_decay 감쇠 → flicker 허용
+        self._success_hold_count = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self._cup_tipping_cos = math.cos(math.radians(cfg.cup_tipping_max_deg))
         self.episode_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.episode_lift_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -742,6 +745,9 @@ class GraspRightEnv(DirectRLEnv):
             "dynamic_bead_spawned": torch.empty(target_count, dtype=torch.bool),
             "cup_friction_static": torch.empty(target_count, dtype=torch.float32),
         }
+        self._write_warm_export_progress(
+            count=0, target=target_count, added=0, status="running"
+        )
 
     def _select_warm_state_export_success(
         self, env_ids: torch.Tensor, started_mask: torch.Tensor
@@ -810,8 +816,47 @@ class GraspRightEnv(DirectRLEnv):
         export["cup_friction_static"][start:end] = self._cup_friction_static[success_env_ids].detach().cpu()
 
         self._warm_state_export_count = end
+        self._write_warm_export_progress(
+            count=self._warm_state_export_count,
+            target=target_count,
+            added=count,
+            status="running",
+        )
+        print(
+            f"[warm_state_export] {self._warm_state_export_count}/{target_count} "
+            f"성공 상태 수집 (+{count})",
+            flush=True,
+        )
         if self._warm_state_export_count >= target_count:
             self._write_warm_state_export_file()
+
+    def _write_warm_export_progress(
+        self,
+        *,
+        count: int,
+        target: int,
+        added: int,
+        status: str,
+    ) -> None:
+        """수집 진행 상황을 ``<out>.progress.json`` 으로 원자적 기록 (외부 폴링용)."""
+        path = self._warm_state_export_path.with_name(
+            self._warm_state_export_path.name + ".progress.json"
+        )
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        data = {
+            "count": int(count),
+            "target": int(target),
+            "added": int(added),
+            "status": status,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(data, f, sort_keys=True)
+                f.write("\n")
+            tmp.replace(path)
+        except OSError:
+            pass
 
     def _write_warm_state_export_file(self) -> None:
         if self._warm_state_export is None or self._warm_state_export_written:
@@ -848,6 +893,12 @@ class GraspRightEnv(DirectRLEnv):
 
         os.replace(tmp_path, path)
         self._warm_state_export_written = True
+        self._write_warm_export_progress(
+            count=count,
+            target=int(self.cfg.warm_state_target_count),
+            added=0,
+            status="complete",
+        )
         print(
             f"[5g_grasp_right_v11] exported {count} pour warm states to {path}",
             flush=True,
@@ -1700,6 +1751,13 @@ class GraspRightEnv(DirectRLEnv):
                 arm_vel=self.robot.data.joint_vel[:, self.arm_dof_indices],
                 finger_pos=self.robot.data.joint_pos[:, self.hand_dof_indices],
                 finger_vel=self.robot.data.joint_vel[:, self.hand_dof_indices],
+                per_joint=True,
+            )
+        )
+        # action policy(palm 6D + finger raw) 로깅 — Tesollo grasp_v1과 공용 헬퍼
+        self.extras.update(
+            action_policy_scalars(
+                action=self.actions, prev_action=self.prev_actions, palm_dims=6,
             )
         )
         self.extras["task/pre_lift_full_contact_rate"] = (

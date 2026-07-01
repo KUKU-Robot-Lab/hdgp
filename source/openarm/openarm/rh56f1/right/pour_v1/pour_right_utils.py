@@ -28,5 +28,57 @@ def tensor_clamp(t: torch.Tensor, min_t: torch.Tensor, max_t: torch.Tensor) -> t
     return torch.max(torch.min(t, max_t), min_t)
 
 
+@torch.jit.script
+def pour_alignment_score(
+    pour_point: torch.Tensor,      # (N, 3) env-local 또는 world 동일 프레임
+    target_opening: torch.Tensor,  # (N, 3) 동일 프레임
+    z_margin: float,               # 목표 z 오프셋 (두 컵 충돌 방지: 입구 위 z_margin)
+    scale: float,                  # 거리 민감도
+) -> torch.Tensor:
+    """pour_point ↔ (target_opening + [0,0,z_margin]) 의 3D 정렬 score.
+
+    xy 정렬(빗나감=spill)과 z 높이(고공 살포/충돌)를 단일 거리로 동시 처리한다.
+    완벽 조준 시 1, 멀수록 0으로 단조 감소(항상 양수 gradient).
+    """
+    delta = pour_point - target_opening
+    # [z-trade-off 해소] pour_point가 목표 z(입구 위 z_margin)보다 위로 뜨면 페널티 유지
+    #   (고공 살포·두 컵 충돌 방지 = 원래 목적). 아래(입구로 내려오는 깊은 tilt 쏟기 자세)면
+    #   z 페널티 면제 → 더 기울여도 align/bead가 안 깨짐 → 80° park(z trade-off) 해소.
+    #   xy 정렬은 그대로 강제(spill 방지). 과한 침투는 컵 충돌 termination이 가드.
+    delta_z = (delta[:, 2] - z_margin).clamp(min=0.0)
+    dist = torch.sqrt(
+        delta[:, 0] * delta[:, 0]
+        + delta[:, 1] * delta[:, 1]
+        + delta_z * delta_z
+        + 1e-12
+    )
+    return torch.exp(-scale * dist)
+
+
+@torch.jit.script
+def pour_corridor_score(
+    pour_point: torch.Tensor,      # (N, 3) env-local 또는 world 동일 프레임
+    target_opening: torch.Tensor,  # (N, 3) 동일 프레임
+    radius: float,                 # 허용 xy corridor 반경
+    z_min: float,                  # target_opening z 기준 허용 하한
+    z_max: float,                  # target_opening z 기준 허용 상한
+    scale: float,                  # corridor 밖 초과거리 민감도
+) -> torch.Tensor:
+    """Target 입구 corridor score.
+
+    Corridor 내부에서는 score=1로 평평하게 유지해 중심축 정렬 파밍을 막고,
+    xy 반경 또는 z 범위를 벗어난 초과분에만 exponential penalty를 준다.
+    """
+    delta = pour_point - target_opening
+    xy_dist = torch.sqrt(delta[:, 0] * delta[:, 0] + delta[:, 1] * delta[:, 1])
+    xy_excess = (xy_dist - radius).clamp(min=0.0)
+    z_rel = delta[:, 2]
+    z_low_excess = (z_min - z_rel).clamp(min=0.0)
+    z_high_excess = (z_rel - z_max).clamp(min=0.0)
+    z_excess = z_low_excess + z_high_excess
+    excess = torch.sqrt(xy_excess * xy_excess + z_excess * z_excess)
+    return torch.exp(-scale * excess)
+
+
 def to_torch(x, dtype=torch.float, device: str = "cuda:0", requires_grad: bool = False) -> torch.Tensor:
     return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)

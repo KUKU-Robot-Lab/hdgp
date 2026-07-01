@@ -43,7 +43,7 @@ def test_preset_rh56f1_hand_joints():
     preset, _ = _load_preset_and_constants()
     assert len(preset.RIGHT_HAND_JOINT_NAMES) == 6
     assert len(preset.RIGHT_HAND_MIMIC_JOINT_NAMES) == 6
-    assert all("rh56f1_right_right" in n for n in preset.RIGHT_HAND_JOINT_NAMES)
+    assert all(n.startswith("r_hj_") for n in preset.RIGHT_HAND_JOINT_NAMES)
     assert len(preset.RIGHT_ACTUATED_JOINT_NAMES) == 13  # 7 arm + 6 hand
     # 손 포즈 6D
     for pose in (preset.HAND_START_POSE, preset.HAND_APPROACH_POSE,
@@ -62,7 +62,7 @@ def test_preset_left_hand_rh56f1():
 
 def test_preset_body_names_rh56f1():
     preset, _ = _load_preset_and_constants()
-    assert preset.HAND_BODY_NAMES_USD[0] == "rh56f1_right_plam_force_sensor"
+    assert preset.HAND_BODY_NAMES_USD[0] == "r_al_7"
     assert len(preset.HAND_BODY_NAMES_USD) == 6
     assert all("rl_dg" not in b for b in preset.HAND_BODY_NAMES_USD)
     assert len(preset.FABRIC_HAND_BODY_NAMES) == 7
@@ -77,13 +77,14 @@ def test_constants_dims():
     assert c.NUM_ARM_DOF == 7
     assert c.NUM_HAND_DOF == 6
     assert c.NUM_ROBOT_DOF == 13
-    assert c.NUM_ACTIONS == 11           # 6 palm + 5 finger lerp
+    assert c.NUM_ACTIONS == 12           # 6 palm + 1 nullspace + 5 finger lerp (pour_v6 이식)
+    assert c.NUM_NULLSPACE_ACTION == 1
     assert c.NUM_FINGER_ACTION == 5
-    assert c.NUM_OBSERVATIONS == 60      # actor (로봇 비의존, 유지)
-    # critic = base 82 + extras 50 = 132
-    assert c.NUM_CRITIC_BASE_OBSERVATIONS == 82
-    assert c.NUM_CRITIC_EXTRAS == 50
-    assert c.NUM_CRITIC_OBSERVATIONS == 132
+    assert c.NUM_OBSERVATIONS == 51      # pour_v6 sim2real 레이아웃 (left_arm 7)
+    # critic = base 77 + extras 35 = 112
+    assert c.NUM_CRITIC_BASE_OBSERVATIONS == 77
+    assert c.NUM_CRITIC_EXTRAS == 35
+    assert c.NUM_CRITIC_OBSERVATIONS == 112
     assert c.NUM_CRITIC_OBSERVATIONS == c.NUM_CRITIC_BASE_OBSERVATIONS + c.NUM_CRITIC_EXTRAS
 
 
@@ -94,14 +95,15 @@ def test_critic_dim_matches_assembly():
             + 3 + 3 + 3        # opening_rel + source_pour_axis + source_up_axis
             + 8                # transport stack
             + 5 + 5            # binary_contact + tip_force
-            + 11               # last_actions
+            + 6                # last_actions (palm 6, α 제외)
             + 1 + 1 + 1 + 1)   # bead source/target/cross/spill
-    assert base == 82
-    extra = (19 + 19          # left_arm pos/vel (7 arm + 12 hand)
+    assert base == 77
+    extra = (7 + 7            # left_arm pos/vel (7 arm; 왼손 rest 고정)
              + 5 + 5          # distal binary/force (=tip)
-             + 1 + 1)         # cup_h + rho
-    assert extra == 50
-    assert base + extra == 132
+             + 1 + 1          # cup_h + rho
+             + 1 + 1 + 7)     # demo_arm_err + demo_j5_err + demo_target_arm_q (privileged)
+    assert extra == 35
+    assert base + extra == 112
 
 
 # ---------------------------------------------------------------------------
@@ -110,10 +112,10 @@ def test_critic_dim_matches_assembly():
 def test_config_init_ids_and_entry():
     s = (ROOT / "config" / "__init__.py").read_text()
     ast.parse(s)
-    for gid in ['id="inspire_r_pour_v1"', 'id="inspire_r_pour_v1-lstm"',
-                'id="inspire_r_pour_v1-play"', 'id="inspire_r_pour_v1-play-lstm"']:
+    for gid in ['id="open-rh56f1_r_pour_v1"', 'id="open-rh56f1_r_pour_v1-lstm"',
+                'id="open-rh56f1_r_pour_v1-play"', 'id="open-rh56f1_r_pour_v1-play-lstm"']:
         assert gid in s, gid
-    assert "pipeline.hand.inspire_r.pour_r_v1" in s
+    assert "openarm.rh56f1.right.pour_v1.pour_right_env" in s
     assert "5g_pour_right_v3" not in s
     assert "hand.right.5g_pour" not in s
 
@@ -160,7 +162,8 @@ def test_env_fabric_and_hand_mapping():
 def test_env_cfg_rh56f1():
     s = (ROOT / "pour_right_env_cfg.py").read_text()
     ast.parse(s)
-    assert "openarm_bi_rh56f1/openarm_bi_rh56f1.usd" in s
+    assert "robot/openarm_bi_rh56f1_rl/openarm_bi_rh56f1_rl.usd" in s
+    assert "cup/cup_middle.usd" in s          # 오른쪽 source cup
     assert "rh56f1_right_drive" in s
     assert "rh56f1_left_drive" in s
     assert "tesollo_hand" not in s
