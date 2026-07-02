@@ -391,6 +391,8 @@ class GraspRightEnv(DirectRLEnv):
         self._palm_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self._grasp_tilt_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
         self._force_ratio_at_lift_start_buf = torch.zeros(self.num_envs, device=self.device)
+        # 매 step force_ratio(grip force / mg). success 게이트에서 grip force 하중충족 판정.
+        self._force_ratio_buf = torch.zeros(self.num_envs, device=self.device)
         self._full_grip_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._lift_success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._full_grip_ready_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -1594,13 +1596,20 @@ class GraspRightEnv(DirectRLEnv):
         self.extras.clear()
 
         # ---- 접촉력 / 질량 ----
-        total_grip_force = self.contact_force_raw.sum(dim=-1)
+        # envelope-consistent grip force: 손끝(tip)+근위(middle) 접촉력 합. envelope wrap 이
+        # force 를 근위로 옮겨도 grip force 로 인정 → force 게이트가 envelope 와 충돌하지 않음.
+        total_grip_force = (
+            self.contact_force_raw.sum(dim=-1)
+            + self.middle_contact_force_raw.sum(dim=-1)
+        )
         effective_mass = (
             self.cfg.cup_base_mass
             + self._bead_mass_normalized * self.cfg.num_beads * self.cfg.bead_single_mass
         )
         mg = effective_mass * 9.81
         force_ratio = total_grip_force / (mg + 1e-4)
+        # _get_dones 의 success 게이트에서 재사용(_get_rewards 가 _get_dones 보다 먼저 실행됨).
+        self._force_ratio_buf.copy_(force_ratio)
 
         # ---- 컵 자세 ----
         z_local = torch.zeros(self.num_envs, 3, device=self.device)
@@ -2131,7 +2140,12 @@ class GraspRightEnv(DirectRLEnv):
             previous_success_hold_count=self._success_hold_count,
             cfg=self.cfg,
         )
-        success_now = stationary_success.success_now
+        # grip force 게이트: 실효질량(가상 bead 포함) 대비 grip force 가 lift_min_force_ratio
+        # 이상일 때만 success 인정 → 수집되는 warm-state 가 하중을 견디는 firm grip 보장.
+        # actor 는 질량 미관측이므로 최악(470g)까지 견디는 강한 grip 을 학습(pour 하중 강건성).
+        success_now = stationary_success.success_now & (
+            self._force_ratio_buf >= self.cfg.lift_min_force_ratio
+        )
         stabilize_success_now = (
             in_stabilize
             & lifted
@@ -2466,9 +2480,14 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 7b. Bead 스폰 ----
         if not self.cfg.physical_beads_enabled:
-            bead_count = torch.zeros(n, dtype=torch.long, device=self.device)
+            # 가상질량(hidden-mass): 물리 bead 없이 bead_count 만 랜덤화 → effective_mass/
+            # force_ratio/critic oracle 에 반영(물리 스폰은 아래 physical_beads_enabled 가드로 차단).
+            # bead_count_max=0 이면 {0} 고정으로 하위호환. {0,10,20,30}개 → {170,270,370,470}g.
+            _min_lvl = min(max(int(self.cfg.bead_count_min) // 10, 0), 3)
+            _max_lvl = min(max(int(self.cfg.bead_count_max) // 10, _min_lvl), 3)
+            bead_count = torch.randint(_min_lvl, _max_lvl + 1, (n,), device=self.device) * 10
             dynamic_add_count = torch.zeros(n, dtype=torch.long, device=self.device)
-            target_bead_count = torch.zeros(n, dtype=torch.long, device=self.device)
+            target_bead_count = bead_count
         elif self.cfg.dynamic_bead_spawn_enabled:
             bead_count = self._sample_bead_counts(
                 n,

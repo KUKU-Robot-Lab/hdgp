@@ -155,14 +155,17 @@ def test_v11_disables_physical_beads_for_small_cup_grasp() -> None:
         "dynamic_bead_add_count_max",
     ):
         assert name in cfg
+    # 물리 bead 는 계속 비활성(소형 컵 학습 안정), 단 가상질량(hidden-mass) 은 활성:
+    # bead_count 를 랜덤화해 effective_mass/force_ratio/critic oracle 에만 반영(물리 스폰 X).
     assert "bead_count_min: int = 0" in cfg
-    assert "bead_count_max: int = 0" in cfg
+    assert "bead_count_max: int = 30" in cfg
     assert "physical_beads_enabled: bool = False" in cfg
     assert "dynamic_bead_spawn_enabled: bool = False" in cfg
     assert "bead_initial_count_max: int = 0" in cfg
     assert "if not self.cfg.physical_beads_enabled:" in env
-    assert "bead_count = torch.zeros(n, dtype=torch.long, device=self.device)" in env
-    assert "target_bead_count = torch.zeros(n, dtype=torch.long, device=self.device)" in env
+    # 물리-off 분기에서 bead_count 를 가상 랜덤화(물리 스폰은 아래 가드로 차단)
+    assert "bead_count = torch.randint(_min_lvl, _max_lvl + 1, (n,), device=self.device) * 10" in env
+    assert "target_bead_count = bead_count" in env
     assert "if self.cfg.physical_beads_enabled and active.any():" in env
     assert "self._bead_mass_normalized[env_ids] = bead_count.float() / self.cfg.num_beads" in env
     assert "self._bead_mass_normalized * self.cfg.num_beads * self.cfg.bead_single_mass" in env

@@ -617,8 +617,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     beads_cfg: RigidObjectCollectionCfg = field(default_factory=_make_beads_cfg)
     num_beads: int = _DEFAULT_BEAD_COUNT              # 30
     physical_beads_enabled: bool = False
+    # 가상질량 도메인 랜덤화: {0,10,20,30}개 × 10g → 컵 실효질량 {170,270,370,470}g.
+    # 물리 bead 없이 hidden-mass 로 grip force 하중강건성 학습(actor 는 질량 미관측, critic oracle).
     bead_count_min: int = 0
-    bead_count_max: int = 0
+    bead_count_max: int = 30
     bead_spawn_z_offset: float = 0.035
 
     # Keep dynamic insertion disabled for hidden-mass static-bin grasp/lift training.
