@@ -74,7 +74,7 @@ def test_rh56f1_procedural_pregrasp_starts_closer_and_has_recovery_range() -> No
     assert "palm_delta_xyz:     float = 0.03" in cfg
     assert "ema_action_alpha: float = 0.7" in cfg
     assert "grasp_palm_delta_scale: float = 1.0" in cfg
-    assert "grasp_palm_inward_offset: float = 0.08" in cfg
+    assert "grasp_palm_inward_offset: float = 0.11" in cfg
 
 
 def test_rh56f1_lift_start_requires_success_contact_count() -> None:

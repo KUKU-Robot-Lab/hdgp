@@ -1819,6 +1819,11 @@ class GraspRightEnv(DirectRLEnv):
         _mimic_pos = self.robot.data.joint_pos[:, self._hand_mimic_dof_indices]
         self.extras["envelope/mimic_pos_mean"] = _mimic_pos.mean()
         self.extras["envelope/mimic_pos_max"] = _mimic_pos.max()
+        # (C) palm 접근 깊이: palm 중심↔컵 중심 거리. palm-seat/삽입 깊이가 실제로 작동하는지 검증
+        #     (task/palm_to_cup_dist 는 rl_games 로깅 누락 → envelope/ 로 확실히 노출).
+        self.extras["envelope/palm_to_cup_dist"] = (
+            self.palm_center_pos - self.object_pos
+        ).norm(dim=-1).mean()
         # (B) 근위(proximal) 마디 접촉: envelope 는 손끝 외 밑마디도 컵에 닿는다(pinch 는 안 닿음).
         _middle_count = self.middle_binary_contact_buf.float().sum(dim=-1)
         self.extras["envelope/middle_contact_count"] = _middle_count.mean()

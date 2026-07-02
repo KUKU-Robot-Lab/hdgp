@@ -242,7 +242,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_upright_max_deg: float = 20.0
     approach_timeout_grasp_reward_scale: float = 0.25
     grasp_palm_delta_scale: float = 1.0
-    grasp_palm_inward_offset: float = 0.08   # 손가락 더 깊숙히: grasp 중 palm 을 컵쪽으로 더 깊이(0.05→0.08, 수동 확인)
+    grasp_palm_inward_offset: float = 0.11   # palm 더 적극적으로 깊숙히: grasp 중 palm 을 컵쪽으로 깊이(0.08→0.11)
     lift_palm_delta_xyz: float = 0.03
     lift_palm_delta_rot_deg: float = 15.0
 
@@ -289,7 +289,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # palm-seat: 컵을 palm 에 밀착(enclosing grasp)하도록 유도. sparse(접촉) 보상은 palm 이
     # 애초에 안 닿아 gradient=0 부트스트랩 실패 → dense 근접 보상 exp(-sharpness×palm_to_cup_dist)
     # 로 안 닿아도 가까워질수록 보상↑. grip 중(num_contacts≥1)에만 → palm-shove 방지.
-    palm_seat_weight:       float = 4.0
+    palm_seat_weight:       float = 6.0
     palm_seat_sharpness:    float = 15.0
     cup_radius_approx:      float = 0.035
     enclosure_thumb_weight: float = 0.6
