@@ -587,8 +587,6 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   (collect_grasp_v1_warm_states.py --robot tesollo). warm-state 는 grasp 성공
     #   초기 pose(arm/hand/cup)라 v6 의 7-D action 차원 변경과 무관하게 유효하다.
     warm_state_source: str = "disk"
-    # [warmstart 롤백] data/grasp_warm_tesollo.hdf5(미생성)→datasets/grasp_warm_v7_2.hdf5(존재) 복원.
-    #   tesollo hdf5는 아직 미생성 → cache 로드 실패 시 손가락 펴진 채(파지없이) 학습 → 붕괴(lstm_test31/29).
     # [rl USD 마이그레이션] 신 USD(조인트 순서/이름 변경)에 맞춘 warmstart 재생성물 사용.
     #   구 grasp_warm_v7_2.hdf5(구 USD)는 비호환 → data/grasp_warm_tesollo.hdf5 (grasp_v1 tesollo, _rl). pour_sensor와 동일.
     warm_state_paths: tuple[str, ...] = (

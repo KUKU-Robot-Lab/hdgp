@@ -120,7 +120,12 @@ def _left_arm_fk_hand_pose(joint_pos_dict: dict) -> tuple:
     Tc = Tc @ _Tj([0,-.0315,.0955],    [0,0,0], [0,0,1],   g("l_aj_5"))
     Tc = Tc @ _Tj([.0375,0,.1205],     [0,0,0], [1,0,0],   g("l_aj_6"))
     Tc = Tc @ _Tj([-.0375,0,0],        [0,0,0], [0,-1,0],  g("l_aj_7"))
-    Tc = Tc @ _Tf([0, 0, .1001],       [0,0,0])
+    # l_al_7 → l_hl_palm_sensor 체인 (07.02: 구 _Tf([0,0,.1001]) 손목근사는 rh56f1 palm 체인을
+    # 반영 못해 타겟컵이 손 안쪽에 소환→penetration. 실제 palm_sensor까지 FK 확장).
+    Tc = Tc @ _Tf([0, 0, 0.0595695],                   [0, 0, math.pi/2])    # l_al_7 → l_hl_base (mount)
+    Tc = Tc @ _Tf([0, 0, 0.0305],                      [0, 0, 0])            # base → palm_1
+    Tc = Tc @ _Tf([0, 0, 0.0],                         [0, 0, 0])            # palm_1 → palm_2
+    Tc = Tc @ _Tf([0.01594, -0.0013505, 0.073746],     [math.pi/2, 0, math.pi/2])  # palm_2 → palm_sensor
     return Tc[:3, 3], Tc[:3, :3]
 
 
@@ -148,12 +153,12 @@ def compute_left_cup_pose_from_fk(joint_pos_dict: dict, local_z: float = 0.04) -
             s=2*np.sqrt(1+R[2,2]-R[0,0]-R[1,1]); w=(R[1,0]-R[0,1])/s; x=(R[0,2]+R[2,0])/s; y=(R[1,2]+R[2,1])/s; z=.25*s
         q = np.array([w, x, y, z]); return (q / np.linalg.norm(q)).tolist()
 
-    c, s = math.cos(math.pi / 2), math.sin(math.pi / 2)
-    R_y90 = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-
-    p_hand, R_hand = _left_arm_fk_hand_pose(joint_pos_dict)
-    cup_pos  = (p_hand + R_hand @ np.array([0.0, 0.0, local_z])).tolist()
-    cup_quat = _R_to_quat_wxyz(R_hand @ R_y90)
+    # _left_arm_fk_hand_pose 는 이제 l_hl_palm_sensor pose 반환 (palm 체인 확장).
+    # 타겟컵을 palm_sensor 근처에 upright(opening=world Z up, 비드 받는 컵)로 배치.
+    # local_z: palm_sensor 프레임 Z 방향 clearance (penetration 방지, render로 미세조정).
+    p_sensor, R_sensor = _left_arm_fk_hand_pose(joint_pos_dict)
+    cup_pos  = (p_sensor + R_sensor @ np.array([0.0, 0.0, local_z])).tolist()
+    cup_quat = [1.0, 0.0, 0.0, 0.0]  # world upright
     return cup_pos, cup_quat
 
 
@@ -181,11 +186,14 @@ TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 # ---------------------------------------------------------------------------
 # 보상/관측에 쓰는 USD body (palm + 5 말단 손가락 링크).
 # Phase 0 검증: fingertip force_sensor 링크는 병합 소멸 → 생존 말단 링크 사용.
-#   [0]=palm force sensor body = r_hl_palm_sensor (OLD rh56f1_right_plam_force_sensor 대응).
-#       (구 r_al_7는 팔 손목이라 palm 자세를 오프셋만큼 틀리게 읽음 → 07.01 복구, grasp_v1과 동일)
+#   [0]=palm 제어 기준 body = r_hl_palm_1 (비회전 palm_link, tesollo rl_dg_palm 대응).
+#       ⚠️ r_hl_palm_sensor는 URDF rpy=(π/2,0,π/2)로 90°×90° 회전된 프레임 → pour tilt 제어가
+#       그 자세를 읽으면 명령축 어긋남(손 회전 시 컵 통제불능). grasp warmstart palm_pose는
+#       palm_link 방향으로 저장되므로 read도 비회전 palm_1로 정합. 위치는 _palm_ee_offset_local로 보정.
+#       (07.02 회전 버그 수정. 구 r_al_7→palm_sensor→palm_1 순으로 정정.)
 #   [1:6]=thumb_4, index_2, middle_2, ring_2, little_2
 HAND_BODY_NAMES_USD = [
-    "r_hl_palm_sensor",
+    "r_hl_palm_1",
     "r_hl_thumb_4",
     "r_hl_index_2",
     "r_hl_middle_2",
