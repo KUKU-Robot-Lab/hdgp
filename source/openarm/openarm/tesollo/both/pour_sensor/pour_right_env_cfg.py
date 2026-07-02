@@ -805,9 +805,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                 kinematic_enabled=True,
                 disable_gravity=True,
             ),
+            # [07.02 reward-hacking fix] 음수 offset(-0.1)은 target cup을 유령(충돌無)으로 만들어
+            #   source cup 관통·겹침 이중카운트(bead_in_source+target=1.4)를 허용했다. 정상값으로 복원해
+            #   SDF 충돌 활성화: source 몸체 관통 불가 + bead가 림 위로 넘어와야 진입 + target이 실제 담음.
             collision_props=CollisionPropertiesCfg(
-                contact_offset=-0.1,
-                rest_offset=-0.1,
+                contact_offset=0.02,
+                rest_offset=0.0,
             ),
         ),
     )
