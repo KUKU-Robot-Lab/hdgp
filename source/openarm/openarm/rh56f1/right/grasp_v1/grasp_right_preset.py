@@ -164,7 +164,7 @@ HAND_APPROACH_POSE = [
 # test5에서는 index/middle 접촉이 거의 0에 머물렀으므로,
 # lift 전 grasp target은 index/middle closure를 ring/little보다 앞당긴다.
 HAND_GRASP_POSE = [
-    1.57,   # thumb_1
+    1.20,   # thumb_1: approach(1.57)보다 낮춰 unpin → action f1 작동. 손바닥쪽으로 내려 컵 지지(수동 확인)
     0.24,   # thumb_2
     1.08,   # index_1
     1.08,   # middle_1
@@ -174,7 +174,7 @@ HAND_GRASP_POSE = [
 
 # 완전 파지 자세 (adaptive closure 상한)
 HAND_FULL_GRIP_POSE = [
-    1.57,   # thumb_1
+    1.00,   # thumb_1: full 에서 더 내려 정책이 [1.0~1.57] 범위로 thumb_1 안정값 탐색
     0.4745, # thumb_2 (한계)
     1.50,   # index_1
     1.50,   # middle_1

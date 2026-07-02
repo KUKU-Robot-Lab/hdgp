@@ -242,7 +242,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_upright_max_deg: float = 20.0
     approach_timeout_grasp_reward_scale: float = 0.25
     grasp_palm_delta_scale: float = 1.0
-    grasp_palm_inward_offset: float = 0.05   # envelope 유도: grasp 중 palm 을 컵쪽으로 더 당김(0.025→0.05)
+    grasp_palm_inward_offset: float = 0.08   # 손가락 더 깊숙히: grasp 중 palm 을 컵쪽으로 더 깊이(0.05→0.08, 수동 확인)
     lift_palm_delta_xyz: float = 0.03
     lift_palm_delta_rot_deg: float = 15.0
 
