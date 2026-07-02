@@ -57,8 +57,10 @@ from collect_grasp_warm_states import (  # noqa: E402
     _terminate_process_group,
 )
 
-_RL_WS = Path("/home/user/rl_ws")
-_HDGP_ROOT = _RL_WS / "hdgp"
+# __file__ 기준 유도 → 로컬(/home/user)·server(/home/oem) 어디서든 동작.
+# .../hdgp/scripts/tools/collect_grasp_v1_warm_states.py → parents[2]=hdgp, parents[3]=rl_ws
+_HDGP_ROOT = Path(__file__).resolve().parents[2]
+_RL_WS = _HDGP_ROOT.parent
 _ISAACLAB_SH = _RL_WS / "IsaacLab" / "isaaclab.sh"
 _COLLECT_PY = _HDGP_ROOT / "scripts/reinforcement_learning/rl_games/collect_warm_states.py"
 _DATA_DIR = _HDGP_ROOT / "data"
