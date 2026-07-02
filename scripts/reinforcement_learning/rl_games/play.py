@@ -64,6 +64,14 @@ parser.add_argument(
     help="When no checkpoint provided, use the last saved model. Otherwise use the best saved model.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument(
+    "--cam_eye", type=str, default=None,
+    help="Viewer camera position 'x,y,z' (env-local). pour 태스크는 기본 근접뷰 자동 적용.",
+)
+parser.add_argument(
+    "--cam_lookat", type=str, default=None,
+    help="Viewer camera lookat 'x,y,z' (env-local).",
+)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -329,6 +337,28 @@ def _apply_playback_env_overrides(env_cfg) -> None:
         env_cfg.scene.num_envs = args_cli.num_envs
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
+
+    # 뷰어 카메라: logged env.yaml이 기본(먼) 카메라를 복원하므로 복원 이후 여기서 덮어쓴다.
+    #   pour 태스크는 컵/손이 작아 기본 7.5m 뷰가 너무 멀다 → env-따라가는 근접뷰 기본 적용.
+    def _parse_xyz(text):
+        parts = [float(v) for v in text.split(",")]
+        if len(parts) != 3:
+            raise ValueError(f"expected 'x,y,z', got: {text}")
+        return tuple(parts)
+
+    task_name = args_cli.task.split(":")[-1]
+    is_pour = "pour" in task_name.lower()
+    cam_eye = _parse_xyz(args_cli.cam_eye) if args_cli.cam_eye else (None if not is_pour else (1.4, 1.0, 0.9))
+    cam_lookat = _parse_xyz(args_cli.cam_lookat) if args_cli.cam_lookat else (None if not is_pour else (0.3, -0.15, 0.45))
+    if cam_eye is not None and hasattr(env_cfg, "viewer"):
+        env_cfg.viewer.eye = cam_eye
+        env_cfg.viewer.lookat = cam_lookat
+        # env 0 원점 기준 상대좌표로 근접뷰 고정 (world 원점 기준이면 여전히 멀어짐)
+        if hasattr(env_cfg.viewer, "origin_type"):
+            env_cfg.viewer.origin_type = "env"
+        if hasattr(env_cfg.viewer, "env_index"):
+            env_cfg.viewer.env_index = 0
+        print(f"[INFO] viewer camera override: eye={cam_eye} lookat={cam_lookat} (origin=env0)")
 
     if args_cli.disable_adr:
         disabled_attrs = []

@@ -62,7 +62,7 @@ def test_preset_left_hand_rh56f1():
 
 def test_preset_body_names_rh56f1():
     preset, _ = _load_preset_and_constants()
-    assert preset.HAND_BODY_NAMES_USD[0] == "r_hl_palm_sensor"  # 07.01 palm 매핑 복구 (구 r_al_7 오류)
+    assert preset.HAND_BODY_NAMES_USD[0] == "r_hl_palm_1"  # 07.02 palm 제어점: 회전된 palm_sensor→비회전 palm_1
     assert len(preset.HAND_BODY_NAMES_USD) == 6
     assert all("rl_dg" not in b for b in preset.HAND_BODY_NAMES_USD)
     assert len(preset.FABRIC_HAND_BODY_NAMES) == 7
@@ -168,7 +168,7 @@ def test_env_cfg_rh56f1():
     assert "rh56f1_left_drive" in s
     assert "tesollo_hand" not in s
     assert "openarm_left_gripper" not in s
-    assert "enable_warmstart_reset: bool = False" in s
+    assert "enable_warmstart_reset: bool = True" in s  # 07.02 warmstart 활성 (grasp_warm_rh56f1.hdf5 연결)
     assert "distal_sensor_cfg" not in s
     assert "middle_sensor_cfg" not in s
 
