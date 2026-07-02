@@ -79,11 +79,12 @@ class RobotPreset:
 #   tesollo → grasp-v1/lstm_test1 (ep_3000, stiffness 수정 수렴본)
 _PRESETS: dict[str, RobotPreset] = {
     "rh56f1": RobotPreset(
-        task="open-rh56f1_r_grasp_v1-play-lstm",
+        # MLP 전환: envelope 파이프라인은 MLP(open-rh56f1_r_grasp_v1)로 학습됨(test6).
+        task="open-rh56f1_r_grasp_v1-play",
         default_checkpoint=(
             _LOG_ROOT
-            / "open-rh56f1/right/grasp-v1/lstm_test1/nn"
-            / "last_open-rh56f1_r_grasp_v1-lstm_ep_2000_rew_10373.4795.pth"
+            / "open-rh56f1/right/grasp-v1/test6/nn"
+            / "open-rh56f1_r_grasp_v1.pth"
         ),
         default_out=_DATA_DIR / "grasp_warm_rh56f1.hdf5",
     ),
