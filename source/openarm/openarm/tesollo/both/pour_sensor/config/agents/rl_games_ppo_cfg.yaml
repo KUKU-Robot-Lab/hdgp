@@ -73,7 +73,7 @@ params:
     save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.0008         # 탐색 과잉 완화
+    entropy_coef: 0.0003         # [07.02 speed-fix③] 정직한 pour 태스크는 gradient가 약해 0.0008이 과함→entropy 상승. 낮춰 수렴 가속+pour 정밀도↑
     truncate_grads: True
     e_clip: 0.25
     horizon_length: 64

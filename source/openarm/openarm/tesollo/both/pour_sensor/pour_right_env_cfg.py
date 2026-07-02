@@ -516,9 +516,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             "weight_pour_bead": (0.0, 50.0),  # 1단계 0(자세만) → 2단계 50(bead 보상)
         }
     }
-    outcome_adr_num_increments: int = 8
-    outcome_adr_increment_interval: int = 20000
-    outcome_adr_trigger_threshold: float = 0.80  # 자세 성공률 80%+ 시 outcome 활성
+    outcome_adr_num_increments: int = 4          # [07.02 speed-fix②] 8→4: weight 0→50 램프를 4단계로(활성 후 ~500ep 완주). 물리 fix가 착취 차단하므로 큰 스텝 안전
+    outcome_adr_increment_interval: int = 8000   # [07.02 speed-fix②] 20000→8000: 체크 간격 단축(~125ep마다)
+    outcome_adr_trigger_threshold: float = 0.80  # 자세 성공률 80%+ 시 outcome 활성 (이제 EMA 윈도우 기준 — speed-fix①)
+    pose_success_ema_alpha: float = 0.1          # [07.02 speed-fix①] outcome_adr trigger용 pose_success를 누적(평생)→EMA(최근 윈도우)로. 초반 실패에 눌린 느린 활성화 해소(ep937→~ep300)
     pose_ready_thresh: float = 0.60   # 자세 성공 게이트: corridor_score ≥ (위치 준비)
     pose_tilt_thresh: float = 0.587   # 자세 성공 게이트: tilt_amount ≥ (1-cos100°)/2 → rim_antiparallel ≤ -0.174 (100°+)
 

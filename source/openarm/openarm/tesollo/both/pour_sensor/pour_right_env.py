@@ -607,6 +607,9 @@ class PourRightEnv(DirectRLEnv):
         self._pose_success_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.episode_pose_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._pose_successful_episodes: int = 0
+        # [07.02 speed-fix①] outcome_adr trigger용 pose_success를 누적→EMA(최근 윈도우)로.
+        #   누적 평생평균은 초반 실패에 눌려 0.80 도달이 느림(ep937). EMA는 최근 성공률 반영→조기 활성(~ep300).
+        self._pose_success_ema: float = 0.0
 
         # ----------------------------------------------------------------
         # Fabrics 초기화
@@ -2345,10 +2348,13 @@ class PourRightEnv(DirectRLEnv):
             self.success_adr.maybe_increment(_ep_success_rate)
         # [outcome ADR] 자세 성공률 80%+ 시 bead 보상(weight_pour_bead) 램프.
         self.extras["log/pose_success"] = self._pose_success_now.float().mean()  # step 자세성공 비율
-        _pose_success_rate = self._pose_successful_episodes / max(self._total_episodes, 1)
+        _pose_success_cumulative = self._pose_successful_episodes / max(self._total_episodes, 1)
+        # [07.02 speed-fix①] trigger는 누적 대신 EMA(최근 윈도우) 사용 → 조기 활성화.
+        _pose_success_rate = self._pose_success_ema
         if self.outcome_adr is not None:
             self.outcome_adr.maybe_increment(_pose_success_rate)
             self.extras["log/pose_success_rate"] = torch.tensor(float(_pose_success_rate), device=self.device)
+            self.extras["log/pose_success_cumulative"] = torch.tensor(float(_pose_success_cumulative), device=self.device)
             self.extras["log/outcome_adr_progress"] = torch.tensor(float(self.outcome_adr.progress), device=self.device)
             self.extras["log/weight_pour_bead"] = torch.tensor(
                 float(self.outcome_adr.get_param("outcome", "weight_pour_bead")), device=self.device
@@ -2680,6 +2686,10 @@ class PourRightEnv(DirectRLEnv):
         self._total_episodes += n
         self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
         self._pose_successful_episodes += int(self.episode_pose_success_buf[env_ids].sum().item())  # [outcome ADR]
+        # [07.02 speed-fix①] 이번 reset 배치의 자세성공 비율로 EMA 갱신 (최근 윈도우). outcome_adr trigger가 이 값 사용.
+        _batch_pose_succ = float(self.episode_pose_success_buf[env_ids].float().mean().item())
+        _a = self.cfg.pose_success_ema_alpha
+        self._pose_success_ema = (1.0 - _a) * self._pose_success_ema + _a * _batch_pose_succ
 
         # warmstart cache 저장: 에피소드 종료(final state)에만 체크
         self._maybe_store_warmstart_successes(env_ids)

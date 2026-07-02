@@ -2055,13 +2055,18 @@ class GraspRightEnv(DirectRLEnv):
             force_ratio * self.is_grasp_phase.float()
         ).sum() / self.is_grasp_phase.float().sum().clamp(min=1.0)
 
-        # palm-seat: 컵을 palm 에 밀착(enclosing grasp)하도록 palm 힘센서 접촉을 보상.
-        # grasp/lift/stabilize 동안만(접근 중 오작동 방지), graded = palm force / max.
-        # → "손가락 열고 접근 → palm seat → 손가락 닫아 wrap" 시퀀스의 seat 단계를 유인.
+        # palm-seat (dense): 컵을 palm 에 밀착(enclosing grasp)하도록 유도.
+        # sparse(접촉) 보상은 palm 이 애초에 안 닿아 gradient=0 부트스트랩 실패 → dense 근접 보상
+        # exp(-sharpness×palm_to_cup_dist) 으로 안 닿아도 가까워질수록 보상↑ → palm 을 컵으로 당김.
+        # grip 중(num_contacts≥1)에만 → 미파지 컵을 palm 으로 밀쳐내는 것 방지.
+        palm_seat_gate = (
+            (self.is_grasp_phase | self.is_lift_phase | self.is_stabilize_phase)
+            & (self.num_contacts_buf >= 1)
+        ).float()
         palm_seat_reward = (
             float(self.cfg.palm_seat_weight)
-            * (self.is_grasp_phase | self.is_lift_phase | self.is_stabilize_phase).float()
-            * (self.palm_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+            * palm_seat_gate
+            * torch.exp(-float(self.cfg.palm_seat_sharpness) * palm_to_cup_dist)
         )
         total = total + palm_seat_reward
         self.extras["reward/palm_seat"] = palm_seat_reward.mean()

@@ -286,17 +286,20 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     enclosure_weight:       float = 3.0
     enclosure_sharpness:    float = 15.0
-    # palm-seat: 컵을 palm 힘센서에 밀착(enclosing grasp)하도록 palm 접촉을 보상.
-    # 수동 조작으로 palm 접촉이 가능함이 확인됨 → 명시적 유인 부여(현재 palm 접촉 reward 없음).
+    # palm-seat: 컵을 palm 에 밀착(enclosing grasp)하도록 유도. sparse(접촉) 보상은 palm 이
+    # 애초에 안 닿아 gradient=0 부트스트랩 실패 → dense 근접 보상 exp(-sharpness×palm_to_cup_dist)
+    # 로 안 닿아도 가까워질수록 보상↑. grip 중(num_contacts≥1)에만 → palm-shove 방지.
     palm_seat_weight:       float = 4.0
+    palm_seat_sharpness:    float = 15.0
     cup_radius_approx:      float = 0.035
     enclosure_thumb_weight: float = 0.6
 
     lift_reward_weight: float = 30.0
     grasp_contact_persistence_reward_steps: int = 30
     approach_tip_contact_penalty_weight: float = -4.0
-    grasp_palm_anchor_penalty_weight: float = -8.0
-    palm_target_motion_penalty_weight: float = -2.0
+    # palm 이 컵으로 이동해 seat 하도록 완화(-8→-3, -2→-1): 기존 값이 palm 이동을 억제해 contact/palm=0.
+    grasp_palm_anchor_penalty_weight: float = -3.0
+    palm_target_motion_penalty_weight: float = -1.0
     stabilize_spawn_xy_reward_weight: float = 40.0
 
     action_smoothness_palm_weight:   float = -0.10
