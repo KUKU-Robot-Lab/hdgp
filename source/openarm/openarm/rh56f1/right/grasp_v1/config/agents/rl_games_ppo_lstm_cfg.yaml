@@ -1,5 +1,5 @@
 # open-rh56f1_r_grasp_v1 recurrent actor / MLP critic config
-# Actor 96D MLP [512, 512] -> LSTM 1024 / critic 114D MLP [512, 512, 256, 128], action 12D.
+# Actor 96D MLP [512, 512] -> LSTM 1024 / critic 119D MLP [512, 512, 256, 128], action 12D.
 # This is a separate non-warm-start config because the LSTM architecture
 # is incompatible with the v10-2 MLP checkpoint.
 

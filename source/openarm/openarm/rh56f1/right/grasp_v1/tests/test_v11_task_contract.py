@@ -32,7 +32,7 @@ def test_v11_keeps_actor_and_critic_observation_shapes() -> None:
     assert "NUM_OBSERVATIONS = 96" in constants
     assert "NUM_OBSERVATIONS_WITH_MASS = 97" in constants
     assert "NUM_OBSERVATIONS_NO_MASS = NUM_OBSERVATIONS" in constants
-    assert "NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 114" in constants
+    assert "NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 119" in constants
     assert "observation_space: int = NUM_OBSERVATIONS" in cfg
     assert "state_space:       int = NUM_CRITIC_OBSERVATIONS" in cfg
     assert "observation_space: int = NUM_OBSERVATIONS_NO_MASS" in cfg
@@ -82,7 +82,7 @@ def test_stationary_task_contract_keeps_12d_control_without_transport() -> None:
 
     assert "NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 12" in constants
     assert "NUM_OBSERVATIONS = 96" in constants
-    assert "NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 114" in constants
+    assert "NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 119" in constants
     assert "EPISODE_STEPS = 600" in constants
     assert "cup_to_goal" not in env
     assert "transport_goal" not in env
@@ -454,7 +454,7 @@ def test_v11_lstm_rl_games_config_uses_no_actor_mass_recurrent_name() -> None:
     t = (_ROOT / "config" / "agents" / "rl_games_ppo_lstm_cfg.yaml").read_text(encoding="utf-8")
 
     assert "name: inspire_r_grasp_v1-lstm" in t
-    assert "Actor 96D MLP [512, 512] -> LSTM 1024 / critic 114D MLP [512, 512, 256, 128]" in t
+    assert "Actor 96D MLP [512, 512] -> LSTM 1024 / critic 119D MLP [512, 512, 256, 128]" in t
     assert "name: lstm" in t
     assert "before_mlp: False" in t
     assert "units: [512, 512, 256, 128]" in t

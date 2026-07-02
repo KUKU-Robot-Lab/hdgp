@@ -1,7 +1,7 @@
 """Phase 2 차원 정합성 검증 (GPU 불필요, 순수 import).
 
 preset/constants 의 차원이 확정 레이아웃과 일치하는지 단언.
-  Action 12D, Actor 96D, Critic 114D, 손 6 DOF.
+  Action 12D, Actor 96D, Critic 119D, 손 6 DOF.
 """
 import importlib.util
 import sys
@@ -43,8 +43,8 @@ def test_dims():
     assert c.NUM_ACTIONS == 12
     assert c.NUM_OBSERVATIONS == 96
     assert c.NUM_OBSERVATIONS_WITH_MASS == 97
-    assert c.NUM_CRITIC_EXTRAS == 18
-    assert c.NUM_CRITIC_OBSERVATIONS == 114
+    assert c.NUM_CRITIC_EXTRAS == 23
+    assert c.NUM_CRITIC_OBSERVATIONS == 119
 
 
 def test_actor_obs_components_sum():
@@ -54,9 +54,10 @@ def test_actor_obs_components_sum():
 
 
 def test_critic_extra_components_sum():
-    """Critic extra 18D 구성요소 합 검증."""
-    comp = [1, 3, 3, 1, 5, 5]  # bead_mass, cup_lin_vel, cup_ang_vel, cup_height, tip contact/dist
-    assert sum(comp) == 18
+    """Critic extra 23D 구성요소 합 검증."""
+    # bead_mass, cup_lin_vel, cup_ang_vel, cup_height, tip contact/dist, middle(proximal) contact
+    comp = [1, 3, 3, 1, 5, 5, 5]
+    assert sum(comp) == 23
 
 
 def test_hand_pose_lengths():

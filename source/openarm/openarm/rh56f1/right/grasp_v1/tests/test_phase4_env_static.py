@@ -40,19 +40,22 @@ def test_no_tesollo_hand_dims_4b():
 
 
 def test_sensors_consolidated_4c():
-    """4c: distal=tip, middle=zeros. 제거된 센서/cfg/Tesollo body 참조 없음."""
+    """4c: distal=tip, middle=근위 sim-only ContactSensor. 제거된 센서/cfg/Tesollo body 참조 없음."""
     s = _src()
-    for tok in ["self._distal_sensor", "self._middle_sensor",
+    for tok in ["self._distal_sensor",
                 "distal_sensor_cfg", "middle_sensor_cfg",
                 "rl_dg_", "NUM_DISTAL_SENSORS", "NUM_MIDDLE_SENSORS"]:
         assert tok not in s, f"잔재: {tok}"
+    # middle(proximal) 접촉 센서는 이제 실재 — envelope 계측/critic 용.
+    assert "self._middle_sensors" in s
+    assert "right_middle_contact_links" in s
 
 
 def test_obs_layout_4d():
-    """4d: obs 빌더 96/114. Tesollo 144/174 주석/critic extra 제거."""
+    """4d: obs 빌더 96/119. Tesollo 144/174 주석/critic extra 제거."""
     s = _src()
     assert "144D" not in s and "174D" not in s, "stale 144/174 주석 잔재"
-    assert "Observations: Actor 96D" in s and "Critic 114D" in s
+    assert "Observations: Actor 96D" in s and "Critic 119D" in s
     assert "tip_contact_binary" in s          # critic privileged
     assert "tip_force_xyz_norm" in s          # actor 실 fingertip 센서
     # critic 에서 distal_force_norm/middle_force_norm 제거됨 (obs 에서 미사용)

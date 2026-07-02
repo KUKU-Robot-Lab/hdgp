@@ -564,7 +564,19 @@ class GraspRightEnv(DirectRLEnv):
             self._tip_sensors.append(sensor)
             self.scene.sensors[f"tip_sensor_{link_name}"] = sensor
 
-        # RH56F1: 별도 distal/middle phalanx 접촉 센서 없음. reward에서는 fingertip/palm만 사용.
+        # 근위(proximal) 마디 접촉 센서 — sim-only(실물엔 tip 힘센서만). envelope 그립 여부를
+        # 계측하고 critic privileged obs 로 노출한다(테솔로 grasp middle-contact 방식과 동일).
+        self._middle_sensors: list[ContactSensor] = []
+        for link_name in self.cfg.right_middle_contact_links:
+            sensor = ContactSensor(ContactSensorCfg(
+                prim_path=f"/World/envs/env_.*/Robot/{link_name}",
+                filter_prim_paths_expr=_CUP_FILTER,
+                history_length=1,
+                track_air_time=False,
+            ))
+            self._middle_sensors.append(sensor)
+            self.scene.sensors[f"middle_sensor_{link_name}"] = sensor
+
         # tip 센서(위 _tip_sensors)가 force_sensor 패드 접촉을 포착한다.
         self._palm_sensor = ContactSensor(self.cfg.palm_sensor_cfg)
         self.scene.sensors["palm_sensor"] = self._palm_sensor
@@ -1023,10 +1035,16 @@ class GraspRightEnv(DirectRLEnv):
         self.distal_contact_force_raw.zero_()
         self.distal_binary_contact_buf.zero_()
 
-        # RH56F1: middle phalanx 센서 없음 → 항상 zeros (reward 의 middle 항목은 무기여).
-        self.middle_contact_force_xyz.zero_()
-        self.middle_contact_force_raw.zero_()
-        self.middle_binary_contact_buf.zero_()
+        # 근위(proximal) 마디 접촉 = envelope signature. sim-only 센서에서 컵 접촉력을 읽어
+        # 채운다(계측 + critic privileged). reward 는 slip weight 0 으로 중립(reward-neutral).
+        mid_xyz = torch.stack([
+            s.data.force_matrix_w[:, 0, 0, :] for s in self._middle_sensors
+        ], dim=1)
+        mid_xyz = torch.nan_to_num(mid_xyz, nan=0.0, posinf=0.0, neginf=0.0)
+        mid_norms = mid_xyz.norm(dim=-1)
+        self.middle_contact_force_xyz.copy_(mid_xyz)
+        self.middle_contact_force_raw.copy_(mid_norms)
+        self.middle_binary_contact_buf.copy_(mid_norms > CONTACT_FORCE_THRESHOLD)
 
         palm_xyz = torch.nan_to_num(self._palm_sensor.data.net_forces_w[:, 0, :], nan=0.0, posinf=0.0, neginf=0.0)
         per_palm = palm_xyz.norm(dim=-1)
@@ -1424,7 +1442,7 @@ class GraspRightEnv(DirectRLEnv):
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 96D (with oracle mass 97) | Critic 114D
+    # Observations: Actor 96D (with oracle mass 97) | Critic 119D
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
         # ==== 공통 clean state (critic용) ====
@@ -1557,7 +1575,8 @@ class GraspRightEnv(DirectRLEnv):
             cup_height_delta,                           # 1
             tip_contact_binary,                         # 5
             fingertip_signed_dist,                      # 5
-        ], dim=-1)   # 114D
+            self.middle_binary_contact_buf.float(),     # 5 (근위 접촉 = envelope, privileged)
+        ], dim=-1)   # 119D
 
         critic_obs = torch.nan_to_num(critic_obs, nan=0.0, posinf=5.0, neginf=-5.0)
 
@@ -1784,6 +1803,25 @@ class GraspRightEnv(DirectRLEnv):
             full_tip_middle_contact & self.is_grasp_phase
         ).float().mean()
         self.extras["task/slip_proxy"] = slip_proxy.mean()
+
+        # ── envelope 그립 확인 지표 ─────────────────────────────────────────
+        # (A) 원위(mimic) 관절 실측 pos: drive×mult 구동에 물리가 실제로 curl 하는지.
+        #     pinch(뻣뻣, ~0) 대비 값이 크게 오르면 원위가 컵을 감쌈 = envelope.
+        _mimic_pos = self.robot.data.joint_pos[:, self._hand_mimic_dof_indices]
+        self.extras["envelope/mimic_pos_mean"] = _mimic_pos.mean()
+        self.extras["envelope/mimic_pos_max"] = _mimic_pos.max()
+        # (B) 근위(proximal) 마디 접촉: envelope 는 손끝 외 밑마디도 컵에 닿는다(pinch 는 안 닿음).
+        _middle_count = self.middle_binary_contact_buf.float().sum(dim=-1)
+        self.extras["envelope/middle_contact_count"] = _middle_count.mean()
+        self.extras["envelope/middle_envelope_rate"] = (_middle_count >= 1).float().mean()
+        # 진짜 envelope: 손끝 AND 근위 동시접촉 손가락 수(그 손가락이 컵을 실제로 감쌈, tesollo v1 기준)
+        _envelope_fingers = (
+            self.binary_contact_buf & self.middle_binary_contact_buf
+        ).float().sum(dim=-1)
+        self.extras["envelope/envelope_finger_count"] = _envelope_fingers.mean()
+        self.extras["envelope/full_envelope_rate"] = (_envelope_fingers >= 3).float().mean()
+        # ────────────────────────────────────────────────────────────────────
+
         self.extras["task/lift_contact_hold"] = self._lift_contact_hold_count.float().mean()
         self.extras["task/contact_persistence"] = self._contact_persistence_buf.float().mean()
         self.extras["task/grip_ready_hold"] = self._grip_ready_hold_count.float().mean()
@@ -1902,11 +1940,22 @@ class GraspRightEnv(DirectRLEnv):
             action_delta_norm=action_delta_norm,
             cfg=self.cfg,
         )
+        # envelope 유도(tesollo v1 기준): 근위 마디 접촉을 grasp 보상에 credit.
+        #   envelope_frac = 근위(proximal) 접촉 비율 → grasp_quality 40% + lift 게이팅.
+        #   grip_frac     = 임의 마디(tip|middle) 접촉 손가락 비율 → post_lift 가 wrap 을
+        #                   그립 손실로 처벌하지 않음. (RH56F1 은 distal=tip, 별도 distal 없음)
+        envelope_frac = self.middle_binary_contact_buf.float().mean(dim=-1)
+        grip_frac = (
+            (self.binary_contact_buf | self.middle_binary_contact_buf)
+            .float().mean(dim=-1)
+        )
         total, reward_terms, reward_gates = compute_grasp_reward_terms(
             num_tip_contacts=self.num_contacts_buf,
             tip_contact_frac=tip_contact_progress,
             full_tip_contact=five_tip_contact,
             contact_persistence_frac=contact_persistence_progress,
+            envelope_frac=envelope_frac,
+            grip_frac=grip_frac,
             palm_to_cup_dist=palm_to_cup_dist,
             fingertip_side_dist=fingertip_side_dist,
             cup_height_delta=cup_height_delta,

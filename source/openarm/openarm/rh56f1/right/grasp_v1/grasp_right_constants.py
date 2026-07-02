@@ -44,16 +44,17 @@ Actor Observation (96D) — sim2real 가능 (실 센서 + FK):
 
 Actor Observation with oracle mass: 97D
 
-Critic Extra (18D) — sim-only privileged:
+Critic Extra (23D) — sim-only privileged:
   bead_mass_normalized:        1
   cup_lin_vel:                 3
   cup_ang_vel:                 3
   cup_height_delta:            1
   tip_contact_binary:          5   (privileged 정밀 접촉 flag)
   fingertip_to_cup_signed_dist: 5
-  Total:                      18
+  middle_contact_binary:       5   (근위 마디 접촉 = envelope, sim-only)
+  Total:                      23
 
-Critic Total: 96 + 18 = 114D
+Critic Total: 96 + 23 = 119D
 
 Episode (10s @ 60Hz = 600 steps):
   Grasp / Lift / Stabilize
@@ -91,8 +92,10 @@ NUM_OBSERVATIONS_NO_MASS = NUM_OBSERVATIONS
 
 NUM_TIP_SENSORS   = 5     # fingertip 힘센서 (실 센서, actor) — *_force_sensor → 말단 링크
 NUM_PALM_SENSORS  = 1     # palm 힘센서 (실 센서, actor) — palm_force_sensor
-NUM_CRITIC_EXTRAS = 18
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 114
+# 18 → 23: middle(proximal) phalanx 접촉 binary 5D 를 critic privileged 로 추가.
+# (실물엔 tip 힘센서만 있으나 sim-only ContactSensor 로 envelope 접촉을 critic 에 노출)
+NUM_CRITIC_EXTRAS = 23
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 119
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

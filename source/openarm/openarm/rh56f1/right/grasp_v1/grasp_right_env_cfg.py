@@ -315,7 +315,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Slip proxy (no_slip_gate 계산용, 게임로직용)
     slip_proxy_threshold:                float = 1.0
     slip_proxy_contact_delta_weight:     float = 0.5
-    slip_proxy_middle_contact_delta_weight: float = 0.5
+    # 0.5 → 0.0: middle 접촉을 이제 실제로 채우므로, 이번 단계(계측+critic)를 reward-neutral 로
+    # 유지하기 위해 slip proxy 의 middle 기여를 0 으로 둔다. envelope 를 reward 로 적극 유도하려면
+    # reward-audit 통과 후 재활성화.
+    slip_proxy_middle_contact_delta_weight: float = 0.0
     slip_proxy_tilt_delta_weight:        float = 0.5
     slip_proxy_tilt_delta_scale:         float = 8.0
 
@@ -542,6 +545,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         "r_hl_middle_2",
         "r_hl_ring_2",
         "r_hl_pinky_2",
+    )
+    # 근위(proximal, finger_1) 마디 접촉 = envelope 그립 signature (tip pinch 와 구분).
+    # sim-only ContactSensor(실물엔 없음) → 계측/critic privileged 용. 엄지는 mid 마디 thumb_3.
+    right_middle_contact_links: tuple = (
+        "r_hl_thumb_3",
+        "r_hl_index_1",
+        "r_hl_middle_1",
+        "r_hl_ring_1",
+        "r_hl_pinky_1",
     )
 
     tip_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
