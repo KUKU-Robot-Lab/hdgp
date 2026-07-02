@@ -286,6 +286,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     enclosure_weight:       float = 3.0
     enclosure_sharpness:    float = 15.0
+    # palm-seat: 컵을 palm 힘센서에 밀착(enclosing grasp)하도록 palm 접촉을 보상.
+    # 수동 조작으로 palm 접촉이 가능함이 확인됨 → 명시적 유인 부여(현재 palm 접촉 reward 없음).
+    palm_seat_weight:       float = 4.0
     cup_radius_approx:      float = 0.035
     enclosure_thumb_weight: float = 0.6
 

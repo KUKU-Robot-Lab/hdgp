@@ -2054,6 +2054,17 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["debug/rh56f1/task/prelift_force_ratio"] = (
             force_ratio * self.is_grasp_phase.float()
         ).sum() / self.is_grasp_phase.float().sum().clamp(min=1.0)
+
+        # palm-seat: 컵을 palm 에 밀착(enclosing grasp)하도록 palm 힘센서 접촉을 보상.
+        # grasp/lift/stabilize 동안만(접근 중 오작동 방지), graded = palm force / max.
+        # → "손가락 열고 접근 → palm seat → 손가락 닫아 wrap" 시퀀스의 seat 단계를 유인.
+        palm_seat_reward = (
+            float(self.cfg.palm_seat_weight)
+            * (self.is_grasp_phase | self.is_lift_phase | self.is_stabilize_phase).float()
+            * (self.palm_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
+        )
+        total = total + palm_seat_reward
+        self.extras["reward/palm_seat"] = palm_seat_reward.mean()
         return total
 
     # ------------------------------------------------------------------
