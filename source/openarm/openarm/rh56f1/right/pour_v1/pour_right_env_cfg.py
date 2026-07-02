@@ -135,7 +135,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
-    max_pose_angle:             float = 45.0
+    # 45→90: palm 방향 clamp(64% 활성, ey 45° 한계)가 tilt를 ~69°에서 막음(붓기 135° 필요).
+    # rh56f1 그립 방향상 tilt 회전이 euler ey(0+45°) 성분에 걸림 → 범위 확대로 tilt 관통 실험.
+    # warmstart pour는 컵을 들고 시작(full approach X)이라 "접근 손목 이상" 우려 작음.
+    max_pose_angle:             float = 90.0
     fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0
     # cspace attractor mass: nullspace 어트랙터 무게. 너무 크면 palm-pose 추종 침범 주의.
