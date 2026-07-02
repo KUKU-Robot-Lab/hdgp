@@ -171,8 +171,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # palm sensor는 palm_link 기준 (0.00, 0.03, 0.04) 오프셋이고, cup 반경은 약 0.035m다.
     # reset orientation에서 thumb_1 루트가 palm sensor보다도 +x 방향으로 더 앞으로 나온다.
     # test3의 top3 fingertip shell error가 컵 반경보다 약 2cm 멀어서 y/z 오프셋을 줄인다.
-    pregrasp_offset_x:     float = -0.045
-    pregrasp_offset_y:     float = -0.055
+    # envelope 유도: palm standoff 0.6배 축소(컵에 근접 → 근위 마디가 컵에 닿아 wrap 가능).
+    # 과근접 시 컵 관통 위험 → render 조기확인 필요.
+    pregrasp_offset_x:     float = -0.027
+    pregrasp_offset_y:     float = -0.033
     pregrasp_offset_z:     float = 0.015
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
@@ -240,7 +242,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_upright_max_deg: float = 20.0
     approach_timeout_grasp_reward_scale: float = 0.25
     grasp_palm_delta_scale: float = 1.0
-    grasp_palm_inward_offset: float = 0.025
+    grasp_palm_inward_offset: float = 0.05   # envelope 유도: grasp 중 palm 을 컵쪽으로 더 당김(0.025→0.05)
     lift_palm_delta_xyz: float = 0.03
     lift_palm_delta_rot_deg: float = 15.0
 

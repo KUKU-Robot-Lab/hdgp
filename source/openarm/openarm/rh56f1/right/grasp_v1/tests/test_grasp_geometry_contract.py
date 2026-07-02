@@ -68,13 +68,13 @@ def test_rh56f1_grasp_pose_biases_non_thumb_closure_before_lift() -> None:
 def test_rh56f1_procedural_pregrasp_starts_closer_and_has_recovery_range() -> None:
     _, cfg = _load_constants_and_cfg_text()
 
-    assert "pregrasp_offset_x:     float = -0.045" in cfg
-    assert "pregrasp_offset_y:     float = -0.055" in cfg
+    assert "pregrasp_offset_x:     float = -0.027" in cfg
+    assert "pregrasp_offset_y:     float = -0.033" in cfg
     assert "pregrasp_offset_z:     float = 0.015" in cfg
     assert "palm_delta_xyz:     float = 0.03" in cfg
     assert "ema_action_alpha: float = 0.7" in cfg
     assert "grasp_palm_delta_scale: float = 1.0" in cfg
-    assert "grasp_palm_inward_offset: float = 0.025" in cfg
+    assert "grasp_palm_inward_offset: float = 0.05" in cfg
 
 
 def test_rh56f1_lift_start_requires_success_contact_count() -> None:
