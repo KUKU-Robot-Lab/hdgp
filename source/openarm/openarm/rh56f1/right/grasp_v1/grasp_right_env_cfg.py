@@ -494,19 +494,25 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 joint_names_expr=["l_aj_[1-7]"],
                 **_actuator_params("openarm_left_arm", 400.0, 80.0),
             ),
-            # RH56F1 우측 손 drive 6 (RL 위치제어)
-            "rh56f1_right_drive": ImplicitActuatorCfg(
+            # RH56F1 우측 손 굴곡 5 (thumb_2 + 4손가락_1) — 07.02: 30→400 (tesollo pour curl/pip/dip 참조).
+            "rh56f1_right_flexion": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "r_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"
+                    "r_hj_(thumb_2|index_1|middle_1|ring_1|pinky_1)"
                 ],
-                **_actuator_params("rh56f1_right_drive", 30.0, 5.0),
+                **_actuator_params("rh56f1_right_flexion", 400.0, 60.0),
             ),
-            # RH56F1 우측 손 mimic 추종 6 (passive — PhysxMimicJoint 가 커플)
+            # abduction(thumb_1) — 30→200 (tesollo abduction 참조, 굴곡보다 낮게: 반력교란 회피).
+            "rh56f1_right_abduction": ImplicitActuatorCfg(
+                joint_names_expr=["r_hj_thumb_1"],
+                **_actuator_params("rh56f1_right_abduction", 200.0, 35.0),
+            ),
+            # RH56F1 우측 손 mimic(원위) 6 — 0→400 (tesollo dip 참조). PhysxMimicJoint 미결합 시
+            # 원위가 흐물해 컵을 못 감쌈 → 강성 부여.
             "rh56f1_right_mimic": ImplicitActuatorCfg(
                 joint_names_expr=[
                     "r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"
                 ],
-                stiffness=0.0, damping=0.0,
+                stiffness=400.0, damping=60.0,
             ),
             # RH56F1 좌측 손 drive 6 (학습 비사용 → 0 hold)
             "rh56f1_left_drive": ImplicitActuatorCfg(

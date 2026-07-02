@@ -76,8 +76,9 @@ LEFT_ARM_AND_HAND_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_HAND_JOINT_NAMES
 # 좌팔 rest 자세 (target cup 을 드는 자세; pour 태스크 demo a11-a20 pour 구간 평균값).
 # 좌손은 0(열림)으로 lock. (Tesollo 의 openarm_left_finger_joint1/2 항목 제거)
 LEFT_ARM_REST_JOINT_POS = {
-    "l_aj_1": -0.315,
-    "l_aj_2": -0.079,
+    # 07.02: 왼손을 소스컵에서 ~0.1m 외곽(-x,+y)으로 이동해 오른손 이동 방해 제거.
+    "l_aj_1": -0.15,
+    "l_aj_2": -0.25,
     "l_aj_3":  0.217,
     "l_aj_4":  0.513,
     "l_aj_5":  0.666,

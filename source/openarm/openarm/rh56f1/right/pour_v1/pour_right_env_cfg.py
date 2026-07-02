@@ -67,7 +67,7 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
             scale=(0.5, 0.5, 0.5),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.005),  # 5g 구슬 (5g→10g: 관성 향상, 진동 날림 방지)
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.001),  # 1g 구슬 (5g→1g: tesollo pour_v5 검증값. deep tilt 쏠림토크↓→grasp 슬립 완화. rh56f1 약한그립엔 5g(150g)이 과부하라 비드소환 즉시 drop)
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=8,   # 16→8: GPU contact stage 연산 부하 감소
@@ -219,7 +219,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Warmstart quality / success
     # -----------------------------------------------------------------------
-    warmstart_palm_z_boost: float = 0.12
+    warmstart_palm_z_boost: float = 0.0  # 07.02: 0.12는 palm 목표를 hdf5 자세보다 12cm 위로 설정→fabric이 시작 즉시 팔을 들어올려 성공자세 이탈+palm 디커플링. 0으로 정합(hdf5 자세 그대로 시작).
     lift_success_height: float = 0.03
     success_mouth_xy_threshold: float = 0.030
     success_z_clearance_min: float = 0.015
@@ -592,19 +592,27 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                 damping=200.0,
             ),
             # RH56F1 우측 손 drive 6 (RL 위치제어 — pour 중 grasp pose freeze)
-            "rh56f1_right_drive": ImplicitActuatorCfg(
+            # 07.02: 굴곡/원위 강성 30→400 (tesollo pour curl/pip/dip=400 참조). 30은 회전 관성토크에
+            # 손가락이 밀려 그립 풀림. 굴곡(thumb_2 + 4손가락_1) 400.
+            "rh56f1_right_flexion": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "r_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"
+                    "r_hj_(thumb_2|index_1|middle_1|ring_1|pinky_1)"
                 ],
-                stiffness=30.0,
-                damping=5.0,
+                stiffness=400.0,
+                damping=60.0,
             ),
-            # RH56F1 우측 손 mimic 추종 6 (passive — PhysxMimicJoint 가 커플)
+            # abduction(thumb_1): tesollo abduction=200 참조. 반력교란 위험이라 굴곡보다 낮게.
+            "rh56f1_right_abduction": ImplicitActuatorCfg(
+                joint_names_expr=["r_hj_thumb_1"],
+                stiffness=200.0,
+                damping=35.0,
+            ),
+            # 원위(mimic) 6 — tesollo dip=400 참조. _apply_action 의 drive×mult 타겟으로 컵 envelope wrap.
             "rh56f1_right_mimic": ImplicitActuatorCfg(
                 joint_names_expr=[
                     "r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"
                 ],
-                stiffness=0.0, damping=0.0,
+                stiffness=400.0, damping=60.0,
             ),
             # RH56F1 좌측 손 drive 6 (학습 비사용 → 0 hold)
             "rh56f1_left_drive": ImplicitActuatorCfg(

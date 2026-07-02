@@ -164,7 +164,8 @@ def test_env_cfg_rh56f1():
     ast.parse(s)
     assert "robot/openarm_bi_rh56f1_rl/openarm_bi_rh56f1_rl.usd" in s
     assert "cup/cup_middle.usd" in s          # 오른쪽 source cup
-    assert "rh56f1_right_drive" in s
+    assert "rh56f1_right_flexion" in s  # 07.02: drive→flexion/abduction 분리, 강성 30→400(tesollo 참조)
+    assert "rh56f1_right_abduction" in s
     assert "rh56f1_left_drive" in s
     assert "tesollo_hand" not in s
     assert "openarm_left_gripper" not in s

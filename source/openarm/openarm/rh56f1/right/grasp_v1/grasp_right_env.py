@@ -98,6 +98,7 @@ from .grasp_right_constants import (
 )
 from .grasp_right_preset import (
     LEFT_ARM_REST_JOINT_POS,
+    RIGHT_HAND_MIMIC_JOINT_NAMES,
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
@@ -183,6 +184,18 @@ class GraspRightEnv(DirectRLEnv):
 
         self.arm_dof_indices  = self.actuated_dof_indices[:NUM_ARM_DOF]
         self.hand_dof_indices = self.actuated_dof_indices[NUM_ARM_DOF:]
+        # mimic 원위 관절 인덱스 — warm-state export 에 실제 mimic 물리값을 저장해
+        # pour warmstart 가 손 전체 자세(drive+mimic)를 정확히 재현하도록 한다.
+        self._hand_mimic_dof_indices = [
+            self.robot.joint_names.index(name) for name in RIGHT_HAND_MIMIC_JOINT_NAMES
+        ]
+        # 원위(mimic) 능동 curl: PhysxMimicJoint 미결합으로 원위가 안 닫혀 fingertip pinch가 됨.
+        # _apply_action 에서 mimic = drive×mult 로 구동해 원위가 컵을 감싸는 envelope grip 유도.
+        # drive(finger_target) 순서 [thumb_1,thumb_2,index_1,middle_1,ring_1,pinky_1] 기준 src/mult.
+        self._hand_mimic_src_idx = torch.tensor([1, 1, 2, 3, 4, 5], device=self.device)
+        self._hand_mimic_mult = torch.tensor(
+            [1.1425, 1.1425 * 0.7508, 1.1169, 1.1169, 1.1169, 1.1169], device=self.device
+        )
         # real2sim DR: 소비처(_apply_real2sim_actuator_randomization)는 .values() 의 joint_ids 만 사용.
         # RH56F1 손은 drive 6관절을 단일 그룹으로 묶는다 (Tesollo 의 abduction/curl/pip/dip 분할 불필요).
         self.real2sim_actuator_group_indices = {
@@ -731,6 +744,7 @@ class GraspRightEnv(DirectRLEnv):
         self._warm_state_export = {
             "arm_joint_pos": torch.empty(target_count, NUM_ARM_DOF, dtype=torch.float32),
             "hand_joint_pos": torch.empty(target_count, NUM_HAND_DOF, dtype=torch.float32),
+            "hand_mimic_pos": torch.empty(target_count, len(RIGHT_HAND_MIMIC_JOINT_NAMES), dtype=torch.float32),
             "palm_pose_quat_xyzw": torch.empty(target_count, 7, dtype=torch.float32),
             "palm_pose_euler_zyx": torch.empty(target_count, 6, dtype=torch.float32),
             "cup_pos_local": torch.empty(target_count, 3, dtype=torch.float32),
@@ -798,6 +812,9 @@ class GraspRightEnv(DirectRLEnv):
         )
         export["hand_joint_pos"][start:end] = (
             self.robot.data.joint_pos[success_env_ids][:, self.hand_dof_indices].detach().cpu()
+        )
+        export["hand_mimic_pos"][start:end] = (
+            self.robot.data.joint_pos[success_env_ids][:, self._hand_mimic_dof_indices].detach().cpu()
         )
         export["palm_pose_quat_xyzw"][start:end] = palm_quat.detach().cpu()
         export["palm_pose_euler_zyx"][start:end] = palm_euler.detach().cpu()
@@ -1332,6 +1349,9 @@ class GraspRightEnv(DirectRLEnv):
             self.hand_joint_targets,
         )
         self.robot.set_joint_position_target(finger_target, joint_ids=self.hand_dof_indices)
+        # 원위(mimic) 마디를 drive×mult 로 능동 curl → 컵을 감싸는 envelope grip (fingertip pinch 탈피).
+        _mimic_target = finger_target[:, self._hand_mimic_src_idx] * self._hand_mimic_mult.unsqueeze(0)
+        self.robot.set_joint_position_target(_mimic_target, joint_ids=self._hand_mimic_dof_indices)
         self.robot.set_joint_velocity_target(
             torch.zeros_like(finger_target), joint_ids=self.hand_dof_indices
         )

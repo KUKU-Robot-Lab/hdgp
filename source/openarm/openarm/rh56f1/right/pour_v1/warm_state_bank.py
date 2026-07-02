@@ -35,6 +35,7 @@ _GROUP = "warm_states"
 _DATASETS = (
     "arm_joint_pos",
     "hand_joint_pos",
+    "hand_mimic_pos",
     "palm_pose_quat_xyzw",
     "palm_pose_euler_zyx",
     "cup_pos_local",
@@ -54,7 +55,8 @@ class PourWarmStateBank:
     """
 
     arm_joint_pos: torch.Tensor        # (N, 7)
-    hand_joint_pos: torch.Tensor       # (N, 20)
+    hand_joint_pos: torch.Tensor       # (N, 6) drive
+    hand_mimic_pos: torch.Tensor       # (N, 6) mimic 원위 실제값 (drive+mimic 전체 손자세 재현용)
     palm_pose_quat_xyzw: torch.Tensor  # (N, 7) = pos3 + quat_xyzw4
     palm_pose_euler_zyx: torch.Tensor  # (N, 6) = pos3 + ezyx3
     cup_pos_local: torch.Tensor        # (N, 3)
@@ -111,6 +113,7 @@ class PourWarmStateBank:
         return cls(
             arm_joint_pos=_to_t(merged["arm_joint_pos"], device),
             hand_joint_pos=_to_t(merged["hand_joint_pos"], device),
+            hand_mimic_pos=_to_t(merged["hand_mimic_pos"], device),
             palm_pose_quat_xyzw=_to_t(merged["palm_pose_quat_xyzw"], device),
             palm_pose_euler_zyx=_to_t(merged["palm_pose_euler_zyx"], device),
             cup_pos_local=_to_t(merged["cup_pos_local"], device),

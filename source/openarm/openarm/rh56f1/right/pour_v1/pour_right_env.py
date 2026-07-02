@@ -89,6 +89,7 @@ from .pour_right_preset import (
     LEFT_TARGET_CUP_POS_ENV_LOCAL,
     LEFT_TARGET_CUP_QUAT_WXYZ,
     RIGHT_ACTUATED_JOINT_NAMES,
+    RIGHT_HAND_MIMIC_JOINT_NAMES,
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
     OBJECT_GOAL_POS,
@@ -256,6 +257,19 @@ class PourRightEnv(DirectRLEnv):
 
         self.arm_dof_indices  = self.actuated_dof_indices[:NUM_ARM_DOF]    # list[int]
         self.hand_dof_indices = self.actuated_dof_indices[NUM_ARM_DOF:]    # list[int]
+
+        # mimic 관절(thumb_3/4, finger_2 = 원위 마디) 인덱스 + drive 대비 배수.
+        # warmstart reset 은 drive 6관절만 write → mimic 은 0(펴짐)으로 남아 그립 미완성→컵 낙하.
+        # reset 에서 mimic = drive[src] × mult 로 함께 write 해 전체 손 자세 재현.
+        # 순서: RIGHT_HAND_MIMIC_JOINT_NAMES = [thumb_3, thumb_4, index_2, middle_2, ring_2, pinky_2]
+        #   drive hand_pos idx: [thumb_1(0),thumb_2(1),index_1(2),middle_1(3),ring_1(4),pinky_1(5)]
+        self._hand_mimic_dof_indices = [
+            self.robot.joint_names.index(name) for name in RIGHT_HAND_MIMIC_JOINT_NAMES
+        ]
+        self._hand_mimic_src_idx = torch.tensor([1, 1, 2, 3, 4, 5], device=self.device)
+        self._hand_mimic_mult = torch.tensor(
+            [1.1425, 1.1425 * 0.7508, 1.1169, 1.1169, 1.1169, 1.1169], device=self.device
+        )
 
         # body indices (RH56F1: 말단 손가락 링크 = fingertip = distal). cfg.right_tip_contact_links 사용.
         _tip_names = list(self.cfg.right_tip_contact_links)  # thumb_4, index_2, middle_2, ring_2, little_2
@@ -1319,6 +1333,13 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_qd[:, NUM_ARM_DOF:].zero_()
 
     def _apply_action(self) -> None:
+        # hold 중엔 팔을 warmstart arm_pos 에 직접 고정 → fabric palm-target 드리프트로 컵이
+        # 움직이는 것 방지 (정지 상태로 upright 유지 후 비드 소환). hold 종료 후 fabric 제어 복귀.
+        if self.cfg.episode_hold_steps > 0:
+            _hold = self.episode_length_buf < self.cfg.episode_hold_steps
+            if bool(_hold.any()):
+                self.fabric_q[_hold, :NUM_ARM_DOF] = self.pregrasp_arm_pos_buf[_hold]
+                self.fabric_qd[_hold, :NUM_ARM_DOF] = 0.0
         # ---- 오른팔: Fabrics arm target (pour phase 전체) ----
         arm_target = self.fabric_q[:, :NUM_ARM_DOF]
         self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_dof_indices)
@@ -1328,6 +1349,12 @@ class PourRightEnv(DirectRLEnv):
 
         # ---- 오른손: grasp_hold 유지 ----
         self.robot.set_joint_position_target(self.hand_joint_targets, joint_ids=self.hand_dof_indices)
+        # 원위(mimic) 마디를 drive×mult 로 능동 구동 → 컵을 감싸(envelope) firm 그립.
+        # (mimic actuator 강성 부여와 짝. 강성만 있고 타겟 0이면 원위가 안 닫힘.)
+        _mimic_target = (
+            self.hand_joint_targets[:, self._hand_mimic_src_idx] * self._hand_mimic_mult.unsqueeze(0)
+        )
+        self.robot.set_joint_position_target(_mimic_target, joint_ids=self._hand_mimic_dof_indices)
         self.robot.set_joint_velocity_target(
             torch.zeros_like(self.hand_joint_targets), joint_ids=self.hand_dof_indices
         )
@@ -2311,9 +2338,17 @@ class PourRightEnv(DirectRLEnv):
 
         # 완료(source_drained/success)는 terminated 아닌 truncated로 분류
         # → 비드를 다 부어도 V=0 절단 없이 미래가치 부트스트랩 유지
+        # 컵을 놓쳐 테이블 근처로 내려가면 hold(120스텝) 중에도 즉시 종료.
+        # (dropped_by_force/grasp_broken 은 episode_hold_steps 게이트라 hold 중 drop 을 못 잡아
+        #  놓친 컵이 방치되는 문제. 든 컵 z≈0.33, spawn_z=0.277 → 0.015 마진 아래면 놓친 것.)
+        cup_lost = (
+            (self.object_pos[:, 2] < (self.cfg.object_spawn_z + 0.015))
+            & (self.episode_length_buf >= 15)
+            & (~torch.full_like(self.success_flag, self._warmstart_collect_mode))
+        )
         terminated = (
             out_x | out_y | fallen | dropped_by_force
-            | bead_fallen | grasp_broken
+            | bead_fallen | grasp_broken | cup_lost
         )
         truncated = (
             (self.episode_length_buf >= self.max_episode_length - 1)
@@ -2595,7 +2630,11 @@ class PourRightEnv(DirectRLEnv):
         # 버퍼를 디스크 캐시 크기로 재할당 (warmstart_cache_size 무관, 전량 활용)
         self._warmstart_arm_pos = bank.arm_joint_pos.clone()
         self._warmstart_hand_pos = bank.hand_joint_pos.clone()
+        self._warmstart_hand_mimic = bank.hand_mimic_pos.clone()  # (n,6) 실제 mimic 물리값
         self._warmstart_palm_pose = bank.palm_pose_quat_xyzw.clone()  # (n,7) pos+quat_xyzw
+        # (n,6) pos+euler_zyx — 제어(_pre_physics_step)가 pregrasp_palm_pose_buf_euler 기준으로
+        # 팔 target을 만들므로 warmstart reset 에서 반드시 세팅해야 함(누락 시 euler base=0→시작 즉시 팔 홱→drop).
+        self._warmstart_palm_pose_euler = bank.palm_pose_euler_zyx.clone()  # (n,6) pos+ezyx
         # cup 은 grasp 성공 당시의 실제 자세로 텔레포트한다.
         # upright(identity) 강제는 손-컵 상대 자세를 깨뜨려(손가락이 컵 벽을
         # 파고듦) hold 중 컵 이탈/손가락 끼임을 유발한다. bead 는 hold 종료
@@ -2743,12 +2782,17 @@ class PourRightEnv(DirectRLEnv):
         arm_pos = self._warmstart_arm_pos[pick]
         hand_pos = self._warmstart_hand_pos[pick]
         palm_pose = self._warmstart_palm_pose[pick]
+        palm_euler = self._warmstart_palm_pose_euler[pick]  # (n,6) 제어 base
+        mimic_pos = self._warmstart_hand_mimic[pick]  # (n,6) 실제 mimic 물리값
         cup_pose_local = self._warmstart_cup_pose[pick]
 
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_pos[:, self.arm_dof_indices] = arm_pos
         full_pos[:, self.hand_dof_indices] = hand_pos
+        # mimic 원위 마디를 grasp 캡처 시점의 실제 물리값으로 write → 손 전체 자세 정확 재현
+        # (drive×mult 근사는 over-close→이젝션. 실제값이라 컵과 정확히 정합).
+        full_pos[:, self._hand_mimic_dof_indices] = mimic_pos
         full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
@@ -2759,7 +2803,13 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_qdd[env_ids].zero_()
 
         self.pregrasp_arm_pos_buf[env_ids] = arm_pos
-        self.grasp_hold_hand_pos_buf[env_ids] = hand_pos
+        # freeze 타겟은 캡처 접촉 위치 "너머"로 굴곡관절을 눌러 grip force 생성.
+        # (접촉 위치 그대로면 누르는 힘 0 → 빈 컵도 중력에 미끄러짐. 초기 joint state 는
+        #  캡처값 그대로라 이젝션 없음. thumb_1 abduction(idx0)은 유지, 굴곡 idx1~5만 +0.2rad 눌러 FULL_GRIP 한계로 클램프.)
+        _hold_target = hand_pos.clone()
+        _flex_max = _hold_target.new_tensor([0.4745, 1.50, 1.50, 1.50, 1.50])
+        _hold_target[:, 1:] = torch.min(_hold_target[:, 1:] + 0.2, _flex_max.unsqueeze(0))
+        self.grasp_hold_hand_pos_buf[env_ids] = _hold_target
         # RH56F1 6-DOF: tesollo 20-DOF (5손가락×4관절) reshape 잔재를 유효 DOF 평균 closure로 대체.
         # (pour 에피소드는 손 freeze → 이 floor 는 action 미적용, per-env 값 존재만 필요.)
         delta_hand = (self.hand_grasp_pose - self.hand_open_pose).unsqueeze(0).expand(n, -1)
@@ -2789,6 +2839,11 @@ class PourRightEnv(DirectRLEnv):
         _ws_clamp_delta = (warmstart_palm_pose[:, :3] - palm_pose[:, :3]).abs().max().item()
         self.pregrasp_palm_pose_buf[env_ids] = warmstart_palm_pose
         self.palm_pose_targets[env_ids] = warmstart_palm_pose
+        # 제어 base(euler)도 동일하게 세팅 (누락 시 첫 스텝 palm target=0→팔 홱→drop).
+        # 위치는 quat 버전과 동일한 z_boost·workspace 클램프 적용, 자세(euler zyx)는 hdf5 그대로.
+        warmstart_palm_euler = palm_euler.clone()
+        warmstart_palm_euler[:, :3] = warmstart_palm_pose[:, :3]
+        self.pregrasp_palm_pose_buf_euler[env_ids] = warmstart_palm_euler
         self.hand_joint_targets[env_ids] = hand_pos
         self.object_init_pos[env_ids] = cup_pose_local[:, :3]
         self.object_init_pos[env_ids, 2] = self.cfg.object_spawn_z  # z는 테이블 높이 기준으로 고정 (캐시 lifted z 사용 시 cup_height_delta=0 버그)
