@@ -335,6 +335,12 @@ def _apply_playback_env_overrides(env_cfg) -> None:
     """Apply CLI-only playback overrides after any logged cfg restore."""
     if args_cli.num_envs is not None:
         env_cfg.scene.num_envs = args_cli.num_envs
+
+    # pour_point(빨강) 마커 off: train.py가 학습 시 True로 강제 → logged env.yaml에 true가 박혀
+    #   복원 단계에서 다시 켜진다. 복원 이후인 여기서 명시적으로 꺼야 렌더/비디오에 안 나온다.
+    if hasattr(env_cfg, "enable_visual_markers") and env_cfg.enable_visual_markers:
+        env_cfg.enable_visual_markers = False
+        print("[INFO] pour_point 마커 표시 off (playback).")
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
 
