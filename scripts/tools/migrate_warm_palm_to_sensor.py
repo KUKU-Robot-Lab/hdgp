@@ -34,7 +34,7 @@ from fabrics_sim.fabrics.openarm_rh56f1_pose_fabric import (
     OpenArmRh56f1PoseFabric,
     NUM_ARM_DOF,
     NUM_HAND_DOF,
-    NUM_ROBOT_DOF,
+    NUM_SIDE_DOF,  # 우측 한 팔 DOF(13) = fabric cspace 우측 슬라이스
     NUM_DOF,
 )
 from fabrics_sim.utils.utils import initialize_warp
@@ -68,7 +68,7 @@ def main():
     # cspace(26): 우측[0:13]=arm+hand, 좌측[13:26]=default 중립(우측 palm FK 에 무영향).
     cspace = fabric.default_config.clone()
     cspace[:, :NUM_ARM_DOF] = arm
-    cspace[:, NUM_ARM_DOF:NUM_ROBOT_DOF] = hand
+    cspace[:, NUM_ARM_DOF:NUM_SIDE_DOF] = hand
 
     with torch.no_grad():
         new_euler = fabric.get_palm_pose(cspace, "euler_zyx").detach().cpu().numpy()   # (N,6)
