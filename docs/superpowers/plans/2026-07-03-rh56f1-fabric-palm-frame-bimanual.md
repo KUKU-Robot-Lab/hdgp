@@ -431,3 +431,35 @@ git -C hdgp tag rh56f1-fabric-bimanual-infra
 - **측정 의존 값(euler 재보정, default_palm_euler, cspace 슬라이스)**: placeholder가 아니라 "FK 산출 스텝 → 대입"으로 명시. 실행 시 정확한 값 확정.
 - **Type/이름 일관성:** `control_point_frames`, `ps_r_*`/`ps_l_*`, `palm_r`/`palm_l`, `_palm_pose_target_r`/`_l`가 Task 간 일관.
 - **알려진 리스크:** BaseFabric `set_features` 상위 시그니처 미확인 → Task 2.2 Step 1에서 확인 절차 명시.
+
+---
+
+## 진행 현황 (2026-07-03 갱신)
+
+### 방향 전환 (계획 대비)
+원안은 "오른팔 Tesollo 공유본 유지 + 왼팔 `_rl` 추가"였으나, Tesollo 오른팔 base 마운트가
+Isaac USD(`_rl`)와 **6.4cm 어긋남**(`(0,-0.0935,0.698)` vs `(0,-0.031,0.698)`)이 확인됨.
+→ **fabric 을 `_rl` URDF 단일 소스로 양팔 재생성**하도록 전환. Phase 1 오른팔도 `_rl` 로 재정비됨.
+generate 스크립트는 Tesollo 의존을 걷어내고 `_rl` 파싱으로 전면 재작성.
+
+### 완료 (정적/수치 검증)
+- [x] Task 1.0 FK 검증기 (자기검증 both 0mm/0°)
+- [x] Task 1.1→2.1 통합: **양팔 `_rl` URDF** (cspace 26, palm_sensor+축점 좌우, FK both PASS 0mm/0°)
+- [x] Task 1.2 fabric palm attractor → `r_hl_palm_sensor` (control_point; 단 cspace 는 아직 13, 2.2 에서 26)
+- [x] Task 1.3 params 충돌 프레임 → palm_sensor
+- [x] Task 1.4 grasp_v1 offset 제거 + euler ex+90 (정적 9 pass)
+- [x] Task 1.5 pour_v1 동일 (68 pass, 1 pre-existing)
+- [x] Task 1.6 **수치 게이트**: 프레임 규약 테스트 3 pass (렌더 대체; palm_sensor +z_world=[0,0,-1], ex+90 손배치 보존)
+
+### 남은 작업 (warp 런타임 서버 검증 필요)
+- [ ] Task 2.2 fabric 코드: cspace 13→**26**, `default_config` 26(왼팔 중립+왼손),
+      좌우 palm attractor(`palm_r`/`palm_l`), `TIP_FRAMES` `rh56f1_tip_*`→`r_hl_*_tip`,
+      `set_features` 좌우 palm. **BaseFabric.set_features 시그니처 파악 선행.**
+- [ ] Task 2.3 params: 양팔 충돌구(`r_al_*`/`l_al_*`), `world_body` 참조 정리(현재 Tesollo 유래).
+- [ ] Task 2.4 env(grasp_v1/pour_v1): `fabric_q` 26, 왼팔/왼손 fabric 구동(고정 중립 target).
+- [ ] Task 2.5 서버 검증: fabric 로드 스모크(num_joints=26), IK 왕복 수치, (play 육안 불가 → 수치).
+
+### 재개 시 주의
+- 재생성 URDF tip 프레임 이름이 `r_hl_*_tip`(구 `rh56f1_tip_*` 아님) → fabric `TIP_FRAMES` 갱신 필수(미갱신 시 로드 에러).
+- 현재 fabric 코드 `NUM_DOF=13`, `default_config` 13 → URDF(26)와 불일치 상태. Task 2.2 전까지 fabric 로드 불가(warp 없어 로컬 무영향).
+- ledger: `hdgp/.superpowers/sdd/progress.md`.
