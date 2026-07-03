@@ -84,6 +84,9 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
         self.construct_fabric()
 
         # Palm pose target tensor (b x 12): 3D origin + 9D rotation matrix
+        # NOTE: control point 를 r_hl_palm_sensor 로 옮긴 뒤로 이 euler 는 palm_sensor 프레임
+        # 기준의 초기 placeholder 다. 실제 target 은 env 가 reset/step 에서 palm_sensor pose 로
+        # 직접 공급(set_features)하므로 이 초기값은 첫 set_features 전까지만 유효.
         self._palm_pose_target = torch.zeros(batch_size, 12, device=device)
         default_palm_euler = torch.tensor([1.5708, 0.0, 1.5708], device=self.device).unsqueeze(0)
         default_palm_euler = default_palm_euler.repeat(self.batch_size, 1)
@@ -157,11 +160,14 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
 
     def add_palm_points_attractor(self):
         taskmap_name = "palm"
+        # 실제 손바닥 센서 링크 r_hl_palm_sensor + 그 로컬 축점 6개를 IK control point 로.
+        # (Tesollo palm_link 가상프레임은 실 palm_sensor 와 위치 3.4cm·자세 90° 어긋나 제거됨.)
+        # 정책 6D pose = palm_sensor pose 직접(env 의 offset 변환 소멸).
         control_point_frames = [
-            "palm_link",
-            "palm_x", "palm_x_neg",
-            "palm_y", "palm_y_neg",
-            "palm_z", "palm_z_neg",
+            "r_hl_palm_sensor",
+            "ps_r_x", "ps_r_x_neg",
+            "ps_r_y", "ps_r_y_neg",
+            "ps_r_z", "ps_r_z_neg",
         ]
         taskmap = RobotFrameOriginsTaskMap(self.urdf_path, control_point_frames,
                                            self.batch_size, self.device)
