@@ -1,6 +1,7 @@
-# OpenArm + RH56F1 right arm pose params
-# 7 DOF OpenArm right arm + 6 actuated RH56F1 right hand = 13 DOF total
-# Based on openarm_tesollo_pose_params.yaml (팔 파라미터 동일, 손 13 DOF 로 축소)
+# OpenArm + RH56F1 bimanual pose params (_rl 소스 단일 기준)
+# (arm 7 + hand drive 6) x 2 = 26 DOF total
+# cspace 순서 = [r_arm7, r_hand6, l_arm7, l_hand6]
+# Based on openarm_tesollo_pose_params.yaml (게인 동일, 충돌/한계 26 DOF 로 확장)
 
 fabric_params:
     cspace_attractor:
@@ -55,43 +56,44 @@ fabric_params:
       constant_accel: 2.
       constant_accel_geom: 3.0
       damping_gain: 0.
+      # 충돌구는 _rl URDF 실존 프레임만 사용(구 Tesollo/world_body 프레임 제거).
+      # 팔은 링크 원점(r_al_*/l_al_*), 손은 손가락 proximal 구(r_sphere_*/l_sphere_*),
+      # 손바닥은 r_hl_palm_sensor/l_hl_palm_sensor, 몸통은 root(body_link) 1구로 근사.
+      # (구 팔 세부구 _sphere2/3 는 새 URDF 에 없음 → 제외, 충돌 거칠어짐. 필요시
+      #  generate 스크립트에 팔 오프셋 구 추가로 정밀화.)  frames/radii 길이 정합(19).
       collision_sphere_frames:
-          ["openarm_right_link2", "openarm_right_link2_sphere2", "openarm_right_link2_sphere3",
-           "openarm_right_link4", "openarm_right_link4_sphere2", "openarm_right_link4_sphere3",
-           "openarm_right_link6_sphere2",
-           "openarm_right_link7", "r_hl_palm_sensor",
-           "rh56f1_sphere_thumb", "rh56f1_sphere_index", "rh56f1_sphere_middle",
-           "rh56f1_sphere_ring", "rh56f1_sphere_little",
-           "world_body_sphere1", "world_body_sphere2", "world_body_sphere3"]
-      # palm 충돌구: Tesollo palm_link/palm_link_sphere2(2개) 제거 → 실 손바닥 센서
-      # r_hl_palm_sensor 위치 구 1개(r=0.05)로 근사. frames/radii 길이 정합(17).
-      collision_sphere_radii: [0.12, 0.10, 0.10,
-                               0.125, 0.10, 0.10,
-                               0.10,
-                               0.075, 0.05,
+          ["r_al_2", "r_al_4", "r_al_7",
+           "r_hl_palm_sensor",
+           "r_sphere_thumb", "r_sphere_index", "r_sphere_middle", "r_sphere_ring", "r_sphere_pinky",
+           "l_al_2", "l_al_4", "l_al_7",
+           "l_hl_palm_sensor",
+           "l_sphere_thumb", "l_sphere_index", "l_sphere_middle", "l_sphere_ring", "l_sphere_pinky",
+           "body_link"]
+      collision_sphere_radii: [0.12, 0.125, 0.075,
+                               0.05,
                                0.025, 0.022, 0.022, 0.022, 0.022,
-                               0.18, 0.15, 0.12]
+                               0.12, 0.125, 0.075,
+                               0.05,
+                               0.025, 0.022, 0.022, 0.022, 0.022,
+                               0.15]
       collision_sphere_pairs: []
       collision_link_prefix_pairs: [
-                                    # 손가락/palm vs link2 (상완)
-                                    ["r_hl_palm_sensor", "openarm_right_link2"],
-                                    ["rh56f1_sphere_thumb", "openarm_right_link2"],
-                                    ["rh56f1_sphere_index", "openarm_right_link2"],
-                                    ["rh56f1_sphere_middle", "openarm_right_link2"],
-                                    ["rh56f1_sphere_ring", "openarm_right_link2"],
-                                    ["rh56f1_sphere_little", "openarm_right_link2"],
-                                    # 손가락/palm vs body (link0/world)
-                                    ["r_hl_palm_sensor", "world_body"],
-                                    ["rh56f1_sphere_thumb", "world_body"],
-                                    ["rh56f1_sphere_index", "world_body"],
-                                    ["rh56f1_sphere_middle", "world_body"],
-                                    ["rh56f1_sphere_ring", "world_body"],
-                                    ["rh56f1_sphere_little", "world_body"],
-                                    # arm link vs world_body
-                                    ["openarm_right_link2", "world_body"],
-                                    ["openarm_right_link4", "world_body"],
-                                    ["openarm_right_link6", "world_body"],
-                                    ["openarm_right_link7", "world_body"]]
+                                    # 오른손 손가락/palm vs 오른팔 상완/전완 (손목 r_al_7 은 인접 → 제외)
+                                    ["r_sphere", "r_al_2"], ["r_sphere", "r_al_4"],
+                                    ["r_hl_palm_sensor", "r_al_2"], ["r_hl_palm_sensor", "r_al_4"],
+                                    # 오른손/오른팔 vs 몸통
+                                    ["r_sphere", "body_link"],
+                                    ["r_hl_palm_sensor", "body_link"],
+                                    ["r_al", "body_link"],
+                                    # 왼손 손가락/palm vs 왼팔 (미러)
+                                    ["l_sphere", "l_al_2"], ["l_sphere", "l_al_4"],
+                                    ["l_hl_palm_sensor", "l_al_2"], ["l_hl_palm_sensor", "l_al_4"],
+                                    ["l_sphere", "body_link"],
+                                    ["l_hl_palm_sensor", "body_link"],
+                                    ["l_al", "body_link"],
+                                    # 교차팔: 오른손 클러스터 vs 왼팔 (최소)
+                                    ["r_sphere", "l_al"],
+                                    ["r_hl_palm_sensor", "l_al"]]
     cspace_damping:
       gain: 10.
     speed_control:
@@ -100,9 +102,13 @@ fabric_params:
       damping: 100.
     joint_limits:
       active: True
-      # 13 DOF: 7 arm (openarm_right_joint1~7) + 6 hand
-      #   (thumb_1, thumb_2, index_1, middle_1, ring_1, little_1)
+      # 26 DOF: [r_arm7, r_hand6, l_arm7, l_hand6]
+      #   arm7=(aj_1~7), hand6=(thumb_1, thumb_2, index_1, middle_1, ring_1, pinky_1)
       acceleration: [7.5, 7.5, 10., 10., 10., 20., 20.,
+                     22.5, 22.5, 22.5, 22.5, 22.5, 22.5,
+                     7.5, 7.5, 10., 10., 10., 20., 20.,
                      22.5, 22.5, 22.5, 22.5, 22.5, 22.5]
       jerk: [3750., 3750., 5000., 5000., 5000., 10000., 10000.,
+             2250., 2250., 2250., 2250., 2250., 2250.,
+             3750., 3750., 5000., 5000., 5000., 10000., 10000.,
              2250., 2250., 2250., 2250., 2250., 2250.]

@@ -1,11 +1,14 @@
-# OpenArm + RH56F1 right arm pose fabric
+# OpenArm + RH56F1 bimanual pose fabric (_rl 소스 단일 기준)
 # Based on openarm_tesollo_pose_fabric.py
-# 7 DOF OpenArm right arm + 6 actuated RH56F1 right hand = 13 DOF total
+# 양팔: (arm 7 + hand drive 6) x 2 = 26 DOF total
 #
-# 설계 메모 (계획 Phase 1):
+# 설계 메모 (Phase 2 — 양팔 인프라):
+#   - cspace 순서 = [r_arm 7, r_hand 6, l_arm 7, l_hand 6] (URDF revolute 정의순).
 #   - RH56F1 손은 underactuated 6 DOF (drive): thumb_1, thumb_2, index_1,
-#     middle_1, ring_1, little_1. mimic 추종 관절은 fabrics URDF 에서 고정.
-#   - 팔(7 DOF) 은 Tesollo 와 동일 → 팔/palm/충돌 구조 재사용.
+#     middle_1, ring_1, pinky_1. mimic 추종 관절은 fabrics URDF 에서 고정.
+#   - palm IK(control point)는 지금은 오른손(r_hl_palm_sensor)만 활성.
+#     왼팔/왼손은 cspace_attractor 로 default_config 중립만 유지("인프라만" —
+#     왼손 능동 palm 제어는 이후 phase 에서 add_palm_points_attractor(l) 로 확장).
 #   - 기본적으로 env 는 use_hand_fabric=False 로 사용 (손은 직접 PD 제어).
 #     add_hand_fabric 은 6D 직접(identity) 매핑으로 제공만 해 둔다.
 
@@ -28,29 +31,35 @@ from fabrics_sim.utils.rotation_utils import quaternion_to_matrix, matrix_to_qua
 
 NUM_ARM_DOF = 7
 NUM_HAND_DOF = 6
-NUM_DOF = NUM_ARM_DOF + NUM_HAND_DOF  # 13
+NUM_SIDE_DOF = NUM_ARM_DOF + NUM_HAND_DOF  # 13 (한 팔)
+NUM_DOF = 2 * NUM_SIDE_DOF  # 26 (양팔)
 
-# fingertip FK 프레임 (fabrics URDF 기준)
+# 오른손 cspace 슬라이스(26 DOF 중): [0:7]=r_arm, [7:13]=r_hand
+R_ARM_SLICE = slice(0, NUM_ARM_DOF)
+R_HAND_SLICE = slice(NUM_ARM_DOF, NUM_SIDE_DOF)
+
+# fingertip FK 프레임 (오른손, _rl URDF 기준). 오른손 obs 전용.
 TIP_FRAMES = [
-    "rh56f1_tip_thumb",
-    "rh56f1_tip_index",
-    "rh56f1_tip_middle",
-    "rh56f1_tip_ring",
-    "rh56f1_tip_little",
+    "r_hl_thumb_tip",
+    "r_hl_index_tip",
+    "r_hl_middle_tip",
+    "r_hl_ring_tip",
+    "r_hl_pinky_tip",
 ]
 
 
 class OpenArmRh56f1PoseFabric(BaseFabric):
-    """Fabric for OpenArm right arm (7 DOF) + RH56F1 right hand (6 DOF) = 13 DOF total.
+    """Bimanual fabric: (OpenArm 7 + RH56F1 hand drive 6) x 2 = 26 DOF total.
 
-    Joint order in fabrics URDF (13 revolute joints):
-      [0-6]  openarm_right_joint1~7        (arm)
-      [7]    rh56f1_right_right_thumb_1     (thumb abduction, 0~2.094)
-      [8]    rh56f1_right_right_thumb_2     (thumb flex drive, 0~0.475)
-      [9]    rh56f1_right_right_index_1     (index flex drive, 0~1.529)
-      [10]   rh56f1_right_right_middle_1    (middle flex drive)
-      [11]   rh56f1_right_right_ring_1      (ring flex drive)
-      [12]   rh56f1_right_right_little_1    (little flex drive)
+    Joint order in fabrics URDF (26 revolute joints, _rl 정의순):
+      [0-6]   r_aj_1~7                 (right arm)
+      [7]     r_hj_thumb_1             (thumb abduction)
+      [8]     r_hj_thumb_2             (thumb flex drive)
+      [9-12]  r_hj_{index,middle,ring,pinky}_1  (right hand flex drives)
+      [13-19] l_aj_1~7                 (left arm)
+      [20]    l_hj_thumb_1
+      [21]    l_hj_thumb_2
+      [22-25] l_hj_{index,middle,ring,pinky}_1  (left hand flex drives)
     """
 
     def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=False):
@@ -65,17 +74,19 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
 
         self.load_robot(robot_dir_name, robot_name, batch_size)
 
-        # Default cspace config (13 DOF):
-        #   arm: Tesollo 와 동일한 자연 작업 자세
-        #   hand: 약한 grasp 자세 (drive 관절 기준)
+        # Default cspace config (26 DOF): [r_arm7, r_hand6, l_arm7, l_hand6]
+        #   right arm : 자연 작업 자세 / right hand : 약한 grasp 자세(drive 기준)
+        #   left arm  : LEFT_ARM_REST_JOINT_POS(env preset) 중립 / left hand : open
+        # 왼팔/왼손은 능동 IK 없이 이 cspace target 으로만 유지된다("인프라만").
         default_config = torch.tensor([
-            # OpenArm right arm joint1~7
+            # right arm r_aj_1~7
             1.0,  -0.1,  -0.6,  0.5,  0.0,  0.0,  0.0,
-            # RH56F1 hand drive 6:
-            #   thumb_1(abduction): 0.6 (opposition 방향)
-            #   thumb_2(flex drive): 0.40
-            #   index/middle/ring/little_1(flex): 0.90
+            # right hand drive 6 (thumb_1 abd, thumb_2 flex, index/middle/ring/pinky flex)
             0.6,  0.40,  0.90,  0.90,  0.90,  0.90,
+            # left arm l_aj_1~7 (grasp_v1 LEFT_ARM_REST_JOINT_POS 와 정합)
+            -0.315, -0.290, 0.400, 0.513, 0.666, -0.729, -0.957,
+            # left hand drive 6 (open)
+            0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
         ], device=self.device)
         self.default_config = default_config.unsqueeze(0).repeat(self.batch_size, 1)
 
@@ -143,13 +154,11 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
         self.add_fabric(taskmap_name, fabric_name, fabric)
 
     def add_hand_fabric(self):
-        """6D 직접 손 제어 (identity). env 가 use_hand_fabric=True 로 쓸 때만 활성.
+        """6D 직접 오른손 제어 (identity). env 가 use_hand_fabric=True 로 쓸 때만 활성.
         보통 env 는 손을 직접 PD 제어하므로 사용하지 않는다."""
-        # 6x6 identity, 7 arm 컬럼은 0 패딩 → (6, 13)
-        hand_map = torch.cat(
-            [torch.zeros(NUM_HAND_DOF, NUM_ARM_DOF, device=self.device),
-             torch.eye(NUM_HAND_DOF, device=self.device)], dim=1
-        )
+        # (6, 26): 오른손 drive 컬럼 [7:13] 만 eye, 나머지(팔·왼쪽) 0 패딩.
+        hand_map = torch.zeros(NUM_HAND_DOF, NUM_DOF, device=self.device)
+        hand_map[:, R_HAND_SLICE] = torch.eye(NUM_HAND_DOF, device=self.device)
         self._pca_matrix = torch.clone(hand_map.detach())
         taskmap_name = "pca_hand"
         taskmap = LinearMap(hand_map, self.device)
@@ -330,10 +339,10 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
         """Pass input features to fabric terms.
 
         Args:
-            hand_target:              (B, 6)  직접 손 target (use_hand_fabric=True 일 때만)
-            palm_pose_target:         (B, 6) euler_zyx  또는 (B, 7) quaternion
-            batched_cspace_position:  (B, 13) current joint positions
-            batched_cspace_velocity:  (B, 13) current joint velocities
+            hand_target:              (B, 6)  직접 오른손 target (use_hand_fabric=True 일 때만)
+            palm_pose_target:         (B, 6) euler_zyx  또는 (B, 7) quaternion (오른손 palm)
+            batched_cspace_position:  (B, 26) current joint positions [r_arm,r_hand,l_arm,l_hand]
+            batched_cspace_velocity:  (B, 26) current joint velocities
         """
         if "pca_hand" in self.fabrics_features:
             self.fabrics_features["pca_hand"]["hand_attractor"] = hand_target
