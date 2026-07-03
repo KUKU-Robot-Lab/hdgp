@@ -336,7 +336,7 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
         "stability_cup_ang_vel_threshold",
         "stability_contact_delta_threshold",
         "stability_action_delta_threshold",
-        "stabilize_upright_max_deg: float = 10.0",
+        "stabilize_upright_max_deg: float = 12.0",
         "stabilize_upright_reward_scale_deg",
         "stage0_lift_start_min_contacts: int = 3",
         "grasp_phase_full_grip_contact_threshold: int = 4",
@@ -398,7 +398,7 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     ):
         assert removed_term not in env
     assert "compute_stationary_grasp_success(" in env
-    assert "stabilize_upright_max_deg: float = 10.0" in cfg
+    assert "stabilize_upright_max_deg: float = 12.0" in cfg
     assert "stable=stability.stable" in env
 
 

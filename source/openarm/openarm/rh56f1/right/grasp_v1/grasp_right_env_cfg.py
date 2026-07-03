@@ -156,7 +156,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_upright_orientation_max_deg: float = 45.0
     stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2
     # lift phase부터 upright 보정 적용 → stabilize 전에 미리 컵을 세워 righting 시간 확보.
-    upright_orientation_from_lift: bool = True
+    upright_orientation_from_lift: bool = False  # 07.03 lift중 보정이 그립 흔들어 리프트 붕괴 → stabilize만
     # Backward-compatible aliases for older launch overrides.
     stabilize_spawn_xy_hold_enabled: bool = True
     stabilize_spawn_xy_hold_gain: float = 2.0
@@ -391,8 +391,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 종료 조건
     # -----------------------------------------------------------------------
     cup_tipping_max_deg: float = 35.0
-    success_upright_max_deg: float = 10.0   # 07.03 pour용 upright 강화(20→10°): 똑바로 든 컵만 성공→warm state upright
-    stabilize_upright_max_deg: float = 10.0  # 20→10°(구 12). 보정강화+lift적용으로 달성 목표
+    success_upright_max_deg: float = 12.0   # 07.03 pour용 upright(20→12°): 달성가능+16°보다 개선
+    stabilize_upright_max_deg: float = 12.0  # 20→12°. stabilize 보정강화로 달성 목표
     obj_out_x_min:  float = 0.05
     obj_out_x_max:  float = 0.85
     obj_out_y_min:  float = -0.60
