@@ -389,6 +389,10 @@ class PourRightEnv(DirectRLEnv):
         self._needs_grasp_init_update = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self._grasp_cup_height_init = torch.zeros(self.num_envs, device=self.device)
         self.palm_center_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        # palm_body_index 가 r_hl_palm_sensor 를 직접 가리키므로 palm_ee 보정 offset 은 0.
+        # (grasp_v1 과 동일: 관측 palm_center_pos = palm_sensor 원점, fabric 제어점도 palm_sensor
+        #  → 아래 _palm_ee_offset_local 사용처 3곳이 모두 항등(identity)이 된다.)
+        self._palm_ee_offset_local = to_torch([0.0, 0.0, 0.0], device=self.device)
         self.fingertip_pos   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.distal4_pos     = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.actions         = torch.zeros(self.num_envs, cfg.num_actions, device=self.device)
@@ -1213,8 +1217,8 @@ class PourRightEnv(DirectRLEnv):
             palm_pose[:, :3] = _palm_ee_target
             # 명령/진단 delta는 palm_ee 기준
             self._cmd_palm_target_delta.copy_(_palm_ee_target - self.palm_center_pos)
-            # [palm_ee 제어] Fabrics는 palm_link 추종 → palm_ee target을 palm_link로 역변환.
-            #   orientation 공유(rpy=0)라 quat 불변, origin만 R(target)·offset 만큼 뺌.
+            # Fabrics 가 palm_sensor 를 직접 제어 → palm target = _palm_ee_target(palm_sensor 프레임).
+            #   offset=0 이라 아래는 항등(palm_pose[:, :3] = _palm_ee_target). 구 palm_link 역변환 폐기.
             _tgt_quat_wxyz = palm_pose[:, 3:7][:, [3, 0, 1, 2]]
             palm_pose[:, :3] = _palm_ee_target - quat_apply(
                 _tgt_quat_wxyz, self._palm_ee_offset_local.unsqueeze(0).expand(self.num_envs, -1)

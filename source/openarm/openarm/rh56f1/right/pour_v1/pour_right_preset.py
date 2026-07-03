@@ -190,13 +190,14 @@ TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 # 보상/관측에 쓰는 USD body (palm + 5 말단 손가락 링크).
 # Phase 0 검증: fingertip force_sensor 링크는 병합 소멸 → 생존 말단 링크 사용.
 #   [0]=palm 제어 기준 body = r_hl_palm_1 (비회전 palm_link, tesollo rl_dg_palm 대응).
-#       ⚠️ r_hl_palm_sensor는 URDF rpy=(π/2,0,π/2)로 90°×90° 회전된 프레임 → pour tilt 제어가
-#       그 자세를 읽으면 명령축 어긋남(손 회전 시 컵 통제불능). grasp warmstart palm_pose는
-#       palm_link 방향으로 저장되므로 read도 비회전 palm_1로 정합. 위치는 _palm_ee_offset_local로 보정.
-#       (07.02 회전 버그 수정. 구 r_al_7→palm_sensor→palm_1 순으로 정정.)
+#       [0]=palm force sensor body = r_hl_palm_sensor. grasp_v1 과 동일하게 palm_sensor
+#       프레임으로 완전 정합(관측·fabric 제어점·reset 모두 palm_sensor 단일 프레임).
+#       palm_sensor 는 rpy=(π/2,0,π/2) 회전 프레임이나, tilt 명령 델타는 world 프레임에서
+#       합성(_compose_world_delta_quat_xyzw)하므로 프레임 무관. euler 규약은 ex+90(R_ls=Rx90).
+#       (07.03 palm_sensor 완전 정합. 구 palm_1+_palm_ee_offset_local 보정 폐기.)
 #   [1:6]=thumb_4, index_2, middle_2, ring_2, little_2
 HAND_BODY_NAMES_USD = [
-    "r_hl_palm_1",
+    "r_hl_palm_sensor",
     "r_hl_thumb_4",
     "r_hl_index_2",
     "r_hl_middle_2",

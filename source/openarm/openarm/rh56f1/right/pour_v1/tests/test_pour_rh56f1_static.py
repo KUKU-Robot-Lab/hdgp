@@ -62,7 +62,7 @@ def test_preset_left_hand_rh56f1():
 
 def test_preset_body_names_rh56f1():
     preset, _ = _load_preset_and_constants()
-    assert preset.HAND_BODY_NAMES_USD[0] == "r_hl_palm_1"  # 07.02 palm 제어점: 회전된 palm_sensor→비회전 palm_1
+    assert preset.HAND_BODY_NAMES_USD[0] == "r_hl_palm_sensor"  # 07.03 palm_sensor 완전 정합(grasp_v1과 동일)
     assert len(preset.HAND_BODY_NAMES_USD) == 6
     assert all("rl_dg" not in b for b in preset.HAND_BODY_NAMES_USD)
     assert len(preset.FABRIC_HAND_BODY_NAMES) == 7
