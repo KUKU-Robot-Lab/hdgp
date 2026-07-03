@@ -302,7 +302,8 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # tilt: 0→135° 단일 연속 ramp, always-on
     tilt_pre_amount: float = 0.456   # 로깅 전용(85° 돌파 추적). 보상 미사용
     weight_tilt_pre: float = 8.0     # 미사용. 구 기록 참조용 유지
-    weight_tilt: float = 20.0        # tilt 직접 유도
+    weight_tilt: float = 30.0        # 07.03 20→30: 틸트 pull 강화(61° plateau 탈출 시도).
+    #   pinch hdf5 grip-cap 실증용 — grasp_broken↑면 grip이 벽(→GPU0 firm 그립이 답)
     weight_tilt_delta: float = 100.0  # tilt 증분(delta) 보상 (더 기울이는 순간만)
     tilt_aim_floor: float = 0.35     # r_tilt pre-ready bootstrap floor
     # 연속 근접 게이트: prox_gate = clamp((far - approach_xy_dist)/(far-near), 0, 1)
