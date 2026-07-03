@@ -285,11 +285,6 @@ class PourRightEnv(DirectRLEnv):
         # distal = fingertip (RH56F1 는 말단 링크가 곧 distal)
         self.distal4_body_indices: list[int] = list(self.fingertip_body_indices)
 
-        # palm_link(=r_hl_palm_sensor) → EE 제어점 offset (로컬). grasp_v1의
-        # _PALM_SENSOR_OFFSET_IN_FABRIC_PALM=(0.0,0.03,0.04)과 동일 (tesollo [0.028,0,0.04]의 rh56f1판).
-        # target을 palm_ee로 만들고 Fabrics 직전 palm_link로 역변환하는 데 사용.
-        self._palm_ee_offset_local = to_torch([0.0, 0.03, 0.04], device=self.device)
-
         # ----------------------------------------------------------------
         # Palm pose 절대 workspace (안전 한계 클램프용)
         # ----------------------------------------------------------------
@@ -873,9 +868,10 @@ class PourRightEnv(DirectRLEnv):
         palm_euler[:, 0] = flat_x + self.cfg.pregrasp_offset_x
         palm_euler[:, 1] = flat_y + self.cfg.pregrasp_offset_y
         palm_euler[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
+        # palm_sensor 규약: ex 는 palm_link 대비 +90°(R_ls=Rx(90)) → 90→180.
         palm_euler[:, 3] = math.radians(90.0)
         palm_euler[:, 4] = math.radians(0.0)
-        palm_euler[:, 5] = math.radians(90.0)
+        palm_euler[:, 5] = math.radians(180.0)
         palm_euler = torch.max(
             torch.min(palm_euler, self.palm_maxs.unsqueeze(0)),
             self.palm_mins.unsqueeze(0),
@@ -2435,9 +2431,10 @@ class PourRightEnv(DirectRLEnv):
 
         pregrasp_palm_pose_euler = torch.zeros(n, 6, device=self.device)
         pregrasp_palm_pose_euler[:, :3] = pregrasp_pos
+        # palm_sensor 규약: ex 는 palm_link 대비 +90°(R_ls=Rx(90)) → 90→180.
         pregrasp_palm_pose_euler[:, 3] = math.radians(90.0)
         pregrasp_palm_pose_euler[:, 4] = math.radians(0.0)
-        pregrasp_palm_pose_euler[:, 5] = math.radians(90.0)
+        pregrasp_palm_pose_euler[:, 5] = math.radians(180.0)
         pregrasp_palm_pose_euler = torch.max(
             torch.min(pregrasp_palm_pose_euler, self.palm_maxs.unsqueeze(0)),
             self.palm_mins.unsqueeze(0),
