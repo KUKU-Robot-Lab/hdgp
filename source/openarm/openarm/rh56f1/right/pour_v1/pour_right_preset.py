@@ -315,10 +315,8 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     # pour workspace: target cup rim ≈ z=0.44m. palm z=0.48 → cup rim clearance 적정.
     d = math.pi / 180.0
     return [
-        # 07.03 z_max 0.48→0.60: 틸트 시 rim-pivot이 palm을 ~0.58까지 위로 스윙해야 주둥이를
-        #   타겟에 유지하는데 0.48 clamp가 이를 깨서(viol_z_deep_signed -0.096, x/y 위반0) 주둥이
-        #   가 0.20으로 추락→spill. z_boost=0이라 z_max를 직접 0.60으로 올려 headroom 확보.
-        0.65, 0.22, 0.60,
+        # tesollo pour_v1 정합: palm workspace maxs (x, y, z) = 0.65, 0.25, 0.68
+        0.65, 0.25, 0.68,
         (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,
