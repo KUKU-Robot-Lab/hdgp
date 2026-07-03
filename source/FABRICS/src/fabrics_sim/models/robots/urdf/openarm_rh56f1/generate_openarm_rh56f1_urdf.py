@@ -61,9 +61,36 @@ TIP_PARENT = {
     "rh56f1_tip_little": ("rh56f1_right_right_little_2", "0.0051203 0.032544 0.0059927"),
 }
 
-# Tesollo URDF 에서 제거할 손 관련 prefix
-DROP_LINK_PREFIXES = ("tesollo_right_rl_dg_", "rl_dg_")
-DROP_JOINT_PREFIXES = ("rj_dg_", "rl_dg_", "tesollo_right_rl_dg_")
+# Tesollo URDF 에서 제거할 손 관련 prefix.
+# palm_* : Tesollo palm 가상프레임(palm_link/palm_x/y/z/palm_center 등). RH56F1 실제
+#   손바닥 센서(r_hl_palm_sensor)와 위치 3.4cm·자세 90° 어긋나므로 제거하고, 아래에서
+#   참고 URDF 실기하로 palm_sensor 체인 + IK 축점을 새로 graft 한다.
+DROP_LINK_PREFIXES = ("tesollo_right_rl_dg_", "rl_dg_", "palm_")
+DROP_JOINT_PREFIXES = ("rj_dg_", "rl_dg_", "tesollo_right_rl_dg_", "palm_")
+
+# ---------------------------------------------------------------------------
+# RH56F1 palm_sensor 체인 (참고 URDF openarm_bi_rh56f1_rl 실기하, r_hl_base 기준).
+#   base_link → palm_1 → palm_2 → r_hl_palm_sensor. 전부 fixed(관절각 무관 상수).
+#   부모 rh56f1_right_base_link 는 이미 link7 에 r_hl_base origin 으로 마운트됨.
+# ---------------------------------------------------------------------------
+PALM_SENSOR_CHAIN = [
+    # (child_link, parent_link, xyz, rpy)
+    ("rh56f1_right_palm_1", "rh56f1_right_base_link", "0 0 0.0305", "0 0 0"),
+    ("rh56f1_right_palm_2", "rh56f1_right_palm_1", "0 0 0", "0 0 0"),
+    (
+        "r_hl_palm_sensor",
+        "rh56f1_right_palm_2",
+        "0.0159401947506102 -0.00135045394126701 0.0737460952299602",
+        "1.5707963267949 0 1.5707963267949",
+    ),
+]
+# palm IK 축점: convert_transform_to_points 가 원점 + ±0.25m 축점으로 6D pose 를 실현.
+# palm_sensor 로컬 축 기준 ±0.25m. fabric control_point_frames 와 이름 일치해야 함.
+PALM_AXIS_POINTS_R = {
+    "ps_r_x": "0.25 0 0", "ps_r_x_neg": "-0.25 0 0",
+    "ps_r_y": "0 0.25 0", "ps_r_y_neg": "0 -0.25 0",
+    "ps_r_z": "0 0 0.25", "ps_r_z_neg": "0 0 -0.25",
+}
 
 
 def _axis_to_rotation_origin(axis_xyz):
@@ -164,6 +191,23 @@ def build():
         ET.SubElement(sj, "origin", {"xyz": "0 0.015 0", "rpy": "0 0 0"})
         ET.SubElement(sj, "parent", {"link": par})
         ET.SubElement(sj, "child", {"link": fin})
+
+    # 6) RH56F1 palm_sensor 체인 (참고 URDF 실기하) + IK 축점 6개.
+    #    Tesollo palm 가상프레임 대체 — fabric IK 가 실제 손바닥 센서를 제어하도록.
+    for child, parent, xyz, rpy in PALM_SENSOR_CHAIN:
+        link = ET.SubElement(out, "link", {"name": child})
+        _massless_inertial(link)
+        j = ET.SubElement(out, "joint", {"name": f"{child}_fixed_joint", "type": "fixed"})
+        ET.SubElement(j, "origin", {"xyz": xyz, "rpy": rpy})
+        ET.SubElement(j, "parent", {"link": parent})
+        ET.SubElement(j, "child", {"link": child})
+    for name, off in PALM_AXIS_POINTS_R.items():
+        link = ET.SubElement(out, "link", {"name": name})
+        _massless_inertial(link)
+        j = ET.SubElement(out, "joint", {"name": f"{name}_joint", "type": "fixed"})
+        ET.SubElement(j, "origin", {"xyz": off, "rpy": "0 0 0"})
+        ET.SubElement(j, "parent", {"link": "r_hl_palm_sensor"})
+        ET.SubElement(j, "child", {"link": name})
 
     _indent(out)
     ET.ElementTree(out).write(OUT_URDF, encoding="utf-8", xml_declaration=True)
