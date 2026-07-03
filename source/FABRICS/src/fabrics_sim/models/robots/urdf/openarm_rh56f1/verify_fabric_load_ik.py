@@ -31,7 +31,9 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--device_int", type=int, default=0)
     parser.add_argument("--steps", type=int, default=600)
-    parser.add_argument("--pos_tol", type=float, default=0.015, help="IK 수렴 위치 허용(m)")
+    # 30mm 목표에 대한 정상상태 잔차 ~22mm(서버 측정, 스텝수 무관 plateau) — palm_attractor
+    # 가 cspace nullspace attractor 와 균형을 이룬 고유 droop. +margin 으로 30mm 기본.
+    parser.add_argument("--pos_tol", type=float, default=0.030, help="IK 수렴 위치 허용(m)")
     parser.add_argument("--hold_tol", type=float, default=0.05, help="왼쪽 중립 유지 허용(rad)")
     parser.add_argument("--max_objects", type=int, default=20)
     args = parser.parse_args()
