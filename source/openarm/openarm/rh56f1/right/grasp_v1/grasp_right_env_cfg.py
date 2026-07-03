@@ -313,10 +313,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     bead_single_mass: float = _DEFAULT_BEAD_MASS  # kg per bead
     bead_scale: float = _DEFAULT_BEAD_SCALE
 
-    # 07.03 0→2: pinch(tip-only)가 success로 인정되던 loophole 차단 → envelope 강제.
-    #   test8 pinch(middle_contact 1.28/5, held_rate 0)의 근본 원인. warm hdf5도 envelope로 수집됨
-    #   → pour freeze 그립이 firm해져 고틸트 가능. Check4 위험: ep800 success<0.15면 1로 롤백.
-    min_middle_contacts_for_success: int = 2
+    # 07.03: 2로 하드게이트 시도 → test9 success 0.0/1233ep 완전 블록(손 기하가 중간마디 ~1개만
+    #   접촉해 2 도달 불가). rh56f1은 하드게이트 불가 확정 → 0 유지, envelope는 geometry/credit로.
+    min_middle_contacts_for_success: int = 0
 
     # Lift-entry grip readiness gate (state tracking용, reward가 아님)
     # Phase A: starting hurdle for the contact_adr 3→4→5 curriculum (was fixed 4).
