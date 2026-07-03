@@ -64,9 +64,11 @@ def test_obs_layout_4d():
 
 
 def test_pregrasp_ik_targets_palm_sensor_reference():
-    """Reset pregrasp should define cup offset at the palm sensor, then convert to Fabric palm_link."""
+    """Fabric IK 가 r_hl_palm_sensor 를 직접 제어 → palm_link offset 변환 제거(항등)."""
     s = _src()
-    assert "_PALM_SENSOR_OFFSET_IN_FABRIC_PALM" in s
+    # Tesollo palm_link offset(3.4cm 오차)은 제거되어야 한다.
+    assert "_PALM_SENSOR_OFFSET_IN_FABRIC_PALM" not in s
+    # 함수는 항등으로 유지(호출부 시그니처 보존).
     assert "def _fabric_palm_pose_from_sensor_target" in s
     assert "palm_sensor[:, 0] = flat_x + self.cfg.pregrasp_offset_x" in s
     assert "pregrasp_sensor_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise" in s

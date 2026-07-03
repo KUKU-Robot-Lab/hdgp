@@ -136,8 +136,6 @@ class GraspRightEnv(DirectRLEnv):
 
     cfg: GraspRightEnvCfg
 
-    _PALM_SENSOR_OFFSET_IN_FABRIC_PALM = (0.0, 0.03, 0.04)
-
     @staticmethod
     def _quat_xyzw_from_euler_zyx(euler_zyx: torch.Tensor) -> torch.Tensor:
         """Convert ZYX Euler angles to quaternion ordered as (x, y, z, w)."""
@@ -152,20 +150,15 @@ class GraspRightEnv(DirectRLEnv):
         return quat_wxyz[:, [1, 2, 3, 0]]
 
     def _fabric_palm_pose_from_sensor_target(self, palm_sensor_pose: torch.Tensor) -> torch.Tensor:
-        """Convert desired palm sensor pose to the Fabric palm_link pose target."""
-        batch = palm_sensor_pose.shape[0]
-        unit_x = palm_sensor_pose.new_tensor([1.0, 0.0, 0.0]).expand(batch, -1)
-        unit_y = palm_sensor_pose.new_tensor([0.0, 1.0, 0.0]).expand(batch, -1)
-        unit_z = palm_sensor_pose.new_tensor([0.0, 0.0, 1.0]).expand(batch, -1)
-        qz = quat_from_angle_axis(palm_sensor_pose[:, 3], unit_z)
-        qy = quat_from_angle_axis(palm_sensor_pose[:, 4], unit_y)
-        qx = quat_from_angle_axis(palm_sensor_pose[:, 5], unit_x)
-        palm_quat_wxyz = quat_mul(quat_mul(qz, qy), qx)
-        sensor_offset = palm_sensor_pose.new_tensor(self._PALM_SENSOR_OFFSET_IN_FABRIC_PALM).expand(batch, -1)
+        """fabric IK 가 r_hl_palm_sensor 를 직접 제어하므로 항등(변환 불필요).
 
-        fabric_palm_pose = palm_sensor_pose.clone()
-        fabric_palm_pose[:, :3] = palm_sensor_pose[:, :3] - quat_apply(palm_quat_wxyz, sensor_offset)
-        return fabric_palm_pose
+        기존 Tesollo palm_link offset (0,0.03,0.04)는 실제 palm_sensor 와 위치 3.4cm
+        어긋난 오차였다(관측 palm_center_pos 는 실 palm_sensor, 제어 target 은 3.4cm 벗어난
+        palm_link → palm-first 안착 실패 원인). palm_sensor 직접 제어로 관측과 IK 제어점이
+        같은 프레임이 되어 정합한다. 회전 규약은 env 가 palm_sensor 기준(euler_zyx)으로
+        지정한다 — palm_link 대비 ex 축 +90°(R_ls = Rx(90°)).
+        """
+        return palm_sensor_pose
 
     def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
@@ -286,6 +279,12 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_full_grip_pose  = to_torch(HAND_FULL_GRIP_POSE,  device=self.device)  # (6,)
         # 6D action 내 thumb 관절 인덱스: [thumb_1(abduction)=0, thumb_2(flexion)=1]
         self.thumb_joint_indices = torch.tensor([0, 1], dtype=torch.long, device=self.device)
+        # palm-first freeze: thumb_1(idx0) 열만 True 인 (1,6) 마스크. approach 중 palm 근접 전까지
+        # 이 열만 approach 값으로 덮어써 엄지 opposition 통로를 유지한다.
+        self.thumb_freeze_col_mask = torch.zeros(
+            1, NUM_HAND_DOF, dtype=torch.bool, device=self.device
+        )
+        self.thumb_freeze_col_mask[0, 0] = True
         # 관절 한계: USD soft_joint_pos_limits (RH56F1 raw 한계) 를 그대로 사용.
         # (Tesollo 의 approach 기반 closure 재조정 제거 — KISS, 추후 튜닝)
         self.hand_joint_lower_limits = self.hand_joint_lower_limits.contiguous()
@@ -380,6 +379,8 @@ class GraspRightEnv(DirectRLEnv):
         self._contact_persistence_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._lift_contact_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._grasp_started_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # palm-first envelope: approach 중 thumb_1 이 palm 근접까지 고정된 env (진단 로깅용)
+        self._thumb_frozen_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._grasp_anchor_set_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._approach_ready_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._approach_timeout_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -671,9 +672,11 @@ class GraspRightEnv(DirectRLEnv):
         palm_sensor[:, 0] = flat_x + self.cfg.pregrasp_offset_x
         palm_sensor[:, 1] = flat_y + self.cfg.pregrasp_offset_y
         palm_sensor[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
+        # euler_zyx (ez, ey, ex). palm_sensor 규약: ex 는 palm_link 대비 +90°(R_ls=Rx(90))
+        # → 손바닥(palm_sensor +z)이 아래(컵)를 향하는 기존 배치를 유지(ex 90→180).
         palm_sensor[:, 3] = math.radians(90.0)
         palm_sensor[:, 4] = math.radians(0.0)
-        palm_sensor[:, 5] = math.radians(90.0)
+        palm_sensor[:, 5] = math.radians(180.0)
         palm = self._fabric_palm_pose_from_sensor_target(palm_sensor)
         palm = torch.max(
             torch.min(palm, self.palm_maxs.unsqueeze(0)),
@@ -1346,6 +1349,21 @@ class GraspRightEnv(DirectRLEnv):
             approach_hand_target,
             close_hand_target,
         )
+
+        # ── palm-first envelope: approach 중 thumb_1(엄지 abduction)을 palm 근접까지 고정 ──
+        # 컵이 엄지-손가락 사이 통로로 들어와 palm 에 앉기 전에는 엄지를 opposition(approach 값)에
+        # 묶어 통로를 열어 둔다. palm 이 컵 중심에 thumb_freeze_release_dist 이내로 다가오면
+        # 정책이 thumb_1 을 제어해 감싸도록 release → fingertip pinch 탈피.
+        palm_to_cup_dist_ht = (self.palm_center_pos - self.object_pos).norm(dim=-1)
+        thumb_frozen = approach_mask & (
+            palm_to_cup_dist_ht >= float(self.cfg.thumb_freeze_release_dist)
+        )
+        self._thumb_frozen_buf.copy_(thumb_frozen)
+        hand_target = torch.where(
+            thumb_frozen.unsqueeze(1) & self.thumb_freeze_col_mask,
+            self.hand_approach_pose.unsqueeze(0).expand_as(hand_target),
+            hand_target,
+        )
         self.hand_joint_targets.copy_(hand_target)
 
         # fabric_q hand 부분 동기화
@@ -1841,6 +1859,12 @@ class GraspRightEnv(DirectRLEnv):
         ).float().sum(dim=-1)
         self.extras["envelope/envelope_finger_count"] = _envelope_fingers.mean()
         self.extras["envelope/full_envelope_rate"] = (_envelope_fingers >= 3).float().mean()
+        # palm-first freeze 진단: approach 중 thumb_1 이 고정된 비율 / palm 근접(release) 비율.
+        self.extras["envelope/thumb_frozen_rate"] = self._thumb_frozen_buf.float().mean()
+        self.extras["envelope/palm_near_rate"] = (
+            (self.palm_center_pos - self.object_pos).norm(dim=-1)
+            < float(self.cfg.thumb_freeze_release_dist)
+        ).float().mean()
         # ────────────────────────────────────────────────────────────────────
 
         self.extras["task/lift_contact_hold"] = self._lift_contact_hold_count.float().mean()
@@ -1952,6 +1976,14 @@ class GraspRightEnv(DirectRLEnv):
         others_dist = others_dist_per_finger.mean(dim=-1)
         thumb_weight = float(self.cfg.enclosure_thumb_weight)
         fingertip_side_dist = thumb_weight * thumb_dist + (1.0 - thumb_weight) * others_dist
+        # palm-first envelope: palm 이 컵에 안착(근접)하기 전에는 fingertip enclosure 유도를 끈다.
+        # (approach 보상 = exp(-sharp·(palm_to_cup + fingertip_side))에서 fingertip_side 를 0 으로
+        #  하여 palm 접근만 유도 → 손끝을 컵 양옆에 대는 pinch 조기 수렴 차단.) common reward_core
+        # 는 그대로 두고 env 에서 입력을 게이팅한다(tesollo 무영향).
+        palm_near_rew = palm_to_cup_dist < float(self.cfg.thumb_freeze_release_dist)
+        fingertip_side_dist = torch.where(
+            palm_near_rew, fingertip_side_dist, torch.zeros_like(fingertip_side_dist)
+        )
 
         action_delta_norm = compute_action_delta_norm(self.actions, self.prev_actions)
         stability = compute_grasp_v2_stability(
@@ -2071,9 +2103,15 @@ class GraspRightEnv(DirectRLEnv):
         # sparse(접촉) 보상은 palm 이 애초에 안 닿아 gradient=0 부트스트랩 실패 → dense 근접 보상
         # exp(-sharpness×palm_to_cup_dist) 으로 안 닿아도 가까워질수록 보상↑ → palm 을 컵으로 당김.
         # grip 중(num_contacts≥1)에만 → 미파지 컵을 palm 으로 밀쳐내는 것 방지.
+        # palm-first envelope: approach phase 에는 접촉이 아직 없어도 palm 근접 보상을 켠다.
+        # (손끝을 먼저 대야 palm 보상이 시작되던 순서를 뒤집어 palm 안착을 부트스트랩.) approach 중
+        # palm 목표가 이미 컵 쪽(pregrasp)이라 밀쳐낼 대상이 아니라 오히려 원하는 방향이다.
         palm_seat_gate = (
-            (self.is_grasp_phase | self.is_lift_phase | self.is_stabilize_phase)
-            & (self.num_contacts_buf >= 1)
+            (
+                (self.is_grasp_phase | self.is_lift_phase | self.is_stabilize_phase)
+                & (self.num_contacts_buf >= 1)
+            )
+            | approach_mask
         ).float()
         palm_seat_reward = (
             float(self.cfg.palm_seat_weight)
@@ -2436,9 +2474,10 @@ class GraspRightEnv(DirectRLEnv):
 
             pregrasp_sensor_pose = torch.zeros(n, 6, device=self.device)
             pregrasp_sensor_pose[:, :3] = pregrasp_sensor_pos
+            # palm_sensor 규약: ex 는 palm_link 대비 +90°(R_ls=Rx(90)) → 90→180.
             pregrasp_sensor_pose[:, 3] = math.radians(90.0)
             pregrasp_sensor_pose[:, 4] = math.radians(0.0)
-            pregrasp_sensor_pose[:, 5] = math.radians(90.0)
+            pregrasp_sensor_pose[:, 5] = math.radians(180.0)
             pregrasp_palm_pose = self._fabric_palm_pose_from_sensor_target(pregrasp_sensor_pose)
             pregrasp_palm_pose = torch.max(
                 torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
@@ -2573,6 +2612,7 @@ class GraspRightEnv(DirectRLEnv):
         self._contact_persistence_buf[env_ids] = 0
         self._lift_contact_hold_count[env_ids] = 0
         self._grasp_started_buf[env_ids] = False
+        self._thumb_frozen_buf[env_ids] = False
         self._grasp_anchor_set_buf[env_ids] = False
         self._approach_ready_buf[env_ids] = False
         self._approach_timeout_buf[env_ids] = False
