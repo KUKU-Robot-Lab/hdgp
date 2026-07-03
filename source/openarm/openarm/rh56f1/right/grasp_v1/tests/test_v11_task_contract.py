@@ -206,8 +206,8 @@ def test_v11_actively_levels_cup_after_lift_with_movable_arm() -> None:
     assert "post_lift_arm_damping_scale" not in cfg
     assert "_apply_post_lift_arm_compliance" not in env
     assert "stabilize_upright_orientation_enabled: bool = True" in cfg
-    assert "stabilize_upright_orientation_gain: float = 1.5" in cfg
-    assert "stabilize_upright_orientation_max_deg: float = 25.0" in cfg
+    assert "stabilize_upright_orientation_gain: float = 3.0" in cfg
+    assert "stabilize_upright_orientation_max_deg: float = 45.0" in cfg
     assert "stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2" in cfg
     assert "stabilize_spawn_xy_hold_enabled: bool = True" in cfg
     assert "def _apply_upright_palm_orientation_correction" in env
@@ -336,7 +336,7 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
         "stability_cup_ang_vel_threshold",
         "stability_contact_delta_threshold",
         "stability_action_delta_threshold",
-        "stabilize_upright_max_deg: float = 12.0",
+        "stabilize_upright_max_deg: float = 10.0",
         "stabilize_upright_reward_scale_deg",
         "stage0_lift_start_min_contacts: int = 3",
         "grasp_phase_full_grip_contact_threshold: int = 4",
@@ -398,7 +398,7 @@ def test_v11_phase_rewards_match_tip_lift_and_stabilize_contract() -> None:
     ):
         assert removed_term not in env
     assert "compute_stationary_grasp_success(" in env
-    assert "stabilize_upright_max_deg: float = 12.0" in cfg
+    assert "stabilize_upright_max_deg: float = 10.0" in cfg
     assert "stable=stability.stable" in env
 
 

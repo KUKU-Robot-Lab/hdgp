@@ -1272,10 +1272,17 @@ class GraspRightEnv(DirectRLEnv):
             stabilize_elapsed_steps.float() / float(upright_blend_steps)
         ).clamp(max=1.0).unsqueeze(1)
         if self.cfg.stabilize_upright_orientation_enabled:
+            if bool(getattr(self.cfg, "upright_orientation_from_lift", False)):
+                # lift+stabilize 내내 보정 → 컵을 lift 중부터 미리 세움(righting 시간↑).
+                _up_mask = is_post_grasp
+                _up_prog = torch.where(
+                    is_stabilize.unsqueeze(1), stabilize_upright_progress, lift_progress
+                )
+            else:
+                _up_mask = is_stabilize
+                _up_prog = stabilize_upright_progress
             lift_palm_pose = self._apply_upright_palm_orientation_correction(
-                lift_palm_pose,
-                is_stabilize,
-                stabilize_upright_progress,
+                lift_palm_pose, _up_mask, _up_prog,
             )
 
         palm_pose = torch.where(
