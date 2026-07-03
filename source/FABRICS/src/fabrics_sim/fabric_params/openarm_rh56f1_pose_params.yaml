@@ -59,27 +59,29 @@ fabric_params:
           ["openarm_right_link2", "openarm_right_link2_sphere2", "openarm_right_link2_sphere3",
            "openarm_right_link4", "openarm_right_link4_sphere2", "openarm_right_link4_sphere3",
            "openarm_right_link6_sphere2",
-           "openarm_right_link7", "palm_link", "palm_link_sphere2",
+           "openarm_right_link7", "r_hl_palm_sensor",
            "rh56f1_sphere_thumb", "rh56f1_sphere_index", "rh56f1_sphere_middle",
            "rh56f1_sphere_ring", "rh56f1_sphere_little",
            "world_body_sphere1", "world_body_sphere2", "world_body_sphere3"]
+      # palm 충돌구: Tesollo palm_link/palm_link_sphere2(2개) 제거 → 실 손바닥 센서
+      # r_hl_palm_sensor 위치 구 1개(r=0.05)로 근사. frames/radii 길이 정합(17).
       collision_sphere_radii: [0.12, 0.10, 0.10,
                                0.125, 0.10, 0.10,
                                0.10,
-                               0.075, 0.05, 0.075,
+                               0.075, 0.05,
                                0.025, 0.022, 0.022, 0.022, 0.022,
                                0.18, 0.15, 0.12]
       collision_sphere_pairs: []
       collision_link_prefix_pairs: [
                                     # 손가락/palm vs link2 (상완)
-                                    ["palm_link", "openarm_right_link2"],
+                                    ["r_hl_palm_sensor", "openarm_right_link2"],
                                     ["rh56f1_sphere_thumb", "openarm_right_link2"],
                                     ["rh56f1_sphere_index", "openarm_right_link2"],
                                     ["rh56f1_sphere_middle", "openarm_right_link2"],
                                     ["rh56f1_sphere_ring", "openarm_right_link2"],
                                     ["rh56f1_sphere_little", "openarm_right_link2"],
                                     # 손가락/palm vs body (link0/world)
-                                    ["palm_link", "world_body"],
+                                    ["r_hl_palm_sensor", "world_body"],
                                     ["rh56f1_sphere_thumb", "world_body"],
                                     ["rh56f1_sphere_index", "world_body"],
                                     ["rh56f1_sphere_middle", "world_body"],
