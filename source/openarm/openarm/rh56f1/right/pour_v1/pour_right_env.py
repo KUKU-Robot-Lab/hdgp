@@ -62,6 +62,7 @@ from .pour_right_env_cfg import PourRightEnvCfg
 from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
+    NUM_ROBOT_DOF,  # 우측 한 팔 DOF(13) = fabric cspace 우측 슬라이스 [0:13]
     NUM_PALM_ACTION,
     NUM_FINGER_ACTION,
     NULLSPACE_OFFSET_ARM,
@@ -552,8 +553,9 @@ class PourRightEnv(DirectRLEnv):
         self._setup_geometric_fabrics()
 
         # cspace attractor: hand는 grasp pose 방향
-        cspace_default = self.fabric.default_config.clone()
-        cspace_default[:, NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self.num_envs, -1)
+        cspace_default = self.fabric.default_config.clone()  # 26D, 좌측 중립 유지
+        cspace_default[:, NUM_ARM_DOF:NUM_ROBOT_DOF] = \
+            self.hand_grasp_pose.unsqueeze(0).expand(self.num_envs, -1)
         self.fabric.default_config.copy_(cspace_default)
 
         # 초기 액션: 0 → palm pose workspace 중심 (접근 자세 유지)
@@ -798,12 +800,14 @@ class PourRightEnv(DirectRLEnv):
             graph_capturable=False,
             use_hand_fabric=False,
         )
-        num_joints = self.fabric.num_joints   # 13 (7 arm + 6 hand)
+        num_joints = self.fabric.num_joints   # 26 (양팔: r_arm7+r_hand6+l_arm7+l_hand6)
 
         self.fabric_integrator = DisplacementIntegrator(self.fabric)
 
-        # Fabric 상태 버퍼
-        self.fabric_q   = self.robot_start_joint_pos.clone().contiguous()
+        # Fabric 상태 버퍼: 26D. 좌측[13:26]=fabric default(중립) 유지(로봇 왼팔은
+        # left_arm_zero_pos 로 별도 구동 — fabric 좌측은 nullspace 입력용). 우측[0:13]만 robot_start.
+        self.fabric_q   = self.fabric.default_config.clone().contiguous()
+        self.fabric_q[:, :NUM_ROBOT_DOF] = self.robot_start_joint_pos
         self.fabric_qd  = torch.zeros(self.num_envs, num_joints, device=self.device)
         self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
 
@@ -821,8 +825,9 @@ class PourRightEnv(DirectRLEnv):
         )
         self._reset_integrator = DisplacementIntegrator(self._reset_fabric)
 
-        reset_cspace = self._reset_fabric.default_config.clone()
-        reset_cspace[:, NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self._reset_chunk, -1)
+        reset_cspace = self._reset_fabric.default_config.clone()  # 26D, 좌측 중립 유지
+        reset_cspace[:, NUM_ARM_DOF:NUM_ROBOT_DOF] = \
+            self.hand_grasp_pose.unsqueeze(0).expand(self._reset_chunk, -1)
         self._reset_fabric.default_config.copy_(reset_cspace)
 
         self._reset_pca     = torch.zeros(self._reset_chunk, NUM_HAND_DOF, device=self.device)
@@ -903,6 +908,14 @@ class PourRightEnv(DirectRLEnv):
         """env_ids(n개)만 Fabrics rollout해서 arm joint 위치 반환."""
         n = len(env_ids)
         C = self._reset_chunk
+
+        # reset_fabric 은 26D cspace. q_init 이 우측 13D 로 오면 좌측 중립(default[13:26])을
+        # 붙여 26D 로 확장하고, 반환은 다시 우측 13D 로 슬라이스한다(호출부 계약 유지).
+        right_only = q_init.shape[1] == NUM_ROBOT_DOF
+        if right_only:
+            left_neutral = self._reset_fabric.default_config[0, NUM_ROBOT_DOF:].unsqueeze(0)
+            q_init = torch.cat([q_init, left_neutral.expand(q_init.shape[0], -1)], dim=1)
+
         q_out = torch.zeros_like(q_init)
 
         for start in range(0, n, C):
@@ -938,7 +951,7 @@ class PourRightEnv(DirectRLEnv):
 
             q_out[start:end] = fq[:m]
 
-        return q_out
+        return q_out[:, :NUM_ROBOT_DOF] if right_only else q_out
 
     # ------------------------------------------------------------------
     # 접촉력 업데이트
@@ -1324,9 +1337,9 @@ class PourRightEnv(DirectRLEnv):
         hand_target = self.grasp_hold_hand_pos_buf
         self.hand_joint_targets.copy_(hand_target)
 
-        # fabric_q hand 부분 동기화 (FK 계산에 활용)
-        self.fabric_q[:, NUM_ARM_DOF:] = hand_target
-        self.fabric_qd[:, NUM_ARM_DOF:].zero_()
+        # fabric_q 오른손 부분[7:13] 동기화 (FK 계산에 활용; 좌측[13:26] 중립 유지)
+        self.fabric_q[:, NUM_ARM_DOF:NUM_ROBOT_DOF] = hand_target
+        self.fabric_qd[:, NUM_ARM_DOF:NUM_ROBOT_DOF].zero_()
 
     def _apply_action(self) -> None:
         # hold 중엔 팔을 warmstart arm_pos 에 직접 고정 → fabric palm-target 드리프트로 컵이
@@ -2404,8 +2417,8 @@ class PourRightEnv(DirectRLEnv):
         full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
-        # ---- 2. Fabrics 상태 리셋 ----
-        self.fabric_q[env_ids]   = self.robot_start_joint_pos[env_ids]
+        # ---- 2. Fabrics 상태 리셋 ---- (우측[0:13]만; 좌측[13:26] 중립 유지)
+        self.fabric_q[env_ids, :NUM_ROBOT_DOF] = self.robot_start_joint_pos[env_ids]
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
 
@@ -2453,10 +2466,10 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
 
-        # hand는 APPROACH_POSE로 강제
+        # hand는 APPROACH_POSE로 강제 (오른손[7:13]만; 좌측[13:26] 중립 유지)
         approach_hand = self.hand_open_pose.unsqueeze(0).expand(n, -1)
-        self.fabric_q[env_ids, NUM_ARM_DOF:] = approach_hand
-        self.fabric_qd[env_ids, NUM_ARM_DOF:].zero_()
+        self.fabric_q[env_ids, NUM_ARM_DOF:NUM_ROBOT_DOF] = approach_hand
+        self.fabric_qd[env_ids, NUM_ARM_DOF:NUM_ROBOT_DOF].zero_()
 
         # ---- 5. pregrasp / prelift 버퍼 저장 ----
         self.pregrasp_arm_pos_buf[env_ids] = q_pregrasp[:, :NUM_ARM_DOF]
@@ -2795,7 +2808,7 @@ class PourRightEnv(DirectRLEnv):
 
         self.fabric_q[env_ids].zero_()
         self.fabric_q[env_ids, :NUM_ARM_DOF] = arm_pos
-        self.fabric_q[env_ids, NUM_ARM_DOF:] = hand_pos
+        self.fabric_q[env_ids, NUM_ARM_DOF:NUM_ROBOT_DOF] = hand_pos  # 좌측[13:26] 중립 유지
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
 
@@ -3096,7 +3109,7 @@ class PourRightEnv(DirectRLEnv):
 
         self.fabric_q[env_ids].zero_()
         self.fabric_q[env_ids, :NUM_ARM_DOF] = arm_pos
-        self.fabric_q[env_ids, NUM_ARM_DOF:] = hand_pos
+        self.fabric_q[env_ids, NUM_ARM_DOF:NUM_ROBOT_DOF] = hand_pos  # 좌측[13:26] 중립 유지
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
 
