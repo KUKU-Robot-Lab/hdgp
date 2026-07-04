@@ -249,7 +249,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_palm_radial_max: float = 0.085
     approach_palm_local_z_min: float = -0.015
     approach_palm_local_z_max: float = 0.095
-    approach_max_tip_contacts: int = 2
+    # 2 는 너무 빡셈: palm 이 radial 게이트 통과해도 열린 손가락(target 0, 더 못 물러남)이
+    # 컵에 부수 접촉(~2.9개)해 approach_ready 를 막고 timeout(0.77) 으로 진입 → palm-first 무력화.
+    # 5(손가락 tip 총수)로 완화해 approach_ready 를 palm-위치(radial≤0.085) 기반으로 전환.
+    approach_max_tip_contacts: int = 5
     approach_upright_max_deg: float = 20.0
     approach_timeout_grasp_reward_scale: float = 0.25
     grasp_palm_delta_scale: float = 1.0
