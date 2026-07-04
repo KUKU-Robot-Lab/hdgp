@@ -28,6 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--offx", type=float, default=None, help="pregrasp_offset_x 오버라이드")
     p.add_argument("--offy", type=float, default=None, help="pregrasp_offset_y 오버라이드")
     p.add_argument("--offz", type=float, default=None, help="pregrasp_offset_z 오버라이드")
+    p.add_argument("--laj1", type=float, default=None, help="왼팔 l_aj_1 오버라이드 (left palm y 튜닝)")
+    p.add_argument("--laj_idx", type=int, default=0, help="오버라이드할 왼팔 관절 index (0=l_aj_1)")
     AppLauncher.add_app_launcher_args(p)
     return p
 
@@ -84,6 +86,8 @@ def main() -> int:
             core._reset_damping.fill_(args.reset_damping)
         if args.dt > 0 and hasattr(core, "timestep"):
             core.timestep = args.dt
+        if args.laj1 is not None and hasattr(core, "left_arm_zero_pos"):
+            core.left_arm_zero_pos[:, args.laj_idx] = args.laj1
         env.reset()
 
         zero = torch.zeros((core.num_envs, core.cfg.num_actions), device=core.device)

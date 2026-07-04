@@ -76,7 +76,7 @@ LEFT_ARM_AND_HAND_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_HAND_JOINT_NAMES
 # 좌팔 rest 자세 (학습 비사용, 우측 작업공간 침범 방지). 좌손은 0(열림)으로 lock.
 LEFT_ARM_REST_JOINT_POS = {
     "l_aj_1": -0.315,
-    "l_aj_2": -0.290,
+    "l_aj_2": -0.440,   # 왼손 palm_sensor y=0.082→0.15 (오른손 워크스페이스서 옆으로 치움, probe 실측)
     "l_aj_3":  0.400,
     "l_aj_4":  0.513,
     "l_aj_5":  0.666,
