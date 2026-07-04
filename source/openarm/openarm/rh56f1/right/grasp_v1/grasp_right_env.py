@@ -679,11 +679,13 @@ class GraspRightEnv(DirectRLEnv):
         palm_sensor[:, 0] = flat_x + self.cfg.pregrasp_offset_x
         palm_sensor[:, 1] = flat_y + self.cfg.pregrasp_offset_y
         palm_sensor[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
-        # euler_zyx (ez, ey, ex). palm_sensor 규약: ex 는 palm_link 대비 +90°(R_ls=Rx(90))
-        # → 손바닥(palm_sensor +z)이 아래(컵)를 향하는 기존 배치를 유지(ex 90→180).
+        # euler_zyx (ez, ey, ex). side grasp: palm_sensor +z(손바닥 법선)가 컵을 향해야 한다.
+        # 컵은 palm 옆·같은 높이(offset z≈0)이므로 palm 법선은 수평(+x, 컵 방향)이어야 한다.
+        # ex=90 → Rz(90)·Rx(90)·[0,0,1]=(+1,0,0)=+x(컵). (ex=180 은 palm_sensor +z 가
+        # 테이블(-z)을 향해 손날로 컵을 미는 버그였음.) Tesollo palm_link 기준선과 동일 값.
         palm_sensor[:, 3] = math.radians(90.0)
         palm_sensor[:, 4] = math.radians(0.0)
-        palm_sensor[:, 5] = math.radians(180.0)
+        palm_sensor[:, 5] = math.radians(90.0)
         palm = self._fabric_palm_pose_from_sensor_target(palm_sensor)
         palm = torch.max(
             torch.min(palm, self.palm_maxs.unsqueeze(0)),
@@ -2489,10 +2491,10 @@ class GraspRightEnv(DirectRLEnv):
 
             pregrasp_sensor_pose = torch.zeros(n, 6, device=self.device)
             pregrasp_sensor_pose[:, :3] = pregrasp_sensor_pos
-            # palm_sensor 규약: ex 는 palm_link 대비 +90°(R_ls=Rx(90)) → 90→180.
+            # side grasp: palm_sensor +z(법선)가 컵(수평 +x)을 향하도록 ex=90. _build_pregrasp_cache 와 일치.
             pregrasp_sensor_pose[:, 3] = math.radians(90.0)
             pregrasp_sensor_pose[:, 4] = math.radians(0.0)
-            pregrasp_sensor_pose[:, 5] = math.radians(180.0)
+            pregrasp_sensor_pose[:, 5] = math.radians(90.0)
             pregrasp_palm_pose = self._fabric_palm_pose_from_sensor_target(pregrasp_sensor_pose)
             pregrasp_palm_pose = torch.max(
                 torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
