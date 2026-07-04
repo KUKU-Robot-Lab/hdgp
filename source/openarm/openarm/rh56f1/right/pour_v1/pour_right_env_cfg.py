@@ -286,7 +286,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     pour_phase_arm_hi: tuple = ( 9.9,  9.9,  9.9,  9.9,  0.0,    0.35,  9.9)
 
     # nullspace baseline(α=0 지점): "robot_start"=순수DRL, "demo"=hard prior
-    nullspace_baseline: str = "demo"
+    nullspace_baseline: str = "demo"  # 유지: pour_orient_release=True에서 j5 deep-tilt nullspace 구동(60° 병목 완화). demo REWARD만 비활성(weight=0)
 
     # Stage A→B 공간 게이트 (target 입구 corridor + ready latch)
     g_ready_center: float = 0.05
@@ -361,10 +361,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     demo_pose_phase: str = "pour"
     demo_nn_lookahead_frames: int = 10
     enable_demo_pose_reward: bool = False  # critic 전용. actor reward 비활성
-    weight_demo_arm_pose: float = 20.0
-    weight_demo_arm_pose_floor: float = 5.0
-    weight_demo_j5: float = 15.0          # j5(틸트 주역) 앵커 시작값, ready 이후만
-    weight_demo_j5_floor: float = 3.0
+    # grasp_v1(cup 0.34) 정합: RBETA demo는 cup 0.27에서 녹화 → 0.34 warmstart를 7cm 당겨 충돌.
+    #   v3 안정기준(demo=0)·audit 이력(demo≥9 tilt 압도 local-min)에 따라 비활성. 0.34 rollout 확보 후 재녹화 검토.
+    weight_demo_arm_pose: float = 0.0
+    weight_demo_arm_pose_floor: float = 0.0
+    weight_demo_j5: float = 0.0            # j5(틸트 주역) 앵커 — demo 재녹화 전까지 비활성
+    weight_demo_j5_floor: float = 0.0
     demo_j5_sharpness: float = 2.0
     demo_pose_near_gate_xy: float = 9999.0
     demo_pose_warmup_steps: int = 1
@@ -425,7 +427,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
+    object_spawn_x_center: float = 0.34   # grasp_v1 정합 (0.27→0.34): warm hdf5 cup x=0.34와 fallback/pregrasp-cache geometry 일치
     object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
     object_spawn_z:        float = 0.2773  # 07.02: grasp_v1(0.2773)·warm-state와 일치 (구 0.297은 grasp와 2cm 불일치로 warmstart 거부)
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
