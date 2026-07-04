@@ -172,13 +172,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True
     # +y side grasp offset (probe 실측, cup x_center=0.34 기준):
-    #   offx=0    → palm 이 컵과 같은 x (전방 도달 한계 x≈0.30, 컵 0.34 뒤 ~3cm)
-    #   offy=-0.07→ palm 이 컵 -y 쪽(측면), 손가락이 +y 로 컵을 감쌈
-    #   offz=-0.15→ palm 을 z-floor(~0.35)까지 끌어내림(컵 상단 rim 높이). palm_sensor→컵 dist≈0.10
-    #     (palm 리세스 3.9cm + cup 반경 3.5cm 감안 이상적). z-floor 는 r_aj_7 한계로 더 못 내림.
-    pregrasp_offset_x:     float = 0.0
-    pregrasp_offset_y:     float = -0.07
+    #   offx=-0.05→ 손을 -x 로 물려 엄지 tip 이 컵 벽 밖(축거리>반경0.035)으로 빠지게(관통 방지).
+    #   offy=-0.08→ palm 이 컵 -y 쪽(측면), 손가락이 +y 로 컵을 감쌈.
+    #   offz=-0.15→ palm 을 아래로 끌어내림. r_aj7_bias 와 합쳐 palm 을 컵 높이로.
+    pregrasp_offset_x:     float = -0.05
+    pregrasp_offset_y:     float = -0.08
     pregrasp_offset_z:     float = -0.15
+    # r_aj_7(손목)을 이만큼 낮춰 palm 을 컵 rim(z~0.35)→컵 중심(z~0.29)으로 내림.
+    # fabric 은 +y 수평 유지 위해 r_aj_7 을 높게(≈1.27) 잡아 palm 이 rim 에 뜸(probe 확정).
+    # 0.3 낮추면 palm z≈0.29(컵 높이)·수평 유지·엄지 관통 없음(offx 와 함께). bias 후 palm
+    # anchor 는 실제 FK 로 재정합해 정책 시작 시 palm 튐 방지.
+    pregrasp_r_aj7_bias:   float = 0.3
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005

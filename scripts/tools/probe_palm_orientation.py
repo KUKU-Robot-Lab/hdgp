@@ -30,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--offz", type=float, default=None, help="pregrasp_offset_z 오버라이드")
     p.add_argument("--laj1", type=float, default=None, help="왼팔 l_aj_1 오버라이드 (left palm y 튜닝)")
     p.add_argument("--laj_idx", type=int, default=0, help="오버라이드할 왼팔 관절 index (0=l_aj_1)")
+    p.add_argument("--raj7_bias", type=float, default=None, help="pregrasp cache 의 r_aj_7 을 이만큼 빼서 palm 을 낮춤")
     AppLauncher.add_app_launcher_args(p)
     return p
 
@@ -89,6 +90,11 @@ def main() -> int:
         if args.laj1 is not None and hasattr(core, "left_arm_zero_pos"):
             core.left_arm_zero_pos[:, args.laj_idx] = args.laj1
         env.reset()
+        core0 = env.unwrapped if hasattr(env, "unwrapped") else env
+        # r_aj_7 bias: 첫 reset 에서 캐시가 빌드된 뒤, 캐시의 r_aj_7(arm index 6)을 낮추고 재리셋.
+        if args.raj7_bias is not None and hasattr(core0, "_cache_q_arm"):
+            core0._cache_q_arm[..., 6] -= args.raj7_bias
+            env.reset()
 
         zero = torch.zeros((core.num_envs, core.cfg.num_actions), device=core.device)
         for _ in range(max(1, args.steps)):
@@ -106,6 +112,13 @@ def main() -> int:
 
         cup = core.scene["cup"]
         cup_pos = cup.data.root_pos_w - origins
+
+        # 엄지 관통 체크용 링크 위치 (있으면)
+        thumb_pos = {}
+        for tn in ("r_hl_thumb_1", "r_hl_thumb_4"):
+            if tn in robot.data.body_names:
+                ti = robot.data.body_names.index(tn)
+                thumb_pos[tn] = robot.data.body_pos_w[:, ti] - origins
 
         # 왼손 palm_sensor 위치(있으면)
         left_palm_pos = None
@@ -141,6 +154,14 @@ def main() -> int:
             if left_palm_pos is not None:
                 lp = [float(v) for v in left_palm_pos[i].tolist()]
                 print(f"  LEFT palm_sensor pos: [{lp[0]:+.3f} {lp[1]:+.3f} {lp[2]:+.3f}]")
+            # 엄지 관통 체크: 컵축(xy) 거리 < 반경(0.035) & 컵 z 범위(0.205~0.345) 안이면 관통
+            cup_r = 0.035
+            for tn, tp in thumb_pos.items():
+                t = [float(v) for v in tp[i].tolist()]
+                dxy = math.sqrt((t[0] - cp[0]) ** 2 + (t[1] - cp[1]) ** 2)
+                inside = (dxy < cup_r) and (0.205 < t[2] < 0.345)
+                flag = "◄관통!" if inside else ""
+                print(f"  {tn}: [{t[0]:+.3f} {t[1]:+.3f} {t[2]:+.3f}] 컵축거리={dxy:.3f}(반경{cup_r}) {flag}")
         # 오른팔 관절 포화 확인 (env 0)
         arm_idx = core.arm_dof_indices
         jp = robot.data.joint_pos[0]

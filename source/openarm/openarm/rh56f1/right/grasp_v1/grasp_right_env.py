@@ -2507,6 +2507,14 @@ class GraspRightEnv(DirectRLEnv):
             else:
                 q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_pregrasp)
             q_pregrasp[:, NUM_ARM_DOF:] = approach_hand
+            # r_aj_7(손목, arm index 6)을 낮춰 palm 을 컵 높이로 내림. fabric 은 +y 수평 유지
+            # 위해 r_aj_7 을 높게 잡아 palm 이 컵 rim 에 뜨므로(probe 확정), bias 로 끌어내린다.
+            # bias 후 실제 palm(FK)로 anchor 를 정합해 정책 시작 시 palm 튐 방지.
+            if self.cfg.pregrasp_r_aj7_bias != 0.0:
+                q_pregrasp[:, 6] = q_pregrasp[:, 6] - self.cfg.pregrasp_r_aj7_bias
+                fq_fk = self.fabric.default_config.clone()
+                fq_fk[env_ids, :NUM_ROBOT_DOF] = q_pregrasp
+                pregrasp_palm_pose = self.fabric.get_palm_pose(fq_fk, "euler_zyx")[env_ids]
             self.demo_lift_palm_target_buf[env_ids] = pregrasp_palm_pose
 
         # ---- 2. 로봇/Fabrics 상태 리셋 ----
