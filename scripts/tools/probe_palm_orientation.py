@@ -31,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--laj1", type=float, default=None, help="왼팔 l_aj_1 오버라이드 (left palm y 튜닝)")
     p.add_argument("--laj_idx", type=int, default=0, help="오버라이드할 왼팔 관절 index (0=l_aj_1)")
     p.add_argument("--raj7_bias", type=float, default=None, help="pregrasp cache 의 r_aj_7 을 이만큼 빼서 palm 을 낮춤")
+    p.add_argument("--thumb1", type=float, default=None, help="approach thumb_1(abduction) 오버라이드 (컵 clearance 튜닝)")
+    p.add_argument("--grip_steps", type=int, default=0, help=">0 이면 손가락 닫는 액션으로 N step 진행 후 wrap 측정")
     AppLauncher.add_app_launcher_args(p)
     return p
 
@@ -89,6 +91,8 @@ def main() -> int:
             core.timestep = args.dt
         if args.laj1 is not None and hasattr(core, "left_arm_zero_pos"):
             core.left_arm_zero_pos[:, args.laj_idx] = args.laj1
+        if args.thumb1 is not None and hasattr(core, "hand_approach_pose"):
+            core.hand_approach_pose[0] = args.thumb1
         env.reset()
         core0 = env.unwrapped if hasattr(env, "unwrapped") else env
         # r_aj_7 bias: 첫 reset 에서 캐시가 빌드된 뒤, 캐시의 r_aj_7(arm index 6)을 낮추고 재리셋.
@@ -99,6 +103,13 @@ def main() -> int:
         zero = torch.zeros((core.num_envs, core.cfg.num_actions), device=core.device)
         for _ in range(max(1, args.steps)):
             env.step(zero)
+
+        # 손가락 닫는 액션(palm 유지, finger idx6:12 = +1)으로 진행 → grasp phase 진입 후 wrap 측정
+        if args.grip_steps > 0:
+            grip = torch.zeros((core.num_envs, core.cfg.num_actions), device=core.device)
+            grip[:, 6:core.cfg.num_actions] = 1.0
+            for _ in range(args.grip_steps):
+                env.step(grip)
 
         robot = core.scene["robot"]
         origins = core.scene.env_origins
@@ -113,9 +124,13 @@ def main() -> int:
         cup = core.scene["cup"]
         cup_pos = cup.data.root_pos_w - origins
 
-        # 엄지 관통 체크용 링크 위치 (있으면)
+        # wrap 측정 링크: 5 손끝 + 근위(envelope signature) + 엄지 중간마디.
+        wrap_links = (
+            "r_hl_thumb_4", "r_hl_index_2", "r_hl_middle_2", "r_hl_ring_2", "r_hl_pinky_2",
+            "r_hl_index_1", "r_hl_middle_1", "r_hl_ring_1", "r_hl_pinky_1", "r_hl_thumb_3",
+        )
         thumb_pos = {}
-        for tn in ("r_hl_thumb_1", "r_hl_thumb_4"):
+        for tn in wrap_links:
             if tn in robot.data.body_names:
                 ti = robot.data.body_names.index(tn)
                 thumb_pos[tn] = robot.data.body_pos_w[:, ti] - origins
@@ -154,14 +169,22 @@ def main() -> int:
             if left_palm_pos is not None:
                 lp = [float(v) for v in left_palm_pos[i].tolist()]
                 print(f"  LEFT palm_sensor pos: [{lp[0]:+.3f} {lp[1]:+.3f} {lp[2]:+.3f}]")
-            # 엄지 관통 체크: 컵축(xy) 거리 < 반경(0.035) & 컵 z 범위(0.205~0.345) 안이면 관통
+            # wrap 분류: 컵축(xy) 거리 vs 반경0.035, 링크두께~0.01 감안.
+            # 컵 z 범위(0.205~0.345) 밖이면 '높이밖'. dxy<0.03=관통, 0.03~0.05=감쌈(접촉), >0.05=벌어짐.
             cup_r = 0.035
             for tn, tp in thumb_pos.items():
                 t = [float(v) for v in tp[i].tolist()]
                 dxy = math.sqrt((t[0] - cp[0]) ** 2 + (t[1] - cp[1]) ** 2)
-                inside = (dxy < cup_r) and (0.205 < t[2] < 0.345)
-                flag = "◄관통!" if inside else ""
-                print(f"  {tn}: [{t[0]:+.3f} {t[1]:+.3f} {t[2]:+.3f}] 컵축거리={dxy:.3f}(반경{cup_r}) {flag}")
+                in_z = 0.205 < t[2] < 0.345
+                if not in_z:
+                    cls = "높이밖"
+                elif dxy < 0.03:
+                    cls = "◄관통"
+                elif dxy <= 0.05:
+                    cls = "◄감쌈(접촉)"
+                else:
+                    cls = "벌어짐"
+                print(f"  {tn}: [{t[0]:+.3f} {t[1]:+.3f} {t[2]:+.3f}] 컵축거리={dxy:.3f} {cls}")
         # 오른팔 관절 포화 확인 (env 0)
         arm_idx = core.arm_dof_indices
         jp = robot.data.joint_pos[0]
