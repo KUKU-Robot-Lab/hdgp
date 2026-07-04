@@ -1881,6 +1881,9 @@ class GraspRightEnv(DirectRLEnv):
             (self.palm_center_pos - self.object_pos).norm(dim=-1)
             < float(self.cfg.thumb_freeze_release_dist)
         ).float().mean()
+        # palm-first 게이트 진단: approach_ready(palm 접근 완료로 grasp 진입) vs timeout fallback 비율.
+        self.extras["envelope/approach_ready_rate"] = self._approach_ready_buf.float().mean()
+        self.extras["envelope/approach_timeout_rate"] = self._approach_timeout_buf.float().mean()
         # ────────────────────────────────────────────────────────────────────
 
         self.extras["task/lift_contact_hold"] = self._lift_contact_hold_count.float().mean()

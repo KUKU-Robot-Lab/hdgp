@@ -243,7 +243,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_min_steps: int = 10
     approach_timeout_steps: int = 90
     approach_palm_radial_min: float = 0.025
-    approach_palm_radial_max: float = 0.105
+    # +y side grasp 기하: pregrasp palm radial ~0.099. 0.105 는 너무 느슨(접근 없이 즉시 grasp
+    # phase 진입→손가락 먼저 닫혀 fingertip pinch). 0.085 로 조여 palm 이 컵으로 ~1.4cm 접근한
+    # 뒤에만 손가락이 닫히게(palm-first). floor~0.075(offx x분리) 위라 도달가능, 미도달 시 timeout fallback.
+    approach_palm_radial_max: float = 0.085
     approach_palm_local_z_min: float = -0.015
     approach_palm_local_z_max: float = 0.095
     approach_max_tip_contacts: int = 2
