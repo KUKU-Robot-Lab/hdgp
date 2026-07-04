@@ -167,7 +167,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # pregrasp_offset_* is the desired palm sensor offset from the cup.
     # The environment converts it to the Fabric palm_link target before IK.
     # -----------------------------------------------------------------------
-    pregrasp_fabric_steps: int   = 60
+    # 리셋 fabric 이 rh56f1 구성에서 불안정(발산): 스텝↑ 시 palm 을 컵 위로 들어올리고 아래로 기울임.
+    # probe 실측(fabric_steps 1→25→60→400): dist~0.147 은 25 에서 이미 최선, 그 이상은 자세만 악화.
+    # 25 에서 palm 이 컵 높이·거의 수평(수평 대비 18°)·컵을 향함. (근본: 발산 안정화는 후속 과제.)
+    pregrasp_fabric_steps: int   = 25
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True
     # RH56F1 pregrasp는 Tesollo 값을 복사하지 않고, 실제 RH56F1/cup 기하 기준으로 둔다.
