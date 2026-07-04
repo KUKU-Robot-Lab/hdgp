@@ -172,10 +172,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True
     # +y side grasp offset (probe 실측, cup x_center=0.34 기준):
-    #   offx=-0.05→ 손을 -x 로 물려 엄지 tip 이 컵 벽 밖(축거리>반경0.035)으로 빠지게(관통 방지).
+    #   offx=-0.07→ 손을 -x 로 물려 엄지 tip 이 컵 벽 밖으로 빠지게. -0.05 는 thumb_4 축거리
+    #     최소 0.042(반경0.035+엄지두께 대비 부족)라 일부 spawn 위치서 겹침 → -0.07(최소~0.053)로 마진.
     #   offy=-0.08→ palm 이 컵 -y 쪽(측면), 손가락이 +y 로 컵을 감쌈.
     #   offz=-0.15→ palm 을 아래로 끌어내림. r_aj7_bias 와 합쳐 palm 을 컵 높이로.
-    pregrasp_offset_x:     float = -0.05
+    pregrasp_offset_x:     float = -0.07
     pregrasp_offset_y:     float = -0.08
     pregrasp_offset_z:     float = -0.15
     # r_aj_7(손목)을 이만큼 낮춰 palm 을 컵 rim(z~0.35)→컵 중심(z~0.29)으로 내림.
