@@ -204,7 +204,8 @@ def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
         0.20, -0.55, 0.20,
-        (90.0 - max_pose_angle) * d,
+        # ez: side grasp palm_sensor +z 가 +y(컵, -y 접근) → 중심 180°.
+        (180.0 - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,
         # ex: side grasp palm_sensor +z(법선)가 컵(수평 +x)을 향하는 자세 → 중심 90°.
         # (180°는 palm 이 테이블을 향해 손날로 컵을 미는 버그였음.)
@@ -216,7 +217,8 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
         0.65, 0.22, 0.65,
-        (90.0 + max_pose_angle) * d,
+        # ez: side grasp palm_sensor +z 가 +y(컵, -y 접근) → 중심 180°.
+        (180.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
         # ex: side grasp palm_sensor +z(법선)가 컵(수평 +x)을 향하는 자세 → 중심 90°.
         # (180°는 palm 이 테이블을 향해 손날로 컵을 미는 버그였음.)

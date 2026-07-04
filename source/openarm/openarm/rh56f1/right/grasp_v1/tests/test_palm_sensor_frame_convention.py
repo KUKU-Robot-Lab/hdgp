@@ -36,15 +36,15 @@ def _Rx(a):
     return np.array([[1, 0, 0], [0, np.cos(a), -np.sin(a)], [0, np.sin(a), np.cos(a)]])
 
 
-PREGRASP_SENSOR_EULER = (math.radians(90.0), 0.0, math.radians(90.0))  # (ez, ey, ex)
+PREGRASP_SENSOR_EULER = (math.radians(180.0), 0.0, math.radians(90.0))  # (ez, ey, ex)
 
 
 def test_pregrasp_palm_faces_cup_horizontally():
-    """pregrasp palm_sensor (90,0,90) → palm_sensor +z_world 가 수평 +x(컵)."""
+    """pregrasp palm_sensor (180,0,90) → palm_sensor +z_world 가 수평 +y(컵, -y 접근)."""
     ez, ey, ex = PREGRASP_SENSOR_EULER
     R_sensor = _Rz(ez) @ _Ry(ey) @ _Rx(ex)
     z_world = R_sensor[:, 2]
-    assert np.allclose(z_world, [1.0, 0.0, 0.0], atol=1e-9), z_world
+    assert np.allclose(z_world, [0.0, 1.0, 0.0], atol=1e-9), z_world
 
 
 def test_ex_180_would_face_table_blade_grasp():
@@ -54,13 +54,12 @@ def test_ex_180_would_face_table_blade_grasp():
     assert np.allclose(z_world, [0.0, 0.0, -1.0], atol=1e-9), z_world
 
 
-def test_preset_palm_pose_mins_maxs_ex_centered_at_90():
-    """preset palm_pose_mins/maxs 의 ex(index 5) 중심이 컵-향 규약(90°)."""
+def test_preset_palm_pose_mins_maxs_centered_ez180_ex90():
+    """preset palm_pose_mins/maxs 중심: ez(index3)=180(+y), ex(index5)=90."""
     max_angle = 30.0
     mins = palm_pose_mins(max_angle)
     maxs = palm_pose_maxs(max_angle)
+    ez_center = math.degrees((mins[3] + maxs[3]) / 2.0)
+    assert abs(ez_center - 180.0) < 1e-6, ez_center
     ex_center = math.degrees((mins[5] + maxs[5]) / 2.0)
     assert abs(ex_center - 90.0) < 1e-6, ex_center
-    # ez(index 3) 도 90° 중심.
-    ez_center = math.degrees((mins[3] + maxs[3]) / 2.0)
-    assert abs(ez_center - 90.0) < 1e-6, ez_center

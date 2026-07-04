@@ -23,6 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--steps", type=int, default=1, help="reset 후 zero-action step 수")
     p.add_argument("--fabric_steps", type=int, default=-1, help=">0 이면 pregrasp_fabric_steps 오버라이드")
     p.add_argument("--no_cache", action="store_true", help="cache_pregrasp_reset 비활성(매 reset fabric rollout)")
+    p.add_argument("--reset_damping", type=float, default=-1.0, help=">0 이면 리셋 fabric cspace damping 오버라이드")
+    p.add_argument("--dt", type=float, default=-1.0, help=">0 이면 fabric timestep 오버라이드")
+    p.add_argument("--offx", type=float, default=None, help="pregrasp_offset_x 오버라이드")
+    p.add_argument("--offy", type=float, default=None, help="pregrasp_offset_y 오버라이드")
+    p.add_argument("--offz", type=float, default=None, help="pregrasp_offset_z 오버라이드")
     AppLauncher.add_app_launcher_args(p)
     return p
 
@@ -65,10 +70,21 @@ def main() -> int:
             env_cfg.pregrasp_fabric_steps = args.fabric_steps
         if args.no_cache:
             env_cfg.cache_pregrasp_reset = False
+        if args.offx is not None:
+            env_cfg.pregrasp_offset_x = args.offx
+        if args.offy is not None:
+            env_cfg.pregrasp_offset_y = args.offy
+        if args.offz is not None:
+            env_cfg.pregrasp_offset_z = args.offz
 
         env = gym.make(args.task, cfg=env_cfg, render_mode=None)
-        env.reset()
         core = env.unwrapped if hasattr(env, "unwrapped") else env
+        # 캐시는 첫 reset 에서 빌드되므로, reset 전에 damping/dt 를 덮어써야 반영된다.
+        if args.reset_damping > 0 and hasattr(core, "_reset_damping"):
+            core._reset_damping.fill_(args.reset_damping)
+        if args.dt > 0 and hasattr(core, "timestep"):
+            core.timestep = args.dt
+        env.reset()
 
         zero = torch.zeros((core.num_envs, core.cfg.num_actions), device=core.device)
         for _ in range(max(1, args.steps)):
@@ -86,6 +102,12 @@ def main() -> int:
 
         cup = core.scene["cup"]
         cup_pos = cup.data.root_pos_w - origins
+
+        # 왼손 palm_sensor 위치(있으면)
+        left_palm_pos = None
+        if "l_hl_palm_sensor" in robot.data.body_names:
+            lidx = robot.data.body_names.index("l_hl_palm_sensor")
+            left_palm_pos = robot.data.body_pos_w[:, lidx] - origins
 
         tgt = core.pregrasp_palm_pose_buf                       # (N,6) pos+euler_zyx
 
@@ -112,6 +134,19 @@ def main() -> int:
             print(f"  actual +z · (down) = {-dot_down:+.3f}  (|+1|=바닥향)")
             print(f"  actual +z · (컵방향) = {dot_cup:+.3f}  (|+1|=컵을 정확히 향함)")
             print(f"  actual +z 의 수평면 대비 각 = {ang_from_horiz:5.1f}° (0=완전수평, 90=수직)")
+            if left_palm_pos is not None:
+                lp = [float(v) for v in left_palm_pos[i].tolist()]
+                print(f"  LEFT palm_sensor pos: [{lp[0]:+.3f} {lp[1]:+.3f} {lp[2]:+.3f}]")
+        # 오른팔 관절 포화 확인 (env 0)
+        arm_idx = core.arm_dof_indices
+        jp = robot.data.joint_pos[0]
+        jl = robot.data.joint_limits[0] if hasattr(robot.data, "joint_limits") else robot.data.soft_joint_pos_limits[0]
+        print("  [env0] 오른팔 관절 (값 / [min,max] / 포화%):")
+        for k, ai in enumerate(arm_idx):
+            v = float(jp[ai]); lo = float(jl[ai, 0]); hi = float(jl[ai, 1])
+            frac = (v - lo) / (hi - lo + 1e-9)
+            sat = "◄SAT" if (frac < 0.05 or frac > 0.95) else ""
+            print(f"    {robot.joint_names[ai]:20s} {v:+.3f} / [{lo:+.2f},{hi:+.2f}] / {frac*100:5.1f}% {sat}")
         print("=" * 70)
         env.close()
 

@@ -167,21 +167,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # pregrasp_offset_* is the desired palm sensor offset from the cup.
     # The environment converts it to the Fabric palm_link target before IK.
     # -----------------------------------------------------------------------
-    # 리셋 fabric 이 rh56f1 구성에서 불안정(발산): 스텝↑ 시 palm 을 컵 위로 들어올리고 아래로 기울임.
-    # probe 실측(fabric_steps 1→25→60→400): dist~0.147 은 25 에서 이미 최선, 그 이상은 자세만 악화.
-    # 25 에서 palm 이 컵 높이·거의 수평(수평 대비 18°)·컵을 향함. (근본: 발산 안정화는 후속 과제.)
-    pregrasp_fabric_steps: int   = 25
+    # ez=180(palm+z=+y 수평, side grasp) 규약에서 리셋 fabric 은 안정 수렴 → 전량 수렴 사용.
+    pregrasp_fabric_steps: int   = 100
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True
-    # RH56F1 pregrasp는 Tesollo 값을 복사하지 않고, 실제 RH56F1/cup 기하 기준으로 둔다.
-    # palm sensor는 palm_link 기준 (0.00, 0.03, 0.04) 오프셋이고, cup 반경은 약 0.035m다.
-    # reset orientation에서 thumb_1 루트가 palm sensor보다도 +x 방향으로 더 앞으로 나온다.
-    # standoff 과축소(0.6배)로 spawn 시 r_hl_index_1 이 컵을 ~2.8cm 관통 → 첫 스텝부터 force_ratio
-    # 100~300배 이젝션(spawn_probe.py 확정). Tesollo grasp(작동) 스케일 (-0.06,-0.07) 로 복원해
-    # 열린 손가락이 컵을 관통하지 않도록 standoff 확보. (z 는 rh56f1 fingertip shell 정합용 유지)
-    pregrasp_offset_x:     float = -0.06
+    # +y side grasp offset (probe 실측, cup x_center=0.34 기준):
+    #   offx=0    → palm 이 컵과 같은 x (전방 도달 한계 x≈0.30, 컵 0.34 뒤 ~3cm)
+    #   offy=-0.07→ palm 이 컵 -y 쪽(측면), 손가락이 +y 로 컵을 감쌈
+    #   offz=-0.15→ palm 을 z-floor(~0.35)까지 끌어내림(컵 상단 rim 높이). palm_sensor→컵 dist≈0.10
+    #     (palm 리세스 3.9cm + cup 반경 3.5cm 감안 이상적). z-floor 는 r_aj_7 한계로 더 못 내림.
+    pregrasp_offset_x:     float = 0.0
     pregrasp_offset_y:     float = -0.07
-    pregrasp_offset_z:     float = 0.015
+    pregrasp_offset_z:     float = -0.15
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005
@@ -413,7 +410,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.40
+    object_spawn_x_center: float = 0.34
     object_spawn_y_center: float = -0.10
     object_spawn_z:        float = 0.2773
     object_spawn_xy_range: float = 0.06
