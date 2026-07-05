@@ -172,12 +172,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True
     # +y side grasp offset (probe 실측, cup x_center=0.34 기준):
-    #   offx=-0.05, offy=-0.03 → 손을 컵에 붙여(palm-cup y-gap 6cm→3.6cm) 4손끝이 컵을
-    #     감싸게(probe: index/middle/ring/pinky_2 dxy 0.04 감쌈). offy=-0.08(fingertip pinch)서 개선.
-    #     접근 엄지 벌림(HAND_APPROACH_POSE thumb_1=0.5)으로 이 근접에서도 pregrasp 관통 없음(6env 확인).
+    #   offx=-0.07, offy=-0.08 → 엄지 opposition(1.57) 유지 시 pregrasp 관통 없는 standoff.
+    #     정책이 이 자세에서 컵을 손가락-엄지 gap 으로 넣어 감싸도록 학습.
     #   offz=-0.15→ palm 을 아래로 끌어내림. r_aj7_bias 와 합쳐 palm 을 컵 높이로.
-    pregrasp_offset_x:     float = -0.05
-    pregrasp_offset_y:     float = -0.03
+    pregrasp_offset_x:     float = -0.07
+    pregrasp_offset_y:     float = -0.08
     pregrasp_offset_z:     float = -0.15
     # r_aj_7(손목)을 이만큼 낮춰 palm 을 컵 rim(z~0.35)→컵 중심(z~0.29)으로 내림.
     # fabric 은 +y 수평 유지 위해 r_aj_7 을 높게(≈1.27) 잡아 palm 이 rim 에 뜸(probe 확정).
