@@ -2182,9 +2182,20 @@ class GraspRightEnv(DirectRLEnv):
             stage0_lift_only = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
             stage1_stabilize_only = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
-        _lift_min_contacts = NUM_FINGERTIPS
-        lift_grasped = self.num_contacts_buf >= _lift_min_contacts
-        contact_grasped = self.num_contacts_buf >= NUM_FINGERTIPS
+        # tesollo grasp_v1 식 grip 판정: 5-fingertip 강제 대신 "임의 마디(tip|middle) 접촉 손가락
+        # 수 >= N + 엄지 컵 접촉". 정책이 수렴하는 강한 근위 그립(five_tip~0, force_ratio 13+)이
+        # 5-tip 미충족으로 success=0 붕괴하던 문제(lstm_test1) 해소. 엄지는 굽힘 대신 접촉만 요구
+        # (엄지는 palm 쪽 깊이 안 들어가면 굽힘 구조상 어려움). finger idx0=thumb.
+        _grip_fingers_bool = self.binary_contact_buf | self.middle_binary_contact_buf
+        _num_grip_fingers = _grip_fingers_bool.sum(dim=-1)
+        _thumb_cup_grip = _grip_fingers_bool[:, 0]
+        grip_grasped = (
+            _num_grip_fingers >= int(self.cfg.success_min_grip_fingers)
+        ) & _thumb_cup_grip
+        self.extras["task/num_grip_fingers"] = _num_grip_fingers.float().mean()
+        self.extras["task/grip_grasped_rate"] = grip_grasped.float().mean()
+        lift_grasped = grip_grasped
+        contact_grasped = grip_grasped
         upright_success = compute_upright_success_mask(
             cup_z_world[:, 2],
             self.cfg.success_upright_max_deg,
