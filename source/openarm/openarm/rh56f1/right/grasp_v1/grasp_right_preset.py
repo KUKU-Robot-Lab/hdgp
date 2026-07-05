@@ -152,7 +152,8 @@ HAND_START_POSE = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # FABRICS 접근 자세 (pregrasp): thumb opposition 유지 + thumb_2를 살짝 벌려 컵 spawn clearance 확보
 HAND_APPROACH_POSE = [
-    1.57,   # thumb_1 abduction → opposition 방향
+    0.50,   # thumb_1: 접근 중 엄지를 벌려(opposition 1.57→0.5) 손을 컵에 붙여도(offy=-0.03)
+            #          pregrasp 관통 회피. 파지 때 정책이 닫아 컵 옆으로 감쌈. (probe 확인)
     0.15,   # thumb_2: reset에서 엄지 말단 링크 clearance 확보
     0.00,   # index_1
     0.00,   # middle_1
