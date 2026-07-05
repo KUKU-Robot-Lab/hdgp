@@ -310,8 +310,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 안착할 때까지 approach 값(opposition, 1.57)에 고정 → 엄지-손가락 사이 통로로 컵이 들어와
     # palm 에 앉은 뒤에야 엄지가 감싸도록(fingertip pinch 탈피). 근접 후 정책이 thumb_1 제어.
     # 같은 게이트로 approach reward 의 fingertip enclosure 항도 켠다. cup_middle 은 작아
-    # palm 이 더 깊이 앉아야 하므로 로그(envelope/palm_to_cup_dist)를 보며 필요 시 낮춘다.
-    thumb_freeze_release_dist: float = 0.05
+    # 0.05 는 palm_sensor→컵 거리 floor(~0.064, 리세스3.9+반경3.5)보다 작아 palm_near 가 절대
+    # 안 켜짐 → fingertip enclosure 유도·엄지 release 가 영영 OFF → 팔이 컵으로 파고들어 감싸는
+    # 학습이 안 되고 pinch 로 수렴(test2 확인). floor 위 0.08 로 올려 palm 근접 시 enclosure+
+    # 엄지 release 활성화 → 컵을 손가락 사이로 넣어 감싸도록 유도. (reward-audit ACCEPT)
+    thumb_freeze_release_dist: float = 0.08
 
     lift_reward_weight: float = 30.0
     grasp_contact_persistence_reward_steps: int = 30
