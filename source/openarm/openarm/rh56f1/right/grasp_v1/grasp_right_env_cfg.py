@@ -285,8 +285,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # envelope 강제(test4: envelope 형성됐다 붕괴 → tip-success 로 회귀). lift 게이팅·grasp
     # credit 의 envelope 비중을 올려 감싸야만 lift/grasp 보상을 받게 → envelope 유지 유도.
     # (공통 코어 cfg-configurable, tesollo 는 기본값 0.5/0.40 유지.)
-    lift_envelope_mix:      float = 0.65   # lift 접촉 게이팅 envelope 비중 (기본 0.5)
-    grasp_envelope_credit:  float = 0.55   # grasp_quality envelope credit (기본 0.40)
+    lift_envelope_mix:      float = 0.58   # lift 접촉 게이팅 envelope 비중 (기본 0.5). test5의 0.65는
+                                           # success 억제+upright 소멸 → 완화. 얇은 컵이 envelope 물리 enabling 담당.
+    grasp_envelope_credit:  float = 0.47   # grasp_quality envelope credit (기본 0.40). 0.55에서 완화(위와 동일 근거).
     stabilize_weight: float = 10.0
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 5.0
@@ -309,7 +310,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 로 안 닿아도 가까워질수록 보상↑. grip 중(num_contacts≥1)에만 → palm-shove 방지.
     palm_seat_weight:       float = 6.0
     palm_seat_sharpness:    float = 15.0
-    cup_radius_approx:      float = 0.035
+    cup_radius_approx:      float = 0.0245   # cup xy 30% 축소(scale 0.7)와 정합. enclosure 게이트 타깃(cup_center±axis×r)에 직접 사용됨.
     enclosure_thumb_weight: float = 0.6
     # palm-first envelope: approach 중 thumb_1(엄지 abduction)을 palm 이 컵에 이 거리 이내로
     # 안착할 때까지 approach 값(opposition, 1.57)에 고정 → 엄지-손가락 사이 통로로 컵이 들어와
@@ -620,7 +621,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         spawn=UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_middle.usd"),
             activate_contact_sensors=True,
-            scale=(1.0, 1.0, 1.0),
+            # xy 30% 축소(r 3.5→2.45cm): 5개 test 내내 full_envelope_rate=0.0 flat →
+            # palm이 kinematic floor(리세스3.9+r3.5=7.4cm)에 붙어 컵에 못 닿고 손가락도
+            # ~1개만 감쌈. 얇은 실린더는 같은 굽힘으로 더 감싸 envelope를 물리적으로 가능케 함.
+            scale=(0.7, 0.7, 1.0),
+            # 물리 질량 고정: scale 0.7²=0.49배로 density 기반 USD 질량이 몰래 절반 되면
+            # force-ratio DR이 왜곡(파지가 인위적으로 쉬워짐)됨 → cup_base_mass로 명시 고정.
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.170),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 articulation_enabled=False,
             ),

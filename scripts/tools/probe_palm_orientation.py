@@ -169,18 +169,18 @@ def main() -> int:
             if left_palm_pos is not None:
                 lp = [float(v) for v in left_palm_pos[i].tolist()]
                 print(f"  LEFT palm_sensor pos: [{lp[0]:+.3f} {lp[1]:+.3f} {lp[2]:+.3f}]")
-            # wrap 분류: 컵축(xy) 거리 vs 반경0.035, 링크두께~0.01 감안.
-            # 컵 z 범위(0.205~0.345) 밖이면 '높이밖'. dxy<0.03=관통, 0.03~0.05=감쌈(접촉), >0.05=벌어짐.
-            cup_r = 0.035
+            # wrap 분류: 컵축(xy) 거리 vs 반경(cfg 실측), 링크두께~0.01 감안.
+            # 컵 z 범위(0.205~0.345) 밖이면 '높이밖'. dxy<r-0.005=관통, ~r+0.015=감쌈(접촉), 그 밖=벌어짐.
+            cup_r = float(getattr(core.cfg, "cup_radius_approx", 0.035))
             for tn, tp in thumb_pos.items():
                 t = [float(v) for v in tp[i].tolist()]
                 dxy = math.sqrt((t[0] - cp[0]) ** 2 + (t[1] - cp[1]) ** 2)
                 in_z = 0.205 < t[2] < 0.345
                 if not in_z:
                     cls = "높이밖"
-                elif dxy < 0.03:
+                elif dxy < cup_r - 0.005:
                     cls = "◄관통"
-                elif dxy <= 0.05:
+                elif dxy <= cup_r + 0.015:
                     cls = "◄감쌈(접촉)"
                 else:
                     cls = "벌어짐"

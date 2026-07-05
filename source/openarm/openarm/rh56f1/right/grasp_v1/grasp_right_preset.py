@@ -154,7 +154,8 @@ HAND_START_POSE = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 HAND_APPROACH_POSE = [
     1.57,   # thumb_1 abduction → opposition(손가락-엄지 사이 gap 열림). 정책이 컵을 이 gap 으로
             #        넣도록 학습. (엄지를 벌렸다 닿게 하는 재배치는 물리적으로 무리 → opposition 유지.)
-    0.15,   # thumb_2: reset에서 엄지 말단 링크 clearance 확보
+    0.00,   # thumb_2: 엄지 원위(thumb_3/4) 완전 폄. test5 렌더서 q1(thumb_2)=0.10 flat →
+            #        엄지 능동 굽힘 없이 abduction tip만 수동 접촉. 0에서 시작해 정책이 능동 wrap 학습.
     0.00,   # index_1
     0.00,   # middle_1
     0.00,   # ring_1
