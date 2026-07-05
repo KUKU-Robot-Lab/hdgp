@@ -310,7 +310,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 로 안 닿아도 가까워질수록 보상↑. grip 중(num_contacts≥1)에만 → palm-shove 방지.
     palm_seat_weight:       float = 6.0
     palm_seat_sharpness:    float = 15.0
-    cup_radius_approx:      float = 0.0245   # cup xy 30% 축소(scale 0.7)와 정합. enclosure 게이트 타깃(cup_center±axis×r)에 직접 사용됨.
+    cup_radius_approx:      float = 0.0315   # cup xyz 10% 축소(scale 0.9)와 정합. enclosure 게이트 타깃(cup_center±axis×r)에 직접 사용됨.
     enclosure_thumb_weight: float = 0.6
     # palm-first envelope: approach 중 thumb_1(엄지 abduction)을 palm 이 컵에 이 거리 이내로
     # 안착할 때까지 approach 값(opposition, 1.57)에 고정 → 엄지-손가락 사이 통로로 컵이 들어와
@@ -621,12 +621,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         spawn=UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_middle.usd"),
             activate_contact_sensors=True,
-            # xy 30% 축소(r 3.5→2.45cm): 5개 test 내내 full_envelope_rate=0.0 flat →
-            # palm이 kinematic floor(리세스3.9+r3.5=7.4cm)에 붙어 컵에 못 닿고 손가락도
-            # ~1개만 감쌈. 얇은 실린더는 같은 굽힘으로 더 감싸 envelope를 물리적으로 가능케 함.
-            scale=(0.7, 0.7, 1.0),
-            # 물리 질량 고정: scale 0.7²=0.49배로 density 기반 USD 질량이 몰래 절반 되면
-            # force-ratio DR이 왜곡(파지가 인위적으로 쉬워짐)됨 → cup_base_mass로 명시 고정.
+            # xyz 전체 10% 축소(r 3.5→3.15cm): test6의 30%(scale 0.7) 축소는 컵이 너무 얇아져
+            # 손끝이 컵을 지나침(five_tip=0, 렌더 확인)→proximal-only 파지. 10%로 완만히 줄여
+            # 손끝 접촉 유지 + 약간의 envelope 여유 확보. (30%는 full_envelope 0.0→0.076 돌파했으나
+            # 손끝 상실이 성공조건과 충돌.)
+            scale=(0.9, 0.9, 0.9),
+            # 물리 질량 고정: scale 0.9³=0.729배로 density 기반 USD 질량이 몰래 줄면 force-ratio
+            # DR이 왜곡(파지가 인위적으로 쉬워짐)됨 → cup_base_mass로 명시 고정.
             mass_props=sim_utils.MassPropertiesCfg(mass=0.170),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 articulation_enabled=False,
