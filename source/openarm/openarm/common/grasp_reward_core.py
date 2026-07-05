@@ -47,7 +47,10 @@ def compute_grasp_reward_terms(
     # (hard latch 게이트 대체). RH56F1은 envelope_frac=None → tip-only 기존 동작 유지.
     if envelope_frac is not None:
         env_quality = envelope_frac.clamp(0.0, 1.0)
-        graded_contact = 0.5 * graded_contact + 0.5 * env_quality
+        # lift 접촉 게이팅의 envelope 비중(기본 0.5=tip/env 반반). cfg 로 올리면 tip-only lift
+        # 억제 강화 → envelope 유지 강제. (기본값 유지 시 tesollo 등 기존 동작 불변.)
+        _emix = _cfg_float(cfg, "lift_envelope_mix", 0.5)
+        graded_contact = (1.0 - _emix) * graded_contact + _emix * env_quality
 
     lifted_bool = cup_height_delta >= _cfg_float(cfg, "lift_success_height", 0.04)
     lifted_gate = lifted_bool.float()
@@ -79,11 +82,15 @@ def compute_grasp_reward_terms(
         # envelope(중간/원위 wrap)을 grasp 보상에 credit → 지배적 grasp 보상이 wrap을
         # 당기는 gradient가 됨(tip-farming 차단). pre_lift_gate라 "wrap만 하고 안 듦"
         # 수렴은 불가(리프트 후 꺼짐).
+        # envelope credit(기본 0.40). cfg 로 올리면 grasp 보상이 wrap 을 더 강하게 당김.
+        # 나머지 tip 항은 (1-credit) 로 비례 축소해 합=1 유지. (기본값 유지 시 기존 동작 불변.)
+        _ecred = _cfg_float(cfg, "grasp_envelope_credit", 0.40)
+        _tip_scale = (1.0 - _ecred) / 0.60
         grasp_quality = (
-            0.15 * tip_contact_frac
-            + 0.20 * full_tip
-            + 0.25 * contact_persistence_frac
-            + 0.40 * envelope_frac.clamp(0.0, 1.0)
+            0.15 * _tip_scale * tip_contact_frac
+            + 0.20 * _tip_scale * full_tip
+            + 0.25 * _tip_scale * contact_persistence_frac
+            + _ecred * envelope_frac.clamp(0.0, 1.0)
         )
     grasp = _cfg_float(cfg, "grasp_weight", 0.0) * pre_lift_gate * grasp_quality
     lift_height_quality = (

@@ -282,6 +282,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     approach_xy_penalty_weight: float = 5.0
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
+    # envelope 강제(test4: envelope 형성됐다 붕괴 → tip-success 로 회귀). lift 게이팅·grasp
+    # credit 의 envelope 비중을 올려 감싸야만 lift/grasp 보상을 받게 → envelope 유지 유도.
+    # (공통 코어 cfg-configurable, tesollo 는 기본값 0.5/0.40 유지.)
+    lift_envelope_mix:      float = 0.65   # lift 접촉 게이팅 envelope 비중 (기본 0.5)
+    grasp_envelope_credit:  float = 0.55   # grasp_quality envelope credit (기본 0.40)
     stabilize_weight: float = 10.0
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 5.0
