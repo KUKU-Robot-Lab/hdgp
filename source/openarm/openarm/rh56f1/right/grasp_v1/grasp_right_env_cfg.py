@@ -288,6 +288,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_envelope_mix:      float = 0.58   # lift 접촉 게이팅 envelope 비중 (기본 0.5). test5의 0.65는
                                            # success 억제+upright 소멸 → 완화. 얇은 컵이 envelope 물리 enabling 담당.
     grasp_envelope_credit:  float = 0.47   # grasp_quality envelope credit (기본 0.40). 0.55에서 완화(위와 동일 근거).
+    # Exp1 anti-roll: post-lift hold 중 cup_ang_vel 직접 페널티 가중치. 컵 굴림(ang_vel 1.0~1.8 >
+    # 임계 0.5)이 held=0의 근본 → 회전 억제로 rigid hold 유도(pour 회전 강건성 기반). 0=무효.
+    cup_ang_vel_penalty_weight: float = 0.5
     stabilize_weight: float = 10.0
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 5.0

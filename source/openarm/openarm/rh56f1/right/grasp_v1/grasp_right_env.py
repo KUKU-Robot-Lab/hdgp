@@ -2141,6 +2141,18 @@ class GraspRightEnv(DirectRLEnv):
         )
         total = total + palm_seat_reward
         self.extras["reward/palm_seat"] = palm_seat_reward.mean()
+        # Exp1 anti-roll: post-lift hold 중 컵 회전(cup_ang_vel)을 직접 페널티 → 정책이 "안 굴러가는
+        # rigid grip"을 찾도록. pour 회전에 안 풀리는 grip의 기반. (rh56f1 env-only, tesollo 무영향.
+        # cfg 기본 0 이면 무효.) stability.cup_ang_vel_norm 재사용(action_delta 오염 없는 순수 회전).
+        _roll_w = float(self.cfg.cup_ang_vel_penalty_weight)
+        if _roll_w > 0.0:
+            _roll_gate = self._lift_started_buf.float()
+            roll_penalty = -_roll_w * _roll_gate * stability.cup_ang_vel_norm
+            total = total + roll_penalty
+            self.extras["reward/roll_penalty"] = roll_penalty.mean()
+            self.extras["task/cup_ang_vel_posthold"] = (
+                stability.cup_ang_vel_norm * _roll_gate
+            ).sum() / _roll_gate.sum().clamp(min=1.0)
         return total
 
     # ------------------------------------------------------------------
