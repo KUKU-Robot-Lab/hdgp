@@ -616,6 +616,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 _grasp = (_re.num_contacts_buf >= 2)             # 파지 중 env
                 if bool(_grasp.any()):
                     _mimic_meas["n"] += int(_grasp.sum())
+                    _mimic_meas.setdefault("frames", 0)
+                    _mimic_meas["frames"] += 1
                     # mimic 조인트 순서: [thumb_3, thumb_4, index_2, middle_2, ring_2, pinky_2]
                     for _nm, _k in [("index_2", 2), ("middle_2", 3), ("ring_2", 4), ("pinky_2", 5), ("thumb_4", 1)]:
                         _drv = _dp[_grasp, _src[_k]].mean().item()
@@ -624,6 +626,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         _mimic_meas["drive"].setdefault(_nm, []).append(_drv)
                         _mimic_meas["mimic_act"].setdefault(_nm, []).append(_act)
                         _mimic_meas["mimic_tgt"].setdefault(_nm, []).append(_tgt)
+                    # 충분히 모이면 즉시 출력 후 강제 종료 (play.py loop-break가 pour continue로 무효)
+                    if _mimic_meas["frames"] >= 40:
+                        import numpy as _np, os as _os
+                        print("\n" + "MIMICSUMMARY" + "=" * 55)
+                        print("MIMIC 추종 측정 (실제 파지 중, num_contacts>=2 env 평균)")
+                        print(f"  파지 프레임: {_mimic_meas['frames']}, env·프레임 누적: {_mimic_meas['n']}")
+                        print(f"  {'조인트':10s} {'drive':>8s} {'기대(xmult)':>12s} {'실제mimic':>10s} {'gap':>8s}  판정")
+                        for _n2 in ["index_2", "middle_2", "ring_2", "pinky_2", "thumb_4"]:
+                            _d = _np.mean(_mimic_meas["drive"][_n2]); _t = _np.mean(_mimic_meas["mimic_tgt"][_n2]); _a = _np.mean(_mimic_meas["mimic_act"][_n2]); _g = _a - _t
+                            _v = "MOT-FOLLOW" if _g < -0.25 else ("FOLLOW" if abs(_g) < 0.25 else "OVER")
+                            print(f"  {_n2:10s} {_d:8.3f} {_t:12.3f} {_a:10.3f} {_g:+8.3f}  {_v}")
+                        print("MIMICSUMMARY" + "=" * 55, flush=True)
+                        _os._exit(0)
+            except SystemExit:
+                raise
             except Exception:
                 pass
 
