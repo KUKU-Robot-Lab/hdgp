@@ -605,21 +605,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 _re2 = env.unwrapped
                 if hasattr(_re2, "env"):
                     _re2 = _re2.env.unwrapped
-                _ls = _re2._lift_started_buf
-                if bool(_ls.any()) and not args_cli.video:
-                    _av = _re2.cup.data.root_ang_vel_w[_ls].norm(dim=-1).mean().item()
-                    _lv = _re2.cup.data.root_lin_vel_w[_ls].norm(dim=-1).mean().item()
+                _lifted = (_re2.object_pos[:, 2] - _re2.object_init_pos[:, 2]) > 0.03
+                _gripped = _re2.num_contacts_buf >= 2
+                _holding = _re2._lift_started_buf & _lifted & _gripped   # 실제로 들고+잡은 env만
+                if bool(_holding.any()) and not args_cli.video:
+                    _av = _re2.cup.data.root_ang_vel_w[_holding].norm(dim=-1).mean().item()
+                    _lv = _re2.cup.data.root_lin_vel_w[_holding].norm(dim=-1).mean().item()
                     _mimic_meas.setdefault("hold_angvel", []).append(_av)
                     _mimic_meas.setdefault("hold_linvel", []).append(_lv)
+                    # env0 (영상 env) 개별 — 들고 있으면
+                    if bool(_holding[0]):
+                        _av0 = _re2.cup.data.root_ang_vel_w[0].norm().item()
+                        _mimic_meas.setdefault("hold_angvel_env0", []).append(_av0)
                     if len(_mimic_meas["hold_angvel"]) >= 120:
                         import numpy as _np2, os as _os2
                         _hav = _np2.mean(_mimic_meas["hold_angvel"]); _hlv = _np2.mean(_mimic_meas["hold_linvel"])
                         _hav_med = float(_np2.median(_mimic_meas["hold_angvel"]))
+                        _e0 = _mimic_meas.get("hold_angvel_env0", [])
+                        _e0m = float(_np2.median(_e0)) if _e0 else -1.0
                         print("\n" + "HOLDSTAB" + "=" * 55)
-                        print(f"HOLD 안정성 (결정론 eval, lift_started env, {len(_mimic_meas['hold_angvel'])} frame)")
+                        print(f"HOLD 안정성 (결정론 eval, 실제 들고+잡은 env, {len(_mimic_meas['hold_angvel'])} frame)")
                         print(f"  cup_ang_vel  mean={_hav:.3f} median={_hav_med:.3f} (stable 임계 0.5)")
                         print(f"  cup_lin_vel  mean={_hlv:.4f} (stable 임계 0.04)")
-                        print(f"  → {'홀드 안정(학습 1.67은 노이즈/artifact = 로그오진)' if _hav_med < 0.5 else '실제 굴림(홀드 불안정 = 로그 맞음)'}")
+                        print(f"  env0(영상) cup_ang_vel median={_e0m:.3f} (frame {len(_e0)})")
+                        print(f"  → aggregate: {'안정' if _hav_med < 0.5 else '굴림'} / env0: {'안정' if 0<=_e0m<0.5 else '굴림'}")
                         print("HOLDSTAB" + "=" * 55, flush=True)
                         _os2._exit(0)
             except SystemExit:
