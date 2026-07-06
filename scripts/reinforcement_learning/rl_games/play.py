@@ -609,16 +609,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 _gripped = _re2.num_contacts_buf >= 2
                 _holding = _re2._lift_started_buf & _lifted & _gripped   # 실제로 들고+잡은 env만
                 if bool(_holding.any()) and not args_cli.video:
-                    _w = _re2.cup.data.root_ang_vel_w[_holding]           # (M,3) world 각속도
+                    _w = _re2.cup.data.root_ang_vel_w[_holding]           # (M,3) world 컵 각속도
+                    _pidx = _re2.palm_body_index
+                    _pw = _re2.robot.data.body_ang_vel_w[_holding, _pidx] # (M,3) palm 각속도
+                    _rel = (_w - _pw).norm(dim=-1).mean().item()          # 상대(그립 슬립/구름)
                     _av = _w.norm(dim=-1).mean().item()
-                    _yaw = _w[:, 2].abs().mean().item()                    # z=수직축(yaw, 무해)
-                    _tilt = _w[:, :2].norm(dim=-1).mean().item()           # xy=tilt변화(tumbling, 유해)
-                    _lv = _re2.cup.data.root_lin_vel_w[_holding].norm(dim=-1).mean().item()
-                    _tdeg = _re2.cup.data.root_pos_w  # placeholder
                     _mimic_meas.setdefault("hold_angvel", []).append(_av)
-                    _mimic_meas.setdefault("hold_yaw", []).append(_yaw)
-                    _mimic_meas.setdefault("hold_tilt", []).append(_tilt)
-                    _mimic_meas.setdefault("hold_linvel", []).append(_lv)
+                    _mimic_meas.setdefault("hold_rel", []).append(_rel)
+                    _mimic_meas.setdefault("hold_linvel", []).append(
+                        _re2.cup.data.root_lin_vel_w[_holding].norm(dim=-1).mean().item())
                     # env0 (영상 env) 개별 — 들고 있으면
                     if bool(_holding[0]):
                         _av0 = _re2.cup.data.root_ang_vel_w[0].norm().item()
@@ -629,15 +628,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         _hav_med = float(_np2.median(_mimic_meas["hold_angvel"]))
                         _e0 = _mimic_meas.get("hold_angvel_env0", [])
                         _e0m = float(_np2.median(_e0)) if _e0 else -1.0
-                        _yawm = float(_np2.median(_mimic_meas.get("hold_yaw", [0])))
-                        _tiltm = float(_np2.median(_mimic_meas.get("hold_tilt", [0])))
+                        _relm = float(_np2.median(_mimic_meas.get("hold_rel", [0])))
                         print("\n" + "HOLDSTAB" + "=" * 55)
                         print(f"HOLD 안정성 (결정론 eval, 실제 들고+잡은 env, {len(_mimic_meas['hold_angvel'])} frame)")
-                        print(f"  cup_ang_vel  mean={_hav:.3f} median={_hav_med:.3f} (stable 임계 0.5)")
-                        print(f"  ├ yaw(수직축,무해)  median={_yawm:.3f}")
-                        print(f"  └ tilt(수평축,유해) median={_tiltm:.3f}")
-                        print(f"  cup_lin_vel  mean={_hlv:.4f} (stable 임계 0.04)")
-                        print(f"  → {'회전은 대부분 YAW(무해)=success 조건 artifact' if _yawm > 2*_tiltm else 'tilt변화 있음=실제 불안정'}")
+                        print(f"  world cup_ang_vel  median={_hav_med:.3f} (팔 동작+슬립 합산)")
+                        print(f"  ★ 상대(컵-palm) 각속도 median={_relm:.3f} = 그립 안 실제 구름/슬립")
+                        print(f"  cup_lin_vel  mean={_hlv:.4f}")
+                        print(f"  → {'그립 FIRM(안 구름), world 회전은 팔 동작 = 로그오진' if _relm < 0.5 else '그립서 실제 구름/슬립 = 로그 맞음'}")
                         print("HOLDSTAB" + "=" * 55, flush=True)
                         _os2._exit(0)
             except SystemExit:
