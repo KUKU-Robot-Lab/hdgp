@@ -33,6 +33,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--raj7_bias", type=float, default=None, help="pregrasp cache 의 r_aj_7 을 이만큼 빼서 palm 을 낮춤")
     p.add_argument("--thumb1", type=float, default=None, help="approach thumb_1(abduction) 오버라이드 (컵 clearance 튜닝)")
     p.add_argument("--grip_steps", type=int, default=0, help=">0 이면 손가락 닫는 액션으로 N step 진행 후 wrap 측정")
+    p.add_argument("--force_close", type=int, default=0, help=">0 이면 게이트 우회, drive 조인트를 직접 닫아 mimic curl 여부 판별")
+    p.add_argument("--cup_in_hand", action="store_true", help="force_close 전 컵을 palm 앞으로 이동(손가락 접촉 유도)")
+    p.add_argument("--mimic_stiff", type=float, default=0.0, help=">0 이면 mimic 조인트 강성 오버라이드")
     AppLauncher.add_app_launcher_args(p)
     return p
 
@@ -110,6 +113,43 @@ def main() -> int:
             grip[:, 6:core.cfg.num_actions] = 1.0
             for _ in range(args.grip_steps):
                 env.step(grip)
+
+        # 강제-닫기: env 게이트 우회, robot API로 drive 조인트를 직접 닫고 mimic=drive×mult 명령.
+        # mimic(원위 _2)이 target을 따라 curl 하는지 vs 물리적으로 막히는지 직접 판별.
+        if args.force_close > 0:
+            robot0 = core.scene["robot"]
+            # mimic 강성 오버라이드 (반력 제압 가설 테스트)
+            if args.mimic_stiff > 0:
+                stiff = torch.full(
+                    (core.num_envs, len(core._hand_mimic_dof_indices)),
+                    args.mimic_stiff, device=core.device,
+                )
+                robot0.write_joint_stiffness_to_sim(stiff, joint_ids=core._hand_mimic_dof_indices)
+                print(f"  [mimic 강성 → {args.mimic_stiff}]")
+            # 컵을 palm 앞(법선 +z 방향 3.5cm)으로 이동 → 닫는 손가락이 컵에 접촉
+            if args.cup_in_hand:
+                cup0 = core.scene["cup"]
+                pidx = core.palm_body_index
+                pw = robot0.data.body_pos_w[:, pidx]
+                pq = robot0.data.body_quat_w[:, pidx]
+                zloc = torch.zeros(core.num_envs, 3, device=core.device); zloc[:, 2] = 1.0
+                pz = quat_apply(pq, zloc)
+                new_pos = pw + 0.035 * pz
+                pose = torch.cat([new_pos, cup0.data.root_quat_w], dim=-1)
+                cup0.write_root_pose_to_sim(pose)
+                cup0.write_root_velocity_to_sim(torch.zeros((core.num_envs, 6), device=core.device))
+                print(f"  [컵을 palm 앞 3.5cm로 이동 (손 안 접촉 유도)]")
+            drive_close = torch.zeros((core.num_envs, len(core.hand_dof_indices)), device=core.device)
+            # [thumb_1, thumb_2, index_1, middle_1, ring_1, pinky_1]
+            drive_close[:] = torch.tensor([1.0, 0.4, 1.2, 1.2, 1.2, 1.2], device=core.device)
+            for _ in range(args.force_close):
+                robot0.set_joint_position_target(drive_close, joint_ids=core.hand_dof_indices)
+                mt = drive_close[:, core._hand_mimic_src_idx] * core._hand_mimic_mult.unsqueeze(0)
+                robot0.set_joint_position_target(mt, joint_ids=core._hand_mimic_dof_indices)
+                core.scene.write_data_to_sim()
+                core.sim.step()
+                core.scene.update(core.sim.get_physics_dt())
+            print(f"  [강제-닫기 {args.force_close}step: drive index_1 target=1.2, mimic index_2 target={1.2*1.1169:.2f}]")
 
         robot = core.scene["robot"]
         origins = core.scene.env_origins
@@ -195,6 +235,17 @@ def main() -> int:
             frac = (v - lo) / (hi - lo + 1e-9)
             sat = "◄SAT" if (frac < 0.05 or frac > 0.95) else ""
             print(f"    {robot.joint_names[ai]:20s} {v:+.3f} / [{lo:+.2f},{hi:+.2f}] / {frac*100:5.1f}% {sat}")
+        # 손 drive + mimic(원위 _2) 조인트 각도 — mimic이 drive를 따라 curl 하는지 진단
+        print("  [env0] 손 drive/mimic 조인트 (grip 명령 후 실측):")
+        for jn in ["r_hj_index_1", "r_hj_index_2", "r_hj_middle_1", "r_hj_middle_2",
+                   "r_hj_ring_1", "r_hj_ring_2", "r_hj_pinky_1", "r_hj_pinky_2",
+                   "r_hj_thumb_1", "r_hj_thumb_2", "r_hj_thumb_3", "r_hj_thumb_4"]:
+            if jn in robot.joint_names:
+                ji = robot.joint_names.index(jn)
+                v = float(robot.data.joint_pos[0, ji])
+                tgt = float(robot.data.joint_pos_target[0, ji]) if hasattr(robot.data, "joint_pos_target") else float("nan")
+                mark = "◄원위 안감김" if (jn.endswith("_2") and abs(v) < 0.3 and tgt > 0.5) else ""
+                print(f"    {jn:16s} pos={v:+.3f}  target={tgt:+.3f}  {mark}")
         print("=" * 70)
         env.close()
 

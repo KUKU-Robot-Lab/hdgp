@@ -592,12 +592,40 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # initialize RNN states if used
     if agent.is_rnn:
         agent.init_rnn()
+    _mimic_meas = {"n": 0, "drive": {}, "mimic_act": {}, "mimic_tgt": {}}  # 파지 중 mimic 추종 측정
     while simulation_app.is_running():
         start_time = time.time()
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
             obs, _, dones, _ = env.step(actions)
+
+            # === mimic 추종 측정 (실제 파지 중 drive vs mimic) ===
+            try:
+                _re = env.unwrapped
+                if hasattr(_re, "env"):
+                    _re = _re.env.unwrapped
+                _rb = _re.robot
+                _mi = _re._hand_mimic_dof_indices
+                _hi = _re.hand_dof_indices
+                _src = _re._hand_mimic_src_idx
+                _mult = _re._hand_mimic_mult
+                _dp = _rb.data.joint_pos[:, _hi]                 # (N,6) drive
+                _mp = _rb.data.joint_pos[:, _mi]                 # (N,6) mimic actual
+                _mt = _dp[:, _src] * _mult.unsqueeze(0)          # mimic 기대(=drive×mult)
+                _grasp = (_re.num_contacts_buf >= 2)             # 파지 중 env
+                if bool(_grasp.any()):
+                    _mimic_meas["n"] += int(_grasp.sum())
+                    # mimic 조인트 순서: [thumb_3, thumb_4, index_2, middle_2, ring_2, pinky_2]
+                    for _nm, _k in [("index_2", 2), ("middle_2", 3), ("ring_2", 4), ("pinky_2", 5), ("thumb_4", 1)]:
+                        _drv = _dp[_grasp, _src[_k]].mean().item()
+                        _act = _mp[_grasp, _k].mean().item()
+                        _tgt = _mt[_grasp, _k].mean().item()
+                        _mimic_meas["drive"].setdefault(_nm, []).append(_drv)
+                        _mimic_meas["mimic_act"].setdefault(_nm, []).append(_act)
+                        _mimic_meas["mimic_tgt"].setdefault(_nm, []).append(_tgt)
+            except Exception:
+                pass
 
             # --- 진단 로깅 (env 0 기준) ---
             # 주의: env.step()은 done인 env를 내부에서 자동 reset한다. done frame의 self.* 는
@@ -767,6 +795,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         sleep_time = dt - (time.time() - start_time)
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
+
+    # === mimic 추종 측정 요약 ===
+    if _mimic_meas["n"] > 0:
+        import numpy as _np
+        print("\n" + "=" * 66)
+        print("MIMIC 추종 측정 (실제 파지 중, num_contacts>=2 env 평균)")
+        print(f"  파지 프레임·env 누적: {_mimic_meas['n']}")
+        print(f"  {'조인트':10s} {'drive':>8s} {'기대(×mult)':>12s} {'실제mimic':>10s} {'gap':>8s}  판정")
+        for _nm in ["index_2", "middle_2", "ring_2", "pinky_2", "thumb_4"]:
+            if _nm in _mimic_meas["drive"]:
+                _d = _np.mean(_mimic_meas["drive"][_nm])
+                _t = _np.mean(_mimic_meas["mimic_tgt"][_nm])
+                _a = _np.mean(_mimic_meas["mimic_act"][_nm])
+                _gap = _a - _t
+                _verdict = "◄못따라감" if _gap < -0.25 else ("추종" if abs(_gap) < 0.25 else "초과")
+                print(f"  {_nm:10s} {_d:8.3f} {_t:12.3f} {_a:10.3f} {_gap:+8.3f}  {_verdict}")
+        print("=" * 66)
 
     # close the simulator
     env.close()
