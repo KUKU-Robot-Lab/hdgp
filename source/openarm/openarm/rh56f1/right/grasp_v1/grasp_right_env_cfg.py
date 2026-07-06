@@ -290,7 +290,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_envelope_credit:  float = 0.47   # grasp_quality envelope credit (기본 0.40). 0.55에서 완화(위와 동일 근거).
     # Exp1 anti-roll: post-lift hold 중 cup_ang_vel 직접 페널티 가중치. 컵 굴림(ang_vel 1.0~1.8 >
     # 임계 0.5)이 held=0의 근본 → 회전 억제로 rigid hold 유도(pour 회전 강건성 기반). 0=무효.
-    cup_ang_vel_penalty_weight: float = 0.5
+    cup_ang_vel_penalty_weight: float = 0.0  # Exp1 실패(굴림 못 잡음) → 0으로 끔. Exp2 단독 검증. firm 그립 생기면 재검토.
     stabilize_weight: float = 10.0
     stabilize_spawn_xy_scale: float = 0.03
     stabilize_upright_reward_scale_deg: float = 5.0
@@ -349,6 +349,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Phase A: starting hurdle for the contact_adr 3→4→5 curriculum (was fixed 4).
     stage0_lift_start_min_contacts: int = 3
     stage0_lift_start_hold_steps:   int = 20
+    # Exp2: 리프트 전 firm 그립 강제. lift-start를 'tip&근위 두 점 접촉 손가락 수 >= N'이 유지된
+    # 후로 지연 → 정책이 먼저 컵을 엄지-손바닥 사이에 넣어 firm 그립을 만들도록 압박(리프트 shortcut
+    # 차단). timeout_steps 지나면 fallback 허용(dead episode 방지). 0=firm 게이트 무효.
+    lift_start_min_firm_fingers: int = 2
+    lift_start_timeout_steps:    int = 150
     # success grip 판정(tip+근위 firm 관점): "손가락당 tip AND 근위 두 점 접촉(firm) 손가락 수 >= N
     # + 엄지 접촉". firm grip이 컵 회전을 구속 → held 가능. full envelope(원위/palm)는 불필요.
     # (tip|근위 union >=4 에서 tip&근위 firm >=3 으로 재구성 — firm은 더 엄격해 N 완화.) tunable.

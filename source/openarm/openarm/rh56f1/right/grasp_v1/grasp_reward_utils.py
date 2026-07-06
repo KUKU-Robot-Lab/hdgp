@@ -59,8 +59,21 @@ def compute_lift_readiness(
     previous_latched: torch.Tensor,
     min_contacts: int,
     hold_steps: int,
+    num_firm_fingers: torch.Tensor | None = None,
+    min_firm_fingers: int = 0,
+    timeout_reached: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """접촉(손끝) + firm(tip&근위) + hold 로 lift 진입 판정.
+
+    Exp2: min_firm_fingers>0 이면 'tip&근위 두 점 접촉 손가락 수 >= min_firm_fingers'를
+    AND 게이트로 추가 → 리프트 전 firm 그립 강제(손끝만으로 일찍 리프트 차단).
+    timeout_reached: firm 미형성이 오래되면 리프트 허용(dead episode 방지 fallback).
+    """
     lift_contact_now = num_contacts >= int(min_contacts)
+    if num_firm_fingers is not None and int(min_firm_fingers) > 0:
+        lift_contact_now = lift_contact_now & (
+            num_firm_fingers >= int(min_firm_fingers)
+        )
     next_hold_count = torch.where(
         lift_contact_now & is_grasp_phase,
         previous_hold_count + 1,
@@ -71,6 +84,10 @@ def compute_lift_readiness(
         ),
     )
     lift_contact_ready_now = next_hold_count >= int(hold_steps)
+    if timeout_reached is not None:
+        lift_contact_ready_now = lift_contact_ready_now | (
+            timeout_reached & (num_contacts >= int(min_contacts)) & is_grasp_phase
+        )
     next_latched = previous_latched | lift_contact_ready_now
     return next_hold_count, lift_contact_ready_now, next_latched
 

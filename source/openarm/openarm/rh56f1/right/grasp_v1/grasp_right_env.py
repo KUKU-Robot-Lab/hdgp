@@ -1694,6 +1694,11 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ---- lift contact hold 추적 ----
+        # Exp2: 리프트 전 firm 그립(tip&근위 두 점 접촉 손가락 >= N) 강제 + timeout fallback.
+        _num_firm_lift = (
+            self.binary_contact_buf & self.middle_binary_contact_buf
+        ).sum(dim=-1)
+        _lift_timeout = self.episode_length_buf >= int(self.cfg.lift_start_timeout_steps)
         lift_contact_phase = close_grasp_mask
         self._lift_contact_hold_count, lift_contact_ready_now, self._lift_contact_ready_latched_buf = compute_lift_readiness(
             num_contacts=self.num_contacts_buf,
@@ -1702,6 +1707,9 @@ class GraspRightEnv(DirectRLEnv):
             previous_latched=self._lift_contact_ready_latched_buf,
             min_contacts=_adr_min_contacts,
             hold_steps=self.cfg.stage0_lift_start_hold_steps,
+            num_firm_fingers=_num_firm_lift,
+            min_firm_fingers=int(self.cfg.lift_start_min_firm_fingers),
+            timeout_reached=_lift_timeout,
         )
         lift_contact_ready_gate = self._lift_contact_ready_latched_buf.float()
         lift_started_now = self._lift_started_buf & (
