@@ -313,7 +313,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 로 안 닿아도 가까워질수록 보상↑. grip 중(num_contacts≥1)에만 → palm-shove 방지.
     palm_seat_weight:       float = 6.0
     palm_seat_sharpness:    float = 15.0
-    cup_radius_approx:      float = 0.0315   # cup xyz 10% 축소(scale 0.9)와 정합. enclosure 게이트 타깃(cup_center±axis×r)에 직접 사용됨.
+    cup_radius_approx:      float = 0.025   # 균일 실린더 반경(2.5cm)과 정합. enclosure 게이트 타깃(cup_center±axis×r)에 직접 사용됨.
     enclosure_thumb_weight: float = 0.6
     # palm-first envelope: approach 중 thumb_1(엄지 abduction)을 palm 이 컵에 이 거리 이내로
     # 안착할 때까지 approach 값(opposition, 1.57)에 고정 → 엄지-손가락 사이 통로로 컵이 들어와
@@ -352,7 +352,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Exp2: 리프트 전 firm 그립 강제. lift-start를 'tip&근위 두 점 접촉 손가락 수 >= N'이 유지된
     # 후로 지연 → 정책이 먼저 컵을 엄지-손바닥 사이에 넣어 firm 그립을 만들도록 압박(리프트 shortcut
     # 차단). timeout_steps 지나면 fallback 허용(dead episode 방지). 0=firm 게이트 무효.
-    lift_start_min_firm_fingers: int = 2
+    lift_start_min_firm_fingers: int = 0   # Exp2(게이트) 실패 → 0으로 끔. 실린더 컵 단독 효과 검증(plain RL).
     lift_start_timeout_steps:    int = 150
     # success grip 판정(tip+근위 firm 관점): "손가락당 tip AND 근위 두 점 접촉(firm) 손가락 수 >= N
     # + 엄지 접촉". firm grip이 컵 회전을 구속 → held 가능. full envelope(원위/palm)는 불필요.
@@ -631,13 +631,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_middle.usd"),
+            # 균일 원통(반경 2.5cm, 높이 12.6cm)로 교체: 기존 cup_middle은 테이퍼(바닥2.1→상단3.3cm)라
+            # 손가락이 높이마다 다른 반경에 닿아 firm(tip+근위) 파지 학습이 어려웠음(Exp1·2 실패 근본).
+            # 균일 원통이면 어느 높이서든 같은 반경 → conform(firm wrap) 용이 → plain RL로 firm 학습 기대.
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_cylinder.usd"),
             activate_contact_sensors=True,
-            # xyz 전체 10% 축소(r 3.5→3.15cm): test6의 30%(scale 0.7) 축소는 컵이 너무 얇아져
-            # 손끝이 컵을 지나침(five_tip=0, 렌더 확인)→proximal-only 파지. 10%로 완만히 줄여
-            # 손끝 접촉 유지 + 약간의 envelope 여유 확보. (30%는 full_envelope 0.0→0.076 돌파했으나
-            # 손끝 상실이 성공조건과 충돌.)
-            scale=(0.9, 0.9, 0.9),
+            scale=(1.0, 1.0, 1.0),
             # 물리 질량 고정: scale 0.9³=0.729배로 density 기반 USD 질량이 몰래 줄면 force-ratio
             # DR이 왜곡(파지가 인위적으로 쉬워짐)됨 → cup_base_mass로 명시 고정.
             mass_props=sim_utils.MassPropertiesCfg(mass=0.170),
