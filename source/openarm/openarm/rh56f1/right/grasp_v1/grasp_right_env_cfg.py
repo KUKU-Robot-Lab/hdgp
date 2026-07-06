@@ -324,6 +324,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 학습이 안 되고 pinch 로 수렴(test2 확인). floor 위 0.08 로 올려 palm 근접 시 enclosure+
     # 엄지 release 활성화 → 컵을 손가락 사이로 넣어 감싸도록 유도. (reward-audit ACCEPT)
     thumb_freeze_release_dist: float = 0.08
+    # thumb_1(엄지 abduction) freeze: True면 palm 근접 전까지 1.57에 고정(palm-first). False면
+    # 1.57은 초기자세로만, 처음부터 정책이 자유 제어 → 엄지가 굽을 위치를 스스로 찾도록(엄지 활성 시도).
+    thumb_freeze_enabled: bool = False
 
     lift_reward_weight: float = 30.0
     grasp_contact_persistence_reward_steps: int = 30

@@ -1371,9 +1371,16 @@ class GraspRightEnv(DirectRLEnv):
         # 묶어 통로를 열어 둔다. palm 이 컵 중심에 thumb_freeze_release_dist 이내로 다가오면
         # 정책이 thumb_1 을 제어해 감싸도록 release → fingertip pinch 탈피.
         palm_to_cup_dist_ht = (self.palm_center_pos - self.object_pos).norm(dim=-1)
-        thumb_frozen = approach_mask & (
-            palm_to_cup_dist_ht >= float(self.cfg.thumb_freeze_release_dist)
-        )
+        if self.cfg.thumb_freeze_enabled:
+            thumb_frozen = approach_mask & (
+                palm_to_cup_dist_ht >= float(self.cfg.thumb_freeze_release_dist)
+            )
+        else:
+            # thumb_1 을 1.57 초기자세로만 두고 처음부터 정책이 자유 제어(freeze 해제).
+            # 엄지가 굽을 위치를 정책이 스스로 찾도록 → 수동 기둥 탈피 시도.
+            thumb_frozen = torch.zeros(
+                self.num_envs, dtype=torch.bool, device=self.device
+            )
         self._thumb_frozen_buf.copy_(thumb_frozen)
         hand_target = torch.where(
             thumb_frozen.unsqueeze(1) & self.thumb_freeze_col_mask,
