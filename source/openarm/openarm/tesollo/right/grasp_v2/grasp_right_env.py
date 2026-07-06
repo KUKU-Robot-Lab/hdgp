@@ -686,6 +686,12 @@ class GraspRightEnv(DirectRLEnv):
         # → distal→proximal 순차 동결로 컵 형상에 손가락이 드리워짐(envelope).
         # 5D action = 손가락별 폐쇄 속도 명령[0,1]. 관절 순서 finger-major [_1,_2,_3,_4]×5.
         cmd = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)          # (N,5) ∈ [0,1]
+        # 다물체 drop-settle: episode 초기 settle_steps 동안 손가락 폐쇄 억제 →
+        # 물체(DEXTRAH식 고정 높이 spawn)가 낙하해 테이블에 안착(grasp_v1 정지물체 전제).
+        in_settle = (
+            self.episode_length_buf < int(self.cfg.settle_steps)
+        ).unsqueeze(-1)
+        cmd = torch.where(in_settle, torch.zeros_like(cmd), cmd)
         tip_c  = self.binary_contact_buf.float()                    # (N,5) 끝
         dist_c = self.distal_binary_contact_buf.float()             # (N,5) distal(rl_dg_X_4)
         mid_c  = self.middle_binary_contact_buf.float()             # (N,5) middle(rl_dg_X_3)
@@ -936,21 +942,13 @@ class GraspRightEnv(DirectRLEnv):
             self.object_pos[:, :2] - self.object_init_pos[:, :2]
         ).norm(dim=-1)
 
-        cup_to_palm_xy = self.palm_center_pos[:, :2] - grasp_center[:, :2]
-        approach_dir_xy = cup_to_palm_xy / cup_to_palm_xy.norm(
-            dim=-1, keepdim=True
-        ).clamp(min=1e-6)
-        enclosure_axis = torch.zeros(self.num_envs, 3, device=self.device)
-        enclosure_axis[:, :2] = torch.stack(
-            [-approach_dir_xy[:, 1], approach_dir_xy[:, 0]], dim=1
-        )
-        radius = float(self.cfg.cup_radius_approx)
-        thumb_target = grasp_center + enclosure_axis * radius
-        others_target = grasp_center - enclosure_axis * radius
-        thumb_dist = (self.fingertip_pos[:, 0] - thumb_target).norm(dim=-1)
-        others_dist = (
-            self.fingertip_pos[:, 1:] - others_target.unsqueeze(1)
-        ).norm(dim=-1).mean(dim=-1)
+        # 다물체: radius 기반 enclosure(cup_radius_approx) 대신 손끝→물체중심 거리로 유도.
+        # 물체 크기 무관(DEXTRAH hand_to_object 정신) → primitives 반경 편차(2.5~6cm)에 견고.
+        tip_to_center = (
+            self.fingertip_pos - grasp_center.unsqueeze(1)
+        ).norm(dim=-1)   # (N, 5)
+        thumb_dist  = tip_to_center[:, 0]
+        others_dist = tip_to_center[:, 1:].mean(dim=-1)
         fingertip_side_dist = (
             float(self.cfg.enclosure_thumb_weight) * thumb_dist
             + (1.0 - float(self.cfg.enclosure_thumb_weight)) * others_dist
