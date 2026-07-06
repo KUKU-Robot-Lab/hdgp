@@ -47,6 +47,21 @@ TIP_FRAMES = [
     "r_hl_pinky_tip",
 ]
 
+# grasp_v2 (DEXTRAH 물체파지 이식) 용 오른손 PCA5 basis.
+# inspire grasp 시연 → RH56F1 6-drive remap → PCA5 (scripts/tools/compute_rh56f1_grasp_pca.py).
+# rows = PC1~5 방향(6-drive 공간). PC1(97.9%)=엄지+4손가락 조율 닫힘=firm envelope 시너지.
+# kuka_allegro_pose_fabric 의 pca_matrix(5x16) 와 동일 역할: LinearMap 이 cspace q 를
+# 이 5개 방향으로 투영(mean 미차감, uncentered) → 5D PCA 공간 attractor.
+# 출처: assets/demograsp_references/rh56f1_grasp_pca5.pt (단일 진실원=위 스크립트).
+NUM_HAND_PCA = 5
+RH56F1_HAND_PCA_MATRIX = [
+    [ 5.055892e-01,  1.252147e-01,  4.233449e-01,  4.358092e-01,  4.029488e-01,  4.440524e-01],
+    [ 8.196450e-01, -7.233454e-02, -2.688281e-01, -4.071321e-01,  3.556392e-02, -2.892402e-01],
+    [-1.990037e-01, -2.065245e-01, -4.532336e-01, -3.136647e-01,  6.543947e-01,  4.309368e-01],
+    [ 1.482936e-01,  1.309842e-01, -2.630515e-01, -1.082689e-01, -6.144237e-01,  7.088141e-01],
+    [ 1.037749e-01, -5.117328e-01, -4.972013e-01,  6.815110e-01, -9.081748e-02, -8.629034e-02],
+]
+
 
 class OpenArmRh56f1PoseFabric(BaseFabric):
     """Bimanual fabric: (OpenArm 7 + RH56F1 hand drive 6) x 2 = 26 DOF total.
@@ -62,8 +77,13 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
       [22-25] l_hj_{index,middle,ring,pinky}_1  (left hand flex drives)
     """
 
-    def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=False):
+    def __init__(self, batch_size, device, timestep, graph_capturable=True,
+                 use_hand_fabric=False, hand_mode="direct"):
+        # hand_mode: "direct" = 6D identity 직접 제어(기존, grasp_v1),
+        #            "pca"    = 5D PCA action(grasp_v2 물체파지, DEXTRAH 방식).
+        assert hand_mode in ("direct", "pca"), f"invalid hand_mode: {hand_mode}"
         self._use_hand_fabric = use_hand_fabric
+        self._hand_mode = hand_mode
         fabric_params_filename = "openarm_rh56f1_pose_params.yaml"
         super().__init__(device, batch_size, timestep, fabric_params_filename,
                          graph_capturable=graph_capturable)
@@ -154,11 +174,23 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
         self.add_fabric(taskmap_name, fabric_name, fabric)
 
     def add_hand_fabric(self):
-        """6D 직접 오른손 제어 (identity). env 가 use_hand_fabric=True 로 쓸 때만 활성.
-        보통 env 는 손을 직접 PD 제어하므로 사용하지 않는다."""
-        # (6, 26): 오른손 drive 컬럼 [7:13] 만 eye, 나머지(팔·왼쪽) 0 패딩.
-        hand_map = torch.zeros(NUM_HAND_DOF, NUM_DOF, device=self.device)
-        hand_map[:, R_HAND_SLICE] = torch.eye(NUM_HAND_DOF, device=self.device)
+        """오른손 fabric taskmap "pca_hand". env 가 use_hand_fabric=True 로 쓸 때만 활성.
+
+        hand_mode="direct": (6, 26) identity — 6D 직접 오른손 제어(grasp_v1 계열, 미사용 기본).
+        hand_mode="pca":    (5, 26) PCA — 5D PCA action(grasp_v2 물체파지, DEXTRAH 방식).
+                            오른손 drive 6열에 PCA basis(5x6), 나머지(팔·왼쪽) 0 패딩.
+        어느 모드든 taskmap 이름은 "pca_hand", attractor 는 "hand_attractor" 로 동일 —
+        set_features(hand_target) 가 hand_target(direct=B×6 / pca=B×5)을 그 attractor 로 넣는다.
+        """
+        if self._hand_mode == "pca":
+            # (5, 26): kuka_allegro 와 동일 — PCA basis 를 오른손 drive 컬럼에 배치, 팔은 0 으로 소거.
+            pca_basis = torch.tensor(RH56F1_HAND_PCA_MATRIX, device=self.device)  # (5, 6)
+            hand_map = torch.zeros(NUM_HAND_PCA, NUM_DOF, device=self.device)
+            hand_map[:, R_HAND_SLICE] = pca_basis
+        else:
+            # (6, 26): 오른손 drive 컬럼 [7:13] 만 eye, 나머지(팔·왼쪽) 0 패딩.
+            hand_map = torch.zeros(NUM_HAND_DOF, NUM_DOF, device=self.device)
+            hand_map[:, R_HAND_SLICE] = torch.eye(NUM_HAND_DOF, device=self.device)
         self._pca_matrix = torch.clone(hand_map.detach())
         taskmap_name = "pca_hand"
         taskmap = LinearMap(hand_map, self.device)
@@ -339,7 +371,8 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
         """Pass input features to fabric terms.
 
         Args:
-            hand_target:              (B, 6)  직접 오른손 target (use_hand_fabric=True 일 때만)
+            hand_target:              use_hand_fabric=True 일 때만. hand_mode="direct"=(B,6) 직접
+                                      drive target / hand_mode="pca"=(B,5) PCA action target
             palm_pose_target:         (B, 6) euler_zyx  또는 (B, 7) quaternion (오른손 palm)
             batched_cspace_position:  (B, 26) current joint positions [r_arm,r_hand,l_arm,l_hand]
             batched_cspace_velocity:  (B, 26) current joint velocities

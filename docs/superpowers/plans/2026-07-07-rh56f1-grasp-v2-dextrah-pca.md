@@ -2,7 +2,8 @@
 
 > **진행 상태 (2026-07-07):**
 > - ✅ **Phase 1 완료·커밋·푸시** (`8179f49`/`f7e9177`): RH56F1 grasp PCA5 basis 계산. PC1(97.9%)=엄지+4손가락 조율 닫힘=firm envelope 시너지 확인. 산출물 `assets/demograsp_references/rh56f1_grasp_pca5.pt`(force-add), 스크립트 `scripts/tools/compute_rh56f1_grasp_pca.py`. **방향 검증 게이트 통과.**
-> - ⏭️ **다음 재개점 = Phase 2** (rh56f1 fabric hand_map identity→PCA basis 5×6, grasp_v1 안 깨게 v2 전용 경로).
+> - ✅ **Phase 2 정적 완료** (커밋 예정): rh56f1 fabric에 `hand_mode="pca"` 경로 추가 — `RH56F1_HAND_PCA_MATRIX`(5×6, .pt와 일치) 모듈상수, `add_hand_fabric` 분기(pca=(5,26)/direct=(6,26)), `set_features` hand_target 5D/6D. **grasp_v1 불변**(기본 `hand_mode="direct"`, `use_hand_fabric=False`). 정적검증: hand_map (5,26)·오른손블록=basis·팔열0. **핵심 커플링**: fabric taskmap=uncentered(mean 미차감)이라 env action 범위=`pca_action_mins/maxs`(uncentered 투영, .pt에 추가). ⏳ **기능검증(IK 왕복 PCA→qpos) = GPU 대기**(server `verify_fabric_load_ik.py`).
+> - ⏭️ **다음 재개점 = Phase 3** (DEXTRAH env 1662줄 → `grasp_v2/` 이식, 최대 덩어리).
 
 **Goal:** grasp_v1(컵 특화, per-finger synergy)로 RH56F1 firm 파지 학습 불가 확정(4개 실험). **원본 DEXTRAH(dextrah_kuka_allegro)의 "일반 물체 파지→goal" 태스크를 OpenArm+RH56F1(inspire PCA 손)로 충실 이식.** 컵/pour 특화(테이퍼·palm-seat·엄지 막힘)를 버리고, **검증된 DEXTRAH 물체 파지가 RH56F1에서 되게** 한 뒤 cup/pour는 나중에 특화.
 

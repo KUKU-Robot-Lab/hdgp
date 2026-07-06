@@ -40,9 +40,15 @@ def main() -> None:
     q_rh = np.clip(q_rh, RH_MIN, RH_MAX)
 
     pca = PCA(n_components=5)
-    z = pca.fit_transform(q_rh)                           # (22,5) PCA 좌표
+    z = pca.fit_transform(q_rh)                           # (22,5) centered PCA 좌표
     recon = pca.inverse_transform(z)
     rms = float(np.sqrt(((recon - q_rh) ** 2).mean()))
+    # fabric LinearMap 은 x = C @ q (mean 미차감, uncentered) 로 투영한다.
+    # → env 의 PCA action 범위(HAND_PCA_MINS/MAXS)는 이 uncentered 투영 범위여야
+    #   attractor target 공간과 정합한다(centered z 범위 쓰면 C@mean 만큼 어긋남).
+    proj = q_rh @ pca.components_.T                       # (22,5) uncentered = fabric taskmap 공간
+    action_mins = proj.min(axis=0)                        # (5,)
+    action_maxs = proj.max(axis=0)                        # (5,)
 
     print("=== RH56F1 grasp PCA5 ===")
     print("설명분산비:", np.round(pca.explained_variance_ratio_, 4),
@@ -60,8 +66,10 @@ def main() -> None:
     payload = {
         "pca_matrix": torch.tensor(pca.components_, dtype=torch.float32),   # (5,6) PCA→? (basis rows)
         "mean": torch.tensor(pca.mean_, dtype=torch.float32),               # (6,)
-        "pca_mins": torch.tensor(z.min(axis=0), dtype=torch.float32),       # (5,)
-        "pca_maxs": torch.tensor(z.max(axis=0), dtype=torch.float32),       # (5,)
+        "pca_mins": torch.tensor(z.min(axis=0), dtype=torch.float32),       # (5,) centered(참고용)
+        "pca_maxs": torch.tensor(z.max(axis=0), dtype=torch.float32),       # (5,) centered(참고용)
+        "pca_action_mins": torch.tensor(action_mins, dtype=torch.float32),  # (5,) uncentered=env action 범위
+        "pca_action_maxs": torch.tensor(action_maxs, dtype=torch.float32),  # (5,) uncentered=env action 범위
         "explained_variance_ratio": torch.tensor(pca.explained_variance_ratio_, dtype=torch.float32),
         "grasps_rh_qpos": torch.tensor(q_rh, dtype=torch.float32),          # (22,6) remap된 grasp
         "meta": {
