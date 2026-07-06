@@ -600,6 +600,33 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
             obs, _, dones, _ = env.step(actions)
 
+            # === HOLD 안정성 측정 (결정론 eval: lift_started 중 cup_ang/lin_vel) ===
+            try:
+                _re2 = env.unwrapped
+                if hasattr(_re2, "env"):
+                    _re2 = _re2.env.unwrapped
+                _ls = _re2._lift_started_buf
+                if bool(_ls.any()) and not args_cli.video:
+                    _av = _re2.cup.data.root_ang_vel_w[_ls].norm(dim=-1).mean().item()
+                    _lv = _re2.cup.data.root_lin_vel_w[_ls].norm(dim=-1).mean().item()
+                    _mimic_meas.setdefault("hold_angvel", []).append(_av)
+                    _mimic_meas.setdefault("hold_linvel", []).append(_lv)
+                    if len(_mimic_meas["hold_angvel"]) >= 120:
+                        import numpy as _np2, os as _os2
+                        _hav = _np2.mean(_mimic_meas["hold_angvel"]); _hlv = _np2.mean(_mimic_meas["hold_linvel"])
+                        _hav_med = float(_np2.median(_mimic_meas["hold_angvel"]))
+                        print("\n" + "HOLDSTAB" + "=" * 55)
+                        print(f"HOLD 안정성 (결정론 eval, lift_started env, {len(_mimic_meas['hold_angvel'])} frame)")
+                        print(f"  cup_ang_vel  mean={_hav:.3f} median={_hav_med:.3f} (stable 임계 0.5)")
+                        print(f"  cup_lin_vel  mean={_hlv:.4f} (stable 임계 0.04)")
+                        print(f"  → {'홀드 안정(학습 1.67은 노이즈/artifact = 로그오진)' if _hav_med < 0.5 else '실제 굴림(홀드 불안정 = 로그 맞음)'}")
+                        print("HOLDSTAB" + "=" * 55, flush=True)
+                        _os2._exit(0)
+            except SystemExit:
+                raise
+            except Exception:
+                pass
+
             # === mimic 추종 측정 (실제 파지 중 drive vs mimic) ===
             try:
                 _re = env.unwrapped
