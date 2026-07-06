@@ -609,9 +609,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 _gripped = _re2.num_contacts_buf >= 2
                 _holding = _re2._lift_started_buf & _lifted & _gripped   # 실제로 들고+잡은 env만
                 if bool(_holding.any()) and not args_cli.video:
-                    _av = _re2.cup.data.root_ang_vel_w[_holding].norm(dim=-1).mean().item()
+                    _w = _re2.cup.data.root_ang_vel_w[_holding]           # (M,3) world 각속도
+                    _av = _w.norm(dim=-1).mean().item()
+                    _yaw = _w[:, 2].abs().mean().item()                    # z=수직축(yaw, 무해)
+                    _tilt = _w[:, :2].norm(dim=-1).mean().item()           # xy=tilt변화(tumbling, 유해)
                     _lv = _re2.cup.data.root_lin_vel_w[_holding].norm(dim=-1).mean().item()
+                    _tdeg = _re2.cup.data.root_pos_w  # placeholder
                     _mimic_meas.setdefault("hold_angvel", []).append(_av)
+                    _mimic_meas.setdefault("hold_yaw", []).append(_yaw)
+                    _mimic_meas.setdefault("hold_tilt", []).append(_tilt)
                     _mimic_meas.setdefault("hold_linvel", []).append(_lv)
                     # env0 (영상 env) 개별 — 들고 있으면
                     if bool(_holding[0]):
@@ -623,12 +629,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         _hav_med = float(_np2.median(_mimic_meas["hold_angvel"]))
                         _e0 = _mimic_meas.get("hold_angvel_env0", [])
                         _e0m = float(_np2.median(_e0)) if _e0 else -1.0
+                        _yawm = float(_np2.median(_mimic_meas.get("hold_yaw", [0])))
+                        _tiltm = float(_np2.median(_mimic_meas.get("hold_tilt", [0])))
                         print("\n" + "HOLDSTAB" + "=" * 55)
                         print(f"HOLD 안정성 (결정론 eval, 실제 들고+잡은 env, {len(_mimic_meas['hold_angvel'])} frame)")
                         print(f"  cup_ang_vel  mean={_hav:.3f} median={_hav_med:.3f} (stable 임계 0.5)")
+                        print(f"  ├ yaw(수직축,무해)  median={_yawm:.3f}")
+                        print(f"  └ tilt(수평축,유해) median={_tiltm:.3f}")
                         print(f"  cup_lin_vel  mean={_hlv:.4f} (stable 임계 0.04)")
-                        print(f"  env0(영상) cup_ang_vel median={_e0m:.3f} (frame {len(_e0)})")
-                        print(f"  → aggregate: {'안정' if _hav_med < 0.5 else '굴림'} / env0: {'안정' if 0<=_e0m<0.5 else '굴림'}")
+                        print(f"  → {'회전은 대부분 YAW(무해)=success 조건 artifact' if _yawm > 2*_tiltm else 'tilt변화 있음=실제 불안정'}")
                         print("HOLDSTAB" + "=" * 55, flush=True)
                         _os2._exit(0)
             except SystemExit:
