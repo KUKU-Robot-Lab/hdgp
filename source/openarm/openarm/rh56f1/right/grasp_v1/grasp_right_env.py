@@ -2012,11 +2012,13 @@ class GraspRightEnv(DirectRLEnv):
             action_delta_norm=action_delta_norm,
             cfg=self.cfg,
         )
-        # envelope 유도(tesollo v1 기준): 근위 마디 접촉을 grasp 보상에 credit.
-        #   envelope_frac = 근위(proximal) 접촉 비율 → grasp_quality 40% + lift 게이팅.
-        #   grip_frac     = 임의 마디(tip|middle) 접촉 손가락 비율 → post_lift 가 wrap 을
-        #                   그립 손실로 처벌하지 않음. (RH56F1 은 distal=tip, 별도 distal 없음)
-        envelope_frac = self.middle_binary_contact_buf.float().mean(dim=-1)
+        # 재구성(tip+근위 관점): grasp 보상의 envelope credit을 '근위만'에서 '손가락당 tip AND 근위
+        # 두 점 접촉' 비율로. full envelope(원위 curl/palm-seat)는 불필요 — 손가락 하나가 tip+근위
+        # 두 점으로 컵을 누르면 회전을 구속(firm grip) → 컵 굴림 방지 → held 가능. envelope_finger_count/5.
+        #   grip_frac = 임의 마디(tip|middle) 접촉 손가락 비율 → post_lift 가 wrap 을 그립 손실로 처벌 안 함.
+        envelope_frac = (
+            self.binary_contact_buf & self.middle_binary_contact_buf
+        ).float().mean(dim=-1)
         grip_frac = (
             (self.binary_contact_buf | self.middle_binary_contact_buf)
             .float().mean(dim=-1)
@@ -2186,13 +2188,16 @@ class GraspRightEnv(DirectRLEnv):
         # 수 >= N + 엄지 컵 접촉". 정책이 수렴하는 강한 근위 그립(five_tip~0, force_ratio 13+)이
         # 5-tip 미충족으로 success=0 붕괴하던 문제(lstm_test1) 해소. 엄지는 굽힘 대신 접촉만 요구
         # (엄지는 palm 쪽 깊이 안 들어가면 굽힘 구조상 어려움). finger idx0=thumb.
-        _grip_fingers_bool = self.binary_contact_buf | self.middle_binary_contact_buf
-        _num_grip_fingers = _grip_fingers_bool.sum(dim=-1)
-        _thumb_cup_grip = _grip_fingers_bool[:, 0]
+        # 재구성(tip+근위 firm 관점): 성공 grip 판정을 'tip|근위 ≥N'에서 '손가락당 tip AND 근위
+        # 두 점 접촉(firm) 손가락 수 ≥N'으로. firm grip이 컵 회전을 구속 → held 가능. 엄지는 두 점
+        # 대신 접촉만 요구(palm 깊이 미도달 시 굽힘 구조상 어려움 → 엄지 firm 제외).
+        _firm_fingers_bool = self.binary_contact_buf & self.middle_binary_contact_buf  # tip AND 근위
+        _num_firm_fingers = _firm_fingers_bool.sum(dim=-1)
+        _thumb_cup_grip = (self.binary_contact_buf | self.middle_binary_contact_buf)[:, 0]  # 엄지 접촉(어느 마디든)
         grip_grasped = (
-            _num_grip_fingers >= int(self.cfg.success_min_grip_fingers)
+            _num_firm_fingers >= int(self.cfg.success_min_grip_fingers)
         ) & _thumb_cup_grip
-        self.extras["task/num_grip_fingers"] = _num_grip_fingers.float().mean()
+        self.extras["task/num_firm_fingers"] = _num_firm_fingers.float().mean()
         self.extras["task/grip_grasped_rate"] = grip_grasped.float().mean()
         lift_grasped = grip_grasped
         contact_grasped = grip_grasped

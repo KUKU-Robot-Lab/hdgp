@@ -346,10 +346,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Phase A: starting hurdle for the contact_adr 3→4→5 curriculum (was fixed 4).
     stage0_lift_start_min_contacts: int = 3
     stage0_lift_start_hold_steps:   int = 20
-    # success grip 판정: 5-fingertip 강제 대신 "임의 마디(tip|middle) 접촉 손가락 수 >= N + 엄지 접촉"
-    # (tesollo grasp_v1 동일 개념, success_min_grip_fingers=4). 정책이 수렴하는 강한 근위 그립을
-    # 성공으로 인정 → five_tip=0으로 success 붕괴하던 문제 해소. 엄지는 굽힘 대신 접촉만 요구.
-    success_min_grip_fingers: int = 4
+    # success grip 판정(tip+근위 firm 관점): "손가락당 tip AND 근위 두 점 접촉(firm) 손가락 수 >= N
+    # + 엄지 접촉". firm grip이 컵 회전을 구속 → held 가능. full envelope(원위/palm)는 불필요.
+    # (tip|근위 union >=4 에서 tip&근위 firm >=3 으로 재구성 — firm은 더 엄격해 N 완화.) tunable.
+    success_min_grip_fingers: int = 3
     lift_contact_hold_steps: int = 30
     full_grip_hold_steps:    int = 30
     lift_min_force_ratio:    float = 1.8
