@@ -626,9 +626,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         _mimic_meas["drive"].setdefault(_nm, []).append(_drv)
                         _mimic_meas["mimic_act"].setdefault(_nm, []).append(_act)
                         _mimic_meas["mimic_tgt"].setdefault(_nm, []).append(_tgt)
+                    # hold(lift_started) 중 컵 각속도/선속도 — 결정론적 eval서 실제 홀드가 안정한지
+                    try:
+                        _ls = _re._lift_started_buf
+                        if bool(_ls.any()):
+                            _av = _re.cup.data.root_ang_vel_w[_ls].norm(dim=-1).mean().item()
+                            _lv = _re.cup.data.root_lin_vel_w[_ls].norm(dim=-1).mean().item()
+                            _mimic_meas.setdefault("hold_angvel", []).append(_av)
+                            _mimic_meas.setdefault("hold_linvel", []).append(_lv)
+                    except Exception:
+                        pass
                     # 충분히 모이면 즉시 출력 후 강제 종료 (play.py loop-break가 pour continue로 무효)
                     # video 렌더 시엔 끝까지 돌려야 하므로 조기종료 안 함.
-                    if _mimic_meas["frames"] >= 40 and not args_cli.video:
+                    if _mimic_meas["frames"] >= 60 and not args_cli.video:
                         import numpy as _np, os as _os
                         print("\n" + "MIMICSUMMARY" + "=" * 55)
                         print("MIMIC 추종 측정 (실제 파지 중, num_contacts>=2 env 평균)")
@@ -638,6 +648,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                             _d = _np.mean(_mimic_meas["drive"][_n2]); _t = _np.mean(_mimic_meas["mimic_tgt"][_n2]); _a = _np.mean(_mimic_meas["mimic_act"][_n2]); _g = _a - _t
                             _v = "MOT-FOLLOW" if _g < -0.25 else ("FOLLOW" if abs(_g) < 0.25 else "OVER")
                             print(f"  {_n2:10s} {_d:8.3f} {_t:12.3f} {_a:10.3f} {_g:+8.3f}  {_v}")
+                        if _mimic_meas.get("hold_angvel"):
+                            _hav = _np.mean(_mimic_meas["hold_angvel"]); _hlv = _np.mean(_mimic_meas["hold_linvel"])
+                            print(f"  [HOLD 결정론 eval] cup_ang_vel={_hav:.3f} (임계 0.5), cup_lin_vel={_hlv:.4f} (임계 0.04)")
+                            print(f"    → {'안정(홀드 OK, 학습 1.67은 노이즈/artifact)' if _hav < 0.5 else '실제 굴림(홀드 불안정)'}")
                         print("MIMICSUMMARY" + "=" * 55, flush=True)
                         _os._exit(0)
             except SystemExit:
