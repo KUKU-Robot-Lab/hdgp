@@ -665,7 +665,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         pass
                     # 충분히 모이면 즉시 출력 후 강제 종료 (play.py loop-break가 pour continue로 무효)
                     # video 렌더 시엔 끝까지 돌려야 하므로 조기종료 안 함.
-                    if _mimic_meas["frames"] >= 60 and not args_cli.video:
+                    if _mimic_meas["frames"] >= 60 and not args_cli.video and _mimic_meas.get("_want_mimic_exit", False):
                         import numpy as _np, os as _os
                         print("\n" + "MIMICSUMMARY" + "=" * 55)
                         print("MIMIC 추종 측정 (실제 파지 중, num_contacts>=2 env 평균)")
