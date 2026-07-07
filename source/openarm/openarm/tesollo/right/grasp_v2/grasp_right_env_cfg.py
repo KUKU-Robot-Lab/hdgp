@@ -219,7 +219,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 파지력 확보: 물체 외란 wrench (DEXTRAH apply_object_wrench 이식).
     # 물체가 가만히 있으면 꽉 잡을 유인이 없음(grip 0.93) → 외란을 줘서 정책이 파지력 학습.
     wrench_enable: bool = True
-    wrench_max_accel: float = 3.0       # m/s² (작게 시작). force = object_mass × accel × 랜덤방향
+    wrench_max_accel: float = 10.0      # m/s² (DEXTRAH 수준, force~중력급 1N). 물체 실제 흔들려야 파지력 유인. force = object_mass × accel × 랜덤방향
     wrench_torsional_radius: float = 0.03  # torque = mass × accel × radius × 랜덤방향
     wrench_trigger_every: int = 60      # step(=1초 @60Hz)마다 새 랜덤 wrench
     grasp_ready_hold_steps: int = 8   # 접촉 N개를 연속 hold하면 lift 래치 (잡으면 바로 리프트)
