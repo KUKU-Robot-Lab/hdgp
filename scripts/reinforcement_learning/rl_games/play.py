@@ -533,6 +533,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     obs_groups = agent_cfg["params"]["env"].get("obs_groups")
     concate_obs_groups = agent_cfg["params"]["env"].get("concate_obs_groups", True)
 
+    # grasp_v2: hydra 가 MultiAssetSpawnerCfg.assets_cfg(중첩 SpawnerCfg list)를 dict 로
+    # 직렬화해 spawn 시 'dict has no attribute func' 로 깨지는 문제 → gym.make 직전 복원.
+    if str(args_cli.task).startswith("open-tesol_r_grasp_v2"):
+        from openarm.tesollo.right.grasp_v2.grasp_right_env_cfg import _GRASP_OBJECT_SPAWN
+        env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
