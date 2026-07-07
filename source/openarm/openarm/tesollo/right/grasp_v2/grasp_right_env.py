@@ -619,9 +619,16 @@ class GraspRightEnv(DirectRLEnv):
         num_envelope_fingers = (
             self.binary_contact_buf & self.middle_binary_contact_buf
         ).sum(dim=-1)
+        # lift 게이트: tip 개수(num_contacts)는 큰 물체에서 손끝이 반대편에 못 닿아 부당.
+        # → grip(tip|mid|distal 중 하나라도 닿은 손가락 수) 기준으로 파지를 인정(크기 무관).
+        num_grip_fingers_gate = (
+            self.binary_contact_buf
+            | self.middle_binary_contact_buf
+            | self.distal_binary_contact_buf
+        ).sum(dim=-1)
         prev_latched = self.lift_ready_latched_buf.clone()
         self.grasp_ready_hold_buf, _ready_now, lift_latched = compute_lift_readiness(
-            num_contacts=self.num_contacts_buf,
+            num_contacts=num_grip_fingers_gate,
             is_grasp_phase=~self.lift_ready_latched_buf,
             previous_hold_count=self.grasp_ready_hold_buf,
             previous_latched=self.lift_ready_latched_buf,
