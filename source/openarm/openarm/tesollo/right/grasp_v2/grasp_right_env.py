@@ -1068,14 +1068,13 @@ class GraspRightEnv(DirectRLEnv):
             cup_height_delta >= self.cfg.lift_success_height
         ).float().mean()
         self.extras["task/five_tip_contact_rate"] = full_tip_contact.mean()
-        self.extras["task/prelift_five_tip_contact_rate"] = full_tip_contact[
-            ~self.is_lift_phase
-        ].mean() if (~self.is_lift_phase).any() else torch.zeros((), device=self.device)
-        self.extras["task/lift_five_tip_contact_rate"] = full_tip_contact[
-            self.is_lift_phase
-        ].mean() if self.is_lift_phase.any() else torch.zeros((), device=self.device)
         self.extras["object/height_delta"] = cup_height_delta.mean()
         self.extras["object/tilt_deg"] = cup_tilt_deg.mean()
+        # DEXTRAH식 거리 진단: 손끝→물체중심(hand_to_object) / 물체→목표(object_to_goal)
+        self.extras["task/hand_to_object_dist"] = fingertip_side_dist.mean()
+        self.extras["task/object_to_goal_dist"] = (
+            self.object_pos - self.object_goal
+        ).norm(dim=-1).mean()
         # per-object 로깅: 물체별 lifted/five_tip/contact (env_id % N 배정)
         # (success 는 episode 누적이 아닌 순간값이라 제외 — 진짜 성공률은 episode_success_rate)
         _lifted_f   = (cup_height_delta >= self.cfg.lift_success_height).float()
@@ -1087,15 +1086,11 @@ class GraspRightEnv(DirectRLEnv):
                 self.extras[f"object/{_name}/five_tip"] = full_tip_contact[_m].mean()
                 self.extras[f"object/{_name}/contact"]  = _ncontact_f[_m].mean()
         self.extras["contact/count"] = self.num_contacts_buf.float().mean()
-        # 인벨롭 진단: 중간마디(_3)/원위(_4) 접촉 + 진짜 인벨롭(팁 AND 중간마디 동시) 측정
-        _tip = self.binary_contact_buf
+        # 접촉 진단: 중간마디(_3)/원위(_4) 접촉 카운트
         _mid = self.middle_binary_contact_buf
         _dist = self.distal_binary_contact_buf
         self.extras["contact/middle_count"] = _mid.float().sum(dim=-1).mean()
         self.extras["contact/distal_count"] = _dist.float().sum(dim=-1).mean()
-        _envelope_fingers = (_tip & _mid).float().sum(dim=-1)
-        self.extras["contact/envelope_finger_count"] = _envelope_fingers.mean()
-        self.extras["contact/full_envelope_rate"] = (_envelope_fingers >= 4).float().mean()
         # joint state(arm/finger per-joint) + action policy(palm 6D + finger 5D raw) 로깅
         _hand_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
         for k, v in joint_state_scalars(
