@@ -39,6 +39,11 @@ def build_codes(assets_dir: Path) -> list[str]:
             codes.append(f"primitive:{name}")
     # fallback primitive key
     codes.append("primitive:default")
+    # visdex object bank codes (if present)
+    visdex_root = assets_dir / "visdex_objects" / "USD"
+    if visdex_root.exists():
+        for name in sorted(p.name for p in visdex_root.iterdir() if p.is_dir()):
+            codes.append(f"visdex:{name}")
     # de-dup while preserving order
     seen = set()
     uniq = []

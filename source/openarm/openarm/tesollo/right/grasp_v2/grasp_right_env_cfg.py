@@ -244,6 +244,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_spawn_z:        float = 0.297
     # 활성 물체군(spawn 순서와 일치) — per-object 로깅용 이름. env_id % N 로 배정.
     active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
+    # 물체 조건 feature(접근 B) lookup용 code 접두사: primitives="primitive", visdex="visdex".
+    object_code_prefix: str = "primitive"
+    object_feature_path: str = _os.path.join(
+        _ASSETS_DIR, "object_pc_features", "openarm_right_object_code_feat_dim64.pt"
+    )
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
 
     # -----------------------------------------------------------------------

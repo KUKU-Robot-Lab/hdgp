@@ -258,6 +258,15 @@ class GraspRightEnv(DirectRLEnv):
         self.object_idx = (
             torch.arange(self.num_envs, device=self.device) % len(self._object_names)
         )
+        # 물체 조건 feature(접근 B): object_idx → code → sha256 feature(64D).
+        _fmap = torch.load(self.cfg.object_feature_path, map_location=self.device)
+        _c2i = _fmap["code_to_index"]
+        _features = _fmap["features"].to(self.device)   # (num_codes, 64)
+        _prefix = self.cfg.object_code_prefix
+        _feat_rows = torch.stack([
+            _features[_c2i[f"{_prefix}:{_n}"]] for _n in self._object_names
+        ], dim=0)   # (N_obj, 64)
+        self.object_feature = _feat_rows[self.object_idx]   # (num_envs, 64), reset 불변
         self.palm_center_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.fingertip_pos   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.distal4_pos     = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
@@ -859,7 +868,8 @@ class GraspRightEnv(DirectRLEnv):
             cup_to_fingertip,       # 15
             binary_contact,         # 5
             last_actions,           # 11
-        ], dim=-1)   # 106D
+            self.object_feature,    # 64 (물체 조건 feature, 접근 B)
+        ], dim=-1)   # 170D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -910,10 +920,11 @@ class GraspRightEnv(DirectRLEnv):
             (fingertip_pos_clean - cup_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
             binary_contact,
             last_actions,
-        ], dim=-1)   # 106D
+            self.object_feature,    # 64 (물체 조건 feature, 접근 B)
+        ], dim=-1)   # 170D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 106
+            actor_obs_clean,        # 170
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4

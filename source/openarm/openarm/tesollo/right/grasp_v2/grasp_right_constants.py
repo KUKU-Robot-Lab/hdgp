@@ -82,11 +82,12 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 106        # Actor: sim2real 가능
+OBJECT_FEATURE_DIM = 64       # 물체 조건 feature (sha256 ID 구분자, 접근 B/visdex)
+NUM_OBSERVATIONS = 106 + OBJECT_FEATURE_DIM   # 170 = base 106 + 물체 feature 64
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 37
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 143
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 207
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
