@@ -356,6 +356,11 @@ class GraspRightEnv(DirectRLEnv):
         self.object_to_goal_pos_error = torch.zeros(self.num_envs, device=self.device)
         self.object_vertical_error    = torch.zeros(self.num_envs, device=self.device)
 
+        # 실험3b: apply_object_wrench 외란 버퍼 (firm grip)
+        self.object_applied_force  = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self.object_applied_torque = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self._object_mass = None   # get_masses() 1회 캐시(매 step CPU 조회 방지 → fps)
+
         # ----------------------------------------------------------------
         # Pregrasp / Lift 버퍼
         # ----------------------------------------------------------------
@@ -1149,6 +1154,53 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
+        # 실험3b: 파지 시 랜덤 외란(firm grip 강제, DEXTRAH apply_object_wrench)
+        self._apply_object_wrench()
+
+    def _apply_object_wrench(self) -> None:
+        """손이 물체를 잡았을 때(hand_to_object<threshold) 랜덤 force/torque 외란 →
+        정책이 물체를 goal 로 옮기려면 견디며 꽉 잡아야 함(firm grip 간접학습). 외란 크기는
+        ADR(object_wrench.max_linear_accel)로 0→강 점증. DEXTRAH apply_object_wrench 이식."""
+        if not self.cfg.enable_object_wrench:
+            return
+        # ADR increment 0(외란 크기 0) 단계에선 set/write_data_to_sim 스킵 → fps 정상 유지.
+        # lifted_rate 가 threshold 넘어 increment 시작되면 외란 켜짐(firm grip 단계).
+        if self.grasp_adr is None or self.grasp_adr.increment_counter == 0:
+            return
+        # object mass (N,1) — MultiAsset 이라 env 마다 다름. 물체 고정이라 1회만 조회·캐시.
+        if self._object_mass is None:
+            self._object_mass = self.cup.root_physx_view.get_masses().to(self.device)[:, 0:1]
+        object_mass = self._object_mass
+        max_accel = (
+            self.grasp_adr.get_param("object_wrench", "max_linear_accel")
+            if self.grasp_adr is not None else 0.0
+        )
+        linear_accel = max_accel * torch.rand(self.num_envs, 1, device=self.device)
+        max_force  = (linear_accel * object_mass).unsqueeze(2)                          # (N,1,1)
+        max_torque = (object_mass * linear_accel * self.cfg.torsional_radius).unsqueeze(2)
+
+        def _rand_dir() -> torch.Tensor:
+            v = torch.randn(self.num_envs, 1, 3, device=self.device)
+            return v / v.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+
+        forces  = max_force  * _rand_dir()
+        torques = max_torque * _rand_dir()
+
+        # wrench_trigger_every step 마다 새 방향, 그 외엔 유지
+        new_dir = (self.episode_length_buf.view(-1, 1, 1) % int(self.cfg.wrench_trigger_every)) == 0
+        self.object_applied_force  = torch.where(new_dir, forces,  self.object_applied_force)
+        self.object_applied_torque = torch.where(new_dir, torques, self.object_applied_torque)
+
+        # 손이 물체를 잡았을 때만 외란 적용(아니면 0)
+        applied = (self.hand_to_object_pos_error <= self.cfg.hand_to_object_dist_threshold)[:, None, None]
+        self.object_applied_force  = torch.where(applied, self.object_applied_force,  torch.zeros_like(self.object_applied_force))
+        self.object_applied_torque = torch.where(applied, self.object_applied_torque, torch.zeros_like(self.object_applied_torque))
+
+        self.cup.set_external_force_and_torque(
+            forces=self.object_applied_force, torques=self.object_applied_torque
+        )
+        self.cup.write_data_to_sim()
+
     def _apply_action(self) -> None:
         """fabric cspace(arm 7 + hand 6) -> 로봇 관절 target. mimic 원위는 drive 추종."""
         # 오른팔
@@ -1432,6 +1484,14 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["metric/object_to_goal_err"] = self.object_to_goal_pos_error.mean()
         self.extras["metric/object_height"] = self.object_pos[:, 2].mean()
         self.extras["metric/in_success_rate"] = in_success.float().mean()
+
+        # 실험3b: wrench ADR 커리큘럼 — lifted_rate 가 threshold 넘으면 외란 난이도 점증(firm grip 강화)
+        lifted_rate = (self.object_pos[:, 2] > self.cfg.wrench_lifted_z).float().mean()
+        self.extras["metric/lifted_rate"] = lifted_rate
+        if self.grasp_adr is not None:
+            self.grasp_adr.maybe_increment(lifted_rate)
+            self.extras["adr/increment"] = float(self.grasp_adr.increment_counter)
+            self.extras["adr/wrench_accel"] = self.grasp_adr.get_param("object_wrench", "max_linear_accel")
 
         return total_reward
 

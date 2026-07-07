@@ -460,7 +460,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     enable_adr:            bool  = True
     adr_num_increments:    int   = 50
     adr_increment_interval: int  = 400
-    adr_trigger_threshold: float = 0.8   # 80% 성공률에서 진행 (contact 학습 후)
+    # 실험3b: wrench 커리큘럼 트리거 = lifted_rate. 리프트 30% 달성 시 난이도(외란)↑.
+    adr_trigger_threshold: float = 0.3   # lifted_rate 30%에서 ADR increment (외란 점증)
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "spawn": {
@@ -474,6 +475,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         },
         "reward_weights": {
             "enclosure_weight": (10.0, 20.0),
+        },
+        # 실험3b: apply_object_wrench 외란 크기 ADR 점증(0→강). firm grip 커리큘럼.
+        # lifted_rate>=trigger_threshold 마다 increment → 외란 강화 → 정책이 더 꽉 잡아야 함.
+        "object_wrench": {
+            "max_linear_accel": (0.0, 10.0),
         },
     })
 
@@ -497,6 +503,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_spawn_z:        float = 0.30    # DEXTRAH drop height(크기무관 고정). settle 로 안착.
     object_spawn_xy_range: float = 0.06
     settle_steps:          int   = 25      # episode 초기 N step 손 pregrasp 유지 + PCA close 억제 → 낙하 안착
+
+    # --- 실험3b: apply_object_wrench (firm grip, DEXTRAH 이식) ---
+    # 손이 물체를 잡았을 때(hand_to_object<threshold) 랜덤 외란 힘/토크 → 정책이 견디며 꽉 잡아야 함.
+    enable_object_wrench:          bool  = True
+    wrench_trigger_every:          int   = 60      # step(1s@60Hz)마다 새 외란 방향
+    torsional_radius:              float = 0.01     # m (토크 = mass·accel·radius)
+    hand_to_object_dist_threshold: float = 0.15     # 이 거리 이내(파지)일때만 외란 (MAX거리 스케일)
+    wrench_lifted_z:               float = 0.26     # object z > 이면 lifted (ADR 트리거 metric)
 
     # -------- DEXTRAH goal-driven reward/goal (Phase4 에서 weight 튜닝 + reward-audit) --------
     # 물체를 goal 위치로 옮겨 들어올리는 태스크. weight/sharpness = DEXTRAH 기본값(dextrah_kuka_allegro).
