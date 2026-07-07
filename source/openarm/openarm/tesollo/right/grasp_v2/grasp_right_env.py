@@ -1086,16 +1086,18 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/object_to_goal_dist"] = (
             self.object_pos - self.object_goal
         ).norm(dim=-1).mean()
-        # per-object 로깅: 물체별 lifted/five_tip/contact (env_id % N 배정)
-        # (success 는 episode 누적이 아닌 순간값이라 제외 — 진짜 성공률은 episode_success_rate)
-        _lifted_f   = (cup_height_delta >= self.cfg.lift_success_height).float()
-        _ncontact_f = self.num_contacts_buf.float()
-        for _i, _name in enumerate(self._object_names):
-            _m = self.object_idx == _i
-            if _m.any():
-                self.extras[f"object/{_name}/lifted"]   = _lifted_f[_m].mean()
-                self.extras[f"object/{_name}/five_tip"] = full_tip_contact[_m].mean()
-                self.extras[f"object/{_name}/contact"]  = _ncontact_f[_m].mean()
+        # per-object 로깅: 물체별 lifted/five_tip/contact (env_id % N 배정).
+        # 물체 수 적을 때만(visdex 153종은 태그 과다 → 전체 object/ 집계만).
+        # (success 는 순간값이라 제외 — 진짜 성공률은 episode_success_rate)
+        if len(self._object_names) <= 16:
+            _lifted_f   = (cup_height_delta >= self.cfg.lift_success_height).float()
+            _ncontact_f = self.num_contacts_buf.float()
+            for _i, _name in enumerate(self._object_names):
+                _m = self.object_idx == _i
+                if _m.any():
+                    self.extras[f"object/{_name}/lifted"]   = _lifted_f[_m].mean()
+                    self.extras[f"object/{_name}/five_tip"] = full_tip_contact[_m].mean()
+                    self.extras[f"object/{_name}/contact"]  = _ncontact_f[_m].mean()
         self.extras["contact/count"] = self.num_contacts_buf.float().mean()
         # 접촉 진단: 중간마디(_3)/원위(_4) 접촉 카운트
         _mid = self.middle_binary_contact_buf

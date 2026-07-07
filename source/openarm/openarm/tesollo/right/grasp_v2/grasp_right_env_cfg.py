@@ -69,13 +69,23 @@ _PRIMITIVE_ALL: tuple[str, ...] = _PRIMITIVE_CURRICULUM_STAGE1 + (
 )
 
 # 현재 활성 물체군(초기 학습 = STAGE1).
-_ACTIVE_OBJECT_NAMES: tuple[str, ...] = _PRIMITIVE_CURRICULUM_STAGE1
+# visdex 실물 뱅크(접근 B): 디렉토리 스캔. code = "visdex:<name>".
+_VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
+_VISDEX_NAMES: tuple[str, ...] = tuple(sorted(
+    _n for _n in _os.listdir(_VISDEX_ROOT)
+    if _os.path.isdir(_os.path.join(_VISDEX_ROOT, _n))
+)) if _os.path.isdir(_VISDEX_ROOT) else ()
+
+# 활성 물체군: visdex 153종. primitives 로 되돌리려면
+#   _ACTIVE_OBJECT_ROOT = primitives/USD, _ACTIVE_OBJECT_NAMES = _PRIMITIVE_CURRICULUM_STAGE1, prefix=primitive.
+_ACTIVE_OBJECT_ROOT: str = _VISDEX_ROOT
+_ACTIVE_OBJECT_NAMES: tuple[str, ...] = _VISDEX_NAMES
 
 
 def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":
-    """단일 primitive USD 의 spawn cfg (cup 과 동일 rigid/articulation 속성)."""
+    """단일 물체 USD 의 spawn cfg (cup 과 동일 rigid/articulation 속성)."""
     return sim_utils.UsdFileCfg(
-        usd_path=_os.path.join(_ASSETS_DIR, "primitives/USD", name, f"{name}.usd"),
+        usd_path=_os.path.join(_ACTIVE_OBJECT_ROOT, name, f"{name}.usd"),
         activate_contact_sensors=True,
         scale=(1.0, 1.0, 1.0),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
@@ -245,7 +255,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 활성 물체군(spawn 순서와 일치) — per-object 로깅용 이름. env_id % N 로 배정.
     active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
     # 물체 조건 feature(접근 B) lookup용 code 접두사: primitives="primitive", visdex="visdex".
-    object_code_prefix: str = "primitive"
+    object_code_prefix: str = "visdex"
     object_feature_path: str = _os.path.join(
         _ASSETS_DIR, "object_pc_features", "openarm_right_object_code_feat_dim64.pt"
     )
