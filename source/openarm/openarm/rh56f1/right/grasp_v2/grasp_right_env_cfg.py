@@ -193,9 +193,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # PCA 복귀: hand_mode="pca" + constants NUM_ACTIONS 11 + _pre_physics scale 되돌림.
     use_hand_fabric:            bool  = True
     hand_mode:                  str   = "direct"
-    # 실험2(접근각 자유화): side-grasp 규약(ez180/ey0/ex90) ±45 → ±90 확대.
-    # ex 0~180° 열려 테이블 위 물체 top-down 파지 가능(palm 과굴곡 완화). 복귀=45.0.
-    max_pose_angle:             float = 90.0
+    # 실험2→3a(접근각): ±90 은 top 파지 확보하나 fabric IK 부하로 fps 급락 → ±70 로 축소.
+    # ex 20~160° 유지(top-down 커버) + fps 회복. 복귀=45.0(side 전용).
+    max_pose_angle:             float = 70.0
     fabrics_max_objects_per_env: int  = 8   # open_tesollo_boxes_no_table 객체 7개 → ≥7 필요
     fabrics_damping_gain:       float = 20.0
     stabilize_upright_orientation_enabled: bool = True
