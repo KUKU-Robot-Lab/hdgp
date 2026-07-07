@@ -1076,9 +1076,9 @@ class GraspRightEnv(DirectRLEnv):
         ].mean() if self.is_lift_phase.any() else torch.zeros((), device=self.device)
         self.extras["object/height_delta"] = cup_height_delta.mean()
         self.extras["object/tilt_deg"] = cup_tilt_deg.mean()
-        # per-object 로깅: 물체별 lifted/five_tip/contact/success (env_id % N 배정)
+        # per-object 로깅: 물체별 lifted/five_tip/contact (env_id % N 배정)
+        # (success 는 episode 누적이 아닌 순간값이라 제외 — 진짜 성공률은 episode_success_rate)
         _lifted_f   = (cup_height_delta >= self.cfg.lift_success_height).float()
-        _success_f  = success_now.float()
         _ncontact_f = self.num_contacts_buf.float()
         for _i, _name in enumerate(self._object_names):
             _m = self.object_idx == _i
@@ -1086,7 +1086,6 @@ class GraspRightEnv(DirectRLEnv):
                 self.extras[f"object/{_name}/lifted"]   = _lifted_f[_m].mean()
                 self.extras[f"object/{_name}/five_tip"] = full_tip_contact[_m].mean()
                 self.extras[f"object/{_name}/contact"]  = _ncontact_f[_m].mean()
-                self.extras[f"object/{_name}/success"]  = _success_f[_m].mean()
         self.extras["contact/count"] = self.num_contacts_buf.float().mean()
         # 인벨롭 진단: 중간마디(_3)/원위(_4) 접촉 + 진짜 인벨롭(팁 AND 중간마디 동시) 측정
         _tip = self.binary_contact_buf
@@ -1097,30 +1096,14 @@ class GraspRightEnv(DirectRLEnv):
         _envelope_fingers = (_tip & _mid).float().sum(dim=-1)
         self.extras["contact/envelope_finger_count"] = _envelope_fingers.mean()
         self.extras["contact/full_envelope_rate"] = (_envelope_fingers >= 4).float().mean()
-        # 엄지(idx0) 컵 접촉 진단: distal/middle 이 Cup-only 필터가 됐으므로 모두 진짜 컵 접촉.
-        # cup_any = success 게이트가 요구하는 엄지 grip(tip|mid|distal). 재실험 핵심 검증 지표.
-        self.extras["debug/thumb/cup_tip"] = _tip[:, 0].float().mean()
-        self.extras["debug/thumb/cup_mid"] = _mid[:, 0].float().mean()
-        self.extras["debug/thumb/cup_dist"] = _dist[:, 0].float().mean()
-        self.extras["debug/thumb/cup_any"] = (
-            _tip[:, 0] | _mid[:, 0] | _dist[:, 0]
-        ).float().mean()
-        # 엄지 자세 진단(play 렌더 "엄지 뒤로 돌아감" 학습 중 추적): 실제 관절각 vs 대향 타깃(-1.57)
-        # hand_dof_indices는 finger-major [_1,_2,_3,_4]×5 → index 0=엄지_1(회전), 1=엄지_2(대향)
-        _hand_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
-        self.extras["debug/thumb/j1_pos"] = _hand_pos[:, 0].mean()
-        self.extras["debug/thumb/j2_pos"] = _hand_pos[:, 1].mean()
-        # 대향(-1.57)에서 뒤로(양의 방향=0쪽) 밀린 양. ~0이면 유지, 크면 엄지 뒤로 돌아감.
-        self.extras["debug/thumb/j2_backward_gap"] = (
-            (_hand_pos[:, 1] + 1.57).clamp(min=0.0).mean()
-        )
         # joint state(arm/finger per-joint) + action policy(palm 6D + finger 5D raw) 로깅
+        _hand_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
         for k, v in joint_state_scalars(
             arm_pos=self.robot.data.joint_pos[:, self.arm_dof_indices],
             arm_vel=self.robot.data.joint_vel[:, self.arm_dof_indices],
             finger_pos=_hand_pos,
             finger_vel=self.robot.data.joint_vel[:, self.hand_dof_indices],
-            per_joint=True,
+            per_joint=False,  # grasp_v2: per-joint(q0~q19, j1~j7) 상세는 grasp_v1 디버깅용 → 요약만
         ).items():
             self.extras[k] = v
         for k, v in action_policy_scalars(
