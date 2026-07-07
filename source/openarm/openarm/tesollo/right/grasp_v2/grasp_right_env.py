@@ -253,6 +253,11 @@ class GraspRightEnv(DirectRLEnv):
         self.object_pos      = torch.zeros(self.num_envs, 3, device=self.device)
         self.object_rot      = torch.zeros(self.num_envs, 4, device=self.device)
         self.object_init_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        # per-object 로깅: MultiAsset(random_choice=False)는 env_id % N 로 물체 배정.
+        self._object_names = list(self.cfg.active_object_names)
+        self.object_idx = (
+            torch.arange(self.num_envs, device=self.device) % len(self._object_names)
+        )
         self.palm_center_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.fingertip_pos   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.distal4_pos     = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
@@ -1069,8 +1074,19 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/lift_five_tip_contact_rate"] = full_tip_contact[
             self.is_lift_phase
         ].mean() if self.is_lift_phase.any() else torch.zeros((), device=self.device)
-        self.extras["cup/height_delta"] = cup_height_delta.mean()
-        self.extras["cup/tilt_deg"] = cup_tilt_deg.mean()
+        self.extras["object/height_delta"] = cup_height_delta.mean()
+        self.extras["object/tilt_deg"] = cup_tilt_deg.mean()
+        # per-object 로깅: 물체별 lifted/five_tip/contact/success (env_id % N 배정)
+        _lifted_f   = (cup_height_delta >= self.cfg.lift_success_height).float()
+        _success_f  = success_now.float()
+        _ncontact_f = self.num_contacts_buf.float()
+        for _i, _name in enumerate(self._object_names):
+            _m = self.object_idx == _i
+            if _m.any():
+                self.extras[f"object/{_name}/lifted"]   = _lifted_f[_m].mean()
+                self.extras[f"object/{_name}/five_tip"] = full_tip_contact[_m].mean()
+                self.extras[f"object/{_name}/contact"]  = _ncontact_f[_m].mean()
+                self.extras[f"object/{_name}/success"]  = _success_f[_m].mean()
         self.extras["contact/count"] = self.num_contacts_buf.float().mean()
         # 인벨롭 진단: 중간마디(_3)/원위(_4) 접촉 + 진짜 인벨롭(팁 AND 중간마디 동시) 측정
         _tip = self.binary_contact_buf

@@ -92,10 +92,11 @@ def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":
     )
 
 
-# env 마다 랜덤 물체 선택(random_choice). replicate_physics=False 필요.
+# env 별 물체를 env_id % N 로 결정적 배정(random_choice=False → proto[index % len]).
+# → per-object 로깅(object_idx = arange(num_envs) % N)과 균등 배정 보장. replicate_physics=False 필요.
 _GRASP_OBJECT_SPAWN = sim_utils.MultiAssetSpawnerCfg(
     assets_cfg=[_primitive_usd_cfg(_n) for _n in _ACTIVE_OBJECT_NAMES],
-    random_choice=True,
+    random_choice=False,
 )
 
 
@@ -241,6 +242,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
     object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
     object_spawn_z:        float = 0.297
+    # 활성 물체군(spawn 순서와 일치) — per-object 로깅용 이름. env_id % N 로 배정.
+    active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
     object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
 
     # -----------------------------------------------------------------------
