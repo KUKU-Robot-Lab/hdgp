@@ -193,9 +193,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # PCA 복귀: hand_mode="pca" + constants NUM_ACTIONS 11 + _pre_physics scale 되돌림.
     use_hand_fabric:            bool  = True
     hand_mode:                  str   = "direct"
-    # 실험2→3a(접근각): ±90 은 top 파지 확보하나 fabric IK 부하로 fps 급락 → ±70 로 축소.
-    # ex 20~160° 유지(top-down 커버) + fps 회복. 복귀=45.0(side 전용).
-    max_pose_angle:             float = 70.0
+    # 실험3c: ±70 은 fps 회복하나 리프트 상실(3a/3b 확인: top-down 부족 ex 20~160°).
+    # ±90(ex 0~180° 완전 top-down)이 리프트 확보(실험2 object_height 0.269) → 90 복귀 + wrench 유지.
+    # fps 낮으나(6k) 리프트 되는 베이스 확보 우선. 복귀=45.0(side 전용).
+    max_pose_angle:             float = 90.0
     fabrics_max_objects_per_env: int  = 8   # open_tesollo_boxes_no_table 객체 7개 → ≥7 필요
     fabrics_damping_gain:       float = 20.0
     stabilize_upright_orientation_enabled: bool = True
