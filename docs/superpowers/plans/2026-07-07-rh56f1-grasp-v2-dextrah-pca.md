@@ -104,3 +104,37 @@
 
 ## 순서
 **Phase 1(inspire PCA + firm 존재 검증 — 학습 전 방향 판정)** → 2(fabric PCA) → 3(env 이식) → 4(reward/ADR) → 5(학습·검증). Phase 1에서 "firm이 PCA 공간에 있는가"를 싸게 먼저 확인하는 게 전체 성패의 관건.
+
+---
+
+## Phase 3 이식 설계 (2026-07-07 확정 · 실행 중)
+
+**사용자 결정:** ① 베이스=grasp_v1 복사 후 개조(rh56f1 fabric/USD/joint 인프라 재사용). ② 물체=primitives 다물체 즉시 도입(MultiAsset + DEXTRAH drop). tesollo grasp_v2의 MultiAsset/drop-settle 자산 참고.
+
+**폴더:** `source/openarm/openarm/rh56f1/right/grasp_v2/` (grasp_v1 전체 복사). gym id `open-rh56f1_r_grasp_v2`(+lstm/play/play-lstm) — config/__init__.py 등록 완료(자동발견 glob).
+
+**핵심 원칙:** grasp_v1의 **인프라 유지**(`__init__`, `_setup_scene`, `_setup_geometric_fabrics`, reset fabric IK, robot/joint indices), **핵심 6메서드는 DEXTRAH 구조로 교체**. 컵특화 phase(approach/grasp/lift/stabilize)·envelope synergy·접촉 reward 전면 제거.
+
+### DEXTRAH → rh56f1 이식 매핑 (원본 dextrah_kuka_allegro_env.py)
+| 항목 | DEXTRAH(kuka) | rh56f1 grasp_v2 |
+|-----|--------------|-----------------|
+| action | 11D=palm6+PCA5, `compute_actions`가 각각 limits로 scale | 동일 11D. palm→palm_pose_targets(palm_pose_mins/maxs), PCA5→hand_pca_targets(pt `pca_action_mins/maxs`) |
+| fabric | kuka fabric, `set_features(pca,palm,...)` | `OpenArmRh56f1PoseFabric(use_hand_fabric=True, hand_mode="pca")`. set_features hand_target=(B,5) |
+| `_pre_physics_step` | phase 없음: compute_actions→set_features→integrate decimation | 동일. grasp_v1의 phase/synergy/thumb-freeze 전량 제거 |
+| `_apply_action` | fabric_q→dof_pos/vel_targets(arm+hand 전체) | fabric_q[:, :13] arm+hand 전체를 로봇에 세팅(mimic은 fabric이 drive6 목표→sim mimic 추종). 왼팔 고정 |
+| reward | hand_to_object + object_to_goal + finger_curl_reg + lift | `compute_rewards` 그대로 이식. weight=Phase4 |
+| hand_to_object | `hand_pos`(fingertip+palm keypoints)와 object 거리 **MAX** | rh56f1: fingertip5+palm_center → object_pos MAX거리 |
+| object_goal | 고정 `[-0.5,0,0.75]` | rh56f1 workspace 맞게 조정(Phase4). 우선 고정값 |
+| curled_q | nominal curl(16 hand dof) | rh56f1 6-drive curl 자세(hand_grasp_pose 근처) |
+| dones | out_of_reach(xy범위 or z<0.2) \| time_out | 동일. cup_tipping 등 접촉 dones 제거 |
+| reset | object xy랜덤+z=0.5 drop+rot랜덤, goal고정 | tesollo grasp_v2 방식: MultiAsset spawn + object_spawn_z drop + settle_steps. 손 pregrasp fabric IK |
+| obs | dof/hand_pos/goal/actions/fabric_q/qd/qdd | grasp_v1 96D 골격 유지+개조: last_actions 12→11, **object_goal 3D 추가**, cup→object 개념, 접촉 obs는 net_forces 또는 제거(Phase4 확정). NUM_OBSERVATIONS 재계산 |
+
+### Phase 3 실행 순서 (완결 단위)
+1. ✅ 폴더 복사 + config 등록(open-rh56f1_r_grasp_v2 4종)
+2. constants.py: NUM_FINGER_ACTION 6→NUM_HAND_PCA 5, NUM_ACTIONS 11, HAND_PCA_MINS/MAXS(pt), obs 차원 재계산
+3. env_cfg.py: num_actions=11, fabric use_hand_fabric=True/hand_mode=pca, cup→MultiAsset primitives, replicate_physics=False, object_spawn_z/settle_steps, reward/goal 파라미터, ContactSensor 다물체(net_forces or 제거)
+4. env.py: _pre_physics_step/_apply_action(phase제거+PCA), _get_rewards(compute_rewards), _get_observations(goal추가/action11), _reset_idx(drop-settle+goal), _get_dones(out_of_reach). fabric setup use_hand_fabric=True
+5. 정적 검증: import/register, action==11 계약, (GPU)env 생성
+
+**Phase 3 검증 목표(계획 원문):** 정적 env 생성, 차원계약(action 11), import/register. reward weight 튜닝·학습은 Phase4~5. 단 다물체+PCA+goal-driven 구조가 정적으로 성립하는 최소 골격까지가 Phase3.
