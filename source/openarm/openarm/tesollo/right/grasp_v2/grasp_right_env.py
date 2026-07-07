@@ -765,8 +765,13 @@ class GraspRightEnv(DirectRLEnv):
         # 관절별 동결 게이트 (local 0=_1, 1=_2, 2=_3 PIP, 3=_4 DIP)
         g1 = torch.zeros_like(tip_c)                                # _1: 무게이트
         g2 = torch.zeros_like(tip_c)                                # _2 MCP: 무게이트(full close)
-        g3 = mid_c                                                  # _3 PIP: 중간마디 접촉 시 동결
-        g4 = (dist_c + tip_c).clamp(max=1.0)                        # _4 DIP: distal|tip 접촉 시 동결
+        if self.cfg.synergy_freeze_enable:
+            g3 = mid_c                                              # _3 PIP: 중간마디 접촉 시 동결
+            g4 = (dist_c + tip_c).clamp(max=1.0)                    # _4 DIP: distal|tip 접촉 시 동결
+        else:
+            # 동결 제거: 손가락이 물체를 계속 조임(물리 collision이 관통/형상적응 담당) → 파지력.
+            g3 = torch.zeros_like(tip_c)
+            g4 = torch.zeros_like(tip_c)
         gate20 = torch.stack([g1, g2, g3, g4], dim=2).reshape(self.num_envs, -1)  # (N,20)
         cmd20 = cmd.repeat_interleave(4, dim=1)                     # (N,20) 손가락 명령 → 4관절
         advance = float(self.cfg.finger_close_speed) * cmd20 * (1.0 - gate20)
