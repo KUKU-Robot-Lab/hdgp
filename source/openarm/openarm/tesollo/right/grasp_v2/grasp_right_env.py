@@ -1111,6 +1111,8 @@ class GraspRightEnv(DirectRLEnv):
         _dist = self.distal_binary_contact_buf
         self.extras["contact/middle_count"] = _mid.float().sum(dim=-1).mean()
         self.extras["contact/distal_count"] = _dist.float().sum(dim=-1).mean()
+        # grip(tip|mid|distal 감싼 손가락 수) = lift 게이트 기준. min_contacts 적정성 진단.
+        self.extras["contact/grip_fingers"] = num_grip_fingers.float().mean()
         # joint state(arm/finger per-joint) + action policy(palm 6D + finger 5D raw) 로깅
         _hand_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
         for k, v in joint_state_scalars(
