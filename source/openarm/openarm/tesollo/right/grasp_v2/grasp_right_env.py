@@ -267,6 +267,10 @@ class GraspRightEnv(DirectRLEnv):
             _features[_c2i[f"{_prefix}:{_n}"]] for _n in self._object_names
         ], dim=0)   # (N_obj, 64)
         self.object_feature = _feat_rows[self.object_idx]   # (num_envs, 64), reset 불변
+        # 파지력 확보: 외란 wrench 버퍼 + 물체 질량 (DEXTRAH apply_object_wrench)
+        self.object_applied_force  = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self.object_applied_torque = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self._cup_mass = self.cup.root_physx_view.get_masses().to(self.device)  # (N, 1)
         self.palm_center_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.fingertip_pos   = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
         self.distal4_pos     = torch.zeros(self.num_envs, NUM_FINGERTIPS, 3, device=self.device)
@@ -605,9 +609,51 @@ class GraspRightEnv(DirectRLEnv):
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
 
     # ------------------------------------------------------------------
+    # 파지력 확보: 물체 외란 wrench (DEXTRAH apply_object_wrench 이식)
+    # ------------------------------------------------------------------
+    def _apply_object_wrench(self) -> None:
+        # 잡기 시작(grip>=1 손가락 접촉)일 때만 외란 인가 → 정책이 놓치지 않게 파지력 학습.
+        num_grip = (
+            self.binary_contact_buf
+            | self.middle_binary_contact_buf
+            | self.distal_binary_contact_buf
+        ).sum(dim=-1)
+        apply = (num_grip >= 1).view(-1, 1, 1)
+        # trigger_every step 마다 새 랜덤 wrench (그 사이 유지)
+        new_trig = (
+            (self.episode_length_buf % int(self.cfg.wrench_trigger_every)) == 0
+        ).view(-1, 1, 1)
+        accel = float(self.cfg.wrench_max_accel) * torch.rand(
+            self.num_envs, 1, 1, device=self.device
+        )
+        fmag = accel * self._cup_mass.view(-1, 1, 1)                       # F = m·a
+        tmag = fmag * float(self.cfg.wrench_torsional_radius)              # τ = m·a·r
+
+        def _rand_dir() -> torch.Tensor:
+            d = torch.randn(self.num_envs, 1, 3, device=self.device)
+            return d / d.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+
+        f = fmag * _rand_dir()
+        t = tmag * _rand_dir()
+        self.object_applied_force = torch.where(new_trig, f, self.object_applied_force)
+        self.object_applied_torque = torch.where(new_trig, t, self.object_applied_torque)
+        # 파지 전(grip<1) env 는 wrench 0
+        self.object_applied_force = torch.where(
+            apply, self.object_applied_force, torch.zeros_like(self.object_applied_force)
+        )
+        self.object_applied_torque = torch.where(
+            apply, self.object_applied_torque, torch.zeros_like(self.object_applied_torque)
+        )
+        self.cup.set_external_force_and_torque(
+            self.object_applied_force, self.object_applied_torque
+        )
+
+    # ------------------------------------------------------------------
     # Physics step
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        if self.cfg.wrench_enable:
+            self._apply_object_wrench()
         self.prev_actions.copy_(self.actions)
         self.actions = actions.clone()
 
@@ -1113,6 +1159,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["contact/distal_count"] = _dist.float().sum(dim=-1).mean()
         # grip(tip|mid|distal 감싼 손가락 수) = lift 게이트 기준. min_contacts 적정성 진단.
         self.extras["contact/grip_fingers"] = num_grip_fingers.float().mean()
+        # 외란 wrench 크기 진단 (파지력 학습 강제)
+        self.extras["wrench/force_mag"] = self.object_applied_force.norm(dim=-1).mean()
         # joint state(arm/finger per-joint) + action policy(palm 6D + finger 5D raw) 로깅
         _hand_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
         for k, v in joint_state_scalars(

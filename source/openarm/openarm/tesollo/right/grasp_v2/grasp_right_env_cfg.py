@@ -216,6 +216,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stability_action_delta_threshold: float = 0.2
     stage0_lift_start_min_contacts: int = 2  # lift 진입: grip(tip|mid|distal) 손가락 수. visdex 큰물체 2~3 파지 대응(4→3→2, 엄지+1).
     success_min_grip_fingers: int = 3  # success 그립 손가락 수(grip 기준, 엄지 접촉 AND). 큰 물체 대응(4→3).
+    # 파지력 확보: 물체 외란 wrench (DEXTRAH apply_object_wrench 이식).
+    # 물체가 가만히 있으면 꽉 잡을 유인이 없음(grip 0.93) → 외란을 줘서 정책이 파지력 학습.
+    wrench_enable: bool = True
+    wrench_max_accel: float = 3.0       # m/s² (작게 시작). force = object_mass × accel × 랜덤방향
+    wrench_torsional_radius: float = 0.03  # torque = mass × accel × radius × 랜덤방향
+    wrench_trigger_every: int = 60      # step(=1초 @60Hz)마다 새 랜덤 wrench
     grasp_ready_hold_steps: int = 8   # 접촉 N개를 연속 hold하면 lift 래치 (잡으면 바로 리프트)
     lift_start_min_envelope_fingers: int = 0  # latch 인벨롭 게이트 제거(0=비활성). envelope은 grasp/lift 보상 credit으로 유도(hard 게이트 대체)
     finger_close_speed: float = 0.05  # ① 접촉-게이트 적응 폐쇄: 손가락 폐쇄 진행 속도/step (중간마디 접촉 시 동결)
