@@ -647,8 +647,9 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qd  = torch.zeros(self.num_envs, num_joints, device=self.device)
         self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
 
-        # grasp_v2: use_hand_fabric=True + hand_mode="pca" → hand_target 은 5D PCA action.
-        self.hand_pca_targets  = torch.zeros(self.num_envs, NUM_HAND_PCA, device=self.device)
+        # 실험1 direct: hand_target 은 6D drive 관절 목표(hand_mode="direct").
+        # (PCA 복귀 시 NUM_HAND_PCA=5). use_hand_fabric=True → fabric 이 손 제어.
+        self.hand_pca_targets  = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
         self.palm_pose_targets = torch.zeros(self.num_envs, 6, device=self.device)
         self.fabric_damping_gain = self.cfg.fabrics_damping_gain * torch.ones(self.num_envs, 1, device=self.device)
 
@@ -1120,11 +1121,13 @@ class GraspRightEnv(DirectRLEnv):
         self._palm_target_delta_buf.copy_(palm_pose - self.palm_pose_targets)
         self.palm_pose_targets.copy_(palm_pose)
 
-        hand_pca = tensor_clamp(
-            scale(hand_actions, self.hand_pca_mins, self.hand_pca_maxs),
-            self.hand_pca_mins, self.hand_pca_maxs,
+        # 실험1 direct: hand action(6) → 관절 한계로 scale → drive 6 목표.
+        # (PCA 복귀 시 scale 대상을 self.hand_pca_mins/maxs 로.)
+        hand_tgt = tensor_clamp(
+            scale(hand_actions, self.hand_joint_lower_limits, self.hand_joint_upper_limits),
+            self.hand_joint_lower_limits, self.hand_joint_upper_limits,
         )
-        self.hand_pca_targets.copy_(hand_pca)
+        self.hand_pca_targets.copy_(hand_tgt)
 
         # ---- fabric: palm pose + PCA hand -> arm+hand cspace 통합 IK ----
         # use_hand_fabric=True 라 fabric integrator 가 손(drive 6)까지 업데이트(수동 동기화 불필요).

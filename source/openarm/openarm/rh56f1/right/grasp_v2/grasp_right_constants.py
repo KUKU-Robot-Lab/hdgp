@@ -81,7 +81,9 @@ NUM_FINGERTIPS = 5
 # ---------------------------------------------------------------------------
 NUM_PALM_ACTION = 6    # 6D palm pose (Fabrics IK → arm 7 DOF)
 NUM_HAND_PCA    = 5    # 5D hand PCA action (DEXTRAH 물체파지, fabric hand_mode="pca")
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_HAND_PCA  # 11 (palm 6 + PCA 5)
+# 실험1(direct 손): PCA 1D 붕괴(PC1 97.9%) 회피 → 6관절 직접 제어로 형태 적응.
+# PCA 복귀: 아래를 NUM_HAND_PCA(=11)로, cfg hand_mode="pca", _pre_physics scale 대상 되돌림.
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_HAND_DOF  # 12 (palm 6 + direct hand 6)
 
 # hand PCA action 범위 (uncentered 투영 좌표, fabric LinearMap 과 정합).
 # 출처: assets/demograsp_references/rh56f1_grasp_pca5.pt (pca_action_mins/maxs).
@@ -94,10 +96,10 @@ HAND_PCA_MAXS = [3.7262845039367676, 0.8179822564125061, 0.1744416356086731,
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-# grasp_v1 96D 골격 유지 + DEXTRAH goal-driven 개조:
-#   last_actions 12→11 (action 차원), object_goal 3D 추가 → 96 − 1 + 3 = 98
-NUM_OBSERVATIONS = 98
-NUM_OBSERVATIONS_WITH_MASS = 99
+# grasp_v1 96D 골격 + DEXTRAH goal-driven + 실험1 direct 손:
+#   last_actions = action 12 (grasp_v1 과 동일), object_goal 3D 추가 → 96 + 3 = 99
+NUM_OBSERVATIONS = 99
+NUM_OBSERVATIONS_WITH_MASS = 100
 NUM_OBSERVATIONS_NO_MASS = NUM_OBSERVATIONS
 
 NUM_TIP_SENSORS   = 5     # fingertip 힘센서 (실 센서, actor) — *_force_sensor → 말단 링크

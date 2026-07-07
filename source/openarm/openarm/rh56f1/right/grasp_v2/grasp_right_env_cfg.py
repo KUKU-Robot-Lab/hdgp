@@ -189,9 +189,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
-    # grasp_v2(DEXTRAH PCA): fabric 이 손도 제어(hand_mode="pca", 5D PCA action).
+    # 실험1: fabric 이 손 제어, hand_mode="direct"(6-DOF 직접, PCA 1D 붕괴 회피).
+    # PCA 복귀: hand_mode="pca" + constants NUM_ACTIONS 11 + _pre_physics scale 되돌림.
     use_hand_fabric:            bool  = True
-    hand_mode:                  str   = "pca"
+    hand_mode:                  str   = "direct"
     max_pose_angle:             float = 45.0
     fabrics_max_objects_per_env: int  = 8   # open_tesollo_boxes_no_table 객체 7개 → ≥7 필요
     fabrics_damping_gain:       float = 20.0
