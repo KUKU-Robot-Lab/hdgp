@@ -67,7 +67,7 @@ params:
     gamma: 0.998
     tau: 0.95
     learning_rate: 3e-4
-    lr_schedule: adaptive   # lstm_test12: KL 0.08~0.14(threshold 8~10배)인데 linear는 미clamp → five_tip 0.42→0.33 드리프트. adaptive로 kl_threshold가 LR 제어(v1과 동일)
+    lr_schedule: linear   # DEXTRAH 원본 재현. adaptive는 kl 0.019<2xthr라 lr 미감쇠, sigma 무한성장(lstm_test1 폭주). 구 reward의 linear 실패(lstm_test12)는 KL 0.08+ 상황이라 부적용
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
@@ -76,7 +76,7 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.001   # 0.002→0.001: lstm_test1 258M서 entropy 16→47 폭주+성과 하락(clip 포화 runaway), audit ACCEPT
+    entropy_coef: 0.002   # DEXTRAH 원본. (0.001은 lstm_test2서 탐색부족 실증 — in_success 0.003 정체)
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 16    # DEXTRAH 정렬 (2048env×16=32768, minibatch 16384 ✓)
