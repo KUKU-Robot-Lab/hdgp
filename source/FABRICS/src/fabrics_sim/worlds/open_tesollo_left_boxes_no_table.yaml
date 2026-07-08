@@ -1,0 +1,47 @@
+# World mesh for OpenArm + Teosllo LEFT arm
+# open_tesollo_boxes_no_table.yaml 의 y-미러 (좌팔 학습용):
+# 반발 대상이 오른팔 영역(y < 0)으로 이동.
+
+left_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 .03 1.1
+  transform: 0.45 -.60 .75 0. 0. 0. 1.
+
+right_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 .03 1.1
+  transform: 0.45 .45 .75 0. 0. 0. 1.
+
+back_wall:
+  env_index: all
+  type: box
+  scaling: .03 1.1 1.1
+  transform: -0.4 -0.075 .75 0. 0. 0. 1.
+
+top_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 1.1 .03
+  transform: 0.45 -0.08 1.30 0. 0. 0. 1.
+
+robot_torso:
+  env_index: all
+  type: box
+  scaling: 0.10 0.10 1.0
+  transform: 0. 0. 0.5 0. 0. 0. 1.
+
+# 오른팔 정적 장애물 (좌팔이 오른팔 workspace 침범 방지, y < 0 영역)
+right_arm_body:
+  env_index: all
+  type: sphere
+  scaling: 0.15 0.15 0.15
+  transform: 0.25 -0.20 0.55 0. 0. 0. 1.
+
+# 오른팔이 든 target cup (미러 위치)
+right_target_cup:
+  env_index: all
+  type: box
+  scaling: 0.10 0.10 0.22
+  transform: 0.268 -0.100 0.310 0. 0. 0. 1.
