@@ -129,6 +129,16 @@ def fmt(v: np.ndarray) -> str:
     return " ".join(f"{x:.9g}" if abs(x) > 1e-12 else "0" for x in v)
 
 
+# palm 6-DOF attractor 의 7점 패턴·get_palm_pose 축 유도는 fabric 코드에
+# +0.25/-0.25 로컬 오프셋으로 하드코딩 → helper 프레임은 지오메트리가 아니라
+# 코드 규약이므로 미러하지 않는다 (미러 시 y/y_neg 스왑 → 자세 불일치, IK 잔차 5.7cm 실증).
+PALM_HELPER_JOINTS = {
+    "palm_x_joint", "palm_x_neg_joint",
+    "palm_y_joint", "palm_y_neg_joint",
+    "palm_z_joint", "palm_z_neg_joint",
+}
+
+
 def generate_left(right_joints: dict, bi_joints: dict) -> None:
     tree = ET.parse(RIGHT_FABRIC_URDF)
     root = tree.getroot()
@@ -137,6 +147,8 @@ def generate_left(right_joints: dict, bi_joints: dict) -> None:
     for j in root.iter("joint"):
         name = j.get("name")
         info = right_joints[name]
+        if name in PALM_HELPER_JOINTS:
+            continue  # 코드 규약 프레임: 우측 로컬 오프셋 그대로 유지
         xyz_m, rpy_m = mirror_origin(info["xyz"], info["rpy"])
         o = j.find("origin")
         if o is None:

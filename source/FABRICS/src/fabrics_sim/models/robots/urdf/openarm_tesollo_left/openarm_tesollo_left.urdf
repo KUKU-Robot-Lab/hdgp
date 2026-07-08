@@ -937,7 +937,7 @@
     </inertial>
   </link>
   <joint name="palm_x_joint" type="fixed">
-    <origin xyz="0.25 0 0" rpy="0 0 0" />
+    <origin xyz="0.25 0. 0." rpy="0. 0. 0." />
     <parent link="palm_link" />
     <child link="palm_x" />
   </joint>
@@ -950,7 +950,7 @@
     </inertial>
   </link>
   <joint name="palm_x_neg_joint" type="fixed">
-    <origin xyz="-0.25 0 0" rpy="0 0 0" />
+    <origin xyz="-0.25 0. 0." rpy="0. 0. 0." />
     <parent link="palm_link" />
     <child link="palm_x_neg" />
   </joint>
@@ -963,7 +963,7 @@
     </inertial>
   </link>
   <joint name="palm_y_joint" type="fixed">
-    <origin xyz="0 -0.25 0" rpy="0 0 0" />
+    <origin xyz="0. 0.25 0." rpy="0. 0. 0." />
     <parent link="palm_link" />
     <child link="palm_y" />
   </joint>
@@ -976,7 +976,7 @@
     </inertial>
   </link>
   <joint name="palm_y_neg_joint" type="fixed">
-    <origin xyz="0 0.25 0" rpy="0 0 0" />
+    <origin xyz="0. -0.25 0." rpy="0. 0. 0." />
     <parent link="palm_link" />
     <child link="palm_y_neg" />
   </joint>
@@ -989,7 +989,7 @@
     </inertial>
   </link>
   <joint name="palm_z_joint" type="fixed">
-    <origin xyz="0 0 0.25" rpy="0 0 0" />
+    <origin xyz="0. 0. 0.25" rpy="0. 0. 0." />
     <parent link="palm_link" />
     <child link="palm_z" />
   </joint>
@@ -1002,7 +1002,7 @@
     </inertial>
   </link>
   <joint name="palm_z_neg_joint" type="fixed">
-    <origin xyz="0 0 -0.25" rpy="0 0 0" />
+    <origin xyz="0. 0. -0.25" rpy="0. 0. 0." />
     <parent link="palm_link" />
     <child link="palm_z_neg" />
   </joint>
