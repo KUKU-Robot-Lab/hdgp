@@ -1261,6 +1261,12 @@ class GraspRightEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _compute_intermediate_values(self) -> None:
         self.object_pos = self.cup.data.root_pos_w - self.scene.env_origins
+
+        # settle 종료 시점에 object_init_pos 를 안착 위치로 갱신 → height_delta 가 drop(0.30) 아닌
+        # 안착 기준(tesollo 4cm 매칭). (reset 시엔 drop 높이라 왜곡.)
+        _settle_done = (self.episode_length_buf == int(self.cfg.settle_steps))
+        if _settle_done.any():
+            self.object_init_pos[_settle_done] = self.object_pos[_settle_done]
         self.object_rot = self.cup.data.root_quat_w
 
         env_origins = self.scene.env_origins
@@ -1472,7 +1478,11 @@ class GraspRightEnv(DirectRLEnv):
             hand_to_object_reward + object_to_goal_reward + finger_curl_reg + lift_reward
         )
 
-        in_success = self.object_to_goal_pos_error < self.cfg.object_goal_tol
+        # tesollo 매칭: success = lifted(height_delta≥0.04) & grasped(num_tip≥min). object_to_goal 대신.
+        _height_delta = self.object_pos[:, 2] - self.object_init_pos[:, 2]
+        _num_tip = self.binary_contact_buf.sum(dim=-1)
+        in_success = (_height_delta >= self.cfg.lifted_success_delta) & (_num_tip >= self.cfg.num_tip_min_success)
+        self.episode_success_buf |= in_success   # episode 누적(tesollo 방식)
 
         # ---- 로깅(grasp_v1 형식: "group/key") ----
         self.extras["reward/hand_to_object"] = hand_to_object_reward.mean()
@@ -1481,9 +1491,10 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/lift"] = lift_reward.mean()
         self.extras["reward/total"] = total_reward.mean()
         self.extras["metric/hand_to_object_err"] = self.hand_to_object_pos_error.mean()
-        self.extras["metric/object_to_goal_err"] = self.object_to_goal_pos_error.mean()
+        self.extras["metric/height_delta"] = _height_delta.mean()
         self.extras["metric/object_height"] = self.object_pos[:, 2].mean()
         self.extras["metric/in_success_rate"] = in_success.float().mean()
+        self.extras["metric/episode_success_rate"] = self.episode_success_buf.float().mean()
 
         # 파지 메커니즘 모니터링: 어느 손가락이 접촉하는지 (net_forces binary). 순서 thumb,index,middle,ring,pinky.
         _tips = ["thumb", "index", "middle", "ring", "pinky"]

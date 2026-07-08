@@ -515,18 +515,21 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     hand_to_object_dist_threshold: float = 0.15     # 이 거리 이내(파지)일때만 외란 (MAX거리 스케일)
     wrench_lifted_z:               float = 0.26     # object z > 이면 lifted (ADR 트리거 metric)
 
-    # -------- DEXTRAH goal-driven reward/goal (Phase4 에서 weight 튜닝 + reward-audit) --------
-    # 물체를 goal 위치로 옮겨 들어올리는 태스크. weight/sharpness = DEXTRAH 기본값(dextrah_kuka_allegro).
-    object_goal_pos:            tuple = (0.34, -0.10, 0.45)   # rh56f1 workspace(x_center 0.34) 기준 lift 목표
-    object_goal_tol:            float = 0.10                   # success region 반경(m)
+    # -------- tesollo grasp_v2 매칭: 리프트(제자리 들기) 중심 + 손 close (reward-audit REVISE) --------
+    # tesollo success=grasped(3접촉)+4cm lifted(0.93). rh56f1 매칭: object_to_goal 제거, lift 집중.
+    object_goal_pos:            tuple = (0.34, -0.10, 0.30)   # 제자리 위 6cm(lift 유도, DEXTRAH 21cm→6cm)
+    object_goal_tol:            float = 0.10
     hand_to_object_weight:      float = 1.0
     hand_to_object_sharpness:   float = 10.0
-    object_to_goal_weight:      float = 5.0
+    object_to_goal_weight:      float = 0.0    # 매칭: 제거(그래핑=들기, 옆 이동 아님)
     object_to_goal_sharpness:   float = -15.0
     lift_weight:                float = 5.0
     lift_sharpness:             float = 8.5
-    finger_curl_reg_weight:     float = 0.0    # Phase4 에서 작은 정규화값으로 활성(reward-audit)
-    object_out_of_reach_z:      float = 0.20   # z < 이면 낙하 판정 → done
+    finger_curl_reg_weight:     float = -0.05  # 매칭: 손 close 유도(tesollo full-close 대응, 작게)
+    object_out_of_reach_z:      float = 0.20
+    # success = tesollo식: lifted(height_delta) + grasped(num_tip). object_to_goal 대신.
+    lifted_success_delta:       float = 0.04   # 4cm 리프트(tesollo lift_success_height 0.04 매칭)
+    num_tip_min_success:        int   = 2      # 파지 판정 최소 접촉 손끝(tesollo 3, rh56f1 6-drive라 2 시작)
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 설정
