@@ -76,7 +76,7 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.002   # DEXTRAH 정렬
+    entropy_coef: 0.001   # 0.002→0.001: lstm_test1 258M서 entropy 16→47 폭주+성과 하락(clip 포화 runaway), audit ACCEPT
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 16    # DEXTRAH 정렬 (2048env×16=32768, minibatch 16384 ✓)
