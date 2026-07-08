@@ -527,7 +527,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_to_goal_sharpness:   float = -15.0
     lift_weight:                float = 5.0
     lift_sharpness:             float = 8.5
-    finger_curl_reg_weight:     float = -0.05  # 매칭: 손 close 유도(tesollo full-close 대응, 작게)
+    finger_curl_reg_weight:     float = 0.0    # 제거: curled_q 고정 강제가 물체 적응 파지 방해→num_tip 급락(리프트 죽음). 실험2 순수 재현.
     object_out_of_reach_z:      float = 0.20
     # success = tesollo식: lifted(height_delta) + grasped(num_tip). object_to_goal 대신.
     lifted_success_delta:       float = 0.04   # 4cm 리프트(tesollo lift_success_height 0.04 매칭)
