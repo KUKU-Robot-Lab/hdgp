@@ -141,7 +141,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
-    max_pose_angle:             float = 45.0
+    max_pose_angle:             float = 90.0   # palm rpy 90°±angle → 90=0~180°(top-down 포함). arm 자유탐색(DEXTRAH식, 45→90)
     fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
 
@@ -187,7 +187,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
     # -----------------------------------------------------------------------
     palm_delta_xyz:     float = 0.15   # ±0.15m per axis
-    palm_delta_rot_deg: float = 20.0   # ±20° per axis
+    palm_delta_rot_deg: float = 90.0   # ±90° per axis: pregrasp side(90°)에서 top-down(0°)까지 정책 자유 회전(20→90, arm 자유탐색)
 
     # -----------------------------------------------------------------------
     # Reward 파라미터
