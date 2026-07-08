@@ -527,7 +527,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_to_goal_sharpness:   float = -15.0
     lift_weight:                float = 5.0
     lift_sharpness:             float = 8.5
-    finger_curl_reg_weight:     float = 0.0    # 제거: curled_q 고정 강제가 물체 적응 파지 방해→num_tip 급락(리프트 죽음). 실험2 순수 재현.
+    finger_curl_reg_weight:     float = 0.0    # 제거: curled_q 고정 강제가 물체 적응 파지 방해→num_tip 급락.
+    # tesollo grasp term 대응: 접촉 유도(감싸 쥐기). DEXTRAH 거리reward는 접근만→num_tip 0.59.
+    grasp_contact_weight:       float = 1.0    # 리프트 전 접촉 손끝 수(num_tip/5) 유도. lift(5)보다 작게(local min 방지).
     object_out_of_reach_z:      float = 0.20
     # success = tesollo식: lifted(height_delta) + grasped(num_tip). object_to_goal 대신.
     lifted_success_delta:       float = 0.04   # 4cm 리프트(tesollo lift_success_height 0.04 매칭)

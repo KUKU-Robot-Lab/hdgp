@@ -1474,8 +1474,15 @@ class GraspRightEnv(DirectRLEnv):
             -self.cfg.lift_sharpness * self.object_vertical_error
         )
 
+        # tesollo grasp term 대응: 리프트 전 접촉 손끝 수(감싸 쥐기) 유도. DEXTRAH 거리는 접근만→num_tip 낮음.
+        _num_tip_frac = self.binary_contact_buf.float().sum(dim=-1) / NUM_FINGERTIPS  # (N,) 0~1
+        _pre_lift = (
+            (self.object_pos[:, 2] - self.object_init_pos[:, 2]) < self.cfg.lifted_success_delta
+        ).float()
+        grasp_reward = self.cfg.grasp_contact_weight * _pre_lift * _num_tip_frac
+
         total_reward = (
-            hand_to_object_reward + object_to_goal_reward + finger_curl_reg + lift_reward
+            hand_to_object_reward + object_to_goal_reward + finger_curl_reg + lift_reward + grasp_reward
         )
 
         # tesollo 매칭: success = lifted(height_delta≥0.04) & grasped(num_tip≥min). object_to_goal 대신.
@@ -1489,6 +1496,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/object_to_goal"] = object_to_goal_reward.mean()
         self.extras["reward/finger_curl_reg"] = finger_curl_reg.mean()
         self.extras["reward/lift"] = lift_reward.mean()
+        self.extras["reward/grasp"] = grasp_reward.mean()
         self.extras["reward/total"] = total_reward.mean()
         self.extras["metric/hand_to_object_err"] = self.hand_to_object_pos_error.mean()
         self.extras["metric/height_delta"] = _height_delta.mean()
