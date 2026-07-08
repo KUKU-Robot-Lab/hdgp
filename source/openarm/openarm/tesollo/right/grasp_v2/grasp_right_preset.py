@@ -32,8 +32,13 @@ RIGHT_HAND_JOINT_NAMES = [f"r_hj_{f}_{j}" for f in _R_FINGERS for j in range(1, 
 RIGHT_ACTUATED_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAMES
 
 LEFT_ARM_JOINT_NAMES = [f"l_aj_{i}" for i in range(1, 8)]
-LEFT_GRIPPER_JOINT_NAMES = ["l_hj_gripper_1", "l_hj_gripper_2"]
-LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
+# 양팔 tesollo USD(openarm_tesollo_bi_rl): 왼손 = tesollo 20관절 (gripper 대체)
+LEFT_HAND_JOINT_NAMES = [
+    f"l_hj_{f}_{i}"
+    for f in ("thumb", "index", "middle", "ring", "pinky")
+    for i in range(1, 5)
+]
+LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_HAND_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
     # pour_right_v3 LEFT_ARM_REST_JOINT_POS와 일치시킴:
@@ -46,8 +51,8 @@ LEFT_ARM_REST_JOINT_POS = {
     "l_aj_5":  0.666,
     "l_aj_6": -0.729,
     "l_aj_7": -0.957,
-    "l_hj_gripper_1": 0.044,
-    "l_hj_gripper_2": 0.044,
+    # 왼손 tesollo: 미사용 → 전체 0 rest (self-collision disabled)
+    **{_n: 0.0 for _n in LEFT_HAND_JOINT_NAMES},
 }
 
 

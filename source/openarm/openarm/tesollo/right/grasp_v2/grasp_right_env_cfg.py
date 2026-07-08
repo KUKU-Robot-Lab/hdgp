@@ -352,12 +352,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     )
 
     # -----------------------------------------------------------------------
-    # 로봇 설정 (openarm_tesollo_sensor_rl.usd: 통일 네이밍 r_aj/r_hj/r_hl, r_hl_*_tip ContactSensor 포함)
+    # 로봇 설정 (openarm_tesollo_bi_rl.usd: 양팔 tesollo, 통일 네이밍 r_aj/r_hj/r_hl + l_hj tesollo 20관절)
     # -----------------------------------------------------------------------
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_bi_rl/openarm_tesollo_bi_rl.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -421,10 +421,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 stiffness=400.0,
                 damping=60.0,
             ),
-            "openarm_left_gripper": ImplicitActuatorCfg(
-                joint_names_expr=["l_hj_gripper_[1-2]"],
+            # 왼손 tesollo (bi USD): 학습 미사용, rest 자세 유지용 hold
+            "tesollo_left_hand": ImplicitActuatorCfg(
+                joint_names_expr=["l_hj_[a-z]+_[1-4]"],
                 stiffness=400.0,
-                damping=80.0,
+                damping=60.0,
             ),
         },
         soft_joint_pos_limit_factor=1.0,
