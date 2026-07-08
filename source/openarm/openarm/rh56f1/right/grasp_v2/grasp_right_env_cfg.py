@@ -517,11 +517,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # -------- tesollo grasp_v2 매칭: 리프트(제자리 들기) 중심 + 손 close (reward-audit REVISE) --------
     # tesollo success=grasped(3접촉)+4cm lifted(0.93). rh56f1 매칭: object_to_goal 제거, lift 집중.
-    object_goal_pos:            tuple = (0.34, -0.10, 0.30)   # 제자리 위 6cm(lift 유도, DEXTRAH 21cm→6cm)
+    # 수정: reward goal(멀리=강한 리프트 gradient)과 success 기준(4cm=완화) 분리.
+    # goal 낮추면 lift reward 포화(3.0)→리프트 동기 소멸(매칭 실패 원인). 실험2 goal(21cm) 복원.
+    object_goal_pos:            tuple = (0.34, -0.10, 0.45)   # 제자리 위 21cm(강한 리프트 유도, 실험2 복원)
     object_goal_tol:            float = 0.10
     hand_to_object_weight:      float = 1.0
     hand_to_object_sharpness:   float = 10.0
-    object_to_goal_weight:      float = 0.0    # 매칭: 제거(그래핑=들기, 옆 이동 아님)
+    object_to_goal_weight:      float = 5.0    # 복원: 리프트 gradient(실험2 리프트 유도). success는 height_delta 4cm로 분리.
     object_to_goal_sharpness:   float = -15.0
     lift_weight:                float = 5.0
     lift_sharpness:             float = 8.5
