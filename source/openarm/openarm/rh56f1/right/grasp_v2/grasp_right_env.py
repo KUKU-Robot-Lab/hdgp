@@ -1485,6 +1485,14 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["metric/object_height"] = self.object_pos[:, 2].mean()
         self.extras["metric/in_success_rate"] = in_success.float().mean()
 
+        # 파지 메커니즘 모니터링: 어느 손가락이 접촉하는지 (net_forces binary). 순서 thumb,index,middle,ring,pinky.
+        _tips = ["thumb", "index", "middle", "ring", "pinky"]
+        for _i, _n in enumerate(_tips):
+            self.extras[f"contact/tip_{_n}"] = self.binary_contact_buf[:, _i].float().mean()
+            self.extras[f"contact/mid_{_n}"] = self.middle_binary_contact_buf[:, _i].float().mean()
+        self.extras["contact/palm"]    = self.palm_binary_contact_buf.float().mean()
+        self.extras["contact/num_tip"] = self.binary_contact_buf.float().sum(-1).mean()
+
         # 실험3b: wrench ADR 커리큘럼 — lifted_rate 가 threshold 넘으면 외란 난이도 점증(firm grip 강화)
         lifted_rate = (self.object_pos[:, 2] > self.cfg.wrench_lifted_z).float().mean()
         self.extras["metric/lifted_rate"] = lifted_rate

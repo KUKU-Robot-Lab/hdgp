@@ -507,7 +507,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # --- 실험3b: apply_object_wrench (firm grip, DEXTRAH 이식) ---
     # 손이 물체를 잡았을 때(hand_to_object<threshold) 랜덤 외란 힘/토크 → 정책이 견디며 꽉 잡아야 함.
-    enable_object_wrench:          bool  = True
+    # 실험3c 판정: wrench(외란)가 작은 물체의 약한 리프트를 방해(실험2는 리프트, 3c는 평평).
+    # → wrench off, 리프트 되는 실험2(90) 재현 + 손가락별 접촉 로깅으로 파지 메커니즘 진단.
+    enable_object_wrench:          bool  = False
     wrench_trigger_every:          int   = 60      # step(1s@60Hz)마다 새 외란 방향
     torsional_radius:              float = 0.01     # m (토크 = mass·accel·radius)
     hand_to_object_dist_threshold: float = 0.15     # 이 거리 이내(파지)일때만 외란 (MAX거리 스케일)
