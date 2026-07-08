@@ -1166,6 +1166,12 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["contact/grip_fingers"] = num_grip_fingers.float().mean()
         # 외란 wrench 크기 진단 (파지력 학습 강제)
         self.extras["wrench/force_mag"] = self.object_applied_force.norm(dim=-1).mean()
+        # 손가락별 접촉 진단 (thumb,index,middle,ring,pinky) — 특정 손가락만 닿는지 확인
+        _any_finger = (
+            self.binary_contact_buf | self.middle_binary_contact_buf | self.distal_binary_contact_buf
+        )
+        for _fi, _fn in enumerate(("thumb", "index", "middle", "ring", "pinky")):
+            self.extras[f"contact/finger/{_fn}"] = _any_finger[:, _fi].float().mean()
         # joint state(arm/finger per-joint) + action policy(palm 6D + finger 5D raw) 로깅
         _hand_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
         for k, v in joint_state_scalars(
