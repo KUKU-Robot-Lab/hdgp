@@ -35,18 +35,22 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
     """
 
     def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=True,
-                 palm_position_only=False):
+                 palm_position_only=False,
+                 robot_dir_name="openarm_tesollo", robot_name="openarm_tesollo",
+                 default_config_override=None, default_palm_euler_zyx=None):
         self._use_hand_fabric = use_hand_fabric
         # [새 구조] palm_position_only=True: palm_link origin 1점(position 3-DOF)만 attractor로
         #   고정하고 orientation은 자유(cspace nullspace가 결정). j6 leak 차단 → IK가 j5 roll을
         #   demo대로 실현. False(기본)=기존 7-point full 6-DOF(v5 대조군 유지).
         self._palm_position_only = palm_position_only
+        # 좌팔 등 변형 URDF 지원: robot_dir_name/robot_name/default_config/palm 기본자세만
+        # 바꾸면 재사용 가능 (좌측 URDF 는 링크/조인트 이름을 우측과 동일하게 유지).
+        self._default_config_override = default_config_override
+        self._default_palm_euler_zyx = default_palm_euler_zyx
         fabric_params_filename = "openarm_tesollo_pose_params.yaml"
         super().__init__(device, batch_size, timestep, fabric_params_filename,
                          graph_capturable=graph_capturable)
 
-        robot_dir_name = "openarm_tesollo"
-        robot_name = "openarm_tesollo"
         self.urdf_path = get_robot_urdf_path(robot_dir_name, robot_name)
 
         self.load_robot(robot_dir_name, robot_name, batch_size)
@@ -79,6 +83,10 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
             #   _2(X, 외전): 0.0  _3: 0.7  _4: 0.5
             0.0,   0.0,  0.7,  0.5,
         ], device=self.device)
+        if self._default_config_override is not None:
+            default_config = torch.as_tensor(
+                self._default_config_override, device=self.device, dtype=default_config.dtype
+            )
         self.default_config = default_config.unsqueeze(0).repeat(self.batch_size, 1)
 
         self._pca_matrix = None
@@ -89,7 +97,9 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         self._palm_pose_target = torch.zeros(batch_size, 12, device=device)
         # Default palm orientation (euler_zyx): ez=pi/2, ey=0, ex=pi/2
         # -> palm +X aligns with world +Y, palm +Z aligns with world +X.
-        default_palm_euler = torch.tensor([1.5708, 0.0, 1.5708], device=self.device).unsqueeze(0)
+        # (좌팔은 미러: M R M = Rz(-ez) Ry(ey) Rx(-ex) → (-pi/2, 0, -pi/2))
+        _palm_euler = self._default_palm_euler_zyx or (1.5708, 0.0, 1.5708)
+        default_palm_euler = torch.tensor(list(_palm_euler), device=self.device).unsqueeze(0)
         default_palm_euler = default_palm_euler.repeat(self.batch_size, 1)
         self._palm_pose_target[:, 3:] = torch.transpose(
             euler_to_matrix(default_palm_euler), 1, 2
@@ -502,3 +512,50 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
 
         if cspace_damping_gain is not None:
             self.fabric_params['cspace_damping']['gain'] = cspace_damping_gain
+
+
+# ---------------------------------------------------------------------------
+# 좌팔 변형: openarm_tesollo_left URDF (bi USD 좌측과 FK 일치 검증됨)
+# ---------------------------------------------------------------------------
+# 좌측 URDF 는 scripts/tools/generate_left_fabric_urdf.py 로 생성:
+#   - 우측 fabric URDF 의 M-conjugation 미러 (링크/조인트 이름 동일 유지)
+#   - axis/limits 는 bi USD(openarm_tesollo_bi_rl) 좌측 규약
+# q 부호 매핑 (q_left = s * q_right):
+#   arm  j1~j7:            [-1,-1,-1, 1,-1,-1,-1]
+#   thumb  _1~_4:          [-1,-1,-1,-1]
+#   index/middle/ring _1~_4: [-1, 1, 1, 1]
+#   pinky  _1~_4:          [-1,-1, 1, 1]
+_LEFT_DEFAULT_CONFIG = [
+    # arm j1~j7 (우측 default 의 s 매핑)
+    -1.0,  0.1,  0.6,  0.5,  0.0,  0.0,  0.0,
+    # thumb: _2(Z) 대향 curl 은 좌측에서 +1.0
+    0.0,  1.0,  -0.5,  -0.5,
+    # index / middle / ring: curl(Y축)은 부호 유지
+    0.0,  0.7,  0.5,  0.5,
+    0.0,  0.7,  0.5,  0.5,
+    0.0,  0.7,  0.5,  0.5,
+    # pinky: _1(Z 굽힘) 부호 반전형이나 default 0
+    0.0,  0.0,  0.7,  0.5,
+]
+
+
+class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
+    """OpenArm 좌팔(7 DOF) + Teosllo 좌손(20 DOF) fabric.
+
+    출력 q 는 openarm_tesollo_bi_rl.usd 좌측 관절(l_aj/l_hj)에 그대로 사용 가능
+    (generate_left_fabric_urdf.py FK 교차검증 PASS).
+    """
+
+    def __init__(self, batch_size, device, timestep, graph_capturable=True,
+                 use_hand_fabric=False, palm_position_only=False):
+        super().__init__(
+            batch_size, device, timestep,
+            graph_capturable=graph_capturable,
+            use_hand_fabric=use_hand_fabric,
+            palm_position_only=palm_position_only,
+            robot_dir_name="openarm_tesollo_left",
+            robot_name="openarm_tesollo_left",
+            default_config_override=_LEFT_DEFAULT_CONFIG,
+            # 우측 기본 palm 자세 (ez,ey,ex)=(π/2,0,π/2) 의 미러 = (-π/2,0,-π/2)
+            default_palm_euler_zyx=(-1.5708, 0.0, -1.5708),
+        )
