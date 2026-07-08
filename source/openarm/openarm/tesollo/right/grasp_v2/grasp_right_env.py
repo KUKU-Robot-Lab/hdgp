@@ -56,12 +56,7 @@ from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply
 
-from openarm.common.grasp_logging import action_policy_scalars, joint_state_scalars
-from openarm.common.grasp_reward_core import compute_grasp_reward_terms
-from openarm.common.grasp_v2_contract import (
-    compute_action_delta_norm,
-    compute_grasp_v2_stability,
-)
+from openarm.common.grasp_logging import action_policy_scalars
 
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
@@ -79,7 +74,6 @@ from .grasp_right_constants import (
     NUM_MIDDLE_SENSORS,
     NUM_CRITIC_OBSERVATIONS,
     GRASP_PHASE_STEPS,
-    LIFT_PHASE_STEPS,
     LIFT_START_STEP,
     EPISODE_STEPS,
     CONTACT_FORCE_THRESHOLD,
@@ -102,7 +96,6 @@ from .grasp_right_preset import (
 from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
 from .grasp_right_utils import (
     compute_joint7_lift_wait_target,
-    compute_lift_readiness,
     scale,
     to_torch,
 )
@@ -111,17 +104,19 @@ from .warm_state_cache import GraspWarmStateCache, compute_arm_joint_match
 
 
 class GraspRightEnv(DirectRLEnv):
-    """OpenArm+Teosllo 오른손 파지 환경 v7.
+    """OpenArm+Teosllo 오른손 다물체 파지 환경 (DEXTRAH 구조).
 
     Action: 11D
       [0:6]  palm pose (x,y,z,ez,ey,ex), 정규화 [-1,1] → Fabrics IK
-      [6:11] per-finger absolute synergy (thumb,index,middle,ring,pinky)
-             grasp: APPROACH(-1) to GRASP(+1)
-             lift:  GRASP(-1) to FULL_GRIP(+1)
+      [6:11] per-finger 폐쇄 속도 명령 (thumb,index,middle,ring,pinky)
+             접촉-게이트 적응 폐쇄: APPROACH → FULL_GRIP
 
-    Episode:
-      Grasp phase (step 0~479):  Fabrics arm + 정책 손가락
-      Lift-wait phase (step 480~599): scripted joint7-only lift-wait + frozen hand
+    Episode (단일 phase, DEXTRAH):
+      settle (step 0~24):  물체 drop-settle, 손가락 폐쇄 억제.
+                           종료 시 안착점 스냅샷 → object_init_pos/goal 확정
+      정책 제어 (step 25~599): Fabrics arm + 손가락 연속 제어.
+                           reward = DEXTRAH 4항(hand_to_object/object_to_goal/
+                           finger_curl_reg/lift), success = |obj-goal| < tol
     """
 
     cfg: GraspRightEnvCfg
@@ -281,13 +276,8 @@ class GraspRightEnv(DirectRLEnv):
         # Pregrasp / Lift 버퍼 (reset에서 계산)
         # ----------------------------------------------------------------
         self.pregrasp_arm_pos_buf      = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        # prelift: warm-state export(cfg 게이트, 기본 off) 전용 잔존 버퍼
         self.prelift_arm_pos_buf       = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.lift_arm_start_buf        = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.is_lift_phase             = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        # 접촉 latch 흐름: 잡으면 바로 리프트 (step-480 scripted 대체)
-        self.lift_ready_latched_buf    = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.grasp_ready_hold_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self.lift_start_step_buf       = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # ----------------------------------------------------------------
         # Hand joint targets (per-finger lerp 결과)
@@ -314,24 +304,25 @@ class GraspRightEnv(DirectRLEnv):
 
         self.middle_contact_force_raw  = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, device=self.device)
         self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
-        self.reward_contact_hold_buf = torch.zeros(
-            self.num_envs, dtype=torch.long, device=self.device
-        )
-        self._prev_reward_contacts_buf = torch.zeros(self.num_envs, device=self.device)
 
         # ----------------------------------------------------------------
         # 기타 버퍼
         # ----------------------------------------------------------------
         self._approach_dir_buf = torch.zeros(self.num_envs, 3, device=self.device)
         self.success_flag = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._cup_tipping_cos = math.cos(math.radians(cfg.cup_tipping_max_deg))
         # episode-level 성공 추적 (per-step average 허수 문제 해결)
         self.episode_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # DEXTRAH success: 물체가 goal 반경(object_goal_tol) 내 (in_success_region)
+        self.in_success_region = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.transfer_entry_grasp_success_buf = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
         self._total_episodes: int = 0
         self._successful_episodes: int = 0
+        # 물체별 성공 집계(episode_success_rate/{object}): 어떤 물체가 성공/실패하는지 진단
+        _n_obj = len(self._object_names)
+        self._obj_total_episodes = torch.zeros(_n_obj, device=self.device)
+        self._obj_success_episodes = torch.zeros(_n_obj, device=self.device)
         # warm export diagnostics
         self._warm_diag_step: int = 0
         self._warm_diag_terminated_early: int = 0  # lift-wait phase 중 early termination 횟수
@@ -612,13 +603,9 @@ class GraspRightEnv(DirectRLEnv):
     # 파지력 확보: 물체 외란 wrench (DEXTRAH apply_object_wrench 이식)
     # ------------------------------------------------------------------
     def _apply_object_wrench(self) -> None:
-        # 잡기 시작(grip>=1 손가락 접촉)일 때만 외란 인가 → 정책이 놓치지 않게 파지력 학습.
-        num_grip = (
-            self.binary_contact_buf
-            | self.middle_binary_contact_buf
-            | self.distal_binary_contact_buf
-        ).sum(dim=-1)
-        apply = (num_grip >= 1).view(-1, 1, 1)
+        # DEXTRAH 원본 정렬: 물체가 goal 도달(in_success_region) 시 외란 인가
+        # → 리프트 학습을 방해하지 않으면서 goal 유지 파지력(robust hold)을 학습.
+        apply = self.in_success_region.view(-1, 1, 1)
         # trigger_every step 마다 새 랜덤 wrench (그 사이 유지)
         new_trig = (
             (self.episode_length_buf % int(self.cfg.wrench_trigger_every)) == 0
@@ -660,64 +647,16 @@ class GraspRightEnv(DirectRLEnv):
         palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
         finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
 
-        # ---- Phase 판정: 접촉 latch (감싸 잡으면 리프트, step-480 scripted 대체) ----
-        # 인벨롭 게이트: 손끝&중간마디 동시접촉 손가락 수 → 손끝만으로 일찍 리프트 차단
-        num_envelope_fingers = (
-            self.binary_contact_buf & self.middle_binary_contact_buf
-        ).sum(dim=-1)
-        # lift 게이트: tip 개수(num_contacts)는 큰 물체에서 손끝이 반대편에 못 닿아 부당.
-        # → grip(tip|mid|distal 중 하나라도 닿은 손가락 수) 기준으로 파지를 인정(크기 무관).
-        num_grip_fingers_gate = (
-            self.binary_contact_buf
-            | self.middle_binary_contact_buf
-            | self.distal_binary_contact_buf
-        ).sum(dim=-1)
-        prev_latched = self.lift_ready_latched_buf.clone()
-        self.grasp_ready_hold_buf, _ready_now, lift_latched = compute_lift_readiness(
-            num_contacts=num_grip_fingers_gate,
-            is_grasp_phase=~self.lift_ready_latched_buf,
-            previous_hold_count=self.grasp_ready_hold_buf,
-            previous_latched=self.lift_ready_latched_buf,
-            min_contacts=int(self.cfg.stage0_lift_start_min_contacts),
-            hold_steps=int(self.cfg.grasp_ready_hold_steps),
-            num_envelope_fingers=num_envelope_fingers,
-            min_envelope_fingers=int(self.cfg.lift_start_min_envelope_fingers),
-        )
-        self.lift_ready_latched_buf.copy_(lift_latched)
-        is_lift = self.lift_ready_latched_buf
-        self.is_lift_phase.copy_(is_lift)
+        # ---- DEXTRAH 단일 phase: settle 종료 시 안착 스냅샷 → baseline·goal 확정 ----
+        # object_init_pos를 spawn(z=0.297)이 아닌 실제 안착점으로 갱신(baseline 버그 수정).
+        # goal = 안착점 + z offset → lift reward가 goal 높이 절대거리 기준(DEXTRAH).
+        snap = self.episode_length_buf == int(self.cfg.settle_steps)
+        if snap.any():
+            self.object_init_pos[snap] = self.object_pos[snap]
+            self.object_goal[snap] = self.object_pos[snap]
+            self.object_goal[snap, 2] += float(self.cfg.lift_goal_offset_z)
 
-        # ---- Lift 진입(래치 전환) 시 arm joint pos + 진입 step 캡처 ----
-        just_entering_lift = self.lift_ready_latched_buf & (~prev_latched)
-        self.lift_start_step_buf = torch.where(
-            just_entering_lift,
-            self.episode_length_buf,
-            self.lift_start_step_buf,
-        )
-
-        # Arm: 진입 시점 실제 위치 캡처 → lift 보간 시작점으로 사용
-        # (pregrasp_arm_pos_buf 대신 실제값 사용: grasp phase에서 Fabrics가 arm을
-        #  실제로 이동했으므로 전환 시 불연속 없이 자연스럽게 lift)
-        actual_arm_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
-        self.lift_arm_start_buf = torch.where(
-            just_entering_lift.unsqueeze(1),
-            actual_arm_pos,
-            self.lift_arm_start_buf,
-        )
-        # Target = actual grasp arm pose with only joint7 moved into lift-wait.
-        actual_prelift = compute_joint7_lift_wait_target(
-            actual_arm_pos,
-            joint7_delta=getattr(self.cfg, "lift_wait_joint7_delta", 0.31),
-            joint7_min=self.cfg.warm_j7_min,
-            joint7_max=self.cfg.warm_j7_max,
-        )
-        self.prelift_arm_pos_buf = torch.where(
-            just_entering_lift.unsqueeze(1),
-            actual_prelift,
-            self.prelift_arm_pos_buf,
-        )
-
-        # ---- Grasp phase: Fabrics arm 제어 ----
+        # ---- Fabrics arm 제어 (전 구간 정책 연속 제어, scripted lift 없음) ----
         # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
         # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
         delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
@@ -790,37 +729,9 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_q[:, NUM_ARM_DOF:] = hand_target
         self.fabric_qd[:, NUM_ARM_DOF:].zero_()
 
-        # ---- Lift-wait phase: Fabrics arm 상태 동결 ----
-        # scripted arm 제어 중 Fabrics integrator 발산 방지
-        freeze_mask = self.is_lift_phase
-        if freeze_mask.any():
-            self.fabric_q[freeze_mask, :NUM_ARM_DOF] = (
-                self.robot.data.joint_pos[freeze_mask][:, self.arm_dof_indices]
-            )
-            self.fabric_qd[freeze_mask, :NUM_ARM_DOF].zero_()
-            self.fabric_qdd[freeze_mask, :NUM_ARM_DOF].zero_()
-
     def _apply_action(self) -> None:
-        is_lift       = self.is_lift_phase        # (N,) bool
-
-        # ---- 오른팔 ----
-        # Grasp phase:    Fabrics arm target
-        # Lift-wait phase: actual grasp arm → joint7-only lift-wait 선형 보간
-        lift_progress = (
-            (self.episode_length_buf - self.lift_start_step_buf).clamp(min=0).float()
-            / max(1, LIFT_PHASE_STEPS - 1)
-        ).clamp(max=1.0).unsqueeze(1)
-
-        arm_target_lift = (
-            self.lift_arm_start_buf * (1.0 - lift_progress)
-            + self.prelift_arm_pos_buf * lift_progress
-        )
-
-        arm_target = torch.where(
-            is_lift.unsqueeze(1),
-            arm_target_lift,
-            self.fabric_q[:, :NUM_ARM_DOF],
-        )
+        # ---- 오른팔: 전 구간 Fabrics arm target (DEXTRAH 단일 phase) ----
+        arm_target = self.fabric_q[:, :NUM_ARM_DOF]
 
         self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_dof_indices)
         self.robot.set_joint_velocity_target(
@@ -1003,190 +914,85 @@ class GraspRightEnv(DirectRLEnv):
         return {"policy": actor_obs, "critic": critic_obs}
 
     # ------------------------------------------------------------------
-    # Rewards: RH56F1 shared grasp-v2 contract
+    # Rewards: DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        cup_height_delta = (
-            self.object_pos[:, 2] - self.object_init_pos[:, 2]
-        ).clamp(min=0.0)
-        grasp_center = self.object_pos.clone()
-        grasp_center[:, 2] += self.cfg.cup_grasp_z_offset
-        palm_to_cup_dist = (self.palm_center_pos - grasp_center).norm(dim=-1)
-        cup_xy_displacement = (
-            self.object_pos[:, :2] - self.object_init_pos[:, :2]
-        ).norm(dim=-1)
-
-        # 다물체: radius 기반 enclosure(cup_radius_approx) 대신 손끝→물체중심 거리로 유도.
-        # 물체 크기 무관(DEXTRAH hand_to_object 정신) → primitives 반경 편차(2.5~6cm)에 견고.
-        tip_to_center = (
-            self.fingertip_pos - grasp_center.unsqueeze(1)
-        ).norm(dim=-1)   # (N, 5)
-        thumb_dist  = tip_to_center[:, 0]
-        others_dist = tip_to_center[:, 1:].mean(dim=-1)
-        fingertip_side_dist = (
-            float(self.cfg.enclosure_thumb_weight) * thumb_dist
-            + (1.0 - float(self.cfg.enclosure_thumb_weight)) * others_dist
+        # 1) hand_to_object: palm+5손끝 → 물체중심 MAX 거리 (OpenArm 포팅 규약 .max())
+        hand_points = torch.cat(
+            [self.palm_center_pos.unsqueeze(1), self.fingertip_pos], dim=1
+        )   # (N, 6, 3)
+        hand_to_object_err = (
+            hand_points - self.object_pos.unsqueeze(1)
+        ).norm(dim=-1).max(dim=-1).values
+        hand_to_object_reward = float(self.cfg.hand_to_object_weight) * torch.exp(
+            -float(self.cfg.hand_to_object_sharpness) * hand_to_object_err
         )
 
-        full_tip_contact_bool = self.num_contacts_buf >= NUM_FINGERTIPS
-        full_tip_contact = full_tip_contact_bool.float()
-        tip_contact_frac = (
-            self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
-        ).clamp(max=1.0)
-        persistent_grasp = (
-            self.num_contacts_buf >= int(self.cfg.stage0_lift_start_min_contacts)
+        # 2) object_to_goal: 물체 → goal(안착점 + lift_goal_offset_z) 거리
+        object_to_goal_err = (self.object_pos - self.object_goal).norm(dim=-1)
+        object_to_goal_reward = float(self.cfg.object_to_goal_weight) * torch.exp(
+            -float(self.cfg.object_to_goal_sharpness) * object_to_goal_err
         )
-        self.reward_contact_hold_buf = torch.where(
-            persistent_grasp,
-            self.reward_contact_hold_buf + 1,
-            torch.zeros_like(self.reward_contact_hold_buf),
+
+        # 3) lift: goal 높이 절대거리 (spawn 상대 height_delta 폐기 → baseline 버그 원천 제거)
+        object_vertical_err = (self.object_goal[:, 2] - self.object_pos[:, 2]).abs()
+        lift_reward = float(self.cfg.lift_weight) * torch.exp(
+            -float(self.cfg.lift_sharpness) * object_vertical_err
         )
-        contact_persistence_frac = (
-            self.reward_contact_hold_buf.float()
-            / max(float(self.cfg.grasp_contact_persistence_reward_steps), 1.0)
-        ).clamp(max=1.0)
-        # envelope wrap 품질: 중간(rl_dg_X_3)·원위(rl_dg_X_4) 마디 접촉 비율
-        # → grasp/lift 보상이 손끝-only가 아닌 진짜 감싸기를 credit하도록 전달
-        middle_frac = self.middle_binary_contact_buf.float().mean(dim=-1)
-        distal_frac = self.distal_binary_contact_buf.float().mean(dim=-1)
-        envelope_frac = 0.5 * (middle_frac + distal_frac)
-        # grip_frac: 임의 마디(tip|middle|distal) 접촉 손가락 비율. envelope wrap이 tip을
-        # mid/dist로 옮겨도 그립으로 인정 → post_lift 페널티·success가 wrap을 처벌 안 함.
-        any_finger_contact = (
+
+        # 4) finger_curl_reg: curled 자세 정규화 (rh56f1 교훈: 적응 파지 방해 → 기본 w=0)
+        finger_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
+        finger_curl_dist = (
+            finger_pos - self.hand_full_grip_pose.unsqueeze(0)
+        ).norm(p=2, dim=-1)
+        finger_curl_reg = float(self.cfg.finger_curl_reg_weight) * finger_curl_dist ** 2
+
+        total = (
+            hand_to_object_reward + object_to_goal_reward + finger_curl_reg + lift_reward
+        )
+
+        # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
+        self.in_success_region = object_to_goal_err < float(self.cfg.object_goal_tol)
+
+        # contact 진단용 grip(tip|mid|distal 접촉 손가락 수)
+        num_grip_fingers = (
             self.binary_contact_buf
             | self.middle_binary_contact_buf
             | self.distal_binary_contact_buf
-        )
-        num_grip_fingers = any_finger_contact.sum(dim=-1)
-        grip_frac = num_grip_fingers.float() / float(NUM_FINGERTIPS)
-
-        z_local = torch.zeros(self.num_envs, 3, device=self.device)
-        z_local[:, 2] = 1.0
-        cup_z_world = quat_apply(self.object_rot, z_local)
-        cup_tilt_deg = torch.rad2deg(
-            torch.acos(cup_z_world[:, 2].clamp(min=-1.0, max=1.0))
-        )
-        upright_quality = torch.exp(
-            -cup_tilt_deg
-            / max(float(self.cfg.stabilize_upright_reward_scale_deg), 1e-6)
-        )
-        action_delta_norm = compute_action_delta_norm(self.actions, self.prev_actions)
-        contact_delta = (
-            self.num_contacts_buf.float() - self._prev_reward_contacts_buf
-        ).abs()
-        stability = compute_grasp_v2_stability(
-            cup_lin_vel=self.cup.data.root_lin_vel_w,
-            cup_ang_vel=self.cup.data.root_ang_vel_w,
-            contact_delta=contact_delta,
-            action_delta_norm=action_delta_norm,
-            cfg=self.cfg,
-        )
-        # success: 엄지-컵 접촉을 명시 요구 + 나머지 완화(≥success_min_grip_fingers).
-        # distal/middle 이 Cup-only 필터가 됐으므로 any_finger_contact[:,0](엄지)는 진짜
-        # 컵 접촉만 True. 전손가락 동시(>=5)는 wrap 시 tip 감소로 진동 이력이 있어 완화하되,
-        # 엄지 컵 접촉(thumb_cup_grip)을 AND 강제해 "엄지 없는 4지 그립"을 success 에서 배제.
-        thumb_cup_grip = any_finger_contact[:, 0]
-        full_grip_bool = (
-            num_grip_fingers >= int(self.cfg.success_min_grip_fingers)
-        ) & thumb_cup_grip
-        success_now = (
-            self.is_lift_phase
-            & (cup_height_delta >= self.cfg.lift_success_height)
-            & full_grip_bool
-            & (cup_tilt_deg <= self.cfg.stabilize_upright_max_deg)
-            & stability.stable
-        )
-
-        total, reward_terms, _ = compute_grasp_reward_terms(
-            num_tip_contacts=self.num_contacts_buf,
-            tip_contact_frac=tip_contact_frac,
-            full_tip_contact=full_tip_contact,
-            contact_persistence_frac=contact_persistence_frac,
-            envelope_frac=envelope_frac,
-            grip_frac=grip_frac,
-            palm_to_cup_dist=palm_to_cup_dist,
-            fingertip_side_dist=fingertip_side_dist,
-            cup_height_delta=cup_height_delta,
-            cup_xy_displacement=cup_xy_displacement,
-            cup_tilt_deg=cup_tilt_deg,
-            upright_quality=upright_quality,
-            lift_latched=self.is_lift_phase,
-            action_delta_norm=action_delta_norm,
-            stabilize_reward_gate=self.is_lift_phase,
-            success_now=success_now,
-            stable=stability.stable,
-            stability_quality=stability.quality,
-            cfg=self.cfg,
-        )
-        self._prev_reward_contacts_buf.copy_(self.num_contacts_buf.float())
+        ).sum(dim=-1)
 
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         if self.grasp_adr is not None:
             self.grasp_adr.maybe_increment(_ep_success_rate)
 
-        self.extras["reward/approach"] = reward_terms["approach"].mean()
-        self.extras["reward/grasp"] = reward_terms["grasp"].mean()
-        self.extras["reward/lift"] = reward_terms["lift"].mean()
-        self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
-        self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
-        self.extras["reward/post_lift_contact_loss"] = reward_terms["post_lift_contact_loss"].mean()
-        self.extras["reward/action_smooth"] = reward_terms["action_smooth"].mean()
-        self.extras["reward/stability"] = reward_terms["stability"].mean()
-        self.extras["reward/total"] = total.mean()
-        self.extras["task/lifted_rate"] = (
-            cup_height_delta >= self.cfg.lift_success_height
-        ).float().mean()
-        self.extras["task/five_tip_contact_rate"] = full_tip_contact.mean()
-        self.extras["object/height_delta"] = cup_height_delta.mean()
-        self.extras["object/tilt_deg"] = cup_tilt_deg.mean()
-        # DEXTRAH식 거리 진단: 손끝→물체중심(hand_to_object) / 물체→목표(object_to_goal)
-        self.extras["task/hand_to_object_dist"] = fingertip_side_dist.mean()
-        self.extras["task/object_to_goal_dist"] = (
-            self.object_pos - self.object_goal
-        ).norm(dim=-1).mean()
-        # per-object 로깅: 물체별 lifted/five_tip/contact (env_id % N 배정).
-        # 물체 수 적을 때만(visdex 153종은 태그 과다 → 전체 object/ 집계만).
-        # (success 는 순간값이라 제외 — 진짜 성공률은 episode_success_rate)
-        if len(self._object_names) <= 16:
-            _lifted_f   = (cup_height_delta >= self.cfg.lift_success_height).float()
-            _ncontact_f = self.num_contacts_buf.float()
-            for _i, _name in enumerate(self._object_names):
-                _m = self.object_idx == _i
-                if _m.any():
-                    self.extras[f"object/{_name}/lifted"]   = _lifted_f[_m].mean()
-                    self.extras[f"object/{_name}/five_tip"] = full_tip_contact[_m].mean()
-                    self.extras[f"object/{_name}/contact"]  = _ncontact_f[_m].mean()
-        self.extras["contact/count"] = self.num_contacts_buf.float().mean()
-        # 접촉 진단: 중간마디(_3)/원위(_4) 접촉 카운트
-        _mid = self.middle_binary_contact_buf
-        _dist = self.distal_binary_contact_buf
-        self.extras["contact/middle_count"] = _mid.float().sum(dim=-1).mean()
-        self.extras["contact/distal_count"] = _dist.float().sum(dim=-1).mean()
-        # grip(tip|mid|distal 감싼 손가락 수) = lift 게이트 기준. min_contacts 적정성 진단.
-        self.extras["contact/grip_fingers"] = num_grip_fingers.float().mean()
-        # 외란 wrench 크기 진단 (파지력 학습 강제)
-        self.extras["wrench/force_mag"] = self.object_applied_force.norm(dim=-1).mean()
-        # 손가락별 접촉 진단 (thumb,index,middle,ring,pinky) — 특정 손가락만 닿는지 확인
-        _any_finger = (
-            self.binary_contact_buf | self.middle_binary_contact_buf | self.distal_binary_contact_buf
-        )
-        for _fi, _fn in enumerate(("thumb", "index", "middle", "ring", "pinky")):
-            self.extras[f"contact/finger/{_fn}"] = _any_finger[:, _fi].float().mean()
-        # joint state(arm/finger per-joint) + action policy(palm 6D + finger 5D raw) 로깅
-        _hand_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
-        for k, v in joint_state_scalars(
-            arm_pos=self.robot.data.joint_pos[:, self.arm_dof_indices],
-            arm_vel=self.robot.data.joint_vel[:, self.arm_dof_indices],
-            finger_pos=_hand_pos,
-            finger_vel=self.robot.data.joint_vel[:, self.hand_dof_indices],
-            per_joint=False,  # grasp_v2: per-joint(q0~q19, j1~j7) 상세는 grasp_v1 디버깅용 → 요약만
-        ).items():
-            self.extras[k] = v
+        # ── 로깅: DEXTRAH-g 정렬 ──────────────────────────────────────────
+        # DEXTRAH 원본 extras: 4 reward 항 + in_success_region (동일 이름)
+        self.extras["hand_to_object_reward"] = hand_to_object_reward.mean()
+        self.extras["object_to_goal_reward"] = object_to_goal_reward.mean()
+        self.extras["finger_curl_reg"] = finger_curl_reg.mean()
+        self.extras["lift_reward"] = lift_reward.mean()
+        self.extras["in_success_region"] = self.in_success_region.float().mean()
+        # 해석 보조: 안착점(settle 스냅샷) 대비 실제 리프트 높이 → 렌더와 일치
+        self.extras["object_height"] = (
+            self.object_pos[:, 2] - self.object_init_pos[:, 2]
+        ).mean()
+        # contact: 감싸기 노드 그룹별 접촉 손가락 수 (0~5). palm 센서 없음 → 제외.
+        self.extras["contact/tip"]    = self.num_contacts_buf.float().mean()
+        self.extras["contact/middle"] = self.middle_binary_contact_buf.float().sum(dim=-1).mean()
+        self.extras["contact/distal"] = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
+        self.extras["contact/grip"]   = num_grip_fingers.float().mean()
+        # action policy(palm 6D + finger 5D raw) 로깅 유지
         for k, v in action_policy_scalars(
             action=self.actions, prev_action=self.prev_actions, palm_dims=6,
         ).items():
             self.extras[k] = v
-        self.extras["task/action_delta_norm"] = action_delta_norm.mean()
+        # episode_success_rate: 물체별 성공률 + 전체 (누적 집계는 _reset_idx 에서 갱신)
+        for _i, _name in enumerate(self._object_names):
+            _tot = self._obj_total_episodes[_i].item()
+            if _tot > 0:
+                self.extras[f"episode_success_rate/{_name}"] = torch.tensor(
+                    self._obj_success_episodes[_i].item() / _tot, device=self.device
+                )
         self.extras["episode_success_rate"] = torch.tensor(
             _ep_success_rate, device=self.device
         )
@@ -1208,27 +1014,21 @@ class GraspRightEnv(DirectRLEnv):
         )
         fallen = self.object_pos[:, 2] < self.cfg.obj_fallen_z
 
-        z_local = torch.zeros(self.num_envs, 3, device=self.device)
-        z_local[:, 2] = 1.0
-        cup_z_world = quat_apply(self.object_rot, z_local)
-        tipped = cup_z_world[:, 2] < self._cup_tipping_cos
-
-        # success bookkeeping: 접촉 래치(잡고 리프트) + 그립 유지 + 유효 컵.
-        grasped = (self.num_contacts_buf >= MIN_CONTACTS_FOR_SUCCESS)
+        # success bookkeeping: DEXTRAH in_success_region (goal 도달) + 유효 물체.
         valid_cup = ~(out_x | out_y | fallen)
-        self.success_flag.copy_(self.lift_ready_latched_buf & grasped & valid_cup)
+        self.success_flag.copy_(self.in_success_region & valid_cup)
         self.transfer_entry_grasp_success_buf |= self.success_flag
         self.episode_success_buf |= self.success_flag
 
         if self.cfg.enable_warm_state_export:
+            z_local = torch.zeros(self.num_envs, 3, device=self.device)
+            z_local[:, 2] = 1.0
+            cup_z_world = quat_apply(self.object_rot, z_local)
             self._maybe_export_warm_states(cup_z_world[:, 2])
 
-        # scripted lift-wait 중에는 tipped 로 종료하지 않음.
-        # joint7 이동으로 cup 이 일시적으로 기울 수 있으나 warm-state 저장은
-        # lift-wait 도달과 접촉 조건으로 필터링한다.
-        is_scripted_phase = self.is_lift_phase
-        tipped_active = tipped & ~is_scripted_phase
-        terminated = out_x | out_y | fallen | tipped_active
+        # DEXTRAH 정렬: 기울기(tipped) 종료 제거 — visdex 153종은 임의 안착 자세라
+        # 컵 전용 upright 가정이 부당. 종료 = 물체 이탈/낙하 + timeout.
+        terminated = out_x | out_y | fallen
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         # warm export 진단: scripted phase 중 (tipped 제외) 조기 종료 추적
@@ -1236,8 +1036,6 @@ class GraspRightEnv(DirectRLEnv):
             early_term = (out_x | out_y | fallen) & is_scripted_phase
             if early_term.any():
                 self._warm_diag_terminated_early += int(early_term.sum().item())
-
-        self.extras["object_z"] = self.object_pos[:, 2].mean()
 
         return terminated, truncated
 
@@ -1436,6 +1234,11 @@ class GraspRightEnv(DirectRLEnv):
         # ---- episode 성공 집계 후 클리어 ----
         self._total_episodes += n
         self._successful_episodes += int(self.episode_success_buf[env_ids].sum().item())
+        # 물체별 성공 집계 (episode_success_rate/{object})
+        _r_obj = self.object_idx[env_ids]
+        _r_succ = self.episode_success_buf[env_ids].float()
+        self._obj_total_episodes.index_add_(0, _r_obj, torch.ones_like(_r_succ))
+        self._obj_success_episodes.index_add_(0, _r_obj, _r_succ)
         self.episode_success_buf[env_ids] = False
 
         # ---- 1. Reset source 선택 ----
@@ -1517,6 +1320,10 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
         self.object_init_pos[env_ids] = obj_pos_local
+        # goal 초기값 = spawn + z offset (settle 스냅샷이 안착점 기준으로 재설정)
+        self.object_goal[env_ids] = obj_pos_local
+        self.object_goal[env_ids, 2] += float(self.cfg.lift_goal_offset_z)
+        self.in_success_region[env_ids] = False
 
         # ---- 5. pregrasp / lift-wait-target 버퍼 저장 ----
         self.pregrasp_arm_pos_buf[env_ids] = q_pregrasp[:, :NUM_ARM_DOF]
@@ -1559,14 +1366,8 @@ class GraspRightEnv(DirectRLEnv):
         self.distal_binary_contact_buf[env_ids] = False
         self.middle_contact_force_raw[env_ids].zero_()
         self.middle_binary_contact_buf[env_ids] = False
-        self.reward_contact_hold_buf[env_ids] = 0
-        self._prev_reward_contacts_buf[env_ids] = 0.0
         self.success_flag[env_ids] = False
         self.transfer_entry_grasp_success_buf[env_ids] = False
-        self.lift_ready_latched_buf[env_ids] = False
-        self.grasp_ready_hold_buf[env_ids] = 0
-        self.lift_start_step_buf[env_ids] = 0
-        self.is_lift_phase[env_ids] = False
         self.finger_close_buf[env_ids] = 0.0
 
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치

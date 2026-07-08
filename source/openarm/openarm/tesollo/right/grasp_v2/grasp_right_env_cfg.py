@@ -190,9 +190,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     palm_delta_rot_deg: float = 90.0   # ±90° per axis: pregrasp side(90°)에서 top-down(0°)까지 정책 자유 회전(20→90, arm 자유탐색)
 
     # -----------------------------------------------------------------------
-    # Reward 파라미터
+    # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
+    # goal = 물체 안착점(settle 스냅샷) + z offset. success = |obj-goal| < tol.
+    # offset 0.21 + tol 0.10 → success 시 최소 11cm 리프트(요구 ≥10cm).
+    # rh56f1 grasp_v2 실험2 검증값 재사용(goal 낮으면 lift 포화→동기 소멸).
     # -----------------------------------------------------------------------
-    # RH56F1 shared grasp-v2 reward contract.
+    lift_goal_offset_z:       float = 0.21
+    object_goal_tol:          float = 0.10
+    hand_to_object_weight:    float = 1.0
+    hand_to_object_sharpness: float = 10.0
+    object_to_goal_weight:    float = 5.0
+    object_to_goal_sharpness: float = 15.0   # exp(-s·err) 형태(양수 s). rh56f1의 -15·exp(+s·err)와 동치
+    lift_weight:              float = 5.0
+    lift_sharpness:           float = 8.5
+    finger_curl_reg_weight:   float = 0.0    # rh56f1 교훈: curled_q 강제가 적응 파지 방해 → 기본 off
+
+    # (구) RH56F1 shared grasp-v2 reward contract — DEXTRAH 전환으로 미사용(호환 보존).
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0
     approach_xy_penalty_weight: float = 5.0

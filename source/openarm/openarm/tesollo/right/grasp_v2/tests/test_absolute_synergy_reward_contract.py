@@ -87,82 +87,58 @@ def test_lift_latch_gate_disabled_envelope_via_reward() -> None:
     assert "min_envelope_fingers" in utils
 
 
-def test_envelope_credited_in_grasp_and_lift_reward() -> None:
-    # envelope(중간/원위 wrap)을 grasp/lift 보상에 credit → tip-farming 차단.
-    core = (
-        Path(__file__).resolve().parents[4] / "common" / "grasp_reward_core.py"
-    ).read_text(encoding="utf-8")
-    env = _text("grasp_right_env.py")
-
-    # 공유 코어: optional envelope_frac (RH56F1 None=기존 동작)
-    assert "envelope_frac: torch.Tensor | None = None" in core
-    # grasp 보상이 envelope_frac을 포함
-    assert "0.40 * envelope_frac" in core
-    # lift/stabilize graded_contact가 envelope-aware
-    assert "0.5 * graded_contact + 0.5 * env_quality" in core
-    # env: 중간·원위 마디 접촉으로 envelope_frac 계산해 전달
-    assert "middle_binary_contact_buf.float().mean" in env
-    assert "distal_binary_contact_buf.float().mean" in env
-    assert "envelope_frac=envelope_frac" in env
-
-
-def test_post_lift_and_success_are_grip_consistent() -> None:
-    # envelope wrap이 tip을 mid/dist로 옮겨도 처벌하지 않도록 post_lift 페널티·success를
-    # grip(임의 마디 접촉) 기준으로. tip-only면 wrap↔tip 진동 유발.
-    core = (
-        Path(__file__).resolve().parents[4] / "common" / "grasp_reward_core.py"
-    ).read_text(encoding="utf-8")
-    env = _text("grasp_right_env.py")
-
-    # 공유 코어: optional grip_frac (RH56F1 None=tip 유지)
-    assert "grip_frac: torch.Tensor | None = None" in core
-    # post_lift_contact_loss가 grip_frac 사용
-    assert "tip_contact_frac if grip_frac is None else grip_frac" in core
-    # env: 임의 마디(tip|middle|distal) 접촉 손가락 수
-    assert "num_grip_fingers" in env
-    assert "grip_frac=grip_frac" in env
-    # success_now가 grip 기반(full_grip) + 엄지-컵 접촉 명시 요구(거짓 4지 그립 배제).
-    # distal/middle Cup-only 필터 후 num_grip_fingers>=success_min_grip_fingers & thumb_cup_grip.
-    assert "num_grip_fingers >= int(self.cfg.success_min_grip_fingers)" in env
-    assert "thumb_cup_grip = any_finger_contact[:, 0]" in env
-    assert "& full_grip_bool" in env
-
-
-def test_reward_uses_rh56f1_shared_core_terms() -> None:
+def test_reward_is_dextrah_four_terms() -> None:
+    # DEXTRAH compute_rewards 이식 계약: 4항(거리 기반) + in_success_region.
+    # 접촉 synergy 항(compute_grasp_reward_terms)은 사용하지 않는다.
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
     reward_body = env.split("def _get_rewards", 1)[1].split("return total", 1)[0]
 
     for name in (
-        "approach_weight",
-        "grasp_weight",
-        "lift_reward_weight",
-        "stabilize_weight",
-        "success_bonus_weight",
-        "post_lift_contact_loss_weight",
-        "action_smooth_weight",
-        "stability_reward_weight",
+        "lift_goal_offset_z",
+        "object_goal_tol",
+        "hand_to_object_weight",
+        "hand_to_object_sharpness",
+        "object_to_goal_weight",
+        "object_to_goal_sharpness",
+        "lift_weight",
+        "lift_sharpness",
+        "finger_curl_reg_weight",
     ):
         assert name in cfg
 
     for term in (
-        "compute_grasp_reward_terms(",
-        'reward_terms["approach"]',
-        'reward_terms["grasp"]',
-        'reward_terms["lift"]',
-        'reward_terms["stabilize"]',
-        'reward_terms["success_bonus"]',
-        'reward_terms["post_lift_contact_loss"]',
-        'reward_terms["action_smooth"]',
-        'reward_terms["stability"]',
+        "hand_to_object_reward",
+        "object_to_goal_reward",
+        "finger_curl_reg",
+        "lift_reward",
+        "in_success_region",
     ):
         assert term in reward_body
 
-    for removed in (
-        "r1b_force_balance",
-        "r1c_full_grasp",
-        "r2_tip_bonus",
-        "r5_quality_lift",
-        "prelift_rim_lift_penalty",
-    ):
-        assert removed not in reward_body
+    # hand_to_object: palm+5손끝 MAX 거리 (OpenArm 포팅 규약)
+    assert ".max(dim=-1).values" in reward_body
+    # 구 접촉 synergy 코어 미사용
+    assert "compute_grasp_reward_terms(" not in reward_body
+
+
+def test_goal_is_settle_anchored() -> None:
+    # baseline 버그 수정 계약: settle 종료 시 안착점 스냅샷 → object_init_pos/goal 갱신.
+    # goal = 안착점 + lift_goal_offset_z (spawn 상대 height_delta 폐기).
+    env = _text("grasp_right_env.py")
+
+    assert "self.episode_length_buf == int(self.cfg.settle_steps)" in env
+    assert "self.object_init_pos[snap] = self.object_pos[snap]" in env
+    assert "self.object_goal[snap, 2] += float(self.cfg.lift_goal_offset_z)" in env
+
+
+def test_single_phase_no_scripted_lift() -> None:
+    # DEXTRAH 단일 phase 계약: scripted joint7 lift/latch/freeze 없이
+    # 정책이 전 구간 Fabrics arm을 연속 제어한다.
+    env = _text("grasp_right_env.py")
+    apply_body = env.split("def _apply_action", 1)[1].split("def ", 1)[0]
+
+    assert "lift_progress" not in apply_body
+    assert "arm_target = self.fabric_q[:, :NUM_ARM_DOF]" in apply_body
+    assert "compute_lift_readiness" not in env
+    assert "is_lift_phase" not in env
