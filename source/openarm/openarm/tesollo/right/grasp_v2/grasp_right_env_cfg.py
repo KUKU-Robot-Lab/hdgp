@@ -201,6 +201,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_weight:              float = 5.0
     lift_sharpness:           float = 8.5
     finger_curl_reg_weight:   float = 0.0    # ADR 미사용 시 fallback (ADR은 -0.01→-0.005)
+    # palm orientation: DEXTRAH 4항엔 손목 방향 제약이 없어 손바닥이 임의(천장) 방향으로
+    # 수렴. palm 법선(로컬 +X → world)이 palm→물체 방향과 정렬되도록 보조 shaping.
+    # w·exp(s·(align−1)): align=1(완전 정렬)→w, align=−1(반대)→w·exp(−2s). weight는
+    # object_to_goal(5.0)의 0.2배로 통제(reward-audit ACCEPT: local-min·hacking 방지).
+    palm_orient_weight:       float = 1.0
+    palm_orient_sharpness:    float = 3.0
 
     # (구) RH56F1 shared grasp-v2 reward contract — DEXTRAH 전환으로 미사용(호환 보존).
     approach_weight: float = 2.0
@@ -304,6 +310,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     obj_out_y_min:  float = -0.60
     obj_out_y_max:  float = 0.25
     obj_fallen_z:   float = 0.20
+
+    # 로봇 발산 종료: fabric 폭주로 손이 도달불가 위치로 튕기면 물체가 테이블에
+    # 남아 컵-기준 종료가 안 걸림 → timeout까지 방치되던 문제. palm↔물체 거리가
+    # 정상 workspace(리치 + pregrasp offset)를 크게 넘거나 NaN이면 조기 종료.
+    robot_escape_dist: float = 0.80
 
     # -----------------------------------------------------------------------
     # 물체 spawn

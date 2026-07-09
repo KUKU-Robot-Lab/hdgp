@@ -41,16 +41,16 @@ LEFT_HAND_JOINT_NAMES = [
 LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_HAND_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
-    # pour_right_v3 LEFT_ARM_REST_JOINT_POS와 일치시킴:
-    # warmstart collection 시 pour env가 이 자세를 사용하므로 OOD 방지
-    # FK 결과: target cup pos ≈ [0.268, 0.100, 0.291] (demo target=[0.27, 0.10])
-    "l_aj_1": -0.315,
-    "l_aj_2": -0.290,
-    "l_aj_3":  0.400,
-    "l_aj_4":  0.513,
-    "l_aj_5":  0.666,
-    "l_aj_6": -0.729,
-    "l_aj_7": -0.957,
+    # grasp_v2는 오른팔만 제어 — 왼팔은 순수 고정(장식)이므로 pour warmstart 자세를
+    # 유지할 이유 없음. 렌더에서 왼팔이 이상한 자세로 흔들리던 문제 해소:
+    # 전체 0 + l_aj_4=1.57(팔꿈치 굽힘)로 깔끔한 중립 고정.
+    "l_aj_1": 0.0,
+    "l_aj_2": 0.0,
+    "l_aj_3": 0.0,
+    "l_aj_4": 1.57,
+    "l_aj_5": 0.0,
+    "l_aj_6": 0.0,
+    "l_aj_7": 0.0,
     # 왼손 tesollo: 미사용 → 전체 0 rest (self-collision disabled)
     **{_n: 0.0 for _n in LEFT_HAND_JOINT_NAMES},
 }

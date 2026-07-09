@@ -957,8 +957,23 @@ class GraspRightEnv(DirectRLEnv):
         ).norm(p=2, dim=-1)
         finger_curl_reg = _curl_w * finger_curl_dist ** 2
 
+        # 5) palm orientation: 손바닥 법선(palm 로컬 +X, grasp_v1 규약)이 palm→물체
+        #    방향과 정렬되도록. DEXTRAH 4항엔 손목 방향 제약이 없어 손바닥이 임의(천장)
+        #    방향으로 수렴하던 것을 side-approach 자세로 유도.
+        palm_quat = self.robot.data.body_quat_w[:, self.palm_body_index]   # (N,4) wxyz
+        palm_x_local = torch.zeros_like(self.palm_center_pos)
+        palm_x_local[:, 0] = 1.0
+        palm_normal = quat_apply(palm_quat, palm_x_local)                  # (N,3) world
+        palm_to_obj = self.object_pos - self.palm_center_pos
+        palm_to_obj = palm_to_obj / (palm_to_obj.norm(dim=-1, keepdim=True) + 1e-8)
+        palm_align = (palm_normal * palm_to_obj).sum(dim=-1)               # [-1, 1]
+        palm_orient_reward = float(self.cfg.palm_orient_weight) * torch.exp(
+            float(self.cfg.palm_orient_sharpness) * (palm_align - 1.0)
+        )
+
         total = (
-            hand_to_object_reward + object_to_goal_reward + finger_curl_reg + lift_reward
+            hand_to_object_reward + object_to_goal_reward + finger_curl_reg
+            + lift_reward + palm_orient_reward
         )
 
         # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
@@ -982,6 +997,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["object_to_goal_reward"] = object_to_goal_reward.mean()
         self.extras["finger_curl_reg"] = finger_curl_reg.mean()
         self.extras["lift_reward"] = lift_reward.mean()
+        self.extras["palm_orient_reward"] = palm_orient_reward.mean()
+        self.extras["palm_align"] = palm_align.mean()
         self.extras["in_success_region"] = self.in_success_region.float().mean()
         # DEXTRAH 원본 extras: ADR 진행도
         if self.grasp_adr is not None:
@@ -1030,6 +1047,15 @@ class GraspRightEnv(DirectRLEnv):
         )
         fallen = self.object_pos[:, 2] < self.cfg.obj_fallen_z
 
+        # 로봇 발산 종료: fabric 폭주로 손이 도달불가 위치로 튕기면 컵-기준 종료가
+        # 안 걸려 timeout까지 남던 문제. palm↔물체 거리가 workspace 초과 또는 NaN.
+        palm_to_obj_dist = (self.palm_center_pos - self.object_pos).norm(dim=-1)
+        robot_diverged = (
+            (palm_to_obj_dist > self.cfg.robot_escape_dist)
+            | torch.isnan(self.palm_center_pos).any(dim=-1)
+            | torch.isnan(self.fabric_q).any(dim=-1)
+        )
+
         # success bookkeeping: DEXTRAH in_success_region (goal 도달) + 유효 물체.
         valid_cup = ~(out_x | out_y | fallen)
         self.success_flag.copy_(self.in_success_region & valid_cup)
@@ -1044,7 +1070,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # DEXTRAH 정렬: 기울기(tipped) 종료 제거 — visdex 153종은 임의 안착 자세라
         # 컵 전용 upright 가정이 부당. 종료 = 물체 이탈/낙하 + timeout.
-        terminated = out_x | out_y | fallen
+        terminated = out_x | out_y | fallen | robot_diverged
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         # warm export 진단: scripted phase 중 (tipped 제외) 조기 종료 추적
