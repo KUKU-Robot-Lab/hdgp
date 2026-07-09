@@ -116,8 +116,10 @@ def test_reward_is_dextrah_four_terms() -> None:
     ):
         assert term in reward_body
 
-    # hand_to_object: palm+5손끝 MAX 거리 (OpenArm 포팅 규약)
-    assert ".max(dim=-1).values" in reward_body
+    # hand_to_object: palm+5손끝 MAX 거리 — intermediates 공용값(wrench 게이트와
+    # 동일 소스)을 reward 가 재사용
+    assert ".max(dim=-1).values" in env
+    assert "self.hand_to_object_err" in reward_body
     # 구 접촉 synergy 코어 미사용
     assert "compute_grasp_reward_terms(" not in reward_body
 
@@ -176,7 +178,7 @@ def test_adr_curriculum_is_dextrah() -> None:
     for group in (
         '"object_wrench"', '"object_spawn"', '"object_state_noise"',
         '"robot_state_noise"', '"reward_weights"', '"fabric_damping"',
-        '"observation_annealing"',
+        '"observation_annealing"', '"robot_spawn"', '"pd_targets"',
     ):
         assert group in cfg, group
     assert '"lift_weight":              (5.0, 0.0)' in cfg
@@ -188,6 +190,20 @@ def test_adr_curriculum_is_dextrah() -> None:
     assert '"object_spawn", "xy_range"' in env
     assert '"object_wrench", "max_linear_accel"' in env
     assert '"reward_weights", "lift_weight"' in env
+    # DEXTRAH 완전 정렬 5건 (07.09):
+    # (1) physics DR: EventCfg + adr_physics_cfg (mass 0.5~3× 등) ADR 확장
+    assert "class EventCfg" in cfg
+    assert "adr_physics_cfg" in cfg
+    assert '"object_scale_mass"' in cfg
+    # (2) wrench 게이트 = hand↔object 거리 (in_success 게이트 아님)
+    assert "hand_to_object_dist_threshold" in cfg
+    assert "self.hand_to_object_err <= float(self.cfg.hand_to_object_dist_threshold)" in env
+    # (3) robot_spawn 리셋 노이즈 커리큘럼
+    assert 'self._adr("robot_spawn", "joint_pos_noise")' in env
+    # (4) 케이던스 = 5×에피소드(3000 steps, DEXTRAH min_steps_for_dr_change)
+    assert "adr_increment_interval: int  = 3000" in cfg
+    # (5) pd velocity feedforward factor (1→0)
+    assert '"pd_targets", "velocity_target_factor"' in env
 
 
 def test_single_phase_no_scripted_lift() -> None:

@@ -339,6 +339,9 @@ class GraspRightEnv(DirectRLEnv):
                 num_increments=cfg.adr_num_increments,
                 increment_interval=cfg.adr_increment_interval,
                 trigger_threshold=cfg.adr_trigger_threshold,
+                # DEXTRAH physics DR: increment 시 EventTerm 범위 확장
+                event_manager=getattr(self, "event_manager", None),
+                physics_cfg=cfg.adr_physics_cfg,
             )
         else:
             self.grasp_adr = None
@@ -606,10 +609,13 @@ class GraspRightEnv(DirectRLEnv):
     # 파지력 확보: 물체 외란 wrench (DEXTRAH apply_object_wrench 이식)
     # ------------------------------------------------------------------
     def _apply_object_wrench(self) -> None:
-        # DEXTRAH 원본 정렬: 물체가 goal 도달(in_success_region) 시 외란 인가
-        # → 리프트 학습을 방해하지 않으면서 goal 유지 파지력(robust hold)을 학습.
+        # DEXTRAH 원본 게이트: 손이 물체 반경(hand_to_object_dist_threshold 0.3m)
+        # 내면 외란 인가 — 접근 후 파지·운반 전 구간에서 robust hold 를 단련.
+        # (구: in_success_region 게이트 — goal 도달 후만 인가라 원본보다 관대했음)
         # 크기는 ADR 커리큘럼 0→10 (원본 object_wrench.max_linear_accel)
-        apply = self.in_success_region.view(-1, 1, 1)
+        apply = (
+            self.hand_to_object_err <= float(self.cfg.hand_to_object_dist_threshold)
+        ).view(-1, 1, 1)
         # trigger_every step 마다 새 랜덤 wrench (그 사이 유지)
         new_trig = (
             (self.episode_length_buf % int(self.cfg.wrench_trigger_every)) == 0
@@ -745,8 +751,12 @@ class GraspRightEnv(DirectRLEnv):
         arm_target = self.fabric_q[:, :NUM_ARM_DOF]
 
         self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_dof_indices)
+        # DEXTRAH pd_targets: velocity feedforward = factor × fabric qd (ADR 1→0).
+        # (팔만 — 손 pos target 은 fabric 이 아니라 contact-gated close 라 fabric
+        # qd 를 손에 인가하면 pos/vel target 불일치)
+        _vel_f = self._adr("pd_targets", "velocity_target_factor")
         self.robot.set_joint_velocity_target(
-            torch.zeros_like(arm_target), joint_ids=self.arm_dof_indices
+            _vel_f * self.fabric_qd[:, :NUM_ARM_DOF], joint_ids=self.arm_dof_indices
         )
 
         # ---- 오른손 ----
@@ -826,6 +836,15 @@ class GraspRightEnv(DirectRLEnv):
             _tip_jac, self.robot_dof_vel_noisy.unsqueeze(2)
         ).squeeze(2)
         self.hand_vel_noisy = torch.cat([_vel_palm, _vel_tips], dim=-1) * _anneal  # (N, 18)
+
+        # hand↔object 거리 (palm+5tip MAX — reward·wrench 게이트 공용, DEXTRAH
+        # hand_to_object_pos_error 대응)
+        _hand_points = torch.cat(
+            [self.palm_center_pos.unsqueeze(1), self.fingertip_pos], dim=1
+        )   # (N, 6, 3)
+        self.hand_to_object_err = (
+            _hand_points - self.object_pos.unsqueeze(1)
+        ).norm(dim=-1).max(dim=-1).values
 
         # object noisy pose
         _op_w = self._adr("object_state_noise", "object_pos_noise")
@@ -916,12 +935,9 @@ class GraspRightEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
         # 1) hand_to_object: palm+5손끝 → 물체중심 MAX 거리 (OpenArm 포팅 규약 .max())
-        hand_points = torch.cat(
-            [self.palm_center_pos.unsqueeze(1), self.fingertip_pos], dim=1
-        )   # (N, 6, 3)
-        hand_to_object_err = (
-            hand_points - self.object_pos.unsqueeze(1)
-        ).norm(dim=-1).max(dim=-1).values
+        #    거리는 _compute_intermediate_values 공용값(hand_to_object_err — wrench
+        #    게이트와 동일 소스) 재사용
+        hand_to_object_err = self.hand_to_object_err
         hand_to_object_reward = float(self.cfg.hand_to_object_weight) * torch.exp(
             -float(self.cfg.hand_to_object_sharpness) * hand_to_object_err
         )
@@ -990,8 +1006,17 @@ class GraspRightEnv(DirectRLEnv):
 
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         # ADR increment: DEXTRAH 원본 = in_success_region 순간 평균 > success_for_adr(0.4)
+        # increment 시 physics DR 새 범위를 전 env 에 즉시 반영 (원본 동일)
         if self.grasp_adr is not None:
-            self.grasp_adr.maybe_increment(self.in_success_region.float().mean())
+            if self.grasp_adr.maybe_increment(self.in_success_region.float().mean()):
+                _em = getattr(self, "event_manager", None)
+                if _em is not None:
+                    _em.reset(env_ids=self.robot._ALL_INDICES)
+                    _em.apply(
+                        env_ids=self.robot._ALL_INDICES,
+                        mode="reset",
+                        global_env_step_count=0,
+                    )
 
         # ── 로깅: DEXTRAH-g 정렬 ──────────────────────────────────────────
         # reward 항은 reward/ 그룹으로 묶어 TB에서 접히게 (rl_games 자체의
@@ -1358,11 +1383,25 @@ class GraspRightEnv(DirectRLEnv):
             # hand는 APPROACH_POSE로 강제
             q_pregrasp[:, NUM_ARM_DOF:] = approach_hand
 
+        # ---- 1.5 로봇 초기상태 노이즈 (DEXTRAH robot_spawn — ADR 0→0.35 rad / 0→1 rad/s) ----
+        _sp_pos = self._adr("robot_spawn", "joint_pos_noise")
+        _sp_vel = self._adr("robot_spawn", "joint_vel_noise")
+        if _sp_pos > 0.0:
+            q_pregrasp = q_pregrasp + _sp_pos * 2.0 * (
+                torch.rand_like(q_pregrasp) - 0.5
+            )
+            _lims = self.robot.data.soft_joint_pos_limits[0, self.actuated_dof_indices]
+            q_pregrasp = torch.clamp(q_pregrasp, min=_lims[:, 0], max=_lims[:, 1])
+
         # ---- 2. 로봇/Fabrics 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_pos[:, self.actuated_dof_indices] = q_pregrasp
         full_pos[:, self.left_arm_dof_indices] = self.left_arm_zero_pos[0]
+        if _sp_vel > 0.0:
+            full_vel[:, self.actuated_dof_indices] = _sp_vel * 2.0 * (
+                torch.rand(n, len(self.actuated_dof_indices), device=self.device) - 0.5
+            )
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
         self.fabric_q[env_ids] = q_pregrasp
