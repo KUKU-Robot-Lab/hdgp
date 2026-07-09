@@ -87,6 +87,7 @@ from .grasp_right_constants import (
 from .grasp_right_preset import (
     LEFT_ARM_REST_JOINT_POS,
     RIGHT_ACTUATED_JOINT_NAMES,
+    RIGHT_HAND_MIMIC_JOINT_NAMES,
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
@@ -136,6 +137,17 @@ class GraspRightEnv(DirectRLEnv):
 
         self.arm_dof_indices  = self.actuated_dof_indices[:NUM_ARM_DOF]    # list[int]
         self.hand_dof_indices = self.actuated_dof_indices[NUM_ARM_DOF:]    # list[int]
+
+        # RH56F1 원위(mimic) 관절: PhysxMimicJoint 미결합이라 능동 curl 필요(미구동 시
+        # 원위가 approach에 고정 → fingertip pinch만 되고 감싸기 불가, lstm_test1 검증).
+        # drive(hand 6) 순서 [thumb_1,thumb_2,index_1,middle_1,ring_1,pinky_1] 기준 src/mult.
+        self._hand_mimic_dof_indices = [
+            self.robot.joint_names.index(name) for name in RIGHT_HAND_MIMIC_JOINT_NAMES
+        ]
+        self._hand_mimic_src_idx = torch.tensor([1, 1, 2, 3, 4, 5], device=self.device)
+        self._hand_mimic_mult = torch.tensor(
+            [1.1425, 1.1425 * 0.7508, 1.1169, 1.1169, 1.1169, 1.1169], device=self.device
+        )
 
         # body indices (robot.data.body_pos_w 참조용). RH56F1: 말단 손가락 링크 = fingertip 센서 body.
         # RH56F1 손은 2-마디 언더액추에이티드(엄지 4마디 + 나머지 _1,_2) → tesollo *_tip 미존재.
@@ -510,7 +522,10 @@ class GraspRightEnv(DirectRLEnv):
         palm[:, 0] = flat_x + self.cfg.pregrasp_offset_x
         palm[:, 1] = flat_y + self.cfg.pregrasp_offset_y
         palm[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
-        palm[:, 3] = math.radians(90.0)
+        # RH56F1 fabric palm attractor = r_hl_palm_sensor 직접 제어. side grasp:
+        # (ez,ey,ex)=(180,0,90) → palm_sensor +z(법선) = world +y (물체 방향). 팔의 자연
+        # 수평자세와 일치 (tesollo 규약 ez=90은 +x 목표라 도달 못 하고 47° 기울어 정착).
+        palm[:, 3] = math.radians(180.0)
         palm[:, 4] = math.radians(0.0)
         palm[:, 5] = math.radians(90.0)
         palm = torch.max(
@@ -762,6 +777,14 @@ class GraspRightEnv(DirectRLEnv):
         # Both phases use policy-controlled absolute synergy targets.
         finger_target = self.hand_joint_targets
         self.robot.set_joint_position_target(finger_target, joint_ids=self.hand_dof_indices)
+        # 원위(mimic) 마디: drive × mult 로 능동 curl (하드웨어 결합 재현 — 미구동 시
+        # 원위 고정 → 감싸기 불가, RH56F1 전용 plumbing).
+        _mimic_target = (
+            finger_target[:, self._hand_mimic_src_idx] * self._hand_mimic_mult.unsqueeze(0)
+        )
+        self.robot.set_joint_position_target(
+            _mimic_target, joint_ids=self._hand_mimic_dof_indices
+        )
         self.robot.set_joint_velocity_target(
             torch.zeros_like(finger_target), joint_ids=self.hand_dof_indices
         )
@@ -1350,7 +1373,9 @@ class GraspRightEnv(DirectRLEnv):
 
             pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
             pregrasp_palm_pose[:, :3] = pregrasp_pos
-            pregrasp_palm_pose[:, 3] = math.radians(90.0)
+            # RH56F1 side grasp: palm_sensor +z(법선)가 물체(-y 접근 → +y)를 향하도록
+            # (ez,ey,ex)=(180,0,90). cache 빌드와 일치 (lstm_test1 검증 규약).
+            pregrasp_palm_pose[:, 3] = math.radians(180.0)
             pregrasp_palm_pose[:, 4] = math.radians(0.0)
             pregrasp_palm_pose[:, 5] = math.radians(90.0)
             pregrasp_palm_pose = torch.max(
@@ -1368,6 +1393,15 @@ class GraspRightEnv(DirectRLEnv):
 
             # hand는 APPROACH_POSE로 강제
             q_pregrasp[:, NUM_ARM_DOF:] = approach_hand
+
+            # r_aj_7(손목, arm index 6)을 낮춰 palm을 물체 높이로 내림. fabric은 +y 수평
+            # 유지 위해 r_aj_7을 높게 잡아 palm이 물체 rim에 뜨므로(probe 확정) bias로
+            # 끌어내린다. bias 후 실제 palm(FK)로 anchor를 정합해 정책 시작 시 palm 튐 방지.
+            if self.cfg.pregrasp_r_aj7_bias != 0.0:
+                q_pregrasp[:, 6] = q_pregrasp[:, 6] - self.cfg.pregrasp_r_aj7_bias
+                fq_fk = self.fabric.default_config.clone()
+                fq_fk[env_ids, :NUM_ROBOT_DOF] = q_pregrasp
+                pregrasp_palm_pose = self.fabric.get_palm_pose(fq_fk, "euler_zyx")[env_ids]
 
         # ---- 2. 로봇/Fabrics 상태 리셋 ----
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)

@@ -152,9 +152,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     pregrasp_fabric_steps: int   = 60
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
-    pregrasp_offset_x:     float = -0.06
-    pregrasp_offset_y:     float = -0.07
-    pregrasp_offset_z:     float = 0.00
+    # RH56F1 검증 기하(lstm_test1 성공 60% 세팅): palm_sensor 기준 offset.
+    # z=-0.15: fabric이 +y 수평 유지 위해 r_aj_7을 높게 잡아 palm이 물체 rim에 뜨는 것 보정.
+    pregrasp_offset_x:     float = -0.07
+    pregrasp_offset_y:     float = -0.08
+    pregrasp_offset_z:     float = -0.15
+    # r_aj_7(손목)을 이만큼 낮춰 palm을 rim→물체 중심 높이로 내림(probe 확정, lstm_test1 검증).
+    pregrasp_r_aj7_bias:   float = 0.3
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005
