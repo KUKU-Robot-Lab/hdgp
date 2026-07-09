@@ -1428,3 +1428,6 @@ class GraspRightEnv(DirectRLEnv):
         self.actions[env_ids, 6:] = -1.0
         self.prev_actions[env_ids, :6] = 0.0
         self.prev_actions[env_ids, 6:] = -1.0
+
+        # DEXTRAH 정렬: reset 직후 obs가 noisy 중간값을 요구 (첫 reset 포함)
+        self._compute_intermediate_values()
