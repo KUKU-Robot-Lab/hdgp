@@ -141,7 +141,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
     use_hand_fabric:            bool  = False
-    max_pose_angle:             float = 90.0   # palm rpy 90°±angle → 90=0~180°(top-down 포함). arm 자유탐색(DEXTRAH식, 45→90)
+    max_pose_angle:             float = 45.0   # DEXTRAH README teacher 레시피 45°. palm rpy 공칭(90,0,90)±45 — 손바닥 방향을 action 공간에서 constrain(천장 지향 구조 차단). 90은 README 확인 전 오독이었음
     fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
 
@@ -287,7 +287,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         },
         # reward 스케줄 (DEXTRAH): lift shaping 5→0 걷어내고 goal 정밀도(sharpness) 강화
         "reward_weights": {
-            "finger_curl_reg":          (-0.01, -0.005),
+            "finger_curl_reg":          (-0.01, -0.01),   # README teacher 레시피 고정 오버라이드 (코드 기본 -0.01→-0.005 대신)
             "object_to_goal_sharpness": (15.0, 20.0),   # 우리 exp(-s·err) 부호
             "lift_weight":              (5.0, 0.0),
         },

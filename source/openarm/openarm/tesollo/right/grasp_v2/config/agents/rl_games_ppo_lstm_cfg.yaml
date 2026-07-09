@@ -66,7 +66,7 @@ params:
     normalize_advantage: True
     gamma: 0.998
     tau: 0.95
-    learning_rate: 3e-4
+    learning_rate: 1e-4   # DEXTRAH README teacher 레시피 명시 오버라이드 (yaml 기본 3e-4보다 우선)
     lr_schedule: linear   # DEXTRAH 원본 재현. adaptive는 kl 0.019<2xthr라 lr 미감쇠, sigma 무한성장(lstm_test1 폭주). 구 reward의 linear 실패(lstm_test12)는 KL 0.08+ 상황이라 부적용
     schedule_type: standard
     kl_threshold: 0.013
@@ -91,16 +91,14 @@ params:
 
     has_central_value: True
     central_value_config:
-      normalize_input: True
-      normalize_value: True
-      value_bootstrap: False
+      # DEXTRAH 원본 CV 블록과 1:1 (여분 키 제거: normalize_value/value_bootstrap/
+      # lr_schedule/e_clip — 원본은 5e-5 고정 lr)
       minibatch_size: 16384
       mini_epochs: 4
       learning_rate: 5e-5
-      lr_schedule: linear
       kl_threshold: 0.016
       clip_value: True
-      e_clip: 0.2
+      normalize_input: True
       truncate_grads: True
       network:
         name: actor_critic
@@ -113,6 +111,15 @@ params:
             name: default
           regularizer:
             name: None
+        rnn:
+          # DEXTRAH 원본: critic 은 MLP 뒤 LSTM 2048 (actor 의 before_mlp True 와 반대)
+          name: lstm
+          units: 2048
+          layers: 1
+          before_mlp: False
+          layer_norm: True
+          concat_input: True
+          concat_output: True
 
     player:
       deterministic: True
