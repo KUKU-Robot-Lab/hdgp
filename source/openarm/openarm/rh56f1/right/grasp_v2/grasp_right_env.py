@@ -91,6 +91,8 @@ from .grasp_right_preset import (
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
+    PREGRASP_EULER_EZ_DEG,
+    PREGRASP_EULER_EX_DEG,
 )
 from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
 from .grasp_right_utils import (
@@ -525,9 +527,9 @@ class GraspRightEnv(DirectRLEnv):
         # RH56F1 fabric palm attractor = r_hl_palm_sensor 직접 제어. side grasp:
         # (ez,ey,ex)=(180,0,90) → palm_sensor +z(법선) = world +y (물체 방향). 팔의 자연
         # 수평자세와 일치 (tesollo 규약 ez=90은 +x 목표라 도달 못 하고 47° 기울어 정착).
-        palm[:, 3] = math.radians(180.0)
+        palm[:, 3] = math.radians(PREGRASP_EULER_EZ_DEG)
         palm[:, 4] = math.radians(0.0)
-        palm[:, 5] = math.radians(90.0)
+        palm[:, 5] = math.radians(PREGRASP_EULER_EX_DEG)
         palm = torch.max(
             torch.min(palm, self.palm_maxs.unsqueeze(0)),
             self.palm_mins.unsqueeze(0),
@@ -1375,9 +1377,9 @@ class GraspRightEnv(DirectRLEnv):
             pregrasp_palm_pose[:, :3] = pregrasp_pos
             # RH56F1 side grasp: palm_sensor +z(법선)가 물체(-y 접근 → +y)를 향하도록
             # (ez,ey,ex)=(180,0,90). cache 빌드와 일치 (lstm_test1 검증 규약).
-            pregrasp_palm_pose[:, 3] = math.radians(180.0)
+            pregrasp_palm_pose[:, 3] = math.radians(PREGRASP_EULER_EZ_DEG)
             pregrasp_palm_pose[:, 4] = math.radians(0.0)
-            pregrasp_palm_pose[:, 5] = math.radians(90.0)
+            pregrasp_palm_pose[:, 5] = math.radians(PREGRASP_EULER_EX_DEG)
             pregrasp_palm_pose = torch.max(
                 torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
                 self.palm_mins.unsqueeze(0),
