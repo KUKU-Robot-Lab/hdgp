@@ -80,14 +80,29 @@ NUM_FINGER_ACTION = 5   # per-finger lerp
 NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 
 # ---------------------------------------------------------------------------
-# Observation space
+# Observation space — DEXTRAH teacher 구조 (distillation 대비 동일 구조)
+#
+# Policy obs (BASE 193 + num_objects onehot):
+#   robot_dof_pos_noisy 27 + robot_dof_vel_noisy 27 (annealing으로 0)
+#   + hand_pos_noisy 18 (fabric FK: palm+5tip) + hand_vel_noisy 18 (0)
+#   + object_pos_noisy 3 + object_rot_noisy 4 + object_goal 3
+#   + [onehot num_objects] + object_scale 1 + actions 11
+#   + fabric_q 27 + fabric_qd 27 + fabric_qdd 27
+#   = 193 + N_obj   (DEXTRAH 원본 "193 + num_objects"와 동일 구조)
+#
+# Critic obs (BASE 247 + num_objects):
+#   robot_dof_pos 27 + robot_dof_vel 27 + hand_pos 18 + hand_vel 36
+#   + hand_forces[:, :3] 3 + measured_joint_torque 27
+#   + object_pos 3 + object_rot 4 + object_vel 6 + object_goal 3
+#   + [onehot] + object_scale 1 + actions 11 + fabric q/qd/qdd 81
+#   = 247 + N_obj   (DEXTRAH 원본 "247 + num_objects"와 동일 구조)
 # ---------------------------------------------------------------------------
-OBJECT_FEATURE_DIM = 64       # 물체 조건 feature (sha256 ID 구분자, 접근 B/visdex)
-NUM_OBSERVATIONS = 106 + OBJECT_FEATURE_DIM   # 170 = base 106 + 물체 feature 64
+NUM_HAND_POINTS = 6           # palm + 5 fingertips (DEXTRAH hand bodies)
+NUM_OBS_BASE        = 193     # onehot 제외 policy obs
+NUM_CRITIC_OBS_BASE = 247     # onehot 제외 critic obs
+# 실제 차원은 env_cfg 에서 + len(active_object_names) 로 확정
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
-NUM_CRITIC_EXTRAS   = 37
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 207
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)

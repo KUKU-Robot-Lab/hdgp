@@ -54,7 +54,7 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_apply
+from isaaclab.utils.math import quat_apply, quat_mul
 
 from openarm.common.grasp_logging import action_policy_scalars
 
@@ -69,18 +69,16 @@ from .grasp_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
     NUM_FINGERTIPS,
-    NUM_OBSERVATIONS,
+    NUM_OBS_BASE,
     NUM_DISTAL_SENSORS,
     NUM_MIDDLE_SENSORS,
-    NUM_CRITIC_OBSERVATIONS,
+    NUM_CRITIC_OBS_BASE,
     GRASP_PHASE_STEPS,
     LIFT_START_STEP,
-    EPISODE_STEPS,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
     MIN_CONTACTS_FOR_SUCCESS,
     PREGRASP_FABRICS_STEPS,
-    CUP_RADIUS_APPROX,
     ARM_START_POSE,
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
@@ -91,7 +89,6 @@ from .grasp_right_preset import (
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
-    OBJECT_GOAL_POS,
 )
 from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
 from .grasp_right_utils import (
@@ -151,6 +148,8 @@ class GraspRightEnv(DirectRLEnv):
             if _palm_name in self.robot.data.body_names
             else -1
         )
+        # DEXTRAH hand bodies (palm + 5 tips) — critic hand_vel/forces 용
+        self._hand_body_indices: list[int] = [self.palm_body_index] + self.fingertip_body_indices
         # distal phalanx body indices (r_hl_<finger>_4) — R2 reward용
         _distal4_names = [f"r_hl_{fn}_4" for fn in _FINGERS]
         self.distal4_body_indices: list[int] = [
@@ -229,10 +228,10 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ----------------------------------------------------------------
-        # 목표 위치
+        # 목표 위치 — DEXTRAH식 고정 절대점 (cfg.object_goal_pos, 에피소드 불변)
         # ----------------------------------------------------------------
         self.object_goal = (
-            to_torch(OBJECT_GOAL_POS, device=self.device)
+            to_torch(list(cfg.object_goal_pos), device=self.device)
             .unsqueeze(0).repeat(self.num_envs, 1)
         )
 
@@ -253,15 +252,17 @@ class GraspRightEnv(DirectRLEnv):
         self.object_idx = (
             torch.arange(self.num_envs, device=self.device) % len(self._object_names)
         )
-        # 물체 조건 feature(접근 B): object_idx → code → sha256 feature(64D).
-        _fmap = torch.load(self.cfg.object_feature_path, map_location=self.device)
-        _c2i = _fmap["code_to_index"]
-        _features = _fmap["features"].to(self.device)   # (num_codes, 64)
-        _prefix = self.cfg.object_code_prefix
-        _feat_rows = torch.stack([
-            _features[_c2i[f"{_prefix}:{_n}"]] for _n in self._object_names
-        ], dim=0)   # (N_obj, 64)
-        self.object_feature = _feat_rows[self.object_idx]   # (num_envs, 64), reset 불변
+        # DEXTRAH 물체 조건화: one-hot object id + scale (obs 구조 원본 동일, distillation 대비)
+        self.multi_object_idx_onehot = torch.nn.functional.one_hot(
+            self.object_idx, num_classes=len(self._object_names)
+        ).float()   # (num_envs, N_obj), reset 불변
+        # object_scale: 자리 유지(원본은 spawn 시 랜덤 스케일, 우리는 고정 1.0)
+        self.object_scale = torch.ones(self.num_envs, 1, device=self.device)
+        # DEXTRAH 관측 노이즈: per-env bias (reset 시 ADR 크기로 재샘플) + per-step uniform
+        self.robot_joint_pos_bias = torch.zeros(self.num_envs, NUM_ARM_DOF + NUM_HAND_DOF, device=self.device)
+        self.robot_joint_vel_bias = torch.zeros(self.num_envs, NUM_ARM_DOF + NUM_HAND_DOF, device=self.device)
+        self.object_pos_bias = torch.zeros(self.num_envs, 3, device=self.device)
+        self.object_rot_bias = torch.zeros(self.num_envs, 4, device=self.device)
         # 파지력 확보: 외란 wrench 버퍼 + 물체 질량 (DEXTRAH apply_object_wrench)
         self.object_applied_force  = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.object_applied_torque = torch.zeros(self.num_envs, 1, 3, device=self.device)
@@ -605,12 +606,17 @@ class GraspRightEnv(DirectRLEnv):
     def _apply_object_wrench(self) -> None:
         # DEXTRAH 원본 정렬: 물체가 goal 도달(in_success_region) 시 외란 인가
         # → 리프트 학습을 방해하지 않으면서 goal 유지 파지력(robust hold)을 학습.
+        # 크기는 ADR 커리큘럼 0→10 (원본 object_wrench.max_linear_accel)
         apply = self.in_success_region.view(-1, 1, 1)
         # trigger_every step 마다 새 랜덤 wrench (그 사이 유지)
         new_trig = (
             (self.episode_length_buf % int(self.cfg.wrench_trigger_every)) == 0
         ).view(-1, 1, 1)
-        accel = float(self.cfg.wrench_max_accel) * torch.rand(
+        max_accel = (
+            self.grasp_adr.get_param("object_wrench", "max_linear_accel")
+            if self.grasp_adr is not None else float(self.cfg.wrench_max_accel)
+        )
+        accel = max_accel * torch.rand(
             self.num_envs, 1, 1, device=self.device
         )
         fmag = accel * self._cup_mass.view(-1, 1, 1)                       # F = m·a
@@ -647,14 +653,11 @@ class GraspRightEnv(DirectRLEnv):
         palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
         finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
 
-        # ---- DEXTRAH 단일 phase: settle 종료 시 안착 스냅샷 → baseline·goal 확정 ----
-        # object_init_pos를 spawn(z=0.297)이 아닌 실제 안착점으로 갱신(baseline 버그 수정).
-        # goal = 안착점 + z offset → lift reward가 goal 높이 절대거리 기준(DEXTRAH).
+        # ---- settle 종료 시 안착 스냅샷 → object_height 로깅 baseline 확정 ----
+        # (goal 은 DEXTRAH식 고정 절대점이라 갱신 없음)
         snap = self.episode_length_buf == int(self.cfg.settle_steps)
         if snap.any():
             self.object_init_pos[snap] = self.object_pos[snap]
-            self.object_goal[snap] = self.object_pos[snap]
-            self.object_goal[snap, 2] += float(self.cfg.lift_goal_offset_z)
 
         # ---- Fabrics arm 제어 (전 구간 정책 연속 제어, scripted lift 없음) ----
         # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
@@ -666,6 +669,12 @@ class GraspRightEnv(DirectRLEnv):
         palm_pose = torch.max(torch.min(palm_pose, palm_maxs), palm_mins)
         self.palm_pose_targets.copy_(palm_pose)
         self.hand_pca_targets.zero_()
+
+        # fabric cspace damping: ADR 커리큘럼 10→20 (DEXTRAH fabric_damping.gain)
+        if self.grasp_adr is not None:
+            self.fabric_damping_gain.fill_(
+                self.grasp_adr.get_param("fabric_damping", "gain")
+            )
 
         self.open_tesollo_fabric.set_features(
             self.hand_pca_targets,
@@ -752,8 +761,13 @@ class GraspRightEnv(DirectRLEnv):
         )
 
     # ------------------------------------------------------------------
-    # Intermediate values
+    # Intermediate values (DEXTRAH _compute_intermediate_values 정렬)
     # ------------------------------------------------------------------
+    def _adr(self, group: str, name: str, default: float = 0.0) -> float:
+        if self.grasp_adr is not None:
+            return self.grasp_adr.get_param(group, name)
+        return default
+
     def _compute_intermediate_values(self) -> None:
         # 물체 위치
         self.object_pos = self.cup.data.root_pos_w - self.scene.env_origins
@@ -776,139 +790,121 @@ class GraspRightEnv(DirectRLEnv):
                 self.robot.data.body_pos_w[:, self.distal4_body_indices, :] - env_origins.unsqueeze(1)
             )   # (N, 5, 3)
 
+        # ==== DEXTRAH noisy states (per-step uniform noise + per-episode bias) ====
+        self.robot_dof_pos = self.robot.data.joint_pos[:, self.actuated_dof_indices]
+        self.robot_dof_vel = self.robot.data.joint_vel[:, self.actuated_dof_indices]
+        _pos_w = self._adr("robot_state_noise", "robot_joint_pos_noise")
+        _vel_w = self._adr("robot_state_noise", "robot_joint_vel_noise")
+        self.robot_dof_pos_noisy = (
+            self.robot_dof_pos
+            + _pos_w * 2.0 * (torch.rand_like(self.robot_dof_pos) - 0.5)
+            + self.robot_joint_pos_bias
+        )
+        self.robot_dof_vel_noisy = (
+            self.robot_dof_vel
+            + _vel_w * 2.0 * (torch.rand_like(self.robot_dof_vel) - 0.5)
+            + self.robot_joint_vel_bias
+        )
+        # velocity obs annealing (DEXTRAH teacher: coefficient 0 = vel obs 상시 차단)
+        _anneal = self._adr("observation_annealing", "coefficient")
+        self.robot_dof_vel_noisy = self.robot_dof_vel_noisy * _anneal
+
+        # hand points (palm + 5 tips): fabric FK on noisy q → noisy hand pos/vel
+        _palm_pts, _palm_jac = self.open_tesollo_fabric.get_taskmap("palm")(
+            self.robot_dof_pos_noisy, None
+        )
+        _tip_pts, _tip_jac = self.open_tesollo_fabric._fingertip_taskmap(
+            self.robot_dof_pos_noisy, None
+        )
+        self.hand_pos_noisy = torch.cat([_palm_pts[:, :3], _tip_pts], dim=-1)  # (N, 18)
+        _vel_palm = torch.bmm(
+            _palm_jac[:, :3, :], self.robot_dof_vel_noisy.unsqueeze(2)
+        ).squeeze(2)
+        _vel_tips = torch.bmm(
+            _tip_jac, self.robot_dof_vel_noisy.unsqueeze(2)
+        ).squeeze(2)
+        self.hand_vel_noisy = torch.cat([_vel_palm, _vel_tips], dim=-1) * _anneal  # (N, 18)
+
+        # object noisy pose
+        _op_w = self._adr("object_state_noise", "object_pos_noise")
+        _or_w = self._adr("object_state_noise", "object_rot_noise")
+        self.object_pos_noisy = (
+            self.object_pos
+            + _op_w * 2.0 * (torch.rand_like(self.object_pos) - 0.5)
+            + self.object_pos_bias
+        )
+        self.object_rot_noisy = (
+            self.object_rot
+            + _or_w * 2.0 * (torch.rand_like(self.object_rot) - 0.5)
+            + self.object_rot_bias
+        )
+
         # 접촉력 업데이트
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: Actor 106D | Critic 143D
+    # Observations: DEXTRAH teacher 구조
+    #   policy 193+N_obj | critic 247+N_obj (distillation 대비 원본 동일)
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
-        # ==== 공통 clean state (critic용, 물리 정확값) ====
-        arm_joint_pos_clean    = self.robot.data.joint_pos[:, self.arm_dof_indices]    # (N, 7)
-        arm_joint_vel_clean    = self.robot.data.joint_vel[:, self.arm_dof_indices]    # (N, 7)
-        finger_joint_pos_clean = self.robot.data.joint_pos[:, self.hand_dof_indices]  # (N, 20)
-        finger_joint_vel_clean = self.robot.data.joint_vel[:, self.hand_dof_indices]  # (N, 20)
-        palm_center_pos_clean  = self.palm_center_pos                                  # (N, 3)
-        fingertip_pos_clean    = self.fingertip_pos                                    # (N, 5, 3)
-        cup_pos_clean          = self.object_pos                                       # (N, 3)
-
-        # ==== Actor obs용 noisy state (sim2real domain randomization) ====
-        σ_qp = self.cfg.obs_noise_joint_pos
-        σ_qv = self.cfg.obs_noise_joint_vel
-        σ_bp = self.cfg.obs_noise_body_pos
-        σ_cp = self.cfg.obs_noise_cup_pos
-
-        arm_joint_pos    = arm_joint_pos_clean    + torch.randn_like(arm_joint_pos_clean)    * σ_qp
-        arm_joint_vel    = arm_joint_vel_clean    + torch.randn_like(arm_joint_vel_clean)    * σ_qv
-        finger_joint_pos = finger_joint_pos_clean + torch.randn_like(finger_joint_pos_clean) * σ_qp
-        finger_joint_vel = finger_joint_vel_clean + torch.randn_like(finger_joint_vel_clean) * σ_qv
-        palm_center_pos  = palm_center_pos_clean  + torch.randn_like(palm_center_pos_clean)  * σ_bp
-        fingertip_pos    = fingertip_pos_clean    + torch.randn_like(fingertip_pos_clean)    * σ_bp
-        cup_pos_noisy    = cup_pos_clean          + torch.randn_like(cup_pos_clean)          * σ_cp
-
-        # ==== Actor obs 조합 (106D) ====
-        # 4. fingertip pos relative to palm (15D)
-        fingertip_pos_rel_palm = (
-            fingertip_pos - palm_center_pos.unsqueeze(1)
-        ).view(self.num_envs, -1)
-
-        # 5. palm to cup vector (3D)
-        palm_to_cup = cup_pos_noisy - palm_center_pos
-
-        # 6. cup to fingertip vectors (15D)
-        cup_to_fingertip = (
-            fingertip_pos - cup_pos_noisy.unsqueeze(1)
-        ).view(self.num_envs, -1)
-
-        # 7. fingertip binary contact (5D) — contact 자체에는 noise 없음
-        binary_contact = self.binary_contact_buf.float()
-
-        # 8. last actions (11D)
-        last_actions = self.actions
-
+        # ==== policy obs (DEXTRAH compute_policy_observations) ====
         actor_obs = torch.cat([
-            arm_joint_pos,          # 7
-            arm_joint_vel,          # 7
-            finger_joint_pos,       # 20
-            finger_joint_vel,       # 20
-            palm_center_pos,        # 3
-            fingertip_pos_rel_palm, # 15
-            palm_to_cup,            # 3
-            cup_to_fingertip,       # 15
-            binary_contact,         # 5
-            last_actions,           # 11
-            self.object_feature,    # 64 (물체 조건 feature, 접근 B)
-        ], dim=-1)   # 170D
+            self.robot_dof_pos_noisy,        # 27
+            self.robot_dof_vel_noisy,        # 27 (annealing=0 → 상시 0)
+            self.hand_pos_noisy,             # 18 (fabric FK: palm+5tip)
+            self.hand_vel_noisy,             # 18 (0)
+            self.object_pos_noisy,           # 3
+            self.object_rot_noisy,           # 4
+            self.object_goal,                # 3 (고정 절대점)
+            self.multi_object_idx_onehot,    # N_obj
+            self.object_scale,               # 1
+            self.actions,                    # 11
+            self.fabric_q,                   # 27
+            self.fabric_qd,                  # 27
+            self.fabric_qdd,                 # 27
+        ], dim=-1)   # 193 + N_obj
 
-        if actor_obs.shape[1] != NUM_OBSERVATIONS:
+        if actor_obs.shape[1] != self.cfg.observation_space:
             raise RuntimeError(
-                f"[v7] Actor obs dim mismatch: {actor_obs.shape[1]} != {NUM_OBSERVATIONS}"
+                f"Actor obs dim mismatch: {actor_obs.shape[1]} != {self.cfg.observation_space}"
             )
 
-        # ==== Critic extra obs (37D) — clean state 사용 ====
-        # cup velocity (6D)
-        cup_lin_vel = self.cup.data.root_lin_vel_w
-        cup_ang_vel = self.cup.data.root_ang_vel_w
-
-        # cup rotation (4D)
-        cup_rot = self.object_rot
-
-        # cup height delta (1D) — clean cup pos
-        cup_height_delta = (
-            cup_pos_clean[:, 2] - self.object_init_pos[:, 2]
-        ).unsqueeze(1)
-
-        # distal contact (5D binary + 5D norm)
-        distal_binary     = self.distal_binary_contact_buf.float()
-        distal_force_norm = (self.distal_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
-
-        # middle contact (5D binary + 5D norm)
-        middle_binary     = self.middle_binary_contact_buf.float()
-        middle_force_norm = (self.middle_contact_force_raw / CONTACT_FORCE_MAX).clamp(0.0, 1.0)
-
-        # phase step ratio (1D)
-        phase_step_ratio = (
-            self.episode_length_buf.float() / EPISODE_STEPS
-        ).unsqueeze(1)
-
-        # fingertip signed dist (5D) — clean positions
-        tip_to_cup_dist = (
-            fingertip_pos_clean - cup_pos_clean.unsqueeze(1)
-        ).norm(dim=-1)
-        fingertip_signed_dist = (tip_to_cup_dist - CUP_RADIUS_APPROX).unsqueeze(-1).squeeze(-1)
-
-        # critic actor_obs_clean (106D) — clean state 재조합
-        actor_obs_clean = torch.cat([
-            arm_joint_pos_clean,
-            arm_joint_vel_clean,
-            finger_joint_pos_clean,
-            finger_joint_vel_clean,
-            palm_center_pos_clean,
-            (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
-            cup_pos_clean - palm_center_pos_clean,
-            (fingertip_pos_clean - cup_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
-            binary_contact,
-            last_actions,
-            self.object_feature,    # 64 (물체 조건 feature, 접근 B)
-        ], dim=-1)   # 170D
+        # ==== critic obs (DEXTRAH compute_critic_observations, privileged) ====
+        hand_pos_clean = torch.cat([
+            self.palm_center_pos.unsqueeze(1), self.fingertip_pos
+        ], dim=1).view(self.num_envs, -1)                              # 18
+        hand_vel_clean = self.robot.data.body_vel_w[
+            :, self._hand_body_indices, :
+        ].reshape(self.num_envs, -1)                                   # 36
+        hand_forces = self.robot.root_physx_view.get_link_incoming_joint_force()[
+            :, self._hand_body_indices
+        ].reshape(self.num_envs, -1)[:, :3]                            # 3 (DEXTRAH 원본 [:, :3])
+        measured_joint_torque = self.robot.root_physx_view.get_dof_projected_joint_forces()[
+            :, self.actuated_dof_indices
+        ]                                                              # 27
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 170
-            cup_lin_vel,            # 3
-            cup_ang_vel,            # 3
-            cup_rot,                # 4
-            cup_height_delta,       # 1
-            distal_binary,          # 5
-            distal_force_norm,      # 5
-            middle_binary,          # 5
-            middle_force_norm,      # 5
-            phase_step_ratio,       # 1
-            fingertip_signed_dist,  # 5
-        ], dim=-1)   # 143D
+            self.robot_dof_pos,              # 27
+            self.robot_dof_vel,              # 27
+            hand_pos_clean,                  # 18
+            hand_vel_clean,                  # 36
+            hand_forces,                     # 3
+            measured_joint_torque,           # 27
+            self.object_pos,                 # 3
+            self.object_rot,                 # 4
+            self.cup.data.root_vel_w,        # 6
+            self.object_goal,                # 3
+            self.multi_object_idx_onehot,    # N_obj
+            self.object_scale,               # 1
+            self.actions,                    # 11
+            self.fabric_q,                   # 27
+            self.fabric_qd,                  # 27
+            self.fabric_qdd,                 # 27
+        ], dim=-1)   # 247 + N_obj
 
-        if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
+        if critic_obs.shape[1] != self.cfg.state_space:
             raise RuntimeError(
-                f"[v7] Critic obs dim mismatch: {critic_obs.shape[1]} != {NUM_CRITIC_OBSERVATIONS}"
+                f"Critic obs dim mismatch: {critic_obs.shape[1]} != {self.cfg.state_space}"
             )
 
         return {"policy": actor_obs, "critic": critic_obs}
@@ -928,24 +924,38 @@ class GraspRightEnv(DirectRLEnv):
             -float(self.cfg.hand_to_object_sharpness) * hand_to_object_err
         )
 
-        # 2) object_to_goal: 물체 → goal(안착점 + lift_goal_offset_z) 거리
-        object_to_goal_err = (self.object_pos - self.object_goal).norm(dim=-1)
-        object_to_goal_reward = float(self.cfg.object_to_goal_weight) * torch.exp(
-            -float(self.cfg.object_to_goal_sharpness) * object_to_goal_err
+        # ADR reward 스케줄 (DEXTRAH reward_weights): lift shaping 걷어내고 goal 정밀화
+        _o2g_sharp = (
+            self._adr("reward_weights", "object_to_goal_sharpness")
+            if self.grasp_adr is not None else float(self.cfg.object_to_goal_sharpness)
+        )
+        _lift_w = (
+            self._adr("reward_weights", "lift_weight")
+            if self.grasp_adr is not None else float(self.cfg.lift_weight)
+        )
+        _curl_w = (
+            self._adr("reward_weights", "finger_curl_reg")
+            if self.grasp_adr is not None else float(self.cfg.finger_curl_reg_weight)
         )
 
-        # 3) lift: goal 높이 절대거리 (spawn 상대 height_delta 폐기 → baseline 버그 원천 제거)
+        # 2) object_to_goal: 물체 → goal(고정 절대점) 거리
+        object_to_goal_err = (self.object_pos - self.object_goal).norm(dim=-1)
+        object_to_goal_reward = float(self.cfg.object_to_goal_weight) * torch.exp(
+            -_o2g_sharp * object_to_goal_err
+        )
+
+        # 3) lift: goal 높이 절대거리 (ADR로 5→0 감쇠 — 후반은 object_to_goal 이 담당)
         object_vertical_err = (self.object_goal[:, 2] - self.object_pos[:, 2]).abs()
-        lift_reward = float(self.cfg.lift_weight) * torch.exp(
+        lift_reward = _lift_w * torch.exp(
             -float(self.cfg.lift_sharpness) * object_vertical_err
         )
 
-        # 4) finger_curl_reg: curled 자세 정규화 (rh56f1 교훈: 적응 파지 방해 → 기본 w=0)
+        # 4) finger_curl_reg (DEXTRAH: -0.01 → -0.005)
         finger_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
         finger_curl_dist = (
             finger_pos - self.hand_full_grip_pose.unsqueeze(0)
         ).norm(p=2, dim=-1)
-        finger_curl_reg = float(self.cfg.finger_curl_reg_weight) * finger_curl_dist ** 2
+        finger_curl_reg = _curl_w * finger_curl_dist ** 2
 
         total = (
             hand_to_object_reward + object_to_goal_reward + finger_curl_reg + lift_reward
@@ -962,8 +972,9 @@ class GraspRightEnv(DirectRLEnv):
         ).sum(dim=-1)
 
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
+        # ADR increment: DEXTRAH 원본 = in_success_region 순간 평균 > success_for_adr(0.4)
         if self.grasp_adr is not None:
-            self.grasp_adr.maybe_increment(_ep_success_rate)
+            self.grasp_adr.maybe_increment(self.in_success_region.float().mean())
 
         # ── 로깅: DEXTRAH-g 정렬 ──────────────────────────────────────────
         # DEXTRAH 원본 extras: 4 reward 항 + in_success_region (동일 이름)
@@ -972,6 +983,11 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["finger_curl_reg"] = finger_curl_reg.mean()
         self.extras["lift_reward"] = lift_reward.mean()
         self.extras["in_success_region"] = self.in_success_region.float().mean()
+        # DEXTRAH 원본 extras: ADR 진행도
+        if self.grasp_adr is not None:
+            self.extras["num_adr_increases"] = torch.tensor(
+                float(self.grasp_adr.increment_counter), device=self.device
+            )
         # 해석 보조: 안착점(settle 스냅샷) 대비 실제 리프트 높이 → 렌더와 일치
         self.extras["object_height"] = (
             self.object_pos[:, 2] - self.object_init_pos[:, 2]
@@ -1269,13 +1285,17 @@ class GraspRightEnv(DirectRLEnv):
             q_pregrasp = self.robot_start_joint_pos[env_ids].clone()
             approach_hand = self.hand_open_pose.unsqueeze(0).expand(n, -1)
 
-            # ---- 컵 spawn 위치 계산 (±0.06m 랜덤) ----
+            # ---- 컵 spawn 위치: ADR 커리큘럼 반경 0→최대 (DEXTRAH object_spawn) ----
+            _xy_range = (
+                self._adr("object_spawn", "xy_range")
+                if self.grasp_adr is not None else self.cfg.object_spawn_xy_range
+            )
             obj_x = self.cfg.object_spawn_x_center + (
                 torch.rand(n, device=self.device) - 0.5
-            ) * 2.0 * self.cfg.object_spawn_xy_range
+            ) * 2.0 * _xy_range
             obj_y = self.cfg.object_spawn_y_center + (
                 torch.rand(n, device=self.device) - 0.5
-            ) * 2.0 * self.cfg.object_spawn_xy_range
+            ) * 2.0 * _xy_range
             obj_pos_local = torch.stack(
                 [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
             )
@@ -1320,10 +1340,26 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
         self.object_init_pos[env_ids] = obj_pos_local
-        # goal 초기값 = spawn + z offset (settle 스냅샷이 안착점 기준으로 재설정)
-        self.object_goal[env_ids] = obj_pos_local
-        self.object_goal[env_ids, 2] += float(self.cfg.lift_goal_offset_z)
+        # (goal 은 DEXTRAH식 고정 절대점 — reset 갱신 없음)
         self.in_success_region[env_ids] = False
+
+        # ---- DEXTRAH 관측 노이즈 bias 재샘플 (per-episode, ADR 크기) ----
+        self.robot_joint_pos_bias[env_ids] = (
+            self._adr("robot_state_noise", "robot_joint_pos_bias")
+            * 2.0 * (torch.rand(n, NUM_ARM_DOF + NUM_HAND_DOF, device=self.device) - 0.5)
+        )
+        self.robot_joint_vel_bias[env_ids] = (
+            self._adr("robot_state_noise", "robot_joint_vel_bias")
+            * 2.0 * (torch.rand(n, NUM_ARM_DOF + NUM_HAND_DOF, device=self.device) - 0.5)
+        )
+        self.object_pos_bias[env_ids] = (
+            self._adr("object_state_noise", "object_pos_bias")
+            * 2.0 * (torch.rand(n, 3, device=self.device) - 0.5)
+        )
+        self.object_rot_bias[env_ids] = (
+            self._adr("object_state_noise", "object_rot_bias")
+            * 2.0 * (torch.rand(n, 4, device=self.device) - 0.5)
+        )
 
         # ---- 5. pregrasp / lift-wait-target 버퍼 저장 ----
         self.pregrasp_arm_pos_buf[env_ids] = q_pregrasp[:, :NUM_ARM_DOF]
@@ -1349,10 +1385,26 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 7. 컵 spawn ----
         obj_pos_world = obj_pos_local + self.scene.env_origins[env_ids]
-        upright_rot = torch.zeros(n, 4, device=self.device)
-        upright_rot[:, 0] = 1.0
+        # spawn 회전: ADR 0→1 (DEXTRAH randomize_rotation — x/y축 랜덤 회전 스케일)
+        _rot_f = self._adr("object_spawn", "rotation")
+        if _rot_f > 0.0:
+            _r0 = (torch.rand(n, device=self.device) - 0.5) * 2.0 * math.pi * _rot_f
+            _r1 = (torch.rand(n, device=self.device) - 0.5) * 2.0 * math.pi * _rot_f
+            _half0, _half1 = _r0 * 0.5, _r1 * 0.5
+            _qx = torch.stack([
+                torch.cos(_half0), torch.sin(_half0),
+                torch.zeros(n, device=self.device), torch.zeros(n, device=self.device),
+            ], dim=1)   # x축 회전 (w,x,y,z)
+            _qy = torch.stack([
+                torch.cos(_half1), torch.zeros(n, device=self.device),
+                torch.sin(_half1), torch.zeros(n, device=self.device),
+            ], dim=1)   # y축 회전
+            spawn_rot = quat_mul(_qx, _qy)
+        else:
+            spawn_rot = torch.zeros(n, 4, device=self.device)
+            spawn_rot[:, 0] = 1.0
         zero_vel = torch.zeros(n, 6, device=self.device)
-        cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
+        cup_root_state = torch.cat([obj_pos_world, spawn_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
         # ---- 8. 버퍼 리셋 ----

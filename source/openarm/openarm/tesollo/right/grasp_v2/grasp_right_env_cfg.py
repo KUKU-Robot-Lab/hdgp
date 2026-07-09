@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: 5g_grasp_right_v1
+"""환경 설정: tesollo grasp_v2 — DEXTRAH 구조 (다물체 파지→goal 운반)
 
-v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
-- Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 106D / critic 143D (asymmetric)
-- Episode: Grasp phase (Fabrics arm + finger 정책) + right-grip lift-wait (frozen hand)
-- Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
+- Action: 11D (6D palm pose Fabrics IK + 5D per-finger 폐쇄)
+- Observation: DEXTRAH teacher 구조 — policy 193+N_obj / critic 247+N_obj
+- Reward: DEXTRAH 4항 + ADR reward 스케줄 (lift 5→0)
+- Goal: 고정 절대점 (object_goal_pos), success = |obj-goal| < tol
+- ADR: wrench/spawn/노이즈/reward 커리큘럼 (in_success > 0.4 트리거)
 """
 
 from dataclasses import MISSING, field
@@ -37,7 +37,7 @@ from isaaclab.utils import configclass
 import os as _os
 
 from openarm import OPENARM_ROOT_DIR
-from .grasp_right_constants import NUM_OBSERVATIONS, NUM_ACTIONS, NUM_CRITIC_OBSERVATIONS
+from .grasp_right_constants import NUM_OBS_BASE, NUM_ACTIONS, NUM_CRITIC_OBS_BASE
 from .grasp_right_preset import (
     HAND_BODY_NAMES_USD,
     LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
@@ -127,15 +127,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     use_cuda_graph:   bool  = False
 
     # -----------------------------------------------------------------------
-    # 관측·액션 공간
+    # 관측·액션 공간 — DEXTRAH teacher 구조 (base + 물체 onehot)
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 106 (actor)
-    action_space:      int = NUM_ACTIONS               # 11
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 143 (critic, privileged)
+    observation_space: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)          # 193 + N_obj
+    action_space:      int = NUM_ACTIONS                                        # 11
+    state_space:       int = NUM_CRITIC_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)   # 247 + N_obj
 
-    num_observations: int = NUM_OBSERVATIONS
+    num_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)
     num_actions:      int = NUM_ACTIONS
-    num_states:       int = NUM_CRITIC_OBSERVATIONS
+    num_states:       int = NUM_CRITIC_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)
 
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
@@ -171,10 +171,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Observation noise (sim2real domain randomization)
     # actor obs에만 적용; critic obs는 privileged clean state 유지
     # -----------------------------------------------------------------------
-    obs_noise_joint_pos: float = 0.01    # joint position σ [rad]
-    obs_noise_joint_vel: float = 0.05    # joint velocity σ [rad/s]
-    obs_noise_body_pos:  float = 0.005   # FK body position σ [m] (palm, fingertip)
-    obs_noise_cup_pos:   float = 0.015   # cup position observation σ [m]
 
     # -----------------------------------------------------------------------
     # 접촉 감지
@@ -191,19 +187,20 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
-    # goal = 물체 안착점(settle 스냅샷) + z offset. success = |obj-goal| < tol.
-    # offset 0.21 + tol 0.10 → success 시 최소 11cm 리프트(요구 ≥10cm).
-    # rh56f1 grasp_v2 실험2 검증값 재사용(goal 낮으면 lift 포화→동기 소멸).
+    # goal = DEXTRAH식 고정 절대점 (spawn 중심 xy, z = 안착(~0.24)+0.21).
+    # success = |obj-goal| < tol. tol 0.10 이 물체별 안착 높이 편차(수 cm)를 흡수.
+    # object_to_goal_sharpness·lift_weight·finger_curl_reg 는 ADR 스케줄이 우선
+    # (enable_adr=True 시 adr_custom_cfg.reward_weights 로 대체).
     # -----------------------------------------------------------------------
-    lift_goal_offset_z:       float = 0.21
+    object_goal_pos:          tuple = (0.27, -0.10, 0.45)
     object_goal_tol:          float = 0.10
     hand_to_object_weight:    float = 1.0
     hand_to_object_sharpness: float = 10.0
     object_to_goal_weight:    float = 5.0
-    object_to_goal_sharpness: float = 15.0   # exp(-s·err) 형태(양수 s). rh56f1의 -15·exp(+s·err)와 동치
+    object_to_goal_sharpness: float = 15.0   # exp(-s·err) 형태(양수 s). DEXTRAH -15·exp(+s·err)와 동치
     lift_weight:              float = 5.0
     lift_sharpness:           float = 8.5
-    finger_curl_reg_weight:   float = 0.0    # rh56f1 교훈: curled_q 강제가 적응 파지 방해 → 기본 off
+    finger_curl_reg_weight:   float = 0.0    # ADR 미사용 시 fallback (ADR은 -0.01→-0.005)
 
     # (구) RH56F1 shared grasp-v2 reward contract — DEXTRAH 전환으로 미사용(호환 보존).
     approach_weight: float = 2.0
@@ -252,12 +249,51 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # ADR
     # -----------------------------------------------------------------------
+    # DEXTRAH ADR 커리큘럼: in_success_region 순간 평균 > threshold 마다 increment,
+    # 각 파라미터가 initial→final 선형 진행. (원본 success_for_adr=0.4)
     enable_adr:            bool  = True
     adr_num_increments:    int   = 50
     adr_increment_interval: int  = 200
-    adr_trigger_threshold: float = 0.02
+    adr_trigger_threshold: float = 0.4
 
-    adr_custom_cfg: dict = field(default_factory=dict)
+    adr_custom_cfg: dict = field(default_factory=lambda: {
+        # 외란 wrench: 0→10 점진 (DEXTRAH. 기존 고정 10은 초기 리프트 학습 방해 가능)
+        "object_wrench": {
+            "max_linear_accel": (0.0, 10.0),
+        },
+        # spawn 커리큘럼: 반경 0→최대, 회전 0→full (DEXTRAH object_spawn)
+        "object_spawn": {
+            "xy_range": (0.0, 0.06),
+            "rotation": (0.0, 1.0),
+        },
+        # 관측 노이즈 점진 (DEXTRAH object/robot_state_noise 원본값)
+        "object_state_noise": {
+            "object_pos_noise": (0.0, 0.03),   # m
+            "object_pos_bias":  (0.0, 0.02),   # m
+            "object_rot_noise": (0.0, 0.1),    # rad
+            "object_rot_bias":  (0.0, 0.08),   # rad
+        },
+        "robot_state_noise": {
+            "robot_joint_pos_noise": (0.0, 0.08),  # rad
+            "robot_joint_pos_bias":  (0.0, 0.08),  # rad
+            "robot_joint_vel_noise": (0.0, 0.18),  # rad/s
+            "robot_joint_vel_bias":  (0.0, 0.08),  # rad/s
+        },
+        # reward 스케줄 (DEXTRAH): lift shaping 5→0 걷어내고 goal 정밀도(sharpness) 강화
+        "reward_weights": {
+            "finger_curl_reg":          (-0.01, -0.005),
+            "object_to_goal_sharpness": (15.0, 20.0),   # 우리 exp(-s·err) 부호
+            "lift_weight":              (5.0, 0.0),
+        },
+        # fabric cspace damping 강화 (DEXTRAH 10→20)
+        "fabric_damping": {
+            "gain": (10.0, 20.0),
+        },
+        # velocity obs annealing: DEXTRAH teacher는 (0,0)=상시 0 (실로봇 vel 추정 부재 대비)
+        "observation_annealing": {
+            "coefficient": (0.0, 0.0),
+        },
+    })
 
     # -----------------------------------------------------------------------
     # 종료 조건
@@ -275,14 +311,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
     object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
     object_spawn_z:        float = 0.297
-    # 활성 물체군(spawn 순서와 일치) — per-object 로깅용 이름. env_id % N 로 배정.
+    # 활성 물체군(spawn 순서와 일치) — onehot·per-object 로깅용 이름. env_id % N 로 배정.
+    # (물체 조건화는 DEXTRAH식 onehot 으로 전환 — 접근 B feature 는 obs 미사용)
     active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
-    # 물체 조건 feature(접근 B) lookup용 code 접두사: primitives="primitive", visdex="visdex".
-    object_code_prefix: str = "visdex"
-    object_feature_path: str = _os.path.join(
-        _ASSETS_DIR, "object_pc_features", "openarm_right_object_code_feat_dim64.pt"
-    )
-    object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
+    object_spawn_xy_range: float = 0.06   # ADR 미사용 시 fallback (ADR은 0→0.06 커리큘럼)
 
     # -----------------------------------------------------------------------
     # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart 재사용)
