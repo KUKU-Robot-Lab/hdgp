@@ -89,6 +89,8 @@ from .grasp_right_preset import (
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
+    PREGRASP_EULER_EZ_DEG,
+    PREGRASP_EULER_EX_DEG,
 )
 from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
 from .grasp_right_utils import (
@@ -502,9 +504,9 @@ class GraspRightEnv(DirectRLEnv):
         palm[:, 0] = flat_x + self.cfg.pregrasp_offset_x
         palm[:, 1] = flat_y + self.cfg.pregrasp_offset_y
         palm[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
-        palm[:, 3] = math.radians(90.0)
+        palm[:, 3] = math.radians(PREGRASP_EULER_EZ_DEG)
         palm[:, 4] = math.radians(0.0)
-        palm[:, 5] = math.radians(90.0)
+        palm[:, 5] = math.radians(PREGRASP_EULER_EX_DEG)
         palm = torch.max(
             torch.min(palm, self.palm_maxs.unsqueeze(0)),
             self.palm_mins.unsqueeze(0),
@@ -992,12 +994,13 @@ class GraspRightEnv(DirectRLEnv):
             self.grasp_adr.maybe_increment(self.in_success_region.float().mean())
 
         # ── 로깅: DEXTRAH-g 정렬 ──────────────────────────────────────────
-        # DEXTRAH 원본 extras: 4 reward 항 + in_success_region (동일 이름)
-        self.extras["hand_to_object_reward"] = hand_to_object_reward.mean()
-        self.extras["object_to_goal_reward"] = object_to_goal_reward.mean()
-        self.extras["finger_curl_reg"] = finger_curl_reg.mean()
-        self.extras["lift_reward"] = lift_reward.mean()
-        self.extras["palm_orient_reward"] = palm_orient_reward.mean()
+        # reward 항은 reward/ 그룹으로 묶어 TB에서 접히게 (rl_games 자체의
+        # rewards/(에피소드 합)와 구분 — 이쪽은 항별 per-step 평균)
+        self.extras["reward/hand_to_object"] = hand_to_object_reward.mean()
+        self.extras["reward/object_to_goal"] = object_to_goal_reward.mean()
+        self.extras["reward/finger_curl_reg"] = finger_curl_reg.mean()
+        self.extras["reward/lift"] = lift_reward.mean()
+        self.extras["reward/palm_orient"] = palm_orient_reward.mean()
         self.extras["palm_align"] = palm_align.mean()
         self.extras["in_success_region"] = self.in_success_region.float().mean()
         # DEXTRAH 원본 extras: ADR 진행도
@@ -1336,9 +1339,9 @@ class GraspRightEnv(DirectRLEnv):
 
             pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
             pregrasp_palm_pose[:, :3] = pregrasp_pos
-            pregrasp_palm_pose[:, 3] = math.radians(90.0)
+            pregrasp_palm_pose[:, 3] = math.radians(PREGRASP_EULER_EZ_DEG)
             pregrasp_palm_pose[:, 4] = math.radians(0.0)
-            pregrasp_palm_pose[:, 5] = math.radians(90.0)
+            pregrasp_palm_pose[:, 5] = math.radians(PREGRASP_EULER_EX_DEG)
             pregrasp_palm_pose = torch.max(
                 torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
                 self.palm_mins.unsqueeze(0),
