@@ -1032,11 +1032,11 @@ class GraspRightEnv(DirectRLEnv):
 
         # ── 로깅: DEXTRAH-g 정렬 ──────────────────────────────────────────
         # DEXTRAH 원본 extras: 4 reward 항 + in_success_region (동일 이름)
-        self.extras["hand_to_object_reward"] = hand_to_object_reward.mean()
-        self.extras["object_to_goal_reward"] = object_to_goal_reward.mean()
-        self.extras["finger_curl_reg"] = finger_curl_reg.mean()
-        self.extras["lift_reward"] = lift_reward.mean()
-        self.extras["palm_orient_reward"] = palm_orient_reward.mean()
+        self.extras["reward/hand_to_object"] = hand_to_object_reward.mean()
+        self.extras["reward/object_to_goal"] = object_to_goal_reward.mean()
+        self.extras["reward/finger_curl_reg"] = finger_curl_reg.mean()
+        self.extras["reward/lift"] = lift_reward.mean()
+        self.extras["reward/palm_orient"] = palm_orient_reward.mean()
         self.extras["palm_align"] = palm_align.mean()
         self.extras["in_success_region"] = self.in_success_region.float().mean()
         # DEXTRAH 원본 extras: ADR 진행도
