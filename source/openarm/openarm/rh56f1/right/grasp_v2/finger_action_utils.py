@@ -3,24 +3,22 @@ from __future__ import annotations
 import torch
 
 
-def _compute_synergy_target(
+def compute_absolute_finger_targets(
     finger_action: torch.Tensor,
     open_pose: torch.Tensor,
     closed_pose: torch.Tensor,
     lower_limits: torch.Tensor,
     upper_limits: torch.Tensor,
 ) -> torch.Tensor:
-    action = finger_action.clamp(-1.0, 1.0)
-    blend = 0.5 * (action + 1.0)
+    """Map five per-finger actions to bounded absolute targets for 20 joints."""
+    blend = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)
+    blend_20 = blend.repeat_interleave(4, dim=1)
     target = torch.lerp(
-        open_pose.unsqueeze(0).expand_as(action),
-        closed_pose.unsqueeze(0).expand_as(action),
-        blend,
+        open_pose.unsqueeze(0).expand_as(blend_20),
+        closed_pose.unsqueeze(0).expand_as(blend_20),
+        blend_20,
     )
-    return target.clamp(
-        lower_limits.unsqueeze(0),
-        upper_limits.unsqueeze(0),
-    )
+    return target.clamp(lower_limits.unsqueeze(0), upper_limits.unsqueeze(0))
 
 
 def compute_grasp_finger_targets(
@@ -30,39 +28,9 @@ def compute_grasp_finger_targets(
     lower_limits: torch.Tensor,
     upper_limits: torch.Tensor,
 ) -> torch.Tensor:
-    return _compute_synergy_target(
-        finger_action=finger_action,
-        open_pose=approach_pose,
-        closed_pose=grasp_pose,
-        lower_limits=lower_limits,
-        upper_limits=upper_limits,
+    return compute_absolute_finger_targets(
+        finger_action, approach_pose, grasp_pose, lower_limits, upper_limits
     )
-
-
-def compute_grasp_phase_finger_targets(
-    finger_action: torch.Tensor,
-    approach_pose: torch.Tensor,
-    grasp_pose: torch.Tensor,
-    full_grip_pose: torch.Tensor,
-    lower_limits: torch.Tensor,
-    upper_limits: torch.Tensor,
-    late_grasp_mask: torch.Tensor,
-) -> torch.Tensor:
-    early_target = compute_grasp_finger_targets(
-        finger_action=finger_action,
-        approach_pose=approach_pose,
-        grasp_pose=grasp_pose,
-        lower_limits=lower_limits,
-        upper_limits=upper_limits,
-    )
-    late_target = compute_lift_finger_targets(
-        finger_action=finger_action,
-        grasp_pose=grasp_pose,
-        full_grip_pose=full_grip_pose,
-        lower_limits=lower_limits,
-        upper_limits=upper_limits,
-    )
-    return torch.where(late_grasp_mask.unsqueeze(1), late_target, early_target)
 
 
 def compute_lift_finger_targets(
@@ -72,10 +40,6 @@ def compute_lift_finger_targets(
     lower_limits: torch.Tensor,
     upper_limits: torch.Tensor,
 ) -> torch.Tensor:
-    return _compute_synergy_target(
-        finger_action=finger_action,
-        open_pose=grasp_pose,
-        closed_pose=full_grip_pose,
-        lower_limits=lower_limits,
-        upper_limits=upper_limits,
+    return compute_absolute_finger_targets(
+        finger_action, grasp_pose, full_grip_pose, lower_limits, upper_limits
     )

@@ -1,5 +1,5 @@
-# open-rh56f1_r_grasp_v1 recurrent actor / MLP critic config
-# Actor 96D MLP [512, 512] -> LSTM 1024 / critic 119D MLP [512, 512, 256, 128], action 12D.
+# 5g_grasp_right_v10-3 recurrent actor / MLP critic config
+# Actor 132D MLP [512, 512] -> LSTM 1024 / critic 169D MLP [512, 512, 256, 128], action 26D incremental palm + hand residual.
 # This is a separate non-warm-start config because the LSTM architecture
 # is incompatible with the v10-2 MLP checkpoint.
 
@@ -41,7 +41,7 @@ params:
       name: lstm
       units: 1024
       layers: 1
-      before_mlp: False
+      before_mlp: True   # DEXTRAH 정렬: 관측→LSTM→MLP
       layer_norm: True
       concat_input: True
       concat_output: True
@@ -50,7 +50,7 @@ params:
   load_path: ''
 
   config:
-    name: inspire_r_grasp_v1-lstm
+    name: open-rh56f1_r_grasp_v2-lstm
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -67,7 +67,7 @@ params:
     gamma: 0.998
     tau: 0.95
     learning_rate: 3e-4
-    lr_schedule: adaptive   # collapse fix: kl 0.10까지 튀어도 linear는 LR 미clamp → 발산. adaptive로 kl_threshold가 실제 LR 제어
+    lr_schedule: linear   # DEXTRAH 원본 재현. adaptive는 kl 0.019<2xthr라 lr 미감쇠, sigma 무한성장(lstm_test1 폭주). 구 reward의 linear 실패(lstm_test12)는 KL 0.08+ 상황이라 부적용
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
@@ -76,10 +76,10 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.001   # collapse fix(test9 실측): 0.003은 과대 → entropy 17→36 인플레로 발산. 0.0005(과소,붕괴)↔0.003(과대) 중간값. non-lstm cfg와 정렬
+    entropy_coef: 0.002   # DEXTRAH 원본. (0.001은 lstm_test2서 탐색부족 실증 — in_success 0.003 정체)
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: 32
+    horizon_length: 16    # DEXTRAH 정렬 (2048env×16=32768, minibatch 16384 ✓)
     minibatch_size: 16384
     mini_epochs: 4
     critic_coef: 4
@@ -106,7 +106,7 @@ params:
         name: actor_critic
         central_value: True
         mlp:
-          units: [512, 512, 256, 128]
+          units: [1024, 512]   # DEXTRAH 정렬
           activation: elu
           d2rl: False
           initializer:

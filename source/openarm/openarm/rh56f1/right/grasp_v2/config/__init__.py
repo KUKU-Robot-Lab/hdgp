@@ -15,9 +15,9 @@
 import gymnasium as gym
 
 from . import agents
-from ..grasp_right_env_cfg import GraspRightEnvCfg, GraspRightEnvCfgNoActorMass
+from ..grasp_right_env_cfg import GraspRightEnvCfg
 
-# entry_point 모듈 경로 (grasp_v2 = DEXTRAH 물체파지 이식, PCA 손).
+# entry_point 모듈 경로 (grasp_v2 = DEXTRAH 구조, tesollo grasp_v2 매칭 / RH56F1 6-DOF 손).
 _ENTRY = (
     "openarm.rh56f1.right.grasp_v2.grasp_right_env:GraspRightEnv"
 )
@@ -25,14 +25,6 @@ _ENTRY = (
 
 class GraspRightEnvCfg_PLAY(GraspRightEnvCfg):
     """플레이용 설정 (소규모 환경)."""
-
-    def __post_init__(self):
-        self.scene.num_envs = 50
-        self.scene.env_spacing = 2.5
-
-
-class GraspRightEnvCfgNoActorMass_PLAY(GraspRightEnvCfgNoActorMass):
-    """플레이용 oracle-mass-free actor 설정."""
 
     def __post_init__(self):
         self.scene.num_envs = 50
@@ -50,16 +42,6 @@ gym.register(
 )
 
 gym.register(
-    id="open-rh56f1_r_grasp_v2-lstm",
-    entry_point=_ENTRY,
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgNoActorMass",
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
-    },
-)
-
-gym.register(
     id="open-rh56f1_r_grasp_v2-play",
     entry_point=_ENTRY,
     disable_env_checker=True,
@@ -70,11 +52,22 @@ gym.register(
 )
 
 gym.register(
+    id="open-rh56f1_r_grasp_v2-lstm",
+    entry_point=_ENTRY,
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
+    },
+)
+
+# play-lstm: lstm 체크포인트 rollout(warm-state 수집)용. PLAY 설정(소규모 env) + lstm 네트워크.
+gym.register(
     id="open-rh56f1_r_grasp_v2-play-lstm",
     entry_point=_ENTRY,
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgNoActorMass_PLAY",
+        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfg_PLAY",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
     },
 )

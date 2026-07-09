@@ -12,12 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""환경 설정: open-rh56f1_r_grasp_v1."""
+"""환경 설정: tesollo grasp_v2 — DEXTRAH 구조 (다물체 파지→goal 운반)
+
+- Action: 11D (6D palm pose Fabrics IK + 5D per-finger 폐쇄)
+- Observation: DEXTRAH teacher 구조 — policy 193+N_obj / critic 247+N_obj
+- Reward: DEXTRAH 4항 + ADR reward 스케줄 (lift 5→0)
+- Goal: 고정 절대점 (object_goal_pos), success = |obj-goal| < tol
+- ADR: wrench/spawn/노이즈/reward 커리큘럼 (in_success > 0.4 트리거)
+"""
 
 from dataclasses import MISSING, field
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg, RigidObjectCollectionCfg
+from isaaclab.assets import ArticulationCfg, RigidObjectCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -30,59 +37,62 @@ from isaaclab.utils import configclass
 import os as _os
 
 from openarm import OPENARM_ROOT_DIR
-from .grasp_right_constants import (
-    NUM_OBSERVATIONS,
-    NUM_OBSERVATIONS_NO_MASS,
-    NUM_ACTIONS,
-    NUM_CRITIC_OBSERVATIONS,
-    LIFT_PHASE_STEPS,
-    LIFT_Z_DELTA,
-    STABILIZE_PHASE_STEPS,
-    STABILIZE_START_STEP,
-)
+from .grasp_right_constants import NUM_OBS_BASE, NUM_ACTIONS, NUM_CRITIC_OBS_BASE
 from .grasp_right_preset import (
-    HAND_BODY_NAMES_USD,
-    LEFT_ARM_AND_HAND_JOINT_NAMES,
-    LEFT_ARM_REST_JOINT_POS,
-    LEFT_HAND_REST_JOINT_POS,
-    RIGHT_ACTUATED_JOINT_NAMES,
     HAND_APPROACH_POSE,
+    HAND_BODY_NAMES_USD,
+    LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
+    LEFT_ARM_REST_JOINT_POS,
+    RIGHT_ACTUATED_JOINT_NAMES,
 )
-from .real2sim_actuator_cfg import get_actuator_params, load_real2sim_calibration
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
-_REAL2SIM_CALIBRATION = load_real2sim_calibration(
-    _os.environ.get("OPENARM_REAL2SIM_ACTUATOR_CALIBRATION", "")
-)
 
 # ---------------------------------------------------------------------------
-# grasp_v2 파지 대상 물체 (다물체): primitives  [tesollo grasp_v2 에서 이식]
+# grasp_v2 파지 대상 물체 (다물체): primitives
 # ---------------------------------------------------------------------------
-# 이름: 숫자=파지 폭(XY, cm). large 5/8/12cm, small 2.5/4/6cm. cyl=원통 / cuboid=직육면체.
-# STAGE1=large 6종(폭 5~12cm). small 은 STAGE2 확장. _ACTIVE_OBJECT_NAMES 만 바꾸면 물체군 변경.
-_PRIMITIVE_CURRICULUM_STAGE1: tuple = (
+# 이름 규칙(STL bbox 측정): 숫자=형태, 5=세로 긴 기둥 / 8=정육면체 / 12=납작 원반.
+# large = small 의 2배. 파지 폭(XY): large 5/8/12 = 5/8/12cm, small = 2.5/4/6cm.
+#
+# 커리큘럼(대표값 고정 방식): cup 크기 상수 cup_radius_approx=0.045(폭 9cm) 는 그대로 두고,
+# spawn 물체군만 좁혀 대표값과 맞춘다. cup_big 실측 = 폭 9cm / 높이 17.8cm 세로 원통.
+#   - STAGE1: large 계열(폭 5~12cm, 반경 2.5~6cm, 중앙 4.5cm = cup radius). 원통 3종 포함.
+#   - small 계열(폭 2.5~6cm)은 radius 대표값보다 확실히 작아 STAGE2 로 확장.
+# 물체군 확장은 _ACTIVE_OBJECT_NAMES 를 바꾸면 됨(reward 상수 불변).
+_PRIMITIVE_CURRICULUM_STAGE1: tuple[str, ...] = (
     "large_5_cyl", "large_8_cyl", "large_12_cyl",
     "large_5_cuboid", "large_8_cuboid", "large_12_cuboid",
 )
-_PRIMITIVE_ALL: tuple = _PRIMITIVE_CURRICULUM_STAGE1 + (
+_PRIMITIVE_ALL: tuple[str, ...] = _PRIMITIVE_CURRICULUM_STAGE1 + (
     "small_5_cyl", "small_8_cyl", "small_12_cyl",
     "small_5_cuboid", "small_8_cuboid", "small_12_cuboid",
 )
-# 현재 활성 물체군(초기 학습 = STAGE1 large 6종).
-_ACTIVE_OBJECT_NAMES: tuple = _PRIMITIVE_CURRICULUM_STAGE1
+
+# 현재 활성 물체군(초기 학습 = STAGE1).
+# visdex 실물 뱅크(접근 B): 디렉토리 스캔. code = "visdex:<name>".
+_VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
+_VISDEX_NAMES: tuple[str, ...] = tuple(sorted(
+    _n for _n in _os.listdir(_VISDEX_ROOT)
+    if _os.path.isdir(_os.path.join(_VISDEX_ROOT, _n))
+)) if _os.path.isdir(_VISDEX_ROOT) else ()
+
+# 활성 물체군: visdex 153종. primitives 로 되돌리려면
+#   _ACTIVE_OBJECT_ROOT = primitives/USD, _ACTIVE_OBJECT_NAMES = _PRIMITIVE_CURRICULUM_STAGE1, prefix=primitive.
+_ACTIVE_OBJECT_ROOT: str = _VISDEX_ROOT
+_ACTIVE_OBJECT_NAMES: tuple[str, ...] = _VISDEX_NAMES
 
 
 def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":
-    """단일 primitive USD spawn cfg (cup 과 동일 rigid 속성)."""
+    """단일 물체 USD 의 spawn cfg (cup 과 동일 rigid/articulation 속성)."""
     return sim_utils.UsdFileCfg(
-        usd_path=_os.path.join(_ASSETS_DIR, "primitives/USD", name, f"{name}.usd"),
+        usd_path=_os.path.join(_ACTIVE_OBJECT_ROOT, name, f"{name}.usd"),
         activate_contact_sensors=True,
         scale=(1.0, 1.0, 1.0),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             articulation_enabled=False,
         ),
-        rigid_props=RigidBodyPropertiesCfg(
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
             solver_position_iteration_count=16,
             solver_velocity_iteration_count=1,
             max_angular_velocity=100.0,
@@ -93,447 +103,251 @@ def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":
     )
 
 
-# env 마다 랜덤 물체 선택(random_choice). MultiAsset → replicate_physics=False 필요.
+# env 별 물체를 env_id % N 로 결정적 배정(random_choice=False → proto[index % len]).
+# → per-object 로깅(object_idx = arange(num_envs) % N)과 균등 배정 보장. replicate_physics=False 필요.
 _GRASP_OBJECT_SPAWN = sim_utils.MultiAssetSpawnerCfg(
     assets_cfg=[_primitive_usd_cfg(_n) for _n in _ACTIVE_OBJECT_NAMES],
-    random_choice=True,
+    random_choice=False,
 )
-
-# 비드 4단계 이산 질량: {0, 10, 20, 30}개 × 10g = {0, 100, 200, 300}g
-# cup_middle용 소형 bead. mass는 그대로 10g으로 유지해 hidden-mass bin을 바꾸지 않는다.
-_DEFAULT_BEAD_COUNT = 30
-_DEFAULT_BEAD_MASS = 0.010
-_DEFAULT_BEAD_SCALE = 0.35
-
-
-def _actuator_params(group_name: str, default_stiffness: float, default_damping: float) -> dict:
-    return get_actuator_params(
-        group_name,
-        _REAL2SIM_CALIBRATION,
-        default_stiffness=default_stiffness,
-        default_damping=default_damping,
-    )
-
-
-def _make_beads_cfg() -> RigidObjectCollectionCfg:
-    """컵 내부 무게 도메인 랜덤화용 bead 설정 (30개, 각 10g, mesh 0.35x)."""
-    rigid_objects: dict = {}
-    for i in range(_DEFAULT_BEAD_COUNT):
-        bead_spawn_cfg = UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
-            scale=(_DEFAULT_BEAD_SCALE, _DEFAULT_BEAD_SCALE, _DEFAULT_BEAD_SCALE),
-            activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=_DEFAULT_BEAD_MASS),
-            rigid_props=RigidBodyPropertiesCfg(
-                disable_gravity=False,
-                solver_position_iteration_count=16,
-                solver_velocity_iteration_count=4,
-                linear_damping=0.5,
-                angular_damping=0.5,
-                max_depenetration_velocity=5.0,
-                max_linear_velocity=10.0,
-                max_angular_velocity=20.0,
-            ),
-        )
-        bead_spawn_cfg.physics_material = sim_utils.RigidBodyMaterialCfg(
-            static_friction=0.1,
-            dynamic_friction=0.08,
-            restitution=0.1,
-            friction_combine_mode="min",
-            restitution_combine_mode="max",
-        )
-        rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
-            prim_path=f"/World/envs/env_.*/Bead_{i:02d}",
-            init_state=RigidObjectCfg.InitialStateCfg(
-                pos=[0.42, -0.15, 0.38],
-                rot=[1.0, 0.0, 0.0, 0.0],
-            ),
-            spawn=bead_spawn_cfg,
-        )
-    return RigidObjectCollectionCfg(rigid_objects=rigid_objects)
 
 
 @configclass
 class GraspRightEnvCfg(DirectRLEnvCfg):
-    """5g_grasp_right_v11 환경 설정."""
+    """5g_grasp_right_v1 환경 설정."""
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 파라미터
+    # 물리: 120 Hz, 정책: 60 Hz (decimation=2)
+    # Fabrics: fabrics_dt=1/60 × fabric_decimation=2 → 120 Hz
+    # Episode: 10s = 600 steps @ 60Hz (8s grasp + 2s lift)
     # -----------------------------------------------------------------------
-    episode_length_s: float = 10.0   # grasp 7s + lift 2s + stabilize 1s
+    episode_length_s: float = 10.0
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
     use_cuda_graph:   bool  = False
 
     # -----------------------------------------------------------------------
-    # 관측·액션 공간
+    # 관측·액션 공간 — DEXTRAH teacher 구조 (base + 물체 onehot)
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 98 (actor; +oracle mass=99)
-    action_space:      int = NUM_ACTIONS               # 11 (palm 6 + PCA 5)
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 121 (critic, privileged)
+    observation_space: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)          # 193 + N_obj
+    action_space:      int = NUM_ACTIONS                                        # 11
+    state_space:       int = NUM_CRITIC_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)   # 247 + N_obj
 
-    num_observations: int = NUM_OBSERVATIONS
+    num_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)
     num_actions:      int = NUM_ACTIONS
-    num_states:       int = NUM_CRITIC_OBSERVATIONS
-    actor_observe_bead_mass: bool = False
-
-    # -----------------------------------------------------------------------
-    # Pour warm-state export (play/collector only)
-    # -----------------------------------------------------------------------
-    enable_warm_state_export: bool = False
-    warm_state_export_path: str = "/home/oem/rl_ws/datasets/grasp_warm_v11_pour.hdf5"
-    warm_state_target_count: int = 2048
-    warm_state_success_source: str = "stabilize"
+    num_states:       int = NUM_CRITIC_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)
 
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
-    # 실험1: fabric 이 손 제어, hand_mode="direct"(6-DOF 직접, PCA 1D 붕괴 회피).
-    # PCA 복귀: hand_mode="pca" + constants NUM_ACTIONS 11 + _pre_physics scale 되돌림.
-    use_hand_fabric:            bool  = True
-    hand_mode:                  str   = "direct"
-    # 실험3c: ±70 은 fps 회복하나 리프트 상실(3a/3b 확인: top-down 부족 ex 20~160°).
-    # ±90(ex 0~180° 완전 top-down)이 리프트 확보(실험2 object_height 0.269) → 90 복귀 + wrench 유지.
-    # fps 낮으나(6k) 리프트 되는 베이스 확보 우선. 복귀=45.0(side 전용).
-    max_pose_angle:             float = 90.0
-    fabrics_max_objects_per_env: int  = 8   # open_tesollo_boxes_no_table 객체 7개 → ≥7 필요
-    fabrics_damping_gain:       float = 20.0
-    stabilize_upright_orientation_enabled: bool = True
-    # 07.03 upright 강화: pour가 똑바로 든 컵을 요구 → 컵 세우기 보정 강화(gain 1.5→3.0, max 25→45°).
-    stabilize_upright_orientation_gain: float = 3.0
-    stabilize_upright_orientation_max_deg: float = 45.0
-    stabilize_upright_orientation_blend_steps: int = STABILIZE_PHASE_STEPS // 2
-    # lift phase부터 upright 보정 적용 → stabilize 전에 미리 컵을 세워 righting 시간 확보.
-    upright_orientation_from_lift: bool = False  # 07.03 lift중 보정이 그립 흔들어 리프트 붕괴 → stabilize만
-    # Backward-compatible aliases for older launch overrides.
-    stabilize_spawn_xy_hold_enabled: bool = True
-    stabilize_spawn_xy_hold_gain: float = 2.0
-    stabilize_spawn_xy_hold_max_delta: float = 0.10
+    use_hand_fabric:            bool  = False
+    max_pose_angle:             float = 90.0   # palm rpy 90°±angle → 90=0~180°(top-down 포함). arm 자유탐색(DEXTRAH식, 45→90)
+    fabrics_max_objects_per_env: int  = 8
+    fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
 
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
-    # pregrasp_offset_* is the desired palm sensor offset from the cup.
-    # The environment converts it to the Fabric palm_link target before IK.
     # -----------------------------------------------------------------------
-    # ez=180(palm+z=+y 수평, side grasp) 규약에서 리셋 fabric 은 안정 수렴 → 전량 수렴 사용.
-    pregrasp_fabric_steps: int   = 100
+    pregrasp_fabric_steps: int   = 60
     reset_fabric_chunk_size: int = 128
-    cache_pregrasp_reset:  bool  = True
-    # +y side grasp offset (probe 실측, cup x_center=0.34 기준):
-    #   offx=-0.07, offy=-0.08 → 엄지 opposition(1.57) 유지 시 pregrasp 관통 없는 standoff.
-    #     정책이 이 자세에서 컵을 손가락-엄지 gap 으로 넣어 감싸도록 학습.
-    #   offz=-0.15→ palm 을 아래로 끌어내림. r_aj7_bias 와 합쳐 palm 을 컵 높이로.
-    pregrasp_offset_x:     float = -0.07
-    pregrasp_offset_y:     float = -0.08
-    pregrasp_offset_z:     float = -0.15
-    # r_aj_7(손목)을 이만큼 낮춰 palm 을 컵 rim(z~0.35)→컵 중심(z~0.29)으로 내림.
-    # fabric 은 +y 수평 유지 위해 r_aj_7 을 높게(≈1.27) 잡아 palm 이 rim 에 뜸(probe 확정).
-    # 0.3 낮추면 palm z≈0.29(컵 높이)·수평 유지·엄지 관통 없음(offx 와 함께). bias 후 palm
-    # anchor 는 실제 FK 로 재정합해 정책 시작 시 palm 튐 방지.
-    pregrasp_r_aj7_bias:   float = 0.3
+    cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
+    pregrasp_offset_x:     float = -0.06
+    pregrasp_offset_y:     float = -0.07
+    pregrasp_offset_z:     float = 0.00
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005
 
     # -----------------------------------------------------------------------
-    # Demo reset (optional): Tesollo 20-DOF demo 데이터(pour_v1_a*) → RH56F1(6-DOF)엔 무효.
-    # RH56F1 포팅: 비활성화하고 절차적 13-DOF 리셋(robot_start_joint_pos) 사용.
+    # Demo reset (pour_v1_a11~a20 grasp start and lift target)
     # -----------------------------------------------------------------------
+    # grasp_v2: cup demo pose 는 다물체에 부적합 → demo-free reset(FABRICS pregrasp cache) 사용.
     enable_demo_grasp_reset: bool = False
     demo_grasp_pose_paths: tuple[str, ...] = tuple(
-        f"/home/oem/rl_ws/datasets/pour_v1_a{i}.hdf5" for i in range(11, 21)
+        _os.path.join(_HDGP_ROOT, "..", "datasets", f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
 
     # -----------------------------------------------------------------------
     # Observation noise (sim2real domain randomization)
+    # actor obs에만 적용; critic obs는 privileged clean state 유지
     # -----------------------------------------------------------------------
-    obs_noise_joint_pos: float = 0.01
-    obs_noise_joint_vel: float = 0.05
-    obs_noise_body_pos:  float = 0.005
-    obs_noise_cup_pos:   float = 0.015
-
-    # -----------------------------------------------------------------------
-    # Real2Sim actuator randomization
-    # -----------------------------------------------------------------------
-    real2sim_actuator_randomization_enabled: bool = bool(_REAL2SIM_CALIBRATION)
-    real2sim_stiffness_scale_range: tuple[float, float] = (0.8, 1.25)
-    real2sim_damping_scale_range: tuple[float, float] = (0.7, 1.5)
-    real2sim_friction_scale_range: tuple[float, float] = (0.7, 1.3)
 
     # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
+    cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
-    lift_target_z_delta: float = LIFT_Z_DELTA
-    success_hold_steps: int = 20   # Phase2-b: 30→20 (decay 0.5/steps 30은 hold_count 4.7서 정체 = success_held ~0). 문턱 완화
-    success_hold_miss_decay: float = 0.25   # Phase2-b: 0.5→0.25 (순증 +0.16→+0.30/step at success_now 0.44). leaky: miss 시 0 리셋 대신 감쇠. -1=기존 hard reset
-    stability_cup_lin_vel_threshold: float = 0.04
-    stability_cup_ang_vel_threshold: float = 0.5
-    stability_contact_delta_threshold: float = 1.0
-    stability_action_delta_threshold: float = 0.4   # Phase B: stable 판정 완화 (0.2는 과도하게 빡빡 → success_held=0)
-
-    # Phase curriculum:
-    # 0 = grasp/lift only, 1 = add stabilize.
-    enable_phase_curriculum: bool = False
-    phase_curriculum_initial_stage: int = 1
-    phase_curriculum_min_episodes: int = 100
-    phase_curriculum_lift_success_threshold: float = 0.70
-    phase_curriculum_stabilize_success_threshold: float = 0.70
-    terminate_on_lift_failure: bool = True
 
     # -----------------------------------------------------------------------
-    # Delta palm action
+    # Delta palm action (pregrasp 기준 상대 오프셋)
+    # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.03
-    palm_delta_rot_deg: float = 5.0
-    ema_action_alpha: float = 0.7
-    approach_min_steps: int = 10
-    approach_timeout_steps: int = 90
-    approach_palm_radial_min: float = 0.025
-    # +y side grasp 기하: pregrasp palm radial ~0.099. 0.105 는 너무 느슨(접근 없이 즉시 grasp
-    # phase 진입→손가락 먼저 닫혀 fingertip pinch). 0.085 로 조여 palm 이 컵으로 ~1.4cm 접근한
-    # 뒤에만 손가락이 닫히게(palm-first). floor~0.075(offx x분리) 위라 도달가능, 미도달 시 timeout fallback.
-    approach_palm_radial_max: float = 0.085
-    approach_palm_local_z_min: float = -0.015
-    approach_palm_local_z_max: float = 0.095
-    # 2 는 너무 빡셈: palm 이 radial 게이트 통과해도 열린 손가락(target 0, 더 못 물러남)이
-    # 컵에 부수 접촉(~2.9개)해 approach_ready 를 막고 timeout(0.77) 으로 진입 → palm-first 무력화.
-    # 5(손가락 tip 총수)로 완화해 approach_ready 를 palm-위치(radial≤0.085) 기반으로 전환.
-    approach_max_tip_contacts: int = 5
-    approach_upright_max_deg: float = 20.0
-    approach_timeout_grasp_reward_scale: float = 0.25
-    grasp_palm_delta_scale: float = 1.0
-    grasp_palm_inward_offset: float = 0.11   # palm 더 적극적으로 깊숙히: grasp 중 palm 을 컵쪽으로 깊이(0.08→0.11)
-    lift_palm_delta_xyz: float = 0.03
-    lift_palm_delta_rot_deg: float = 15.0
+    palm_delta_xyz:     float = 0.15   # ±0.15m per axis
+    palm_delta_rot_deg: float = 90.0   # ±90° per axis: pregrasp side(90°)에서 top-down(0°)까지 정책 자유 회전(20→90, arm 자유탐색)
 
     # -----------------------------------------------------------------------
-    # Finger action semantics
-    # RH56F1 v1은 6D absolute synergy target을 사용한다.
-    # grasp:      HAND_APPROACH_POSE(-1) ~ HAND_GRASP_POSE(+1)
-    # post-grasp: HAND_GRASP_POSE(-1)    ~ HAND_FULL_GRIP_POSE(+1)
-    # 아래 delta_scale 항목은 이전 run/config 호환을 위해 유지되며 현재 env에서는 사용하지 않는다.
+    # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
+    # goal = DEXTRAH식 고정 절대점 (spawn 중심 xy, z = 안착(~0.24)+0.21).
+    # success = |obj-goal| < tol. tol 0.10 이 물체별 안착 높이 편차(수 cm)를 흡수.
+    # object_to_goal_sharpness·lift_weight·finger_curl_reg 는 ADR 스케줄이 우선
+    # (enable_adr=True 시 adr_custom_cfg.reward_weights 로 대체).
     # -----------------------------------------------------------------------
-    finger_delta_scale:      float = 0.08
-    lift_finger_delta_scale: float = 0.08
-    enable_grasp_phase_full_grip_blend: bool = True
-    grasp_phase_full_grip_contact_threshold: int = 4
-    grasp_phase_full_grip_progress_threshold: float = 0.65
+    object_goal_pos:          tuple = (0.27, -0.10, 0.45)
+    object_goal_tol:          float = 0.10
+    hand_to_object_weight:    float = 1.0
+    hand_to_object_sharpness: float = 10.0
+    object_to_goal_weight:    float = 5.0
+    object_to_goal_sharpness: float = 15.0   # exp(-s·err) 형태(양수 s). DEXTRAH -15·exp(+s·err)와 동치
+    lift_weight:              float = 5.0
+    lift_sharpness:           float = 8.5
+    finger_curl_reg_weight:   float = 0.0    # ADR 미사용 시 fallback (ADR은 -0.01→-0.005)
+    # palm orientation: DEXTRAH 4항엔 손목 방향 제약이 없어 손바닥이 임의(천장) 방향으로
+    # 수렴. palm 법선(로컬 +X → world)이 palm→물체 방향과 정렬되도록 보조 shaping.
+    # w·exp(s·(align−1)): align=1(완전 정렬)→w, align=−1(반대)→w·exp(−2s). weight는
+    # object_to_goal(5.0)의 0.2배로 통제(reward-audit ACCEPT: local-min·hacking 방지).
+    palm_orient_weight:       float = 1.0
+    palm_orient_sharpness:    float = 3.0
 
-    # -----------------------------------------------------------------------
-    # Shared 5-tip grasp reward parameters
-    # -----------------------------------------------------------------------
-    grasp_upright_threshold_deg: float = 8.0
-    grasp_xy_threshold: float = 0.025
+    # (구) RH56F1 shared grasp-v2 reward contract — DEXTRAH 전환으로 미사용(호환 보존).
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0
     approach_xy_penalty_weight: float = 5.0
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
-    # envelope 강제(test4: envelope 형성됐다 붕괴 → tip-success 로 회귀). lift 게이팅·grasp
-    # credit 의 envelope 비중을 올려 감싸야만 lift/grasp 보상을 받게 → envelope 유지 유도.
-    # (공통 코어 cfg-configurable, tesollo 는 기본값 0.5/0.40 유지.)
-    lift_envelope_mix:      float = 0.58   # lift 접촉 게이팅 envelope 비중 (기본 0.5). test5의 0.65는
-                                           # success 억제+upright 소멸 → 완화. 얇은 컵이 envelope 물리 enabling 담당.
-    grasp_envelope_credit:  float = 0.47   # grasp_quality envelope credit (기본 0.40). 0.55에서 완화(위와 동일 근거).
-    # Exp1 anti-roll: post-lift hold 중 cup_ang_vel 직접 페널티 가중치. 컵 굴림(ang_vel 1.0~1.8 >
-    # 임계 0.5)이 held=0의 근본 → 회전 억제로 rigid hold 유도(pour 회전 강건성 기반). 0=무효.
-    cup_ang_vel_penalty_weight: float = 0.0  # Exp1 실패(굴림 못 잡음) → 0으로 끔. Exp2 단독 검증. firm 그립 생기면 재검토.
+    lift_reward_weight: float = 30.0
     stabilize_weight: float = 10.0
-    stabilize_spawn_xy_scale: float = 0.03
-    stabilize_upright_reward_scale_deg: float = 5.0
-    stabilize_action_sharpness: float = 1.5
     stability_reward_weight: float = 1.0
     success_bonus_weight: float = 20.0
     post_lift_contact_loss_weight: float = -8.0
     action_smooth_weight: float = -0.02
-    palm_action_delta_reward_scale: float = 0.25
-    finger_action_delta_reward_scale: float = 1.0
+    grasp_xy_threshold: float = 0.025
+    grasp_upright_threshold_deg: float = 8.0
+    success_upright_max_deg: float = 20.0
+    stabilize_upright_max_deg: float = 5.0
+    stabilize_upright_reward_scale_deg: float = 5.0
+    stabilize_action_sharpness: float = 1.5
+    stability_cup_lin_vel_threshold: float = 0.04
+    stability_cup_ang_vel_threshold: float = 0.5
+    stability_contact_delta_threshold: float = 1.0
+    stability_action_delta_threshold: float = 0.2
+    stage0_lift_start_min_contacts: int = 2  # lift 진입: grip(tip|mid|distal) 손가락 수. visdex 큰물체 2~3 파지 대응(4→3→2, 엄지+1).
+    success_min_grip_fingers: int = 3  # success 그립 손가락 수(grip 기준, 엄지 접촉 AND). 큰 물체 대응(4→3).
+    # 파지력 확보: 물체 외란 wrench (DEXTRAH apply_object_wrench 이식).
+    # 물체가 가만히 있으면 꽉 잡을 유인이 없음(grip 0.93) → 외란을 줘서 정책이 파지력 학습.
+    wrench_enable: bool = True
+    wrench_max_accel: float = 10.0      # m/s² (DEXTRAH 수준, force~중력급 1N). 물체 실제 흔들려야 파지력 유인. force = object_mass × accel × 랜덤방향
+    wrench_torsional_radius: float = 0.03  # torque = mass × accel × radius × 랜덤방향
+    wrench_trigger_every: int = 60      # step(=1초 @60Hz)마다 새 랜덤 wrench
+    grasp_ready_hold_steps: int = 8   # 접촉 N개를 연속 hold하면 lift 래치 (잡으면 바로 리프트)
+    lift_start_min_envelope_fingers: int = 0  # latch 인벨롭 게이트 제거(0=비활성). envelope은 grasp/lift 보상 credit으로 유도(hard 게이트 대체)
+    finger_close_speed: float = 0.05  # ① 접촉-게이트 적응 폐쇄: 손가락 폐쇄 진행 속도/step (중간마디 접촉 시 동결)
+    # synergy 접촉 동결(g3/g4): 접촉 시 조임 멈춤 → 파지력 약화(grip 0.90 정체).
+    # False=동결 제거 → 손가락이 물체를 계속 조임(물리 collision이 관통/형상적응 담당, DEXTRAH식 파지력).
+    # primitives 복귀는 True. 기본 False(파지력 확보).
+    synergy_freeze_enable: bool = False
+    settle_steps: int = 25  # 다물체 drop-settle: episode 초기 N step 손가락 폐쇄 억제 → 물체 낙하 안착
 
-    # Legacy names kept for compatibility with older launch overrides.
-    palm_approach_weight:    float = 1.0
-    palm_approach_sharpness: float = 10.0
-
-    enclosure_weight:       float = 3.0
-    enclosure_sharpness:    float = 15.0
-    # palm-seat: 컵을 palm 에 밀착(enclosing grasp)하도록 유도. sparse(접촉) 보상은 palm 이
-    # 애초에 안 닿아 gradient=0 부트스트랩 실패 → dense 근접 보상 exp(-sharpness×palm_to_cup_dist)
-    # 로 안 닿아도 가까워질수록 보상↑. grip 중(num_contacts≥1)에만 → palm-shove 방지.
-    palm_seat_weight:       float = 6.0
-    palm_seat_sharpness:    float = 15.0
-    cup_radius_approx:      float = 0.025   # 균일 실린더 반경(2.5cm)과 정합. enclosure 게이트 타깃(cup_center±axis×r)에 직접 사용됨.
+    grasp_contact_persistence_reward_steps: int = 20
+    enclosure_sharpness: float = 15.0
+    cup_radius_approx: float = 0.045
     enclosure_thumb_weight: float = 0.6
-    # palm-first envelope: approach 중 thumb_1(엄지 abduction)을 palm 이 컵에 이 거리 이내로
-    # 안착할 때까지 approach 값(opposition, 1.57)에 고정 → 엄지-손가락 사이 통로로 컵이 들어와
-    # palm 에 앉은 뒤에야 엄지가 감싸도록(fingertip pinch 탈피). 근접 후 정책이 thumb_1 제어.
-    # 같은 게이트로 approach reward 의 fingertip enclosure 항도 켠다. cup_middle 은 작아
-    # 0.05 는 palm_sensor→컵 거리 floor(~0.064, 리세스3.9+반경3.5)보다 작아 palm_near 가 절대
-    # 안 켜짐 → fingertip enclosure 유도·엄지 release 가 영영 OFF → 팔이 컵으로 파고들어 감싸는
-    # 학습이 안 되고 pinch 로 수렴(test2 확인). floor 위 0.08 로 올려 palm 근접 시 enclosure+
-    # 엄지 release 활성화 → 컵을 손가락 사이로 넣어 감싸도록 유도. (reward-audit ACCEPT)
-    thumb_freeze_release_dist: float = 0.08
-    # thumb_1(엄지 abduction) freeze: True면 palm 근접 전까지 1.57에 고정(palm-first). False면
-    # 1.57은 초기자세로만, 처음부터 정책이 자유 제어 → 엄지가 굽을 위치를 스스로 찾도록(엄지 활성 시도).
-    thumb_freeze_enabled: bool = False
-
-    lift_reward_weight: float = 30.0
-    grasp_contact_persistence_reward_steps: int = 30
-    approach_tip_contact_penalty_weight: float = -4.0
-    # palm 이 컵으로 이동해 seat 하도록 완화(-8→-3, -2→-1): 기존 값이 palm 이동을 억제해 contact/palm=0.
-    grasp_palm_anchor_penalty_weight: float = -3.0
-    palm_target_motion_penalty_weight: float = -1.0
-    stabilize_spawn_xy_reward_weight: float = 40.0
-
-    action_smoothness_palm_weight:   float = -0.10
-    action_smoothness_finger_weight: float = -0.01
-
-    # 질량 파라미터 (force-ratio/bin logging용 privileged variable)
-    cup_base_mass:  float = 0.170          # kg (빈 컵 질량)
-    bead_single_mass: float = _DEFAULT_BEAD_MASS  # kg per bead
-    bead_scale: float = _DEFAULT_BEAD_SCALE
-
-    # 07.03: 2로 하드게이트 시도 → test9 success 0.0/1233ep 완전 블록(손 기하가 중간마디 ~1개만
-    #   접촉해 2 도달 불가). rh56f1은 하드게이트 불가 확정 → 0 유지, envelope는 geometry/credit로.
-    min_middle_contacts_for_success: int = 0
-
-    # Lift-entry grip readiness gate (state tracking용, reward가 아님)
-    # Phase A: starting hurdle for the contact_adr 3→4→5 curriculum (was fixed 4).
-    stage0_lift_start_min_contacts: int = 3
-    stage0_lift_start_hold_steps:   int = 20
-    # Exp2: 리프트 전 firm 그립 강제. lift-start를 'tip&근위 두 점 접촉 손가락 수 >= N'이 유지된
-    # 후로 지연 → 정책이 먼저 컵을 엄지-손바닥 사이에 넣어 firm 그립을 만들도록 압박(리프트 shortcut
-    # 차단). timeout_steps 지나면 fallback 허용(dead episode 방지). 0=firm 게이트 무효.
-    lift_start_min_firm_fingers: int = 0   # Exp2(게이트) 실패 → 0으로 끔. 실린더 컵 단독 효과 검증(plain RL).
-    lift_start_timeout_steps:    int = 150
-    # success grip 판정(tip+근위 firm 관점): "손가락당 tip AND 근위 두 점 접촉(firm) 손가락 수 >= N
-    # + 엄지 접촉". firm grip이 컵 회전을 구속 → held 가능. full envelope(원위/palm)는 불필요.
-    # (tip|근위 union >=4 에서 tip&근위 firm >=3 으로 재구성 — firm은 더 엄격해 N 완화.) tunable.
-    success_min_grip_fingers: int = 3
-    lift_contact_hold_steps: int = 30
-    full_grip_hold_steps:    int = 30
-    lift_min_force_ratio:    float = 1.8
-
-    # Slip proxy (no_slip_gate 계산용, 게임로직용)
-    slip_proxy_threshold:                float = 1.0
-    slip_proxy_contact_delta_weight:     float = 0.5
-    # 0.5 → 0.0: middle 접촉을 이제 실제로 채우므로, 이번 단계(계측+critic)를 reward-neutral 로
-    # 유지하기 위해 slip proxy 의 middle 기여를 0 으로 둔다. envelope 를 reward 로 적극 유도하려면
-    # reward-audit 통과 후 재활성화.
-    slip_proxy_middle_contact_delta_weight: float = 0.0
-    slip_proxy_tilt_delta_weight:        float = 0.5
-    slip_proxy_tilt_delta_scale:         float = 8.0
-
-    # Stabilize 판정 임계값 (full_grip_ready gate용)
-    stabilize_cup_lin_vel_threshold:  float = 0.04
-    stabilize_cup_ang_vel_threshold:  float = 0.50
-    stabilize_force_delta_threshold:  float = 0.35
-    stabilize_contact_delta_threshold: float = 1.0
-    stabilize_spawn_xy_success_threshold: float = 0.01
-
-    # Legacy delta-control knob (absolute synergy semantics에서는 미사용)
-    thumb_curl_downward_action_scale: float = 0.25
-    thumb_curl_max_downward_delta:    float = 0.05
 
     # -----------------------------------------------------------------------
-    # ADR — contact curriculum (threshold=0.1, 먼저 진행)
+    # ADR
     # -----------------------------------------------------------------------
-    # slip/adaptive/full_contact gate의 최소 총 접촉 수: 2 → 5
-    enable_contact_adr:             bool  = True
-    contact_adr_num_increments:     int   = 50
-    contact_adr_increment_interval: int   = 400
-    contact_adr_trigger_threshold:  float = 0.5   # Phase A: lift_started_rate 50%에서 다음 허들로 (트리거 신호를 success_rate→lift_started_rate로 교체)
-
-    # 6.2: ADR trigger moving-window 크기
-    # 최근 N episode 성공률을 ADR trigger에 사용 (0: 기존 cumulative 방식 유지)
-    adr_window_size: int = 500
-
-    contact_adr_custom_cfg: dict = field(default_factory=lambda: {
-        "contact": {
-            # int(round(value)) 로 사용. Phase A: 3 → 5 (전 손가락 FULL-GRASPING)
-            "min_contacts": (3.0, 5.0),
-        },
-    })
-
-    # -----------------------------------------------------------------------
-    # ADR — 난이도 (threshold=0.8, contact ADR 이후 진행)
-    # -----------------------------------------------------------------------
+    # DEXTRAH ADR 커리큘럼: in_success_region 순간 평균 > threshold 마다 increment,
+    # 각 파라미터가 initial→final 선형 진행. (원본 success_for_adr=0.4)
     enable_adr:            bool  = True
     adr_num_increments:    int   = 50
-    adr_increment_interval: int  = 400
-    # 실험3b: wrench 커리큘럼 트리거 = lifted_rate. 리프트 30% 달성 시 난이도(외란)↑.
-    adr_trigger_threshold: float = 0.3   # lifted_rate 30%에서 ADR increment (외란 점증)
+    adr_increment_interval: int  = 200
+    adr_trigger_threshold: float = 0.4
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
-        "spawn": {
-            "object_spawn_xy_range": (0.01, 0.06),
-        },
-        "noise": {
-            "obs_noise_cup_pos": (0.005, 0.025),
-        },
-        "finger": {
-            "delta_scale": (0.05, 0.15),
-        },
-        "reward_weights": {
-            "enclosure_weight": (10.0, 20.0),
-        },
-        # 실험3b: apply_object_wrench 외란 크기 ADR 점증(0→강). firm grip 커리큘럼.
-        # lifted_rate>=trigger_threshold 마다 increment → 외란 강화 → 정책이 더 꽉 잡아야 함.
+        # 외란 wrench: 0→10 점진 (DEXTRAH. 기존 고정 10은 초기 리프트 학습 방해 가능)
         "object_wrench": {
             "max_linear_accel": (0.0, 10.0),
+        },
+        # spawn 커리큘럼: 반경 0→최대, 회전 0→full (DEXTRAH object_spawn)
+        "object_spawn": {
+            "xy_range": (0.0, 0.06),
+            "rotation": (0.0, 1.0),
+        },
+        # 관측 노이즈 점진 (DEXTRAH object/robot_state_noise 원본값)
+        "object_state_noise": {
+            "object_pos_noise": (0.0, 0.03),   # m
+            "object_pos_bias":  (0.0, 0.02),   # m
+            "object_rot_noise": (0.0, 0.1),    # rad
+            "object_rot_bias":  (0.0, 0.08),   # rad
+        },
+        "robot_state_noise": {
+            "robot_joint_pos_noise": (0.0, 0.08),  # rad
+            "robot_joint_pos_bias":  (0.0, 0.08),  # rad
+            "robot_joint_vel_noise": (0.0, 0.18),  # rad/s
+            "robot_joint_vel_bias":  (0.0, 0.08),  # rad/s
+        },
+        # reward 스케줄 (DEXTRAH): lift shaping 5→0 걷어내고 goal 정밀도(sharpness) 강화
+        "reward_weights": {
+            "finger_curl_reg":          (-0.01, -0.005),
+            "object_to_goal_sharpness": (15.0, 20.0),   # 우리 exp(-s·err) 부호
+            "lift_weight":              (5.0, 0.0),
+        },
+        # fabric cspace damping 강화 (DEXTRAH 10→20)
+        "fabric_damping": {
+            "gain": (10.0, 20.0),
+        },
+        # velocity obs annealing: DEXTRAH teacher는 (0,0)=상시 0 (실로봇 vel 추정 부재 대비)
+        "observation_annealing": {
+            "coefficient": (0.0, 0.0),
         },
     })
 
     # -----------------------------------------------------------------------
     # 종료 조건
     # -----------------------------------------------------------------------
-    cup_tipping_max_deg: float = 35.0
-    success_upright_max_deg: float = 12.0   # 07.03 pour용 upright(20→12°): 달성가능+16°보다 개선
-    stabilize_upright_max_deg: float = 12.0  # 20→12°. stabilize 보정강화로 달성 목표
+    cup_tipping_max_deg: float = 60.0
     obj_out_x_min:  float = 0.05
     obj_out_x_max:  float = 0.85
     obj_out_y_min:  float = -0.60
     obj_out_y_max:  float = 0.25
     obj_fallen_z:   float = 0.20
 
+    # 로봇 발산 종료: fabric 폭주로 손이 도달불가 위치로 튕기면 물체가 테이블에
+    # 남아 컵-기준 종료가 안 걸림 → timeout까지 방치되던 문제. palm↔물체 거리가
+    # 정상 workspace(리치 + pregrasp offset)를 크게 넘거나 NaN이면 조기 종료.
+    robot_escape_dist: float = 0.80
+
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.34
-    object_spawn_y_center: float = -0.10
-    object_spawn_z:        float = 0.30    # DEXTRAH drop height(크기무관 고정). settle 로 안착.
-    object_spawn_xy_range: float = 0.06
-    settle_steps:          int   = 25      # episode 초기 N step 손 pregrasp 유지 + PCA close 억제 → 낙하 안착
+    object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
+    object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
+    object_spawn_z:        float = 0.297
+    # 활성 물체군(spawn 순서와 일치) — onehot·per-object 로깅용 이름. env_id % N 로 배정.
+    # (물체 조건화는 DEXTRAH식 onehot 으로 전환 — 접근 B feature 는 obs 미사용)
+    active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
+    object_spawn_xy_range: float = 0.06   # ADR 미사용 시 fallback (ADR은 0→0.06 커리큘럼)
 
-    # --- 실험3b: apply_object_wrench (firm grip, DEXTRAH 이식) ---
-    # 손이 물체를 잡았을 때(hand_to_object<threshold) 랜덤 외란 힘/토크 → 정책이 견디며 꽉 잡아야 함.
-    # 실험3c 판정: wrench(외란)가 작은 물체의 약한 리프트를 방해(실험2는 리프트, 3c는 평평).
-    # → wrench off, 리프트 되는 실험2(90) 재현 + 손가락별 접촉 로깅으로 파지 메커니즘 진단.
-    enable_object_wrench:          bool  = False
-    wrench_trigger_every:          int   = 60      # step(1s@60Hz)마다 새 외란 방향
-    torsional_radius:              float = 0.01     # m (토크 = mass·accel·radius)
-    hand_to_object_dist_threshold: float = 0.15     # 이 거리 이내(파지)일때만 외란 (MAX거리 스케일)
-    wrench_lifted_z:               float = 0.26     # object z > 이면 lifted (ADR 트리거 metric)
-
-    # -------- tesollo grasp_v2 매칭: 리프트(제자리 들기) 중심 + 손 close (reward-audit REVISE) --------
-    # tesollo success=grasped(3접촉)+4cm lifted(0.93). rh56f1 매칭: object_to_goal 제거, lift 집중.
-    # 수정: reward goal(멀리=강한 리프트 gradient)과 success 기준(4cm=완화) 분리.
-    # goal 낮추면 lift reward 포화(3.0)→리프트 동기 소멸(매칭 실패 원인). 실험2 goal(21cm) 복원.
-    object_goal_pos:            tuple = (0.34, -0.10, 0.45)   # 제자리 위 21cm(강한 리프트 유도, 실험2 복원)
-    object_goal_tol:            float = 0.10
-    hand_to_object_weight:      float = 1.0
-    hand_to_object_sharpness:   float = 10.0
-    object_to_goal_weight:      float = 5.0    # 복원: 리프트 gradient(실험2 리프트 유도). success는 height_delta 4cm로 분리.
-    object_to_goal_sharpness:   float = -15.0
-    lift_weight:                float = 5.0
-    lift_sharpness:             float = 8.5
-    finger_curl_reg_weight:     float = 0.0    # 제거: curled_q 고정 강제가 물체 적응 파지 방해→num_tip 급락.
-    # tesollo grasp term 대응: 접촉 유도(감싸 쥐기). DEXTRAH 거리reward는 접근만→num_tip 0.59.
-    grasp_contact_weight:       float = 1.0    # 리프트 전 접촉 손끝 수(num_tip/5) 유도. lift(5)보다 작게(local min 방지).
-    object_out_of_reach_z:      float = 0.20
-    # success = tesollo식: lifted(height_delta) + grasped(num_tip). object_to_goal 대신.
-    lifted_success_delta:       float = 0.04   # 4cm 리프트(tesollo lift_success_height 0.04 매칭)
-    num_tip_min_success:        int   = 2      # 파지 판정 최소 접촉 손끝(tesollo 3, rh56f1 6-drive라 2 시작)
+    # -----------------------------------------------------------------------
+    # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart 재사용)
+    # -----------------------------------------------------------------------
+    # 학습 루프에는 영향 없음 (기본 False). collect 스크립트/play 에서만 True.
+    # success 이후 오른손 grasp arm pose 를 유지하고 joint7 만 lift-wait 로 이동한 상태를 저장한다.
+    # demo cup/phase 구분을 신뢰하지 않고 실제 sim 손/컵 grasp 결과를 그대로 유지한다.
+    # 손가락 접촉은 기본 2개 이상, lift-wait arm match 는 기본 1 step 만 요구한다.
+    enable_warm_state_export: bool = False
+    warm_state_export_path: str = _os.path.normpath(
+        _os.path.join(_HDGP_ROOT, "..", "datasets", "grasp_warm_v1.hdf5")
+    )
+    warm_state_target_count: int = 2048
+    warm_min_contacts: int = 2
+    warm_contact_stable_steps: int = 1
+    warm_lift_wait_arm_tol: float = 0.035
+    warm_lift_wait_hold_steps: int = 1
+    lift_wait_joint7_delta: float = 0.31
+    warm_cup_upright_min: float = 0.90   # legacy override 호환용; lift-wait export 에서는 미사용
+    warm_j7_min: float = 0.20
+    warm_j7_max: float = 1.50
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 설정
@@ -559,7 +373,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=128,
         env_spacing=2.5,
-        replicate_physics=False,  # MultiAsset(env 별 다른 물체) → physics 복제 불가
+        # grasp_v2: MultiAsset(env 별 다른 물체) spawn 은 physics 복제 불가.
+        replicate_physics=False,
     )
 
     # -----------------------------------------------------------------------
@@ -581,7 +396,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     )
 
     # -----------------------------------------------------------------------
-    # 로봇 설정
+    # 로봇 설정 (openarm_bi_rh56f1_rl.usd: 양팔 openarm, 우측 RH56F1 6-drive 손 + 좌측 RH56F1)
     # -----------------------------------------------------------------------
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
@@ -610,74 +425,71 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 "r_aj_6":  0.0,
                 "r_aj_7":  0.0,
                 # RH56F1 우측 손 drive (approach pose)
-                "r_hj_thumb_1":  HAND_APPROACH_POSE[0],   # 0.60
-                "r_hj_thumb_2":  HAND_APPROACH_POSE[1],   # 0.15
-                "r_hj_index_1":  HAND_APPROACH_POSE[2],   # 0.30
-                "r_hj_middle_1": HAND_APPROACH_POSE[3],   # 0.30
-                "r_hj_ring_1":   HAND_APPROACH_POSE[4],   # 0.30
-                "r_hj_pinky_1": HAND_APPROACH_POSE[5],   # 0.30
+                "r_hj_thumb_1":  HAND_APPROACH_POSE[0],
+                "r_hj_thumb_2":  HAND_APPROACH_POSE[1],
+                "r_hj_index_1":  HAND_APPROACH_POSE[2],
+                "r_hj_middle_1": HAND_APPROACH_POSE[3],
+                "r_hj_ring_1":   HAND_APPROACH_POSE[4],
+                "r_hj_pinky_1":  HAND_APPROACH_POSE[5],
                 # mimic 추종 (= drive × multiplier, 결합 init 으로 snap 방지)
-                "r_hj_thumb_3":  HAND_APPROACH_POSE[1] * 1.1425,            # 0.171
-                "r_hj_thumb_4":  HAND_APPROACH_POSE[1] * 1.1425 * 0.7508,   # 0.129
-                "r_hj_index_2":  HAND_APPROACH_POSE[2] * 1.1169,            # 0.335
+                "r_hj_thumb_3":  HAND_APPROACH_POSE[1] * 1.1425,
+                "r_hj_thumb_4":  HAND_APPROACH_POSE[1] * 1.1425 * 0.7508,
+                "r_hj_index_2":  HAND_APPROACH_POSE[2] * 1.1169,
                 "r_hj_middle_2": HAND_APPROACH_POSE[3] * 1.1169,
                 "r_hj_ring_2":   HAND_APPROACH_POSE[4] * 1.1169,
-                "r_hj_pinky_2": HAND_APPROACH_POSE[5] * 1.1169,
+                "r_hj_pinky_2":  HAND_APPROACH_POSE[5] * 1.1169,
                 **LEFT_ARM_REST_JOINT_POS,
-                **LEFT_HAND_REST_JOINT_POS,
             },
         ),
         actuators={
             "openarm_right_arm": ImplicitActuatorCfg(
                 joint_names_expr=["r_aj_[1-7]"],
-                **_actuator_params("openarm_right_arm", 400.0, 80.0),
+                stiffness=400.0,
+                damping=80.0,
             ),
             "openarm_left_arm": ImplicitActuatorCfg(
                 joint_names_expr=["l_aj_[1-7]"],
-                **_actuator_params("openarm_left_arm", 400.0, 80.0),
+                stiffness=400.0,
+                damping=80.0,
             ),
-            # RH56F1 우측 손 굴곡 5 (thumb_2 + 4손가락_1) — 07.02: 30→400 (tesollo pour curl/pip/dip 참조).
+            # RH56F1 우측 손 굴곡 5 (thumb_2 + 4손가락_1) — tesollo pour curl/pip/dip 강성 참조.
             "rh56f1_right_flexion": ImplicitActuatorCfg(
-                joint_names_expr=[
-                    "r_hj_(thumb_2|index_1|middle_1|ring_1|pinky_1)"
-                ],
-                **_actuator_params("rh56f1_right_flexion", 400.0, 60.0),
+                joint_names_expr=["r_hj_(thumb_2|index_1|middle_1|ring_1|pinky_1)"],
+                stiffness=400.0,
+                damping=60.0,
             ),
-            # abduction(thumb_1) — 30→200 (tesollo abduction 참조, 굴곡보다 낮게: 반력교란 회피).
+            # abduction(thumb_1) — 굴곡보다 낮게(반력 교란 회피).
             "rh56f1_right_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["r_hj_thumb_1"],
-                **_actuator_params("rh56f1_right_abduction", 200.0, 35.0),
+                stiffness=200.0,
+                damping=35.0,
             ),
-            # RH56F1 우측 손 mimic(원위) 6 — 0→400 (tesollo dip 참조). PhysxMimicJoint 미결합 시
-            # 원위가 흐물해 컵을 못 감쌈 → 강성 부여.
+            # RH56F1 우측 손 mimic(원위) 6 — PhysxMimicJoint 미결합 시 원위가 흐물 → 강성 부여.
             "rh56f1_right_mimic": ImplicitActuatorCfg(
-                joint_names_expr=[
-                    "r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"
-                ],
-                stiffness=400.0, damping=60.0,
+                joint_names_expr=["r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"],
+                stiffness=400.0,
+                damping=60.0,
             ),
-            # RH56F1 좌측 손 drive 6 (학습 비사용 → 0 hold)
+            # RH56F1 좌측 손 drive 6 (학습 비사용 → hold)
             "rh56f1_left_drive": ImplicitActuatorCfg(
-                joint_names_expr=[
-                    "l_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"
-                ],
-                **_actuator_params("rh56f1_left_drive", 30.0, 5.0),
+                joint_names_expr=["l_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"],
+                stiffness=30.0,
+                damping=5.0,
             ),
             # RH56F1 좌측 손 mimic 추종 6 (passive)
             "rh56f1_left_mimic": ImplicitActuatorCfg(
-                joint_names_expr=[
-                    "l_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"
-                ],
-                stiffness=0.0, damping=0.0,
+                joint_names_expr=["l_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"],
+                stiffness=0.0,
+                damping=0.0,
             ),
         },
         soft_joint_pos_limit_factor=1.0,
     )
 
     # -----------------------------------------------------------------------
-    # ContactSensor 설정
+    # ContactSensor 설정 (env.py _setup_scene 에서 링크명 기반 개별 센서 생성)
+    # Actor tip: fingertip 힘센서(실 *_force_sensor → 병합 말단 링크). RH56F1 2-마디.
     # -----------------------------------------------------------------------
-    # fingertip 힘센서 (실 *_force_sensor → 병합된 말단 링크). 순서: thumb,index,middle,ring,little
     right_tip_contact_links: tuple = (
         "r_hl_thumb_4",
         "r_hl_index_2",
@@ -685,28 +497,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         "r_hl_ring_2",
         "r_hl_pinky_2",
     )
-    # 근위(proximal, finger_1) 마디 접촉 = envelope 그립 signature (tip pinch 와 구분).
-    # sim-only ContactSensor(실물엔 없음) → 계측/critic privileged 용. 엄지는 mid 마디 thumb_3.
-    right_middle_contact_links: tuple = (
-        "r_hl_thumb_3",
-        "r_hl_index_1",
-        "r_hl_middle_1",
-        "r_hl_ring_1",
-        "r_hl_pinky_1",
-    )
 
-    tip_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
+    # env.py 가 링크명으로 직접 센서를 만들므로 아래 cfg 는 참조/호환용(미인스턴스).
+    distal_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/r_hl_(thumb_4|index_2|middle_2|ring_2|pinky_2)",
         history_length=1,
         track_air_time=False,
     )
 
-    # palm force sensor body = r_hl_palm_sensor (OLD rh56f1_right_plam_force_sensor 대응).
-    # 구 r_al_7(팔 손목)는 palm-cup 접촉 신호가 죽어 파지 저하 → 07.01 복구.
-    palm_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/r_hl_palm_sensor",
-        # grasp_v2: MultiAsset(replicate_physics=False)는 GPU contact filter 미지원 →
-        # filter_prim_paths_expr 제거, net_forces_w 사용(tesollo grasp_v2 동일).
+    middle_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/r_hl_(thumb_2|index_1|middle_1|ring_1|pinky_1)",
         history_length=1,
         track_air_time=False,
     )
@@ -714,67 +514,20 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 컵 설정
     # -----------------------------------------------------------------------
-    # grasp_v2: 단일 cup → primitives 다물체(MultiAsset, env 별 random_choice).
-    # prim 명 "Cup" 유지 → tip/palm ContactSensor(Robot 링크 기준) 재사용. env.py self.cup 참조 불변.
     cup_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Cup",
         init_state=RigidObjectCfg.InitialStateCfg(
-            # 크기무관 고정 drop height (DEXTRAH 방식). env reset 에서 xy 재배치 + settle 안착.
-            pos=[0.34, -0.10, 0.30],
+            pos=[0.5, 0.0, 0.25],
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
+        # grasp_v2: 단일 cup → primitives 다물체(MultiAsset, env 별 random_choice).
+        # prim 이름 "Cup" 은 유지(ContactSensor 필터/센서 참조 재사용).
         spawn=_GRASP_OBJECT_SPAWN,
     )
-
-    # -----------------------------------------------------------------------
-    # 컵 마찰계수 도메인 랜덤화
-    # -----------------------------------------------------------------------
-    # μ_static  ~ Uniform[cup_friction_min, cup_friction_max]  (에피소드별 리셋)
-    # μ_dynamic = μ_static × 0.9
-    # 목적: max-grip이 Pareto-optimal이 되는 것을 방지 → 마찰 변동으로 적응형 파지 학습
-    cup_friction_min: float = 0.15
-    cup_friction_max: float = 0.60
-
-    # 6.4: friction ablation — 고정값 (>= 0)이면 DR 비활성화, -1이면 랜덤화
-    cup_friction_fixed: float = -1.0
-
-    # -----------------------------------------------------------------------
-    # Bead 무게 도메인 랜덤화
-    # cup_middle에서는 물리 bead가 컵을 관통/튕김시키므로 기본 비활성화한다.
-    # -----------------------------------------------------------------------
-    beads_cfg: RigidObjectCollectionCfg = field(default_factory=_make_beads_cfg)
-    num_beads: int = _DEFAULT_BEAD_COUNT              # 30
-    physical_beads_enabled: bool = False
-    # 가상질량 도메인 랜덤화: {0,10,20,30}개 × 10g → 컵 실효질량 {170,270,370,470}g.
-    # 물리 bead 없이 hidden-mass 로 grip force 하중강건성 학습(actor 는 질량 미관측, critic oracle).
-    bead_count_min: int = 0
-    bead_count_max: int = 30
-    bead_spawn_z_offset: float = 0.035
-
-    # Keep dynamic insertion disabled for hidden-mass static-bin grasp/lift training.
-    dynamic_bead_spawn_enabled: bool = False
-    dynamic_bead_spawn_step: int = STABILIZE_START_STEP + 30
-    bead_initial_count_min: int = 0
-    bead_initial_count_max: int = 0
-    dynamic_bead_add_count_min: int = 10
-    dynamic_bead_add_count_max: int = 20
-
-    # Eval-only: lift 중 oracle/effective mass만 바꿔 force 반응을 측정한다.
-    eval_mass_shift_enabled: bool = False
-    eval_mass_shift_step: int = LIFT_PHASE_STEPS // 2
-    eval_mass_shift_target_bead_count: int = 30
 
     # -----------------------------------------------------------------------
     # Hand / joint 이름
     # -----------------------------------------------------------------------
     hand_body_names:      list = HAND_BODY_NAMES_USD
     actuated_joint_names: list = RIGHT_ACTUATED_JOINT_NAMES
-    left_arm_joint_names: list = LEFT_ARM_AND_HAND_JOINT_NAMES
-
-
-class GraspRightEnvCfgNoActorMass(GraspRightEnvCfg):
-    """Asymmetric teacher config: actor excludes oracle mass, critic keeps it."""
-
-    observation_space: int = NUM_OBSERVATIONS_NO_MASS
-    num_observations: int = NUM_OBSERVATIONS_NO_MASS
-    actor_observe_bead_mass: bool = False
+    left_arm_joint_names: list = LEFT_ARM_AND_GRIPPER_JOINT_NAMES
