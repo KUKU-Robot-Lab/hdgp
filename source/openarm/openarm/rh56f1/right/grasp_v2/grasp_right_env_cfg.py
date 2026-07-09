@@ -24,9 +24,11 @@
 from dataclasses import MISSING, field
 
 import isaaclab.sim as sim_utils
+import isaaclab.envs.mdp as mdp
 from isaaclab.assets import ArticulationCfg, RigidObjectCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.managers import EventTermCfg as EventTerm, SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg, GroundPlaneCfg
@@ -109,6 +111,70 @@ _GRASP_OBJECT_SPAWN = sim_utils.MultiAssetSpawnerCfg(
     assets_cfg=[_primitive_usd_cfg(_n) for _n in _ACTIVE_OBJECT_NAMES],
     random_choice=False,
 )
+
+
+@configclass
+class EventCfg:
+    """DEXTRAH physics DR (원본 EventCfg 1:1 — asset 이름만 robot/cup).
+
+    초기 범위는 중립(스케일 1 또는 0) — ADR 증분이 adr_physics_cfg 종점까지
+    선형 확장(GraspADR._expand_physics_ranges). mode="reset" 이라 에피소드
+    리셋마다 per-env 재샘플.
+    """
+
+    robot_physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "static_friction_range": (1.0, 1.0),
+            "dynamic_friction_range": (1.0, 1.0),
+            "restitution_range": (1.0, 1.0),
+            "num_buckets": 250,
+        },
+    )
+    robot_joint_stiffness_and_damping = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "stiffness_distribution_params": (1.0, 1.0),
+            "damping_distribution_params": (1.0, 1.0),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    robot_joint_friction = EventTerm(
+        func=mdp.randomize_joint_parameters,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "friction_distribution_params": (0.0, 0.0),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    object_physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("cup", body_names=".*"),
+            "static_friction_range": (1.0, 1.0),
+            "dynamic_friction_range": (1.0, 1.0),
+            "restitution_range": (1.0, 1.0),
+            "num_buckets": 250,
+        },
+    )
+    object_scale_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("cup"),
+            "mass_distribution_params": (1.0, 1.0),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
 
 
 @configclass
@@ -264,8 +330,37 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 각 파라미터가 initial→final 선형 진행. (원본 success_for_adr=0.4)
     enable_adr:            bool  = True
     adr_num_increments:    int   = 50
-    adr_increment_interval: int  = 200
+    # DEXTRAH min_steps_for_dr_change = 5 × 에피소드 길이 (600 steps @10s) = 3000
+    adr_increment_interval: int  = 3000
     adr_trigger_threshold: float = 0.4
+
+    # DEXTRAH physics DR: EventCfg(reset 이벤트) + ADR 범위 확장 종점 (원본 adr_cfg_dict)
+    events: EventCfg = field(default_factory=EventCfg)
+    adr_physics_cfg: dict = field(default_factory=lambda: {
+        "robot_physics_material": {
+            "static_friction_range":  (0.5, 1.2),
+            "dynamic_friction_range": (0.3, 1.0),
+            "restitution_range":      (0.8, 1.0),
+        },
+        "robot_joint_stiffness_and_damping": {
+            "stiffness_distribution_params": (0.5, 2.0),
+            "damping_distribution_params":   (0.5, 2.0),
+        },
+        "robot_joint_friction": {
+            "friction_distribution_params": (0.0, 5.0),
+        },
+        "object_physics_material": {
+            "static_friction_range":  (0.5, 1.2),
+            "dynamic_friction_range": (0.3, 1.0),
+            "restitution_range":      (0.8, 1.0),
+        },
+        "object_scale_mass": {
+            "mass_distribution_params": (0.5, 3.0),
+        },
+    })
+
+    # DEXTRAH wrench 게이트: 손이 물체 반경 내면 외란 인가 (in_success 게이트 아님)
+    hand_to_object_dist_threshold: float = 0.3   # m
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         # 외란 wrench: 0→10 점진 (DEXTRAH. 기존 고정 10은 초기 리프트 학습 방해 가능)
@@ -289,6 +384,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             "robot_joint_pos_bias":  (0.0, 0.08),  # rad
             "robot_joint_vel_noise": (0.0, 0.18),  # rad/s
             "robot_joint_vel_bias":  (0.0, 0.08),  # rad/s
+        },
+        # 리셋 시 로봇 초기상태 노이즈 커리큘럼 (DEXTRAH robot_spawn)
+        "robot_spawn": {
+            "joint_pos_noise": (0.0, 0.35),   # rad
+            "joint_vel_noise": (0.0, 1.0),    # rad/s
+        },
+        # PD velocity feedforward 1→0 (DEXTRAH pd_targets — 종점 0 은 기존 코드의 zeros 와 동치)
+        "pd_targets": {
+            "velocity_target_factor": (1.0, 0.0),
         },
         # reward 스케줄 (DEXTRAH): lift shaping 5→0 걷어내고 goal 정밀도(sharpness) 강화
         "reward_weights": {
