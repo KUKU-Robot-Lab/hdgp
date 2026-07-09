@@ -151,6 +151,13 @@ OBJECT_GOAL_POS = [0.27, 0.10, 0.65]  # target cup xy와 일치 (demo target=[0.
 # lift_v1: palm_ee 기준 -6cm → palm_link 기준 ≈ -9cm + rollout 여유 3cm = -12cm
 PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 
+# Pregrasp/reset palm 접근 방향 euler (deg) — env.py IK 타깃이 참조.
+# right=+90 (palm 경계 [0°,180°] 중앙 = side-approach). left 미러는 -90.
+# 주의: env.py에 숫자 하드코드 금지 — left lstm_test1에서 +90 하드코드가 left 경계
+# [-180°,0°]에 0°로 clamp되어 pregrasp 90° 뒤틀림 → 파지 불가·orientation hacking 실증.
+PREGRASP_EULER_EZ_DEG = 90.0
+PREGRASP_EULER_EX_DEG = 90.0
+
 
 def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0
