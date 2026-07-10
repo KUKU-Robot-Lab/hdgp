@@ -323,6 +323,16 @@ def _apply_logged_env_cfg(target, logged: dict) -> None:
 
         if isinstance(value, dict) and (isinstance(current, dict) or hasattr(current, "__dict__")):
             _apply_logged_env_cfg(current, value)
+        elif isinstance(value, list) and isinstance(current, list) and any(
+            isinstance(item, dict) for item in value
+        ):
+            # 설정 객체 리스트(spawn.assets_cfg 등): 통째로 교체하면 configclass가
+            # dict로 바뀌어 asset_cfg.func 접근이 깨진다 → 같은 인덱스끼리 재귀 복원.
+            for cur_item, val_item in zip(current, value):
+                if isinstance(val_item, dict) and (
+                    isinstance(cur_item, dict) or hasattr(cur_item, "__dict__")
+                ):
+                    _apply_logged_env_cfg(cur_item, val_item)
         else:
             try:
                 if isinstance(target, dict):
