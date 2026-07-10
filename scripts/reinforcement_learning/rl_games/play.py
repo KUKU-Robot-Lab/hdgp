@@ -114,6 +114,33 @@ from isaaclab.envs import (
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import load_yaml
+
+import yaml as _yaml
+
+
+class _RunCfgYamlLoader(_yaml.FullLoader):
+    """logged env.yaml 전용 loader.
+
+    EventCfg의 SceneEntityCfg 기본값 slice(None)이
+    `!!python/object/apply:builtins.slice` 태그로 덤프되는데 FullLoader가
+    거부하므로 해당 태그만 명시적으로 복원한다.
+    """
+
+
+_RunCfgYamlLoader.add_constructor(
+    "tag:yaml.org,2002:python/object/apply:builtins.slice",
+    lambda loader, node: slice(*loader.construct_sequence(node, deep=True)),
+)
+
+
+def _load_run_yaml(path: str):
+    try:
+        return load_yaml(path)
+    except _yaml.constructor.ConstructorError:
+        with open(path) as f:
+            return _yaml.load(f, Loader=_RunCfgYamlLoader)
+
+
 try:
     from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 except ModuleNotFoundError:
@@ -314,14 +341,14 @@ def _restore_run_cfg_if_available(env_cfg, agent_cfg: dict, *, resume_path: str,
     agent_yaml = os.path.join(params_dir, "agent.yaml")
 
     if os.path.exists(env_yaml):
-        logged_env = _rebase_logged_paths(load_yaml(env_yaml), workspace_root=workspace_root)
+        logged_env = _rebase_logged_paths(_load_run_yaml(env_yaml), workspace_root=workspace_root)
         _apply_logged_env_cfg(env_cfg, logged_env)
         print(f"[INFO] Restored playback env cfg from: {env_yaml}")
     else:
         print(f"[WARN] Run env cfg not found; using current source cfg: {env_yaml}")
 
     if os.path.exists(agent_yaml):
-        logged_agent = _rebase_logged_paths(load_yaml(agent_yaml), workspace_root=workspace_root)
+        logged_agent = _rebase_logged_paths(_load_run_yaml(agent_yaml), workspace_root=workspace_root)
         if isinstance(logged_agent, dict) and "params" in logged_agent:
             print(f"[INFO] Restored playback agent cfg from: {agent_yaml}")
             return logged_agent
@@ -537,6 +564,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # 직렬화해 spawn 시 'dict has no attribute func' 로 깨지는 문제 → gym.make 직전 복원.
     if str(args_cli.task).startswith("open-tesol_r_grasp_v2"):
         from openarm.tesollo.right.grasp_v2.grasp_right_env_cfg import _GRASP_OBJECT_SPAWN
+        env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
+    elif str(args_cli.task).startswith("open-rh56f1_r_grasp_v2"):
+        from openarm.rh56f1.right.grasp_v2.grasp_right_env_cfg import _GRASP_OBJECT_SPAWN
         env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
 
     # create isaac environment
