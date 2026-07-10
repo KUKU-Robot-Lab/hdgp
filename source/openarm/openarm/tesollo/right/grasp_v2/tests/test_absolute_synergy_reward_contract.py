@@ -58,6 +58,18 @@ def test_synergy_action_couples_all_five_fingers() -> None:
     for name, idx in reps.items():
         assert p[0, idx] > 0.25, f"{name} 진행도 {p[0, idx]:.3f} — 시너지 커플링 실패"
 
+    # 열림 보장 (lstm_test7 in_success 0 버그의 계약): action=-1 → 완전 열림,
+    # action=+1 → 5지 전부 감김. 계수 범위가 축별 "열림(0)↔감김(c_grip)" 정렬일 것.
+    p_open = utils.compute_synergy_progress_targets(
+        -torch.ones(1, 5), basis, anchor, mins, maxs, open_pose, grip,
+    )
+    assert p_open.max() < 0.05, f"열림 실패: max 진행도 {p_open.max():.3f}"
+    p_close = utils.compute_synergy_progress_targets(
+        torch.ones(1, 5), basis, anchor, mins, maxs, open_pose, grip,
+    )
+    for name, idx in reps.items():
+        assert p_close[0, idx] > 0.8, f"{name} 감김 실패 {p_close[0, idx]:.3f}"
+
     # 직교정규 basis 검증
     eye_err = (basis @ basis.T - torch.eye(5)).abs().max()
     assert eye_err < 1e-4

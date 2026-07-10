@@ -168,12 +168,16 @@ def main() -> None:
         if B[k] @ close_dir < 0 and k == 0:
             B[k] = -B[k]
 
-    # 계수 범위: open(0)·FULL_GRIP 투영 (open 기준 좌표)
+    # 계수 범위: "열림(0)↔감김(c_grip)" 축별 정렬 좌표.
+    # 이전 방식([min(0,grip)−margin, max(0,grip)+margin])은 열림이 action
+    # 꼭짓점에 정렬되지 않아 "손을 완전히 여는 action이 존재하지 않는" 버그
+    # (lstm_test7 in_success 0, 103M) — action=-1 → -0.15·c_grip(열림 근처),
+    # action=+1 → 1.35·c_grip(감김 초과)로 부호 자동 정렬 (DEXTRAH
+    # HAND_PCA_MINS/MAXS 도 축별 열림↔감김 정렬 구조).
     c_open = B @ (ANCHOR - ANCHOR)   # = 0 (앵커 기준 좌표)
     c_grip = B @ (FULL_GRIP - ANCHOR)
-    margin = 0.35 * np.abs(c_grip).max()
-    c_min = np.minimum(c_open, c_grip) - margin
-    c_max = np.maximum(c_open, c_grip) + margin
+    c_min = -0.15 * c_grip
+    c_max = 1.35 * c_grip
 
     out = os.path.join(_HDGP, "data", "tesollo_hand_pca.npz")
     np.savez(
