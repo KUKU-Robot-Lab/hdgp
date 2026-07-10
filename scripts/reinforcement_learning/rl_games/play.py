@@ -65,6 +65,14 @@ parser.add_argument(
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument(
+    "--eval_episodes", type=int, default=0,
+    help="grasp_v2 정량 평가 모드: N 에피소드 완료까지 돌린 뒤 성공률/물체별/접촉 리포트 출력 후 종료 (0=off).",
+)
+parser.add_argument(
+    "--adr_level", type=int, default=None,
+    help="평가 시 ADR increment 고정 (0=노이즈 없음 ~ 50=최대 난이도). 미지정 시 0에서 시작(기본 env 동작).",
+)
+parser.add_argument(
     "--cam_eye", type=str, default=None,
     help="Viewer camera position 'x,y,z' (env-local). pour 태스크는 기본 근접뷰 자동 적용.",
 )
@@ -639,12 +647,73 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent.is_rnn:
         agent.init_rnn()
     _mimic_meas = {"n": 0, "drive": {}, "mimic_act": {}, "mimic_tgt": {}}  # 파지 중 mimic 추종 측정
+    _eval_acc = {"in_succ": [], "grip_sum": 0.0, "grip_n": 0, "grip_hist": None, "height": []}
     while simulation_app.is_running():
         start_time = time.time()
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
             obs, _, dones, _ = env.step(actions)
+
+            # === grasp_v2 정량 평가 (--eval_episodes N) ===
+            if args_cli.eval_episodes > 0:
+                _ge = env.unwrapped
+                if hasattr(_ge, "env"):
+                    _ge = _ge.env.unwrapped
+                if not getattr(_ge, "_eval_init_done", False):
+                    # ADR 레벨 고정 + 집계 카운터 리셋 (레벨 적용 전 에피소드 오염 방지)
+                    if args_cli.adr_level is not None and getattr(_ge, "grasp_adr", None) is not None:
+                        _ge.grasp_adr.set_increment(int(args_cli.adr_level))
+                        print(f"[EVAL] ADR increment 고정: {_ge.grasp_adr.increment_counter}/"
+                              f"{_ge.grasp_adr.num_increments}")
+                    _ge._total_episodes = 0
+                    _ge._successful_episodes = 0
+                    _ge._obj_total_episodes.zero_()
+                    _ge._obj_success_episodes.zero_()
+                    _ge._eval_init_done = True
+                # per-step 집계
+                _eval_acc["in_succ"].append(_ge.in_success_region.float().mean().item())
+                _lift_h = _ge.object_pos[:, 2] - _ge.object_init_pos[:, 2]
+                _lifted = _lift_h > 0.05
+                if bool(_lifted.any()):
+                    _gf = (
+                        _ge.binary_contact_buf
+                        | _ge.middle_binary_contact_buf
+                        | _ge.distal_binary_contact_buf
+                    ).sum(dim=-1)[_lifted]
+                    _eval_acc["grip_sum"] += _gf.float().sum().item()
+                    _eval_acc["grip_n"] += int(_lifted.sum())
+                    _h = torch.bincount(_gf.long().clamp(0, 5), minlength=6)
+                    _eval_acc["grip_hist"] = _h if _eval_acc["grip_hist"] is None else _eval_acc["grip_hist"] + _h
+                    _eval_acc["height"].append(_lift_h[_lifted].mean().item())
+                # 목표 에피소드 도달 → 리포트 후 종료
+                if _ge._total_episodes >= args_cli.eval_episodes:
+                    import numpy as _np3, os as _os3
+                    _tot = max(_ge._total_episodes, 1)
+                    _obj_t = _ge._obj_total_episodes.cpu()
+                    _obj_s = _ge._obj_success_episodes.cpu()
+                    _rates = [
+                        (_ge._object_names[i], (_obj_s[i] / _obj_t[i]).item())
+                        for i in range(len(_ge._object_names)) if _obj_t[i] > 0
+                    ]
+                    _rates.sort(key=lambda x: x[1])
+                    print("\n" + "EVALSUMMARY" + "=" * 55)
+                    print(f"[EVAL] episodes={_ge._total_episodes}  adr_level="
+                          f"{getattr(getattr(_ge, 'grasp_adr', None), 'increment_counter', 'off')}")
+                    print(f"  에피소드 성공률(latch): {_ge._successful_episodes / _tot:.3f}")
+                    print(f"  in_success 순간 평균:   {_np3.mean(_eval_acc['in_succ']):.3f}")
+                    if _eval_acc["grip_n"] > 0:
+                        print(f"  들었을 때(>5cm) 평균 접촉 손가락: {_eval_acc['grip_sum'] / _eval_acc['grip_n']:.2f}")
+                        _hist = _eval_acc["grip_hist"].float()
+                        _hist = (_hist / _hist.sum()).tolist()
+                        print(f"  접촉 손가락 분포 0~5: {[round(v, 3) for v in _hist]}")
+                        print(f"  평균 리프트 높이(들었을 때): {_np3.mean(_eval_acc['height']):.3f} m")
+                    if _rates:
+                        print(f"  물체별({len(_rates)}종): 평균 {_np3.mean([v for _, v in _rates]):.3f}"
+                              f"  최저 {_rates[0][0]} {_rates[0][1]:.3f}  최고 {_rates[-1][0]} {_rates[-1][1]:.3f}")
+                        print(f"  하위 8: {[(n, round(v, 3)) for n, v in _rates[:8]]}")
+                    print("EVALSUMMARY" + "=" * 55, flush=True)
+                    _os3._exit(0)
 
             # === HOLD 안정성 측정 (결정론 eval: lift_started 중 cup_ang/lin_vel) ===
             try:
