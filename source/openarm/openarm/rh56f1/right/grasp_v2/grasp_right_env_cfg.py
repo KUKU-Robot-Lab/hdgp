@@ -209,10 +209,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
-    # DEXTRAH식 hand PCA 배선(준비): True면 finger action 5D를 uncentered PCA 좌표로
-    # 해석해 fabric hand attractor(hand_mode="pca")가 손 6관절을 적분(per-finger lerp 미사용).
-    # 기본 False=per-finger lerp(tesollo 매칭 검증 경로). basis(PC1 97.9%) 재추출 후 전환 예정.
-    use_hand_fabric:            bool  = False
+    # DEXTRAH 원본 재현(07.10 사용자 결정: "로봇만 다르고 동일하게"): hand = PCA5.
+    # finger action 5D를 uncentered PCA 좌표로 해석, fabric hand attractor(hand_mode="pca")가
+    # 손 6관절 적분 — DEXTRAH kuka_allegro(팔 IK + hand PCA5)와 동일 제어 구조.
+    # False로 되돌리면 per-finger lerp(tesollo 매칭 경로). basis PC1=97.9%(1D 성향)는
+    # 다물체 성공 grasp 수집 후 재추출 예정.
+    use_hand_fabric:            bool  = True
     hand_mode:                  str   = "pca"   # use_hand_fabric=True일 때만 사용 ("pca"|"direct")
     max_pose_angle:             float = 45.0   # DEXTRAH README teacher 레시피 45°. palm rpy 공칭(180,0,90)±45 — 손바닥 방향을 action 공간에서 constrain(천장 지향 구조 차단). tesollo 0fa6fb3 정렬
     fabrics_max_objects_per_env: int  = 8
@@ -282,7 +284,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 수렴. palm 법선(로컬 +X → world)이 palm→물체 방향과 정렬되도록 보조 shaping.
     # w·exp(s·(align−1)): align=1(완전 정렬)→w, align=−1(반대)→w·exp(−2s). weight는
     # object_to_goal(5.0)의 0.2배로 통제(reward-audit ACCEPT: local-min·hacking 방지).
-    palm_orient_weight:       float = 1.0
+    # DEXTRAH 원본 재현: palm_orient 비활성(0.0). 이 항은 DEXTRAH 4항에 없는 우리 추가물로,
+    # lstm_test6에서 "비접촉 파밍이 접촉보다 +66 유리"한 회피 local min을 만든 주범(분석 확증).
+    # 원래 목적(손바닥 천장 방지)은 max_pose_angle 45° constrain(DEXTRAH README 해법)이 담당.
+    palm_orient_weight:       float = 0.0
     palm_orient_sharpness:    float = 3.0
 
     # (구) RH56F1 shared grasp-v2 reward contract — DEXTRAH 전환으로 미사용(호환 보존).
