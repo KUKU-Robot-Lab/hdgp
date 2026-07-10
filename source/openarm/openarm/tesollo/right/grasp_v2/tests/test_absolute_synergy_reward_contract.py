@@ -22,24 +22,45 @@ def _load_finger_action_utils():
     return module
 
 
-def test_five_finger_actions_drive_absolute_twenty_joint_synergy() -> None:
-    module = _load_finger_action_utils()
-    open_pose = torch.arange(20, dtype=torch.float32)
-    closed_pose = open_pose + 4.0
-    lower = torch.full((20,), -100.0)
-    upper = torch.full((20,), 100.0)
-    actions = torch.tensor([[-1.0, -0.5, 0.0, 0.5, 1.0]])
+def _load_module(filename: str, name: str):
+    path = ROOT / filename
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    target = module.compute_absolute_finger_targets(
-        finger_action=actions,
-        open_pose=open_pose,
-        closed_pose=closed_pose,
-        lower_limits=lower,
-        upper_limits=upper,
+
+def test_synergy_action_couples_all_five_fingers() -> None:
+    # 시너지(eigengrasp) 계약: PC1(a₁) 하나로 다섯 손가락 curl 진행도가 모두
+    # 상승 — per-finger 독립 제어의 "2지 최소해"가 action 공간에서 표현 불가.
+    utils = _load_finger_action_utils()
+    syn = _load_module("tesollo_hand_synergy.py", "grasp_v2_tesollo_hand_synergy")
+
+    basis = torch.tensor(syn.HAND_SYNERGY_BASIS, dtype=torch.float32)
+    anchor = torch.tensor(syn.HAND_SYNERGY_ANCHOR, dtype=torch.float32)
+    mins = torch.tensor(syn.HAND_SYNERGY_COEFF_MINS, dtype=torch.float32)
+    maxs = torch.tensor(syn.HAND_SYNERGY_COEFF_MAXS, dtype=torch.float32)
+    # preset 의 open(APPROACH)/FULL_GRIP
+    open_pose = anchor.clone()
+    grip = torch.tensor([
+        0.0, -1.57, 1.8, 1.8,  0.0, 1.9, 1.8, 1.8,  0.0, 1.9, 1.8, 1.8,
+        0.0, 1.9, 1.8, 1.8,    0.0, 0.0, 1.8, 1.8,
+    ], dtype=torch.float32)
+
+    # a₁ = +1 (전지 감김 축 최대), 나머지 최소
+    action = torch.tensor([[1.0, -1.0, -1.0, -1.0, -1.0]])
+    p = utils.compute_synergy_progress_targets(
+        action, basis, anchor, mins, maxs, open_pose, grip,
     )
+    # 각 손가락 대표 curl 관절 진행도 (finger-major [thumb,index,middle,ring,pinky]×4)
+    reps = {"thumb_4": 3, "index_2": 5, "middle_2": 9, "ring_2": 13, "pinky_3": 18}
+    for name, idx in reps.items():
+        assert p[0, idx] > 0.25, f"{name} 진행도 {p[0, idx]:.3f} — 시너지 커플링 실패"
 
-    expected_blend = torch.tensor([[0.0, 0.25, 0.5, 0.75, 1.0]]).repeat_interleave(4, dim=1)
-    assert torch.allclose(target, open_pose.unsqueeze(0) + 4.0 * expected_blend)
+    # 직교정규 basis 검증
+    eye_err = (basis @ basis.T - torch.eye(5)).abs().max()
+    assert eye_err < 1e-4
 
 
 def test_finger_close_is_contact_gated_adaptive() -> None:
@@ -71,7 +92,10 @@ def test_finger_close_is_per_joint_contact_gated() -> None:
     assert "self.middle_binary_contact_buf.float()" in env
     # 관절별 게이트 스택 → (N,20)
     assert "gate20 = torch.stack" in env
-    assert "cmd.repeat_interleave(4" in env
+    # 시너지(eigengrasp) 경로: per-finger 독립 명령(cmd.repeat_interleave) 제거,
+    # PCA 계수 → 관절별 진행도 목표를 rate-limit 추종
+    assert "compute_synergy_progress_targets(" in env
+    assert "cmd.repeat_interleave(4" not in env
     # 1-DOF lerp(close_buf를 repeat_interleave 후 lerp) 제거 확인
     assert "self.finger_close_buf.repeat_interleave(4" not in env
 

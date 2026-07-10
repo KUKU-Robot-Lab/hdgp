@@ -92,7 +92,17 @@ from .grasp_right_preset import (
     PREGRASP_EULER_EZ_DEG,
     PREGRASP_EULER_EX_DEG,
 )
-from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
+from .finger_action_utils import (
+    compute_grasp_finger_targets,
+    compute_lift_finger_targets,
+    compute_synergy_progress_targets,
+)
+from .tesollo_hand_synergy import (
+    HAND_SYNERGY_BASIS,
+    HAND_SYNERGY_ANCHOR,
+    HAND_SYNERGY_COEFF_MINS,
+    HAND_SYNERGY_COEFF_MAXS,
+)
 from .grasp_right_utils import (
     compute_joint7_lift_wait_target,
     scale,
@@ -200,6 +210,11 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_open_pose      = to_torch(HAND_APPROACH_POSE, device=self.device)
         self.hand_grasp_pose     = to_torch(HAND_GRASP_POSE, device=self.device)
         self.hand_full_grip_pose = to_torch(HAND_FULL_GRIP_POSE, device=self.device)
+        # 시너지(eigengrasp) basis — Allegro PCA 리타겟 (tesollo_hand_synergy.py)
+        self.hand_synergy_basis = to_torch(HAND_SYNERGY_BASIS, device=self.device)       # (5,20)
+        self.hand_synergy_anchor = to_torch(HAND_SYNERGY_ANCHOR, device=self.device)     # (20,)
+        self.hand_synergy_mins = to_torch(HAND_SYNERGY_COEFF_MINS, device=self.device)   # (5,)
+        self.hand_synergy_maxs = to_torch(HAND_SYNERGY_COEFF_MAXS, device=self.device)   # (5,)
         hand_limits = self.robot.data.soft_joint_pos_limits[0, self.hand_dof_indices, :]
         self.hand_joint_lower_limits = hand_limits[:, 0].contiguous()
         self.hand_joint_upper_limits = hand_limits[:, 1].contiguous()
@@ -702,19 +717,24 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # ---- 관절별 접촉-게이트 적응 폐쇄 (underactuated wrap) ----
-        # 각 curl 관절을 독립 진행도로 폐쇄(APPROACH→FULL_GRIP)하되 자기 마디 센서로 동결:
-        #   _1 외전 / _2 MCP: 무게이트(full close, 근위 마디를 컵에 밀착)
-        #   _3 PIP: 중간마디(middle) 접촉 시 동결 / _4 DIP: distal|tip 접촉 시 동결
-        # → distal→proximal 순차 동결로 컵 형상에 손가락이 드리워짐(envelope).
-        # 5D action = 손가락별 폐쇄 속도 명령[0,1]. 관절 순서 finger-major [_1,_2,_3,_4]×5.
-        cmd = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)          # (N,5) ∈ [0,1]
+        # ---- 시너지(eigengrasp) + 관절별 접촉-게이트 적응 폐쇄 ----
+        # 5D action = DEXTRAH PCA 계수 (Allegro 리타겟, tesollo_hand_synergy):
+        #   PC1=전지 감김(파워) PC2=말단 PC3=파지형 재편 PC4=엄지 PC5=미세.
+        # 손가락 커플링이 action 공간에 내장 — per-finger 독립 제어의 "2지 최소해"가
+        # 표현 불가(action 전부가 다지 자세 매니폴드 위). 관절별 목표 진행도 p*로
+        # 변환 후 rate-limit 추종(양방향 — DEXTRAH PCA 타깃과 동일하게 재개방 가능).
+        p_star = compute_synergy_progress_targets(
+            finger_action,
+            self.hand_synergy_basis, self.hand_synergy_anchor,
+            self.hand_synergy_mins, self.hand_synergy_maxs,
+            self.hand_open_pose, self.hand_full_grip_pose,
+        )                                                            # (N,20) ∈ [0,1]
         # 다물체 drop-settle: episode 초기 settle_steps 동안 손가락 폐쇄 억제 →
         # 물체(DEXTRAH식 고정 높이 spawn)가 낙하해 테이블에 안착(grasp_v1 정지물체 전제).
         in_settle = (
             self.episode_length_buf < int(self.cfg.settle_steps)
         ).unsqueeze(-1)
-        cmd = torch.where(in_settle, torch.zeros_like(cmd), cmd)
+        p_star = torch.where(in_settle, torch.zeros_like(p_star), p_star)
         tip_c  = self.binary_contact_buf.float()                    # (N,5) 끝
         dist_c = self.distal_binary_contact_buf.float()             # (N,5) distal(rl_dg_X_4)
         mid_c  = self.middle_binary_contact_buf.float()             # (N,5) middle(rl_dg_X_3)
@@ -729,9 +749,9 @@ class GraspRightEnv(DirectRLEnv):
             g3 = torch.zeros_like(tip_c)
             g4 = torch.zeros_like(tip_c)
         gate20 = torch.stack([g1, g2, g3, g4], dim=2).reshape(self.num_envs, -1)  # (N,20)
-        cmd20 = cmd.repeat_interleave(4, dim=1)                     # (N,20) 손가락 명령 → 4관절
-        advance = float(self.cfg.finger_close_speed) * cmd20 * (1.0 - gate20)
-        self.finger_close_buf = (self.finger_close_buf + advance).clamp(0.0, 1.0)  # (N,20)
+        _step = float(self.cfg.finger_close_speed)
+        delta = (p_star - self.finger_close_buf).clamp(-_step, _step) * (1.0 - gate20)
+        self.finger_close_buf = (self.finger_close_buf + delta).clamp(0.0, 1.0)  # (N,20)
         hand_target = torch.lerp(
             self.hand_open_pose.unsqueeze(0).expand(self.num_envs, -1),
             self.hand_full_grip_pose.unsqueeze(0).expand(self.num_envs, -1),
