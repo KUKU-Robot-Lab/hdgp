@@ -749,8 +749,12 @@ class GraspRightEnv(DirectRLEnv):
             g3 = torch.zeros_like(tip_c)
             g4 = torch.zeros_like(tip_c)
         gate20 = torch.stack([g1, g2, g3, g4], dim=2).reshape(self.num_envs, -1)  # (N,20)
+        # 래칫(전진만): 양방향 추종은 h2o max-거리 보상과 결합해 "손 펴서 손끝을
+        # 물체에 붙이기" 국소최적을 만든다(test8 실증: f2~f4 action -0.95 수렴,
+        # in_success 0). per-finger 시절의 전진-only semantics 복원 — 정책은
+        # "언제/얼마나 감기 시작할지"만 결정, 재개방은 reset에서만.
         _step = float(self.cfg.finger_close_speed)
-        delta = (p_star - self.finger_close_buf).clamp(-_step, _step) * (1.0 - gate20)
+        delta = (p_star - self.finger_close_buf).clamp(0.0, _step) * (1.0 - gate20)
         self.finger_close_buf = (self.finger_close_buf + delta).clamp(0.0, 1.0)  # (N,20)
         hand_target = torch.lerp(
             self.hand_open_pose.unsqueeze(0).expand(self.num_envs, -1),

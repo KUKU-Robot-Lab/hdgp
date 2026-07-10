@@ -108,6 +108,10 @@ def test_finger_close_is_per_joint_contact_gated() -> None:
     # PCA 계수 → 관절별 진행도 목표를 rate-limit 추종
     assert "compute_synergy_progress_targets(" in env
     assert "cmd.repeat_interleave(4" not in env
+    # 래칫(전진만): 양방향 추종은 h2o max-거리 보상과 결합해 "손 펴기" 국소최적
+    # (test8: f2~f4 -0.95 수렴, in_success 0). clamp 하한 0.0 필수.
+    assert ".clamp(0.0, _step)" in env
+    assert ".clamp(-_step, _step)" not in env
     # 1-DOF lerp(close_buf를 repeat_interleave 후 lerp) 제거 확인
     assert "self.finger_close_buf.repeat_interleave(4" not in env
 
