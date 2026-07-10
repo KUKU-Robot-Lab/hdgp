@@ -1,7 +1,7 @@
 # rh56f1 grasp_v2 — 원본 DEXTRAH 직접 이식 (물체 파지 + inspire PCA) 계획
 
 > **진행 상태 (2026-07-07):**
-> - ✅ **Phase 1 완료·커밋·푸시** (`8179f49`/`f7e9177`): RH56F1 grasp PCA5 basis 계산. PC1(97.9%)=엄지+4손가락 조율 닫힘=firm envelope 시너지 확인. 산출물 `assets/demograsp_references/rh56f1_grasp_pca5.pt`(force-add), 스크립트 `scripts/tools/compute_rh56f1_grasp_pca.py`. **방향 검증 게이트 통과.**
+> - ✅ **Phase 1 완료·커밋·푸시** (`8179f49`/`f7e9177`): RH56F1 grasp PCA5 basis 계산. PC1(97.9%)=엄지+4손가락 조율 닫힘=firm envelope 시너지 확인. 산출물 `assets/demograsp_references/rh56f1_grasp_pca5.pt`(force-add), 스크립트 `scripts/pca/compute_rh56f1_grasp_pca.py`. **방향 검증 게이트 통과.**
 > - ✅ **Phase 2 정적 완료** (커밋 예정): rh56f1 fabric에 `hand_mode="pca"` 경로 추가 — `RH56F1_HAND_PCA_MATRIX`(5×6, .pt와 일치) 모듈상수, `add_hand_fabric` 분기(pca=(5,26)/direct=(6,26)), `set_features` hand_target 5D/6D. **grasp_v1 불변**(기본 `hand_mode="direct"`, `use_hand_fabric=False`). 정적검증: hand_map (5,26)·오른손블록=basis·팔열0. **핵심 커플링**: fabric taskmap=uncentered(mean 미차감)이라 env action 범위=`pca_action_mins/maxs`(uncentered 투영, .pt에 추가). ⏳ **기능검증(IK 왕복 PCA→qpos) = GPU 대기**(server `verify_fabric_load_ik.py`).
 > - ⏭️ **다음 재개점 = Phase 3** (DEXTRAH env 1662줄 → `grasp_v2/` 이식, 최대 덩어리).
 

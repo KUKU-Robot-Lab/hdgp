@@ -26,3 +26,9 @@ log/*
 data
 # ignore run artifacts
 atuo/runs/
+
+# pytest
+.pytest_cache/
+
+# r2s_autotune 실험 산출물 (합성 트랙 / best calibration)
+logs/r2s_autotune/

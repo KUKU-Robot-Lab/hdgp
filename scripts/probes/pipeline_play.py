@@ -7,7 +7,7 @@ At stage boundaries, it copies the simulator state (robot joints + object/bead r
 into the next task environment so the sequence continues in the same physical state.
 
 Example:
-  ./isaaclab.sh -p ../hdgp/scripts/tools/pipeline_play.py \
+  ./isaaclab.sh -p ../hdgp/scripts/probes/pipeline_play.py \
     --reach-ckpt /path/to/reach.pt \
     --grasp-ckpt /path/to/grasp.pt \
     --transfer-ckpt /path/to/transfer.pt \

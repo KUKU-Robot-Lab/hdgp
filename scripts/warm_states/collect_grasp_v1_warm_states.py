@@ -30,13 +30,13 @@ logged-cfg 복원이 export 설정을 덮어써 수집을 무력화한 사고(20
 
 사용 예:
     # rh56f1 (기본 체크포인트 lstm_test1, 출력 hdgp/data/grasp_warm_rh56f1.hdf5)
-    python3 scripts/tools/collect_grasp_v1_warm_states.py --robot rh56f1
+    python3 scripts/warm_states/collect_grasp_v1_warm_states.py --robot rh56f1
 
     # tesollo (기본 체크포인트 lstm_test1, 출력 hdgp/data/grasp_warm_tesollo.hdf5)
-    python3 scripts/tools/collect_grasp_v1_warm_states.py --robot tesollo
+    python3 scripts/warm_states/collect_grasp_v1_warm_states.py --robot tesollo
 
     # 체크포인트/출력 직접 지정
-    python3 scripts/tools/collect_grasp_v1_warm_states.py \\
+    python3 scripts/warm_states/collect_grasp_v1_warm_states.py \\
         --robot tesollo --checkpoint /abs/path.pth --out /abs/out.hdf5 \\
         --num_envs 256 --target_count 2048
 """
@@ -58,7 +58,7 @@ from collect_grasp_warm_states import (  # noqa: E402
 )
 
 # __file__ 기준 유도 → 로컬(/home/user)·server(/home/oem) 어디서든 동작.
-# .../hdgp/scripts/tools/collect_grasp_v1_warm_states.py → parents[2]=hdgp, parents[3]=rl_ws
+# .../hdgp/scripts/warm_states/collect_grasp_v1_warm_states.py → parents[2]=hdgp, parents[3]=rl_ws
 _HDGP_ROOT = Path(__file__).resolve().parents[2]
 _RL_WS = _HDGP_ROOT.parent
 _ISAACLAB_SH = _RL_WS / "IsaacLab" / "isaaclab.sh"

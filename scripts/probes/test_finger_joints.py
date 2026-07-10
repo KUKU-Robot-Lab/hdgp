@@ -4,7 +4,7 @@
 Type joint values in the terminal and see the result in the viewport.
 
 Usage:
-    ./isaaclab.sh -p ../hdgp/scripts/test_finger_joints.py \
+    ./isaaclab.sh -p ../hdgp/scripts/probes/test_finger_joints.py \
         --task 5g_lift_left-v1 --num_envs 1
 
 Commands:
@@ -42,7 +42,7 @@ def main():
     import gymnasium as gym
     import torch
 
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     sys.path.append(str(repo_root / "source"))
 
     import openarm.tasks  # noqa: F401

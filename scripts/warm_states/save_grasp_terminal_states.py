@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Save transfer policy terminal states for pour curriculum learning.
+"""Save grasp policy terminal states for transfer curriculum learning.
 
-This script runs the transfer policy and saves successful terminal states
+This script runs the grasp policy and saves successful terminal states
 to be used as initial states for grasp training (roll-out reset).
 
 Usage:
     cd /home/user/rl_ws/IsaacLab
 
-    ./isaaclab.sh -p ../hdgp/scripts/tools/save_transfer_terminal_states.py \
-        --task TransferIK-v0 \
-        --checkpoint /path/to/transfer/model.pt \
+    ./isaaclab.sh -p ../hdgp/scripts/warm_states/save_grasp_terminal_states.py \
+        --task GraspIK-v0 \
+        --checkpoint /path/to/grasp/model.pt \
         --num_episodes 1000 \
-        --output ../hdgp/data/transfer_terminal_states.pt \
+        --output ../hdgp/data/grasp_terminal_states.pt \
         --headless
 """
 
@@ -27,19 +27,18 @@ from isaaclab.app import AppLauncher
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Save transfer policy terminal states for pour curriculum learning."
+        description="Save grasp policy terminal states for transfer curriculum learning."
     )
-    parser.add_argument("--task", type=str, required=True, help="Transfer task name")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to transfer policy checkpoint")
+    parser.add_argument("--task", type=str, required=True, help="Grasp task name")
+    parser.add_argument("--checkpoint", type=str, required=True, help="Path to grasp policy checkpoint")
     parser.add_argument("--agent", type=str, default="rsl_rl_cfg_entry_point", help="Agent config entry point")
     parser.add_argument("--num_episodes", type=int, default=1000, help="Number of episodes to collect")
     parser.add_argument("--num_envs", type=int, default=64, help="Number of parallel environments")
-    parser.add_argument("--output", type=str, default="transfer_terminal_states.pt", help="Output file path")
+    parser.add_argument("--output", type=str, default="grasp_terminal_states.pt", help="Output file path")
     parser.add_argument("--success_threshold", type=float, default=0.05, help="Distance threshold for success (m)")
 
-    parser.add_argument("--close_threshold", type=float, default=0.05, help="Object2-to-object distance threshold (m)")
-    parser.add_argument("--target_offset_z", type=float, default=0.10, help="Target cup Z offset (m)")
-    parser.add_argument("--source_offset_z", type=float, default=0.10, help="Source cup Z offset (m)")
+    parser.add_argument("--lift_height", type=float, default=0.1, help="Lift height threshold (m)")
+    parser.add_argument("--grasp_dist", type=float, default=0.03, help="EEF-to-cup distance threshold (m)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     AppLauncher.add_app_launcher_args(parser)
     return parser
@@ -101,7 +100,7 @@ def main() -> int:
         # Get robot and objects
         robot = env.unwrapped.scene["robot"]
 
-        # Check for cup/cup2 (grasp style) or object/object2 (transfer style)
+        # Check for cup/cup2 (grasp style) or object/object2 (grasp style)
         if "cup" in env.unwrapped.scene.keys():
             left_obj = env.unwrapped.scene["cup"]
             obj_key = "cup"
@@ -208,13 +207,25 @@ def main() -> int:
                     # Check success using PREVIOUS step's state (before reset)
                     is_success = True
 
-                    if left_obj is not None and right_obj is not None:
-                        left_obj_pos = prev_left_obj_pos[idx].clone()
-                        right_obj_pos = prev_right_obj_pos[idx].clone()
-                        left_obj_pos[2] += args.target_offset_z
-                        right_obj_pos[2] += args.source_offset_z
-                        dist = torch.norm(left_obj_pos - right_obj_pos)
-                        is_success = is_success and (dist < args.close_threshold)
+                    if left_obj is not None:
+                        left_obj_pos = prev_left_obj_pos[idx]
+                        is_success = is_success and (left_obj_pos[2] > args.lift_height)
+
+                    if right_obj is not None:
+                        right_obj_pos = prev_right_obj_pos[idx]
+                        is_success = is_success and (right_obj_pos[2] > args.lift_height)
+
+                    if left_eef_idx is not None and left_obj is not None:
+                        left_eef_pos = prev_left_eef_pos[idx]
+                        left_obj_pos = prev_left_obj_pos[idx]
+                        left_dist = torch.norm(left_eef_pos - left_obj_pos)
+                        is_success = is_success and (left_dist < args.grasp_dist)
+
+                    if right_eef_idx is not None and right_obj is not None:
+                        right_eef_pos = prev_right_eef_pos[idx]
+                        right_obj_pos = prev_right_obj_pos[idx]
+                        right_dist = torch.norm(right_eef_pos - right_obj_pos)
+                        is_success = is_success and (right_dist < args.grasp_dist)
 
                     episode_count += 1
 

@@ -10,7 +10,7 @@ fabric 이 r_hl_palm_sensor 를 직접 제어(ex 중심 180°, offset 0)하도�
 나머지(관절·컵·비드·mimic)는 보존한다. grasp 재학습 불필요.
 
 서버(warp) 실행:
-  python scripts/tools/migrate_warm_palm_to_sensor.py --hdf5 data/grasp_warm_rh56f1.hdf5
+  python scripts/warm_states/migrate_warm_palm_to_sensor.py --hdf5 data/grasp_warm_rh56f1.hdf5
   (--dry-run 으로 재계산 통계만 확인 가능)
 """
 

@@ -27,7 +27,7 @@ def main():
     import torch
 
     # Ensure hdgp/source is on path for task registration.
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     sys.path.append(str(repo_root / "source"))
 
     # Register OpenArm tasks

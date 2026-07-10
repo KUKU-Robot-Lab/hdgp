@@ -8,7 +8,7 @@ to be used as initial states for grasp training (roll-out reset).
 Usage:
     cd /home/user/rl_ws/IsaacLab
 
-    ./isaaclab.sh -p ../hdgp/scripts/tools/save_reach_terminal_states.py \
+    ./isaaclab.sh -p ../hdgp/scripts/warm_states/save_reach_terminal_states.py \
         --task Reach-v1 \
         --checkpoint /path/to/reach/model.pt \
         --num_episodes 1000 \

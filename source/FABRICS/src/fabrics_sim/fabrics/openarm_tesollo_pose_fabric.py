@@ -517,7 +517,7 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
 # ---------------------------------------------------------------------------
 # 좌팔 변형: openarm_tesollo_left URDF (bi USD 좌측과 FK 일치 검증됨)
 # ---------------------------------------------------------------------------
-# 좌측 URDF 는 scripts/tools/generate_left_fabric_urdf.py 로 생성:
+# 좌측 URDF 는 scripts/assets_tools/generate_left_fabric_urdf.py 로 생성:
 #   - 우측 fabric URDF 의 M-conjugation 미러 (링크/조인트 이름 동일 유지)
 #   - axis/limits 는 bi USD(openarm_tesollo_bi_rl) 좌측 규약
 # q 부호 매핑 (q_left = s * q_right):

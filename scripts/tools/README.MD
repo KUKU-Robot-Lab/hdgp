@@ -116,7 +116,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/print_command_slice.py \
+./isaaclab.sh -p ../hdgp/scripts/probes/print_command_slice.py \
   --task reach2g-v1 \
   --group policy \
   --num_envs 1 \
@@ -137,7 +137,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/export_scene.py \
+./isaaclab.sh -p ../hdgp/scripts/assets_tools/export_scene.py \
   --task GraspIK-v0 \
   --output /tmp/grasp_scene.usd \
   --joint-output /tmp/grasp_joint_state.json \
@@ -161,7 +161,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/eval_grasp2g_policy.py \
+./isaaclab.sh -p ../hdgp/scripts/probes/eval_grasp2g_policy.py \
   --task Grasp2g_IK-v0 \
   --checkpoint /path/to/model.pt \
   --num_episodes 100 \
@@ -181,7 +181,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/save_reach_terminal_states.py \
+./isaaclab.sh -p ../hdgp/scripts/warm_states/save_reach_terminal_states.py \
   --task Reach-v1 \
   --checkpoint /path/to/reach.pt \
   --num_episodes 1000 \
@@ -199,7 +199,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/save_grasp_terminal_states.py \
+./isaaclab.sh -p ../hdgp/scripts/warm_states/save_grasp_terminal_states.py \
   --task GraspIK-v0 \
   --checkpoint /path/to/grasp.pt \
   --num_episodes 1000 \
@@ -217,7 +217,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/save_transfer_terminal_states.py \
+./isaaclab.sh -p ../hdgp/scripts/warm_states/save_transfer_terminal_states.py \
   --task TransferIK-v0 \
   --checkpoint /path/to/transfer.pt \
   --num_episodes 1000 \
@@ -238,7 +238,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/pipeline_play.py \
+./isaaclab.sh -p ../hdgp/scripts/probes/pipeline_play.py \
   --reach-ckpt /path/to/reach.pt \
   --grasp-ckpt /path/to/grasp.pt \
   --transfer-ckpt /path/to/transfer.pt \
@@ -263,9 +263,9 @@ cd /home/user/rl_ws/IsaacLab
 ```bash
 cd /home/user/rl_ws/hdgp
 # rh56f1 (기본 ckpt: grasp-v1/lstm_test1 ep2000)
-python3 scripts/tools/collect_grasp_v1_warm_states.py --robot rh56f1
+python3 scripts/warm_states/collect_grasp_v1_warm_states.py --robot rh56f1
 # tesollo (기본 ckpt: grasp-v1/lstm_test7 ep12500)
-python3 scripts/tools/collect_grasp_v1_warm_states.py --robot tesollo
+python3 scripts/warm_states/collect_grasp_v1_warm_states.py --robot tesollo
 ```
 
 ### 학습 로그 / 분석 도구
@@ -285,7 +285,7 @@ python3 scripts/tools/collect_grasp_v1_warm_states.py --robot tesollo
 - 예시:
 
 ```bash
-python3 /home/user/rl_ws/hdgp/scripts/tools/build_run_dataset.py \
+python3 /home/user/rl_ws/hdgp/scripts/datasets/build_run_dataset.py \
   --log_dir /home/user/rl_ws/hdgp/log/rsl_rl/grasp2g/test3 \
   --out_dir /home/user/rl_ws/hdgp/log/rsl_rl/grasp2g/test3/analysis
 ```
@@ -298,7 +298,7 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/build_run_dataset.py \
 - 예시:
 
 ```bash
-python3 /home/user/rl_ws/hdgp/scripts/tools/report_lift_kpi.py \
+python3 /home/user/rl_ws/hdgp/scripts/reports/report_lift_kpi.py \
   --log_dir /home/user/rl_ws/hdgp/log/rl_games/pipeline/left/5g_lift_left_v2/test2
 ```
 
@@ -347,7 +347,7 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/freeze_run_analysis.py \
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/report_5g_grasp_right_spawn.py \
+./isaaclab.sh -p ../hdgp/scripts/reports/report_5g_grasp_right_spawn.py \
   --task 5g_grasp_right-v2 \
   --num_envs 1 \
   --output /tmp/spawn_report.json \
@@ -364,7 +364,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/report_phaseb3_metrics.py \
+./isaaclab.sh -p ../hdgp/scripts/reports/report_phaseb3_metrics.py \
   --task 5g_grasp_right-v2 \
   --num_envs 8 \
   --steps 32 \
@@ -382,7 +382,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/report_phase32_success_metrics.py \
+./isaaclab.sh -p ../hdgp/scripts/reports/report_phase32_success_metrics.py \
   --task 5g_grasp_right-v2 \
   --num_envs 8 \
   --steps 32 \
@@ -399,7 +399,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/report_phasec1_contact_metrics.py \
+./isaaclab.sh -p ../hdgp/scripts/reports/report_phasec1_contact_metrics.py \
   --task 5g_grasp_right-v2 \
   --num_envs 8 \
   --steps 32 \
@@ -416,7 +416,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/report_phasec2_contact_reliability.py \
+./isaaclab.sh -p ../hdgp/scripts/reports/report_phasec2_contact_reliability.py \
   --task 5g_grasp_right-v2 \
   --num_envs 8 \
   --steps 32 \
@@ -434,7 +434,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/report_phasec4_object_feat.py \
+./isaaclab.sh -p ../hdgp/scripts/reports/report_phasec4_object_feat.py \
   --task 5g_grasp_right-v2 \
   --num_envs 32 \
   --steps 4 \
@@ -456,7 +456,7 @@ cd /home/user/rl_ws/IsaacLab
 
 ```bash
 cd /home/user/rl_ws/IsaacLab
-./isaaclab.sh -p ../hdgp/scripts/tools/verify_contact_filter_cpu.py \
+./isaaclab.sh -p ../hdgp/scripts/probes/verify_contact_filter_cpu.py \
   --task 5g_grasp_right-v2 \
   --num_envs 1 \
   --steps 8 \
@@ -487,7 +487,7 @@ cd /home/user/rl_ws/IsaacLab
 OUT_DIR=/tmp/phaseD_reports \
 NUM_ENVS=256 \
 STEPS=2048 \
-bash /home/user/rl_ws/hdgp/scripts/tools/run_phase_d_matrix.sh
+bash /home/user/rl_ws/hdgp/scripts/reports/run_phase_d_matrix.sh
 ```
 
 #### `summarize_phase_d_matrix.py`
@@ -499,7 +499,7 @@ bash /home/user/rl_ws/hdgp/scripts/tools/run_phase_d_matrix.sh
 - 예시:
 
 ```bash
-python3 /home/user/rl_ws/hdgp/scripts/tools/summarize_phase_d_matrix.py \
+python3 /home/user/rl_ws/hdgp/scripts/reports/summarize_phase_d_matrix.py \
   --input_dir /tmp/phaseD_reports \
   --output /tmp/phaseD_reports/summary.json
 ```
@@ -523,7 +523,7 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/summarize_phase_d_matrix.py \
 OUT_DIR=/tmp/phaseD_kpi_reports \
 NUM_ENVS=128 \
 STEPS=512 \
-bash /home/user/rl_ws/hdgp/scripts/tools/run_phase_d_kpi_matrix.sh
+bash /home/user/rl_ws/hdgp/scripts/reports/run_phase_d_kpi_matrix.sh
 ```
 
 #### `summarize_phase_d_kpi.py`
@@ -538,7 +538,7 @@ bash /home/user/rl_ws/hdgp/scripts/tools/run_phase_d_kpi_matrix.sh
 - 예시:
 
 ```bash
-python3 /home/user/rl_ws/hdgp/scripts/tools/summarize_phase_d_kpi.py \
+python3 /home/user/rl_ws/hdgp/scripts/reports/summarize_phase_d_kpi.py \
   --input_dir /tmp/phaseD_kpi_reports \
   --output /tmp/phaseD_kpi_reports/summary.json
 ```
@@ -556,7 +556,7 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/summarize_phase_d_kpi.py \
 - 예시:
 
 ```bash
-python3 /home/user/rl_ws/hdgp/scripts/tools/convert_demograsp_references.py \
+python3 /home/user/rl_ws/hdgp/scripts/assets_tools/convert_demograsp_references.py \
   --src_dir /home/user/rl_ws/hdgp/assets/demograsp_references \
   --dst_dir /home/user/rl_ws/hdgp/assets/demograsp_references/normalized \
   --fit_to_bounds
@@ -579,7 +579,7 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/convert_demograsp_references.py \
 - 예시:
 
 ```bash
-python3 /home/user/rl_ws/hdgp/scripts/tools/find_pregrasp_pose.py \
+python3 /home/user/rl_ws/hdgp/scripts/probes/find_pregrasp_pose.py \
   --cup 0.40 -0.15 0.215 \
   --pregrasp-y -0.09 \
   --restarts 10
@@ -596,7 +596,7 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/find_pregrasp_pose.py \
 - 예시:
 
 ```bash
-python3 /home/user/rl_ws/hdgp/scripts/tools/generate_object_pc_feature_map.py \
+python3 /home/user/rl_ws/hdgp/scripts/assets_tools/generate_object_pc_feature_map.py \
   --assets_dir /home/user/rl_ws/hdgp/assets \
   --dim 64 \
   --output /home/user/rl_ws/hdgp/assets/object_pc_features/openarm_right_object_code_feat_dim64.pt
@@ -613,7 +613,7 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/generate_object_pc_feature_map.py \
 - 예시:
 
 ```bash
-python3 /home/user/rl_ws/hdgp/scripts/tools/urdf_spec_report.py \
+python3 /home/user/rl_ws/hdgp/scripts/assets_tools/urdf_spec_report.py \
   /home/user/Desktop/dd.urdf \
   --from visual \
   --top-frac 0.02
@@ -631,7 +631,7 @@ python3 /home/user/rl_ws/hdgp/scripts/tools/urdf_spec_report.py \
 - 예시:
 
 ```bash
-python3 /home/user/rl_ws/hdgp/scripts/tools/patch_swap_lr.py \
+python3 /home/user/rl_ws/hdgp/scripts/assets_tools/patch_swap_lr.py \
   --isaaclab-dir /home/user/rl_ws/IsaacLab \
   --dry-run
 ```

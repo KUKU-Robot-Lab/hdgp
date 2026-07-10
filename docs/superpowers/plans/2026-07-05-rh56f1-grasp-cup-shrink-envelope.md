@@ -51,11 +51,11 @@
 ## Task 3: probe 재보정 — 새 기하 palm floor·clearance 실측 (log-first)
 
 **Files:** (코드 변경 없음, 측정 전용)
-- Run: `scripts/tools/probe_palm_orientation.py`
+- Run: `scripts/probes/probe_palm_orientation.py`
 
 **절차:**
 1. Task 1·2 적용 상태에서 로컬 GPU probe 실행:
-   `cd /home/user/rl_ws/IsaacLab && ./isaaclab.sh -p ../hdgp/scripts/tools/probe_palm_orientation.py --headless --num_envs 4 --grip_steps 30`
+   `cd /home/user/rl_ws/IsaacLab && ./isaaclab.sh -p ../hdgp/scripts/probes/probe_palm_orientation.py --headless --num_envs 4 --grip_steps 30`
 2. 측정: 새 `palm_to_cup_dist` floor(예상 7.4→6.4cm 부근), 엄지/손가락 clearance, pregrasp offset 적정성, grip 30step 후 wrap 분류(감쌈/관통/벌어짐).
 3. 산출: `approach_palm_radial_max`, `thumb_freeze_release_dist`, 필요시 `pregrasp_offset_x/y/z` 재조정 후보값.
 

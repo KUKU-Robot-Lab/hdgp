@@ -6,7 +6,7 @@ env 의 action→진행도→관절 target 경로(compute_synergy_progress_targe
 open↔FULL_GRIP lerp)를 그대로 재현하므로 학습에서 손이 취할 자세와 동일하다.
 
 실행 (server):
-  ./isaaclab.sh -p ../hdgp/scripts/tools/render_synergy_sweep.py \
+  ./isaaclab.sh -p ../hdgp/scripts/pca/render_synergy_sweep.py \
       --headless --enable_cameras --out /tmp/synergy_sweep
 """
 
@@ -105,8 +105,9 @@ def main() -> None:
         q[0, arm_ids] = torch.tensor(RIGHT_ARM_START_POSE, dtype=torch.float32, device=dev)
         q[0, hand_ids] = hand20
         robot.write_joint_state_to_sim(q, torch.zeros_like(q))
-        # PD target 도 동일하게 (중력 하 유지)
+        # PD target 도 동일하게 유지 — write_data_to_sim 없으면 sim에 미반영!
         robot.set_joint_position_target(q)
+        robot.write_data_to_sim()
 
     # 카메라: 한 스텝 돌려 palm 위치 확보 후 손 정면·측면에서 촬영
     set_pose(open_pose)
@@ -141,8 +142,7 @@ def main() -> None:
         q = hand_q(act)
         set_pose(q)
         for _ in range(30):   # 안정화 + 렌더 워밍업
-            robot.set_joint_position_target(robot.data.joint_pos.clone().index_copy_(
-                1, torch.tensor(hand_ids, device=dev), q.unsqueeze(0)))
+            set_pose(q)
             sim.step()
             robot.update(sim.get_physics_dt())
         for vname, eye in views.items():

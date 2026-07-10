@@ -3,7 +3,7 @@
 
 Isaac Sim Python 환경에서 실행:
   cd /home/user/rl_ws/IsaacLab
-  ./isaaclab.sh -p ../hdgp/scripts/tools/convert_cup_collision_to_sdf.py
+  ./isaaclab.sh -p ../hdgp/scripts/assets_tools/convert_cup_collision_to_sdf.py
 
 결과: assets/cup/cup_big_sdf.usd (원본 유지, 새 파일 생성)
 """

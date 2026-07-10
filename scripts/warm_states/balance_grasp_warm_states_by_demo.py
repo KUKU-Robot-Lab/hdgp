@@ -22,7 +22,7 @@ collect_grasp_warm_states_v5.py 가 출력한 raw HDF5 를 읽어:
   4. 결과를 새 HDF5 로 저장 (메타데이터 attrs 유지)
 
 사용 예:
-    python3 scripts/tools/balance_grasp_warm_states_by_demo.py \\
+    python3 scripts/warm_states/balance_grasp_warm_states_by_demo.py \\
         --src /home/user/rl_ws/datasets/grasp_warm_v7_2_contact4_raw.hdf5 \\
         --out /home/user/rl_ws/datasets/grasp_warm_v7_2_contact4_balanced_400x10.hdf5 \\
         --per_demo 400 \\

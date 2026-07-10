@@ -48,7 +48,7 @@ TIP_FRAMES = [
 ]
 
 # grasp_v2 (DEXTRAH 물체파지 이식) 용 오른손 PCA5 basis.
-# inspire grasp 시연 → RH56F1 6-drive remap → PCA5 (scripts/tools/compute_rh56f1_grasp_pca.py).
+# inspire grasp 시연 → RH56F1 6-drive remap → PCA5 (scripts/pca/compute_rh56f1_grasp_pca.py).
 # rows = PC1~5 방향(6-drive 공간). PC1(97.9%)=엄지+4손가락 조율 닫힘=firm envelope 시너지.
 # kuka_allegro_pose_fabric 의 pca_matrix(5x16) 와 동일 역할: LinearMap 이 cspace q 를
 # 이 5개 방향으로 투영(mean 미차감, uncentered) → 5D PCA 공간 attractor.

@@ -164,7 +164,7 @@ def _resolve_paths(paths: Iterable[str | Path]) -> tuple[Path, ...]:
         raise FileNotFoundError(
             f"warm-state HDF5 file(s) do not exist: {missing_text}. "
             f"Searched fallback dirs: {candidates}. "
-            "Run scripts/tools/collect_grasp_warm_states.py first."
+            "Run scripts/warm_states/collect_grasp_warm_states.py first."
         )
     return tuple(resolved)
 

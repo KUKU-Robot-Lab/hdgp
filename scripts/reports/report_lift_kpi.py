@@ -2,7 +2,7 @@
 """Report lift-task KPI summary from TensorBoard event file.
 
 Usage:
-  ./isaaclab.sh -p ../hdgp/scripts/tools/report_lift_kpi.py \
+  ./isaaclab.sh -p ../hdgp/scripts/reports/report_lift_kpi.py \
       --log_dir ../hdgp/log/rl_games/pipeline/left/5g_lift_left_v2/test6
 """
 

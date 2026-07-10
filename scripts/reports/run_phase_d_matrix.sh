@@ -46,7 +46,7 @@ cd "${ISAACLAB_ROOT}"
 for row in "${cases[@]}"; do
   read -r NAME A B C <<< "${row}"
   echo "==== [PhaseD:${NAME}] start ===="
-  ./isaaclab.sh -p ../hdgp/scripts/tools/report_phaseb3_metrics.py \
+  ./isaaclab.sh -p ../hdgp/scripts/reports/report_phaseb3_metrics.py \
     --task "${TASK}" \
     ${HEADLESS_ARG} \
     --num_envs "${NUM_ENVS}" \
@@ -60,5 +60,5 @@ for row in "${cases[@]}"; do
   echo "==== [PhaseD:${NAME}] done ===="
 done
 
-python3 ../hdgp/scripts/tools/summarize_phase_d_matrix.py --input_dir "${OUT_DIR}" --output "${OUT_DIR}/summary.json"
+python3 ../hdgp/scripts/reports/summarize_phase_d_matrix.py --input_dir "${OUT_DIR}" --output "${OUT_DIR}/summary.json"
 echo "[PhaseD] summary: ${OUT_DIR}/summary.json"

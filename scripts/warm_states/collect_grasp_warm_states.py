@@ -13,22 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Collect grasp warm states for 5g_pour_right_v5 warmstart.
+"""Collect grasp-success warm states for 5g_pour_right_v3 warmstart.
 
-5g_grasp_right_v7_2 체크포인트(test4)를 이용해 pour v5 warmstart 용
-HDF5 를 수집한다. v3 대비 --warm_min_contacts / --warm_stable_steps 를
-높여 품질 기준을 강화하는 것이 v5 전용 목적이다.
+검증된 play.py 체크포인트 로딩/AppLauncher 기계를 그대로 재사용하는 얇은
+래퍼. play.py 를 서브프로세스로 실행하되 grasp env 의 warm-state export 를
+hydra override 로 켠다. grasp env 가 목표 개수만큼 모으면 HDF5 를 원자적으로
+저장(tmp→replace)하므로, 출력 파일이 새로 나타나는 즉시 서브프로세스를
+종료한다.
 
 사용 예:
-    python3 scripts/tools/collect_grasp_warm_states_v5.py \\
-        --checkpoint /home/user/rl_ws/hdgp/log/rl_games/pipeline/right/5g_grasp_right_v7_2/test4/nn/5g_grasp_right-v7-2.pth \\
-        --num_envs 2048 \\
-        --target_count 2048 \\
-        --out /home/user/rl_ws/datasets/grasp_warm_v7_2_contact4_raw.hdf5 \\
-        --warm_min_contacts 4 \\
-        --warm_stable_steps 12 \\
-        --timeout_sec 10800 \\
-        --status_sec 30
+    python3 scripts/warm_states/collect_grasp_warm_states.py \
+        --num_envs 256 --target_count 2048
+
+    # 산출물: /home/user/rl_ws/datasets/grasp_warm_v7_2.hdf5
 """
 
 from __future__ import annotations
@@ -41,47 +38,29 @@ import sys
 import time
 from pathlib import Path
 
-_HDGP_ROOT = Path(__file__).resolve().parents[2]   # hdgp/scripts/tools → hdgp/
-_RL_WS = _HDGP_ROOT.parent                          # hdgp/ → rl_ws/
-_ISAACLAB_SH = _RL_WS / "IsaacLab" / "isaaclab.sh"
+_HDGP_ROOT = Path("/home/user/rl_ws/hdgp")
+_ISAACLAB_SH = Path("/home/user/rl_ws/IsaacLab/isaaclab.sh")
 _PLAY_PY = _HDGP_ROOT / "scripts/reinforcement_learning/rl_games/play.py"
 _DEFAULT_CKPT = (
     _HDGP_ROOT
-    / "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test4/nn/5g_grasp_right-v7-2.pth"
+    / "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test3/nn/5g_grasp_right-v7-2.pth"
 )
-_DEFAULT_OUT = _RL_WS / "datasets/grasp_warm_v7_2_contact4_raw.hdf5"
+_DEFAULT_OUT = Path("/home/user/rl_ws/datasets/grasp_warm_v7_2.hdf5")
 _TASK = "5g_grasp_right-v7-2"
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--num_envs", type=int, default=256)
-    p.add_argument("--target_count", type=int, default=2048)
-    p.add_argument("--checkpoint", type=str, default=str(_DEFAULT_CKPT))
-    p.add_argument("--out", type=str, default=str(_DEFAULT_OUT))
-    p.add_argument(
-        "--warm_min_contacts",
-        type=int,
-        default=4,
-        help="grasp 성공으로 인정할 최소 접촉 손가락 수 (env.warm_min_contacts 오버라이드)",
-    )
-    p.add_argument(
-        "--warm_stable_steps",
-        type=int,
-        default=12,
-        help="안정 접촉 유지 스텝 수 (env.warm_contact_stable_steps 오버라이드)",
-    )
-    p.add_argument(
-        "--status_sec",
-        type=float,
-        default=30.0,
-        help="출력 파일 폴링 간격(초)",
-    )
-    p.add_argument("--timeout_sec", type=float, default=3600.0)
+    p.add_argument("--num_envs", type=int, default=256, help="병렬 환경 수")
+    p.add_argument("--target_count", type=int, default=2048, help="수집할 성공 상태 개수")
+    p.add_argument("--checkpoint", type=str, default=str(_DEFAULT_CKPT), help="grasp v7-2 체크포인트")
+    p.add_argument("--out", type=str, default=str(_DEFAULT_OUT), help="출력 HDF5 경로")
+    p.add_argument("--poll_sec", type=float, default=5.0, help="출력 파일 폴링 간격(초)")
+    p.add_argument("--timeout_sec", type=float, default=3600.0, help="최대 수집 대기(초)")
     p.add_argument(
         "--keep_adr",
         action="store_true",
-        help="ADR 노이즈 유지 (기본: 비활성, 깨끗한 성공 분포 수집)",
+        help="ADR 노이즈 유지 (기본: 비활성, 깨끗한 정책 성공 분포 수집)",
     )
     return p.parse_args()
 
@@ -95,14 +74,9 @@ def _validate(args: argparse.Namespace) -> None:
         raise FileNotFoundError(f"checkpoint not found: {ckpt}")
     if args.target_count <= 0:
         raise ValueError(f"--target_count must be positive, got {args.target_count}")
-    if args.warm_min_contacts < 1:
-        raise ValueError(f"--warm_min_contacts must be >= 1, got {args.warm_min_contacts}")
-    if args.warm_stable_steps < 1:
-        raise ValueError(f"--warm_stable_steps must be >= 1, got {args.warm_stable_steps}")
 
 
 def _build_command(args: argparse.Namespace) -> list[str]:
-    out_path = Path(args.out).resolve()
     cmd = [
         str(_ISAACLAB_SH),
         "-p",
@@ -117,12 +91,11 @@ def _build_command(args: argparse.Namespace) -> list[str]:
     ]
     if not args.keep_adr:
         cmd.append("--disable_adr")
+    # hydra env_cfg overrides (play.py 는 @hydra_task_config 사용)
     cmd += [
         "env.enable_warm_state_export=true",
-        f"env.warm_state_export_path={out_path}",
+        f"env.warm_state_export_path={Path(args.out).resolve()}",
         f"env.warm_state_target_count={args.target_count}",
-        f"env.warm_min_contacts={args.warm_min_contacts}",
-        f"env.warm_contact_stable_steps={args.warm_stable_steps}",
     ]
     return cmd
 
@@ -134,22 +107,31 @@ def _file_signature(path: Path) -> tuple[bool, float]:
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
+    """프로세스 그룹 전체를 SIGINT→SIGTERM→SIGKILL 로 단계적 종료.
+
+    isaaclab.sh 만 죽이면 자식 Isaac Sim(python.sh→kit python)이 고아로
+    남아 GPU 를 점유한다. 그룹 전체에 신호를 보내 누수를 막는다.
+    """
     if proc.poll() is not None:
         return
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
         return
+
     for sig, wait_s in ((signal.SIGINT, 30), (signal.SIGTERM, 15), (signal.SIGKILL, 5)):
         try:
             os.killpg(pgid, sig)
         except ProcessLookupError:
-            return
+            return  # 그룹이 이미 사라짐
         try:
             proc.wait(timeout=wait_s)
             break
         except subprocess.TimeoutExpired:
             continue
+
+    # 최종 스윕: shell 리더가 SIGINT 로 먼저 죽고 Isaac 손자 프로세스가
+    # 그룹에 남는 케이스를 확실히 정리한다 (이번 결함의 정확한 시나리오).
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
@@ -165,17 +147,10 @@ def main() -> int:
     before_exists, before_mtime = _file_signature(out_path)
 
     cmd = _build_command(args)
-    print(
-        "[collect_grasp_warm_states_v5] launching:\n  " + " ".join(cmd),
-        flush=True,
-    )
-    print(
-        f"[collect_grasp_warm_states_v5] "
-        f"min_contacts={args.warm_min_contacts} stable_steps={args.warm_stable_steps} "
-        f"target={args.target_count} out={out_path}",
-        flush=True,
-    )
+    print("[collect_grasp_warm_states] launching:\n  " + " ".join(cmd), flush=True)
 
+    # 자체 프로세스 그룹으로 띄운다. isaaclab.sh → python.sh → kit python 의
+    # 자식 트리 전체를 한 번에 신호 보낼 수 있어야 Isaac Sim 누수가 안 생김.
     proc = subprocess.Popen(cmd, cwd=str(_HDGP_ROOT), start_new_session=True)
     deadline = time.monotonic() + args.timeout_sec
     saved = False
@@ -184,7 +159,7 @@ def main() -> int:
             ret = proc.poll()
             if ret is not None:
                 print(
-                    f"[collect_grasp_warm_states_v5] play.py exited early (code={ret}).",
+                    f"[collect_grasp_warm_states] play.py exited early (code={ret}).",
                     flush=True,
                 )
                 break
@@ -193,45 +168,33 @@ def main() -> int:
             if exists and (not before_exists or mtime > before_mtime):
                 saved = True
                 print(
-                    f"[collect_grasp_warm_states_v5] output written: {out_path} → stopping.",
+                    f"[collect_grasp_warm_states] output written: {out_path} "
+                    "→ stopping rollout.",
                     flush=True,
                 )
                 break
 
-            elapsed = time.monotonic() - (deadline - args.timeout_sec)
             if time.monotonic() > deadline:
                 print(
-                    f"[collect_grasp_warm_states_v5] timeout after {args.timeout_sec}s.",
+                    f"[collect_grasp_warm_states] timeout after {args.timeout_sec}s "
+                    "without a completed cache. Stopping rollout.",
                     flush=True,
                 )
                 break
 
-            print(
-                f"[collect_grasp_warm_states_v5] waiting... elapsed={elapsed:.0f}s",
-                flush=True,
-            )
-            time.sleep(args.status_sec)
+            time.sleep(args.poll_sec)
     finally:
         _terminate_process_group(proc)
 
     if saved and out_path.is_file():
-        import h5py
-        try:
-            with h5py.File(out_path, "r") as h5:
-                n = int(h5["warm_states"]["arm_joint_pos"].shape[0])
-            print(
-                f"[collect_grasp_warm_states_v5] DONE. {n} states → {out_path}",
-                flush=True,
-            )
-        except Exception:
-            print(
-                f"[collect_grasp_warm_states_v5] DONE. → {out_path}",
-                flush=True,
-            )
+        print(
+            f"[collect_grasp_warm_states] DONE. Warm-state cache: {out_path}",
+            flush=True,
+        )
         return 0
 
     print(
-        "[collect_grasp_warm_states_v5] FAILED: no warm-state cache produced.",
+        "[collect_grasp_warm_states] FAILED: no completed warm-state cache produced.",
         file=sys.stderr,
         flush=True,
     )
