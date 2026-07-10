@@ -76,8 +76,18 @@ NUM_FINGERTIPS = 5
 # Action space
 # ---------------------------------------------------------------------------
 NUM_PALM_ACTION   = 6   # 6D palm pose (Fabrics IK)
-NUM_FINGER_ACTION = 5   # per-finger lerp
+NUM_FINGER_ACTION = 5   # per-finger lerp (기본) / hand PCA 5D (use_hand_fabric=True)
 NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
+
+# DEXTRAH식 hand PCA(use_hand_fabric=True, hand_mode="pca") — action 차원 동일(5D)이라
+# per-finger lerp와 cfg 토글만으로 전환 가능. 좌표는 uncentered 투영(fabric LinearMap 정합).
+# 출처: assets/demograsp_references/rh56f1_grasp_pca5.pt (compute_rh56f1_grasp_pca.py 단일 진실원).
+# 주의: 현 basis는 PC1=97.9%(실질 1D) — 다물체 성공 grasp 수집 후 재추출 예정.
+NUM_HAND_PCA = 5
+HAND_PCA_MINS = [0.2258177250623703, -0.07913326472043991, -0.37289050221443176,
+                 -0.19040870666503906, -0.06522199511528015]
+HAND_PCA_MAXS = [3.7262845039367676, 0.8179822564125061, 0.1744416356086731,
+                 0.025599155575037003, 0.04043136164546013]
 
 # ---------------------------------------------------------------------------
 # Observation space — DEXTRAH teacher 구조 (distillation 대비 동일 구조)

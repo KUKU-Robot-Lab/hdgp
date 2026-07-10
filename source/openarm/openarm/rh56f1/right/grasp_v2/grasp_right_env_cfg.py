@@ -74,9 +74,11 @@ _PRIMITIVE_ALL: tuple[str, ...] = _PRIMITIVE_CURRICULUM_STAGE1 + (
 # 현재 활성 물체군(초기 학습 = STAGE1).
 # visdex 실물 뱅크(접근 B): 디렉토리 스캔. code = "visdex:<name>".
 _VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
+# <name>/<name>.usd 존재하는 디렉토리만 물체로 인정 (.ruff_cache 등 잡동사니 유입 시
+# onehot N이 틀어지고 MultiAsset spawn이 FileNotFoundError로 깨짐 — 07.10 실측)
 _VISDEX_NAMES: tuple[str, ...] = tuple(sorted(
     _n for _n in _os.listdir(_VISDEX_ROOT)
-    if _os.path.isdir(_os.path.join(_VISDEX_ROOT, _n))
+    if _os.path.isfile(_os.path.join(_VISDEX_ROOT, _n, f"{_n}.usd"))
 )) if _os.path.isdir(_VISDEX_ROOT) else ()
 
 # 활성 물체군: visdex 153종. primitives 로 되돌리려면
@@ -207,7 +209,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
+    # DEXTRAH식 hand PCA 배선(준비): True면 finger action 5D를 uncentered PCA 좌표로
+    # 해석해 fabric hand attractor(hand_mode="pca")가 손 6관절을 적분(per-finger lerp 미사용).
+    # 기본 False=per-finger lerp(tesollo 매칭 검증 경로). basis(PC1 97.9%) 재추출 후 전환 예정.
     use_hand_fabric:            bool  = False
+    hand_mode:                  str   = "pca"   # use_hand_fabric=True일 때만 사용 ("pca"|"direct")
     max_pose_angle:             float = 45.0   # DEXTRAH README teacher 레시피 45°. palm rpy 공칭(180,0,90)±45 — 손바닥 방향을 action 공간에서 constrain(천장 지향 구조 차단). tesollo 0fa6fb3 정렬
     fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소

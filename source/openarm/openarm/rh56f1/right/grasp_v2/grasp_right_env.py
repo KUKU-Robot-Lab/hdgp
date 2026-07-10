@@ -58,7 +58,10 @@ from isaaclab.utils.math import quat_apply, quat_mul
 
 from openarm.common.grasp_logging import action_policy_scalars
 
-from fabrics_sim.fabrics.openarm_rh56f1_pose_fabric import OpenArmRh56f1PoseFabric
+from fabrics_sim.fabrics.openarm_rh56f1_pose_fabric import (
+    OpenArmRh56f1PoseFabric,
+    RH56F1_HAND_PCA_MATRIX,
+)
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
 from fabrics_sim.utils.utils import initialize_warp
 from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
@@ -69,6 +72,9 @@ from .grasp_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
     NUM_ROBOT_DOF,
+    NUM_HAND_PCA,
+    HAND_PCA_MINS,
+    HAND_PCA_MAXS,
     NUM_FINGERTIPS,
     NUM_OBS_BASE,
     NUM_DISTAL_SENSORS,
@@ -215,6 +221,13 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_open_pose      = to_torch(HAND_APPROACH_POSE, device=self.device)
         self.hand_grasp_pose     = to_torch(HAND_GRASP_POSE, device=self.device)
         self.hand_full_grip_pose = to_torch(HAND_FULL_GRIP_POSE, device=self.device)
+
+        # DEXTRAH hand PCA (use_hand_fabric=True 배선): action 5D → uncentered PCA 좌표.
+        # z_approach = M(5,6)·q_approach — settle 억제/reset 초기 타겟(손 열림 유지).
+        self.hand_pca_mins = to_torch(HAND_PCA_MINS, device=self.device)   # (5,)
+        self.hand_pca_maxs = to_torch(HAND_PCA_MAXS, device=self.device)   # (5,)
+        _pca_m = to_torch(RH56F1_HAND_PCA_MATRIX, device=self.device)      # (5, 6)
+        self.hand_pca_z_approach = _pca_m @ self.hand_open_pose            # (5,)
         hand_limits = self.robot.data.soft_joint_pos_limits[0, self.hand_dof_indices, :]
         self.hand_joint_lower_limits = hand_limits[:, 0].contiguous()
         self.hand_joint_upper_limits = hand_limits[:, 1].contiguous()
@@ -379,11 +392,9 @@ class GraspRightEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.cup   = RigidObject(self.cfg.cup_cfg)
         self.table = RigidObject(self.cfg.table_cfg)
 
         self.scene.articulations["robot"] = self.robot
-        self.scene.rigid_objects["cup"]   = self.cup
         self.scene.rigid_objects["table"] = self.table
 
         # Actor: fingertip 개별 ContactSensor.
@@ -429,7 +440,16 @@ class GraspRightEnv(DirectRLEnv):
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+        # ★다물체 스폰 순서 (07.10 버그 수정): clone → cup(MultiAsset) 생성.
+        # RigidObject(cup_cfg)는 생성 시점에 즉시 spawn하는데(asset_base.py — leaf "Cup"은
+        # non-regex), clone 이전엔 env_0만 존재해 MultiAssetSpawner가 물체[0] 하나만 spawn
+        # → clone(copy_from_source=True)이 그걸 전 env에 복제 = 전 env 동일 물체 버그
+        # (probe 실측: 16env 전부 visdex[0]='104738', 물체별 성공률 std 0.005 허구 라벨).
+        # clone을 먼저 하면 spawn 시점에 env prim 전부 존재 → env_i % N 결정적 배정 정상화.
         self.scene.clone_environments(copy_from_source=True)
+        self.cup = RigidObject(self.cfg.cup_cfg)
+        self.scene.rigid_objects["cup"] = self.cup
 
     # ------------------------------------------------------------------
     # Geometric Fabrics 초기화
@@ -449,11 +469,13 @@ class GraspRightEnv(DirectRLEnv):
 
         self.timestep = self.cfg.fabrics_dt
 
-        # Main fabric (arm 제어용, graph_capturable=False)
+        # Main fabric. use_hand_fabric=False(기본)=arm만 적분(손은 per-finger lerp PD),
+        # True=DEXTRAH PCA — fabric hand attractor가 손 6관절까지 적분.
         self.fabric = OpenArmRh56f1PoseFabric(
             self.num_envs, self.device, self.timestep,
             graph_capturable=False,
-            use_hand_fabric=False,
+            use_hand_fabric=self.cfg.use_hand_fabric,
+            hand_mode=self.cfg.hand_mode,
         )
         num_joints = self.fabric.num_joints   # 26 (bi-arm: r_arm7,r_hand6,l_arm7,l_hand6)
 
@@ -465,8 +487,9 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_qd  = torch.zeros(self.num_envs, num_joints, device=self.device)
         self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
 
-        # Fabric input 버퍼
-        self.hand_pca_targets  = torch.zeros(self.num_envs, 5, device=self.device)
+        # Fabric input 버퍼 (pca=5D / direct=6D; use_hand_fabric=False면 무시됨)
+        _hand_tgt_dim = NUM_HAND_PCA if self.cfg.hand_mode == "pca" else NUM_HAND_DOF
+        self.hand_pca_targets  = torch.zeros(self.num_envs, _hand_tgt_dim, device=self.device)
         self.palm_pose_targets = torch.zeros(self.num_envs, 6, device=self.device)
         self.fabric_damping_gain = self.cfg.fabrics_damping_gain * torch.ones(self.num_envs, 1, device=self.device)
 
@@ -707,7 +730,25 @@ class GraspRightEnv(DirectRLEnv):
         palm_maxs = torch.maximum(self.palm_maxs.unsqueeze(0), self.pregrasp_palm_pose_buf)
         palm_pose = torch.max(torch.min(palm_pose, palm_maxs), palm_mins)
         self.palm_pose_targets.copy_(palm_pose)
-        self.hand_pca_targets.zero_()
+        if self.cfg.use_hand_fabric:
+            # DEXTRAH PCA: finger action 5D → uncentered PCA 좌표 절대 타겟.
+            # settle 동안은 z_approach(손 열림)로 억제(다물체 drop-settle, lerp 경로와 동일 의도).
+            _in_settle = (
+                self.episode_length_buf < int(self.cfg.settle_steps)
+            ).unsqueeze(-1)
+            _pca_cmd = scale(
+                finger_action.clamp(-1.0, 1.0),
+                self.hand_pca_mins, self.hand_pca_maxs,
+            )
+            self.hand_pca_targets.copy_(
+                torch.where(
+                    _in_settle,
+                    self.hand_pca_z_approach.unsqueeze(0).expand_as(_pca_cmd),
+                    _pca_cmd,
+                )
+            )
+        else:
+            self.hand_pca_targets.zero_()
 
         # fabric cspace damping: ADR 커리큘럼 10→20 (DEXTRAH fabric_damping.gain)
         if self.grasp_adr is not None:
@@ -733,44 +774,54 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # ---- 손가락별 접촉-게이트 적응 폐쇄 (RH56F1 6-DOF underactuated wrap) ----
-        # RH56F1 손 관절(6): [thumb_1, thumb_2, index_1, middle_1, ring_1, little_1].
-        # 5D action = 손가락별 폐쇄 속도 명령[0,1] → 관절 매핑 counts=[2,1,1,1,1](엄지만 2관절).
-        # tesollo 4-마디 phalanx gate(_3/_4)는 RH56F1 2-마디엔 부재 → 손가락 단위 gate로 단순화.
-        cmd = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)          # (N,5) ∈ [0,1]
-        # 다물체 drop-settle: episode 초기 settle_steps 동안 손가락 폐쇄 억제 →
-        # 물체(DEXTRAH식 고정 높이 spawn)가 낙하해 테이블에 안착(grasp_v1 정지물체 전제).
-        in_settle = (
-            self.episode_length_buf < int(self.cfg.settle_steps)
-        ).unsqueeze(-1)
-        cmd = torch.where(in_settle, torch.zeros_like(cmd), cmd)
-        # 손가락 단위 동결(freeze_enable 시): tip|middle 접촉하면 해당 손가락 조임 정지.
-        if self.cfg.synergy_freeze_enable:
-            finger_gate = (
-                self.binary_contact_buf.float()
-                + self.middle_binary_contact_buf.float()
-            ).clamp(max=1.0)                                        # (N,5)
+        if self.cfg.use_hand_fabric:
+            # ---- DEXTRAH PCA 경로: fabric integrator가 손[7:13]까지 적분 완료 ----
+            # (per-finger lerp/finger_close_buf 미사용. 접촉-동결 없음 — DEXTRAH 원본과 동일하게
+            #  물리 collision이 형상적응 담당.)
+            hand_target = self.fabric_q[:, NUM_ARM_DOF:NUM_ROBOT_DOF].clamp(
+                self.hand_joint_lower_limits.unsqueeze(0),
+                self.hand_joint_upper_limits.unsqueeze(0),
+            )
+            self.hand_joint_targets.copy_(hand_target)
         else:
-            # 동결 제거: 손가락이 물체를 계속 조임(물리 collision이 관통/형상적응 담당) → 파지력.
-            finger_gate = torch.zeros_like(cmd)                     # (N,5)
-        counts = torch.tensor([2, 1, 1, 1, 1], device=self.device)  # thumb 2관절, 나머지 1관절
-        gate6 = finger_gate.repeat_interleave(counts, dim=1)        # (N,6)
-        cmd6  = cmd.repeat_interleave(counts, dim=1)                # (N,6) 손가락 명령 → 관절
-        advance = float(self.cfg.finger_close_speed) * cmd6 * (1.0 - gate6)
-        self.finger_close_buf = (self.finger_close_buf + advance).clamp(0.0, 1.0)  # (N,6)
-        hand_target = torch.lerp(
-            self.hand_open_pose.unsqueeze(0).expand(self.num_envs, -1),
-            self.hand_full_grip_pose.unsqueeze(0).expand(self.num_envs, -1),
-            self.finger_close_buf,                                  # (N,6) 관절별 진행도
-        ).clamp(
-            self.hand_joint_lower_limits.unsqueeze(0),
-            self.hand_joint_upper_limits.unsqueeze(0),
-        )
-        self.hand_joint_targets.copy_(hand_target)
+            # ---- 손가락별 접촉-게이트 적응 폐쇄 (RH56F1 6-DOF underactuated wrap) ----
+            # RH56F1 손 관절(6): [thumb_1, thumb_2, index_1, middle_1, ring_1, little_1].
+            # 5D action = 손가락별 폐쇄 속도 명령[0,1] → 관절 매핑 counts=[2,1,1,1,1](엄지만 2관절).
+            # tesollo 4-마디 phalanx gate(_3/_4)는 RH56F1 2-마디엔 부재 → 손가락 단위 gate로 단순화.
+            cmd = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)          # (N,5) ∈ [0,1]
+            # 다물체 drop-settle: episode 초기 settle_steps 동안 손가락 폐쇄 억제 →
+            # 물체(DEXTRAH식 고정 높이 spawn)가 낙하해 테이블에 안착(grasp_v1 정지물체 전제).
+            in_settle = (
+                self.episode_length_buf < int(self.cfg.settle_steps)
+            ).unsqueeze(-1)
+            cmd = torch.where(in_settle, torch.zeros_like(cmd), cmd)
+            # 손가락 단위 동결(freeze_enable 시): tip|middle 접촉하면 해당 손가락 조임 정지.
+            if self.cfg.synergy_freeze_enable:
+                finger_gate = (
+                    self.binary_contact_buf.float()
+                    + self.middle_binary_contact_buf.float()
+                ).clamp(max=1.0)                                        # (N,5)
+            else:
+                # 동결 제거: 손가락이 물체를 계속 조임(물리 collision이 관통/형상적응 담당) → 파지력.
+                finger_gate = torch.zeros_like(cmd)                     # (N,5)
+            counts = torch.tensor([2, 1, 1, 1, 1], device=self.device)  # thumb 2관절, 나머지 1관절
+            gate6 = finger_gate.repeat_interleave(counts, dim=1)        # (N,6)
+            cmd6  = cmd.repeat_interleave(counts, dim=1)                # (N,6) 손가락 명령 → 관절
+            advance = float(self.cfg.finger_close_speed) * cmd6 * (1.0 - gate6)
+            self.finger_close_buf = (self.finger_close_buf + advance).clamp(0.0, 1.0)  # (N,6)
+            hand_target = torch.lerp(
+                self.hand_open_pose.unsqueeze(0).expand(self.num_envs, -1),
+                self.hand_full_grip_pose.unsqueeze(0).expand(self.num_envs, -1),
+                self.finger_close_buf,                                  # (N,6) 관절별 진행도
+            ).clamp(
+                self.hand_joint_lower_limits.unsqueeze(0),
+                self.hand_joint_upper_limits.unsqueeze(0),
+            )
+            self.hand_joint_targets.copy_(hand_target)
 
-        # fabric_q 오른손[7:13] 부분 동기화 (FK 계산에 활용). 좌측[13:26]은 중립 유지.
-        self.fabric_q[:, NUM_ARM_DOF:NUM_ROBOT_DOF] = hand_target
-        self.fabric_qd[:, NUM_ARM_DOF:NUM_ROBOT_DOF].zero_()
+            # fabric_q 오른손[7:13] 부분 동기화 (FK 계산에 활용). 좌측[13:26]은 중립 유지.
+            self.fabric_q[:, NUM_ARM_DOF:NUM_ROBOT_DOF] = hand_target
+            self.fabric_qd[:, NUM_ARM_DOF:NUM_ROBOT_DOF].zero_()
 
     def _apply_action(self) -> None:
         # ---- 오른팔: 전 구간 Fabrics arm target (DEXTRAH 단일 phase) ----
@@ -1536,6 +1587,9 @@ class GraspRightEnv(DirectRLEnv):
         self.success_flag[env_ids] = False
         self.transfer_entry_grasp_success_buf[env_ids] = False
         self.finger_close_buf[env_ids] = 0.0
+        if self.cfg.use_hand_fabric:
+            # PCA 경로: 손 타겟을 approach 투영으로 초기화(손 열림 상태서 시작)
+            self.hand_pca_targets[env_ids] = self.hand_pca_z_approach.unsqueeze(0)
 
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
         # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)
