@@ -1,0 +1,110 @@
+# Tesollo sensor asset autotune 설정.
+#
+# 주의: grasp_v11 env_cfg는 아직 legacy joint 이름(rj_dg_*, openarm_right_joint*)과
+# 존재하지 않는 USD 경로(assets/openarm_tesollo_sensor/)를 참조한다.
+# 이 설정은 assets/robot/openarm_tesollo_sensor_rl 기준 canonical 이름만 쓴다.
+# grasp_v11의 canonical 마이그레이션은 별도 작업이다.
+
+asset: openarm_tesollo_sensor_rl
+usd_path: assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd
+manifest: assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl_manifest.yaml
+
+groups:
+  # 팔 group은 실물 MIT PD 게인 구조를 따라 셋으로 나눈다.
+  #   teleopration_openarm_tesollo/src/openarm_description/config/arm/v10/control_gains.yaml
+  # kp는 그룹 안에서 정확히 균일하다(70 / 60 / 10). kd만 조금씩 달라 평균을 seed로 쓴다.
+  #   proximal kd = mean(2.75, 2.5, 2.0)    wrist kd = mean(0.7, 0.6, 0.5)
+  #
+  # defaults가 RL env_cfg(400/80)와 다른 것은 의도적이다. 논문이 말하듯 제조사 모델 상수는
+  # 정답이 아니라 real-to-sim의 출발점이다. 400/80은 sim 학습 안정성을 위해 고른 값이지
+  # 실물을 흉내낸 값이 아니다 (손목은 실물 대비 강성 40배, 감쇠 160배).
+  #
+  # 주의: 이 세 group 이름은 아직 어떤 RL env_cfg에도 없다. calibration을 학습에 적용하려면
+  # 대상 env의 actuator 블록을 같은 이름으로 쪼개야 한다. 그러지 않으면 get_actuator_params가
+  # 조용히 default로 fallback한다.
+  arm_proximal:
+    joint_names_expr: ["r_aj_[1-3]"]
+    defaults: {stiffness: 70.0, damping: 2.4167}
+    search:
+      stiffness_scale: [0.7, 1.5]
+      damping_scale: [0.5, 2.0]
+      friction_scale: [0.7, 1.3]
+
+  arm_elbow:
+    joint_names_expr: ["r_aj_4"]
+    defaults: {stiffness: 60.0, damping: 2.0}
+    search:
+      stiffness_scale: [0.7, 1.5]
+      damping_scale: [0.5, 2.0]
+      friction_scale: [0.7, 1.3]
+
+  arm_wrist:
+    joint_names_expr: ["r_aj_[5-7]"]
+    defaults: {stiffness: 10.0, damping: 0.6}
+    search:
+      stiffness_scale: [0.6, 1.6]
+      damping_scale: [0.5, 2.0]
+      friction_scale: [0.5, 2.0]
+
+  # 왼팔은 이번 identification 대상이 아니다. 실물 게인으로 바꾸면 sim에서 중력에 처지므로
+  # 학습 env와 같은 값을 유지한다.
+  openarm_left_arm:
+    joint_names_expr: ["l_aj_[1-7]"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+  tesollo_hand_abduction:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_1"]
+    defaults: {stiffness: 30.0, damping: 5.0}
+    search:
+      stiffness_scale: [0.6, 1.6]
+      damping_scale: [0.5, 2.0]
+      friction_scale: [0.5, 2.0]
+
+  # curl이 task action과 가장 직접 연결되고 hand response 차이를 크게 만든다 (가이드 §7.1).
+  tesollo_hand_curl:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_2"]
+    defaults: {stiffness: 30.0, damping: 5.0}
+    search:
+      stiffness_scale: [0.6, 1.6]
+      damping_scale: [0.5, 2.0]
+      friction_scale: [0.5, 2.0]
+
+  tesollo_hand_pip:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_3"]
+    defaults: {stiffness: 30.0, damping: 5.0}
+    search:
+      stiffness_scale: [0.6, 1.6]
+      damping_scale: [0.5, 2.0]
+      friction_scale: [0.5, 2.0]
+
+  tesollo_hand_dip:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_4"]
+    defaults: {stiffness: 30.0, damping: 5.0}
+    search:
+      stiffness_scale: [0.6, 1.6]
+      damping_scale: [0.5, 2.0]
+      friction_scale: [0.5, 2.0]
+
+  # gripper_2는 mimic이라 control_joint_order에는 없지만 movable이므로 group이 덮어야 한다.
+  openarm_left_gripper:
+    joint_names_expr: ["l_hj_gripper_[12]"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+tune_groups:
+  - tesollo_hand_curl
+
+population_size: 128
+random_seed: 7
+
+real_track:
+  hdf5: logs/r2s_autotune/seeds/tesollo_sensor_synthetic.hdf5
+  demo_key: demo_0
+  command_dataset: obs/q_cmd
+  measured_dataset: obs/q_real
+  velocity_dataset: obs/dq_real
+  dt: 0.01
+
+error_weights:
+  q: 1.0
+  dq: 0.05
+  delay: 0.01
