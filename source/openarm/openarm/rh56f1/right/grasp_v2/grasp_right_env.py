@@ -1087,12 +1087,18 @@ class GraspRightEnv(DirectRLEnv):
         # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
         self.in_success_region = object_to_goal_err < float(self.cfg.object_goal_tol)
 
-        # contact 진단용 grip(tip|mid|distal 접촉 손가락 수)
-        num_grip_fingers = (
-            self.binary_contact_buf
-            | self.middle_binary_contact_buf
-            | self.distal_binary_contact_buf
-        ).sum(dim=-1)
+        # contact 진단용 grip(tip|mid|distal 접촉 손가락 수).
+        # 거리 게이트(07.11): net_forces 는 물체/테이블 구분 불가 → 손가락별 tip↔물체
+        # 거리가 gate 이내일 때만 "물체 접촉"으로 인정 (dextrah6b grip 2.2 = 전부
+        # 테이블 접촉으로 판명된 오염 제거. 로깅·진단 전용 — reward 경로 아님).
+        _finger_near = (
+            (self.fingertip_pos - self.object_pos.unsqueeze(1)).norm(dim=-1)
+            < float(self.cfg.contact_object_dist_gate)
+        )                                                            # (N, 5)
+        _tip_obj    = self.binary_contact_buf & _finger_near
+        _mid_obj    = self.middle_binary_contact_buf & _finger_near
+        _distal_obj = self.distal_binary_contact_buf & _finger_near
+        num_grip_fingers = (_tip_obj | _mid_obj | _distal_obj).sum(dim=-1)
 
         # 접촉 출처 진단 (GRASP_DEBUG_CONTACT=1 로 play 시): net_forces 센서는 물체/테이블
         # 구분 불가 → tip↔물체 최근접 거리와 grip 동시 출력으로 "grip이 물체 접촉인지" 판별.
@@ -1140,11 +1146,17 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["object_height"] = (
             self.object_pos[:, 2] - self.object_init_pos[:, 2]
         ).mean()
-        # contact: 감싸기 노드 그룹별 접촉 손가락 수 (0~5). palm 센서 없음 → 제외.
-        self.extras["contact/tip"]    = self.num_contacts_buf.float().mean()
-        self.extras["contact/middle"] = self.middle_binary_contact_buf.float().sum(dim=-1).mean()
-        self.extras["contact/distal"] = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
+        # contact: 감싸기 노드 그룹별 "물체" 접촉 손가락 수 (0~5, 거리 게이트 정화).
+        # contact/raw_grip = 무게이트(테이블 포함) — 구 지표와의 연속성·오염량 관측용.
+        self.extras["contact/tip"]    = _tip_obj.float().sum(dim=-1).mean()
+        self.extras["contact/middle"] = _mid_obj.float().sum(dim=-1).mean()
+        self.extras["contact/distal"] = _distal_obj.float().sum(dim=-1).mean()
         self.extras["contact/grip"]   = num_grip_fingers.float().mean()
+        self.extras["contact/raw_grip"] = (
+            self.binary_contact_buf
+            | self.middle_binary_contact_buf
+            | self.distal_binary_contact_buf
+        ).sum(dim=-1).float().mean()
         # action policy(palm 6D + finger 5D raw) 로깅 유지
         for k, v in action_policy_scalars(
             action=self.actions, prev_action=self.prev_actions, palm_dims=6,

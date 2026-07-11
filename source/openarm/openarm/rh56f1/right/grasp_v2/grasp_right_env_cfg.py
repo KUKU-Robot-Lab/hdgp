@@ -261,8 +261,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Delta palm action (pregrasp 기준 상대 오프셋)
     # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.15   # ±0.15m per axis
-    palm_delta_rot_deg: float = 90.0   # ±90° per axis: pregrasp side(90°)에서 top-down(0°)까지 정책 자유 회전(20→90, arm 자유탐색)
+    # 07.11 접근속도 수정(probe E1/E2 실측): 짧은 리치 대각 접근에서 ±0.15m/step 타겟은
+    # 초기 탐색을 전속 스윙으로 만들어 물체 밀침(15.5cm, 19% 종료)→회피 학습의 주범.
+    # 1.5cm/step로 줄이면 밀침 1/3·종료 1/3. lstm_test1(성공 60%) 검증값 0.03/5° 복원.
+    # (tesollo 0.15/90은 긴 손가락 caging이 밀침을 상쇄해 무해 — 로봇 기하 차이)
+    palm_delta_xyz:     float = 0.03   # ±0.03m per axis
+    palm_delta_rot_deg: float = 5.0    # ±5° per axis
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
@@ -372,6 +376,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # DEXTRAH wrench 게이트: 손이 물체 반경 내면 외란 인가 (in_success 게이트 아님)
     hand_to_object_dist_threshold: float = 0.3   # m
+
+    # contact 로깅 거리 게이트(07.11): net_forces 센서는 물체/테이블 구분 불가 —
+    # dextrah6b에서 grip 2.2 전부가 테이블·자기 접촉으로 판명(probe). 손끝이 물체
+    # 이 거리 이내일 때만 접촉으로 카운트해 진단 지표를 물체 접촉으로 정화.
+    contact_object_dist_gate: float = 0.06   # m
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         # 외란 wrench: 0→10 점진 (DEXTRAH. 기존 고정 10은 초기 리프트 학습 방해 가능)
