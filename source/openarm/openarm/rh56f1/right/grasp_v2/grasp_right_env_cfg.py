@@ -261,12 +261,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Delta palm action (pregrasp 기준 상대 오프셋)
     # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
     # -----------------------------------------------------------------------
-    # 07.11 접근속도 수정(probe E1/E2 실측): 짧은 리치 대각 접근에서 ±0.15m/step 타겟은
-    # 초기 탐색을 전속 스윙으로 만들어 물체 밀침(15.5cm, 19% 종료)→회피 학습의 주범.
-    # 1.5cm/step로 줄이면 밀침 1/3·종료 1/3. lstm_test1(성공 60%) 검증값 0.03/5° 복원.
-    # (tesollo 0.15/90은 긴 손가락 caging이 밀침을 상쇄해 무해 — 로봇 기하 차이)
-    palm_delta_xyz:     float = 0.03   # ±0.03m per axis
-    palm_delta_rot_deg: float = 5.0    # ±5° per axis
+    # 07.11 접근속도 재설계(범위·속도 분리): delta는 anchor 기준 "도달 박스"라 좁히면
+    # goal(z 0.45, 리프트 21cm) 도달이 물리적으로 불가(0.03 실수의 교훈). 요구 분리:
+    #  - 박스: 크게(0.35 ≈ 전체 workspace) → goal 도달 보장. rh56f1 앵커가 낮아(z~0.2)
+    #    기존 0.15로도 z 도달이 빠듯했음.
+    #  - 속도: palm_target_rate_* per-step slew-rate — probe E1 검증(1.5cm/step =
+    #    밀침 1/3·종료 1/3). 초기 랜덤 정책의 스윙도 스텝당 rate로 제한.
+    # DEXTRAH 정합: 원본도 절대 타겟+fabric 감쇠가 실효 속도 제한 — 명시적 구현.
+    palm_delta_xyz:     float = 0.35   # anchor±0.35m 도달 박스 (workspace clamp가 최종 한계)
+    palm_delta_rot_deg: float = 90.0   # anchor±90° (max_pose_angle 45 workspace가 최종 한계)
+    palm_target_rate_xyz:     float = 0.015  # m/step  — 타겟 이동 속도 상한 (E1 검증)
+    palm_target_rate_rot_deg: float = 2.0    # °/step
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
@@ -434,8 +439,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 종료 조건
     # -----------------------------------------------------------------------
     cup_tipping_max_deg: float = 60.0
-    obj_out_x_min:  float = 0.05
-    obj_out_x_max:  float = 0.85
+    # out-of-reach 종료(07.11 조임, DEXTRAH 정렬): 물체가 palm workspace(x 0.20~0.65,
+    # y -0.55~0.22)+7cm 밖이면 즉시 종료. 기존 x_max 0.85는 도달불가 물체를 남겨
+    # 에피소드가 baseline 파밍으로 낭비됨(렌더 관찰: 쳐낸 물체가 닿지 않는 곳에 방치).
+    obj_out_x_min:  float = 0.13
+    obj_out_x_max:  float = 0.72
     obj_out_y_min:  float = -0.60
     obj_out_y_max:  float = 0.25
     obj_fallen_z:   float = 0.20

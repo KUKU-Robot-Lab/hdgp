@@ -203,6 +203,12 @@ class GraspRightEnv(DirectRLEnv):
             cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
             _delta_rad, _delta_rad, _delta_rad,
         ], device=self.device)
+        # palm 타겟 slew-rate (per-step 이동 상한): 범위(delta 박스)와 속도를 분리.
+        _rate_rad = math.radians(cfg.palm_target_rate_rot_deg)
+        self.palm_target_rate = to_torch([
+            cfg.palm_target_rate_xyz, cfg.palm_target_rate_xyz, cfg.palm_target_rate_xyz,
+            _rate_rad, _rate_rad, _rate_rad,
+        ], device=self.device)
 
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
         self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 6, device=self.device)
@@ -724,14 +730,27 @@ class GraspRightEnv(DirectRLEnv):
             self.object_init_pos[snap] = self.object_pos[snap]
 
         # ---- Fabrics arm 제어 (전 구간 정책 연속 제어, scripted lift 없음) ----
-        # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
+        # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta(도달 박스)
         # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
         delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
-        palm_pose = self.pregrasp_palm_pose_buf + delta
+        palm_desired = self.pregrasp_palm_pose_buf + delta
         palm_mins = torch.minimum(self.palm_mins.unsqueeze(0), self.pregrasp_palm_pose_buf)
         palm_maxs = torch.maximum(self.palm_maxs.unsqueeze(0), self.pregrasp_palm_pose_buf)
-        palm_pose = torch.max(torch.min(palm_pose, palm_maxs), palm_mins)
-        self.palm_pose_targets.copy_(palm_pose)
+        palm_desired = torch.max(torch.min(palm_desired, palm_maxs), palm_mins)
+        # settle 동안 palm 앵커 고정: 손가락만이 아니라 팔도 — 낙하·안착 중인 물체를
+        # 쫓아가 치는 문제(렌더 관찰: 스폰 직후 손이 따라가 물체를 쳐냄) 방지.
+        _palm_in_settle = (
+            self.episode_length_buf < int(self.cfg.settle_steps)
+        ).unsqueeze(-1)
+        palm_desired = torch.where(
+            _palm_in_settle, self.pregrasp_palm_pose_buf, palm_desired
+        )
+        # slew-rate: 타겟은 스텝당 rate 이내로만 이동 — 느린 접근(probe E1: 밀침 1/3)
+        # + goal 도달 범위 보존. 초기 랜덤 정책의 스윙도 rate로 제한.
+        _step = (palm_desired - self.palm_pose_targets).clamp(
+            -self.palm_target_rate, self.palm_target_rate
+        )
+        self.palm_pose_targets.add_(_step)
         if self.cfg.use_hand_fabric:
             # DEXTRAH PCA: finger action 5D → uncentered PCA 좌표 절대 타겟.
             # settle 동안은 z_approach(손 열림)로 억제(다물체 drop-settle, lerp 경로와 동일 의도).
