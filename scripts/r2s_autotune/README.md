@@ -77,11 +77,30 @@ logs/r2s_autotune/seeds/bi_rh56f1_synthetic_ground_truth.json
 - `error spread < 1e-3` → excitation이 약하거나 command와 measured가 같은 값을 보고 있다.
 - `seed가 모든 후보보다 낫다` → scale range가 잘못됐다.
 
-### 4. RL env에 적용
+### 4. RL env에 적용 (튜닝값을 학습에 재사용)
+
+튜닝된 stiffness / damping / friction 은 **USD가 아니라 이 JSON에 산다.** 학습은 스폰 시점에
+JSON을 읽어 `ImplicitActuatorCfg`에 세 값을 모두 넣는다. USD 파일은 건드리지 않는다.
 
 ```bash
 export OPENARM_REAL2SIM_ACTUATOR_CALIBRATION=/home/user/rl_ws/hdgp/logs/r2s_autotune/results/bi_rh56f1_best_calibration.json
+# 이 환경변수를 세팅한 채 train.sh 실행하면 끝. env_cfg가 자동으로 읽는다.
 ```
+
+**전제: JSON의 group 이름이 env_cfg의 actuator group 이름과 정확히 같아야 한다.**
+loader는 group 이름만 보고 regex는 보지 않는다. 이름이 어긋나면 `get_actuator_params`가
+에러 없이 default로 fallback해서 튜닝값이 조용히 무시된다 (legacy/canonical regex 차이는
+문제되지 않는다 — 이름만 맞으면 된다).
+
+- **손 (`tesollo_hand_curl`)**: env_cfg에 이미 같은 이름 group이 있어 그대로 재사용된다.
+- **팔 (`arm_proximal`/`arm_elbow`/`arm_wrist`)**: 이 이름들은 아직 어떤 env_cfg에도 없다.
+  팔 튜닝값을 학습에 쓰려면 먼저 대상 env의 `openarm_right_arm` 블록을 같은 세 이름으로
+  쪼개야 한다. 그러지 않으면 팔 calibration은 무시된다.
+
+USD physics layer에 값을 직접 굽는 것(경로 B)은 이 파이프라인의 범위가 아니다. 가이드가
+말한 "최종 고정본" 단계이며, 기존 USD-drive 편집 도구
+(`sim2real/isaacsim_bridge/scripts/apply_joint_drive_config.py`)는 stiffness/damping만 쓰고
+friction은 다루지 않는다.
 
 ---
 
