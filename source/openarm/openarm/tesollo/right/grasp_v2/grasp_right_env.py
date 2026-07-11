@@ -91,6 +91,7 @@ from .grasp_right_preset import (
     HAND_FULL_GRIP_POSE,
     PREGRASP_EULER_EZ_DEG,
     PREGRASP_EULER_EX_DEG,
+    FABRIC_WORLD_FILENAME,
 )
 from .finger_action_utils import (
     compute_grasp_finger_targets,
@@ -189,6 +190,12 @@ class GraspRightEnv(DirectRLEnv):
         self.delta_maxs = to_torch([
             cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
             _delta_rad, _delta_rad, _delta_rad,
+        ], device=self.device)
+        # palm 목표 rate limit (스텝당 최대 변화량 — 접근 밀침·스윙 대책, 기구적 제약)
+        _rate_rad = math.radians(cfg.palm_rate_rot_deg_per_step)
+        self.palm_rate_limits = to_torch([
+            cfg.palm_rate_xyz_per_step, cfg.palm_rate_xyz_per_step, cfg.palm_rate_xyz_per_step,
+            _rate_rad, _rate_rad, _rate_rad,
         ], device=self.device)
 
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
@@ -439,7 +446,7 @@ class GraspRightEnv(DirectRLEnv):
             batch_size=self.num_envs,
             max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
             device=self.device,
-            world_filename="open_tesollo_boxes_no_table",
+            world_filename=FABRIC_WORLD_FILENAME,
         )
         self.object_ids, self.object_indicator = self.world_model.get_object_ids()
 
@@ -484,7 +491,7 @@ class GraspRightEnv(DirectRLEnv):
             batch_size=self._reset_chunk,
             max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
             device=self.device,
-            world_filename="open_tesollo_boxes_no_table",
+            world_filename=FABRIC_WORLD_FILENAME,
         )
         self._reset_obj_ids, self._reset_obj_indicator = self._reset_world.get_object_ids()
 
@@ -690,6 +697,13 @@ class GraspRightEnv(DirectRLEnv):
         palm_mins = torch.minimum(self.palm_mins.unsqueeze(0), self.pregrasp_palm_pose_buf)
         palm_maxs = torch.maximum(self.palm_maxs.unsqueeze(0), self.pregrasp_palm_pose_buf)
         palm_pose = torch.max(torch.min(palm_pose, palm_maxs), palm_mins)
+        # rate limit: 목표가 이전 목표에서 스텝당 palm_rate_limits 이상 못 움직임
+        # (정책의 bang-bang 목표 순간이동 → 접근 밀침·리프트 후 스윙의 기구적 차단.
+        #  reset 시 palm_pose_targets=pregrasp 로 앵커됨)
+        _step6 = (palm_pose - self.palm_pose_targets).clamp(
+            -self.palm_rate_limits, self.palm_rate_limits
+        )
+        palm_pose = self.palm_pose_targets + _step6
         self.palm_pose_targets.copy_(palm_pose)
         self.hand_pca_targets.zero_()
 

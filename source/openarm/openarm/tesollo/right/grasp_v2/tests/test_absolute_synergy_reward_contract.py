@@ -246,6 +246,20 @@ def test_adr_curriculum_is_dextrah() -> None:
     assert '"pd_targets", "velocity_target_factor"' in env
 
 
+def test_palm_target_rate_limit() -> None:
+    # palm 목표 rate limit 계약 (07.11): 정책의 목표 순간이동(bang-bang)이
+    # 접근 밀침·리프트 후 스윙을 만듦 — 스텝당 변화량을 기구적으로 제한.
+    # palm_delta_xyz 는 도달 범위(속도 아님) — goal 기하상 0.15 미만 축소 금지.
+    cfg = _text("grasp_right_env_cfg.py")
+    env = _text("grasp_right_env.py")
+
+    assert "palm_rate_xyz_per_step:     float = 0.01" in cfg
+    assert "palm_rate_rot_deg_per_step: float = 2.0" in cfg
+    assert "palm_delta_xyz:     float = 0.15" in cfg
+    assert "self.palm_rate_limits" in env
+    assert "(palm_pose - self.palm_pose_targets).clamp(" in env
+
+
 def test_single_phase_no_scripted_lift() -> None:
     # DEXTRAH 단일 phase 계약: scripted joint7 lift/latch/freeze 없이
     # 정책이 전 구간 Fabrics arm을 연속 제어한다.

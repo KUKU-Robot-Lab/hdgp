@@ -158,6 +158,12 @@ PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 PREGRASP_EULER_EZ_DEG = 90.0
 PREGRASP_EULER_EX_DEG = 90.0
 
+# Fabrics world 파일 (WorldMeshesModel) — env.py가 참조. 문자열 하드코드 금지.
+# right world는 왼팔 영역(y>0)에 반발체(left_arm_body sphere·left_target_cup box)를
+# 두므로 left에서 그대로 쓰면 왼손이 자기 workspace에서 밀려남(left lstm_test2
+# in_success 0 근본원인). left 미러는 open_tesollo_left_boxes_no_table.
+FABRIC_WORLD_FILENAME = "open_tesollo_boxes_no_table"
+
 
 def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0

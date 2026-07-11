@@ -248,8 +248,19 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Delta palm action (pregrasp 기준 상대 오프셋)
     # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.15   # ±0.15m per axis
+    # 주의: delta는 속도가 아니라 pregrasp 기준 "도달 범위". goal 기하상 리프트
+    # 필요량 ~0.10~0.15m (goal z 0.45 − 안착 물체 z ~0.25, tol 0.10) → 0.03이면
+    # goal 도달 불가(in_success 붕괴). 접근 속도 문제는 아래 rate limit이 담당.
+    palm_delta_xyz:     float = 0.15   # ±0.15m per axis (도달 범위 — 축소 금지)
     palm_delta_rot_deg: float = 90.0   # ±90° per axis: pregrasp side(90°)에서 top-down(0°)까지 정책 자유 회전(20→90, arm 자유탐색)
+
+    # palm 목표 rate limit (스텝당 최대 변화량) — 접근 밀침·리프트 후 스윙 대책.
+    # 정책의 목표 순간이동(±delta 범위 bang-bang)을 기구적으로 제한: finger 래칫·
+    # max_pose_angle 과 같은 action 공간 제약 (reward 아님). DEXTRAH는 kuka
+    # 대반경 top-down + 큰 관성이 자연 필터지만 우리는 단반경 side/대각 접근이라
+    # 명시 제한 필요. 0.01m/step @60Hz = 0.6 m/s, 2°/step = 120°/s.
+    palm_rate_xyz_per_step:     float = 0.01
+    palm_rate_rot_deg_per_step: float = 2.0
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
