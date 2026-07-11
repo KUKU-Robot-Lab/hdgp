@@ -58,6 +58,8 @@ from isaaclab.utils.math import quat_apply, quat_mul
 
 from openarm.common.grasp_logging import action_policy_scalars
 
+import os as _os
+
 from fabrics_sim.fabrics.openarm_rh56f1_pose_fabric import (
     OpenArmRh56f1PoseFabric,
     RH56F1_HAND_PCA_MATRIX,
@@ -1091,6 +1093,20 @@ class GraspRightEnv(DirectRLEnv):
             | self.middle_binary_contact_buf
             | self.distal_binary_contact_buf
         ).sum(dim=-1)
+
+        # 접촉 출처 진단 (GRASP_DEBUG_CONTACT=1 로 play 시): net_forces 센서는 물체/테이블
+        # 구분 불가 → tip↔물체 최근접 거리와 grip 동시 출력으로 "grip이 물체 접촉인지" 판별.
+        if _os.environ.get("GRASP_DEBUG_CONTACT") and int(self.episode_length_buf[0]) % 30 == 0:
+            _tipd = (self.fingertip_pos - self.object_pos.unsqueeze(1)).norm(dim=-1).min(dim=1).values
+            _near = (_tipd < 0.06)  # 물체 반경급 근접
+            _g = num_grip_fingers.float()
+            print(
+                f"DBGC step={int(self.episode_length_buf[0]):3d} "
+                f"tipdist mean={_tipd.mean():.3f} min={_tipd.min():.3f} "
+                f"grip_all={_g.mean():.2f} grip_near={(_g * _near.float()).sum() / _near.float().sum().clamp(min=1):.2f} "
+                f"near_frac={_near.float().mean():.2f} objz={self.object_pos[:, 2].mean():.3f}",
+                flush=True,
+            )
 
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         # ADR increment: DEXTRAH 원본 = in_success_region 순간 평균 > success_for_adr(0.4)
