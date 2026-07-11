@@ -259,8 +259,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # max_pose_angle 과 같은 action 공간 제약 (reward 아님). DEXTRAH는 kuka
     # 대반경 top-down + 큰 관성이 자연 필터지만 우리는 단반경 side/대각 접근이라
     # 명시 제한 필요. 0.01m/step @60Hz = 0.6 m/s, 2°/step = 120°/s.
-    palm_rate_xyz_per_step:     float = 0.01
-    palm_rate_rot_deg_per_step: float = 2.0
+    # 0.01/2°는 과잉 제한 실증(test11 159M: 접근 실패 → in_success 0, h2o 0.05,
+    # bang-bang 왕복이 rate에 갇혀 실효 전진 0). fabric 실효 속도 수준(0.04m=2.4m/s,
+    # 8°=480°/s)으로 완화 — 순간이동만 차단.
+    palm_rate_xyz_per_step:     float = 0.04
+    palm_rate_rot_deg_per_step: float = 8.0
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)

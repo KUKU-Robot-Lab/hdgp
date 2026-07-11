@@ -41,12 +41,10 @@ def test_synergy_action_couples_all_five_fingers() -> None:
     anchor = torch.tensor(syn.HAND_SYNERGY_ANCHOR, dtype=torch.float32)
     mins = torch.tensor(syn.HAND_SYNERGY_COEFF_MINS, dtype=torch.float32)
     maxs = torch.tensor(syn.HAND_SYNERGY_COEFF_MAXS, dtype=torch.float32)
-    # preset 의 open(APPROACH)/FULL_GRIP
+    # preset 의 open(APPROACH)/FULL_GRIP — 좌우 미러 수치라 리터럴 하드코드 금지
+    preset = _load_module("grasp_right_preset.py", "grasp_v2_preset_for_synergy_test")
     open_pose = anchor.clone()
-    grip = torch.tensor([
-        0.0, -1.57, 1.8, 1.8,  0.0, 1.9, 1.8, 1.8,  0.0, 1.9, 1.8, 1.8,
-        0.0, 1.9, 1.8, 1.8,    0.0, 0.0, 1.8, 1.8,
-    ], dtype=torch.float32)
+    grip = torch.tensor(preset.HAND_FULL_GRIP_POSE, dtype=torch.float32)
 
     # a₁ = +1 (전지 감김 축 최대), 나머지 최소
     action = torch.tensor([[1.0, -1.0, -1.0, -1.0, -1.0]])
@@ -253,8 +251,8 @@ def test_palm_target_rate_limit() -> None:
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
 
-    assert "palm_rate_xyz_per_step:     float = 0.01" in cfg
-    assert "palm_rate_rot_deg_per_step: float = 2.0" in cfg
+    assert "palm_rate_xyz_per_step:     float = 0.04" in cfg
+    assert "palm_rate_rot_deg_per_step: float = 8.0" in cfg
     assert "palm_delta_xyz:     float = 0.15" in cfg
     assert "self.palm_rate_limits" in env
     assert "(palm_pose - self.palm_pose_targets).clamp(" in env
