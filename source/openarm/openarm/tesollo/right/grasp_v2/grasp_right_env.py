@@ -697,6 +697,14 @@ class GraspRightEnv(DirectRLEnv):
         palm_mins = torch.minimum(self.palm_mins.unsqueeze(0), self.pregrasp_palm_pose_buf)
         palm_maxs = torch.maximum(self.palm_maxs.unsqueeze(0), self.pregrasp_palm_pose_buf)
         palm_pose = torch.max(torch.min(palm_pose, palm_maxs), palm_mins)
+        # settle 동안 팔 동결: 물체 낙하-안착 전 정책이 팔로 쫓아가 물체를 쳐내
+        # 도달불가 위치로 밀어버리는 것 방지 (finger 억제와 동일 게이트 — 렌더 실증)
+        in_settle = (
+            self.episode_length_buf < int(self.cfg.settle_steps)
+        ).unsqueeze(-1)
+        palm_pose = torch.where(
+            in_settle, self.pregrasp_palm_pose_buf, palm_pose
+        )
         # rate limit: 목표가 이전 목표에서 스텝당 palm_rate_limits 이상 못 움직임
         # (정책의 bang-bang 목표 순간이동 → 접근 밀침·리프트 후 스윙의 기구적 차단.
         #  reset 시 palm_pose_targets=pregrasp 로 앵커됨)
@@ -745,9 +753,7 @@ class GraspRightEnv(DirectRLEnv):
         )                                                            # (N,20) ∈ [0,1]
         # 다물체 drop-settle: episode 초기 settle_steps 동안 손가락 폐쇄 억제 →
         # 물체(DEXTRAH식 고정 높이 spawn)가 낙하해 테이블에 안착(grasp_v1 정지물체 전제).
-        in_settle = (
-            self.episode_length_buf < int(self.cfg.settle_steps)
-        ).unsqueeze(-1)
+        # (in_settle 은 위 palm 동결 게이트와 공유)
         p_star = torch.where(in_settle, torch.zeros_like(p_star), p_star)
         tip_c  = self.binary_contact_buf.float()                    # (N,5) 끝
         dist_c = self.distal_binary_contact_buf.float()             # (N,5) distal(rl_dg_X_4)

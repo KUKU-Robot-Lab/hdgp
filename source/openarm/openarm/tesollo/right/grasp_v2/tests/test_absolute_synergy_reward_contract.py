@@ -258,6 +258,8 @@ def test_palm_target_rate_limit() -> None:
     assert "palm_delta_xyz:     float = 0.15" in cfg
     assert "self.palm_rate_limits" in env
     assert "(palm_pose - self.palm_pose_targets).clamp(" in env
+    # settle 동안 팔 동결: 낙하 중 물체를 팔로 쳐내는 것 방지 (finger 게이트 공유)
+    assert "in_settle, self.pregrasp_palm_pose_buf, palm_pose" in env
 
 
 def test_single_phase_no_scripted_lift() -> None:
