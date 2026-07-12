@@ -583,6 +583,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if str(args_cli.task).startswith("open-tesol_r_grasp_v2"):
         from openarm.tesollo.right.grasp_v2.grasp_right_env_cfg import _GRASP_OBJECT_SPAWN
         env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
+    elif str(args_cli.task).startswith("open-tesol_l_grasp_v2"):
+        from openarm.tesollo.left.grasp_v2.grasp_left_env_cfg import _GRASP_OBJECT_SPAWN
+        env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
     elif str(args_cli.task).startswith("open-rh56f1_r_grasp_v2"):
         from openarm.rh56f1.right.grasp_v2.grasp_right_env_cfg import _GRASP_OBJECT_SPAWN
         env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
@@ -641,6 +644,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     timestep = 0
     _episode_step = 0
     _episode_buf = []
+    # pour 전용 진단 로깅 게이트: grasp 등 다른 태스크에서 '--' 표 스팸 방지
+    _pour_diag = "pour" in str(args_cli.task).lower()
     # required: enables the flag for batched observations
     _ = agent.get_batch_size(obs, 1)
     # initialize RNN states if used
@@ -829,7 +834,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 for s in agent.states:
                     s[:, dones, :] = 0.0
 
-            if not _done0:
+            if not _pour_diag:
+                pass  # pour 진단 로깅 off (비-pour 태스크)
+            elif not _done0:
                 def _g0(attr):
                     """env 0의 텐서 값을 python(float/list)으로. 없으면 None."""
                     t = getattr(_raw_env, attr, None)
