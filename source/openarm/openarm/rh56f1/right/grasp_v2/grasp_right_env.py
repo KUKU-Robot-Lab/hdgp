@@ -203,13 +203,6 @@ class GraspRightEnv(DirectRLEnv):
             cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
             _delta_rad, _delta_rad, _delta_rad,
         ], device=self.device)
-        # palm 타겟 slew-rate (per-step 이동 상한): 범위(delta 박스)와 속도를 분리.
-        _rate_rad = math.radians(cfg.palm_target_rate_rot_deg)
-        self.palm_target_rate = to_torch([
-            cfg.palm_target_rate_xyz, cfg.palm_target_rate_xyz, cfg.palm_target_rate_xyz,
-            _rate_rad, _rate_rad, _rate_rad,
-        ], device=self.device)
-
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
         self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 6, device=self.device)
         self.demo_grasp_reset_bank = (
@@ -759,12 +752,11 @@ class GraspRightEnv(DirectRLEnv):
         palm_desired = torch.where(
             _palm_in_settle, self.pregrasp_palm_pose_buf, palm_desired
         )
-        # slew-rate: 타겟은 스텝당 rate 이내로만 이동 — 느린 접근(probe E1: 밀침 1/3)
-        # + goal 도달 범위 보존. 초기 랜덤 정책의 스윙도 rate로 제한.
-        _step = (palm_desired - self.palm_pose_targets).clamp(
-            -self.palm_target_rate, self.palm_target_rate
-        )
-        self.palm_pose_targets.add_(_step)
+        # DEXTRAH 절대 타겟 의미론 (07.12, slew 제거): 타겟 즉시 반영, 실속도는
+        # fabric 자연 감쇠가 제한. slew(1.5cm/step)는 측면 밀침 대응 추가물이었으나
+        # E3(top-down)에선 테이블이 밀침을 흡수해 존재 이유 소멸 + 행동→효과 지연으로
+        # credit assignment 희석·탐색 질식(dextrah10 노이즈 발산, analysis.md).
+        self.palm_pose_targets.copy_(palm_desired)
         if self.cfg.use_hand_fabric:
             # DEXTRAH PCA: finger action 5D → uncentered PCA 좌표 절대 타겟.
             # settle 동안은 z_approach(손 열림)로 억제(다물체 drop-settle, lerp 경로와 동일 의도).

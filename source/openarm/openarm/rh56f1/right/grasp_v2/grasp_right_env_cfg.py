@@ -265,17 +265,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Delta palm action (pregrasp 기준 상대 오프셋)
     # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
     # -----------------------------------------------------------------------
-    # 07.11 접근속도 재설계(범위·속도 분리): delta는 anchor 기준 "도달 박스"라 좁히면
-    # goal(z 0.45, 리프트 21cm) 도달이 물리적으로 불가(0.03 실수의 교훈). 요구 분리:
-    #  - 박스: 크게(0.35 ≈ 전체 workspace) → goal 도달 보장. rh56f1 앵커가 낮아(z~0.2)
-    #    기존 0.15로도 z 도달이 빠듯했음.
-    #  - 속도: palm_target_rate_* per-step slew-rate — probe E1 검증(1.5cm/step =
-    #    밀침 1/3·종료 1/3). 초기 랜덤 정책의 스윙도 스텝당 rate로 제한.
-    # DEXTRAH 정합: 원본도 절대 타겟+fabric 감쇠가 실효 속도 제한 — 명시적 구현.
+    # 07.12 DEXTRAH 절대 타겟 정합: delta는 anchor 기준 "도달 박스"(좁히면 goal 도달
+    # 불가 — 0.03 실수의 교훈). 속도 제한(slew)은 제거 — 측면 밀침 대응 추가물이었으나
+    # E3(top-down)에선 테이블이 밀침을 흡수해 불필요 + 행동→효과 지연이 credit
+    # assignment 를 희석(dextrah10 노이즈 발산). 실효 속도는 원본처럼 fabric 감쇠가 제한.
     palm_delta_xyz:     float = 0.35   # anchor±0.35m 도달 박스 (workspace clamp가 최종 한계)
-    palm_delta_rot_deg: float = 90.0   # anchor±90° (max_pose_angle 45 workspace가 최종 한계)
-    palm_target_rate_xyz:     float = 0.015  # m/step  — 타겟 이동 속도 상한 (E1 검증)
-    palm_target_rate_rot_deg: float = 2.0    # °/step
+    palm_delta_rot_deg: float = 45.0   # anchor±45° — DEXTRAH max_pose_angle 45 정합 (기존 90)
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
