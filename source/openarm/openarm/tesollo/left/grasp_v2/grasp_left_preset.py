@@ -1,0 +1,265 @@
+# Copyright 2025 Enactic, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Hand/robot preset metadata for 5g_grasp_left_v2 (좌팔 제어 미러).
+
+right/grasp_v2(grasp_right_preset)의 좌우 미러 버전.
+- 제어 대상: 왼팔(l_aj) + 왼손 Teosllo 20관절(l_hj)
+- 고정 대상: 오른팔 + 오른손 (RIGHT_ARM_REST_JOINT_POS)
+
+미러 규칙(generate_left_fabric_urdf.py + OpenArmTeoslloLeftPoseFabric 검증 기준):
+  q_left = SIGN * q_right (관절별 부호 매핑)
+    arm  j1~j7:               [-1,-1,-1, 1,-1,-1,-1]
+    thumb  _1~_4:             [-1,-1,-1,-1]
+    index/middle/ring _1~_4:  [-1, 1, 1, 1]
+    pinky  _1~_4:             [-1,-1, 1, 1]
+  워크스페이스: y 좌표는 y=0 평면 대칭(부호 반전).
+  palm orientation(euler_zyx): ez,ex 부호 반전, ey 유지 (fabric 기본자세와 일치).
+"""
+
+import math
+import math as _math
+
+
+# ---------------------------------------------------------------------------
+# 좌우 미러 부호 매핑 (q_left = SIGN * q_right)
+# ---------------------------------------------------------------------------
+# 손 20관절 순서(finger-major): thumb, index, middle, ring, pinky × (_1.._4)
+_HAND_SIGN = [
+    -1.0, -1.0, -1.0, -1.0,   # thumb
+    -1.0,  1.0,  1.0,  1.0,   # index
+    -1.0,  1.0,  1.0,  1.0,   # middle
+    -1.0,  1.0,  1.0,  1.0,   # ring
+    -1.0, -1.0,  1.0,  1.0,   # pinky
+]
+_ARM_SIGN = [-1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0]
+
+
+def _mirror_hand(pose_right: list) -> list:
+    """오른손 20D 관절 포즈 → 왼손(부호 매핑)."""
+    return [s * v for s, v in zip(_HAND_SIGN, pose_right)]
+
+
+def _mirror_arm(pose_right: list) -> list:
+    """오른팔 7D 관절 포즈 → 왼팔(부호 매핑)."""
+    return [s * v for s, v in zip(_ARM_SIGN, pose_right)]
+
+
+# ---------------------------------------------------------------------------
+# Joint groups (제어=왼팔 l_aj/l_hj)
+# ---------------------------------------------------------------------------
+# 통일 네이밍(openarm_tesollo_bi_rl.usd): 왼팔 l_aj_, 왼손 l_hj_<finger>_
+# 손가락 순서(finger-major) 보존: thumb,index,middle,ring,pinky
+_L_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
+LEFT_ARM_JOINT_NAMES = [f"l_aj_{i}" for i in range(1, 8)]
+LEFT_HAND_JOINT_NAMES = [f"l_hj_{f}_{j}" for f in _L_FINGERS for j in range(1, 5)]
+LEFT_ACTUATED_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_HAND_JOINT_NAMES
+
+# 고정 대상: 오른팔 + 오른손 (bi USD 우측 체인 hold)
+RIGHT_ARM_JOINT_NAMES = [f"r_aj_{i}" for i in range(1, 8)]
+RIGHT_HAND_JOINT_NAMES = [
+    f"r_hj_{f}_{i}" for f in _L_FINGERS for i in range(1, 5)
+]
+RIGHT_ARM_AND_GRIPPER_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAMES
+
+# 고정 오른팔 rest 자세: grasp_v2는 왼팔만 제어 — 오른팔은 순수 고정(장식)이므로
+# pour warmstart 자세를 유지할 이유 없음. 렌더에서 팔이 이상한 자세로 흔들리던 문제
+# 해소: 전체 0 + r_aj_4=1.57(팔꿈치 굽힘)로 깔끔한 중립 고정.
+# (right/grasp_v2 의 고정 왼팔 중립화 {l_aj_4:1.57} 와 대칭 — arm4 부호 +1이라 값 동일)
+RIGHT_ARM_REST_JOINT_POS = {
+    "r_aj_1": 0.0,
+    "r_aj_2": 0.0,
+    "r_aj_3": 0.0,
+    "r_aj_4": 1.57,
+    "r_aj_5": 0.0,
+    "r_aj_6": 0.0,
+    "r_aj_7": 0.0,
+    # 오른손 tesollo: 미사용 → 전체 0 rest (self-collision disabled)
+    **{_n: 0.0 for _n in RIGHT_HAND_JOINT_NAMES},
+}
+
+
+# ---------------------------------------------------------------------------
+# Hand links (USD / Fabrics) — 제어 왼손 l_hl_*
+# ---------------------------------------------------------------------------
+# sim USD(openarm_tesollo_bi_rl) body 이름
+HAND_BODY_NAMES_USD = [
+    "l_hl_palm",
+    "l_hl_thumb_4",
+    "l_hl_index_4",
+    "l_hl_middle_4",
+    "l_hl_ring_4",
+    "l_hl_pinky_4",
+]
+
+# Isaac USD(l_hl_*) 참조용. grasp env 의 body index 조회에 쓰인다.
+# 주의: 좌팔 fabric URDF(openarm_tesollo_left)는 우측 fabric URDF 의 미러이며
+# 내부 링크/조인트 이름을 보존한다(palm_link, rl_dg_*_tip 등). fabric 내부
+# 프레임 이름은 우측과 동일하다.
+FABRIC_HAND_BODY_NAMES = [
+    "l_hl_palm",
+    "l_hl_palm_x",
+    "l_hl_thumb_tip",
+    "l_hl_index_tip",
+    "l_hl_middle_tip",
+    "l_hl_ring_tip",
+    "l_hl_pinky_tip",
+]
+
+
+# ---------------------------------------------------------------------------
+# Start / grasp poses (오른손 값의 부호 미러)
+# ---------------------------------------------------------------------------
+_HAND_START_POSE_RIGHT = [
+    0.0, 0.0, 0.0, 0.0,   # thumb
+    0.0, 0.0, 0.0, 0.0,   # index
+    0.0, 0.0, 0.0, 0.0,   # middle
+    0.0, 0.0, 0.0, 0.0,   # ring
+    0.0, 0.0, 0.0, 0.0,   # pinky
+]
+HAND_START_POSE = _mirror_hand(_HAND_START_POSE_RIGHT)
+
+# FABRICS 접근 자세 (오른손 기준값의 미러)
+# 오른손: thumb _2=-1.57(opposition), _3=-0.5(PIP curl)
+# 왼손: 부호 반전 → thumb _2=+1.57, _3=+0.5
+_HAND_APPROACH_POSE_RIGHT = [
+    0.0, -1.57, -0.5, 0.0,   # thumb
+    0.0,  0.0,   0.0, 0.0,   # index
+    0.0,  0.0,   0.0, 0.0,   # middle
+    0.0,  0.0,   0.0, 0.0,   # ring
+    0.0,  0.0,   0.0, 0.0,   # pinky
+]
+HAND_APPROACH_POSE = _mirror_hand(_HAND_APPROACH_POSE_RIGHT)
+
+# 파지 자세 (per-finger lerp action=+1 목표) — 오른손 값의 미러
+_HAND_GRASP_POSE_RIGHT = [
+    0.0, -1.57, 1.5, 1.5,   # thumb
+    0.0,  1.6,  1.5, 1.5,   # index
+    0.0,  1.6,  1.5, 1.5,   # middle
+    0.0,  1.6,  1.5, 1.5,   # ring
+    0.0,  0.0,  1.5, 1.5,   # pinky
+]
+HAND_GRASP_POSE = _mirror_hand(_HAND_GRASP_POSE_RIGHT)
+
+# Lift-phase absolute closure anchor — 오른손 값의 미러
+_HAND_FULL_GRIP_POSE_RIGHT = [
+    0.0, -1.57, 1.8, 1.8,   # thumb
+    0.0,  1.9,  1.8, 1.8,   # index
+    0.0,  1.9,  1.8, 1.8,   # middle
+    0.0,  1.9,  1.8, 1.8,   # ring
+    0.0,  0.0,  1.8, 1.8,   # pinky
+]
+HAND_FULL_GRIP_POSE = _mirror_hand(_HAND_FULL_GRIP_POSE_RIGHT)
+
+# 팔 시작 자세 (오른팔 start 자세의 부호 미러)
+_RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0]
+LEFT_ARM_START_POSE = _mirror_arm(_RIGHT_ARM_START_POSE)
+
+
+# ---------------------------------------------------------------------------
+# Workspace / goal (y 좌표 y=0 대칭 반전)
+# ---------------------------------------------------------------------------
+# right: source=[0.27,-0.10], target=[0.27,0.10]
+#   → left: source=[0.27,+0.10], target=[0.27,-0.10]
+OBJECT_SPAWN_CENTER = [0.27, 0.10, 0.38]
+OBJECT_SPAWN_RANGE_XY = 0.06
+OBJECT_GOAL_POS = [0.27, -0.10, 0.65]
+
+# Pregrasp offset: cup 옆에서 접근 — right 는 -Y, left 는 +Y 방향
+PREGRASP_OFFSET = [0.0, 0.12, 0.05]
+
+# Pregrasp/reset palm 접근 방향 euler (deg) — env.py IK 타깃이 참조.
+# left=-90 (palm 경계 [-180°,0°] 중앙 = +y측 side-approach). right +90의 미러.
+# lstm_test1 실패 원인: env.py의 +90 하드코드가 left 경계에 0°로 clamp되어
+# pregrasp 90° 뒤틀림 → 파지 불가·palm_orient hacking 붕괴 (analysis.md 참조).
+PREGRASP_EULER_EZ_DEG = -90.0
+PREGRASP_EULER_EX_DEG = -90.0
+
+# Fabrics world 파일 — right world의 y-미러(반발체가 오른팔 영역 y<0으로 이동).
+# lstm_test2 실패 근본원인: sed 재생성이 right world 문자열을 복귀시켜
+# left_arm_body sphere·left_target_cup box가 left pregrasp 목표·물체 spawn을
+# 정확히 덮음 → fabric이 왼손을 자기 물체에서 밀어냄 (analysis.md 참조).
+FABRIC_WORLD_FILENAME = "open_tesollo_left_boxes_no_table"
+
+
+def palm_pose_mins(max_pose_angle: float) -> list:
+    # y 경계: right [-0.55, 0.22] → left 미러 [-0.22, 0.55]
+    # orientation: ez,ex 중심 -90° (right +90° 의 미러), ey 중심 0°
+    d = math.pi / 180.0
+    return [
+        0.20, -0.22, 0.20,
+        (-90.0 - max_pose_angle) * d,
+        (0.0 - max_pose_angle) * d,
+        (-90.0 - max_pose_angle) * d,
+    ]
+
+
+def palm_pose_maxs(max_pose_angle: float) -> list:
+    d = math.pi / 180.0
+    return [
+        0.65, 0.55, 0.65,
+        (-90.0 + max_pose_angle) * d,
+        (0.0 + max_pose_angle) * d,
+        (-90.0 + max_pose_angle) * d,
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Direct PD hand control (curl joints) — 제어 왼손 l_hj_*
+# ---------------------------------------------------------------------------
+# RL이 직접 제어하는 curl joints (5D action, 손가락당 1D)
+HAND_CURL_JOINT_NAMES = [
+    "l_hj_thumb_2",   # thumb curl
+    "l_hj_index_2",   # index curl
+    "l_hj_middle_2",  # middle curl
+    "l_hj_ring_2",    # ring curl
+    "l_hj_pinky_3",   # pinky curl (_1 고정이므로 _3 사용)
+]
+
+# 고정 joints (RL 제어 제외)
+HAND_FIXED_JOINT_NAMES = [
+    "l_hj_thumb_1",
+    "l_hj_index_1",
+    "l_hj_middle_1",
+    "l_hj_ring_1",
+    "l_hj_pinky_1",
+    "l_hj_pinky_2",
+]
+HAND_FIXED_JOINT_VALUES = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+# iCub distal tendon 커플링 (PIP = _3, DIP = _4)
+HAND_PIP_JOINT_NAMES = [
+    "l_hj_thumb_3",
+    "l_hj_index_3",
+    "l_hj_middle_3",
+    "l_hj_ring_3",
+    "l_hj_pinky_4",
+]
+HAND_DIP_JOINT_NAMES = [
+    "l_hj_thumb_4",
+    "l_hj_index_4",
+    "l_hj_middle_4",
+    "l_hj_ring_4",
+]
+
+# 커플링 비율 (HAND_GRASP_POSE 기준; 크기값이라 부호 무관)
+DISTAL_RATIO_PIP = [0.33, 0.71, 0.71, 0.71, 0.71]
+DISTAL_RATIO_DIP = [0.33, 0.71, 0.71, 0.71]
+
+# curl joint 절대 범위 [min, max] (rad) — 오른손 범위의 미러.
+# curl 부호맵: thumb_2=-1(반전), index_2/middle_2/ring_2=+1(유지), pinky_3=+1(유지).
+# thumb_2: right [-π, 0] → left [0, π] (부호반전 → min/max 스왑·부호반전)
+# 나머지: 부호 유지 → 범위 동일.
+CURL_JOINT_LIMITS_MIN = [0.0, 0.0, 0.0, 0.0, 0.0]
+CURL_JOINT_LIMITS_MAX = [_math.pi, 2.007, 1.955, 1.902, _math.pi / 2]

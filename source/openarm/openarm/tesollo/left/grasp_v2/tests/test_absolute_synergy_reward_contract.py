@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import torch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _text(filename: str) -> str:
+    return (ROOT / filename).read_text(encoding="utf-8")
+
+
+def _load_finger_action_utils():
+    path = ROOT / "finger_action_utils.py"
+    spec = importlib.util.spec_from_file_location("grasp_v2_finger_action_utils", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_module(filename: str, name: str):
+    path = ROOT / filename
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_synergy_action_couples_all_five_fingers() -> None:
+    # 시너지(eigengrasp) 계약: PC1(a₁) 하나로 다섯 손가락 curl 진행도가 모두
+    # 상승 — per-finger 독립 제어의 "2지 최소해"가 action 공간에서 표현 불가.
+    utils = _load_finger_action_utils()
+    syn = _load_module("tesollo_hand_synergy.py", "grasp_v2_tesollo_hand_synergy")
+
+    basis = torch.tensor(syn.HAND_SYNERGY_BASIS, dtype=torch.float32)
+    anchor = torch.tensor(syn.HAND_SYNERGY_ANCHOR, dtype=torch.float32)
+    mins = torch.tensor(syn.HAND_SYNERGY_COEFF_MINS, dtype=torch.float32)
+    maxs = torch.tensor(syn.HAND_SYNERGY_COEFF_MAXS, dtype=torch.float32)
+    # preset 의 open(APPROACH)/FULL_GRIP — 좌우 미러 수치라 리터럴 하드코드 금지
+    preset = _load_module("grasp_left_preset.py", "grasp_v2_preset_for_synergy_test")
+    open_pose = anchor.clone()
+    grip = torch.tensor(preset.HAND_FULL_GRIP_POSE, dtype=torch.float32)
+
+    # a₁ = +1 (전지 감김 축 최대), 나머지 최소
+    action = torch.tensor([[1.0, -1.0, -1.0, -1.0, -1.0]])
+    p = utils.compute_synergy_progress_targets(
+        action, basis, anchor, mins, maxs, open_pose, grip,
+    )
+    # 각 손가락 대표 curl 관절 진행도 (finger-major [thumb,index,middle,ring,pinky]×4)
+    reps = {"thumb_4": 3, "index_2": 5, "middle_2": 9, "ring_2": 13, "pinky_3": 18}
+    for name, idx in reps.items():
+        assert p[0, idx] > 0.25, f"{name} 진행도 {p[0, idx]:.3f} — 시너지 커플링 실패"
+
+    # 열림 보장 (lstm_test7 in_success 0 버그의 계약): action=-1 → 완전 열림,
+    # action=+1 → 5지 전부 감김. 계수 범위가 축별 "열림(0)↔감김(c_grip)" 정렬일 것.
+    p_open = utils.compute_synergy_progress_targets(
+        -torch.ones(1, 5), basis, anchor, mins, maxs, open_pose, grip,
+    )
+    assert p_open.max() < 0.05, f"열림 실패: max 진행도 {p_open.max():.3f}"
+    p_close = utils.compute_synergy_progress_targets(
+        torch.ones(1, 5), basis, anchor, mins, maxs, open_pose, grip,
+    )
+    for name, idx in reps.items():
+        assert p_close[0, idx] > 0.8, f"{name} 감김 실패 {p_close[0, idx]:.3f}"
+
+    # 직교정규 basis 검증
+    eye_err = (basis @ basis.T - torch.eye(5)).abs().max()
+    assert eye_err < 1e-4
+
+
+def test_finger_close_is_contact_gated_adaptive() -> None:
+    # ① 접촉-게이트 적응 폐쇄: 손가락이 중간마디(_3) 접촉까지 점진 폐쇄 후 동결.
+    # 고정 포즈 lerp(compute_lift_finger_targets) 제어를 대체.
+    env = _text("grasp_left_env.py")
+    preset = _text("grasp_left_preset.py")
+
+    assert "HAND_FULL_GRIP_POSE" in preset
+    assert "finger_close_buf" in env
+    assert "middle_binary_contact_buf" in env
+    assert "self.hand_full_grip_pose" in env
+    assert "finger_close_speed" in env
+    # 고정 lerp 제어 제거 확인
+    assert "compute_lift_finger_targets(" not in env
+    assert "self.lift_finger_pos_buf" not in env
+
+
+def test_finger_close_is_per_joint_contact_gated() -> None:
+    # 관절별 적응 폐쇄: PIP@middle, DIP@distal|tip 독립 동결, MCP 무게이트 full close.
+    # 손가락당 1-DOF(repeat_interleave 후 lerp) 제어를 대체.
+    env = _text("grasp_left_env.py")
+
+    # 관절별 (N,20) 버퍼
+    assert "self.finger_close_buf = torch.zeros(self.num_envs, NUM_HAND_DOF" in env
+    # 3개 접촉 밴드 모두 게이트 입력으로 사용
+    assert "self.binary_contact_buf.float()" in env
+    assert "self.distal_binary_contact_buf.float()" in env
+    assert "self.middle_binary_contact_buf.float()" in env
+    # 관절별 게이트 스택 → (N,20)
+    assert "gate20 = torch.stack" in env
+    # 시너지(eigengrasp) 경로: per-finger 독립 명령(cmd.repeat_interleave) 제거,
+    # PCA 계수 → 관절별 진행도 목표를 rate-limit 추종
+    assert "compute_synergy_progress_targets(" in env
+    assert "cmd.repeat_interleave(4" not in env
+    # 래칫(전진만): 양방향 추종은 h2o max-거리 보상과 결합해 "손 펴기" 국소최적
+    # (test8: f2~f4 -0.95 수렴, in_success 0). clamp 하한 0.0 필수.
+    assert ".clamp(0.0, _step)" in env
+    assert ".clamp(-_step, _step)" not in env
+    # 1-DOF lerp(close_buf를 repeat_interleave 후 lerp) 제거 확인
+    assert "self.finger_close_buf.repeat_interleave(4" not in env
+
+
+def test_lift_latch_gate_disabled_envelope_via_reward() -> None:
+    # 인벨롭 latch hard 게이트는 비활성(=0): success를 죽이면서 envelope은 못 만듦.
+    # envelope은 grasp/lift 보상 credit(soft gradient)으로 유도한다.
+    cfg = _text("grasp_left_env_cfg.py")
+    utils = _text("grasp_left_utils.py")
+
+    assert "lift_start_min_envelope_fingers: int = 0" in cfg
+    # 게이트 배선은 보존(재활성 가능), compute_lift_readiness가 지원만
+    assert "min_envelope_fingers" in utils
+
+
+def test_reward_is_dextrah_four_terms() -> None:
+    # DEXTRAH compute_rewards 이식 계약: 4항(거리 기반) + in_success_region.
+    # 접촉 synergy 항(compute_grasp_reward_terms)은 사용하지 않는다.
+    cfg = _text("grasp_left_env_cfg.py")
+    env = _text("grasp_left_env.py")
+    reward_body = env.split("def _get_rewards", 1)[1].split("return total", 1)[0]
+
+    for name in (
+        "object_goal_pos",
+        "object_goal_tol",
+        "hand_to_object_weight",
+        "hand_to_object_sharpness",
+        "object_to_goal_weight",
+        "object_to_goal_sharpness",
+        "lift_weight",
+        "lift_sharpness",
+        "finger_curl_reg_weight",
+    ):
+        assert name in cfg
+
+    for term in (
+        "hand_to_object_reward",
+        "object_to_goal_reward",
+        "finger_curl_reg",
+        "lift_reward",
+        "in_success_region",
+    ):
+        assert term in reward_body
+
+    # hand_to_object: palm+5손끝 MAX 거리 — intermediates 공용값(wrench 게이트와
+    # 동일 소스)을 reward 가 재사용
+    assert ".max(dim=-1).values" in env
+    assert "self.hand_to_object_err" in reward_body
+    # 구 접촉 synergy 코어 미사용
+    assert "compute_grasp_reward_terms(" not in reward_body
+
+
+def test_goal_is_fixed_dextrah() -> None:
+    # DEXTRAH 정렬 계약: goal = cfg 고정 절대점 (settle/reset 갱신 없음).
+    # object_init_pos 스냅샷은 object_height 로깅 baseline 으로만 유지.
+    env = _text("grasp_left_env.py")
+
+    assert "self.episode_length_buf == int(self.cfg.settle_steps)" in env
+    assert "self.object_init_pos[snap] = self.object_pos[snap]" in env
+    assert "self.object_goal[snap" not in env
+    assert "cfg.object_goal_pos" in env
+
+
+def test_obs_is_dextrah_teacher_structure() -> None:
+    # DEXTRAH teacher obs 계약 (distillation 대비 원본 동일 구조):
+    # policy = dof pos/vel noisy + hand pos/vel noisy(fabric FK) + object pose noisy
+    #          + goal + onehot + scale + actions + fabric q/qd/qdd  (193 + N_obj)
+    # critic = clean + hand_forces + measured torque + object_vel  (247 + N_obj)
+    env = _text("grasp_left_env.py")
+    obs_body = env.split("def _get_observations", 1)[1].split("def _get_rewards", 1)[0]
+
+    for term in (
+        "self.robot_dof_pos_noisy",
+        "self.robot_dof_vel_noisy",
+        "self.hand_pos_noisy",
+        "self.hand_vel_noisy",
+        "self.object_pos_noisy",
+        "self.object_rot_noisy",
+        "self.object_goal",
+        "self.multi_object_idx_onehot",
+        "self.object_scale",
+        "self.fabric_q",
+        "self.fabric_qd",
+        "self.fabric_qdd",
+        "get_link_incoming_joint_force",
+        "get_dof_projected_joint_forces",
+    ):
+        assert term in obs_body, term
+    # 구 106D 구성 제거 확인
+    assert "cup_to_fingertip" not in obs_body
+    assert "object_feature" not in obs_body
+
+    cfg = _text("grasp_left_env_cfg.py")
+    assert "NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)" in cfg
+    assert "NUM_CRITIC_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)" in cfg
+
+
+def test_adr_curriculum_is_dextrah() -> None:
+    # DEXTRAH ADR 커리큘럼 계약: wrench 0→10, spawn 0→최대·회전, reward 스케줄
+    # (lift 5→0, sharpness 15→20, curl_reg), 관측 노이즈 점진, in_success 트리거.
+    cfg = _text("grasp_left_env_cfg.py")
+    env = _text("grasp_left_env.py")
+
+    for group in (
+        '"object_wrench"', '"object_spawn"', '"object_state_noise"',
+        '"robot_state_noise"', '"reward_weights"', '"fabric_damping"',
+        '"observation_annealing"', '"robot_spawn"', '"pd_targets"',
+    ):
+        assert group in cfg, group
+    assert '"lift_weight":              (5.0, 0.0)' in cfg
+    assert "adr_trigger_threshold: float = 0.4" in cfg
+    # 트리거 = in_success 순간 평균 (DEXTRAH success_for_adr)
+    assert "maybe_increment(self.in_success_region.float().mean())" in env
+    # wrench/spawn/reward 가 ADR 파라미터를 사용
+    assert 'self._adr("robot_state_noise", "robot_joint_pos_noise")' in env
+    assert '"object_spawn", "xy_range"' in env
+    assert '"object_wrench", "max_linear_accel"' in env
+    assert '"reward_weights", "lift_weight"' in env
+    # DEXTRAH 완전 정렬 5건 (07.09):
+    # (1) physics DR: EventCfg + adr_physics_cfg (mass 0.5~3× 등) ADR 확장
+    assert "class EventCfg" in cfg
+    assert "adr_physics_cfg" in cfg
+    assert '"object_scale_mass"' in cfg
+    # (2) wrench 게이트 = hand↔object 거리 (in_success 게이트 아님)
+    assert "hand_to_object_dist_threshold" in cfg
+    assert "self.hand_to_object_err <= float(self.cfg.hand_to_object_dist_threshold)" in env
+    # (3) robot_spawn 리셋 노이즈 커리큘럼
+    assert 'self._adr("robot_spawn", "joint_pos_noise")' in env
+    # (4) 케이던스 = 5×에피소드(3000 steps, DEXTRAH min_steps_for_dr_change)
+    assert "adr_increment_interval: int  = 3000" in cfg
+    # (5) pd velocity feedforward factor (1→0)
+    assert '"pd_targets", "velocity_target_factor"' in env
+
+
+def test_palm_target_rate_limit() -> None:
+    # palm 목표 rate limit 계약 (07.11): 정책의 목표 순간이동(bang-bang)이
+    # 접근 밀침·리프트 후 스윙을 만듦 — 스텝당 변화량을 기구적으로 제한.
+    # palm_delta_xyz 는 도달 범위(속도 아님) — goal 기하상 0.15 미만 축소 금지.
+    cfg = _text("grasp_left_env_cfg.py")
+    env = _text("grasp_left_env.py")
+
+    assert "palm_rate_xyz_per_step:     float = 0.04" in cfg
+    assert "palm_rate_rot_deg_per_step: float = 8.0" in cfg
+    assert "palm_delta_xyz:     float = 0.15" in cfg
+    assert "self.palm_rate_limits" in env
+    assert "(palm_pose - self.palm_pose_targets).clamp(" in env
+    # settle 동안 팔 동결: 낙하 중 물체를 팔로 쳐내는 것 방지 (finger 게이트 공유)
+    assert "in_settle, self.pregrasp_palm_pose_buf, palm_pose" in env
+
+
+def test_single_phase_no_scripted_lift() -> None:
+    # DEXTRAH 단일 phase 계약: scripted joint7 lift/latch/freeze 없이
+    # 정책이 전 구간 Fabrics arm을 연속 제어한다.
+    env = _text("grasp_left_env.py")
+    apply_body = env.split("def _apply_action", 1)[1].split("def ", 1)[0]
+
+    assert "lift_progress" not in apply_body
+    assert "arm_target = self.fabric_q[:, :NUM_ARM_DOF]" in apply_body
+    assert "compute_lift_readiness" not in env
+    assert "is_lift_phase" not in env
