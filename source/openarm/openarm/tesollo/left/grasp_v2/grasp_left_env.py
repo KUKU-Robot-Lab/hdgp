@@ -386,11 +386,9 @@ class GraspLeftEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.cup   = RigidObject(self.cfg.cup_cfg)
         self.table = RigidObject(self.cfg.table_cfg)
 
         self.scene.articulations["robot"] = self.robot
-        self.scene.rigid_objects["cup"]   = self.cup
         self.scene.rigid_objects["table"] = self.table
 
         # Actor: fingertip 개별 ContactSensor.
@@ -432,7 +430,16 @@ class GraspLeftEnv(DirectRLEnv):
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+        # ★다물체 스폰 순서 (07.12 버그 수정, rh56f1 d674952와 동일): clone → cup(MultiAsset) 생성.
+        # RigidObject(cup_cfg)는 생성 시점에 즉시 spawn하는데(asset_base.py — leaf "Cup"은
+        # non-regex), clone 이전엔 env_0만 존재해 MultiAssetSpawner가 물체[0] 하나만 spawn
+        # → clone(copy_from_source=True)이 그걸 전 env에 복제 = 전 env 동일 물체 버그
+        # (probe 실측 /tmp/probe_tesol2.log: 16env 전부 visdex[0]='104738', unique=1).
+        # clone을 먼저 하면 spawn 시점에 env prim 전부 존재 → env_i % N 결정적 배정 정상화.
         self.scene.clone_environments(copy_from_source=True)
+        self.cup = RigidObject(self.cfg.cup_cfg)
+        self.scene.rigid_objects["cup"] = self.cup
 
     # ------------------------------------------------------------------
     # Geometric Fabrics 초기화

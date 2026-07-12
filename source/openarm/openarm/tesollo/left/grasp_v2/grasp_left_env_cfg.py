@@ -75,7 +75,7 @@ _PRIMITIVE_ALL: tuple[str, ...] = _PRIMITIVE_CURRICULUM_STAGE1 + (
 _VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
 _VISDEX_NAMES: tuple[str, ...] = tuple(sorted(
     _n for _n in _os.listdir(_VISDEX_ROOT)
-    if _os.path.isdir(_os.path.join(_VISDEX_ROOT, _n))
+    if _os.path.isfile(_os.path.join(_VISDEX_ROOT, _n, f"{_n}.usd"))
 )) if _os.path.isdir(_VISDEX_ROOT) else ()
 
 # 활성 물체군: visdex 153종. primitives 로 되돌리려면
