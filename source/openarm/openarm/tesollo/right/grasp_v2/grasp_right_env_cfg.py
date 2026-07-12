@@ -33,14 +33,28 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg, GroundPlaneCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.utils import configclass
 
+import math as _math
 import os as _os
 
+import warp as wp
+
 from openarm import OPENARM_ROOT_DIR
-from .grasp_right_constants import NUM_OBS_BASE, NUM_ACTIONS, NUM_CRITIC_OBS_BASE
+from .grasp_right_constants import (
+    NUM_OBS_BASE, NUM_ACTIONS, NUM_CRITIC_OBS_BASE, NUM_STUDENT_OBS,
+)
 from .grasp_right_preset import (
+    CAMERA_CLIPPING_RANGE,
+    CAMERA_D_MAX,
+    CAMERA_D_MIN,
+    CAMERA_FOCAL_LENGTH,
+    CAMERA_HORIZONTAL_APERTURE,
+    CAMERA_IMG_HEIGHT,
+    CAMERA_IMG_WIDTH,
+    CAMERA_POS,
+    CAMERA_ROT,
     HAND_BODY_NAMES_USD,
     LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
     LEFT_ARM_REST_JOINT_POS,
@@ -49,6 +63,30 @@ from .grasp_right_preset import (
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
+
+
+def _make_cam_matrix(width: int, height: int, focal: float, aperture: float):
+    """depth normal_noise 커널이 픽셀→광선 역투영에 쓰는 정규화 투영행렬.
+
+    DEXTRAH 규약: a = focal_px/(W/2) = 1/tan(hfov/2), b = focal_px/(H/2).
+    주점(cx, cy) 오프셋은 원본과 동일하게 넣지 않는다 — 표면 법선 추정용이라
+    전 픽셀에 동일한 shear 가 걸릴 뿐 노이즈 특성에 영향이 없다.
+    """
+    fov = 2.0 * _math.atan(aperture / (2.0 * focal))
+    focal_px = width * 0.5 / _math.tan(fov / 2.0)
+
+    mat = wp.mat44f()
+    mat[0, 0] = focal_px / (width * 0.5)
+    mat[1, 1] = focal_px / (height * 0.5)
+    mat[2, 3] = -1.0
+    mat[3, 2] = 1.0e-3
+    return mat
+
+
+_CAM_MATRIX = _make_cam_matrix(
+    CAMERA_IMG_WIDTH, CAMERA_IMG_HEIGHT,
+    CAMERA_FOCAL_LENGTH, CAMERA_HORIZONTAL_APERTURE,
+)
 
 # ---------------------------------------------------------------------------
 # grasp_v2 파지 대상 물체 (다물체): primitives
@@ -621,6 +659,78 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         history_length=1,
         track_air_time=False,
     )
+
+    # -----------------------------------------------------------------------
+    # Distillation (teacher → vision student) — RealSense D435i mono RGB-D
+    #
+    # distillation=False 가 기본. teacher(PPO) 학습 경로는 아래 설정을 일절 타지 않는다.
+    # True 로 켜면: TiledCamera 활성 + obs dict 가 4-key (policy/expert_policy/img/rgb).
+    # 이때 "policy" 는 student obs(185, 물체 미관측)로 바뀌고 teacher obs 는
+    # "expert_policy" 로 이동한다 — teacher 관측 구조 자체는 변경 없음.
+    # -----------------------------------------------------------------------
+    distillation: bool = False
+
+    num_student_observations: int = NUM_STUDENT_OBS     # 185 (물체 privileged state 제외)
+    num_teacher_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)  # 193 + N_obj
+
+    img_width:  int = CAMERA_IMG_WIDTH
+    img_height: int = CAMERA_IMG_HEIGHT
+    d_min: float = CAMERA_D_MIN
+    d_max: float = CAMERA_D_MAX
+
+    tiled_camera_cfg: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Camera",
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=CAMERA_POS, rot=CAMERA_ROT, convention="ros"
+        ),
+        data_types=["rgb", "depth"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=CAMERA_FOCAL_LENGTH,
+            focus_distance=400.0,
+            horizontal_aperture=CAMERA_HORIZONTAL_APERTURE,
+            clipping_range=CAMERA_CLIPPING_RANGE,
+        ),
+        width=CAMERA_IMG_WIDTH,
+        height=CAMERA_IMG_HEIGHT,
+    )
+
+    # depth 도메인 랜덤화 (D435i 스테레오 IR 깊이 노이즈 모사)
+    aug_depth: bool = True
+    aux_coeff: float = 1.0        # aux head(object_pos 회귀) 손실 가중
+
+    # normal_noise 커널이 픽셀→광선 역투영에 쓰는 정규화 투영행렬.
+    # a = 1/tan(hfov/2), b = a * W/H  (DEXTRAH 원본 규약: 주점 오프셋 없음)
+    cam_matrix = _CAM_MATRIX
+    depth_randomization_cfg_dict: dict = field(default_factory=lambda: {
+        "pixel_dropout_and_randu": {
+            "p_dropout": 0.0125 / 4,
+            "p_randu": 0.0125 / 4,
+            "d_min": CAMERA_D_MIN,
+            "d_max": CAMERA_D_MAX,
+        },
+        "sticks": {
+            "p_stick": 0.001 / 4,
+            "max_stick_len": 18.0,
+            "max_stick_width": 3.0,
+            "d_min": CAMERA_D_MIN,
+            "d_max": CAMERA_D_MAX,
+        },
+        "correlated_noise": {
+            "sigma_s": 1.0 / 2,
+            "sigma_d": 1.0 / 6,
+            "d_min": CAMERA_D_MIN,
+            "d_max": CAMERA_D_MAX,
+        },
+        "normal_noise": {
+            "sigma_theta": 0.01,
+            "cam_matrix": _CAM_MATRIX,
+            "d_min": CAMERA_D_MIN,
+            "d_max": CAMERA_D_MAX,
+        },
+    })
+
+    # distillation rollout 은 성공 후 조기 종료 (DEXTRAH success_timeout)
+    success_timeout: int = 60
 
     # -----------------------------------------------------------------------
     # 컵 설정

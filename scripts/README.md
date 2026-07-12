@@ -16,6 +16,7 @@ _HDGP_ROOT = Path(__file__).resolve().parents[2]   # scripts/<dir>/x.py → hdgp
 | `tools/` | 상시 사용하는 핵심 도구. `parse_tfevents.py`, `record_test_snapshot.py`, `openarm_fk.py`, `list_envs.py`, `confirm_env.py`, `freeze_run_analysis.py` |
 | `reinforcement_learning/` | RL 학습·재생 진입점 (`rl_games/train.py`, `rl_games/play.py`) |
 | `reinforcement_learning/probes/` | 일회성 확인 스크립트 (07.06 live-policy-fluid 평가의 `p1`~`p4`, `verify_fluid_*`, `replay_pour_fluid.py`) |
+| `distillation/` | teacher(state) → student(vision, D435i RGB-D) DAgger 증류 진입점. **torchrun 필수** (자체 README 참조) |
 | `imitation_learning/` | BC / robomimic 학습 |
 | `analysis/` | TFEvents 파싱 및 실험 분석 |
 | `warm_states/` | grasp 성공 상태 수집 → pour warm start (`collect_*`, `save_*_terminal_states`, `balance_*`, `migrate_*`) |

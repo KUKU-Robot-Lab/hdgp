@@ -232,3 +232,31 @@ DISTAL_RATIO_DIP = [0.33, 0.71, 0.71, 0.71]
 # curl joint 절대 범위 [min, max] (rad)
 CURL_JOINT_LIMITS_MIN = [-_math.pi, 0.0,  0.0,  0.0,  0.0]
 CURL_JOINT_LIMITS_MAX = [0.0, 2.007, 1.955, 1.902, _math.pi / 2]
+
+# ---------------------------------------------------------------------------
+# Distillation 카메라 — RealSense D435i (mono RGB-D)
+#
+# intrinsics: D435i depth 스트림 실측 사양(1280x720, HFOV 87°/VFOV 58°)에서 유도.
+#   16:9 를 유지해야 FOV가 맞는다 — DEXTRAH 원본의 4:3(320x240)을 그대로 쓰면
+#   같은 HFOV에서 VFOV가 71°로 부풀어 실제 센서와 어긋난다.
+#   clipping 근거리 0.3m = D435i 최소 측정거리. 원본의 0.01m는 실기에 존재하지 않는
+#   관측이라 그대로 학습시키면 sim2real 갭이 된다.
+#
+# extrinsics: !!! PLACEHOLDER — 실제 마운트 후 hand-eye 캘리브레이션 값으로 교체할 것 !!!
+#   현재 값은 작업공간(물체 스폰 0.27, -0.10, 0.297 / goal 0.27, -0.10, 0.45)을
+#   정면 대각 위에서 내려다보도록 look-at 으로 계산한 것(목표까지 0.87m, 하향 30°).
+#   left 미러 시 y 부호와 쿼터니언을 함께 뒤집어야 한다.
+# ---------------------------------------------------------------------------
+CAMERA_IMG_WIDTH  = 320
+CAMERA_IMG_HEIGHT = 180        # 16:9 — D435i depth 종횡비
+CAMERA_FOCAL_LENGTH       = 20.0
+CAMERA_HORIZONTAL_APERTURE = 37.9586   # 2*focal*tan(87°/2) → HFOV 87°
+CAMERA_CLIPPING_RANGE = (0.3, 3.0)     # D435i: 최소 0.3m, 실사용 상한 3m
+
+CAMERA_POS = [1.05, -0.10, 0.75]                       # PLACEHOLDER
+CAMERA_ROT = [0.354477, -0.6118382, -0.6118382, 0.354477]  # (w,x,y,z), ros convention
+
+# depth 유효 밴드 — 이 밖의 픽셀은 0으로 죽인다.
+# 카메라~물체 0.87m, 카메라~테이블 뒤편 ~1.3m 를 포괄.
+CAMERA_D_MIN = 0.3
+CAMERA_D_MAX = 1.5

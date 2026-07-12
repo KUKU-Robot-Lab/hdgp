@@ -96,10 +96,18 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 #   + object_pos 3 + object_rot 4 + object_vel 6 + object_goal 3
 #   + [onehot] + object_scale 1 + actions 11 + fabric q/qd/qdd 81
 #   = 247 + N_obj   (DEXTRAH 원본 "247 + num_objects"와 동일 구조)
+#
+# Student obs (distillation, 185 — onehot 없음):
+#   policy obs에서 물체 privileged state 전량 제거
+#   (object_pos_noisy 3 + object_rot_noisy 4 + onehot N_obj + object_scale 1)
+#   → 물체 정보는 D435i RGB-D에서 추론해야 하므로 관측에서 뺀다.
+#   robot_dof_pos_noisy 27 + robot_dof_vel_noisy 27 + hand_pos_noisy 18
+#   + hand_vel_noisy 18 + object_goal 3 + actions 11 + fabric q/qd/qdd 81 = 185
 # ---------------------------------------------------------------------------
 NUM_HAND_POINTS = 6           # palm + 5 fingertips (DEXTRAH hand bodies)
 NUM_OBS_BASE        = 193     # onehot 제외 policy obs
 NUM_CRITIC_OBS_BASE = 247     # onehot 제외 critic obs
+NUM_STUDENT_OBS     = 185     # distillation student (onehot 무관 — 물체 정보 미관측)
 # 실제 차원은 env_cfg 에서 + len(active_object_names) 로 확정
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3

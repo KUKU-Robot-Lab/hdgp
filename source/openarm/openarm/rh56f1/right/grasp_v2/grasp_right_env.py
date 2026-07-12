@@ -852,6 +852,16 @@ class GraspRightEnv(DirectRLEnv):
                 self.episode_length_buf < int(self.cfg.settle_steps)
             ).unsqueeze(-1)
             p_star = torch.where(in_settle, torch.zeros_like(p_star), p_star)
+            # 접근 거리 게이트 (07.13, 사용자 지적 "접근 전에 닫히면 절대 못 잡음"):
+            # 전진-only 래칫은 랜덤 탐색 노이즈만으로 settle 직후 수십 step 내 영구
+            # 감김 → 하강을 배우기 전에 항상 주먹 → 파지 신호 원천 차단(d12 grip
+            # 0.000, d11의 접촉 파도조차 소멸·감긴 손 리치 축소로 h2o 악화).
+            # 손이 물체 근접일 때만 래칫 전진 허용 — 접근 중엔 열린 approach 자세
+            # 유지(리치 보존, d11 접근 자산 복원). 이미 감긴 buf 는 래칫이라 유지.
+            _near = (
+                self.hand_to_object_err < float(self.cfg.finger_close_dist_gate)
+            ).unsqueeze(-1)
+            p_star = torch.where(_near, p_star, torch.zeros_like(p_star))
             # 손가락 단위 동결(freeze_enable 시): tip|middle 접촉하면 해당 손가락 조임 정지.
             if self.cfg.synergy_freeze_enable:
                 finger_gate = (

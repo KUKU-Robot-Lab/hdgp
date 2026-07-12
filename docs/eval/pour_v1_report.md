@@ -83,14 +83,16 @@ sim2real 이식성 확보. eval에서 88% 이송을 달성했으므로 이 축�
 ## 4. Action 구조 & 타당성
 
 - **명목 12D** = palm pose 6 + nullspace 1 + per-finger 5.
-- **이번 최종 config(deep_tilt_boot1) 유효 6D**: `_pre_physics_step`이 `actions[:, :6]`(palm pose)만 사용,
-  손은 episode 내내 **grasp_hold freeze**, nullspace 미적용.
-- 6D palm pose(x,y,z, euler ez,ey,ex) → **Fabrics IK → 오른팔 7 DOF** → EMA smoothing.
+- **이번 최종 config(deep_tilt_boot1) 유효 7D**: `_pre_physics_step`이 `actions[:, :6]`(palm pose) +
+  `actions[:, 6]`(nullspace α)를 사용. **nullspace α 활성**(`nullspace_action_scale=1.0`, L1312-1316) →
+  잉여 1-DOF(elbow swivel) 제어. **손가락(action[7:12])만 grasp_hold freeze**(inert).
+- palm 6D(x,y,z, euler ez,ey,ex; index 4=β 채널) + α 1D → **Fabrics IK → 오른팔 7 DOF** → EMA smoothing.
 
 **타당성**:
-- 손 freeze + palm-pose IK 제어로 **탐색공간을 컵 자세로 축소** → 안정 학습(붕괴 0)에 기여.
-- **한계(개선점)**: action head가 12D인데 6D만 사용 → nullspace 1 + hand 5 = 6개 출력이 inert.
-  성능엔 무해(fixed_sigma로 정책이 무시 학습)하나, 순수 6D head로 축소하면 파라미터·탐색 효율 소폭 개선 여지.
+- 손가락 freeze + palm-pose·α IK 제어로 **탐색공간을 축소** → 안정 학습(붕괴 0)에 기여.
+  (파지 자체는 grasp 정책 warmstart에서 손가락을 움직여 형성 → pour는 그 자세를 고정.)
+- **한계(개선점)**: action head가 12D인데 **7D만 사용** → hand 5 = 5개 출력이 inert.
+  성능엔 무해(fixed_sigma로 정책이 무시 학습)하나, 12D→7D head로 축소하면 파라미터·탐색 효율 소폭 개선 여지.
 
 ---
 
@@ -162,12 +164,12 @@ total = r_hold + r_grasp + r_approach + r_introt + r_tilt + r_tilt_delta
 
 - **obs**: 배포가능 55D actor + 특권 144D critic → sim2real 지향 + 안정 학습. 정보 충분성 eval로 입증.
 - **network**: LSTM 512 + entropy_coef 0 + AMP off → 600-step 장기과제 수렴(17→4.2), 붕괴 0.
-- **action**: 6D palm-pose IK(손 freeze) → 탐색 축소·안정. (12D head 중 6D 미사용은 무해한 개선여지.)
+- **action**: 7D(palm 6 + nullspace α 1) IK, 손가락 freeze → 탐색 축소·안정. (12D head 중 hand 5 미사용은 무해한 개선여지.)
 - **reward**: r_pour outcome 재설계 + r_aim ADR가 핵심 동력. spill 직접처벌 없이 간접 억제 성공.
 - **결과**: 성공률 **93.1%**, 평균 이송 **17.67/20**, 20개 전량 **33.8%**, 완전실패 **1.2%**.
 
 ### 한계 / 향후 개선
-1. **12D→6D action head 축소**로 파라미터·탐색 효율 정리(성능 무해).
+1. **12D→7D action head 축소**(inert hand 5 제거)로 파라미터·탐색 효율 정리(성능 무해).
 2. **완전실패 1.2%(25/2101)** 원인 진단 — warmstart palm-clamp(0.12m) decouple 경고와 상관 조사.
 3. mouth_xy 0.022m는 우수하나, 잔여 spill 10.8%의 상한 개선은 r_aim ADR을 15→상향 재실험 여지(진동 이력 주의).
 4. 실기 이식 시 왼팔 FK 기반 target 관측의 실 encoder 노이즈 강건성 검증.
