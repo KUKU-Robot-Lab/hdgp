@@ -331,9 +331,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_ready_hold_steps: int = 8   # 접촉 N개를 연속 hold하면 lift 래치 (잡으면 바로 리프트)
     lift_start_min_envelope_fingers: int = 0  # latch 인벨롭 게이트 제거(0=비활성). envelope은 grasp/lift 보상 credit으로 유도(hard 게이트 대체)
     finger_close_speed: float = 0.05  # ① 접촉-게이트 적응 폐쇄: 손가락 폐쇄 진행 속도/step (중간마디 접촉 시 동결)
-    # 래칫 전진 허용 거리 (hand_to_object_err = palm+5tip MAX 거리 기준).
-    # E3 실측: anchor 0.137 / 하강 후 ~0.10-0.12 → 0.12 = 유의미하게 내려간 뒤에만 감김.
-    finger_close_dist_gate: float = 0.12
+    # 래칫 전진 허용 게이트: palm↔물체 수직 간격(m). E3 실측 anchor 0.108 /
+    # 하강 후 0.045 → 0.07 = 유의미하게 하강한 뒤에만 감김 허용.
+    finger_close_dist_gate: float = 0.07
     # synergy 접촉 동결(g3/g4): 접촉 시 조임 멈춤 → 파지력 약화(grip 0.90 정체).
     # False=동결 제거 → 손가락이 물체를 계속 조임(물리 collision이 관통/형상적응 담당, DEXTRAH식 파지력).
     # primitives 복귀는 True. 기본 False(파지력 확보).
