@@ -233,6 +233,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     pregrasp_offset_z:     float = -0.15
     # r_aj_7(손목)을 이만큼 낮춰 palm을 rim→물체 중심 높이로 내림(probe 확정, lstm_test1 검증).
     pregrasp_r_aj7_bias:   float = 0.3
+    # settle 종료 시 안착된 물체 위치로 anchor xy 재정렬 (drop-settle 롤링 보정).
+    reanchor_after_settle: bool  = True
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005

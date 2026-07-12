@@ -728,6 +728,20 @@ class GraspRightEnv(DirectRLEnv):
         snap = self.episode_length_buf == int(self.cfg.settle_steps)
         if snap.any():
             self.object_init_pos[snap] = self.object_pos[snap]
+            # ---- re-anchor (07.12): drop-settle 중 롤링으로 물체가 스폰점을 벗어나
+            # anchor 가 빈 곳을 가리킴(probe: xy drift mean 7.3cm/max 37cm → h2o 정체
+            # ·grip 0.02 의 기하 원인). 안착 위치 기준으로 anchor xy 재정렬 — slew 가
+            # 있어 palm 은 rate 이내로 부드럽게 따라감. offsets 를 당기는 방식은 스폰
+            # 충돌(probe A: 손끝이 낙하 지점에 들어가 물체 쳐올림)이라 불가.
+            if self.cfg.reanchor_after_settle:
+                _new_xy = (
+                    self.object_pos[snap, :2] + self.pregrasp_offset[:2].unsqueeze(0)
+                )
+                _new_xy = torch.max(
+                    torch.min(_new_xy, self.palm_maxs[:2].unsqueeze(0)),
+                    self.palm_mins[:2].unsqueeze(0),
+                )
+                self.pregrasp_palm_pose_buf[snap, :2] = _new_xy
 
         # ---- Fabrics arm 제어 (전 구간 정책 연속 제어, scripted lift 없음) ----
         # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta(도달 박스)
