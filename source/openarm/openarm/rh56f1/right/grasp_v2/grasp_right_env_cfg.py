@@ -209,12 +209,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
-    # DEXTRAH 원본 재현(07.10 사용자 결정: "로봇만 다르고 동일하게"): hand = PCA5.
-    # finger action 5D를 uncentered PCA 좌표로 해석, fabric hand attractor(hand_mode="pca")가
-    # 손 6관절 적분 — DEXTRAH kuka_allegro(팔 IK + hand PCA5)와 동일 제어 구조.
-    # False로 되돌리면 per-finger lerp(tesollo 매칭 경로). basis PC1=97.9%(1D 성향)는
-    # 다물체 성공 grasp 수집 후 재추출 예정.
-    use_hand_fabric:            bool  = True
+    # 07.13 재구성(사용자 결정 "tesollo는 되는데 여긴 안 됨"): hand = 시너지+래칫.
+    # False = 시너지(eigengrasp) p* + 전진-only 래칫 (tesollo 91fb455·d250ae5 이식,
+    # tesollo test12 성공 경로). dextrah11 실증: PCA 절대 타겟(양방향, True)은
+    # "열림 포화" 국소최적(f1=-0.99, 접촉 파도 3회 소멸·리프트 0) — tesollo test8
+    # '손 펴기'와 동일 병리. True로 되돌리면 DEXTRAH PCA fabric 경로.
+    use_hand_fabric:            bool  = False
     hand_mode:                  str   = "pca"   # use_hand_fabric=True일 때만 사용 ("pca"|"direct")
     max_pose_angle:             float = 45.0   # DEXTRAH README teacher 레시피 45°. palm rpy 공칭(180,0,90)±45 — 손바닥 방향을 action 공간에서 constrain(천장 지향 구조 차단). tesollo 0fa6fb3 정렬
     fabrics_max_objects_per_env: int  = 8

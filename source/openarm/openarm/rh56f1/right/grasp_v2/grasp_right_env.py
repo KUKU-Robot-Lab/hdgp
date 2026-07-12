@@ -102,7 +102,17 @@ from .grasp_right_preset import (
     PREGRASP_EULER_EZ_DEG,
     PREGRASP_EULER_EX_DEG,
 )
-from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
+from .finger_action_utils import (
+    compute_grasp_finger_targets,
+    compute_lift_finger_targets,
+    compute_synergy_progress_targets,
+)
+from .rh56f1_hand_synergy import (
+    HAND_SYNERGY_BASIS,
+    HAND_SYNERGY_ANCHOR,
+    HAND_SYNERGY_COEFF_MINS,
+    HAND_SYNERGY_COEFF_MAXS,
+)
 from .grasp_right_utils import (
     compute_joint7_lift_wait_target,
     scale,
@@ -229,6 +239,13 @@ class GraspRightEnv(DirectRLEnv):
         self.hand_pca_maxs = to_torch(HAND_PCA_MAXS, device=self.device)   # (5,)
         _pca_m = to_torch(RH56F1_HAND_PCA_MATRIX, device=self.device)      # (5, 6)
         self.hand_pca_z_approach = _pca_m @ self.hand_open_pose            # (5,)
+
+        # 시너지(eigengrasp) basis — rh56f1_grasp_pca5.pt 리터럴(rh56f1_hand_synergy).
+        # use_hand_fabric=False 경로: action 5D → 계수 → 관절 진행도 p* → 래칫.
+        self.hand_synergy_basis  = to_torch(HAND_SYNERGY_BASIS, device=self.device)      # (5,6)
+        self.hand_synergy_anchor = to_torch(HAND_SYNERGY_ANCHOR, device=self.device)     # (6,)
+        self.hand_synergy_mins   = to_torch(HAND_SYNERGY_COEFF_MINS, device=self.device) # (5,)
+        self.hand_synergy_maxs   = to_torch(HAND_SYNERGY_COEFF_MAXS, device=self.device) # (5,)
         hand_limits = self.robot.data.soft_joint_pos_limits[0, self.hand_dof_indices, :]
         self.hand_joint_lower_limits = hand_limits[:, 0].contiguous()
         self.hand_joint_upper_limits = hand_limits[:, 1].contiguous()
@@ -811,17 +828,30 @@ class GraspRightEnv(DirectRLEnv):
             )
             self.hand_joint_targets.copy_(hand_target)
         else:
-            # ---- 손가락별 접촉-게이트 적응 폐쇄 (RH56F1 6-DOF underactuated wrap) ----
-            # RH56F1 손 관절(6): [thumb_1, thumb_2, index_1, middle_1, ring_1, little_1].
-            # 5D action = 손가락별 폐쇄 속도 명령[0,1] → 관절 매핑 counts=[2,1,1,1,1](엄지만 2관절).
-            # tesollo 4-마디 phalanx gate(_3/_4)는 RH56F1 2-마디엔 부재 → 손가락 단위 gate로 단순화.
-            cmd = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)          # (N,5) ∈ [0,1]
+            # ---- 시너지(eigengrasp) + 래칫 폐쇄 (tesollo 91fb455·d250ae5 이식, 07.13) ----
+            # 5D action = RH56F1 grasp PCA5 계수(rh56f1_hand_synergy, uncentered) →
+            # 관절별 목표 진행도 p* → 전진-only 래칫. dextrah11 실증: PCA 절대 타겟
+            # (양방향)은 h2o max-거리와 결합해 "열림 포화" 국소최적(f1=-0.99, 접촉
+            # 파도 3회 전부 소멸·리프트 0) — tesollo test8 '손 펴기'와 동일 병리를
+            # tesollo 가 래칫으로 차단한 전례를 따름. 정책은 "언제/얼마나 감기
+            # 시작할지"만 결정, 재개방은 reset 에서만.
+            p_star = compute_synergy_progress_targets(
+                finger_action,
+                self.hand_synergy_basis, self.hand_synergy_anchor,
+                self.hand_synergy_mins, self.hand_synergy_maxs,
+                self.hand_open_pose, self.hand_full_grip_pose,
+            )                                                           # (N,6) ∈ [0,1]
+            # thumb_1(외전) 축 반전 보정: uncentered basis 의 thumb_1 PCA 범위가
+            # open(1.57)→grip(1.0) 진행 축과 역방향 (tesollo test7 축정렬 버그 2b13d99
+            # 와 동일 계열 — 방치 시 action -1 이 외전을 감고 +1 이 opposition 해제).
+            # 외전은 4지 굴곡 합의에 동기: 접근 중 opposition 유지, 감김에 비례해 1.0.
+            p_star[:, 0] = p_star[:, 2:].mean(dim=1)
             # 다물체 drop-settle: episode 초기 settle_steps 동안 손가락 폐쇄 억제 →
             # 물체(DEXTRAH식 고정 높이 spawn)가 낙하해 테이블에 안착(grasp_v1 정지물체 전제).
             in_settle = (
                 self.episode_length_buf < int(self.cfg.settle_steps)
             ).unsqueeze(-1)
-            cmd = torch.where(in_settle, torch.zeros_like(cmd), cmd)
+            p_star = torch.where(in_settle, torch.zeros_like(p_star), p_star)
             # 손가락 단위 동결(freeze_enable 시): tip|middle 접촉하면 해당 손가락 조임 정지.
             if self.cfg.synergy_freeze_enable:
                 finger_gate = (
@@ -830,12 +860,14 @@ class GraspRightEnv(DirectRLEnv):
                 ).clamp(max=1.0)                                        # (N,5)
             else:
                 # 동결 제거: 손가락이 물체를 계속 조임(물리 collision이 관통/형상적응 담당) → 파지력.
-                finger_gate = torch.zeros_like(cmd)                     # (N,5)
+                finger_gate = torch.zeros(
+                    self.num_envs, 5, device=self.device
+                )                                                       # (N,5)
             counts = torch.tensor([2, 1, 1, 1, 1], device=self.device)  # thumb 2관절, 나머지 1관절
             gate6 = finger_gate.repeat_interleave(counts, dim=1)        # (N,6)
-            cmd6  = cmd.repeat_interleave(counts, dim=1)                # (N,6) 손가락 명령 → 관절
-            advance = float(self.cfg.finger_close_speed) * cmd6 * (1.0 - gate6)
-            self.finger_close_buf = (self.finger_close_buf + advance).clamp(0.0, 1.0)  # (N,6)
+            _step = float(self.cfg.finger_close_speed)
+            delta = (p_star - self.finger_close_buf).clamp(0.0, _step) * (1.0 - gate6)
+            self.finger_close_buf = (self.finger_close_buf + delta).clamp(0.0, 1.0)  # (N,6)
             hand_target = torch.lerp(
                 self.hand_open_pose.unsqueeze(0).expand(self.num_envs, -1),
                 self.hand_full_grip_pose.unsqueeze(0).expand(self.num_envs, -1),
