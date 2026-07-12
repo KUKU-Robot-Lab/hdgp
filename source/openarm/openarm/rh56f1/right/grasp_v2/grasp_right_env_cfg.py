@@ -87,12 +87,20 @@ _ACTIVE_OBJECT_ROOT: str = _VISDEX_ROOT
 _ACTIVE_OBJECT_NAMES: tuple[str, ...] = _VISDEX_NAMES
 
 
+# 물체 스케일 커리큘럼 (07.13, 153종 스캔 근거): scale 1.0에선 RH56F1 envelope 이
+# 대부분 물체에 닫힘(scripted 리프트 1/153). 0.75에서 존재 증명(cup +14.6cm) —
+# 축소 물체로 성공 표본을 만들고, 성공 후 1.0 복원 run 으로 커리큘럼(grasp_v1
+# 컵 축소 전례). run 간 커리큘럼 — 스폰 시점 고정이라 학습 중 변경 불가.
+OBJECT_SCALE_CURRICULUM: float = 0.75
+
+
 def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":
     """단일 물체 USD 의 spawn cfg (cup 과 동일 rigid/articulation 속성)."""
+    _s = OBJECT_SCALE_CURRICULUM
     return sim_utils.UsdFileCfg(
         usd_path=_os.path.join(_ACTIVE_OBJECT_ROOT, name, f"{name}.usd"),
         activate_contact_sensors=True,
-        scale=(1.0, 1.0, 1.0),
+        scale=(_s, _s, _s),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             articulation_enabled=False,
         ),
@@ -229,12 +237,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # E3 top-down (07.12, probe sweep B/D 검증): palm이 물체 상공(스폰+0.08)에서
     # 아래보기로 시작 — 스폰·하강 중 물체 무교란(불도저 해소), scripted 파지-리프트 재현.
     # 측면 세팅(-0.07/-0.08/-0.15, ex=90)은 도주로 열림으로 파지 불성립(analysis.md).
-    pregrasp_offset_x:     float = 0.0
-    pregrasp_offset_y:     float = -0.01
+    # 07.13 심도 재탐색(sweep A/B): aj7 0.6 + offsets 보정 → 하강 floor 0.300,
+    # palm-obj xy 잔차 dx+0.03/dy+0.02 (aj7 치우침 +x0.072/-y0.034 상쇄).
+    pregrasp_offset_x:     float = -0.07
+    pregrasp_offset_y:     float = 0.02
     pregrasp_offset_z:     float = 0.08
-    # r_aj_7(손목) bias: top-down 하강 심도 확보 (0→palm floor 0.339, 0.5→0.324,
-    # 0.8은 xy 정렬 붕괴). probe sweep B/D에서 0.4~0.5가 스윗스팟.
-    pregrasp_r_aj7_bias:   float = 0.5
+    # r_aj_7(손목) bias: top-down 하강 심도 확보 (0.5→floor 0.324, 0.6→0.300,
+    # 0.8은 xy 정렬 붕괴 — offsets 보정으로 0.6까지 사용 가능).
+    pregrasp_r_aj7_bias:   float = 0.6
     # settle 종료 시 안착된 물체 위치로 anchor xy 재정렬 (drop-settle 롤링 보정).
     reanchor_after_settle: bool  = True
     pregrasp_noise_x:      float = 0.01
