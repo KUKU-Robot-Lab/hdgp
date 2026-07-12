@@ -205,12 +205,14 @@ PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 
 
 # Pregrasp/reset palm 접근 방향 euler (deg) — env.py IK 타깃이 참조.
-# RH56F1 fabric palm attractor = r_hl_palm_sensor: side grasp = +z(법선)가 +y(물체) →
-# ez=180, ex=90. (tesollo palm_link 규약 ez=90과 다름 — 프레임 규약 차이.)
+# E3 top-down (07.12): ez=180, ex=180 → R=Ry(180), palm 법선(local +Z)이 world -z
+# (아래보기), 손가락(local +Y)은 world +y 수평. 물체 상공에서 하강 파지 —
+# 측면(ex=90) 접근은 도주로가 열려 불도저(밀림 herding)로 파지 불성립 실증(probe P1).
+# (tesollo palm_link 규약 ez=90과 다름 — 프레임 규약 차이.)
 # 주의: env.py에 숫자 하드코드 금지 — tesollo left lstm_test1에서 하드코드가 경계 clamp로
 # pregrasp 90° 뒤틀림 → 파지 불가 실증 (tesollo preset 동일 규칙).
 PREGRASP_EULER_EZ_DEG = 180.0
-PREGRASP_EULER_EX_DEG = 90.0
+PREGRASP_EULER_EX_DEG = 180.0
 
 
 def palm_pose_mins(max_pose_angle: float) -> list:
@@ -220,8 +222,7 @@ def palm_pose_mins(max_pose_angle: float) -> list:
         # ez: side grasp palm_sensor +z 가 +y(컵, -y 접근) → 중심 180°.
         (PREGRASP_EULER_EZ_DEG - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,
-        # ex: side grasp palm_sensor +z(법선)가 컵(수평 +x)을 향하는 자세 → 중심 90°.
-        # (180°는 palm 이 테이블을 향해 손날로 컵을 미는 버그였음.)
+        # ex: E3 top-down — palm_sensor +z(법선)가 -z(테이블)를 향하는 자세 → 중심 180°.
         (PREGRASP_EULER_EX_DEG - max_pose_angle) * d,
     ]
 
@@ -233,7 +234,6 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
         # ez: side grasp palm_sensor +z 가 +y(컵, -y 접근) → 중심 180°.
         (PREGRASP_EULER_EZ_DEG + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
-        # ex: side grasp palm_sensor +z(법선)가 컵(수평 +x)을 향하는 자세 → 중심 90°.
-        # (180°는 palm 이 테이블을 향해 손날로 컵을 미는 버그였음.)
+        # ex: E3 top-down — palm_sensor +z(법선)가 -z(테이블)를 향하는 자세 → 중심 180°.
         (PREGRASP_EULER_EX_DEG + max_pose_angle) * d,
     ]
