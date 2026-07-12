@@ -78,12 +78,16 @@ def main() -> None:
     assert sign.shape == (20,), "부호맵 차원 불일치"
     q_right = q_left * sign                                   # canonical right 좌표
 
-    # --- 전역 PCA5 (centered) -------------------------------------------------
-    pca = PCA(n_components=N_PC)
+    # --- 전역 PCA (centered) — 전체 20축을 뽑고 상위 N_PC 를 기본 뷰로 사용 -----
+    # 5축은 DEXTRAH action 차원 관례일 뿐 매니폴드 차원이 아님 — 실측 스펙트럼은
+    # 8축 ~96%, 10축 ~99% (분석·후속 활용 위해 전체 basis 를 .pt 에 보존한다).
+    pca = PCA(n_components=q_right.shape[1])
     pca.fit(q_right)
-    basis = pca.components_                                    # (5, 20) 정규직교 행
+    basis_full = pca.components_                               # (20, 20) 정규직교 행
+    evr_full = pca.explained_variance_ratio_                   # (20,)
+    basis = basis_full[:N_PC]                                  # (5, 20) 기본 뷰
     mean = pca.mean_                                           # (20,)
-    evr = pca.explained_variance_ratio_
+    evr = evr_full[:N_PC]
     # fabric/env 호환: uncentered 투영(x = B q)의 관측 범위
     proj = q_right @ basis.T                                   # (M, 5)
     coeff_mins, coeff_maxs = proj.min(axis=0), proj.max(axis=0)
@@ -116,6 +120,8 @@ def main() -> None:
         "coeff_mins_uncentered": torch.tensor(coeff_mins, dtype=torch.float64),
         "coeff_maxs_uncentered": torch.tensor(coeff_maxs, dtype=torch.float64),
         "explained_variance_ratio": torch.tensor(evr, dtype=torch.float64),
+        "basis_full_right": torch.tensor(basis_full, dtype=torch.float64),   # (20,20) 전체 축
+        "explained_variance_ratio_full": torch.tensor(evr_full, dtype=torch.float64),
         "per_object_signature": sig,
         "meta": {
             "source_npz": str(args.npz),
@@ -143,6 +149,10 @@ def main() -> None:
         "",
         "## 전역 PCA5 (신규, 성공 파지 기반)",
         f"- 설명분산비: {[round(float(v), 4) for v in evr]}  (누적 {float(evr.sum()):.4f})",
+        f"- 전체 스펙트럼 누적: 5축 {float(evr_full[:5].sum()):.3f} / 8축 "
+        f"{float(evr_full[:8].sum()):.3f} / 10축 {float(evr_full[:10].sum()):.3f} — "
+        "5축은 action 관례이지 매니폴드 차원이 아님. 전체 20축 basis 는 .pt 의 "
+        "basis_full_right 에 보존",
         f"- 재구성 RMS: **신규 {recon_new:.4f} rad** vs 현행(Allegro retarget) {recon_cur:.4f} rad",
         f"- uncentered 계수 범위 mins: {[round(float(v), 3) for v in coeff_mins]}",
         f"- uncentered 계수 범위 maxs: {[round(float(v), 3) for v in coeff_maxs]}",
