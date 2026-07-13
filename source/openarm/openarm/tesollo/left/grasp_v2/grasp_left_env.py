@@ -93,7 +93,11 @@ from .grasp_left_preset import (
     PREGRASP_EULER_EZ_DEG,
     PREGRASP_EULER_EX_DEG,
     PREGRASP_EULER_EX_TOPDOWN_DEG,
-    PREGRASP_OFFSET_TOPDOWN,
+    PREGRASP_TOPDOWN_XY,
+    PREGRASP_TOPDOWN_CLEARANCE,
+    PREGRASP_SIDE_Z,
+    PREGRASP_SIDE_CLEARANCE,
+    PREGRASP_OFFSET,
     HAND_ABDUCTION_LOCAL_INDICES,
     HAND_ABDUCTION_LIMITS_MIN,
     HAND_ABDUCTION_LIMITS_MAX,
@@ -282,16 +286,13 @@ class GraspLeftEnv(DirectRLEnv):
             .unsqueeze(0).repeat(self.num_envs, 1)
         )
 
-        # Pregrasp offset (cup 기준 palm target offset)
-        # (2, 3): [0]=side(기존), [1]=top-down(납작한 물체 — 물체 위에서 손끝으로 집기)
-        self.pregrasp_offset_by_pose = to_torch(
-            [
-                [cfg.pregrasp_offset_x, cfg.pregrasp_offset_y, cfg.pregrasp_offset_z],
-                list(PREGRASP_OFFSET_TOPDOWN),
-            ],
+        # Pregrasp offset 은 reset 에서 물체 clearance 로 계산한다(_compute_pregrasp_offset).
+        # demo warmstart 경로는 side 로 수집된 고정 자세라 cfg 값을 그대로 쓴다.
+        self.pregrasp_offset = to_torch(
+            [cfg.pregrasp_offset_x, cfg.pregrasp_offset_y, cfg.pregrasp_offset_z],
             device=self.device,
         )
-        self.pregrasp_offset = self.pregrasp_offset_by_pose[1]
+        self._side_y_sign = -1.0 if PREGRASP_OFFSET[1] < 0 else 1.0
 
         # ----------------------------------------------------------------
         # 자유화된 abduction 관절 (action[11:15] → 절대 목표)
@@ -325,6 +326,11 @@ class GraspLeftEnv(DirectRLEnv):
             if _n in self._object_names
         ]
         self.side_object_idx = to_torch(_side, dtype=torch.long, device=self.device)
+        # 물체별 clearance = ‖half_extent‖ (임의 회전 시 중심→표면 최대거리).
+        # pregrasp 를 이 값에 비례시켜 스폰 겹침(→ depenetration 폭주)을 없앤다.
+        self.object_clearance = to_torch(
+            self._load_object_clearances(), device=self.device
+        )
         # DEXTRAH 물체 조건화: one-hot object id + scale (obs 구조 원본 동일, distillation 대비)
         self.multi_object_idx_onehot = torch.nn.functional.one_hot(
             self.object_idx, num_classes=len(self._object_names)
@@ -588,10 +594,6 @@ class GraspLeftEnv(DirectRLEnv):
         )
         self._reset_obj_ids, self._reset_obj_indicator = self._reset_world.get_object_ids()
 
-        # Pregrasp IK 캐시 사전 계산 (spawn grid 전체 × 접근 자세 2종)
-        if self.cfg.cache_pregrasp_reset and self.demo_grasp_reset_bank is None:
-            self._build_pregrasp_cache()
-
     # ------------------------------------------------------------------
     # 물체 치수 → 접근 자세 분기
     # ------------------------------------------------------------------
@@ -618,64 +620,55 @@ class GraspLeftEnv(DirectRLEnv):
         """물체 이름 기반 접근 자세: cup → 0(side), 그 외 → 1(top-down)."""
         return compute_palm_pose_id(obj_idx, self.side_object_idx)
 
-    # ------------------------------------------------------------------
-    # Pregrasp grid 캐시 빌드 (startup 1회)
-    # ------------------------------------------------------------------
-    def _build_pregrasp_cache(self) -> None:
-        """spawn 위치 13×13 grid × 접근 자세 2종에 대해 Fabrics IK를 startup에서 일괄 계산.
+    def _load_object_clearances(self) -> list[float]:
+        """물체별 clearance = ‖half_extent‖ (m). 누락 물체는 즉시 실패시킨다.
 
-        reset 시 nearest-neighbor lookup → Fabrics rollout 생략 → 대폭 속도 향상.
-        1cm 간격 grid이므로 실제 spawn 위치와 최대 ~0.7cm 오차 → Fabrics가 첫 몇 스텝에서 보정.
-        접근 자세(side/top-down)마다 IK 해가 다르므로 pose 축을 하나 더 둔다.
+        조용한 fallback(0 채우기)은 pregrasp 를 물체 안에 박아 넣으므로 금지.
         """
-        _N = 13  # 1cm 간격, ±6cm 범위
-        xs = torch.linspace(
-            self.cfg.object_spawn_x_center - self.cfg.object_spawn_xy_range,
-            self.cfg.object_spawn_x_center + self.cfg.object_spawn_xy_range,
-            _N, device=self.device,
-        )
-        ys = torch.linspace(
-            self.cfg.object_spawn_y_center - self.cfg.object_spawn_xy_range,
-            self.cfg.object_spawn_y_center + self.cfg.object_spawn_xy_range,
-            _N, device=self.device,
-        )
-        gx, gy = torch.meshgrid(xs, ys, indexing="ij")
-        flat_x, flat_y = gx.flatten(), gy.flatten()
-        M = flat_x.shape[0]  # 169
-
-        caches = []
-        for pose_id in range(self.palm_mins_by_pose.shape[0]):
-            off = self.pregrasp_offset_by_pose[pose_id]
-            palm = torch.zeros(M, 6, device=self.device)
-            palm[:, 0] = flat_x + off[0]
-            palm[:, 1] = flat_y + off[1]
-            palm[:, 2] = self.cfg.object_spawn_z + off[2]
-            palm[:, 3] = math.radians(PREGRASP_EULER_EZ_DEG)
-            palm[:, 4] = math.radians(0.0)
-            palm[:, 5] = (
-                math.radians(PREGRASP_EULER_EX_TOPDOWN_DEG) if pose_id == 1
-                else math.radians(PREGRASP_EULER_EX_DEG)
+        path = Path(self.cfg.object_bbox_path)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"물체 bbox 파일 없음: {path}\n"
+                "  python3 scripts/tools/compute_object_bbox.py 로 먼저 생성하세요."
             )
-            palm = torch.max(
-                torch.min(palm, self.palm_maxs_by_pose[pose_id].unsqueeze(0)),
-                self.palm_mins_by_pose[pose_id].unsqueeze(0),
-            )
+        table = json.loads(path.read_text(encoding="utf-8"))
+        missing = [nm for nm in self._object_names if nm not in table]
+        if missing:
+            raise KeyError(f"bbox 누락 물체 {len(missing)}종: {missing[:5]} … — bbox 재생성 필요")
+        return [
+            float(sum(float(v) ** 2 for v in table[nm]) ** 0.5)
+            for nm in self._object_names
+        ]
 
-            q_init = self.robot_start_joint_pos[0].unsqueeze(0).expand(M, -1).contiguous()
-            dummy  = torch.arange(M, device=self.device)
-            q_out  = self._run_reset_fabric(dummy, palm, q_init.clone())
-            caches.append(q_out[:, :NUM_ARM_DOF].view(_N, _N, NUM_ARM_DOF))
+    def _compute_pregrasp_offset(
+        self, obj_idx: torch.Tensor, pose_id: torch.Tensor
+    ) -> torch.Tensor:
+        """물체 clearance 비례 pregrasp offset (n,3).
 
-        # (2, 13, 13, 7): [pose_id, xi, yi] → arm joints
-        self._cache_q_arm = torch.stack(caches).contiguous()
-        self._cache_xs    = xs
-        self._cache_ys    = ys
-        self._cache_n     = _N
+        고정 offset 은 회전 ADR 이 오르면 물체가 palm 을 침범해 PhysX depenetration
+        폭주를 일으킨다(right lstm_test1: ADR 36 부터 스파이크, 14111 에서 -4.9e7 붕괴).
+        top-down 은 물체 위 (clearance + 손가락 여유), side 는 옆 (clearance + palm 여유).
+        """
+        clr = self.object_clearance[obj_idx]                    # (n,)
+        is_top = pose_id == 1
+        off = torch.zeros(clr.shape[0], 3, device=self.device)
+        off[:, 0] = torch.where(
+            is_top,
+            torch.full_like(clr, float(PREGRASP_TOPDOWN_XY[0])),
+            torch.full_like(clr, float(self.cfg.pregrasp_offset_x)),
+        )
+        off[:, 1] = torch.where(
+            is_top,
+            torch.full_like(clr, float(PREGRASP_TOPDOWN_XY[1])),
+            self._side_y_sign * (clr + float(PREGRASP_SIDE_CLEARANCE)),
+        )
+        off[:, 2] = torch.where(
+            is_top,
+            clr + float(PREGRASP_TOPDOWN_CLEARANCE),
+            torch.full_like(clr, float(PREGRASP_SIDE_Z)),
+        )
+        return off
 
-
-    # ------------------------------------------------------------------
-    # Reset 전용 Fabrics rollout (chunk 단위)
-    # ------------------------------------------------------------------
     def _run_reset_fabric(
         self,
         env_ids: torch.Tensor,
@@ -1210,7 +1203,7 @@ class GraspLeftEnv(DirectRLEnv):
         finger_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
         finger_curl_dist = (
             finger_pos - self.hand_full_grip_pose.unsqueeze(0)
-        ).norm(p=2, dim=-1)
+        ).norm(p=2, dim=-1).clamp(max=float(self.cfg.finger_curl_dist_max))
         finger_curl_reg = _curl_w * finger_curl_dist ** 2
 
         # 5) palm orientation: 손바닥 법선(palm 로컬 +X, grasp_v1 규약)이 palm→물체
@@ -1636,7 +1629,9 @@ class GraspLeftEnv(DirectRLEnv):
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
             ], dim=1)
-            pregrasp_pos = obj_pos_local + self.pregrasp_offset_by_pose[pose_id] + noise
+            pregrasp_pos = obj_pos_local + self._compute_pregrasp_offset(
+                self.object_idx[env_ids], pose_id
+            ) + noise
 
             _ex = torch.where(
                 pose_id == 1,
@@ -1653,13 +1648,7 @@ class GraspLeftEnv(DirectRLEnv):
                 self.palm_mins_env[env_ids],
             )
 
-            if self.cfg.cache_pregrasp_reset:
-                # cache lookup: spawn 위치 → 가장 가까운 grid point arm IK (접근 자세별 캐시)
-                xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
-                yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
-                q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[pose_id, xi, yi]
-            else:
-                q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_pregrasp)
+            q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_pregrasp)
 
             # hand는 APPROACH_POSE로 강제
             q_pregrasp[:, NUM_ARM_DOF:] = approach_hand

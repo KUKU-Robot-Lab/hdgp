@@ -14,6 +14,7 @@ import torch
 
 PKG = Path(__file__).resolve().parents[1]
 LEFT_PKG = PKG.parents[1] / "left" / "grasp_v2"
+REPO = PKG.parents[5]   # …/hdgp
 
 
 def _load(name: str, path: Path):
@@ -169,3 +170,61 @@ def test_synergy_basis_cannot_drive_abduction_joints():
             assert col > 0.1
         else:
             assert col < 0.05
+
+
+# ---------------------------------------------------------------------------
+# pregrasp clearance — 스폰 겹침(→ depenetration 폭주) 방지
+# ---------------------------------------------------------------------------
+def _clearances():
+    import json
+    tbl = json.loads((REPO / "assets" / "object_bbox.json").read_text())
+    return {n: math.sqrt(sum(float(v) ** 2 for v in h)) for n, h in tbl.items()}
+
+
+def test_pregrasp_clears_every_object_in_both_poses():
+    """어떤 물체도, 어떤 회전에서도 palm 위치를 침범하지 못해야 한다.
+
+    고정 offset(구버전)은 palm 이 물체중심 9.2cm 에 있어 153종 중 48종이 palm 을
+    덮었다 → 회전 ADR 36 부터 PhysX depenetration 폭주 → 리턴 -4.9e7 붕괴.
+    clearance 비례로 바꾼 뒤에는 위반이 0 이어야 한다.
+    """
+    clr = _clearances()
+    for preset in (r_preset, l_preset):
+        for name, c in clr.items():
+            # top-down: palm = 물체중심 + (xy, c + FINGER_CLEARANCE)
+            tx, ty = preset.PREGRASP_TOPDOWN_XY
+            tz = c + preset.PREGRASP_TOPDOWN_CLEARANCE
+            d_top = math.sqrt(tx * tx + ty * ty + tz * tz)
+            assert d_top > c, f"{name}: top-down palm({d_top:.3f}) 이 물체 반경({c:.3f}) 안"
+
+            # side: palm = 물체중심 + (offset_x, ±(c + PALM_CLEARANCE), SIDE_Z)
+            sy = c + preset.PREGRASP_SIDE_CLEARANCE
+            sz = preset.PREGRASP_SIDE_Z
+            d_side = math.sqrt(sy * sy + sz * sz)
+            assert d_side > c, f"{name}: side palm({d_side:.3f}) 이 물체 반경({c:.3f}) 안"
+
+
+def test_pregrasp_keeps_minimum_margin():
+    """여유가 palm 두께 수준(3cm) 이상이어야 실제 메시가 안 닿는다."""
+    clr = _clearances()
+    worst = min(
+        (math.sqrt(sum(v * v for v in (
+            r_preset.PREGRASP_TOPDOWN_XY[0],
+            r_preset.PREGRASP_TOPDOWN_XY[1],
+            c + r_preset.PREGRASP_TOPDOWN_CLEARANCE,
+        ))) - c)
+        for c in clr.values()
+    )
+    assert worst >= 0.03, f"top-down 최소 여유 {worst*100:.1f}cm < 3cm"
+
+
+def test_curl_penalty_is_bounded():
+    """finger_curl_reg 가 무계이면 물리 발산이 리턴을 -1e7 규모로 터뜨린다."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_branch_r_cfg_src", PKG / "grasp_right_env_cfg.py"
+    )
+    src = (PKG / "grasp_right_env_cfg.py").read_text()
+    assert "finger_curl_dist_max" in src
+    env_src = (PKG / "grasp_right_env.py").read_text()
+    assert "clamp(max=float(self.cfg.finger_curl_dist_max))" in env_src

@@ -202,8 +202,16 @@ PREGRASP_EULER_EX_DEG = -90.0
 # Fabrics IK 가 불안정 → ey=0 을 유지하고 ex 만 돌린다.
 PREGRASP_EULER_EX_TOPDOWN_DEG = -180.0
 
-# top-down pregrasp offset (palm_link 기준, 물체 중심 대비). right [0,-0.02,0.10] 의 y-미러.
-PREGRASP_OFFSET_TOPDOWN = [0.0, 0.02, 0.10]
+# pregrasp offset 은 물체 크기(clearance = ‖half_extent‖, 회전 무관 최대 반경)에
+# 비례한다. 고정 offset 은 회전 ADR 이 오르면 물체가 palm 을 침범해 PhysX
+# depenetration 폭주를 일으킨다 — lstm_test1 실증: ADR 36 부터 리턴 -1e4 스파이크가
+# 24회 발생(그 전엔 0회), iter 14111 에서 -4.9e7 로 정책 붕괴.
+# top-down: palm 을 물체 위 (clearance + 손가락 길이 여유) 에 둔다.
+PREGRASP_TOPDOWN_XY = [0.0, +0.02]
+PREGRASP_TOPDOWN_CLEARANCE = 0.10
+# side(cup 전용): palm 을 물체 옆 (clearance + palm 두께 여유) 에 둔다.
+PREGRASP_SIDE_Z = 0.05
+PREGRASP_SIDE_CLEARANCE = 0.03
 
 # side 접근을 유지할 물체 (그 외 전부 top-down). cup 은 내용물을 흘리면 안 되므로
 # 위에서 집지 않고 옆면을 감싸 잡는다(grasp_v1 방식).

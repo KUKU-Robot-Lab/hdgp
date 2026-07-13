@@ -235,7 +235,6 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 60
     reset_fabric_chunk_size: int = 128
-    cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
     pregrasp_offset_x:     float = -0.06
     pregrasp_offset_y:     float = 0.07   # y 대칭: right -0.07 → left +0.07
     pregrasp_offset_z:     float = 0.00
@@ -251,6 +250,8 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 회전을 반영하므로 만렙(ADR 50, spawn 회전 ±180°)에서 누운 원통도 자동 대상이 된다.
     approach_branch_enable:      bool = True
     side_approach_object_names:  tuple[str, ...] = SIDE_APPROACH_OBJECT_NAMES
+    # pregrasp 를 물체 크기에 비례시키기 위한 bbox (compute_object_bbox.py 산출물)
+    object_bbox_path:            str = _os.path.join(_ASSETS_DIR, "object_bbox.json")
 
     # -----------------------------------------------------------------------
     # Demo reset (pour_v1_a11~a20 grasp start and lift target)
@@ -358,6 +359,12 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # abduction 목표 rate limit (rad/step). 자기충돌 검사가 꺼져 있어
     # (enabled_self_collisions=False) 순간이동식 abduction 은 인접 손가락을 관통한다.
     abduction_rate_limit: float = 0.02
+    # finger_curl_reg = -0.01·‖q-q_grip‖² 는 5개 reward 항 중 유일하게 무계(아래로 무한).
+    # 물리 solver 가 발산하면 제곱으로 증폭돼 에피소드 리턴이 -4.9e7 까지 튀고
+    # (lstm_test1 iter 14111) rl_games 의 리턴/value 통계를 오염시켜 정책이 붕괴한다.
+    # 정상 물리에서는 joint limit 때문에 ‖q-q_grip‖ 이 이 값을 넘을 수 없다 →
+    # clamp 는 정상 학습에 영향 0, 발산 시에만 발동.
+    finger_curl_dist_max: float = 14.0
 
     grasp_contact_persistence_reward_steps: int = 20
     enclosure_sharpness: float = 15.0
