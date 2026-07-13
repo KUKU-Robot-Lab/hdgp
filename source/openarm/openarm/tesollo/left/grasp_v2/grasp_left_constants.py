@@ -75,9 +75,10 @@ NUM_FINGERTIPS = 5
 # ---------------------------------------------------------------------------
 # Action space
 # ---------------------------------------------------------------------------
-NUM_PALM_ACTION   = 6   # 6D palm pose (Fabrics IK)
-NUM_FINGER_ACTION = 5   # per-finger lerp
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
+NUM_PALM_ACTION      = 6   # 6D palm pose (Fabrics IK)
+NUM_FINGER_ACTION    = 5   # 시너지(PCA) 계수
+NUM_ABDUCTION_ACTION = 4   # thumb_1 / index_1 / pinky_1 / pinky_2 절대 목표
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION + NUM_ABDUCTION_ACTION  # 15
 
 # ---------------------------------------------------------------------------
 # Observation space — DEXTRAH teacher 구조 (distillation 대비 동일 구조)
@@ -98,12 +99,12 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 #   = 247 + N_obj   (DEXTRAH 원본 "247 + num_objects"와 동일 구조)
 # ---------------------------------------------------------------------------
 NUM_HAND_POINTS = 6           # palm + 5 fingertips (DEXTRAH hand bodies)
-NUM_OBS_BASE        = 193     # onehot 제외 policy obs
-NUM_CRITIC_OBS_BASE = 247     # onehot 제외 critic obs
-# distillation student (185): policy obs 에서 물체 privileged state 전량 제거
+NUM_OBS_BASE        = 197     # onehot 제외 policy obs
+NUM_CRITIC_OBS_BASE = 251     # onehot 제외 critic obs
+# distillation student (189): policy obs 에서 물체 privileged state 전량 제거
 #   (object_pos_noisy 3 + object_rot_noisy 4 + onehot N_obj + object_scale 1)
 #   → 물체 정보는 D435i RGB-D 에서 추론해야 하므로 관측에서 뺀다.
-NUM_STUDENT_OBS     = 185
+NUM_STUDENT_OBS     = 189
 # 실제 차원은 env_cfg 에서 + len(active_object_names) 로 확정
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3

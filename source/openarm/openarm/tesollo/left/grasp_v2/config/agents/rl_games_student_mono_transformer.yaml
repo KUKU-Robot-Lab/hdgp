@@ -1,6 +1,6 @@
 # grasp_v2 distillation student — RealSense D435i mono RGB-D
 #
-# obs: student 185D (물체 privileged state 없음) + depth/rgb 320x180
+# obs: student 189D (물체 privileged state 없음) + depth/rgb 320x180
 # 학습은 PPO 가 아니라 DAgger(openarm/distillation/dagger.py) — 아래 config 의
 # ppo/lr/kl 계열 값은 rl_games ModelBuilder 가 요구해서 남긴 것이고 실제 최적화는
 # Dagger 가 자체 Adam(1e-4)으로 돌린다. Dagger 가 실제로 읽는 값:

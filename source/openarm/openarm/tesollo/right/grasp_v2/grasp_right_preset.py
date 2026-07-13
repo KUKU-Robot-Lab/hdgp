@@ -159,11 +159,15 @@ PREGRASP_EULER_EZ_DEG = 90.0
 PREGRASP_EULER_EX_DEG = 90.0
 
 # ---------------------------------------------------------------------------
-# Top-down 접근 (납작한 물체 전용)
+# Top-down 접근 (기본) / side 접근 (cup 전용)
 # ---------------------------------------------------------------------------
-# side-approach(ex=90)는 "감쌀 수직 옆면"이 있어야 작동한다. 높이 ≤4cm 물체에서는
+# DEXTRAH 와 동일하게 top-down 을 기본 접근 자세로 쓴다.
+# side-approach(ex=90)는 "감쌀 수직 옆면"이 있어야 작동한다. 납작한 물체에서는
 # 손끝이 테이블에 눌린 채 수평 전진해 물체를 4~6cm 쳐내는 불도저 실패가 난다
 # (ep_14000 관찰 probe 실증: 실패 9ep 리프트 ≤0.5cm / 성공 3ep 12~22cm).
+# 물체 높이 규칙으로 분기하던 방식(lstm_test2)은 ADR 회전이 커지면 납작한 원통이
+# 누우면서 "납작" 조건에서 빠져 topdown_frac 이 0.025→0.0015 로 자멸했다 —
+# 규칙 자체를 폐기하고 물체 이름 기반 고정 분기로 바꾼다.
 #
 # tesollo palm 축: +X=손바닥 법선, +Z=손가락 방향.
 #   ex=90  → 손가락 +X(수평), 법선 +Y(수평)  = side
@@ -176,10 +180,10 @@ PREGRASP_EULER_EX_TOPDOWN_DEG = 180.0
 # 손가락이 -Z 로 뻗으므로 palm 은 물체 위에 둔다. z=+0.10 은 손가락 길이(~10cm) 여유.
 PREGRASP_OFFSET_TOPDOWN = [0.0, -0.02, 0.10]
 
-# 회전 후 물체 z 높이가 이 값 미만이면 top-down 으로 분기 (m).
-# 5cm: 관측과 정합 — 실패 small_8_cyl/cuboid(h4.0)·small_12_cyl/cuboid(h2.5)는 포함,
-# 성공 small_5_cyl(h6.0)·large_5_cyl(h12)은 제외.
-FLAT_OBJECT_HEIGHT_THRESHOLD = 0.05
+# side 접근을 유지할 물체 (그 외 전부 top-down).
+# cup 은 내용물을 흘리면 안 되므로 위에서 집으면 안 된다 — 옆면을 감싸 잡는다
+# (grasp_v1 방식). pour 로 이어지는 유일한 물체.
+SIDE_APPROACH_OBJECT_NAMES = ("cup",)
 
 # Fabrics world 파일 (WorldMeshesModel) — env.py가 참조. 문자열 하드코드 금지.
 # right world는 왼팔 영역(y>0)에 반발체(left_arm_body sphere·left_target_cup box)를
@@ -224,14 +228,34 @@ HAND_CURL_JOINT_NAMES = [
 
 # 고정 joints (RL 제어 제외)
 HAND_FIXED_JOINT_NAMES = [
-    "r_hj_thumb_1",  # thumb abduction: 0.0 고정
-    "r_hj_index_1",  # index abduction: 0.0 고정
     "r_hj_middle_1",  # middle abduction: 0.0 고정
     "r_hj_ring_1",  # ring abduction: 0.0 고정
-    "r_hj_pinky_1",  # pinky Z-flex: 0.0 고정
-    "r_hj_pinky_2",  # pinky abduction: 0.0 고정
 ]
-HAND_FIXED_JOINT_VALUES = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+HAND_FIXED_JOINT_VALUES = [0.0, 0.0]
+
+# ---------------------------------------------------------------------------
+# 자유화된 abduction/opposition joints (RL 직접 제어, 4D action)
+#
+# 시너지 basis 로는 살릴 수 없다: basis 열이 0 이고 anchor==open 이라
+# q* = anchor + coeffs@basis 가 open 값에 고정 → progress 항상 0.
+# 그래서 시너지 경로 바깥에서 절대 목표로 덮어쓴다.
+#
+# 범위는 URDF joint limit 의 "0 을 경계로 한 한쪽 절반" — 손이 안쪽으로만 모이게
+# 하여 반대 방향 벌어짐(물체를 놓침)과 인접 손가락 관통을 동시에 막는다.
+# enabled_self_collisions=False 이므로 물리 자기충돌 검사가 없다 → 이 범위 제한이
+# 유일한 방어선이다. 좌우는 URDF limit 자체가 미러라 부호만 뒤집힌다.
+#
+# 인덱스는 RIGHT_HAND_JOINT_NAMES(finger-major) 기준: thumb_1=0, index_1=4,
+# pinky_1=16, pinky_2=17.
+HAND_ABDUCTION_JOINT_NAMES = [
+    "r_hj_thumb_1",  # thumb abduction: 전 범위 (대향 자세를 물체마다 달리 잡아야 함)
+    "r_hj_index_1",  # index abduction: 음수만 (엄지 쪽으로 모음)
+    "r_hj_pinky_1",  # pinky Z-flex:   양수만 (손바닥 안쪽으로 오므림)
+    "r_hj_pinky_2",  # pinky abduction: 양수만
+]
+HAND_ABDUCTION_LOCAL_INDICES = [0, 4, 16, 17]
+HAND_ABDUCTION_LIMITS_MIN = [-0.3839724, -0.4188790, 0.0, 0.0]
+HAND_ABDUCTION_LIMITS_MAX = [0.8901179, 0.0, 1.0471976, 0.6108652]
 
 # iCub distal tendon 커플링 (PIP = _3, DIP = _4)
 HAND_PIP_JOINT_NAMES = [
@@ -265,19 +289,19 @@ CURL_JOINT_LIMITS_MAX = [0.0, 2.007, 1.955, 1.902, _math.pi / 2]
 #   clipping 근거리 0.3m = D435i 최소 측정거리. 원본의 0.01m는 실기에 존재하지 않는
 #   관측이라 그대로 학습시키면 sim2real 갭이 된다.
 #
-# extrinsics: !!! PLACEHOLDER — 실제 마운트 후 hand-eye 캘리브레이션 값으로 교체할 것 !!!
-#   현재 값은 작업공간(물체 스폰 0.27, -0.10, 0.297 / goal 0.27, -0.10, 0.45)을
-#   정면 대각 위에서 내려다보도록 look-at 으로 계산한 것(목표까지 0.87m, 하향 30°).
-#   left 미러 시 y 부호와 쿼터니언을 함께 뒤집어야 한다.
-# ---------------------------------------------------------------------------
+# extrinsics: GUI(place_camera.py)로 시뮬에서 직접 잡은 배치. 07.13.
+#   로봇 정중면 근처 높이 0.97m 에서 65° 하향 — 물체(0.27,-0.10,0.297)까지 0.70m,
+#   시선이 (0.377, -0.006, 0.33) 을 지난다. roll 없는 순수 look-at.
+#   실물 D435i 를 "비슷한 위치"에 단 뒤, hand-eye 캘리브레이션 값으로 최종 교체할 것.
+#   left 는 y 부호 반전 + 미러된 목표점으로 look-at 재계산 (grasp_left_preset.py).
 CAMERA_IMG_WIDTH  = 320
 CAMERA_IMG_HEIGHT = 180        # 16:9 — D435i depth 종횡비
 CAMERA_FOCAL_LENGTH       = 20.0
 CAMERA_HORIZONTAL_APERTURE = 37.9586   # 2*focal*tan(87°/2) → HFOV 87°
 CAMERA_CLIPPING_RANGE = (0.3, 3.0)     # D435i: 최소 0.3m, 실사용 상한 3m
 
-CAMERA_POS = [1.05, -0.10, 0.75]                       # PLACEHOLDER
-CAMERA_ROT = [0.354477, -0.6118382, -0.6118382, 0.354477]  # (w,x,y,z), ros convention
+CAMERA_POS = [0.0804, -0.0050, 0.9674]
+CAMERA_ROT = [0.1524955, -0.6891995, 0.6916149, -0.1530299]  # (w,x,y,z), ros convention
 
 # depth 유효 밴드 — 이 밖의 픽셀은 0으로 죽인다.
 # 카메라~물체 0.87m, 카메라~테이블 뒤편 ~1.3m 를 포괄.

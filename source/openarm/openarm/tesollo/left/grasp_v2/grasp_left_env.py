@@ -55,7 +55,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg, TiledCamera
 from openarm.distillation.visual_dr import VisualDomainRandomizer
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import matrix_from_quat, quat_apply, quat_mul
+from isaaclab.utils.math import quat_apply, quat_mul
 
 from openarm.common.grasp_logging import action_policy_scalars
 
@@ -94,6 +94,9 @@ from .grasp_left_preset import (
     PREGRASP_EULER_EX_DEG,
     PREGRASP_EULER_EX_TOPDOWN_DEG,
     PREGRASP_OFFSET_TOPDOWN,
+    HAND_ABDUCTION_LOCAL_INDICES,
+    HAND_ABDUCTION_LIMITS_MIN,
+    HAND_ABDUCTION_LIMITS_MAX,
     FABRIC_WORLD_FILENAME,
 )
 from .finger_action_utils import (
@@ -108,8 +111,9 @@ from .tesollo_hand_synergy import (
     HAND_SYNERGY_COEFF_MAXS,
 )
 from .grasp_left_utils import (
-    compute_flat_object_mask,
+    compute_abduction_targets,
     compute_joint7_lift_wait_target,
+    compute_palm_pose_id,
     scale,
     to_torch,
 )
@@ -191,10 +195,10 @@ class GraspLeftEnv(DirectRLEnv):
         self.palm_maxs_by_pose = torch.stack([self.palm_maxs.clone(), self.palm_maxs.clone()])
         self.palm_mins_by_pose[1, 5] = _ex_top - _mpa
         self.palm_maxs_by_pose[1, 5] = _ex_top + _mpa
-        # per-env 경계 버퍼 (reset 에서 물체 높이에 따라 채움). 기본 = side.
-        self.palm_pose_id  = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self.palm_mins_env = self.palm_mins_by_pose[0].unsqueeze(0).repeat(self.num_envs, 1)
-        self.palm_maxs_env = self.palm_maxs_by_pose[0].unsqueeze(0).repeat(self.num_envs, 1)
+        # per-env 경계 버퍼 (reset 에서 물체 이름에 따라 채움). 기본 = top-down.
+        self.palm_pose_id  = torch.ones(self.num_envs, dtype=torch.long, device=self.device)
+        self.palm_mins_env = self.palm_mins_by_pose[1].unsqueeze(0).repeat(self.num_envs, 1)
+        self.palm_maxs_env = self.palm_maxs_by_pose[1].unsqueeze(0).repeat(self.num_envs, 1)
 
         # ----------------------------------------------------------------
         # Delta palm action 범위 (pregrasp 기준 상대 오프셋)
@@ -287,7 +291,21 @@ class GraspLeftEnv(DirectRLEnv):
             ],
             device=self.device,
         )
-        self.pregrasp_offset = self.pregrasp_offset_by_pose[0]
+        self.pregrasp_offset = self.pregrasp_offset_by_pose[1]
+
+        # ----------------------------------------------------------------
+        # 자유화된 abduction 관절 (action[11:15] → 절대 목표)
+        # ----------------------------------------------------------------
+        self.abduction_local_indices = to_torch(
+            HAND_ABDUCTION_LOCAL_INDICES, dtype=torch.long, device=self.device
+        )
+        self.abduction_limits_min = to_torch(HAND_ABDUCTION_LIMITS_MIN, device=self.device)
+        self.abduction_limits_max = to_torch(HAND_ABDUCTION_LIMITS_MAX, device=self.device)
+        # 목표 버퍼: reset 시 중립(0) → rate limit 으로 부드럽게 추종.
+        # 자기충돌 검사가 꺼져 있어 순간이동식 abduction 은 인접 손가락을 관통한다.
+        self.abduction_targets = torch.zeros(
+            self.num_envs, len(HAND_ABDUCTION_LOCAL_INDICES), device=self.device
+        )
 
         # ----------------------------------------------------------------
         # 중간값 버퍼
@@ -300,11 +318,13 @@ class GraspLeftEnv(DirectRLEnv):
         self.object_idx = (
             torch.arange(self.num_envs, device=self.device) % len(self._object_names)
         )
-        # 물체별 half-extent (n_obj, 3) — reset 에서 "회전 후 높이"를 구해 접근 자세를
-        # 분기하는 데 쓴다. scripts/tools/compute_object_bbox.py 산출물.
-        self.object_half_extent = to_torch(
-            self._load_object_half_extents(), device=self.device
-        )
+        # side 접근을 유지할 물체의 인덱스 (cup). 그 외 전부 top-down.
+        _side = [
+            self._object_names.index(_n)
+            for _n in self.cfg.side_approach_object_names
+            if _n in self._object_names
+        ]
+        self.side_object_idx = to_torch(_side, dtype=torch.long, device=self.device)
         # DEXTRAH 물체 조건화: one-hot object id + scale (obs 구조 원본 동일, distillation 대비)
         self.multi_object_idx_onehot = torch.nn.functional.one_hot(
             self.object_idx, num_classes=len(self._object_names)
@@ -348,7 +368,7 @@ class GraspLeftEnv(DirectRLEnv):
                 randomize_dome_light=not cfg.disable_dome_light_randomization,
                 randomize_robot=not cfg.disable_robot_randomization,
             )
-            if cfg.distillation and cfg.img_aug_type == "rgb"
+            if cfg.distillation and cfg.img_aug_type == "rgb" and cfg.enable_visual_dr
             else None
         )
         # 성공 유지 스텝 — distillation rollout 조기 종료용 (DEXTRAH success_timeout)
@@ -575,24 +595,6 @@ class GraspLeftEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     # 물체 치수 → 접근 자세 분기
     # ------------------------------------------------------------------
-    def _load_object_half_extents(self) -> list[list[float]]:
-        """active_object_names 순서의 half-extent 목록 (m). 누락 물체는 즉시 실패시킨다.
-
-        조용한 fallback(예: 0 채우기)은 전 물체를 "납작"으로 오분류해 접근 자세를
-        통째로 뒤집으므로 절대 허용하지 않는다.
-        """
-        path = Path(self.cfg.object_bbox_path)
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"물체 bbox 파일 없음: {path}\n"
-                "  python3 scripts/tools/compute_object_bbox.py 로 먼저 생성하세요."
-            )
-        table = json.loads(path.read_text(encoding="utf-8"))
-        missing = [n for n in self._object_names if n not in table]
-        if missing:
-            raise KeyError(f"bbox 누락 물체 {len(missing)}종: {missing[:5]} … — bbox 재생성 필요")
-        return [[float(v) for v in table[n]] for n in self._object_names]
-
     def _sample_spawn_rotation(self, n: int) -> torch.Tensor:
         """물체 spawn 회전 quat (w,x,y,z). ADR 0→1 (DEXTRAH randomize_rotation).
 
@@ -612,19 +614,9 @@ class GraspLeftEnv(DirectRLEnv):
         _qy = torch.stack([torch.cos(_half1), _zeros, torch.sin(_half1), _zeros], dim=1)
         return quat_mul(_qx, _qy)
 
-    def _compute_topdown_mask(
-        self, obj_idx: torch.Tensor, spawn_rot: torch.Tensor
-    ) -> torch.Tensor:
-        """회전 후 물체 높이 < 임계 → top-down 접근 대상(True).
-
-        spawn 회전(ADR 커리큘럼 0→±180°)을 반영하므로, 만렙에서 세로 원통이 누워
-        납작해지면 자동으로 top-down 으로 분기된다.
-        """
-        return compute_flat_object_mask(
-            self.object_half_extent[obj_idx],
-            matrix_from_quat(spawn_rot),
-            self.cfg.flat_object_height_threshold,
-        )
+    def _compute_palm_pose_id(self, obj_idx: torch.Tensor) -> torch.Tensor:
+        """물체 이름 기반 접근 자세: cup → 0(side), 그 외 → 1(top-down)."""
+        return compute_palm_pose_id(obj_idx, self.side_object_idx)
 
     # ------------------------------------------------------------------
     # Pregrasp grid 캐시 빌드 (startup 1회)
@@ -813,8 +805,9 @@ class GraspLeftEnv(DirectRLEnv):
         self.prev_actions.copy_(self.actions)
         self.actions = actions.clone()
 
-        palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
-        finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
+        palm_action      = actions[:, :6]     # (N, 6) ∈ [-1, 1]
+        finger_action    = actions[:, 6:11]   # (N, 5) ∈ [-1, 1]  시너지 계수
+        abduction_action = actions[:, 11:15]  # (N, 4) ∈ [-1, 1]  thumb_1/index_1/pinky_1/_2
 
         # ---- settle 종료 시 안착 스냅샷 → object_height 로깅 baseline 확정 ----
         # (goal 은 DEXTRAH식 고정 절대점이라 갱신 없음)
@@ -915,6 +908,25 @@ class GraspLeftEnv(DirectRLEnv):
             self.hand_full_grip_pose.unsqueeze(0).expand(self.num_envs, -1),
             self.finger_close_buf,                                  # (N,20) 관절별 진행도
         ).clamp(
+            self.hand_joint_lower_limits.unsqueeze(0),
+            self.hand_joint_upper_limits.unsqueeze(0),
+        )
+
+        # ---- abduction (thumb_1/index_1/pinky_1/pinky_2): 시너지 바깥 절대 목표 ----
+        # 시너지 basis 열이 0 이라 진행도 경로로는 절대 안 움직인다 → 여기서 덮어쓴다.
+        # 양방향(래칫 아님): 납작한 물체는 손끝 핀치, 큰 물체는 감싸기 — 자세를 바꿔야 한다.
+        abd_goal = compute_abduction_targets(
+            abduction_action, self.abduction_limits_min, self.abduction_limits_max
+        )
+        # settle 동안 중립(0) 유지 — 손가락 폐쇄 억제와 동일 게이트.
+        abd_goal = torch.where(in_settle, torch.zeros_like(abd_goal), abd_goal)
+        # rate limit: 자기충돌 검사가 꺼져 있어 순간이동은 인접 손가락을 관통한다.
+        _abd_step = (abd_goal - self.abduction_targets).clamp(
+            -float(self.cfg.abduction_rate_limit), float(self.cfg.abduction_rate_limit)
+        )
+        self.abduction_targets += _abd_step
+        hand_target[:, self.abduction_local_indices] = self.abduction_targets
+        hand_target = hand_target.clamp(
             self.hand_joint_lower_limits.unsqueeze(0),
             self.hand_joint_upper_limits.unsqueeze(0),
         )
@@ -1057,7 +1069,7 @@ class GraspLeftEnv(DirectRLEnv):
             self.object_goal,                # 3 (고정 절대점)
             self.multi_object_idx_onehot,    # N_obj
             self.object_scale,               # 1
-            self.actions,                    # 11
+            self.actions,                    # 15
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
             self.fabric_qdd,                 # 27
@@ -1095,7 +1107,7 @@ class GraspLeftEnv(DirectRLEnv):
             self.object_goal,                # 3
             self.multi_object_idx_onehot,    # N_obj
             self.object_scale,               # 1
-            self.actions,                    # 11
+            self.actions,                    # 15
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
             self.fabric_qdd,                 # 27
@@ -1131,7 +1143,7 @@ class GraspLeftEnv(DirectRLEnv):
         }
 
     def compute_student_policy_observations(self) -> torch.Tensor:
-        """student obs (185) — 물체 privileged state 없음.
+        """student obs (189) — 물체 privileged state 없음.
 
         teacher obs 에서 object_pos/rot/onehot/scale 을 뺀 것. 물체 정보는
         D435i RGB-D 에서 추론해야 하므로 관측으로 주지 않는다. object_goal 은
@@ -1143,11 +1155,11 @@ class GraspLeftEnv(DirectRLEnv):
             self.hand_pos_noisy,             # 18
             self.hand_vel_noisy,             # 18
             self.object_goal,                # 3
-            self.actions,                    # 11
+            self.actions,                    # 15
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
             self.fabric_qdd,                 # 27
-        ], dim=-1)   # 185
+        ], dim=-1)   # 189
 
         if student_obs.shape[1] != self.cfg.num_student_observations:
             raise RuntimeError(
@@ -1270,6 +1282,10 @@ class GraspLeftEnv(DirectRLEnv):
         self.extras["contact/middle"] = self.middle_binary_contact_buf.float().sum(dim=-1).mean()
         self.extras["contact/distal"] = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
         self.extras["contact/grip"]   = num_grip_fingers.float().mean()
+        # abduction 실제 관절 목표 (rad) — 정책이 이 축을 실제로 쓰는지 확인용.
+        # 전부 0 근처면 자유화가 무의미한 것이고, 부호가 범위 반대면 미러 버그다.
+        for _i, _nm in enumerate(("thumb_1", "index_1", "pinky_1", "pinky_2")):
+            self.extras[f"abduction/{_nm}"] = self.abduction_targets[:, _i].mean()
         # action policy(palm 6D + finger 5D raw) 로깅 유지
         for k, v in action_policy_scalars(
             action=self.actions, prev_action=self.prev_actions, palm_dims=6,
@@ -1604,13 +1620,10 @@ class GraspLeftEnv(DirectRLEnv):
                 [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
             )
 
-            # ---- 접근 자세 결정: 회전 후 물체 높이 < 임계 → top-down ----
-            # spawn 회전을 pregrasp 보다 먼저 뽑아야 "누운 물체"까지 판정할 수 있다.
+            # ---- 접근 자세 결정: cup → side, 그 외 → top-down ----
             spawn_rot = self._sample_spawn_rotation(n)
             if self.cfg.approach_branch_enable:
-                pose_id = self._compute_topdown_mask(
-                    self.object_idx[env_ids], spawn_rot
-                ).long()                                             # (n,) 0=side, 1=top
+                pose_id = self._compute_palm_pose_id(self.object_idx[env_ids])  # 0=side, 1=top
             else:
                 pose_id = torch.zeros(n, dtype=torch.long, device=self.device)
             self.palm_pose_id[env_ids] = pose_id
@@ -1741,6 +1754,8 @@ class GraspLeftEnv(DirectRLEnv):
         self.success_flag[env_ids] = False
         self.transfer_entry_grasp_success_buf[env_ids] = False
         self.finger_close_buf[env_ids] = 0.0
+        # abduction 은 중립(0)에서 시작 — HAND_APPROACH_POSE 의 해당 관절 값과 일치.
+        self.abduction_targets[env_ids] = 0.0
 
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
         # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)

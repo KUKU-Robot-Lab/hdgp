@@ -90,7 +90,12 @@ def test_student_obs_keeps_goal_and_proprio():
         assert kept in student_terms
 
 
-def test_teacher_obs_dim_unchanged_by_distillation():
-    # distillation 이식이 teacher 관측 구조를 건드리면 기존 체크포인트가 죽는다
-    assert C["NUM_OBS_BASE"] == 193
-    assert C["NUM_CRITIC_OBS_BASE"] == 247
+def test_teacher_obs_dim_matches_action_dim():
+    """teacher obs 는 actions 를 그대로 싣는다 — action 차원이 바뀌면 함께 움직인다.
+
+    193/247/185 는 action 11D 시절 값. abduction 자유화로 15D 가 되면서 각각 +4.
+    distillation 이식이 (action 변경 없이) 이 값을 건드리면 여기서 잡힌다.
+    """
+    assert C["NUM_OBS_BASE"] == 193 + 4
+    assert C["NUM_CRITIC_OBS_BASE"] == 247 + 4
+    assert C["NUM_STUDENT_OBS"] == 185 + 4

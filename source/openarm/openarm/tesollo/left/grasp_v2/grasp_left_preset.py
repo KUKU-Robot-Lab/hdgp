@@ -187,11 +187,13 @@ PREGRASP_EULER_EZ_DEG = -90.0
 PREGRASP_EULER_EX_DEG = -90.0
 
 # ---------------------------------------------------------------------------
-# Top-down 접근 (납작한 물체 전용) — right 의 y/부호 미러
+# Top-down 접근 (기본) / side 접근 (cup 전용) — right 의 y/부호 미러
 # ---------------------------------------------------------------------------
-# side-approach(|ex|=90)는 "감쌀 수직 옆면"이 있어야 작동한다. 높이 ≤4cm 물체에서는
-# 손끝이 테이블에 눌린 채 수평 전진해 물체를 쳐내는 불도저 실패가 난다
-# (right ep_14000 관찰 probe 실증).
+# DEXTRAH 와 동일하게 top-down 이 기본. side-approach(|ex|=90)는 감쌀 수직 옆면이
+# 있어야 작동하고, 납작한 물체에서는 손끝이 테이블에 눌린 채 수평 전진해 물체를
+# 쳐내는 불도저 실패가 난다(right ep_14000 관찰 probe 실증).
+# 물체 높이 규칙 분기(lstm_test2)는 ADR 회전이 커지면 원통이 누우면서 "납작"에서
+# 빠져 topdown_frac 이 자멸했다 → 물체 이름 기반 고정 분기로 대체.
 #
 # tesollo palm 축: +X=손바닥 법선, +Z=손가락 방향.
 #   ex=-90  → 손가락 수평 = side
@@ -203,8 +205,9 @@ PREGRASP_EULER_EX_TOPDOWN_DEG = -180.0
 # top-down pregrasp offset (palm_link 기준, 물체 중심 대비). right [0,-0.02,0.10] 의 y-미러.
 PREGRASP_OFFSET_TOPDOWN = [0.0, 0.02, 0.10]
 
-# 회전 후 물체 z 높이가 이 값 미만이면 top-down 으로 분기 (m). right 와 동일 임계.
-FLAT_OBJECT_HEIGHT_THRESHOLD = 0.05
+# side 접근을 유지할 물체 (그 외 전부 top-down). cup 은 내용물을 흘리면 안 되므로
+# 위에서 집지 않고 옆면을 감싸 잡는다(grasp_v1 방식).
+SIDE_APPROACH_OBJECT_NAMES = ("cup",)
 
 # Fabrics world 파일 — right world의 y-미러(반발체가 오른팔 영역 y<0으로 이동).
 # lstm_test2 실패 근본원인: sed 재생성이 right world 문자열을 복귀시켜
@@ -249,14 +252,33 @@ HAND_CURL_JOINT_NAMES = [
 
 # 고정 joints (RL 제어 제외)
 HAND_FIXED_JOINT_NAMES = [
-    "l_hj_thumb_1",
-    "l_hj_index_1",
     "l_hj_middle_1",
     "l_hj_ring_1",
-    "l_hj_pinky_1",
-    "l_hj_pinky_2",
 ]
-HAND_FIXED_JOINT_VALUES = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+HAND_FIXED_JOINT_VALUES = [0.0, 0.0]
+
+# ---------------------------------------------------------------------------
+# 자유화된 abduction/opposition joints (RL 직접 제어, 4D action) — right 의 부호 미러
+#
+# 시너지 basis 로는 살릴 수 없다: basis 열이 0 이고 anchor==open 이라
+# q* = anchor + coeffs@basis 가 open 값에 고정 → progress 항상 0.
+# 그래서 시너지 경로 바깥에서 절대 목표로 덮어쓴다.
+#
+# 범위는 URDF joint limit 의 "0 을 경계로 한 한쪽 절반" — 손이 안쪽으로만 모인다.
+# left URDF limit 자체가 right 의 미러라 부호가 그대로 뒤집힌다.
+# enabled_self_collisions=False 이므로 이 범위 제한이 유일한 방어선이다.
+#
+# 인덱스는 LEFT_HAND_JOINT_NAMES(finger-major) 기준: thumb_1=0, index_1=4,
+# pinky_1=16, pinky_2=17.
+HAND_ABDUCTION_JOINT_NAMES = [
+    "l_hj_thumb_1",  # thumb abduction: 전 범위
+    "l_hj_index_1",  # index abduction: 양수만 (엄지 쪽으로 모음 — right 미러)
+    "l_hj_pinky_1",  # pinky Z-flex:   음수만 (손바닥 안쪽으로 오므림)
+    "l_hj_pinky_2",  # pinky abduction: 음수만
+]
+HAND_ABDUCTION_LOCAL_INDICES = [0, 4, 16, 17]
+HAND_ABDUCTION_LIMITS_MIN = [-0.8901179, 0.0, -1.0471976, -0.6108652]
+HAND_ABDUCTION_LIMITS_MAX = [0.3839724, 0.4188790, 0.0, 0.0]
 
 # iCub distal tendon 커플링 (PIP = _3, DIP = _4)
 HAND_PIP_JOINT_NAMES = [
@@ -290,21 +312,18 @@ CURL_JOINT_LIMITS_MAX = [_math.pi, 2.007, 1.955, 1.902, _math.pi / 2]
 # intrinsics 는 센서 사양이라 좌우 동일(D435i depth 1280x720, HFOV 87°/VFOV 58°).
 #   16:9 를 유지해야 FOV 가 맞는다. clipping 근거리 0.3m = D435i 최소 측정거리.
 #
-# extrinsics: !!! PLACEHOLDER — 실제 마운트 후 hand-eye 캘리브레이션 값으로 교체할 것 !!!
-#   left 작업공간(물체 스폰 0.27, +0.10 / goal 0.27, +0.10)을 정면 대각에서
-#   내려다보는 look-at. right(y=-0.10) 의 y 부호 반전이다.
-#   ROT 가 right 와 같은 값인 건 우연이 아니다: 카메라와 목표의 y 가 같아 시선이
-#   x-z 평면 안에 있어서 y 미러가 회전에 영향을 주지 않는다. 실측 캘리브레이션
-#   값이 들어오면 좌우 ROT 는 일반적으로 달라진다 — 그때 이 대칭을 가정하지 말 것.
-# ---------------------------------------------------------------------------
+# extrinsics: right 배치(GUI 로 확정, 07.13)의 좌우 미러.
+#   위치는 y 부호 반전, 자세는 "미러된 목표점을 다시 look-at" 으로 재계산했다.
+#   쿼터니언을 그대로 부호 뒤집으면 핸디드니스가 깨진다 — 그렇게 하지 말 것.
+#   실물 D435i 를 단 뒤 hand-eye 캘리브레이션 값으로 최종 교체할 것.
 CAMERA_IMG_WIDTH  = 320
 CAMERA_IMG_HEIGHT = 180        # 16:9 — D435i depth 종횡비
 CAMERA_FOCAL_LENGTH       = 20.0
 CAMERA_HORIZONTAL_APERTURE = 37.9586   # 2*focal*tan(87°/2) → HFOV 87°
 CAMERA_CLIPPING_RANGE = (0.3, 3.0)
 
-CAMERA_POS = [1.05, 0.10, 0.75]                        # PLACEHOLDER (right: y=-0.10)
-CAMERA_ROT = [0.354477, -0.6118382, -0.6118382, 0.354477]  # (w,x,y,z), ros convention
+CAMERA_POS = [0.0804, 0.0050, 0.9674]
+CAMERA_ROT = [0.1530261, -0.6915698, 0.6892421, -0.1525110]  # (w,x,y,z), ros convention
 
 CAMERA_D_MIN = 0.3
 CAMERA_D_MAX = 1.5

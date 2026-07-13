@@ -83,16 +83,34 @@ def to_torch(x, dtype=torch.float, device: str = "cuda:0", requires_grad: bool =
     return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)
 
 
-def compute_flat_object_mask(
-    half_extent: torch.Tensor,
-    spawn_rot_matrix: torch.Tensor,
-    height_threshold: float,
+def compute_palm_pose_id(
+    object_idx: torch.Tensor,
+    side_object_idx: torch.Tensor,
 ) -> torch.Tensor:
-    """회전 후 물체 높이 < 임계 → True (top-down 접근 대상).
+    """접근 자세 분기: side 물체면 0, 그 외 전부 1(top-down).
 
-    half_extent:      (n, 3) 물체 로컬 half-extent (m)
-    spawn_rot_matrix: (n, 3, 3) spawn 회전 행렬
-    회전된 AABB 의 z half-extent = Σ_j |R[2, j]| · half[j] 로 구한다.
+    object_idx:      (n,)  각 env 의 활성 물체 인덱스
+    side_object_idx: (k,)  side 접근을 유지할 물체 인덱스 (cup 등)
+
+    물체 이름으로 고정 분기한다 — 물체 높이 규칙은 ADR 회전이 커지면 납작한 원통이
+    누우면서 분기에서 빠져 스스로 꺼진다(lstm_test2: topdown_frac 0.025→0.0015).
     """
-    half_z = (spawn_rot_matrix[:, 2, :].abs() * half_extent).sum(dim=1)
-    return (2.0 * half_z) < height_threshold
+    is_side = (object_idx.unsqueeze(1) == side_object_idx.unsqueeze(0)).any(dim=1)
+    return torch.where(
+        is_side,
+        torch.zeros_like(object_idx),
+        torch.ones_like(object_idx),
+    )
+
+
+def compute_abduction_targets(
+    abduction_action: torch.Tensor,
+    limits_min: torch.Tensor,
+    limits_max: torch.Tensor,
+) -> torch.Tensor:
+    """abduction action (n,4) ∈ [-1,1] → 절대 관절 목표 (n,4).
+
+    범위는 URDF limit 의 한쪽 절반이라 손이 안쪽으로만 모인다 — 자기충돌 검사가
+    꺼져 있으므로(enabled_self_collisions=False) 이 범위가 유일한 방어선이다.
+    """
+    return scale(abduction_action.clamp(-1.0, 1.0), limits_min, limits_max)

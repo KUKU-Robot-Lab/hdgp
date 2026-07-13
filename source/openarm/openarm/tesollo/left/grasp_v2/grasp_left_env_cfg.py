@@ -14,8 +14,8 @@
 
 """환경 설정: tesollo grasp_v2 (left) — DEXTRAH 구조 (다물체 파지→goal 운반)
 
-- Action: 11D (6D palm pose Fabrics IK + 5D per-finger 폐쇄)
-- Observation: DEXTRAH teacher 구조 — policy 193+N_obj / critic 247+N_obj
+- Action: 15D (6D palm pose Fabrics IK + 5D 시너지 + 4D abduction)
+- Observation: DEXTRAH teacher 구조 — policy 197+N_obj / critic 251+N_obj
 - Reward: DEXTRAH 4항 + ADR reward 스케줄 (lift 5→0)
 - Goal: 고정 절대점 (object_goal_pos), success = |obj-goal| < tol
 - ADR: wrench/spawn/노이즈/reward 커리큘럼 (in_success > 0.4 트리거)
@@ -57,6 +57,7 @@ from .grasp_left_preset import (
     RIGHT_ARM_AND_GRIPPER_JOINT_NAMES,
     RIGHT_ARM_REST_JOINT_POS,
     LEFT_ACTUATED_JOINT_NAMES,
+    SIDE_APPROACH_OBJECT_NAMES,
 )
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
@@ -248,9 +249,8 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # side-approach 는 감쌀 수직 옆면이 필요 → 낮은 물체에서 불도저 실패(right ep_14000 실증).
     # reset 에서 물체의 "회전 후 높이"가 임계 미만이면 top-down pregrasp 로 분기한다.
     # 회전을 반영하므로 만렙(ADR 50, spawn 회전 ±180°)에서 누운 원통도 자동 대상이 된다.
-    approach_branch_enable:        bool  = True
-    flat_object_height_threshold:  float = 0.05   # m. 관측 정합: 실패 h≤4cm 포함, 성공 h6cm 제외
-    object_bbox_path:              str   = _os.path.join(_ASSETS_DIR, "object_bbox.json")
+    approach_branch_enable:      bool = True
+    side_approach_object_names:  tuple[str, ...] = SIDE_APPROACH_OBJECT_NAMES
 
     # -----------------------------------------------------------------------
     # Demo reset (pour_v1_a11~a20 grasp start and lift target)
@@ -355,6 +355,9 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # primitives 복귀는 True. 기본 False(파지력 확보).
     synergy_freeze_enable: bool = False
     settle_steps: int = 25  # 다물체 drop-settle: episode 초기 N step 손가락 폐쇄 억제 → 물체 낙하 안착
+    # abduction 목표 rate limit (rad/step). 자기충돌 검사가 꺼져 있어
+    # (enabled_self_collisions=False) 순간이동식 abduction 은 인접 손가락을 관통한다.
+    abduction_rate_limit: float = 0.02
 
     grasp_contact_persistence_reward_steps: int = 20
     enclosure_sharpness: float = 15.0
@@ -529,7 +532,8 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Table",
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=[0.5725, 0.003, 0.2],
+            # x: 0.5725 → 0.4725 (렌더 확인: 테이블이 로봇에서 10cm 멀었다)
+            pos=[0.4725, 0.003, 0.2],
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
@@ -659,12 +663,12 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     #
     # distillation=False 가 기본. teacher(PPO) 학습 경로는 아래 설정을 일절 타지 않는다.
     # True 로 켜면: TiledCamera 활성 + obs dict 가 4-key (policy/expert_policy/img/rgb).
-    # 이때 "policy" 는 student obs(185, 물체 미관측)로 바뀌고 teacher obs 는
+    # 이때 "policy" 는 student obs(189, 물체 미관측)로 바뀌고 teacher obs 는
     # "expert_policy" 로 이동한다 — teacher 관측 구조 자체는 변경 없음.
     # -----------------------------------------------------------------------
     distillation: bool = False
 
-    num_student_observations: int = NUM_STUDENT_OBS     # 185 (물체 privileged state 제외)
+    num_student_observations: int = NUM_STUDENT_OBS     # 189 (물체 privileged state 제외)
     num_teacher_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)  # 193 + N_obj
 
     img_width:  int = CAMERA_IMG_WIDTH
@@ -695,6 +699,9 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     img_aug_type: str = "rgb"
 
     # 시각 도메인 랜덤화 텍스처 (DEXTRAH textures.zip). git 비추적 — server 는 별도 확보.
+    # enable_visual_dr=False 면 텍스처 없이도 기동한다 (카메라 배치 프리뷰용).
+    # 학습에서는 절대 끄지 말 것 — 외형이 고정되면 student 가 단일 장면에 과적합된다.
+    enable_visual_dr: bool = True
     texture_root: str = _TEXTURE_ROOT
     disable_dome_light_randomization: bool = False
     disable_robot_randomization: bool = False
