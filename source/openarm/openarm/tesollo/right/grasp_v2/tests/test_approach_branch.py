@@ -316,3 +316,20 @@ def test_curl_penalty_is_bounded():
     assert "finger_curl_dist_max" in src
     env_src = (PKG / "grasp_right_env.py").read_text()
     assert "clamp(max=float(self.cfg.finger_curl_dist_max))" in env_src
+
+
+def test_finger_curl_reg_anchors_on_open_pose_not_fist():
+    """finger_curl_reg 기준이 FULL_GRIP(주먹)이면 정책이 물체에서 도망간다.
+
+    DEXTRAH 원본 curled_q 는 편 자세(+thumb 대향)이고, 의도는 "과도한 말림 방지"다.
+    FULL_GRIP 을 기준으로 쓰면 부호가 뒤집혀 '빈손 주먹'이 페널티 0 이 되고,
+    물체를 잡으면 손가락이 막혀 페널티가 붙는다 → 접근 자체가 손해가 된다.
+    lstm_test3 실증: hand_to_object 0.256(ep50) → 0.028(ep100).
+    """
+    for pkg, fname in ((PKG, "grasp_right_env.py"), (LEFT_PKG, "grasp_left_env.py")):
+        src = (pkg / fname).read_text()
+        i = src.index("finger_curl_dist = (")
+        expr = src[i:i + 200]
+        assert "hand_open_pose" in expr, f"{fname}: curl 기준이 열린 자세가 아님"
+        assert "hand_full_grip_pose" not in expr, \
+            f"{fname}: curl 기준이 FULL_GRIP(주먹) — 물체 회피를 보상한다"

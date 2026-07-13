@@ -1210,9 +1210,22 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # 4) finger_curl_reg (DEXTRAH: -0.01 → -0.005)
+        #
+        # 기준은 HAND_APPROACH_POSE(열린 자세) 다 — FULL_GRIP(완전 주먹)이 아니다.
+        # DEXTRAH 원본 curled_q 는 index/middle/ring 전부 0(편 자세) + thumb 만 대향으로,
+        # 원본 주석이 의도를 명시한다: "fingers seem to curl in a lot to play with the
+        # object. A good strategy is to approach the object with wider set fingers and
+        # then encase the object flexing inwards" — 즉 과도한 말림을 막는 정규화다.
+        #
+        # FULL_GRIP 을 기준으로 쓰면 부호가 정반대가 된다: 빈손으로 주먹을 쥐면 거리 0
+        # (페널티 0)이고, 물체를 잡으면 손가락이 물체에 막혀 FULL_GRIP 에 못 가 페널티가
+        # 붙는다 → "물체에 가까이 가면 손해" → 정책이 물체에서 도망간다.
+        # lstm_test3(G프레임) 실증: hand_to_object 가 epoch 50 에 0.256 까지 올랐다가
+        # epoch 100 에 0.028 로 급락(= 거리 34cm). 렌더 관찰의 "제자리 주먹"과 일치.
+        # HAND_APPROACH_POSE(thumb 대향 + 나머지 편 자세)는 DEXTRAH curled_q 와 구조가 같다.
         finger_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
         finger_curl_dist = (
-            finger_pos - self.hand_full_grip_pose.unsqueeze(0)
+            finger_pos - self.hand_open_pose.unsqueeze(0)
         ).norm(p=2, dim=-1).clamp(max=float(self.cfg.finger_curl_dist_max))
         finger_curl_reg = _curl_w * finger_curl_dist ** 2
 
