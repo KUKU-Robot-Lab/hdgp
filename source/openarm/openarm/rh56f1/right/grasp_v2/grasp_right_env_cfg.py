@@ -285,15 +285,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_success_height: float = 0.04
 
     # -----------------------------------------------------------------------
-    # Delta palm action (pregrasp 기준 상대 오프셋)
-    # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
+    # palm action: workspace 절대 pose (DEXTRAH 원본 구조, tesollo 1aa9dcc 이식)
+    # action[0:6] ∈ [-1,1] → palm_mins_env~palm_maxs_env 박스로 직접 스케일.
     # -----------------------------------------------------------------------
-    # 07.12 DEXTRAH 절대 타겟 정합: delta는 anchor 기준 "도달 박스"(좁히면 goal 도달
-    # 불가 — 0.03 실수의 교훈). 속도 제한(slew)은 제거 — 측면 밀침 대응 추가물이었으나
-    # E3(top-down)에선 테이블이 밀침을 흡수해 불필요 + 행동→효과 지연이 credit
-    # assignment 를 희석(dextrah10 노이즈 발산). 실효 속도는 원본처럼 fabric 감쇠가 제한.
-    palm_delta_xyz:     float = 0.35   # anchor±0.35m 도달 박스 (workspace clamp가 최종 한계)
-    palm_delta_rot_deg: float = 45.0   # anchor±45° — DEXTRAH max_pose_angle 45 정합 (기존 90)
+    # 07.13: anchor+delta 방식은 물체까지 20~30cm 를 매 스텝 재적분해야 해서
+    # credit assignment 가 무너졌다(d9~d15 "가만히 있기" 수렴의 근본원인 중 하나 —
+    # tesollo 동일 병리 실증: curl 기준 수정 후에도 hand_to_object ep200 0.216 →
+    # ep400 0.017 급락). DEXTRAH 원본은 절대 pose 라 "물체 위로 가라"가 1스텝 결정.
+    # rate limit 은 그대로 유지(아래) — 목표는 1스텝, 실제 이동은 부드럽게.
+    palm_rate_xyz_per_step:     float = 0.04   # m/step
+    palm_rate_rot_deg_per_step: float = 8.0    # deg/step
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)

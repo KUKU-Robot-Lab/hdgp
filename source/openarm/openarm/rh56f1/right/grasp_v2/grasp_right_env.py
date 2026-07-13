@@ -221,20 +221,17 @@ class GraspRightEnv(DirectRLEnv):
         self.palm_maxs_env = self.palm_maxs_by_pose[0].unsqueeze(0).repeat(self.num_envs, 1)
 
         # ----------------------------------------------------------------
-        # Delta palm action 범위 (pregrasp 기준 상대 오프셋)
-        # action=0 → pregrasp 위치 유지, action=±1 → ±delta 이동
-        # scale(0) = pregrasp 이므로 초기 정책(출력≈0) = 안정된 pregrasp 위치
+        # palm 목표 rate limit (스텝당 최대 변화량) — 절대 pose 전환 후에도 유지
+        # (tesollo 1aa9dcc 이식): 정책의 목표 순간이동(박스 전체 bang-bang)을
+        # 기구적으로 제한 — 접근 밀침·리프트 후 스윙 대책. 목표는 1스텝에 절대
+        # pose 로 찍히지만, 실제 palm_pose_targets 는 이 rate 이내로만 이동한다.
         # ----------------------------------------------------------------
-        _delta_rad = math.radians(cfg.palm_delta_rot_deg)
-        self.delta_mins = to_torch([
-            -cfg.palm_delta_xyz, -cfg.palm_delta_xyz, -cfg.palm_delta_xyz,
-            -_delta_rad, -_delta_rad, -_delta_rad,
+        _rate_rad = math.radians(cfg.palm_rate_rot_deg_per_step)
+        self.palm_rate_limits = to_torch([
+            cfg.palm_rate_xyz_per_step, cfg.palm_rate_xyz_per_step, cfg.palm_rate_xyz_per_step,
+            _rate_rad, _rate_rad, _rate_rad,
         ], device=self.device)
-        self.delta_maxs = to_torch([
-            cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
-            _delta_rad, _delta_rad, _delta_rad,
-        ], device=self.device)
-        # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
+        # pregrasp palm pose 버퍼 (에피소드 시작 자세 — settle 동결·rate limit 초기 앵커)
         self.pregrasp_palm_pose_buf = torch.zeros(self.num_envs, 6, device=self.device)
         self.demo_grasp_reset_bank = (
             DemoGraspResetBank.from_hdf5_paths(cfg.demo_grasp_pose_paths, device=self.device)
@@ -819,28 +816,37 @@ class GraspRightEnv(DirectRLEnv):
                 )
                 self.pregrasp_palm_pose_buf[snap, :2] = _new_xy
 
-        # ---- Fabrics arm 제어 (전 구간 정책 연속 제어, scripted lift 없음) ----
-        # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta(도달 박스)
-        # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
-        delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
-        palm_desired = self.pregrasp_palm_pose_buf + delta
-        # 경계는 per-env — top-down 물체는 회전 중심이 ex=180° 로 옮겨져 있다(07.13).
-        palm_mins = torch.minimum(self.palm_mins_env, self.pregrasp_palm_pose_buf)
-        palm_maxs = torch.maximum(self.palm_maxs_env, self.pregrasp_palm_pose_buf)
-        palm_desired = torch.max(torch.min(palm_desired, palm_maxs), palm_mins)
+        # ---- Fabrics arm 제어: palm 절대 pose (DEXTRAH 원본 구조, tesollo 1aa9dcc 이식) ----
+        # action[0:6] ∈ [-1,1] 을 palm workspace 박스로 직접 스케일한다.
+        # 즉 정책 출력이 곧 "손바닥을 놓을 절대 위치/자세"다.
+        #
+        # 이전의 anchor+delta 방식(pregrasp ± 0.35m)은 물체까지 20~30cm 를 매 스텝
+        # 재적분해야 해서 credit assignment 가 무너졌다 — d9~d15 전체가 "가만히
+        # 있기"로 수렴한 근본 원인 중 하나(tesollo 동일 병리 실증: curl 기준 수정
+        # 후에도 hand_to_object ep200 0.216 → ep400 0.017 급락). DEXTRAH 는 절대
+        # pose 라 "물체 위로 가라"가 1스텝 결정이다.
+        #
+        # 경계는 per-env(side/top-down 회전 중심이 다르다). scale 결과가 이미
+        # 박스 안이므로 별도 clamp 불필요. action=0 → 박스 중심 — 회전 중심은
+        # pregrasp 자세와 동일하므로 초기 정책(출력≈0)은 올바른 접근 자세에서 시작.
+        palm_pose = scale(palm_action, self.palm_mins_env, self.palm_maxs_env)  # (N, 6)
         # settle 동안 palm 앵커 고정: 손가락만이 아니라 팔도 — 낙하·안착 중인 물체를
         # 쫓아가 치는 문제(렌더 관찰: 스폰 직후 손이 따라가 물체를 쳐냄) 방지.
         _palm_in_settle = (
             self.episode_length_buf < int(self.cfg.settle_steps)
         ).unsqueeze(-1)
-        palm_desired = torch.where(
-            _palm_in_settle, self.pregrasp_palm_pose_buf, palm_desired
+        palm_pose = torch.where(
+            _palm_in_settle, self.pregrasp_palm_pose_buf, palm_pose
         )
-        # DEXTRAH 절대 타겟 의미론 (07.12, slew 제거): 타겟 즉시 반영, 실속도는
-        # fabric 자연 감쇠가 제한. slew(1.5cm/step)는 측면 밀침 대응 추가물이었으나
-        # E3(top-down)에선 테이블이 밀침을 흡수해 존재 이유 소멸 + 행동→효과 지연으로
-        # credit assignment 희석·탐색 질식(dextrah10 노이즈 발산, analysis.md).
-        self.palm_pose_targets.copy_(palm_desired)
+        # rate limit: 목표가 이전 목표에서 스텝당 palm_rate_limits 이상 못 움직임
+        # (정책의 bang-bang 목표 순간이동 → 접근 밀침·리프트 후 스윙의 기구적 차단.
+        #  reset 시 palm_pose_targets=pregrasp 로 앵커됨). 절대 pose 전환 후에도
+        # 목표는 1스텝에 찍되 실제 이동은 부드럽게 — DEXTRAH 정합 유지.
+        _step6 = (palm_pose - self.palm_pose_targets).clamp(
+            -self.palm_rate_limits, self.palm_rate_limits
+        )
+        palm_pose = self.palm_pose_targets + _step6
+        self.palm_pose_targets.copy_(palm_pose)
         if self.cfg.use_hand_fabric:
             # DEXTRAH PCA: finger action 5D → uncentered PCA 좌표 절대 타겟.
             # settle 동안은 z_approach(손 열림)로 억제(다물체 drop-settle, lerp 경로와 동일 의도).
@@ -1776,8 +1782,8 @@ class GraspRightEnv(DirectRLEnv):
             # PCA 경로: 손 타겟을 approach 투영으로 초기화(손 열림 상태서 시작)
             self.hand_pca_targets[env_ids] = self.hand_pca_z_approach.unsqueeze(0)
 
-        # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
-        # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)
+        # actions 리셋: 절대 pose 라 action=0 → 박스 중심. 회전 중심은 pregrasp
+        # 자세와 동일하므로(palm_mins/maxs_env 구성) 실질적으로 pregrasp 근방에서 시작.
         self.actions[env_ids, :6] = 0.0
         self.actions[env_ids, 6:] = -1.0
         self.prev_actions[env_ids, :6] = 0.0
