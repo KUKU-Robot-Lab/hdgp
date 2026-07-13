@@ -245,7 +245,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # palm-obj xy 잔차 dx+0.03/dy+0.02 (aj7 치우침 +x0.072/-y0.034 상쇄).
     pregrasp_offset_x:     float = -0.07
     pregrasp_offset_y:     float = 0.02
-    pregrasp_offset_z:     float = 0.08
+    # offz 0.08→0.12 (07.13): aj7 0.6 IK 변동으로 일부 env palm 이 0.33까지 낮게
+    # 앉아 물체 낙하 경로 침범 → 스폰 충돌 사출(즉시종료 36/153). 4cm 상향으로 경로 확보.
+    pregrasp_offset_z:     float = 0.12
     # r_aj_7(손목) bias: top-down 하강 심도 확보 (0.5→floor 0.324, 0.6→0.300,
     # 0.8은 xy 정렬 붕괴 — offsets 보정으로 0.6까지 사용 가능).
     pregrasp_r_aj7_bias:   float = 0.6
