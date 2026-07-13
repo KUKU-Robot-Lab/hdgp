@@ -205,14 +205,37 @@ PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 
 
 # Pregrasp/reset palm 접근 방향 euler (deg) — env.py IK 타깃이 참조.
-# E3 top-down (07.12): ez=180, ex=180 → R=Ry(180), palm 법선(local +Z)이 world -z
-# (아래보기), 손가락(local +Y)은 world +y 수평. 물체 상공에서 하강 파지 —
-# 측면(ex=90) 접근은 도주로가 열려 불도저(밀림 herding)로 파지 불성립 실증(probe P1).
+# 07.13 접근 자세 분기 (tesollo cd29c62 이식, 안 1→반전): top-down 이 기본, cup 만
+# side(내용물 흘림 방지, grasp_v1 방식). 물체 높이 규칙(78592a3)은 ADR 회전이
+# 커지면 납작한 물체가 누우면서 분기에서 스스로 빠지는 자기모순이 있어(tesollo
+# lstm_test2 실증) 이름 기반 고정 분기로 대체.
+# (ez,ey,ex)=(180,0,90) → palm_sensor +z(법선) = world +y (물체 방향, side).
+# (ez,ey,ex)=(180,0,180) → palm_sensor +z(법선) = world -z (아래보기, top-down).
+# RH56F1 은 local+Z 가 이미 Allegro/DEXTRAH 와 동일 규약(법선)이라 tesollo 의
+# "가짜 top-down"(frame 불일치, 12673ea) 버그가 없음을 실측 확인(07.13 probe:
+# 법선 |z| 0.849 — tesollo 깨짐값 0.123과 다름) → G-frame 이식 불필요.
 # (tesollo palm_link 규약 ez=90과 다름 — 프레임 규약 차이.)
 # 주의: env.py에 숫자 하드코드 금지 — tesollo left lstm_test1에서 하드코드가 경계 clamp로
 # pregrasp 90° 뒤틀림 → 파지 불가 실증 (tesollo preset 동일 규칙).
 PREGRASP_EULER_EZ_DEG = 180.0
-PREGRASP_EULER_EX_DEG = 180.0
+PREGRASP_EULER_EX_DEG = 90.0
+PREGRASP_EULER_EX_TOPDOWN_DEG = 180.0
+
+# pregrasp offset 은 물체 크기(clearance = ‖half_extent‖, 회전 무관 최대 반경)에
+# 비례한다 (tesollo 9f0e4f7 이식, 안전 필수): 고정 offset 은 ADR 회전이 오르면
+# 큰 물체가 palm 을 침범해 PhysX depenetration 폭주를 일으킨다(tesollo lstm_test1
+# 실증: ADR 36부터 리턴 -1e4 스파이크 24회, iter 14111 붕괴 -4.9e7). 상수는
+# RH56F1 자체 probe 로 재도출(153종 전수 겹침 0 검증, analysis 참조) — tesollo
+# 값(0.04/0.03)을 맹목 복사하지 않음(손 리치·aj7 하강 기구가 다름).
+PREGRASP_TOPDOWN_XY = [-0.07, 0.02]
+PREGRASP_TOPDOWN_CLEARANCE = 0.05
+PREGRASP_SIDE_Z = -0.15
+PREGRASP_SIDE_CLEARANCE = 0.03
+PREGRASP_R_AJ7_BIAS_TOPDOWN = 0.6
+
+# side 접근을 유지할 물체 (그 외 전부 top-down). cup 은 내용물을 흘리면 안 되므로
+# 위에서 집으면 안 된다 — 옆면을 감싸 잡는다(grasp_v1 방식, tesollo와 동일).
+SIDE_APPROACH_OBJECT_NAMES = ("cup",)
 
 
 def palm_pose_mins(max_pose_angle: float) -> list:

@@ -81,3 +81,24 @@ def compute_lift_readiness(
 
 def to_torch(x, dtype=torch.float, device: str = "cuda:0", requires_grad: bool = False) -> torch.Tensor:
     return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)
+
+
+def compute_palm_pose_id(
+    object_idx: torch.Tensor,
+    side_object_idx: torch.Tensor,
+) -> torch.Tensor:
+    """접근 자세 분기: side 물체면 0, 그 외 전부 1(top-down). tesollo cd29c62 이식.
+
+    object_idx:      (n,)  각 env 의 활성 물체 인덱스
+    side_object_idx: (k,)  side 접근을 유지할 물체 인덱스 (cup 등)
+
+    물체 이름으로 고정 분기한다 — 물체 높이 규칙(구 compute_flat_object_mask)은
+    ADR 회전이 커지면 납작한 원통이 누우면서 분기에서 빠져 스스로 꺼진다
+    (tesollo lstm_test2 실증: topdown_frac 0.025→0.0015 자기모순).
+    """
+    is_side = (object_idx.unsqueeze(1) == side_object_idx.unsqueeze(0)).any(dim=1)
+    return torch.where(
+        is_side,
+        torch.zeros_like(object_idx),
+        torch.ones_like(object_idx),
+    )

@@ -46,6 +46,7 @@ from .grasp_right_preset import (
     LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
     LEFT_ARM_REST_JOINT_POS,
     RIGHT_ACTUATED_JOINT_NAMES,
+    SIDE_APPROACH_OBJECT_NAMES,
 )
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
@@ -237,27 +238,31 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 60
     reset_fabric_chunk_size: int = 128
-    cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
-    # E3 top-down (07.12, probe sweep B/D 검증): palm이 물체 상공(스폰+0.08)에서
-    # 아래보기로 시작 — 스폰·하강 중 물체 무교란(불도저 해소), scripted 파지-리프트 재현.
-    # 측면 세팅(-0.07/-0.08/-0.15, ex=90)은 도주로 열림으로 파지 불성립(analysis.md).
-    # 07.13 심도 재탐색(sweep A/B): aj7 0.6 + offsets 보정 → 하강 floor 0.300,
-    # palm-obj xy 잔차 dx+0.03/dy+0.02 (aj7 치우침 +x0.072/-y0.034 상쇄).
+    # 07.13: pregrasp offset 이 물체 clearance 로 연속값이 되어(아래) grid IK 캐시
+    # 전제(고정 offset)가 깨진다 — 캐시 제거, reset 마다 fabrics rollout (tesollo 9f0e4f7).
+    # 07.13 접근 자세 분기 반전(tesollo cd29c62 이식): top-down 이 기본, cup 만 side.
+    # E3(전 물체 top-down)는 153종 스캔에서 envelope 거의 닫힘 확정(scale1.0 리프트
+    # 1/153), 진단 롤아웃(ep2500)에서도 cup(존재증명 물체)만 100% 성공하고 종료
+    # 189건이 fallen/out_x(물체 쳐냄) — 형상별 자세 불일치가 근본 원인.
+    # 아래 x/y/z 는 side(cup 전용) 기하: x/aj7 는 그대로, y/z 는 clearance 공식이
+    # 부호·상수로 사용(_compute_pregrasp_offset) — E3 이전 lstm_test1 60% 검증값.
     pregrasp_offset_x:     float = -0.07
-    pregrasp_offset_y:     float = 0.02
-    # offz 0.08→0.10 (07.13): aj7 0.6 IK 변동으로 일부 env palm 이 낙하 경로를
-    # 침범(스폰 충돌 즉시종료 36/153) → 상향으로 해소(0.10에서 2/153). 스캔의
-    # cup 리프트 유무가 offz 에 따라 출렁이는 건 눈먼 스크립트의 xy 정렬 복권 —
-    # envelope 은 이 스케일에서 열려 있음(5회 입증), 정렬은 정책 학습 몫.
-    pregrasp_offset_z:     float = 0.10
-    # r_aj_7(손목) bias: top-down 하강 심도 확보 (0.5→floor 0.324, 0.6→0.300,
-    # 0.8은 xy 정렬 붕괴 — offsets 보정으로 0.6까지 사용 가능).
-    pregrasp_r_aj7_bias:   float = 0.6
+    pregrasp_offset_y:     float = -0.08
+    pregrasp_offset_z:     float = -0.15
+    # r_aj_7(손목)을 이만큼 낮춰 palm을 rim→물체 중심 높이로 내림(probe 확정, lstm_test1 검증).
+    pregrasp_r_aj7_bias:   float = 0.3
     # settle 종료 시 안착된 물체 위치로 anchor xy 재정렬 (drop-settle 롤링 보정).
     reanchor_after_settle: bool  = True
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
     pregrasp_noise_z:      float = 0.005
+
+    # -----------------------------------------------------------------------
+    # 접근 자세 분기 (top-down 기본 / cup 만 side, tesollo cd29c62 이식)
+    # -----------------------------------------------------------------------
+    approach_branch_enable:        bool  = True
+    side_approach_object_names:    tuple[str, ...] = SIDE_APPROACH_OBJECT_NAMES
+    object_bbox_path:              str   = _os.path.join(_ASSETS_DIR, "object_bbox.json")
 
     # -----------------------------------------------------------------------
     # Demo reset (pour_v1_a11~a20 grasp start and lift target)
@@ -306,6 +311,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_weight:              float = 5.0
     lift_sharpness:           float = 8.5
     finger_curl_reg_weight:   float = 0.0    # ADR 미사용 시 fallback (ADR은 -0.01→-0.005)
+    # finger_curl_reg 는 5개 reward 항 중 유일하게 무계(제곱, 아래로 무한) — tesollo
+    # 9f0e4f7 실증: 물리 발산 시 제곱 증폭으로 리턴이 -4.9e7 까지 튀어 rl_games
+    # 리턴/value 통계를 오염시켜 정책 붕괴. clamp 는 정상 학습(joint limit 이내)엔
+    # 영향 없고 발산 시에만 발동하는 안전판.
+    finger_curl_dist_max:     float = 14.0
     # palm orientation: DEXTRAH 4항엔 손목 방향 제약이 없어 손바닥이 임의(천장) 방향으로
     # 수렴. palm 법선(로컬 +X → world)이 palm→물체 방향과 정렬되도록 보조 shaping.
     # w·exp(s·(align−1)): align=1(완전 정렬)→w, align=−1(반대)→w·exp(−2s). weight는
