@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import warp as wp
 
@@ -37,6 +38,50 @@ def make_cam_matrix(width: int, height: int, focal: float, aperture: float):
     mat[2, 3] = -1.0
     mat[3, 2] = 1.0e-3
     return mat
+
+
+def look_at_quat(
+    pos: Sequence[float],
+    target: Sequence[float],
+    up: Sequence[float] = (0.0, 0.0, 1.0),
+) -> list[float]:
+    """pos 에서 target 을 바라보는 카메라 자세 → (w, x, y, z), ROS 규약.
+
+    ROS 카메라 프레임: +z = 전방(시선), +x = 오른쪽, +y = 아래.
+    Isaac Lab TiledCameraCfg.OffsetCfg(convention="ros") 가 이 규약을 쓴다.
+    """
+    import numpy as np
+
+    p = np.asarray(pos, dtype=float)
+    t = np.asarray(target, dtype=float)
+    u = np.asarray(up, dtype=float)
+
+    z = t - p
+    norm = np.linalg.norm(z)
+    if norm < 1e-9:
+        raise ValueError("카메라 위치와 목표점이 같다 — 시선을 정할 수 없다")
+    z /= norm
+
+    x = np.cross(z, u)
+    x_norm = np.linalg.norm(x)
+    if x_norm < 1e-9:
+        raise ValueError(
+            "시선이 up 축과 평행하다 — 카메라 roll 이 정의되지 않는다. "
+            "up 을 바꾸거나 카메라를 살짝 옮길 것"
+        )
+    x /= x_norm
+    y = np.cross(z, x)
+
+    rot = np.stack([x, y, z], axis=1)
+    w = math.sqrt(max(0.0, 1.0 + rot.trace())) / 2.0
+    if w < 1e-9:
+        raise ValueError("쿼터니언 변환 실패 (특이 자세)")
+    return [
+        w,
+        (rot[2, 1] - rot[1, 2]) / (4.0 * w),
+        (rot[0, 2] - rot[2, 0]) / (4.0 * w),
+        (rot[1, 0] - rot[0, 1]) / (4.0 * w),
+    ]
 
 
 def depth_randomization_cfg(cam_matrix, d_min: float, d_max: float) -> dict:

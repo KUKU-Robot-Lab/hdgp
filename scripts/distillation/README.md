@@ -151,6 +151,72 @@ python3 scripts/tools/parse_tfevents.py log/distillation/<task>/<label>/summarie
 
 ---
 
+## 카메라 배치 정하기 ① GUI 로 직접 옮기기 (`place_camera.py`)
+
+Isaac Sim 창을 띄우고 카메라를 마우스로 옮긴다. 움직일 때마다 터미널에 pose 가
+preset 형식으로 찍히고 파일로도 저장된다.
+
+```bash
+cd ~/rl_ws/IsaacLab
+./isaaclab.sh -p ../hdgp/scripts/distillation/place_camera.py \
+    --task open-tesol_r_grasp_v2-distill
+```
+
+1. Stage 트리에서 `/World/envs/env_0/Camera` 선택
+2. `W`(이동) / `E`(회전) 기즈모로 배치
+3. **카메라가 실제로 보는 화면**을 보려면 뷰포트를 하나 더 열고(Window → Viewport → Viewport 2)
+   그 뷰포트의 카메라를 위 Camera prim 으로 전환
+4. 마음에 드는 위치에서 터미널에 찍힌 `CAMERA_POS` / `CAMERA_ROT` 를 preset 에 붙여넣는다
+   (같은 값이 `docs/camera_preview/camera_pose.txt` 에도 저장된다)
+
+> `TiledCameraCfg.update_latest_camera_pose` 는 기본이 `False` 라 카메라 pose 를 초기화 때
+> 한 번만 읽는다. 이 스크립트는 그걸 켜고 돈다 — 안 켜면 GUI 에서 아무리 옮겨도
+> 읽히는 값은 preset 그대로다.
+
+---
+
+## 카메라 배치 정하기 ② 좌표로 스윕 (`preview_camera.py`)
+
+student 가 실제로 보게 될 화면을 뽑아 배치를 정하는 도구다.
+**시각 DR(텍스처)은 꺼지므로 textures.zip 없이 돈다.**
+
+```bash
+cd ~/rl_ws/IsaacLab
+
+# 현재 preset 배치 확인
+./isaaclab.sh -p ../hdgp/scripts/distillation/preview_camera.py \
+    --task open-tesol_r_grasp_v2-distill --headless
+
+# 여러 배치를 한 번에 비교 (Isaac 기동에만 1분 걸린다 — 스윕이 훨씬 빠르다)
+./isaaclab.sh -p ../hdgp/scripts/distillation/preview_camera.py \
+    --task open-tesol_r_grasp_v2-distill --headless \
+    --out docs/camera_preview/my_sweep \
+    --sweep "a=0.72,-0.10,0.55:0.27,-0.10,0.33" \
+            "b=0.80,-0.22,0.58:0.27,-0.10,0.34" \
+            "c=0.66,-0.10,0.48:0.27,-0.10,0.33"
+```
+
+`--sweep` 문법은 `<이름>=카메라x,y,z:바라볼점x,y,z` 다. 자세(쿼터니언)는 look-at 으로
+자동 계산된다. 좌표는 **env 로컬** — 로봇 베이스가 원점, 물체 스폰이 `(0.27, ∓0.10, 0.297)`,
+goal 이 `(0.27, ∓0.10, 0.45)` (right 는 y 음수, left 는 양수).
+
+출력: `docs/camera_preview/<out>/<이름>_rgb.png`, `<이름>_depth.png`
+그리고 각 배치의 depth 유효 픽셀 비율(밴드 0.3~1.5m 안에 든 픽셀)과,
+그대로 preset 에 붙여넣을 `CAMERA_POS` / `CAMERA_ROT` 를 찍어준다.
+
+배치를 고르면 `grasp_right_preset.py` / `grasp_left_preset.py` 의
+`CAMERA_POS` / `CAMERA_ROT` 를 그 값으로 교체하면 된다.
+
+### 볼 때 확인할 것
+
+- 물체가 손에 가리지 않는가 (정면 대각이 과하면 손이 물체를 덮는다)
+- 물체가 너무 작지 않은가 (멀면 8cm 물체가 20픽셀 남짓이 된다)
+- 리프트 목표 높이(z=0.45)까지 프레임에 들어오는가
+- depth 유효 픽셀 비율이 지나치게 낮지 않은가 (60% 이상 권장)
+- **실물 D435i 를 그 위치에 물리적으로 달 수 있는가** ← 이건 시뮬이 알려주지 않는다
+
+---
+
 ## 반드시 먼저 할 일: 카메라 캘리브레이션
 
 `grasp_right_preset.py`의 `CAMERA_POS` / `CAMERA_ROT`는 **PLACEHOLDER**다.
