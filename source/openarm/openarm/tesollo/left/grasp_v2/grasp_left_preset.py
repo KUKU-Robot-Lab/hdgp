@@ -229,9 +229,17 @@ SIDE_APPROACH_OBJECT_NAMES = ("cup",)
 FABRIC_WORLD_FILENAME = "open_tesollo_left_boxes_no_table"
 
 
+# ⚠️ z 상한 0.65 → 0.75 (07.13): top-down 에서는 palm 이 물체보다
+# (clearance + 0.04) 만큼 위에 있으므로, 물체를 goal(z=0.65)로 올리려면 palm 이
+# 0.72~0.81 까지 가야 한다. 상한 0.65 는 물체 절반을 goal tol(0.10) 밖에 가둬
+# 성공 자체를 물리적으로 불가능하게 만들었다(in_success 0.000 의 근본 원인).
+#   clearance 8.7cm(중앙) → 물체 최대 z 0.523 → goal 과 12.7cm > tol 10cm
+# IK 실측: 팔은 z≈0.74 까지 도달한다(0.80 목표 시 실제 0.737). 즉 박스가 팔의
+# 실제 도달 범위보다 9cm 낮게 잘려 있었다. side 방식은 palm 이 물체와 같은
+# 높이라 이 제약이 없었다(lstm_test1 이 in_success 0.637 을 낸 이유).
 # palm workspace 위치 경계 (y: right [-0.55, 0.22] → left 미러 [-0.22, 0.55])
 PALM_POS_MINS = [0.20, -0.22, 0.20]
-PALM_POS_MAXS = [0.65, 0.55, 0.65]
+PALM_POS_MAXS = [0.65, 0.55, 0.75]
 
 
 def palm_pose_mins(max_pose_angle: float, center_deg: list | None = None) -> list:

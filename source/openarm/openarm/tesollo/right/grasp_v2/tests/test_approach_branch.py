@@ -333,3 +333,32 @@ def test_finger_curl_reg_anchors_on_open_pose_not_fist():
         assert "hand_open_pose" in expr, f"{fname}: curl 기준이 열린 자세가 아님"
         assert "hand_full_grip_pose" not in expr, \
             f"{fname}: curl 기준이 FULL_GRIP(주먹) — 물체 회피를 보상한다"
+
+
+def test_every_object_can_reach_the_goal_in_topdown():
+    """top-down 파지로 모든 물체가 goal tol 안에 들어와야 한다.
+
+    top-down 에서는 palm 이 물체보다 (clearance + TOPDOWN_CLEARANCE) 위에 있으므로,
+    물체가 올라갈 수 있는 최대 높이 = palm 박스 z 상한 - 그만큼.
+    상한이 0.65 였을 때 clearance 8.7cm(중앙) 물체는 최대 z 0.523 → goal(0.65)과
+    12.7cm 로 tol(0.10) 밖 → 성공이 물리적으로 불가능했다(in_success 0.000).
+    IK 실측상 팔은 z≈0.74 까지 도달하므로 상한 0.75 로 올렸다.
+    """
+    import json
+    tbl = json.loads((REPO / "assets" / "object_bbox.json").read_text())
+    GOAL_Z = 0.65      # cfg.object_goal_pos[2]
+    TOL = 0.10         # cfg.object_goal_tol
+
+    for preset in (r_preset, l_preset):
+        z_max = preset.PALM_POS_MAXS[2]
+        worst_name, worst_gap = None, -1.0
+        for name, half in tbl.items():
+            clr = math.sqrt(sum(float(v) ** 2 for v in half))
+            obj_z_max = z_max - (clr + preset.PREGRASP_TOPDOWN_CLEARANCE)
+            gap = GOAL_Z - obj_z_max
+            if gap > worst_gap:
+                worst_name, worst_gap = name, gap
+        assert worst_gap < TOL, (
+            f"{worst_name}: top-down 으로 goal 에 {worst_gap*100:.1f}cm 까지밖에 못 감 "
+            f"(tol {TOL*100:.0f}cm) — palm 박스 z 상한 {z_max} 가 너무 낮다"
+        )
