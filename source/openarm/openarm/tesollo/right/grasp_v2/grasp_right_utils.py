@@ -156,6 +156,19 @@ def g_pose_to_fabric_quat(pose6: torch.Tensor, frame_rot: torch.Tensor) -> torch
     return torch.cat([pose6[:, :3], quat], dim=-1)                   # (n,7)
 
 
+def compute_rotated_half_z(
+    half_extent: torch.Tensor,
+    rot_matrix: torch.Tensor,
+) -> torch.Tensor:
+    """회전 후 물체의 z half-extent = Σ_j |R[2,j]|·half[j].
+
+    half_extent: (n,3) 로컬 half-extent
+    rot_matrix:  (n,3,3) spawn 회전
+    직립이면 half[2] 그대로, 누우면 커진다 → palm 이 자동으로 그만큼 올라간다.
+    """
+    return (rot_matrix[:, 2, :].abs() * half_extent).sum(dim=1)
+
+
 def compute_palm_pose_id(
     object_idx: torch.Tensor,
     side_object_idx: torch.Tensor,

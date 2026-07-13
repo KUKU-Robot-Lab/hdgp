@@ -55,7 +55,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg, TiledCamera
 from openarm.distillation.visual_dr import VisualDomainRandomizer
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_apply, quat_mul
+from isaaclab.utils.math import matrix_from_quat, quat_apply, quat_mul
 
 from openarm.common.grasp_logging import action_policy_scalars
 
@@ -96,7 +96,9 @@ from .grasp_left_preset import (
     PALM_G_EULER_CENTER_TOPDOWN,
     PALM_G_EULER_CENTER_SIDE,
     PREGRASP_TOPDOWN_XY,
-    PREGRASP_TOPDOWN_CLEARANCE,
+    PREGRASP_TOPDOWN_FINGER_REACH,
+    TABLE_TOP_Z,
+    OBJECT_SPAWN_GAP,
     PREGRASP_SIDE_Z,
     PREGRASP_SIDE_CLEARANCE,
     PREGRASP_OFFSET,
@@ -120,6 +122,7 @@ from .grasp_left_utils import (
     compute_abduction_targets,
     compute_joint7_lift_wait_target,
     compute_palm_pose_id,
+    compute_rotated_half_z,
     g_pose_to_fabric_quat,
     scale,
     to_torch,
@@ -331,6 +334,12 @@ class GraspLeftEnv(DirectRLEnv):
         # pregrasp 를 이 값에 비례시켜 스폰 겹침(→ depenetration 폭주)을 없앤다.
         self.object_clearance = to_torch(
             self._load_object_clearances(), device=self.device
+        )
+        # 물체별 half-extent (n_obj, 3) — top-down palm 높이를 "회전 후 실제 물체
+        # 높이(half_z)" 로 잡는 데 쓴다. clearance(대각선)는 직립 물체에서 물체 top 을
+        # 최대 3.2cm 과대평가해 손가락이 닿지 않았다.
+        self.object_half_extent = to_torch(
+            self._load_object_half_extents(), device=self.device
         )
         # DEXTRAH 물체 조건화: one-hot object id + scale (obs 구조 원본 동일, distillation 대비)
         self.multi_object_idx_onehot = torch.nn.functional.one_hot(
@@ -641,16 +650,33 @@ class GraspLeftEnv(DirectRLEnv):
             for nm in self._object_names
         ]
 
-    def _compute_pregrasp_offset(
-        self, obj_idx: torch.Tensor, pose_id: torch.Tensor
-    ) -> torch.Tensor:
-        """물체 clearance 비례 pregrasp offset (n,3).
+    def _load_object_half_extents(self) -> list[list[float]]:
+        """active_object_names 순서의 half-extent (m). 누락 시 즉시 실패."""
+        path = Path(self.cfg.object_bbox_path)
+        table = json.loads(path.read_text(encoding="utf-8"))
+        missing = [nm for nm in self._object_names if nm not in table]
+        if missing:
+            raise KeyError(f"bbox 누락 물체 {len(missing)}종: {missing[:5]} …")
+        return [[float(v) for v in table[nm]] for nm in self._object_names]
 
-        고정 offset 은 회전 ADR 이 오르면 물체가 palm 을 침범해 PhysX depenetration
-        폭주를 일으킨다(right lstm_test1: ADR 36 부터 스파이크, 14111 에서 -4.9e7 붕괴).
-        top-down 은 물체 위 (clearance + 손가락 여유), side 는 옆 (clearance + palm 여유).
+    def _compute_pregrasp_offset(
+        self, obj_idx: torch.Tensor, pose_id: torch.Tensor, spawn_rot: torch.Tensor
+    ) -> torch.Tensor:
+        """물체 크기 비례 pregrasp offset (n,3).
+
+        top-down: palm z = (회전 후 물체 높이 half_z) + FINGER_REACH.
+          clearance(‖half_extent‖ = 대각선)를 쓰면 직립 물체에서 물체 top 을 최대 3.2cm
+          과대평가해 palm 이 너무 높이 뜬다 → 손가락(~10cm)을 굽혀도 물체에 닿지 않는다
+          (실측: contact/tip 0.00~0.09, object_height 음수 — 한 번도 못 잡음).
+          회전 후 half_z 를 쓰면 직립일 때 palm 이 물체 top 바로 위에 오고, ADR 로 물체가
+          누우면 half_z 가 커져 palm 도 자동으로 올라간다(겹침 방지 유지).
+
+        side(cup): 옆에서 감싸므로 회전 무관 최대 반경(clearance)을 그대로 쓴다.
         """
-        clr = self.object_clearance[obj_idx]                    # (n,)
+        clr = self.object_clearance[obj_idx]                    # (n,)  회전 무관 최대 반경
+        half_z = compute_rotated_half_z(
+            self.object_half_extent[obj_idx], matrix_from_quat(spawn_rot)
+        )                                                       # (n,)  회전 후 실제 높이
         is_top = pose_id == 1
         off = torch.zeros(clr.shape[0], 3, device=self.device)
         off[:, 0] = torch.where(
@@ -665,7 +691,7 @@ class GraspLeftEnv(DirectRLEnv):
         )
         off[:, 2] = torch.where(
             is_top,
-            clr + float(PREGRASP_TOPDOWN_CLEARANCE),
+            half_z + float(PREGRASP_TOPDOWN_FINGER_REACH),
             torch.full_like(clr, float(PREGRASP_SIDE_Z)),
         )
         return off
@@ -1633,12 +1659,20 @@ class GraspLeftEnv(DirectRLEnv):
             obj_y = self.cfg.object_spawn_y_center + (
                 torch.rand(n, device=self.device) - 0.5
             ) * 2.0 * _xy_range
+            # 물체를 테이블 바로 위에 스폰한다 (회전 후 half_z 반영).
+            # 고정 높이(0.297) 스폰은 5~8cm 자유낙하를 만들고, pregrasp 가 낙하 전
+            # 위치 기준이라 palm~물체가 항상 15.7cm 로 고정돼 손가락이 안 닿았다.
+            _spawn_rot_for_z = self._sample_spawn_rotation(n)
+            _half_z_spawn = compute_rotated_half_z(
+                self.object_half_extent[self.object_idx[env_ids]],
+                matrix_from_quat(_spawn_rot_for_z),
+            )
             obj_pos_local = torch.stack(
-                [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
+                [obj_x, obj_y, TABLE_TOP_Z + _half_z_spawn + OBJECT_SPAWN_GAP], dim=1
             )
 
             # ---- 접근 자세 결정: cup → side, 그 외 → top-down ----
-            spawn_rot = self._sample_spawn_rotation(n)
+            spawn_rot = _spawn_rot_for_z          # 스폰 높이 계산에 쓴 것과 동일해야 한다
             if self.cfg.approach_branch_enable:
                 pose_id = self._compute_palm_pose_id(self.object_idx[env_ids])  # 0=side, 1=top
             else:
@@ -1654,7 +1688,7 @@ class GraspLeftEnv(DirectRLEnv):
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
             ], dim=1)
             pregrasp_pos = obj_pos_local + self._compute_pregrasp_offset(
-                self.object_idx[env_ids], pose_id
+                self.object_idx[env_ids], pose_id, spawn_rot
             ) + noise
 
             # pregrasp 회전 = G 규약 euler (pose 별 상수). P 규약 하드코드 금지 —

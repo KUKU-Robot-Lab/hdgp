@@ -197,7 +197,27 @@ PALM_G_EULER_CENTER_SIDE = [0.0, 0.0, -90.0]
 # hand_to_object 가 보는 MAX(palm,tips) 거리가 오히려 커진다(실측 30.1cm → h2o 0.049).
 # 0.04 = palm 두께 이상의 여유. 실측 침투 여유 8.1cm 이므로 겹침 없이 줄일 수 있다.
 PREGRASP_TOPDOWN_XY = [0.0, -0.02]
-PREGRASP_TOPDOWN_CLEARANCE = 0.04
+# top-down palm 높이 = 물체중심 + (회전 후 half_z) + FINGER_REACH.
+#
+# clearance(‖half_extent‖ = 대각선)를 쓰면 직립 물체에서 물체 top 보다 최대 3.2cm
+# 과대평가한다(small_12_cyl: clearance 4.4cm vs half_z 1.3cm). 그 결과 palm 이
+# 물체 top 위 9.3cm 에 뜨는데 손가락 길이가 ~10cm 라 굽혀도 물체에 닿지 않았다
+# (실측: contact/tip 0.00~0.09, object_height 음수 — 한 번도 못 잡음).
+#
+# 회전 후 half_z = Σ_j |R[2,j]|·half[j] 로 실제 물체 높이를 쓰면
+#   - 직립일 때 palm 이 물체 top 바로 위 FINGER_REACH 에 온다 → 손가락이 닿는다
+#   - ADR 로 물체가 누우면 half_z 가 커져 palm 도 자동으로 올라간다 → 겹침 방지
+PREGRASP_TOPDOWN_FINGER_REACH = 0.06
+
+# 물체 스폰 높이 = TABLE_TOP_Z + (회전 후 half_z) + SPAWN_GAP.
+#
+# 기존 object_spawn_z=0.297 고정은 물체를 테이블(상면 z=0.200) 위 5~8cm 에서
+# 자유낙하시켰다. 그런데 pregrasp 는 "낙하 전" spawn 위치 기준으로 잡혀서,
+#     palm~물체 = (spawn_z + half_z + REACH) - (table + half_z) = 0.157  (half_z 소거!)
+# 즉 물체 크기와 무관하게 항상 15.7cm 가 되어 손가락(~10cm)이 닿지 못했다.
+# 테이블 바로 위에 스폰하면 낙하가 사라지고 pregrasp 가 실제 물체 위치와 맞는다.
+TABLE_TOP_Z = 0.200
+OBJECT_SPAWN_GAP = 0.01
 # side(cup 전용): palm 을 물체 옆 (clearance + palm 두께 여유) 에 둔다.
 PREGRASP_SIDE_Z = 0.05
 PREGRASP_SIDE_CLEARANCE = 0.03

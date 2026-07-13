@@ -440,7 +440,10 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
         },
         # reward 스케줄 (DEXTRAH): lift shaping 5→0 걷어내고 goal 정밀도(sharpness) 강화
         "reward_weights": {
-            "finger_curl_reg":          (-0.01, -0.01),   # README teacher 레시피 고정 오버라이드 (코드 기본 -0.01→-0.005 대신)
+            "finger_curl_reg":          (-0.003, -0.003),  # tesollo 스케일 정합. DEXTRAH 는 Allegro(16관절,
+        #   파지 굽힘 ~1.0rad)에서 ‖q-anchor‖²≈12 → 실효 -0.12/step. tesollo 는 20관절·1.8rad 라
+        #   ‖·‖²≈37 → 같은 weight 로 -0.37/step (3배). 그 결과 "손을 굽히는 것 자체가 순손실"이 되어
+        #   정책이 손을 펴고 물체에서 도망갔다(curl -0.367→-0.005 와 h2o 급락이 동시 발생).
             "object_to_goal_sharpness": (15.0, 20.0),   # 우리 exp(-s·err) 부호
             "lift_weight":              (5.0, 0.0),
         },

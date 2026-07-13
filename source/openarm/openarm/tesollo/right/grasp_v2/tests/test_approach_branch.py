@@ -272,38 +272,38 @@ def _clearances():
 def test_pregrasp_clears_every_object_in_both_poses():
     """어떤 물체도, 어떤 회전에서도 palm 위치를 침범하지 못해야 한다.
 
-    고정 offset(구버전)은 palm 이 물체중심 9.2cm 에 있어 153종 중 48종이 palm 을
-    덮었다 → 회전 ADR 36 부터 PhysX depenetration 폭주 → 리턴 -4.9e7 붕괴.
-    clearance 비례로 바꾼 뒤에는 위반이 0 이어야 한다.
+    top-down palm z = (회전 후 half_z) + FINGER_REACH 이므로, 회전이 어떻든 palm 은
+    물체 top 보다 FINGER_REACH 만큼 위에 있다 → 겹침이 원리적으로 불가능.
+    side(cup)는 clearance(회전 무관 최대 반경) + 여유를 쓴다.
+    고정 offset 시절엔 palm 이 물체중심 9.2cm 라 153종 중 48종이 palm 을 덮었고,
+    회전 ADR 36 부터 depenetration 폭주 → 리턴 -4.9e7 붕괴가 났다.
     """
     clr = _clearances()
     for preset in (r_preset, l_preset):
-        for name, c in clr.items():
-            # top-down: palm = 물체중심 + (xy, c + FINGER_CLEARANCE)
-            tx, ty = preset.PREGRASP_TOPDOWN_XY
-            tz = c + preset.PREGRASP_TOPDOWN_CLEARANCE
-            d_top = math.sqrt(tx * tx + ty * ty + tz * tz)
-            assert d_top > c, f"{name}: top-down palm({d_top:.3f}) 이 물체 반경({c:.3f}) 안"
+        # top-down: 정의상 물체 top 위 FINGER_REACH → 겹침 없음
+        assert preset.PREGRASP_TOPDOWN_FINGER_REACH > 0.03, \
+            "FINGER_REACH 가 palm 두께보다 작으면 물체와 겹친다"
 
-            # side: palm = 물체중심 + (offset_x, ±(c + PALM_CLEARANCE), SIDE_Z)
+        # side: palm 이 회전 무관 최대 반경 밖에 있어야 한다
+        for name, c in clr.items():
             sy = c + preset.PREGRASP_SIDE_CLEARANCE
             sz = preset.PREGRASP_SIDE_Z
             d_side = math.sqrt(sy * sy + sz * sz)
             assert d_side > c, f"{name}: side palm({d_side:.3f}) 이 물체 반경({c:.3f}) 안"
 
 
-def test_pregrasp_keeps_minimum_margin():
-    """여유가 palm 두께 수준(3cm) 이상이어야 실제 메시가 안 닿는다."""
-    clr = _clearances()
-    worst = min(
-        (math.sqrt(sum(v * v for v in (
-            r_preset.PREGRASP_TOPDOWN_XY[0],
-            r_preset.PREGRASP_TOPDOWN_XY[1],
-            c + r_preset.PREGRASP_TOPDOWN_CLEARANCE,
-        ))) - c)
-        for c in clr.values()
-    )
-    assert worst >= 0.03, f"top-down 최소 여유 {worst*100:.1f}cm < 3cm"
+def test_pregrasp_is_within_finger_reach():
+    """palm 이 물체 top 위 FINGER_REACH 에 와야 손가락(~10cm)이 물체에 닿는다.
+
+    clearance(대각선)를 쓰던 시절엔 직립 물체에서 물체 top 을 최대 3.2cm 과대평가해
+    palm 이 물체 top 위 9.3cm 에 떴다 → 손가락을 굽혀도 안 닿았다
+    (실측: contact/tip 0.00~0.09, object_height 음수 — 한 번도 못 잡음).
+    """
+    FINGER_LEN = 0.10
+    for preset in (r_preset, l_preset):
+        reach = preset.PREGRASP_TOPDOWN_FINGER_REACH
+        assert reach < FINGER_LEN, \
+            f"FINGER_REACH({reach}) 가 손가락 길이({FINGER_LEN}) 이상 — 굽혀도 안 닿는다"
 
 
 def test_curl_penalty_is_bounded():
@@ -338,11 +338,10 @@ def test_finger_curl_reg_anchors_on_open_pose_not_fist():
 def test_every_object_can_reach_the_goal_in_topdown():
     """top-down 파지로 모든 물체가 goal tol 안에 들어와야 한다.
 
-    top-down 에서는 palm 이 물체보다 (clearance + TOPDOWN_CLEARANCE) 위에 있으므로,
-    물체가 올라갈 수 있는 최대 높이 = palm 박스 z 상한 - 그만큼.
-    상한이 0.65 였을 때 clearance 8.7cm(중앙) 물체는 최대 z 0.523 → goal(0.65)과
-    12.7cm 로 tol(0.10) 밖 → 성공이 물리적으로 불가능했다(in_success 0.000).
-    IK 실측상 팔은 z≈0.74 까지 도달하므로 상한 0.75 로 올렸다.
+    top-down 에서 palm 은 물체 top 위 FINGER_REACH 이므로, 물체가 올라갈 수 있는
+    최대 높이 = palm 박스 z 상한 - (half_z + FINGER_REACH).
+    박스 상한이 0.65 였을 때는 물체 절반이 goal tol 밖이라 성공이 물리적으로
+    불가능했다(in_success 0.000). IK 실측상 팔은 z≈0.74 까지 간다 → 상한 0.75.
     """
     import json
     tbl = json.loads((REPO / "assets" / "object_bbox.json").read_text())
@@ -353,8 +352,8 @@ def test_every_object_can_reach_the_goal_in_topdown():
         z_max = preset.PALM_POS_MAXS[2]
         worst_name, worst_gap = None, -1.0
         for name, half in tbl.items():
-            clr = math.sqrt(sum(float(v) ** 2 for v in half))
-            obj_z_max = z_max - (clr + preset.PREGRASP_TOPDOWN_CLEARANCE)
+            half_z = float(half[2])          # 직립 기준 (회전하면 palm 도 같이 올라감)
+            obj_z_max = z_max - (half_z + preset.PREGRASP_TOPDOWN_FINGER_REACH)
             gap = GOAL_Z - obj_z_max
             if gap > worst_gap:
                 worst_name, worst_gap = name, gap
@@ -362,3 +361,17 @@ def test_every_object_can_reach_the_goal_in_topdown():
             f"{worst_name}: top-down 으로 goal 에 {worst_gap*100:.1f}cm 까지밖에 못 감 "
             f"(tol {TOL*100:.0f}cm) — palm 박스 z 상한 {z_max} 가 너무 낮다"
         )
+
+
+def test_curl_weight_matches_tesollo_hand_scale():
+    """finger_curl_reg weight 는 손 구조에 맞춰야 한다.
+
+    DEXTRAH 는 Allegro(16관절, 파지 굽힘 ~1.0rad)에서 ‖q-anchor‖²≈12 → 실효 -0.12/step.
+    tesollo 는 20관절·1.8rad 라 ‖·‖²≈37 → 같은 weight(-0.01) 로 -0.37/step (3배).
+    그 결과 "손을 굽히는 것 자체가 순손실"이 되어 정책이 손을 펴고 물체에서 도망갔다
+    (curl -0.367 → -0.005 와 hand_to_object 급락이 동시 발생).
+    """
+    for pkg, fname in ((PKG, "grasp_right_env_cfg.py"), (LEFT_PKG, "grasp_left_env_cfg.py")):
+        src = (pkg / fname).read_text()
+        assert '"finger_curl_reg":          (-0.003, -0.003)' in src, \
+            f"{fname}: curl weight 가 tesollo 스케일(-0.003)이 아님"
