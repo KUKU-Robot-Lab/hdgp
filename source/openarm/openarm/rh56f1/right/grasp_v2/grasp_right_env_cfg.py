@@ -101,6 +101,10 @@ def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":
         usd_path=_os.path.join(_ACTIVE_OBJECT_ROOT, name, f"{name}.usd"),
         activate_contact_sensors=True,
         scale=(_s, _s, _s),
+        # 질량 고정 (07.13): scale 0.75에서 질량이 scale³=0.42배로 줄어 drop 튕김·
+        # 팔 스윕만으로 경계 이탈(zero-action 60step 종료 21% 실측, episode 57step
+        # 붕괴 — d14). 균일 0.15kg 로 고정(physics DR 이 위에서 ±랜덤화).
+        mass_props=sim_utils.MassPropertiesCfg(mass=0.15),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             articulation_enabled=False,
         ),
@@ -470,7 +474,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
     object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
-    object_spawn_z:        float = 0.297
+    # 07.13: 0.297→0.27 — scale 0.75 안착고(0.24) 대비 drop 5.7cm는 튕김·롤링 과다.
+    object_spawn_z:        float = 0.27
     # 활성 물체군(spawn 순서와 일치) — onehot·per-object 로깅용 이름. env_id % N 로 배정.
     # (물체 조건화는 DEXTRAH식 onehot 으로 전환 — 접근 B feature 는 obs 미사용)
     active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
