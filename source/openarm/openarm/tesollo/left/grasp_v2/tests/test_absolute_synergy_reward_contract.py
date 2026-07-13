@@ -247,13 +247,20 @@ def test_adr_curriculum_is_dextrah() -> None:
 def test_palm_target_rate_limit() -> None:
     # palm 목표 rate limit 계약 (07.11): 정책의 목표 순간이동(bang-bang)이
     # 접근 밀침·리프트 후 스윙을 만듦 — 스텝당 변화량을 기구적으로 제한.
-    # palm_delta_xyz 는 도달 범위(속도 아님) — goal 기하상 0.15 미만 축소 금지.
+    #
+    # palm action 은 절대 pose 다(DEXTRAH 원본 구조, 07.13). delta 방식은 물체까지
+    # 20~30cm 를 rate limit 으로 수백 스텝 적분해야 해서 정책이 "가만히 있기"로
+    # 수렴했다(curl_fix run: hand_to_object ep200 0.216 → ep400 0.017).
+    # rate limit 은 절대 pose 에서도 그대로 유지된다 — 목표는 1스텝에 찍되
+    # 실제 이동은 부드럽게.
     cfg = _text("grasp_left_env_cfg.py")
     env = _text("grasp_left_env.py")
 
     assert "palm_rate_xyz_per_step:     float = 0.04" in cfg
     assert "palm_rate_rot_deg_per_step: float = 8.0" in cfg
-    assert "palm_delta_xyz:     float = 0.15" in cfg
+    assert "scale(palm_action, self.palm_mins_env, self.palm_maxs_env)" in env, \
+        "palm action 이 절대 pose 가 아님 (delta 로 되돌아갔다)"
+    assert "palm_delta_xyz" not in cfg, "delta cfg 가 되살아났다"
     assert "self.palm_rate_limits" in env
     assert "(palm_pose - self.palm_pose_targets).clamp(" in env
     # settle 동안 팔 동결: 낙하 중 물체를 팔로 쳐내는 것 방지 (finger 게이트 공유)

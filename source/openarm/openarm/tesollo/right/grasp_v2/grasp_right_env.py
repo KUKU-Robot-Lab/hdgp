@@ -219,15 +219,6 @@ class GraspRightEnv(DirectRLEnv):
         # action=0 → pregrasp 위치 유지, action=±1 → ±delta 이동
         # scale(0) = pregrasp 이므로 초기 정책(출력≈0) = 안정된 pregrasp 위치
         # ----------------------------------------------------------------
-        _delta_rad = math.radians(cfg.palm_delta_rot_deg)
-        self.delta_mins = to_torch([
-            -cfg.palm_delta_xyz, -cfg.palm_delta_xyz, -cfg.palm_delta_xyz,
-            -_delta_rad, -_delta_rad, -_delta_rad,
-        ], device=self.device)
-        self.delta_maxs = to_torch([
-            cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
-            _delta_rad, _delta_rad, _delta_rad,
-        ], device=self.device)
         # palm 목표 rate limit (스텝당 최대 변화량 — 접근 밀침·스윙 대책, 기구적 제약)
         _rate_rad = math.radians(cfg.palm_rate_rot_deg_per_step)
         self.palm_rate_limits = to_torch([
@@ -816,15 +807,21 @@ class GraspRightEnv(DirectRLEnv):
         if snap.any():
             self.object_init_pos[snap] = self.object_pos[snap]
 
-        # ---- Fabrics arm 제어 (전 구간 정책 연속 제어, scripted lift 없음) ----
-        # Delta action: action=0 → pregrasp 유지, action=±1 → pregrasp ± delta
-        # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
-        delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
-        palm_pose = self.pregrasp_palm_pose_buf + delta
-        # 경계는 per-env — top-down 물체는 회전 중심이 ex=180° 로 옮겨져 있다.
-        palm_mins = torch.minimum(self.palm_mins_env, self.pregrasp_palm_pose_buf)
-        palm_maxs = torch.maximum(self.palm_maxs_env, self.pregrasp_palm_pose_buf)
-        palm_pose = torch.max(torch.min(palm_pose, palm_maxs), palm_mins)
+        # ---- Fabrics arm 제어: palm 절대 pose (DEXTRAH 원본 구조) ----
+        # action[0:6] ∈ [-1,1] 을 palm workspace 박스로 직접 스케일한다.
+        # 즉 정책 출력이 곧 "손바닥을 놓을 절대 위치/자세"다.
+        #
+        # 이전의 delta 방식(pregrasp ± 0.15m)은 물체까지 20~30cm 를 rate limit
+        # (0.04 m/step) 으로 수백 스텝 적분해야 해서 credit assignment 가 무너졌다:
+        # hand_to_object 가 오르다가 정책이 "가만히 있기"로 수렴하며 급락했다
+        # (curl_fix run: ep200 0.216 → ep400 0.017). DEXTRAH 는 절대 pose 라
+        # "물체 위로 가라"가 1스텝 결정이다.
+        #
+        # 경계는 per-env (side/top-down 회전 중심이 다르다). scale 결과가 이미
+        # 박스 안이므로 별도 clamp 불필요.
+        # action=0 → 박스 중심. 회전 중심은 G euler pregrasp 자세와 동일하므로
+        # 초기 정책(출력≈0)은 올바른 접근 자세에서 시작한다.
+        palm_pose = scale(palm_action, self.palm_mins_env, self.palm_maxs_env)  # (N, 6)
         # settle 동안 팔 동결: 물체 낙하-안착 전 정책이 팔로 쫓아가 물체를 쳐내
         # 도달불가 위치로 밀어버리는 것 방지 (finger 억제와 동일 게이트 — 렌더 실증)
         in_settle = (
@@ -1777,7 +1774,7 @@ class GraspRightEnv(DirectRLEnv):
         self.abduction_targets[env_ids] = 0.0
 
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
-        # (역스케일 불필요: scale(0, delta_mins, delta_maxs) = delta=0 → pregrasp 유지)
+        # (절대 pose 라 action=0 → 박스 중심. 회전은 pregrasp 자세와 동일)
         self.actions[env_ids, :6] = 0.0
         self.actions[env_ids, 6:] = -1.0
         self.prev_actions[env_ids, :6] = 0.0
