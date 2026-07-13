@@ -81,3 +81,18 @@ def compute_lift_readiness(
 
 def to_torch(x, dtype=torch.float, device: str = "cuda:0", requires_grad: bool = False) -> torch.Tensor:
     return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)
+
+
+def compute_flat_object_mask(
+    half_extent: torch.Tensor,
+    spawn_rot_matrix: torch.Tensor,
+    height_threshold: float,
+) -> torch.Tensor:
+    """회전 후 물체 높이 < 임계 → True (top-down 접근 대상).
+
+    half_extent:      (n, 3) 물체 로컬 half-extent (m)
+    spawn_rot_matrix: (n, 3, 3) spawn 회전 행렬
+    회전된 AABB 의 z half-extent = Σ_j |R[2, j]| · half[j] 로 구한다.
+    """
+    half_z = (spawn_rot_matrix[:, 2, :].abs() * half_extent).sum(dim=1)
+    return (2.0 * half_z) < height_threshold

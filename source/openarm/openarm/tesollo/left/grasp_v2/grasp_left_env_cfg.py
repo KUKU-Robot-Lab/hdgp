@@ -225,6 +225,16 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     pregrasp_noise_z:      float = 0.005
 
     # -----------------------------------------------------------------------
+    # 접근 자세 분기 (안 1: 납작한 물체 top-down / 나머지 side) — right 와 동일
+    # -----------------------------------------------------------------------
+    # side-approach 는 감쌀 수직 옆면이 필요 → 낮은 물체에서 불도저 실패(right ep_14000 실증).
+    # reset 에서 물체의 "회전 후 높이"가 임계 미만이면 top-down pregrasp 로 분기한다.
+    # 회전을 반영하므로 만렙(ADR 50, spawn 회전 ±180°)에서 누운 원통도 자동 대상이 된다.
+    approach_branch_enable:        bool  = True
+    flat_object_height_threshold:  float = 0.05   # m. 관측 정합: 실패 h≤4cm 포함, 성공 h6cm 제외
+    object_bbox_path:              str   = _os.path.join(_ASSETS_DIR, "object_bbox.json")
+
+    # -----------------------------------------------------------------------
     # Demo reset (pour_v1_a11~a20 grasp start and lift target)
     # -----------------------------------------------------------------------
     # grasp_v2: cup demo pose 는 다물체에 부적합 → demo-free reset(FABRICS pregrasp cache) 사용.

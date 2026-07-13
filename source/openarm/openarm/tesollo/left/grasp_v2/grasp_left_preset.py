@@ -186,6 +186,26 @@ PREGRASP_OFFSET = [0.0, 0.12, 0.05]
 PREGRASP_EULER_EZ_DEG = -90.0
 PREGRASP_EULER_EX_DEG = -90.0
 
+# ---------------------------------------------------------------------------
+# Top-down 접근 (납작한 물체 전용) — right 의 y/부호 미러
+# ---------------------------------------------------------------------------
+# side-approach(|ex|=90)는 "감쌀 수직 옆면"이 있어야 작동한다. 높이 ≤4cm 물체에서는
+# 손끝이 테이블에 눌린 채 수평 전진해 물체를 쳐내는 불도저 실패가 난다
+# (right ep_14000 관찰 probe 실증).
+#
+# tesollo palm 축: +X=손바닥 법선, +Z=손가락 방향.
+#   ex=-90  → 손가락 수평 = side
+#   ex=-180 → 손가락 -Z(아래) = top-down (물체 위에서 손끝으로 집기)
+# ey=90 이면 손바닥 법선이 정확히 -Z 가 되지만 euler_zyx gimbal lock 특이점이라
+# Fabrics IK 가 불안정 → ey=0 을 유지하고 ex 만 돌린다.
+PREGRASP_EULER_EX_TOPDOWN_DEG = -180.0
+
+# top-down pregrasp offset (palm_link 기준, 물체 중심 대비). right [0,-0.02,0.10] 의 y-미러.
+PREGRASP_OFFSET_TOPDOWN = [0.0, 0.02, 0.10]
+
+# 회전 후 물체 z 높이가 이 값 미만이면 top-down 으로 분기 (m). right 와 동일 임계.
+FLAT_OBJECT_HEIGHT_THRESHOLD = 0.05
+
 # Fabrics world 파일 — right world의 y-미러(반발체가 오른팔 영역 y<0으로 이동).
 # lstm_test2 실패 근본원인: sed 재생성이 right world 문자열을 복귀시켜
 # left_arm_body sphere·left_target_cup box가 left pregrasp 목표·물체 spawn을

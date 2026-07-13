@@ -54,7 +54,7 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_apply, quat_mul
+from isaaclab.utils.math import matrix_from_quat, quat_apply, quat_mul
 
 from openarm.common.grasp_logging import action_policy_scalars
 
@@ -91,6 +91,8 @@ from .grasp_left_preset import (
     HAND_FULL_GRIP_POSE,
     PREGRASP_EULER_EZ_DEG,
     PREGRASP_EULER_EX_DEG,
+    PREGRASP_EULER_EX_TOPDOWN_DEG,
+    PREGRASP_OFFSET_TOPDOWN,
     FABRIC_WORLD_FILENAME,
 )
 from .finger_action_utils import (
@@ -105,6 +107,7 @@ from .tesollo_hand_synergy import (
     HAND_SYNERGY_COEFF_MAXS,
 )
 from .grasp_left_utils import (
+    compute_flat_object_mask,
     compute_joint7_lift_wait_target,
     scale,
     to_torch,
@@ -176,6 +179,21 @@ class GraspLeftEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         self.palm_mins = to_torch(PALM_POSE_MINS_FUNC(cfg.max_pose_angle), device=self.device)
         self.palm_maxs = to_torch(PALM_POSE_MAXS_FUNC(cfg.max_pose_angle), device=self.device)
+
+        # 접근 자세별 회전 경계 — 폭(±max_pose_angle)은 그대로, 중심만 옮긴다.
+        # side(ex=-90) 물체는 기존과 동일한 [-135°,-45°], top-down(ex=-180)은 [-225°,-135°].
+        # 두 영역이 겹치지 않아 서로의 탐색을 간섭하지 않는다(기존 성공 물체 회귀 차단).
+        _mpa = math.radians(cfg.max_pose_angle)
+        _ex_top = math.radians(PREGRASP_EULER_EX_TOPDOWN_DEG)
+        # (2, 6): [0]=side, [1]=top-down. 위치 3축은 두 자세 공통.
+        self.palm_mins_by_pose = torch.stack([self.palm_mins.clone(), self.palm_mins.clone()])
+        self.palm_maxs_by_pose = torch.stack([self.palm_maxs.clone(), self.palm_maxs.clone()])
+        self.palm_mins_by_pose[1, 5] = _ex_top - _mpa
+        self.palm_maxs_by_pose[1, 5] = _ex_top + _mpa
+        # per-env 경계 버퍼 (reset 에서 물체 높이에 따라 채움). 기본 = side.
+        self.palm_pose_id  = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.palm_mins_env = self.palm_mins_by_pose[0].unsqueeze(0).repeat(self.num_envs, 1)
+        self.palm_maxs_env = self.palm_maxs_by_pose[0].unsqueeze(0).repeat(self.num_envs, 1)
 
         # ----------------------------------------------------------------
         # Delta palm action 범위 (pregrasp 기준 상대 오프셋)
@@ -260,10 +278,15 @@ class GraspLeftEnv(DirectRLEnv):
         )
 
         # Pregrasp offset (cup 기준 palm target offset)
-        self.pregrasp_offset = to_torch(
-            [cfg.pregrasp_offset_x, cfg.pregrasp_offset_y, cfg.pregrasp_offset_z],
+        # (2, 3): [0]=side(기존), [1]=top-down(납작한 물체 — 물체 위에서 손끝으로 집기)
+        self.pregrasp_offset_by_pose = to_torch(
+            [
+                [cfg.pregrasp_offset_x, cfg.pregrasp_offset_y, cfg.pregrasp_offset_z],
+                list(PREGRASP_OFFSET_TOPDOWN),
+            ],
             device=self.device,
         )
+        self.pregrasp_offset = self.pregrasp_offset_by_pose[0]
 
         # ----------------------------------------------------------------
         # 중간값 버퍼
@@ -275,6 +298,11 @@ class GraspLeftEnv(DirectRLEnv):
         self._object_names = list(self.cfg.active_object_names)
         self.object_idx = (
             torch.arange(self.num_envs, device=self.device) % len(self._object_names)
+        )
+        # 물체별 half-extent (n_obj, 3) — reset 에서 "회전 후 높이"를 구해 접근 자세를
+        # 분기하는 데 쓴다. scripts/tools/compute_object_bbox.py 산출물.
+        self.object_half_extent = to_torch(
+            self._load_object_half_extents(), device=self.device
         )
         # DEXTRAH 물체 조건화: one-hot object id + scale (obs 구조 원본 동일, distillation 대비)
         self.multi_object_idx_onehot = torch.nn.functional.one_hot(
@@ -502,20 +530,73 @@ class GraspLeftEnv(DirectRLEnv):
         )
         self._reset_obj_ids, self._reset_obj_indicator = self._reset_world.get_object_ids()
 
-
-
-        # Pregrasp IK 캐시 사전 계산 (spawn grid 전체)
+        # Pregrasp IK 캐시 사전 계산 (spawn grid 전체 × 접근 자세 2종)
         if self.cfg.cache_pregrasp_reset and self.demo_grasp_reset_bank is None:
             self._build_pregrasp_cache()
+
+    # ------------------------------------------------------------------
+    # 물체 치수 → 접근 자세 분기
+    # ------------------------------------------------------------------
+    def _load_object_half_extents(self) -> list[list[float]]:
+        """active_object_names 순서의 half-extent 목록 (m). 누락 물체는 즉시 실패시킨다.
+
+        조용한 fallback(예: 0 채우기)은 전 물체를 "납작"으로 오분류해 접근 자세를
+        통째로 뒤집으므로 절대 허용하지 않는다.
+        """
+        path = Path(self.cfg.object_bbox_path)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"물체 bbox 파일 없음: {path}\n"
+                "  python3 scripts/tools/compute_object_bbox.py 로 먼저 생성하세요."
+            )
+        table = json.loads(path.read_text(encoding="utf-8"))
+        missing = [n for n in self._object_names if n not in table]
+        if missing:
+            raise KeyError(f"bbox 누락 물체 {len(missing)}종: {missing[:5]} … — bbox 재생성 필요")
+        return [[float(v) for v in table[n]] for n in self._object_names]
+
+    def _sample_spawn_rotation(self, n: int) -> torch.Tensor:
+        """물체 spawn 회전 quat (w,x,y,z). ADR 0→1 (DEXTRAH randomize_rotation).
+
+        접근 자세 분기가 회전 후 높이를 보므로 reset 앞부분에서 뽑아 둔다.
+        """
+        _rot_f = self._adr("object_spawn", "rotation")
+        if _rot_f <= 0.0:
+            rot = torch.zeros(n, 4, device=self.device)
+            rot[:, 0] = 1.0
+            return rot
+
+        _r0 = (torch.rand(n, device=self.device) - 0.5) * 2.0 * math.pi * _rot_f
+        _r1 = (torch.rand(n, device=self.device) - 0.5) * 2.0 * math.pi * _rot_f
+        _half0, _half1 = _r0 * 0.5, _r1 * 0.5
+        _zeros = torch.zeros(n, device=self.device)
+        _qx = torch.stack([torch.cos(_half0), torch.sin(_half0), _zeros, _zeros], dim=1)
+        _qy = torch.stack([torch.cos(_half1), _zeros, torch.sin(_half1), _zeros], dim=1)
+        return quat_mul(_qx, _qy)
+
+    def _compute_topdown_mask(
+        self, obj_idx: torch.Tensor, spawn_rot: torch.Tensor
+    ) -> torch.Tensor:
+        """회전 후 물체 높이 < 임계 → top-down 접근 대상(True).
+
+        spawn 회전(ADR 커리큘럼 0→±180°)을 반영하므로, 만렙에서 세로 원통이 누워
+        납작해지면 자동으로 top-down 으로 분기된다.
+        """
+        return compute_flat_object_mask(
+            self.object_half_extent[obj_idx],
+            matrix_from_quat(spawn_rot),
+            self.cfg.flat_object_height_threshold,
+        )
 
     # ------------------------------------------------------------------
     # Pregrasp grid 캐시 빌드 (startup 1회)
     # ------------------------------------------------------------------
     def _build_pregrasp_cache(self) -> None:
-        """spawn 위치 13×13 grid에 대해 Fabrics IK를 startup에서 일괄 계산.
+        """spawn 위치 13×13 grid × 접근 자세 2종에 대해 Fabrics IK를 startup에서 일괄 계산.
 
         reset 시 nearest-neighbor lookup → Fabrics rollout 생략 → 대폭 속도 향상.
         1cm 간격 grid이므로 실제 spawn 위치와 최대 ~0.7cm 오차 → Fabrics가 첫 몇 스텝에서 보정.
+        접근 자세(side/top-down)마다 IK 해가 다르므로 pose 축을 하나 더 둔다.
         """
         _N = 13  # 1cm 간격, ±6cm 범위
         xs = torch.linspace(
@@ -532,24 +613,31 @@ class GraspLeftEnv(DirectRLEnv):
         flat_x, flat_y = gx.flatten(), gy.flatten()
         M = flat_x.shape[0]  # 169
 
-        palm = torch.zeros(M, 6, device=self.device)
-        palm[:, 0] = flat_x + self.cfg.pregrasp_offset_x
-        palm[:, 1] = flat_y + self.cfg.pregrasp_offset_y
-        palm[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
-        palm[:, 3] = math.radians(PREGRASP_EULER_EZ_DEG)
-        palm[:, 4] = math.radians(0.0)
-        palm[:, 5] = math.radians(PREGRASP_EULER_EX_DEG)
-        palm = torch.max(
-            torch.min(palm, self.palm_maxs.unsqueeze(0)),
-            self.palm_mins.unsqueeze(0),
-        )
+        caches = []
+        for pose_id in range(self.palm_mins_by_pose.shape[0]):
+            off = self.pregrasp_offset_by_pose[pose_id]
+            palm = torch.zeros(M, 6, device=self.device)
+            palm[:, 0] = flat_x + off[0]
+            palm[:, 1] = flat_y + off[1]
+            palm[:, 2] = self.cfg.object_spawn_z + off[2]
+            palm[:, 3] = math.radians(PREGRASP_EULER_EZ_DEG)
+            palm[:, 4] = math.radians(0.0)
+            palm[:, 5] = (
+                math.radians(PREGRASP_EULER_EX_TOPDOWN_DEG) if pose_id == 1
+                else math.radians(PREGRASP_EULER_EX_DEG)
+            )
+            palm = torch.max(
+                torch.min(palm, self.palm_maxs_by_pose[pose_id].unsqueeze(0)),
+                self.palm_mins_by_pose[pose_id].unsqueeze(0),
+            )
 
-        q_init = self.robot_start_joint_pos[0].unsqueeze(0).expand(M, -1).contiguous()
-        dummy  = torch.arange(M, device=self.device)
-        q_out  = self._run_reset_fabric(dummy, palm, q_init.clone())
+            q_init = self.robot_start_joint_pos[0].unsqueeze(0).expand(M, -1).contiguous()
+            dummy  = torch.arange(M, device=self.device)
+            q_out  = self._run_reset_fabric(dummy, palm, q_init.clone())
+            caches.append(q_out[:, :NUM_ARM_DOF].view(_N, _N, NUM_ARM_DOF))
 
-        # (13, 13, 7): arm joints only
-        self._cache_q_arm = q_out[:, :NUM_ARM_DOF].view(_N, _N, NUM_ARM_DOF).contiguous()
+        # (2, 13, 13, 7): [pose_id, xi, yi] → arm joints
+        self._cache_q_arm = torch.stack(caches).contiguous()
         self._cache_xs    = xs
         self._cache_ys    = ys
         self._cache_n     = _N
@@ -701,8 +789,9 @@ class GraspLeftEnv(DirectRLEnv):
         # 절대 workspace(palm_mins/maxs)로 클램프하여 안전 영역 보장
         delta = scale(palm_action, self.delta_mins, self.delta_maxs)   # (N, 6)
         palm_pose = self.pregrasp_palm_pose_buf + delta
-        palm_mins = torch.minimum(self.palm_mins.unsqueeze(0), self.pregrasp_palm_pose_buf)
-        palm_maxs = torch.maximum(self.palm_maxs.unsqueeze(0), self.pregrasp_palm_pose_buf)
+        # 경계는 per-env — top-down 물체는 회전 중심이 ex=-180° 로 옮겨져 있다.
+        palm_mins = torch.minimum(self.palm_mins_env, self.pregrasp_palm_pose_buf)
+        palm_maxs = torch.maximum(self.palm_maxs_env, self.pregrasp_palm_pose_buf)
         palm_pose = torch.max(torch.min(palm_pose, palm_maxs), palm_mins)
         # settle 동안 팔 동결: 물체 낙하-안착 전 정책이 팔로 쫓아가 물체를 쳐내
         # 도달불가 위치로 밀어버리는 것 방지 (finger 억제와 동일 게이트 — 렌더 실증)
@@ -1079,6 +1168,8 @@ class GraspLeftEnv(DirectRLEnv):
         self.extras["reward/palm_orient"] = palm_orient_reward.mean()
         self.extras["palm_align"] = palm_align.mean()
         self.extras["in_success_region"] = self.in_success_region.float().mean()
+        # 접근 자세 분기 검증용: top-down 으로 배정된 env 비율 (ADR 회전이 커지면 상승)
+        self.extras["topdown_frac"] = (self.palm_pose_id == 1).float().mean()
         # DEXTRAH 원본 extras: ADR 진행도
         if self.grasp_adr is not None:
             self.extras["num_adr_increases"] = torch.tensor(
@@ -1386,6 +1477,11 @@ class GraspLeftEnv(DirectRLEnv):
                 noise_xy,
             )
             pregrasp_palm_pose = start_palm_pose
+            # demo warmstart 는 side-approach 자세로 수집된 데이터 → 분기 대상 아님.
+            spawn_rot = self._sample_spawn_rotation(n)
+            self.palm_pose_id[env_ids] = 0
+            self.palm_mins_env[env_ids] = self.palm_mins_by_pose[0]
+            self.palm_maxs_env[env_ids] = self.palm_maxs_by_pose[0]
         else:
             q_pregrasp = self.robot_start_joint_pos[env_ids].clone()
             approach_hand = self.hand_open_pose.unsqueeze(0).expand(n, -1)
@@ -1405,29 +1501,47 @@ class GraspLeftEnv(DirectRLEnv):
                 [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
             )
 
+            # ---- 접근 자세 결정: 회전 후 물체 높이 < 임계 → top-down ----
+            # spawn 회전을 pregrasp 보다 먼저 뽑아야 "누운 물체"까지 판정할 수 있다.
+            spawn_rot = self._sample_spawn_rotation(n)
+            if self.cfg.approach_branch_enable:
+                pose_id = self._compute_topdown_mask(
+                    self.object_idx[env_ids], spawn_rot
+                ).long()                                             # (n,) 0=side, 1=top
+            else:
+                pose_id = torch.zeros(n, dtype=torch.long, device=self.device)
+            self.palm_pose_id[env_ids] = pose_id
+            self.palm_mins_env[env_ids] = self.palm_mins_by_pose[pose_id]
+            self.palm_maxs_env[env_ids] = self.palm_maxs_by_pose[pose_id]
+
             # ---- FABRICS pregrasp rollout/cache lookup ----
             noise = torch.stack([
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_x,
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
             ], dim=1)
-            pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
+            pregrasp_pos = obj_pos_local + self.pregrasp_offset_by_pose[pose_id] + noise
 
+            _ex = torch.where(
+                pose_id == 1,
+                torch.full((n,), math.radians(PREGRASP_EULER_EX_TOPDOWN_DEG), device=self.device),
+                torch.full((n,), math.radians(PREGRASP_EULER_EX_DEG), device=self.device),
+            )
             pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
             pregrasp_palm_pose[:, :3] = pregrasp_pos
             pregrasp_palm_pose[:, 3] = math.radians(PREGRASP_EULER_EZ_DEG)
             pregrasp_palm_pose[:, 4] = math.radians(0.0)
-            pregrasp_palm_pose[:, 5] = math.radians(PREGRASP_EULER_EX_DEG)
+            pregrasp_palm_pose[:, 5] = _ex
             pregrasp_palm_pose = torch.max(
-                torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
-                self.palm_mins.unsqueeze(0),
+                torch.min(pregrasp_palm_pose, self.palm_maxs_env[env_ids]),
+                self.palm_mins_env[env_ids],
             )
 
             if self.cfg.cache_pregrasp_reset:
-                # cache lookup: spawn 위치 → 가장 가까운 grid point arm IK
+                # cache lookup: spawn 위치 → 가장 가까운 grid point arm IK (접근 자세별 캐시)
                 xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
                 yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
-                q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[xi, yi]
+                q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[pose_id, xi, yi]
             else:
                 q_pregrasp = self._run_reset_fabric(env_ids, pregrasp_palm_pose, q_pregrasp)
 
@@ -1503,25 +1617,9 @@ class GraspLeftEnv(DirectRLEnv):
         self.prelift_arm_pos_buf[env_ids] = prelift_arm
 
         # ---- 7. 컵 spawn ----
+        # spawn_rot 은 위(1. Reset source)에서 이미 뽑았다 — 접근 자세 분기가 "회전 후
+        # 물체 높이"를 필요로 하므로 pregrasp IK 보다 먼저 결정돼야 한다.
         obj_pos_world = obj_pos_local + self.scene.env_origins[env_ids]
-        # spawn 회전: ADR 0→1 (DEXTRAH randomize_rotation — x/y축 랜덤 회전 스케일)
-        _rot_f = self._adr("object_spawn", "rotation")
-        if _rot_f > 0.0:
-            _r0 = (torch.rand(n, device=self.device) - 0.5) * 2.0 * math.pi * _rot_f
-            _r1 = (torch.rand(n, device=self.device) - 0.5) * 2.0 * math.pi * _rot_f
-            _half0, _half1 = _r0 * 0.5, _r1 * 0.5
-            _qx = torch.stack([
-                torch.cos(_half0), torch.sin(_half0),
-                torch.zeros(n, device=self.device), torch.zeros(n, device=self.device),
-            ], dim=1)   # x축 회전 (w,x,y,z)
-            _qy = torch.stack([
-                torch.cos(_half1), torch.zeros(n, device=self.device),
-                torch.sin(_half1), torch.zeros(n, device=self.device),
-            ], dim=1)   # y축 회전
-            spawn_rot = quat_mul(_qx, _qy)
-        else:
-            spawn_rot = torch.zeros(n, 4, device=self.device)
-            spawn_rot[:, 0] = 1.0
         zero_vel = torch.zeros(n, 6, device=self.device)
         cup_root_state = torch.cat([obj_pos_world, spawn_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)

@@ -158,6 +158,29 @@ PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 PREGRASP_EULER_EZ_DEG = 90.0
 PREGRASP_EULER_EX_DEG = 90.0
 
+# ---------------------------------------------------------------------------
+# Top-down 접근 (납작한 물체 전용)
+# ---------------------------------------------------------------------------
+# side-approach(ex=90)는 "감쌀 수직 옆면"이 있어야 작동한다. 높이 ≤4cm 물체에서는
+# 손끝이 테이블에 눌린 채 수평 전진해 물체를 4~6cm 쳐내는 불도저 실패가 난다
+# (ep_14000 관찰 probe 실증: 실패 9ep 리프트 ≤0.5cm / 성공 3ep 12~22cm).
+#
+# tesollo palm 축: +X=손바닥 법선, +Z=손가락 방향.
+#   ex=90  → 손가락 +X(수평), 법선 +Y(수평)  = side
+#   ex=180 → 손가락 -Z(아래),  법선 +Y(수평)  = top-down (물체 위에서 손끝으로 집기)
+# 손바닥 법선을 정확히 -Z로 돌리려면 ey=90 이 필요한데 euler_zyx gimbal lock 특이점이라
+# Fabrics IK 가 불안정해진다 → ey=0 을 유지하고 ex 만 180 으로 돌린다.
+PREGRASP_EULER_EX_TOPDOWN_DEG = 180.0
+
+# top-down pregrasp offset (palm_link 기준, 물체 중심 대비).
+# 손가락이 -Z 로 뻗으므로 palm 은 물체 위에 둔다. z=+0.10 은 손가락 길이(~10cm) 여유.
+PREGRASP_OFFSET_TOPDOWN = [0.0, -0.02, 0.10]
+
+# 회전 후 물체 z 높이가 이 값 미만이면 top-down 으로 분기 (m).
+# 5cm: 관측과 정합 — 실패 small_8_cyl/cuboid(h4.0)·small_12_cyl/cuboid(h2.5)는 포함,
+# 성공 small_5_cyl(h6.0)·large_5_cyl(h12)은 제외.
+FLAT_OBJECT_HEIGHT_THRESHOLD = 0.05
+
 # Fabrics world 파일 (WorldMeshesModel) — env.py가 참조. 문자열 하드코드 금지.
 # right world는 왼팔 영역(y>0)에 반발체(left_arm_body sphere·left_target_cup box)를
 # 두므로 left에서 그대로 쓰면 왼손이 자기 workspace에서 밀려남(left lstm_test2
