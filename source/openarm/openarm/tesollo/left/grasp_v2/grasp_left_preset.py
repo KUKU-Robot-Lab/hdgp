@@ -310,13 +310,14 @@ HAND_FIXED_JOINT_VALUES = [0.0, 0.0]
 # pinky_1=16, pinky_2=17.
 HAND_ABDUCTION_JOINT_NAMES = [
     "l_hj_thumb_1",  # thumb abduction: 전 범위
+    "l_hj_thumb_2",  # thumb opposition: 전 범위 — 엄지를 4지 반대편으로 보내는 핵심 축
     "l_hj_index_1",  # index abduction: 양수만 (엄지 쪽으로 모음 — right 미러)
     "l_hj_pinky_1",  # pinky Z-flex:   음수만 (손바닥 안쪽으로 오므림)
     "l_hj_pinky_2",  # pinky abduction: 음수만
 ]
-HAND_ABDUCTION_LOCAL_INDICES = [0, 4, 16, 17]
-HAND_ABDUCTION_LIMITS_MIN = [-0.8901179, 0.0, -1.0471976, -0.6108652]
-HAND_ABDUCTION_LIMITS_MAX = [0.3839724, 0.4188790, 0.0, 0.0]
+HAND_ABDUCTION_LOCAL_INDICES = [0, 1, 4, 16, 17]
+HAND_ABDUCTION_LIMITS_MIN = [-0.8901179, 0.0, 0.0, -1.0471976, -0.6108652]
+HAND_ABDUCTION_LIMITS_MAX = [0.3839724, 3.1415927, 0.4188790, 0.0, 0.0]
 
 # iCub distal tendon 커플링 (PIP = _3, DIP = _4)
 HAND_PIP_JOINT_NAMES = [

@@ -14,8 +14,8 @@
 
 """환경 설정: tesollo grasp_v2 — DEXTRAH 구조 (다물체 파지→goal 운반)
 
-- Action: 15D (6D palm pose Fabrics IK + 5D 시너지 + 4D abduction)
-- Observation: DEXTRAH teacher 구조 — policy 197+N_obj / critic 251+N_obj
+- Action: 16D (6D palm pose Fabrics IK + 5D 시너지 + 5D abduction/opposition)
+- Observation: DEXTRAH teacher 구조 — policy 198+N_obj / critic 252+N_obj
 - Reward: DEXTRAH 4항 + ADR reward 스케줄 (lift 5→0)
 - Goal: 고정 절대점 (object_goal_pos), success = |obj-goal| < tol
 - ADR: wrench/spawn/노이즈/reward 커리큘럼 (in_success > 0.4 트리거)
@@ -416,6 +416,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             "xy_range": (0.0, 0.06),
             "rotation": (0.0, 1.0),
         },
+        # abduction 커리큘럼: 0 → 1 로 열린다.
+        #   0 = HAND_APPROACH_POSE 값에 고정 (thumb_2 = -90° 등) → 실효 11D = DEXTRAH 원본
+        #   1 = 전 범위 자유 (thumb_1/thumb_2/index_1/pinky_1/pinky_2)
+        # probe 실증: abduction 중립에서 리프트 +17.6cm (palm 물체 위 4cm, thumb_2 -90°),
+        # 벌리면(+1) 리프트 0 — 즉 abduction 을 처음부터 열면 파지를 방해한다.
+        # 기본 파지를 배운 뒤(in_success > 0.4 로 ADR 상승) 세밀 제어를 연다.
+        "abduction": {
+            "range_scale": (0.0, 1.0),
+        },
         # 관측 노이즈 점진 (DEXTRAH object/robot_state_noise 원본값)
         "object_state_noise": {
             "object_pos_noise": (0.0, 0.03),   # m
@@ -666,12 +675,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #
     # distillation=False 가 기본. teacher(PPO) 학습 경로는 아래 설정을 일절 타지 않는다.
     # True 로 켜면: TiledCamera 활성 + obs dict 가 4-key (policy/expert_policy/img/rgb).
-    # 이때 "policy" 는 student obs(189, 물체 미관측)로 바뀌고 teacher obs 는
+    # 이때 "policy" 는 student obs(190, 물체 미관측)로 바뀌고 teacher obs 는
     # "expert_policy" 로 이동한다 — teacher 관측 구조 자체는 변경 없음.
     # -----------------------------------------------------------------------
     distillation: bool = False
 
-    num_student_observations: int = NUM_STUDENT_OBS     # 189 (물체 privileged state 제외)
+    num_student_observations: int = NUM_STUDENT_OBS     # 190 (물체 privileged state 제외)
     num_teacher_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)  # 193 + N_obj
 
     img_width:  int = CAMERA_IMG_WIDTH

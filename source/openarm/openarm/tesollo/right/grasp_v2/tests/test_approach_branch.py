@@ -173,26 +173,43 @@ def test_quaternion_roundtrip_matches_euler_path():
 def test_abduction_ranges_stay_on_one_side_of_zero():
     """index 는 음수(right)/양수(left), pinky 는 양수(right)/음수(left) 로만 열린다.
 
-    enabled_self_collisions=False 이므로 이 범위가 손가락 관통을 막는 유일한
-    방어선이다.
+    enabled_self_collisions=False 이므로 이 범위가 손가락 관통을 막는 유일한 방어선이다.
+    thumb 두 축(벌림·대향)은 전 범위 — 엄지는 물체·자세에 따라 어디든 가야 한다.
     """
+    # 축 순서: thumb_1(벌림), thumb_2(대향), index_1, pinky_1, pinky_2
     for preset, is_right in ((r_preset, True), (l_preset, False)):
         lo = preset.HAND_ABDUCTION_LIMITS_MIN
         hi = preset.HAND_ABDUCTION_LIMITS_MAX
         names = preset.HAND_ABDUCTION_JOINT_NAMES
 
-        assert lo[0] < 0.0 < hi[0], names[0]  # thumb_1: 전 범위
+        assert lo[0] < 0.0 < hi[0], names[0]          # thumb_1: 전 범위
+        assert abs(hi[1] - lo[1]) > 3.0, names[1]     # thumb_2: 대향 전 범위(π)
 
         if is_right:
-            assert lo[1] < 0.0 and math.isclose(hi[1], 0.0, abs_tol=1e-9), names[1]
+            assert lo[2] < 0.0 and math.isclose(hi[2], 0.0, abs_tol=1e-9), names[2]
         else:
-            assert math.isclose(lo[1], 0.0, abs_tol=1e-9) and hi[1] > 0.0, names[1]
+            assert math.isclose(lo[2], 0.0, abs_tol=1e-9) and hi[2] > 0.0, names[2]
 
-        for k in (2, 3):  # pinky_1, pinky_2
+        for k in (3, 4):  # pinky_1, pinky_2
             if is_right:
                 assert math.isclose(lo[k], 0.0, abs_tol=1e-9) and hi[k] > 0.0, names[k]
             else:
                 assert math.isclose(hi[k], 0.0, abs_tol=1e-9) and lo[k] < 0.0, names[k]
+
+
+def test_thumb_opposition_is_free():
+    """엄지 대향(thumb_2)이 고정되면 top-down 파지가 원리적으로 불가능하다.
+
+    -1.57 고정은 side 접근 전용 튜닝값이었고, 세 pose(APPROACH/GRASP/FULL_GRIP)에서
+    값이 같아 시너지 진행도가 항상 0 → 정책이 절대 못 움직였다.
+    그 결과 어떤 palm 높이에서도 물체를 못 들어올렸다(리프트 최선 +1.7cm, 대부분 음수).
+    """
+    for preset in (r_preset, l_preset):
+        names = preset.HAND_ABDUCTION_JOINT_NAMES
+        assert any("thumb_2" in n for n in names), "thumb_2(대향)가 자유화되지 않았다"
+        i = [k for k, n in enumerate(names) if "thumb_2" in n][0]
+        span = abs(preset.HAND_ABDUCTION_LIMITS_MAX[i] - preset.HAND_ABDUCTION_LIMITS_MIN[i])
+        assert span > 3.0, f"thumb_2 범위가 {span:.2f} rad — 대향 전 범위(π)여야 한다"
 
 
 def test_abduction_limits_are_left_right_mirrored():
@@ -225,9 +242,9 @@ def test_abduction_action_maps_to_limits():
     lo = torch.tensor(r_preset.HAND_ABDUCTION_LIMITS_MIN)
     hi = torch.tensor(r_preset.HAND_ABDUCTION_LIMITS_MAX)
 
-    at_min = r_utils.compute_abduction_targets(torch.full((1, 4), -1.0), lo, hi)
-    at_max = r_utils.compute_abduction_targets(torch.full((1, 4), +1.0), lo, hi)
-    at_mid = r_utils.compute_abduction_targets(torch.zeros(1, 4), lo, hi)
+    at_min = r_utils.compute_abduction_targets(torch.full((1, 5), -1.0), lo, hi)
+    at_max = r_utils.compute_abduction_targets(torch.full((1, 5), +1.0), lo, hi)
+    at_mid = r_utils.compute_abduction_targets(torch.zeros(1, 5), lo, hi)
 
     assert torch.allclose(at_min[0], lo, atol=1e-6)
     assert torch.allclose(at_max[0], hi, atol=1e-6)
@@ -238,7 +255,7 @@ def test_abduction_action_clamps_out_of_range_input():
     lo = torch.tensor(r_preset.HAND_ABDUCTION_LIMITS_MIN)
     hi = torch.tensor(r_preset.HAND_ABDUCTION_LIMITS_MAX)
 
-    out = r_utils.compute_abduction_targets(torch.full((1, 4), 5.0), lo, hi)
+    out = r_utils.compute_abduction_targets(torch.full((1, 5), 5.0), lo, hi)
 
     assert torch.allclose(out[0], hi, atol=1e-6)
 
@@ -246,18 +263,23 @@ def test_abduction_action_clamps_out_of_range_input():
 def test_synergy_basis_cannot_drive_abduction_joints():
     """자유화가 왜 별도 action 축이어야 하는지 고정.
 
-    basis 열이 0 이면 q* = anchor 라 진행도가 항상 0 이다 — open/grip 스팬을
-    벌려도 관절이 안 움직인다. basis 를 교체하면 이 테스트가 깨지고, 그때는
-    자유화 설계를 다시 검토해야 한다.
+    시너지 진행도는 (q* - open)/(grip - open) 인데 세 pose 에서 값이 같은 관절
+    (open == grip)은 스팬이 0 이라 진행도가 항상 0 이다. basis 에 성분이 있어도
+    (thumb_2 는 PC5 에 0.598) 움직이지 않는다 — 이것이 thumb_2 가 -1.57 에 못 박혀
+    있던 이유다. 따라서 시너지 밖 별도 축으로 빼야 한다.
     """
-    basis = torch.tensor(synergy.HAND_SYNERGY_BASIS)  # (5, 20)
+    synergy_mod = _load("_branch_synergy2", PKG / "tesollo_hand_synergy.py")
+    anchor = torch.tensor(synergy_mod.HAND_SYNERGY_ANCHOR)      # == HAND_APPROACH_POSE
+    grip = torch.tensor(r_preset.HAND_FULL_GRIP_POSE)
 
-    for local_idx in r_preset.HAND_ABDUCTION_LOCAL_INDICES:
-        col = basis[:, local_idx].abs().max()
-        if local_idx == 0:  # thumb_1 은 PC4/PC5 성분이 있으나 스팬 0 이라 죽어 있었다
-            assert col > 0.1
-        else:
-            assert col < 0.05
+    for local_idx, name in zip(
+        r_preset.HAND_ABDUCTION_LOCAL_INDICES, r_preset.HAND_ABDUCTION_JOINT_NAMES
+    ):
+        span = abs(float(grip[local_idx] - anchor[local_idx]))
+        assert span < 1e-6, (
+            f"{name}: open→grip 스팬이 {span:.3f} — 스팬이 있으면 시너지가 이 관절을 "
+            f"움직이므로 별도 abduction 축과 충돌한다"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -375,3 +397,33 @@ def test_curl_weight_matches_tesollo_hand_scale():
         src = (pkg / fname).read_text()
         assert '"finger_curl_reg":          (-0.003, -0.003)' in src, \
             f"{fname}: curl weight 가 tesollo 스케일(-0.003)이 아님"
+
+
+def test_abduction_curriculum_starts_at_grasping_pose():
+    """ADR range_scale=0 에서 abduction 은 HAND_APPROACH_POSE 에 고정돼야 한다.
+
+    probe 실증: palm 이 물체 위 4cm, thumb_2=-90°(= APPROACH_POSE 값), abduction 중립일 때
+    리프트 +17.6cm (grip 3.50). abduction 을 벌리면(+1) 리프트 0 — 즉 abduction 을
+    처음부터 열면 파지를 방해한다. 그래서 scale 0 에서 시작해 기본 파지를 배운 뒤
+    (in_success > 0.4 로 ADR 상승) 세밀 제어를 연다. scale=0 이면 실효 action 이
+    11D = DEXTRAH 원본(6 palm + 5 PCA)과 같아진다.
+    """
+    for pkg, side in ((PKG, "right"), (LEFT_PKG, "left")):
+        cfg_src = (pkg / f"grasp_{side}_env_cfg.py").read_text()
+        env_src = (pkg / f"grasp_{side}_env.py").read_text()
+        assert '"abduction": {' in cfg_src and '"range_scale": (0.0, 1.0)' in cfg_src, \
+            f"{side}: ADR abduction 커리큘럼이 없다"
+        assert 'self._adr("abduction", "range_scale"' in env_src, \
+            f"{side}: env 가 range_scale 을 안 쓴다"
+        assert "self.abduction_neutral" in env_src, \
+            f"{side}: 중립값(HAND_APPROACH_POSE) 앵커가 없다"
+
+    # 중립값이 실제로 APPROACH_POSE 이고 thumb_2 = -90° 인지
+    for preset in (r_preset, l_preset):
+        ap = preset.HAND_APPROACH_POSE
+        idxs = preset.HAND_ABDUCTION_LOCAL_INDICES
+        names = preset.HAND_ABDUCTION_JOINT_NAMES
+        for i, nm in zip(idxs, names):
+            if "thumb_2" in nm:
+                assert abs(abs(ap[i]) - 1.57) < 0.01, \
+                    f"{nm} 중립이 ±90° 가 아님: {ap[i]:.3f} — probe 최적 파지 자세와 다르다"

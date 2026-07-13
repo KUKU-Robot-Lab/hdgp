@@ -305,11 +305,14 @@ class GraspLeftEnv(DirectRLEnv):
         )
         self.abduction_limits_min = to_torch(HAND_ABDUCTION_LIMITS_MIN, device=self.device)
         self.abduction_limits_max = to_torch(HAND_ABDUCTION_LIMITS_MAX, device=self.device)
-        # 목표 버퍼: reset 시 중립(0) → rate limit 으로 부드럽게 추종.
+        # 중립값 = HAND_APPROACH_POSE 의 해당 관절 (thumb_2 = -1.57 등).
+        # ADR range_scale=0 일 때 이 값에 고정된다 — probe 실증상 파지에 최적인 자세다.
+        self.abduction_neutral = self.hand_open_pose[self.abduction_local_indices].clone()
+        # 목표 버퍼: reset 시 중립 → rate limit 으로 부드럽게 추종.
         # 자기충돌 검사가 꺼져 있어 순간이동식 abduction 은 인접 손가락을 관통한다.
-        self.abduction_targets = torch.zeros(
-            self.num_envs, len(HAND_ABDUCTION_LOCAL_INDICES), device=self.device
-        )
+        self.abduction_targets = self.abduction_neutral.unsqueeze(0).repeat(
+            self.num_envs, 1
+        ).contiguous()
 
         # ----------------------------------------------------------------
         # 중간값 버퍼
@@ -827,7 +830,7 @@ class GraspLeftEnv(DirectRLEnv):
 
         palm_action      = actions[:, :6]     # (N, 6) ∈ [-1, 1]
         finger_action    = actions[:, 6:11]   # (N, 5) ∈ [-1, 1]  시너지 계수
-        abduction_action = actions[:, 11:15]  # (N, 4) ∈ [-1, 1]  thumb_1/index_1/pinky_1/_2
+        abduction_action = actions[:, 11:16]  # (N, 5) ∈ [-1,1] thumb_1/thumb_2/index_1/pinky_1/_2
 
         # ---- settle 종료 시 안착 스냅샷 → object_height 로깅 baseline 확정 ----
         # (goal 은 DEXTRAH식 고정 절대점이라 갱신 없음)
@@ -943,8 +946,16 @@ class GraspLeftEnv(DirectRLEnv):
         # ---- abduction (thumb_1/index_1/pinky_1/pinky_2): 시너지 바깥 절대 목표 ----
         # 시너지 basis 열이 0 이라 진행도 경로로는 절대 안 움직인다 → 여기서 덮어쓴다.
         # 양방향(래칫 아님): 납작한 물체는 손끝 핀치, 큰 물체는 감싸기 — 자세를 바꿔야 한다.
+        # ADR 커리큘럼: range_scale 0 → 1 로 abduction 자유도를 연다.
+        # scale=0 이면 항상 중립(HAND_APPROACH_POSE 값 = thumb_2 -90° 등)이라
+        # 실효 action 이 11D(DEXTRAH 원본)가 된다. probe 실증상 그 자세가 파지에 최적이고,
+        # abduction 을 벌리면 오히려 못 잡는다 → 기본 파지를 배운 뒤에 연다.
+        _abd_scale = self._adr("abduction", "range_scale", default=1.0)
         abd_goal = compute_abduction_targets(
             abduction_action, self.abduction_limits_min, self.abduction_limits_max
+        )
+        abd_goal = self.abduction_neutral.unsqueeze(0) + _abd_scale * (
+            abd_goal - self.abduction_neutral.unsqueeze(0)
         )
         # settle 동안 중립(0) 유지 — 손가락 폐쇄 억제와 동일 게이트.
         abd_goal = torch.where(in_settle, torch.zeros_like(abd_goal), abd_goal)
@@ -1097,7 +1108,7 @@ class GraspLeftEnv(DirectRLEnv):
             self.object_goal,                # 3 (고정 절대점)
             self.multi_object_idx_onehot,    # N_obj
             self.object_scale,               # 1
-            self.actions,                    # 15
+            self.actions,                    # 16
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
             self.fabric_qdd,                 # 27
@@ -1135,7 +1146,7 @@ class GraspLeftEnv(DirectRLEnv):
             self.object_goal,                # 3
             self.multi_object_idx_onehot,    # N_obj
             self.object_scale,               # 1
-            self.actions,                    # 15
+            self.actions,                    # 16
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
             self.fabric_qdd,                 # 27
@@ -1183,7 +1194,7 @@ class GraspLeftEnv(DirectRLEnv):
             self.hand_pos_noisy,             # 18
             self.hand_vel_noisy,             # 18
             self.object_goal,                # 3
-            self.actions,                    # 15
+            self.actions,                    # 16
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
             self.fabric_qdd,                 # 27
@@ -1326,7 +1337,7 @@ class GraspLeftEnv(DirectRLEnv):
         self.extras["contact/grip"]   = num_grip_fingers.float().mean()
         # abduction 실제 관절 목표 (rad) — 정책이 이 축을 실제로 쓰는지 확인용.
         # 전부 0 근처면 자유화가 무의미한 것이고, 부호가 범위 반대면 미러 버그다.
-        for _i, _nm in enumerate(("thumb_1", "index_1", "pinky_1", "pinky_2")):
+        for _i, _nm in enumerate(("thumb_1", "thumb_2", "index_1", "pinky_1", "pinky_2")):
             self.extras[f"abduction/{_nm}"] = self.abduction_targets[:, _i].mean()
         # action policy(palm 6D + finger 5D raw) 로깅 유지
         for k, v in action_policy_scalars(
@@ -1813,8 +1824,8 @@ class GraspLeftEnv(DirectRLEnv):
         self.success_flag[env_ids] = False
         self.transfer_entry_grasp_success_buf[env_ids] = False
         self.finger_close_buf[env_ids] = 0.0
-        # abduction 은 중립(0)에서 시작 — HAND_APPROACH_POSE 의 해당 관절 값과 일치.
-        self.abduction_targets[env_ids] = 0.0
+        # abduction 은 중립(HAND_APPROACH_POSE 값)에서 시작.
+        self.abduction_targets[env_ids] = self.abduction_neutral
 
         # actions 리셋: delta action 방식 → action=0 = pregrasp 위치
         # (절대 pose 라 action=0 → 박스 중심. 회전은 pregrasp 자세와 동일)

@@ -16,10 +16,13 @@
 
 v7: Fabrics 팔 학습(6D palm action) + per-finger lerp(5D) + Contact sensor 없는 FK 기반 보상
 
-Action (15D):
+Action (16D):
   [0:6]   6D palm pose (x,y,z,ez,ey,ex) → Fabrics IK → arm 7 DOF
   [6:11]  5D 시너지(PCA) 계수 → 20관절 폐쇄 진행도
-  [11:15] 4D abduction 절대 목표 (thumb_1, index_1, pinky_1, pinky_2)
+  [11:16] 5D abduction/opposition 절대 목표
+          (thumb_1 벌림, thumb_2 대향, index_1, pinky_1, pinky_2)
+          thumb_2(대향)는 엄지를 4지 반대편으로 보내는 축이다. -1.57 고정이던 것을
+          자유화 — 그 값은 side 접근 전용 튜닝이라 top-down 파지가 불가능했다.
           시너지 basis 가 0인 관절이라 별도 축으로 뺀다 (HAND_ABDUCTION_* 참조)
 
 Actor Observation (106D) — sim2real 가능:
@@ -78,8 +81,8 @@ NUM_FINGERTIPS = 5
 # ---------------------------------------------------------------------------
 NUM_PALM_ACTION      = 6   # 6D palm pose (Fabrics IK)
 NUM_FINGER_ACTION    = 5   # 시너지(PCA) 계수
-NUM_ABDUCTION_ACTION = 4   # thumb_1 / index_1 / pinky_1 / pinky_2 절대 목표
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION + NUM_ABDUCTION_ACTION  # 15
+NUM_ABDUCTION_ACTION = 5   # thumb_1(벌림) / thumb_2(대향) / index_1 / pinky_1 / pinky_2
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION + NUM_ABDUCTION_ACTION  # 16
 
 # ---------------------------------------------------------------------------
 # Observation space — DEXTRAH teacher 구조 (distillation 대비 동일 구조)
@@ -88,28 +91,28 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION + NUM_ABDUCTION_ACTION  # 15
 #   robot_dof_pos_noisy 27 + robot_dof_vel_noisy 27 (annealing으로 0)
 #   + hand_pos_noisy 18 (fabric FK: palm+5tip) + hand_vel_noisy 18 (0)
 #   + object_pos_noisy 3 + object_rot_noisy 4 + object_goal 3
-#   + [onehot num_objects] + object_scale 1 + actions 15
+#   + [onehot num_objects] + object_scale 1 + actions 16
 #   + fabric_q 27 + fabric_qd 27 + fabric_qdd 27
-#   = 197 + N_obj   (DEXTRAH 원본 "193 + num_objects" + abduction action 4)
+#   = 198 + N_obj   (DEXTRAH 원본 "193 + num_objects" + abduction action 4)
 #
 # Critic obs (BASE 251 + num_objects):
 #   robot_dof_pos 27 + robot_dof_vel 27 + hand_pos 18 + hand_vel 36
 #   + hand_forces[:, :3] 3 + measured_joint_torque 27
 #   + object_pos 3 + object_rot 4 + object_vel 6 + object_goal 3
-#   + [onehot] + object_scale 1 + actions 15 + fabric q/qd/qdd 81
-#   = 251 + N_obj   (DEXTRAH 원본 "247 + num_objects" + abduction action 4)
+#   + [onehot] + object_scale 1 + actions 16 + fabric q/qd/qdd 81
+#   = 252 + N_obj   (DEXTRAH 원본 "247 + num_objects" + abduction action 4)
 #
 # Student obs (distillation, 189 — onehot 없음):
 #   policy obs에서 물체 privileged state 전량 제거
 #   (object_pos_noisy 3 + object_rot_noisy 4 + onehot N_obj + object_scale 1)
 #   → 물체 정보는 D435i RGB-D에서 추론해야 하므로 관측에서 뺀다.
 #   robot_dof_pos_noisy 27 + robot_dof_vel_noisy 27 + hand_pos_noisy 18
-#   + hand_vel_noisy 18 + object_goal 3 + actions 15 + fabric q/qd/qdd 81 = 189
+#   + hand_vel_noisy 18 + object_goal 3 + actions 16 + fabric q/qd/qdd 81 = 190
 # ---------------------------------------------------------------------------
 NUM_HAND_POINTS = 6           # palm + 5 fingertips (DEXTRAH hand bodies)
-NUM_OBS_BASE        = 197     # onehot 제외 policy obs
-NUM_CRITIC_OBS_BASE = 251     # onehot 제외 critic obs
-NUM_STUDENT_OBS     = 189     # distillation student (onehot 무관 — 물체 정보 미관측)
+NUM_OBS_BASE        = 198     # onehot 제외 policy obs
+NUM_CRITIC_OBS_BASE = 252     # onehot 제외 critic obs
+NUM_STUDENT_OBS     = 190     # distillation student (onehot 무관 — 물체 정보 미관측)
 # 실제 차원은 env_cfg 에서 + len(active_object_names) 로 확정
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
