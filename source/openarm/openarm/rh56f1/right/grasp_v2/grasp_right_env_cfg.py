@@ -474,8 +474,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
     object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
-    # 07.13: 0.297→0.27 — scale 0.75 안착고(0.24) 대비 drop 5.7cm는 튕김·롤링 과다.
-    object_spawn_z:        float = 0.27
+    # 0.27 축소 시도는 역효과(anchor=spawn+0.08 과 간격 3cm → 물체가 손 안으로
+    # 스폰돼 충돌 사출, 즉시 종료 49/153) — 0.297 유지 (probe_fallen 실측).
+    object_spawn_z:        float = 0.297
     # 활성 물체군(spawn 순서와 일치) — onehot·per-object 로깅용 이름. env_id % N 로 배정.
     # (물체 조건화는 DEXTRAH식 onehot 으로 전환 — 접근 B feature 는 obs 미사용)
     active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
