@@ -98,7 +98,6 @@ from .grasp_right_preset import (
     PREGRASP_TOPDOWN_XY,
     PREGRASP_TOPDOWN_FINGER_REACH,
     TABLE_TOP_Z,
-    OBJECT_SPAWN_GAP,
     PREGRASP_SIDE_Z,
     PREGRASP_SIDE_CLEARANCE,
     PREGRASP_OFFSET,
@@ -1659,17 +1658,24 @@ class GraspRightEnv(DirectRLEnv):
             obj_y = self.cfg.object_spawn_y_center + (
                 torch.rand(n, device=self.device) - 0.5
             ) * 2.0 * _xy_range
-            # 물체를 테이블 바로 위에 스폰한다 (회전 후 half_z 반영).
-            # 고정 높이(0.297) 스폰은 5~8cm 자유낙하를 만들고, pregrasp 가 낙하 전
-            # 위치 기준이라 palm~물체가 항상 15.7cm 로 고정돼 손가락이 안 닿았다.
+            # 물체는 DEXTRAH 원본처럼 공중에서 떨어뜨린다(object_start_state[:,2]=0.5).
+            # 낙하하며 굴러 위치·자세가 랜덤해지는 것이 의도된 도메인 랜덤화다.
             _spawn_rot_for_z = self._sample_spawn_rotation(n)
-            _half_z_spawn = compute_rotated_half_z(
+            obj_pos_local = torch.stack(
+                [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)],
+                dim=1,
+            )
+            # 단, pregrasp 는 "안착 예상 높이" 기준으로 잡는다. 낙하 전 spawn z 를 쓰면
+            #   palm~물체 = (spawn_z + half_z + REACH) - (table + half_z) = 0.157
+            # 로 half_z 가 소거돼 물체 크기와 무관하게 항상 15.7cm 가 되고, 손가락(~10cm)이
+            # 닿지 못한다. 낙하 중 xy 가 굴러 바뀌는 것은 정책이 obs(실시간 물체 위치)로
+            # 보정한다 — palm action 이 절대 pose 라 1스텝에 지령할 수 있다.
+            _half_z_settled = compute_rotated_half_z(
                 self.object_half_extent[self.object_idx[env_ids]],
                 matrix_from_quat(_spawn_rot_for_z),
             )
-            obj_pos_local = torch.stack(
-                [obj_x, obj_y, TABLE_TOP_Z + _half_z_spawn + OBJECT_SPAWN_GAP], dim=1
-            )
+            obj_pos_settled = obj_pos_local.clone()
+            obj_pos_settled[:, 2] = TABLE_TOP_Z + _half_z_settled
 
             # ---- 접근 자세 결정: cup → side, 그 외 → top-down ----
             spawn_rot = _spawn_rot_for_z          # 스폰 높이 계산에 쓴 것과 동일해야 한다
@@ -1687,7 +1693,7 @@ class GraspRightEnv(DirectRLEnv):
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_y,
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
             ], dim=1)
-            pregrasp_pos = obj_pos_local + self._compute_pregrasp_offset(
+            pregrasp_pos = obj_pos_settled + self._compute_pregrasp_offset(
                 self.object_idx[env_ids], pose_id, spawn_rot
             ) + noise
 
