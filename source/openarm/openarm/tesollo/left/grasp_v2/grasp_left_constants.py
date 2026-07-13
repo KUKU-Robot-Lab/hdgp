@@ -100,6 +100,10 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 NUM_HAND_POINTS = 6           # palm + 5 fingertips (DEXTRAH hand bodies)
 NUM_OBS_BASE        = 193     # onehot 제외 policy obs
 NUM_CRITIC_OBS_BASE = 247     # onehot 제외 critic obs
+# distillation student (185): policy obs 에서 물체 privileged state 전량 제거
+#   (object_pos_noisy 3 + object_rot_noisy 4 + onehot N_obj + object_scale 1)
+#   → 물체 정보는 D435i RGB-D 에서 추론해야 하므로 관측에서 뺀다.
+NUM_STUDENT_OBS     = 185
 # 실제 차원은 env_cfg 에서 + len(active_object_names) 로 확정
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3

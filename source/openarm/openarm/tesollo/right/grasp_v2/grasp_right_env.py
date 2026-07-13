@@ -53,6 +53,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg, TiledCamera
+from openarm.distillation.visual_dr import VisualDomainRandomizer
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import matrix_from_quat, quat_apply, quat_mul
 
@@ -181,7 +182,7 @@ class GraspRightEnv(DirectRLEnv):
         self.palm_maxs = to_torch(PALM_POSE_MAXS_FUNC(cfg.max_pose_angle), device=self.device)
 
         # 접근 자세별 회전 경계 — 폭(±max_pose_angle)은 그대로, 중심만 옮긴다.
-        # side(ex=90) 물체는 기존과 동일한 [45°,135°], top-down(ex=180)은 [135°,225°].
+        # side(ex=90) 물체는 기존과 동일한 [45°,135°], top-down(ex=180) 물체는 [135°,225°].
         # 두 영역이 겹치지 않아 서로의 탐색을 간섭하지 않는다(기존 성공 물체 회귀 차단).
         _mpa = math.radians(cfg.max_pose_angle)
         _ex_top = math.radians(PREGRASP_EULER_EX_TOPDOWN_DEG)
@@ -337,6 +338,19 @@ class GraspRightEnv(DirectRLEnv):
         )
         self.num_teacher_observations = cfg.num_teacher_observations
         self.use_camera = cfg.distillation
+        # 시각 도메인 랜덤화 — student 인코더가 RGB 를 보므로 외형이 고정되면
+        # 단일 장면에만 맞는 정책이 나온다. shader prim 은 씬 clone 이후에 존재하므로
+        # 여기(super().__init__ 완료 후)에서 만든다.
+        self.visual_dr = (
+            VisualDomainRandomizer(
+                num_envs=self.num_envs,
+                texture_root=cfg.texture_root,
+                randomize_dome_light=not cfg.disable_dome_light_randomization,
+                randomize_robot=not cfg.disable_robot_randomization,
+            )
+            if cfg.distillation and cfg.img_aug_type == "rgb"
+            else None
+        )
         # 성공 유지 스텝 — distillation rollout 조기 종료용 (DEXTRAH success_timeout)
         self.time_in_success_region = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
@@ -1528,6 +1542,9 @@ class GraspRightEnv(DirectRLEnv):
         n = len(env_ids)
 
         self.time_in_success_region[env_ids] = 0
+
+        if self.visual_dr is not None:
+            self.visual_dr.randomize(env_ids)
 
         # ---- episode 성공 집계 후 클리어 ----
         self._total_episodes += n

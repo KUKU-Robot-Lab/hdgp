@@ -52,7 +52,8 @@ for _parent in Path(__file__).resolve().parents:
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
-from isaaclab.sensors import ContactSensor, ContactSensorCfg
+from isaaclab.sensors import ContactSensor, ContactSensorCfg, TiledCamera
+from openarm.distillation.visual_dr import VisualDomainRandomizer
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import matrix_from_quat, quat_apply, quat_mul
 
@@ -326,6 +327,36 @@ class GraspLeftEnv(DirectRLEnv):
         self.prev_actions    = torch.full((self.num_envs, cfg.num_actions), 0.0, device=self.device)
 
         # ----------------------------------------------------------------
+        # Distillation (Dagger 가 참조하는 계약. teacher 학습에선 use_camera=False)
+        #   num_observations   = 학습 중인 정책의 obs 차원 (student ↔ teacher)
+        #   num_teacher_observations = 항상 teacher 차원 (expert_policy)
+        # ----------------------------------------------------------------
+        self.num_actions = cfg.num_actions
+        self.num_observations = (
+            cfg.num_student_observations if cfg.distillation
+            else cfg.num_teacher_observations
+        )
+        self.num_teacher_observations = cfg.num_teacher_observations
+        self.use_camera = cfg.distillation
+        # 시각 도메인 랜덤화 — student 인코더가 RGB 를 보므로 외형이 고정되면
+        # 단일 장면에만 맞는 정책이 나온다. shader prim 은 씬 clone 이후에 존재하므로
+        # 여기(super().__init__ 완료 후)에서 만든다.
+        self.visual_dr = (
+            VisualDomainRandomizer(
+                num_envs=self.num_envs,
+                texture_root=cfg.texture_root,
+                randomize_dome_light=not cfg.disable_dome_light_randomization,
+                randomize_robot=not cfg.disable_robot_randomization,
+            )
+            if cfg.distillation and cfg.img_aug_type == "rgb"
+            else None
+        )
+        # 성공 유지 스텝 — distillation rollout 조기 종료용 (DEXTRAH success_timeout)
+        self.time_in_success_region = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
+
+        # ----------------------------------------------------------------
         # Pregrasp / Lift 버퍼 (reset에서 계산)
         # ----------------------------------------------------------------
         self.pregrasp_arm_pos_buf      = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
@@ -454,6 +485,13 @@ class GraspLeftEnv(DirectRLEnv):
             ))
             self._middle_sensors.append(sensor)
             self.scene.sensors[f"middle_sensor_{i + 1}"] = sensor
+
+        # Distillation: D435i RGB-D. teacher 학습(distillation=False)에선 생성하지 않는다
+        # — TiledCamera 는 env 당 렌더 타깃을 잡아 4096 env teacher 학습을 못 돌린다.
+        # (self.use_camera 는 아직 없다 — _setup_scene 은 super().__init__ 안에서 돈다)
+        if self.cfg.distillation:
+            self._tiled_camera = TiledCamera(self.cfg.tiled_camera_cfg)
+            self.scene.sensors["tiled_camera"] = self._tiled_camera
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
@@ -1068,7 +1106,55 @@ class GraspLeftEnv(DirectRLEnv):
                 f"Critic obs dim mismatch: {critic_obs.shape[1]} != {self.cfg.state_space}"
             )
 
-        return {"policy": actor_obs, "critic": critic_obs}
+        if not self.use_camera:
+            return {"policy": actor_obs, "critic": critic_obs}
+
+        # ==== distillation: student(vision) 가 "policy", teacher 는 "expert_policy" ====
+        # depth 유효 밴드 밖은 0 으로 죽인다. mask 는 배경(=밴드 초과) 픽셀 —
+        # aux depth 재구성 손실에서 배경을 제외하는 데 쓴다.
+        depth = self._tiled_camera.data.output["depth"].clone()
+        mask = depth.permute((0, 3, 1, 2)) > self.cfg.d_max
+        depth[depth <= 1e-8] = 10.0        # 렌더 미스(0) → 무효로 밀어냄
+        depth[depth > self.cfg.d_max] = 0.0
+        depth[depth < self.cfg.d_min] = 0.0
+
+        return {
+            "policy": self.compute_student_policy_observations(),
+            "expert_policy": actor_obs,
+            "critic": critic_obs,
+            "img": depth.permute((0, 3, 1, 2)),
+            "rgb": self._tiled_camera.data.output["rgb"].clone().permute(
+                (0, 3, 1, 2)
+            ) / 255.0,
+            "aux_info": {"object_pos": self.object_pos},
+            "mask": mask,
+        }
+
+    def compute_student_policy_observations(self) -> torch.Tensor:
+        """student obs (185) — 물체 privileged state 없음.
+
+        teacher obs 에서 object_pos/rot/onehot/scale 을 뺀 것. 물체 정보는
+        D435i RGB-D 에서 추론해야 하므로 관측으로 주지 않는다. object_goal 은
+        고정 절대점이라 실기에서도 알 수 있으므로 남긴다.
+        """
+        student_obs = torch.cat([
+            self.robot_dof_pos_noisy,        # 27
+            self.robot_dof_vel_noisy,        # 27
+            self.hand_pos_noisy,             # 18
+            self.hand_vel_noisy,             # 18
+            self.object_goal,                # 3
+            self.actions,                    # 11
+            self.fabric_q,                   # 27
+            self.fabric_qd,                  # 27
+            self.fabric_qdd,                 # 27
+        ], dim=-1)   # 185
+
+        if student_obs.shape[1] != self.cfg.num_student_observations:
+            raise RuntimeError(
+                f"Student obs dim mismatch: {student_obs.shape[1]} "
+                f"!= {self.cfg.num_student_observations}"
+            )
+        return student_obs
 
     # ------------------------------------------------------------------
     # Rewards: DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
@@ -1242,6 +1328,18 @@ class GraspLeftEnv(DirectRLEnv):
         # 컵 전용 upright 가정이 부당. 종료 = 물체 이탈/낙하 + timeout.
         terminated = out_x | out_y | fallen | robot_diverged
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
+
+        # distillation: 성공을 success_timeout 스텝 유지하면 조기 종료.
+        # teacher 학습에선 이 경로를 타지 않는다(에피소드 길이 = reward 스케줄 전제).
+        if self.cfg.distillation:
+            self.time_in_success_region = torch.where(
+                self.success_flag,
+                self.time_in_success_region + 1,
+                torch.zeros_like(self.time_in_success_region),
+            )
+            truncated = truncated | (
+                self.time_in_success_region >= self.cfg.success_timeout
+            )
 
         # warm export 진단: scripted phase 중 (tipped 제외) 조기 종료 추적
         if self.cfg.enable_warm_state_export:
@@ -1442,6 +1540,11 @@ class GraspLeftEnv(DirectRLEnv):
             return
 
         n = len(env_ids)
+
+        self.time_in_success_region[env_ids] = 0
+
+        if self.visual_dr is not None:
+            self.visual_dr.randomize(env_ids)
 
         # ---- episode 성공 집계 후 클리어 ----
         self._total_episodes += n

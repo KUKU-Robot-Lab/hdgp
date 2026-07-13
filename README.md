@@ -142,14 +142,16 @@ NOTE="lift weight 5→0" ./train.sh open-tesol_r_pour_v5-lstm test9 --num_envs 2
 ### Distillation (teacher → vision student)
 
 state 기반 teacher를 RealSense D435i RGB-D만 보는 student로 증류한다.
-**torchrun 필수** — 자세한 사용법은 [scripts/distillation/README.md](scripts/distillation/README.md).
+자세한 사용법은 [scripts/distillation/README.md](scripts/distillation/README.md).
 
 ```bash
-../IsaacLab/isaaclab.sh -p -m torch.distributed.run --standalone --nproc_per_node=1 \
-    scripts/distillation/run_distillation.py \
-    --task open-tesol_r_grasp_v2-distill --teacher <teacher.pth> \
-    --label test1 --num_envs 256 --headless
+# GPU0 = right, GPU1 = left 동시 실행
+GPU=0 ./distill.sh open-tesol_r_grasp_v2-distill test1 <right_teacher.pth>
+GPU=1 ./distill.sh open-tesol_l_grasp_v2-distill test1 <left_teacher.pth>
 ```
+
+`distill.sh` 를 쓸 것 — Dagger가 DDP를 요구해 torchrun 기동이 필요하고, 같은 호스트에서
+`--standalone` 잡을 두 개 띄우면 두 잡이 하나로 병합될 수 있다.
 
 ---
 

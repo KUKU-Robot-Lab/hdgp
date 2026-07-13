@@ -33,14 +33,26 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg, GroundPlaneCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.utils import configclass
 
 import os as _os
 
 from openarm import OPENARM_ROOT_DIR
-from .grasp_left_constants import NUM_OBS_BASE, NUM_ACTIONS, NUM_CRITIC_OBS_BASE
+from openarm.distillation.camera import depth_randomization_cfg, make_cam_matrix
+from .grasp_left_constants import (
+    NUM_OBS_BASE, NUM_ACTIONS, NUM_CRITIC_OBS_BASE, NUM_STUDENT_OBS,
+)
 from .grasp_left_preset import (
+    CAMERA_CLIPPING_RANGE,
+    CAMERA_D_MAX,
+    CAMERA_D_MIN,
+    CAMERA_FOCAL_LENGTH,
+    CAMERA_HORIZONTAL_APERTURE,
+    CAMERA_IMG_HEIGHT,
+    CAMERA_IMG_WIDTH,
+    CAMERA_POS,
+    CAMERA_ROT,
     HAND_BODY_NAMES_USD,
     RIGHT_ARM_AND_GRIPPER_JOINT_NAMES,
     RIGHT_ARM_REST_JOINT_POS,
@@ -49,6 +61,12 @@ from .grasp_left_preset import (
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
+_TEXTURE_ROOT = _os.path.join(_ASSETS_DIR, "dextrah_textures")
+
+_CAM_MATRIX = make_cam_matrix(
+    CAMERA_IMG_WIDTH, CAMERA_IMG_HEIGHT,
+    CAMERA_FOCAL_LENGTH, CAMERA_HORIZONTAL_APERTURE,
+)
 
 # ---------------------------------------------------------------------------
 # grasp_v2 파지 대상 물체 (다물체): primitives
@@ -635,6 +653,65 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
         history_length=1,
         track_air_time=False,
     )
+
+    # -----------------------------------------------------------------------
+    # Distillation (teacher → vision student) — RealSense D435i mono RGB-D
+    #
+    # distillation=False 가 기본. teacher(PPO) 학습 경로는 아래 설정을 일절 타지 않는다.
+    # True 로 켜면: TiledCamera 활성 + obs dict 가 4-key (policy/expert_policy/img/rgb).
+    # 이때 "policy" 는 student obs(185, 물체 미관측)로 바뀌고 teacher obs 는
+    # "expert_policy" 로 이동한다 — teacher 관측 구조 자체는 변경 없음.
+    # -----------------------------------------------------------------------
+    distillation: bool = False
+
+    num_student_observations: int = NUM_STUDENT_OBS     # 185 (물체 privileged state 제외)
+    num_teacher_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)  # 193 + N_obj
+
+    img_width:  int = CAMERA_IMG_WIDTH
+    img_height: int = CAMERA_IMG_HEIGHT
+    d_min: float = CAMERA_D_MIN
+    d_max: float = CAMERA_D_MAX
+
+    tiled_camera_cfg: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Camera",
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=CAMERA_POS, rot=CAMERA_ROT, convention="ros"
+        ),
+        data_types=["rgb", "depth"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=CAMERA_FOCAL_LENGTH,
+            focus_distance=400.0,
+            horizontal_aperture=CAMERA_HORIZONTAL_APERTURE,
+            clipping_range=CAMERA_CLIPPING_RANGE,
+        ),
+        width=CAMERA_IMG_WIDTH,
+        height=CAMERA_IMG_HEIGHT,
+    )
+
+    # 이미지 증강 종류 — student 인코더가 보는 텐서를 증강해야 한다.
+    #   "rgb"   : a2c_mono_transformer 등 배포 학생망 전부 (use_depth=False → RGB 입력)
+    #   "depth" : 구 a2c_with_aux_depth 처럼 depth 를 직접 입력받는 경우
+    # 여기서 틀리면 인코더가 안 보는 텐서에 노이즈를 넣게 되어 조용히 헛돈다.
+    img_aug_type: str = "rgb"
+
+    # 시각 도메인 랜덤화 텍스처 (DEXTRAH textures.zip). git 비추적 — server 는 별도 확보.
+    texture_root: str = _TEXTURE_ROOT
+    disable_dome_light_randomization: bool = False
+    disable_robot_randomization: bool = False
+
+    # depth 도메인 랜덤화 (img_aug_type="depth" 일 때만 적용)
+    aug_depth: bool = True
+    aux_coeff: float = 1.0        # aux head(object_pos 회귀) 손실 가중
+
+    cam_matrix = _CAM_MATRIX
+    depth_randomization_cfg_dict: dict = field(
+        default_factory=lambda: depth_randomization_cfg(
+            _CAM_MATRIX, CAMERA_D_MIN, CAMERA_D_MAX
+        )
+    )
+
+    # distillation rollout 은 성공 후 조기 종료 (DEXTRAH success_timeout)
+    success_timeout: int = 60
 
     # -----------------------------------------------------------------------
     # 컵 설정

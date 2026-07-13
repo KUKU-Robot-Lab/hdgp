@@ -1,0 +1,113 @@
+# grasp_v2 distillation student — RealSense D435i mono RGB-D
+#
+# obs: student 185D (물체 privileged state 없음) + depth/rgb 320x180
+# 학습은 PPO 가 아니라 DAgger(openarm/distillation/dagger.py) — 아래 config 의
+# ppo/lr/kl 계열 값은 rl_games ModelBuilder 가 요구해서 남긴 것이고 실제 최적화는
+# Dagger 가 자체 Adam(1e-4)으로 돌린다. Dagger 가 실제로 읽는 값:
+#   horizon_length, seq_length, normalize_input, normalize_value
+#
+# aux head: teacher 가 관측하던 object_pos 를 이미지에서 회귀시켜, 인코더가
+# "물체가 어디 있나"를 명시적으로 학습하게 만든다 (aux_coeff=1.0).
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: a2c_mono_transformer
+    separate: False
+
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+
+    mlp:
+      units: [512, 512, 256]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+
+    rnn:
+      name: lstm
+      units: 512
+      layers: 1
+      before_mlp: True
+      layer_norm: True
+
+    aux_network:
+      mlp:
+        units: [512, 256]
+        activation: elu
+        out_activation: None
+        d2rl: False
+        initializer:
+          name: default
+        regularizer:
+          name: None
+
+    aux_outputs:
+      object_pos: {size: 3}
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: 5g_grasp_left-v2-student
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False
+    normalize_input: True
+    normalize_value: True
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    learning_rate: 1e-4
+    lr_schedule: adaptive
+    schedule_type: standard
+    kl_threshold: 0.016
+    score_to_win: 100000000
+    max_epochs: 10000
+    save_best_after: 100
+    save_frequency: 200
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.0
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 16
+    minibatch_size: 16384
+    mini_epochs: 4
+    critic_coef: 4
+    clip_value: True
+    seq_length: 20
+    bounds_loss_coef: 0.0001
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True

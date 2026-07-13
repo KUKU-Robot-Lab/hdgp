@@ -35,7 +35,10 @@ class GraspRightEnvCfg_DISTILL(GraspRightEnvCfg):
 
     def __post_init__(self):
         self.distillation = True
+        # DEXTRAH 증류 레시피: env.num_envs=256 (타일 렌더는 제곱수가 유리), aux_coeff=10.
+        # aux(object_pos 회귀)를 크게 걸어야 인코더가 "물체가 어디 있나"를 먼저 배운다.
         self.scene.num_envs = 256
+        self.aux_coeff = 10.0
 
 
 gym.register(

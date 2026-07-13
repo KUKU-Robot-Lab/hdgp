@@ -36,12 +36,10 @@ from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
 from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.utils import configclass
 
-import math as _math
 import os as _os
 
-import warp as wp
-
 from openarm import OPENARM_ROOT_DIR
+from openarm.distillation.camera import depth_randomization_cfg, make_cam_matrix
 from .grasp_right_constants import (
     NUM_OBS_BASE, NUM_ACTIONS, NUM_CRITIC_OBS_BASE, NUM_STUDENT_OBS,
 )
@@ -63,30 +61,13 @@ from .grasp_right_preset import (
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
+_TEXTURE_ROOT = _os.path.join(_ASSETS_DIR, "dextrah_textures")
 
-
-def _make_cam_matrix(width: int, height: int, focal: float, aperture: float):
-    """depth normal_noise 커널이 픽셀→광선 역투영에 쓰는 정규화 투영행렬.
-
-    DEXTRAH 규약: a = focal_px/(W/2) = 1/tan(hfov/2), b = focal_px/(H/2).
-    주점(cx, cy) 오프셋은 원본과 동일하게 넣지 않는다 — 표면 법선 추정용이라
-    전 픽셀에 동일한 shear 가 걸릴 뿐 노이즈 특성에 영향이 없다.
-    """
-    fov = 2.0 * _math.atan(aperture / (2.0 * focal))
-    focal_px = width * 0.5 / _math.tan(fov / 2.0)
-
-    mat = wp.mat44f()
-    mat[0, 0] = focal_px / (width * 0.5)
-    mat[1, 1] = focal_px / (height * 0.5)
-    mat[2, 3] = -1.0
-    mat[3, 2] = 1.0e-3
-    return mat
-
-
-_CAM_MATRIX = _make_cam_matrix(
+_CAM_MATRIX = make_cam_matrix(
     CAMERA_IMG_WIDTH, CAMERA_IMG_HEIGHT,
     CAMERA_FOCAL_LENGTH, CAMERA_HORIZONTAL_APERTURE,
 )
+
 
 # ---------------------------------------------------------------------------
 # grasp_v2 파지 대상 물체 (다물체): primitives
@@ -704,40 +685,29 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         height=CAMERA_IMG_HEIGHT,
     )
 
-    # depth 도메인 랜덤화 (D435i 스테레오 IR 깊이 노이즈 모사)
+    # 이미지 증강 종류 — student 인코더가 보는 텐서를 증강해야 한다.
+    #   "rgb"   : a2c_mono_transformer 등 배포 학생망 전부 (use_depth=False → RGB 입력)
+    #   "depth" : 구 a2c_with_aux_depth 처럼 depth 를 직접 입력받는 경우
+    # 여기서 틀리면 인코더가 안 보는 텐서에 노이즈를 넣게 되어 조용히 헛돈다.
+    img_aug_type: str = "rgb"
+
+    # 시각 도메인 랜덤화 텍스처 (DEXTRAH textures.zip). git 비추적 — server 는 별도 확보.
+    texture_root: str = _TEXTURE_ROOT
+    disable_dome_light_randomization: bool = False
+    disable_robot_randomization: bool = False
+
+    # depth 도메인 랜덤화 (img_aug_type="depth" 일 때만 적용)
     aug_depth: bool = True
     aux_coeff: float = 1.0        # aux head(object_pos 회귀) 손실 가중
 
     # normal_noise 커널이 픽셀→광선 역투영에 쓰는 정규화 투영행렬.
     # a = 1/tan(hfov/2), b = a * W/H  (DEXTRAH 원본 규약: 주점 오프셋 없음)
     cam_matrix = _CAM_MATRIX
-    depth_randomization_cfg_dict: dict = field(default_factory=lambda: {
-        "pixel_dropout_and_randu": {
-            "p_dropout": 0.0125 / 4,
-            "p_randu": 0.0125 / 4,
-            "d_min": CAMERA_D_MIN,
-            "d_max": CAMERA_D_MAX,
-        },
-        "sticks": {
-            "p_stick": 0.001 / 4,
-            "max_stick_len": 18.0,
-            "max_stick_width": 3.0,
-            "d_min": CAMERA_D_MIN,
-            "d_max": CAMERA_D_MAX,
-        },
-        "correlated_noise": {
-            "sigma_s": 1.0 / 2,
-            "sigma_d": 1.0 / 6,
-            "d_min": CAMERA_D_MIN,
-            "d_max": CAMERA_D_MAX,
-        },
-        "normal_noise": {
-            "sigma_theta": 0.01,
-            "cam_matrix": _CAM_MATRIX,
-            "d_min": CAMERA_D_MIN,
-            "d_max": CAMERA_D_MAX,
-        },
-    })
+    depth_randomization_cfg_dict: dict = field(
+        default_factory=lambda: depth_randomization_cfg(
+            _CAM_MATRIX, CAMERA_D_MIN, CAMERA_D_MAX
+        )
+    )
 
     # distillation rollout 은 성공 후 조기 종료 (DEXTRAH success_timeout)
     success_timeout: int = 60

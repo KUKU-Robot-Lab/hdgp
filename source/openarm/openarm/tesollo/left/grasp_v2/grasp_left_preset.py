@@ -283,3 +283,28 @@ DISTAL_RATIO_DIP = [0.33, 0.71, 0.71, 0.71]
 # 나머지: 부호 유지 → 범위 동일.
 CURL_JOINT_LIMITS_MIN = [0.0, 0.0, 0.0, 0.0, 0.0]
 CURL_JOINT_LIMITS_MAX = [_math.pi, 2.007, 1.955, 1.902, _math.pi / 2]
+
+# ---------------------------------------------------------------------------
+# Distillation 카메라 — RealSense D435i (mono RGB-D). right preset 의 좌우 미러.
+#
+# intrinsics 는 센서 사양이라 좌우 동일(D435i depth 1280x720, HFOV 87°/VFOV 58°).
+#   16:9 를 유지해야 FOV 가 맞는다. clipping 근거리 0.3m = D435i 최소 측정거리.
+#
+# extrinsics: !!! PLACEHOLDER — 실제 마운트 후 hand-eye 캘리브레이션 값으로 교체할 것 !!!
+#   left 작업공간(물체 스폰 0.27, +0.10 / goal 0.27, +0.10)을 정면 대각에서
+#   내려다보는 look-at. right(y=-0.10) 의 y 부호 반전이다.
+#   ROT 가 right 와 같은 값인 건 우연이 아니다: 카메라와 목표의 y 가 같아 시선이
+#   x-z 평면 안에 있어서 y 미러가 회전에 영향을 주지 않는다. 실측 캘리브레이션
+#   값이 들어오면 좌우 ROT 는 일반적으로 달라진다 — 그때 이 대칭을 가정하지 말 것.
+# ---------------------------------------------------------------------------
+CAMERA_IMG_WIDTH  = 320
+CAMERA_IMG_HEIGHT = 180        # 16:9 — D435i depth 종횡비
+CAMERA_FOCAL_LENGTH       = 20.0
+CAMERA_HORIZONTAL_APERTURE = 37.9586   # 2*focal*tan(87°/2) → HFOV 87°
+CAMERA_CLIPPING_RANGE = (0.3, 3.0)
+
+CAMERA_POS = [1.05, 0.10, 0.75]                        # PLACEHOLDER (right: y=-0.10)
+CAMERA_ROT = [0.354477, -0.6118382, -0.6118382, 0.354477]  # (w,x,y,z), ros convention
+
+CAMERA_D_MIN = 0.3
+CAMERA_D_MAX = 1.5
