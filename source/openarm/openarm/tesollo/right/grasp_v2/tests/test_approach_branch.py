@@ -74,9 +74,97 @@ def test_side_object_names_is_cup_only():
     assert l_preset.SIDE_APPROACH_OBJECT_NAMES == ("cup",)
 
 
-def test_topdown_euler_is_mirrored():
-    assert r_preset.PREGRASP_EULER_EX_TOPDOWN_DEG == 180.0
-    assert l_preset.PREGRASP_EULER_EX_TOPDOWN_DEG == -180.0
+# ---------------------------------------------------------------------------
+# grasp 프레임 (G) — 진짜 top-down 이 나오는가
+# ---------------------------------------------------------------------------
+def _R_world_palm(preset, utils, g_euler_deg):
+    """G 규약 euler → 실제 palm 회전행렬 (fabric 에 넘어가는 quaternion 을 되풀어서)."""
+    C = torch.tensor(preset.PALM_GRASP_FRAME_ROT)
+    pose = torch.tensor([[0.0, 0.0, 0.0] + [math.radians(v) for v in g_euler_deg]])
+    q = utils.g_pose_to_fabric_quat(pose, C)[0, 3:]          # xyzw
+    x, y, z, w = q
+    return torch.tensor([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def test_grasp_frame_is_proper_rotation():
+    for preset in (r_preset, l_preset):
+        C = torch.tensor(preset.PALM_GRASP_FRAME_ROT)
+        assert torch.allclose(C.T @ C, torch.eye(3), atol=1e-6)
+        assert abs(float(torch.det(C)) - 1.0) < 1e-6
+
+
+def test_topdown_actually_faces_the_table():
+    """핵심 회귀 테스트 — lstm_test3 의 "가짜 top-down" 재발 방지.
+
+    palm 법선(로컬 +X)이 world -Z 여야 손바닥이 테이블을 본다. 실패한 구현은
+    법선이 (0,+1,0) 수평이고 손가락만 아래로 꽂혀 있었다(실측 확인).
+    """
+    for preset, utils in ((r_preset, r_utils), (l_preset, l_utils)):
+        R = _R_world_palm(preset, utils, preset.PREGRASP_G_EULER_TOPDOWN)
+        normal, finger = R[:, 0], R[:, 2]
+        assert normal[2] < -0.99, f"법선이 아래를 안 봄: {normal.tolist()}"
+        assert abs(float(finger[2])) < 0.01, f"손가락이 수평이 아님: {finger.tolist()}"
+
+
+def test_topdown_normal_is_invariant_to_heading():
+    """ez(손가락 방위각)를 아무리 돌려도 법선은 -Z 를 유지해야 한다."""
+    for ez in (-135.0, -45.0, 0.0, 45.0, 90.0, 180.0):
+        R = _R_world_palm(r_preset, r_utils, [ez, 0.0, 180.0])
+        assert R[2, 0] < -0.99, f"ez={ez} 에서 법선이 무너짐"
+
+
+def test_side_pose_matches_legacy_exactly():
+    """cup(side) 자세는 G 규약 전환 후에도 기존과 완전히 같아야 한다 (회귀 방지).
+
+    기존: right (ez=90, ey=0, ex=90) / left (ez=-90, ey=0, ex=-90) — P 규약 euler.
+    """
+    for preset, utils, legacy in (
+        (r_preset, r_utils, (90.0, 0.0, 90.0)),
+        (l_preset, l_utils, (-90.0, 0.0, -90.0)),
+    ):
+        R_new = _R_world_palm(preset, utils, preset.PREGRASP_G_EULER_SIDE)
+        R_old = r_utils.euler_zyx_to_matrix(
+            torch.tensor([[math.radians(v) for v in legacy]])
+        )[0]
+        assert torch.allclose(R_new, R_old, atol=1e-5), \
+            f"side 자세가 바뀜:\n{R_new}\nvs\n{R_old}"
+
+
+def test_pregrasp_lies_inside_its_own_palm_box():
+    """경계가 pregrasp 자세를 잘라내면 안 된다 — 이 사고가 이미 두 번 났다.
+
+    (1) left lstm_test1: +90 하드코드가 left 경계에 0° 로 clamp → 90° 뒤틀림
+    (2) lstm_test3: 진짜 top-down 에 필요한 ey=90 이 경계 [-45,45] 밖
+    각 pregrasp 가 자기 박스 안에 5° 이상 여유를 두고 들어있는지 고정한다.
+    """
+    MPA = 45.0          # cfg.max_pose_angle
+    MARGIN = 5.0
+    for preset in (r_preset, l_preset):
+        for pose_name, pregrasp, center in (
+            ("side", preset.PREGRASP_G_EULER_SIDE, preset.PALM_G_EULER_CENTER_SIDE),
+            ("top-down", preset.PREGRASP_G_EULER_TOPDOWN, preset.PALM_G_EULER_CENTER_TOPDOWN),
+        ):
+            lo = preset.palm_pose_mins(MPA, center)
+            hi = preset.palm_pose_maxs(MPA, center)
+            for k in range(3):
+                v = math.radians(pregrasp[k])
+                assert lo[3 + k] + math.radians(MARGIN) <= v <= hi[3 + k] - math.radians(MARGIN), \
+                    f"{pose_name} euler[{k}] 가 경계에 붙었다: {math.degrees(v):.1f}° " \
+                    f"∈ [{math.degrees(lo[3+k]):.1f}, {math.degrees(hi[3+k]):.1f}]"
+
+
+def test_quaternion_roundtrip_matches_euler_path():
+    """quaternion 경로가 euler 경로와 같은 회전을 내는지 (비특이 자세에서)."""
+    C = torch.tensor(r_preset.PALM_GRASP_FRAME_ROT)
+    for g in ([0.0, 0.0, 180.0], [30.0, -20.0, 160.0], [0.0, 0.0, -90.0]):
+        pose = torch.tensor([[0.1, 0.2, 0.3] + [math.radians(v) for v in g]])
+        R_direct = r_utils.euler_zyx_to_matrix(pose[:, 3:6])[0] @ C.T
+        R_quat = _R_world_palm(r_preset, r_utils, g)
+        assert torch.allclose(R_direct, R_quat, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------

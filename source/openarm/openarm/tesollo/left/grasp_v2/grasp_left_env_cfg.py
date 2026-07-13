@@ -315,8 +315,6 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 수렴. palm 법선(로컬 +X → world)이 palm→물체 방향과 정렬되도록 보조 shaping.
     # w·exp(s·(align−1)): align=1(완전 정렬)→w, align=−1(반대)→w·exp(−2s). weight는
     # object_to_goal(5.0)의 0.2배로 통제(reward-audit ACCEPT: local-min·hacking 방지).
-    palm_orient_weight:       float = 1.0
-    palm_orient_sharpness:    float = 3.0
 
     # (구) RH56F1 shared grasp-v2 reward contract — DEXTRAH 전환으로 미사용(호환 보존).
     approach_weight: float = 2.0

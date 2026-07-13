@@ -151,38 +151,53 @@ OBJECT_GOAL_POS = [0.27, 0.10, 0.65]  # target cup xy와 일치 (demo target=[0.
 # lift_v1: palm_ee 기준 -6cm → palm_link 기준 ≈ -9cm + rollout 여유 3cm = -12cm
 PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 
-# Pregrasp/reset palm 접근 방향 euler (deg) — env.py IK 타깃이 참조.
-# right=+90 (palm 경계 [0°,180°] 중앙 = side-approach). left 미러는 -90.
-# 주의: env.py에 숫자 하드코드 금지 — left lstm_test1에서 +90 하드코드가 left 경계
-# [-180°,0°]에 0°로 clamp되어 pregrasp 90° 뒤틀림 → 파지 불가·orientation hacking 실증.
-PREGRASP_EULER_EZ_DEG = 90.0
-PREGRASP_EULER_EX_DEG = 90.0
-
 # ---------------------------------------------------------------------------
-# Top-down 접근 (기본) / side 접근 (cup 전용)
+# grasp 프레임 (G) — palm orientation 을 DEXTRAH 규약으로 사상
 # ---------------------------------------------------------------------------
-# DEXTRAH 와 동일하게 top-down 을 기본 접근 자세로 쓴다.
-# side-approach(ex=90)는 "감쌀 수직 옆면"이 있어야 작동한다. 납작한 물체에서는
-# 손끝이 테이블에 눌린 채 수평 전진해 물체를 4~6cm 쳐내는 불도저 실패가 난다
-# (ep_14000 관찰 probe 실증: 실패 9ep 리프트 ≤0.5cm / 성공 3ep 12~22cm).
-# 물체 높이 규칙으로 분기하던 방식(lstm_test2)은 ADR 회전이 커지면 납작한 원통이
-# 누우면서 "납작" 조건에서 빠져 topdown_frac 이 0.025→0.0015 로 자멸했다 —
-# 규칙 자체를 폐기하고 물체 이름 기반 고정 분기로 바꾼다.
+# 문제: tesollo palm 로컬축은 +X=손바닥 법선, +Z=손가락. Allegro(DEXTRAH)는 정반대로
+# +X=손가락, ±Z=법선이다. euler_zyx(R = Rz·Ry·Rx) 에서
+#     col0 = (cos ez·cos ey, sin ez·cos ey, -sin ey)
+# 이므로 ey=0 이면 col0 는 반드시 수평이다. Allegro 는 col0 가 손가락이라 무관하지만,
+# tesollo 는 col0 가 법선이라 ey≈0 으로는 손바닥을 아래로 돌리는 것이 원리적으로 불가능하다.
+# lstm_test3 의 (ez=90, ey=0, ex=180) 은 손바닥이 옆(+Y)을 본 채 손가락만 아래로 꽂힌
+# "가짜 top-down" 이었다 — 실측: 법선 (-0.14, +0.98, +0.10), 손가락 (+0.21, +0.13, -0.97).
+# 정책은 물체에 닿을 수 없어 정렬 보상만 먹고 제자리에서 주먹을 쥐었다(in_success 0.000).
 #
-# tesollo palm 축: +X=손바닥 법선, +Z=손가락 방향.
-#   ex=90  → 손가락 +X(수평), 법선 +Y(수평)  = side
-#   ex=180 → 손가락 -Z(아래),  법선 +Y(수평)  = top-down (물체 위에서 손끝으로 집기)
-# 손바닥 법선을 정확히 -Z로 돌리려면 ey=90 이 필요한데 euler_zyx gimbal lock 특이점이라
-# Fabrics IK 가 불안정해진다 → ey=0 을 유지하고 ex 만 180 으로 돌린다.
-PREGRASP_EULER_EX_TOPDOWN_DEG = 180.0
+# 해법: 상수 회전 C 로 palm 프레임 P 를 Allegro 규약 G 로 사상한다.
+#     G.x = P.z(손가락),  G.z = P.x(법선),  G.y = -P.y
+#     R_world_P = R_cmd(G-euler) · Cᵀ
+# G 규약에서 (ez, ey=0, ex=180) 은 ez 와 무관하게 법선을 항상 -Z(테이블)로 보낸다.
+# ez 는 손가락 방위각만 결정하고, ey 는 법선 기울임이 된다 → 기존 ±45° 경계가 그대로 유효.
+# 특이점(ey=±90)이 필요 없지만, 최종 행렬은 fabric 에 quaternion 으로 넘긴다
+# (openarm_tesollo_pose_fabric.set_features 가 "quaternion" convention 지원).
+PALM_GRASP_FRAME_ROT = [
+    [0.0, 0.0, 1.0],
+    [0.0, -1.0, 0.0],
+    [1.0, 0.0, 0.0],
+]
+
+# G 규약 pregrasp euler (deg) — env.py 하드코드 금지.
+#   top-down: 법선 -Z(테이블), 손가락 수평. ez* = 손가락 방위각.
+#   side(cup): 기존 side 자세와 정확히 동일한 회전을 재현한다(회귀 없음).
+#              검증: 현행 right side(ez=90,ey=0,ex=90) 의 G 등가 = (0, 0, -90).
+PREGRASP_G_EULER_TOPDOWN = [0.0, 0.0, 180.0]   # ez* 는 heading — probe 로 확정
+PREGRASP_G_EULER_SIDE = [0.0, 0.0, -90.0]
+
+# palm 회전 경계 중심 (G 규약). 폭은 cfg.max_pose_angle(±45°).
+PALM_G_EULER_CENTER_TOPDOWN = [0.0, 0.0, 180.0]
+PALM_G_EULER_CENTER_SIDE = [0.0, 0.0, -90.0]
 
 # pregrasp offset 은 물체 크기(clearance = ‖half_extent‖, 회전 무관 최대 반경)에
 # 비례한다. 고정 offset 은 회전 ADR 이 오르면 물체가 palm 을 침범해 PhysX
 # depenetration 폭주를 일으킨다 — lstm_test1 실증: ADR 36 부터 리턴 -1e4 스파이크가
 # 24회 발생(그 전엔 0회), iter 14111 에서 -4.9e7 로 정책 붕괴.
-# top-down: palm 을 물체 위 (clearance + 손가락 길이 여유) 에 둔다.
+# top-down: palm 을 물체 위 (clearance + palm 여유) 에 둔다.
+# 0.10 → 0.04: 0.10 은 "손가락이 아래로 10cm 뻗는다"는 가짜 top-down 전제로 정한 값이다.
+# 진짜 top-down(G 규약)에서는 손가락이 수평이라 손끝이 옆으로 뻗고, palm 을 높이 띄우면
+# hand_to_object 가 보는 MAX(palm,tips) 거리가 오히려 커진다(실측 30.1cm → h2o 0.049).
+# 0.04 = palm 두께 이상의 여유. 실측 침투 여유 8.1cm 이므로 겹침 없이 줄일 수 있다.
 PREGRASP_TOPDOWN_XY = [0.0, -0.02]
-PREGRASP_TOPDOWN_CLEARANCE = 0.10
+PREGRASP_TOPDOWN_CLEARANCE = 0.04
 # side(cup 전용): palm 을 물체 옆 (clearance + palm 두께 여유) 에 둔다.
 PREGRASP_SIDE_Z = 0.05
 PREGRASP_SIDE_CLEARANCE = 0.03
@@ -199,25 +214,23 @@ SIDE_APPROACH_OBJECT_NAMES = ("cup",)
 FABRIC_WORLD_FILENAME = "open_tesollo_boxes_no_table"
 
 
-def palm_pose_mins(max_pose_angle: float) -> list:
-    d = math.pi / 180.0
-    return [
-        0.20, -0.55, 0.20,
-        (90.0 - max_pose_angle) * d,
-        (0.0 - max_pose_angle) * d,
-        (90.0 - max_pose_angle) * d,
-    ]
+# palm workspace 위치 경계 (G 규약과 무관 — 회전 표현을 바꿔도 위치는 그대로)
+# y_max: -0.02 → 0.22 (source cup y=-0.10에서 target cup y=0.10으로 이송 허용)
+PALM_POS_MINS = [0.20, -0.55, 0.20]
+PALM_POS_MAXS = [0.65, 0.22, 0.65]
 
 
-def palm_pose_maxs(max_pose_angle: float) -> list:
-    # y_max: -0.02 → 0.22 (source cup y=-0.10에서 target cup y=0.10으로 이송 허용)
+def palm_pose_mins(max_pose_angle: float, center_deg: list | None = None) -> list:
+    """palm pose 하한 [x,y,z, ez,ey,ex]. 회전은 G 규약 중심 ± max_pose_angle."""
     d = math.pi / 180.0
-    return [
-        0.65, 0.22, 0.65,
-        (90.0 + max_pose_angle) * d,
-        (0.0 + max_pose_angle) * d,
-        (90.0 + max_pose_angle) * d,
-    ]
+    c = center_deg if center_deg is not None else PALM_G_EULER_CENTER_SIDE
+    return PALM_POS_MINS + [(v - max_pose_angle) * d for v in c]
+
+
+def palm_pose_maxs(max_pose_angle: float, center_deg: list | None = None) -> list:
+    d = math.pi / 180.0
+    c = center_deg if center_deg is not None else PALM_G_EULER_CENTER_SIDE
+    return PALM_POS_MAXS + [(v + max_pose_angle) * d for v in c]
 
 
 # ---------------------------------------------------------------------------

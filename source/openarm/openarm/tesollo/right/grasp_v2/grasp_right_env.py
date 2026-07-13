@@ -90,9 +90,11 @@ from .grasp_right_preset import (
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
-    PREGRASP_EULER_EZ_DEG,
-    PREGRASP_EULER_EX_DEG,
-    PREGRASP_EULER_EX_TOPDOWN_DEG,
+    PALM_GRASP_FRAME_ROT,
+    PREGRASP_G_EULER_TOPDOWN,
+    PREGRASP_G_EULER_SIDE,
+    PALM_G_EULER_CENTER_TOPDOWN,
+    PALM_G_EULER_CENTER_SIDE,
     PREGRASP_TOPDOWN_XY,
     PREGRASP_TOPDOWN_CLEARANCE,
     PREGRASP_SIDE_Z,
@@ -118,6 +120,7 @@ from .grasp_right_utils import (
     compute_abduction_targets,
     compute_joint7_lift_wait_target,
     compute_palm_pose_id,
+    g_pose_to_fabric_quat,
     scale,
     to_torch,
 )
@@ -184,21 +187,28 @@ class GraspRightEnv(DirectRLEnv):
         ]
 
         # ----------------------------------------------------------------
-        # Palm pose 절대 workspace (안전 한계 클램프용)
+        # Palm pose 절대 workspace (안전 한계 클램프용) — G 규약
+        #
+        # 회전은 grasp 프레임(G) 에서 명령한다. tesollo palm 로컬축(+X=법선,+Z=손가락)이
+        # Allegro/DEXTRAH 규약(+X=손가락,±Z=법선)과 90° 어긋나 있어, P 규약 euler 로는
+        # ey≈0 에서 손바닥을 아래로 돌릴 수 없다(lstm_test3 "가짜 top-down" 실증).
+        # G 규약에서는 (ez, ey=0, ex=180) 이 ez 와 무관하게 법선을 -Z 로 보낸다
+        #   → ez = 손가락 방위각, ey = 법선 기울임 → 기존 ±45° 경계가 그대로 유효.
         # ----------------------------------------------------------------
-        self.palm_mins = to_torch(PALM_POSE_MINS_FUNC(cfg.max_pose_angle), device=self.device)
-        self.palm_maxs = to_torch(PALM_POSE_MAXS_FUNC(cfg.max_pose_angle), device=self.device)
+        self.palm_grasp_frame_rot = to_torch(PALM_GRASP_FRAME_ROT, device=self.device)  # (3,3) C
 
-        # 접근 자세별 회전 경계 — 폭(±max_pose_angle)은 그대로, 중심만 옮긴다.
-        # side(ex=90)는 [45°,135°], top-down(ex=180)은 [135°,225°].
-        # 두 영역이 겹치지 않아 서로의 탐색을 간섭하지 않는다.
-        _mpa = math.radians(cfg.max_pose_angle)
-        _ex_top = math.radians(PREGRASP_EULER_EX_TOPDOWN_DEG)
-        # (2, 6): [0]=side, [1]=top-down. 위치 3축은 두 자세 공통.
-        self.palm_mins_by_pose = torch.stack([self.palm_mins.clone(), self.palm_mins.clone()])
-        self.palm_maxs_by_pose = torch.stack([self.palm_maxs.clone(), self.palm_maxs.clone()])
-        self.palm_mins_by_pose[1, 5] = _ex_top - _mpa
-        self.palm_maxs_by_pose[1, 5] = _ex_top + _mpa
+        # (2, 6): [0]=side(cup), [1]=top-down. 위치 3축 공통, 회전 중심만 다르다.
+        self.palm_mins_by_pose = torch.stack([
+            to_torch(PALM_POSE_MINS_FUNC(cfg.max_pose_angle, PALM_G_EULER_CENTER_SIDE), device=self.device),
+            to_torch(PALM_POSE_MINS_FUNC(cfg.max_pose_angle, PALM_G_EULER_CENTER_TOPDOWN), device=self.device),
+        ])
+        self.palm_maxs_by_pose = torch.stack([
+            to_torch(PALM_POSE_MAXS_FUNC(cfg.max_pose_angle, PALM_G_EULER_CENTER_SIDE), device=self.device),
+            to_torch(PALM_POSE_MAXS_FUNC(cfg.max_pose_angle, PALM_G_EULER_CENTER_TOPDOWN), device=self.device),
+        ])
+        self.palm_mins = self.palm_mins_by_pose[1]
+        self.palm_maxs = self.palm_maxs_by_pose[1]
+
         # per-env 경계 버퍼 (reset 에서 물체 이름에 따라 채움). 기본 = top-down.
         self.palm_pose_id  = torch.ones(self.num_envs, dtype=torch.long, device=self.device)
         self.palm_mins_env = self.palm_mins_by_pose[1].unsqueeze(0).repeat(self.num_envs, 1)
@@ -693,10 +703,11 @@ class GraspRightEnv(DirectRLEnv):
             fqd  = torch.zeros(C, qi.shape[1], device=self.device)
             fqdd = torch.zeros(C, qi.shape[1], device=self.device)
 
+            # G 규약 euler → fabric quaternion (특이점 없음)
             self._reset_fabric.set_features(
                 self._reset_pca,
-                pp,
-                "euler_zyx",
+                g_pose_to_fabric_quat(pp, self.palm_grasp_frame_rot),
+                "quaternion",
                 fq.detach(),
                 fqd.detach(),
                 self._reset_obj_ids,
@@ -838,10 +849,12 @@ class GraspRightEnv(DirectRLEnv):
                 self.grasp_adr.get_param("fabric_damping", "gain")
             )
 
+        # palm_pose_targets 는 G 규약 euler(ey≈0 중심, 특이점 없음)로 유지하고,
+        # fabric 에는 quaternion 으로 넘긴다 — 최종 행렬은 euler 로 표현 불가(ey=±90).
         self.open_tesollo_fabric.set_features(
             self.hand_pca_targets,
-            self.palm_pose_targets,
-            "euler_zyx",
+            g_pose_to_fabric_quat(self.palm_pose_targets, self.palm_grasp_frame_rot),
+            "quaternion",
             self.fabric_q.detach(),
             self.fabric_qd.detach(),
             self.object_ids,
@@ -1203,9 +1216,14 @@ class GraspRightEnv(DirectRLEnv):
         ).norm(p=2, dim=-1).clamp(max=float(self.cfg.finger_curl_dist_max))
         finger_curl_reg = _curl_w * finger_curl_dist ** 2
 
-        # 5) palm orientation: 손바닥 법선(palm 로컬 +X, grasp_v1 규약)이 palm→물체
-        #    방향과 정렬되도록. DEXTRAH 4항엔 손목 방향 제약이 없어 손바닥이 임의(천장)
-        #    방향으로 수렴하던 것을 side-approach 자세로 유도.
+        # palm_align: 진단 로깅 전용 (reward 아님).
+        #
+        # palm_orient reward(weight 1.0, sharp 3.0)는 제거했다. DEXTRAH 원본에 없는
+        # 우리 추가분이었고, 거리 무관항이라 손이 물체에서 27cm 떨어져 있어도 0.877 을
+        # 준다 → lstm_test3 에서 정책이 접근을 포기하고 정렬 보상만 먹는 orientation
+        # hacking 의 직접 동력이었다(in_success 0.000, hand_to_object 0.066).
+        # 도입 목적("손바닥이 천장 향하는 것 차단")은 G 규약 palm 경계(ex 중심 ±45°)가
+        # 구조적으로 보장하므로 중복이다.
         palm_quat = self.robot.data.body_quat_w[:, self.palm_body_index]   # (N,4) wxyz
         palm_x_local = torch.zeros_like(self.palm_center_pos)
         palm_x_local[:, 0] = 1.0
@@ -1213,13 +1231,10 @@ class GraspRightEnv(DirectRLEnv):
         palm_to_obj = self.object_pos - self.palm_center_pos
         palm_to_obj = palm_to_obj / (palm_to_obj.norm(dim=-1, keepdim=True) + 1e-8)
         palm_align = (palm_normal * palm_to_obj).sum(dim=-1)               # [-1, 1]
-        palm_orient_reward = float(self.cfg.palm_orient_weight) * torch.exp(
-            float(self.cfg.palm_orient_sharpness) * (palm_align - 1.0)
-        )
 
         total = (
             hand_to_object_reward + object_to_goal_reward + finger_curl_reg
-            + lift_reward + palm_orient_reward
+            + lift_reward
         )
 
         # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
@@ -1253,7 +1268,6 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/object_to_goal"] = object_to_goal_reward.mean()
         self.extras["reward/finger_curl_reg"] = finger_curl_reg.mean()
         self.extras["reward/lift"] = lift_reward.mean()
-        self.extras["reward/palm_orient"] = palm_orient_reward.mean()
         self.extras["palm_align"] = palm_align.mean()
         self.extras["in_success_region"] = self.in_success_region.float().mean()
         # 접근 자세 분기 검증용: top-down 으로 배정된 env 비율 (ADR 회전이 커지면 상승)
@@ -1630,16 +1644,22 @@ class GraspRightEnv(DirectRLEnv):
                 self.object_idx[env_ids], pose_id
             ) + noise
 
-            _ex = torch.where(
-                pose_id == 1,
-                torch.full((n,), math.radians(PREGRASP_EULER_EX_TOPDOWN_DEG), device=self.device),
-                torch.full((n,), math.radians(PREGRASP_EULER_EX_DEG), device=self.device),
+            # pregrasp 회전 = G 규약 euler (pose 별 상수). P 규약 하드코드 금지 —
+            # 가짜 top-down(손바닥이 옆을 봄)이 여기서 났다.
+            _g_top = to_torch(
+                [math.radians(v) for v in PREGRASP_G_EULER_TOPDOWN], device=self.device
             )
+            _g_side = to_torch(
+                [math.radians(v) for v in PREGRASP_G_EULER_SIDE], device=self.device
+            )
+            _g_euler = torch.where(
+                (pose_id == 1).unsqueeze(-1),
+                _g_top.unsqueeze(0).expand(n, -1),
+                _g_side.unsqueeze(0).expand(n, -1),
+            )                                                        # (n,3)
             pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
             pregrasp_palm_pose[:, :3] = pregrasp_pos
-            pregrasp_palm_pose[:, 3] = math.radians(PREGRASP_EULER_EZ_DEG)
-            pregrasp_palm_pose[:, 4] = math.radians(0.0)
-            pregrasp_palm_pose[:, 5] = _ex
+            pregrasp_palm_pose[:, 3:6] = _g_euler
             pregrasp_palm_pose = torch.max(
                 torch.min(pregrasp_palm_pose, self.palm_maxs_env[env_ids]),
                 self.palm_mins_env[env_ids],
