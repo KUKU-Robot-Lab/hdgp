@@ -308,6 +308,27 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     lift_weight:              float = 5.0
     lift_sharpness:           float = 8.5
     finger_curl_reg_weight:   float = 0.0    # ADR 미사용 시 fallback (ADR은 -0.01→-0.005)
+
+    # -----------------------------------------------------------------------
+    # 접촉/force-closure reward (07.14 신설) — passive baseline 붕괴 + 파지 유도
+    #
+    # tesollo lstm_test11 실측: contact/tip 0.006(접근조차 안 함), 총보상의 ~100%가
+    # 무행동 수입(lift+o2g+h2o passive). DEXTRAH 4항엔 접촉 신호가 없어 "물체를
+    # 건드릴 이유"가 없다. 아래 3요소로 접촉→force closure→리프트를 순차 유도한다.
+    #
+    # (A) grasp_contact: 손끝이 실제 물체에 닿는가(force_matrix Cup-only 개수 기반).
+    #     rh56f1 에서 접촉 유도 확인됐으나 "접촉만 유지·리프트 0" 고착 함정도 확인 →
+    #     weight 낮게(0.3) + ADR 로 감쇠(부트스트랩 후 끔) + persist 비중 축소.
+    # (B) force_closure(opposition): 엄지 접촉력 방향 vs 4지 평균 접촉력 방향의 −cos.
+    #     마주보고 조이면 +. rh56f1 이 접촉해도 못 든 진짜 결측 요소(force closure).
+    #     grip_frac(양쪽 실접촉)으로 게이트해 hacking 차단. ← 리프트 주력.
+    # (C) lift_reward *= grip_frac: 안 잡으면 lift 보상 0 → passive("기다리기") 제거.
+    # -----------------------------------------------------------------------
+    grasp_contact_weight:        float = 0.3   # (A) ADR 로 0.3→0.0 감쇠(부트스트랩)
+    grasp_contact_persist_steps: int   = 15    # 연속 접촉 N step 이면 persist_frac=1
+    force_closure_weight:        float = 4.0   # (B) 리프트 주력. o2g(5.0) 급
+    force_closure_force_scale:   float = 3.0   # N. tanh(‖f‖/scale) grip 세기 정규화
+    lift_grip_gate_enable:       bool  = True  # (C) lift_reward *= grip_frac
     # palm orientation: DEXTRAH 4항엔 손목 방향 제약이 없어 손바닥이 임의(천장) 방향으로
     # 수렴. palm 법선(로컬 +X → world)이 palm→물체 방향과 정렬되도록 보조 shaping.
     # w·exp(s·(align−1)): align=1(완전 정렬)→w, align=−1(반대)→w·exp(−2s). weight는
@@ -483,6 +504,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         #   정책이 손을 펴고 물체에서 도망갔다(curl -0.367→-0.005 와 h2o 급락이 동시 발생).
             "object_to_goal_sharpness": (15.0, 20.0),   # 우리 exp(-s·err) 부호
             "lift_weight":              (5.0, 0.0),
+            # grasp_contact 부트스트랩 감쇠: 초기엔 접촉 유도(0.3), 파지 학습 후
+            # force_closure 가 주력이 되도록 끔(0.0). "접촉만 유지" 고착 함정 회피.
+            "grasp_contact_weight":     (0.3, 0.0),
         },
         # fabric cspace damping 강화 (DEXTRAH 10→20)
         "fabric_damping": {

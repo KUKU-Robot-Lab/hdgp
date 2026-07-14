@@ -110,9 +110,12 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION + NUM_ABDUCTION_ACTION  # 16
 #   + hand_vel_noisy 18 + object_goal 3 + actions 16 + fabric q/qd/qdd 81 = 190
 # ---------------------------------------------------------------------------
 NUM_HAND_POINTS = 6           # palm + 5 fingertips (DEXTRAH hand bodies)
-NUM_OBS_BASE        = 198     # onehot 제외 policy obs
-NUM_CRITIC_OBS_BASE = 252     # onehot 제외 critic obs
-NUM_STUDENT_OBS     = 190     # distillation student (onehot 무관 — 물체 정보 미관측)
+# fingertip 접촉력 15D(5tip × 3축, force_matrix_w Cup-only) 를 actor obs 에 추가.
+# 정책이 접촉을 "보고" force closure 를 조율하게 함(실물 RH56F1/Tesollo FT 센서 대응).
+# critic 은 privileged 로 distal/middle 접촉력 norm 10D 도 추가.
+NUM_OBS_BASE        = 213     # 198 + 15 (fingertip contact force xyz)
+NUM_CRITIC_OBS_BASE = 277     # 252 + 15 (tip xyz) + 10 (distal/middle norm)
+NUM_STUDENT_OBS     = 205     # distillation student (190 + 15 접촉력; onehot 무관)
 # 실제 차원은 env_cfg 에서 + len(active_object_names) 로 확정
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3

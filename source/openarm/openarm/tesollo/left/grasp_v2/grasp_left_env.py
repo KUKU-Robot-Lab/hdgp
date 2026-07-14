@@ -417,6 +417,8 @@ class GraspLeftEnv(DirectRLEnv):
         self.contact_force_raw     = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)
         self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
         self.num_contacts_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # grasp_contact persistence: 연속 접촉(임의 손끝) step 수 (reset 시 0)
+        self.contact_persist_buf   = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.warm_contact_stable_steps_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.lift_wait_match_hold_steps_buf = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
@@ -1115,7 +1117,11 @@ class GraspLeftEnv(DirectRLEnv):
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
             self.fabric_qdd,                 # 27
-        ], dim=-1)   # 193 + N_obj
+            # fingertip 접촉력 15D(5tip × xyz, force_matrix Cup-only). 정책이 접촉을
+            # "보고" force closure 를 조율하게 한다(실물 FT 센서 대응). CONTACT_FORCE_MAX
+            # 로 정규화 — 원시 N 값은 스케일이 커 obs 통계를 교란.
+            (self.contact_force_xyz_raw / CONTACT_FORCE_MAX).reshape(self.num_envs, -1),  # 15
+        ], dim=-1)   # 208 + N_obj
 
         if actor_obs.shape[1] != self.cfg.observation_space:
             raise RuntimeError(
@@ -1153,7 +1159,11 @@ class GraspLeftEnv(DirectRLEnv):
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
             self.fabric_qdd,                 # 27
-        ], dim=-1)   # 247 + N_obj
+            # privileged 접촉: tip xyz 15 + distal/middle norm 10 (Cup-only force_matrix)
+            (self.contact_force_xyz_raw / CONTACT_FORCE_MAX).reshape(self.num_envs, -1),  # 15
+            self.distal_contact_force_raw / CONTACT_FORCE_MAX,   # 5
+            self.middle_contact_force_raw / CONTACT_FORCE_MAX,   # 5
+        ], dim=-1)   # 272 + N_obj
 
         if critic_obs.shape[1] != self.cfg.state_space:
             raise RuntimeError(
@@ -1201,7 +1211,9 @@ class GraspLeftEnv(DirectRLEnv):
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
             self.fabric_qdd,                 # 27
-        ], dim=-1)   # 189
+            # 접촉력 15D: 실물 student 도 FT 센서로 얻는 값이라 privileged 아님 → 유지.
+            (self.contact_force_xyz_raw / CONTACT_FORCE_MAX).reshape(self.num_envs, -1),  # 15
+        ], dim=-1)   # 204
 
         if student_obs.shape[1] != self.cfg.num_student_observations:
             raise RuntimeError(
@@ -1243,10 +1255,22 @@ class GraspLeftEnv(DirectRLEnv):
         )
 
         # 3) lift: goal 높이 절대거리 (ADR로 5→0 감쇠 — 후반은 object_to_goal 이 담당)
+        #    grip_frac 게이트(cfg.lift_grip_gate_enable): 물체를 안 잡으면 lift 보상 0.
+        #    DEXTRAH 원본 lift 는 "물체가 올라가면" 무조건 보상이라, 정책이 손을 안 쓰고
+        #    물체가 저절로 오르길 기다리는 passive baseline 이 부분최적이 됐다(리프트 0).
+        #    grip_frac(임의 마디 실접촉 손가락 비율)을 곱해 "잡아야 lift 신호"로 만든다.
         object_vertical_err = (self.object_goal[:, 2] - self.object_pos[:, 2]).abs()
         lift_reward = _lift_w * torch.exp(
             -float(self.cfg.lift_sharpness) * object_vertical_err
         )
+        num_grip_fingers = (
+            self.binary_contact_buf
+            | self.middle_binary_contact_buf
+            | self.distal_binary_contact_buf
+        ).sum(dim=-1)
+        grip_frac = (num_grip_fingers.float() / NUM_FINGERTIPS).clamp(0.0, 1.0)
+        if bool(self.cfg.lift_grip_gate_enable):
+            lift_reward = lift_reward * grip_frac
 
         # 4) finger_curl_reg (DEXTRAH: -0.01 → -0.005)
         #
@@ -1284,9 +1308,52 @@ class GraspLeftEnv(DirectRLEnv):
         palm_to_obj = palm_to_obj / (palm_to_obj.norm(dim=-1, keepdim=True) + 1e-8)
         palm_align = (palm_normal * palm_to_obj).sum(dim=-1)               # [-1, 1]
 
+        # 5) grasp_contact (부트스트랩): 손끝 실접촉 유도 (force_matrix Cup-only 개수).
+        #    DEXTRAH 4항엔 접촉 신호가 없어 정책이 물체를 건드릴 이유가 없다(passive).
+        #    ADR 로 0.3→0.0 감쇠(파지 학습 후 끔). persist 비중 축소(0.40→0.20)로
+        #    rh56f1 의 "접촉만 유지·리프트 0" 고착 함정을 완화(reward-audit REVISE).
+        tip_frac = (self.num_contacts_buf.float() / NUM_FINGERTIPS).clamp(0.0, 1.0)
+        full_tip = (self.num_contacts_buf >= NUM_FINGERTIPS).float()
+        _has_contact = self.num_contacts_buf > 0
+        self.contact_persist_buf = torch.where(
+            _has_contact,
+            self.contact_persist_buf + 1,
+            torch.zeros_like(self.contact_persist_buf),
+        )
+        persist_frac = (
+            self.contact_persist_buf.float()
+            / max(int(self.cfg.grasp_contact_persist_steps), 1)
+        ).clamp(0.0, 1.0)
+        grasp_quality = 0.45 * tip_frac + 0.35 * full_tip + 0.20 * persist_frac
+        _gc_w = (
+            self._adr("reward_weights", "grasp_contact_weight")
+            if self.grasp_adr is not None else float(self.cfg.grasp_contact_weight)
+        )
+        grasp_contact_reward = _gc_w * grasp_quality
+
+        # 6) force_closure(opposition) ← 리프트 주력.
+        #    접촉 반력(force_matrix_w)은 물체가 손끝을 "미는" 방향이다. 엄지와 4지가
+        #    물체를 양쪽에서 마주 조이면 두 반력 벡터가 대략 반대(−cos>0) → force closure.
+        #    rh56f1 이 접촉(tip 1.88)해도 못 든 진짜 결측이 이 대향 조임이다. 힘 크기(tanh)
+        #    를 곱하고 엄지·4지 실접촉 AND 게이트로 hacking(한쪽만/빈손) 차단.
+        _f = self.contact_force_xyz_raw                       # (N,5,3) Cup-only 접촉력
+        _f_thumb = _f[:, 0]                                   # (N,3)
+        _f_others = _f[:, 1:].mean(dim=1)                     # (N,3) 4지 평균
+        _scale = float(self.cfg.force_closure_force_scale)
+        _t_norm = _f_thumb.norm(dim=-1)
+        _o_norm = _f_others.norm(dim=-1)
+        _cos = (_f_thumb * _f_others).sum(dim=-1) / (_t_norm * _o_norm + 1e-6)
+        opposition = (-_cos).clamp(min=0.0)                  # 마주볼 때만(0~1)
+        grip_strength = torch.tanh(_t_norm / _scale) * torch.tanh(_o_norm / _scale)
+        _thumb_c = self.binary_contact_buf[:, 0]
+        _others_c = self.binary_contact_buf[:, 1:].any(dim=-1)
+        fc_gate = (_thumb_c & _others_c).float()
+        opposition_quality = fc_gate * opposition * grip_strength
+        force_closure_reward = float(self.cfg.force_closure_weight) * opposition_quality
+
         total = (
             hand_to_object_reward + object_to_goal_reward + finger_curl_reg
-            + lift_reward
+            + lift_reward + grasp_contact_reward + force_closure_reward
         )
 
         # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
@@ -1320,6 +1387,13 @@ class GraspLeftEnv(DirectRLEnv):
         self.extras["reward/object_to_goal"] = object_to_goal_reward.mean()
         self.extras["reward/finger_curl_reg"] = finger_curl_reg.mean()
         self.extras["reward/lift"] = lift_reward.mean()
+        self.extras["reward/grasp_contact"] = grasp_contact_reward.mean()
+        self.extras["reward/force_closure"] = force_closure_reward.mean()
+        # opposition: 게이트 통과(양쪽 접촉) env 에서의 평균 대향도. force closure 학습 진단.
+        self.extras["contact/opposition"] = (
+            (opposition * fc_gate).sum() / fc_gate.sum().clamp(min=1.0)
+        )
+        self.extras["contact/fc_gate_frac"] = fc_gate.mean()
         self.extras["palm_align"] = palm_align.mean()
         self.extras["in_success_region"] = self.in_success_region.float().mean()
         # 접근 자세 분기 검증용: top-down 으로 배정된 env 비율 (ADR 회전이 커지면 상승)
@@ -1875,6 +1949,7 @@ class GraspLeftEnv(DirectRLEnv):
         self.success_flag[env_ids] = False
         self.transfer_entry_grasp_success_buf[env_ids] = False
         self.finger_close_buf[env_ids] = 0.0
+        self.contact_persist_buf[env_ids] = 0
         # abduction 은 중립(HAND_APPROACH_POSE 값)에서 시작.
         self.abduction_targets[env_ids] = self.abduction_neutral
 
