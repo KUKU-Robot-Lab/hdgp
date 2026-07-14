@@ -561,7 +561,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Table",
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=[0.5725, 0.003, 0.2],
+            # x: 0.5725 → 0.4725 (렌더 확인 07.14: 테이블이 로봇에서 10cm 멀어
+            # 접근 시 손가락이 테이블 상면에 걸리고 종료. tesollo 가 이미 한 -0.1
+            # 교정을 rh56f1 은 못 받아 옛 값이 남아있었음).
+            pos=[0.4725, 0.003, 0.2],
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
