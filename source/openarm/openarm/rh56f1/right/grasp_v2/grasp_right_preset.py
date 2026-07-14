@@ -233,6 +233,20 @@ PREGRASP_SIDE_Z = -0.15
 PREGRASP_SIDE_CLEARANCE = 0.03
 PREGRASP_R_AJ7_BIAS_TOPDOWN = 0.6
 
+# ---------------------------------------------------------------------------
+# palm 절대 pose 박스 위치 재정렬 (07.14, DEXTRAH 원본 재확인)
+# ---------------------------------------------------------------------------
+# DEXTRAH 는 robot_start_joint_pos 가 고정 상수라 reset 자세 == action=0 자세(둘 다
+# 같은 홈 포지션) — 이 문제 자체가 없다. 우리는 tesollo 에서 물려받은 범용 박스
+# 중심(0.425,-0.165,0.425)을 그대로 썼는데, 실제 pregrasp reset 위치와 크게
+# 어긋나 있었다(probe 실측: side 20cm·topdown 8~9cm 차이). settle 종료 직후
+# 미학습 정책(출력≈0)이 잘 계산된 pregrasp 를 버리고 박스 중심으로 끌려가
+# 17.9cm→24.7cm 로 더 멀어지는 것을 6 step 만에 확인(매 에피소드 반복).
+# 박스 중심을 실측 reset 위치로 재정렬 — 폭은 그대로 유지(안전 여유 보존).
+# z 는 두 pose 모두 이동 시 바닥 안전마진(0.20)을 위반해 미이동.
+PALM_POS_CENTER_SHIFT_SIDE    = [-0.1985, -0.0725, 0.0]  # side(cup) reset 위치 기준
+PALM_POS_CENTER_SHIFT_TOPDOWN = [-0.0828,  0.0820, 0.0]  # topdown(152종) reset 위치 기준
+
 # side 접근을 유지할 물체 (그 외 전부 top-down). cup 은 내용물을 흘리면 안 되므로
 # 위에서 집으면 안 된다 — 옆면을 감싸 잡는다(grasp_v1 방식, tesollo와 동일).
 SIDE_APPROACH_OBJECT_NAMES = ("cup",)

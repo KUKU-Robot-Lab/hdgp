@@ -107,6 +107,8 @@ from .grasp_right_preset import (
     PREGRASP_SIDE_Z,
     PREGRASP_SIDE_CLEARANCE,
     PREGRASP_R_AJ7_BIAS_TOPDOWN,
+    PALM_POS_CENTER_SHIFT_SIDE,
+    PALM_POS_CENTER_SHIFT_TOPDOWN,
 )
 from .finger_action_utils import (
     compute_grasp_finger_targets,
@@ -215,6 +217,15 @@ class GraspRightEnv(DirectRLEnv):
         self.palm_maxs_by_pose = torch.stack([self.palm_maxs.clone(), self.palm_maxs.clone()])
         self.palm_mins_by_pose[1, 5] = _ex_top - _mpa
         self.palm_maxs_by_pose[1, 5] = _ex_top + _mpa
+        # 박스 위치 재정렬 (07.14, DEXTRAH 재확인): action=0(박스 중심)이 pregrasp
+        # reset 위치와 어긋나 있어 settle 종료 직후 미학습 정책이 잘 계산된 pregrasp
+        # 를 버리고 박스 중심으로 끌려가는 문제 수정(폭 유지, 실측 위치로 중심 이동).
+        _shift_side = to_torch(PALM_POS_CENTER_SHIFT_SIDE, device=self.device)
+        _shift_top  = to_torch(PALM_POS_CENTER_SHIFT_TOPDOWN, device=self.device)
+        self.palm_mins_by_pose[0, :3] += _shift_side
+        self.palm_maxs_by_pose[0, :3] += _shift_side
+        self.palm_mins_by_pose[1, :3] += _shift_top
+        self.palm_maxs_by_pose[1, :3] += _shift_top
         # per-env 경계 버퍼 (reset 에서 물체 높이에 따라 채움). 기본 = side.
         self.palm_pose_id  = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.palm_mins_env = self.palm_mins_by_pose[0].unsqueeze(0).repeat(self.num_envs, 1)
