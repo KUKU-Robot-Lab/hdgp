@@ -154,25 +154,61 @@ def trial(dx: float, a1: float, all_fingers: bool, dz: float = 0.10):
 
 
 print("=" * 90)
-print("palm 높이(dz) × x offset(dx) 2D 스윕 — %s" % args.task)
-print("  현행 basis. PC1=+0.5 로 폐쇄. 리프트 cm.")
-print("  실측 pregrasp 는 dz=+0.106 — 아래 표에서 그 높이가 최적인지 본다.")
+print("palm 높이(dz) × 손 폐쇄방식 — %s" % args.task)
+print("  현행 basis. dx=0 과 -0.08 두 지점.")
+print("  PC1only = act[6]만,  ALL5 = act[6:11] 전부 (probe_close_hand 가 +17.6cm 낸 방식)")
 print("=" * 90)
 
 set_synergy(BASIS0, ANCHOR0, MINS0, MAXS0)
-DZS = (0.04, 0.06, 0.08, 0.10, 0.12)
-DXS = (0.00, -0.04, -0.08, -0.12)
 
-print("\n  %-8s %s" % ("dx \\ dz", "  ".join("%12s" % ("%.2f" % z) for z in DZS)))
-for dx in DXS:
-    row = "  %-8.2f" % dx
-    for dz in DZS:
-        g, lf = trial(dx, 0.5, False, dz)
-        mark = "*" if lf > 3.0 else " "
-        row += "  %6.1f(g%.1f)%s" % (lf, g, mark)
-    print(row)
 
-print("\n  * = 리프트 3cm 초과.  실측 pregrasp = (dx≈0, dz≈0.106)")
+def trial5(dx, a, dz, all5):
+    """all5=True 면 시너지 5축 전부, False 면 PC1만."""
+    env.reset()
+    zero = torch.zeros(n, env.cfg.num_actions, device=D)
+    for _ in range(int(env.cfg.settle_steps) + 2):
+        env.step(zero)
+    obj0 = env.object_pos.clone()
+    tgt = torch.zeros(n, 6, device=D)
+    tgt[:, 0] = obj0[:, 0] + dx
+    tgt[:, 1] = obj0[:, 1]
+    tgt[:, 2] = obj0[:, 2] + dz
+    tgt[:, 5] = math.pi
+    tgt = torch.max(torch.min(tgt, env.palm_maxs_env), env.palm_mins_env)
+    lo, hi = env.palm_mins_env, env.palm_maxs_env
+    act = torch.zeros(n, env.cfg.num_actions, device=D)
+    act[:, :6] = (2.0 * (tgt - lo) / (hi - lo + 1e-9) - 1.0).clamp(-1.0, 1.0)
+    act[:, 6:11] = -1.0
+    for _ in range(90):
+        env.step(act)
+    if all5:
+        act[:, 6:11] = a
+    else:
+        act[:, 6] = a
+    for _ in range(120):
+        env.step(act)
+    g = (env.binary_contact_buf | env.middle_binary_contact_buf
+         | env.distal_binary_contact_buf).sum(dim=-1).float().mean()
+    tu = tgt.clone()
+    tu[:, 2] = torch.clamp(tgt[:, 2] + 0.20, max=env.palm_maxs_env[:, 2])
+    act[:, :6] = (2.0 * (tu - lo) / (hi - lo + 1e-9) - 1.0).clamp(-1.0, 1.0)
+    for _ in range(120):
+        env.step(act)
+    return g, (env.object_pos[:, 2] - obj0[:, 2]).mean() * 100
+
+
+for dx in (0.00, -0.08):
+    print("\n[dx = %+.2f]" % dx)
+    print("  %-10s %s" % ("dz", "  ".join("%16s" % m for m in ("PC1only a=+1", "ALL5 a=+1"))))
+    for dz in (0.02, 0.04, 0.06, 0.08, 0.10):
+        row = "  %-10.2f" % dz
+        for all5 in (False, True):
+            g, lf = trial5(dx, 1.0, dz, all5)
+            mark = "*" if lf > 3.0 else " "
+            row += "  %9.1fcm(g%.1f)%s" % (lf, g, mark)
+        print(row)
+
+print("\n  * = 리프트 3cm 초과.  probe_close_hand(초반)는 dz=0.04·ALL5 에서 +17.6cm 를 냈다.")
 
 _OUT.close()
 env.close()
