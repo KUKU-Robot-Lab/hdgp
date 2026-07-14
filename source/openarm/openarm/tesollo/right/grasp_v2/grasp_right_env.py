@@ -425,9 +425,11 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         self.distal_contact_force_raw  = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, device=self.device)
+        self.distal_contact_force_xyz_raw = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, 3, device=self.device)
         self.distal_binary_contact_buf = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, dtype=torch.bool, device=self.device)
 
         self.middle_contact_force_raw  = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, device=self.device)
+        self.middle_contact_force_xyz_raw = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, 3, device=self.device)
         self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
@@ -772,11 +774,15 @@ class GraspRightEnv(DirectRLEnv):
         self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
         self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
 
-        per_distal = _obj_force(self._distal_sensors).norm(dim=-1)   # (N, 5)
+        distal_xyz = _obj_force(self._distal_sensors)                # (N, 5, 3)
+        per_distal = distal_xyz.norm(dim=-1)                         # (N, 5)
+        self.distal_contact_force_xyz_raw.copy_(distal_xyz)
         self.distal_contact_force_raw.copy_(per_distal)
         self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
 
-        per_middle = _obj_force(self._middle_sensors).norm(dim=-1)   # (N, 5)
+        middle_xyz = _obj_force(self._middle_sensors)                # (N, 5, 3)
+        per_middle = middle_xyz.norm(dim=-1)                         # (N, 5)
+        self.middle_contact_force_xyz_raw.copy_(middle_xyz)
         self.middle_contact_force_raw.copy_(per_middle)
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
 
@@ -1332,11 +1338,20 @@ class GraspRightEnv(DirectRLEnv):
         grasp_contact_reward = _gc_w * grasp_quality
 
         # 6) force_closure(opposition) ← 리프트 주력.
-        #    접촉 반력(force_matrix_w)은 물체가 손끝을 "미는" 방향이다. 엄지와 4지가
+        #    접촉 반력(force_matrix_w)은 물체가 손가락을 "미는" 방향이다. 엄지와 4지가
         #    물체를 양쪽에서 마주 조이면 두 반력 벡터가 대략 반대(−cos>0) → force closure.
         #    rh56f1 이 접촉(tip 1.88)해도 못 든 진짜 결측이 이 대향 조임이다. 힘 크기(tanh)
         #    를 곱하고 엄지·4지 실접촉 AND 게이트로 hacking(한쪽만/빈손) 차단.
-        _f = self.contact_force_xyz_raw                       # (N,5,3) Cup-only 접촉력
+        #
+        #    tip+distal+middle 합산 벡터(fc1 실측 반영): tesollo 긴 손가락의 감싸기는
+        #    tip 이 아닌 중간 마디로 조인다 — fc1 에서 middle 0.46~0.82 상승에도 tip 0.10
+        #    정체 → tip-only 게이트 fc_gate_frac 0.0005 로 force_closure 질식. 손가락별
+        #    총 반력(3마디 합)과 any-segment 게이트(lift grip_frac 과 동일 기준)로 교정.
+        _f = (
+            self.contact_force_xyz_raw
+            + self.distal_contact_force_xyz_raw
+            + self.middle_contact_force_xyz_raw
+        )                                                     # (N,5,3) 손가락별 총 반력
         _f_thumb = _f[:, 0]                                   # (N,3)
         _f_others = _f[:, 1:].mean(dim=1)                     # (N,3) 4지 평균
         _scale = float(self.cfg.force_closure_force_scale)
@@ -1345,8 +1360,13 @@ class GraspRightEnv(DirectRLEnv):
         _cos = (_f_thumb * _f_others).sum(dim=-1) / (_t_norm * _o_norm + 1e-6)
         opposition = (-_cos).clamp(min=0.0)                  # 마주볼 때만(0~1)
         grip_strength = torch.tanh(_t_norm / _scale) * torch.tanh(_o_norm / _scale)
-        _thumb_c = self.binary_contact_buf[:, 0]
-        _others_c = self.binary_contact_buf[:, 1:].any(dim=-1)
+        _any_c = (
+            self.binary_contact_buf
+            | self.middle_binary_contact_buf
+            | self.distal_binary_contact_buf
+        )                                                     # (N,5) 임의 마디 접촉
+        _thumb_c = _any_c[:, 0]
+        _others_c = _any_c[:, 1:].any(dim=-1)
         fc_gate = (_thumb_c & _others_c).float()
         opposition_quality = fc_gate * opposition * grip_strength
         force_closure_reward = float(self.cfg.force_closure_weight) * opposition_quality
