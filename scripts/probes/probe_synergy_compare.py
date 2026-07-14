@@ -108,7 +108,7 @@ MODES = [
 ]
 
 
-def trial(dx: float, a1: float, all_fingers: bool):
+def trial(dx: float, a1: float, all_fingers: bool, dz: float = 0.10):
     """palm 을 물체 위 (dx, 0, +0.10) 에 top-down 으로 두고 → 손 폐쇄 → 20cm 상승."""
     env.reset()
     zero = torch.zeros(n, env.cfg.num_actions, device=D)
@@ -120,7 +120,7 @@ def trial(dx: float, a1: float, all_fingers: bool):
     tgt = torch.zeros(n, 6, device=D)
     tgt[:, 0] = obj0[:, 0] + dx
     tgt[:, 1] = obj0[:, 1]
-    tgt[:, 2] = obj0[:, 2] + 0.10
+    tgt[:, 2] = obj0[:, 2] + dz
     tgt[:, 5] = math.pi
     tgt = torch.max(torch.min(tgt, env.palm_maxs_env), env.palm_mins_env)
 
@@ -154,29 +154,25 @@ def trial(dx: float, a1: float, all_fingers: bool):
 
 
 print("=" * 90)
-print("손가락 협응 3종 비교 — %s" % args.task)
-print("  palm 을 물체 위 (dx, 0, +0.10) 에 top-down 으로 두고 폐쇄 → 20cm 상승")
-print("  A/B 는 PC1(주축)만 스윕, C 는 5손가락 동일 계수. 리프트 cm.")
+print("palm 높이(dz) × x offset(dx) 2D 스윕 — %s" % args.task)
+print("  현행 basis. PC1=+0.5 로 폐쇄. 리프트 cm.")
+print("  실측 pregrasp 는 dz=+0.106 — 아래 표에서 그 높이가 최적인지 본다.")
 print("=" * 90)
 
-DXS = (0.00, -0.08)
-ACTS = (-1.0, -0.5, 0.0, +0.5, +1.0)
+set_synergy(BASIS0, ANCHOR0, MINS0, MAXS0)
+DZS = (0.04, 0.06, 0.08, 0.10, 0.12)
+DXS = (0.00, -0.04, -0.08, -0.12)
 
-for label, ba, an, mn, mx in MODES:
-    set_synergy(ba, an, mn, mx)
-    is_lerp = label.startswith("C")
-    print("\n[%s]" % label)
-    print("  %-8s %s" % ("dx", "  ".join("%14s" % ("a=%+.1f" % a) for a in ACTS)))
-    for dx in DXS:
-        row = "  %-8.2f" % dx
-        for a in ACTS:
-            g, lf = trial(dx, a, is_lerp)
-            mark = "*" if lf > 3.0 else " "
-            row += "  %6.1fcm(g%.1f)%s" % (lf, g, mark)
-        print(row)
+print("\n  %-8s %s" % ("dx \\ dz", "  ".join("%12s" % ("%.2f" % z) for z in DZS)))
+for dx in DXS:
+    row = "  %-8.2f" % dx
+    for dz in DZS:
+        g, lf = trial(dx, 0.5, False, dz)
+        mark = "*" if lf > 3.0 else " "
+        row += "  %6.1f(g%.1f)%s" % (lf, g, mark)
+    print(row)
 
-print("\n  * = 리프트 3cm 초과(물체가 실제로 들림)")
-print("  A 가 전부 3cm 미만이고 B 또는 C 가 뜨면, 협응 방식 교체가 답이다.")
+print("\n  * = 리프트 3cm 초과.  실측 pregrasp = (dx≈0, dz≈0.106)")
 
 _OUT.close()
 env.close()
