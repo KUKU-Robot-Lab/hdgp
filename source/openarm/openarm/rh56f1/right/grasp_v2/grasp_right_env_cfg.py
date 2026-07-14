@@ -298,12 +298,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # -----------------------------------------------------------------------
     # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
-    # goal = DEXTRAH식 고정 절대점 (spawn 중심 xy, z = 안착(~0.24)+0.21).
-    # success = |obj-goal| < tol. tol 0.10 이 물체별 안착 높이 편차(수 cm)를 흡수.
+    # success = |obj-goal| < tol. tol 0.10 은 DEXTRAH 원본과 동일(object_goal_tol=0.1).
     # object_to_goal_sharpness·lift_weight·finger_curl_reg 는 ADR 스케줄이 우선
     # (enable_adr=True 시 adr_custom_cfg.reward_weights 로 대체).
-    # -----------------------------------------------------------------------
-    object_goal_pos:          tuple = (0.27, -0.10, 0.45)
+    #
+    # goal 위치 (07.14, DEXTRAH 재확인 — 사용자 질문 "먼 물체도 성공하는데 왜 우린
+    # 못하나"): 구 goal(0.27,-0.10,0.45)은 spawn(0.27,-0.10,0.297)과 x/y 가 완전히
+    # 같고 z 만 15cm 위라 "가만히 있어도" lift+o2g 로 총 reward 최대치의 11.4%를
+    # 받았다(실측 reward/lift 0.87~0.99·object_to_goal 0.22~0.24). DEXTRAH 원본은
+    # goal(-0.5,0,0.75)이 spawn(-0.55,0.1,~0.3)과 x/y 도 다르고 z 도 45cm 이상 떨어져
+    # 있어 방치 시 총점의 ~1.1%만 받는다(같은 수식·같은 sharpness 로 역산). 우리
+    # workspace box(topdown 중심 재정렬 후 z 상한 0.65)가 DEXTRAH 만큼 크지 않아
+    # 동일 절대거리(46cm) 는 못 맞추지만, x/y 도 이동시키고 z 를 상한 여유 두고
+    # 최대로 올려 passive 비중을 낮췄다. dry-run 실측(방치 시): lift+o2g 합계
+    # 1.14→0.258(최대 10 중 11.4%→2.6%, 약 4.4배 감소). topdown/side 박스 양쪽
+    # 모두 안(margin 확인), out-of-reach 경계(x 0.13~0.72, y -0.60~0.25) 안.
+    object_goal_pos:          tuple = (0.37, -0.25, 0.60)
     object_goal_tol:          float = 0.10
     hand_to_object_weight:    float = 1.0
     hand_to_object_sharpness: float = 10.0
