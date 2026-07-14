@@ -99,6 +99,18 @@ for k in range(5):
     dist = d_tips[:, k, :].norm(dim=-1).mean()
     print("  %-8s (%+.4f, %+.4f, %+.4f)   %8.4f" % (FING[k], v[0], v[1], v[2], dist))
 
+# ---- pregrasp 목표 vs 실제: fabric IK 가 지시한 곳으로 갔는가 ----
+# reset 이 저장해 둔 목표(pregrasp_palm_pose_buf)와 실제 palm 위치를 직접 비교한다.
+# 링크 구조·G 변환이 정상이어도 IK 가 목표에 못 가면 출발점이 어긋난다.
+tgt = env.pregrasp_palm_pose_buf[:, :3]           # (n,3) reset 이 지시한 palm 위치
+err = palm - tgt
+print("\n[fabric IK 추종 오차]  목표(pregrasp_palm_pose) → 실제 palm")
+print("  목표   = (%+.4f, %+.4f, %+.4f)" % (*tgt.mean(dim=0),))
+print("  실제   = (%+.4f, %+.4f, %+.4f)" % (*palm.mean(dim=0),))
+print("  오차   = (%+.4f, %+.4f, %+.4f)   |err| = %.4f  (max %.4f)"
+      % (*err.mean(dim=0), err.norm(dim=-1).mean(), err.norm(dim=-1).max()))
+print("  → |err| 이 크면 IK 가 지시한 자리로 못 간 것이다(수렴 실패 또는 도달 불가).")
+
 print("\n[요약 — 좌우 비교용 한 줄]")
 _dp = (d_palm * flip).mean(dim=0)
 _mind = d_tips.norm(dim=-1).min(dim=1).values.mean()
