@@ -368,8 +368,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 밀면 물체에 닿거나 포화된 관절은 멈추고 나머지만 계속 감긴다(grasp_v1 방식, 98% 실증).
     finger_control_mode: str = "per_finger"
 
-    # contact/grip_near 판정 거리 — 접촉 센서가 물체/테이블을 구분 못 하므로
-    # "손끝이 물체에서 이 거리 안"일 때만 물체 접촉으로 센다(로깅 전용, reward 무관).
+    # contact sensor 필터 대상 — Cup prim 하위의 실제 rigid body.
+    # probe_contact_filter 실측: /World/envs/env_0/Cup 은 Xform 이고 RigidBodyAPI 는
+    # baseLink 에 있다. 이 경로로 필터를 걸면 force_matrix_w 가 (N,1,1,3) 으로 나온다
+    # — "GPU 미지원" 이라던 종전 주석은 오진이었다.
+    cup_rigid_body_name: str = "baseLink"
+
+    # contact/grip_near 판정 거리 — 필터 복원 후에도 교차검증용으로 남긴다
+    # (센서가 물체 접촉만 세는지 거리로 재확인). 로깅 전용, reward 무관.
     contact_near_dist: float = 0.06
 
     settle_steps: int = 25  # 다물체 drop-settle: episode 초기 N step 손가락 폐쇄 억제 → 물체 낙하 안착

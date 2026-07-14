@@ -489,39 +489,43 @@ class GraspRightEnv(DirectRLEnv):
         self.scene.articulations["robot"] = self.robot
         self.scene.rigid_objects["table"] = self.table
 
-        # Actor: fingertip 개별 ContactSensor.
-        # grasp_v2: MultiAsset(replicate_physics=False)에서 filter_prim_paths_expr(force_matrix_w)는
-        # GPU 미지원 → contact 0. filter 제거하고 net_forces_w(접촉 여부, 물체 구분 없음, GPU 지원)로
-        # 접촉을 판정한다. synergy 게이트는 "닿았나"만 필요하므로 물체 구분 불필요.
-        self._tip_sensors: list[ContactSensor] = []
-        for link_name in self.cfg.right_tip_contact_links:
-            sensor = ContactSensor(ContactSensorCfg(
-                prim_path=f"/World/envs/env_.*/Robot/{link_name}",
+        # Actor: 손가락별 개별 ContactSensor + **물체 전용 필터**.
+        #
+        # 이전 주석은 "MultiAsset(replicate_physics=False)에서 filter_prim_paths_expr는
+        # GPU 미지원 → contact 0" 이라며 필터를 지우고 net_forces_w 를 읽었다. **오진이었다.**
+        # probe_contact_filter 실측 — 필터를 걸면 force_matrix_w 가 (N,1,1,3) 으로 정상
+        # 출력된다. 필터가 적용되는 것은 force_matrix_w 뿐이고 net_forces_w 는 필터와
+        # 무관하게 **모든** 접촉을 합산한다(IsaacLab 문서). 즉 필터를 걸어놓고 net_forces_w
+        # 를 읽었거나(당시), 필터를 아예 지운 채(현행) 물체·테이블을 구분 못 하고 있었다.
+        #
+        # 그 대가로 "contact/grip 3.2 인데 object_height 0" 같은 모순된 로그가 나왔다 —
+        # 손가락이 물체가 아니라 테이블을 짚고 있었던 것이다.
+        _CUP_FILTER = [f"/World/envs/env_.*/Cup/{self.cfg.cup_rigid_body_name}"]
+
+        def _mk_sensor(prim: str) -> ContactSensor:
+            return ContactSensor(ContactSensorCfg(
+                prim_path=prim,
+                filter_prim_paths_expr=_CUP_FILTER,
                 history_length=1,
                 track_air_time=False,
             ))
+
+        self._tip_sensors: list[ContactSensor] = []
+        for link_name in self.cfg.right_tip_contact_links:
+            sensor = _mk_sensor(f"/World/envs/env_.*/Robot/{link_name}")
             self._tip_sensors.append(sensor)
             self.scene.sensors[f"tip_sensor_{link_name}"] = sensor
 
-        # distal/middle 도 손가락별 개별 센서. net_forces_w[:, 0, :] 로 읽는다.
         _SENSOR_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
         self._distal_sensors: list[ContactSensor] = []
         for i, fn in enumerate(_SENSOR_FINGERS):
-            sensor = ContactSensor(ContactSensorCfg(
-                prim_path=f"/World/envs/env_.*/Robot/r_hl_{fn}_4",
-                history_length=1,
-                track_air_time=False,
-            ))
+            sensor = _mk_sensor(f"/World/envs/env_.*/Robot/r_hl_{fn}_4")
             self._distal_sensors.append(sensor)
             self.scene.sensors[f"distal_sensor_{i + 1}"] = sensor
 
         self._middle_sensors: list[ContactSensor] = []
         for i, fn in enumerate(_SENSOR_FINGERS):
-            sensor = ContactSensor(ContactSensorCfg(
-                prim_path=f"/World/envs/env_.*/Robot/r_hl_{fn}_3",
-                history_length=1,
-                track_air_time=False,
-            ))
+            sensor = _mk_sensor(f"/World/envs/env_.*/Robot/r_hl_{fn}_3")
             self._middle_sensors.append(sensor)
             self.scene.sensors[f"middle_sensor_{i + 1}"] = sensor
 
@@ -750,11 +754,15 @@ class GraspRightEnv(DirectRLEnv):
     # 접촉력 업데이트
     # ------------------------------------------------------------------
     def _update_contact_forces(self) -> None:
-        # Actor: fingertip 개별 센서. net_forces_w[:, 0, :] = 링크 net contact force
-        # (filter 없음 → 물체 구분 없이 접촉 여부만; MultiAsset/GPU 호환).
-        tip_xyz = torch.stack([
-            s.data.net_forces_w[:, 0, :] for s in self._tip_sensors
-        ], dim=1)   # (N, 5, 3)
+        # **물체 접촉만** 센다 — force_matrix_w 는 filter_prim_paths_expr(Cup) 에 대한
+        # 접촉력이다. net_forces_w 는 필터와 무관하게 테이블·자기 손까지 전부 합산하므로
+        # 쓰지 않는다(IsaacLab 문서). 필터 1개 → shape (N, 1, 1, 3).
+        def _obj_force(sensors: list[ContactSensor]) -> torch.Tensor:
+            return torch.stack([
+                s.data.force_matrix_w[:, 0, 0, :] for s in sensors
+            ], dim=1)                                        # (N, 5, 3)
+
+        tip_xyz = _obj_force(self._tip_sensors)
         tip_norms = tip_xyz.norm(dim=-1)   # (N, 5)
 
         self.contact_force_xyz_raw.copy_(tip_xyz)
@@ -762,17 +770,11 @@ class GraspRightEnv(DirectRLEnv):
         self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
         self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
 
-        # Critic: distal (손가락별 개별 센서 net_forces_w[:, 0, :])
-        per_distal = torch.stack([
-            s.data.net_forces_w[:, 0, :] for s in self._distal_sensors
-        ], dim=1).norm(dim=-1)   # (N, 5)
+        per_distal = _obj_force(self._distal_sensors).norm(dim=-1)   # (N, 5)
         self.distal_contact_force_raw.copy_(per_distal)
         self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
 
-        # Critic: middle (손가락별 개별 센서 net_forces_w[:, 0, :])
-        per_middle = torch.stack([
-            s.data.net_forces_w[:, 0, :] for s in self._middle_sensors
-        ], dim=1).norm(dim=-1)   # (N, 5)
+        per_middle = _obj_force(self._middle_sensors).norm(dim=-1)   # (N, 5)
         self.middle_contact_force_raw.copy_(per_middle)
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
 
