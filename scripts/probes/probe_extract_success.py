@@ -58,14 +58,24 @@ def print(*a, **kw):  # noqa: A001
 env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
 agent_cfg = load_cfg_from_registry(args.task, "rl_games_cfg_entry_point")
 
+# play.py 와 동일 절차 — hydra 가 MultiAssetSpawnerCfg 를 dict 로 직렬화해 깨뜨리므로 복원
+if str(args.task).startswith("open-tesol_r_grasp_v2"):
+    from openarm.tesollo.right.grasp_v2.grasp_right_env_cfg import _GRASP_OBJECT_SPAWN
+    env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
+elif str(args.task).startswith("open-tesol_l_grasp_v2"):
+    from openarm.tesollo.left.grasp_v2.grasp_left_env_cfg import _GRASP_OBJECT_SPAWN
+    env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
+
+rl_device = agent_cfg["params"]["config"]["device"]
+clip_obs = agent_cfg["params"]["env"].get("clip_observations", float("inf"))
+clip_act = agent_cfg["params"]["env"].get("clip_actions", float("inf"))
+obs_groups = agent_cfg["params"]["env"].get("obs_groups")
+concate = agent_cfg["params"]["env"].get("concate_obs_groups", True)
+
 env = gym.make(args.task, cfg=env_cfg)
 raw = env.unwrapped
+env = RlGamesVecEnvWrapper(env, rl_device, clip_obs, clip_act, obs_groups, concate)
 
-clip_obs = agent_cfg["params"]["env"].get("clip_observations", math_inf := float("inf"))
-clip_act = agent_cfg["params"]["env"].get("clip_actions", math_inf)
-env = RlGamesVecEnvWrapper(env, args.device, clip_obs, clip_act)
-
-import gym as _gym  # noqa: E402
 from rl_games.common import env_configurations, vecenv  # noqa: E402
 
 vecenv.register("IsaacRlgWrapper", lambda cfg_name, nenv, **kw: env)
@@ -85,28 +95,25 @@ n = raw.num_envs
 D = raw.device
 FING = ("thumb", "index", "middle", "ring", "pinky")
 
-def _as_obs(o):
-    """rl_games wrapper 가 dict/tuple 로 줄 수 있다 — 텐서로 normalize."""
-    if isinstance(o, tuple):
-        o = o[0]
-    if isinstance(o, dict):
-        o = o.get("obs", next(iter(o.values())))
-    return o
+obs = env.reset()
+if isinstance(obs, dict):
+    obs = obs["obs"]
+_ = agent.get_batch_size(obs, 1)
 
-
-obs = _as_obs(env.reset())
 
 # 성공 순간 누적 버퍼
 acc = {k: [] for k in ("d_palm", "normal", "finger", "hand_q", "act", "d_tips", "obj_h")}
-is_rnn = getattr(agent, "is_rnn", False)
+is_rnn = agent.is_rnn
 if is_rnn:
     agent.init_rnn()
 
 for t in range(args.steps):
     with torch.no_grad():
-        a = agent.get_action(obs, is_deterministic=True)
-    _step = env.step(a)
-    obs, dones = _as_obs(_step[0]), _step[2]
+        obs = agent.obs_to_torch(obs)
+        a = agent.get_action(obs, is_deterministic=agent.is_deterministic)
+    obs, _r, dones, _info = env.step(a)
+    if isinstance(obs, dict):
+        obs = obs["obs"]
 
     oh = raw.object_pos[:, 2] - raw.object_init_pos[:, 2]        # 안착 대비 상승
     hit = oh > args.lift_thresh
@@ -123,8 +130,10 @@ for t in range(args.steps):
         acc["d_tips"].append((raw.fingertip_pos[idx] - obj.unsqueeze(1)).cpu())
         acc["obj_h"].append(oh[idx].cpu())
 
-    if is_rnn and dones.any():
-        agent.reset()
+    if is_rnn and agent.states is not None and len(dones) > 0:
+        _d = dones.nonzero(as_tuple=False)
+        for st in agent.states:
+            st[:, _d, :] = st[:, _d, :] * 0.0
 
 N = sum(x.shape[0] for x in acc["obj_h"]) if acc["obj_h"] else 0
 print("=" * 88)
