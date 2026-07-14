@@ -1,0 +1,42 @@
+# RIGHT world 에서 왼팔 영역 반발체(left_arm_body sphere, left_target_cup box)만 제거.
+# 가설: 이 둘이 top-down 접근 경로(팔을 물체 위 z 0.4~0.7 로 들어올림)를 막는다.
+# side 접근은 팔을 낮게 옆으로 뻗어 무관했으나 top-down 은 정면으로 걸린다.
+# probe 전용 — 효과가 확인되면 정식 world 로 승격한다.
+# World mesh for OpenArm + Teosllo right arm
+# Same as open_tesollo_boxes.yaml, but without the table obstacle.
+# Keep PhysX table collisions active in the sim while removing FABRICS table repulsion.
+
+left_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 .03 1.1
+  transform: 0.45 -.45 .75 0. 0. 0. 1.
+
+right_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 .03 1.1
+  transform: 0.45 .60 .75 0. 0. 0. 1.
+
+back_wall:
+  env_index: all
+  type: box
+  scaling: .03 1.1 1.1
+  transform: -0.4 0.075 .75 0. 0. 0. 1.
+
+top_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 1.1 .03
+  transform: 0.45 0.08 1.30 0. 0. 0. 1.
+
+
+# Robot torso column: covers world_body_sphere1/2/3 positions (z=0.15/0.45/0.70, r=0.18/0.15/0.12)
+# World mesh box supplements body_repulsion spheres via WorldMeshesModel SDF path.
+# Robot base at env-local (0,0,0) → torso column along Z axis.
+robot_torso:
+  env_index: all
+  type: box
+  scaling: 0.10 0.10 1.0
+  transform: 0. 0. 0.5 0. 0. 0. 1.
+
