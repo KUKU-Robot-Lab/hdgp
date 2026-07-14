@@ -109,6 +109,7 @@ from .grasp_right_preset import (
 from .finger_action_utils import (
     compute_grasp_finger_targets,
     compute_lift_finger_targets,
+    compute_per_finger_progress_targets,
     compute_synergy_progress_targets,
 )
 from .tesollo_hand_synergy import (
@@ -808,7 +809,7 @@ class GraspRightEnv(DirectRLEnv):
         t = tmag * _rand_dir()
         self.object_applied_force = torch.where(new_trig, f, self.object_applied_force)
         self.object_applied_torque = torch.where(new_trig, t, self.object_applied_torque)
-        # 파지 전(grip<1) env 는 wrench 0
+        # 게이트(위 apply) 밖의 env 는 wrench 0 — 손이 물체 반경 밖이면 인가하지 않는다.
         self.object_applied_force = torch.where(
             apply, self.object_applied_force, torch.zeros_like(self.object_applied_force)
         )
@@ -897,18 +898,18 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # ---- 시너지(eigengrasp) + 관절별 접촉-게이트 적응 폐쇄 ----
-        # 5D action = DEXTRAH PCA 계수 (Allegro 리타겟, tesollo_hand_synergy):
-        #   PC1=전지 감김(파워) PC2=말단 PC3=파지형 재편 PC4=엄지 PC5=미세.
-        # 손가락 커플링이 action 공간에 내장 — per-finger 독립 제어의 "2지 최소해"가
-        # 표현 불가(action 전부가 다지 자세 매니폴드 위). 관절별 목표 진행도 p*로
-        # 변환 후 rate-limit 추종(양방향 — DEXTRAH PCA 타깃과 동일하게 재개방 가능).
-        p_star = compute_synergy_progress_targets(
-            finger_action,
-            self.hand_synergy_basis, self.hand_synergy_anchor,
-            self.hand_synergy_mins, self.hand_synergy_maxs,
-            self.hand_open_pose, self.hand_full_grip_pose,
-        )                                                            # (N,20) ∈ [0,1]
+        # ---- 손 제어: per-finger(grasp_v1) 또는 시너지(DEXTRAH PCA) ----
+        # cfg.finger_control_mode 로 고른다. 기본은 per_finger — PCA basis 가
+        # 20관절을 커플링해 형상 적응이 불가능했다(cfg 주석에 근거 상술).
+        if self.cfg.finger_control_mode == "per_finger":
+            p_star = compute_per_finger_progress_targets(finger_action)   # (N,20) ∈ [0,1]
+        else:
+            p_star = compute_synergy_progress_targets(
+                finger_action,
+                self.hand_synergy_basis, self.hand_synergy_anchor,
+                self.hand_synergy_mins, self.hand_synergy_maxs,
+                self.hand_open_pose, self.hand_full_grip_pose,
+            )                                                            # (N,20) ∈ [0,1]
         # 다물체 drop-settle: episode 초기 settle_steps 동안 손가락 폐쇄 억제 →
         # 물체(DEXTRAH식 고정 높이 spawn)가 낙하해 테이블에 안착(grasp_v1 정지물체 전제).
         # (in_settle 은 위 palm 동결 게이트와 공유)
@@ -1331,10 +1332,48 @@ class GraspRightEnv(DirectRLEnv):
             self.object_pos[:, 2] - self.object_init_pos[:, 2]
         ).mean()
         # contact: 감싸기 노드 그룹별 접촉 손가락 수 (0~5). palm 센서 없음 → 제외.
+        #
+        # ⚠️ 이 센서들은 **물체와 테이블을 구분하지 못한다**. MultiAsset(replicate_physics
+        # =False)에서 filter_prim_paths_expr(force_matrix_w)가 GPU 미지원이라 net_forces_w
+        # (무엇에 닿든 1)로 대체돼 있다(_setup_sensors 주석 참조). 손을 테이블에 짚기만
+        # 해도 grip 이 오른다 — 실제로 그 때문에 "grip 3.2 인데 object_height 0" 이라는
+        # 모순된 로그를 오래 들여다봤다. 아래 contact/grip_near 를 함께 보라.
         self.extras["contact/tip"]    = self.num_contacts_buf.float().mean()
         self.extras["contact/middle"] = self.middle_binary_contact_buf.float().sum(dim=-1).mean()
         self.extras["contact/distal"] = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
         self.extras["contact/grip"]   = num_grip_fingers.float().mean()
+
+        # ---- 진짜 물체 접촉 / 실거리 (센서의 물체-테이블 혼동을 우회) ----
+        # 손끝↔물체 거리로 게이트한다: 접촉 센서가 켜졌고 **그 손끝이 물체 근처**면
+        # 물체 접촉으로 본다. 테이블만 짚은 경우는 거리가 멀어 걸러진다.
+        _tip_d = (self.fingertip_pos - self.object_pos.unsqueeze(1)).norm(dim=-1)   # (N,5)
+        _near = _tip_d < float(self.cfg.contact_near_dist)
+        self.extras["contact/grip_near"] = (
+            self.binary_contact_buf & _near
+        ).float().sum(dim=-1).mean()
+        # h2o 보상은 exp(-10·d) 라 꼬리에서 실거리가 안 보인다 — 원거리도 그대로 로깅한다.
+        self.extras["dist/tip_min"]  = _tip_d.min(dim=1).values.mean()
+        self.extras["dist/tip_max"]  = _tip_d.max(dim=1).values.mean()
+        self.extras["dist/palm_obj"] = (
+            self.palm_center_pos - self.object_pos
+        ).norm(dim=-1).mean()
+        # 물체를 건드리기는 하는가 (안착점 대비 수평 변위) — 접근 성공의 직접 증거
+        self.extras["engage/obj_disp"] = (
+            self.object_pos[:, :2] - self.object_init_pos[:, :2]
+        ).norm(dim=-1).mean()
+
+        # ---- palm 자세: 정책이 top-down 을 버리고 side 로 도망치는가 ----
+        # LEFT 실측 — 성공 순간 법선이 top-down(0,0,-1)에서 54° 기울어져 있었고 palm
+        # 회전 action 3축이 전부 경계(-0.99)에 붙어 있었다. 그 탈출을 로그로 잡는다.
+        _tilt = torch.acos(
+            (-palm_normal[:, 2]).clamp(-1.0, 1.0)
+        ) * (180.0 / math.pi)                                    # 0°=순수 top-down
+        self.extras["palm/topdown_deg"] = _tilt.mean()
+        # action 포화율: 정책이 action 공간 구석에 몰렸는지 (제약이 병목이라는 신호)
+        _a = self.actions
+        self.extras["sat/palm_rot"]  = (_a[:, 3:6].abs() > 0.95).float().mean()
+        self.extras["sat/palm_pos"]  = (_a[:, 0:3].abs() > 0.95).float().mean()
+        self.extras["sat/finger"]    = (_a[:, 6:11].abs() > 0.95).float().mean()
         # abduction 실제 관절 목표 (rad) — 정책이 이 축을 실제로 쓰는지 확인용.
         # 전부 0 근처면 자유화가 무의미한 것이고, 부호가 범위 반대면 미러 버그다.
         for _i, _nm in enumerate(("thumb_1", "thumb_2", "index_1", "pinky_1", "pinky_2")):
@@ -1397,6 +1436,16 @@ class GraspRightEnv(DirectRLEnv):
         # 컵 전용 upright 가정이 부당. 종료 = 물체 이탈/낙하 + timeout.
         terminated = out_x | out_y | fallen | robot_diverged
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
+
+        # 종료 원인 분해 — 이게 없어서 "에피소드가 199 스텝에 끝난다"까지만 알고
+        # 넷 중 무엇 때문인지 몰랐다. 종료된 env 중 각 원인의 비율로 기록한다
+        # (순간 평균은 대부분 0 이라 무의미하다).
+        _nt = terminated.sum().clamp(min=1).float()
+        self.extras["term/out_x"]          = out_x.float().sum() / _nt
+        self.extras["term/out_y"]          = out_y.float().sum() / _nt
+        self.extras["term/fallen"]         = fallen.float().sum() / _nt
+        self.extras["term/robot_diverged"] = robot_diverged.float().sum() / _nt
+        self.extras["term/rate"]           = terminated.float().mean()
 
         # distillation: 성공을 success_timeout 스텝 유지하면 조기 종료.
         # teacher 학습에선 이 경로를 타지 않는다(에피소드 길이 = reward 스케줄 전제).

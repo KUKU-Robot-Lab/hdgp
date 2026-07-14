@@ -45,6 +45,22 @@ def compute_lift_finger_targets(
     )
 
 
+def compute_per_finger_progress_targets(finger_action: torch.Tensor) -> torch.Tensor:
+    """per-finger 손 제어(grasp_v1 방식) → 관절별 폐쇄 진행도 p* (N,20)∈[0,1].
+
+    손가락 5개가 완전히 독립이다. PCA 와 달리 커플링이 없으므로 "pinky 만 빼고 닫기"
+    같은 형상 적응형 파지가 action 공간에서 표현 가능하다.
+
+    envelope 은 물리가 만든다 — 목표를 FULL_GRIP 까지 밀어붙이면 물체에 닿았거나
+    관절 한계에 포화된 관절은 거기서 멈추고, 막히지 않은 관절만 계속 감긴다.
+    (env 의 접촉 게이트 gate20 이 이를 명시적으로 보조한다.)
+
+    시너지 경로(compute_synergy_progress_targets)와 출력 규격이 같아 교체 가능하다.
+    """
+    a01 = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)      # (N,5) ∈ [0,1]
+    return a01.repeat_interleave(4, dim=1)                   # (N,20) 손가락 내 4관절 공통
+
+
 def compute_synergy_progress_targets(
     finger_action: torch.Tensor,
     basis: torch.Tensor,
