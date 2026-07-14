@@ -60,74 +60,58 @@ env = gym.make(args.task, cfg=env_cfg).unwrapped
 env.reset()
 
 print("=" * 88)
-print("contact filter 진단 — %s" % args.task)
+print("contact filter 확증 — 테이블만 짚으면 contact 가 0 인가")
+print("  force_matrix_w 는 필터 대상(Cup)과의 접촉력만 담는다. 테이블 접촉은 0 이어야 한다.")
 print("=" * 88)
 
-# ---- 1) Cup prim 트리에서 실제 rigid body 를 찾는다 ----
-stage = omni.usd.get_context().get_stage()
-print("\n[1] Cup prim 트리 (env_0) — RigidBodyAPI 를 가진 prim 이 필터 대상이어야 한다")
-root = stage.GetPrimAtPath("/World/envs/env_0/Cup")
-print("  /World/envs/env_0/Cup   valid=%s" % root.IsValid())
-rigid_paths = []
-if root.IsValid():
-    def walk(prim, depth=0):
-        has_rb = prim.HasAPI(UsdPhysics.RigidBodyAPI)
-        has_col = prim.HasAPI(UsdPhysics.CollisionAPI)
-        mark = ""
-        if has_rb:
-            mark += "  ← RigidBodyAPI"
-            rigid_paths.append(str(prim.GetPath()))
-        if has_col:
-            mark += " +CollisionAPI"
-        print("    %s%s (%s)%s" % ("  " * depth, prim.GetName(), prim.GetTypeName(), mark))
-        if depth < 3:
-            for c in prim.GetChildren():
-                walk(c, depth + 1)
-    walk(root)
+import math
 
-print("\n  RigidBodyAPI 를 가진 경로:")
-for rp in rigid_paths:
-    print("    %s" % rp)
-if not rigid_paths:
-    print("    (없음 — Cup 자체가 rigid body 가 아니면 필터가 아무것도 못 찾는다)")
+n = env.num_envs
+D = env.device
 
-# ---- 2) 현행 센서: force_matrix_w 가 존재하나 ----
-print("\n[2] 현행 tip 센서 (필터 없음)")
-s0 = env._tip_sensors[0]
-print("  body_names      : %s" % (s0.body_names,))
-print("  net_forces_w    : %s" % (tuple(s0.data.net_forces_w.shape),))
-print("  force_matrix_w  : %s" % ("None" if s0.data.force_matrix_w is None
-                                  else tuple(s0.data.force_matrix_w.shape)))
-print("  → 필터를 안 걸었으니 force_matrix_w 가 None 인 것은 당연하다.")
 
-# ---- 3) 필터를 건 센서를 새로 만들어 본다 ----
-print("\n[3] 필터를 건 센서를 새로 생성 — force_matrix_w 가 값을 내는가")
-_cands = []
-if rigid_paths:
-    # env_0 경로를 env_.* 패턴으로 일반화
-    for rp in rigid_paths[:2]:
-        _cands.append(rp.replace("/World/envs/env_0/", "/World/envs/env_.*/"))
-_cands.append("/World/envs/env_.*/Cup")          # 현행 코드가 쓰던 경로 (대조군)
+def scene(dx, dy, dz, close):
+    """palm 을 물체 기준 (dx,dy,dz) 에 두고 손을 닫는다 → contact 를 잰다."""
+    env.reset()
+    zero = torch.zeros(n, env.cfg.num_actions, device=D)
+    for _ in range(int(env.cfg.settle_steps) + 2):
+        env.step(zero)
+    obj = env.object_pos.clone()
+    tgt = torch.zeros(n, 6, device=D)
+    tgt[:, 0] = obj[:, 0] + dx
+    tgt[:, 1] = obj[:, 1] + dy
+    tgt[:, 2] = obj[:, 2] + dz
+    tgt[:, 5] = math.pi
+    tgt = torch.max(torch.min(tgt, env.palm_maxs_env), env.palm_mins_env)
+    lo, hi = env.palm_mins_env, env.palm_maxs_env
+    act = torch.zeros(n, env.cfg.num_actions, device=D)
+    act[:, :6] = (2.0 * (tgt - lo) / (hi - lo + 1e-9) - 1.0).clamp(-1.0, 1.0)
+    act[:, 6:11] = -1.0
+    for _ in range(90):
+        env.step(act)
+    act[:, 6:11] = close
+    for _ in range(120):
+        env.step(act)
+    tip = env.num_contacts_buf.float().mean()
+    grip = (env.binary_contact_buf | env.middle_binary_contact_buf
+            | env.distal_binary_contact_buf).sum(dim=-1).float().mean()
+    tipd = (env.fingertip_pos - env.object_pos.unsqueeze(1)).norm(dim=-1).min(dim=1).values.mean()
+    return tip, grip, tipd
 
-_link = env.cfg.right_tip_contact_links[1]        # index_tip
-for cand in _cands:
-    try:
-        s = ContactSensor(ContactSensorCfg(
-            prim_path=f"/World/envs/env_.*/Robot/{_link}",
-            filter_prim_paths_expr=[cand],
-            history_length=1,
-            track_air_time=False,
-        ))
-        env.scene.sensors[f"_probe_{cand}"] = s
-        s._initialize_impl()
-        fm = s.data.force_matrix_w
-        print("  filter=%-46s force_matrix_w=%s"
-              % (cand, "None" if fm is None else tuple(fm.shape)))
-    except Exception as e:                        # noqa: BLE001
-        print("  filter=%-46s 실패: %s" % (cand, str(e)[:60]))
 
-print("\n  → force_matrix_w 가 (N,1,F,3) 형태로 나오면 필터는 동작한다.")
-print("     그렇다면 'GPU 미지원' 이라는 현행 주석은 오진이고, 경로가 틀렸던 것이다.")
+print("\n  %-42s %8s %8s %12s" % ("상황", "tip", "grip", "손끝~물체"))
+# (a) 물체에서 멀리 떨어져 테이블만 짚는다 — y 로 30cm 비켜서 바닥까지 내린다
+t, g, d = scene(0.0, -0.30 if "_r_" in args.task else 0.30, -0.02, 1.0)
+print("  %-42s %8.2f %8.2f %12.3f" % ("테이블만 짚음 (물체에서 30cm 비켜서)", t, g, d))
+# (b) 물체 위에서 손을 닫는다
+t, g, d = scene(-0.08, 0.0, 0.10, 1.0)
+print("  %-42s %8.2f %8.2f %12.3f" % ("물체 위에서 폐쇄", t, g, d))
+# (c) 손을 열어둔 채 물체 위
+t, g, d = scene(-0.08, 0.0, 0.10, -1.0)
+print("  %-42s %8.2f %8.2f %12.3f" % ("물체 위, 손 개방", t, g, d))
+
+print("\n  판정: (a) 가 0 이면 필터가 물체만 센다 = 확증.")
+print("        (a) 가 0 이 아니면 여전히 테이블을 세고 있다.")
 
 _OUT.close()
 env.close()
