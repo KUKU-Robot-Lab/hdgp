@@ -85,9 +85,16 @@ n = raw.num_envs
 D = raw.device
 FING = ("thumb", "index", "middle", "ring", "pinky")
 
-obs = env.reset()
-if isinstance(obs, tuple):
-    obs = obs[0]
+def _as_obs(o):
+    """rl_games wrapper 가 dict/tuple 로 줄 수 있다 — 텐서로 normalize."""
+    if isinstance(o, tuple):
+        o = o[0]
+    if isinstance(o, dict):
+        o = o.get("obs", next(iter(o.values())))
+    return o
+
+
+obs = _as_obs(env.reset())
 
 # 성공 순간 누적 버퍼
 acc = {k: [] for k in ("d_palm", "normal", "finger", "hand_q", "act", "d_tips", "obj_h")}
@@ -98,9 +105,8 @@ if is_rnn:
 for t in range(args.steps):
     with torch.no_grad():
         a = agent.get_action(obs, is_deterministic=True)
-    obs, _r, dones, _info = env.step(a)
-    if isinstance(obs, dict):
-        obs = obs["obs"] if "obs" in obs else obs
+    _step = env.step(a)
+    obs, dones = _as_obs(_step[0]), _step[2]
 
     oh = raw.object_pos[:, 2] - raw.object_init_pos[:, 2]        # 안착 대비 상승
     hit = oh > args.lift_thresh
