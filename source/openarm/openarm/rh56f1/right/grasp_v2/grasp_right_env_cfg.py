@@ -292,10 +292,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # credit assignment 가 무너졌다(d9~d15 "가만히 있기" 수렴의 근본원인 중 하나 —
     # tesollo 동일 병리 실증: curl 기준 수정 후에도 hand_to_object ep200 0.216 →
     # ep400 0.017 급락). DEXTRAH 원본은 절대 pose 라 "물체 위로 가라"가 1스텝 결정.
-    # rate limit 은 그대로 유지(아래) — 목표는 1스텝, 실제 이동은 부드럽게.
-    palm_rate_xyz_per_step:     float = 0.04   # m/step
-    palm_rate_rot_deg_per_step: float = 8.0    # deg/step
-
+    # 07.14: palm rate limit 도 제거(DEXTRAH 직접제어) — settle override 와 함께
+    # tesollo 계보 scaffolding 이 정책 탐색 자유도를 좁혀 object_height 정체시킨
+    # 원인 후보로 격리. DEXTRAH 는 t=0 부터 palm 절대 pose 를 매 스텝 그대로 지령.
     # -----------------------------------------------------------------------
     # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
     # success = |obj-goal| < tol. tol 0.10 은 DEXTRAH 원본과 동일(object_goal_tol=0.1).

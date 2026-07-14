@@ -87,15 +87,15 @@ def test_pregrasp_offset_is_clearance_based_not_fixed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4) palm action — 절대 pose (1aa9dcc 이식): anchor+delta 회귀 시 credit
-#    assignment 붕괴("가만히 있기" 국소최적) 재발.
+# 4) palm action — DEXTRAH 직접제어 절대 pose: 정책 출력을 매 스텝 palm workspace
+#    박스 절대 pose 로 그대로 지령. anchor+delta 회귀("가만히 있기" 국소최적) 금지,
+#    그리고 settle override·rate limit(tesollo 계보 scaffolding) 도 제거 —
+#    DEXTRAH 는 t=0 부터 palm 을 자유·절대 제어한다(object_height 정체 격리 검증).
 # ---------------------------------------------------------------------------
 def test_palm_action_is_absolute_pose_not_delta() -> None:
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
 
-    assert "palm_rate_xyz_per_step:     float = 0.04" in cfg
-    assert "palm_rate_rot_deg_per_step: float = 8.0" in cfg
     assert "palm_delta_xyz" not in cfg, "delta cfg 가 되살아났다"
     assert "palm_delta_rot_deg" not in cfg
 
@@ -104,9 +104,13 @@ def test_palm_action_is_absolute_pose_not_delta() -> None:
     )
     assert "self.delta_mins" not in env
     assert "self.delta_maxs" not in env
-    assert "self.palm_rate_limits" in env
-    # rate limit: 목표는 절대 pose, 실제 이동은 palm_pose_targets 를 rate 이내로.
-    assert "(palm_pose - self.palm_pose_targets).clamp(" in env
+    # DEXTRAH 직접제어: 정책 출력 → palm_pose_targets 로 곧바로 복사. rate limit
+    # clamp·settle 중 palm override 가 되살아나면 안 된다(scaffolding 회귀 차단).
+    assert "self.palm_rate_limits" not in env, "palm rate limit 이 되살아났다"
+    assert "(palm_pose - self.palm_pose_targets).clamp(" not in env, (
+        "palm rate clamp 회귀 — DEXTRAH 직접제어 위반"
+    )
+    assert "_palm_in_settle" not in env, "settle 중 palm override 회귀"
 
 
 # ---------------------------------------------------------------------------
