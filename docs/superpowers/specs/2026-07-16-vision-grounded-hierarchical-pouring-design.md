@@ -27,7 +27,8 @@ RGB-D + command
 
 - Do not move, rename, reorganize, or rewrite existing `hdgp` folders.
 - Do not change the observation, action, reset, checkpoint, or task-registration contracts of `grasp_v1` and `pour_v1`.
-- Add new packages and adapters around the existing tasks.
+- Add one independent `source/vlm` extension and reference existing OpenArm tasks through adapters.
+- Do not create a second `openarm` Python package under `source/vlm`; it would shadow or conflict with `source/openarm/openarm`.
 - Keep Qwen out of the low-level control loop.
 - Qwen may emit task metadata only; it must never emit joint commands, policy actions, contact truth, or precise control poses.
 - Use hard skill routing in v1. Do not blend raw actions from heterogeneous policies.
@@ -45,64 +46,42 @@ source/openarm/openarm/tesollo/right/grasp_v1/
 source/openarm/openarm/tesollo/right/pour_v1/
 ```
 
-Add the hierarchical package beside them:
+Add a separate, shallow extension. The conventional `source/<extension>/<python-package>` repetition keeps the import root unambiguous, so the runtime import is `vlm.pouring`:
 
 ```text
-source/openarm/openarm/tesollo/right/hierarchical_pouring/
-├── __init__.py
-├── task_grounding/
-│   ├── __init__.py
-│   ├── task_specification.py
-│   ├── task_schema.py
-│   └── qwen_vlm_client.py
-├── state_provider/
-│   ├── __init__.py
-│   ├── semantic_state.py
-│   ├── provider.py
-│   └── sim_state_provider.py
-├── high_level_rl/
-│   ├── __init__.py
-│   ├── actions.py
-│   ├── policy.py
-│   └── deterministic_policy.py
-├── skill_manager/
-│   ├── __init__.py
-│   ├── skill_manager.py
-│   ├── skill_registry.py
-│   ├── transition_guard.py
-│   └── readiness_estimator.py
-├── skills/
-│   ├── __init__.py
-│   ├── base_skill.py
-│   ├── approach/
-│   ├── pre_grasp_bridge/
-│   ├── grasp_lift/
-│   ├── pre_pour_bridge/
-│   ├── bimanual_pour/
-│   └── recovery/
-├── execution/
-│   ├── __init__.py
-│   ├── low_level_executor.py
-│   ├── fabric_ik_adapter.py
-│   ├── joint_pd_adapter.py
-│   └── safety_supervisor.py
-└── tests/
+source/vlm/
+├── config/
+│   └── extension.toml
+├── pyproject.toml
+├── setup.py
+└── vlm/
+    ├── __init__.py
+    └── pouring/
+        ├── __init__.py
+        ├── contracts.py
+        ├── task_grounding.py
+        ├── qwen_client.py
+        ├── qwen_server.py
+        ├── state_provider.py
+        ├── high_level_policy.py
+        ├── skill_manager.py
+        ├── skill_registry.py
+        ├── checkpoint_resolver.py
+        ├── transitions.py
+        ├── execution.py
+        ├── safety.py
+        ├── skills/
+        │   ├── __init__.py
+        │   ├── approach.py
+        │   ├── pre_grasp_bridge.py
+        │   ├── grasp_lift.py
+        │   ├── pre_pour_bridge.py
+        │   ├── bimanual_pour.py
+        │   └── recovery.py
+        └── tests/
 ```
 
-Add Qwen as a separate same-machine process:
-
-```text
-vlm_server/
-├── __init__.py
-├── app.py
-├── config.py
-├── qwen_backend.py
-├── schemas.py
-├── requirements.txt
-└── tests/
-```
-
-ROS 2 packages remain future additions under `robot_ws/`; they are not placed inside the Isaac Lab extension.
+The Qwen server runs as a separate process via `python -m vlm.pouring.qwen_server`, but its source stays in the same extension. ROS 2 packages remain future additions under `robot_ws/`; they are not placed inside the Isaac Lab extension.
 
 ## 4. Closed-Loop Architecture
 
@@ -221,8 +200,8 @@ status(semantic_state_batch)
 
 The registry maps generic skills to current implementations:
 
-- `GRASP_LIFT` → adapter around existing `tesollo/right/grasp_v1` checkpoint and observation contract.
-- `BIMANUAL_POUR` → adapter around existing `tesollo/right/pour_v1` checkpoint and observation contract.
+- `GRASP_LIFT` → adapter importing the existing `openarm.tesollo.right.grasp_v1` observation contract and loading its checkpoint from `log/rl_games/open-tesol/right/grasp-v1`.
+- `BIMANUAL_POUR` → adapter importing the existing `openarm.tesollo.right.pour_v1` observation contract and loading its checkpoint from `log/rl_games/open-tesol/right/pour-v1`.
 - `APPROACH` → rule-based task-space target generation through Fabric IK; no trained approach policy is claimed.
 - `PRE_GRASP_BRIDGE` → rule-based readiness alignment for the start distribution expected by `grasp_v1`.
 - `PRE_POUR_BRIDGE` → validation and selection through the existing grasp warm-state HDF5 schema and pour warm-state loader.
@@ -280,7 +259,33 @@ The bridge validates at least:
 
 The default source is `data/grasp_warm_tesollo.hdf5`. An in-memory bridge may be added only after the disk path passes integration tests.
 
-## 10. Qwen Server and Client
+## 10. Existing Policy and Checkpoint References
+
+The new extension does not copy policy classes, RL-Games configurations, checkpoints, or logged environment parameters. `SkillRegistry` imports the existing OpenArm modules, and `CheckpointResolver` locates runtime artifacts beneath the existing `hdgp/log/rl_games` tree.
+
+Resolution rules are deterministic:
+
+1. An explicit checkpoint path in runtime configuration has highest priority.
+2. Otherwise resolve the task-specific log root and run selector using the same naming convention as `scripts/reinforcement_learning/rl_games/play.py`.
+3. Use Isaac Lab's `get_checkpoint_path` to select the requested best or last checkpoint.
+4. Load the `params/agent.yaml` and `params/env.yaml` stored beside that checkpoint so inference matches training.
+5. Fail with the searched task, run selector, and directory when no unique checkpoint exists; never silently choose an unrelated run.
+
+Initial task references are:
+
+```text
+GRASP_LIFT:
+  task: open-tesol_r_grasp_v1-lstm
+  logs: log/rl_games/open-tesol/right/grasp-v1
+
+BIMANUAL_POUR:
+  task: open-tesol_r_pour_v1-lstm
+  logs: log/rl_games/open-tesol/right/pour-v1
+```
+
+The exact checkpoint file remains runtime configuration because training runs continue to be added under `hdgp/log`.
+
+## 11. Qwen Server and Client
 
 The same machine runs Qwen in a process separate from Isaac Sim. The default model is configurable and initially set to `Qwen/Qwen3-VL-4B-Instruct`.
 
@@ -299,7 +304,7 @@ The client uses bounded connect/read timeouts and never retries inside the contr
 
 Model loading is lazy so importing the server package does not allocate GPU memory. Unit tests use a fake generation backend and never download model weights.
 
-## 11. Safety and Error Handling
+## 12. Safety and Error Handling
 
 The safety supervisor has final veto authority over all skill outputs. V1 detects and reports:
 
@@ -315,7 +320,7 @@ The safety supervisor has final veto authority over all skill outputs. V1 detect
 
 Every transition records environment ID, previous skill, requested skill, accepted skill, reason, and step index. Failures are explicit; no implicit fallback policy or raw action blending is allowed.
 
-## 12. Testing Strategy
+## 13. Testing Strategy
 
 Development follows test-first implementation with at least 80% coverage for the new pure-Python packages.
 
@@ -333,6 +338,7 @@ Development follows test-first implementation with at least 80% coverage for the
 
 - Load the real `data/grasp_warm_tesollo.hdf5` through the existing `PourWarmStateBank` path.
 - Map registry aliases to existing `grasp_v1` and `pour_v1` adapters without modifying either task.
+- Resolve explicit and task-derived checkpoints from a temporary RL-Games log tree, including missing and ambiguous cases.
 - Exercise `command + image → fake Qwen backend → TaskSpecification → deterministic decision`.
 - Exercise manager routing with fake skill implementations across multiple environments.
 
@@ -345,24 +351,26 @@ Development follows test-first implementation with at least 80% coverage for the
 
 Actual Qwen inference is a manual smoke test because model weights and GPU availability are runtime resources. The smoke test must call `/health`, send a real image and command, and receive a valid `TaskSpecification`.
 
-## 13. Acceptance Criteria
+## 14. Acceptance Criteria
 
 The initial architecture is complete when:
 
 1. No existing `hdgp` task folder or contract has been moved, renamed, or reorganized.
-2. Existing grasp and pour contract tests still pass.
-3. The real grasp warm-state HDF5 loads through the existing pour loader.
-4. A validated Qwen response produces `TaskSpecification`, including `allowed_skills`.
-5. Qwen cannot express low-level actions through the accepted schema.
-6. The deterministic high-level policy emits one decision per environment.
-7. The manager hard-routes environments independently and logs every accepted or rejected transition.
-8. Approach and both bridges exist behind explicit interfaces; v1 approach uses rule-based Fabric IK.
-9. Existing grasp and pour policies are reached only through adapters that preserve their contracts.
-10. New unit and integration tests pass with at least 80% coverage.
-11. A real Qwen smoke command is documented and works when model weights and sufficient GPU memory are available.
-12. The implementation does not claim that high-level RL, learned approach, learned recovery, FoundationPose, ROS 2, or real-robot deployment has already been trained or validated.
+2. All new Python implementation is contained under `source/vlm/vlm/pouring` and imports as `vlm.pouring` without shadowing `openarm`.
+3. Existing grasp and pour contract tests still pass.
+4. The real grasp warm-state HDF5 loads through the existing pour loader.
+5. A validated Qwen response produces `TaskSpecification`, including `allowed_skills`.
+6. Qwen cannot express low-level actions through the accepted schema.
+7. The deterministic high-level policy emits one decision per environment.
+8. The manager hard-routes environments independently and logs every accepted or rejected transition.
+9. Approach and both bridges exist behind explicit interfaces; v1 approach uses rule-based Fabric IK.
+10. Existing grasp and pour policies and their logged parameters are referenced through adapters instead of copied.
+11. Checkpoint resolution is explicit or deterministic and never silently selects an unrelated run.
+12. New unit and integration tests pass with at least 80% coverage.
+13. A real Qwen smoke command is documented and works when model weights and sufficient GPU memory are available.
+14. The implementation does not claim that high-level RL, learned approach, learned recovery, FoundationPose, ROS 2, or real-robot deployment has already been trained or validated.
 
-## 14. Deferred Work
+## 15. Deferred Work
 
 - Train `RLHighLevelPolicy` while low-level policies are frozen.
 - Add transition residual policies after rule-based bridges are stable.
