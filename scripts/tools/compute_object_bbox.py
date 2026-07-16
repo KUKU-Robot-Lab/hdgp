@@ -72,11 +72,15 @@ def main() -> None:
             continue
         out[d.name] = list(_bbox_from_stl(stl))
 
-    # cup 은 visdex/primitives 어디에도 urdf 소스가 없다(별도 자산).
+    # cup / cup_big 은 visdex/primitives 어디에도 urdf 소스가 없다(별도 자산 — pour 실물컵).
     # cup_radius_approx=0.045(폭 9cm) 와 일치하는 cup_big_2.stl 을 쓴다.
+    # cup_big 은 visdex USD 로 이식돼 active set 에 들어가나 urdf/obj 가 없어 스캔에서 누락되므로
+    # 여기서 같은 STL 로 명시 산출한다(cup 과 동일 geometry).
     cup_stl = REPO / "assets/cup/cup_big_2.stl"
     if cup_stl.is_file():
-        out["cup"] = list(_bbox_from_stl(cup_stl))
+        _cup_bbox = list(_bbox_from_stl(cup_stl))
+        out["cup"] = _cup_bbox
+        out["cup_big"] = _cup_bbox
 
     OUT_JSON.write_text(json.dumps(out, indent=1, sort_keys=True), encoding="utf-8")
 
