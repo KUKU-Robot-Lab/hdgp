@@ -13,13 +13,67 @@
 현재 teacher를 distillation에 물릴 때 obs 차원 불일치로 깨진다.
 
 - **Phase 1 (선행, 현재 우선순위)**: 물체군 **불변(153 visdex)**. 현재 server teacher 완주 →
-  `distill.sh --teacher <last.pth>`로 distillation 실행 → 구조/파이프라인이 제대로 학습되는지 검증.
-  distillation 인프라는 이미 구축·정적검증 완료(30 pass). **본 spec의 코드 변경을 적용하지 않는다.**
-- **Phase 2 (본 spec, 후행)**: Phase 1 검증 통과 후, 아래 물체군 재구성(실패 제거 + cup upright)을
-  적용 → 새 teacher 재학습 → 새 distillation.
+  **비전 셋업(카메라 정면-사선 + depth) 적용** → `distill.sh --teacher <last.pth>`로 distillation 실행 →
+  구조/파이프라인이 제대로 학습되는지 검증. 비전 셋업은 teacher(상태 기반)와 무관해 물체군을 안 건드린다.
+  상세는 §A.
+- **Phase 2 (후행)**: Phase 1 검증 통과 후, 아래 물체군 재구성(실패 제거 + cup upright)을 적용 →
+  새 teacher 재학습 → 새 distillation. 상세는 §1~§7.
 
 > ⚠️ Phase 1이 끝나기 전에 §4의 물체군 변경을 grasp_v2 cfg에 적용하면 현재 teacher의 distillation이
 > 깨진다. server가 git pull로 코드를 받는 구조이므로, 학습 중 물체군 변경 커밋을 push하지 않는다.
+
+---
+
+## A. Phase 1 — distillation 비전 셋업 (카메라 정면-사선 + depth)
+
+> 현재 teacher(153 visdex, 상태 기반)로 vision student를 증류해 **구조/파이프라인이 제대로 학습되는지
+> 검증**하기 위한 셋업. teacher와 무관하므로 물체군을 건드리지 않는다. **학습 실행은 teacher 완료 후**
+> (현재 미완료) 사용자가 별도 수행 — 본 spec은 코드/설정 준비까지.
+
+### A.1 문제: top-down 접근에서 카메라 가림
+
+현재 카메라(월드 고정 3인칭)는 베이스 근처 높이 0.97m에서 **65° 하향**(over-the-shoulder).
+접근이 top-down으로 바뀌며 **위에서 내려오는 손·팔뚝이 접촉 직전 물체를 가린다** → 가장 중요한 순간에
+depth에서 물체가 사라진다.
+
+### A.2 카메라 재배치 (정면-사선)
+
+- 월드 고정이라 `CAMERA_POS`/`CAMERA_ROT`(preset, env 로컬 좌표) 2개만 변경.
+- 목표: **물체 앞쪽(+x, 물체 x=0.27 앞)에서 로봇 향해, 물체와 ≥0.3m(D435i 최소거리), 높이 ~0.4~0.55m,
+  약 30~45° 하향**. 물체 윗면·앞면 + 내려오는 손의 옆모습이 보여 마지막 순간까지 가림 최소.
+- DEXTRAH-G도 정면 3인칭 depth 뷰. 완전 수평(0°)은 윗면 depth 단서 손실·완전가림 위험 → 사선 채택.
+- **기하 문제라 눈 검증이 정답**: `place_camera.py`로 후보 pose 잡고 `preview_camera.py`로 top-down
+  동작 내내 가림 확인 후 확정. left는 y 부호 반전 미러(`grasp_left_preset.py`).
+
+### A.3 student modality: RGB → depth
+
+- 근거: depth가 sim2real 갭이 작다(RGB는 텍스처·조명 DR 의존, depth는 기하 기반). DEXTRAH 방식.
+- **이미 준비된 것**: env가 `"img"`=depth(1ch, 유효밴드 마스킹) 제공(`env.py:1185-1200`);
+  `DepthAug`+`depth_randomization_cfg`가 `img_aug_type=="depth"`에서 켜짐(`dagger.py:215`).
+- **변경 필요(네트워크 코드)**: 활성 인코더가 `MonoEncoder(resnet, use_depth=False 하드코딩)`으로 3ch RGB
+  전용(`a2c_mono_transformer.py:454,460`). ResNet은 1ch depth 불가. 방식:
+  - (권장) 주석 처리된 **DEXTRAH `CustomCNN` depth 경로 부활**(`num_channel=1`, `:278,304`).
+  - 대안: resnet 첫 conv 1ch 교체(pretrained 손실) / depth 3ch 타일링(특성 약화).
+- 설정: `img_aug_type="depth"`, `aug_depth=True`(기본), student가 obs `"img"` 소비.
+- **점검**: 인코더 하드코딩 `img_height=240`(`:452`)이 카메라 180과 어긋남 — resnet adaptive pool로
+  흡수되는지 구현 중 확인.
+
+### A.4 순서
+
+카메라 정면-사선 + depth 인코더를 **둘 다 먼저 적용**해 최종 구성으로 검증(사용자 결정). teacher 완료 후
+`distill.sh open-tesol_{r,l}_grasp_v2-distill <label> <teacher.pth>`로 실행.
+
+### A.5 테스트
+
+- `preview_camera.py` 시각 검증(가림 없음) — 실행형, 사용자 GPU.
+- depth 인코더 유닛: 1ch 입력 forward 통과, 출력 shape 정합.
+- `img_aug_type="depth"` 경로에서 `DepthAug` 적용·RgbAug 미적용 확인.
+
+### A.6 Phase 1 리스크
+
+- 카메라 pose는 렌더로만 확정 가능(GPU 필요) — 코드는 후보값 + preview 절차까지.
+- depth 인코더 교체가 student 수렴 특성을 바꿈 — 첫 검증에서 aux(object_pos 회귀) 손실 추세로 확인.
+- 좌우 미러 카메라 pose 동기화 필요.
 
 ---
 
