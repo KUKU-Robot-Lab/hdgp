@@ -126,10 +126,15 @@ def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":
 
 # env 별 물체를 env_id % N 로 결정적 배정(random_choice=False → proto[index % len]).
 # → per-object 로깅(object_idx = arange(num_envs) % N)과 균등 배정 보장. replicate_physics=False 필요.
-_GRASP_OBJECT_SPAWN = sim_utils.MultiAssetSpawnerCfg(
-    assets_cfg=[_primitive_usd_cfg(_n) for _n in _ACTIVE_OBJECT_NAMES],
-    random_choice=False,
-)
+def _grasp_object_spawn_for(names: "tuple[str, ...] | list[str]") -> "sim_utils.MultiAssetSpawnerCfg":
+    """주어진 물체 이름 목록으로 MultiAsset 스포너 생성 (distillation 실패물체 제외에 재사용)."""
+    return sim_utils.MultiAssetSpawnerCfg(
+        assets_cfg=[_primitive_usd_cfg(_n) for _n in names],
+        random_choice=False,
+    )
+
+
+_GRASP_OBJECT_SPAWN = _grasp_object_spawn_for(_ACTIVE_OBJECT_NAMES)
 
 
 @configclass
@@ -542,6 +547,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 활성 물체군(spawn 순서와 일치) — onehot·per-object 로깅용 이름. env_id % N 로 배정.
     # (물체 조건화는 DEXTRAH식 onehot 으로 전환 — 접근 B feature 는 obs 미사용)
     active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
+    # distillation 전용: 여기 나열한 물체는 스폰·배정에서 제외한다(teacher 완료 후 실패물체 주입).
+    # onehot 차원은 active_object_names(153) 를 그대로 유지 → teacher 체크포인트 호환.
+    # teacher 학습(distillation=False)은 이 필드를 무시한다. DISTILL cfg 에서 스포너를 kept 로 교체.
+    distill_excluded_object_names: tuple[str, ...] = ()
     object_spawn_xy_range: float = 0.06   # ADR 미사용 시 fallback (ADR은 0→0.06 커리큘럼)
 
     # -----------------------------------------------------------------------

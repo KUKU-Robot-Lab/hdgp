@@ -200,3 +200,27 @@ def compute_abduction_targets(
     꺼져 있으므로(enabled_self_collisions=False) 이 범위가 유일한 방어선이다.
     """
     return scale(abduction_action.clamp(-1.0, 1.0), limits_min, limits_max)
+
+
+def kept_object_names_and_indices(
+    names: list[str], excluded: tuple[str, ...]
+) -> tuple[list[str], list[int]]:
+    """distillation 실패물체 제외용: excluded 를 뺀 kept 이름 + 각 kept 의 원본 인덱스.
+
+    onehot 은 원본 names(153) 차원을 그대로 유지해야 teacher 체크포인트와 호환된다.
+    그래서 스폰·배정은 kept 로만 하되, object_idx 는 원본 슬롯 인덱스(orig)로 매핑해
+    teacher 가 학습한 onehot 슬롯이 그대로 나가게 한다. 스포너(env_id % len(kept))와
+    orig 는 같은 kept 순서를 공유하므로 스폰 물체와 onehot 슬롯이 일치한다.
+
+    excluded 에 names 에 없는 이름이 있으면 조용히 무시하지 않고 즉시 실패시킨다
+    (오타로 제외가 무력화되는 것을 막는다).
+    """
+    unknown = [n for n in excluded if n not in names]
+    if unknown:
+        raise KeyError(f"제외 목록에 활성 물체군에 없는 이름: {unknown}")
+    excluded_set = set(excluded)
+    kept = [n for n in names if n not in excluded_set]
+    if not kept:
+        raise ValueError("제외 후 남는 물체가 없다 — 제외 목록을 확인하라")
+    orig = [names.index(n) for n in kept]
+    return kept, orig

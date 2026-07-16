@@ -15,7 +15,8 @@
 import gymnasium as gym
 
 from . import agents
-from ..grasp_right_env_cfg import GraspRightEnvCfg
+from ..grasp_right_env_cfg import GraspRightEnvCfg, _grasp_object_spawn_for
+from ..grasp_right_utils import kept_object_names_and_indices
 
 
 class GraspRightEnvCfg_PLAY(GraspRightEnvCfg):
@@ -33,12 +34,24 @@ class GraspRightEnvCfg_DISTILL(GraspRightEnvCfg):
     붙어 GPU 메모리가 teacher 규모를 감당하지 못한다.
     """
 
+    # teacher 완료 후 실패물체 이름을 여기 주입한다(예: ("small_5_cyl", "small_8_cyl")).
+    # onehot 은 active_object_names(153) 유지 → teacher 체크포인트 호환. 빈 튜플이면 제외 없음.
+    DISTILL_EXCLUDED_OBJECT_NAMES: tuple[str, ...] = ()
+
     def __post_init__(self):
         self.distillation = True
         # DEXTRAH 증류 레시피: env.num_envs=256 (타일 렌더는 제곱수가 유리), aux_coeff=10.
         # aux(object_pos 회귀)를 크게 걸어야 인코더가 "물체가 어디 있나"를 먼저 배운다.
         self.scene.num_envs = 256
         self.aux_coeff = 10.0
+        # 실패물체 제외: onehot 은 153 유지, 스포너만 kept 로 교체(env 는 object_idx 를
+        # 원본 슬롯으로 remap). teacher 학습 env 는 이 경로를 타지 않는다(distillation=False).
+        self.distill_excluded_object_names = self.DISTILL_EXCLUDED_OBJECT_NAMES
+        if self.distill_excluded_object_names:
+            kept, _ = kept_object_names_and_indices(
+                list(self.active_object_names), self.distill_excluded_object_names
+            )
+            self.cup_cfg.spawn = _grasp_object_spawn_for(kept)
 
 
 gym.register(

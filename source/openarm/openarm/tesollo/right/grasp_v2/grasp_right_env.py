@@ -124,6 +124,7 @@ from .grasp_right_utils import (
     compute_palm_pose_id,
     compute_rotated_half_z,
     g_pose_to_fabric_quat,
+    kept_object_names_and_indices,
     scale,
     to_torch,
 )
@@ -323,9 +324,19 @@ class GraspRightEnv(DirectRLEnv):
         self.object_init_pos = torch.zeros(self.num_envs, 3, device=self.device)
         # per-object 로깅: MultiAsset(random_choice=False)는 env_id % N 로 물체 배정.
         self._object_names = list(self.cfg.active_object_names)
-        self.object_idx = (
-            torch.arange(self.num_envs, device=self.device) % len(self._object_names)
-        )
+        # distillation 실패물체 제외: onehot 은 153 유지, 배정만 kept 로 하되 object_idx 는
+        # 원본 슬롯 인덱스로 remap(스포너 kept 순서와 env_id % len(kept) 를 공유해 일치).
+        _excluded = getattr(self.cfg, "distill_excluded_object_names", ())
+        if getattr(self.cfg, "distillation", False) and _excluded:
+            _kept, _orig = kept_object_names_and_indices(self._object_names, _excluded)
+            _orig_t = to_torch(_orig, dtype=torch.long, device=self.device)
+            self.object_idx = _orig_t[
+                torch.arange(self.num_envs, device=self.device) % len(_kept)
+            ]
+        else:
+            self.object_idx = (
+                torch.arange(self.num_envs, device=self.device) % len(self._object_names)
+            )
         # side 접근을 유지할 물체의 인덱스 (cup). 그 외 전부 top-down.
         _side = [
             self._object_names.index(_n)

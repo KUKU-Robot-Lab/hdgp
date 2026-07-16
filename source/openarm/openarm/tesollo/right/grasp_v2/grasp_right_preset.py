@@ -339,19 +339,23 @@ CURL_JOINT_LIMITS_MAX = [0.0, 2.007, 1.955, 1.902, _math.pi / 2]
 #   clipping 근거리 0.3m = D435i 최소 측정거리. 원본의 0.01m는 실기에 존재하지 않는
 #   관측이라 그대로 학습시키면 sim2real 갭이 된다.
 #
-# extrinsics: GUI(place_camera.py)로 시뮬에서 직접 잡은 배치. 07.13.
-#   로봇 정중면 근처 높이 0.97m 에서 65° 하향 — 물체(0.27,-0.10,0.297)까지 0.70m,
-#   시선이 (0.377, -0.006, 0.33) 을 지난다. roll 없는 순수 look-at.
-#   실물 D435i 를 "비슷한 위치"에 단 뒤, hand-eye 캘리브레이션 값으로 최종 교체할 것.
-#   left 는 y 부호 반전 + 미러된 목표점으로 look-at 재계산 (grasp_left_preset.py).
+# extrinsics: 정면-사선(front-oblique) 3인칭. 07.16 — top-down 접근 가림 회피용 재배치.
+#   물체(0.27,-0.10,0.297) 앞(+x)에서 로봇 향해 높이 0.62m·37.8° 하향, 시선이 (0.28,-0.10,0.31)
+#   을 지난다(dist 0.506m ≥ D435i 최소 0.3m). roll 없는 순수 look-at.
+#   근거: over-shoulder 65° 하향은 top-down 하강하는 손·팔뚝이 접촉 직전 물체를 가린다.
+#   정면-사선은 물체 윗면·앞면 + 내려오는 손의 옆모습이 보여 마지막 순간까지 가림 최소.
+#   ⚠️ 시뮬 후보값 — preview_camera.py 로 top-down 동작 내내 가림 확인 후 확정할 것.
+#   실물 D435i 는 hand-eye 캘리브레이션 값으로 최종 교체. left 는 y 미러(회전 동일).
+#   (이전 over-shoulder 07.13: POS [0.0804,-0.0050,0.9674]
+#    ROT [0.1524955,-0.6891995,0.6916149,-0.1530299] — 롤백용 보존)
 CAMERA_IMG_WIDTH  = 320
 CAMERA_IMG_HEIGHT = 180        # 16:9 — D435i depth 종횡비
 CAMERA_FOCAL_LENGTH       = 20.0
 CAMERA_HORIZONTAL_APERTURE = 37.9586   # 2*focal*tan(87°/2) → HFOV 87°
 CAMERA_CLIPPING_RANGE = (0.3, 3.0)     # D435i: 최소 0.3m, 실사용 상한 3m
 
-CAMERA_POS = [0.0804, -0.0050, 0.9674]
-CAMERA_ROT = [0.1524955, -0.6891995, 0.6916149, -0.1530299]  # (w,x,y,z), ros convention
+CAMERA_POS = [0.6800, -0.1000, 0.6200]
+CAMERA_ROT = [0.3112187, -0.6349354, -0.6349354, 0.3112187]  # (w,x,y,z), ros convention
 
 # depth 유효 밴드 — 이 밖의 픽셀은 0으로 죽인다.
 # 카메라~물체 0.87m, 카메라~테이블 뒤편 ~1.3m 를 포괄.
