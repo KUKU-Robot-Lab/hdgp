@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 import math
+from collections.abc import Callable
 from typing import Protocol
 
 from .checkpoint_resolver import PolicyArtifacts

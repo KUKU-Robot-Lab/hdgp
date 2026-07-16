@@ -55,7 +55,7 @@ class SkillManager:
         records: list[TransitionRecord] = []
         switched: dict[SkillId, list[int]] = defaultdict(list)
 
-        for env_id, (state, decision) in enumerate(zip(states, decisions)):
+        for env_id, (state, decision) in enumerate(zip(states, decisions, strict=True)):
             previous = self.current_skills[env_id]
             accepted, reason = self._guard(
                 task,
@@ -107,7 +107,7 @@ class SkillManager:
             outputs = skill.infer(env_tuple, state_batch)
             if len(outputs) != len(env_ids):
                 raise ValueError(f"{skill_id.value} returned {len(outputs)} commands for {len(env_ids)} environments")
-            for env_id, output in zip(env_ids, outputs):
+            for env_id, output in zip(env_ids, outputs, strict=True):
                 commands[env_id] = self.safety.validate(output)
 
         self.step_index += 1

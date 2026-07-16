@@ -6,7 +6,6 @@ from vlm.pouring.contracts import SkillId, TaskSpecification
 from vlm.pouring.high_level_policy import DeterministicHighLevelPolicy
 from vlm.pouring.tests.test_state_provider import valid_state
 
-
 TASK = TaskSpecification(
     task="pour",
     source_id="source",

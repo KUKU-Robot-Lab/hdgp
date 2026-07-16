@@ -19,3 +19,4 @@ select = ["E", "F", "I", "UP", "B"]
 pythonVersion = "3.10"
 typeCheckingMode = "standard"
 include = ["vlm/pouring"]
+reportMissingImports = false

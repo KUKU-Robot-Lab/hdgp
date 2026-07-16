@@ -3,7 +3,6 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Any
 
-
 _SYSTEM_PROMPT = """You ground a robot pouring task. Return exactly one JSON object and no other text.
 The keys must be exactly: task, source_id, target_id, nominal_plan, allowed_skills.
 task must be pour. Skills may only be approach, pre_grasp_bridge, grasp_lift,
@@ -64,7 +63,10 @@ class QwenBackend:
         )
         inputs = inputs.to(next(self._model.parameters()).device)
         generated = self._model.generate(**inputs, do_sample=False, max_new_tokens=256)
-        trimmed = [output[len(prompt) :] for prompt, output in zip(inputs.input_ids, generated)]
+        trimmed = [
+            output[len(prompt) :]
+            for prompt, output in zip(inputs.input_ids, generated, strict=True)
+        ]
         return self._processor.batch_decode(
             trimmed,
             skip_special_tokens=True,

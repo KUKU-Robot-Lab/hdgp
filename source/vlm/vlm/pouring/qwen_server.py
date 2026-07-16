@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 import base64
 import binascii
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from dataclasses import asdict
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
 
 from .qwen_backend import QwenBackend
@@ -16,7 +16,9 @@ _MAX_REQUEST_BYTES = 20 * 1024 * 1024
 
 class GenerationBackend(Protocol):
     model_id: str
-    loaded: bool
+
+    @property
+    def loaded(self) -> bool: ...
 
     def generate(self, command: str, image: bytes) -> str: ...
 
@@ -76,7 +78,11 @@ def _handler_type(service: TaskGroundingService) -> type[BaseHTTPRequestHandler]
                 payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
                 if not isinstance(payload, dict):
                     raise RequestValidationError("request root must be an object")
-                result = service.ground(payload.get("command"), payload.get("image_base64"))
+                command = payload.get("command")
+                image_base64 = payload.get("image_base64")
+                if not isinstance(command, str) or not isinstance(image_base64, str):
+                    raise RequestValidationError("command and image_base64 must be strings")
+                result = service.ground(command, image_base64)
             except (RequestValidationError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 self._write_json(422, {"detail": str(exc)})
                 return

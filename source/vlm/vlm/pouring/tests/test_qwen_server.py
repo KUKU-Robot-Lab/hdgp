@@ -79,7 +79,8 @@ def test_service_and_client_round_trip_the_http_json_contract() -> None:
 
     def service_transport(request: Request, timeout: float) -> tuple[int, bytes]:
         assert timeout == 2.0
-        payload = json.loads(request.data or b"{}")
+        assert isinstance(request.data, bytes)
+        payload = json.loads(request.data)
         result = service.ground(payload["command"], payload["image_base64"])
         return 200, json.dumps(result).encode("utf-8")
 

@@ -4,7 +4,6 @@ import pytest
 
 from vlm.pouring.task_grounding import parse_task_specification
 
-
 VALID = """```json
 {"task":"pour","source_id":"cup_2","target_id":"cup_5",
 "nominal_plan":["grasp_lift","pre_pour_bridge","bimanual_pour"],
