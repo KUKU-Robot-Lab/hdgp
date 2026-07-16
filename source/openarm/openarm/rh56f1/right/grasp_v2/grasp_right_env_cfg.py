@@ -85,7 +85,13 @@ _VISDEX_NAMES: tuple[str, ...] = tuple(sorted(
 # 활성 물체군: visdex 153종. primitives 로 되돌리려면
 #   _ACTIVE_OBJECT_ROOT = primitives/USD, _ACTIVE_OBJECT_NAMES = _PRIMITIVE_CURRICULUM_STAGE1, prefix=primitive.
 _ACTIVE_OBJECT_ROOT: str = _VISDEX_ROOT
-_ACTIVE_OBJECT_NAMES: tuple[str, ...] = _VISDEX_NAMES
+_EXCLUDED_SMALL_OBJECTS: tuple[str, ...] = (
+    "small_5_cyl", "small_8_cyl", "small_12_cyl",
+    "small_5_cuboid", "small_8_cuboid", "small_12_cuboid",
+)
+_ACTIVE_OBJECT_NAMES: tuple[str, ...] = tuple(
+    _n for _n in _VISDEX_NAMES if _n not in _EXCLUDED_SMALL_OBJECTS
+)
 
 
 # 물체 스케일 커리큘럼 (07.13, 153종 스캔 근거): scale 1.0에선 RH56F1 envelope 이
@@ -222,13 +228,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Fabrics 파라미터
     # -----------------------------------------------------------------------
-    # 07.13 재구성(사용자 결정 "tesollo는 되는데 여긴 안 됨"): hand = 시너지+래칫.
-    # False = 시너지(eigengrasp) p* + 전진-only 래칫 (tesollo 91fb455·d250ae5 이식,
-    # tesollo test12 성공 경로). dextrah11 실증: PCA 절대 타겟(양방향, True)은
-    # "열림 포화" 국소최적(f1=-0.99, 접촉 파도 3회 소멸·리프트 0) — tesollo test8
-    # '손 펴기'와 동일 병리. True로 되돌리면 DEXTRAH PCA fabric 경로.
-    use_hand_fabric:            bool  = False
-    hand_mode:                  str   = "pca"   # use_hand_fabric=True일 때만 사용 ("pca"|"direct")
+    # 07.14: 손 = 6D per-finger 직접 제어(시너지/PCA 폐기). fabric 은 팔 IK 만 담당.
+    # RH56F1 은 하드웨어 언더액추(원위 mimic)라 이미 물리적 시너지 — 그 위 소프트웨어
+    # PCA(5D)는 이중 압축이라 thumb_1(opposition)을 죽였음. 6 액추에이터 직접 제어로 전환.
     max_pose_angle:             float = 45.0   # DEXTRAH README teacher 레시피 45°. palm rpy 공칭(180,0,90)±45 — 손바닥 방향을 action 공간에서 constrain(천장 지향 구조 차단). tesollo 0fa6fb3 정렬
     fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
@@ -306,13 +308,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 같고 z 만 15cm 위라 "가만히 있어도" lift+o2g 로 총 reward 최대치의 11.4%를
     # 받았다(실측 reward/lift 0.87~0.99·object_to_goal 0.22~0.24). DEXTRAH 원본은
     # goal(-0.5,0,0.75)이 spawn(-0.55,0.1,~0.3)과 x/y 도 다르고 z 도 45cm 이상 떨어져
-    # 있어 방치 시 총점의 ~1.1%만 받는다(같은 수식·같은 sharpness 로 역산). 우리
-    # workspace box(topdown 중심 재정렬 후 z 상한 0.65)가 DEXTRAH 만큼 크지 않아
-    # 동일 절대거리(46cm) 는 못 맞추지만, x/y 도 이동시키고 z 를 상한 여유 두고
-    # 최대로 올려 passive 비중을 낮췄다. dry-run 실측(방치 시): lift+o2g 합계
-    # 1.14→0.258(최대 10 중 11.4%→2.6%, 약 4.4배 감소). topdown/side 박스 양쪽
-    # 모두 안(margin 확인), out-of-reach 경계(x 0.13~0.72, y -0.60~0.25) 안.
-    object_goal_pos:          tuple = (0.37, -0.25, 0.60)
+    # 07.15 goal 하향: (0.37,-0.25,0.60)은 passive(방치) 비중을 낮추려 goal 을 멀리·높이
+    # 잡은 값이었으나(물체-goal 45cm, z 35cm 상승 요구), 파지 실패 시절 우려였다. force_closure
+    # 로 파지·리프트가 확실히 되고(정책이 방치보다 파지-운반이 크게 이득) + lift 가 접촉 게이팅
+    # (envelope)이라 안 잡으면 lift=0 → passive lift 차단됨. 로봇 base(0,0,0)·물체 spawn
+    # (0.5,0,0.25)이 tesollo 와 완전 동일한데 goal 만 과설정이라 물체를 44.8cm 운반해야 성공
+    # (리프트 14.6cm 로 도달 불가) → tesollo 검증값(153종 성공)으로 정합. z 20cm·3D 32cm 로 완화.
+    object_goal_pos:          tuple = (0.27, -0.10, 0.45)
     object_goal_tol:          float = 0.10
     hand_to_object_weight:    float = 1.0
     hand_to_object_sharpness: float = 10.0
@@ -326,15 +328,19 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 리턴/value 통계를 오염시켜 정책 붕괴. clamp 는 정상 학습(joint limit 이내)엔
     # 영향 없고 발산 시에만 발동하는 안전판.
     finger_curl_dist_max:     float = 14.0
-    # palm orientation: DEXTRAH 4항엔 손목 방향 제약이 없어 손바닥이 임의(천장) 방향으로
-    # 수렴. palm 법선(로컬 +X → world)이 palm→물체 방향과 정렬되도록 보조 shaping.
-    # w·exp(s·(align−1)): align=1(완전 정렬)→w, align=−1(반대)→w·exp(−2s). weight는
-    # object_to_goal(5.0)의 0.2배로 통제(reward-audit ACCEPT: local-min·hacking 방지).
-    # DEXTRAH 원본 재현: palm_orient 비활성(0.0). 이 항은 DEXTRAH 4항에 없는 우리 추가물로,
-    # lstm_test6에서 "비접촉 파밍이 접촉보다 +66 유리"한 회피 local min을 만든 주범(분석 확증).
-    # 원래 목적(손바닥 천장 방지)은 max_pose_angle 45° constrain(DEXTRAH README 해법)이 담당.
-    palm_orient_weight:       float = 0.0
-    palm_orient_sharpness:    float = 3.0
+    # grasp 접촉 보상(07.14, grasp_v1 grasp_quality 구조 이식): hand_to_object(거리)는
+    # 손 6점이 물체 근처에만 있으면 만족돼 손가락 굴곡 유인이 없음(3000ep 정체 실증).
+    # force_matrix 실접촉(자기 env Cup) 개수에 직접 보상 → 굴곡을 능동 유도. persistence
+    # 항이 "닿기만 하고 뗌" 해킹 차단. weight 는 hand_to_object(1.0)보다 작게 시작.
+    grasp_contact_weight:        float = 0.5
+    grasp_contact_persist_steps: int   = 15   # 연속 접촉 N step 이면 persistence_frac=1
+    # force_closure(opposition) 보상(07.15, tesollo 이식, 리프트 주력): 접촉 개수(grasp_contact)
+    # 로는 못 잡던 "엄지 vs 4지 마주조임 힘 방향"을 직접 보상. lstm_test2 실측 — 접촉·굴곡·
+    # 지속(persist 0.90)은 성공했으나 thumb_2(엄지 굴곡=조임)가 진동(조임 유인 부재) → 리프트
+    # 3mm 정체(못 조여 미끄러짐). 접촉반력(force_matrix) 엄지 vs 4지평균 −cos + 양쪽 세기 tanh,
+    # 양쪽 실접촉 AND 게이트로 hacking 차단. weight 4.0 = o2g(5.0)급 주력.
+    force_closure_weight:        float = 4.0
+    force_closure_force_scale:   float = 3.0   # N. tanh(‖f‖/scale) grip 세기 정규화
 
     # (구) RH56F1 shared grasp-v2 reward contract — DEXTRAH 전환으로 미사용(호환 보존).
     approach_weight: float = 2.0
@@ -368,15 +374,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     wrench_trigger_every: int = 60      # step(=1초 @60Hz)마다 새 랜덤 wrench
     grasp_ready_hold_steps: int = 8   # 접촉 N개를 연속 hold하면 lift 래치 (잡으면 바로 리프트)
     lift_start_min_envelope_fingers: int = 0  # latch 인벨롭 게이트 제거(0=비활성). envelope은 grasp/lift 보상 credit으로 유도(hard 게이트 대체)
-    finger_close_speed: float = 0.05  # ① 접촉-게이트 적응 폐쇄: 손가락 폐쇄 진행 속도/step (중간마디 접촉 시 동결)
-    # 래칫 전진 허용 게이트: palm↔물체 수직 간격(m). E3 실측 anchor 0.108 /
-    # 하강 후 0.045 → 0.07 = 유의미하게 하강한 뒤에만 감김 허용.
-    finger_close_dist_gate: float = 0.07
-    # synergy 접촉 동결(g3/g4): 접촉 시 조임 멈춤 → 파지력 약화(grip 0.90 정체).
-    # False=동결 제거 → 손가락이 물체를 계속 조임(물리 collision이 관통/형상적응 담당, DEXTRAH식 파지력).
-    # primitives 복귀는 True. 기본 False(파지력 확보).
-    synergy_freeze_enable: bool = False
-    settle_steps: int = 25  # 다물체 drop-settle: episode 초기 N step 손가락 폐쇄 억제 → 물체 낙하 안착
+    settle_steps: int = 25  # 다물체 drop-settle: episode 초기 N step 손을 approach(열림)로 고정 → 물체 낙하 안착
 
     grasp_contact_persistence_reward_steps: int = 20
     enclosure_sharpness: float = 15.0
@@ -421,11 +419,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
 
     # DEXTRAH wrench 게이트: 손이 물체 반경 내면 외란 인가 (in_success 게이트 아님)
     hand_to_object_dist_threshold: float = 0.3   # m
-
-    # contact 로깅 거리 게이트(07.11): net_forces 센서는 물체/테이블 구분 불가 —
-    # dextrah6b에서 grip 2.2 전부가 테이블·자기 접촉으로 판명(probe). 손끝이 물체
-    # 이 거리 이내일 때만 접촉으로 카운트해 진단 지표를 물체 접촉으로 정화.
-    contact_object_dist_gate: float = 0.06   # m
 
     adr_custom_cfg: dict = field(default_factory=lambda: {
         # 외란 wrench: 0→10 점진 (DEXTRAH. 기존 고정 10은 초기 리프트 학습 방해 가능)
@@ -705,6 +698,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         # prim 이름 "Cup" 은 유지(ContactSensor 필터/센서 참조 재사용).
         spawn=_GRASP_OBJECT_SPAWN,
     )
+    # visdex 물체 USD 의 rigid body prim 이름 — ContactSensor force_matrix filter 대상.
+    # filter 는 실제 rigid body(/Cup/baseLink)를 가리켜야 GPU contact filter 가 작동한다
+    # (Xform 루트 /Cup 은 미지원). tesollo grasp_v2 와 동일 (visdex USD 공유, baseLink).
+    cup_rigid_body_name: str = "baseLink"
 
     # -----------------------------------------------------------------------
     # Hand / joint 이름

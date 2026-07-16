@@ -61,7 +61,7 @@ from openarm.common.grasp_logging import action_policy_scalars
 
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloLeftPoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
-from fabrics_sim.utils.utils import initialize_warp
+from fabrics_sim.utils.utils import initialize_warp, capture_fabric
 from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
 
 from .grasp_left_env_cfg import GraspLeftEnvCfg
@@ -124,6 +124,7 @@ from .grasp_left_utils import (
     compute_palm_pose_id,
     compute_rotated_half_z,
     g_pose_to_fabric_quat,
+    g_pose_to_fabric_matrix,
     kept_object_names_and_indices,
     scale,
     to_torch,
@@ -583,10 +584,11 @@ class GraspLeftEnv(DirectRLEnv):
 
         self.timestep = self.cfg.fabrics_dt
 
-        # Main fabric (arm 제어용, graph_capturable=False)
+        # Main fabric (arm 제어용). use_cuda_graph=True 면 fabric IK 를 CUDA Graph 로
+        # 캡처(capture_fabric)해 커널 런치 오버헤드를 없앤다 → graph_capturable 필수.
         self.open_tesollo_fabric = OpenArmTeoslloLeftPoseFabric(
             self.num_envs, self.device, self.timestep,
-            graph_capturable=False,
+            graph_capturable=bool(self.cfg.use_cuda_graph),
             use_hand_fabric=False,
         )
         num_joints = self.open_tesollo_fabric.num_joints   # 27
@@ -602,6 +604,28 @@ class GraspLeftEnv(DirectRLEnv):
         self.hand_pca_targets  = torch.zeros(self.num_envs, 5, device=self.device)
         self.palm_pose_targets = torch.zeros(self.num_envs, 6, device=self.device)
         self.fabric_damping_gain = self.cfg.fabrics_damping_gain * torch.ones(self.num_envs, 1, device=self.device)
+        # palm matrix 고정 버퍼: set_features("matrix") 에 넘길 (B,12)[x,y,z,R_flat9] 를
+        # 매 step in-place 로 갱신한다. CUDA Graph 캡처는 입력 텐서 주소 고정 필요(새 텐서
+        # 생성 금지) + quaternion 경로의 fancy indexing 회피를 위해 matrix 모드를 쓴다.
+        self.palm_matrix_buf = g_pose_to_fabric_matrix(
+            self.palm_pose_targets, self.palm_grasp_frame_rot
+        ).contiguous()
+
+        # CUDA Graph 캡처(use_cuda_graph=True): fabric set_features + integrator.step 을
+        # 한 번 캡처해두고 매 step replay → 다물체(replicate_physics=False)로 떨어진 GPU
+        # 활용을 fabric IK 쪽에서 만회(DEXTRAH env.py 동일 기법). 캡처 입력은 전부 고정 버퍼.
+        if bool(self.cfg.use_cuda_graph):
+            self._fabric_inputs = [
+                self.hand_pca_targets, self.palm_matrix_buf, "matrix",
+                self.fabric_q.detach(), self.fabric_qd.detach(),
+                self.object_ids, self.object_indicator, self.fabric_damping_gain,
+            ]
+            self.g, self.fabric_q_new, self.fabric_qd_new, self.fabric_qdd_new = capture_fabric(
+                self.open_tesollo_fabric,
+                self.fabric_q, self.fabric_qd, self.fabric_qdd,
+                self.timestep, self.open_tesollo_integrator,
+                self._fabric_inputs, self.device,
+            )
 
         # Reset 전용 소형 Fabrics (chunk 단위)
         self._reset_chunk = self.cfg.reset_fabric_chunk_size
@@ -900,24 +924,36 @@ class GraspLeftEnv(DirectRLEnv):
             )
 
         # palm_pose_targets 는 G 규약 euler(ey≈0 중심, 특이점 없음)로 유지하고,
-        # fabric 에는 quaternion 으로 넘긴다 — 최종 행렬은 euler 로 표현 불가(ey=±90).
-        self.open_tesollo_fabric.set_features(
-            self.hand_pca_targets,
-            g_pose_to_fabric_quat(self.palm_pose_targets, self.palm_grasp_frame_rot),
-            "quaternion",
-            self.fabric_q.detach(),
-            self.fabric_qd.detach(),
-            self.object_ids,
-            self.object_indicator,
-            self.fabric_damping_gain,
+        # fabric 에는 matrix 로 넘긴다 — 최종 행렬은 euler 로 표현 불가(ey=±90).
+        # matrix 는 고정 버퍼에 in-place 로 써서 CUDA Graph 캡처 입력 주소를 유지한다.
+        self.palm_matrix_buf.copy_(
+            g_pose_to_fabric_matrix(self.palm_pose_targets, self.palm_grasp_frame_rot)
         )
-        for _ in range(self.cfg.fabric_decimation):
-            self.fabric_q, self.fabric_qd, self.fabric_qdd = self.open_tesollo_integrator.step(
+        if not bool(self.cfg.use_cuda_graph):
+            self.open_tesollo_fabric.set_features(
+                self.hand_pca_targets,
+                self.palm_matrix_buf,
+                "matrix",
                 self.fabric_q.detach(),
                 self.fabric_qd.detach(),
-                self.fabric_qdd.detach(),
-                self.timestep,
+                self.object_ids,
+                self.object_indicator,
+                self.fabric_damping_gain,
             )
+            for _ in range(self.cfg.fabric_decimation):
+                self.fabric_q, self.fabric_qd, self.fabric_qdd = self.open_tesollo_integrator.step(
+                    self.fabric_q.detach(),
+                    self.fabric_qd.detach(),
+                    self.fabric_qdd.detach(),
+                    self.timestep,
+                )
+        else:
+            # CUDA Graph replay: 캡처된 fabric IK 커널을 최신 입력(위 in-place 갱신)으로 재생.
+            for _ in range(self.cfg.fabric_decimation):
+                self.g.replay()
+                self.fabric_q.copy_(self.fabric_q_new)
+                self.fabric_qd.copy_(self.fabric_qd_new)
+                self.fabric_qdd.copy_(self.fabric_qdd_new)
 
         # ---- 손 제어: per-finger(grasp_v1) 또는 시너지(DEXTRAH PCA) ----
         # cfg.finger_control_mode 로 고른다. 기본은 per_finger — PCA basis 가

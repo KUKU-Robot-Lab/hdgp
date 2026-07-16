@@ -351,10 +351,10 @@ CURL_JOINT_LIMITS_MAX = [_math.pi, 2.007, 1.955, 1.902, _math.pi / 2]
 # intrinsics 는 센서 사양이라 좌우 동일(D435i depth 1280x720, HFOV 87°/VFOV 58°).
 #   16:9 를 유지해야 FOV 가 맞는다. clipping 근거리 0.3m = D435i 최소 측정거리.
 #
-# extrinsics: right DEXTRAH-like 정면(07.16)의 좌우 미러. 물체(0.27,+0.10,0.297) 앞에서 로봇
-#   향해 높이 0.72m·27.1° 하향, 시선이 (0.27,+0.10,0.31) 을 지난다(dist 0.899m).
-#   시선이 y-정렬(순수 -x 방향)이라 회전은 right 와 동일, 위치만 y 부호 반전.
-#   DEXTRAH 원본 배치(~0.9m·정면, clip far 2.0m) 충실 재현. 실물은 hand-eye 캘리브로 교체.
+# extrinsics: DEXTRAH-like 정면 — 단일 중앙 카메라(right 와 완전 동일). 07.16.
+#   실물 카메라 1대라 left/right 가 같은 POS·ROT 를 쓴다(y 미러 아님). 워크스페이스 중앙
+#   (0.27,0,0.31) 앞 높이 0.72m·27.1° 하향, dist 0.899m. 왼팔 물체(y=+0.10)도 중앙축 7° 이내.
+#   DEXTRAH 원본(~0.9m·정면, clip far 2.0m) 충실. 실물은 hand-eye 캘리브로 교체.
 #   (이전 미러 07.13: POS [0.0804,0.0050,0.9674]
 #    ROT [0.1530261,-0.6915698,0.6892421,-0.1525110] — 롤백용 보존)
 CAMERA_IMG_WIDTH  = 320
@@ -363,7 +363,8 @@ CAMERA_FOCAL_LENGTH       = 20.0
 CAMERA_HORIZONTAL_APERTURE = 37.9586   # 2*focal*tan(87°/2) → HFOV 87°
 CAMERA_CLIPPING_RANGE = (0.3, 3.0)
 
-CAMERA_POS = [1.0700, 0.1000, 0.7200]
+# 단일 중앙 카메라: right 와 정확히 같은 값(실물 1대 반영).
+CAMERA_POS = [1.0700, 0.0000, 0.7200]
 CAMERA_ROT = [0.3687510, -0.6033429, -0.6033429, 0.3687510]  # (w,x,y,z), ros convention
 
 CAMERA_D_MIN = 0.3

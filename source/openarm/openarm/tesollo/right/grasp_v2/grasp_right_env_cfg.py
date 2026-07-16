@@ -98,10 +98,18 @@ _VISDEX_NAMES: tuple[str, ...] = tuple(sorted(
     if _os.path.isfile(_os.path.join(_VISDEX_ROOT, _n, f"{_n}.usd"))
 )) if _os.path.isdir(_VISDEX_ROOT) else ()
 
-# 활성 물체군: visdex 153종. primitives 로 되돌리려면
-#   _ACTIVE_OBJECT_ROOT = primitives/USD, _ACTIVE_OBJECT_NAMES = _PRIMITIVE_CURRICULUM_STAGE1, prefix=primitive.
+# 구조적으로 못 잡는 작은 물체(반경 소 → 손가락 감쌀 여유 없어 force closure 불가)는
+# 학습 물체군에서 제외한다. fc2 per-object 실측: right/left 모두 small 계열 전부 <0.1
+# (right 최하위 5종·left 최하위군 = small_5/8/12 × cyl/cuboid). cup 은 별도 side approach
+# 로 유지(SIDE_APPROACH_OBJECT_NAMES). onehot 차원이 len(active)만큼이라 재학습 필요.
+_EXCLUDED_SMALL_OBJECTS: tuple[str, ...] = (
+    "small_5_cyl", "small_8_cyl", "small_12_cyl",
+    "small_5_cuboid", "small_8_cuboid", "small_12_cuboid",
+)
 _ACTIVE_OBJECT_ROOT: str = _VISDEX_ROOT
-_ACTIVE_OBJECT_NAMES: tuple[str, ...] = _VISDEX_NAMES
+_ACTIVE_OBJECT_NAMES: tuple[str, ...] = tuple(
+    _n for _n in _VISDEX_NAMES if _n not in _EXCLUDED_SMALL_OBJECTS
+)
 
 
 def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":

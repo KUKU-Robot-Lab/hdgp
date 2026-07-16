@@ -156,6 +156,20 @@ def g_pose_to_fabric_quat(pose6: torch.Tensor, frame_rot: torch.Tensor) -> torch
     return torch.cat([pose6[:, :3], quat], dim=-1)                   # (n,7)
 
 
+def g_pose_to_fabric_matrix(pose6: torch.Tensor, frame_rot: torch.Tensor) -> torch.Tensor:
+    """G 규약 palm pose (n,6) → fabric matrix pose (n,12)[x,y,z, R_flat9].
+
+    g_pose_to_fabric_quat 과 동일한 R_world_p 를 quaternion 대신 flatten 해 넘긴다.
+    fabric set_features("matrix") 경로는 fancy indexing 없이 slice+reshape 만 써
+    CUDA Graph 캡처가 가능하다(quaternion 경로는 [:, [6,3,4,5]] 로 캡처 불가). 등가.
+    """
+    R_cmd = euler_zyx_to_matrix(pose6[:, 3:6])                       # (n,3,3)
+    R_world_p = R_cmd @ frame_rot.transpose(0, 1).unsqueeze(0)       # (n,3,3)
+    return torch.cat(
+        [pose6[:, :3], R_world_p.reshape(pose6.shape[0], 9)], dim=-1  # (n,12)
+    )
+
+
 def compute_rotated_half_z(
     half_extent: torch.Tensor,
     rot_matrix: torch.Tensor,

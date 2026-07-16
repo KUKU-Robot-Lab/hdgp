@@ -249,7 +249,7 @@ PALM_POS_CENTER_SHIFT_TOPDOWN = [-0.0828,  0.0820, 0.0]  # topdown(152종) reset
 
 # side 접근을 유지할 물체 (그 외 전부 top-down). cup 은 내용물을 흘리면 안 되므로
 # 위에서 집으면 안 된다 — 옆면을 감싸 잡는다(grasp_v1 방식, tesollo와 동일).
-SIDE_APPROACH_OBJECT_NAMES = ("cup",)
+SIDE_APPROACH_OBJECT_NAMES = ("cup", "cup_big")
 
 
 def palm_pose_mins(max_pose_angle: float) -> list:

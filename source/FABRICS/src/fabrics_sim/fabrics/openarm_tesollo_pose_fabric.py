@@ -482,8 +482,18 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
             self._palm_pose_target[:, 3:] = torch.transpose(
                 quaternion_to_matrix(palm_pose_target[:, [6, 3, 4, 5]]), 1, 2
             ).reshape(self.batch_size, 9)
+        elif orientation_convention == "matrix":
+            # (B, 12) = [x,y,z, R_flat(9)]. CUDA Graph 캡처용 경로 — euler/quaternion 이
+            # 쓰는 fancy indexing([:, [6,3,4,5]])·euler_to_matrix 없이 rotation matrix 를
+            # slice+reshape 로만 다뤄 stream capture 중 금지 연산을 피한다. 저장 형식은
+            # 기존 두 경로와 동일(transpose 후 9D flatten) → 결과 등가.
+            assert palm_pose_target.shape[1] == 12, \
+                "matrix pose target must be (B, 12)"
+            self._palm_pose_target[:, 3:] = torch.transpose(
+                palm_pose_target[:, 3:].reshape(self.batch_size, 3, 3), 1, 2
+            ).reshape(self.batch_size, 9)
         else:
-            raise ValueError('orientation_convention must be "euler_zyx" or "quaternion"')
+            raise ValueError('orientation_convention must be "euler_zyx", "quaternion", or "matrix"')
 
         palm_pose_target_points = self.convert_transform_to_points()
 

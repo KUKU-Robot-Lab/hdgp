@@ -339,14 +339,13 @@ CURL_JOINT_LIMITS_MAX = [0.0, 2.007, 1.955, 1.902, _math.pi / 2]
 #   clipping 근거리 0.3m = D435i 최소 측정거리. 원본의 0.01m는 실기에 존재하지 않는
 #   관측이라 그대로 학습시키면 sim2real 갭이 된다.
 #
-# extrinsics: DEXTRAH-like 정면 3인칭. 07.16 — DEXTRAH 원본 배치 충실 재현.
-#   물체(0.27,-0.10,0.297) 앞(+x)에서 로봇 향해 높이 0.72m·27.1° 하향, 시선이 (0.27,-0.10,0.31)
-#   을 지난다(dist 0.899m). roll 없는 순수 look-at. left 는 y 미러(회전 동일).
+# extrinsics: DEXTRAH-like 정면 3인칭 — 단일 중앙 카메라(좌우 동일). 07.16.
+#   실물은 카메라가 하나이므로 left/right 가 완전히 같은 POS·ROT 를 쓴다(y 미러 아님).
+#   워크스페이스 중앙(0.27,0,0.31) 앞(+x) 높이 0.72m·27.1° 하향, dist 0.899m. roll 없는 look-at.
+#   각 팔 물체(y=∓0.10)는 중앙축에서 7° 벗어날 뿐이라 광각 87° 프레임 안에 넉넉히 들어온다.
 #   근거: DEXTRAH 원본(repo/DEXTRAH)은 카메라를 워크스페이스에서 ~0.9m·정면에 두고 clip far 2.0m,
-#   좁은 FOV 48° 로 학습. 우리는 실물 D435i(광각 87°)라 같은 거리에서 배경을 더 많이 봐 depth 가
-#   더 죽지만(유효 ~66%), CAMERA_D_MAX=2.0 으로 올려 워크스페이스는 밴드 안에 들어온다.
-#   preview_camera.py 검증(07.16): top-down pregrasp 손이 옆모습으로 보여 물체 가림 적음.
-#   ★사용자가 GUI(place_camera.py)로 잡은 먼 정면(1.5m·유효 33%)을 이 거리(0.9m)로 교정한 값.
+#   좁은 FOV 48° 로 학습. 우리는 실물 D435i(광각 87°)라 배경을 더 봐 depth 유효 ~66%지만
+#   CAMERA_D_MAX=2.0 으로 워크스페이스는 밴드 안. 사용자 GUI 먼 정면(1.5m·33%)을 0.9m 로 교정.
 #   실물 D435i 는 hand-eye 캘리브레이션 값으로 최종 교체. 실측 이미지 docs/camera_preview/.
 #   (이전 over-shoulder 07.13: POS [0.0804,-0.0050,0.9674]
 #    ROT [0.1524955,-0.6891995,0.6916149,-0.1530299] — 롤백용 보존)
@@ -356,7 +355,8 @@ CAMERA_FOCAL_LENGTH       = 20.0
 CAMERA_HORIZONTAL_APERTURE = 37.9586   # 2*focal*tan(87°/2) → HFOV 87°
 CAMERA_CLIPPING_RANGE = (0.3, 3.0)     # D435i: 최소 0.3m, 실사용 상한 3m
 
-CAMERA_POS = [1.0700, -0.1000, 0.7200]
+# 단일 중앙 카메라: 좌우 grasp_v2 가 정확히 같은 값을 쓴다(실물 1대 반영).
+CAMERA_POS = [1.0700, 0.0000, 0.7200]
 CAMERA_ROT = [0.3687510, -0.6033429, -0.6033429, 0.3687510]  # (w,x,y,z), ros convention
 
 # depth 유효 밴드 — 이 밖의 픽셀은 0으로 죽인다.

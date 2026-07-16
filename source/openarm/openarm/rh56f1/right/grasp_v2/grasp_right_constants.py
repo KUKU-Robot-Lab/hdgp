@@ -76,18 +76,12 @@ NUM_FINGERTIPS = 5
 # Action space
 # ---------------------------------------------------------------------------
 NUM_PALM_ACTION   = 6   # 6D palm pose (Fabrics IK)
-NUM_FINGER_ACTION = 5   # per-finger lerp (기본) / hand PCA 5D (use_hand_fabric=True)
-NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
-
-# DEXTRAH식 hand PCA(use_hand_fabric=True, hand_mode="pca") — action 차원 동일(5D)이라
-# per-finger lerp와 cfg 토글만으로 전환 가능. 좌표는 uncentered 투영(fabric LinearMap 정합).
-# 출처: assets/demograsp_references/rh56f1_grasp_pca5.pt (compute_rh56f1_grasp_pca.py 단일 진실원).
-# 주의: 현 basis는 PC1=97.9%(실질 1D) — 다물체 성공 grasp 수집 후 재추출 예정.
-NUM_HAND_PCA = 5
-HAND_PCA_MINS = [0.2258177250623703, -0.07913326472043991, -0.37289050221443176,
-                 -0.19040870666503906, -0.06522199511528015]
-HAND_PCA_MAXS = [3.7262845039367676, 0.8179822564125061, 0.1744416356086731,
-                 0.025599155575037003, 0.04043136164546013]
+NUM_FINGER_ACTION = 6   # per-finger 직접 제어 6D = 6 액추에이터(thumb_1,thumb_2,index_1,
+                        # middle_1,ring_1,pinky_1) 각각 독립. 원위 6은 하드웨어 mimic(drive×mult).
+                        # 시너지/PCA 폐기(07.14): RH56F1 은 언더액추라 이미 물리적 시너지 —
+                        # 그 위에 소프트웨어 PCA(5D)를 또 씌우면 이중 압축이라 opposition(thumb_1)
+                        # 제어를 죽였음. 실물 angleSet 도 6값 각도 직접 명령이라 6D 직접이 정합.
+NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 12
 
 # ---------------------------------------------------------------------------
 # Observation space — DEXTRAH teacher 구조 (distillation 대비 동일 구조)
@@ -96,23 +90,23 @@ HAND_PCA_MAXS = [3.7262845039367676, 0.8179822564125061, 0.1744416356086731,
 #   robot_dof_pos_noisy 27 + robot_dof_vel_noisy 27 (annealing으로 0)
 #   + hand_pos_noisy 18 (fabric FK: palm+5tip) + hand_vel_noisy 18 (0)
 #   + object_pos_noisy 3 + object_rot_noisy 4 + object_goal 3
-#   + [onehot num_objects] + object_scale 1 + actions 11
+#   + [onehot num_objects] + object_scale 1 + actions 12
 #   + fabric_q 27 + fabric_qd 27 + fabric_qdd 27
-#   = 193 + N_obj   (DEXTRAH 원본 "193 + num_objects"와 동일 구조)
+#   = 194 + N_obj
 #
-# Critic obs (BASE 247 + num_objects):
+# Critic obs (BASE 248 + num_objects):
 #   robot_dof_pos 27 + robot_dof_vel 27 + hand_pos 18 + hand_vel 36
 #   + hand_forces[:, :3] 3 + measured_joint_torque 27
 #   + object_pos 3 + object_rot 4 + object_vel 6 + object_goal 3
-#   + [onehot] + object_scale 1 + actions 11 + fabric q/qd/qdd 81
-#   = 247 + N_obj   (DEXTRAH 원본 "247 + num_objects"와 동일 구조)
+#   + [onehot] + object_scale 1 + actions 12 + fabric q/qd/qdd 81
+#   = 248 + N_obj
 # ---------------------------------------------------------------------------
 NUM_HAND_POINTS = 6           # palm + 5 fingertips (DEXTRAH hand bodies)
 # RH56F1: robot_dof 13(arm7+hand6), fabric q/qd/qdd 각 13(우측 slice) → tesollo(27) 대비 축소.
-#   policy: robot 13+13 + hand 18+18 + obj 3+4+3 + scale1 + actions11 + fabric 13*3 = 123
-#   critic: robot 13+13 + hand 18+36 + forces3 + torque13 + obj 3+4+6+3 + scale1 + actions11 + fabric 39 = 163
-NUM_OBS_BASE        = 123     # onehot 제외 policy obs (RH56F1 13-DOF)
-NUM_CRITIC_OBS_BASE = 163     # onehot 제외 critic obs (RH56F1 13-DOF)
+#   policy: robot 13+13 + hand 18+18 + obj 3+4+3 + scale1 + actions12 + fabric 13*3 = 124
+#   critic: robot 13+13 + hand 18+36 + forces3 + torque13 + obj 3+4+6+3 + scale1 + actions12 + fabric 39 = 164
+NUM_OBS_BASE        = 124     # onehot 제외 policy obs (RH56F1 13-DOF, action 12D)
+NUM_CRITIC_OBS_BASE = 164     # onehot 제외 critic obs (RH56F1 13-DOF, action 12D)
 # 실제 차원은 env_cfg 에서 + len(active_object_names) 로 확정
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3

@@ -100,7 +100,13 @@ _VISDEX_NAMES: tuple[str, ...] = tuple(sorted(
 # 활성 물체군: visdex 153종. primitives 로 되돌리려면
 #   _ACTIVE_OBJECT_ROOT = primitives/USD, _ACTIVE_OBJECT_NAMES = _PRIMITIVE_CURRICULUM_STAGE1, prefix=primitive.
 _ACTIVE_OBJECT_ROOT: str = _VISDEX_ROOT
-_ACTIVE_OBJECT_NAMES: tuple[str, ...] = _VISDEX_NAMES
+_EXCLUDED_SMALL_OBJECTS: tuple[str, ...] = (
+    "small_5_cyl", "small_8_cyl", "small_12_cyl",
+    "small_5_cuboid", "small_8_cuboid", "small_12_cuboid",
+)
+_ACTIVE_OBJECT_NAMES: tuple[str, ...] = tuple(
+    _n for _n in _VISDEX_NAMES if _n not in _EXCLUDED_SMALL_OBJECTS
+)
 
 
 def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":
