@@ -53,29 +53,31 @@ def _check(pos, quat, obj):
     return d, cos, down
 
 
-def test_right_camera_looks_at_object():
-    d, cos, down = _check(r.CAMERA_POS, r.CAMERA_ROT, OBJ_R)
-    assert cos > 0.999, f"시선이 물체를 향하지 않음 (cos={cos:.4f})"
+# 단일 중앙 카메라 → 워크스페이스 중앙 정조준(각 팔 물체 사이 y=0).
+CENTER = (0.27, 0.0, 0.31)
+
+
+def test_camera_looks_at_workspace_center():
+    d, cos, down = _check(r.CAMERA_POS, r.CAMERA_ROT, CENTER)
+    assert cos > 0.999, f"시선이 중앙을 향하지 않음 (cos={cos:.4f})"
     assert d >= 0.3, f"D435i 최소거리 미만 (dist={d:.3f})"
     assert DOWN_MIN <= down <= DOWN_MAX, f"하향각 범위 벗어남 ({down:.1f}deg)"
-    assert r.CAMERA_POS[0] > OBJ_R[0], "카메라가 물체 앞(+x)에 있지 않음"
+    assert r.CAMERA_POS[0] > CENTER[0], "카메라가 워크스페이스 앞(+x)에 있지 않음"
 
 
-def test_left_camera_looks_at_object():
-    d, cos, down = _check(l.CAMERA_POS, l.CAMERA_ROT, OBJ_L)
-    assert cos > 0.999, f"시선이 물체를 향하지 않음 (cos={cos:.4f})"
-    assert d >= 0.3
-    assert DOWN_MIN <= down <= DOWN_MAX
-    assert l.CAMERA_POS[0] > OBJ_L[0]
+def test_left_right_camera_identical():
+    # 실물 카메라 1대 → 좌우 grasp_v2 가 완전히 같은 POS·ROT 를 써야 한다(미러 아님).
+    assert list(l.CAMERA_POS) == list(r.CAMERA_POS)
+    assert list(l.CAMERA_ROT) == list(r.CAMERA_ROT)
 
 
-def test_left_is_y_mirror_of_right():
-    assert math.isclose(l.CAMERA_POS[0], r.CAMERA_POS[0], abs_tol=1e-6)
-    assert math.isclose(l.CAMERA_POS[1], -r.CAMERA_POS[1], abs_tol=1e-6)
-    assert math.isclose(l.CAMERA_POS[2], r.CAMERA_POS[2], abs_tol=1e-6)
-    # 시선이 y-정렬(순수 -x)이라 회전은 좌우 동일.
-    for a, b in zip(l.CAMERA_ROT, r.CAMERA_ROT):
-        assert math.isclose(a, b, abs_tol=1e-6)
+def test_each_arm_object_within_fov():
+    # 중앙 카메라라도 각 팔 물체(y=∓0.10)가 광각 87° 프레임 안(HFOV/2=43.5°)에 들어와야 한다.
+    hfov_half = math.degrees(math.atan(r.CAMERA_HORIZONTAL_APERTURE / (2 * r.CAMERA_FOCAL_LENGTH)))
+    for obj in (OBJ_R, OBJ_L):
+        _, cos, _ = _check(r.CAMERA_POS, r.CAMERA_ROT, obj)
+        off = math.degrees(math.acos(min(1.0, cos)))
+        assert off < hfov_half, f"물체가 FOV 밖 ({off:.1f}deg > {hfov_half:.1f})"
 
 
 def test_intrinsics_d435i_aspect():
