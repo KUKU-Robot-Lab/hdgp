@@ -8,9 +8,12 @@ from vlm.pouring.transitions import PrePourWarmStateBridge
 def test_pre_pour_bridge_loads_existing_grasp_warm_state() -> None:
     root = Path(__file__).resolve().parents[5]
     bridge = PrePourWarmStateBridge(root)
+    warm_path = root / "data/grasp_warm_tesollo.hdf5"
+    if not warm_path.is_file():
+        warm_path = Path("/home/user/rl_ws/hdgp/data/grasp_warm_tesollo.hdf5")
 
     result = bridge.load(
-        root / "data/grasp_warm_tesollo.hdf5",
+        warm_path,
         expected_object_spawn_z=0.297,
     )
 
