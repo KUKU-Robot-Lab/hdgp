@@ -48,6 +48,24 @@ if [[ ! -f "$TEACHER" ]]; then
     exit 1
 fi
 
+# 자동 실패물체 제외(옵션, 기본 비활성). teacher 로그에서 성공률<임계 물체를 추출해
+# 이 arm 의 DISTILL cfg(DISTILL_EXCLUDED_OBJECT_NAMES)에 주입한다 — config 에 기록되어
+# 커밋·재현 가능. onehot(153)은 유지되고 스폰만 빠져 teacher 체크포인트와 호환된다.
+#   AUTO_EXCLUDE=1               활성화
+#   AUTO_EXCLUDE_THRESHOLD=0.3   제외 임계 (기본 0.3)
+# 좌우 합집합을 원하면 이 옵션 대신 extract_failing_objects.py --right --left --write 를
+# 먼저 수동 실행하라(이 옵션은 실행 중인 arm 것만 주입한다).
+if [[ -n "${AUTO_EXCLUDE:-}" ]]; then
+    RUN_DIR="$(cd "$(dirname "$TEACHER")/.." && pwd)"   # <run>/nn/x.pth → <run>
+    if [[ "$TASK" == *_r_* ]]; then SIDE_FLAG="--right"
+    elif [[ "$TASK" == *_l_* ]]; then SIDE_FLAG="--left"
+    else echo "ERROR: TASK 에서 arm(_r_/_l_) 판별 불가: $TASK" >&2; exit 1; fi
+    THRESH="${AUTO_EXCLUDE_THRESHOLD:-0.3}"
+    echo ">> AUTO_EXCLUDE: teacher 실패물체(<${THRESH}) 추출→주입 (${RUN_DIR})"
+    python3 "${HDGP_ROOT}/scripts/distillation/extract_failing_objects.py" \
+        "$SIDE_FLAG" "$RUN_DIR" --threshold "$THRESH" --write
+fi
+
 echo "============================================"
 echo " Distillation 시작"
 echo "  태스크 : $TASK"

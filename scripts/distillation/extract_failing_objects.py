@@ -128,8 +128,10 @@ def main() -> None:
         for n, v in sorted(fail.items(), key=lambda kv: kv[1]):
             print(f"    {n:<12} {v:.3f}")
 
+    # 제공된 arm 들의 합집합(양쪽 주면 좌우 대칭, 한쪽만 주면 그 arm 것).
     union = tuple(sorted(set().union(*[set(f) for f in fails.values()])))
-    print(f"\n합집합 제외 대상 {len(union)}종:")
+    scope = "+".join(fails.keys())
+    print(f"\n제외 대상 {len(union)}종 ({scope}):")
     print("DISTILL_EXCLUDED_OBJECT_NAMES = (")
     for n in union:
         print(f'    "{n}",')
@@ -139,7 +141,8 @@ def main() -> None:
         if not union:
             print("\n제외 대상이 없어 주입 생략.")
             return
-        for side in ("right", "left"):
+        # 제공된 arm 의 cfg 만 패치한다(단일 arm 실행이 반대쪽을 덮어쓰지 않게).
+        for side in fails:
             p = _patch_cfg(side, union)
             print(f"주입 완료: {p}")
         print("※ py_compile/테스트로 확인 후 커밋하라.")
