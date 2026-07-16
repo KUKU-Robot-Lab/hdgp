@@ -19,6 +19,9 @@ LEFT_PKG = PKG.parents[1] / "left" / "grasp_v2"
 OBJ_R = (0.27, -0.10, 0.31)
 OBJ_L = (0.27, 0.10, 0.31)
 
+# 정면-사선 하향각 허용 범위(deg): preview 검증 배치 51.5°. over-shoulder 65° 는 배제.
+DOWN_MIN, DOWN_MAX = 40.0, 58.0
+
 
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -54,7 +57,7 @@ def test_right_camera_looks_at_object():
     d, cos, down = _check(r.CAMERA_POS, r.CAMERA_ROT, OBJ_R)
     assert cos > 0.999, f"시선이 물체를 향하지 않음 (cos={cos:.4f})"
     assert d >= 0.3, f"D435i 최소거리 미만 (dist={d:.3f})"
-    assert 25.0 <= down <= 50.0, f"하향각 범위 벗어남 ({down:.1f}deg)"
+    assert DOWN_MIN <= down <= DOWN_MAX, f"하향각 범위 벗어남 ({down:.1f}deg)"
     assert r.CAMERA_POS[0] > OBJ_R[0], "카메라가 물체 앞(+x)에 있지 않음"
 
 
@@ -62,7 +65,7 @@ def test_left_camera_looks_at_object():
     d, cos, down = _check(l.CAMERA_POS, l.CAMERA_ROT, OBJ_L)
     assert cos > 0.999, f"시선이 물체를 향하지 않음 (cos={cos:.4f})"
     assert d >= 0.3
-    assert 25.0 <= down <= 50.0
+    assert DOWN_MIN <= down <= DOWN_MAX
     assert l.CAMERA_POS[0] > OBJ_L[0]
 
 
