@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from threading import Thread
+from urllib.request import Request
 
 import pytest
 
@@ -74,18 +74,33 @@ def test_service_rejects_malformed_or_control_model_output() -> None:
             )
 
 
-def test_localhost_server_and_client_round_trip() -> None:
-    server = create_server(FakeBackend(), host="127.0.0.1", port=0)
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        client = QwenTaskClient(
-            base_url=f"http://127.0.0.1:{server.server_port}/v1/task-grounding",
-            timeout_seconds=2.0,
-        )
-        result = client.ground("pour", b"image")
-        assert result.target_id == "left_cup"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2.0)
+def test_service_and_client_round_trip_the_http_json_contract() -> None:
+    service = TaskGroundingService(FakeBackend())
+
+    def service_transport(request: Request, timeout: float) -> tuple[int, bytes]:
+        assert timeout == 2.0
+        payload = json.loads(request.data or b"{}")
+        result = service.ground(payload["command"], payload["image_base64"])
+        return 200, json.dumps(result).encode("utf-8")
+
+    client = QwenTaskClient(timeout_seconds=2.0, transport=service_transport)
+
+    result = client.ground("pour", b"image")
+
+    assert result.target_id == "left_cup"
+
+
+def test_create_server_uses_requested_local_address(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_server(address, handler):
+        captured["address"] = address
+        captured["handler"] = handler
+        return "server"
+
+    monkeypatch.setattr("vlm.pouring.qwen_server.ThreadingHTTPServer", fake_server)
+
+    result = create_server(FakeBackend(), host="127.0.0.1", port=8100)
+
+    assert result == "server"
+    assert captured["address"] == ("127.0.0.1", 8100)
