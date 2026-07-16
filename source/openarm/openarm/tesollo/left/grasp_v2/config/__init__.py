@@ -45,6 +45,9 @@ class GraspLeftEnvCfg_DISTILL(GraspLeftEnvCfg):
         # aux(object_pos 회귀)를 크게 걸어야 인코더가 "물체가 어디 있나"를 먼저 배운다.
         self.scene.num_envs = 256
         self.aux_coeff = 10.0
+        # student depth 입력(D435i, sim2real 갭↓). student network use_depth=True 와 반드시 일치
+        # (dagger 가 불일치를 막는다). depth 증강(aug_depth)이 이 경로에서 켜진다.
+        self.img_aug_type = "depth"
         # 실패물체 제외: onehot 은 153 유지, 스포너만 kept 로 교체(env 는 object_idx 를
         # 원본 슬롯으로 remap). teacher 학습 env 는 이 경로를 타지 않는다(distillation=False).
         self.distill_excluded_object_names = self.DISTILL_EXCLUDED_OBJECT_NAMES

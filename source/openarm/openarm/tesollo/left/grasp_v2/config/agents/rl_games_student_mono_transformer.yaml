@@ -25,6 +25,9 @@ params:
   network:
     name: a2c_mono_transformer
     separate: False
+    # depth 입력(D435i, sim2real 갭↓). env.img_aug_type="depth" 와 반드시 일치.
+    # resnet(3ch pretrained) 앞에서 1ch→3ch 타일링. RGB 로 되돌리려면 False + img_aug_type="rgb".
+    use_depth: True
 
     space:
       continuous:

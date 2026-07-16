@@ -451,7 +451,10 @@ class A2CBuilder(NetworkBuilder):
 
             self.img_height = int(120*2)
             self.img_width = int(160*2)
-            self.use_depth = False
+            # depth 입력 여부는 network config(use_depth)로 제어한다. True 면 forward 에서
+            # obs["img"](depth 1ch)를 쓰고, resnet(3ch pretrained) 앞에서 3ch 로 타일링한다.
+            # 환경의 img_aug_type 과 반드시 일치해야 한다(dagger 가 불일치를 막는다).
+            self.use_depth = bool(params.get("use_depth", False))
             # self.feature_extractor = CustomCNN(
             #     input_height=self.img_height,
             #     input_width=self.img_width,
@@ -538,6 +541,10 @@ class A2CBuilder(NetworkBuilder):
                         img_tensor = self.running_mean_std(img)
                     else:
                         img_tensor = img
+                # depth(1ch) → resnet(3ch pretrained) 앞에서 3ch 로 타일링(pretrained 보존).
+                # depth-as-grayscale 방식. 네이티브 1ch 가 필요하면 CustomCNN 경로로 교체.
+                if self.use_depth and img_tensor.shape[1] == 1:
+                    img_tensor = img_tensor.repeat(1, 3, 1, 1)
                 img_features = self.feature_extractor(img_tensor)
                 obs = torch.cat([obs, img_features], dim=-1)
             # obs = self.running_mean_std(obs_dict['observations'])

@@ -209,6 +209,15 @@ class Dagger:
         #   img_aug_type="depth" : 구 a2c_with_aux_depth 처럼 depth 를 직접 입력받는 경우
         # 엉뚱한 쪽을 증강하면 조용히 헛돈다 — 인코더가 안 보는 텐서에 노이즈를 넣게 된다.
         self.img_aug_type = self.ov_env.cfg.img_aug_type
+        # 인코더가 보는 modality(use_depth)와 증강 대상(img_aug_type)이 어긋나면 조용히 헛돈다
+        # (안 보는 텐서에 노이즈를 넣거나, 정규화 채널수가 어긋난다) → 시작 시 즉시 실패시킨다.
+        _net_use_depth = bool(getattr(self.student_model.a2c_network, "use_depth", False))
+        if (self.img_aug_type == "depth") != _net_use_depth:
+            raise ValueError(
+                f"modality 불일치: env.img_aug_type={self.img_aug_type!r} 인데 "
+                f"student network use_depth={_net_use_depth}. "
+                "둘을 함께 맞춰라(depth ↔ True, rgb ↔ False)."
+            )
         self.use_data_aug = config["student"]["data_aug"]
 
         self.depth_aug = DepthAug(f"cuda:{self.local_rank}")
