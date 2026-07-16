@@ -41,12 +41,14 @@ class FakeSkill:
 
 def make_task(allowed: tuple[str, ...] | None = None) -> TaskSpecification:
     default = ("grasp_lift", "bimanual_pour", "recovery")
+    selected = allowed or default
+    nominal = tuple(skill for skill in ("grasp_lift", "bimanual_pour") if skill in selected)
     return TaskSpecification(
         "pour",
         "source",
         "target",
-        ("grasp_lift", "bimanual_pour"),
-        allowed or default,
+        nominal,
+        selected,
     )
 
 
