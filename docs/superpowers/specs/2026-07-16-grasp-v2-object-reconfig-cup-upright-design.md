@@ -2,7 +2,24 @@
 
 - 날짜: 2026-07-16
 - 대상: `tesollo/right/grasp_v2`, `tesollo/left/grasp_v2`, `openarm/distillation`
-- 상태: 설계 승인됨. **본 spec의 구현 범위는 "코드 준비"까지.** 학습 실행은 사용자 요청 시까지 보류.
+- 상태: 설계 승인됨. **본 spec은 Phase 2 작업.** Phase 1(현재 teacher distillation 검증) 완료 후 착수.
+
+---
+
+## 0. 실행 순서 (2-phase) — 중요
+
+물체군 재구성은 **현재 학습 중인 teacher와 호환되지 않는다.** distillation env는 teacher와 동일한
+물체군을 써야 `num_teacher_observations`가 teacher 체크포인트와 일치한다. 지금 물체군을 바꾸면
+현재 teacher를 distillation에 물릴 때 obs 차원 불일치로 깨진다.
+
+- **Phase 1 (선행, 현재 우선순위)**: 물체군 **불변(153 visdex)**. 현재 server teacher 완주 →
+  `distill.sh --teacher <last.pth>`로 distillation 실행 → 구조/파이프라인이 제대로 학습되는지 검증.
+  distillation 인프라는 이미 구축·정적검증 완료(30 pass). **본 spec의 코드 변경을 적용하지 않는다.**
+- **Phase 2 (본 spec, 후행)**: Phase 1 검증 통과 후, 아래 물체군 재구성(실패 제거 + cup upright)을
+  적용 → 새 teacher 재학습 → 새 distillation.
+
+> ⚠️ Phase 1이 끝나기 전에 §4의 물체군 변경을 grasp_v2 cfg에 적용하면 현재 teacher의 distillation이
+> 깨진다. server가 git pull로 코드를 받는 구조이므로, 학습 중 물체군 변경 커밋을 push하지 않는다.
 
 ---
 
@@ -68,10 +85,13 @@ teacher가 못 하는 건 student도 배울 수 없다(`dagger.py:173` teacher �
 - (선택·YAGNI 보류) cup spawn z를 settled 높이로 강제하는 보강은 넣지 않는다 — zero velocity + yaw-only면
   수직 원통이 그대로 안착한다. 실측에서 흔들리면 그때 추가.
 
-### 4.3 teacher 재학습 (실행 보류)
+### 4.3 teacher 재학습 (Phase 2, 실행 보류)
 
-- 새 물체군으로 rl_games PPO 재학습(right, left). reset warm-state·ADR 인프라 재사용, 네트워크는
-  obs 차원 변경으로 **fresh**. 체크포인트 warm-start는 입력 차원 불일치로 불가(정정된 사실).
+- 새 물체군으로 rl_games PPO 재학습(right, left). reset warm-state·ADR 인프라·하이퍼파라미터 재사용.
+- **재학습 방식은 미정(사용자 보류)**: (a) fresh — 새 obs 차원으로 처음부터, 단순. (b) warm-start —
+  입력층 weight 수동 재매핑(겹치는 물체 슬롯 + hidden/LSTM/value 복사, cup 슬롯 랜덤)으로 전이,
+  수렴 빠르나 체크포인트 수술 코드 추가 필요. rl_games **자동** 로드는 입력 차원 불일치로 불가.
+  Phase 1 검증·run 종료 후 결정한다.
 - **본 spec 범위 밖의 실행.** 코드가 준비되면 사용자가 `train.sh`로 구동.
 
 ### 4.4 distillation 연결 (실행 보류)
