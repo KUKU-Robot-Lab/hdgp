@@ -69,9 +69,10 @@ def test_left_mirror_uses_same_branch_rule():
     assert l_utils.compute_palm_pose_id(obj_idx, side_idx).tolist() == [0, 1]
 
 
-def test_side_object_names_is_cup_only():
-    assert r_preset.SIDE_APPROACH_OBJECT_NAMES == ("cup",)
-    assert l_preset.SIDE_APPROACH_OBJECT_NAMES == ("cup",)
+def test_side_object_names_are_cups():
+    # cup + cup_big(pour 실물컵) 은 세로 원통이라 side approach 로 감싸 잡는다. 좌우 동일.
+    assert r_preset.SIDE_APPROACH_OBJECT_NAMES == ("cup", "cup_big")
+    assert l_preset.SIDE_APPROACH_OBJECT_NAMES == ("cup", "cup_big")
 
 
 # ---------------------------------------------------------------------------

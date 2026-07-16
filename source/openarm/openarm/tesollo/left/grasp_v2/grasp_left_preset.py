@@ -241,7 +241,7 @@ PREGRASP_SIDE_CLEARANCE = 0.03
 
 # side 접근을 유지할 물체 (그 외 전부 top-down). cup 은 내용물을 흘리면 안 되므로
 # 위에서 집지 않고 옆면을 감싸 잡는다(grasp_v1 방식).
-SIDE_APPROACH_OBJECT_NAMES = ("cup",)
+SIDE_APPROACH_OBJECT_NAMES = ("cup", "cup_big")
 
 # Fabrics world 파일 — right world의 y-미러(반발체가 오른팔 영역 y<0으로 이동).
 # lstm_test2 실패 근본원인: sed 재생성이 right world 문자열을 복귀시켜
@@ -351,11 +351,10 @@ CURL_JOINT_LIMITS_MAX = [_math.pi, 2.007, 1.955, 1.902, _math.pi / 2]
 # intrinsics 는 센서 사양이라 좌우 동일(D435i depth 1280x720, HFOV 87°/VFOV 58°).
 #   16:9 를 유지해야 FOV 가 맞는다. clipping 근거리 0.3m = D435i 최소 측정거리.
 #
-# extrinsics: right 정면-사선(07.16, preview 검증)의 좌우 미러. 물체(0.27,+0.10,0.297) 앞에서
-#   로봇 향해 높이 0.70m·51.5° 하향, 시선이 (0.27,+0.10,0.31) 을 지난다(dist 0.498m).
+# extrinsics: right DEXTRAH-like 정면(07.16)의 좌우 미러. 물체(0.27,+0.10,0.297) 앞에서 로봇
+#   향해 높이 0.72m·27.1° 하향, 시선이 (0.27,+0.10,0.31) 을 지난다(dist 0.899m).
 #   시선이 y-정렬(순수 -x 방향)이라 회전은 right 와 동일, 위치만 y 부호 반전.
-#   preview_camera.py 검증(07.16): 이 배치가 top-down 손과 물체를 분리·depth 유효 100%.
-#   실물은 hand-eye 캘리브로 교체.
+#   DEXTRAH 원본 배치(~0.9m·정면, clip far 2.0m) 충실 재현. 실물은 hand-eye 캘리브로 교체.
 #   (이전 미러 07.13: POS [0.0804,0.0050,0.9674]
 #    ROT [0.1530261,-0.6915698,0.6892421,-0.1525110] — 롤백용 보존)
 CAMERA_IMG_WIDTH  = 320
@@ -364,8 +363,8 @@ CAMERA_FOCAL_LENGTH       = 20.0
 CAMERA_HORIZONTAL_APERTURE = 37.9586   # 2*focal*tan(87°/2) → HFOV 87°
 CAMERA_CLIPPING_RANGE = (0.3, 3.0)
 
-CAMERA_POS = [0.5800, 0.1000, 0.7000]
-CAMERA_ROT = [0.2330111, -0.6676120, -0.6676120, 0.2330111]  # (w,x,y,z), ros convention
+CAMERA_POS = [1.0700, 0.1000, 0.7200]
+CAMERA_ROT = [0.3687510, -0.6033429, -0.6033429, 0.3687510]  # (w,x,y,z), ros convention
 
 CAMERA_D_MIN = 0.3
-CAMERA_D_MAX = 1.5
+CAMERA_D_MAX = 2.0

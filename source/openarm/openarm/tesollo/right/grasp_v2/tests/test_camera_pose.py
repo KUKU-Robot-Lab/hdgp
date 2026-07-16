@@ -19,8 +19,8 @@ LEFT_PKG = PKG.parents[1] / "left" / "grasp_v2"
 OBJ_R = (0.27, -0.10, 0.31)
 OBJ_L = (0.27, 0.10, 0.31)
 
-# 정면-사선 하향각 허용 범위(deg): preview 검증 배치 51.5°. over-shoulder 65° 는 배제.
-DOWN_MIN, DOWN_MAX = 40.0, 58.0
+# 정면 하향각 허용 범위(deg): DEXTRAH-like 배치 27.1°. over-shoulder 65° 는 배제.
+DOWN_MIN, DOWN_MAX = 20.0, 58.0
 
 
 def _load(name: str, path: Path):
@@ -82,3 +82,10 @@ def test_intrinsics_d435i_aspect():
     # 16:9 유지 + D435i 최소거리 0.3m (sim2real 갭 방지).
     assert r.CAMERA_IMG_WIDTH == 320 and r.CAMERA_IMG_HEIGHT == 180
     assert r.CAMERA_CLIPPING_RANGE[0] == 0.3
+
+
+def test_depth_band_covers_dextrah_distance():
+    # DEXTRAH-like ~0.9m 거리 + 광각이라 depth far 를 2.0m 로 올려야 워크스페이스가 밴드 안에 든다.
+    # 좌우 동일해야 미러 student 가 같은 depth 통계를 본다.
+    assert r.CAMERA_D_MAX == 2.0 and l.CAMERA_D_MAX == 2.0
+    assert r.CAMERA_D_MIN == 0.3 and l.CAMERA_D_MIN == 0.3

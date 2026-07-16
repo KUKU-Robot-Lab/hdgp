@@ -226,7 +226,7 @@ PREGRASP_SIDE_CLEARANCE = 0.03
 # side 접근을 유지할 물체 (그 외 전부 top-down).
 # cup 은 내용물을 흘리면 안 되므로 위에서 집으면 안 된다 — 옆면을 감싸 잡는다
 # (grasp_v1 방식). pour 로 이어지는 유일한 물체.
-SIDE_APPROACH_OBJECT_NAMES = ("cup",)
+SIDE_APPROACH_OBJECT_NAMES = ("cup", "cup_big")
 
 # Fabrics world 파일 (WorldMeshesModel) — env.py가 참조. 문자열 하드코드 금지.
 # right world는 왼팔 영역(y>0)에 반발체(left_arm_body sphere·left_target_cup box)를
@@ -339,14 +339,15 @@ CURL_JOINT_LIMITS_MAX = [0.0, 2.007, 1.955, 1.902, _math.pi / 2]
 #   clipping 근거리 0.3m = D435i 최소 측정거리. 원본의 0.01m는 실기에 존재하지 않는
 #   관측이라 그대로 학습시키면 sim2real 갭이 된다.
 #
-# extrinsics: 정면-사선(front-oblique) 3인칭. 07.16 — top-down 접근 가림 회피용 재배치.
-#   물체(0.27,-0.10,0.297) 앞(+x)에서 로봇 향해 높이 0.70m·51.5° 하향, 시선이 (0.27,-0.10,0.31)
-#   을 지난다(dist 0.498m ≥ D435i 최소 0.3m). roll 없는 순수 look-at.
-#   근거: over-shoulder 65° 하향은 top-down 하강하는 손·팔뚝이 접촉 직전 물체를 가린다.
-#   ★preview_camera.py 검증(07.16): 물체 앞·높은 정면-사선이 top-down pregrasp 손과 물체를
-#   분리해 가림을 줄인다. 후보 3종 중 이 배치(높이 0.70)가 depth 유효 100%·물체 수평중앙으로
-#   최적(낮은 0.62/0.55 배치는 depth 유효 ~82%·손과 겹침). 실측 이미지 docs/camera_preview/.
-#   실물 D435i 는 hand-eye 캘리브레이션 값으로 최종 교체. left 는 y 미러(회전 동일).
+# extrinsics: DEXTRAH-like 정면 3인칭. 07.16 — DEXTRAH 원본 배치 충실 재현.
+#   물체(0.27,-0.10,0.297) 앞(+x)에서 로봇 향해 높이 0.72m·27.1° 하향, 시선이 (0.27,-0.10,0.31)
+#   을 지난다(dist 0.899m). roll 없는 순수 look-at. left 는 y 미러(회전 동일).
+#   근거: DEXTRAH 원본(repo/DEXTRAH)은 카메라를 워크스페이스에서 ~0.9m·정면에 두고 clip far 2.0m,
+#   좁은 FOV 48° 로 학습. 우리는 실물 D435i(광각 87°)라 같은 거리에서 배경을 더 많이 봐 depth 가
+#   더 죽지만(유효 ~66%), CAMERA_D_MAX=2.0 으로 올려 워크스페이스는 밴드 안에 들어온다.
+#   preview_camera.py 검증(07.16): top-down pregrasp 손이 옆모습으로 보여 물체 가림 적음.
+#   ★사용자가 GUI(place_camera.py)로 잡은 먼 정면(1.5m·유효 33%)을 이 거리(0.9m)로 교정한 값.
+#   실물 D435i 는 hand-eye 캘리브레이션 값으로 최종 교체. 실측 이미지 docs/camera_preview/.
 #   (이전 over-shoulder 07.13: POS [0.0804,-0.0050,0.9674]
 #    ROT [0.1524955,-0.6891995,0.6916149,-0.1530299] — 롤백용 보존)
 CAMERA_IMG_WIDTH  = 320
@@ -355,10 +356,10 @@ CAMERA_FOCAL_LENGTH       = 20.0
 CAMERA_HORIZONTAL_APERTURE = 37.9586   # 2*focal*tan(87°/2) → HFOV 87°
 CAMERA_CLIPPING_RANGE = (0.3, 3.0)     # D435i: 최소 0.3m, 실사용 상한 3m
 
-CAMERA_POS = [0.5800, -0.1000, 0.7000]
-CAMERA_ROT = [0.2330111, -0.6676120, -0.6676120, 0.2330111]  # (w,x,y,z), ros convention
+CAMERA_POS = [1.0700, -0.1000, 0.7200]
+CAMERA_ROT = [0.3687510, -0.6033429, -0.6033429, 0.3687510]  # (w,x,y,z), ros convention
 
 # depth 유효 밴드 — 이 밖의 픽셀은 0으로 죽인다.
 # 카메라~물체 0.87m, 카메라~테이블 뒤편 ~1.3m 를 포괄.
 CAMERA_D_MIN = 0.3
-CAMERA_D_MAX = 1.5
+CAMERA_D_MAX = 2.0
