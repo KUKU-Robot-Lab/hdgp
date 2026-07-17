@@ -1301,16 +1301,19 @@ class GraspRightEnv(DirectRLEnv):
         ).items():
             self.extras[k] = v
         # episode_success_rate: 물체별 성공률 + 전체 (누적 집계는 _reset_idx 에서 갱신)
-        # counter 는 리셋에서만 갱신 → GPU 텐서를 .tolist() 로 한 번에 전송(물체당 .item()
-        # 2회 = 매 스텝 sync 다발 → 2 sync). fps sawtooth 의 CPU 구간 축소.
-        _tot_list = self._obj_total_episodes.tolist()
-        _suc_list = self._obj_success_episodes.tolist()
-        for _i, _name in enumerate(self._object_names):
-            _tot = _tot_list[_i]
-            if _tot > 0:
-                self.extras[f"episode_success_rate/{_name}"] = torch.tensor(
-                    _suc_list[_i] / _tot, device=self.device
-                )
+        # 물체별 카운트는 리셋에서만 변하고 TB 는 epoch(=horizon 16 step)에만 쓰므로 매 step
+        # 148종 CPU 전송(.tolist() 2 sync)은 낭비 → per_object_log_interval step마다만 갱신.
+        # extras dict 은 초기화 안 되므로 값이 유지됨(DEXTRAH: 매 step 집계만, 동기 0). fps
+        # sawtooth 의 CPU 구간 제거. 집계 스칼라는 python int 라 sync 없어 매 step 유지.
+        if self.common_step_counter % self.cfg.per_object_log_interval == 0:
+            _tot_list = self._obj_total_episodes.tolist()
+            _suc_list = self._obj_success_episodes.tolist()
+            for _i, _name in enumerate(self._object_names):
+                _tot = _tot_list[_i]
+                if _tot > 0:
+                    self.extras[f"episode_success_rate/{_name}"] = torch.tensor(
+                        _suc_list[_i] / _tot, device=self.device
+                    )
         self.extras["episode_success_rate"] = torch.tensor(
             _ep_success_rate, device=self.device
         )

@@ -212,7 +212,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     decimation:       int   = 2
     fabrics_dt:       float = 1.0 / 60.0
     fabric_decimation: int  = 2
-    use_cuda_graph:   bool  = False
+    use_cuda_graph:   bool  = True
 
     # -----------------------------------------------------------------------
     # 관측·액션 공간 — DEXTRAH teacher 구조 (base + 물체 onehot)
@@ -341,6 +341,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 양쪽 실접촉 AND 게이트로 hacking 차단. weight 4.0 = o2g(5.0)급 주력.
     force_closure_weight:        float = 4.0
     force_closure_force_scale:   float = 3.0   # N. tanh(‖f‖/scale) grip 세기 정규화
+    # per-object episode_success_rate 로깅 주기(step). 물체별 카운트는 _reset_idx 에서만 변하고
+    # TB 는 epoch(=horizon_length 16 step) 경계에만 쓰므로 매 step 148종 CPU 전송은 불필요.
+    # DEXTRAH 는 매 step 집계 .mean() 만(동기 0). horizon_length 에 맞춰 16 step마다만 갱신 →
+    # hot-path 동기 제거(GPU sawtooth 완화). 집계 스칼라(python int)는 매 step 유지.
+    per_object_log_interval:     int   = 16
 
     # (구) RH56F1 shared grasp-v2 reward contract — DEXTRAH 전환으로 미사용(호환 보존).
     approach_weight: float = 2.0
