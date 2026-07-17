@@ -34,17 +34,26 @@ NUM_HAND_DOF = 6
 NUM_SIDE_DOF = NUM_ARM_DOF + NUM_HAND_DOF  # 13 (한 팔)
 NUM_DOF = 2 * NUM_SIDE_DOF  # 26 (양팔)
 
-# 오른손 cspace 슬라이스(26 DOF 중): [0:7]=r_arm, [7:13]=r_hand
+# cspace 슬라이스(26 DOF 중): [0:7]=r_arm, [7:13]=r_hand, [13:20]=l_arm, [20:26]=l_hand
 R_ARM_SLICE = slice(0, NUM_ARM_DOF)
 R_HAND_SLICE = slice(NUM_ARM_DOF, NUM_SIDE_DOF)
+L_ARM_SLICE = slice(NUM_SIDE_DOF, NUM_SIDE_DOF + NUM_ARM_DOF)          # [13:20]
+L_HAND_SLICE = slice(NUM_SIDE_DOF + NUM_ARM_DOF, NUM_DOF)             # [20:26]
 
-# fingertip FK 프레임 (오른손, _rl URDF 기준). 오른손 obs 전용.
+# fingertip FK 프레임 (_rl URDF 기준). obs 전용.
 TIP_FRAMES = [
     "r_hl_thumb_tip",
     "r_hl_index_tip",
     "r_hl_middle_tip",
     "r_hl_ring_tip",
     "r_hl_pinky_tip",
+]
+LEFT_TIP_FRAMES = [
+    "l_hl_thumb_tip",
+    "l_hl_index_tip",
+    "l_hl_middle_tip",
+    "l_hl_ring_tip",
+    "l_hl_pinky_tip",
 ]
 
 # grasp_v2 (DEXTRAH 물체파지 이식) 용 오른손 PCA5 basis.
@@ -78,12 +87,24 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
     """
 
     def __init__(self, batch_size, device, timestep, graph_capturable=True,
-                 use_hand_fabric=False, hand_mode="direct"):
+                 use_hand_fabric=False, hand_mode="direct", side="right"):
         # hand_mode: "direct" = 6D identity 직접 제어(기존, grasp_v1),
         #            "pca"    = 5D PCA action(grasp_v2 물체파지, DEXTRAH 방식).
+        # side: "right" = 오른팔 palm IK 활성(왼팔 rest), "left" = 좌우 미러.
         assert hand_mode in ("direct", "pca"), f"invalid hand_mode: {hand_mode}"
+        assert side in ("right", "left"), f"invalid side: {side}"
         self._use_hand_fabric = use_hand_fabric
         self._hand_mode = hand_mode
+        self._side = side
+        # side 별 제어점/슬라이스/FK 프레임(오른손 기본, 왼손 미러). construct_fabric 전에 설정.
+        if side == "right":
+            self._palm_frame = "r_hl_palm_sensor"
+            self._arm_slice, self._hand_slice = R_ARM_SLICE, R_HAND_SLICE
+            self._tip_frames = TIP_FRAMES
+        else:
+            self._palm_frame = "l_hl_palm_sensor"
+            self._arm_slice, self._hand_slice = L_ARM_SLICE, L_HAND_SLICE
+            self._tip_frames = LEFT_TIP_FRAMES
         fabric_params_filename = "openarm_rh56f1_pose_params.yaml"
         super().__init__(device, batch_size, timestep, fabric_params_filename,
                          graph_capturable=graph_capturable)
@@ -95,19 +116,20 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
         self.load_robot(robot_dir_name, robot_name, batch_size)
 
         # Default cspace config (26 DOF): [r_arm7, r_hand6, l_arm7, l_hand6]
-        #   right arm : 자연 작업 자세 / right hand : 약한 grasp 자세(drive 기준)
-        #   left arm  : LEFT_ARM_REST_JOINT_POS(env preset) 중립 / left hand : open
-        # 왼팔/왼손은 능동 IK 없이 이 cspace target 으로만 유지된다("인프라만").
-        default_config = torch.tensor([
-            # right arm r_aj_1~7
-            1.0,  -0.1,  -0.6,  0.5,  0.0,  0.0,  0.0,
-            # right hand drive 6 (thumb_1 abd, thumb_2 flex, index/middle/ring/pinky flex)
-            0.6,  0.40,  0.90,  0.90,  0.90,  0.90,
-            # left arm l_aj_1~7 (grasp_v1 LEFT_ARM_REST_JOINT_POS 와 정합)
-            -0.315, -0.290, 0.400, 0.513, 0.666, -0.729, -0.957,
-            # left hand drive 6 (open)
-            0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
-        ], device=self.device)
+        #   활성 팔(side): 자연 작업 자세 + 약한 grasp / 비활성 팔: rest + open.
+        #   비활성 팔은 능동 IK 없이 이 cspace target 으로만 유지된다("인프라만").
+        # 미러 규칙(arm sign [-1,-1,-1,1,-1,-1,-1]): 좌팔 grasp/rest = 우팔값 부호 매핑.
+        _ARM_GRASP_R = [ 1.0, -0.1, -0.6,  0.5,  0.0,  0.0,  0.0]  # 우팔 자연 작업 자세
+        _ARM_REST_R  = [ 0.315,  0.290, -0.400, 0.513, -0.666, 0.729, 0.957]  # 우팔 rest(좌rest 미러)
+        _ARM_GRASP_L = [-1.0,  0.1,  0.6,  0.5,  0.0,  0.0,  0.0]  # 좌팔 grasp(우grasp 미러)
+        _ARM_REST_L  = [-0.315, -0.290, 0.400, 0.513, 0.666, -0.729, -0.957]  # 좌팔 rest(grasp_v1 정합)
+        _HAND_GRASP  = [0.6, 0.40, 0.90, 0.90, 0.90, 0.90]  # drive 6: thumb_1 abd, thumb_2 flex, 4지 flex
+        _HAND_OPEN   = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        if side == "right":
+            _cfg = _ARM_GRASP_R + _HAND_GRASP + _ARM_REST_L + _HAND_OPEN
+        else:
+            _cfg = _ARM_REST_R + _HAND_OPEN + _ARM_GRASP_L + _HAND_GRASP
+        default_config = torch.tensor(_cfg, device=self.device)
         self.default_config = default_config.unsqueeze(0).repeat(self.batch_size, 1)
 
         self._pca_matrix = None
@@ -126,9 +148,9 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
         ).reshape(self.batch_size, 9)
         self._native_palm_pose_target = None
 
-        # Fingertip FK taskmap (sim2real 관측용)
+        # Fingertip FK taskmap (sim2real 관측용). side 별 tip 프레임.
         self._fingertip_taskmap = RobotFrameOriginsTaskMap(
-            self.urdf_path, TIP_FRAMES, batch_size, device
+            self.urdf_path, self._tip_frames, batch_size, device
         )
 
     # ------------------------------------------------------------------
@@ -186,11 +208,11 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
             # (5, 26): kuka_allegro 와 동일 — PCA basis 를 오른손 drive 컬럼에 배치, 팔은 0 으로 소거.
             pca_basis = torch.tensor(RH56F1_HAND_PCA_MATRIX, device=self.device)  # (5, 6)
             hand_map = torch.zeros(NUM_HAND_PCA, NUM_DOF, device=self.device)
-            hand_map[:, R_HAND_SLICE] = pca_basis
+            hand_map[:, self._hand_slice] = pca_basis
         else:
             # (6, 26): 오른손 drive 컬럼 [7:13] 만 eye, 나머지(팔·왼쪽) 0 패딩.
             hand_map = torch.zeros(NUM_HAND_DOF, NUM_DOF, device=self.device)
-            hand_map[:, R_HAND_SLICE] = torch.eye(NUM_HAND_DOF, device=self.device)
+            hand_map[:, self._hand_slice] = torch.eye(NUM_HAND_DOF, device=self.device)
         self._pca_matrix = torch.clone(hand_map.detach())
         taskmap_name = "pca_hand"
         taskmap = LinearMap(hand_map, self.device)
@@ -204,11 +226,12 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
         # 실제 손바닥 센서 링크 r_hl_palm_sensor + 그 로컬 축점 6개를 IK control point 로.
         # (Tesollo palm_link 가상프레임은 실 palm_sensor 와 위치 3.4cm·자세 90° 어긋나 제거됨.)
         # 정책 6D pose = palm_sensor pose 직접(env 의 offset 변환 소멸).
+        _s = "r" if self._side == "right" else "l"
         control_point_frames = [
-            "r_hl_palm_sensor",
-            "ps_r_x", "ps_r_x_neg",
-            "ps_r_y", "ps_r_y_neg",
-            "ps_r_z", "ps_r_z_neg",
+            self._palm_frame,
+            f"ps_{_s}_x", f"ps_{_s}_x_neg",
+            f"ps_{_s}_y", f"ps_{_s}_y_neg",
+            f"ps_{_s}_z", f"ps_{_s}_z_neg",
         ]
         taskmap = RobotFrameOriginsTaskMap(self.urdf_path, control_point_frames,
                                            self.batch_size, self.device)
@@ -422,3 +445,20 @@ class OpenArmRh56f1PoseFabric(BaseFabric):
 
         if cspace_damping_gain is not None:
             self.fabric_params['cspace_damping']['gain'] = cspace_damping_gain
+
+
+class OpenArmRh56f1LeftPoseFabric(OpenArmRh56f1PoseFabric):
+    """좌팔 미러: 동일 bi-arm URDF(openarm_rh56f1)에서 왼손 palm IK 활성.
+
+    base 클래스를 side="left" 로 인스턴스화 — palm 제어점 l_hl_palm_sensor + ps_l_*,
+    hand slice [20:26], FK tip = l_hl_*_tip, default_config 좌활성/우rest.
+    tesollo OpenArmTeoslloLeftPoseFabric 과 동일 역할(단 별도 미러 URDF 불필요 —
+    rh56f1 bi-arm URDF 에 양팔·양 palm 축점이 이미 존재).
+    """
+
+    def __init__(self, batch_size, device, timestep, graph_capturable=True,
+                 use_hand_fabric=False, hand_mode="direct"):
+        super().__init__(batch_size, device, timestep,
+                         graph_capturable=graph_capturable,
+                         use_hand_fabric=use_hand_fabric, hand_mode=hand_mode,
+                         side="left")

@@ -1,0 +1,127 @@
+# 5g_grasp_right_v10-3 recurrent actor / MLP critic config
+# Actor 132D MLP [512, 512] -> LSTM 1024 / critic 169D MLP [512, 512, 256, 128], action 26D incremental palm + hand residual.
+# This is a separate non-warm-start config because the LSTM architecture
+# is incompatible with the v10-2 MLP checkpoint.
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [512, 512]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    rnn:
+      name: lstm
+      units: 1024
+      layers: 1
+      before_mlp: True   # DEXTRAH 정렬: 관측→LSTM→MLP
+      layer_norm: True
+      concat_input: True
+      concat_output: True
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: open-rh56f1_r_grasp_v2-lstm
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False
+    normalize_input: True
+    normalize_value: True
+    value_bootstrap: False
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    learning_rate: 1e-4   # DEXTRAH README teacher 레시피 명시 오버라이드 (yaml 기본 3e-4보다 우선)
+    lr_schedule: linear   # DEXTRAH 원본 재현. adaptive는 kl 0.019<2xthr라 lr 미감쇠, sigma 무한성장(lstm_test1 폭주). 구 reward의 linear 실패(lstm_test12)는 KL 0.08+ 상황이라 부적용
+    schedule_type: standard
+    kl_threshold: 0.013
+    score_to_win: 100000000
+    max_epochs: 20000
+    save_best_after: 100
+    save_frequency: 500
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.002   # DEXTRAH 원본. (0.001은 lstm_test2서 탐색부족 실증 — in_success 0.003 정체)
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 16    # DEXTRAH 정렬 (2048env×16=32768, minibatch 16384 ✓)
+    minibatch_size: 16384
+    mini_epochs: 4
+    critic_coef: 4
+    clip_value: True
+    seq_length: 16
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005
+    zero_rnn_on_done: True
+
+    has_central_value: True
+    central_value_config:
+      # DEXTRAH 원본 CV 블록과 1:1 (여분 키 제거: normalize_value/value_bootstrap/
+      # lr_schedule/e_clip — 원본은 5e-5 고정 lr)
+      minibatch_size: 16384
+      mini_epochs: 4
+      learning_rate: 5e-5
+      kl_threshold: 0.016
+      clip_value: True
+      normalize_input: True
+      truncate_grads: True
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [1024, 512]   # DEXTRAH 정렬
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
+        rnn:
+          # DEXTRAH 원본: critic 은 MLP 뒤 LSTM 2048 (actor 의 before_mlp True 와 반대)
+          name: lstm
+          units: 2048
+          layers: 1
+          before_mlp: False
+          layer_norm: True
+          concat_input: True
+          concat_output: True
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True
