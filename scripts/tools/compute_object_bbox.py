@@ -72,15 +72,17 @@ def main() -> None:
             continue
         out[d.name] = list(_bbox_from_stl(stl))
 
-    # cup / cup_big 은 visdex/primitives 어디에도 urdf 소스가 없다(별도 자산 — pour 실물컵).
-    # cup_radius_approx=0.045(폭 9cm) 와 일치하는 cup_big_2.stl 을 쓴다.
-    # cup_big 은 visdex USD 로 이식돼 active set 에 들어가나 urdf/obj 가 없어 스캔에서 누락되므로
-    # 여기서 같은 STL 로 명시 산출한다(cup 과 동일 geometry).
+    # cup / cup_big 은 visdex/primitives 어디에도 urdf/obj 소스가 없다(별도 USD 자산).
+    # cup_big = pour 실물컵(세로원통 9×17.8cm) → cup_big_2.stl.
+    # ★cup 은 DEXTRAH 계열 visdex 머그(짧고 넓음, 손잡이). cup_big 과 형상이 다르다.
+    #   과거엔 "cup 과 동일 geometry" 로 오판해 cup 에 cup_big 의 세로원통 bbox(높이 17.8cm)를
+    #   뒤집어씌웠고, clearance=‖half‖ 가 0.109m 로 과대→pregrasp 가 9cm 머그 위로 과도히 멀어져
+    #   cup 파지가 tesollo/rh56f1 양쪽에서 실패했다. 실제 cup.usd 실측(isaac UsdGeom world bbox):
+    #   full [0.0923, 0.1271, 0.0910]m → half 아래. (cup.usd 는 USD crate 라 obj 스캔 불가 → 명시.)
     cup_stl = REPO / "assets/cup/cup_big_2.stl"
     if cup_stl.is_file():
-        _cup_bbox = list(_bbox_from_stl(cup_stl))
-        out["cup"] = _cup_bbox
-        out["cup_big"] = _cup_bbox
+        out["cup_big"] = list(_bbox_from_stl(cup_stl))
+    out["cup"] = [0.04615, 0.06355, 0.04550]  # cup.usd 머그 실측 half-extent (m)
 
     OUT_JSON.write_text(json.dumps(out, indent=1, sort_keys=True), encoding="utf-8")
 
