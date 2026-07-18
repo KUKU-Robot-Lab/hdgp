@@ -62,7 +62,6 @@ import pathlib  # noqa: E402
 
 import gymnasium as gym  # noqa: E402
 import torch.distributed as dist  # noqa: E402
-from isaaclab_rl.rl_games import RlGamesVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
 
 _HDGP_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -77,10 +76,6 @@ from rl_games.algos_torch import model_builder  # noqa: E402
 from openarm.distillation.a2c_mono_transformer import A2CBuilder as _A2CMonoTransformerBuilder  # noqa: E402
 
 model_builder.register_network("a2c_mono_transformer", _A2CMonoTransformerBuilder)
-
-_RL_DEVICE = "cuda:0"
-_CLIP_OBS = 5.0
-_CLIP_ACTIONS = 1.0
 
 
 def _resolve_student_cfg(task: str) -> str:
@@ -138,8 +133,10 @@ def main(env_cfg, agent_cfg: dict) -> None:
     log_dir = _HDGP_ROOT / "log" / "distillation" / args_cli.task / args_cli.label
     (log_dir / "nn").mkdir(parents=True, exist_ok=True)
 
+    # DEXTRAH(run_distillation.py:104,195)와 동일하게 raw gym env 를 그대로 Dagger 에
+    # 넘긴다. Dagger 는 gymnasium 5-tuple step/reset API 를 쓰며, RlGamesVecEnvWrapper 를
+    # 씌우면 _process_obs 가 중첩 obs dict(벡터+카메라 img)를 clamp 하다 TypeError 로 죽는다.
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
-    env = RlGamesVecEnvWrapper(env, _RL_DEVICE, _CLIP_OBS, _CLIP_ACTIONS)
 
     dagger = Dagger(
         env,
