@@ -128,9 +128,16 @@ class ResnetEncoder(nn.Module):
 
         self.transform = get_standard_transform(self.device)
 
-        # Linear layers
+        # Linear layers — resnet18(fc/avgpool=Identity) flatten 출력은 512×⌈H/32⌉×⌈W/32⌉ 로
+        # 입력 해상도에 종속(DEXTRAH 320×240=40960 하드코딩이 320×180 카메라에서 30720 과
+        # 불일치로 죽었다). dummy forward 로 실제 차원을 산출해 어떤 해상도든 정합.
+        with torch.no_grad():
+            _dummy = torch.zeros(
+                1, 3, input_height, input_width, dtype=torch.bfloat16, device=device
+            )
+            _feat_dim = self.resnet18(_dummy).shape[1]
         self.linear = nn.Sequential(
-            nn.Linear(40960, 16384)
+            nn.Linear(_feat_dim, 16384)
         )
 
 
