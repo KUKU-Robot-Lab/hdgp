@@ -112,3 +112,17 @@ def test_receiver_mode_branches_all_three() -> None:
     # EXP-2 scale/delay는 learned 경로에만
     assert "self.cfg.receiver_action_scale" in env
     assert "self.cfg.receiver_action_delay_steps" in env
+
+
+def test_left_tcp_z_down_capped_for_s2r() -> None:
+    """[s2r] receiver TCP z 하강 캡: 컵 kinematic-follow의 테이블 관통 방지.
+
+    기본값 0(rest 아래 금지). env가 z 하한만 별도(_wr_min[0,2]=left_tcp_z_down_m)로 clamp.
+    """
+    cfg = _read("pour_right_env_cfg.py")
+    m = re.search(r"^\s*left_tcp_z_down_m\s*:\s*float\s*=\s*([0-9.]+)", cfg, flags=re.MULTILINE)
+    assert m is not None, "left_tcp_z_down_m flag 없음"
+    assert float(m.group(1)) == 0.0, "기본값 0 = rest 아래 하강 금지(테이블 관통 방지)"
+    env = _read("pour_right_env.py")
+    assert "self.cfg.left_tcp_z_down_m" in env, "env가 z-down 캡 미적용"
+    assert "_wr_min" in env and "_wr_min[0, 2]" in env, "z 하한만 별도 clamp 아님"

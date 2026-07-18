@@ -607,6 +607,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   left_cup_follow_local_z:  왼손 body(l_hl_gripper_base) frame Z 방향 컵 offset[m] (고정배치 0.05와 일치)
     left_tcp_action_delta_m: float = 0.01
     left_tcp_workspace_range: tuple[float, float, float] = (0.08, 0.08, 0.08)
+    # [s2r] 왼팔 TCP z 하강 허용량[m]. receiver 컵은 kinematic-follow라 테이블과 물리충돌이
+    #   없어, z 하강을 workspace_range(8cm)로 두면 컵이 테이블을 관통한다(실물 불가 → s2r 붕괴).
+    #   기본 0 = rest z 아래로 하강 금지(테이블 위 유지). lateral(x,y)·상방(z+)은 workspace_range.
+    left_tcp_z_down_m: float = 0.0
     left_cup_follow_local_z: float = 0.05
     # [RA-L ablation] receiver(왼팔) 제어 모드 — M0/M2/M4 공정비교 + EXP-2 necessity.
     #   learned : 정책 action[12:15] 누적 (M4, 기본 — 기존 학습과 완전 동일)

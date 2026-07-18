@@ -424,8 +424,11 @@ class PourRightEnv(DirectRLEnv):
         self.left_tcp_fixed_quat_b = self._left_tcp_rest_quat_b.repeat(self.num_envs, 1).contiguous()
         self.left_tcp_delta = float(self.cfg.left_tcp_action_delta_m)
         _wr = to_torch(list(self.cfg.left_tcp_workspace_range), device=self.device).unsqueeze(0)   # (1,3)
-        self._left_tcp_min = self._left_tcp_rest_pos_b - _wr
         self._left_tcp_max = self._left_tcp_rest_pos_b + _wr
+        # [s2r] z 하강만 별도 캡(기본 0=rest 아래 금지). 컵 kinematic-follow가 테이블 관통하는 것 방지.
+        _wr_min = _wr.clone()
+        _wr_min[0, 2] = float(self.cfg.left_tcp_z_down_m)
+        self._left_tcp_min = self._left_tcp_rest_pos_b - _wr_min
         # 컵 follow offset (preset FK와 동일: [0,0,local_z] + R_y(+90°))
         self._left_cup_follow_offset = to_torch(
             [0.0, 0.0, float(self.cfg.left_cup_follow_local_z)], device=self.device
