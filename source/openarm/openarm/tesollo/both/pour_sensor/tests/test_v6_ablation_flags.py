@@ -87,3 +87,28 @@ def test_demo_reward_runtime_gated_off_by_default() -> None:
     env = _read("pour_right_env.py")
     assert "not self.cfg.enable_demo_pose_reward" in env
     assert 'return {"r_demo_arm_pose": zero, "r_demo_j5": zero' in env
+
+
+def test_receiver_control_mode_flag_exists_default_learned() -> None:
+    """[RA-L] receiver_control_mode(str) flag 존재 + 기본값 learned(M4, 기존 학습 무영향)."""
+    cfg = _read("pour_right_env_cfg.py")
+    m = re.search(r'^\s*receiver_control_mode\s*:\s*str\s*=\s*"(\w+)"', cfg, flags=re.MULTILINE)
+    assert m is not None, "receiver_control_mode str flag 없음"
+    assert m.group(1) == "learned", "기본값=learned (M4). frozen/scripted는 override로만."
+    # EXP-2 necessity + scripted 파라미터도 존재
+    assert re.search(r"^\s*receiver_action_scale\s*:\s*float\s*=", cfg, flags=re.MULTILINE)
+    assert re.search(r"^\s*receiver_action_delay_steps\s*:\s*int\s*=", cfg, flags=re.MULTILINE)
+    assert re.search(r"^\s*scripted_receiver_clearance\s*:\s*float\s*=", cfg, flags=re.MULTILINE)
+
+
+def test_receiver_mode_branches_all_three() -> None:
+    """env가 frozen/scripted/learned 3분기 모두 처리하고, learned가 기본(else)이어야 한다."""
+    env = _read("pour_right_env.py")
+    assert '_recv_mode = self.cfg.receiver_control_mode' in env
+    assert '_recv_mode == "frozen"' in env, "M0 frozen 분기 없음"
+    assert '_recv_mode == "scripted"' in env, "M2 scripted 분기 없음"
+    # scripted는 source pour-point(base frame)를 추종
+    assert "self._source_pour_point_w" in env
+    # EXP-2 scale/delay는 learned 경로에만
+    assert "self.cfg.receiver_action_scale" in env
+    assert "self.cfg.receiver_action_delay_steps" in env

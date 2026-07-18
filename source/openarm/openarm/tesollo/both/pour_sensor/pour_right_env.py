@@ -1156,17 +1156,45 @@ class PourRightEnv(DirectRLEnv):
         alpha_action = actions[:, 6]    # (N,) ∈ [-1, 1] — [2b] arm 잉여 1-DOF (nullspace self-motion)
         self._raw_null_action.copy_(alpha_action)
 
-        # ---- [both/pour_sensor] 왼팔 TCP 3D 위치 delta (action[12:15]) ----
-        # rest TCP 기준 누적 위치 target을 workspace 박스로 클램프 (속도 cap = left_tcp_delta).
-        # orientation은 rest upright 고정. episode_hold_steps 동안은 왼팔도 고정(물리 안착).
-        left_action = actions[:, 12:15]                                              # (N,3) ∈ [-1,1]
+        # ---- [both/pour_sensor] 왼팔(receiver) TCP 제어 — 모드별 (RA-L ablation) ----
+        # learned: 정책 action[12:15] 누적(M4) / frozen: rest 고정(M0) / scripted: pour-point 추종(M2).
+        # orientation은 rest upright 고정. episode_hold_steps 동안은 모드 무관 rest 유지(물리 안착).
+        _recv_mode = self.cfg.receiver_control_mode
+        if _recv_mode == "frozen":
+            _new_left_target = self._left_tcp_rest_pos_b.expand(self.num_envs, -1).clone()
+        elif _recv_mode == "scripted":
+            # source pour-point(base frame) 아래로 receiver를 능동 추종 (기하 규칙, §3.1)
+            _src_b, _ = subtract_frame_transforms(
+                self.robot.data.root_pos_w, self.robot.data.root_quat_w, self._source_pour_point_w
+            )
+            _new_left_target = _src_b.clone()
+            _new_left_target[:, 0] += float(self.cfg.scripted_receiver_offset_xy[0])
+            _new_left_target[:, 1] += float(self.cfg.scripted_receiver_offset_xy[1])
+            _new_left_target[:, 2] = _src_b[:, 2] - float(self.cfg.scripted_receiver_clearance)
+            _new_left_target = torch.clamp(_new_left_target, self._left_tcp_min, self._left_tcp_max)
+        else:  # learned (M4, 기본 — scale=1·delay=0이면 기존 동작과 완전 동일)
+            left_action = actions[:, 12:15]                                          # (N,3) ∈ [-1,1]
+            if self.cfg.receiver_action_scale != 1.0:                                # [EXP-2] scale
+                left_action = left_action * float(self.cfg.receiver_action_scale)
+            if self.cfg.receiver_action_delay_steps > 0:                             # [EXP-2] delay (FIFO)
+                _d = int(self.cfg.receiver_action_delay_steps)
+                if getattr(self, "_recv_delay_buf", None) is None or self._recv_delay_buf.shape[1] != _d:
+                    self._recv_delay_buf = torch.zeros(self.num_envs, _d, 3, device=self.device)
+                    self._recv_delay_ptr = 0
+                _out = self._recv_delay_buf[:, self._recv_delay_ptr, :].clone()
+                self._recv_delay_buf[:, self._recv_delay_ptr, :] = left_action
+                self._recv_delay_ptr = (self._recv_delay_ptr + 1) % _d
+                left_action = _out
+            _new_left_target = torch.clamp(
+                self.left_tcp_target_pos_b + left_action * self.left_tcp_delta,
+                self._left_tcp_min, self._left_tcp_max,
+            )
         if self.cfg.episode_hold_steps > 0:
             _lhold = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
-            left_action = torch.where(_lhold, torch.zeros_like(left_action), left_action)
-        self.left_tcp_target_pos_b = torch.clamp(
-            self.left_tcp_target_pos_b + left_action * self.left_tcp_delta,
-            self._left_tcp_min, self._left_tcp_max,
-        )
+            _new_left_target = torch.where(
+                _lhold, self._left_tcp_rest_pos_b.expand(self.num_envs, -1), _new_left_target
+            )
+        self.left_tcp_target_pos_b = _new_left_target
 
         # ---- Pour phase: Fabrics arm 제어 ----
         # xyz: rim-pivot target 이동량, rot: current-palm incremental target.

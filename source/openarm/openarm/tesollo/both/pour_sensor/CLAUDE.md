@@ -1,4 +1,4 @@
-# pour v6 — PALM 틸팅
+# both/pour_sensor — 양팔 active-receiver (v6 PALM 틸팅 fork)
 
 @../pour_v5/CLAUDE.md
 
@@ -15,10 +15,14 @@
 
 ---
 
-## v6 고유 구조
+## both/pour_sensor 고유 구조
 
-- **7-D α action** (잉여 1-DOF self-motion) + rim-pivot 3D + approach. critic obs **144**.
-  - action 차원 7-D → v4/v5 체크포인트·warmstart 무효, fresh 재학습 필수.
+- **15-D action** (`pour_right_constants.py`): palm 6D + nullspace α 1D + hand lerp 5D + **왼팔(receiver) TCP 3D**.
+  - `action[12:15]` = 왼팔 TCP 위치 delta → DifferentialIK(DLS). orientation은 rest upright 고정,
+    target 컵은 왼손 kinematic-follow. 속도 cap `left_tcp_action_delta_m`(1cm/step),
+    workspace `left_tcp_workspace_range`(rest 기준 ±8cm 박스).
+  - actor obs **55**, critic obs **144** (105 base + 39 privileged).
+  - action 차원이 v4/v5(6~7D)와 다름 → 해당 체크포인트·warmstart 무효, fresh 재학습 필수.
 - **ablation flag** (논문용, `pour_right_env_cfg.py`):
   - `nullspace_baseline: str` (`robot_start`=순수DRL / `demo`=hard prior)
   - `enable_demo_pose_reward: bool` (soft prior)

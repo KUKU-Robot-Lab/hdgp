@@ -608,6 +608,18 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     left_tcp_action_delta_m: float = 0.01
     left_tcp_workspace_range: tuple[float, float, float] = (0.08, 0.08, 0.08)
     left_cup_follow_local_z: float = 0.05
+    # [RA-L ablation] receiver(왼팔) 제어 모드 — M0/M2/M4 공정비교 + EXP-2 necessity.
+    #   learned : 정책 action[12:15] 누적 (M4, 기본 — 기존 학습과 완전 동일)
+    #   frozen  : 왼팔 TCP를 rest에 고정 (M0, EXP-2 freeze)
+    #   scripted: source pour-point를 추종하는 기하 규칙 (M2, §3.1)
+    #   실행별 주입: hydra override `env.receiver_control_mode=frozen` 등.
+    receiver_control_mode: str = "learned"
+    # [EXP-2 necessity, eval-time] learned action 스케일 축소 / 지연(step, 60Hz → 100ms≈6)
+    receiver_action_scale: float = 1.0
+    receiver_action_delay_steps: int = 0
+    # [scripted 전용] pour-point 대비 receiver 목표 XY offset[m] / 하강 clearance[m]
+    scripted_receiver_offset_xy: tuple[float, float] = (0.0, 0.0)
+    scripted_receiver_clearance: float = 0.05
     source_cup_pour_point_pos_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_POINT_POS_B)
     target_cup_opening_pos_b: tuple[float, float, float] = tuple(TARGET_CUP_OPENING_POS_B)
     source_cup_pour_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_AXIS_B)
