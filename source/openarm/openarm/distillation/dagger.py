@@ -119,7 +119,9 @@ class Dagger:
         wp.set_device(f"cuda:{self.local_rank}")
 
         self.env = env
-        self.ov_env = env.env
+        # gym.make 가 OrderEnforcing 등 wrapper 를 씌우므로 unwrapped 로 베이스
+        # DirectRLEnv 까지 벗긴다(num_envs·cfg·robot 등 직접 속성 접근용).
+        self.ov_env = env.env.unwrapped
         self.num_envs = self.ov_env.num_envs
         self.num_actions = self.ov_env.num_actions
         self.device = self.local_rank
