@@ -449,8 +449,11 @@ class A2CBuilder(NetworkBuilder):
                             self.activations_factory.create(self.aux_out_activation)
                         )
 
-            self.img_height = int(120*2)
-            self.img_width = int(160*2)
+            # 카메라 해상도와 반드시 일치(D435i 16:9 320×180, CAMERA_IMG_* preset).
+            # DEXTRAH 기본(320×240) 하드코딩이 RunningMeanStd(240) vs 실제 img(180)
+            # 형상 불일치로 죽었다(첫 GPU 실행 발견). yaml network 섹션 override 가능.
+            self.img_height = int(params.get("img_height", 180))
+            self.img_width = int(params.get("img_width", 320))
             # depth 입력 여부는 network config(use_depth)로 제어한다. True 면 forward 에서
             # obs["img"](depth 1ch)를 쓰고, resnet(3ch pretrained) 앞에서 3ch 로 타일링한다.
             # 환경의 img_aug_type 과 반드시 일치해야 한다(dagger 가 불일치를 막는다).

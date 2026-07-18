@@ -28,6 +28,9 @@ params:
     # depth 입력(D435i, sim2real 갭↓). env.img_aug_type="depth" 와 반드시 일치.
     # resnet(3ch pretrained) 앞에서 1ch→3ch 타일링. RGB 로 되돌리려면 False + img_aug_type="rgb".
     use_depth: True
+    # 카메라 해상도(D435i 16:9). a2c_mono_transformer RunningMeanStd/encoder 형상과 일치 필수.
+    img_height: 180
+    img_width: 320
 
     space:
       continuous:
