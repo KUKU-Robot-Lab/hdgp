@@ -71,6 +71,13 @@ sys.path.insert(0, str(_HDGP_ROOT / "source" / "openarm"))
 import openarm.tasks  # noqa: F401,E402
 from openarm.distillation.dagger import Dagger  # noqa: E402
 
+# student 네트워크를 rl_games factory 에 등록 (DEXTRAH run_distillation.py:193 동일).
+# 미등록이면 ModelBuilder().load 가 ValueError: a2c_mono_transformer 로 죽는다.
+from rl_games.algos_torch import model_builder  # noqa: E402
+from openarm.distillation.a2c_mono_transformer import A2CBuilder as _A2CMonoTransformerBuilder  # noqa: E402
+
+model_builder.register_network("a2c_mono_transformer", _A2CMonoTransformerBuilder)
+
 _RL_DEVICE = "cuda:0"
 _CLIP_OBS = 5.0
 _CLIP_ACTIONS = 1.0
