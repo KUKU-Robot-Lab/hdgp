@@ -40,6 +40,11 @@ parser.add_argument(
     "--play_policy", action="store_true", default=False,
     help="Roll out the student without training (evaluation).",
 )
+parser.add_argument(
+    "--video", action="store_true", default=False,
+    help="Record an mp4 of the student rollout (play_policy 실패 모드 확인용).",
+)
+parser.add_argument("--video_length", type=int, default=400, help="Video length (steps).")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
@@ -136,7 +141,20 @@ def main(env_cfg, agent_cfg: dict) -> None:
     # DEXTRAH(run_distillation.py:104,195)와 동일하게 raw gym env 를 그대로 Dagger 에
     # 넘긴다. Dagger 는 gymnasium 5-tuple step/reset API 를 쓰며, RlGamesVecEnvWrapper 를
     # 씌우면 _process_obs 가 중첩 obs dict(벡터+카메라 img)를 clamp 하다 TypeError 로 죽는다.
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    env = gym.make(
+        args_cli.task, cfg=env_cfg,
+        render_mode="rgb_array" if args_cli.video else None,
+    )
+    # 학생 rollout 영상: play_policy 실패 모드(어느 물체·어느 단계) 육안 확인.
+    # RecordVideo 가 env.step/reset 을 후킹하는데 Dagger 가 그 env 를 직접 돌리므로 캡처됨.
+    if args_cli.video:
+        import gymnasium as _gym
+        _vf = str(log_dir / "videos" / "play")
+        env = _gym.wrappers.RecordVideo(
+            env, video_folder=_vf, step_trigger=lambda s: s == 0,
+            video_length=args_cli.video_length, disable_logger=True,
+        )
+        print(f"[INFO] Recording student rollout video → {_vf}")
 
     dagger = Dagger(
         env,
