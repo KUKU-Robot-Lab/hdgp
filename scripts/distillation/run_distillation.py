@@ -41,6 +41,10 @@ parser.add_argument(
     help="Roll out the student without training (evaluation).",
 )
 parser.add_argument(
+    "--play_teacher", action="store_true", default=False,
+    help="play 시 teacher(expert) action 으로 rollout(상한 비교 렌더). --play_policy 와 함께.",
+)
+parser.add_argument(
     "--video", action="store_true", default=False,
     help="Record an mp4 of the student rollout (play_policy 실패 모드 확인용).",
 )
@@ -177,6 +181,7 @@ def main(env_cfg, agent_cfg: dict) -> None:
                 "obs_type": "expert_policy",
             },
             "play_policy": args_cli.play_policy,
+            "play_teacher": args_cli.play_teacher,
         },
         summaries_dir=str(log_dir / "summaries"),
         nn_dir=str(log_dir / "nn"),

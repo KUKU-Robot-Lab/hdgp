@@ -190,6 +190,8 @@ class Dagger:
         self.finetune_backbone = False
 
         self.play_policy = config["play_policy"]
+        # play 시 teacher(expert) action 으로 rollout(beta=1). teacher 상한 확인·비교 렌더용.
+        self.play_teacher = bool(config.get("play_teacher", False))
         self.frame = 0
         self.epoch_num = 0
         self.game_rewards = torch_ext.AverageMeter(
@@ -316,6 +318,8 @@ class Dagger:
             beta = 0.0
             if self.play_policy:
                 self.optimizer.param_groups[0]["lr"] = 0.0
+                if self.play_teacher:
+                    beta = 1.0   # 전 env teacher action 으로 스텝(상한 비교 렌더)
             self.finetune_backbone = log_counter >= BACKBONE_FREEZE_ITERS
 
             if self.use_depth_aug:
