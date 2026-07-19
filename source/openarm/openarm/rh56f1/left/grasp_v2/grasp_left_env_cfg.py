@@ -495,7 +495,7 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 물체 spawn
     # -----------------------------------------------------------------------
     object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
-    object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
+    object_spawn_y_center: float = 0.10   # y-미러(좌팔 워크스페이스). probe 실증: -0.10이면 물체가 우측에 스폰돼 palm↔obj 0.47m
     # 0.27 축소 시도는 역효과(anchor=spawn+0.08 과 간격 3cm → 물체가 손 안으로
     # 스폰돼 충돌 사출, 즉시 종료 49/153) — 0.297 유지 (probe_fallen 실측).
     object_spawn_z:        float = 0.297
@@ -596,11 +596,12 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
             pos=[0.0, 0.0, 0.0],
             rot=[1.0, 0.0, 0.0, 0.0],
             joint_pos={
-                "l_aj_1":  0.5,
-                "l_aj_2":  0.1,
-                "l_aj_3":  0.4,
+                # 활성 좌팔 시작자세 = 우팔 (0.5,0.1,0.4,0.60,-0.2,0,0) 의 ARM_SIGN 미러
+                "l_aj_1": -0.5,
+                "l_aj_2": -0.1,
+                "l_aj_3": -0.4,
                 "l_aj_4":  0.60,
-                "l_aj_5": -0.2,
+                "l_aj_5":  0.2,
                 "l_aj_6":  0.0,
                 "l_aj_7":  0.0,
                 # RH56F1 우측 손 drive (approach pose)

@@ -76,14 +76,16 @@ RIGHT_ARM_AND_HAND_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAMES
 RIGHT_ARM_AND_GRIPPER_JOINT_NAMES = RIGHT_ARM_AND_HAND_JOINT_NAMES
 
 # 좌팔 rest 자세 (학습 비사용, 우측 작업공간 침범 방지). 좌손은 0(열림)으로 lock.
+# 비활성 우팔 rest = 원본 좌팔 rest 의 부호 미러(ARM_SIGN [-1,-1,-1,1,-1,-1,-1]).
+# 주의: 관절 limit 이 좌우 미러(비대칭)라 값 그대로 옮기면 r_aj_2 가 limit 위반(기동실패 실증).
 RIGHT_ARM_REST_JOINT_POS = {
-    "r_aj_1": -0.315,
-    "r_aj_2": -0.440,   # 왼손 palm_sensor y=0.082→0.15 (오른손 워크스페이스서 옆으로 치움, probe 실측)
-    "r_aj_3":  0.400,
+    "r_aj_1":  0.315,
+    "r_aj_2":  0.440,   # 오른손 palm_sensor 를 왼손 워크스페이스에서 옆으로 치움(좌 rest 미러)
+    "r_aj_3": -0.400,
     "r_aj_4":  0.513,
-    "r_aj_5":  0.666,
-    "r_aj_6": -0.729,
-    "r_aj_7": -0.957,
+    "r_aj_5": -0.666,
+    "r_aj_6":  0.729,
+    "r_aj_7":  0.957,
 }
 RIGHT_HAND_REST_JOINT_POS = {name: 0.0 for name in RIGHT_HAND_JOINT_NAMES}
 

@@ -410,9 +410,9 @@ class GraspLeftEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         self._setup_geometric_fabrics()
 
-        # cspace attractor: 오른손[7:13]만 grasp pose 방향, 좌측[13:26]은 중립 유지
+        # cspace attractor: 왼손[20:26]만 grasp pose 방향, 우측[0:13]은 rest 유지 (좌팔 활성)
         cspace_default = self.fabric.default_config.clone()  # 26D [r_arm7,r_hand6,l_arm7,l_hand6]
-        cspace_default[:, NUM_ARM_DOF:NUM_ROBOT_DOF] = self.hand_grasp_pose.unsqueeze(0).expand(self.num_envs, -1)
+        cspace_default[:, NUM_ROBOT_DOF + NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self.num_envs, -1)
         self.fabric.default_config.copy_(cspace_default)
 
         # 초기 액션: 0 → palm pose workspace 중심 (접근 자세 유지)
@@ -517,9 +517,9 @@ class GraspLeftEnv(DirectRLEnv):
 
         self.fabric_integrator = DisplacementIntegrator(self.fabric)
 
-        # Fabric 상태 버퍼 (26D). 우측[0:13]=팔+손 시작자세, 좌측[13:26]=default 중립 유지.
+        # Fabric 상태 버퍼 (26D). 좌측[13:26]=팔+손 시작자세, 우측[0:13]=default rest 유지.
         self.fabric_q   = self.fabric.default_config.clone().contiguous()
-        self.fabric_q[:, :NUM_ROBOT_DOF] = self.robot_start_joint_pos
+        self.fabric_q[:, NUM_ROBOT_DOF:] = self.robot_start_joint_pos
         self.fabric_qd  = torch.zeros(self.num_envs, num_joints, device=self.device)
         self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
 
@@ -554,8 +554,8 @@ class GraspLeftEnv(DirectRLEnv):
         )
         self._reset_integrator = DisplacementIntegrator(self._reset_fabric)
 
-        reset_cspace = self._reset_fabric.default_config.clone()  # 26D, 좌측 중립 유지
-        reset_cspace[:, NUM_ARM_DOF:NUM_ROBOT_DOF] = self.hand_grasp_pose.unsqueeze(0).expand(self._reset_chunk, -1)
+        reset_cspace = self._reset_fabric.default_config.clone()  # 26D, 우측 rest 유지
+        reset_cspace[:, NUM_ROBOT_DOF + NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self._reset_chunk, -1)
         self._reset_fabric.default_config.copy_(reset_cspace)
 
         self._reset_pca     = torch.zeros(self._reset_chunk, 5, device=self.device)
@@ -657,12 +657,14 @@ class GraspLeftEnv(DirectRLEnv):
         n = len(env_ids)
         C = self._reset_chunk
 
-        # reset_fabric 은 26D cspace. q_init 이 우측 13D 로 오면 좌측 중립(default[13:26])을
-        # 붙여 26D 로 확장하고, 반환은 다시 우측 13D 로 슬라이스한다(호출부 계약 유지).
+        # reset_fabric 은 26D cspace [r13, l13]. q_init 이 좌측 13D 로 오면 우측 rest
+        # (default[0:13])를 앞에 붙여 26D 로 확장, 반환은 좌측[13:26] 슬라이스(호출부 계약).
+        # ★주의: 26D 순서는 URDF 고정([r,l]) — 좌측 값을 앞[0:13]에 넣으면 우팔 IK 해를
+        # 좌팔에 적용하게 됨(probe 실증: l_aj_2=0.503 limit 위반 → palm 0.43m 미달).
         left_only = q_init.shape[1] == NUM_ROBOT_DOF
         if left_only:
-            right_neutral = self._reset_fabric.default_config[0, NUM_ROBOT_DOF:].unsqueeze(0)
-            q_init = torch.cat([q_init, right_neutral.expand(q_init.shape[0], -1)], dim=1)
+            right_rest = self._reset_fabric.default_config[0, :NUM_ROBOT_DOF].unsqueeze(0)
+            q_init = torch.cat([right_rest.expand(q_init.shape[0], -1), q_init], dim=1)
 
         q_out = torch.zeros_like(q_init)
 
@@ -699,7 +701,7 @@ class GraspLeftEnv(DirectRLEnv):
 
             q_out[start:end] = fq[:m]
 
-        return q_out[:, :NUM_ROBOT_DOF] if left_only else q_out
+        return q_out[:, NUM_ROBOT_DOF:] if left_only else q_out
 
     # ------------------------------------------------------------------
     # 접촉력 업데이트
@@ -897,13 +899,13 @@ class GraspLeftEnv(DirectRLEnv):
         )
         self.hand_joint_targets.copy_(hand_target)
 
-        # fabric_q 오른손[7:13] 부분 동기화 (FK 계산에 활용). 좌측[13:26]은 중립 유지.
-        self.fabric_q[:, NUM_ARM_DOF:NUM_ROBOT_DOF] = hand_target
-        self.fabric_qd[:, NUM_ARM_DOF:NUM_ROBOT_DOF].zero_()
+        # fabric_q 왼손[20:26] 부분 동기화 (FK 계산에 활용). 우측[0:13]은 rest 유지.
+        self.fabric_q[:, NUM_ROBOT_DOF + NUM_ARM_DOF:] = hand_target
+        self.fabric_qd[:, NUM_ROBOT_DOF + NUM_ARM_DOF:].zero_()
 
     def _apply_action(self) -> None:
-        # ---- 오른팔: 전 구간 Fabrics arm target (DEXTRAH 단일 phase) ----
-        arm_target = self.fabric_q[:, :NUM_ARM_DOF]
+        # ---- 왼팔: 전 구간 Fabrics arm target (DEXTRAH 단일 phase) ----
+        arm_target = self.fabric_q[:, NUM_ROBOT_DOF:NUM_ROBOT_DOF + NUM_ARM_DOF]
 
         self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_dof_indices)
         # DEXTRAH pd_targets: velocity feedforward = factor × fabric qd (ADR 1→0).
@@ -986,10 +988,10 @@ class GraspLeftEnv(DirectRLEnv):
         # hand points (palm + 5 tips): fabric FK on noisy q → noisy hand pos/vel.
         # RH56F1 fabric taskmap 은 26D cspace 입력 필요 → 우측 noisy 13D + 좌측 중립 13D 로 확장.
         # (좌측은 고정이므로 velocity 0. Jacobian 도 26D → vel 도 26D 로 확장해 bmm.)
-        _right_neutral = self.fabric.default_config[:, NUM_ROBOT_DOF:]                    # (N, 13)
-        _q_noisy_full  = torch.cat([self.robot_dof_pos_noisy, _right_neutral], dim=1)     # (N, 26)
+        _right_rest = self.fabric.default_config[:, :NUM_ROBOT_DOF]                      # (N, 13) 우측 rest
+        _q_noisy_full  = torch.cat([_right_rest, self.robot_dof_pos_noisy], dim=1)        # (N, 26) [r, l]
         _qd_noisy_full = torch.cat(
-            [self.robot_dof_vel_noisy, torch.zeros_like(_right_neutral)], dim=1
+            [torch.zeros_like(_right_rest), self.robot_dof_vel_noisy], dim=1
         )                                                                               # (N, 26)
         _palm_pts, _palm_jac = self.fabric.get_taskmap("palm")(_q_noisy_full, None)
         _tip_pts, _tip_jac = self.fabric._fingertip_taskmap(_q_noisy_full, None)
@@ -1045,9 +1047,9 @@ class GraspLeftEnv(DirectRLEnv):
             self.multi_object_idx_onehot,    # N_obj
             self.object_scale,               # 1
             self.actions,                    # 11
-            self.fabric_q[:, :NUM_ROBOT_DOF],    # 13 (우측 팔+손, 좌측 제외)
-            self.fabric_qd[:, :NUM_ROBOT_DOF],   # 13
-            self.fabric_qdd[:, :NUM_ROBOT_DOF],  # 13
+            self.fabric_q[:, NUM_ROBOT_DOF:],    # 13 (우측 팔+손, 좌측 제외)
+            self.fabric_qd[:, NUM_ROBOT_DOF:],   # 13
+            self.fabric_qdd[:, NUM_ROBOT_DOF:],  # 13
         ], dim=-1)   # 123 + N_obj
 
         if actor_obs.shape[1] != self.cfg.observation_space:
@@ -1083,9 +1085,9 @@ class GraspLeftEnv(DirectRLEnv):
             self.multi_object_idx_onehot,    # N_obj
             self.object_scale,               # 1
             self.actions,                    # 11
-            self.fabric_q[:, :NUM_ROBOT_DOF],    # 13
-            self.fabric_qd[:, :NUM_ROBOT_DOF],   # 13
-            self.fabric_qdd[:, :NUM_ROBOT_DOF],  # 13
+            self.fabric_q[:, NUM_ROBOT_DOF:],    # 13
+            self.fabric_qd[:, NUM_ROBOT_DOF:],   # 13
+            self.fabric_qdd[:, NUM_ROBOT_DOF:],  # 13
         ], dim=-1)   # 163 + N_obj
 
         if critic_obs.shape[1] != self.cfg.state_space:
@@ -1704,7 +1706,7 @@ class GraspLeftEnv(DirectRLEnv):
             )
         self.robot.write_joint_state_to_sim(full_pos, full_vel, env_ids=env_ids)
 
-        self.fabric_q[env_ids, :NUM_ROBOT_DOF] = q_pregrasp   # 우측 13D, 좌측[13:26] 중립 유지
+        self.fabric_q[env_ids, NUM_ROBOT_DOF:] = q_pregrasp   # 좌측 13D, 우측[0:13] rest 유지
         self.fabric_qd[env_ids].zero_()
         self.fabric_qdd[env_ids].zero_()
         self.object_init_pos[env_ids] = obj_pos_local
