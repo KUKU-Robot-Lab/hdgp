@@ -331,7 +331,14 @@ class Dagger:
                 # mask = 배경(depth 밴드 초과) 픽셀 → 배경만 VOC 이미지로 교체
                 obs["rgb"] = self.rgb_aug.apply(obs["rgb"], obs["mask"])
 
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            # play(eval)에선 autocast 끔(fp32) — bf16 이 teacher sigma 를 음수로 반올림해
+            # 모델 내부 sample(models.py normal std>=0) 이 죽는다. 학습만 bf16 유지.
+            import contextlib as _ctx
+            _amp = (
+                _ctx.nullcontext() if self.play_policy
+                else torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            )
+            with _amp:
                 with torch.no_grad():
                     actions_teacher = self._get_actions(obs, "teacher")
                     self.actions_teacher = actions_teacher["actions"]
