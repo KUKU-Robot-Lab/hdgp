@@ -369,3 +369,6 @@ CAMERA_ROT = [0.3687510, -0.6033429, -0.6033429, 0.3687510]  # (w,x,y,z), ros co
 
 CAMERA_D_MIN = 0.3
 CAMERA_D_MAX = 2.0
+
+# 중앙 crop → 물체 detail 확보(right 동일, dt 고원 진단). 0.5=중앙절반 crop→업샘플.
+CAMERA_CROP_FRAC = 0.5

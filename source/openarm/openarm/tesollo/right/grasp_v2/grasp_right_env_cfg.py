@@ -47,6 +47,7 @@ from .grasp_right_preset import (
     CAMERA_CLIPPING_RANGE,
     CAMERA_D_MAX,
     CAMERA_D_MIN,
+    CAMERA_CROP_FRAC,
     CAMERA_FOCAL_LENGTH,
     CAMERA_HORIZONTAL_APERTURE,
     CAMERA_IMG_HEIGHT,
@@ -760,6 +761,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     img_height: int = CAMERA_IMG_HEIGHT
     d_min: float = CAMERA_D_MIN
     d_max: float = CAMERA_D_MAX
+    # 중앙 crop 비율(물체 detail 확보). 1.0=crop 없음(기존). 0.5=중앙 절반 crop→원크기 업샘플.
+    camera_crop_frac: float = CAMERA_CROP_FRAC
 
     tiled_camera_cfg: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",

@@ -363,3 +363,9 @@ CAMERA_ROT = [0.3687510, -0.6033429, -0.6033429, 0.3687510]  # (w,x,y,z), ros co
 # 카메라~물체 0.87m, 카메라~테이블 뒤편 ~1.3m 를 포괄.
 CAMERA_D_MIN = 0.3
 CAMERA_D_MAX = 2.0
+
+# 중앙 crop → 물체 detail 확보 (dt1/dt2 고원 진단: 물체가 87° 광각서 ~19px, DEXTRAH 44px).
+# 원본 320×180 의 중앙 CAMERA_CROP_FRAC 만큼을 잘라 다시 320×180 으로 업샘플.
+# 유효 HFOV 87°→~44°, 물체 ~19px→~37px. 실물 D435i(87° 고정)에서도 depth 를 동일 crop
+# 하면 sim↔real 정합(하드웨어 화각 무관, 후처리로 통일). 0(=1.0) 이면 crop 없음(기존).
+CAMERA_CROP_FRAC = 0.5   # 160×90 중앙 crop → 320×180 리사이즈

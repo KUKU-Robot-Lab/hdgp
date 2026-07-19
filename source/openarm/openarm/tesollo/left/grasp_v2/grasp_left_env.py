@@ -1235,6 +1235,17 @@ class GraspLeftEnv(DirectRLEnv):
         # depth 유효 밴드 밖은 0 으로 죽인다. mask 는 배경(=밴드 초과) 픽셀 —
         # aux depth 재구성 손실에서 배경을 제외하는 데 쓴다.
         depth = self._tiled_camera.data.output["depth"].clone()
+        # 중앙 crop → 물체 detail 확보(right 동일). crop_frac 만큼 중앙을 잘라 원 해상도로
+        # 업샘플 → 물체 화면 크기 1/crop_frac 배. 실물 D435i 도 동일 crop 으로 정합.
+        _cf = float(self.cfg.camera_crop_frac)
+        if _cf < 0.999:
+            _d = depth.permute(0, 3, 1, 2)
+            _n, _c, _h, _w = _d.shape
+            _ch, _cw = int(_h * _cf), int(_w * _cf)
+            _t, _l = (_h - _ch) // 2, (_w - _cw) // 2
+            _d = _d[:, :, _t:_t + _ch, _l:_l + _cw]
+            _d = torch.nn.functional.interpolate(_d, size=(_h, _w), mode="nearest")
+            depth = _d.permute(0, 2, 3, 1).contiguous()
         mask = depth.permute((0, 3, 1, 2)) > self.cfg.d_max
         depth[depth <= 1e-8] = 10.0        # 렌더 미스(0) → 무효로 밀어냄
         depth[depth > self.cfg.d_max] = 0.0

@@ -1236,6 +1236,20 @@ class GraspRightEnv(DirectRLEnv):
         # depth 유효 밴드 밖은 0 으로 죽인다. mask 는 배경(=밴드 초과) 픽셀 —
         # aux depth 재구성 손실에서 배경을 제외하는 데 쓴다.
         depth = self._tiled_camera.data.output["depth"].clone()
+        # 중앙 crop → 물체 detail 확보(dt1/dt2 고원: 물체 ~19px). 중앙 crop_frac 만큼을
+        # 잘라 원 해상도로 업샘플 → 물체 화면 크기 1/crop_frac 배(0.5→2배 ~37px). 유효
+        # HFOV 87°→~44°. depth 는 (N,H,W,1) → interpolate 위해 (N,1,H,W) 로 permute.
+        _cf = float(self.cfg.camera_crop_frac)
+        if _cf < 0.999:
+            _d = depth.permute(0, 3, 1, 2)                       # (N,1,H,W)
+            _n, _c, _h, _w = _d.shape
+            _ch, _cw = int(_h * _cf), int(_w * _cf)
+            _t, _l = (_h - _ch) // 2, (_w - _cw) // 2
+            _d = _d[:, :, _t:_t + _ch, _l:_l + _cw]              # 중앙 crop
+            _d = torch.nn.functional.interpolate(
+                _d, size=(_h, _w), mode="nearest"                # depth 는 nearest(값 보존)
+            )
+            depth = _d.permute(0, 2, 3, 1).contiguous()          # (N,H,W,1) 로 복귀
         mask = depth.permute((0, 3, 1, 2)) > self.cfg.d_max
         depth[depth <= 1e-8] = 10.0        # 렌더 미스(0) → 무효로 밀어냄
         depth[depth > self.cfg.d_max] = 0.0

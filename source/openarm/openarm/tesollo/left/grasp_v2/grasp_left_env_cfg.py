@@ -47,6 +47,7 @@ from .grasp_left_preset import (
     CAMERA_CLIPPING_RANGE,
     CAMERA_D_MAX,
     CAMERA_D_MIN,
+    CAMERA_CROP_FRAC,
     CAMERA_FOCAL_LENGTH,
     CAMERA_HORIZONTAL_APERTURE,
     CAMERA_IMG_HEIGHT,
@@ -759,6 +760,7 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     img_height: int = CAMERA_IMG_HEIGHT
     d_min: float = CAMERA_D_MIN
     d_max: float = CAMERA_D_MAX
+    camera_crop_frac: float = CAMERA_CROP_FRAC
 
     tiled_camera_cfg: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
