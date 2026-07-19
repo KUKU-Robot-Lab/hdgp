@@ -1166,14 +1166,19 @@ class PourRightEnv(DirectRLEnv):
         if _recv_mode == "frozen":
             _new_left_target = self._left_tcp_rest_pos_b.expand(self.num_envs, -1).clone()
         elif _recv_mode == "scripted":
-            # source pour-point(base frame) 아래로 receiver를 능동 추종 (기하 규칙, §3.1)
-            _src_b, _ = subtract_frame_transforms(
-                self.robot.data.root_pos_w, self.robot.data.root_quat_w, self._source_pour_point_w
+            # [M2] receiver 컵 입구를 source pour-point 밑(XY)에 놓는 기하 규칙 (§3.1).
+            # 제어 대상은 왼팔 TCP(hand)지만 실제 받는 건 컵 입구(hand와 offset) →
+            #   cup-follow offset을 보정해 TCP target을 산출. z는 rest(받는 높이) 고정,
+            #   XY만 spout를 추종. workspace(±8cm) 클램프.
+            _hand_w = self.robot.data.body_pos_w[:, self._left_hand_body_index]     # (N,3) 왼손 world
+            _open_off_w = self._target_opening_w - _hand_w                          # 컵입구−손 offset(world)
+            _desired_hand_w = self._source_pour_point_w.clone()
+            _desired_hand_w[:, 0] += float(self.cfg.scripted_receiver_offset_xy[0]) - _open_off_w[:, 0]
+            _desired_hand_w[:, 1] += float(self.cfg.scripted_receiver_offset_xy[1]) - _open_off_w[:, 1]
+            _new_left_target, _ = subtract_frame_transforms(
+                self.robot.data.root_pos_w, self.robot.data.root_quat_w, _desired_hand_w
             )
-            _new_left_target = _src_b.clone()
-            _new_left_target[:, 0] += float(self.cfg.scripted_receiver_offset_xy[0])
-            _new_left_target[:, 1] += float(self.cfg.scripted_receiver_offset_xy[1])
-            _new_left_target[:, 2] = _src_b[:, 2] - float(self.cfg.scripted_receiver_clearance)
+            _new_left_target[:, 2] = self._left_tcp_rest_pos_b[0, 2]                # z는 rest 고정
             _new_left_target = torch.clamp(_new_left_target, self._left_tcp_min, self._left_tcp_max)
         else:  # learned (M4, 기본 — scale=1·delay=0이면 기존 동작과 완전 동일)
             left_action = actions[:, 12:15]                                          # (N,3) ∈ [-1,1]
