@@ -479,6 +479,12 @@ class GraspRightEnv(DirectRLEnv):
                 event_manager=getattr(self, "event_manager", None),
                 physics_cfg=cfg.adr_physics_cfg,
             )
+            # DEXTRAH starting_adr_increments (env_cfg.py:339) 이식: distillation 은
+            # env 를 teacher 작동점(만렙)에 고정해야 한다 — ADR 0 이면 abduction 이
+            # 잠겨 teacher 시연이 왜곡된다(dt1 고원 0.19 의 구조 원인). 기본 0 = 기존 동작.
+            _start_adr = int(getattr(cfg, "starting_adr_increments", 0))
+            if _start_adr > 0:
+                self.grasp_adr.set_increment(_start_adr)
         else:
             self.grasp_adr = None
 

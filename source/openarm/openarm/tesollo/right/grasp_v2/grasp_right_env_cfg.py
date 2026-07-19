@@ -439,6 +439,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # DEXTRAH min_steps_for_dr_change = 5 × 에피소드 길이 (600 steps @10s) = 3000
     adr_increment_interval: int  = 3000
     adr_trigger_threshold: float = 0.4
+    # DEXTRAH starting_adr_increments (env_cfg.py:339) 이식. 0=기존 동작(레벨 0 시작),
+    # adr_num_increments=만렙 고정 시작. distillation 은 teacher 작동점(만렙)에 고정해야
+    # abduction 이 안 잠긴다 — DISTILL cfg 가 50 으로 오버라이드.
+    starting_adr_increments: int = 0
 
     # DEXTRAH physics DR: EventCfg(reset 이벤트) + ADR 범위 확장 종점 (원본 adr_cfg_dict)
     events: EventCfg = field(default_factory=EventCfg)

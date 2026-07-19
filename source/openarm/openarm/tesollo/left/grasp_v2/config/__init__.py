@@ -45,6 +45,8 @@ class GraspLeftEnvCfg_DISTILL(GraspLeftEnvCfg):
         # aux(object_pos 회귀)를 크게 걸어야 인코더가 "물체가 어디 있나"를 먼저 배운다.
         self.scene.num_envs = 256
         self.aux_coeff = 10.0
+        # ★env 를 teacher 작동점(ADR 만렙)에 고정(right dt1 고원 교훈).
+        self.starting_adr_increments = self.adr_num_increments
         # student depth 입력(D435i, sim2real 갭↓). student network use_depth=True 와 반드시 일치
         # (dagger 가 불일치를 막는다). depth 증강(aug_depth)이 이 경로에서 켜진다.
         self.img_aug_type = "depth"
