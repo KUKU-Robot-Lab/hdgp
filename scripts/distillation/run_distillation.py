@@ -141,6 +141,12 @@ def main(env_cfg, agent_cfg: dict) -> None:
     # DEXTRAH(run_distillation.py:104,195)와 동일하게 raw gym env 를 그대로 Dagger 에
     # 넘긴다. Dagger 는 gymnasium 5-tuple step/reset API 를 쓰며, RlGamesVecEnvWrapper 를
     # 씌우면 _process_obs 가 중첩 obs dict(벡터+카메라 img)를 clamp 하다 TypeError 로 죽는다.
+    # 영상: 한 env 클로즈업(원경 기본 7.5,7.5,7.5 은 너무 멀어 파지가 안 보인다).
+    # 파지 영역(테이블 위 ~[0.45,0,0.3])을 대각 근접에서 본다. num_envs=1 권장.
+    if args_cli.video and hasattr(env_cfg, "viewer"):
+        env_cfg.viewer.eye = (1.15, 0.75, 0.65)
+        env_cfg.viewer.lookat = (0.45, 0.0, 0.30)
+
     env = gym.make(
         args_cli.task, cfg=env_cfg,
         render_mode="rgb_array" if args_cli.video else None,
