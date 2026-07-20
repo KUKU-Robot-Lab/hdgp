@@ -114,52 +114,55 @@ def test_finger_close_is_per_joint_contact_gated() -> None:
     assert "self.finger_close_buf.repeat_interleave(4" not in env
 
 
-def test_lift_latch_gate_disabled_envelope_via_reward() -> None:
-    # 인벨롭 latch hard 게이트는 비활성(=0): success를 죽이면서 envelope은 못 만듦.
-    # envelope은 grasp/lift 보상 credit(soft gradient)으로 유도한다.
+def test_lift_latch_gate_enabled_via_compute_lift_readiness() -> None:
+    # [08-21] grasp_v1 staged reward 이식: 접촉 latch(compute_lift_readiness)가
+    # step 스크립트(LIFT_START_STEP) 대신 리프트/안정화 보상 게이트를 연다.
+    # 인벨롭 hard 게이트(lift_start_min_envelope_fingers)는 여전히 0(비활성) —
+    # envelope 은 grasp reward credit(grasp_envelope_credit, soft gradient)으로 유도.
     cfg = _text("grasp_right_env_cfg.py")
-    utils = _text("grasp_right_utils.py")
+    env = _text("grasp_right_env.py")
+    reward_body = env.split("def _get_rewards", 1)[1].split("return total", 1)[0]
 
     assert "lift_start_min_envelope_fingers: int = 0" in cfg
-    # 게이트 배선은 보존(재활성 가능), compute_lift_readiness가 지원만
-    assert "min_envelope_fingers" in utils
+    assert "grasp_envelope_credit: float = 0.5" in cfg
+    assert "compute_lift_readiness(" in reward_body
+    assert "self.lift_latched_buf" in reward_body
 
 
-def test_reward_is_dextrah_four_terms() -> None:
-    # DEXTRAH compute_rewards 이식 계약: 4항(거리 기반) + in_success_region.
-    # 접촉 synergy 항(compute_grasp_reward_terms)은 사용하지 않는다.
+def test_reward_is_grasp_v1_staged() -> None:
+    # [08-21] grasp_v1 staged reward(compute_grasp_reward_terms) 이식 — DEXTRAH
+    # 4항(거리 기반 carry-to-goal)·force_closure 는 걷어냈다.
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
     reward_body = env.split("def _get_rewards", 1)[1].split("return total", 1)[0]
 
     for name in (
-        "object_goal_pos",
-        "object_goal_tol",
-        "hand_to_object_weight",
-        "hand_to_object_sharpness",
-        "object_to_goal_weight",
-        "object_to_goal_sharpness",
-        "lift_weight",
-        "lift_sharpness",
-        "finger_curl_reg_weight",
+        "approach_weight", "grasp_weight", "lift_reward_weight",
+        "stabilize_weight", "success_bonus_weight",
+        "post_lift_contact_loss_weight", "stability_reward_weight",
+        "grasp_envelope_credit", "enclosure_thumb_weight",
     ):
         assert name in cfg
 
     for term in (
-        "hand_to_object_reward",
-        "object_to_goal_reward",
-        "finger_curl_reg",
-        "lift_reward",
-        "in_success_region",
+        "compute_grasp_reward_terms(",
+        "envelope_frac", "grip_frac", "fingertip_side_dist",
+        "cup_height_delta", "cup_xy_displacement", "cup_tilt_deg",
+        "success_now",
     ):
         assert term in reward_body
 
-    # hand_to_object: palm+5손끝 MAX 거리 — intermediates 공용값(wrench 게이트와
-    # 동일 소스)을 reward 가 재사용
-    assert ".max(dim=-1).values" in env
-    assert "self.hand_to_object_err" in reward_body
-    # 구 접촉 synergy 코어 미사용
-    assert "compute_grasp_reward_terms(" not in reward_body
+    # DEXTRAH 4항/force_closure 구조 미사용 확인
+    for removed in (
+        "hand_to_object_reward", "object_to_goal_reward",
+        "object_to_goal_err", "force_closure_reward", "fc_gate",
+    ):
+        assert removed not in reward_body, removed
+    for removed_cfg in (
+        "hand_to_object_weight", "object_to_goal_weight", "lift_weight",
+        "force_closure_weight", "grasp_contact_weight", "object_goal_tol",
+    ):
+        assert removed_cfg not in cfg, removed_cfg
 
 
 def test_goal_is_fixed_dextrah() -> None:
@@ -217,26 +220,28 @@ def test_obs_is_dextrah_teacher_structure() -> None:
 
 
 def test_adr_curriculum_is_dextrah() -> None:
-    # DEXTRAH ADR 커리큘럼 계약: wrench 0→10, spawn 0→최대·회전, reward 스케줄
-    # (lift 5→0, sharpness 15→20, curl_reg), 관측 노이즈 점진, in_success 트리거.
+    # DEXTRAH ADR 커리큘럼 계약: wrench 0→10, spawn 0→최대·회전, 관측 노이즈 점진,
+    # in_success 트리거. [08-21] "reward_weights" ADR 그룹은 DEXTRAH 4항/
+    # force_closure 전용이라 그 둘 제거와 함께 걷어냈다(grasp_v1 staged reward는
+    # 고정 cfg 값 사용, ADR 안 함 — grasp_v1 자신도 그렇다).
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
 
     for group in (
         '"object_wrench"', '"object_spawn"', '"object_state_noise"',
-        '"robot_state_noise"', '"reward_weights"', '"fabric_damping"',
+        '"robot_state_noise"', '"fabric_damping"',
         '"observation_annealing"', '"robot_spawn"', '"pd_targets"',
     ):
         assert group in cfg, group
-    assert '"lift_weight":              (5.0, 0.0)' in cfg
+    assert '"reward_weights"' not in cfg
     assert "adr_trigger_threshold: float = 0.4" in cfg
-    # 트리거 = in_success 순간 평균 (DEXTRAH success_for_adr)
+    # 트리거 = in_success 순간 평균 (DEXTRAH success_for_adr) — 이제 grasp_v1식
+    # in-place lift+hold success_now 를 본다(carry-to-goal 아님).
     assert "maybe_increment(self.in_success_region.float().mean())" in env
-    # wrench/spawn/reward 가 ADR 파라미터를 사용
+    # wrench/spawn 가 ADR 파라미터를 사용
     assert 'self._adr("robot_state_noise", "robot_joint_pos_noise")' in env
     assert '"object_spawn", "xy_range"' in env
     assert '"object_wrench", "max_linear_accel"' in env
-    assert '"reward_weights", "lift_weight"' in env
     # DEXTRAH 완전 정렬 5건 (07.09):
     # (1) physics DR: EventCfg + adr_physics_cfg (mass 0.5~3× 등) ADR 확장
     assert "class EventCfg" in cfg
@@ -278,11 +283,13 @@ def test_palm_target_rate_limit() -> None:
 
 def test_single_phase_no_scripted_lift() -> None:
     # DEXTRAH 단일 phase 계약: scripted joint7 lift/latch/freeze 없이
-    # 정책이 전 구간 Fabrics arm을 연속 제어한다.
+    # 정책이 전 구간 Fabrics arm을 연속 제어한다. [08-21] compute_lift_readiness는
+    # 이제 reward 게이트로 쓰이지만(별도 계약, test_lift_latch_gate_enabled_*),
+    # arm 제어(_apply_action)에는 여전히 없다 — reward 판정과 arm phase 는 분리.
     env = _text("grasp_right_env.py")
     apply_body = env.split("def _apply_action", 1)[1].split("def ", 1)[0]
 
     assert "lift_progress" not in apply_body
     assert "arm_target = self.fabric_q[:, :NUM_ARM_DOF]" in apply_body
-    assert "compute_lift_readiness" not in env
+    assert "compute_lift_readiness" not in apply_body
     assert "is_lift_phase" not in env

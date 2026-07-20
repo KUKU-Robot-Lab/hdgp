@@ -58,6 +58,8 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import matrix_from_quat, quat_apply, quat_mul
 
 from openarm.common.grasp_logging import action_policy_scalars
+from openarm.common.grasp_reward_core import compute_grasp_reward_terms
+from openarm.common.grasp_v2_contract import compute_action_delta_norm, compute_grasp_v2_stability
 
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
@@ -121,6 +123,7 @@ from .tesollo_hand_synergy import (
 from .grasp_right_utils import (
     compute_abduction_targets,
     compute_joint7_lift_wait_target,
+    compute_lift_readiness,
     compute_palm_pose_id,
     compute_rotated_half_z,
     g_pose_to_fabric_quat,
@@ -430,8 +433,17 @@ class GraspRightEnv(DirectRLEnv):
         self.contact_force_raw     = torch.zeros(self.num_envs, NUM_FINGERTIPS, device=self.device)
         self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
         self.num_contacts_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        # grasp_contact persistence: 연속 접촉(임의 손끝) step 수 (reset 시 0)
+        # grasp_contact persistence: 연속 접촉(grip 손가락수 >= stage0_lift_start_min_contacts) step 수
+        # (grasp_v1 이식, 08-21 — reward_contact_hold_buf 대응. reset 시 0)
         self.contact_persist_buf   = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # [08-21 grasp_v1 리워드 이식] stability(contact_delta) 용 이전 step 접촉수 스냅샷
+        self._prev_reward_contacts_buf = torch.zeros(self.num_envs, device=self.device)
+        # 접촉 latch(compute_lift_readiness): "감싸 잡으면 리프트" — step 스크립트 대신
+        # 접촉 유지로 리프트/안정화 보상 게이트를 연다(reward 전용, arm 제어의 is_lift_phase
+        # 스텝 스케줄과는 별개 — 물리적으로 아직 안 들었으면 latch가 일러도 lift 보상은
+        # height 항이 0이라 자연히 무해).
+        self.lift_hold_count  = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.lift_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.warm_contact_stable_steps_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.lift_wait_match_hold_steps_buf = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
@@ -1322,80 +1334,160 @@ class GraspRightEnv(DirectRLEnv):
     # Rewards: DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        # 1) hand_to_object: palm+5손끝 → 물체중심 MAX 거리 (OpenArm 포팅 규약 .max())
-        #    거리는 _compute_intermediate_values 공용값(hand_to_object_err — wrench
-        #    게이트와 동일 소스) 재사용
-        hand_to_object_err = self.hand_to_object_err
-        hand_to_object_reward = float(self.cfg.hand_to_object_weight) * torch.exp(
-            -float(self.cfg.hand_to_object_sharpness) * hand_to_object_err
+        # [08-21] grasp_v1 staged reward 이식 (DEXTRAH 4항 + force_closure 제거).
+        # 사용자 확인: "grasp v1 리워드 이식, 기존것 제거. 최대한 5지 접촉으로 해야함."
+        #
+        # DEXTRAH 4항은 "물체→goal(고정 절대점) 거리"를 직접 보상해 carry-to-point
+        # 과제였다. grasp_v1은 그런 goal 개념이 없다 — 성공 = **제자리에서 들어올려
+        # 안정적으로 유지**(approach→grasp→lift→stabilize→success, 접촉 latch로 단계
+        # 전환). Tesollo-native 파지 원형(grasp_v1)으로 복귀하는 이번 세션 방향과 일치
+        # — 이 태스크는 "확실히 잡고 든다"까지가 범위고, 이후 특정 지점으로 옮기는 건
+        # 별도 downstream 스킬(pour_v1처럼 grasp warm-state 로 이어받음)의 몫이다.
+        # cfg 필드(approach_weight~enclosure_thumb_weight)는 이미 존재했었다(구 RH56F1
+        # 공유 계약 호환 보존분, DEXTRAH 전환으로 미사용 상태였음) — 새 필드 추가 없이
+        # 그대로 재활성화한다. object_goal 은 obs 에는 남기되(무해한 고정 상수) reward
+        # 에서는 더 이상 쓰지 않는다.
+        grasp_center = self.object_pos.clone()
+        grasp_center[:, 2] += float(self.cfg.cup_grasp_z_offset)
+        palm_to_cup_dist = (self.palm_center_pos - grasp_center).norm(dim=-1)
+        cup_height_delta = (
+            self.object_pos[:, 2] - self.object_init_pos[:, 2]
+        ).clamp(min=0.0)
+        cup_xy_displacement = (
+            self.object_pos[:, :2] - self.object_init_pos[:, :2]
+        ).norm(dim=-1)
+
+        # side-to-side 인벨롭 기하(grasp_v1 enclosure_axis): 접근 방향에 수직인 축을
+        # 잡아 엄지 vs 4지가 물체를 사이에 두고 양옆에서 마주 조이도록 목표점을 준다.
+        # 반지름은 grasp_v1 처럼 고정 상수가 아니라 물체별 clearance(다물체 대응,
+        # CAD bbox 유래 — reward/env 내부 전용, 정책 obs 에는 노출 안 됨).
+        cup_to_palm_xy = self.palm_center_pos[:, :2] - grasp_center[:, :2]
+        approach_dir_xy = cup_to_palm_xy / cup_to_palm_xy.norm(
+            dim=-1, keepdim=True
+        ).clamp(min=1e-6)
+        enclosure_axis = torch.zeros(self.num_envs, 3, device=self.device)
+        enclosure_axis[:, :2] = torch.stack(
+            [-approach_dir_xy[:, 1], approach_dir_xy[:, 0]], dim=1
+        )
+        radius = self.object_clearance[self.object_idx].unsqueeze(-1)   # (N,1)
+        thumb_target = grasp_center + enclosure_axis * radius
+        others_target = grasp_center - enclosure_axis * radius
+        thumb_dist = (self.fingertip_pos[:, 0] - thumb_target).norm(dim=-1)
+        others_dist = (
+            self.fingertip_pos[:, 1:] - others_target.unsqueeze(1)
+        ).norm(dim=-1).mean(dim=-1)
+        fingertip_side_dist = (
+            float(self.cfg.enclosure_thumb_weight) * thumb_dist
+            + (1.0 - float(self.cfg.enclosure_thumb_weight)) * others_dist
         )
 
-        # ADR reward 스케줄 (DEXTRAH reward_weights): lift shaping 걷어내고 goal 정밀화
-        _o2g_sharp = (
-            self._adr("reward_weights", "object_to_goal_sharpness")
-            if self.grasp_adr is not None else float(self.cfg.object_to_goal_sharpness)
+        # 접촉 파생값 — tip/envelope/grip fraction
+        full_tip_contact_bool = self.num_contacts_buf >= NUM_FINGERTIPS
+        full_tip_contact = full_tip_contact_bool.float()
+        tip_contact_frac = (
+            self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
+        ).clamp(max=1.0)
+        # contact_persist_buf 재사용(구 grasp_contact 부트스트랩 항 자리) — 트리거를
+        # "임의 접촉>0"에서 grasp_v1식 "grip 손가락수 >= stage0_lift_start_min_contacts"로.
+        persistent_grasp = self.num_contacts_buf >= int(self.cfg.stage0_lift_start_min_contacts)
+        self.contact_persist_buf = torch.where(
+            persistent_grasp,
+            self.contact_persist_buf + 1,
+            torch.zeros_like(self.contact_persist_buf),
         )
-        _lift_w = (
-            self._adr("reward_weights", "lift_weight")
-            if self.grasp_adr is not None else float(self.cfg.lift_weight)
-        )
-        _curl_w = (
-            self._adr("reward_weights", "finger_curl_reg")
-            if self.grasp_adr is not None else float(self.cfg.finger_curl_reg_weight)
-        )
-
-        # 2) object_to_goal: 물체 → goal(고정 절대점) 거리
-        object_to_goal_err = (self.object_pos - self.object_goal).norm(dim=-1)
-        object_to_goal_reward = float(self.cfg.object_to_goal_weight) * torch.exp(
-            -_o2g_sharp * object_to_goal_err
-        )
-
-        # 3) lift: goal 높이 절대거리 (ADR로 5→0 감쇠 — 후반은 object_to_goal 이 담당)
-        #    grip_frac 게이트(cfg.lift_grip_gate_enable): 물체를 안 잡으면 lift 보상 0.
-        #    DEXTRAH 원본 lift 는 "물체가 올라가면" 무조건 보상이라, 정책이 손을 안 쓰고
-        #    물체가 저절로 오르길 기다리는 passive baseline 이 부분최적이 됐다(리프트 0).
-        #    grip_frac(임의 마디 실접촉 손가락 비율)을 곱해 "잡아야 lift 신호"로 만든다.
-        object_vertical_err = (self.object_goal[:, 2] - self.object_pos[:, 2]).abs()
-        lift_reward = _lift_w * torch.exp(
-            -float(self.cfg.lift_sharpness) * object_vertical_err
-        )
-        num_grip_fingers = (
+        contact_persistence_frac = (
+            self.contact_persist_buf.float()
+            / max(float(self.cfg.grasp_contact_persistence_reward_steps), 1.0)
+        ).clamp(max=1.0)
+        middle_frac = self.middle_binary_contact_buf.float().mean(dim=-1)
+        distal_frac = self.distal_binary_contact_buf.float().mean(dim=-1)
+        envelope_frac = 0.5 * (middle_frac + distal_frac)
+        any_finger_contact = (
             self.binary_contact_buf
             | self.middle_binary_contact_buf
             | self.distal_binary_contact_buf
-        ).sum(dim=-1)
-        grip_frac = (num_grip_fingers.float() / NUM_FINGERTIPS).clamp(0.0, 1.0)
-        if bool(self.cfg.lift_grip_gate_enable):
-            lift_reward = lift_reward * grip_frac
+        )
+        num_grip_fingers = any_finger_contact.sum(dim=-1)
+        grip_frac = num_grip_fingers.float() / float(NUM_FINGERTIPS)
 
-        # 4) finger_curl_reg (DEXTRAH: -0.01 → -0.005)
-        #
-        # 기준은 HAND_APPROACH_POSE(열린 자세) 다 — FULL_GRIP(완전 주먹)이 아니다.
-        # DEXTRAH 원본 curled_q 는 index/middle/ring 전부 0(편 자세) + thumb 만 대향으로,
-        # 원본 주석이 의도를 명시한다: "fingers seem to curl in a lot to play with the
-        # object. A good strategy is to approach the object with wider set fingers and
-        # then encase the object flexing inwards" — 즉 과도한 말림을 막는 정규화다.
-        #
-        # FULL_GRIP 을 기준으로 쓰면 부호가 정반대가 된다: 빈손으로 주먹을 쥐면 거리 0
-        # (페널티 0)이고, 물체를 잡으면 손가락이 물체에 막혀 FULL_GRIP 에 못 가 페널티가
-        # 붙는다 → "물체에 가까이 가면 손해" → 정책이 물체에서 도망간다.
-        # lstm_test3(G프레임) 실증: hand_to_object 가 epoch 50 에 0.256 까지 올랐다가
-        # epoch 100 에 0.028 로 급락(= 거리 34cm). 렌더 관찰의 "제자리 주먹"과 일치.
-        # HAND_APPROACH_POSE(thumb 대향 + 나머지 편 자세)는 DEXTRAH curled_q 와 구조가 같다.
-        finger_pos = self.robot.data.joint_pos[:, self.hand_dof_indices]
-        finger_curl_dist = (
-            finger_pos - self.hand_open_pose.unsqueeze(0)
-        ).norm(p=2, dim=-1).clamp(max=float(self.cfg.finger_curl_dist_max))
-        finger_curl_reg = _curl_w * finger_curl_dist ** 2
+        # 물체 자세
+        z_local = torch.zeros(self.num_envs, 3, device=self.device)
+        z_local[:, 2] = 1.0
+        cup_z_world = quat_apply(self.object_rot, z_local)
+        cup_tilt_deg = torch.rad2deg(
+            torch.acos(cup_z_world[:, 2].clamp(min=-1.0, max=1.0))
+        )
+        upright_quality = torch.exp(
+            -cup_tilt_deg / max(float(self.cfg.stabilize_upright_reward_scale_deg), 1e-6)
+        )
 
-        # palm_align: 진단 로깅 전용 (reward 아님).
-        #
-        # palm_orient reward(weight 1.0, sharp 3.0)는 제거했다. DEXTRAH 원본에 없는
-        # 우리 추가분이었고, 거리 무관항이라 손이 물체에서 27cm 떨어져 있어도 0.877 을
-        # 준다 → lstm_test3 에서 정책이 접근을 포기하고 정렬 보상만 먹는 orientation
-        # hacking 의 직접 동력이었다(in_success 0.000, hand_to_object 0.066).
-        # 도입 목적("손바닥이 천장 향하는 것 차단")은 G 규약 palm 경계(ex 중심 ±45°)가
-        # 구조적으로 보장하므로 중복이다.
+        # action smoothness + 안정성(GraspV2Stability 공유 계약)
+        action_delta_norm = compute_action_delta_norm(self.actions, self.prev_actions)
+        contact_delta = (
+            self.num_contacts_buf.float() - self._prev_reward_contacts_buf
+        ).abs()
+        stability = compute_grasp_v2_stability(
+            cup_lin_vel=self.cup.data.root_lin_vel_w,
+            cup_ang_vel=self.cup.data.root_ang_vel_w,
+            contact_delta=contact_delta,
+            action_delta_norm=action_delta_norm,
+            cfg=self.cfg,
+        )
+        self._prev_reward_contacts_buf.copy_(self.num_contacts_buf.float())
+
+        # 접촉 latch(compute_lift_readiness): "감싸 잡으면 리프트/안정화 보상 게이트가
+        # 열린다" — step 스크립트(LIFT_START_STEP) 대신 실제 파지 상태로 단계 전환.
+        # settle(낙하 안착) 이후만 유효 구간으로 본다.
+        is_grasp_phase = self.episode_length_buf >= int(self.cfg.settle_steps)
+        num_envelope_fingers = (self.binary_contact_buf & self.middle_binary_contact_buf).sum(dim=-1)
+        self.lift_hold_count, _lift_ready_now, self.lift_latched_buf = compute_lift_readiness(
+            num_contacts=self.num_contacts_buf,
+            is_grasp_phase=is_grasp_phase,
+            previous_hold_count=self.lift_hold_count,
+            previous_latched=self.lift_latched_buf,
+            min_contacts=int(self.cfg.stage0_lift_start_min_contacts),
+            hold_steps=int(self.cfg.grasp_ready_hold_steps),
+            num_envelope_fingers=num_envelope_fingers,
+            min_envelope_fingers=int(self.cfg.lift_start_min_envelope_fingers),
+        )
+        lift_latched = self.lift_latched_buf
+
+        # success: 엄지-물체 접촉 명시 요구 + 나머지 완화(>=success_min_grip_fingers).
+        thumb_cup_grip = any_finger_contact[:, 0]
+        full_grip_bool = (
+            num_grip_fingers >= int(self.cfg.success_min_grip_fingers)
+        ) & thumb_cup_grip
+        success_now = (
+            lift_latched
+            & (cup_height_delta >= float(self.cfg.lift_success_height))
+            & full_grip_bool
+            & (cup_tilt_deg <= float(self.cfg.stabilize_upright_max_deg))
+            & stability.stable
+        )
+
+        total, reward_terms, _ = compute_grasp_reward_terms(
+            num_tip_contacts=self.num_contacts_buf,
+            tip_contact_frac=tip_contact_frac,
+            full_tip_contact=full_tip_contact,
+            contact_persistence_frac=contact_persistence_frac,
+            envelope_frac=envelope_frac,
+            grip_frac=grip_frac,
+            palm_to_cup_dist=palm_to_cup_dist,
+            fingertip_side_dist=fingertip_side_dist,
+            cup_height_delta=cup_height_delta,
+            cup_xy_displacement=cup_xy_displacement,
+            cup_tilt_deg=cup_tilt_deg,
+            upright_quality=upright_quality,
+            lift_latched=lift_latched,
+            action_delta_norm=action_delta_norm,
+            stabilize_reward_gate=lift_latched,
+            success_now=success_now,
+            stable=stability.stable,
+            stability_quality=stability.quality,
+            cfg=self.cfg,
+        )
+
+        # palm_align: 진단 로깅 전용 (reward 아님) — palm 이 top-down 을 버리고 도망치는지.
         palm_quat = self.robot.data.body_quat_w[:, self.palm_body_index]   # (N,4) wxyz
         palm_x_local = torch.zeros_like(self.palm_center_pos)
         palm_x_local[:, 0] = 1.0
@@ -1404,85 +1496,8 @@ class GraspRightEnv(DirectRLEnv):
         palm_to_obj = palm_to_obj / (palm_to_obj.norm(dim=-1, keepdim=True) + 1e-8)
         palm_align = (palm_normal * palm_to_obj).sum(dim=-1)               # [-1, 1]
 
-        # 5) grasp_contact (부트스트랩): 손끝 실접촉 유도 (force_matrix Cup-only 개수).
-        #    DEXTRAH 4항엔 접촉 신호가 없어 정책이 물체를 건드릴 이유가 없다(passive).
-        #    ADR 로 0.3→0.0 감쇠(파지 학습 후 끔). persist 비중 축소(0.40→0.20)로
-        #    rh56f1 의 "접촉만 유지·리프트 0" 고착 함정을 완화(reward-audit REVISE).
-        tip_frac = (self.num_contacts_buf.float() / NUM_FINGERTIPS).clamp(0.0, 1.0)
-        full_tip = (self.num_contacts_buf >= NUM_FINGERTIPS).float()
-        _has_contact = self.num_contacts_buf > 0
-        self.contact_persist_buf = torch.where(
-            _has_contact,
-            self.contact_persist_buf + 1,
-            torch.zeros_like(self.contact_persist_buf),
-        )
-        persist_frac = (
-            self.contact_persist_buf.float()
-            / max(int(self.cfg.grasp_contact_persist_steps), 1)
-        ).clamp(0.0, 1.0)
-        grasp_quality = 0.45 * tip_frac + 0.35 * full_tip + 0.20 * persist_frac
-        _gc_w = (
-            self._adr("reward_weights", "grasp_contact_weight")
-            if self.grasp_adr is not None else float(self.cfg.grasp_contact_weight)
-        )
-        grasp_contact_reward = _gc_w * grasp_quality
-
-        # 6) force_closure(opposition) ← 리프트 주력.
-        #    접촉 반력(force_matrix_w)은 물체가 손가락을 "미는" 방향이다. 엄지와 4지가
-        #    물체를 양쪽에서 마주 조이면 두 반력 벡터가 대략 반대(−cos>0) → force closure.
-        #    rh56f1 이 접촉(tip 1.88)해도 못 든 진짜 결측이 이 대향 조임이다. 힘 크기(tanh)
-        #    를 곱하고 엄지·4지 실접촉 AND 게이트로 hacking(한쪽만/빈손) 차단.
-        #
-        #    tip+distal+middle 합산 벡터(fc1 실측 반영): tesollo 긴 손가락의 감싸기는
-        #    tip 이 아닌 중간 마디로 조인다 — fc1 에서 middle 0.46~0.82 상승에도 tip 0.10
-        #    정체 → tip-only 게이트 fc_gate_frac 0.0005 로 force_closure 질식. 손가락별
-        #    총 반력(3마디 합)과 any-segment 게이트(lift grip_frac 과 동일 기준)로 교정.
-        _f = (
-            self.contact_force_xyz_raw
-            + self.distal_contact_force_xyz_raw
-            + self.middle_contact_force_xyz_raw
-        )                                                     # (N,5,3) 손가락별 총 반력
-        _f_thumb = _f[:, 0]                                   # (N,3)
-        _f_others = _f[:, 1:].mean(dim=1)                     # (N,3) 4지 평균
-        _scale = float(self.cfg.force_closure_force_scale)
-        _t_norm = _f_thumb.norm(dim=-1)
-        _o_norm = _f_others.norm(dim=-1)
-        _cos = (_f_thumb * _f_others).sum(dim=-1) / (_t_norm * _o_norm + 1e-6)
-        opposition = (-_cos).clamp(min=0.0)                  # 마주볼 때만(0~1)
-        grip_strength = torch.tanh(_t_norm / _scale) * torch.tanh(_o_norm / _scale)
-        _any_c = (
-            self.binary_contact_buf
-            | self.middle_binary_contact_buf
-            | self.distal_binary_contact_buf
-        )                                                     # (N,5) 임의 마디 접촉
-        _thumb_c = _any_c[:, 0]
-        # [07-21] "아무거나 1개"→"최소 N개". 헐거운 게이트가 3지(엄지+2)만으로 force_closure
-        # 보상을 다 주던 문제 수정(lstm_test2: ring raw action이 학습하며 -0.9까지 붕괴 —
-        # 굽힐 이유가 구조적으로 없었음). grasp_contact_weight 와 같은 ADR 커리큘럼(1→3,
-        # adr_custom_cfg["reward_weights"])으로 초기 부트스트랩은 느슨하게 유지.
-        _min_others = self._adr(
-            "reward_weights", "force_closure_min_others",
-            default=float(self.cfg.force_closure_min_others),
-        )
-        _others_c = (_any_c[:, 1:].sum(dim=-1) >= round(_min_others))
-        fc_gate = (_thumb_c & _others_c).float()
-        opposition_quality = fc_gate * opposition * grip_strength
-        force_closure_reward = float(self.cfg.force_closure_weight) * opposition_quality
-
-        total = (
-            hand_to_object_reward + object_to_goal_reward + finger_curl_reg
-            + lift_reward + grasp_contact_reward + force_closure_reward
-        )
-
-        # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
-        self.in_success_region = object_to_goal_err < float(self.cfg.object_goal_tol)
-
-        # contact 진단용 grip(tip|mid|distal 접촉 손가락 수)
-        num_grip_fingers = (
-            self.binary_contact_buf
-            | self.middle_binary_contact_buf
-            | self.distal_binary_contact_buf
-        ).sum(dim=-1)
+        # success: grasp_v1 in-place lift+hold (goal-carry 아님)
+        self.in_success_region = success_now
 
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         # ADR increment: DEXTRAH 원본 = in_success_region 순간 평균 > success_for_adr(0.4)
@@ -1498,20 +1513,15 @@ class GraspRightEnv(DirectRLEnv):
                         global_env_step_count=0,
                     )
 
-        # ── 로깅: DEXTRAH-g 정렬 ──────────────────────────────────────────
-        # reward 항은 reward/ 그룹으로 묶어 TB에서 접히게 (rl_games 자체의
-        # rewards/(에피소드 합)와 구분 — 이쪽은 항별 per-step 평균)
-        self.extras["reward/hand_to_object"] = hand_to_object_reward.mean()
-        self.extras["reward/object_to_goal"] = object_to_goal_reward.mean()
-        self.extras["reward/finger_curl_reg"] = finger_curl_reg.mean()
-        self.extras["reward/lift"] = lift_reward.mean()
-        self.extras["reward/grasp_contact"] = grasp_contact_reward.mean()
-        self.extras["reward/force_closure"] = force_closure_reward.mean()
-        # opposition: 게이트 통과(양쪽 접촉) env 에서의 평균 대향도. force closure 학습 진단.
-        self.extras["contact/opposition"] = (
-            (opposition * fc_gate).sum() / fc_gate.sum().clamp(min=1.0)
-        )
-        self.extras["contact/fc_gate_frac"] = fc_gate.mean()
+        # ── 로깅: grasp_v1 staged reward 항 (reward/ 그룹으로 묶어 TB에서 접히게 —
+        # rl_games 자체의 rewards/(에피소드 합)와 구분, 이쪽은 항별 per-step 평균) ──
+        for _term_name, _term_val in reward_terms.items():
+            self.extras[f"reward/{_term_name}"] = _term_val.mean()
+        self.extras["envelope_frac"] = envelope_frac.mean()
+        self.extras["lift/latched_frac"] = lift_latched.float().mean()
+        self.extras["lift/hold_count"] = self.lift_hold_count.float().mean()
+        self.extras["stability/quality"] = stability.quality.mean()
+        self.extras["stability/stable_frac"] = stability.stable.float().mean()
         self.extras["palm_align"] = palm_align.mean()
         self.extras["in_success_region"] = self.in_success_region.float().mean()
         # 접근 자세 분기 검증용: top-down 으로 배정된 env 비율 (ADR 회전이 커지면 상승)
@@ -2085,6 +2095,9 @@ class GraspRightEnv(DirectRLEnv):
         self.transfer_entry_grasp_success_buf[env_ids] = False
         self.finger_close_buf[env_ids] = 0.0
         self.contact_persist_buf[env_ids] = 0
+        self._prev_reward_contacts_buf[env_ids] = 0.0
+        self.lift_hold_count[env_ids]  = 0
+        self.lift_latched_buf[env_ids] = False
         # abduction 은 중립(HAND_APPROACH_POSE 값)에서 시작.
         self.abduction_targets[env_ids] = self.abduction_neutral
 

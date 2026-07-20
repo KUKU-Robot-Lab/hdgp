@@ -315,48 +315,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     palm_rate_rot_deg_per_step: float = 8.0
 
     # -----------------------------------------------------------------------
-    # Reward 파라미터 — DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
-    # goal = DEXTRAH식 고정 절대점 (spawn 중심 xy, z = 안착(~0.24)+0.21).
-    # success = |obj-goal| < tol. tol 0.10 이 물체별 안착 높이 편차(수 cm)를 흡수.
-    # object_to_goal_sharpness·lift_weight·finger_curl_reg 는 ADR 스케줄이 우선
-    # (enable_adr=True 시 adr_custom_cfg.reward_weights 로 대체).
+    # Reward 파라미터 — [08-21] DEXTRAH 4항 + force-closure 제거, grasp_v1 staged
+    # reward(approach~enclosure_thumb_weight, 아래 "구 RH56F1 공유 계약" 절 참조)로
+    # 대체됐다. object_goal_pos 는 obs(actor/critic)에 여전히 쓰이므로 유지 —
+    # reward 는 이제 goal 이 아니라 grasp_v1식 in-place lift+hold 를 본다.
     # -----------------------------------------------------------------------
     object_goal_pos:          tuple = (0.27, -0.10, 0.45)
-    object_goal_tol:          float = 0.10
-    hand_to_object_weight:    float = 1.0
-    hand_to_object_sharpness: float = 10.0
-    object_to_goal_weight:    float = 5.0
-    object_to_goal_sharpness: float = 15.0   # exp(-s·err) 형태(양수 s). DEXTRAH -15·exp(+s·err)와 동치
-    lift_weight:              float = 5.0
-    lift_sharpness:           float = 8.5
-    finger_curl_reg_weight:   float = 0.0    # ADR 미사용 시 fallback (ADR은 -0.01→-0.005)
 
-    # -----------------------------------------------------------------------
-    # 접촉/force-closure reward (07.14 신설) — passive baseline 붕괴 + 파지 유도
-    #
-    # tesollo lstm_test11 실측: contact/tip 0.006(접근조차 안 함), 총보상의 ~100%가
-    # 무행동 수입(lift+o2g+h2o passive). DEXTRAH 4항엔 접촉 신호가 없어 "물체를
-    # 건드릴 이유"가 없다. 아래 3요소로 접촉→force closure→리프트를 순차 유도한다.
-    #
-    # (A) grasp_contact: 손끝이 실제 물체에 닿는가(force_matrix Cup-only 개수 기반).
-    #     rh56f1 에서 접촉 유도 확인됐으나 "접촉만 유지·리프트 0" 고착 함정도 확인 →
-    #     weight 낮게(0.3) + ADR 로 감쇠(부트스트랩 후 끔) + persist 비중 축소.
-    # (B) force_closure(opposition): 엄지 접촉력 방향 vs 4지 평균 접촉력 방향의 −cos.
-    #     마주보고 조이면 +. rh56f1 이 접촉해도 못 든 진짜 결측 요소(force closure).
-    #     grip_frac(양쪽 실접촉)으로 게이트해 hacking 차단. ← 리프트 주력.
-    # (C) lift_reward *= grip_frac: 안 잡으면 lift 보상 0 → passive("기다리기") 제거.
-    # -----------------------------------------------------------------------
-    grasp_contact_weight:        float = 0.3   # (A) ADR 로 0.3→0.0 감쇠(부트스트랩)
-    grasp_contact_persist_steps: int   = 15    # 연속 접촉 N step 이면 persist_frac=1
-    force_closure_weight:        float = 4.0   # (B) 리프트 주력. o2g(5.0) 급
-    force_closure_force_scale:   float = 3.0   # N. tanh(‖f‖/scale) grip 세기 정규화
-    lift_grip_gate_enable:       bool  = True  # (C) lift_reward *= grip_frac
-    # palm orientation: DEXTRAH 4항엔 손목 방향 제약이 없어 손바닥이 임의(천장) 방향으로
-    # 수렴. palm 법선(로컬 +X → world)이 palm→물체 방향과 정렬되도록 보조 shaping.
-    # w·exp(s·(align−1)): align=1(완전 정렬)→w, align=−1(반대)→w·exp(−2s). weight는
-    # object_to_goal(5.0)의 0.2배로 통제(reward-audit ACCEPT: local-min·hacking 방지).
-
-    # (구) RH56F1 shared grasp-v2 reward contract — DEXTRAH 전환으로 미사용(호환 보존).
+    # grasp_v1 staged reward(compute_grasp_reward_terms 공유 계약) — [08-21] 재활성화.
+    # 구 RH56F1 공유 grasp-v2 reward 계약(당시 DEXTRAH 전환으로 미사용 보존)이었으나,
+    # 이번 세션에 DEXTRAH 4항/force-closure 를 걷어내고 이 값들로 실제 reward 를 계산.
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0
     approach_xy_penalty_weight: float = 5.0
@@ -380,10 +348,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stability_action_delta_threshold: float = 0.2
     stage0_lift_start_min_contacts: int = 2  # lift 진입: grip(tip|mid|distal) 손가락 수. visdex 큰물체 2~3 파지 대응(4→3→2, 엄지+1).
     success_min_grip_fingers: int = 3  # success 그립 손가락 수(grip 기준, 엄지 접촉 AND). 큰 물체 대응(4→3).
-    # [07-21] force_closure_min_others 의 ADR-off 폴백(= adr_custom_cfg initial 값과 동일,
-    # 1=현행 "아무거나 1개" 그대로). ADR 활성 시엔 adr_custom_cfg["reward_weights"] 커리큘럼
-    # (1.0→3.0)이 우선 적용된다 — 상세 근거는 그쪽 주석 참조.
-    force_closure_min_others: float = 1.0
     # 파지력 확보: 물체 외란 wrench (DEXTRAH apply_object_wrench 이식).
     # 물체가 가만히 있으면 꽉 잡을 유인이 없음(grip 0.93) → 외란을 줘서 정책이 파지력 학습.
     wrench_enable: bool = True
@@ -439,17 +403,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 자기충돌 검사가 꺼져 있어(enabled_self_collisions=False) 순간이동식 abduction 은
     # 인접 손가락을 관통한다. 0.02 rad/step ≈ 전 범위(1.05 rad) 통과에 ~0.9초.
     abduction_rate_limit: float = 0.02
-    # finger_curl_reg = -0.01·‖q-q_grip‖² 는 5개 reward 항 중 유일하게 무계(아래로 무한).
-    # 물리 solver 가 발산하면 제곱으로 증폭돼 에피소드 리턴이 -4.9e7 까지 튀고
-    # (lstm_test1 iter 14111) rl_games 의 리턴/value 통계를 오염시켜 정책이 붕괴한다.
-    # 정상 물리에서는 joint limit 때문에 ‖q-q_grip‖ 이 이 값을 넘을 수 없다 →
-    # clamp 는 정상 학습에 영향 0, 발산 시에만 발동.
-    finger_curl_dist_max: float = 14.0
 
     grasp_contact_persistence_reward_steps: int = 20
     enclosure_sharpness: float = 15.0
-    cup_radius_approx: float = 0.045
+    # [08-21] cup_radius_approx(고정 상수, grasp_v1 단일물체 유산) 제거 — grasp_v2
+    # 다물체 reward(enclosure_axis)는 물체별 object_clearance(CAD bbox 유래)를 쓴다.
     enclosure_thumb_weight: float = 0.6
+    # grasp reward 중 envelope(중간/원위 마디 wrap) 비중. compute_grasp_reward_terms
+    # 기본값 0.40(grasp_v1) 대비 상향 — "최대한 5지 접촉"(사용자 지시): tip-only
+    # 파지보다 감싸기에 더 강한 gradient. 나머지 tip 항은 (1-credit)/0.60 로 비례
+    # 축소돼 합은 유지(core 로직, reward-audit: 기존 함수의 이미 감사된 재파라미터화
+    # — 새 항 추가 아님).
+    grasp_envelope_credit: float = 0.5
 
     # -----------------------------------------------------------------------
     # ADR
@@ -535,23 +500,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             "velocity_target_factor": (1.0, 0.0),
         },
         # reward 스케줄 (DEXTRAH): lift shaping 5→0 걷어내고 goal 정밀도(sharpness) 강화
-        "reward_weights": {
-            "finger_curl_reg":          (-0.003, -0.003),  # tesollo 스케일 정합. DEXTRAH 는 Allegro(16관절,
-        #   파지 굽힘 ~1.0rad)에서 ‖q-anchor‖²≈12 → 실효 -0.12/step. tesollo 는 20관절·1.8rad 라
-        #   ‖·‖²≈37 → 같은 weight 로 -0.37/step (3배). 그 결과 "손을 굽히는 것 자체가 순손실"이 되어
-        #   정책이 손을 펴고 물체에서 도망갔다(curl -0.367→-0.005 와 h2o 급락이 동시 발생).
-            "object_to_goal_sharpness": (15.0, 20.0),   # 우리 exp(-s·err) 부호
-            "lift_weight":              (5.0, 0.0),
-            # grasp_contact 부트스트랩 감쇠: 초기엔 접촉 유도(0.3), 파지 학습 후
-            # force_closure 가 주력이 되도록 끔(0.0). "접촉만 유지" 고착 함정 회피.
-            "grasp_contact_weight":     (0.3, 0.0),
-            # [07-21] force_closure fc_gate 최소 관여 손가락 수(엄지 제외, float→int(round)).
-            # 처음부터 강하게 걸면(예: 2) 무작위 초기 정책이 force_closure 보상을 거의 못 받아
-            # 부트스트랩이 막힌다(reward-audit Check1) — grasp_contact_weight 와 같은 원리로
-            # 초기엔 느슨하게(1.0, 현행 유지) 시작해 파지가 익어갈수록 조여(3.0, 엄지+3=4개) 3지
-            # 국소최적(lstm_test2 실측: ring/pinky raw action 붕괴)을 나중에 차단한다.
-            "force_closure_min_others": (1.0, 3.0),
-        },
+        # [08-21] "reward_weights" ADR 그룹 제거 — 전부 DEXTRAH 4항/force_closure(이번에
+        # 걷어냄) 전용 항목이었다. grasp_v1 staged reward(compute_grasp_reward_terms)는
+        # 공유 함수라 ADR 커리큘럼 대신 고정 cfg 값을 쓴다(grasp_v1 자신도 이 항들을
+        # ADR 안 함) — grasp_envelope_credit 를 고정으로 상향(0.40→0.5, 아래 참조)해
+        # "최대한 5지 접촉"을 반영.
         # fabric cspace damping 강화 (DEXTRAH 10→20)
         "fabric_damping": {
             "gain": (10.0, 20.0),
