@@ -1457,10 +1457,15 @@ class GraspRightEnv(DirectRLEnv):
             | self.distal_binary_contact_buf
         )                                                     # (N,5) 임의 마디 접촉
         _thumb_c = _any_c[:, 0]
-        # [07-21] "아무거나 1개"→"최소 N개"(기본 2, success_min_grip_fingers=3과 정합).
-        # 헐거운 게이트가 3지(엄지+2)만으로 force_closure 보상을 다 주던 문제 수정
-        # (lstm_test2: ring 원시 action이 학습하며 -0.9까지 붕괴 — 굽힐 이유가 구조적으로 없었음).
-        _others_c = (_any_c[:, 1:].sum(dim=-1) >= int(self.cfg.force_closure_min_others))
+        # [07-21] "아무거나 1개"→"최소 N개". 헐거운 게이트가 3지(엄지+2)만으로 force_closure
+        # 보상을 다 주던 문제 수정(lstm_test2: ring raw action이 학습하며 -0.9까지 붕괴 —
+        # 굽힐 이유가 구조적으로 없었음). grasp_contact_weight 와 같은 ADR 커리큘럼(1→3,
+        # adr_custom_cfg["reward_weights"])으로 초기 부트스트랩은 느슨하게 유지.
+        _min_others = self._adr(
+            "reward_weights", "force_closure_min_others",
+            default=float(self.cfg.force_closure_min_others),
+        )
+        _others_c = (_any_c[:, 1:].sum(dim=-1) >= round(_min_others))
         fc_gate = (_thumb_c & _others_c).float()
         opposition_quality = fc_gate * opposition * grip_strength
         force_closure_reward = float(self.cfg.force_closure_weight) * opposition_quality
