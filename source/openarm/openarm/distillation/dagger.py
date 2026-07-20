@@ -182,8 +182,13 @@ class Dagger:
         self.is_rnn = self.student_model.is_rnn()
         self.is_teacher_rnn = self.teacher_model.is_rnn()
         if self.is_rnn:
-            # 원본과 동일: student RNN은 매 스텝 BPTT(seq_length=1)
-            self.seq_length = 1
+            # BPTT 윈도우 길이. 원본 DEXTRAH 은 1(매 스텝 flush + hidden detach)이라
+            # LSTM 이 시간 credit assignment 를 못 배운다 — occlusion 전에 물체 위치를
+            # hidden 에 저장했다 나중에 꺼내 쓰는 걸 학습할 gradient 경로가 없다.
+            # config.seq_length>1 이면 hidden 을 N 스텝 유지 후 한 번에 backward →
+            # LSTM 이 시간 메모리를 학습. 에피소드 리셋은 flush 하지 않고 done env
+            # hidden 만 마스크 곱으로 0 처리(_on_done). 경계에서만 flush(distill()).
+            self.seq_length = int(student_cfg.get("seq_length", 1))
         self.is_aux = bool(
             getattr(self.student_model.a2c_network, "is_aux", False)
         )
@@ -408,10 +413,20 @@ class Dagger:
         return 0.0
 
     def _on_done(self, total_loss, all_done_indices):
-        """에피소드 종료 env의 RNN hidden state를 0으로 리셋한다."""
+        """에피소드 종료 env의 RNN hidden state를 0으로 리셋한다.
+
+        seq_length>1(BPTT 윈도우)에서는 여기서 optimizer flush 를 하지 않는다.
+        예전엔 done 이 하나라도 있으면 매 스텝 flush 해서, 리셋이 잦은 다중 env 에선
+        유효 BPTT 윈도우가 1 로 붕괴했다(memory 학습 불가). flush 는 distill() 의
+        경계(log_counter % seq_length == 0)에서만 한다.
+
+        done env 의 hidden 은 0 으로 만들되, 윈도우 그래프에 걸린 텐서를 in-place 로
+        건드리면 autograd 가 죽으므로 마스크 곱(새 텐서)으로 처리한다.
+        """
         if self.is_rnn:
-            if torch.is_tensor(total_loss) and total_loss > 1e-8:
-                total_loss = self._optimizer_step(total_loss)
+            done_keep = (~self.dones.bool()).to(
+                self.student_hidden_states[0].dtype
+            ).view(1, -1, 1)                       # (1, num_envs, 1)
             for i in range(len(self.student_hidden_states)):
                 with torch.no_grad():
                     self.hidden_state_means[i](
@@ -419,7 +434,8 @@ class Dagger:
                             (1, 0, 2)
                         )
                     )
-                self.student_hidden_states[i][:, all_done_indices] *= 0.0
+                # in-place 대신 마스크 곱 — 윈도우 그래프 손상 없이 done env hidden 0
+                self.student_hidden_states[i] = self.student_hidden_states[i] * done_keep
 
         if self.is_teacher_rnn:
             for s in self.teacher_hidden_states:

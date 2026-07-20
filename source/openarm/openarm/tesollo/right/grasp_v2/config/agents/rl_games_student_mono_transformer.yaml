@@ -28,6 +28,9 @@ params:
     # depth 입력(D435i, sim2real 갭↓). env.img_aug_type="depth" 와 반드시 일치.
     # resnet(3ch pretrained) 앞에서 1ch→3ch 타일링. RGB 로 되돌리려면 False + img_aug_type="rgb".
     use_depth: True
+    # LSTM-only BPTT 윈도우 실험: CNN 특징을 스텝마다 detach(인코더 동결) → 지각 품질을
+    # 현재(85000 iter, aux~0.015)로 고정하고 LSTM 시간 메모리만 학습. config.seq_length 와 세트.
+    freeze_img_features: True
     # 카메라 해상도(D435i 16:9). a2c_mono_transformer RunningMeanStd/encoder 형상과 일치 필수.
     img_height: 180
     img_width: 320
@@ -110,7 +113,10 @@ params:
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
-    seq_length: 20
+    # BPTT 윈도우 = LSTM hidden 을 N 스텝 유지 후 backward(dagger 가 읽음). 원본 1 →
+    # 16 으로 올려 LSTM 이 시간 메모리(occlusion 통과)를 학습. CNN 은 detach 로 동결이라
+    # 윈도우 메모리 부담은 LSTM/MLP 만(256×512×16, 작음).
+    seq_length: 16
     bounds_loss_coef: 0.0001
 
     player:

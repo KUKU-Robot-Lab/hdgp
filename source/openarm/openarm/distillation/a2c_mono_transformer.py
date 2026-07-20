@@ -458,6 +458,11 @@ class A2CBuilder(NetworkBuilder):
             # obs["img"](depth 1ch)를 쓰고, resnet(3ch pretrained) 앞에서 3ch 로 타일링한다.
             # 환경의 img_aug_type 과 반드시 일치해야 한다(dagger 가 불일치를 막는다).
             self.use_depth = bool(params.get("use_depth", False))
+            # LSTM-only BPTT 윈도우 실험용: True 면 forward 에서 CNN 특징을 detach 해
+            # 지각(인코더)을 현재 품질로 동결하고, LSTM 그래프만 시간 윈도우로 남긴다.
+            # → 메모리 학습(occlusion 통과) 효과를 지각 개선과 분리해 격리 측정.
+            # CNN 은 여전히 aux 를 통해 LSTM 출력에 신호를 주지만, 인코더 자체는 갱신 안 됨.
+            self.freeze_img_features = bool(params.get("freeze_img_features", False))
             # self.feature_extractor = CustomCNN(
             #     input_height=self.img_height,
             #     input_width=self.img_width,
@@ -549,6 +554,11 @@ class A2CBuilder(NetworkBuilder):
                 if self.use_depth and img_tensor.shape[1] == 1:
                     img_tensor = img_tensor.repeat(1, 3, 1, 1)
                 img_features = self.feature_extractor(img_tensor)
+                # LSTM-only BPTT 윈도우: CNN 특징을 detach 해 인코더를 동결하고
+                # (스텝별 CNN 활성값도 그래프에서 분리 → 윈도우 메모리 폭증 방지),
+                # LSTM 그래프만 seq_length 스텝 동안 남긴다.
+                if getattr(self, "freeze_img_features", False):
+                    img_features = img_features.detach()
                 obs = torch.cat([obs, img_features], dim=-1)
             # obs = self.running_mean_std(obs_dict['observations'])
             # TODO: fix this and allow for normalization! 
