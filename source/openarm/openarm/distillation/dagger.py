@@ -528,7 +528,12 @@ class Dagger:
                 batch_dict["rnn_states"] = self.teacher_hidden_states
                 batch_dict["seq_length"] = 1
                 batch_dict["rnn_masks"] = None
-            res_dict = self.teacher_model(batch_dict)
+            # teacher 는 is_train=False 라 모델 내부(rl_games models.py)에서 직접
+            # distr.sample() 을 호출한다 — bf16 autocast 가 teacher sigma 를 음수로
+            # 반올림하면 거기서 죽는다(dagger 의 clamp 는 반환 후라 못 막음). teacher
+            # forward 만 fp32 로 돌려 방지(LSTM 뿐이라 저렴). play 렌더 fix 와 동일.
+            with torch.autocast(device_type="cuda", enabled=False):
+                res_dict = self.teacher_model(batch_dict)
             if self.is_teacher_rnn:
                 self.teacher_hidden_states = res_dict["rnn_states"]
 
