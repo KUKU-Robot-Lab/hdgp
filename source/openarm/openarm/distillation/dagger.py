@@ -266,6 +266,64 @@ class Dagger:
 
         self._init_tensors()
 
+        # 물체별 접촉 진단(play 전용): "파지 관여(distal/middle/tip 중 하나라도 접촉)
+        # 중일 때 tip 이 닿는 비율"을 물체별로 누적. 접근 단계(무접촉)를 분모에서 빼
+        # "제대로 잡았을 때 tip sensing 되는가"를 물체별로 본다.
+        self._obj_contact = None
+        if self.play_policy:
+            n = len(self.ov_env._object_names)
+            z = lambda: torch.zeros(n, device=self.device)  # noqa: E731
+            self._obj_contact = {
+                "names": list(self.ov_env._object_names),
+                "tip": z(), "distal": z(), "middle": z(),
+                "engaged": z(), "total": z(),
+            }
+
+    def _accumulate_obj_contact(self) -> None:
+        s = self._obj_contact
+        if s is None:
+            return
+        ov = self.ov_env
+        obj = ov.object_idx.long()                              # (N,)
+        tipc = ov.binary_contact_buf.any(dim=1)                 # (N,) any tip finger
+        distc = ov.distal_binary_contact_buf.any(dim=1)
+        midc = ov.middle_binary_contact_buf.any(dim=1)
+        engaged = (tipc | distc | midc).float()
+        ones = torch.ones_like(engaged)
+        s["tip"].scatter_add_(0, obj, tipc.float() * engaged)
+        s["distal"].scatter_add_(0, obj, distc.float() * engaged)
+        s["middle"].scatter_add_(0, obj, midc.float() * engaged)
+        s["engaged"].scatter_add_(0, obj, engaged)
+        s["total"].scatter_add_(0, obj, ones)
+
+    def _dump_obj_contact(self) -> None:
+        s = self._obj_contact
+        if s is None:
+            return
+        eng = s["engaged"].clamp_min(1.0)
+        tot = s["total"].clamp_min(1.0)
+        tip = (s["tip"] / eng).cpu().tolist()
+        distal = (s["distal"] / eng).cpu().tolist()
+        middle = (s["middle"] / eng).cpu().tolist()
+        engc = s["engaged"].cpu().tolist()
+        engagement = (s["engaged"] / tot).cpu().tolist()
+        rows = sorted(
+            zip(s["names"], tip, distal, middle, engagement, engc),
+            key=lambda r: r[1],
+        )
+        print("===== PER-OBJECT CONTACT (engaged 중 tip/distal/middle 접촉률) =====")
+        print("  물체            tip   distal middle | engage(관여율) n_eng")
+        for name, t, d, m, e, c in rows:
+            if c < 5:
+                continue
+            print(
+                f"  {name:14s} {t:.2f}  {d:.2f}   {m:.2f}   |  {e:.2f}       {int(c)}"
+            )
+        _eng_arr = s["engaged"]
+        _tw = float((_eng_arr * torch.tensor(tip, device=self.device)).sum()
+                    / _eng_arr.sum().clamp_min(1.0))
+        print(f"  OVERALL engaged 중 tip 접촉률 = {_tw:.3f}")
+
     def _init_tensors(self) -> None:
         # neglogp 계산이 요구하는 더미 (값 자체는 쓰지 않음)
         self.prev_actions_student = torch.zeros(
@@ -395,6 +453,12 @@ class Dagger:
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
             self.actions_teacher[all_done_indices] *= 0.0
+
+            # 물체별 접촉 진단(play): 매 스텝 누적, 600 스텝마다 테이블 덤프
+            if self.play_policy:
+                self._accumulate_obj_contact()
+                if self.rank == 0 and log_counter % 600 == 0:
+                    self._dump_obj_contact()
 
             if not self.play_policy and self.rank == 0 and log_counter % CKPT_INTERVAL == 0:
                 self.save(
