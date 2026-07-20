@@ -500,7 +500,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             "velocity_target_factor": (1.0, 0.0),
         },
         # reward 스케줄 (DEXTRAH): lift shaping 5→0 걷어내고 goal 정밀도(sharpness) 강화
-        # [08-21] "reward_weights" ADR 그룹 제거 — 전부 DEXTRAH 4항/force_closure(이번에
+        # [08-21] reward-weights ADR 그룹 제거 — 전부 DEXTRAH 4항/force_closure(이번에
         # 걷어냄) 전용 항목이었다. grasp_v1 staged reward(compute_grasp_reward_terms)는
         # 공유 함수라 ADR 커리큘럼 대신 고정 cfg 값을 쓴다(grasp_v1 자신도 이 항들을
         # ADR 안 함) — grasp_envelope_credit 를 고정으로 상향(0.40→0.5, 아래 참조)해

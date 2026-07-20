@@ -330,15 +330,20 @@ def test_pregrasp_is_within_finger_reach():
 
 
 def test_curl_penalty_is_bounded():
-    """finger_curl_reg 가 무계이면 물리 발산이 리턴을 -1e7 규모로 터뜨린다."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "_branch_r_cfg_src", PKG / "grasp_right_env_cfg.py"
-    )
-    src = (PKG / "grasp_right_env_cfg.py").read_text()
-    assert "finger_curl_dist_max" in src
-    env_src = (PKG / "grasp_right_env.py").read_text()
-    assert "clamp(max=float(self.cfg.finger_curl_dist_max))" in env_src
+    """finger_curl_reg 가 무계이면 물리 발산이 리턴을 -1e7 규모로 터뜨린다.
+
+    [08-21] right 는 grasp_v1 staged reward 이식으로 finger_curl_reg 자체가
+    없다(grasp_v1 core 에 이 항이 없음) — 발산 방어는 compute_grasp_reward_terms
+    의 total nan_to_num(nan/posinf/neginf→0)이 대신한다(right 전용 clamp보다
+    일반적: 어느 항이 터져도 잡음). left 는 아직 이식 전이라 구 clamp 유지 검증.
+    """
+    src = (PKG / "grasp_right_env.py").read_text()
+    assert "compute_grasp_reward_terms(" in src, \
+        "right: 공유 코어(compute_grasp_reward_terms, 내부에서 total 을 nan_to_num 보호)를 써야 함"
+    left_src = (LEFT_PKG / "grasp_left_env_cfg.py").read_text()
+    assert "finger_curl_dist_max" in left_src
+    left_env_src = (LEFT_PKG / "grasp_left_env.py").read_text()
+    assert "clamp(max=float(self.cfg.finger_curl_dist_max))" in left_env_src
 
 
 def test_finger_curl_reg_anchors_on_open_pose_not_fist():
@@ -348,14 +353,19 @@ def test_finger_curl_reg_anchors_on_open_pose_not_fist():
     FULL_GRIP 을 기준으로 쓰면 부호가 뒤집혀 '빈손 주먹'이 페널티 0 이 되고,
     물체를 잡으면 손가락이 막혀 페널티가 붙는다 → 접근 자체가 손해가 된다.
     lstm_test3 실증: hand_to_object 0.256(ep50) → 0.028(ep100).
+
+    [08-21] right 는 grasp_v1 staged reward 이식으로 finger_curl_reg 자체가 없어
+    이 위험이 구조적으로 소거됐다(항이 없으니 기준도 없음). left 만 검증.
     """
-    for pkg, fname in ((PKG, "grasp_right_env.py"), (LEFT_PKG, "grasp_left_env.py")):
-        src = (pkg / fname).read_text()
-        i = src.index("finger_curl_dist = (")
-        expr = src[i:i + 200]
-        assert "hand_open_pose" in expr, f"{fname}: curl 기준이 열린 자세가 아님"
-        assert "hand_full_grip_pose" not in expr, \
-            f"{fname}: curl 기준이 FULL_GRIP(주먹) — 물체 회피를 보상한다"
+    src = (LEFT_PKG / "grasp_left_env.py").read_text()
+    i = src.index("finger_curl_dist = (")
+    expr = src[i:i + 200]
+    assert "hand_open_pose" in expr, "left: curl 기준이 열린 자세가 아님"
+    assert "hand_full_grip_pose" not in expr, \
+        "left: curl 기준이 FULL_GRIP(주먹) — 물체 회피를 보상한다"
+    right_src = (PKG / "grasp_right_env.py").read_text()
+    assert "finger_curl_dist = (" not in right_src, \
+        "right: finger_curl_reg 가 되살아났다(grasp_v1 이식 계약 위반)"
 
 
 def test_every_object_can_reach_the_goal_in_topdown():
@@ -393,11 +403,13 @@ def test_curl_weight_matches_tesollo_hand_scale():
     tesollo 는 20관절·1.8rad 라 ‖·‖²≈37 → 같은 weight(-0.01) 로 -0.37/step (3배).
     그 결과 "손을 굽히는 것 자체가 순손실"이 되어 정책이 손을 펴고 물체에서 도망갔다
     (curl -0.367 → -0.005 와 hand_to_object 급락이 동시 발생).
+
+    [08-21] right 는 grasp_v1 staged reward 이식으로 finger_curl_reg ADR 항목 자체가
+    없다(reward_weights ADR 그룹 전체 제거). left 만 검증.
     """
-    for pkg, fname in ((PKG, "grasp_right_env_cfg.py"), (LEFT_PKG, "grasp_left_env_cfg.py")):
-        src = (pkg / fname).read_text()
-        assert '"finger_curl_reg":          (-0.003, -0.003)' in src, \
-            f"{fname}: curl weight 가 tesollo 스케일(-0.003)이 아님"
+    src = (LEFT_PKG / "grasp_left_env_cfg.py").read_text()
+    assert '"finger_curl_reg":          (-0.003, -0.003)' in src, \
+        "left: curl weight 가 tesollo 스케일(-0.003)이 아님"
 
 
 def test_abduction_curriculum_starts_at_grasping_pose():

@@ -439,7 +439,7 @@ class GraspRightEnv(DirectRLEnv):
         # [08-21 grasp_v1 리워드 이식] stability(contact_delta) 용 이전 step 접촉수 스냅샷
         self._prev_reward_contacts_buf = torch.zeros(self.num_envs, device=self.device)
         # 접촉 latch(compute_lift_readiness): "감싸 잡으면 리프트" — step 스크립트 대신
-        # 접촉 유지로 리프트/안정화 보상 게이트를 연다(reward 전용, arm 제어의 is_lift_phase
+        # 접촉 유지로 리프트/안정화 보상 게이트를 연다(reward 전용, arm 제어의 리프트-phase
         # 스텝 스케줄과는 별개 — 물리적으로 아직 안 들었으면 latch가 일러도 lift 보상은
         # height 항이 0이라 자연히 무해).
         self.lift_hold_count  = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
