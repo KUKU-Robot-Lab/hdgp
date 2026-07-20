@@ -533,7 +533,13 @@ class Dagger:
                 self.teacher_hidden_states = res_dict["rnn_states"]
 
         mus, sigmas = res_dict["mus"], res_dict["sigmas"]
-        distr = torch.distributions.Normal(mus, sigmas, validate_args=False)
+        # bf16 autocast 가 near-zero sigma 를 음수로 반올림하면 Normal.sample 이
+        # RuntimeError(std>=0)로 죽는다(play 렌더에서 이미 관측, autocast on 학습에서도
+        # frozen-CNN+윈도우로 rollout 상태가 달라지면 재현). sampling 시 양수 바닥으로
+        # clamp — 정상 sigma(~0.1~1)엔 무해하고 loss 에 쓰는 sigmas 원본은 유지한다.
+        distr = torch.distributions.Normal(
+            mus, sigmas.clamp_min(1e-4), validate_args=False
+        )
         selected_action = torch.clamp(distr.sample().squeeze(), -1.0, 1.0)
 
         return {"mus": mus, "sigmas": sigmas, "actions": selected_action, "aux": aux}
