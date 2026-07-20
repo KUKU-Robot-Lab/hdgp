@@ -324,6 +324,7 @@ class GraspRightEnv(DirectRLEnv):
         # Distillation (Dagger 계약: student="policy", teacher="expert_policy").
         # teacher 학습(distillation=False)에선 use_camera=False → 카메라·student obs 미사용.
         # ----------------------------------------------------------------
+        self.num_actions = cfg.num_actions
         self.num_teacher_observations = cfg.num_teacher_observations
         self.num_observations = (
             cfg.num_student_observations if cfg.distillation
