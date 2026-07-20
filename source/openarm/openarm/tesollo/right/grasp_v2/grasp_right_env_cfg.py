@@ -372,6 +372,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stability_action_delta_threshold: float = 0.2
     stage0_lift_start_min_contacts: int = 2  # lift 진입: grip(tip|mid|distal) 손가락 수. visdex 큰물체 2~3 파지 대응(4→3→2, 엄지+1).
     success_min_grip_fingers: int = 3  # success 그립 손가락 수(grip 기준, 엄지 접촉 AND). 큰 물체 대응(4→3).
+    # [07-21 추가] force_closure fc_gate: 엄지+"나머지 중 아무거나 1개"였던 게 success 기준(3개)
+    # 보다 헐거워 정책이 3지(엄지+2)만으로 force_closure·success·lift 전부를 챙기고 나머지
+    # (특히 ring)를 포기하는 국소최적을 만들었다(lstm_test2 실측: action_policy/finger/f4_mean
+    # 즉 ring 원시 명령이 epoch1801에 -0.912까지 붕괴, pinky도 -0.759로 추종). success 기준과
+    # 정합을 맞춰 force_closure_min_others=2(엄지 포함 총 3개)로 강화 — 5개 강제는 아니지만
+    # 최소한 지금의 3지-충분 국소최적 자체는 막는다.
+    force_closure_min_others: int = 2
     # 파지력 확보: 물체 외란 wrench (DEXTRAH apply_object_wrench 이식).
     # 물체가 가만히 있으면 꽉 잡을 유인이 없음(grip 0.93) → 외란을 줘서 정책이 파지력 학습.
     wrench_enable: bool = True
