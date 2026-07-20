@@ -402,9 +402,19 @@ class Dagger:
                 )
 
     def _optimizer_step(self, total_loss):
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.student_model.parameters(), GRAD_CLIP_NORM)
-        self.optimizer.step()
+        # 윈도우 손실은 seq_length 스텝의 합 → 평균으로 정규화해 유효 lr 가
+        # seq_length 배로 뛰지 않게 한다(seq_length=1 안정 영역과 정합).
+        loss = total_loss / max(self.seq_length, 1)
+        loss.backward()
+        # bf16 BPTT(윈도우) backward 가 간헐적으로 grad 를 inf/nan 로 만들 수 있고,
+        # clip 은 nan norm 을 못 살린다(1/nan 스케일로 전부 nan 전파) → optimizer.step 이
+        # 파라미터를 nan 으로 오염 → 다음 forward 에서 sigma=exp(logstd)=nan → std>=0
+        # 크래시. clip 이 돌려주는 total_norm 이 비유한이면 이 스텝을 통째로 버린다.
+        total_norm = torch.nn.utils.clip_grad_norm_(
+            self.student_model.parameters(), GRAD_CLIP_NORM
+        )
+        if torch.isfinite(total_norm):
+            self.optimizer.step()
         self.optimizer.zero_grad()
         # 다음 스텝의 BPTT가 이미 소비한 그래프를 다시 타지 않도록 hidden 분리
         for i, s in enumerate(self.student_hidden_states):
