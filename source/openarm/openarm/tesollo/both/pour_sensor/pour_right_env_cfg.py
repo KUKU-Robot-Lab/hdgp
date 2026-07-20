@@ -624,6 +624,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [scripted 전용] pour-point 대비 receiver 목표 XY offset[m] / 하강 clearance[m]
     scripted_receiver_offset_xy: tuple[float, float] = (0.0, 0.0)
     scripted_receiver_clearance: float = 0.05
+    # [Ablation #1 — joint-space action] task-space+Fabric 우수성 대조군.
+    #   True면 우팔을 palm-pose/Fabric 대신 action[:7](palm6+null1 슬롯)을 관절 delta로 직접 구동
+    #   (Fabric 우회). fabric_q[:7]을 덮어써 _apply_action이 그대로 사용. base=False(현행 task-space).
+    #   demo nullspace prior는 Fabric-bound라 jointspace에선 무효(action space 기여 격리).
+    #   별도 cfg: pour_right_env_cfg_ablation1_actionspace.py / hydra: env.right_arm_jointspace=true
+    right_arm_jointspace: bool = False
+    jointspace_action_scale: float = 0.03   # 관절 delta 스케일 [rad/step]
     source_cup_pour_point_pos_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_POINT_POS_B)
     target_cup_opening_pos_b: tuple[float, float, float] = tuple(TARGET_CUP_OPENING_POS_B)
     source_cup_pour_axis_b: tuple[float, float, float] = tuple(SOURCE_CUP_POUR_AXIS_B)

@@ -905,6 +905,8 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_q   = self.robot_start_joint_pos.clone().contiguous()
         self.fabric_qd  = torch.zeros(self.num_envs, num_joints, device=self.device)
         self.fabric_qdd = torch.zeros(self.num_envs, num_joints, device=self.device)
+        # [Ablation #1] joint-space arm target 버퍼 (right_arm_jointspace=True 시 사용)
+        self._jointspace_arm_target = self.robot_start_joint_pos[:, :NUM_ARM_DOF].clone().contiguous()
 
         # Fabric input 버퍼
         self.hand_pca_targets  = torch.zeros(self.num_envs, 5, device=self.device)
@@ -1507,6 +1509,25 @@ class PourRightEnv(DirectRLEnv):
             self.fabric_qd[:, :NUM_ARM_DOF] = torch.where(
                 _hit, torch.zeros_like(_arm_q), self.fabric_qd[:, :NUM_ARM_DOF]
             )
+
+        # [Ablation #1] joint-space arm: Fabric 결과(fabric_q[:7])를 action[:7] 관절 delta로 덮어씀
+        #   (Fabric 우회). task-space+Fabric 대비 raw joint-space RL 대조군. base=False(현행 유지).
+        #   hold 동안은 현재 관절 추종(warmstart에서 누적 시작). obs는 실제 관절 읽어 일관.
+        if self.cfg.right_arm_jointspace:
+            _cur_arm = self.robot.data.joint_pos[:, self.arm_dof_indices]          # (N,7) 실제 관절
+            if self.cfg.episode_hold_steps > 0:
+                _jhold = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
+            else:
+                _jhold = torch.zeros((self.num_envs, 1), dtype=torch.bool, device=self.device)
+            _jdelta = torch.where(_jhold, torch.zeros_like(_cur_arm), actions[:, :NUM_ARM_DOF])
+            _jbase = torch.where(_jhold, _cur_arm, self._jointspace_arm_target)    # hold: warmstart 추종
+            _jt = torch.max(
+                torch.min(_jbase + _jdelta * float(self.cfg.jointspace_action_scale), self._arm_joint_max),
+                self._arm_joint_min,
+            )
+            self._jointspace_arm_target = _jt
+            self.fabric_q[:, :NUM_ARM_DOF] = _jt
+            self.fabric_qd[:, :NUM_ARM_DOF].zero_()
 
         # ---- 오른손: warmstart 파지(grasp_hold) 전구간 freeze ----
         #   [drift fix] 이전(phase 분리)엔 latch 후 손가락을 정책 lerp로 풀었으나, deep tilt 중 action≈0
