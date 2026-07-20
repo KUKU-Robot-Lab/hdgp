@@ -31,6 +31,21 @@ class GraspLeftEnvCfg_PLAY(GraspLeftEnvCfg):
         self.scene.env_spacing = 2.5
 
 
+class GraspLeftEnvCfg_DISTILL(GraspLeftEnvCfg):
+    """Distillation 설정 — D435i(RGB+depth) 활성, student obs(116). right 규약 동일."""
+
+    DISTILL_EXCLUDED_OBJECT_NAMES: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        self.distillation = True
+        self.scene.num_envs = 256
+        self.aux_coeff = 10.0
+        self.img_aug_type = "rgb"
+        # ★env 를 teacher 작동점(ADR 50, left lstm_test3 만렙)에 고정.
+        self.starting_adr_increments = 50
+        self.distill_excluded_object_names = self.DISTILL_EXCLUDED_OBJECT_NAMES
+
+
 gym.register(
     id="open-rh56f1_l_grasp_v2",
     entry_point=_ENTRY,
@@ -69,5 +84,19 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}:GraspLeftEnvCfg_PLAY",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
+    },
+)
+
+# distill: teacher(lstm) → vision student(D435i mono RGB + object_pos aux) DAgger 증류.
+gym.register(
+    id="open-rh56f1_l_grasp_v2-distill",
+    entry_point=_ENTRY,
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}:GraspLeftEnvCfg_DISTILL",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
+        "student_cfg_entry_point": (
+            f"{agents.__name__}:rl_games_student_mono_transformer.yaml"
+        ),
     },
 )

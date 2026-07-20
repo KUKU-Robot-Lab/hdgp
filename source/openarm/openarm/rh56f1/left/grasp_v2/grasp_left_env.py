@@ -57,6 +57,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply, quat_mul
 
 from openarm.common.grasp_logging import action_policy_scalars
+from openarm.distillation.visual_dr import VisualDomainRandomizer
 
 import os as _os
 
@@ -320,6 +321,30 @@ class GraspLeftEnv(DirectRLEnv):
         ).float()   # (num_envs, N_obj), reset 불변
         # object_scale: 자리 유지(원본은 spawn 시 랜덤 스케일, 우리는 고정 1.0)
         self.object_scale = torch.ones(self.num_envs, 1, device=self.device)
+
+        # ----------------------------------------------------------------
+        # Distillation (Dagger 계약). teacher 학습(distillation=False)엔 미사용.
+        # ----------------------------------------------------------------
+        self.num_actions = cfg.num_actions
+        self.num_teacher_observations = cfg.num_teacher_observations
+        self.num_observations = (
+            cfg.num_student_observations if cfg.distillation
+            else cfg.num_teacher_observations
+        )
+        self.use_camera = cfg.distillation
+        self.visual_dr = (
+            VisualDomainRandomizer(
+                num_envs=self.num_envs,
+                texture_root=cfg.texture_root,
+                randomize_dome_light=not cfg.disable_dome_light_randomization,
+                randomize_robot=not cfg.disable_robot_randomization,
+            )
+            if cfg.distillation and cfg.img_aug_type == "rgb" and cfg.enable_visual_dr
+            else None
+        )
+        self.time_in_success_region = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
         # DEXTRAH 관측 노이즈: per-env bias (reset 시 ADR 크기로 재샘플) + per-step uniform
         self.robot_joint_pos_bias = torch.zeros(self.num_envs, NUM_ARM_DOF + NUM_HAND_DOF, device=self.device)
         self.robot_joint_vel_bias = torch.zeros(self.num_envs, NUM_ARM_DOF + NUM_HAND_DOF, device=self.device)
@@ -402,6 +427,9 @@ class GraspLeftEnv(DirectRLEnv):
                 event_manager=getattr(self, "event_manager", None),
                 physics_cfg=cfg.adr_physics_cfg,
             )
+            # distillation: teacher 작동점(만렙)에 ADR 고정 시작.
+            if getattr(cfg, "starting_adr_increments", 0) > 0:
+                self.grasp_adr.set_increment(int(cfg.starting_adr_increments))
         else:
             self.grasp_adr = None
 
@@ -488,8 +516,8 @@ class GraspLeftEnv(DirectRLEnv):
         self.cup = RigidObject(self.cfg.cup_cfg)
         self.scene.rigid_objects["cup"] = self.cup
 
-        # Distillation/occlusion 측정용 D435i 카메라. 기본 off(teacher 학습 무영향).
-        if getattr(self.cfg, "enable_camera_probe", False):
+        # Distillation D435i 카메라(RGB+depth) 또는 occlusion 측정 카메라. teacher 학습 off.
+        if getattr(self.cfg, "distillation", False) or getattr(self.cfg, "enable_camera_probe", False):
             from isaaclab.sensors import TiledCamera
             self._tiled_camera = TiledCamera(self.cfg.tiled_camera_cfg)
             self.scene.sensors["tiled_camera"] = self._tiled_camera
@@ -1101,7 +1129,54 @@ class GraspLeftEnv(DirectRLEnv):
                 f"Critic obs dim mismatch: {critic_obs.shape[1]} != {self.cfg.state_space}"
             )
 
-        return {"policy": actor_obs, "critic": critic_obs}
+        if not self.use_camera:
+            return {"policy": actor_obs, "critic": critic_obs}
+
+        # ==== distillation: student(vision)="policy", teacher="expert_policy" ====
+        depth = self._tiled_camera.data.output["depth"].clone()          # (N,H,W,1)
+        _cf = float(self.cfg.camera_crop_frac)
+        if _cf < 0.999:
+            _d = depth.permute(0, 3, 1, 2)                               # (N,1,H,W)
+            _n, _c, _h, _w = _d.shape
+            _ch, _cw = int(_h * _cf), int(_w * _cf)
+            _t, _l = (_h - _ch) // 2, (_w - _cw) // 2
+            _d = _d[:, :, _t:_t + _ch, _l:_l + _cw]
+            _d = torch.nn.functional.interpolate(_d, size=(_h, _w), mode="nearest")
+            depth = _d.permute(0, 2, 3, 1).contiguous()
+        mask = depth.permute((0, 3, 1, 2)) > self.cfg.d_max
+        depth[depth <= 1e-8] = 10.0
+        depth[depth > self.cfg.d_max] = 0.0
+        depth[depth < self.cfg.d_min] = 0.0
+
+        return {
+            "policy": self.compute_student_policy_observations(),
+            "expert_policy": actor_obs,
+            "critic": critic_obs,
+            "img": depth.permute((0, 3, 1, 2)),
+            "rgb": self._tiled_camera.data.output["rgb"].clone().permute((0, 3, 1, 2)) / 255.0,
+            "aux_info": {"object_pos": self.object_pos},
+            "mask": mask,
+        }
+
+    def compute_student_policy_observations(self) -> torch.Tensor:
+        """student obs (116) — 물체 privileged state 없음(RGB 에서 추론). 좌팔 fabric 슬라이스."""
+        student_obs = torch.cat([
+            self.robot_dof_pos_noisy,        # 13
+            self.robot_dof_vel_noisy,        # 13
+            self.hand_pos_noisy,             # 18
+            self.hand_vel_noisy,             # 18
+            self.object_goal,                # 3
+            self.actions,                    # 12
+            self.fabric_q[:, NUM_ROBOT_DOF:],    # 13 (좌팔)
+            self.fabric_qd[:, NUM_ROBOT_DOF:],   # 13
+            self.fabric_qdd[:, NUM_ROBOT_DOF:],  # 13
+        ], dim=-1)   # 116
+        if student_obs.shape[1] != self.cfg.num_student_observations:
+            raise RuntimeError(
+                f"Student obs dim mismatch: {student_obs.shape[1]} "
+                f"!= {self.cfg.num_student_observations}"
+            )
+        return student_obs
 
     # ------------------------------------------------------------------
     # Rewards: DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
