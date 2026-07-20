@@ -588,6 +588,18 @@ class Dagger:
         student_loss = total_loss - self.aux_coeff * sum(aux_loss)
         perf = self.ov_env.in_success_region.float().mean().cpu().numpy()
 
+        # 접촉 분포 진단: tip vs distal vs middle 접촉률. envelope grip 이 tip 센서까지
+        # 닿는지(=student 촉각 15D 가 teacher 에서라도 유효한지) 확인용. tip 이 낮고
+        # distal/middle 만 높으면 촉각 활용(A) 전에 grip 기하부터 봐야 한다.
+        ov = self.ov_env
+        tip_pf = ov.binary_contact_buf.float().mean(dim=0)          # (5,) 손가락별
+        tip_rate = float(tip_pf.mean())
+        distal_rate = float(ov.distal_binary_contact_buf.float().mean())
+        middle_rate = float(ov.middle_binary_contact_buf.float().mean())
+        self.writer.add_scalar("contact/tip", tip_rate, self.frame)
+        self.writer.add_scalar("contact/distal", distal_rate, self.frame)
+        self.writer.add_scalar("contact/middle", middle_rate, self.frame)
+
         if self.game_rewards.current_size > 0:
             mean_rewards = self.game_rewards.get_mean()
             self.writer.add_scalar("rewards/step", mean_rewards[0], self.frame)
@@ -607,6 +619,11 @@ class Dagger:
             print(f"  imitation_loss: {float(student_loss):.5f}")
             print(f"  total_loss: {float(total_loss):.5f}")
             print(f"  in_success_region: {perf}")
+            print(
+                f"  contact tip={tip_rate:.3f} distal={distal_rate:.3f} "
+                f"middle={middle_rate:.3f} | tip_per_finger="
+                + " ".join(f"{v:.2f}" for v in tip_pf.tolist())
+            )
             if self.game_rewards.current_size > 0:
                 print(f"  mean_rewards: {self.game_rewards.get_mean()}")
                 print(f"  mean_length: {self.game_lengths.get_mean()}")
