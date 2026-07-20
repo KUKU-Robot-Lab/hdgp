@@ -381,10 +381,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     grasp_ready_hold_steps: int = 8   # 접촉 N개를 연속 hold하면 lift 래치 (잡으면 바로 리프트)
     lift_start_min_envelope_fingers: int = 0  # latch 인벨롭 게이트 제거(0=비활성). envelope은 grasp/lift 보상 credit으로 유도(hard 게이트 대체)
     finger_close_speed: float = 0.05  # ① 접촉-게이트 적응 폐쇄: 손가락 폐쇄 진행 속도/step (중간마디 접촉 시 동결)
-    # synergy 접촉 동결(g3/g4): 접촉 시 조임 멈춤 → 파지력 약화(grip 0.90 정체).
-    # False=동결 제거 → 손가락이 물체를 계속 조임(물리 collision이 관통/형상적응 담당, DEXTRAH식 파지력).
-    # primitives 복귀는 True. 기본 False(파지력 확보).
-    synergy_freeze_enable: bool = False
+    # [07-20 재검증 실험] 접촉 동결(g3/g4): 마지막 True 테스트는 07-08(cd91f22, "grip 0.90 정체"로
+    # False 복귀)뿐이었는데, 그때는 synergy(PCA) 제어·구 4항 reward·단일물체 시절이라 지금과
+    # 조건이 다르다. 이후 per_finger 전환(52e0fb9)·힘-크기 기반 force_closure(tip+distal+middle
+    # 합산, 접촉이 아닌 힘 크기 요구)·148물체·cup 스케일 수정이 모두 들어간 채로는 한 번도
+    # 재검증되지 않았다. lstm_test1(3지 파지·중지/약지 tip 0.00·6cm herding)은 이 값 False로
+    # 학습됨 — 현재 조합에서 True 단독 격리 실험(reward-audit REVISE, 다른 항 불변). 결과에 따라
+    # 원복 또는 유지.
+    synergy_freeze_enable: bool = True
 
     # 손 제어 방식 — "per_finger"(grasp_v1) | "synergy"(DEXTRAH PCA)
     #

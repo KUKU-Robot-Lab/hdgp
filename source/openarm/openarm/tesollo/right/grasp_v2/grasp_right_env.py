@@ -1520,11 +1520,12 @@ class GraspRightEnv(DirectRLEnv):
         ).mean()
         # contact: 감싸기 노드 그룹별 접촉 손가락 수 (0~5). palm 센서 없음 → 제외.
         #
-        # ⚠️ 이 센서들은 **물체와 테이블을 구분하지 못한다**. MultiAsset(replicate_physics
-        # =False)에서 filter_prim_paths_expr(force_matrix_w)가 GPU 미지원이라 net_forces_w
-        # (무엇에 닿든 1)로 대체돼 있다(_setup_sensors 주석 참조). 손을 테이블에 짚기만
-        # 해도 grip 이 오른다 — 실제로 그 때문에 "grip 3.2 인데 object_height 0" 이라는
-        # 모순된 로그를 오래 들여다봤다. 아래 contact/grip_near 를 함께 보라.
+        # [정정 07.20] 아래 문단은 낡은 진단(오진)이다 — _setup_scene 참조: probe_contact_filter
+        # 실측으로 filter_prim_paths_expr(force_matrix_w)는 GPU에서 정상 동작하며, _update_contact_forces
+        # 가 실제로 읽는 값도 force_matrix_w(Cup-only 필터, 52e0fb9)다. net_forces_w 는 쓰지 않는다.
+        # 즉 contact/tip·middle·distal 은 현재 **물체 전용** 접촉이다. "grip 3.2인데 object_height 0"
+        # 모순은 당시(필터를 net_forces_w로 오독하던 시기) 증상이었고 지금은 재현되지 않는다.
+        # 아래 contact/grip_near 는 여전히 유지 — 물체-테이블 혼동이 아니라 손끝-물체 실거리 교차검증용.
         self.extras["contact/tip"]    = self.num_contacts_buf.float().mean()
         self.extras["contact/middle"] = self.middle_binary_contact_buf.float().sum(dim=-1).mean()
         self.extras["contact/distal"] = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
