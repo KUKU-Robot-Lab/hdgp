@@ -1152,10 +1152,20 @@ class GraspRightEnv(DirectRLEnv):
         # object noisy pose
         _op_w = self._adr("object_state_noise", "object_pos_noise")
         _or_w = self._adr("object_state_noise", "object_rot_noise")
-        # [FP 배포 검증] eval_pose_hold: obs 의 물체 pose 원천을 live→held(settle 고정)로.
-        # FoundationPose 로 폐색 전 pose 를 lock 하고 open-loop 로 grasp 하는 실기 상황 모사.
-        _obj_pos_src = self.object_pos_held if bool(self.cfg.eval_pose_hold) else self.object_pos
-        _obj_rot_src = self.object_rot_held if bool(self.cfg.eval_pose_hold) else self.object_rot
+        # [FP 배포 검증] eval_pose_hold: grasp 단계(물체 정적·폐색)에만 held(settle 고정)
+        # pose 사용 = FoundationPose lock. approach/settle 과 lift 는 live(lift 는 물체가
+        # 손과 함께 상승 → 운동학 브리지 proxy). 이렇게 분리해야 "정적 grasp 구간에서
+        # FP-lock 이 통하는지"를 lift-phase 불일치와 섞이지 않게 격리 측정한다.
+        if bool(self.cfg.eval_pose_hold):
+            _in_grasp = (
+                (self.episode_length_buf >= int(self.cfg.settle_steps))
+                & (self.episode_length_buf < LIFT_START_STEP)
+            ).unsqueeze(-1)
+            _obj_pos_src = torch.where(_in_grasp, self.object_pos_held, self.object_pos)
+            _obj_rot_src = torch.where(_in_grasp, self.object_rot_held, self.object_rot)
+        else:
+            _obj_pos_src = self.object_pos
+            _obj_rot_src = self.object_rot
         self.object_pos_noisy = (
             _obj_pos_src
             + _op_w * 2.0 * (torch.rand_like(self.object_pos) - 0.5)
