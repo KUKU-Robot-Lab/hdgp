@@ -323,6 +323,9 @@ class GraspRightEnv(DirectRLEnv):
         self.object_pos      = torch.zeros(self.num_envs, 3, device=self.device)
         self.object_rot      = torch.zeros(self.num_envs, 4, device=self.device)
         self.object_init_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        # [FP 배포 검증] eval_pose_hold: settle 시점까지 추종 후 고정되는 pose(=FP lock)
+        self.object_pos_held = torch.zeros(self.num_envs, 3, device=self.device)
+        self.object_rot_held = torch.zeros(self.num_envs, 4, device=self.device)
         # per-object 로깅: MultiAsset(random_choice=False)는 env_id % N 로 물체 배정.
         self._object_names = list(self.cfg.active_object_names)
         # distillation 실패물체 제외: onehot 은 153 유지, 배정만 kept 로 하되 object_idx 는
@@ -890,6 +893,13 @@ class GraspRightEnv(DirectRLEnv):
         if snap.any():
             self.object_init_pos[snap] = self.object_pos[snap]
 
+        # [FP 배포 검증] settle 까지는 live pose 추종(물체 낙하 안착 중), 이후 고정.
+        # 정적 물체라 settle 후 held == 실제 pose(grasp 로 들어올리기 전까지). = FP lock.
+        if bool(self.cfg.eval_pose_hold):
+            _track = (self.episode_length_buf <= int(self.cfg.settle_steps))
+            self.object_pos_held[_track] = self.object_pos[_track]
+            self.object_rot_held[_track] = self.object_rot[_track]
+
         # ---- Fabrics arm 제어: palm 절대 pose (DEXTRAH 원본 구조) ----
         # action[0:6] ∈ [-1,1] 을 palm workspace 박스로 직접 스케일한다.
         # 즉 정책 출력이 곧 "손바닥을 놓을 절대 위치/자세"다.
@@ -1142,13 +1152,17 @@ class GraspRightEnv(DirectRLEnv):
         # object noisy pose
         _op_w = self._adr("object_state_noise", "object_pos_noise")
         _or_w = self._adr("object_state_noise", "object_rot_noise")
+        # [FP 배포 검증] eval_pose_hold: obs 의 물체 pose 원천을 live→held(settle 고정)로.
+        # FoundationPose 로 폐색 전 pose 를 lock 하고 open-loop 로 grasp 하는 실기 상황 모사.
+        _obj_pos_src = self.object_pos_held if bool(self.cfg.eval_pose_hold) else self.object_pos
+        _obj_rot_src = self.object_rot_held if bool(self.cfg.eval_pose_hold) else self.object_rot
         self.object_pos_noisy = (
-            self.object_pos
+            _obj_pos_src
             + _op_w * 2.0 * (torch.rand_like(self.object_pos) - 0.5)
             + self.object_pos_bias
         )
         self.object_rot_noisy = (
-            self.object_rot
+            _obj_rot_src
             + _or_w * 2.0 * (torch.rand_like(self.object_rot) - 0.5)
             + self.object_rot_bias
         )

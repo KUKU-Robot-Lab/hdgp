@@ -414,6 +414,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     contact_near_dist: float = 0.06
 
     settle_steps: int = 25  # 다물체 drop-settle: episode 초기 N step 손가락 폐쇄 억제 → 물체 낙하 안착
+    # [FP 배포 검증] object pose obs 를 settle 시점에 lock(freeze)하고 이후 고정 사용.
+    # 물체가 정적이므로 "FoundationPose 로 폐색 전 pose 를 한 번 찍고 open-loop grasp"를
+    # 모사한다. teacher 가 이 고정 pose 로도 파지에 성공하면 vision distillation 없이
+    # FP + 직접배포가 가능하다는 근거. 기본 False(학습·기존 경로 무영향).
+    eval_pose_hold: bool = False
     # abduction 목표 rate limit (rad/step). finger_close_speed 와 같은 취지 —
     # 자기충돌 검사가 꺼져 있어(enabled_self_collisions=False) 순간이동식 abduction 은
     # 인접 손가락을 관통한다. 0.02 rad/step ≈ 전 범위(1.05 rad) 통과에 ~0.9초.
