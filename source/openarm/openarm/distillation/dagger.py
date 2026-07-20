@@ -273,10 +273,16 @@ class Dagger:
         if self.play_policy:
             n = len(self.ov_env._object_names)
             z = lambda: torch.zeros(n, device=self.device)  # noqa: E731
+            _side_mask = torch.zeros(n, dtype=torch.bool, device=self.device)
+            _side_mask[self.ov_env.side_object_idx] = True   # cup 등 side 접근
             self._obj_contact = {
                 "names": list(self.ov_env._object_names),
                 "tip": z(), "distal": z(), "middle": z(),
                 "engaged": z(), "total": z(),
+                # 파지 중 물체 수평 이동(테이블 위에 남아있는 통제된 파지만 — 실패로
+                # 튕겨나간 것 제외). side/top 접근별로 "제자리 파지"인지 본다.
+                "drift_sum": z(), "drift_cnt": z(),
+                "side_mask": _side_mask,
             }
 
     def _accumulate_obj_contact(self) -> None:
@@ -295,6 +301,14 @@ class Dagger:
         s["middle"].scatter_add_(0, obj, midc.float() * engaged)
         s["engaged"].scatter_add_(0, obj, engaged)
         s["total"].scatter_add_(0, obj, ones)
+        # 파지 중 수평 변위 — 물체가 테이블 위에 남아있고(±5cm z, 실패로 튕김/리프트 제외)
+        # settle 이후인 env 만. = "제자리에서 잡는가 vs 밀며 잡는가".
+        drift_xy = (ov.object_pos[:, :2] - ov.object_init_pos[:, :2]).norm(dim=-1)
+        on_table = (ov.object_pos[:, 2] - ov.object_init_pos[:, 2]).abs() < 0.05
+        past_settle = ov.episode_length_buf >= int(ov.cfg.settle_steps)
+        gate = (on_table & past_settle).float()
+        s["drift_sum"].scatter_add_(0, obj, drift_xy * gate)
+        s["drift_cnt"].scatter_add_(0, obj, gate)
 
     def _dump_obj_contact(self) -> None:
         s = self._obj_contact
@@ -323,6 +337,25 @@ class Dagger:
         _tw = float((_eng_arr * torch.tensor(tip, device=self.device)).sum()
                     / _eng_arr.sum().clamp_min(1.0))
         print(f"  OVERALL engaged 중 tip 접촉률 = {_tw:.3f}")
+
+        # ── 파지 중 물체 수평 변위 (테이블 위 통제 파지만) ──
+        dcnt = s["drift_cnt"]
+        davg = (s["drift_sum"] / dcnt.clamp_min(1.0))
+        side_mask = s["side_mask"]
+        drows = sorted(
+            [(nm, float(davg[i]), int(dcnt[i]), bool(side_mask[i]))
+             for i, nm in enumerate(s["names"]) if float(dcnt[i]) >= 20],
+            key=lambda r: -r[1],
+        )
+        print("===== PER-OBJECT 파지 중 수평변위(m, 테이블 위만) — 큰 순 =====")
+        print("  물체            drift  approach  n")
+        for nm, dv, c, sd in drows[:20]:
+            print(f"  {nm:14s} {dv:.3f}  {'side' if sd else 'top':4s}     {c}")
+        # side vs top 종합
+        for _tag, _m in (("top", ~side_mask), ("side", side_mask)):
+            _c = dcnt[_m].sum().clamp_min(1.0)
+            _w = float((s['drift_sum'][_m]).sum() / _c)
+            print(f"  OVERALL {_tag:4s} 파지 중 수평변위 = {_w:.3f} m (n={int(dcnt[_m].sum())})")
 
     def _init_tensors(self) -> None:
         # neglogp 계산이 요구하는 더미 (값 자체는 쓰지 않음)
