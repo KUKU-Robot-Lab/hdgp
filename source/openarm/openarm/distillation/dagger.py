@@ -336,13 +336,13 @@ class Dagger:
                 # mask = 배경(depth 밴드 초과) 픽셀 → 배경만 VOC 이미지로 교체
                 obs["rgb"] = self.rgb_aug.apply(obs["rgb"], obs["mask"])
 
-            # play(eval)에선 autocast 끔(fp32) — bf16 이 teacher sigma 를 음수로 반올림해
-            # 모델 내부 sample(models.py normal std>=0) 이 죽는다. 학습만 bf16 유지.
+            # 학습·play 모두 fp32(autocast off). 이유:
+            #  1) bf16 이 sigma 를 음수/near-zero 로 반올림해 Normal.sample(std>=0) 크래시.
+            #  2) 윈도우 BPTT 의 bf16 backward 가 overflow→inf grad→nan 파라미터→발산.
+            # 무거운 CNN(resnet)은 인코더 내부에서 자체 bf16 을 쓰고 동결·detach 라
+            # 그래프에 안 남으므로, fp32 전환 비용은 작은 LSTM/MLP 뿐이다.
             import contextlib as _ctx
-            _amp = (
-                _ctx.nullcontext() if self.play_policy
-                else torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-            )
+            _amp = _ctx.nullcontext()
             with _amp:
                 with torch.no_grad():
                     actions_teacher = self._get_actions(obs, "teacher")
