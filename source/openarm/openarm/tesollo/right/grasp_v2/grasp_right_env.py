@@ -1531,6 +1531,22 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["contact/distal"] = self.distal_binary_contact_buf.float().sum(dim=-1).mean()
         self.extras["contact/grip"]   = num_grip_fingers.float().mean()
 
+        # ---- 손가락별 분해 (07-20 추가) ----
+        # 위 contact/tip·middle·distal 은 5지 합산이라 "어느 손가락이 안 굽는지"를
+        # 가린다(예: 중지·약지 tip=0이어도 합산 곡선은 다른 손가락이 메워 정상으로 보임).
+        # synergy_freeze_enable 같은 제어 변경이 특정 손가락에 실제로 작동하는지 확인하려면
+        # 손가락별 분해가 필수 — finger_close_progress(명령 진행도, 접촉 무관·"굽히려 하는가")
+        # 와 손가락별 접촉(결과, "닿았는가")을 나란히 봐야 원인(제어)과 결과(접촉)를 분리할 수 있다.
+        _FINGER_NAMES = ("thumb", "index", "middle", "ring", "pinky")
+        _close_per_finger = self.finger_close_buf.view(self.num_envs, 5, 4).mean(dim=2)   # (N,5) 관절4개 평균 진행도
+        _dip_per_finger = self.finger_close_buf.view(self.num_envs, 5, 4)[:, :, 3]        # (N,5) DIP(_4, tip측) 진행도만
+        for _fi, _fn in enumerate(_FINGER_NAMES):
+            self.extras[f"close_progress/{_fn}"]     = _close_per_finger[:, _fi].mean()
+            self.extras[f"close_progress_dip/{_fn}"] = _dip_per_finger[:, _fi].mean()
+            self.extras[f"contact/tip_{_fn}"]    = self.binary_contact_buf[:, _fi].float().mean()
+            self.extras[f"contact/distal_{_fn}"] = self.distal_binary_contact_buf[:, _fi].float().mean()
+            self.extras[f"contact/middle_{_fn}"] = self.middle_binary_contact_buf[:, _fi].float().mean()
+
         # ---- 진짜 물체 접촉 / 실거리 (센서의 물체-테이블 혼동을 우회) ----
         # 손끝↔물체 거리로 게이트한다: 접촉 센서가 켜졌고 **그 손끝이 물체 근처**면
         # 물체 접촉으로 본다. 테이블만 짚은 경우는 거리가 멀어 걸러진다.
