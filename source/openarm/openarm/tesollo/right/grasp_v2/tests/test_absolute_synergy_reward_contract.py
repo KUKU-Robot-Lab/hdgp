@@ -181,7 +181,7 @@ def test_obs_is_dextrah_teacher_structure() -> None:
     # critic = clean + hand_forces + measured torque + object_vel + onehot + scale (277 + N_obj)
     env = _text("grasp_right_env.py")
     obs_body = env.split("def _get_observations", 1)[1].split("def _get_rewards", 1)[0]
-    actor_body, critic_body = obs_body.split("critic_obs = torch.cat(", 1)
+    actor_body, critic_body = obs_body.split("==== critic obs", 1)
 
     for term in (
         "self.robot_dof_pos_noisy",
