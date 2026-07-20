@@ -488,6 +488,12 @@ class GraspLeftEnv(DirectRLEnv):
         self.cup = RigidObject(self.cfg.cup_cfg)
         self.scene.rigid_objects["cup"] = self.cup
 
+        # Distillation/occlusion 측정용 D435i 카메라. 기본 off(teacher 학습 무영향).
+        if getattr(self.cfg, "enable_camera_probe", False):
+            from isaaclab.sensors import TiledCamera
+            self._tiled_camera = TiledCamera(self.cfg.tiled_camera_cfg)
+            self.scene.sensors["tiled_camera"] = self._tiled_camera
+
     # ------------------------------------------------------------------
     # Geometric Fabrics 초기화
     # ------------------------------------------------------------------

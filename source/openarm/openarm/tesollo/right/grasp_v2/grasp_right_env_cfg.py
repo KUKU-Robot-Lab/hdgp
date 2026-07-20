@@ -762,6 +762,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # "expert_policy" 로 이동한다 — teacher 관측 구조 자체는 변경 없음.
     # -----------------------------------------------------------------------
     distillation: bool = False
+    # occlusion 측정 전용: distillation 없이도 카메라만 켠다(play.py --occlusion_probe 재사용).
+    enable_camera_probe: bool = False
 
     num_student_observations: int = NUM_STUDENT_OBS     # 190 (물체 privileged state 제외)
     num_teacher_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)  # 193 + N_obj

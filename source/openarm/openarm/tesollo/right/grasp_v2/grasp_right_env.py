@@ -557,7 +557,7 @@ class GraspRightEnv(DirectRLEnv):
         # Distillation: D435i RGB-D. teacher 학습(distillation=False)에선 생성하지 않는다
         # — TiledCamera 는 env 당 렌더 타깃을 잡아 4096 env teacher 학습을 못 돌린다.
         # (self.use_camera 는 아직 없다 — _setup_scene 은 super().__init__ 안에서 돈다)
-        if self.cfg.distillation:
+        if self.cfg.distillation or getattr(self.cfg, "enable_camera_probe", False):
             self._tiled_camera = TiledCamera(self.cfg.tiled_camera_cfg)
             self.scene.sensors["tiled_camera"] = self._tiled_camera
 

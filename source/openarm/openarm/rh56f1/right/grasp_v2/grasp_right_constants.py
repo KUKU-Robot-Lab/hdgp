@@ -107,6 +107,9 @@ NUM_HAND_POINTS = 6           # palm + 5 fingertips (DEXTRAH hand bodies)
 #   critic: robot 13+13 + hand 18+36 + forces3 + torque13 + obj 3+4+6+3 + scale1 + actions12 + fabric 39 = 164
 NUM_OBS_BASE        = 124     # onehot 제외 policy obs (RH56F1 13-DOF, action 12D)
 NUM_CRITIC_OBS_BASE = 164     # onehot 제외 critic obs (RH56F1 13-DOF, action 12D)
+# distillation student obs: teacher(124) 에서 물체 privileged(object_pos 3+rot 4+scale 1=8)
+# 및 onehot 제거 → 116. 물체 정보는 D435i RGB 에서 추론(카메라 aux 로 depth/object_pos 재구성).
+NUM_STUDENT_OBS     = 116     # robot 13+13 + hand 18+18 + goal 3 + actions 12 + fabric 13*3
 # 실제 차원은 env_cfg 에서 + len(active_object_names) 로 확정
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3

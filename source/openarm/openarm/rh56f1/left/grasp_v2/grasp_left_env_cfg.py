@@ -33,7 +33,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg, GroundPlaneCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.utils import configclass
 
 import os as _os
@@ -47,6 +47,16 @@ from .grasp_left_preset import (
     RIGHT_ARM_REST_JOINT_POS,
     LEFT_ACTUATED_JOINT_NAMES,
     SIDE_APPROACH_OBJECT_NAMES,
+    CAMERA_IMG_WIDTH,
+    CAMERA_IMG_HEIGHT,
+    CAMERA_FOCAL_LENGTH,
+    CAMERA_HORIZONTAL_APERTURE,
+    CAMERA_CLIPPING_RANGE,
+    CAMERA_POS,
+    CAMERA_ROT,
+    CAMERA_D_MIN,
+    CAMERA_D_MAX,
+    CAMERA_CROP_FRAC,
 )
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
@@ -708,6 +718,32 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # filter 는 실제 rigid body(/Cup/baseLink)를 가리켜야 GPU contact filter 가 작동한다
     # (Xform 루트 /Cup 은 미지원). tesollo grasp_v2 와 동일 (visdex USD 공유, baseLink).
     cup_rigid_body_name: str = "baseLink"
+
+    # -----------------------------------------------------------------------
+    # Distillation/occlusion 측정용 D435i 카메라 (right/grasp_v2 규약 동일, 좌우 공용).
+    # enable_camera_probe=False 기본 → teacher 학습 경로는 카메라를 생성하지 않는다.
+    # -----------------------------------------------------------------------
+    enable_camera_probe: bool = False
+    img_width:  int = CAMERA_IMG_WIDTH
+    img_height: int = CAMERA_IMG_HEIGHT
+    d_min: float = CAMERA_D_MIN
+    d_max: float = CAMERA_D_MAX
+    camera_crop_frac: float = CAMERA_CROP_FRAC
+    tiled_camera_cfg: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Camera",
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=CAMERA_POS, rot=CAMERA_ROT, convention="ros"
+        ),
+        data_types=["depth"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=CAMERA_FOCAL_LENGTH,
+            focus_distance=400.0,
+            horizontal_aperture=CAMERA_HORIZONTAL_APERTURE,
+            clipping_range=CAMERA_CLIPPING_RANGE,
+        ),
+        width=CAMERA_IMG_WIDTH,
+        height=CAMERA_IMG_HEIGHT,
+    )
 
     # -----------------------------------------------------------------------
     # Hand / joint 이름

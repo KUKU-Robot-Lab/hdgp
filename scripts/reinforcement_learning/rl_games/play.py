@@ -73,6 +73,10 @@ parser.add_argument(
     help="평가 시 ADR increment 고정 (0=노이즈 없음 ~ 50=최대 난이도). 미지정 시 0에서 시작(기본 env 동작).",
 )
 parser.add_argument(
+    "--occlusion_probe", type=int, default=0,
+    help="student 카메라(depth) occlusion 정량화: N 스텝 돌며 물체 가시 픽셀 비율 측정 후 출력·종료 (0=off). 소수 env 권장.",
+)
+parser.add_argument(
     "--cam_eye", type=str, default=None,
     help="Viewer camera position 'x,y,z' (env-local). pour 태스크는 기본 근접뷰 자동 적용.",
 )
@@ -589,6 +593,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     elif str(args_cli.task).startswith("open-rh56f1_r_grasp_v2"):
         from openarm.rh56f1.right.grasp_v2.grasp_right_env_cfg import _GRASP_OBJECT_SPAWN
         env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
+    elif str(args_cli.task).startswith("open-rh56f1_l_grasp_v2"):
+        from openarm.rh56f1.left.grasp_v2.grasp_left_env_cfg import _GRASP_OBJECT_SPAWN
+        env_cfg.cup_cfg.spawn = _GRASP_OBJECT_SPAWN
+
+    # occlusion probe: student D435i 카메라를 켠다(depth 렌더). teacher 정책은 무영향.
+    if args_cli.occlusion_probe > 0 and hasattr(env_cfg, "enable_camera_probe"):
+        env_cfg.enable_camera_probe = True
+        print("[OCC] enable_camera_probe=True (depth 카메라 활성)")
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -652,13 +664,101 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent.is_rnn:
         agent.init_rnn()
     _mimic_meas = {"n": 0, "drive": {}, "mimic_act": {}, "mimic_tgt": {}}  # 파지 중 mimic 추종 측정
-    _eval_acc = {"in_succ": [], "grip_sum": 0.0, "grip_n": 0, "grip_hist": None, "height": []}
+    _eval_acc = {"in_succ": [], "grip_sum": 0.0, "grip_n": 0, "grip_hist": None, "height": [],
+                 "cup_idx": None, "cup_finger": None, "cup_n": 0, "cup_hist": None,
+                 "obj_finger": None, "obj_n": 0}
+    _occ = {"step": 0, "by_obj": {}}  # occlusion probe 누적: obj_name -> [vis_lift_sum, n_lift, vis_pre_sum, n_pre]
     while simulation_app.is_running():
         start_time = time.time()
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
             obs, _, dones, _ = env.step(actions)
+
+            # === occlusion probe (--occlusion_probe N): student depth 카메라 물체 가시율 ===
+            if args_cli.occlusion_probe > 0:
+                from isaaclab.utils.math import quat_apply, quat_conjugate
+                _oe = env.unwrapped
+                if hasattr(_oe, "env"):
+                    _oe = _oe.env.unwrapped
+                _cam = getattr(_oe, "_tiled_camera", None)
+                if _cam is None:
+                    print("[OCC] 카메라 없음 — enable_camera_probe 실패"); os._exit(1)
+                _depth = _cam.data.output["depth"]
+                if _depth.dim() == 4:
+                    _depth = _depth[..., 0]                     # (N,H,W)
+                _N, _H, _W = _depth.shape
+                _K = _cam.data.intrinsic_matrices               # (N,3,3)
+                _cp = _cam.data.pos_w                            # (N,3)
+                _cq = _cam.data.quat_w_ros                       # (N,4) wxyz
+                _objw = _oe.object_pos + _oe.scene.env_origins   # object_pos 는 env-local → world 로
+                _pc = quat_apply(quat_conjugate(_cq), _objw - _cp)   # world→cam (N,3)
+                _z = _pc[:, 2]
+                _fx = _K[:, 0, 0]; _fy = _K[:, 1, 1]; _cx = _K[:, 0, 2]; _cy = _K[:, 1, 2]
+                _u = (_fx * _pc[:, 0] / _z + _cx)
+                _v = (_fy * _pc[:, 1] / _z + _cy)
+                _r = _oe.object_clearance[_oe.object_idx]        # (N,) 물체 반경 ‖half_extent‖
+                _rho = (_fx * _r / _z).clamp(min=2.0)            # 픽셀 반경
+                _lift_h = (_oe.object_pos[:, 2] - _oe.object_init_pos[:, 2])
+                _dcpu = _depth.detach()
+                for _n in range(_N):
+                    if not (_z[_n] > 0.05):
+                        continue
+                    _ui = int(_u[_n].item()); _vi = int(_v[_n].item()); _rr = int(_rho[_n].item())
+                    _x0 = max(0, _ui - _rr); _x1 = min(_W, _ui + _rr + 1)
+                    _y0 = max(0, _vi - _rr); _y1 = min(_H, _vi + _rr + 1)
+                    if _x1 <= _x0 or _y1 <= _y0:
+                        continue
+                    _patch = _dcpu[_n, _y0:_y1, _x0:_x1]
+                    _zc = float(_z[_n].item())
+                    _rn = float(_r[_n].item())
+                    _m = _rn + 0.015                              # 물체 깊이 반경 + 여유
+                    _valid = torch.isfinite(_patch) & (_patch > 1e-4)   # 렌더된 유한 픽셀만(inf=배경 제외)
+                    _objm = (_valid & ((_patch >= _zc - _m) & (_patch <= _zc + _m)))  # 물체 깊이 밴드
+                    _occm = (_valid & (_patch < _zc - _m))        # 물체보다 확실히 앞 = 손(가림)
+                    _vis = int(_objm.sum().item()); _oc = int(_occm.sum().item())
+                    _den = _vis + _oc
+                    if _occ["step"] == 5 and _n < 4:
+                        _fin = _patch[torch.isfinite(_patch) & (_patch > 1e-4)]
+                        _fs = (float(_fin.min()), float(_fin.median()), float(_fin.max())) if _fin.numel() else (-1, -1, -1)
+                        print(f"[OCCDBG] env{_n} zc={_zc:.3f} r={_rn:.3f} u={_ui} v={_vi} rho={_rr} H={_H} W={_W} "
+                              f"finite_px={_fin.numel()}/{_patch.numel()} depth(min={_fs[0]:.3f},med={_fs[1]:.3f},max={_fs[2]:.3f}) "
+                              f"vis={_vis} occ={_oc}", flush=True)
+                    if _den < 6:
+                        continue
+                    _visfrac = _vis / _den
+                    _nm = _oe._object_names[int(_oe.object_idx[_n].item())]
+                    _rec = _occ["by_obj"].setdefault(_nm, [0.0, 0, 0.0, 0])
+                    if float(_lift_h[_n].item()) > 0.03:
+                        _rec[0] += _visfrac; _rec[1] += 1
+                    else:
+                        _rec[2] += _visfrac; _rec[3] += 1
+                _occ["step"] += 1
+                if _occ["step"] >= args_cli.occlusion_probe:
+                    import numpy as _npo
+                    print("\n" + "OCCSUMMARY" + "=" * 55)
+                    print(f"[OCC] student depth 카메라 물체 가시율 (가시=물체영역 픽셀 중 손에 안 가려진 비율)")
+                    print(f"[OCC] steps={_occ['step']}  물체수={len(_occ['by_obj'])}")
+                    _rows = []
+                    for _nm, _rc in _occ["by_obj"].items():
+                        _vl = _rc[0] / _rc[1] if _rc[1] else float('nan')
+                        _vp = _rc[2] / _rc[3] if _rc[3] else float('nan')
+                        _rows.append((_nm, _vl, _vp, _rc[1]))
+                    _lifted_rows = [r for r in _rows if r[3] >= 20 and r[1] == r[1]]
+                    _lifted_rows.sort(key=lambda x: x[1])
+                    _allvl = [r[1] for r in _lifted_rows]
+                    _allvp = [r[2] for r in _rows if r[2] == r[2]]
+                    if _allvl:
+                        print(f"[OCC] 리프트 중 가시율: 평균 {_npo.mean(_allvl):.2f}  중앙 {_npo.median(_allvl):.2f}  "
+                              f"(참고 리프트전 평균 {_npo.mean(_allvp):.2f})")
+                        print(f"[OCC] 리프트 중 가시율 최저 8종: {[(n, round(v,2)) for n,v,_,_ in _lifted_rows[:8]]}")
+                        print(f"[OCC] 리프트 중 가시율 최고 5종: {[(n, round(v,2)) for n,v,_,_ in _lifted_rows[-5:]]}")
+                        _lo = sum(1 for v in _allvl if v < 0.2); _mid = sum(1 for v in _allvl if 0.2 <= v < 0.5)
+                        print(f"[OCC] 분포: <0.2 가림심함 {_lo}종 | 0.2~0.5 {_mid}종 | ≥0.5 잘보임 {len(_allvl)-_lo-_mid}종")
+                    else:
+                        print("[OCC] 리프트 표본 부족")
+                    print("OCCSUMMARY" + "=" * 55, flush=True)
+                    os._exit(0)
 
             # === grasp_v2 정량 평가 (--eval_episodes N) ===
             if args_cli.eval_episodes > 0:
@@ -675,6 +775,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     _ge._successful_episodes = 0
                     _ge._obj_total_episodes.zero_()
                     _ge._obj_success_episodes.zero_()
+                    # 컵 전용 손가락별 접촉 진단: object_names 에서 'cup' 인덱스 찾기
+                    try:
+                        _eval_acc["cup_idx"] = list(_ge._object_names).index("cup")
+                        print(f"[EVAL] cup object_idx = {_eval_acc['cup_idx']}")
+                    except ValueError:
+                        _eval_acc["cup_idx"] = None
+                        print("[EVAL] 경고: object_names 에 'cup' 없음 — 컵 진단 생략")
                     _ge._eval_init_done = True
                 # per-step 집계
                 _eval_acc["in_succ"].append(_ge.in_success_region.float().mean().item())
@@ -691,6 +798,42 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     _h = torch.bincount(_gf.long().clamp(0, 5), minlength=6)
                     _eval_acc["grip_hist"] = _h if _eval_acc["grip_hist"] is None else _eval_acc["grip_hist"] + _h
                     _eval_acc["height"].append(_lift_h[_lifted].mean().item())
+                    # 비-컵 물체(=실제 성공군) 손가락별 접촉률: 들었을 때 near-gate 로 테이블 배제.
+                    _ci0 = _eval_acc["cup_idx"]
+                    _obj_m = _lifted & (_ge.object_idx != _ci0) if _ci0 is not None else _lifted
+                    if bool(_obj_m.any()):
+                        _otd = (_ge.fingertip_pos - _ge.object_pos.unsqueeze(1)).norm(dim=-1)
+                        _ofe = (
+                            _ge.binary_contact_buf
+                            | _ge.middle_binary_contact_buf
+                            | _ge.distal_binary_contact_buf
+                        )
+                        _og = (_ofe & (_otd < 0.06))[_obj_m].float()   # (M,5)
+                        _os5 = _og.sum(dim=0)
+                        _eval_acc["obj_finger"] = _os5 if _eval_acc["obj_finger"] is None else _eval_acc["obj_finger"] + _os5
+                        _eval_acc["obj_n"] += int(_obj_m.sum())
+                # 컵 한정 진단: 리프트 성공과 무관하게 파지 시도(손끝 컵 근접) 프레임의 손가락별 접촉.
+                # envelope(4~5지 감쌈) vs 핀치(2~3지) 판별용. near-gate(0.06m)로 테이블 접촉 배제.
+                _ci = _eval_acc["cup_idx"]
+                if _ci is not None:
+                    _cup_env = (_ge.object_idx == _ci)
+                    if bool(_cup_env.any()):
+                        _tipd = (_ge.fingertip_pos - _ge.object_pos.unsqueeze(1)).norm(dim=-1)  # (N,5)
+                        _fnear = _tipd < 0.06
+                        _fe = (
+                            _ge.binary_contact_buf
+                            | _ge.middle_binary_contact_buf
+                            | _ge.distal_binary_contact_buf
+                        )
+                        _cg = (_fe & _fnear)[_cup_env].float()          # (M,5) 컵 근접+접촉
+                        _active = _cg.sum(dim=-1) >= 1                    # ≥1지 접촉한 파지시도 프레임
+                        if bool(_active.any()):
+                            _ca = _cg[_active]
+                            _s5 = _ca.sum(dim=0)
+                            _eval_acc["cup_finger"] = _s5 if _eval_acc["cup_finger"] is None else _eval_acc["cup_finger"] + _s5
+                            _eval_acc["cup_n"] += int(_active.sum())
+                            _ch = torch.bincount(_ca.sum(dim=-1).long().clamp(0, 5), minlength=6)
+                            _eval_acc["cup_hist"] = _ch if _eval_acc["cup_hist"] is None else _eval_acc["cup_hist"] + _ch
                 # 목표 에피소드 도달 → 리포트 후 종료
                 if _ge._total_episodes >= args_cli.eval_episodes:
                     import numpy as _np3, os as _os3
@@ -713,10 +856,29 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         _hist = (_hist / _hist.sum()).tolist()
                         print(f"  접촉 손가락 분포 0~5: {[round(v, 3) for v in _hist]}")
                         print(f"  평균 리프트 높이(들었을 때): {_np3.mean(_eval_acc['height']):.3f} m")
+                    if _eval_acc["obj_n"] > 0:
+                        _of = (_eval_acc["obj_finger"] / _eval_acc["obj_n"]).tolist()
+                        _fl0 = ["thumb", "index", "middle", "ring", "pinky"]
+                        print(f"  [비-컵 물체] 손가락별 접촉률(들었을 때, near-gate), n={_eval_acc['obj_n']}:")
+                        print("        " + "   ".join(f"{n}={v:.2f}" for n, v in zip(_fl0, _of)))
+                    if _eval_acc["cup_n"] > 0:
+                        _cf = (_eval_acc["cup_finger"] / _eval_acc["cup_n"]).tolist()
+                        _fl = ["thumb", "index", "middle", "ring", "pinky"]
+                        print("  ── CUP 전용 (파지 접촉 프레임 기준, 리프트 무관) ──────")
+                        print(f"  [CUP] 손가락별 접촉률(envelope tip|mid|distal, 컵 근접), n={_eval_acc['cup_n']}:")
+                        print("        " + "   ".join(f"{n}={v:.2f}" for n, v in zip(_fl, _cf)))
+                        _chd = _eval_acc["cup_hist"].float(); _chd = (_chd / _chd.sum()).tolist()
+                        print(f"  [CUP] 접촉 손가락 수 분포 0~5: {[round(v, 3) for v in _chd]}")
+                        _ncup = sum(1 for v in _cf if v >= 0.5)
+                        print(f"  [CUP] 접촉률≥0.5 손가락 수: {_ncup}/5 → {'ENVELOPE(4~5지 감쌈)' if _ncup >= 4 else ('3지 그립' if _ncup == 3 else '핀치(2지 이하)')}")
+                    elif _eval_acc["cup_idx"] is not None:
+                        print("  [CUP] 컵에 손끝이 닿은 프레임이 전혀 없음 — 접근 실패")
                     if _rates:
                         print(f"  물체별({len(_rates)}종): 평균 {_np3.mean([v for _, v in _rates]):.3f}"
                               f"  최저 {_rates[0][0]} {_rates[0][1]:.3f}  최고 {_rates[-1][0]} {_rates[-1][1]:.3f}")
                         print(f"  하위 8: {[(n, round(v, 3)) for n, v in _rates[:8]]}")
+                    if hasattr(_ge, "_dbg_done_cnt"):
+                        print(f"  종료원인(GRASP_DEBUG_DONES): {_ge._dbg_done_cnt}")
                     print("EVALSUMMARY" + "=" * 55, flush=True)
                     _os3._exit(0)
 
@@ -742,7 +904,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     if bool(_holding[0]):
                         _av0 = _re2.cup.data.root_ang_vel_w[0].norm().item()
                         _mimic_meas.setdefault("hold_angvel_env0", []).append(_av0)
-                    if len(_mimic_meas["hold_angvel"]) >= 120:
+                    if len(_mimic_meas["hold_angvel"]) >= 120 and args_cli.eval_episodes == 0:
                         import numpy as _np2, os as _os2
                         _hav = _np2.mean(_mimic_meas["hold_angvel"]); _hlv = _np2.mean(_mimic_meas["hold_linvel"])
                         _hav_med = float(_np2.median(_mimic_meas["hold_angvel"]))

@@ -1,0 +1,122 @@
+# rh56f1 grasp_v2 distillation student — RealSense D435i mono RGB (+ object_pos aux)
+#
+# obs: student 116D (물체 privileged state 없음) + rgb/depth 320x180
+# 입력 modality = RGB(use_depth=False, env.img_aug_type="rgb" 와 일치). depth 는 obs 에
+# "img" 로 함께 렌더되어 향후 depth 재구성 aux(상류 stereo head 재추가 시)에 쓸 수 있다.
+# 현재 aux = object_pos 회귀(teacher 가 관측하던 물체 위치를 이미지에서 회귀 → 인코더가
+# "물체가 어디 있나"를 명시 학습, aux_coeff 는 env cfg).
+#
+# 학습은 PPO 가 아니라 DAgger(openarm/distillation/dagger.py). Dagger 가 실제로 읽는 값:
+#   horizon_length, seq_length, normalize_input, normalize_value. action/obs 차원은 env 에서.
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: a2c_mono_transformer
+    separate: False
+    # RGB 입력(3ch, resnet pretrained 정합). env.img_aug_type="rgb" 와 반드시 일치.
+    use_depth: False
+    # LSTM-only BPTT 윈도우: CNN 특징을 스텝마다 detach(인코더 동결) → LSTM 시간 메모리만
+    # 학습(occlusion 통과). config.seq_length 와 세트.
+    freeze_img_features: True
+    img_height: 180
+    img_width: 320
+
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+
+    mlp:
+      units: [512, 512, 256]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+
+    rnn:
+      name: lstm
+      units: 512
+      layers: 1
+      before_mlp: True
+      layer_norm: True
+
+    aux_network:
+      mlp:
+        units: [512, 256]
+        activation: elu
+        out_activation: None
+        d2rl: False
+        initializer:
+          name: default
+        regularizer:
+          name: None
+
+    aux_outputs:
+      object_pos: {size: 3}
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: 5g_grasp_right_rh56f1-v2-student
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False
+    normalize_input: True
+    normalize_value: True
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    learning_rate: 1e-4
+    lr_schedule: adaptive
+    schedule_type: standard
+    kl_threshold: 0.016
+    score_to_win: 100000000
+    max_epochs: 10000
+    save_best_after: 100
+    save_frequency: 200
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.0
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 16
+    minibatch_size: 16384
+    mini_epochs: 4
+    critic_coef: 4
+    clip_value: True
+    # BPTT 윈도우 = LSTM hidden 을 N 스텝 유지 후 backward(dagger 가 읽음). 원본 1 → 16
+    # 으로 올려 LSTM 이 시간 메모리(occlusion 통과)를 학습. CNN 은 detach 동결.
+    seq_length: 16
+    bounds_loss_coef: 0.0001
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True

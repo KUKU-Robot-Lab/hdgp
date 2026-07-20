@@ -33,13 +33,14 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg, GroundPlaneCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.utils import configclass
 
 import os as _os
 
 from openarm import OPENARM_ROOT_DIR
-from .grasp_right_constants import NUM_OBS_BASE, NUM_ACTIONS, NUM_CRITIC_OBS_BASE
+from .grasp_right_constants import NUM_OBS_BASE, NUM_ACTIONS, NUM_CRITIC_OBS_BASE, NUM_STUDENT_OBS
+from openarm.distillation.camera import depth_randomization_cfg, make_cam_matrix
 from .grasp_right_preset import (
     HAND_APPROACH_POSE,
     HAND_BODY_NAMES_USD,
@@ -47,10 +48,26 @@ from .grasp_right_preset import (
     LEFT_ARM_REST_JOINT_POS,
     RIGHT_ACTUATED_JOINT_NAMES,
     SIDE_APPROACH_OBJECT_NAMES,
+    CAMERA_IMG_WIDTH,
+    CAMERA_IMG_HEIGHT,
+    CAMERA_FOCAL_LENGTH,
+    CAMERA_HORIZONTAL_APERTURE,
+    CAMERA_CLIPPING_RANGE,
+    CAMERA_POS,
+    CAMERA_ROT,
+    CAMERA_D_MIN,
+    CAMERA_D_MAX,
+    CAMERA_CROP_FRAC,
 )
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
+
+# distillation 시각 자산: DEXTRAH 텍스처(RGB visual DR) + depth 랜덤화용 카메라 행렬.
+_TEXTURE_ROOT = _os.path.join(_ASSETS_DIR, "dextrah_textures")
+_CAM_MATRIX = make_cam_matrix(
+    CAMERA_IMG_WIDTH, CAMERA_IMG_HEIGHT, CAMERA_FOCAL_LENGTH, CAMERA_HORIZONTAL_APERTURE
+)
 
 # ---------------------------------------------------------------------------
 # grasp_v2 파지 대상 물체 (다물체): primitives
@@ -393,6 +410,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 각 파라미터가 initial→final 선형 진행. (원본 success_for_adr=0.4)
     enable_adr:            bool  = True
     adr_num_increments:    int   = 50
+    # distillation: env 를 teacher 작동점(만렙 ADR)에 고정 시작 (0=자연 진행). teacher
+    # 시연이 ADR 0(스폰 고정·abduction 잠김)에서 왜곡되는 것을 방지. GraspADR.set_increment.
+    starting_adr_increments: int = 0
     # DEXTRAH min_steps_for_dr_change = 5 × 에피소드 길이 (600 steps @10s) = 3000
     adr_increment_interval: int  = 3000
     adr_trigger_threshold: float = 0.4
@@ -707,6 +727,54 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # filter 는 실제 rigid body(/Cup/baseLink)를 가리켜야 GPU contact filter 가 작동한다
     # (Xform 루트 /Cup 은 미지원). tesollo grasp_v2 와 동일 (visdex USD 공유, baseLink).
     cup_rigid_body_name: str = "baseLink"
+
+    # -----------------------------------------------------------------------
+    # Distillation/occlusion 측정용 D435i 카메라 (tesollo grasp_v2 규약 동일).
+    # enable_camera_probe=False 기본 → teacher 학습 경로는 카메라를 생성하지 않는다.
+    # -----------------------------------------------------------------------
+    enable_camera_probe: bool = False
+    img_width:  int = CAMERA_IMG_WIDTH
+    img_height: int = CAMERA_IMG_HEIGHT
+    d_min: float = CAMERA_D_MIN
+    d_max: float = CAMERA_D_MAX
+    camera_crop_frac: float = CAMERA_CROP_FRAC
+    tiled_camera_cfg: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Camera",
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=CAMERA_POS, rot=CAMERA_ROT, convention="ros"
+        ),
+        data_types=["rgb", "depth"],   # RGB 입력 + depth aux 재구성
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=CAMERA_FOCAL_LENGTH,
+            focus_distance=400.0,
+            horizontal_aperture=CAMERA_HORIZONTAL_APERTURE,
+            clipping_range=CAMERA_CLIPPING_RANGE,
+        ),
+        width=CAMERA_IMG_WIDTH,
+        height=CAMERA_IMG_HEIGHT,
+    )
+
+    # -----------------------------------------------------------------------
+    # Distillation (RGB 입력 + depth aux 재구성). distillation=False 가 기본 —
+    # teacher(PPO) 학습 경로는 아래 설정을 일절 타지 않는다. Dagger 가 참조하는 계약.
+    # -----------------------------------------------------------------------
+    distillation: bool = False
+    num_student_observations: int = NUM_STUDENT_OBS                            # 116 (물체 privileged 제외)
+    num_teacher_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)   # 124 + N_obj
+    # distillation 전용: 여기 나열한 물체는 스폰·배정에서 제외(cup/cup_big — 파지 실패 확정).
+    distill_excluded_object_names: tuple[str, ...] = ()
+    img_aug_type: str = "rgb"          # student 인코더 입력 modality (RGB)
+    enable_visual_dr: bool = True      # RGB visual DR (외형 고정 시 단일 장면 과적합)
+    texture_root: str = _TEXTURE_ROOT
+    disable_dome_light_randomization: bool = False
+    disable_robot_randomization: bool = False
+    aug_depth: bool = False             # depth 는 입력이 아니라 aux 재구성 대상 → depth 입력증강 off
+    aux_coeff: float = 1.0              # aux head(depth 재구성 + object_pos 회귀) 손실 가중
+    cam_matrix = _CAM_MATRIX
+    depth_randomization_cfg_dict: dict = field(
+        default_factory=lambda: depth_randomization_cfg(_CAM_MATRIX, CAMERA_D_MIN, CAMERA_D_MAX)
+    )
+    success_timeout: int = 60          # distillation rollout 성공 유지 조기 종료 (DEXTRAH)
 
     # -----------------------------------------------------------------------
     # Hand / joint 이름

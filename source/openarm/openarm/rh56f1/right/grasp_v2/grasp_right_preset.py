@@ -274,3 +274,19 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
         # ex: E3 top-down — palm_sensor +z(법선)가 -z(테이블)를 향하는 자세 → 중심 180°.
         (PREGRASP_EULER_EX_DEG + max_pose_angle) * d,
     ]
+
+
+# ---------------------------------------------------------------------------
+# Distillation D435i 카메라 (tesollo grasp_v2 와 동일 규약 — occlusion 측정/증류용).
+# teacher 학습에선 미사용(enable_camera_probe=False 기본). ROS convention.
+# ---------------------------------------------------------------------------
+CAMERA_IMG_WIDTH  = 320
+CAMERA_IMG_HEIGHT = 180
+CAMERA_FOCAL_LENGTH        = 20.0
+CAMERA_HORIZONTAL_APERTURE = 37.9586      # HFOV 87° (D435i)
+CAMERA_CLIPPING_RANGE = (0.3, 3.0)
+CAMERA_POS = [1.0700, 0.0000, 0.7200]
+CAMERA_ROT = [0.3687510, -0.6033429, -0.6033429, 0.3687510]  # (w,x,y,z) ros
+CAMERA_D_MIN = 0.3
+CAMERA_D_MAX = 2.0
+CAMERA_CROP_FRAC = 0.5     # 160×90 중앙 crop → student 실입력
