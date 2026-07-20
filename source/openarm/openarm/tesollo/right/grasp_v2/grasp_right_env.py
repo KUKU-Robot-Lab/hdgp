@@ -325,7 +325,6 @@ class GraspRightEnv(DirectRLEnv):
         self.object_init_pos = torch.zeros(self.num_envs, 3, device=self.device)
         # [FP 배포 검증] eval_pose_hold: settle 시점까지 추종 후 고정되는 pose(=FP lock)
         self.object_pos_held = torch.zeros(self.num_envs, 3, device=self.device)
-        self.object_rot_held = torch.zeros(self.num_envs, 4, device=self.device)
         # per-object 로깅: MultiAsset(random_choice=False)는 env_id % N 로 물체 배정.
         self._object_names = list(self.cfg.active_object_names)
         # distillation 실패물체 제외: onehot 은 153 유지, 배정만 kept 로 하되 object_idx 는
@@ -369,7 +368,6 @@ class GraspRightEnv(DirectRLEnv):
         self.robot_joint_pos_bias = torch.zeros(self.num_envs, NUM_ARM_DOF + NUM_HAND_DOF, device=self.device)
         self.robot_joint_vel_bias = torch.zeros(self.num_envs, NUM_ARM_DOF + NUM_HAND_DOF, device=self.device)
         self.object_pos_bias = torch.zeros(self.num_envs, 3, device=self.device)
-        self.object_rot_bias = torch.zeros(self.num_envs, 4, device=self.device)
         # 파지력 확보: 외란 wrench 버퍼 + 물체 질량 (DEXTRAH apply_object_wrench)
         self.object_applied_force  = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.object_applied_torque = torch.zeros(self.num_envs, 1, 3, device=self.device)
@@ -898,7 +896,6 @@ class GraspRightEnv(DirectRLEnv):
         if bool(self.cfg.eval_pose_hold):
             _track = (self.episode_length_buf <= int(self.cfg.settle_steps))
             self.object_pos_held[_track] = self.object_pos[_track]
-            self.object_rot_held[_track] = self.object_rot[_track]
 
         # ---- Fabrics arm 제어: palm 절대 pose (DEXTRAH 원본 구조) ----
         # action[0:6] ∈ [-1,1] 을 palm workspace 박스로 직접 스케일한다.
@@ -1150,8 +1147,11 @@ class GraspRightEnv(DirectRLEnv):
         ).norm(dim=-1).max(dim=-1).values
 
         # object noisy pose
+        # [08-21] 물체 회전(rot)은 actor obs 에서 제거됨(미학습 신규 물체 일반화 —
+        # 인벨롭 그립은 pose 없이도 접촉-게이트 폐쇄로 형상에 적응하므로 방향까지는
+        # 몰라도 됨, 위치만 있으면 접근 가능). object_rot_noisy/held/bias 전체 삭제
+        # (critic 은 clean self.object_rot 을 그대로 쓰므로 영향 없음).
         _op_w = self._adr("object_state_noise", "object_pos_noise")
-        _or_w = self._adr("object_state_noise", "object_rot_noise")
         # [FP 배포 검증] eval_pose_hold: grasp 단계(물체 정적·폐색)에만 held(settle 고정)
         # pose 사용 = FoundationPose lock. approach/settle 과 lift 는 live(lift 는 물체가
         # 손과 함께 상승 → 운동학 브리지 proxy). 이렇게 분리해야 "정적 grasp 구간에서
@@ -1162,40 +1162,39 @@ class GraspRightEnv(DirectRLEnv):
                 & (self.episode_length_buf < LIFT_START_STEP)
             ).unsqueeze(-1)
             _obj_pos_src = torch.where(_in_grasp, self.object_pos_held, self.object_pos)
-            _obj_rot_src = torch.where(_in_grasp, self.object_rot_held, self.object_rot)
         else:
             _obj_pos_src = self.object_pos
-            _obj_rot_src = self.object_rot
         self.object_pos_noisy = (
             _obj_pos_src
             + _op_w * 2.0 * (torch.rand_like(self.object_pos) - 0.5)
             + self.object_pos_bias
-        )
-        self.object_rot_noisy = (
-            _obj_rot_src
-            + _or_w * 2.0 * (torch.rand_like(self.object_rot) - 0.5)
-            + self.object_rot_bias
         )
 
         # 접촉력 업데이트
         self._update_contact_forces()
 
     # ------------------------------------------------------------------
-    # Observations: DEXTRAH teacher 구조
-    #   policy 193+N_obj | critic 247+N_obj (distillation 대비 원본 동일)
+    # Observations: Tesollo-native (FP 배포 가능성 우선, 08-21 재설계)
+    #   policy 208 (물체 수 무관 — 정체성/형상 없음, pos만) | critic 252+N_obj (privileged)
+    #
+    # [핵심] actor obs 에서 물체 identity(onehot)·scale·rotation 을 뺐다. FP 는 실기에서
+    # 신규(미학습) 물체도 CAD/mesh 만 있으면 pose 를 준다 — 단 "어떤 물체인지"·"정확한
+    # 치수/형상"까지는 정책이 몰라도 된다. 인벨롭 그립(접촉-게이트 폐쇄, per_finger)이
+    # 목표를 FULL_GRIP 까지 밀면 닿거나 포화된 관절만 멈추는 형태-적응 제어라, 정책은
+    # "물체가 대략 어디 있는지(pos)"만 알고 다가가 손가락을 닫으면 충분하다 — 물체 회전·
+    # 정체성·치수는 제어 루프(환경단)가 실시간 접촉으로 흡수한다. critic 은 여전히
+    # privileged(onehot/scale/rot)를 받아 value 추정을 돕는다(비대칭 actor-critic,
+    # 배포엔 actor 만 쓰므로 무해).
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
-        # ==== policy obs (DEXTRAH compute_policy_observations) ====
+        # ==== policy obs (물체 pos 만 — identity/scale/rotation 없음) ====
         actor_obs = torch.cat([
             self.robot_dof_pos_noisy,        # 27
             self.robot_dof_vel_noisy,        # 27 (annealing=0 → 상시 0)
             self.hand_pos_noisy,             # 18 (fabric FK: palm+5tip)
             self.hand_vel_noisy,             # 18 (0)
-            self.object_pos_noisy,           # 3
-            self.object_rot_noisy,           # 4
+            self.object_pos_noisy,           # 3 (FP 배포 채널 — 물체 정체성/형상 없음)
             self.object_goal,                # 3 (고정 절대점)
-            self.multi_object_idx_onehot,    # N_obj
-            self.object_scale,               # 1
             self.actions,                    # 16
             self.fabric_q,                   # 27
             self.fabric_qd,                  # 27
@@ -1204,7 +1203,7 @@ class GraspRightEnv(DirectRLEnv):
             # "보고" force closure 를 조율하게 한다(실물 FT 센서 대응). CONTACT_FORCE_MAX
             # 로 정규화 — 원시 N 값은 스케일이 커 obs 통계를 교란.
             (self.contact_force_xyz_raw / CONTACT_FORCE_MAX).reshape(self.num_envs, -1),  # 15
-        ], dim=-1)   # 208 + N_obj
+        ], dim=-1)   # 208 (N_obj 무관)
 
         if actor_obs.shape[1] != self.cfg.observation_space:
             raise RuntimeError(
@@ -2039,10 +2038,6 @@ class GraspRightEnv(DirectRLEnv):
         self.object_pos_bias[env_ids] = (
             self._adr("object_state_noise", "object_pos_bias")
             * 2.0 * (torch.rand(n, 3, device=self.device) - 0.5)
-        )
-        self.object_rot_bias[env_ids] = (
-            self._adr("object_state_noise", "object_rot_bias")
-            * 2.0 * (torch.rand(n, 4, device=self.device) - 0.5)
         )
 
         # ---- 5. pregrasp / lift-wait-target 버퍼 저장 ----

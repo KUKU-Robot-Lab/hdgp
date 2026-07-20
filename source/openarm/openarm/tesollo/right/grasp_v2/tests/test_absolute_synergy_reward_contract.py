@@ -174,12 +174,14 @@ def test_goal_is_fixed_dextrah() -> None:
 
 
 def test_obs_is_dextrah_teacher_structure() -> None:
-    # DEXTRAH teacher obs 계약 (distillation 대비 원본 동일 구조):
-    # policy = dof pos/vel noisy + hand pos/vel noisy(fabric FK) + object pose noisy
-    #          + goal + onehot + scale + actions + fabric q/qd/qdd  (193 + N_obj)
-    # critic = clean + hand_forces + measured torque + object_vel  (247 + N_obj)
+    # [08-21] Tesollo-native obs 계약 (일반화 개편 — 물체 identity/scale/rotation 은
+    # critic 만 privileged 로 받고, actor(policy) 는 pos 만 본다):
+    # policy = dof pos/vel noisy + hand pos/vel noisy(fabric FK) + object pos noisy
+    #          + goal + actions + fabric q/qd/qdd  (208, 물체 수 무관)
+    # critic = clean + hand_forces + measured torque + object_vel + onehot + scale (277 + N_obj)
     env = _text("grasp_right_env.py")
     obs_body = env.split("def _get_observations", 1)[1].split("def _get_rewards", 1)[0]
+    actor_body, critic_body = obs_body.split("critic_obs = torch.cat(", 1)
 
     for term in (
         "self.robot_dof_pos_noisy",
@@ -187,23 +189,30 @@ def test_obs_is_dextrah_teacher_structure() -> None:
         "self.hand_pos_noisy",
         "self.hand_vel_noisy",
         "self.object_pos_noisy",
-        "self.object_rot_noisy",
         "self.object_goal",
-        "self.multi_object_idx_onehot",
-        "self.object_scale",
         "self.fabric_q",
         "self.fabric_qd",
         "self.fabric_qdd",
+    ):
+        assert term in actor_body, term
+    # 물체 identity/scale/rotation 은 actor 에서 빠져야 한다 — 미학습 신규 물체 일반화.
+    for term in ("self.object_rot_noisy", "self.multi_object_idx_onehot", "self.object_scale"):
+        assert term not in actor_body, f"actor obs 에 privileged 항목 '{term}' 이 남아있다"
+
+    for term in (
+        "self.multi_object_idx_onehot",
+        "self.object_scale",
+        "self.object_rot",
         "get_link_incoming_joint_force",
         "get_dof_projected_joint_forces",
     ):
-        assert term in obs_body, term
+        assert term in critic_body, term
     # 구 106D 구성 제거 확인
     assert "cup_to_fingertip" not in obs_body
     assert "object_feature" not in obs_body
 
     cfg = _text("grasp_right_env_cfg.py")
-    assert "NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)" in cfg
+    assert "observation_space: int = NUM_OBS_BASE" in cfg
     assert "NUM_CRITIC_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)" in cfg
 
 

@@ -85,27 +85,25 @@ NUM_ABDUCTION_ACTION = 5   # thumb_1(벌림) / thumb_2(대향) / index_1 / pinky
 NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION + NUM_ABDUCTION_ACTION  # 16
 
 # ---------------------------------------------------------------------------
-# Observation space — DEXTRAH teacher 구조 (distillation 대비 동일 구조)
+# Observation space — Tesollo-native (08-21 재설계: actor obs 물체 수 무관, 일반화)
 #
-# Policy obs (BASE 193 + num_objects onehot):
+# Policy obs (BASE 193, 물체 수 무관 — onehot/scale/rotation 없음):
 #   robot_dof_pos_noisy 27 + robot_dof_vel_noisy 27 (annealing으로 0)
 #   + hand_pos_noisy 18 (fabric FK: palm+5tip) + hand_vel_noisy 18 (0)
-#   + object_pos_noisy 3 + object_rot_noisy 4 + object_goal 3
-#   + [onehot num_objects] + object_scale 1 + actions 16
+#   + object_pos_noisy 3 (FP 배포 채널, pos만) + object_goal 3 + actions 16
 #   + fabric_q 27 + fabric_qd 27 + fabric_qdd 27
-#   = 198 + N_obj   (DEXTRAH 원본 "193 + num_objects" + abduction action 4)
+#   = 193   (물체 identity/scale/rotation 없음 → 미학습 신규 물체에도 obs dim 불변)
 #
-# Critic obs (BASE 251 + num_objects):
+# Critic obs (BASE 252 + num_objects, privileged 유지 — 비대칭 actor-critic):
 #   robot_dof_pos 27 + robot_dof_vel 27 + hand_pos 18 + hand_vel 36
 #   + hand_forces[:, :3] 3 + measured_joint_torque 27
 #   + object_pos 3 + object_rot 4 + object_vel 6 + object_goal 3
 #   + [onehot] + object_scale 1 + actions 16 + fabric q/qd/qdd 81
 #   = 252 + N_obj   (DEXTRAH 원본 "247 + num_objects" + abduction action 4)
 #
-# Student obs (distillation, 189 — onehot 없음):
-#   policy obs에서 물체 privileged state 전량 제거
-#   (object_pos_noisy 3 + object_rot_noisy 4 + onehot N_obj + object_scale 1)
-#   → 물체 정보는 D435i RGB-D에서 추론해야 하므로 관측에서 뺀다.
+# Student obs (distillation, 190 — 현재 보류. actor obs 가 이미 pos-only 라
+#   "object_pos_noisy" 3D 하나만 더 빼면 student 가 됨. FP 직접배포로 distillation
+#   자체가 불필요해질 가능성 높음 — 재설계 시 재검토):
 #   robot_dof_pos_noisy 27 + robot_dof_vel_noisy 27 + hand_pos_noisy 18
 #   + hand_vel_noisy 18 + object_goal 3 + actions 16 + fabric q/qd/qdd 81 = 190
 # ---------------------------------------------------------------------------
@@ -113,10 +111,10 @@ NUM_HAND_POINTS = 6           # palm + 5 fingertips (DEXTRAH hand bodies)
 # fingertip 접촉력 15D(5tip × 3축, force_matrix_w Cup-only) 를 actor obs 에 추가.
 # 정책이 접촉을 "보고" force closure 를 조율하게 함(실물 RH56F1/Tesollo FT 센서 대응).
 # critic 은 privileged 로 distal/middle 접촉력 norm 10D 도 추가.
-NUM_OBS_BASE        = 213     # 198 + 15 (fingertip contact force xyz)
+NUM_OBS_BASE        = 208     # 193 + 15 (fingertip contact force xyz). 물체 수 무관(고정)
 NUM_CRITIC_OBS_BASE = 277     # 252 + 15 (tip xyz) + 10 (distal/middle norm)
 NUM_STUDENT_OBS     = 205     # distillation student (190 + 15 접촉력; onehot 무관)
-# 실제 차원은 env_cfg 에서 + len(active_object_names) 로 확정
+# critic 만 실제 차원이 env_cfg 에서 + len(active_object_names) 로 확정된다.
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 

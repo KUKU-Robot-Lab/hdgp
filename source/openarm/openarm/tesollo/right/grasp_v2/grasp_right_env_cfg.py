@@ -58,7 +58,6 @@ from .grasp_right_preset import (
     LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
     LEFT_ARM_REST_JOINT_POS,
     RIGHT_ACTUATED_JOINT_NAMES,
-    SIDE_APPROACH_OBJECT_NAMES,
 )
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
@@ -227,13 +226,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     use_cuda_graph:   bool  = False
 
     # -----------------------------------------------------------------------
-    # 관측·액션 공간 — DEXTRAH teacher 구조 (base + 물체 onehot)
+    # 관측·액션 공간 — Tesollo-native (08-21: actor obs 는 물체 수 무관, 일반화)
+    #
+    # actor(policy) obs 는 물체 onehot/scale/rotation 을 뺐다 — 미학습 신규 물체는
+    # 원핫 슬롯이 없어 "몇 종 학습했는지"에 obs dim 이 의존하면 일반화가 원리적으로
+    # 불가능하다. 남은 물체 정보는 pos(FP 배포 채널)뿐이라 NUM_OBS_BASE 가 고정값이다.
+    # critic 은 privileged(onehot/scale/rot 유지, 비대칭 actor-critic)라 여전히 N_obj 의존.
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)          # 193 + N_obj
+    observation_space: int = NUM_OBS_BASE                                      # 208 (N_obj 무관)
     action_space:      int = NUM_ACTIONS                                        # 11
-    state_space:       int = NUM_CRITIC_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)   # 247 + N_obj
+    state_space:       int = NUM_CRITIC_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)   # 277 + N_obj
 
-    num_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)
+    num_observations: int = NUM_OBS_BASE
     num_actions:      int = NUM_ACTIONS
     num_states:       int = NUM_CRITIC_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)
 
@@ -258,12 +262,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     pregrasp_noise_z:      float = 0.005
 
     # -----------------------------------------------------------------------
-    # 접근 자세 분기 (기본 top-down / cup 만 side)
+    # 접근 자세 분기 (08-21: side-to-side 가 기본 — grasp_v1 확장)
     # -----------------------------------------------------------------------
-    # DEXTRAH 와 동일하게 top-down 이 기본. cup 은 내용물을 흘리면 안 되므로 옆면을
-    # 감싸 잡는다(grasp_v1 방식). 물체 이름 기반 고정 분기라 ADR 회전과 무관하다.
+    # DEXTRAH top-down 하강 접근 대신, grasp_v1 원형인 side-to-side(엄지 vs 4지가
+    # 물체를 사이에 두고 양옆에서 마주 조임, enclosure_axis)를 전 물체 기본으로 삼는다.
+    # top-down 분기 코드(compute_palm_pose_id)는 그대로 남겨두되(제거 아님), side 목록을
+    # 활성 물체 전체로 채워 사실상 전부 side 로 라우팅한다 — 특정 물체만 top-down 이
+    # 필요해지면(예: 아주 납작한 물체) 이 목록에서 빼면 된다. 물체 이름 기반 고정 분기라
+    # ADR 회전과 무관.
     approach_branch_enable:      bool = True
-    side_approach_object_names:  tuple[str, ...] = SIDE_APPROACH_OBJECT_NAMES
+    side_approach_object_names:  tuple[str, ...] = _ACTIVE_OBJECT_NAMES
     # pregrasp 를 물체 크기에 비례시키기 위한 bbox (compute_object_bbox.py 산출물)
     object_bbox_path:            str = _os.path.join(_ASSETS_DIR, "object_bbox.json")
 
@@ -505,12 +513,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         "abduction": {
             "range_scale": (0.0, 1.0),
         },
-        # 관측 노이즈 점진 (DEXTRAH object/robot_state_noise 원본값)
+        # 관측 노이즈 점진 (DEXTRAH object/robot_state_noise 원본값).
+        # [08-21] object_rot_noise/bias 삭제 — actor obs 에서 물체 회전을 뺐다(일반화 개편).
         "object_state_noise": {
             "object_pos_noise": (0.0, 0.03),   # m
             "object_pos_bias":  (0.0, 0.02),   # m
-            "object_rot_noise": (0.0, 0.1),    # rad
-            "object_rot_bias":  (0.0, 0.08),   # rad
         },
         "robot_state_noise": {
             "robot_joint_pos_noise": (0.0, 0.08),  # rad
