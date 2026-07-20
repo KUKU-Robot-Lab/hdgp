@@ -1,6 +1,6 @@
 # Tesollo-Native Grasping + FoundationPose 배포 — 설계 문서
 
-> 상태: 설계(구현 전). 방향 전환 결정 근거는 memory `dextrah-unsuitable-tesollo-pivot.md`.
+> 상태: §3.4 관측(pos-only) + §3.1 접근 자세(side-to-side 기본) 구현 완료(커밋 1345fbe, 서버 정적테스트 62 pass). **학습 미기동** — reward/H1(5지 관여)은 §5 재검증 대기. 방향 전환 결정 근거는 memory `dextrah-unsuitable-tesollo-pivot.md`.
 > 대상: `source/openarm/openarm/tesollo/right/grasp_v2` 재설계 → Tesollo-native 코어 복원 + FP 배포.
 
 ---
@@ -51,7 +51,9 @@ middle/ring tip 접촉 0.00 자체는 손가락 길이 때문에 tip 전에 dist
 - `_4`(DIP): **distal|tip 접촉 시 동결**.
 - `advance = finger_close_speed · cmd · (1 − gate)` → 각 손가락이 **닿을 때까지** 독립 폐쇄 → 물체 형상에 드리움(envelope). action = 손가락별 폐쇄 속도 5D.
 - 팔: Fabrics IK palm 6D(유지). thumb opposition/abduction 축은 유지·정합.
-- **리스크(reward-audit Check 1)**: 동결이 "닿기만 하고 안 누르기" 국소최적으로 샐 위험(07-08 grip 0.90 정체 전례). 완화 요인: 현재 force_closure_reward는 접촉이 아닌 힘 **크기**를 요구(tanh(force/scale)) — 07-08엔 없던 항. 단 미검증이므로 격리 실험 필수(§5 Stage 2).
+- **리스크(reward-audit Check 1)**: 동결이 "닿기만 하고 안 누르기" 국소최적으로 샐 위험(07-08 grip 0.90 정체 전례). 완화 요인: 현재 force_closure_reward는 접촉이 아닌 힘 **크기**를 요구(tanh(force/scale)) — 07-08엔 없던 항. 단 미검증이므로 격리 실험 필수(§5 Stage 2). lstm_test1~3 실측(07-20~21)으로 3지(엄지+2) 국소최적을 fc_gate 강화(`force_closure_min_others` ADR 1→3)로 대응 시작 — H1으로 §5에 재편입.
+
+**[08-21 추가] 접근 자세도 side-to-side가 기본** — grasp_v1 원형(`enclosure_axis`: 접근 방향에 수직인 축을 잡아 엄지 vs 4지가 물체를 사이에 두고 양옆에서 마주 조임)을 전 물체 기본으로 복원(DEXTRAH top-down 하강 접근은 기본에서 제외, 코드는 남김). `side_approach_object_names` 기본값을 cup 등 예외 목록 → 활성 물체 전체로 변경(구현 완료, 커밋 1345fbe).
 
 ### 3.2 리프트 트리거
 grasp_v1 **접촉 latch**(`compute_lift_readiness`, grasp_v2엔 dead code로 존재): tip≥N + envelope 손가락≥M → 리프트 진입. step-480 scripted 대체 → **감싸 잡으면 리프트**(herding 완화).
@@ -59,10 +61,11 @@ grasp_v1 **접촉 latch**(`compute_lift_readiness`, grasp_v2엔 dead code로 존
 ### 3.3 보상 (staged, grasp_v1 core `compute_grasp_reward_terms`)
 approach(2) → grasp(12) → lift(30) → **stabilize(10)+stability(1)+post_lift_contact_loss(−8)** → success_bonus(20), enclosure_thumb(0.6). 접촉 게이팅은 tip+envelope 혼합(`lift_envelope_mix`)으로 tip-only 억제. **stabilize+post_lift_contact_loss가 "가만히 버티기"를 직접 보상**.
 
-### 3.4 관측
-- teacher actor: proprio(encoder) + hand FK(palm+5tip) + **object pose(FP-deployable)** + goal + **tactile(tip F/T 3축)** + fabric q/qd/qdd.
-- critic(privileged): object vel, distal/mid contact, torque.
-- onehot/scale: FP mesh-known → 배포 가능(알려진 물체).
+### 3.4 관측 — [08-21 확정·구현 완료] 물체 pos만, identity/scale/rotation 없음
+사용자 확인: "obs에는 물체의 pos 정보만 있으면 됨. 어떤 물체인지는 중요하지 않음." §0의 "알려진 물체 배포"에서 한 단계 더 나아가 **미학습 신규 물체 일반화**로 목표를 상향 — FP는 CAD/mesh만 있으면 신규 물체도 pose를 주지만, bbox 같은 형상 특징을 실시간 obs로 안정적으로 공급하는 건 별도 파이프라인이라 s2r 가정이 약하다(초기 설계 오판, 정정됨).
+- **actor(teacher) obs**: proprio + hand FK(palm+5tip) + **object_pos(FP-deployable, 위치만)** + goal + tactile(tip F/T 3축) + fabric q/qd/qdd + actions. **object identity(onehot)·scale·rotation 없음.** `NUM_OBS_BASE=208`, 물체 수 무관(고정) — 구현 완료(`grasp_right_env.py`/`_env_cfg.py`/`_constants.py`, 커밋 1345fbe).
+- 근거: 인벨롭 그립(접촉-게이트 폐쇄)은 목표를 FULL_GRIP까지 밀면 닿거나 포화된 관절이 멈추는 **형태-적응** 제어라, 물체가 어떤 모양/크기인지 정책이 몰라도 물리(환경의 실시간 접촉 게이트)가 감싼다. "존재를 알고(pos) 다가가서 손가락을 닫으면 인벨롭된다"가 핵심 원리 — 정책 obs에 형상 정보를 넣는 순간 오히려 물체별 지름길 암기를 유발해 일반화를 저해한다.
+- critic(privileged, 비대칭 actor-critic — 배포는 actor만 씀): object_rot, object_vel, onehot, scale, distal/mid contact, torque. 학습 안정화용으로 유지.
 
 ### 3.5 배포 (FoundationPose, distillation 없음)
 - 고정 **외부 global 카메라** + **일회성 camera→base 외참**(hand-eye 아님).
