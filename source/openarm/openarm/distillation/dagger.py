@@ -664,6 +664,17 @@ class Dagger:
         self.writer.add_scalar("contact/distal", distal_rate, self.frame)
         self.writer.add_scalar("contact/middle", middle_rate, self.frame)
 
+        # 물체 수평 변위(settle 대비): teacher 가 파지 중 물체를 얼마나 이동시키는가.
+        # FP-lock 이 깨지는 정도 = tactile 이 보완해야 할 밀림량.
+        _drift = (ov.object_pos[:, :2] - ov.object_init_pos[:, :2]).norm(dim=-1)  # (N,)
+        drift_mean = float(_drift.mean())
+        drift_p90 = float(_drift.quantile(0.9))
+        drift_max = float(_drift.max())
+        drift_f1 = float((_drift > 0.01).float().mean())
+        drift_f3 = float((_drift > 0.03).float().mean())
+        self.writer.add_scalar("obj_drift/mean", drift_mean, self.frame)
+        self.writer.add_scalar("obj_drift/p90", drift_p90, self.frame)
+
         if self.game_rewards.current_size > 0:
             mean_rewards = self.game_rewards.get_mean()
             self.writer.add_scalar("rewards/step", mean_rewards[0], self.frame)
@@ -687,6 +698,10 @@ class Dagger:
                 f"  contact tip={tip_rate:.3f} distal={distal_rate:.3f} "
                 f"middle={middle_rate:.3f} | tip_per_finger="
                 + " ".join(f"{v:.2f}" for v in tip_pf.tolist())
+            )
+            print(
+                f"  obj_drift(m) mean={drift_mean:.4f} p90={drift_p90:.4f} "
+                f"max={drift_max:.4f} | >1cm={drift_f1:.2f} >3cm={drift_f3:.2f}"
             )
             if self.game_rewards.current_size > 0:
                 print(f"  mean_rewards: {self.game_rewards.get_mean()}")
