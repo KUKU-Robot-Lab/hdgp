@@ -336,7 +336,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # grasp-v2 reward 계약(DEXTRAH 전환기 미사용 보존분)이었던 걸 재활성화.
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0
-    approach_xy_penalty_weight: float = 5.0
+    # [08-21 v2] approach_xy_penalty_weight/grasp_xy_threshold 제거 — object_to_goal
+    # 복원으로 "물체를 goal 까지 옮기면 보상"과 "물체가 제자리서 벗어나면 벌점"이
+    # 정면 충돌해 삭제(위 approach_reward 계산부 주석 참조). tilt 페널티만 유지.
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     lift_reward_weight: float = 30.0
@@ -345,7 +347,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     success_bonus_weight: float = 20.0
     post_lift_contact_loss_weight: float = -8.0
     action_smooth_weight: float = -0.02
-    grasp_xy_threshold: float = 0.025
     grasp_upright_threshold_deg: float = 8.0
     success_upright_max_deg: float = 20.0
     stabilize_upright_max_deg: float = 5.0

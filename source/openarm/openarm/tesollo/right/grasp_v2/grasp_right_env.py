@@ -1351,9 +1351,6 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- approach (grasp_v1, 상시 활성) ----
         palm_to_cup_dist = (self.palm_center_pos - grasp_center).norm(dim=-1)
-        cup_xy_displacement = (
-            self.object_pos[:, :2] - self.object_init_pos[:, :2]
-        ).norm(dim=-1)
 
         # side-to-side 인벨롭 기하(grasp_v1 enclosure_axis): 접근 방향에 수직인 축을
         # 잡아 엄지 vs 4지가 물체를 사이에 두고 양옆에서 마주 조이도록 목표점을 준다.
@@ -1386,13 +1383,18 @@ class GraspRightEnv(DirectRLEnv):
             torch.acos(cup_z_world[:, 2].clamp(min=-1.0, max=1.0))
         )
 
-        xy_margin = float(self.cfg.grasp_xy_threshold)
+        # [08-21 v2 정정] grasp_v1 원본은 xy_displacement 페널티가 있었다 — "물체가
+        # 잡은 자리에서 안 벗어나게"(제자리 유지 과제 전제). 그런데 lift/goal 을
+        # DEXTRAH 로 되돌리며 object_to_goal_reward 가 **물체를 고정 goal 점까지
+        # 옮기라고 보상**한다(148물체 각기 다른 스폰 위치 → 대부분 실제 수평 이동 필요).
+        # 두 항을 그대로 합치면 "이동해야 보상"과 "이동하면 벌점"이 정면 충돌 —
+        # 단순 이식(복붙)이었던 부분. xy 페널티는 제거하고 tilt(넘어짐 방지, 이동
+        # 방향과 무관)만 유지한다.
         tilt_margin = float(self.cfg.grasp_upright_threshold_deg)
         approach_reward = (
             float(self.cfg.approach_weight) * torch.exp(
                 -float(self.cfg.approach_sharpness) * (palm_to_cup_dist + fingertip_side_dist)
             )
-            - float(self.cfg.approach_xy_penalty_weight) * torch.relu(cup_xy_displacement - xy_margin)
             - float(self.cfg.approach_tilt_penalty_weight) * torch.relu(cup_tilt_deg - tilt_margin)
         )
 
