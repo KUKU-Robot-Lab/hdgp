@@ -53,6 +53,18 @@ parser.add_argument(
     help="Fix bead count for playback. Supports bead_count_min/max and single bead_count curriculum tasks.",
 )
 parser.add_argument(
+    "--cup_scale", type=float, default=None,
+    help="[generalization] 받는(target) 컵 크기 scale (eval-time, 복원 후 적용). env __init__이 판정기하 비례조정.",
+)
+parser.add_argument(
+    "--spawn_x", type=float, default=None,
+    help="[generalization] source cup spawn x_center override (eval-time, 복원 후 적용).",
+)
+parser.add_argument(
+    "--spawn_y", type=float, default=None,
+    help="[generalization] source cup spawn y_center override (eval-time, 복원 후 적용).",
+)
+parser.add_argument(
     "--freeze_grasp_hand",
     action="store_true",
     default=False,
@@ -378,6 +390,20 @@ def _apply_playback_env_overrides(env_cfg) -> None:
             print(f"[INFO] bead count fixed for playback: {args_cli.bead_fixed}")
         else:
             print("[WARN] --bead_fixed ignored: env does not expose bead count settings")
+
+    # [generalization] 복원된 학습 cfg 위에 eval-time override (hydra는 복원에 덮이므로 여기서 적용)
+    if args_cli.cup_scale is not None:
+        if hasattr(env_cfg, "left_target_cup_scale"):
+            env_cfg.left_target_cup_scale = args_cli.cup_scale
+            print(f"[INFO] target cup scale for playback: {args_cli.cup_scale}")
+        else:
+            print("[WARN] --cup_scale ignored: env has no left_target_cup_scale")
+    if args_cli.spawn_x is not None and hasattr(env_cfg, "object_spawn_x_center"):
+        env_cfg.object_spawn_x_center = args_cli.spawn_x
+        print(f"[INFO] spawn x_center for playback: {args_cli.spawn_x}")
+    if args_cli.spawn_y is not None and hasattr(env_cfg, "object_spawn_y_center"):
+        env_cfg.object_spawn_y_center = args_cli.spawn_y
+        print(f"[INFO] spawn y_center for playback: {args_cli.spawn_y}")
 
     if args_cli.freeze_grasp_hand:
         if hasattr(env_cfg, "freeze_grasp_hand_during_episode"):
