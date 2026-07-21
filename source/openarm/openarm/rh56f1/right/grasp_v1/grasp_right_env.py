@@ -1267,8 +1267,8 @@ class GraspRightEnv(DirectRLEnv):
             height_delta / max(float(self.cfg.lift_success_height), 1e-6)
         ).clamp(0.0, 1.0)
         # palm 밀착 접근(07.22): palm→물체 거리 dense — palm 이 닿을 때까지 깊이 다가가게 유도.
-        palm_pos = self.robot.data.body_pos_w[:, self.palm_body_index]   # (N, 3)
-        palm_to_object_dist = (palm_pos - self.object_pos).norm(dim=-1)  # (N,)
+        # palm_center_pos·object_pos 모두 env-local(env_origins 제거) — 좌표계 일치 필수.
+        palm_to_object_dist = (self.palm_center_pos - self.object_pos).norm(dim=-1)  # (N,)
         palm_approach_reward = float(self.cfg.palm_approach_weight) * torch.exp(
             -float(self.cfg.palm_approach_sharpness) * palm_to_object_dist
         )
