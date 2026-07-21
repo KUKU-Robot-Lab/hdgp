@@ -66,7 +66,7 @@ from fabrics_sim.integrator.integrators import DisplacementIntegrator
 from fabrics_sim.utils.utils import initialize_warp
 from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
 
-from .pour_right_env_cfg import PourRightEnvCfg
+from .pour_right_env_cfg import PourRightEnvCfg, _make_beads_cfg, _DEFAULT_BEAD_COUNT
 from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
@@ -247,6 +247,10 @@ class PourRightEnv(DirectRLEnv):
         )
 
     def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
+        # [generalization] 물리 bead collection을 cfg.bead_count에 맞춰 재생성(기본 20이면 무변화).
+        #   collection 크기 = num_beads 일치시켜 eval-time --bead_fixed(≠20) 지원. 학습(bead20)은 무영향.
+        if int(cfg.bead_count) != _DEFAULT_BEAD_COUNT:
+            cfg.beads_cfg = _make_beads_cfg(int(cfg.bead_count))
         super().__init__(cfg, render_mode, **kwargs)
 
         # ----------------------------------------------------------------

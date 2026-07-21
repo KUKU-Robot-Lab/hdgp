@@ -58,9 +58,9 @@ _DEFAULT_BEAD_COUNT = 20
 _DEFAULT_DEMO_POSE_DATASET_DIR = _os.path.normpath(_os.path.join(_HDGP_ROOT, "..", "datasets"))
 
 
-def _make_beads_cfg() -> RigidObjectCollectionCfg:
+def _make_beads_cfg(n: int = _DEFAULT_BEAD_COUNT) -> RigidObjectCollectionCfg:
     rigid_objects: dict[str, RigidObjectCfg] = {}
-    for i in range(_DEFAULT_BEAD_COUNT):
+    for i in range(n):
         bead_spawn_cfg = UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
             scale=(0.5, 0.5, 0.5),
