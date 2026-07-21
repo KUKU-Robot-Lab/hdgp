@@ -20,8 +20,10 @@ _app = SimulationApp({"headless": True})
 import os
 from pxr import Usd, UsdGeom, UsdPhysics
 
-_VISDEX = "/home/user/rl_ws/hdgp/assets/visdex_objects/USD"
-_SRC = "/home/user/rl_ws/hdgp/assets/cup/cup_middle.usd"
+# hdgp 루트를 __file__ 기준으로 동적 산출(로컬 /home/user, 서버 /home/oem 양쪽 동작).
+_HDGP = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+_VISDEX = f"{_HDGP}/assets/visdex_objects/USD"
+_SRC = f"{_HDGP}/assets/cup/cup_middle.usd"
 _DST_DIR = f"{_VISDEX}/cup_middle"
 _DST = f"{_DST_DIR}/cup_middle.usd"
 _EXPECT = (0.07, 0.07, 0.14)  # cup_middle_2.stl 실측 (직경 7cm, 높이 14cm)
@@ -121,7 +123,7 @@ for p in d2.Traverse():
     if p.HasAPI(UsdPhysics.MassAPI): apis.append("MASS")
     out(f"    {p.GetPath()} <{p.GetTypeName()}>{' [' + '+'.join(apis) + ']' if apis else ''}")
 
-with open("/home/user/rl_ws/hdgp/scratchpad/fix_cup_middle_result.txt", "w") as f:
+with open(f"{_HDGP}/scratchpad/fix_cup_middle_result.txt", "w") as f:
     f.write("\n".join(log) + "\n")
 print("DONE")
 _app.close()
