@@ -58,7 +58,6 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import matrix_from_quat, quat_apply, quat_mul
 
 from openarm.common.grasp_logging import action_policy_scalars
-from openarm.common.grasp_reward_core import compute_grasp_reward_terms
 from openarm.common.grasp_v2_contract import compute_action_delta_norm, compute_grasp_v2_stability
 
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
@@ -1334,25 +1333,24 @@ class GraspRightEnv(DirectRLEnv):
     # Rewards: DEXTRAH 4항 (dextrah_kuka_allegro compute_rewards 이식)
     # ------------------------------------------------------------------
     def _get_rewards(self) -> torch.Tensor:
-        # [08-21] grasp_v1 staged reward 이식 (DEXTRAH 4항 + force_closure 제거).
-        # 사용자 확인: "grasp v1 리워드 이식, 기존것 제거. 최대한 5지 접촉으로 해야함."
+        # [08-21 v2] 하이브리드 — approach/grasp = grasp_v1, lift/goal/success = DEXTRAH.
+        # 사용자 확정: "접근·파지 리워드는 grasp_v1, lift·goal은 기존 DEXTRAH 방법."
         #
-        # DEXTRAH 4항은 "물체→goal(고정 절대점) 거리"를 직접 보상해 carry-to-point
-        # 과제였다. grasp_v1은 그런 goal 개념이 없다 — 성공 = **제자리에서 들어올려
-        # 안정적으로 유지**(approach→grasp→lift→stabilize→success, 접촉 latch로 단계
-        # 전환). Tesollo-native 파지 원형(grasp_v1)으로 복귀하는 이번 세션 방향과 일치
-        # — 이 태스크는 "확실히 잡고 든다"까지가 범위고, 이후 특정 지점으로 옮기는 건
-        # 별도 downstream 스킬(pour_v1처럼 grasp warm-state 로 이어받음)의 몫이다.
-        # cfg 필드(approach_weight~enclosure_thumb_weight)는 이미 존재했었다(구 RH56F1
-        # 공유 계약 호환 보존분, DEXTRAH 전환으로 미사용 상태였음) — 새 필드 추가 없이
-        # 그대로 재활성화한다. object_goal 은 obs 에는 남기되(무해한 고정 상수) reward
-        # 에서는 더 이상 쓰지 않는다.
+        # 배경: v1(순수 grasp_v1 이식) 실측 3271 epoch — lift/stabilize/success_bonus/
+        # stability가 전 구간 정확히 0. 원인: grasp_v1은 접촉 latch가 걸리면 **arm을
+        # 스크립트(joint7 lift-wait)가 대신 들어올려준다** — 정책은 latch까지만 하면
+        # 된다. grasp_v2(DEXTRAH 단일 phase, 정책이 latch 이후도 계속 arm을 몲)에
+        # 그 reward 구조만 이식하니 latch가 거의 안 걸리고(3271 epoch 성공 0) latch
+        # 이후 보상 전체가 죽는 "절벽"이 됐다. DEXTRAH의 lift/goal 보상은 hard latch
+        # 없이 grip_frac(연속값)로만 부드럽게 게이트해 이 절벽이 없다 — 그래서 lift·
+        # goal·success는 DEXTRAH로 되돌린다. approach·grasp(물체 형상/접촉 품질 shaping)
+        # 는 grasp_v1 쪽이 dense/side-to-side 기하가 이미 맞으므로 유지하되, **latch
+        # 게이트(pre_lift_gate)는 제거**해 상시 활성화한다(절벽 원인 제거).
         grasp_center = self.object_pos.clone()
         grasp_center[:, 2] += float(self.cfg.cup_grasp_z_offset)
+
+        # ---- approach (grasp_v1, 상시 활성) ----
         palm_to_cup_dist = (self.palm_center_pos - grasp_center).norm(dim=-1)
-        cup_height_delta = (
-            self.object_pos[:, 2] - self.object_init_pos[:, 2]
-        ).clamp(min=0.0)
         cup_xy_displacement = (
             self.object_pos[:, :2] - self.object_init_pos[:, :2]
         ).norm(dim=-1)
@@ -1381,14 +1379,30 @@ class GraspRightEnv(DirectRLEnv):
             + (1.0 - float(self.cfg.enclosure_thumb_weight)) * others_dist
         )
 
-        # 접촉 파생값 — tip/envelope/grip fraction
-        full_tip_contact_bool = self.num_contacts_buf >= NUM_FINGERTIPS
-        full_tip_contact = full_tip_contact_bool.float()
+        z_local = torch.zeros(self.num_envs, 3, device=self.device)
+        z_local[:, 2] = 1.0
+        cup_z_world = quat_apply(self.object_rot, z_local)
+        cup_tilt_deg = torch.rad2deg(
+            torch.acos(cup_z_world[:, 2].clamp(min=-1.0, max=1.0))
+        )
+
+        xy_margin = float(self.cfg.grasp_xy_threshold)
+        tilt_margin = float(self.cfg.grasp_upright_threshold_deg)
+        approach_reward = (
+            float(self.cfg.approach_weight) * torch.exp(
+                -float(self.cfg.approach_sharpness) * (palm_to_cup_dist + fingertip_side_dist)
+            )
+            - float(self.cfg.approach_xy_penalty_weight) * torch.relu(cup_xy_displacement - xy_margin)
+            - float(self.cfg.approach_tilt_penalty_weight) * torch.relu(cup_tilt_deg - tilt_margin)
+        )
+
+        # ---- grasp (grasp_v1, 상시 활성 — 원본은 pre_lift_gate 게이트가 있으나 latch
+        # 의존을 없애려 제거. 접촉 품질(tip/envelope) shaping 은 latch 여부와 무관하게
+        # 항상 유효한 신호라 상시 켜둬도 문제 없음) ----
+        full_tip_contact = (self.num_contacts_buf >= NUM_FINGERTIPS).float()
         tip_contact_frac = (
             self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
         ).clamp(max=1.0)
-        # contact_persist_buf 재사용(구 grasp_contact 부트스트랩 항 자리) — 트리거를
-        # "임의 접촉>0"에서 grasp_v1식 "grip 손가락수 >= stage0_lift_start_min_contacts"로.
         persistent_grasp = self.num_contacts_buf >= int(self.cfg.stage0_lift_start_min_contacts)
         self.contact_persist_buf = torch.where(
             persistent_grasp,
@@ -1410,18 +1424,60 @@ class GraspRightEnv(DirectRLEnv):
         num_grip_fingers = any_finger_contact.sum(dim=-1)
         grip_frac = num_grip_fingers.float() / float(NUM_FINGERTIPS)
 
-        # 물체 자세
-        z_local = torch.zeros(self.num_envs, 3, device=self.device)
-        z_local[:, 2] = 1.0
-        cup_z_world = quat_apply(self.object_rot, z_local)
-        cup_tilt_deg = torch.rad2deg(
-            torch.acos(cup_z_world[:, 2].clamp(min=-1.0, max=1.0))
+        # grasp_envelope_credit: 0.40(grasp_v1 코어 기본값 그대로 — 0.5 상향은 이번에
+        # 되돌림. 5지 유도는 여기 대신 lift 의 grip_frac 연속 게이트가 담당).
+        _ecred = float(self.cfg.grasp_envelope_credit)
+        _tip_scale = (1.0 - _ecred) / 0.60
+        grasp_quality = (
+            0.15 * _tip_scale * tip_contact_frac
+            + 0.20 * _tip_scale * full_tip_contact
+            + 0.25 * _tip_scale * contact_persistence_frac
+            + _ecred * envelope_frac.clamp(0.0, 1.0)
         )
-        upright_quality = torch.exp(
-            -cup_tilt_deg / max(float(self.cfg.stabilize_upright_reward_scale_deg), 1e-6)
-        )
+        grasp_reward = float(self.cfg.grasp_weight) * grasp_quality
 
-        # action smoothness + 안정성(GraspV2Stability 공유 계약)
+        # ---- lift + object_to_goal (DEXTRAH, 연속·grip_frac 게이트 — hard latch 없음) ----
+        _o2g_sharp = (
+            self._adr("reward_weights", "object_to_goal_sharpness")
+            if self.grasp_adr is not None else float(self.cfg.object_to_goal_sharpness)
+        )
+        _lift_w = (
+            self._adr("reward_weights", "lift_weight")
+            if self.grasp_adr is not None else float(self.cfg.lift_weight)
+        )
+        object_to_goal_err = (self.object_pos - self.object_goal).norm(dim=-1)
+        object_to_goal_reward = float(self.cfg.object_to_goal_weight) * torch.exp(
+            -_o2g_sharp * object_to_goal_err
+        )
+        object_vertical_err = (self.object_goal[:, 2] - self.object_pos[:, 2]).abs()
+        lift_reward = _lift_w * torch.exp(
+            -float(self.cfg.lift_sharpness) * object_vertical_err
+        ) * grip_frac
+
+        total = approach_reward + grasp_reward + object_to_goal_reward + lift_reward
+
+        reward_terms = {
+            "approach": approach_reward,
+            "grasp": grasp_reward,
+            "object_to_goal": object_to_goal_reward,
+            "lift": lift_reward,
+        }
+
+        # ---- 진단 전용(reward 게이팅 없음): 접촉 latch + stability ----
+        # compute_lift_readiness 는 더 이상 reward 를 게이트하지 않는다(위 배경 참조) —
+        # "실제 파지력이 latch 문턱을 얼마나 자주 넘는지" 관찰용으로만 남긴다.
+        is_grasp_phase = self.episode_length_buf >= int(self.cfg.settle_steps)
+        num_envelope_fingers = (self.binary_contact_buf & self.middle_binary_contact_buf).sum(dim=-1)
+        self.lift_hold_count, _lift_ready_now, self.lift_latched_buf = compute_lift_readiness(
+            num_contacts=self.num_contacts_buf,
+            is_grasp_phase=is_grasp_phase,
+            previous_hold_count=self.lift_hold_count,
+            previous_latched=self.lift_latched_buf,
+            min_contacts=int(self.cfg.stage0_lift_start_min_contacts),
+            hold_steps=int(self.cfg.grasp_ready_hold_steps),
+            num_envelope_fingers=num_envelope_fingers,
+            min_envelope_fingers=int(self.cfg.lift_start_min_envelope_fingers),
+        )
         action_delta_norm = compute_action_delta_norm(self.actions, self.prev_actions)
         contact_delta = (
             self.num_contacts_buf.float() - self._prev_reward_contacts_buf
@@ -1435,58 +1491,6 @@ class GraspRightEnv(DirectRLEnv):
         )
         self._prev_reward_contacts_buf.copy_(self.num_contacts_buf.float())
 
-        # 접촉 latch(compute_lift_readiness): "감싸 잡으면 리프트/안정화 보상 게이트가
-        # 열린다" — step 스크립트(LIFT_START_STEP) 대신 실제 파지 상태로 단계 전환.
-        # settle(낙하 안착) 이후만 유효 구간으로 본다.
-        is_grasp_phase = self.episode_length_buf >= int(self.cfg.settle_steps)
-        num_envelope_fingers = (self.binary_contact_buf & self.middle_binary_contact_buf).sum(dim=-1)
-        self.lift_hold_count, _lift_ready_now, self.lift_latched_buf = compute_lift_readiness(
-            num_contacts=self.num_contacts_buf,
-            is_grasp_phase=is_grasp_phase,
-            previous_hold_count=self.lift_hold_count,
-            previous_latched=self.lift_latched_buf,
-            min_contacts=int(self.cfg.stage0_lift_start_min_contacts),
-            hold_steps=int(self.cfg.grasp_ready_hold_steps),
-            num_envelope_fingers=num_envelope_fingers,
-            min_envelope_fingers=int(self.cfg.lift_start_min_envelope_fingers),
-        )
-        lift_latched = self.lift_latched_buf
-
-        # success: 엄지-물체 접촉 명시 요구 + 나머지 완화(>=success_min_grip_fingers).
-        thumb_cup_grip = any_finger_contact[:, 0]
-        full_grip_bool = (
-            num_grip_fingers >= int(self.cfg.success_min_grip_fingers)
-        ) & thumb_cup_grip
-        success_now = (
-            lift_latched
-            & (cup_height_delta >= float(self.cfg.lift_success_height))
-            & full_grip_bool
-            & (cup_tilt_deg <= float(self.cfg.stabilize_upright_max_deg))
-            & stability.stable
-        )
-
-        total, reward_terms, _ = compute_grasp_reward_terms(
-            num_tip_contacts=self.num_contacts_buf,
-            tip_contact_frac=tip_contact_frac,
-            full_tip_contact=full_tip_contact,
-            contact_persistence_frac=contact_persistence_frac,
-            envelope_frac=envelope_frac,
-            grip_frac=grip_frac,
-            palm_to_cup_dist=palm_to_cup_dist,
-            fingertip_side_dist=fingertip_side_dist,
-            cup_height_delta=cup_height_delta,
-            cup_xy_displacement=cup_xy_displacement,
-            cup_tilt_deg=cup_tilt_deg,
-            upright_quality=upright_quality,
-            lift_latched=lift_latched,
-            action_delta_norm=action_delta_norm,
-            stabilize_reward_gate=lift_latched,
-            success_now=success_now,
-            stable=stability.stable,
-            stability_quality=stability.quality,
-            cfg=self.cfg,
-        )
-
         # palm_align: 진단 로깅 전용 (reward 아님) — palm 이 top-down 을 버리고 도망치는지.
         palm_quat = self.robot.data.body_quat_w[:, self.palm_body_index]   # (N,4) wxyz
         palm_x_local = torch.zeros_like(self.palm_center_pos)
@@ -1496,8 +1500,8 @@ class GraspRightEnv(DirectRLEnv):
         palm_to_obj = palm_to_obj / (palm_to_obj.norm(dim=-1, keepdim=True) + 1e-8)
         palm_align = (palm_normal * palm_to_obj).sum(dim=-1)               # [-1, 1]
 
-        # success: grasp_v1 in-place lift+hold (goal-carry 아님)
-        self.in_success_region = success_now
+        # success: DEXTRAH in_success_region (goal 도달)
+        self.in_success_region = object_to_goal_err < float(self.cfg.object_goal_tol)
 
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         # ADR increment: DEXTRAH 원본 = in_success_region 순간 평균 > success_for_adr(0.4)
@@ -1518,7 +1522,7 @@ class GraspRightEnv(DirectRLEnv):
         for _term_name, _term_val in reward_terms.items():
             self.extras[f"reward/{_term_name}"] = _term_val.mean()
         self.extras["envelope_frac"] = envelope_frac.mean()
-        self.extras["lift/latched_frac"] = lift_latched.float().mean()
+        self.extras["lift/latched_frac"] = self.lift_latched_buf.float().mean()
         self.extras["lift/hold_count"] = self.lift_hold_count.float().mean()
         self.extras["stability/quality"] = stability.quality.mean()
         self.extras["stability/stable_frac"] = stability.stable.float().mean()

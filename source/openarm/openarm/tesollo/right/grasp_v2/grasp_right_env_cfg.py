@@ -315,16 +315,25 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     palm_rate_rot_deg_per_step: float = 8.0
 
     # -----------------------------------------------------------------------
-    # Reward 파라미터 — [08-21] DEXTRAH 4항 + force-closure 제거, grasp_v1 staged
-    # reward(approach~enclosure_thumb_weight, 아래 "구 RH56F1 공유 계약" 절 참조)로
-    # 대체됐다. object_goal_pos 는 obs(actor/critic)에 여전히 쓰이므로 유지 —
-    # reward 는 이제 goal 이 아니라 grasp_v1식 in-place lift+hold 를 본다.
+    # Reward 파라미터 — [08-21 v2] 하이브리드 확정.
+    # approach/grasp = grasp_v1(아래 "구 RH56F1 공유 계약" 절), lift/goal/success =
+    # DEXTRAH(이 절). 순수 grasp_v1 이식(v1) 실측 결과 lift 이후 보상이 접촉 latch에
+    # 막혀 3271 epoch 내내 죽어있었다 — grasp_v1은 latch 이후 arm을 스크립트가 대신
+    # 들어올려주는데(joint7 lift-wait) grasp_v2(단일 phase)는 그 지원이 없어 latch가
+    # 거의 안 걸렸다. DEXTRAH의 연속·grip_frac-게이트 lift/goal 보상으로 이 절벽을
+    # 없앤다(사용자 확정).
     # -----------------------------------------------------------------------
     object_goal_pos:          tuple = (0.27, -0.10, 0.45)
+    object_goal_tol:          float = 0.10
+    object_to_goal_weight:    float = 5.0
+    object_to_goal_sharpness: float = 15.0   # exp(-s·err) 형태(양수 s). ADR 로 15→20
+    lift_weight:              float = 5.0    # ADR 로 5→0(후반은 object_to_goal 이 담당)
+    lift_sharpness:           float = 8.5
 
-    # grasp_v1 staged reward(compute_grasp_reward_terms 공유 계약) — [08-21] 재활성화.
-    # 구 RH56F1 공유 grasp-v2 reward 계약(당시 DEXTRAH 전환으로 미사용 보존)이었으나,
-    # 이번 세션에 DEXTRAH 4항/force-closure 를 걷어내고 이 값들로 실제 reward 를 계산.
+    # grasp_v1 staged reward 중 approach/grasp 만 사용(compute_grasp_reward_terms 계약,
+    # 공유 함수는 더 이상 호출하지 않고 해당 두 항 공식만 인라인 — lift/stabilize/
+    # success_bonus/post_lift_contact_loss/stability 는 미사용). 구 RH56F1 공유
+    # grasp-v2 reward 계약(DEXTRAH 전환기 미사용 보존분)이었던 걸 재활성화.
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0
     approach_xy_penalty_weight: float = 5.0
@@ -409,12 +418,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # [08-21] cup_radius_approx(고정 상수, grasp_v1 단일물체 유산) 제거 — grasp_v2
     # 다물체 reward(enclosure_axis)는 물체별 object_clearance(CAD bbox 유래)를 쓴다.
     enclosure_thumb_weight: float = 0.6
-    # grasp reward 중 envelope(중간/원위 마디 wrap) 비중. compute_grasp_reward_terms
-    # 기본값 0.40(grasp_v1) 대비 상향 — "최대한 5지 접촉"(사용자 지시): tip-only
-    # 파지보다 감싸기에 더 강한 gradient. 나머지 tip 항은 (1-credit)/0.60 로 비례
-    # 축소돼 합은 유지(core 로직, reward-audit: 기존 함수의 이미 감사된 재파라미터화
-    # — 새 항 추가 아님).
-    grasp_envelope_credit: float = 0.5
+    # grasp reward 중 envelope(중간/원위 마디 wrap) 비중.
+    # [08-21 v2] 0.5(5지 유도용 상향)→0.40(grasp_v1 코어 기본값)으로 원복. 0.5 상향이
+    # "중지 1개만 닫고 나머지 4지 포기" 국소최적과 겹쳐 관찰됐다(인과 미확정이나
+    # grasp_v1 원본값에서 벗어난 유일한 grasp 항이라 우선 원복) — 5지 유도는 이제
+    # lift 의 grip_frac 연속 게이트가 담당.
+    grasp_envelope_credit: float = 0.40
 
     # -----------------------------------------------------------------------
     # ADR
@@ -499,12 +508,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         "pd_targets": {
             "velocity_target_factor": (1.0, 0.0),
         },
-        # reward 스케줄 (DEXTRAH): lift shaping 5→0 걷어내고 goal 정밀도(sharpness) 강화
-        # [08-21] reward-weights ADR 그룹 제거 — 전부 DEXTRAH 4항/force_closure(이번에
-        # 걷어냄) 전용 항목이었다. grasp_v1 staged reward(compute_grasp_reward_terms)는
-        # 공유 함수라 ADR 커리큘럼 대신 고정 cfg 값을 쓴다(grasp_v1 자신도 이 항들을
-        # ADR 안 함) — grasp_envelope_credit 를 고정으로 상향(0.40→0.5, 아래 참조)해
-        # "최대한 5지 접촉"을 반영.
+        # reward 스케줄 (DEXTRAH): lift shaping 5→0 걷어내고 goal 정밀도(sharpness) 강화.
+        # [08-21 v2] lift/goal 을 DEXTRAH 방식으로 복원하며 재활성화(한 번 지웠다가
+        # 되살림 — approach/grasp(grasp_v1) 는 ADR 없이 고정 cfg 값 사용).
+        "reward_weights": {
+            "object_to_goal_sharpness": (15.0, 20.0),   # 우리 exp(-s·err) 부호
+            "lift_weight":              (5.0, 0.0),
+        },
         # fabric cspace damping 강화 (DEXTRAH 10→20)
         "fabric_damping": {
             "gain": (10.0, 20.0),
