@@ -114,55 +114,69 @@ def test_finger_close_is_per_joint_contact_gated() -> None:
     assert "self.finger_close_buf.repeat_interleave(4" not in env
 
 
-def test_lift_latch_gate_enabled_via_compute_lift_readiness() -> None:
-    # [08-21] grasp_v1 staged reward 이식: 접촉 latch(compute_lift_readiness)가
-    # step 스크립트(LIFT_START_STEP) 대신 리프트/안정화 보상 게이트를 연다.
-    # 인벨롭 hard 게이트(lift_start_min_envelope_fingers)는 여전히 0(비활성) —
-    # envelope 은 grasp reward credit(grasp_envelope_credit, soft gradient)으로 유도.
+def test_lift_latch_is_diagnostic_only() -> None:
+    # [08-21 v2] compute_lift_readiness(접촉 latch)는 더 이상 reward 를 게이트하지
+    # 않는다 — v1(순수 grasp_v1 이식) 실측 3271 epoch: latch 이후 보상(lift/stabilize/
+    # success_bonus/stability)이 전 구간 0이었다. grasp_v1은 latch 이후 arm을
+    # 스크립트가 대신 들어올려주는데(joint7 lift-wait) grasp_v2(단일 phase)는 그 지원이
+    # 없어 latch가 거의 안 걸렸다(reward 절벽). 지금은 진단 로깅(lift/latched_frac)
+    # 전용으로만 남긴다 — reward 계산(total)에는 관여하지 않는다.
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
     reward_body = env.split("def _get_rewards", 1)[1].split("return total", 1)[0]
 
     assert "lift_start_min_envelope_fingers: int = 0" in cfg
-    assert "grasp_envelope_credit: float = 0.5" in cfg
+    assert "grasp_envelope_credit: float = 0.40" in cfg
     assert "compute_lift_readiness(" in reward_body
     assert "self.lift_latched_buf" in reward_body
+    # 진단 전용 확인: total 계산부(approach+grasp+object_to_goal+lift)에 latch 변수가
+    # 안 쓰인다.
+    total_expr = reward_body.split(
+        "total = torch.nan_to_num(", 1
+    )[1].split(")", 1)[0]
+    assert "lift_latched" not in total_expr
+    assert "lift_hold_count" not in total_expr
 
 
-def test_reward_is_grasp_v1_staged() -> None:
-    # [08-21] grasp_v1 staged reward(compute_grasp_reward_terms) 이식 — DEXTRAH
-    # 4항(거리 기반 carry-to-goal)·force_closure 는 걷어냈다.
+def test_reward_is_hybrid_grasp_v1_dextrah() -> None:
+    # [08-21 v2] 하이브리드 확정: approach/grasp = grasp_v1 공식(인라인, 상시 활성 —
+    # pre_lift_gate 제거), lift/object_to_goal/success = DEXTRAH(연속, grip_frac 게이트,
+    # hard latch 없음). force_closure·finger_curl_reg·grasp_v1 후반부(stabilize/
+    # success_bonus/post_lift_contact_loss/stability)는 reward 에서 미사용.
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
     reward_body = env.split("def _get_rewards", 1)[1].split("return total", 1)[0]
 
     for name in (
-        "approach_weight", "grasp_weight", "lift_reward_weight",
-        "stabilize_weight", "success_bonus_weight",
-        "post_lift_contact_loss_weight", "stability_reward_weight",
+        "approach_weight", "approach_sharpness", "grasp_weight",
         "grasp_envelope_credit", "enclosure_thumb_weight",
+        "object_to_goal_weight", "object_to_goal_sharpness",
+        "lift_weight", "lift_sharpness", "object_goal_tol",
     ):
         assert name in cfg
 
     for term in (
-        "compute_grasp_reward_terms(",
         "envelope_frac", "grip_frac", "fingertip_side_dist",
-        "cup_height_delta", "cup_xy_displacement", "cup_tilt_deg",
-        "success_now",
+        "cup_xy_displacement", "cup_tilt_deg",
+        "object_to_goal_err", "object_to_goal_reward", "lift_reward",
+        "approach_reward", "grasp_reward",
     ):
         assert term in reward_body
 
-    # DEXTRAH 4항/force_closure 구조 미사용 확인
+    # grasp_v1 후반부(latch 의존 절벽의 원인)·force_closure 구조 미사용 확인
     for removed in (
-        "hand_to_object_reward", "object_to_goal_reward",
-        "object_to_goal_err", "force_closure_reward", "fc_gate",
+        "compute_grasp_reward_terms(", "force_closure_reward", "fc_gate",
+        "success_now", "stabilize_reward_gate", "post_lift_contact_loss",
     ):
         assert removed not in reward_body, removed
-    for removed_cfg in (
-        "hand_to_object_weight", "object_to_goal_weight", "lift_weight",
-        "force_closure_weight", "grasp_contact_weight", "object_goal_tol",
-    ):
+    for removed_cfg in ("force_closure_weight", "grasp_contact_weight"):
         assert removed_cfg not in cfg, removed_cfg
+
+    # 발산 방어(구 compute_grasp_reward_terms 내부 nan_to_num 대신 직접 검)
+    assert "torch.nan_to_num(" in reward_body
+
+    # success: DEXTRAH goal-거리 기준으로 복원
+    assert "self.in_success_region = object_to_goal_err < float(self.cfg.object_goal_tol)" in env
 
 
 def test_goal_is_fixed_dextrah() -> None:
@@ -220,28 +234,29 @@ def test_obs_is_dextrah_teacher_structure() -> None:
 
 
 def test_adr_curriculum_is_dextrah() -> None:
-    # DEXTRAH ADR 커리큘럼 계약: wrench 0→10, spawn 0→최대·회전, 관측 노이즈 점진,
-    # in_success 트리거. [08-21] "reward_weights" ADR 그룹은 DEXTRAH 4항/
-    # force_closure 전용이라 그 둘 제거와 함께 걷어냈다(grasp_v1 staged reward는
-    # 고정 cfg 값 사용, ADR 안 함 — grasp_v1 자신도 그렇다).
+    # DEXTRAH ADR 커리큘럼 계약: wrench 0→10, spawn 0→최대·회전, reward 스케줄
+    # (lift 5→0, sharpness 15→20), 관측 노이즈 점진, in_success 트리거.
+    # [08-21 v2] lift/goal 을 DEXTRAH 로 복원하며 reward_weights ADR 그룹도 재활성화
+    # (approach/grasp 은 grasp_v1 고정 cfg 값, ADR 대상 아님).
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
 
     for group in (
         '"object_wrench"', '"object_spawn"', '"object_state_noise"',
-        '"robot_state_noise"', '"fabric_damping"',
+        '"robot_state_noise"', '"reward_weights"', '"fabric_damping"',
         '"observation_annealing"', '"robot_spawn"', '"pd_targets"',
     ):
         assert group in cfg, group
-    assert '"reward_weights"' not in cfg
+    assert '"lift_weight":              (5.0, 0.0)' in cfg
     assert "adr_trigger_threshold: float = 0.4" in cfg
-    # 트리거 = in_success 순간 평균 (DEXTRAH success_for_adr) — 이제 grasp_v1식
-    # in-place lift+hold success_now 를 본다(carry-to-goal 아님).
+    # 트리거 = in_success 순간 평균 (DEXTRAH success_for_adr) — success 는 다시
+    # object_to_goal 기준(goal-거리)이다.
     assert "maybe_increment(self.in_success_region.float().mean())" in env
-    # wrench/spawn 가 ADR 파라미터를 사용
+    # wrench/spawn/reward 가 ADR 파라미터를 사용
     assert 'self._adr("robot_state_noise", "robot_joint_pos_noise")' in env
     assert '"object_spawn", "xy_range"' in env
     assert '"object_wrench", "max_linear_accel"' in env
+    assert '"reward_weights", "lift_weight"' in env
     # DEXTRAH 완전 정렬 5건 (07.09):
     # (1) physics DR: EventCfg + adr_physics_cfg (mass 0.5~3× 등) ADR 확장
     assert "class EventCfg" in cfg

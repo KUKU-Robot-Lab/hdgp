@@ -1454,7 +1454,13 @@ class GraspRightEnv(DirectRLEnv):
             -float(self.cfg.lift_sharpness) * object_vertical_err
         ) * grip_frac
 
-        total = approach_reward + grasp_reward + object_to_goal_reward + lift_reward
+        # compute_grasp_reward_terms 를 더 안 쓰므로(hand-compose) 그 함수 내부의
+        # nan_to_num 발산 방어(물리 발산 시 리턴 -4.9e7 폭주, lstm_test1 iter 14111
+        # 전례)를 여기서 직접 건다.
+        total = torch.nan_to_num(
+            approach_reward + grasp_reward + object_to_goal_reward + lift_reward,
+            nan=0.0, posinf=0.0, neginf=0.0,
+        )
 
         reward_terms = {
             "approach": approach_reward,

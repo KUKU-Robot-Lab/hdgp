@@ -332,14 +332,15 @@ def test_pregrasp_is_within_finger_reach():
 def test_curl_penalty_is_bounded():
     """finger_curl_reg 가 무계이면 물리 발산이 리턴을 -1e7 규모로 터뜨린다.
 
-    [08-21] right 는 grasp_v1 staged reward 이식으로 finger_curl_reg 자체가
-    없다(grasp_v1 core 에 이 항이 없음) — 발산 방어는 compute_grasp_reward_terms
-    의 total nan_to_num(nan/posinf/neginf→0)이 대신한다(right 전용 clamp보다
-    일반적: 어느 항이 터져도 잡음). left 는 아직 이식 전이라 구 clamp 유지 검증.
+    [08-21 v2] right 는 하이브리드 reward(approach/grasp=grasp_v1 인라인, lift/goal=
+    DEXTRAH)로 finger_curl_reg 자체가 없다 — 발산 방어는 total 계산 직후 직접 건
+    torch.nan_to_num(nan/posinf/neginf→0)이 대신한다. left 는 아직 이식 전이라
+    구 clamp 유지 검증.
     """
     src = (PKG / "grasp_right_env.py").read_text()
-    assert "compute_grasp_reward_terms(" in src, \
-        "right: 공유 코어(compute_grasp_reward_terms, 내부에서 total 을 nan_to_num 보호)를 써야 함"
+    reward_body = src.split("def _get_rewards", 1)[1].split("return total", 1)[0]
+    assert "torch.nan_to_num(" in reward_body, \
+        "right: total 발산 방어(nan_to_num)가 없다"
     left_src = (LEFT_PKG / "grasp_left_env_cfg.py").read_text()
     assert "finger_curl_dist_max" in left_src
     left_env_src = (LEFT_PKG / "grasp_left_env.py").read_text()
