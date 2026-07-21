@@ -340,6 +340,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     object_goal_tol:          float = 0.10
     hand_to_object_weight:    float = 1.0
     hand_to_object_sharpness: float = 10.0
+    # 07.22 palm 접촉 기반 envelope grip(사용자 지시): palm 이 물체에 닿을 때까지 깊이 접근 유도.
+    #   palm_approach: palm→물체 거리 dense(부트스트랩, 밀착 유인).
+    #   palm_contact: palm 닿음 보너스(부트스트랩). lift 는 palm 접촉 AND 게이트 →
+    #   palm 닿아야(진짜 감쌈) lift 보상, 얕은 pinch(palm 미접촉) 배제.
+    palm_approach_weight:      float = 1.0
+    palm_approach_sharpness:   float = 10.0
+    palm_contact_bonus_weight: float = 0.5
     object_to_goal_weight:    float = 5.0
     object_to_goal_sharpness: float = 15.0   # exp(-s·err) 형태(양수 s). DEXTRAH -15·exp(+s·err)와 동치
     lift_weight:              float = 5.0

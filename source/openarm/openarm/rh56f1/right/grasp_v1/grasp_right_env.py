@@ -397,6 +397,9 @@ class GraspRightEnv(DirectRLEnv):
         self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
         # firm envelope: tip(distal)+근위(middle) 동시접촉 손가락 수 (firm 성공 게이트용, 07.21)
         self.num_firm_fingers = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # palm 접촉(07.22): envelope grip 진짜 지표 — 물체가 손가락 지나 palm 까지 닿아야 감쌈 성립.
+        self.palm_contact_force_raw  = torch.zeros(self.num_envs, device=self.device)
+        self.palm_binary_contact_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ----------------------------------------------------------------
         # 기타 버퍼
@@ -507,6 +510,16 @@ class GraspRightEnv(DirectRLEnv):
             ))
             self._middle_sensors.append(sensor)
             self.scene.sensors[f"middle_sensor_{i + 1}"] = sensor
+
+        # palm 센서(07.22): 단일 r_hl_palm_sensor 링크, Cup 접촉만(force_matrix) →
+        # envelope grip 진짜 지표(물체가 손가락 지나 손바닥까지 닿아야 감쌈 성립).
+        self._palm_sensor = ContactSensor(ContactSensorCfg(
+            prim_path="/World/envs/env_.*/Robot/r_hl_palm_sensor",
+            filter_prim_paths_expr=_CUP_FILTER,
+            history_length=1,
+            track_air_time=False,
+        ))
+        self.scene.sensors["palm_sensor"] = self._palm_sensor
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
@@ -771,6 +784,12 @@ class GraspRightEnv(DirectRLEnv):
         ], dim=1).norm(dim=-1)   # (N, 5)
         self.middle_contact_force_raw.copy_(per_middle)
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
+
+        # palm 접촉(07.22): 단일 palm_sensor 의 Cup 접촉력만 (force_matrix, 테이블 오염 배제).
+        palm_xyz = self._palm_sensor.data.force_matrix_w[:, 0, 0, :]   # (N, 3)
+        palm_norm = palm_xyz.norm(dim=-1)                              # (N,)
+        self.palm_contact_force_raw.copy_(palm_norm)
+        self.palm_binary_contact_buf.copy_(palm_norm > CONTACT_FORCE_THRESHOLD)
 
     # ------------------------------------------------------------------
     # 파지력 확보: 물체 외란 wrench (DEXTRAH apply_object_wrench 이식)
@@ -1247,7 +1266,19 @@ class GraspRightEnv(DirectRLEnv):
         lift_height_quality = (
             height_delta / max(float(self.cfg.lift_success_height), 1e-6)
         ).clamp(0.0, 1.0)
-        lift_reward = _lift_w * graded_contact * lift_height_quality
+        # palm 밀착 접근(07.22): palm→물체 거리 dense — palm 이 닿을 때까지 깊이 다가가게 유도.
+        palm_pos = self.robot.data.body_pos_w[:, self.palm_body_index]   # (N, 3)
+        palm_to_object_dist = (palm_pos - self.object_pos).norm(dim=-1)  # (N,)
+        palm_approach_reward = float(self.cfg.palm_approach_weight) * torch.exp(
+            -float(self.cfg.palm_approach_sharpness) * palm_to_object_dist
+        )
+        palm_contact_bonus = (
+            float(self.cfg.palm_contact_bonus_weight) * self.palm_binary_contact_buf.float()
+        )
+        # lift 게이트(07.22): palm 닿아야(물체가 손가락 지나 손바닥까지 감김 = 진짜 envelope)
+        # lift 보상 — 얕은 pinch(palm 미접촉, tip 만 걸침)는 lift 보상에서 배제.
+        palm_gate = self.palm_binary_contact_buf.float()
+        lift_reward = _lift_w * graded_contact * palm_gate * lift_height_quality
 
         # 4) finger_curl_reg (DEXTRAH: -0.01 → -0.005)
         # 07.13 기준 수정(tesollo 77357f0 이식, 치명 버그): DEXTRAH curled_q(=원본
@@ -1307,6 +1338,7 @@ class GraspRightEnv(DirectRLEnv):
         total = (
             hand_to_object_reward + object_to_goal_reward + finger_curl_reg
             + lift_reward + grasp_contact_reward + force_closure_reward
+            + palm_approach_reward + palm_contact_bonus
         )
 
         # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
@@ -1392,6 +1424,10 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["contact/fc_gate_frac"] = fc_gate.mean()
         self.extras["contact/envelope_frac"] = graded_contact.mean()  # lift 게이트(감쌈) 값
         self.extras["contact/num_firm_fingers"] = self.num_firm_fingers.float().mean()  # firm(tip+근위) 손가락 수
+        self.extras["contact/palm_frac"] = self.palm_binary_contact_buf.float().mean()  # palm 접촉률(진짜 envelope)
+        self.extras["contact/palm_dist"] = palm_to_object_dist.mean()  # palm→물체 거리(밀착도)
+        self.extras["reward/palm_approach"] = palm_approach_reward.mean()
+        self.extras["reward/palm_contact"] = palm_contact_bonus.mean()
         # 손가락별 tip 접촉률 (엄지 포함 개별 관측 — tip 센서 순서 thumb_4/index_2/…/pinky_2)
         for _i, _fn in enumerate(("thumb", "index", "middle", "ring", "pinky")):
             self.extras[f"contact/tip_{_fn}"] = self.binary_contact_buf[:, _i].float().mean()
