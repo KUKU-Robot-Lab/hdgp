@@ -983,6 +983,16 @@ class GraspRightEnv(DirectRLEnv):
         # cfg.finger_control_mode 로 고른다. 기본은 per_finger — PCA basis 가
         # 20관절을 커플링해 형상 적응이 불가능했다(cfg 주석에 근거 상술).
         if self.cfg.finger_control_mode == "per_finger":
+            if bool(self.cfg.couple_four_fingers):
+                # 4지(검지~소지) 독립 닫힘 자유 제거 — 정책이 중지·약지를 "안 닫는"
+                # action 으로 thumb+2~3지 국소최적에 고착한 것을 원천 차단(3600ep 렌더
+                # 실증). 4지를 공통 신호(평균)로 묶어 "특정 손가락만 이탈"을 표현 불가
+                # 하게 한다. 엄지(0)는 opposition 회전 위해 독립 유지. 접촉 시 개별
+                # 동결(gate20)은 그대로라 각 손가락이 닿는 지점서 멈춤 → 최종 조합은
+                # 물체가 결정. cfg.couple_four_fingers 주석에 근거 상술.
+                _thumb_a = finger_action[:, 0:1]
+                _common4 = finger_action[:, 1:5].mean(dim=1, keepdim=True)
+                finger_action = torch.cat([_thumb_a, _common4.expand(-1, 4)], dim=1)
             p_star = compute_per_finger_progress_targets(finger_action)   # (N,20) ∈ [0,1]
         else:
             p_star = compute_synergy_progress_targets(

@@ -393,6 +393,21 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 밀면 물체에 닿거나 포화된 관절은 멈추고 나머지만 계속 감긴다(grasp_v1 방식, 98% 실증).
     finger_control_mode: str = "per_finger"
 
+    # [07-21] 4지(검지~소지) 공통 닫힘 — per_finger 의 독립성이 오히려 "중지·약지를 안
+    # 닫는" 국소최적을 낳았다(하이브리드 v2 3600ep 렌더 실증: 엄지 opposition + 2~3지로만
+    # 파지, middle/ring 은 close_progress 자체가 0.22~0.35 로 낮음 = 접촉 실패가 아니라
+    # 닫힘 포기). reward 는 손가락별 최소참여를 강제하지 못하고(mean/count) lift grip_frac
+    # 게이트도 any(OR)라 3지로도 보상 대부분 획득 → 3지 고착·success 0.55 정체.
+    #
+    # 해법: 4지의 독립 닫힘 자유를 제거해 "특정 손가락만 이탈"을 action 공간에서 표현
+    # 불가하게 한다(엄지는 opposition 회전 필요해 독립 유지). 4지는 하나의 공통 신호로
+    # 함께 닫히되, 접촉 시 개별 동결(gate20 g3/g4)은 그대로라 각 손가락이 물체에 닿는
+    # 지점에서 멈춘다 → 최종 접촉 조합(작은 물체=2~3지, 큰 물체=5지)은 강제 없이 물체
+    # 형상이 결정. "모두 닫히되, 누가 닿을지는 물체가 정한다"(사용자 지시).
+    # action/obs 차원(16/208)은 보존 — finger_action[1:5] 를 평균으로 묶을 뿐이라 정책
+    # 출력 head·계약 불변. 단 제어 의미가 바뀌므로 재학습 필요.
+    couple_four_fingers: bool = True
+
     # contact sensor 필터 대상 — Cup prim 하위의 실제 rigid body.
     # probe_contact_filter 실측: /World/envs/env_0/Cup 은 Xform 이고 RigidBodyAPI 는
     # baseLink 에 있다. 이 경로로 필터를 걸면 force_matrix_w 가 (N,1,1,3) 으로 나온다
