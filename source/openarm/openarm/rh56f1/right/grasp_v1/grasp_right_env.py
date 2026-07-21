@@ -1327,13 +1327,15 @@ class GraspRightEnv(DirectRLEnv):
             _tipd = (self.fingertip_pos - self.object_pos.unsqueeze(1)).norm(dim=-1).min(dim=1).values
             _near = (_tipd < 0.06)  # 물체 반경급 근접
             _g = num_grip_fingers.float()
-            _pf = self.binary_contact_buf.float().mean(dim=0)  # (5,) 손가락별 tip 접촉률
+            _pf = self.binary_contact_buf.float().mean(dim=0)  # (5,) 손가락별 tip(말단) 접촉률
+            _pfm = self.middle_binary_contact_buf.float().mean(dim=0)  # (5,) 손가락별 근위(thumb_2 등) 접촉률
             print(
                 f"DBGC step={int(self.episode_length_buf[0]):3d} "
                 f"tipdist mean={_tipd.mean():.3f} min={_tipd.min():.3f} "
                 f"grip_all={_g.mean():.2f} grip_near={(_g * _near.float()).sum() / _near.float().sum().clamp(min=1):.2f} "
                 f"near_frac={_near.float().mean():.2f} objz={self.object_pos[:, 2].mean():.3f} "
-                f"| tip접촉 thumb={_pf[0]:.2f} index={_pf[1]:.2f} middle={_pf[2]:.2f} ring={_pf[3]:.2f} pinky={_pf[4]:.2f}",
+                f"| tip(말단) thumb={_pf[0]:.2f} index={_pf[1]:.2f} middle={_pf[2]:.2f} ring={_pf[3]:.2f} pinky={_pf[4]:.2f} "
+                f"| 근위 thumb={_pfm[0]:.2f} index={_pfm[1]:.2f} middle={_pfm[2]:.2f} ring={_pfm[3]:.2f} pinky={_pfm[4]:.2f}",
                 flush=True,
             )
 
