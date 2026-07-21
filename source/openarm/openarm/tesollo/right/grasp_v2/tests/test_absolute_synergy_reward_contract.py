@@ -157,11 +157,15 @@ def test_reward_is_hybrid_grasp_v1_dextrah() -> None:
 
     for term in (
         "envelope_frac", "grip_frac", "fingertip_side_dist",
-        "cup_xy_displacement", "cup_tilt_deg",
+        "cup_tilt_deg",
         "object_to_goal_err", "object_to_goal_reward", "lift_reward",
         "approach_reward", "grasp_reward",
     ):
         assert term in reward_body
+    # [08-21 v2 정정] xy 페널티는 object_to_goal(물체를 옮기라고 보상)과 충돌해 제거—
+    # cup_xy_displacement 는 이제 reward 어디서도 안 쓴다.
+    assert "cup_xy_displacement" not in reward_body
+    assert "approach_xy_penalty_weight" not in cfg
 
     # grasp_v1 후반부(latch 의존 절벽의 원인)·force_closure 구조 미사용 확인
     for removed in (
