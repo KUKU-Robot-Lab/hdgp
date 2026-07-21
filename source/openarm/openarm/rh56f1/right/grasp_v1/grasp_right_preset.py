@@ -72,6 +72,8 @@ LEFT_HAND_MIMIC_JOINT_NAMES = [
 ]
 LEFT_HAND_JOINT_NAMES = LEFT_HAND_DRIVE_JOINT_NAMES + LEFT_HAND_MIMIC_JOINT_NAMES
 LEFT_ARM_AND_HAND_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_HAND_JOINT_NAMES
+# env_cfg 호환 별칭 (tesollo grasp_v2 매칭: left_arm_joint_names 로 좌측 전체 hold)
+LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_AND_HAND_JOINT_NAMES
 
 # 좌팔 rest 자세 (학습 비사용, 우측 작업공간 침범 방지). 좌손은 0(열림)으로 lock.
 LEFT_ARM_REST_JOINT_POS = {
@@ -202,16 +204,68 @@ OBJECT_GOAL_POS = [0.27, 0.10, 0.65]
 PREGRASP_OFFSET = [0.0, -0.12, 0.05]
 
 
+# Pregrasp/reset palm 접근 방향 euler (deg) — env.py IK 타깃이 참조.
+# 07.13 접근 자세 분기 (tesollo cd29c62 이식, 안 1→반전): top-down 이 기본, cup 만
+# side(내용물 흘림 방지, grasp_v1 방식). 물체 높이 규칙(78592a3)은 ADR 회전이
+# 커지면 납작한 물체가 누우면서 분기에서 스스로 빠지는 자기모순이 있어(tesollo
+# lstm_test2 실증) 이름 기반 고정 분기로 대체.
+# (ez,ey,ex)=(180,0,90) → palm_sensor +z(법선) = world +y (물체 방향, side).
+# (ez,ey,ex)=(180,0,180) → palm_sensor +z(법선) = world -z (아래보기, top-down).
+# RH56F1 은 local+Z 가 이미 Allegro/DEXTRAH 와 동일 규약(법선)이라 tesollo 의
+# "가짜 top-down"(frame 불일치, 12673ea) 버그가 없음을 실측 확인(07.13 probe:
+# 법선 |z| 0.849 — tesollo 깨짐값 0.123과 다름) → G-frame 이식 불필요.
+# (tesollo palm_link 규약 ez=90과 다름 — 프레임 규약 차이.)
+# 주의: env.py에 숫자 하드코드 금지 — tesollo left lstm_test1에서 하드코드가 경계 clamp로
+# pregrasp 90° 뒤틀림 → 파지 불가 실증 (tesollo preset 동일 규칙).
+PREGRASP_EULER_EZ_DEG = 180.0
+PREGRASP_EULER_EX_DEG = 90.0
+PREGRASP_EULER_EX_TOPDOWN_DEG = 180.0
+
+# pregrasp offset 은 물체 크기(clearance = ‖half_extent‖, 회전 무관 최대 반경)에
+# 비례한다 (tesollo 9f0e4f7 이식, 안전 필수): 고정 offset 은 ADR 회전이 오르면
+# 큰 물체가 palm 을 침범해 PhysX depenetration 폭주를 일으킨다(tesollo lstm_test1
+# 실증: ADR 36부터 리턴 -1e4 스파이크 24회, iter 14111 붕괴 -4.9e7). 상수는
+# RH56F1 자체 probe 로 재도출(153종 전수 겹침 0 검증, analysis 참조) — tesollo
+# 값(0.04/0.03)을 맹목 복사하지 않음(손 리치·aj7 하강 기구가 다름).
+PREGRASP_TOPDOWN_XY = [-0.07, 0.02]
+PREGRASP_TOPDOWN_CLEARANCE = 0.05
+PREGRASP_SIDE_Z = -0.15
+PREGRASP_SIDE_CLEARANCE = 0.03
+PREGRASP_R_AJ7_BIAS_TOPDOWN = 0.6
+
+# ---------------------------------------------------------------------------
+# palm 절대 pose 박스 위치 재정렬 (07.14, DEXTRAH 원본 재확인)
+# ---------------------------------------------------------------------------
+# DEXTRAH 는 robot_start_joint_pos 가 고정 상수라 reset 자세 == action=0 자세(둘 다
+# 같은 홈 포지션) — 이 문제 자체가 없다. 우리는 tesollo 에서 물려받은 범용 박스
+# 중심(0.425,-0.165,0.425)을 그대로 썼는데, 실제 pregrasp reset 위치와 크게
+# 어긋나 있었다(probe 실측: side 20cm·topdown 8~9cm 차이). settle 종료 직후
+# 미학습 정책(출력≈0)이 잘 계산된 pregrasp 를 버리고 박스 중심으로 끌려가
+# 17.9cm→24.7cm 로 더 멀어지는 것을 6 step 만에 확인(매 에피소드 반복).
+# 박스 중심을 실측 reset 위치로 재정렬 — 폭은 그대로 유지(안전 여유 보존).
+# z 는 두 pose 모두 이동 시 바닥 안전마진(0.20)을 위반해 미이동.
+PALM_POS_CENTER_SHIFT_SIDE    = [-0.1985, -0.0725, 0.0]  # side(cup) reset 위치 기준
+PALM_POS_CENTER_SHIFT_TOPDOWN = [-0.0828,  0.0820, 0.0]  # topdown(152종) reset 위치 기준
+
+# grasp_v1 다형상 envelope 리빌드(07.21): 물체군 전체가 원통형 컵 계열이고
+# rh56f1 은 abduction(벌림) DOF 가 없어 top-down 손가락-사이 삽입이 물리적으로 불가하다.
+# → 전 물체를 side approach(옆면을 감싸 잡기)로 강제한다. cup 은 내용물 slip 방지도 겸한다.
+SIDE_APPROACH_OBJECT_NAMES = (
+    "large_5_cyl", "large_8_cyl",
+    "small_8_cyl", "small_12_cyl",
+    "cup", "cup_middle", "cup_big",
+)
+
+
 def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
         0.20, -0.55, 0.20,
         # ez: side grasp palm_sensor +z 가 +y(컵, -y 접근) → 중심 180°.
-        (180.0 - max_pose_angle) * d,
+        (PREGRASP_EULER_EZ_DEG - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,
-        # ex: side grasp palm_sensor +z(법선)가 컵(수평 +x)을 향하는 자세 → 중심 90°.
-        # (180°는 palm 이 테이블을 향해 손날로 컵을 미는 버그였음.)
-        (90.0 - max_pose_angle) * d,
+        # ex: E3 top-down — palm_sensor +z(법선)가 -z(테이블)를 향하는 자세 → 중심 180°.
+        (PREGRASP_EULER_EX_DEG - max_pose_angle) * d,
     ]
 
 
@@ -220,9 +274,24 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     return [
         0.65, 0.22, 0.65,
         # ez: side grasp palm_sensor +z 가 +y(컵, -y 접근) → 중심 180°.
-        (180.0 + max_pose_angle) * d,
+        (PREGRASP_EULER_EZ_DEG + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
-        # ex: side grasp palm_sensor +z(법선)가 컵(수평 +x)을 향하는 자세 → 중심 90°.
-        # (180°는 palm 이 테이블을 향해 손날로 컵을 미는 버그였음.)
-        (90.0 + max_pose_angle) * d,
+        # ex: E3 top-down — palm_sensor +z(법선)가 -z(테이블)를 향하는 자세 → 중심 180°.
+        (PREGRASP_EULER_EX_DEG + max_pose_angle) * d,
     ]
+
+
+# ---------------------------------------------------------------------------
+# Distillation D435i 카메라 (tesollo grasp_v2 와 동일 규약 — occlusion 측정/증류용).
+# teacher 학습에선 미사용(enable_camera_probe=False 기본). ROS convention.
+# ---------------------------------------------------------------------------
+CAMERA_IMG_WIDTH  = 320
+CAMERA_IMG_HEIGHT = 180
+CAMERA_FOCAL_LENGTH        = 20.0
+CAMERA_HORIZONTAL_APERTURE = 37.9586      # HFOV 87° (D435i)
+CAMERA_CLIPPING_RANGE = (0.3, 3.0)
+CAMERA_POS = [1.0700, 0.0000, 0.7200]
+CAMERA_ROT = [0.3687510, -0.6033429, -0.6033429, 0.3687510]  # (w,x,y,z) ros
+CAMERA_D_MIN = 0.3
+CAMERA_D_MAX = 2.0
+CAMERA_CROP_FRAC = 0.5     # 160×90 중앙 crop → student 실입력

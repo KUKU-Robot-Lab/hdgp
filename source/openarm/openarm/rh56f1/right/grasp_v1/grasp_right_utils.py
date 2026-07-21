@@ -28,5 +28,77 @@ def tensor_clamp(t: torch.Tensor, min_t: torch.Tensor, max_t: torch.Tensor) -> t
     return torch.max(torch.min(t, max_t), min_t)
 
 
+def compute_joint7_lift_wait_target(
+    actual_arm: torch.Tensor,
+    *,
+    joint7_delta: float,
+    joint7_min: float,
+    joint7_max: float,
+) -> torch.Tensor:
+    """Keep the grasp arm pose and move only right joint7 into lift-wait."""
+    target = actual_arm.clone()
+    target[:, 6] = (target[:, 6] + float(joint7_delta)).clamp(
+        min=float(joint7_min),
+        max=float(joint7_max),
+    )
+    return target
+
+
+def compute_lift_readiness(
+    num_contacts: torch.Tensor,
+    is_grasp_phase: torch.Tensor,
+    previous_hold_count: torch.Tensor,
+    previous_latched: torch.Tensor,
+    min_contacts: int,
+    hold_steps: int,
+    num_envelope_fingers: torch.Tensor | None = None,
+    min_envelope_fingers: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """접촉(손끝) + 인벨롭(tip&mid) + hold 로 lift 진입 판정. '감싸 잡으면 리프트' 래치.
+
+    step-기반(LIFT_START_STEP) 트리거를 대체. 한번 래치되면 유지된다.
+    인벨롭 게이트: num_envelope_fingers(손끝&중간마디 동시 접촉 손가락 수)가
+    min_envelope_fingers 이상이어야 latch 진입 → 손끝만으로 일찍 리프트하는 것을 차단.
+    """
+    lift_contact_now = num_contacts >= int(min_contacts)
+    if num_envelope_fingers is not None and int(min_envelope_fingers) > 0:
+        lift_contact_now = lift_contact_now & (
+            num_envelope_fingers >= int(min_envelope_fingers)
+        )
+    next_hold_count = torch.where(
+        lift_contact_now & is_grasp_phase,
+        previous_hold_count + 1,
+        torch.where(
+            previous_latched,
+            previous_hold_count,
+            torch.zeros_like(previous_hold_count),
+        ),
+    )
+    lift_contact_ready_now = next_hold_count >= int(hold_steps)
+    next_latched = previous_latched | lift_contact_ready_now
+    return next_hold_count, lift_contact_ready_now, next_latched
+
+
 def to_torch(x, dtype=torch.float, device: str = "cuda:0", requires_grad: bool = False) -> torch.Tensor:
     return torch.tensor(x, dtype=dtype, device=device, requires_grad=requires_grad)
+
+
+def compute_palm_pose_id(
+    object_idx: torch.Tensor,
+    side_object_idx: torch.Tensor,
+) -> torch.Tensor:
+    """접근 자세 분기: side 물체면 0, 그 외 전부 1(top-down). tesollo cd29c62 이식.
+
+    object_idx:      (n,)  각 env 의 활성 물체 인덱스
+    side_object_idx: (k,)  side 접근을 유지할 물체 인덱스 (cup 등)
+
+    물체 이름으로 고정 분기한다 — 물체 높이 규칙(구 compute_flat_object_mask)은
+    ADR 회전이 커지면 납작한 원통이 누우면서 분기에서 빠져 스스로 꺼진다
+    (tesollo lstm_test2 실증: topdown_frac 0.025→0.0015 자기모순).
+    """
+    is_side = (object_idx.unsqueeze(1) == side_object_idx.unsqueeze(0)).any(dim=1)
+    return torch.where(
+        is_side,
+        torch.zeros_like(object_idx),
+        torch.ones_like(object_idx),
+    )

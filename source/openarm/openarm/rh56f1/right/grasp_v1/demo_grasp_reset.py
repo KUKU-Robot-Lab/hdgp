@@ -1,4 +1,4 @@
-"""Demo-derived reset references for 5g_grasp_right_v11."""
+"""Demo-derived reset references for 5g_grasp_right_v1-2."""
 
 from __future__ import annotations
 
@@ -29,7 +29,6 @@ class DemoGraspResetBank:
     start_palm_pose_euler_zyx: torch.Tensor
     lift_arm_joint_pos: torch.Tensor
     lift_palm_pose: torch.Tensor
-    lift_palm_pose_euler_zyx: torch.Tensor
     lift_medoid_arm_joint_pos: torch.Tensor
     start_frames: torch.Tensor
     lift_frames: torch.Tensor
@@ -59,7 +58,6 @@ class DemoGraspResetBank:
             "start_palm_euler",
             "lift_arm",
             "lift_palm",
-            "lift_palm_euler",
             "start_frames",
             "lift_frames",
         ):
@@ -81,9 +79,6 @@ class DemoGraspResetBank:
             ),
             lift_arm_joint_pos=torch.as_tensor(merged["lift_arm"], dtype=torch.float32, device=device),
             lift_palm_pose=torch.as_tensor(merged["lift_palm"], dtype=torch.float32, device=device),
-            lift_palm_pose_euler_zyx=torch.as_tensor(
-                merged["lift_palm_euler"], dtype=torch.float32, device=device
-            ),
             lift_medoid_arm_joint_pos=torch.as_tensor(
                 merged["lift_arm"][medoid_idx], dtype=torch.float32, device=device
             ),
@@ -173,7 +168,6 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
             start_palm = _pose_matrix_to_pos_quat(eef[start_frame : start_frame + 1])
             lift_palm = _pose_matrix_to_pos_quat(eef[lift_frame : lift_frame + 1])
             start_euler = _pose_matrix_to_pos_euler_zyx(eef[start_frame : start_frame + 1])
-            lift_euler = _pose_matrix_to_pos_euler_zyx(eef[lift_frame : lift_frame + 1])
 
             chunks.append(
                 {
@@ -183,7 +177,6 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
                     "start_palm_euler": start_euler,
                     "lift_arm": lift_arm,
                     "lift_palm": lift_palm,
-                    "lift_palm_euler": lift_euler,
                     "start_frames": np.asarray([start_frame], dtype=np.int64),
                     "lift_frames": np.asarray([lift_frame], dtype=np.int64),
                 }
