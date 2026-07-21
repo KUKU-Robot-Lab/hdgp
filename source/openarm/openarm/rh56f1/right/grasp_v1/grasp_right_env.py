@@ -1329,13 +1329,16 @@ class GraspRightEnv(DirectRLEnv):
             _g = num_grip_fingers.float()
             _pf = self.binary_contact_buf.float().mean(dim=0)  # (5,) 손가락별 tip(말단) 접촉률
             _pfm = self.middle_binary_contact_buf.float().mean(dim=0)  # (5,) 손가락별 근위(thumb_2 등) 접촉률
+            _fa = self.actions[:, 6:12].mean(dim=0)  # (6,) finger action 명령 [-1,1]: thumb_1,thumb_2,index_1,middle_1,ring_1,pinky_1
+            _jp = self.robot.data.joint_pos[:, self.hand_dof_indices].mean(dim=0)  # (6,) 실제 drive joint (rad)
             print(
                 f"DBGC step={int(self.episode_length_buf[0]):3d} "
                 f"tipdist mean={_tipd.mean():.3f} min={_tipd.min():.3f} "
-                f"grip_all={_g.mean():.2f} grip_near={(_g * _near.float()).sum() / _near.float().sum().clamp(min=1):.2f} "
-                f"near_frac={_near.float().mean():.2f} objz={self.object_pos[:, 2].mean():.3f} "
-                f"| tip(말단) thumb={_pf[0]:.2f} index={_pf[1]:.2f} middle={_pf[2]:.2f} ring={_pf[3]:.2f} pinky={_pf[4]:.2f} "
-                f"| 근위 thumb={_pfm[0]:.2f} index={_pfm[1]:.2f} middle={_pfm[2]:.2f} ring={_pfm[3]:.2f} pinky={_pfm[4]:.2f}",
+                f"grip_all={_g.mean():.2f} near_frac={_near.float().mean():.2f} objz={self.object_pos[:, 2].mean():.3f} "
+                f"| tip thumb={_pf[0]:.2f} idx={_pf[1]:.2f} mid={_pf[2]:.2f} ring={_pf[3]:.2f} pky={_pf[4]:.2f} "
+                f"| 근위 thumb={_pfm[0]:.2f} idx={_pfm[1]:.2f} mid={_pfm[2]:.2f} "
+                f"| ACT thumb1={_fa[0]:+.2f} thumb2={_fa[1]:+.2f} idx1={_fa[2]:+.2f} "
+                f"| JOINT thumb1={_jp[0]:.2f} thumb2={_jp[1]:.2f} idx1={_jp[2]:.2f}(rad)",
                 flush=True,
             )
 
