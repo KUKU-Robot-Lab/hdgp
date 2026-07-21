@@ -801,9 +801,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     disable_dome_light_randomization: bool = False
     disable_robot_randomization: bool = False
 
-    # depth 도메인 랜덤화 (img_aug_type="depth" 일 때만 적용)
-    aug_depth: bool = True
-    aux_coeff: float = 1.0        # aux head(object_pos 회귀) 손실 가중
+    # [07-22 rh56f1 정합] RGB 입력(img_aug_type="rgb")이므로 depth 는 인코더 입력이 아니라
+    # aux 재구성 대상 → depth 입력증강 off. 종전 True 는 img_aug_type="depth" 전제였는데
+    # 현재 rgb 라 무효였다(rh56f1 동일하게 False).
+    aug_depth: bool = False
+    aux_coeff: float = 1.0        # aux head(object_pos 회귀; 향후 depth 재구성 추가 여지) 손실 가중
 
     # normal_noise 커널이 픽셀→광선 역투영에 쓰는 정규화 투영행렬.
     # a = 1/tan(hfov/2), b = a * W/H  (DEXTRAH 원본 규약: 주점 오프셋 없음)

@@ -25,9 +25,10 @@ params:
   network:
     name: a2c_mono_transformer
     separate: False
-    # depth 입력(D435i, sim2real 갭↓). env.img_aug_type="depth" 와 반드시 일치.
-    # resnet(3ch pretrained) 앞에서 1ch→3ch 타일링. RGB 로 되돌리려면 False + img_aug_type="rgb".
-    use_depth: True
+    # [07-22 rh56f1 정합] RGB 입력(3ch, resnet pretrained 정합). env.img_aug_type="rgb"
+    # 와 반드시 일치. 종전 use_depth=True 는 env img_aug_type="rgb" 와 모순이라 dagger
+    # modality 가드에서 걸렸다 — right/rh56f1 처럼 RGB 로 통일(실물 D435i RGB + visual DR).
+    use_depth: False
     # 카메라 해상도(D435i 16:9). a2c_mono_transformer RunningMeanStd/encoder 형상과 일치 필수.
     img_height: 180
     img_width: 320

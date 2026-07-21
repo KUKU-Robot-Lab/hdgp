@@ -402,6 +402,13 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 밀면 물체에 닿거나 포화된 관절은 멈추고 나머지만 계속 감긴다(grasp_v1 방식, 98% 실증).
     finger_control_mode: str = "per_finger"
 
+    # [07-22] 4지(검지~소지) 공통 닫힘 — right 와 구조 통일. per_finger 독립성이
+    # "중지·약지를 안 닫는" 3지 국소최적을 허용했고(right lstm_test1 3600ep 렌더 실증),
+    # 4지를 공통 신호로 묶어 원천 차단(right lstm_test2 succ 0.65 수렴 실증). 엄지는
+    # opposition 위해 독립 유지, 접촉 시 개별 freeze 그대로 → 최종 조합은 물체가 결정.
+    # action/obs 차원 보존(finger_action[1:5] 평균만). 상세=right grasp_right_env_cfg.py.
+    couple_four_fingers: bool = True
+
     # contact sensor 필터 대상 — Cup prim 하위의 실제 rigid body.
     # probe_contact_filter 실측: /World/envs/env_0/Cup 은 Xform 이고 RigidBodyAPI 는
     # baseLink 에 있다. 이 경로로 필터를 걸면 force_matrix_w 가 (N,1,1,3) 으로 나온다
@@ -792,9 +799,10 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     disable_dome_light_randomization: bool = False
     disable_robot_randomization: bool = False
 
-    # depth 도메인 랜덤화 (img_aug_type="depth" 일 때만 적용)
-    aug_depth: bool = True
-    aux_coeff: float = 1.0        # aux head(object_pos 회귀) 손실 가중
+    # [07-22 rh56f1 정합] RGB 입력이므로 depth 는 인코더 입력이 아니라 aux 재구성 대상
+    # → depth 입력증강 off. 종전 True 는 img_aug_type="depth" 전제였는데 현재 rgb 라 무효였다.
+    aug_depth: bool = False
+    aux_coeff: float = 1.0        # aux head(object_pos 회귀; 향후 depth 재구성 여지) 손실 가중
 
     cam_matrix = _CAM_MATRIX
     depth_randomization_cfg_dict: dict = field(

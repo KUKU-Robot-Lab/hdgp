@@ -1,6 +1,7 @@
-# grasp_v2 distillation student — RealSense D435i mono RGB-D
+# grasp_v2 distillation student — RealSense D435i mono RGB (+ object_pos aux)
 #
-# obs: student 189D (물체 privileged state 없음) + depth/rgb 320x180
+# obs: student 205D (물체 privileged state 없음) + rgb/depth 320x180
+# 입력 modality = RGB(use_depth=False, env.img_aug_type="rgb" 와 일치, rh56f1 정합).
 # 학습은 PPO 가 아니라 DAgger(openarm/distillation/dagger.py) — 아래 config 의
 # ppo/lr/kl 계열 값은 rl_games ModelBuilder 가 요구해서 남긴 것이고 실제 최적화는
 # Dagger 가 자체 Adam(1e-4)으로 돌린다. Dagger 가 실제로 읽는 값:
@@ -25,9 +26,11 @@ params:
   network:
     name: a2c_mono_transformer
     separate: False
-    # depth 입력(D435i, sim2real 갭↓). env.img_aug_type="depth" 와 반드시 일치.
-    # resnet(3ch pretrained) 앞에서 1ch→3ch 타일링. RGB 로 되돌리려면 False + img_aug_type="rgb".
-    use_depth: True
+    # [07-22 rh56f1 정합] RGB 입력(3ch, resnet pretrained 정합). env.img_aug_type="rgb"
+    # 와 반드시 일치. 종전 use_depth=True 는 env img_aug_type="rgb" 와 모순이라 dagger
+    # modality 가드(dagger.py)에서 걸렸다 — rh56f1 처럼 RGB 로 통일한다(실물 D435i RGB
+    # 정합 + visual DR 로 sim2real). depth 는 obs 에 함께 렌더돼 향후 depth 재구성 aux 재료.
+    use_depth: False
     # LSTM-only BPTT 윈도우 실험: CNN 특징을 스텝마다 detach(인코더 동결) → 지각 품질을
     # 현재(85000 iter, aux~0.015)로 고정하고 LSTM 시간 메모리만 학습. config.seq_length 와 세트.
     freeze_img_features: True
