@@ -203,6 +203,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     target_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
     target_inside_z_max:  float = 0.100   # 림 높이
     target_mouth_z:       float = 0.100   # 림 높이 (bead crossing 기준)
+    # [generalization] 받는(target) 컵 크기 sweep. 1.0=학습. env __init__에서 !=1.0이면
+    #   물리 자산(left_target_cup_cfg.spawn.scale)+판정기하(inner_radius/inside_z/mouth_z/opening_pos_b)
+    #   를 s배로 비례 조정 → 미학습 컵 크기 일반화(작을수록 정밀도 하드). 학습(1.0)은 무영향.
+    left_target_cup_scale: float = 1.0
     source_inner_radius:  float = 0.041   # 컵 내부 반경
     source_outer_radius:  float = 0.045   # 컵 외부 반경 (최하단 림 점 계산용)
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유

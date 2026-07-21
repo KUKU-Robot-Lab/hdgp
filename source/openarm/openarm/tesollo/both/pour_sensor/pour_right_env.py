@@ -251,6 +251,16 @@ class PourRightEnv(DirectRLEnv):
         #   collection 크기 = num_beads 일치시켜 eval-time --bead_fixed(≠20) 지원. 학습(bead20)은 무영향.
         if int(cfg.bead_count) != _DEFAULT_BEAD_COUNT:
             cfg.beads_cfg = _make_beads_cfg(int(cfg.bead_count))
+        # [generalization] 받는 컵 크기 sweep: s!=1.0이면 물리 자산+판정기하를 s배 비례 조정
+        #   (미학습 컵 크기 일반화). left cup은 kinematic이라 파지 무관. 학습(1.0)은 무영향.
+        _s = float(getattr(cfg, "left_target_cup_scale", 1.0))
+        if _s != 1.0:
+            cfg.left_target_cup_cfg.spawn.scale = (_s, _s, _s)
+            cfg.target_inner_radius = cfg.target_inner_radius * _s
+            cfg.target_inside_z_min = cfg.target_inside_z_min * _s
+            cfg.target_inside_z_max = cfg.target_inside_z_max * _s
+            cfg.target_mouth_z = cfg.target_mouth_z * _s
+            cfg.target_cup_opening_pos_b = tuple(float(v) * _s for v in cfg.target_cup_opening_pos_b)
         super().__init__(cfg, render_mode, **kwargs)
 
         # ----------------------------------------------------------------
