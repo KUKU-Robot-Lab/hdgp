@@ -107,8 +107,14 @@ _EXCLUDED_SMALL_OBJECTS: tuple[str, ...] = (
     "small_5_cuboid", "small_8_cuboid", "small_12_cuboid",
 )
 _ACTIVE_OBJECT_ROOT: str = _VISDEX_ROOT
+# [07-22] cup_middle 은 다른 세션이 grasp_v1 용으로 visdex 에 추가한 자산이다. grasp_v2 는
+# visdex 디렉토리를 sorted-glob 하므로 자동 포함되어 물체수 148→149, critic obs 425→426 으로
+# lstm_test2 체크포인트(148)와 불일치해 resume 이 깨졌다(size mismatch). grasp_v2 물체군을
+# 148 로 고정(cup_middle 제외)해 ① 체크포인트 호환 복원 ② 공유자산 추가에 의한 obs 무단변경 차단.
+_EXCLUDED_GRASP_V2: tuple[str, ...] = ("cup_middle",)
 _ACTIVE_OBJECT_NAMES: tuple[str, ...] = tuple(
-    _n for _n in _VISDEX_NAMES if _n not in _EXCLUDED_SMALL_OBJECTS
+    _n for _n in _VISDEX_NAMES
+    if _n not in _EXCLUDED_SMALL_OBJECTS and _n not in _EXCLUDED_GRASP_V2
 )
 
 

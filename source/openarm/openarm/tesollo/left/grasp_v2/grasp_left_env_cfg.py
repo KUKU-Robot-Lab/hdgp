@@ -105,8 +105,13 @@ _EXCLUDED_SMALL_OBJECTS: tuple[str, ...] = (
     "small_5_cyl", "small_8_cyl", "small_12_cyl",
     "small_5_cuboid", "small_8_cuboid", "small_12_cuboid",
 )
+# [07-22] cup_middle 은 다른 세션이 grasp_v1 용으로 visdex 에 추가한 자산 — grasp_v2 는
+# visdex 를 sorted-glob 하므로 자동 포함돼 물체수/obs 가 무단 변경된다(right 와 동일 문제).
+# right 와 물체군 통일 위해 148 로 고정(cup_middle 제외).
+_EXCLUDED_GRASP_V2: tuple[str, ...] = ("cup_middle",)
 _ACTIVE_OBJECT_NAMES: tuple[str, ...] = tuple(
-    _n for _n in _VISDEX_NAMES if _n not in _EXCLUDED_SMALL_OBJECTS
+    _n for _n in _VISDEX_NAMES
+    if _n not in _EXCLUDED_SMALL_OBJECTS and _n not in _EXCLUDED_GRASP_V2
 )
 
 
