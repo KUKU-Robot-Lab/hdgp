@@ -130,16 +130,16 @@ def _primitive_usd_cfg(name: str) -> "sim_utils.UsdFileCfg":
         usd_path=_os.path.join(_ACTIVE_OBJECT_ROOT, name, f"{name}.usd"),
         activate_contact_sensors=True,
         scale=(_s, _s, _s),
-        # 질량 고정 (07.13): scale 0.75에서 질량이 scale³=0.42배로 줄어 drop 튕김·
-        # 팔 스윕만으로 경계 이탈(zero-action 60step 종료 21% 실측, episode 57step
-        # 붕괴 — d14). 균일 0.15kg 로 고정(physics DR 이 위에서 ±랜덤화).
-        mass_props=sim_utils.MassPropertiesCfg(mass=0.15),
+        # 질량 (07.13 0.15 → 07.22 0.20): palm 접근 시 쓰러뜨림 방지(관성↑). 소폭이라 lift 영향 미미.
+        mass_props=sim_utils.MassPropertiesCfg(mass=0.20),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             articulation_enabled=False,
         ),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             solver_position_iteration_count=16,
             solver_velocity_iteration_count=1,
+            # 07.22 angular_damping: palm 접근이 물체를 밀 때 쓰러지는 회전을 감쇠(tipping 억제).
+            angular_damping=10.0,
             max_angular_velocity=100.0,
             max_linear_velocity=100.0,
             max_depenetration_velocity=5.0,
@@ -345,8 +345,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   palm_contact: palm 닿음 보너스(부트스트랩). lift 는 palm 접촉 AND 게이트 →
     #   palm 닿아야(진짜 감쌈) lift 보상, 얕은 pinch(palm 미접촉) 배제.
     palm_approach_weight:      float = 1.0
-    palm_approach_sharpness:   float = 10.0
-    palm_contact_bonus_weight: float = 0.5
+    # 07.22 sharpness 10→15: palm_dist 0.087 에서 포화(밀착 미완) → 접촉 직전 gradient 강화로 더 깊이.
+    palm_approach_sharpness:   float = 15.0
+    # 07.22 contact bonus 0.5→1.5: palm 실접촉 유인 강화(palm_frac ~0 정체 탈출).
+    palm_contact_bonus_weight: float = 1.5
     object_to_goal_weight:    float = 5.0
     object_to_goal_sharpness: float = 15.0   # exp(-s·err) 형태(양수 s). DEXTRAH -15·exp(+s·err)와 동치
     lift_weight:              float = 5.0
