@@ -253,7 +253,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 07.14: 손 = 6D per-finger 직접 제어(시너지/PCA 폐기). fabric 은 팔 IK 만 담당.
     # RH56F1 은 하드웨어 언더액추(원위 mimic)라 이미 물리적 시너지 — 그 위 소프트웨어
     # PCA(5D)는 이중 압축이라 thumb_1(opposition)을 죽였음. 6 액추에이터 직접 제어로 전환.
-    max_pose_angle:             float = 45.0   # DEXTRAH README teacher 레시피 45°. palm rpy 공칭(180,0,90)±45 — 손바닥 방향을 action 공간에서 constrain(천장 지향 구조 차단). tesollo 0fa6fb3 정렬
+    # 07.22 45→25: ±45° 자유가 커서 정책이 palm 을 side 에서 틀어 손날 접촉·위→아래 접근(영상 실측).
+    # ±25° 로 제한해 손바닥 법선이 물체 측면(side) 을 향하도록 강제(palm 중심 밀착 유도).
+    max_pose_angle:             float = 25.0   # palm rpy 공칭(180,0,90)±25
+    # 07.22 palm orientation reward: palm 법선(+z)이 palm→물체 방향과 정렬되게(손바닥 중심이 물체 향함).
+    # 손날 접촉 억제 — max_pose_angle 축소와 함께 palm 중심 밀착 유도.
+    palm_orient_weight:         float = 1.0
     fabrics_max_objects_per_env: int  = 8
     fabrics_damping_gain:       float = 20.0  # 10→20: Fabrics 속도 감쇠 증가 → grasp phase 떨림 감소
 

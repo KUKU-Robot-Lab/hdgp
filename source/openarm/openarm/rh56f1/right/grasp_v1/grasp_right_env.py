@@ -1275,6 +1275,16 @@ class GraspRightEnv(DirectRLEnv):
         palm_contact_bonus = (
             float(self.cfg.palm_contact_bonus_weight) * self.palm_binary_contact_buf.float()
         )
+        # palm orientation(07.22): 손바닥 법선(palm +z)이 palm→물체 방향과 정렬되게 →
+        # 손날 아닌 손바닥 중심이 물체를 향하도록. (영상 실측: 손날 접촉·위→아래 접근 억제)
+        _palm_quat = self.robot.data.body_quat_w[:, self.palm_body_index]   # (N, 4) world
+        _pz = torch.zeros_like(self.palm_center_pos)
+        _pz[:, 2] = 1.0
+        palm_normal = quat_apply(_palm_quat, _pz)                           # (N, 3) 손바닥 법선(world)
+        _dir_to_obj = self.object_pos - self.palm_center_pos               # env-local(방향은 world 동일)
+        _dir_to_obj = _dir_to_obj / (_dir_to_obj.norm(dim=-1, keepdim=True) + 1e-6)
+        palm_align = (palm_normal * _dir_to_obj).sum(dim=-1)               # cos ∈ [-1,1]
+        palm_orient_reward = float(self.cfg.palm_orient_weight) * palm_align.clamp(min=0.0)
         # lift 게이트(07.22): palm 닿아야(물체가 손가락 지나 손바닥까지 감김 = 진짜 envelope)
         # lift 보상 — 얕은 pinch(palm 미접촉, tip 만 걸침)는 lift 보상에서 배제.
         palm_gate = self.palm_binary_contact_buf.float()
@@ -1338,7 +1348,7 @@ class GraspRightEnv(DirectRLEnv):
         total = (
             hand_to_object_reward + object_to_goal_reward + finger_curl_reg
             + lift_reward + grasp_contact_reward + force_closure_reward
-            + palm_approach_reward + palm_contact_bonus
+            + palm_approach_reward + palm_contact_bonus + palm_orient_reward
         )
 
         # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
@@ -1428,6 +1438,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["contact/palm_dist"] = palm_to_object_dist.mean()  # palm→물체 거리(밀착도)
         self.extras["reward/palm_approach"] = palm_approach_reward.mean()
         self.extras["reward/palm_contact"] = palm_contact_bonus.mean()
+        self.extras["contact/palm_align"] = palm_align.mean()  # 손바닥 법선↔물체 정렬(1=정면)
+        self.extras["reward/palm_orient"] = palm_orient_reward.mean()
         # 손가락별 tip 접촉률 (엄지 포함 개별 관측 — tip 센서 순서 thumb_4/index_2/…/pinky_2)
         for _i, _fn in enumerate(("thumb", "index", "middle", "ring", "pinky")):
             self.extras[f"contact/tip_{_fn}"] = self.binary_contact_buf[:, _i].float().mean()
