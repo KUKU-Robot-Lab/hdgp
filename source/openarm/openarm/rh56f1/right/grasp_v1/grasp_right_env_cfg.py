@@ -355,8 +355,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 07.23 계층 재설계(approach→grasp→lift): 독립 병렬 항의 개별 챙김(hacking) 차단.
     # side 측면 접근: palm 이 물체 중심보다 위(palm_z>obj_z)면 지수 감쇠 → top-down 도피 배제.
     palm_approach_side_z_sharpness: float = 10.0
-    # grasp(파지 통합) = grasp_weight · palm_gate · min(1,num_firm/grasp_firm_k) · opposition_quality
-    grasp_weight:              float = 4.0
+    # grasp(파지 통합) = grasp_combined_weight · palm_gate · min(1,num_firm/grasp_firm_k) · opposition_quality
+    # ★ 고유명 사용: 아래 레거시 grasp_weight(=12.0, 미사용/호환보존)와 dataclass 필드 충돌 회피.
+    grasp_combined_weight:     float = 4.0
     grasp_firm_k:              int   = 4     # grip_quality firm 정규화 분모(num_firm/K, 5지 중 4)
     lift_firm_k:               int   = 2     # lift 게이트 firm 임계(num_firm>=K, ADR firm_success 하한)
     object_to_goal_weight:    float = 5.0

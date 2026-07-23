@@ -1355,7 +1355,7 @@ class GraspRightEnv(DirectRLEnv):
             (self.num_firm_fingers.float() / max(int(self.cfg.grasp_firm_k), 1)).clamp(0.0, 1.0)
             * opposition_quality
         )
-        grasp_reward = float(self.cfg.grasp_weight) * palm_gate * grip_quality
+        grasp_reward = float(self.cfg.grasp_combined_weight) * palm_gate * grip_quality
 
         # (palm_orient reward 제거 — DEXTRAH 4항엔 손목 방향 제약이 없고 weight=0 상태로
         #  폐기돼 있었음. 손바닥 법선축 규약은 palm_sensor +Z(손바닥에서 나오는 방향),
