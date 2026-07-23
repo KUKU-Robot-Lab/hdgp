@@ -1299,14 +1299,25 @@ class GraspRightEnv(DirectRLEnv):
         depth[depth > self.cfg.d_max] = 0.0
         depth[depth < self.cfg.d_min] = 0.0
 
+        # [07-23] RGB 도 depth 와 동일하게 중앙 crop → 확대. student 입력이 RGB(use_depth=False)
+        # 인데 종전엔 crop 미적용이라 물체가 ~19px 로 작아 위치추정 정밀도 한계 → envelope 파지
+        # 빗나감(실행격차). crop_frac 만큼 중앙 crop 후 원해상도 업샘플 → 물체 화면크기 1/cf 배.
+        _rgb = self._tiled_camera.data.output["rgb"].clone().permute((0, 3, 1, 2)) / 255.0
+        if _cf < 0.999:
+            _rn, _rc, _rh, _rw = _rgb.shape
+            _rch, _rcw = int(_rh * _cf), int(_rw * _cf)
+            _rt, _rl = (_rh - _rch) // 2, (_rw - _rcw) // 2
+            _rgb = _rgb[:, :, _rt:_rt + _rch, _rl:_rl + _rcw]
+            _rgb = torch.nn.functional.interpolate(
+                _rgb, size=(_rh, _rw), mode="bilinear", align_corners=False
+            )
+
         return {
             "policy": self.compute_student_policy_observations(),
             "expert_policy": actor_obs,
             "critic": critic_obs,
             "img": depth.permute((0, 3, 1, 2)),
-            "rgb": self._tiled_camera.data.output["rgb"].clone().permute(
-                (0, 3, 1, 2)
-            ) / 255.0,
+            "rgb": _rgb.contiguous(),
             "aux_info": {"object_pos": self.object_pos},
             "mask": mask,
         }

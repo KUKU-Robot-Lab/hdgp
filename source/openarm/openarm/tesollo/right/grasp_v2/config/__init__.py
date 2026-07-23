@@ -47,12 +47,11 @@ class GraspRightEnvCfg_DISTILL(GraspRightEnvCfg):
         # aux(object_pos 회귀)를 크게 걸어야 인코더가 "물체가 어디 있나"를 먼저 배운다.
         self.scene.num_envs = 256
         self.aux_coeff = 10.0
-        # [07-23] vision student 실행격차 대응(clean eval in_success 0.05·obj_drift 0.097).
-        # ① 손가락/파지 action dim(palm 이후) 손실 가중 — 20-DOF 를 5D PCA 시너지로 압축
-        # 제어해 계수 오차가 관절로 증폭→물체 밀어냄. dagger 가 손가락 축을 3배 정밀 모방.
-        # ② action EMA smoothing(alpha 0.3) — 실행 action jitter 완화로 물체 밀어냄↓.
-        self.finger_loss_weight = 3.0
-        self.action_ema_alpha = 0.3
+        # [07-23] ①손가락 손실가중 3.0 + ②action EMA 0.3 은 baseline 대비 무효(in_success·
+        # obj_drift 불변) → 격리 위해 off(base 기본 1.0/0.0). 다음 가설=RGB crop(지각정밀도,
+        # grasp_right_env.py). 필요 시 아래 재활성:
+        # self.finger_loss_weight = 3.0
+        # self.action_ema_alpha = 0.3
         # ★env 를 teacher 실제 작동점(ADR 28)에 고정 — teacher(lstm_test3 ep_13000)는
         # ADR 28 에서 포화(게이트 0.4 미달)돼 그 이상은 학습 안 됨. 만렙(50)에 고정하면
         # teacher 가 미학습 난이도에서 굴러 시연이 왜곡된다(deterministic 작동점 = 28,
