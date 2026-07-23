@@ -77,6 +77,11 @@ parser.add_argument(
     help="student 카메라(depth) occlusion 정량화: N 스텝 돌며 물체 가시 픽셀 비율 측정 후 출력·종료 (0=off). 소수 env 권장.",
 )
 parser.add_argument(
+    "--grip_probe", action="store_true", default=False,
+    help="기하 probe: 정책의 palm 배치는 유지하되 손가락 action 을 강제 full-grip(+1)으로 덮어써 "
+         "작은 물체에서 손끝 감쌈·palm 도달 여부를 렌더/DBGC 로 확인. --video --num_envs 8 권장.",
+)
+parser.add_argument(
     "--cam_eye", type=str, default=None,
     help="Viewer camera position 'x,y,z' (env-local). pour 태스크는 기본 근접뷰 자동 적용.",
 )
@@ -673,6 +678,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
+            # 기하 probe: 손가락만 강제 full-grip(+1), palm(0:6)은 정책 유지 →
+            # 정책이 놓은 최선 접근 위치에서 손을 완전히 닫았을 때의 물리 접촉을 관찰.
+            if args_cli.grip_probe:
+                actions[:, 6:12] = 1.0
             obs, _, dones, _ = env.step(actions)
 
             # === occlusion probe (--occlusion_probe N): student depth 카메라 물체 가시율 ===
