@@ -62,6 +62,7 @@ CKPT_INTERVAL = 5_000
 GRAD_CLIP_NORM = 1.0
 LEARNING_RATE = 1e-4
 GAMES_TO_TRACK = 100
+PALM_ACTION_DIMS = 6   # action[0:6]=palm(arm), [6:]=hand(finger/abduction). 양 로봇 공통.
 
 
 def l2(model: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -125,6 +126,10 @@ class Dagger:
         self.num_envs = self.ov_env.num_envs
         self.num_actions = self.ov_env.num_actions
         self.device = self.local_rank
+        # ① 손가락/파지 dim 손실 가중 (PCA 시너지 오차 증폭 대응) + ② action EMA smoothing.
+        # tesollo distill cfg 에서만 켜짐 — 미설정 로봇(rh56f1 등)은 무효(weight 1.0, ema 0.0).
+        self.finger_loss_weight = float(getattr(self.ov_env.cfg, "finger_loss_weight", 1.0))
+        self.action_ema_alpha = float(getattr(self.ov_env.cfg, "action_ema_alpha", 0.0))
         self.config = config
 
         self.student_network_params = self._load_param_dict(config["student"]["cfg"])["params"]
@@ -377,6 +382,15 @@ class Dagger:
         self.actions_teacher = torch.zeros(
             (self.num_envs, self.num_actions), dtype=torch.float32, device=self.device
         )
+        # ② action EMA smoothing 버퍼 (action_ema_alpha>0 일 때만 사용).
+        self.action_ema = torch.zeros(
+            (self.num_envs, self.num_actions), dtype=torch.float32, device=self.device
+        )
+        # ① 손가락/파지 dim 손실 가중 벡터: palm(0:6)=1, hand(6:)=finger_loss_weight.
+        self._action_dim_weight = torch.ones(
+            self.num_actions, dtype=torch.float32, device=self.device
+        )
+        self._action_dim_weight[PALM_ACTION_DIMS:] = self.finger_loss_weight
 
         if self.is_rnn:
             self.student_hidden_states = [
@@ -444,6 +458,9 @@ class Dagger:
 
                 # teacher sigma의 역수 제곱으로 가중 — teacher가 확신하는 축을 더 강하게 모방
                 weights = (1.0 / actions_teacher["sigmas"][0]) ** 2
+                # ① 손가락/파지 dim(palm 이후) 추가 가중 — PCA 시너지 계수 오차가 여러 관절로
+                # 증폭돼 물체를 밀어내므로, 손가락 축을 더 정밀히 모방시킨다(weight 1.0=무효).
+                weights = weights * self._action_dim_weight
                 student_loss = self._loss(
                     actions_student["mus"], actions_teacher["mus"],
                     fn="weighted_l2", weights=weights,
@@ -465,6 +482,14 @@ class Dagger:
                 total_loss = 0.0
 
             stepping_actions = self._mix_actions(actions_student, actions_teacher, beta)
+            # ② action EMA smoothing — 압축(PCA) action jitter 를 완화해 물체 밀어냄↓.
+            # 실행 action 에만 적용(imitation 타깃은 raw). 배포에도 동일 적용 전제. alpha=0 무효.
+            if self.action_ema_alpha > 0.0:
+                stepping_actions = (
+                    self.action_ema_alpha * self.action_ema
+                    + (1.0 - self.action_ema_alpha) * stepping_actions
+                )
+                self.action_ema = stepping_actions.detach()
             obs, rew, out_of_reach, timed_out, _ = self.env.step(
                 stepping_actions.detach()
             )
@@ -486,6 +511,9 @@ class Dagger:
             self.current_rewards = self.current_rewards * not_dones.unsqueeze(1)
             self.current_lengths = self.current_lengths * not_dones
             self.actions_teacher[all_done_indices] *= 0.0
+            # ② 에피소드 종료 env 는 EMA 리셋(이전 에피소드 action 오염 방지).
+            if self.action_ema_alpha > 0.0:
+                self.action_ema[all_done_indices] *= 0.0
 
             # 물체별 접촉 진단(play): 매 스텝 누적, 600 스텝마다 테이블 덤프
             if self.play_policy:

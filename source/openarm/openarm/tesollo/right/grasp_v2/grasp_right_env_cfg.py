@@ -815,6 +815,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 현재 rgb 라 무효였다(rh56f1 동일하게 False).
     aug_depth: bool = False
     aux_coeff: float = 1.0        # aux head(object_pos 회귀; 향후 depth 재구성 추가 여지) 손실 가중
+    # [07-23] distillation 실행격차 대응 (기본 무효 — DISTILL cfg 에서 활성). dagger.py 가 읽음.
+    finger_loss_weight: float = 1.0   # ① 손가락/파지 action dim(palm 6D 이후) imitation 손실 가중(1.0=무효)
+    action_ema_alpha:   float = 0.0   # ② 실행 action EMA smoothing 계수(0.0=무효)
 
     # normal_noise 커널이 픽셀→광선 역투영에 쓰는 정규화 투영행렬.
     # a = 1/tan(hfov/2), b = a * W/H  (DEXTRAH 원본 규약: 주점 오프셋 없음)
