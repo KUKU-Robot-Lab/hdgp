@@ -31,13 +31,13 @@ params:
     # modality 가드(dagger.py)에서 걸렸다 — rh56f1 처럼 RGB 로 통일한다(실물 D435i RGB
     # 정합 + visual DR 로 sim2real). depth 는 obs 에 함께 렌더돼 향후 depth 재구성 aux 재료.
     use_depth: False
-    # [07-23] freeze_img_features 는 img_features(resnet+linear→16384) 전체를 detach.
-    # 이상적으로 fresh 는 False(인코더 학습, aux_coeff=10 이 CNN shape)여야 하나, False 로
-    # 두면 CNN+LSTM 전 그래프가 BPTT seq_length(16) 동안 retain 되면서 LSTM(512)+layer_norm
-    # 의 inplace 수정과 충돌 → 학습 backward 에서 "version 17 expected 16" RuntimeError 크래시
-    # (imit_loss 도 31→323 발산). True 가 그래프를 잘라 이 latent 버그를 회피(이전 run 정상).
-    # → 우선 True 로 학습. 인코더 학습(False)은 BPTT inplace 버그 수정 or seq_length=1 선행 필요.
-    freeze_img_features: True
+    # CNN 인코더를 처음부터 학습(False, rh56f1 정합). True(동결)면 랜덤 초기화 인코더가
+    # 물체를 못 봐 파지 실패(in_success 0.0 — dt1·07-23 tesollo freeze=True 실측 일치).
+    # True 는 인코더가 이미 학습된 뒤 LSTM 윈도우만 격리하는 후기 단계용. seq_length=1 과
+    # 세트여야 함: seq_length=16(BPTT retain)+freeze=False 는 LSTM(512)+layer_norm inplace
+    # 충돌로 backward 크래시("version 17 expected 16"). tesollo occlusion 낮음(가시율 0.99,
+    # 07-22 probe) 확인돼 per-frame(seq_length=1) 로 충분 → rh56f1 과 동일 설정.
+    freeze_img_features: False
     # 카메라 해상도(D435i 16:9). a2c_mono_transformer RunningMeanStd/encoder 형상과 일치 필수.
     img_height: 180
     img_width: 320
@@ -120,10 +120,11 @@ params:
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
-    # BPTT 윈도우 = LSTM hidden 을 N 스텝 유지 후 backward(dagger 가 읽음). 원본 1 →
-    # 16 으로 올려 LSTM 이 시간 메모리(occlusion 통과)를 학습. CNN 은 detach 로 동결이라
-    # 윈도우 메모리 부담은 LSTM/MLP 만(256×512×16, 작음).
-    seq_length: 16
+    # BPTT 윈도우. tesollo occlusion 낮아(가시율 0.99, 07-22 probe) 시간 메모리 불필요 →
+    # per-frame(1, rh56f1 정합). 종전 16 은 "occlusion 큰 tesollo" 가정(probe 전)이라 stale
+    # 이었고, freeze_img_features=False 와 함께 쓰면 BPTT retain 그래프가 LSTM inplace 와
+    # 충돌해 backward 크래시. 인코더 학습(freeze=False)엔 반드시 seq_length=1.
+    seq_length: 1
     bounds_loss_coef: 0.0001
 
     player:
