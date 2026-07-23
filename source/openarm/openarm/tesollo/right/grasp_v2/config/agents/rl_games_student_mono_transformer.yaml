@@ -31,12 +31,13 @@ params:
     # modality 가드(dagger.py)에서 걸렸다 — rh56f1 처럼 RGB 로 통일한다(실물 D435i RGB
     # 정합 + visual DR 로 sim2real). depth 는 obs 에 함께 렌더돼 향후 depth 재구성 aux 재료.
     use_depth: False
-    # [07-23] fresh student 는 인코더 학습 필요: freeze_img_features=True 는 img_features
-    # (resnet+linear→16384) 전체를 detach 해 random-init linear 가 학습 안 됨(고정 random
-    # projection) → aux_coeff=10 이 인코더를 못 shape. True 는 인코더가 이미 학습된 resume
-    # (85000 iter, aux~0.015)에서 LSTM-window 만 격리하려던 것. fresh 는 False(97GB server
-    # 라 BPTT-16 + trainable CNN OOM 없음). 재개 시 다시 True 로 격리 가능.
-    freeze_img_features: False
+    # [07-23] freeze_img_features 는 img_features(resnet+linear→16384) 전체를 detach.
+    # 이상적으로 fresh 는 False(인코더 학습, aux_coeff=10 이 CNN shape)여야 하나, False 로
+    # 두면 CNN+LSTM 전 그래프가 BPTT seq_length(16) 동안 retain 되면서 LSTM(512)+layer_norm
+    # 의 inplace 수정과 충돌 → 학습 backward 에서 "version 17 expected 16" RuntimeError 크래시
+    # (imit_loss 도 31→323 발산). True 가 그래프를 잘라 이 latent 버그를 회피(이전 run 정상).
+    # → 우선 True 로 학습. 인코더 학습(False)은 BPTT inplace 버그 수정 or seq_length=1 선행 필요.
+    freeze_img_features: True
     # 카메라 해상도(D435i 16:9). a2c_mono_transformer RunningMeanStd/encoder 형상과 일치 필수.
     img_height: 180
     img_width: 320
