@@ -685,23 +685,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 _pe = env.unwrapped
                 if hasattr(_pe, "env"):
                     _pe = _pe.env.unwrapped
-                _obj = _pe.object_pos                       # (N,3) env-local
+                _obj = _pe.object_pos.clone()               # (N,3) env-local
+                _obj[:, 2] = _obj[:, 2] - 0.20              # ★ z 하향 overshoot: 손을 최대한 끌어내림
                 _mins = _pe.palm_mins_env; _maxs = _pe.palm_maxs_env   # (N,6)
                 _a_pos = (2.0 * (_obj - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
                 actions[:, :3] = _a_pos
                 actions[:, 3:6] = 0.0                       # 방향 box 중심(정면)
                 actions[:, 6:12] = 1.0                      # 손가락 full-grip
-                if timestep == 80:
-                    _pc = _pe.palm_center_pos                                       # (N,3)
-                    _ftip = _pe.robot.data.body_pos_w[:, _pe.fingertip_body_indices, :] - _pe.scene.env_origins.unsqueeze(1)
-                    _td = (_ftip - _pe.object_pos.unsqueeze(1)).norm(dim=-1).min(dim=1).values  # (N,) 최근접 손끝↔물체
-                    _pf = _pe.palm_binary_contact_buf.float()                       # (N,)
-                    _names = list(_pe.cfg._ACTIVE_OBJECT_NAMES) if hasattr(_pe.cfg, "_ACTIVE_OBJECT_NAMES") else [str(i) for i in range(_pe.num_envs)]
-                    print("[PROBE per-env] env: obj  obj_z  palm_z  tipdist  palm_frac", flush=True)
-                    for e in range(_pe.num_envs):
-                        _nm = _names[int(_pe.object_idx[e])] if hasattr(_pe, "object_idx") else str(e)
-                        print(f"  env{e}: {_nm:12s} obj_z={_pe.object_pos[e,2]:.3f} palm_z={_pc[e,2]:.3f} "
-                              f"tipdist={_td[e]:.3f} palm_frac={_pf[e]:.0f}", flush=True)
+                if timestep % 30 == 0:
+                    _pc = _pe.palm_center_pos
+                    _aj = _pe.robot.data.joint_pos[0, _pe.arm_dof_indices]
+                    _lim = _pe.robot.data.soft_joint_pos_limits[0, _pe.arm_dof_indices, :]
+                    _near = torch.minimum(_aj - _lim[:, 0], _lim[:, 1] - _aj)
+                    _js = " ".join(f"aj{i+1}={_aj[i]:+.2f}(m{_near[i]:.2f})" for i in range(len(_aj)))
+                    print(f"[PROBE overshoot] palm_sensor_z_min={_pc[:, 2].min():.3f} mean={_pc[:, 2].mean():.3f} "
+                          f"obj_z={_pe.object_pos[:, 2].mean():.3f}\n          ARM {_js}", flush=True)
             obs, _, dones, _ = env.step(actions)
 
             # === occlusion probe (--occlusion_probe N): student depth 카메라 물체 가시율 ===
