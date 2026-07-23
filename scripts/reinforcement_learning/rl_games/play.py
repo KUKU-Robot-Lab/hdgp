@@ -695,9 +695,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     _tgt = getattr(_pe, "palm_pose_targets", None)
                     _pc = _pe.palm_center_pos
                     _tz = _tgt[:, 2].mean().item() if _tgt is not None else float("nan")
+                    _aj = _pe.robot.data.joint_pos[0, _pe.arm_dof_indices]          # (7,) arm joint (env0)
+                    _lim = _pe.robot.data.soft_joint_pos_limits[0, _pe.arm_dof_indices, :]  # (7,2)
+                    _lo = _aj - _lim[:, 0]; _hi = _lim[:, 1] - _aj                  # margin to lower/upper
+                    _near = torch.minimum(_lo, _hi)                                  # (7,) 최소 여유(rad)
+                    _js = " ".join(f"aj{i+1}={_aj[i]:+.2f}(m{_near[i]:.2f})" for i in range(len(_aj)))
                     print(f"[PROBE z] cmd_target_z={_tz:.3f} palm_sensor_z={_pc[:, 2].mean():.3f} "
-                          f"obj_z={_pe.object_pos[:, 2].mean():.3f} box_z=[{_mins[:, 2].mean():.3f},{_maxs[:, 2].mean():.3f}]",
-                          flush=True)
+                          f"obj_z={_pe.object_pos[:, 2].mean():.3f} box_z=[{_mins[:, 2].mean():.3f},{_maxs[:, 2].mean():.3f}]\n"
+                          f"          ARM {_js}", flush=True)
             obs, _, dones, _ = env.step(actions)
 
             # === occlusion probe (--occlusion_probe N): student depth 카메라 물체 가시율 ===
