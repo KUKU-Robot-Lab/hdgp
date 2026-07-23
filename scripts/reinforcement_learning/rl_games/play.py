@@ -678,12 +678,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
-            # 기하 probe: palm(0:6)=0(pregrasp box 중심 고정) + 손가락 강제 full-grip(+1) →
-            # hover 정책 표류를 제거하고, reset pregrasp 위치에서 손을 완전히 닫았을 때의
-            # 물리 접촉(손끝 감쌈·palm 도달)만 순수 관찰. pregrasp offset 축소와 병행.
+            # 기하 probe: palm 위치를 물체 중심으로 직접 지령(box unscale) + 손가락 full-grip(+1).
+            # 정책/hover 무관하게 "손을 물체에 붙이면 감싸는가·palm 이 닿는가"를 순수 기하로 검증.
+            # palm_pose=scale(action, mins, maxs) 의 역: action=2(t-min)/(max-min)-1, box 밖이면 ±1 clamp.
             if args_cli.grip_probe:
-                actions[:, :6] = 0.0
-                actions[:, 6:12] = 1.0
+                _pe = env.unwrapped
+                if hasattr(_pe, "env"):
+                    _pe = _pe.env.unwrapped
+                _obj = _pe.object_pos                       # (N,3) env-local
+                _mins = _pe.palm_mins_env; _maxs = _pe.palm_maxs_env   # (N,6)
+                _a_pos = (2.0 * (_obj - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
+                actions[:, :3] = _a_pos
+                actions[:, 3:6] = 0.0                       # 방향 box 중심(정면)
+                actions[:, 6:12] = 1.0                      # 손가락 full-grip
             obs, _, dones, _ = env.step(actions)
 
             # === occlusion probe (--occlusion_probe N): student depth 카메라 물체 가시율 ===
