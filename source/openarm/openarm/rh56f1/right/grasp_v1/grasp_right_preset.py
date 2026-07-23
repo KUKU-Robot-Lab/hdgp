@@ -260,7 +260,7 @@ SIDE_APPROACH_OBJECT_NAMES = (
 def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
-        0.20, -0.55, 0.20,
+        0.20, -0.55, 0.10,   # [PROBE 임시 z하한 0.20→0.10] box 하한이 palm 0.33 정체 원인인지 검증
         # ez: side grasp palm_sensor +z 가 +y(컵, -y 접근) → 중심 180°.
         (PREGRASP_EULER_EZ_DEG - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,
