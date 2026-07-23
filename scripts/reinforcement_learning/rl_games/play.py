@@ -691,6 +691,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 actions[:, :3] = _a_pos
                 actions[:, 3:6] = 0.0                       # 방향 box 중심(정면)
                 actions[:, 6:12] = 1.0                      # 손가락 full-grip
+                if timestep % 30 == 0:
+                    _tgt = getattr(_pe, "palm_pose_targets", None)
+                    _pc = _pe.palm_center_pos
+                    _tz = _tgt[:, 2].mean().item() if _tgt is not None else float("nan")
+                    print(f"[PROBE z] cmd_target_z={_tz:.3f} palm_sensor_z={_pc[:, 2].mean():.3f} "
+                          f"obj_z={_pe.object_pos[:, 2].mean():.3f} box_z=[{_mins[:, 2].mean():.3f},{_maxs[:, 2].mean():.3f}]",
+                          flush=True)
             obs, _, dones, _ = env.step(actions)
 
             # === occlusion probe (--occlusion_probe N): student depth 카메라 물체 가시율 ===
