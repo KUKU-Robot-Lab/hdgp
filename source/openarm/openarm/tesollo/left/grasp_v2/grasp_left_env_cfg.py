@@ -766,7 +766,10 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     distillation: bool = False
 
     num_student_observations: int = NUM_STUDENT_OBS     # 190 (물체 privileged state 제외)
-    num_teacher_observations: int = NUM_OBS_BASE + len(_ACTIVE_OBJECT_NAMES)  # 193 + N_obj
+    # [07-23] pos-only obs 이후 teacher actor obs = NUM_OBS_BASE(213, onehot 제거). env 는
+    # expert_policy=actor_obs(213)를 준다. 종전 +N_obj 는 onehot 포함 시절 잔재로, distillation
+    # 에서 dagger 가 teacher 를 잘못된 차원으로 빌드해 체크포인트와 size mismatch 를 낸다(right 동일).
+    num_teacher_observations: int = NUM_OBS_BASE  # 213 (pos-only, actor obs 와 동일)
 
     img_width:  int = CAMERA_IMG_WIDTH
     img_height: int = CAMERA_IMG_HEIGHT
