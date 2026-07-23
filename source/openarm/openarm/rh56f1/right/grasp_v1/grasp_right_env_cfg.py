@@ -351,7 +351,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   palm 닿아야(진짜 감쌈) lift 보상, 얕은 pinch(palm 미접촉) 배제.
     palm_approach_weight:      float = 1.5   # 07.23 h2o 제거로 유일 접근 유인 → 1.0→1.5 부트스트랩 보강
     palm_approach_sharpness:   float = 15.0
-    palm_contact_bonus_weight: float = 1.5   # (계층 재설계 후 미사용 — grasp 로 흡수)
+    palm_contact_bonus_weight: float = 1.5   # 07.23 approach 완결 부트스트랩 재활성: 측면접촉 보너스
+                                             # (lstm_test8 dead zone — palm 정렬접근 후 접촉 미발생 소거 대응).
+                                             # lift/goal(5.0)의 0.3배 = 목표항이 그 위 지배(부트스트랩 크기).
     # 07.23 계층 재설계(approach→grasp→lift): 독립 병렬 항의 개별 챙김(hacking) 차단.
     # side 측면 접근: palm 이 물체 중심보다 위(palm_z>obj_z)면 지수 감쇠 → top-down 도피 배제.
     palm_approach_side_z_sharpness: float = 10.0

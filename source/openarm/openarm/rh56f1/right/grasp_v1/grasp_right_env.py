@@ -1294,6 +1294,12 @@ class GraspRightEnv(DirectRLEnv):
         # lift 게이트(계층, 07.23): 파지(grasp) 성립 = palm 닿고(palm_gate) 손가락 firm 감쌈
         # (num_firm>=lift_firm_k) 이어야 들기 보상 — 상단 받치기(palm만)로는 lift 0.
         palm_gate = self.palm_binary_contact_buf.float()
+        # approach 완결 부트스트랩(07.23): 손바닥이 측면에서 실제 접촉하면 보너스 — approach 포화
+        # (hover ~11cm, palm_frac=0)과 grasp 게이트(palm AND firm AND 대향) 사이 dead zone 을 잇는다.
+        # lstm_test8 실측: palm 정렬접근은 됐으나 접촉 미발생 → 손끝 접촉조차 무보상으로 소거(퇴행).
+        # side_gate 로 상단접촉 배제(top-press hacking 차단), align 무관(근접 wrap 시 법선이 물체중심을
+        # 안 향해도 정상). weight 1.5 = lift/goal(5.0)의 0.3배(부트스트랩, 목표항이 그 위 지배).
+        palm_contact_bonus = float(self.cfg.palm_contact_bonus_weight) * palm_gate * _side_gate
         grasp_gate = palm_gate * (self.num_firm_fingers >= int(self.cfg.lift_firm_k)).float()
         lift_reward = _lift_w * grasp_gate * lift_height_quality
 
@@ -1365,7 +1371,7 @@ class GraspRightEnv(DirectRLEnv):
         #   h2o(top-down 조장·중복) 제거, palm_contact/grasp_contact/force_closure 는 grasp 로 흡수.
         total = (
             object_to_goal_reward + finger_curl_reg
-            + palm_approach_reward + grasp_reward + lift_reward
+            + palm_approach_reward + palm_contact_bonus + grasp_reward + lift_reward
         )
 
         # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
@@ -1470,6 +1476,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["contact/palm_frac"] = self.palm_binary_contact_buf.float().mean()  # palm 접촉률(진짜 envelope)
         self.extras["contact/palm_dist"] = palm_to_object_dist.mean()  # palm→물체 거리(밀착도)
         self.extras["reward/palm_approach"] = palm_approach_reward.mean()
+        self.extras["reward/palm_contact"] = palm_contact_bonus.mean()  # approach 완결 부트스트랩(측면접촉)
         self.extras["contact/palm_above"] = (self.palm_center_pos[:, 2] - self.object_pos[:, 2]).mean()  # palm-obj z(양수=상단, side면 ≈0)
         self.extras["contact/palm_align"] = palm_align.mean()  # 손바닥 법선↔물체 정렬(approach 에 곱)
         # 손가락별 tip 접촉률 (엄지 포함 개별 관측 — tip 센서 순서 thumb_4/index_2/…/pinky_2)
