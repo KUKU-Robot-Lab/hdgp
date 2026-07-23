@@ -686,7 +686,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 if hasattr(_pe, "env"):
                     _pe = _pe.env.unwrapped
                 _obj = _pe.object_pos.clone()               # (N,3) env-local
-                _obj[:, 2] = _obj[:, 2] - 0.20              # ★ z 하향 overshoot: 손을 최대한 끌어내림
+                _obj[:, 2] = _obj[:, 2] - 0.05              # 소폭 하향(undershoot 보정): 물체 몸통 겨냥
                 _mins = _pe.palm_mins_env; _maxs = _pe.palm_maxs_env   # (N,6)
                 _a_pos = (2.0 * (_obj - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
                 actions[:, :3] = _a_pos
