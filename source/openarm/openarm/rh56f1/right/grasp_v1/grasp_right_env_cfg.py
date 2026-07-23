@@ -109,9 +109,12 @@ _ACTIVE_OBJECT_ROOT: str = _VISDEX_ROOT
 #   제외: small_5_cyl(직경1.9cm, 너무 작아 4지 동시접촉 불가), large_12_cyl(직경9cm, 상한 초과).
 #   cup_middle(직경7cm 상한 대표)은 visdex 구조 이식 후 추가 예정(assets/cup → visdex_objects/USD).
 #   현재 6종 전부 scale0.75 직경 3~6.9cm 로 rh56f1 파지 가능 범위(상한 7cm) 내.
+# 07.23 grip_probe 재분석: 손 도달 하한(palm z~0.33@box0.20)이 짧은 물체 상단에 못 미침.
+#   box z하한 0.16 으로 낮춰 도달 확보 + 물체를 cup 높이급 긴 것만 남긴다(사용자 지시).
+#   제거: small_12_cyl(높이 1.3cm 납작 원반), small_8_cyl(높이 2cm) — 손끝 사거리 밖.
+#   유지 5종: large_5/8_cyl, cup, cup_middle, cup_big (전부 높이 4cm 이상, 상단 파지 가능).
 _ACTIVE_OBJECT_NAMES: tuple[str, ...] = (
     "large_5_cyl", "large_8_cyl",
-    "small_8_cyl", "small_12_cyl",
     "cup", "cup_middle", "cup_big",
 )
 

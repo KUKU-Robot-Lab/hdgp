@@ -252,7 +252,6 @@ PALM_POS_CENTER_SHIFT_TOPDOWN = [-0.0828,  0.0820, 0.0]  # topdown(152종) reset
 # → 전 물체를 side approach(옆면을 감싸 잡기)로 강제한다. cup 은 내용물 slip 방지도 겸한다.
 SIDE_APPROACH_OBJECT_NAMES = (
     "large_5_cyl", "large_8_cyl",
-    "small_8_cyl", "small_12_cyl",
     "cup", "cup_middle", "cup_big",
 )
 
@@ -260,7 +259,9 @@ SIDE_APPROACH_OBJECT_NAMES = (
 def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
-        0.20, -0.55, 0.16,   # [PROBE 임시 z하한 0.20→0.16] table+1cm 도달 목표 검증
+        0.20, -0.55, 0.16,   # z하한 0.16(07.23 grip_probe 검증): 구 0.20은 fabric undershoot로
+                             #   palm 이 물체 위 ~12cm(z0.33)서 바닥쳐 손이 테이블 물체에 도달 불가
+                             #   → 파지 실패 근본원인. 0.16서 palm 이 물체 몸통 높이까지 하강(관절 한계無).
         # ez: side grasp palm_sensor +z 가 +y(컵, -y 접근) → 중심 180°.
         (PREGRASP_EULER_EZ_DEG - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,

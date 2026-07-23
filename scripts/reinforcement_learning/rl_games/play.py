@@ -678,28 +678,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
-            # 기하 probe: palm 위치를 물체 중심으로 직접 지령(box unscale) + 손가락 full-grip(+1).
-            # 정책/hover 무관하게 "손을 물체에 붙이면 감싸는가·palm 이 닿는가"를 순수 기하로 검증.
-            # palm_pose=scale(action, mins, maxs) 의 역: action=2(t-min)/(max-min)-1, box 밖이면 ±1 clamp.
+            # 기하 probe(--grip_probe): palm 을 물체 위치로 직접 지령(box unscale) + 손가락 full-grip.
+            # 정책 무관하게 "손이 물체에 도달·감쌈 가능한가"를 순수 기하로 검증하는 도구.
+            # palm_pose=scale(action,mins,maxs) 역: action=2(t-min)/(max-min)-1, box 밖이면 ±1 clamp.
+            # GRASP_DEBUG_CONTACT=1 로 tipdist/palm_frac/관절여유 DBGC 동시 출력.
             if args_cli.grip_probe:
                 _pe = env.unwrapped
                 if hasattr(_pe, "env"):
                     _pe = _pe.env.unwrapped
-                _obj = _pe.object_pos.clone()               # (N,3) env-local
-                _obj[:, 2] = _obj[:, 2] - 0.05              # 소폭 하향(undershoot 보정): 물체 몸통 겨냥
                 _mins = _pe.palm_mins_env; _maxs = _pe.palm_maxs_env   # (N,6)
-                _a_pos = (2.0 * (_obj - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
+                _a_pos = (2.0 * (_pe.object_pos - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
                 actions[:, :3] = _a_pos
-                actions[:, 3:6] = 0.0                       # 방향 box 중심(정면)
-                actions[:, 6:12] = 1.0                      # 손가락 full-grip
-                if timestep % 30 == 0:
-                    _pc = _pe.palm_center_pos
-                    _aj = _pe.robot.data.joint_pos[0, _pe.arm_dof_indices]
-                    _lim = _pe.robot.data.soft_joint_pos_limits[0, _pe.arm_dof_indices, :]
-                    _near = torch.minimum(_aj - _lim[:, 0], _lim[:, 1] - _aj)
-                    _js = " ".join(f"aj{i+1}={_aj[i]:+.2f}(m{_near[i]:.2f})" for i in range(len(_aj)))
-                    print(f"[PROBE overshoot] palm_sensor_z_min={_pc[:, 2].min():.3f} mean={_pc[:, 2].mean():.3f} "
-                          f"obj_z={_pe.object_pos[:, 2].mean():.3f}\n          ARM {_js}", flush=True)
+                actions[:, 3:6] = 0.0
+                actions[:, 6:12] = 1.0
             obs, _, dones, _ = env.step(actions)
 
             # === occlusion probe (--occlusion_probe N): student depth 카메라 물체 가시율 ===
