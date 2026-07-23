@@ -229,8 +229,8 @@ PREGRASP_EULER_EX_TOPDOWN_DEG = 180.0
 # 값(0.04/0.03)을 맹목 복사하지 않음(손 리치·aj7 하강 기구가 다름).
 PREGRASP_TOPDOWN_XY = [-0.07, 0.02]
 PREGRASP_TOPDOWN_CLEARANCE = 0.05
-PREGRASP_SIDE_Z = -0.15
-PREGRASP_SIDE_CLEARANCE = 0.03
+PREGRASP_SIDE_Z = 0.0    # [PROBE 임시 -0.15→0.0] 물체 같은 높이 옆에 배치(기하 확인용, 원복 예정)
+PREGRASP_SIDE_CLEARANCE = 0.02   # [PROBE 임시 0.03→0.02]
 PREGRASP_R_AJ7_BIAS_TOPDOWN = 0.6
 
 # ---------------------------------------------------------------------------

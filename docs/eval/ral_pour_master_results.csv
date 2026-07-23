@@ -1,0 +1,45 @@
+category,condition,param,num_beads,episodes,success_rate,mean_transfer,median,ge50,ge75,ge90,complete,tail_lt25,spill_pct,notes
+core,NS_demo,"null-space=demo, boot off",20,1073,98.6,17.56,18,98.8,90.2,58.2,28.3,0.7,1.5,ours headline
+core,NS_naive,null-space=robot_start,20,1024,0.0,0.0,0,0.0,0.0,0.0,0.0,100.0,0.0,total failure
+core,Full,M4 =demo+boot,20,1103,96.4,19.21,20,96.6,95.6,93.8,90.2,2.6,2.5,deployed
+core,JS,joint-space,20,1030,97.7,15.58,16,97.9,71.1,23.2,5.3,0.9,3.6,ablation #1
+gen_cupscale,NS_demo,scale=0.7,20,1189,1.6,2.22,0,2.3,1.0,0.2,0.0,77.5,81.9,
+gen_cupscale,Full,scale=0.7,20,2117,28.6,7.89,6,39.1,22.8,14.0,6.4,41.5,59.4,
+gen_cupscale,NS_demo,scale=0.8,20,1274,18.8,7.4,8,29.5,14.4,9.6,3.8,30.1,59.1,
+gen_cupscale,Full,scale=0.8,20,1729,76.8,15.94,20,82.9,71.3,62.0,50.3,7.3,16.6,
+gen_cupscale,NS_demo,scale=0.9,20,1161,88.5,14.64,15,90.9,56.0,29.5,18.7,5.4,18.6,
+gen_cupscale,Full,scale=0.9,20,1122,86.2,17.09,20,90.6,79.6,69.6,55.2,4.5,8.8,
+gen_cupscale,NS_demo,scale=1.0,20,1065,98.8,17.53,18,98.8,89.6,57.5,27.6,0.9,1.4,
+gen_cupscale,Full,scale=1.0,20,1097,97.1,19.34,20,97.9,96.0,94.2,89.8,1.9,1.9,
+gen_cupscale,NS_demo,scale=1.1,20,1088,91.5,16.21,17,91.8,86.9,46.8,26.2,7.7,3.3,
+gen_cupscale,Full,scale=1.1,20,1310,89.2,17.84,20,90.3,87.1,84.8,79.5,7.6,3.6,
+gen_cupscale,NS_demo,scale=1.2,20,1084,0.6,0.25,0,0.6,0.0,0.0,0.0,98.2,32.0,
+gen_cupscale,Full,scale=1.2,20,1028,0.1,0.02,0,0.1,0.1,0.0,0.0,99.9,1.9,
+gen_fill,NS_demo,bead=10,10,1050,95.7,7.23,7,96.2,41.8,27.7,19.9,1.2,1.3,
+gen_fill,Full,bead=10,10,1346,97.5,9.67,10,98.5,96.4,93.4,86.8,1.1,2.3,
+gen_fill,NS_demo,bead=15,15,1052,97.6,12.22,12,98.0,61.6,34.8,21.9,1.0,1.3,
+gen_fill,Full,bead=15,15,1176,95.8,14.36,15,97.0,94.8,90.4,85.3,1.7,3.2,
+gen_fill,NS_demo,bead=20,20,1066,98.4,17.53,18,98.7,90.0,57.7,27.0,0.9,1.3,
+gen_fill,Full,bead=20,20,1114,96.1,19.22,20,96.9,95.2,93.0,89.0,1.7,2.5,
+gen_fill,NS_demo,bead=25,25,1075,98.5,21.72,22,98.5,93.2,44.3,13.3,1.1,1.5,
+gen_fill,Full,bead=25,25,1060,97.9,23.9,25,98.3,95.3,89.3,72.2,1.1,1.6,
+gen_fill,NS_demo,bead=30,30,1081,98.3,26.62,27,98.3,95.3,59.6,13.6,1.1,1.8,
+gen_fill,Full,bead=30,30,1045,97.9,28.64,30,98.5,94.8,89.2,72.1,1.2,1.4,
+gen_srcpos_INVALID,NS_demo,center,20,1066,98.4,17.5,18,98.4,91.6,56.8,27.0,1.2,1.4,warmstart clobber=invalid
+gen_srcpos_INVALID,NS_demo,xplus,20,1069,98.2,17.52,18,98.5,90.7,59.0,28.2,1.2,1.5,warmstart clobber=invalid
+gen_srcpos_INVALID,NS_demo,xminus,20,1067,98.5,17.58,18,98.7,91.3,58.9,27.5,0.9,1.3,warmstart clobber=invalid
+gen_srcpos_INVALID,NS_demo,yplus,20,1061,98.1,17.54,18,98.3,91.0,59.6,26.9,1.0,1.6,warmstart clobber=invalid
+gen_srcpos_INVALID,NS_demo,yminus,20,1076,98.2,17.53,18,98.6,91.3,56.8,29.6,1.0,1.4,warmstart clobber=invalid
+fluid_PBD,NS_demo,fill~30%,,,,,,,,,,,,eta_ft=0.549 (target/total fluid)
+fluid_PBD,NS_demo,fill~50%,,,,,,,,,,,,eta_ft=0.523
+fluid_PBD,NS_demo,fill~70%,,,,,,,,,,,,eta_ft=0.351
+receiver_C0,M4_learned,C0,,,95.1,18.98,,,,,,,4.1,active receiver (appendix)
+receiver_C0,M0_frozen,C0,,,94.0,18.78,,,,,,,3.4,M4~M0=능동무부하
+receiver_C0,M2_scripted,C0,,,16.5,3.21,,,,,,,49.6,scripted 불충분
+receiver_EXP2,M4_normal,,,,95.1,,,,,,,,,baseline
+receiver_EXP2,M4_frozen,,,,96.6,,,,,,,,,freeze 무하락
+receiver_EXP2,M4_scale0.5,,,,97.5,,,,,,,,,scale 무하락
+receiver_EXP2,M4_delay6,,,,96.4,,,,,,,,,delay 무하락
+DexPour_ref,DexPour,fill 30%,,,,,,,,,,,,"fluid transfer 99% (IROS2025, bowl target)"
+DexPour_ref,DexPour,fill 50%,,,,,,,,,,,,fluid transfer 96%
+DexPour_ref,DexPour,fill 70%,,,,,,,,,,,,fluid transfer 92%; APA -81.6% train time

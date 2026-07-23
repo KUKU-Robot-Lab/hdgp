@@ -1,5 +1,0 @@
-- env.enable_warm_state_export=true
-- env.warm_state_export_path=/home/user/rl_ws/datasets/grasp_warm_v7_2_smoke.hdf5
-- env.warm_state_target_count=32
-- env.warm_min_contacts=2
-- env.warm_contact_stable_steps=1

@@ -678,9 +678,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
-            # 기하 probe: 손가락만 강제 full-grip(+1), palm(0:6)은 정책 유지 →
-            # 정책이 놓은 최선 접근 위치에서 손을 완전히 닫았을 때의 물리 접촉을 관찰.
+            # 기하 probe: palm(0:6)=0(pregrasp box 중심 고정) + 손가락 강제 full-grip(+1) →
+            # hover 정책 표류를 제거하고, reset pregrasp 위치에서 손을 완전히 닫았을 때의
+            # 물리 접촉(손끝 감쌈·palm 도달)만 순수 관찰. pregrasp offset 축소와 병행.
             if args_cli.grip_probe:
+                actions[:, :6] = 0.0
                 actions[:, 6:12] = 1.0
             obs, _, dones, _ = env.step(actions)
 
