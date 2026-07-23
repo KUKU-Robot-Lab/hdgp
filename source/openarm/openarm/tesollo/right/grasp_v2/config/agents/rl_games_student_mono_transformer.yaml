@@ -120,12 +120,12 @@ params:
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
-    # [07-23 seq16 마지막 시도] BPTT 윈도우 16. freeze=False+seq1(rh56f1 정합)은 학습됐으나
-    # clean eval 실패(in_success 0.05, teacher의 12%, obj_drift 0.097) — 실행격차. 시간메모리
-    # 로 개선 여지 확인 차 seq16 재시도. freeze=False+seq16 은 resnet inplace(BN [512])로 크래시
-    # 났었으나 mono_encoder.py ResnetEncoder 에서 BN track_running_stats=False + inplace ReLU off
-    # 로 해소. horizon_length(16)와 세트. 실패 시 FP 직접배포로 귀착.
-    seq_length: 16
+    # BPTT 윈도우. tesollo occlusion 낮아(가시율 0.99, 07-22 probe) per-frame(1, rh56f1 정합).
+    # [07-23] seq16 마지막 시도 결과 비viable 확정: freeze=False+seq16 은 (1)resnet BN inplace
+    # 크래시(BN fix 로 해소했으나) (2)num_envs256 OOM→128 로도 GPU 42→62GB 증가 (3)in_success
+    # iter620 까지 0.0(seq1 은 동시점 0.05) + imit_loss 96~441 불안정. 병목=실행격차지 시간메모리
+    # 아니라 seq16 무효. seq1 로 복귀(가벼움·rh56f1 정합). vision 정책 개선은 실행격차 직공으로.
+    seq_length: 1
     bounds_loss_coef: 0.0001
 
     player:

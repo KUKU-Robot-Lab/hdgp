@@ -121,19 +121,6 @@ class ResnetEncoder(nn.Module):
         self.resnet18.fc = nn.Identity()
         self.resnet18.avgpool = nn.Identity()
 
-        # [07-23] seq_length>1(BPTT retain 그래프) + freeze_img_features=False(인코더 학습) 시
-        # resnet 의 inplace op 이 16-스텝 retain 그래프를 손상시켜 backward 크래시
-        # ("[512] version N+1 expected N"). [512]=layer4 BatchNorm running-stat inplace 갱신.
-        # track_running_stats=False 로 배치통계만 쓰게 해 running-stat inplace 제거 +
-        # inplace ReLU off. 가중치는 그대로 학습(freeze=False 의도 보존). seq1 은 영향 없음.
-        for _m in self.resnet18.modules():
-            if isinstance(_m, nn.ReLU):
-                _m.inplace = False
-            elif isinstance(_m, nn.BatchNorm2d):
-                _m.track_running_stats = False
-                _m.running_mean = None
-                _m.running_var = None
-
         if train_resnet:
             self.resnet18.train().to(device)
         else:
