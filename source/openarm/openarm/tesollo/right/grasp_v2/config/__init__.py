@@ -34,9 +34,12 @@ class GraspRightEnvCfg_DISTILL(GraspRightEnvCfg):
     붙어 GPU 메모리가 teacher 규모를 감당하지 못한다.
     """
 
-    # teacher 완료 후 실패물체 이름을 여기 주입한다(예: ("small_5_cyl", "small_8_cyl")).
-    # onehot 은 active_object_names(153) 유지 → teacher 체크포인트 호환. 빈 튜플이면 제외 없음.
-    DISTILL_EXCLUDED_OBJECT_NAMES: tuple[str, ...] = ()
+    # teacher 완료 후 실패물체 이름을 여기 주입한다.
+    # onehot 은 active_object_names(148) 유지 → teacher 체크포인트 호환. 빈 튜플이면 제외 없음.
+    # [07-23] lstm_test3 teacher(ep_13000, ADR28) clean eval 하위: cup=0.39(2지 핀치,
+    # envelope 와 다른 파지모드) · 80597=0.25 · 2dvafvp8=0.32 (teacher 거의 실패).
+    # 나쁜 시연 모방 방지 위해 제외 (사용자 지시 cup+teacher<0.35).
+    DISTILL_EXCLUDED_OBJECT_NAMES: tuple[str, ...] = ("cup", "80597", "2dvafvp8")
 
     def __post_init__(self):
         self.distillation = True
@@ -44,12 +47,15 @@ class GraspRightEnvCfg_DISTILL(GraspRightEnvCfg):
         # aux(object_pos 회귀)를 크게 걸어야 인코더가 "물체가 어디 있나"를 먼저 배운다.
         self.scene.num_envs = 256
         self.aux_coeff = 10.0
-        # ★env 를 teacher 작동점(ADR 만렙)에 고정 — dt1 고원(0.19)의 구조 원인이
-        # ADR 0(abduction 잠김·스폰 고정)에서의 teacher 시연 왜곡이었다.
-        self.starting_adr_increments = self.adr_num_increments
-        # student depth 입력(D435i, sim2real 갭↓). student network use_depth=True 와 반드시 일치
-        # (dagger 가 불일치를 막는다). depth 증강(aug_depth)이 이 경로에서 켜진다.
-        self.img_aug_type = "depth"
+        # ★env 를 teacher 실제 작동점(ADR 28)에 고정 — teacher(lstm_test3 ep_13000)는
+        # ADR 28 에서 포화(게이트 0.4 미달)돼 그 이상은 학습 안 됨. 만렙(50)에 고정하면
+        # teacher 가 미학습 난이도에서 굴러 시연이 왜곡된다(deterministic 작동점 = 28,
+        # clean in_success 0.417). ADR 0 도 안 됨(dt1 고원 0.19 = 스폰/abduction 왜곡).
+        self.starting_adr_increments = 28
+        # student RGB 입력(D435i, 실물 RGB 정합 + visual DR). student network use_depth=False
+        # (img_aug_type="rgb") 와 반드시 일치 — dagger modality 가드가 불일치를 막는다.
+        # depth 는 인코더 입력이 아니라 aux 재구성 대상(base aug_depth=False 유지).
+        self.img_aug_type = "rgb"
         # 실패물체 제외: onehot 은 153 유지, 스포너만 kept 로 교체(env 는 object_idx 를
         # 원본 슬롯으로 remap). teacher 학습 env 는 이 경로를 타지 않는다(distillation=False).
         self.distill_excluded_object_names = self.DISTILL_EXCLUDED_OBJECT_NAMES
