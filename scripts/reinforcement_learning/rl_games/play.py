@@ -691,18 +691,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 actions[:, :3] = _a_pos
                 actions[:, 3:6] = 0.0                       # 방향 box 중심(정면)
                 actions[:, 6:12] = 1.0                      # 손가락 full-grip
-                if timestep % 30 == 0:
-                    _tgt = getattr(_pe, "palm_pose_targets", None)
-                    _pc = _pe.palm_center_pos
-                    _tz = _tgt[:, 2].mean().item() if _tgt is not None else float("nan")
-                    _aj = _pe.robot.data.joint_pos[0, _pe.arm_dof_indices]          # (7,) arm joint (env0)
-                    _lim = _pe.robot.data.soft_joint_pos_limits[0, _pe.arm_dof_indices, :]  # (7,2)
-                    _lo = _aj - _lim[:, 0]; _hi = _lim[:, 1] - _aj                  # margin to lower/upper
-                    _near = torch.minimum(_lo, _hi)                                  # (7,) 최소 여유(rad)
-                    _js = " ".join(f"aj{i+1}={_aj[i]:+.2f}(m{_near[i]:.2f})" for i in range(len(_aj)))
-                    print(f"[PROBE z] cmd_target_z={_tz:.3f} palm_sensor_z={_pc[:, 2].mean():.3f} "
-                          f"obj_z={_pe.object_pos[:, 2].mean():.3f} box_z=[{_mins[:, 2].mean():.3f},{_maxs[:, 2].mean():.3f}]\n"
-                          f"          ARM {_js}", flush=True)
+                if timestep == 80:
+                    _pc = _pe.palm_center_pos                                       # (N,3)
+                    _ftip = _pe.robot.data.body_pos_w[:, _pe.fingertip_body_indices, :] - _pe.scene.env_origins.unsqueeze(1)
+                    _td = (_ftip - _pe.object_pos.unsqueeze(1)).norm(dim=-1).min(dim=1).values  # (N,) 최근접 손끝↔물체
+                    _pf = _pe.palm_binary_contact_buf.float()                       # (N,)
+                    _names = list(_pe.cfg._ACTIVE_OBJECT_NAMES) if hasattr(_pe.cfg, "_ACTIVE_OBJECT_NAMES") else [str(i) for i in range(_pe.num_envs)]
+                    print("[PROBE per-env] env: obj  obj_z  palm_z  tipdist  palm_frac", flush=True)
+                    for e in range(_pe.num_envs):
+                        _nm = _names[int(_pe.object_idx[e])] if hasattr(_pe, "object_idx") else str(e)
+                        print(f"  env{e}: {_nm:12s} obj_z={_pe.object_pos[e,2]:.3f} palm_z={_pc[e,2]:.3f} "
+                              f"tipdist={_td[e]:.3f} palm_frac={_pf[e]:.0f}", flush=True)
             obs, _, dones, _ = env.step(actions)
 
             # === occlusion probe (--occlusion_probe N): student depth 카메라 물체 가시율 ===
