@@ -1375,10 +1375,16 @@ class GraspRightEnv(DirectRLEnv):
             _pfm = self.middle_binary_contact_buf.float().mean(dim=0)  # (5,) 손가락별 근위(thumb_2 등) 접촉률
             _fa = self.actions[:, 6:12].mean(dim=0)  # (6,) finger action 명령 [-1,1]: thumb_1,thumb_2,index_1,middle_1,ring_1,pinky_1
             _jp = self.robot.data.joint_pos[:, self.hand_dof_indices].mean(dim=0)  # (6,) 실제 drive joint (rad)
+            _palmz = self.palm_center_pos[:, 2].mean()          # palm 높이
+            _objz = self.object_pos[:, 2].mean()                # 물체 중심 높이
+            _z2 = torch.zeros_like(self.palm_center_pos); _z2[:, 2] = 1.0
+            _obj_up = quat_apply(self.object_rot, _z2)[:, 2].mean()  # 물체 local+z의 world z (1=세움, 0=누움)
+            _palmf = self.palm_binary_contact_buf.float().mean() # palm 접촉률
             print(
                 f"DBGC step={int(self.episode_length_buf[0]):3d} "
                 f"tipdist mean={_tipd.mean():.3f} min={_tipd.min():.3f} "
                 f"grip_all={_g.mean():.2f} near_frac={_near.float().mean():.2f} objz={self.object_pos[:, 2].mean():.3f} "
+                f"| PALM z={_palmz:.3f} vs objz={_objz:.3f} (palm-obj={_palmz-_objz:+.3f}) palm_frac={_palmf:.2f} obj_up={_obj_up:.2f} "
                 f"| tip thumb={_pf[0]:.2f} idx={_pf[1]:.2f} mid={_pf[2]:.2f} ring={_pf[3]:.2f} pky={_pf[4]:.2f} "
                 f"| 근위 thumb={_pfm[0]:.2f} idx={_pfm[1]:.2f} mid={_pfm[2]:.2f} "
                 f"| ACT thumb1={_fa[0]:+.2f} thumb2={_fa[1]:+.2f} idx1={_fa[2]:+.2f} "
