@@ -1391,6 +1391,15 @@ class GraspRightEnv(DirectRLEnv):
                 f"| JOINT thumb1={_jp[0]:.2f} thumb2={_jp[1]:.2f} idx1={_jp[2]:.2f}(rad)",
                 flush=True,
             )
+            if self.num_envs <= 8:  # 물체별 진단(num_envs=N종 → env_i = 물체 i)
+                _oup_e = quat_apply(self.object_rot, _z2)[:, 2]                       # env별 obj_up
+                _pod_e = self.palm_center_pos[:, 2] - self.object_pos[:, 2]           # env별 palm-obj z
+                _pf_e = self.palm_binary_contact_buf.float()                          # env별 palm 접촉
+                _gr_e = num_grip_fingers.float()                                      # env별 grip 손가락
+                print("  PER-OBJ " + " ".join(
+                    f"e{i}(up{_oup_e[i]:.2f},pmz{_pod_e[i]:+.2f},pf{_pf_e[i]:.1f},grip{_gr_e[i]:.0f})"
+                    for i in range(self.num_envs)
+                ), flush=True)
 
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         # ADR increment: DEXTRAH 원본 = in_success_region 순간 평균 > success_for_adr(0.4)
