@@ -349,11 +349,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   palm_approach: palm→물체 거리 dense(부트스트랩, 밀착 유인).
     #   palm_contact: palm 닿음 보너스(부트스트랩). lift 는 palm 접촉 AND 게이트 →
     #   palm 닿아야(진짜 감쌈) lift 보상, 얕은 pinch(palm 미접촉) 배제.
-    palm_approach_weight:      float = 1.0
-    # 07.22 sharpness 10→15: palm_dist 0.087 에서 포화(밀착 미완) → 접촉 직전 gradient 강화로 더 깊이.
+    palm_approach_weight:      float = 1.5   # 07.23 h2o 제거로 유일 접근 유인 → 1.0→1.5 부트스트랩 보강
     palm_approach_sharpness:   float = 15.0
-    # 07.22 contact bonus 0.5→1.5: palm 실접촉 유인 강화(palm_frac ~0 정체 탈출).
-    palm_contact_bonus_weight: float = 1.5
+    palm_contact_bonus_weight: float = 1.5   # (계층 재설계 후 미사용 — grasp 로 흡수)
+    # 07.23 계층 재설계(approach→grasp→lift): 독립 병렬 항의 개별 챙김(hacking) 차단.
+    # side 측면 접근: palm 이 물체 중심보다 위(palm_z>obj_z)면 지수 감쇠 → top-down 도피 배제.
+    palm_approach_side_z_sharpness: float = 10.0
+    # grasp(파지 통합) = grasp_weight · palm_gate · min(1,num_firm/grasp_firm_k) · opposition_quality
+    grasp_weight:              float = 4.0
+    grasp_firm_k:              int   = 4     # grip_quality firm 정규화 분모(num_firm/K, 5지 중 4)
+    lift_firm_k:               int   = 2     # lift 게이트 firm 임계(num_firm>=K, ADR firm_success 하한)
     object_to_goal_weight:    float = 5.0
     object_to_goal_sharpness: float = 15.0   # exp(-s·err) 형태(양수 s). DEXTRAH -15·exp(+s·err)와 동치
     lift_weight:              float = 5.0

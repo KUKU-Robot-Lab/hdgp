@@ -1279,18 +1279,23 @@ class GraspRightEnv(DirectRLEnv):
         # palm approach(주): 거리 exp × 손바닥 정렬 — 손바닥 향하며 가까이 접근할 때만 보상.
         # palm_center_pos·object_pos 모두 env-local. 멀면 exp≈0 이라 겨냥만으론 무보상.
         palm_to_object_dist = (self.palm_center_pos - self.object_pos).norm(dim=-1)  # (N,)
+        # side 측면 접근(계층, 07.23): palm 이 물체 중심보다 위면(palm_z-obj_z>0) 지수 감쇠 →
+        # top-down 상단 누르기 도피 배제, 측면(palm_z≈obj_z) 접근 강제(전 물체 상단접근 실측 대응).
+        _side_gate = torch.exp(
+            -float(self.cfg.palm_approach_side_z_sharpness)
+            * (self.palm_center_pos[:, 2] - self.object_pos[:, 2]).clamp(min=0.0)
+        )
         palm_approach_reward = (
             float(self.cfg.palm_approach_weight)
             * torch.exp(-float(self.cfg.palm_approach_sharpness) * palm_to_object_dist)
             * palm_align.clamp(min=0.0)
+            * _side_gate
         )
-        palm_contact_bonus = (
-            float(self.cfg.palm_contact_bonus_weight) * self.palm_binary_contact_buf.float()
-        )
-        # lift 게이트(07.22): palm 닿아야(물체가 손가락 지나 손바닥까지 감김 = 진짜 envelope)
-        # lift 보상 — 얕은 pinch(palm 미접촉, tip 만 걸침)는 lift 보상에서 배제.
+        # lift 게이트(계층, 07.23): 파지(grasp) 성립 = palm 닿고(palm_gate) 손가락 firm 감쌈
+        # (num_firm>=lift_firm_k) 이어야 들기 보상 — 상단 받치기(palm만)로는 lift 0.
         palm_gate = self.palm_binary_contact_buf.float()
-        lift_reward = _lift_w * graded_contact * palm_gate * lift_height_quality
+        grasp_gate = palm_gate * (self.num_firm_fingers >= int(self.cfg.lift_firm_k)).float()
+        lift_reward = _lift_w * grasp_gate * lift_height_quality
 
         # 4) finger_curl_reg (DEXTRAH: -0.01 → -0.005)
         # 07.13 기준 수정(tesollo 77357f0 이식, 치명 버그): DEXTRAH curled_q(=원본
@@ -1342,15 +1347,25 @@ class GraspRightEnv(DirectRLEnv):
             self.binary_contact_buf[:, 0] & self.binary_contact_buf[:, 1:].any(dim=-1)
         ).float()
         opposition_quality = fc_gate * opposition * grip_strength
-        force_closure_reward = float(self.cfg.force_closure_weight) * opposition_quality
+
+        # grasp(파지 통합, 계층 07.23): palm 밀착(palm_gate) × 손가락 firm 감쌈(num_firm/K) ×
+        # 엄지 대향(opposition_quality) 곱 — 하나라도 0이면 grasp 0. 기존 palm_contact +
+        # grasp_contact + force_closure 를 이 단일 게이트로 통합(독립 병렬 항의 개별 챙김 차단).
+        grip_quality = (
+            (self.num_firm_fingers.float() / max(int(self.cfg.grasp_firm_k), 1)).clamp(0.0, 1.0)
+            * opposition_quality
+        )
+        grasp_reward = float(self.cfg.grasp_weight) * palm_gate * grip_quality
 
         # (palm_orient reward 제거 — DEXTRAH 4항엔 손목 방향 제약이 없고 weight=0 상태로
         #  폐기돼 있었음. 손바닥 법선축 규약은 palm_sensor +Z(손바닥에서 나오는 방향),
         #  +Y=손가락 방향 — 재도입 시 palm_normal = quat_apply(palm_quat, +Z) 사용.)
+        # 계층 구조(07.23): approach → grasp → lift 순차 게이트.
+        #   palm_approach(측면 접근) → grasp(palm×firm×대향) → lift(grasp_gate×height).
+        #   h2o(top-down 조장·중복) 제거, palm_contact/grasp_contact/force_closure 는 grasp 로 흡수.
         total = (
-            hand_to_object_reward + object_to_goal_reward + finger_curl_reg
-            + lift_reward + grasp_contact_reward + force_closure_reward
-            + palm_approach_reward + palm_contact_bonus
+            object_to_goal_reward + finger_curl_reg
+            + palm_approach_reward + grasp_reward + lift_reward
         )
 
         # success: DEXTRAH in_success_region (goal 도달 = 최소 11cm 리프트 내포)
@@ -1444,7 +1459,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["contact/tip_frac"]     = tip_frac.mean()
         self.extras["contact/persist_frac"] = persist_frac.mean()
         # force_closure 진단: 엄지-4지 마주조임 학습 여부
-        self.extras["reward/force_closure"] = force_closure_reward.mean()
+        self.extras["reward/grasp"] = grasp_reward.mean()  # 통합 파지(palm×firm×대향)
+        self.extras["contact/grip_quality"] = grip_quality.mean()
         self.extras["contact/opposition"] = (
             (opposition * fc_gate).sum() / fc_gate.sum().clamp(min=1.0)
         )  # 게이트 통과(양쪽 접촉) env 평균 대향도
@@ -1454,7 +1470,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["contact/palm_frac"] = self.palm_binary_contact_buf.float().mean()  # palm 접촉률(진짜 envelope)
         self.extras["contact/palm_dist"] = palm_to_object_dist.mean()  # palm→물체 거리(밀착도)
         self.extras["reward/palm_approach"] = palm_approach_reward.mean()
-        self.extras["reward/palm_contact"] = palm_contact_bonus.mean()
+        self.extras["contact/palm_above"] = (self.palm_center_pos[:, 2] - self.object_pos[:, 2]).mean()  # palm-obj z(양수=상단, side면 ≈0)
         self.extras["contact/palm_align"] = palm_align.mean()  # 손바닥 법선↔물체 정렬(approach 에 곱)
         # 손가락별 tip 접촉률 (엄지 포함 개별 관측 — tip 센서 순서 thumb_4/index_2/…/pinky_2)
         for _i, _fn in enumerate(("thumb", "index", "middle", "ring", "pinky")):
