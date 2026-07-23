@@ -275,7 +275,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 189건이 fallen/out_x(물체 쳐냄) — 형상별 자세 불일치가 근본 원인.
     # 아래 x/y/z 는 side(cup 전용) 기하: x/aj7 는 그대로, y/z 는 clearance 공식이
     # 부호·상수로 사용(_compute_pregrasp_offset) — E3 이전 lstm_test1 60% 검증값.
-    pregrasp_offset_x:     float = -0.02   # [PROBE 임시 -0.07→-0.02] 기하 확인용(원복 예정)
+    pregrasp_offset_x:     float = -0.07
     pregrasp_offset_y:     float = -0.08
     pregrasp_offset_z:     float = -0.15
     # r_aj_7(손목)을 이만큼 낮춰 palm을 rim→물체 중심 높이로 내림(probe 확정, lstm_test1 검증).
