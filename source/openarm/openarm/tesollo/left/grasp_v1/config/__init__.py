@@ -15,51 +15,63 @@
 import gymnasium as gym
 
 from . import agents
+from ..grasp_left_env_cfg import GraspLeftEnvCfg
+
+
+class GraspLeftEnvCfg_PLAY(GraspLeftEnvCfg):
+    """플레이용 설정 (소규모 환경)."""
+
+    def __post_init__(self):
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+
 
 gym.register(
     id="open-tesol_l_grasp_v1",
-    entry_point="openarm.tesollo.left.grasp_v1.grasp_left_hold_env:Grasp5gHoldEnv",
+    entry_point=(
+        "openarm.tesollo.left.grasp_v1.grasp_left_env:GraspLeftEnv"
+    ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:OpenArmGrasp5gLeftEnvCfg",
+        "env_cfg_entry_point": f"{__name__}:GraspLeftEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:OpenArmGraspLeftV1PPORunnerCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
     },
 )
 
 gym.register(
     id="open-tesol_l_grasp_v1-play",
-    entry_point="openarm.tesollo.left.grasp_v1.grasp_left_hold_env:Grasp5gHoldEnv",
+    entry_point=(
+        "openarm.tesollo.left.grasp_v1.grasp_left_env:GraspLeftEnv"
+    ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:OpenArmGrasp5gLeftEnvCfg_PLAY",
+        "env_cfg_entry_point": f"{__name__}:GraspLeftEnvCfg_PLAY",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:OpenArmGraspLeftV1PPORunnerCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
     },
 )
 
 gym.register(
-    id="open-tesol_l_grasp_v1-20d",
-    entry_point="openarm.tesollo.left.grasp_v1.grasp_left_hold_env:Grasp5gHoldEnv",
+    id="open-tesol_l_grasp_v1-lstm",
+    entry_point=(
+        "openarm.tesollo.left.grasp_v1.grasp_left_env:GraspLeftEnv"
+    ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:OpenArmGrasp5gLeftEnvCfg20D",
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:OpenArmGraspLeftV1PPORunnerCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "env_cfg_entry_point": f"{__name__}:GraspLeftEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
     },
 )
 
+# play-lstm: lstm 체크포인트 rollout(warm-state 수집)용.
+# open-tesol_r_grasp_v1-play-lstm 과 대칭. PLAY 설정(소규모 env) + lstm 네트워크.
 gym.register(
-    id="open-tesol_l_grasp_v1-20d-play",
-    entry_point="openarm.tesollo.left.grasp_v1.grasp_left_hold_env:Grasp5gHoldEnv",
+    id="open-tesol_l_grasp_v1-play-lstm",
+    entry_point=(
+        "openarm.tesollo.left.grasp_v1.grasp_left_env:GraspLeftEnv"
+    ),
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:OpenArmGrasp5gLeftEnvCfg20D_PLAY",
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:OpenArmGraspLeftV1PPORunnerCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "env_cfg_entry_point": f"{__name__}:GraspLeftEnvCfg_PLAY",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
     },
 )
