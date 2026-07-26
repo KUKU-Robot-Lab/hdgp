@@ -693,6 +693,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 actions[:, 6:12] = 1.0
             obs, _, dones, _ = env.step(actions)
 
+            # grip_probe 손끝별 정량 계측: 접촉율(c)/force(f)/물체거리(d), 손가락 순서 thumb..pinky
+            if args_cli.grip_probe:
+                _gp = env.unwrapped
+                if hasattr(_gp, "env"):
+                    _gp = _gp.env.unwrapped
+                _gp._gpstep = getattr(_gp, "_gpstep", 0) + 1
+                if _gp._gpstep % 30 == 0:
+                    _tc = _gp.binary_contact_buf.float().mean(0)
+                    _tf = _gp.contact_force_raw.mean(0)
+                    _td = (_gp.fingertip_pos - _gp.object_pos.unsqueeze(1)).norm(dim=-1).mean(0)
+                    _fn = ["thumb", "index", "middle", "ring", "pinky"]
+                    print("[GRIP] " + "  ".join(
+                        f"{n}:c={c:.2f},f={f:5.1f},d={d:.3f}"
+                        for n, c, f, d in zip(_fn, _tc.tolist(), _tf.tolist(), _td.tolist())
+                    ), flush=True)
+
             # === occlusion probe (--occlusion_probe N): student depth 카메라 물체 가시율 ===
             if args_cli.occlusion_probe > 0:
                 from isaaclab.utils.math import quat_apply, quat_conjugate
