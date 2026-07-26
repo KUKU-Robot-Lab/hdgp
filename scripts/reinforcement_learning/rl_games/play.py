@@ -693,11 +693,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 actions[:, 6:12] = 1.0
             obs, _, dones, _ = env.step(actions)
 
-            # grip_probe 손끝별 정량 계측: 접촉율(c)/force(f)/물체거리(d), 손가락 순서 thumb..pinky
-            if args_cli.grip_probe:
-                _gp = env.unwrapped
-                if hasattr(_gp, "env"):
-                    _gp = _gp.env.unwrapped
+            # 손끝별 정량 계측(정책 play): 접촉율(c)/force(f)/물체거리(d), 손가락 순서 thumb..pinky
+            _gp = env.unwrapped
+            if hasattr(_gp, "env"):
+                _gp = _gp.env.unwrapped
+            if hasattr(_gp, "binary_contact_buf"):
                 _gp._gpstep = getattr(_gp, "_gpstep", 0) + 1
                 if _gp._gpstep % 30 == 0:
                     _tc = _gp.binary_contact_buf.float().mean(0)
