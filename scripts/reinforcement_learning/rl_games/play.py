@@ -707,8 +707,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     _tc = _gp.binary_contact_buf.float().mean(0)
                     _tf = _gp.contact_force_raw.mean(0)
                     _td = (_gp.fingertip_pos - _gp.object_pos.unsqueeze(1)).norm(dim=-1).mean(0)
+                    _pd = (_gp.palm_center_pos - _gp.object_pos).norm(dim=-1).mean()
                     _fn = ["thumb", "index", "middle", "ring", "pinky"]
-                    print("[GRIP] " + "  ".join(
+                    print(f"[GRIP] palm_d={_pd:.3f}  " + "  ".join(
                         f"{n}:c={c:.2f},f={f:5.1f},d={d:.3f}"
                         for n, c, f, d in zip(_fn, _tc.tolist(), _tf.tolist(), _td.tolist())
                     ), flush=True)
