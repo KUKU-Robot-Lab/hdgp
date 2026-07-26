@@ -686,7 +686,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 _pe = env.unwrapped
                 if hasattr(_pe, "env"):
                     _pe = _pe.env.unwrapped
-                _mins = _pe.palm_mins_env; _maxs = _pe.palm_maxs_env   # (N,6)
+                _mins = getattr(_pe, "palm_mins_env", None)
+                if _mins is None:   # tesollo: palm_mins/maxs 는 (6,) → (1,6) broadcast
+                    _mins = _pe.palm_mins.unsqueeze(0); _maxs = _pe.palm_maxs.unsqueeze(0)
+                else:
+                    _maxs = _pe.palm_maxs_env   # (N,6)
                 _a_pos = (2.0 * (_pe.object_pos - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
                 actions[:, :3] = _a_pos
                 actions[:, 3:6] = 0.0
