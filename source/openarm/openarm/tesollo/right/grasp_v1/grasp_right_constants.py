@@ -32,7 +32,9 @@ Actor Observation (106D) — sim2real 가능:
   cup_to_fingertip:        15  (5 × 3D)
   fingertip_contact_binary: 5  (FT sensor, 실 로봇 가능)
   last_actions:            11
-  Total:                  106
+  Base Total:             106
+  object_onehot:            8  (2026-07-26 MultiAsset 8종, 뒤에 append)
+  Total:                  114
 
 Critic Extra (37D) — sim-only privileged:
   cup_lin_vel:              3
@@ -47,7 +49,7 @@ Critic Extra (37D) — sim-only privileged:
   fingertip_to_cup_signed_dist: 5
   Total:                   37
 
-Critic Total: 106 + 37 = 143D
+Critic Total: 114 + 37 = 151D
 
 Episode (10s @ 60Hz = 600 steps):
   Grasp phase (0~479):  Fabrics arm + per-finger policy
@@ -82,11 +84,14 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------
-NUM_OBSERVATIONS = 106        # Actor: sim2real 가능
+# 2026-07-26 MultiAsset(8종)+DR 이식: 물체 onehot 8D를 base obs 뒤에 append.
+NUM_OBSERVATIONS_BASE = 106   # Actor base: sim2real 가능 (물체 onehot 제외)
+NUM_OBJECT_CLASSES    = 8     # 물체군: cup_big×4 scale + shaker_body + cyl×3(직경5/8/12, 높이12cm 통일)
+NUM_OBSERVATIONS = NUM_OBSERVATIONS_BASE + NUM_OBJECT_CLASSES    # 106+8=114
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 37
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 143
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 114+37=151
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
@@ -114,7 +119,7 @@ PREGRASP_FABRICS_STEPS = 60
 # ---------------------------------------------------------------------------
 # Cup geometry
 # ---------------------------------------------------------------------------
-CUP_RADIUS_APPROX = 0.045  # m, cup_big 반경 (enclosure target 계산용)
+CUP_RADIUS_APPROX = 0.045  # m, (legacy fallback) 07.26부터 per-object bbox(GraspRightEnv.cup_radius_approx_buf)가 대체 — 미사용
 
 # ---------------------------------------------------------------------------
 # Aliases

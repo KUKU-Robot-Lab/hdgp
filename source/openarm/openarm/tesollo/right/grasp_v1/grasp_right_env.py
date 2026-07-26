@@ -38,6 +38,7 @@ from pathlib import Path
 from collections.abc import Sequence
 
 import torch
+import torch.nn.functional as F
 
 # Fabrics 경로 설정 (hdgp/source/FABRICS/src 우선)
 for _parent in Path(__file__).resolve().parents:
@@ -86,7 +87,6 @@ from .grasp_right_constants import (
     CONTACT_FORCE_MAX,
     MIN_CONTACTS_FOR_SUCCESS,
     PREGRASP_FABRICS_STEPS,
-    CUP_RADIUS_APPROX,
     ARM_START_POSE,
     PALM_POSE_MINS_FUNC,
     PALM_POSE_MAXS_FUNC,
@@ -248,6 +248,27 @@ class GraspRightEnv(DirectRLEnv):
         )
 
         # ----------------------------------------------------------------
+        # 다물체(MultiAsset 8종) 배정: env_id % N 결정론적 (rh56f1 grasp_v1 이식).
+        # ----------------------------------------------------------------
+        self._object_names = list(self.cfg.active_object_names)
+        self.object_idx = (
+            torch.arange(self.num_envs, device=self.device) % len(self._object_names)
+        )
+        # DEXTRAH/rh56f1 식 onehot 조건화: reset 불변(항상 env_id%N 고정 배정이므로).
+        self.multi_object_idx_onehot = F.one_hot(
+            self.object_idx, num_classes=len(self._object_names)
+        ).float()   # (num_envs, N_obj)
+
+        # per-object bbox → 물리 안착 텐서 (design §per-object 처리, reward 아님).
+        # object_spawn_z/cup_radius_approx/cup_grasp_z_offset(cfg, cup_big 기준 스칼라)를
+        # object_bbox.json 반높이·반경 비율로 물체별 텐서화한다. 누락 시 즉시 실패(fail loud).
+        (
+            self.object_spawn_z_buf,
+            self.cup_radius_approx_buf,
+            self.cup_grasp_z_offset_buf,
+        ) = self._load_object_physical_tensors()
+
+        # ----------------------------------------------------------------
         # 중간값 버퍼
         # ----------------------------------------------------------------
         self.object_pos      = torch.zeros(self.num_envs, 3, device=self.device)
@@ -349,20 +370,21 @@ class GraspRightEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.cup   = RigidObject(self.cfg.cup_cfg)
         self.table = RigidObject(self.cfg.table_cfg)
 
         self.scene.articulations["robot"] = self.robot
-        self.scene.rigid_objects["cup"]   = self.cup
         self.scene.rigid_objects["table"] = self.table
 
-        # Actor: fingertip 개별 ContactSensor (Cup-only, real FT sensor 대응)
-        _CUP_FILTER = ["/World/envs/env_.*/Cup"]
+        # Actor: fingertip 개별 ContactSensor (Cup-only, real FT sensor 대응).
+        # 2026-07-26 MultiAsset 전환: 물체마다 rigid body prim 이 다르다(baseLink 중첩
+        # vs Xform 루트 자체) — 두 패턴을 모두 filter 에 걸고 _update_contact_forces 에서
+        # filter 축을 합산한다(cfg.object_contact_filter, GPU 검증 필요).
+        _OBJECT_FILTER = list(self.cfg.object_contact_filter)
         self._tip_sensors: list[ContactSensor] = []
         for link_name in self.cfg.right_tip_contact_links:
             sensor = ContactSensor(ContactSensorCfg(
                 prim_path=f"/World/envs/env_.*/Robot/{link_name}",
-                filter_prim_paths_expr=_CUP_FILTER,
+                filter_prim_paths_expr=_OBJECT_FILTER,
                 history_length=1,
                 track_air_time=False,
             ))
@@ -371,13 +393,13 @@ class GraspRightEnv(DirectRLEnv):
 
         # distal/middle 도 tip 처럼 손가락별 개별 Cup-only 센서.
         # 다중 body 단일 센서의 force_matrix_w 는 채워지지 않아(0 반환) Cup 필터가 무력화되므로,
-        # r_hl_<finger>_4 / _3 를 개별 ContactSensor 로 만들어 force_matrix_w[:,0,0,:] 로 읽는다.
+        # r_hl_<finger>_4 / _3 를 개별 ContactSensor 로 만들어 force_matrix_w[:,0,:,:] 로 읽는다.
         _SENSOR_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
         self._distal_sensors: list[ContactSensor] = []
         for i, fn in enumerate(_SENSOR_FINGERS):
             sensor = ContactSensor(ContactSensorCfg(
                 prim_path=f"/World/envs/env_.*/Robot/r_hl_{fn}_4",
-                filter_prim_paths_expr=_CUP_FILTER,
+                filter_prim_paths_expr=_OBJECT_FILTER,
                 history_length=1,
                 track_air_time=False,
             ))
@@ -388,7 +410,7 @@ class GraspRightEnv(DirectRLEnv):
         for i, fn in enumerate(_SENSOR_FINGERS):
             sensor = ContactSensor(ContactSensorCfg(
                 prim_path=f"/World/envs/env_.*/Robot/r_hl_{fn}_3",
-                filter_prim_paths_expr=_CUP_FILTER,
+                filter_prim_paths_expr=_OBJECT_FILTER,
                 history_length=1,
                 track_air_time=False,
             ))
@@ -398,7 +420,60 @@ class GraspRightEnv(DirectRLEnv):
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+        # ★다물체 스폰 순서(rh56f1 grasp_v1 07.10 버그 수정 이식): clone → cup(MultiAsset) 생성.
+        # RigidObject(cup_cfg)를 clone 이전에 만들면 env_0만 존재하는 시점에 MultiAssetSpawner가
+        # 물체[0] 하나만 spawn하고 clone이 그걸 전 env에 복제(전 env 동일 물체 버그)한다.
+        # clone을 먼저 해야 spawn 시점에 env prim이 전부 존재해 env_i % N 결정적 배정이 된다.
         self.scene.clone_environments(copy_from_source=True)
+        self.cup = RigidObject(self.cfg.cup_cfg)
+        self.scene.rigid_objects["cup"] = self.cup
+
+    # ------------------------------------------------------------------
+    # per-object 물리 안착 텐서 (design §per-object 처리, reward 아님)
+    # ------------------------------------------------------------------
+    def _load_object_physical_tensors(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """object_bbox.json 기반 물체별 (spawn_z, radius_approx, grasp_z_offset).
+
+        cfg.object_spawn_z/cup_radius_approx/cup_grasp_z_offset 은 원래 단일 cup_big_sdf
+        전용 스칼라였다. "cup_big_s100"(cup_big 원본과 동일 bbox)을 캘리브레이션 기준으로
+        삼아 테이블 표면 z 와 offset 비율을 역산하고, 물체별 반높이/반경으로 텐서화한다.
+        누락 물체는 즉시 실패(fallback 없음 — rh56f1 grasp_v1 _load_object_clearances 동일 원칙).
+
+        assumption(육안/GPU 검증 필요): object_spawn_z=0.297 이 cup_big(반높이 0.0888) 기준
+        테이블 안착 높이로 캘리브레이션됐다고 가정 — 다른 형상(shaker_body 등)에서도 바닥
+        clearance 가 동일하다고 가정한다(design §검증 3. play 육안 확인 항목).
+        """
+        path = Path(self.cfg.object_bbox_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"물체 bbox 파일 없음: {path}")
+        table = json.loads(path.read_text(encoding="utf-8"))
+
+        missing = [n for n in self._object_names if n not in table]
+        if missing:
+            raise KeyError(f"bbox 누락 물체 {len(missing)}종: {missing} — object_bbox.json 등록 필요")
+        _REF = "cup_big_s100"
+        if _REF not in table:
+            raise KeyError(f"캘리브레이션 기준 물체 '{_REF}' bbox 누락")
+
+        half_extents = to_torch(
+            [table[n] for n in self._object_names], device=self.device
+        )   # (N_obj, 3)
+        ref_half_z = float(table[_REF][2])
+        table_surface_z = float(self.cfg.object_spawn_z) - ref_half_z
+        z_offset_ratio = float(self.cfg.cup_grasp_z_offset) / ref_half_z
+
+        spawn_z_per_obj  = table_surface_z + half_extents[:, 2]
+        radius_per_obj   = 0.5 * (half_extents[:, 0] + half_extents[:, 1])
+        z_offset_per_obj = z_offset_ratio * half_extents[:, 2]
+
+        return (
+            spawn_z_per_obj[self.object_idx],
+            radius_per_obj[self.object_idx],
+            z_offset_per_obj[self.object_idx],
+        )
 
     # ------------------------------------------------------------------
     # Geometric Fabrics 초기화
@@ -471,25 +546,31 @@ class GraspRightEnv(DirectRLEnv):
     # Pregrasp grid 캐시 빌드 (startup 1회)
     # ------------------------------------------------------------------
     def _build_pregrasp_cache(self) -> None:
-        """spawn 위치 13×13 grid에 대해 Fabrics IK를 startup에서 일괄 계산.
+        """spawn 위치 17×17 grid에 대해 Fabrics IK를 startup에서 일괄 계산.
 
         reset 시 nearest-neighbor lookup → Fabrics rollout 생략 → 대폭 속도 향상.
         1cm 간격 grid이므로 실제 spawn 위치와 최대 ~0.7cm 오차 → Fabrics가 첫 몇 스텝에서 보정.
+
+        2026-07-26: grid 반경을 cfg.pregrasp_cache_xy_range(고정 ±8cm)로 확대 —
+        ADR(spawn xy_range 0.02→0.08)가 최종적으로 요구하는 최대범위를 항상 커버해야
+        ADR 진행에 따라 lookup이 grid 밖으로 벗어나지 않는다(object_spawn_xy_range는
+        ADR 미사용 시 fallback일 뿐이라 캐시 크기 기준으로 쓰지 않는다).
         """
-        _N = 13  # 1cm 간격, ±6cm 범위
+        _cache_range = float(self.cfg.pregrasp_cache_xy_range)
+        _N = int(round(2 * _cache_range / 0.01)) + 1  # 1cm 간격 → ±8cm=17
         xs = torch.linspace(
-            self.cfg.object_spawn_x_center - self.cfg.object_spawn_xy_range,
-            self.cfg.object_spawn_x_center + self.cfg.object_spawn_xy_range,
+            self.cfg.object_spawn_x_center - _cache_range,
+            self.cfg.object_spawn_x_center + _cache_range,
             _N, device=self.device,
         )
         ys = torch.linspace(
-            self.cfg.object_spawn_y_center - self.cfg.object_spawn_xy_range,
-            self.cfg.object_spawn_y_center + self.cfg.object_spawn_xy_range,
+            self.cfg.object_spawn_y_center - _cache_range,
+            self.cfg.object_spawn_y_center + _cache_range,
             _N, device=self.device,
         )
         gx, gy = torch.meshgrid(xs, ys, indexing="ij")
         flat_x, flat_y = gx.flatten(), gy.flatten()
-        M = flat_x.shape[0]  # 169
+        M = flat_x.shape[0]  # _N*_N (17×17=289)
 
         palm = torch.zeros(M, 6, device=self.device)
         palm[:, 0] = flat_x + self.cfg.pregrasp_offset_x
@@ -507,7 +588,7 @@ class GraspRightEnv(DirectRLEnv):
         dummy  = torch.arange(M, device=self.device)
         q_out  = self._run_reset_fabric(dummy, palm, q_init.clone())
 
-        # (13, 13, 7): arm joints only
+        # (_N, _N, 7): arm joints only
         self._cache_q_arm = q_out[:, :NUM_ARM_DOF].view(_N, _N, NUM_ARM_DOF).contiguous()
         self._cache_xs    = xs
         self._cache_ys    = ys
@@ -567,9 +648,13 @@ class GraspRightEnv(DirectRLEnv):
     # 접촉력 업데이트
     # ------------------------------------------------------------------
     def _update_contact_forces(self) -> None:
+        # 2026-07-26 MultiAsset: cfg.object_contact_filter 가 물체당 2개 후보 경로
+        # (baseLink 중첩 / Xform 루트 자체)를 등록하므로 force_matrix_w 의 filter 축이
+        # 2 가 된다 — 물체마다 실제 rigid body 인 한쪽만 값이 실리므로 axis=1(filter) 합산.
+        # (N, sensor_body=1, filter=2, 3) → sum(dim=1) → (N, 3)
         # Actor: fingertip 개별 센서 (Cup-only)
         tip_xyz = torch.stack([
-            s.data.force_matrix_w[:, 0, 0, :] for s in self._tip_sensors
+            s.data.force_matrix_w[:, 0, :, :].sum(dim=1) for s in self._tip_sensors
         ], dim=1)   # (N, 5, 3)
         tip_norms = tip_xyz.norm(dim=-1)   # (N, 5)
 
@@ -578,16 +663,16 @@ class GraspRightEnv(DirectRLEnv):
         self.binary_contact_buf.copy_(tip_norms > CONTACT_FORCE_THRESHOLD)
         self.num_contacts_buf.copy_(self.binary_contact_buf.sum(dim=-1).long())
 
-        # Critic: distal (Cup-only, 손가락별 개별 센서 force_matrix_w[:, 0, 0, :])
+        # Critic: distal (Cup-only, 손가락별 개별 센서 force_matrix_w[:, 0, :, :].sum(dim=1))
         per_distal = torch.stack([
-            s.data.force_matrix_w[:, 0, 0, :] for s in self._distal_sensors
+            s.data.force_matrix_w[:, 0, :, :].sum(dim=1) for s in self._distal_sensors
         ], dim=1).norm(dim=-1)   # (N, 5)
         self.distal_contact_force_raw.copy_(per_distal)
         self.distal_binary_contact_buf.copy_(per_distal > CONTACT_FORCE_THRESHOLD)
 
-        # Critic: middle (Cup-only, 손가락별 개별 센서 force_matrix_w[:, 0, 0, :])
+        # Critic: middle (Cup-only, 손가락별 개별 센서 force_matrix_w[:, 0, :, :].sum(dim=1))
         per_middle = torch.stack([
-            s.data.force_matrix_w[:, 0, 0, :] for s in self._middle_sensors
+            s.data.force_matrix_w[:, 0, :, :].sum(dim=1) for s in self._middle_sensors
         ], dim=1).norm(dim=-1)   # (N, 5)
         self.middle_contact_force_raw.copy_(per_middle)
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
@@ -839,6 +924,9 @@ class GraspRightEnv(DirectRLEnv):
         # 8. last actions (11D)
         last_actions = self.actions
 
+        # 9. 물체 onehot (8D, MultiAsset 조건화, 2026-07-26) — reset 불변(env_id%N 고정 배정)
+        object_onehot = self.multi_object_idx_onehot
+
         actor_obs = torch.cat([
             arm_joint_pos,          # 7
             arm_joint_vel,          # 7
@@ -850,7 +938,8 @@ class GraspRightEnv(DirectRLEnv):
             cup_to_fingertip,       # 15
             binary_contact,         # 5
             last_actions,           # 11
-        ], dim=-1)   # 106D
+            object_onehot,          # 8
+        ], dim=-1)   # 114D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -883,13 +972,14 @@ class GraspRightEnv(DirectRLEnv):
             self.episode_length_buf.float() / EPISODE_STEPS
         ).unsqueeze(1)
 
-        # fingertip signed dist (5D) — clean positions
+        # fingertip signed dist (5D) — clean positions.
+        # 2026-07-26: 전역 CUP_RADIUS_APPROX 상수 → 물체별 텐서(cup_radius_approx_buf).
         tip_to_cup_dist = (
             fingertip_pos_clean - cup_pos_clean.unsqueeze(1)
         ).norm(dim=-1)
-        fingertip_signed_dist = (tip_to_cup_dist - CUP_RADIUS_APPROX).unsqueeze(-1).squeeze(-1)
+        fingertip_signed_dist = tip_to_cup_dist - self.cup_radius_approx_buf.unsqueeze(-1)
 
-        # critic actor_obs_clean (106D) — clean state 재조합
+        # critic actor_obs_clean (114D) — clean state 재조합
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,
             arm_joint_vel_clean,
@@ -901,10 +991,11 @@ class GraspRightEnv(DirectRLEnv):
             (fingertip_pos_clean - cup_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
             binary_contact,
             last_actions,
-        ], dim=-1)   # 106D
+            object_onehot,
+        ], dim=-1)   # 114D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 106
+            actor_obs_clean,        # 114
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4
@@ -915,7 +1006,7 @@ class GraspRightEnv(DirectRLEnv):
             middle_force_norm,      # 5
             phase_step_ratio,       # 1
             fingertip_signed_dist,  # 5
-        ], dim=-1)   # 143D
+        ], dim=-1)   # 151D
 
         if critic_obs.shape[1] != NUM_CRITIC_OBSERVATIONS:
             raise RuntimeError(
@@ -932,7 +1023,8 @@ class GraspRightEnv(DirectRLEnv):
             self.object_pos[:, 2] - self.object_init_pos[:, 2]
         ).clamp(min=0.0)
         grasp_center = self.object_pos.clone()
-        grasp_center[:, 2] += self.cfg.cup_grasp_z_offset
+        # 2026-07-26: cfg.cup_grasp_z_offset(cup_big 기준 스칼라) → 물체별 텐서(bbox 반높이 비율).
+        grasp_center[:, 2] += self.cup_grasp_z_offset_buf
         palm_to_cup_dist = (self.palm_center_pos - grasp_center).norm(dim=-1)
         cup_xy_displacement = (
             self.object_pos[:, :2] - self.object_init_pos[:, :2]
@@ -946,7 +1038,8 @@ class GraspRightEnv(DirectRLEnv):
         enclosure_axis[:, :2] = torch.stack(
             [-approach_dir_xy[:, 1], approach_dir_xy[:, 0]], dim=1
         )
-        radius = float(self.cfg.cup_radius_approx)
+        # 2026-07-26: cfg.cup_radius_approx(cup_big 기준 스칼라) → 물체별 텐서(bbox 반경 평균).
+        radius = self.cup_radius_approx_buf.unsqueeze(-1)
         thumb_target = grasp_center + enclosure_axis * radius
         others_target = grasp_center - enclosure_axis * radius
         thumb_dist = (self.fingertip_pos[:, 0] - thumb_target).norm(dim=-1)
@@ -1395,15 +1488,23 @@ class GraspRightEnv(DirectRLEnv):
             q_pregrasp = self.robot_start_joint_pos[env_ids].clone()
             approach_hand = self.hand_open_pose.unsqueeze(0).expand(n, -1)
 
-            # ---- 컵 spawn 위치 계산 (±0.06m 랜덤) ----
+            # ---- 컵 spawn 위치 계산 ----
+            # xy_range: design §위치 ADR — enable_adr=True 면 grasp_adr.get_param("spawn",
+            # "xy_range")로 0.02→0.08 점진 확대, 아니면 cfg.object_spawn_xy_range(±6cm) fallback.
+            _xy_range = (
+                self.grasp_adr.get_param("spawn", "xy_range")
+                if self.grasp_adr is not None else float(self.cfg.object_spawn_xy_range)
+            )
             obj_x = self.cfg.object_spawn_x_center + (
                 torch.rand(n, device=self.device) - 0.5
-            ) * 2.0 * self.cfg.object_spawn_xy_range
+            ) * 2.0 * _xy_range
             obj_y = self.cfg.object_spawn_y_center + (
                 torch.rand(n, device=self.device) - 0.5
-            ) * 2.0 * self.cfg.object_spawn_xy_range
+            ) * 2.0 * _xy_range
+            # z: 물체별 bbox 반높이 텐서(object_spawn_z_buf) — 2026-07-26 MultiAsset 이식,
+            # cfg.object_spawn_z(cup_big 기준 스칼라) 고정값 대체.
             obj_pos_local = torch.stack(
-                [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
+                [obj_x, obj_y, self.object_spawn_z_buf[env_ids]], dim=1
             )
 
             # ---- FABRICS pregrasp rollout/cache lookup ----
@@ -1425,7 +1526,11 @@ class GraspRightEnv(DirectRLEnv):
             )
 
             if self.cfg.cache_pregrasp_reset:
-                # cache lookup: spawn 위치 → 가장 가까운 grid point arm IK
+                # cache lookup: spawn 위치(x,y) → 가장 가까운 grid point arm IK.
+                # 2026-07-26 MultiAsset: 캐시는 단일 기준 z(cfg.object_spawn_z)로 빌드돼
+                # 물체별 z(object_spawn_z_buf, 최대 편차 ~3cm)를 반영하지 않는다 — 초기
+                # arm IK 근사치일 뿐이며, palm_delta 액션(±0.15m) 및 episode 중 Fabrics
+                # arm 학습이 이 잔차를 보정한다는 가정(육안 검증 필요, design §검증 3).
                 xi = ((obj_x - self._cache_xs[0]) / (self._cache_xs[1] - self._cache_xs[0])).round().long().clamp(0, self._cache_n - 1)
                 yi = ((obj_y - self._cache_ys[0]) / (self._cache_ys[1] - self._cache_ys[0])).round().long().clamp(0, self._cache_n - 1)
                 q_pregrasp[:, :NUM_ARM_DOF] = self._cache_q_arm[xi, yi]

@@ -16,17 +16,23 @@
 
 v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
 - Action: 11D (6D palm pose + 5D per-finger lerp)
-- Observation: actor 106D / critic 143D (asymmetric)
+- Observation: actor 114D(106 base + 8 물체 onehot) / critic 151D (asymmetric)
 - Episode: Grasp phase (Fabrics arm + finger 정책) + right-grip lift-wait (frozen hand)
 - Contact: fingertip FT sensor (actor, real-compatible) + distal/middle sensors (critic only)
+
+2026-07-26 MultiAsset(8종)+DR 이식 (design: docs/superpowers/specs/2026-07-26-
+tesollo-grasp-v1-multiasset-dr-design.md): 단일 cup_big_sdf → cup_big×4 scale +
+shaker_body + cyl 3종(높이 12cm 통일). reward/성공판정/side approach 로직은 불변.
 """
 
 from dataclasses import MISSING, field
 
 import isaaclab.sim as sim_utils
+import isaaclab.envs.mdp as mdp
 from isaaclab.assets import ArticulationCfg, RigidObjectCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.managers import EventTermCfg as EventTerm, SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg, GroundPlaneCfg
@@ -47,6 +53,83 @@ from .grasp_right_preset import (
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
+_VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
+
+# ---------------------------------------------------------------------------
+# 물체 구성 — 8종 (design §물체 구성). 논리 ID(=onehot·bbox 조회 키) 순서가
+# env_id % 8 결정론적 배정과 MultiAssetSpawnerCfg assets_cfg 순서를 동시에 정한다.
+# cup_big×4: 동일 USD, scale만 등방(0.85/1.0/1.15/1.30)으로 다르게.
+# shaker_body: cocktail 자산(다른 USD 뱅크, metersPerUnit=1 정상).
+# cyl 3종: 높이 12cm 통일(large_5_cyl 그대로, large_8/12_cyl은 z-scale로 승격).
+# ---------------------------------------------------------------------------
+_ACTIVE_OBJECT_SPECS: tuple[dict, ...] = (
+    {"id": "cup_big_s085", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (0.85, 0.85, 0.85)},
+    {"id": "cup_big_s100", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.00, 1.00, 1.00)},
+    {"id": "cup_big_s115", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.15, 1.15, 1.15)},
+    {"id": "cup_big_s130", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.30, 1.30, 1.30)},
+    {"id": "shaker_body",  "usd_path": _os.path.join(_ASSETS_DIR, "cocktail", "usd", "shaker_body.usda"), "scale": (1.0, 1.0, 1.0)},
+    {"id": "large_5_cyl",     "usd_path": _os.path.join(_VISDEX_ROOT, "large_5_cyl", "large_5_cyl.usd"),   "scale": (1.0, 1.0, 1.0)},
+    {"id": "large_8_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_8_cyl", "large_8_cyl.usd"),   "scale": (1.0, 1.0, 1.5)},
+    {"id": "large_12_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_12_cyl", "large_12_cyl.usd"), "scale": (1.0, 1.0, 2.4)},
+)
+_ACTIVE_OBJECT_NAMES: tuple[str, ...] = tuple(_s["id"] for _s in _ACTIVE_OBJECT_SPECS)
+
+
+def _object_usd_cfg(spec: dict) -> "sim_utils.UsdFileCfg":
+    """단일 물체 USD spawn cfg. rigid/articulation 속성은 tesollo 기존 cup_cfg 값 그대로."""
+    return sim_utils.UsdFileCfg(
+        usd_path=spec["usd_path"],
+        activate_contact_sensors=True,
+        scale=spec["scale"],
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            articulation_enabled=False,
+        ),
+        rigid_props=RigidBodyPropertiesCfg(
+            solver_position_iteration_count=16,
+            solver_velocity_iteration_count=1,
+            max_angular_velocity=100.0,
+            max_linear_velocity=100.0,
+            max_depenetration_velocity=5.0,
+            disable_gravity=False,
+        ),
+    )
+
+
+# env_id % 8 결정론적 배정 (rh56f1 grasp_v1 이식). replicate_physics=False 필요.
+_GRASP_OBJECT_SPAWN = sim_utils.MultiAssetSpawnerCfg(
+    assets_cfg=[_object_usd_cfg(_s) for _s in _ACTIVE_OBJECT_SPECS],
+    random_choice=False,
+)
+
+
+@configclass
+class EventCfg:
+    """물체 physics DR (design §DR — friction/mass, 매 reset per-env 연속 랜덤).
+
+    ADR 스케줄 없이 고정 범위(정적) — object_spawn(xy_range)만 ADR 대상(아래 adr_custom_cfg).
+    """
+
+    object_physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("cup", body_names=".*"),
+            "static_friction_range":  (0.5, 1.2),
+            "dynamic_friction_range": (0.5, 1.2),
+            "restitution_range":      (1.0, 1.0),
+            "num_buckets": 250,
+        },
+    )
+    object_scale_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("cup"),
+            "mass_distribution_params": (0.7, 1.3),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
 
 
 @configclass
@@ -68,9 +151,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 관측·액션 공간
     # -----------------------------------------------------------------------
-    observation_space: int = NUM_OBSERVATIONS          # 106 (actor)
+    observation_space: int = NUM_OBSERVATIONS          # 114 (actor, 106 base + 8 물체 onehot)
     action_space:      int = NUM_ACTIONS               # 11
-    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 143 (critic, privileged)
+    state_space:       int = NUM_CRITIC_OBSERVATIONS   # 151 (critic, privileged)
 
     num_observations: int = NUM_OBSERVATIONS
     num_actions:      int = NUM_ACTIONS
@@ -89,7 +172,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     pregrasp_fabric_steps: int   = 60
     reset_fabric_chunk_size: int = 128
-    cache_pregrasp_reset:  bool  = True    # 13×13 grid IK 사전 계산 → reset 시 lookup (랜덤화와 호환)
+    # 17×17 grid(1cm 간격, ±8cm) IK 사전 계산 → reset 시 lookup. design §위치 ADR:
+    # spawn xy_range가 ADR로 0.02→0.08까지 커지므로 캐시는 항상 최대범위(±8cm)를 커버해야
+    # ADR가 range를 넓혀도 lookup이 grid 밖으로 벗어나지 않는다(2026-07-26, 13×13/±6cm→17×17/±8cm).
+    cache_pregrasp_reset:  bool  = True
+    pregrasp_cache_xy_range: float = 0.08   # 캐시 grid 반경(고정) — object_spawn_xy_range(ADR 초기값)와 별개
     pregrasp_offset_x:     float = -0.06
     pregrasp_offset_y:     float = -0.07
     pregrasp_offset_z:     float = 0.00
@@ -100,7 +187,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Demo reset (pour_v1_a11~a20 grasp start and lift target)
     # -----------------------------------------------------------------------
-    enable_demo_grasp_reset: bool = True
+    # 2026-07-26 MultiAsset 다물체 이식: demo pose는 단일 컵 전용 고정 자세라 8종 물체(높이·
+    # 위치 ADR)에 부적합 → False(rh56f1/grasp_v2 동일 결정, "grasp_v2: cup demo pose 는
+    # 다물체에 부적합 → demo-free reset 사용"). off 시 아래 FABRICS pregrasp cache 경로 사용.
+    enable_demo_grasp_reset: bool = False
     demo_grasp_pose_paths: tuple[str, ...] = tuple(
         _os.path.join(_HDGP_ROOT, "..", "datasets", f"pour_v1_a{i}.hdf5") for i in range(11, 21)
     )
@@ -117,6 +207,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 접촉 감지
     # -----------------------------------------------------------------------
+    # cup_grasp_z_offset: cup_big(높이 17.8cm) 기준 보정값. 2026-07-26부터 GraspRightEnv가
+    # object_bbox.json 반높이 비율로 물체별 텐서(cup_grasp_z_offset_buf)를 파생 — 이 필드는
+    # 파생 시 기준 비율(0.06/cup_big 반높이)로만 쓰이고 reward/리셋에 직접 대입되지 않는다.
     cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
 
@@ -159,6 +252,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     finger_close_speed: float = 0.05  # ① 접촉-게이트 적응 폐쇄: 손가락 폐쇄 진행 속도/step (중간마디 접촉 시 동결)
     grasp_contact_persistence_reward_steps: int = 20
     enclosure_sharpness: float = 15.0
+    # cup_radius_approx: cup_big 기준값(반경). 2026-07-26부터 per-object bbox 텐서
+    # (cup_radius_approx_buf = bbox half_x/half_y 평균)가 enclosure target·obs 진단에 쓰인다.
+    # 이 필드는 object_bbox.json 로딩 실패 시 즉시 예외(fail loud) — fallback 미사용.
     cup_radius_approx: float = 0.045
     enclosure_thumb_weight: float = 0.6
 
@@ -170,7 +266,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     adr_increment_interval: int  = 200
     adr_trigger_threshold: float = 0.02
 
-    adr_custom_cfg: dict = field(default_factory=dict)
+    # design §위치 ADR: spawn xy_range 0.02→0.08 점진 확대(초기 좁게 학습 후 확장).
+    # grasp_adr.get_param("spawn","xy_range")로 GraspRightEnv._reset_idx가 조회.
+    adr_custom_cfg: dict = field(default_factory=lambda: {
+        "spawn": {
+            "xy_range": (0.02, 0.08),
+        },
+    })
 
     # -----------------------------------------------------------------------
     # 종료 조건
@@ -187,8 +289,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
     object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
+    # object_spawn_z: cup_big(반높이 0.08881200104951859) 기준 테이블 안착 높이. 2026-07-26부터
+    # GraspRightEnv가 이 값에서 테이블 표면 z(=object_spawn_z - cup_big 반높이)를 역산해
+    # 물체별 반높이를 더한 object_spawn_z_buf(N,)를 파생한다 — reset에서 물체별 텐서를 쓴다.
     object_spawn_z:        float = 0.297
-    object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
+    # object_spawn_xy_range: enable_adr=False 일 때만 쓰이는 fallback(±6cm). 기본은
+    # enable_adr=True → adr_custom_cfg["spawn"]["xy_range"](0.02→0.08)가 실제 범위를 결정.
+    object_spawn_xy_range: float = 0.06
+    # 활성 물체군(8종, MultiAsset assets_cfg 순서와 일치) — onehot·bbox 조회·env_id%8 배정용.
+    active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
+    object_bbox_path: str = _os.path.join(_ASSETS_DIR, "object_bbox.json")
 
     # -----------------------------------------------------------------------
     # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart 재사용)
@@ -230,12 +340,18 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     )
 
     # -----------------------------------------------------------------------
+    # 물체 physics DR (design §DR — friction/mass, 2026-07-26)
+    # -----------------------------------------------------------------------
+    events: EventCfg = field(default_factory=EventCfg)
+
+    # -----------------------------------------------------------------------
     # 씬 설정
     # -----------------------------------------------------------------------
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=128,
         env_spacing=2.5,
-        replicate_physics=True,
+        # MultiAsset(env 별 다른 물체) spawn 은 physics 복제 불가(2026-07-26, rh56f1 동일).
+        replicate_physics=False,
     )
 
     # -----------------------------------------------------------------------
@@ -351,22 +467,35 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # distal/middle 도 tip 처럼 Cup-only 필터(force_matrix_w). 무필터(net_forces)면
     # 손가락이 컵이 아닌 다른 손가락/palm 에 self-contact 해도 grip 으로 잡혀,
     # 엄지가 컵을 안 닿고도 success(num_grip>=5)를 거짓 충족하던 버그를 차단한다.
+    #
+    # 2026-07-26 MultiAsset 전환: 물체 rigid body prim 이 물체마다 다르다 —
+    #   visdex 자산(cup_big/large_*_cyl): 중첩 "Cup/baseLink" (rh56f1 grasp_v1 확인·재사용).
+    #   cocktail shaker_body.usda: Xform 루트("ShakerBody")에 직접 RigidBodyAPI → 참조 후
+    #   "Cup" 프림 자체가 rigid body("Cup/baseLink" 없음).
+    # 두 패턴을 모두 filter 에 걸고 env.py 에서 force_matrix_w 필터 축을 합산한다(한쪽만 0이 아님).
+    # Xform 루트(/Cup) 만 걸면 GPU contact filter 가 rigid body 를 못 찾아 0 반환하는 물체가
+    # 섞이므로(rh56f1 07.14 실측) 반드시 두 패턴을 동시에 등록해야 한다 — GPU 검증 필요.
+    object_contact_filter: tuple = (
+        "/World/envs/env_.*/Cup/baseLink",
+        "/World/envs/env_.*/Cup",
+    )
     distal_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/r_hl_[a-z]+_4",
-        filter_prim_paths_expr=["/World/envs/env_.*/Cup"],
+        filter_prim_paths_expr=["/World/envs/env_.*/Cup/baseLink", "/World/envs/env_.*/Cup"],
         history_length=1,
         track_air_time=False,
     )
 
     middle_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/r_hl_[a-z]+_3",
-        filter_prim_paths_expr=["/World/envs/env_.*/Cup"],
+        filter_prim_paths_expr=["/World/envs/env_.*/Cup/baseLink", "/World/envs/env_.*/Cup"],
         history_length=1,
         track_air_time=False,
     )
 
     # -----------------------------------------------------------------------
-    # 컵 설정
+    # 컵 설정 — 2026-07-26: 단일 cup_big_sdf → MultiAsset 8종(_GRASP_OBJECT_SPAWN).
+    # prim 이름 "Cup" 은 유지(ContactSensor filter·env.py 참조 재사용).
     # -----------------------------------------------------------------------
     cup_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Cup",
@@ -374,22 +503,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             pos=[0.5, 0.0, 0.25],
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
-        spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_sdf.usd"),
-            activate_contact_sensors=True,
-            scale=(1.0, 1.0, 1.0),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                articulation_enabled=False,
-            ),
-            rigid_props=RigidBodyPropertiesCfg(
-                solver_position_iteration_count=16,
-                solver_velocity_iteration_count=1,
-                max_angular_velocity=100.0,
-                max_linear_velocity=100.0,
-                max_depenetration_velocity=5.0,
-                disable_gravity=False,
-            ),
-        ),
+        spawn=_GRASP_OBJECT_SPAWN,
     )
 
     # -----------------------------------------------------------------------
