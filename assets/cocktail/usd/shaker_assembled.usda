@@ -1,0 +1,45 @@
+#usda 1.0
+(
+    defaultPrim = "Shaker"
+    metersPerUnit = 1
+    upAxis = "Z"
+    doc = "Closed cocktail shaker = separable parts (references) welded by fixed joints. Root origin AND every part origin are at the respective center of mass. Part placements are (part_COM - assembled_COM). Spawn part files individually to separate."
+)
+
+def Xform "Shaker"
+{
+    def Xform "Body" (prepend references = @./shaker_body.usda@)
+    {
+        double3 xformOp:translate = (0, 0, -0.04744)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Lid" (prepend references = @./shaker_lid.usda@)
+    {
+        double3 xformOp:translate = (0, 0, 0.04382)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "Cap" (prepend references = @./shaker_cap.usda@)
+    {
+        double3 xformOp:translate = (0, 0, 0.08071)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsFixedJoint "join_lid_to_body"
+    {
+        rel physics:body0 = </Shaker/Body>
+        rel physics:body1 = </Shaker/Lid>
+        point3f physics:localPos0 = (0, 0, 0.06491)
+        point3f physics:localPos1 = (0, 0, -0.02635)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+    }
+    def PhysicsFixedJoint "join_cap_to_lid"
+    {
+        rel physics:body0 = </Shaker/Lid>
+        rel physics:body1 = </Shaker/Cap>
+        point3f physics:localPos0 = (0, 0, 0.01965)
+        point3f physics:localPos1 = (0, 0, -0.01724)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+    }
+}

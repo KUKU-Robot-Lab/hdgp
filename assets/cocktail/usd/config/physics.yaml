@@ -1,0 +1,93 @@
+# Portable physics configuration for the cocktail-shaker USD assets.
+# Parts are INDEPENDENT rigid bodies (separable): pour into open body ->
+# place lid -> shake. Values are also baked into the .usda files; this file is
+# the human-readable source of truth.
+units:
+  length: meter          # USD metersPerUnit = 1
+  up_axis: Z
+  mesh_source_units: mm  # STL/OBJ in mm; USD points pre-scaled to m
+material:
+  default: StainlessSteel      # alternate: Aluminum (see Looks scope / .mtl)
+origin_convention: center_of_mass   # every part & assembly origin sits at its COM
+
+# --- independent parts (each a standalone rigid-body USD; ORIGIN = COM) ---
+parts:
+  body:                        # open cup; POURING container
+    usd: ../shaker_body.usda
+    urdf: ../../urdf/shaker_body.urdf
+    prim: /ShakerBody
+    mass_kg: 0.2633
+    center_of_mass_m: [0.0, 0.0, 0.0]     # origin IS the COM
+    diagonal_inertia: [8.3799e-04, 8.3799e-04, 3.5519e-04]
+    geom_z_extent_m: [-0.09209, 0.08291]  # base .. rim relative to COM
+  lid:
+    usd: ../shaker_lid.usda
+    urdf: ../../urdf/shaker_lid.urdf
+    prim: /ShakerLid
+    mass_kg: 0.1776
+    center_of_mass_m: [0.0, 0.0, 0.0]
+    diagonal_inertia: [1.8023e-04, 1.8023e-04, 2.6513e-04]
+    geom_z_extent_m: [-0.02635, 0.03165]
+  cap:
+    usd: ../shaker_cap.usda
+    urdf: ../../urdf/shaker_cap.urdf
+    prim: /ShakerCap
+    mass_kg: 0.0583
+    center_of_mass_m: [0.0, 0.0, 0.0]
+    diagonal_inertia: [2.9110e-05, 2.9110e-05, 4.6322e-05]
+    geom_z_extent_m: [-0.01724, 0.01776]
+
+collision:                     # applies to every part
+  approximation: sdf           # keep cavity hollow
+  contact_offset_m: 0.002
+  rest_offset_m: 0.0005
+  sdf_resolution: 256
+
+# --- closed assembly: mate transforms (in BODY frame) + fixed joints ---
+assembly:
+  usd: ../shaker_assembled.usda      # references the 3 parts + welds them
+  # origins are at COM, so mate poses = (part_COM - reference_COM)
+  place_lid_in_body_frame_m: [0.0, 0.0, 0.09126]   # target lid pose when closing
+  place_cap_in_body_frame_m: [0.0, 0.0, 0.12815]   # or (0,0,0.03689) in LID frame
+  assembled_com_world_m: [0.0, 0.0, 0.13953]       # whole-shaker COM (base at z=0 world)
+  part_placement_in_assembled_frame_m:              # used inside shaker_assembled.usda
+    body: [0.0, 0.0, -0.04744]
+    lid:  [0.0, 0.0,  0.04382]
+    cap:  [0.0, 0.0,  0.08071]
+  fixed_joints:   # anchor at the physical mate plane, expressed in each body's COM frame
+    - {body0: body, body1: lid, anchor_in_body0_m: [0, 0, 0.06491], anchor_in_body1_m: [0, 0, -0.02635]}
+    - {body0: lid,  body1: cap, anchor_in_body0_m: [0, 0, 0.01965], anchor_in_body1_m: [0, 0, -0.01724]}
+  note: >
+    For separable manipulation spawn the 3 part USDs individually.
+    Create the fixed joint (or grasp-weld) at runtime the moment the lid seats,
+    then shake. shaker_assembled.usda is the pre-welded closed state.
+
+# --- mating fit (interference / clearance) ---
+mate:
+  lid_on_body:
+    body_top_outer_dia_mm: 88.0
+    lid_skirt_inner_dia_mm: 88.7      # 0.35 mm/side clearance
+    overlap_mm: 18.0
+  cap_on_lid_neck:
+    lid_neck_outer_dia_mm: 57.0
+    cap_fit_inner_dia_mm: 57.6
+    overlap_mm: 12.0
+
+# alternate materials (mass only; scale inertia by mass ratio)
+material_mass_kg:
+  body: {stainless304: 0.2633, aluminum: 0.0906, PLA: 0.0416}
+  lid:  {stainless304: 0.1776, aluminum: 0.0611, PLA: 0.0281}
+  cap:  {stainless304: 0.0583, aluminum: 0.0201, PLA: 0.0092}
+
+# solver hints for thin-wall (0.8 mm) parts during shaking
+solver:
+  type: TGS
+  physics_dt_s: 0.004167
+  position_iterations: 16
+  velocity_iterations: 4
+
+geometry_reference:
+  assembled_height_mm: 238.0
+  cup_capacity_ml: 706
+  cup_mouth_inner_dia_mm: 86.4
+  strainer_holes: "13 x Ø4.0 mm (1 center + 12 on PCD 34)"

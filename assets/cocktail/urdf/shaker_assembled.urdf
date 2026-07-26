@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<!--
+  Cocktail shaker ASSEMBLED (Body + Lid + Cap) as ONE rigid body — SHAKING phase.
+  Sealed container: beads already inside, lid+cap closed, robot grasps and shakes.
+  Visual = OBJ, Collision = STL. Mesh paths relative to this URDF file.
+  Meshes in millimeters -> scale 0.001 -> meters. Parts are pre-positioned in
+  assembly coordinates, so all three sit under one link with identity origins.
+
+  ISAAC IMPORTANT:
+   * Collision approximation = "sdf" for body (and lid) so the interior stays
+     hollow and beads interact with inner walls + strainer plate.
+     (The prebuilt USD in ../usd already has SDF baked in.)
+   * Inertia is measured in Fusion for the real hollow shells, stainless 304,
+     total mass 0.4993 kg, about the center of mass (z = 0.13953 m).
+   * Total assembled height 0.238 m; max outer diameter 0.092 m.
+-->
+<robot name="cocktail_shaker_assembled">
+  <link name="shaker">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>  <!-- link origin = assembled center of mass -->
+      <mass value="0.4993"/>
+      <inertia ixx="2.3642e-03" ixy="0" ixz="0"
+                                 iyy="2.3642e-03" iyz="0"
+                                                  izz="6.6758e-04"/>
+    </inertial>
+
+    <!-- VISUAL: COM-centered part meshes placed at (part_COM - assembled_COM) -->
+    <visual><origin xyz="0 0 -0.04744" rpy="0 0 0"/><geometry><mesh filename="../meshes/visual/shaker_body.obj" scale="0.001 0.001 0.001"/></geometry></visual>
+    <visual><origin xyz="0 0  0.04382" rpy="0 0 0"/><geometry><mesh filename="../meshes/visual/shaker_lid.obj"  scale="0.001 0.001 0.001"/></geometry></visual>
+    <visual><origin xyz="0 0  0.08071" rpy="0 0 0"/><geometry><mesh filename="../meshes/visual/shaker_cap.obj"  scale="0.001 0.001 0.001"/></geometry></visual>
+
+    <!-- COLLISION: STL shells; set SDF on body+lid in Isaac -->
+    <collision><origin xyz="0 0 -0.04744" rpy="0 0 0"/><geometry><mesh filename="../meshes/collision/shaker_body.stl" scale="0.001 0.001 0.001"/></geometry></collision>
+    <collision><origin xyz="0 0  0.04382" rpy="0 0 0"/><geometry><mesh filename="../meshes/collision/shaker_lid.stl"  scale="0.001 0.001 0.001"/></geometry></collision>
+    <collision><origin xyz="0 0  0.08071" rpy="0 0 0"/><geometry><mesh filename="../meshes/collision/shaker_cap.stl"  scale="0.001 0.001 0.001"/></geometry></collision>
+  </link>
+</robot>

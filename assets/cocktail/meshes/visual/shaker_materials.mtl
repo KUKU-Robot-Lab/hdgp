@@ -1,0 +1,20 @@
+# cocktail shaker materials
+newmtl stainless
+Ka 0.200 0.200 0.200
+Kd 0.560 0.570 0.577
+Ks 0.900 0.900 0.900
+Ns 120
+d 1.0
+illum 3
+Pr 0.32
+Pm 1.0
+
+newmtl aluminum
+Ka 0.220 0.220 0.220
+Kd 0.912 0.914 0.920
+Ks 0.950 0.950 0.950
+Ns 140
+d 1.0
+illum 3
+Pr 0.28
+Pm 1.0

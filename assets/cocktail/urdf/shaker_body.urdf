@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!--
+  Cocktail shaker BODY only (open cup) — container for the POURING phase.
+  Visual = OBJ, Collision = STL. Mesh paths are relative to this URDF file.
+  Meshes are in millimeters -> scale 0.001 converts to meters.
+
+  ISAAC IMPORTANT:
+   * Set this link's collision approximation to  "sdf"  (Signed Distance Field)
+     after import. Convex hull/decomposition would FILL the cavity so beads
+     could not enter. (The prebuilt USD in ../usd already has SDF baked in.)
+   * To reduce bead tunneling through the 0.8 mm walls during vigorous motion,
+     swap the collision mesh to  shaker_body_thick3mm.stl  (~3 mm walls).
+   * mass = stainless 304. Change for your material.
+-->
+<robot name="cocktail_shaker_body">
+  <link name="shaker_body">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>  <!-- origin = center of mass -->
+      <mass value="0.2633"/>
+      <inertia ixx="8.3799e-04" ixy="0" ixz="0" iyy="8.3799e-04" iyz="0" izz="3.5519e-04"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="../meshes/visual/shaker_body.obj" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <!-- use SDF approximation on this mesh in Isaac -->
+        <mesh filename="../meshes/collision/shaker_body.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>
