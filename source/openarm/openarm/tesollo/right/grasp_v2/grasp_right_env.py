@@ -1299,25 +1299,17 @@ class GraspRightEnv(DirectRLEnv):
         depth[depth > self.cfg.d_max] = 0.0
         depth[depth < self.cfg.d_min] = 0.0
 
-        # [07-23] RGB 도 depth 와 동일하게 중앙 crop → 확대. student 입력이 RGB(use_depth=False)
-        # 인데 종전엔 crop 미적용이라 물체가 ~19px 로 작아 위치추정 정밀도 한계 → envelope 파지
-        # 빗나감(실행격차). crop_frac 만큼 중앙 crop 후 원해상도 업샘플 → 물체 화면크기 1/cf 배.
-        _rgb = self._tiled_camera.data.output["rgb"].clone().permute((0, 3, 1, 2)) / 255.0
-        if _cf < 0.999:
-            _rn, _rc, _rh, _rw = _rgb.shape
-            _rch, _rcw = int(_rh * _cf), int(_rw * _cf)
-            _rt, _rl = (_rh - _rch) // 2, (_rw - _rcw) // 2
-            _rgb = _rgb[:, :, _rt:_rt + _rch, _rl:_rl + _rcw]
-            _rgb = torch.nn.functional.interpolate(
-                _rgb, size=(_rh, _rw), mode="bilinear", align_corners=False
-            )
-
+        # [07-26] RGB 는 crop 미적용 — rh56f1 과 카메라 파이프라인 100% 동일(사용자 확정).
+        # 07-23 시험한 RGB 중앙 crop(물체 확대)은 student_test4 clean eval 서 baseline 과
+        # 동일(in_success 0.05)로 무효 판정 → revert. crop 은 depth(aux 재구성 대상)에만 유지.
         return {
             "policy": self.compute_student_policy_observations(),
             "expert_policy": actor_obs,
             "critic": critic_obs,
             "img": depth.permute((0, 3, 1, 2)),
-            "rgb": _rgb.contiguous(),
+            "rgb": self._tiled_camera.data.output["rgb"].clone().permute(
+                (0, 3, 1, 2)
+            ) / 255.0,
             "aux_info": {"object_pos": self.object_pos},
             "mask": mask,
         }
