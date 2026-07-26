@@ -648,10 +648,9 @@ class GraspRightEnv(DirectRLEnv):
     # 접촉력 업데이트
     # ------------------------------------------------------------------
     def _update_contact_forces(self) -> None:
-        # 2026-07-26 MultiAsset: cfg.object_contact_filter 가 물체당 2개 후보 경로
-        # (baseLink 중첩 / Xform 루트 자체)를 등록하므로 force_matrix_w 의 filter 축이
-        # 2 가 된다 — 물체마다 실제 rigid body 인 한쪽만 값이 실리므로 axis=1(filter) 합산.
-        # (N, sensor_body=1, filter=2, 3) → sum(dim=1) → (N, 3)
+        # 2026-07-26 MultiAsset: 8종 전부 "Cup/baseLink" 단일 filter(shaker 도 fix_shaker_asset
+        # 으로 visdex 표준 이식). force_matrix_w (N, sensor_body=1, filter=1, 3) →
+        # [:,0,:,:].sum(dim=1) → (N, 3). filter 축 합산은 단일 filter 에도 안전.
         # Actor: fingertip 개별 센서 (Cup-only)
         tip_xyz = torch.stack([
             s.data.force_matrix_w[:, 0, :, :].sum(dim=1) for s in self._tip_sensors

@@ -67,7 +67,7 @@ _ACTIVE_OBJECT_SPECS: tuple[dict, ...] = (
     {"id": "cup_big_s100", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.00, 1.00, 1.00)},
     {"id": "cup_big_s115", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.15, 1.15, 1.15)},
     {"id": "cup_big_s130", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.30, 1.30, 1.30)},
-    {"id": "shaker_body",  "usd_path": _os.path.join(_ASSETS_DIR, "cocktail", "usd", "shaker_body.usda"), "scale": (1.0, 1.0, 1.0)},
+    {"id": "shaker_body",  "usd_path": _os.path.join(_VISDEX_ROOT, "shaker_body", "shaker_body.usd"), "scale": (1.0, 1.0, 1.0)},
     {"id": "large_5_cyl",     "usd_path": _os.path.join(_VISDEX_ROOT, "large_5_cyl", "large_5_cyl.usd"),   "scale": (1.0, 1.0, 1.0)},
     {"id": "large_8_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_8_cyl", "large_8_cyl.usd"),   "scale": (1.0, 1.0, 1.5)},
     {"id": "large_12_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_12_cyl", "large_12_cyl.usd"), "scale": (1.0, 1.0, 2.4)},
@@ -468,27 +468,24 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 손가락이 컵이 아닌 다른 손가락/palm 에 self-contact 해도 grip 으로 잡혀,
     # 엄지가 컵을 안 닿고도 success(num_grip>=5)를 거짓 충족하던 버그를 차단한다.
     #
-    # 2026-07-26 MultiAsset 전환: 물체 rigid body prim 이 물체마다 다르다 —
-    #   visdex 자산(cup_big/large_*_cyl): 중첩 "Cup/baseLink" (rh56f1 grasp_v1 확인·재사용).
-    #   cocktail shaker_body.usda: Xform 루트("ShakerBody")에 직접 RigidBodyAPI → 참조 후
-    #   "Cup" 프림 자체가 rigid body("Cup/baseLink" 없음).
-    # 두 패턴을 모두 filter 에 걸고 env.py 에서 force_matrix_w 필터 축을 합산한다(한쪽만 0이 아님).
-    # Xform 루트(/Cup) 만 걸면 GPU contact filter 가 rigid body 를 못 찾아 0 반환하는 물체가
-    # 섞이므로(rh56f1 07.14 실측) 반드시 두 패턴을 동시에 등록해야 한다 — GPU 검증 필요.
+    # 2026-07-26 MultiAsset: 8종 전부 visdex 표준 "Cup/baseLink" rigid body 구조로 통일.
+    #   cup_big/large_*_cyl 은 원래 baseLink 중첩. shaker_body 는 원본이 Xform 루트에 직접
+    #   RigidBodyAPI 인 비표준이라 GPU 에서 "/Cup/baseLink" 8종 중 7종만 매치("expected 8,
+    #   found 7") + "/Cup" 루트 filter 는 GPU contact 미지원(07-26 실측). → fix_shaker_asset.py
+    #   로 shaker 를 visdex 표준(baseLink[RB+MASS])으로 재이식 → 단일 filter 로 해결.
     object_contact_filter: tuple = (
         "/World/envs/env_.*/Cup/baseLink",
-        "/World/envs/env_.*/Cup",
     )
     distal_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/r_hl_[a-z]+_4",
-        filter_prim_paths_expr=["/World/envs/env_.*/Cup/baseLink", "/World/envs/env_.*/Cup"],
+        filter_prim_paths_expr=["/World/envs/env_.*/Cup/baseLink"],
         history_length=1,
         track_air_time=False,
     )
 
     middle_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/r_hl_[a-z]+_3",
-        filter_prim_paths_expr=["/World/envs/env_.*/Cup/baseLink", "/World/envs/env_.*/Cup"],
+        filter_prim_paths_expr=["/World/envs/env_.*/Cup/baseLink"],
         history_length=1,
         track_air_time=False,
     )
