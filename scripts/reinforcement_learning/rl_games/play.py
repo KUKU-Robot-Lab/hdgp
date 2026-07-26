@@ -709,8 +709,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     _td = (_gp.fingertip_pos - _gp.object_pos.unsqueeze(1)).norm(dim=-1).mean(0)
                     _eei = next((i for i, n in enumerate(_gp.robot.data.body_names) if n.endswith("palm_ee")), -1)
                     _pd = (((_gp.robot.data.body_pos_w[:, _eei, :] - _gp.scene.env_origins) - _gp.object_pos).norm(dim=-1).mean() if _eei >= 0 else -1.0)
+                    _ov = (_gp.cup.data.root_lin_vel_w.norm(dim=-1).mean() if hasattr(_gp, "cup") else -1.0)
+                    _oz = _gp.object_pos[:, 2].mean()
                     _fn = ["thumb", "index", "middle", "ring", "pinky"]
-                    print(f"[GRIP] palm_d={_pd:.3f}  " + "  ".join(
+                    print(f"[GRIP] palm_d={_pd:.3f} obj_z={_oz:.3f} obj_v={_ov:.3f}  " + "  ".join(
                         f"{n}:c={c:.2f},f={f:5.1f},d={d:.3f}"
                         for n, c, f, d in zip(_fn, _tc.tolist(), _tf.tolist(), _td.tolist())
                     ), flush=True)
