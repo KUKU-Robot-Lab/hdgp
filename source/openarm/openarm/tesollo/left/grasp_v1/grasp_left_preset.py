@@ -80,17 +80,18 @@ RIGHT_ARM_AND_GRIPPER_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAM
 # 호환용 비-영 자세)를 _ARM_SIGN 으로 부호 미러. 오른손은 bi USD 로 전체 Tesollo 가 됐으므로
 # 그리퍼 값 대신 right/grasp_v2 관례(전체 0 rest, self-collision disabled)를 쓴다.
 #
-# ⚠️ 이 arm rest 값은 "pour_left_v3 warmstart 호환"을 목표로 부호 미러한 것으로,
-# 대응하는 pour_left_v3 웜스타트 자세와의 실제 정합은 검증되지 않았다(원본 주석의
-# 근거였던 FK target ≈ [0.268,0.100,0.291] 은 right 전용 값). GPU 검증 필요.
+# [07-26 수정] 비-영 미러 자세(0.315,0.290,-0.4,0.513,-0.666,0.729,0.957)가 bi_rl
+# 오른팔에 부적합 — self-collision/불안정으로 오른팔·오른손이 고정 안 되고 흔들림
+# (사용자 영상 실측). grasp_v2 left 의 검증된 중립 고정(전체 0 + r_aj_4=1.57 팔꿈치
+# 굽힘, ADR50 완주로 오른팔 안정 확인)으로 교체.
 RIGHT_ARM_REST_JOINT_POS = {
-    "r_aj_1":  0.315,
-    "r_aj_2":  0.290,
-    "r_aj_3": -0.400,
-    "r_aj_4":  0.513,
-    "r_aj_5": -0.666,
-    "r_aj_6":  0.729,
-    "r_aj_7":  0.957,
+    "r_aj_1": 0.0,
+    "r_aj_2": 0.0,
+    "r_aj_3": 0.0,
+    "r_aj_4": 1.57,
+    "r_aj_5": 0.0,
+    "r_aj_6": 0.0,
+    "r_aj_7": 0.0,
     **{_n: 0.0 for _n in RIGHT_HAND_JOINT_NAMES},
 }
 
