@@ -214,8 +214,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # f_safe/f_buckle은 종이컵 추정 placeholder(설계 §4: f_safe≈0.6~0.8·F_yield).
     # ★ 학습 초기 task/radial_compression 분포를 보고 보정할 것(로그 먼저).
     damage_penalty_weight: float = 3.0
-    f_safe:   float = 8.0    # N, 안전 radial 압축 상한(초과분 penalty)
-    f_buckle: float = 15.0   # N, 좌굴(파손) radial 압축 임계
+    # 07.27 lstm_test4 초기 로그로 보정: 실측 radial_compression ~4.5N(hold ~2.7N)이라
+    # 기존 f_safe=8/f_buckle=15는 penalty·buckle이 거의 안 걸려 damage 신호가 꺼졌음.
+    f_safe:   float = 3.0    # N, 안전 radial 압축 상한(초과분 penalty)
+    f_buckle: float = 8.0    # N, 좌굴(파손) radial 압축 임계(강한 감싸기만)
     buckle_penalty: float = 10.0   # 파손 종료 시 음의 보상 크기
     hand_residual_magnitude_weight: float = -0.005
     hand_residual_scale: float = 0.15
