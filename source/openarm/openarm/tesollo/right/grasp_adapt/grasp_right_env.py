@@ -95,7 +95,11 @@ from .finger_action_utils import (
     compute_preset_residual_finger_targets,
 )
 from .grasp_reward_utils import compute_upright_success_mask
-from .grasp_right_utils import compute_precision_grasp_mask, to_torch
+from .grasp_right_utils import (
+    compute_precision_grasp_mask,
+    compute_radial_compression,
+    to_torch,
+)
 
 
 class GraspRightEnv(DirectRLEnv):
@@ -141,7 +145,9 @@ class GraspRightEnv(DirectRLEnv):
             "reward/secure": ("reward/summary", "secure"),
             "reward/efficient": ("reward/summary", "efficient"),
             "reward/drop": ("reward/summary", "drop"),
-            "reward/envelope": ("reward/summary", "envelope"),
+            "reward/damage": ("reward/summary", "damage"),
+            "task/radial_compression": ("task/damage", "radial"),
+            "task/radial_compression_hold": ("task/damage", "radial_hold"),
             "reward/action_smooth": ("reward/summary", "action_smooth"),
             "contact/count": ("task/contact", "tip_count"),
             "task/middle_contact_rate": ("task/contact", "middle_rate"),
@@ -389,6 +395,7 @@ class GraspRightEnv(DirectRLEnv):
 
         self.middle_contact_force_raw  = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, device=self.device)
         self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
+        self._radial_compression_buf   = torch.zeros(self.num_envs, device=self.device)
         self.palm_contact_force_raw = torch.zeros(self.num_envs, device=self.device)
         self.palm_binary_contact_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._prev_total_grip_force_buf = torch.zeros(self.num_envs, device=self.device)
@@ -1151,16 +1158,43 @@ class GraspRightEnv(DirectRLEnv):
         )
         hold_gate = adaptive_terms["hold_gate"]
 
-        # 손끝-only 강제(하드웨어 제약): Tesollo는 손끝에만 6축 F/T 센서 → 중간마디(middle)로
-        # 감싸는 envelope 접촉은 tactile로 못 읽어 fragile/force 파이프라인이 무효화된다.
-        # hold 구간에서 middle 접촉을 벌점(distal은 손끝 인접 회색지대라 진단 로깅만).
-        middle_contact_frac = (
-            self.middle_binary_contact_buf.float().sum(dim=-1) / float(NUM_MIDDLE_SENSORS)
+        # 손끝-only 자연 유도(하드웨어 제약): radial 압축 좌굴 fragile damage.
+        # 감싸기(사방 마디가 벽 안으로 압박)=radial↑=파손, 손끝 국부 파지=radial↓.
+        # Phase 1 geometry envelope penalty는 secure와 상충해 실패 → radial 물리로 대체.
+        env_origins = self.scene.env_origins
+        z_local = torch.zeros(self.num_envs, 3, device=self.device)
+        z_local[:, 2] = 1.0
+        cup_axis = quat_apply(self.object_rot, z_local)              # (N,3) 컵 up축
+        cup_center = self.object_pos                                 # (N,3) env-local
+        tip_pos = self.fingertip_pos                                 # (N,5,3) env-local
+        tip_force = self.contact_force_xyz_raw                       # (N,5,3) world
+        tip_mask = self.binary_contact_buf.float()                  # (N,5)
+        middle_pos = (
+            self.robot.data.body_pos_w[:, self.middle3_body_indices, :]
+            - env_origins.unsqueeze(1)
+        )                                                            # (N,5,3)
+        middle_force = torch.nan_to_num(
+            self._middle_sensor.data.net_forces_w, nan=0.0, posinf=0.0, neginf=0.0
+        )                                                            # (N,5,3) world
+        middle_mask = self.middle_binary_contact_buf.float()        # (N,5)
+        contact_pos = torch.cat([tip_pos, middle_pos], dim=1)        # (N,10,3)
+        contact_force = torch.cat([tip_force, middle_force], dim=1)  # (N,10,3)
+        contact_mask = torch.cat([tip_mask, middle_mask], dim=1)     # (N,10)
+        radial_compression = compute_radial_compression(
+            contact_pos, contact_force, cup_center, cup_axis, contact_mask
+        )                                                            # (N,)
+        self._radial_compression_buf.copy_(radial_compression)
+        # 순간 penalty: hold 구간 F_safe 초과분
+        r_damage = (
+            -float(self.cfg.damage_penalty_weight)
+            * hold_gate
+            * torch.relu(radial_compression - float(self.cfg.f_safe))
         )
+        # 진단(로깅용): middle/distal 접촉률
+        middle_contact_frac = middle_mask.sum(dim=-1) / float(NUM_MIDDLE_SENSORS)
         distal_contact_frac = (
             self.distal_binary_contact_buf.float().sum(dim=-1) / float(NUM_DISTAL_SENSORS)
         )
-        r_envelope = -float(self.cfg.envelope_penalty_weight) * hold_gate * middle_contact_frac
 
         # 평가 bonus (Fork C): 10cm·upright·5접촉 유지 시 보너스. 축소·force-quality 비결합.
         # lift/stabilize는 적응을 "평가"하는 gate일 뿐, 목적이 아니다 (weight는 cfg에서 축소).
@@ -1179,7 +1213,7 @@ class GraspRightEnv(DirectRLEnv):
         reward_terms["success_bonus"] = height_hold_success_bonus
 
         total = torch.nan_to_num(
-            total - base_success_bonus + height_hold_success_bonus + r_objective + r_envelope,
+            total - base_success_bonus + height_hold_success_bonus + r_objective + r_damage,
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
@@ -1198,7 +1232,11 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/secure"] = adaptive_terms["r_secure"].mean()
         self.extras["reward/efficient"] = adaptive_terms["r_efficient"].mean()
         self.extras["reward/drop"] = adaptive_terms["r_drop"].mean()
-        self.extras["reward/envelope"] = r_envelope.mean()
+        self.extras["reward/damage"] = r_damage.mean()
+        self.extras["task/radial_compression"] = radial_compression.mean()
+        self.extras["task/radial_compression_hold"] = (
+            radial_compression * hold_gate
+        ).sum() / hold_gate.sum().clamp(min=1.0)
         self.extras["task/middle_contact_rate"] = middle_contact_frac.mean()
         self.extras["task/distal_contact_rate"] = distal_contact_frac.mean()
         # 적응 검증: grip_ratio가 mass bin별로 공통값에 수렴해야 함 (force ∝ mass)
