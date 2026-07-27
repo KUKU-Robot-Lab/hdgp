@@ -136,7 +136,9 @@ PRELOAD_START_STEP = 400
 # ---------------------------------------------------------------------------
 CONTACT_FORCE_THRESHOLD  = 0.1    # N  binary contact 판정
 CONTACT_FORCE_MAX        = 10.0   # N  정규화 분모
-MIN_CONTACTS_FOR_SUCCESS = 4      # 성공 판정 최소 접촉 손가락 수 (v10: 2→4, ADR 독립 고정값)
+MIN_CONTACTS_FOR_SUCCESS = 4      # (미사용) env는 import하지 않음. 실제 성공 gate는
+                                  # grasp_right_env._get_dones 참조 — Phase 1에서 5/5 접촉을
+                                  # compute_precision_grasp_mask(엄지+대향2지)로 교체 예정.
 
 # ---------------------------------------------------------------------------
 # FABRICS pregrasp

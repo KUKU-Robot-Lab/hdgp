@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import math
-import math as _math
 
 
 # ---------------------------------------------------------------------------
@@ -155,51 +154,3 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
         (0.0 + max_pose_angle) * d,
         (90.0 + max_pose_angle) * d,
     ]
-
-
-# ---------------------------------------------------------------------------
-# Direct PD hand control (v4: iCub-style, curl_gate 제거)
-# ---------------------------------------------------------------------------
-
-# RL이 직접 제어하는 curl joints (5D action, 손가락당 1D)
-HAND_CURL_JOINT_NAMES = [
-    "rj_dg_1_2",  # thumb curl (Z, range [-π, 0])
-    "rj_dg_2_2",  # index curl (Y, range [0, 2.007])
-    "rj_dg_3_2",  # middle curl (Y, range [0, 1.955])
-    "rj_dg_4_2",  # ring curl (Y, range [0, 1.902])
-    "rj_dg_5_3",  # pinky curl (Y, _1 고정이므로 _3 사용)
-]
-
-# 고정 joints (RL 제어 제외)
-HAND_FIXED_JOINT_NAMES = [
-    "rj_dg_1_1",  # thumb abduction: 0.0 고정
-    "rj_dg_2_1",  # index abduction: 0.0 고정
-    "rj_dg_3_1",  # middle abduction: 0.0 고정
-    "rj_dg_4_1",  # ring abduction: 0.0 고정
-    "rj_dg_5_1",  # pinky Z-flex: 0.0 고정
-    "rj_dg_5_2",  # pinky abduction: 0.0 고정
-]
-HAND_FIXED_JOINT_VALUES = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-
-# iCub distal tendon 커플링 (PIP = _3, DIP = _4)
-HAND_PIP_JOINT_NAMES = [
-    "rj_dg_1_3",  # thumb PIP
-    "rj_dg_2_3",  # index PIP
-    "rj_dg_3_3",  # middle PIP
-    "rj_dg_4_3",  # ring PIP
-    "rj_dg_5_4",  # pinky DIP (pinky _3이 curl이므로 _4가 커플링)
-]
-HAND_DIP_JOINT_NAMES = [
-    "rj_dg_1_4",  # thumb DIP
-    "rj_dg_2_4",  # index DIP
-    "rj_dg_3_4",  # middle DIP
-    "rj_dg_4_4",  # ring DIP
-]
-
-# 커플링 비율 (HAND_GRASP_POSE 기준)
-DISTAL_RATIO_PIP = [0.33, 0.71, 0.71, 0.71, 0.71]
-DISTAL_RATIO_DIP = [0.33, 0.71, 0.71, 0.71]
-
-# curl joint 절대 범위 [min, max] (rad)
-CURL_JOINT_LIMITS_MIN = [-_math.pi, 0.0,  0.0,  0.0,  0.0]
-CURL_JOINT_LIMITS_MAX = [0.0, 2.007, 1.955, 1.902, _math.pi / 2]
