@@ -91,9 +91,7 @@ from .grasp_right_preset import (
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
 )
-from .finger_action_utils import (
-    compute_preset_residual_finger_targets,
-)
+from .finger_action_utils import compute_full_range_finger_targets
 from .grasp_reward_utils import compute_upright_success_mask
 from .grasp_right_utils import (
     compute_precision_grasp_mask,
@@ -286,7 +284,10 @@ class GraspRightEnv(DirectRLEnv):
         self.shape_anchor_mask = torch.zeros(NUM_HAND_DOF, device=self.device)
         self.shape_anchor_mask[[0, 4, 8, 12, 16, 17]] = 1.0
         self.hand_residual_mask = torch.ones(NUM_HAND_DOF, device=self.device)
-        self.hand_residual_mask[[0, 4, 8, 12, 16, 17]] = 0.0
+        # full-range 제어 활성 마스크: abduction 5개만 고정(0), 나머지 15 DOF는 full-range(1).
+        #   고정 = thumb/index/middle/ring _1(0,4,8,12) + pinky _2 abduction(17).
+        #   pinky _1(16)은 flexion이라 살려서 제어(감싸기 preset 갇힘 해소 — 손끝 파지 탐색).
+        self.hand_residual_mask[[0, 4, 8, 12, 17]] = 0.0
 
         # ----------------------------------------------------------------
         # approach_pose 기준 관절 한계 재조정 — 반대 방향 휘어짐 방지
@@ -811,13 +812,14 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        hand_target = compute_preset_residual_finger_targets(
-            preset_pos=self.hand_grasp_pose,
+        # 감싸기 preset(HAND_GRASP_POSE) 갇힘 해소: full-range 절대 제어로 정책이 손끝 파지
+        # 형상까지 자유 탐색. abduction 5개(mask 0)만 고정, 나머지 15 DOF는 full-range.
+        hand_target = compute_full_range_finger_targets(
             finger_action=finger_action,
             lower_limits=self.hand_joint_lower_limits,
             upper_limits=self.hand_joint_upper_limits,
-            residual_scale=self.cfg.hand_residual_scale,
-            residual_mask=self.hand_residual_mask,
+            active_mask=self.hand_residual_mask,
+            fixed_pose=self.hand_grasp_pose,
         )
         self.hand_joint_targets.copy_(hand_target)
 
