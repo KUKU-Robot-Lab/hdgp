@@ -99,11 +99,14 @@ from .grasp_left_preset import (
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
     OBJECT_GOAL_POS,
+    PALM_GRASP_FRAME_ROT,
+    PALM_G_EULER_CENTER_SIDE,
 )
 from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
 from .grasp_left_utils import (
     compute_joint7_lift_wait_target,
     compute_lift_readiness,
+    g_pose_to_fabric_quat,
     scale,
     to_torch,
 )
@@ -166,10 +169,15 @@ class GraspLeftEnv(DirectRLEnv):
         ]
 
         # ----------------------------------------------------------------
-        # Palm pose 절대 workspace (안전 한계 클램프용)
+        # Palm pose 절대 workspace (안전 한계 클램프용) — 회전은 G 규약(grasp 프레임)
+        #
+        # tesollo palm 로컬축(+X=법선,+Z=손가락)이 Allegro/DEXTRAH 규약(+X=손가락,±Z=법선)과
+        # 90° 어긋나 있어, 옛 P 규약 euler 로는 ey≈0 에서 손바닥을 물체 쪽으로 정확히 못
+        # 돌린다(grasp_v2 left 에서 실증·수정된 문제 — PALM_GRASP_FRAME_ROT 이식).
         # ----------------------------------------------------------------
         self.palm_mins = to_torch(PALM_POSE_MINS_FUNC(cfg.max_pose_angle), device=self.device)
         self.palm_maxs = to_torch(PALM_POSE_MAXS_FUNC(cfg.max_pose_angle), device=self.device)
+        self.palm_grasp_frame_rot = to_torch(PALM_GRASP_FRAME_ROT, device=self.device)  # (3,3) C
 
         # ----------------------------------------------------------------
         # Delta palm action 범위 (pregrasp 기준 상대 오프셋)
@@ -580,9 +588,10 @@ class GraspLeftEnv(DirectRLEnv):
         palm[:, 0] = flat_x + self.cfg.pregrasp_offset_x
         palm[:, 1] = flat_y + self.cfg.pregrasp_offset_y
         palm[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
-        palm[:, 3] = math.radians(-90.0)
-        palm[:, 4] = math.radians(0.0)
-        palm[:, 5] = math.radians(-90.0)
+        # 회전 중심 = G 규약 PALM_G_EULER_CENTER_SIDE (grasp_v2 left 이식)
+        palm[:, 3] = math.radians(PALM_G_EULER_CENTER_SIDE[0])
+        palm[:, 4] = math.radians(PALM_G_EULER_CENTER_SIDE[1])
+        palm[:, 5] = math.radians(PALM_G_EULER_CENTER_SIDE[2])
         palm = torch.max(
             torch.min(palm, self.palm_maxs.unsqueeze(0)),
             self.palm_mins.unsqueeze(0),
@@ -629,10 +638,11 @@ class GraspLeftEnv(DirectRLEnv):
             fqd  = torch.zeros(C, qi.shape[1], device=self.device)
             fqdd = torch.zeros(C, qi.shape[1], device=self.device)
 
+            # G 규약 euler → fabric quaternion (특이점 없음, grasp_v2 left 이식)
             self._reset_fabric.set_features(
                 self._reset_pca,
-                pp,
-                "euler_zyx",
+                g_pose_to_fabric_quat(pp, self.palm_grasp_frame_rot),
+                "quaternion",
                 fq.detach(),
                 fqd.detach(),
                 self._reset_obj_ids,
@@ -751,10 +761,12 @@ class GraspLeftEnv(DirectRLEnv):
         self.palm_pose_targets.copy_(palm_pose)
         self.hand_pca_targets.zero_()
 
+        # palm_pose_targets 는 G 규약 euler(회전 중심 PALM_G_EULER_CENTER_SIDE)로 유지하고,
+        # fabric 에는 quaternion 으로 넘긴다(grasp_v2 left 이식 — PALM_GRASP_FRAME_ROT 사상).
         self.open_tesollo_fabric.set_features(
             self.hand_pca_targets,
-            self.palm_pose_targets,
-            "euler_zyx",
+            g_pose_to_fabric_quat(self.palm_pose_targets, self.palm_grasp_frame_rot),
+            "quaternion",
             self.fabric_q.detach(),
             self.fabric_qd.detach(),
             self.object_ids,
@@ -1520,9 +1532,10 @@ class GraspLeftEnv(DirectRLEnv):
 
             pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
             pregrasp_palm_pose[:, :3] = pregrasp_pos
-            pregrasp_palm_pose[:, 3] = math.radians(-90.0)
-            pregrasp_palm_pose[:, 4] = math.radians(0.0)
-            pregrasp_palm_pose[:, 5] = math.radians(-90.0)
+            # 회전 중심 = G 규약 PALM_G_EULER_CENTER_SIDE (grasp_v2 left 이식)
+            pregrasp_palm_pose[:, 3] = math.radians(PALM_G_EULER_CENTER_SIDE[0])
+            pregrasp_palm_pose[:, 4] = math.radians(PALM_G_EULER_CENTER_SIDE[1])
+            pregrasp_palm_pose[:, 5] = math.radians(PALM_G_EULER_CENTER_SIDE[2])
             pregrasp_palm_pose = torch.max(
                 torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
                 self.palm_mins.unsqueeze(0),
