@@ -154,6 +154,7 @@ class GraspRightEnv(DirectRLEnv):
             "task/middle_contact_rate": ("task/contact", "middle_rate"),
             "task/distal_contact_rate": ("task/contact", "distal_rate"),
             "contact/palm": ("task/contact", "palm_rate"),
+            "task/palm_to_cup_dist": ("task/contact", "palm_to_cup_dist"),
             "contact/palm_force": ("task/contact", "palm_force"),
             "cup/tilt_deg": ("task/cup", "tilt_deg"),
             "cup/height_delta": ("task/cup", "height_delta"),
@@ -1094,7 +1095,10 @@ class GraspRightEnv(DirectRLEnv):
             tip_contact_frac=tip_contact_frac,
             full_tip_contact=full_tip_contact,
             contact_persistence_frac=contact_persistence_frac,
-            palm_to_cup_dist=palm_to_cup_dist,
+            # palm 94% 접촉 근본원인: approach의 palm_to_cup_dist=0 목표가 palm을 컵 중심으로
+            # 밀착시킴(cup_radius 0.045). 손끝 중심 approach로 전환 — palm 항 제거(0 전달),
+            # fingertip_side_dist(손끝→컵 옆 목표점)만 유도. palm은 손끝 자세의 결과로 자유.
+            palm_to_cup_dist=torch.zeros_like(palm_to_cup_dist),
             fingertip_side_dist=fingertip_side_dist,
             cup_height_delta=cup_height_delta,
             cup_xy_displacement=cup_xy_displacement,
@@ -1265,6 +1269,7 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/total"] = total.mean()
         self.extras["contact/count"] = num_tip_contacts.float().mean()
         self.extras["contact/palm"] = palm_contact.mean()
+        self.extras["task/palm_to_cup_dist"] = palm_to_cup_dist.mean()
         self.extras["contact/palm_force"] = self.palm_contact_force_raw.mean()
         self.extras["cup/tilt_deg"] = cup_tilt_deg.mean()
         self.extras["cup/height_delta"] = cup_height_delta.mean()
