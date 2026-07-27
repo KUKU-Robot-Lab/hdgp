@@ -204,9 +204,19 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_action_sharpness: float = 1.5
     action_smooth_weight: float = -0.02
     post_lift_contact_loss_weight: float = -8.0
-    # 손끝-only 강제(하드웨어 제약: 손끝에만 6축 F/T): hold 구간 중간마디(middle) 접촉 벌점.
-    # secure(10)·drop(8)보다 작게 두어 손끝 파지는 온전, envelope(감싸기)만 상쇄.
-    envelope_penalty_weight: float = 4.0
+    # Phase 1 envelope penalty 제거(geometry penalty는 secure와 상충해 실패 — radial로 일원화).
+    # 필드는 존치하되 0. (Phase 1 lstm_test3: 감싸기 회귀 실증)
+    envelope_penalty_weight: float = 0.0
+    # Phase 2 radial-압축 fragile damage (하드웨어 제약: 손끝-only를 물리로 유도).
+    #   radial_compression = 접촉력(tip+middle)의 컵 중심 inward 성분 합.
+    #   r_damage = -damage_penalty_weight · hold_gate · relu(radial - f_safe)
+    #   radial > f_buckle → 파손 종료(buckle) + buckle_penalty.
+    # f_safe/f_buckle은 종이컵 추정 placeholder(설계 §4: f_safe≈0.6~0.8·F_yield).
+    # ★ 학습 초기 task/radial_compression 분포를 보고 보정할 것(로그 먼저).
+    damage_penalty_weight: float = 3.0
+    f_safe:   float = 8.0    # N, 안전 radial 압축 상한(초과분 penalty)
+    f_buckle: float = 15.0   # N, 좌굴(파손) radial 압축 임계
+    buckle_penalty: float = 10.0   # 파손 종료 시 음의 보상 크기
     hand_residual_magnitude_weight: float = -0.005
     hand_residual_scale: float = 0.15
 
