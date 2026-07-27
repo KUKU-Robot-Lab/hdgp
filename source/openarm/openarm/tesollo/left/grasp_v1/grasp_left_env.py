@@ -1198,6 +1198,11 @@ class GraspLeftEnv(DirectRLEnv):
         self.extras["debug/thumb/cup_tip"] = _tip[:, 0].float().mean()
         self.extras["debug/thumb/cup_mid"] = _mid[:, 0].float().mean()
         self.extras["debug/thumb/cup_dist"] = _dist[:, 0].float().mean()
+        # 손가락별 컵 접촉율 (any=tip|mid|dist) — tb 진단용(play 없이 tb로 손가락별 확인).
+        # 순서 thumb,index,middle,ring,pinky. success 게이트(4지 grip)의 어느 손가락이 병목인지 추적.
+        _any_fc = (_tip | _mid | _dist).float()
+        for _fi, _fn in enumerate(["thumb", "index", "middle", "ring", "pinky"]):
+            self.extras[f"debug/finger/{_fn}_cup"] = _any_fc[:, _fi].mean()
         self.extras["debug/thumb/cup_any"] = (
             _tip[:, 0] | _mid[:, 0] | _dist[:, 0]
         ).float().mean()
