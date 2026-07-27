@@ -95,7 +95,7 @@ from .finger_action_utils import (
     compute_preset_residual_finger_targets,
 )
 from .grasp_reward_utils import compute_upright_success_mask
-from .grasp_right_utils import to_torch
+from .grasp_right_utils import compute_precision_grasp_mask, to_torch
 
 
 class GraspRightEnv(DirectRLEnv):
@@ -148,6 +148,7 @@ class GraspRightEnv(DirectRLEnv):
             "cup/tilt_deg": ("task/cup", "tilt_deg"),
             "cup/height_delta": ("task/cup", "height_delta"),
             "cup/xy_displacement": ("task/cup", "xy_displacement"),
+            "task/precision_grasp_rate": ("task/progress", "precision_grasp_rate"),
             "task/five_tip_contact_rate": ("task/progress", "five_tip_contact_rate"),
             "task/lift_started_rate": ("task/progress", "lift_started_rate"),
             "task/lift_success_rate": ("task/success", "lift_success_rate"),
@@ -1033,12 +1034,21 @@ class GraspRightEnv(DirectRLEnv):
 
         num_tip_contacts = self.num_contacts_buf
         tip_contact_frac = num_tip_contacts.float() / float(NUM_FINGERTIPS)
-        full_tip_contact_bool = num_tip_contacts >= NUM_FINGERTIPS
-        full_tip_contact = full_tip_contact_bool.float()
+        # Phase 1: 5/5 envelope 강제 제거 → 엄지+대향2지 fingertip precision 파지.
+        # 하위 gate(lift latch / adaptive hold / success)가 참조하는 변수명
+        # full_tip_contact은 유지하되 의미는 precision 파지로 바뀐다.
+        precision_grasp_bool = compute_precision_grasp_mask(
+            self.binary_contact_buf, int(self.cfg.precision_min_opposing)
+        )
+        full_tip_contact = precision_grasp_bool.float()
+        # 진짜 5접촉(과압축/envelope 회귀 진단 전용 지표)
+        true_five_tip = (num_tip_contacts >= NUM_FINGERTIPS).float()
         palm_contact_bool = self.palm_binary_contact_buf
         palm_contact = palm_contact_bool.float()
 
-        grasp_ready_now = num_tip_contacts >= self.cfg.stage0_lift_start_min_contacts
+        # Phase 1: lift latch 진입도 precision 파지(엄지+대향2지) 형성 기준으로.
+        # (기존 num_tip_contacts >= stage0_lift_start_min_contacts 접촉수 게이트 대체)
+        grasp_ready_now = precision_grasp_bool
         self.grasp_ready_hold_buf = torch.where(
             grasp_ready_now,
             self.grasp_ready_hold_buf + 1,
@@ -1199,7 +1209,8 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["cup/tilt_deg"] = cup_tilt_deg.mean()
         self.extras["cup/height_delta"] = cup_height_delta.mean()
         self.extras["cup/xy_displacement"] = cup_xy_displacement.mean()
-        self.extras["task/five_tip_contact_rate"] = full_tip_contact.mean()
+        self.extras["task/precision_grasp_rate"] = full_tip_contact.mean()
+        self.extras["task/five_tip_contact_rate"] = true_five_tip.mean()
         self.extras["task/lift_started_rate"] = self.lift_started_buf.float().mean()
         self.extras["task/lift_success_rate"] = self._lift_success_latched_buf.float().mean()
         self.extras["task/stabilize_success_rate"] = self.episode_stabilize_success_buf.float().mean()
@@ -1249,7 +1260,10 @@ class GraspRightEnv(DirectRLEnv):
         in_or_past_lift = self.lift_ready_latched_buf
         lifted  = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_success_height)
         reached_target = self.object_pos[:, 2] > (self.object_init_pos[:, 2] + self.cfg.lift_target_height)
-        full_tip_contact = self.num_contacts_buf >= NUM_FINGERTIPS
+        # Phase 1: 5/5 접촉 → 엄지+대향2지 fingertip precision 파지(lift/success 판정 gate)
+        full_tip_contact = compute_precision_grasp_mask(
+            self.binary_contact_buf, int(self.cfg.precision_min_opposing)
+        )
         upright_success = compute_upright_success_mask(
             cup_z_world[:, 2],
             self.cfg.success_upright_max_deg,

@@ -179,7 +179,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Policy-driven reward/gate 파라미터
     # -----------------------------------------------------------------------
-    stage0_lift_start_min_contacts: int = 5   # lift latch: 5접촉(전 손가락) 유지 시 진입
+    # Phase 1: fingertip precision 파지 판정 — 엄지 대향 최소 손가락 수.
+    precision_min_opposing: int = 2   # 엄지 + 대향 2지 이상 = 안정 파지
+    # (미사용) lift latch가 precision_grasp_bool(엄지+대향2지)로 대체됨. Phase 1 이전엔
+    # 접촉수 게이트였고 contact ADR가 이 값을 5까지 올렸으나 이제 적용점 없음.
+    stage0_lift_start_min_contacts: int = 3
     grasp_ready_hold_steps: int = 20
     grasp_contact_persistence_reward_steps: int = 30
     full_grip_hold_steps: int = 30
@@ -239,9 +243,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # ADR — contact curriculum (threshold=0.1, 먼저 진행)
     # -----------------------------------------------------------------------
-    # force_balance gate의 최소 others 접촉 수: 1 → 4 (thumb+1 → thumb+4)
-    # slip/adaptive/full_contact gate의 최소 총 접촉 수: 2 → 5
-    enable_contact_adr:             bool  = True
+    # Phase 1: contact curriculum 비활성화. lift/success gate가 precision_grasp_bool
+    # (엄지+대향2지)로 바뀌어 min_contacts(2→5) ADR의 적용점이 사라졌다(설계 §9:
+    # "contact ADR 2→5 증가 제거"). general difficulty ADR(enable_adr)은 유지.
+    enable_contact_adr:             bool  = False
     contact_adr_num_increments:     int   = 50
     contact_adr_increment_interval: int   = 400
     contact_adr_trigger_threshold:  float = 0.1   # 10% 성공률에서 진행 (early curriculum)

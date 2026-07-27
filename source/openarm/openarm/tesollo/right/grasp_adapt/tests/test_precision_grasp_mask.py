@@ -24,21 +24,18 @@ def _mask(tip_contact_bool: torch.Tensor) -> torch.Tensor:
     return _mod.compute_precision_grasp_mask(tip_contact_bool)
 
 
-@pytest.mark.skip(reason="Phase 1에서 compute_precision_grasp_mask 구현 후 해제")
 def test_thumb_plus_two_opposing_is_grasp():
     # 엄지(idx0) + 검지 + 중지 접촉 → True
     tip = torch.tensor([[True, True, True, False, False]])
     assert bool(_mask(tip)[0]) is True
 
 
-@pytest.mark.skip(reason="Phase 1에서 구현 후 해제")
 def test_no_thumb_is_not_grasp():
     # 엄지 없이 4지 접촉 → False (엄지 대향이 파지의 핵심)
     tip = torch.tensor([[False, True, True, True, True]])
     assert bool(_mask(tip)[0]) is False
 
 
-@pytest.mark.skip(reason="Phase 1에서 구현 후 해제")
 def test_thumb_plus_one_is_not_grasp():
     # 엄지 + 1지만 → False (대향 2지 미만)
     tip = torch.tensor([[True, True, False, False, False]])

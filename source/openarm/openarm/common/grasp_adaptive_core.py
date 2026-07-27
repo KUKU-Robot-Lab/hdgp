@@ -41,7 +41,8 @@ def compute_adaptive_grip_terms(
         tip_contact_frac: (N,) 접촉 손가락 비율 [0,1].
         lift_gate: (N,) lift latched {0,1}.
         lifted_gate: (N,) 컵이 lift_success_height 이상 {0,1}.
-        full_tip_contact: (N,) 5접촉 {0,1}.
+        full_tip_contact: (N,) 안정 파지 게이트 {0,1}. grasp_adapt Phase 1부터는
+            precision_grasp_mask(엄지+대향2지)를 넘긴다(하위호환: 다른 태스크는 5접촉 bool).
         cfg: secure_weight, secure_slip_sharpness, force_efficiency_weight,
              drop_penalty_weight, force_ratio_cost_cap 를 갖는 설정 객체.
 
