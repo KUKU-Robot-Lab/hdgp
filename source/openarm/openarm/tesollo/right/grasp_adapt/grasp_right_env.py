@@ -148,6 +148,7 @@ class GraspRightEnv(DirectRLEnv):
             "reward/damage": ("reward/summary", "damage"),
             "task/radial_compression": ("task/damage", "radial"),
             "task/radial_compression_hold": ("task/damage", "radial_hold"),
+            "task/buckle_rate": ("task/damage", "buckle_rate"),
             "reward/action_smooth": ("reward/summary", "action_smooth"),
             "contact/count": ("task/contact", "tip_count"),
             "task/middle_contact_rate": ("task/contact", "middle_rate"),
@@ -1218,6 +1219,9 @@ class GraspRightEnv(DirectRLEnv):
             posinf=0.0,
             neginf=0.0,
         )
+        # 파손(좌굴) 순간 음의 보상: radial이 f_buckle 초과 시 (종료는 _get_dones)
+        buckle_now = radial_compression > float(self.cfg.f_buckle)
+        total = total - float(self.cfg.buckle_penalty) * buckle_now.float()
 
         if len(self._success_window) >= 10:
             _ep_success_rate = sum(self._success_window) / len(self._success_window)
@@ -1356,7 +1360,10 @@ class GraspRightEnv(DirectRLEnv):
         )
         final_success_held = self._success_hold_count >= int(self.cfg.success_hold_steps)
 
-        terminated = out_x | out_y | fallen | tipped | final_success_held
+        # Phase 2: radial 압축이 f_buckle 초과 → 컵 좌굴(파손) 종료
+        buckle = self._radial_compression_buf > float(self.cfg.f_buckle)
+        self.extras["task/buckle_rate"] = buckle.float().mean()
+        terminated = out_x | out_y | fallen | tipped | final_success_held | buckle
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
 
         return terminated, truncated
