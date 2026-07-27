@@ -15,7 +15,7 @@
 """환경 클래스: 5g_grasp_adapt
 
 v10: v9 기반 버그 수정
-- Fix 1: rj_dg_1_1 (thumb abduction) = 0.0 고정 (v9: -0.283 → 엄지 치우침 수정)
+- Fix 1: r_hj_thumb_1 (thumb abduction) = 0.0 고정 (v9: -0.283 → 엄지 치우침 수정)
 - Fix 2: MIN_CONTACTS_FOR_SUCCESS = 4, ADR과 분리 (v9: 2접촉 success 오판정 수정)
 - Fix 3: has_5_contact = num_contacts>=5 고정 (v9: has_4_contact와 동일 식 버그 수정)
 
@@ -212,18 +212,19 @@ class GraspRightEnv(DirectRLEnv):
             "openarm_left_arm": self.left_arm_dof_indices,
         }
 
-        # body indices
-        _tip_names = [f"rl_dg_{i}_tip" for i in range(1, 6)]
+        # body indices (통일 네이밍: r_hl_<finger>_*)
+        _FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
+        _tip_names = [f"r_hl_{fn}_tip" for fn in _FINGERS]
         self.fingertip_body_indices: list[int] = [
             self.robot.data.body_names.index(name) for name in _tip_names
         ]
-        _palm_name = "rl_dg_palm"
+        _palm_name = "r_hl_palm"
         self.palm_body_index: int = (
             self.robot.data.body_names.index(_palm_name)
             if _palm_name in self.robot.data.body_names
             else -1
         )
-        _distal4_names = [f"rl_dg_{i}_4" for i in range(1, 6)]
+        _distal4_names = [f"r_hl_{fn}_4" for fn in _FINGERS]
         self.distal4_body_indices: list[int] = [
             self.robot.data.body_names.index(name)
             for name in _distal4_names
@@ -232,7 +233,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # middle phalanx (PIP, _3 link) body indices — FK 기반 actor obs용
         # sim2real 가능: joint encoder FK로 실기에서도 계산 가능
-        _middle3_names = [f"rl_dg_{i}_3" for i in range(1, 6)]
+        _middle3_names = [f"r_hl_{fn}_3" for fn in _FINGERS]
         self.middle3_body_indices: list[int] = [
             self.robot.data.body_names.index(name)
             for name in _middle3_names

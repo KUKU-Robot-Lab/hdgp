@@ -22,7 +22,7 @@ Action (27D):
   [0:3]   palm xyz target, normalized [-1, 1] → workspace clamp
   [3:7]   palm quaternion target (x, y, z, w), env에서 unit normalize
   [7:27]  20D hand residual around HAND_GRASP_POSE, normalized [-1, 1] → ±scale rad
-         rj_dg_1_1~4, rj_dg_2_1~4, rj_dg_3_1~4, rj_dg_4_1~4, rj_dg_5_1~4
+         r_hj_thumb_1~4, r_hj_index_1~4, r_hj_middle_1~4, r_hj_ring_1~4, r_hj_pinky_1~4
 
 Actor Observation (133D, no oracle mass) — sim2real 가능:
   arm_joint_pos:            7
@@ -50,9 +50,9 @@ Critic Extra (37D) — sim-only privileged:
   cup_ang_vel:              3
   cup_rot (quat):           4
   cup_height_delta:         1
-  distal_contact_binary:    5  (rl_dg_*_4)
+  distal_contact_binary:    5  (r_hl_<finger>_4)
   distal_contact_norm:      5
-  middle_contact_binary:    5  (rl_dg_*_3)
+  middle_contact_binary:    5  (r_hl_<finger>_3)
   middle_contact_norm:      5
   fingertip_to_cup_signed_dist: 5
   Total:                   37
@@ -116,8 +116,8 @@ FINGER_ACTION_SLICE = slice(7, 27)
 #   [제거] cup_to_goal 3D (transport 제거), cup_to_fingertip 15D (항등식), binary_contact 5D
 NUM_OBSERVATIONS_NO_MASS = 133
 NUM_OBSERVATIONS = 134
-NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
-NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
+NUM_DISTAL_SENSORS  = 5       # r_hl_<finger>_4
+NUM_MIDDLE_SENSORS  = 5       # r_hl_<finger>_3
 NUM_CRITIC_EXTRAS   = 37
 NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS_NO_MASS + NUM_CRITIC_EXTRAS  # 170
 

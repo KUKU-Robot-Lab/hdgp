@@ -15,7 +15,7 @@
 """환경 설정: 5g_grasp_adapt
 
 v10: v9 기반 + 버그 수정
-- Fix 1: rj_dg_1_1 (thumb abduction) = 0.0 고정 (v9: -0.283 → 엄지 새끼손가락 방향 치우침 수정)
+- Fix 1: r_hj_thumb_1 (thumb abduction) = 0.0 고정 (v9: -0.283 → 엄지 새끼손가락 방향 치우침 수정)
 - Fix 2: MIN_CONTACTS_FOR_SUCCESS = 4 (v9: 2, ADR 연동 → 2접촉으로 success 오판정 수정)
 - Fix 3: has_5_contact = num_contacts>=5 고정 (v9: has_4_contact와 동일 식 버그 수정)
 """
@@ -353,7 +353,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "openarm_tesollo_sensor/openarm_tesollo_sensor.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -369,48 +369,48 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             pos=[0.0, 0.0, 0.0],
             rot=[1.0, 0.0, 0.0, 0.0],
             joint_pos={
-                "openarm_right_joint1":  0.5,
-                "openarm_right_joint2":  0.1,
-                "openarm_right_joint3":  0.4,
-                "openarm_right_joint4":  0.60,
-                "openarm_right_joint5": -0.2,
-                "openarm_right_joint6":  0.0,
-                "openarm_right_joint7":  0.0,
-                "rj_dg_1_1": 0.0, "rj_dg_1_2": -1.57, "rj_dg_1_3": -0.5, "rj_dg_1_4": 0.0,
-                "rj_dg_2_1": 0.0, "rj_dg_2_2":  0.0,  "rj_dg_2_3":  0.0, "rj_dg_2_4": 0.0,
-                "rj_dg_3_1": 0.0, "rj_dg_3_2":  0.0,  "rj_dg_3_3":  0.0, "rj_dg_3_4": 0.0,
-                "rj_dg_4_1": 0.0, "rj_dg_4_2":  0.0,  "rj_dg_4_3":  0.0, "rj_dg_4_4": 0.0,
-                "rj_dg_5_1": 0.0, "rj_dg_5_2":  0.0,  "rj_dg_5_3":  0.0, "rj_dg_5_4": 0.0,
+                "r_aj_1":  0.5,
+                "r_aj_2":  0.1,
+                "r_aj_3":  0.4,
+                "r_aj_4":  0.60,
+                "r_aj_5": -0.2,
+                "r_aj_6":  0.0,
+                "r_aj_7":  0.0,
+                "r_hj_thumb_1": 0.0, "r_hj_thumb_2": -1.57, "r_hj_thumb_3": -0.5, "r_hj_thumb_4": 0.0,
+                "r_hj_index_1": 0.0, "r_hj_index_2":  0.0,  "r_hj_index_3":  0.0, "r_hj_index_4": 0.0,
+                "r_hj_middle_1": 0.0, "r_hj_middle_2":  0.0,  "r_hj_middle_3":  0.0, "r_hj_middle_4": 0.0,
+                "r_hj_ring_1": 0.0, "r_hj_ring_2":  0.0,  "r_hj_ring_3":  0.0, "r_hj_ring_4": 0.0,
+                "r_hj_pinky_1": 0.0, "r_hj_pinky_2":  0.0,  "r_hj_pinky_3":  0.0, "r_hj_pinky_4": 0.0,
                 **LEFT_ARM_REST_JOINT_POS,
             },
         ),
         actuators={
             "openarm_right_arm": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_right_joint[1-7]"],
+                joint_names_expr=["r_aj_[1-7]"],
                 **_actuator_params("openarm_right_arm", 400.0, 80.0),
             ),
             "openarm_left_arm": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_left_joint[1-7]"],
+                joint_names_expr=["l_aj_[1-7]"],
                 **_actuator_params("openarm_left_arm", 400.0, 80.0),
             ),
             "tesollo_hand_abduction": ImplicitActuatorCfg(
-                joint_names_expr=["rj_dg_[1-5]_1"],
+                joint_names_expr=["r_hj_[a-z]+_1"],
                 **_actuator_params("tesollo_hand_abduction", 30.0, 5.0),
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
-                joint_names_expr=["rj_dg_[1-5]_2"],
+                joint_names_expr=["r_hj_[a-z]+_2"],
                 **_actuator_params("tesollo_hand_curl", 90.0, 5.0),
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
-                joint_names_expr=["rj_dg_[1-5]_3"],
+                joint_names_expr=["r_hj_[a-z]+_3"],
                 **_actuator_params("tesollo_hand_pip", 90.0, 5.0),
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
-                joint_names_expr=["rj_dg_[1-5]_4"],
+                joint_names_expr=["r_hj_[a-z]+_4"],
                 **_actuator_params("tesollo_hand_dip", 90.0, 5.0),
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
-                joint_names_expr=["openarm_left_finger_joint[1-2]"],
+                joint_names_expr=["l_hj_gripper_[1-2]"],
                 **_actuator_params("openarm_left_gripper", 400.0, 80.0),
             ),
         },
@@ -421,27 +421,27 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # ContactSensor 설정
     # -----------------------------------------------------------------------
     right_tip_contact_links: tuple = (
-        "rl_dg_1_tip",
-        "rl_dg_2_tip",
-        "rl_dg_3_tip",
-        "rl_dg_4_tip",
-        "rl_dg_5_tip",
+        "r_hl_thumb_tip",
+        "r_hl_index_tip",
+        "r_hl_middle_tip",
+        "r_hl_ring_tip",
+        "r_hl_pinky_tip",
     )
 
     distal_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/rl_dg_[1-5]_4",
+        prim_path="/World/envs/env_.*/Robot/r_hl_[a-z]+_4",
         history_length=1,
         track_air_time=False,
     )
 
     middle_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/rl_dg_[1-5]_3",
+        prim_path="/World/envs/env_.*/Robot/r_hl_[a-z]+_3",
         history_length=1,
         track_air_time=False,
     )
 
     palm_sensor_cfg: ContactSensorCfg = ContactSensorCfg(
-        prim_path="/World/envs/env_.*/Robot/rl_dg_palm",
+        prim_path="/World/envs/env_.*/Robot/r_hl_palm",
         history_length=1,
         track_air_time=False,
     )

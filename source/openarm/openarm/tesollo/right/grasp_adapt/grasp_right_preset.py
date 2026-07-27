@@ -18,27 +18,30 @@ import math
 # ---------------------------------------------------------------------------
 # Joint groups
 # ---------------------------------------------------------------------------
-RIGHT_ARM_JOINT_NAMES = [f"openarm_right_joint{i}" for i in range(1, 8)]
-RIGHT_HAND_JOINT_NAMES = [f"rj_dg_{f}_{j}" for f in range(1, 6) for j in range(1, 5)]
+# 통일 네이밍(openarm_tesollo_sensor_rl.usd): arm r_aj_/l_aj_, 손 r_hj_<finger>_
+# 손가락 순서(finger-major) 보존: thumb,index,middle,ring,pinky
+_R_FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
+RIGHT_ARM_JOINT_NAMES = [f"r_aj_{i}" for i in range(1, 8)]
+RIGHT_HAND_JOINT_NAMES = [f"r_hj_{f}_{j}" for f in _R_FINGERS for j in range(1, 5)]
 RIGHT_ACTUATED_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAMES
 
-LEFT_ARM_JOINT_NAMES = [f"openarm_left_joint{i}" for i in range(1, 8)]
-LEFT_GRIPPER_JOINT_NAMES = ["openarm_left_finger_joint1", "openarm_left_finger_joint2"]
+LEFT_ARM_JOINT_NAMES = [f"l_aj_{i}" for i in range(1, 8)]
+LEFT_GRIPPER_JOINT_NAMES = ["l_hj_gripper_1", "l_hj_gripper_2"]
 LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
     # pour_right_v3 LEFT_ARM_REST_JOINT_POS와 일치시킴:
     # warmstart collection 시 pour env가 이 자세를 사용하므로 OOD 방지
     # FK 결과: target cup pos ≈ [0.268, 0.100, 0.291] (demo target=[0.27, 0.10])
-    "openarm_left_joint1": -0.315,
-    "openarm_left_joint2": -0.290,
-    "openarm_left_joint3":  0.400,
-    "openarm_left_joint4":  0.513,
-    "openarm_left_joint5":  0.666,
-    "openarm_left_joint6": -0.729,
-    "openarm_left_joint7": -0.957,
-    "openarm_left_finger_joint1": 0.044,
-    "openarm_left_finger_joint2": 0.044,
+    "l_aj_1": -0.315,
+    "l_aj_2": -0.290,
+    "l_aj_3":  0.400,
+    "l_aj_4":  0.513,
+    "l_aj_5":  0.666,
+    "l_aj_6": -0.729,
+    "l_aj_7": -0.957,
+    "l_hj_gripper_1": 0.044,
+    "l_hj_gripper_2": 0.044,
 }
 
 
@@ -46,26 +49,26 @@ LEFT_ARM_REST_JOINT_POS = {
 # Hand links (USD / Fabrics)
 # ---------------------------------------------------------------------------
 HAND_BODY_NAMES_USD = [
-    "rl_dg_palm",
-    "rl_dg_1_4",
-    "rl_dg_2_4",
-    "rl_dg_3_4",
-    "rl_dg_4_4",
-    "rl_dg_5_4",
+    "r_hl_palm",
+    "r_hl_thumb_4",
+    "r_hl_index_4",
+    "r_hl_middle_4",
+    "r_hl_ring_4",
+    "r_hl_pinky_4",
 ]
 
-# Fabrics FK taskmap body names (openarm_tesollo_sensor.urdf 기준)
-# [0]=palm_link (= rl_dg_palm alias, Fabrics attractor 기준점)
-# [1]=palm_x    (palm_link +X 방향 기준, 방향 참조용)
-# [2:7]=rl_dg_*_tip (fingertip sensor 링크, 센서 URDF 기준)
+# Fabrics FK taskmap body names (openarm_tesollo_sensor_rl fabrics URDF 기준)
+# [0]=r_hl_palm (Fabrics attractor 기준점, old palm_link ↔ 동일 transform 검증됨)
+# [1]=r_hl_palm_x (r_hl_palm +X 방향 기준, 방향 참조용; fabrics URDF 전용 helper)
+# [2:7]=r_hl_<finger>_tip (fingertip 링크)
 FABRIC_HAND_BODY_NAMES = [
-    "palm_link",
-    "palm_x",
-    "rl_dg_1_tip",
-    "rl_dg_2_tip",
-    "rl_dg_3_tip",
-    "rl_dg_4_tip",
-    "rl_dg_5_tip",
+    "r_hl_palm",
+    "r_hl_palm_x",
+    "r_hl_thumb_tip",
+    "r_hl_index_tip",
+    "r_hl_middle_tip",
+    "r_hl_ring_tip",
+    "r_hl_pinky_tip",
 ]
 
 
@@ -83,12 +86,12 @@ HAND_START_POSE = [
 
 # FABRICS 접근 자세 (Approach pose)
 # FABRICS pregrasp rollout 동안 유지 + episode 시작 초기 손 자세 + per-finger lerp 기준점
-# rj_dg_1_1 (thumb abduction, X축) = 0.0 고정 (v10: -0.283 → 0.0)
+# r_hj_thumb_1 (thumb abduction, X축) = 0.0 고정 (v10: -0.283 → 0.0)
 #   → 0으로 고정 시 엄지가 neutral opposition 위치를 유지 (새끼손가락 방향으로 치우치는 현상 방지)
-# rj_dg_1_2 (thumb, Z-axis curl, range [-π, 0]) = -1.241 rad
+# r_hj_thumb_2 (thumb, Z-axis curl, range [-π, 0]) = -1.241 rad
 #   → thumb을 opposition 방향으로 pre-curl하여 접근 시 컵과의 collision 방지
 HAND_APPROACH_POSE = [
-    +0.000, -1.241, +0.104, +0.790,   # thumb  (v10: rj_dg_1_1 -0.283→0.0 고정)
+    +0.000, -1.241, +0.104, +0.790,   # thumb  (v10: r_hj_thumb_1 -0.283→0.0 고정)
     +0.016, +0.527, +0.502, +0.674,   # index
     +0.004, +0.775, +0.170, +1.090,   # middle
     -0.000, +0.668, +0.387, +1.013,   # ring
@@ -96,9 +99,9 @@ HAND_APPROACH_POSE = [
 ]
 
 # 파지 자세 — v7 test* 학습 결과에서 추출 후 thumb_1 수동 보정
-# rj_dg_*_1 = 0.0 고정 
+# r_hj_*_1 = 0.0 고정
 HAND_GRASP_POSE = [
-    +0.000, -1.570, +0.130, +0.988,   # thumb  (v10: rj_dg_1_1=0.0 고정)
+    +0.000, -1.570, +0.130, +0.988,   # thumb  (v10: r_hj_thumb_1=0.0 고정)
     +0.000, +0.659, +0.628, +0.843,   # index
     +0.000, +0.969, +0.213, +1.363,   # middle
     -0.000, +0.835, +0.484, +1.266,   # ring
@@ -107,7 +110,7 @@ HAND_GRASP_POSE = [
 
 # 완전 파지 자세 — HAND_GRASP_POSE 기준 약 20% 더 닫힌 상한/방향
 # policy imitation target이 아니라 adaptive closure의 bounded limit로만 사용한다.
-# rj_*_1 및 thumb rj_dg_1_2는 HAND_GRASP_POSE와 동일하게 유지한다.
+# r_hj_*_1 및 thumb r_hj_thumb_2는 HAND_GRASP_POSE와 동일하게 유지한다.
 HAND_FULL_GRIP_POSE = [
     +0.000, -1.570, +0.156, +1.186,   # thumb
     +0.000, +0.791, +0.754, +1.012,   # index

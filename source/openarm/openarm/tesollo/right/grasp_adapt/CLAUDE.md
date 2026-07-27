@@ -20,7 +20,7 @@
 - real2sim actuator 보정: `real2sim_actuator_cfg.py`.
 
 ## 손가락 인덱스 규약
-- tip contact 텐서 index 0 = 엄지(`rl_dg_1_tip`), index 1~4 = 검지/중지/약지/소지.
+- tip contact 텐서 index 0 = 엄지(`r_hl_thumb_tip`), index 1~4 = 검지/중지/약지/소지.
 
 ## 핵심 지표 (TFEvents)
 - `reward/r_secure`, `reward/r_efficient`, `reward/r_drop`
