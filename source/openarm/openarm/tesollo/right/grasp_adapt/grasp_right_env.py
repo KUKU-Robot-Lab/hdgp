@@ -141,8 +141,11 @@ class GraspRightEnv(DirectRLEnv):
             "reward/secure": ("reward/summary", "secure"),
             "reward/efficient": ("reward/summary", "efficient"),
             "reward/drop": ("reward/summary", "drop"),
+            "reward/envelope": ("reward/summary", "envelope"),
             "reward/action_smooth": ("reward/summary", "action_smooth"),
             "contact/count": ("task/contact", "tip_count"),
+            "task/middle_contact_rate": ("task/contact", "middle_rate"),
+            "task/distal_contact_rate": ("task/contact", "distal_rate"),
             "contact/palm": ("task/contact", "palm_rate"),
             "contact/palm_force": ("task/contact", "palm_force"),
             "cup/tilt_deg": ("task/cup", "tilt_deg"),
@@ -1148,6 +1151,17 @@ class GraspRightEnv(DirectRLEnv):
         )
         hold_gate = adaptive_terms["hold_gate"]
 
+        # 손끝-only 강제(하드웨어 제약): Tesollo는 손끝에만 6축 F/T 센서 → 중간마디(middle)로
+        # 감싸는 envelope 접촉은 tactile로 못 읽어 fragile/force 파이프라인이 무효화된다.
+        # hold 구간에서 middle 접촉을 벌점(distal은 손끝 인접 회색지대라 진단 로깅만).
+        middle_contact_frac = (
+            self.middle_binary_contact_buf.float().sum(dim=-1) / float(NUM_MIDDLE_SENSORS)
+        )
+        distal_contact_frac = (
+            self.distal_binary_contact_buf.float().sum(dim=-1) / float(NUM_DISTAL_SENSORS)
+        )
+        r_envelope = -float(self.cfg.envelope_penalty_weight) * hold_gate * middle_contact_frac
+
         # 평가 bonus (Fork C): 10cm·upright·5접촉 유지 시 보너스. 축소·force-quality 비결합.
         # lift/stabilize는 적응을 "평가"하는 gate일 뿐, 목적이 아니다 (weight는 cfg에서 축소).
         base_success_bonus = reward_terms["success_bonus"]
@@ -1165,7 +1179,7 @@ class GraspRightEnv(DirectRLEnv):
         reward_terms["success_bonus"] = height_hold_success_bonus
 
         total = torch.nan_to_num(
-            total - base_success_bonus + height_hold_success_bonus + r_objective,
+            total - base_success_bonus + height_hold_success_bonus + r_objective + r_envelope,
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
@@ -1184,6 +1198,9 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["reward/secure"] = adaptive_terms["r_secure"].mean()
         self.extras["reward/efficient"] = adaptive_terms["r_efficient"].mean()
         self.extras["reward/drop"] = adaptive_terms["r_drop"].mean()
+        self.extras["reward/envelope"] = r_envelope.mean()
+        self.extras["task/middle_contact_rate"] = middle_contact_frac.mean()
+        self.extras["task/distal_contact_rate"] = distal_contact_frac.mean()
         # 적응 검증: grip_ratio가 mass bin별로 공통값에 수렴해야 함 (force ∝ mass)
         self.extras["task/grip_force_n"] = grip_normal_force.mean()
         self.extras["task/grip_ratio"] = force_ratio.mean()

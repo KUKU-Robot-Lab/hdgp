@@ -12,6 +12,8 @@
 
 ## Global Constraints
 
+- **손끝-only (하드웨어 제약, 전 Phase 공통):** Tesollo 핸드는 **손끝에만 6축 F/T 센서**가 있다. 중간마디(`r_hl_*_3`)로 감싸는 envelope 파지는 그 접촉력을 센서가 못 읽어 tactile 파이프라인(Phase 2 damage, Phase 3 residual, Phase 5 constraint 전부)을 무효화한다. 따라서 **접촉은 손끝에서만 일어나야 하며, 이는 태스크 성공의 근본 정의**다. hold 구간 middle 접촉은 `envelope_penalty_weight`로 벌점(distal=`r_hl_*_4`는 손끝 인접 회색지대라 진단 로깅만). 이 제약은 Phase 1에서 도입하지만 모든 후속 Phase가 전제한다.
+
 - **대상 폴더만 수정:** `hdgp/source/openarm/openarm/tesollo/right/grasp_adapt/`. 공유 코어(`openarm/common/grasp_reward_core.py`, `grasp_adaptive_core.py`)는 **다른 태스크(RH56F1, grasp_v1/v2)가 함께 쓰므로** 기존 인자 기본값을 깨지 않는 방식(신규 optional 인자)으로만 확장한다. `hdgp/CLAUDE.md` 코드 수정 규칙 3.
 - **손가락 인덱스 규약:** tip contact 텐서 index 0 = 엄지(`rl_dg_1_tip`), index 1~4 = 검지/중지/약지/소지. grasp_v1 `thumb_cup_grip = any_finger_contact[:, 0]` 근거.
 - **접촉 임계값:** `CONTACT_FORCE_THRESHOLD = 0.1 N`, `CONTACT_FORCE_MAX = 10.0 N` (정규화 divisor). `grasp_right_constants.py`.
@@ -387,13 +389,15 @@ CUDA_VISIBLE_DEVICES=0 NOTE="Phase1 precision grasp fresh" \
 ```
 `train.sh`가 `record_test_snapshot.py`로 스냅샷 자동 기록.
 
-### Phase 1 검증 게이트 (TFEvents 근거)
-`parse_tfevents.py`로 다음을 확인하고 `analysis.md`에 누적:
-- **접촉 손가락 수 평균이 하락**(envelope 5접촉 → precision 3점 수렴) — 팁 파지 전환의 1차 증거.
-- **precision grasp 성공률**이 상승 추세, 만렙에서 유의미(>0.5 목표, 절대값은 컵 난이도 의존).
-- `reward/r_secure`가 이전보다 **일찍 활성화**(hold_gate가 3점에서 열림).
-- play.py 렌더링에서 실제로 **손끝으로 집는지**(감싸지 않는지) 육안 확인 — hdgp 증거 우선순위 2.
-- 실패 시(팁 파지 미형성, 컵 떨어뜨림 지속): reward 재조정은 TFEvents 근거로 별도 iteration. Phase 2로 넘어가지 않는다.
+### Phase 1 검증 게이트 (TFEvents 근거) — **Phase 2 진입 exit 기준**
+`parse_tfevents.py`로 다음을 확인하고 `analysis.md`에 누적. 아래를 만족하면 **완벽한 정밀 파지까지 다듬지 말고 즉시 Phase 2로**(힘/최소접촉 미세조정은 tactile reward가 붙는 Phase 2 이후 자연히 다뤄짐):
+- **손끝-only 확립(핵심):** `task/middle_contact_rate`가 낮게 수렴(감싸기 억제됨). envelope penalty 도입 전 대비 하락. — 손끝 파지의 직접 증거.
+- **파지·리프트 성립:** `task/success_rate` 유의미(>0.5, 컵 난이도 의존), `cup/height_delta` 10cm 도달, `task/precision_grasp_rate` 상승.
+- `reward/r_secure` 활성, `reward/envelope`가 0으로 수렴(감싸기 소멸).
+- play.py 렌더링에서 **손끝으로 집는지**(중간마디로 감싸지 않는지) 육안 확인 — hdgp 증거 우선순위 2.
+- **실패 시**: middle_contact_rate가 안 내려가면 `envelope_penalty_weight`↑(4.0→). 손끝만으로 못 들면(success↓) 컵 무게/마찰 재검토. TFEvents 근거로 조정, Phase 2로 넘어가지 않는다.
+
+**주의(진행 이력):** 최초 학습(`lstm_test1`)은 USD 통일 네이밍 이관 누락으로 크래시 → 이관 후 `lstm_test2`는 학습됐으나 손끝-only 미반영(success 0.70·precision 0.82이나 five_tip 0.72로 감쌈 가능). envelope penalty 반영본으로 재학습이 실제 Phase 1 검증 대상.
 
 ---
 

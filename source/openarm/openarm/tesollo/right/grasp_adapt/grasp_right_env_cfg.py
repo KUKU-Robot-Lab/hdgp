@@ -204,6 +204,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_action_sharpness: float = 1.5
     action_smooth_weight: float = -0.02
     post_lift_contact_loss_weight: float = -8.0
+    # 손끝-only 강제(하드웨어 제약: 손끝에만 6축 F/T): hold 구간 중간마디(middle) 접촉 벌점.
+    # secure(10)·drop(8)보다 작게 두어 손끝 파지는 온전, envelope(감싸기)만 상쇄.
+    envelope_penalty_weight: float = 4.0
     hand_residual_magnitude_weight: float = -0.005
     hand_residual_scale: float = 0.15
 
