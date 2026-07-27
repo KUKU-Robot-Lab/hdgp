@@ -705,9 +705,18 @@ class GraspLeftEnv(DirectRLEnv):
         num_envelope_fingers = (
             self.binary_contact_buf & self.middle_binary_contact_buf
         ).sum(dim=-1)
+        # 2026-07-27 lift 게이트 완화(reward-audit ACCEPT): tip 접촉(num_contacts_buf) →
+        # any(tip|mid|dist). left가 물체를 마디로 감싸는데(엄지 mid 0.675) tip 4지 못 넘어
+        # lift latch 안 됨→lift reward 0 정체(chicken-egg). palm orientation 완벽미러 수치확인 후.
+        # right는 tip으로 넘으니 any 게이트에도 영향 없음(tip⊂any).
+        _lift_contact_count = (
+            self.binary_contact_buf
+            | self.middle_binary_contact_buf
+            | self.distal_binary_contact_buf
+        ).sum(dim=-1)
         prev_latched = self.lift_ready_latched_buf.clone()
         self.grasp_ready_hold_buf, _ready_now, lift_latched = compute_lift_readiness(
-            num_contacts=self.num_contacts_buf,
+            num_contacts=_lift_contact_count,
             is_grasp_phase=~self.lift_ready_latched_buf,
             previous_hold_count=self.grasp_ready_hold_buf,
             previous_latched=self.lift_ready_latched_buf,
