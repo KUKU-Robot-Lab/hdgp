@@ -353,7 +353,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   palm_contact: palm 닿음 보너스(부트스트랩). lift 는 palm 접촉 AND 게이트 →
     #   palm 닿아야(진짜 감쌈) lift 보상, 얕은 pinch(palm 미접촉) 배제.
     palm_approach_weight:      float = 1.5   # 07.23 h2o 제거로 유일 접근 유인 → 1.0→1.5 부트스트랩 보강
-    palm_approach_sharpness:   float = 15.0
+    palm_approach_sharpness:   float = 6.0   # 07.27 15→6: lstm_test1(box0.16) 실패 원인 = sharpness15가
+                                             #   palm_dist>0.2서 exp≈0(gradient 소멸) → 팜이 z만 내려가고(side_gate)
+                                             #   물체 xy로 견인 안 돼 옆으로 빗나감(palm_dist 0.27 정체·접촉0).
+                                             #   6으로 낮춰 접근 전구간(0.3→0.05) gradient 확보, 물체로 3D 견인.
     palm_contact_bonus_weight: float = 1.5   # 07.23 approach 완결 부트스트랩 재활성: 측면접촉 보너스
                                              # (lstm_test8 dead zone — palm 정렬접근 후 접촉 미발생 소거 대응).
                                              # lift/goal(5.0)의 0.3배 = 목표항이 그 위 지배(부트스트랩 크기).
