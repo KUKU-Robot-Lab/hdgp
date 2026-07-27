@@ -10,17 +10,17 @@ def Xform "Shaker"
 {
     def Xform "Body" (prepend references = @./shaker_body.usda@)
     {
-        double3 xformOp:translate = (0, 0, -0.04744)
+        double3 xformOp:translate = (0, 0, -0.052964)
         uniform token[] xformOpOrder = ["xformOp:translate"]
     }
     def Xform "Lid" (prepend references = @./shaker_lid.usda@)
     {
-        double3 xformOp:translate = (0, 0, 0.04382)
+        double3 xformOp:translate = (0, 0, 0.045996)
         uniform token[] xformOpOrder = ["xformOp:translate"]
     }
     def Xform "Cap" (prepend references = @./shaker_cap.usda@)
     {
-        double3 xformOp:translate = (0, 0, 0.08071)
+        double3 xformOp:translate = (0, 0, 0.087371)
         uniform token[] xformOpOrder = ["xformOp:translate"]
     }
 
@@ -28,8 +28,8 @@ def Xform "Shaker"
     {
         rel physics:body0 = </Shaker/Body>
         rel physics:body1 = </Shaker/Lid>
-        point3f physics:localPos0 = (0, 0, 0.06491)
-        point3f physics:localPos1 = (0, 0, -0.02635)
+        point3f physics:localPos0 = (0, 0, 0.072609)
+        point3f physics:localPos1 = (0, 0, -0.026351)
         quatf physics:localRot0 = (1, 0, 0, 0)
         quatf physics:localRot1 = (1, 0, 0, 0)
     }
@@ -37,8 +37,8 @@ def Xform "Shaker"
     {
         rel physics:body0 = </Shaker/Lid>
         rel physics:body1 = </Shaker/Cap>
-        point3f physics:localPos0 = (0, 0, 0.01965)
-        point3f physics:localPos1 = (0, 0, -0.01724)
+        point3f physics:localPos0 = (0, 0, 0.019649)
+        point3f physics:localPos1 = (0, 0, -0.021726)
         quatf physics:localRot0 = (1, 0, 0, 0)
         quatf physics:localRot1 = (1, 0, 0, 0)
     }

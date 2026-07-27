@@ -3,15 +3,15 @@
   Cocktail shaker CAP as an independent rigid body. ORIGIN = center of mass.
   Visual = OBJ, Collision = STL. Mesh paths relative to this URDF. mm -> scale 0.001.
 
-  Assembly: when closed, place this cap at (0,0,0.12815) in the BODY frame
-  (= (0,0,0.03689) in the LID frame). Fit inner Ø57.6 over the lid neck Ø57.
+  Assembly: when closed, place this cap at (0,0,0.140335) in the BODY frame
+  (= (0,0,0.041375) in the LID frame). Fit inner Ø57.6 over the lid neck Ø57.
 -->
 <robot name="cocktail_shaker_cap">
   <link name="shaker_cap">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>  <!-- origin = center of mass -->
-      <mass value="0.0583"/>
-      <inertia ixx="2.9110e-05" ixy="0" ixz="0" iyy="2.9110e-05" iyz="0" izz="4.6322e-05"/>
+      <mass value="0.0808"/>
+      <inertia ixx="3.7989e-05" ixy="0" ixz="0" iyy="3.7989e-05" iyz="0" izz="5.4881e-05"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>

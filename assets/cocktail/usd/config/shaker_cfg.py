@@ -74,5 +74,5 @@ SHAKER_ASSEMBLED_CFG = RigidObjectCfg(
 
 # --- assembly / mate transforms (body frame, meters) ---
 # All origins are at COM, so a mate pose = (part_COM - body_COM).
-LID_MATE_POS = (0.0, 0.0, 0.09126)   # place lid here (in body frame) to close
-CAP_MATE_POS = (0.0, 0.0, 0.12815)   # place cap here (in body frame)
+LID_MATE_POS = (0.0, 0.0, 0.098960)   # place lid here (in body frame) to close
+CAP_MATE_POS = (0.0, 0.0, 0.140335)   # place cap here (in body frame)

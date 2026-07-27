@@ -15,9 +15,7 @@ isaac/
 │   │   ├── shaker_materials.mtl     # 금속 재질(stainless 기본 / aluminum)
 │   │   └── shaker_full.stl          # 병합 STL(호환용)
 │   └── collision/                   # 충돌용 STL
-│       ├── shaker_body.stl  shaker_lid.stl  shaker_cap.stl   # 속 빈 셸 → SDF
-│       ├── shaker_body_thick3mm.stl # 컵 벽3mm 대체본 (tunneling 저감)
-│       └── shaker_solid_envelope.stl# 외형 채운 솔리드 — ※ bead 컨테이너엔 쓰지 말 것
+│       └── shaker_body.stl  shaker_lid.stl  shaker_cap.stl   # 속 빈 셸(바닥/윗면 닫힘) → SDF
 ├── urdf/                            # 파트별 독립 + 조립본
 │   ├── shaker_body.urdf             # 몸체(열린 컵)  ← POURING
 │   ├── shaker_lid.urdf              # 뚜껑(독립 강체)
@@ -64,7 +62,7 @@ Isaac에서 이 USD를 참조하면 별도 물성 세팅 없이 바로 시뮬 �
 
 ### 값 바꾸는 법
 - 질량/재료: `.usda` 의 `physics:mass` 와 `physics:diagonalInertia` 수정
-  (관성은 질량에 비례: `I = mass × [xx=4.728e-3, zz=1.335e-3] m²`, 조립체 기준).
+  (관성은 질량에 비례: `I = mass × [xx=5.578e-3, zz=1.255e-3] m²`, 조립체 기준).
 - tunneling 심하면 `sdfResolution` 상향(256→512) 또는 `restOffset` 소폭 증가.
 
 ### Isaac 로딩 (핵심)
@@ -81,18 +79,19 @@ add_reference_to_stage(usd_path="usd/shaker_body.usda", prim_path="/World/Shaker
 |------|-----------|------|
 | **컵(컨테이너)** | **SDF 메시** (`shaker_body.stl`) | 내부 공동+얇은 벽 보존, bead가 들어가고 벽과 충돌 |
 | 뚜껑/스트레이너 | SDF 메시 | Ø4 홀 straining 거동 유지 |
-| 컵을 단순 강체로만 취급(내부 무시) | convex decomposition (`collision/shaker_solid_envelope.stl`) | 접촉 안정 최고, 단 내부 사용 불가 |
+| 컵을 단순 강체로만 취급(내부 무시) | convex decomposition (파트 메시에 직접 적용) | 접촉 안정 최고, 단 내부 사용 불가 |
 
 **절대 금지:** 컵을 convex hull / convex decomposition 로 충돌 처리 → 공동이 메워져 bead가 못 들어감.
 
 ## 치수 / 물성 (설계값)
 - 컵 내부 용량 ≈ **706 mL** (사양 700 mL 일치)
-- 컵 입구 내경 ≈ 86 mm, 바닥 내경 ≈ 56 mm, 내부 높이 ≈ 174 mm
+- 컵 입구 내경 ≈ 86 mm, 바닥 내경 ≈ 56 mm, 내부 높이 ≈ 174 mm, **바닥 1.2mm 닫힘**(캡 윗면 1.2mm 닫힘)
 - 스트레이너 홀: **Ø4 mm × 13개** (중앙 1 + PCD 34 위 12개)
-- 질량(속 빈 셸 기준): 스테인리스304 **0.50 kg** / 알루미늄 0.17 kg / PLA 0.079 kg / PETG 0.081 kg
-- 무게중심(조립·월드): z = **139.5 mm** (x=y=0, 축대칭)
-- 관성(스테인리스 0.50 kg, COM 기준): Ixx=Iyy=2.36e-3, Izz=6.68e-4 kg·m²
-  - 다른 질량으로 스케일: `I = mass × [Ixx/m=4.728e-3, Izz/m=1.335e-3] (m²)`
+- 질량(속 빈 셸, 스테인리스304): Body **0.288** / Lid **0.178** / Cap **0.081** / 조립 **0.546 kg**
+  - 알루미늄 조립 0.188 kg / PLA 0.086 kg (질량비로 스케일)
+- 조립 무게중심(월드): z = **137.4 mm** (x=y=0, 축대칭)
+- 관성(조립 0.546 kg, COM 기준): Ixx=Iyy=3.046e-3, Izz=6.851e-4 kg·m²
+  - 다른 질량으로 스케일: `I = mass × [Ixx/m=5.578e-3, Izz/m=1.255e-3] (m²)`
 
 ## bead(유체 근사) 셋업 권장값
 - **모델**: rigid-sphere bead 다수 (PhysX particle system 대신 강체 구 근사).
@@ -105,7 +104,7 @@ add_reference_to_stage(usd_path="usd/shaker_body.usda", prim_path="/World/Shaker
 ## tunneling(벽 관통) 대책 — 얇은 벽(0.8mm) + 격한 shaking
 우선순위대로:
 1. **컵 충돌을 SDF** 로. (PhysX SDF는 얇은/오목 벽에 강함)
-2. 그래도 새면 컵 충돌 메시를 **`meshes/collision/shaker_body_thick3mm.stl`** 로 교체(벽 3mm).
+2. 그래도 새면 컵 충돌 메시를 벽 두께를 키운 별도본(예: 3mm)으로 교체(필요 시 생성).
 3. 시뮬 스텝/솔버:
    - `sim.dt` 작게 (예 1/240 s 이하), `decimation` 로 policy step 조정.
    - PhysX solver iterations 상향: position ≈ 16, velocity ≈ 4.
@@ -119,8 +118,8 @@ add_reference_to_stage(usd_path="usd/shaker_body.usda", prim_path="/World/Shaker
 
 - **① POUR**: `shaker_body.usda`(열린 컵, 넓은 입구 Ø86) 에 음료를 붓는다. 뚜껑/캡은 스테이징 위치에 별도로 스폰.
 - **② CLOSE**: 로봇이 뚜껑을 집어 몸체 위에 안착. 목표 상대 포즈(몸체 프레임 기준):
-  - 뚜껑 = `(0, 0, 0.09126) m`  (몸체 COM→뚜껑 COM; 스커트가 상단 림에 18mm 물림, Ø88.7/Ø88)
-  - 캡  = `(0, 0, 0.12815) m`  (= 뚜껑 프레임 기준 `(0,0,0.03689)`)
+  - 뚜껑 = `(0, 0, 0.098960) m`  (몸체 COM→뚜껑 COM; 스커트가 상단 림에 18mm 물림, Ø88.7/Ø88)
+  - 캡  = `(0, 0, 0.140335) m`  (= 뚜껑 프레임 기준 `(0,0,0.041375)`)
   - ※ 모든 원점이 COM이라 mate 포즈 = (파트 COM − 기준 COM)
 - **③ SHAKE**: 뚜껑이 안착된 순간 **fixed joint(또는 grasp-weld)를 런타임 생성**해 하나로 묶고 흔든다.
   - 미리 묶인 닫힘 상태가 필요하면 `shaker_assembled.usda` 사용(3파트 참조 + fixed joint 내장).

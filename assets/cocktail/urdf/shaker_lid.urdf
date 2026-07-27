@@ -3,7 +3,7 @@
   Cocktail shaker LID as an independent rigid body. ORIGIN = center of mass.
   Visual = OBJ, Collision = STL. Mesh paths relative to this URDF. mm -> scale 0.001.
 
-  Assembly: when closed, place this lid at (0,0,0.09126) in the BODY frame
+  Assembly: when closed, place this lid at (0,0,0.098960) in the BODY frame
   (= body_COM to lid_COM). Mating fit: skirt inner Ø88.7 over body top Ø88 (18mm overlap).
   Set collision approximation = "sdf" in Isaac (hollow shell + Ø4 strainer holes).
 -->

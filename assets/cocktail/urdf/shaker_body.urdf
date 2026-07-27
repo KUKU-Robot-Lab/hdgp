@@ -8,16 +8,15 @@
    * Set this link's collision approximation to  "sdf"  (Signed Distance Field)
      after import. Convex hull/decomposition would FILL the cavity so beads
      could not enter. (The prebuilt USD in ../usd already has SDF baked in.)
-   * To reduce bead tunneling through the 0.8 mm walls during vigorous motion,
-     swap the collision mesh to  shaker_body_thick3mm.stl  (~3 mm walls).
+   * Bottom is now a closed 1.2 mm floor (axis-closed revolve).
    * mass = stainless 304. Change for your material.
 -->
 <robot name="cocktail_shaker_body">
   <link name="shaker_body">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>  <!-- origin = center of mass -->
-      <mass value="0.2633"/>
-      <inertia ixx="8.3799e-04" ixy="0" ixz="0" iyy="8.3799e-04" iyz="0" izz="3.5519e-04"/>
+      <mass value="0.2876"/>
+      <inertia ixx="1.028556e-03" ixy="0" ixz="0" iyy="1.028556e-03" iyz="0" izz="3.650899e-04"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
