@@ -51,6 +51,37 @@ def compute_precision_grasp_mask(
     return thumb & (opposing >= min_opposing)
 
 
+def compute_radial_compression(
+    contact_pos: torch.Tensor,
+    contact_force: torch.Tensor,
+    cup_center: torch.Tensor,
+    cup_axis: torch.Tensor,
+    contact_mask: torch.Tensor,
+) -> torch.Tensor:
+    """접촉력의 컵 중심축 방향 inward(radial 압축) 성분 합.
+
+    감싸기(사방 마디가 벽을 안으로 압박)는 radial↑, 손끝 국부/축방향 파지는 radial↓.
+    종이컵 좌굴은 radial 압축이 임계를 넘을 때 발생 → 손끝-only를 물리로 유도한다.
+
+    Args:
+        contact_pos: (N,K,3) 접촉점 world 좌표.
+        contact_force: (N,K,3) 접촉력 world 벡터.
+        cup_center: (N,3) 컵 중심 world.
+        cup_axis: (N,3) 컵 up축(정규화 가정).
+        contact_mask: (N,K) 유효 접촉 {0,1}.
+    Returns:
+        (N,) radial inward 성분 합(≥0).
+    """
+    rel = contact_pos - cup_center.unsqueeze(1)                      # (N,K,3)
+    axis = cup_axis.unsqueeze(1)                                     # (N,1,3)
+    axial = (rel * axis).sum(dim=-1, keepdim=True) * axis            # 축방향 성분
+    radial_vec = rel - axial                                        # 축에 수직(바깥 방향)
+    radial_out = radial_vec / radial_vec.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+    # 힘의 inward 성분(바깥 방향의 반대)만 양수로
+    inward = (-(contact_force * radial_out).sum(dim=-1)).clamp(min=0.0)  # (N,K)
+    return (inward * contact_mask).sum(dim=-1)                       # (N,)
+
+
 def compute_precision_grasp_frac(tip_contact_bool: torch.Tensor) -> torch.Tensor:
     """precision 파지 품질 [0,1] (엄지 없으면 0). graded 게이팅용.
 
