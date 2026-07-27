@@ -137,8 +137,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     pregrasp_fabric_steps: int   = 60
     reset_fabric_chunk_size: int = 128
     cache_pregrasp_reset:  bool  = True
-    pregrasp_offset_x:     float = -0.06
-    pregrasp_offset_y:     float = -0.07
+    # palm 71% 접촉 근본원인=grasp_v1 물림 pregrasp/workspace가 palm을 컵 ~9.2cm에 고정
+    # → 큰 Tesollo 손+작은 컵(r 4.5cm)이라 손끝 잡으면 palm 표면이 컵에 붙음(기구학).
+    # palm을 컵에서 멀리(9.2→12cm) 소환해 손끝만 뻗어 잡게(손끝 관절 리치로 커버).
+    # ★손끝 리치 부족 시 success 붕괴 → 값 축소. reward 아님(초기 위치).
+    pregrasp_offset_x:     float = -0.08
+    pregrasp_offset_y:     float = -0.09
     pregrasp_offset_z:     float = 0.00
     pregrasp_noise_x:      float = 0.01
     pregrasp_noise_y:      float = 0.01
