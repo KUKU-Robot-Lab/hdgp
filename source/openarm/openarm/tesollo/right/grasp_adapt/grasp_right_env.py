@@ -95,6 +95,7 @@ from .finger_action_utils import compute_full_range_finger_targets
 from .grasp_reward_utils import compute_upright_success_mask
 from .grasp_right_utils import (
     compute_damage_dose,
+    compute_mass_shift_trigger,
     compute_precision_grasp_mask,
     compute_radial_compression,
     to_torch,
@@ -375,6 +376,11 @@ class GraspRightEnv(DirectRLEnv):
         self._lift_success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._lift_success_latched_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._eval_mass_shift_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # Phase 3: 동적 mass(물 추가) 버퍼
+        self._mass_shift_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._mass_shift_hold_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._mass_shift_pre_dose = torch.zeros(self.num_envs, device=self.device)     # 추가 직전 dose
+        self._mass_shift_pre_height = torch.zeros(self.num_envs, device=self.device)   # 추가 직전 높이
         # Stabilize(height-hold) phase 버퍼 (lift 성공 후 10cm 유지 단계)
         self.is_stabilize_phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.episode_stabilize_success_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -792,6 +798,50 @@ class GraspRightEnv(DirectRLEnv):
                     float(target_count) / max(float(self.cfg.num_beads), 1.0)
                 )
                 self._eval_mass_shift_done[shift_mask] = True
+
+        # Phase 3: 동적 mass 이벤트 (물 추가) — hidden bead를 컵 현재 위치로 물리 teleport.
+        # cup.data.root_pos_w/root_lin_vel_w는 항상 현 sim 상태(self.object_pos 신선도 무관).
+        if self.cfg.mass_shift_enabled:
+            height_delta_now = (
+                self.cup.data.root_pos_w[:, 2]
+                - self.scene.env_origins[:, 2]
+                - self.object_init_pos[:, 2]
+            )
+            mass_shift_trigger, self._mass_shift_hold_counter = compute_mass_shift_trigger(
+                self.lift_ready_latched_buf,
+                height_delta_now,
+                float(self.cfg.mass_shift_height_threshold),
+                self._mass_shift_hold_counter,
+                int(self.cfg.mass_shift_delay_steps),
+                self._mass_shift_done,
+            )
+            if mass_shift_trigger.any():
+                shift_ids = mass_shift_trigger.nonzero(as_tuple=False).squeeze(-1)
+                target = min(
+                    max(int(self.cfg.mass_shift_target_bead_count), 0),
+                    int(self.cfg.num_beads),
+                )
+                k = int(shift_ids.numel())
+                cup_pos_k = self.cup.data.root_pos_w[shift_ids]        # (k,3) world
+                cup_vel_k = self.cup.data.root_lin_vel_w[shift_ids]    # (k,3)
+                bead_state = torch.zeros(k, self.cfg.num_beads, 13, device=self.device)
+                bead_state[..., :3] = (
+                    self.scene.env_origins[shift_ids].unsqueeze(1)
+                    + self._hidden_bead_offsets_b.unsqueeze(0)
+                )
+                bead_state[..., 3] = 1.0                              # quat w
+                for bi in range(target):
+                    bead_state[:, bi, :3] = cup_pos_k + self._bead_offsets_b[bi].unsqueeze(0)
+                    bead_state[:, bi, 3] = 1.0
+                    bead_state[:, bi, 7:10] = cup_vel_k               # lin vel = 컵 속도(jolt 방지)
+                self.beads.write_object_state_to_sim(bead_state, env_ids=shift_ids)
+                # 지표 baseline(추가 직전) 기록
+                self._mass_shift_pre_dose[shift_ids] = self._damage_dose_buf[shift_ids]
+                self._mass_shift_pre_height[shift_ids] = height_delta_now[shift_ids]
+                self._bead_mass_normalized[shift_ids] = float(target) / max(
+                    float(self.cfg.num_beads), 1.0
+                )
+                self._mass_shift_done[shift_ids] = True
 
         self.palm_pose_targets[:, :3] = palm_pos
         self.palm_pose_targets[:, 3:7] = palm_quat
@@ -1371,6 +1421,21 @@ class GraspRightEnv(DirectRLEnv):
         # 목적(형상 덜 파괴하며 파지)을 직접 성공조건화. palm 지지는 무관.
         shape_intact = self._damage_dose_buf < float(self.cfg.damage_dose_success_max)
         self.extras["task/damage_dose"] = self._damage_dose_buf.mean()
+
+        # Phase 3: 동적 mass(물 추가) 지표 — 추가 후 형상파괴/높이 유지(=slip/drop 대리)
+        if self.cfg.mass_shift_enabled:
+            shifted = self._mass_shift_done.float()
+            shifted_n = shifted.sum().clamp(min=1.0)
+            cur_height = (self.object_pos[:, 2] - self.object_init_pos[:, 2]).clamp(min=0.0)
+            self.extras["task/mass_shift_rate"] = shifted.mean()
+            self.extras["task/post_shift_damage"] = (
+                ((self._damage_dose_buf - self._mass_shift_pre_dose) * shifted).sum() / shifted_n
+            )
+            self.extras["task/post_shift_height"] = (cur_height * shifted).sum() / shifted_n
+            self.extras["task/post_shift_height_loss"] = (
+                ((self._mass_shift_pre_height - cur_height).clamp(min=0.0) * shifted).sum()
+                / shifted_n
+            )
         final_success_now = (
             self._lift_success_latched_buf
             & reached_target
@@ -1633,6 +1698,11 @@ class GraspRightEnv(DirectRLEnv):
         self.is_stabilize_phase[env_ids] = False
         self.episode_stabilize_success_buf[env_ids] = False
         self._eval_mass_shift_done[env_ids] = False
+        # Phase 3: 동적 mass 버퍼 리셋
+        self._mass_shift_done[env_ids] = False
+        self._mass_shift_hold_counter[env_ids] = 0
+        self._mass_shift_pre_dose[env_ids] = 0.0
+        self._mass_shift_pre_height[env_ids] = 0.0
         self.contacts_at_lift_start_buf[env_ids] = 0.0
         self.palm_at_lift_start_buf[env_ids] = 0.0
         self.grasp_tilt_at_lift_start_buf[env_ids] = 0.0

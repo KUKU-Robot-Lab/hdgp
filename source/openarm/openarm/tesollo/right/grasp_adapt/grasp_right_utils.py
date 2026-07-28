@@ -105,3 +105,32 @@ def compute_damage_dose(
     """
     over = (radial_compression - f_safe).clamp(min=0.0) / max(f_safe, 1e-6)
     return prev_dose + dt * over.pow(q)
+
+
+def compute_mass_shift_trigger(
+    lift_latched: torch.Tensor,
+    height_delta: torch.Tensor,
+    height_threshold: float,
+    hold_counter: torch.Tensor,
+    delay_steps: int,
+    already_done: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Phase 3 '물 추가' 발동 판정 (설계 §5).
+
+    lift latch + 컵 높이 ≥ 임계를 delay_steps 이상 연속 유지하면 1회 발동.
+    높이 미달 시 hold_counter 초기화(연속 유지만 인정).
+
+    Args:
+        lift_latched: (N,) lift latch 여부.
+        height_delta: (N,) 현 리프트 높이 [m].
+        height_threshold: 발동 높이 임계 [m].
+        hold_counter: (N,) 높이 유지 누적 step (int).
+        delay_steps: 발동에 필요한 유지 step 수.
+        already_done: (N,) 이미 이번 에피소드에 발동했는지.
+    Returns:
+        (trigger_mask (N,bool), new_hold_counter (N,)).
+    """
+    at_height = lift_latched & (height_delta >= height_threshold)
+    new_hold = torch.where(at_height, hold_counter + 1, torch.zeros_like(hold_counter))
+    trigger = at_height & (~already_done) & (new_hold >= int(delay_steps))
+    return trigger, new_hold

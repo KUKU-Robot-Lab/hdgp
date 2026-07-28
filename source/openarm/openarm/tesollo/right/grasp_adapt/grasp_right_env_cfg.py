@@ -524,6 +524,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     eval_mass_shift_target_bead_count: int = 30
 
     # -----------------------------------------------------------------------
+    # Phase 3: 동적 mass 이벤트 (물 추가) — lift 후 hidden bead를 컵으로 물리 teleport.
+    # eval_mass_shift(oracle 값만 변경)와 달리 실제 하중이 증가한다.
+    # 리셋은 가벼운 컵(bead_count_max 낮게)으로, lift 후 target까지 bead를 추가한다.
+    # actor는 mass를 관측하지 않으므로(tactile 추론) 무게 증가를 느껴 grip을 조절해야 한다.
+    # -----------------------------------------------------------------------
+    mass_shift_enabled:              bool  = False   # Phase 3 run에서만 True
+    mass_shift_target_bead_count:    int   = 30      # 추가 후 목표 bead 수
+    mass_shift_height_threshold:     float = 0.08    # 이 높이(m) 이상 유지 시 발동
+    mass_shift_delay_steps:          int   = 15      # 높이 도달 후 유지 step 수
+
+    # -----------------------------------------------------------------------
     # Hand / joint 이름
     # -----------------------------------------------------------------------
     actuated_joint_names: list = RIGHT_ACTUATED_JOINT_NAMES
@@ -536,3 +547,14 @@ class GraspRightEnvCfgNoActorMass(GraspRightEnvCfg):
     observation_space: int = NUM_OBSERVATIONS_NO_MASS
     num_observations: int = NUM_OBSERVATIONS_NO_MASS
     actor_observe_bead_mass: bool = False
+
+
+class GraspRightEnvCfgMassShift(GraspRightEnvCfgNoActorMass):
+    """Phase 3: 동적 mass(물 추가). 리셋은 가벼운 컵(0~10 bead), lift 후 target까지 추가.
+
+    obs/action 차원 불변(actor는 mass 미관측) → 기존 체크포인트에서 fine-tune 가능.
+    """
+
+    mass_shift_enabled: bool = True
+    bead_count_min: int = 0
+    bead_count_max: int = 10   # 리셋 가벼움 → shift로 mass_shift_target_bead_count까지 추가
