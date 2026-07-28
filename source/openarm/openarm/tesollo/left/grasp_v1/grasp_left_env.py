@@ -101,14 +101,11 @@ from .grasp_left_preset import (
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
     OBJECT_GOAL_POS,
-    PALM_GRASP_FRAME_ROT,
-    PALM_G_EULER_CENTER_SIDE,
 )
 from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
 from .grasp_left_utils import (
     compute_joint7_lift_wait_target,
     compute_lift_readiness,
-    g_pose_to_fabric_quat,
     scale,
     to_torch,
 )
@@ -171,15 +168,11 @@ class GraspLeftEnv(DirectRLEnv):
         ]
 
         # ----------------------------------------------------------------
-        # Palm pose 절대 workspace (안전 한계 클램프용) — 회전은 G 규약(grasp 프레임)
-        #
-        # tesollo palm 로컬축(+X=법선,+Z=손가락)이 Allegro/DEXTRAH 규약(+X=손가락,±Z=법선)과
-        # 90° 어긋나 있어, 옛 P 규약 euler 로는 ey≈0 에서 손바닥을 물체 쪽으로 정확히 못
-        # 돌린다(grasp_v2 left 에서 실증·수정된 문제 — PALM_GRASP_FRAME_ROT 이식).
+        # Palm pose 절대 workspace (안전 한계 클램프용) — 회전은 P-frame euler_zyx
+        # 직접 전달(right 미러, 중심 [-90,0,-90]deg). fabric 에 그대로 넘긴다.
         # ----------------------------------------------------------------
         self.palm_mins = to_torch(PALM_POSE_MINS_FUNC(cfg.max_pose_angle), device=self.device)
         self.palm_maxs = to_torch(PALM_POSE_MAXS_FUNC(cfg.max_pose_angle), device=self.device)
-        self.palm_grasp_frame_rot = to_torch(PALM_GRASP_FRAME_ROT, device=self.device)  # (3,3) C
 
         # ----------------------------------------------------------------
         # Delta palm action 범위 (pregrasp 기준 상대 오프셋)
@@ -590,10 +583,9 @@ class GraspLeftEnv(DirectRLEnv):
         palm[:, 0] = flat_x + self.cfg.pregrasp_offset_x
         palm[:, 1] = flat_y + self.cfg.pregrasp_offset_y
         palm[:, 2] = self.cfg.object_spawn_z + self.cfg.pregrasp_offset_z
-        # 회전 중심 = G 규약 PALM_G_EULER_CENTER_SIDE (grasp_v2 left 이식)
-        palm[:, 3] = math.radians(PALM_G_EULER_CENTER_SIDE[0])
-        palm[:, 4] = math.radians(PALM_G_EULER_CENTER_SIDE[1])
-        palm[:, 5] = math.radians(PALM_G_EULER_CENTER_SIDE[2])
+        palm[:, 3] = math.radians(-90.0)
+        palm[:, 4] = math.radians(0.0)
+        palm[:, 5] = math.radians(-90.0)
         palm = torch.max(
             torch.min(palm, self.palm_maxs.unsqueeze(0)),
             self.palm_mins.unsqueeze(0),
@@ -640,11 +632,10 @@ class GraspLeftEnv(DirectRLEnv):
             fqd  = torch.zeros(C, qi.shape[1], device=self.device)
             fqdd = torch.zeros(C, qi.shape[1], device=self.device)
 
-            # G 규약 euler → fabric quaternion (특이점 없음, grasp_v2 left 이식)
             self._reset_fabric.set_features(
                 self._reset_pca,
-                g_pose_to_fabric_quat(pp, self.palm_grasp_frame_rot),
-                "quaternion",
+                pp,
+                "euler_zyx",
                 fq.detach(),
                 fqd.detach(),
                 self._reset_obj_ids,
@@ -766,12 +757,10 @@ class GraspLeftEnv(DirectRLEnv):
         self.palm_pose_targets.copy_(palm_pose)
         self.hand_pca_targets.zero_()
 
-        # palm_pose_targets 는 G 규약 euler(회전 중심 PALM_G_EULER_CENTER_SIDE)로 유지하고,
-        # fabric 에는 quaternion 으로 넘긴다(grasp_v2 left 이식 — PALM_GRASP_FRAME_ROT 사상).
         self.open_tesollo_fabric.set_features(
             self.hand_pca_targets,
-            g_pose_to_fabric_quat(self.palm_pose_targets, self.palm_grasp_frame_rot),
-            "quaternion",
+            self.palm_pose_targets,
+            "euler_zyx",
             self.fabric_q.detach(),
             self.fabric_qd.detach(),
             self.object_ids,
@@ -792,14 +781,8 @@ class GraspLeftEnv(DirectRLEnv):
         #   _3 PIP: 중간마디(middle) 접촉 시 동결 / _4 DIP: distal|tip 접촉 시 동결
         # → distal→proximal 순차 동결로 컵 형상에 손가락이 드리워짐(envelope).
         # 5D action = 손가락별 폐쇄 속도 명령[0,1]. 관절 순서 finger-major [_1,_2,_3,_4]×5.
-        # ---- couple_four_fingers: 4지 공통닫힘 (2026-07-28, grasp_v2 left 0.908 실증 이식) ----
-        # left는 검지~소지를 독립 제어 시 index/middle/ring 3지만 닫는 국소최적에 고착
-        # (thumb/pinky 미접촉). 4지를 공통(평균) 신호로 묶어 "특정 손가락만 안 닫기"를
-        # 표현 불가하게 차단. 엄지(0)는 opposition 위해 독립 유지. 접촉 시 개별 동결
-        # (gate20)은 그대로라 각 손가락이 닿는 지점서 멈춤 → 최종 조합은 물체가 결정.
-        _thumb_a = finger_action[:, 0:1]
-        _common4 = finger_action[:, 1:5].mean(dim=1, keepdim=True)
-        finger_action = torch.cat([_thumb_a, _common4.expand(-1, 4)], dim=1)  # (N,5)
+        # (couple_four_fingers 제거 2026-07-28: 3지 국소최적은 엄지 부호버그의 증상이었고
+        #  엄지 -1 수정으로 해소 → right와 동일 per-finger 독립 제어로 충실 미러 복원.)
         cmd = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)          # (N,5) ∈ [0,1]
         tip_c  = self.binary_contact_buf.float()                    # (N,5) 끝
         dist_c = self.distal_binary_contact_buf.float()             # (N,5) distal(l_hl_X_4)
@@ -1550,10 +1533,9 @@ class GraspLeftEnv(DirectRLEnv):
 
             pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
             pregrasp_palm_pose[:, :3] = pregrasp_pos
-            # 회전 중심 = G 규약 PALM_G_EULER_CENTER_SIDE (grasp_v2 left 이식)
-            pregrasp_palm_pose[:, 3] = math.radians(PALM_G_EULER_CENTER_SIDE[0])
-            pregrasp_palm_pose[:, 4] = math.radians(PALM_G_EULER_CENTER_SIDE[1])
-            pregrasp_palm_pose[:, 5] = math.radians(PALM_G_EULER_CENTER_SIDE[2])
+            pregrasp_palm_pose[:, 3] = math.radians(-90.0)
+            pregrasp_palm_pose[:, 4] = math.radians(0.0)
+            pregrasp_palm_pose[:, 5] = math.radians(-90.0)
             pregrasp_palm_pose = torch.max(
                 torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
                 self.palm_mins.unsqueeze(0),
