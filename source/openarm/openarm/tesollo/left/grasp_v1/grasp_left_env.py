@@ -23,7 +23,9 @@ right/grasp_v1(grasp_right_env)의 좌우 미러. v7: Fabrics 팔 학습 + per-f
 
 Action (11D):
   [0:6]  6D palm pose → Fabrics IK → arm 7 DOF (학습, cup 위치 오차 대응)
-  [6:11] 5D per-finger lerp: -1 → HAND_APPROACH_POSE, +1 → HAND_GRASP_POSE
+  [6:11] 5D 손가락 lerp: -1 → HAND_APPROACH_POSE, +1 → HAND_GRASP_POSE.
+         엄지(6)는 독립, 검지~소지(7:11)는 공통닫힘(couple_four_fingers)으로 묶여
+         3지 국소최적 차단(grasp_v2 left 0.908 실증).
 
 Episode (10s @ 60Hz):
   Grasp phase   (0~479): Fabrics arm + per-finger 정책
@@ -705,18 +707,12 @@ class GraspLeftEnv(DirectRLEnv):
         num_envelope_fingers = (
             self.binary_contact_buf & self.middle_binary_contact_buf
         ).sum(dim=-1)
-        # 2026-07-27 lift 게이트 완화(reward-audit ACCEPT): tip 접촉(num_contacts_buf) →
-        # any(tip|mid|dist). left가 물체를 마디로 감싸는데(엄지 mid 0.675) tip 4지 못 넘어
-        # lift latch 안 됨→lift reward 0 정체(chicken-egg). palm orientation 완벽미러 수치확인 후.
-        # right는 tip으로 넘으니 any 게이트에도 영향 없음(tip⊂any).
-        _lift_contact_count = (
-            self.binary_contact_buf
-            | self.middle_binary_contact_buf
-            | self.distal_binary_contact_buf
-        ).sum(dim=-1)
+        # 2026-07-28 lift 게이트 revert: any(tip|mid|dist) 완화는 부실 파지 국소최적
+        # 생성(lifted 0.72→0.002 붕괴)으로 롤백. tip 접촉(num_contacts_buf)으로 복원.
+        # left 3지 고착은 게이트가 아니라 손가락 제어(couple_four_fingers)로 해결.
         prev_latched = self.lift_ready_latched_buf.clone()
         self.grasp_ready_hold_buf, _ready_now, lift_latched = compute_lift_readiness(
-            num_contacts=_lift_contact_count,
+            num_contacts=self.num_contacts_buf,
             is_grasp_phase=~self.lift_ready_latched_buf,
             previous_hold_count=self.grasp_ready_hold_buf,
             previous_latched=self.lift_ready_latched_buf,
@@ -796,6 +792,14 @@ class GraspLeftEnv(DirectRLEnv):
         #   _3 PIP: 중간마디(middle) 접촉 시 동결 / _4 DIP: distal|tip 접촉 시 동결
         # → distal→proximal 순차 동결로 컵 형상에 손가락이 드리워짐(envelope).
         # 5D action = 손가락별 폐쇄 속도 명령[0,1]. 관절 순서 finger-major [_1,_2,_3,_4]×5.
+        # ---- couple_four_fingers: 4지 공통닫힘 (2026-07-28, grasp_v2 left 0.908 실증 이식) ----
+        # left는 검지~소지를 독립 제어 시 index/middle/ring 3지만 닫는 국소최적에 고착
+        # (thumb/pinky 미접촉). 4지를 공통(평균) 신호로 묶어 "특정 손가락만 안 닫기"를
+        # 표현 불가하게 차단. 엄지(0)는 opposition 위해 독립 유지. 접촉 시 개별 동결
+        # (gate20)은 그대로라 각 손가락이 닿는 지점서 멈춤 → 최종 조합은 물체가 결정.
+        _thumb_a = finger_action[:, 0:1]
+        _common4 = finger_action[:, 1:5].mean(dim=1, keepdim=True)
+        finger_action = torch.cat([_thumb_a, _common4.expand(-1, 4)], dim=1)  # (N,5)
         cmd = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)          # (N,5) ∈ [0,1]
         tip_c  = self.binary_contact_buf.float()                    # (N,5) 끝
         dist_c = self.distal_binary_contact_buf.float()             # (N,5) distal(l_hl_X_4)
