@@ -255,6 +255,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # lift_reward — Fork C: 평가 bootstrap gate로 강등 (30→6)
     lift_reward_weight: float = 6.0
 
+    # lift_height_bonus — lstm_test10 진단: main lift(lift_height_quality)가 4cm에서
+    # clamp 포화 → 4cm 위 gradient 0. efficient가 grip을 깎아 5cm 약파지 hold에 고착
+    # (success 0). contact-독립 height 보상을 10cm까지 열어 "형상 유지+10cm까지 리프트"를
+    # reward 최대로 만든다. clamp=2.5 = lift_target(0.10)/lift_success(0.04).
+    lift_height_bonus_weight: float = 4.0
+    lift_height_bonus_clamp:  float = 2.5
+
     # success_bonus — Fork C: 10cm·upright·5접촉 유지 평가 bonus로 강등 (20→4)
     success_bonus_weight: float = 4.0
 
