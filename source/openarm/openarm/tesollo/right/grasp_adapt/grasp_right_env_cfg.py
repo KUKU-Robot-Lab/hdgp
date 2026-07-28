@@ -549,10 +549,14 @@ class GraspRightEnvCfgNoActorMass(GraspRightEnvCfg):
     actor_observe_bead_mass: bool = False
 
 
-class GraspRightEnvCfgMassShift(GraspRightEnvCfgNoActorMass):
+@configclass
+class GraspRightEnvCfgMassShift(GraspRightEnvCfg):
     """Phase 3: 동적 mass(물 추가). 리셋은 가벼운 컵(0~10 bead), lift 후 target까지 추가.
 
-    obs/action 차원 불변(actor는 mass 미관측) → 기존 체크포인트에서 fine-tune 가능.
+    **@configclass 필수**: 데코레이터 없는 서브클래스는 부모 dataclass __init__이 인스턴스
+    속성을 부모 기본값으로 세팅해 class-attr override가 무시된다(NoActorMass 잠재버그와 동일).
+    base(GraspRightEnvCfg) 상속 = test11 실제 obs(134, actor가 mass 관측)와 정합
+    → 기존 체크포인트에서 fine-tune 가능(obs/action 차원 불변).
     """
 
     mass_shift_enabled: bool = True
