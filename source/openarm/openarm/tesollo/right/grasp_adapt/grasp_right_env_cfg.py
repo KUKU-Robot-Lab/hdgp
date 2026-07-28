@@ -206,21 +206,22 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stabilize_action_sharpness: float = 1.5
     action_smooth_weight: float = -0.02
     post_lift_contact_loss_weight: float = -8.0
-    # Phase 1 envelope penalty 제거(geometry penalty는 secure와 상충해 실패 — radial로 일원화).
-    # 필드는 존치하되 0. (Phase 1 lstm_test3: 감싸기 회귀 실증)
-    envelope_penalty_weight: float = 0.0
-    # Phase 2 radial-압축 fragile damage (하드웨어 제약: 손끝-only를 물리로 유도).
+    # Fragile 형상파괴 억제 (radial 압축 좌굴 = 종이컵 벽을 눌러 찌그러뜨림).
+    # 손끝-only가 아니라 "형상 덜 파괴하며 파지"가 목적 — 감싸기/palm 지지는 무방,
+    # 과도한 radial 압박만 형상파괴로 벌점한다.
     #   radial_compression = 접촉력(tip+middle)의 컵 중심 inward 성분 합.
-    #   r_damage = -damage_penalty_weight · hold_gate · relu(radial - f_safe)
-    #   radial > f_buckle → 파손 종료(buckle) + buckle_penalty.
-    # f_safe/f_buckle은 종이컵 추정 placeholder(설계 §4: f_safe≈0.6~0.8·F_yield).
-    # ★ 학습 초기 task/radial_compression 분포를 보고 보정할 것(로그 먼저).
+    #   r_damage    = -damage_penalty_weight · hold_gate · relu(radial - f_safe)  (순간 과압박)
+    #   damage_dose = Σ dt·relu((radial-f_safe)/f_safe)^q  (누적 형상파괴 — 성공조건에 사용)
+    #   radial > f_buckle → 좌굴 종료(buckle) + buckle_penalty.
+    # f_safe/f_buckle = 종이컵 좌굴 임계 placeholder. ★학습 초기 task/radial_compression
+    # 분포 보고 보정(로그 먼저). 07.27 lstm_test4 실측 radial ~4.5N(hold ~2.7N) 기준 현 값.
     damage_penalty_weight: float = 3.0
-    # 07.27 lstm_test4 초기 로그로 보정: 실측 radial_compression ~4.5N(hold ~2.7N)이라
-    # 기존 f_safe=8/f_buckle=15는 penalty·buckle이 거의 안 걸려 damage 신호가 꺼졌음.
-    f_safe:   float = 3.0    # N, 안전 radial 압축 상한(초과분 penalty)
-    f_buckle: float = 8.0    # N, 좌굴(파손) radial 압축 임계(강한 감싸기만)
-    buckle_penalty: float = 10.0   # 파손 종료 시 음의 보상 크기
+    f_safe:   float = 3.0    # N, 안전 radial 상한(형상파괴 시작, 초과분 penalty·dose 누적)
+    f_buckle: float = 8.0    # N, 좌굴(파손) radial 임계
+    buckle_penalty: float = 10.0   # 파손 종료 시 음의 보상
+    # 누적 damage dose(형상파괴 총량). 성공조건: dose < damage_dose_success_max.
+    damage_dose_q: float = 2.0            # dose 지수 (설계 §6: relu((radial-f_safe)/f_safe)^q)
+    damage_dose_success_max: float = 1.0  # 성공 허용 형상파괴 상한(초과 시 부숨 = 실패)
     hand_residual_magnitude_weight: float = -0.005
     hand_residual_scale: float = 0.15
 

@@ -60,8 +60,8 @@ def compute_radial_compression(
 ) -> torch.Tensor:
     """접촉력의 컵 중심축 방향 inward(radial 압축) 성분 합.
 
-    감싸기(사방 마디가 벽을 안으로 압박)는 radial↑, 손끝 국부/축방향 파지는 radial↓.
-    종이컵 좌굴은 radial 압축이 임계를 넘을 때 발생 → 손끝-only를 물리로 유도한다.
+    종이컵 좌굴은 radial 압축이 임계를 넘을 때 발생 → 형상파괴 억제 신호.
+    감싸기/palm 지지 자체는 무방(형상만 안 부수면 됨), 과도한 radial 압박만 damage.
 
     Args:
         contact_pos: (N,K,3) 접촉점 world 좌표.
@@ -82,17 +82,26 @@ def compute_radial_compression(
     return (inward * contact_mask).sum(dim=-1)                       # (N,)
 
 
-def compute_precision_grasp_frac(tip_contact_bool: torch.Tensor) -> torch.Tensor:
-    """precision 파지 품질 [0,1] (엄지 없으면 0). graded 게이팅용.
+def compute_damage_dose(
+    prev_dose: torch.Tensor,
+    radial_compression: torch.Tensor,
+    f_safe: float,
+    dt: float,
+    q: float,
+) -> torch.Tensor:
+    """누적 형상파괴 dose: D_{t+1} = D_t + dt·relu((radial-f_safe)/f_safe)^q (설계 §6).
 
-    엄지 + 대향 손가락 수를 최대 3접촉(엄지+2)으로 정규화한다.
+    순간 압박이 아니라 '얼마나 오래·세게 눌러 형상을 파괴했나'를 누적한다.
+    성공조건(dose < 임계)에 사용. reset 시 0으로 초기화(호출부).
 
     Args:
-        tip_contact_bool: (N,5) bool — 손끝 접촉 여부(idx0=엄지).
+        prev_dose: (N,) 이전 누적 dose.
+        radial_compression: (N,) 현 radial 압축 [N].
+        f_safe: 형상파괴 시작 임계 [N].
+        dt: 시간 스텝(누적 스케일).
+        q: 초과분 지수.
     Returns:
-        (N,) float — [0,1] precision 파지 품질.
+        (N,) 갱신된 누적 dose(≥ prev).
     """
-    thumb = tip_contact_bool[:, 0].float()
-    opposing = tip_contact_bool[:, 1:].sum(dim=1).float()
-    frac = (1.0 + opposing) / 3.0
-    return (thumb * frac).clamp(0.0, 1.0)
+    over = (radial_compression - f_safe).clamp(min=0.0) / max(f_safe, 1e-6)
+    return prev_dose + dt * over.pow(q)

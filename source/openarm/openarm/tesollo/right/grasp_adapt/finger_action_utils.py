@@ -30,19 +30,3 @@ def compute_full_range_finger_targets(
     a = finger_action.clamp(-1.0, 1.0)
     full = 0.5 * (a + 1.0) * (upper_limits - lower_limits).unsqueeze(0) + lower_limits.unsqueeze(0)
     return torch.where(active_mask.unsqueeze(0).bool(), full, fixed_pose.unsqueeze(0))
-
-
-def compute_preset_residual_finger_targets(
-    preset_pos: torch.Tensor,
-    finger_action: torch.Tensor,
-    lower_limits: torch.Tensor,
-    upper_limits: torch.Tensor,
-    residual_scale: float,
-    residual_mask: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Map normalized policy action to a small residual around a preset pose."""
-    residual = finger_action.clamp(-1.0, 1.0) * float(residual_scale)
-    if residual_mask is not None:
-        residual = residual * residual_mask.unsqueeze(0)
-    target = preset_pos.unsqueeze(0) + residual
-    return target.clamp(lower_limits.unsqueeze(0), upper_limits.unsqueeze(0))

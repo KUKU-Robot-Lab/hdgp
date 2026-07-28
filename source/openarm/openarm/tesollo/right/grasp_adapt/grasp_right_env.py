@@ -94,6 +94,7 @@ from .grasp_right_preset import (
 from .finger_action_utils import compute_full_range_finger_targets
 from .grasp_reward_utils import compute_upright_success_mask
 from .grasp_right_utils import (
+    compute_damage_dose,
     compute_precision_grasp_mask,
     compute_radial_compression,
     to_torch,
@@ -147,6 +148,7 @@ class GraspRightEnv(DirectRLEnv):
             "task/radial_compression": ("task/damage", "radial"),
             "task/radial_compression_hold": ("task/damage", "radial_hold"),
             "task/buckle_rate": ("task/damage", "buckle_rate"),
+            "task/damage_dose": ("task/damage", "dose"),
             "reward/action_smooth": ("reward/summary", "action_smooth"),
             "contact/count": ("task/contact", "tip_count"),
             "task/middle_contact_rate": ("task/contact", "middle_rate"),
@@ -399,6 +401,7 @@ class GraspRightEnv(DirectRLEnv):
         self.middle_contact_force_raw  = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, device=self.device)
         self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
         self._radial_compression_buf   = torch.zeros(self.num_envs, device=self.device)
+        self._damage_dose_buf          = torch.zeros(self.num_envs, device=self.device)  # 누적 형상파괴
         self.palm_contact_force_raw = torch.zeros(self.num_envs, device=self.device)
         self.palm_binary_contact_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._prev_total_grip_force_buf = torch.zeros(self.num_envs, device=self.device)
@@ -1191,6 +1194,18 @@ class GraspRightEnv(DirectRLEnv):
             contact_pos, contact_force, cup_center, cup_axis, contact_mask
         )                                                            # (N,)
         self._radial_compression_buf.copy_(radial_compression)
+        # 누적 형상파괴 dose(설계 §6): hold 구간에서만 누적(파지 중 눌러 찌그러뜨린 총량).
+        self._damage_dose_buf = torch.where(
+            hold_gate > 0.0,
+            compute_damage_dose(
+                self._damage_dose_buf,
+                radial_compression,
+                float(self.cfg.f_safe),
+                dt=self.step_dt,
+                q=float(self.cfg.damage_dose_q),
+            ),
+            self._damage_dose_buf,
+        )
         # 순간 penalty: hold 구간 F_safe 초과분
         r_damage = (
             -float(self.cfg.damage_penalty_weight)
@@ -1352,11 +1367,16 @@ class GraspRightEnv(DirectRLEnv):
         self.episode_stabilize_success_buf |= stabilize_success_now
 
         # 최종 성공: lift 성공 latch 후 컵을 10cm까지 올려 5-tip grasp·엄격 upright로 유지
+        # 성공 = 들고 유지 + 손끝 파지 + upright + 형상 안 부숨(누적 damage dose < 임계).
+        # 목적(형상 덜 파괴하며 파지)을 직접 성공조건화. palm 지지는 무관.
+        shape_intact = self._damage_dose_buf < float(self.cfg.damage_dose_success_max)
+        self.extras["task/damage_dose"] = self._damage_dose_buf.mean()
         final_success_now = (
             self._lift_success_latched_buf
             & reached_target
             & full_tip_contact
             & stabilize_upright_success
+            & shape_intact
         )
         self.success_flag.copy_(final_success_now)
         self.episode_success_buf |= final_success_now
@@ -1607,6 +1627,7 @@ class GraspRightEnv(DirectRLEnv):
         self.lift_started_buf[env_ids] = False
         self._lift_success_hold_count[env_ids] = 0
         self._lift_success_latched_buf[env_ids] = False
+        self._damage_dose_buf[env_ids] = 0.0
         self.is_lift_phase[env_ids] = False
         # Stabilize(height-hold) phase 버퍼
         self.is_stabilize_phase[env_ids] = False
