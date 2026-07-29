@@ -687,20 +687,24 @@ class GraspRightEnv(DirectRLEnv):
         finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
 
         # ---- Phase 판정: 접촉 latch (감싸 잡으면 리프트, step-480 scripted 대체) ----
-        # 인벨롭 게이트: 손끝&중간마디 동시접촉 손가락 수 → 손끝만으로 일찍 리프트 차단
-        num_envelope_fingers = (
-            self.binary_contact_buf & self.middle_binary_contact_buf
+        # 인벨롭 wrap 게이트: 중간(_3)&원위(_4) 마디 동시접촉 손가락 수로 lift 진입.
+        # grasp_v1 목표=실린더 컵 인벨롭 그립이고, 센서리스 sim2real(물체 obs만·촉각 없음)에선
+        # 손끝(tip) 정렬보다 감싸기가 로버스트하므로 tip 게이트를 mid&distal wrap 게이트로 대체.
+        # (구 tip 게이트는 우연히 tip 자세로 수렴해야만 통과 → 목표=인벨롭과 불일치했다.)
+        # ※ 과거 any(tip|mid|dist) '1마디 OR' 완화는 부실 파지로 붕괴(lifted 0.72→0.002)했으나,
+        #   여기는 mid&distal 'AND(2마디 동시)'라 견고한 감쌈만 인정 → 부실 파지는 배제된다.
+        #   하위 게이트(height≥4cm·tilt≤5°·stability)도 유지되어 부실 lift를 이중 방어.
+        num_wrap_fingers = (
+            self.middle_binary_contact_buf & self.distal_binary_contact_buf
         ).sum(dim=-1)
         prev_latched = self.lift_ready_latched_buf.clone()
         self.grasp_ready_hold_buf, _ready_now, lift_latched = compute_lift_readiness(
-            num_contacts=self.num_contacts_buf,
+            num_contacts=num_wrap_fingers,
             is_grasp_phase=~self.lift_ready_latched_buf,
             previous_hold_count=self.grasp_ready_hold_buf,
             previous_latched=self.lift_ready_latched_buf,
-            min_contacts=int(self.cfg.stage0_lift_start_min_contacts),
+            min_contacts=int(self.cfg.lift_start_min_wrap_fingers),
             hold_steps=int(self.cfg.grasp_ready_hold_steps),
-            num_envelope_fingers=num_envelope_fingers,
-            min_envelope_fingers=int(self.cfg.lift_start_min_envelope_fingers),
         )
         self.lift_ready_latched_buf.copy_(lift_latched)
         is_lift = self.lift_ready_latched_buf
@@ -1158,6 +1162,12 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/lifted_rate"] = (
             cup_height_delta >= self.cfg.lift_success_height
         ).float().mean()
+        # 인벨롭 wrap 게이트 모니터링(신규 lift 진입 기준): mid(_3)&distal(_4) 동시접촉 손가락 수.
+        _wrap_fingers = (
+            self.middle_binary_contact_buf & self.distal_binary_contact_buf
+        ).sum(dim=-1)
+        self.extras["task/wrap_finger_count"] = _wrap_fingers.float().mean()
+        self.extras["task/lift_ready_rate"] = self.is_lift_phase.float().mean()
         self.extras["task/five_tip_contact_rate"] = full_tip_contact.mean()
         self.extras["task/prelift_five_tip_contact_rate"] = full_tip_contact[
             ~self.is_lift_phase
