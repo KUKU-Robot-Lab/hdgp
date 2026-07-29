@@ -70,7 +70,8 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgMassShift",
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
+        # Phase3 fine-tune 전용: actor LR 1e-4 (fine-tune 붕괴 방지)
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_massshift_cfg.yaml",
     },
 )
 
