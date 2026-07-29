@@ -8,6 +8,15 @@ schema:
   r_hj_*/l_hj_*: right/left hand joints, including fixed mount/base/palm/sensor joints
   r_al_N/l_al_N: right/left OpenArm arm links
   r_hl_*/l_hl_*: right/left hand links
+  head_*: D435i pan/tilt head; head_j_pan/head_j_tilt are revolute but stay out of control_joint_order
+  head_cam_view: camera view origin frame (+X = viewing direction, +Z up), fixed to head_camera
+  origin note: robot origin sits at the mount plate TOP (vendor origin +8mm); head mounts at z=+0.750m
+camera_view_frame:
+  link: head_cam_view
+  parent_link: head_camera
+  xyz: [0.0147, 0.0145, 0.0365]
+  rpy: [0, 0, 0]
+  convention: +X viewing direction, +Z up (robot frame; not ROS optical)
 control_joint_order:
   - r_aj_1
   - r_aj_2
@@ -107,6 +116,10 @@ kinematic_joint_order:
   - l_hj_pinky_2
   - l_hj_pinky_sensor
   - l_hj_pinky_tip
+  - head_j_mount
+  - head_j_pan
+  - head_j_tilt
+  - head_j_cam_view
 fixed_joint_order:
   - body_j_base
   - r_aj_base
@@ -141,6 +154,8 @@ fixed_joint_order:
   - l_hj_ring_tip
   - l_hj_pinky_sensor
   - l_hj_pinky_tip
+  - head_j_mount
+  - head_j_cam_view
 link_order:
   - body_root
   - body_link
@@ -214,7 +229,13 @@ link_order:
   - l_hl_pinky_2
   - l_hl_pinky_sensor
   - l_hl_pinky_tip
+  - head_base
+  - head_mid
+  - head_camera
+  - head_cam_view
 source_to_canonical_joints:
+  joint_pan: head_j_pan
+  joint_tilt: head_j_tilt
   mount_left_link7_to_rh56f1: l_hj_mount
   mount_right_link7_to_rh56f1: r_hj_mount
   openarm_body_world_joint: body_j_base
@@ -287,6 +308,9 @@ source_to_canonical_joints:
   rh56f1_right_thumb_force_sensor_joint: r_hj_thumb_sensor
   rh56f1_right_thumb_tip_joint: r_hj_thumb_tip
 source_to_canonical_links:
+  base_link: head_base
+  camera_link: head_camera
+  mid_link: head_mid
   openarm_body_link0: body_link
   openarm_left_link0: l_al_0
   openarm_left_link1: l_al_1

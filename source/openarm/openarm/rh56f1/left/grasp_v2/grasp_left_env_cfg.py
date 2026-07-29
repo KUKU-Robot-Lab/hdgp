@@ -641,6 +641,14 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
             },
         ),
         actuators={
+            # head pan/tilt 카메라 관절(신규 USD). revolute라 DOF로 잡히므로
+            # actuator 커버리지 필수(없으면 크래시/자유회전). 기본각 0 고정 hold.
+            # obs/action은 이름 기반이라 head 미포함 유지 → 차원 불변.
+            "head_camera": ImplicitActuatorCfg(
+                joint_names_expr=["head_j_(pan|tilt)"],
+                stiffness=400.0,
+                damping=80.0,
+            ),
             "openarm_left_arm": ImplicitActuatorCfg(
                 joint_names_expr=["l_aj_[1-7]"],
                 stiffness=400.0,

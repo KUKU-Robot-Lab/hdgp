@@ -8,6 +8,15 @@ schema:
   r_hj_*/l_hj_*: right/left hand joints, including fixed mount/base/palm/sensor joints
   r_al_N/l_al_N: right/left OpenArm arm links
   r_hl_*/l_hl_*: right/left hand links
+  head_*: D435i pan/tilt head; head_j_pan/head_j_tilt are revolute but stay out of control_joint_order
+  head_cam_view: camera view origin frame (+X = viewing direction, +Z up), fixed to head_camera
+  origin note: robot origin sits at the mount plate TOP (vendor origin +8mm); head mounts at z=+0.750m
+camera_view_frame:
+  link: head_cam_view
+  parent_link: head_camera
+  xyz: [0.0147, 0.0145, 0.0365]
+  rpy: [0, 0, 0]
+  convention: +X viewing direction, +Z up (robot frame; not ROS optical)
 control_joint_order:
   - r_aj_1
   - r_aj_2
@@ -143,6 +152,10 @@ kinematic_joint_order:
   - l_hj_pinky_3
   - l_hj_pinky_4
   - l_hj_pinky_tip
+  - head_j_mount
+  - head_j_pan
+  - head_j_tilt
+  - head_j_cam_view
 fixed_joint_order:
   - body_j_base
   - r_aj_base
@@ -169,6 +182,8 @@ fixed_joint_order:
   - l_hj_middle_tip
   - l_hj_ring_tip
   - l_hj_pinky_tip
+  - head_j_mount
+  - head_j_cam_view
 link_order:
   - body_root
   - body_link
@@ -250,9 +265,15 @@ link_order:
   - l_hl_pinky_3
   - l_hl_pinky_4
   - l_hl_pinky_tip
+  - head_base
+  - head_mid
+  - head_camera
+  - head_cam_view
 source_to_canonical_joints:
   base_joint2: l_hj_adapter
   dummy_joint: r_hj_adapter
+  joint_pan: head_j_pan
+  joint_tilt: head_j_tilt
   left_palm_link_to_ee: l_hj_palm_ee
   left_upstream_palm_to_palm_link: l_hj_palm_alias
   lj_dg_1_1: l_hj_thumb_1
@@ -331,6 +352,8 @@ source_to_canonical_joints:
   rj_dg_base: r_hj_base
   rj_dg_palm: r_hj_palm
 source_to_canonical_links:
+  base_link: head_base
+  camera_link: head_camera
   left_base_link: l_hl_mount
   left_palm_ee: l_hl_palm_ee
   left_palm_link: l_hl_palm_alias
@@ -362,6 +385,7 @@ source_to_canonical_links:
   ll_dg_base: l_hl_base
   ll_dg_mount: l_hl_adapter
   ll_dg_palm: l_hl_palm
+  mid_link: head_mid
   openarm_body_link0: body_link
   openarm_left_link0: l_al_0
   openarm_left_link1: l_al_1
