@@ -791,7 +791,10 @@ class GraspLeftEnv(DirectRLEnv):
         # 관절별 동결 게이트 (local 0=_1, 1=_2, 2=_3 PIP, 3=_4 DIP)
         g1 = torch.zeros_like(tip_c)                                # _1: 무게이트
         g2 = torch.zeros_like(tip_c)                                # _2 MCP: 무게이트(full close)
-        g3 = mid_c                                                  # _3 PIP: 중간마디 접촉 시 동결
+        # _3 PIP·_4 DIP 둘 다 distal|tip 접촉 시 동결. (구 g3=mid_c는 중간마디 접촉 순간
+        # PIP를 멈춰 손가락이 middle로 컵에 얹힌 채 정지 → 손끝(distal)까지 감아 조이지 못함
+        # = 인벨롭 미완성·distal 저조·wrap 미달. 이제 손끝이 닿을 때까지 계속 감아 진짜로 감싼다.)
+        g3 = (dist_c + tip_c).clamp(max=1.0)                        # _3 PIP: distal|tip 접촉 시 동결
         g4 = (dist_c + tip_c).clamp(max=1.0)                        # _4 DIP: distal|tip 접촉 시 동결
         gate20 = torch.stack([g1, g2, g3, g4], dim=2).reshape(self.num_envs, -1)  # (N,20)
         cmd20 = cmd.repeat_interleave(4, dim=1)                     # (N,20) 손가락 명령 → 4관절
