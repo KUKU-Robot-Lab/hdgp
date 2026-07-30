@@ -549,8 +549,16 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     left_arm_joint_names: list = LEFT_ARM_AND_GRIPPER_JOINT_NAMES
 
 
+@configclass
 class GraspRightEnvCfgNoActorMass(GraspRightEnvCfg):
-    """Asymmetric teacher config: actor excludes oracle mass, critic keeps it."""
+    """Asymmetric teacher config: actor excludes oracle mass, critic keeps it.
+
+    **@configclass 필수(sim2real 버그 수정)**: 데코레이터 없으면 부모 dataclass __init__이
+    인스턴스 속성을 부모 기본값으로 세팅해 아래 override가 무시된다 → actor가 oracle bead
+    mass를 관측(obs 134)하며 학습돼 실물 배포 불가(실물엔 oracle mass 없음). @configclass로
+    override 적용 → actor tactile-only(obs 133), sim2real 배포 가능.
+    ⚠️ obs 134→133 변경이므로 이전 obs-134 체크포인트(test11 등)와 비호환 → 클린 재학습 필요.
+    """
 
     observation_space: int = NUM_OBSERVATIONS_NO_MASS
     num_observations: int = NUM_OBSERVATIONS_NO_MASS
@@ -558,13 +566,12 @@ class GraspRightEnvCfgNoActorMass(GraspRightEnvCfg):
 
 
 @configclass
-class GraspRightEnvCfgMassShift(GraspRightEnvCfg):
+class GraspRightEnvCfgMassShift(GraspRightEnvCfgNoActorMass):
     """Phase 3: 동적 mass(물 추가). 리셋은 가벼운 컵(0~10 bead), lift 후 target까지 추가.
 
-    **@configclass 필수**: 데코레이터 없는 서브클래스는 부모 dataclass __init__이 인스턴스
-    속성을 부모 기본값으로 세팅해 class-attr override가 무시된다(NoActorMass 잠재버그와 동일).
-    base(GraspRightEnvCfg) 상속 = test11 실제 obs(134, actor가 mass 관측)와 정합
-    → 기존 체크포인트에서 fine-tune 가능(obs/action 차원 불변).
+    NoActorMass 상속 → actor tactile-only(obs 133, sim2real 정합). 무게 증가를 oracle가
+    아니라 tactile로 느껴 grip을 조절해야 한다(adapt의 핵심). @configclass 필수.
+    ⚠️ obs 133이라 obs-134 체크포인트(massshift2 등)와 비호환 → 클린 재학습 필요.
     """
 
     mass_shift_enabled: bool = True

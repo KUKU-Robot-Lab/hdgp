@@ -1347,6 +1347,18 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/lift_success_rate"] = self._lift_success_latched_buf.float().mean()
         self.extras["task/stabilize_success_rate"] = self.episode_stabilize_success_buf.float().mean()
         self.extras["task/success_rate"] = torch.tensor(_ep_success_rate, device=self.device)
+        # 평가 정밀화: per-mass-bin slip(현 스텝, 무게별 미끄럼) + success(에피소드, 최종 무게별).
+        # "각 무게에서 안 미끄러지고 성공하는가"를 분리 판정 (동적 mass는 최종=post-shift 무게).
+        for bin_idx in range(4):
+            _bh = hold_gate * (mass_bin == bin_idx).float()
+            self.extras[f"task/slip_ratio_hold/mass_bin_{bin_idx}"] = (
+                slip_severity * _bh
+            ).sum() / _bh.sum().clamp(min=1.0)
+            self.extras[f"task/success_rate/mass_bin_{bin_idx}"] = torch.tensor(
+                self._successful_episodes_bin[bin_idx]
+                / max(self._total_episodes_bin[bin_idx], 1),
+                device=self.device,
+            )
 
         tip_force_mean = self.tip_force_local.mean(dim=0)
         for tip_idx in range(NUM_FINGERTIPS):
