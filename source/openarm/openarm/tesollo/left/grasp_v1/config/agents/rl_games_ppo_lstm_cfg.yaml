@@ -76,7 +76,7 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.0005
+    entropy_coef: 0.003   # 0.0005→0.003 exploration 강화(08.02): palm orientation thumb/index 국소최적 탈출. reward/미러 무관 하이퍼(left만). right는 sim2real 진행.
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 32
