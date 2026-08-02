@@ -693,6 +693,15 @@ class GraspLeftEnv(DirectRLEnv):
         palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
         finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
 
+        # ---- couple_four_fingers (left-only, 08.02): 3지 국소최적 원천 차단 ----
+        # 검지~소지(1:5)를 공통 신호(평균)로 묶어 "특정 손가락만 안 닫힘" action 자체를 표현
+        # 불가하게 한다. 엄지(0)는 opposition 회전 위해 독립. 접촉 시 개별 동결(g3/g4)은 그대로라
+        # 각 손가락이 닿는 지점서 멈춰 최종 조합은 물체가 결정(형상 적응 유지). grasp_v2 검증법.
+        if bool(getattr(self.cfg, "couple_four_fingers", False)):
+            _thumb_a = finger_action[:, 0:1]
+            _common4 = finger_action[:, 1:5].mean(dim=1, keepdim=True)
+            finger_action = torch.cat([_thumb_a, _common4.expand(-1, 4)], dim=1)
+
         # ---- Phase 판정: 접촉 latch (감싸 잡으면 리프트, step-480 scripted 대체) ----
         # lift 진입 게이트: 손가락별 아무 마디(tip|mid|distal)든 닿은 손가락 수(grip)로 판정.
         # 사용자 설계 의도 = "손가락이 어느 위치든 닿았다면 그대로 lift 진행" + 제어(g3)가 손끝

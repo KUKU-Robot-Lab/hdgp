@@ -260,6 +260,13 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     grasp_ready_hold_steps: int = 8   # 접촉 N개를 연속 hold하면 lift 래치 (잡으면 바로 리프트)
     lift_start_min_envelope_fingers: int = 0  # latch 인벨롭 게이트 제거(0=비활성). envelope은 grasp/lift 보상 credit으로 유도(hard 게이트 대체)
     finger_close_speed: float = 0.05  # ① 접촉-게이트 적응 폐쇄: 손가락 폐쇄 진행 속도/step (중간마디 접촉 시 동결)
+    # ★couple_four_fingers(08.02, left-only): 검지~소지(4지)를 공통신호(평균)로 묶어 "특정
+    # 손가락만 안 닫힘"을 표현 불가하게 함 → 3지 국소최적 원천 차단. 엄지(0)는 opposition
+    # 위해 독립. per-joint 접촉게이트(g3/g4)는 유지되어 물체 형상에 개별 적응(닿는 곳서 동결).
+    # grasp_v2 에서 3지 고착 해소 검증된 방법(grasp_v2 left ADR50 0.908). grasp_v1 은 07-28에
+    # 제거했으나 left per-finger 가 3지로 수렴(right 는 우연히 5지)해 08.02 left 만 재도입.
+    # reward/obs/action 차원 불변(action 전처리) → 좌우 reward 동일 제약 유지·right 무영향.
+    couple_four_fingers: bool = True
     grasp_contact_persistence_reward_steps: int = 20
     enclosure_sharpness: float = 15.0
     # cup_radius_approx: cup_big 기준값(반경). 2026-07-26부터 per-object bbox 텐서
