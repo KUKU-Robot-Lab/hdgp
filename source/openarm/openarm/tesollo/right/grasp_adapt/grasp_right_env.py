@@ -175,9 +175,20 @@ class GraspRightEnv(DirectRLEnv):
             "task/cup_slip_speed": ("task/slip", "cup_slip_speed"),
             "task/secure_quality_hold": ("task/slip", "secure_quality_hold"),
         }
+        # adaptive grasping 판별 by-mass 곡선 (TB 그룹). 무게(bead)별로 한 차트에 겹쳐 그려
+        # power-grip(평탄한 force·하강하는 ratio) vs 적응(무게비례 force·평탄한 ratio)을 한눈에.
         for bin_idx, bead_count in enumerate((0, 10, 20, 30)):
-            tag = f"task/grip_ratio_hold/mass_bin_{bin_idx}"
-            groups[tag] = ("task/grip_ratio_hold_by_mass", f"{bead_count}beads")
+            series = f"{bead_count}beads"
+            groups[f"task/grip_ratio_hold/mass_bin_{bin_idx}"] = (
+                "task/grip_ratio_hold_by_mass", series)      # 적응=평탄, power-grip=하강
+            groups[f"task/grip_force_hold/mass_bin_{bin_idx}"] = (
+                "task/grip_force_hold_by_mass", series)       # 적응=무게비례↑, power-grip=평탄
+            groups[f"task/deform_hold/mass_bin_{bin_idx}"] = (
+                "task/deform_hold_by_mass", series)           # 적응=낮고 무게무관, 과파지=무거울수록↑
+            groups[f"task/slip_ratio_hold/mass_bin_{bin_idx}"] = (
+                "task/slip_ratio_hold_by_mass", series)       # 안 미끄러짐(하한)
+            groups[f"task/success_rate/mass_bin_{bin_idx}"] = (
+                "task/success_rate_by_mass", series)          # 무게별 성공
         for tip_idx in range(NUM_FINGERTIPS):
             tip_tag = f"sensor/tip_{tip_idx + 1}"
             groups[f"{tip_tag}/x"] = (tip_tag, "x")
@@ -1346,9 +1357,14 @@ class GraspRightEnv(DirectRLEnv):
         mass_bin = (self._bead_mass_normalized * 3.0).round().long().clamp(0, 3)
         for bin_idx in range(4):
             bin_hold = hold_gate * (mass_bin == bin_idx).float()
+            _bn = bin_hold.sum().clamp(min=1.0)
+            # 적응 판별 핵심: 무게별 grip_ratio(적응=평탄) + 절대 grip_force(적응=무게비례↑).
             self.extras[f"task/grip_ratio_hold/mass_bin_{bin_idx}"] = (
                 force_ratio * bin_hold
-            ).sum() / bin_hold.sum().clamp(min=1.0)
+            ).sum() / _bn
+            self.extras[f"task/grip_force_hold/mass_bin_{bin_idx}"] = (
+                grip_normal_force * bin_hold
+            ).sum() / _bn
         # no-slip 검증: 주 지표 = 컵-손 상대속도(secure), 보조 = shear severity
         self.extras["task/cup_slip_speed"] = cup_slip_speed.mean()
         self.extras["task/secure_quality_hold"] = (
@@ -1375,9 +1391,14 @@ class GraspRightEnv(DirectRLEnv):
         # "각 무게에서 안 미끄러지고 성공하는가"를 분리 판정 (동적 mass는 최종=post-shift 무게).
         for bin_idx in range(4):
             _bh = hold_gate * (mass_bin == bin_idx).float()
+            _bhn = _bh.sum().clamp(min=1.0)
             self.extras[f"task/slip_ratio_hold/mass_bin_{bin_idx}"] = (
                 slip_severity * _bh
-            ).sum() / _bh.sum().clamp(min=1.0)
+            ).sum() / _bhn
+            # 무게별 변형(deg, deformable일 때). 적응=낮고 무게무관, 과파지=무거울수록↑.
+            self.extras[f"task/deform_hold/mass_bin_{bin_idx}"] = (
+                radial_compression * _bh
+            ).sum() / _bhn
             self.extras[f"task/success_rate/mass_bin_{bin_idx}"] = torch.tensor(
                 self._successful_episodes_bin[bin_idx]
                 / max(self._total_episodes_bin[bin_idx], 1),

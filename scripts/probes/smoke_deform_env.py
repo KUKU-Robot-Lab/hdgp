@@ -77,6 +77,11 @@ def main() -> None:
           f"reward/damage={float(ex.get('reward/damage', 0)):.4f} "
           f"buckle_rate={float(ex.get('task/buckle_rate', -1)):.3f} "
           f"dose={float(ex.get('task/damage_dose', -1)):.4f}", flush=True)
+    # adaptive grasping by-mass 지표 존재/형상 확인
+    gf = [f"{float(ex.get(f'task/grip_force_hold/mass_bin_{i}', -9)):.2f}" for i in range(4)]
+    df = [f"{float(ex.get(f'task/deform_hold/mass_bin_{i}', -9)):.2f}" for i in range(4)]
+    gr = [f"{float(ex.get(f'task/grip_ratio_hold/mass_bin_{i}', -9)):.2f}" for i in range(4)]
+    print(f"[smoke] by-mass grip_force={gf} deform={df} grip_ratio={gr}", flush=True)
     print(f"[smoke] {args.steps} steps done. nan_seen={nan_seen} "
           f"max_panel_deg={max_panel_deg:.3f}", flush=True)
     verdict = ("PASS" if (not nan_seen and obs_dim == 133)
