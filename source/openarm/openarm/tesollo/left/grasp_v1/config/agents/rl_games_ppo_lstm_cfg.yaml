@@ -76,7 +76,7 @@ params:
     save_frequency: 500
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.003   # 0.0005→0.003 exploration 강화(08.02): palm orientation thumb/index 국소최적 탈출. reward/미러 무관 하이퍼(left만). right는 sim2real 진행.
+    entropy_coef: 0.0005   # right mirror-identical 복원(08.02): entropy 0.003 exploration 강화는 thumb/index 국소최적 탈출 실패(middle/ring/pinky→0.02 재붕괴). 대신 right 성공 체크포인트를 Y-미러 weight-transform 하여 warmstart(--checkpoint)로 국소최적 우회 → 검증 iter152 success 0.69·5지 인벨롭. warmstart는 로드된 정책 보존이 중요하므로 exploration 노이즈 최소화(=right값).
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 32
