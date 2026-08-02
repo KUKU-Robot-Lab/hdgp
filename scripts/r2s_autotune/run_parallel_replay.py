@@ -9,7 +9,7 @@ RL 학습을 실행하지 않는다. USD를 복사하거나 수정하지 않는�
 실행 (server):
   ./isaaclab.sh -p ../hdgp/scripts/r2s_autotune/run_parallel_replay.py \
       --config ../hdgp/scripts/r2s_autotune/configs/bi_rh56f1.yaml \
-      --output ../hdgp/logs/r2s_autotune/results/bi_rh56f1_best_calibration.json --headless
+      --output ../hdgp/log/logs/r2s_autotune/results/bi_rh56f1_best_calibration.json --headless
 """
 
 import argparse
