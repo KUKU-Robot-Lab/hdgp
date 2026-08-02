@@ -513,6 +513,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 패널 관절은 정책 action에 편입되지 않음(컵은 로봇과 별개 articulation) → 순수 수동 스프링.
     # -----------------------------------------------------------------------
     cup_is_articulated: bool = False
+    deform_panel_count: int = 12   # deformable cup 패널 수(USD와 일치). contact 필터 구성에 사용.
 
     # -----------------------------------------------------------------------
     # 컵 마찰계수 도메인 랜덤화

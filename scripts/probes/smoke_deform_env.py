@@ -64,6 +64,13 @@ def main() -> None:
         q = env.cup.data.joint_pos  # (N, n_joints)
         max_panel_deg = max(max_panel_deg, float(q.abs().max()) * 180.0 / 3.14159265)
 
+    # 접촉 필터 검증: tip force(force_matrix 합)가 계산되는지(다중-body 필터 정상)
+    tip_f = env.contact_force_xyz_raw  # (N,5,3)
+    tip_fmax = float(tip_f.norm(dim=-1).max())
+    tip_contacts = int(env.binary_contact_buf.sum())
+    print(f"[smoke] tip_force_max={tip_fmax:.4f} tip_contacts(all env)={tip_contacts} "
+          f"nan={bool(torch.isnan(tip_f).any())}", flush=True)
+
     # Gate C 파이프 확인: radial(=deg)·reward/damage·buckle_rate·dose
     ex = env.extras
     print(f"[smoke] radial(deg)={float(ex.get('task/radial_compression', -1)):.3f} "

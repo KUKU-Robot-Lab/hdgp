@@ -540,10 +540,14 @@ class GraspRightEnv(DirectRLEnv):
         self.scene.rigid_objects["table"] = self.table
         self.scene.rigid_object_collections["beads"] = self.beads
 
-        # 접촉 필터: rigid cup은 단일 prim, deformable cup은 패널+base 링크 prim들.
+        # 접촉 필터: ContactSensor는 필터 '표현식'마다 env당 정확히 1 prim을 요구한다.
+        # rigid cup = 단일 prim. deformable cup = 패널(12)+base 각각을 개별 표현식으로
+        # (glob "panel_.*"는 env당 12 매칭 → count 오류). tip-vs-cup 힘은 이 필터들의 합.
         if self.cfg.cup_is_articulated:
-            _CUP_FILTER = ["/World/envs/env_.*/Cup/panel_.*",
-                           "/World/envs/env_.*/Cup/base"]
+            _CUP_FILTER = [
+                f"/World/envs/env_.*/Cup/panel_{i:02d}"
+                for i in range(int(self.cfg.deform_panel_count))
+            ] + ["/World/envs/env_.*/Cup/base"]
         else:
             _CUP_FILTER = ["/World/envs/env_.*/Cup"]
         self._tip_sensors: list[ContactSensor] = []
@@ -722,8 +726,10 @@ class GraspRightEnv(DirectRLEnv):
     # 접촉력 업데이트
     # ------------------------------------------------------------------
     def _update_contact_forces(self) -> None:
+        # force_matrix_w: (N, 1 body, M filters, 3). rigid cup M=1, deformable M=13(패널12+base).
+        # 필터 차원 합산 = tip이 컵 전체에서 받는 총 힘(M=1이면 기존과 동일, 다중-body면 정합).
         tip_xyz = torch.stack([
-            s.data.force_matrix_w[:, 0, 0, :] for s in self._tip_sensors
+            s.data.force_matrix_w[:, 0, :, :].sum(dim=1) for s in self._tip_sensors
         ], dim=1)
         tip_xyz = torch.nan_to_num(tip_xyz, nan=0.0, posinf=0.0, neginf=0.0)
         tip_norms = tip_xyz.norm(dim=-1)
