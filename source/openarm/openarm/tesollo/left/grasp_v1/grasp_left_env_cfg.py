@@ -266,7 +266,10 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # grasp_v2 에서 3지 고착 해소 검증된 방법(grasp_v2 left ADR50 0.908). grasp_v1 은 07-28에
     # 제거했으나 left per-finger 가 3지로 수렴(right 는 우연히 5지)해 08.02 left 만 재도입.
     # reward/obs/action 차원 불변(action 전처리) → 좌우 reward 동일 제약 유지·right 무영향.
-    couple_four_fingers: bool = True
+    # 08.03 되돌림(True→False): couple 은 lift 미러버그를 우회하려던 잘못된 방향이었다.
+    # 진짜 원인=joint7 lift 미러(위 수정). lift 고치면 right 와 동일 per-finger 순수 미러로
+    # 5지 리프트 수렴 기대 → couple 불필요(오히려 warmstart per-finger 정책과 상충해 0.565 정체).
+    couple_four_fingers: bool = False
     grasp_contact_persistence_reward_steps: int = 20
     enclosure_sharpness: float = 15.0
     # cup_radius_approx: cup_big 기준값(반경). 2026-07-26부터 per-object bbox 텐서
@@ -335,10 +338,15 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     warm_contact_stable_steps: int = 1
     warm_lift_wait_arm_tol: float = 0.035
     warm_lift_wait_hold_steps: int = 1
-    lift_wait_joint7_delta: float = 0.31
+    # ★joint7 lift 미러 수정(08.03): joint7 은 _ARM_SIGN=-1 미러 관절(left 실측 ≈ -0.97).
+    # right 의 양수 delta(+0.31)·클램프[0.20,1.50]를 그대로 쓰면 left joint7 을 -0.97→+0.20 으로
+    # 강제(+1.17rad 급젖힘)해 물체를 떨궈 lifted 0.15 고착이었음(right 는 0.8). 방향성 리터럴이라
+    # 미러 함수를 안 타 좌우 동일하게 남아있던 버그(rl-mirror-port "하드코딩 리터럴" 전형).
+    # delta·범위를 부호 미러: +0.31→-0.31, [0.20,1.50]→[-1.50,-0.20].
+    lift_wait_joint7_delta: float = -0.31
     warm_cup_upright_min: float = 0.90   # legacy override 호환용; lift-wait export 에서는 미사용
-    warm_j7_min: float = 0.20
-    warm_j7_max: float = 1.50
+    warm_j7_min: float = -1.50
+    warm_j7_max: float = -0.20
 
     # -----------------------------------------------------------------------
     # 시뮬레이션 설정
