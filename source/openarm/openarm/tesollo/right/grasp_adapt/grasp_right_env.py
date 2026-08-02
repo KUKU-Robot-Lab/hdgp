@@ -96,6 +96,7 @@ from .grasp_reward_utils import compute_upright_success_mask
 from .grasp_right_utils import (
     compute_damage_dose,
     compute_mass_shift_trigger,
+    compute_panel_deformation_deg,
     compute_precision_grasp_mask,
     compute_radial_compression,
     to_torch,
@@ -524,16 +525,27 @@ class GraspRightEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.cup   = RigidObject(self.cfg.cup_cfg)
+        # Phase 2: deformable cup은 Articulation(패널 스프링), 기존 rigid cup은 RigidObject.
+        # root_pos_w/root_quat_w/root_lin_vel_w API가 동일해 이후 접근 코드는 무변경.
+        if self.cfg.cup_is_articulated:
+            self.cup = Articulation(self.cfg.cup_cfg)
+            self.scene.articulations["cup"] = self.cup
+        else:
+            self.cup = RigidObject(self.cfg.cup_cfg)
+            self.scene.rigid_objects["cup"] = self.cup
         self.table = RigidObject(self.cfg.table_cfg)
         self.beads = RigidObjectCollection(self.cfg.beads_cfg)
 
         self.scene.articulations["robot"] = self.robot
-        self.scene.rigid_objects["cup"]   = self.cup
         self.scene.rigid_objects["table"] = self.table
         self.scene.rigid_object_collections["beads"] = self.beads
 
-        _CUP_FILTER = ["/World/envs/env_.*/Cup"]
+        # 접촉 필터: rigid cup은 단일 prim, deformable cup은 패널+base 링크 prim들.
+        if self.cfg.cup_is_articulated:
+            _CUP_FILTER = ["/World/envs/env_.*/Cup/panel_.*",
+                           "/World/envs/env_.*/Cup/base"]
+        else:
+            _CUP_FILTER = ["/World/envs/env_.*/Cup"]
         self._tip_sensors: list[ContactSensor] = []
         for link_name in self.cfg.right_tip_contact_links:
             sensor = ContactSensor(ContactSensorCfg(
@@ -1240,9 +1252,15 @@ class GraspRightEnv(DirectRLEnv):
         contact_pos = torch.cat([tip_pos, middle_pos], dim=1)        # (N,10,3)
         contact_force = torch.cat([tip_force, middle_force], dim=1)  # (N,10,3)
         contact_mask = torch.cat([tip_mask, middle_mask], dim=1)     # (N,10)
-        radial_compression = compute_radial_compression(
-            contact_pos, contact_force, cup_center, cup_axis, contact_mask
-        )                                                            # (N,)
+        if self.cfg.cup_is_articulated:
+            # Phase 2: 힘-proxy 대신 실제 패널 힌지각(변형)을 damage 신호로 사용.
+            # 과파지 → 패널 안쪽 눌림(실측 기하) → r_damage/dose/buckle이 진짜 형상파괴에 연동.
+            # 단위=deg(f_safe/f_buckle도 Deformable cfg에서 deg로 override).
+            radial_compression = compute_panel_deformation_deg(self.cup.data.joint_pos)
+        else:
+            radial_compression = compute_radial_compression(
+                contact_pos, contact_force, cup_center, cup_axis, contact_mask
+            )                                                        # (N,)
         self._radial_compression_buf.copy_(radial_compression)
         # 누적 형상파괴 dose(설계 §6): hold 구간에서만 누적(파지 중 눌러 찌그러뜨린 총량).
         self._damage_dose_buf = torch.where(
@@ -1633,6 +1651,12 @@ class GraspRightEnv(DirectRLEnv):
         zero_vel = torch.zeros(n, 6, device=self.device)
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
+
+        # ---- 7-def. deformable cup: 패널 관절 0(미변형)으로 리셋 ----
+        # 스프링이 target 0으로 복원하지만, 이전 에피소드 눌림 상태가 남지 않도록 명시 리셋.
+        if self.cfg.cup_is_articulated:
+            zero_q = torch.zeros((n, self.cup.num_joints), device=self.device)
+            self.cup.write_joint_state_to_sim(zero_q, zero_q, env_ids=env_ids)
 
         # ---- 7a. 컵 마찰계수 DR ----
         # μ_static ~ Uniform[cup_friction_min, cup_friction_max]

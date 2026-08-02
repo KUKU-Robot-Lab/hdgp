@@ -107,6 +107,23 @@ def compute_damage_dose(
     return prev_dose + dt * over.pow(q)
 
 
+@torch.jit.script
+def compute_panel_deformation_deg(panel_joint_pos: torch.Tensor) -> torch.Tensor:
+    """Phase 2: segmented-shell deformable cup의 형상파괴 신호 = 최대 |패널 힌지각|(deg).
+
+    각 패널은 base 링에 접선 힌지로 붙어 안쪽으로 눌리면 각이 발생(=변형), 스프링이 복원.
+    파지 squeeze는 안쪽 굽힘만 유발하므로 |각| = 안쪽 변형량. **max**(최악 국소 crush)를
+    쓰면 기존 힘-proxy `radial_compression`(단일 scalar severity)과 1:1 대체 가능 →
+    r_damage/dose/buckle 하류 코드 무변경으로 실제 기하 변형에 연동된다.
+
+    Args:
+        panel_joint_pos: (N, num_panels) 패널 힌지각 [rad].
+    Returns:
+        (N,) 최대 패널 변형 [deg].
+    """
+    return panel_joint_pos.abs().max(dim=-1).values * (180.0 / 3.141592653589793)
+
+
 def compute_mass_shift_trigger(
     lift_latched: torch.Tensor,
     height_delta: torch.Tensor,

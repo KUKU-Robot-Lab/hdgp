@@ -17,6 +17,7 @@ import gymnasium as gym
 from . import agents
 from ..grasp_right_env_cfg import (
     GraspRightEnvCfg,
+    GraspRightEnvCfgDeformable,
     GraspRightEnvCfgMassShift,
     GraspRightEnvCfgNoActorMass,
 )
@@ -32,6 +33,14 @@ class GraspRightEnvCfg_PLAY(GraspRightEnvCfg):
 
 class GraspRightEnvCfgNoActorMass_PLAY(GraspRightEnvCfgNoActorMass):
     """플레이용 oracle-mass-free actor 설정."""
+
+    def __post_init__(self):
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+
+
+class GraspRightEnvCfgDeformable_PLAY(GraspRightEnvCfgDeformable):
+    """플레이/스모크용 deformable cup 설정 (소규모 환경)."""
 
     def __post_init__(self):
         self.scene.num_envs = 50
@@ -72,6 +81,31 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgMassShift",
         # Phase3 fine-tune 전용: actor LR 1e-4 (fine-tune 붕괴 방지)
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_massshift_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="open-tesol_r_grasp_adapt_deform-lstm",
+    entry_point=(
+        "openarm.tesollo.right.grasp_adapt.grasp_right_env:GraspRightEnv"
+    ),
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgDeformable",
+        # fresh 재학습(rigid 비전이). fine-tune 아니지만 안정 위해 lstm 표준 yaml.
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="open-tesol_r_grasp_adapt_deform-play-lstm",
+    entry_point=(
+        "openarm.tesollo.right.grasp_adapt.grasp_right_env:GraspRightEnv"
+    ),
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgDeformable_PLAY",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
     },
 )
 

@@ -507,6 +507,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     )
 
     # -----------------------------------------------------------------------
+    # Phase 2: segmented-shell deformable cup (기본 비활성 — rigid 태스크 무영향).
+    # True면 env가 cup을 Articulation으로 스폰하고 리셋 시 패널 관절(수동 스프링)을 0으로
+    # 되돌린다. 스폰 자산·actuator(스프링 gain)는 deformable 서브클래스가 cup_cfg override로 지정.
+    # 패널 관절은 정책 action에 편입되지 않음(컵은 로봇과 별개 articulation) → 순수 수동 스프링.
+    # -----------------------------------------------------------------------
+    cup_is_articulated: bool = False
+
+    # -----------------------------------------------------------------------
     # 컵 마찰계수 도메인 랜덤화
     # -----------------------------------------------------------------------
     # μ_static  ~ Uniform[cup_friction_min, cup_friction_max]  (에피소드별 리셋)
@@ -577,3 +585,73 @@ class GraspRightEnvCfgMassShift(GraspRightEnvCfgNoActorMass):
     mass_shift_enabled: bool = True
     bead_count_min: int = 0
     bead_count_max: int = 10   # 리셋 가벼움 → shift로 mass_shift_target_bead_count까지 추가
+
+
+@configclass
+class GraspRightEnvCfgDeformable(GraspRightEnvCfgNoActorMass):
+    """Phase 2: segmented-shell deformable cup.
+
+    컵을 12 rigid 패널 + 접선 힌지 스프링 articulation으로 교체 → **과파지 = 실제 패널
+    안쪽 눌림(형상파괴)** 이 되어 power-grip이 벌점화된다. under-grip(떨굼)도 over-grip(부숨)도
+    불가 → 정책이 "딱 필요한 만큼"의 mass 적응 파지를 강제로 학습(power-grip 수렴 해소).
+
+    Gate B: 높은 stiffness(rigid-like, 패널 거의 안 움직임)로 현 base와 동등 파지 회귀 검증.
+    Gate D: stiffness 커리큘럼으로 점진 물렁하게(진짜 변형 학습). armature는 경량 패널
+    안정화에 필수(Gate A 실증: 없으면 NaN 폭주).
+
+    actor obs 133(tactile-only, NoActorMass 상속 → sim2real 정합).
+    ⚠️ 컵 물리 자체가 바뀜(동역학 변화) = rigid 체크포인트 비전이 → **fresh 재학습 필수**.
+    obs/action 차원은 불변이라 코드 호환만 유지.
+    """
+
+    cup_is_articulated: bool = True
+
+    # -------------------------------------------------------------------
+    # damage 신호 단위 전환: 힘 proxy(N) → 실제 패널 최대 변형(deg).
+    # radial_compression = compute_panel_deformation_deg(패널 힌지각) [deg].
+    #   r_damage    = -damage_penalty_weight · hold_gate · relu(deform - f_safe)
+    #   damage_dose = Σ dt·relu((deform-f_safe)/f_safe)^q  (성공조건: dose < max)
+    #   deform > f_buckle → 좌굴(파손) 종료 + buckle_penalty.
+    # ★ placeholder — 학습 초기 task/radial_compression(=deg) 분포 보고 보정(로그 먼저).
+    #   Gate B(stiffness 5.0)에선 파지 시 ~8deg < f_safe라 damage 미발동(rigid 회귀).
+    #   Gate D 커리큘럼서 stiffness 낮추면 변형↑ → damage 활성 → gentle 적응 강제.
+    # -------------------------------------------------------------------
+    f_safe:   float = 10.0    # deg, 안전 패널각(형상 온전, 초과분 penalty·dose)
+    f_buckle: float = 35.0    # deg, 좌굴(파손) 패널각
+    damage_penalty_weight: float = 0.3   # deg 스케일(relu~10~25)에 맞춰 축소(기존 N일 때 3.0)
+
+    cup_cfg: ArticulationCfg = ArticulationCfg(
+        prim_path="/World/envs/env_.*/Cup",
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=[0.5, 0.0, 0.25],
+            rot=[1.0, 0.0, 0.0, 0.0],
+        ),
+        spawn=UsdFileCfg(
+            usd_path=_os.path.join(_ASSETS_DIR, "cup/deformable_cup.usd"),
+            activate_contact_sensors=True,
+            scale=(1.0, 1.0, 1.0),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                articulation_enabled=True,
+                solver_position_iteration_count=32,
+                solver_velocity_iteration_count=4,
+            ),
+            rigid_props=RigidBodyPropertiesCfg(
+                solver_position_iteration_count=32,
+                solver_velocity_iteration_count=4,
+                max_angular_velocity=100.0,
+                max_linear_velocity=100.0,
+                max_depenetration_velocity=5.0,
+                disable_gravity=False,
+            ),
+        ),
+        # 패널 관절 = 정책 미제어 수동 스프링(target=default 0). Gate B는 rigid-like 고강성.
+        actuators={
+            "panels": ImplicitActuatorCfg(
+                joint_names_expr=["revolute_.*"],
+                stiffness=5.0,      # Gate B: rigid-like(고강성). Gate D 커리큘럼서 낮춤.
+                damping=0.1,
+                armature=1.0e-3,    # 경량 패널 NaN 방지(Gate A 필수)
+                effort_limit=1.0e6,
+            ),
+        },
+    )
