@@ -441,10 +441,28 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
                 stiffness=400.0,
                 damping=80.0,
             ),
-            "openarm_left_arm": ImplicitActuatorCfg(
-                joint_names_expr=["l_aj_[1-7]"],
-                stiffness=400.0,
-                damping=80.0,
+            # ★왼팔 real2sim 캘리브(08.02): right/grasp_v1 의 r_aj 캘리브를 미러.
+            #   좌우 OpenArm 은 동일 하드웨어라 강성/감쇠/마찰 값이 같다(강성은 부호무관 스칼라).
+            #   right 는 kp 12~67(부드러움)인데 left 만 400(뻣뻣)이면 팔 dynamics 비대칭 → right에서
+            #   학습한 mirror-warmstart 정책이 transfer 안 되고 3지로 drift(08.02 진단). left sim 팔을
+            #   right 와 일치시켜 warmstart 가 제대로 전달되게 함. 값=CALIBRATION.md/right_arm.json.
+            "left_arm_proximal": ImplicitActuatorCfg(
+                joint_names_expr=["l_aj_[1-3]"],
+                stiffness=67.587,
+                damping=6.376,
+                friction=0.213,
+            ),
+            "left_arm_elbow": ImplicitActuatorCfg(
+                joint_names_expr=["l_aj_4"],
+                stiffness=66.979,
+                damping=5.635,
+                friction=0.493,
+            ),
+            "left_arm_wrist": ImplicitActuatorCfg(
+                joint_names_expr=["l_aj_[5-7]"],
+                stiffness=12.019,
+                damping=2.154,
+                friction=0.151,
             ),
             # 손 stiffness/damping: pour-v5/6 검증값 채택. 기존 30/5(물렁)은 엄지 _3/_4가
             # 컵을 감을 때 반력이 엄지 대향을 뒤로 밀어냄(play 렌더 관찰). 단단히 유지.
