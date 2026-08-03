@@ -269,7 +269,12 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 08.03 되돌림(True→False): couple 은 lift 미러버그를 우회하려던 잘못된 방향이었다.
     # 진짜 원인=joint7 lift 미러(위 수정). lift 고치면 right 와 동일 per-finger 순수 미러로
     # 5지 리프트 수렴 기대 → couple 불필요(오히려 warmstart per-finger 정책과 상충해 0.565 정체).
-    couple_four_fingers: bool = False
+    # 08.03-2 재도입(False→True): lift 수정 warmstart(lstm_test11)가 lifted 0.15→0.69 로 lift
+    # 근본원인 해결을 확정했으나, per-finger 파지가 grip 3.4·success 0.74 천장에서 정체(right 4.4/0.89
+    # 미달). 병목이 lift 에서 per-finger firmness 로 이동 → couple 로 4지 공통닫힘(3지 국소최적 차단).
+    # 이번엔 fresh(warmstart 없음)+lift 수정 유지라 과거 couple 실패 두 원인(warmstart 상충·lift 버그)
+    # 모두 제거됨. 여전히 reward/obs/action 불변·left-only·right 무영향.
+    couple_four_fingers: bool = True
     grasp_contact_persistence_reward_steps: int = 20
     enclosure_sharpness: float = 15.0
     # cup_radius_approx: cup_big 기준값(반경). 2026-07-26부터 per-object bbox 텐서
