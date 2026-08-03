@@ -1,0 +1,125 @@
+# 부위별 autotune 설정 — 【왼손 Tesollo 20관절】
+#
+# ⚠ 자산이 다르다. 왼손 Tesollo는 openarm_tesollo_sensor_rl에 없다 — 그 자산의 왼손은
+#   2관절 그리퍼다. 왼손 부위만 openarm_tesollo_bi_rl(양팔 Tesollo)로 잡는다.
+#   실기에서도 왼팔에 Tesollo를 물린 뒤에야 이 트랙을 수집할 수 있다.
+#
+# 부위마다 config를 따로 두는 이유: autotune 결과 JSON은 tune 대상이 아니었던 group까지
+# config 기본값 그대로 담는다. 부위를 섞어 돌리면 어느 값이 측정된 것이고 어느 값이
+# placeholder인지 구분할 수 없어진다. 부위별로 돌리고 calibration_parts.py로
+# 실제 튜닝한 group만 뽑아 자산 옆에 저장한다.
+#
+# 결과 저장 위치:
+#   assets/robot/openarm_tesollo_bi_rl/calibration/left_hand.json
+
+asset: openarm_tesollo_bi_rl
+usd_path: assets/robot/openarm_tesollo_bi_rl/openarm_tesollo_bi_rl.usd
+manifest: assets/robot/openarm_tesollo_bi_rl/openarm_tesollo_bi_rl_manifest.yaml
+
+groups:
+  head_camera:
+    joint_names_expr: ["head_j_(pan|tilt)"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+  # 오른팔 기본값 = 07.29 실측 확정본 (같은 하드웨어, 자산만 다르다).
+  right_arm_proximal:
+    joint_names_expr: ["r_aj_[1-3]"]
+    defaults: {stiffness: 67.587, damping: 6.376, joint_friction: 0.213}
+
+  right_arm_elbow:
+    joint_names_expr: ["r_aj_4"]
+    defaults: {stiffness: 66.979, damping: 5.635, joint_friction: 0.493}
+
+  right_arm_wrist:
+    joint_names_expr: ["r_aj_[5-7]"]
+    defaults: {stiffness: 12.019, damping: 2.154, joint_friction: 0.151}
+
+  left_arm_proximal:
+    joint_names_expr: ["l_aj_[1-3]"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+  left_arm_elbow:
+    joint_names_expr: ["l_aj_4"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+  left_arm_wrist:
+    joint_names_expr: ["l_aj_[5-7]"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+  tesollo_hand_abduction:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_1"]
+    defaults: {stiffness: 600.0, damping: 40.0}
+
+  tesollo_hand_curl:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_2"]
+    defaults: {stiffness: 400.0, damping: 60.0}
+
+  tesollo_hand_pip:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_3"]
+    defaults: {stiffness: 400.0, damping: 60.0}
+
+  tesollo_hand_dip:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_4"]
+    defaults: {stiffness: 400.0, damping: 60.0}
+
+  # ── 이 config의 튜닝 대상 ───────────────────────────────────────────────────
+  #
+  # ⚠ seed는 측정값이 아니라 학습 env(left/grasp_v1)의 sim 값이다. 오른손 부위 튜닝이
+  #   먼저 끝났다면 그 결과를 seed로 옮기고 범위를 좁히는 편이 낫다 — 같은 Tesollo다.
+  #   학습 env(left/grasp_v2)는 왼손을 tesollo_left_hand 한 group으로 두지만, 여기서는
+  #   오른손과 같은 4분할로 잡는다. 학습에 적용할 때 env 쪽을 같은 이름으로 쪼개야 한다.
+  tesollo_left_hand_abduction:
+    joint_names_expr: ["l_hj_(thumb|index|middle|ring|pinky)_1"]
+    defaults: {stiffness: 600.0, damping: 40.0}
+    search:
+      stiffness_scale: [0.07, 1.5]
+      damping_scale: [0.1, 2.5]
+      friction_scale: [0.5, 2.0]
+
+  tesollo_left_hand_curl:
+    joint_names_expr: ["l_hj_(thumb|index|middle|ring|pinky)_2"]
+    defaults: {stiffness: 400.0, damping: 60.0}
+    search:
+      stiffness_scale: [0.1, 2.25]
+      damping_scale: [0.1, 2.5]
+      friction_scale: [0.5, 2.0]
+
+  tesollo_left_hand_pip:
+    joint_names_expr: ["l_hj_(thumb|index|middle|ring|pinky)_3"]
+    defaults: {stiffness: 400.0, damping: 60.0}
+    search:
+      stiffness_scale: [0.1, 2.25]
+      damping_scale: [0.1, 2.5]
+      friction_scale: [0.5, 2.0]
+
+  tesollo_left_hand_dip:
+    joint_names_expr: ["l_hj_(thumb|index|middle|ring|pinky)_4"]
+    defaults: {stiffness: 400.0, damping: 60.0}
+    search:
+      stiffness_scale: [0.1, 2.25]
+      damping_scale: [0.1, 2.5]
+      friction_scale: [0.5, 2.0]
+  # ───────────────────────────────────────────────────────────────────────────
+
+tune_groups:
+  - tesollo_left_hand_abduction
+  - tesollo_left_hand_curl
+  - tesollo_left_hand_pip
+  - tesollo_left_hand_dip
+
+population_size: 128
+random_seed: 7
+
+# ⚠ 왼손을 여진한 트랙이어야 한다.
+real_track:
+  hdf5: /home/user/r2s/left_hand_track.hdf5
+  demo_key: demo_0
+  command_dataset: command/position
+  measured_dataset: measured/position
+  velocity_dataset: null
+  dt: 0.01
+
+error_weights:
+  q: 1.0
+  dq: 0.05
+  delay: 0.01

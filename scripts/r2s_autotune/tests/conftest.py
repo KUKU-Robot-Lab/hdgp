@@ -16,6 +16,10 @@ if str(SCRIPTS_DIR) not in sys.path:
 CONFIG_DIR = SCRIPTS_DIR / "r2s_autotune" / "configs"
 
 
-@pytest.fixture(params=["bi_rh56f1.yaml", "tesollo_sensor.yaml"])
+# 목록을 손으로 적으면 새 부위별 config가 검증 밖에 남는다 — 디렉토리를 그대로 훑는다.
+ALL_CONFIGS = sorted(p.name for p in CONFIG_DIR.glob("*.yaml"))
+
+
+@pytest.fixture(params=ALL_CONFIGS)
 def config_path(request) -> Path:
     return CONFIG_DIR / request.param

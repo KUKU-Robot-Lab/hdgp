@@ -1,0 +1,129 @@
+# 부위별 autotune 설정 — 【오른팔 7관절】  ★07.29 실측 완료본
+#
+# 부위마다 config를 따로 두는 이유: autotune 결과 JSON은 tune 대상이 아니었던 group까지
+# config 기본값 그대로 담는다. 부위를 섞어 돌리면 어느 값이 측정된 것이고 어느 값이
+# placeholder인지 구분할 수 없어진다. 부위별로 돌리고 calibration_parts.py로
+# 실제 튜닝한 group만 뽑아 자산 옆에 저장한다.
+#
+# 같은 자산의 다른 부위: tesollo_sensor_right_hand.yaml / tesollo_sensor_left_arm.yaml
+# group 이름·regex는 네 config가 모두 같아야 한다 (tests/test_calibration_parts.py가 대조).
+#
+# 결과 저장 위치:
+#   assets/robot/openarm_tesollo_sensor_rl/calibration/right_arm.json  (생성 완료)
+#
+# ※ 07.29 실행 당시 group 이름은 arm_proximal / arm_elbow / arm_wrist 였다.
+#   왼팔 부위 config가 생기면서 좌우 구분이 필요해져 right_arm_* 로 바꿨다.
+#   logs/r2s_autotune/results/right_arm_best_calibration.json(원본 산출물)은 옛 이름을
+#   그대로 갖고 있고, calibration_parts.py가 뽑을 때 이름을 옮긴다.
+
+asset: openarm_tesollo_sensor_rl
+usd_path: assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd
+manifest: assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl_manifest.yaml
+
+groups:
+  # D435i 헤드(pan/tilt). 이 트랙은 헤드를 여진하지 않으므로 튜닝 대상이 아니지만
+  # movable이라 group이 덮어야 한다 — 빠지면 로딩 즉시 JointContractError.
+  head_camera:
+    joint_names_expr: ["head_j_(pan|tilt)"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+  # ── 이 config의 튜닝 대상 ───────────────────────────────────────────────────
+  #
+  # 팔 group은 실물 MIT PD 게인 구조를 따라 셋으로 나눈다.
+  #   teleopration_openarm_tesollo/src/openarm_description/config/arm/v10/control_gains.yaml
+  # kp는 그룹 안에서 정확히 균일하다(70 / 60 / 10). kd만 조금씩 달라 평균을 seed로 썼다.
+  #
+  # defaults가 RL env_cfg(400/80)와 다른 것은 의도적이다. 제조사 모델 상수는 정답이 아니라
+  # real-to-sim의 출발점이고, 400/80은 sim 학습 안정성을 위해 고른 값이지 실물을 흉내낸
+  # 값이 아니다 (손목은 실물 대비 강성 40배, 감쇠 160배).
+  right_arm_proximal:
+    joint_names_expr: ["r_aj_[1-3]"]
+    # seed = 07.29 계단 실측 평균 (kp 74.7/75.1/69.5, Fc 0.246/0.207/0.272).
+    # 벤더 스펙 70과 4% 차이 — 실측이 스펙을 확인해 준 셈이다.
+    defaults: {stiffness: 73.1, damping: 2.4167, joint_friction: 0.242}
+    search:
+      # kp와 Fc는 계단이 모델 없이 실측했다 — 탐색이 뒤집을 근거가 이 트랙에는 없다.
+      # (넓히자 elbow가 실측의 2.4배까지 경계로 밀렸는데 오차는 오히려 나빠졌다.)
+      # 좁은 여유만 두고, 실측하지 못한 damping만 넓게 찾는다.
+      stiffness_scale: [0.9, 1.1]
+      damping_scale: [0.3, 4.0]
+      friction_scale: [0.8, 1.25]
+
+  right_arm_elbow:
+    joint_names_expr: ["r_aj_4"]
+    # seed = 07.29 계단 실측 (kp 60.9, Fc 0.571). 벤더 스펙 60과 1.5% 차이.
+    defaults: {stiffness: 60.9, damping: 2.0, joint_friction: 0.571}
+    search:
+      stiffness_scale: [0.9, 1.1]
+      damping_scale: [0.3, 4.0]
+      friction_scale: [0.8, 1.25]
+
+  right_arm_wrist:
+    joint_names_expr: ["r_aj_[5-7]"]
+    # seed = 07.29 계단 실측 평균 (kp 10.8/14.5/10.5, Fc 0.121/0.167/0.139).
+    defaults: {stiffness: 11.9, damping: 0.6, joint_friction: 0.142}
+    search:
+      stiffness_scale: [0.9, 1.1]
+      damping_scale: [0.3, 4.0]
+      friction_scale: [0.8, 1.25]
+  # ───────────────────────────────────────────────────────────────────────────
+
+  # 왼팔은 이 트랙의 대상이 아니다. 실물 게인으로 바꾸면 sim에서 중력에 처지므로
+  # 학습 env와 같은 값을 유지한다. (07.29 실행 때는 openarm_left_arm 한 group이었고,
+  # 값이 셋 다 같아 셋으로 나눠도 시뮬 결과는 동일하다 — 부위 config 간 group 정합용.)
+  left_arm_proximal:
+    joint_names_expr: ["l_aj_[1-3]"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+  left_arm_elbow:
+    joint_names_expr: ["l_aj_4"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+  left_arm_wrist:
+    joint_names_expr: ["l_aj_[5-7]"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+  tesollo_hand_abduction:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_1"]
+    defaults: {stiffness: 600.0, damping: 40.0}
+
+  tesollo_hand_curl:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_2"]
+    defaults: {stiffness: 400.0, damping: 60.0}
+
+  tesollo_hand_pip:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_3"]
+    defaults: {stiffness: 400.0, damping: 60.0}
+
+  tesollo_hand_dip:
+    joint_names_expr: ["r_hj_(thumb|index|middle|ring|pinky)_4"]
+    defaults: {stiffness: 400.0, damping: 60.0}
+
+  # gripper_2는 mimic이라 control_joint_order에는 없지만 movable이므로 group이 덮어야 한다.
+  openarm_left_gripper:
+    joint_names_expr: ["l_hj_gripper_[12]"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
+# 07.29 실기 트랙은 오른팔만 여진했다 — 손은 이 트랙에 정보가 없으므로 대상에서 뺀다.
+tune_groups:
+  - right_arm_proximal
+  - right_arm_elbow
+  - right_arm_wrist
+
+population_size: 128
+random_seed: 7
+
+# robotctl r2s normalize가 쓴 실기 트랙(07.29, 테솔로 부착, 진폭 0.65).
+# 속도 데이터셋은 없다 — 위치에서 유한차분으로 만든다.
+real_track:
+  hdf5: /home/user/r2s/right_track.hdf5
+  demo_key: demo_0
+  command_dataset: command/position
+  measured_dataset: measured/position
+  velocity_dataset: null
+  dt: 0.01
+
+error_weights:
+  q: 1.0
+  dq: 0.05
+  delay: 0.01

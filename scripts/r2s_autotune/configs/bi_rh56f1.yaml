@@ -9,6 +9,12 @@ usd_path: assets/robot/openarm_bi_rh56f1_rl/openarm_bi_rh56f1_rl.usd
 manifest: assets/robot/openarm_bi_rh56f1_rl/openarm_bi_rh56f1_rl_manifest.yaml
 
 groups:
+  # D435i 헤드(pan/tilt). 여진 대상은 아니지만 movable이라 group이 덮어야 한다
+  # (07.29 헤드 카메라 USD 교체 이후 필수).
+  head_camera:
+    joint_names_expr: ["head_j_(pan|tilt)"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
   openarm_right_arm:
     joint_names_expr: ["r_aj_[1-7]"]
     defaults: {stiffness: 400.0, damping: 80.0}

@@ -16,8 +16,9 @@ RH56F1_MANIFEST = asset_manifest("openarm_bi_rh56f1_rl")
 def test_movable_joints_exclude_fixed_joints():
     manifest = load_manifest(RH56F1_MANIFEST)
 
-    # 기존 coverage test가 말하는 38 DOF를 깨면 안 된다.
-    assert len(manifest.movable_joints) == 38
+    # 38 DOF + 07.29 헤드 카메라 USD의 pan/tilt 2개.
+    assert len(manifest.movable_joints) == 40
+    assert {"head_j_pan", "head_j_tilt"} <= set(manifest.movable_joints)
     assert all(not j.endswith("_mount") for j in manifest.movable_joints)
 
 

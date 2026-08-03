@@ -10,6 +10,12 @@ usd_path: assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd
 manifest: assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl_manifest.yaml
 
 groups:
+  # D435i 헤드(pan/tilt). 여진 대상은 아니지만 movable이라 group이 덮어야 한다
+  # (07.29 헤드 카메라 USD 교체 이후 필수).
+  head_camera:
+    joint_names_expr: ["head_j_(pan|tilt)"]
+    defaults: {stiffness: 400.0, damping: 80.0}
+
   # 팔 group은 실물 MIT PD 게인 구조를 따라 셋으로 나눈다.
   #   teleopration_openarm_tesollo/src/openarm_description/config/arm/v10/control_gains.yaml
   # kp는 그룹 안에서 정확히 균일하다(70 / 60 / 10). kd만 조금씩 달라 평균을 seed로 쓴다.
