@@ -617,9 +617,13 @@ class GraspRightEnvCfgDeformable(GraspRightEnvCfgNoActorMass):
     #   Gate B(stiffness 5.0)에선 파지 시 ~8deg < f_safe라 damage 미발동(rigid 회귀).
     #   Gate D 커리큘럼서 stiffness 낮추면 변형↑ → damage 활성 → gentle 적응 강제.
     # -------------------------------------------------------------------
-    f_safe:   float = 10.0    # deg, 안전 패널각(형상 온전, 초과분 penalty·dose)
-    f_buckle: float = 35.0    # deg, 좌굴(파손) 패널각
-    damage_penalty_weight: float = 0.3   # deg 스케일(relu~10~25)에 맞춰 축소(기존 N일 때 3.0)
+    # K와 f_safe 분리(08.03 발견): K=파지가능성, f_safe=damage 임계. K=2.5는 너무 물렁해
+    # 파지 자체가 안 됐음(패널이 손끝 피해 후퇴). → K=5.0(파지 가능) 유지 + f_safe 낮춰
+    # 과파지만 벌점. K=5.0서 파지력↔변형 비례(gentle ~2° / firm ~6°)라 f_safe 3.5°면
+    # gentle 통과·firm 벌점. f_buckle은 backstop(K=5.0선 도달 드묾).
+    f_safe:   float = 3.5     # deg, 안전 패널각(초과분 penalty·dose)
+    f_buckle: float = 10.0    # deg, 좌굴(파손) 패널각 — backstop
+    damage_penalty_weight: float = 0.3   # relu(deform-3.5)~2.5 스케일. 로그 보고 보정.
 
     cup_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Cup",
@@ -649,10 +653,9 @@ class GraspRightEnvCfgDeformable(GraspRightEnvCfgNoActorMass):
         actuators={
             "panels": ImplicitActuatorCfg(
                 joint_names_expr=["revolute_.*"],
-                # K=2.5: 적응 압박 활성값. warm-start 정책의 firm grip이 ~11~13° 변형(>f_safe 10°)
-                # → damage 발동해 과파지 벌점 → 최소힘 적응 강제(K=5.0 near-rigid는 ~5°로 미발동).
-                # 실파지 변형 분포(task/deform_hold_by_mass) 보고 f_safe/K 보정(로그 먼저).
-                stiffness=2.5,
+                # K=5.0: 파지 가능성 확보(K=2.5는 물렁해 파지 실패). 적응 압박은 K가 아니라
+                # f_safe(3.5°)를 낮춰 만든다(과파지=변형↑=벌점). firm grip ~6°>f_safe → damage 발동.
+                stiffness=5.0,
                 damping=0.1,
                 armature=1.0e-3,    # 경량 패널 NaN 방지(Gate A 필수)
                 effort_limit=1.0e6,
