@@ -82,6 +82,12 @@ parser.add_argument(
          "작은 물체에서 손끝 감쌈·palm 도달 여부를 렌더/DBGC 로 확인. --video --num_envs 8 권장.",
 )
 parser.add_argument(
+    "--dead_hand_probe", action="store_true", default=False,
+    help="sim2real 죽은 손 재현 probe: 손가락 action 을 -1(폐쇄 0)로 강제해 손을 APPROACH 에 물리 동결 "
+         "(관절 정지·접촉 0·tips 정지 = 실기 손 하드웨어 두절 상태), last_actions obs 는 정책 raw 로 원복. "
+         "팔 후퇴(LSTM 발산) 가설 검증용 — [GRIP] palm_d 추이로 판정.",
+)
+parser.add_argument(
     "--cam_eye", type=str, default=None,
     help="Viewer camera position 'x,y,z' (env-local). pour 태스크는 기본 근접뷰 자동 적용.",
 )
@@ -695,7 +701,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 actions[:, :3] = _a_pos
                 actions[:, 3:6] = 0.0
                 actions[:, 6:12] = 1.0
+            # 죽은 손 probe(--dead_hand_probe): 정책 raw 는 보존하고 env 에는 손가락 -1(폐쇄 0) 주입
+            # → 손이 APPROACH 에 물리 동결(관절 정지·접촉 0·tips 정지 = 실기 손 두절 재현).
+            if args_cli.dead_hand_probe:
+                _raw_finger = actions[:, 6:11].clone()
+                actions = actions.clone()
+                actions[:, 6:11] = -1.0
             obs, _, dones, _ = env.step(actions)
+            # last_actions obs(101:106=finger 5D)를 정책 raw 로 원복 — 실기는 정책 자신의 출력을 기록.
+            if args_cli.dead_hand_probe:
+                _o_dh = obs["obs"] if isinstance(obs, dict) else obs
+                _o_dh[:, 101:106] = _raw_finger
 
             # 손끝별 정량 계측(정책 play): 접촉율(c)/force(f)/물체거리(d), 손가락 순서 thumb..pinky
             _gp = env.unwrapped
