@@ -155,7 +155,8 @@ def generate(out_path: str, *, panels: int, radius: float, z_bottom: float,
     )
 
     # --- N 패널(벽 세그먼트) + 접선 힌지 스프링 ---------------------------
-    panel_w = 2.0 * radius * math.sin(math.pi / panels)  # 접선 폭(현)
+    # 접선 폭 = 외접 12각형 한 변(2R·tan) → 인접 패널이 맞닿아 닫힌 12각형 벽 형성(간격 없음).
+    panel_w = 2.0 * radius * math.tan(math.pi / panels)
     joints_scope = UsdGeom.Scope.Define(stage, f"{root_path}/joints")
     _ = joints_scope
 
@@ -165,20 +166,24 @@ def generate(out_path: str, *, panels: int, radius: float, z_bottom: float,
         hinge = Gf.Vec3f(radius * math.cos(theta), radius * math.sin(theta),
                          base_top)
         panel_path = f"{root_path}/panel_{i:02d}"
-        # 패널 body: 원점=hinge, Rz(θ) 회전(local X=접선, Y=반경밖, Z=위).
+        # 패널 body: 원점=hinge, Rz(θ+90°) 회전.
+        # Rz(θ)면 local X=방사→넓은 면이 방사로 서서 '블레이드'가 되고 힌지축도 방사(옆 휘둘림).
+        # Rz(θ+90°)면 local X=접선(넓은 폭)·local Y=방사(얇은 두께, 벽 법선)·local Z=위
+        # → 넓은 면이 12각형 벽을 이루고, 접선축(local X) 힌지로 안쪽으로 접힘.
+        panel_rot = theta_deg + 90.0
         _make_body_xform(stage, panel_path,
                          Gf.Vec3d(float(hinge[0]), float(hinge[1]), float(hinge[2])),
-                         theta_deg)
+                         panel_rot)
         _apply_rigid_body(stage.GetPrimAtPath(panel_path), panel_mass)
-        # 패널 geo: 안쪽(-Y)으로 두께 절반, 위로 wall_h/2.
+        # 패널 geo: X=접선폭(panel_w), Y=방사두께(thin), Z=높이. 반경 R 중심, 위로 wall_h/2.
         _make_box_collider(
             stage, f"{panel_path}/panel_geo",
             size=Gf.Vec3f(panel_w, wall_thickness, wall_h),
-            translate=Gf.Vec3d(0.0, -wall_thickness / 2.0, wall_h / 2.0),
+            translate=Gf.Vec3d(0.0, 0.0, wall_h / 2.0),
         )
         _make_revolute_spring_joint(
             stage, f"{root_path}/joints/revolute_{i:02d}",
-            base_path, panel_path, hinge, theta_deg,
+            base_path, panel_path, hinge, panel_rot,
             stiffness=stiffness, damping=damping, limit_deg=limit_deg,
         )
 
