@@ -98,6 +98,20 @@ gym.register(
 )
 
 gym.register(
+    id="open-tesol_r_grasp_adapt_deform_ft-lstm",
+    entry_point=(
+        "openarm.tesollo.right.grasp_adapt.grasp_right_env:GraspRightEnv"
+    ),
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgDeformable",
+        # warm-start fine-tune 전용: actor LR 1e-4 (fresh 실패→massshift ckpt에서 전이,
+        # 수렴 정책 fine-tune이라 full LR 붕괴 방지).
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_massshift_cfg.yaml",
+    },
+)
+
+gym.register(
     id="open-tesol_r_grasp_adapt_deform-play-lstm",
     entry_point=(
         "openarm.tesollo.right.grasp_adapt.grasp_right_env:GraspRightEnv"

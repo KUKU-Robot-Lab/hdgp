@@ -649,7 +649,10 @@ class GraspRightEnvCfgDeformable(GraspRightEnvCfgNoActorMass):
         actuators={
             "panels": ImplicitActuatorCfg(
                 joint_names_expr=["revolute_.*"],
-                stiffness=5.0,      # Gate B: rigid-like(고강성). Gate D 커리큘럼서 낮춤.
+                # K=2.5: 적응 압박 활성값. warm-start 정책의 firm grip이 ~11~13° 변형(>f_safe 10°)
+                # → damage 발동해 과파지 벌점 → 최소힘 적응 강제(K=5.0 near-rigid는 ~5°로 미발동).
+                # 실파지 변형 분포(task/deform_hold_by_mass) 보고 f_safe/K 보정(로그 먼저).
+                stiffness=2.5,
                 damping=0.1,
                 armature=1.0e-3,    # 경량 패널 NaN 방지(Gate A 필수)
                 effort_limit=1.0e6,
