@@ -62,7 +62,10 @@
 3. **Gate C — deformation 보상 배선**: r_damage/dose를 실제 각 기반으로, reward-audit 통과. 로컬 smoke로 변형 지표 로깅 확인.
    - ✅ **완료(2026-08-03)**: `compute_panel_deformation_deg`(utils, max|힌지각|deg) → articulated일 때 `radial_compression`을 이 값으로 공급(env ~L1254). 하류 r_damage/dose/buckle/success 무변경. Deformable cfg에 deg 단위 override(f_safe 10°·f_buckle 35°·damage_penalty_weight 0.3). **reward-audit ACCEPT**(신규 태스크·플래그 게이트·penalty만·측정가능). pytest 29 pass(+5), py_compile OK.
    - 스모크(stiffness 0.15, 80step): radial=14.3°(>f_safe) 정상 유입·NaN 0. reward/damage·dose=0은 hold_gate=0(random action=실파지 아님)이라 **정상**(접근 스침 미벌점). buckle 24°<35° 정확. → **파이프 검증 PASS**. Gate D서 실파지+저강성이면 damage 활성 확실.
-4. **Gate D — 학습**: stiffness 커리큘럼 fresh 재학습(obs 133 tactile-only). **GPU 대기**(server GPU0=사용자 left grasp_v1·GPU1=massshift_s2r2 점유 중). 판정:
+4. **Gate D — 학습**: fresh 재학습(obs 133 tactile-only).
+   - **contact 필터 버그 수정(08.03, e9f6749)**: 첫 2048-env 기동서 발견 — ContactSensor 필터는 표현식마다 env당 1 prim 요구인데 glob `panel_.*`가 env당 12 매칭 → 오류. 패널12+base 개별 표현식 13개 + force_matrix 필터차원 합산(tip이 컵 전체서 받는 총 힘, sim2real F/T 정합)으로 수정. **Gate B 스모크가 dim·NaN만 봐서 놓친 버그**(스모크에 tactile 검증 추가). GPU1 massshift_s2r2(rigid+dynamic mass, power-grip 못거름=적응증명 무의미)는 사용자 판단으로 종료·GPU1 재활용.
+   - ✅ **deform1 기동(08.03, GPU1, K=5.0 near-rigid fresh)**: epoch 76+/20000, **fps ~13,700·필터에러0·NaN0·크래시0** = **2048-env articulation(12스프링×2048) 안정성 실증 통과**(최대 미검증 리스크 해소). K=5.0은 near-rigid라 우선 ①scale 안정성 ②실파지 중 변형(deg) 분포 확보용. **판정 후 stiffness 낮춰 적응압박 도입**(로그 먼저).
+   판정:
    - **grip_force-vs-mass 곡선 평탄화**(ratio 무게 무관 ~일정, 빈 컵 3.0 → 적정) = **진짜 적응**.
    - deformation 낮음·buckle_rate~0·success 유지.
    - **정성**: play.py 영상 — 패널 안 접힘(intact) vs 과파지 시 접힘 대비.
