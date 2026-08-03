@@ -36,10 +36,12 @@ from isaaclab.sim import SimulationContext  # noqa: E402
 
 
 def _presser(prim, pos):
+    # 면(paddle) presser: 실제 손가락/손처럼 벽을 넓게(높이·둘레) 눌러 하중 분산.
+    # 얇게(x=누름방향)·넓게(y=접선)·높게(z=벽높이).
     return RigidObject(RigidObjectCfg(
         prim_path=prim,
-        spawn=sim_utils.SphereCfg(
-            radius=0.02,
+        spawn=sim_utils.CuboidCfg(
+            size=(0.012, 0.06, 0.12),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             collision_props=sim_utils.CollisionPropertiesCfg(),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.2, 0.2)),
@@ -97,20 +99,23 @@ def main() -> None:
         rgb = cam.data.output["rgb"][0, ..., :3].detach().cpu().numpy()
         if rgb.dtype != np.uint8:
             rgb = (np.clip(rgb, 0.0, 1.0) * 255).astype(np.uint8)
+        rgb = np.ascontiguousarray(rgb)  # PIL 'tile' 인코딩 버그(비연속 배열) 회피
         rgb_frames.append(rgb)
         if f % 40 == 0:
             nan = bool(np.isnan(rgb).any())
             print(f"[ring_sq] frame {f}/{F} xr={xr:.3f} nan_rgb={nan}", flush=True)
 
-    mp4 = os.path.join(args.out, "ring_squeeze.mp4")
-    gif = os.path.join(args.out, "ring_squeeze.gif")
-    try:
-        imageio.mimsave(mp4, rgb_frames, fps=30)
-        print(f"[ring_sq] saved {mp4}", flush=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"[ring_sq] mp4 fail {e}", flush=True)
-    imageio.mimsave(gif, rgb_frames[::2], fps=15)
-    print(f"[ring_sq] saved {gif} ({len(rgb_frames)} frames)", flush=True)
+    # 핵심 PNG 먼저(인코딩 무관, 항상 성공): rest·peak(최대 crush)
+    imageio.imwrite(os.path.join(args.out, "rest.png"), rgb_frames[3])
+    imageio.imwrite(os.path.join(args.out, "peak.png"), rgb_frames[len(rgb_frames) // 2])
+    print(f"[ring_sq] saved rest.png peak.png", flush=True)
+    for name, seq, fps in (("ring_squeeze.mp4", rgb_frames, 30),
+                           ("ring_squeeze.gif", rgb_frames[::2], 15)):
+        try:
+            imageio.mimsave(os.path.join(args.out, name), seq, fps=fps)
+            print(f"[ring_sq] saved {name}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[ring_sq] {name} fail: {e}", flush=True)
     app.close()
 
 

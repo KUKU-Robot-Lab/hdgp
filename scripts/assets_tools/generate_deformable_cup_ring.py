@@ -114,7 +114,11 @@ def _edge_joint(stage, path, body0, body1, lpos0, lpos1,
 
 
 def generate(out_path, *, panels, radius, z_bottom, z_top, base_height,
-             wall_thickness, base_mass, panel_mass, stiffness, damping, limit_deg):
+             wall_thickness, base_mass, panel_mass, stiffness, damping, limit_deg,
+             edge_stiffness=None, bottom_stiffness=None):
+    # 강성 분리(비틀림 억제): 모서리 무르게(ovalize)·바닥 뻣뻣하게(패널 직립 유지).
+    edge_stiffness = stiffness if edge_stiffness is None else edge_stiffness
+    bottom_stiffness = stiffness if bottom_stiffness is None else bottom_stiffness
     stage = Usd.Stage.CreateNew(out_path)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
@@ -158,7 +162,7 @@ def generate(out_path, *, panels, radius, z_bottom, z_top, base_height,
                          float(radius * math.sin(th)), float(base_top))
         _bottom_joint(stage, f"{root_path}/joints/bottom_{i:02d}",
                       base_path, f"{root_path}/panel_{i:02d}", hinge, theta + 90.0,
-                      stiffness=stiffness, damping=damping, limit_deg=limit_deg)
+                      stiffness=bottom_stiffness, damping=damping, limit_deg=limit_deg)
 
     # 인접 패널 모서리 힌지(수직 Z) — 닫힌 링(panel_11 → panel_0 루프 폐쇄)
     zc = wall_h / 2.0
@@ -169,13 +173,14 @@ def generate(out_path, *, panels, radius, z_bottom, z_top, base_height,
             f"{root_path}/panel_{i:02d}", f"{root_path}/panel_{j:02d}",
             lpos0=Gf.Vec3f(float(half_w), 0.0, float(zc)),    # panel_i 우측 모서리
             lpos1=Gf.Vec3f(float(-half_w), 0.0, float(zc)),   # panel_j 좌측 모서리
-            stiffness=stiffness, damping=damping, limit_deg=limit_deg,
+            stiffness=edge_stiffness, damping=damping, limit_deg=limit_deg,
         )
 
     stage.GetRootLayer().Save()
     print(f"[ring] saved {out_path}")
     print(f"  panels={panels} radius={radius} wall_h={wall_h:.4f} panel_w={panel_w:.4f}")
-    print(f"  edge springs: stiffness={stiffness} damping={damping} limit=±{limit_deg}deg")
+    print(f"  springs: edge={edge_stiffness} bottom={bottom_stiffness} "
+          f"damping={damping} limit=±{limit_deg}deg")
     print(f"  panel mass total={panels * panel_mass:.4f}kg ({panels}panel), base=static anchor")
 
 
@@ -195,6 +200,10 @@ def main():
     ap.add_argument("--base-mass", type=float, default=DEFAULT_BASE_MASS)
     ap.add_argument("--panel-mass", type=float, default=DEFAULT_PANEL_MASS)
     ap.add_argument("--stiffness", type=float, default=0.3)
+    ap.add_argument("--edge-stiffness", type=float, default=None,
+                    help="모서리(ovalize) 강성. 낮을수록 단면이 잘 눌림. 미지정=--stiffness")
+    ap.add_argument("--bottom-stiffness", type=float, default=None,
+                    help="바닥(패널 tilt) 강성. 높을수록 패널 직립 유지(비틀림↓). 미지정=--stiffness")
     ap.add_argument("--damping", type=float, default=0.05)
     ap.add_argument("--limit-deg", type=float, default=40.0)
     args = ap.parse_args()
@@ -204,7 +213,8 @@ def main():
              z_top=args.z_top, base_height=args.base_height,
              wall_thickness=args.wall_thickness, base_mass=args.base_mass,
              panel_mass=args.panel_mass, stiffness=args.stiffness,
-             damping=args.damping, limit_deg=args.limit_deg)
+             damping=args.damping, limit_deg=args.limit_deg,
+             edge_stiffness=args.edge_stiffness, bottom_stiffness=args.bottom_stiffness)
 
 
 if __name__ == "__main__":
