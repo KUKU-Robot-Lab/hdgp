@@ -71,14 +71,25 @@ def _cyl(stage, path, radius, height, translate):
     UsdPhysics.CollisionAPI.Apply(c.GetPrim())
 
 
-def _fixed_joint(stage, path, body0, body1, lpos0, lrot0):
-    j = UsdPhysics.FixedJoint.Define(stage, path)
-    j.CreateBody0Rel().SetTargets([body0])
-    j.CreateBody1Rel().SetTargets([body1])
-    j.CreateLocalPos0Attr(lpos0)
-    j.CreateLocalRot0Attr(lrot0)
+def _bottom_joint(stage, path, base_body, panel_body, hinge_world, rot_z_deg,
+                  stiffness, damping, limit_deg):
+    """base—panel 바닥 접선축(local X) 힌지 + 스프링. 바닥 rim을 base에 고정하되 안쪽 tilt 허용."""
+    j = UsdPhysics.RevoluteJoint.Define(stage, path)
+    j.CreateBody0Rel().SetTargets([base_body])
+    j.CreateBody1Rel().SetTargets([panel_body])
+    j.CreateAxisAttr("X")
+    j.CreateLocalPos0Attr(hinge_world)
+    j.CreateLocalRot0Attr(_rot_z_quat(rot_z_deg))
     j.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
     j.CreateLocalRot1Attr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+    j.CreateLowerLimitAttr(-limit_deg)
+    j.CreateUpperLimitAttr(limit_deg)
+    d = UsdPhysics.DriveAPI.Apply(j.GetPrim(), "angular")
+    d.CreateTypeAttr("force")
+    d.CreateTargetPositionAttr(0.0)
+    d.CreateStiffnessAttr(stiffness)
+    d.CreateDampingAttr(damping)
+    d.CreateMaxForceAttr(1.0e6)
 
 
 def _edge_joint(stage, path, body0, body1, lpos0, lpos1,
@@ -138,10 +149,16 @@ def generate(out_path, *, panels, radius, z_bottom, z_top, base_height,
              size=Gf.Vec3f(panel_w, wall_thickness, wall_h),
              translate=Gf.Vec3d(0.0, 0.0, wall_h / 2.0))
 
-    # base —fixed— panel_0 (링을 base에 고정, 한 점 앵커)
-    _fixed_joint(stage, f"{root_path}/joints/base_fix",
-                 base_path, f"{root_path}/panel_00",
-                 Gf.Vec3f(float(radius), 0.0, float(base_top)), _rot_z_quat(90.0))
+    # base —bottom hinge— 모든 패널 (바닥 rim 전체를 base에 고정, 옆면 떨어짐 방지).
+    # 접선축이라 바닥은 붙은 채 벽이 안쪽 tilt/ovalize 가능.
+    for i in range(panels):
+        theta = 360.0 * i / panels
+        th = math.radians(theta)
+        hinge = Gf.Vec3f(float(radius * math.cos(th)),
+                         float(radius * math.sin(th)), float(base_top))
+        _bottom_joint(stage, f"{root_path}/joints/bottom_{i:02d}",
+                      base_path, f"{root_path}/panel_{i:02d}", hinge, theta + 90.0,
+                      stiffness=stiffness, damping=damping, limit_deg=limit_deg)
 
     # 인접 패널 모서리 힌지(수직 Z) — 닫힌 링(panel_11 → panel_0 루프 폐쇄)
     zc = wall_h / 2.0
