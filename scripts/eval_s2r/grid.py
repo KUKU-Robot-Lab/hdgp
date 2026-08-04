@@ -6,7 +6,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import torch
+# torch는 텐서 생성 함수 내부에서만 지연 import한다 — Isaac Lab 관례상 AppLauncher 기동
+# 전에는 torch를 import하면 안 되는데(CUDA/omni 컨텍스트 초기화 순서), GridSpec은 eval_sim2real.py가
+# AppLauncher 생성 전 인자 검증(M4)에 재사용하므로 모듈 최상단에서는 torch에 의존하지 않는다.
 
 
 @dataclass(frozen=True)
@@ -52,11 +54,15 @@ def env_to_cell(env_idx: int, repeats: int) -> int:
 
 def build_spawn_tensor(
     cells: list[tuple[float, float]], repeats: int, z: float = float("nan")
-) -> torch.Tensor:
-    """[len(cells)*repeats, 3] float32. env i → cells[i // repeats]. z NaN=물체별 기본 높이."""
+):
+    """[len(cells)*repeats, 3] float32 torch.Tensor. env i → cells[i // repeats]. z NaN=물체별 기본 높이."""
+    import torch
+
     rows = [[x, y, z] for (x, y) in cells for _ in range(repeats)]
     return torch.tensor(rows, dtype=torch.float32)
 
 
-def single_spawn_tensor(x: float, y: float, z: float, num_envs: int) -> torch.Tensor:
+def single_spawn_tensor(x: float, y: float, z: float, num_envs: int):
+    import torch
+
     return torch.tensor([[x, y, z]] * num_envs, dtype=torch.float32)

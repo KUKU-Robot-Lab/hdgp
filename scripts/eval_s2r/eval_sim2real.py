@@ -61,6 +61,8 @@ def _validate_mode(a) -> str:
     if has_grid:
         if not all(v is not None for v in grid_args):
             parser.error("그리드 모드는 --grid_x/--grid_y/--grid_nx/--grid_ny 전부 필요")
+        if a.render:
+            parser.error("--render 는 단일 모드(--object_x/y) 전용입니다")
         return "grid"
     if has_single:
         if a.object_x is None or a.object_y is None:
@@ -69,7 +71,38 @@ def _validate_mode(a) -> str:
     parser.error("모드를 지정하세요: 그리드 인자 | --object_x/y | --interactive")
 
 
+def _validate_checkpoint_early(checkpoint: str) -> None:
+    """Isaac 기동 전 간단 존재 확인 (M4).
+
+    --checkpoint 는 play.py와 동일하게 prefix-glob(확장자 없는 절단 경로, 예: `ep_15000`)도
+    허용하는데, 그 해석(retrieve_file_path·glob 매칭)은 Isaac 기동 후에만 쓸 수 있는
+    헬퍼(_resolve_checkpoint_path)가 필요하다. 그래서 여기서는 '완전한 .pth 경로인데
+    파일이 없는' 명백한 오타만 조기 차단하고, 확장자 없는 prefix는 그대로 통과시켜
+    post-launch 해석에 맡긴다.
+    """
+    if "*" in checkpoint or not checkpoint.endswith(".pth"):
+        return
+    candidate = Path(checkpoint).expanduser()
+    if candidate.is_file():
+        return
+    if not candidate.is_absolute() and (Path(_HDGP_ROOT) / candidate).is_file():
+        return
+    parser.error(f"--checkpoint 경로를 찾을 수 없습니다: {checkpoint}")
+
+
 MODE = _validate_mode(args_cli)
+
+# ---- Isaac 기동 전 fail-fast (M4): 무거운 AppLauncher(GPU/렌더러 초기화) 뒤에서 인자 오류로
+#      실패하면 기동 시간을 낭비한다 — 순수 파이썬으로 검증 가능한 것만 여기서 미리 걸러낸다.
+if MODE == "grid":
+    from scripts.eval_s2r.grid import GridSpec  # 모듈 최상단이 torch 미의존이라 기동 전 import 안전
+    try:
+        GridSpec(args_cli.grid_x[0], args_cli.grid_x[1], args_cli.grid_nx,
+                 args_cli.grid_y[0], args_cli.grid_y[1], args_cli.grid_ny, args_cli.grid_repeats)
+    except ValueError as e:
+        parser.error(str(e))
+_validate_checkpoint_early(args_cli.checkpoint)
+
 if MODE == "interactive":
     args_cli.real_time = True  # 인터랙티브 세션은 기본 실시간 재생(스펙 §4.6)
 if MODE == "interactive" or args_cli.render:
@@ -94,7 +127,7 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry, parse_env_cfg
 
 import openarm.tasks  # noqa: F401,E402
 
-from scripts.eval_s2r.console import SessionState, apply_command, parse_command  # noqa: E402,F401
+from scripts.eval_s2r.console import SessionState, apply_command, parse_command  # noqa: E402
 from scripts.eval_s2r.grid import (  # noqa: E402
     GridSpec, build_cells, build_spawn_tensor, env_to_cell, single_spawn_tensor,
 )

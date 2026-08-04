@@ -120,13 +120,20 @@ GUI 상주 세션을 시작한다. 터미널에서 다음 명령어로 물체 �
 
 ## 출력 형식
 
-각 모드의 결과:
+그리드/단일 모드는 둘 다 `main()`을 거치므로 `--out`을 지정했는지 여부와 무관하게 항상
+`results.csv`+`summary.json`을 남긴다(`--out` 미지정 시 `log/eval_s2r/{robot}_{timestamp}/`에 자동 생성).
+히트맵 PNG만 그리드 모드 전용.
 
-- **그리드 모드**: `{out}/heatmap_{prefix}.png` (히트맵 이미지)
-                 `{out}/results.csv` (셀별 성공률·통계)
-                 `{out}/results.json` (전체 메타데이터)
-- **단일 모드**: 터미널 출력 (성공 여부, 상세 지표)
-- **인터랙티브**: 각 `spawn` 이후 터미널 출력
+- **그리드 모드**: `{out}/heatmap_success.png`, `{out}/heatmap_lifted.png` (히트맵 이미지 2장)
+                 `{out}/results.csv` (셀별 성공률·통계, `per_obj_success`/`finger_contact_rates`는 JSON 인코딩된 문자열 컬럼)
+                 `{out}/summary.json` (전체 메타데이터 + 셀별 집계)
+                 터미널에 셀별 요약 표 출력
+- **단일 모드**: 위와 동일하게 `{out}/results.csv`+`{out}/summary.json` 기록(셀 1개, 히트맵 없음) + 터미널 출력
+- **인터랙티브**: 각 `spawn` 이후 터미널 출력(`fingers=[...]` 포함). `--out` 지정 시 세션 종료 시
+                `{out}/interactive_history.json` 에 세션 전체 에피소드 이력을 **JSON**으로 저장
+                (다른 모드의 CSV/JSON 이중 출력과 달리 인터랙티브는 JSON 단일 파일만 — 스펙 문서의
+                CSV 언급과는 의도적으로 다르다: 세션 이력은 셀 집계가 없는 원시 `EpisodeResult` 리스트라
+                CSV 스키마가 맞지 않는다)
 
 ---
 
@@ -134,4 +141,6 @@ GUI 상주 세션을 시작한다. 터미널에서 다음 명령어로 물체 �
 
 - **ADR 비활성화**: 그리드 고정 스폰과 충돌하므로 평가 중 자동 비활성화
 - **pose_source**: SP1은 `state_frozen`, `live` 만 지원. `camera_frozen`은 SP2에서 구현.
+- **finger_contact_rates**: `results.csv`/`summary.json`에 손가락별(엄지·검지·중지·약지·소지, T/I/M/R/P 순)
+  접촉률이 셀당 원소별 평균으로 포함된다(표본 0이면 `null`).
 - **체크포인트 경로**: play.py와 동일한 prefix-glob 지원 (`*_ep_*.pth` 자동 해석)
