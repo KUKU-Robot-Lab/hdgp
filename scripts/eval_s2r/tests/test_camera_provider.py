@@ -151,6 +151,39 @@ class TestCameraFileProvider:
         assert float(ov2[0, 0]) != pytest.approx(999.0)
 
 
+class TestCameraFileProviderRobotCrossCheck:
+    """I5: --robot을 meta.json/poses.json 양쪽과 대조 — 잘못 짝지은 좌/우 pose 파일 방지."""
+
+    def test_matching_robot_ok(self, tmp_path):
+        meta_path = _write_meta(tmp_path)
+        poses_path = _write_poses(tmp_path)
+        provider = CameraFileProvider(str(poses_path), str(meta_path), robot="right")
+        assert isinstance(provider, CameraFileProvider)
+
+    def test_robot_omitted_still_ok(self, tmp_path):
+        # 하위호환: robot 미지정이면 기존처럼 검증 없이 통과
+        meta_path = _write_meta(tmp_path)
+        poses_path = _write_poses(tmp_path)
+        provider = CameraFileProvider(str(poses_path), str(meta_path))
+        assert isinstance(provider, CameraFileProvider)
+
+    def test_meta_robot_mismatch_raises(self, tmp_path):
+        meta_path = _write_meta(tmp_path)  # meta robot="right"
+        poses_path = _write_poses(tmp_path)  # poses robot="right"
+        with pytest.raises(ValueError, match="robot mismatch"):
+            CameraFileProvider(str(poses_path), str(meta_path), robot="left")
+
+    def test_poses_robot_mismatch_raises(self, tmp_path):
+        meta_path = _write_meta(tmp_path)  # meta robot="right"
+        # poses robot을 left로 조작(meta는 right로 둔 채)
+        data = json.loads(_write_poses(tmp_path).read_text())
+        data["robot"] = "left"
+        poses_path = tmp_path / "poses_mismatch.json"
+        poses_path.write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="robot mismatch"):
+            CameraFileProvider(str(poses_path), str(meta_path), robot="right")
+
+
 class TestMakeProviderCameraFrozen:
     def test_missing_kwargs_raises_value_error(self):
         with pytest.raises(ValueError):

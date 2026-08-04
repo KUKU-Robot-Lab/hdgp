@@ -629,6 +629,7 @@ def _setup(task: str, num_envs: int, mode: str, cells: list, spec: GridSpec | No
     if args_cli.pose_source == "camera_frozen":
         provider = make_provider(
             "camera_frozen", poses_path=args_cli.poses, frames_meta_path=args_cli.frames_meta,
+            robot=args_cli.robot,
         )
         # 생성 직후 pose 파일의 그리드(meta.json 기록)와 이번 실행의 그리드 인자를 대조한다 —
         # 다른 그리드로 캡처한 pose 파일을 잘못 재사용하면 셀별 좌표가 어긋난 채로 조용히

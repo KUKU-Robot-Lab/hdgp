@@ -299,27 +299,37 @@ python3 scripts/eval_s2r/delta_report.py \
 ### poses.json 및 meta.json 스키마
 
 #### poses.json (FoundationPose 출력)
+
+실제 스키마는 §3의 예시와 동일한 envelope 구조다(`robot`/`num_envs`/`poses` — `poses`의
+키는 `"env_0"`이 아니라 정수 문자열 `"0"`, `"1"`, ... 이다, `fp_batch.py` `run_fp()` 참조):
+
 ```json
 {
-  "env_0": {
-    "ok": true,
-    "T_cam_obj": [
-      [0.9, 0.0, 0.1, 0.05],
-      [0.0, 0.95, 0.0, -0.02],
-      [-0.1, 0.0, 0.9, 0.35],
-      [0.0, 0.0, 0.0, 1.0]
-    ]
-  },
-  "env_1": {
-    "ok": false,
-    "reason": "mesh_missing"
+  "robot": "right",
+  "num_envs": 24,
+  "poses": {
+    "0": {
+      "ok": true,
+      "T_cam_obj": [
+        [0.9, 0.0, 0.1, 0.05],
+        [0.0, 0.95, 0.0, -0.02],
+        [-0.1, 0.0, 0.9, 0.35],
+        [0.0, 0.0, 0.0, 1.0]
+      ]
+    },
+    "1": {
+      "ok": false,
+      "reason": "mesh_missing"
+    }
   }
 }
 ```
 
-- `ok`: 추정 성공 여부
-- `T_cam_obj` (ok=true일 때): 4×4 카메라→물체 변환 행렬
-- `reason` (ok=false일 때): 실패 사유 (`mesh_missing`, `inference_fail`, 등)
+- `robot`: `fp_batch.py --robot` 값 — `CameraFileProvider(robot=...)` 교차검증에 쓰인다.
+- `num_envs`: `meta.json`의 `num_envs`와 일치해야 함(불일치 시 `CameraFileProvider` 생성자가 예외).
+- `poses.<env_id>.ok`: 추정 성공 여부
+- `poses.<env_id>.T_cam_obj` (ok=true일 때): 4×4 카메라→물체 변환 행렬
+- `poses.<env_id>.reason` (ok=false일 때): 실패 사유 (`mesh_missing`, `empty_mask`, 등)
 
 #### meta.json (Pass 1 렌더 메타)
 ```json

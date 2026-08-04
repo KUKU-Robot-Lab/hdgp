@@ -1,6 +1,6 @@
 """델타 맵 — STATE−CAMERA 비교 리포트 (순수 함수, Isaac 무관).
 
-설계: docs/superpowers/specs/2026-08-04-grasp-v1-s2r-eval-sp2-design.md §7
+설계: docs/superpowers/specs/2026-08-04-grasp-v1-s2r-eval-sp2-camera-design.md §4.4
 """
 from __future__ import annotations
 

@@ -92,7 +92,7 @@ class CameraFileProvider:
     - get_override: StateFrozenProvider와 동일하게 방어적 `.clone()` 반환.
     """
 
-    def __init__(self, poses_path: str, frames_meta_path: str) -> None:
+    def __init__(self, poses_path: str, frames_meta_path: str, robot: str | None = None) -> None:
         with open(frames_meta_path) as f:
             meta = json.load(f)
         with open(poses_path) as f:
@@ -103,6 +103,18 @@ class CameraFileProvider:
             raise ValueError(
                 f"num_envs mismatch: meta={num_envs} poses={poses_data['num_envs']}"
             )
+
+        # I5: robot 교차검증. --robot을 잘못 짝지어 좌/우 pose 파일을 실행하면(예: left
+        # 체크포인트에 right meta/poses를 물림) num_envs만으로는 안 걸린다 — 같은 그리드면
+        # env 수가 우연히 같을 수 있기 때문. robot이 주어졌을 때만 meta·poses 양쪽과 대조한다
+        # (둘 다 없거나 omit이면 기존처럼 통과 — 하위호환).
+        if robot is not None:
+            meta_robot = meta.get("robot")
+            poses_robot = poses_data.get("robot")
+            if meta_robot != robot or poses_robot != robot:
+                raise ValueError(
+                    f"robot mismatch: requested={robot!r} meta={meta_robot!r} poses={poses_robot!r}"
+                )
 
         self.expected_grid: dict = dict(meta["grid"])  # 방어 복사: 파싱된 JSON dict 원본을 노출하지 않음
 
@@ -165,5 +177,5 @@ def make_provider(name: str, **kwargs) -> PoseProvider:
             raise ValueError(
                 f"camera_frozen requires poses_path and frames_meta_path kwargs (missing {e})"
             ) from e
-        return CameraFileProvider(poses_path, frames_meta_path)
+        return CameraFileProvider(poses_path, frames_meta_path, robot=kwargs.get("robot"))
     raise ValueError(f"unknown pose_source: {name!r} (live|state_frozen|camera_frozen)")
