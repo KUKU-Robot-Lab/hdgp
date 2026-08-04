@@ -29,6 +29,10 @@ parser.add_argument("--robot", required=True, choices=["left", "right"])
 parser.add_argument("--checkpoint", required=True, help="정책 .pth (prefix-glob 허용)")
 parser.add_argument("--pose_source", default="state_frozen",
                     choices=["live", "state_frozen", "camera_frozen"])
+parser.add_argument("--poses", type=str, default=None,
+                    help="camera_frozen 전용: FoundationPose 결과 poses.json 경로")
+parser.add_argument("--frames_meta", type=str, default=None,
+                    help="camera_frozen 전용: render_pass meta.json 경로")
 parser.add_argument("--grid_x", nargs=2, type=float, metavar=("MIN", "MAX"))
 parser.add_argument("--grid_y", nargs=2, type=float, metavar=("MIN", "MAX"))
 parser.add_argument("--grid_nx", type=int)
@@ -71,6 +75,15 @@ def _validate_mode(a) -> str:
     parser.error("모드를 지정하세요: 그리드 인자 | --object_x/y | --interactive")
 
 
+def _validate_pose_source_args(a) -> None:
+    """--poses/--frames_meta 는 camera_frozen 전용 — 부팅 전 조기 오용 차단(M4)."""
+    if a.pose_source == "camera_frozen":
+        if a.poses is None or a.frames_meta is None:
+            parser.error("--pose_source camera_frozen 은 --poses 와 --frames_meta 둘 다 필요합니다")
+    elif a.poses is not None or a.frames_meta is not None:
+        parser.error("--poses/--frames_meta 는 --pose_source camera_frozen 전용입니다")
+
+
 def _validate_checkpoint_early(checkpoint: str) -> None:
     """Isaac 기동 전 간단 존재 확인 (M4).
 
@@ -102,6 +115,7 @@ if MODE == "grid":
     except ValueError as e:
         parser.error(str(e))
 _validate_checkpoint_early(args_cli.checkpoint)
+_validate_pose_source_args(args_cli)
 
 if MODE == "interactive":
     args_cli.real_time = True  # 인터랙티브 세션은 기본 실시간 재생(스펙 §4.6)
@@ -346,6 +360,34 @@ def _snapshot_to_result(snap: dict, env_idx: int, cell_idx: int) -> EpisodeResul
                          finger_contacts=finger_contacts)
 
 
+# 지각(카메라/FoundationPose) 실패 env가 NaN pose를 내놓을 때 물리 스텝을 오염시키지 않기 위한
+# 안전한 더미 좌표(작업공간 밖 far-away, z만 임의 유한값) — 이 env의 기록 결과는 perception_fail로
+# 이미 합성돼 버려지므로 값 자체의 의미는 없고, "유한하다"는 것만 중요하다.
+_PERCEPTION_FAIL_DUMMY_POS = (1.0, 1.0, 0.3)
+
+
+def _sanitize_override_for_failed_envs(override: torch.Tensor | None, provider):
+    """provider.failed_envs(있으면)의 행을 NaN → 안전한 유한 더미로 치환.
+
+    CameraFileProvider.get_override는 실패 env 행을 NaN으로 반환한다(provider 계약 유지 —
+    실패 마커는 provider 레벨에서 NaN 그대로 둔다). 그 NaN이 obs에 실려 정책 forward에
+    들어가면 액션이 NaN이 돼 env.step() 배치 전체(건강한 env 포함)가 깨질 수 있어, eval
+    루프 쪽에서만 스텝 직전에 치환한다. 실패 env 결과는 batch loop에서 이미 discard되므로
+    이 치환이 기록되는 결과를 오염시키지 않는다. live/state_frozen처럼 failed_envs 속성이
+    없는 provider는 원본을 그대로 통과시킨다.
+    """
+    if override is None:
+        return None
+    failed_envs = getattr(provider, "failed_envs", None)
+    if not failed_envs:
+        return override
+    sanitized = override.clone()
+    dummy = torch.tensor(_PERCEPTION_FAIL_DUMMY_POS, dtype=sanitized.dtype, device=sanitized.device)
+    for env_id in failed_envs:
+        sanitized[env_id] = dummy
+    return sanitized
+
+
 def _eval_step(env, ge, agent, obs, provider):
     """스텝 1회 실행 + 지표 스냅샷 + LSTM done 리셋 + provider 재캡처.
 
@@ -356,7 +398,8 @@ def _eval_step(env, ge, agent, obs, provider):
     반환: (새 obs, dones[N] bool, done 이전 스냅샷 dict)
     """
     snap = _snapshot_metrics(ge)
-    ge.eval_cup_pos_override = provider.get_override(ge)  # live면 None
+    # NaN 치환은 여기서 한 번만 — override가 None(live)이면 그대로 통과.
+    ge.eval_cup_pos_override = _sanitize_override_for_failed_envs(provider.get_override(ge), provider)
     with torch.inference_mode():
         actions = agent.get_action(agent.obs_to_torch(obs), is_deterministic=True)
         obs, _, dones, _ = env.step(actions)
@@ -574,7 +617,27 @@ def _setup(task: str, num_envs: int, mode: str, cells: list, spec: GridSpec | No
     agent.restore(resume_path)
     agent.reset()
 
-    provider = make_provider(args_cli.pose_source)
+    if args_cli.pose_source == "camera_frozen":
+        provider = make_provider(
+            "camera_frozen", poses_path=args_cli.poses, frames_meta_path=args_cli.frames_meta,
+        )
+        # 생성 직후 pose 파일의 그리드(meta.json 기록)와 이번 실행의 그리드 인자를 대조한다 —
+        # 다른 그리드로 캡처한 pose 파일을 잘못 재사용하면 셀별 좌표가 어긋난 채로 조용히
+        # 집계될 수 있어 fail-fast로 막는다. spec이 없는 모드(단일/인터랙티브)는 대조할
+        # 그리드가 없으므로 건너뛴다.
+        if spec is not None:
+            current_grid = {
+                "x_min": spec.x_min, "x_max": spec.x_max, "nx": spec.nx,
+                "y_min": spec.y_min, "y_max": spec.y_max, "ny": spec.ny,
+                "repeats": spec.repeats,
+            }
+            if provider.expected_grid != current_grid:
+                raise ValueError(
+                    f"camera_frozen pose 파일의 그리드가 현재 실행 그리드 인자와 다릅니다: "
+                    f"file={provider.expected_grid} current={current_grid}"
+                )
+    else:
+        provider = make_provider(args_cli.pose_source)
 
     # reset + get_batch_size + RNN init (play.py:664-676 복제)
     # reset 전 override를 비워 stale 값(직전 세션/이전 에피소드)이 첫 관측에 새지 않도록 한다.
@@ -604,6 +667,22 @@ def main():
     episode_counts = [0] * ge.num_envs
     results: list[EpisodeResult] = []
     step_dt = ge.step_dt
+
+    # 지각(camera_frozen) 실패 env는 스텝 결과를 기록하지 않고 episodes_per_env개의 합성
+    # perception_fail 에피소드로 미리 채운다. 주의: 이 env들도 씬에는 그대로 존재하고
+    # 액션은 배치 전체에 대해 계산되므로 물리적으로는 계속 스텝을 밟는다(_sanitize_override_
+    # for_failed_envs가 NaN pose를 안전한 더미로 치환해 배치 전체가 깨지지 않게 함) — 다만
+    # 그 env가 만들어내는 실제 스텝 결과는 절대 기록하지 않고 버린다(discard). episode_counts를
+    # 미리 target으로 채워두면 아래 배치 루프의 "이미 다 찬 env" 스킵 로직이 자연히 처리한다.
+    for i in getattr(provider, "failed_envs", set()):
+        cell_idx = env_to_cell(i, spec.repeats) if MODE == "grid" else 0
+        for _ in range(target):
+            results.append(EpisodeResult(
+                cell_idx=cell_idx, success=False, lifted=False, grip_count=0.0,
+                displacement=0.0, obj_idx=i % 8, invalid=False,
+                finger_contacts=(0.0,) * 5, perception_fail=True,
+            ))
+        episode_counts[i] = target
 
     while any(c < target for c in episode_counts) and simulation_app.is_running():
         start_time = time.time()

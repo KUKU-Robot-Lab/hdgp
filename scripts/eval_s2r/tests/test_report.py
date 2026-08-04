@@ -9,12 +9,12 @@ CELLS = [(0.21, -0.16), (0.21, 0.02), (0.33, -0.16), (0.33, 0.02)]  # nx=2, ny=2
 
 
 def _ep(cell, success, lifted=None, grip=4.0, disp=0.01, obj=0, invalid=False,
-        finger_contacts=(1.0, 1.0, 1.0, 1.0, 1.0)):
+        finger_contacts=(1.0, 1.0, 1.0, 1.0, 1.0), perception_fail=False):
     return EpisodeResult(
         cell_idx=cell, success=success,
         lifted=success if lifted is None else lifted,
         grip_count=grip, displacement=disp, obj_idx=obj, invalid=invalid,
-        finger_contacts=finger_contacts,
+        finger_contacts=finger_contacts, perception_fail=perception_fail,
     )
 
 
@@ -56,6 +56,28 @@ class TestAggregate:
         rows = aggregate([], CELLS)
         assert rows[0]["finger_contact_rates"] is None
 
+    def test_perception_fail_counted_in_n_but_success_contributes_zero(self):
+        # perception_fail 에피소드는 success=False로 합성되므로 n_episodes엔 포함되지만
+        # success_rate 계산에는 0으로 반영돼야 한다(정책 실패와 지각 실패를 success_rate에서 섞지 않되,
+        # n_episodes/perception_fail_rate로는 드러나야 함).
+        results = [_ep(0, False, perception_fail=True), _ep(0, True)]
+        rows = aggregate(results, CELLS)
+        assert rows[0]["n_episodes"] == 2
+        assert rows[0]["success_rate"] == pytest.approx(0.5)
+
+    def test_perception_fail_rate_mixed(self):
+        results = [
+            _ep(0, False, perception_fail=True),
+            _ep(0, True),
+            _ep(0, True, perception_fail=True),
+        ]
+        rows = aggregate(results, CELLS)
+        assert rows[0]["perception_fail_rate"] == pytest.approx(2 / 3)
+
+    def test_perception_fail_rate_none_when_cell_empty(self):
+        rows = aggregate([], CELLS)
+        assert rows[0]["perception_fail_rate"] is None
+
 
 class TestWriters:
     def test_csv_roundtrip(self, tmp_path):
@@ -68,6 +90,15 @@ class TestWriters:
         assert float(got[0]["success_rate"]) == pytest.approx(1.0)
         assert json.loads(got[0]["finger_contact_rates"]) == pytest.approx([1.0, 1.0, 0.0, 1.0, 1.0])
         assert json.loads(got[2]["finger_contact_rates"]) is None
+
+    def test_csv_includes_perception_fail_rate_column(self, tmp_path):
+        rows = aggregate([_ep(0, True, perception_fail=True), _ep(0, True)], CELLS)
+        p = tmp_path / "results.csv"
+        write_csv(rows, str(p))
+        with open(p) as f:
+            got = list(csv.DictReader(f))
+        assert "perception_fail_rate" in got[0]
+        assert float(got[0]["perception_fail_rate"]) == pytest.approx(0.5)
 
     def test_summary_json(self, tmp_path):
         rows = aggregate([_ep(0, True), _ep(1, False)], CELLS)

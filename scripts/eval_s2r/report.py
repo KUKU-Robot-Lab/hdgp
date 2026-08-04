@@ -26,6 +26,7 @@ class EpisodeResult:
     obj_idx: int
     invalid: bool
     finger_contacts: tuple  # (thumb, index, middle, ring, pinky) — 0.0/1.0 각 5개
+    perception_fail: bool = False  # camera_frozen 등 지각 실패로 합성된 에피소드 표시 (Task 5, 기본값 있는 신규 필드)
 
 
 def aggregate(results: list[EpisodeResult], cells: list[tuple[float, float]]) -> list[dict]:
@@ -48,6 +49,7 @@ def aggregate(results: list[EpisodeResult], cells: list[tuple[float, float]]) ->
             "lifted_rate": (sum(r.lifted for r in eps) / n) if n else None,
             "grip_finger_count": (sum(r.grip_count for r in eps) / n) if n else None,
             "displacement_mean": (sum(r.displacement for r in eps) / n) if n else None,
+            "perception_fail_rate": (sum(r.perception_fail for r in eps) / n) if n else None,
             "per_obj_success": per_obj,
             "finger_contact_rates": finger_contact_rates,
         })
@@ -57,7 +59,8 @@ def aggregate(results: list[EpisodeResult], cells: list[tuple[float, float]]) ->
 def write_csv(rows: list[dict], path: str) -> None:
     fields = ["cell_idx", "x", "y", "n_episodes", "n_invalid",
               "success_rate", "lifted_rate", "grip_finger_count",
-              "displacement_mean", "per_obj_success", "finger_contact_rates"]
+              "displacement_mean", "perception_fail_rate",
+              "per_obj_success", "finger_contact_rates"]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
