@@ -139,6 +139,226 @@ GUI 상주 세션을 시작한다. 터미널에서 다음 명령어로 물체 �
 
 ---
 
+## SP2 — camera_frozen (D435i 렌더 + FoundationPose)
+
+**오프라인 3-pass 워크플로우**: Pass 1에서 D435i 헤드카메라로 렌더링한 프레임 집합을 고정 카메라 pose로 처리하고, Pass 2에서 FoundationPose로 컵 위치를 추정한 뒤, Pass 3에서 고정 pose를 eval_sim2real에 주입하여 정책 평가를 수행한다. 각 env마다 1프레임만 캡처되므로(freeze-once 정책) 전체 워크플로우는 **render(Pass 1) → mesh export(Task 6) → FoundationPose 배치(Pass 2, vision-3090 컨테이너) → eval camera_frozen(Pass 3, 로컬) → delta 비교(사용자)**의 5단계로 진행된다.
+
+### 실행 절차
+
+#### (0) 프리뷰: 렌더 헤드 자세 확인
+
+```bash
+isaaclab.sh -p scripts/eval_s2r/render_pass.py \
+  --robot right \
+  --grid_x 0.21 0.33 --grid_nx 3 \
+  --grid_y -0.16 0.02 --grid_ny 3 \
+  --grid_repeats 8 \
+  --head_tilt <TILT_RAD> \
+  --head_pan 0.0 \
+  --out frames/right \
+  --preview
+```
+
+- `--head_tilt` / `--head_pan`: 헤드 카메라 관절 목표각[rad] (기본값 0.0)
+- `--preview`: 중심 셀 1환경만 렌더 → `preview_env0.png` 저장 후 종료 (NPZ/메타 미생성)
+- **출력**: 프리뷰 이미지로 시야 확인 후 실제 `--head_tilt` 값 결정
+
+#### (1) 메시 추출
+
+```bash
+isaaclab.sh -p scripts/eval_s2r/export_meshes.py \
+  --object_map frames/right/object_map.json \
+  --out meshes/
+```
+
+- `--object_map`: Pass 1 렌더에서 생성된 object_map.json 경로
+- `--out`: 메시 출력 디렉토리 (각 물체가 `<id>.obj`로 저장됨)
+- `--kit`: USD pxr import 실패 시만 추가 (일반적으로 불필요)
+
+#### (2) 렌더 (전체 프레임)
+
+```bash
+isaaclab.sh -p scripts/eval_s2r/render_pass.py \
+  --robot right \
+  --grid_x 0.21 0.33 --grid_nx 3 \
+  --grid_y -0.16 0.02 --grid_ny 3 \
+  --grid_repeats 8 \
+  --head_tilt <TILT_RAD> \
+  --head_pan 0.0 \
+  --out frames/right
+```
+
+- (0)에서 확정한 `--head_tilt` 값 사용
+- `--preview` 제거 (전체 렌더 실행)
+- **출력**: `frames/right/` 디렉토리
+  - `env_0.npz`, `env_1.npz`, ... (RGB/depth/mask/K/T_local_cam/GT 위치 포함)
+  - `object_map.json` (물체 ID → USD 경로 매핑)
+  - `meta.json` (그리드 사양·메타데이터)
+
+#### (3) FoundationPose 배치 (vision-3090 컨테이너)
+
+**로컬에서 먼저 rsync**:
+```bash
+rsync -av frames/right/ vision-3090:hdgp_perception/frames/right/
+rsync -av meshes/ vision-3090:hdgp_perception/meshes/
+```
+
+**vision-3090에서 컨테이너 내 실행** (perception repo 런북 참조 — 컨테이너 기동 방법):
+```bash
+python3 scripts/eval_s2r/fp_batch.py \
+  --robot right \
+  --frames frames/right \
+  --mesh_dir meshes \
+  --out poses/right.json \
+  --iteration 5
+```
+
+- `--frames`: Pass 1 렌더 출력 디렉토리 경로
+- `--robot`: `left` 또는 `right`
+- `--mesh_dir`: (1)에서 추출한 메시 디렉토리
+- `--out`: poses 출력 JSON 경로 (기본값 `poses/<robot>.json`)
+- `--iteration`: FoundationPose register() 정제 iteration 수 (기본값 5)
+- **출력**: `poses/right.json`
+  ```json
+  {
+    "env_0": {"ok": true, "T_cam_obj": [[4x4 행렬]]},
+    "env_1": {"ok": false, "reason": "mesh_missing"},
+    ...
+  }
+  ```
+
+#### (4) eval camera_frozen (로컬)
+
+**rsync 회수**:
+```bash
+rsync -av vision-3090:hdgp_perception/poses/ log/eval_s2r/poses/
+```
+
+**로컬에서 평가**:
+```bash
+isaaclab.sh -p scripts/eval_s2r/eval_sim2real.py \
+  --robot right \
+  --checkpoint <path/to/ep_20000.pth> \
+  --pose_source camera_frozen \
+  --poses log/eval_s2r/poses/right.json \
+  --frames_meta frames/right/meta.json \
+  --grid_x 0.21 0.33 --grid_nx 3 \
+  --grid_y -0.16 0.02 --grid_ny 3 \
+  --grid_repeats 8 \
+  --episodes_per_env 3 \
+  --out log/eval_s2r/right_camera \
+  --headless
+```
+
+- `--pose_source camera_frozen`: 고정 pose 모드 활성화
+- `--poses`: (3) FoundationPose 결과 JSON
+- `--frames_meta`: Pass 1 메타 JSON (env 배치 검증용)
+- `--grid_x/y/nx/ny/repeats`: **Pass 1 렌더와 동일해야 함** (meta.json으로 자동 검증)
+- `--checkpoint`: 정책 .pth 경로 (prefix-glob 지원)
+- `--episodes_per_env`: 각 env마다 순차 에피소드 개수 (기본값 3)
+- `--headless`: GUI 비활성화 (배치 모드)
+- **출력**: `log/eval_s2r/right_camera/`
+  - `heatmap_success.png`, `heatmap_lifted.png`
+  - `results.csv`, `summary.json`
+
+#### (5) 델타 맵 생성
+
+```bash
+python3 scripts/eval_s2r/delta_report.py \
+  --state log/eval_s2r/right_lstm_test3_grid/summary.json \
+  --camera log/eval_s2r/right_camera/summary.json \
+  --out log/eval_s2r/right_delta
+```
+
+- `--state`: state_frozen 평가 summary.json (Pass 1 baseline)
+- `--camera`: camera_frozen 평가 summary.json (Pass 3 결과)
+- `--out`: 델타 결과 디렉토리
+- **출력**: `log/eval_s2r/right_delta/`
+  - `delta_success.csv` (셀별 성공률 차이)
+  - `heatmap_delta_success.png`, `heatmap_delta_lifted.png`
+
+---
+
+### 4-게이트 체크리스트
+
+| 게이트 | 확인 항목 | 검증 방법 |
+|--------|----------|---------|
+| **G1: 렌더 프리뷰** | 헤드 카메라 시야·tilt 각도 적절 | (0) --preview 실행 → preview_env0.png 확인(사용자 시각) |
+| **G2: NPZ 무결성** | Pass 1 렌더 200장 생성 완료 | `ls frames/right/env_*.npz \| wc -l` → 예상 env 개수(grid_nx × grid_ny × grid_repeats) 확인 |
+| **G3: FP 성공률/오차** | FoundationPose 추정 품질 | poses.json의 ok=true 비율 > 90% + GT 대비 위치오차 < 5cm(메시 bbox 단위) |
+| **G4: 평가 + 델타** | camera_frozen 평가 완료 및 베이스라인과 비교 | heatmap_success.png 생성 + delta_success.csv 셀별 비교 |
+
+**주의**: 게이트를 통과하지 못한 경우 다음 단계로 진행하지 마세요.
+
+---
+
+### poses.json 및 meta.json 스키마
+
+#### poses.json (FoundationPose 출력)
+```json
+{
+  "env_0": {
+    "ok": true,
+    "T_cam_obj": [
+      [0.9, 0.0, 0.1, 0.05],
+      [0.0, 0.95, 0.0, -0.02],
+      [-0.1, 0.0, 0.9, 0.35],
+      [0.0, 0.0, 0.0, 1.0]
+    ]
+  },
+  "env_1": {
+    "ok": false,
+    "reason": "mesh_missing"
+  }
+}
+```
+
+- `ok`: 추정 성공 여부
+- `T_cam_obj` (ok=true일 때): 4×4 카메라→물체 변환 행렬
+- `reason` (ok=false일 때): 실패 사유 (`mesh_missing`, `inference_fail`, 등)
+
+#### meta.json (Pass 1 렌더 메타)
+```json
+{
+  "grid": {
+    "x_min": 0.21, "x_max": 0.33, "nx": 3,
+    "y_min": -0.16, "y_max": 0.02, "ny": 3,
+    "repeats": 8
+  },
+  "robot": "right",
+  "head_tilt": -0.3,
+  "head_pan": 0.0,
+  "camera_K": [[...], [...], [...]],
+  "timestamp": "2026-08-04T21:30:00"
+}
+```
+
+---
+
+### 신규 산출물 표
+
+| 경로 | 출처 | 용도 |
+|------|------|------|
+| `frames/right/env_*.npz` | Pass 1 render_pass.py | RGB/depth/mask/K/intrinsics/GT 위치 |
+| `frames/right/object_map.json` | Pass 1 render_pass.py | 물체 ID → USD/scale 매핑 |
+| `frames/right/meta.json` | Pass 1 render_pass.py | 그리드 사양·카메라 내부 파라미터 |
+| `meshes/<id>.obj` | export_meshes.py | FoundationPose용 메시 |
+| `poses/right.json` | fp_batch.py (Pass 2) | T_cam_obj 추정치 |
+| `log/eval_s2r/right_camera/heatmap_success.png` | eval_sim2real.py (Pass 3) | 성공률 히트맵 |
+| `log/eval_s2r/right_camera/summary.json` | eval_sim2real.py (Pass 3) | 셀별 집계 (perception_fail_rate 포함) |
+| `log/eval_s2r/right_delta/delta_success.csv` | delta_report.py | 베이스라인 대비 성공률 차이 |
+
+---
+
+### 주의사항 (SP2 특정)
+
+- **camera_frozen은 그리드 모드 전용**: Pass 1 렌더 그리드와 eval env 배치를 1:1로 정렬하는 계약이므로, 단일/인터랙티브 모드에서 `--pose_source camera_frozen`을 지정하면 부팅 전 검증 오류로 거부됨.
+- **메타 검증**: eval_sim2real이 부팅 시 --frames_meta의 그리드 사양과 CLI 인자(--grid_x/y/nx/ny)를 비교하여 불일치 시 종료.
+- **FP 실패 처리**: poses.json에서 ok=false인 env는 평가 시 건너뜀(해당 셀의 perception_fail_rate 컬럼에 집계).
+- **메시 누락**: mesh_dir/object_map 탐색 순서: (1) object_map 동일 디렉토리의 sibling .obj, (2) mesh_dir/<id>.obj. 둘 다 없으면 해당 물체를 reason="mesh_missing"으로 처리.
+
+---
+
 ## 주의사항
 
 - **ADR 비활성화**: 그리드 고정 스폰과 충돌하므로 평가 중 자동 비활성화
