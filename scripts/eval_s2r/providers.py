@@ -29,7 +29,14 @@ class StateFrozenProvider:
     """Reset 시 객체 위치를 캡처해 에피소드 내 고정 반환.
 
     의미론:
-    - on_reset(env, env_ids): env_ids에 속한 환경들의 object_pos를 캡처. 미검증 환경은 NaN으로 표시.
+    - on_reset(env, env_ids): env_ids에 속한 환경들의 object_init_pos를 캡처. 미검증 환경은 NaN으로 표시.
+      object_pos가 아닌 object_init_pos를 쓰는 이유: object_pos는 _get_dones()
+      (→ _compute_intermediate_values) 안에서만 갱신되는데, on_reset은 env.reset() 직후
+      (아직 _get_dones 미실행 → 0으로 남은 stale) 또는 env.step()의 내부 auto-reset 직후
+      (직전 에피소드의 마지막 관측값이 남은 stale)에 호출된다. 두 경우 모두 object_pos는
+      "지금 이 리셋"의 값이 아니다. 반면 object_init_pos는 _reset_idx()가 정확히 리셋되는
+      env_ids에 대해 env-origin-local GT 스폰 위치를 그 자리에서 기록한다
+      (grasp_right_env.py:1593, grasp_left_env.py:1615) — on_reset 시점에 이미 최신값.
     - get_override(env): 버퍼의 방어 복사 반환. 다운스트림 in-place 수정이 buffer 부패 불가.
     - 부분 first reset 후 get_override는 RuntimeError (미리셋 환경 NaN 검출).
     """
@@ -37,7 +44,7 @@ class StateFrozenProvider:
         self._buf: torch.Tensor | None = None
 
     def on_reset(self, env, env_ids: torch.Tensor) -> None:
-        pos = env.object_pos  # [N,3] env-origin local (grasp_*_env.py: root_pos_w - env_origins)
+        pos = env.object_init_pos  # [N,3] env-origin local GT 스폰 pose (grasp_*_env.py:1593/1615, _reset_idx가 즉시 기록)
         if not torch.isfinite(pos[env_ids]).all():
             raise ValueError(f"non-finite object_pos at reset for envs {env_ids.tolist()}")
         # 불변 패턴: 기존 버퍼를 제자리 수정하지 않고 새 텐서 생성.

@@ -489,6 +489,8 @@ def _setup(task: str, num_envs: int, mode: str, cells: list, spec: GridSpec | No
     provider = make_provider(args_cli.pose_source)
 
     # reset + get_batch_size + RNN init (play.py:664-676 복제)
+    # reset 전 override를 비워 stale 값(직전 세션/이전 에피소드)이 첫 관측에 새지 않도록 한다.
+    ge.eval_cup_pos_override = None
     obs = env.reset()
     if isinstance(obs, dict):
         obs = obs["obs"]
@@ -627,6 +629,8 @@ def interactive_main():
             #    기동 후 해당 env만 평가하는 후속 개선으로 미룸: YAGNI)
             if state.obj_idx not in (None, 0):
                 print(f"[WARN] obj {state.obj_idx} 미지원(단일 env는 물체 0 고정) — 물체 0으로 진행")
+            # reset 전 override를 비워 이전 에피소드의 고정 pose가 새 reset 관측에 새지 않도록 한다.
+            ge.eval_cup_pos_override = None
             obs = env.reset()
             if isinstance(obs, dict):
                 obs = obs["obs"]

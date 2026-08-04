@@ -5,9 +5,9 @@ from scripts.eval_s2r.providers import LiveProvider, StateFrozenProvider, make_p
 
 
 class FakeEnv:
-    """object_pos만 갖는 duck-type env."""
+    """object_init_pos만 갖는 duck-type env."""
     def __init__(self, pos):
-        self.object_pos = torch.tensor(pos, dtype=torch.float32)
+        self.object_init_pos = torch.tensor(pos, dtype=torch.float32)
 
 
 class TestLiveProvider:
@@ -24,7 +24,7 @@ class TestStateFrozenProvider:
         p = StateFrozenProvider()
         p.on_reset(env, torch.tensor([0, 1]))
         # 물체가 움직여도 override는 reset 시점 값 고정
-        env.object_pos = env.object_pos + 1.0
+        env.object_init_pos = env.object_init_pos + 1.0
         ov = p.get_override(env)
         assert torch.allclose(ov[0], torch.tensor([0.3, 0.0, 0.1]))
 
@@ -32,7 +32,7 @@ class TestStateFrozenProvider:
         env = FakeEnv([[0.3, 0.0, 0.1], [0.2, -0.1, 0.1]])
         p = StateFrozenProvider()
         p.on_reset(env, torch.tensor([0, 1]))
-        env.object_pos = torch.tensor([[9.0, 9.0, 9.0], [0.5, 0.5, 0.5]])
+        env.object_init_pos = torch.tensor([[9.0, 9.0, 9.0], [0.5, 0.5, 0.5]])
         p.on_reset(env, torch.tensor([1]))  # env1만 재캡처
         ov = p.get_override(env)
         assert torch.allclose(ov[0], torch.tensor([0.3, 0.0, 0.1]))   # 불변
@@ -53,7 +53,7 @@ class TestStateFrozenProvider:
         env = FakeEnv([[0.3, 0.0, 0.1]])
         p = StateFrozenProvider()
         p.on_reset(env, torch.tensor([0]))
-        env.object_pos[0, 0] = 99.0  # 원본 in-place 변경이 override에 새지 않아야 함
+        env.object_init_pos[0, 0] = 99.0  # 원본 in-place 변경이 override에 새지 않아야 함
         assert float(p.get_override(env)[0, 0]) == pytest.approx(0.3)
 
     def test_partial_first_reset_then_get_override_raises(self):
