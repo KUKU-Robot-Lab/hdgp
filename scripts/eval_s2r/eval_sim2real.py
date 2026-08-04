@@ -388,10 +388,17 @@ def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0,
     닫히면 이미 종료된 시뮬레이션을 계속 step()하는 크래시/행 대신, 마지막으로 확보한
     스냅샷(있으면)을 invalid=True로 표시해 즉시 반환한다. 중단된 에피소드는 유효 표본이
     아니므로 절대 invalid=False 로 집계돼선 안 된다.
-    반환: (새 obs, EpisodeResult(cell_idx=cell_idx)) — 정상 종료면 invalid는 스냅샷 기준값,
-    앱 중단이면 항상 invalid=True.
+    stop_before_done=True(인터랙티브 back2ini 지원): env.step()의 done 프레임은 내부
+    auto-reset으로 장면을 순간이동시키므로, 타임아웃 2스텝 전에 조기 정지해 "잡은 상태"
+    장면을 보존한다. 지표는 정지 시점의 즉석 스냅샷(성공 래치는 누적 OR라 그대로 유효).
+    단 물체 낙하/이탈 등으로 done이 먼저 오면 장면은 이미 리셋됨 → scene_intact=False.
+
+    반환: (새 obs, EpisodeResult(cell_idx=cell_idx), scene_intact: bool)
+    — 정상 done 종료·앱 중단이면 scene_intact=False, 조기 정지면 True.
     """
     step_dt = ge.step_dt
+    max_steps = max(1, int(ge.max_episode_length) - 2) if stop_before_done else None
+    steps_done = 0
     snap = None
     if record_traj is not None:
         # back2ini 역재생용: 에피소드의 전체 관절 자세를 컨트롤 스텝마다 기록.
@@ -406,11 +413,16 @@ def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0,
                     cell_idx=cell_idx, success=False, lifted=False,
                     grip_count=0.0, displacement=0.0, obj_idx=-1, invalid=True,
                     finger_contacts=(0.0,) * 5,
-                )
+                ), False
             aborted = _snapshot_to_result(snap, env_idx, cell_idx=cell_idx)
-            return obs, dataclasses.replace(aborted, invalid=True)
+            return obs, dataclasses.replace(aborted, invalid=True), False
+        if max_steps is not None and steps_done >= max_steps:
+            # 조기 정지: done(auto-reset) 전에 멈춰 장면 보존. 지표는 현재 상태 즉석 스냅샷.
+            now = _snapshot_metrics(ge)
+            return obs, _snapshot_to_result(now, env_idx, cell_idx=cell_idx), True
         start_time = time.time()
         obs, dones, snap = _eval_step(env, ge, agent, obs, provider)
+        steps_done += 1
         if record_traj is not None and not bool(dones[env_idx]):
             # done 프레임은 제외 — env.step()이 내부 auto-reset을 이미 수행해 joint_pos가
             # "리셋 자세"로 바뀐 뒤라, 기록하면 역재생 첫 프레임이 순간이동이 된다.
@@ -420,7 +432,34 @@ def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0,
             if sleep_time > 0:
                 time.sleep(sleep_time)
         if bool(dones[env_idx]):
-            return obs, _snapshot_to_result(snap, env_idx, cell_idx=cell_idx)
+            return obs, _snapshot_to_result(snap, env_idx, cell_idx=cell_idx), False
+
+
+def _replay_reverse(ge, traj: list, real_time: bool = True) -> None:
+    """기록된 관절 궤적을 역순으로 kinematic 추종 재생 — 잡기→놓기 연속동작 관찰용.
+
+    scripts/probes/probe_palm_orientation.py:146-151의 수동 스텝 idiom:
+    set_joint_position_target → scene.write_data_to_sim → sim.step → scene.update.
+    env.step()을 우회하므로 정책/리워드/done과 무관하게 순수 자세 추종이며, 물체는
+    물리로 자연스럽게 놓인다(손이 열리면 낙하·안착). 컨트롤 스텝 1프레임당
+    decimation번 물리 스텝(학습과 동일 120Hz)으로 부드럽게 추종한다.
+    """
+    decim = max(1, int(getattr(ge.cfg, "decimation", 2)))
+    phys_dt = ge.sim.get_physics_dt()
+    step_dt = ge.step_dt
+    for q in reversed(traj):
+        if not simulation_app.is_running():
+            return
+        start_time = time.time()
+        ge.robot.set_joint_position_target(q.unsqueeze(0))
+        for _ in range(decim):
+            ge.scene.write_data_to_sim()
+            ge.sim.step()
+            ge.scene.update(phys_dt)
+        if real_time:
+            sleep_time = step_dt - (time.time() - start_time)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
 
 def _poll_stdin() -> str | None:
@@ -637,9 +676,11 @@ def interactive_main():
 
     state = SessionState(last_spawn=None, obj_idx=None)
     session_results: list[EpisodeResult] = []
-    print("[INTERACTIVE] 명령: spawn X Y [Z] | repeat | obj N | sweep ... | quit")
+    print("[INTERACTIVE] 명령: spawn X Y [Z] | repeat | reset | back2ini | obj N | quit")
     print("> ", end="", flush=True)
     pending = None  # 실행 지시 dict (None 이면 STAGED)
+    last_traj: list = []       # 직전 에피소드 관절 궤적 (back2ini 역재생용)
+    scene_intact = False       # 조기 정지로 장면(잡은 상태)이 보존됐는가
     while simulation_app.is_running():
         if pending is None:
             # STAGED: 물리 스텝 없이 렌더만 돌리며 stdin 폴링 (GUI 응답성 유지)
@@ -667,6 +708,29 @@ def interactive_main():
                 print("[ERR] sweep 은 인터랙티브 num_envs=1 세션에서 미지원 — "
                       "배치 모드로 별도 실행하세요\n> ", end="", flush=True)
                 continue
+            if act["action"] == "reset":
+                # 환경 초기화 → 물체 대기 위치 파킹 → STAGED 유지
+                ge.eval_cup_pos_override = None
+                ge.eval_fixed_spawn_local = single_spawn_tensor(*STAGE_AWAY, 1).to(ge.device)
+                obs = env.reset()
+                if isinstance(obs, dict):
+                    obs = obs["obs"]
+                last_traj = []
+                scene_intact = False
+                print("[OK] 환경 초기화 — 대기 모드\n> ", end="", flush=True)
+                continue
+            if act["action"] == "back2ini":
+                if not last_traj or not scene_intact:
+                    print("[ERR] 역재생할 궤적이 없습니다 — spawn 으로 에피소드를 먼저 실행"
+                          "하세요 (물체 낙하 등으로 장면이 리셋된 경우도 불가)\n> ",
+                          end="", flush=True)
+                    continue
+                print(f"[BACK2INI] 역재생 시작 ({len(last_traj)} frames — 잡기→놓기)")
+                _replay_reverse(ge, last_traj, real_time=args_cli.real_time)
+                last_traj = []
+                scene_intact = False
+                print("[BACK2INI] 완료 — 초기 자세 복귀\n> ", end="", flush=True)
+                continue
             pending = act
         else:
             # EVAL: 고정 스폰 설정 → reset → 1 에피소드 실행 → 결과 출력 → STAGED 복귀
@@ -686,7 +750,11 @@ def interactive_main():
             if agent.is_rnn:
                 agent.init_rnn()
             provider.on_reset(ge, torch.arange(ge.num_envs, device=ge.device))
-            obs, result = _run_one_episode(env, ge, agent, obs, provider, real_time=args_cli.real_time)
+            last_traj = []
+            obs, result, scene_intact = _run_one_episode(
+                env, ge, agent, obs, provider, real_time=args_cli.real_time,
+                record_traj=last_traj, stop_before_done=True,
+            )
             session_results.append(result)
             if not simulation_app.is_running():
                 # 에피소드 도중 GUI 창이 닫힘 — result 는 이미 invalid=True 로 기록됐다.
@@ -698,6 +766,8 @@ def interactive_main():
                   f"grip={result.grip_count:.1f} disp={result.displacement*100:.1f}cm "
                   f"obj={result.obj_idx} fingers={fingers}"
                   f"{' [INVALID]' if result.invalid else ''}")
+            if scene_intact:
+                print("       (장면 보존됨 — back2ini 로 잡기→놓기 역재생 가능)")
             print("> ", end="", flush=True)
             pending = None
 
