@@ -342,10 +342,28 @@ def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0,
     num_envs=1 세션 전용(env_idx 기본 0). real_time=True 면 배치 루프(play.py:1211-1213
     패턴, main()의 배치 루프와 동일 로직)와 마찬가지로 스텝마다 실측 소요시간을 step_dt에
     맞춰 sleep한다 — 인터랙티브 GUI 세션을 벽시계 속도로 재생하기 위함.
-    반환: (새 obs, EpisodeResult(cell_idx=cell_idx)).
+
+    매 반복 진입 시 simulation_app.is_running()을 재확인한다(배치 루프의
+    `while ... and simulation_app.is_running()` 패턴과 동일한 이유) — GUI 창이 done 이전에
+    닫히면 이미 종료된 시뮬레이션을 계속 step()하는 크래시/행 대신, 마지막으로 확보한
+    스냅샷(있으면)을 invalid=True로 표시해 즉시 반환한다. 중단된 에피소드는 유효 표본이
+    아니므로 절대 invalid=False 로 집계돼선 안 된다.
+    반환: (새 obs, EpisodeResult(cell_idx=cell_idx)) — 정상 종료면 invalid는 스냅샷 기준값,
+    앱 중단이면 항상 invalid=True.
     """
     step_dt = ge.step_dt
+    snap = None
     while True:
+        if not simulation_app.is_running():
+            if snap is None:
+                # 첫 스텝 전에 이미 앱이 닫힘 — ge 상태를 더 읽지 않고(torn-down 시뮬 접근 회피)
+                # 합성 invalid 결과만 반환.
+                return obs, EpisodeResult(
+                    cell_idx=cell_idx, success=False, lifted=False,
+                    grip_count=0.0, displacement=0.0, obj_idx=-1, invalid=True,
+                )
+            aborted = _snapshot_to_result(snap, env_idx, cell_idx=cell_idx)
+            return obs, dataclasses.replace(aborted, invalid=True)
         start_time = time.time()
         obs, dones, snap = _eval_step(env, ge, agent, obs, provider)
         if real_time:
@@ -578,6 +596,12 @@ def interactive_main():
             line = _poll_stdin()
             if line is None:
                 continue
+            if line == "":
+                # stdin EOF(파이프 입력 소진) — readline()이 빈 문자열 반환. 사용자가 실제로
+                # 빈 줄만 입력하면 "\n"이 오므로 ""와는 구분됨. 방치하면 select()가 EOF
+                # 소켓을 계속 ready로 보고해 렌더 루프 속도로 [ERR] 빈 입력 스팸이 무한 반복된다.
+                print("\n[INFO] stdin EOF — 세션 종료")
+                break
             try:
                 state, act = apply_command(state, parse_command(line))
             except ValueError as e:
@@ -611,6 +635,11 @@ def interactive_main():
             provider.on_reset(ge, torch.arange(ge.num_envs, device=ge.device))
             obs, result = _run_one_episode(env, ge, agent, obs, provider, real_time=args_cli.real_time)
             session_results.append(result)
+            if not simulation_app.is_running():
+                # 에피소드 도중 GUI 창이 닫힘 — result 는 이미 invalid=True 로 기록됐다.
+                # 더 이상 입력을 받을 앱이 없으므로 프롬프트를 다시 찍지 않고 세션을 정리한다.
+                print("[WARN] 시뮬레이션 앱 종료 감지 — 에피소드 중단(invalid) 처리 후 세션 종료")
+                break
             print(f"[RESULT] success={result.success} lifted={result.lifted} "
                   f"grip={result.grip_count:.1f} disp={result.displacement*100:.1f}cm "
                   f"obj={result.obj_idx}{' [INVALID]' if result.invalid else ''}")
