@@ -41,6 +41,8 @@ parser.add_argument("--real-time", action="store_true")
 parser.add_argument("--interactive", action="store_true", help="상주 대화 세션(GUI)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if hydra_args:
+    parser.error(f"알 수 없는 인자: {hydra_args}")
 
 
 def _validate_mode(a) -> str:
@@ -314,7 +316,7 @@ def _eval_step(env, ge, agent, obs, provider):
     ge.eval_cup_pos_override = provider.get_override(ge)  # live면 None
     with torch.inference_mode():
         actions = agent.get_action(agent.obs_to_torch(obs), is_deterministic=True)
-    obs, _, dones, _ = env.step(actions)
+        obs, _, dones, _ = env.step(actions)
     if isinstance(obs, dict):
         obs = obs["obs"]
     if agent.is_rnn and agent.states is not None and len(dones) > 0:
