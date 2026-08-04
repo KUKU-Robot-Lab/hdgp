@@ -911,6 +911,13 @@ class GraspRightEnv(DirectRLEnv):
         fingertip_pos    = fingertip_pos_clean    + torch.randn_like(fingertip_pos_clean)    * σ_bp
         cup_pos_noisy    = cup_pos_clean          + torch.randn_like(cup_pos_clean)          * σ_cp
 
+        # eval_s2r: cup pose obs 오버라이드 — 평가 하네스(scripts/eval_s2r) 전용.
+        # 주입값은 이미 "지각 결과"이므로 obs_noise_cup_pos 를 additionally 얹지 않는다.
+        # 학습·기존 play 에서는 속성 부재(getattr→None)로 완전 무동작.
+        _eval_cup = getattr(self, "eval_cup_pos_override", None)
+        if _eval_cup is not None:
+            cup_pos_noisy = _eval_cup.to(cup_pos_clean.device)
+
         # ==== Actor obs 조합 (106D) ====
         # 4. fingertip pos relative to palm (15D)
         fingertip_pos_rel_palm = (
@@ -1526,6 +1533,19 @@ class GraspRightEnv(DirectRLEnv):
             obj_pos_local = torch.stack(
                 [obj_x, obj_y, self.object_spawn_z_buf[env_ids]], dim=1
             )
+
+            # eval_s2r: 고정 스폰 오버라이드 — 평가 하네스(scripts/eval_s2r) 전용.
+            # 학습·기존 play 에서는 속성 부재(getattr→None)로 완전 무동작.
+            # obj_x/obj_y 도 동기해야 pregrasp cache lookup 이 오버라이드 위치를 따라간다.
+            # z 가 NaN 이면 물체별 테이블 높이(object_spawn_z_buf)를 유지.
+            _eval_spawn = getattr(self, "eval_fixed_spawn_local", None)
+            if _eval_spawn is not None:
+                _ov = _eval_spawn[env_ids].to(self.device).clone()
+                _z_nan = torch.isnan(_ov[:, 2])
+                _ov[_z_nan, 2] = self.object_spawn_z_buf[env_ids][_z_nan]
+                obj_pos_local = _ov
+                obj_x = _ov[:, 0]
+                obj_y = _ov[:, 1]
 
             # ---- FABRICS pregrasp rollout/cache lookup ----
             noise = torch.stack([
