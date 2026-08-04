@@ -75,11 +75,20 @@ def _validate_mode(a) -> str:
     parser.error("모드를 지정하세요: 그리드 인자 | --object_x/y | --interactive")
 
 
-def _validate_pose_source_args(a) -> None:
-    """--poses/--frames_meta 는 camera_frozen 전용 — 부팅 전 조기 오용 차단(M4)."""
+def _validate_pose_source_args(a, mode: str) -> None:
+    """--poses/--frames_meta 는 camera_frozen 전용 — 부팅 전 조기 오용 차단(M4).
+
+    camera_frozen은 그리드 스윕 전용이다(스펙 §4.3/§5) — pose 파일이 Pass 1 렌더 그리드와
+    env 배치를 1:1로 정렬하는 계약이라, 단일/인터랙티브 모드(num_envs가 그리드와 무관하게
+    1)로 실행하면 provider 버퍼([grid_num_envs,3])와 실제 num_envs(1)가 어긋난다. 이걸
+    여기서 막지 않으면 무거운 Isaac 기동 이후에야 IndexError/torch.cat RuntimeError로
+    터진다 — 그러니 부팅 전에 명시적으로 거부한다.
+    """
     if a.pose_source == "camera_frozen":
         if a.poses is None or a.frames_meta is None:
             parser.error("--pose_source camera_frozen 은 --poses 와 --frames_meta 둘 다 필요합니다")
+        if mode != "grid":
+            parser.error("--pose_source camera_frozen 은 그리드 모드 전용입니다 (Pass 1 렌더와 env 정렬이 전제)")
     elif a.poses is not None or a.frames_meta is not None:
         parser.error("--poses/--frames_meta 는 --pose_source camera_frozen 전용입니다")
 
@@ -115,7 +124,7 @@ if MODE == "grid":
     except ValueError as e:
         parser.error(str(e))
 _validate_checkpoint_early(args_cli.checkpoint)
-_validate_pose_source_args(args_cli)
+_validate_pose_source_args(args_cli, MODE)
 
 if MODE == "interactive":
     args_cli.real_time = True  # 인터랙티브 세션은 기본 실시간 재생(스펙 §4.6)
