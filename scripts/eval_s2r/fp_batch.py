@@ -56,24 +56,23 @@ def load_frame(npz_path: str) -> dict:
 def mesh_path_for(obj_idx: int, object_map: dict, mesh_dir: str | None) -> tuple:
     """obj_idx의 mesh .obj 경로를 결정한다.
 
-    탐색 순서:
-    1) object_map[obj_idx]["usd_path"]와 같은 디렉토리의 sibling `<usd stem>.obj`
-    2) `<mesh_dir>/<id>.obj` (mesh_dir이 주어진 경우만, Task 6 export 산출물)
-    둘 다 없으면 (None, scale) — 호출자가 해당 물체 전 env를 reason="mesh_missing"으로
-    FAIL 처리한다.
+    탐색: `<mesh_dir>/<id>.obj` (Task 6 export_meshes.py 산출물)뿐이다. usd_path 옆
+    sibling `.obj`를 찾는 경로는 두지 않는다 — render 머신의 usd_path는 vision-3090
+    컨테이너에서 접근 불가능한 절대경로라 이 브랜치는 실제로 도달하지 않는 죽은 코드였고,
+    설령 sibling .obj가 존재했더라도 metersPerUnit을 반영하지 않아 단위가 안전하지 않다
+    (export_meshes.py만이 metersPerUnit+scale을 둘 다 베이크한다).
+    mesh_dir이 없거나 파일이 없으면 (None, scale) — 호출자가 해당 물체 전 env를
+    reason="mesh_missing"으로 FAIL 처리한다.
 
     반환: (path_str_or_None, scale) — scale은 object_map 값을 그대로(list) 반환한다.
+    scale은 이제 로깅 전용이다: export_meshes.py가 이미 obj 정점에 베이크했으므로
+    run_fp()에서 다시 곱하면 이중 스케일이 된다(스펙 위험 1 재발 방지).
     """
     key = str(obj_idx)
     if key not in object_map:
         raise ValueError(f"mesh_path_for: obj_idx {obj_idx!r} not in object_map (keys={list(object_map.keys())})")
     spec = object_map[key]
-    usd_path = Path(spec["usd_path"])
     scale = list(spec["scale"])
-
-    sibling = usd_path.parent / f"{usd_path.stem}.obj"
-    if sibling.exists():
-        return str(sibling), scale
 
     if mesh_dir is not None:
         candidate = Path(mesh_dir) / f"{spec['id']}.obj"
@@ -235,8 +234,10 @@ def run_fp(frames_dir: str, mesh_dir: str | None, out_path: str, stats_path: str
             continue
 
         mesh = trimesh.load(path)
-        # 비균일 스케일 포함 — 정점에 직접 곱해 적용(단위 오류를 mesh bbox로 즉시 탐지, 스펙 위험 1).
-        mesh.vertices = np.asarray(mesh.vertices, dtype=float) * np.asarray(scale, dtype=float)
+        # 스케일은 export_meshes.py가 베이크 — 여기서 재적용 금지(이중 스케일).
+        # mesh_dir/<id>.obj는 export_meshes.py가 metersPerUnit과 spec["scale"]을 이미 정점에
+        # 곱해 저장한 결과물이라, 여기서 scale을 또 곱하면 물체 크기가 최대 5.76배까지
+        # 틀어진다(C1). scale은 mesh_bbox_log 로깅(as-baked bbox와 대조용)에만 쓴다.
         extents = (mesh.bounds[1] - mesh.bounds[0]).tolist() if len(mesh.vertices) else [0.0, 0.0, 0.0]
         mesh_bbox_log[str(obj_idx)] = {
             "id": object_map[str(obj_idx)]["id"],

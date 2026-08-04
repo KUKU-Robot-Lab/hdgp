@@ -365,7 +365,7 @@ python3 scripts/eval_s2r/delta_report.py \
 - **camera_frozen은 그리드 모드 전용**: Pass 1 렌더 그리드와 eval env 배치를 1:1로 정렬하는 계약이므로, 단일/인터랙티브 모드에서 `--pose_source camera_frozen`을 지정하면 부팅 전 검증 오류로 거부됨.
 - **메타 검증**: eval_sim2real이 부팅 시 --frames_meta의 그리드 사양과 CLI 인자(--grid_x/y/nx/ny)를 비교하여 불일치 시 종료.
 - **FP 실패 처리**: poses.json에서 ok=false인 env는 평가 시 건너뜀(해당 셀의 perception_fail_rate 컬럼에 집계).
-- **메시 누락**: mesh_dir/object_map 탐색 순서: (1) object_map 동일 디렉토리의 sibling .obj, (2) mesh_dir/<id>.obj. 둘 다 없으면 해당 물체를 reason="mesh_missing"으로 처리.
+- **메시 누락**: mesh_path_for는 `mesh_dir/<id>.obj`(export_meshes.py 산출물)만 탐색한다. 파일이 없으면 해당 물체를 reason="mesh_missing"으로 처리. (sibling .obj 폴백은 이중 스케일 버그로 제거됨 — export_meshes.py만이 metersPerUnit+scale을 안전하게 베이크한다.)
 
 ---
 

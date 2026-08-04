@@ -67,62 +67,43 @@ class TestLoadFrame:
 
 
 class TestMeshPathFor:
+    """mesh_dir/<id>.obj 단일 경로만 검증(C1 수정: sibling .obj 폴백 제거).
+
+    render 머신의 usd_path는 vision-3090 컨테이너에서 접근 불가능한 절대경로라 sibling
+    분기는 실제로 도달하지 않는 죽은 코드였고, metersPerUnit 미반영으로 단위도 안전하지
+    않았다 — export_meshes.py가 만든 mesh_dir/<id>.obj만이 유효한 경로다.
+    """
+
     def _object_map(self, usd_path, obj_id="cup0", scale=(1.0, 1.0, 1.0)):
         return {"0": {"id": obj_id, "usd_path": usd_path, "scale": list(scale)}}
 
-    def test_sibling_obj_preferred_over_mesh_dir(self, tmp_path):
-        usd_dir = tmp_path / "objs"
-        usd_dir.mkdir()
-        usd_path = usd_dir / "cup0.usd"
-        usd_path.write_text("")
-        sibling_obj = usd_dir / "cup0.obj"
-        sibling_obj.write_text("")
+    def test_found_in_mesh_dir(self, tmp_path):
+        usd_path = tmp_path / "objs" / "cup0.usd"
 
         mesh_dir = tmp_path / "export"
         mesh_dir.mkdir()
-        fallback_obj = mesh_dir / "cup0.obj"
-        fallback_obj.write_text("")
+        target_obj = mesh_dir / "cup0.obj"
+        target_obj.write_text("")
 
         object_map = self._object_map(str(usd_path))
         path, scale = mesh_path_for(0, object_map, str(mesh_dir))
-        assert path == str(sibling_obj)
+        assert path == str(target_obj)
         assert scale == [1.0, 1.0, 1.0]
 
-    def test_falls_back_to_mesh_dir_when_no_sibling(self, tmp_path):
-        usd_dir = tmp_path / "objs"
-        usd_dir.mkdir()
-        usd_path = usd_dir / "cup0.usd"
-        usd_path.write_text("")
-        # sibling .obj 없음
-
-        mesh_dir = tmp_path / "export"
-        mesh_dir.mkdir()
-        fallback_obj = mesh_dir / "cup0.obj"
-        fallback_obj.write_text("")
-
-        object_map = self._object_map(str(usd_path))
-        path, scale = mesh_path_for(0, object_map, str(mesh_dir))
-        assert path == str(fallback_obj)
-
     def test_mesh_missing_returns_none_path(self, tmp_path):
-        usd_dir = tmp_path / "objs"
-        usd_dir.mkdir()
-        usd_path = usd_dir / "cup0.usd"
-        usd_path.write_text("")
+        usd_path = tmp_path / "objs" / "cup0.usd"
 
         mesh_dir = tmp_path / "export"
         mesh_dir.mkdir()
+        # id.obj 없음
 
         object_map = self._object_map(str(usd_path))
         path, scale = mesh_path_for(0, object_map, str(mesh_dir))
         assert path is None
         assert scale == [1.0, 1.0, 1.0]
 
-    def test_mesh_dir_none_only_checks_sibling(self, tmp_path):
-        usd_dir = tmp_path / "objs"
-        usd_dir.mkdir()
-        usd_path = usd_dir / "cup0.usd"
-        usd_path.write_text("")
+    def test_mesh_dir_none_returns_none(self, tmp_path):
+        usd_path = tmp_path / "objs" / "cup0.usd"
 
         object_map = self._object_map(str(usd_path))
         path, scale = mesh_path_for(0, object_map, None)
