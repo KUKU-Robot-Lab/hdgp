@@ -6,9 +6,12 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import json
 import math
 import os
 import re
+import select
 import subprocess
 import sys
 import time
@@ -67,6 +70,8 @@ def _validate_mode(a) -> str:
 
 
 MODE = _validate_mode(args_cli)
+if MODE == "interactive":
+    args_cli.real_time = True  # 인터랙티브 세션은 기본 실시간 재생(스펙 §4.6)
 if MODE == "interactive" or args_cli.render:
     args_cli.headless = False  # GUI 강제
 app_launcher = AppLauncher(args_cli)
@@ -104,6 +109,8 @@ TASK_BY_ROBOT = {
 }
 # 학습 스폰 분포(cfg 기본): 중심 ±(xy_range + ADR max). 벗어나면 경고만 (분포외 측정이 목적).
 TRAIN_RANGE_WARN = 0.08 + 0.06
+# 인터랙티브 STAGED 대기 위치(스펙 §4.6): obj_out_x_max 밖 원거리라 물리에 안 걸림.
+STAGE_AWAY = (1.0, 1.0, float("nan"))
 
 
 # ============================================================================
@@ -328,22 +335,46 @@ def _eval_step(env, ge, agent, obs, provider):
     return obs, dones, snap
 
 
-def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0):
+def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0,
+                     cell_idx: int = 0, real_time: bool = False):
     """env_idx 하나가 done 될 때까지 _eval_step 반복 — Task 7 인터랙티브(num_envs=1) 재사용.
 
-    반환: (새 obs, EpisodeResult(cell_idx=0)) — 호출측이 필요하면 cell_idx를 덮어쓴다.
+    num_envs=1 세션 전용(env_idx 기본 0). real_time=True 면 배치 루프(play.py:1211-1213
+    패턴, main()의 배치 루프와 동일 로직)와 마찬가지로 스텝마다 실측 소요시간을 step_dt에
+    맞춰 sleep한다 — 인터랙티브 GUI 세션을 벽시계 속도로 재생하기 위함.
+    반환: (새 obs, EpisodeResult(cell_idx=cell_idx)).
     """
+    step_dt = ge.step_dt
     while True:
+        start_time = time.time()
         obs, dones, snap = _eval_step(env, ge, agent, obs, provider)
+        if real_time:
+            sleep_time = step_dt - (time.time() - start_time)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
         if bool(dones[env_idx]):
-            return obs, _snapshot_to_result(snap, env_idx, cell_idx=0)
+            return obs, _snapshot_to_result(snap, env_idx, cell_idx=cell_idx)
 
 
-def main():
-    task = TASK_BY_ROBOT[args_cli.robot]
-    spec, cells, num_envs = _build_grid_and_num_envs(args_cli, MODE)
-    print(f"[INFO] mode={MODE} task={task} num_envs={num_envs}")
+def _poll_stdin() -> str | None:
+    """논블로킹 stdin 1줄 폴링. 입력 없으면 None. (GUI 렌더 루프를 막지 않기 위함)"""
+    r, _, _ = select.select([sys.stdin], [], [], 0.0)
+    if r:
+        return sys.stdin.readline()
+    return None
 
+
+def _setup(task: str, num_envs: int, mode: str, cells: list, spec: GridSpec | None):
+    """env cfg/checkpoint/agent/provider 공통 로더 — 배치(main)·인터랙티브 양쪽이 공유(DRY).
+
+    main()에 인라인돼 있던 로더 블록을 순수 추출한 것 — 동작은 배치 모드 기준 완전히 동일하다.
+    mode에 따라 최초 eval_fixed_spawn_local 만 달라진다: grid/single 은 기존과 동일하게
+    각 모드의 스폰 좌표, interactive 는 STAGE_AWAY(작업공간 밖, 스펙 §4.6)로 파킹해
+    세션 시작 시 물체가 로봇 앞에 놓이지 않도록 한다 — interactive_main() 이 spawn 명령을
+    받을 때마다 이 값을 덮어쓰고 다시 reset() 한다.
+
+    반환: (env, ge, agent, resume_path, provider, obs) — obs 는 최초 reset() 직후 관측값.
+    """
     # ---- env cfg (play.py의 parse_env_cfg 경로, hydra 데코레이터 대신 probe_extract_success.py
     #      의 non-hydra 패턴 복제 — 이 스크립트는 hydra_task_config를 쓰지 않는다) ----
     env_cfg = parse_env_cfg(task, device=args_cli.device, num_envs=num_envs)
@@ -382,7 +413,8 @@ def main():
     if hasattr(env_cfg, "enable_warm_state_export"):
         env_cfg.enable_warm_state_export = False
 
-    # 학습 스폰 분포 밖 경고 (분포외 측정이 목적이므로 차단하지 않고 경고만).
+    # 학습 스폰 분포 밖 경고 (분포외 측정이 목적이므로 차단하지 않고 경고만). interactive 는
+    # cells=[] 라 항상 무경고.
     center_x = getattr(env_cfg, "object_spawn_x_center", 0.0)
     center_y = getattr(env_cfg, "object_spawn_y_center", 0.0)
     out_of_range = [
@@ -417,10 +449,13 @@ def main():
     # eval_fixed_spawn_local: 훅이 env_ids로 인덱싱한 뒤 .to(self.device)를 호출하므로
     # (grasp_right_env.py:1541 부근 `_eval_spawn[env_ids].to(self.device)`), env_ids가
     # ge.device 텐서라면 인덱싱 이전에 이미 같은 device여야 한다 — 그래서 여기서 미리 .to(ge.device).
-    ge.eval_fixed_spawn_local = (
-        build_spawn_tensor(cells, spec.repeats, z=args_cli.object_z) if MODE == "grid"
-        else single_spawn_tensor(args_cli.object_x, args_cli.object_y, args_cli.object_z, 1)
-    ).to(ge.device)
+    if mode == "grid":
+        initial_spawn = build_spawn_tensor(cells, spec.repeats, z=args_cli.object_z)
+    elif mode == "single":
+        initial_spawn = single_spawn_tensor(args_cli.object_x, args_cli.object_y, args_cli.object_z, 1)
+    else:  # interactive — 세션 시작 시 STAGED, 물체는 작업공간 밖에 파킹
+        initial_spawn = single_spawn_tensor(*STAGE_AWAY, 1)
+    ge.eval_fixed_spawn_local = initial_spawn.to(ge.device)
 
     # ---- Runner/create_player/restore/reset (play.py:646-659 복제) ----
     agent_cfg["params"]["load_checkpoint"] = True
@@ -445,6 +480,16 @@ def main():
 
     all_ids = torch.arange(ge.num_envs, device=ge.device)
     provider.on_reset(ge, all_ids)  # 전 env 최초 캡처 (StateFrozenProvider의 NaN 검증 요건)
+
+    return env, ge, agent, resume_path, provider, obs
+
+
+def main():
+    task = TASK_BY_ROBOT[args_cli.robot]
+    spec, cells, num_envs = _build_grid_and_num_envs(args_cli, MODE)
+    print(f"[INFO] mode={MODE} task={task} num_envs={num_envs}")
+
+    env, ge, agent, resume_path, provider, obs = _setup(task, num_envs, MODE, cells, spec)
 
     # ---- 배치 루프 — 전 env가 episodes_per_env 채울 때까지 (play.py:682-710, :1053-1055 패턴) ----
     target = args_cli.episodes_per_env
@@ -511,8 +556,81 @@ def main():
     env.close()
 
 
+def interactive_main():
+    """상주 GUI 세션: spawn → 리셋 → 1 에피소드 평가 → 결과 → STAGED 복귀 루프.
+
+    STAGED(pending is None) 동안은 물리를 스텝하지 않고 simulation_app.update()만 돌리며
+    stdin을 논블로킹 폴링한다 — GUI 응답성을 막지 않기 위함(스펙 §4.6). num_envs=1 고정.
+    """
+    task = TASK_BY_ROBOT[args_cli.robot]
+    print(f"[INFO] mode={MODE} task={task} num_envs=1")
+    env, ge, agent, _resume_path, provider, obs = _setup(task, 1, MODE, [], None)
+
+    state = SessionState(last_spawn=None, obj_idx=None)
+    session_results: list[EpisodeResult] = []
+    print("[INTERACTIVE] 명령: spawn X Y [Z] | repeat | obj N | sweep ... | quit")
+    print("> ", end="", flush=True)
+    pending = None  # 실행 지시 dict (None 이면 STAGED)
+    while simulation_app.is_running():
+        if pending is None:
+            # STAGED: 물리 스텝 없이 렌더만 돌리며 stdin 폴링 (GUI 응답성 유지)
+            simulation_app.update()
+            line = _poll_stdin()
+            if line is None:
+                continue
+            try:
+                state, act = apply_command(state, parse_command(line))
+            except ValueError as e:
+                print(f"[ERR] {e}\n> ", end="", flush=True)
+                continue
+            if act["action"] == "quit":
+                break
+            if act["action"] == "noop":
+                print(f"[OK] obj={state.obj_idx}\n> ", end="", flush=True)
+                continue
+            if act["action"] == "sweep":
+                print("[ERR] sweep 은 인터랙티브 num_envs=1 세션에서 미지원 — "
+                      "배치 모드로 별도 실행하세요\n> ", end="", flush=True)
+                continue
+            pending = act
+        else:
+            # EVAL: 고정 스폰 설정 → reset → 1 에피소드 실행 → 결과 출력 → STAGED 복귀
+            ge.eval_fixed_spawn_local = single_spawn_tensor(
+                pending["x"], pending["y"], pending["z"], 1
+            ).to(ge.device)
+            # obj 선택: env0의 물체는 env_id%8=0 고정이라 obj N 은 경고만
+            #   (MultiAsset 배정은 spawn 시점 고정 — 스펙 §7.4. obj 실선택은 num_envs=8
+            #    기동 후 해당 env만 평가하는 후속 개선으로 미룸: YAGNI)
+            if state.obj_idx not in (None, 0):
+                print(f"[WARN] obj {state.obj_idx} 미지원(단일 env는 물체 0 고정) — 물체 0으로 진행")
+            obs = env.reset()
+            if isinstance(obs, dict):
+                obs = obs["obs"]
+            if agent.is_rnn:
+                agent.init_rnn()
+            provider.on_reset(ge, torch.arange(ge.num_envs, device=ge.device))
+            obs, result = _run_one_episode(env, ge, agent, obs, provider, real_time=args_cli.real_time)
+            session_results.append(result)
+            print(f"[RESULT] success={result.success} lifted={result.lifted} "
+                  f"grip={result.grip_count:.1f} disp={result.displacement*100:.1f}cm "
+                  f"obj={result.obj_idx}{' [INVALID]' if result.invalid else ''}")
+            print("> ", end="", flush=True)
+            pending = None
+
+    # 종료: 세션 이력 저장 (--out 지정 시)
+    if args_cli.out and session_results:
+        os.makedirs(args_cli.out, exist_ok=True)
+        hist_path = os.path.join(args_cli.out, "interactive_history.json")
+        with open(hist_path, "w") as f:
+            json.dump([dataclasses.asdict(r) for r in session_results], f, indent=2)
+        print(f"[INFO] 세션 이력 저장: {hist_path}")
+
+    env.close()
+
+
 if __name__ == "__main__":
     if MODE == "interactive":
-        raise NotImplementedError("interactive 모드는 Task 7")
-    main()
+        interactive_main()
+    else:
+        main()
     simulation_app.close()
