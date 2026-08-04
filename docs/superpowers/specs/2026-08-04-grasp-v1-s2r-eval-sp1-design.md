@@ -26,10 +26,13 @@ STATE(SP1) 히트맵 − CAMERA(SP2) 히트맵 = 지각 유발 열화 지도.
 
 ### 포함 (SP1)
 
+0. **인터랙티브 모드 (`--interactive`, 주 사용 방식)**: Isaac Sim GUI
+   상주 세션 — 씬(책상·로봇·뷰포트 카메라)·정책 로드 후 대기, 터미널
+   명령으로 물체 소환→평가→결과 출력→리셋→대기 반복. §4.6 참조.
 1. 신규 평가 스크립트 `scripts/eval_s2r/eval_sim2real.py` (+ 순수 로직
    모듈 + 테스트).
-2. 그리드 스윕: `--grid_x/--grid_y/--grid_nx/--grid_ny/--grid_repeats`
-   → env를 셀에 1:1 배정, 고정 스폰.
+2. 그리드 스윕(무인 배치): `--grid_x/--grid_y/--grid_nx/--grid_ny/
+   --grid_repeats` → env를 셀에 1:1 배정, 고정 스폰. 서버 headless 가능.
 3. grasp_v1 env(left/right)에 **최소 훅 2개**:
    - 고정 스폰 오버라이드 (`_reset_idx`)
    - cup-pose obs 오버라이드 (`_get_observations`)
@@ -64,6 +67,10 @@ python scripts/eval_s2r/eval_sim2real.py \
 python scripts/eval_s2r/eval_sim2real.py \
   --robot right --checkpoint <...> \
   --object_x 0.27 --object_y -0.10 --render --real-time
+
+# 인터랙티브 상주 세션 (GUI, 주 사용 방식)
+python scripts/eval_s2r/eval_sim2real.py \
+  --robot right --checkpoint <...> --interactive
 ```
 
 인자 규칙:
@@ -75,6 +82,8 @@ python scripts/eval_s2r/eval_sim2real.py \
   전부 지정. `num_envs = nx*ny*grid_repeats` 자동 산출.
 - 단일 모드: `--object_x X --object_y Y` (그리드 인자와 상호배타).
   `--render` 시 단일 모드 강제.
+- `--interactive`: 상주 대화 세션(§4.6). GUI 강제(headless 불가),
+  num_envs=1 고정, 그리드/단일 인자와 상호배타.
 - `--object_z`: 생략 시 env의 `object_spawn_z_buf`(물체별 테이블 높이)
   사용. 지정 시 전 env 공통 오버라이드.
 - `--pose_source {live,state_frozen,camera_frozen}` 기본 `state_frozen`.
@@ -93,10 +102,12 @@ scripts/eval_s2r/
 ├── grid.py            # 그리드 생성·env↔셀 매핑 (순수 함수)
 ├── providers.py       # PoseProvider 인터페이스 + Live/StateFrozen
 ├── report.py          # 셀 집계, CSV/JSON/heatmap PNG (순수 함수)
+├── console.py         # 인터랙티브 명령 파서·상태기계 (순수 함수)
 └── tests/
     ├── test_grid.py
     ├── test_providers.py
-    └── test_report.py
+    ├── test_report.py
+    └── test_console.py
 ```
 
 - `scripts/` 바로 아래 1단계 신규 디렉토리 — hdgp 레이아웃 규칙 준수.
@@ -205,6 +216,42 @@ CLI 인자 → grid.py: 셀 목록 + env→셀 매핑 + spawn 텐서[num_envs,3]
  → 전 셀 episodes_per_env 충족 시 종료 → report.py → CSV/JSON/PNG
 ```
 
+### 4.6 인터랙티브 모드 (`--interactive`)
+
+Isaac Sim **GUI 상주 세션**. 기동 시 씬(책상·로봇·뷰포트 카메라,
+`--cam_eye/--cam_lookat` 재사용)과 정책을 로드하고 대기 모드로 진입.
+
+상태기계 (`console.py`, 순수 함수로 구현·테스트):
+
+```
+STAGED(대기) --spawn X Y [Z]--> EVAL(에피소드 실행)
+EVAL --에피소드 종료--> REPORT(결과 출력) --자동--> RESET --> STAGED
+STAGED --quit--> 종료
+```
+
+터미널 명령:
+
+| 명령 | 동작 |
+|---|---|
+| `spawn X Y [Z]` | 해당 위치에 물체 스폰(훅 A) 후 즉시 정책 시작 |
+| `repeat` | 직전 위치로 재실행 |
+| `obj N` | 다음 스폰에 사용할 물체(0~7) 선택 |
+| `sweep ...` | 그리드 인자를 받아 배치 스윕을 세션 내 실행 |
+| `quit` | 세션 종료 |
+
+- **대기 중 물체 처리**: STAGED에서는 물체를 작업공간 밖 대기 위치
+  (테이블 아래 z<0 또는 원거리)에 두어 "물체 없음" 상태를 연출. spawn
+  명령이 목표 위치로 이동시킨다.
+- **GUI 정지 방지**: stdin 블로킹 읽기는 렌더 루프를 멈춰 창이 "응답
+  없음"이 된다. 대기 중에도 매 프레임 `app.update()`(렌더)를 돌리면서
+  `select()`로 stdin을 논블로킹 폴링한다. STAGED 중 물리 스텝은 하지
+  않는다(로봇은 리셋 자세 유지).
+- **에피소드 결과 즉시 출력**: success / lifted / grip_finger_count /
+  변위 / 손가락별 접촉을 종료 직후 터미널에 표. 세션 전체 이력은 종료
+  시 `--out`에 CSV로 저장(있으면).
+- num_envs=1, `--real-time` 기본 on. 로컬 pc5090 실행 전제(서버는
+  headless라 GUI 불가).
+
 ## 5. 에러 처리
 
 - 인자 검증 실패·checkpoint/params 부재 → argparse error 또는 명확한
@@ -227,6 +274,8 @@ CLI 인자 → grid.py: 셀 목록 + env→셀 매핑 + spawn 텐서[num_envs,3]
    재캡처, Live는 항상 None.
 3. `test_report.py` — 셀 집계 산술, invalid 제외, CSV/JSON 스키마,
    heatmap 파일 생성.
+3b. `test_console.py` — 명령 파싱(spawn/repeat/obj/sweep/quit, 잘못된
+   입력 거부), 상태 전이(STAGED→EVAL→REPORT→RESET→STAGED).
 4. env 훅 회귀 — 속성 None일 때 `_reset_idx`/`_get_observations` 출력이
    현행과 동일함(기존 grasp_v1 테스트 스위트 통과로 확인).
 
@@ -236,6 +285,8 @@ GPU 스모크(사용자 게이트 — 학습 자원 사용은 지시 후):
   success가 play.py `--eval_episodes` 결과(≈0.89)와 ±0.05 일치.
 - left lstm_test12 동일 절차.
 - `live` vs `state_frozen` 중심 셀 비교 → freeze staleness 영향 1차 수치.
+- 인터랙티브 스모크(로컬 pc5090, GUI): 기동→spawn→평가→결과 출력→리셋
+  →재-spawn 2회→quit. 대기 중 GUI 응답성(창 조작 가능) 확인.
 
 ## 7. 위험·미해결 (point 4 "문제 서칭"의 SP1 몫)
 
