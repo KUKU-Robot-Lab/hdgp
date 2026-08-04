@@ -360,11 +360,13 @@ def _eval_step(env, ge, agent, obs, provider):
     with torch.inference_mode():
         actions = agent.get_action(agent.obs_to_torch(obs), is_deterministic=True)
         obs, _, dones, _ = env.step(actions)
-    if isinstance(obs, dict):
-        obs = obs["obs"]
-    if agent.is_rnn and agent.states is not None and len(dones) > 0:
-        for s in agent.states:
-            s[:, dones, :] = 0.0
+        if isinstance(obs, dict):
+            obs = obs["obs"]
+        # LSTM done 리셋은 play.py처럼 inference_mode "안"에서 수행해야 한다 —
+        # get_action이 갱신한 agent.states는 inference 텐서라 밖에서의 in-place가 금지됨.
+        if agent.is_rnn and agent.states is not None and len(dones) > 0:
+            for s in agent.states:
+                s[:, dones, :] = 0.0
     if bool(dones.any()):
         done_ids = dones.nonzero(as_tuple=True)[0]
         provider.on_reset(ge, done_ids)
