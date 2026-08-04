@@ -25,6 +25,7 @@ class EpisodeResult:
     displacement: float
     obj_idx: int
     invalid: bool
+    finger_contacts: tuple  # (thumb, index, middle, ring, pinky) — 0.0/1.0 각 5개
 
 
 def aggregate(results: list[EpisodeResult], cells: list[tuple[float, float]]) -> list[dict]:
@@ -37,6 +38,9 @@ def aggregate(results: list[EpisodeResult], cells: list[tuple[float, float]]) ->
         for oi in sorted({r.obj_idx for r in eps}):
             sub = [r for r in eps if r.obj_idx == oi]
             per_obj[oi] = sum(r.success for r in sub) / len(sub)
+        finger_contact_rates = (
+            [sum(r.finger_contacts[fi] for r in eps) / n for fi in range(5)] if n else None
+        )
         rows.append({
             "cell_idx": ci, "x": x, "y": y,
             "n_episodes": n, "n_invalid": n_invalid,
@@ -45,6 +49,7 @@ def aggregate(results: list[EpisodeResult], cells: list[tuple[float, float]]) ->
             "grip_finger_count": (sum(r.grip_count for r in eps) / n) if n else None,
             "displacement_mean": (sum(r.displacement for r in eps) / n) if n else None,
             "per_obj_success": per_obj,
+            "finger_contact_rates": finger_contact_rates,
         })
     return rows
 
@@ -52,13 +57,14 @@ def aggregate(results: list[EpisodeResult], cells: list[tuple[float, float]]) ->
 def write_csv(rows: list[dict], path: str) -> None:
     fields = ["cell_idx", "x", "y", "n_episodes", "n_invalid",
               "success_rate", "lifted_rate", "grip_finger_count",
-              "displacement_mean", "per_obj_success"]
+              "displacement_mean", "per_obj_success", "finger_contact_rates"]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for r in rows:
             out = dict(r)
             out["per_obj_success"] = json.dumps(r["per_obj_success"])
+            out["finger_contact_rates"] = json.dumps(r["finger_contact_rates"])
             w.writerow(out)
 
 

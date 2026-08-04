@@ -8,11 +8,13 @@ from scripts.eval_s2r.report import EpisodeResult, aggregate, write_csv, write_s
 CELLS = [(0.21, -0.16), (0.21, 0.02), (0.33, -0.16), (0.33, 0.02)]  # nx=2, ny=2
 
 
-def _ep(cell, success, lifted=None, grip=4.0, disp=0.01, obj=0, invalid=False):
+def _ep(cell, success, lifted=None, grip=4.0, disp=0.01, obj=0, invalid=False,
+        finger_contacts=(1.0, 1.0, 1.0, 1.0, 1.0)):
     return EpisodeResult(
         cell_idx=cell, success=success,
         lifted=success if lifted is None else lifted,
         grip_count=grip, displacement=disp, obj_idx=obj, invalid=invalid,
+        finger_contacts=finger_contacts,
     )
 
 
@@ -42,16 +44,30 @@ class TestAggregate:
         rows = aggregate([], CELLS)
         assert rows[3]["x"] == pytest.approx(0.33) and rows[3]["y"] == pytest.approx(0.02)
 
+    def test_finger_contact_rates_elementwise_mean(self):
+        results = [
+            _ep(0, True, finger_contacts=(1.0, 0.0, 1.0, 0.0, 1.0)),
+            _ep(0, False, finger_contacts=(0.0, 0.0, 1.0, 1.0, 1.0)),
+        ]
+        rows = aggregate(results, CELLS)
+        assert rows[0]["finger_contact_rates"] == pytest.approx([0.5, 0.0, 1.0, 0.5, 1.0])
+
+    def test_finger_contact_rates_none_when_empty(self):
+        rows = aggregate([], CELLS)
+        assert rows[0]["finger_contact_rates"] is None
+
 
 class TestWriters:
     def test_csv_roundtrip(self, tmp_path):
-        rows = aggregate([_ep(0, True)], CELLS)
+        rows = aggregate([_ep(0, True, finger_contacts=(1.0, 1.0, 0.0, 1.0, 1.0))], CELLS)
         p = tmp_path / "results.csv"
         write_csv(rows, str(p))
         with open(p) as f:
             got = list(csv.DictReader(f))
         assert len(got) == 4
         assert float(got[0]["success_rate"]) == pytest.approx(1.0)
+        assert json.loads(got[0]["finger_contact_rates"]) == pytest.approx([1.0, 1.0, 0.0, 1.0, 1.0])
+        assert json.loads(got[2]["finger_contact_rates"]) is None
 
     def test_summary_json(self, tmp_path):
         rows = aggregate([_ep(0, True), _ep(1, False)], CELLS)

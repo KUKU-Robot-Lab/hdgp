@@ -302,12 +302,15 @@ def _snapshot_to_result(snap: dict, env_idx: int, cell_idx: int) -> EpisodeResul
     obj_init = snap["object_init_pos"][env_idx]
     lift_h = float((obj_pos[2] - obj_init[2]).item())
     disp = float(torch.norm(obj_pos[:2] - obj_init[:2]).item())
-    grip = float(snap["binary_contact"][env_idx].float().sum().item())
+    contact_row = snap["binary_contact"][env_idx].float()
+    grip = float(contact_row.sum().item())
+    finger_contacts = tuple(contact_row.tolist())  # (thumb,index,middle,ring,pinky)
     obj_idx = int(snap["obj_idx"][env_idx].item())
     invalid = not bool(torch.isfinite(obj_pos).all().item())
     success = bool(snap["success"][env_idx].item())
     return EpisodeResult(cell_idx=cell_idx, success=success, lifted=lift_h > 0.05,
-                         grip_count=grip, displacement=disp, obj_idx=obj_idx, invalid=invalid)
+                         grip_count=grip, displacement=disp, obj_idx=obj_idx, invalid=invalid,
+                         finger_contacts=finger_contacts)
 
 
 def _eval_step(env, ge, agent, obs, provider):
@@ -361,6 +364,7 @@ def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0,
                 return obs, EpisodeResult(
                     cell_idx=cell_idx, success=False, lifted=False,
                     grip_count=0.0, displacement=0.0, obj_idx=-1, invalid=True,
+                    finger_contacts=(0.0,) * 5,
                 )
             aborted = _snapshot_to_result(snap, env_idx, cell_idx=cell_idx)
             return obs, dataclasses.replace(aborted, invalid=True)
@@ -644,9 +648,11 @@ def interactive_main():
                 # 더 이상 입력을 받을 앱이 없으므로 프롬프트를 다시 찍지 않고 세션을 정리한다.
                 print("[WARN] 시뮬레이션 앱 종료 감지 — 에피소드 중단(invalid) 처리 후 세션 종료")
                 break
+            fingers = [int(v) for v in result.finger_contacts]  # T/I/M/R/P 순
             print(f"[RESULT] success={result.success} lifted={result.lifted} "
                   f"grip={result.grip_count:.1f} disp={result.displacement*100:.1f}cm "
-                  f"obj={result.obj_idx}{' [INVALID]' if result.invalid else ''}")
+                  f"obj={result.obj_idx} fingers={fingers}"
+                  f"{' [INVALID]' if result.invalid else ''}")
             print("> ", end="", flush=True)
             pending = None
 
