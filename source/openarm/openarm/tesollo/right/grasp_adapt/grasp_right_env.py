@@ -401,6 +401,8 @@ class GraspRightEnv(DirectRLEnv):
         # Hand joint targets (per-joint delta 결과)
         # ----------------------------------------------------------------
         self.hand_joint_targets = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
+        # 손가락 타겟 EMA(chatter 억제) 이전값 버퍼. reset 시 grasp_pose로 초기화.
+        self._prev_hand_target = self.hand_grasp_pose.unsqueeze(0).repeat(self.num_envs, 1).clone()
 
         # ----------------------------------------------------------------
         # 접촉 상태 버퍼
@@ -903,6 +905,11 @@ class GraspRightEnv(DirectRLEnv):
             active_mask=self.hand_residual_mask,
             fixed_pose=self.hand_grasp_pose,
         )
+        # 손가락 타겟 EMA 저역통과: 정책 스텝간 변동을 평활해 chatter 억제.
+        _alpha = float(self.cfg.finger_target_ema_alpha)
+        if _alpha > 0.0:
+            hand_target = _alpha * self._prev_hand_target + (1.0 - _alpha) * hand_target
+        self._prev_hand_target.copy_(hand_target)
         self.hand_joint_targets.copy_(hand_target)
 
         self.fabric_q[:, NUM_ARM_DOF:] = hand_target
@@ -1235,13 +1242,16 @@ class GraspRightEnv(DirectRLEnv):
 
         # ---- 목적함수: friction-aware no-slip 최소 힘 (지배항) ----
         # 안 미끄러지는(secure) 최소 힘으로 압박 → mass·friction 적응이 emergent.
+        # 고정 컵: 컵이 못 뜨므로 lifted_gate=1로 우회 → hold_gate=grasp·full_tip(damage/secure/
+        # efficient 활성). r_drop fell=lift·(1-1)=0(오발동 無), contact_loss는 파지 손실만 벌점.
+        _lifted_gate = torch.ones_like(lifted_gate) if self.cfg.cup_anchored else lifted_gate
         r_objective, adaptive_terms = compute_adaptive_grip_terms(
             grip_normal_force=grip_normal_force,
             cup_weight=cup_weight,
             cup_speed=cup_slip_speed,
             tip_contact_frac=tip_contact_frac,
             lift_gate=lift_gate,
-            lifted_gate=lifted_gate,
+            lifted_gate=_lifted_gate,
             full_tip_contact=full_tip_contact,
             cfg=self.cfg,
         )
@@ -1310,13 +1320,21 @@ class GraspRightEnv(DirectRLEnv):
         final_upright = (
             cup_tilt_deg <= float(self.cfg.stabilize_upright_max_deg)
         ).float()
-        height_hold_success_bonus = (
-            float(self.cfg.success_bonus_weight)
-            * lift_gate
-            * reached_target_gate
-            * full_tip_contact
-            * final_upright
-        )
+        if self.cfg.cup_anchored:
+            # 고정 컵(lift 제거): "precision 파지 + 현재 안 부숨(deform<f_safe)"을 성공 보상으로.
+            # lift 보상이 사라진 자리를 gentle 파지 보상이 채워 파지 품질에 집중하게 한다.
+            intact_now = (radial_compression < float(self.cfg.f_safe)).float()
+            height_hold_success_bonus = (
+                float(self.cfg.success_bonus_weight) * full_tip_contact * intact_now
+            )
+        else:
+            height_hold_success_bonus = (
+                float(self.cfg.success_bonus_weight)
+                * lift_gate
+                * reached_target_gate
+                * full_tip_contact
+                * final_upright
+            )
         reward_terms["success_bonus"] = height_hold_success_bonus
 
         total = torch.nan_to_num(
@@ -1493,13 +1511,17 @@ class GraspRightEnv(DirectRLEnv):
                 ((self._mass_shift_pre_height - cur_height).clamp(min=0.0) * shifted).sum()
                 / shifted_n
             )
-        final_success_now = (
-            self._lift_success_latched_buf
-            & reached_target
-            & full_tip_contact
-            & stabilize_upright_success
-            & shape_intact
-        )
+        if self.cfg.cup_anchored:
+            # 고정 컵: lift/upright 무관. precision 파지 + 안 부숨(dose<max) 유지 = 성공.
+            final_success_now = full_tip_contact & shape_intact
+        else:
+            final_success_now = (
+                self._lift_success_latched_buf
+                & reached_target
+                & full_tip_contact
+                & stabilize_upright_success
+                & shape_intact
+            )
         self.success_flag.copy_(final_success_now)
         self.episode_success_buf |= final_success_now
         self._success_hold_count = torch.where(
@@ -1791,6 +1813,8 @@ class GraspRightEnv(DirectRLEnv):
         self.actions[env_ids, PALM_QUAT_ACTION_SLICE] = self.palm_pose_targets[env_ids, 3:7]
         self.actions[env_ids, FINGER_ACTION_SLICE] = 0.0
         self.prev_actions[env_ids] = self.actions[env_ids]
+        # EMA 손가락 타겟 버퍼도 grasp_pose로 초기화(에피소드 시작 점프 방지).
+        self._prev_hand_target[env_ids] = self.hand_grasp_pose
 
     def _uniform_scale(self, shape: tuple[int, int], value_range: tuple[float, float]) -> torch.Tensor:
         low, high = value_range

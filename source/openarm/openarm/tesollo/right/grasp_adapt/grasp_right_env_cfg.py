@@ -204,7 +204,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     transport_upright_quality_power: float = 1.0
     stabilize_upright_reward_scale_deg: float = 10.0
     stabilize_action_sharpness: float = 1.5
-    action_smooth_weight: float = -0.02
+    action_smooth_weight: float = -0.15   # -0.02→-0.15: 손가락 chatter 억제(||Δaction|| 페널티 강화)
+
+    # 손가락 타겟 저역통과(EMA): smoothed = α·prev + (1-α)·new. full-range 절대제어라 정책
+    # 스텝간 변동이 타겟을 크게 흔들어 chatter → EMA로 평활(실물 컨트롤러도 명령 평활, s2r 안전).
+    # α↑=부드럽지만 느림. 0=필터off. reset 시 grasp_pose로 초기화.
+    finger_target_ema_alpha: float = 0.7
     post_lift_contact_loss_weight: float = -8.0
     # Fragile 형상파괴 억제 (radial 압축 좌굴 = 종이컵 벽을 눌러 찌그러뜨림).
     # 손끝-only가 아니라 "형상 덜 파괴하며 파지"가 목적 — 감싸기/palm 지지는 무방,
@@ -259,7 +264,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # clamp 포화 → 4cm 위 gradient 0. efficient가 grip을 깎아 5cm 약파지 hold에 고착
     # (success 0). contact-독립 height 보상을 10cm까지 열어 "형상 유지+10cm까지 리프트"를
     # reward 최대로 만든다. clamp=2.5 = lift_target(0.10)/lift_success(0.04).
-    lift_height_bonus_weight: float = 4.0
+    lift_height_bonus_weight: float = 1.5   # 4.0→1.5: lift-지배(reward/lift 12) 완화 → grasp 품질 비중 회복
     lift_height_bonus_clamp:  float = 2.5
 
     # success_bonus — Fork C: 10cm·upright·5접촉 유지 평가 bonus로 강등 (20→4)
@@ -515,6 +520,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     cup_is_articulated: bool = False
     deform_panel_count: int = 12   # deformable cup 패널 수(USD와 일치). contact 필터 구성에 사용.
 
+    # Phase-1 grasp-in-place: 테이블 위 컵에 lift 보상 0 → lift 없이 gentle 파지만 학습(fix_root_link은
+    # Isaac Lab이 로봇 articulation을 깨뜨려 미사용). success=precision+안부숨(dose<max).
+    # True면 success를 "precision 파지 + 안 부숨(dose<max) 유지"로 재정의(lift/upright 무관).
+    # lift-지배 보상이 사라져 파지 품질에 집중 → "안 부수고 잡기" 검증에 적합.
+    cup_anchored: bool = False
+
     # -----------------------------------------------------------------------
     # 컵 마찰계수 도메인 랜덤화
     # -----------------------------------------------------------------------
@@ -606,6 +617,10 @@ class GraspRightEnvCfgDeformable(GraspRightEnvCfgNoActorMass):
     """
 
     cup_is_articulated: bool = True
+    cup_anchored: bool = True   # Phase-1 grasp-in-place: lift 없이 gentle 파지만(success 재정의)
+    # no-lift 모드: lift 보상 0 → 컵 들어올리기 유인 제거(lift-지배 방지). 테이블 위 제자리 파지.
+    lift_reward_weight: float = 0.0
+    lift_height_bonus_weight: float = 0.0
 
     # -------------------------------------------------------------------
     # damage 신호 단위 전환: 힘 proxy(N) → 실제 패널 최대 변형(deg).
