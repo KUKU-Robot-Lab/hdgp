@@ -199,6 +199,37 @@ def _quat_to_rot(quat_wxyz: np.ndarray) -> np.ndarray:
     ], dtype=np.float64)
 
 
+def _assert_camera_ready(camera: TiledCamera, clip_range: tuple[float, float]) -> None:
+    """카메라가 실제로 초기화·렌더됐는지 하드 검증 — 조용히 200장의 오염된 NPZ를 쓰지 않기 위한 가드.
+
+    리뷰 F1: post-hoc TiledCamera 생성 + sim.reset() 워크어라운드(_create_head_camera 참조)가
+    실패해도 이전엔 아무 에러 없이 검은/빈 프레임이 그대로 저장됐다. 이제 3중 체크로 즉시 중단한다.
+    (a) is_initialized(속성 있으면 하드 체크, 없으면 (b)(c) 데이터 존재 체크로 대체)
+    (b) env0 rgb가 전부 0이 아님 — 렌더 타깃이 비어있으면(빈 화면) 감지.
+    (c) env0 depth가 clipping range 안에 유한값을 하나 이상 포함 — depth 파이프라인이 죽어있으면 감지.
+    """
+    if hasattr(camera, "is_initialized") and not camera.is_initialized:
+        raise RuntimeError(
+            "TiledCamera가 초기화되지 않음(is_initialized=False) — post-hoc 생성 후 "
+            "sim.reset() 워크어라운드가 PLAY 콜백을 트리거하지 못한 것으로 보인다. "
+            "--enable_cameras 플래그·head_cam_view prim 경로를 확인하라."
+        )
+    rgb0 = camera.data.output["rgb"][0].detach().cpu().numpy()
+    if not rgb0.any():
+        raise RuntimeError(
+            "env0 rgb 버퍼가 전부 0 — 카메라가 렌더링되지 않았다(빈 화면). "
+            "settle 스텝 수·prim_path·조명 설정을 확인하라."
+        )
+    depth0 = camera.data.output["distance_to_image_plane"][0, ..., 0].detach().cpu().numpy()
+    finite = np.isfinite(depth0)
+    in_range = finite & (depth0 >= clip_range[0]) & (depth0 <= clip_range[1])
+    if not in_range.any():
+        raise RuntimeError(
+            f"env0 depth 버퍼에 clipping range {clip_range} 안의 유한값이 하나도 없음 — "
+            "depth 파이프라인이 죽어있거나 카메라가 아무 것도 보고 있지 않다."
+        )
+
+
 def _resolve_semantic_id(info: dict, class_name: str) -> int | None:
     """semantic_segmentation info의 idToLabels에서 class_name과 일치하는 정수 ID를 찾는다.
 
@@ -218,7 +249,7 @@ def _resolve_semantic_id(info: dict, class_name: str) -> int | None:
 
 def _capture_env(ge, camera: TiledCamera, env_idx: int, graspobj_id: int | None,
                  K: np.ndarray, cells: list[tuple[float, float]], repeats: int) -> dict:
-    """env_idx 하나의 npz payload 구성. 키는 스펙 §4.1 표 그대로."""
+    """env_idx 하나의 npz payload 구성. 키는 스펙 §4.1 표 + `mask_pixels`(리뷰 F2, 추가 키)."""
     rgb = camera.data.output["rgb"][env_idx].detach().cpu().numpy().astype(np.uint8)
     depth = camera.data.output["distance_to_image_plane"][env_idx, ..., 0].detach().cpu().numpy().astype(np.float32)
     seg = camera.data.output["semantic_segmentation"][env_idx, ..., 0].detach().cpu().numpy()
@@ -256,6 +287,8 @@ def _capture_env(ge, camera: TiledCamera, env_idx: int, graspobj_id: int | None,
         "cell_idx": cell_idx,
         "cell_x": cell_x,
         "cell_y": cell_y,
+        # 리뷰 F2 추가 키(additive) — Pass 2가 mask 없는(FOV 밖 등) env를 사전 필터링할 수 있게.
+        "mask_pixels": int(mask.sum()),
     }
 
 
@@ -343,12 +376,24 @@ def main() -> None:
     _command_head_pose(ge, tilt=args_cli.head_tilt, pan=args_cli.head_pan)
     _settle(ge, N_SETTLE)
     camera.update(ge.sim.get_physics_dt())
+    _assert_camera_ready(camera, D435I_CLIPPING_RANGE)  # 리뷰 F1: fail-loud 가드
 
     seg_info = camera.data.info.get("semantic_segmentation", {})
     graspobj_id = _resolve_semantic_id(seg_info, GRASPOBJ_SEMANTIC_CLASS)
     if graspobj_id is None:
-        print(f"[WARN] semantic id for class={GRASPOBJ_SEMANTIC_CLASS!r} 못 찾음 "
-              f"(info={seg_info}) — mask 전부 False로 저장됨")
+        id_to_labels = seg_info.get("idToLabels", seg_info) if isinstance(seg_info, dict) else seg_info
+        if args_cli.preview:
+            # 프리뷰는 바로 이 상황(마스크 클래스 부재)을 진단하려고 존재 — 경고만 내고 계속.
+            print(f"[WARN] semantic id for class={GRASPOBJ_SEMANTIC_CLASS!r} 못 찾음 "
+                  f"— mask 전부 False로 저장됨. idToLabels={id_to_labels}")
+        else:
+            # 리뷰 F2: mask 없이는 배치 200장 전체가 Pass 2(FoundationPose) 입력으로 무의미하다 —
+            # 조용히 mask=False로 채운 NPZ를 쓰는 대신 즉시 중단한다.
+            raise RuntimeError(
+                f"semantic id for class={GRASPOBJ_SEMANTIC_CLASS!r} 못 찾음 — mask 없이는 "
+                f"배치 전체가 무의미. semantic_tags 주입(_inject_semantic_tags)이나 카메라 "
+                f"data_types 설정을 확인하라. idToLabels={id_to_labels}"
+            )
 
     K = k_from_pinhole(focal, aperture, width, height)
 
@@ -360,17 +405,26 @@ def main() -> None:
         _save_preview(frame, out_dir / "preview_env0.png")
         print(f"[PREVIEW] K=\n{K}")
         print(f"[PREVIEW] head_tilt={args_cli.head_tilt} head_pan={args_cli.head_pan} "
-              f"mask_px={int(frame['mask'].sum())}/{frame['mask'].size}")
+              f"mask_px={frame['mask_pixels']}/{frame['mask'].size}")
         print(f"[PREVIEW] 저장: {out_dir / 'preview_env0.png'}")
         env.close()
         simulation_app.close()
         return
 
     T_local_cam_all: dict[str, list] = {}
+    zero_mask_envs: list[int] = []
     for i in range(ge.num_envs):
         frame = _capture_env(ge, camera, i, graspobj_id, K, local_cells, repeats)
+        if frame["mask_pixels"] == 0:
+            zero_mask_envs.append(i)
         np.savez(out_dir / f"env_{i}.npz", **frame)
         T_local_cam_all[str(i)] = frame["T_local_cam"].tolist()
+
+    if zero_mask_envs:
+        # raise 하지 않음 — FOV 밖 그리드 극단 셀에서는 정상적으로 일어날 수 있는 경우(설계 §7 위험 5).
+        # Pass 2가 이 env들을 mask_pixels==0으로 사전 필터링할 수 있게 여기서도 요약만 남긴다.
+        print(f"[WARN] mask 픽셀 0인 env {len(zero_mask_envs)}/{ge.num_envs}개 "
+              f"(FP 등록 실패 예상 — FOV 밖 등이 원인일 수 있음): {zero_mask_envs}")
 
     try:
         git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=_HDGP_ROOT).decode().strip()
