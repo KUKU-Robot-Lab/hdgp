@@ -2,14 +2,19 @@
 
 live: env 현행 경로(GT+DR노이즈) — override 없음.
 state_frozen: reset 시 GT를 1회 캡처해 에피소드 내내 고정(배포 open-loop 재현).
-camera_frozen: SP2 — 카메라 렌더+FoundationPose (미구현).
+camera_frozen: SP2 — 카메라 렌더+FoundationPose 결과 파일을 로드해 고정 주입.
 설계: docs/superpowers/specs/2026-08-04-grasp-v1-s2r-eval-sp1-design.md §4.3
+      docs/superpowers/specs/2026-08-04-grasp-v1-s2r-eval-sp2-camera-design.md §4.3
 """
 from __future__ import annotations
 
+import json
 from typing import Protocol
 
+import numpy as np
 import torch
+
+from scripts.eval_s2r.transforms import compose_local_pose
 
 
 class PoseProvider(Protocol):
@@ -72,11 +77,87 @@ class StateFrozenProvider:
         return self._buf.clone()
 
 
-def make_provider(name: str) -> PoseProvider:
+class CameraFileProvider:
+    """카메라 렌더+FoundationPose 결과 파일(poses.json+meta.json)을 로드해 고정 주입.
+
+    의미론:
+    - 생성 시 1회 로드: env별 T_local_cam(meta) @ T_cam_obj(poses) → env-local 위치 [N,3] 버퍼 구성.
+      poses.json은 Task 4 fp_batch, meta.json은 Task 3 render_pass 산출물(스키마는
+      task-2-brief.md에 고정, 임의 변경 시 test_camera_provider.py가 잡는다).
+    - 실패 env(ok=false, 키 누락, 또는 ok=true인데 T_cam_obj 비유한)는 버퍼 행이 NaN이고
+      `failed_envs`(env id 집합)에 포함. `fail_reasons`에 사유 문자열 기록.
+      계약: 실패 env를 실제로 돌리지 않는 책임은 eval 루프 쪽(Task 5) — 여기서는 예외를
+      던지지 않고(개별 env 실패로 전체 로드를 막지 않기 위해) 표시만 한다.
+    - on_reset: 파일 고정 데이터라 매 리셋마다 다시 캡처할 게 없음 → no-op.
+    - get_override: StateFrozenProvider와 동일하게 방어적 `.clone()` 반환.
+    """
+
+    def __init__(self, poses_path: str, frames_meta_path: str) -> None:
+        with open(frames_meta_path) as f:
+            meta = json.load(f)
+        with open(poses_path) as f:
+            poses_data = json.load(f)
+
+        num_envs = meta["num_envs"]
+        if poses_data["num_envs"] != num_envs:
+            raise ValueError(
+                f"num_envs mismatch: meta={num_envs} poses={poses_data['num_envs']}"
+            )
+
+        self.expected_grid: dict = meta["grid"]
+
+        T_local_cam_by_env = meta["T_local_cam"]
+        poses_by_env = poses_data["poses"]
+
+        buf = np.full((num_envs, 3), np.nan, dtype=np.float32)
+        failed_envs: set[int] = set()
+        fail_reasons: dict[int, str] = {}
+
+        for env_id in range(num_envs):
+            key = str(env_id)
+            entry = poses_by_env.get(key)
+            if entry is None:
+                failed_envs.add(env_id)
+                fail_reasons[env_id] = "missing"
+                continue
+            if not entry.get("ok", False):
+                failed_envs.add(env_id)
+                fail_reasons[env_id] = entry.get("reason", "unknown")
+                continue
+
+            T_cam_obj = np.asarray(entry["T_cam_obj"], dtype=float)
+            if not np.isfinite(T_cam_obj).all():
+                # ok=true여도 비유한 값이면 예외 없이 실패로 강등 (compose_local_pose는 raise함)
+                failed_envs.add(env_id)
+                fail_reasons[env_id] = "nonfinite"
+                continue
+
+            T_local_cam = np.asarray(T_local_cam_by_env[key], dtype=float)
+            buf[env_id] = compose_local_pose(T_local_cam, T_cam_obj).astype(np.float32)
+
+        self.failed_envs = failed_envs
+        self.fail_reasons = fail_reasons
+        self._buf = torch.from_numpy(buf)
+
+    def on_reset(self, env, env_ids: torch.Tensor) -> None:
+        pass  # 파일 고정 데이터라 리셋마다 다시 캡처할 것이 없음
+
+    def get_override(self, env) -> torch.Tensor:
+        return self._buf.clone()  # 방어 복사: StateFrozenProvider와 동일 패턴
+
+
+def make_provider(name: str, **kwargs) -> PoseProvider:
     if name == "live":
         return LiveProvider()
     if name == "state_frozen":
         return StateFrozenProvider()
     if name == "camera_frozen":
-        raise NotImplementedError("camera_frozen provider는 SP2에서 구현 (spec §8)")
+        try:
+            poses_path = kwargs["poses_path"]
+            frames_meta_path = kwargs["frames_meta_path"]
+        except KeyError as e:
+            raise ValueError(
+                f"camera_frozen requires poses_path and frames_meta_path kwargs (missing {e})"
+            ) from e
+        return CameraFileProvider(poses_path, frames_meta_path)
     raise ValueError(f"unknown pose_source: {name!r} (live|state_frozen|camera_frozen)")

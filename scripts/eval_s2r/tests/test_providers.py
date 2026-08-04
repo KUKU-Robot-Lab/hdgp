@@ -81,8 +81,9 @@ class TestFactory:
         assert isinstance(make_provider("live"), LiveProvider)
         assert isinstance(make_provider("state_frozen"), StateFrozenProvider)
 
-    def test_camera_frozen_not_implemented(self):
-        with pytest.raises(NotImplementedError):
+    def test_camera_frozen_missing_kwargs_raises(self):
+        # SP2 구현 완료: camera_frozen은 이제 NotImplementedError가 아니라 인자 검증 ValueError
+        with pytest.raises(ValueError):
             make_provider("camera_frozen")
 
     def test_unknown_raises(self):
