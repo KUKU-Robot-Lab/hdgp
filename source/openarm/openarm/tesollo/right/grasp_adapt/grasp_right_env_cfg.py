@@ -618,10 +618,11 @@ class GraspRightEnvCfgDeformable(GraspRightEnvCfgNoActorMass):
     """
 
     cup_is_articulated: bool = True
-    cup_anchored: bool = True   # Phase-1 grasp-in-place: lift 없이 gentle 파지만(success 재정의)
-    # no-lift 모드: lift 보상 0 → 컵 들어올리기 유인 제거(lift-지배 방지). 테이블 위 제자리 파지.
-    lift_reward_weight: float = 0.0
-    lift_height_bonus_weight: float = 0.0
+    # lift 복원(2026-08-05): 고정(anchored) 검증서 gentle 파지는 되나 mass 적응 불가 판명
+    # (컵이 안 떨어져 촉각 mass 신호 없음 → grip_force 무게 무관 균일 8.5N power-grip).
+    # 적응의 유일한 교사 = "힘 부족→미끄럼/낙하→촉각 피드백" 루프 → lift 필요.
+    # cup_anchored=False + lift_reward/lift_height_bonus는 base값(6.0/1.5) 상속.
+    cup_anchored: bool = False
 
     # -------------------------------------------------------------------
     # 리워드 teardown (2026-08-04): 핵심만 남기고 파생항 제거 → secure/drop/slip 재설계 기반.
