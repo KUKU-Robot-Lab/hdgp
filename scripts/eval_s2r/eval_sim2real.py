@@ -374,7 +374,9 @@ def _eval_step(env, ge, agent, obs, provider):
 
 
 def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0,
-                     cell_idx: int = 0, real_time: bool = False):
+                     cell_idx: int = 0, real_time: bool = False,
+                     record_traj: list | None = None,
+                     stop_before_done: bool = False):
     """env_idx 하나가 done 될 때까지 _eval_step 반복 — Task 7 인터랙티브(num_envs=1) 재사용.
 
     num_envs=1 세션 전용(env_idx 기본 0). real_time=True 면 배치 루프(play.py:1211-1213
@@ -391,6 +393,10 @@ def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0,
     """
     step_dt = ge.step_dt
     snap = None
+    if record_traj is not None:
+        # back2ini 역재생용: 에피소드의 전체 관절 자세를 컨트롤 스텝마다 기록.
+        # 시작 자세(리셋 직후)도 포함해야 역재생의 종점이 초기 자세가 된다.
+        record_traj.append(ge.robot.data.joint_pos[env_idx].detach().clone())
     while True:
         if not simulation_app.is_running():
             if snap is None:
@@ -405,6 +411,10 @@ def _run_one_episode(env, ge, agent, obs, provider, env_idx: int = 0,
             return obs, dataclasses.replace(aborted, invalid=True)
         start_time = time.time()
         obs, dones, snap = _eval_step(env, ge, agent, obs, provider)
+        if record_traj is not None and not bool(dones[env_idx]):
+            # done 프레임은 제외 — env.step()이 내부 auto-reset을 이미 수행해 joint_pos가
+            # "리셋 자세"로 바뀐 뒤라, 기록하면 역재생 첫 프레임이 순간이동이 된다.
+            record_traj.append(ge.robot.data.joint_pos[env_idx].detach().clone())
         if real_time:
             sleep_time = step_dt - (time.time() - start_time)
             if sleep_time > 0:

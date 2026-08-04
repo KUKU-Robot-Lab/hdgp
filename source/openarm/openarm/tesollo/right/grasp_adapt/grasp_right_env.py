@@ -91,7 +91,7 @@ from .grasp_right_preset import (
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
 )
-from .finger_action_utils import compute_full_range_finger_targets
+from .finger_action_utils import compute_residual_finger_targets
 from .grasp_reward_utils import compute_upright_success_mask
 from .grasp_right_utils import (
     compute_damage_dose,
@@ -896,10 +896,13 @@ class GraspRightEnv(DirectRLEnv):
                 self.timestep,
             )
 
-        # 감싸기 preset(HAND_GRASP_POSE) 갇힘 해소: full-range 절대 제어로 정책이 손끝 파지
-        # 형상까지 자유 탐색. abduction 5개(mask 0)만 고정, 나머지 15 DOF는 full-range.
-        hand_target = compute_full_range_finger_targets(
+        # residual 제어: grasp pose 기준 ±hand_residual_scale rad 상대 제어.
+        # full-range 절대는 chatter 근본원인(소량 action 변동→관절 전범위 이동)이라 폐기.
+        # abduction 5개(mask 0)만 고정, 나머지 15 DOF는 grasp pose 근방 residual.
+        hand_target = compute_residual_finger_targets(
             finger_action=finger_action,
+            center_pose=self.hand_grasp_pose,
+            scale=self.cfg.hand_residual_scale,
             lower_limits=self.hand_joint_lower_limits,
             upper_limits=self.hand_joint_upper_limits,
             active_mask=self.hand_residual_mask,
@@ -1289,9 +1292,13 @@ class GraspRightEnv(DirectRLEnv):
                 contact_pos, contact_force, cup_center, cup_axis, contact_mask
             )                                                        # (N,)
         self._radial_compression_buf.copy_(radial_compression)
-        # 누적 형상파괴 dose(설계 §6): hold 구간에서만 누적(파지 중 눌러 찌그러뜨린 총량).
+        # r_damage를 grasp 하위로(2026-08-04): 게이트 = hold_gate(lift latch 필요) →
+        # full_tip_contact(precision 파지). "파지 중 과압박 = 형상파괴" 를 lift 단계와
+        # 무관하게 grasp 성립 시점부터 벌점화 → damage가 파지 품질의 하위 속성이 됨.
+        grasp_gate = full_tip_contact  # (N,) precision grasp float
+        # 누적 형상파괴 dose(설계 §6): grasp 구간에서만 누적(파지 중 눌러 찌그러뜨린 총량).
         self._damage_dose_buf = torch.where(
-            hold_gate > 0.0,
+            grasp_gate > 0.0,
             compute_damage_dose(
                 self._damage_dose_buf,
                 radial_compression,
@@ -1301,10 +1308,10 @@ class GraspRightEnv(DirectRLEnv):
             ),
             self._damage_dose_buf,
         )
-        # 순간 penalty: hold 구간 F_safe 초과분
+        # 순간 penalty: grasp 구간 F_safe 초과분
         r_damage = (
             -float(self.cfg.damage_penalty_weight)
-            * hold_gate
+            * grasp_gate
             * torch.relu(radial_compression - float(self.cfg.f_safe))
         )
         # 진단(로깅용): middle/distal 접촉률

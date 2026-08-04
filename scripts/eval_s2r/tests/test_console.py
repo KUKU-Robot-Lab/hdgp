@@ -61,3 +61,19 @@ class TestApply:
     def test_quit(self):
         _, act = apply_command(SessionState(None, None), parse_command("quit"))
         assert act["action"] == "quit"
+
+
+class TestResetBack2Ini:
+    def test_parse_reset_and_back2ini(self):
+        assert parse_command("reset").kind == "reset"
+        assert parse_command("back2ini").kind == "back2ini"
+
+    def test_apply_reset_action(self):
+        s0 = SessionState(last_spawn=(0.3, 0.0, float("nan")), obj_idx=None)
+        s1, act = apply_command(s0, parse_command("reset"))
+        assert act["action"] == "reset"
+        assert s1.last_spawn == s0.last_spawn  # 상태 보존(repeat 이력 유지)
+
+    def test_apply_back2ini_action(self):
+        _, act = apply_command(SessionState(None, None), parse_command("back2ini"))
+        assert act["action"] == "back2ini"

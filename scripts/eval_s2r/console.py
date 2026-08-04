@@ -1,6 +1,6 @@
 """인터랙티브 세션 명령 파서·상태 전이 (순수 함수, Isaac 무관).
 
-명령: spawn X Y [Z] | repeat | obj N | sweep XMIN XMAX NX YMIN YMAX NY REPEATS | quit
+명령: spawn X Y [Z] | repeat | reset | back2ini | obj N | sweep XMIN XMAX NX YMIN YMAX NY REPEATS | quit
 설계: docs/superpowers/specs/2026-08-04-grasp-v1-s2r-eval-sp1-design.md §4.6
 """
 from __future__ import annotations
@@ -33,10 +33,8 @@ def parse_command(line: str) -> Command:
     if not parts:
         raise ValueError("빈 입력 (spawn X Y [Z] | repeat | obj N | sweep ... | quit)")
     kind, args = parts[0], parts[1:]
-    if kind == "quit":
-        return Command(kind="quit")
-    if kind == "repeat":
-        return Command(kind="repeat")
+    if kind in ("quit", "repeat", "reset", "back2ini"):
+        return Command(kind=kind)
     if kind == "spawn":
         if len(args) not in (2, 3):
             raise ValueError("사용법: spawn X Y [Z]")
@@ -84,4 +82,8 @@ def apply_command(state: SessionState, cmd: Command) -> tuple[SessionState, dict
         return state, {"action": "spawn", "x": x, "y": y, "z": z}
     if cmd.kind == "sweep":
         return state, {"action": "sweep", "grid": cmd.grid}
+    if cmd.kind == "reset":
+        return state, {"action": "reset"}
+    if cmd.kind == "back2ini":
+        return state, {"action": "back2ini"}
     raise ValueError(f"unhandled command kind {cmd.kind!r}")

@@ -228,7 +228,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     damage_dose_q: float = 2.0            # dose 지수 (설계 §6: relu((radial-f_safe)/f_safe)^q)
     damage_dose_success_max: float = 1.0  # 성공 허용 형상파괴 상한(초과 시 부숨 = 실패)
     hand_residual_magnitude_weight: float = -0.005
-    hand_residual_scale: float = 0.15
+    hand_residual_scale: float = 0.35  # rad, grasp pose 기준 residual 반경.
+    # GRASP→FULL_GRIP 간극(~0.13~0.27rad)을 덮고 개방 여유까지. 한계로 clamp됨.
 
     # approach term의 fingertip_side_dist 기하 계산용
     cup_radius_approx:      float = 0.045
@@ -621,6 +622,17 @@ class GraspRightEnvCfgDeformable(GraspRightEnvCfgNoActorMass):
     # no-lift 모드: lift 보상 0 → 컵 들어올리기 유인 제거(lift-지배 방지). 테이블 위 제자리 파지.
     lift_reward_weight: float = 0.0
     lift_height_bonus_weight: float = 0.0
+
+    # -------------------------------------------------------------------
+    # 리워드 teardown (2026-08-04): 핵심만 남기고 파생항 제거 → secure/drop/slip 재설계 기반.
+    #   - approach_tilt_penalty / stabilize / success_bonus 제거(0): 지금 단계 불필요.
+    #   - r_damage는 grasp 하위로(env: hold_gate → full_tip_contact 게이트) — cfg는 weight 유지.
+    #   - success_bonus는 전체 리워드 정립 후 "최종 태스크 성공"으로 재설정 예정.
+    #   - secure/drop/slip weight는 미변경(함수 재설계 대기).
+    # -------------------------------------------------------------------
+    approach_tilt_penalty_weight: float = 0.0
+    stabilize_weight: float = 0.0
+    success_bonus_weight: float = 0.0
 
     # -------------------------------------------------------------------
     # damage 신호 단위 전환: 힘 proxy(N) → 실제 패널 최대 변형(deg).
