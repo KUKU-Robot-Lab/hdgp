@@ -23,6 +23,13 @@ if _HDGP_ROOT not in sys.path:
 
 from isaaclab.app import AppLauncher  # noqa: E402
 
+# 카메라 offset rot 기본값(ros convention, w x y z) — C2: identity(1,0,0,0)는 광축(optical +Z)이
+# head_cam_view 링크의 +Z(=world up, URDF 체인 rpy=0)와 일치해 천장을 본다. grasp_v2 프리셋
+# (grasp_right_preset.py CAMERA_ROT)과 같은 계열의 비-identity 값을 써야 광축이 링크 +X(전방)로
+# 매핑된다: R(0.5,-0.5,0.5,-0.5)는 camera-Z(광축)→parent+X, camera-Y(아래)→parent-Z,
+# camera-X(오른쪽)→parent-Y 로 보내 X-전방/Y-좌/Z-상 링크 관례에서 정면·정상 방향을 만든다.
+DEFAULT_CAM_OFFSET_ROT_WXYZ = (0.5, -0.5, 0.5, -0.5)
+
 parser = argparse.ArgumentParser(description="grasp_v1 s2r 평가 SP2 — Pass 1 렌더(D435i 헤드캠 NPZ 캡처)")
 parser.add_argument("--robot", required=True, choices=["left", "right"])
 parser.add_argument("--grid_x", nargs=2, type=float, metavar=("MIN", "MAX"), required=True)
@@ -32,6 +39,16 @@ parser.add_argument("--grid_ny", type=int, required=True)
 parser.add_argument("--grid_repeats", type=int, default=8)
 parser.add_argument("--head_tilt", type=float, default=0.0, help="head_j_tilt 목표각 [rad]")
 parser.add_argument("--head_pan", type=float, default=0.0, help="head_j_pan 목표각 [rad]")
+parser.add_argument(
+    "--cam_offset_rot", nargs=4, type=float, default=DEFAULT_CAM_OFFSET_ROT_WXYZ,
+    metavar=("W", "X", "Y", "Z"),
+    help=(
+        "TiledCameraCfg.OffsetCfg rot(ros convention, w x y z). identity(1,0,0,0)는 광축이 "
+        "head_cam_view 링크의 +Z(=천장)를 향해 테이블을 못 본다(C2) — 기본값은 grasp_v2 "
+        "CAMERA_ROT 프리셋과 같은 계열의 비-identity 값. gate-1 프리뷰에서 값을 바꿔가며 "
+        "반복할 수 있게 CLI로 노출."
+    ),
+)
 parser.add_argument("--camera_info", type=str, default=None,
                     help="실기 camera_info YAML(K + width/height) — 지정 시 D435i 공칭값을 대체")
 parser.add_argument("--out", type=str, required=True, help="frames/<robot> 출력 디렉토리")
@@ -130,12 +147,20 @@ def _inject_semantic_tags(env_cfg) -> None:
         asset_cfg.semantic_tags = [("class", GRASPOBJ_SEMANTIC_CLASS)]
 
 
-def _build_camera_cfg(width: int, height: int, focal: float, aperture: float) -> TiledCameraCfg:
+def _build_camera_cfg(width: int, height: int, focal: float, aperture: float,
+                      offset_rot_wxyz: tuple[float, float, float, float]) -> TiledCameraCfg:
+    """offset_rot_wxyz 근거는 DEFAULT_CAM_OFFSET_ROT_WXYZ 주석(C2) — identity면 광축=천장.
+
+    depth_clipping_behavior="zero"(I4): FP는 depth==0을 무효값으로 취급한다(<0.001 필터).
+    기본값 "none"은 clipping range 밖 배경을 +inf로 남겨, FP의 무효값 필터를 그대로
+    통과해버려(inf < 0.001 는 False) 배경 픽셀이 유효 depth처럼 오염시킨다.
+    """
     return TiledCameraCfg(
         prim_path=HEAD_CAM_PRIM_PATH,
-        offset=TiledCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"),
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=tuple(offset_rot_wxyz), convention="ros"),
         data_types=["rgb", "distance_to_image_plane", "semantic_segmentation"],
         colorize_semantic_segmentation=False,
+        depth_clipping_behavior="zero",
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=focal,
             focus_distance=400.0,
@@ -360,7 +385,7 @@ def main() -> None:
     env = gym.make(task, cfg=env_cfg, render_mode=None)
     ge = env.unwrapped
 
-    camera_cfg = _build_camera_cfg(width, height, focal, aperture)
+    camera_cfg = _build_camera_cfg(width, height, focal, aperture, args_cli.cam_offset_rot)
     camera = _create_head_camera(ge, camera_cfg)
 
     # eval_fixed_spawn_local: env_ids로 인덱싱한 뒤 .to(self.device) 하므로 미리 .to(ge.device)
