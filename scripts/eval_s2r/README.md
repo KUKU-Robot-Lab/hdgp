@@ -163,19 +163,7 @@ isaaclab.sh -p scripts/eval_s2r/render_pass.py \
 - `--preview`: 중심 셀 1환경만 렌더 → `preview_env0.png` 저장 후 종료 (NPZ/메타 미생성)
 - **출력**: 프리뷰 이미지로 시야 확인 후 실제 `--head_tilt` 값 결정
 
-#### (1) 메시 추출
-
-```bash
-isaaclab.sh -p scripts/eval_s2r/export_meshes.py \
-  --object_map frames/right/object_map.json \
-  --out meshes/
-```
-
-- `--object_map`: Pass 1 렌더에서 생성된 object_map.json 경로
-- `--out`: 메시 출력 디렉토리 (각 물체가 `<id>.obj`로 저장됨)
-- `--kit`: USD pxr import 실패 시만 추가 (일반적으로 불필요)
-
-#### (2) 렌더 (전체 프레임)
+#### (1) 렌더 (전체 프레임)
 
 ```bash
 isaaclab.sh -p scripts/eval_s2r/render_pass.py \
@@ -195,6 +183,18 @@ isaaclab.sh -p scripts/eval_s2r/render_pass.py \
   - `object_map.json` (물체 ID → USD 경로 매핑)
   - `meta.json` (그리드 사양·메타데이터)
 
+#### (2) 메시 추출
+
+```bash
+isaaclab.sh -p scripts/eval_s2r/export_meshes.py \
+  --object_map frames/right/object_map.json \
+  --out meshes/
+```
+
+- `--object_map`: (1) 전체 렌더에서 생성된 object_map.json 경로
+- `--out`: 메시 출력 디렉토리 (각 물체가 `<id>.obj`로 저장됨)
+- `--kit`: USD pxr import 실패 시만 추가 (일반적으로 불필요)
+
 #### (3) FoundationPose 배치 (vision-3090 컨테이너)
 
 **로컬에서 먼저 rsync**:
@@ -213,17 +213,21 @@ python3 scripts/eval_s2r/fp_batch.py \
   --iteration 5
 ```
 
-- `--frames`: Pass 1 렌더 출력 디렉토리 경로
+- `--frames`: (1) 렌더 출력 디렉토리 경로
 - `--robot`: `left` 또는 `right`
-- `--mesh_dir`: (1)에서 추출한 메시 디렉토리
+- `--mesh_dir`: (2)에서 추출한 메시 디렉토리
 - `--out`: poses 출력 JSON 경로 (기본값 `poses/<robot>.json`)
 - `--iteration`: FoundationPose register() 정제 iteration 수 (기본값 5)
 - **출력**: `poses/right.json`
   ```json
   {
-    "env_0": {"ok": true, "T_cam_obj": [[4x4 행렬]]},
-    "env_1": {"ok": false, "reason": "mesh_missing"},
-    ...
+    "robot": "right",
+    "num_envs": 24,
+    "poses": {
+      "0": {"ok": true, "T_cam_obj": [[4x4 행렬]]},
+      "1": {"ok": false, "reason": "mesh_missing"},
+      ...
+    }
   }
   ```
 
@@ -283,10 +287,10 @@ python3 scripts/eval_s2r/delta_report.py \
 
 | 게이트 | 확인 항목 | 검증 방법 |
 |--------|----------|---------|
-| **G1: 렌더 프리뷰** | 헤드 카메라 시야·tilt 각도 적절 | (0) --preview 실행 → preview_env0.png 확인(사용자 시각) |
-| **G2: NPZ 무결성** | Pass 1 렌더 200장 생성 완료 | `ls frames/right/env_*.npz \| wc -l` → 예상 env 개수(grid_nx × grid_ny × grid_repeats) 확인 |
-| **G3: FP 성공률/오차** | FoundationPose 추정 품질 | poses.json의 ok=true 비율 > 90% + GT 대비 위치오차 < 5cm(메시 bbox 단위) |
-| **G4: 평가 + 델타** | camera_frozen 평가 완료 및 베이스라인과 비교 | heatmap_success.png 생성 + delta_success.csv 셀별 비교 |
+| **G1: 렌더 프리뷰** | 헤드 카메라 시야·tilt 각도 적절 | 단계 (0) --preview 실행 → preview_env0.png 확인(사용자 시각) |
+| **G2: NPZ 무결성** | 단계 (1) 렌더 200장 생성 완료 | `ls frames/right/env_*.npz \| wc -l` → 예상 env 개수(grid_nx × grid_ny × grid_repeats) 확인 |
+| **G3: FP 성공률/오차** | 단계 (3) FoundationPose 추정 품질 | poses.json의 ok=true 비율 > 90% + GT 대비 위치오차 < 5cm(메시 bbox 단위) |
+| **G4: 평가 + 델타** | 단계 (4)/(5) 평가 완료 및 베이스라인과 비교 | heatmap_success.png 생성 + delta_success.csv 셀별 비교 |
 
 **주의**: 게이트를 통과하지 못한 경우 다음 단계로 진행하지 마세요.
 
@@ -320,16 +324,22 @@ python3 scripts/eval_s2r/delta_report.py \
 #### meta.json (Pass 1 렌더 메타)
 ```json
 {
+  "robot": "right",
+  "num_envs": 24,
   "grid": {
     "x_min": 0.21, "x_max": 0.33, "nx": 3,
     "y_min": -0.16, "y_max": 0.02, "ny": 3,
     "repeats": 8
   },
-  "robot": "right",
   "head_tilt": -0.3,
   "head_pan": 0.0,
-  "camera_K": [[...], [...], [...]],
-  "timestamp": "2026-08-04T21:30:00"
+  "T_local_cam": {
+    "0": [[...], [...], [...], [...]],
+    "1": [[...], [...], [...], [...]],
+    ...
+  },
+  "git_sha": "a1b2c3d...",
+  "k_source": "nominal"
 }
 ```
 
