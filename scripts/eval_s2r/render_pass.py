@@ -108,7 +108,12 @@ ENV_CFG_MODULE_BY_ROBOT = {
 # head_base -> head_mid(head_j_pan) -> head_camera(head_j_tilt) -> head_cam_view(고정) 체인이
 # 동일 이름으로 존재함을 확인(assets/robot/{openarm_tesollo_sensor_rl,openarm_tesollo_bi_rl}/*.urdf
 # 918행대/1393행대). 로봇 prim_path도 둘 다 "/World/envs/env_.*/Robot" 이라 prim_path 하나로 공용.
-HEAD_CAM_PRIM_PATH = "/World/envs/env_.*/Robot/head_cam_view/Camera"
+# ⚠ 2026-08-04 게이트1 실측: URDF→USD 변환에서 fixed-joint 자식 head_cam_view 링크가
+# 병합되어 USD에 prim이 없음(런타임 "Unable to find source prim path" 에러로 확인).
+# → 부모 head_camera(틸트 링크)에 부착하고, head_j_cam_view fixed joint의 origin
+#   xyz=(0.0147, 0.0145, 0.0365), rpy=0 (URDF :1330-1334)을 OffsetCfg pos로 보정한다.
+HEAD_CAM_PRIM_PATH = "/World/envs/env_.*/Robot/head_camera/Camera"
+HEAD_CAM_VIEW_OFFSET_POS = (0.0147, 0.0145, 0.0365)  # head_camera → head_cam_view (URDF fixed origin)
 GRASPOBJ_SEMANTIC_CLASS = "graspobj"
 
 # D435i 공칭 intrinsics — grasp_right_preset.py:352-359 상수를 값만 복제(env import 회피, 소스 주석).
@@ -157,7 +162,7 @@ def _build_camera_cfg(width: int, height: int, focal: float, aperture: float,
     """
     return TiledCameraCfg(
         prim_path=HEAD_CAM_PRIM_PATH,
-        offset=TiledCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=tuple(offset_rot_wxyz), convention="ros"),
+        offset=TiledCameraCfg.OffsetCfg(pos=HEAD_CAM_VIEW_OFFSET_POS, rot=tuple(offset_rot_wxyz), convention="ros"),
         data_types=["rgb", "distance_to_image_plane", "semantic_segmentation"],
         colorize_semantic_segmentation=False,
         depth_clipping_behavior="zero",
