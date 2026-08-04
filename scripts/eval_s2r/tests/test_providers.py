@@ -56,6 +56,25 @@ class TestStateFrozenProvider:
         env.object_pos[0, 0] = 99.0  # 원본 in-place 변경이 override에 새지 않아야 함
         assert float(p.get_override(env)[0, 0]) == pytest.approx(0.3)
 
+    def test_partial_first_reset_then_get_override_raises(self):
+        """부분 first reset (env_ids 미포함 env가 있음) 후 get_override → RuntimeError."""
+        env = FakeEnv([[0.3, 0.0, 0.1], [0.2, -0.1, 0.1]])
+        p = StateFrozenProvider()
+        p.on_reset(env, torch.tensor([0]))  # env_1만 리셋하지 않음
+        with pytest.raises(RuntimeError, match="some envs never reset"):
+            p.get_override(env)
+
+    def test_returned_tensor_mutation_does_not_corrupt_buffer(self):
+        """반환된 텐서를 in-place 수정해도 내부 buffer는 불변."""
+        env = FakeEnv([[0.3, 0.0, 0.1]])
+        p = StateFrozenProvider()
+        p.on_reset(env, torch.tensor([0]))
+        ov = p.get_override(env)
+        ov[0, 0] = 123.0  # 반환된 복사본을 in-place 수정
+        # 다시 get_override → 여전히 원본값
+        ov2 = p.get_override(env)
+        assert float(ov2[0, 0]) == pytest.approx(0.3)
+
 
 class TestFactory:
     def test_names(self):
