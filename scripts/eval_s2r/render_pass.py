@@ -278,7 +278,8 @@ def _resolve_semantic_id(info: dict, class_name: str) -> int | None:
 
 
 def _capture_env(ge, camera: TiledCamera, env_idx: int, graspobj_id: int | None,
-                 K: np.ndarray, cells: list[tuple[float, float]], repeats: int) -> dict:
+                 K: np.ndarray, cells: list[tuple[float, float]], repeats: int,
+                 head_body_idx: int, offset_rot_wxyz: tuple) -> dict:
     """env_idx 하나의 npz payload 구성. 키는 스펙 §4.1 표 + `mask_pixels`(리뷰 F2, 추가 키)."""
     rgb = camera.data.output["rgb"][env_idx].detach().cpu().numpy().astype(np.uint8)
     depth = camera.data.output["distance_to_image_plane"][env_idx, ..., 0].detach().cpu().numpy().astype(np.float32)
@@ -286,11 +287,17 @@ def _capture_env(ge, camera: TiledCamera, env_idx: int, graspobj_id: int | None,
     mask = (seg == graspobj_id) if graspobj_id is not None else np.zeros(seg.shape, dtype=bool)
 
     env_origin = ge.scene.env_origins[env_idx].detach().cpu().numpy()
-    cam_pos_w = camera.data.pos_w[env_idx].detach().cpu().numpy()
-    cam_quat_ros = camera.data.quat_w_ros[env_idx].detach().cpu().numpy()  # (w,x,y,z)
+    # ⚠ 게이트2 실측(2026-08-04): 후행 생성 TiledCamera의 camera.data.pos_w/quat_w_ros가
+    # tilt 명령을 반영하지 않는 stale pose를 반환(전 env 동일·무틸트 — 재투영 median 347px로 발각).
+    # 렌더 자체는 tilt를 반영하므로 pose만 로봇 FK(body pose, 물리 권위값)에서 직접 합성한다:
+    # T_local_cam = T_local_link(head_camera) @ T_offset(head_j_cam_view 고정 origin + ros 광학 회전).
+    link_pos_w = ge.robot.data.body_pos_w[env_idx, head_body_idx].detach().cpu().numpy()
+    link_quat_w = ge.robot.data.body_quat_w[env_idx, head_body_idx].detach().cpu().numpy()  # (w,x,y,z)
+    R_link = _quat_to_rot(link_quat_w)
+    R_off = _quat_to_rot(np.asarray(offset_rot_wxyz, dtype=np.float64))
     T_local_cam = np.eye(4, dtype=np.float64)
-    T_local_cam[:3, :3] = _quat_to_rot(cam_quat_ros)
-    T_local_cam[:3, 3] = cam_pos_w - env_origin
+    T_local_cam[:3, :3] = R_link @ R_off
+    T_local_cam[:3, 3] = (link_pos_w - env_origin) + R_link @ np.asarray(HEAD_CAM_VIEW_OFFSET_POS)
 
     # object_pos는 _get_dones()(→_compute_intermediate_values) 안에서만 갱신되는데(env.step() 경로),
     # 이 스크립트는 env.step()을 한 번도 호출하지 않는다 — 그래서 stale일 수 있는 ge.object_pos 대신
@@ -410,6 +417,12 @@ def main() -> None:
 
     seg_info = camera.data.info.get("semantic_segmentation", {})
     graspobj_id = _resolve_semantic_id(seg_info, GRASPOBJ_SEMANTIC_CLASS)
+
+    # 카메라 FK 합성용 head_camera 링크 인덱스 (센서 pose stale 문제 회피 — _capture_env 주석 참조)
+    _head_ids, _head_names = ge.robot.find_bodies(["head_camera"])
+    if len(_head_ids) != 1:
+        raise RuntimeError(f"head_camera 링크를 찾지 못함: {_head_names}")
+    head_body_idx = int(_head_ids[0])
     if graspobj_id is None:
         id_to_labels = seg_info.get("idToLabels", seg_info) if isinstance(seg_info, dict) else seg_info
         if args_cli.preview:
@@ -431,7 +444,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if args_cli.preview:
-        frame = _capture_env(ge, camera, 0, graspobj_id, K, local_cells, repeats)
+        frame = _capture_env(ge, camera, 0, graspobj_id, K, local_cells, repeats,
+                             head_body_idx, tuple(args_cli.cam_offset_rot))
         _save_preview(frame, out_dir / "preview_env0.png")
         print(f"[PREVIEW] K=\n{K}")
         print(f"[PREVIEW] head_tilt={args_cli.head_tilt} head_pan={args_cli.head_pan} "
@@ -444,7 +458,8 @@ def main() -> None:
     T_local_cam_all: dict[str, list] = {}
     zero_mask_envs: list[int] = []
     for i in range(ge.num_envs):
-        frame = _capture_env(ge, camera, i, graspobj_id, K, local_cells, repeats)
+        frame = _capture_env(ge, camera, i, graspobj_id, K, local_cells, repeats,
+                             head_body_idx, tuple(args_cli.cam_offset_rot))
         if frame["mask_pixels"] == 0:
             zero_mask_envs.append(i)
         np.savez(out_dir / f"env_{i}.npz", **frame)
