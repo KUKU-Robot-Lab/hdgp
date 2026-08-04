@@ -104,7 +104,7 @@ class CameraFileProvider:
                 f"num_envs mismatch: meta={num_envs} poses={poses_data['num_envs']}"
             )
 
-        self.expected_grid: dict = meta["grid"]
+        self.expected_grid: dict = dict(meta["grid"])  # 방어 복사: 파싱된 JSON dict 원본을 노출하지 않음
 
         T_local_cam_by_env = meta["T_local_cam"]
         poses_by_env = poses_data["poses"]
@@ -133,7 +133,13 @@ class CameraFileProvider:
                 continue
 
             T_local_cam = np.asarray(T_local_cam_by_env[key], dtype=float)
-            buf[env_id] = compose_local_pose(T_local_cam, T_cam_obj).astype(np.float32)
+            try:
+                buf[env_id] = compose_local_pose(T_local_cam, T_cam_obj).astype(np.float32)
+            except ValueError:
+                # 유한하지만 회전부가 비직교(퇴화한 FoundationPose 출력 등) → 개별 env만 강등,
+                # 다른 env 구성을 막지 않는다 (클래스 계약: 생성자는 예외 없이 표시만 한다)
+                failed_envs.add(env_id)
+                fail_reasons[env_id] = "invalid_rotation"
 
         self.failed_envs = failed_envs
         self.fail_reasons = fail_reasons

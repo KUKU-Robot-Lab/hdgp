@@ -83,6 +83,42 @@ class TestCameraFileProvider:
         ov = provider.get_override(env=None)
         assert torch.isnan(ov[2]).all()
 
+    def test_invalid_rotation_env_demoted_not_crashing(self, tmp_path):
+        # 유한하지만 회전부가 비직교(스케일-2 R) — 퇴화한 FoundationPose 출력 가능성
+        bad_T_cam_obj = [
+            [2.0, 0.0, 0.0, 0.1],
+            [0.0, 2.0, 0.0, 0.02],
+            [0.0, 0.0, 2.0, 0.3],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+        meta_path = _write_meta(tmp_path)
+        poses = {
+            "0": {"ok": True, "T_cam_obj": _T_CAM_OBJ_0},
+            "1": {"ok": False, "reason": "register_failed"},
+            "2": {"ok": True, "T_cam_obj": bad_T_cam_obj},
+        }
+        poses_path = tmp_path / "poses.json"
+        poses_path.write_text(json.dumps({"robot": "right", "num_envs": 3, "poses": poses}))
+
+        provider = CameraFileProvider(str(poses_path), str(meta_path))  # 생성이 예외 없이 성공해야 함
+
+        assert 2 in provider.failed_envs
+        assert provider.fail_reasons[2] == "invalid_rotation"
+        ov = provider.get_override(env=None)
+        assert torch.isnan(ov[2]).all()
+        # 다른 env(0)는 정상 계산되어 있어야 함(전체 생성 실패로 오염되지 않음)
+        expected0 = compose_local_pose(np.array(_T_LOCAL_CAM_0), np.array(_T_CAM_OBJ_0))
+        assert torch.allclose(ov[0], torch.tensor(expected0, dtype=torch.float32), atol=1e-6)
+
+    def test_expected_grid_is_defensive_copy(self, tmp_path):
+        meta_path = _write_meta(tmp_path)
+        poses_path = _write_poses(tmp_path)
+        provider = CameraFileProvider(str(poses_path), str(meta_path))
+        provider.expected_grid["x_min"] = 999.0  # 반환된 dict를 in-place 수정
+        # 동일 파일로 새 provider를 구성해도 오염되지 않아야 함(내부 파싱 dict를 그대로 노출하지 않음)
+        provider2 = CameraFileProvider(str(poses_path), str(meta_path))
+        assert provider2.expected_grid["x_min"] == _GRID["x_min"]
+
     def test_num_envs_mismatch_raises(self, tmp_path):
         meta_path = _write_meta(tmp_path, num_envs=3)
         poses_path = _write_poses(tmp_path, num_envs=4)
