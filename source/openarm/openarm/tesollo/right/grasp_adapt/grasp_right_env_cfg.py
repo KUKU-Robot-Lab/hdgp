@@ -348,8 +348,9 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             gpu_found_lost_pairs_capacity=16 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=32 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=16 * 1024 * 1024,
-            gpu_max_rigid_patch_count=2**22,
-            gpu_max_rigid_contact_count=2**23,
+            # 16384서 contact 9.9M·patch 7.85M 요구(벤치 실측) → 24576 헤드룸 위해 2^24(16.8M).
+            gpu_max_rigid_patch_count=2**24,
+            gpu_max_rigid_contact_count=2**24,
             gpu_collision_stack_size=2**28,
             gpu_max_num_partitions=8,
             friction_correlation_distance=0.00625,
