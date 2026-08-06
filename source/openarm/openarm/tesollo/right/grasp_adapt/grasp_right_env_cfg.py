@@ -627,14 +627,19 @@ class GraspRightEnvCfgDeformable(GraspRightEnvCfgNoActorMass):
 
     # -------------------------------------------------------------------
     # 리워드 teardown (2026-08-04): 핵심만 남기고 파생항 제거 → secure/drop/slip 재설계 기반.
-    #   - approach_tilt_penalty / stabilize / success_bonus 제거(0): 지금 단계 불필요.
+    #   - approach_tilt_penalty / stabilize 제거(0): 지금 단계 불필요.
     #   - r_damage는 grasp 하위로(env: hold_gate → full_tip_contact 게이트) — cfg는 weight 유지.
-    #   - success_bonus는 전체 리워드 정립 후 "최종 태스크 성공"으로 재설정 예정.
     #   - secure/drop/slip weight는 미변경(함수 재설계 대기).
+    # v2 (2026-08-07): 성공 funnel 진단 — 병목=10cm 미달(평균 7cm, 32%만 도달). tilt 4°(통과)·
+    #   precision 0.87(OK). 원인=4cm 위로 끄는 힘 부족(lift_reward는 4cm clamp 포화, dense 견인은
+    #   lift_height_bonus 1.5뿐인데 secure 10에 눌림) + success_bonus 0(완주 보상 없음).
+    #   → success_bonus 재설정(sparse 완주보상 4.0) + lift_height_bonus 강화(dense 견인 1.5→2.5,
+    #   4.0은 lift-지배 이력이라 보수적). 10cm 상승엔 더 firm 파지 필요 → adaptation gradation 시너지.
     # -------------------------------------------------------------------
     approach_tilt_penalty_weight: float = 0.0
     stabilize_weight: float = 0.0
-    success_bonus_weight: float = 0.0
+    success_bonus_weight: float = 4.0        # 0→4.0: 10cm+upright+precision+intact 완주 보상 재설정
+    lift_height_bonus_weight: float = 2.5    # 1.5→2.5: 4→10cm dense 견인 강화(4.0은 lift-지배 위험)
 
     # -------------------------------------------------------------------
     # damage 신호 단위 전환: 힘 proxy(N) → 실제 패널 최대 변형(deg).
