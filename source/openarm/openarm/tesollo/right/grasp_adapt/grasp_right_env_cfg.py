@@ -341,10 +341,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         render_interval=2,
         physx=sim_utils.PhysxCfg(
             bounce_threshold_velocity=0.01,
-            gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
-            gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
+            # num_envs 확장(8192→16384+) 시 deform 컵(12패널×손가락) 접촉쌍이 기본 버퍼 초과 →
+            # PhysX foundLostPairsCapacity 등 GPU 접촉버퍼 상향(2026-08-06 벤치 실측: 16384서
+            # foundLostPairsCapacity 7.68M 요구, 미설정=기본값이라 부팅 실패). 24576 헤드룸 포함.
+            # 8192에도 무해(큰 버퍼는 안전), VRAM 소폭↑(여유 충분).
+            gpu_found_lost_pairs_capacity=16 * 1024 * 1024,
+            gpu_found_lost_aggregate_pairs_capacity=32 * 1024 * 1024,
+            gpu_total_aggregate_pairs_capacity=16 * 1024 * 1024,
             gpu_max_rigid_patch_count=2**22,
-            gpu_max_rigid_contact_count=2**22,
+            gpu_max_rigid_contact_count=2**23,
             gpu_collision_stack_size=2**28,
             gpu_max_num_partitions=8,
             friction_correlation_distance=0.00625,

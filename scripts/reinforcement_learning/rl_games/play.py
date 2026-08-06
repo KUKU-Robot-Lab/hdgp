@@ -95,6 +95,10 @@ parser.add_argument(
     "--cam_lookat", type=str, default=None,
     help="Viewer camera lookat 'x,y,z' (env-local).",
 )
+parser.add_argument(
+    "--view_env_index", type=int, default=0,
+    help="Viewer/비디오 근접뷰가 따라갈 env index (env-local 카메라 기준). 물체별 개별 영상 촬영용.",
+)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -423,8 +427,8 @@ def _apply_playback_env_overrides(env_cfg) -> None:
         if hasattr(env_cfg.viewer, "origin_type"):
             env_cfg.viewer.origin_type = "env"
         if hasattr(env_cfg.viewer, "env_index"):
-            env_cfg.viewer.env_index = 0
-        print(f"[INFO] viewer camera override: eye={cam_eye} lookat={cam_lookat} (origin=env0)")
+            env_cfg.viewer.env_index = args_cli.view_env_index
+        print(f"[INFO] viewer camera override: eye={cam_eye} lookat={cam_lookat} (origin=env{args_cli.view_env_index})")
 
     if args_cli.disable_adr:
         disabled_attrs = []
