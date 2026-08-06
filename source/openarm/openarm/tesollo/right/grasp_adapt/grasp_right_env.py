@@ -1165,10 +1165,10 @@ class GraspRightEnv(DirectRLEnv):
             ~self.lift_ready_latched_buf
             & (self.grasp_ready_hold_buf >= self.cfg.grasp_ready_hold_steps)
         )
-        if just_latched.any():
-            self.contacts_at_lift_start_buf[just_latched] = num_tip_contacts[just_latched].float()
-            self.palm_at_lift_start_buf[just_latched] = palm_contact[just_latched]
-            self.grasp_tilt_at_lift_start_buf[just_latched] = cup_tilt_deg[just_latched]
+        # util: .any() GPU→CPU 동기화 제거 — 마스크 대입은 all-False여도 안전(빈 연산)
+        self.contacts_at_lift_start_buf[just_latched] = num_tip_contacts[just_latched].float()
+        self.palm_at_lift_start_buf[just_latched] = palm_contact[just_latched]
+        self.grasp_tilt_at_lift_start_buf[just_latched] = cup_tilt_deg[just_latched]
         self.lift_ready_latched_buf |= just_latched
         self.lift_started_buf |= self.lift_ready_latched_buf
         self.is_lift_phase.copy_(self.lift_ready_latched_buf)
@@ -1563,46 +1563,47 @@ class GraspRightEnv(DirectRLEnv):
         self._apply_real2sim_actuator_randomization(env_ids)
 
         n = len(env_ids)
-        started_n = int(had_started.sum().item())
+        # 성능(util): per-env .item()가 done env당 ~11개 GPU→CPU 동기화를 만들어 매 스텝
+        # 수백 sync → GPU 스톨(util 등락 주원인). 필요한 버퍼를 텐서당 1회 .cpu()로 배치 전송
+        # 후 CPU numpy로 루프(sync 0). 평가/로깅 bookkeeping이라 학습 무영향.
+        had_np = had_started.cpu().numpy()
+        succ_np = self.episode_success_buf[env_ids].cpu().numpy()
+        started_n = int(had_np.sum())
 
         # ---- episode 성공 집계 ----
         self._total_episodes += started_n
         if started_n > 0:
-            self._successful_episodes += int(
-                (self.episode_success_buf[env_ids] & had_started).sum().item()
-            )
+            self._successful_episodes += int((succ_np & had_np).sum())
 
-        # 6.2 & 6.3: moving window + per-bin 업데이트
-        for i, env_id in enumerate(env_ids):
-            if not bool(had_started[i].item()):
-                continue
-            success_val = int(bool(self.episode_success_buf[env_id].item()))
-            # 6.2: deque에 추가 (maxlen으로 자동 oldest 제거)
-            self._success_window.append(success_val)
-            # 6.3: bead level (0~3) 판별 — _bead_mass_normalized는 아직 이전 에피소드 값
-            lvl = int(round(self._bead_mass_normalized[env_id].item() * 3.0))
-            lvl = min(max(lvl, 0), 3)
-            self._total_episodes_bin[lvl] += 1
-            self._successful_episodes_bin[lvl] += success_val
+            # 배치 CPU 전송(텐서당 1회) — per-env .item() 동기화 폭탄 제거
+            bead_np = self._bead_mass_normalized[env_ids].cpu().numpy()
+            contacts_np = self.contacts_at_lift_start_buf[env_ids].cpu().numpy()
+            palm_np = self.palm_at_lift_start_buf[env_ids].cpu().numpy()
+            tilt_np = self.grasp_tilt_at_lift_start_buf[env_ids].cpu().numpy()
+            liftst_np = self.lift_started_buf[env_ids].cpu().numpy()
+            liftsucc_np = self.episode_lift_success_buf[env_ids].cpu().numpy()
+            stabsucc_np = self.episode_stabilize_success_buf[env_ids].cpu().numpy()
 
-        # Eval 기록 저장
-        for i, env_id in enumerate(env_ids):
-            if not bool(had_started[i].item()):
-                continue
-
-            bead_count = int(round(self._bead_mass_normalized[env_id].item() * self.cfg.num_beads))
-
-            self._eval_records.append({
-                "bead_count": bead_count,
-                "bead_mass": self._bead_mass_normalized[env_id].item(),
-                "contacts_at_lift_start": self.contacts_at_lift_start_buf[env_id].item(),
-                "palm_at_lift_start": self.palm_at_lift_start_buf[env_id].item(),
-                "grasp_cup_tilt_deg": self.grasp_tilt_at_lift_start_buf[env_id].item(),
-                "lift_started": self.lift_started_buf[env_id].item(),
-                "lift_success": self.episode_lift_success_buf[env_id].item(),
-                "stabilize_success": self.episode_stabilize_success_buf[env_id].item(),
-                "success": self.episode_success_buf[env_id].item(),
-            })
+            # moving window + per-bin + eval 기록 (CPU numpy 루프, GPU sync 없음)
+            for i in range(n):
+                if not bool(had_np[i]):
+                    continue
+                success_val = int(bool(succ_np[i]))
+                self._success_window.append(success_val)
+                lvl = min(max(int(round(float(bead_np[i]) * 3.0)), 0), 3)
+                self._total_episodes_bin[lvl] += 1
+                self._successful_episodes_bin[lvl] += success_val
+                self._eval_records.append({
+                    "bead_count": int(round(float(bead_np[i]) * self.cfg.num_beads)),
+                    "bead_mass": float(bead_np[i]),
+                    "contacts_at_lift_start": float(contacts_np[i]),
+                    "palm_at_lift_start": float(palm_np[i]),
+                    "grasp_cup_tilt_deg": float(tilt_np[i]),
+                    "lift_started": float(liftst_np[i]),
+                    "lift_success": float(liftsucc_np[i]),
+                    "stabilize_success": float(stabsucc_np[i]),
+                    "success": float(succ_np[i]),
+                })
 
         self.episode_success_buf[env_ids] = False
         self.episode_lift_success_buf[env_ids] = False
