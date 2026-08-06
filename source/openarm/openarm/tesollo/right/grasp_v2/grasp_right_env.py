@@ -899,8 +899,8 @@ class GraspRightEnv(DirectRLEnv):
         # ---- settle 종료 시 안착 스냅샷 → object_height 로깅 baseline 확정 ----
         # (goal 은 DEXTRAH식 고정 절대점이라 갱신 없음)
         snap = self.episode_length_buf == int(self.cfg.settle_steps)
-        if snap.any():
-            self.object_init_pos[snap] = self.object_pos[snap]
+        # util: .any() 동기화 제거 — 마스크 대입은 빈 마스크도 안전(빈 연산)
+        self.object_init_pos[snap] = self.object_pos[snap]
 
         # [FP 배포 검증] settle 까지는 live pose 추종(물체 낙하 안착 중), 이후 고정.
         # 정적 물체라 settle 후 held == 실제 pose(grasp 로 들어올리기 전까지). = FP lock.

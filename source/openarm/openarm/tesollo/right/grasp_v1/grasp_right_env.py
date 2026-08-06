@@ -809,12 +809,12 @@ class GraspRightEnv(DirectRLEnv):
         # ---- Lift-wait phase: Fabrics arm 상태 동결 ----
         # scripted arm 제어 중 Fabrics integrator 발산 방지
         freeze_mask = self.is_lift_phase
-        if freeze_mask.any():
-            self.fabric_q[freeze_mask, :NUM_ARM_DOF] = (
-                self.robot.data.joint_pos[freeze_mask][:, self.arm_dof_indices]
-            )
-            self.fabric_qd[freeze_mask, :NUM_ARM_DOF].zero_()
-            self.fabric_qdd[freeze_mask, :NUM_ARM_DOF].zero_()
+        # util: .any() 동기화 제거 — 마스크 대입은 빈 마스크도 안전(빈 연산)
+        self.fabric_q[freeze_mask, :NUM_ARM_DOF] = (
+            self.robot.data.joint_pos[freeze_mask][:, self.arm_dof_indices]
+        )
+        self.fabric_qd[freeze_mask, :NUM_ARM_DOF].zero_()
+        self.fabric_qdd[freeze_mask, :NUM_ARM_DOF].zero_()
 
     def _apply_action(self) -> None:
         is_lift       = self.is_lift_phase        # (N,) bool
@@ -1187,12 +1187,15 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["task/wrap_finger_count"] = _wrap_fingers.float().mean()
         self.extras["task/lift_ready_rate"] = self.is_lift_phase.float().mean()
         self.extras["task/five_tip_contact_rate"] = full_tip_contact.mean()
-        self.extras["task/prelift_five_tip_contact_rate"] = full_tip_contact[
-            ~self.is_lift_phase
-        ].mean() if (~self.is_lift_phase).any() else torch.zeros((), device=self.device)
-        self.extras["task/lift_five_tip_contact_rate"] = full_tip_contact[
-            self.is_lift_phase
-        ].mean() if self.is_lift_phase.any() else torch.zeros((), device=self.device)
+        # util: .any() GPU→CPU 동기화 제거 → nan-safe 마스크 평균(빈 마스크는 clamp로 0)
+        _prelift_m = (~self.is_lift_phase).float()
+        self.extras["task/prelift_five_tip_contact_rate"] = (
+            (full_tip_contact.float() * _prelift_m).sum() / _prelift_m.sum().clamp(min=1.0)
+        )
+        _lift_m = self.is_lift_phase.float()
+        self.extras["task/lift_five_tip_contact_rate"] = (
+            (full_tip_contact.float() * _lift_m).sum() / _lift_m.sum().clamp(min=1.0)
+        )
         self.extras["cup/height_delta"] = cup_height_delta.mean()
         self.extras["cup/tilt_deg"] = cup_tilt_deg.mean()
         self.extras["contact/count"] = self.num_contacts_buf.float().mean()

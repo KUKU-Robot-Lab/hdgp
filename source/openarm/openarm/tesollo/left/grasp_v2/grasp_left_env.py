@@ -886,8 +886,8 @@ class GraspLeftEnv(DirectRLEnv):
         # ---- settle 종료 시 안착 스냅샷 → object_height 로깅 baseline 확정 ----
         # (goal 은 DEXTRAH식 고정 절대점이라 갱신 없음)
         snap = self.episode_length_buf == int(self.cfg.settle_steps)
-        if snap.any():
-            self.object_init_pos[snap] = self.object_pos[snap]
+        # util: .any() 동기화 제거 — 마스크 대입은 빈 마스크도 안전(빈 연산)
+        self.object_init_pos[snap] = self.object_pos[snap]
 
         # ---- Fabrics arm 제어: palm 절대 pose (DEXTRAH 원본 구조) ----
         # action[0:6] ∈ [-1,1] 을 palm workspace 박스로 직접 스케일한다.
