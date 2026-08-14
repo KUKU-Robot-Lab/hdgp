@@ -921,6 +921,11 @@ class PourRightEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
         self.scene.clone_environments(copy_from_source=True)
+        # [DR] scale_set(MultiAsset)은 replicate_physics=False → env 간 충돌 필터가 자동
+        #   적용되지 않아 broadphase pair 폭증(수억, foundLostPairsCapacity 에러+메모리 폭증).
+        #   env 간 충돌을 수동 필터하고 ground 와의 충돌만 유지한다.
+        if not self.cfg.scene.replicate_physics:
+            self.scene.filter_collisions(global_prim_paths=["/World/ground"])
 
     # ------------------------------------------------------------------
     # Fabrics collision box 파싱 (시각화 전용)
