@@ -83,6 +83,7 @@ import os
 from pathlib import Path
 import re
 import torch
+import yaml
 
 from rl_games.common import env_configurations, vecenv
 from rl_games.common import a2c_common
@@ -222,9 +223,18 @@ def _restore_run_cfg_if_available(env_cfg, agent_cfg: dict, *, resume_path: str,
     agent_yaml = os.path.join(params_dir, "agent.yaml")
 
     if os.path.exists(env_yaml):
-        logged_env = _rebase_logged_paths(load_yaml(env_yaml), workspace_root=workspace_root)
-        _apply_logged_env_cfg(env_cfg, logged_env)
-        print(f"[INFO] Restored env cfg from: {env_yaml}")
+        # EventCfg의 SceneEntityCfg(slice)가 !!python/object/apply:builtins.slice 로
+        # 직렬화되어 full_load 가 실패할 수 있다 (grasp_v1 multiasset DR 이후 env.yaml).
+        # 복원은 편의 기능이므로 파싱 실패 시 현재 소스 cfg 로 graceful skip.
+        try:
+            logged_env = _rebase_logged_paths(load_yaml(env_yaml), workspace_root=workspace_root)
+            _apply_logged_env_cfg(env_cfg, logged_env)
+            print(f"[INFO] Restored env cfg from: {env_yaml}")
+        except yaml.YAMLError as exc:
+            print(
+                f"[WARN] Run env cfg unparsable ({type(exc).__name__}); "
+                f"using current source cfg: {env_yaml}"
+            )
     else:
         print(f"[WARN] Run env cfg not found; using current source cfg: {env_yaml}")
 

@@ -212,6 +212,18 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   (narrow/wide opening). inner_radius만 s배 조정(opening_pos_b는 xy=0이라 무변).
     #   left_target_cup_scale과 곱으로 조합 가능. 학습(1.0)은 무영향.
     left_target_cup_scale_xy: float = 1.0
+    # [DR 재학습] 받는 컵 스케일 세트 — 비어있지 않으면 env_id % K 결정론 배정
+    #   (MultiAssetSpawnerCfg, replicate_physics=False 자동)으로 per-env 다른 스케일 컵을
+    #   스폰하고 판정기하(inner_radius/inside_z/mouth_z/opening_pos)를 per-env 텐서로 조정.
+    #   학습 시 receiver geometry DR → cup-scale 일반화창 확장 목적. ()=기존 단일 스케일.
+    left_target_cup_scale_set: tuple[float, ...] = ()
+    # [DR 재학습] source 컵 스케일 세트 — grasp_v1 cup 스펙과 동일 순서 권장
+    #   (예: (0.85, 1.0, 1.15, 1.30) = grasp_v1 spec 0..3). env_id % K 결정론 배정(MultiAsset)
+    #   + warm state의 object_spec_idx 를 env 스케일과 매칭해 샘플(파지자세-컵크기 정합).
+    #   bead-in-source 판정만 per-env 스케일; 리워드/pour_point 기준은 nominal 유지(크기 무관 설계).
+    source_cup_scale_set: tuple[float, ...] = ()
+    # scale_set[i] ↔ grasp_v1 warm spec idx 매핑 (기본: cup_big 4종 = 0..3)
+    source_warm_spec_map: tuple[int, ...] = (0, 1, 2, 3)
     source_inner_radius:  float = 0.041   # 컵 내부 반경
     source_outer_radius:  float = 0.045   # 컵 외부 반경 (최하단 림 점 계산용)
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
@@ -601,6 +613,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     warm_state_paths: tuple[str, ...] = (
         _os.path.normpath(_os.path.join(_HDGP_ROOT, "data", "grasp_warm_tesollo.hdf5")),
     )
+    # [grasp_v1 재연결] multiasset 태깅 캐시에서 사용할 물체 스펙 인덱스
+    #   (grasp_v1 _ACTIVE_OBJECT_SPECS 순서; 1 = cup_big_s100 = pour source 컵과 동일 스케일).
+    #   구캐시(태깅 없음)는 필터가 자동 무시됨. 빈 튜플 = 필터 없음.
+    warm_object_spec_filter: tuple[int, ...] = (1,)
     freeze_grasp_hand_during_episode: bool = True
     # 최상위 비드 z=0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)

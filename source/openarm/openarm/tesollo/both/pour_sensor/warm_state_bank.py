@@ -60,6 +60,7 @@ class PourWarmStateBank:
     cup_pos_local: torch.Tensor        # (N, 3)
     cup_quat_wxyz: torch.Tensor        # (N, 4)
     num_contacts: torch.Tensor         # (N,)
+    object_spec_idx: torch.Tensor      # (N,) long — grasp_v1 물체 스펙 (-1=미태깅 구캐시)
     source_meta: dict[str, float]
     source_paths: tuple[str, ...]
 
@@ -78,8 +79,14 @@ class PourWarmStateBank:
         device: str | torch.device = "cpu",
         expected_object_spawn_z: float | None = None,
         expected_palm_bounds: tuple[float, float, float, float, float, float] | None = None,
+        object_spec_filter: tuple[int, ...] | None = None,
     ) -> "PourWarmStateBank":
-        """HDF5 경로들을 로드/병합. spawn z 불일치는 hard fail, workspace 는 warn."""
+        """HDF5 경로들을 로드/병합. spawn z 불일치는 hard fail, workspace 는 warn.
+
+        object_spec_filter: grasp_v1 multiasset 태깅(`object_spec_idx`)이 있는 캐시에서
+        지정 물체 인덱스만 선택 (예: (1,)=cup_big_s100). 태깅이 없는 구캐시(전부 -1)는
+        필터를 적용하지 않고 전체 통과한다 (하위호환).
+        """
         resolved = _resolve_paths(paths)
         if not resolved:
             raise ValueError("warm_state_paths is empty; provide at least one HDF5 path.")
@@ -87,8 +94,21 @@ class PourWarmStateBank:
         chunks = [_load_path(path) for path in resolved]
         merged: dict[str, np.ndarray] = {
             key: np.concatenate([chunk[key] for chunk in chunks], axis=0)
-            for key in _DATASETS
+            for key in (*_DATASETS, "object_spec_idx")
         }
+        spec_idx = merged["object_spec_idx"]
+        if object_spec_filter is not None and (spec_idx >= 0).any():
+            keep = np.isin(spec_idx, np.asarray(object_spec_filter, dtype=spec_idx.dtype))
+            if not keep.any():
+                raise ValueError(
+                    f"object_spec_filter={object_spec_filter} matched 0 warm states "
+                    f"(available spec ids: {sorted(set(spec_idx.tolist()))})"
+                )
+            merged = {key: value[keep] for key, value in merged.items()}
+            print(
+                f"[PourWarmStateBank] object_spec_filter={object_spec_filter}: "
+                f"{int(keep.sum())}/{keep.size} states kept"
+            )
         for key, value in merged.items():
             if not np.isfinite(value).all():
                 raise ValueError(f"warm-state '{key}' contains NaN or Inf")
@@ -116,6 +136,9 @@ class PourWarmStateBank:
             cup_pos_local=_to_t(merged["cup_pos_local"], device),
             cup_quat_wxyz=_to_t(merged["cup_quat_wxyz"], device),
             num_contacts=_to_t(merged["num_contacts"], device),
+            object_spec_idx=torch.as_tensor(
+                merged["object_spec_idx"], dtype=torch.long, device=device
+            ),
             source_meta={k: float(v) for k, v in meta.items()},
             source_paths=tuple(str(p) for p in resolved),
         )
@@ -182,6 +205,11 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
         out: dict[str, np.ndarray] = {
             key: np.asarray(grp[key], dtype=np.float32) for key in _DATASETS
         }
+        # multiasset 태깅 (신규 캐시만 존재; 구캐시는 -1 = 미태깅으로 채워 하위호환)
+        if "object_spec_idx" in grp:
+            out["object_spec_idx"] = np.asarray(grp["object_spec_idx"], dtype=np.int64)
+        else:
+            out["object_spec_idx"] = np.full((n,), -1, dtype=np.int64)
         # 수치 메타만 로드. grasp_v1/v7_2 collector가 기록하는 문자열 메타
         # (cup_z_mode="actual_lifted", export_mode=...)는 로더 계약상 불필요하므로 건너뛴다.
         # (float() 강제 변환 시 문자열에서 ValueError → warm-state 로드 전체 실패 방지)

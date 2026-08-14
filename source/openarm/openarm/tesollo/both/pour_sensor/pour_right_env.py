@@ -270,6 +270,31 @@ class PourRightEnv(DirectRLEnv):
             cfg.target_inner_radius = cfg.target_inner_radius * _sxy
             _op = cfg.target_cup_opening_pos_b
             cfg.target_cup_opening_pos_b = (float(_op[0]) * _sxy, float(_op[1]) * _sxy, float(_op[2]))
+        # [DR 재학습] 받는 컵 스케일 세트: env_id % K 결정론 배정(MultiAsset, grasp_v1 패턴).
+        #   물리 자산은 스폰에서, 판정기하는 super() 후 per-env 텐서에서 조정.
+        _sset = tuple(getattr(cfg, "left_target_cup_scale_set", ()) or ())
+        if _sset:
+            _base_spawn = cfg.left_target_cup_cfg.spawn
+            cfg.left_target_cup_cfg.spawn = sim_utils.MultiAssetSpawnerCfg(
+                assets_cfg=[
+                    _base_spawn.replace(scale=(float(_sv), float(_sv), float(_sv)))
+                    for _sv in _sset
+                ],
+                random_choice=False,
+            )
+            cfg.scene.replicate_physics = False
+        # [DR 재학습] source 컵 스케일 세트: env_id % K 결정론 배정 (grasp_v1 warm 매칭은 리셋에서).
+        _src_set = tuple(getattr(cfg, "source_cup_scale_set", ()) or ())
+        if _src_set:
+            _base_cup_spawn = cfg.cup_cfg.spawn
+            cfg.cup_cfg.spawn = sim_utils.MultiAssetSpawnerCfg(
+                assets_cfg=[
+                    _base_cup_spawn.replace(scale=(float(_sv), float(_sv), float(_sv)))
+                    for _sv in _src_set
+                ],
+                random_choice=False,
+            )
+            cfg.scene.replicate_physics = False
         super().__init__(cfg, render_mode, **kwargs)
 
         # ----------------------------------------------------------------
@@ -686,6 +711,42 @@ class PourRightEnv(DirectRLEnv):
         self._bead_spawn_quat_source_cup = to_torch(self.cfg.bead_spawn_quat_source_cup_wxyz, device=self.device)
         self._source_cup_pour_point_pos_b = to_torch(self.cfg.source_cup_pour_point_pos_b, device=self.device)
         self._target_cup_opening_pos_b = to_torch(self.cfg.target_cup_opening_pos_b, device=self.device)
+        # [DR] per-env 받는 컵 판정기하 — scale_set 없으면 전 env 동일값(기존 경로와 수치 동일).
+        #   uniform/xy scalar 경로는 cfg 값에 이미 곱해져 있으므로 여기 곱은 조합으로 동작.
+        _sset = tuple(getattr(self.cfg, "left_target_cup_scale_set", ()) or ())
+        if _sset:
+            _s_env = to_torch(list(_sset), device=self.device)[
+                torch.arange(self.num_envs, device=self.device) % len(_sset)
+            ]
+        else:
+            _s_env = torch.ones(self.num_envs, device=self.device)
+        self._tgt_scale_env = _s_env                                        # (N,)
+        self._tgt_inner_r_env = self.cfg.target_inner_radius * _s_env       # (N,)
+        self._tgt_z_min_env = self.cfg.target_inside_z_min * _s_env         # (N,)
+        self._tgt_z_max_env = self.cfg.target_inside_z_max * _s_env         # (N,)
+        self._tgt_mouth_z_env = self.cfg.target_mouth_z * _s_env            # (N,)
+        # [DR] per-env source 컵 물리 판정 기하 + warm spec 요구 (리워드 기준은 nominal 유지).
+        _src_set = tuple(getattr(self.cfg, "source_cup_scale_set", ()) or ())
+        if _src_set:
+            _src_idx = torch.arange(self.num_envs, device=self.device) % len(_src_set)
+            _src_s_env = to_torch(list(_src_set), device=self.device)[_src_idx]
+            _map = tuple(getattr(self.cfg, "source_warm_spec_map", ()))
+            if len(_map) < len(_src_set):
+                raise ValueError(
+                    f"source_warm_spec_map({_map})가 source_cup_scale_set({_src_set})보다 짧음"
+                )
+            self._src_spec_env = torch.tensor(
+                [int(_map[i]) for i in range(len(_src_set))],
+                dtype=torch.long, device=self.device,
+            )[_src_idx]                                                     # (N,) warm spec 요구
+        else:
+            _src_s_env = torch.ones(self.num_envs, device=self.device)
+            self._src_spec_env = None
+        self._src_scale_env = _src_s_env                                    # (N,)
+        self._src_inner_r_env = self.cfg.source_inner_radius * _src_s_env   # (N,)
+        self._src_z_min_env = self.cfg.source_inside_z_min * _src_s_env     # (N,)
+        self._src_z_max_env = self.cfg.source_inside_z_max * _src_s_env     # (N,)
+        self._warm_spec_pools: dict[int, torch.Tensor] | None = None
         self._source_cup_pour_axis_b = to_torch(self.cfg.source_cup_pour_axis_b, device=self.device)
         self._source_cup_up_axis_b = to_torch(self.cfg.source_cup_up_axis_b, device=self.device)
         self._target_cup_up_axis_b = to_torch(self.cfg.target_cup_up_axis_b, device=self.device)
@@ -1104,9 +1165,9 @@ class PourRightEnv(DirectRLEnv):
         pos_in_target = quat_apply_inverse(left_quat_flat, left_rel_flat).reshape(n, k, 3)
         bead_xy_to_target = torch.norm(pos_in_target[..., :2], dim=-1)
         bead_in_target = (
-            (bead_xy_to_target <= self.cfg.target_inner_radius)
-            & (pos_in_target[..., 2] >= self.cfg.target_inside_z_min)
-            & (pos_in_target[..., 2] <= self.cfg.target_inside_z_max)
+            (bead_xy_to_target <= self._tgt_inner_r_env.unsqueeze(1))
+            & (pos_in_target[..., 2] >= self._tgt_z_min_env.unsqueeze(1))
+            & (pos_in_target[..., 2] <= self._tgt_z_max_env.unsqueeze(1))
         )
         self._bead_in_target.copy_(bead_in_target)
         self._bead_ever_in_target |= bead_in_target
@@ -1118,16 +1179,16 @@ class PourRightEnv(DirectRLEnv):
         pos_in_source = quat_apply_inverse(cup_quat_flat, cup_rel_flat).reshape(n, k, 3)
         bead_xy_to_source = torch.norm(pos_in_source[..., :2], dim=-1)
         bead_in_source = (
-            (bead_xy_to_source <= self.cfg.source_inner_radius)
-            & (pos_in_source[..., 2] >= self.cfg.source_inside_z_min)
-            & (pos_in_source[..., 2] <= self.cfg.source_inside_z_max)
+            (bead_xy_to_source <= self._src_inner_r_env.unsqueeze(1))
+            & (pos_in_source[..., 2] >= self._src_z_min_env.unsqueeze(1))
+            & (pos_in_source[..., 2] <= self._src_z_max_env.unsqueeze(1))
         )
         self._bead_in_source.copy_(bead_in_source)
 
         mouth_crossed_now = (
-            (bead_xy_to_target <= self.cfg.target_inner_radius)
-            & (self._prev_bead_target_local_z > self.cfg.target_mouth_z)
-            & (pos_in_target[..., 2] <= self.cfg.target_mouth_z)
+            (bead_xy_to_target <= self._tgt_inner_r_env.unsqueeze(1))
+            & (self._prev_bead_target_local_z > self._tgt_mouth_z_env.unsqueeze(1))
+            & (pos_in_target[..., 2] <= self._tgt_mouth_z_env.unsqueeze(1))
         )
         self._bead_crossed_target_mouth |= mouth_crossed_now
         self._bead_cross_count.copy_(self._bead_crossed_target_mouth.sum(dim=-1).long())
@@ -1139,7 +1200,7 @@ class PourRightEnv(DirectRLEnv):
         # transit bead (공중 이동 중): target local z > z_min → spill 아님
         bead_spilled = (
             (~self._bead_in_source)
-            & (pos_in_target[..., 2] < self.cfg.target_inside_z_min)
+            & (pos_in_target[..., 2] < self._tgt_z_min_env.unsqueeze(1))
         )
         spill_ratio = bead_spilled.float().mean(dim=-1)
 
@@ -1148,7 +1209,7 @@ class PourRightEnv(DirectRLEnv):
         # sparse 0→0 자기참조를 끊는 다리. captured bead(xy≈0)도 높은 점수 → 채움 유지.
         # anti-hacking: 소스 안 bead는 제외(실제로 따라야 점수) + 바닥 아래(spill) 제외.
         _released = ~self._bead_in_source
-        _not_lost = pos_in_target[..., 2] >= self.cfg.target_inside_z_min
+        _not_lost = pos_in_target[..., 2] >= self._tgt_z_min_env.unsqueeze(1)
         _xy_score = torch.exp(-self.cfg.bead_near_scale * bead_xy_to_target)
         _near = _xy_score * (_released & _not_lost).float()
         self._bead_near_score.copy_(_near.mean(dim=-1))
@@ -1667,6 +1728,7 @@ class PourRightEnv(DirectRLEnv):
             self._source_cup_up_axis_b.unsqueeze(0).expand(n, -1),
         )
         # target opening — pour_point xy 방향 계산에 선행 필요 (순서 이동)
+        # [DR 원칙] opening 기준점(리워드/obs)은 nominal 고정 — bead 판정만 per-env 스케일.
         self._target_opening_w = left_target_pos_w + quat_apply(
             left_target_quat_w,
             self._target_cup_opening_pos_b.unsqueeze(0).expand(n, -1),
@@ -2201,6 +2263,7 @@ class PourRightEnv(DirectRLEnv):
         # [06.21 Phase3] approach 기준점을 rim_center로 고정(blend 제거). tilt 시 pour_point가 swing해
         #   approach가 tilt를 상쇄하던 D3 얽힘 제거 → "컵 이송"(rim_center, tilt-거의불변)과
         #   "정밀 붓기"(pour_point, r_pour) 분리. introt 예비회전으로 근접 시 rim 충돌 없음.
+        # [DR 원칙] 리워드는 컵 크기 무관(사용자 의도 설계) — corridor는 nominal 스칼라 유지.
         corridor_radius = self.cfg.target_inner_radius + self.cfg.pour_corridor_xy_margin
         _approach_pt_w = self._source_rim_center_w
         self._approach_xy_dist = torch.norm(
@@ -3035,11 +3098,15 @@ class PourRightEnv(DirectRLEnv):
             float(self.palm_maxs[2]),
         )
         try:
+            _spec_filter = getattr(self.cfg, "warm_object_spec_filter", ())
+            if self._src_spec_env is not None:
+                _spec_filter = ()  # scale_set 매칭 모드 — 필터 대신 리셋 시 per-env spec 매칭
             bank = PourWarmStateBank.from_hdf5_paths(
                 self.cfg.warm_state_paths,
                 device=self.device,
                 expected_object_spawn_z=self.cfg.object_spawn_z,
                 expected_palm_bounds=palm_bounds,
+                object_spec_filter=tuple(_spec_filter) if _spec_filter else None,
             )
         except (FileNotFoundError, KeyError, ValueError) as exc:
             print(f"[5g_pour_right_v4] warm-state disk load error: {exc}", flush=True)
@@ -3063,6 +3130,36 @@ class PourRightEnv(DirectRLEnv):
         cup_pose[:, 3:7] = bank.cup_quat_wxyz  # 실제 grasp cup orientation (wxyz)
         self._warmstart_cup_pose = cup_pose
         self._warmstart_cache_count = n
+        # [DR] source scale_set 매칭 모드: spec별 인덱스 풀 구성 (미태깅 구캐시는 hard fail →
+        #   rollout degrade 방지 위해 명시 재수집 요구).
+        if self._src_spec_env is not None:
+            spec_idx = bank.object_spec_idx
+            if (spec_idx < 0).all():
+                print(
+                    "[5g_pour_right_v4] source_cup_scale_set 사용 시 warm cache에 "
+                    "object_spec_idx 태깅 필요 — 최신 grasp_v1로 재수집하세요 "
+                    "(collect_grasp_v1_warm_states.py).",
+                    flush=True,
+                )
+                return False
+            pools: dict[int, torch.Tensor] = {}
+            for k in torch.unique(self._src_spec_env).tolist():
+                pool = (spec_idx == int(k)).nonzero(as_tuple=False).squeeze(-1)
+                if pool.numel() == 0:
+                    print(
+                        f"[5g_pour_right_v4] warm cache에 spec {int(k)} 상태가 0개 — "
+                        f"source_cup_scale_set 매칭 불가 (available: "
+                        f"{sorted(set(spec_idx[spec_idx >= 0].tolist()))}).",
+                        flush=True,
+                    )
+                    return False
+                pools[int(k)] = pool
+            self._warm_spec_pools = pools
+            print(
+                "[5g_pour_right_v4] warm spec pools: "
+                + ", ".join(f"spec{k}={v.numel()}" for k, v in pools.items()),
+                flush=True,
+            )
 
         print(
             f"[5g_pour_right_v4] loaded {n} warmstart states from disk "
@@ -3240,7 +3337,18 @@ class PourRightEnv(DirectRLEnv):
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
-        pick = torch.randint(self._warmstart_cache_count, (n,), device=self.device)
+        if self._warm_spec_pools is not None:
+            # [DR] env의 source 컵 스케일에 맞는 spec 풀에서만 샘플 (파지자세-컵크기 정합).
+            env_ids_t = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+            spec_req = self._src_spec_env[env_ids_t]
+            pick = torch.empty(n, dtype=torch.long, device=self.device)
+            for k, pool in self._warm_spec_pools.items():
+                m = spec_req == k
+                cnt = int(m.sum())
+                if cnt:
+                    pick[m] = pool[torch.randint(pool.shape[0], (cnt,), device=self.device)]
+        else:
+            pick = torch.randint(self._warmstart_cache_count, (n,), device=self.device)
         arm_pos = self._warmstart_arm_pos[pick]
         hand_pos = self._warmstart_hand_pos[pick]
         palm_pose = self._warmstart_palm_pose[pick]

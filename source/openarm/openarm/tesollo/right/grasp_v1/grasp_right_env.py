@@ -1404,6 +1404,7 @@ class GraspRightEnv(DirectRLEnv):
             per_finger_contact=self.binary_contact_buf[ids],
             stable_contact_steps=self.warm_contact_stable_steps_buf[ids],
             demo_file_idx=demo_idx,
+            object_spec_idx=self.object_idx[ids],
         )
         if added <= 0:
             return
