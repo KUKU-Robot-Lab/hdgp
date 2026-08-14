@@ -670,7 +670,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         render_interval=2,
         physx=sim_utils.PhysxCfg(
             bounce_threshold_velocity=0.05,  # 0.2→0.05: 낮은 속도 충돌도 바운스 허용 (비드 자연 반발)
-            gpu_found_lost_pairs_capacity=4 * 1024 * 1024,
+            # [DR] scale_set(MultiAsset, replicate_physics=False)에서 bead 초기 스폰 웨이브가
+            #   filter 적용 후에도 최대 ~46M pairs 요구 (부족 시 접촉 miss → bead 관통 위험) → 64M.
+            gpu_found_lost_pairs_capacity=64 * 1024 * 1024,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
             gpu_max_rigid_patch_count=2**24,
