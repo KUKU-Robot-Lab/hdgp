@@ -43,3 +43,13 @@ receiver_EXP2,M4_delay6,,,,96.4,,,,,,,,,delay 무하락
 DexPour_ref,DexPour,fill 30%,,,,,,,,,,,,"fluid transfer 99% (IROS2025, bowl target)"
 DexPour_ref,DexPour,fill 50%,,,,,,,,,,,,fluid transfer 96%
 DexPour_ref,DexPour,fill 70%,,,,,,,,,,,,fluid transfer 92%; APA -81.6% train time
+cupxy_gen,NS_demo,xy0.7,20,1025,0.6,3.09,,,,,0.2,64.6,,opening-only(높이고정); deep-tilt 전략
+cupxy_gen,NS_demo,xy0.8,20,1025,22.2,6.96,,,,,0.6,19.9,,
+cupxy_gen,NS_demo,xy0.9,20,1025,72.0,10.28,,,,,0.5,6.2,,
+cupxy_gen,NS_demo,xy1.1,20,1083,87.3,15.38,,,,,15.7,9.4,,
+cupxy_gen,NS_demo,xy1.2,20,1062,0.2,0.12,,,,,0.0,98.9,,
+cupxy_gen,Full_M4,xy0.7,20,4180,0.8,0.17,,,,,,100.0,,조기종료 다발=rim충돌 파지붕괴
+cupxy_gen,Full_M4,xy0.8,20,4010,1.0,0.22,,,,,0.7,98.8,,rim-approach 전략 붕괴
+cupxy_gen,Full_M4,xy0.9,20,3710,1.7,0.41,,,,,1.0,97.4,,진단영상 m4_cupxy09_failure_diagnosis.mp4
+cupxy_gen,Full_M4,xy1.1,20,1929,47.3,9.36,,,,,36.0,49.9,,
+cupxy_gen,Full_M4,xy1.2,20,1027,0.0,0.0,,,,,0.0,100.0,,
