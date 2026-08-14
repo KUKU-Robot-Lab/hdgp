@@ -57,6 +57,10 @@ parser.add_argument(
     help="[generalization] 받는(target) 컵 크기 scale (eval-time, 복원 후 적용). env __init__이 판정기하 비례조정.",
 )
 parser.add_argument(
+    "--cup_scale_xy", type=float, default=None,
+    help="[generalization] 받는 컵 opening-only scale (xy만, 높이 불변; eval-time, 복원 후 적용). narrow/wide opening OOD.",
+)
+parser.add_argument(
     "--spawn_x", type=float, default=None,
     help="[generalization] source cup spawn x_center override (eval-time, 복원 후 적용).",
 )
@@ -398,6 +402,12 @@ def _apply_playback_env_overrides(env_cfg) -> None:
             print(f"[INFO] target cup scale for playback: {args_cli.cup_scale}")
         else:
             print("[WARN] --cup_scale ignored: env has no left_target_cup_scale")
+    if args_cli.cup_scale_xy is not None:
+        if hasattr(env_cfg, "left_target_cup_scale_xy"):
+            env_cfg.left_target_cup_scale_xy = args_cli.cup_scale_xy
+            print(f"[INFO] target cup opening-only scale (xy) for playback: {args_cli.cup_scale_xy}")
+        else:
+            print("[WARN] --cup_scale_xy ignored: env has no left_target_cup_scale_xy")
     if args_cli.spawn_x is not None and hasattr(env_cfg, "object_spawn_x_center"):
         env_cfg.object_spawn_x_center = args_cli.spawn_x
         print(f"[INFO] spawn x_center for playback: {args_cli.spawn_x}")

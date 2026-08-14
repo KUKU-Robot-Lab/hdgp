@@ -207,6 +207,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   물리 자산(left_target_cup_cfg.spawn.scale)+판정기하(inner_radius/inside_z/mouth_z/opening_pos_b)
     #   를 s배로 비례 조정 → 미학습 컵 크기 일반화(작을수록 정밀도 하드). 학습(1.0)은 무영향.
     left_target_cup_scale: float = 1.0
+    # [generalization] 받는 컵 opening-only sweep. 1.0=학습. env __init__에서 !=1.0이면
+    #   xy만 s배(높이 z 불변) → uniform scale과 달리 opening 직경만 변하는 geometry OOD
+    #   (narrow/wide opening). inner_radius만 s배 조정(opening_pos_b는 xy=0이라 무변).
+    #   left_target_cup_scale과 곱으로 조합 가능. 학습(1.0)은 무영향.
+    left_target_cup_scale_xy: float = 1.0
     source_inner_radius:  float = 0.041   # 컵 내부 반경
     source_outer_radius:  float = 0.045   # 컵 외부 반경 (최하단 림 점 계산용)
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유

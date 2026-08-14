@@ -261,6 +261,15 @@ class PourRightEnv(DirectRLEnv):
             cfg.target_inside_z_max = cfg.target_inside_z_max * _s
             cfg.target_mouth_z = cfg.target_mouth_z * _s
             cfg.target_cup_opening_pos_b = tuple(float(v) * _s for v in cfg.target_cup_opening_pos_b)
+        # [generalization] 받는 컵 opening-only sweep: xy만 s배(높이 불변) → narrow/wide opening OOD.
+        #   판정기하는 inner_radius만 s배(opening_pos_b는 xy=0). uniform scale 위에 곱으로 적용.
+        _sxy = float(getattr(cfg, "left_target_cup_scale_xy", 1.0))
+        if _sxy != 1.0:
+            _base = cfg.left_target_cup_cfg.spawn.scale or (1.0, 1.0, 1.0)
+            cfg.left_target_cup_cfg.spawn.scale = (_base[0] * _sxy, _base[1] * _sxy, _base[2])
+            cfg.target_inner_radius = cfg.target_inner_radius * _sxy
+            _op = cfg.target_cup_opening_pos_b
+            cfg.target_cup_opening_pos_b = (float(_op[0]) * _sxy, float(_op[1]) * _sxy, float(_op[2]))
         super().__init__(cfg, render_mode, **kwargs)
 
         # ----------------------------------------------------------------
