@@ -127,6 +127,26 @@ class GraspRightEnv(DirectRLEnv):
     cfg: GraspRightEnvCfg
 
     def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
+        # [warm 수집→pour 정합] cup 4종을 SDF collider 자산으로 치환 (cfg 주석 참조).
+        if getattr(cfg, "collect_sdf_cup_assets", False):
+            from .grasp_right_env_cfg import _ASSETS_DIR as _assets_dir
+            import os as _os_mod
+            _sdf_path = _os_mod.path.join(_assets_dir, "cup", "cup_big_sdf.usd")
+            _n = 0
+            for _a in cfg.cup_cfg.spawn.assets_cfg:
+                if "cup_big" in str(getattr(_a, "usd_path", "")):
+                    _a.usd_path = _sdf_path
+                    _n += 1
+            print(f"[grasp_v1] collect_sdf_cup_assets: {_n} cup assets → {_sdf_path}", flush=True)
+        # [warm 수집→pour 정합] 우팔/abduction 게인을 pour_sensor 값으로 치환 (cfg 주석 참조).
+        if getattr(cfg, "collect_pour_matched_gains", False):
+            _acts = cfg.robot_cfg.actuators
+            for _k in ("right_arm_proximal", "right_arm_elbow", "right_arm_wrist"):
+                _acts[_k].stiffness = 400.0
+                _acts[_k].damping = 80.0
+            _acts["tesollo_hand_abduction"].stiffness = 200.0
+            _acts["tesollo_hand_abduction"].damping = 35.0
+            print("[grasp_v1] collect_pour_matched_gains: arm→400/80, abduction→200/35", flush=True)
         super().__init__(cfg, render_mode, **kwargs)
 
         # ----------------------------------------------------------------

@@ -520,6 +520,17 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     )
 
     # -----------------------------------------------------------------------
+    # [warm 수집→pour 정합] True면 cup_big 4종의 usd_path를 cup_big_sdf.usd(SDF collider)로 치환.
+    #   visdex cup_big은 dynamic body에서 convexHull fallback(오목 내부 채워짐) → 그 표면 기준
+    #   파지 자세가 pour의 SDF 컵에서 관통/공극을 만들어 warm 리셋 시 컵 이탈·bead 유실
+    #   (08.15 zero-action probe로 실증: SDF 수집 구캐시=유지 1.0, convexHull 신캐시=유실 다발).
+    #   외벽 기하는 동일하므로 학습 정책의 zero-shot 파지에는 유효. 수집 CLI에서만 켠다.
+    collect_sdf_cup_assets: bool = False
+    # [warm 수집→pour 정합] True면 우팔/손 actuator 게인을 pour_sensor 값으로 치환:
+    #   팔 r_aj_1-7 → kp400/kd80 (캘리브 67.6/12 대신), abduction r_hj_*_1 → kp200/kd35.
+    #   신 grasp_v1(캘리브 유연팔+강한 abduction)에서 형성된 파지는 pour 게인에서 미끄러져
+    #   컵 이탈·bead 유실 (08.15 렌더 실증). 수집 물리 = 소비 물리 정합용. 수집 CLI에서만 켠다.
+    collect_pour_matched_gains: bool = False
     # 컵 설정 — 2026-07-26: 단일 cup_big_sdf → MultiAsset 8종(_GRASP_OBJECT_SPAWN).
     # prim 이름 "Cup" 은 유지(ContactSensor filter·env.py 참조 재사용).
     # -----------------------------------------------------------------------

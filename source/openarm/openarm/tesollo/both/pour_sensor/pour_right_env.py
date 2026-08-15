@@ -885,14 +885,10 @@ class PourRightEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.cup = RigidObject(self.cfg.cup_cfg)
-        self.left_target_cup = RigidObject(self.cfg.left_target_cup_cfg)
         self.beads = RigidObjectCollection(self.cfg.beads_cfg)
         self.table = RigidObject(self.cfg.table_cfg)
 
         self.scene.articulations["robot"] = self.robot
-        self.scene.rigid_objects["cup"] = self.cup
-        self.scene.rigid_objects["left_target_cup"] = self.left_target_cup
         self.scene.rigid_object_collections["beads"] = self.beads
         self.scene.rigid_objects["table"] = self.table
 
@@ -921,6 +917,14 @@ class PourRightEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
         self.scene.clone_environments(copy_from_source=True)
+        # ★[DR] 컵 2종은 clone **이후** 생성 (grasp_v1 07.10 버그 수정 이식):
+        #   MultiAssetSpawner를 clone 이전에 만들면 env_0만 존재하는 시점에 asset[0]만
+        #   spawn되고 clone이 그걸 복제 → env_id%K 배정이 실제 물리 자산과 어긋나
+        #   판정기하/warm 매칭 붕괴(zero-action probe에서 bead 전량 유실 실증).
+        self.cup = RigidObject(self.cfg.cup_cfg)
+        self.left_target_cup = RigidObject(self.cfg.left_target_cup_cfg)
+        self.scene.rigid_objects["cup"] = self.cup
+        self.scene.rigid_objects["left_target_cup"] = self.left_target_cup
         # [DR] scale_set(MultiAsset)은 replicate_physics=False → env 간 충돌 필터가 자동
         #   적용되지 않아 broadphase pair 폭증(수억, foundLostPairsCapacity 에러+메모리 폭증).
         #   env 간 충돌을 수동 필터하고 ground 와의 충돌만 유지한다.
@@ -3140,31 +3144,32 @@ class PourRightEnv(DirectRLEnv):
         if self._src_spec_env is not None:
             spec_idx = bank.object_spec_idx
             if (spec_idx < 0).all():
+                # 미태깅(구) 캐시: spec 매칭 대신 전 풀 공유 — 리셋에서 컵 반경 기하보정이
+                #   nominal 파지를 각 스케일 컵에 맞춘다 (spec 풀 미구성 = 랜덤 pick 경로).
                 print(
-                    "[5g_pour_right_v4] source_cup_scale_set 사용 시 warm cache에 "
-                    "object_spec_idx 태깅 필요 — 최신 grasp_v1로 재수집하세요 "
-                    "(collect_grasp_v1_warm_states.py).",
+                    "[5g_pour_right_v4] untagged warm cache + scale_set → 반경 기하보정 모드 "
+                    "(spec 매칭 없이 전 풀 공유).",
                     flush=True,
                 )
-                return False
-            pools: dict[int, torch.Tensor] = {}
-            for k in torch.unique(self._src_spec_env).tolist():
-                pool = (spec_idx == int(k)).nonzero(as_tuple=False).squeeze(-1)
-                if pool.numel() == 0:
-                    print(
-                        f"[5g_pour_right_v4] warm cache에 spec {int(k)} 상태가 0개 — "
-                        f"source_cup_scale_set 매칭 불가 (available: "
-                        f"{sorted(set(spec_idx[spec_idx >= 0].tolist()))}).",
-                        flush=True,
-                    )
-                    return False
-                pools[int(k)] = pool
-            self._warm_spec_pools = pools
-            print(
-                "[5g_pour_right_v4] warm spec pools: "
-                + ", ".join(f"spec{k}={v.numel()}" for k, v in pools.items()),
-                flush=True,
-            )
+            else:
+                pools: dict[int, torch.Tensor] = {}
+                for k in torch.unique(self._src_spec_env).tolist():
+                    pool = (spec_idx == int(k)).nonzero(as_tuple=False).squeeze(-1)
+                    if pool.numel() == 0:
+                        print(
+                            f"[5g_pour_right_v4] warm cache에 spec {int(k)} 상태가 0개 — "
+                            f"source_cup_scale_set 매칭 불가 (available: "
+                            f"{sorted(set(spec_idx[spec_idx >= 0].tolist()))}).",
+                            flush=True,
+                        )
+                        return False
+                    pools[int(k)] = pool
+                self._warm_spec_pools = pools
+                print(
+                    "[5g_pour_right_v4] warm spec pools: "
+                    + ", ".join(f"spec{k}={v.numel()}" for k, v in pools.items()),
+                    flush=True,
+                )
 
         print(
             f"[5g_pour_right_v4] loaded {n} warmstart states from disk "
@@ -3342,6 +3347,12 @@ class PourRightEnv(DirectRLEnv):
 
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
+        _sequential = bool(getattr(self.cfg, "warm_validation_sequential", False))
+        if not hasattr(self, "_warm_seq_cursor"):
+            self._warm_seq_cursor: dict[int, int] = {}
+            self._last_warm_pick = torch.full(
+                (self.num_envs,), -1, dtype=torch.long, device=self.device
+            )
         if self._warm_spec_pools is not None:
             # [DR] env의 source 컵 스케일에 맞는 spec 풀에서만 샘플 (파지자세-컵크기 정합).
             env_ids_t = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
@@ -3350,14 +3361,39 @@ class PourRightEnv(DirectRLEnv):
             for k, pool in self._warm_spec_pools.items():
                 m = spec_req == k
                 cnt = int(m.sum())
-                if cnt:
+                if not cnt:
+                    continue
+                if _sequential:
+                    cur = self._warm_seq_cursor.get(k, 0)
+                    idx = (torch.arange(cnt, device=self.device) + cur) % pool.shape[0]
+                    pick[m] = pool[idx]
+                    self._warm_seq_cursor[k] = int((cur + cnt) % pool.shape[0])
+                else:
                     pick[m] = pool[torch.randint(pool.shape[0], (cnt,), device=self.device)]
+        elif _sequential:
+            cur = self._warm_seq_cursor.get(-1, 0)
+            pick = (torch.arange(n, device=self.device) + cur) % self._warmstart_cache_count
+            self._warm_seq_cursor[-1] = int((cur + n) % self._warmstart_cache_count)
         else:
             pick = torch.randint(self._warmstart_cache_count, (n,), device=self.device)
+        env_ids_t2 = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        self._last_warm_pick[env_ids_t2] = pick
         arm_pos = self._warmstart_arm_pos[pick]
         hand_pos = self._warmstart_hand_pos[pick]
         palm_pose = self._warmstart_palm_pose[pick]
-        cup_pose_local = self._warmstart_cup_pose[pick]
+        cup_pose_local = self._warmstart_cup_pose[pick].clone()
+        # [DR 기하보정] source scale_set 활성 시: warm 파지(nominal 컵 기준)를 s-스케일 컵에
+        #   맞춰 컵 중심을 palm→컵 수평 방향으로 반경 차 (r_base·(s−1)) 만큼 이동.
+        #   컵 벽은 국소적으로 원기둥이라 관절각 그대로 접촉 기하가 근사 유지됨(±6~12mm).
+        #   → nominal 수집 캐시(검증된 안정 파지) 하나로 전 스케일 커버. spec 매칭 불필요.
+        if self._src_spec_env is not None:
+            env_ids_adj = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+            s_env = self._src_scale_env[env_ids_adj]                       # (n,)
+            palm_pos = self._warmstart_palm_pose[pick][:, :3]
+            dir_xy = cup_pose_local[:, :2] - palm_pos[:, :2]
+            dir_xy = dir_xy / dir_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+            radial = self.cfg.source_inner_radius * (s_env - 1.0)         # base r·(s−1)
+            cup_pose_local[:, :2] += dir_xy * radial.unsqueeze(1)
 
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)

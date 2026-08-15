@@ -121,6 +121,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="ADR 노이즈 유지 (기본: 비활성, 깨끗한 정책 성공 분포 수집)",
     )
+    p.add_argument(
+        "--extra",
+        nargs="*",
+        default=None,
+        help="자식 수집 프로세스에 그대로 전달할 hydra override (예: env.collect_sdf_cup_assets=true)",
+    )
     return p.parse_args()
 
 
@@ -142,7 +148,8 @@ def _validate(checkpoint: Path, target_count: int) -> None:
 
 
 def _build_command(
-    *, task: str, checkpoint: Path, out: Path, num_envs: int, target_count: int, keep_adr: bool
+    *, task: str, checkpoint: Path, out: Path, num_envs: int, target_count: int, keep_adr: bool,
+    extra: list[str] | None = None,
 ) -> list[str]:
     cmd = [
         str(_ISAACLAB_SH),
@@ -163,6 +170,8 @@ def _build_command(
     ]
     if not keep_adr:
         cmd.append("--disable_adr")
+    if extra:
+        cmd.extend(extra)  # hydra env.* override (예: env.collect_sdf_cup_assets=true)
     return cmd
 
 
@@ -182,6 +191,7 @@ def main() -> int:
         num_envs=args.num_envs,
         target_count=args.target_count,
         keep_adr=args.keep_adr,
+        extra=args.extra,
     )
     print(
         f"[collect_grasp_v1_warm_states] robot={args.robot} task={preset.task}\n"

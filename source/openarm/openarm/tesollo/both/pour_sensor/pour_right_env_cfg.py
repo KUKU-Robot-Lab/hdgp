@@ -617,6 +617,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   (grasp_v1 _ACTIVE_OBJECT_SPECS 순서; 1 = cup_big_s100 = pour source 컵과 동일 스케일).
     #   구캐시(태깅 없음)는 필터가 자동 무시됨. 빈 튜플 = 필터 없음.
     warm_object_spec_filter: tuple[int, ...] = (1,)
+    # [warm 검증필터] True면 warmstart pick을 랜덤 대신 순차(spec 풀 내 라운드로빈)로 하고
+    #   env별 pick 인덱스를 self._last_warm_pick 에 기록 — pour 물리에서 warm bank 전수
+    #   안정성 검증(validate_warm_states_in_pour.py)용. 학습에서는 False 고정.
+    warm_validation_sequential: bool = False
     freeze_grasp_hand_during_episode: bool = True
     # 최상위 비드 z=0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
     bead_spawn_pos_source_cup_b: tuple[float, float, float] = (0.0, 0.0, 0.015)
