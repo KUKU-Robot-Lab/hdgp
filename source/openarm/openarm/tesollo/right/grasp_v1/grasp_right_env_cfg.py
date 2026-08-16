@@ -66,6 +66,17 @@ _VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
 # ADR mass DR 의 곱셈 기준이 되므로 여기를 바꾸면 실효 질량 범위 전체가 이동한다.
 _BASE_OBJECT_MASS: float = 0.134
 
+# ★08.16 SDF 콜라이더 자산(scripts/tools/make_sdf_grasp_assets.py 산출).
+#   visdex cup_big/shaker 는 physics:approximation="sdf" 를 적어놓고도 apiSchemas 에
+#   PhysxSDFMeshCollisionAPI 와 physxSDFMeshCollision:sdfResolution 이 없어 PhysX 가
+#   **convexHull 로 폴백**했다(런타임 경고 실증). convexHull 은 컵의 오목한 내부를 메우므로
+#   grasp 는 "속이 찬 원통", pour(cup_big_sdf.usd, 진짜 SDF)는 "속이 빈 컵"이 되어
+#   파지 자세가 전달되지 않았다(08.16 실측 pour 통과율 4.0%).
+#   메시는 두 자산이 **완전 동일**(1765 pts/3526 faces/bbox 일치)이라 authoring 만 맞추면 된다.
+#   ⚠️visdex 원본을 제자리 수정하지 않은 이유: grasp_v2 가 visdex_objects/USD 를 sorted-glob 해
+#   물체 수로 obs 차원이 정해지므로 그 디렉토리는 불가침. 산출물을 assets/cup/ 에 둔다.
+_SDF_ASSET_ROOT = _os.path.join(_ASSETS_DIR, "cup")
+
 _ACTIVE_OBJECT_SPECS: tuple[dict, ...] = (
     # ★기본 질량 8종 통일 = _BASE_OBJECT_MASS(0.134kg, pour 실컵 질량).
     #   ① pour_v1 실컵(cup_big_sdf, density 파생 ≈0.134kg)과 학습 질량 정합.
@@ -76,11 +87,11 @@ _ACTIVE_OBJECT_SPECS: tuple[dict, ...] = (
     #      외삽 영역(shaker 3.0×=0.79kg, grasp_v2 실증 상한 0.536kg의 1.5배)으로 튄다.
     #      기본질량을 통일하면 **모든 물체가 동일한 절대 질량 범위 전체를 학습**한다
     #      (다양성은 ADR DR 이 매 에피소드 샘플링으로 제공 — 오히려 커버리지가 넓어짐).
-    {"id": "cup_big_s085", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (0.85, 0.85, 0.85), "mass": _BASE_OBJECT_MASS},
-    {"id": "cup_big_s100", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.00, 1.00, 1.00), "mass": _BASE_OBJECT_MASS},
-    {"id": "cup_big_s115", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.15, 1.15, 1.15), "mass": _BASE_OBJECT_MASS},
-    {"id": "cup_big_s130", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.30, 1.30, 1.30), "mass": _BASE_OBJECT_MASS},
-    {"id": "shaker_body",  "usd_path": _os.path.join(_VISDEX_ROOT, "shaker_body", "shaker_body.usd"), "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s085", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (0.85, 0.85, 0.85), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s100", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.00, 1.00, 1.00), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s115", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.15, 1.15, 1.15), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s130", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.30, 1.30, 1.30), "mass": _BASE_OBJECT_MASS},
+    {"id": "shaker_body",  "usd_path": _os.path.join(_SDF_ASSET_ROOT, "shaker_body_rl.usd"), "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
     {"id": "large_5_cyl",     "usd_path": _os.path.join(_VISDEX_ROOT, "large_5_cyl", "large_5_cyl.usd"),   "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
     {"id": "large_8_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_8_cyl", "large_8_cyl.usd"),   "scale": (1.0, 1.0, 1.5), "mass": _BASE_OBJECT_MASS},
     {"id": "large_12_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_12_cyl", "large_12_cyl.usd"), "scale": (1.0, 1.0, 2.4), "mass": _BASE_OBJECT_MASS},
