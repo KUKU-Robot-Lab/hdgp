@@ -287,9 +287,17 @@ class PourRightEnv(DirectRLEnv):
         _src_set = tuple(getattr(cfg, "source_cup_scale_set", ()) or ())
         if _src_set:
             _base_cup_spawn = cfg.cup_cfg.spawn
+            # [DR 정합] 스케일별 질량이 s³로 변하지 않도록 grasp_v1과 같은 고정 질량을 주입.
+            _fixed_m = getattr(cfg, "source_cup_fixed_mass", None)
+            _mass_props = (
+                sim_utils.MassPropertiesCfg(mass=float(_fixed_m))
+                if _fixed_m is not None else _base_cup_spawn.mass_props
+            )
             cfg.cup_cfg.spawn = sim_utils.MultiAssetSpawnerCfg(
                 assets_cfg=[
-                    _base_cup_spawn.replace(scale=(float(_sv), float(_sv), float(_sv)))
+                    _base_cup_spawn.replace(
+                        scale=(float(_sv), float(_sv), float(_sv)), mass_props=_mass_props
+                    )
                     for _sv in _src_set
                 ],
                 random_choice=False,
@@ -574,6 +582,7 @@ class PourRightEnv(DirectRLEnv):
                 num_increments=cfg.spill_adr_num_increments,
                 increment_interval=cfg.spill_adr_increment_interval,
                 trigger_threshold=cfg.spill_adr_trigger_threshold,
+                initial_increment=getattr(cfg, "spill_adr_initial_increment", 0),
             )
             if cfg.enable_spill_adr
             else None
@@ -585,6 +594,7 @@ class PourRightEnv(DirectRLEnv):
                 num_increments=cfg.noise_adr_num_increments,
                 increment_interval=cfg.noise_adr_increment_interval,
                 trigger_threshold=cfg.noise_adr_trigger_threshold,
+                initial_increment=getattr(cfg, "noise_adr_initial_increment", 0),
             )
             if cfg.enable_noise_adr
             else None
@@ -596,6 +606,7 @@ class PourRightEnv(DirectRLEnv):
                 num_increments=cfg.success_adr_num_increments,
                 increment_interval=cfg.success_adr_increment_interval,
                 trigger_threshold=cfg.success_adr_trigger_threshold,
+                initial_increment=getattr(cfg, "success_adr_initial_increment", 0),
             )
             if cfg.enable_success_adr
             else None
@@ -608,10 +619,23 @@ class PourRightEnv(DirectRLEnv):
                 num_increments=cfg.outcome_adr_num_increments,
                 increment_interval=cfg.outcome_adr_increment_interval,
                 trigger_threshold=cfg.outcome_adr_trigger_threshold,
+                initial_increment=getattr(cfg, "outcome_adr_initial_increment", 0),
             )
             if cfg.enable_outcome_adr
             else None
         )
+
+        # [단계형 인계] 비영 초기 레벨이 하나라도 있으면 1회 요약 출력 (기본 실행의 stdout 불변).
+        _inc0 = {
+            _k: _v.increment_counter
+            for _k, _v in (
+                ("spill", self.spill_adr), ("noise", self.noise_adr),
+                ("success", self.success_adr), ("outcome", self.outcome_adr),
+            )
+            if _v is not None
+        }
+        if any(_inc0.values()):
+            print(f"[POUR-ADR] initial increments (단계 인계): {_inc0}", flush=True)
 
         self._noise_base_joint_pos = cfg.obs_noise_joint_pos
         self._noise_base_joint_vel = cfg.obs_noise_joint_vel
@@ -747,6 +771,11 @@ class PourRightEnv(DirectRLEnv):
         self._src_z_min_env = self.cfg.source_inside_z_min * _src_s_env     # (N,)
         self._src_z_max_env = self.cfg.source_inside_z_max * _src_s_env     # (N,)
         self._warm_spec_pools: dict[int, torch.Tensor] | None = None
+        # [warm 모드] 0=plain(scale_set 없음) / 1=spec-matched(스케일별 실파지) / 2=radial-fix(미태깅 구캐시 보정).
+        #   반경 기하보정은 2번에서만 쓰는 fallback이다. spec 매칭 캐시나 rollout 수집분에 적용하면
+        #   이미 스케일에 맞는 파지를 다시 밀어내 어긋난다(이중보정).
+        self._warm_radial_fix_active: bool = False
+        self._warm_mode_code: int = 0
         self._source_cup_pour_axis_b = to_torch(self.cfg.source_cup_pour_axis_b, device=self.device)
         self._source_cup_up_axis_b = to_torch(self.cfg.source_cup_up_axis_b, device=self.device)
         self._target_cup_up_axis_b = to_torch(self.cfg.target_cup_up_axis_b, device=self.device)
@@ -2490,21 +2519,42 @@ class PourRightEnv(DirectRLEnv):
             - g_ready * spill_weight * spill_cost   # [H14] g_ready 게이트: target 위(stageB)서만 spill 벌점 → 초기 탐험 보호
         )
 
+        # [warm 모드 진단] 0=plain 1=spec-matched 2=radial-fix. 런 사후에 TB만 보고
+        #   어느 warmstart 경로로 학습했는지 판정하기 위한 상수 스칼라.
+        self.extras["log/warm_mode"] = torch.tensor(float(self._warm_mode_code), device=self.device)
+
         # ---- ADR increment ----
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
+        # 증가 시점을 stdout에 남긴다 — 학습 종료 후 다음 단계에 넣을 initial_increment를 로그에서 회수.
         if self.spill_adr is not None:
-            self.spill_adr.maybe_increment(_ep_success_rate)
+            if self.spill_adr.maybe_increment(_ep_success_rate):
+                print(f"[POUR-ADR] spill {self.spill_adr.increment_counter}/{self.spill_adr.num_increments}"
+                      f" (metric={_ep_success_rate:.3f})", flush=True)
+            self.extras["log/adr_inc_spill"] = torch.tensor(
+                float(self.spill_adr.increment_counter), device=self.device)
         if self.noise_adr is not None:
-            self.noise_adr.maybe_increment(_ep_success_rate)
+            if self.noise_adr.maybe_increment(_ep_success_rate):
+                print(f"[POUR-ADR] noise {self.noise_adr.increment_counter}/{self.noise_adr.num_increments}"
+                      f" (metric={_ep_success_rate:.3f})", flush=True)
+            self.extras["log/adr_inc_noise"] = torch.tensor(
+                float(self.noise_adr.increment_counter), device=self.device)
         if self.success_adr is not None:
-            self.success_adr.maybe_increment(_ep_success_rate)
+            if self.success_adr.maybe_increment(_ep_success_rate):
+                print(f"[POUR-ADR] success {self.success_adr.increment_counter}/{self.success_adr.num_increments}"
+                      f" (metric={_ep_success_rate:.3f})", flush=True)
+            self.extras["log/adr_inc_success"] = torch.tensor(
+                float(self.success_adr.increment_counter), device=self.device)
         # [outcome ADR] 자세 성공률 80%+ 시 bead 보상(weight_pour_bead) 램프.
         self.extras["log/pose_success"] = self._pose_success_now.float().mean()  # step 자세성공 비율
         _pose_success_cumulative = self._pose_successful_episodes / max(self._total_episodes, 1)
         # [07.02 speed-fix①] trigger는 누적 대신 EMA(최근 윈도우) 사용 → 조기 활성화.
         _pose_success_rate = self._pose_success_ema
         if self.outcome_adr is not None:
-            self.outcome_adr.maybe_increment(_pose_success_rate)
+            if self.outcome_adr.maybe_increment(_pose_success_rate):
+                print(f"[POUR-ADR] outcome {self.outcome_adr.increment_counter}/{self.outcome_adr.num_increments}"
+                      f" (pose_ema={_pose_success_rate:.3f})", flush=True)
+            self.extras["log/adr_inc_outcome"] = torch.tensor(
+                float(self.outcome_adr.increment_counter), device=self.device)
             self.extras["log/pose_success_rate"] = torch.tensor(float(_pose_success_rate), device=self.device)
             self.extras["log/pose_success_cumulative"] = torch.tensor(float(_pose_success_cumulative), device=self.device)
             self.extras["log/outcome_adr_progress"] = torch.tensor(float(self.outcome_adr.progress), device=self.device)
@@ -2817,6 +2867,16 @@ class PourRightEnv(DirectRLEnv):
             self._last_done_bead[_done_mask] = self._bead_in_target_fraction[_done_mask]
             self._last_done_spill[_done_mask] = self._spill_ratio[_done_mask]
             self._last_done_mouth_xy[_done_mask] = self._mouth_xy_distance[_done_mask]
+
+        # [진단] 종료 사유별 비율 — 08.16 DR 분석에서 조기종료(에피소드 202~373 step)의 원인을
+        #   TFEvents로 특정하지 못했다(사유별 로깅 부재). 각 불리언은 위에서 이미 계산돼 있으므로
+        #   평균만 남긴다. 학습/보상에 영향 없음(extras 진단 채널).
+        for _name, _flag in (
+            ("out_x", out_x), ("out_y", out_y), ("fallen", fallen),
+            ("dropped_by_force", dropped_by_force), ("bead_fallen", bead_fallen),
+            ("grasp_broken", grasp_broken), ("source_drained", source_drained),
+        ):
+            self.extras[f"done/{_name}"] = _flag.float().mean()
 
         return terminated, truncated
 
@@ -3151,6 +3211,8 @@ class PourRightEnv(DirectRLEnv):
                     "(spec 매칭 없이 전 풀 공유).",
                     flush=True,
                 )
+                self._warm_radial_fix_active = True
+                self._warm_mode_code = 2
             else:
                 pools: dict[int, torch.Tensor] = {}
                 for k in torch.unique(self._src_spec_env).tolist():
@@ -3165,9 +3227,13 @@ class PourRightEnv(DirectRLEnv):
                         return False
                     pools[int(k)] = pool
                 self._warm_spec_pools = pools
+                self._warm_mode_code = 1
                 print(
-                    "[5g_pour_right_v4] warm spec pools: "
-                    + ", ".join(f"spec{k}={v.numel()}" for k, v in pools.items()),
+                    "[5g_pour_right_v4][warm-mode] spec-matched | "
+                    f"src_set={tuple(getattr(self.cfg, 'source_cup_scale_set', ()) or ())} "
+                    f"map={tuple(getattr(self.cfg, 'source_warm_spec_map', ()))} | pools: "
+                    + ", ".join(f"spec{k}={v.numel()}" for k, v in pools.items())
+                    + " | radial_fix=OFF",
                     flush=True,
                 )
 
@@ -3382,11 +3448,11 @@ class PourRightEnv(DirectRLEnv):
         hand_pos = self._warmstart_hand_pos[pick]
         palm_pose = self._warmstart_palm_pose[pick]
         cup_pose_local = self._warmstart_cup_pose[pick].clone()
-        # [DR 기하보정] source scale_set 활성 시: warm 파지(nominal 컵 기준)를 s-스케일 컵에
-        #   맞춰 컵 중심을 palm→컵 수평 방향으로 반경 차 (r_base·(s−1)) 만큼 이동.
-        #   컵 벽은 국소적으로 원기둥이라 관절각 그대로 접촉 기하가 근사 유지됨(±6~12mm).
-        #   → nominal 수집 캐시(검증된 안정 파지) 하나로 전 스케일 커버. spec 매칭 불필요.
-        if self._src_spec_env is not None:
+        # [DR 기하보정 — fallback 전용] 미태깅 구캐시 + scale_set 조합에서만 동작한다.
+        #   nominal 컵 기준 파지를 s-스케일 컵에 맞추려 컵 중심을 palm→컵 수평 방향으로
+        #   반경 차 (r_base·(s−1)) 만큼 이동(±6~12mm 근사). 컵 벽이 국소적으로 원기둥이라 성립.
+        #   ⚠ spec 매칭(스케일별 실파지)이나 rollout 수집분에는 적용 금지 — 이중보정으로 어긋난다.
+        if self._warm_radial_fix_active:
             env_ids_adj = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
             s_env = self._src_scale_env[env_ids_adj]                       # (n,)
             palm_pos = self._warmstart_palm_pose[pick][:, :3]

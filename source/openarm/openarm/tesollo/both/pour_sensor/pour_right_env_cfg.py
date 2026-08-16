@@ -196,6 +196,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     noise_adr_num_increments: int = 40
     noise_adr_increment_interval: int = 20000
     noise_adr_trigger_threshold: float = 0.3
+    # [단계형 학습 인계] 이전 단계가 도달한 ADR 레벨을 시작값으로 주입(0=처음부터).
+    #   체크포인트에는 카운터가 저장되지 않으므로, 이전 런 TB의 `log/adr_inc_<name>` 최종값을 넣는다.
+    #   PourADR.set_increment가 [0, num_increments]로 클램프. 기본 0 = 기존 동작 완전 동일.
+    #   ⚠ ablation 대조군 런에는 넣지 않는다(커리큘럼 진도가 달라져 비교 무효).
+    noise_adr_initial_increment: int = 0
 
 
     # bead / cup geometry (.usd 기준: bottom=-0.077m, rim=+0.100m, inner_r=0.041m)
@@ -224,6 +229,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     source_cup_scale_set: tuple[float, ...] = ()
     # scale_set[i] ↔ grasp_v1 warm spec idx 매핑 (기본: cup_big 4종 = 0..3)
     source_warm_spec_map: tuple[int, ...] = (0, 1, 2, 3)
+    # [DR 정합] source_cup_scale_set 스폰 시 컵 질량을 스케일 무관하게 이 값(kg)으로 고정.
+    #   grasp_v1 _ACTIVE_OBJECT_SPECS(cup_big 4종 mass=0.134)와 정합 — 수집↔소비 force-ratio 일치.
+    #   미고정 시 USD density 파생으로 s³ 변동(0.082/0.134/0.204/0.294)해 1.3배 컵에서 2.2배 무거워진다.
+    #   None이면 파생값 유지. scale_set 미사용 기본 경로는 이 값을 읽지 않음(기존 물리 완전 보존).
+    source_cup_fixed_mass: float | None = 0.134
     source_inner_radius:  float = 0.041   # 컵 내부 반경
     source_outer_radius:  float = 0.045   # 컵 외부 반경 (최하단 림 점 계산용)
     source_inside_z_min:  float = -0.070  # bottom(-0.077) + bead_radius(~0.01) 여유
@@ -511,6 +521,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     spill_adr_num_increments: int = 50
     spill_adr_increment_interval: int = 20000
     spill_adr_trigger_threshold: float = 0.10
+    spill_adr_initial_increment: int = 0   # [단계형 인계] noise_adr_initial_increment 주석 참조
 
     # ADR: success 기준 커리큘럼 (fill_ratio: 낮은 기준→높은 기준)
     # bead 10개 기준: 0.20=2개, 0.30=3개, 0.40=4개, 0.50=5개
@@ -528,6 +539,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   2000으로 낮춰 ~4M프레임마다 1단계 체크 → 8단계 ≈ 32M프레임에 완주.
     success_adr_increment_interval: int = 2000
     success_adr_trigger_threshold: float = 0.15  # 현재 기준에서 15% 성공률 달성 시 상향
+    success_adr_initial_increment: int = 0   # [단계형 인계] noise_adr_initial_increment 주석 참조
 
     # [재설계 outcome ADR] DexPour 커리큘럼: 자세 성공률 80%+ 시 bead 보상(r_pour) weight 0→50 램프.
     #   1단계=자세만(approach/tilt/align), bead 로깅만. 2단계=자세 완성 후 bead_in_target 상태보상 활성 → 정밀 pour.
@@ -540,6 +552,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     outcome_adr_num_increments: int = 4          # [07.02 speed-fix②] 8→4: weight 0→50 램프를 4단계로(활성 후 ~500ep 완주). 물리 fix가 착취 차단하므로 큰 스텝 안전
     outcome_adr_increment_interval: int = 8000   # [07.02 speed-fix②] 20000→8000: 체크 간격 단축(~125ep마다)
     outcome_adr_trigger_threshold: float = 0.80  # 자세 성공률 80%+ 시 outcome 활성 (이제 EMA 윈도우 기준 — speed-fix①)
+    # [단계형 인계 ★핵심] 08.16 실측: 컵 스케일 DR 하에서 pose_success EMA가 0.80을 한 번도 못 넘어
+    #   weight_pour_bead가 6000+ iter 내내 0 = pour 보상 부재로 학습 자체가 불가능했다(FullDR_s42/s43).
+    #   M4처럼 이미 outcome을 획득한 정책에서 재개할 때는 max(=outcome_adr_num_increments)를 주입해
+    #   보상 그라디언트를 유지한 채 DR에 적응시킨다.
+    outcome_adr_initial_increment: int = 0
     pose_success_ema_alpha: float = 0.1          # [07.02 speed-fix①] outcome_adr trigger용 pose_success를 누적(평생)→EMA(최근 윈도우)로. 초반 실패에 눌린 느린 활성화 해소(ep937→~ep300)
     pose_ready_thresh: float = 0.60   # 자세 성공 게이트: corridor_score ≥ (위치 준비)
     pose_tilt_thresh: float = 0.587   # 자세 성공 게이트: tilt_amount ≥ (1-cos100°)/2 → rim_antiparallel ≤ -0.174 (100°+)

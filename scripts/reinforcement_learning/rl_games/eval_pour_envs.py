@@ -61,6 +61,17 @@ parser.add_argument(
     help="[generalization] 받는 컵 opening-only scale (xy만, 높이 불변; eval-time, 복원 후 적용). narrow/wide opening OOD.",
 )
 parser.add_argument(
+    "--cup_scale_set", type=str, default=None,
+    help="[generalization] 받는 컵 스케일 DR set 오버라이드 (콤마구분, 예 0.8,1.0,1.2). "
+         "빈 문자열/'none'이면 DR 해제(단일 컵) → --cup_scale 계열 OOD sweep과 이중조건 방지. "
+         "미지정이면 학습 env.yaml 값 유지.",
+)
+parser.add_argument(
+    "--source_scale_set", type=str, default=None,
+    help="[generalization] source(드는) 컵 스케일 DR set 오버라이드. 규약은 --cup_scale_set과 동일. "
+         "해제 시 warm spec 매칭도 함께 비활성(단일 nominal 파지 풀).",
+)
+parser.add_argument(
     "--spawn_x", type=float, default=None,
     help="[generalization] source cup spawn x_center override (eval-time, 복원 후 적용).",
 )
@@ -356,6 +367,22 @@ def _restore_run_cfg_if_available(env_cfg, agent_cfg: dict, *, resume_path: str,
     return agent_cfg
 
 
+def _parse_scale_set(raw: str | None) -> tuple[float, ...] | None:
+    """CLI 스케일 세트 파싱. None=미지정(오버라이드 없음), ()=DR 해제."""
+    if raw is None:
+        return None
+    s = raw.strip()
+    if s == "" or s.lower() in ("none", "off", "[]"):
+        return ()
+    s = s.strip("[]()")
+    try:
+        return tuple(float(t) for t in s.split(",") if t.strip() != "")
+    except ValueError as exc:
+        raise SystemExit(
+            f"[ERROR] scale set 파싱 실패: {raw!r} ({exc}). 예: 0.8,1.0,1.2 또는 '' (해제)"
+        )
+
+
 def _apply_playback_env_overrides(env_cfg) -> None:
     """Apply CLI-only playback overrides after any logged cfg restore."""
     if args_cli.num_envs is not None:
@@ -408,6 +435,28 @@ def _apply_playback_env_overrides(env_cfg) -> None:
             print(f"[INFO] target cup opening-only scale (xy) for playback: {args_cli.cup_scale_xy}")
         else:
             print("[WARN] --cup_scale_xy ignored: env has no left_target_cup_scale_xy")
+    # [DR] scale_set 오버라이드 — hydra env.*는 학습 cfg 복원에 덮이므로 반드시 여기서 적용.
+    for _arg_name, _cfg_attr, _label in (
+        ("cup_scale_set", "left_target_cup_scale_set", "target cup scale set"),
+        ("source_scale_set", "source_cup_scale_set", "source cup scale set"),
+    ):
+        _new = _parse_scale_set(getattr(args_cli, _arg_name, None))
+        if _new is None:
+            continue
+        if not hasattr(env_cfg, _cfg_attr):
+            print(f"[WARN] --{_arg_name} ignored: env has no {_cfg_attr}")
+            continue
+        _old = tuple(getattr(env_cfg, _cfg_attr) or ())
+        setattr(env_cfg, _cfg_attr, _new)
+        print(f"[INFO] {_label} for playback: {_old} → {_new if _new else '() (DR off)'}")
+    # 이중조건 경고: scalar scale은 판정기하만, scale_set은 물리자산까지 바꿔 서로 어긋난다.
+    if getattr(args_cli, "cup_scale", None) is not None or getattr(args_cli, "cup_scale_xy", None) is not None:
+        if tuple(getattr(env_cfg, "left_target_cup_scale_set", ()) or ()):
+            print(
+                "[WARN] --cup_scale/--cup_scale_xy 와 left_target_cup_scale_set 동시 활성 — "
+                "판정기하만 scalar배, 물리자산은 set 스케일 → 조건 불일치. "
+                "OOD sweep 시 --cup_scale_set '' 를 함께 지정하라."
+            )
     if args_cli.spawn_x is not None and hasattr(env_cfg, "object_spawn_x_center"):
         env_cfg.object_spawn_x_center = args_cli.spawn_x
         print(f"[INFO] spawn x_center for playback: {args_cli.spawn_x}")

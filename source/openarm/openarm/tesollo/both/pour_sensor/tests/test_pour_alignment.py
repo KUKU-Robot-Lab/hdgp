@@ -225,7 +225,12 @@ def test_outcome_adr_curriculum() -> None:
     cfg = _read("pour_right_env_cfg.py")
 
     assert "self.outcome_adr" in env
-    assert "r_pour = pour_bead_w * corridor_score * self._bead_in_target_fraction" in env
+    # r_pour는 이후 capture_delta 항이 붙어 여러 줄로 바뀌었다(제품 코드 정상 진화).
+    # 계약의 핵심은 "bead 보상 weight × corridor 게이트 × 실제 이송분" 구조이므로
+    # 한 줄 문자열 대신 구성요소로 검사한다.
+    assert "r_pour = pour_bead_w * corridor_score * (" in env
+    _r_pour_expr = env.split("r_pour = pour_bead_w * corridor_score * (")[1].split(")")[0]
+    assert "self._bead_in_target_fraction" in _r_pour_expr
     assert "self._pose_success_now = (" in env
     assert "self.outcome_adr.maybe_increment(_pose_success_rate)" in env
     assert "outcome_adr_trigger_threshold: float = 0.80" in cfg
