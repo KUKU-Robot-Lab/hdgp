@@ -58,7 +58,9 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import quat_apply
 
 from openarm.common.grasp_logging import action_policy_scalars, joint_state_scalars
-from openarm.common.grasp_reward_core import compute_grasp_reward_terms
+# ★grasp_v1 은 공유 core 를 쓰지 않는다(08.16 지시) — 감쌈 깊이·유지 페널티를
+# 계속 손대야 하는데 공유 core 를 건드리면 v2/v7_2/v10_3/adapt 가 전부 영향받는다.
+from .grasp_reward import compute_grasp_reward_terms
 from openarm.common.grasp_v2_contract import (
     compute_action_delta_norm,
     compute_grasp_v2_stability,
@@ -320,6 +322,13 @@ class GraspRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         self.object_applied_force  = torch.zeros(self.num_envs, 1, 3, device=self.device)
         self.object_applied_torque = torch.zeros(self.num_envs, 1, 3, device=self.device)
+
+        # ----------------------------------------------------------------
+        # 감쌈 깊이 버퍼 (08.16). wrap_frac = per-finger (middle AND distal) 비율,
+        # wrap_at_latch = 래치 순간 스냅샷(유지 페널티 기준선). _pre_physics_step 서 갱신.
+        # ----------------------------------------------------------------
+        self.wrap_frac_buf     = torch.zeros(self.num_envs, device=self.device)
+        self.wrap_at_latch_buf = torch.zeros(self.num_envs, device=self.device)
         self._cup_mass = self.cup.root_physx_view.get_masses().to(self.device).view(-1)
 
         # ----------------------------------------------------------------
@@ -825,6 +834,19 @@ class GraspRightEnv(DirectRLEnv):
             self.lift_start_step_buf,
         )
 
+        # ---- 감쌈 깊이(per-finger mid AND distal)와 래치 시점 스냅샷 ----
+        # wrap_frac 은 "같은 손가락이 중간마디와 원위마디 둘 다 닿았나" = 진짜 감쌈.
+        # envelope_frac(0.5*(mid+dist) 평균)은 서로 다른 손가락이어도 값이 올라 느슨하다.
+        # wrap_at_latch 는 유지 페널티의 기준선 — 래치 순간의 깊이를 붙들어 두고,
+        # 그보다 얕아진 만큼만 처벌한다(절대 깊이 처벌은 리프트 보상을 억제해 REVISE됨).
+        self.wrap_frac_buf.copy_(
+            (self.middle_binary_contact_buf & self.distal_binary_contact_buf)
+            .float().mean(dim=-1)
+        )
+        self.wrap_at_latch_buf = torch.where(
+            just_entering_lift, self.wrap_frac_buf, self.wrap_at_latch_buf
+        )
+
         # Arm: 진입 시점 실제 위치 캡처 → lift 보간 시작점으로 사용
         # (pregrasp_arm_pos_buf 대신 실제값 사용: grasp phase에서 Fabrics가 arm을
         #  실제로 이동했으므로 전환 시 불연속 없이 자연스럽게 lift)
@@ -896,6 +918,15 @@ class GraspRightEnv(DirectRLEnv):
         g3 = (dist_c + tip_c).clamp(max=1.0)                        # _3 PIP: distal|tip 접촉 시 동결
         g4 = (dist_c + tip_c).clamp(max=1.0)                        # _4 DIP: distal|tip 접촉 시 동결
         gate20 = torch.stack([g1, g2, g3, g4], dim=2).reshape(self.num_envs, -1)  # (N,20)
+        # ★08.16 래치 후 재조임 권한(retighten_after_latch).
+        # 파지력은 힘 명령이 아니라 `stiffness × (target − actual)` 오버슈트가 전부인데,
+        # 동결이 **첫 접촉(0.1N)** 에서 걸리므로 오버슈트가 거의 0 인 채 고정된다 —
+        # 즉 "조인 것"이 아니라 "닿은 데서 멈춘 것"이고, 외란이 와도 더 조일 수단이 없다.
+        # 래치 후에는 동결을 풀어 정책이 finger_close_buf 를 1.0 쪽으로 더 밀 수 있게 한다.
+        # 되풀기(음의 advance)는 넣지 않는다 — 래치 회피 gradient 를 여는 과거 실패 패턴.
+        # 래치 전 동결은 그대로 유지(접근→형상적응 감쌈이 이 구조로 만들어짐).
+        if bool(getattr(self.cfg, "retighten_after_latch", False)):
+            gate20 = gate20 * (~self.lift_ready_latched_buf).float().unsqueeze(1)
         cmd20 = cmd.repeat_interleave(4, dim=1)                     # (N,20) 손가락 명령 → 4관절
         advance = float(self.cfg.finger_close_speed) * cmd20 * (1.0 - gate20)
         self.finger_close_buf = (self.finger_close_buf + advance).clamp(0.0, 1.0)  # (N,20)
@@ -1248,6 +1279,10 @@ class GraspRightEnv(DirectRLEnv):
             contact_persistence_frac=contact_persistence_frac,
             envelope_frac=envelope_frac,
             grip_frac=grip_frac,
+            # 08.16 감쌈 깊이(per-finger mid AND distal)와 래치 기준선. 둘 다 주어져야
+            # 유지 페널티가 켜진다 — 미주입이면 core 가 기존 동작 그대로 돈다.
+            wrap_frac=self.wrap_frac_buf,
+            wrap_at_latch=self.wrap_at_latch_buf,
             palm_to_cup_dist=palm_to_cup_dist,
             fingertip_side_dist=fingertip_side_dist,
             cup_height_delta=cup_height_delta,
@@ -1343,6 +1378,21 @@ class GraspRightEnv(DirectRLEnv):
         _any_fc = (_tip | _mid | _dist).float()
         for _fi, _fn in enumerate(["thumb", "index", "middle", "ring", "pinky"]):
             self.extras[f"debug/finger/{_fn}_cup"] = _any_fc[:, _fi].mean()
+        # 감쌈 깊이 진단(08.16). reward-audit Check5 조건 — 유지 페널티의 회피 경로
+        # ("얕게 래치하면 잃을 게 없다")가 실제로 발생하는지 보려면 래치 시점 깊이가 필요하다.
+        #   wrap_now      : 현재 per-finger 감쌈 깊이
+        #   wrap_at_latch : 래치 순간 깊이(페널티 기준선) — 이게 하락하면 회피가 일어나는 것
+        #   wrap_drop     : 실제로 물린 페널티 크기(=relu(latch-now))
+        self.extras["contact/wrap_now"] = self.wrap_frac_buf.mean()
+        _latched_f = self.lift_ready_latched_buf.float()
+        _n_latched = _latched_f.sum().clamp(min=1.0)
+        self.extras["contact/wrap_at_latch"] = (
+            (self.wrap_at_latch_buf * _latched_f).sum() / _n_latched
+        )
+        self.extras["contact/wrap_drop"] = (
+            ((self.wrap_at_latch_buf - self.wrap_frac_buf).clamp(min=0.0) * _latched_f).sum()
+            / _n_latched
+        )
         # 외란 진단(08.15, reward-audit Check5 조건): ADR 램프 현재값 + wrench 실인가율.
         # 외란 중 접촉 유지의 대리 지표 = contact/envelope_finger_count·debug/finger/*_cup.
         if self.cfg.wrench_enable:
@@ -1450,7 +1500,18 @@ class GraspRightEnv(DirectRLEnv):
         # scripted lift-wait 중에는 tipped 로 종료하지 않음.
         # joint7 이동으로 cup 이 일시적으로 기울 수 있으나 warm-state 저장은
         # lift-wait 도달과 접촉 조건으로 필터링한다.
+        # ★08.16: 억제를 **스크립트 램프 구간(LIFT_PHASE_STEPS)** 으로만 한정한다.
+        # 기존엔 래치 이후 전 구간을 억제했는데, 그 구간이 정확히 회전 외란
+        # (hold_rotation_perturb)이 걸리는 구간이라 **외란의 유일한 실패 신호가 꺼져 있었다**.
+        # 램프가 끝난 hold 구간에서는 틸팅 종료를 되살려 "회전에 놓치면 실패"를 학습시킨다.
+        # 램프 중 일시적 기울임은 그대로 면제되므로 warm-state 수집 경로는 영향 없다.
+        # (정상 구간 실측 cup_tilt_deg 10.9° vs 임계 60° — 여유 큼)
         is_scripted_phase = self.is_lift_phase
+        if bool(getattr(self.cfg, "tipping_active_after_lift_ramp", False)):
+            _ramp_left = (
+                self.episode_length_buf - self.lift_start_step_buf
+            ) < int(LIFT_PHASE_STEPS)
+            is_scripted_phase = self.is_lift_phase & _ramp_left
         tipped_active = tipped & ~is_scripted_phase
         terminated = out_x | out_y | fallen | tipped_active
         truncated  = self.episode_length_buf >= self.max_episode_length - 1
@@ -1820,6 +1881,10 @@ class GraspRightEnv(DirectRLEnv):
         self.transfer_entry_grasp_success_buf[env_ids] = False
         self.lift_ready_latched_buf[env_ids] = False
         self.grasp_ready_hold_buf[env_ids] = 0
+        # 감쌈 깊이 버퍼도 리셋 — 안 하면 이전 에피소드의 래치 기준선이 남아
+        # 새 에피소드가 시작부터 페널티를 문다.
+        self.wrap_frac_buf[env_ids] = 0.0
+        self.wrap_at_latch_buf[env_ids] = 0.0
         self.lift_start_step_buf[env_ids] = 0
         self.is_lift_phase[env_ids] = False
         self.finger_close_buf[env_ids] = 0.0

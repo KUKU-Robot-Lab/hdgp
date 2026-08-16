@@ -90,31 +90,81 @@ def test_lift_latch_gate_disabled_envelope_via_reward() -> None:
 def test_envelope_credited_in_grasp_and_lift_reward() -> None:
     # envelope(중간/원위 wrap)을 grasp/lift 보상에 credit → tip-farming 차단.
     core = (
-        Path(__file__).resolve().parents[4] / "common" / "grasp_reward_core.py"
+        Path(__file__).resolve().parents[1] / "grasp_reward.py"
     ).read_text(encoding="utf-8")
     env = _text("grasp_left_env.py")
 
-    # 공유 코어: optional envelope_frac (RH56F1 None=기존 동작)
+    # 전용 모듈: envelope_frac 는 graded_contact 용으로 남아 있다
     assert "envelope_frac: torch.Tensor | None = None" in core
-    # grasp 보상이 envelope_frac을 포함
-    assert "0.40 * envelope_frac" in core
-    # lift/stabilize graded_contact가 envelope-aware
-    assert "0.5 * graded_contact + 0.5 * env_quality" in core
+    # grasp 보상의 envelope 비중은 cfg knob(grasp_envelope_credit, 기본 0.40)로 노출된다.
+    # ※구 계약은 리터럴 "0.40 * envelope_frac" 였으나 knob 화되며 사라졌다.
+    assert '_cfg_float(cfg, "grasp_envelope_credit", 0.40)' in core
+    # tip 항은 (1-credit)/0.60 으로 비례 축소 → 합=1 유지 → credit 을 올려도 grasp 최대치 불변
+    # (감쌈만 하고 안 드는 국소최적을 구조적으로 차단; reward-audit Check1 근거)
+    assert "_tip_scale = (1.0 - _ecred) / 0.60" in core
+    # lift/stabilize graded_contact 가 envelope-aware (mix 는 lift_envelope_mix knob)
+    assert '_cfg_float(cfg, "lift_envelope_mix", 0.5)' in core
+    assert "(1.0 - _emix) * graded_contact + _emix * env_quality" in core
     # env: 중간·원위 마디 접촉으로 envelope_frac 계산해 전달
     assert "middle_binary_contact_buf.float().mean" in env
     assert "distal_binary_contact_buf.float().mean" in env
     assert "envelope_frac=envelope_frac" in env
 
 
+def test_wrap_depth_and_retention_contract() -> None:
+    """08.16 감쌈 깊이(per-finger mid AND distal)와 래치 대비 유지 페널티 계약.
+
+    배경: ADR 만렙 후 난이도가 상수인 구간에서도 감쌈만 단조 침식했다. 원인은
+    ①grasp(감쌈 credit)가 pre_lift_gate 로 리프트 순간 꺼지고 ②post_lift 페널티가
+    grip_frac(마디 무관 OR)이라 중간마디를 잃어도 비용이 0 이었던 것.
+    """
+    core = (
+        Path(__file__).resolve().parents[1] / "grasp_reward.py"
+    ).read_text(encoding="utf-8")
+    env = _text("grasp_left_env.py")
+
+    # grasp_v1 전용 모듈이므로 optional 이 아니라 **필수 인자**다(공유 core 호환 불필요).
+    assert "wrap_frac: torch.Tensor," in core
+    assert "wrap_at_latch: torch.Tensor," in core
+    # grasp credit 이 느슨한 envelope_frac 이 아니라 깊이(wrap_frac)를 직접 참조
+    assert "+ _ecred * wrap_frac.clamp(0.0, 1.0)" in core
+    assert "_ecred * envelope_frac.clamp(0.0, 1.0)" not in core
+    # 유지 페널티는 **절대 깊이가 아니라 래치 대비 감소분** — 유지하면 비용 0이라
+    # 보상 기준선이 이동하지 않는다(절대 깊이 처벌은 리프트를 억제해 REVISE 됨)
+    assert "torch.relu(wrap_at_latch.clamp(0.0, 1.0) - wrap_frac.clamp(0.0, 1.0))" in core
+    assert 'wrap_retention_loss_weight' in core
+
+    # env: per-finger AND 로 깊이 산출 + 래치 순간 스냅샷 + 리셋 클리어
+    assert "middle_binary_contact_buf & self.distal_binary_contact_buf" in env
+    assert "self.wrap_at_latch_buf = torch.where(" in env
+    assert "self.wrap_at_latch_buf[env_ids] = 0.0" in env
+    # 회피 경로("얕게 래치하면 잃을 게 없다") 감시용 로깅이 있어야 한다
+    assert 'self.extras["contact/wrap_at_latch"]' in env
+
+
+def test_retighten_and_tipping_signal_contract() -> None:
+    """래치 후 재조임 권한 + 회전 외란 구간의 실패 신호 복원."""
+    env = _text("grasp_left_env.py")
+
+    # 파지력 = stiffness×(target−actual) 오버슈트뿐인데 동결이 첫 접촉에서 걸려
+    # 오버슈트≈0 으로 고정된다 → 래치 후 동결 해제로 "더 조일" 권한을 준다
+    assert 'getattr(self.cfg, "retighten_after_latch", False)' in env
+    assert "gate20 = gate20 * (~self.lift_ready_latched_buf).float().unsqueeze(1)" in env
+    # 회전 외란은 래치 후에만 걸리는데 tipped 종료가 그 구간 전체에서 꺼져 있었다 →
+    # 스크립트 램프 구간만 억제하고 hold 구간에서는 복원
+    assert 'getattr(self.cfg, "tipping_active_after_lift_ramp", False)' in env
+    assert "is_scripted_phase = self.is_lift_phase & _ramp_left" in env
+
+
 def test_post_lift_and_success_are_grip_consistent() -> None:
     # envelope wrap이 tip을 mid/dist로 옮겨도 처벌하지 않도록 post_lift 페널티·success를
     # grip(임의 마디 접촉) 기준으로. tip-only면 wrap↔tip 진동 유발.
     core = (
-        Path(__file__).resolve().parents[4] / "common" / "grasp_reward_core.py"
+        Path(__file__).resolve().parents[1] / "grasp_reward.py"
     ).read_text(encoding="utf-8")
     env = _text("grasp_left_env.py")
 
-    # 공유 코어: optional grip_frac (RH56F1 None=tip 유지)
+    # grip_frac(마디 무관 OR)은 breadth 유지용으로 그대로 사용
     assert "grip_frac: torch.Tensor | None = None" in core
     # post_lift_contact_loss가 grip_frac 사용
     assert "tip_contact_frac if grip_frac is None else grip_frac" in core

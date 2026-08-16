@@ -309,6 +309,40 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 이번엔 fresh(warmstart 없음)+lift 수정 유지라 과거 couple 실패 두 원인(warmstart 상충·lift 버그)
     # 모두 제거됨. 여전히 reward/obs/action 불변·left-only·right 무영향.
     couple_four_fingers: bool = True
+
+    # -----------------------------------------------------------------------
+    # 감쌈(envelope) 품질 — 08.16 개편. reward-audit ACCEPT/REVISE 반영.
+    #
+    # 배경(실측): ADR 만렙 후 난이도가 상수인 2,687 epoch 동안 성공률·리프트는 평탄한데
+    # **감쌈만 단조 침식**했다(envelope 1.94→1.74, full_envelope 0.24→0.17,
+    # middle_count 2.44→2.16, 엄지 cup_mid 0.59→0.48). 손끝 접촉은 오히려 줄었으므로
+    # "손끝 전환"이 아니라 **중간마디(PIP)를 버려 감쌈이 얕아지는 것**이고, 그게 공짜였다:
+    #   · grasp(12.0, envelope credit)는 pre_lift_gate 로 리프트 순간 꺼진다
+    #   · post_lift_contact_loss 는 grip_frac(마디 무관 OR)이라 mid→distal 이동이 무비용
+    # -----------------------------------------------------------------------
+    # grasp 보상 안 감쌈 비중(core 기본 0.40). 합이 1로 재정규화되므로 올려도 grasp
+    # 최대치는 불변 — 국소최적을 구조적으로 못 만든다. 래치 **전** shaping 이라
+    # 래치 시점 자세가 깊어지고, 그 자세가 곧 유지 페널티의 기준선이 된다.
+    grasp_envelope_credit: float = 0.55
+    # 리프트 후 게이트의 감쌈 비중(core 기본 0.5): graded_contact=(1-mix)*tip+mix*envelope.
+    # ★여기엔 느슨한 envelope_frac 이 들어간다 — 엄격한 깊이(wrap)를 넣으면 실측 0.349→0.144
+    #   (0.41배)라 lift 30.0·stabilize 10.0·stability 1.0 을 20~30% 일괄 삭감한다.
+    #   그래서 mix 만 소폭 올린다(0.5→0.6, graded 0.518→0.484 로 −6.6%).
+    lift_envelope_mix: float = 0.6
+    # 감쌈 유지 페널티 가중치. **래치 시점 대비 감소분**에만 걸린다(절대 깊이 아님).
+    # 유지하면 정확히 0 이라 보상 기준선이 이동하지 않고, 잃을 때만 비용이 생긴다.
+    # 크기 산정: 실측 wrap 침식폭 ≈0.05(0.19→0.14) × 이 가중치 = 스텝당 −0.30,
+    # reward/lift 실측 5.8 대비 5% 수준 — 신호는 되되 리프트를 억제하지 않는 선.
+    wrap_retention_loss_weight: float = -6.0
+    # ★래치 후 손가락 동결 해제(재조임 권한). 파지력은 stiffness×(target−actual) 오버슈트가
+    # 전부인데 동결이 첫 접촉(0.1N)에서 걸려 오버슈트≈0 으로 고정된다 — 외란이 와도 더 조일
+    # 수단이 없다. 래치 후 동결을 풀어 정책이 폐쇄 진행도를 더 밀 수 있게 한다.
+    # ⚠️배포 동기화 필수: sim2real/scripts/grasp_action_decoder.py 의 GraspFingerController.
+    retighten_after_latch: bool = True
+    # ★틸팅 종료 억제를 스크립트 램프(LIFT_PHASE_STEPS) 구간으로만 한정. 기존엔 래치 이후
+    # 전 구간을 억제했는데 그 구간이 정확히 회전 외란이 걸리는 구간이라, 외란의 유일한
+    # 실패 신호가 꺼져 있었다. 램프 후 hold 구간에서 되살린다.
+    tipping_active_after_lift_ramp: bool = True
     grasp_contact_persistence_reward_steps: int = 20
     enclosure_sharpness: float = 15.0
     # cup_radius_approx: cup_big 기준값(반경). 2026-07-26부터 per-object bbox 텐서
