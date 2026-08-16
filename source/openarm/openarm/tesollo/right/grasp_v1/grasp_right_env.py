@@ -55,7 +55,7 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_apply
+from isaaclab.utils.math import quat_apply, quat_conjugate
 
 from openarm.common.grasp_logging import action_policy_scalars, joint_state_scalars
 # ★grasp_v1 은 공유 core 를 쓰지 않는다(08.16 지시) — 감쌈 깊이·유지 페널티를
@@ -1070,8 +1070,25 @@ class GraspRightEnv(DirectRLEnv):
             fingertip_pos - cup_pos_noisy.unsqueeze(1)
         ).view(self.num_envs, -1)
 
-        # 7. fingertip binary contact (5D) — contact 자체에는 noise 없음
-        binary_contact = self.binary_contact_buf.float()
+        # 7. fingertip 접촉력 3축 (15D) — ★08.16 binary(5D) 대체.
+        # 왜: 재조임 권한을 열어도 정책이 **자기 파지력을 관측할 수 없으면 조절할 수 없다**.
+        # binary 는 0.1N 임계 하나라 "닿음"과 "으스러뜨림"을 구분하지 못한다.
+        # 실기 근거: Tesollo DG-5F 손끝은 6축 F/T 내장 —
+        #   /dg5f_right/fingertip_{1..5}_broadcaster/wrench 로 실제 발행된다.
+        #   6축 중 **force 3축만** 쓴다(torque 3축은 미사용 — 쓰려면 재학습 필요).
+        # ★프레임 결정 = tip-local: sim 의 force_matrix_w 는 world frame 이지만 실물 F/T 는
+        #   센서(손가락) 로컬 출력이다. world 로 학습하면 배포 시 매 스텝 tip FK 회전으로
+        #   변환해야 하고 그 변환이 어긋나면 조용히 잘못된 obs 가 된다(과거 손 obs zeros
+        #   사고와 동형). sim 을 tip-local 로 맞춰 **실기 값이 그대로 들어가게** 한다.
+        # 정규화는 CONTACT_FORCE_MAX(10N) — 실기 노드도 동일 상수를 써야 한다.
+        _tip_quat_w = self.robot.data.body_quat_w[:, self.fingertip_body_indices]  # (N,5,4)
+        _tip_f_local = quat_apply(
+            quat_conjugate(_tip_quat_w.reshape(-1, 4)),
+            self.contact_force_xyz_raw.reshape(-1, 3),
+        ).view(self.num_envs, NUM_FINGERTIPS, 3)
+        tip_force_local = (_tip_f_local / CONTACT_FORCE_MAX).clamp(-1.0, 1.0).view(
+            self.num_envs, -1
+        )   # (N,15)
 
         # 8. last actions (11D)
         last_actions = self.actions
@@ -1088,10 +1105,10 @@ class GraspRightEnv(DirectRLEnv):
             fingertip_pos_rel_palm, # 15
             palm_to_cup,            # 3
             cup_to_fingertip,       # 15
-            binary_contact,         # 5
+            tip_force_local,        # 15  ★08.16 binary(5) → 3축 힘(15). tip-local·10N 정규화
             last_actions,           # 11
             object_onehot,          # 8
-        ], dim=-1)   # 114D
+        ], dim=-1)   # 124D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -1131,7 +1148,7 @@ class GraspRightEnv(DirectRLEnv):
         ).norm(dim=-1)
         fingertip_signed_dist = tip_to_cup_dist - self.cup_radius_approx_buf.unsqueeze(-1)
 
-        # critic actor_obs_clean (114D) — clean state 재조합
+        # critic actor_obs_clean (124D) — clean state 재조합
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,
             arm_joint_vel_clean,
@@ -1141,13 +1158,13 @@ class GraspRightEnv(DirectRLEnv):
             (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
             cup_pos_clean - palm_center_pos_clean,
             (fingertip_pos_clean - cup_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
-            binary_contact,
+            tip_force_local,        # 15 — actor 와 동일(접촉력엔 obs noise 미적용)
             last_actions,
             object_onehot,
-        ], dim=-1)   # 114D
+        ], dim=-1)   # 124D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 114
+            actor_obs_clean,        # 124
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4
@@ -1383,6 +1400,16 @@ class GraspRightEnv(DirectRLEnv):
         #   wrap_now      : 현재 per-finger 감쌈 깊이
         #   wrap_at_latch : 래치 순간 깊이(페널티 기준선) — 이게 하락하면 회피가 일어나는 것
         #   wrap_drop     : 실제로 물린 페널티 크기(=relu(latch-now))
+        # ★과폐쇄 감시(08.16, retighten_after_latch 도입에 따른 예상 부작용).
+        # 유지 페널티는 "잃는 것"만 처벌하고 sim 컵은 rigid 라 **끝까지 조이는 게 공짜**다.
+        # 정책이 close_frac→1.0 으로 포화하면 (a) 재조임이 학습이 아니라 상수가 되고
+        # (b) 실기에서 손가락·물체 손상 위험. 행동은 안 바꾸고 지표로만 감시한다.
+        #   close_frac  : 손가락 폐쇄 진행도 평균(1.0 = 완전 폐쇄)
+        #   tip_force   : 손끝 접촉력 평균 [N] — 포화 시 함께 치솟는다
+        self.extras["debug/finger/close_frac"] = self.finger_close_buf.mean()
+        self.extras["debug/finger/close_frac_max"] = self.finger_close_buf.max()
+        self.extras["contact/tip_force_mean"] = self.contact_force_raw.mean()
+        self.extras["contact/tip_force_max"] = self.contact_force_raw.max()
         self.extras["contact/wrap_now"] = self.wrap_frac_buf.mean()
         _latched_f = self.lift_ready_latched_buf.float()
         _n_latched = _latched_f.sum().clamp(min=1.0)

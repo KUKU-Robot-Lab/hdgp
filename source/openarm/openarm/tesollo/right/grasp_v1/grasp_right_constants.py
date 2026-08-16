@@ -85,13 +85,17 @@ NUM_ACTIONS = NUM_PALM_ACTION + NUM_FINGER_ACTION  # 11
 # Observation space
 # ---------------------------------------------------------------------------
 # 2026-07-26 MultiAsset(8종)+DR 이식: 물체 onehot 8D를 base obs 뒤에 append.
-NUM_OBSERVATIONS_BASE = 106   # Actor base: sim2real 가능 (물체 onehot 제외)
+# ★08.16: fingertip 접촉 obs 를 binary 5D → **3축 힘 15D**(tip-local, 10N 정규화)로 교체.
+# 106 - 5 + 15 = 116. 근거: Tesollo DG-5F 손끝에 6축 F/T 가 내장되어 실기도 3축 force 를
+# 발행하며(/dg5f_right/fingertip_*/wrench), binary(임계 0.1N)로는 정책이 자기 파지력을
+# 관측·조절할 수 없다(재조임 권한을 열어도 무의미).
+NUM_OBSERVATIONS_BASE = 116   # Actor base: sim2real 가능 (물체 onehot 제외)
 NUM_OBJECT_CLASSES    = 8     # 물체군: cup_big×4 scale + shaker_body + cyl×3(직경5/8/12, 높이12cm 통일)
-NUM_OBSERVATIONS = NUM_OBSERVATIONS_BASE + NUM_OBJECT_CLASSES    # 106+8=114
+NUM_OBSERVATIONS = NUM_OBSERVATIONS_BASE + NUM_OBJECT_CLASSES    # 116+8=124
 NUM_DISTAL_SENSORS  = 5       # rl_dg_*_4
 NUM_MIDDLE_SENSORS  = 5       # rl_dg_*_3
 NUM_CRITIC_EXTRAS   = 37
-NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 114+37=151
+NUM_CRITIC_OBSERVATIONS = NUM_OBSERVATIONS + NUM_CRITIC_EXTRAS  # 124+37=161
 
 # ---------------------------------------------------------------------------
 # Episode structure (@ 60 Hz)
