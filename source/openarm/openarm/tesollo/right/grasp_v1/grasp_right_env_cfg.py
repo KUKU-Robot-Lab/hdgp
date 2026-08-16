@@ -322,11 +322,25 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 크기 산정: 실측 wrap 침식폭 ≈0.05(0.19→0.14) × 이 가중치 = 스텝당 −0.30,
     # reward/lift 실측 5.8 대비 5% 수준 — 신호는 되되 리프트를 억제하지 않는 선.
     wrap_retention_loss_weight: float = -6.0
-    # ★래치 후 손가락 동결 해제(재조임 권한). 파지력은 stiffness×(target−actual) 오버슈트가
-    # 전부인데 동결이 첫 접촉(0.1N)에서 걸려 오버슈트≈0 으로 고정된다 — 외란이 와도 더 조일
-    # 수단이 없다. 래치 후 동결을 풀어 정책이 폐쇄 진행도를 더 밀 수 있게 한다.
-    # ⚠️배포 동기화 필수: sim2real/scripts/grasp_action_decoder.py 의 GraspFingerController.
-    retighten_after_latch: bool = True
+    # ★★08.16 실패 실증 → False 로 되돌림(wrapfix1_retighten_FAILED_ep400).
+    # 시도: 래치 후 동결 게이트를 풀어 "더 조일" 권한을 준다.
+    # 결과: **감쌈이 파괴됐다.** 같은 epoch(300~450) 대조 —
+    #   full_envelope 0.176→0.035(0.20x), wrap 0.447→0.214(0.48x),
+    #   middle_count 2.496→1.190(0.48x), distal_count 0.736→0.420(0.57x)
+    #   그런데 총 접촉은 4.07→4.41 로 늘고 five_tip 동시접촉률은 0.42→0.68(1.61x)
+    #   = 접촉이 사라진 게 아니라 중간·원위마디에서 **손끝으로 이동**(인벨롭→핀치).
+    # 원인: 동결 게이트는 "컵 반경보다 더 말아쥐지 못하게" 하는 장치였다. 풀어주면 손가락이
+    #   컵 반경(4.5cm)보다 작은 반경으로 말리고, 그러면 기하학적으로 컵에 닿을 수 있는 점은
+    #   가장 끝(손끝) 하나뿐이라 중간·원위가 들린다(close_frac 0.96 = 거의 주먹).
+    # 교훈: **위치 목표를 더 미는 것은 "조이는" 동작이 아니라 "더 작은 반경으로 마는" 동작**이다.
+    #   반경이 정해진 물체에서는 후자가 감쌈을 파괴한다. 파지력을 키우려면 자세를 더 말지 않고
+    #   같은 자세에서 토크를 키워야 하는데, 현 구조(위치 목표가 유일 입력)에는 그 채널이 없다.
+    retighten_after_latch: bool = False
+
+    # -----------------------------------------------------------------------
+    # ★08.16 squeeze(가압) 철회 — 액션에서 제거(NUM_SQUEEZE_ACTION=0). 근거는 constants 참조:
+    #   도입 전제("동결 때문에 오버슈트가 0")가 오진이었고 실제 원인은 토크 포화였다.
+    #   게인 재설정으로 포화는 풀렸으나, PIP/DIP 분리 채널이 같은 권한을 더 자연스럽게 준다.
     # ★틸팅 종료 억제를 스크립트 램프(LIFT_PHASE_STEPS) 구간으로만 한정. 기존엔 래치 이후
     # 전 구간을 억제했는데 그 구간이 정확히 회전 외란이 걸리는 구간이라, 외란의 유일한
     # 실패 신호가 꺼져 있었다. 램프 후 hold 구간에서 되살린다.
@@ -348,7 +362,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 크기는 ADR 커리큘럼 0→max (adr_custom_cfg["object_wrench"]) — 급격 도입 시 grip 붕괴 방지.
     # -----------------------------------------------------------------------
     wrench_enable: bool = True
-    wrench_max_accel: float = 15.0      # m/s² ADR 종점. 컵 154g 기준 최대 2.3N = 중력(1.51N)의 1.5배(08.16 10→15 상향)
+    # ★08.16 15→8 하향(S2 실측). 실제 인가는 accel = max·rand(0,1), 질량도 per-reset 독립
+    # 샘플이므로 하중 = m·(9.81+a) 의 최악 코너는 m=0.268·a=8 → 4.77 N. 측정된 파지 능력
+    # (총 5 N, k=5 팁핀치)에 딱 들어온다. 구 15 는 6.65 N 이상을 요구해 코너가 물리적으로 불가.
+    wrench_max_accel: float = 8.0       # m/s² ADR 종점
     wrench_torsional_radius: float = 0.045  # m — pour source_inner_radius(0.041) 비드 쏠림 레버암 재현 (grasp_v2 0.03보다 큼)
     wrench_trigger_every: int = 15      # step(0.25s @60Hz)마다 새 랜덤 wrench — 비드 슬로싱 주기 근사(08.16 20→15)
     wrench_hand_dist_threshold: float = 0.3  # m — palm-물체 거리 게이트
@@ -361,7 +378,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 파지점 레버암 ~0.05m 로 만드는 중력 토크 ≈ 0.154×9.81×0.05 = 0.076 N·m.
     # a=12·r=0.045 → τ = 0.154×12×0.045 = 0.083 N·m 로 그 수준을 재현한다(구 6=0.042,
     # 실제 tilt 하중의 절반에 불과했음).
-    hold_rotation_perturb_max_accel: float = 12.0
+    # ★08.16 12→8 하향: 위 wrench 와 동일 근거(구 값은 포화 게인 전제). pour deep-tilt
+    # 재현 목표치(τ≈0.076 N·m)는 질량 종점 2.0 과 조합하면 0.268×8×0.045 = 0.096 N·m 로
+    # 여전히 충족한다 — 난이도를 깎은 게 아니라 질량 쪽으로 옮겨 담았다.
+    hold_rotation_perturb_max_accel: float = 8.0
 
     # -----------------------------------------------------------------------
     # ADR
@@ -389,11 +409,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         # 08.15 외란 커리큘럼: 0에서 시작해 increment마다 선형 증가(급격 도입 시 grip 붕괴 방지).
         # spawn과 동일 카운터 공유(grasp_v1 ADR 구조) — 학습 곡선에서 latch 후 붕괴가 보이면
         # adr_increment_interval 상향으로 램프 속도 완화(스케줄 자체 변경은 하지 않음).
+        # ★08.16 종점 하향(15→8, 12→8): 아래 wrench_max_accel 주석 참조. 구 값은 포화 게인
+        # 전제였고, 실측 파지 능력(총 5N)에 대해 질량 종점 2.0 과 조합하면 4.77N 으로 들어온다.
         "object_wrench": {
-            "max_linear_accel": (0.0, 15.0),
+            "max_linear_accel": (0.0, 8.0),
         },
         "hold_rotation": {
-            "max_accel": (0.0, 12.0),
+            "max_accel": (0.0, 8.0),
         },
     })
 
@@ -408,13 +430,15 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             "restitution_range":      (0.8, 1.0),
         },
         "object_scale_mass": {
-            # ★0.5~4.0× (사용자 지시: pour 에 국한하지 말고 광범위하게, 컵 무게 외
-            # 최소 300g 을 여유롭게 파지). 기본질량 0.134kg 통일이므로 전 물체가
-            # **0.067 ~ 0.536 kg** 을 동일하게 커버 → 최대 적재량 = 0.536-0.134 = **402g**
-            # (요구 300g 대비 +34% 여유). 상한 0.536kg 은 grasp_v2 가 ADR 만렙에서 실제로
-            # 성공시킨 최대 절대질량(0.1787kg×3.0)과 정확히 같아, 외삽이 아닌 실증 영역이다.
-            # pour 실조건 0.154kg(비드 만재)은 이 분포의 하위 구간에 여유롭게 포함된다.
-            "mass_distribution_params": (0.5, 4.0),
+            # ★08.16 4.0 → 2.0 하향 (S2 능력 곡선 실측). 구 4.0 은 **토크 포화(구 게인)에서만
+            # 성립하던 난이도**였다 — 실측 파지 능력은 총 하중 약 5 N(= 외란 3.65N + 자중 1.31N,
+            # k=5·팁핀치 기준)이고, 하중은 m·(9.81 + a) 이므로 m=0.268kg·a=8 에서 4.77 N 으로
+            # 딱 들어온다. 4.0(0.536kg)이면 6.65 N 이상이 되어 물리적으로 불가.
+            # ⚠️사용자 요구 "컵 외 최소 300g 적재"는 **정적 유지에서는 충족**(정적 한계
+            # 5/9.81 = 510g → 적재 376g)되나, 최대 wrench 동시 인가 시에는 미충족(적재 134g).
+            # 진짜 인벨롭 파지가 성립하면 능력이 올라가므로, 재학습 후 S2 를 다시 돌려
+            # 상향 여부를 재판정할 것(팁핀치 기준의 보수적 하한임).
+            "mass_distribution_params": (0.5, 2.0),
         },
     })
 
@@ -595,25 +619,39 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             ),
             # 손 stiffness/damping: pour-v5/6 검증값 채택. 기존 30/5(물렁)은 엄지 _3/_4가
             # 컵을 감을 때 반력이 엄지 대향(_2=-1.57)을 뒤로 밀어냄(play 렌더 관찰). 단단히 유지.
+            # ★08.16 손 게인 전면 재설정 (S1~S4 실측). 구 400/60 은 **토크 포화 영역**이었다:
+            #   URDF effort limit 7.5 N·m 인데 접촉 시 요구 토크가 143 N·m(한계의 19배),
+            #   접촉 관절의 80.6% 가 상시 포화(probe_torque_saturation). 즉 위치 제어가 아니라
+            #   "모터 최대 토크로 계속 쥐는 bang-bang 그리퍼"로 동작했고, 그래서 목표를 더 밀어도
+            #   힘이 1 N·m 도 안 올랐다(retighten·squeeze 실패의 구조적 원인).
+            #   또한 실기는 effort 명령 + P게인 1.5(dg5f_right_controller.yaml)라 이 영역에
+            #   구조적으로 도달 불가 — sim2real 이 성립하지 않았다.
+            # S1(포화 이탈선): 포화% 83.7(k=400) → 24.1(k=5) → 8.6(k=2) → 0(k=1.5). 상한 k≈5.
+            # S2(능력 곡선): k=5 에서 이탈가속 27.2 m/s² = 새 wrench 종점(8)의 3.4배. 게인을
+            #   80배 낮춰도 외란 내성은 37→27 로만 감소(외란 내성은 파지력보다 기하에 지배됨).
+            # S4(damping): kd=60 은 k=400 기준값. k=5 에서 kd 스윕 실측 —
+            #   kd 6.71→포화 20.5%(감쇠항 자체가 토크를 포화시킴), kd≤0.5→정착속도 2배(채터),
+            #   kd 2.0 이 포화 0.8% + 최저 채터로 양쪽 최적. 실기 d=0.0 이므로 이 damping 은
+            #   실기 기계마찰의 sim 대역품 — r2s 복구 후 armature/joint friction 실측치로 교체할 것.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["r_hj_[a-z]+_1"],
-                stiffness=200.0,   # 08.15 pour 정합: 600→200 (pour_v1 abduction 200/35와 동일). 600 이력=roll 억제 절충이었으나 pour 소비 게인과 불일치가 파지 미끄러짐 유발(e2c0e7a).
-                damping=35.0,
+                stiffness=5.0,
+                damping=2.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["r_hj_[a-z]+_2"],
-                stiffness=400.0,
-                damping=60.0,
+                stiffness=5.0,
+                damping=2.0,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["r_hj_[a-z]+_3"],
-                stiffness=400.0,
-                damping=60.0,
+                stiffness=5.0,
+                damping=2.0,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["r_hj_[a-z]+_4"],
-                stiffness=400.0,
-                damping=60.0,
+                stiffness=5.0,
+                damping=2.0,
             ),
             "openarm_left_gripper": ImplicitActuatorCfg(
                 joint_names_expr=["l_hj_gripper_[1-2]"],

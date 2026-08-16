@@ -50,6 +50,14 @@ parser.add_argument("--stage_steps", type=int, default=60, help="배율 단계�
 parser.add_argument("--stages", type=int, default=8, help="배율 단계 수")
 parser.add_argument("--max_scale", type=float, default=2.0,
                     help="최대 외란 배율(1.0 = 학습 ADR 만렙과 동일)")
+parser.add_argument("--hand_stiffness", type=float, default=0.0,
+                    help="0 이면 학습 게인 유지. >0 이면 파지 성립 **후** 손 게인을 이 값으로 "
+                         "교체하고 외란을 인가한다 — 기하는 학습 영역에서 만들고 힘 용량만 "
+                         "바꿔 비교하기 위함(S2 능력 곡선).")
+parser.add_argument("--hand_damping", type=float, default=-1.0,
+                    help="<0 이면 감쇠비 보존(kd = 60·√(k/400)). S4 에서 재도출 예정.")
+parser.add_argument("--mass_scale", type=float, default=1.0,
+                    help="파지 성립 후 물체 질량 배율. ADR mass DR(0.5~4.0) 범위 실측용.")
 parser.add_argument("--out", type=str, default="")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -122,6 +130,41 @@ def main(env_cfg, agent_cfg):
     grasp_fail = (~eligible).float().mean()
     print(f"[eval] 파지 성립 {int(eligible.sum())}/{n} "
           f"(grasp_fail_rate={float(grasp_fail):.3f})", flush=True)
+
+    # ---- 1.5단계: 손 게인 / 물체 질량 교체 (S2 능력 곡선) ----
+    # 기하는 학습 게인에서 만들고 그 뒤 힘 용량만 바꾼다. 처음부터 낮은 게인으로 돌리면
+    # 파지 형상 자체가 달라져 "힘이 모자란 것"과 "잘못 잡은 것"이 섞인다.
+    if args_cli.hand_stiffness > 0.0:
+        k = float(args_cli.hand_stiffness)
+        kd = float(args_cli.hand_damping) if args_cli.hand_damping >= 0.0 else 60.0 * (k / 400.0) ** 0.5
+        hd = uenv.hand_dof_indices
+        stiff = uenv.robot.data.joint_stiffness.clone()
+        damp = uenv.robot.data.joint_damping.clone()
+        stiff[:, hd] = k
+        damp[:, hd] = kd
+        uenv.robot.write_joint_stiffness_to_sim(stiff)
+        uenv.robot.write_joint_damping_to_sim(damp)
+        # ★write_joint_*_to_sim 은 actuator 모델을 갱신하지 않는다(IsaacLab articulation.py:624).
+        #   장부를 안 맞추면 applied_torque 등 진단값이 옛 게인으로 계산된다.
+        for _name, _a in uenv.robot.actuators.items():
+            if _name.startswith("tesollo_hand"):
+                _a.stiffness[:] = k
+                _a.damping[:] = kd
+        print(f"[eval] 손 게인 교체: stiffness={k:.2f} damping={kd:.2f}", flush=True)
+
+    if args_cli.mass_scale != 1.0:
+        masses = uenv.cup.root_physx_view.get_masses()
+        uenv.cup.root_physx_view.set_masses(masses * float(args_cli.mass_scale),
+                                            torch.arange(n))
+        print(f"[eval] 물체 질량 ×{args_cli.mass_scale:.2f} "
+              f"(평균 {float(masses.mean())*args_cli.mass_scale*1000:.0f} g)", flush=True)
+
+    if args_cli.hand_stiffness > 0.0 or args_cli.mass_scale != 1.0:
+        for _ in range(60):                                  # 새 물성에서 정착
+            step(0.0)
+        still = uenv.lift_ready_latched_buf & eligible
+        print(f"[eval] 교체 정착 후 파지 유지 {int(still.sum())}/{int(eligible.sum())}",
+              flush=True)
 
     broken = torch.zeros(n, dtype=torch.bool, device=dev)
     break_scale = torch.full((n,), float(args_cli.max_scale), device=dev)
