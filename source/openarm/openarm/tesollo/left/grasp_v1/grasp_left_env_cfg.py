@@ -68,25 +68,44 @@ _VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
 # env_id % 8 결정론적 배정과 MultiAssetSpawnerCfg assets_cfg 순서를 동시에 정한다.
 # 물체 자산은 좌우 공유이므로 right 원본과 동일하게 유지한다(경로 치환 금지).
 # ---------------------------------------------------------------------------
+# 전 물체 공통 기본 질량 [kg]. pour_v1 실컵(cup_big_sdf, density 파생)과 동일.
+# ADR mass DR 의 곱셈 기준이 되므로 여기를 바꾸면 실효 질량 범위 전체가 이동한다.
+_BASE_OBJECT_MASS: float = 0.134
+
 _ACTIVE_OBJECT_SPECS: tuple[dict, ...] = (
-    {"id": "cup_big_s085", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (0.85, 0.85, 0.85)},
-    {"id": "cup_big_s100", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.00, 1.00, 1.00)},
-    {"id": "cup_big_s115", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.15, 1.15, 1.15)},
-    {"id": "cup_big_s130", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.30, 1.30, 1.30)},
-    {"id": "shaker_body",  "usd_path": _os.path.join(_VISDEX_ROOT, "shaker_body", "shaker_body.usd"), "scale": (1.0, 1.0, 1.0)},
-    {"id": "large_5_cyl",     "usd_path": _os.path.join(_VISDEX_ROOT, "large_5_cyl", "large_5_cyl.usd"),   "scale": (1.0, 1.0, 1.0)},
-    {"id": "large_8_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_8_cyl", "large_8_cyl.usd"),   "scale": (1.0, 1.0, 1.5)},
-    {"id": "large_12_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_12_cyl", "large_12_cyl.usd"), "scale": (1.0, 1.0, 2.4)},
+    # ★기본 질량 8종 통일 = _BASE_OBJECT_MASS(0.134kg, pour 실컵 질량). right 08.16 이식.
+    #   ① pour 실컵(cup_big_sdf, density 파생 ≈0.134kg)과 학습 질량 정합.
+    #   ② SDF 컵 질량이 scale s³로 몰래 바뀌는 함정 차단(질량은 scale 무관 고정).
+    #   ③ USD 기본질량이 제각각(shaker 0.263 / 원기둥 0.100)이면 동일한 ADR scale 을 걸어도
+    #      물체마다 절대 질량이 최대 2.6배 벌어져, 무거운 물체만 미검증 외삽 영역으로 튄다.
+    #      통일하면 **모든 물체가 동일한 절대 질량 범위 전체를 학습**한다(다양성은 ADR DR 이
+    #      매 에피소드 샘플링으로 제공 — 오히려 커버리지가 넓어짐).
+    {"id": "cup_big_s085", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (0.85, 0.85, 0.85), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s100", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.00, 1.00, 1.00), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s115", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.15, 1.15, 1.15), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s130", "usd_path": _os.path.join(_VISDEX_ROOT, "cup_big", "cup_big.usd"), "scale": (1.30, 1.30, 1.30), "mass": _BASE_OBJECT_MASS},
+    {"id": "shaker_body",  "usd_path": _os.path.join(_VISDEX_ROOT, "shaker_body", "shaker_body.usd"), "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
+    {"id": "large_5_cyl",     "usd_path": _os.path.join(_VISDEX_ROOT, "large_5_cyl", "large_5_cyl.usd"),   "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
+    {"id": "large_8_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_8_cyl", "large_8_cyl.usd"),   "scale": (1.0, 1.0, 1.5), "mass": _BASE_OBJECT_MASS},
+    {"id": "large_12_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_12_cyl", "large_12_cyl.usd"), "scale": (1.0, 1.0, 2.4), "mass": _BASE_OBJECT_MASS},
 )
 _ACTIVE_OBJECT_NAMES: tuple[str, ...] = tuple(_s["id"] for _s in _ACTIVE_OBJECT_SPECS)
 
 
 def _object_usd_cfg(spec: dict) -> "sim_utils.UsdFileCfg":
-    """단일 물체 USD spawn cfg. rigid/articulation 속성은 tesollo 기존 cup_cfg 값 그대로."""
+    """단일 물체 USD spawn cfg. rigid/articulation 속성은 tesollo 기존 cup_cfg 값 그대로.
+
+    spec에 "mass"(kg)가 있으면 mass_props로 명시 고정 — USD 내장값(명시 mass 또는
+    density 파생)을 덮어써 scale·자산 교체와 무관하게 질량을 결정론화한다.
+    """
+    _mass_props = (
+        sim_utils.MassPropertiesCfg(mass=float(spec["mass"])) if "mass" in spec else None
+    )
     return sim_utils.UsdFileCfg(
         usd_path=spec["usd_path"],
         activate_contact_sensors=True,
         scale=spec["scale"],
+        mass_props=_mass_props,
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             articulation_enabled=False,
         ),
@@ -112,7 +131,9 @@ _GRASP_OBJECT_SPAWN = sim_utils.MultiAssetSpawnerCfg(
 class EventCfg:
     """물체 physics DR (design §DR — friction/mass, 매 reset per-env 연속 랜덤).
 
-    ADR 스케줄 없이 고정 범위(정적) — object_spawn(xy_range)만 ADR 대상(아래 adr_custom_cfg).
+    ★08.16 ADR 스케줄 대상으로 전환(right 이식, grasp_v2 방식): 아래 값은 **초기(중립)
+    범위**이고, ADR increment 마다 adr_physics_cfg 의 terminal 로 선형 확장된다. 구조상
+    정적 고정 범위는 "처음부터 최대 난이도"라 커리큘럼이 아니었다(질량·마찰이 ADR 밖).
     """
 
     object_physics_material = EventTerm(
@@ -120,8 +141,9 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("cup", body_names=".*"),
-            "static_friction_range":  (0.5, 1.2),
-            "dynamic_friction_range": (0.5, 1.2),
+            # 초기=중립(1.0 배). terminal 은 adr_physics_cfg 참조.
+            "static_friction_range":  (1.0, 1.0),
+            "dynamic_friction_range": (1.0, 1.0),
             "restitution_range":      (1.0, 1.0),
             "num_buckets": 250,
         },
@@ -131,7 +153,8 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("cup"),
-            "mass_distribution_params": (0.7, 1.3),
+            # 초기=중립(원 질량 그대로). terminal 은 adr_physics_cfg 참조.
+            "mass_distribution_params": (1.0, 1.0),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -284,18 +307,75 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     enclosure_thumb_weight: float = 0.6
 
     # -----------------------------------------------------------------------
+    # 물체 외란 wrench (08.16 right 이식, DEXTRAH apply_object_wrench)
+    # pour 연결 강건화: pour 는 hold 후 비드 20×1g 소환(+15% 계단 하중)+슬로싱(자유 구름)
+    # +deep tilt 회전을 가하는데, 기존 grasp_v1 학습은 외란 경험 0회(right e2c0e7a: pour
+    # 검증 9~15%). force = mass × accel × 랜덤방향(등방), torque = force × torsional_radius.
+    # 게이트: palm이 물체 반경(wrench_hand_dist_threshold) 내일 때만 인가(DEXTRAH 원본).
+    # 크기는 ADR 커리큘럼 0→max — 급격 도입 시 grip 붕괴 방지.
+    # -----------------------------------------------------------------------
+    wrench_enable: bool = True
+    wrench_max_accel: float = 15.0      # m/s² ADR 종점. 컵 154g 기준 최대 2.3N = 중력(1.51N)의 1.5배
+    wrench_torsional_radius: float = 0.045  # m — pour source_inner_radius(0.041) 비드 쏠림 레버암 재현
+    wrench_trigger_every: int = 15      # step(0.25s @60Hz)마다 새 랜덤 wrench — 비드 슬로싱 주기 근사
+    wrench_hand_dist_threshold: float = 0.3  # m — palm-물체 거리 게이트
+    # 회전 외란(Exp4-A 물리판·reward-audit ACCEPT): lift latch 이후 env에 수평 랜덤축 torque를
+    # 추가 인가 — pour deep-tilt 중 컵이 손안에서 회전하려는 하중을 재현(회전에 안 놓는 grip 단련).
+    # reward/gate 불변(물리만) — 실패 신호는 기존 tipping 종료(60°)+success upright 게이트가 제공.
+    hold_rotation_perturb_enable: bool = True
+    # a=12·r=0.045 → τ = 0.154×12×0.045 = 0.083 N·m. pour 110° 기울임에서 컵+비드(0.154kg)가
+    # 파지점 레버암 ~0.05m 로 만드는 중력 토크(≈0.076 N·m) 수준을 재현한다.
+    hold_rotation_perturb_max_accel: float = 12.0
+
+    # -----------------------------------------------------------------------
     # ADR
     # -----------------------------------------------------------------------
     enable_adr:            bool  = True
     adr_num_increments:    int   = 50
-    adr_increment_interval: int  = 200
-    adr_trigger_threshold: float = 0.02
+    # ★08.16 케이던스 완화(200→1000): 질량·마찰·wrench·회전이 모두 이 카운터 하나를
+    # 공유하게 되면서 구 케이던스(50증분×200step≈epoch 500 만렙)는 "커리큘럼 없이 즉시
+    # 최대 난이도"와 같아졌다(right lstm_test7 실측: ep~500 만렙 도달). 1000step 이면
+    # 만렙까지 최소 ~1,560 epoch — 20k 런에서 실질 커리큘럼이 된다.
+    adr_increment_interval: int  = 1000
+    # threshold 는 "무너지는 중엔 난이도를 올리지 않는다"는 가드(순간 성공률 기준).
+    # 0.25: 순간값(success_flag 평균)은 에피소드 단위 성공률보다 구조적으로 낮다
+    # — 에피소드 중 success 유지 구간이 일부이기 때문. 실측은 TB adr/trigger_metric 으로 재보정.
+    adr_trigger_threshold: float = 0.25
 
     # design §위치 ADR: spawn xy_range 0.02→0.08 점진 확대(초기 좁게 학습 후 확장).
     # grasp_adr.get_param("spawn","xy_range")로 GraspLeftEnv._reset_idx가 조회.
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "spawn": {
             "xy_range": (0.02, 0.08),
+        },
+        # 외란 커리큘럼: 0에서 시작해 increment마다 선형 증가(급격 도입 시 grip 붕괴 방지).
+        # spawn과 동일 카운터 공유 — 학습 곡선에서 latch 후 붕괴가 보이면
+        # adr_increment_interval 상향으로 램프 속도 완화(스케줄 자체 변경은 하지 않음).
+        "object_wrench": {
+            "max_linear_accel": (0.0, 15.0),
+        },
+        "hold_rotation": {
+            "max_accel": (0.0, 12.0),
+        },
+    })
+
+    # ★08.16 물리 DR ADR (right 이식, grasp_v2 방식): EventCfg 의 초기(중립) 범위를
+    # increment 마다 아래 terminal 로 선형 확장한다. 질량·마찰이 정적 고정 범위였던
+    # 구조를 커리큘럼으로 전환 — 초기엔 원 질량/마찰로 파지를 익히고, 성공할수록
+    # 무겁고 미끄러운 물체로 확장.
+    adr_physics_cfg: dict = field(default_factory=lambda: {
+        "object_physics_material": {
+            "static_friction_range":  (0.5, 1.2),
+            "dynamic_friction_range": (0.3, 1.0),   # 하한 0.3 = 미끄러운 컵
+            "restitution_range":      (0.8, 1.0),
+        },
+        "object_scale_mass": {
+            # ★0.5~4.0× (pour 에 국한하지 않는 광범위 적재: 컵 무게 외 최소 300g 여유 파지).
+            # 기본질량 0.134kg 통일이므로 전 물체가 **0.067 ~ 0.536 kg** 을 동일하게 커버
+            # → 최대 적재량 = 0.536-0.134 = **402g**(요구 300g 대비 +34% 여유).
+            # 상한 0.536kg 은 grasp_v2 가 ADR 만렙에서 실제로 성공시킨 최대 절대질량과
+            # 같아 외삽이 아닌 실증 영역이다.
+            "mass_distribution_params": (0.5, 4.0),
         },
     })
 
@@ -461,35 +541,38 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
                 stiffness=400.0,
                 damping=80.0,
             ),
-            # ★왼팔 real2sim 캘리브(08.02): right/grasp_v1 의 r_aj 캘리브를 미러.
-            #   좌우 OpenArm 은 동일 하드웨어라 강성/감쇠/마찰 값이 같다(강성은 부호무관 스칼라).
-            #   right 는 kp 12~67(부드러움)인데 left 만 400(뻣뻣)이면 팔 dynamics 비대칭 → right에서
-            #   학습한 mirror-warmstart 정책이 transfer 안 되고 3지로 drift(08.02 진단). left sim 팔을
-            #   right 와 일치시켜 warmstart 가 제대로 전달되게 함. 값=CALIBRATION.md/right_arm.json.
+            # ★08.16 pour 게인 정합(right 이식, 좌우 통일): kp/kd를 pour 학습값과 동일하게
+            #   (팔 400/80, abduction 200/35). 근거=right e2c0e7a 실측 — 캘리브 유연팔(67.6/6.4)
+            #   +강한 abduction(600/40)에서 형성된 파지가 pour 게인(400/80·200/35)에서 미끄러져
+            #   컵 이탈·bead 유실. 수집 시점 치환만으론 부족 — 학습 물리 = 소비 물리 정합.
+            #   both/pour_sensor 의 왼팔도 l_aj 400/80 이라 좌팔 소비 게인과도 일치한다.
+            #   friction 은 07.29 real2sim 실측값 유지(실물 마찰은 실재하므로 보존).
+            #   캘리브 원본(되돌릴 때 사용): kp 67.587/66.979/12.019, kd 6.376/5.635/2.154
+            #   — assets/robot/openarm_tesollo_sensor_rl/calibration/right_arm.json(좌우 동일 HW).
             "left_arm_proximal": ImplicitActuatorCfg(
                 joint_names_expr=["l_aj_[1-3]"],
-                stiffness=67.587,
-                damping=6.376,
+                stiffness=400.0,
+                damping=80.0,
                 friction=0.213,
             ),
             "left_arm_elbow": ImplicitActuatorCfg(
                 joint_names_expr=["l_aj_4"],
-                stiffness=66.979,
-                damping=5.635,
+                stiffness=400.0,
+                damping=80.0,
                 friction=0.493,
             ),
             "left_arm_wrist": ImplicitActuatorCfg(
                 joint_names_expr=["l_aj_[5-7]"],
-                stiffness=12.019,
-                damping=2.154,
+                stiffness=400.0,
+                damping=80.0,
                 friction=0.151,
             ),
             # 손 stiffness/damping: pour-v5/6 검증값 채택. 기존 30/5(물렁)은 엄지 _3/_4가
             # 컵을 감을 때 반력이 엄지 대향을 뒤로 밀어냄(play 렌더 관찰). 단단히 유지.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["l_hj_[a-z]+_1"],
-                stiffness=600.0,   # 2000→600: 2000은 _1을 0에 고정했으나 컵 반력을 큰 교정토크로 되받아 파지 교란→붕괴. 600은 roll을 크게 줄이되 반력 교란 완화.
-                damping=40.0,
+                stiffness=200.0,   # 08.16 pour 정합: 600→200 (pour abduction 200/35와 동일). 600 이력=roll 억제 절충이었으나 pour 소비 게인과 불일치가 파지 미끄러짐 유발.
+                damping=35.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["l_hj_[a-z]+_2"],

@@ -116,6 +116,8 @@ class GraspRightEnv(DirectRLEnv):
     Action: 11D
       [0:6]  palm pose (x,y,z,ez,ey,ex), 정규화 [-1,1] → Fabrics IK
       [6:11] per-finger absolute synergy (thumb,index,middle,ring,pinky)
+             엄지(6)는 독립, 검지~소지(7:11)는 공통닫힘(couple_four_fingers)으로 묶여
+             평균 신호 하나로 구동(3지 국소최적 차단, 접촉 시 per-joint 동결로 형상 적응).
              grasp: APPROACH(-1) to GRASP(+1)
              lift:  GRASP(-1) to FULL_GRIP(+1)
 
@@ -313,6 +315,14 @@ class GraspRightEnv(DirectRLEnv):
         self.lift_start_step_buf       = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # ----------------------------------------------------------------
+        # 물체 외란 wrench 버퍼 (08.15, cfg 주석 참조). _cup_mass는 mass DR(reset event)
+        # 반영 위해 _reset_idx에서 배치 갱신(F=m·a의 m을 현재 실효질량으로).
+        # ----------------------------------------------------------------
+        self.object_applied_force  = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self.object_applied_torque = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self._cup_mass = self.cup.root_physx_view.get_masses().to(self.device).view(-1)
+
+        # ----------------------------------------------------------------
         # Hand joint targets (per-finger lerp 결과)
         # ----------------------------------------------------------------
         self.hand_joint_targets = torch.zeros(self.num_envs, NUM_HAND_DOF, device=self.device)
@@ -368,6 +378,10 @@ class GraspRightEnv(DirectRLEnv):
                 num_increments=cfg.adr_num_increments,
                 increment_interval=cfg.adr_increment_interval,
                 trigger_threshold=cfg.adr_trigger_threshold,
+                # 08.16 물리 DR ADR(grasp_v2 이식): increment 시 질량·마찰 EventTerm
+                # 범위를 중립→terminal 로 확장.
+                event_manager=getattr(self, "event_manager", None),
+                physics_cfg=getattr(cfg, "adr_physics_cfg", None),
             )
         else:
             self.grasp_adr = None
@@ -697,14 +711,87 @@ class GraspRightEnv(DirectRLEnv):
         self.middle_binary_contact_buf.copy_(per_middle > CONTACT_FORCE_THRESHOLD)
 
     # ------------------------------------------------------------------
+    # 파지력 확보: 물체 외란 wrench (08.15, DEXTRAH apply_object_wrench — rh56f1 grasp_v1 이식)
+    # ------------------------------------------------------------------
+    def _apply_object_wrench(self) -> None:
+        # 게이트: palm이 물체 반경 내면 인가(DEXTRAH 원본) — 접근 후 파지·운반 전 구간에서
+        # robust hold 단련. object_pos/palm_center_pos는 직전 스텝 값(둘 다 env-local).
+        apply = (
+            (self.palm_center_pos - self.object_pos).norm(dim=-1)
+            <= float(self.cfg.wrench_hand_dist_threshold)
+        ).view(-1, 1, 1)
+        # trigger_every step 마다 새 랜덤 wrench (그 사이 유지)
+        new_trig = (
+            (self.episode_length_buf % int(self.cfg.wrench_trigger_every)) == 0
+        ).view(-1, 1, 1)
+        max_accel = (
+            self.grasp_adr.get_param("object_wrench", "max_linear_accel")
+            if self.grasp_adr is not None else float(self.cfg.wrench_max_accel)
+        )
+        accel = max_accel * torch.rand(self.num_envs, 1, 1, device=self.device)
+        fmag = accel * self._cup_mass.view(-1, 1, 1)                       # F = m·a
+        tmag = fmag * float(self.cfg.wrench_torsional_radius)              # τ = m·a·r
+
+        def _rand_dir() -> torch.Tensor:
+            d = torch.randn(self.num_envs, 1, 3, device=self.device)
+            return d / d.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+
+        f = fmag * _rand_dir()
+        t = tmag * _rand_dir()
+        # 회전 외란(Exp4-A, cfg 주석): lift latch 이후 env에 수평 랜덤축 torque 추가 —
+        # pour deep-tilt 회전 하중 재현. latch 판정은 샘플 시점 값(트리거 주기마다 재평가).
+        if bool(getattr(self.cfg, "hold_rotation_perturb_enable", False)):
+            rot_max = (
+                self.grasp_adr.get_param("hold_rotation", "max_accel")
+                if self.grasp_adr is not None
+                else float(self.cfg.hold_rotation_perturb_max_accel)
+            )
+            rot_accel = rot_max * torch.rand(self.num_envs, 1, 1, device=self.device)
+            rot_tmag = (
+                rot_accel * self._cup_mass.view(-1, 1, 1)
+                * float(self.cfg.wrench_torsional_radius)
+            )
+            _ang = torch.rand(self.num_envs, 1, 1, device=self.device) * (2.0 * math.pi)
+            rot_axis = torch.cat(
+                [torch.cos(_ang), torch.sin(_ang), torch.zeros_like(_ang)], dim=-1
+            )  # 수평축(z=0) — 틸트 방향 토크
+            rot_t = rot_tmag * rot_axis
+            t = t + torch.where(
+                self.lift_ready_latched_buf.view(-1, 1, 1), rot_t, torch.zeros_like(rot_t)
+            )
+        self.object_applied_force = torch.where(new_trig, f, self.object_applied_force)
+        self.object_applied_torque = torch.where(new_trig, t, self.object_applied_torque)
+        # 게이트 밖(palm 멀리) env 는 wrench 0
+        self.object_applied_force = torch.where(
+            apply, self.object_applied_force, torch.zeros_like(self.object_applied_force)
+        )
+        self.object_applied_torque = torch.where(
+            apply, self.object_applied_torque, torch.zeros_like(self.object_applied_torque)
+        )
+        self.cup.set_external_force_and_torque(
+            self.object_applied_force, self.object_applied_torque
+        )
+
+    # ------------------------------------------------------------------
     # Physics step
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        if self.cfg.wrench_enable:
+            self._apply_object_wrench()
         self.prev_actions.copy_(self.actions)
         self.actions = actions.clone()
 
         palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
         finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
+
+        # ---- couple_four_fingers (08.15, left 08.02 이식): 3지 국소최적 원천 차단 ----
+        # 검지~소지(1:5)를 공통 신호(평균)로 묶어 "특정 손가락만 안 닫힘" action 자체를 표현
+        # 불가하게 한다. 엄지(0)는 opposition 회전 위해 독립. 접촉 시 개별 동결(g3/g4)은 그대로라
+        # 각 손가락이 닿는 지점서 멈춰 최종 조합은 물체가 결정(형상 적응 유지). grasp_v2 검증법.
+        if bool(getattr(self.cfg, "couple_four_fingers", False)):
+            _thumb_a = finger_action[:, 0:1]
+            _common4 = finger_action[:, 1:5].mean(dim=1, keepdim=True)
+            finger_action = torch.cat([_thumb_a, _common4.expand(-1, 4)], dim=1)
 
         # ---- Phase 판정: 접촉 latch (감싸 잡으면 리프트, step-480 scripted 대체) ----
         # lift 진입 게이트: 손가락별 아무 마디(tip|mid|distal)든 닿은 손가락 수(grip)로 판정.
@@ -1179,7 +1266,25 @@ class GraspRightEnv(DirectRLEnv):
 
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         if self.grasp_adr is not None:
-            self.grasp_adr.maybe_increment(_ep_success_rate)
+            # ★08.16 ADR 트리거를 누적→순간 성공률로 전환(grasp_v2 방식).
+            # 누적(_ep_success_rate)은 한 번 임계를 넘으면 사실상 내려오지 않아, 난이도가
+            # 올라 정책이 무너져도 램프가 멈추지 않는 한방향 래칫이었다. success_flag 는
+            # 매 스텝 갱신(_get_dones, DirectRLEnv 가 _get_rewards 보다 먼저 호출 → 동일
+            # 스텝 최신값)되는 순간 지표라 성능 저하에 즉시 반응해 램프가 자동 정지한다.
+            # (누적 지표는 TB 로깅용으로 계속 사용 — 삭제 금지)
+            _adr_metric = self.success_flag.float().mean()
+            self.extras["adr/trigger_metric"] = _adr_metric
+            # increment 시 확장된 물리 DR 범위(질량·마찰)를 전 env 에 즉시 반영
+            # (grasp_v2 동일 — 안 하면 다음 자연 리셋까지 구 범위가 남는다).
+            if self.grasp_adr.maybe_increment(_adr_metric):
+                _em = getattr(self, "event_manager", None)
+                if _em is not None:
+                    _em.reset(env_ids=self.robot._ALL_INDICES)
+                    _em.apply(
+                        env_ids=self.robot._ALL_INDICES,
+                        mode="reset",
+                        global_env_step_count=0,
+                    )
 
         self.extras["reward/approach"] = reward_terms["approach"].mean()
         self.extras["reward/grasp"] = reward_terms["grasp"].mean()
@@ -1233,6 +1338,53 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["debug/thumb/cup_tip"] = _tip[:, 0].float().mean()
         self.extras["debug/thumb/cup_mid"] = _mid[:, 0].float().mean()
         self.extras["debug/thumb/cup_dist"] = _dist[:, 0].float().mean()
+        # 손가락별 컵 접촉율 (any=tip|mid|dist) — tb 진단용(play 없이 tb로 손가락별 확인).
+        # 순서 thumb,index,middle,ring,pinky. success 게이트(4지 grip)의 어느 손가락이 병목인지 추적.
+        _any_fc = (_tip | _mid | _dist).float()
+        for _fi, _fn in enumerate(["thumb", "index", "middle", "ring", "pinky"]):
+            self.extras[f"debug/finger/{_fn}_cup"] = _any_fc[:, _fi].mean()
+        # 외란 진단(08.15, reward-audit Check5 조건): ADR 램프 현재값 + wrench 실인가율.
+        # 외란 중 접촉 유지의 대리 지표 = contact/envelope_finger_count·debug/finger/*_cup.
+        if self.cfg.wrench_enable:
+            _wr_a = (
+                self.grasp_adr.get_param("object_wrench", "max_linear_accel")
+                if self.grasp_adr is not None else float(self.cfg.wrench_max_accel)
+            )
+            self.extras["adr/wrench_max_accel"] = torch.tensor(_wr_a, device=self.device)
+            _rot_a = (
+                self.grasp_adr.get_param("hold_rotation", "max_accel")
+                if self.grasp_adr is not None
+                else float(self.cfg.hold_rotation_perturb_max_accel)
+            )
+            self.extras["adr/hold_rotation_max_accel"] = torch.tensor(_rot_a, device=self.device)
+            self.extras["debug/wrench/applied_frac"] = (
+                self.object_applied_force.view(self.num_envs, 3).norm(dim=-1) > 1e-6
+            ).float().mean()
+        # 물리 DR 커리큘럼 진행 관측(08.16): 현재 실효 질량 스케일/마찰 상한 + 실측 질량.
+        if self.grasp_adr is not None:
+            self.extras["adr/increment"] = torch.tensor(
+                float(self.grasp_adr.increment_counter), device=self.device
+            )
+            _em = getattr(self, "event_manager", None)
+            if _em is not None and "object_scale_mass" in self.grasp_adr.physics_cfg:
+                _mr = _em.get_term_cfg("object_scale_mass").params["mass_distribution_params"]
+                self.extras["adr/mass_scale_lo"] = torch.tensor(float(_mr[0]), device=self.device)
+                self.extras["adr/mass_scale_hi"] = torch.tensor(float(_mr[1]), device=self.device)
+                _fr = _em.get_term_cfg("object_physics_material").params["dynamic_friction_range"]
+                self.extras["adr/dyn_friction_lo"] = torch.tensor(float(_fr[0]), device=self.device)
+            self.extras["adr/cup_mass_mean"] = self._cup_mass.mean()
+        # 물체별 순간 성공률(08.16): ADR 난이도가 오를 때 **특정 물체 계열만** 무너지는지
+        # 감지한다. grasp_v2 실측에서 cup_big 계열이 ADR 상승과 함께 0.53→0.1~0.3 으로
+        # 단조 붕괴했는데 148종에 묻혀 전체 지표로는 보이지 않았다. v1 은 8종 중 4종이
+        # cup_big 이라 같은 일이 생기면 치명적 — 전체 success 보다 먼저 여기서 드러난다.
+        # index_add_ 배치 연산(.item()/sync 없음).
+        _succ_f = self.success_flag.float()
+        _n_obj = len(self._object_names)
+        _cnt = torch.bincount(self.object_idx, minlength=_n_obj).float().clamp(min=1.0)
+        _sum = torch.zeros(_n_obj, device=self.device).index_add_(0, self.object_idx, _succ_f)
+        _per_obj = _sum / _cnt
+        for _oi, _on in enumerate(self._object_names):
+            self.extras[f"obj_success/{_on}"] = _per_obj[_oi]
         self.extras["debug/thumb/cup_any"] = (
             _tip[:, 0] | _mid[:, 0] | _dist[:, 0]
         ).float().mean()
@@ -1505,6 +1657,11 @@ class GraspRightEnv(DirectRLEnv):
             return
 
         n = len(env_ids)
+
+        # ---- wrench 질량 캐시 갱신: mass DR(reset event, super 내 적용)이 바꾼 실효질량 반영.
+        # 전체 텐서 1회 배치 read(per-env 루프/sync 금지 — isaac-reset-item 교훈).
+        if self.cfg.wrench_enable:
+            self._cup_mass = self.cup.root_physx_view.get_masses().to(self.device).view(-1)
 
         # ---- episode 성공 집계 후 클리어 ----
         self._total_episodes += n

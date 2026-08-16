@@ -208,8 +208,15 @@ def main() -> int:
         while True:
             ret = proc.poll()
             if ret is not None:
+                # 정상 종료 race 방지(08.15 실증): 자식이 캐시를 쓰고 같은 폴링 윈도우
+                # 안에 종료하면 파일 확인 전에 이 분기로 빠져 FAILED 오판정. 종료 후
+                # 최종 파일 확인으로 완료 여부를 판정한다.
+                exists, mtime = _file_signature(out_path)
+                if ret == 0 and exists and (not before_exists or mtime > before_mtime):
+                    saved = True
                 print(
-                    f"[collect_grasp_v1_warm_states] play.py exited early (code={ret}).",
+                    f"[collect_grasp_v1_warm_states] play.py exited early "
+                    f"(code={ret}, cache_saved={saved}).",
                     flush=True,
                 )
                 break
