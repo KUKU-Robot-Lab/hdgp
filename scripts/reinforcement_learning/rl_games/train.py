@@ -323,19 +323,49 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     os.makedirs(log_root_path, exist_ok=True)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
-    # LOG RUN-NAME RULE:
-    #   auto-increment "test1", "test2", ... for feed-forward tasks
-    #   auto-increment "lstm_test1", "lstm_test2", ... for recurrent tasks
-    # Modify this if you prefer timestamp/custom run names.
-    run_prefix = _resolve_run_dir_prefix(task_name)
-    existing = []
-    for name in os.listdir(log_root_path):
-        if name.startswith(run_prefix):
-            suffix = name[len(run_prefix):]
-            if suffix.isdigit():
-                existing.append(int(suffix))
-    next_idx = (max(existing) + 1) if existing else 1
-    log_dir = f"{run_prefix}{next_idx}"
+    # LOG RUN-NAME RULE
+    # ★2026-08-17 변경: RUN_LABEL 이 있으면 **그것을 폴더명으로 쓴다.**
+    #   기존에는 폴더가 항상 `lstm_test<N>` 자동증가였고 의미 라벨은 test_history.md 에만
+    #   들어가, 폴더 `NS_demo_s42` 의 기록 헤더가 `# lstm_test1` 인 불일치가 남았다
+    #   (사후 개명까지 겹쳐 어떤 런이 어떤 조건인지 추적이 끊겼다).
+    #   RUN_LABEL 이 없으면 종전 자동증가를 유지한다(하위호환).
+    #
+    #   라벨이 규약 `<논문>-<실험>-<조건>-a<자산>-s<시드>` 형식이면 **자산 게이트**가 돈다:
+    #   라벨의 자산 태그와 실제 로봇 USD 가 다르면 학습을 거부한다. 로봇 자산이
+    #   DG-5F→DG-5FS 로 바뀌었는데 런 이름에 자산이 없어 구/신 수치가 뒤섞였던 사고의
+    #   재발 방지 장치다. 규약 밖 라벨은 검사하지 않는다.
+    _run_label = os.environ.get("RUN_LABEL", "").strip()
+    if _run_label:
+        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tools")))
+        from run_naming import assert_asset_matches, sanitize_for_dir  # noqa: E402
+
+        _usd = None
+        try:
+            _usd = str(env_cfg.robot_cfg.spawn.usd_path)
+        except AttributeError:
+            pass                      # 로봇 cfg 구조가 다른 태스크 — 게이트 생략
+        if _usd:
+            assert_asset_matches(_run_label, _usd)   # 불일치면 RuntimeError 로 중단
+            print(f"[INFO] 자산 게이트 통과: label={_run_label} usd={os.path.basename(_usd)}")
+
+        log_dir = sanitize_for_dir(_run_label)
+        # 같은 라벨이 이미 있으면 덮어쓰지 않고 -r2, -r3 … 로 분기한다(재현 런).
+        if os.path.isdir(os.path.join(log_root_path, log_dir)):
+            _k = 2
+            while os.path.isdir(os.path.join(log_root_path, f"{log_dir}-r{_k}")):
+                _k += 1
+            log_dir = f"{log_dir}-r{_k}"
+            print(f"[INFO] 동일 라벨 존재 → 런 폴더를 '{log_dir}' 로 분기")
+    else:
+        run_prefix = _resolve_run_dir_prefix(task_name)
+        existing = []
+        for name in os.listdir(log_root_path):
+            if name.startswith(run_prefix):
+                suffix = name[len(run_prefix):]
+                if suffix.isdigit():
+                    existing.append(int(suffix))
+        next_idx = (max(existing) + 1) if existing else 1
+        log_dir = f"{run_prefix}{next_idx}"
     # set directory into agent config
     # logging directory path: <train_dir>/<full_experiment_name>
     agent_cfg["params"]["config"]["train_dir"] = log_root_path

@@ -179,6 +179,7 @@ def write_run_snapshot(task_id: str, run_dir: Path, test_label: str = "", note: 
     short_hash, commit_msg = get_git_head()
     uncommitted    = get_git_diff_summary(task_rel)
     label = test_label or run_dir.name
+    robot_asset = read_robot_asset(run_dir)
 
     entry = f"""# {run_dir.name} — 실험 기록
 
@@ -187,6 +188,7 @@ def write_run_snapshot(task_id: str, run_dir: Path, test_label: str = "", note: 
 - **Date**: {now}
 - **Task**: {task_id}
 - **Commit**: `{short_hash}` — {commit_msg}
+- **로봇 자산**: `{robot_asset}`
 - **전체 설정**: `params/env.yaml` (seed·num_envs·모든 weight) · `params/agent.yaml`
 
 ### Uncommitted 변경
@@ -215,6 +217,27 @@ def append_to_history(history_file: Path, entry: str) -> None:
     else:
         header = f"# {history_file.parent.name} Test History\n\n"
         history_file.write_text(header + entry, encoding="utf-8")
+
+
+def read_robot_asset(run_dir: Path) -> str:
+    """params/env.yaml 에서 로봇 USD 를 뽑아 자산 신원을 기록한다.
+
+    ★2026-08-17: 로봇 자산이 DG-5F→DG-5FS 로 바뀌었는데 런 기록 어디에도 자산이 없어
+      "이 수치가 어떤 로봇에서 나왔는가"를 사후에 확인할 수 없었다. env.yaml 안에는
+      있었지만 사람이 열어보지 않는다 — 헤더로 끌어올린다.
+    """
+    env_yaml = run_dir / "params" / "env.yaml"
+    if not env_yaml.is_file():
+        return "(env.yaml 없음 — 스냅샷이 dump 보다 먼저 실행됐다)"
+    try:
+        text = env_yaml.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"(env.yaml 읽기 실패: {exc})"
+    # usd_path 중 robot/ 을 포함하는 첫 항목 (컵·테이블 usd 와 구분)
+    for line in text.splitlines():
+        if "usd_path" in line and "/robot/" in line:
+            return line.split("usd_path", 1)[1].lstrip(": ").strip()
+    return "(robot usd_path 미발견)"
 
 
 def main() -> None:
