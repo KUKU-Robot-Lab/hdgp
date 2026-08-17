@@ -157,13 +157,13 @@
     <visual name="openarm_right_link7_visual">
       <origin rpy="0.0 0.0 0.0" xyz="0.0 -0.0 -0.5585" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/openarm_description/meshes/arm/v10/visual/link7.dae" scale="0.001 0.001 0.001" />
+        <mesh filename="file:///home/user/rl_ws/urdf/vendor/openarm_description/meshes/arm/v10/visual/link7_without_mat2_mat3_components00_03.dae" scale="0.001 0.001 0.001" />
       </geometry>
     </visual>
     <collision name="openarm_right_link7_collision">
       <origin rpy="0.0 0.0 0.0" xyz="0.0 -0.0 -0.5585" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/openarm_description/meshes/arm/v10/collision/link7_symp.stl" scale="0.001 0.001 0.001" />
+        <mesh filename="file:///home/user/rl_ws/urdf/vendor/openarm_description/meshes/arm/v10/collision/link7_without_mat2_mat3_components00_03.stl" scale="0.001 0.001 0.001" />
       </geometry>
     </collision>
     <inertial>
@@ -1035,7 +1035,7 @@
   <joint name="r_hj_mount" type="fixed">
     <parent link="r_al_7" />
     <child link="r_hl_mount" />
-    <origin rpy="0 0 -1.5707964" xyz="0 0.0000003 0.0595695" />
+    <origin rpy="0 0 -1.5707964" xyz="0 0.0000003 0.0495" />
   </joint>
   <joint name="r_hj_adapter" type="fixed">
     <origin rpy="0 0 0" xyz="0 0 0" />

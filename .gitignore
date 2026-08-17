@@ -36,3 +36,4 @@ logs/r2s_autotune/
 # DEXTRAH 시각 DR 텍스처 (8.4GB, HuggingFace nvidia/dextrah_textures)
 # git 에 넣지 않는다 — server 는 별도로 내려받을 것 (scripts/distillation/README.md)
 assets/dextrah_textures/
+log_archive/
