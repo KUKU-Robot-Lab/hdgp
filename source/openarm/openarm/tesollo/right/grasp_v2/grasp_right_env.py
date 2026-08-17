@@ -608,6 +608,9 @@ class GraspRightEnv(DirectRLEnv):
             self.num_envs, self.device, self.timestep,
             graph_capturable=bool(self.cfg.use_cuda_graph),
             use_hand_fabric=False,
+            # ★08.17 DG-5FS 전용 fabric URDF(P0b, FK 오차 0.000mm 검증). 기존 URDF 는 불변.
+            robot_dir_name="openarm_tesollo_bi_s",
+            robot_name="openarm_tesollo_bi_s",
         )
         num_joints = self.open_tesollo_fabric.num_joints   # 27
 
@@ -651,6 +654,9 @@ class GraspRightEnv(DirectRLEnv):
             self._reset_chunk, self.device, self.timestep,
             graph_capturable=False,
             use_hand_fabric=False,
+            # ★08.17 DG-5FS 전용 fabric URDF(P0b, FK 오차 0.000mm 검증). 기존 URDF 는 불변.
+            robot_dir_name="openarm_tesollo_bi_s",
+            robot_name="openarm_tesollo_bi_s",
         )
         self._reset_integrator = DisplacementIntegrator(self._reset_fabric)
 

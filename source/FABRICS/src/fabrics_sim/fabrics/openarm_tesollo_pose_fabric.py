@@ -557,14 +557,19 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
     """
 
     def __init__(self, batch_size, device, timestep, graph_capturable=True,
-                 use_hand_fabric=False, palm_position_only=False):
+                 use_hand_fabric=False, palm_position_only=False,
+                 robot_dir_name="openarm_tesollo_left",
+                 robot_name="openarm_tesollo_left"):
+        # ★08.17 robot_dir_name/robot_name 패스스루 추가: DG-5FS 전용 URDF
+        #   (openarm_tesollo_bi_s_left)를 쓰는 태스크가 기존 URDF 를 건드리지 않고
+        #   선택할 수 있게 한다. 기본값은 구 DG-5F(pour 등 기존 소비자 보호).
         super().__init__(
             batch_size, device, timestep,
             graph_capturable=graph_capturable,
             use_hand_fabric=use_hand_fabric,
             palm_position_only=palm_position_only,
-            robot_dir_name="openarm_tesollo_left",
-            robot_name="openarm_tesollo_left",
+            robot_dir_name=robot_dir_name,
+            robot_name=robot_name,
             default_config_override=_LEFT_DEFAULT_CONFIG,
             # 우측 기본 palm 자세 (ez,ey,ex)=(π/2,0,π/2) 의 미러 = (-π/2,0,-π/2)
             default_palm_euler_zyx=(-1.5708, 0.0, -1.5708),
