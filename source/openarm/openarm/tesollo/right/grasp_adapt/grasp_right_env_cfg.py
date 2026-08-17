@@ -70,7 +70,12 @@ def _actuator_params(group_name: str, default_stiffness: float, default_damping:
 
 
 def _make_beads_cfg() -> RigidObjectCollectionCfg:
-    """컵 내부 무게 도메인 랜덤화용 bead 설정 (30개, 각 10g, mesh 0.5x)."""
+    """컵 내부 무게 도메인 랜덤화용 bead 설정 (30개, 각 8g, mesh 0.5x).
+
+    ★08.17 10g→8g: 물 총량을 실물 종이컵 기준(가득 ≈ 240ml)에 맞춘다.
+    30개 × 8g = 240g. 개수 이산단계({0,10,20,30})는 `_bead_lvl * 10`으로
+    env에 박혀 있어, 질량만 바꾸는 것이 최소 변경이다.
+    """
     rigid_objects: dict = {}
     for i in range(_DEFAULT_BEAD_COUNT):
         rigid_objects[f"bead_{i:02d}"] = RigidObjectCfg(
@@ -81,9 +86,9 @@ def _make_beads_cfg() -> RigidObjectCollectionCfg:
             ),
             spawn=UsdFileCfg(
                 usd_path=_os.path.join(_ASSETS_DIR, "bead", "bead.usd"),
-                scale=(0.5, 0.5, 0.5),          # mesh 절반 크기, mass는 10g 유지
+                scale=(0.5, 0.5, 0.5),          # mesh 절반 크기, mass는 8g
                 activate_contact_sensors=False,
-                mass_props=sim_utils.MassPropertiesCfg(mass=0.01),
+                mass_props=sim_utils.MassPropertiesCfg(mass=0.008),
                 rigid_props=RigidBodyPropertiesCfg(
                     disable_gravity=False,
                     solver_position_iteration_count=16,
@@ -311,8 +316,28 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
         "finger": {
             "delta_scale": (0.05, 0.15),
         },
+        # ★08.17 질량 커리큘럼(Phase 4 deform_water). base 태스크는 mass_shift_enabled=False라
+        # "shift_target_count"가 조회되지 않으므로 base 동작은 불변이고, "bead_count_max"도
+        # 아래 use_mass_adr=False 게이트로 차단된다 (기존 태스크 무영향).
+        #   - bead_count_max:     리셋 시 담기는 물의 양(정적 수위) 0 → 가득
+        #   - shift_target_count: lift 후 추가되는 물의 목표량(동적) 0 → 가득
+        # 급격 도입 시 grip 붕괴를 막기 위해 grasp_v1 외란 커리큘럼과 같은 선형 램프를 쓴다.
+        "mass": {
+            "bead_count_max": (0.0, 30.0),
+            "shift_target_count": (0.0, 30.0),
+        },
         # adaptive_force_weight는 ADR에서 제거 (v10: Gaussian target 방식으로 변경, 가중치 고정)
     })
+
+    # 질량 ADR 사용 여부. False면 bead_count_min/max 고정값을 그대로 쓴다(기존 동작).
+    # Phase 4(deform_water)에서만 True.
+    use_mass_adr: bool = False
+    # 동적 물 추가(mass_shift)를 활성화할 ADR increment. 그 전에는 정적 수위만 학습한다.
+    # 사유: 정적 수위조차 못 잡는 단계에서 동적 추가가 겹치면 "무게 추론"과
+    # "무게 변화 대응" 신호가 섞여 어느 쪽도 배우지 못한다.
+    mass_shift_adr_start: int = 25
+    # 동적 shift 활성 구간에서 리셋 시 담기는 물의 상한(가벼운 컵으로 시작 → 들고 나서 채움).
+    mass_shift_reset_bead_cap: int = 10
 
     # -----------------------------------------------------------------------
     # 종료 조건
@@ -699,3 +724,28 @@ class GraspRightEnvCfgDeformable(GraspRightEnvCfgNoActorMass):
             ),
         },
     )
+
+
+@configclass
+class GraspRightEnvCfgDeformableWater(GraspRightEnvCfgDeformable):
+    """Phase 4: 변형 종이컵 + 물(정적 수위 + 동적 추가).
+
+    Deformable(Phase 2, 종이컵)과 MassShift(Phase 3, 물 추가)는 기존에 형제 클래스라
+    함께 쓸 수 없었다. 이 클래스가 둘을 합친다 — Deformable을 상속해 컵 물리를 유지한
+    채 mass_shift를 켠다. actor obs 133(tactile-only)는 NoActorMass 계통에서 상속.
+
+    ⚠️ 선행 massshift2(success 0.96)는 **rigid 컵 + actor가 oracle mass를 본 obs 134**
+    조건이었다(당시 configclass 미적용 버그). 본 조합(tactile-only + 변형 컵)은 미검증이며
+    난이도가 더 높다 — 그 0.96을 성공 보증으로 취급하지 않는다.
+
+    학습: test25 ckpt warmstart + 저LR fine-tune. 07.30 실증(LR 3e-4는 수렴 정책을
+    ep~273에 붕괴시켰고 1e-4가 해결)에 따라 fresh가 아니라 fine-tune으로 시작한다.
+
+    설계: docs/superpowers/specs/2026-08-17-grasp-adapt-deform-water-design.md
+    """
+
+    mass_shift_enabled: bool = True
+    # 질량 ADR 활성 — bead_count_max/shift_target_count가 커리큘럼으로 확장된다.
+    use_mass_adr: bool = True
+    # ADR 전반부(0~25)는 정적 수위만, 후반부(25~50)에 동적 물 추가를 도입한다.
+    mass_shift_adr_start: int = 25

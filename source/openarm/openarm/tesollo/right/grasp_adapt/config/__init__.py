@@ -18,6 +18,7 @@ from . import agents
 from ..grasp_right_env_cfg import (
     GraspRightEnvCfg,
     GraspRightEnvCfgDeformable,
+    GraspRightEnvCfgDeformableWater,
     GraspRightEnvCfgMassShift,
     GraspRightEnvCfgNoActorMass,
 )
@@ -106,6 +107,21 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgDeformable",
         # warm-start fine-tune 전용: actor LR 1e-4(붕괴 방지) + minibatch 65536(num_envs 8192).
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_deform_ft_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="open-tesol_r_grasp_adapt_deform_water-lstm",
+    entry_point=(
+        "openarm.tesollo.right.grasp_adapt.grasp_right_env:GraspRightEnv"
+    ),
+    disable_env_checker=True,
+    kwargs={
+        # Phase 4: 변형 종이컵 + 물(정적 수위 + 동적 추가). 질량 ADR 2단계 게이팅.
+        "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgDeformableWater",
+        # deform_ft와 동일 yaml — actor LR 1e-4. 07.30 실증(LR 3e-4는 수렴 정책을
+        # ep~273에 붕괴시킴)에 따라 fresh가 아니라 저LR fine-tune으로 시작한다.
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_deform_ft_cfg.yaml",
     },
 )

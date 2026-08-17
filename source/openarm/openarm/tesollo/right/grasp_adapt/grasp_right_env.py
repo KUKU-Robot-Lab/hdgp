@@ -525,6 +525,53 @@ class GraspRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         self._setup_geometric_fabrics()
 
+    # --------------------------------------------------------------------
+    # 질량 커리큘럼 (Phase 4 deform_water) — ADR increment로 물의 양을 확장한다.
+    # use_mass_adr=False(기존 태스크)면 전부 cfg 고정값으로 폴백해 동작이 불변이다.
+    # --------------------------------------------------------------------
+    def _mass_adr_increment(self) -> int:
+        """현재 ADR increment. ADR 비활성이면 0."""
+        if self.grasp_adr is None:
+            return 0
+        return int(getattr(self.grasp_adr, "increment_counter", 0))
+
+    def _mass_shift_active(self) -> bool:
+        """동적 물 추가(shift) 활성 여부.
+
+        질량 ADR을 안 쓰면 항상 활성(기존 massshift 태스크 동작 유지).
+        쓰면 ADR 전반부엔 정적 수위만 학습하고 `mass_shift_adr_start` 이후 도입한다.
+        """
+        if not getattr(self.cfg, "use_mass_adr", False):
+            return True
+        return self._mass_adr_increment() >= int(self.cfg.mass_shift_adr_start)
+
+    def _resolve_reset_bead_cap(self) -> int:
+        """리셋 시 담기는 물의 상한(bead 개수)."""
+        if not getattr(self.cfg, "use_mass_adr", False):
+            return int(self.cfg.bead_count_max)
+        # 동적 shift가 켜지면 리셋은 가벼운 컵으로 시작해야 "들고 나서 차오름"이 성립한다.
+        if self._mass_shift_active():
+            return int(self.cfg.mass_shift_reset_bead_cap)
+        if self.grasp_adr is None:
+            return int(self.cfg.bead_count_max)
+        try:
+            cap = self.grasp_adr.get_param("mass", "bead_count_max")
+        except KeyError:
+            # adr_custom_cfg에 "mass" 그룹이 없는 커스텀 설정 → 고정값 폴백.
+            return int(self.cfg.bead_count_max)
+        return int(round(float(cap)))
+
+    def _resolve_shift_target_count(self) -> int:
+        """동적 추가 후 목표 물의 양(bead 개수)."""
+        if not getattr(self.cfg, "use_mass_adr", False) or self.grasp_adr is None:
+            return int(self.cfg.mass_shift_target_bead_count)
+        try:
+            target = self.grasp_adr.get_param("mass", "shift_target_count")
+        except KeyError:
+            return int(self.cfg.mass_shift_target_bead_count)
+        # 리셋 수위보다 적게 채우면 무게가 줄어드는 셈이라 하한을 리셋 상한으로 건다.
+        return max(int(round(float(target))), int(self.cfg.mass_shift_reset_bead_cap))
+
         # cspace attractor: hand는 grasp pose 방향
         cspace_default = self.open_tesollo_fabric.default_config.clone()
         cspace_default[:, NUM_ARM_DOF:] = self.hand_grasp_pose.unsqueeze(0).expand(self.num_envs, -1)
@@ -838,7 +885,7 @@ class GraspRightEnv(DirectRLEnv):
 
         # Phase 3: 동적 mass 이벤트 (물 추가) — hidden bead를 컵 현재 위치로 물리 teleport.
         # cup.data.root_pos_w/root_lin_vel_w는 항상 현 sim 상태(self.object_pos 신선도 무관).
-        if self.cfg.mass_shift_enabled:
+        if self.cfg.mass_shift_enabled and self._mass_shift_active():
             height_delta_now = (
                 self.cup.data.root_pos_w[:, 2]
                 - self.scene.env_origins[:, 2]
@@ -855,7 +902,7 @@ class GraspRightEnv(DirectRLEnv):
             if mass_shift_trigger.any():
                 shift_ids = mass_shift_trigger.nonzero(as_tuple=False).squeeze(-1)
                 target = min(
-                    max(int(self.cfg.mass_shift_target_bead_count), 0),
+                    max(int(self._resolve_shift_target_count()), 0),
                     int(self.cfg.num_beads),
                 )
                 k = int(shift_ids.numel())
@@ -1744,10 +1791,11 @@ class GraspRightEnv(DirectRLEnv):
         self.cup.root_physx_view.set_material_properties(_materials, _env_ids_cpu)
 
         # ---- 7b. Bead 스폰 ----
-        # 이산 4단계: {0, 10, 20, 30}개 × 10g = {0, 100, 200, 300}g 추가 질량
-        # 총 컵 질량: 170g / 270g / 370g / 470g (1x / 1.6x / 2.2x / 2.8x)
+        # 이산 4단계: {0, 10, 20, 30}개 × 8g = {0, 80, 160, 240}g 추가 질량(물)
+        # 총 컵 질량: 170g / 250g / 330g / 410g (1x / 1.5x / 1.9x / 2.4x)
+        _bead_cap = self._resolve_reset_bead_cap()
         min_level = min(max(int(self.cfg.bead_count_min) // 10, 0), 3)
-        max_level = min(max(int(self.cfg.bead_count_max) // 10, min_level), 3)
+        max_level = min(max(int(_bead_cap) // 10, min_level), 3)
         _bead_lvl = torch.randint(min_level, max_level + 1, (n,), device=self.device)  # 0~3
         bead_count = _bead_lvl * 10  # {0, 10, 20, 30}
 
