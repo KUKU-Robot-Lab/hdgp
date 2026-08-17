@@ -1705,6 +1705,9 @@ class GraspLeftEnv(DirectRLEnv):
             per_finger_contact=self.binary_contact_buf[ids],
             stable_contact_steps=self.warm_contact_stable_steps_buf[ids],
             demo_file_idx=demo_idx,
+            # ★08.17 receiver 다양화(both/pour-v1): left warm 도 물체 스펙을 태깅해야
+            #   pour 가 receiver 컵 종류별로 필터/페어링할 수 있다(right 와 동일 계약).
+            object_spec_idx=self.object_idx[ids],
         )
         if added <= 0:
             return

@@ -104,6 +104,9 @@ class GraspWarmStateCache:
         self.stable_contact_steps = torch.zeros(self._cap, dtype=torch.long, device=device)
         # 이 warmstart 를 생성한 demo 파일 인덱스 (0-based; -1 = 미태깅)
         self.demo_file_idx = torch.full((self._cap,), -1, dtype=torch.long, device=device)
+        # 이 warmstart 의 물체 스펙 인덱스 (_ACTIVE_OBJECT_SPECS 순서; -1 = 미태깅)
+        #   pour warm 로더가 컵 스케일 매칭/필터에 사용한다.
+        self.object_spec_idx = torch.full((self._cap,), -1, dtype=torch.long, device=device)
 
     def __len__(self) -> int:
         return self._count
@@ -124,6 +127,7 @@ class GraspWarmStateCache:
         per_finger_contact: torch.Tensor,
         stable_contact_steps: torch.Tensor,
         demo_file_idx: torch.Tensor | None = None,
+        object_spec_idx: torch.Tensor | None = None,
     ) -> int:
         """성공 env 배치를 추가. 실제 저장한 개수(capacity 한정)를 반환."""
         if self.is_full:
@@ -146,6 +150,8 @@ class GraspWarmStateCache:
         self.stable_contact_steps[s:e] = stable_contact_steps[:n].long()
         if demo_file_idx is not None:
             self.demo_file_idx[s:e] = demo_file_idx[:n].long()
+        if object_spec_idx is not None:
+            self.object_spec_idx[s:e] = object_spec_idx[:n].long()
         self._count = e
         return n
 
@@ -186,4 +192,5 @@ class GraspWarmStateCache:
                 data=self.stable_contact_steps[:c].cpu().numpy(),
             )
             grp.create_dataset("demo_file_idx", data=self.demo_file_idx[:c].cpu().numpy())
+            grp.create_dataset("object_spec_idx", data=self.object_spec_idx[:c].cpu().numpy())
         tmp.replace(path)
