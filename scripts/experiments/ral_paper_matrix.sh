@@ -42,12 +42,26 @@ MECH_OFF=(
 
 cond_args() {
   case "$1" in
-    # ---- Table I: 핵심 4조건 ----
-    NS_demo)   printf '%s\n' "${MECH_ON[@]}"  env.enable_deep_tilt_boot=False ;;
-    Full)      printf '%s\n' "${MECH_ON[@]}"  env.enable_deep_tilt_boot=True  ;;
-    NS_naive)  printf '%s\n' "${MECH_OFF[@]}" env.enable_deep_tilt_boot=False ;;
+    # ---- Table I: 핵심 4조건 (demo 보상 OFF) ----
+    NS_demo)   printf '%s\n' "${MECH_ON[@]}"  env.enable_deep_tilt_boot=False \
+                             env.enable_demo_pose_reward=False ;;
+    Full)      printf '%s\n' "${MECH_ON[@]}"  env.enable_deep_tilt_boot=True  \
+                             env.enable_demo_pose_reward=False ;;
+    NS_naive)  printf '%s\n' "${MECH_OFF[@]}" env.enable_deep_tilt_boot=False \
+                             env.enable_demo_pose_reward=False ;;
     JS)        printf '%s\n' "${MECH_OFF[@]}" env.enable_deep_tilt_boot=False \
+                             env.enable_demo_pose_reward=False \
                              env.right_arm_jointspace=True ;;
+    # ---- posture-prior 2×2: demo prior를 "어느 경로로" 주입하는가 ----
+    #   축1 = 제어(null-space 투영, MECH_ON/OFF)  축2 = 보상(enable_demo_pose_reward)
+    #   P0=NS_naive(둘 다 off) · P1=NS_demo(투영만) · P2=보상만 · P3=둘 다
+    P2)        printf '%s\n' "${MECH_OFF[@]}" env.enable_deep_tilt_boot=False \
+                             env.enable_demo_pose_reward=True ;;
+    P3)        printf '%s\n' "${MECH_ON[@]}"  env.enable_deep_tilt_boot=False \
+                             env.enable_demo_pose_reward=True ;;
+    # 배포 조합(M4)에 보상까지 더한 상한 확인용
+    Full_rew)  printf '%s\n' "${MECH_ON[@]}"  env.enable_deep_tilt_boot=True  \
+                             env.enable_demo_pose_reward=True ;;
     # ---- Table II: reward ablation (NS_demo base, boot off) ----
     R_noaim)       printf '%s\n' "${MECH_ON[@]}" env.enable_deep_tilt_boot=False \
                                  env.weight_aim_precision=0.0 ;;
@@ -59,8 +73,12 @@ cond_args() {
                                  env.weight_tilt_delta=0.0 ;;
     *) echo "!! 알 수 없는 조건: $1" >&2; return 1 ;;
   esac
-  # 전 조건 공통 (ablation 불변 통제)
-  printf '%s\n' env.enable_demo_pose_reward=False env.receiver_control_mode=learned
+  # reward ablation 4종은 NS_demo base(보상 off)를 공유한다
+  case "$1" in
+    R_*) printf '%s\n' env.enable_demo_pose_reward=False ;;
+  esac
+  # 전 조건 공통
+  printf '%s\n' env.receiver_control_mode=learned
 }
 
 [[ $# -ge 1 ]] || { echo "Usage: $0 <조건> [조건...]"; exit 1; }
