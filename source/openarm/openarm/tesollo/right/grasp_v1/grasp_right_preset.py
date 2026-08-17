@@ -96,6 +96,16 @@ HAND_START_POSE = [
     0.0, 0.0, 0.0, 0.0,   # pinky
 ]
 
+# ★08.17 DG-5FS(bi_s_rl) 전환 검증 — HAND_*_POSE 는 **변경 없이 유효**하다. 3단 검증:
+#   ① palm 공통 프레임에서 q=0 기준 20관절 회전축이 구 자산과 전부 동일(dot>0.99, 좌손 포함)
+#      → 각 값의 방향 의미(굴곡/외전 부호)가 보존된다. ⚠️부모 프레임 축만 비교하면 상류
+#      rpy 누적 때문에 직교로 보인다 — 반드시 palm 프레임에서 누적 후 비교할 것.
+#   ② 새 관절 한계 대조: FULL_GRIP _3/_4=1.8 의 ±1.571 초과만 걸리는데 이는 구 자산에서도
+#      동일한 의도적 과지령(런타임 클램프)이라 변경 불필요.
+#   ③ GPU 물리(probe_pretrain_check): 인벨롭 프로파일 wrap 0.159 / middle 1.50
+#      (구 자산 0.172 / 1.23) — 새 마디 길이(0.0388→0.0334)에서도 감쌈 성립.
+# 바뀐 것은 마디 길이·베이스 위치·한계뿐이고, 그건 접촉 동결이 흡수한다.
+#
 # FABRICS 접근 자세 (Approach pose)
 # FABRICS pregrasp rollout 동안 유지 + episode 시작 초기 손 자세 + per-finger lerp 기준점
 # r_hj_thumb_2 (thumb, Z-axis curl, range [-π, 0]) = -1.57 rad
