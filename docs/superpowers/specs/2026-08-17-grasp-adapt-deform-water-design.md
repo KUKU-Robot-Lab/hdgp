@@ -44,7 +44,11 @@ success **0.96**, 물 부어 무게 2~3배 급증해도 damage 0. 결론: *"세�
 - LR **1e-4**로 낮추자 해결 → massshift2가 0.96 달성
 - 명시적 결론: **"fresh 대신 fine-tune이 옳았음"**
 
-→ 본 설계는 **test25 ckpt warmstart + 저LR**로 시작한다. 기존 `rl_games_ppo_lstm_deform_ft_cfg.yaml`이 이미 actor LR 1e-4라 그대로 쓴다.
+이 교훈은 **warmstart를 택할 경우에만** 적용된다 — 수렴한 정책에 full LR을 쓰지 말라는 뜻이다.
+
+**본 설계는 fresh로 간다 (2026-08-17 결정).** 사유: 07.30에 "USD 무죄"로 검증된 것은 **head 카메라** 교체였고 팔·파지와 무관했다. 이번에는 **손 마운트가 54.8mm 바뀌어 팔 관절↔palm 매핑이 실제로 달라졌고**, bead 질량(10g→8g)과 질량 ADR도 새로 들어온다. 전이를 기대할 근거가 약하다.
+
+→ agent yaml은 **`rl_games_ppo_lstm_cfg.yaml`**(fresh 표준: actor LR 3e-4 · minibatch 16384)을 쓴다. warmstart 전용 `deform_ft_cfg`(LR 1e-4)는 fresh에 쓰면 수렴이 지나치게 느리다.
 
 ### 3.3 급격 도입 금지 (grasp_v1)
 
@@ -88,7 +92,7 @@ GraspRightEnvCfgDeformable            (기존, 종이컵)
 ```
 
 태스크: `open-tesol_r_grasp_adapt_deform_water-lstm`
-agent yaml: `rl_games_ppo_lstm_deform_ft_cfg.yaml` (actor LR 1e-4)
+agent yaml: `rl_games_ppo_lstm_cfg.yaml` (fresh 표준, actor LR 3e-4 · minibatch 16384)
 
 기존 `deform_ft`는 **무변경** — test25 재현 경로를 보존한다.
 
@@ -138,7 +142,9 @@ Gate 1에서 test25 수준(0.88)에 크게 못 미치면 **손 USD 변경이 원
 ### 6.5 학습 환경
 
 - 로컬 **RTX 5090 · num_envs 4096** (32GB 제약; test25는 8192에서 31.8GB 사용)
-- **시작점: test25 ckpt warmstart + 저LR fine-tune** (§3.2 근거)
+- **시작점: fresh** (§3.2 근거). 로그는 `log/`에 새 실험 폴더로 남기고, 아카이브
+  (`log_archive/2026-08-17_pre_dg5fs/`)는 보존용으로만 둔다.
+- minibatch 16384는 4096 env × horizon 32 = 131072을 8등분해 나누어떨어진다.
 
 ## 7. 변경 파일
 

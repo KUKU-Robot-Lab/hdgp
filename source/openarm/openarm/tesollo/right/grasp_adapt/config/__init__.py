@@ -120,9 +120,12 @@ gym.register(
     kwargs={
         # Phase 4: 변형 종이컵 + 물(정적 수위 + 동적 추가). 질량 ADR 2단계 게이팅.
         "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgDeformableWater",
-        # deform_ft와 동일 yaml — actor LR 1e-4. 07.30 실증(LR 3e-4는 수렴 정책을
-        # ep~273에 붕괴시킴)에 따라 fresh가 아니라 저LR fine-tune으로 시작한다.
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_deform_ft_cfg.yaml",
+        # ★fresh 학습용 표준 yaml(actor LR 3e-4 · minibatch 16384).
+        # 손 USD(dg5f→dg5fs, 마운트 -54.8mm)·bead 질량·질량 ADR이 모두 바뀌어
+        # test25 ckpt 전이를 기대하지 않고 처음부터 학습한다.
+        # (warmstart로 전환할 경우엔 rl_games_ppo_lstm_deform_ft_cfg.yaml =
+        #  actor LR 1e-4. 07.30 실증: 수렴 정책에 3e-4를 쓰면 ep~273에 붕괴.)
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
     },
 )
 
