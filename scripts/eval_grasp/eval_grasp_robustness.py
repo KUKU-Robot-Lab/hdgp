@@ -58,6 +58,10 @@ parser.add_argument("--hand_damping", type=float, default=-1.0,
                     help="<0 이면 감쇠비 보존(kd = 60·√(k/400)). S4 에서 재도출 예정.")
 parser.add_argument("--mass_scale", type=float, default=1.0,
                     help="파지 성립 후 물체 질량 배율. ADR mass DR(0.5~4.0) 범위 실측용.")
+parser.add_argument("--static_friction", type=float, default=-1.0,
+                    help="<0 이면 변경 없음. 물체 정지마찰 고정값(ADR 범위 0.5~1.2).")
+parser.add_argument("--dynamic_friction", type=float, default=-1.0,
+                    help="<0 이면 변경 없음. 물체 운동마찰 고정값(ADR 범위 0.3~1.0, 하한=미끄러운 컵).")
 parser.add_argument("--out", type=str, default="")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -87,8 +91,29 @@ def main(env_cfg, agent_cfg):
     # 외란은 매 스텝 우리가 배율을 바꿔 넣으므로 env 자체 트리거 주기는 짧게.
     env_cfg.wrench_trigger_every = 15
 
+    # ★에피소드 길이 가드 (필수) — 08.17 오측정 재발 방지.
+    # 기본 EPISODE_STEPS=600 인데 settle(260) + stages×stage_steps 가 그걸 넘으면 램프 도중
+    # 에피소드가 리셋되고, 그 리셋이 _alive()=False 로 잡혀 **타임아웃을 파지 붕괴로 기록**한다.
+    # 실제로 첫 실행에서 8종 전부 break_scale 1.78~1.82 로 균일하게 나왔는데, 그건 강건성이
+    # 같아서가 아니라 전부 같은 스텝에서 리셋됐기 때문이었다(생존 503→14 절벽 = 스텝 620).
+    # 여기서는 필요한 스텝을 계산해 episode_length_s 를 늘리고, 그래도 모자라면 즉시 죽인다.
+    _HZ = 60.0
+    _need = args_cli.settle_steps + args_cli.stages * args_cli.stage_steps + 120  # +여유
+    _have = int(env_cfg.episode_length_s * _HZ)
+    if _need > _have:
+        env_cfg.episode_length_s = _need / _HZ
+        print(f"[eval] 에피소드 길이 확장: {_have} → {_need} 스텝 "
+              f"(episode_length_s {_have/_HZ:.1f} → {env_cfg.episode_length_s:.1f}s)", flush=True)
+
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
     uenv = env.unwrapped
+    _max_steps = int(uenv.max_episode_length)
+    if _need > _max_steps:
+        raise RuntimeError(
+            f"평가 스케줄({_need} 스텝)이 에피소드 길이({_max_steps} 스텝)를 넘는다. "
+            f"램프 도중 리셋이 파지 붕괴로 오기록된다. --settle_steps/--stages/--stage_steps 를 줄여라."
+        )
+    print(f"[eval] 스케줄 {_need} 스텝 / 에피소드 {_max_steps} 스텝 — 리셋 없이 완주 가능", flush=True)
 
     clip_obs = agent_cfg["params"]["env"].get("clip_observations", float("inf"))
     clip_act = agent_cfg["params"]["env"].get("clip_actions", float("inf"))
@@ -101,9 +126,15 @@ def main(env_cfg, agent_cfg):
     player.restore(args_cli.checkpoint)
     player.reset()
 
-    obs = env.reset()
+    # 비대칭 obs(actor+critic) 태스크라 wrapper 가 dict 를 돌려준다. rl_games player 는
+    # 텐서를 기대하므로 풀어줘야 한다(play.py:668-670 과 동일 가드 — 빠뜨리면
+    # AttributeError: 'dict' object has no attribute 'size' 로 죽는다).
+    def _unwrap(o):
+        return o["obs"] if isinstance(o, dict) else o
+
+    obs = _unwrap(env.reset())
+    _ = player.get_batch_size(obs, 1)
     if player.is_rnn:
-        _ = player.get_batch_size(obs, 1)
         player.init_rnn()
 
     n = uenv.num_envs
@@ -116,7 +147,8 @@ def main(env_cfg, agent_cfg):
         uenv.cfg.hold_rotation_perturb_max_accel = float(_BASE_ROT * scale)
         with torch.no_grad():
             act = player.get_action(player.obs_to_torch(step.obs), is_deterministic=True)
-        step.obs, _, _, _ = env.step(act)
+        _o, _, _, _ = env.step(act)
+        step.obs = _unwrap(_o)
 
     _BASE_WRENCH = float(uenv.cfg.wrench_max_accel)
     _BASE_ROT = float(uenv.cfg.hold_rotation_perturb_max_accel)
@@ -159,7 +191,19 @@ def main(env_cfg, agent_cfg):
         print(f"[eval] 물체 질량 ×{args_cli.mass_scale:.2f} "
               f"(평균 {float(masses.mean())*args_cli.mass_scale*1000:.0f} g)", flush=True)
 
-    if args_cli.hand_stiffness > 0.0 or args_cli.mass_scale != 1.0:
+    if args_cli.static_friction >= 0.0 or args_cli.dynamic_friction >= 0.0:
+        # material shape = (num_envs, num_shapes, 3) = [static, dynamic, restitution]
+        mat = uenv.cup.root_physx_view.get_material_properties().clone()
+        if args_cli.static_friction >= 0.0:
+            mat[..., 0] = float(args_cli.static_friction)
+        if args_cli.dynamic_friction >= 0.0:
+            mat[..., 1] = float(args_cli.dynamic_friction)
+        uenv.cup.root_physx_view.set_material_properties(mat, torch.arange(n))
+        print(f"[eval] 물체 마찰 고정: static={float(mat[..., 0].mean()):.3f} "
+              f"dynamic={float(mat[..., 1].mean()):.3f}", flush=True)
+
+    if (args_cli.hand_stiffness > 0.0 or args_cli.mass_scale != 1.0
+            or args_cli.static_friction >= 0.0 or args_cli.dynamic_friction >= 0.0):
         for _ in range(60):                                  # 새 물성에서 정착
             step(0.0)
         still = uenv.lift_ready_latched_buf & eligible
