@@ -334,11 +334,25 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 크기 산정: 실측 wrap 침식폭 ≈0.05(0.19→0.14) × 이 가중치 = 스텝당 −0.30,
     # reward/lift 실측 5.8 대비 5% 수준 — 신호는 되되 리프트를 억제하지 않는 선.
     wrap_retention_loss_weight: float = -6.0
-    # ★래치 후 손가락 동결 해제(재조임 권한). 파지력은 stiffness×(target−actual) 오버슈트가
-    # 전부인데 동결이 첫 접촉(0.1N)에서 걸려 오버슈트≈0 으로 고정된다 — 외란이 와도 더 조일
-    # 수단이 없다. 래치 후 동결을 풀어 정책이 폐쇄 진행도를 더 밀 수 있게 한다.
-    # ⚠️배포 동기화 필수: sim2real/scripts/grasp_action_decoder.py 의 GraspFingerController.
-    retighten_after_latch: bool = True
+    # ★★08.16 실패 실증 → False 로 되돌림(wrapfix1_retighten_FAILED_ep400).
+    # 시도: 래치 후 동결 게이트를 풀어 "더 조일" 권한을 준다.
+    # 결과: **감쌈이 파괴됐다.** 같은 epoch(300~450) 대조 —
+    #   full_envelope 0.176→0.035(0.20x), wrap 0.447→0.214(0.48x),
+    #   middle_count 2.496→1.190(0.48x), distal_count 0.736→0.420(0.57x)
+    #   그런데 총 접촉은 4.07→4.41 로 늘고 five_tip 동시접촉률은 0.42→0.68(1.61x)
+    #   = 접촉이 사라진 게 아니라 중간·원위마디에서 **손끝으로 이동**(인벨롭→핀치).
+    # 원인: 동결 게이트는 "컵 반경보다 더 말아쥐지 못하게" 하는 장치였다. 풀어주면 손가락이
+    #   컵 반경(4.5cm)보다 작은 반경으로 말리고, 그러면 기하학적으로 컵에 닿을 수 있는 점은
+    #   가장 끝(손끝) 하나뿐이라 중간·원위가 들린다(close_frac 0.96 = 거의 주먹).
+    # 교훈: **위치 목표를 더 미는 것은 "조이는" 동작이 아니라 "더 작은 반경으로 마는" 동작**이다.
+    #   반경이 정해진 물체에서는 후자가 감쌈을 파괴한다. 파지력을 키우려면 자세를 더 말지 않고
+    #   같은 자세에서 토크를 키워야 하는데, 현 구조(위치 목표가 유일 입력)에는 그 채널이 없다.
+    retighten_after_latch: bool = False
+
+    # -----------------------------------------------------------------------
+    # ★08.16 squeeze(가압) 철회 — 액션에서 제거(NUM_SQUEEZE_ACTION=0). 근거는 constants 참조:
+    #   도입 전제("동결 때문에 오버슈트가 0")가 오진이었고 실제 원인은 토크 포화였다.
+    #   게인 재설정으로 포화는 풀렸으나, PIP/DIP 분리 채널이 같은 권한을 더 자연스럽게 준다.
     # ★틸팅 종료 억제를 스크립트 램프(LIFT_PHASE_STEPS) 구간으로만 한정. 기존엔 래치 이후
     # 전 구간을 억제했는데 그 구간이 정확히 회전 외란이 걸리는 구간이라, 외란의 유일한
     # 실패 신호가 꺼져 있었다. 램프 후 hold 구간에서 되살린다.
@@ -360,7 +374,9 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 크기는 ADR 커리큘럼 0→max — 급격 도입 시 grip 붕괴 방지.
     # -----------------------------------------------------------------------
     wrench_enable: bool = True
-    wrench_max_accel: float = 15.0      # m/s² ADR 종점. 컵 154g 기준 최대 2.3N = 중력(1.51N)의 1.5배
+    # ★08.16 15→8 하향(S2 실측, right 동일). 하중 = m·(9.81+a) 최악 코너를 실측 파지
+    # 능력 안에 맞춘 값. 강건성 평가에서 3배(24 m/s²)까지 생존 98.4% 확인.
+    wrench_max_accel: float = 8.0      # m/s² ADR 종점. 컵 154g 기준 최대 2.3N = 중력(1.51N)의 1.5배
     wrench_torsional_radius: float = 0.045  # m — pour source_inner_radius(0.041) 비드 쏠림 레버암 재현
     wrench_trigger_every: int = 15      # step(0.25s @60Hz)마다 새 랜덤 wrench — 비드 슬로싱 주기 근사
     wrench_hand_dist_threshold: float = 0.3  # m — palm-물체 거리 게이트
@@ -370,7 +386,8 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     hold_rotation_perturb_enable: bool = True
     # a=12·r=0.045 → τ = 0.154×12×0.045 = 0.083 N·m. pour 110° 기울임에서 컵+비드(0.154kg)가
     # 파지점 레버암 ~0.05m 로 만드는 중력 토크(≈0.076 N·m) 수준을 재현한다.
-    hold_rotation_perturb_max_accel: float = 12.0
+    # ★08.16 12→8 하향(right 동일): 질량 종점과 조합해 pour deep-tilt 토크 재현 유지.
+    hold_rotation_perturb_max_accel: float = 8.0
 
     # -----------------------------------------------------------------------
     # ADR
@@ -397,10 +414,10 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
         # spawn과 동일 카운터 공유 — 학습 곡선에서 latch 후 붕괴가 보이면
         # adr_increment_interval 상향으로 램프 속도 완화(스케줄 자체 변경은 하지 않음).
         "object_wrench": {
-            "max_linear_accel": (0.0, 15.0),
+            "max_linear_accel": (0.0, 8.0),
         },
         "hold_rotation": {
-            "max_accel": (0.0, 12.0),
+            "max_accel": (0.0, 8.0),
         },
     })
 
@@ -415,11 +432,11 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
             "restitution_range":      (0.8, 1.0),
         },
         "object_scale_mass": {
-            # ★0.5~4.0× (pour 에 국한하지 않는 광범위 적재: 컵 무게 외 최소 300g 여유 파지).
-            # 기본질량 0.134kg 통일이므로 전 물체가 **0.067 ~ 0.536 kg** 을 동일하게 커버
-            # → 최대 적재량 = 0.536-0.134 = **402g**(요구 300g 대비 +34% 여유).
-            # 상한 0.536kg 은 grasp_v2 가 ADR 만렙에서 실제로 성공시킨 최대 절대질량과
-            # 같아 외삽이 아닌 실증 영역이다.
+            # ★08.17 ×4.0 복원 (강건성 평가 실측). 08.16 에 S2 프로브(총 하중 5N)를 근거로
+            # 2.0 으로 내렸으나, 그 수치는 **스크립트 팁핀치**(wrap 0.03) 기준이었고 학습된
+            # 인벨롭 정책(wrap 1.43)의 실측 능력은 2.8배였다: 536g(×4.0)+외란 2.0×에서
+            # 생존 88.4%, cup_big 계열은 0.937 이상. "컵 외 300g 적재" 요구도 이 복원으로
+            # 재충족(536-134=402g). 원통 3종은 이 영역에서 어려움(마찰 의존) — 학습 과제로 남김.
             "mass_distribution_params": (0.5, 4.0),
         },
     })
@@ -618,25 +635,30 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
             ),
             # 손 stiffness/damping: pour-v5/6 검증값 채택. 기존 30/5(물렁)은 엄지 _3/_4가
             # 컵을 감을 때 반력이 엄지 대향을 뒤로 밀어냄(play 렌더 관찰). 단단히 유지.
+            # ★08.16 손 게인 전면 재설정 (S1~S4 실측, right 와 동일 — HW 좌우 동일).
+            #   구 400/60 은 토크 포화 영역: effort limit 7.5 N·m vs 요구 143 N·m(19배),
+            #   접촉 관절 80.6% 상시 포화 → 파지력 제어 원리적 불가 + 실기(effort p=1.5) 도달 불가.
+            #   S1 포화 이탈선 k≈5 / S4 kd 스윕 → kd 2.0 (포화 0.8% + 최저 채터).
+            #   실기 d=0.0 이므로 damping 은 기계마찰의 sim 대역품 — r2s 후 armature 로 교체할 것.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["l_hj_[a-z]+_1"],
-                stiffness=200.0,   # 08.16 pour 정합: 600→200 (pour abduction 200/35와 동일). 600 이력=roll 억제 절충이었으나 pour 소비 게인과 불일치가 파지 미끄러짐 유발.
-                damping=35.0,
+                stiffness=5.0,
+                damping=2.0,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["l_hj_[a-z]+_2"],
-                stiffness=400.0,
-                damping=60.0,
+                stiffness=5.0,
+                damping=2.0,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["l_hj_[a-z]+_3"],
-                stiffness=400.0,
-                damping=60.0,
+                stiffness=5.0,
+                damping=2.0,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["l_hj_[a-z]+_4"],
-                stiffness=400.0,
-                damping=60.0,
+                stiffness=5.0,
+                damping=2.0,
             ),
             # 오른손 tesollo (bi USD): 학습 미사용, rest 자세 유지용 hold (고정)
             "tesollo_right_hand": ImplicitActuatorCfg(

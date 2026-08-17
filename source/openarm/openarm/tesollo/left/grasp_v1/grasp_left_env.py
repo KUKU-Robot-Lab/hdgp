@@ -58,7 +58,7 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_apply
+from isaaclab.utils.math import quat_apply, quat_conjugate
 
 from openarm.common.grasp_logging import action_policy_scalars, joint_state_scalars
 # ★grasp_v1 은 공유 core 를 쓰지 않는다(08.16 지시) — 감쌈 깊이·유지 페널티를
@@ -80,6 +80,9 @@ from .grasp_left_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
     NUM_FINGERTIPS,
+    NUM_PALM_ACTION,
+    NUM_FINGER_ACTION,
+    NUM_FINGER_CHANNELS,
     NUM_OBSERVATIONS,
     NUM_DISTAL_SENSORS,
     NUM_MIDDLE_SENSORS,
@@ -90,6 +93,7 @@ from .grasp_left_constants import (
     EPISODE_STEPS,
     CONTACT_FORCE_THRESHOLD,
     CONTACT_FORCE_MAX,
+    JOINT_POS_ERR_MAX,
     MIN_CONTACTS_FOR_SUCCESS,
     PREGRASP_FABRICS_STEPS,
     ARM_START_POSE,
@@ -781,17 +785,23 @@ class GraspLeftEnv(DirectRLEnv):
         self.prev_actions.copy_(self.actions)
         self.actions = actions.clone()
 
-        palm_action   = actions[:, :6]    # (N, 6) ∈ [-1, 1]
-        finger_action = actions[:, 6:11]  # (N, 5) ∈ [-1, 1]
+        palm_action = actions[:, :NUM_PALM_ACTION]                  # (N, 6) ∈ [-1, 1]
+        # ★08.16 PIP/DIP 분리: (N,15) → (N,5,3) [손가락, 채널]. 채널 0=_1 외전 / 1=_2 MCP /
+        #   2=_3·_4 PIP·DIP 공통. 이제 정책이 **관절 사이의 비율**을 정할 수 있다.
+        finger_action = actions[
+            :, NUM_PALM_ACTION:NUM_PALM_ACTION + NUM_FINGER_ACTION
+        ].view(self.num_envs, NUM_FINGERTIPS, NUM_FINGER_CHANNELS)
 
         # ---- couple_four_fingers (left-only, 08.02): 3지 국소최적 원천 차단 ----
         # 검지~소지(1:5)를 공통 신호(평균)로 묶어 "특정 손가락만 안 닫힘" action 자체를 표현
         # 불가하게 한다. 엄지(0)는 opposition 회전 위해 독립. 접촉 시 개별 동결(g3/g4)은 그대로라
         # 각 손가락이 닿는 지점서 멈춰 최종 조합은 물체가 결정(형상 적응 유지). grasp_v2 검증법.
+        # ★분리 후에도 **채널별로** 평균낸다 — 4지가 같은 자세를 공유하되, 그 자세의
+        #   외전/MCP/PIP 비율은 정책이 자유롭게 정한다(3지 방지와 형상 자유도가 양립).
         if bool(getattr(self.cfg, "couple_four_fingers", False)):
-            _thumb_a = finger_action[:, 0:1]
-            _common4 = finger_action[:, 1:5].mean(dim=1, keepdim=True)
-            finger_action = torch.cat([_thumb_a, _common4.expand(-1, 4)], dim=1)
+            _thumb_a = finger_action[:, 0:1, :]                       # (N,1,3)
+            _common4 = finger_action[:, 1:5, :].mean(dim=1, keepdim=True)
+            finger_action = torch.cat([_thumb_a, _common4.expand(-1, 4, -1)], dim=1)
 
         # ---- Phase 판정: 접촉 latch (감싸 잡으면 리프트, step-480 scripted 대체) ----
         # lift 진입 게이트: 손가락별 아무 마디(tip|mid|distal)든 닿은 손가락 수(grip)로 판정.
@@ -894,10 +904,8 @@ class GraspLeftEnv(DirectRLEnv):
         #   _1 외전 / _2 MCP: 무게이트(full close, 근위 마디를 컵에 밀착)
         #   _3 PIP: 중간마디(middle) 접촉 시 동결 / _4 DIP: distal|tip 접촉 시 동결
         # → distal→proximal 순차 동결로 컵 형상에 손가락이 드리워짐(envelope).
-        # 5D action = 손가락별 폐쇄 속도 명령[0,1]. 관절 순서 finger-major [_1,_2,_3,_4]×5.
-        # (couple_four_fingers 제거 2026-07-28: 3지 국소최적은 엄지 부호버그의 증상이었고
-        #  엄지 -1 수정으로 해소 → right와 동일 per-finger 독립 제어로 충실 미러 복원.)
-        cmd = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)          # (N,5) ∈ [0,1]
+        # 15D action = 손가락×채널 **절대 폐쇄도**[0,1]. 관절 순서 finger-major [_1,_2,_3,_4]×5.
+        cmd_ch = 0.5 * (finger_action.clamp(-1.0, 1.0) + 1.0)       # (N,5,3) ∈ [0,1]
         tip_c  = self.binary_contact_buf.float()                    # (N,5) 끝
         dist_c = self.distal_binary_contact_buf.float()             # (N,5) distal(l_hl_X_4)
         mid_c  = self.middle_binary_contact_buf.float()             # (N,5) middle(l_hl_X_3)
@@ -910,9 +918,6 @@ class GraspLeftEnv(DirectRLEnv):
         g3 = (dist_c + tip_c).clamp(max=1.0)                        # _3 PIP: distal|tip 접촉 시 동결
         g4 = (dist_c + tip_c).clamp(max=1.0)                        # _4 DIP: distal|tip 접촉 시 동결
         gate20 = torch.stack([g1, g2, g3, g4], dim=2).reshape(self.num_envs, -1)  # (N,20)
-        cmd20 = cmd.repeat_interleave(4, dim=1)                     # (N,20) 손가락 명령 → 4관절
-        advance = float(self.cfg.finger_close_speed) * cmd20 * (1.0 - gate20)
-        self.finger_close_buf = (self.finger_close_buf + advance).clamp(0.0, 1.0)  # (N,20)
         # ★08.16 래치 후 재조임 권한(retighten_after_latch).
         # 파지력은 힘 명령이 아니라 `stiffness × (target − actual)` 오버슈트가 전부인데,
         # 동결이 **첫 접촉(0.1N)** 에서 걸리므로 오버슈트가 거의 0 인 채 고정된다 —
@@ -922,14 +927,30 @@ class GraspLeftEnv(DirectRLEnv):
         # 래치 전 동결은 그대로 유지(접근→형상적응 감쌈이 이 구조로 만들어짐).
         if bool(getattr(self.cfg, "retighten_after_latch", False)):
             gate20 = gate20 * (~self.lift_ready_latched_buf).float().unsqueeze(1)
-        cmd20 = cmd.repeat_interleave(4, dim=1)                     # (N,20) 손가락 명령 → 4관절
-        advance = float(self.cfg.finger_close_speed) * cmd20 * (1.0 - gate20)
+        # 채널 → 20관절 전개. [_1, _2, _3, _4] 순서에 [ch0, ch1, ch2, ch2] 를 대응.
+        cmd20 = torch.stack(
+            [cmd_ch[:, :, 0], cmd_ch[:, :, 1], cmd_ch[:, :, 2], cmd_ch[:, :, 2]], dim=2
+        ).reshape(self.num_envs, -1)                                # (N,20)
+        # ★08.16 래칫 제거 — 명령을 "속도"에서 "절대 폐쇄도 목표"로 바꾼다.
+        # 구: advance = speed × cmd20 ≥ 0 → 단조 증가만 가능. cmd 는 [0,1] 이라 탐색 노이즈
+        #   평균(cmd≈0.5)만으로도 스텝당 +0.0125 씩 쌓여 80스텝이면 완전 폐쇄에 도달하고
+        #   되돌릴 수 없었다(실증: close_frac_max 가 첫 구간부터 1.0). 즉 정책은 "얼마나
+        #   닫을지"를 표현할 수 없었고, **채널을 분리해도 전부 1.0 으로 포화해 비율이 안 생긴다.**
+        #   → PIP/DIP 분리가 의미를 가지려면 이 수정이 필수다(둘은 한 묶음).
+        # 신: 목표를 향해 finger_close_speed 를 **변화율 상한**으로 삼아 이동. 감소 가능.
+        # 동결은 그대로 유지 — 접촉한 관절은 그 자리에 멈춰 컵 형상에 드리워진다(감쌈 생성
+        #   메커니즘이자 다형상 적응의 근거). 여기를 건드리면 3지 국소최적으로 회귀한다.
+        _rate = float(self.cfg.finger_close_speed)
+        delta = (cmd20 - self.finger_close_buf).clamp(-_rate, _rate)
+        advance = delta * (1.0 - gate20)
         self.finger_close_buf = (self.finger_close_buf + advance).clamp(0.0, 1.0)  # (N,20)
         hand_target = torch.lerp(
             self.hand_open_pose.unsqueeze(0).expand(self.num_envs, -1),
             self.hand_full_grip_pose.unsqueeze(0).expand(self.num_envs, -1),
             self.finger_close_buf,                                  # (N,20) 관절별 진행도
-        ).clamp(
+        )
+
+        hand_target = hand_target.clamp(
             self.hand_joint_lower_limits.unsqueeze(0),
             self.hand_joint_upper_limits.unsqueeze(0),
         )
@@ -1065,8 +1086,38 @@ class GraspLeftEnv(DirectRLEnv):
             fingertip_pos - cup_pos_noisy.unsqueeze(1)
         ).view(self.num_envs, -1)
 
-        # 7. fingertip binary contact (5D) — contact 자체에는 noise 없음
-        binary_contact = self.binary_contact_buf.float()
+        # 7. fingertip 접촉력 3축 (15D) — ★08.16 binary(5D) 대체.
+        # 왜: 재조임 권한을 열어도 정책이 **자기 파지력을 관측할 수 없으면 조절할 수 없다**.
+        # binary 는 0.1N 임계 하나라 "닿음"과 "으스러뜨림"을 구분하지 못한다.
+        # 실기 근거: Tesollo DG-5F 손끝은 6축 F/T 내장 —
+        #   /dg5f_right/fingertip_{1..5}_broadcaster/wrench 로 실제 발행된다.
+        #   6축 중 **force 3축만** 쓴다(torque 3축은 미사용 — 쓰려면 재학습 필요).
+        # ★프레임 결정 = tip-local: sim 의 force_matrix_w 는 world frame 이지만 실물 F/T 는
+        #   센서(손가락) 로컬 출력이다. world 로 학습하면 배포 시 매 스텝 tip FK 회전으로
+        #   변환해야 하고 그 변환이 어긋나면 조용히 잘못된 obs 가 된다(과거 손 obs zeros
+        #   사고와 동형). sim 을 tip-local 로 맞춰 **실기 값이 그대로 들어가게** 한다.
+        # 정규화는 CONTACT_FORCE_MAX(10N) — 실기 노드도 동일 상수를 써야 한다.
+        _tip_quat_w = self.robot.data.body_quat_w[:, self.fingertip_body_indices]  # (N,5,4)
+        _tip_f_local = quat_apply(
+            quat_conjugate(_tip_quat_w.reshape(-1, 4)),
+            self.contact_force_xyz_raw.reshape(-1, 3),
+        ).view(self.num_envs, NUM_FINGERTIPS, 3)
+        tip_force_local = (_tip_f_local / CONTACT_FORCE_MAX).clamp(-1.0, 1.0).view(
+            self.num_envs, -1
+        )   # (N,15)
+
+        # 7-b. 손 관절 위치 오차 20D — ★인벨롭 그립의 주 힘 관측(08.16).
+        # 힘 ∝ stiffness × (지령 − 실측)이고, **어느 마디가 막히든 오차로 나타난다**.
+        # 손끝 F/T 만으로는 부족하다: 인벨롭이 잘 될수록 접촉이 중간·원위마디로 가고
+        # 팁은 0 을 읽는다(실측 엄지 팁 0.619 vs 아무 마디 0.844 — 40% 구간 팁 무접촉).
+        # 즉 손끝 힘은 "닿을 때만" 유효한 보조 신호이고, 전 마디를 덮는 건 이 오차뿐이다.
+        # 실기에서도 우리가 보낸 지령과 /dg5f_right/joint_states 실측으로 그대로 계산된다
+        # (추가 센서 불필요) — 배포 가능한 관측.
+        # 부호를 보존한다: 어느 방향으로 막혔는지가 정보다.
+        _hand_pos_now = self.robot.data.joint_pos[:, self.hand_dof_indices]
+        joint_pos_err = (
+            (self.hand_joint_targets - _hand_pos_now) / JOINT_POS_ERR_MAX
+        ).clamp(-1.0, 1.0)   # (N,20)
 
         # 8. last actions (11D)
         last_actions = self.actions
@@ -1083,10 +1134,11 @@ class GraspLeftEnv(DirectRLEnv):
             fingertip_pos_rel_palm, # 15
             palm_to_cup,            # 3
             cup_to_fingertip,       # 15
-            binary_contact,         # 5
-            last_actions,           # 11
+            tip_force_local,        # 15  손끝 3축 힘(tip-local·10N) — 보조(팁 무접촉 시 0)
+            joint_pos_err,          # 20  ★관절 위치 오차 = 전 마디 힘 관측(주)
+            last_actions,           # 13
             object_onehot,          # 8
-        ], dim=-1)   # 114D
+        ], dim=-1)   # 146D
 
         if actor_obs.shape[1] != NUM_OBSERVATIONS:
             raise RuntimeError(
@@ -1126,7 +1178,7 @@ class GraspLeftEnv(DirectRLEnv):
         ).norm(dim=-1)
         fingertip_signed_dist = tip_to_cup_dist - self.cup_radius_approx_buf.unsqueeze(-1)
 
-        # critic actor_obs_clean (114D) — clean state 재조합
+        # critic actor_obs_clean (146D) — clean state 재조합
         actor_obs_clean = torch.cat([
             arm_joint_pos_clean,
             arm_joint_vel_clean,
@@ -1136,13 +1188,14 @@ class GraspLeftEnv(DirectRLEnv):
             (fingertip_pos_clean - palm_center_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
             cup_pos_clean - palm_center_pos_clean,
             (fingertip_pos_clean - cup_pos_clean.unsqueeze(1)).view(self.num_envs, -1),
-            binary_contact,
+            tip_force_local,        # 15 — actor 와 동일(접촉력엔 obs noise 미적용)
+            joint_pos_err,          # 20 — actor 와 동일
             last_actions,
             object_onehot,
-        ], dim=-1)   # 114D
+        ], dim=-1)   # 146D
 
         critic_obs = torch.cat([
-            actor_obs_clean,        # 114
+            actor_obs_clean,        # 146
             cup_lin_vel,            # 3
             cup_ang_vel,            # 3
             cup_rot,                # 4
@@ -1378,6 +1431,26 @@ class GraspLeftEnv(DirectRLEnv):
         #   wrap_now      : 현재 per-finger 감쌈 깊이
         #   wrap_at_latch : 래치 순간 깊이(페널티 기준선) — 이게 하락하면 회피가 일어나는 것
         #   wrap_drop     : 실제로 물린 페널티 크기(=relu(latch-now))
+        # ★과폐쇄 감시(08.16, retighten_after_latch 도입에 따른 예상 부작용).
+        # 유지 페널티는 "잃는 것"만 처벌하고 sim 컵은 rigid 라 **끝까지 조이는 게 공짜**다.
+        # 정책이 close_frac→1.0 으로 포화하면 (a) 재조임이 학습이 아니라 상수가 되고
+        # (b) 실기에서 손가락·물체 손상 위험. 행동은 안 바꾸고 지표로만 감시한다.
+        #   close_frac  : 손가락 폐쇄 진행도 평균(1.0 = 완전 폐쇄)
+        #   tip_force   : 손끝 접촉력 평균 [N] — 포화 시 함께 치솟는다
+        self.extras["debug/finger/close_frac"] = self.finger_close_buf.mean()
+        self.extras["debug/finger/close_frac_max"] = self.finger_close_buf.max()
+        # ★08.16 PIP/DIP 분리가 실제로 쓰이는지 보는 지표. 관절 순서 finger-major [_1,_2,_3,_4]×5.
+        # 세 값이 서로 붙어 있으면 정책이 채널을 안 쓰는 것(= 구 5D 와 동일) → 분리 실패.
+        # 벌어져야 인벨롭 자세(MCP 깊게 / PIP·DIP 얕게)를 실제로 만들고 있다는 뜻이다.
+        _cb = self.finger_close_buf.view(self.num_envs, NUM_FINGERTIPS, 4)
+        self.extras["debug/finger/close_ab"] = _cb[:, :, 0].mean()      # _1 외전
+        self.extras["debug/finger/close_mcp"] = _cb[:, :, 1].mean()     # _2 MCP
+        self.extras["debug/finger/close_pip"] = _cb[:, :, 2].mean()     # _3 PIP
+        self.extras["debug/finger/close_spread"] = (
+            _cb[:, :, 1].mean() - _cb[:, :, 2].mean()                   # MCP − PIP 비율 분화
+        )
+        self.extras["contact/tip_force_mean"] = self.contact_force_raw.mean()
+        self.extras["contact/tip_force_max"] = self.contact_force_raw.max()
         self.extras["contact/wrap_now"] = self.wrap_frac_buf.mean()
         _latched_f = self.lift_ready_latched_buf.float()
         _n_latched = _latched_f.sum().clamp(min=1.0)

@@ -71,9 +71,45 @@ def test_finger_close_is_per_joint_contact_gated() -> None:
     assert "self.middle_binary_contact_buf.float()" in env
     # 관절별 게이트 스택 → (N,20)
     assert "gate20 = torch.stack" in env
-    assert "cmd.repeat_interleave(4" in env
+    # ★08.16 PIP/DIP 분리: 손가락 스칼라 복사(cmd.repeat_interleave)를 채널 전개로 대체.
+    #   [_1,_2,_3,_4] 에 [ch0,ch1,ch2,ch2] 를 대응시킨다.
+    assert "cmd.repeat_interleave(4" not in env
+    assert "cmd_ch[:, :, 0], cmd_ch[:, :, 1], cmd_ch[:, :, 2], cmd_ch[:, :, 2]" in env
     # 1-DOF lerp(close_buf를 repeat_interleave 후 lerp) 제거 확인
     assert "self.finger_close_buf.repeat_interleave(4" not in env
+
+
+def test_finger_action_is_absolute_level_not_ratchet() -> None:
+    # ★08.16 래칫 제거. 구 advance = speed × cmd ≥ 0 은 단조 증가만 가능해
+    # 탐색 노이즈만으로 close_buf 가 1.0 에 포화했다(close_frac_max 첫 구간부터 1.0).
+    # 그 상태로 채널만 분리하면 세 채널이 전부 1.0 이 되어 비율이 안 생긴다 —
+    # 즉 PIP/DIP 분리와 래칫 제거는 한 묶음이어야 의미가 있다.
+    env = _text("grasp_left_env.py")
+    consts = _text("grasp_left_constants.py")
+
+    # 절대 목표를 향해 변화율 상한으로 이동(감소 가능)
+    assert "delta = (cmd20 - self.finger_close_buf).clamp(-_rate, _rate)" in env
+    assert "advance = delta * (1.0 - gate20)" in env
+    # 구 단방향 누적 형태가 남아 있지 않을 것
+    assert "float(self.cfg.finger_close_speed) * cmd20" not in env
+    # 접촉 동결은 유지되어야 한다(감쌈 생성 메커니즘 — 제거 시 3지 국소최적 회귀)
+    assert "(1.0 - gate20)" in env
+
+    # 액션 차원 계약: 6 palm + 15 finger(5×3), squeeze 철회
+    assert "NUM_FINGER_CHANNELS = 3" in consts
+    assert "NUM_FINGER_ACTION = NUM_FINGERTIPS * NUM_FINGER_CHANNELS" in consts
+    assert "NUM_SQUEEZE_ACTION = 0" in consts
+    # squeeze 잔재 없음
+    assert "squeeze_action" not in env
+    assert "squeeze_cmd_buf" not in env
+
+
+def test_four_finger_coupling_is_per_channel() -> None:
+    # couple_four_fingers 는 3지 국소최적 차단용이므로 유지하되, **채널별로** 평균내야
+    # 4지가 같은 자세를 공유하면서도 그 자세의 외전/MCP/PIP 비율은 자유로울 수 있다.
+    env = _text("grasp_left_env.py")
+    assert "finger_action[:, 1:5, :].mean(dim=1, keepdim=True)" in env
+    assert "_common4.expand(-1, 4, -1)" in env
 
 
 def test_lift_latch_gate_disabled_envelope_via_reward() -> None:
