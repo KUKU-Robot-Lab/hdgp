@@ -46,9 +46,19 @@ success **0.96**, 물 부어 무게 2~3배 급증해도 damage 0. 결론: *"세�
 
 이 교훈은 **warmstart를 택할 경우에만** 적용된다 — 수렴한 정책에 full LR을 쓰지 말라는 뜻이다.
 
-**본 설계는 fresh로 간다 (2026-08-17 결정).** 사유: 07.30에 "USD 무죄"로 검증된 것은 **head 카메라** 교체였고 팔·파지와 무관했다. 이번에는 **손 마운트가 54.8mm 바뀌어 팔 관절↔palm 매핑이 실제로 달라졌고**, bead 질량(10g→8g)과 질량 ADR도 새로 들어온다. 전이를 기대할 근거가 약하다.
+**08.17 fresh 시도 → 즉시 폭발 → warmstart로 재정정.** 처음엔 07.30 교훈 해석을 "USD 무죄=head 카메라 한정"으로 보고 fresh로 갔으나, 실제로 돌려보니 **ep1부터 reward −1e14로 즉시 붕괴**했다. 격리 실험으로 근본원인을 확인했다:
 
-→ agent yaml은 **`rl_games_ppo_lstm_cfg.yaml`**(fresh 표준: actor LR 3e-4 · minibatch 16384)을 쓴다. warmstart 전용 `deform_ft_cfg`(LR 1e-4)는 fresh에 쓰면 수렴이 지나치게 느리다.
+| 실험 | 조건 | 결과 |
+|---|---|---|
+| 기존 `deform_ft`(무변경) + 랜덤 액션 | articulated cup | step 0에서 reward −2.77e14 |
+| 신규 `deform_water` + 랜덤 액션 | articulated cup | step 0에서 reward −9.98e13 |
+| 기존 rigid `grasp_adapt` + 동일 랜덤 액션 | non-articulated | 40스텝 정상(reward −10~3.6) |
+
+세 실험이 같은 결론을 가리킨다: **12패널 spring-articulated 종이컵이 랜덤(미학습) 액션에 물리적으로 못 버틴다.** 손 USD·매니페스트는 무죄(rigid 태스크가 동일 자산으로 안정), 본 설계의 mass 변경도 무죄(기존 코드도 동일하게 폭발). 순수 콜드스타트 취약성이다.
+
+지금까지의 모든 deform 성공 사례(test24/25, massshift2)는 전부 **이미 gentle하게 잡는 법을 아는 정책에서 warmstart**했다 — 즉 이 콜드스타트 상황 자체를 겪은 적이 없다.
+
+→ **warmstart로 되돌린다.** test25 ckpt에서 이어받아 `rl_games_ppo_lstm_deform_ft_cfg.yaml`(actor LR 1e-4)로 fine-tune한다. 위 LR 교훈(fresh 아닌 fine-tune)이 이제 이유가 하나 더 늘었다 — 수렴 정책 붕괴 방지뿐 아니라 **변형 컵 자체가 콜드스타트를 견디지 못한다.**
 
 ### 3.3 급격 도입 금지 (grasp_v1)
 
@@ -92,7 +102,7 @@ GraspRightEnvCfgDeformable            (기존, 종이컵)
 ```
 
 태스크: `open-tesol_r_grasp_adapt_deform_water-lstm`
-agent yaml: `rl_games_ppo_lstm_cfg.yaml` (fresh 표준, actor LR 3e-4 · minibatch 16384)
+agent yaml: `rl_games_ppo_lstm_deform_ft_cfg.yaml` (warmstart, actor LR 1e-4 · minibatch 65536) — §3.2 참조
 
 기존 `deform_ft`는 **무변경** — test25 재현 경로를 보존한다.
 
@@ -142,9 +152,9 @@ Gate 1에서 test25 수준(0.88)에 크게 못 미치면 **손 USD 변경이 원
 ### 6.5 학습 환경
 
 - 로컬 **RTX 5090 · num_envs 4096** (32GB 제약; test25는 8192에서 31.8GB 사용)
-- **시작점: fresh** (§3.2 근거). 로그는 `log/`에 새 실험 폴더로 남기고, 아카이브
+- **시작점: test25 ckpt warmstart** (§3.2). 로그는 `log/`에 새 실험 폴더로 남기고, 아카이브
   (`log_archive/2026-08-17_pre_dg5fs/`)는 보존용으로만 둔다.
-- minibatch 16384는 4096 env × horizon 32 = 131072을 8등분해 나누어떨어진다.
+- fresh 시도(lstm_test1, 08.17)는 ep1 즉시 붕괴로 폐기 — tfevents만 진단 증거로 남김.
 
 ## 7. 변경 파일
 

@@ -120,12 +120,14 @@ gym.register(
     kwargs={
         # Phase 4: 변형 종이컵 + 물(정적 수위 + 동적 추가). 질량 ADR 2단계 게이팅.
         "env_cfg_entry_point": f"{__name__}:GraspRightEnvCfgDeformableWater",
-        # ★fresh 학습용 표준 yaml(actor LR 3e-4 · minibatch 16384).
-        # 손 USD(dg5f→dg5fs, 마운트 -54.8mm)·bead 질량·질량 ADR이 모두 바뀌어
-        # test25 ckpt 전이를 기대하지 않고 처음부터 학습한다.
-        # (warmstart로 전환할 경우엔 rl_games_ppo_lstm_deform_ft_cfg.yaml =
-        #  actor LR 1e-4. 07.30 실증: 수렴 정책에 3e-4를 쓰면 ep~273에 붕괴.)
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_cfg.yaml",
+        # ★08.17 fresh→warmstart 전환(재정정). fresh(rl_games_ppo_lstm_cfg, LR 3e-4)로
+        # 실제 학습을 돌려본 결과 ep1부터 reward -1e14로 즉시 붕괴. 격리 실험으로 근본원인
+        # 확인: 12패널 spring-articulated 종이컵이 랜덤(미학습) 액션에 물리적으로 못 버팀
+        # (rigid 태스크는 동일 USD·동일 랜덤액션에서 40스텝 정상 — 매니페스트/USD 무죄,
+        # deform_ft도 동일 폭발 재현 — 내 mass 변경과도 무관, 순수 콜드스타트 취약성).
+        # → test25(이미 gentle하게 잡는 정책) warmstart로 이 상황 자체를 피한다.
+        # actor LR 1e-4(07.30 실증: 수렴 정책에 3e-4 쓰면 massshift1처럼 ep~273 붕괴).
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_lstm_deform_ft_cfg.yaml",
     },
 )
 
