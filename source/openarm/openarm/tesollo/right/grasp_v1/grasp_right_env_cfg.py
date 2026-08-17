@@ -29,7 +29,7 @@ from dataclasses import MISSING, field
 
 import isaaclab.sim as sim_utils
 import isaaclab.envs.mdp as mdp
-from isaaclab.assets import ArticulationCfg, RigidObjectCfg
+from isaaclab.assets import ArticulationCfg, RigidObjectCfg, RigidObjectCollectionCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm, SceneEntityCfg
@@ -43,6 +43,12 @@ from isaaclab.utils import configclass
 import os as _os
 
 from openarm import OPENARM_ROOT_DIR
+# ★[both/pour_v1 대응] warm 수집 시 컵을 채울 비드. 정의는 common 한 곳에만 둔다
+#   (pour 와 물성이 같아야 bead_state 복원이 물리적으로 성립).
+from openarm.common.bead_assets import (
+    DEFAULT_BEAD_COUNT as _DEFAULT_BEAD_COUNT,
+    make_beads_cfg as _make_beads_cfg,
+)
 from .grasp_right_constants import NUM_OBSERVATIONS, NUM_ACTIONS, NUM_CRITIC_OBSERVATIONS
 from .grasp_right_preset import (
     HAND_BODY_NAMES_USD,
@@ -91,10 +97,25 @@ _ACTIVE_OBJECT_SPECS: tuple[dict, ...] = (
     {"id": "cup_big_s100", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.00, 1.00, 1.00), "mass": _BASE_OBJECT_MASS},
     {"id": "cup_big_s115", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.15, 1.15, 1.15), "mass": _BASE_OBJECT_MASS},
     {"id": "cup_big_s130", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.30, 1.30, 1.30), "mass": _BASE_OBJECT_MASS},
-    {"id": "shaker_body",  "usd_path": _os.path.join(_SDF_ASSET_ROOT, "shaker_body_rl.usd"), "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
-    {"id": "large_5_cyl",     "usd_path": _os.path.join(_VISDEX_ROOT, "large_5_cyl", "large_5_cyl.usd"),   "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
-    {"id": "large_8_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_8_cyl", "large_8_cyl.usd"),   "scale": (1.0, 1.0, 1.5), "mass": _BASE_OBJECT_MASS},
-    {"id": "large_12_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_12_cyl", "large_12_cyl.usd"), "scale": (1.0, 1.0, 2.4), "mass": _BASE_OBJECT_MASS},
+    # ★08.17 shaker_body → shaker_closed: 원본은 **양쪽 뚫린 관**(축 근처 정점 0개)이라
+    #   비드가 바닥으로 그냥 빠졌다(유지율 0.000 vs cup_big 0.975~1.000). 공동 반경은
+    #   오히려 셰이커가 넓어(28~38mm) 비드를 줄여도 해결되지 않는다 — 바닥이 없는 것이 원인.
+    #   `scripts/tools/make_closed_shaker_asset.py` 가 하단에 얇은 원기둥 콜라이더를 덧붙인
+    #   사본을 만든다. 플러그 반경 29.5mm < 셰이커 최대 44mm 라 파지 외곽 프로파일은 불변.
+    {"id": "shaker_closed", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "shaker_closed_rl.usd"), "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
+    # ★08.17 cyl 3종 제거 → **컵 변형으로 치환** (both/pour_v1 = 컵 다양화 학습).
+    #   왜 삭제가 아니라 치환인가: `multi_object_idx_onehot` 의 폭이 `len(_object_names)` 에서
+    #   파생되어 물체 수가 곧 actor obs 차원이다(146 = 138 + onehot 8). 3종을 지우면
+    #   obs 146→143 이 되어 학습된 체크포인트가 전부 무효가 된다. 8종을 유지하면 obs 불변이라
+    #   기존 체크포인트로 학습을 이어갈 수 있고, 컵 다양성은 4종→7종으로 오히려 늘어난다.
+    #
+    #   cyl 을 뺀 이유: visdex 원본(`large_*_cyl`)은 apiSchemas 에 SDF API 가 없어 PhysX 가
+    #   **convexHull 로 폴백**한다 = 속이 찬 원통. pour 는 컵 안에 비드를 담아 붓는 과제라
+    #   ① 속 찬 물체는 비드를 담을 수 없고(실측: 그 안에 비드를 소환하면 유지율 0.089,
+    #      실제 컵은 0.95~1.00) ② pour source/receiver 는 항상 컵이므로 전이 가치도 없다.
+    {"id": "cup_big_s090", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (0.90, 0.90, 0.90), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s105", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.05, 1.05, 1.05), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s120", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.20, 1.20, 1.20), "mass": _BASE_OBJECT_MASS},
 )
 _ACTIVE_OBJECT_NAMES: tuple[str, ...] = tuple(_s["id"] for _s in _ACTIVE_OBJECT_SPECS)
 
@@ -719,6 +740,30 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   08.15부터 학습 기본 게인 자체가 pour 정합값(위 actuators 주석)이라 이 플래그는 no-op —
     #   과거 캘리브 게인 체크포인트로 수집할 때의 하위호환용으로만 유지.
     collect_pour_matched_gains: bool = False
+    # -----------------------------------------------------------------------
+    # ★[both/pour_v1 대응] warm 수집 시 source 컵에 **비드를 미리 채운다**.
+    # -----------------------------------------------------------------------
+    # 왜 필요한가: pour 의 warm 리셋은 파지 자세를 텔레포트한 뒤 손을 그 자세로 **동결**한다
+    #   (`freeze_grasp_hand_during_episode=True`) — 즉 재조임하는 정책이 없는 **수동 스프링**이다.
+    #   게다가 손 강성이 5.0(토크 포화 이탈선)으로 낮다. 빈 컵으로 만든 파지를 텔레포트한 뒤
+    #   비드(20 × 1g)를 나중에 넣으면 그 하중을 수동으로 흡수해야 해서 컵을 놓칠 수 있다.
+    #   비드를 **수집 시점에** 채워두면 정책이 하중이 있는 상태에서 파지를 형성하므로,
+    #   기록되는 관절 목표가 "실제로 찬 컵을 들었던" 값이 된다.
+    #
+    # 학습에는 영향이 없다(기본 False) — 수집 CLI 에서만 켠다.
+    #   `collect_grasp_v1_warm_states.py --robot tesollo_right --extra env.collect_with_beads=true`
+    #
+    # 접촉 판정 오염 없음: tip/distal/middle ContactSensor 는 `object_contact_filter`(컵 전용)로
+    #   걸려 있어 비드 접촉이 `num_contacts` 에 들어가지 않는다 → warm 성공 판정 규약 불변.
+    #
+    # MultiAsset 주의: 비드는 전 env **동일 자산 하나**라 MultiAssetSpawner 의 env_i % N
+    #   배정 규칙과 무관하다. 다만 씬 생성 순서는 컵과 같이 clone 이후로 둔다.
+    collect_with_beads: bool = False
+    # 비드 개수 — pour 의 `bead_count` 와 **반드시 같아야** warm 복원이 성립한다.
+    collect_bead_count: int = _DEFAULT_BEAD_COUNT
+    # 소환 배치는 cfg 파라미터로 두지 않는다 — `openarm.common.bead_assets.bead_offsets_in_cup`
+    #   의 **검증된 단일 배치**를 쓴다. 배치를 조절 가능하게 만들었다가 값이 어긋나
+    #   비드가 소환 순간 겹쳐 터진 사고(2026-08-17)가 있었다. 공용본만 신뢰한다.
     # 컵 설정 — 2026-07-26: 단일 cup_big_sdf → MultiAsset 8종(_GRASP_OBJECT_SPAWN).
     # prim 이름 "Cup" 은 유지(ContactSensor filter·env.py 참조 재사용).
     # -----------------------------------------------------------------------
@@ -734,6 +779,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Hand / joint 이름
     # -----------------------------------------------------------------------
+    # ★[both/pour_v1 대응] 비드 컬렉션 설정. `collect_with_beads=True` 일 때만 씬에 올린다.
+    #   cfg 객체 자체는 항상 만들어 두어도 무해하다(씬 등록을 안 하면 스폰되지 않는다).
+    beads_cfg: RigidObjectCollectionCfg = _make_beads_cfg(_ASSETS_DIR, _DEFAULT_BEAD_COUNT)
+
     hand_body_names:      list = HAND_BODY_NAMES_USD
     actuated_joint_names: list = RIGHT_ACTUATED_JOINT_NAMES
     left_arm_joint_names: list = LEFT_ARM_AND_GRIPPER_JOINT_NAMES

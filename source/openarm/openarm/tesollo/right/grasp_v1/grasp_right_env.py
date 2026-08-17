@@ -51,7 +51,9 @@ for _parent in Path(__file__).resolve().parents:
         break
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets import Articulation, RigidObject, RigidObjectCollection
+
+from openarm.common.bead_assets import bead_offsets_in_cup as _bead_offsets_in_cup
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
@@ -475,6 +477,21 @@ class GraspRightEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=True)
         self.cup = RigidObject(self.cfg.cup_cfg)
         self.scene.rigid_objects["cup"] = self.cup
+
+        # ★[both/pour_v1 대응] warm 수집 시 컵을 비드로 채운다 (`collect_with_beads`).
+        #   컵과 같은 위치(clone 이후)에 만든다. 비드는 전 env **동일 자산**이라
+        #   MultiAssetSpawner 의 env_i % N 배정 규칙과 무관하지만, 순서를 컵과 맞춰
+        #   "clone 이후 생성" 규약을 한 곳으로 통일한다.
+        #   학습에서는 flag=False → 씬에 올리지 않으므로 비용 0.
+        self.beads = None
+        if bool(getattr(self.cfg, "collect_with_beads", False)):
+            self.beads = RigidObjectCollection(self.cfg.beads_cfg)
+            self.scene.rigid_object_collections["beads"] = self.beads
+            print(
+                f"[grasp_v1] collect_with_beads: {int(self.cfg.collect_bead_count)} beads "
+                "→ source 컵을 채운 상태로 파지 형성/수집",
+                flush=True,
+            )
 
     # ------------------------------------------------------------------
     # per-object 물리 안착 텐서 (design §per-object 처리, reward 아님)
@@ -1611,6 +1628,51 @@ class GraspRightEnv(DirectRLEnv):
         return terminated, truncated
 
     # ------------------------------------------------------------------
+    # ★[both/pour_v1 대응] 수집 전용 비드 소환
+    # ------------------------------------------------------------------
+    def _spawn_beads_in_cup(
+        self, env_ids: Sequence[int], cup_pos_world: torch.Tensor
+    ) -> None:
+        """컵 내부에 비드를 겹치지 않게 쌓아 소환한다 (수집 전용).
+
+        비드를 미리 채워둬야 정책이 **하중이 있는 컵**으로 파지를 형성하고, 그 관절 목표가
+        warm state 로 기록된다. pour 는 손을 그 자세로 동결(수동 스프링)하므로, 빈 컵으로
+        만든 파지에 나중에 비드를 넣으면 하중을 흡수하지 못해 컵을 놓칠 수 있다.
+
+        배치: 나선(황금각) + 층 쌓기로 초기 관통을 피한다. 컵은 리셋 직후 upright 라
+        회전 적용이 필요 없다.
+        """
+        env_ids_t = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+        n = env_ids_t.numel()
+        k = int(self.cfg.collect_bead_count)
+        # ★배치는 **공용 검증본**을 쓴다(`openarm.common.bead_assets.bead_offsets_in_cup`).
+        #   자체 배치를 새로 만들면 안 된다 — 2026-08-17 에 골든앵글 나선을 만들었더니
+        #   최소 중심간 거리가 9.1mm 로 좁아져 소환 순간 비드가 겹쳤고, PhysX 침투 보정이
+        #   비드를 컵 벽 밖으로 밀어내 수집 결과가 "빈 컵 + 컵 밑 비드"가 됐다
+        #   (컵 내부 유지율 0.042). 공용본은 pour 가 20개를 담아 온 15.6mm 배치다.
+        if getattr(self, "_bead_offsets_cup_b", None) is None:
+            self._bead_offsets_cup_b = to_torch(
+                _bead_offsets_in_cup(k), device=self.device
+            )                                                     # (k,3)
+        offs = self._bead_offsets_cup_b
+        pos = cup_pos_world.unsqueeze(1) + offs.unsqueeze(0)       # (n,k,3)
+
+        state = torch.zeros(n, k, 13, device=self.device)
+        state[:, :, :3] = pos
+        state[:, :, 3] = 1.0                                      # quat w=1 (identity)
+        self.beads.write_object_state_to_sim(state, env_ids=env_ids_t)
+
+    def _bead_state_env_local(self, ids: torch.Tensor) -> torch.Tensor:
+        """현재 비드 상태를 env-local 좌표로 (m, k, 13) 반환 — warm export 용.
+
+        pour 가 다른 env 원점으로 복원할 수 있게 world → env-local 로 바꿔 저장한다
+        (pour 의 deep-tilt bank 와 동일 규약).
+        """
+        st = self.beads.data.object_state_w[ids].clone()     # (m,k,13)
+        st[:, :, :3] -= self.scene.env_origins[ids].unsqueeze(1)
+        return st
+
+    # ------------------------------------------------------------------
     # Warm-state export (grasp 성공 → 디스크 캐시 → pour warmstart)
     # ------------------------------------------------------------------
     def _maybe_export_warm_states(self, _cup_up_z: torch.Tensor) -> None:
@@ -1640,6 +1702,10 @@ class GraspRightEnv(DirectRLEnv):
                     "warm_lift_wait_arm_tol": self.cfg.warm_lift_wait_arm_tol,
                     "warm_lift_wait_hold_steps": self.cfg.warm_lift_wait_hold_steps,
                     "lift_wait_joint7_delta": self.cfg.lift_wait_joint7_delta,
+                    # ★[both/pour_v1 대응] 자산 출처. 로봇 USD 가 바뀌면 warm state 의
+                    #   palm/컵 상대자세가 무효가 되는데, 텐서 차원이 같아 로더가 조용히
+                    #   성공한다(2026-08-17 DG-5F→DG-5FS 사고). 소비측이 검증할 수 있게 남긴다.
+                    "robot_usd": str(self.cfg.robot_cfg.spawn.usd_path),
                     "palm_min_x": float(self.palm_mins[0]),
                     "palm_min_y": float(self.palm_mins[1]),
                     "palm_min_z": float(self.palm_mins[2]),
@@ -1722,6 +1788,10 @@ class GraspRightEnv(DirectRLEnv):
             stable_contact_steps=self.warm_contact_stable_steps_buf[ids],
             demo_file_idx=demo_idx,
             object_spec_idx=self.object_idx[ids],
+            # ★[both/pour_v1 대응] 비드가 채워진 상태로 수집했다면 그 상태도 함께 저장한다.
+            #   pour 는 이 값을 복원해 "비드가 든 컵을 쥔 채" 에피소드를 시작한다.
+            #   비드를 안 켰으면 None → HDF5 에 데이터셋이 생기지 않고, pour 는 자체 소환으로 degrade.
+            bead_state=(self._bead_state_env_local(ids) if self.beads is not None else None),
         )
         if added <= 0:
             return
@@ -1947,6 +2017,12 @@ class GraspRightEnv(DirectRLEnv):
         zero_vel = torch.zeros(n, 6, device=self.device)
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
+
+        # ★[both/pour_v1 대응] 컵 안에 비드를 채운다 (`collect_with_beads`).
+        #   컵은 방금 upright 로 놓였으므로 컵 body frame = world axis-aligned 이다
+        #   → offset 을 그대로 더하면 된다(회전 적용 불필요).
+        if self.beads is not None:
+            self._spawn_beads_in_cup(env_ids, obj_pos_world)
 
         # ---- 8. 버퍼 리셋 ----
         self.hand_joint_targets[env_ids] = approach_hand

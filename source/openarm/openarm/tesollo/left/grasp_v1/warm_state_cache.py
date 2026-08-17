@@ -79,6 +79,12 @@ def euler_zyx_to_quat_xyzw(euler_zyx: torch.Tensor) -> torch.Tensor:
 class GraspWarmStateCache:
     """Grasp 성공 종료 상태의 append-only 버퍼 + HDF5 영속화.
 
+    ★[both/pour_v1] 우측 사본(`right/grasp_v1/warm_state_cache.py`)에는 `bead_state`
+      선택 컬럼이 있지만 **좌측에는 의도적으로 없다.** pour_v1 에서 왼팔이 드는 것은
+      receiver 컵이고 그건 빈 컵으로 시작하므로 비드를 채울 이유가 없다.
+      (좌측에서 비드 수집이 필요해지면 우측 구현을 그대로 이식할 것 — `bead_state`
+       kwarg 를 넘기면 지금은 TypeError 로 즉시 실패한다.)
+
     capacity 만큼 채워지면 더 이상 append 하지 않는다 (overflow 무시).
     저장 시 ``source_meta`` 를 HDF5 attrs 로 함께 기록해, pour 로드 시
     spawn/workspace 정합성을 검증할 수 있게 한다.

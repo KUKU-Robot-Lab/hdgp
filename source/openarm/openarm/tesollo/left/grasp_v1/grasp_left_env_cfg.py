@@ -95,10 +95,25 @@ _ACTIVE_OBJECT_SPECS: tuple[dict, ...] = (
     {"id": "cup_big_s100", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.00, 1.00, 1.00), "mass": _BASE_OBJECT_MASS},
     {"id": "cup_big_s115", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.15, 1.15, 1.15), "mass": _BASE_OBJECT_MASS},
     {"id": "cup_big_s130", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.30, 1.30, 1.30), "mass": _BASE_OBJECT_MASS},
-    {"id": "shaker_body",  "usd_path": _os.path.join(_SDF_ASSET_ROOT, "shaker_body_rl.usd"), "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
-    {"id": "large_5_cyl",     "usd_path": _os.path.join(_VISDEX_ROOT, "large_5_cyl", "large_5_cyl.usd"),   "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
-    {"id": "large_8_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_8_cyl", "large_8_cyl.usd"),   "scale": (1.0, 1.0, 1.5), "mass": _BASE_OBJECT_MASS},
-    {"id": "large_12_cyl_h12", "usd_path": _os.path.join(_VISDEX_ROOT, "large_12_cyl", "large_12_cyl.usd"), "scale": (1.0, 1.0, 2.4), "mass": _BASE_OBJECT_MASS},
+    # ★08.17 shaker_body → shaker_closed: 원본은 **양쪽 뚫린 관**(축 근처 정점 0개)이라
+    #   비드가 바닥으로 그냥 빠졌다(유지율 0.000 vs cup_big 0.975~1.000). 공동 반경은
+    #   오히려 셰이커가 넓어(28~38mm) 비드를 줄여도 해결되지 않는다 — 바닥이 없는 것이 원인.
+    #   `scripts/tools/make_closed_shaker_asset.py` 가 하단에 얇은 원기둥 콜라이더를 덧붙인
+    #   사본을 만든다. 플러그 반경 29.5mm < 셰이커 최대 44mm 라 파지 외곽 프로파일은 불변.
+    {"id": "shaker_closed", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "shaker_closed_rl.usd"), "scale": (1.0, 1.0, 1.0), "mass": _BASE_OBJECT_MASS},
+    # ★08.17 cyl 3종 제거 → **컵 변형으로 치환** (both/pour_v1 = 컵 다양화 학습).
+    #   왜 삭제가 아니라 치환인가: `multi_object_idx_onehot` 의 폭이 `len(_object_names)` 에서
+    #   파생되어 물체 수가 곧 actor obs 차원이다(146 = 138 + onehot 8). 3종을 지우면
+    #   obs 146→143 이 되어 학습된 체크포인트가 전부 무효가 된다. 8종을 유지하면 obs 불변이라
+    #   기존 체크포인트로 학습을 이어갈 수 있고, 컵 다양성은 4종→7종으로 오히려 늘어난다.
+    #
+    #   cyl 을 뺀 이유: visdex 원본(`large_*_cyl`)은 apiSchemas 에 SDF API 가 없어 PhysX 가
+    #   **convexHull 로 폴백**한다 = 속이 찬 원통. pour 는 컵 안에 비드를 담아 붓는 과제라
+    #   ① 속 찬 물체는 비드를 담을 수 없고(실측: 그 안에 비드를 소환하면 유지율 0.089,
+    #      실제 컵은 0.95~1.00) ② pour source/receiver 는 항상 컵이므로 전이 가치도 없다.
+    {"id": "cup_big_s090", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (0.90, 0.90, 0.90), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s105", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.05, 1.05, 1.05), "mass": _BASE_OBJECT_MASS},
+    {"id": "cup_big_s120", "usd_path": _os.path.join(_SDF_ASSET_ROOT, "cup_big_rl.usd"), "scale": (1.20, 1.20, 1.20), "mass": _BASE_OBJECT_MASS},
 )
 _ACTIVE_OBJECT_NAMES: tuple[str, ...] = tuple(_s["id"] for _s in _ACTIVE_OBJECT_SPECS)
 

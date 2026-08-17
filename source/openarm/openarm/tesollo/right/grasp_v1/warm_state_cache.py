@@ -107,6 +107,10 @@ class GraspWarmStateCache:
         # 이 warmstart 의 물체 스펙 인덱스 (_ACTIVE_OBJECT_SPECS 순서; -1 = 미태깅)
         #   pour warm 로더가 컵 스케일 매칭/필터에 사용한다.
         self.object_spec_idx = torch.full((self._cap,), -1, dtype=torch.long, device=device)
+        # ★[both/pour_v1 대응] 비드 상태 (env-local, (cap, k, 13)). 수집 시 컵을 비드로 채운
+        #   경우에만 채워진다. 비드 개수 k 는 첫 append 에서 확정한다(설정 이중 정의 방지).
+        #   None 이면 HDF5 에 데이터셋을 만들지 않고, pour 는 자체 비드 소환으로 degrade 한다.
+        self.bead_state: torch.Tensor | None = None
 
     def __len__(self) -> int:
         return self._count
@@ -128,6 +132,7 @@ class GraspWarmStateCache:
         stable_contact_steps: torch.Tensor,
         demo_file_idx: torch.Tensor | None = None,
         object_spec_idx: torch.Tensor | None = None,
+        bead_state: torch.Tensor | None = None,
     ) -> int:
         """성공 env 배치를 추가. 실제 저장한 개수(capacity 한정)를 반환."""
         if self.is_full:
@@ -152,6 +157,16 @@ class GraspWarmStateCache:
             self.demo_file_idx[s:e] = demo_file_idx[:n].long()
         if object_spec_idx is not None:
             self.object_spec_idx[s:e] = object_spec_idx[:n].long()
+        # ★[both/pour_v1 대응] 비드 상태. 첫 append 에서 비드 개수 k 를 확정해 버퍼를 만든다.
+        if bead_state is not None:
+            if self.bead_state is None:
+                _k = int(bead_state.shape[1])
+                self.bead_state = torch.zeros(self._cap, _k, 13, device=self._device)
+            elif int(bead_state.shape[1]) != int(self.bead_state.shape[1]):
+                raise ValueError(
+                    f"bead 개수가 수집 중 변했다: {self.bead_state.shape[1]} → {bead_state.shape[1]}"
+                )
+            self.bead_state[s:e] = bead_state[:n]
         self._count = e
         return n
 
@@ -193,4 +208,10 @@ class GraspWarmStateCache:
             )
             grp.create_dataset("demo_file_idx", data=self.demo_file_idx[:c].cpu().numpy())
             grp.create_dataset("object_spec_idx", data=self.object_spec_idx[:c].cpu().numpy())
+            # ★[both/pour_v1 대응] 비드를 채워 수집한 경우에만 기록한다.
+            #   pour 는 이 데이터셋이 있으면 복원하고, 없으면 자체 소환으로 degrade 한다.
+            if self.bead_state is not None:
+                grp.create_dataset("bead_state", data=self.bead_state[:c].cpu().numpy())
+                h5.attrs["meta/collected_with_beads"] = 1.0
+                h5.attrs["meta/bead_count"] = float(self.bead_state.shape[1])
         tmp.replace(path)

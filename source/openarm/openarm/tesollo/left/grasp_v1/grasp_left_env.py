@@ -1624,6 +1624,10 @@ class GraspLeftEnv(DirectRLEnv):
                     "warm_lift_wait_arm_tol": self.cfg.warm_lift_wait_arm_tol,
                     "warm_lift_wait_hold_steps": self.cfg.warm_lift_wait_hold_steps,
                     "lift_wait_joint7_delta": self.cfg.lift_wait_joint7_delta,
+                    # ★[both/pour_v1 대응] 자산 출처. 로봇 USD 가 바뀌면 warm state 의
+                    #   palm/컵 상대자세가 무효가 되는데, 텐서 차원이 같아 로더가 조용히
+                    #   성공한다(2026-08-17 DG-5F→DG-5FS 사고). 소비측이 검증할 수 있게 남긴다.
+                    "robot_usd": str(self.cfg.robot_cfg.spawn.usd_path),
                     "palm_min_x": float(self.palm_mins[0]),
                     "palm_min_y": float(self.palm_mins[1]),
                     "palm_min_z": float(self.palm_mins[2]),

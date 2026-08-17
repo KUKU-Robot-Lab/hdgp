@@ -35,6 +35,11 @@ logged-cfg 복원이 export 설정을 덮어써 수집을 무력화한 사고(20
     # tesollo (기본 체크포인트 lstm_test1, 출력 hdgp/data/grasp_warm_tesollo.hdf5)
     python3 scripts/warm_states/collect_grasp_v1_warm_states.py --robot tesollo
 
+    # [both/pour_v1] 양손 파지 pour 용 — 좌/우 순차 수집.
+    #   source(우팔)는 비드를 채운 상태로, receiver(좌팔)는 빈 컵으로 수집한다.
+    python3 scripts/warm_states/collect_grasp_v1_warm_states.py --robot tesollo_right --with_beads
+    python3 scripts/warm_states/collect_grasp_v1_warm_states.py --robot tesollo_left
+
     # 체크포인트/출력 직접 지정
     python3 scripts/warm_states/collect_grasp_v1_warm_states.py \\
         --robot tesollo --checkpoint /abs/path.pth --out /abs/out.hdf5 \\
@@ -99,6 +104,29 @@ _PRESETS: dict[str, RobotPreset] = {
         ),
         default_out=_DATA_DIR / "grasp_warm_tesollo.hdf5",
     ),
+    # ★[both/pour_v1] 양손 파지 pour 용 좌/우 분리 프리셋.
+    #   pour_v1 은 왼팔(receiver 컵)·오른팔(source 컵) **두 뱅크**를 각각 로드하므로
+    #   출력 파일명을 좌우로 구분한다. 기존 `tesollo` 프리셋은 구 단일뱅크 호환용으로 남긴다.
+    #   ⚠ 체크포인트는 신 USD(bi_s_rl) 로 학습한 런을 반드시 지정할 것 —
+    #     구 USD 체크포인트로 수집하면 pour 에서 조용히 어긋난 초기상태가 된다.
+    "tesollo_right": RobotPreset(
+        task="open-tesol_r_grasp_v1-play-lstm",
+        default_checkpoint=(
+            _LOG_ROOT
+            / "open-tesol/right/grasp-v1/lstm_test1/nn"
+            / "last_open-tesol_r_grasp_v1-lstm_ep_3000_rew_9431.901.pth"
+        ),
+        default_out=_DATA_DIR / "grasp_warm_tesollo_right.hdf5",
+    ),
+    "tesollo_left": RobotPreset(
+        task="open-tesol_l_grasp_v1-play-lstm",
+        default_checkpoint=(
+            _LOG_ROOT
+            / "open-tesol/left/grasp-v1/lstm_test1/nn"
+            / "last_open-tesol_l_grasp_v1-lstm.pth"
+        ),
+        default_out=_DATA_DIR / "grasp_warm_tesollo_left.hdf5",
+    ),
 }
 
 
@@ -120,6 +148,15 @@ def _parse_args() -> argparse.Namespace:
         "--keep_adr",
         action="store_true",
         help="ADR 노이즈 유지 (기본: 비활성, 깨끗한 정책 성공 분포 수집)",
+    )
+    p.add_argument(
+        "--with_beads",
+        action="store_true",
+        help=(
+            "source 컵에 비드를 채운 상태로 파지를 형성/수집한다 (both/pour_v1 용). "
+            "pour 는 손을 warm 자세로 동결하므로, 빈 컵 파지에 나중에 비드를 넣으면 "
+            "하중을 흡수하지 못해 컵을 놓칠 수 있다. receiver(왼팔)는 빈 컵이라 붙이지 않는다."
+        ),
     )
     p.add_argument(
         "--extra",
@@ -149,6 +186,7 @@ def _validate(checkpoint: Path, target_count: int) -> None:
 
 def _build_command(
     *, task: str, checkpoint: Path, out: Path, num_envs: int, target_count: int, keep_adr: bool,
+    with_beads: bool = False,
     extra: list[str] | None = None,
 ) -> list[str]:
     cmd = [
@@ -170,6 +208,10 @@ def _build_command(
     ]
     if not keep_adr:
         cmd.append("--disable_adr")
+    if with_beads:
+        # ★[both/pour_v1] source 컵을 비드로 채운 상태에서 파지를 형성/수집한다.
+        #   hydra override 로 넣으므로 학습 기본값(False)은 건드리지 않는다.
+        cmd.append("env.collect_with_beads=true")
     if extra:
         cmd.extend(extra)  # hydra env.* override (예: env.collect_sdf_cup_assets=true)
     return cmd
@@ -191,6 +233,7 @@ def main() -> int:
         num_envs=args.num_envs,
         target_count=args.target_count,
         keep_adr=args.keep_adr,
+        with_beads=args.with_beads,
         extra=args.extra,
     )
     print(
