@@ -648,7 +648,11 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_bi_rl/openarm_tesollo_bi_rl.usd"),
+            # ★08.17 openarm_tesollo_bi_rl → openarm_tesollo_bi_s_rl (DG-5F → DG-5FS).
+            # 이름은 동일하나 기구학 전면 재정의(축 0 0 1, 마디 0.0388→0.0334,
+            # palm 0.0698→0.015, 한계 10/20 변경) → HAND_*_POSE·워크스페이스·PCA·
+            # warm state·체크포인트 전부 무효. Fabrics 는 P0(95caa19)에서 갱신됨.
+            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_bi_s_rl/openarm_tesollo_bi_s_rl.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,

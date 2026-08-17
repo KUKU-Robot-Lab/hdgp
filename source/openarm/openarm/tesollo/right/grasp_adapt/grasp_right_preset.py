@@ -26,8 +26,10 @@ RIGHT_HAND_JOINT_NAMES = [f"r_hj_{f}_{j}" for f in _R_FINGERS for j in range(1, 
 RIGHT_ACTUATED_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAMES
 
 LEFT_ARM_JOINT_NAMES = [f"l_aj_{i}" for i in range(1, 8)]
-LEFT_GRIPPER_JOINT_NAMES = ["l_hj_gripper_1", "l_hj_gripper_2"]
-LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
+# ★08.17 sensor_rl → bi_s_rl: 좌측이 2-DOF 그리퍼 → DG-5FS 20-DOF 손.
+#   존재하지 않는 이름을 init_state 에 남기면 Isaac Lab 이 예외를 던진다.
+LEFT_HAND_JOINT_NAMES = [f"l_hj_{f}_{j}" for f in _R_FINGERS for j in range(1, 5)]
+LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_HAND_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
     # pour_right_v3 LEFT_ARM_REST_JOINT_POS와 일치시킴:
@@ -40,8 +42,8 @@ LEFT_ARM_REST_JOINT_POS = {
     "l_aj_5":  0.666,
     "l_aj_6": -0.729,
     "l_aj_7": -0.957,
-    "l_hj_gripper_1": 0.044,
-    "l_hj_gripper_2": 0.044,
+    # 좌손(DG-5FS)은 이 태스크에서 미사용 — 전 관절 0(개방) 고정.
+    **{n: 0.0 for n in LEFT_HAND_JOINT_NAMES},
 }
 
 

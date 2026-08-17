@@ -546,7 +546,12 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd"),
+            # ★08.17 openarm_tesollo_sensor_rl → openarm_tesollo_bi_s_rl (DG-5F → DG-5FS).
+            # 조인트/링크 이름은 동일하나 기구학이 전면 재정의됐다(회전축 전부 0 0 1, 마디
+            # 0.0388→0.0334, palm 오프셋 0.0698→0.015, 한계 10/20 변경). 따라서 HAND_*_POSE·
+            # palm 워크스페이스·PCA·warm state·체크포인트가 전부 무효다 — P2 이후에서 재도출.
+            # Fabrics URDF 는 P0(95caa19)에서 갱신 완료(FK 오차 29.3mm → 0.000mm).
+            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_bi_s_rl/openarm_tesollo_bi_s_rl.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -653,10 +658,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 stiffness=5.0,
                 damping=2.0,
             ),
-            "openarm_left_gripper": ImplicitActuatorCfg(
-                joint_names_expr=["l_hj_gripper_[1-2]"],
+            # ★08.17 bi_s_rl 전환: 좌측이 2-DOF 그리퍼 → DG-5FS 20-DOF 손. 커버리지를 안 주면
+            # 20개 관절이 무구동으로 자유회전한다. 이 태스크는 좌손을 쓰지 않으므로 rest 자세
+            # 유지만 하면 되고, 그래서 우손(5.0/2.0)이 아니라 단단한 게인으로 고정한다
+            # (로봇은 disable_gravity 라 처짐은 없지만 접촉 시 밀리지 않게).
+            "tesollo_left_hand": ImplicitActuatorCfg(
+                joint_names_expr=["l_hj_[a-z]+_[1-4]"],
                 stiffness=400.0,
-                damping=80.0,
+                damping=60.0,
             ),
         },
         soft_joint_pos_limit_factor=1.0,

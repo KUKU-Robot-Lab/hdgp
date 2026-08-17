@@ -32,8 +32,12 @@ RIGHT_HAND_JOINT_NAMES = [f"r_hj_{f}_{j}" for f in _R_FINGERS for j in range(1, 
 RIGHT_ACTUATED_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAMES
 
 LEFT_ARM_JOINT_NAMES = [f"l_aj_{i}" for i in range(1, 8)]
-LEFT_GRIPPER_JOINT_NAMES = ["l_hj_gripper_1", "l_hj_gripper_2"]
-LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
+# ★08.17 로봇 자산 openarm_tesollo_sensor_rl → openarm_tesollo_bi_s_rl 전환.
+#   sensor_rl 은 좌측이 2-DOF 그리퍼(l_hj_gripper_1/2)였으나 bi_s_rl 은 좌측도 DG-5FS
+#   20-DOF 손이다. 존재하지 않는 이름을 init_state 에 남기면 Isaac Lab 의
+#   resolve_matching_names_values 가 예외를 던진다.
+LEFT_HAND_JOINT_NAMES = [f"l_hj_{f}_{j}" for f in _R_FINGERS for j in range(1, 5)]
+LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_HAND_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
     # pour_right_v3 LEFT_ARM_REST_JOINT_POS와 일치시킴:
@@ -46,8 +50,9 @@ LEFT_ARM_REST_JOINT_POS = {
     "l_aj_5":  0.666,
     "l_aj_6": -0.729,
     "l_aj_7": -0.957,
-    "l_hj_gripper_1": 0.044,
-    "l_hj_gripper_2": 0.044,
+    # 좌손(DG-5FS)은 이 태스크에서 쓰지 않는다 — 전 관절 0(개방)으로 고정만 한다.
+    # 구 그리퍼 0.044 를 대체. 우손 엄지처럼 opposition(-1.57)을 줄 이유가 없다.
+    **{n: 0.0 for n in LEFT_HAND_JOINT_NAMES},
 }
 
 

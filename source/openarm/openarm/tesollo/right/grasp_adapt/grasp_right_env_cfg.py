@@ -385,7 +385,8 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd"),
+            # ★08.17 openarm_tesollo_sensor_rl → openarm_tesollo_bi_s_rl (DG-5F → DG-5FS).
+            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_bi_s_rl/openarm_tesollo_bi_s_rl.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -449,9 +450,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
                 joint_names_expr=["r_hj_[a-z]+_4"],
                 **_actuator_params("tesollo_hand_dip", 90.0, 5.0),
             ),
-            "openarm_left_gripper": ImplicitActuatorCfg(
-                joint_names_expr=["l_hj_gripper_[1-2]"],
-                **_actuator_params("openarm_left_gripper", 400.0, 80.0),
+            # ★08.17 bi_s_rl 전환: 좌측 2-DOF 그리퍼 → DG-5FS 20-DOF 손. 커버리지 없으면
+            # 20개 관절이 무구동으로 자유회전한다. 미사용 손이라 rest 유지만 하면 된다.
+            "tesollo_left_hand": ImplicitActuatorCfg(
+                joint_names_expr=["l_hj_[a-z]+_[1-4]"],
+                **_actuator_params("tesollo_left_hand", 400.0, 60.0),
             ),
         },
         soft_joint_pos_limit_factor=1.0,
