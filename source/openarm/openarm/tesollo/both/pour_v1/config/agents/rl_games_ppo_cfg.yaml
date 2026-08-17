@@ -1,0 +1,116 @@
+# 5g_pour_right_v4 rl_games PPO 설정
+# reset 은 v7 warmstart cache를 사용하고, 학습 task 이름만 새로 분리한다.
+# 관측: actor 55D / critic 144D (asymmetric), 액션: 6D
+# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [512, 256, 128]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: open-tesol_b_pour_v1
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: True
+    normalize_input: True
+    normalize_value: True
+    value_bootstrap: False
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    # num_envs별 lr (sqrt scaling 기준):
+    #   128  envs: lr=4e-4  (baseline)
+    #   512  envs: lr=8e-4
+    #   1024 envs: lr=1.1e-3
+    #   2048 envs: lr=1.6e-3
+    learning_rate: 1e-4
+    lr_schedule: linear
+    schedule_type: standard
+    kl_threshold: 0.013
+    score_to_win: 100000000
+    max_epochs: 10000        # --max_iterations 2000 으로 CLI에서 override
+    save_best_after: 100
+    save_frequency: 50
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0.0003         # [07.02 speed-fix③] 정직한 pour 태스크는 gradient가 약해 0.0008이 과함→entropy 상승. 낮춰 수렴 가속+pour 정밀도↑
+    truncate_grads: True
+    e_clip: 0.25
+    horizon_length: 64
+    # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함 (항상 4 splits)
+    #   128  envs: batch=   8,192 → minibatch=  2,048  lr=4e-4
+    #   512  envs: batch=  32,768 → minibatch=  8,192  lr=8e-4
+    #   1024 envs: batch=  65,536 → minibatch= 16,384  lr=1.1e-3
+    #   2048 envs: batch= 131,072 → minibatch= 32,768  lr=1.6e-3  ← default below
+    minibatch_size: 32768
+    mini_epochs: 6
+    critic_coef: 4
+    clip_value: True
+    clip_actions: False
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005
+
+    # Asymmetric Actor-Critic: critic은 144D privileged obs 사용
+    has_central_value: True
+    central_value_config:
+      normalize_input: True
+      normalize_value: True
+      value_bootstrap: False
+      minibatch_size: 32768     # actor와 동일하게 맞출 것 (num_envs 2048 기준)
+      mini_epochs: 6
+      learning_rate: 1e-4
+      lr_schedule: linear
+      kl_threshold: 0.013
+      clip_value: True
+      e_clip: 0.25
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [512, 256, 128]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
