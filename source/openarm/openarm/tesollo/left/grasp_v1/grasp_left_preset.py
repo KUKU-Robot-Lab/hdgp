@@ -87,13 +87,15 @@ RIGHT_HAND_JOINT_NAMES = [f"r_hj_{f}_{i}" for f in _L_FINGERS for i in range(1, 
 RIGHT_ARM_AND_GRIPPER_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAMES
 
 # 고정 오른팔 rest 자세: left 는 왼팔로 파지하므로 오른팔+오른손(bi_rl 우측 체인)을
-# 중립 자세로 hold 고정한다. 값 = grasp_v2 left 검증본(전체 0 + r_aj_4=1.57 팔꿈치 굽힘,
-# ADR50 완주로 안정 확인), 오른손 전체 0.
+# 중립 자세로 hold 고정한다. 오른손 전체 0.
+# ★2026-08-18 r_aj_4 1.57 → 1.4. right/grasp_v1 의 LEFT_ARM_REST_JOINT_POS 와
+#   값을 일치시킨다(_ARM_SIGN[3]=+1 이라 미러해도 부호 불변 → 좌우 동일 값).
+#   구 1.57 은 grasp_v2 left 검증본 값이었다(ADR50 완주로 안정 확인됨).
 RIGHT_ARM_REST_JOINT_POS = {
     "r_aj_1": 0.0,
     "r_aj_2": 0.0,
     "r_aj_3": 0.0,
-    "r_aj_4": 1.57,
+    "r_aj_4": 1.4,
     "r_aj_5": 0.0,
     "r_aj_6": 0.0,
     "r_aj_7": 0.0,

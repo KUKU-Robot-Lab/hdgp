@@ -186,13 +186,14 @@ class GraspLeftEnv(DirectRLEnv):
         # scale(0) = pregrasp 이므로 초기 정책(출력≈0) = 안정된 pregrasp 위치
         # ----------------------------------------------------------------
         _delta_rad = math.radians(cfg.palm_delta_rot_deg)
+        # ★2026-08-18 palm_delta_xyz 가 축별 튜플 (x, y, z). 구 스칼라도 그대로 받는다.
+        _d = cfg.palm_delta_xyz
+        _dx, _dy, _dz = (_d, _d, _d) if isinstance(_d, (int, float)) else tuple(_d)
         self.delta_mins = to_torch([
-            -cfg.palm_delta_xyz, -cfg.palm_delta_xyz, -cfg.palm_delta_xyz,
-            -_delta_rad, -_delta_rad, -_delta_rad,
+            -_dx, -_dy, -_dz, -_delta_rad, -_delta_rad, -_delta_rad,
         ], device=self.device)
         self.delta_maxs = to_torch([
-            cfg.palm_delta_xyz, cfg.palm_delta_xyz, cfg.palm_delta_xyz,
-            _delta_rad, _delta_rad, _delta_rad,
+            _dx, _dy, _dz, _delta_rad, _delta_rad, _delta_rad,
         ], device=self.device)
 
         # pregrasp palm pose 버퍼 (에피소드별 delta action 기준점)
@@ -576,9 +577,47 @@ class GraspLeftEnv(DirectRLEnv):
 
 
 
-        # Pregrasp IK 캐시 사전 계산 (spawn grid 전체)
-        if self.cfg.cache_pregrasp_reset and self.demo_grasp_reset_bank is None:
+        # 리셋 초기 자세 사전 계산
+        # ★2026-08-18 고정 홈 모드에서는 grid 캐시가 필요 없다 — 홈이 단일 자세라
+        #   시작 시 IK 를 1회만 풀어 q_home 으로 재사용한다.
+        self.home_palm_pose = None
+        self.q_home_arm = None
+        if getattr(self.cfg, "reset_from_fixed_home", False) and self.demo_grasp_reset_bank is None:
+            self._build_home_pose()
+        elif self.cfg.cache_pregrasp_reset and self.demo_grasp_reset_bank is None:
             self._build_pregrasp_cache()
+
+    # ------------------------------------------------------------------
+    # 고정 홈 자세 IK (startup 1회)
+    # ------------------------------------------------------------------
+    def _build_home_pose(self) -> None:
+        """컵과 무관한 고정 홈 palm 자세를 Fabrics IK 로 풀어 q_home 으로 캐시한다.
+
+        실기에서는 컵 위치가 perception 결과이므로 참값 기반 pregrasp 로 팔을
+        텔레포트할 수 없다. 대신 항상 같은 홈에서 출발하고 접근은 정책이 학습한다.
+        """
+        hp = list(self.cfg.reset_home_palm_pose)
+        pose = torch.tensor(
+            hp[:3] + [math.radians(v) for v in hp[3:6]],
+            device=self.device, dtype=torch.float32,
+        ).unsqueeze(0)
+        _lo, _hi = self.palm_mins.unsqueeze(0), self.palm_maxs.unsqueeze(0)
+        if bool(((pose < _lo) | (pose > _hi)).any()):
+            raise ValueError(
+                f"reset_home_palm_pose 가 palm workspace 밖이다: {hp} "
+                f"(mins={self.palm_mins.tolist()}, maxs={self.palm_maxs.tolist()})"
+            )
+        self.home_palm_pose = pose                                   # (1, 6)
+
+        C = self._reset_chunk
+        palm = pose.expand(C, -1).contiguous()
+        q_init = self.robot_start_joint_pos[0].unsqueeze(0).expand(C, -1).contiguous()
+        q_out = self._run_reset_fabric(
+            torch.arange(C, device=self.device), palm, q_init.clone()
+        )
+        self.q_home_arm = q_out[0, :NUM_ARM_DOF].clone()             # (7,)
+        print(f"[grasp_v1] 고정 홈 palm={hp} → q_home="
+              f"[{', '.join(f'{v:+.4f}' for v in self.q_home_arm.tolist())}]")
 
     # ------------------------------------------------------------------
     # Pregrasp grid 캐시 빌드 (startup 1회)
@@ -591,7 +630,7 @@ class GraspLeftEnv(DirectRLEnv):
 
         2026-07-26: grid 반경을 cfg.pregrasp_cache_xy_range(고정 ±8cm)로 확대 —
         ADR(spawn xy_range 0.02→0.08)가 최종적으로 요구하는 최대범위를 항상 커버해야
-        ADR 진행에 따라 lookup이 grid 밖으로 벗어나지 않는다(object_spawn_xy_range는
+        ADR 진행에 따라 lookup이 grid 밖으로 벗어나지 않는다(object_spawn_{x,y}_range는
         ADR 미사용 시 fallback일 뿐이라 캐시 크기 기준으로 쓰지 않는다).
         """
         _cache_range = float(self.cfg.pregrasp_cache_xy_range)
@@ -1615,7 +1654,8 @@ class GraspLeftEnv(DirectRLEnv):
                     "lift_success_height": self.cfg.lift_success_height,
                     "object_spawn_x_center": self.cfg.object_spawn_x_center,
                     "object_spawn_y_center": self.cfg.object_spawn_y_center,
-                    "object_spawn_xy_range": self.cfg.object_spawn_xy_range,
+                    "object_spawn_x_range": self.cfg.object_spawn_x_range,
+                    "object_spawn_y_range": self.cfg.object_spawn_y_range,
                     "export_mode": "left_grip_lift_wait_actual_grasp",
                     "cup_z_mode": "actual_lifted",
                     "lift_wait_joint7_only": 1.0,
@@ -1833,17 +1873,22 @@ class GraspLeftEnv(DirectRLEnv):
 
             # ---- 컵 spawn 위치 계산 ----
             # xy_range: design §위치 ADR — enable_adr=True 면 grasp_adr.get_param("spawn",
-            # "xy_range")로 0.02→0.08 점진 확대, 아니면 cfg.object_spawn_xy_range(±6cm) fallback.
-            _xy_range = (
-                self.grasp_adr.get_param("spawn", "xy_range")
-                if self.grasp_adr is not None else float(self.cfg.object_spawn_xy_range)
+            # "x_range"/"y_range")로 점진 확대, 아니면 cfg.object_spawn_{x,y}_range fallback.
+            # ★2026-08-18 축별 분리 (x ±0.05 / y ±0.10).
+            _x_range = (
+                self.grasp_adr.get_param("spawn", "x_range")
+                if self.grasp_adr is not None else float(self.cfg.object_spawn_x_range)
+            )
+            _y_range = (
+                self.grasp_adr.get_param("spawn", "y_range")
+                if self.grasp_adr is not None else float(self.cfg.object_spawn_y_range)
             )
             obj_x = self.cfg.object_spawn_x_center + (
                 torch.rand(n, device=self.device) - 0.5
-            ) * 2.0 * _xy_range
+            ) * 2.0 * _x_range
             obj_y = self.cfg.object_spawn_y_center + (
                 torch.rand(n, device=self.device) - 0.5
-            ) * 2.0 * _xy_range
+            ) * 2.0 * _y_range
             # z: 물체별 bbox 반높이 텐서(object_spawn_z_buf) — 2026-07-26 MultiAsset 이식,
             # cfg.object_spawn_z(cup_big 기준 스칼라) 고정값 대체.
             obj_pos_local = torch.stack(
@@ -1881,7 +1926,11 @@ class GraspLeftEnv(DirectRLEnv):
                 self.palm_mins.unsqueeze(0),
             )
 
-            if self.cfg.cache_pregrasp_reset:
+            if self.q_home_arm is not None:
+                # 고정 홈: 컵 위치를 쓰지 않는다. 액션 기준점도 홈 → action=0 이면 홈 유지.
+                pregrasp_palm_pose = self.home_palm_pose.expand(n, -1).clone()
+                q_pregrasp[:, :NUM_ARM_DOF] = self.q_home_arm.unsqueeze(0)
+            elif self.cfg.cache_pregrasp_reset:
                 # cache lookup: spawn 위치(x,y) → 가장 가까운 grid point arm IK.
                 # 2026-07-26 MultiAsset: 캐시는 단일 기준 z(cfg.object_spawn_z)로 빌드돼
                 # 물체별 z(object_spawn_z_buf, 최대 편차 ~3cm)를 반영하지 않는다 — 초기

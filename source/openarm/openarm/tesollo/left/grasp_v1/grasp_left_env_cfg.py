@@ -230,6 +230,21 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 17×17 grid(1cm 간격, ±8cm) IK 사전 계산 → reset 시 lookup. design §위치 ADR:
     # spawn xy_range가 ADR로 0.02→0.08까지 커지므로 캐시는 항상 최대범위(±8cm)를 커버해야
     # ADR가 range를 넓혀도 lookup이 grid 밖으로 벗어나지 않는다(2026-07-26, 13×13/±6cm→17×17/±8cm).
+    # ★2026-08-18 고정 홈 리셋 (perception_plus_plus 연결용).
+    #   구 동작은 컵 **참값**으로 pregrasp 를 계산해 팔을 텔레포트했다 — 실기에서는
+    #   컵 위치가 지각 결과라 재현 불가였고, 컵 y=+0.10 일 때 손이 스폰 박스 안에서
+    #   출발해 side 접근도 성립하지 않았다. 이제 컵과 무관한 고정 홈에서 출발한다.
+    #
+    #   홈 자세 근거 (URDF openarm_tesollo_bi_s_rl FK/IK 실측, base=env 원점):
+    #     위치오차 0.00mm · 자세오차 0.0deg · 컵 스폰 박스 밖 80mm
+    #     팔 최저 z=0.377(테이블면 0.208) · 헤드 카메라 시선 최근접 72.7mm
+    #     (링크 반경 45mm) → 초기 프레임에서 컵 가림 없음
+    #   right/grasp_v1 홈 (0.28, -0.38, 0.42, 90, 0, 90) 의 y·자세 미러.
+    reset_from_fixed_home: bool = True
+    # [x, y, z, ez, ey, ex] — 회전은 도(deg), env 에서 라디안 변환.
+    reset_home_palm_pose: tuple = (0.28, 0.38, 0.42, -90.0, 0.0, -90.0)
+
+    # cache_pregrasp_reset: reset_from_fixed_home=True 면 쓰이지 않는다.
     cache_pregrasp_reset:  bool  = True
     pregrasp_cache_xy_range: float = 0.08   # 캐시 grid 반경(고정) — object_spawn_xy_range(ADR 초기값)와 별개
     # pregrasp offset: right 는 -Y(-0.07), left 는 y=0 대칭 반전(+0.07)
@@ -273,7 +288,10 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # Delta palm action (pregrasp 기준 상대 오프셋)
     # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
     # -----------------------------------------------------------------------
-    palm_delta_xyz:     float = 0.15   # ±0.15m per axis
+    # ★2026-08-18 스칼라 0.15 → 축별 (x, y, z). 고정 홈 리셋으로 바꾸면서 y 만 확대.
+    #   홈 palm y=+0.38 에서 컵 y=+0.10 까지 0.28m 를 액션으로 덮어야 한다.
+    #   x·z 는 파지 직전 미세조정 분해능 유지를 위해 0.15 그대로.
+    palm_delta_xyz:     tuple = (0.15, 0.35, 0.15)   # ±m, (x, y, z)
     palm_delta_rot_deg: float = 20.0   # ±20° per axis
 
     # -----------------------------------------------------------------------
@@ -421,9 +439,12 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
 
     # design §위치 ADR: spawn xy_range 0.02→0.08 점진 확대(초기 좁게 학습 후 확장).
     # grasp_adr.get_param("spawn","xy_range")로 GraspLeftEnv._reset_idx가 조회.
+    # ★2026-08-18 스칼라 xy_range → 축별 분리 (right/grasp_v1 와 동일).
+    #   목표 스폰 범위 x 0.25~0.35(±0.05), y +0.10~+0.30(±0.10).
     adr_custom_cfg: dict = field(default_factory=lambda: {
         "spawn": {
-            "xy_range": (0.02, 0.08),
+            "x_range": (0.02, 0.05),
+            "y_range": (0.02, 0.10),
         },
         # 외란 커리큘럼: 0에서 시작해 increment마다 선형 증가(급격 도입 시 grip 붕괴 방지).
         # spawn과 동일 카운터 공유 — 학습 곡선에서 latch 후 붕괴가 보이면
@@ -470,7 +491,8 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
+    # ★2026-08-18 x 중심 0.27 → 0.30 (목표 범위 0.25~0.35 의 중앙).
+    object_spawn_x_center: float = 0.30
     # right: y=-0.10 (demo 데이터와 일치). left: y=0 대칭 반전 → +0.10
     # ★2026-08-18 스폰 y 를 ∓0.10 → ∓0.20 으로 벌린다 (both/pour_v1 양손 파지용).
     #   **정책은 바꾸지 않는다** — 스폰 위치만 옮긴다. 재학습 불필요함을 실측으로 확인:
@@ -494,9 +516,11 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # GraspLeftEnv가 이 값에서 테이블 표면 z(=object_spawn_z - cup_big 반높이)를 역산해
     # 물체별 반높이를 더한 object_spawn_z_buf(N,)를 파생한다 — reset에서 물체별 텐서를 쓴다.
     object_spawn_z:        float = 0.297
-    # object_spawn_xy_range: enable_adr=False 일 때만 쓰이는 fallback(±6cm). 기본은
-    # enable_adr=True → adr_custom_cfg["spawn"]["xy_range"](0.02→0.08)가 실제 범위를 결정.
-    object_spawn_xy_range: float = 0.06
+    # object_spawn_{x,y}_range: enable_adr=False 일 때만 쓰이는 fallback. 기본은
+    # enable_adr=True → adr_custom_cfg["spawn"]["x_range"/"y_range"]가 실제 범위를 결정.
+    # ★2026-08-18 스칼라를 축별로 분리하고 ADR 종점과 맞췄다.
+    object_spawn_x_range: float = 0.05
+    object_spawn_y_range: float = 0.10
     # 활성 물체군(8종, MultiAsset assets_cfg 순서와 일치) — onehot·bbox 조회·env_id%8 배정용.
     active_object_names: tuple[str, ...] = _ACTIVE_OBJECT_NAMES
     object_bbox_path: str = _os.path.join(_ASSETS_DIR, "object_bbox.json")
