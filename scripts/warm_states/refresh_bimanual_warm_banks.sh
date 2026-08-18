@@ -67,16 +67,29 @@ echo; echo ">>> [2/2] receiver(좌팔) 수집 — 빈 컵"
 python3 "$COLLECT" "${l_args[@]}"
 
 # ---- 3. 겹침 실측 --------------------------------------------------------
-echo; echo ">>> 좌/우 페어 겹침 실측"
+echo; echo ">>> [검증 1/2] 좌/우 페어 겹침"
 python3 scripts/probes/verify_bimanual_cup_overlap.py
+
+# ---- 4. warm → pour 제어 인계 검사 (Isaac 불필요, 즉시) -------------------
+# 뱅크의 palm pose 가 pour workspace 밖이면 리셋이 클램프해 palm 목표가 실제 팔
+# 자세와 분리된다. 그 상태로 학습을 걸면 제어가 어긋난 채 시작한다.
+echo; echo ">>> [검증 2/2] warm → pour 제어 인계"
+if ! python3 scripts/probes/verify_warm_to_pour_handoff.py; then
+  echo
+  echo "!! 인계 검사 실패 — 학습으로 넘어가지 말 것. 위 항목을 먼저 해결한다."
+  exit 1
+fi
 
 cat <<'EOT'
 
 ------------------------------------------------------------
-다음 단계
-  1) 위 겹침이 크면 grasp cfg `object_spawn_y_center` 를 더 벌리고 재수집한다
+정적 검증 통과. 다음 단계
+  1) 겹침이 크면 grasp cfg `object_spawn_y_center` 를 더 벌리고 재수집한다
      (정책 재학습은 불필요 — 스폰만 옮겨도 평균이 따라 이동함을 실측했다).
-  2) E0-3 게이트: scripts/probes/probe_bimanual_warm_coexist.py
-  3) 통과하면 ./scripts/experiments/run_pour_v1_queue.sh E1
+  2) E0-3 물리 게이트 (Isaac 필요, 수 분):
+       ../IsaacLab/isaaclab.sh -p scripts/probes/probe_bimanual_warm_coexist.py \
+         --num_envs 128 --steps 300 --headless
+  3) 통과하면 학습:
+       ./scripts/experiments/run_pour_v1_queue.sh E1
 ------------------------------------------------------------
 EOT
