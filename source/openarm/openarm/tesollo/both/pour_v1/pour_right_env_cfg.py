@@ -199,6 +199,45 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     left_target_cup_scale_set: tuple[float, ...] = (0.85, 1.0, 1.15, 1.30)
     # scale_set[i] ↔ grasp_v1 warm spec idx (grasp `_ACTIVE_OBJECT_SPECS` 순서: 0=s085,1=s100,2=s115,3=s130)
     left_warm_spec_map: tuple[int, ...] = (0, 1, 2, 3)
+    # -------------------------------------------------------------------
+    # ★[both/pour_v1] 좌우 컵 겹침 — 해결 경로와 폐기된 시도 (2026-08-18)
+    # -------------------------------------------------------------------
+    # 문제: grasp_v1 의 리프트는 joint7 만 0.31rad 돌리는 스크립트 동작이라 잡은 컵을
+    #   측면으로 스윙시킨다. 컵이 스폰에서 좌우 각각 약 6cm 중앙으로 모여, pour_v1 에서
+    #   둘을 합치면 페어의 44.3% 가 물리적으로 관통했다(중심거리 중앙 98mm < 반경합 94mm).
+    #   겹친 채 리셋하면 PhysX 가 밀어내며 파지를 뜯는다
+    #   (게이트 실측: 우컵 유지 0.188 · 접촉 0.81개 · 64env 중 11 완주 · 비드 0.042).
+    #
+    # 해결: **grasp 스폰을 ∓0.20 으로 벌린다**(`object_spawn_y_center`). 정책은 바꾸지 않는다.
+    #   실제 좌/우 페어(2048×2048=419만 조합) 실측:
+    #     ∓0.10 → 간격  80mm · 겹침 44.3%
+    #     ∓0.20 → 간격 197mm · 겹침 **0.019%** (pour 사용 spec 0-3 은 0.060%)
+    #   남는 꼬리는 아래 `left_right_cup_min_gap_m` 재추첨이 걸러낸다.
+    #   실기에서도 컵을 벌려 놓으므로 s2r 과 더 정합한다.
+    #
+    # ⚠ 폐기된 시도 1 — "정책이 y 를 끌어당기니 스폰을 벌려도 소용없다"
+    #   틀렸다. y 분산은 압축되지만(비 0.45) **평균은 따라 이동한다**. 같은 체크포인트로
+    #   ∓0.16 · ∓0.20 에서 각각 256/256 을 수집해 확인했다. 재학습도 필요 없었다.
+    #
+    # ⚠ 폐기된 시도 2 — "j1(베이스 요)로 warm 자세를 회전해 벌린다"
+    #   `j1` 은 베이스 요가 아니다. URDF `axis="0 0 1"` 은 조인트 로컬 기준이고 부모 마운트에
+    #   rpy=(-pi/2,0,0) 이 걸려 있다. FK 실측: `l_aj_1 +0.15` → Δpalm=[-0.057, 0.000, -0.034]
+    #   (수평반경 0.275→0.222, z 0.333→0.299) — **Δy=0.000**. y 주축은 j2 다.
+    #   구현은 관절을 j1 으로 돌리고 컵·palm 좌표는 z축 회전으로 옮겨 **손과 컵이 분리**됐다
+    #   (접촉 0.81→0.03개 · 완주 0/64 · 비드 0.859→0.181). 좌표만 맞추고 팔이 그 pose 에
+    #   도달하는지 검증하지 않은 것이 원인이다. 되살리려면 목표 palm pose 를 IK 로 풀 것.
+    # ★[both/pour_v1] 좌우 컵이 겹치는 페어는 **재추첨**한다 (안전장치).
+    #   grasp 스폰을 ∓0.20 으로 벌려 겹침을 44.3% → 0.05% 로 낮췄지만(실제 좌/우 페어
+    #   8000쌍 실측), 분포 꼬리에 소수가 남는다. 겹친 상태로 리셋하면 PhysX 가 두 컵을
+    #   밀어내며 파지를 뜯어낸다(게이트 실측: 접촉 0.81개, 64env 중 11개만 완주).
+    #   재추첨 비용은 0.05% 에 대해 무시할 수준이다.
+    #   min_gap: 두 컵 반경 합에 더할 여유[m]. 0 이면 접촉 직전까지 허용.
+    #   컵 외경 = per-env 내부 반경(스케일 반영) + 이 벽 두께. 실측 nominal 외경 47.2mm
+    #   vs 내부 41mm → 6.2mm. 여유를 둬 7mm 로 잡는다(과소평가하면 겹침을 놓친다).
+    cup_wall_thickness_m: float = 0.007
+    left_right_cup_min_gap_m: float = 0.005
+    # 재추첨 최대 시도. 초과분은 경고와 함께 그대로 둔다(무한 루프 금지).
+    left_right_cup_redraw_tries: int = 8
     # [DR 재학습] source 컵 스케일 세트 — grasp_v1 cup 스펙과 동일 순서 권장
     #   (예: (0.85, 1.0, 1.15, 1.30) = grasp_v1 spec 0..3). env_id % K 결정론 배정(MultiAsset)
     #   + warm state의 object_spec_idx 를 env 스케일과 매칭해 샘플(파지자세-컵크기 정합).
@@ -642,17 +681,72 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS에서 hand local_z=0.05)
     left_target_cup_pos_env_local: tuple[float, float, float] = tuple(LEFT_TARGET_CUP_POS_ENV_LOCAL)
     left_target_cup_quat_wxyz: tuple[float, float, float, float] = tuple(LEFT_TARGET_CUP_QUAT_WXYZ)
-    # [both/pour_sensor] 왼팔 TCP(DifferentialIK) 제어 + 컵 kinematic-follow 파라미터
+    # 왼팔 TCP(DifferentialIK) 제어 파라미터.
+    #   ★pour_v1 은 컵 kinematic-follow 를 제거했다(왼손이 물리적으로 쥔다) → 관련
+    #     파라미터 `left_cup_follow_local_z` 도 함께 삭제했다.
     #   left_tcp_action_delta_m:  policy step당 왼팔 TCP 위치 최대 이동량[m] (속도 cap; rest 기준 누적)
     #   left_tcp_workspace_range: rest TCP 기준 위치 클램프 박스 half-extent [m] (x,y,z)
-    #   left_cup_follow_local_z:  왼손 body(l_hl_gripper_base) frame Z 방향 컵 offset[m] (고정배치 0.05와 일치)
+    # ★[both/pour_v1] 리셋 시 receiver 를 **내려놓는** 높이[m] (2026-08-18).
+    #
+    # 왜: pour_v1 은 왼손이 컵을 들고 있어 receiver 가 pour_sensor 대비 7.4cm 높다
+    #   (z 0.291 → 0.365). source 도 z 0.367 이라 두 컵이 같은 높이에서 시작하는데,
+    #   붓기는 원리상 source 가 위여야 성립한다. 그 결과 `pour`/`bead_in`/`success`
+    #   보상이 **한 번도 발화하지 못했고**(A-E1-frozen 2442 epoch · A-E1-learned 319 epoch
+    #   모두 0.0000), gradient 가 없으니 정책은 접근을 포기하고 자세 항만 챙겼다
+    #   (approach 보상 1.33→1.10, mouth_xy_dist 0.174→0.221 로 **멀어짐**).
+    #
+    # 어떻게: 왼팔 rest TCP 를 이만큼 낮게 잡는다. `episode_hold_steps`(120) 동안 왼팔
+    #   목표는 rest 로 강제되므로 DLS 가 팔을 내리고, 컵은 **물리적으로 쥐여 있어** 따라
+    #   내려온다(텔레포트 아님 = s2r 정합). 하강률 cap 은 `left_tcp_action_delta_m`(1cm/step)
+    #   이라 8cm 는 약 8 스텝이면 끝난다.
+    #
+    # ★2026-08-18 **기본값 0.0 (비활성)** — 도입 근거가 반증됐다.
+    #   도입 이유였던 "두 컵이 같은 높이라 붓기 불가" 는 틀렸다. `pour_spout_z_lock` 이
+    #   주둥이 z 를 `receiver 입구 z + margin` 으로 강제해 **상대 높이를 이미 묶고 있다**.
+    #   실측: receiver 를 7.2cm 내리자 우팔도 z-lock 을 따라 같이 내려가(0.374→0.298)
+    #   z 여유는 −0.006 → −0.026 으로 오히려 나빠졌다.
+    #   게다가 켜면 왼팔이 오른팔 영역으로 내려와 **양손 최소거리 0.0mm · 좌컵 grip
+    #   108mm 이탈 · dropped_by_force 50** 을 유발했다(E0-3 FAIL).
+    #   기능 자체는 동작하므로(하강 7.2cm 확인) 코드는 남기되 기본은 끈다.
+    # ⚠ 켤 때는 `left_tcp_z_down_m` 이 이 값 이상이어야 하고, 양팔 간격을 반드시 재볼 것.
+    # ★hold 구간에 palm 목표를 warmstart pose 로 **고정**한다 (2026-08-18).
+    #   구 코드는 `palm_action` 만 0 으로 만들고 목표는 live 계산이라, "가만히 있어야 할"
+    #   hold 에서 팔이 25cm 밀리고 128 env 중 58 개가 죽었다(step 120 시점 컵 x 0.325→0.119).
+    #   주석이 선언한 동작("warmstart pose 강제 유지")을 코드로 실제 구현한 것이다.
+    #   False = 구 동작(회귀 확인용).
+    hold_freeze_palm_target: bool = True
+    # ★hold → 제어 전환을 **램프**로 넘긴다 (2026-08-18).
+    #   실측: 전환 스텝(121)에 palm 목표가 **106.8mm** 튄다
+    #     hold  (0.2872, -0.1734, 0.4743)  ← warmstart palm + z_boost(12cm)
+    #     전환  (0.2607, -0.2139, 0.3979)  ← z-lock 이 주둥이를 입구+3cm 로 강제
+    #   z 가 76mm 떨어지는 것이 지배적이다. `palm_ee` offset(48.8mm)의 2배가 넘으므로
+    #   좌표 규약 문제가 아니라 **prelift 와 z-lock 이 서로 반대로 당기는** 것이다.
+    #   (z_boost 를 0 으로 해도 점프 방향만 +44mm 로 바뀔 뿐 계단은 그대로다 — 실측에서
+    #    z_boost 0/0.06/0.12 의 사망이 동일했던 이유.)
+    #   그 계단 킥에 사망이 몰린다: hold 중(1~110) 사망 0, 111~160 에 51/128.
+    #   N 스텝에 걸쳐 hold 목표 → live 목표로 선형 보간한다. 0 이면 구 동작(계단).
+    control_handover_ramp_steps: int = 30
+    receiver_lower_m: float = 0.0
     left_tcp_action_delta_m: float = 0.01
     left_tcp_workspace_range: tuple[float, float, float] = (0.08, 0.08, 0.08)
-    # [s2r] 왼팔 TCP z 하강 허용량[m]. receiver 컵은 kinematic-follow라 테이블과 물리충돌이
-    #   없어, z 하강을 workspace_range(8cm)로 두면 컵이 테이블을 관통한다(실물 불가 → s2r 붕괴).
-    #   기본 0 = rest z 아래로 하강 금지(테이블 위 유지). lateral(x,y)·상방(z+)은 workspace_range.
-    left_tcp_z_down_m: float = 0.0
-    left_cup_follow_local_z: float = 0.05
+    # 왼팔 TCP z 하강 허용량[m].
+    #
+    # ★2026-08-18 pour_v1 에서 0.0 → 0.08. **구 제약의 근거가 사라졌다.**
+    #   pour_sensor 에서 0 이었던 이유는 receiver 컵이 `kinematic-follow` 라 테이블과
+    #   물리충돌이 없어, 하강을 허용하면 컵이 **테이블을 관통**했기 때문이다(s2r 무효).
+    #   pour_v1 의 왼컵은 dynamic rigid body 를 왼손이 실제로 쥐고 있어 물리가 관통을 막는다.
+    #   포팅 때 값만 따라와 근거 없는 제약으로 남아 있었다.
+    #
+    #   이게 왜 치명적이었나: pour_v1 은 왼손이 컵을 **들고** 있어 receiver 가
+    #   pour_sensor 대비 **7.4cm 높다**(z 0.291 → 0.365). source 컵도 z 0.367 이라
+    #   두 컵이 같은 높이에서 시작하고, 붓기는 원리상 source 가 위여야 성립한다.
+    #   그런데 왼팔은 **내려갈 수가 없어서** 이 격차를 해소할 수단이 없었다.
+    #   실측 결과: A-E1-frozen 이 2442 epoch 동안 완전 평탄
+    #   (bead_in_target 0.000 · mouth_xy_dist 0.2255→0.2265 · mouth_z_clearance −0.009).
+    #
+    #   0.08 = workspace_range 와 동일. 필요한 하강은 약 6.5cm(→ pour_sensor 기하 복원)이고
+    #   그 아래는 테이블이 물리적으로 막는다.
+    left_tcp_z_down_m: float = 0.08
     # -------------------------------------------------------------------
     # ★[both/pour_v1] 왼컵 낙하 판정 — dynamic 전환으로 새로 생긴 실패 모드
     # -------------------------------------------------------------------

@@ -118,15 +118,29 @@ def test_receiver_mode_branches_all_three() -> None:
     assert "self.cfg.receiver_action_delay_steps" in env
 
 
-def test_left_tcp_z_down_capped_for_s2r() -> None:
-    """[s2r] receiver TCP z 하강 캡: 컵 kinematic-follow의 테이블 관통 방지.
+def test_left_tcp_z_down_allows_lowering_receiver() -> None:
+    """receiver TCP z 하강 — **pour_v1 에서 계약이 뒤집혔다** (2026-08-18).
 
-    기본값 0(rest 아래 금지). env가 z 하한만 별도(_wr_min[0,2]=left_tcp_z_down_m)로 clamp.
+    구 pour_sensor 계약은 `left_tcp_z_down_m == 0.0` 이었다. 이유는 receiver 컵이
+    `kinematic-follow` 라 테이블과 물리충돌이 없어, 하강을 허용하면 컵이 테이블을
+    **관통**했기 때문이다(실물 불가 → s2r 붕괴).
+
+    pour_v1 의 왼컵은 dynamic rigid body 를 왼손이 실제로 쥔다 → 물리가 관통을 막으므로
+    그 근거가 사라졌다. 반대로 왼손이 컵을 **들고** 있어 receiver 가 pour_sensor 대비
+    7.4cm 높고(z 0.291 → 0.365), source 도 z 0.367 이라 두 컵이 같은 높이에서 시작한다.
+    붓기는 원리상 source 가 위여야 하므로 **하강 없이는 과제가 성립하지 않는다.**
+    실측: 하강 금지 상태의 A-E1-frozen 은 2442 epoch 동안 bead_in_target 0.000 평탄
+    (mouth_xy_dist 0.2255→0.2265, mouth_z_clearance −0.009).
+
+    구조(z 하한만 별도 clamp)는 그대로 유지한다 — 바뀐 것은 값의 근거뿐이다.
     """
     cfg = _read("pour_right_env_cfg.py")
     m = re.search(r"^\s*left_tcp_z_down_m\s*:\s*float\s*=\s*([0-9.]+)", cfg, flags=re.MULTILINE)
     assert m is not None, "left_tcp_z_down_m flag 없음"
-    assert float(m.group(1)) == 0.0, "기본값 0 = rest 아래 하강 금지(테이블 관통 방지)"
+    assert float(m.group(1)) >= 0.06, (
+        f"z 하강 허용치 {m.group(1)} — receiver 를 내릴 수 없어 붓기가 불가능하다 "
+        "(필요 하강 약 6.5cm = pour_sensor 기하 복원)"
+    )
     env = _read("pour_right_env.py")
     assert "self.cfg.left_tcp_z_down_m" in env, "env가 z-down 캡 미적용"
     assert "_wr_min" in env and "_wr_min[0, 2]" in env, "z 하한만 별도 clamp 아님"

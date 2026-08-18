@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 import tokenize
 from pathlib import Path
 
@@ -140,7 +141,9 @@ def test_reset_applies_left_warm_on_every_path() -> None:
     # _reset_idx 는 warm 분기와 pregrasp 분기에서 **같은 샘플**을 재사용하므로
     # 관절 쓰기는 4회지만 샘플링은 3회다 (일관성 유지 목적 — 두 분기가 다른 자세면 안 된다).
     assert env.count("_write_left_warm_joints(") == 5   # 정의 1 + 호출 4
-    assert env.count("_sample_left_warm(") == 4         # 정의 1 + 호출 3
+    # 정의 1 + 리셋 3 + 겹침 재추첨 1 = 5.
+    # 재추첨(2026-08-18)은 겹친 페어만 왼쪽 pick 을 다시 뽑으므로 호출이 하나 늘었다.
+    assert env.count("_sample_left_warm(") == 5
     assert env.count("_place_left_cup(") == 4           # 정의 1 + 호출 3
 
 
@@ -480,3 +483,112 @@ def test_left_warm_sampling_matches_receiver_scale() -> None:
     assert "_left_warm_spec_pools" in env
     # 미태깅 캐시 + scale_set 조합은 조용히 통과시키면 안 된다
     assert "미태깅(object_spec_idx 전부 -1)" in env
+
+
+def test_left_spec_filter_disabled_under_scale_set() -> None:
+    """receiver 컵 scale_set 을 쓰면 좌팔 단일 spec 필터를 **꺼야** 한다.
+
+    필터가 spec 1 만 남기면 spec 풀 구성이 0/2/3 을 못 찾아 로드가 실패한다.
+    우팔은 같은 규약을 이미 갖고 있었는데 좌팔에 빠져 있었고, E0-3 공존 게이트가
+    실제로 이 버그를 잡았다(ValueError: 왼팔 warm 캐시에 spec 0 상태가 없다).
+    """
+    env = _nows(_code("pour_right_env.py"))
+    # 좌/우 모두 scale_set 활성 시 필터를 비운다
+    assert "ifself._tgt_spec_envisnotNone:_lf=()" in env
+    assert "ifself._src_spec_envisnotNone:_spec_filter=()" in env
+
+
+# ---------------------------------------------------------------------------
+# 좌/우 컵 겹침 방지 (2026-08-18)
+# ---------------------------------------------------------------------------
+# 근본원인: grasp 리프트가 joint7 만 0.31rad 돌려 잡은 컵을 몸쪽으로 스윙시킨다.
+#   좌/우 뱅크를 독립 샘플링해 합치면 두 컵이 겹치고, PhysX 가 침투를 밀어내며
+#   파지를 뜯어낸다(스폰 ∓0.10 실측: 겹침 44.3%, 접촉 0.81개, 64env 중 11 완주).
+# 대책 2단: (1) grasp 스폰을 ∓0.20 으로 벌림  (2) 남은 꼬리는 리셋 시 재추첨.
+
+def _grasp_cfg_code(side: str) -> str:
+    """grasp cfg 원문(주석 제거). `_code` 는 TASK_DIR 기준 상대경로를 받는다."""
+    path = _GRASP_R_CFG if side == "right" else _GRASP_L_CFG
+    assert path.is_file(), f"{path} 없음"
+    return _code(os.path.relpath(path, TASK_DIR))
+
+
+def test_grasp_spawn_y_is_separated_for_bimanual():
+    """좌/우 스폰 y 가 ∓0.20 이어야 한다 — 겹침 0.05% 를 만든 실측값."""
+    assert _nows("object_spawn_y_center: float = -0.20") in _nows(_grasp_cfg_code("right"))
+    assert _nows("object_spawn_y_center: float = 0.20") in _nows(_grasp_cfg_code("left"))
+
+
+def test_redraw_is_wired_into_both_warm_reset_paths():
+    """warmstart cache 와 deep-tilt boot **둘 다** 재추첨을 호출해야 한다.
+
+    한쪽만 걸면 그 경로에서만 겹침이 살아남아 원인 추적이 어려워진다.
+    """
+    code = _code("pour_right_env.py")
+    assert code.count("self._redraw_overlapping_pairs(") == 2, (
+        "재추첨 호출이 2곳(_reset_from_warmstart_cache, _reset_from_deep_tilt_bank)이 아니다"
+    )
+    assert "def _redraw_overlapping_pairs(" in code
+
+
+def test_redraw_uses_per_env_scaled_radii():
+    """겹침 판정에 **per-env 스케일 반영 반경**을 써야 한다.
+
+    컵 스케일이 (0.85~1.30) 로 섞이므로 nominal 반경으로 재면 큰 컵의 겹침을 놓친다.
+    """
+    code = _code("pour_right_env.py")
+    body = code.split("def _redraw_overlapping_pairs(")[1].split("\n    def ")[0]
+    assert "_src_inner_r_env" in body and "_tgt_inner_r_env" in body
+    assert "cup_wall_thickness_m" in body, "내부 반경만 쓰면 컵 벽 두께를 빠뜨린다"
+
+
+def test_redraw_has_bounded_retries():
+    """재추첨은 유한 시도여야 한다(무한 루프 금지) + 미해소 시 침묵하지 않아야."""
+    code = _code("pour_right_env.py")
+    body = code.split("def _redraw_overlapping_pairs(")[1].split("\n    def ")[0]
+    assert "left_right_cup_redraw_tries" in body
+    assert "while " not in body, "무한 루프 위험 — for + tries 로 제한할 것"
+    assert "WARN" in body, "미해소분을 조용히 넘기면 안 된다"
+
+
+def test_j1_yaw_spread_is_removed():
+    """j1 회전 보정은 **제거**했다 — 비활성만 두면 누군가 값을 올린다.
+
+    실측: `l_aj_1 +0.15` → Δpalm=[-0.057, **0.000**, -0.034]. j1 은 베이스 요가 아니다
+    (URDF axis 는 joint-local, 부모 마운트 rpy=(-pi/2,0,0)). 관절은 j1 으로 돌리고
+    좌표는 z축 회전으로 옮겨 손과 컵이 분리됐다. 되살리려면 IK 로 palm pose 를 풀 것.
+    """
+    for name in ("pour_right_env.py", "pour_right_env_cfg.py"):
+        code = _code(name)
+        assert "warm_arm_yaw_spread_rad" not in code, f"{name}: 폐기된 cfg 필드가 남아 있다"
+        assert "_spread_warm_bank_yaw" not in code, f"{name}: 폐기된 회전 함수가 남아 있다"
+
+
+def test_pour_target_is_not_reanchored_to_measured_pose():
+    """붓기 목표는 **실측 pose 에 재앵커하면 안 된다** (2026-08-18).
+
+    구 pour_sensor: `pour_point_target = rim_env + delta` — `rim_env` 가 실측 주둥이라,
+    팔이 하중으로 뒤처지면 목표가 그 뒤처진 위치에 다시 앵커된다 → 지연이 **속도**로
+    바뀌어 위치가 선형 누적된다(관절 괴리는 0.04rad 포화인데 컵 x 는 0.33→0.077,
+    zero-action out_x 사망 104/128 · 생존 0).
+
+    `grasp_v1` 은 같은 fabric 을 쓰면서 목표를 절대 앵커(`pregrasp_palm_pose_buf + delta`)로
+    잡아 이 루프가 없다. pour 는 20cm 이상 이동해야 하므로 고정 앵커 대신 **action 만
+    적분하는 명령 상태**(`_cmd_spout_env`)를 쓴다 — plant 를 되읽지 않는다.
+
+    ⚠ `fabric_q` 를 매 스텝 실제 관절로 동기화하는 대안도 시도했으나, fabric 이 앞서
+      적분할 여지가 없어 **팔이 명령을 전혀 못 따라갔다**(+y 3cm 명령 280스텝에 palm
+      이동 −11mm, 이동률 0.001). 폭주를 부동으로 바꾼 셈이라 폐기했다.
+      fabric 은 open-loop 로 두고 목표만 고치는 것이 맞다.
+    """
+    env = _code("pour_right_env.py")
+    n = _nows(env)
+    assert _nows("pour_point_target = self._cmd_spout_env") in n, \
+        "붓기 목표가 명령 상태에서 오지 않는다"
+    assert _nows("pour_point_target = rim_env + delta") not in n, \
+        "실측 주둥이에 재앵커하는 구 방식이 남아 있다 (드리프트 재발)"
+    assert "_cmd_spout_valid[env_ids] = False" in env, \
+        "리셋에서 명령 상태를 무효화하지 않으면 이전 에피소드 목표가 새 에피소드로 샌다"
+    # fabric 은 open-loop 여야 한다 — 동기화하면 팔이 못 움직인다(위 ⚠ 참조).
+    assert _nows("self.fabric_q[:, :NUM_ARM_DOF] = self.robot.data.joint_pos") not in n, \
+        "fabric_q 를 실제 관절로 동기화하면 위치 명령 추종이 죽는다"

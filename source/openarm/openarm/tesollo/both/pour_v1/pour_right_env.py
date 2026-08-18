@@ -297,7 +297,13 @@ class PourRightEnv(DirectRLEnv):
         if int(cfg.bead_count) != _DEFAULT_BEAD_COUNT:
             cfg.beads_cfg = _make_beads_cfg(int(cfg.bead_count))
         # [generalization] 받는 컵 크기 sweep: s!=1.0이면 물리 자산+판정기하를 s배 비례 조정
-        #   (미학습 컵 크기 일반화). left cup은 kinematic이라 파지 무관. 학습(1.0)은 무영향.
+        #   (미학습 컵 크기 일반화). 학습(1.0)은 무영향.
+        # ★2026-08-18 전제 정정: 구 주석은 "left cup은 kinematic이라 파지 무관" 이었으나
+        #   pour_v1 의 왼컵은 **왼손이 실제로 쥔다**. 이 경로는 컵만 s배로 바꾸고 왼팔 warm
+        #   파지자세는 그대로 두므로, s≠1.0 이면 손가락이 허공을 잡거나 컵 벽을 파고든다.
+        #   ⚠ E4(컵 일반화 eval)에서 `--cup_scale` 을 쓰려면 **그 스케일로 수집한 좌팔 warm
+        #     뱅크**가 필요하다. 학습 시 섞는 `left_target_cup_scale_set` 은 `left_warm_spec_map`
+        #     으로 spec 매칭이 되어 있어 안전하지만, 이 단일 override 경로는 매칭이 없다.
         _s = float(getattr(cfg, "left_target_cup_scale", 1.0))
         if _s != 1.0:
             cfg.left_target_cup_cfg.spawn.scale = (_s, _s, _s)
@@ -552,9 +558,10 @@ class PourRightEnv(DirectRLEnv):
         self.left_tcp_delta = float(self.cfg.left_tcp_action_delta_m)
         _wr = to_torch(list(self.cfg.left_tcp_workspace_range), device=self.device).unsqueeze(0)   # (1,3)
         self._left_tcp_max = self._left_tcp_rest_pos_b + _wr
-        # [s2r] z 하강만 별도 캡(기본 0=rest 아래 금지).
-        #   구 pour_sensor 에서는 kinematic-follow 컵이 테이블을 관통하는 것을 막는 용도였고,
-        #   pour_v1 에서는 물리 컵이 테이블을 때리는 것을 막는 용도다(목적은 같다).
+        # [s2r] z 하강 캡. pour_sensor 에서는 kinematic-follow 컵의 **테이블 관통**을 막는
+        #   용도라 0 이어야 했지만, pour_v1 의 왼컵은 dynamic 이라 물리가 관통을 막는다.
+        #   왼손이 컵을 들고 있어 receiver 가 7.4cm 높으므로 **하강 허용이 필수**다
+        #   (cfg `left_tcp_z_down_m` 주석에 근거 상세).
         _wr_min = _wr.clone()
         _wr_min[0, 2] = float(self.cfg.left_tcp_z_down_m)
         self._left_tcp_min = self._left_tcp_rest_pos_b - _wr_min
@@ -652,6 +659,10 @@ class PourRightEnv(DirectRLEnv):
         # [B-light] 주둥이의 palm-body-frame offset. approach(미ready) 중 갱신, tilt(ready) 중 동결
         #   → orientation 풀린 채로도 주둥이 위치를 예측적으로 고정(pour-point 보존).
         self._spout_offset_body = torch.zeros(self.num_envs, 3, device=self.device)
+        # ★[both/pour_v1] 주둥이 **명령 상태** (env-local). action delta 만 적분하고
+        #   실측 pose 를 다시 앵커하지 않는다 — cfg/주석 근거는 `_apply_action` 참조.
+        self._cmd_spout_env = torch.zeros(self.num_envs, 3, device=self.device)
+        self._cmd_spout_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._cmd_delta_pre_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_post_gate = torch.zeros(self.num_envs, 6, device=self.device)
         self._cmd_delta_rotvec_world = torch.zeros(self.num_envs, 3, device=self.device)
@@ -1411,6 +1422,13 @@ class PourRightEnv(DirectRLEnv):
             _lh_pos_b, _ = subtract_frame_transforms(
                 self.robot.data.root_pos_w, self.robot.data.root_quat_w, _lh_pos_w
             )
+            # ★receiver 를 `receiver_lower_m` 만큼 낮춰 rest 로 잡는다 (cfg 주석에 근거 상세).
+            #   hold 구간 동안 목표가 rest 이므로 DLS 가 팔을 내리고, 컵은 물리적으로
+            #   쥐여 있어 따라 내려온다. 두 컵이 같은 높이라 붓기가 불가능했던 문제를 푼다.
+            _lower = float(getattr(self.cfg, "receiver_lower_m", 0.0))
+            if _lower > 0.0:
+                _lh_pos_b = _lh_pos_b.clone()
+                _lh_pos_b[:, 2] -= _lower
             _m = _uncaptured.unsqueeze(1)
             self._left_tcp_rest_env = torch.where(_m, _lh_pos_b, self._left_tcp_rest_env)
             self._left_tcp_max_env = self._left_tcp_rest_env + self._left_tcp_wr
@@ -1592,7 +1610,45 @@ class PourRightEnv(DirectRLEnv):
             #   그대로 주입하지 않는다. alpha=1.0 이면 구 동작(무필터)과 동일하다.
             self._update_spout_z_lock_ref()
             # 회전 R 후 rim = palm_ee + R·rim_rel → palm_ee = pour_point_target − R·rim_rel (xyz 전부)
-            pour_point_target = rim_env + delta[:, :3]
+            # ★2026-08-18 목표를 **내부 명령 상태**로 적분한다 (실측 재앵커 제거).
+            #
+            # 구 pour_sensor 는 `pour_point_target = rim_env + delta` 였다. `rim_env` 는
+            #   **실측** 주둥이 위치라, 팔이 하중으로 뒤처지면 목표가 그 뒤처진 위치에
+            #   다시 앵커된다 → 지연이 그대로 속도가 되어 위치가 선형 누적된다
+            #   (실측: 관절 괴리는 0.04rad 포화인데 컵 x 는 0.33→0.077, out_x 사망 104/128).
+            #
+            # `grasp_v1` 은 같은 fabric 을 쓰면서 목표를 **절대 앵커**
+            #   (`pregrasp_palm_pose_buf + delta`)로 잡아 이 루프가 없다. 여기서도 같은
+            #   원리를 쓰되, pour 는 20cm 이상 이동해야 하므로 앵커를 고정값이 아니라
+            #   **action 만 적분하는 명령 상태**로 둔다(plant 를 되읽지 않는다).
+            #
+            # ⚠ fabric_q 를 매 스텝 실제 관절로 동기화하는 방식도 시도했으나, fabric 이
+            #   앞서 적분할 여지가 없어져 **팔이 명령을 전혀 못 따라갔다**(+y 3cm 명령을
+            #   280스텝 줬는데 palm 이동 −11mm, 이동률 0.001). 폭주를 부동으로 바꾼 셈이라
+            #   되돌렸다. fabric 은 open-loop 로 두고 목표만 고치는 것이 맞다.
+            # ★명령 상태는 **hold 가 끝나는 시점**에 초기화한다.
+            #   step 1 에 초기화하면 hold 동안 팔이 prelift 로 올라간 뒤, hold 종료 순간
+            #   목표가 120 스텝 전 위치로 되돌아가는 **계단 입력**이 걸린다.
+            #   (hold 목표 고정 수정 후 사망 중앙이 120→220 으로 밀린 것이 이 전환 시점이다.)
+            _fresh = (~self._cmd_spout_valid) & (
+                self.episode_length_buf >= self.cfg.episode_hold_steps
+            )
+            if bool(_fresh.any()):
+                # ★초기값은 **그 모드가 제어하는 점**이어야 한다 — palm 모드에서 주둥이로
+                #   초기화하면 전환 순간 rim_rel(약 6cm)만큼 목표가 튄다.
+                _init_pt = (
+                    self.palm_center_pos
+                    if self.cfg.pour_approach_pivot == "palm"
+                    else rim_env
+                )
+                self._cmd_spout_env = torch.where(_fresh.unsqueeze(1), _init_pt, self._cmd_spout_env)
+                self._cmd_spout_valid |= _fresh
+            # hold 중에는 아직 미초기화 → 그 구간의 목표는 위 hold 고정 분기가 덮어쓴다.
+            self._cmd_spout_env = torch.max(
+                torch.min(self._cmd_spout_env + delta[:, :3], self.palm_maxs[:3].unsqueeze(0)),
+                self.palm_mins[:3].unsqueeze(0),
+            )
+            pour_point_target = self._cmd_spout_env.clone()
             if self.cfg.pour_spout_z_lock:
                 # [robust] approach 단계에도 주둥이 z를 target 위 margin으로 구조 강제.
                 #   (pour 단계만 잠그면 v5는 ready 못 latch해 적용 안 됨 → approach부터 잠가
@@ -1601,7 +1657,21 @@ class PourRightEnv(DirectRLEnv):
             if self.cfg.pour_approach_pivot == "palm":
                 # [palm 제어] action xy가 palm을 직접 이동(rim 역산 없음). 주둥이 z-lock은 공통 유지
                 #   (spout=palm+R·rim_rel → palm_z = spout_z−(R·rim_rel)_z로 환산해 주둥이 높이 동일).
-                _palm_ee_target = self.palm_center_pos + delta[:, :3]
+                # ★2026-08-18 실측에 재앵커하지 않는다 — **명령 상태**를 쓴다.
+                #
+                # 구: `_palm_ee_target = palm_center_pos + delta` → 목표가 매 스텝 **현재
+                #   palm 에서 3cm 앞**으로 갱신된다(=속도 명령). 오차가 항상 3cm 로 작아
+                #   attractor 인력이 약하고, damping 50 에 눌려 속도가 붙지 않는다.
+                #   실측: +y 최대명령 280 스텝에 palm 이동 **−2.4mm**(사실상 부동).
+                #
+                # 동작하는 참조 `grasp_v1` 은 `pregrasp_palm_pose_buf + delta` — **고정
+                #   앵커에 15cm offset**이라 오차가 지속되고, 같은 시험에서 **+124.8mm**
+                #   움직인다(같은 fabric·로봇·게인).
+                #
+                # 그래서 여기서도 action 만 적분하는 명령 상태를 쓴다(plant 를 되읽지 않음).
+                #   `_cmd_spout_env` 는 pour_point(주둥이) 명령이고, palm 제어에서는 그것을
+                #   palm_ee 명령으로 그대로 쓴다(z 는 아래에서 z-lock 이 덮어쓴다).
+                _palm_ee_target = self._cmd_spout_env.clone()
                 _palm_ee_target[:, 2] = (
                     pour_point_target[:, 2] - quat_apply(_delta_quat_wxyz, rim_rel)[:, 2]
                 )
@@ -1650,7 +1720,7 @@ class PourRightEnv(DirectRLEnv):
                 self._spout_offset_body = torch.where(
                     _ready.unsqueeze(-1), self._spout_offset_body, _off_now           # ready=동결, 아니면 갱신
                 )
-                _spout_target_bl = _rim_env_bl + delta[:, :3]                         # action xyz로 주둥이 조준
+                _spout_target_bl = self._cmd_spout_env.clone()   # 위와 같은 명령 상태(실측 재앵커 없음)
                 if self.cfg.pour_spout_z_lock:
                     # [robust] 주둥이 z를 정책에서 분리해 target 입구 위 margin으로 구조 강제(env-local).
                     #   v5 실패모드("주둥이 target 아래→붓기 불가") 원천 차단. xy는 정책 유지.
@@ -1673,6 +1743,31 @@ class PourRightEnv(DirectRLEnv):
                 self._cmd_palm_target_delta.copy_(
                     torch.where(_rm, _palm_ee_bl - self.palm_center_pos, self._cmd_palm_target_delta)
                 )
+            # ★hold 구간에는 **목표 자체를 warmstart pose 로 고정**한다.
+            #
+            # 구 코드는 hold 에서 `palm_action` 만 0 으로 만들고 목표는 매 스텝 live 로
+            #   계산했다(z-lock 포함). 주석은 "warmstart pose 를 강제 유지" 라고 했지만
+            #   코드가 그러지 않아, **가만히 있어야 할 구간에서 팔이 25cm 밀렸다**:
+            #     step 120(hold 종료) 시점에 palm x 0.33→0.075, 컵 x 0.325→0.119,
+            #     128 env 중 58 개가 이미 사망. 이후 action-phase 코드는 무관했다.
+            #   리셋에서 `warmstart_palm_z_boost`(12cm prelift)로 잡아둔 목표도 첫
+            #   `_apply_action` 에서 덮어써져 무의미했다.
+            if getattr(self.cfg, "hold_freeze_palm_target", True):
+                _hold = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
+                palm_pose = torch.where(_hold, self.pregrasp_palm_pose_buf, palm_pose)
+                # ★전환을 램프로 — 계단이면 목표가 106.8mm 튀어 팔이 무너진다(cfg 주석 참조).
+                _ramp_n = int(getattr(self.cfg, "control_handover_ramp_steps", 0))
+                if _ramp_n > 0:
+                    _since = (
+                        self.episode_length_buf - self.cfg.episode_hold_steps
+                    ).clamp(min=0).float()
+                    _a = (_since / float(_ramp_n)).clamp(0.0, 1.0).unsqueeze(1)   # 0→1
+                    _in_ramp = (~_hold) & (_a < 1.0)
+                    palm_pose = torch.where(
+                        _in_ramp,
+                        (1.0 - _a) * self.pregrasp_palm_pose_buf + _a * palm_pose,
+                        palm_pose,
+                    )
             self.palm_pose_targets.copy_(palm_pose)
             self.hand_pca_targets.zero_()
             # [v6 ablation] nullspace baseline(α=0 지점)을 cfg flag로 선택 (demo prior hard 경로).
@@ -3321,6 +3416,71 @@ class PourRightEnv(DirectRLEnv):
     #   (_reset_idx 의 warm/pregrasp 두 분기, _reset_from_warmstart_cache,
     #    _reset_from_deep_tilt_bank). 로직을 한 곳에 두어 경로별 표류를 막는다.
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # ★[both/pour_v1] warm 자세를 베이스 요(j1)로 벌리기
+    # ------------------------------------------------------------------
+    def _redraw_overlapping_pairs(
+        self,
+        env_ids_t: torch.Tensor,
+        right_cup_local: torch.Tensor,
+        left_sample,
+    ) -> None:
+        """좌/우 컵이 겹치는 페어만 **왼쪽 pick 을 재추첨**해 해소한다 (제자리 수정).
+
+        왜 필요한가 (2026-08-18)
+        ------------------------
+        grasp 의 리프트가 joint7 만 0.31rad 돌리는 스크립트 동작이라 잡은 컵이 몸쪽으로
+        스윙한다. 좌/우 뱅크를 독립 샘플링해 합치면 두 컵이 같은 자리를 차지할 수 있고,
+        겹친 채 리셋하면 PhysX 가 침투를 밀어내며 **파지를 뜯어낸다**
+        (실측: 스폰 ∓0.10 에서 겹침 44.3% → 접촉 0.81개, 64env 중 11개만 완주).
+
+        1차 대책은 grasp 스폰을 ∓0.20 으로 벌린 것이다(겹침 0.05%, 실제 좌/우 페어
+        8000쌍 실측). 이 함수는 남은 분포 꼬리를 막는 2차 안전장치다 — 0.05% 에
+        대해서만 도는 루프이므로 비용이 사실상 없다.
+
+        왼쪽만 다시 뽑는 이유: 오른쪽 pick 은 비드 상태·source spec 풀과 엮여 있어
+        바꾸면 그쪽 정합을 다시 맞춰야 한다. 왼쪽은 receiver 라 제약이 적다.
+
+        Args:
+            env_ids_t: 리셋 대상 env 인덱스 (n,)
+            right_cup_local: 오른(source) 컵 **env-local** pose (n,7) 또는 (n,3+)
+            left_sample: `_sample_left_warm` 반환 3-튜플. 겹친 행만 in-place 갱신된다.
+        """
+        if left_sample is None or self._left_warm_count <= 0:
+            return
+        tries = int(getattr(self.cfg, "left_right_cup_redraw_tries", 0))
+        if tries <= 0:
+            return
+        # 외경 = per-env 내부 반경(스케일 반영) + 벽 두께. 두 컵 외경 합 + 여유가 기준.
+        wall = float(getattr(self.cfg, "cup_wall_thickness_m", 0.007))
+        gap = float(getattr(self.cfg, "left_right_cup_min_gap_m", 0.0))
+        r_sum = (
+            self._src_inner_r_env[env_ids_t]
+            + self._tgt_inner_r_env[env_ids_t]
+            + 2.0 * wall
+            + gap
+        )
+        r_xy = right_cup_local[:, :2]
+        bad = None
+        for _ in range(tries):
+            d = torch.norm(r_xy - left_sample[2][:, :2], dim=-1)
+            bad = d < r_sum
+            if not bool(bad.any()):
+                return
+            fresh = self._sample_left_warm(env_ids_t[bad])
+            if fresh is None:
+                return
+            for k in range(len(left_sample)):
+                left_sample[k][bad] = fresh[k]
+        n_bad = int(bad.sum()) if bad is not None else 0
+        if n_bad:
+            print(
+                f"[pour_v1][WARN] 좌/우 컵 겹침 {n_bad}/{env_ids_t.numel()} env 가 "
+                f"{tries}회 재추첨 후에도 남았다 — 그대로 리셋한다(파지가 뜯길 수 있음). "
+                "grasp 스폰 분리(object_spawn_y_center)를 다시 볼 것.",
+                flush=True,
+            )
+
     def _sample_left_warm(self, env_ids: Sequence[int]):
         """왼쪽 warm bank 에서 `env_ids` 만큼 샘플. 뱅크가 없으면 None.
 
@@ -3385,7 +3545,11 @@ class PourRightEnv(DirectRLEnv):
         self._left_cup_ref_dist[env_ids_t] = torch.norm(
             left_cup_pose_w[:, :3] - left_hand_w, dim=-1
         )
-        self._left_cup_ref_z[env_ids_t] = left_cup_pose_w[:, 2]
+        # ★하강분을 미리 반영한다 — 안 하면 `receiver_lower_m` 만큼의 정상 하강을
+        #   `left_cup_dropped`(z 기준 8cm)로 오판해 hold 종료 직후 전 env 가 죽는다.
+        self._left_cup_ref_z[env_ids_t] = left_cup_pose_w[:, 2] - float(
+            getattr(self.cfg, "receiver_lower_m", 0.0)
+        )
         return left_cup_pose_w
 
     def _load_left_warmstart_cache_from_disk(self) -> bool:
@@ -3404,6 +3568,12 @@ class PourRightEnv(DirectRLEnv):
             return False
         try:
             _lf = tuple(getattr(self.cfg, "left_warm_object_spec_filter", ()) or ())
+            if self._tgt_spec_env is not None:
+                # receiver 컵 scale_set 매칭 모드 — 단일 spec 필터를 걸면 안 된다.
+                #   필터가 spec 1 만 남기면 아래 spec 풀 구성이 0/2/3 을 못 찾아 실패한다
+                #   (E0-3 공존 게이트가 실제로 이 버그를 잡았다). 우팔과 같은 규약:
+                #   필터 대신 리셋에서 per-env spec 매칭으로 고른다.
+                _lf = ()
             bank = PourWarmStateBank.from_hdf5_paths(
                 paths,
                 device=self.device,
@@ -3814,6 +3984,8 @@ class PourRightEnv(DirectRLEnv):
 
         # ★[both/pour_v1] 왼팔 warm 파지자세 — 양손 파지 시작의 **주 경로**
         _left_sample = self._sample_left_warm(env_ids)
+        # 좌/우 컵이 겹치는 페어는 왼쪽 pick 재추첨으로 해소한다(스폰 분리의 2차 안전장치).
+        self._redraw_overlapping_pairs(env_ids_t2, cup_pose_local, _left_sample)
 
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
@@ -3836,13 +4008,18 @@ class PourRightEnv(DirectRLEnv):
         warmstart_palm_pose = palm_pose.clone()
         if self.cfg.warmstart_palm_z_boost > 0.0:
             warmstart_palm_pose[:, 2] = warmstart_palm_pose[:, 2] + self.cfg.warmstart_palm_z_boost
+        # ★2026-08-18 진단 버그 수정: 클램프량을 **clamp 전/후**로 재야 한다.
+        #   구 코드는 boost 적용 후 값을 **boost 이전 원본**과 비교해, 클램프가 전혀
+        #   없어도 z_boost(0.12) 를 그대로 "clamped by 0.1200m" 로 보고했다
+        #   → warmstart_palm_z_boost>0.02 이면 항상 뜨는 오탐 경고였다.
+        _preclamp = warmstart_palm_pose[:, :3].clone()
         warmstart_palm_pose[:, :3] = torch.max(
             torch.min(warmstart_palm_pose[:, :3], self.palm_maxs[:3].unsqueeze(0)),
             self.palm_mins[:3].unsqueeze(0),
         )
         # palm pos 가 pour workspace 로 잘리면 palm target ↔ 실제 arm 자세가
         # 괴리될 수 있다. 1회 진단 로그용 최대 클램프량 기록.
-        _ws_clamp_delta = (warmstart_palm_pose[:, :3] - palm_pose[:, :3]).abs().max().item()
+        _ws_clamp_delta = (warmstart_palm_pose[:, :3] - _preclamp).abs().max().item()
         self.pregrasp_palm_pose_buf[env_ids] = warmstart_palm_pose
         self.palm_pose_targets[env_ids] = warmstart_palm_pose
         self.hand_joint_targets[env_ids] = hand_pos
@@ -3920,6 +4097,7 @@ class PourRightEnv(DirectRLEnv):
         # ★[both/pour_v1] z-lock 저역통과 상태 무효화 → 새 에피소드는 raw 값에서 즉시 시작.
         #   (이전 에피소드의 필터 잔향이 초기 조준을 흐리지 않게 한다)
         self._spout_z_lock_ref_valid[env_ids] = False
+        self._cmd_spout_valid[env_ids] = False
         # ★[both/pour_v1] 왼컵 낙하 플래그도 초기화 (기준선은 `_place_left_cup` 이 갱신).
         self._left_cup_dropped[env_ids] = False
         self.contact_force_raw[env_ids].zero_()
@@ -4028,6 +4206,12 @@ class PourRightEnv(DirectRLEnv):
         # ★[both/pour_v1] deep-tilt boot 경로도 왼팔 warm 파지자세로 시작한다
         #   (boot 뱅크는 오른팔만 담고 있어 왼팔은 별도 뱅크에서 샘플).
         _left_sample = self._sample_left_warm(env_ids)
+        # 좌/우 컵이 겹치는 페어는 왼쪽 pick 재추첨으로 해소한다(스폰 분리의 2차 안전장치).
+        self._redraw_overlapping_pairs(
+            torch.as_tensor(env_ids, dtype=torch.long, device=self.device),
+            cup_pose_local,
+            _left_sample,
+        )
 
         full_pos = torch.zeros(n, self.robot.num_joints, device=self.device)
         full_vel = torch.zeros(n, self.robot.num_joints, device=self.device)
