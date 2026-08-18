@@ -47,8 +47,8 @@ def test_action_obs_contract_unchanged() -> None:
 def test_config_registers_v6_id_and_entry_point() -> None:
     """gym 등록이 pour_v1 모듈/id로 갱신되어야 한다 (복사 직후엔 v4)."""
     cfg = _read("config/__init__.py")
-    assert 'id="open-tesol_r_pour_v1"' in cfg
-    assert "openarm.tesollo.right.pour_v1.pour_right_env:PourRightEnv" in cfg
+    assert 'id="open-tesol_r_pour_sensor"' in cfg
+    assert "openarm.tesollo.right.pour_sensor.pour_right_env:PourRightEnv" in cfg
     assert "pour_v4" not in cfg, "v4 참조 잔존 → 잘못된 모듈로 entry"
     assert 'id="open-tesol_r_pour_v4"' not in cfg
 

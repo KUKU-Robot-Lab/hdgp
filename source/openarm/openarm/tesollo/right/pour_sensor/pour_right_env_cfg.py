@@ -576,22 +576,24 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     deep_tilt_f_boot_end: float = 0.0              # anneal 종착 (직립 전이)
     deep_tilt_anneal_steps: int = 300_000          # progress = common_step_counter / anneal_steps
     # warmstart 초기 상태 소스:
-    #   "disk"   : grasp 가 디스크에 저장한 캐시(grasp_warm_v7_2.hdf5) 로드 (권장).
+    #   "disk"   : grasp 가 디스크에 저장한 캐시 로드 (권장).
     #              startup 시 grasp policy rollout 불필요 → 분포/포맷 불일치 제거.
-    #   "rollout": (레거시 fallback) 기존처럼 startup 에서 v7-2 체크포인트를
-    #              pour env 안에서 rollout 해 캐시 수집.
+    #   "rollout": (레거시) startup 에서 지정 체크포인트를 pour env 안에서 rollout 해
+    #              캐시 수집 — warmstart_checkpoint_path 명시 필수(기본값 없음).
     #   "preset" : 캐시 없이 preset/pregrasp 합성 시작 (디버그용).
-    # disk 로드 실패(파일 없음/검증 실패) 시 rollout 으로 안전하게 degrade한다.
-    # 기본 "disk": train.py 가 override 없이도 grasp_warm_tesollo.hdf5 를 로드.
-    # 파일이 없으면 자동으로 rollout 으로 fallback 하므로 안전.
-    # Tesollo grasp_v1 전용 산출물: data/grasp_warm_tesollo.hdf5
-    #   (collect_grasp_v1_warm_states.py --robot tesollo). warm-state 는 grasp 성공
-    #   초기 pose(arm/hand/cup)라 v6 의 7-D action 차원 변경과 무관하게 유효하다.
+    # ★08.18 fail-loud: disk 로드 실패 시 rollout 으로 조용히 degrade 하지 않고
+    #   즉시 에러다(env._build_warmstart_reset_cache) — s2r 트랙은 뱅크가 계약이다.
     warm_state_source: str = "disk"
-    # [rl USD 마이그레이션] 신 USD(조인트 순서/이름 변경)에 맞춘 warmstart 재생성물 사용.
-    #   구 grasp_warm_v7_2.hdf5(구 USD)는 비호환 → data/grasp_warm_tesollo.hdf5 (grasp_v1 tesollo, _rl). pour_sensor와 동일.
+    # ★08.18 pour_sensor(a1) 재배선: right/grasp_sensor(openarm_tesollo_sensor_rl)
+    #   산출물 전용. 수집 = collect_grasp_v1_warm_states.py --robot tesollo_sensor.
+    #   bi_s_rl(DG-5FS) 계열 grasp_warm_tesollo*.hdf5 는 텐서 차원이 같아 조용히
+    #   로드되므로 파일명부터 분리했고, 로더의 meta/robot_usd 하드 가드가 2차 방어한다.
+    #   ⚠ 스폰 기하 주의: grasp_sensor 는 y_center -0.20 에서 스폰하지만 리프트 스윙
+    #   (joint7 0.31rad)이 컵을 몸쪽으로 당겨 warm 컵 y 는 ≈-0.085 로 이동한다
+    #   (bimanual 8000쌍 실측, 우팔 기준). object_spawn_*(fresh 폴백)와 target 기하는
+    #   뱅크 수집 후 **실측으로** 재튜닝한다 — 추정으로 미리 바꾸지 않는다.
     warm_state_paths: tuple[str, ...] = (
-        _os.path.normpath(_os.path.join(_HDGP_ROOT, "data", "grasp_warm_tesollo.hdf5")),
+        _os.path.normpath(_os.path.join(_HDGP_ROOT, "data", "grasp_warm_tesollo_sensor.hdf5")),
     )
     freeze_grasp_hand_during_episode: bool = True
     # 최상위 비드 z=0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)

@@ -27,9 +27,9 @@ class PourRightEnvCfg_PLAY(PourRightEnvCfg):
 
 
 gym.register(
-    id="open-tesol_r_pour_v1",
+    id="open-tesol_r_pour_sensor",
     entry_point=(
-        "openarm.tesollo.right.pour_v1.pour_right_env:PourRightEnv"
+        "openarm.tesollo.right.pour_sensor.pour_right_env:PourRightEnv"
     ),
     disable_env_checker=True,
     kwargs={
@@ -39,9 +39,9 @@ gym.register(
 )
 
 gym.register(
-    id="open-tesol_r_pour_v1-play",
+    id="open-tesol_r_pour_sensor-play",
     entry_point=(
-        "openarm.tesollo.right.pour_v1.pour_right_env:PourRightEnv"
+        "openarm.tesollo.right.pour_sensor.pour_right_env:PourRightEnv"
     ),
     disable_env_checker=True,
     kwargs={
@@ -52,9 +52,9 @@ gym.register(
 
 # LSTM PPO variant — MLP 체크포인트와 비호환, scratch 학습 전용
 gym.register(
-    id="open-tesol_r_pour_v1-lstm",
+    id="open-tesol_r_pour_sensor-lstm",
     entry_point=(
-        "openarm.tesollo.right.pour_v1.pour_right_env:PourRightEnv"
+        "openarm.tesollo.right.pour_sensor.pour_right_env:PourRightEnv"
     ),
     disable_env_checker=True,
     kwargs={
@@ -64,9 +64,9 @@ gym.register(
 )
 
 gym.register(
-    id="open-tesol_r_pour_v1-play-lstm",
+    id="open-tesol_r_pour_sensor-play-lstm",
     entry_point=(
-        "openarm.tesollo.right.pour_v1.pour_right_env:PourRightEnv"
+        "openarm.tesollo.right.pour_sensor.pour_right_env:PourRightEnv"
     ),
     disable_env_checker=True,
     kwargs={
