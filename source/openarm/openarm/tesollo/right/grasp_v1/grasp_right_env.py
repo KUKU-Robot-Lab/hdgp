@@ -1052,15 +1052,11 @@ class GraspRightEnv(DirectRLEnv):
         self.fabric_q[:, NUM_ARM_DOF:] = hand_target
         self.fabric_qd[:, NUM_ARM_DOF:].zero_()
 
-        # ---- Lift-wait phase: Fabrics arm 상태 동결 ----
-        # scripted arm 제어 중 Fabrics integrator 발산 방지
-        freeze_mask = self.is_lift_phase
-        # util: .any() 동기화 제거 — 마스크 대입은 빈 마스크도 안전(빈 연산)
-        self.fabric_q[freeze_mask, :NUM_ARM_DOF] = (
-            self.robot.data.joint_pos[freeze_mask][:, self.arm_dof_indices]
-        )
-        self.fabric_qd[freeze_mask, :NUM_ARM_DOF].zero_()
-        self.fabric_qdd[freeze_mask, :NUM_ARM_DOF].zero_()
+        # ★2026-08-19 리프트 중 Fabrics 동결 블록 **제거** (35cee1b 잔존 버그 수정).
+        # 구 j7 관절보간 시절엔 "scripted arm 제어 중 integrator 발산 방지"가 맞았지만,
+        # 수직 palm 램프는 Fabrics 가 직접 팔을 구동한다 — 동결(상태를 실측으로 되돌리고
+        # 속도 0)을 남기면 integrator 가 매 스텝 초기화돼 palm 이 오르지 못한다.
+        # GPU 프로브 실측: 동결 유지 시 z 상승 -0.3mm / 제거 시 정상 상승.
 
     def _apply_action(self) -> None:
         is_lift       = self.is_lift_phase        # (N,) bool

@@ -70,3 +70,14 @@ def test_j7_lift_removed_from_env():
                  "compute_joint7_lift_wait_target"):
         assert dead not in src, f"구 리프트 잔재: {dead}"
     assert "lift_palm_pose_buf" in src
+
+
+def test_fabric_freeze_removed_during_lift():
+    """리프트 중 Fabrics 동결이 남아 있으면 palm 램프가 물리적으로 죽는다.
+
+    동결 = fabric_q 팔 상태를 매 스텝 실측으로 되돌리고 속도를 0으로 초기화
+    → integrator 가 목표로 전진하지 못해 z 상승 ≈ 0 (GPU 프로브 실측 -0.3mm).
+    35cee1b 가 이 블록을 지우지 않은 채 커밋된 사고의 회귀 방지.
+    """
+    src = _ENV.read_text()
+    assert "freeze_mask" not in src, "리프트 중 Fabrics 동결 블록 잔재"
