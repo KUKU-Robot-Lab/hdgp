@@ -83,7 +83,9 @@ def test_idle_arm_rest_mirrors_grasp_home():
     (env._build_home_pose 가 Fabrics 로 푼 실제 q_home 과의 일치를 런타임에도 검사한다.)
     """
     ARM_SIGN = [-1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0]
-    HOME_R = [0.3082, 0.5785, 0.0970, 0.5811, 0.2676, 0.5281, 0.5792]
+    # ★08.18 grasp_sensor(a1/DG-5F) 실측 q_home — env._build_home_pose 첫 부팅 출력값.
+    #   bi_s(DG-5FS) 값([0.3082, 0.5785, ...])과 최대 0.265rad 다르다(palm 오프셋 5.5cm).
+    HOME_R = [0.0431, 0.6706, 0.0961, 0.7342, 0.3750, 0.5678, 0.6709]
     want = HOME_R if OTHER == "r" else [s * v for s, v in zip(ARM_SIGN, HOME_R)]
     have = [REST[f"{OTHER}_aj_{i}"] for i in range(1, 8)]
     assert all(abs(a - b) < 1e-6 for a, b in zip(have, want)), (have, want)
