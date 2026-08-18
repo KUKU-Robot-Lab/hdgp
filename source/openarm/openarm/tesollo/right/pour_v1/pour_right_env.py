@@ -95,6 +95,9 @@ from .pour_right_preset import (
 from .pour_right_utils import pour_corridor_score, scale, to_torch
 from .demo_pose_reference import DemoPoseReferenceBank
 from .warm_state_bank import PourWarmStateBank
+
+# 이 태스크가 전제하는 로봇 자산(부분 일치 검사) — warm 뱅크 출처 가드에 사용.
+_EXPECTED_ROBOT_USD = "openarm_tesollo_sensor_rl"
 from .deep_tilt_bank import DeepTiltStateBank, capture_mask, f_boot_ratio
 
 
@@ -2806,6 +2809,9 @@ class PourRightEnv(DirectRLEnv):
                 device=self.device,
                 expected_object_spawn_z=self.cfg.object_spawn_z,
                 expected_palm_bounds=palm_bounds,
+                # ★08.18 자산 가드(both/pour_v1 이식): 이 태스크는 sensor_rl(DG-5F) 전용.
+                #   bi_s_rl(DG-5FS) 뱅크는 텐서 차원이 같아 조용히 로드되므로 여기서 막는다.
+                expected_robot_usd=_EXPECTED_ROBOT_USD,
             )
         except (FileNotFoundError, KeyError, ValueError) as exc:
             print(f"[5g_pour_right_v4] warm-state disk load error: {exc}", flush=True)
@@ -2855,10 +2861,15 @@ class PourRightEnv(DirectRLEnv):
         if source == "disk":
             if self._load_warmstart_cache_from_disk():
                 return
-            print(
-                "[5g_pour_right_v4] disk warm-state load failed; "
-                "falling back to checkpoint rollout.",
-                flush=True,
+            # ★08.18 fail-loud 전환: 종전엔 checkpoint rollout 으로 조용히 폴백했는데,
+            #   기본 warmstart_checkpoint_path(v7_2 pth)는 디스크에 존재하지 않아
+            #   "뱅크 없이 pregrasp 리셋으로 학습이 도는" 무증상 열화가 실제로 일어났다.
+            #   s2r 트랙은 뱅크가 계약이므로 disk 소스 실패는 즉시 에러로 만든다.
+            raise RuntimeError(
+                "[5g_pour_right_v4] warm_state_source='disk' 인데 디스크 뱅크 로드에 "
+                f"실패했다 (paths={tuple(self.cfg.warm_state_paths)}). "
+                "grasp_sensor 뱅크를 재수집하거나 warm_state_paths 를 고쳐라. "
+                "(의도적으로 뱅크 없이 돌리려면 warm_state_source='preset'/'rollout')"
             )
 
         ckpt = self.cfg.warmstart_checkpoint_path

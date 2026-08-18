@@ -78,13 +78,23 @@ class PourWarmStateBank:
         device: str | torch.device = "cpu",
         expected_object_spawn_z: float | None = None,
         expected_palm_bounds: tuple[float, float, float, float, float, float] | None = None,
+        expected_robot_usd: str | None = None,
     ) -> "PourWarmStateBank":
-        """HDF5 경로들을 로드/병합. spawn z 불일치는 hard fail, workspace 는 warn."""
+        """HDF5 경로들을 로드/병합. spawn z 불일치는 hard fail, workspace 는 warn.
+
+        expected_robot_usd: 기대하는 로봇 자산 이름(부분 일치, 예 "openarm_tesollo_sensor_rl").
+        캐시에 `robot_usd` 출처가 기록돼 있고 다르면 hard fail, 기록이 없으면 warn.
+        """
         resolved = _resolve_paths(paths)
         if not resolved:
             raise ValueError("warm_state_paths is empty; provide at least one HDF5 path.")
 
         chunks = [_load_path(path) for path in resolved]
+        _warn_on_robot_usd_mismatch(
+            tuple(str(chunk.get("__robot_usd__", "")) for chunk in chunks),
+            expected_robot_usd,
+            resolved,
+        )
         merged: dict[str, np.ndarray] = {
             key: np.concatenate([chunk[key] for chunk in chunks], axis=0)
             for key in _DATASETS
@@ -194,8 +204,44 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
                 meta[ks.split("meta/", 1)[1]] = float(v)
             except (TypeError, ValueError):
                 continue
+        # ★자산 출처(robot_usd) — both/pour_v1 가드 이식(2026-08-18).
+        #   2026-08-17 사고: 로봇 자산이 DG-5F → DG-5FS 로 교체됐는데 warm state 텐서 차원이
+        #   같아서(arm7+hand20) 구 캐시가 **에러 없이** 로드됐다. 손 기하가 달라 palm/컵 상대
+        #   자세가 어긋난 초기상태로 학습이 돌 수 있었다. 문자열 속성은 수치 메타 루프에서
+        #   버려지므로 여기서 별도로 보존한다.
+        _usd = h5.attrs.get("robot_usd", h5.attrs.get("meta/robot_usd"))
+        out["__robot_usd__"] = (  # type: ignore[assignment]
+            str(_usd) if _usd is not None else ""
+        )
         out["__meta__"] = meta  # type: ignore[assignment]
         return out
+
+
+def _warn_on_robot_usd_mismatch(
+    robot_usds: tuple[str, ...], expected_robot_usd: str | None, resolved: tuple[Path, ...]
+) -> None:
+    """캐시가 어느 로봇 자산에서 나왔는지 확인한다.
+
+    출처 기록이 없으면(구 캐시) 경고만 한다 — hard fail 로 두면 기존 캐시가 전부 막힌다.
+    기록이 있고 기대값과 다르면 **hard fail**: 이 불일치는 조용히 잘못된 학습으로 이어진다.
+    """
+    tagged = [u for u in robot_usds if u]
+    if not tagged:
+        print(
+            "[PourWarmStateBank][WARN] warm 캐시에 robot_usd 출처 기록이 없다 "
+            f"({[p.name for p in resolved]}). 이 캐시가 현재 로봇 자산(sensor_rl/DG-5F)에서 "
+            "나온 것인지 자동 확인할 수 없다 — 수집 자산을 직접 확인할 것.",
+            flush=True,
+        )
+        return
+    if expected_robot_usd is None:
+        return
+    bad = sorted({u for u in tagged if expected_robot_usd not in u})
+    if bad:
+        raise ValueError(
+            f"warm 캐시 robot_usd 불일치: 기대='{expected_robot_usd}', 캐시={bad}. "
+            "다른 로봇 자산에서 수집한 캐시다 — 손 기하가 달라 초기 파지가 어긋난다. 재수집 필요."
+        )
 
 
 def _warn_on_workspace_mismatch(

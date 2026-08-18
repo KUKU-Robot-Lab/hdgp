@@ -551,9 +551,10 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # Warmstart reset cache
     # -----------------------------------------------------------------------
     enable_warmstart_reset: bool = True
-    warmstart_checkpoint_path: str = (
-        _os.path.join(_HDGP_ROOT, "log/rl_games/pipeline/right/5g_grasp_right_v7_2/test3/nn/5g_grasp_right-v7-2.pth")
-    )
+    # ★08.18 기본값 제거: 종전 경로(log/rl_games/pipeline/.../5g_grasp_right-v7-2.pth)는
+    #   디스크 어디에도 존재하지 않는 dangling 참조였다(구 rl-USD 이전 산출물).
+    #   rollout 소스를 쓰려면 실존하는 체크포인트를 명시적으로 지정하라.
+    warmstart_checkpoint_path: str = ""
     warmstart_cache_size: int = 256
     warmstart_max_rollout_steps: int = 6000
 

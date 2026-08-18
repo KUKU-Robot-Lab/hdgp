@@ -127,6 +127,19 @@ _PRESETS: dict[str, RobotPreset] = {
         ),
         default_out=_DATA_DIR / "grasp_warm_tesollo_left.hdf5",
     ),
+    # ★08.18 sim2real(a1) 트랙: right/grasp_sensor(openarm_tesollo_sensor_rl, DG-5F)
+    #   → right/pour_v1(→pour_sensor) 단일 뱅크. 출력 파일명을 bi_s 계열
+    #   (grasp_warm_tesollo*.hdf5)과 반드시 분리한다 — 두 자산은 텐서 차원이 같아
+    #   파일이 섞이면 로더가 조용히 성공한다(뱅크 meta/robot_usd 가드가 최후 방어선).
+    "tesollo_sensor": RobotPreset(
+        task="open-tesol_r_grasp_sensor-play-lstm",
+        default_checkpoint=(
+            _LOG_ROOT
+            / "open-tesol/right/grasp-sensor/lstm_test1/nn"
+            / "last_open-tesol_r_grasp_sensor-lstm.pth"
+        ),
+        default_out=_DATA_DIR / "grasp_warm_tesollo_sensor.hdf5",
+    ),
 }
 
 
