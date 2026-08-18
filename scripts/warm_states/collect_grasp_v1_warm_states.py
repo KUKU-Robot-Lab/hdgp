@@ -200,8 +200,11 @@ def _latest_checkpoint(preset: RobotPreset) -> Path:
     """
     # .../grasp-v1/<run>/nn/<file>.pth → parents[2] = grasp-v1
     grasp_root = preset.default_checkpoint.parents[2]
+    # ★`rew__1234_` 처럼 밑줄이 겹친 변형은 제외한다. 같은 ep 에 정상 이름과 이 변형이
+    #   함께 있는 런이 실재하고(lstm_test1), **파일 크기가 서로 다르다**(89743036 vs
+    #   89743270). mtime 이 같은 초에 찍히면 어느 쪽이 뽑힐지 불안정해진다.
     cands = sorted(
-        grasp_root.glob("*/nn/*ep_*.pth"),
+        (q for q in grasp_root.glob("*/nn/*ep_*.pth") if "__" not in q.name),
         key=lambda q: q.stat().st_mtime,
         reverse=True,
     )
