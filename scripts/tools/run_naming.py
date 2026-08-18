@@ -21,7 +21,10 @@
     <paper>-<exp>-<cond>-a<asset>-s<seed>
     예) A-E1-NSdemo-a2-s42     B-E1-frozen-a2-s42
 
-    paper : 논문 구분   A=RA-L(both/pour_sensor)  B=양손 dexterous(both/pour_v1)
+    paper : 논문 구분   A=양손 dexterous 정밀 pouring(both/pour_v1, 자산 a2)
+            ★2026-08-17 결정으로 논문을 하나로 통합했다. 정본은
+              docs/experiments/registry.md 다. 구 주석은 A=RA-L(both/pour_sensor)
+              였는데, pour_sensor 는 그 결정으로 **동결**됐다.
     exp   : 실험 묶음   E1, E2, ... (Table/Figure 단위)
     cond  : 조건        NSdemo, NSnaive, JS, Full, Rnoaim, frozen, learned, ...
     asset : 자산 버전   a1=openarm_tesollo_sensor_rl, a2=openarm_tesollo_bi_s_rl

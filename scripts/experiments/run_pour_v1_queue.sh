@@ -29,11 +29,7 @@ SEED="${SEED:-42}"
 NUM_ENVS="${NUM_ENVS:-2048}"
 MAX_ITER="${MAX_ITER:-6500}"
 ASSET="${ASSET:-a2}"
-# ★2026-08-18 기본값 A → B. run_naming 규약은 A=RA-L(both/pour_sensor),
-#   B=양손 dexterous(both/pour_v1) 인데 러너가 A 로 찍고 있어 두 트랙의 런 이름이
-#   같은 공간에 섞였다(기존 A-E1-frozen-a2-s42 / A-E1-learned-a2-s42 는 그 결과이며,
-#   둘 다 aborted 된 실패 런이라 이력으로 남긴다).
-PAPER="${PAPER:-B}"
+PAPER="${PAPER:-A}"
 
 # 여자유도 해소 메커니즘 — 3플래그를 **한 단위로** 켜고 끈다.
 #   `nullspace_baseline` 단독은 죽은 코드다: pour_orient_release=True 분기가 baseline 과
