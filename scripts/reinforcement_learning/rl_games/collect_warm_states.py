@@ -392,6 +392,17 @@ def main(env_cfg, agent_cfg: dict):
     if agent.is_rnn:
         agent.init_rnn()
 
+    # ★2026-08-18 함정: 아래 루프는 **파일 존재**를 완료 신호로 쓴다(env 가 target 도달 시
+    #   스스로 저장). 그래서 목적지에 구 뱅크가 남아 있으면 1스텝 만에
+    #   "DONE: cache written" 을 찍고 끝난다 — 구 캐시를 새로 수집한 것으로 착각한다.
+    #   실제로 스폰 ∓0.20 재수집에서 이걸 밟았다(구 ∓0.10 뱅크가 그대로 남았다).
+    if out_path.is_file():
+        raise SystemExit(
+            f"[collect_warm_states] 목적지가 이미 있다: {out_path}\n"
+            "  이 스크립트는 파일 존재를 '수집 완료' 신호로 쓰므로 그대로 두면 아무것도\n"
+            "  수집하지 않고 성공처럼 끝난다. 기존 파일을 옮기거나 지운 뒤 다시 실행할 것."
+        )
+
     print(
         f"[collect_warm_states] rollout 시작: num_envs={env.unwrapped.num_envs} "
         f"target={args_cli.warm_target_count} out={out_path}",
@@ -410,7 +421,11 @@ def main(env_cfg, agent_cfg: dict):
 
         steps += 1
         if out_path.is_file():
-            print(f"[collect_warm_states] DONE: cache written → {out_path} ({steps} steps)", flush=True)
+            print(
+                f"[collect_warm_states] DONE: env 가 캐시를 저장했다 → {out_path} "
+                f"({steps} steps)",
+                flush=True,
+            )
             break
         if steps >= args_cli.max_steps:
             print(
