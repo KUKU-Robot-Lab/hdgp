@@ -40,7 +40,13 @@ MECH_OFF=(env.nullspace_baseline=robot_start env.pour_orient_release=False env.p
 # 조건 → hydra override. 레지스트리의 표와 1:1 대응.
 cond_args() {
   case "$1" in
-    # ---- E1: 성립 게이트 (왼팔 고정) ----
+    # ---- E1: 성립 게이트 ----
+    # ★2026-08-18 E1 을 frozen → learned 로 바꿨다. pour_v1 은 왼손이 컵을 **들고** 있어
+    #   receiver 가 pour_sensor 대비 7.4cm 높다(z 0.291→0.365). source 도 0.367 이라 두 컵이
+    #   같은 높이에서 시작하는데, 왼팔을 고정하면 그 격차를 해소할 수단이 없다.
+    #   실측: A-E1-frozen 은 2442 epoch 동안 bead_in_target 0.000 평탄 → aborted.
+    #   (구 pour_sensor 는 receiver 가 테이블 위라 frozen 으로도 성립했다.)
+    learned)      printf '%s\n' "${MECH_ON[@]}" env.enable_deep_tilt_boot=False ;;
     frozen)       printf '%s\n' "${MECH_ON[@]}" env.receiver_control_mode=frozen \
                                 env.enable_deep_tilt_boot=False env.enable_demo_pose_reward=False ;;
     # ---- E2: 핵심 조건 (왼팔 제어 해제) ----
@@ -69,7 +75,7 @@ cond_args() {
 
 exp_conds() {
   case "$1" in
-    E1) echo "frozen" ;;
+    E1) echo "learned" ;;
     E2) echo "Full NSdemo NSnaive JS" ;;
     E3) echo "Rnoaim Rnoalign Rnointrot Rnotiltdelta" ;;
     *) echo "!! 알 수 없는 실험: $1 (E1|E2|E3)" >&2; return 1 ;;

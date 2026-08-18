@@ -58,6 +58,8 @@ parser.add_argument(
 )
 parser.add_argument("--gate_cup_retain", type=float, default=0.90)
 parser.add_argument("--gate_bead_retain", type=float, default=0.90)
+# zero-action 으로 steps 를 완주한 env 비율. 팔이 자세를 유지하는지 본다.
+parser.add_argument("--gate_survive", type=float, default=0.50)
 parser.add_argument("--gate_arm_gap_m", type=float, default=0.02)
 parser.add_argument("--gate_sat_frac", type=float, default=0.50)
 parser.add_argument(
@@ -164,11 +166,26 @@ def main(env_cfg, agent_cfg):
 
     zero = torch.zeros(n, uenv.cfg.action_space, device=dev)
 
-    # ---- 리셋 직후 기준선 --------------------------------------------------
-    r_cup0 = uenv.cup.data.root_pos_w.clone()
-    l_cup0 = uenv.left_target_cup.data.root_pos_w.clone()
-    palm0 = uenv.palm_center_pos.clone()
-    r_grip0 = torch.norm(r_cup0 - palm0, dim=-1)
+    # ---- 기준선은 **1 스텝 굴린 뒤** 캡처한다 ------------------------------
+    # ★2026-08-18 버그: 리셋 직후 `root_pos_w` / `body_pos_w` 는 write_*_to_sim 이
+    #   아직 반영되지 않은 stale 값이다(실측: reset 직후 object_pos 가 정확히 0.000).
+    #   그 값으로 기준선을 잡으면 실제 grip 거리 변화가 60mm 인데 **212mm** 로 보여
+    #   파지 실패로 오판한다(E0-3 우컵 유지 0.141 = 이 오판이었다).
+    #   1 스텝 뒤 값은 안정적이다(실측: step1→step2 변화 1.4mm).
+    # inference_mode 로 감싸면 fabric 의 in-place 갱신이 막힌다(RuntimeError).
+    env.step(zero)
+    # ★좌표계: `object_pos` 는 env-local(root_pos_w − env_origins), `palm_center_pos` 도
+    #   env-local 이다. 구 코드는 `cup.data.root_pos_w`(world) 에서 env-local 을 빼서
+    #   env 가 흩어진 거리만큼 오차가 섞였다(실측 7610mm). 반드시 같은 프레임을 쓸 것.
+    r_grip0 = torch.norm(uenv.object_pos - uenv.palm_center_pos, dim=-1)
+    _l_hand0 = uenv.robot.data.body_pos_w[:, uenv._left_hand_body_index]
+    l_grip0 = torch.norm(uenv.left_target_cup.data.root_pos_w - _l_hand0, dim=-1)
+    l_z0 = uenv.left_target_cup.data.root_pos_w[:, 2].clone()
+    print(
+        f"[probe] 기준선(1스텝 후)  우 grip {r_grip0.mean()*1000:.1f}mm  "
+        f"좌 grip {l_grip0.mean()*1000:.1f}mm  좌컵 z {l_z0.mean():.3f}m",
+        flush=True,
+    )
 
     # ---- "첫 에피소드 동안"만 값을 얼린다 ---------------------------------
     #   env.step() 은 종료된 env 를 자동 리셋한다. 리셋 후 값을 섞으면 게이트가 무의미하다.
@@ -187,12 +204,16 @@ def main(env_cfg, agent_cfg):
 
     for t in range(args_cli.steps):
         # --- 스텝 전 상태를 살아있는 env 에 대해 갱신 (리셋 오염 방지) ---
-        r_drift = (torch.norm(uenv.cup.data.root_pos_w - uenv.palm_center_pos, dim=-1)
-                   - r_grip0).abs()
+        # 프레임 통일: 둘 다 env-local (위 기준선 주석 참조)
+        r_drift = (
+            torch.norm(uenv.object_pos - uenv.palm_center_pos, dim=-1) - r_grip0
+        ).abs()
         l_pos = uenv.left_target_cup.data.root_pos_w
         l_hand = uenv.robot.data.body_pos_w[:, uenv._left_hand_body_index]
-        l_drift = (torch.norm(l_pos - l_hand, dim=-1) - uenv._left_cup_ref_dist).abs()
-        l_zdrop = uenv._left_cup_ref_z - l_pos[:, 2]
+        # ★env 내부 `_left_cup_ref_dist/_ref_z` 는 리셋 시 stale body_pos_w 로 잡힐 수
+        #   있다(env 주석도 그 가능성을 인정한다). 게이트는 probe 자체 기준선을 쓴다.
+        l_drift = (torch.norm(l_pos - l_hand, dim=-1) - l_grip0).abs()
+        l_zdrop = l_z0 - l_pos[:, 2]
 
         if r_idx and l_idx:
             rb = uenv.robot.data.body_pos_w[:, r_idx]            # (n,R,3)
@@ -265,8 +286,16 @@ def main(env_cfg, agent_cfg):
     print("\n" + "=" * 72, flush=True)
     print(f"[probe] 양손 warm 공존 게이트  (num_envs={n}, steps={args_cli.steps})", flush=True)
     print("=" * 72, flush=True)
-    print(f"  우컵(source) 유지율     {r_retain:.3f}   (드리프트 < {d_thr*100:.0f}cm)", flush=True)
-    print(f"  좌컵(receiver) 유지율   {l_retain:.3f}   (드리프트 < {d_thr*100:.0f}cm & 낙하 < {z_thr*100:.0f}cm)", flush=True)
+    print(
+        f"  우컵(source) 파지유지   {r_retain:.3f}   "
+        f"(grip 거리 변화 < {d_thr*100:.0f}cm)",
+        flush=True,
+    )
+    print(
+        f"  좌컵(receiver) 파지유지 {l_retain:.3f}   "
+        f"(grip 거리 변화 < {d_thr*100:.0f}cm & 낙하 < {z_thr*100:.0f}cm)",
+        flush=True,
+    )
     print(f"  source 비드 유지율      {bead_retain:.3f}", flush=True)
     _w = int(torch.argmin(f_gap))
     _pn = (f"{names[r_idx[int(f_pair_r[_w])]]} ↔ {names[l_idx[int(f_pair_l[_w])]]}"
@@ -276,7 +305,13 @@ def main(env_cfg, agent_cfg):
     print(f"                            근위부가 min 을 지배하면 손 간섭이 가려진다.", flush=True)
     print(f"  손 토크 포화율          max={sat_max:.3f}  mean={sat_mean:.3f}", flush=True)
     print(f"  손 접촉 수(평균)        {float(f_contacts.mean()):.2f}", flush=True)
-    print(f"  첫 에피소드 완주 env    {never_term}/{n}", flush=True)
+    survive = never_term / max(n, 1)
+    print(f"  ★zero-action 생존율     {survive:.3f}  ({never_term}/{n}, {args_cli.steps} 스텝)", flush=True)
+    print(
+        "     (구 해설 삭제: 'zero-action 이라 out_x 로 밀린다' 는 fabric 상태 동기화 전\n"
+        "      이야기다. 지금은 out_x=0 이므로 사망은 파지/접촉 쪽 문제로 읽어야 한다.)",
+        flush=True,
+    )
     if done_reasons:
         top = sorted(done_reasons.items(), key=lambda kv: -kv[1])[:6]
         print("  종료 사유(누적 추정)    " + ", ".join(f"{k.split('/')[-1]}={v}" for k, v in top), flush=True)
@@ -299,6 +334,11 @@ def main(env_cfg, agent_cfg):
          f"{l_retain:.3f} ≥ {args_cli.gate_cup_retain}"),
         ("비드 유지", right_n > 0, bead_retain >= args_cli.gate_bead_retain,
          f"{bead_retain:.3f} ≥ {args_cli.gate_bead_retain}"),
+        # ★2026-08-18 추가. 기존 5지표는 전부 **리셋 직후 품질**만 봐서, 팔이 자세를
+        #   유지하지 못해 전 env 가 out_x 로 죽는 조건을 5/5 로 통과시켰다(E1 학습 불가).
+        #   에피소드가 끝까지 살아야 접근·붓기 보상이 발화할 기회가 생긴다.
+        ("생존율", True, survive >= args_cli.gate_survive,
+         f"{survive:.3f} ≥ {args_cli.gate_survive}"),
         ("양팔 간격", right_n > 0 and left_n > 0, gap_min >= args_cli.gate_arm_gap_m,
          f"{gap_min*1000:.1f}mm ≥ {args_cli.gate_arm_gap_m*1000:.0f}mm"),
         # 포화율은 접촉이 있어야 의미가 있다 — 허공에서 0.25 가 나와도 파지 능력과 무관하다.
