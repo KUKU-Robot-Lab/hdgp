@@ -88,17 +88,23 @@ RIGHT_ARM_AND_GRIPPER_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES + RIGHT_HAND_JOINT_NAM
 
 # 고정 오른팔 rest 자세: left 는 왼팔로 파지하므로 오른팔+오른손(bi_rl 우측 체인)을
 # 중립 자세로 hold 고정한다. 오른손 전체 0.
-# ★2026-08-18 r_aj_4 1.57 → 1.4. right/grasp_v1 의 LEFT_ARM_REST_JOINT_POS 와
-#   값을 일치시킨다(_ARM_SIGN[3]=+1 이라 미러해도 부호 불변 → 좌우 동일 값).
-#   구 1.57 은 grasp_v2 left 검증본 값이었다(ADR50 완주로 안정 확인됨).
 RIGHT_ARM_REST_JOINT_POS = {
-    "r_aj_1": 0.0,
-    "r_aj_2": 0.0,
-    "r_aj_3": 0.0,
-    "r_aj_4": 1.4,
-    "r_aj_5": 0.0,
-    "r_aj_6": 0.0,
-    "r_aj_7": 0.0,
+    # ★2026-08-18 유휴 팔을 **파지 팔 홈의 부호 미러**로 둔다(중립 접힘 대체).
+    #   값 = Fabrics 가 푼 반대편 q_home (grasp_v1 리셋 홈 palm 의 IK 해).
+    #   좌우가 완전 대칭이 되고 양팔 pour 초기 자세와도 그대로 이어진다.
+    #   URDF FK 실측(양팔 미러 상태): palm 이 x·z 동일하고 y 만 반전
+    #     (r [+0.281,-0.382,+0.412] / l [+0.281,+0.382,+0.412], Δy=-0.764),
+    #     유휴 팔→컵 박스 482mm(구 중립 접힘 253mm), 유휴 팔 최저 z 0.369,
+    #     헤드 카메라 가림 최악 93.2mm(링크반경 45mm) — 파지 팔이 결정, 불변.
+    #   ⚠ reset_home_palm_pose 를 바꾸면 이 값도 같이 바꿔야 한다.
+    #     env._build_home_pose 가 시작 시 미러 일치를 검사해 어긋나면 즉시 실패한다.
+    "r_aj_1": +0.3082,
+    "r_aj_2": +0.5785,
+    "r_aj_3": +0.0970,
+    "r_aj_4": +0.5811,
+    "r_aj_5": +0.2676,
+    "r_aj_6": +0.5281,
+    "r_aj_7": +0.5792,
     **{_n: 0.0 for _n in RIGHT_HAND_JOINT_NAMES},
 }
 

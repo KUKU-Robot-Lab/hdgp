@@ -15,6 +15,8 @@ from pathlib import Path
 
 from openarm.tesollo.left.grasp_v1.grasp_left_preset import RIGHT_ARM_REST_JOINT_POS
 
+REST = RIGHT_ARM_REST_JOINT_POS
+OTHER = "r"
 SIGN = 1
 _CFG_SRC = Path(__file__).resolve().parents[1] / "grasp_left_env_cfg.py"
 
@@ -74,7 +76,20 @@ def test_action_range_reaches_every_cup():
     assert far <= dy + 1e-9, f"먼 쪽 컵까지 {far:.3f}m 인데 액션 y 범위는 {dy:.3f}m"
 
 
-def test_idle_arm_rest_is_neutral_fold():
-    """유휴 팔은 중립 접힘 [0,0,0,1.4,0,0,0] — 좌우 동일 값(_ARM_SIGN[3]=+1)."""
-    vals = [RIGHT_ARM_REST_JOINT_POS[f"r_aj_{i}"] for i in range(1, 8)]
-    assert vals == [0.0, 0.0, 0.0, 1.4, 0.0, 0.0, 0.0], vals
+def test_idle_arm_rest_mirrors_grasp_home():
+    """유휴 팔 rest = 파지 팔 홈의 부호 미러.
+
+    좌우 완전 대칭 + 양팔 pour 초기 자세 정합을 위한 계약.
+    (env._build_home_pose 가 Fabrics 로 푼 실제 q_home 과의 일치를 런타임에도 검사한다.)
+    """
+    ARM_SIGN = [-1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0]
+    HOME_R = [0.3082, 0.5785, 0.0970, 0.5811, 0.2676, 0.5281, 0.5792]
+    want = HOME_R if OTHER == "r" else [s * v for s, v in zip(ARM_SIGN, HOME_R)]
+    have = [REST[f"{OTHER}_aj_{i}"] for i in range(1, 8)]
+    assert all(abs(a - b) < 1e-6 for a, b in zip(have, want)), (have, want)
+
+
+def test_idle_arm_is_not_neutral_zero():
+    """전 관절 0 이면 팔이 앞으로 뻗어 파지 팔·카메라와 겹친다 — 회귀 방지."""
+    have = [REST[f"{OTHER}_aj_{i}"] for i in range(1, 8)]
+    assert any(abs(v) > 0.05 for v in have)

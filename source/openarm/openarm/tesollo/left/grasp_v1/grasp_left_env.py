@@ -119,6 +119,10 @@ from .demo_grasp_reset import DemoGraspResetBank, compute_demo_cup_spawn_local
 from .warm_state_cache import GraspWarmStateCache, compute_arm_joint_match
 
 
+# 팔 7관절 좌우 미러 부호 (Y-미러: 회전축 X/Z 는 반전, Y 는 유지).
+# left/grasp_v1 preset 의 _ARM_SIGN 과 동일해야 한다.
+_ARM_MIRROR_SIGN = [-1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0]
+
 class GraspLeftEnv(DirectRLEnv):
     """OpenArm+Teosllo 왼손 파지 환경 v7.
 
@@ -618,6 +622,19 @@ class GraspLeftEnv(DirectRLEnv):
         self.q_home_arm = q_out[0, :NUM_ARM_DOF].clone()             # (7,)
         print(f"[grasp_v1] 고정 홈 palm={hp} → q_home="
               f"[{', '.join(f'{v:+.4f}' for v in self.q_home_arm.tolist())}]")
+
+        # 유휴 팔 rest 는 파지 팔 홈의 부호 미러여야 한다(좌우 대칭 + 양팔 pour 정합).
+        # preset 의 하드코딩 값이 홈 변경을 못 따라가면 장면이 조용히 비대칭이 된다 → 여기서 잡는다.
+        _sign = torch.tensor(_ARM_MIRROR_SIGN, device=self.device)
+        _want = _sign * self.q_home_arm
+        _have = self.fixed_arm_zero_pos[0][:NUM_ARM_DOF]
+        _err = (_have - _want).abs().max().item()
+        if _err > 0.05:
+            raise ValueError(
+                "유휴 팔 rest 가 홈의 미러와 어긋난다(최대 오차 "
+                f"{_err:.4f} rad > 0.05). preset 의 RIGHT_ARM_REST_JOINT_POS 를 "
+                f"[{', '.join(f'{v:+.4f}' for v in _want.tolist())}] 로 갱신하라."
+            )
 
     # ------------------------------------------------------------------
     # Pregrasp grid 캐시 빌드 (startup 1회)
