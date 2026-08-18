@@ -592,3 +592,65 @@ def test_pour_target_is_not_reanchored_to_measured_pose():
     # fabric 은 open-loop 여야 한다 — 동기화하면 팔이 못 움직인다(위 ⚠ 참조).
     assert _nows("self.fabric_q[:, :NUM_ARM_DOF] = self.robot.data.joint_pos") not in n, \
         "fabric_q 를 실제 관절로 동기화하면 위치 명령 추종이 죽는다"
+
+
+# ---------------------------------------------------------------------------
+# grasp_v1 ↔ pour_v1 스폰 박스 정합 (2026-08-18)
+#
+# grasp_v1 이 2f33e2c 로 스폰 박스를 재설정했다(x 중심 0.27→0.30, 축별 범위
+# x±0.05 / y±0.10). pour_v1 의 fresh 경로(warm 뱅크가 빌 때만 도는 fallback)가
+# 구 값으로 남아 있으면, 뱅크 없이 돌린 진단이 grasp 와 **다른 초기 분포**를
+# 만들면서도 "같은 조건"으로 보인다. 조용히 어긋나는 것을 막는다.
+# ---------------------------------------------------------------------------
+import ast as _ast
+
+_GRASP_CFG = (
+    TASK_DIR.parents[1] / "right" / "grasp_v1" / "grasp_right_env_cfg.py"
+)
+_POUR_CFG = TASK_DIR / "pour_right_env_cfg.py"
+
+
+def _cfg_literals(path: Path, cls_name: str) -> dict:
+    """dataclass 필드 기본값을 리터럴로 추출 (Isaac import 없이)."""
+    tree = _ast.parse(path.read_text())
+    cls = next(
+        n for n in _ast.walk(tree)
+        if isinstance(n, _ast.ClassDef) and n.name == cls_name
+    )
+    out = {}
+    for node in cls.body:
+        if not isinstance(node, _ast.AnnAssign) or node.value is None:
+            continue
+        try:
+            out[node.target.id] = _ast.literal_eval(node.value)
+        except (ValueError, SyntaxError):
+            pass
+    return out
+
+
+def test_pour_fresh_spawn_box_matches_grasp_v1():
+    """pour_v1 fresh 스폰 박스가 grasp_v1(우팔)과 같은 상자여야 한다."""
+    g = _cfg_literals(_GRASP_CFG, "GraspRightEnvCfg")
+    p = _cfg_literals(_POUR_CFG, "PourRightEnvCfg")
+
+    assert p["object_spawn_x_center"] == g["object_spawn_x_center"], (
+        f"x 중심 불일치: pour={p['object_spawn_x_center']} grasp={g['object_spawn_x_center']}"
+    )
+    assert p["object_spawn_y_center"] == g["object_spawn_y_center"], (
+        f"y 중심 불일치: pour={p['object_spawn_y_center']} grasp={g['object_spawn_y_center']}"
+    )
+    for axis in ("x", "y"):
+        key = f"object_spawn_{axis}_range"
+        assert p[key] == g[key], f"{key} 불일치: pour={p[key]} grasp={g[key]}"
+
+
+def test_pour_spawn_range_is_axiswise_not_scalar():
+    """구 스칼라 `object_spawn_xy_range` 로 되돌아가지 않았는지."""
+    p = _cfg_literals(_POUR_CFG, "PourRightEnvCfg")
+    assert "object_spawn_xy_range" not in p, (
+        "축별 분리를 되돌리면 x·y 요구 폭(±0.05 / ±0.10)을 표현할 수 없다"
+    )
+    src = _code("pour_right_env.py")
+    assert "object_spawn_xy_range" not in src, (
+        "env.py 가 아직 구 스칼라를 참조한다 — 스폰 범위가 축별로 반영되지 않는다"
+    )

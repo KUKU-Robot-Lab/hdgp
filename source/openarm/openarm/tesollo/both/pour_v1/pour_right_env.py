@@ -1201,15 +1201,18 @@ class PourRightEnv(DirectRLEnv):
         reset 시 nearest-neighbor lookup → Fabrics rollout 생략 → 대폭 속도 향상.
         1cm 간격 grid이므로 실제 spawn 위치와 최대 ~0.7cm 오차 → Fabrics가 첫 몇 스텝에서 보정.
         """
-        _N = 13  # 1cm 간격, ±6cm 범위
+        # ★2026-08-18 스폰 범위를 축별로 분리(grasp_v1 정렬). grid 는 축마다 실제
+        #   범위를 덮어야 lookup 이 grid 밖으로 나가지 않는다 — 스칼라 시절엔 x·y 가
+        #   같은 폭이라 한 변수로 충분했다.
+        _N = 13  # 축당 13점
         xs = torch.linspace(
-            self.cfg.object_spawn_x_center - self.cfg.object_spawn_xy_range,
-            self.cfg.object_spawn_x_center + self.cfg.object_spawn_xy_range,
+            self.cfg.object_spawn_x_center - self.cfg.object_spawn_x_range,
+            self.cfg.object_spawn_x_center + self.cfg.object_spawn_x_range,
             _N, device=self.device,
         )
         ys = torch.linspace(
-            self.cfg.object_spawn_y_center - self.cfg.object_spawn_xy_range,
-            self.cfg.object_spawn_y_center + self.cfg.object_spawn_xy_range,
+            self.cfg.object_spawn_y_center - self.cfg.object_spawn_y_range,
+            self.cfg.object_spawn_y_center + self.cfg.object_spawn_y_range,
             _N, device=self.device,
         )
         gx, gy = torch.meshgrid(xs, ys, indexing="ij")
@@ -3206,10 +3209,10 @@ class PourRightEnv(DirectRLEnv):
         # ---- 3. 컵 spawn 위치 계산 (±0.06m 랜덤) ----
         obj_x = self.cfg.object_spawn_x_center + (
             torch.rand(n, device=self.device) - 0.5
-        ) * 2.0 * self.cfg.object_spawn_xy_range
+        ) * 2.0 * self.cfg.object_spawn_x_range
         obj_y = self.cfg.object_spawn_y_center + (
             torch.rand(n, device=self.device) - 0.5
-        ) * 2.0 * self.cfg.object_spawn_xy_range
+        ) * 2.0 * self.cfg.object_spawn_y_range
         obj_pos_local = torch.stack(
             [obj_x, obj_y, torch.full((n,), self.cfg.object_spawn_z, device=self.device)], dim=1
         )

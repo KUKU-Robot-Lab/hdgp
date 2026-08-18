@@ -265,6 +265,9 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Policy action / pouring target
     # -----------------------------------------------------------------------
+    # ⚠ 아래 산수는 구 스폰(cup_y_spawn=-0.10) 기준이라 현재 값(-0.20)과 맞지 않는다.
+    #   pour_v1 은 warm 뱅크에서 시작하므로 이 pregrasp 산수는 결론에 쓰이지 않는다
+    #   (남겨 두는 이유는 delta/workspace 를 왜 이 크기로 잡았는지의 이력이기 때문).
     # pregrasp palm y = cup_y_spawn(-0.10) + pregrasp_offset_y(-0.12) = -0.22m
     #   delta=0.3m → max palm y = -0.22 + 0.30 = +0.08m (workspace y_max=0.22 이전에 delta 소진)
     #   타겟 컵 y ≈ 0.10m (demo 데이터 기준, LEFT_ARM_REST FK 기준)
@@ -278,10 +281,20 @@ class PourRightEnvCfg(DirectRLEnvCfg):
                                   #   0.1은 max 6m/s로 급이동→극단/외회전 귀결. 0.03(max 1.8m/s)+EMA 0.7로
                                   #   demo(0.025m/s)에 가까운 천천한 이동. 도달은 palm_mins/maxs 박스가 누적 보장.
     # warmstart cache 수집(체크포인트 rollout) 시 사용할 palm delta.
-    # v7-2 grasp checkpoint 학습 조건과 반드시 일치해야 한다:
+    # v7-2 grasp checkpoint 학습 조건과 일치시킨 값이다:
     #   5g_grasp_right_v7_2: palm_delta_xyz=0.15m, palm_delta_rot_deg=20°
-    warmstart_collect_palm_delta_xyz: float = 0.15   # v7-2 학습 값과 일치
-    warmstart_collect_palm_delta_rot_deg: float = 20.0  # v7-2 학습 값과 일치 (≠ pour 120°)
+    #
+    # ⚠ STALE (2026-08-18). 이 값이 맞춰져 있던 v7-2 는 현재 파이프라인의 정책이 아니다.
+    #   · 지금 warm 뱅크는 **외부 스크립트**(scripts/warm_states/collect_grasp_v1_warm_states.py)
+    #     가 grasp_v1 env 에서 수집한다. 아래 두 값을 쓰는 `_warmstart_collect_mode`
+    #     (env._collect_warmstart_cache) 는 그 경로에서 실행되지 않는다.
+    #   · grasp_v1 은 2026-08-18(2f33e2c) 로 palm_delta_xyz 가 축별 (0.15, 0.35, 0.15) 이
+    #     됐다. 여기 스칼라 0.15 와 다르다.
+    #   값을 (0.15,0.35,0.15) 로 "맞추지 않은" 이유: 이 레거시 경로는 액션 스케일뿐 아니라
+    #   obs 규약(`_get_legacy_warmstart_policy_obs`)까지 달라, 스케일만 바꾸면 정합된 것처럼
+    #   보이면서 실제로는 여전히 호환되지 않는다. 이 경로를 되살릴 때 통째로 재정렬할 것.
+    warmstart_collect_palm_delta_xyz: float = 0.15   # v7-2 학습 값 (현 파이프라인 미사용)
+    warmstart_collect_palm_delta_rot_deg: float = 20.0  # v7-2 학습 값 (현 파이프라인 미사용)
     palm_delta_rot_deg: float = 15.0  # current-palm incremental target. 120° absolute target은 Fabrics tracking을 깨뜨림.
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
@@ -603,10 +616,23 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 물체 spawn
     # -----------------------------------------------------------------------
-    object_spawn_x_center: float = 0.27   # demo 데이터와 일치 (0.40→0.27)
-    object_spawn_y_center: float = -0.10  # demo 데이터와 일치 (-0.15→-0.10)
+    # ★2026-08-18 grasp_v1 의 스폰 박스 재설정(2f33e2c)에 맞춰 정렬한다.
+    #   이 값들은 **warm 뱅크가 비었을 때만** 도는 fresh 경로에서 쓰인다
+    #   (`_reset_idx` 는 `_warmstart_cache_count > 0` 이면 warm 으로 리셋하고 곧장 return).
+    #   그래도 맞춰 두는 이유: 뱅크 없이 돌린 진단이 grasp 와 다른 초기 분포를 만들면
+    #   "같은 조건"이라 믿고 비교하다 조용히 어긋난다.
+    #
+    #   ⚠ fresh 경로는 여전히 컵 **참값**으로 pregrasp 를 계산해 팔을 텔레포트한다
+    #     (`_build_pregrasp_cache` / `_reset_idx` 4단계). grasp_v1 은 실기 재현 불가를
+    #     이유로 이 패턴을 고정 홈 리셋으로 교체했다(2f33e2c). pour_v1 의 정상 경로는
+    #     warm 뱅크라 당장 문제되지 않지만, fresh 를 실제로 쓸 일이 생기면 같이 고칠 것.
+    object_spawn_x_center: float = 0.30   # grasp_v1 과 동일 (구 0.27)
+    object_spawn_y_center: float = -0.20  # grasp_v1 우팔과 동일 (구 -0.10)
     object_spawn_z:        float = 0.297
-    object_spawn_xy_range: float = 0.06   # ±6cm 랜덤화 (Fabrics arm 학습으로 보정 가능)
+    # 축별 분리 — grasp_v1 ADR 종점(x_range 0.05 / y_range 0.10)과 맞춘다.
+    # 구 스칼라 object_spawn_xy_range(0.06) 로는 x·y 요구 폭이 달라 표현할 수 없었다.
+    object_spawn_x_range: float = 0.05    # x 0.25~0.35
+    object_spawn_y_range: float = 0.10    # y -0.30~-0.10
 
     # -----------------------------------------------------------------------
     # Warmstart reset cache

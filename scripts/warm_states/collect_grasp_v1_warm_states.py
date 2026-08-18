@@ -141,6 +141,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--num_envs", type=int, default=256, help="병렬 환경 수")
     p.add_argument("--target_count", type=int, default=2048, help="수집할 성공 상태 개수")
     p.add_argument("--checkpoint", type=str, default=None, help="grasp_v1 LSTM 체크포인트 (생략 시 프리셋 기본값)")
+    p.add_argument(
+        "--latest",
+        action="store_true",
+        help=(
+            "프리셋 기본값 대신 해당 로봇의 grasp-v1 로그에서 **가장 최근 수정된** "
+            "ep 체크포인트를 고른다. 프리셋 경로는 학습 런이 바뀔 때마다 낡으므로"
+            "(2026-08-18 lstm_test1→lstm_test2) 재수집 자동화에는 이쪽을 쓴다. "
+            "무엇을 골랐는지 항상 출력하고, 뱅크 attrs 에도 기록된다."
+        ),
+    )
     p.add_argument("--out", type=str, default=None, help="출력 HDF5 경로 (생략 시 hdgp/data/grasp_warm_<robot>.hdf5)")
     p.add_argument("--poll_sec", type=float, default=5.0, help="출력 파일 폴링 간격(초)")
     p.add_argument("--timeout_sec", type=float, default=3600.0, help="최대 수집 대기(초)")
@@ -167,9 +177,38 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _latest_checkpoint(preset: RobotPreset) -> Path:
+    """프리셋 체크포인트가 속한 grasp-v1 트리에서 최신 ep 체크포인트를 고른다.
+
+    프리셋의 `default_checkpoint` 는 특정 런 폴더(lstm_test1 등)를 하드코딩하므로
+    재학습으로 런이 늘어나면 조용히 낡는다(실측: 2026-08-18 재학습은 lstm_test2 에
+    저장됐는데 프리셋은 lstm_test1 의 삭제된 파일을 가리키고 있었다).
+    여기서는 `<...>/grasp-v1/*/nn/*ep_*.pth` 를 모아 mtime 최신을 고른다.
+    """
+    # .../grasp-v1/<run>/nn/<file>.pth → parents[2] = grasp-v1
+    grasp_root = preset.default_checkpoint.parents[2]
+    cands = sorted(
+        grasp_root.glob("*/nn/*ep_*.pth"),
+        key=lambda q: q.stat().st_mtime,
+        reverse=True,
+    )
+    if not cands:
+        raise FileNotFoundError(
+            f"--latest: {grasp_root} 아래에서 ep 체크포인트를 찾지 못했다.\n"
+            "  학습 로그가 이 머신에 없으면 --checkpoint 로 경로를 직접 줄 것."
+        )
+    return cands[0]
+
+
 def _resolve(args: argparse.Namespace) -> tuple[RobotPreset, Path, Path]:
     preset = _PRESETS[args.robot]
-    checkpoint = Path(args.checkpoint) if args.checkpoint else preset.default_checkpoint
+    if args.checkpoint:
+        checkpoint = Path(args.checkpoint)
+    elif getattr(args, "latest", False):
+        checkpoint = _latest_checkpoint(preset)
+        print(f"[collect_grasp_v1_warm_states] --latest → {checkpoint}", flush=True)
+    else:
+        checkpoint = preset.default_checkpoint
     out = Path(args.out) if args.out else preset.default_out
     return preset, checkpoint, out
 
@@ -215,6 +254,46 @@ def _build_command(
     if extra:
         cmd.extend(extra)  # hydra env.* override (예: env.collect_sdf_cup_assets=true)
     return cmd
+
+
+def _stamp_provenance(out_path: Path, checkpoint: Path, task: str, args) -> None:
+    """수집이 끝난 HDF5 에 **어떤 체크포인트로 만들었는지**를 기록한다.
+
+    왜 필요한가 (2026-08-18): 뱅크에는 상태만 있고 출처가 없었다. 그래서
+      · 파일 크기가 구 뱅크와 같아(고정 shape) 재수집이 됐는지 눈으로 구분할 수 없었고
+      · 임시 체크포인트(ep_8000)로 만든 뱅크로 잰 게이트 수치를 최종 정책의 것으로
+        오해할 여지가 있었다.
+    상태 데이터는 건드리지 않고 파일 attrs 만 덧붙인다(수집기 본체 수정 없이 안전).
+    실패해도 수집 자체는 성공이므로 경고만 남긴다.
+    """
+    try:
+        import hashlib
+
+        import h5py
+    except ImportError as exc:  # h5py 없는 환경에서도 수집은 성공으로 둔다
+        print(f"[collect_grasp_v1_warm_states][WARN] provenance 기록 생략: {exc}", flush=True)
+        return
+
+    try:
+        h = hashlib.sha256()
+        with open(checkpoint, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        with h5py.File(out_path, "a") as f:
+            f.attrs["prov/checkpoint"] = str(checkpoint.resolve())
+            f.attrs["prov/checkpoint_sha256"] = h.hexdigest()
+            f.attrs["prov/task"] = task
+            f.attrs["prov/robot"] = args.robot
+            f.attrs["prov/with_beads"] = bool(args.with_beads)
+            f.attrs["prov/keep_adr"] = bool(args.keep_adr)
+            f.attrs["prov/target_count"] = int(args.target_count)
+        print(
+            f"[collect_grasp_v1_warm_states] provenance 기록: "
+            f"ckpt={checkpoint.name} sha256={h.hexdigest()[:12]}…",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — 기록 실패가 수집을 무효로 만들지는 않는다
+        print(f"[collect_grasp_v1_warm_states][WARN] provenance 기록 실패: {exc}", flush=True)
 
 
 def main() -> int:
@@ -287,6 +366,7 @@ def main() -> int:
         _terminate_process_group(proc)
 
     if saved and out_path.is_file():
+        _stamp_provenance(out_path, checkpoint, preset.task, args)
         print(
             f"[collect_grasp_v1_warm_states] DONE. Warm-state cache: {out_path}",
             flush=True,
