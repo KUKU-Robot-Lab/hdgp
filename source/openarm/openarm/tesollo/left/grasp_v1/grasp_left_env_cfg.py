@@ -283,6 +283,16 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 파생 시 기준 비율(0.06/cup_big 반높이)로만 쓰이고 reward/리셋에 직접 대입되지 않는다.
     cup_grasp_z_offset:  float = 0.06
     lift_success_height: float = 0.04
+    # ★2026-08-19 수직 palm 리프트 높이. 래치 palm 에서 z 를 이만큼 올린다(120스텝 램프).
+    lift_height_delta: float = 0.10
+    # lift 보상 정규화 기준을 성공 임계와 분리한다.
+    #   구: lift_height_quality = (height_delta / lift_success_height(0.04)).clamp(max=1.0)
+    #       → 4cm 에서 포화. Δ=0.10 인데 컵이 5cm 만 따라와도(=손 안에서 5cm 미끄러짐)
+    #         보상이 만점이라 미끄러짐을 구분하지 못한다.
+    #   신: 정규화만 0.10 으로 열어 0~10cm 에 gradient 를 편다. 최대 보상 크기는 그대로.
+    #   ※ lift_height_bonus_clamp 를 올리는 우회는 무효 — 그 분기의 lift_height_bonus_weight
+    #     가 grasp_v1 에서 0(기본)이라 꺼져 있다.
+    lift_height_ref: float = 0.10
 
     # -----------------------------------------------------------------------
     # Delta palm action (pregrasp 기준 상대 오프셋)
@@ -300,7 +310,11 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # RH56F1 shared grasp-v2 reward contract.
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0
-    approach_xy_penalty_weight: float = 5.0
+    # ★2026-08-19 5.0 → 25.0. 컵 밀기 페널티는 approach 안에 있는데 approach 전체가
+    #   총보상의 1.6% 뿐이라, 컵을 10cm 밀어도 페널티 0.375 vs 성공보너스 4.572(비 1:12)로
+    #   미는 게 합리적인 구조였다. 25 는 lift+success(9.16)의 ~10% 수준.
+    #   ⚠ 60 이상 금지 — "컵에 안 다가감" 이 국소최적이 된다(reward-audit Check 2).
+    approach_xy_penalty_weight: float = 25.0
     approach_tilt_penalty_weight: float = 0.08
     grasp_weight: float = 12.0
     lift_reward_weight: float = 30.0
@@ -310,6 +324,12 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     post_lift_contact_loss_weight: float = -8.0
     action_smooth_weight: float = -0.02
     grasp_xy_threshold: float = 0.025
+    # ★2026-08-19 컵 밀림 soft 감쇠 한계. lift/success_bonus 에 (1-clamp(disp/limit)) 를 곱한다.
+    #   0 = 비활성(기존 동작 불변). 0.08 이면 4cm 밀 때 보상 50%, 8cm 면 0.
+    #   하드 게이트를 쓰지 않는 이유: 보상 86% 를 한 번에 끄면 '컵을 안 밀면서 잡는 법' 을
+    #   아직 모르는 초기 구간에서 gradient 가 approach(1.6%)만 남아 탐색이 붕괴한다
+    #   (reward-audit Check 1 실패, 과거 pour_gate 지연이 같은 이유로 실패).
+    cup_xy_disp_limit: float = 0.08
     grasp_upright_threshold_deg: float = 8.0
     success_upright_max_deg: float = 20.0
     stabilize_upright_max_deg: float = 5.0
@@ -546,6 +566,8 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     # 강제(+1.17rad 급젖힘)해 물체를 떨궈 lifted 0.15 고착이었음(right 는 0.8). 방향성 리터럴이라
     # 미러 함수를 안 타 좌우 동일하게 남아있던 버그(rl-mirror-port "하드코딩 리터럴" 전형).
     # delta·범위를 부호 미러: +0.31→-0.31, [0.20,1.50]→[-1.50,-0.20].
+    # ⚠2026-08-19 이후 미사용 — 수직 palm 리프트(lift_height_delta)로 대체.
+    #   구 j7 리프트는 palm 자세를 17.76° 회전시켜 쥔 컵을 같이 기울였다.
     lift_wait_joint7_delta: float = -0.31
     warm_cup_upright_min: float = 0.90   # legacy override 호환용; lift-wait export 에서는 미사용
     warm_j7_min: float = -1.50

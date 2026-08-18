@@ -109,13 +109,12 @@ from .grasp_right_preset import (
 )
 from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
 from .grasp_right_utils import (
-    compute_joint7_lift_wait_target,
     compute_lift_readiness,
     scale,
     to_torch,
 )
 from .demo_grasp_reset import DemoGraspResetBank, compute_demo_cup_spawn_local
-from .warm_state_cache import GraspWarmStateCache, compute_arm_joint_match
+from .warm_state_cache import GraspWarmStateCache
 
 
 # 팔 7관절 좌우 미러 부호 (Y-미러: 회전축 X/Z 는 반전, Y 는 유지).
@@ -320,8 +319,9 @@ class GraspRightEnv(DirectRLEnv):
         # Pregrasp / Lift 버퍼 (reset에서 계산)
         # ----------------------------------------------------------------
         self.pregrasp_arm_pos_buf      = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.prelift_arm_pos_buf       = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
-        self.lift_arm_start_buf        = torch.zeros(self.num_envs, NUM_ARM_DOF, device=self.device)
+        # ★2026-08-19 수직 palm 리프트: 래치 시점의 palm 6D 목표만 잡아두고 z 를 램프한다.
+        #   구 방식(관절공간 j7 보간)은 palm 자세를 17.76° 회전시켜 쥔 컵을 기울였다.
+        self.lift_palm_pose_buf        = torch.zeros(self.num_envs, 6, device=self.device)
         self.is_lift_phase             = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # 접촉 latch 흐름: 잡으면 바로 리프트 (step-480 scripted 대체)
         self.lift_ready_latched_buf    = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -359,9 +359,6 @@ class GraspRightEnv(DirectRLEnv):
         self.binary_contact_buf    = torch.zeros(self.num_envs, NUM_FINGERTIPS, dtype=torch.bool, device=self.device)
         self.num_contacts_buf      = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.warm_contact_stable_steps_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self.lift_wait_match_hold_steps_buf = torch.zeros(
-            self.num_envs, dtype=torch.long, device=self.device
-        )
 
         self.distal_contact_force_raw  = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, device=self.device)
         self.distal_binary_contact_buf = torch.zeros(self.num_envs, NUM_DISTAL_SENSORS, dtype=torch.bool, device=self.device)
@@ -939,26 +936,12 @@ class GraspRightEnv(DirectRLEnv):
             just_entering_lift, self.wrap_frac_buf, self.wrap_at_latch_buf
         )
 
-        # Arm: 진입 시점 실제 위치 캡처 → lift 보간 시작점으로 사용
-        # (pregrasp_arm_pos_buf 대신 실제값 사용: grasp phase에서 Fabrics가 arm을
-        #  실제로 이동했으므로 전환 시 불연속 없이 자연스럽게 lift)
-        actual_arm_pos = self.robot.data.joint_pos[:, self.arm_dof_indices]
-        self.lift_arm_start_buf = torch.where(
+        # ★2026-08-19 래치 시점의 palm 6D 목표를 고정. 이후 리프트 구간에는 여기서 z 만
+        #   올린다 → 컵이 제자리에서 수직으로 뜬다(xy·자세 불변).
+        self.lift_palm_pose_buf = torch.where(
             just_entering_lift.unsqueeze(1),
-            actual_arm_pos,
-            self.lift_arm_start_buf,
-        )
-        # Target = actual grasp arm pose with only joint7 moved into lift-wait.
-        actual_prelift = compute_joint7_lift_wait_target(
-            actual_arm_pos,
-            joint7_delta=getattr(self.cfg, "lift_wait_joint7_delta", 0.31),
-            joint7_min=self.cfg.warm_j7_min,
-            joint7_max=self.cfg.warm_j7_max,
-        )
-        self.prelift_arm_pos_buf = torch.where(
-            just_entering_lift.unsqueeze(1),
-            actual_prelift,
-            self.prelift_arm_pos_buf,
+            self.palm_pose_targets,
+            self.lift_palm_pose_buf,
         )
 
         # ---- Grasp phase: Fabrics arm 제어 ----
@@ -969,6 +952,23 @@ class GraspRightEnv(DirectRLEnv):
         palm_mins = torch.minimum(self.palm_mins.unsqueeze(0), self.pregrasp_palm_pose_buf)
         palm_maxs = torch.maximum(self.palm_maxs.unsqueeze(0), self.pregrasp_palm_pose_buf)
         palm_pose = torch.max(torch.min(palm_pose, palm_maxs), palm_mins)
+
+        # ★2026-08-19 리프트 구간: 정책 palm action 을 무시하고 래치 palm 에서 z 만 램프한다.
+        #   구 방식은 여기서 만든 palm 을 버리고 말미에서 관절 보간을 썼다. 이제 Fabrics 가
+        #   그대로 추종하므로 arm_target 분기가 불필요하다.
+        _lift_prog = (
+            (self.episode_length_buf - self.lift_start_step_buf).clamp(min=0).float()
+            / max(1, LIFT_PHASE_STEPS - 1)
+        ).clamp(max=1.0)
+        _lift_palm = self.lift_palm_pose_buf.clone()
+        _lift_palm[:, 2] = _lift_palm[:, 2] + (
+            float(getattr(self.cfg, "lift_height_delta", 0.10)) * _lift_prog
+        )
+        _lift_palm = torch.max(
+            torch.min(_lift_palm, self.palm_maxs.unsqueeze(0)),
+            self.palm_mins.unsqueeze(0),
+        )
+        palm_pose = torch.where(is_lift.unsqueeze(1), _lift_palm, palm_pose)
         self.palm_pose_targets.copy_(palm_pose)
         self.hand_pca_targets.zero_()
 
@@ -1068,21 +1068,9 @@ class GraspRightEnv(DirectRLEnv):
         # ---- 오른팔 ----
         # Grasp phase:    Fabrics arm target
         # Lift-wait phase: actual grasp arm → joint7-only lift-wait 선형 보간
-        lift_progress = (
-            (self.episode_length_buf - self.lift_start_step_buf).clamp(min=0).float()
-            / max(1, LIFT_PHASE_STEPS - 1)
-        ).clamp(max=1.0).unsqueeze(1)
-
-        arm_target_lift = (
-            self.lift_arm_start_buf * (1.0 - lift_progress)
-            + self.prelift_arm_pos_buf * lift_progress
-        )
-
-        arm_target = torch.where(
-            is_lift.unsqueeze(1),
-            arm_target_lift,
-            self.fabric_q[:, :NUM_ARM_DOF],
-        )
+        # ★2026-08-19 리프트도 Fabrics palm 추종으로 통일. 구 관절공간 보간 분기 제거.
+        #   리프트 구간 palm 목표는 위에서 '래치 palm + z 램프' 로 이미 치환돼 있다.
+        arm_target = self.fabric_q[:, :NUM_ARM_DOF]
 
         self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_dof_indices)
         self.robot.set_joint_velocity_target(
@@ -1498,6 +1486,11 @@ class GraspRightEnv(DirectRLEnv):
         )
         self.extras["cup/height_delta"] = cup_height_delta.mean()
         self.extras["cup/tilt_deg"] = cup_tilt_deg.mean()
+        # ★2026-08-19 컵 밀림량 로깅. approach 페널티의 입력인데 그동안 로깅이 없어
+        #   "정책이 컵을 얼마나 미는가"를 볼 수 없었다(가중치를 추측으로 정하게 되는 원인).
+        #   p95 를 같이 본다 — 평균만 보면 소수의 큰 밀림이 묻힌다.
+        self.extras["cup/xy_displacement"] = cup_xy_displacement.mean()
+        self.extras["cup/xy_disp_p95"] = torch.quantile(cup_xy_displacement, 0.95)
         self.extras["contact/count"] = self.num_contacts_buf.float().mean()
         # 인벨롭 진단: 중간마디(_3)/원위(_4) 접촉 + 진짜 인벨롭(팁 AND 중간마디 동시) 측정
         _tip = self.binary_contact_buf
@@ -1793,13 +1786,11 @@ class GraspRightEnv(DirectRLEnv):
             torch.zeros_like(self.warm_contact_stable_steps_buf),
         )
         stable_grasp = self.warm_contact_stable_steps_buf >= warm_stable_steps
-        actual_arm_pos_all = self.robot.data.joint_pos[:, self.arm_dof_indices]
-        lift_wait_matched, self.lift_wait_match_hold_steps_buf = compute_arm_joint_match(
-            actual_arm_pos_all,
-            self.prelift_arm_pos_buf,
-            tol=self.cfg.warm_lift_wait_arm_tol,
-            previous_hold_steps=self.lift_wait_match_hold_steps_buf,
-            required_hold_steps=self.cfg.warm_lift_wait_hold_steps,
+        # ★2026-08-19 구 조건은 '팔이 prelift 관절목표에 도달했는가' 였으나 그 목표가
+        #   사라졌다. 리프트 램프는 시간축으로 결정론적이므로 '램프 완료' 로 대체한다.
+        lift_wait_matched = self.lift_ready_latched_buf & (
+            (self.episode_length_buf - self.lift_start_step_buf)
+            >= int(LIFT_PHASE_STEPS - 1)
         )
         warm_ok = (
             lift_wait_matched
@@ -2073,13 +2064,8 @@ class GraspRightEnv(DirectRLEnv):
         # pregrasp arm pos로 설정 → 에피소드 시작 시 null-space 항 ≈ 0 → 안정
         self.open_tesollo_fabric.default_config[env_ids, :NUM_ARM_DOF] = q_pregrasp[:, :NUM_ARM_DOF]
 
-        prelift_arm = compute_joint7_lift_wait_target(
-            q_pregrasp[:, :NUM_ARM_DOF],
-            joint7_delta=getattr(self.cfg, "lift_wait_joint7_delta", 0.31),
-            joint7_min=self.cfg.warm_j7_min,
-            joint7_max=self.cfg.warm_j7_max,
-        )
-        self.prelift_arm_pos_buf[env_ids] = prelift_arm
+        # 리프트 palm 은 래치 시점에 캡처되므로 리셋에서는 pregrasp palm 으로 초기화만 한다.
+        self.lift_palm_pose_buf[env_ids] = pregrasp_palm_pose
 
         # ---- 7. 컵 spawn ----
         obj_pos_world = obj_pos_local + self.scene.env_origins[env_ids]
@@ -2101,7 +2087,6 @@ class GraspRightEnv(DirectRLEnv):
         self.binary_contact_buf[env_ids] = False
         self.num_contacts_buf[env_ids]   = 0
         self.warm_contact_stable_steps_buf[env_ids] = 0
-        self.lift_wait_match_hold_steps_buf[env_ids] = 0
         self.distal_contact_force_raw[env_ids].zero_()
         self.distal_binary_contact_buf[env_ids] = False
         self.middle_contact_force_raw[env_ids].zero_()

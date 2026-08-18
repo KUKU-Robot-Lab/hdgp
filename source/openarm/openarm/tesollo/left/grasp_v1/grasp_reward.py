@@ -123,10 +123,12 @@ def compute_grasp_reward_terms(
             + _ecred * wrap_frac.clamp(0.0, 1.0)
         )
     grasp = _cfg_float(cfg, "grasp_weight", 0.0) * pre_lift_gate * grasp_quality
-    lift_height_quality = (
-        cup_height_delta
-        / max(_cfg_float(cfg, "lift_success_height", 0.04), 1e-6)
-    ).clamp(min=0.0, max=1.0)
+    # ★2026-08-19 보상 정규화 기준을 성공 임계와 분리. lift_height_ref 미설정(0)이면
+    #   기존대로 lift_success_height 를 쓴다(동작 불변).
+    _h_ref = _cfg_float(cfg, "lift_height_ref", 0.0)
+    if _h_ref <= 0.0:
+        _h_ref = _cfg_float(cfg, "lift_success_height", 0.04)
+    lift_height_quality = (cup_height_delta / max(_h_ref, 1e-6)).clamp(min=0.0, max=1.0)
     # Phase K2: lift height bonus는 4cm 위까지 gradient를 살려야 평형이 4cm 이상에 형성된다.
     # lift_height_quality(4cm clamp)를 그대로 쓰면 4cm 위 gradient=0이라 평형이 ~3.1cm에
     # 고착(test2 확인). bonus 전용 quality를 lift_height_bonus_clamp(기본 1.0=4cm,
@@ -209,6 +211,15 @@ def compute_grasp_reward_terms(
         else success_now.bool()
     )
     success_bonus = _cfg_float(cfg, "success_bonus_weight", 0.0) * success_now_bool.float()
+
+    # ★2026-08-19 컵 밀림 soft 감쇠. 보상의 86% 를 차지하는 lift/success_bonus 를
+    #   컵이 밀린 만큼 연속적으로 깎는다 → "밀어서라도 성공" 이 더 이상 이득이 아니다.
+    #   하드 게이트가 아니라 감쇠인 이유는 cfg 주석(cup_xy_disp_limit) 참조.
+    _disp_limit = _cfg_float(cfg, "cup_xy_disp_limit", 0.0)
+    if _disp_limit > 0.0:
+        disp_factor = 1.0 - (cup_xy_displacement / _disp_limit).clamp(0.0, 1.0)
+        lift = lift * disp_factor
+        success_bonus = success_bonus * disp_factor
     action_smooth = _cfg_float(cfg, "action_smooth_weight", 0.0) * action_delta_norm
 
     terms = {
