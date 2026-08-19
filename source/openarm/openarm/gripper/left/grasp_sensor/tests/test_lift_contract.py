@@ -160,10 +160,10 @@ def test_reference_object_body_name_is_overridden():
       `sim.is_playing()` 일 때만 도는데, 프로브 경로에서는 그 타이밍을 안 타서 resolve 가
       스킵되고 정상 동작한다. 서버 학습 기동에서만 터졌다. 그래서 정적으로 못을 박는다.
     """
-    from pxr import Usd  # noqa: PLC0415
-
-    stage = pytest.importorskip("pxr.Usd").Stage.Open(str(_CUP_USD))
-    assert isinstance(stage, Usd.Stage)
+    # ★`importorskip` 보다 먼저 `from pxr import ...` 를 쓰면 pxr 없는 머신(서버)에서
+    #   skip 이 아니라 **에러**가 난다. 로컬만 보고 넘어가지 말 것.
+    pxr_usd = pytest.importorskip("pxr.Usd", reason="pxr 없음")
+    stage = pxr_usd.Stage.Open(str(_CUP_USD))
     prims = {p.GetName() for p in stage.Traverse()}
     assert P.CUP_BODY_NAME in prims, f"컵 USD 에 {P.CUP_BODY_NAME} 이 없다: {sorted(prims)}"
     assert "Object" not in prims
