@@ -75,15 +75,24 @@ def main() -> int:
     #     (c) TCP 계산식이 틀림            → 위 둘 다 정상인데 err 만 큼
     #   셋을 안 나누면 "안 간다"만 보이고 어디를 고칠지 알 수 없다.
     print("\n=== 1. zero-action 접근 (Fabrics 가 홈 → pregrasp) ===")
-    print(f"  {'step':>5} {'TCP-pregrasp[mm]':>17} {'관절추종오차[rad]':>18}")
+    print(f"  {'step':>5} {'TCP-pregrasp[mm]':>17} {'관절추종[rad]':>14} "
+          f"{'컵밀림[mm]':>11} {'컵기울기[°]':>11} {'래치':>5}")
     for k in range(args.approach_steps):
         obs, _, _, _, _ = env.step(zero)
-        if (k + 1) % 30 == 0 or k == 0:
+        if (k + 1) % 20 == 0 or k == 0:
             d = (env.tcp_pos - env.pregrasp_palm_pose_buf[:, :3]).norm(dim=-1)
             track = (
                 env.fabric_q[:, :7] - robot.data.joint_pos[:, env.arm_dof_indices]
             ).abs().max(dim=-1).values
-            print(f"  {k+1:5d} {d.mean()*1000:17.1f} {track.mean():18.4f}")
+            disp = (env.object_pos[:, :2] - env.cup_spawn_pos[:, :2]).norm(dim=-1)
+            # 컵 기울기: 컵이 밀린 게 아니라 **넘어지는** 것이면 여기서 먼저 커진다
+            up = torch.zeros_like(env.object_pos); up[:, 2] = 1.0
+            from isaaclab.utils.math import quat_apply as _qa
+            cup_up = _qa(env.object_rot, up)
+            tilt = torch.rad2deg(torch.acos(cup_up[:, 2].clamp(-1.0, 1.0)))
+            print(f"  {k+1:5d} {d.mean()*1000:17.1f} {track.mean():14.4f} "
+                  f"{disp.mean()*1000:11.1f} {tilt.mean():11.1f} "
+                  f"{env.lift_latched_buf.float().mean():5.2f}")
     tcp_err = (env.tcp_pos - env.pregrasp_palm_pose_buf[:, :3]).norm(dim=-1)
     print(f"  TCP–pregrasp 거리  평균 {tcp_err.mean()*1000:7.1f} mm  "
           f"최대 {tcp_err.max()*1000:7.1f} mm   (게이트 < {REACH_GATE*1000:.0f} mm)")
