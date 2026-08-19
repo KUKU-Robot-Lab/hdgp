@@ -525,7 +525,10 @@ class GraspLeftGripperEnv(DirectRLEnv):
         log["metric/latched_rate"] = self.lift_latched_buf.float().mean()
         log["metric/lifted_rate"] = lifted.float().mean()
         log["metric/success_rate"] = success_now.float().mean()
-        log.update(action_policy_scalars(self.actions, self.prev_actions))
+        # keyword-only 시그니처다. palm_dims=6 이면 나머지 1D 가 그리퍼 그룹으로 잡힌다.
+        log.update(action_policy_scalars(
+            action=self.actions, prev_action=self.prev_actions, palm_dims=NUM_PALM_ACTION
+        ))
         return total
 
     # ------------------------------------------------------------------

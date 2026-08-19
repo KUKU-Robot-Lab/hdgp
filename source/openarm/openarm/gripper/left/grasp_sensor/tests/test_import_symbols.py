@@ -69,6 +69,39 @@ def test_env_calls_the_two_finger_reward():
     assert hasattr(grasp_reward, "compute_gripper_grasp_reward_terms")
 
 
+def test_shared_function_calls_match_their_signatures():
+    """env 가 공용 함수를 **실제 시그니처대로** 부르는지 정적으로 검증한다.
+
+    `action_policy_scalars` 는 keyword-only 인데 위치인자로 불러서 Isaac 을 30초 띄운 뒤에야
+    TypeError 로 죽은 적이 있다. 이런 호출 규약 불일치는 import 만으로는 안 잡히고
+    런타임까지 가야 드러나므로, AST 로 호출부를 찾아 signature.bind 로 미리 맞춰본다.
+    """
+    import inspect
+
+    from openarm.common import grasp_logging, grasp_v2_contract
+
+    targets = {
+        "action_policy_scalars": grasp_logging.action_policy_scalars,
+        "compute_action_delta_norm": grasp_v2_contract.compute_action_delta_norm,
+        "compute_grasp_v2_stability": grasp_v2_contract.compute_grasp_v2_stability,
+        "compute_gripper_grasp_reward_terms": grasp_reward.compute_gripper_grasp_reward_terms,
+    }
+    tree = ast.parse((_PKG / "grasp_left_env.py").read_text(encoding="utf-8"))
+    checked = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        fn = targets.get(node.func.id)
+        if fn is None:
+            continue
+        sig = inspect.signature(fn)
+        args = [inspect.Parameter.empty] * len(node.args)
+        kwargs = {kw.arg: inspect.Parameter.empty for kw in node.keywords if kw.arg}
+        sig.bind(*args, **kwargs)   # 불일치면 TypeError
+        checked += 1
+    assert checked >= len(targets), f"검증한 호출 {checked}개 — 호출부를 못 찾았다"
+
+
 def test_gripper_target_goes_to_one_joint_only():
     """gripper_2 는 USD PhysX mimic — 둘 다 지령하면 mimic 제약과 드라이브가 싸운다."""
     env_src = (_PKG / "grasp_left_env.py").read_text(encoding="utf-8")
