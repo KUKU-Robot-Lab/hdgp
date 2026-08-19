@@ -57,6 +57,7 @@ from openarm import OPENARM_ROOT_DIR
 
 from . import grasp_left_events as events
 from . import grasp_left_preset as P
+from . import grasp_left_rewards as rewards
 
 _HDGP_ROOT = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
@@ -270,6 +271,21 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         self.rewards.object_goal_tracking_fine_grained.params["minimal_height"] = (
             P.MINIMAL_LIFT_HEIGHT
         )
+
+        # ── 리프트 판정에 "쥐고 있는가"를 AND ────────────────────────
+        # ★★weight 는 그대로 두고 **판정 함수만** 바꾼다. z 만 보는 레퍼런스 판정으로는
+        #   컵을 위로 쳐 날리는 것이 최적 전략이 되기 때문이다(test3 실증: 리프트 판정
+        #   85.9% 동안 TCP–컵 평균 3044 mm). 자세한 근거는 grasp_left_rewards 참조.
+        #   ⚠ goal-tracking 두 개도 내부에서 z 게이트를 직접 계산하므로 함께 교체해야 한다 —
+        #     하나라도 남기면 그쪽으로 같은 hack 이 되살아난다.
+        self.rewards.lifting_object.func = rewards.object_is_held_and_lifted
+        self.rewards.lifting_object.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+        for _term in (
+            self.rewards.object_goal_tracking,
+            self.rewards.object_goal_tracking_fine_grained,
+        ):
+            _term.func = rewards.object_goal_distance_when_held
+            _term.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
         self.terminations.object_dropping.params["minimum_height"] = P.OBJECT_DROP_HEIGHT
 
 

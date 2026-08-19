@@ -321,8 +321,31 @@ def test_env_cfg_inherits_isaaclab_lift():
     assert "LiftEnvCfg" in bases
     src = _cfg_source()
     assert "isaaclab_tasks.manager_based.manipulation.lift" in src
-    # reward weight 를 새로 정의하지 않는다
-    assert "RewTerm(" not in src, "보상 term 을 재정의하지 말 것 — 물려받은 weight 를 쓴다"
+    # ★weight 는 물려받은 값을 쓴다. 판정 **함수**는 바꿔도 되지만(아래 참조) 새 term 을
+    #   만들거나 weight 를 재정의하지는 않는다.
+    assert "RewTerm(" not in src, "보상 term 을 새로 만들지 말 것 — 물려받은 weight 를 쓴다"
+    assert "weight=" not in src, "보상 weight 를 재정의하지 말 것"
+
+
+def test_lift_gate_requires_holding_the_cup():
+    """★★리프트 판정이 z 만 보면 **컵을 쳐 날리는 것**이 최적 전략이 된다.
+
+    test3(1500 epoch) 실측: 리프트 판정 비율 85.9% 동안 **TCP–컵 거리 평균 3044 mm**,
+    `reaching_object` 0.019 → 0.018 평탄, `object_dropping` 종료 99.8%.
+    컵이 134 g·높이 175 mm 라 위로 치면 에피소드(1.8 초) 내내 공중에 떠 있고, 그동안
+    lifting(15) + goal-tracking(16) 을 모두 받는다. 큐브 레퍼런스에는 없는 문제다.
+
+    → 판정을 `z > 임계 AND TCP 가 컵 곁` 으로 바꾼다. weight 는 건드리지 않는다.
+    goal-tracking 두 개도 내부에서 z 게이트를 직접 계산하므로 **함께** 교체해야 한다.
+    """
+    src = _cfg_source()
+    assert "object_is_held_and_lifted" in src
+    assert "object_goal_distance_when_held" in src
+    # 세 term 전부에 근접 임계가 들어갔는가 (하나라도 빠지면 그쪽으로 hack 이 되살아난다)
+    assert src.count("P.GRASP_MAX_EE_DISTANCE") >= 2
+    assert 0.0 < P.GRASP_MAX_EE_DISTANCE < 0.13, (
+        "임계가 홈 자세의 TCP–컵 거리(약 130 mm)만큼 크면 게이트가 무의미하다"
+    )
 
 
 def test_each_asset_cfg_assignment_builds_a_fresh_instance():
