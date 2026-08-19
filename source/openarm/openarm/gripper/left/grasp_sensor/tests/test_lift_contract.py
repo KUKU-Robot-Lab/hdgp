@@ -199,6 +199,31 @@ def test_grasp_pose_quality_is_required():
     )
 
 
+@pytest.mark.skipif(not _ROBOT_URDF.is_file(), reason="로봇 URDF 없음")
+def test_home_pose_keeps_action_range_slack_from_joint_limits():
+    """★★액션 범위가 ±0.5 rad 인데 홈이 한계에 붙어 있으면 **탐색이 잘린다**.
+
+    옛 홈(Fabrics 시절 IK)은 여유가 0.116 rad 뿐이었다 — l_aj_6 −0.6695(한계 ±0.7854).
+    렌더에서 "j7 이 꺾여 보인다"고 관찰된 것도, 정책이 한쪽으로 못 움직인 것도 같은 원인.
+    """
+    root = ET.parse(_ROBOT_URDF).getroot()
+    limits = {}
+    for j in root.iter("joint"):
+        name = j.get("name") or ""
+        lim = j.find("limit")
+        if name.startswith("l_aj_") and lim is not None:
+            limits[name] = (float(lim.get("lower", "0")), float(lim.get("upper", "0")))
+
+    action_half_range = 0.5          # JointPositionActionCfg(scale=0.5) 의 액션 ±1
+    tight = []
+    for name, value in P.LEFT_ARM_HOME_JOINT_POS.items():
+        lo, hi = limits[name]
+        slack = min(value - lo, hi - value)
+        if slack < action_half_range:
+            tight.append(f"{name}={value:+.4f} 여유 {slack:.3f}")
+    assert not tight, f"한계 여유가 {action_half_range} rad 미만인 관절: {tight}"
+
+
 def test_left_arm_velocity_limit_matches_the_reference():
     """★★레퍼런스 `OPENARM_UNI_CFG` 는 팔에 velocity 2.175/2.175/2.61 을 명시한다.
 
@@ -286,19 +311,21 @@ def test_spawn_box_clears_the_home_pose_arm():
     probe_lift_left_gripper_smoke.py 의 1e 스윕이 잰 경계가 `SPAWN_X_SAFE_MIN`이고,
     스폰 박스 **전체**가 그 바깥이어야 한다. 중심만 확인하면 랜덤화 하한에서 터진다.
     """
-    assert P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE >= P.SPAWN_X_SAFE_MIN
-    # 목표도 같은 이유로 팔이 점유한 공간 밖이어야 한다.
-    assert P.GOAL_POS_X[0] >= P.SPAWN_X_SAFE_MIN
+    assert P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE >= P.SPAWN_X_SAFE_MIN - 1e-9
+    # 목표 커맨드는 **들어올린 뒤** 옮길 지점이라 스폰 경계에 묶이지 않는다(컵이 공중이면
+    # 팔이 점유한 공간과 충돌하지 않는다). 다만 팔 도달 범위 안이어야 한다.
+    assert P.GOAL_POS_X[0] > P.TABLE_POS[0] - P.TABLE_HALF_X
 
 
 def test_spawn_center_is_no_longer_the_left_grasp_v1_position():
     """반전 기록: 처음엔 `tesollo/left/grasp_v1`(x 0.30, y 0.20)을 따랐다.
 
-    그 자리는 lift 홈 자세에서 **팔이 점유한 공간**이라 쓸 수 없다. x 만 앞으로 옮겼고
-    y 는 그대로 두었다(스윕에서 y 는 관통에 무관했다).
+    그 자리는 lift 홈 자세에서 **팔이 점유한 공간**이라 쓸 수 없다. 홈을 교체한 뒤에는
+    관통 영역이 "x 가 낮고 y 가 높은" 코너로 바뀌어 y 도 함께 내렸다.
+    ★스폰 박스는 홈에 종속이다 — 홈을 바꿀 때마다 스윕을 다시 돌려야 한다.
     """
     assert P.CUP_SPAWN_X_CENTER > 0.30
-    assert math.isclose(P.CUP_SPAWN_Y_CENTER, 0.20, abs_tol=1e-9)
+    assert P.CUP_SPAWN_Y_CENTER <= 0.20
 
 
 def test_goal_z_range_sits_above_the_lift_threshold():
