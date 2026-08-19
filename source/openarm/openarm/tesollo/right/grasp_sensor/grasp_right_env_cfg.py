@@ -238,7 +238,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   팔을 그 자세로 텔레포트했다. 실기에서는 컵 위치가 지각 결과이므로
     #   "참값으로 계산한 자세에서 시작"은 재현할 수 없고, 컵 y=-0.10 일 때는
     #   손이 스폰 박스 **안**(y=-0.22)에서 출발해 side 접근도 성립하지 않았다.
-    #   새 동작: 컵과 무관한 고정 홈 palm 자세에서 출발 → 정책이 접근 전 구간을 학습.
+    #   새 동작: 컵과 무관한 고정 홈 palm 자세에서 출발.
+    #   ★2026-08-19(A0): 물리 리셋만 홈이고 **액션 기준점은 컵-정준 pregrasp**(env
+    #   _reset_idx) — action=0 이면 Fabrics 가 홈에서 정렬된 pregrasp 까지 스스로 접근.
+    #   구("접근 전 구간을 정책이 학습")는 tilted-palm 2지 국소최적로 실패(lstm_test1).
     #
     #   홈 자세 근거 (URDF openarm_tesollo_bi_s_rl FK/IK 실측, base=env 원점):
     #     위치오차 0.00mm · 자세오차 0.0deg · 관절한계 여유 ≥0.36rad
@@ -303,12 +306,11 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # Delta palm action (리셋 기준 자세 대비 상대 오프셋)
     # action=0 → 기준 자세 유지, action=±1 → 기준 ± delta
     # -----------------------------------------------------------------------
-    # ★2026-08-18 스칼라 0.15 → 축별 (x, y, z). 고정 홈 리셋으로 바꾸면서
-    #   y 만 확대했다. 홈 palm y=-0.38 에서 컵 y=-0.10 까지 0.28m 를 액션으로
-    #   덮어야 하는데 ±0.15 로는 구조적으로 도달 불가였다(산수:
-    #   모든 컵에 닿으려면 기준점 y 가 -0.25~-0.15 여야 하고 그 구간은 전부 스폰 박스 안).
-    #   x·z 는 파지 직전 미세조정 분해능을 지키려고 0.15 유지.
-    palm_delta_xyz:     tuple = (0.15, 0.35, 0.15)   # ±m, (x, y, z)
+    # ★2026-08-19(A0) y 0.35 → 0.15 원복 (축 균일). 구 y=0.35 는 "액션 기준점=홈"이라
+    #   홈 y=-0.38 에서 컵까지 0.28m 를 액션으로 덮어야 했던 보정이었다. 이제 기준점이
+    #   컵-정준 pregrasp(env _reset_idx)라 action=0 이 이미 컵 옆이고, delta 는
+    #   파지 직전 미세조정 + 잔차 보정 용도만 남는다 → 축 균일 0.15 로 해상도 회복.
+    palm_delta_xyz:     tuple = (0.15, 0.15, 0.15)   # ±m, (x, y, z)
     palm_delta_rot_deg: float = 20.0   # ±20° per axis
 
     # -----------------------------------------------------------------------
@@ -347,9 +349,14 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     stability_contact_delta_threshold: float = 1.0
     stability_action_delta_threshold: float = 0.2
     stage0_lift_start_min_contacts: int = 4  # (persistence·hold용 tip 접촉 임계, 유지)
-    lift_start_min_grip_fingers: int = 3  # ★lift 진입: 아무 마디(tip|mid|distal) 닿은 손가락 수 임계.
-    # 사용자 의도="어느 위치든 닿으면 lift 진행"+제어(g3)가 distal까지 감아 인벨롭 유도.
-    # 부실 방지=hold_steps 연속유지+success(lifted+stable+tilt). 3=엄지+대향2지. success는 success_min_grip_fingers(4).
+    # ★2026-08-19(A3, audit ACCEPT) 3→4 + env 에서 엄지 접촉 AND 추가.
+    # latch 는 비가역 + approach/grasp shaping 차단 스위치인데, 구 3지(엄지 무관)는
+    # "엄지+소지+1지" 얕은 latch 를 허용해 shaping 을 조기·영구 소멸시켰다
+    # (Stage1 텔레포트 실측: wrap_at_latch 0.03~0.05 8000ep 고착 = primary bottleneck).
+    # 4+thumb = success_min_grip_fingers(4)+thumb AND 와 일원화 — latch 시점=성공 요건
+    # 충족 시점. Stage1 실측 grip_finger_count 4.5·thumb_cup 0.94 라 도달 가능 임계.
+    # 폴백(ep6000 lifted_rate 0 시): 4→3 완화 1단계만, thumb AND 는 유지.
+    lift_start_min_grip_fingers: int = 4  # lift 진입: 아무 마디(tip|mid|distal) 닿은 손가락 수 임계 + 엄지 AND(env).
     success_min_grip_fingers: int = 4  # success 그립 손가락 수(엄지-컵 접촉 AND 강제와 함께 사용). 5(전손가락 동시)는 wrap 진동 이력.
     grasp_ready_hold_steps: int = 8   # 접촉 N개를 연속 hold하면 lift 래치 (잡으면 바로 리프트)
     lift_start_min_envelope_fingers: int = 0  # latch 인벨롭 게이트 제거(0=비활성). envelope은 grasp/lift 보상 credit으로 유도(hard 게이트 대체)
@@ -725,25 +732,37 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             #   kd 6.71→포화 20.5%(감쇠항 자체가 토크를 포화시킴), kd≤0.5→정착속도 2배(채터),
             #   kd 2.0 이 포화 0.8% + 최저 채터로 양쪽 최적. 실기 d=0.0 이므로 이 damping 은
             #   실기 기계마찰의 sim 대역품 — r2s 복구 후 armature/joint friction 실측치로 교체할 것.
+            # ★2026-08-19(A4) effort_limit_sim=1.5 N·m 신설 (구: 미설정 → URDF 7.5 그대로).
+            #   실측(_probe_abd, ep16500 ckpt): 7.5 에서 전 손관절이 3~5 N·m 를 상시 유지하며
+            #   ~2 N 컵을 쥐고, 그 합력 모멘트가 thumb_1(외전, 고정 0 명령)을 하드스톱
+            #   (-0.384rad) 넘어 -0.94rad 까지 밀었다(viol=1.00, k=200 으로도 불변 = effort
+            #   포화가 원인). 실기 DG-5F 연속토크는 ~1.5 N·m 수준이라 7.5 레짐은 sim2real
+            #   무효 + 모터 무리(사용자 지시). 1.5 는 과압착 레짐을 물리적으로 제거한다.
+            #   ⚠ ADR 만렙 질량(mass_scale_hi)이 1.5 로 유지 불가하면 질량 종점을 낮출 것
+            #   (실기가 못 드는 질량은 학습 대상이 아니다) — Phase B probe 로 판정.
             "tesollo_hand_abduction": ImplicitActuatorCfg(
                 joint_names_expr=["r_hj_[a-z]+_1"],
                 stiffness=5.0,
                 damping=2.0,
+                effort_limit_sim=1.5,
             ),
             "tesollo_hand_curl": ImplicitActuatorCfg(
                 joint_names_expr=["r_hj_[a-z]+_2"],
                 stiffness=5.0,
                 damping=2.0,
+                effort_limit_sim=1.5,
             ),
             "tesollo_hand_pip": ImplicitActuatorCfg(
                 joint_names_expr=["r_hj_[a-z]+_3"],
                 stiffness=5.0,
                 damping=2.0,
+                effort_limit_sim=1.5,
             ),
             "tesollo_hand_dip": ImplicitActuatorCfg(
                 joint_names_expr=["r_hj_[a-z]+_4"],
                 stiffness=5.0,
                 damping=2.0,
+                effort_limit_sim=1.5,
             ),
             # ★08.18 grasp_sensor(sensor_rl): 좌측은 2-DOF 프리즈매틱 그리퍼(l_hj_gripper_1/2).
             # 커버리지를 안 주면 무구동으로 자유이동한다. 이 태스크는 좌측을 쓰지 않으므로

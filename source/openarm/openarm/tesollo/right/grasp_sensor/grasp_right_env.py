@@ -105,6 +105,8 @@ from .grasp_right_preset import (
     HAND_APPROACH_POSE,
     HAND_GRASP_POSE,
     HAND_FULL_GRIP_POSE,
+    HAND_FIXED_JOINT_NAMES,
+    HAND_FIXED_JOINT_VALUES,
     OBJECT_GOAL_POS,
 )
 from .finger_action_utils import compute_grasp_finger_targets, compute_lift_finger_targets
@@ -899,12 +901,16 @@ class GraspRightEnv(DirectRLEnv):
         # (distal)까지 감아 자연스럽게 인벨롭 유도 → 다양한 크기 컵을 robust 파지.
         # 부실 파지 방지 = ①hold_steps(연속 접촉 유지) ②success의 lifted+stable+tilt 이중 게이트
         #   (과거 any 완화 붕괴 lifted 0.72→0.002는 유지조건이 약했던 것 — 여기선 hold+success로 견고 파지만 성공).
-        num_grip_fingers = (
+        _any_grip_contact = (
             self.binary_contact_buf
             | self.middle_binary_contact_buf
             | self.distal_binary_contact_buf
-        ).sum(dim=-1)
+        )
+        num_grip_fingers = _any_grip_contact.sum(dim=-1)
         prev_latched = self.lift_ready_latched_buf.clone()
+        # ★2026-08-19(A3): latch 진입에 엄지 접촉 AND — success 게이트(thumb_cup_grip)와
+        #   일원화. 얕은 latch(엄지 없는 count 충족)가 shaping 을 조기·영구 차단하던 것을
+        #   차단(Stage1 실측 wrap_at_latch 0.03~0.05 고착). finger index 0 = 엄지.
         self.grasp_ready_hold_buf, _ready_now, lift_latched = compute_lift_readiness(
             num_contacts=num_grip_fingers,
             is_grasp_phase=~self.lift_ready_latched_buf,
@@ -912,6 +918,7 @@ class GraspRightEnv(DirectRLEnv):
             previous_latched=self.lift_ready_latched_buf,
             min_contacts=int(self.cfg.lift_start_min_grip_fingers),
             hold_steps=int(self.cfg.grasp_ready_hold_steps),
+            required_contact=_any_grip_contact[:, 0],
         )
         self.lift_ready_latched_buf.copy_(lift_latched)
         is_lift = self.lift_ready_latched_buf
@@ -1598,6 +1605,25 @@ class GraspRightEnv(DirectRLEnv):
         self.extras["debug/thumb/j2_backward_gap"] = (
             (_hand_pos[:, 1] + 1.57).clamp(min=0.0).mean()
         )
+        # ★2026-08-19(A5) 손 토크·고정관절 이탈 관측 — A4(effort_limit 1.5) 효과 판정용.
+        #   구 7.5 레짐 실측: 전 손관절 3~5 N·m 상시 + thumb_1 하드스톱 밖 -0.94rad.
+        #   기대: torque_max ≤1.5 상한 준수, fixed_joint_dev_max < 0.1rad 로 하락.
+        _hand_tau = self.robot.data.applied_torque[:, self.hand_dof_indices].abs()
+        self.extras["debug/hand/torque_mean"] = _hand_tau.mean()
+        self.extras["debug/hand/torque_max"] = _hand_tau.max()
+        if not hasattr(self, "_fixed_hand_joint_ids"):
+            _jn = self.robot.data.joint_names
+            self._fixed_hand_joint_ids = torch.tensor(
+                [_jn.index(_n) for _n in HAND_FIXED_JOINT_NAMES],
+                device=self.device, dtype=torch.long,
+            )
+            self._fixed_hand_joint_vals = torch.tensor(
+                HAND_FIXED_JOINT_VALUES, device=self.device,
+            ).unsqueeze(0)
+        self.extras["debug/hand/fixed_joint_dev_max"] = (
+            self.robot.data.joint_pos[:, self._fixed_hand_joint_ids]
+            - self._fixed_hand_joint_vals
+        ).abs().max()
         # joint state(arm/finger per-joint) + action policy(palm 6D + finger 5D raw) 로깅
         for k, v in joint_state_scalars(
             arm_pos=self.robot.data.joint_pos[:, self.arm_dof_indices],
@@ -2034,9 +2060,16 @@ class GraspRightEnv(DirectRLEnv):
             )
 
             if self.q_home_arm is not None:
-                # 고정 홈: 컵 위치를 쓰지 않는다. 액션 기준점도 홈으로 둔다
-                # → action=0 이면 홈 유지, 접근은 전적으로 정책의 몫.
-                pregrasp_palm_pose = self.home_palm_pose.expand(n, -1).clone()
+                # ★2026-08-19 고정 홈 + 컵-정준 액션 기준점 (Fabrics 이점 활용).
+                # 물리 리셋(팔)은 홈 그대로 — sim2real 흐름(지정 자세→인지→접근→파지) 유지.
+                # 액션 기준점(pregrasp_palm_pose)은 위에서 계산한 컵 정준 pregrasp
+                # (obj + pregrasp_offset + noise, rot 90/0/90)를 **덮어쓰지 않고 그대로** 쓴다
+                # → action=0 이면 Fabrics 가 홈에서 정렬된 pregrasp 까지 스스로 접근한다
+                #   (리프트 램프와 같은 "palm 목표를 주면 Fabrics 가 따라간다" 패턴).
+                # 구(08.18): 기준점도 홈 → 접근 전 구간을 정책이 리워드만으로 학습 →
+                # tilted-palm 2지 국소최적(lstm_test1 ABORTED). 텔레포트(Stage1) 성공의
+                # 실체가 "정렬된 기준점"이었으므로 리셋이 아닌 기준점으로 이식한다.
+                # 실기 미러: grasp_inference 가 인지된 컵 pose 로 동일 기준점을 계산한다.
                 q_pregrasp[:, :NUM_ARM_DOF] = self.q_home_arm.unsqueeze(0)
             elif self.cfg.cache_pregrasp_reset:
                 # cache lookup: spawn 위치(x,y) → 가장 가까운 grid point arm IK.

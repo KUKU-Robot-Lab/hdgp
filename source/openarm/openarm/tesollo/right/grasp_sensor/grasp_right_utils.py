@@ -53,14 +53,21 @@ def compute_lift_readiness(
     hold_steps: int,
     num_envelope_fingers: torch.Tensor | None = None,
     min_envelope_fingers: int = 0,
+    required_contact: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """접촉(손끝) + 인벨롭(tip&mid) + hold 로 lift 진입 판정. '감싸 잡으면 리프트' 래치.
 
     step-기반(LIFT_START_STEP) 트리거를 대체. 한번 래치되면 유지된다.
     인벨롭 게이트: num_envelope_fingers(손끝&중간마디 동시 접촉 손가락 수)가
     min_envelope_fingers 이상이어야 latch 진입 → 손끝만으로 일찍 리프트하는 것을 차단.
+    required_contact: 반드시 접촉해야 하는 손가락의 bool (N,) — 예: 엄지.
+    ★2026-08-19(A3): latch 는 비가역 + shaping 차단 스위치라, "엄지 없는 count 충족"
+    으로 얕게 래치하면 approach/grasp gradient 가 영구 소멸한다(wrap_at_latch
+    0.03~0.05 고착 실측). success 게이트(thumb AND)와 진입 조건을 일원화한다.
     """
     lift_contact_now = num_contacts >= int(min_contacts)
+    if required_contact is not None:
+        lift_contact_now = lift_contact_now & required_contact
     if num_envelope_fingers is not None and int(min_envelope_fingers) > 0:
         lift_contact_now = lift_contact_now & (
             num_envelope_fingers >= int(min_envelope_fingers)

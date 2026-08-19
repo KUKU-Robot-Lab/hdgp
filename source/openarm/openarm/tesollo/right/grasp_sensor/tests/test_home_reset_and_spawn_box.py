@@ -66,14 +66,34 @@ def test_home_palm_is_outside_spawn_box():
     assert abs(hy) > max(abs(y0), abs(y1)) - 1e-9
 
 
-def test_action_range_reaches_every_cup():
+def test_action_reference_is_cup_anchored():
+    """★2026-08-19(A0) 고정 홈 모드의 액션 기준점 = 컵-정준 pregrasp.
+
+    구 계약("홈에서 액션 y 범위만으로 모든 컵 도달" → palm_delta y=0.35)은 폐기.
+    이제 물리 리셋만 홈이고 기준점은 컵 pregrasp 이므로, 도달성은 기준점이 보장하고
+    delta 는 미세조정 용도다. 회귀 = 고정 홈 분기가 기준점을 홈으로 되덮는 것.
+    """
+    env_src = (Path(__file__).resolve().parents[1] / "grasp_right_env.py").read_text()
+    assert "pregrasp_palm_pose = self.home_palm_pose" not in env_src, (
+        "고정 홈 분기가 액션 기준점을 홈으로 되덮고 있다 (A0 회귀)"
+    )
+
+
+def test_action_range_covers_pregrasp_offset():
+    """기준점(컵 pregrasp)에서 delta 액션으로 컵 파지 중심까지 도달 가능해야 한다.
+
+    |pregrasp_offset| + 기준점 노이즈 ≤ palm_delta (축별). 이게 깨지면 action=+1 로도
+    컵에 못 닿는 축이 생긴다.
+    """
     c = _cfg_literals()
-    hy = c["reset_home_palm_pose"][1]
     d = c["palm_delta_xyz"]
-    dy = d if isinstance(d, (int, float)) else d[1]
-    (_, _), (y0, y1) = _spawn_box(c)
-    far = max(abs(y0 - hy), abs(y1 - hy))
-    assert far <= dy + 1e-9, f"먼 쪽 컵까지 {far:.3f}m 인데 액션 y 범위는 {dy:.3f}m"
+    d = (d, d, d) if isinstance(d, (int, float)) else d
+    off = (c["pregrasp_offset_x"], c["pregrasp_offset_y"], c["pregrasp_offset_z"])
+    noise = (c["pregrasp_noise_x"], c["pregrasp_noise_y"], c["pregrasp_noise_z"])
+    for ax, (o, nz, dx) in enumerate(zip(off, noise, d)):
+        assert abs(o) + nz <= dx + 1e-9, (
+            f"축 {ax}: |pregrasp_offset|({abs(o)})+noise({nz}) > palm_delta({dx})"
+        )
 
 
 def test_idle_arm_rest_mirrors_grasp_home():
