@@ -601,7 +601,7 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
 #   물러난 자세로 다시 뽑았다(scripts/probes/probe_left_gripper_home.py).
 #   ⚠ preset 의 LEFT_ARM_HOME_JOINT_POS 와 **항상 같이 바꿀 것**.
 _GRIPPER_LEFT_DEFAULT_CONFIG = [
-    +0.0844, -1.3476, +1.2701, +1.7705, +1.2631, -0.4643, +1.2345,
+    -0.1569, -0.5984, +1.4065, +1.2005, +1.0895, -0.6695, +1.3563,
 ]
 
 

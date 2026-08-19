@@ -173,6 +173,22 @@ def test_grasp_euler_reproduces_grasp_axes():
             assert math.isclose(R[row][col], expected[row], abs_tol=1e-9)
 
 
+def test_cup_spawn_box_sits_on_the_table():
+    """컵 스폰 박스 전체가 테이블 판 위여야 한다 — 밖이면 컵이 떨어져 넘어진다.
+
+    Isaac 실측: 기본 테이블 위치(x 0.5725)면 판이 x>=0.310 이라 이 팔의 파지 영역
+    (x 0.22~0.30)이 통째로 판 밖이었고, 접촉 없이 컵 기울기가 36.6° 까지 갔다.
+    "컵이 밀린다"로 보이지만 실제로는 **넘어지는** 것이라 원인을 놓치기 쉽다.
+    """
+    near = P.TABLE_POS[0] - P.TABLE_HALF_X
+    far = P.TABLE_POS[0] + P.TABLE_HALF_X
+    base_r = 0.0295          # shaker 바닥 원판 반경 (shaker_closed_rl.usd bottom_plug)
+    lo = P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE - base_r
+    hi = P.CUP_SPAWN_X_CENTER + P.CUP_SPAWN_X_RANGE + base_r
+    assert near <= lo, f"스폰 박스 근단 {lo:.4f} 이 테이블 근단 {near:.4f} 보다 앞"
+    assert hi <= far, f"스폰 박스 원단 {hi:.4f} 이 테이블 원단 {far:.4f} 보다 뒤"
+
+
 def test_pregrasp_keeps_fingertips_clear_of_the_cup():
     """action=0 기준점에서 핑거 팁이 컵 표면 **밖**에 있어야 한다.
 
@@ -225,9 +241,20 @@ def test_fabric_default_config_matches_preset_home():
         assert math.isclose(got, want, abs_tol=1e-6), f"{values} != {home}"
 
 
-def test_spawn_box_x_is_not_the_naive_mirror_of_right_task():
-    """우측 x=0.30 을 그대로 미러하면 낮은 파지점에 팔이 못 미친다(실측 잔차 11~20mm)."""
-    assert P.CUP_SPAWN_X_CENTER < 0.30
+def test_spawn_center_follows_left_grasp_v1_in_x_but_shifts_out_in_y():
+    """스폰 중심은 tesollo/left/grasp_v1(x 0.30, y 0.20) 을 기준으로 삼는다.
+
+    x 는 그대로 쓴다. y 만 바깥(0.28)으로 옮겼는데, 이유는 손이 다르기 때문이다:
+    2지 그리퍼는 jaw 를 **수평으로 유지**해야 하고 손목 j6 가 ±45° 뿐이라 자세 제약이
+    훨씬 빡빡해서, y<=0.20 에서는 정확 파지자세가 아예 안 나온다(실측 지도 전 x 에서 X).
+
+    ⚠ 한때 "x 는 0.30 이면 팔이 못 미친다"고 판단해 0.25~0.26 으로 당겼던 적이 있는데,
+      그건 **테이블 상면을 6.8mm 낮게 잡은 탓**이었다(0.2082 vs 실제 0.215).
+      상면을 바로잡으니 x=0.30 이 정상 도달한다. 기하 상수가 틀리면 도달성 결론이 통째로
+      뒤집힌다는 사례로 남긴다.
+    """
+    assert math.isclose(P.CUP_SPAWN_X_CENTER, 0.30, abs_tol=1e-9)
+    assert P.CUP_SPAWN_Y_CENTER > 0.20
 
 
 # ---------------------------------------------------------------------------

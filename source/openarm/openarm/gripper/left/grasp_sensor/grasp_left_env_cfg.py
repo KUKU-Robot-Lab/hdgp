@@ -48,6 +48,7 @@ from .grasp_left_constants import (
 )
 from .grasp_left_preset import (
     CUP_USD_NAME,
+    TABLE_POS,
     CUP_SPAWN_X_CENTER,
     CUP_SPAWN_X_RANGE,
     CUP_SPAWN_Y_CENTER,
@@ -247,8 +248,10 @@ class GraspLeftGripperEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Table",
+        # ★기본 위치(x 0.5725)면 판이 x>=0.310 이라 이 팔의 파지 영역이 판 밖이다.
+        #   preset 에서 당겨온 위치를 쓴다 — tests 가 스폰 박스가 판 위인지 검사한다.
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=[0.5725, 0.003, 0.2],
+            pos=list(TABLE_POS),
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
