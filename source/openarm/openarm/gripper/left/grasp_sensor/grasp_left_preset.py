@@ -74,6 +74,11 @@ CUP_MASS = 0.134                  # kg, right/grasp_sensor 전 물체 공통값�
 # ★bbox 반높이(0.0875)가 아니다 — shaker 원점은 기하 중심이 아니라서 반높이로 역산하면
 #   컵이 테이블에 파묻힌다.
 CUP_BOTTOM_TO_ORIGIN = 0.09209
+# ★컵의 강체 이름. 레퍼런스는 큐브 prim 이름인 `"Object"` 를 SceneEntityCfg 에 박아 두는데
+#   우리 shaker 는 `baseLink` 라 그대로 두면 매니저가 이름을 resolve 하는 순간 죽는다
+#   (서버 학습 기동 시 실제로 터졌다: "Object: [] / Available strings: ['baseLink']").
+#   ⚠ 로컬에서는 sim 이 playing 이 아닌 타이밍이라 resolve 가 스킵돼 **드러나지 않는다**.
+CUP_BODY_NAME = "baseLink"
 CUP_SPAWN_Z = TABLE_SURFACE_Z + CUP_BOTTOM_TO_ORIGIN     # 0.30709
 
 # ★★스폰 x 하한은 **홈 자세의 팔이 점유한 공간 바깥**이어야 한다.

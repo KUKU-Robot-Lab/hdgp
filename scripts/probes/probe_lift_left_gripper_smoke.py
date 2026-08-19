@@ -118,6 +118,47 @@ def main() -> None:
     print(f"\n  스폰 z 기대 {P.CUP_SPAWN_Z:.5f} / 실측 {cup[:, 2].mean():.5f}")
     print(f"  리프트 임계 {P.MINIMAL_LIFT_HEIGHT:.3f} (테이블 상면 {P.TABLE_SURFACE_Z:.3f})")
 
+    print("\n=== 0) 모든 SceneEntityCfg 가 실제로 resolve 되는가 ===")
+    print(
+        "  ★★서버 학습 기동에서만 터지는 부류를 여기서 잡는다. IsaacLab 은 SceneEntityCfg 의\n"
+        "    이름 해석을 `sim.is_playing()` 일 때만 하는데, 프로브 경로는 그 타이밍을 안 타서\n"
+        "    **잘못된 이름이 조용히 통과한다**. 실제로 레퍼런스가 박아 둔 `body_names=\"Object\"`\n"
+        "    (우리 컵은 baseLink)가 로컬을 통과하고 서버에서 학습을 죽였다.\n"
+        "    ⚠ 복사본을 resolve 한다 — 원본은 이미 해석돼 있어 다시 하면 불일치로 죽는다."
+    )
+    import copy as _copy
+
+    from isaaclab.managers import SceneEntityCfg
+
+    def _walk(obj, path):
+        if isinstance(obj, SceneEntityCfg):
+            yield path, obj
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                yield from _walk(v, f"{path}[{k!r}]")
+            return
+        if isinstance(obj, (list, tuple)):
+            for i, v in enumerate(obj):
+                yield from _walk(v, f"{path}[{i}]")
+            return
+        if hasattr(obj, "__dict__") and not isinstance(obj, (str, bytes)):
+            for k, v in vars(obj).items():
+                if not k.startswith("__"):
+                    yield from _walk(v, f"{path}.{k}")
+
+    bad = 0
+    seen = 0
+    for path, cfg_entity in _walk(env.cfg, "cfg"):
+        seen += 1
+        probe_cfg = _copy.deepcopy(cfg_entity)
+        try:
+            probe_cfg.resolve(env.scene)
+        except Exception as exc:  # noqa: BLE001
+            bad += 1
+            print(f"  ✗ {path}\n      {type(exc).__name__}: {exc}")
+    print(f"  {seen - bad}/{seen} resolve 성공" + ("" if bad == 0 else f"  ← **{bad} 건 실패**"))
+
     print("\n=== 1a) 유휴 오른팔이 프리셋 자세를 지키는가 ===")
     print(
         "  ★렌더에서 오른팔이 **바닥에 닿아** 있는 것으로 관찰됐다. 유휴 팔이 처지면\n"

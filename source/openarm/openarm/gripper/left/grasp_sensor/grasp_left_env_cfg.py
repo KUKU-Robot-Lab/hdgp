@@ -213,6 +213,12 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         )
 
         # ── 물체 스폰 랜덤화 ────────────────────────────────────────
+        # ★asset_cfg 를 반드시 교체한다. 레퍼런스는 큐브 prim 이름 `"Object"` 를 박아 두는데
+        #   우리 shaker 의 강체는 `baseLink` 라, 매니저가 이름을 resolve 하는 순간 죽는다.
+        #   이 이벤트는 root state 만 쓰므로 body_names 자체가 불필요하다.
+        #   ⚠ 로컬에서는 sim 이 playing 이 아닌 타이밍이라 resolve 가 스킵돼 통과하고,
+        #     서버 학습 기동에서만 터졌다. 아래 계약 테스트로 고정해 둔다.
+        self.events.reset_object_position.params["asset_cfg"] = SceneEntityCfg("object")
         self.events.reset_object_position.params["pose_range"] = {
             "x": (-P.CUP_SPAWN_X_RANGE, P.CUP_SPAWN_X_RANGE),
             "y": (-P.CUP_SPAWN_Y_RANGE, P.CUP_SPAWN_Y_RANGE),

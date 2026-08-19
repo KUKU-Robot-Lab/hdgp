@@ -149,6 +149,31 @@ def test_drop_threshold_catches_a_tipped_cup_not_just_a_fallen_one():
     assert not math.isclose(P.OBJECT_DROP_HEIGHT, P.TABLE_SURFACE_Z - 0.05, abs_tol=1e-6)
 
 
+@pytest.mark.skipif(not _CUP_USD.is_file(), reason="컵 USD 없음")
+def test_reference_object_body_name_is_overridden():
+    """★레퍼런스는 큐브 prim 이름 `"Object"` 를 SceneEntityCfg 에 박아 둔다.
+
+    우리 shaker 의 강체는 `baseLink` 라 그대로 두면 매니저가 이름을 resolve 하는 순간
+    죽는다("Object: [] / Available strings: ['baseLink']").
+
+    ⚠ 이 결함은 **로컬에서 드러나지 않는다** — `_process_term_cfg_at_play` 는
+      `sim.is_playing()` 일 때만 도는데, 프로브 경로에서는 그 타이밍을 안 타서 resolve 가
+      스킵되고 정상 동작한다. 서버 학습 기동에서만 터졌다. 그래서 정적으로 못을 박는다.
+    """
+    from pxr import Usd  # noqa: PLC0415
+
+    stage = pytest.importorskip("pxr.Usd").Stage.Open(str(_CUP_USD))
+    assert isinstance(stage, Usd.Stage)
+    prims = {p.GetName() for p in stage.Traverse()}
+    assert P.CUP_BODY_NAME in prims, f"컵 USD 에 {P.CUP_BODY_NAME} 이 없다: {sorted(prims)}"
+    assert "Object" not in prims
+
+    src = _cfg_source()
+    assert 'reset_object_position.params["asset_cfg"]' in src, (
+        "레퍼런스의 body_names=\"Object\" 를 덮어쓰지 않았다"
+    )
+
+
 def test_idle_joints_get_an_explicit_pd_target():
     """★★`init_state.joint_pos` 는 관절의 **상태**만 정하고 PD 목표는 정하지 않는다.
 
