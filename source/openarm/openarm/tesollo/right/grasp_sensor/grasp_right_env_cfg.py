@@ -332,17 +332,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     success_bonus_weight: float = 20.0
     post_lift_contact_loss_weight: float = -8.0
     action_smooth_weight: float = -0.02
-    # ★2026-08-20 0.025 → 0.05 (audit ACCEPT). approach 의 xy 페널티 사각지대.
-    #   test4 ep6500 probe 실측: 밀림 0.084 에서 페널티 25*(0.084-0.025)=1.48 이
-    #   접근 보상(최대 2.0, 실효 ~0.6)을 압도해 **reward/approach 가 상시 음수(-0.0995)**.
-    #   음수 구간은 "빨리 끝내는 게 이득"이라 정책이 손끝 4지+엄지가 닿자마자 latch(60스텝)
-    #   → latch 후 palm 은 스크립트 램프 지배라 palm-컵 9.5cm 에 영구 고정 → PIP 가 이미
-    #   0.994 포화라 손끝만 접촉 → 리프트 중 원위 접촉 1.52→0.16 붕괴(wrap 0.036).
-    #   0.05 = 파지 접촉에서 불가피한 밀림은 면제, 그 이상은 25.0 기울기 그대로.
-    #   가중치 25.0 은 불변이고 lift/success 의 disp 감쇠(limit 0.08)도 그대로다.
-    #   ⚠ 대조군: 동일 margin 의 Stage1(텔레포트)은 정상(distal 1.86) — 접근 구간이 없어
-    #   음수 approach 를 겪지 않았을 뿐. 고정홈 전용 결함.
-    grasp_xy_threshold: float = 0.05
+    grasp_xy_threshold: float = 0.025
     # ★2026-08-19 컵 밀림 soft 감쇠 한계. lift/success_bonus 에 (1-clamp(disp/limit)) 를 곱한다.
     #   0 = 비활성(기존 동작 불변). 0.08 이면 4cm 밀 때 보상 50%, 8cm 면 0.
     #   하드 게이트를 쓰지 않는 이유: 보상 86% 를 한 번에 끄면 '컵을 안 밀면서 잡는 법' 을
