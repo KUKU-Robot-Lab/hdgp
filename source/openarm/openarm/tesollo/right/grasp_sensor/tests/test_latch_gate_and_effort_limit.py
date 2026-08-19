@@ -106,6 +106,22 @@ def test_grasp_shaping_survives_latch():
                      rwd_src), "grasp 항 정의를 못 찾음 (계약 문자열 갱신 필요)"
 
 
+def test_mcp_frozen_after_latch():
+    """래치 후 MCP 동결 — 리프트 중 손가락을 더 말아 인벨롭을 깨는 것을 막는다.
+
+    실측(test4 ep6500): 래치 시점 dst 1.52 로 인벨롭 성립 → 리프트 20~40스텝에
+    MCP 0.767→0.843 조임 → dst 0.71 붕괴, 손끝만 남음(tip 4.54→4.96).
+    PIP/DIP 는 접촉 동결로 잠겨 있어 MCP 만 가능한 경로였다.
+    래치 **전** 무게이트는 유지해야 한다(근위 마디 밀착 = 감쌈 생성 메커니즘).
+    """
+    assert "g2 = torch.zeros_like(tip_c)" not in _ENV_SRC, "MCP 가 다시 무상시 무게이트다"
+    assert re.search(
+        r"g2\s*=\s*_any_c\s*\*\s*self\.lift_ready_latched_buf", _ENV_SRC
+    ), "MCP 래치-후 동결이 없다"
+    # 래치 전에는 걸리지 않아야 한다 → latched 곱이 반드시 있어야 함(위 assert 가 보장)
+    assert "_any_c = (mid_c + dist_c + tip_c).clamp(max=1.0)" in _ENV_SRC
+
+
 # ---------------------------------------------------------------------------
 # A4: 손 effort_limit
 # ---------------------------------------------------------------------------

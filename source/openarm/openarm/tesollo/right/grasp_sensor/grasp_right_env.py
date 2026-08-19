@@ -1011,7 +1011,18 @@ class GraspRightEnv(DirectRLEnv):
         mid_c  = self.middle_binary_contact_buf.float()             # (N,5) middle(rl_dg_X_3)
         # 관절별 동결 게이트 (local 0=_1, 1=_2, 2=_3 PIP, 3=_4 DIP)
         g1 = torch.zeros_like(tip_c)                                # _1: 무게이트
-        g2 = torch.zeros_like(tip_c)                                # _2 MCP: 무게이트(full close)
+        # ★2026-08-20 _2 MCP: 래치 **전**은 무게이트(근위 마디를 컵에 밀착 — 감쌈 생성),
+        #   래치 **후**에는 접촉한 손가락만 동결한다.
+        #   실측(test4 ep6500, latch 상대시간 probe): 래치 시점엔 인벨롭 그립이 성립해
+        #   있는데(dst 1.52) 리프트 직후 20~40스텝에 MCP 를 0.767→0.843 으로 더 조여
+        #   **원위 접촉이 1.52→0.71 로 붕괴**하고 손끝만 남았다(tip 4.54→4.96).
+        #   PIP/DIP 는 접촉 동결로 잠겨 있어 MCP 만 이 짓을 할 수 있다.
+        #   동기는 P1(래치 후 grasp shaping 유지)의 부작용 — grasp_quality 의
+        #   tip_contact_frac 이 **손끝 개수** 기반이라 MCP 를 조여 5지를 다 닿게 하는 게
+        #   이득이었다. 사용자 관찰 "이미 인벨롭으로 잘 잡았는데 올리는 중에 손가락을 만다".
+        #   래치 후 동결 = "든 뒤에는 잡은 자세를 그대로 유지"로, 리프트 목적과 정합.
+        _any_c = (mid_c + dist_c + tip_c).clamp(max=1.0)            # (N,5) 아무 마디 접촉
+        g2 = _any_c * self.lift_ready_latched_buf.float().unsqueeze(1)
         # _3 PIP·_4 DIP 둘 다 distal|tip 접촉 시 동결. (구 g3=mid_c는 중간마디 접촉 순간
         # PIP를 멈춰 손가락이 middle로 컵에 얹힌 채 정지 → 손끝(distal)까지 감아 조이지 못함
         # = 인벨롭 미완성·distal 저조·wrap 미달. 이제 손끝이 닿을 때까지 계속 감아 진짜로 감싼다.)
