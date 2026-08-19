@@ -92,6 +92,21 @@ def test_latch_is_still_irreversible_once_earned():
 
 
 # ---------------------------------------------------------------------------
+# P1: latch 절벽 제거 — grasp shaping 은 latch 후에도 유지
+# ---------------------------------------------------------------------------
+
+def test_grasp_shaping_survives_latch():
+    """grasp 항이 pre_lift_gate 로 꺼지면 latch=순손실 → latch 회피 학습 (lstm_test3 실측:
+    엄지 접촉 포기로 thumb-AND latch 차단, thumb_cup 0.56→0.007). 회귀 방지."""
+    rwd_src = (_BASE / "grasp_reward.py").read_text()
+    assert "pre_lift_gate * grasp_quality" not in rwd_src, (
+        "grasp 항이 다시 latch 절벽이 됐다 (P1 회귀)"
+    )
+    assert re.search(r'grasp\s*=\s*_cfg_float\(cfg,\s*"grasp_weight",\s*0\.0\)\s*\*\s*grasp_quality',
+                     rwd_src), "grasp 항 정의를 못 찾음 (계약 문자열 갱신 필요)"
+
+
+# ---------------------------------------------------------------------------
 # A4: 손 effort_limit
 # ---------------------------------------------------------------------------
 

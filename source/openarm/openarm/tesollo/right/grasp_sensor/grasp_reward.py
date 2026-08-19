@@ -104,8 +104,8 @@ def compute_grasp_reward_terms(
         )
     else:
         # envelope(중간/원위 wrap)을 grasp 보상에 credit → 지배적 grasp 보상이 wrap을
-        # 당기는 gradient가 됨(tip-farming 차단). pre_lift_gate라 "wrap만 하고 안 듦"
-        # 수렴은 불가(리프트 후 꺼짐).
+        # 당기는 gradient가 됨(tip-farming 차단). "wrap만 하고 안 듦" 수렴은 불가 —
+        # latch(4지+엄지)가 성립하면 스크립트 램프가 자동으로 들어올린다(P1 주석 참조).
         # envelope credit(기본 0.40). cfg 로 올리면 grasp 보상이 wrap 을 더 강하게 당김.
         # 나머지 tip 항은 (1-credit) 로 비례 축소해 합=1 유지. (기본값 유지 시 기존 동작 불변.)
         # ★합이 1로 재정규화되므로 credit 을 올려도 grasp 최대치는 불변 —
@@ -122,7 +122,15 @@ def compute_grasp_reward_terms(
             + 0.25 * _tip_scale * contact_persistence_frac
             + _ecred * wrap_frac.clamp(0.0, 1.0)
         )
-    grasp = _cfg_float(cfg, "grasp_weight", 0.0) * pre_lift_gate * grasp_quality
+    # ★2026-08-19(P1, audit ACCEPT) pre_lift_gate 곱 제거 — grasp shaping 을 latch 후에도 유지.
+    #   구(latch 절벽): latch 순간 grasp+approach 수입(실측 1.63/step)이 0 이 되고 비가역이라,
+    #   어설픈 파지의 lift 수입 < 절벽 손실 → 정책이 latch 를 능동 회피(lstm_test3 ep1000:
+    #   엄지 접촉 포기 thumb_cup 0.56→0.007 로 thumb-AND latch 를 외과적으로 차단,
+    #   lift_ready 0.47→0.00). latch 후에도 quality 수입이 이어지면 latch 는 순이득
+    #   (+lift 30/stabilize 10/success 20)이 된다. latch 후 palm 은 스크립트 램프가 지배라
+    #   "latch 하고 안 드는" hacking 은 구조적으로 불가. 파지를 놓치면 quality 자동 소멸.
+    #   ⚠ lift 구간 수입 증가로 reward/total 절대값은 이전 run 과 비교 금지.
+    grasp = _cfg_float(cfg, "grasp_weight", 0.0) * grasp_quality
     # ★2026-08-19 보상 정규화 기준을 성공 임계와 분리. lift_height_ref 미설정(0)이면
     #   기존대로 lift_success_height 를 쓴다(동작 불변).
     _h_ref = _cfg_float(cfg, "lift_height_ref", 0.0)
