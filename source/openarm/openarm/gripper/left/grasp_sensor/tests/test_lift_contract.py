@@ -108,19 +108,43 @@ def test_table_surface_matches_usd_extent():
     assert not math.isclose(P.TABLE_SURFACE_Z, 0.2004, abs_tol=1e-4)
 
 
-def test_minimal_lift_height_is_absolute_world_z():
-    """★가장 위험한 함정. mdp.object_is_lifted 는 절대 z 를 본다.
+def test_minimal_lift_height_is_measured_from_the_resting_cup_origin():
+    """★★가장 위험한 함정. `mdp.object_is_lifted` 는 물체 **root 원점**의 절대 z 를 본다.
 
-    테이블 상면을 안 더하면 컵이 놓인 채로도 lifting 보상(weight 15)이 상시 1 이 되고,
-    goal-tracking 게이트도 항상 열려 학습이 통째로 망가진다.
+    기준선은 테이블 상면이 아니라 **컵이 놓여 있을 때의 원점 z**(= CUP_SPAWN_Z)다.
+    레퍼런스가 상면 기준으로 맞는 건 큐브 원점이 기하 중심이라서일 뿐이고, shaker 는
+    원점이 바닥에서 92 mm 위라 상면만 더하면 임계가 **놓인 상태보다 낮아진다**.
+
+    실제로 이 실수로 한 번 학습을 태웠다(test1-r2): 임계 0.255 < 놓인 원점 0.30709 라
+    lifting 보상이 상시 1(14.63/15.0), goal 게이트도 늘 열려 "가만히 있기"가 최적이 됐고
+    reaching_object 가 0.024 → 0.007 로 떨어졌다.
     """
-    assert math.isclose(
-        P.MINIMAL_LIFT_HEIGHT, P.TABLE_SURFACE_Z + P.LIFT_HEIGHT_ABOVE_TABLE, abs_tol=1e-9
+    assert P.MINIMAL_LIFT_HEIGHT > P.CUP_SPAWN_Z, (
+        "임계가 놓인 컵의 원점보다 낮다 — lifting 보상이 상시 1 이 된다"
     )
-    assert P.MINIMAL_LIFT_HEIGHT > P.TABLE_SURFACE_Z
+    assert math.isclose(
+        P.MINIMAL_LIFT_HEIGHT, P.CUP_SPAWN_Z + P.LIFT_HEIGHT_ABOVE_TABLE, abs_tol=1e-9
+    )
+    # 옛 계산식(상면 기준)으로 되돌아가지 않도록 못을 박는다
+    assert not math.isclose(
+        P.MINIMAL_LIFT_HEIGHT, P.TABLE_SURFACE_Z + P.LIFT_HEIGHT_ABOVE_TABLE, abs_tol=1e-6
+    )
     # cfg 가 실제로 이 값을 세 군데 전부에 넣는지
     src = _cfg_source()
     assert src.count("P.MINIMAL_LIFT_HEIGHT") >= 3
+
+
+def test_drop_threshold_is_below_the_resting_cup_but_catches_a_fallen_one():
+    """낙하 종료는 컵이 **테이블 밖으로** 떨어졌을 때만 발화해야 한다.
+
+    놓인 원점(0.30709)보다 낮고, 바닥에 선 컵의 원점(= bottom→원점 0.09209)보다는 높아야
+    한다. 테이블 위에서 넘어진 컵(원점 ≈ 상면 + 반경)은 잡지 않는다 — lift 레시피는
+    넘어짐을 보지 않으므로 여기서 종료시키면 학습 신호만 끊긴다.
+    """
+    assert P.OBJECT_DROP_HEIGHT < P.CUP_SPAWN_Z
+    assert P.OBJECT_DROP_HEIGHT > P.CUP_BOTTOM_TO_ORIGIN
+    tipped_on_table = P.TABLE_SURFACE_Z + 0.044      # 옆으로 누운 컵의 원점 근사(반경)
+    assert P.OBJECT_DROP_HEIGHT < tipped_on_table
 
 
 def test_object_drop_threshold_is_below_table():
@@ -164,9 +188,11 @@ def test_spawn_center_is_no_longer_the_left_grasp_v1_position():
     assert math.isclose(P.CUP_SPAWN_Y_CENTER, 0.20, abs_tol=1e-9)
 
 
-def test_goal_z_range_is_above_the_table():
+def test_goal_z_range_sits_above_the_lift_threshold():
+    """목표도 컵 **원점** 좌표다. 하한이 리프트 임계보다 낮으면 게이트는 닫혀 있는데 목표는
+    이미 발밑에 있는 꼴이 되어 "먼저 들어라 → 옮겨라" 순서가 무너진다."""
     lo, hi = P.GOAL_POS_Z
-    assert lo > P.TABLE_SURFACE_Z
+    assert lo >= P.MINIMAL_LIFT_HEIGHT
     assert hi > lo
 
 

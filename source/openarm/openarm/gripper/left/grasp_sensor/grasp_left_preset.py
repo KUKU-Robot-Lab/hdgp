@@ -96,11 +96,19 @@ CUP_SPAWN_Y_RANGE = 0.03          # ±m → y ∈ [0.17, 0.23] (스윕 검증 �
 # ---------------------------------------------------------------------------
 # 리프트 판정
 # ---------------------------------------------------------------------------
-# ★`mdp.object_is_lifted` 는 **절대 world z** 를 본다. 레퍼런스는 테이블 상면이 z=0 이라
-#   0.04 를 쓰지만, 우리 상면은 0.215 이므로 그만큼 더해야 "4cm 들어올림"이 된다.
-#   이걸 놓치면 컵이 테이블에 놓인 채로도 lifting 보상이 상시 1 이 되어 학습이 망가진다.
+# ★★`mdp.object_is_lifted` 는 물체 **root 원점**의 절대 world z 를 본다.
+#   기준선은 테이블 상면이 아니라 **컵이 놓여 있을 때의 원점 z**, 즉 CUP_SPAWN_Z 다.
+#   레퍼런스가 상면 기준으로 맞아떨어지는 건 큐브의 원점이 기하 중심이라서일 뿐이고,
+#   shaker 는 원점이 바닥에서 92 mm 위라 상면만 더하면 임계가 놓인 상태보다 **낮아진다**.
+#
+#   ⚠ 실제로 이 실수를 저질렀다(test1-r2). `TABLE_SURFACE_Z + 0.04 = 0.255` 인데 놓인
+#     컵의 원점이 이미 0.30709 라, lifting 보상(weight 15)이 **상시 1**이었다:
+#       Episode_Reward/lifting_object 14.63 / 상한 15.0
+#     goal-tracking 게이트도 늘 열려 있으니 정책이 컵을 건드릴 이유가 없고, action_rate·
+#     joint_vel 페널티까지 있어 **가만히 있는 것이 최적**이 된다. 실제로 reaching_object 가
+#     0.024 → 0.007 로 계속 떨어졌다(그리퍼가 컵에서 도망갔다).
 LIFT_HEIGHT_ABOVE_TABLE = 0.04
-MINIMAL_LIFT_HEIGHT = TABLE_SURFACE_Z + LIFT_HEIGHT_ABOVE_TABLE   # 0.255
+MINIMAL_LIFT_HEIGHT = CUP_SPAWN_Z + LIFT_HEIGHT_ABOVE_TABLE       # 0.34709
 # 물체 낙하 종료 임계 — 레퍼런스는 -0.05(테이블 z=0 기준). 상면만큼 올린다.
 OBJECT_DROP_HEIGHT = TABLE_SURFACE_Z - 0.05
 
@@ -158,7 +166,9 @@ RIGHT_REST_JOINT_POS = {**RIGHT_ARM_REST_JOINT_POS, **RIGHT_HAND_REST_JOINT_POS}
 # 컵을 들고 그리로 가려면 팔을 접어야 하는데, 관절 델타 ±0.5 rad 로는 무리다.
 GOAL_POS_X = (0.32, 0.44)
 GOAL_POS_Y = (0.15, 0.28)
-GOAL_POS_Z = (TABLE_SURFACE_Z + 0.10, TABLE_SURFACE_Z + 0.25)
+# ★목표도 컵 **원점** 좌표다. 하한이 리프트 임계보다 낮으면 "먼저 들어라 → 옮겨라" 순서가
+#   무너진다(게이트는 닫혀 있는데 목표는 이미 발밑에 있는 상태). 놓인 원점 기준으로 잡는다.
+GOAL_POS_Z = (CUP_SPAWN_Z + 0.08, CUP_SPAWN_Z + 0.20)
 
 # ---------------------------------------------------------------------------
 # 그리퍼 기하 (probe_gripper_opening.py 실측 — 참고값, 보상/제어에 직접 쓰지 않음)
