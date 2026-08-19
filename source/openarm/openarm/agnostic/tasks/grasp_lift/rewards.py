@@ -38,10 +38,17 @@ def tracking_reward(object_pos: torch.Tensor, goal_pos: torch.Tensor, std: float
     return (1.0 - torch.tanh(d / std)) * gate.float()
 
 
-def success_reward(object_pos: torch.Tensor, goal_pos: torch.Tensor, pos_std: float) -> torch.Tensor:
-    """(1 − tanh(‖obj − goal‖ / pos_std))² — dexsuite success (rot 없음 = lift 변형)."""
+def success_reward(object_pos: torch.Tensor, goal_pos: torch.Tensor, pos_std: float,
+                   gate: torch.Tensor) -> torch.Tensor:
+    """(1 − tanh(‖obj − goal‖ / pos_std))² × 접촉게이트.
+
+    ★dexsuite 원본은 게이트가 없지만(goal 이 임의 pose 명령+재샘플), 우리 goal 은
+    스폰+15cm 고정 + 저중력 커리큘럼이라 "쳐올려 저글링" 으로 비접촉 수확이 가능
+    (reward-audit Check 1 REVISE). 최종 행동이 "잡고 유지"이므로 접촉 게이트는
+    태스크 정의 그 자체 — hold 중 상시 참이라 절벽이 아니다.
+    """
     d = torch.norm(object_pos - goal_pos, dim=-1)
-    return (1.0 - torch.tanh(d / pos_std)) ** 2
+    return ((1.0 - torch.tanh(d / pos_std)) ** 2) * gate.float()
 
 
 def action_l2_clamped(actions: torch.Tensor, clamp: float = 1.0) -> torch.Tensor:
@@ -73,7 +80,7 @@ def compute_grasp_lift_rewards(
         "tracking": float(cfg.tracking_weight)
         * tracking_reward(object_pos, goal_pos, float(cfg.tracking_std), g),
         "success": float(cfg.success_weight)
-        * success_reward(object_pos, goal_pos, float(cfg.success_std)),
+        * success_reward(object_pos, goal_pos, float(cfg.success_std), g),
         "action_l2": float(cfg.action_l2_weight) * action_l2_clamped(actions),
         "action_rate_l2": float(cfg.action_rate_l2_weight)
         * action_rate_l2_clamped(actions, prev_actions),
