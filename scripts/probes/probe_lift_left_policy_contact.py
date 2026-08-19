@@ -57,6 +57,13 @@ from rl_games.torch_runner import Runner
 TASK = "open-grip_l_grasp_sensor"
 
 
+def _quat_tilt_deg(quat: torch.Tensor) -> torch.Tensor:
+    """물체 로컬 +z 와 월드 +z 사이 각도."""
+    w, x, y, z = quat.unbind(-1)
+    axis_z_w = 1 - 2 * (x * x + y * y)
+    return torch.rad2deg(torch.acos(axis_z_w.clamp(-1.0, 1.0)))
+
+
 def main() -> None:
     env_cfg = parse_env_cfg(TASK, device=args.device, num_envs=args.num_envs)
     agent_cfg = load_cfg_from_registry(TASK, "rl_games_cfg_entry_point")
@@ -89,6 +96,7 @@ def main() -> None:
     idx = [i for i, _ in left]
     names = [n for _, n in left]
     grip_ids, _ = robot.find_joints(P.GRIPPER_JOINT_NAMES, preserve_order=True)
+    base_i = robot.body_names.index(P.GRIPPER_BASE_BODY)
 
     def _tensor(o):
         # RlGamesVecEnvWrapper 는 {'obs': tensor} 를 준다. player 는 텐서를 기대한다.
@@ -106,6 +114,9 @@ def main() -> None:
     total = 0
     grip_open_when_lifted = []
     tcp_when_lifted = []
+    jaw_tilt = []          # jaw 축이 수평면에서 벗어난 각(도). 0 = 완전 수평
+    approach_pitch = []    # 접근축(base +z)이 수평면에서 벗어난 각(도)
+    cup_tilt_held = []     # 쥐고 있을 때 컵이 세워져 있는가
 
     for _ in range(args.steps):
         with torch.inference_mode():
@@ -131,6 +142,17 @@ def main() -> None:
         tcp_when_lifted.append(float((tcp - cup).norm(dim=-1)[lifted].mean()))
         grip_open_when_lifted.append(float(robot.data.joint_pos[:, grip_ids[0]][lifted].mean()))
 
+        # ★파지 **자세**. 2 지 그리퍼가 원통을 제대로 잡으려면 jaw 축(두 손가락을 잇는
+        #   방향 = gripper_base 의 y 축)이 **수평**이어야 두 접촉점이 컵 지름 양끝에 놓인다.
+        if bool(held.any()):
+            q = robot.data.body_quat_w[:, base_i, :]
+            w, x, y, z = q.unbind(-1)
+            jaw_z = 2 * (y * z + w * x)            # R[2,1] : base y 축의 world z 성분
+            appr_z = 1 - 2 * (x * x + y * y)       # R[2,2] : base z 축의 world z 성분
+            jaw_tilt.append(float(torch.rad2deg(torch.asin(jaw_z.abs().clamp(max=1.0)))[held].mean()))
+            approach_pitch.append(float(torch.rad2deg(torch.asin(appr_z.abs().clamp(max=1.0)))[held].mean()))
+            cup_tilt_held.append(float(_quat_tilt_deg(obj.data.root_quat_w)[held].mean()))
+
     print("\n=== 리프트 판정 중 컵에 가장 가까운 링크 ===")
     print(f"  z 만 보는 판정(레퍼런스): {lifted_steps / max(total, 1):.1%}")
     print(f"  쥐고 있음까지 요구(신규):   {held_steps / max(total, 1):.1%}"
@@ -147,6 +169,13 @@ def main() -> None:
         print(f"  리프트 중 그리퍼 개도 평균 {sum(grip_open_when_lifted) / len(grip_open_when_lifted) * 1e3:.1f} mm "
               f"(닫힘 0 ~ 열림 {P.GRIPPER_OPEN_POS * 1e3:.0f})")
         print("  → 최근접이 손가락이 아니고 TCP 가 멀면 **그리퍼가 아닌 부위로 떠받친 것**이다.")
+    if jaw_tilt:
+        n = len(jaw_tilt)
+        print("\n=== 쥐고 있을 때의 파지 자세 ===")
+        print(f"  jaw 수평 이탈    {sum(jaw_tilt) / n:6.1f}°   (0 = 완전 수평. 두 접촉점이 컵 지름 양끝)")
+        print(f"  접근축 pitch     {sum(approach_pitch) / n:6.1f}°   (0 = 수평 접근, 90 = 위에서 내려잡기)")
+        print(f"  컵 기울기        {sum(cup_tilt_held) / n:6.1f}°   (0 = 세워진 채로 들림)")
+        print("  → jaw 수평 이탈이 크면 컵을 비스듬히 물어 접촉이 한쪽으로 몰린다.")
 
     env.close()
 

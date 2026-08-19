@@ -47,32 +47,86 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+def _cup_upright_cos(env: "ManagerBasedRLEnv", object_cfg: SceneEntityCfg) -> torch.Tensor:
+    """컵 로컬 +z 의 world z 성분. 1 = 완전히 세워짐, 0 = 옆으로 누움."""
+    obj: RigidObject = env.scene[object_cfg.name]
+    w, x, y, z = obj.data.root_quat_w.unbind(-1)
+    return 1.0 - 2.0 * (x * x + y * y)
+
+
+def jaw_level_quality(
+    env: "ManagerBasedRLEnv", robot_cfg: SceneEntityCfg, body_name: str
+) -> torch.Tensor:
+    """jaw 축이 수평인 정도. 1 = 완전 수평, 0 = 수직.
+
+    jaw 축은 두 손가락을 잇는 방향, 즉 `gripper_base` 프레임의 **y 축**이다
+    (URDF: 손가락이 base 의 ±y 로 벌어진다). 그 world z 성분의 크기가 곧 기울기의 sin 이다.
+    """
+    robot: RigidObject = env.scene[robot_cfg.name]
+    body_idx = robot.body_names.index(body_name)
+    w, x, y, z = robot.data.body_quat_w[:, body_idx, :].unbind(-1)
+    jaw_axis_z = 2.0 * (y * z + w * x)              # 회전행렬 R[2,1]
+    return (1.0 - jaw_axis_z.abs()).clamp(min=0.0)
+
+
 def _held(
     env: "ManagerBasedRLEnv",
     minimal_height: float,
     max_ee_distance: float,
     object_cfg: SceneEntityCfg,
     ee_frame_cfg: SceneEntityCfg,
+    min_upright_cos: float = -1.0,
 ) -> torch.Tensor:
-    """물체가 임계 위로 올라갔고 **동시에** TCP 가 곁에 있는가. (num_envs,) float 0/1."""
+    """물체를 **제대로** 들고 있는가. (num_envs,) float 0/1.
+
+    · 임계 높이 위로 올라갔고
+    · TCP 가 곁에 있으며(그리퍼가 아닌 부위로 떠받치는 것 차단)
+    · 컵이 세워져 있다(`min_upright_cos`)
+
+    ★컵 자세 조건이 필요한 이유: 근접 조건만으로는 컵을 **47° 기울인 채** 손가락 끝으로
+      걸어 올리는 파지가 학습된다(test4 실측: 컵 기울기 47.1°, 그리퍼 개도 5.6 mm 로
+      몸통을 물지 못한 상태). 사용자 요구는 "수평으로 제대로 잡기" 다.
+    """
     obj: RigidObject = env.scene[object_cfg.name]
     ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
     obj_pos_w = obj.data.root_pos_w
     ee_pos_w = ee_frame.data.target_pos_w[..., 0, :]
     lifted = obj_pos_w[:, 2] > minimal_height
     near = torch.norm(obj_pos_w - ee_pos_w, dim=1) < max_ee_distance
-    return (lifted & near).float()
+    upright = _cup_upright_cos(env, object_cfg) > min_upright_cos
+    return (lifted & near & upright).float()
+
+
+def held_with_level_jaw(
+    env: "ManagerBasedRLEnv",
+    minimal_height: float,
+    max_ee_distance: float,
+    min_upright_cos: float,
+    body_name: str,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """제대로 든 상태에서 **jaw 가 수평일수록** 커지는 보너스 (0~1).
+
+    게이트가 아니라 **연속 보너스**로 둔 이유: jaw 수평을 AND 게이트로 넣으면 겨우 붙기
+    시작한 파지가 한꺼번에 무너질 수 있다(reward-audit Check 4). 보너스면 "조금 나아지면
+    조금 더 받는" gradient 가 생기고, 별도 term 이라 TFEvents 에 자동 로깅돼 관측도 된다.
+    """
+    gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
+    return gate * jaw_level_quality(env, robot_cfg, body_name)
 
 
 def object_is_held_and_lifted(
     env: "ManagerBasedRLEnv",
     minimal_height: float,
     max_ee_distance: float,
+    min_upright_cos: float = -1.0,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
 ) -> torch.Tensor:
-    """`mdp.object_is_lifted` 에 근접 조건을 더한 것."""
-    return _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
+    """`mdp.object_is_lifted` 에 근접·컵 자세 조건을 더한 것."""
+    return _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
 
 
 def object_goal_distance_when_held(
@@ -81,6 +135,7 @@ def object_goal_distance_when_held(
     minimal_height: float,
     max_ee_distance: float,
     command_name: str,
+    min_upright_cos: float = -1.0,
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
@@ -96,5 +151,5 @@ def object_goal_distance_when_held(
         robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
     )
     distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
-    gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
+    gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
     return gate * (1 - torch.tanh(distance / std))

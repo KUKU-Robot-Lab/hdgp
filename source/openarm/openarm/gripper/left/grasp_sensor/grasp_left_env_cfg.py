@@ -42,6 +42,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.managers import EventTermCfg, SceneEntityCfg
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.sensors import FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
@@ -236,6 +237,16 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             "z": (0.0, 0.0),
         }
 
+        # ── 학습 영상: env 하나만 정면에서 ──────────────────────────
+        # 기본 뷰어는 여러 env 가 한 화면에 잡혀 파지 자세를 판별할 수 없다.
+        # `origin_type="env"` + `env_index=0` 으로 env 0 에 고정하고, 로봇 정면에서
+        # 컵·그리퍼를 바라본다(파지 시 jaw 가 수평인지 보이는 각도).
+        self.viewer.origin_type = "env"
+        self.viewer.env_index = 0
+        self.viewer.eye = P.VIEWER_EYE
+        self.viewer.lookat = P.VIEWER_LOOKAT
+        self.viewer.resolution = (1280, 720)
+
         # ── 유휴 관절 자세 고정 ────────────────────────────────────
         # ★★없으면 오른팔이 **차렷으로 내려가 바닥에 닿는다**. init_state 는 관절의 상태만
         #   정하고 PD 목표는 정하지 않는데, 액션 대상이 아닌 관절은 아무도 목표를 써 주지
@@ -290,12 +301,29 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #     하나라도 남기면 그쪽으로 같은 hack 이 되살아난다.
         self.rewards.lifting_object.func = rewards.object_is_held_and_lifted
         self.rewards.lifting_object.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+        self.rewards.lifting_object.params["min_upright_cos"] = P.CUP_UPRIGHT_MIN_COS
         for _term in (
             self.rewards.object_goal_tracking,
             self.rewards.object_goal_tracking_fine_grained,
         ):
             _term.func = rewards.object_goal_distance_when_held
             _term.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+            _term.params["min_upright_cos"] = P.CUP_UPRIGHT_MIN_COS
+
+        # ── jaw 수평 보너스 (신설) ──────────────────────────────────
+        # ★게이트가 아니라 **연속 보너스**다. jaw 수평을 AND 로 넣으면 겨우 붙기 시작한
+        #   파지가 한꺼번에 무너진다(reward-audit Check 4). 별도 term 이라 TFEvents 에
+        #   자동 로깅돼 "제대로 잡는지"를 학습 중에 관측할 수 있다는 이점도 있다.
+        self.rewards.jaw_level = RewTerm(
+            func=rewards.held_with_level_jaw,
+            weight=P.JAW_LEVEL_REWARD_WEIGHT,
+            params={
+                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
+                "min_upright_cos": P.CUP_UPRIGHT_MIN_COS,
+                "body_name": P.GRIPPER_BASE_BODY,
+            },
+        )
         self.terminations.object_dropping.params["minimum_height"] = P.OBJECT_DROP_HEIGHT
 
 

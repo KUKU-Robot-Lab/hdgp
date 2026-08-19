@@ -174,6 +174,31 @@ def test_reference_object_body_name_is_overridden():
     )
 
 
+def test_grasp_pose_quality_is_required():
+    """★"컵을 잡아도 이상하게 잡으면 안 된다" — 자세 조건.
+
+    근접 게이트만으로는 컵을 **47.1° 기울인 채** 손가락 끝으로 걸어 올리는 파지가
+    학습된다(test4 실측: jaw 18.6° 비스듬, 그리퍼 개도 5.6 mm 로 몸통을 물지 못함).
+
+    · 컵 자세는 **게이트**(AND): 40° 초과로 기울면 성공으로 치지 않는다.
+    · jaw 수평은 **연속 보너스**: 게이트로 넣으면 겨우 붙은 파지가 한꺼번에 무너진다.
+      별도 term 이라 TFEvents 에 로깅돼 학습 중 관측도 된다.
+    """
+    src = _cfg_source()
+    # 컵 자세 게이트가 세 판정 term 전부에 들어갔는가
+    assert src.count("P.CUP_UPRIGHT_MIN_COS") >= 3
+    assert 0.0 < P.CUP_UPRIGHT_MIN_COS < 1.0
+    assert math.isclose(
+        P.CUP_UPRIGHT_MIN_COS, math.cos(math.radians(P.CUP_UPRIGHT_MAX_TILT_DEG)), abs_tol=1e-9
+    )
+    # jaw 는 게이트가 아니라 보너스여야 한다
+    assert "held_with_level_jaw" in src
+    assert "jaw_level" in src
+    assert 0.0 < P.JAW_LEVEL_REWARD_WEIGHT <= 15.0 / 3.0, (
+        "자세 보너스가 lifting(15) 대비 1/3 을 넘으면 자세만 맞추는 국소최적이 생긴다"
+    )
+
+
 def test_left_arm_velocity_limit_matches_the_reference():
     """★★레퍼런스 `OPENARM_UNI_CFG` 는 팔에 velocity 2.175/2.175/2.61 을 명시한다.
 
@@ -357,10 +382,16 @@ def test_env_cfg_inherits_isaaclab_lift():
     assert "LiftEnvCfg" in bases
     src = _cfg_source()
     assert "isaaclab_tasks.manager_based.manipulation.lift" in src
-    # ★weight 는 물려받은 값을 쓴다. 판정 **함수**는 바꿔도 되지만(아래 참조) 새 term 을
-    #   만들거나 weight 를 재정의하지는 않는다.
-    assert "RewTerm(" not in src, "보상 term 을 새로 만들지 말 것 — 물려받은 weight 를 쓴다"
-    assert "weight=" not in src, "보상 weight 를 재정의하지 말 것"
+    # ★물려받은 6 개 term 의 weight 는 재정의하지 않는다. 신설은 jaw 수평 보너스 하나뿐이고
+    #   그 weight 는 preset 상수로만 온다(리터럴 금지 — 값이 코드에 흩어지지 않게).
+    inherited = (
+        "reaching_object", "lifting_object", "object_goal_tracking",
+        "object_goal_tracking_fine_grained", "action_rate", "joint_vel",
+    )
+    for name in inherited:
+        assert f"self.rewards.{name} = " not in src, f"{name} 을 재정의하지 말 것"
+    assert src.count("RewTerm(") <= 1, "신설 term 은 jaw 수평 보너스 하나뿐이다"
+    assert "weight=P." in src and "weight=0" not in src
 
 
 def test_lift_gate_requires_holding_the_cup():
