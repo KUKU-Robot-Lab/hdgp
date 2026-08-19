@@ -227,7 +227,12 @@ def object_settled_at_goal(
 
     lin = torch.norm(obj.data.root_lin_vel_w, dim=1)
     ang = torch.norm(obj.data.root_ang_vel_w, dim=1)
-    still = (1.0 - torch.tanh(lin / lin_vel_std)) * (1.0 - torch.tanh(ang / ang_vel_std))
+    # ★선속도·각속도를 **평균**한다(곱이 아니라). 곱하면 각각 0.19 일 때 0.036 까지 떨어져
+    #   lifting(11.0)에 비해 400 배 작아지고, 조금 개선해도 증가분이 다른 항에 묻힌다
+    #   (test11 실측: settle 이 상한의 0.4% 에서 정체). 평균이면 같은 상태에서 5 배 크다.
+    still = 0.5 * (1.0 - torch.tanh(lin / lin_vel_std)) + 0.5 * (
+        1.0 - torch.tanh(ang / ang_vel_std)
+    )
 
     gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
     return gate * near_goal * still
