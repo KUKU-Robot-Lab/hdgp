@@ -173,6 +173,40 @@ def test_grasp_euler_reproduces_grasp_axes():
             assert math.isclose(R[row][col], expected[row], abs_tol=1e-9)
 
 
+def test_palm_rotation_bounds_avoid_euler_gimbal():
+    """euler_zyx 는 ey=±90° 에서 퇴화한다 — 클램프 범위가 거기 닿으면 안 된다.
+
+    기준자세 ey 가 75° 라 액션(±20°)만으로도 90° 를 넘길 수 있어 별도 상한을 둔다.
+    퇴화 구간에서는 같은 회전이 여러 euler 로 갈려 클램프가 의미를 잃는다.
+    """
+    lo = P.palm_pose_mins()
+    hi = P.palm_pose_maxs()
+    ey_lo, ey_hi = math.degrees(lo[4]), math.degrees(hi[4])
+    assert -89.0 < ey_lo < 89.0
+    assert -89.0 < ey_hi < 89.0
+    assert ey_lo < P.GRASP_PALM_EULER_ZYX_DEG[1] < ey_hi
+
+
+def test_fabric_default_config_matches_preset_home():
+    """Fabrics cspace attractor 가 당기는 자세 = 이 태스크의 홈이어야 한다.
+
+    두 값이 어긋나면 attractor 가 파지 자세를 방해한다 — 그게 첫 Isaac 실패의 원인이었다
+    (홈이 파지 자세군 밖이라 jaw 가 28.5° 기울었다). 파일이 둘로 나뉘어 있어 조용히 어긋난다.
+    """
+    src = (_HDGP / "source/FABRICS/src/fabrics_sim/fabrics/openarm_tesollo_pose_fabric.py")
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    values = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and node.targets
+                and getattr(node.targets[0], "id", None) == "_GRIPPER_LEFT_DEFAULT_CONFIG"):
+            values = ast.literal_eval(node.value)
+    assert values is not None, "_GRIPPER_LEFT_DEFAULT_CONFIG 를 못 찾았다"
+    home = [P.LEFT_ARM_HOME_JOINT_POS[n] for n in P.LEFT_ARM_JOINT_NAMES]
+    assert len(values) == len(home)
+    for got, want in zip(values, home):
+        assert math.isclose(got, want, abs_tol=1e-6), f"{values} != {home}"
+
+
 def test_spawn_box_x_is_not_the_naive_mirror_of_right_task():
     """우측 x=0.30 을 그대로 미러하면 낮은 파지점에 팔이 못 미친다(실측 잔차 11~20mm)."""
     assert P.CUP_SPAWN_X_CENTER < 0.30

@@ -594,11 +594,14 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
 # ⚠ 그리퍼 개폐(l_hj_gripper_1)는 이 fabric 이 제어하지 않는다. RL 액션이 직접 관절 목표를 준다.
 #   Fabrics 는 팔 자세(IK)만 담당한다.
 #
-# cspace default = grasp_sensor 프리셋의 좌팔 rest 실측값(LEFT_ARM_REST_JOINT_POS).
-#   임의의 미러 부호 매핑이 아니라 **이 로봇에서 실제로 측정된 in-limit 자세**라 nullspace
-#   바이어스로 안전하다.
+# cspace default = 그리퍼 태스크의 **홈 자세**(gripper/left/grasp_sensor preset 과 동일 값).
+#   cspace attractor 는 이 자세로 당기므로, 파지 자세군 밖의 값을 넣으면 palm attractor 와
+#   싸워 자세를 못 낸다. 실제로 처음에는 우팔 DG-5F 홈의 미러를 썼다가 Fabrics 가 파지
+#   자세를 못 내고 jaw 가 28.5° 기울었다(Isaac 실측). 홈은 파지 해들의 관절공간 중심에서
+#   물러난 자세로 다시 뽑았다(scripts/probes/probe_left_gripper_home.py).
+#   ⚠ preset 의 LEFT_ARM_HOME_JOINT_POS 와 **항상 같이 바꿀 것**.
 _GRIPPER_LEFT_DEFAULT_CONFIG = [
-    -0.0431, -0.6706, -0.0961, 0.7342, -0.3750, -0.5678, -0.6709,
+    +0.0844, -1.3476, +1.2701, +1.7705, +1.2631, -0.4643, +1.2345,
 ]
 
 

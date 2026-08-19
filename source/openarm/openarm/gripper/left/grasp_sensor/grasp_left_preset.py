@@ -52,23 +52,28 @@ GRIPPER_CLOSED_POS = 0.0    # m, 완전 폐쇄 (limit lower)
 # ---------------------------------------------------------------------------
 # 왼팔 홈 자세 (파지 팔)
 # ---------------------------------------------------------------------------
-# right/grasp_sensor 가 유휴 왼팔 rest 로 쓰는 값과 **동일**하다. 그쪽에서 이 값은
-# `_build_home_pose` 가 출력한 실측 미러값이고(= 우팔 홈의 부호 미러), 이 태스크에서는
-# 그 자세가 곧 파지 팔의 시작 홈이 된다. 두 태스크가 같은 홈을 공유하므로 양팔 pour
-# 초기 자세와도 그대로 이어진다.
-# ⚠ 이 태스크는 홈을 IK 로 풀지 않는다 — 이미 측정된 관절값이라 그대로 쓴다.
-#   (우측이 홈 palm 자세를 IK 로 푸는 것은 그쪽 홈이 palm 6D 로 정의돼 있기 때문)
+# ★이 홈은 right/grasp_sensor 의 유휴 왼팔 rest 와 **다르다**. 처음에는 그 값(= 우팔
+#   DG-5F 홈의 부호 미러)을 썼는데, 20관절 손 기준으로 잡힌 자세라 2지 그리퍼의 파지
+#   자세군과 손목이 ~100° 어긋난다. Isaac 실측 결과 Fabrics 가 파지 자세를 못 내고
+#   jaw 가 28.5° 기울어 수평 파지가 불성립했다(j5 가 한계에 붙음).
+#   Fabrics 는 IK 솔버가 아니라 홈에서 출발하는 **기울기 흐름**이라, 홈이 파지 자세군
+#   밖에 있으면 흐름이 거기까지 못 간다.
+#   → 홈을 파지 자세군 안에서 다시 뽑았다(scripts/probes/probe_left_gripper_home.py):
+#     스폰 박스 9점 파지 해의 관절공간 중심에서 접근축 반대 8cm·위 12cm·바깥 6cm 후퇴.
+#     홈 관절여유 0.301 rad, 홈→파지 최대 관절변위 1.380 rad(구 홈은 1.73~1.80 = 분기 경계).
+# ⚠ 홈이 바뀌면 아래 RIGHT_ARM_REST_JOINT_POS(부호 미러)도 함께 바뀐다 —
+#   두 팔 모두 한계 안이고 여유 0.30 rad 이상임을 확인했다.
 LEFT_ARM_HOME_JOINT_POS = {
-    "l_aj_1": -0.0431,
-    "l_aj_2": -0.6706,
-    "l_aj_3": -0.0961,
-    "l_aj_4": +0.7342,
-    "l_aj_5": -0.3750,
-    "l_aj_6": -0.5678,
-    "l_aj_7": -0.6709,
+    "l_aj_1": +0.0844,
+    "l_aj_2": -1.3476,
+    "l_aj_3": +1.2701,
+    "l_aj_4": +1.7705,
+    "l_aj_5": +1.2631,
+    "l_aj_6": -0.4643,
+    "l_aj_7": +1.2345,
 }
 # 홈에서의 TCP 자세 (FK 실측, 참고용 — reward/리셋에 직접 쓰지 않는다)
-LEFT_HOME_TCP_POS = (0.3362, 0.3910, 0.4073)
+LEFT_HOME_TCP_POS = (0.2062, 0.3405, 0.4026)
 
 # ---------------------------------------------------------------------------
 # 유휴 오른팔 rest  (파지 팔 홈의 부호 미러)
@@ -127,16 +132,17 @@ GRASP_HEIGHT_BAND = (0.010, 0.085)      # m, 그리퍼가 통과 가능한 파�
 # ★기준 파지자세: jaw 축이 **수평**이어야 두 접촉점이 컵 단면 지름 양끝(대향)에 놓인다.
 #   접근축까지 수평으로 고정하면 이 팔은 자세를 못 낸다(손목 j6 가 ±45° 뿐).
 #   probe_left_gripper_reach.py 가 스폰 박스 전 격자점 공통해로 도출한 값:
-#     jaw 방위 θ = -15°, 접근축을 수평에서 아래로 φ = 35°
-#     → 전 격자점 최소 관절여유 0.238 rad
-#   ★파지 높이는 그리퍼 여유와 팔 도달성이 **반대 방향**이라 대역 안에서 스윕해 정했다:
-#     h=55 → 여유 0.101 / h=65 → **0.238** / h=75 → 0.005 / h=85 → 공통해 없음.
-GRASP_JAW_AZIMUTH_DEG = -15.0
-GRASP_APPROACH_TILT_DEG = 35.0
+#     jaw 방위 θ = 20°, 접근축을 수평에서 아래로 φ = 15° (거의 수평 측면 파지)
+#     → 스폰 박스 전 격자점 최소 관절여유 0.105 rad, 홈에서 도달 검증됨
+#   ★파지 높이는 그리퍼 여유와 팔 도달성이 **반대 방향**이라 대역 안에서 스윕해 정했다.
+#   ★★자세는 **정확 자세로 전 격자점 IK 가 풀리는지**로 골라야 한다. "±8° 근방에 해가
+#     있다"로 고르면 실제로 명령하는 정확 자세는 도달 불가일 수 있다(그 실수로 한 번 실패).
+GRASP_JAW_AZIMUTH_DEG = 20.0
+GRASP_APPROACH_TILT_DEG = 15.0
 
 # 위 (θ, φ) 를 Fabrics 가 받는 euler_zyx(ez, ey, ex) 로 변환한 값 [deg].
 # R = Rz(ez)·Ry(ey)·Rx(ex) 로 역산 검증됨 (오차 3e-16). tests 가 (θ,φ) 와의 일치를 고정한다.
-GRASP_PALM_EULER_ZYX_DEG = (165.0, 55.0, 180.0)
+GRASP_PALM_EULER_ZYX_DEG = (-160.0, 75.0, 180.0)
 
 # 파지 높이에서의 컵 단면 반경 [m] — approach shaping 의 표면 거리 기준.
 GRASP_CUP_RADIUS = 0.034
@@ -183,31 +189,39 @@ CUP_SPAWN_Z = TABLE_SURFACE_Z + CUP_BOTTOM_TO_ORIGIN     # 컵 원점 높이 = 0
 # ★스폰 중심 x=0.25 는 right/grasp_sensor(0.30)의 단순 미러가 **아니다**.
 #   그리퍼는 컵 굵기가 개구보다 좁은 낮은 구간에서만 잡을 수 있어 파지점이 우측보다
 #   낮은데, x=0.30 에서는 그 낮은 점에 팔이 못 미친다(실측 잔차 11~20mm).
-#   x=0.25 로 당기면 전 구간 도달된다.
-CUP_SPAWN_X_CENTER = 0.25
-CUP_SPAWN_Y_CENTER = 0.20         # 양팔 pour 좌우 컵 분리 규약(∓0.20)과 정합
-CUP_SPAWN_X_RANGE = 0.03          # ±m — x 는 도달성이 민감해 우측(±0.05)보다 좁다
-CUP_SPAWN_Y_RANGE = 0.10          # ±m
+#   실측 지도로 팔이 편한 영역을 찾아 x 0.26±0.04, y 0.30±0.06 으로 정했다 —
+#   이 박스에서 기준 파지자세의 관절여유가 전 구간 0.20~0.27 이다.
+#   더 안쪽(y<=0.20)은 팔이 접혀 자세 자체가 안 나오고, y=0.24 대역은 여유가 절반(0.11),
+#   바깥(y>=0.40)·앞(x>=0.34)은 다시 한계에 붙는다.
+CUP_SPAWN_X_CENTER = 0.26
+CUP_SPAWN_Y_CENTER = 0.30         # 우측 컵 y=-0.20 대비 분리 0.50 — 양팔 겹침에도 여유
+CUP_SPAWN_X_RANGE = 0.04          # ±m
+CUP_SPAWN_Y_RANGE = 0.06          # ±m
 
 # ---------------------------------------------------------------------------
 # palm(TCP) workspace — 액션 클램프 절대 한계
 # ---------------------------------------------------------------------------
 _ROT_HALF_RANGE_DEG = 45.0
+# ★euler_zyx 는 ey = ±90° 에서 짐벌 특이점이라 그 근처에서 표현이 퇴화한다.
+#   기준자세의 ey 가 75° 라 액션(±20°)만으로도 90° 를 넘길 수 있으므로 ey 만 따로 막는다.
+#   (Fabrics 는 euler 를 회전행렬로 바꿔 쓰지만, 우리가 euler 공간에서 클램프하기 때문에
+#    퇴화 구간에 들어가면 같은 회전이 여러 euler 로 갈려 클램프가 의미를 잃는다.)
+_EY_ABS_LIMIT_DEG = 85.0
+
+
+def _rot_bounds(sign: float) -> list[float]:
+    ez, ey, ex = GRASP_PALM_EULER_ZYX_DEG
+    h = _ROT_HALF_RANGE_DEG
+    ey_bound = ey + sign * h
+    ey_bound = max(-_EY_ABS_LIMIT_DEG, min(_EY_ABS_LIMIT_DEG, ey_bound))
+    return [math.radians(ez + sign * h), math.radians(ey_bound), math.radians(ex + sign * h)]
 
 
 def palm_pose_mins() -> list[float]:
     """[x, y, z, ez, ey, ex] 하한 (위치 m / 회전 rad)."""
-    ez, ey, ex = GRASP_PALM_EULER_ZYX_DEG
-    h = _ROT_HALF_RANGE_DEG
-    return [0.10, 0.00, TABLE_SURFACE_Z - 0.02] + [
-        math.radians(v - h) for v in (ez, ey, ex)
-    ]
+    return [0.10, 0.00, TABLE_SURFACE_Z - 0.02] + _rot_bounds(-1.0)
 
 
 def palm_pose_maxs() -> list[float]:
     """[x, y, z, ez, ey, ex] 상한."""
-    ez, ey, ex = GRASP_PALM_EULER_ZYX_DEG
-    h = _ROT_HALF_RANGE_DEG
-    return [0.50, 0.50, TABLE_SURFACE_Z + 0.40] + [
-        math.radians(v + h) for v in (ez, ey, ex)
-    ]
+    return [0.50, 0.50, TABLE_SURFACE_Z + 0.40] + _rot_bounds(+1.0)
