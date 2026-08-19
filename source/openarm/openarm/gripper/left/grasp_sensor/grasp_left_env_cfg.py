@@ -41,7 +41,7 @@ import os as _os
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import EventTermCfg, SceneEntityCfg
 from isaaclab.sensors import FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
@@ -55,6 +55,7 @@ from isaaclab_tasks.manager_based.manipulation.lift.config.openarm.lift_openarm_
 
 from openarm import OPENARM_ROOT_DIR
 
+from . import grasp_left_events as events
 from . import grasp_left_preset as P
 
 _HDGP_ROOT = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
@@ -113,13 +114,24 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                     stiffness=2e3,
                     damping=1e2,
                 ),
-                # 유휴 오른팔·오른손: rest 유지만.
+                # 유휴 오른팔·오른손: rest 자세 유지만 하면 된다.
+                # ★★`effort_limit_sim` 을 반드시 올린다. URDF 의 팔 effort 는
+                #   j1/j2=40, j3/j4=27, **j5~j7=7 N·m** 뿐이라 stiffness 400 이 무의미하게
+                #   포화하고, 20 관절 손(약 1.4 kg)을 단 오른팔이 중력에 그대로 처진다.
+                #   실측(프로브 1a): 관절 오차 최대 49.9°·평균 27°, 손끝이 테이블 상면
+                #   바로 위(0.223)까지 내려와 **테이블에 얹힌다**. 렌더에서 사용자가 지적한
+                #   "오른팔이 바닥에 닿아 있다"가 이것이다.
+                #   이 팔은 학습에 쓰이지 않는 배경이고 실기로 배포되지도 않으므로,
+                #   sim 에서 자세만 고정되면 된다.
                 "idle_right_arm": ImplicitActuatorCfg(
-                    joint_names_expr=["r_aj_[1-7]"], stiffness=400.0, damping=80.0,
+                    joint_names_expr=["r_aj_[1-7]"],
+                    stiffness=400.0, damping=80.0, effort_limit_sim=1000.0,
                 ),
+                # 유휴 오른손도 같은 이유로 올린다. effort 1.5 는 실기 정합값이지만
+                # 그건 **파지를 학습하는 손**에 필요한 것이고, 여기 오른손은 배경이다.
                 "idle_right_hand": ImplicitActuatorCfg(
                     joint_names_expr=["r_hj_[a-z]+_[1-4]"],
-                    stiffness=5.0, damping=2.0, effort_limit_sim=1.5,
+                    stiffness=20.0, damping=4.0, effort_limit_sim=50.0,
                 ),
                 "head_camera": ImplicitActuatorCfg(
                     joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0,
@@ -206,6 +218,22 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             "y": (-P.CUP_SPAWN_Y_RANGE, P.CUP_SPAWN_Y_RANGE),
             "z": (0.0, 0.0),
         }
+
+        # ── 유휴 관절 자세 고정 ────────────────────────────────────
+        # ★★없으면 오른팔이 **차렷으로 내려가 바닥에 닿는다**. init_state 는 관절의 상태만
+        #   정하고 PD 목표는 정하지 않는데, 액션 대상이 아닌 관절은 아무도 목표를 써 주지
+        #   않아 0 인 채로 남기 때문이다. 자세한 경위는 grasp_left_events 참조.
+        self.events.hold_idle_joints = EventTermCfg(
+            func=events.hold_joints_at_target,
+            mode="reset",
+            params={
+                "joint_targets": {
+                    **P.RIGHT_REST_JOINT_POS,
+                    "head_j_pan": 0.0,
+                    "head_j_tilt": 0.0,
+                },
+            },
+        )
 
         # ── 목표 커맨드 ────────────────────────────────────────────
         self.commands.object_pose.body_name = P.GRIPPER_BASE_BODY

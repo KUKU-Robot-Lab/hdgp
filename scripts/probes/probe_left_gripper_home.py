@@ -185,8 +185,8 @@ def main() -> int:
     survivors = []
     # 탐색 범위는 실측 지도(θ 30~50 / φ 15~30 대역이 유효)에 맞춰 좁혔다.
     # 연속법이 시드를 대부분 해결하므로 survey 단계는 무작위 재시작을 줄인다.
-    for th in range(20, 61, 10):
-        for ph in (15, 30):
+    for th in (20, 25, 30, 35):
+        for ph in (10, 15, 20):
             R_goal = rot_of(th, ph)
             ok, sols, worst_mg, _ = solve_grid_by_continuation(
                 steps, limits, grid, grasp_z, R_goal, full, restarts=8)

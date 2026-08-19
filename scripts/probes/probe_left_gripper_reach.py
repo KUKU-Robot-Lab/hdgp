@@ -61,19 +61,19 @@ ARM_JOINTS = [f"openarm_right_joint{i}" for i in range(1, 8)]
 #   0.2082(우측 역산값)·0.2004(BBoxCache 이중 스케일) 둘 다 틀렸다 — preset 주석 참조.
 TABLE_Z = 0.215
 CUP_BOTTOM_TO_ORIGIN = 0.092090  # shaker_closed_rl.usd 메시 bottom → 원점 (probe_gripper_opening 실측)
-CUP_CENTER_X = 0.30            # ★우측(0.30)의 단순 미러가 아니다 — 아래 주석 참조
+CUP_CENTER_X = 0.28            # ★우측(0.30)의 단순 미러가 아니다 — 아래 주석 참조
 # ★스폰 박스 = x 0.26±0.04, y 0.30±0.06 (연속법 IK 실측).
 #   이 영역에서 θ=30°/φ=15° 정확 파지자세의 관절여유가 전 구간 0.20~0.27 로 넉넉하다.
 #   더 안쪽(y<=0.20)은 팔이 몸쪽으로 접혀 자세 자체가 안 나오고, y=0.24 대역은 되긴 하나
 #   여유가 0.11 로 절반이다. 바깥(y>=0.40)·앞(x>=0.34)은 다시 한계에 붙는다.
 #   우측 컵이 y=-0.20 이므로 좌우 분리 0.50 — 양팔 겹침 관점에서도 여유롭다.
-CUP_CENTER_Y = 0.28
-SPAWN_HALF_X = 0.03
-SPAWN_HALF_Y = 0.06
+CUP_CENTER_Y = 0.175
+SPAWN_HALF_X = 0.02
+SPAWN_HALF_Y = 0.045
 # 테이블 기준 파지 중심 높이. ★P0-1 통과대역(shaker: 10~85mm) 안에서 **스윕해 정한다** —
 # 그리퍼 여유와 팔 도달성이 반대 방향이라 높이가 곧 자유 파라미터다.
 # 전 격자점 최소 관절여유 실측: h=55 → 0.101 / h=65 → **0.238** / h=75 → 0.005 / h=85 → 공통해 없음.
-GRASP_HEIGHT = 0.065
+GRASP_HEIGHT = 0.045
 
 # 좌팔 홈 = probe_left_gripper_home.py 가 도출한 그리퍼 전용 홈.
 # ★구 값(우팔 DG-5F 홈의 미러)은 파지 자세군 밖이라 Fabrics 가 못 따라갔다.

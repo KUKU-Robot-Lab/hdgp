@@ -118,6 +118,97 @@ def main() -> None:
     print(f"\n  스폰 z 기대 {P.CUP_SPAWN_Z:.5f} / 실측 {cup[:, 2].mean():.5f}")
     print(f"  리프트 임계 {P.MINIMAL_LIFT_HEIGHT:.3f} (테이블 상면 {P.TABLE_SURFACE_Z:.3f})")
 
+    print("\n=== 1a) 유휴 오른팔이 프리셋 자세를 지키는가 ===")
+    print(
+        "  ★렌더에서 오른팔이 **바닥에 닿아** 있는 것으로 관찰됐다. 유휴 팔이 처지면\n"
+        "    씬이 통째로 신뢰할 수 없고, 나중에 양팔로 갈 때 그대로 문제가 된다."
+    )
+    # cfg 에 쓴 값이 실제로 적용됐는지부터 본다 — USD drive 가 이기는 경우가 있다.
+    for name, act in robot.actuators.items():
+        def _s(v):
+            try:
+                return f"{float(v.min()):.1f}~{float(v.max()):.1f}"
+            except Exception:
+                return str(v)
+        print(f"  [actuator] {name:<16} stiffness {_s(act.stiffness)}  "
+              f"damping {_s(act.damping)}  effort {_s(act.effort_limit)}")
+
+    r_arm_ids, r_arm_names = robot.find_joints(
+        list(P.RIGHT_ARM_REST_JOINT_POS), preserve_order=True
+    )
+    r_home = torch.tensor(
+        [P.RIGHT_ARM_REST_JOINT_POS[n] for n in r_arm_names], device=env.device
+    )
+    err = robot.data.joint_pos[:, r_arm_ids] - r_home
+    print(f"  오른팔 관절 오차(도): 최대 {torch.rad2deg(err.abs()).max():.2f}, "
+          f"평균 {torch.rad2deg(err.abs()).mean():.2f}")
+    for j, n in enumerate(r_arm_names):
+        print(f"    {n}: 목표 {r_home[j]:+.4f}  실제 {robot.data.joint_pos[:, r_arm_ids[j]].mean():+.4f}  "
+              f"오차 {torch.rad2deg(err[:, j]).mean():+7.2f}°")
+    right_bodies = [
+        (i, n) for i, n in enumerate(robot.body_names)
+        if n.startswith("r_hl_") or n.startswith("r_al_")
+    ]
+    lows = sorted(
+        ((robot.data.body_pos_w[:, i, 2] - origins[:, 2]).min().item(), n)
+        for i, n in right_bodies
+    )
+    print("  오른팔 링크 최저 z (바닥 0.0, 테이블 상면 %.3f):" % P.TABLE_SURFACE_Z)
+    for z, n in lows[:5]:
+        mark = "  ← 바닥/테이블 아래" if z < 0.02 else ""
+        print(f"    {n:<26} {z:+.4f}{mark}")
+
+    print("\n=== 1a2) 컵이 모든 env 에 제대로 스폰되는가 ===")
+    print("  ★일부 env 에서 컵이 안 보인다는 관찰. 위치·개수를 전 env 에서 직접 센다.")
+    cup_local = obj.data.root_pos_w - origins
+    print(f"  x: [{cup_local[:, 0].min():.4f}, {cup_local[:, 0].max():.4f}] "
+          f"기대 [{P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE:.4f}, "
+          f"{P.CUP_SPAWN_X_CENTER + P.CUP_SPAWN_X_RANGE:.4f}]")
+    print(f"  y: [{cup_local[:, 1].min():.4f}, {cup_local[:, 1].max():.4f}] "
+          f"기대 [{P.CUP_SPAWN_Y_CENTER - P.CUP_SPAWN_Y_RANGE:.4f}, "
+          f"{P.CUP_SPAWN_Y_CENTER + P.CUP_SPAWN_Y_RANGE:.4f}]")
+    print(f"  z: [{cup_local[:, 2].min():.5f}, {cup_local[:, 2].max():.5f}] "
+          f"기대 {P.CUP_SPAWN_Z:.5f}")
+    out = (
+        (cup_local[:, 0] < P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE - 1e-3)
+        | (cup_local[:, 0] > P.CUP_SPAWN_X_CENTER + P.CUP_SPAWN_X_RANGE + 1e-3)
+        | (cup_local[:, 1] < P.CUP_SPAWN_Y_CENTER - P.CUP_SPAWN_Y_RANGE - 1e-3)
+        | (cup_local[:, 1] > P.CUP_SPAWN_Y_CENTER + P.CUP_SPAWN_Y_RANGE + 1e-3)
+    )
+    print(f"  스폰 박스 밖: {int(out.sum())}/{env.num_envs}")
+    print(f"  env 원점 간격: x {origins[:, 0].unique().numel()} 종, "
+          f"y {origins[:, 1].unique().numel()} 종")
+
+    print("\n=== 1a3) 쓰러진 컵이 종료되는가 ===")
+    print(
+        "  ★렌더에서 컵이 테이블에 쓰러진 채 종료되지 않는 것으로 관찰됐다.\n"
+        "    쓰러뜨려 놓고 원점 z 를 재서, 현재 종료 임계로 잡히는지 확인한다."
+    )
+    env.reset()
+    root = obj.data.default_root_state.clone()
+    root[:, :3] += origins
+    # ★테이블에 **얹힌** 상태로 눕혀야 한다. 스폰 높이 그대로 눕히면 컵이 공중에 뜬 채라
+    #   z 가 아직 안 내려가 종료가 안 걸린다(그렇게 재서 한 번 오판했다).
+    root[:, 2] = origins[:, 2] + P.CUP_TIPPED_ORIGIN_Z
+    root[:, 3:] = 0.0
+    # y 축 90° 회전 = 옆으로 누움
+    root[:, 3] = 0.70710678
+    root[:, 5] = 0.70710678
+    obj.write_root_pose_to_sim(root[:, :7])
+    obj.write_root_velocity_to_sim(root[:, 7:])
+    # ★리셋이 일어나기 전에 읽어야 한다. 종료가 걸리면 컵이 곧바로 정립 스폰으로 돌아가
+    #   "쓰러진 컵"을 영영 관측하지 못한다(그 자체가 수정이 먹혔다는 증거이긴 하다).
+    env.step(zero.clone())
+    lying = (obj.data.root_pos_w - origins)[:, 2]
+    lying_tilt = _quat_tilt_deg(obj.data.root_quat_w)
+    fired = int(env.termination_manager.terminated.sum())
+    print(f"  눕힌 직후 컵 원점 z = {lying.mean():.5f} (tilt {lying_tilt.mean():.1f}°)")
+    print(f"  낙하/쓰러짐 종료 임계 {P.OBJECT_DROP_HEIGHT:.5f} → "
+          f"종료 발화 {fired}/{env.num_envs} env "
+          f"{'✓ 잡힌다' if fired == env.num_envs else '← **안 잡힌다** (에피소드가 계속된다)'}")
+    print(f"  리프트 임계 {P.MINIMAL_LIFT_HEIGHT:.5f} → "
+          f"{'lifted 판정 참(!)' if lying.mean() > P.MINIMAL_LIFT_HEIGHT else 'lifted 판정 거짓'}")
+
     print("\n=== 1b) 테이블 상면 실측 (낙하 정착) ===")
     print(
         "  자산 해석(extent·BBoxCache)을 두 번 틀렸으므로, 여기서는 **물리로 잰다**.\n"

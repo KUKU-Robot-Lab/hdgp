@@ -134,21 +134,48 @@ def test_minimal_lift_height_is_measured_from_the_resting_cup_origin():
     assert src.count("P.MINIMAL_LIFT_HEIGHT") >= 3
 
 
-def test_drop_threshold_is_below_the_resting_cup_but_catches_a_fallen_one():
-    """낙하 종료는 컵이 **테이블 밖으로** 떨어졌을 때만 발화해야 한다.
+def test_drop_threshold_catches_a_tipped_cup_not_just_a_fallen_one():
+    """★종료 임계는 낙하뿐 아니라 **쓰러짐**도 잡아야 한다 — 전제가 한 번 뒤집힌 항목.
 
-    놓인 원점(0.30709)보다 낮고, 바닥에 선 컵의 원점(= bottom→원점 0.09209)보다는 높아야
-    한다. 테이블 위에서 넘어진 컵(원점 ≈ 상면 + 반경)은 잡지 않는다 — lift 레시피는
-    넘어짐을 보지 않으므로 여기서 종료시키면 학습 신호만 끊긴다.
+    처음에는 "넘어짐은 lift 레시피가 보지 않으니 종료시키지 않는다"로 뒀다. 렌더 관찰이
+    그 판단을 뒤집었다: shaker 는 가늘고 길어 잘 쓰러지는데 2지 그리퍼로는 다시 세울 수
+    없어, 쓰러진 뒤의 에피소드가 통째로 낭비된다. 게다가 원점 z 는 기울기에 둔감해서
+    (완전히 누워도 0.25199) 레퍼런스식 임계 0.165 로는 영원히 안 잡힌다.
     """
-    assert P.OBJECT_DROP_HEIGHT < P.CUP_SPAWN_Z
-    assert P.OBJECT_DROP_HEIGHT > P.CUP_BOTTOM_TO_ORIGIN
-    tipped_on_table = P.TABLE_SURFACE_Z + 0.044      # 옆으로 누운 컵의 원점 근사(반경)
-    assert P.OBJECT_DROP_HEIGHT < tipped_on_table
+    assert P.OBJECT_DROP_HEIGHT < P.CUP_SPAWN_Z, "정상 상태를 종료시키면 안 된다"
+    assert P.OBJECT_DROP_HEIGHT > P.CUP_TIPPED_ORIGIN_Z, "누운 컵을 잡지 못한다"
+    assert P.OBJECT_DROP_HEIGHT > P.CUP_BOTTOM_TO_ORIGIN, "테이블 밖 낙하도 잡아야 한다"
+    # 옛 레퍼런스식(상면 −0.05)으로 되돌아가지 않도록
+    assert not math.isclose(P.OBJECT_DROP_HEIGHT, P.TABLE_SURFACE_Z - 0.05, abs_tol=1e-6)
 
 
-def test_object_drop_threshold_is_below_table():
-    assert P.OBJECT_DROP_HEIGHT < P.TABLE_SURFACE_Z
+def test_idle_joints_get_an_explicit_pd_target():
+    """★★`init_state.joint_pos` 는 관절의 **상태**만 정하고 PD 목표는 정하지 않는다.
+
+    액션 대상이 아닌 관절(오른팔 7 + 오른손 20 + 헤드 2)은 아무도 목표를 써 주지 않아
+    목표가 0 인 채 남고, 팔이 "차렷"으로 내려가 바닥에 닿는다(렌더 관찰 → 프로브 확인:
+    목표 미지정 25.4° vs 지정 2.1°). 리셋마다 목표를 명시하는 이벤트가 반드시 있어야 한다.
+    """
+    src = _cfg_source()
+    assert "hold_idle_joints" in src, "유휴 관절 목표 고정 이벤트가 없다 — 오른팔이 내려앉는다"
+    assert "hold_joints_at_target" in src
+    assert 'mode="reset"' in src
+    # 오른팔·오른손·헤드가 모두 포함돼야 한다
+    assert "P.RIGHT_REST_JOINT_POS" in src
+    assert "head_j_pan" in src and "head_j_tilt" in src
+
+
+def test_idle_right_arm_has_enough_effort_to_hold_its_pose():
+    """★URDF 팔 effort 는 j1/j2=40, j3/j4=27, **j5~j7=7 N·m** 뿐이다.
+
+    이걸 안 올리면 stiffness 400 이 무의미하게 포화해 20 관절 손(약 1.4 kg)을 단 오른팔이
+    중력에 처지고 손끝이 테이블에 얹힌다(실측 관절 오차 최대 49.9°). 학습에 쓰이지 않는
+    배경 팔이므로 sim 에서만 강하게 잡아 둔다.
+    """
+    src = _cfg_source()
+    idle = src[src.index('"idle_right_arm"'):]
+    idle = idle[: idle.index("),")]
+    assert "effort_limit_sim" in idle, "유휴 오른팔에 effort_limit_sim 이 없다 — 처진다"
 
 
 def test_cup_spawn_z_puts_bottom_on_table():
