@@ -54,6 +54,32 @@ def _cup_upright_cos(env: "ManagerBasedRLEnv", object_cfg: SceneEntityCfg) -> to
     return 1.0 - 2.0 * (x * x + y * y)
 
 
+def perpendicular_quality(
+    env: "ManagerBasedRLEnv", robot_cfg: SceneEntityCfg, body_name: str,
+    object_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """TCP z축(그리퍼 접근축)과 컵 z축(원통 축)이 **직교**하는 정도. 1 = 90°, 0 = 평행.
+
+    ★원통을 2 지 그리퍼로 제대로 물려면 **옆에서** 접근해야 한다. 두 축이 평행하면
+      컵 축 방향으로 내려꽂은 것이라 두 손가락이 지름을 잡지 못한다.
+      test8 실측 81.2° — 방식은 맞지만 8.8° 어긋나 있었다.
+    품질 = |sin(두 축 사이 각)| 이므로 90° → 1.0, 60° → 0.87, 0° → 0.
+    """
+    robot: RigidObject = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    body_idx = robot.body_names.index(body_name)
+    w, x, y, z = robot.data.body_quat_w[:, body_idx, :].unbind(-1)
+    tcp_axis = torch.stack(
+        [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)], dim=-1
+    )
+    cw, cx, cy, cz = obj.data.root_quat_w.unbind(-1)
+    cup_axis = torch.stack(
+        [2 * (cx * cz + cw * cy), 2 * (cy * cz - cw * cx), 1 - 2 * (cx * cx + cy * cy)], dim=-1
+    )
+    cos_between = (tcp_axis * cup_axis).sum(dim=-1).abs().clamp(max=1.0)
+    return (1.0 - cos_between * cos_between).clamp(min=0.0).sqrt()      # |sin|
+
+
 def jaw_level_quality(
     env: "ManagerBasedRLEnv", robot_cfg: SceneEntityCfg, body_name: str
 ) -> torch.Tensor:
@@ -108,7 +134,7 @@ def held_with_good_pose(
 ) -> torch.Tensor:
     """든 상태에서 **자세가 좋을수록** 커지는 보너스 (0~1).
 
-    품질 = (컵이 세워진 정도) × (jaw 가 수평인 정도). 둘 다 0~1 연속.
+    품질 = (컵이 세워진 정도) × (jaw 가 수평인 정도) × (TCP축 ⊥ 컵축 정도). 전부 0~1 연속.
 
     ★★자세를 **게이트로 넣으면 안 된다** — 한 번 실패한 설계다. 컵 자세를 40° AND 게이트로
       걸었더니(test6/test7) 파지 중 필연적인 흔들림이 전부 차단돼 양의 보상이 **완전히 0**이
@@ -118,7 +144,12 @@ def held_with_good_pose(
     """
     gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
     upright = _cup_upright_cos(env, object_cfg).clamp(min=0.0)
-    return gate * upright * jaw_level_quality(env, robot_cfg, body_name)
+    return (
+        gate
+        * upright
+        * jaw_level_quality(env, robot_cfg, body_name)
+        * perpendicular_quality(env, robot_cfg, body_name, object_cfg)
+    )
 
 
 def object_is_held_and_lifted(

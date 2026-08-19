@@ -207,6 +207,13 @@ def test_grasp_pose_is_a_bonus_never_a_gate():
     src = _cfg_source()
     # 판정 게이트는 lifted & near 까지만 (test5 에서 검증된 구성)
     assert "min_upright_cos" not in src, "컵 자세를 게이트에 넣지 말 것 — 학습이 죽는다"
+    # ★"제대로 파지했다면 TCP z축과 컵 z축이 약 90°" — 원통을 옆에서 물어야 두 손가락이
+    #   지름을 잡는다. 평행이면 축 방향으로 내려꽂은 것이다(test8 실측 81.2°).
+    rewards_src = (Path(_CFG_SRC).parent / "grasp_left_rewards.py").read_text(encoding="utf-8")
+    assert "perpendicular_quality" in rewards_src
+    assert "perpendicular_quality(" in rewards_src.split("def held_with_good_pose")[1], (
+        "직교 조건이 자세 보너스에 곱해지지 않았다"
+    )
     assert "held_with_good_pose" in src
     assert "grasp_pose" in src
     assert 0.0 < P.GRASP_POSE_REWARD_WEIGHT <= 15.0 / 3.0, (
