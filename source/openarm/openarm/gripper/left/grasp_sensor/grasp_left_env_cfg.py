@@ -73,7 +73,11 @@ _CUP_MASS: float = 0.134
 class EventCfg:
     """컵 physics DR (매 reset per-env).
 
-    초기값은 중립(1.0배)이고 ADR 이 넓힌다 — right/grasp_sensor 와 동일 구조.
+    ★`randomize_rigid_body_material` 은 **절대 물성값**을 샘플링한다(배율이 아니다).
+      right/grasp_sensor 는 이 값들을 "초기=중립(1.0배)"으로 주석해 뒀는데, 그렇게 읽으면
+      restitution 1.0 = **완전 탄성 반발**을 넣게 된다. 실제로 이 태스크에서 컵이 팔에
+      닿지도 않은 채 매 스텝 미끄러져 200스텝에 44mm 드리프트했다(Isaac 실측).
+      마찰 1.0 은 계수로도 타당하지만 restitution 은 0 이어야 컵이 테이블에 가만히 앉는다.
     """
 
     object_physics_material = EventTerm(
@@ -83,7 +87,8 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg("cup", body_names=".*"),
             "static_friction_range": (1.0, 1.0),
             "dynamic_friction_range": (1.0, 1.0),
-            "restitution_range": (1.0, 1.0),
+            # ⚠ 절대값. 1.0 은 완전 탄성이라 컵이 계속 튄다 — 0 으로 둔다.
+            "restitution_range": (0.0, 0.0),
             "num_buckets": 250,
         },
     )
