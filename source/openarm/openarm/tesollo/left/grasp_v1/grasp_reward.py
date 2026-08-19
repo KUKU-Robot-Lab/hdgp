@@ -217,7 +217,13 @@ def compute_grasp_reward_terms(
     #   하드 게이트가 아니라 감쇠인 이유는 cfg 주석(cup_xy_disp_limit) 참조.
     _disp_limit = _cfg_float(cfg, "cup_xy_disp_limit", 0.0)
     if _disp_limit > 0.0:
-        disp_factor = 1.0 - (cup_xy_displacement / _disp_limit).clamp(0.0, 1.0)
+        # ★2026-08-19 선형(1-d/L) → 제곱역수. 선형은 d>=L 에서 정확히 0 이 되어
+        #   **하드 게이트와 같아진다** — 실측(vlift_fixed ep315) 밀림 0.207 vs L=0.08 에서
+        #   lift/success 보상이 0 이 되고 밀림이 300 epoch 간 전혀 줄지 않았다(gradient 소실).
+        #   제곱역수는 0 에 닿지 않아 어떤 밀림에서도 "덜 밀면 더 받는" 단조 신호가 남는다.
+        #   d=L 에서 0.5, d=2L 에서 0.2, d=0 에서 1.0.
+        _r = cup_xy_displacement / _disp_limit
+        disp_factor = 1.0 / (1.0 + _r * _r)
         lift = lift * disp_factor
         success_bonus = success_bonus * disp_factor
     action_smooth = _cfg_float(cfg, "action_smooth_weight", 0.0) * action_delta_norm

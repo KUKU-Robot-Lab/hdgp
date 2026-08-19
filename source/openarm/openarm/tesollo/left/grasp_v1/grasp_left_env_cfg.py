@@ -329,7 +329,11 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
     #   하드 게이트를 쓰지 않는 이유: 보상 86% 를 한 번에 끄면 '컵을 안 밀면서 잡는 법' 을
     #   아직 모르는 초기 구간에서 gradient 가 approach(1.6%)만 남아 탐색이 붕괴한다
     #   (reward-audit Check 1 실패, 과거 pour_gate 지연이 같은 이유로 실패).
-    cup_xy_disp_limit: float = 0.08
+    # ★2026-08-19 0.08 → 0.16. 감쇠식이 제곱역수로 바뀌면서 limit 은 "0 이 되는 지점"이
+    #   아니라 "factor 가 0.5 가 되는 지점"이 됐다. 실측 베이스라인 밀림 0.19~0.21 이므로
+    #   0.16 이면 시작 factor ≈ 0.37 — 보상이 살아 있으면서 줄일 유인이 분명하다.
+    #   (구 0.08 은 선형 감쇠 기준값이었고, 베이스라인의 절반이라 상시 0 이었다.)
+    cup_xy_disp_limit: float = 0.16
     grasp_upright_threshold_deg: float = 8.0
     success_upright_max_deg: float = 20.0
     stabilize_upright_max_deg: float = 5.0
