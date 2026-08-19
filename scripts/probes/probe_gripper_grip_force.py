@@ -90,6 +90,38 @@ def main() -> int:
     print(f"  목표 palm(첫 env)  {[round(v, 4) for v in env.palm_pose_targets[0].tolist()]}")
     print(f"  실측 TCP(첫 env)   {[round(v, 4) for v in env.tcp_pos[0].tolist()]}")
     print(f"  컵 위치(첫 env)    {[round(v, 4) for v in env.object_pos[0].tolist()]}")
+
+    # ── 자세 오차 ──────────────────────────────────────────────────
+    # palm attractor 는 원점 + ±0.25 m 축점 7개로 자세를 잰다. 즉 **1° 자세 오차가
+    # 4.4 mm 점 변위**로 환산돼 위치와 한 저울에 올라간다. 위치만 보면 원인을 못 찾는다.
+    import math as _m
+    q = env.tcp_quat[0]
+    w, x, y_, z_ = (float(v) for v in q)
+    R = [
+        [1 - 2 * (y_ * y_ + z_ * z_), 2 * (x * y_ - w * z_), 2 * (x * z_ + w * y_)],
+        [2 * (x * y_ + w * z_), 1 - 2 * (x * x + z_ * z_), 2 * (y_ * z_ - w * x)],
+        [2 * (x * z_ - w * y_), 2 * (y_ * z_ + w * x), 1 - 2 * (x * x + y_ * y_)],
+    ]
+    ey = _m.asin(max(-1.0, min(1.0, -R[2][0])))
+    ez = _m.atan2(R[1][0], R[0][0])
+    ex = _m.atan2(R[2][1], R[2][2])
+    tgt = env.palm_pose_targets[0][3:].tolist()
+    print(f"  자세 목표 euler_zyx[°] "
+          f"{[round(_m.degrees(v), 1) for v in tgt]}")
+    print(f"  자세 실측 euler_zyx[°] "
+          f"{[round(_m.degrees(v), 1) for v in (ez, ey, ex)]}")
+    print(f"  jaw축(실측) {[round(R[i][1], 3) for i in range(3)]}  "
+          f"접근축(실측) {[round(R[i][2], 3) for i in range(3)]}")
+    print(f"  ※ jaw z 성분이 0 에서 멀면 수평 파지가 안 되고 있다는 뜻")
+
+    # ── 관절 상태 ──────────────────────────────────────────────────
+    qa = robot.data.joint_pos[0, env.arm_dof_indices]
+    lo = robot.data.soft_joint_pos_limits[0, env.arm_dof_indices, 0]
+    hi = robot.data.soft_joint_pos_limits[0, env.arm_dof_indices, 1]
+    margin = torch.minimum(qa - lo, hi - qa)
+    print(f"  관절(첫 env)  {[round(float(v), 3) for v in qa]}")
+    print(f"  한계여유      {[round(float(v), 3) for v in margin]}  "
+          f"최소 {float(margin.min()):.3f} rad")
     print(f"  TCP–컵 거리        평균 "
           f"{(env.object_pos - env.tcp_pos).norm(dim=-1).mean()*1000:7.1f} mm")
     print(f"  컵 밀림            평균 "
