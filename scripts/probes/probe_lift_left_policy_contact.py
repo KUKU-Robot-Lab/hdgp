@@ -118,6 +118,9 @@ def main() -> None:
     approach_pitch = []    # 접근축(base +z)이 수평면에서 벗어난 각(도)
     cup_tilt_held = []     # 쥐고 있을 때 컵이 세워져 있는가
     axis_angle = []        # ★TCP z축 ↔ 컵 z축 사이 각(도). **90° 가 올바른 파지**
+    lin_speed = []         # 쥐고 있을 때 컵 선속도 (m/s)
+    ang_speed = []         # 쥐고 있을 때 컵 각속도 (rad/s)
+    goal_dist = []         # 컵 ↔ 목표 거리 (m)
 
     for _ in range(args.steps):
         with torch.inference_mode():
@@ -168,6 +171,18 @@ def main() -> None:
             dot = (tcp_axis * cup_axis).sum(dim=-1).abs().clamp(max=1.0)
             axis_angle.append(float(torch.rad2deg(torch.acos(dot))[held].mean()))
 
+            # ★"목표로 옮겨 정지"를 보상하려면 실제 속도 규모를 알아야 임계를 정할 수 있다.
+            lin_speed.append(float(obj.data.root_lin_vel_w.norm(dim=-1)[held].mean()))
+            ang_speed.append(float(obj.data.root_ang_vel_w.norm(dim=-1)[held].mean()))
+            cmd = raw.command_manager.get_command("object_pose")
+            from isaaclab.utils.math import combine_frame_transforms  # noqa: PLC0415
+            des_w, _ = combine_frame_transforms(
+                robot.data.root_pos_w, robot.data.root_quat_w, cmd[:, :3]
+            )
+            goal_dist.append(
+                float((des_w - obj.data.root_pos_w).norm(dim=-1)[held].mean())
+            )
+
     print("\n=== 리프트 판정 중 컵에 가장 가까운 링크 ===")
     print(f"  z 만 보는 판정(레퍼런스): {lifted_steps / max(total, 1):.1%}")
     print(f"  쥐고 있음까지 요구(신규):   {held_steps / max(total, 1):.1%}"
@@ -193,6 +208,18 @@ def main() -> None:
         print(f"  ★TCP z ↔ 컵 z   {sum(axis_angle) / n:6.1f}°   "
               f"(**90° = 원통을 옆에서 문 올바른 파지**, 0° = 축 방향으로 내려꽂음)")
         print("  → jaw 수평 이탈이 크면 컵을 비스듬히 물어 접촉이 한쪽으로 몰린다.")
+    if lin_speed:
+        n = len(lin_speed)
+        v = sum(lin_speed) / n
+        w_ = sum(ang_speed) / n
+        g = sum(goal_dist) / n
+        print("\n=== 정지 보상 임계 산정용 실측 ===")
+        print(f"  컵 선속도 {v:.3f} m/s   각속도 {w_:.3f} rad/s   목표까지 {g * 1e3:.0f} mm")
+        for name, val, std in (("선속도", v, 0.10), ("각속도", w_, 1.00), ("목표거리", g, 0.05)):
+            import math as _m
+            q = 1.0 - _m.tanh(val / std)
+            print(f"    {name}: 현재 std={std} → 품질 {q:.4f}")
+        print("  → 품질이 0 에 가까우면 보상 신호가 없어 gradient 가 생기지 않는다.")
 
     env.close()
 

@@ -191,8 +191,18 @@ def test_settling_at_the_goal_is_rewarded():
     assert 0.0 < P.SETTLE_REWARD_WEIGHT <= 15.0, (
         "정지 보너스가 lifting(15) 을 넘으면 파지보다 정지가 우선이 된다"
     )
-    # 정지 판정 정밀도는 goal_fine 수준이어야 "목표에 세워 둔다"가 성립한다
-    assert P.SETTLE_POS_STD <= 0.05
+    # ★★임계는 **실측 규모에 맞춰야** 신호가 산다. 처음에 0.10 m/s·1.00 rad/s 로 잡았다가
+    #   보상이 학습 내내 정확히 0 이었다(test10). 실측은 0.444 m/s·3.43 rad/s 였고 그
+    #   값에 옛 임계를 넣으면 품질이 0.0003·0.0021 이라 곱하면 신호가 사라진다.
+    measured_lin, measured_ang = 0.444, 3.432        # test8 정책, 쥐고 있을 때
+    assert 1.0 - math.tanh(measured_lin / P.SETTLE_LIN_VEL_STD) > 0.05, (
+        "선속도 임계가 실측 대비 너무 빡빡해 보상 신호가 죽는다"
+    )
+    assert 1.0 - math.tanh(measured_ang / P.SETTLE_ANG_VEL_STD) > 0.05, (
+        "각속도 임계가 실측 대비 너무 빡빡해 보상 신호가 죽는다"
+    )
+    # 그래도 "정지"를 요구할 만큼은 조여야 한다 — 실측값에서 품질이 이미 높으면 무의미
+    assert 1.0 - math.tanh(measured_lin / P.SETTLE_LIN_VEL_STD) < 0.5
 
 
 def test_grasp_pose_is_a_bonus_never_a_gate():
