@@ -31,6 +31,8 @@ parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument("--approach_steps", type=int, default=180, help="zero-action 접근 스텝")
 parser.add_argument("--close_steps", type=int, default=120, help="그리퍼 폐쇄 유지 스텝")
 parser.add_argument("--lift_steps", type=int, default=120, help="이후 들어올리는 스텝")
+parser.add_argument("--freeze_steps", type=int, default=0,
+                    help="팔을 홈에 완전히 고정한 채 물리만 돌리는 스텝 (씬 문제 분리용)")
 AppLauncher.add_app_launcher_args(parser)
 args, _ = parser.parse_known_args()
 args.headless = True
@@ -67,6 +69,33 @@ def main() -> int:
     print(f"=== 설정 ===")
     print(f"  task={args.task} envs={env.num_envs}  그리퍼 effort_limit_sim={effort_limit} N")
     print(f"  Fabrics cspace={env.fabric.num_joints} (팔 7 DOF 여야 한다)")
+
+    # ── 0. 팔 고정 관측 (선택) ─────────────────────────────────────
+    # ★"컵이 움직인다"의 원인을 씬/물리 vs 팔 움직임으로 **가르는** 유일한 방법이다.
+    #   env.step 은 항상 Fabrics 를 돌려 팔을 움직이므로, 여기서는 액션 파이프라인을
+    #   건너뛰고 물리만 굴린다. 팔이 가만히 있는데도 컵이 움직이면 그건 씬 문제다.
+    if args.freeze_steps > 0:
+        print("\n=== 0. 팔 고정 (액션 파이프라인 우회, 물리만) ===")
+        print(f"  {'step':>5} {'컵밀림[mm]':>11} {'컵기울기[°]':>11} {'컵 z[m]':>9}")
+        home_arm = env.q_home_arm.unsqueeze(0).repeat(env.num_envs, 1)
+        for k in range(args.freeze_steps):
+            robot.set_joint_position_target(home_arm, joint_ids=env.arm_dof_indices)
+            robot.set_joint_position_target(
+                torch.full((env.num_envs, 1), float(env.gripper_cmd_buf[0]), device=env.device),
+                joint_ids=[env.gripper_cmd_index])
+            robot.set_joint_position_target(env.idle_rest_pos, joint_ids=env.idle_dof_indices)
+            env.scene.write_data_to_sim()
+            env.sim.step(render=False)
+            env.scene.update(dt=env.physics_dt)
+            if (k + 1) % 20 == 0 or k == 0:
+                env._compute_intermediate_values()
+                disp = (env.object_pos[:, :2] - env.cup_spawn_pos[:, :2]).norm(dim=-1)
+                up = torch.zeros_like(env.object_pos); up[:, 2] = 1.0
+                from isaaclab.utils.math import quat_apply as _qa
+                tilt = torch.rad2deg(torch.acos(_qa(env.object_rot, up)[:, 2].clamp(-1, 1)))
+                print(f"  {k+1:5d} {disp.mean()*1000:11.1f} {tilt.mean():11.1f} "
+                      f"{env.object_pos[:, 2].mean():9.4f}")
+        print("  → 여기서 이미 움직이면 그리퍼와 무관한 **씬/물리** 문제다")
 
     # ── 1. zero-action 접근 ────────────────────────────────────────
     # ★수렴 실패 시 원인을 세 갈래로 **분리**해서 봐야 한다:
