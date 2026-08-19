@@ -301,26 +301,25 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #     하나라도 남기면 그쪽으로 같은 hack 이 되살아난다.
         self.rewards.lifting_object.func = rewards.object_is_held_and_lifted
         self.rewards.lifting_object.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
-        self.rewards.lifting_object.params["min_upright_cos"] = P.CUP_UPRIGHT_MIN_COS
         for _term in (
             self.rewards.object_goal_tracking,
             self.rewards.object_goal_tracking_fine_grained,
         ):
             _term.func = rewards.object_goal_distance_when_held
             _term.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
-            _term.params["min_upright_cos"] = P.CUP_UPRIGHT_MIN_COS
 
-        # ── jaw 수평 보너스 (신설) ──────────────────────────────────
-        # ★게이트가 아니라 **연속 보너스**다. jaw 수평을 AND 로 넣으면 겨우 붙기 시작한
-        #   파지가 한꺼번에 무너진다(reward-audit Check 4). 별도 term 이라 TFEvents 에
-        #   자동 로깅돼 "제대로 잡는지"를 학습 중에 관측할 수 있다는 이점도 있다.
-        self.rewards.jaw_level = RewTerm(
-            func=rewards.held_with_level_jaw,
-            weight=P.JAW_LEVEL_REWARD_WEIGHT,
+        # ── 파지 자세 보너스 (신설) ─────────────────────────────────
+        # ★★자세는 **연속 보너스로만** 유도한다. 게이트로 넣으면 파지 중 필연적인 흔들림이
+        #   전부 차단돼 양의 보상이 0 이 되고, 남은 것이 페널티뿐이라 **에피소드를 빨리
+        #   끝내는 것이 최적**이 된다. 실제로 그렇게 죽였다(test6/test7):
+        #       lifting 6.14 → 0.0000 / 에피소드 130 → 13 / 총보상 +34.9 → −0.46
+        #   별도 term 이라 TFEvents 에 로깅돼 자세 개선을 학습 중 관측할 수 있다.
+        self.rewards.grasp_pose = RewTerm(
+            func=rewards.held_with_good_pose,
+            weight=P.GRASP_POSE_REWARD_WEIGHT,
             params={
                 "minimal_height": P.MINIMAL_LIFT_HEIGHT,
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
-                "min_upright_cos": P.CUP_UPRIGHT_MIN_COS,
                 "body_name": P.GRIPPER_BASE_BODY,
             },
         )

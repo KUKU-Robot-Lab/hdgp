@@ -174,27 +174,21 @@ def test_reference_object_body_name_is_overridden():
     )
 
 
-def test_grasp_pose_quality_is_required():
-    """★"컵을 잡아도 이상하게 잡으면 안 된다" — 자세 조건.
+def test_grasp_pose_is_a_bonus_never_a_gate():
+    """★★자세는 **연속 보너스로만** 건다 — 게이트로 넣었다가 학습을 통째로 죽였다.
 
-    근접 게이트만으로는 컵을 **47.1° 기울인 채** 손가락 끝으로 걸어 올리는 파지가
-    학습된다(test4 실측: jaw 18.6° 비스듬, 그리퍼 개도 5.6 mm 로 몸통을 물지 못함).
-
-    · 컵 자세는 **게이트**(AND): 40° 초과로 기울면 성공으로 치지 않는다.
-    · jaw 수평은 **연속 보너스**: 게이트로 넣으면 겨우 붙은 파지가 한꺼번에 무너진다.
-      별도 term 이라 TFEvents 에 로깅돼 학습 중 관측도 된다.
+    컵 자세를 40° AND 게이트로 걸자(test6/test7) 파지 중 필연적인 흔들림이 전부 차단돼
+    양의 보상이 **완전히 0** 이 됐고, 남은 것이 페널티뿐이라 **에피소드를 빨리 끝내는 것이
+    최적**이 됐다:
+        lifting 6.14 → 0.0000 / 에피소드 길이 130 → 13 / 총보상 +34.9 → −0.46
+    test6(옛 홈)·test7(새 홈)이 똑같이 붕괴해 원인이 홈이 아니라 게이트임이 갈렸다.
     """
     src = _cfg_source()
-    # 컵 자세 게이트가 세 판정 term 전부에 들어갔는가
-    assert src.count("P.CUP_UPRIGHT_MIN_COS") >= 3
-    assert 0.0 < P.CUP_UPRIGHT_MIN_COS < 1.0
-    assert math.isclose(
-        P.CUP_UPRIGHT_MIN_COS, math.cos(math.radians(P.CUP_UPRIGHT_MAX_TILT_DEG)), abs_tol=1e-9
-    )
-    # jaw 는 게이트가 아니라 보너스여야 한다
-    assert "held_with_level_jaw" in src
-    assert "jaw_level" in src
-    assert 0.0 < P.JAW_LEVEL_REWARD_WEIGHT <= 15.0 / 3.0, (
+    # 판정 게이트는 lifted & near 까지만 (test5 에서 검증된 구성)
+    assert "min_upright_cos" not in src, "컵 자세를 게이트에 넣지 말 것 — 학습이 죽는다"
+    assert "held_with_good_pose" in src
+    assert "grasp_pose" in src
+    assert 0.0 < P.GRASP_POSE_REWARD_WEIGHT <= 15.0 / 3.0, (
         "자세 보너스가 lifting(15) 대비 1/3 을 넘으면 자세만 맞추는 국소최적이 생긴다"
     )
 

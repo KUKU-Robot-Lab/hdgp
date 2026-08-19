@@ -97,24 +97,28 @@ def _held(
     return (lifted & near & upright).float()
 
 
-def held_with_level_jaw(
+def held_with_good_pose(
     env: "ManagerBasedRLEnv",
     minimal_height: float,
     max_ee_distance: float,
-    min_upright_cos: float,
     body_name: str,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """제대로 든 상태에서 **jaw 가 수평일수록** 커지는 보너스 (0~1).
+    """든 상태에서 **자세가 좋을수록** 커지는 보너스 (0~1).
 
-    게이트가 아니라 **연속 보너스**로 둔 이유: jaw 수평을 AND 게이트로 넣으면 겨우 붙기
-    시작한 파지가 한꺼번에 무너질 수 있다(reward-audit Check 4). 보너스면 "조금 나아지면
-    조금 더 받는" gradient 가 생기고, 별도 term 이라 TFEvents 에 자동 로깅돼 관측도 된다.
+    품질 = (컵이 세워진 정도) × (jaw 가 수평인 정도). 둘 다 0~1 연속.
+
+    ★★자세를 **게이트로 넣으면 안 된다** — 한 번 실패한 설계다. 컵 자세를 40° AND 게이트로
+      걸었더니(test6/test7) 파지 중 필연적인 흔들림이 전부 차단돼 양의 보상이 **완전히 0**이
+      됐고, 남은 것이 페널티뿐이라 **에피소드를 빨리 끝내는 것이 최적**이 됐다:
+          lifting 6.14 → 0.0000 / 에피소드 길이 130 → 13 / 총보상 +34.9 → −0.46
+      학습이 시작조차 못 한다. 자세는 반드시 연속 보너스로만 유도한다.
     """
-    gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
-    return gate * jaw_level_quality(env, robot_cfg, body_name)
+    gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
+    upright = _cup_upright_cos(env, object_cfg).clamp(min=0.0)
+    return gate * upright * jaw_level_quality(env, robot_cfg, body_name)
 
 
 def object_is_held_and_lifted(
