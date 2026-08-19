@@ -102,9 +102,19 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 },
             ),
             actuators={
-                # 팔: IsaacLab OpenArm 값(80/4). ★400/80 은 IK 추종용이라 쓰지 않는다.
+                # 팔: IsaacLab OpenArm 값. ★400/80 은 IK 추종용이라 쓰지 않는다.
+                # ★★`velocity_limit_sim` 을 반드시 함께 준다. 레퍼런스 `OPENARM_UNI_CFG` 가
+                #   명시하는데 처음 이식할 때 빠뜨렸고, 그러면 USD/URDF 기본값(5.4~20.9 rad/s,
+                #   레퍼런스의 2.5~9.6 배)이 쓰인다. damping 이 4 뿐이라 팔이 과속으로 오버슈트
+                #   하며 흔들리고("시작할 때 진자처럼 흔들린다"는 렌더 관찰), TCP 로 컵을
+                #   정조준할 수 없게 된다. 20.9 rad/s 면 한 스텝(0.02 s)에 0.42 rad — 액션
+                #   범위(±0.5 rad)를 한 스텝에 소화해 버린다. 2.175 면 0.0435 rad 로 부드럽다.
                 "left_arm": ImplicitActuatorCfg(
-                    joint_names_expr=["l_aj_[1-7]"], stiffness=80.0, damping=4.0,
+                    joint_names_expr=["l_aj_[1-7]"],
+                    velocity_limit_sim=P.ARM_VELOCITY_LIMIT,
+                    effort_limit_sim=P.ARM_EFFORT_LIMIT,
+                    stiffness=80.0,
+                    damping=4.0,
                 ),
                 # 그리퍼: 두 관절 모두 커버리지를 준다(없으면 무구동 자유이동).
                 # 지령은 gripper_1 에만 간다 — mimic 과 싸우지 않게.

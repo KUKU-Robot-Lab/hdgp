@@ -174,6 +174,42 @@ def test_reference_object_body_name_is_overridden():
     )
 
 
+def test_left_arm_velocity_limit_matches_the_reference():
+    """★★레퍼런스 `OPENARM_UNI_CFG` 는 팔에 velocity 2.175/2.175/2.61 을 명시한다.
+
+    이걸 빠뜨리면 URDF 기본값(5.4~20.9 rad/s)이 쓰이는데, damping 이 4 뿐이라 팔이
+    과속으로 오버슈트하며 진동한다("시작할 때 진자처럼 흔들린다"는 렌더 관찰).
+    20.9 rad/s 는 한 스텝(0.02 s)에 0.42 rad — 액션 범위(±0.5 rad)를 한 스텝에 소화한다.
+    """
+    src = _cfg_source()
+    assert "velocity_limit_sim=P.ARM_VELOCITY_LIMIT" in src
+    assert set(P.ARM_VELOCITY_LIMIT.values()) == {2.175, 2.61}
+    assert set(P.ARM_EFFORT_LIMIT.values()) == {40.0, 27.0, 7.0}
+    # URDF 기본값으로 되돌아가지 않도록
+    assert max(P.ARM_VELOCITY_LIMIT.values()) < 5.0
+
+
+@pytest.mark.skipif(not _ROBOT_URDF.is_file(), reason="로봇 URDF 없음")
+def test_tcp_offset_lands_inside_the_fingers():
+    """TCP 가 손가락 범위 밖이면 정책이 조준하는 점과 실제 파지점이 어긋난다.
+
+    URDF 기준: 손가락 링크 원점은 base 에서 z=0.015, 손가락 메시는 링크 기준
+    z∈[-0.0145, +0.0804] → base 기준 z∈[+0.0005, +0.0954]. TCP 는 +0.08 로 그 안이다.
+    """
+    root = ET.parse(_ROBOT_URDF).getroot()
+    tcp_joint = next(
+        j for j in root.iter("joint") if j.get("name") == "l_hj_gripper_tcp"
+    )
+    origin = tcp_joint.find("origin")
+    assert origin is not None
+    xyz = [float(v) for v in (origin.get("xyz") or "").split()]
+    assert math.isclose(xyz[2], P.TCP_OFFSET_IN_BASE_Z, abs_tol=1e-6)
+    assert xyz[0] == 0.0 and xyz[1] == 0.0, "TCP 가 그리퍼 중심선에서 벗어났다"
+    # 손가락 메시 범위(base 기준, 실측) 안이어야 한다
+    finger_span = (0.0005, 0.0954)
+    assert finger_span[0] < P.TCP_OFFSET_IN_BASE_Z < finger_span[1]
+
+
 def test_idle_joints_get_an_explicit_pd_target():
     """★★`init_state.joint_pos` 는 관절의 **상태**만 정하고 PD 목표는 정하지 않는다.
 

@@ -250,6 +250,100 @@ def main() -> None:
     print(f"  리프트 임계 {P.MINIMAL_LIFT_HEIGHT:.5f} → "
           f"{'lifted 판정 참(!)' if lying.mean() > P.MINIMAL_LIFT_HEIGHT else 'lifted 판정 거짓'}")
 
+    print("\n=== 1a4) 왼팔이 리셋 직후 진동하는가 (진자운동 관찰) ===")
+    print(
+        "  ★렌더에서 '시작할 때 왼팔이 진자처럼 흔들린다'는 관찰. 감쇠가 부족하거나 속도\n"
+        "    제한이 없으면 팔이 오버슈트하며 흔들리고, 그러면 TCP 로 컵을 정조준할 수 없다."
+    )
+    for name, act in robot.actuators.items():
+        if name != "left_arm":
+            continue
+        def _rng(v):
+            try:
+                return f"{float(v.min()):.3f}~{float(v.max()):.3f}"
+            except Exception:
+                return str(v)
+        print(f"  [left_arm] stiffness {_rng(act.stiffness)}  damping {_rng(act.damping)}  "
+              f"effort {_rng(act.effort_limit)}  velocity {_rng(act.velocity_limit)}")
+    print("  (레퍼런스 OpenArm: stiffness 80 / damping 4 / effort 40·27·7 / "
+          "**velocity 2.175·2.175·2.61**)")
+
+    env.reset()
+    l_home = torch.tensor(
+        [P.LEFT_ARM_HOME_JOINT_POS[n] for n in P.LEFT_ARM_JOINT_NAMES], device=env.device
+    )
+    peak = torch.zeros(len(P.LEFT_ARM_JOINT_NAMES), device=env.device)
+    sign_flips = torch.zeros(len(P.LEFT_ARM_JOINT_NAMES), device=env.device)
+    prev_v = None
+    max_speed = torch.zeros(len(P.LEFT_ARM_JOINT_NAMES), device=env.device)
+    print("\n  step | 관절별 |오차|(deg) — l_aj_1..7")
+    for i in range(80):
+        env.step(zero.clone())
+        err = (robot.data.joint_pos[:, arm_ids] - l_home).mean(dim=0)
+        vel = robot.data.joint_vel[:, arm_ids].mean(dim=0)
+        peak = torch.maximum(peak, torch.rad2deg(err.abs()))
+        max_speed = torch.maximum(max_speed, vel.abs())
+        if prev_v is not None:
+            sign_flips += ((vel * prev_v) < 0).float()   # 속도 부호 반전 = 진동 1회
+        prev_v = vel.clone()
+        if i < 6 or i % 20 == 0:
+            print("  " + f"{i:4d} | " + " ".join(f"{v:6.2f}" for v in torch.rad2deg(err.abs())))
+    print("  ─────────────────────────────────────────────────────────")
+    print("  최대|오차| | " + " ".join(f"{v:6.2f}" for v in peak))
+    print("  속도반전   | " + " ".join(f"{int(v):6d}" for v in sign_flips))
+    print("  최대속도   | " + " ".join(f"{v:6.2f}" for v in max_speed) + "  (rad/s)")
+    print("  → 속도 부호 반전이 관절당 3 회 이상이면 **진동**이다. 최대속도가 레퍼런스 제한"
+          "(2.175/2.61)을 넘으면 제한이 안 걸린 것이다.")
+
+    # ★zero action 은 진동을 거의 안 드러낸다. 정책이 큰 액션을 낼 때가 진짜 시험이다.
+    #   액션 ±1 = 관절 목표 ±0.5 rad 계단 입력을 주고 오버슈트/정착을 본다.
+    print("\n  [계단 응답] 액션 +1(=+0.5 rad) → 40 스텝 → 액션 −1 → 40 스텝")
+    env.reset()
+    for _ in range(3):
+        env.step(zero.clone())
+    for tag, val in (("+0.5 rad", 1.0), ("-0.5 rad", -1.0)):
+        # ★phase 마다 초기화한다. 누적하면 phase 전환의 큰 이동이 오버슈트로 잡힌다.
+        act = zero.clone()
+        act[:, :7] = val
+        want = l_home + 0.5 * val
+        over = torch.zeros(len(P.LEFT_ARM_JOINT_NAMES), device=env.device)
+        flips = torch.zeros(len(P.LEFT_ARM_JOINT_NAMES), device=env.device)
+        peak_v = torch.zeros(len(P.LEFT_ARM_JOINT_NAMES), device=env.device)
+        prev_v = None
+        for _ in range(60):
+            env.step(act.clone())
+            err = (robot.data.joint_pos[:, arm_ids] - want).mean(dim=0)
+            vel = robot.data.joint_vel[:, arm_ids].mean(dim=0)
+            # 오버슈트 = 목표를 **지나친** 양 (val 부호 방향으로 초과)
+            over = torch.maximum(over, torch.rad2deg(torch.clamp(err * val, min=0.0)))
+            peak_v = torch.maximum(peak_v, vel.abs())
+            if prev_v is not None:
+                flips += ((vel * prev_v) < 0).float()
+            prev_v = vel.clone()
+        settle = torch.rad2deg((robot.data.joint_pos[:, arm_ids] - want).mean(dim=0).abs())
+        print(f"  [{tag}]")
+        print("    오버슈트 | " + " ".join(f"{v:6.2f}" for v in over) + "  (deg)")
+        print("    속도반전 | " + " ".join(f"{int(v):6d}" for v in flips))
+        print("    최대속도 | " + " ".join(f"{v:6.2f}" for v in peak_v) + "  (rad/s)")
+        print("    정착오차 | " + " ".join(f"{v:6.2f}" for v in settle) + "  (deg)")
+    print("  → 오버슈트가 크고 반전이 잦으면 감쇠·속도제한이 부족한 것이다.")
+
+    print("\n=== 1a5) TCP 가 손가락 사이 파지점에 있는가 ===")
+    print("  ★'TCP 가 컵을 정조준하지 않는다'는 관찰. TCP 정의부터 확인한다 —")
+    print("    TCP 가 엉뚱한 점이면 정책은 그 점을 컵에 맞추고 그리퍼는 빗나간다.")
+    fing_ids = [i for i, n in enumerate(robot.body_names)
+                if n in ("l_hl_gripper_right_finger", "l_hl_gripper_left_finger")]
+    mid = robot.data.body_pos_w[:, fing_ids, :].mean(dim=1) - origins
+    tcp = ee.data.target_pos_w[:, 0, :] - origins
+    base_i = robot.body_names.index(P.GRIPPER_BASE_BODY)
+    base = robot.data.body_pos_w[:, base_i, :] - origins
+    print(f"  gripper_base  {base.mean(dim=0).tolist()}")
+    print(f"  손가락 원점 중점 {mid.mean(dim=0).tolist()}")
+    print(f"  TCP           {tcp.mean(dim=0).tolist()}")
+    print(f"  |TCP - base| = {(tcp - base).norm(dim=-1).mean() * 1e3:.1f} mm "
+          f"(URDF l_hj_gripper_tcp origin = {P.TCP_OFFSET_IN_BASE_Z * 1e3:.0f} mm)")
+    print(f"  |TCP - 손가락중점| = {(tcp - mid).norm(dim=-1).mean() * 1e3:.1f} mm")
+
     print("\n=== 1b) 테이블 상면 실측 (낙하 정착) ===")
     print(
         "  자산 해석(extent·BBoxCache)을 두 번 틀렸으므로, 여기서는 **물리로 잰다**.\n"
