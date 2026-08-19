@@ -124,23 +124,23 @@ def test_lift_latch_gate_disabled_envelope_via_reward() -> None:
 
 
 def test_envelope_credited_in_grasp_and_lift_reward() -> None:
-    # envelope(중간/원위 wrap)을 grasp/lift 보상에 credit → tip-farming 차단.
+    """2026-08-20 재설계: 감쌈 유도가 contact_envelope_credit 한 곳으로 통합됐다.
+
+    구 계약(grasp_envelope_credit + lift_envelope_mix + wrap_retention 3원화)은 폐기.
+    손끝 항이 grasp quality 의 95% 를 차지해 손끝 파지가 최적해였던 것이 실패 원인이라,
+    envelope 비중이 지배적(기본 0.75)이어야 한다.
+    """
     core = (
         Path(__file__).resolve().parents[1] / "grasp_reward.py"
     ).read_text(encoding="utf-8")
     env = _text("grasp_right_env.py")
 
-    # 전용 모듈: envelope_frac 는 graded_contact 용으로 남아 있다
-    assert "envelope_frac: torch.Tensor | None = None" in core
-    # grasp 보상의 envelope 비중은 cfg knob(grasp_envelope_credit, 기본 0.40)로 노출된다.
-    # ※구 계약은 리터럴 "0.40 * envelope_frac" 였으나 knob 화되며 사라졌다.
-    assert '_cfg_float(cfg, "grasp_envelope_credit", 0.40)' in core
-    # tip 항은 (1-credit)/0.60 으로 비례 축소 → 합=1 유지 → credit 을 올려도 grasp 최대치 불변
-    # (감쌈만 하고 안 드는 국소최적을 구조적으로 차단; reward-audit Check1 근거)
-    assert "_tip_scale = (1.0 - _ecred) / 0.60" in core
-    # lift/stabilize graded_contact 가 envelope-aware (mix 는 lift_envelope_mix knob)
-    assert '_cfg_float(cfg, "lift_envelope_mix", 0.5)' in core
-    assert "(1.0 - _emix) * graded_contact + _emix * env_quality" in core
+    assert '_cfg_float(cfg, "contact_envelope_credit", 0.75)' in core
+    assert "(1.0 - _env_credit) * tip_contact_frac" in core
+    assert "_env_credit * envelope_frac" in core
+    # 구 3원화 knob 이 되살아나면 실패
+    for dead in ("grasp_envelope_credit", "lift_envelope_mix", "wrap_retention_loss_weight"):
+        assert dead not in core, f"구 knob 부활: {dead}"
     # env: 중간·원위 마디 접촉으로 envelope_frac 계산해 전달
     assert "middle_binary_contact_buf.float().mean" in env
     assert "distal_binary_contact_buf.float().mean" in env
@@ -148,34 +148,22 @@ def test_envelope_credited_in_grasp_and_lift_reward() -> None:
 
 
 def test_wrap_depth_and_retention_contract() -> None:
-    """08.16 감쌈 깊이(per-finger mid AND distal)와 래치 대비 유지 페널티 계약.
+    """2026-08-20: 감쌈 유지 페널티 제거를 고정한다.
 
-    배경: ADR 만렙 후 난이도가 상수인 구간에서도 감쌈만 단조 침식했다. 원인은
-    ①grasp(감쌈 credit)가 pre_lift_gate 로 리프트 순간 꺼지고 ②post_lift 페널티가
-    grip_frac(마디 무관 OR)이라 중간마디를 잃어도 비용이 0 이었던 것.
+    감쌈을 잃으면 contact_quality 가 곧바로 떨어져 grasp 보상이 자동 감소하므로
+    별도 페널티는 중복이었다(구 설계 페널티 5개 → 2개). 래치 스냅샷 기준선
+    (wrap_at_latch)도 보상에서 빠졌다 — 다만 **진단 로깅으로는 유지**한다.
     """
     core = (
         Path(__file__).resolve().parents[1] / "grasp_reward.py"
     ).read_text(encoding="utf-8")
     env = _text("grasp_right_env.py")
 
-    # grasp_v1 전용 모듈이므로 optional 이 아니라 **필수 인자**다(공유 core 호환 불필요).
-    assert "wrap_frac: torch.Tensor," in core
-    assert "wrap_at_latch: torch.Tensor," in core
-    # grasp credit 이 느슨한 envelope_frac 이 아니라 깊이(wrap_frac)를 직접 참조
-    assert "+ _ecred * wrap_frac.clamp(0.0, 1.0)" in core
-    assert "_ecred * envelope_frac.clamp(0.0, 1.0)" not in core
-    # 유지 페널티는 **절대 깊이가 아니라 래치 대비 감소분** — 유지하면 비용 0이라
-    # 보상 기준선이 이동하지 않는다(절대 깊이 처벌은 리프트를 억제해 REVISE 됨)
-    assert "torch.relu(wrap_at_latch.clamp(0.0, 1.0) - wrap_frac.clamp(0.0, 1.0))" in core
-    assert 'wrap_retention_loss_weight' in core
-
-    # env: per-finger AND 로 깊이 산출 + 래치 순간 스냅샷 + 리셋 클리어
-    assert "middle_binary_contact_buf & self.distal_binary_contact_buf" in env
-    assert "self.wrap_at_latch_buf = torch.where(" in env
-    assert "self.wrap_at_latch_buf[env_ids] = 0.0" in env
-    # 회피 경로("얕게 래치하면 잃을 게 없다") 감시용 로깅이 있어야 한다
+    for dead in ("wrap_at_latch", "wrap_frac", "post_lift_contact_loss"):
+        assert dead not in core, f"보상에서 제거됐어야 할 항: {dead}"
+    # 로깅은 유지 — 감쌈 침식 진단은 계속 필요하다
     assert 'self.extras["contact/wrap_at_latch"]' in env
+    assert "middle_binary_contact_buf & self.distal_binary_contact_buf" in env
 
 
 def test_retighten_and_tipping_signal_contract() -> None:
@@ -193,28 +181,22 @@ def test_retighten_and_tipping_signal_contract() -> None:
 
 
 def test_post_lift_and_success_are_grip_consistent() -> None:
-    # envelope wrap이 tip을 mid/dist로 옮겨도 처벌하지 않도록 post_lift 페널티·success를
-    # grip(임의 마디 접촉) 기준으로. tip-only면 wrap↔tip 진동 유발.
-    core = (
-        Path(__file__).resolve().parents[1] / "grasp_reward.py"
-    ).read_text(encoding="utf-8")
+    """success_flag 는 보상에서 분리돼 ADR·warm export·로깅 전용으로 남는다.
+
+    2026-08-20 재설계에서 success_bonus 보상 항은 hold 로 대체됐지만, success_flag
+    자체는 파이프라인 하류(ADR 트리거, warm 뱅크 입구)가 쓰므로 정의가 유지돼야 한다.
+    """
     env = _text("grasp_right_env.py")
 
-    # grip_frac(마디 무관 OR)은 breadth 유지용으로 그대로 사용
-    assert "grip_frac: torch.Tensor | None = None" in core
-    # post_lift_contact_loss가 grip_frac 사용
-    assert "tip_contact_frac if grip_frac is None else grip_frac" in core
-    # env: 임의 마디(tip|middle|distal) 접촉 손가락 수
-    assert "num_grip_fingers" in env
-    assert "grip_frac=grip_frac" in env
-    # success_now가 grip 기반(full_grip) + 엄지-컵 접촉 명시 요구(거짓 4지 그립 배제).
-    # distal/middle Cup-only 필터 후 num_grip_fingers>=success_min_grip_fingers & thumb_cup_grip.
-    assert "num_grip_fingers >= int(self.cfg.success_min_grip_fingers)" in env
-    assert "thumb_cup_grip = any_finger_contact[:, 0]" in env
-    assert "& full_grip_bool" in env
+    assert "self.success_flag" in env
+    assert "adr/trigger_metric" in env
+    # 실리프트 증거(P5) 유지 — 들지 않은 latch 가 ADR 을 오염시키던 것을 막는다
+    assert "_lifted_evidence" in env
+    assert "_upright_evidence" in env
 
 
 def test_reward_uses_rh56f1_shared_core_terms() -> None:
+    """2026-08-20 재설계 계약: 4항 + 페널티 2개, latch 게이트 0개."""
     cfg = _text("grasp_right_env_cfg.py")
     env = _text("grasp_right_env.py")
     reward_body = env.split("def _get_rewards", 1)[1].split("return total", 1)[0]
@@ -222,33 +204,27 @@ def test_reward_uses_rh56f1_shared_core_terms() -> None:
     for name in (
         "approach_weight",
         "grasp_weight",
+        "contact_envelope_credit",
+        "lift_weight",
+        "hold_weight",
+        "upright_soft_scale_deg",
+        "push_penalty_weight",
+        "action_smooth_weight",
+    ):
+        assert name in cfg, f"신 가중치 누락: {name}"
+
+    # 구 8항 가중치가 되살아나면 실패
+    for dead in (
         "lift_reward_weight",
         "stabilize_weight",
         "success_bonus_weight",
         "post_lift_contact_loss_weight",
-        "action_smooth_weight",
         "stability_reward_weight",
+        "approach_xy_penalty_weight",
     ):
-        assert name in cfg
+        assert dead not in cfg, f"구 가중치 부활: {dead}"
 
-    for term in (
-        "compute_grasp_reward_terms(",
-        'reward_terms["approach"]',
-        'reward_terms["grasp"]',
-        'reward_terms["lift"]',
-        'reward_terms["stabilize"]',
-        'reward_terms["success_bonus"]',
-        'reward_terms["post_lift_contact_loss"]',
-        'reward_terms["action_smooth"]',
-        'reward_terms["stability"]',
-    ):
-        assert term in reward_body
-
-    for removed in (
-        "r1b_force_balance",
-        "r1c_full_grasp",
-        "r2_tip_bonus",
-        "r5_quality_lift",
-        "prelift_rim_lift_penalty",
-    ):
-        assert removed not in reward_body
+    assert "compute_grasp_reward_terms(" in reward_body
+    # 항·factor 를 전부 로깅한다(구 설계는 곱셈 factor 를 하나도 안 내보내 진단 불가였다)
+    assert 'self.extras[f"reward/{_k}"]' in reward_body
+    assert 'self.extras[f"reward_factor/{_k}"]' in reward_body

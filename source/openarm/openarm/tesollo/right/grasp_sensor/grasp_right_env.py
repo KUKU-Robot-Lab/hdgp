@@ -65,7 +65,6 @@ from openarm.common.grasp_logging import action_policy_scalars, joint_state_scal
 from .grasp_reward import compute_grasp_reward_terms
 from openarm.common.grasp_v2_contract import (
     compute_action_delta_norm,
-    compute_grasp_v2_stability,
 )
 
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
@@ -367,10 +366,6 @@ class GraspRightEnv(DirectRLEnv):
 
         self.middle_contact_force_raw  = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, device=self.device)
         self.middle_binary_contact_buf = torch.zeros(self.num_envs, NUM_MIDDLE_SENSORS, dtype=torch.bool, device=self.device)
-        self.reward_contact_hold_buf = torch.zeros(
-            self.num_envs, dtype=torch.long, device=self.device
-        )
-        self._prev_reward_contacts_buf = torch.zeros(self.num_envs, device=self.device)
 
         # ----------------------------------------------------------------
         # 기타 버퍼
@@ -1352,32 +1347,12 @@ class GraspRightEnv(DirectRLEnv):
         tip_contact_frac = (
             self.num_contacts_buf.float() / float(NUM_FINGERTIPS)
         ).clamp(max=1.0)
-        persistent_grasp = (
-            self.num_contacts_buf >= int(self.cfg.stage0_lift_start_min_contacts)
-        )
-        self.reward_contact_hold_buf = torch.where(
-            persistent_grasp,
-            self.reward_contact_hold_buf + 1,
-            torch.zeros_like(self.reward_contact_hold_buf),
-        )
-        contact_persistence_frac = (
-            self.reward_contact_hold_buf.float()
-            / max(float(self.cfg.grasp_contact_persistence_reward_steps), 1.0)
-        ).clamp(max=1.0)
-        # envelope wrap 품질: 중간(rl_dg_X_3)·원위(rl_dg_X_4) 마디 접촉 비율
-        # → grasp/lift 보상이 손끝-only가 아닌 진짜 감싸기를 credit하도록 전달
+        # envelope wrap 품질: 중간(rl_dg_X_3)·원위(rl_dg_X_4) 마디 접촉 비율.
+        # ★2026-08-20 재설계에서 이것이 grasp 보상의 **지배 성분**(credit 0.75)이 됐다 —
+        #   구 설계는 손끝 항이 95% 라 손끝 파지가 최적해였다.
         middle_frac = self.middle_binary_contact_buf.float().mean(dim=-1)
         distal_frac = self.distal_binary_contact_buf.float().mean(dim=-1)
         envelope_frac = 0.5 * (middle_frac + distal_frac)
-        # grip_frac: 임의 마디(tip|middle|distal) 접촉 손가락 비율. envelope wrap이 tip을
-        # mid/dist로 옮겨도 그립으로 인정 → post_lift 페널티·success가 wrap을 처벌 안 함.
-        any_finger_contact = (
-            self.binary_contact_buf
-            | self.middle_binary_contact_buf
-            | self.distal_binary_contact_buf
-        )
-        num_grip_fingers = any_finger_contact.sum(dim=-1)
-        grip_frac = num_grip_fingers.float() / float(NUM_FINGERTIPS)
 
         z_local = torch.zeros(self.num_envs, 3, device=self.device)
         z_local[:, 2] = 1.0
@@ -1385,63 +1360,22 @@ class GraspRightEnv(DirectRLEnv):
         cup_tilt_deg = torch.rad2deg(
             torch.acos(cup_z_world[:, 2].clamp(min=-1.0, max=1.0))
         )
-        upright_quality = torch.exp(
-            -cup_tilt_deg
-            / max(float(self.cfg.stabilize_upright_reward_scale_deg), 1e-6)
-        )
         action_delta_norm = compute_action_delta_norm(self.actions, self.prev_actions)
-        contact_delta = (
-            self.num_contacts_buf.float() - self._prev_reward_contacts_buf
-        ).abs()
-        stability = compute_grasp_v2_stability(
-            cup_lin_vel=self.cup.data.root_lin_vel_w,
-            cup_ang_vel=self.cup.data.root_ang_vel_w,
-            contact_delta=contact_delta,
-            action_delta_norm=action_delta_norm,
-            cfg=self.cfg,
-        )
-        # success: 엄지-컵 접촉을 명시 요구 + 나머지 완화(≥success_min_grip_fingers).
-        # distal/middle 이 Cup-only 필터가 됐으므로 any_finger_contact[:,0](엄지)는 진짜
-        # 컵 접촉만 True. 전손가락 동시(>=5)는 wrap 시 tip 감소로 진동 이력이 있어 완화하되,
-        # 엄지 컵 접촉(thumb_cup_grip)을 AND 강제해 "엄지 없는 4지 그립"을 success 에서 배제.
-        thumb_cup_grip = any_finger_contact[:, 0]
-        full_grip_bool = (
-            num_grip_fingers >= int(self.cfg.success_min_grip_fingers)
-        ) & thumb_cup_grip
-        success_now = (
-            self.is_lift_phase
-            & (cup_height_delta >= self.cfg.lift_success_height)
-            & full_grip_bool
-            & (cup_tilt_deg <= self.cfg.stabilize_upright_max_deg)
-            & stability.stable
-        )
 
-        total, reward_terms, _ = compute_grasp_reward_terms(
-            num_tip_contacts=self.num_contacts_buf,
+        # ★2026-08-20 리워드 전면 재설계(simple is best): 4항+페널티2, 곱셈 최대 2겹,
+        #   latch 게이트 0개. latch/램프 제어와 success_flag(ADR·warm-export)는 불변이고
+        #   reward 만 물리 상태(거리/접촉/높이/기울기)로 단순화했다. 상세는 grasp_reward.py.
+        total, reward_terms, reward_factors = compute_grasp_reward_terms(
             tip_contact_frac=tip_contact_frac,
-            full_tip_contact=full_tip_contact,
-            contact_persistence_frac=contact_persistence_frac,
             envelope_frac=envelope_frac,
-            grip_frac=grip_frac,
-            # 08.16 감쌈 깊이(per-finger mid AND distal)와 래치 기준선. 둘 다 주어져야
-            # 유지 페널티가 켜진다 — 미주입이면 core 가 기존 동작 그대로 돈다.
-            wrap_frac=self.wrap_frac_buf,
-            wrap_at_latch=self.wrap_at_latch_buf,
             palm_to_cup_dist=palm_to_cup_dist,
             fingertip_side_dist=fingertip_side_dist,
             cup_height_delta=cup_height_delta,
             cup_xy_displacement=cup_xy_displacement,
             cup_tilt_deg=cup_tilt_deg,
-            upright_quality=upright_quality,
-            lift_latched=self.is_lift_phase,
             action_delta_norm=action_delta_norm,
-            stabilize_reward_gate=self.is_lift_phase,
-            success_now=success_now,
-            stable=stability.stable,
-            stability_quality=stability.quality,
             cfg=self.cfg,
         )
-        self._prev_reward_contacts_buf.copy_(self.num_contacts_buf.float())
 
         _ep_success_rate = self._successful_episodes / max(self._total_episodes, 1)
         if self.grasp_adr is not None:
@@ -1465,14 +1399,13 @@ class GraspRightEnv(DirectRLEnv):
                         global_env_step_count=0,
                     )
 
-        self.extras["reward/approach"] = reward_terms["approach"].mean()
-        self.extras["reward/grasp"] = reward_terms["grasp"].mean()
-        self.extras["reward/lift"] = reward_terms["lift"].mean()
-        self.extras["reward/stabilize"] = reward_terms["stabilize"].mean()
-        self.extras["reward/success_bonus"] = reward_terms["success_bonus"].mean()
-        self.extras["reward/post_lift_contact_loss"] = reward_terms["post_lift_contact_loss"].mean()
-        self.extras["reward/action_smooth"] = reward_terms["action_smooth"].mean()
-        self.extras["reward/stability"] = reward_terms["stability"].mean()
+        # ★2026-08-20 항 6개 전부 + **곱셈 factor 4종**을 로깅한다. 구 설계는 factor 가
+        #   하나도 안 나가 "어느 factor 가 lift 를 죽이는지" 를 로그로 분해할 수 없었고,
+        #   매번 GPU probe 를 띄워야 했다(3연속 실패 진단 비용의 대부분).
+        for _k, _v in reward_terms.items():
+            self.extras[f"reward/{_k}"] = _v.mean()
+        for _k, _v in reward_factors.items():
+            self.extras[f"reward_factor/{_k}"] = _v.mean()
         self.extras["reward/total"] = total.mean()
         self.extras["task/lifted_rate"] = (
             cup_height_delta >= self.cfg.lift_success_height
@@ -2150,8 +2083,6 @@ class GraspRightEnv(DirectRLEnv):
         self.distal_binary_contact_buf[env_ids] = False
         self.middle_contact_force_raw[env_ids].zero_()
         self.middle_binary_contact_buf[env_ids] = False
-        self.reward_contact_hold_buf[env_ids] = 0
-        self._prev_reward_contacts_buf[env_ids] = 0.0
         self.success_flag[env_ids] = False
         self.transfer_entry_grasp_success_buf[env_ids] = False
         self.lift_ready_latched_buf[env_ids] = False

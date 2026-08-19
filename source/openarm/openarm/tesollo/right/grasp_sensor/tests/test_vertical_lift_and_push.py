@@ -49,20 +49,36 @@ def test_reward_normalizer_matches_lift_height():
 
 
 def test_cup_push_decay_enabled():
+    """2026-08-20: 컵 밀기 억제가 **곱셈 감쇠 → 덧셈 페널티**로 바뀌었다.
+
+    구 disp_factor(=1-clamp(disp/limit))는 lift/success_bonus 에 곱해져서
+    실측 밀림 0.084 에서 정확히 0 이 됐다 = 하드게이트. 가중치 50짜리 두 항이
+    통째로 소거되고, 감쇠 없는 grasp(12.0)만 남아 손끝 파지가 최적해가 됐다.
+    신 설계는 상한 있는 덧셈 페널티라 gradient 가 절대 소실되지 않는다.
+    """
     c = _cfg()
-    assert c["cup_xy_disp_limit"] > 0.0
-    # 하드 게이트가 아니라 감쇠여야 한다 — 성공 임계(grasp_xy_threshold)보다 커야
-    # 임계 근처에서 보상이 절벽처럼 끊기지 않는다.
-    assert c["cup_xy_disp_limit"] > c["grasp_xy_threshold"]
+    assert c["push_penalty_weight"] > 0.0
+    assert c["push_penalty_ref"] > 0.0
+    core = (Path(__file__).resolve().parents[1] / "grasp_reward.py").read_text()
+    # 주석은 제외하고 **코드 라인만** 검사한다(헤더가 구 설계를 설명하므로).
+    code = "\n".join(
+        l for l in core.split("\n") if not l.lstrip().startswith("#")
+    )
+    assert "* disp_factor" not in code, "컵 밀림이 다시 곱셈 감쇠가 됐다"
+    assert "push_penalty = -" in code
 
 
 def test_push_penalty_is_meaningful_but_not_dominant():
-    """페널티가 너무 작으면 무시되고, 너무 크면 '컵에 안 다가감' 국소최적이 된다."""
+    """페널티가 너무 작으면 무시되고, 너무 크면 '컵에 안 다가감' 국소최적이 된다.
+
+    신 설계 기준: 페널티 상한(push_penalty_weight)이 lift+hold 합의 5~20% 구간.
+    """
     c = _cfg()
-    w = c["approach_xy_penalty_weight"]
-    assert 10.0 <= w <= 60.0, f"approach_xy_penalty_weight={w} 가 권장 범위 밖"
-
-
+    w = c["push_penalty_weight"]
+    stage_max = c["lift_weight"] + c["hold_weight"]
+    assert 0.05 * stage_max <= w <= 0.20 * stage_max, (
+        f"push_penalty_weight={w} 가 lift+hold({stage_max})의 5~20% 밖"
+    )
 def test_j7_lift_removed_from_env():
     """구 관절공간 리프트 잔재가 남아 있으면 두 경로가 공존해 조용히 어긋난다."""
     src = _ENV.read_text()

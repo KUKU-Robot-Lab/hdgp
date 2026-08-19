@@ -316,39 +316,37 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Reward 파라미터
     # -----------------------------------------------------------------------
-    # RH56F1 shared grasp-v2 reward contract.
-    approach_weight: float = 2.0
+    # ★★2026-08-20 리워드 전면 재설계 (simple is best). 상세 근거는 grasp_reward.py 헤더.
+    #   구: 8항 / 최대 5겹 곱 / 페널티 5개 → 고정홈 fresh 3연속 국소최적.
+    #   신: 4항 + 페널티 2개 / 곱셈 최대 2겹 / latch 게이트 0개.
+    #   단계별 누적 최대 = 1 → 4 → 12 → 24 (단조 증가, 전환 절벽 없음).
+    #   ⚠ 스케일이 바뀌었다(구 실측 총보상 5.7). 이전 run 과 reward 절대비교 금지.
+    #
+    # 단계 1 — approach: 손을 컵으로.
+    approach_weight: float = 1.0
     approach_sharpness: float = 8.0
-    # ★2026-08-19 5.0 → 25.0. 컵 밀기 페널티는 approach 안에 있는데 approach 전체가
-    #   총보상의 1.6% 뿐이라, 컵을 10cm 밀어도 페널티 0.375 vs 성공보너스 4.572(비 1:12)로
-    #   미는 게 합리적인 구조였다. 25 는 lift+success(9.16)의 ~10% 수준.
-    #   ⚠ 60 이상 금지 — "컵에 안 다가감" 이 국소최적이 된다(reward-audit Check 2).
-    approach_xy_penalty_weight: float = 25.0
-    approach_tilt_penalty_weight: float = 0.08
-    grasp_weight: float = 12.0
-    lift_reward_weight: float = 30.0
-    stabilize_weight: float = 10.0
-    stability_reward_weight: float = 1.0
-    success_bonus_weight: float = 20.0
-    post_lift_contact_loss_weight: float = -8.0
+    # 단계 2 — grasp: 감싸 쥐기. contact_envelope_credit 이 손끝 vs 마디 배분을 정한다.
+    #   0.75 = envelope 지배(손끝만 닿으면 quality ~0.33, 감싸면 ~1.5 로 4.5배 격차).
+    #   구 설계는 손끝 항이 quality 의 95% 라 손끝 파지가 문자 그대로 최적해였다.
+    #   폴백(ep1000 에 envelope 미상승): 0.75 → 0.9 (1단계만).
+    grasp_weight: float = 3.0
+    contact_envelope_credit: float = 0.75
+    # 단계 3 — lift: 들어올리기. height_frac = clamp(Δz / lift_height_ref).
+    lift_weight: float = 8.0
+    # 단계 4 — hold: 똑바로 든 채 유지. sim2real 흐름의 종착점이라 가장 크다.
+    #   upright_soft = exp(-tilt / scale). 구 5.0 은 10° 에서 0.135 로 과가혹해
+    #   lift·stabilize·stability 를 일괄 붕괴시켰다 — 15.0 이면 10° 에서 0.51.
+    hold_weight: float = 12.0
+    upright_soft_scale_deg: float = 15.0
+    # 페널티 — 덧셈이고 상한이 있다. **곱하지 않는다**: 구 disp_factor 는 곱이라
+    #   실측 밀림 0.084 에서 정확히 0 이 되어 lift/success 를 통째로 소거했다.
+    #   상한 2.0 은 lift+hold(20)의 10% — "밀어서라도 들기" 는 여전히 손해.
+    push_penalty_weight: float = 2.0
+    push_penalty_ref: float = 0.10
     action_smooth_weight: float = -0.02
-    grasp_xy_threshold: float = 0.025
-    # ★2026-08-19 컵 밀림 soft 감쇠 한계. lift/success_bonus 에 (1-clamp(disp/limit)) 를 곱한다.
-    #   0 = 비활성(기존 동작 불변). 0.08 이면 4cm 밀 때 보상 50%, 8cm 면 0.
-    #   하드 게이트를 쓰지 않는 이유: 보상 86% 를 한 번에 끄면 '컵을 안 밀면서 잡는 법' 을
-    #   아직 모르는 초기 구간에서 gradient 가 approach(1.6%)만 남아 탐색이 붕괴한다
-    #   (reward-audit Check 1 실패, 과거 pour_gate 지연이 같은 이유로 실패).
-    cup_xy_disp_limit: float = 0.08
-    grasp_upright_threshold_deg: float = 8.0
+    # success_flag(ADR 트리거·warm export 입구·로깅) 전용 임계 — 보상 항이 아니다.
     success_upright_max_deg: float = 20.0
     stabilize_upright_max_deg: float = 5.0
-    stabilize_upright_reward_scale_deg: float = 5.0
-    stabilize_action_sharpness: float = 1.5
-    stability_cup_lin_vel_threshold: float = 0.04
-    stability_cup_ang_vel_threshold: float = 0.5
-    stability_contact_delta_threshold: float = 1.0
-    stability_action_delta_threshold: float = 0.2
-    stage0_lift_start_min_contacts: int = 4  # (persistence·hold용 tip 접촉 임계, 유지)
     # ★2026-08-19(A3, audit ACCEPT) 3→4 + env 에서 엄지 접촉 AND 추가.
     # latch 는 비가역 + approach/grasp shaping 차단 스위치인데, 구 3지(엄지 무관)는
     # "엄지+소지+1지" 얕은 latch 를 허용해 shaping 을 조기·영구 소멸시켰다
@@ -379,20 +377,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     #   · grasp(12.0, envelope credit)는 pre_lift_gate 로 리프트 순간 꺼진다
     #   · post_lift_contact_loss 는 grip_frac(마디 무관 OR)이라 mid→distal 이동이 무비용
     # -----------------------------------------------------------------------
-    # grasp 보상 안 감쌈 비중(core 기본 0.40). 합이 1로 재정규화되므로 올려도 grasp
-    # 최대치는 불변 — 국소최적을 구조적으로 못 만든다. 래치 **전** shaping 이라
-    # 래치 시점 자세가 깊어지고, 그 자세가 곧 유지 페널티의 기준선이 된다.
-    grasp_envelope_credit: float = 0.55
-    # 리프트 후 게이트의 감쌈 비중(core 기본 0.5): graded_contact=(1-mix)*tip+mix*envelope.
-    # ★여기엔 느슨한 envelope_frac 이 들어간다 — 엄격한 깊이(wrap)를 넣으면 실측 0.349→0.144
-    #   (0.41배)라 lift 30.0·stabilize 10.0·stability 1.0 을 20~30% 일괄 삭감한다.
-    #   그래서 mix 만 소폭 올린다(0.5→0.6, graded 0.518→0.484 로 −6.6%).
-    lift_envelope_mix: float = 0.6
-    # 감쌈 유지 페널티 가중치. **래치 시점 대비 감소분**에만 걸린다(절대 깊이 아님).
-    # 유지하면 정확히 0 이라 보상 기준선이 이동하지 않고, 잃을 때만 비용이 생긴다.
-    # 크기 산정: 실측 wrap 침식폭 ≈0.05(0.19→0.14) × 이 가중치 = 스텝당 −0.30,
-    # reward/lift 실측 5.8 대비 5% 수준 — 신호는 되되 리프트를 억제하지 않는 선.
-    wrap_retention_loss_weight: float = -6.0
+    # 2026-08-20 감쌈 관련 구 knob 3종(grasp_envelope_credit / lift_envelope_mix /
+    #   wrap_retention_loss_weight) 삭제 — 리워드 재설계로 감쌈 유도가
+    #   contact_envelope_credit(0.75) 한 곳으로 통합됐다. 감쌈 유지 페널티는 불필요:
+    #   감쌈을 잃으면 contact_quality 가 곧바로 떨어져 grasp 보상이 자동 감소한다.
     # ★★08.16 실패 실증 → False 로 되돌림(wrapfix1_retighten_FAILED_ep400).
     # 시도: 래치 후 동결 게이트를 풀어 "더 조일" 권한을 준다.
     # 결과: **감쌈이 파괴됐다.** 같은 epoch(300~450) 대조 —
@@ -416,8 +404,6 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # 전 구간을 억제했는데 그 구간이 정확히 회전 외란이 걸리는 구간이라, 외란의 유일한
     # 실패 신호가 꺼져 있었다. 램프 후 hold 구간에서 되살린다.
     tipping_active_after_lift_ramp: bool = True
-    grasp_contact_persistence_reward_steps: int = 20
-    enclosure_sharpness: float = 15.0
     # cup_radius_approx: cup_big 기준값(반경). 2026-07-26부터 per-object bbox 텐서
     # (cup_radius_approx_buf = bbox half_x/half_y 평균)가 enclosure target·obs 진단에 쓰인다.
     # 이 필드는 object_bbox.json 로딩 실패 시 즉시 예외(fail loud) — fallback 미사용.
