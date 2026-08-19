@@ -104,7 +104,13 @@ def _fk(steps, q: np.ndarray) -> np.ndarray:
 
 
 def sample_jaw_horizontal_poses(steps, limits, p_goal, seed):
-    """위치만 만족하는 해를 다수 구한 뒤 jaw 수평인 것만 남겨 (θ, φ, margin) 반환."""
+    """위치만 만족하는 해를 다수 구한 뒤 jaw 수평인 것만 남겨 (θ, φ, margin, dq) 반환.
+
+    dq = 홈에서의 최대 관절 변위. ★이게 왜 필요한가: Fabrics 는 IK 솔버가 아니라 홈에서
+    출발하는 **기울기 흐름**이라, 기구학적으로 도달 가능해도 흐름이 닿지 않는 자세가 있다.
+    실제로 기구학 여유만 보고 고른 자세(θ=-15/φ=35)는 Isaac 에서 j5 가 한계에 붙어
+    자세 오차 28° 로 실패했다. 홈에서 가까운 해일수록 흐름이 실제로 도달한다.
+    """
     lo = np.maximum(limits[:, 0], Q_HOME - HOME_BRANCH_DEV)
     hi = np.minimum(limits[:, 1], Q_HOME + HOME_BRANCH_DEV)
     rng = np.random.default_rng(seed)
@@ -124,7 +130,8 @@ def sample_jaw_horizontal_poses(steps, limits, p_goal, seed):
         theta = theta - 180.0 if theta > 90 else (theta + 180.0 if theta < -90 else theta)
         phi = math.degrees(math.asin(max(-1.0, min(1.0, -approach[2]))))
         margin = float(np.min(np.minimum(sol.x - limits[:, 0], limits[:, 1] - sol.x)))
-        out.append((theta, phi, margin))
+        dq = float(np.abs(sol.x - Q_HOME).max())
+        out.append((theta, phi, margin, dq))
     return out
 
 
@@ -149,7 +156,8 @@ def main() -> int:
             for y in (CUP_CENTER_Y - SPAWN_HALF_Y, CUP_CENTER_Y, CUP_CENTER_Y + SPAWN_HALF_Y)]
 
     print("\n=== 격자점별 jaw-수평 자세 집합 ===")
-    print(f"  {'x':>5} {'y':>6} | {'해수':>4}  {'θ 범위[°]':>16}  {'φ 범위[°]':>16}  {'최대여유':>8}")
+    print(f"  {'x':>5} {'y':>6} | {'해수':>4}  {'θ 범위[°]':>16}  {'φ 범위[°]':>16}  "
+          f"{'최대여유':>8}  {'최소dq':>7}")
     sets: dict[tuple[float, float], list] = {}
     for i, (x, y) in enumerate(grid):
         s = sample_jaw_horizontal_poses(steps, limits, np.array([x, y, grasp_z]), seed=i)
@@ -158,24 +166,29 @@ def main() -> int:
             print(f"  {x:5.2f} {y:+6.2f} |    0  {'—':>16}  {'—':>16}  {'—':>8}")
             continue
         th = np.array([a[0] for a in s]); ph = np.array([a[1] for a in s])
-        mg = np.array([a[2] for a in s])
+        mg = np.array([a[2] for a in s]); dq = np.array([a[3] for a in s])
         print(f"  {x:5.2f} {y:+6.2f} | {len(s):4d}  {th.min():+7.1f}~{th.max():+7.1f}  "
-              f"{ph.min():+7.1f}~{ph.max():+7.1f}  {mg.max():8.3f}")
+              f"{ph.min():+7.1f}~{ph.max():+7.1f}  {mg.max():8.3f}  {dq.min():7.2f}")
 
-    print("\n=== 전 격자점 공통 기준자세 탐색 ===")
+    # ★선택 기준 = "관절여유가 게이트를 넘는 것들 중 **홈에서 가장 가까운** 자세".
+    #   구 기준(여유 최대화)은 기구학적으로만 좋은 자세를 골라 Fabrics 가 못 따라갔다.
+    print("\n=== 전 격자점 공통 기준자세 탐색 (여유 게이트 통과 + 홈 변위 최소) ===")
     best = None
     for th0 in range(-90, 91, 5):
         for ph0 in range(0, 86, 5):
-            worst = 9.0
+            worst_margin, worst_dq = 9.0, 0.0
             for s in sets.values():
-                cand = [m for t, p_, m in s
-                        if abs(t - th0) <= POSE_MATCH_TOL and abs(p_ - ph0) <= POSE_MATCH_TOL]
+                cand = [(m, d) for t, p_, m, d in s
+                        if abs(t - th0) <= POSE_MATCH_TOL and abs(p_ - ph0) <= POSE_MATCH_TOL
+                        and m >= MARGIN_GATE]
                 if not cand:
-                    worst = -1.0
+                    worst_margin = -1.0
                     break
-                worst = min(worst, max(cand))
-            if worst >= 0 and (best is None or worst > best[0]):
-                best = (worst, th0, ph0)
+                m_best, d_best = min(cand, key=lambda md: md[1])   # 홈에서 가장 가까운 해
+                worst_margin = min(worst_margin, m_best)
+                worst_dq = max(worst_dq, d_best)
+            if worst_margin >= 0 and (best is None or worst_dq < best[3]):
+                best = (worst_margin, th0, ph0, worst_dq)
 
     print("\n=== 판정 ===")
     if best is None or best[0] < MARGIN_GATE:
@@ -183,8 +196,12 @@ def main() -> int:
         print(f"  [FAIL] 전 격자점 공통 jaw-수평 기준자세 {got}")
         print("         → 파지 높이/스폰 박스/컵 위치 재조정 필요")
         return 1
-    _, th_star, ph_star = best
-    print(f"  [PASS] 공통 기준자세 존재 — 전 격자점 최소 관절여유 {best[0]:.3f} rad")
+    _, th_star, ph_star, dq_star = best
+    print(f"  [PASS] 공통 기준자세 존재 — 최소 관절여유 {best[0]:.3f} rad, "
+          f"홈에서 최대 관절 변위 {dq_star:.3f} rad")
+    print("  ⚠ 이 프로브는 **기구학** 도달성만 본다. Fabrics 는 홈에서 출발하는 기울기 흐름이라")
+    print("    여기서 PASS 여도 실제로는 다른 평형에 갇힐 수 있다 →")
+    print("    scripts/probes/probe_gripper_grip_force.py 로 반드시 확인할 것.")
     print(f"  → preset 상수:")
     print(f"       GRASP_JAW_AZIMUTH_DEG  = {th_star}   # jaw 축 = (-sinθ, cosθ, 0), 수평")
     print(f"       GRASP_APPROACH_TILT_DEG = {ph_star}   # 접근축을 수평에서 아래로 φ")
