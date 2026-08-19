@@ -52,12 +52,15 @@ ARM_JOINTS = [f"openarm_right_joint{i}" for i in range(1, 8)]
 
 # ── 씬 기하 ────────────────────────────────────────────────────────
 TABLE_Z = 0.2082               # right/grasp_sensor 와 동일 테이블 표면
-CUP_BOTTOM_TO_ORIGIN = 0.0773  # cup_big_rl.usd 메시 bottom → 원점 (probe_gripper_opening 실측)
+CUP_BOTTOM_TO_ORIGIN = 0.092090  # shaker_closed_rl.usd 메시 bottom → 원점 (probe_gripper_opening 실측)
 CUP_CENTER_X = 0.25            # ★우측(0.30)의 단순 미러가 아니다 — 아래 "왜 x=0.25" 참조
 CUP_CENTER_Y = 0.20
 SPAWN_HALF_X = 0.03
 SPAWN_HALF_Y = 0.10
-GRASP_HEIGHT = 0.055           # 테이블 기준 파지 중심 높이 (P0-1 통과대역 35~60mm 상단부)
+# 테이블 기준 파지 중심 높이. ★P0-1 통과대역(shaker: 10~85mm) 안에서 **스윕해 정한다** —
+# 그리퍼 여유와 팔 도달성이 반대 방향이라 높이가 곧 자유 파라미터다.
+# 전 격자점 최소 관절여유 실측: h=55 → 0.101 / h=65 → **0.238** / h=75 → 0.005 / h=85 → 공통해 없음.
+GRASP_HEIGHT = 0.065
 
 # 좌팔 홈 = grasp_sensor 프리셋 LEFT_ARM_REST_JOINT_POS 실측값
 Q_HOME = np.array([-0.0431, -0.6706, -0.0961, 0.7342, -0.3750, -0.5678, -0.6709])

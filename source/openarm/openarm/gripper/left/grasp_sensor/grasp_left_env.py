@@ -74,6 +74,7 @@ from .grasp_left_constants import (
 )
 from .grasp_left_env_cfg import GraspLeftGripperEnvCfg
 from .grasp_left_preset import (
+    GRASP_CUP_RADIUS,
     GRASP_DEPTH,
     GRASP_PALM_EULER_ZYX_DEG,
     GRIPPER_BASE_BODY,
@@ -414,8 +415,8 @@ class GraspLeftGripperEnv(DirectRLEnv):
         }
 
     def _cup_radius_at_grasp(self) -> float:
-        """파지 높이에서의 컵 반경 [m] (probe_gripper_opening 실측 통과지름 64.3mm)."""
-        return 0.0322
+        """파지 높이에서의 컵 단면 반경 [m] (probe_gripper_opening 실측)."""
+        return GRASP_CUP_RADIUS
 
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:

@@ -35,7 +35,7 @@ Actor Observation (48D) — 전부 실기 취득 가능:
   ------------------------------
   Total                   48
 
-  ★물체 onehot 없음 — 이 태스크는 cup_big 단일 종이다(right/grasp_sensor 는 8종 MultiAsset).
+  ★물체 onehot 없음 — 이 태스크는 shaker 단일 종이다(right/grasp_sensor 는 8종 MultiAsset).
 
 Critic Extra (14D) — sim-only privileged:
   cup_lin_vel              3

@@ -10,9 +10,12 @@ openarm_tesollo_sensor_rl 왼손은 스트로크 0~0.044 m 프리즈매틱 2지 
      아니라 핑거 메시가 정한다. 실측 결과 최대 개구는 이론치 100 mm 가 아니라 84.5 mm 다.
      충돌 근사가 convexHull 이므로 핑거 안쪽 오목부는 메워지고, 통과 가능 폭은
      **가장 안쪽 점(핑거 팁)** 이 지배한다.
-  2. **cup_big 은 원통이 아니라 원뿔형이다.** bbox 반경 0.045(지름 90 mm)는 림의 최대치이고,
-     몸통 하단은 62~71 mm 까지 좁아진다. 즉 파지 높이를 낮추면 같은 컵을 스케일 축소 없이
-     잡을 수 있다. bbox 만 보고 "scale 을 줄여야 한다"고 결론내면 실물 크기를 불필요하게 버린다.
+  2. **컵이 원통이 아니다.** cup_big 은 원뿔형, shaker 는 계단형 원뿔이다.
+     bbox 반경은 **림(최대치)** 을 재는 값이라 몸통 실제 지름과 크게 다르다:
+       cup_big : 하단 62~71 / 중단 83~86 / 림 93 mm  → 파지 가능 h = 35~60 mm
+       shaker  : 하단 58 / 68 / 78 / 상단 88 mm       → 파지 가능 h = 10~80 mm
+     즉 파지 높이를 고르면 스케일 축소 없이 잡을 수 있다. bbox 만 보고
+     "scale 을 줄여야 한다"고 결론내면 실물 크기를 불필요하게 버린다.
 
 따라서 이 프로브는 "개구 vs bbox 지름"이 아니라 **"개구 vs 파지 높이별 실제 단면 지름"**을 잰다.
 
@@ -24,11 +27,14 @@ openarm_tesollo_sensor_rl 왼손은 스트로크 0~0.044 m 프리즈매틱 2지 
       그리퍼가 파지 높이 h 를 겨눌 때 핑거는 x 방향 ±HALF_WIDTH 를 덮으므로,
       그 구간에서의 **최대** 지름이 통과해야 할 폭이다.
 
-사용: python3 scripts/probes/probe_gripper_opening.py
+사용:
+  python3 scripts/probes/probe_gripper_opening.py                        # 기본 = shaker_closed
+  python3 scripts/probes/probe_gripper_opening.py --cup cup_big_rl.usd
 """
 
 from __future__ import annotations
 
+import argparse
 import struct
 import sys
 from pathlib import Path
@@ -39,7 +45,7 @@ HDGP = Path(__file__).resolve().parents[2]
 FINGER_STL = Path(
     "/home/user/rl_ws/urdf/vendor/openarm_description/meshes/ee/openarm_hand/collision/finger.stl"
 )
-CUP_USD = HDGP / "assets/cup/cup_big_rl.usd"
+DEFAULT_CUP = "shaker_closed_rl.usd"
 
 # URDF openarm_tesollo_sensor_rl.urdf 실값 (링크 880-915, 조인트 1294-1308)
 MESH_SCALE_MM = 0.001
@@ -83,20 +89,27 @@ def finger_points_in_base(name: str, q: float, verts_mm: np.ndarray) -> np.ndarr
     return verts_mm * scale + f["origin"] + np.array([0.0, f["j_y"] + f["ax_y"] * q, JOINT_Z])
 
 
-def load_cup_points() -> np.ndarray:
+def load_cup_points(cup_usd: Path) -> np.ndarray:
     from pxr import Usd, UsdGeom  # noqa: PLC0415  (pxr 는 선택적 의존)
 
-    stage = Usd.Stage.Open(str(CUP_USD))
+    stage = Usd.Stage.Open(str(cup_usd))
     for prim in stage.Traverse():
         if prim.GetTypeName() != "Mesh":
             continue
         pts = UsdGeom.Mesh(prim).GetPointsAttr().Get()
         if pts is not None and len(pts):
             return np.asarray(pts, dtype=float)
-    raise ValueError(f"{CUP_USD} 에서 메시 정점을 찾지 못했다")
+    raise ValueError(f"{cup_usd} 에서 메시 정점을 찾지 못했다")
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--cup", default=DEFAULT_CUP, help="assets/cup/ 아래 USD 파일명")
+    args = ap.parse_args()
+    cup_usd = HDGP / "assets/cup" / args.cup
+    if not cup_usd.is_file():
+        print(f"[FAIL] 컵 자산 없음: {cup_usd}")
+        return 1
     if not FINGER_STL.is_file():
         print(f"[FAIL] 핑거 메시 없음: {FINGER_STL}")
         return 1
@@ -120,11 +133,12 @@ def main() -> int:
           % (half_width * 1000))
 
     # ── 2. 컵 프로파일 ──────────────────────────────────────────────
-    cp = load_cup_points()
+    cp = load_cup_points(cup_usd)
     cz, cr = cp[:, 2], np.hypot(cp[:, 0], cp[:, 1])
     z_bottom = float(cz.min())
     cup_height = float(cz.max() - z_bottom)
-    print(f"\n=== 2. cup_big 프로파일 (scale 1.0) ===")
+    print(f"\n=== 2. {args.cup} 프로파일 (scale 1.0) ===")
+    print(f"  원점 기준 bottom z = {z_bottom:+.6f} m  (CUP_BOTTOM_TO_ORIGIN = {-z_bottom:.6f})")
     print(f"  정점 {len(cp)}개, 높이 {cup_height*1000:.1f} mm, 최대 지름 {2*cr.max()*1000:.2f} mm (림)")
 
     # ── 3. 파지 높이별 통과 폭 ──────────────────────────────────────
@@ -150,14 +164,20 @@ def main() -> int:
     if not feasible:
         print("  [FAIL] scale 1.0 에서 통과 가능한 파지 높이가 없다 → 컵 스케일 축소 필요.")
         return 1
-    best = max(feasible, key=lambda t: t[2])
+    widest = max(feasible, key=lambda t: t[2])
+    highest = feasible[-1]
     h_lo, h_hi = feasible[0][0], feasible[-1][0]
-    print(f"  [PASS] cup_big **scale 1.0 유지 가능**. 파지 가능 높이대 "
+    print(f"  [PASS] {args.cup} **scale 1.0 유지 가능**. 파지 가능 높이대 "
           f"h = {h_lo*1000:.0f}~{h_hi*1000:.0f} mm (테이블 기준)")
-    print(f"  최적 파지 높이 h = {best[0]*1000:.0f} mm "
-          f"(통과지름 {best[1]*1000:.2f} mm, 편측 여유 {best[2]*1000:.2f} mm)")
-    print(f"  → 컵 원점 기준 파지 z 오프셋 = {(z_bottom + best[0])*1000:+.1f} mm "
-          f"(cup_grasp_z_offset 설정값)")
+    print(f"  여유 최대 h = {widest[0]*1000:.0f} mm "
+          f"(통과지름 {widest[1]*1000:.2f} mm, 편측 여유 {widest[2]*1000:.2f} mm)")
+    # ★실제 채택은 보통 **대역의 최상단**이다. 낮은 파지점일수록 팔이 못 미치기 때문
+    #   (probe_left_gripper_reach 실측: h=45mm 잔차 21mm vs h=100mm 잔차 0.4mm).
+    #   그리퍼 여유와 팔 도달성이 반대 방향이라, 여유가 게이트를 넘는 선에서 가장 높게 잡는다.
+    print(f"  최상단 통과 h = {highest[0]*1000:.0f} mm "
+          f"(통과지름 {highest[1]*1000:.2f} mm, 편측 여유 {highest[2]*1000:.2f} mm) "
+          f"← 팔 도달성 때문에 보통 이쪽을 채택")
+    print(f"  → 다음: probe_left_gripper_reach.py 의 GRASP_HEIGHT 를 이 대역에서 정하고 재실행")
     return 0
 
 

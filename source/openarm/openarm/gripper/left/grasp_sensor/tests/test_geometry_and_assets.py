@@ -105,7 +105,7 @@ def test_idle_right_arm_is_sign_mirror_of_left_home():
 # 파지 기하 (프로브 실측 고정)
 # ---------------------------------------------------------------------------
 def test_grasp_height_inside_gripper_feasible_band():
-    """cup_big 은 원뿔형이라 이 대역 밖에서는 그리퍼 개구(84.5mm)로 컵이 안 들어간다."""
+    """shaker 는 계단형 원뿔이라 이 대역 밖에서는 그리퍼 개구(84.5mm)로 컵이 안 들어간다."""
     lo, hi = P.GRASP_HEIGHT_BAND
     assert lo <= P.GRASP_HEIGHT_ABOVE_TABLE <= hi
 

@@ -116,24 +116,30 @@ FABRIC_PALM_BODY = "palm_link"
 #   아니다 — 충돌 근사가 convexHull 이고 통과폭은 가장 안쪽 점인 **핑거 팁**이 지배한다.
 GRIPPER_MAX_OPENING = 0.0845
 
-# ★cup_big 은 원통이 아니라 **원뿔형**이다. bbox 반경 0.045(지름 90mm)는 림의 최대치이고
-#   몸통은 하단 62~71 / 중단 83~86 / 림 93.4 mm. 따라서 스케일 축소 없이 scale 1.0 을 쓰되
-#   **테이블 위 35~60 mm 구간에서만** 파지 가능하다(통과지름 64.3mm, 편측 여유 10.1mm).
-#   h>=70mm 는 편측 여유 <2mm 로 불가.
-GRASP_HEIGHT_ABOVE_TABLE = 0.055        # m, 통과대역 35~60mm 의 상단부 (팔 도달성에 유리)
-GRASP_HEIGHT_BAND = (0.035, 0.060)      # m, 그리퍼가 통과 가능한 파지 높이 범위
+# ★shaker 는 원통이 아니라 **계단형 원뿔**이다. bbox 반경 0.044(지름 88mm)는 상단 최대치이고
+#   몸통은 하단 58 / 68 / 78 / 상단 88 mm. 따라서 스케일 축소 없이 scale 1.0 을 쓰되
+#   **테이블 위 10~85 mm 구간에서만** 파지 가능하다(h=65mm 에서 통과지름 68mm, 편측 여유 8.2mm).
+#   h>=90mm 는 지름 78mm 로 편측 여유 3.2mm 라 불가.
+#   (참고: 이전 자산 cup_big 은 대역이 35~60mm 로 훨씬 좁았다)
+GRASP_HEIGHT_ABOVE_TABLE = 0.065
+GRASP_HEIGHT_BAND = (0.010, 0.085)      # m, 그리퍼가 통과 가능한 파지 높이 범위
 
 # ★기준 파지자세: jaw 축이 **수평**이어야 두 접촉점이 컵 단면 지름 양끝(대향)에 놓인다.
 #   접근축까지 수평으로 고정하면 이 팔은 자세를 못 낸다(손목 j6 가 ±45° 뿐).
 #   probe_left_gripper_reach.py 가 스폰 박스 전 격자점 공통해로 도출한 값:
-#     jaw 방위 θ = -35°, 접근축을 수평에서 아래로 φ = 55° (= 대각 측면 파지)
-#     → 전 격자점 최소 관절여유 0.101 rad
-GRASP_JAW_AZIMUTH_DEG = -35.0
-GRASP_APPROACH_TILT_DEG = 55.0
+#     jaw 방위 θ = -15°, 접근축을 수평에서 아래로 φ = 35°
+#     → 전 격자점 최소 관절여유 0.238 rad
+#   ★파지 높이는 그리퍼 여유와 팔 도달성이 **반대 방향**이라 대역 안에서 스윕해 정했다:
+#     h=55 → 여유 0.101 / h=65 → **0.238** / h=75 → 0.005 / h=85 → 공통해 없음.
+GRASP_JAW_AZIMUTH_DEG = -15.0
+GRASP_APPROACH_TILT_DEG = 35.0
 
 # 위 (θ, φ) 를 Fabrics 가 받는 euler_zyx(ez, ey, ex) 로 변환한 값 [deg].
-# R = Rz(ez)·Ry(ey)·Rx(ex) 로 역산 검증됨 (오차 2e-16).
-GRASP_PALM_EULER_ZYX_DEG = (145.0, 35.0, 180.0)
+# R = Rz(ez)·Ry(ey)·Rx(ex) 로 역산 검증됨 (오차 3e-16). tests 가 (θ,φ) 와의 일치를 고정한다.
+GRASP_PALM_EULER_ZYX_DEG = (165.0, 55.0, 180.0)
+
+# 파지 높이에서의 컵 단면 반경 [m] — approach shaping 의 표면 거리 기준.
+GRASP_CUP_RADIUS = 0.034
 
 
 def grasp_axes() -> tuple[tuple[float, float, float], ...]:
@@ -161,13 +167,23 @@ PREGRASP_RETREAT = 0.06
 # ---------------------------------------------------------------------------
 # 씬 (테이블/컵)
 # ---------------------------------------------------------------------------
+# 파지 대상 = **shaker**. `shaker_body` 가 아니라 `shaker_closed` 를 쓴다 —
+# 원본 shaker_body 는 양쪽이 뚫린 관이라(축 근처 정점 0개) 내용물이 그대로 빠진다.
+# scripts/tools/make_closed_shaker_asset.py 가 하단에 얇은 원기둥 콜라이더를 덧붙인 것이
+# shaker_closed 이고, right/grasp_sensor 도 이쪽을 쓴다. 양팔 pour 의 receiver 로 이어지려면
+# 내용물을 받을 수 있어야 하므로 closed 가 유일한 선택이다.
+CUP_USD_NAME = "shaker_closed_rl.usd"
+
 TABLE_SURFACE_Z = 0.2082          # right/grasp_sensor 와 동일 테이블 표면
-CUP_BOTTOM_TO_ORIGIN = 0.0773     # cup_big_rl.usd 메시 bottom → 원점 (실측)
-CUP_SPAWN_Z = TABLE_SURFACE_Z + CUP_BOTTOM_TO_ORIGIN     # 컵 원점 높이 = 0.2855
+# 메시 bottom → 원점 (probe_gripper_opening 실측). ★bbox 반높이가 아니다 —
+# shaker 원점은 기하 중심이 아니라서 반높이로 역산하면 컵이 테이블에 파묻히거나 뜬다.
+CUP_BOTTOM_TO_ORIGIN = 0.092090   # shaker_closed_rl.usd
+CUP_SPAWN_Z = TABLE_SURFACE_Z + CUP_BOTTOM_TO_ORIGIN     # 컵 원점 높이 = 0.30029
 
 # ★스폰 중심 x=0.25 는 right/grasp_sensor(0.30)의 단순 미러가 **아니다**.
-#   그리퍼가 컵 하단만 잡을 수 있어 파지점이 우측보다 6~10cm 낮은데, x=0.30 에서는
-#   그 낮은 점에 팔이 못 미친다(실측 잔차 11~20mm). x=0.25 로 당기면 전 구간 도달된다.
+#   그리퍼는 컵 굵기가 개구보다 좁은 낮은 구간에서만 잡을 수 있어 파지점이 우측보다
+#   낮은데, x=0.30 에서는 그 낮은 점에 팔이 못 미친다(실측 잔차 11~20mm).
+#   x=0.25 로 당기면 전 구간 도달된다.
 CUP_SPAWN_X_CENTER = 0.25
 CUP_SPAWN_Y_CENTER = 0.20         # 양팔 pour 좌우 컵 분리 규약(∓0.20)과 정합
 CUP_SPAWN_X_RANGE = 0.03          # ±m — x 는 도달성이 민감해 우측(±0.05)보다 좁다

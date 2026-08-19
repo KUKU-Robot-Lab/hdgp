@@ -17,7 +17,7 @@
 - 로봇: openarm_tesollo_sensor_rl (왼팔 7 DOF + 2지 그리퍼, 오른팔은 rest 고정)
 - Action 7D: TCP 6D delta (Fabrics IK) + 그리퍼 1D
 - Observation: actor 48D / critic 62D (asymmetric)
-- 물체: **cup_big 단일 종** — MultiAsset 아님, onehot 없음
+- 물체: **shaker 단일 종** — MultiAsset 아님, onehot 없음
 - Episode: 10s = 600 step @60Hz (접근·파지 480 + 리프트 120)
 
 right/grasp_sensor 와의 차이는 전부 "손이 다르다"에서 나온다. 상세는 각 필드 주석 참조.
@@ -47,6 +47,7 @@ from .grasp_left_constants import (
     NUM_OBSERVATIONS,
 )
 from .grasp_left_preset import (
+    CUP_USD_NAME,
     CUP_SPAWN_X_CENTER,
     CUP_SPAWN_X_RANGE,
     CUP_SPAWN_Y_CENTER,
@@ -63,7 +64,7 @@ from .grasp_left_preset import (
 _HDGP_ROOT = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
-# 컵 질량 [kg]. right/grasp_sensor·pour 실컵과 동일해야 warm 상태의 force-ratio 가 맞는다.
+# 컵 질량 [kg]. right/grasp_sensor 전 물체 공통값과 동일해야 warm 상태의 force-ratio 가 맞는다.
 _CUP_MASS: float = 0.134
 
 
@@ -153,8 +154,8 @@ class GraspLeftGripperEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # 컵 스폰
     # -----------------------------------------------------------------------
-    # ★x 중심 0.25 는 우측(0.30)의 미러가 아니다 — preset 주석 참조(그리퍼가 컵 하단만
-    #   잡을 수 있어 파지점이 낮고, x=0.30 에서는 팔이 그 점에 못 미친다).
+    # ★x 중심 0.25 는 우측(0.30)의 미러가 아니다 — preset 주석 참조(그리퍼가 컵을 낮은
+    #   높이에서만 잡을 수 있어 파지점이 우측보다 낮고, x=0.30 에서는 팔이 못 미친다).
     object_spawn_x_center: float = CUP_SPAWN_X_CENTER
     object_spawn_y_center: float = CUP_SPAWN_Y_CENTER
     object_spawn_z: float = CUP_SPAWN_Z
@@ -255,12 +256,14 @@ class GraspLeftGripperEnvCfg(DirectRLEnvCfg):
     )
 
     # -----------------------------------------------------------------------
-    # 컵 — cup_big **단일 종, scale 1.0**
+    # 컵 — **shaker 단일 종, scale 1.0**
     # -----------------------------------------------------------------------
-    # ★스케일을 줄이지 않는다. cup_big 은 원뿔형이라 몸통 하단이 62~71 mm 로 좁아지고,
-    #   그리퍼 최대 개구 84.5 mm 로 **테이블 위 35~60 mm 구간에서 편측 여유 10.1 mm** 로
-    #   통과한다(probe_gripper_opening.py). bbox 지름 90 mm 만 보고 축소하면 실물 크기를
-    #   불필요하게 버린다.
+    # ★스케일을 줄이지 않는다. shaker 는 계단형 원뿔이라 몸통이 58/68/78/88 mm 로 단계적으로
+    #   굵어지고, 그리퍼 최대 개구 84.5 mm 로 **테이블 위 10~85 mm 구간을 통과**한다
+    #   (채택 h=65 mm 에서 통과지름 68 mm, 편측 여유 8.2 mm — probe_gripper_opening.py).
+    #   bbox 지름 88 mm 만 보고 "개구보다 크다"고 판단하면 잡을 수 있는 컵을 버린다.
+    # ★질량은 USD 기본값(shaker 0.263 kg)이 아니라 여기서 고정한다 — 자산마다 다른 기본질량을
+    #   그대로 쓰면 ADR 질량 배율이 자산별로 다른 절대 구간으로 튄다(우측에서 실증된 문제).
     cup_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Cup",
         init_state=RigidObjectCfg.InitialStateCfg(
@@ -268,7 +271,7 @@ class GraspLeftGripperEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "cup/cup_big_rl.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "cup", CUP_USD_NAME),
             scale=(1.0, 1.0, 1.0),
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
