@@ -157,3 +157,46 @@ def object_goal_distance_when_held(
     distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
     gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
     return gate * (1 - torch.tanh(distance / std))
+
+
+def object_settled_at_goal(
+    env: "ManagerBasedRLEnv",
+    std: float,
+    lin_vel_std: float,
+    ang_vel_std: float,
+    minimal_height: float,
+    max_ee_distance: float,
+    command_name: str,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """컵을 목표까지 옮겨 **가만히 정지**시켰는가 (0~1).
+
+    ★레퍼런스 lift 의 `object_goal_distance` 는 **거리만** 본다. 목표 근처에서 컵이 계속
+      흔들려도 만점이라, "옮겨서 세워 둔다"는 요구를 표현하지 못한다. 실제로 test8 은
+      goal-tracking 이 상한의 68% 까지 갔는데 정밀 항(`goal_fine`)은 16% 에 머물렀다.
+
+    품질 = (게이트) × (목표 근접) × (정지 정도). 셋 다 연속이라 gradient 가 이어진다.
+      · 목표 근접을 곱하므로 "든 채 제자리에 가만히 있기"는 0 이다(목표에서 멀면 근접이 0).
+      · 정지 정도는 컵의 선속도·각속도 둘 다 본다 — 각속도를 빼면 제자리에서 빙빙 도는
+        상태가 만점이 된다.
+
+    ⚠ 자세와 마찬가지로 **게이트가 아니라 보너스**다. 판정 게이트에 조건을 더 얹으면
+      양의 보상이 0 이 되고 조기 종료가 최적이 된다(test6/test7 에서 실증).
+    """
+    robot: RigidObject = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    des_pos_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
+    )
+    distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
+    near_goal = 1.0 - torch.tanh(distance / std)
+
+    lin = torch.norm(obj.data.root_lin_vel_w, dim=1)
+    ang = torch.norm(obj.data.root_ang_vel_w, dim=1)
+    still = (1.0 - torch.tanh(lin / lin_vel_std)) * (1.0 - torch.tanh(ang / ang_vel_std))
+
+    gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
+    return gate * near_goal * still

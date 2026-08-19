@@ -314,6 +314,22 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   끝내는 것이 최적**이 된다. 실제로 그렇게 죽였다(test6/test7):
         #       lifting 6.14 → 0.0000 / 에피소드 130 → 13 / 총보상 +34.9 → −0.46
         #   별도 term 이라 TFEvents 에 로깅돼 자세 개선을 학습 중 관측할 수 있다.
+        # ── 목표에서 정지 보너스 (신설) ─────────────────────────────
+        # 레퍼런스 goal-tracking 은 **거리만** 본다. "옮겨서 가만히 세워 둔다"를 표현하려면
+        # 속도 항이 필요하다. 여기도 게이트가 아니라 보너스다.
+        self.rewards.settled_at_goal = RewTerm(
+            func=rewards.object_settled_at_goal,
+            weight=P.SETTLE_REWARD_WEIGHT,
+            params={
+                "std": P.SETTLE_POS_STD,
+                "lin_vel_std": P.SETTLE_LIN_VEL_STD,
+                "ang_vel_std": P.SETTLE_ANG_VEL_STD,
+                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
+                "command_name": "object_pose",
+            },
+        )
+
         self.rewards.grasp_pose = RewTerm(
             func=rewards.held_with_good_pose,
             weight=P.GRASP_POSE_REWARD_WEIGHT,

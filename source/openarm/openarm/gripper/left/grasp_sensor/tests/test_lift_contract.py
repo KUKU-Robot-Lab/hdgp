@@ -174,6 +174,27 @@ def test_reference_object_body_name_is_overridden():
     )
 
 
+def test_settling_at_the_goal_is_rewarded():
+    """★"목표지점에 이동시켜 **가만히 정지**시켜야 한다" — 레퍼런스에 없는 요구.
+
+    `mdp.object_goal_distance` 는 거리만 보므로 목표 근처에서 컵이 흔들려도 만점이다
+    (test8: goal-tracking 은 상한의 68% 인데 정밀 항은 16%). 속도 항이 있어야 한다.
+
+    선속도·각속도를 **둘 다** 봐야 한다 — 각속도를 빼면 제자리에서 빙빙 도는 상태가
+    만점이 된다.
+    """
+    src = _cfg_source()
+    assert "object_settled_at_goal" in src
+    assert "settled_at_goal" in src
+    assert "lin_vel_std" in src and "ang_vel_std" in src, "각속도 항이 빠졌다"
+    assert P.SETTLE_LIN_VEL_STD > 0 and P.SETTLE_ANG_VEL_STD > 0
+    assert 0.0 < P.SETTLE_REWARD_WEIGHT <= 15.0, (
+        "정지 보너스가 lifting(15) 을 넘으면 파지보다 정지가 우선이 된다"
+    )
+    # 정지 판정 정밀도는 goal_fine 수준이어야 "목표에 세워 둔다"가 성립한다
+    assert P.SETTLE_POS_STD <= 0.05
+
+
 def test_grasp_pose_is_a_bonus_never_a_gate():
     """★★자세는 **연속 보너스로만** 건다 — 게이트로 넣었다가 학습을 통째로 죽였다.
 
@@ -411,7 +432,9 @@ def test_env_cfg_inherits_isaaclab_lift():
     )
     for name in inherited:
         assert f"self.rewards.{name} = " not in src, f"{name} 을 재정의하지 말 것"
-    assert src.count("RewTerm(") <= 1, "신설 term 은 jaw 수평 보너스 하나뿐이다"
+    # 신설 term 은 **보너스만** 허용한다: 파지 자세(grasp_pose), 목표 정지(settled_at_goal).
+    # 판정 게이트를 늘리는 term 은 금지 — test6/test7 에서 학습을 죽였다.
+    assert src.count("RewTerm(") <= 2, "신설 term 은 자세·정지 보너스 둘뿐이다"
     assert "weight=P." in src and "weight=0" not in src
 
 
