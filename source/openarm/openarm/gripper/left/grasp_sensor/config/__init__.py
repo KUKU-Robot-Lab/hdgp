@@ -14,43 +14,37 @@
 
 """gym 등록. `openarm/tasks/__init__.py` 가 `*/*/*/config/__init__.py` 를 glob 임포트한다.
 
-⚠ 그 임포트는 `except (ModuleNotFoundError, ImportError): pass` 로 감싸여 있어
-  **에러가 조용히 삼켜진다**. 등록 실패는 "task not found" 로만 보이므로,
-  이 패키지를 건드린 뒤에는 항상 아래를 실행해 확인할 것:
+⚠ 그 임포트는 `except (ModuleNotFoundError, ImportError): pass` 로 감싸여 있어 **에러가
+  조용히 삼켜진다**. 등록 실패는 "task not found" 로만 보이므로 건드린 뒤에는 항상 확인할 것:
       python3 -c "import openarm.tasks, gymnasium as gym; print(gym.spec('open-grip_l_grasp_sensor'))"
 
-id 규약: open-{robot}_{l|r|b}_{task}. 로그 경로는 train.py 가
+entry_point 가 커스텀 env 클래스가 아니라 **`isaaclab.envs:ManagerBasedRLEnv`** 다 —
+IsaacLab lift 레시피를 그대로 쓰므로 env 코드를 따로 둘 이유가 없다.
+
+id 규약: open-{robot}_{l|r|b}_{task}. train.py 가
   open-grip_l_grasp_sensor → log/rl_games/open-grip/left/grasp-sensor/ 로 해석한다.
 """
 
 import gymnasium as gym
 
 from . import agents
-from ..grasp_left_env_cfg import GraspLeftGripperEnvCfg
 
-_ENTRY = "openarm.gripper.left.grasp_sensor.grasp_left_env:GraspLeftGripperEnv"
+gym.register(
+    id="open-grip_l_grasp_sensor",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "openarm.gripper.left.grasp_sensor.grasp_left_env_cfg:GraspLeftGripperEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+    },
+)
 
-
-class GraspLeftGripperEnvCfg_PLAY(GraspLeftGripperEnvCfg):
-    """플레이용 설정 (소규모 환경)."""
-
-    def __post_init__(self):
-        self.scene.num_envs = 50
-        self.scene.env_spacing = 2.5
-
-
-for _suffix, _cfg, _yaml in (
-    ("", "GraspLeftGripperEnvCfg", "rl_games_ppo_cfg.yaml"),
-    ("-play", "GraspLeftGripperEnvCfg_PLAY", "rl_games_ppo_cfg.yaml"),
-    ("-lstm", "GraspLeftGripperEnvCfg", "rl_games_ppo_lstm_cfg.yaml"),
-    ("-play-lstm", "GraspLeftGripperEnvCfg_PLAY", "rl_games_ppo_lstm_cfg.yaml"),
-):
-    gym.register(
-        id=f"open-grip_l_grasp_sensor{_suffix}",
-        entry_point=_ENTRY,
-        disable_env_checker=True,
-        kwargs={
-            "env_cfg_entry_point": f"{__name__}:{_cfg}",
-            "rl_games_cfg_entry_point": f"{agents.__name__}:{_yaml}",
-        },
-    )
+gym.register(
+    id="open-grip_l_grasp_sensor-play",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "openarm.gripper.left.grasp_sensor.grasp_left_env_cfg:GraspLeftGripperEnvCfg_PLAY",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+    },
+)

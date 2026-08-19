@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from openarm.gripper.left.grasp_sensor import grasp_left_constants, grasp_left_preset, grasp_reward
+from openarm.gripper.left.grasp_sensor_fabrics_ABORTED import grasp_left_constants, grasp_left_preset, grasp_reward
 
 _PKG = Path(__file__).resolve().parents[1]
 _LOCAL_MODULES = {

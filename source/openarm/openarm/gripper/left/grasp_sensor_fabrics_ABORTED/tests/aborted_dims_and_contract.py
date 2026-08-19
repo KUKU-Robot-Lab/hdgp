@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from openarm.common.grasp_v2_contract import GRASP_V2_REWARD_TERMS
-from openarm.gripper.left.grasp_sensor import grasp_left_constants as C
-from openarm.gripper.left.grasp_sensor import grasp_reward
+from openarm.gripper.left.grasp_sensor_fabrics_ABORTED import grasp_left_constants as C
+from openarm.gripper.left.grasp_sensor_fabrics_ABORTED import grasp_reward
 
 _CFG_SRC = Path(__file__).resolve().parents[1] / "grasp_left_env_cfg.py"
 

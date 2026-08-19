@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from openarm import OPENARM_ROOT_DIR
-from openarm.gripper.left.grasp_sensor import grasp_left_preset as P
+from openarm.gripper.left.grasp_sensor_fabrics_ABORTED import grasp_left_preset as P
 
 _HDGP = Path(OPENARM_ROOT_DIR).resolve().parents[2]
 _ROBOT_URDF = _HDGP / "assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.urdf"
