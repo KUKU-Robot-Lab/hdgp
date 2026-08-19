@@ -574,3 +574,56 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
             # 우측 기본 palm 자세 (ez,ey,ex)=(π/2,0,π/2) 의 미러 = (-π/2,0,-π/2)
             default_palm_euler_zyx=(-1.5708, 0.0, -1.5708),
         )
+
+
+# ---------------------------------------------------------------------------
+# 좌팔 2지 그리퍼 변형: openarm_tesollo_sensor_left_gripper URDF
+# ---------------------------------------------------------------------------
+# 대상 로봇: openarm_tesollo_sensor_rl 의 **왼팔**(7 DOF) + 2-DOF 프리즈매틱 그리퍼.
+# URDF 는 scripts/assets_tools/generate_sensor_left_gripper_fabric_urdf.py 로 생성한다:
+#   - 팔 7관절 origin/axis/limit = sensor_rl `l_aj_1..7` 실값 (미러 추정 아님, FK 0 오차 검증)
+#   - 손 20관절은 **fixed 로 동결** → BaseFabric 이 revolute 만 세므로 cspace = 팔 7 DOF
+#   - palm_link = 그리퍼 TCP, 축은 그리퍼 고유축 (+z 접근, +y jaw, +x 핑거 폭)
+#   - 링크/조인트 이름은 우측(openarm_tesollo)과 동일 → fabric_params 프레임 리스트 재사용
+#
+# ⚠ 그리퍼 개폐(l_hj_gripper_1)는 이 fabric 이 제어하지 않는다. RL 액션이 직접 관절 목표를 준다.
+#   Fabrics 는 팔 자세(IK)만 담당한다.
+#
+# cspace default = grasp_sensor 프리셋의 좌팔 rest 실측값(LEFT_ARM_REST_JOINT_POS).
+#   임의의 미러 부호 매핑이 아니라 **이 로봇에서 실제로 측정된 in-limit 자세**라 nullspace
+#   바이어스로 안전하다.
+_GRIPPER_LEFT_DEFAULT_CONFIG = [
+    -0.0431, -0.6706, -0.0961, 0.7342, -0.3750, -0.5678, -0.6709,
+]
+
+
+class OpenArmGripperLeftPoseFabric(OpenArmTeoslloPoseFabric):
+    """OpenArm 좌팔(7 DOF) + 2지 그리퍼 fabric.
+
+    출력 q(7,)는 openarm_tesollo_sensor_rl.usd 의 `l_aj_1..7` 에 그대로 사용 가능
+    (generate_sensor_left_gripper_fabric_urdf.py FK 교차검증 PASS).
+    """
+
+    def __init__(self, batch_size, device, timestep, graph_capturable=True,
+                 use_hand_fabric=False, palm_position_only=False,
+                 robot_dir_name="openarm_tesollo_sensor_left_gripper",
+                 robot_name="openarm_tesollo_sensor_left_gripper",
+                 default_palm_euler_zyx=(0.0, 1.5708, 0.0)):
+        # 기본 palm 자세 (ez,ey,ex)=(0, π/2, 0) → R = Ry(90°):
+        #   palm +z(접근축) = world +X,  palm +y(jaw) = world +Y,  palm +x(핑거 폭) = world -Z.
+        #   즉 로봇 앞쪽으로 뻗어 컵의 좌우면을 수평 jaw 로 집는 **측면 파지** 기본자세.
+        #   (우측 손의 (π/2,0,π/2) 와 달리 palm 프레임 정의 자체가 다르므로 미러값이 아니다.)
+        if use_hand_fabric:
+            raise ValueError(
+                "2지 그리퍼에는 hand fabric(PCA 20관절)이 없다. use_hand_fabric=False 로 쓸 것."
+            )
+        super().__init__(
+            batch_size, device, timestep,
+            graph_capturable=graph_capturable,
+            use_hand_fabric=False,
+            palm_position_only=palm_position_only,
+            robot_dir_name=robot_dir_name,
+            robot_name=robot_name,
+            default_config_override=_GRIPPER_LEFT_DEFAULT_CONFIG,
+            default_palm_euler_zyx=default_palm_euler_zyx,
+        )
