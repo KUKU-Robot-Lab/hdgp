@@ -173,6 +173,24 @@ def test_grasp_euler_reproduces_grasp_axes():
             assert math.isclose(R[row][col], expected[row], abs_tol=1e-9)
 
 
+def test_pregrasp_keeps_fingertips_clear_of_the_cup():
+    """action=0 기준점에서 핑거 팁이 컵 표면 **밖**에 있어야 한다.
+
+    처음 PREGRASP_RETREAT 를 0.06 으로 찍었더니 팁이 컵 표면 안쪽 9.4mm 에 놓였다 —
+    즉 액션 0 이 그리퍼를 컵에 밀어넣는 자세였고, Isaac 에서 접근 중 컵이 58.6mm 밀리고
+    원치 않는 래치가 걸렸다. 그래서 이 값은 상수가 아니라 기하 유도식이다.
+    """
+    tip_from_axis = P.GRASP_DEPTH + P.FINGERTIP_AHEAD_OF_TCP - P.PREGRASP_RETREAT
+    clearance = -tip_from_axis - P.GRASP_CUP_RADIUS
+    assert clearance > 0.0, f"pregrasp 에서 팁이 컵 안쪽 {-clearance*1000:.1f}mm"
+    assert math.isclose(clearance, P.PREGRASP_CLEARANCE, abs_tol=1e-9)
+
+
+def test_grasp_depth_puts_cup_inside_the_jaw():
+    """파지 시에는 반대로 TCP 가 컵 축을 지나야 컵이 jaw 안쪽에 물린다."""
+    assert P.GRASP_DEPTH > 0.0
+
+
 def test_palm_rotation_bounds_avoid_euler_gimbal():
     """euler_zyx 는 ey=±90° 에서 퇴화한다 — 클램프 범위가 거기 닿으면 안 된다.
 

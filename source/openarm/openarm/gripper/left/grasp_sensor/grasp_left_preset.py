@@ -166,9 +166,22 @@ def grasp_axes() -> tuple[tuple[float, float, float], ...]:
 
 # 파지 시 TCP 를 컵 축보다 접근축 방향으로 이만큼 더 밀어넣는다(컵이 jaw 안쪽에 물리도록).
 GRASP_DEPTH = 0.02
-# 액션 기준점(pregrasp)은 파지 자세에서 접근축 **반대**로 이만큼 물러난 곳.
+
+# 핑거 팁이 TCP 보다 접근축 방향으로 앞서 있는 거리 [m].
+# gripper_base 기준 팁 z=0.0954, TCP z=0.08 (probe_gripper_opening 실측).
+FINGERTIP_AHEAD_OF_TCP = 0.0954 - TCP_OFFSET_IN_BASE_Z
+
+# 액션 기준점(pregrasp)은 파지 자세에서 접근축 **반대**로 물러난 곳.
 # action=0 이면 Fabrics 가 홈에서 여기까지 스스로 접근하고, 정책은 마지막 진입과 폐쇄를 학습한다.
-PREGRASP_RETREAT = 0.06
+#
+# ★상수로 찍지 말고 **기하에서 유도할 것**. 처음 0.06 으로 찍었더니 action=0 기준점에서
+#   핑거 팁이 컵 표면 **안쪽 9.4 mm** 에 놓였다 — 즉 액션 0 이 그리퍼를 컵에 밀어넣는
+#   자세였고, Isaac 실측에서 접근 중 컵이 58.6 mm 밀리고 원치 않는 래치가 걸렸다.
+#   팁이 컵 표면에서 PREGRASP_CLEARANCE 만큼 떨어지도록 역산한다.
+PREGRASP_CLEARANCE = 0.025
+PREGRASP_RETREAT = (
+    GRASP_DEPTH + FINGERTIP_AHEAD_OF_TCP + GRASP_CUP_RADIUS + PREGRASP_CLEARANCE
+)   # ≈ 0.094 m
 
 # ---------------------------------------------------------------------------
 # 씬 (테이블/컵)
