@@ -210,8 +210,10 @@ class GraspLeftGripperEnvCfg(DirectRLEnvCfg):
     gripper_finger_contact_links: tuple = GRIPPER_FINGER_BODIES
     # 컵만 필터(Cup-only). 무필터면 핑거가 테이블·자기 몸에 닿아도 grip 으로 잡혀
     # 거짓 성공이 생긴다(우측에서 실증된 버그).
+    # ⚠ 루트 prim("/Cup")은 필터로 쓸 수 없다 — PhysX GPU 파이프라인이 지원하지 않아
+    #   env 마다 "GPU contact filter for collider ... is not supported" 경고만 쏟는다(실측).
+    #   강체가 실제로 붙어 있는 **baseLink** 를 직접 건다(visdex 표준 구조).
     object_contact_filter: tuple = (
-        "/World/envs/env_.*/Cup",
         "/World/envs/env_.*/Cup/baseLink",
     )
 

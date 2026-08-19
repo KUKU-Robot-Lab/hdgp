@@ -37,7 +37,8 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
     def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=True,
                  palm_position_only=False,
                  robot_dir_name="openarm_tesollo", robot_name="openarm_tesollo",
-                 default_config_override=None, default_palm_euler_zyx=None):
+                 default_config_override=None, default_palm_euler_zyx=None,
+                 fabric_params_filename=None):
         self._use_hand_fabric = use_hand_fabric
         # [새 구조] palm_position_only=True: palm_link origin 1점(position 3-DOF)만 attractor로
         #   고정하고 orientation은 자유(cspace nullspace가 결정). j6 leak 차단 → IK가 j5 roll을
@@ -47,7 +48,11 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         # 바꾸면 재사용 가능 (좌측 URDF 는 링크/조인트 이름을 우측과 동일하게 유지).
         self._default_config_override = default_config_override
         self._default_palm_euler_zyx = default_palm_euler_zyx
-        fabric_params_filename = "openarm_tesollo_pose_params.yaml"
+        # params 파일도 변형이 바꿀 수 있게 열어둔다. 기본값은 기존 소비자(pour/grasp_v1/
+        # grasp_sensor) 보호용으로 그대로 유지 — 인자를 안 주면 동작이 완전히 동일하다.
+        # ⚠ joint_limits.acceleration 리스트 길이가 곧 cspace_dim 이다(fabric.py:155).
+        #   관절 수가 다른 변형은 반드시 자기 params 파일을 줘야 한다.
+        fabric_params_filename = fabric_params_filename or "openarm_tesollo_pose_params.yaml"
         super().__init__(device, batch_size, timestep, fabric_params_filename,
                          graph_capturable=graph_capturable)
 
@@ -608,7 +613,8 @@ class OpenArmGripperLeftPoseFabric(OpenArmTeoslloPoseFabric):
                  use_hand_fabric=False, palm_position_only=False,
                  robot_dir_name="openarm_tesollo_sensor_left_gripper",
                  robot_name="openarm_tesollo_sensor_left_gripper",
-                 default_palm_euler_zyx=(0.0, 1.5708, 0.0)):
+                 default_palm_euler_zyx=(0.0, 1.5708, 0.0),
+                 fabric_params_filename="openarm_gripper_left_pose_params.yaml"):
         # 기본 palm 자세 (ez,ey,ex)=(0, π/2, 0) → R = Ry(90°):
         #   palm +z(접근축) = world +X,  palm +y(jaw) = world +Y,  palm +x(핑거 폭) = world -Z.
         #   즉 로봇 앞쪽으로 뻗어 컵의 좌우면을 수평 jaw 로 집는 **측면 파지** 기본자세.
@@ -626,4 +632,7 @@ class OpenArmGripperLeftPoseFabric(OpenArmTeoslloPoseFabric):
             robot_name=robot_name,
             default_config_override=_GRIPPER_LEFT_DEFAULT_CONFIG,
             default_palm_euler_zyx=default_palm_euler_zyx,
+            # ★팔 7 DOF 전용 params. 27 길이 accel/jerk 를 그대로 쓰면 첫 스텝에서
+            #   "Number of joints does not match ..." assert 로 죽는다(실측).
+            fabric_params_filename=fabric_params_filename,
         )
