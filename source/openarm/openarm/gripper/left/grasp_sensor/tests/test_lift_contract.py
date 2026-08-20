@@ -150,8 +150,18 @@ def test_lift_is_a_ramp_not_a_binary_gate():
     ⚠ 1·2차 때는 **이 테스트가 틀린 쪽을 옳다고 고정하고 있었다**. 그래서 이제 절대값이
       아니라 **구조**(램프인지, 0 지점이 놓인 높이인지)를 고정한다.
     """
-    # 램프 0 지점은 **놓인 컵의 원점**이어야 한다 — 여기서 0 이라야 정지가 공짜가 아니다.
-    assert math.isclose(P.LIFT_RAMP_ZERO_Z, P.CUP_SPAWN_Z, abs_tol=1e-9)
+    # ★램프 0 지점은 놓인 원점 **바로 위**여야 한다 — 정확히 원점에 두면 컵을 바닥
+    #   모서리로 기울이는 것만으로 +4.61 mm 를 공짜로 얻는다(test4/test6 실측 최대
+    #   +4.9/+4.6 mm, 1 cm 이상 올린 스텝 0.0%). 기울임 상한은 자산 기하에서 나온다.
+    assert P.LIFT_RAMP_ZERO_Z > P.CUP_SPAWN_Z + P.CUP_TIP_RISE_MAX, (
+        "기울여서 얻는 상승이 램프에 들어온다 — 흔들기가 리프트로 계산된다"
+    )
+    assert P.LIFT_RAMP_ZERO_Z < P.CUP_SPAWN_Z + 0.015, "램프 시작이 너무 높아 절벽이 된다"
+    assert math.isclose(
+        P.CUP_TIP_RISE_MAX,
+        math.sqrt(P.CUP_BOTTOM_TO_ORIGIN**2 + P.CUP_BASE_RADIUS**2) - P.CUP_BOTTOM_TO_ORIGIN,
+        abs_tol=1e-9,
+    ), "기울임 상한이 자산 기하에서 파생되지 않았다"
     assert 0.0 < P.LIFT_RAMP_SPAN <= 0.10, "램프 구간이 비었거나 지나치게 길다"
 
     rsrc = (
@@ -508,9 +518,9 @@ def test_env_cfg_inherits_isaaclab_lift():
     )
     for name in inherited:
         assert f"self.rewards.{name} = " not in src, f"{name} 을 재정의하지 말 것"
-    # 신설 term 은 보너스 둘(grasp_pose, settled_at_goal)뿐이다.
+    # 신설 term 은 보너스 셋(grasp_pose, settled_at_goal, grasp_closure)뿐이다.
     # 판정 게이트를 늘리는 term 은 금지 — test6/test7 에서 학습을 죽였다.
-    assert src.count("RewTerm(") <= 2, "신설 term 은 보너스 둘뿐이다"
+    assert src.count("RewTerm(") <= 3, "신설 term 은 보너스 셋뿐이다"
 
 
 def test_smoothing_is_the_reference_curriculum_not_an_extra_term():

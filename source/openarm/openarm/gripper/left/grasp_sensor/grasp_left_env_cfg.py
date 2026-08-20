@@ -346,6 +346,25 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   `rewards.ActionJerkL2` 는 남겨 두되, 커리큘럼이 평탄해진 뒤에도 진동이 남을
         #   때에만 꺼내 쓴다. 한 런에 한 가설만 바꾼다.
 
+        # ── 그리퍼 폐쇄 보너스 (신설) ───────────────────────────────
+        # ★닭-달걀 차단. 닫는 이득이 "들어올린 뒤"에만 생기니 정책이 아예 안 닫는다
+        #   (test6: 개도 평균 42.2 mm, 거의 열림 95.6%, '열기' 지령 89.9%).
+        #   허공에서 닫는 건 straddle 이 0 이라 공짜가 아니다. 근거는 rewards 참조.
+        self.rewards.grasp_closure = RewTerm(
+            func=rewards.gripper_closure_on_cup,
+            weight=P.GRIPPER_CLOSURE_REWARD_WEIGHT,
+            params={
+                "along_std": P.STRADDLE_ALONG_STD,
+                "lateral_std": P.STRADDLE_LATERAL_STD,
+                "open_pos": P.GRIPPER_OPEN_POS,
+                "drive_joint": P.GRIPPER_DRIVE_JOINT,
+                "robot_cfg": SceneEntityCfg(
+                    "robot", body_names=list(P.GRIPPER_FINGER_BODIES), preserve_order=True
+                ),
+                "object_cfg": SceneEntityCfg("object", body_names=P.CUP_BODY_NAME),
+            },
+        )
+
         # ── 목표에서 정지 보너스 (신설) ─────────────────────────────
         # 레퍼런스 goal-tracking 은 **거리만** 본다. "옮겨서 가만히 세워 둔다"를 표현하려면
         # 속도 항이 필요하다. 여기도 게이트가 아니라 보너스다.

@@ -38,10 +38,10 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from isaaclab.assets import RigidObject
+from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.sensors import FrameTransformer
-from isaaclab.utils.math import combine_frame_transforms
+from isaaclab.utils.math import combine_frame_transforms, matrix_from_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -289,3 +289,56 @@ class ActionJerkL2(ManagerTermBase):
         jerk = torch.sum(torch.square(delta - self._prev_delta), dim=1)
         self._prev_delta[:] = delta
         return jerk
+
+
+def gripper_closure_on_cup(
+    env: "ManagerBasedRLEnv",
+    along_std: float,
+    lateral_std: float,
+    open_pos: float,
+    drive_joint: str,
+    robot_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """**컵을 턱 사이에 넣고 닫는 것** 자체에 주는 연속 보상. 리프트와 무관하다.
+
+    ★왜 필요한가 — 닭-달걀이다. 그리퍼를 닫는 이득은 "들어올린 뒤"에만 생기는데, 들려면
+      먼저 닫아야 한다. test6 실측이 그 결과를 보여준다:
+          그리퍼 개도 평균 **42.2 mm**(최대 44) · 거의 열림(>40 mm) 스텝 **95.6%**
+          '열기' 지령 **89.9%** · 최대 컵 상승 +4.6 mm(= 기울임 상한) · 1 cm 이상 0.0%
+      정책은 턱을 활짝 편 채 팔만 떨어 컵을 흔들었다. 한 번도 닫지 않으니 파지가 애초에
+      불가능했다.
+
+    ★공짜로 못 먹게 하는 장치 — **straddle 을 곱한다.** 허공에서 닫는 것은 0 이다.
+      straddle = (턱 축 방향으로 컵이 가운데인가) × (턱 축에서 컵 축까지 가까운가)
+      둘 다 tanh 로 연속이라 절벽이 없다.
+
+    closure 는 개도가 줄수록 커진다. 컵을 감싸고 닫으면 턱이 컵 지름에서 멈추므로
+    closure 는 포화하고(약 0.3), 그 이상은 리프트로만 벌 수 있다 — 의도한 대로다.
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+
+    # 두 손가락 위치에서 턱 축과 중점을 만든다.
+    fingers = robot.data.body_pos_w[:, robot_cfg.body_ids, :]      # (N, 2, 3)
+    p_l, p_r = fingers[:, 0, :], fingers[:, 1, :]
+    mid = 0.5 * (p_l + p_r)
+    jaw = p_r - p_l
+    span = torch.norm(jaw, dim=-1, keepdim=True).clamp(min=1e-6)
+    u = jaw / span
+
+    # 컵 축(로컬 z)의 world 방향과, 턱 중점에서 가장 가까운 컵 축 위의 점.
+    cup_z = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]
+    to_mid = mid - obj.data.root_pos_w
+    cup_pt = obj.data.root_pos_w + cup_z * (to_mid * cup_z).sum(-1, keepdim=True)
+
+    d = cup_pt - mid
+    along = (d * u).sum(-1).abs()                                   # 턱 축 방향 어긋남
+    lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)  # 턱 축까지의 수직거리
+    straddle = (1.0 - torch.tanh(along / along_std)) * (
+        1.0 - torch.tanh(lateral / lateral_std)
+    )
+
+    drive = robot.data.joint_pos[:, robot.joint_names.index(drive_joint)]
+    closure = (1.0 - drive / open_pos).clamp(0.0, 1.0)
+    return straddle * closure
