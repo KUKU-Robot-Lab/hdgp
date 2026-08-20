@@ -37,6 +37,9 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--steps", type=int, default=250)
+# ★태스크를 고정하면 안 된다. 관절공간판(obs 36·action 8)과 태스크공간 IK 판(35·7)은
+#   체크포인트 모양이 달라, 하드코딩하면 IK 체크포인트가 size mismatch 로 죽는다.
+parser.add_argument("--task", type=str, default="open-grip_l_grasp_sensor")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -54,7 +57,7 @@ from openarm.gripper.left.grasp_sensor import grasp_left_preset as P
 from rl_games.common import env_configurations, vecenv
 from rl_games.torch_runner import Runner
 
-TASK = "open-grip_l_grasp_sensor"
+TASK = args.task
 
 
 def _quat_tilt_deg(quat: torch.Tensor) -> torch.Tensor:
@@ -133,6 +136,11 @@ def main() -> None:
     tgt_delta = []         # 적용된 관절 목표의 스텝간 변화 (rad) — 제한기 이후
     prev_tgt = [None]
     late_lin = []          # 에피소드 후반(목표 근처)에서의 컵 선속도
+    # ★리프트 게이트가 **놓인 상태에서 열려 있으므로**(레퍼런스 정합) 'lifted 비율' 만으로는
+    #   들었는지 알 수 없다 — 가만히 있어도 100% 다. 컵 원점 z 를 직접 잰다.
+    cup_z = []             # 컵 원점 z (env-local)
+    cup_dxy = []           # 스폰 위치에서의 수평 이동
+    spawn_xy = [None]
 
     for _ in range(args.steps):
         with torch.inference_mode():
@@ -157,6 +165,10 @@ def main() -> None:
         prev_tgt[0] = tgt.clone()
 
         cup = obj.data.root_pos_w - origins
+        if spawn_xy[0] is None:
+            spawn_xy[0] = cup[:, :2].clone()
+        cup_z.append(float(cup[:, 2].mean()))
+        cup_dxy.append(float((cup[:, :2] - spawn_xy[0]).norm(dim=-1).mean()))
         lifted = cup[:, 2] > P.MINIMAL_LIFT_HEIGHT
         tcp_w = ee.data.target_pos_w[:, 0, :] - origins
         held = lifted & ((tcp_w - cup).norm(dim=-1) < P.GRASP_MAX_EE_DISTANCE)
@@ -257,8 +269,25 @@ def main() -> None:
             q = 1.0 - _m.tanh(val / std)
             print(f"    {name}: 현재 std={std} → 품질 {q:.4f}")
         print("  → 품질이 0 에 가까우면 보상 신호가 없어 gradient 가 생기지 않는다.")
+    if cup_z:
+        import statistics as _st
+        nz = len(cup_z)
+        print("\n=== 컵이 실제로 들렸는가 (게이트가 놓인 상태에서 열려 있으므로 필수) ===")
+        print(f"  스폰 원점 z {P.CUP_SPAWN_Z:.5f} · 리프트 게이트 {P.MINIMAL_LIFT_HEIGHT:.5f}")
+        print(f"  {'구간':<10}{'컵 z':>10}{'스폰대비':>12}{'xy이동':>10}")
+        for a, b, lab in [(0, nz // 5, "0~20%"), (nz // 5, 2 * nz // 5, "20~40%"),
+                          (2 * nz // 5, 3 * nz // 5, "40~60%"), (3 * nz // 5, 4 * nz // 5, "60~80%"),
+                          (4 * nz // 5, nz, "80~100%")]:
+            z = _st.mean(cup_z[a:b]); dd = _st.mean(cup_dxy[a:b])
+            print(f"  {lab:<10}{z:10.5f}{(z - P.CUP_SPAWN_Z) * 1e3:+9.1f} mm{dd * 1e3:8.1f} mm")
+        up = sum(1 for z in cup_z if z > P.CUP_SPAWN_Z + 0.01) / nz
+        print(f"  최대 컵 z {max(cup_z):.5f} (스폰 대비 {(max(cup_z) - P.CUP_SPAWN_Z) * 1e3:+.1f} mm)"
+              f" · 스폰보다 1 cm 이상 올라간 스텝 {up:.1%}")
+        print("  → 이 값이 0 에 가까우면 **컵을 안 들고 곁에 서 있는 것**이다.")
+
     if act_delta:
-        print("\n=== 진동 진단 (제어는 IK 가 아니라 관절 위치 델타다) ===")
+        mode = "태스크공간 diff-IK" if "_ik" in TASK else "관절 위치 델타"
+        print(f"\n=== 진동 진단 (제어 = {mode}) ===")
         print(f"  1차 차분 |Δa|          {sum(act_delta) / len(act_delta):.4f}"
               f"   ← action_rate 가 벌하는 양 (범위 ±1)")
         if act_jerk:
