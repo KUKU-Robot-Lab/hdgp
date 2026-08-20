@@ -1,0 +1,224 @@
+"""물체 뱅크 — 어떤 물체를 몇 종 스폰할지 한 곳에서 정한다.
+
+Phase A 는 컵 1종으로 시작하고, 나중에 grasp_v2 식 다물체 일반화로 갈 때
+`object_bank` 문자열 하나만 바꾸면 되게 한다.
+
+★모듈이 강제하는 함정 2개 (둘 다 재발 이력이 있다)
+  ① 뱅크 크기 > 1 이면 `scene.replicate_physics` 를 **반드시** False 로 둬야 한다.
+     MultiAsset(env 별 다른 물체)은 physics 복제가 불가능하다.
+  ② RigidObject 생성은 **`clone_environments` 이후**여야 한다. 그 전에는 env_0 만
+     존재해 MultiAssetSpawner 가 assets_cfg[0] 하나만 스폰하고, 전 env 가 같은
+     물체를 받는다(배정 어긋남 → warm/판정 붕괴). pour_sensor 포함 3회 재발.
+     `assert_spawned_after_clone()` 로 호출 순서를 검사한다.
+
+★자산 선택 근거 (08.16 실측)
+  visdex 의 cup_big/shaker 는 USD 에 `physics:approximation="sdf"` 를 적어놓고도
+  apiSchemas 에 PhysxSDFMeshCollisionAPI 가 없어 PhysX 가 **convexHull 로 폴백**한다
+  = 속이 찬 원통. 그래서 파지 자세가 pour(진짜 SDF 컵)로 전달되지 않았다.
+  authoring 을 맞춘 사본이 `assets/cup/*_rl.usd` 이고, 컵 계열 뱅크는 그쪽을 쓴다.
+  (visdex 원본은 grasp_v2 가 sorted-glob 으로 obs 차원을 파생시키므로 불가침이다.)
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+
+# openarm 패키지 루트에서 assets 까지
+_MODULES_DIR = os.path.dirname(os.path.abspath(__file__))
+_HDGP_ROOT = os.path.normpath(os.path.join(_MODULES_DIR, "..", "..", "..", "..", ".."))
+ASSETS_DIR = os.path.join(_HDGP_ROOT, "assets")
+CUP_ROOT = os.path.join(ASSETS_DIR, "cup")
+VISDEX_ROOT = os.path.join(ASSETS_DIR, "visdex_objects", "USD")
+
+# 전 물체 공통 기본 질량 [kg] — pour_v1 실컵과 동일.
+# ADR mass DR 의 곱셈 기준이라 여기를 바꾸면 실효 질량 범위 전체가 이동한다.
+# ★USD 기본질량이 제각각이면(shaker 0.263 / 원기둥 0.100) 같은 scale DR 을 걸어도
+#   물체마다 절대 질량이 2.6배 벌어져 무거운 물체만 미검증 외삽 영역으로 튄다.
+BASE_OBJECT_MASS = 0.134
+
+# grasp_v2 에서 구조적으로 못 잡는다고 판정된 물체(반경이 작아 force closure 불가).
+VISDEX_EXCLUDED = (
+    "small_5_cyl", "small_8_cyl", "small_12_cyl",
+    "small_5_cuboid", "small_8_cuboid", "small_12_cuboid",
+)
+
+
+@dataclass(frozen=True)
+class ObjectSpec:
+    """물체 하나. scale 로 같은 USD 를 여러 크기로 쓸 수 있다."""
+
+    id: str
+    usd_path: str
+    scale: tuple = (1.0, 1.0, 1.0)
+    mass: float = BASE_OBJECT_MASS
+    # ★USD 원점이 물체 **바닥에서 얼마나 위**인가 [m] (scale 적용 전).
+    #   이걸 모르면 "작업면에 놓인 상태"의 z 를 계산할 수 없다.
+    #   실측(pxr bbox): cup_big 0.0773 · shaker_closed 0.0921.
+    #   None = 미측정 → 그 뱅크를 쓰면 env 가 fail-loud 한다(조용히 틀린 높이 금지).
+    base_origin_offset_z: float | None = None
+    # ★접촉 필터가 가리켜야 할 **RigidBodyAPI prim 이름**.
+    #   루트 Xform 을 가리키면 PhysX 가 "GPU contact filter … not supported" 를 내고
+    #   force_matrix_w 가 **항상 0** 이 된다(fab_test1~4 를 그렇게 날렸다).
+    #   실측: cup/shaker/visdex 표본 전부 "baseLink". 새 자산은 확인 후 채울 것.
+    rigid_body_name: str = "baseLink"
+
+    @property
+    def origin_offset_z(self) -> float:
+        if self.base_origin_offset_z is None:
+            raise RuntimeError(
+                f"물체 '{self.id}' 의 base_origin_offset_z 가 미측정이다. "
+                "작업면 위 안착 높이를 계산할 수 없다 — USD bbox 로 측정해 채워라."
+            )
+        return self.base_origin_offset_z * float(self.scale[2])
+
+
+@dataclass(frozen=True)
+class ObjectBank:
+    name: str
+    specs: tuple
+    note: str = ""
+
+    def __len__(self) -> int:
+        return len(self.specs)
+
+    @property
+    def ids(self) -> tuple:
+        return tuple(s.id for s in self.specs)
+
+    @property
+    def onehot_dim(self) -> int:
+        """`enable_object_onehot` 을 켰을 때 obs 에 더해지는 차원."""
+        return len(self.specs)
+
+    @property
+    def rigid_body_name(self) -> str:
+        """뱅크 전체가 같은 이름이어야 접촉 필터를 하나로 쓸 수 있다."""
+        names = {s.rigid_body_name for s in self.specs}
+        if len(names) != 1:
+            raise RuntimeError(
+                f"물체 뱅크 '{self.name}' 의 rigid body 이름이 섞여 있다: {sorted(names)}. "
+                "접촉 필터를 하나로 지정할 수 없다."
+            )
+        return names.pop()
+
+    @property
+    def needs_multi_asset(self) -> bool:
+        return len(self.specs) > 1
+
+    @property
+    def requires_replicate_physics_off(self) -> bool:
+        return self.needs_multi_asset
+
+    def missing_files(self) -> tuple:
+        return tuple(s.usd_path for s in self.specs if not os.path.isfile(s.usd_path))
+
+    def assign_indices(self, num_envs: int):
+        """env_id % N 결정론적 배정 — MultiAssetSpawner(random_choice=False)와 같은 규칙.
+
+        torch 를 import 하지 않기 위해 리스트로 돌려준다(호출부가 텐서화).
+        """
+        n = len(self.specs)
+        return [i % n for i in range(num_envs)]
+
+
+# =============================================================================
+# 뱅크 정의
+# =============================================================================
+_CUP_BIG = os.path.join(CUP_ROOT, "cup_big_rl.usd")
+_SHAKER = os.path.join(CUP_ROOT, "shaker_closed_rl.usd")
+
+
+# 실측(pxr bbox, scale=1): cup_big 바닥 -0.0773 / 상단 +0.1003
+_CUP_BIG_ORIGIN_OFFSET = 0.0773
+_SHAKER_ORIGIN_OFFSET = 0.0921      # 메모리 기록 "shaker 원점은 바닥+92mm" 와 일치
+
+
+def _cup(scale: float) -> ObjectSpec:
+    # ★round 필수 — int(1.15 * 100) 은 부동소수 때문에 114 가 된다(id 가 조용히 어긋남).
+    return ObjectSpec(id=f"cup_big_s{round(scale * 100):03d}",
+                      usd_path=_CUP_BIG, scale=(scale, scale, scale),
+                      base_origin_offset_z=_CUP_BIG_ORIGIN_OFFSET)
+
+
+SINGLE_CUP = ObjectBank(
+    name="single_cup",
+    specs=(_cup(1.00),),
+    note="Phase A 착수용. MultiAsset 불필요 → replicate_physics 를 켠 채로 돌 수 있다.",
+)
+
+CUP_FAMILY = ObjectBank(
+    name="cup_family",
+    specs=(
+        _cup(0.85), _cup(1.00), _cup(1.15), _cup(1.30),
+        ObjectSpec(id="shaker_closed", usd_path=_SHAKER,
+                   base_origin_offset_z=_SHAKER_ORIGIN_OFFSET),
+        _cup(0.90), _cup(1.05), _cup(1.20),
+    ),
+    note=("grasp_v1 의 8종. 순서가 env_id % 8 배정과 onehot 인덱스를 동시에 정하므로 "
+          "바꾸면 기존 체크포인트와 어긋난다."),
+)
+
+
+def _visdex_bank() -> ObjectBank:
+    """visdex 디렉터리를 sorted-glob 한다(grasp_v2 규약).
+
+    ★디렉터리에 자산이 하나 추가되면 뱅크 크기가 조용히 변하고, onehot 을 켠 상태면
+      obs 차원이 바뀌어 체크포인트 resume 이 깨진다(grasp_v2 에서 실제로 발생 — 148→149).
+      그래서 이 뱅크를 쓰는 런은 `expected_size` 로 크기를 고정해 대조해야 한다.
+    """
+    if not os.path.isdir(VISDEX_ROOT):
+        return ObjectBank(name="visdex", specs=(), note="visdex 자산 디렉터리 없음")
+    names = sorted(
+        n for n in os.listdir(VISDEX_ROOT)
+        if os.path.isfile(os.path.join(VISDEX_ROOT, n, f"{n}.usd"))
+        and n not in VISDEX_EXCLUDED
+    )
+    # ★원점 오프셋 미측정(base_origin_offset_z=None). Phase C 에서 이 뱅크를 쓰려면
+    #   149종의 USD bbox 를 한 번 계산해 캐시해야 한다 — 안 하면 env 가 fail-loud 한다.
+    specs = tuple(
+        ObjectSpec(id=n, usd_path=os.path.join(VISDEX_ROOT, n, f"{n}.usd"))
+        for n in names
+    )
+    return ObjectBank(
+        name="visdex", specs=specs,
+        note=("grasp_v2 물체군. 디렉터리 glob 이라 자산 추가 시 크기가 조용히 변한다 — "
+              "onehot 을 켜면 반드시 expected_size 로 고정할 것."),
+    )
+
+
+VISDEX = _visdex_bank()
+
+BANKS: dict[str, ObjectBank] = {b.name: b for b in (SINGLE_CUP, CUP_FAMILY, VISDEX)}
+DEFAULT_BANK = "single_cup"
+
+
+def get(name: str, *, expected_size: int | None = None) -> ObjectBank:
+    if name not in BANKS:
+        raise KeyError(f"알 수 없는 물체 뱅크 '{name}'. 가능: {sorted(BANKS)}")
+    bank = BANKS[name]
+    if expected_size is not None and len(bank) != expected_size:
+        raise RuntimeError(
+            f"물체 뱅크 '{name}' 크기가 {len(bank)} 인데 {expected_size} 를 기대했다. "
+            "자산 디렉터리가 바뀌었을 수 있다 — onehot 을 켠 체크포인트와 어긋난다."
+        )
+    missing = bank.missing_files()
+    if missing:
+        raise FileNotFoundError(f"물체 뱅크 '{name}' 자산 없음: {missing}")
+    return bank
+
+
+# =============================================================================
+# 스폰 순서 강제
+# =============================================================================
+def assert_spawned_after_clone(bank: ObjectBank, cloned: bool) -> None:
+    """MultiAsset 물체를 clone 이전에 만들면 전 env 가 assets_cfg[0] 하나만 받는다.
+
+    3회 재발한 함정이라 조용히 넘기지 않고 여기서 멈춘다.
+    """
+    if bank.needs_multi_asset and not cloned:
+        raise RuntimeError(
+            f"물체 뱅크 '{bank.name}'({len(bank)}종)는 clone_environments **이후**에 "
+            "스폰해야 한다. clone 이전에는 env_0 만 존재해 MultiAssetSpawner 가 "
+            "assets_cfg[0] 하나만 스폰하고, env 별 배정이 통째로 어긋난다."
+        )

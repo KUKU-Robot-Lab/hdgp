@@ -49,6 +49,7 @@ ASSET_TAGS: dict[str, str] = {
     "a1": "openarm_tesollo_sensor_rl",   # DG-5F, 오른손만 Tesollo + 왼손 2-DOF 그리퍼
     "a2": "openarm_tesollo_bi_s_rl",     # DG-5FS, 좌우 20관절
     "a0": "openarm_bi_rh56f1_rl",        # RH56F1 (참고용)
+    "a3": "openarm_tesollo_bi_rl",       # DG-5F(구 기구학), 좌우 20관절
 }
 
 _LABEL_RE = re.compile(
