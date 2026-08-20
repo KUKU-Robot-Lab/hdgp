@@ -100,6 +100,7 @@ class GraspLiftEnv(DirectRLEnv):
 
         # ---- 커리큘럼 ---------------------------------------------------------------
         self.difficulty = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._gate_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._goal_reached_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._object_mass = self.object.root_physx_view.get_masses().to(self.device).view(self.num_envs, 1)
 
@@ -198,10 +199,14 @@ class GraspLiftEnv(DirectRLEnv):
         # 유휴 관절(반대팔·헤드 등)은 default 유지 — reset 에서 target 설정됨
 
         # ---- 커리큘럼: 물체 반중력 보상력 (유효 중력 = g × 난이도/max) -------------
+        # ★접촉 성립(대향 게이트 참) 시에만 건다 — 잡기 전엔 정상 중력(컵 안정),
+        #   잡으면 가벼움 = 커리큘럼 의도 그대로. 접촉 전부터 걸면 0.15g 컵이 마찰을
+        #   잃고 떠돌다 낙하(agn_test1 ep1000: episode 323/480, height_delta -11mm).
         frac = (self.difficulty.float().unsqueeze(1) / float(self.cfg.curriculum_max_level)).clamp(
             min=float(self.cfg.gravity_min_frac))
+        comp = self._object_mass * _GRAVITY * (1.0 - frac) * self._gate_buf.float().unsqueeze(1)
         f = torch.zeros(self.num_envs, 1, 3, device=self.device)
-        f[:, 0, 2] = (self._object_mass * _GRAVITY * (1.0 - frac)).squeeze(1)
+        f[:, 0, 2] = comp.squeeze(1)
         self.object.set_external_force_and_torque(
             f, torch.zeros_like(f), body_ids=[0], is_global=True)
 
@@ -265,6 +270,7 @@ class GraspLiftEnv(DirectRLEnv):
             prev_actions=self.prev_actions,
             cfg=self.cfg,
         )
+        self._gate_buf.copy_(gate)   # 반중력 커리큘럼용 (접촉 시에만 보상력)
         # abnormal 종료 페널티(관절한계) — _get_dones 가 같은 스텝에 계산한 플래그 사용
         total = total + float(self.cfg.abnormal_penalty) * self._abnormal_buf.float()
         self.prev_actions.copy_(self.actions)
@@ -325,6 +331,7 @@ class GraspLiftEnv(DirectRLEnv):
             self.difficulty[env_ids] + torch.where(succ, 1, -1)
         ).clamp(0, int(self.cfg.curriculum_max_level))
         self._goal_reached_now[env_ids] = False
+        self._gate_buf[env_ids] = False
 
         # ---- 로봇: 프로필 init 자세 ---------------------------------------------------
         q0 = self._default_q[env_ids].clone()
