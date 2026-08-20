@@ -313,9 +313,16 @@ class GraspLiftEnv(DirectRLEnv):
         beyond = (q_arm < self._arm_lo - 0.05) | (q_arm > self._arm_hi + 0.05)
         runaway = qd_arm.abs() > 20.0
         self._abnormal_buf = (beyond | runaway).any(dim=-1)
-        terminated = out_xy | fell | self._abnormal_buf
+        # ★2026-08-20 fell/out 은 **종료하지 않는다** (로깅만). agn_test2 ep1000 실측:
+        #   컵 근처에 가면 확률적으로 쳐서 떨어뜨림 → 종료 → discount 된 미래 보상 전체
+        #   소실 → 정책이 "접근하지 않고 에피소드를 길게 끄는" 회피를 학습
+        #   (reaching 0.056→0.005 붕괴 + episode_lengths 384→389 동반 상승).
+        #   떨어진 컵은 reaching/tracking 이 자연히 낮아 보상으로 이미 처벌된다.
+        terminated = self._abnormal_buf
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         self.extras["task/abnormal_rate"] = self._abnormal_buf.float().mean()
+        self.extras["task/fell_rate"] = fell.float().mean()
+        self.extras["task/out_xy_rate"] = out_xy.float().mean()
         return terminated, truncated
 
     # ------------------------------------------------------------------
@@ -352,7 +359,8 @@ class GraspLiftEnv(DirectRLEnv):
         spawn = torch.zeros(n, 3, device=self.device)
         spawn[:, 0] = p.object_spawn_center[0] + offs[:, 0]
         spawn[:, 1] = p.object_spawn_center[1] + offs[:, 1]
-        spawn[:, 2] = p.object_spawn_z
+        # +5mm 패딩: 정확 안착 높이는 스폰 침투 반동으로 컵을 튕긴다(실측 침하 -11mm)
+        spawn[:, 2] = p.object_spawn_z + 0.005
         self.object_spawn_pos[env_ids] = spawn
         self.goal_pos[env_ids] = spawn + torch.tensor(
             [0.0, 0.0, float(self.cfg.goal_height_offset)], device=self.device)
