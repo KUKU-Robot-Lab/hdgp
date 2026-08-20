@@ -238,7 +238,13 @@ def main() -> None:
         g = sum(goal_dist) / n
         print("\n=== 정지 보상 임계 산정용 실측 ===")
         print(f"  컵 선속도 {v:.3f} m/s   각속도 {w_:.3f} rad/s   목표까지 {g * 1e3:.0f} mm")
-        for name, val, std in (("선속도", v, 0.10), ("각속도", w_, 1.00), ("목표거리", g, 0.05)):
+        # ★프리셋에서 읽는다. 여기에 리터럴을 박아두면 프리셋이 바뀐 뒤에도
+        #   낡은 임계로 "품질 0" 을 찍어 실제보다 나쁘게 오보한다(실제로 그랬다).
+        for name, val, std in (
+            ("선속도", v, P.SETTLE_LIN_VEL_STD),
+            ("각속도", w_, P.SETTLE_ANG_VEL_STD),
+            ("목표거리", g, P.SETTLE_POS_STD),
+        ):
             import math as _m
             q = 1.0 - _m.tanh(val / std)
             print(f"    {name}: 현재 std={std} → 품질 {q:.4f}")

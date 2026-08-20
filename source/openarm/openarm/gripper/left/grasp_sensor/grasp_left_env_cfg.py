@@ -315,23 +315,15 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   끝내는 것이 최적**이 된다. 실제로 그렇게 죽였다(test6/test7):
         #       lifting 6.14 → 0.0000 / 에피소드 130 → 13 / 총보상 +34.9 → −0.46
         #   별도 term 이라 TFEvents 에 로깅돼 자세 개선을 학습 중 관측할 수 있다.
-        # ── 액션 jerk 페널티 (신설) ─────────────────────────────────
-        # ★레퍼런스에는 1차 차분(action_rate)만 있는데, 실측은 2차가 더 크고 방향 반전이
-        #   68.6% 였다(= 고주파 채터링). 1차만으로는 "일정 크기로 계속 진동"을 못 막는다.
-        #   커리큘럼도 action_rate 와 같은 시점에 강화한다.
-        self.rewards.action_jerk = RewTerm(
-            func=rewards.ActionJerkL2,
-            weight=P.ACTION_JERK_WEIGHT_INIT,
-            params={},
-        )
-        self.curriculum.action_jerk = CurrTerm(
-            func=mdp.modify_reward_weight,
-            params={
-                "term_name": "action_jerk",
-                "weight": P.ACTION_JERK_WEIGHT_FINAL,
-                "num_steps": P.ACTION_JERK_CURRICULUM_STEPS,
-            },
-        )
+        # ── 액션 jerk 페널티는 **배선하지 않는다** ──────────────────
+        # ★한때 넣었다가 뺐다. 근거: 그 처방은 test12 의 고주파 채터링(방향 반전 68.6%,
+        #   2차 차분 > 1차)을 보고 쓴 것인데, test13 에서 그 증상이 사라졌다(반전 19.9%).
+        #   그리고 레퍼런스식 커리큘럼(action_rate/joint_vel 를 10000 step 에 1000 배)이
+        #   **이미 작동 중**임을 학습 곡선이 보여준다 — 관절 목표 도약이
+        #       epoch 1150: 10.8° → 1450: 7.45°/스텝 으로 단조 감소, 끝에서도 감소 중.
+        #   즉 평활화에 부족한 것은 새 항이 아니라 **학습 시간**이었다(1500 에서 잘렸다).
+        #   `rewards.ActionJerkL2` 는 남겨 두되, 커리큘럼이 평탄해진 뒤에도 진동이 남을
+        #   때에만 꺼내 쓴다. 한 런에 한 가설만 바꾼다.
 
         # ── 목표에서 정지 보너스 (신설) ─────────────────────────────
         # 레퍼런스 goal-tracking 은 **거리만** 본다. "옮겨서 가만히 세워 둔다"를 표현하려면

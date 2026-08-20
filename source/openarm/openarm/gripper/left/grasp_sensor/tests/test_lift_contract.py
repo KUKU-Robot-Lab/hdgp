@@ -26,6 +26,13 @@ _ROBOT_URDF = _HDGP / "assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_se
 _CUP_USD = _HDGP / "assets/cup" / P.CUP_USD_NAME
 _TABLE_USD = _HDGP / "assets/scene_objects/table.usd"
 _CFG_SRC = Path(__file__).resolve().parents[1] / "grasp_left_env_cfg.py"
+# 상속 원본. 커리큘럼 onset 처럼 "레퍼런스가 정하는 값"은 여기서 읽어야
+# 레퍼런스가 바뀌었을 때 계약이 조용히 거짓이 되지 않는다.
+_ISAACLAB_LIFT_ENV_CFG = (
+    _HDGP.parent
+    / "IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/lift"
+    / "lift_env_cfg.py"
+)
 
 
 def _cfg_source() -> str:
@@ -473,28 +480,60 @@ def test_env_cfg_inherits_isaaclab_lift():
     )
     for name in inherited:
         assert f"self.rewards.{name} = " not in src, f"{name} 을 재정의하지 말 것"
-    # 신설 term: 보너스 둘(grasp_pose, settled_at_goal) + 평활화 페널티 하나(action_jerk).
+    # 신설 term 은 보너스 둘(grasp_pose, settled_at_goal)뿐이다.
     # 판정 게이트를 늘리는 term 은 금지 — test6/test7 에서 학습을 죽였다.
-    assert src.count("RewTerm(") <= 3, "신설 term 은 보너스 둘 + jerk 페널티 하나뿐이다"
+    assert src.count("RewTerm(") <= 2, "신설 term 은 보너스 둘뿐이다"
 
 
-def test_action_jerk_penalty_exists():
-    """★레퍼런스에는 1차 차분(action_rate)만 있다. 실측은 **2차가 더 컸다**.
+def test_smoothing_is_the_reference_curriculum_not_an_extra_term():
+    """★평활화의 주체는 **레퍼런스 커리큘럼**이지 새 항이 아니다.
 
-    test12: 1차 |Δa| 0.943 < 2차 |Δ²a| **1.755**, 방향 반전 **68.6%** = 고주파 채터링.
-    action_rate 는 변화량만 벌하므로 일정 크기로 계속 진동하면 대가를 감수하고 유지할 수
-    있다. jerk 는 방향을 되돌릴 때마다 커져 진동을 직접 벌한다.
+    test13 학습 곡선이 근거다. action_rate/joint_vel 가 10000 step(= epoch 417)에 1000 배로
+    강화된 뒤 관절 목표 도약이 단조 감소했다:
+
+        epoch  1150   1200   1250   1300   1350   1400   1450
+        도약   10.8°  10.2°   9.2°   8.6°   8.1°   7.6°   7.45°   ← 끝에서도 **감소 중**
+
+    같은 구간에서 총보상은 오히려 올랐다(107 → 113~119). 즉 평활화가 과제 성능을 깎지
+    않는다. 부족했던 것은 새 페널티가 아니라 **에폭**이었다 — max_epochs 1500 에서 잘렸다.
+    그래서 jerk 항을 배선하지 않는다. 한 런에 한 가설만 바꾼다.
     """
     src = _cfg_source()
-    assert "action_jerk" in src
-    assert "ActionJerkL2" in src
-    # action_rate 와 같은 시점에 커리큘럼으로 강화
-    assert "curriculum.action_jerk" in src
-    assert P.ACTION_JERK_WEIGHT_INIT < 0 and P.ACTION_JERK_WEIGHT_FINAL < 0
-    assert P.ACTION_JERK_WEIGHT_FINAL < P.ACTION_JERK_WEIGHT_INIT, "커리큘럼이 강화 방향이어야"
-    # 2차 차분 제곱합이 1차의 약 3.5 배라 weight 를 그만큼 낮춰 영향이 비슷하게
-    assert abs(P.ACTION_JERK_WEIGHT_FINAL) < 1e-1, "action_rate(-1e-1)보다 작아야 균형이 맞는다"
-    assert "weight=P." in src and "weight=0" not in src
+    assert "self.rewards.action_jerk" not in src, "jerk 항은 의도적으로 배선하지 않는다"
+    assert "self.curriculum.action_jerk" not in src
+    # 레퍼런스 커리큘럼 둘은 반드시 살아 있어야 한다(상속받으므로 재정의가 없어야 정상).
+    for name in ("action_rate", "joint_vel"):
+        assert f"self.rewards.{name} = " not in src, f"{name} 은 레퍼런스 것을 그대로 쓴다"
+
+
+def test_max_epochs_outlives_the_smoothing_curriculum():
+    """★커리큘럼이 강화되는 시점보다 학습이 훨씬 길어야 한다.
+
+    커리큘럼 onset = 10000 env-step / horizon_length = epoch 417. test13 은 1500 에서
+    멈췄고, 그 시점에도 도약이 매 50 epoch 마다 계속 줄고 있었다. onset 의 몇 배는 돌려야
+    평활화가 수렴한다. 이 계약이 없으면 다음에도 조용히 중간에 잘린다.
+    """
+    import re
+    import pathlib as _pl
+
+    yaml_path = (
+        _pl.Path(__file__).resolve().parents[1] / "config" / "agents" / "rl_games_ppo_cfg.yaml"
+    )
+    text = yaml_path.read_text()
+    max_epochs = int(re.search(r"max_epochs:\s*(\d+)", text).group(1))
+    horizon = int(re.search(r"horizon_length:\s*(\d+)", text).group(1))
+    # onset 은 **상속받은** 레퍼런스 커리큘럼에서 직접 읽는다. 리터럴을 박아두면
+    # 레퍼런스가 바뀐 뒤에도 통과해 계약이 거짓이 된다.
+    if not _ISAACLAB_LIFT_ENV_CFG.is_file():
+        pytest.skip("IsaacLab 소스 트리를 찾을 수 없다")
+    ref = _ISAACLAB_LIFT_ENV_CFG.read_text()
+    onset_steps = int(
+        re.search(r'"term_name":\s*"action_rate".*?"num_steps":\s*(\d+)', ref, re.S).group(1)
+    )
+    onset_epoch = onset_steps / horizon
+    assert max_epochs >= 5 * onset_epoch, (
+        f"max_epochs {max_epochs} 가 커리큘럼 onset(epoch {onset_epoch:.0f})의 5 배 미만"
+    )
 
 
 def test_lift_gate_requires_holding_the_cup():
