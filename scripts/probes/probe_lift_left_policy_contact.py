@@ -130,6 +130,8 @@ def main() -> None:
     act_jerk = []          # |Δa_t − Δa_{t−1}| (2차 차분 — 레퍼런스에 **없는** 항)
     act_flips = []         # 액션 성분별 부호 반전 비율 (진동이면 높다)
     arm_speed = []         # 팔 관절 속도 크기 (rad/s)
+    tgt_delta = []         # 적용된 관절 목표의 스텝간 변화 (rad) — 제한기 이후
+    prev_tgt = [None]
     late_lin = []          # 에피소드 후반(목표 근처)에서의 컵 선속도
 
     for _ in range(args.steps):
@@ -147,6 +149,12 @@ def main() -> None:
         obs, _, _, _ = wrapped.step(act)
         obs = _tensor(obs)
         arm_speed.append(float(robot.data.joint_vel[:, arm_ids].norm(dim=-1).mean()))
+        # ★변화율 제한기가 있으면 raw 액션의 차분은 무의미하다(clamp 되어 버려진다).
+        #   실제로 로봇에 간 **관절 목표**의 스텝간 변화를 따로 잰다 — 이게 평활도다.
+        tgt = robot.data.joint_pos_target[:, arm_ids]
+        if prev_tgt[0] is not None:
+            tgt_delta.append(float((tgt - prev_tgt[0]).abs().amax(dim=-1).mean()))
+        prev_tgt[0] = tgt.clone()
 
         cup = obj.data.root_pos_w - origins
         lifted = cup[:, 2] > P.MINIMAL_LIFT_HEIGHT
@@ -258,6 +266,10 @@ def main() -> None:
                   f"   ← 레퍼런스에 **없는** 항")
             print(f"  방향 반전 비율          {sum(act_flips) / len(act_flips):.1%}"
                   f"   (일정 방향 이동이면 0%, 진동이면 50% 근처)")
+        if tgt_delta:
+            d = sum(tgt_delta) / len(tgt_delta)
+            print(f"  ★적용된 관절 목표 변화  {d:.5f} rad/스텝 = {d / 0.02:.2f} rad/s"
+                  f"   (관절 속도 한계 2.175~2.61)")
         print(f"  팔 관절 속도            {sum(arm_speed) / len(arm_speed):.3f} rad/s")
         if late_lin:
             print(f"  목표 10 cm 이내에서 컵 선속도 {sum(late_lin) / len(late_lin):.3f} m/s"
