@@ -84,9 +84,12 @@ TESOLLO_RIGHT = RobotProfile(
     contact_group_b=("index", "middle", "ring", "pinky"),
     fingertip_bodies=tuple(f"r_hl_{f}_tip" for f in _FINGERS),
     init_joint_pos={
-        # 팔: 컵 쪽을 향한 자연스러운 준비 자세(grasp_sensor init 승계)
-        "r_aj_1": 0.5, "r_aj_2": 0.1, "r_aj_3": 0.4, "r_aj_4": 0.60,
-        "r_aj_5": -0.2, "r_aj_6": 0.0, "r_aj_7": 0.0,
+        # 팔: 스폰 박스 위 pre-grasp 홈 (palm ≈ (0.31, -0.25, 0.49), IK 실측 08.20).
+        # ★구 grasp_sensor 홈(0.5,0.1,0.4,0.6,-0.2,0,0)은 sensor_rl 자산에서 손 메시가
+        #   스폰 박스를 점유해 컵을 리셋 즉시 밀어냈다(링크 원점 거리로는 안 보임 —
+        #   probe_spawn_overlap/probe_home_retreat 실측, 스폰 박스 ±0.08 전 9점 quiet 검증).
+        "r_aj_1": 0.097, "r_aj_2": -0.134, "r_aj_3": 0.378, "r_aj_4": 1.864,
+        "r_aj_5": -0.206, "r_aj_6": 0.103, "r_aj_7": -0.793,
         # 손: 엄지 대향 + 나머지 폄
         "r_hj_thumb_1": 0.0, "r_hj_thumb_2": -1.57, "r_hj_thumb_3": -0.5, "r_hj_thumb_4": 0.0,
         **{f"r_hj_{f}_{j}": 0.0 for f in ("index", "middle", "ring", "pinky") for j in (1, 2, 3, 4)},
