@@ -617,3 +617,51 @@ def test_arm_action_command_cannot_outrun_the_joint():
     )
     for expr, rate in P.ARM_TARGET_RATE_LIMIT.items():
         assert rate > 0.0, f"{expr} 상한이 0 이하"
+
+
+def test_ik_variant_controls_the_same_point_the_reward_measures():
+    """★태스크공간 변형은 **보상이 보는 점**을 제어해야 한다.
+
+    보상의 EE 프레임은 `l_hl_gripper_base` + z 오프셋(TCP_OFFSET_IN_BASE_Z)이다.
+    IK 액션의 `body_offset` 이 이와 다르면 "제어하는 점"과 "평가받는 점"이 어긋나
+    거리 보상이 영영 0 에 안 붙는데, 어디서도 에러가 나지 않는다.
+
+    또한 스케일이 레퍼런스 Franka 값(0.5)이면 안 된다 — dt 0.02 에서 25 m/s 지령이라
+    관절공간에서 진단한 포화(지령이 관절 한계의 7 배)를 그대로 재현한다.
+    """
+    src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_ik_env_cfg.py"
+    ).read_text(encoding="utf-8")
+    assert "use_relative_mode=True" in src and 'ik_method="dls"' in src
+    assert "P.TCP_OFFSET_IN_BASE_Z" in src, "보상 EE 프레임과 같은 오프셋을 써야 한다"
+    assert "scale=P.IK_ACTION_SCALE" in src
+    # 위치·회전 상한이 팔의 실제 능력 근처여야 한다(관절 한계 2.175~2.61 rad/s).
+    pos = P.IK_ACTION_SCALE[:3]
+    rot = P.IK_ACTION_SCALE[3:]
+    dt = 0.02
+    assert all(v / dt <= 2.0 for v in pos), "TCP 선속도 지령 상한이 2 m/s 를 넘는다"
+    assert all(v / dt <= max(P.ARM_VELOCITY_LIMIT.values()) for v in rot), (
+        "TCP 각속도 지령 상한이 관절 속도 한계를 넘는다"
+    )
+    # IK 해는 관절 한계로 clamp 돼야 한다 — 레퍼런스 액션은 그걸 안 한다.
+    act_src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_actions.py"
+    ).read_text(encoding="utf-8")
+    assert "soft_joint_pos_limits" in act_src
+
+
+def test_joint_space_task_is_left_untouched_by_the_ik_variant():
+    """★IK 변형은 **별도 등록**이다. 관절공간 태스크의 액션/관측 차원은 그대로여야 한다.
+
+    hdgp 규칙상 obs/action 차원은 명시 요청 없이 바꾸지 않는다. 비교가 성립하려면
+    두 태스크가 나란히 살아 있어야 하기도 한다.
+    """
+    reg = (
+        Path(__file__).resolve().parents[1] / "config" / "__init__.py"
+    ).read_text(encoding="utf-8")
+    assert 'id="open-grip_l_grasp_sensor"' in reg
+    assert 'id="open-grip_l_grasp_sensor_ik"' in reg
+    cfg = _cfg_source()
+    # 관절공간판의 팔 액션은 여전히 관절 위치(변화율 상한 포함)여야 한다.
+    assert "RateLimitedJointPositionActionCfg" in cfg
+    assert "DifferentialInverseKinematics" not in cfg

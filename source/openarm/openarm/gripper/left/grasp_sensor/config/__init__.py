@@ -48,3 +48,26 @@ gym.register(
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
     },
 )
+
+# ── 태스크공간(diff-IK) 변형 ─────────────────────────────────────────────
+# 팔 액션만 TCP 상대 pose 6D 로 바꾼 것. 보상·씬·목표는 위와 동일해서 같은 조건에서
+# 관절공간판과 머리를 맞댈 수 있다. 근거는 `grasp_left_ik_env_cfg.py` docstring.
+gym.register(
+    id="open-grip_l_grasp_sensor_ik",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "openarm.gripper.left.grasp_sensor.grasp_left_ik_env_cfg:GraspLeftGripperIKEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="open-grip_l_grasp_sensor_ik-play",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "openarm.gripper.left.grasp_sensor.grasp_left_ik_env_cfg:GraspLeftGripperIKEnvCfg_PLAY",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+    },
+)

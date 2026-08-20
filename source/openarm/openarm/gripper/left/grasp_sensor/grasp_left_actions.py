@@ -42,8 +42,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Sequence
 
 import torch
-from isaaclab.envs.mdp.actions.actions_cfg import JointPositionActionCfg
+from isaaclab.envs.mdp.actions.actions_cfg import (
+    DifferentialInverseKinematicsActionCfg,
+    JointPositionActionCfg,
+)
 from isaaclab.envs.mdp.actions.joint_actions import JointPositionAction
+from isaaclab.envs.mdp.actions.task_space_actions import DifferentialInverseKinematicsAction
 from isaaclab.utils import configclass
 from isaaclab.utils.string import resolve_matching_names_values
 
@@ -112,3 +116,35 @@ class RateLimitedJointPositionActionCfg(JointPositionActionCfg):
     class_type: type = RateLimitedJointPositionAction
 
     rate_limit: dict[str, float] = None
+
+
+class JointLimitedDifferentialIKAction(DifferentialInverseKinematicsAction):
+    """diff-IK 결과를 **관절 한계 안으로 클램프**한다.
+
+    레퍼런스 `DifferentialInverseKinematicsAction.apply_actions` 는 IK 해를 그대로
+    `set_joint_position_target` 에 넘긴다(`task_space_actions.py:214`) — 한계 검사가 없다.
+    이 팔은 손목 j6 가 ±45° 뿐이고 손목 3 축 effort 가 7 N·m 라, 도달 불가능한 자세를
+    지령하면 관절이 한계에 눌린 채 버티며 IK 가 계속 같은 방향을 밀어 고착된다
+    (Fabrics 경로에서 실제로 j5 한계 고착으로 관측됐다).
+
+    agnostic 트랙(`agnostic/tasks/grasp_lift`)도 같은 이유로 IK 해를 한계로 clamp 한다.
+    """
+
+    def apply_actions(self) -> None:
+        ee_pos_curr, ee_quat_curr = self._compute_frame_pose()
+        joint_pos = self._asset.data.joint_pos[:, self._joint_ids]
+        if ee_quat_curr.norm() != 0:
+            jacobian = self._compute_frame_jacobian()
+            joint_pos_des = self._ik_controller.compute(
+                ee_pos_curr, ee_quat_curr, jacobian, joint_pos
+            )
+        else:
+            joint_pos_des = joint_pos.clone()
+        limits = self._asset.data.soft_joint_pos_limits[:, self._joint_ids, :]
+        joint_pos_des = joint_pos_des.clamp(min=limits[..., 0], max=limits[..., 1])
+        self._asset.set_joint_position_target(joint_pos_des, self._joint_ids)
+
+
+@configclass
+class JointLimitedDifferentialIKActionCfg(DifferentialInverseKinematicsActionCfg):
+    class_type: type = JointLimitedDifferentialIKAction
