@@ -35,6 +35,8 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--num_envs", type=int, default=32)
 parser.add_argument("--steps", type=int, default=120)
+# ★관절공간 판과 IK 판 **둘 다** 상한이 걸려야 한다. 태스크를 고정하면 한쪽만 보게 된다.
+parser.add_argument("--task", type=str, default="open-grip_l_grasp_sensor")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -51,15 +53,23 @@ from openarm.gripper.left.grasp_sensor import grasp_left_preset as P  # noqa: E4
 
 
 def main() -> None:
-    cfg = parse_env_cfg("open-grip_l_grasp_sensor", num_envs=args.num_envs)
-    env = gym.make("open-grip_l_grasp_sensor", cfg=cfg).unwrapped
+    cfg = parse_env_cfg(args.task, num_envs=args.num_envs)
+    env = gym.make(args.task, cfg=cfg).unwrapped
     env.reset()
 
     term = env.action_manager.get_term("arm_action")
     names = term._joint_names
     joint_ids = term._joint_ids
     dt = env.step_dt
-    limit = term._max_step_delta[0].clone()          # [rad] per control step
+    # ★기대치를 term 내부 값에서 읽지 않는다. 관절공간 판은 `process_actions`(env 스텝당
+    #   1 회)에서 묶고 IK 판은 `apply_actions`(물리 스텝당 1 회 = decimation 배)에서 묶어,
+    #   내부 `_max_step_delta` 의 dt 기준이 서로 다르다. 우리가 검증하려는 것은 그게 아니라
+    #   **env 스텝당 관절 목표가 속도 한계를 넘지 않는가** 이므로 프리셋에서 직접 만든다.
+    from isaaclab.utils.string import resolve_matching_names_values
+    _rate = torch.zeros(len(names), device=env.device)
+    _idx, _, _val = resolve_matching_names_values(P.ARM_TARGET_RATE_LIMIT, list(names))
+    _rate[_idx] = torch.tensor(_val, device=env.device)
+    limit = _rate * dt                                # [rad] per env step
 
     robot = env.scene["robot"]
     # ★리셋 직후 `joint_pos_target` 버퍼는 stale 하다(아직 아무도 안 썼다). 그걸 기준으로
@@ -101,22 +111,33 @@ def main() -> None:
     print(f"\n제어 스텝 dt = {dt:.4f} s   (도중 리셋된 env-step {n_reset} 개는 제외)")
     print(f"{'관절':<10}{'상한[rad]':>12}{'실측최대':>12}{'상한대비':>10}{'리셋후1스텝':>14}")
     ok = True
+    reached = 0.0
     for i, n in enumerate(names):
         lim = float(limit[i]); got = float(worst[i]); rst = float(first_step_after_reset[i])
         ratio = got / lim if lim else float("nan")
+        reached = max(reached, ratio)
         flag = ""
         if got > lim * 1.001:
             flag = "  ← 상한 초과!"; ok = False
         if rst > lim * 1.001:
             flag += "  ← 리셋후 초과!"; ok = False
         if ratio < 0.99:
-            flag += "  ← 상한에 못 닿음(제한기가 과하게 죽였나?)"; ok = False
+            # ★"상한에 닿아야 한다"는 관절공간 판(액션↔관절 1:1)에서만 성립한다. IK 판은
+            #   자코비안이 한 TCP 지령을 여러 관절에 나눠 주므로 특정 관절이 상한까지
+            #   안 갈 수 있다 — 그건 제한기 결함이 아니다. 그래서 IK 에서는 경고만 낸다.
+            if "_ik" in args.task:
+                flag += "  (IK: 이 관절엔 상한만큼 요구가 안 감 — 정상)"
+            else:
+                flag += "  ← 상한에 못 닿음(제한기가 과하게 죽였나?)"; ok = False
         print(f"{n:<10}{lim:12.5f}{got:12.5f}{ratio:9.1%}{rst:14.5f}{flag}")
 
     unlimited = 1.0 * 0.5 * 2  # ±1 부호 반전 × scale
     print(f"\n제한기가 없었다면 스텝간 변화는 {unlimited:.3f} rad "
           f"(= {unlimited/dt:.1f} rad/s). 관절 속도 한계는 "
           f"{min(P.ARM_VELOCITY_LIMIT.values()):.3f}~{max(P.ARM_VELOCITY_LIMIT.values()):.3f} rad/s.")
+    if "_ik" in args.task and reached < 0.99:
+        print("  ← 어떤 관절도 상한에 안 닿았다 — 제한기가 실제로 작동하는지 확인 못 함")
+        ok = False
     print("\n판정:", "PASS" if ok else "FAIL")
 
     env.close()

@@ -128,7 +128,64 @@ class JointLimitedDifferentialIKAction(DifferentialInverseKinematicsAction):
     (Fabrics 경로에서 실제로 j5 한계 고착으로 관측됐다).
 
     agnostic 트랙(`agnostic/tasks/grasp_lift`)도 같은 이유로 IK 해를 한계로 clamp 한다.
+
+    ★★그리고 **관절 변화율**도 묶는다. `IK_ACTION_SCALE` 은 TCP 변위만 묶을 뿐, IK 가
+      그걸 관절로 푸는 단계는 안 묶인다 — 자코비안 조건이 나쁜 자세에서는 2 cm 요청이
+      큰 관절 이동이 된다. 관절공간 판에는 변화율 상한을 넣어 놓고 IK 판에는 안 넣은
+      것이 실측으로 드러났다(test4, epoch 1100):
+
+          적용된 관절 목표 변화 **2.17 rad/s** = 관절 속도 한계(2.175)에 정확히 포화
+          방향 반전 **49.3%** · jaw 수평 이탈 **32.4°**
+          그리퍼 개도 최소 **16.9 mm** — 컵(지름 58 mm)을 감쌌다면 30.2 mm 에서 막혀야
+          하는데 그보다 더 닫혔다 = **컵이 턱 사이에 없을 때 닫는다.**
+
+      한계에서 떨고 있는 팔은 어떤 자세도 유지할 수 없고, 그러면 58 mm 물체를 턱 사이에
+      넣는 것이 운이 된다. 관절공간 판에서 같은 처방이 jaw 이탈 23.3° → 8.8° 로 줄인
+      직접 증거가 있다.
+
+    ★상한을 **두 군데** 건다. 하나만으로는 부족하다 — 실측으로 확인했다.
+      ① `|목표 − 현재 관절| ≤ v·dt` : 목표가 실제 관절보다 한 스텝 이상 앞서지 못하게 한다
+         (windup 방지, PD 오차와 토크를 묶는다).
+      ② `|목표(t) − 목표(t−1)| ≤ v·dt` : 지령 자체의 진동을 묶는다.
+      ① 만 걸었더니 `probe_action_rate_limit.py` 가 목표-대-목표 변화에서 **상한의 200%**
+      를 쟀다. 현재 위치를 중심으로 ±Δ 를 오갈 수 있어서다 — 팔은 그 고주파를 못 따라가
+      제자리에 서고, 정책은 "움직이려 했는데 안 움직인다"를 겪는다.
     """
+
+    cfg: "JointLimitedDifferentialIKActionCfg"
+
+    def __init__(self, cfg: "JointLimitedDifferentialIKActionCfg", env: ManagerBasedEnv) -> None:
+        super().__init__(cfg, env)
+        rate = torch.zeros(len(self._joint_ids), device=self.device)
+        index_list, _, value_list = resolve_matching_names_values(
+            cfg.rate_limit, self._joint_names
+        )
+        rate[index_list] = torch.tensor(value_list, device=self.device)
+        if bool((rate <= 0.0).any()):
+            missing = [n for i, n in enumerate(self._joint_names) if rate[i] <= 0.0]
+            raise ValueError(
+                f"rate_limit 이 풀리지 않은 관절이 있다: {missing}. "
+                "정규식이 모든 액션 관절을 덮어야 한다."
+            )
+        # ★★`apply_actions` 는 **물리 스텝마다** 불린다(decimation 2 → env 스텝당 2 회).
+        #   IK 는 매 substep 현재 자세에서 다시 풀어야 하므로 클램프도 여기 있어야 하고,
+        #   따라서 상한도 **물리 스텝 기준**이어야 한다. env 스텝 기준으로 잡았더니
+        #   프로브가 정확히 **상한의 200%** 를 쟀다(2 회 적용).
+        #   ⚠ 관절공간 판(`RateLimitedJointPositionAction`)은 `process_actions` 에서 묶는데
+        #     그건 env 스텝당 1 회라 `env.step_dt` 가 맞다. 같은 상한 표를 쓰지만 **곱하는
+        #     dt 가 다르다** — 두 클래스를 나란히 읽을 때 헷갈리기 쉬운 지점이다.
+        physics_dt = getattr(env, "physics_dt", None) or env.step_dt / env.cfg.decimation
+        self._max_step_delta = (rate * physics_dt).unsqueeze(0)
+        # ②용 상태. 리셋 기준은 기본 자세다(리셋 직후 팔이 거기 있다).
+        self._prev_target = self._asset.data.default_joint_pos[:, self._joint_ids].clone()
+
+    def reset(self, env_ids=None) -> None:
+        super().reset(env_ids)
+        default = self._asset.data.default_joint_pos[:, self._joint_ids]
+        if env_ids is None:
+            self._prev_target.copy_(default)
+        else:
+            self._prev_target[env_ids] = default[env_ids]
 
     def apply_actions(self) -> None:
         ee_pos_curr, ee_quat_curr = self._compute_frame_pose()
@@ -140,11 +197,28 @@ class JointLimitedDifferentialIKAction(DifferentialInverseKinematicsAction):
             )
         else:
             joint_pos_des = joint_pos.clone()
+        # ① 현재 관절 기준: 목표가 실제 관절보다 앞서 나가지 못하게(windup·토크 제한)
+        joint_pos_des = joint_pos + torch.clamp(
+            joint_pos_des - joint_pos, min=-self._max_step_delta, max=self._max_step_delta
+        )
+        # ② 직전 목표 기준: 지령 자체의 진동을 묶는다
+        joint_pos_des = self._prev_target + torch.clamp(
+            joint_pos_des - self._prev_target,
+            min=-self._max_step_delta,
+            max=self._max_step_delta,
+        )
+        # ③ 관절 한계: 한계 밖 지령은 눌린 채 고착시킨다
         limits = self._asset.data.soft_joint_pos_limits[:, self._joint_ids, :]
         joint_pos_des = joint_pos_des.clamp(min=limits[..., 0], max=limits[..., 1])
+        # ★in-place 복사. 대입하면 같은 텐서를 가리켜 ② 가 무효가 된다.
+        self._prev_target.copy_(joint_pos_des)
         self._asset.set_joint_position_target(joint_pos_des, self._joint_ids)
 
 
 @configclass
 class JointLimitedDifferentialIKActionCfg(DifferentialInverseKinematicsActionCfg):
+    """`rate_limit` 은 관절 정규식 → 목표 변화율 상한 [rad/s]."""
+
     class_type: type = JointLimitedDifferentialIKAction
+
+    rate_limit: dict[str, float] = None

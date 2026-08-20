@@ -69,6 +69,10 @@ def _apply_ik_arm(cfg: GraspLeftGripperEnvCfg) -> None:
             command_type="pose", use_relative_mode=True, ik_method="dls"
         ),
         scale=P.IK_ACTION_SCALE,
+        # ★TCP 변위 상한(scale)만으로는 부족하다 — IK 가 그걸 관절로 푸는 단계가
+        #   안 묶여 자코비안 조건이 나쁜 자세에서 관절 속도 한계까지 포화한다
+        #   (test4 실측 2.17 rad/s = 한계, 방향 반전 49.3%). 관절공간 판과 같은 표를 쓴다.
+        rate_limit=P.ARM_TARGET_RATE_LIMIT,
         # TCP 는 실제 링크가 아니라 gripper_base 에서 z 로 띄운 프레임이다(보상의 EE
         # 프레임과 같은 정의를 써야 "보상이 보는 점"과 "제어하는 점"이 일치한다).
         body_offset=actions.JointLimitedDifferentialIKActionCfg.OffsetCfg(

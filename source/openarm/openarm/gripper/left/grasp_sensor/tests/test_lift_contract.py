@@ -693,3 +693,27 @@ def test_joint_space_task_is_left_untouched_by_the_ik_variant():
     # 관절공간판의 팔 액션은 여전히 관절 위치(변화율 상한 포함)여야 한다.
     assert "RateLimitedJointPositionActionCfg" in cfg
     assert "DifferentialInverseKinematics" not in cfg
+
+
+def test_ik_joint_solution_is_rate_limited_too():
+    """★TCP 변위 상한(scale)만 묶으면 부족하다 — IK 가 관절로 푸는 단계가 안 묶인다.
+
+    test4(램프판, epoch 1100) 실측: 적용된 관절 목표 변화 **2.17 rad/s** 로 관절 속도
+    한계(2.175)에 정확히 포화, 방향 반전 **49.3%**, jaw 수평 이탈 **32.4°**,
+    그리퍼 개도 최소 **16.9 mm**(컵 지름 58 mm 를 감쌌다면 30.2 mm 에서 막혀야 한다)
+    = 떨면서 접근해 **한 번도 컵을 물지 못했다**.
+
+    관절공간 판에는 같은 상한을 넣어 두고 IK 판에는 빠뜨렸던 것이다. 같은 표에서
+    파생되어야 한다 — 액추에이터 한계를 바꿨을 때 한쪽만 어긋나면 안 된다.
+    """
+    src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_ik_env_cfg.py"
+    ).read_text(encoding="utf-8")
+    assert "rate_limit=P.ARM_TARGET_RATE_LIMIT" in src, "IK 액션에 변화율 상한이 없다"
+    act_src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_actions.py"
+    ).read_text(encoding="utf-8")
+    # 관절공간판과 IK판 **양쪽** 모두 상한을 적용해야 한다.
+    assert act_src.count("_max_step_delta") >= 4
+    # IK 판은 **현재 관절 위치** 기준으로 묶어야 목표가 앞서 나가지 않는다.
+    assert "joint_pos_des - joint_pos, min=-self._max_step_delta" in act_src
