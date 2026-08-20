@@ -45,10 +45,13 @@ def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
                 max_depenetration_velocity=1.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                # ★True: diff IK 트랙에는 Fabrics 의 body-sphere repulsion 같은
-                #   자기충돌 회피 수단이 없어, 끄면 손가락끼리 그대로 관통한다
-                #   (사용자 지적 08.20; probe 실측 full-grip 손관절합 25.8 vs ON 18.3).
-                enabled_self_collisions=True,
+                # ★False 유지. True 로 켜면 손가락 겹침은 막히지만(손관절합 25.8→18.9)
+                #   **유휴에서 팔이 못 선다** — zero-action 480스텝 실측: palm 드리프트
+                #   max 180mm·팔 |qd| 2~4 rad/s 지속·컵 171mm 이동(OFF 는 0.0mm).
+                #   홈 자세에서 이미 접촉 중인 링크쌍이 상시 반발력을 만드는 것으로,
+                #   fabric 트랙이 기록한 "자기충돌이 팔을 한계 밖으로 민다"와 같은 현상.
+                #   → 손가락 겹침은 자산 레벨 pair 필터(인접 링크 제외)로 풀어야 한다.
+                enabled_self_collisions=False,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
             ),
