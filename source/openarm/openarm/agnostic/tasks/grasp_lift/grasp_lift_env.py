@@ -302,6 +302,7 @@ class GraspLiftEnv(DirectRLEnv):
         tilt_deg = torch.rad2deg(torch.acos(_obj_z[:, 2].clamp(-1.0, 1.0)))
         total, terms, gate = compute_grasp_lift_rewards(
             object_tilt_deg=tilt_deg,
+            height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
             fingertip_pos=tips,
             object_pos=obj_pos,
             goal_pos=self.goal_pos,

@@ -116,6 +116,9 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     tracking_std: float = 0.1
     success_weight: float = 10.0
     success_std: float = 0.05
+    # 리프트 부분 진척 — gate 곱. goal_height_offset(0.15m)에서 포화.
+    # dexsuite 는 이 항을 뺐지만 그 전제(goal=물체 근처 랜덤 pose)가 우리와 다르다.
+    lift_weight: float = 1.5
     # 전도 페널티 — 20° 여유대(정상 파지 흔들림 무징계) 초과분 비례, 최대 −0.5.
     # 60° 초과 = 사실상 넘어짐 → 낙하와 동일하게 컵만 리스폰(죽은 시간 방지).
     tilt_penalty_weight: float = -0.5

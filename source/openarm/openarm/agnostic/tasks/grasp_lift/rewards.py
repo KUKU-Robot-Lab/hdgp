@@ -64,6 +64,19 @@ def success_reward(object_pos: torch.Tensor, goal_pos: torch.Tensor, pos_std: fl
     return ((1.0 - torch.tanh(d / pos_std)) ** 2) * gate.float()
 
 
+def lift_reward(height_delta: torch.Tensor, target_height: float,
+                gate: torch.Tensor) -> torch.Tensor:
+    """스폰 대비 상승분의 선형 진척(0~1) × 접촉게이트.
+
+    ★dexsuite 원본은 lift 항을 빼고 중력 커리큘럼으로 대체했지만, 그 전제는
+    goal 이 **물체 근처 랜덤 pose** 라 tracking gradient 가 살아 있다는 것이다.
+    우리 goal 은 스폰+15cm 고정이라 tracking(std 0.1)이 tanh 포화 구간에 있어
+    초기 몇 cm 리프트의 gradient 가 사실상 0 이었다(agn_test12: 잡고 정지 수렴,
+    d 0.16→0.15 일 때 항 값 0.078→0.095). 부분 진척을 선형으로 되돌려준다.
+    """
+    return (height_delta / max(target_height, 1e-6)).clamp(0.0, 1.0) * gate.float()
+
+
 def tilt_penalty(object_tilt_deg: torch.Tensor, free_deg: float) -> torch.Tensor:
     """전도 페널티: free_deg 초과분을 90°로 정규화한 값(0~1).
 
@@ -94,6 +107,7 @@ def compute_grasp_lift_rewards(
     group_a_tip_idx: torch.Tensor,    # fingertip_pos 안에서의 A 그룹 인덱스
     group_b_tip_idx: torch.Tensor,
     object_tilt_deg: torch.Tensor,    # (N,) 물체 z축과 월드 z축 사이각
+    height_delta: torch.Tensor,       # (N,) 스폰 대비 상승분 [m]
     actions: torch.Tensor,
     prev_actions: torch.Tensor,
     cfg: object,
@@ -111,6 +125,8 @@ def compute_grasp_lift_rewards(
         * tracking_reward(object_pos, goal_pos, float(cfg.tracking_std), g),
         "success": float(cfg.success_weight)
         * success_reward(object_pos, goal_pos, float(cfg.success_std), g),
+        "lift": float(cfg.lift_weight)
+        * lift_reward(height_delta, float(cfg.goal_height_offset), g),
         "tilt_penalty": float(cfg.tilt_penalty_weight)
         * tilt_penalty(object_tilt_deg, float(cfg.tilt_free_deg)),
         "action_l2": float(cfg.action_l2_weight) * action_l2_clamped(actions),
