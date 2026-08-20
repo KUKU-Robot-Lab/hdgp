@@ -141,6 +141,10 @@ def main() -> None:
     cup_z = []             # 컵 원점 z (env-local)
     cup_dxy = []           # 스폰 위치에서의 수평 이동
     spawn_xy = [None]
+    # ★그리퍼 지령의 **시계열**이 필요하다. 평균만 보면 '컵에 막혀 멈춘 것'과 '아예
+    #   안 닫는 것'을 구분할 수 없다 — 둘 다 중간값으로 나온다.
+    grip_series = []       # 구동 관절 위치 (m)
+    grip_cmd = []          # 이진 그리퍼 액션의 부호 (>0 = 열기 지령)
 
     for _ in range(args.steps):
         with torch.inference_mode():
@@ -157,6 +161,8 @@ def main() -> None:
         obs, _, _, _ = wrapped.step(act)
         obs = _tensor(obs)
         arm_speed.append(float(robot.data.joint_vel[:, arm_ids].norm(dim=-1).mean()))
+        grip_series.append(float(robot.data.joint_pos[:, grip_ids[0]].mean()))
+        grip_cmd.append(float((act[:, -1] > 0).float().mean()))
         # ★변화율 제한기가 있으면 raw 액션의 차분은 무의미하다(clamp 되어 버려진다).
         #   실제로 로봇에 간 **관절 목표**의 스텝간 변화를 따로 잰다 — 이게 평활도다.
         tgt = robot.data.joint_pos_target[:, arm_ids]
@@ -285,6 +291,19 @@ def main() -> None:
         print(f"  최대 컵 z {max(cup_z):.5f} (스폰 대비 {(max(cup_z) - P.CUP_SPAWN_Z) * 1e3:+.1f} mm)"
               f" · 스폰보다 1 cm 이상 올라간 스텝 {up:.1%}")
         print("  → 이 값이 0 에 가까우면 **컵을 안 들고 곁에 서 있는 것**이다.")
+
+    if grip_series:
+        import statistics as _st
+        ng = len(grip_series)
+        closed = sum(1 for g in grip_series if g < 0.005) / ng
+        opened = sum(1 for g in grip_series if g > 0.040) / ng
+        print("\n=== 그리퍼가 실제로 무엇을 하는가 ===")
+        print(f"  개도  최소 {min(grip_series) * 1e3:5.1f} · 평균 {_st.mean(grip_series) * 1e3:5.1f}"
+              f" · 최대 {max(grip_series) * 1e3:5.1f} mm  (완전닫힘 0 ~ 완전열림 44)")
+        print(f"  거의 닫힘(<5 mm) 스텝 {closed:.1%} · 거의 열림(>40 mm) 스텝 {opened:.1%}")
+        print(f"  '열기' 지령을 낸 스텝 {_st.mean(grip_cmd):.1%}")
+        print("  → 지령이 계속 '열기'면 **닫을 생각이 없는 것**이고, 개도가 컵 지름 근처에서")
+        print("     멈춰 있으면 **닫다가 컵에 막힌 것**(= 실제로 물고 있다)이다.")
 
     if act_delta:
         mode = "태스크공간 diff-IK" if "_ik" in TASK else "관절 위치 델타"
