@@ -102,6 +102,9 @@ def main() -> None:
         # RlGamesVecEnvWrapper 는 {'obs': tensor} 를 준다. player 는 텐서를 기대한다.
         return o["obs"] if isinstance(o, dict) else o
 
+    arm_ids, _ = robot.find_joints([f"l_aj_{i}" for i in range(1, 8)], preserve_order=True)
+    prev_act = None
+    prev_delta = None
     obs = _tensor(wrapped.reset())
     # ★play.py 와 같은 준비 절차. 이게 없으면 player 가 배치를 1개로 보고
     #   (1, num_envs*obs_dim) 로 flatten 해 행렬곱이 깨진다.
@@ -121,12 +124,29 @@ def main() -> None:
     lin_speed = []         # 쥐고 있을 때 컵 선속도 (m/s)
     ang_speed = []         # 쥐고 있을 때 컵 각속도 (rad/s)
     goal_dist = []         # 컵 ↔ 목표 거리 (m)
+    # ★진동 진단: 제어는 IK 가 아니라 **관절 위치 델타**(JointPositionAction)다.
+    #   정책이 매 스텝 관절 목표를 내므로, 그 목표가 스텝마다 흔들리면 팔이 멈추지 않는다.
+    act_delta = []         # |a_t − a_{t−1}| (1차 차분 — action_rate 가 벌하는 양)
+    act_jerk = []          # |Δa_t − Δa_{t−1}| (2차 차분 — 레퍼런스에 **없는** 항)
+    act_flips = []         # 액션 성분별 부호 반전 비율 (진동이면 높다)
+    arm_speed = []         # 팔 관절 속도 크기 (rad/s)
+    late_lin = []          # 에피소드 후반(목표 근처)에서의 컵 선속도
 
     for _ in range(args.steps):
         with torch.inference_mode():
             act = agent.get_action(agent.obs_to_torch(obs), is_deterministic=True)
+        if prev_act is not None:
+            d = act - prev_act
+            act_delta.append(float(d.norm(dim=-1).mean()))
+            if prev_delta is not None:
+                act_jerk.append(float((d - prev_delta).norm(dim=-1).mean()))
+                # 부호 반전 = 방향을 되돌린 성분의 비율. 일정 방향 이동이면 0 에 가깝다.
+                act_flips.append(float(((d * prev_delta) < 0).float().mean()))
+            prev_delta = d.clone()
+        prev_act = act.clone()
         obs, _, _, _ = wrapped.step(act)
         obs = _tensor(obs)
+        arm_speed.append(float(robot.data.joint_vel[:, arm_ids].norm(dim=-1).mean()))
 
         cup = obj.data.root_pos_w - origins
         lifted = cup[:, 2] > P.MINIMAL_LIFT_HEIGHT
@@ -179,9 +199,12 @@ def main() -> None:
             des_w, _ = combine_frame_transforms(
                 robot.data.root_pos_w, robot.data.root_quat_w, cmd[:, :3]
             )
-            goal_dist.append(
-                float((des_w - obj.data.root_pos_w).norm(dim=-1)[held].mean())
-            )
+            gd = (des_w - obj.data.root_pos_w).norm(dim=-1)
+            goal_dist.append(float(gd[held].mean()))
+            # 목표에 이미 가까운(≤10 cm) env 만 골라 "도달 후에도 움직이는가"를 본다
+            close = held & (gd < 0.10)
+            if bool(close.any()):
+                late_lin.append(float(obj.data.root_lin_vel_w.norm(dim=-1)[close].mean()))
 
     print("\n=== 리프트 판정 중 컵에 가장 가까운 링크 ===")
     print(f"  z 만 보는 판정(레퍼런스): {lifted_steps / max(total, 1):.1%}")
@@ -220,6 +243,21 @@ def main() -> None:
             q = 1.0 - _m.tanh(val / std)
             print(f"    {name}: 현재 std={std} → 품질 {q:.4f}")
         print("  → 품질이 0 에 가까우면 보상 신호가 없어 gradient 가 생기지 않는다.")
+    if act_delta:
+        print("\n=== 진동 진단 (제어는 IK 가 아니라 관절 위치 델타다) ===")
+        print(f"  1차 차분 |Δa|          {sum(act_delta) / len(act_delta):.4f}"
+              f"   ← action_rate 가 벌하는 양 (범위 ±1)")
+        if act_jerk:
+            print(f"  2차 차분 |Δ²a| (jerk)  {sum(act_jerk) / len(act_jerk):.4f}"
+                  f"   ← 레퍼런스에 **없는** 항")
+            print(f"  방향 반전 비율          {sum(act_flips) / len(act_flips):.1%}"
+                  f"   (일정 방향 이동이면 0%, 진동이면 50% 근처)")
+        print(f"  팔 관절 속도            {sum(arm_speed) / len(arm_speed):.3f} rad/s")
+        if late_lin:
+            print(f"  목표 10 cm 이내에서 컵 선속도 {sum(late_lin) / len(late_lin):.3f} m/s"
+                  f"   (도달 후에도 이 값이 크면 **멈추지 못하는 것**)")
+        print("  → 액션 변화가 크면 정책이 목표를 계속 바꾸는 것이고, 팔 속도만 크면"
+              " 목표는 안정한데 추종이 흔들리는 것이다.")
 
     env.close()
 

@@ -42,6 +42,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.managers import EventTermCfg, SceneEntityCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.sensors import FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
@@ -314,6 +315,24 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   끝내는 것이 최적**이 된다. 실제로 그렇게 죽였다(test6/test7):
         #       lifting 6.14 → 0.0000 / 에피소드 130 → 13 / 총보상 +34.9 → −0.46
         #   별도 term 이라 TFEvents 에 로깅돼 자세 개선을 학습 중 관측할 수 있다.
+        # ── 액션 jerk 페널티 (신설) ─────────────────────────────────
+        # ★레퍼런스에는 1차 차분(action_rate)만 있는데, 실측은 2차가 더 크고 방향 반전이
+        #   68.6% 였다(= 고주파 채터링). 1차만으로는 "일정 크기로 계속 진동"을 못 막는다.
+        #   커리큘럼도 action_rate 와 같은 시점에 강화한다.
+        self.rewards.action_jerk = RewTerm(
+            func=rewards.ActionJerkL2,
+            weight=P.ACTION_JERK_WEIGHT_INIT,
+            params={},
+        )
+        self.curriculum.action_jerk = CurrTerm(
+            func=mdp.modify_reward_weight,
+            params={
+                "term_name": "action_jerk",
+                "weight": P.ACTION_JERK_WEIGHT_FINAL,
+                "num_steps": P.ACTION_JERK_CURRICULUM_STEPS,
+            },
+        )
+
         # ── 목표에서 정지 보너스 (신설) ─────────────────────────────
         # 레퍼런스 goal-tracking 은 **거리만** 본다. "옮겨서 가만히 세워 둔다"를 표현하려면
         # 속도 항이 필요하다. 여기도 게이트가 아니라 보너스다.

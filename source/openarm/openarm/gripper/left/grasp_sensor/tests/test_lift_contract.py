@@ -473,9 +473,27 @@ def test_env_cfg_inherits_isaaclab_lift():
     )
     for name in inherited:
         assert f"self.rewards.{name} = " not in src, f"{name} 을 재정의하지 말 것"
-    # 신설 term 은 **보너스만** 허용한다: 파지 자세(grasp_pose), 목표 정지(settled_at_goal).
+    # 신설 term: 보너스 둘(grasp_pose, settled_at_goal) + 평활화 페널티 하나(action_jerk).
     # 판정 게이트를 늘리는 term 은 금지 — test6/test7 에서 학습을 죽였다.
-    assert src.count("RewTerm(") <= 2, "신설 term 은 자세·정지 보너스 둘뿐이다"
+    assert src.count("RewTerm(") <= 3, "신설 term 은 보너스 둘 + jerk 페널티 하나뿐이다"
+
+
+def test_action_jerk_penalty_exists():
+    """★레퍼런스에는 1차 차분(action_rate)만 있다. 실측은 **2차가 더 컸다**.
+
+    test12: 1차 |Δa| 0.943 < 2차 |Δ²a| **1.755**, 방향 반전 **68.6%** = 고주파 채터링.
+    action_rate 는 변화량만 벌하므로 일정 크기로 계속 진동하면 대가를 감수하고 유지할 수
+    있다. jerk 는 방향을 되돌릴 때마다 커져 진동을 직접 벌한다.
+    """
+    src = _cfg_source()
+    assert "action_jerk" in src
+    assert "ActionJerkL2" in src
+    # action_rate 와 같은 시점에 커리큘럼으로 강화
+    assert "curriculum.action_jerk" in src
+    assert P.ACTION_JERK_WEIGHT_INIT < 0 and P.ACTION_JERK_WEIGHT_FINAL < 0
+    assert P.ACTION_JERK_WEIGHT_FINAL < P.ACTION_JERK_WEIGHT_INIT, "커리큘럼이 강화 방향이어야"
+    # 2차 차분 제곱합이 1차의 약 3.5 배라 weight 를 그만큼 낮춰 영향이 비슷하게
+    assert abs(P.ACTION_JERK_WEIGHT_FINAL) < 1e-1, "action_rate(-1e-1)보다 작아야 균형이 맞는다"
     assert "weight=P." in src and "weight=0" not in src
 
 

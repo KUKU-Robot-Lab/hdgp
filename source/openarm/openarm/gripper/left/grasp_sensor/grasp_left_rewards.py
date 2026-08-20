@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from isaaclab.assets import RigidObject
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.sensors import FrameTransformer
 from isaaclab.utils.math import combine_frame_transforms
 
@@ -238,3 +238,37 @@ def object_settled_at_goal(
 
     gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
     return gate * near_goal * still
+
+
+class ActionJerkL2(ManagerTermBase):
+    """액션의 **2차 차분**(jerk) 제곱합 페널티.
+
+    ★레퍼런스 lift 에는 `action_rate_l2`(1차 차분)와 `joint_vel_l2` 만 있다. 그런데
+      test12 실측은 1차보다 2차가 더 크고 방향 반전이 68.6% 였다:
+          1차 |Δa| 0.943 / **2차 |Δ²a| 1.755** / 방향 반전 68.6%
+      전형적인 고주파 채터링이다. `action_rate` 는 "변화량"만 벌하므로 **일정 크기로 계속
+      진동하면 그 대가를 감수하고 유지**할 수 있다. jerk 는 방향을 되돌릴 때마다 커지므로
+      진동을 직접 벌한다.
+
+    구현이 클래스인 이유: 2차 차분에는 직전 **차분**이 필요한데 `ActionManager` 는
+    `action` 과 `prev_action` 만 보관한다. 그래서 직전 차분을 이 term 이 들고 있는다.
+    """
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        self._prev_delta = torch.zeros(
+            env.num_envs, env.action_manager.total_action_dim, device=env.device
+        )
+
+    def reset(self, env_ids=None):
+        # ★에피소드 경계에서 초기화하지 않으면 리셋 직후 스텝이 가짜 jerk 로 벌을 받는다.
+        if env_ids is None:
+            self._prev_delta[:] = 0.0
+        else:
+            self._prev_delta[env_ids] = 0.0
+
+    def __call__(self, env) -> torch.Tensor:  # noqa: D102
+        delta = env.action_manager.action - env.action_manager.prev_action
+        jerk = torch.sum(torch.square(delta - self._prev_delta), dim=1)
+        self._prev_delta[:] = delta
+        return jerk
