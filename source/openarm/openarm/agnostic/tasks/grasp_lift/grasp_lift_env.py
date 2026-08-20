@@ -128,6 +128,13 @@ class GraspLiftEnv(DirectRLEnv):
             [fingers.index(f) for f in p.contact_group_a], device=self.device, dtype=torch.long)
         self._group_b_idx = torch.tensor(
             [fingers.index(f) for f in p.contact_group_b], device=self.device, dtype=torch.long)
+        # 그룹 인덱스를 fingertip_bodies 에도 그대로 쓴다(접근 보상) — 두 목록의
+        # 손가락 순서가 같아야 성립하므로 fail-loud 로 강제한다.
+        if len(p.fingertip_bodies) != len(fingers):
+            raise RuntimeError(
+                f"[{p.name}] fingertip_bodies({len(p.fingertip_bodies)}) 와 "
+                f"finger_sensor_bodies({len(fingers)}) 의 손가락 수가 달라 그룹 인덱스를 공유할 수 없다"
+            )
 
         print(f"[grasp_lift] profile={p.name} arm={len(self.arm_ids)} hand={len(self.hand_ids)} "
               f"tips={len(self.tip_ids)} action={self.cfg.action_space} obs={self.cfg.observation_space}",
@@ -290,6 +297,8 @@ class GraspLiftEnv(DirectRLEnv):
             fingertip_pos=tips,
             object_pos=obj_pos,
             goal_pos=self.goal_pos,
+            group_a_tip_idx=self._group_a_idx,
+            group_b_tip_idx=self._group_b_idx,
             group_a_force=contact[:, self._group_a_idx],
             group_b_force=contact[:, self._group_b_idx],
             actions=self.actions,
@@ -337,6 +346,9 @@ class GraspLiftEnv(DirectRLEnv):
             self.extras[f"contact/{gname}_force"] = contact[:, gi].mean()
         # 관통 프록시: 정상 파지 접촉은 수 N 대. 수십~수백 N 은 깊은 상호침투를
         # 솔버가 밀어내는 신호다(08.20 사용자 지적 — 손가락이 컵을 뚫음).
+        _d = torch.norm(tips - obj_pos[:, None, :], dim=-1)
+        self.extras["task/dist_group_a"] = _d[:, self._group_a_idx].min(dim=-1).values.mean()
+        self.extras["task/dist_group_b"] = _d[:, self._group_b_idx].min(dim=-1).values.mean()
         _raw = self._contact_forces()
         self.extras["contact/force_max"] = _raw.max()
         self.extras["contact/force_p95"] = torch.quantile(_raw.reshape(-1), 0.95)

@@ -20,6 +20,19 @@ def reaching_reward(fingertip_pos: torch.Tensor, object_pos: torch.Tensor, std: 
     return 1.0 - torch.tanh(d / std)
 
 
+def group_reaching(fingertip_pos: torch.Tensor, object_pos: torch.Tensor, std: float,
+                   group_idx: torch.Tensor) -> torch.Tensor:
+    """대향 그룹별 접근 보상 — 그룹 안에서 물체에 **가장 가까운** 손끝 기준.
+
+    ★max-over-all-tips 는 "엄지가 반대편에 와야 한다"를 표현하지 못한다(agn_test10:
+    4지는 컵을 감싸는데 엄지 접촉력이 전 구간 0 → 게이트 영구 미발화). 접촉 게이트가
+    쓰는 그룹 구조를 접근 단계에도 그대로 적용해 **양쪽 그룹이 각각 물체에 닿도록**
+    유도한다. 2지 그리퍼(조1/조2)에도 동일하게 성립 — max 판정보다 robot-agnostic.
+    """
+    d = torch.norm(fingertip_pos[:, group_idx] - object_pos[:, None, :], dim=-1).min(dim=-1).values
+    return 1.0 - torch.tanh(d / std)
+
+
 def contact_gate(group_a_force: torch.Tensor, group_b_force: torch.Tensor, threshold: float) -> torch.Tensor:
     """대향 접촉 게이트: (A그룹 아무 손가락) AND (B그룹 아무 손가락). bool (N,).
 
@@ -67,15 +80,20 @@ def compute_grasp_lift_rewards(
     goal_pos: torch.Tensor,           # (N, 3) env-local
     group_a_force: torch.Tensor,      # (N, Fa)
     group_b_force: torch.Tensor,      # (N, Fb)
+    group_a_tip_idx: torch.Tensor,    # fingertip_pos 안에서의 A 그룹 인덱스
+    group_b_tip_idx: torch.Tensor,
     actions: torch.Tensor,
     prev_actions: torch.Tensor,
     cfg: object,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor]:
     """returns (total, terms, gate)."""
     g = contact_gate(group_a_force, group_b_force, float(cfg.contact_force_threshold))
+    _std = float(cfg.reaching_std)
+    _w = 0.5 * float(cfg.reaching_weight)
     terms = {
-        "reaching": float(cfg.reaching_weight)
-        * reaching_reward(fingertip_pos, object_pos, float(cfg.reaching_std)),
+        # 대향 그룹별 접근(각 0.5×w) — 합은 기존 reaching 최대치와 동일해 스케일 불변
+        "reaching_a": _w * group_reaching(fingertip_pos, object_pos, _std, group_a_tip_idx),
+        "reaching_b": _w * group_reaching(fingertip_pos, object_pos, _std, group_b_tip_idx),
         "contact": float(cfg.contact_weight) * g.float(),
         "tracking": float(cfg.tracking_weight)
         * tracking_reward(object_pos, goal_pos, float(cfg.tracking_std), g),
