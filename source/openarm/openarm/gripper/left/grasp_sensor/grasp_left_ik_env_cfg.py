@@ -73,6 +73,7 @@ def _apply_ik_arm(cfg: GraspLeftGripperEnvCfg) -> None:
         #   안 묶여 자코비안 조건이 나쁜 자세에서 관절 속도 한계까지 포화한다
         #   (test4 실측 2.17 rad/s = 한계, 방향 반전 49.3%). 관절공간 판과 같은 표를 쓴다.
         rate_limit=P.ARM_TARGET_RATE_LIMIT,
+        max_tracking_error=P.ARM_IK_MAX_TRACKING_ERROR,
         # TCP 는 실제 링크가 아니라 gripper_base 에서 z 로 띄운 프레임이다(보상의 EE
         # 프레임과 같은 정의를 써야 "보상이 보는 점"과 "제어하는 점"이 일치한다).
         body_offset=actions.JointLimitedDifferentialIKActionCfg.OffsetCfg(

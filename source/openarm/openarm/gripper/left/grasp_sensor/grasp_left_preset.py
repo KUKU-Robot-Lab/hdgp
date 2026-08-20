@@ -99,6 +99,17 @@ ACTION_PENALTY_CURRICULUM_STEPS = 36000
 ARM_IK_STIFFNESS = 400.0
 ARM_IK_DAMPING = 80.0
 
+# ★★anti-windup 상한 = **effort 한계 / 강성**. 목표가 실제 관절보다 이만큼 앞서면 PD 가
+#   effort 한계만큼의 토크를 내므로, 그 이상 앞서 봐야 힘이 더 안 나오고 windup 만 쌓인다.
+#   ⚠ 이 값을 **속도 한계**에서 잡으면 안 된다. 한때 그렇게 했다가(v·dt = 0.0261 rad)
+#     토크가 400×0.0261 = 10.44 N·m 로 잘려 test5 가 364 epoch 동안 lift/goal/pose/
+#     settle/drop 전부 0.000 이었다 — 컵까지는 갔는데(reaching 0.94) 들지 못했다.
+ARM_IK_MAX_TRACKING_ERROR = {
+    "l_aj_[1-2]": 40.0 / ARM_IK_STIFFNESS,   # 0.1000 rad
+    "l_aj_[3-4]": 27.0 / ARM_IK_STIFFNESS,   # 0.0675 rad
+    "l_aj_[5-7]": 7.0 / ARM_IK_STIFFNESS,    # 0.0175 rad
+}
+
 # ★태스크공간 액션 스케일 = 한 스텝에 지령할 수 있는 TCP 변위/회전.
 #   관절공간에서 배운 것을 그대로 가져온다: **지령이 로봇이 낼 수 있는 크기를 넘으면
 #   팔은 포화하고 움직임이 거칠어진다**(test13 실측 16 rad/s vs 한계 2.175).

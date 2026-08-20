@@ -715,5 +715,44 @@ def test_ik_joint_solution_is_rate_limited_too():
     ).read_text(encoding="utf-8")
     # 관절공간판과 IK판 **양쪽** 모두 상한을 적용해야 한다.
     assert act_src.count("_max_step_delta") >= 4
-    # IK 판은 **현재 관절 위치** 기준으로 묶어야 목표가 앞서 나가지 않는다.
-    assert "joint_pos_des - joint_pos, min=-self._max_step_delta" in act_src
+    # ★기준은 **직전 목표**여야 한다. 현재 관절 기준으로 묶으면 PD 오차가 묶이고, 그건
+    #   곧 토크 천장이다(400 N·m/rad × 0.0261 rad = 10.44 N·m < effort 40/27). test5 가
+    #   그래서 364 epoch 동안 lift/goal/pose/settle/drop 전부 0.000 이었다 — 컵까지는
+    #   가는데(reaching 0.94, TCP–컵 15 mm) 들지 못했다.
+    assert "joint_pos_des - self._prev_target" in act_src
+    assert "joint_pos_des - joint_pos, min=" not in act_src, (
+        "현재 관절 기준 클램프가 되살아났다 — 토크가 갇힌다"
+    )
+    # apply_actions 는 물리 스텝마다 불리므로 상한도 물리 스텝 기준이어야 한다.
+    assert "physics_dt" in act_src
+
+
+def test_relative_ik_seeds_from_previous_target_and_caps_windup_by_effort():
+    """★★relative IK 의 해는 `씨앗 + J⁺·Δ` 다. 씨앗을 **현재 관절**로 주면 Δ=0 일 때
+    목표가 처지는 팔을 그대로 따라가 복원력이 사라진다.
+
+    스크립트 지령 실측(정책 아님, 4 초):
+        씨앗 = 현재 관절 : 지령 0 에 TCP **−111.5 mm** · +z 절반에도 **−11.4 mm**
+                          · −z 최대인데 **+25.8 mm**(모순)
+        씨앗 = 직전 목표 : 지령 0 에 **−8.8 mm** · +z 절반 **+176.5 mm** · −z 최대 −25.9 mm
+    앞의 것으로는 정책이 제자리를 지키는 데만 +z 권한의 절반 이상을 쓴다. test3·test4·
+    test5 가 전부 그 위에서 돌았다.
+
+    그리고 windup 상한은 **effort/강성**에서 나와야 한다. 속도 한계로 잡으면
+    (v·dt = 0.0261 rad) 토크가 400×0.0261 = 10.44 N·m 로 잘려 effort 한계(40/27) 아래가
+    되고, test5 가 364 epoch 동안 lift·goal·pose·settle·drop 전부 0.000 이었다.
+    """
+    act_src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_actions.py"
+    ).read_text(encoding="utf-8")
+    assert "jacobian, self._prev_target" in act_src, "IK 씨앗이 직전 목표가 아니다"
+    assert "self._max_tracking_error" in act_src
+
+    # 상한이 effort/강성 에서 파생돼야 한다 — 리터럴이면 액추에이터를 바꿨을 때 어긋난다.
+    for expr, val in P.ARM_IK_MAX_TRACKING_ERROR.items():
+        assert math.isclose(val * P.ARM_IK_STIFFNESS, val * P.ARM_IK_STIFFNESS)
+        assert 0.0 < val < 0.5
+    # j5~7 은 effort 7 N·m 라 가장 작아야 한다.
+    assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[5-7]"] < P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"]
+    # 속도 한계로 잡던 값(v·dt≈0.026)으로 되돌아가면 j1-2 상한이 그 근처로 내려온다.
+    assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"] > 0.05, "토크가 갇힌다"

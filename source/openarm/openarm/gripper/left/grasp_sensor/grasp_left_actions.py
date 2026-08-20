@@ -116,6 +116,7 @@ class RateLimitedJointPositionActionCfg(JointPositionActionCfg):
     class_type: type = RateLimitedJointPositionAction
 
     rate_limit: dict[str, float] = None
+    max_tracking_error: dict[str, float] = None
 
 
 class JointLimitedDifferentialIKAction(DifferentialInverseKinematicsAction):
@@ -143,13 +144,19 @@ class JointLimitedDifferentialIKAction(DifferentialInverseKinematicsAction):
       넣는 것이 운이 된다. 관절공간 판에서 같은 처방이 jaw 이탈 23.3° → 8.8° 로 줄인
       직접 증거가 있다.
 
-    ★상한을 **두 군데** 건다. 하나만으로는 부족하다 — 실측으로 확인했다.
-      ① `|목표 − 현재 관절| ≤ v·dt` : 목표가 실제 관절보다 한 스텝 이상 앞서지 못하게 한다
-         (windup 방지, PD 오차와 토크를 묶는다).
-      ② `|목표(t) − 목표(t−1)| ≤ v·dt` : 지령 자체의 진동을 묶는다.
-      ① 만 걸었더니 `probe_action_rate_limit.py` 가 목표-대-목표 변화에서 **상한의 200%**
-      를 쟀다. 현재 위치를 중심으로 ±Δ 를 오갈 수 있어서다 — 팔은 그 고주파를 못 따라가
-      제자리에 서고, 정책은 "움직이려 했는데 안 움직인다"를 겪는다.
+    ★상한은 **직전 목표 기준 하나만** 건다: `|목표(t) − 목표(t−1)| ≤ v·dt`.
+      관절공간 판(`RateLimitedJointPositionAction`)과 같은 구조다.
+
+      ⚠ 한때 `|목표 − 현재 관절| ≤ v·dt` 도 함께 걸었다가 **뺐다.** 그건 PD 오차를 묶는
+        것이고, 위치 제어 팔에서 PD 오차를 묶으면 **낼 수 있는 토크를 묶는 것**이다:
+            강성 400 N·m/rad × 상한 0.0261 rad = **10.44 N·m 천장**
+        (팔 effort 한계는 40/27/7 N·m 인데 그 아래로 잘린다.)
+        자유 공간에서는 오차가 상한의 **9%** 라 안 보이지만(실측), 컵을 들려고 힘을 쓰는
+        순간 걸린다. test5 가 정확히 그랬다 — 364 epoch 동안 lift·goal·pose·settle·drop 이
+        **전부 정확히 0.000**, ep_len 250(컵을 건드리지도 못함), 그런데 reaching 은 0.94
+        (TCP–컵 15 mm)였다. **컵까지는 가는데 들지 못한다.**
+        위치 제어 팔이 힘을 내려면 목표가 실제 위치보다 앞서 나가야 한다. 그걸 막으면
+        순응(compliant) 팔이 된다.
     """
 
     cfg: "JointLimitedDifferentialIKActionCfg"
@@ -176,6 +183,17 @@ class JointLimitedDifferentialIKAction(DifferentialInverseKinematicsAction):
         #     dt 가 다르다** — 두 클래스를 나란히 읽을 때 헷갈리기 쉬운 지점이다.
         physics_dt = getattr(env, "physics_dt", None) or env.step_dt / env.cfg.decimation
         self._max_step_delta = (rate * physics_dt).unsqueeze(0)
+
+        # ★★anti-windup 상한. 목표가 실제 관절보다 얼마나 앞설 수 있는가 = 낼 수 있는 토크.
+        #   effort 한계 / 강성 으로 잡아야 **full torque 는 허용하되 windup 은 막는다**.
+        err = torch.zeros(len(self._joint_ids), device=self.device)
+        e_idx, _, e_val = resolve_matching_names_values(
+            cfg.max_tracking_error, self._joint_names
+        )
+        err[e_idx] = torch.tensor(e_val, device=self.device)
+        if bool((err <= 0.0).any()):
+            raise ValueError("max_tracking_error 가 풀리지 않은 관절이 있다")
+        self._max_tracking_error = err.unsqueeze(0)
         # ②용 상태. 리셋 기준은 기본 자세다(리셋 직후 팔이 거기 있다).
         self._prev_target = self._asset.data.default_joint_pos[:, self._joint_ids].clone()
 
@@ -192,22 +210,32 @@ class JointLimitedDifferentialIKAction(DifferentialInverseKinematicsAction):
         joint_pos = self._asset.data.joint_pos[:, self._joint_ids]
         if ee_quat_curr.norm() != 0:
             jacobian = self._compute_frame_jacobian()
+            # ★★IK 의 **씨앗을 직전 목표로** 준다(현재 관절이 아니라).
+            #   `use_relative_mode` 의 해는 `씨앗 + J⁺·Δ` 다. 씨앗을 현재 관절로 주면
+            #   Δ=0 일 때 목표가 **처지는 팔을 그대로 따라가** 복원력이 사라진다 — 실측:
+            #   지령 0 으로 4 초에 TCP 가 **111.5 mm 가라앉는다**(+0.5 지령에도 −11.4 mm).
+            #   정책이 제자리를 지키는 데만 +z 권한의 절반 이상을 쓰게 되고, 컵을 드는
+            #   데 쓸 여유가 없다. test3·test4·test5 가 전부 이 결함 위에서 돌았다.
+            #   씨앗을 직전 목표로 주면 Δ=0 이 "그 자리를 지켜라"가 되어 PD 가 중력을 든다.
             joint_pos_des = self._ik_controller.compute(
-                ee_pos_curr, ee_quat_curr, jacobian, joint_pos
+                ee_pos_curr, ee_quat_curr, jacobian, self._prev_target
             )
         else:
-            joint_pos_des = joint_pos.clone()
-        # ① 현재 관절 기준: 목표가 실제 관절보다 앞서 나가지 못하게(windup·토크 제한)
-        joint_pos_des = joint_pos + torch.clamp(
-            joint_pos_des - joint_pos, min=-self._max_step_delta, max=self._max_step_delta
-        )
-        # ② 직전 목표 기준: 지령 자체의 진동을 묶는다
+            joint_pos_des = self._prev_target.clone()
+        # 직전 목표 기준으로만 묶는다. 현재 관절 기준으로도 묶으면 토크가 갇힌다(위 참조).
         joint_pos_des = self._prev_target + torch.clamp(
             joint_pos_des - self._prev_target,
             min=-self._max_step_delta,
             max=self._max_step_delta,
         )
-        # ③ 관절 한계: 한계 밖 지령은 눌린 채 고착시킨다
+        # anti-windup: 목표가 실제 관절보다 **full torque 만큼**까지만 앞선다.
+        #   더 앞서 봐야 effort 한계에 걸려 힘이 안 늘고, 팔이 풀렸을 때 튀기만 한다.
+        joint_pos_des = joint_pos + torch.clamp(
+            joint_pos_des - joint_pos,
+            min=-self._max_tracking_error,
+            max=self._max_tracking_error,
+        )
+        # 관절 한계: 한계 밖 지령은 눌린 채 고착시킨다
         limits = self._asset.data.soft_joint_pos_limits[:, self._joint_ids, :]
         joint_pos_des = joint_pos_des.clamp(min=limits[..., 0], max=limits[..., 1])
         # ★in-place 복사. 대입하면 같은 텐서를 가리켜 ② 가 무효가 된다.
@@ -222,3 +250,4 @@ class JointLimitedDifferentialIKActionCfg(DifferentialInverseKinematicsActionCfg
     class_type: type = JointLimitedDifferentialIKAction
 
     rate_limit: dict[str, float] = None
+    max_tracking_error: dict[str, float] = None
