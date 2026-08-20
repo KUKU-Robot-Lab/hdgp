@@ -296,15 +296,18 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         self.observations.policy.joint_vel.params["asset_cfg"] = _left_joints()
         self.rewards.joint_vel.params["asset_cfg"] = _left_joints()
 
-        # ── 리프트 임계: 절대 world z ──────────────────────────────
-        # ★레퍼런스는 테이블 상면이 z=0 이라 0.04 를 쓴다. 우리 상면은 0.215 이므로
-        #   그만큼 올려야 "4cm 들어올림"이 된다. 안 그러면 컵이 놓인 채로도 lifting 보상이
-        #   상시 1 이 되어 학습이 통째로 망가진다.
-        self.rewards.lifting_object.params["minimal_height"] = P.MINIMAL_LIFT_HEIGHT
-        self.rewards.object_goal_tracking.params["minimal_height"] = P.MINIMAL_LIFT_HEIGHT
-        self.rewards.object_goal_tracking_fine_grained.params["minimal_height"] = (
-            P.MINIMAL_LIFT_HEIGHT
-        )
+        # ── 리프트 판정: 이진 게이트가 아니라 **연속 램프** ─────────
+        # ★놓인 높이에서 0, +4 cm 에서 1. 이진 게이트는 양쪽 다 실패했다 — 닫으면 절벽
+        #   (IK 1 차 827 epoch 동안 lifting 0.000), 열면 공짜(IK test3 은 총보상 149 인데
+        #   컵 상승 최대 +3.6 mm). 근거는 grasp_left_rewards._held docstring.
+        for _term in (
+            self.rewards.lifting_object,
+            self.rewards.object_goal_tracking,
+            self.rewards.object_goal_tracking_fine_grained,
+        ):
+            _term.params.pop("minimal_height", None)
+            _term.params["lift_zero_z"] = P.LIFT_RAMP_ZERO_Z
+            _term.params["lift_span"] = P.LIFT_RAMP_SPAN
 
         # ── 리프트 판정에 "쥐고 있는가"를 AND ────────────────────────
         # ★★weight 는 그대로 두고 **판정 함수만** 바꾼다. z 만 보는 레퍼런스 판정으로는
@@ -353,7 +356,8 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "std": P.SETTLE_POS_STD,
                 "lin_vel_std": P.SETTLE_LIN_VEL_STD,
                 "ang_vel_std": P.SETTLE_ANG_VEL_STD,
-                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "lift_zero_z": P.LIFT_RAMP_ZERO_Z,
+                "lift_span": P.LIFT_RAMP_SPAN,
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "command_name": "object_pose",
             },
@@ -363,7 +367,8 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             func=rewards.held_with_good_pose,
             weight=P.GRASP_POSE_REWARD_WEIGHT,
             params={
-                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "lift_zero_z": P.LIFT_RAMP_ZERO_Z,
+                "lift_span": P.LIFT_RAMP_SPAN,
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "body_name": P.GRIPPER_BASE_BODY,
                 "upright_zero_at_cos": P.CUP_UPRIGHT_ZERO_AT_COS,

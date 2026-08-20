@@ -130,40 +130,42 @@ def test_work_surface_matches_env_usd_mesh_points():
     assert "P.ENV_USD_REL" in src and "rigid_props" not in src.split("P.ENV_USD_REL")[1][:200]
 
 
-def test_lift_gate_matches_the_reference_open_at_rest_closed_when_tipped():
-    """★★두 번 틀린 자리. `mdp.object_is_lifted` 는 물체 **root 원점**의 절대 world z 를 본다.
+def test_lift_is_a_ramp_not_a_binary_gate():
+    """★★세 번 틀린 자리. 이진 게이트는 **양쪽 다** 실패했다.
 
-    1차 오해 — 기준선을 테이블 상면으로 잡았다(0.255). shaker 원점은 바닥에서 92 mm 위라
-      놓인 원점(0.30709)보다 낮았고, lifting 이 상시 1(14.63/15.0)이 됐다(test1-r2).
-    2차 오해 — 그래서 "놓인 원점 + 4 cm = 0.34709" 로 올렸다. **이것도 틀렸다.**
-      레퍼런스 openarm lift 는 큐브를 world z **0.055** 에 놓고 `minimal_height`=**0.04**
-      를 쓴다 — 놓인 상태에서 **게이트가 이미 열려 있다**. 즉 `object_is_lifted` 는 상수라
-      gradient 가 없고, 실제 신호는 **목표까지의 거리 기울기**뿐이며 목표 z 가 공중이라
-      들어올리기가 저절로 유도된다. 넘어야 할 문턱이 없다.
-      내 0.34709 는 레퍼런스에 없는 **절벽**이었고, 태스크공간 1차가 483 epoch 동안
-      `lifting_object` 0.00 이었던 이유다(reaching 0.3~0.57 = 팔은 컵 곁에 있었다).
+    1차 — 기준선을 테이블 상면으로 잡음(0.255 < 놓인 원점). lifting 상시 1(test1-r2).
+    2차 — "놓인 원점 + 4 cm = 0.34709" 로 닫음 → 레퍼런스에 없는 **절벽**. 컵이 4 cm
+          오르기 전까지 이 게이트를 곱하는 모든 항이 0 이라, 태스크공간 1 차가
+          **827 epoch 동안 `lifting_object` 정확히 0.000** 이었다(reaching 0.43 = 팔은
+          컵 곁에 있었다).
+    3차 — 레퍼런스처럼 놓인 상태에서 열어둠 → **공짜**. IK test3 은 4000 epoch 완주에
+          총보상 149 를 냈지만 실측하면 컵 상승 **최대 +3.6 mm**, 1 cm 이상 올린 스텝
+          **0.0%**, 그리퍼 개도 1.2 mm — 컵 옆에 서서 그리퍼만 닫고 가만히 있었다.
+          정지 보상이 **안 움직일수록 최대**라 이 전략을 특히 강하게 떠받친다.
+          (레퍼런스에서 같은 구조가 되는 건 목표가 놓인 큐브에서 멀기 때문이다.)
 
-    ⚠ 그 절벽을 **이 테스트가 옳다고 고정하고 있었다**. 같은 오해를 공유한 테스트는
-      버그를 막지 못한다. 그래서 이제 레퍼런스와의 **관계**를 고정한다.
+    → 높이 항은 **연속 램프**여야 한다: 놓인 높이에서 0, +span 에서 1.
+      절벽 없음(첫 밀리미터부터 gradient) · 공짜 없음(가만히 있으면 0).
 
-    공짜 보상은 게이트를 여는 것으로 막지 않는다 — `_held` 의 **TCP 근접(8 cm)** 게이트가
-    막는다(던지기 방지용으로 이미 있다). 그리고 임계가 누운 컵 원점보다 위라 쓰러지면
-    게이트가 닫힌다 = "세워서 들고 있을 때만 목표 보상".
+    ⚠ 1·2차 때는 **이 테스트가 틀린 쪽을 옳다고 고정하고 있었다**. 그래서 이제 절대값이
+      아니라 **구조**(램프인지, 0 지점이 놓인 높이인지)를 고정한다.
     """
-    assert P.MINIMAL_LIFT_HEIGHT < P.CUP_SPAWN_Z, (
-        "게이트가 놓인 상태에서 닫혀 있다 — 레퍼런스에 없는 절벽이 생긴다"
-    )
-    assert P.MINIMAL_LIFT_HEIGHT > P.CUP_TIPPED_ORIGIN_Z, (
-        "누운 컵에서도 게이트가 열린다 — 쓰러뜨린 채 목표로 밀 수 있다"
-    )
-    # 레퍼런스와 같은 여유(0.055 − 0.04 = 0.015)에서 파생되어야 한다.
-    assert math.isclose(
-        P.MINIMAL_LIFT_HEIGHT, P.CUP_SPAWN_Z - P.LIFT_GATE_BELOW_REST, abs_tol=1e-9
-    )
-    # 공짜 보상 차단은 TCP 근접 게이트가 맡는다 — 없어지면 test3 의 던지기가 돌아온다.
+    # 램프 0 지점은 **놓인 컵의 원점**이어야 한다 — 여기서 0 이라야 정지가 공짜가 아니다.
+    assert math.isclose(P.LIFT_RAMP_ZERO_Z, P.CUP_SPAWN_Z, abs_tol=1e-9)
+    assert 0.0 < P.LIFT_RAMP_SPAN <= 0.10, "램프 구간이 비었거나 지나치게 길다"
+
+    rsrc = (
+        Path(__file__).resolve().parents[1] / "grasp_left_rewards.py"
+    ).read_text(encoding="utf-8")
+    # 이진 비교로 되돌아가면 실패해야 한다.
+    assert "lift_zero_z) / lift_span).clamp(0.0, 1.0)" in rsrc, "높이 항이 램프가 아니다"
+    assert "obj_pos_w[:, 2] > " not in rsrc, "이진 리프트 게이트가 되살아났다"
+
+    # 램프를 곱하는 항이 셋 이상이어야 한다(lifting/goal/goal_fine + settle/pose).
     src = _cfg_source()
+    assert src.count("P.LIFT_RAMP_ZERO_Z") >= 3
+    # 공짜 보상 차단의 나머지 절반은 TCP 근접 게이트다 — 없어지면 test3 던지기가 돌아온다.
     assert "GRASP_MAX_EE_DISTANCE" in src
-    assert src.count("P.MINIMAL_LIFT_HEIGHT") >= 3
 
 
 def test_drop_threshold_catches_a_tipped_cup_not_just_a_fallen_one():
@@ -420,7 +422,8 @@ def test_goal_z_range_sits_above_the_lift_threshold():
     """목표도 컵 **원점** 좌표다. 하한이 리프트 임계보다 낮으면 게이트는 닫혀 있는데 목표는
     이미 발밑에 있는 꼴이 되어 "먼저 들어라 → 옮겨라" 순서가 무너진다."""
     lo, hi = P.GOAL_POS_Z
-    assert lo >= P.MINIMAL_LIFT_HEIGHT
+    # 램프가 완전히 서는 높이(놓인 높이 + span)보다 목표가 위여야 한다.
+    assert lo >= P.LIFT_RAMP_ZERO_Z + P.LIFT_RAMP_SPAN
     assert hi > lo
 
 

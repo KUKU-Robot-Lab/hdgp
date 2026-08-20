@@ -116,7 +116,8 @@ def main() -> None:
             )
 
     print(f"\n  스폰 z 기대 {P.CUP_SPAWN_Z:.5f} / 실측 {cup[:, 2].mean():.5f}")
-    print(f"  리프트 임계 {P.MINIMAL_LIFT_HEIGHT:.3f} (테이블 상면 {P.TABLE_SURFACE_Z:.3f})")
+    print(f"  리프트 램프 {P.LIFT_RAMP_ZERO_Z:.3f} → +{P.LIFT_RAMP_SPAN * 1e3:.0f} mm "
+          f"(테이블 상면 {P.TABLE_SURFACE_Z:.3f})")
 
     print("\n=== 0) 모든 SceneEntityCfg 가 실제로 resolve 되는가 ===")
     print(
@@ -247,8 +248,8 @@ def main() -> None:
     print(f"  낙하/쓰러짐 종료 임계 {P.OBJECT_DROP_HEIGHT:.5f} → "
           f"종료 발화 {fired}/{env.num_envs} env "
           f"{'✓ 잡힌다' if fired == env.num_envs else '← **안 잡힌다** (에피소드가 계속된다)'}")
-    print(f"  리프트 임계 {P.MINIMAL_LIFT_HEIGHT:.5f} → "
-          f"{'lifted 판정 참(!)' if lying.mean() > P.MINIMAL_LIFT_HEIGHT else 'lifted 판정 거짓'}")
+    _r = max(0.0, min(1.0, (float(lying.mean()) - P.LIFT_RAMP_ZERO_Z) / P.LIFT_RAMP_SPAN))
+    print(f"  누운 컵의 리프트 램프 값 = {_r:.3f} (0 이어야 정상 — 누우면 원점이 내려간다)")
 
     print("\n=== 1a4) 왼팔이 리셋 직후 진동하는가 (진자운동 관찰) ===")
     print(

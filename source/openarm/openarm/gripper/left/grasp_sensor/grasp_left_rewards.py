@@ -97,17 +97,30 @@ def jaw_level_quality(
 
 def _held(
     env: "ManagerBasedRLEnv",
-    minimal_height: float,
+    lift_zero_z: float,
+    lift_span: float,
     max_ee_distance: float,
     object_cfg: SceneEntityCfg,
     ee_frame_cfg: SceneEntityCfg,
     min_upright_cos: float = -1.0,
 ) -> torch.Tensor:
-    """물체를 **제대로** 들고 있는가. (num_envs,) float 0/1.
+    """물체를 **제대로 들고 있는 정도**. (num_envs,) float, 0~1 연속.
 
-    · 임계 높이 위로 올라갔고
-    · TCP 가 곁에 있으며(그리퍼가 아닌 부위로 떠받치는 것 차단)
+    · 높이: `lift_zero_z`(놓인 높이)에서 0, `+lift_span`에서 1 인 **연속 램프**
+    · TCP 가 곁에 있고(그리퍼가 아닌 부위로 떠받치는 것 차단)
     · 컵이 세워져 있다(`min_upright_cos`)
+
+    ★★높이 항이 램프인 이유 — 이진 게이트는 양쪽 다 실패했다.
+      · 닫아두면(놓인 원점 +4 cm) **절벽**이 된다. 컵이 4 cm 오르기 전까지 이 게이트를
+        곱하는 모든 항이 0 이라 신호가 없다. IK 1 차가 827 epoch 동안 `lifting_object`
+        정확히 0.000 이었다(reaching 은 0.43 = 팔은 컵 곁에 있었다).
+      · 열어두면(놓인 상태에서 참) **공짜**가 된다. IK test3 은 4000 epoch 완주에
+        총보상 149 를 냈지만 실측하면 컵 상승 최대 **+3.6 mm**, 1 cm 이상 올린 스텝
+        **0.0%**, 그리퍼 개도 1.2 mm — 컵 옆에 서서 그리퍼만 닫고 가만히 있었다.
+        정지 보상은 **안 움직일수록 최대**라 이 전략을 특히 강하게 떠받친다.
+      램프는 첫 밀리미터부터 gradient 가 있어 절벽이 없고, 가만히 있으면 0 이라 공짜도
+      없다. 덤으로 `lifting_object` 가 상수에서 **상승량 비례**로 바뀌어 TFEvents 곡선이
+      리프트 높이의 대리 지표가 된다 — 위 실패가 곡선에 안 보였던 이유가 그 상수였다.
 
     ★컵 자세 조건이 필요한 이유: 근접 조건만으로는 컵을 **47° 기울인 채** 손가락 끝으로
       걸어 올리는 파지가 학습된다(test4 실측: 컵 기울기 47.1°, 그리퍼 개도 5.6 mm 로
@@ -117,15 +130,16 @@ def _held(
     ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
     obj_pos_w = obj.data.root_pos_w
     ee_pos_w = ee_frame.data.target_pos_w[..., 0, :]
-    lifted = obj_pos_w[:, 2] > minimal_height
+    lift = ((obj_pos_w[:, 2] - lift_zero_z) / lift_span).clamp(0.0, 1.0)
     near = torch.norm(obj_pos_w - ee_pos_w, dim=1) < max_ee_distance
     upright = _cup_upright_cos(env, object_cfg) > min_upright_cos
-    return (lifted & near & upright).float()
+    return lift * (near & upright).float()
 
 
 def held_with_good_pose(
     env: "ManagerBasedRLEnv",
-    minimal_height: float,
+    lift_zero_z: float,
+    lift_span: float,
     max_ee_distance: float,
     body_name: str,
     upright_zero_at_cos: float = 0.0,
@@ -148,7 +162,7 @@ def held_with_good_pose(
           lifting 6.14 → 0.0000 / 에피소드 길이 130 → 13 / 총보상 +34.9 → −0.46
       학습이 시작조차 못 한다. 자세는 반드시 연속 보너스로만 유도한다.
     """
-    gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
+    gate = _held(env, lift_zero_z, lift_span, max_ee_distance, object_cfg, ee_frame_cfg)
     cos_tilt = _cup_upright_cos(env, object_cfg)
     upright = ((cos_tilt - upright_zero_at_cos) / (1.0 - upright_zero_at_cos)).clamp(0.0, 1.0)
     return gate * upright * jaw_level_quality(env, robot_cfg, body_name)
@@ -156,20 +170,22 @@ def held_with_good_pose(
 
 def object_is_held_and_lifted(
     env: "ManagerBasedRLEnv",
-    minimal_height: float,
+    lift_zero_z: float,
+    lift_span: float,
     max_ee_distance: float,
     min_upright_cos: float = -1.0,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
 ) -> torch.Tensor:
     """`mdp.object_is_lifted` 에 근접·컵 자세 조건을 더한 것."""
-    return _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
+    return _held(env, lift_zero_z, lift_span, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
 
 
 def object_goal_distance_when_held(
     env: "ManagerBasedRLEnv",
     std: float,
-    minimal_height: float,
+    lift_zero_z: float,
+    lift_span: float,
     max_ee_distance: float,
     command_name: str,
     min_upright_cos: float = -1.0,
@@ -188,7 +204,7 @@ def object_goal_distance_when_held(
         robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
     )
     distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
-    gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
+    gate = _held(env, lift_zero_z, lift_span, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
     return gate * (1 - torch.tanh(distance / std))
 
 
@@ -197,7 +213,8 @@ def object_settled_at_goal(
     std: float,
     lin_vel_std: float,
     ang_vel_std: float,
-    minimal_height: float,
+    lift_zero_z: float,
+    lift_span: float,
     max_ee_distance: float,
     command_name: str,
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -236,7 +253,7 @@ def object_settled_at_goal(
         1.0 - torch.tanh(ang / ang_vel_std)
     )
 
-    gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
+    gate = _held(env, lift_zero_z, lift_span, max_ee_distance, object_cfg, ee_frame_cfg)
     return gate * near_goal * still
 
 

@@ -169,7 +169,8 @@ def main() -> None:
             spawn_xy[0] = cup[:, :2].clone()
         cup_z.append(float(cup[:, 2].mean()))
         cup_dxy.append(float((cup[:, :2] - spawn_xy[0]).norm(dim=-1).mean()))
-        lifted = cup[:, 2] > P.MINIMAL_LIFT_HEIGHT
+        # 램프가 0 을 벗어나는 지점 = 실제로 뜨기 시작한 높이
+        lifted = cup[:, 2] > P.LIFT_RAMP_ZERO_Z
         tcp_w = ee.data.target_pos_w[:, 0, :] - origins
         held = lifted & ((tcp_w - cup).norm(dim=-1) < P.GRASP_MAX_EE_DISTANCE)
         held_steps += int(held.sum())
@@ -273,7 +274,7 @@ def main() -> None:
         import statistics as _st
         nz = len(cup_z)
         print("\n=== 컵이 실제로 들렸는가 (게이트가 놓인 상태에서 열려 있으므로 필수) ===")
-        print(f"  스폰 원점 z {P.CUP_SPAWN_Z:.5f} · 리프트 게이트 {P.MINIMAL_LIFT_HEIGHT:.5f}")
+        print(f"  스폰 원점 z {P.CUP_SPAWN_Z:.5f} · 램프 0→1 구간 +{P.LIFT_RAMP_SPAN * 1e3:.0f} mm")
         print(f"  {'구간':<10}{'컵 z':>10}{'스폰대비':>12}{'xy이동':>10}")
         for a, b, lab in [(0, nz // 5, "0~20%"), (nz // 5, 2 * nz // 5, "20~40%"),
                           (2 * nz // 5, 3 * nz // 5, "40~60%"), (3 * nz // 5, 4 * nz // 5, "60~80%"),
