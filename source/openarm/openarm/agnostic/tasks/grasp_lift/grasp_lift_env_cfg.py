@@ -40,10 +40,15 @@ def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
-                max_depenetration_velocity=5.0,
+                # 5.0 → 1.0: 관통 시 밀어내는 속도가 크면 충격량이 폭증한다
+                # (fabric 트랙 실측: 전형 13~20N 인데 스파이크 7218N).
+                max_depenetration_velocity=1.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False,
+                # ★True: diff IK 트랙에는 Fabrics 의 body-sphere repulsion 같은
+                #   자기충돌 회피 수단이 없어, 끄면 손가락끼리 그대로 관통한다
+                #   (사용자 지적 08.20; probe 실측 full-grip 손관절합 25.8 vs ON 18.3).
+                enabled_self_collisions=True,
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
             ),
