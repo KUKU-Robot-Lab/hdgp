@@ -151,7 +151,22 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=[0.30, -0.20, 0.297]),
         spawn=UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "cup", "cup_big_rl.usd"),
+            activate_contact_sensors=True,
             mass_props=MassPropertiesCfg(mass=0.134),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                articulation_enabled=False,
+            ),
+            # ★물체에도 solver/depenetration 을 명시한다 — 빠지면 PhysX 기본(4회)이라
+            #   파지 조임 중 손끝이 컵 벽을 파고든다(사용자 영상 08.20).
+            #   값은 grasp_v1·grasp_lift_fabric 과 동일.
+            rigid_props=RigidBodyPropertiesCfg(
+                solver_position_iteration_count=16,
+                solver_velocity_iteration_count=1,
+                max_angular_velocity=100.0,
+                max_linear_velocity=100.0,
+                max_depenetration_velocity=1.0,
+                disable_gravity=False,
+            ),
         ),
     )
 

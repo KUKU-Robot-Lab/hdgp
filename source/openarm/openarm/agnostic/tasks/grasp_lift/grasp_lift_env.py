@@ -317,6 +317,11 @@ class GraspLiftEnv(DirectRLEnv):
         self.extras["debug/hand/torque_max"] = _hand_tau.max()
         for gi, gname in ((self._group_a_idx, "group_a"), (self._group_b_idx, "group_b")):
             self.extras[f"contact/{gname}_force"] = contact[:, gi].mean()
+        # 관통 프록시: 정상 파지 접촉은 수 N 대. 수십~수백 N 은 깊은 상호침투를
+        # 솔버가 밀어내는 신호다(08.20 사용자 지적 — 손가락이 컵을 뚫음).
+        _raw = self._contact_forces()
+        self.extras["contact/force_max"] = _raw.max()
+        self.extras["contact/force_p95"] = torch.quantile(_raw.reshape(-1), 0.95)
         return total
 
     # ------------------------------------------------------------------
