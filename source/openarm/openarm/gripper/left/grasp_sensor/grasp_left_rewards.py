@@ -128,13 +128,19 @@ def held_with_good_pose(
     minimal_height: float,
     max_ee_distance: float,
     body_name: str,
+    upright_zero_at_cos: float = 0.0,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """든 상태에서 **자세가 좋을수록** 커지는 보너스 (0~1).
 
-    품질 = (컵이 세워진 정도) × (jaw 가 수평인 정도) × (TCP축 ⊥ 컵축 정도). 전부 0~1 연속.
+    품질 = (컵이 똑바로 선 정도) × (jaw 가 수평인 정도). 둘 다 0~1 연속.
+
+    ★TCP축⊥컵축 항은 **뺐다** — |sin| 이라 81.8° 에서 이미 0.99 여서 개선 압력이 없었고
+      (test8 81.2° → test12 81.8°, 제자리), 결과적으로 필요한 것은 컵을 똑바로 드는 것이다.
+    ★upright 는 cos 를 그대로 쓰면 12.8° 에서 0.975 라 압력이 없다. `upright_zero_at_cos`
+      에서 0 이 되도록 재척도해 가파르게 만든다.
 
     ★★자세를 **게이트로 넣으면 안 된다** — 한 번 실패한 설계다. 컵 자세를 40° AND 게이트로
       걸었더니(test6/test7) 파지 중 필연적인 흔들림이 전부 차단돼 양의 보상이 **완전히 0**이
@@ -143,13 +149,9 @@ def held_with_good_pose(
       학습이 시작조차 못 한다. 자세는 반드시 연속 보너스로만 유도한다.
     """
     gate = _held(env, minimal_height, max_ee_distance, object_cfg, ee_frame_cfg)
-    upright = _cup_upright_cos(env, object_cfg).clamp(min=0.0)
-    return (
-        gate
-        * upright
-        * jaw_level_quality(env, robot_cfg, body_name)
-        * perpendicular_quality(env, robot_cfg, body_name, object_cfg)
-    )
+    cos_tilt = _cup_upright_cos(env, object_cfg)
+    upright = ((cos_tilt - upright_zero_at_cos) / (1.0 - upright_zero_at_cos)).clamp(0.0, 1.0)
+    return gate * upright * jaw_level_quality(env, robot_cfg, body_name)
 
 
 def object_is_held_and_lifted(

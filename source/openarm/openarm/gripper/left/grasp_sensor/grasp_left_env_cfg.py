@@ -337,6 +337,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "minimal_height": P.MINIMAL_LIFT_HEIGHT,
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "body_name": P.GRIPPER_BASE_BODY,
+                "upright_zero_at_cos": P.CUP_UPRIGHT_ZERO_AT_COS,
             },
         )
         self.terminations.object_dropping.params["minimum_height"] = P.OBJECT_DROP_HEIGHT

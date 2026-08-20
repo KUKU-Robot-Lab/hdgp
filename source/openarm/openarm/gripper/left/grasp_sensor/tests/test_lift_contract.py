@@ -217,18 +217,42 @@ def test_grasp_pose_is_a_bonus_never_a_gate():
     src = _cfg_source()
     # 판정 게이트는 lifted & near 까지만 (test5 에서 검증된 구성)
     assert "min_upright_cos" not in src, "컵 자세를 게이트에 넣지 말 것 — 학습이 죽는다"
-    # ★"제대로 파지했다면 TCP z축과 컵 z축이 약 90°" — 원통을 옆에서 물어야 두 손가락이
-    #   지름을 잡는다. 평행이면 축 방향으로 내려꽂은 것이다(test8 실측 81.2°).
+    # ★결과적으로 제어해야 할 것은 **컵을 똑바로 드는 것**이다(실기에서도 컵 로컬 z 는
+    #   파악 가능하다). TCP축⊥컵축 항은 |sin| 이라 81.8° 에서 이미 0.99 여서 개선 압력이
+    #   없었고 test8 81.2° → test12 81.8° 로 제자리였다 → 자세 보너스에서 뺐다.
     rewards_src = (Path(_CFG_SRC).parent / "grasp_left_rewards.py").read_text(encoding="utf-8")
-    assert "perpendicular_quality" in rewards_src
-    assert "perpendicular_quality(" in rewards_src.split("def held_with_good_pose")[1], (
-        "직교 조건이 자세 보너스에 곱해지지 않았다"
+    pose_fn = rewards_src.split("def held_with_good_pose")[1]
+    assert "perpendicular_quality(" not in pose_fn, "직교 항은 개선 압력이 없어 뺐다"
+    # upright 는 cos 를 그대로 쓰면 12.8° 에서 0.975 라 압력이 없다 → 재척도해 가파르게
+    assert "upright_zero_at_cos" in pose_fn
+    assert 0.0 < P.CUP_UPRIGHT_ZERO_AT_COS < 1.0
+    q_at_measured = (math.cos(math.radians(12.8)) - P.CUP_UPRIGHT_ZERO_AT_COS) / (
+        1.0 - P.CUP_UPRIGHT_ZERO_AT_COS
+    )
+    assert 0.3 < q_at_measured < 0.95, (
+        "현재 자세(12.8°)에서 품질이 1 에 붙으면 개선 압력이 없고, 0 이면 신호가 죽는다"
     )
     assert "held_with_good_pose" in src
     assert "grasp_pose" in src
     assert 0.0 < P.GRASP_POSE_REWARD_WEIGHT <= 15.0 / 3.0, (
         "자세 보너스가 lifting(15) 대비 1/3 을 넘으면 자세만 맞추는 국소최적이 생긴다"
     )
+
+
+def test_goal_is_a_specific_point_not_a_wide_range():
+    """★이송 목표는 **우리가 정하는 특정 점**이다(실기에서도 옮길 자리는 우리가 지정한다).
+
+    넓은 랜덤 범위는 정밀 도달과 정지를 동시에 어렵게 만든다 — test12 에서 goal_fine 이
+    상한의 8%, settle 이 7.8% 에 머문 이유 중 하나다.
+    """
+    span_x = P.GOAL_POS_X[1] - P.GOAL_POS_X[0]
+    span_y = P.GOAL_POS_Y[1] - P.GOAL_POS_Y[0]
+    span_z = P.GOAL_POS_Z[1] - P.GOAL_POS_Z[0]
+    for span in (span_x, span_y, span_z):
+        assert span <= 0.06, f"목표 범위가 넓다({span:.3f} m) — 특정 점이어야 한다"
+    # 스폰 자리에 그대로 두는 것이 목표가 되면 "들어서 옮기기"가 성립하지 않는다
+    dz = P.GOAL_POINT[2] - P.CUP_SPAWN_Z
+    assert dz > 0.05, "목표가 스폰 높이와 가까우면 이송을 요구하지 못한다"
 
 
 @pytest.mark.skipif(not _ROBOT_URDF.is_file(), reason="로봇 URDF 없음")
