@@ -28,6 +28,12 @@ class RobotProfile:
     # ---- 제어 대상 (regex 는 Articulation.find_joints 로 해석) ----------------
     arm_joint_regex: str = ""
     hand_joint_regex: str = ""
+    # 손 관절 중 **정책이 건드리지 않고 홈 값으로 고정**할 것 (PD 가 잡고 있는다).
+    # grasp_v2 방식 — 외전(_1)을 자유화하면 자기충돌이 꺼진 상태에서 손가락이
+    # 서로 벌어져 겹치고 파지 평면이 무너진다(08.20 사용자 지시).
+    # 빈 문자열이면 전 손관절이 정책 제어.
+    hand_locked_joint_regex: str = ""
+    num_locked_hand_joints: int = 0      # 공간 계산용(regex 해석 결과와 대조 검증)
 
     # ---- diff IK ---------------------------------------------------------------
     palm_body: str = ""                  # IK 가 추종하는 EE body
@@ -76,6 +82,11 @@ TESOLLO_RIGHT = RobotProfile(
     num_hand_joints=20,
     arm_joint_regex="r_aj_[1-7]",
     hand_joint_regex="r_hj_(thumb|index|middle|ring|pinky)_[1-4]",
+    # index/middle/ring 의 _1 = 외전. grasp_v2 도 이 축들을 정책에서 뺐다.
+    # ★thumb_1(대향 벌림)과 pinky_1(= Z-flex, 외전 아님 — tesollo pinky 운동학 메모)은
+    #   파지에 필수라 자유 유지.
+    hand_locked_joint_regex="r_hj_(index|middle|ring)_1",
+    num_locked_hand_joints=3,
     palm_body="r_hl_palm",
     # 원위마디(_4)와 센서팁 둘 다 — 인벨롭(마디 접촉)과 핀치(팁 접촉) 어느 쪽이든
     # 접촉으로 인정(tesollo 팁은 인벨롭에서 안 닿기 쉬움, 07.29 교훈).

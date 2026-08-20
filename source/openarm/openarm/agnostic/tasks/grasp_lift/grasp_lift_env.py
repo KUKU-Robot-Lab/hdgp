@@ -56,6 +56,23 @@ class GraspLiftEnv(DirectRLEnv):
         self._arm_ids_t = torch.tensor(self.arm_ids, device=self.device, dtype=torch.long)
         self._hand_ids_t = torch.tensor(self.hand_ids, device=self.device, dtype=torch.long)
 
+        # 정책이 건드리지 않는 손 관절(홈 고정) — hand_ids 안에서의 지역 인덱스로 분리.
+        locked_ids: list[int] = []
+        if p.hand_locked_joint_regex:
+            locked_ids, locked_names = self.robot.find_joints(p.hand_locked_joint_regex)
+            if len(locked_ids) != p.num_locked_hand_joints:
+                raise RuntimeError(
+                    f"[{p.name}] 고정 손관절 수 불일치: {len(locked_ids)}!="
+                    f"{p.num_locked_hand_joints} ({locked_names})"
+                )
+            if not set(locked_ids) <= set(self.hand_ids):
+                raise RuntimeError(f"[{p.name}] 고정 손관절이 hand_joint_regex 밖이다: {locked_names}")
+        _locked_set = set(locked_ids)
+        self._hand_free_local = torch.tensor(
+            [i for i, j in enumerate(self.hand_ids) if j not in _locked_set],
+            device=self.device, dtype=torch.long,
+        )
+
         palm_ids, _ = self.robot.find_bodies(p.palm_body)
         if len(palm_ids) != 1:
             raise RuntimeError(f"[{p.name}] palm_body '{p.palm_body}' 해석 실패: {palm_ids}")
@@ -190,9 +207,10 @@ class GraspLiftEnv(DirectRLEnv):
         ee_pos, ee_quat = self._ee_pose_b()
         self._ik.set_command(cmd, ee_pos=ee_pos, ee_quat=ee_quat)
         # 손: 절대 목표를 delta 로 이동 + 관절한계 clamp
-        self.hand_targets = (
-            self.hand_targets + self.actions[:, 6:] * float(self.cfg.hand_joint_scale)
-        ).clamp(self._hand_lo, self._hand_hi)
+        # 자유 손관절에만 delta 를 얹는다 — 고정 관절은 홈 목표 그대로 유지.
+        _delta = torch.zeros_like(self.hand_targets)
+        _delta[:, self._hand_free_local] = self.actions[:, 6:] * float(self.cfg.hand_joint_scale)
+        self.hand_targets = (self.hand_targets + _delta).clamp(self._hand_lo, self._hand_hi)
 
     def _apply_action(self) -> None:
         # 팔 IK — 물리 스텝마다 최신 상태로 재계산(120 Hz)

@@ -190,7 +190,8 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
         num_tips = len(profile.fingertip_bodies)
         num_fingers = len(profile.finger_sensor_bodies)
         # 액션 = palm 6D delta + 손 관절 delta
-        self.action_space = 6 + profile.num_hand_joints
+        # 액션 = palm 6D + **자유** 손관절(고정 관절은 정책이 안 건드린다)
+        self.action_space = 6 + profile.num_hand_joints - profile.num_locked_hand_joints
         # 관측 = q + qd + palm pose(7) + tips(3T) + obj pose(7) + goal(3)
         #        + 손가락별 접촉력 크기(F) + last action
         self.observation_space = (
