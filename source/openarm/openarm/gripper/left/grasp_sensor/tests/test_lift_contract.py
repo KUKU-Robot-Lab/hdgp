@@ -86,33 +86,48 @@ def test_gripper_stroke_matches_urdf_limit():
 # 씬 기하 — 절대 z 함정
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(not _TABLE_USD.is_file(), reason="테이블 USD 없음")
-def test_table_surface_matches_usd_extent():
-    """★상면 = init pos z + Cube extent 반높이.
+def test_work_surface_matches_env_usd_mesh_points():
+    """★작업면 z 는 `env.usd` 의 `top_plate` 메시 점에서 직접 나와야 한다.
 
-    이 값을 두 번 틀렸다:
-      · 0.2082 — right/grasp_sensor 가 컵 반높이로 역산한 중간값. 상면이 아니다.
-      · 0.2004 — USD **BBoxCache** 로 읽은 값. extent 는 이미 xformOp:scale 반영값인데
-                 BBoxCache 가 scale 을 또 곱한다. extent 를 직접 읽어야 한다.
-    이 테스트는 그 "직접 읽기"를 고정한다.
+    env.usd 는 xformOp 이 하나도 없어 **메시 좌표가 곧 Env 프레임 값**이고, Env 원점은
+    로봇 base link 원점이다(사용자 지정). 그래서 top_plate 의 max z 가 작업면이다.
+
+    ⚠ 과거 이 값을 두 번 틀렸다: right/grasp_sensor 의 0.2082 는 컵 bbox 반높이로 역산한
+      중간값이고, USD BBoxCache 로 읽으면 extent 에 scale 이 **또** 곱해져 0.2004 가 된다.
+      메시 점을 직접 읽으면 두 함정과 무관하다.
     """
-    pxr_usd = pytest.importorskip("pxr.Usd", reason="pxr 없음")
-    UsdGeom = pytest.importorskip("pxr.UsdGeom")
+    usda = _HDGP / "assets/env/usd/env.usda"
+    if not usda.is_file():
+        pytest.skip("env.usda 없음")
+    txt = usda.read_text(encoding="utf-8")
 
-    stage = pxr_usd.Stage.Open(str(_TABLE_USD))
-    halves = []
-    for prim in stage.Traverse():
-        ext = UsdGeom.Boundable(prim).GetExtentAttr() if prim.IsA(UsdGeom.Boundable) else None
-        if ext and ext.HasAuthoredValue():
-            _lo, hi = ext.Get()
-            halves.append((hi[0], hi[1], hi[2]))
-    assert halves, "table.usd 에서 authored extent 를 못 찾았다"
-    hx, _, hz = max(halves, key=lambda h: h[0] * h[1])
+    def aabb(mesh_name: str):
+        m = re.search(
+            r'def Mesh "%s"(.*?)point3f\[\] points = \[(.*?)\]\s*\n' % mesh_name, txt, re.S
+        )
+        assert m, f"{mesh_name} 메시를 못 찾았다"
+        vals = re.findall(r"\(([-0-9.eE]+),\s*([-0-9.eE]+),\s*([-0-9.eE]+)\)", m.group(2))
+        cols = list(zip(*[[float(c) for c in v] for v in vals]))
+        return [(min(c), max(c)) for c in cols]
 
-    assert math.isclose(P.TABLE_HALF_X, hx, abs_tol=1e-6)
-    assert math.isclose(P.TABLE_SURFACE_Z, P.TABLE_POS[2] + hz, abs_tol=1e-6)
+    # 변환이 없어야 좌표를 그대로 믿을 수 있다 — 나중에 누가 넣으면 이 계약이 깨져야 한다.
+    assert "xformOp" not in txt, "env.usd 에 변환이 생겼다 — 메시 좌표를 그대로 못 쓴다"
+    assert "metersPerUnit = 1" in txt, "단위가 m 이 아니다(0.01 이면 자산이 100 배 작아진다)"
+
+    top = aabb("top_plate")
+    assert math.isclose(P.TABLE_SURFACE_Z, top[2][1], abs_tol=1e-6)
+    assert math.isclose(P.WORK_SURFACE_X[0], top[0][0], abs_tol=1e-6)
+    assert math.isclose(P.WORK_SURFACE_X[1], top[0][1], abs_tol=1e-6)
+    # 로봇이 서는 면과 바닥판
+    assert math.isclose(P.ROBOT_MOUNT_Z, aabb("platform")[2][1], abs_tol=1e-6)
+    assert math.isclose(P.ENV_FLOOR_Z, aabb("base_plate")[2][1], abs_tol=1e-6)
     # 과거에 틀렸던 두 값이 다시 들어오지 않도록
     assert not math.isclose(P.TABLE_SURFACE_Z, 0.2082, abs_tol=1e-4)
     assert not math.isclose(P.TABLE_SURFACE_Z, 0.2004, abs_tol=1e-4)
+    # env 는 로봇 원점에 그대로 붙는다 — 오프셋이 생기면 모든 높이 상수가 어긋난다.
+    assert P.ENV_POS == (0.0, 0.0, 0.0)
+    src = _cfg_source()
+    assert "P.ENV_USD_REL" in src and "rigid_props" not in src.split("P.ENV_USD_REL")[1][:200]
 
 
 def test_lift_gate_matches_the_reference_open_at_rest_closed_when_tipped():
@@ -370,8 +385,7 @@ def test_cup_spawn_z_puts_bottom_on_table():
 
 
 def test_cup_spawn_box_sits_on_the_table():
-    near = P.TABLE_POS[0] - P.TABLE_HALF_X
-    far = P.TABLE_POS[0] + P.TABLE_HALF_X
+    near, far = P.WORK_SURFACE_X
     base_r = 0.0295          # shaker 바닥 원판 반경 (shaker_closed_rl.usd bottom_plug)
     assert near <= P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE - base_r
     assert P.CUP_SPAWN_X_CENTER + P.CUP_SPAWN_X_RANGE + base_r <= far
@@ -387,7 +401,8 @@ def test_spawn_box_clears_the_home_pose_arm():
     assert P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE >= P.SPAWN_X_SAFE_MIN - 1e-9
     # 목표 커맨드는 **들어올린 뒤** 옮길 지점이라 스폰 경계에 묶이지 않는다(컵이 공중이면
     # 팔이 점유한 공간과 충돌하지 않는다). 다만 팔 도달 범위 안이어야 한다.
-    assert P.GOAL_POS_X[0] > P.TABLE_POS[0] - P.TABLE_HALF_X
+    assert P.GOAL_POS_X[0] > P.WORK_SURFACE_X[0]
+    assert P.GOAL_POS_X[1] < P.WORK_SURFACE_X[1], "목표가 판 앞쪽 밖이다"
 
 
 def test_spawn_center_is_no_longer_the_left_grasp_v1_position():
