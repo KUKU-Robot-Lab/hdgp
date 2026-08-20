@@ -115,29 +115,39 @@ def test_table_surface_matches_usd_extent():
     assert not math.isclose(P.TABLE_SURFACE_Z, 0.2004, abs_tol=1e-4)
 
 
-def test_minimal_lift_height_is_measured_from_the_resting_cup_origin():
-    """★★가장 위험한 함정. `mdp.object_is_lifted` 는 물체 **root 원점**의 절대 z 를 본다.
+def test_lift_gate_matches_the_reference_open_at_rest_closed_when_tipped():
+    """★★두 번 틀린 자리. `mdp.object_is_lifted` 는 물체 **root 원점**의 절대 world z 를 본다.
 
-    기준선은 테이블 상면이 아니라 **컵이 놓여 있을 때의 원점 z**(= CUP_SPAWN_Z)다.
-    레퍼런스가 상면 기준으로 맞는 건 큐브 원점이 기하 중심이라서일 뿐이고, shaker 는
-    원점이 바닥에서 92 mm 위라 상면만 더하면 임계가 **놓인 상태보다 낮아진다**.
+    1차 오해 — 기준선을 테이블 상면으로 잡았다(0.255). shaker 원점은 바닥에서 92 mm 위라
+      놓인 원점(0.30709)보다 낮았고, lifting 이 상시 1(14.63/15.0)이 됐다(test1-r2).
+    2차 오해 — 그래서 "놓인 원점 + 4 cm = 0.34709" 로 올렸다. **이것도 틀렸다.**
+      레퍼런스 openarm lift 는 큐브를 world z **0.055** 에 놓고 `minimal_height`=**0.04**
+      를 쓴다 — 놓인 상태에서 **게이트가 이미 열려 있다**. 즉 `object_is_lifted` 는 상수라
+      gradient 가 없고, 실제 신호는 **목표까지의 거리 기울기**뿐이며 목표 z 가 공중이라
+      들어올리기가 저절로 유도된다. 넘어야 할 문턱이 없다.
+      내 0.34709 는 레퍼런스에 없는 **절벽**이었고, 태스크공간 1차가 483 epoch 동안
+      `lifting_object` 0.00 이었던 이유다(reaching 0.3~0.57 = 팔은 컵 곁에 있었다).
 
-    실제로 이 실수로 한 번 학습을 태웠다(test1-r2): 임계 0.255 < 놓인 원점 0.30709 라
-    lifting 보상이 상시 1(14.63/15.0), goal 게이트도 늘 열려 "가만히 있기"가 최적이 됐고
-    reaching_object 가 0.024 → 0.007 로 떨어졌다.
+    ⚠ 그 절벽을 **이 테스트가 옳다고 고정하고 있었다**. 같은 오해를 공유한 테스트는
+      버그를 막지 못한다. 그래서 이제 레퍼런스와의 **관계**를 고정한다.
+
+    공짜 보상은 게이트를 여는 것으로 막지 않는다 — `_held` 의 **TCP 근접(8 cm)** 게이트가
+    막는다(던지기 방지용으로 이미 있다). 그리고 임계가 누운 컵 원점보다 위라 쓰러지면
+    게이트가 닫힌다 = "세워서 들고 있을 때만 목표 보상".
     """
-    assert P.MINIMAL_LIFT_HEIGHT > P.CUP_SPAWN_Z, (
-        "임계가 놓인 컵의 원점보다 낮다 — lifting 보상이 상시 1 이 된다"
+    assert P.MINIMAL_LIFT_HEIGHT < P.CUP_SPAWN_Z, (
+        "게이트가 놓인 상태에서 닫혀 있다 — 레퍼런스에 없는 절벽이 생긴다"
     )
+    assert P.MINIMAL_LIFT_HEIGHT > P.CUP_TIPPED_ORIGIN_Z, (
+        "누운 컵에서도 게이트가 열린다 — 쓰러뜨린 채 목표로 밀 수 있다"
+    )
+    # 레퍼런스와 같은 여유(0.055 − 0.04 = 0.015)에서 파생되어야 한다.
     assert math.isclose(
-        P.MINIMAL_LIFT_HEIGHT, P.CUP_SPAWN_Z + P.LIFT_HEIGHT_ABOVE_TABLE, abs_tol=1e-9
+        P.MINIMAL_LIFT_HEIGHT, P.CUP_SPAWN_Z - P.LIFT_GATE_BELOW_REST, abs_tol=1e-9
     )
-    # 옛 계산식(상면 기준)으로 되돌아가지 않도록 못을 박는다
-    assert not math.isclose(
-        P.MINIMAL_LIFT_HEIGHT, P.TABLE_SURFACE_Z + P.LIFT_HEIGHT_ABOVE_TABLE, abs_tol=1e-6
-    )
-    # cfg 가 실제로 이 값을 세 군데 전부에 넣는지
+    # 공짜 보상 차단은 TCP 근접 게이트가 맡는다 — 없어지면 test3 의 던지기가 돌아온다.
     src = _cfg_source()
+    assert "GRASP_MAX_EE_DISTANCE" in src
     assert src.count("P.MINIMAL_LIFT_HEIGHT") >= 3
 
 
