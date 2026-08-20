@@ -589,3 +589,28 @@ def test_idle_right_arm_is_not_a_mirror_of_the_left_home():
     ]
     actual = [P.RIGHT_ARM_REST_JOINT_POS[f"r_aj_{i}"] for i in range(1, 8)]
     assert not all(math.isclose(a, b, abs_tol=1e-6) for a, b in zip(mirrored, actual))
+
+
+def test_arm_action_command_cannot_outrun_the_joint():
+    """★지령은 관절이 낼 수 있는 속도를 넘으면 안 된다.
+
+    test13 결정론 정책은 관절당 0.324 rad/스텝(= 16 rad/s)을 지령했다. 관절 속도 한계
+    2.175~2.61 rad/s 의 **7 배**라 팔은 그냥 포화했다(실측 관절속도 2.02 rad/s ≈ 한계).
+    보상으로는 못 고친다 — `action_rate_l2` 는 액션공간 통계라 탐색 노이즈에 오염되고,
+    옵티마이저는 σ 만 줄인다(CLAUDE.md 함정 절).
+
+    그래서 액션 자체를 제한한다. 상한은 **관절 속도 한계 그 자체**여야 한다 — 임의의
+    숫자를 박아두면 근거가 사라지고, 액추에이터 한계를 바꿨을 때 조용히 어긋난다.
+    실제 제한 동작은 `scripts/probes/probe_action_rate_limit.py` 가 잰다(7 관절 PASS).
+    """
+    src = _cfg_source()
+    assert "RateLimitedJointPositionActionCfg" in src, "팔 액션에 변화율 상한이 있어야 한다"
+    assert "rate_limit=P.ARM_TARGET_RATE_LIMIT" in src
+    # 레시피의 핵심 성질은 그대로여야 한다.
+    assert "scale=0.5" in src and "use_default_offset=True" in src
+    # 상한이 관절 속도 한계와 **같은 표**여야 한다. 리터럴을 따로 두면 어긋난다.
+    assert P.ARM_TARGET_RATE_LIMIT == P.ARM_VELOCITY_LIMIT, (
+        "목표 변화율 상한은 관절 속도 한계에서 파생되어야 한다"
+    )
+    for expr, rate in P.ARM_TARGET_RATE_LIMIT.items():
+        assert rate > 0.0, f"{expr} 상한이 0 이하"

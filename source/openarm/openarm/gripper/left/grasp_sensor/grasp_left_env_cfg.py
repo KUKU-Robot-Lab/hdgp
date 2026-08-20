@@ -32,6 +32,10 @@ lift 레시피는 정반대다:
 ★바꾸지 말 것: scale=0.5, use_default_offset=True, BinaryJointPositionAction,
   커리큘럼 2개, decimation=2 / episode_length_s=5.0, reward weight 조합.
   이것들이 이 레시피가 학습되는 이유다.
+
+단 하나 덧댄 것: 팔 액션에 **목표 변화율 상한**(= 관절 속도 한계)을 씌웠다. 위 성질은
+그대로다 — scale·offset·도달 범위·액션 차원이 전부 같고, 절대 목표를 만드는 부모의
+계산 뒤에 clamp 만 붙는다. 근거는 grasp_left_actions.py 의 docstring 에 실측과 함께 있다.
 """
 
 from __future__ import annotations
@@ -57,6 +61,7 @@ from isaaclab_tasks.manager_based.manipulation.lift.config.openarm.lift_openarm_
 
 from openarm import OPENARM_ROOT_DIR
 
+from . import grasp_left_actions as actions
 from . import grasp_left_events as events
 from . import grasp_left_preset as P
 from . import grasp_left_rewards as rewards
@@ -154,11 +159,17 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         )
 
         # ── 액션 ────────────────────────────────────────────────────
-        self.actions.arm_action = mdp.JointPositionActionCfg(
+        # ★레퍼런스의 `JointPositionActionCfg` 에 **목표 변화율 상한**만 씌운 것이다.
+        #   scale=0.5 / use_default_offset=True 는 그대로 — 액션 0 = 홈 자세, 도달 범위도 동일.
+        #   상한을 넣은 이유는 grasp_left_actions.py 의 모듈 docstring 에 실측과 함께 있다.
+        #   요약: 결정론 정책이 관절 속도 한계의 **7 배**를 지령하고 있었고, 그건 보상으로
+        #   고칠 수 없다(action_rate 는 탐색 노이즈에 오염돼 σ 만 줄인다).
+        self.actions.arm_action = actions.RateLimitedJointPositionActionCfg(
             asset_name="robot",
             joint_names=["l_aj_[1-7]"],
             scale=0.5,
             use_default_offset=True,
+            rate_limit=P.ARM_TARGET_RATE_LIMIT,
         )
         # ⚠ gripper_2 는 USD PhysX mimic 이라 지령 대상에서 뺀다. BinaryJointPositionAction 은
         #   joint_names 가 하나라도 안 풀리면 ValueError 로 즉사하므로 정규식이 아니라 정확한
