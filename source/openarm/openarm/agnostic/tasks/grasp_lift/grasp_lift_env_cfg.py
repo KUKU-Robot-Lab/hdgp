@@ -123,7 +123,9 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     # min_frac 0.15 = level 0 에서도 컵이 테이블에 앉아 마찰로 고정되게(완전 무중력이면
     # 수직항력 0 → 부유 표류. probe 실측: 120스텝에 컵이 100mm 떠다님).
     gravity_min_frac: float = 0.15
-    # 스폰 xy 반경: 초기 → 최종 보간
+    # 스폰 xy 반경: 초기 → 최종 보간.
+    # ★final 은 프로필 스폰 중심 기준 박스 전체가 "홈 팔 quiet 영역" 안이어야 한다
+    #   (probe_spawn_map/probe_solve_v1_home 실측 — 관통은 링크 원점 거리로 안 보임).
     spawn_range_initial: float = 0.02
     spawn_range_final: float = 0.08
 

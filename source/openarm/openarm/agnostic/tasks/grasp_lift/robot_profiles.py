@@ -84,12 +84,14 @@ TESOLLO_RIGHT = RobotProfile(
     contact_group_b=("index", "middle", "ring", "pinky"),
     fingertip_bodies=tuple(f"r_hl_{f}_tip" for f in _FINGERS),
     init_joint_pos={
-        # 팔: 스폰 박스 위 pre-grasp 홈 (palm ≈ (0.31, -0.25, 0.49), IK 실측 08.20).
-        # ★구 grasp_sensor 홈(0.5,0.1,0.4,0.6,-0.2,0,0)은 sensor_rl 자산에서 손 메시가
-        #   스폰 박스를 점유해 컵을 리셋 즉시 밀어냈다(링크 원점 거리로는 안 보임 —
-        #   probe_spawn_overlap/probe_home_retreat 실측, 스폰 박스 ±0.08 전 9점 quiet 검증).
-        "r_aj_1": 0.097, "r_aj_2": -0.134, "r_aj_3": 0.378, "r_aj_4": 1.864,
-        "r_aj_5": -0.206, "r_aj_6": 0.103, "r_aj_7": -0.793,
+        # 팔: grasp_v1 의 실제 런타임 고정 홈 = reset_home_palm_pose
+        #   (0.28,-0.38,0.42 / ez90·ey0·ex90) 를 sensor_rl 에서 IK 역산한 관절값
+        #   (probe_solve_v1_home 08.20: 오차 2.2mm/0.6°, 손끝 z 0.37~0.44 테이블 위).
+        # ★grasp_v1 의 cfg init joint 값(0.5,0.1,...)을 복사하면 안 된다 — 그 값은
+        #   시작 시 IK 로 덮어써지는 자리표시자이고, sensor_rl 에선 손이 스폰 박스를
+        #   점유해 컵을 리셋 즉시 밀어낸다(팔 홈은 관절값이 아니라 palm 포즈가 정의).
+        "r_aj_1": 0.0380, "r_aj_2": 0.4012, "r_aj_3": 0.6015, "r_aj_4": 0.9643,
+        "r_aj_5": 0.0294, "r_aj_6": 0.7060, "r_aj_7": 0.4213,
         # 손: 엄지 대향 + 나머지 폄
         "r_hj_thumb_1": 0.0, "r_hj_thumb_2": -1.57, "r_hj_thumb_3": -0.5, "r_hj_thumb_4": 0.0,
         **{f"r_hj_{f}_{j}": 0.0 for f in ("index", "middle", "ring", "pinky") for j in (1, 2, 3, 4)},
@@ -109,6 +111,7 @@ TESOLLO_RIGHT = RobotProfile(
         "left_gripper":       dict(joint_names_expr=["l_hj_gripper_[1-2]"], stiffness=400.0, damping=80.0),
         "head":               dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
     },
+    # grasp_v1 원좌표. palm-pose 홈 기준 x0.22~0.38 × y-0.30~-0.10 전 격자 quiet 실측.
     object_spawn_center=(0.30, -0.20),
     object_spawn_z=0.297,
 )
