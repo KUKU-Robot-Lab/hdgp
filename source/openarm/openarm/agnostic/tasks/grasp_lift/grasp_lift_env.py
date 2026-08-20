@@ -279,6 +279,20 @@ class GraspLiftEnv(DirectRLEnv):
         goal_dist = torch.norm(obj_pos - self.goal_pos, dim=-1)
         self._goal_reached_now = goal_dist < float(self.cfg.success_pos_tolerance)
 
+        # ---- 떨어진 컵 즉시 리스폰 (2026-08-20, agn_test3 ep3000 개입) -------------
+        # 스텝의 25%가 "컵이 바닥에 있는 죽은 시간"(fell_rate 0.25, height_delta -76mm)
+        # 이라 접근·접촉 연습 밀도가 3/4 로 깎였다. 종료(회피 유인 학습, agn_test2)도
+        # 방치(죽은 시간, agn_test3)도 아닌 세 번째 선택지: 컵만 스폰 위치로 되돌린다
+        # (로봇·에피소드·goal 유지). 보상은 위에서 떨어진 위치 기준으로 이미 계산됐다.
+        _fell = obj_pos[:, 2] < float(self.cfg.object_min_z)
+        if _fell.any():
+            _ids = _fell.nonzero(as_tuple=False).squeeze(-1)
+            _root = torch.zeros(len(_ids), 13, device=self.device)
+            _root[:, :3] = self.object_spawn_pos[_ids] + self.scene.env_origins[_ids]
+            _root[:, 3] = 1.0
+            self.object.write_root_state_to_sim(_root, env_ids=_ids)
+        self.extras["task/respawn_rate"] = _fell.float().mean()
+
         # ---- 로깅 ----
         for k, v in terms.items():
             self.extras[f"reward/{k}"] = v.mean()
