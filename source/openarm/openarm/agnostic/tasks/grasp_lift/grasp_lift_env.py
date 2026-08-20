@@ -148,7 +148,10 @@ class GraspLiftEnv(DirectRLEnv):
                 self.scene.sensors[f"contact_{finger}_{body}"] = s
             self._finger_sensors[finger] = sensors
 
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        # env.usd 의 platform 상면이 정확히 z=0 이라 기본 지면(z=0)과 겹친다 —
+        # 바닥은 env.usd base_plate(z -0.025~-0.015)가 담당, 지면은 시각 배경으로 내린다.
+        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(),
+                           translation=(0.0, 0.0, -0.05))
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
