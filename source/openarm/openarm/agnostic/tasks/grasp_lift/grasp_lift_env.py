@@ -25,6 +25,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import (
     combine_frame_transforms,
     matrix_from_quat,
+    quat_apply,
     quat_inv,
     skew_symmetric_matrix,
     subtract_frame_transforms,
@@ -293,7 +294,14 @@ class GraspLiftEnv(DirectRLEnv):
             - self.scene.env_origins[:, None, :]
         )
         contact = self._contact_forces()
+        # 물체 기울기: 로컬 z 축과 월드 z 축 사이각(도)
+        _obj_z = quat_apply(
+            self.object.data.root_quat_w,
+            torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, 3),
+        )
+        tilt_deg = torch.rad2deg(torch.acos(_obj_z[:, 2].clamp(-1.0, 1.0)))
         total, terms, gate = compute_grasp_lift_rewards(
+            object_tilt_deg=tilt_deg,
             fingertip_pos=tips,
             object_pos=obj_pos,
             goal_pos=self.goal_pos,
@@ -319,7 +327,10 @@ class GraspLiftEnv(DirectRLEnv):
         # 이라 접근·접촉 연습 밀도가 3/4 로 깎였다. 종료(회피 유인 학습, agn_test2)도
         # 방치(죽은 시간, agn_test3)도 아닌 세 번째 선택지: 컵만 스폰 위치로 되돌린다
         # (로봇·에피소드·goal 유지). 보상은 위에서 떨어진 위치 기준으로 이미 계산됐다.
-        _fell = obj_pos[:, 2] < float(self.cfg.object_min_z)
+        # 전도(>tilt_respawn_deg)도 같은 처리 — 쓰러진 컵을 눌러 게이트만 채우는
+        # 국소최적(agn_test11 ep3000 영상)을 끊는다.
+        _tipped = tilt_deg > float(self.cfg.tilt_respawn_deg)
+        _fell = (obj_pos[:, 2] < float(self.cfg.object_min_z)) | _tipped
         if _fell.any():
             _ids = _fell.nonzero(as_tuple=False).squeeze(-1)
             _root = torch.zeros(len(_ids), 13, device=self.device)
@@ -327,6 +338,8 @@ class GraspLiftEnv(DirectRLEnv):
             _root[:, 3] = 1.0
             self.object.write_root_state_to_sim(_root, env_ids=_ids)
         self.extras["task/respawn_rate"] = _fell.float().mean()
+        self.extras["task/object_tilt_deg"] = tilt_deg.mean()
+        self.extras["task/tipped_rate"] = _tipped.float().mean()
 
         # ---- 로깅 ----
         for k, v in terms.items():

@@ -116,6 +116,11 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     tracking_std: float = 0.1
     success_weight: float = 10.0
     success_std: float = 0.05
+    # 전도 페널티 — 20° 여유대(정상 파지 흔들림 무징계) 초과분 비례, 최대 −0.5.
+    # 60° 초과 = 사실상 넘어짐 → 낙하와 동일하게 컵만 리스폰(죽은 시간 방지).
+    tilt_penalty_weight: float = -0.5
+    tilt_free_deg: float = 20.0
+    tilt_respawn_deg: float = 60.0
     action_l2_weight: float = -0.005
     action_rate_l2_weight: float = -0.005
     # 관절한계 위반 종료 페널티 (diff IK 는 관절한계 무방비 → 종료+페널티로 처리)

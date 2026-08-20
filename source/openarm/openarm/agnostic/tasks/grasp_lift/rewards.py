@@ -64,6 +64,17 @@ def success_reward(object_pos: torch.Tensor, goal_pos: torch.Tensor, pos_std: fl
     return ((1.0 - torch.tanh(d / pos_std)) ** 2) * gate.float()
 
 
+def tilt_penalty(object_tilt_deg: torch.Tensor, free_deg: float) -> torch.Tensor:
+    """전도 페널티: free_deg 초과분을 90°로 정규화한 값(0~1).
+
+    ★agn_test11 ep3000: 접근 중 컵을 넘어뜨린 뒤 **쓰러진 컵을 테이블에 눌러** 접촉
+    게이트 0.9 를 만족시키고 리프트는 영영 못 하는 상태로 수렴했다. 기울기를 보는
+    항이 하나도 없어 "넘어뜨려도 손해가 없었다". free_deg 여유대는 정상 파지 중의
+    자연스러운 흔들림을 벌하지 않기 위한 것.
+    """
+    return ((object_tilt_deg - free_deg).clamp(min=0.0) / 90.0).clamp(0.0, 1.0)
+
+
 def action_l2_clamped(actions: torch.Tensor, clamp: float = 1.0) -> torch.Tensor:
     return torch.sum(actions**2, dim=-1).clamp(max=clamp)
 
@@ -82,6 +93,7 @@ def compute_grasp_lift_rewards(
     group_b_force: torch.Tensor,      # (N, Fb)
     group_a_tip_idx: torch.Tensor,    # fingertip_pos 안에서의 A 그룹 인덱스
     group_b_tip_idx: torch.Tensor,
+    object_tilt_deg: torch.Tensor,    # (N,) 물체 z축과 월드 z축 사이각
     actions: torch.Tensor,
     prev_actions: torch.Tensor,
     cfg: object,
@@ -99,6 +111,8 @@ def compute_grasp_lift_rewards(
         * tracking_reward(object_pos, goal_pos, float(cfg.tracking_std), g),
         "success": float(cfg.success_weight)
         * success_reward(object_pos, goal_pos, float(cfg.success_std), g),
+        "tilt_penalty": float(cfg.tilt_penalty_weight)
+        * tilt_penalty(object_tilt_deg, float(cfg.tilt_free_deg)),
         "action_l2": float(cfg.action_l2_weight) * action_l2_clamped(actions),
         "action_rate_l2": float(cfg.action_rate_l2_weight)
         * action_rate_l2_clamped(actions, prev_actions),
