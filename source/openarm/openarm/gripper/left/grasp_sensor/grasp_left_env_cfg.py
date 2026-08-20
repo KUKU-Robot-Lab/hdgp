@@ -326,6 +326,12 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   끝내는 것이 최적**이 된다. 실제로 그렇게 죽였다(test6/test7):
         #       lifting 6.14 → 0.0000 / 에피소드 130 → 13 / 총보상 +34.9 → −0.46
         #   별도 term 이라 TFEvents 에 로깅돼 자세 개선을 학습 중 관측할 수 있다.
+        # ── 평활화 페널티 커리큘럼 시점만 뒤로 민다 ─────────────────
+        # 항도 weight 도 레퍼런스 그대로다. **켜는 시점**만 옮긴다. 근거는 프리셋
+        # `ACTION_PENALTY_CURRICULUM_STEPS` 주석에 test15 붕괴 로그와 함께 있다.
+        for _curr in (self.curriculum.action_rate, self.curriculum.joint_vel):
+            _curr.params["num_steps"] = P.ACTION_PENALTY_CURRICULUM_STEPS
+
         # ── 액션 jerk 페널티는 **배선하지 않는다** ──────────────────
         # ★한때 넣었다가 뺐다. 근거: 그 처방은 test12 의 고주파 채터링(방향 반전 68.6%,
         #   2차 차분 > 1차)을 보고 쓴 것인데, test13 에서 그 증상이 사라졌다(반전 19.9%).

@@ -506,14 +506,18 @@ def test_smoothing_is_the_reference_curriculum_not_an_extra_term():
         assert f"self.rewards.{name} = " not in src, f"{name} 은 레퍼런스 것을 그대로 쓴다"
 
 
-def test_max_epochs_outlives_the_smoothing_curriculum():
-    """★커리큘럼이 강화되는 시점보다 학습이 훨씬 길어야 한다.
+def test_penalty_curriculum_fires_after_lifting_and_leaves_room_to_act():
+    """★평활화 페널티는 **lifting 이 자리를 잡은 뒤에** 켜져야 하고, 켠 뒤에도 충분히 돌아야 한다.
 
-    커리큘럼 onset = 10000 env-step / horizon_length = epoch 417. test13 은 1500 에서
-    멈췄고, 그 시점에도 도약이 매 50 epoch 마다 계속 줄고 있었다. onset 의 몇 배는 돌려야
-    평활화가 수렴한다. 이 계약이 없으면 다음에도 조용히 중간에 잘린다.
+    test15 는 레퍼런스 onset(10000 step = epoch 417)에서 붕괴했다. 액션 변화율 상한 때문에
+    초기 탐색이 느려져 그 시점 lifting 이 1.19 뿐이었고, 페널티가 1000 배가 되자 총보상이
+    음수(+6.80 → −10.99)가 됐다. 그러자 최적해가 "에피소드를 빨리 끝내기" 즉 **컵을 쳐서
+    떨어뜨리기**가 됐다(epoch 500 에 drop 100% · ep_len 13).
+
+    두 방향 모두 계약이 필요하다:
+      · 너무 이르면 → 위처럼 부호가 뒤집혀 자살 전략으로 붕괴한다.
+      · 너무 늦으면 → 켜고 나서 평활화할 시간이 없다.
     """
-    import re
     import pathlib as _pl
 
     yaml_path = (
@@ -522,18 +526,17 @@ def test_max_epochs_outlives_the_smoothing_curriculum():
     text = yaml_path.read_text()
     max_epochs = int(re.search(r"max_epochs:\s*(\d+)", text).group(1))
     horizon = int(re.search(r"horizon_length:\s*(\d+)", text).group(1))
-    # onset 은 **상속받은** 레퍼런스 커리큘럼에서 직접 읽는다. 리터럴을 박아두면
-    # 레퍼런스가 바뀐 뒤에도 통과해 계약이 거짓이 된다.
-    if not _ISAACLAB_LIFT_ENV_CFG.is_file():
-        pytest.skip("IsaacLab 소스 트리를 찾을 수 없다")
-    ref = _ISAACLAB_LIFT_ENV_CFG.read_text()
-    onset_steps = int(
-        re.search(r'"term_name":\s*"action_rate".*?"num_steps":\s*(\d+)', ref, re.S).group(1)
+    onset_epoch = P.ACTION_PENALTY_CURRICULUM_STEPS / horizon
+
+    # 레퍼런스 onset(epoch 417)보다 확실히 뒤여야 한다 — 거기서 실제로 붕괴했다.
+    assert onset_epoch > 1000, f"onset epoch {onset_epoch:.0f} 는 lifting 학습 전이다"
+    # 켠 뒤에 평활화가 일할 epoch 이 남아야 한다.
+    assert max_epochs - onset_epoch >= 2000, (
+        f"onset(epoch {onset_epoch:.0f}) 이후 남는 epoch 이 {max_epochs - onset_epoch:.0f} 뿐"
     )
-    onset_epoch = onset_steps / horizon
-    assert max_epochs >= 5 * onset_epoch, (
-        f"max_epochs {max_epochs} 가 커리큘럼 onset(epoch {onset_epoch:.0f})의 5 배 미만"
-    )
+    # env_cfg 가 실제로 이 상수로 덮어써야 한다(프리셋만 바꾸고 배선을 잊는 것을 막는다).
+    src = _cfg_source()
+    assert 'params["num_steps"] = P.ACTION_PENALTY_CURRICULUM_STEPS' in src
 
 
 def test_lift_gate_requires_holding_the_cup():
