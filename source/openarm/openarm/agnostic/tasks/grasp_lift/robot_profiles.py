@@ -113,7 +113,9 @@ TESOLLO_RIGHT = RobotProfile(
     },
     # grasp_v1 원좌표. palm-pose 홈 기준 x0.22~0.38 × y-0.30~-0.10 전 격자 quiet 실측.
     object_spawn_center=(0.30, -0.20),
-    object_spawn_z=0.297,
+    # env.usd 상면 0.200 + cup_big 원점-바닥 0.0773 + 5mm 패딩 (낙하 정착 실측 0.2773).
+    # ★스폰을 낮게 잡으면 1cm 상판을 터널링한다(z0.24 실측) — 정착+5mm 유지.
+    object_spawn_z=0.282,
 )
 
 

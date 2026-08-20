@@ -136,12 +136,13 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     arm_joint_limit_frac: float = 0.99
 
     # ---- 씬 --------------------------------------------------------------------------
+    # 실기 환경 USD (테이블 상면 z 0.200, 기둥/받침/바닥판 포함 전부 충돌체).
+    # 원점을 로봇 base link 원점(env 원점)에 그대로 붙인다 — 사용자 지정 08.20.
     table_cfg: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Table",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5725, 0.003, 0.2], rot=[1.0, 0.0, 0.0, 0.0]),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.0, 0.0, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "scene_objects/table.usd"),
-            rigid_props=RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+            usd_path=_os.path.join(_ASSETS_DIR, "env/usd/env.usd"),
         ),
     )
     # 단일 물체(cup_big, 질량 0.134kg = pour 실컵)로 시작. 다물체는 Phase 3.

@@ -119,11 +119,16 @@ class GraspLiftEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.table = RigidObject(self.cfg.table_cfg)
         self.object = RigidObject(self.cfg.object_cfg)
         self.scene.articulations["robot"] = self.robot
-        self.scene.rigid_objects["table"] = self.table
         self.scene.rigid_objects["object"] = self.object
+        # 정적 환경 USD (env.usd: RigidBodyAPI 없음, 전 메시 충돌체) —
+        # env_0 에 spawn 하면 clone_environments 가 복제한다.
+        tbl = self.cfg.table_cfg
+        tbl.spawn.func(
+            "/World/envs/env_0/Table", tbl.spawn,
+            translation=tuple(tbl.init_state.pos), orientation=tuple(tbl.init_state.rot),
+        )
 
         # 손가락별 접촉 센서 — body 마다 개별 생성(다중 body 단일 센서는 force_matrix_w=0,
         # grasp_sensor 실측 함정). Object-only 필터.
