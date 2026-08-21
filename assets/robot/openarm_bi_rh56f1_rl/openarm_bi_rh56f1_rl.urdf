@@ -163,7 +163,7 @@
     <collision name="openarm_right_link7_collision">
       <origin rpy="0.0 0.0 0.0" xyz="0.0 -0.0 -0.5585" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/openarm_description/meshes/arm/v10/collision/link7_without_mat2_mat3_components00_03.stl" scale="0.001 0.001 0.001" />
+        <mesh filename="file:///home/user/rl_ws/urdf/generated/rl/meshes/link7_flange_cut.stl" scale="0.001 0.001 0.001" />
       </geometry>
     </collision>
     <inertial>
@@ -209,12 +209,6 @@
         <color rgba="0.866666666666667 0.866666666666667 0.890196078431372 1" />
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/plam_1.STL" />
-      </geometry>
-    </collision>
   </link>
   <link name="r_hl_palm_2">
     <inertial>
@@ -298,9 +292,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.000254582 0.00624817 -0.00333607" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_thumb_1.STL" />
+        <box size="0.00758285 0.0205866 0.0153284" />
       </geometry>
     </collision>
   </link>
@@ -320,9 +314,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.0242392 0.0143017 0.00480001" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_thumb_2.STL" />
+        <box size="0.0544741 0.0620779 0.0222501" />
       </geometry>
     </collision>
   </link>
@@ -342,9 +336,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00983497 0.00101741 0.00799211" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_thumb_3.STL" />
+        <box size="0.0340982 0.0371117 0.0202091" />
       </geometry>
     </collision>
   </link>
@@ -364,9 +358,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00919005 0.00853341 0.00679997" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_thumb_4.STL" />
+        <box size="0.0243792 0.0336562 0.0162755" />
       </geometry>
     </collision>
   </link>
@@ -386,9 +380,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00539884 0.000964061 -0.0104136" rpy="-0 1.5708 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/thumb_force_sensor.STL" />
+        <cylinder radius="0.00856687" length="0.0364273" />
       </geometry>
     </collision>
   </link>
@@ -408,9 +402,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="5.69876e-05 -0.011408 -0.014586" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/thumb_tip.STL" />
+        <box size="0.0162752 0.0297899 0.0297747" />
       </geometry>
     </collision>
   </link>
@@ -430,9 +424,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00100374 0.012718 0.00699999" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_index_1.STL" />
+        <cylinder radius="0.00806266" length="0.0463133" />
       </geometry>
     </collision>
   </link>
@@ -452,9 +446,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00289016 0.0161101 0.00599954" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_index_2.STL" />
+        <cylinder radius="0.0072377" length="0.0502971" />
       </geometry>
     </collision>
   </link>
@@ -474,9 +468,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.000600554 -0.0134634 -0.00521611" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/index_force_sensor.STL" />
+        <cylinder radius="0.0079409" length="0.0507241" />
       </geometry>
     </collision>
   </link>
@@ -496,9 +490,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00136382 -0.0203801 -0.014362" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/index_tip.STL" />
+        <box size="0.0157954 0.0456248 0.0293267" />
       </geometry>
     </collision>
   </link>
@@ -518,9 +512,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00100372 0.012718 0.007" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_middle_1.STL" />
+        <cylinder radius="0.00806266" length="0.0463133" />
       </geometry>
     </collision>
   </link>
@@ -540,9 +534,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00240716 0.0175762 0.00609936" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_middle_2.STL" />
+        <cylinder radius="0.00723557" length="0.0532292" />
       </geometry>
     </collision>
   </link>
@@ -562,9 +556,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.000599191 -0.0149269 -0.00505491" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/middle_force_sensor.STL" />
+        <cylinder radius="0.0072913" length="0.0536642" />
       </geometry>
     </collision>
   </link>
@@ -584,9 +578,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-2.10984e-05 -0.0217812 -0.0149531" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/middle_tip.STL" />
+        <box size="0.0144707 0.0483447 0.0305088" />
       </geometry>
     </collision>
   </link>
@@ -606,9 +600,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00100372 0.012718 0.00700001" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_ring_1.STL" />
+        <cylinder radius="0.00806266" length="0.0463133" />
       </geometry>
     </collision>
   </link>
@@ -628,9 +622,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.0028902 0.0161101 0.00599956" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_ring_2.STL" />
+        <cylinder radius="0.0072377" length="0.0502971" />
       </geometry>
     </collision>
   </link>
@@ -650,9 +644,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00131244 -0.0134423 -0.00521611" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/ring_force_sensor.STL" />
+        <cylinder radius="0.00803594" length="0.0507444" />
       </geometry>
     </collision>
   </link>
@@ -672,9 +666,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00116387 -0.0203841 -0.014362" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/ring_tip.STL" />
+        <box size="0.0155468 0.045617 0.0293267" />
       </geometry>
     </collision>
   </link>
@@ -694,9 +688,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00100376 0.012718 0.007" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_little_1.STL" />
+        <cylinder radius="0.00806266" length="0.0463133" />
       </geometry>
     </collision>
   </link>
@@ -716,9 +710,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00278276 0.0125868 0.00599985" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/right_little_2.STL" />
+        <cylinder radius="0.00716796" length="0.0432787" />
       </geometry>
     </collision>
   </link>
@@ -738,9 +732,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.001569 -0.00997403 -0.00555481" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/little_force_sensor.STL" />
+        <cylinder radius="0.00797037" length="0.043889" />
       </geometry>
     </collision>
   </link>
@@ -760,9 +754,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.0017548 -0.0171883 -0.0129312" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_R/meshes/little_tip.STL" />
+        <box size="0.0161457 0.0394019 0.026465" />
       </geometry>
     </collision>
   </link>
@@ -909,7 +903,7 @@
     <collision name="openarm_left_link7_collision">
       <origin rpy="0.0 0.0 0.0" xyz="0.0 -0.0 -0.5585" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/openarm_description/meshes/arm/v10/collision/link7_without_mat2_mat3_components00_03.stl" scale="0.001 -0.001 0.001" />
+        <mesh filename="file:///home/user/rl_ws/urdf/generated/rl/meshes/link7_flange_cut.stl" scale="0.001 -0.001 0.001" />
       </geometry>
     </collision>
     <inertial>
@@ -955,12 +949,6 @@
         <color rgba="1 1 1 1" />
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/plam_1.STL" />
-      </geometry>
-    </collision>
   </link>
   <link name="l_hl_palm_2">
     <inertial>
@@ -1044,9 +1032,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.000242088 -0.00626857 -0.00333608" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_thumb_1.STL" />
+        <box size="0.00761364 0.0206182 0.0153284" />
       </geometry>
     </collision>
   </link>
@@ -1066,9 +1054,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.0261963 0.0116891 0.00479999" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_thumb_2.STL" />
+        <box size="0.0583821 0.0598939 0.0222501" />
       </geometry>
     </collision>
   </link>
@@ -1088,9 +1076,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00983497 0.00101643 0.00799214" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_thumb_3.STL" />
+        <box size="0.0340982 0.0371097 0.0202092" />
       </geometry>
     </collision>
   </link>
@@ -1110,9 +1098,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00919005 0.00853079 0.00679997" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_thumb_4.STL" />
+        <box size="0.0243792 0.0336509 0.0162755" />
       </geometry>
     </collision>
   </link>
@@ -1132,9 +1120,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00539883 0.000964277 -0.0104156" rpy="-0 1.5708 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/thumb_force_sensor.STL" />
+        <cylinder radius="0.00856693" length="0.0364273" />
       </geometry>
     </collision>
   </link>
@@ -1154,9 +1142,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.000103805 -0.0107341 -0.0148868" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/thumb_tip.STL" />
+        <box size="0.0162751 0.0297926 0.0297745" />
       </geometry>
     </collision>
   </link>
@@ -1176,9 +1164,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00100374 0.012718 -0.007" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_index_1.STL" />
+        <cylinder radius="0.00806266" length="0.0463133" />
       </geometry>
     </collision>
   </link>
@@ -1198,9 +1186,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.0028901 0.0161101 -0.00599983" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_index_2.STL" />
+        <cylinder radius="0.00723799" length="0.0502971" />
       </geometry>
     </collision>
   </link>
@@ -1220,9 +1208,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00142766 -0.013442 -0.00521594" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/index_force_sensor.STL" />
+        <cylinder radius="0.00817662" length="0.0507537" />
       </geometry>
     </collision>
   </link>
@@ -1242,9 +1230,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00170082 -0.0203829 -0.0143284" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/index_tip.STL" />
+        <box size="0.0160206 0.0456063 0.0292686" />
       </geometry>
     </collision>
   </link>
@@ -1264,9 +1252,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00100372 0.012718 -0.007" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_middle_1.STL" />
+        <cylinder radius="0.00806266" length="0.0463133" />
       </geometry>
     </collision>
   </link>
@@ -1286,9 +1274,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00240716 0.0175761 -0.00609978" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_middle_2.STL" />
+        <cylinder radius="0.00723601" length="0.0532292" />
       </geometry>
     </collision>
   </link>
@@ -1308,9 +1296,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.000599163 -0.0149269 -0.00505491" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/middle_force_sensor.STL" />
+        <cylinder radius="0.00729131" length="0.0536642" />
       </geometry>
     </collision>
   </link>
@@ -1330,9 +1318,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-2.17301e-05 -0.0217812 -0.0149531" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/middle_tip.STL" />
+        <box size="0.014472 0.0483447 0.0305089" />
       </geometry>
     </collision>
   </link>
@@ -1352,9 +1340,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00100372 0.012718 -0.007" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_ring_1.STL" />
+        <cylinder radius="0.00806266" length="0.0463133" />
       </geometry>
     </collision>
   </link>
@@ -1374,9 +1362,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00289013 0.0161101 -0.00599983" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_ring_2.STL" />
+        <cylinder radius="0.00723799" length="0.0502971" />
       </geometry>
     </collision>
   </link>
@@ -1396,9 +1384,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.000380934 -0.0134564 -0.00521594" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/ring_force_sensor.STL" />
+        <cylinder radius="0.00770788" length="0.0507024" />
       </geometry>
     </collision>
   </link>
@@ -1418,9 +1406,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.0011947 -0.020382 -0.0143617" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/ring_tip.STL" />
+        <box size="0.015568 0.0456113 0.0293262" />
       </geometry>
     </collision>
   </link>
@@ -1440,9 +1428,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="0.00100374 0.012718 -0.007" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_little_1.STL" />
+        <cylinder radius="0.00806266" length="0.0463133" />
       </geometry>
     </collision>
   </link>
@@ -1462,9 +1450,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00278273 0.0125868 -0.00635816" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/left_little_2.STL" />
+        <cylinder radius="0.00716796" length="0.0432787" />
       </geometry>
     </collision>
   </link>
@@ -1484,9 +1472,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.000667938 -0.0100231 -0.00556022" rpy="1.5708 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/little_force_sensor.STL" />
+        <cylinder radius="0.00795973" length="0.0438574" />
       </geometry>
     </collision>
   </link>
@@ -1506,9 +1494,9 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
+      <origin xyz="-0.00178561 -0.0171851 -0.0129282" rpy="0 -0 0" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/RH56F1/RH56F1_L/meshes/little_tip.STL" />
+        <box size="0.0161707 0.0393926 0.0264591" />
       </geometry>
     </collision>
   </link>

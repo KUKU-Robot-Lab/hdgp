@@ -163,7 +163,7 @@
     <collision name="openarm_right_link7_collision">
       <origin rpy="0.0 0.0 0.0" xyz="0.0 -0.0 -0.5585" />
       <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/vendor/openarm_description/meshes/arm/v10/collision/link7_without_mat2_mat3_components00_03.stl" scale="0.001 0.001 0.001" />
+        <mesh filename="file:///home/user/rl_ws/urdf/generated/rl/meshes/link7_flange_cut.stl" scale="0.001 0.001 0.001" />
       </geometry>
     </collision>
     <inertial>
@@ -184,11 +184,6 @@
         <mesh filename="file:///home/user/rl_ws/urdf/install/dg_description/share/dg_description/meshes/dg5f_right/visual/rl_dg_mount.dae" />
       </geometry>
     </visual>
-    <collision>
-      <geometry>
-        <mesh filename="file:///home/user/rl_ws/urdf/install/dg_description/share/dg_description/meshes/dg5f_right/collision/rl_dg_mount_c.STL" />
-      </geometry>
-    </collision>
   </link>
   <link name="r_hl_base">
     <inertial>
