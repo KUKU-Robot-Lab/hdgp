@@ -165,9 +165,14 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     palm_slew_rot_deg: float = 2.0
     symmetric_action_scale: bool = True
     # source palm 자세 박스: 중심 = (sign·90, 0, sign·90)° + 아래 비대칭 오프셋.
-    # ★deep tilt(±45° 로는 표현 불가)용 확장. **P3 도달성 probe 로 실측 후 확정** —
-    #   현 값은 pour_v1 deep-tilt(110~135°)를 담기 위한 후보다.
-    pose_offset_lo_deg: tuple = (-45.0, -45.0, -150.0)   # (ez, ey, ex)
+    # ★순서는 env 배선대로 **(ex=roll, ey=pitch, ez=yaw)** — euler_xyz 순.
+    #   (구 값은 (ez,ey,ex) 로 착각해 -150 을 yaw 에 놨었다. yaw 는 세계 z 회전이라
+    #    컵 tilt 기여 0°인 데다 -150° 추종도 불가(오차 43.6°/108mm) — P3 실측.)
+    # P3 probe_pour_tilt_reachability 08.22 실측(roll 에 -150, 홈 앵커·중력·self-coll ON):
+    #   roll 스윕 tilt 달성 60/90/110→오차 0.4/0.5/1.5° · 130→123.5° · 150→137.9°(단조)
+    #   깊 tilt+z상승 0.3 조합 115° 달성 · yaw ±45/pitch ±45 정밀 추종.
+    #   → tilt_target 110° 는 오차 1.5° 로 여유, 최대 달성 137.9° ≥ 135°.
+    pose_offset_lo_deg: tuple = (-150.0, -45.0, -45.0)   # (ex, ey, ez)
     pose_offset_hi_deg: tuple = (45.0, 45.0, 45.0)
     # receiver 자세는 warm 측정값 고정(직립 유지) — 액션 없음.
 

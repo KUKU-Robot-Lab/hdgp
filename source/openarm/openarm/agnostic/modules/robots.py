@@ -387,9 +387,13 @@ BIS_RIGHT = _tesollo_profile(
 BIS_LEFT = _tesollo_profile(
     asset=TESOLLO_BI_S, side="l",
     fabric_dir="openarm_tesollo_bi_s_left", fabric_class="OpenArmTeoslloLeftPoseFabric",
-    spawn_center=_SPAWN_L, box=_BOX_L,
+    spawn_center=_SPAWN_L, box=_BOX_L, box_verified=True,
     notes=(_HOME_NOTE, _MIRROR_NOTE,
-           "좌측 fabric URDF 는 FK 교차검증 기록이 없다 — probe 4 대상."),
+           "fabric URDF FK 교차검증 08.22: 오차 max 0.002mm "
+           "(probe_fabric_fk_crosscheck, 6400표본·랜덤 자세) — 우팔 기록과 동급.",
+           "probe_workspace_reach 08.22 (5^3·180스텝·self-coll·중력 ON) PASS: "
+           "<30mm 87.2% · 중앙값 0.6mm · p90 34.9mm · 컵 15cm 이내 9.9mm "
+           "(우팔 90.4%/8.4mm/29.4mm/8.7mm 과 동급 — 미달 영역은 z0.34 하단 모서리)."),
 )
 BI_RIGHT = _tesollo_profile(
     asset=TESOLLO_BI, side="r",
