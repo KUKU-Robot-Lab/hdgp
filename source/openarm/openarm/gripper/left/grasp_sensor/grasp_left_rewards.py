@@ -286,6 +286,52 @@ class ActionJerkL2(ManagerTermBase):
         return jerk
 
 
+def _jaw_geometry(
+    env: "ManagerBasedRLEnv",
+    along_std: float,
+    lateral_std: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    robot_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+):
+    """턱 ↔ 컵 기하 (align, enclose). 두 보상 항이 **같은 기하**를 쓰도록 여기 모은다.
+
+    · align   = 평균( 턱 축 방향 정렬, 턱 축 직선까지의 근접 )  — 곱하지 않는다
+    · enclose = 두 손가락이 컵 축 **양쪽**에 있는가 (0~1)
+
+    ★기준선은 **손가락 패드 중앙**이다. 손가락 강체 원점은 base z=+15 mm 인데 성공 파지의
+      컵 축은 z=+46.9 mm 다(test17 13,058 샘플 중앙값). 원점 그대로 쓰면 보상이
+      "컵을 손바닥까지 32 mm 더 밀어넣어라"를 가리킨다.
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+
+    fingers = robot.data.body_pos_w[:, robot_cfg.body_ids, :]      # (N, 2, 3)
+    # 손가락은 base 의 y 로만 미끄러지므로 손가락 자세 = base 자세다(접근축을 여기서 얻는다).
+    approach = matrix_from_quat(robot.data.body_quat_w[:, robot_cfg.body_ids[0], :])[:, :, 2]
+    fingers = fingers + (approach * pad_offset).unsqueeze(1)
+    p_l, p_r = fingers[:, 0, :], fingers[:, 1, :]
+    mid = 0.5 * (p_l + p_r)
+    jaw = p_r - p_l
+    u = jaw / torch.norm(jaw, dim=-1, keepdim=True).clamp(min=1e-6)
+
+    cup_z = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]
+    to_mid = mid - obj.data.root_pos_w
+    cup_pt = obj.data.root_pos_w + cup_z * (to_mid * cup_z).sum(-1, keepdim=True)
+
+    d = cup_pt - mid
+    along = (d * u).sum(-1).abs()
+    lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
+    align = 0.5 * (1.0 - torch.tanh(along / along_std)) + 0.5 * (
+        1.0 - torch.tanh(lateral / lateral_std)
+    )
+    s_l = ((cup_pt - p_l) * u).sum(-1)
+    s_r = ((p_r - cup_pt) * u).sum(-1)
+    enclose = (torch.minimum(s_l, s_r) / enclose_half_width).clamp(0.0, 1.0)
+    return align, enclose
+
+
 def cup_between_jaws(
     env: "ManagerBasedRLEnv",
     along_std: float,
@@ -298,63 +344,55 @@ def cup_between_jaws(
 ) -> torch.Tensor:
     """**컵이 두 턱 사이에 들어왔는가** (0~1). 리프트와 무관한 전제조건 보상.
 
-    ★왜 필요한가 — 08.22 fab_test1 이 실증했다. 684 epoch 동안 `lifting_object` 가 정확히
-      0 이었고, 정책을 결정론으로 재보니:
-          턱축까지 수직거리 최선 **36.5 mm**(컵 반경 29~44 mm 와 거의 같다)
-          그리퍼 개도 평균 **3.1 mm** · 거의 닫힘 스텝 **95.6%** · '열기' 지령 **0.0%**
-      즉 **주먹을 쥔 채 컵 옆구리를 누르고** 있었다. 닫힌 턱에는 컵이 들어갈 자리가 없으니
-      경로가 아무리 좋아도 파지가 불가능하다.
-      성공한 test17 은 같은 자로 재면 수직거리 최선 **0.4 mm**, 개도 26.5 mm 다.
+    ★왜 필요한가 — fab_test1 실측: 개도 3.1 mm · '열기' 지령 0.0% · enclose 0.026.
+      **주먹을 쥔 채 컵 옆구리를 누르고** 있었다. 닫힌 턱에는 컵이 들어갈 자리가 없다.
+      이 항을 넣은 fab_test4 는 enclose **0.845** 로 뒤집혔다 — 항은 의도대로 작동한다.
 
-    ★왜 옛 식(straddle × closure)이 아닌가 — 그 식은 `closure = 1 − drive/open` 을 곱해
-      **닫을수록 커진다.** 주먹으로 컵을 누르는 것이 벌려 감싸는 것보다 점수가 높아,
-      관측된 실패 행동을 그대로 보상한다. closure 를 **enclose** 로 바꾼다.
-
-    구성 (셋 다 연속, 절벽 없음):
-      · along   턱 축 방향으로 컵이 두 턱의 가운데에서 벗어난 정도
-      · lateral 턱 축(직선)에서 컵 축까지의 수직거리 — 0 이면 턱 축이 컵 축을 관통
-      · enclose 두 손가락이 컵 축 **양쪽**에 있는가.
-                s_l = (컵축점 − 왼손가락)·u,  s_r = (오른손가락 − 컵축점)·u
-                둘 다 양수여야 사이에 있다. min 을 컵 반경으로 정규화해 0~1.
-
-    ★along·lateral 은 **평균**한다(곱하지 않는다). 곱하면 fab 현재 상태 품질이 0.0159 로
-      떨어져 다른 항에 묻힌다 — test10/test11 을 죽인 바로 그 구조다. 평균이면 0.170.
-    ★enclose 는 바닥값(`enclose_floor`)을 남긴다. 완전 곱셈이면 주먹 상태에서 항이 통째로
-      0 이 되어 "가서 정렬하라"는 신호까지 사라진다(= 게이트와 같아진다).
-      바닥값이 있으면 개선 경로가 단조롭다: 정렬 → 벌림 → 정밀정렬, 매 단계 값이 오른다.
+    ★enclose 는 바닥값을 남긴다. 완전 곱셈이면 주먹 상태에서 "가서 정렬하라" 신호까지
+      사라진다(= 게이트와 같아진다). 바닥값이 있으면 개선 경로가 단조롭다.
+      ⚠ 폐쇄 보상(`grip_closure_when_enclosed`)에는 **바닥값을 주지 않는다** — 거기서는
+        "감싸지 않은 폐쇄"가 정확히 0 이어야 옛 주먹 해킹이 되살아나지 않는다.
     """
-    robot: Articulation = env.scene[robot_cfg.name]
-    obj: RigidObject = env.scene[object_cfg.name]
-
-    fingers = robot.data.body_pos_w[:, robot_cfg.body_ids, :]      # (N, 2, 3)
-    # ★★기준선을 **손가락 패드 중앙**으로 옮긴다. 손가락 강체 원점은 base z=+15 mm 인데
-    #   성공 파지의 컵 축은 z=**+46.9 mm** 다(test17 13,058 샘플 중앙값). 원점 그대로 쓰면
-    #   보상이 "컵을 손바닥까지 32 mm 더 밀어넣어라"를 가리킨다 — 실제로는 박힌다.
-    #   손가락은 base 의 y 로만 미끄러지므로 손가락 자세 = base 자세다(접근축을 여기서 얻는다).
-    approach = matrix_from_quat(robot.data.body_quat_w[:, robot_cfg.body_ids[0], :])[:, :, 2]
-    fingers = fingers + (approach * pad_offset).unsqueeze(1)
-    p_l, p_r = fingers[:, 0, :], fingers[:, 1, :]
-    mid = 0.5 * (p_l + p_r)
-    jaw = p_r - p_l
-    u = jaw / torch.norm(jaw, dim=-1, keepdim=True).clamp(min=1e-6)
-
-    # 컵 축(로컬 z) 위에서 턱 중점에 가장 가까운 점.
-    cup_z = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]
-    to_mid = mid - obj.data.root_pos_w
-    cup_pt = obj.data.root_pos_w + cup_z * (to_mid * cup_z).sum(-1, keepdim=True)
-
-    d = cup_pt - mid
-    along = (d * u).sum(-1).abs()
-    lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
-    align = 0.5 * (1.0 - torch.tanh(along / along_std)) + 0.5 * (
-        1.0 - torch.tanh(lateral / lateral_std)
-    )
-
-    s_l = ((cup_pt - p_l) * u).sum(-1)
-    s_r = ((p_r - cup_pt) * u).sum(-1)
-    enclose = (torch.minimum(s_l, s_r) / enclose_half_width).clamp(0.0, 1.0)
-
+    align, enclose = _jaw_geometry(env, along_std, lateral_std, enclose_half_width,
+                                   pad_offset, robot_cfg, object_cfg)
     return align * (enclose_floor + (1.0 - enclose_floor) * enclose)
+
+
+def grip_closure_when_enclosed(
+    env: "ManagerBasedRLEnv",
+    along_std: float,
+    lateral_std: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    open_pos: float,
+    drive_joint: str,
+    robot_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """**컵을 감싼 상태에서 닫는 것**에 주는 보상 (0~1). 리프트와 무관하다.
+
+    ★★왜 필요한가 — fab_test4 실측이 정확히 이 구멍을 보여줬다:
+          enclose **0.845**(턱이 컵을 잘 감쌌다) · 개도 평균 **35.5 mm**
+          '열기' 지령 **78.0%** · 거의 닫힘 스텝 **0.0%** · 컵 최대 상승 +20.5 mm
+      턱은 제자리에 갔는데 **한 번도 닫지 않는다.** 닫는 것을 보상하는 항이 없고, 닫다가
+      컵이 밀리면 `cup_between_jaws` 를 잃으니 **닫지 않는 것이 최적**이었다.
+      (닭-달걀: 닫는 이득은 들어올린 뒤에만 생기는데, 들려면 먼저 닫아야 한다.)
+
+    ★★왜 옛 `gripper_closure_on_cup` 이 아닌가 — 그 식은 closure 를 **약한 straddle** 에만
+      곱해서 허공/주먹 폐쇄가 사실상 만점이었다. 여기서는 **enclose 를 곱한다**:
+      주먹은 컵 반경에 막혀 두 손가락이 컵 축 양쪽에 설 수 없으므로 enclose≈0 이다
+      (fab_test1 실측 0.026 이 그 증거).
+    ⚠ 바닥값을 주지 않는다 — "감싸지 않은 폐쇄"는 정확히 0 이어야 한다.
+
+    closure 는 컵 지름에서 포화한다(58 mm 단면이면 약 0.32). 그 이상은 리프트로만 벌 수
+    있다 — 의도한 대로다.
+    """
+    align, enclose = _jaw_geometry(env, along_std, lateral_std, enclose_half_width,
+                                   pad_offset, robot_cfg, object_cfg)
+    robot: Articulation = env.scene[robot_cfg.name]
+    drive = robot.data.joint_pos[:, robot.joint_names.index(drive_joint)]
+    closure = (1.0 - drive / open_pos).clamp(0.0, 1.0)
+    return align * enclose * closure
 
 
 def ee_grasp_point_distance(

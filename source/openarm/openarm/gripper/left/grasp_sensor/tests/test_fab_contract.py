@@ -189,7 +189,8 @@ def test_between_jaws_averages_along_and_lateral_never_multiplies():
     죽인 구조). 평균이면 0.170 — 10 배 차이.
     """
     rew = _src("grasp_left_rewards.py")
-    body = rew[rew.index("def cup_between_jaws("):]
+    # 08.23 기하가 공용 헬퍼로 옮겨졌다 — 두 항(정렬/폐쇄)이 같은 자를 쓰게 하기 위해서다.
+    body = rew[rew.index("def _jaw_geometry("):]
     assert "align = 0.5 * (1.0 - torch.tanh(along / along_std)) + 0.5 * (" in body
 
 
@@ -281,7 +282,7 @@ def test_jaw_reference_line_sits_at_the_measured_grasp_depth():
     assert abs(P.JAW_PAD_OFFSET - 0.0319) < 1e-6
     assert abs(P.TCP_TO_GRASP_DEPTH - 0.0331) < 1e-6
     rew = _src("grasp_left_rewards.py")
-    body = rew[rew.index("def cup_between_jaws("):]
+    body = rew[rew.index("def _jaw_geometry("):]
     assert "approach * pad_offset" in body, "기준선을 패드 중앙으로 옮기지 않았다"
     cfg = _src("grasp_left_env_cfg.py")
     assert '"pad_offset": P.JAW_PAD_OFFSET' in cfg
@@ -298,3 +299,37 @@ def test_palm_box_has_room_for_gravity_droop_lead():
     assert P.PALM_BOX_X[1] >= deepest_x + 0.13, (
         f"x 상한 {P.PALM_BOX_X[1]} 이 파지점 {deepest_x:.3f} + 처짐 선행 여유를 못 담는다"
     )
+
+
+def test_closure_reward_is_gated_by_enclosure_with_no_floor():
+    """★★닫기 보상은 **감싼 상태에서만** 나와야 한다.
+
+    fab_test4 실측: enclose 0.845 로 턱은 잘 감쌌는데 '열기' 지령 78.0% · 거의 닫힘 0.0%
+    — 닫는 보상이 없어 **한 번도 닫지 않았다**(닫으면 컵이 밀려 정렬 보상만 잃는다).
+    ⚠ 옛 `gripper_closure_on_cup` 처럼 closure 를 약한 straddle 에만 곱하면 허공·주먹
+      폐쇄가 만점이 된다(fab_test1 이 정확히 그 행동). enclose 를 곱하고 **바닥값은 없다.**
+    """
+    cfg = _src("grasp_left_env_cfg.py")
+    assert "self.rewards.grip_closure_when_enclosed" in cfg
+    rew = _src("grasp_left_rewards.py")
+    body = rew[rew.index("def grip_closure_when_enclosed("):]
+    body = body[: body.index("\ndef ")] if "\ndef " in body else body
+    assert "align * enclose * closure" in body, "enclose 게이트가 없다"
+    assert "enclose_floor" not in body, "폐쇄 보상에 바닥값을 주면 허공 폐쇄가 보상된다"
+
+
+def test_both_jaw_rewards_share_one_geometry_helper():
+    """두 항이 다른 기하를 쓰면 한쪽만 고쳤을 때 조용히 어긋난다."""
+    rew = _src("grasp_left_rewards.py")
+    assert "def _jaw_geometry(" in rew
+    for fn in ("cup_between_jaws", "grip_closure_when_enclosed"):
+        body = rew[rew.index(f"def {fn}("):]
+        body = body[: body.index("\ndef ", 10)] if "\ndef " in body[10:] else body
+        assert "_jaw_geometry(" in body, f"{fn} 이 공용 기하를 안 쓴다"
+
+
+def test_closure_weight_stays_a_stepping_stone():
+    """★closure 는 컵 지름에서 포화한다(58mm 단면 → 약 0.32) → 실현 상한 약 1.4.
+    lifting 15 + goal 16 + settle 15 대비 충분히 작아야 파지·이송이 우선이다."""
+    realistic_max = 0.32 * P.CLOSURE_WHEN_ENCLOSED_WEIGHT
+    assert realistic_max <= 0.10 * (15.0 + 16.0 + P.SETTLE_REWARD_WEIGHT)

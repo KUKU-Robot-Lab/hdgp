@@ -438,6 +438,27 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             },
         )
 
+        # ── 감싼 상태에서 닫기 (08.23 신설) ────────────────────────
+        # ★★fab_test4 가 이 구멍을 드러냈다: enclose 0.845 로 턱은 컵을 잘 감쌌는데
+        #   '열기' 지령 78.0% · 거의 닫힘 0.0% — **한 번도 닫지 않는다.**
+        #   닫는 것을 보상하는 항이 없고, 닫다가 컵이 밀리면 cup_between_jaws 를 잃으니
+        #   닫지 않는 것이 최적이었다. 리프트는 닫아야만 생기는데 닫을 이유가 없다(닭-달걀).
+        #   ⚠ enclose 를 곱하므로 옛 주먹 해킹(fab_test1, enclose 0.026)은 0 이다.
+        self.rewards.grip_closure_when_enclosed = RewTerm(
+            func=rewards.grip_closure_when_enclosed,
+            weight=P.CLOSURE_WHEN_ENCLOSED_WEIGHT,
+            params={
+                "along_std": P.JAW_ALONG_STD,
+                "lateral_std": P.JAW_LATERAL_STD,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                "open_pos": P.GRIPPER_OPEN_POS,
+                "drive_joint": P.GRIPPER_DRIVE_JOINT,
+                # ★SceneEntityCfg 는 가변 객체다 — term 마다 새 인스턴스여야 한다.
+                "robot_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+            },
+        )
+
         # ── 목표에서 정지 보너스 (신설) ─────────────────────────────
         # 레퍼런스 goal-tracking 은 **거리만** 본다. "옮겨서 가만히 세워 둔다"를 표현하려면
         # 속도 항이 필요하다. 여기도 게이트가 아니라 보너스다.

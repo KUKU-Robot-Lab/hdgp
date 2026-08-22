@@ -584,9 +584,10 @@ def test_env_cfg_inherits_isaaclab_lift():
         assert "weight=1.1" in blk and '"std": 0.1' in blk, (
             "도달 보상은 목표점만 옮길 수 있다 — weight/std 는 레퍼런스 값 유지"
         )
-    # 신설 term: grasp_pose · settled_at_goal · cup_between_jaws + 도달 목표점 교정 1
+    # 신설 term: grasp_pose · settled_at_goal · cup_between_jaws ·
+    #            grip_closure_when_enclosed + 도달 목표점 교정 1
     # 판정 게이트를 늘리는 term 은 여전히 금지 — test6/test7 에서 학습을 죽였다.
-    assert src.count("RewTerm(") <= 4, "신설 term 이 예상보다 많다"
+    assert src.count("RewTerm(") <= 5, "신설 term 이 예상보다 많다"
 
 
 def test_smoothing_is_the_reference_curriculum_not_an_extra_term():
