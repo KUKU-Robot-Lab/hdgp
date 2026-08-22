@@ -285,3 +285,25 @@ def test_resolve_cfg_rejects_bad_receiver_mode():
     cfg.receiver_control_mode = "scripted"
     with pytest.raises(ValueError):
         C.resolve_cfg(cfg)
+
+
+def test_registered_cfg_classes_keep_own_pair_name():
+    """configclass 상속 함정 회귀 가드 — grasp_lift_fabric 5e31d86 과 동일 결함.
+
+    서브클래스에 일반 클래스 속성으로 pair_name 을 넣으면 베이스 데이터클래스
+    __init__ 이 베이스 기본값("bis")을 인스턴스 속성으로 다시 써서 조용히 가린다.
+    등록된 모든 쌍의 생성 cfg 를 실제 인스턴스화해 pair_name 을 대조한다.
+    """
+    _cfg_module()  # Isaac 게이트
+    from openarm.agnostic.tasks.pour_fabric import config as reg
+
+    assert reg.REGISTERED, "등록된 쌍이 없다"
+    for short in reg.REGISTERED:
+        for suffix in ("", "_PLAY"):
+            cls = getattr(reg, f"PourFabric_{short}{suffix}_Cfg")
+            cfg = cls()
+            assert cfg.pair_name == short, (
+                f"{cls.__name__}: pair_name={cfg.pair_name!r} != {short!r} — "
+                "베이스 기본값에 가려짐(configclass 상속 함정)")
+    play = getattr(reg, f"PourFabric_{sorted(reg.REGISTERED)[0]}_PLAY_Cfg")()
+    assert play.scene.num_envs == 50

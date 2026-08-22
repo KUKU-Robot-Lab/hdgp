@@ -24,13 +24,22 @@ REGISTERED: dict[str, str] = {}
 
 def _cfg_class(pair_name: str, play: bool):
     name = f"PourFabric_{pair_name}{'_PLAY' if play else ''}_Cfg"
-    ns = {"pair_name": pair_name}
-    if play:
-        def __post_init__(self):
+
+    # ★★클래스 속성으로 두면 안 된다. 베이스가 configclass(데이터클래스)라 상속된
+    #   __init__ 이 **베이스 필드 기본값**(DEFAULT_PAIR="bis")을 인스턴스 속성으로 다시
+    #   써서 서브클래스의 일반 클래스 속성을 조용히 가린다 — grasp_lift_fabric 에서
+    #   전 프로필이 bis_right 로 부팅되던 실측 결함(08.22, 5e31d86)과 동일 패턴.
+    #   __post_init__ 에서 **인스턴스 속성**으로 강제한 뒤 베이스 resolve 를 태운다.
+    #   (기본 인자 바인딩 `_pn=pair_name` 은 루프 late-binding 함정 방지.)
+    _play = play
+
+    def __post_init__(self, _pn=pair_name, _play=_play):
+        self.pair_name = _pn
+        if _play:
             self.scene.num_envs = 50
-            PourFabricEnvCfg.__post_init__(self)
-        ns["__post_init__"] = __post_init__
-    cls = type(name, (PourFabricEnvCfg,), ns)
+        PourFabricEnvCfg.__post_init__(self)
+
+    cls = type(name, (PourFabricEnvCfg,), {"__post_init__": __post_init__})
     globals()[name] = cls        # entry point 가 "모듈:속성" 문자열이라 노출 필요
     return cls
 
