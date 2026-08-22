@@ -285,3 +285,16 @@ def test_jaw_reference_line_sits_at_the_measured_grasp_depth():
     assert "approach * pad_offset" in body, "기준선을 패드 중앙으로 옮기지 않았다"
     cfg = _src("grasp_left_env_cfg.py")
     assert '"pad_offset": P.JAW_PAD_OFFSET' in cfg
+
+
+def test_palm_box_has_room_for_gravity_droop_lead():
+    """★★fabric 은 물리적 중력 처짐을 모른다 — 지령을 앞당겨야 자세가 나온다.
+
+    G4 폐루프 실측: 파지 자세를 실제로 내려면 접근축으로 **47~117 mm 선행**이 필요하고,
+    그렇게 하면 TCP 오차 0.2 mm 로 수렴한다. 박스가 그 선행을 못 담으면 클램프되어
+    정책이 필요한 지령을 **표현할 수 없다**(0.50 일 때 8.7 mm 에서 정체).
+    """
+    deepest_x = P.CUP_SPAWN_X_CENTER + P.CUP_SPAWN_X_RANGE + P.TCP_TO_GRASP_DEPTH
+    assert P.PALM_BOX_X[1] >= deepest_x + 0.13, (
+        f"x 상한 {P.PALM_BOX_X[1]} 이 파지점 {deepest_x:.3f} + 처짐 선행 여유를 못 담는다"
+    )

@@ -15,8 +15,9 @@ import argparse
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--gate", choices=["g1", "g2", "g3"], required=True)
+parser.add_argument("--gate", choices=["g1", "g2", "g3", "g4"], required=True)
 parser.add_argument("--num_envs", type=int, default=16)
+parser.add_argument("--quick", action="store_true", help="G4: 중심 1점만")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -33,6 +34,13 @@ from openarm.gripper.left.grasp_sensor import grasp_left_preset as P  # noqa: E4
 TASK = "open-grip_l_grasp_sensor_fab"
 cfg = parse_env_cfg(TASK, device=args.device, num_envs=args.num_envs)
 env = gym.make(TASK, cfg=cfg).unwrapped
+# ★★계측 중 **에피소드 타임아웃을 끈다.** 안 끄면 250 스텝마다 리셋되어 fabric_q 가 홈으로
+#   돌아가고, 그 직후 값을 "추종 오차" 로 오독한다. 실제로 G3 의 진입 오차 70~142 mm 와
+#   "env별 1~177 mm 산포" 가 전부 이 오염이었다 — 폐루프 궤적이
+#       39 17 8 6 | 66 38 15 10 | 127 59
+#   처럼 4 회(=240 스텝)마다 튀는 것으로 드러났다. 보정 자체는 **6 mm 로 수렴**한다.
+#   ⚠ 이 태스크에서 리셋 오염에 당한 것이 세 번째다(fabric 처짐 30 mm 오보, park_cup 자유낙하).
+env.cfg.episode_length_s = 100000.0
 env.reset()
 
 robot = env.scene["robot"]
@@ -203,6 +211,72 @@ elif args.gate == "g2":
     print(f"  z+5cm 계단: 90% 상승 {t90} 스텝 · fabric 오버슈트 {fovershoot:5.1f}% · L1 {l1s:.2f} mm"
           f" · [참고] TCP 오버슈트 {overshoot:5.1f}% · TCP sse {sse:6.2f} mm"
           f"   {'PASS' if (fovershoot < 15.0 and l1s < 5.0) else 'FAIL'}")
+
+elif args.gate == "g4":
+    # ★★G4 순수 도달성 — **컵을 치우고** 파지점 자세를 지령해 수렴만 본다.
+    #   왜 필요한가: G3 진입 오차가 70~142 mm 인데 **컵이 거의 안 움직인다**(상승 −0.2 mm).
+    #   134 g 짜리를 턱으로 밀었다면 날아갔어야 한다 → 손이 컵에 막힌 게 아니라
+    #   **fabric 이 그 자세에 도달을 못 하는 것**이다. 접촉을 지워서 그것만 분리한다.
+    #   G1 은 목표 박스 꼭짓점과 pregrasp 만 봤지, **최종 파지점**은 본 적이 없다.
+    park_cup()
+    _w, _x, _y, _z = P.PALM_REF_QUAT_WXYZ
+    approach = torch.tensor([2*(_x*_z + _w*_y), 2*(_y*_z - _w*_x), 1 - 2*(_x*_x + _y*_y)],
+                            device=env.device)
+    approach = approach / approach.norm()
+    print("\n=== G4 파지점 순수 도달성 (컵 없음) ===")
+    print(f"  {'컵 x':>7}{'컵 y':>7}{'삽입':>7}{'TCP 오차':>11}{'한계근접 관절':>16}")
+    rows = []
+    _xs = (P.CUP_SPAWN_X_CENTER,) if args.quick else (
+        P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE, P.CUP_SPAWN_X_CENTER,
+        P.CUP_SPAWN_X_CENTER + P.CUP_SPAWN_X_RANGE)
+    _ys = (P.CUP_SPAWN_Y_CENTER,) if args.quick else (
+        P.CUP_SPAWN_Y_CENTER - P.CUP_SPAWN_Y_RANGE, P.CUP_SPAWN_Y_CENTER,
+        P.CUP_SPAWN_Y_CENTER + P.CUP_SPAWN_Y_RANGE)
+    for cx in _xs:
+        for cy in _ys:
+            for ins in (0.0, P.TCP_TO_GRASP_DEPTH):
+                base = torch.tensor([cx, cy, P.GRASP_TARGET_Z], device=env.device)
+                tgt = (base + ins * approach).expand(env.num_envs, 3)
+                env.reset(); park_cup()
+                a = act_for(tgt.clamp(_BOX_LO, _BOX_HI), grip=+1.0)
+                for _ in range(220):
+                    env.step(a)
+                    park_cup()
+                err = float((tcp() - tgt).norm(dim=-1).mean()) * 1e3
+                q = robot.data.joint_pos[:, arm_ids]
+                lo = robot.data.joint_limits[:, arm_ids, 0]
+                hi = robot.data.joint_limits[:, arm_ids, 1]
+                slack = torch.minimum(q - lo, hi - q)
+                j = int(slack.mean(dim=0).argmin())
+                rows.append(err)
+                # ★★2층 분해: fabric 이 못 가는가(L1) vs 관절 PD 가 못 따라가는가(L2).
+                #   fabric_q 는 액션항이 들고 있는 fabric 내부 관절 상태 = PD 목표다.
+                _fq = env.action_manager.get_term("arm_action")._fabric_q
+                _dq = (_fq - robot.data.joint_pos[:, arm_ids]).abs().mean(dim=0)
+                print(f"      L2 관절오차(fabric_q − 실제) 최대 {float(_dq.max())*1e3:.1f} mrad "
+                      f"@l_aj_{int(_dq.argmax())+1} · 평균 {float(_dq.mean())*1e3:.1f} mrad")
+                # ★★처짐을 **폐루프로 상쇄 가능한가** — 이게 진짜 질문이다.
+                #   fabric 은 자기 관절상태만 적분하므로 물리적 중력 처짐을 모른다.
+                #   정책은 절대 목표를 학습으로 앞당겨 이걸 흡수할 수 있다(test17 이 관절공간에서
+                #   같은 방식으로 성공했다). 스크립트에서는 오차 되먹임으로 재현한다.
+                cmd = tgt.clone()
+                trail = []
+                for _it in range(10):
+                    cmd = cmd + (tgt - tcp())
+                    a2 = act_for(cmd.clamp(_BOX_LO, _BOX_HI), grip=+1.0)
+                    for _ in range(60):
+                        env.step(a2); park_cup()
+                    trail.append(float((tcp() - tgt).norm(dim=-1).mean()) * 1e3)
+                print("      폐루프 보정 궤적(mm): "
+                      + " ".join(f"{v:.0f}" for v in trail))
+                print(f"      → 최종 {trail[-1]:.1f} mm · 지령 선행량 "
+                      f"{float((cmd - tgt).norm(dim=-1).mean())*1e3:.1f} mm")
+                print(f"  {cx:7.3f}{cy:7.3f}{ins*1e3:7.1f}{err:10.1f} mm"
+                      f"{'l_aj_' + str(j + 1) + ' ' + f'{float(slack.mean(dim=0)[j]):.3f}':>16}")
+    print(f"\n  최대 {max(rows):.1f} mm · 평균 {sum(rows)/len(rows):.1f} mm")
+    ok = max(rows) < 10.0
+    print(f"  판정: {'PASS' if ok else 'FAIL'} (기준: 전 조합 10 mm 미만)")
+    print("  → FAIL 이면 병목은 접촉이 아니라 **fabric 이 그 자세를 못 낸다** 이다.")
 
 elif args.gate == "g3":
     print("\n=== G3 스크립트 파지-리프트-이송 (처짐 폐루프 보정) ===")
