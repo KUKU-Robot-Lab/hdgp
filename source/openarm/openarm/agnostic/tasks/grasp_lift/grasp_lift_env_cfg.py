@@ -173,8 +173,18 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     hand_joint_scale: float = 0.1
 
     # ---- 보상 (dexsuite lift 가중치 그대로) ---------------------------------------
-    reaching_weight: float = 1.0
-    reaching_std: float = 0.1
+    # ---- 접근 기하 (v1/v2 이식, 08.22 인벨롭 재설계) --------------------------------
+    # exp(−s·(d_palm + d_side)). 그룹-min reaching(rim-hook 의 원인)을 대체.
+    # sharpness 8.0 = 합거리 12.5cm 에서 e⁻¹ (v1/v2 검증치).
+    approach_weight: float = 2.0
+    approach_sharpness: float = 8.0
+    # 파지중심 z 오프셋(물체 원점 기준)·대향점 반경 — P-A probe 실측으로 확정
+    grasp_z_offset: float = 0.0
+    side_radius: float = 0.03
+    # 감쌈 직접 보상: envelope_frac = 0.5·(중간마디 접촉비율 + 원위마디 접촉비율).
+    # ★2.0 초과 금지 — goal 계열(13.5)의 지배가 깨지면 "테이블 위 감싸고 정지" 국소최적
+    #   (reward-audit Check 1).
+    envelope_weight: float = 2.0
     contact_weight: float = 0.5
     contact_force_threshold: float = 1.0     # [N] dexsuite 동일
     tracking_weight: float = 2.0
@@ -216,6 +226,12 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     success_pos_tolerance: float = 0.025
     # 이전 12,000ep 런과의 연속성 비교 전용(보상·커리큘럼 미사용, 로깅만)
     success_pos_tolerance_loose: float = 0.05
+    # ★성공 판정 3조건(08.22, 사용자 결정): goal 근접 AND envelope_frac AND 직립.
+    #   "인벨롭으로 세워 든 것"만 성공 — 다음 태스크(pour)의 전제. 커리큘럼 승급도 이 기준.
+    # 0.6 = 테솔로(env 4지)는 3지 이상 감쌈, 2지 그리퍼는 양 jaw(1.0). 0.5 는 두
+    # 손가락 rim-hook(0.5)이 통과해 버린다 — P-B probe 반증.
+    success_envelope_min: float = 0.6
+    success_tilt_max_deg: float = 20.0
 
     # ---- 커리큘럼 (per-env 난이도 0~10) --------------------------------------------
     curriculum_max_level: int = 10

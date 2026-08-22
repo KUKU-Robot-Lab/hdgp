@@ -63,6 +63,11 @@ class RobotProfile:
     # A=jaw1, B=jaw2 로 같은 코드가 동작한다.
     contact_group_a: tuple = ()
     contact_group_b: tuple = ()
+    # ---- 인벨롭 손가락 (감쌈 판정·d_side 분모) ----------------------------------
+    # envelope_frac 의 분모와 d_side 의 wrap 그룹 평균에 들어가는 손가락만.
+    # ★tesollo pinky 는 제대로 된 굴곡축이 없어(pinky_1 손끝이동 12mm vs index_2 42mm,
+    #   메모리 tesollo-pinky-joint-kinematics) 분모에 넣으면 상한이 0.8 로 깎인다 — 제외.
+    envelope_fingers: tuple = ()
 
     # ---- 관측/보상용 손끝 body (reaching 은 max 거리 = 전 손가락 유도) -----------
     fingertip_bodies: tuple = ()
@@ -130,6 +135,7 @@ TESOLLO_RIGHT = RobotProfile(
     },
     contact_group_a=("thumb",),
     contact_group_b=("index", "middle", "ring", "pinky"),
+    envelope_fingers=("thumb", "index", "middle", "ring"),   # pinky 제외 (필드 주석 참조)
     fingertip_bodies=tuple(f"r_hl_{f}_tip" for f in _FINGERS),
     init_joint_pos={
         # 팔: grasp_v1 의 실제 런타임 고정 홈 = reset_home_palm_pose
@@ -190,6 +196,7 @@ GRIPPER_LEFT = RobotProfile(
     },
     contact_group_a=("jaw1",),
     contact_group_b=("jaw2",),
+    envelope_fingers=("jaw1", "jaw2"),   # 2지 그리퍼는 양 jaw 접촉이 곧 감쌈
     fingertip_bodies=("l_hl_gripper_1", "l_hl_gripper_2"),
     init_joint_pos={
         "l_aj_1": 0.0431, "l_aj_2": 0.6706, "l_aj_3": 0.0961, "l_aj_4": 0.7342,

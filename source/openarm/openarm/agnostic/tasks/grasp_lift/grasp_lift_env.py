@@ -133,6 +133,16 @@ class GraspLiftEnv(DirectRLEnv):
             [fingers.index(f) for f in p.contact_group_a], device=self.device, dtype=torch.long)
         self._group_b_idx = torch.tensor(
             [fingers.index(f) for f in p.contact_group_b], device=self.device, dtype=torch.long)
+        # 인벨롭 손가락(감쌈 판정 분모·d_side wrap 그룹) — 프로필이 정의(pinky 제외 등)
+        if not p.envelope_fingers:
+            raise RuntimeError(f"[{p.name}] envelope_fingers 미정의 — 인벨롭 보상 성립 불가")
+        self._env_finger_idx = torch.tensor(
+            [fingers.index(f) for f in p.envelope_fingers], device=self.device, dtype=torch.long)
+        self._group_b_env_idx = torch.tensor(
+            [fingers.index(f) for f in p.contact_group_b if f in p.envelope_fingers],
+            device=self.device, dtype=torch.long)
+        if len(self._group_b_env_idx) == 0:
+            raise RuntimeError(f"[{p.name}] contact_group_b ∩ envelope_fingers 가 비었다")
         # 그룹 인덱스를 fingertip_bodies 에도 그대로 쓴다(접근 보상) — 두 목록의
         # 손가락 순서가 같아야 성립하므로 fail-loud 로 강제한다.
         if len(p.fingertip_bodies) != len(fingers):
@@ -392,6 +402,26 @@ class GraspLiftEnv(DirectRLEnv):
             mags.append(total)
         return torch.stack(mags, dim=1)
 
+    def _contact_forces_split(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """(mid, dist) 마디별 접촉력 (N, F) — envelope_frac 용. 같은 센서, 합산만 분리.
+
+        finger_sensor_bodies 규약: 마지막 원소 = 팁, 그 앞이 (중간, 원위) 순.
+        body 가 하나뿐인 손가락(2지 그리퍼 jaw)은 그 접촉 자체가 감쌈 — mid=dist=그 body.
+        """
+        mids, dists = [], []
+        for finger in self._finger_names:
+            sensors = self._finger_sensors[finger]
+            n = len(sensors)
+            mid_i, dist_i = (0, 1) if n >= 3 else (0, 0)
+
+            def _mag(s):
+                fm = s.data.force_matrix_w
+                return fm.view(self.num_envs, -1, 3).sum(dim=1).norm(dim=-1)
+
+            mids.append(_mag(sensors[mid_i]))
+            dists.append(_mag(sensors[dist_i]))
+        return torch.stack(mids, dim=1), torch.stack(dists, dim=1)
+
     def _env_local(self, pos_w: torch.Tensor) -> torch.Tensor:
         return pos_w - self.scene.env_origins
 
@@ -432,18 +462,23 @@ class GraspLiftEnv(DirectRLEnv):
             - self.scene.env_origins[:, None, :]
         )
         contact = self._contact_forces()
+        mid_f, dist_f = self._contact_forces_split()
         # 물체 기울기 — 같은 스텝에 _get_dones 가 계산·캐시한 값(dones 가 rewards 보다 먼저)
         tilt_deg = self._tilt_deg_buf
-        total, terms, gate = compute_grasp_lift_rewards(
+        palm_pos = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
+        total, terms, gate, env_frac = compute_grasp_lift_rewards(
             object_tilt_deg=tilt_deg,
             height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
+            palm_pos=palm_pos,
             fingertip_pos=tips,
             object_pos=obj_pos,
             goal_pos=self.goal_pos,
             group_a_tip_idx=self._group_a_idx,
-            group_b_tip_idx=self._group_b_idx,
+            group_b_env_tip_idx=self._group_b_env_idx,
             group_a_force=contact[:, self._group_a_idx],
             group_b_force=contact[:, self._group_b_idx],
+            env_mid_force=mid_f[:, self._env_finger_idx],
+            env_dist_force=dist_f[:, self._env_finger_idx],
             actions=self.actions,
             prev_actions=self.prev_actions,
             cfg=self.cfg,
@@ -452,9 +487,14 @@ class GraspLiftEnv(DirectRLEnv):
         total = total + float(self.cfg.abnormal_penalty) * self._abnormal_buf.float()
         self.prev_actions.copy_(self.actions)
 
-        # 성공 판정(커리큘럼): goal 근접 상태를 매 스텝 갱신 — 리셋 시 마지막 값 사용
+        # ★성공 판정 3조건(08.22): goal 근접 AND 감쌈 AND 직립 — "인벨롭으로 세워 든
+        #   것"만 성공. 커리큘럼 승급도 이 기준(리셋 시 마지막 값 사용).
         goal_dist = torch.norm(obj_pos - self.goal_pos, dim=-1)
-        self._goal_reached_now = goal_dist < float(self.cfg.success_pos_tolerance)
+        self._goal_reached_now = (
+            (goal_dist < float(self.cfg.success_pos_tolerance))
+            & (env_frac >= float(self.cfg.success_envelope_min))
+            & (tilt_deg < float(self.cfg.success_tilt_max_deg))
+        )
 
         # ★컵 단독 리스폰은 폐기됐다(08.22, 사용자 지시). 텔레포트 전이(s→s′ 불연속)가
         #   학습 데이터에 그대로 들어가 value/LSTM 이 비마르코프 점프를 학습했고, 손이
@@ -465,6 +505,14 @@ class GraspLiftEnv(DirectRLEnv):
             tilt_deg > float(self.cfg.tilt_reset_deg)).float().mean()
 
         # ---- 로깅 ----
+        # 접근 기하 진단(가중 전 원거리) — terms 에 _접두로 실려 온다
+        self.extras["task/d_palm"] = terms.pop("_d_palm").mean()
+        self.extras["task/d_side"] = terms.pop("_d_side").mean()
+        self.extras["task/envelope_frac"] = env_frac.mean()
+        # 게이트 참인 env 의 감쌈 — "접촉은 됐는데 감쌈이 안 되는" 상태의 직접 지표
+        _gf = gate.float()
+        self.extras["task/envelope_at_gate"] = (
+            (env_frac * _gf).sum() / _gf.sum().clamp(min=1.0))
         for k, v in terms.items():
             self.extras[f"reward/{k}"] = v.mean()
         self.extras["reward/total"] = total.mean()
