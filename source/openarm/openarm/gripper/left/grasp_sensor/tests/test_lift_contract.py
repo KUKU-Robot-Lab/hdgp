@@ -564,17 +564,29 @@ def test_env_cfg_inherits_isaaclab_lift():
     assert "LiftEnvCfg" in bases
     src = _cfg_source()
     assert "isaaclab_tasks.manager_based.manipulation.lift" in src
-    # ★물려받은 6 개 term 의 weight 는 재정의하지 않는다. 신설은 jaw 수평 보너스 하나뿐이고
-    #   그 weight 는 preset 상수로만 온다(리터럴 금지 — 값이 코드에 흩어지지 않게).
-    inherited = (
-        "reaching_object", "lifting_object", "object_goal_tracking",
+    # ★물려받은 term 의 **weight** 는 재정의하지 않는다. 레시피가 보존되는 이유가 그 비율이다.
+    #   ⚠ 08.22 이 계약을 **좁혔다**. 원래는 `reaching_object` 의 재정의 자체를 금지했는데,
+    #     그 금지가 실제 버그를 고정하고 있었다: 레퍼런스 도달 보상은 컵 **원점**을 겨냥하고,
+    #     우리 shaker 는 원점(상면 +92 mm)이 그리퍼 통과 대역(+10~85 mm) **밖**이라
+    #     보상이 들어갈 수 없는 높이를 가리켰다(G3 실측 진입 오차 100.2 mm).
+    #     → 금지 대상을 "재정의"에서 **"weight/std 변경"**으로 바꾼다. 목표점 교정은 허용하되
+    #       레퍼런스 비율(1.1 / std 0.1)은 그대로여야 한다.
+    #     같은 오해를 공유한 테스트는 버그를 막지 못한다 — 이 파일에서 세 번째다.
+    frozen_weight = (
+        "lifting_object", "object_goal_tracking",
         "object_goal_tracking_fine_grained", "action_rate", "joint_vel",
     )
-    for name in inherited:
+    for name in frozen_weight:
         assert f"self.rewards.{name} = " not in src, f"{name} 을 재정의하지 말 것"
-    # 신설 term 은 보너스 셋(grasp_pose, settled_at_goal, grasp_closure)뿐이다.
-    # 판정 게이트를 늘리는 term 은 금지 — test6/test7 에서 학습을 죽였다.
-    assert src.count("RewTerm(") <= 3, "신설 term 은 보너스 셋뿐이다"
+    if "self.rewards.reaching_object = " in src:
+        blk = src[src.index("self.rewards.reaching_object = "):]
+        blk = blk[: blk.index(")\n\n")]
+        assert "weight=1.1" in blk and '"std": 0.1' in blk, (
+            "도달 보상은 목표점만 옮길 수 있다 — weight/std 는 레퍼런스 값 유지"
+        )
+    # 신설 term: grasp_pose · settled_at_goal · cup_between_jaws + 도달 목표점 교정 1
+    # 판정 게이트를 늘리는 term 은 여전히 금지 — test6/test7 에서 학습을 죽였다.
+    assert src.count("RewTerm(") <= 4, "신설 term 이 예상보다 많다"
 
 
 def test_smoothing_is_the_reference_curriculum_not_an_extra_term():

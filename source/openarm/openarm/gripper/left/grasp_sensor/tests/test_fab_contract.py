@@ -162,3 +162,73 @@ def test_fab_gym_registration_points_to_real_symbols():
     env_cfg = _src("grasp_left_fab_env_cfg.py")
     assert "class GraspLeftGripperFabEnvCfg(" in env_cfg
     assert "class GraspLeftGripperFabEnvCfg_PLAY(" in env_cfg
+
+
+def test_between_jaws_reward_is_wired_and_uses_enclose_not_closure():
+    """★★08.22 fab_test1 실패의 직접 처방 — 이 항이 빠지면 같은 실패가 재발한다.
+
+    실측: fab 정책은 개도 3.1 mm 로 **주먹을 쥔 채** 컵 옆구리를 눌렀다(수직 최선 36.5 mm
+    ≈ 컵 반경). 성공한 test17 은 0.4 mm / 26.5 mm.
+    ⚠ 옛 `closure = 1 − drive/open` 을 곱하면 **닫을수록 커져** 그 실패 행동을 보상한다.
+    """
+    cfg = _src("grasp_left_env_cfg.py")
+    assert "self.rewards.cup_between_jaws" in cfg, "턱 사이 진입 보상이 배선되지 않았다"
+    rew = _src("grasp_left_rewards.py")
+    assert "def cup_between_jaws(" in rew
+    assert "def gripper_closure_on_cup(" not in rew, (
+        "닫을수록 커지는 옛 식이 되살아났다 — 주먹으로 누르기가 감싸기보다 높아진다"
+    )
+    # enclose = 두 손가락이 컵 축 양쪽에 있는가
+    assert "s_l" in rew and "s_r" in rew and "torch.minimum" in rew
+
+
+def test_between_jaws_averages_along_and_lateral_never_multiplies():
+    """★CLAUDE.md 설계 규칙: 곱할 항은 게이트 성격만, 연속 품질은 평균한다.
+
+    곱하면 fab 현재 상태 품질이 0.0159 로 떨어져 다른 항에 묻힌다(test10/test11 을
+    죽인 구조). 평균이면 0.170 — 10 배 차이.
+    """
+    rew = _src("grasp_left_rewards.py")
+    body = rew[rew.index("def cup_between_jaws("):]
+    assert "align = 0.5 * (1.0 - torch.tanh(along / along_std)) + 0.5 * (" in body
+
+
+def test_between_jaws_std_matches_measured_scale():
+    """★임계는 실측 규모에서 정한다 — 옛 20/20 mm 는 fab 현재 상태 품질이 0.00000 이라
+    배선해도 죽은 항이 된다(test10/test11 과 같은 함정)."""
+    import math as _m
+    # fab_test1 실측 평균: along 27.1 mm · lateral 108.9 mm
+    q = 0.5 * (1 - _m.tanh(0.0271 / P.JAW_ALONG_STD)) + 0.5 * (
+        1 - _m.tanh(0.1089 / P.JAW_LATERAL_STD)
+    )
+    assert q > 0.10, f"현재 상태에서 정렬 품질이 {q:.4f} — gradient 가 죽는다"
+    # 목표 상태(test17 최선: along 0 · lateral 0.4 mm)에서는 만점 근처여야 개선 폭이 생긴다
+    q_goal = 0.5 * 1.0 + 0.5 * (1 - _m.tanh(0.0004 / P.JAW_LATERAL_STD))
+    assert q_goal > 0.95 and q_goal / q > 4.0, "현재↔목표 개선 폭이 부족하다"
+
+
+def test_between_jaws_weight_stays_a_stepping_stone():
+    """★상한이 lifting+goal+settle 대비 작아야 "감싸고 가만히 있기" 국소최적이 안 생긴다."""
+    assert P.BETWEEN_JAWS_REWARD_WEIGHT <= 0.15 * (
+        15.0 + 16.0 + P.SETTLE_REWARD_WEIGHT
+    )
+
+
+def test_reach_reward_targets_the_graspable_band_not_the_cup_origin():
+    """★★컵 원점은 상면 +92 mm 인데 그리퍼 통과 대역은 +10~85 mm 다.
+
+    원점 높이의 컵 지름(88 mm)이 개구(84.5 mm)보다 넓어 **턱이 못 들어간다.**
+    레퍼런스 `object_ee_distance` 를 그대로 쓰면 도달 보상이 들어갈 수 없는 높이를
+    가리킨다(G3 실측: 진입 TCP 오차 100.2 mm → 대역 겨냥 시 70.7 mm).
+    """
+    lo, hi = P.GRASP_HEIGHT_BAND
+    origin_h = P.CUP_SPAWN_Z - P.TABLE_SURFACE_Z
+    assert not (lo <= origin_h <= hi), "전제가 바뀌었다 — 컵 원점이 파지 대역 안이면 이 교정은 불필요"
+    grasp_h = P.GRASP_TARGET_Z - P.TABLE_SURFACE_Z
+    assert lo < grasp_h < hi, f"파지 목표 높이 {grasp_h * 1e3:.0f} mm 가 대역 밖이다"
+    cfg = _src("grasp_left_env_cfg.py")
+    assert "self.rewards.reaching_object" in cfg and "ee_grasp_point_distance" in cfg
+    rew = _src("grasp_left_rewards.py")
+    # ★오프셋은 컵 로컬 축을 따라야 한다 — world z 면 컵이 기울 때 파지점이 컵 밖으로 나간다
+    body = rew[rew.index("def ee_grasp_point_distance("):]
+    assert "matrix_from_quat" in body and "cup_z * grasp_offset" in body

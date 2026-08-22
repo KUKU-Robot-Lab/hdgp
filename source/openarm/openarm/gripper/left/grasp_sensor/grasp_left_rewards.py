@@ -286,54 +286,95 @@ class ActionJerkL2(ManagerTermBase):
         return jerk
 
 
-def gripper_closure_on_cup(
+def cup_between_jaws(
     env: "ManagerBasedRLEnv",
     along_std: float,
     lateral_std: float,
-    open_pos: float,
-    drive_joint: str,
+    enclose_half_width: float,
+    enclose_floor: float,
     robot_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
 ) -> torch.Tensor:
-    """**컵을 턱 사이에 넣고 닫는 것** 자체에 주는 연속 보상. 리프트와 무관하다.
+    """**컵이 두 턱 사이에 들어왔는가** (0~1). 리프트와 무관한 전제조건 보상.
 
-    ★왜 필요한가 — 닭-달걀이다. 그리퍼를 닫는 이득은 "들어올린 뒤"에만 생기는데, 들려면
-      먼저 닫아야 한다. test6 실측이 그 결과를 보여준다:
-          그리퍼 개도 평균 **42.2 mm**(최대 44) · 거의 열림(>40 mm) 스텝 **95.6%**
-          '열기' 지령 **89.9%** · 최대 컵 상승 +4.6 mm(= 기울임 상한) · 1 cm 이상 0.0%
-      정책은 턱을 활짝 편 채 팔만 떨어 컵을 흔들었다. 한 번도 닫지 않으니 파지가 애초에
-      불가능했다.
+    ★왜 필요한가 — 08.22 fab_test1 이 실증했다. 684 epoch 동안 `lifting_object` 가 정확히
+      0 이었고, 정책을 결정론으로 재보니:
+          턱축까지 수직거리 최선 **36.5 mm**(컵 반경 29~44 mm 와 거의 같다)
+          그리퍼 개도 평균 **3.1 mm** · 거의 닫힘 스텝 **95.6%** · '열기' 지령 **0.0%**
+      즉 **주먹을 쥔 채 컵 옆구리를 누르고** 있었다. 닫힌 턱에는 컵이 들어갈 자리가 없으니
+      경로가 아무리 좋아도 파지가 불가능하다.
+      성공한 test17 은 같은 자로 재면 수직거리 최선 **0.4 mm**, 개도 26.5 mm 다.
 
-    ★공짜로 못 먹게 하는 장치 — **straddle 을 곱한다.** 허공에서 닫는 것은 0 이다.
-      straddle = (턱 축 방향으로 컵이 가운데인가) × (턱 축에서 컵 축까지 가까운가)
-      둘 다 tanh 로 연속이라 절벽이 없다.
+    ★왜 옛 식(straddle × closure)이 아닌가 — 그 식은 `closure = 1 − drive/open` 을 곱해
+      **닫을수록 커진다.** 주먹으로 컵을 누르는 것이 벌려 감싸는 것보다 점수가 높아,
+      관측된 실패 행동을 그대로 보상한다. closure 를 **enclose** 로 바꾼다.
 
-    closure 는 개도가 줄수록 커진다. 컵을 감싸고 닫으면 턱이 컵 지름에서 멈추므로
-    closure 는 포화하고(약 0.3), 그 이상은 리프트로만 벌 수 있다 — 의도한 대로다.
+    구성 (셋 다 연속, 절벽 없음):
+      · along   턱 축 방향으로 컵이 두 턱의 가운데에서 벗어난 정도
+      · lateral 턱 축(직선)에서 컵 축까지의 수직거리 — 0 이면 턱 축이 컵 축을 관통
+      · enclose 두 손가락이 컵 축 **양쪽**에 있는가.
+                s_l = (컵축점 − 왼손가락)·u,  s_r = (오른손가락 − 컵축점)·u
+                둘 다 양수여야 사이에 있다. min 을 컵 반경으로 정규화해 0~1.
+
+    ★along·lateral 은 **평균**한다(곱하지 않는다). 곱하면 fab 현재 상태 품질이 0.0159 로
+      떨어져 다른 항에 묻힌다 — test10/test11 을 죽인 바로 그 구조다. 평균이면 0.170.
+    ★enclose 는 바닥값(`enclose_floor`)을 남긴다. 완전 곱셈이면 주먹 상태에서 항이 통째로
+      0 이 되어 "가서 정렬하라"는 신호까지 사라진다(= 게이트와 같아진다).
+      바닥값이 있으면 개선 경로가 단조롭다: 정렬 → 벌림 → 정밀정렬, 매 단계 값이 오른다.
     """
     robot: Articulation = env.scene[robot_cfg.name]
     obj: RigidObject = env.scene[object_cfg.name]
 
-    # 두 손가락 위치에서 턱 축과 중점을 만든다.
     fingers = robot.data.body_pos_w[:, robot_cfg.body_ids, :]      # (N, 2, 3)
     p_l, p_r = fingers[:, 0, :], fingers[:, 1, :]
     mid = 0.5 * (p_l + p_r)
     jaw = p_r - p_l
-    span = torch.norm(jaw, dim=-1, keepdim=True).clamp(min=1e-6)
-    u = jaw / span
+    u = jaw / torch.norm(jaw, dim=-1, keepdim=True).clamp(min=1e-6)
 
-    # 컵 축(로컬 z)의 world 방향과, 턱 중점에서 가장 가까운 컵 축 위의 점.
+    # 컵 축(로컬 z) 위에서 턱 중점에 가장 가까운 점.
     cup_z = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]
     to_mid = mid - obj.data.root_pos_w
     cup_pt = obj.data.root_pos_w + cup_z * (to_mid * cup_z).sum(-1, keepdim=True)
 
     d = cup_pt - mid
-    along = (d * u).sum(-1).abs()                                   # 턱 축 방향 어긋남
-    lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)  # 턱 축까지의 수직거리
-    straddle = (1.0 - torch.tanh(along / along_std)) * (
+    along = (d * u).sum(-1).abs()
+    lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
+    align = 0.5 * (1.0 - torch.tanh(along / along_std)) + 0.5 * (
         1.0 - torch.tanh(lateral / lateral_std)
     )
 
-    drive = robot.data.joint_pos[:, robot.joint_names.index(drive_joint)]
-    closure = (1.0 - drive / open_pos).clamp(0.0, 1.0)
-    return straddle * closure
+    s_l = ((cup_pt - p_l) * u).sum(-1)
+    s_r = ((p_r - cup_pt) * u).sum(-1)
+    enclose = (torch.minimum(s_l, s_r) / enclose_half_width).clamp(0.0, 1.0)
+
+    return align * (enclose_floor + (1.0 - enclose_floor) * enclose)
+
+
+def ee_grasp_point_distance(
+    env: "ManagerBasedRLEnv",
+    std: float,
+    grasp_offset: float,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """도달 보상. 레퍼런스와 같은 tanh 커널이되 목표가 컵 원점이 아니라 **파지점**이다.
+
+    ★★08.22 — 레퍼런스 `object_ee_distance` 는 컵 **원점**을 겨냥한다. 큐브는 원점이
+      기하 중심이라 그게 파지점과 같지만, 우리 shaker 는 다르다:
+          컵 원점 = 상면 +92 mm · 그리퍼 통과 대역 = 상면 +10~85 mm
+      원점 높이의 컵 지름(88 mm)이 개구(84.5 mm)보다 넓어 **턱이 물리적으로 못 들어간다.**
+      즉 도달 보상이 학습 내내 **들어갈 수 없는 높이**를 가리키고 있었다.
+      G3 스크립트가 같은 지점을 겨냥했을 때 실측: pregrasp 까지 TCP 오차 2.9 mm 인데
+      진입에서 100.2 mm(벡터 −31,+93,+15)로 튕긴다. 파지 대역으로 내리면 70.7 mm 로 준다.
+      ⚠ 관절공간 test17 이 성공한 건 lifting(15) 이 압도적이라 정책이 도달 보상이 가리키는
+        높이를 **무시하도록** 배웠기 때문이다. 제어 여유가 적은 트랙은 그걸 못 이긴다.
+
+    오프셋은 **컵의 로컬 축을 따라** 적용한다 — world z 로 내리면 컵이 기울었을 때
+    파지점이 컵 밖으로 나간다.
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    cup_z = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]
+    grasp_pt = obj.data.root_pos_w + cup_z * grasp_offset
+    ee_w = ee_frame.data.target_pos_w[..., 0, :]
+    return 1.0 - torch.tanh(torch.norm(grasp_pt - ee_w, dim=1) / std)

@@ -390,13 +390,42 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   `rewards.ActionJerkL2` 는 남겨 두되, 커리큘럼이 평탄해진 뒤에도 진동이 남을
         #   때에만 꺼내 쓴다. 한 런에 한 가설만 바꾼다.
 
-        # ── 그리퍼 폐쇄 보너스는 **배선하지 않는다** ────────────────
-        # ★한때 넣었다(weight 3.0). "닫는 이득이 들어올린 뒤에만 생기니 정책이 아예 안
-        #   닫는다"는 test6 관찰이 근거였는데, 그 test6 은 **자세 게이트로 학습이 죽은**
-        #   런이라 근거로 못 쓴다. 정상 학습된 test13/16 은 게이트 없이도 lift 0.83~0.84 로
-        #   실제로 잡고 들었다. 한 런에 한 가설만 바꾼다 — 검증된 구성 복귀가 먼저다.
-        #   `rewards.gripper_closure_on_cup` 은 남겨 두되, 이번 런에서 파지 실패가
-        #   확인되면 그때 꺼내 쓴다.
+        # ── 도달 보상의 **목표 높이 교정** (08.22) ──────────────────
+        # ★★레퍼런스 `object_ee_distance` 는 컵 **원점**을 겨냥하는데, 우리 shaker 는
+        #   원점이 상면 +92 mm 로 **그리퍼 통과 대역(+10~85 mm) 밖**이다. 그 높이의 컵
+        #   지름 88 mm > 개구 84.5 mm 라 턱이 물리적으로 못 들어간다.
+        #   즉 도달 보상이 학습 내내 **들어갈 수 없는 높이**를 가리키고 있었다.
+        #   G3 실측: 컵 원점 겨냥 시 진입 TCP 오차 100.2 mm → 파지 대역 겨냥 시 70.7 mm.
+        #   std·weight 는 레퍼런스 그대로(0.1 / 1.1) — 목표점만 옮긴다.
+        self.rewards.reaching_object = RewTerm(
+            func=rewards.ee_grasp_point_distance,
+            weight=1.1,
+            params={"std": 0.1, "grasp_offset": P.CUP_ORIGIN_TO_GRASP_Z},
+        )
+
+        # ── 컵이 턱 사이에 들어왔는가 (08.22 신설) ─────────────────
+        # ★★"이번 런에서 파지 실패가 확인되면 그때 꺼내 쓴다"고 적어 뒀던 조건이 **충족됐다.**
+        #   fab_test1 이 684 epoch 동안 lifting 정확히 0 이었고, 결정론 프로브가 원인을 짚었다:
+        #       턱축까지 수직 최선 36.5 mm(≈컵 반경) · 개도 3.1 mm · '열기' 지령 0.0%
+        #   = **주먹을 쥔 채 컵 옆구리를 누르고 있었다.** 닫힌 턱에는 컵이 들어갈 자리가 없다.
+        #   성공한 test17 은 같은 자로 수직 최선 0.4 mm · 개도 26.5 mm 다.
+        #   ⚠ 옛 `gripper_closure_on_cup` 을 그대로 꺼내 쓰면 안 됐다 — closure 를 곱해
+        #     **닫을수록 커지므로** 관측된 실패 행동을 그대로 보상한다. enclose 로 교체했다.
+        #   ⚠ 관절공간 트랙(test17)에도 함께 들어간다 — 항이 태스크의 올바른 서술이고,
+        #     test17 실측 상태에서 이미 만점에 가까워 반대 압력이 없다. 다만 총보상 기준선이
+        #     최대 +3.0 이동하므로 test17 의 171.7 과 직접 비교하지 말 것.
+        self.rewards.cup_between_jaws = RewTerm(
+            func=rewards.cup_between_jaws,
+            weight=P.BETWEEN_JAWS_REWARD_WEIGHT,
+            params={
+                "along_std": P.JAW_ALONG_STD,
+                "lateral_std": P.JAW_LATERAL_STD,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "enclose_floor": P.JAW_ENCLOSE_FLOOR,
+                # ★SceneEntityCfg 는 가변 객체다 — term 마다 **새 인스턴스**여야 한다.
+                "robot_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+            },
+        )
 
         # ── 목표에서 정지 보너스 (신설) ─────────────────────────────
         # 레퍼런스 goal-tracking 은 **거리만** 본다. "옮겨서 가만히 세워 둔다"를 표현하려면
