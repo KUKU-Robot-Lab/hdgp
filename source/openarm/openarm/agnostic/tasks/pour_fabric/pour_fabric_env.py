@@ -153,7 +153,7 @@ class PourFabricEnv(DirectRLEnv):
             if rig is self.src:
                 lo_off, hi_off = cfg.pose_offset_lo_deg, cfg.pose_offset_hi_deg
                 if sign < 0:            # 좌팔이 source 면 오프셋 구간을 미러
-                    lo_off, hi_off = tuple(-h for h in hi_off), tuple(-l for l in lo_off)
+                    lo_off, hi_off = tuple(-v for v in hi_off), tuple(-v for v in lo_off)
             else:
                 # receiver 자세는 액션이 없지만 박스는 sanity 용으로 ±45° 를 둔다.
                 lo_off, hi_off = (-45.0,) * 3, (45.0,) * 3
@@ -287,6 +287,7 @@ class PourFabricEnv(DirectRLEnv):
                 idx.append(ids[0])
             rig.bank_joint_t = torch.tensor(idx, device=self.device, dtype=torch.long)
             rig.bank_joint_pos = torch.tensor(bank.joint_pos, device=self.device)
+            rig.bank_joint_target = torch.tensor(bank.joint_target, device=self.device)
             rig.bank_cup_pose = torch.tensor(bank.cup_pose, device=self.device)
             rig.bank_beads = (torch.tensor(bank.bead_state, device=self.device)
                               if bank.bead_state is not None else None)
@@ -711,9 +712,8 @@ class PourFabricEnv(DirectRLEnv):
 
     # ==================================================================
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """종료 = runaway + 컵 낙하. grasp 와 의도적으로 다르다:
-        grasp 의 fell→리스폰은 재파지가 가능해서였고, pour 의 낙하는 회복 불가라
-        방치하면 '빈손 조준' farming 이 열린다(pour_v1 문서화 근거). 계약 테스트가 pin.
+        """종료 = runaway + 컵 낙하(회복 불가 — 방치하면 '빈손 조준' farming).
+        ※grasp_lift_fabric 도 0ce705a 에서 리스폰→종료로 전환해 이제 규약이 같다.
 
         ★DirectRLEnv 는 _get_dones 를 _get_rewards **보다 먼저** 부른다(:390-392).
           낙하 판정을 여기서 계산해 두면 같은 스텝에 종료와 일회 페널티가 일치한다
@@ -749,12 +749,16 @@ class PourFabricEnv(DirectRLEnv):
         dev = self.device
 
         q0 = self._default_q[env_ids].clone()
+        # ★타깃은 측정 위치와 **다르다** — 손가락이 컵을 누르는 PD 오차가 곧 파지력이다.
+        #   측정치를 목표로 쓰면 파지력이 소멸해 컵이 미끄러진다(warm_bank docstring 실측).
+        qt0 = q0.clone()
         cup_poses = {}
         if self._warm_src is not None:
             for rig, bank_len in ((self.src, len(self._warm_src)),
                                   (self.rcv, len(self._warm_rcv))):
                 pick = torch.randint(bank_len, (n,), device=dev)
                 q0[:, rig.bank_joint_t] = rig.bank_joint_pos[pick]
+                qt0[:, rig.bank_joint_t] = rig.bank_joint_target[pick]
                 cup_poses[rig] = rig.bank_cup_pose[pick]
                 rig._last_pick = pick
         else:
@@ -769,10 +773,13 @@ class PourFabricEnv(DirectRLEnv):
                 cup_poses[rig] = pose
 
         self.robot.write_joint_state_to_sim(q0, torch.zeros_like(q0), env_ids=env_ids)
-        self.robot.set_joint_position_target(q0, env_ids=env_ids)
+        self.robot.set_joint_position_target(qt0, env_ids=env_ids)
         for rig in (self.src, self.rcv):
-            rig.hand_hold[env_ids] = q0[:, rig.hand_t]
-            rig.fabric_q[env_ids] = q0[:, rig.fab_t]
+            rig.hand_hold[env_ids] = qt0[:, rig.hand_t]
+            # ★팔도 **target** 으로 시드한다 — 수집 시 fabric_q(팔 지령)와 측정 관절의
+            #   차이가 컵 무게를 지탱하는 PD preload 다. 측정치로 시드하면 그 힘이
+            #   사라져 컵이 서서히 처진다(실측: 120스텝 24mm sag → target 시드로 해소).
+            rig.fabric_q[env_ids] = qt0[:, rig.fab_t]
             rig.fabric_qd[env_ids] = 0.0
             rig.fabric_qdd[env_ids] = 0.0
             # 앵커/지령은 capture 전까지 홈 — obs 의 cmd_rel 이 0 근방에 머물게.

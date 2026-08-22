@@ -183,7 +183,8 @@ def test_bank_load_gates_runtime():
 
     n, J = 64, 27
     kw = dict(joint_names=tuple(f"j{i}" for i in range(J)),
-              joint_pos=np.zeros((n, J)), cup_pose=np.tile([0, 0, 0.3, 1, 0, 0, 0], (n, 1)),
+              joint_pos=np.zeros((n, J)), joint_target=np.zeros((n, J)),
+              cup_pose=np.tile([0, 0, 0.3, 1, 0, 0, 0], (n, 1)),
               num_contacts=np.zeros(n), bead_state=None)
     meta = dict(robot_usd="asset_a.usd", enable_gravity=True,
                 enable_self_collisions=True, profile="p", checkpoint="c")

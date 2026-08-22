@@ -9,7 +9,12 @@
      실기 인계 프로토콜이다. 뱅크에는 **물리 상태만** 담는다.
 
 스키마 (HDF5 group "warm_states"):
-    joint_pos   (N, J)  float32 — 이 뱅크가 담당하는 팔+손 관절 (이름은 attrs)
+    joint_pos    (N, J) float32 — 이 뱅크가 담당하는 팔+손 관절 **측정** 위치
+    joint_target (N, J) float32 — 같은 관절의 **PD 지령 목표** (★필수)
+        ★측정 위치만 저장하면 파지가 풀린다 — 파지력 = kp·(target − q) 인데
+          target=q 로 복원하면 오차가 0 이라 힘이 소멸한다(실측: 복원 직후 22N →
+          120스텝 뒤 2.4N, 컵이 손에서 93mm 미끄러져 낙하). 지령 목표는 실기에서도
+          컨트롤러가 만드는 값이라 s2r 계약(측정가능량+지령량 재구성)에 부합한다.
     cup_pose    (N, 7)  float32 — env-local pos(3) + quat wxyz(4)
     bead_state  (N, k, 13) float32 — env-local root state (source 뱅크만, 선택)
     num_contacts (N,)   int64
@@ -35,7 +40,8 @@ class PourWarmBank:
 
     path: str
     joint_names: tuple            # (J,) 뱅크 저장 순서의 관절 이름
-    joint_pos: np.ndarray         # (N, J)
+    joint_pos: np.ndarray         # (N, J) 측정 위치
+    joint_target: np.ndarray      # (N, J) PD 지령 목표 (파지력의 원천)
     cup_pose: np.ndarray          # (N, 7) env-local pos + quat wxyz
     num_contacts: np.ndarray      # (N,)
     bead_state: np.ndarray | None  # (N, k, 13) env-local | None
@@ -68,7 +74,12 @@ class PourWarmBank:
             if "warm_states" not in f:
                 raise RuntimeError(f"{path}: 'warm_states' group 이 없다 (구 스키마?)")
             g = f["warm_states"]
+            if "joint_target" not in g:
+                raise RuntimeError(
+                    f"{path}: 'joint_target' 부재 — 측정 위치만으로는 파지력이 "
+                    "복원되지 않는다(구 스키마). 재수집할 것.")
             joint_pos = np.asarray(g["joint_pos"], dtype=np.float32)
+            joint_target = np.asarray(g["joint_target"], dtype=np.float32)
             cup_pose = np.asarray(g["cup_pose"], dtype=np.float32)
             num_contacts = np.asarray(g["num_contacts"], dtype=np.int64)
             bead_state = (np.asarray(g["bead_state"], dtype=np.float32)
@@ -83,6 +94,9 @@ class PourWarmBank:
             raise RuntimeError(f"{path}: 상태 {n}개 < 최소 {min_states}")
         if cup_pose.shape != (n, 7):
             raise RuntimeError(f"{path}: cup_pose {cup_pose.shape} != ({n},7)")
+        if joint_target.shape != joint_pos.shape:
+            raise RuntimeError(
+                f"{path}: joint_target {joint_target.shape} != joint_pos {joint_pos.shape}")
         if joint_pos.shape[1] != len(joint_names):
             raise RuntimeError(
                 f"{path}: joint_pos 폭 {joint_pos.shape[1]} != "
@@ -116,12 +130,13 @@ class PourWarmBank:
                   "전부 버린다(부분 적용 금지)", flush=True)
             bead_state = None
 
-        if not np.isfinite(joint_pos).all() or not np.isfinite(cup_pose).all():
-            raise RuntimeError(f"{path}: joint_pos/cup_pose 에 NaN/Inf")
+        if (not np.isfinite(joint_pos).all() or not np.isfinite(cup_pose).all()
+                or not np.isfinite(joint_target).all()):
+            raise RuntimeError(f"{path}: joint_pos/joint_target/cup_pose 에 NaN/Inf")
 
         return cls(path=str(path), joint_names=joint_names, joint_pos=joint_pos,
-                   cup_pose=cup_pose, num_contacts=num_contacts,
-                   bead_state=bead_state, meta=meta)
+                   joint_target=joint_target, cup_pose=cup_pose,
+                   num_contacts=num_contacts, bead_state=bead_state, meta=meta)
 
 
 def save_bank(
@@ -129,6 +144,7 @@ def save_bank(
     *,
     joint_names: tuple,
     joint_pos: np.ndarray,
+    joint_target: np.ndarray,
     cup_pose: np.ndarray,
     num_contacts: np.ndarray,
     bead_state: np.ndarray | None,
@@ -148,6 +164,7 @@ def save_bank(
     with h5py.File(path, "w") as f:
         g = f.create_group("warm_states")
         g.create_dataset("joint_pos", data=np.asarray(joint_pos, dtype=np.float32))
+        g.create_dataset("joint_target", data=np.asarray(joint_target, dtype=np.float32))
         g.create_dataset("cup_pose", data=np.asarray(cup_pose, dtype=np.float32))
         g.create_dataset("num_contacts", data=np.asarray(num_contacts, dtype=np.int64))
         if bead_state is not None:
