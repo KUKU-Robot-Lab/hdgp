@@ -55,9 +55,16 @@ from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import configclass
 
 from isaaclab_tasks.manager_based.manipulation.lift import mdp
-from isaaclab_tasks.manager_based.manipulation.lift.config.openarm.lift_openarm_env_cfg import (
-    LiftEnvCfg,
-)
+
+# ★IsaacLab 원본을 먼저, 없으면 vendored 사본. vision-3090 의 IsaacLab(5c2ec81c)에는
+#   openarm lift 레시피가 아직 없어 ModuleNotFoundError 로 죽는다(08.22 실측) —
+#   그 머신의 IsaacLab 을 올리면 퍼셉션 쪽 소비자가 위험해 사본을 동봉했다.
+try:
+    from isaaclab_tasks.manager_based.manipulation.lift.config.openarm.lift_openarm_env_cfg import (
+        LiftEnvCfg,
+    )
+except ModuleNotFoundError:
+    from ._vendored_lift_openarm_env_cfg import LiftEnvCfg
 
 from openarm import OPENARM_ROOT_DIR
 
