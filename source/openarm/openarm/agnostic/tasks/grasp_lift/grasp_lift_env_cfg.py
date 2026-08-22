@@ -189,6 +189,11 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     tilt_penalty_weight: float = -0.5
     tilt_free_deg: float = 20.0
     tilt_respawn_deg: float = 60.0
+    # ★리스폰 유예 반경(08.22): 스폰점에서 팁·palm 최소거리가 이 값 이하면 리스폰을
+    #   미룬다. 무확인 텔레포트가 컵을 손가락 위로 겹쳐 소환하던 결함("순간이동 관통",
+    #   force_max 86~140N 스파이크)의 수정. 값 = 컵 최대반경 0.044 + 손가락 링크 반경
+    #   ~0.012 + 여유 → 0.12 m.
+    respawn_clearance: float = 0.12
     action_l2_weight: float = -0.005
     action_rate_l2_weight: float = -0.005
     # 관절한계 위반 종료 페널티 (diff IK 는 관절한계 무방비 → 종료+페널티로 처리)

@@ -467,13 +467,25 @@ class GraspLiftEnv(DirectRLEnv):
         # 국소최적(agn_test11 ep3000 영상)을 끊는다.
         _tipped = tilt_deg > float(self.cfg.tilt_respawn_deg)
         _fell = (obj_pos[:, 2] < float(self.cfg.object_min_z)) | _tipped
-        if _fell.any():
-            _ids = _fell.nonzero(as_tuple=False).squeeze(-1)
+        # ★스폰 지대가 손으로 점유된 동안은 리스폰을 **미룬다**(08.22, 사용자 영상 발견).
+        #   무확인 텔레포트가 컵을 손가락 위로 겹쳐 소환 → SDF 반발 수백 N 스파이크
+        #   (TB force_max 86~140N)·"순간이동 관통" 프레임·접촉 obs 오염. 미룸은 자기해소다:
+        #   reaching 이 손을 쓰러진 컵 쪽으로 끌면 스폰 지대가 비고 다음 스텝에 발화한다.
+        _tips_l = (self.robot.data.body_pos_w[:, self._tip_ids_t]
+                   - self.scene.env_origins[:, None, :])
+        _palm_l = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
+        _hand_min = torch.minimum(
+            torch.norm(_tips_l - self.object_spawn_pos[:, None, :], dim=-1).min(dim=1).values,
+            torch.norm(_palm_l - self.object_spawn_pos, dim=-1))
+        _do_respawn = _fell & (_hand_min > float(self.cfg.respawn_clearance))
+        if _do_respawn.any():
+            _ids = _do_respawn.nonzero(as_tuple=False).squeeze(-1)
             _root = torch.zeros(len(_ids), 13, device=self.device)
             _root[:, :3] = self.object_spawn_pos[_ids] + self.scene.env_origins[_ids]
             _root[:, 3] = 1.0
             self.object.write_root_state_to_sim(_root, env_ids=_ids)
-        self.extras["task/respawn_rate"] = _fell.float().mean()
+        self.extras["task/respawn_rate"] = _do_respawn.float().mean()
+        self.extras["task/respawn_deferred"] = (_fell & ~_do_respawn).float().mean()
         self.extras["task/object_tilt_deg"] = tilt_deg.mean()
         self.extras["task/tipped_rate"] = _tipped.float().mean()
 
