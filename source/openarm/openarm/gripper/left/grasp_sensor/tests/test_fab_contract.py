@@ -263,3 +263,25 @@ def test_physx_aggregate_pair_buffers_cover_measured_demand():
     assert ns["gpu_collision_stack_size"] >= 68_960_016, (
         "collisionStackSize 가 실측 요구치 미만 — 'Contacts have been dropped' 가 난다"
     )
+
+
+
+def test_jaw_reference_line_sits_at_the_measured_grasp_depth():
+    """★★파지 기준점은 TCP 도 턱 중점도 아니다 — **손가락 패드 중앙**이다.
+
+    test17(성공) 정책의 **실제로 들고 있는 13,058 샘플** 실측: 컵 축의 base z 중앙값
+    **+46.9 mm**. 손가락 강체 원점은 +15.0 mm, TCP 는 +80.0 mm 다.
+    기준선을 안 옮기면 보상이 "컵을 손바닥까지 32 mm 더 밀어넣어라"를 가리킨다.
+    ⚠ 여기서 두 번 틀렸다: TCP 기준(진입오차 70.7 mm) → 턱 중점 기준(141.9 mm, 악화).
+      lateral 의 min(최선 1 샘플)을 깊이로 읽은 게 원인 — 분포를 봐야 한다.
+    """
+    assert P.JAW_FINGER_BODY_Z < P.GRASP_DEPTH_IN_BASE_Z < P.TCP_OFFSET_IN_BASE_Z, (
+        "파지 깊이가 손가락 원점과 TCP 사이에 있어야 한다"
+    )
+    assert abs(P.JAW_PAD_OFFSET - 0.0319) < 1e-6
+    assert abs(P.TCP_TO_GRASP_DEPTH - 0.0331) < 1e-6
+    rew = _src("grasp_left_rewards.py")
+    body = rew[rew.index("def cup_between_jaws("):]
+    assert "approach * pad_offset" in body, "기준선을 패드 중앙으로 옮기지 않았다"
+    cfg = _src("grasp_left_env_cfg.py")
+    assert '"pad_offset": P.JAW_PAD_OFFSET' in cfg

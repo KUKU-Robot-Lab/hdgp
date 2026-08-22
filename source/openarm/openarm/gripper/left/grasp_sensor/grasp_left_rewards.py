@@ -292,6 +292,7 @@ def cup_between_jaws(
     lateral_std: float,
     enclose_half_width: float,
     enclose_floor: float,
+    pad_offset: float,
     robot_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
 ) -> torch.Tensor:
@@ -326,6 +327,12 @@ def cup_between_jaws(
     obj: RigidObject = env.scene[object_cfg.name]
 
     fingers = robot.data.body_pos_w[:, robot_cfg.body_ids, :]      # (N, 2, 3)
+    # ★★기준선을 **손가락 패드 중앙**으로 옮긴다. 손가락 강체 원점은 base z=+15 mm 인데
+    #   성공 파지의 컵 축은 z=**+46.9 mm** 다(test17 13,058 샘플 중앙값). 원점 그대로 쓰면
+    #   보상이 "컵을 손바닥까지 32 mm 더 밀어넣어라"를 가리킨다 — 실제로는 박힌다.
+    #   손가락은 base 의 y 로만 미끄러지므로 손가락 자세 = base 자세다(접근축을 여기서 얻는다).
+    approach = matrix_from_quat(robot.data.body_quat_w[:, robot_cfg.body_ids[0], :])[:, :, 2]
+    fingers = fingers + (approach * pad_offset).unsqueeze(1)
     p_l, p_r = fingers[:, 0, :], fingers[:, 1, :]
     mid = 0.5 * (p_l + p_r)
     jaw = p_r - p_l

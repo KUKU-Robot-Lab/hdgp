@@ -432,6 +432,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "lateral_std": P.JAW_LATERAL_STD,
                 "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
                 "enclose_floor": P.JAW_ENCLOSE_FLOOR,
+                "pad_offset": P.JAW_PAD_OFFSET,
                 # ★SceneEntityCfg 는 가변 객체다 — term 마다 **새 인스턴스**여야 한다.
                 "robot_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
             },

@@ -475,6 +475,25 @@ GRASP_HEIGHT_BAND = (0.010, 0.085)
 #   ⚠ 관절공간 test17 이 성공한 건 lifting(15) 이 압도적이라 정책이 보상이 가리키는 높이를
 #     **무시하고** 더 낮은 곳을 물도록 배웠기 때문이다. 즉 보상은 내내 틀린 곳을 가리켰고
 #     제어 여유가 큰 트랙만 그걸 이겨냈다.
+# ★★파지 기준점은 TCP 도, 턱 중점도 아니다 — **손가락 패드 중앙**이다 (실측).
+#     TCP            gripper_base 프레임 z **+80.0 mm** (= TCP_OFFSET_IN_BASE_Z)
+#     손가락 강체 원점                    z **+15.0 mm**
+#     ★성공 파지의 컵 축                  z **+46.9 mm** (중앙값)
+#   마지막 값은 test17(파지·리프트·이송 성공) 정책에서 **실제로 들고 있는 13,058 샘플**의
+#   컵 축 최근접점을 base 프레임으로 변환해 잰 것이다(10~90% = 39.7~90.9 mm).
+#
+#   ⚠ 여기서 두 번 틀렸다. 기록해 둔다:
+#     ① TCP 를 컵 축에 맞췄다 → 턱이 못 미쳐 손가락 끝만 컵을 스친다(G3 진입 오차 70.7 mm).
+#     ② 그래서 턱 **중점**(z=15)에 맞추려고 65 mm 더 들여보냈다 → 컵이 손바닥에 박힌다
+#        (G3 141.9 mm 로 **악화**). lateral 의 `min`(전 스텝 최선 1 샘플)을 파지 깊이로
+#        읽은 것이 원인 — 그 값은 스치는 순간의 이상치였다. **분포를 봐야 한다.**
+JAW_FINGER_BODY_Z = 0.015          # 실측: 손가락 강체 원점의 base z
+GRASP_DEPTH_IN_BASE_Z = 0.0469     # 실측: 성공 파지 시 컵 축의 base z (중앙값)
+# 턱 축 직선(손가락 원점을 잇는 선)을 패드 중앙까지 **앞으로 옮기는** 양.
+# 이걸 안 하면 보상이 "컵을 손바닥까지 밀어넣어라"를 가리킨다.
+JAW_PAD_OFFSET = GRASP_DEPTH_IN_BASE_Z - JAW_FINGER_BODY_Z          # 0.0319 m
+# TCP 지령은 컵 축보다 이만큼 **앞**에 둔다(스크립트 진입용).
+TCP_TO_GRASP_DEPTH = TCP_OFFSET_IN_BASE_Z - GRASP_DEPTH_IN_BASE_Z   # 0.0331 m
 GRASP_TARGET_Z = TABLE_SURFACE_Z + 0.5 * (GRASP_HEIGHT_BAND[0] + GRASP_HEIGHT_BAND[1])
 CUP_ORIGIN_TO_GRASP_Z = GRASP_TARGET_Z - CUP_SPAWN_Z      # -0.0446 m
 

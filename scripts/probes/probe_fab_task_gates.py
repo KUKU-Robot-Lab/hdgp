@@ -234,6 +234,7 @@ elif args.gate == "g3":
                             device=env.device)
     approach = approach / approach.norm()
     _gp0 = cup0.clone(); _gp0[:, 2] += P.CUP_ORIGIN_TO_GRASP_Z
+    _gp0 = _gp0 + P.TCP_TO_GRASP_DEPTH * approach
     e0 = goto((_gp0 - 0.10 * approach).clamp(_BOX_LO, _BOX_HI), grip=+1.0)
     for t in (0.06, 0.03):
         goto((_gp0 - t * approach).clamp(_BOX_LO, _BOX_HI), grip=+1.0, iters=2)
@@ -242,6 +243,9 @@ elif args.gate == "g3":
     #   부딪혀 밀려난다(실측: TCP 오차 100.2 mm, 벡터 −31,+93,+15).
     grasp_pt = cup0.clone()
     grasp_pt[:, 2] += P.CUP_ORIGIN_TO_GRASP_Z
+    # ★★턱 중점은 TCP 보다 접근축으로 65 mm 뒤다(실측). TCP 를 컵 축에 맞추면 턱이 그만큼
+    #   못 미쳐 손가락 끝만 컵을 스친다. TCP 지령을 그만큼 **더 들여보낸다**.
+    grasp_pt = grasp_pt + P.TCP_TO_GRASP_DEPTH * approach
     e1 = goto(grasp_pt, grip=+1.0, iters=4)
     err_vec = (tcp() - grasp_pt).mean(dim=0) * 1e3
     per_env = ((tcp() - grasp_pt).norm(dim=-1) * 1e3)

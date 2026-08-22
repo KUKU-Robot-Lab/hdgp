@@ -188,6 +188,10 @@ def main() -> None:
         cup_dxy.append(float((cup[:, :2] - spawn_xy[0]).norm(dim=-1).mean()))
         # straddle: 턱 중점 ↔ 컵 축. 보상 함수와 동일한 기하.
         _f = robot.data.body_pos_w[:, finger_ids, :]
+        # ★기준선을 손가락 패드 중앙으로 (보상 함수와 동일). 손가락 원점 그대로면
+        #   "컵을 손바닥까지 밀어넣어라"를 재는 자가 된다 — 실측 파지 깊이는 base z=+46.9mm.
+        _ap = matrix_from_quat(robot.data.body_quat_w[:, finger_ids[0], :])[:, :, 2]
+        _f = _f + (_ap * P.JAW_PAD_OFFSET).unsqueeze(1)
         _mid = 0.5 * (_f[:, 0, :] + _f[:, 1, :])
         _jaw = _f[:, 1, :] - _f[:, 0, :]
         _u = _jaw / _jaw.norm(dim=-1, keepdim=True).clamp(min=1e-6)
