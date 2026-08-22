@@ -59,7 +59,9 @@ params:
     mixed_precision: False
     normalize_input: True
     normalize_value: True
-    value_bootstrap: False
+    # ★True 필수(08.22): 전도/낙하가 truncation 으로 env 를 리셋한다. bootstrap 이
+    # 없으면 truncation=termination 이 되어 미래 보상 절벽 → 회피 학습(agn_test2) 재발.
+    value_bootstrap: True
     num_actors: -1
     reward_shaper:
       scale_value: 0.01
@@ -95,7 +97,7 @@ params:
     central_value_config:
       normalize_input: True
       normalize_value: True
-      value_bootstrap: False
+      value_bootstrap: True
       minibatch_size: 16384
       mini_epochs: 4
       learning_rate: 5e-5

@@ -185,15 +185,13 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     # dexsuite 는 이 항을 뺐지만 그 전제(goal=물체 근처 랜덤 pose)가 우리와 다르다.
     lift_weight: float = 1.5
     # 전도 페널티 — 20° 여유대(정상 파지 흔들림 무징계) 초과분 비례, 최대 −0.5.
-    # 60° 초과 = 사실상 넘어짐 → 낙하와 동일하게 컵만 리스폰(죽은 시간 방지).
+    # 60° 초과 = 사실상 넘어짐 → **truncation 으로 env 전체 리셋**(08.22, 사용자 지시).
+    # 컵 단독 리스폰은 폐기 — 텔레포트 전이가 학습 데이터를 오염시키고, 손 위로
+    # 겹쳐 소환되는 결함이 있었다. value_bootstrap(yaml)과 반드시 짝이어야 한다:
+    # bootstrap 없는 truncation 은 termination 과 같아져 회피 학습(agn_test2)이 재발한다.
     tilt_penalty_weight: float = -0.5
     tilt_free_deg: float = 20.0
-    tilt_respawn_deg: float = 60.0
-    # ★리스폰 유예 반경(08.22): 스폰점에서 팁·palm 최소거리가 이 값 이하면 리스폰을
-    #   미룬다. 무확인 텔레포트가 컵을 손가락 위로 겹쳐 소환하던 결함("순간이동 관통",
-    #   force_max 86~140N 스파이크)의 수정. 값 = 컵 최대반경 0.044 + 손가락 링크 반경
-    #   ~0.012 + 여유 → 0.12 m.
-    respawn_clearance: float = 0.12
+    tilt_reset_deg: float = 60.0
     action_l2_weight: float = -0.005
     action_rate_l2_weight: float = -0.005
     # 관절한계 위반 종료 페널티 (diff IK 는 관절한계 무방비 → 종료+페널티로 처리)

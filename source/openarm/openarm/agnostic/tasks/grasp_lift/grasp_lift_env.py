@@ -430,12 +430,8 @@ class GraspLiftEnv(DirectRLEnv):
             - self.scene.env_origins[:, None, :]
         )
         contact = self._contact_forces()
-        # 물체 기울기: 로컬 z 축과 월드 z 축 사이각(도)
-        _obj_z = quat_apply(
-            self.object.data.root_quat_w,
-            torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, 3),
-        )
-        tilt_deg = torch.rad2deg(torch.acos(_obj_z[:, 2].clamp(-1.0, 1.0)))
+        # 물체 기울기 — 같은 스텝에 _get_dones 가 계산·캐시한 값(dones 가 rewards 보다 먼저)
+        tilt_deg = self._tilt_deg_buf
         total, terms, gate = compute_grasp_lift_rewards(
             object_tilt_deg=tilt_deg,
             height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
@@ -458,36 +454,13 @@ class GraspLiftEnv(DirectRLEnv):
         goal_dist = torch.norm(obj_pos - self.goal_pos, dim=-1)
         self._goal_reached_now = goal_dist < float(self.cfg.success_pos_tolerance)
 
-        # ---- 떨어진 컵 즉시 리스폰 (2026-08-20, agn_test3 ep3000 개입) -------------
-        # 스텝의 25%가 "컵이 바닥에 있는 죽은 시간"(fell_rate 0.25, height_delta -76mm)
-        # 이라 접근·접촉 연습 밀도가 3/4 로 깎였다. 종료(회피 유인 학습, agn_test2)도
-        # 방치(죽은 시간, agn_test3)도 아닌 세 번째 선택지: 컵만 스폰 위치로 되돌린다
-        # (로봇·에피소드·goal 유지). 보상은 위에서 떨어진 위치 기준으로 이미 계산됐다.
-        # 전도(>tilt_respawn_deg)도 같은 처리 — 쓰러진 컵을 눌러 게이트만 채우는
-        # 국소최적(agn_test11 ep3000 영상)을 끊는다.
-        _tipped = tilt_deg > float(self.cfg.tilt_respawn_deg)
-        _fell = (obj_pos[:, 2] < float(self.cfg.object_min_z)) | _tipped
-        # ★스폰 지대가 손으로 점유된 동안은 리스폰을 **미룬다**(08.22, 사용자 영상 발견).
-        #   무확인 텔레포트가 컵을 손가락 위로 겹쳐 소환 → SDF 반발 수백 N 스파이크
-        #   (TB force_max 86~140N)·"순간이동 관통" 프레임·접촉 obs 오염. 미룸은 자기해소다:
-        #   reaching 이 손을 쓰러진 컵 쪽으로 끌면 스폰 지대가 비고 다음 스텝에 발화한다.
-        _tips_l = (self.robot.data.body_pos_w[:, self._tip_ids_t]
-                   - self.scene.env_origins[:, None, :])
-        _palm_l = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
-        _hand_min = torch.minimum(
-            torch.norm(_tips_l - self.object_spawn_pos[:, None, :], dim=-1).min(dim=1).values,
-            torch.norm(_palm_l - self.object_spawn_pos, dim=-1))
-        _do_respawn = _fell & (_hand_min > float(self.cfg.respawn_clearance))
-        if _do_respawn.any():
-            _ids = _do_respawn.nonzero(as_tuple=False).squeeze(-1)
-            _root = torch.zeros(len(_ids), 13, device=self.device)
-            _root[:, :3] = self.object_spawn_pos[_ids] + self.scene.env_origins[_ids]
-            _root[:, 3] = 1.0
-            self.object.write_root_state_to_sim(_root, env_ids=_ids)
-        self.extras["task/respawn_rate"] = _do_respawn.float().mean()
-        self.extras["task/respawn_deferred"] = (_fell & ~_do_respawn).float().mean()
+        # ★컵 단독 리스폰은 폐기됐다(08.22, 사용자 지시). 텔레포트 전이(s→s′ 불연속)가
+        #   학습 데이터에 그대로 들어가 value/LSTM 이 비마르코프 점프를 학습했고, 손이
+        #   스폰 지대에 있으면 컵이 손가락 위로 겹쳐 소환됐다("순간이동 관통").
+        #   전도/낙하/이탈은 이제 _get_dones 의 **truncation** 이 env 전체 리셋으로 처리한다.
         self.extras["task/object_tilt_deg"] = tilt_deg.mean()
-        self.extras["task/tipped_rate"] = _tipped.float().mean()
+        self.extras["task/tipped_rate"] = (
+            tilt_deg > float(self.cfg.tilt_reset_deg)).float().mean()
 
         # ---- 로깅 ----
         for k, v in terms.items():
@@ -550,16 +523,28 @@ class GraspLiftEnv(DirectRLEnv):
         beyond = (q_arm < self._arm_lo - 0.05) | (q_arm > self._arm_hi + 0.05)
         runaway = qd_arm.abs() > 20.0
         self._abnormal_buf = (beyond | runaway).any(dim=-1)
-        # ★2026-08-20 fell/out 은 **종료하지 않는다** (로깅만). agn_test2 ep1000 실측:
-        #   컵 근처에 가면 확률적으로 쳐서 떨어뜨림 → 종료 → discount 된 미래 보상 전체
-        #   소실 → 정책이 "접근하지 않고 에피소드를 길게 끄는" 회피를 학습
-        #   (reaching 0.056→0.005 붕괴 + episode_lengths 384→389 동반 상승).
-        #   떨어진 컵은 reaching/tracking 이 자연히 낮아 보상으로 이미 처벌된다.
+        # ---- 전도/낙하/이탈 = env 전체 리셋 (08.22, 사용자 지시) ----------------------
+        # 두 실패한 선행 설계의 교훈을 모두 반영한 형태:
+        #   · termination(agn_test2): done 이 미래 보상 전부를 끊어 **암묵적 대형 페널티**
+        #     → "접근하지 않는" 회피 학습 (reaching 0.056→0.005 붕괴).
+        #   · 컵 단독 리스폰(agn_test4~lstm_test4): 텔레포트 전이가 학습 데이터에 들어가
+        #     value/LSTM 오염 + 손 위 겹침 소환.
+        # → **truncation + value_bootstrap**(yaml): env 는 리셋되지만 V(s′) 부트스트랩이
+        #   미래 보상을 대신해 return 절벽이 없다. 넘어뜨림의 대가는 tilt_penalty 와
+        #   "낮은 V(쓰러진 상태)" 만큼만 — 보상과 무관한 순수 리셋에 가장 가깝다.
+        _obj_z = quat_apply(
+            self.object.data.root_quat_w,
+            torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, 3),
+        )
+        self._tilt_deg_buf = torch.rad2deg(torch.acos(_obj_z[:, 2].clamp(-1.0, 1.0)))
+        tipped = self._tilt_deg_buf > float(self.cfg.tilt_reset_deg)
         terminated = self._abnormal_buf
-        truncated = self.episode_length_buf >= self.max_episode_length - 1
+        timeout = self.episode_length_buf >= self.max_episode_length - 1
+        truncated = timeout | fell | tipped | out_xy
         self.extras["task/abnormal_rate"] = self._abnormal_buf.float().mean()
         self.extras["task/fell_rate"] = fell.float().mean()
         self.extras["task/out_xy_rate"] = out_xy.float().mean()
+        self.extras["task/object_reset_rate"] = (fell | tipped | out_xy).float().mean()
         return terminated, truncated
 
     # ------------------------------------------------------------------
