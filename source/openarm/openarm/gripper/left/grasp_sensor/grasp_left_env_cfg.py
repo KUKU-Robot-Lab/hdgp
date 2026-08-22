@@ -97,8 +97,15 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   ★줄인 뒤에는 반드시 오버플로 카운트 0 을 확인할 것 — 부족하면 접촉이 조용히 유실된다.
         self.sim.physx.gpu_max_rigid_patch_count = 2 ** 20
         self.sim.physx.gpu_max_rigid_contact_count = 2 ** 21
-        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 2 * 1024 * 1024
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 1024 * 1024
+        # ★★08.22 실측으로 올렸다. 2 * 1024 * 1024 로는 **부족했다** — vision-3090 2048 env
+        #   에서 PhysX 가 "increase foundLostAggregatePairsCapacity to **4562626**" 를 냈다.
+        #   ⚠ 이건 죽지 않고 경고만 내면서 **접촉을 조용히 놓치는** 종류다("the simulation
+        #     will miss interactions"). fab_test1 이 이 상태로 4000 epoch 을 돌 뻔했고,
+        #     내 모니터링 grep 이 "Patch buffer|buffer overflow" 만 봐서 놓쳤다.
+        #     → 모니터링 패턴에 반드시 `PxGpuDynamicsMemoryConfig` 를 넣을 것.
+        #   요구치 4.56M 에 1.8 배 여유. 쌍 버퍼라 VRAM 증가는 수십 MB 수준이다.
+        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 8 * 1024 * 1024
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 4 * 1024 * 1024
         self.sim.physx.gpu_collision_stack_size = 2 ** 26
 
         # ── 로봇 ────────────────────────────────────────────────────

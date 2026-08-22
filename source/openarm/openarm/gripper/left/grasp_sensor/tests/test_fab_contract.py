@@ -232,3 +232,29 @@ def test_reach_reward_targets_the_graspable_band_not_the_cup_origin():
     # ★오프셋은 컵 로컬 축을 따라야 한다 — world z 면 컵이 기울 때 파지점이 컵 밖으로 나간다
     body = rew[rew.index("def ee_grasp_point_distance("):]
     assert "matrix_from_quat" in body and "cup_z * grasp_offset" in body
+
+
+def test_physx_aggregate_pair_buffers_cover_measured_demand():
+    """★★부족해도 **죽지 않고 접촉만 조용히 놓친다** — 가장 위험한 종류다.
+
+    vision-3090 2048 env 실측: PhysX 가 foundLostAggregatePairsCapacity **4,562,626** 을
+    요구했다. fab_test1 은 2 * 1024 * 1024 로 돌아 내내 상호작용을 놓치고 있었고,
+    모니터링 grep 이 "Patch buffer|buffer overflow" 만 봐서 드러나지 않았다.
+    """
+    src = _src("grasp_left_env_cfg.py")
+    ns: dict = {}
+    for line in src.splitlines():
+        t = line.strip()
+        if t.startswith("self.sim.physx.gpu_") and "=" in t:
+            key, val = t.split("=", 1)
+            try:
+                ns[key.strip().rsplit(".", 1)[-1]] = eval(val.strip())  # noqa: S307
+            except Exception:  # noqa: BLE001
+                pass
+    assert ns["gpu_found_lost_aggregate_pairs_capacity"] >= 4_562_626, (
+        "실측 요구치 미만 — PhysX 가 접촉을 조용히 놓친다"
+    )
+    assert (
+        ns["gpu_total_aggregate_pairs_capacity"]
+        >= ns["gpu_found_lost_aggregate_pairs_capacity"] // 2
+    ), "total 이 found_lost 대비 지나치게 작다"
