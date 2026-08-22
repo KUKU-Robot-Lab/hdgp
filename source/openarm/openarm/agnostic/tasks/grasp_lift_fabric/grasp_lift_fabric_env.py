@@ -694,8 +694,9 @@ class GraspLiftFabricEnv(DirectRLEnv):
         _best = contact.max(dim=1).values
         self.extras["contact/force_max"] = contact.max()
         self.extras["contact/force_best_finger"] = _best.mean()
-        self.extras["contact/n_over_thr"] = (contact > thr).float().sum(dim=1).mean()
-        self.extras["contact/n_over_tenth"] = (contact > thr * 0.1).float().sum(dim=1).mean()
+        _g_thr = float(self.cfg.contact_force_threshold)
+        self.extras["contact/n_over_thr"] = (contact > _g_thr).float().sum(dim=1).mean()
+        self.extras["contact/n_over_tenth"] = (contact > _g_thr * 0.1).float().sum(dim=1).mean()
         self.extras["contact/group_a"] = contact[:, self._grp_a].max(dim=1).values.mean()
         self.extras["contact/group_b"] = contact[:, self._grp_b].max(dim=1).values.mean()
         # 손끝 최소거리 — approach 의 합만으론 "닿기 직전"인지 알 수 없다
