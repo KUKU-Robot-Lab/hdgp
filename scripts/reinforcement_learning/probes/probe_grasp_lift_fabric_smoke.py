@@ -57,6 +57,15 @@ if args.self_collisions or args.gravity:
           f" · disable_gravity={env_cfg.robot_cfg.spawn.rigid_props.disable_gravity}")
 env = gym.make(args.task, cfg=env_cfg).unwrapped
 p = env.profile
+# ★★id ↔ 프로필 일치 가드. cfg 클래스의 profile_name 이 데이터클래스 상속에 가려져
+#   좌팔 id 로 우팔 프로필이 조용히 로드된 실측(08.22)이 있다 — 로그에 profile= 이
+#   찍혀도 대조하지 않으면 못 잡는다.
+_m = args.task.split("_")
+_id_short, _id_side = _m[0].replace("open-", ""), _m[1]
+if p.asset.short != _id_short or p.side != _id_side:
+    raise RuntimeError(
+        f"태스크 id 와 프로필 불일치: id={args.task} (short={_id_short}, side={_id_side})"
+        f" vs profile={p.name} (short={p.asset.short}, side={p.side})")
 
 banner("1. 자산 계약")
 print(f"  프로필      : {p.name}  (자산 {p.asset.name}, 태그 {p.asset.tag})")

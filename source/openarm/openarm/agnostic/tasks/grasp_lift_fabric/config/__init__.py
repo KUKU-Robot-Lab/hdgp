@@ -28,13 +28,22 @@ REGISTERED: dict[str, str] = {}
 
 def _cfg_class(profile, play: bool):
     name = f"GraspLiftFabric_{profile.name}{'_PLAY' if play else ''}_Cfg"
-    ns = {"profile_name": profile.name}
-    if play:
-        def __post_init__(self):
+
+    # ★★클래스 속성으로 두면 안 된다. 베이스가 configclass(데이터클래스)라 상속된
+    #   __init__ 이 **베이스 필드 기본값**("bis_right")을 인스턴스 속성으로 다시 쓴다 —
+    #   서브클래스의 일반 클래스 속성은 조용히 가려진다. 실측: 좌팔 id
+    #   `open-bis_l_...` 로 부팅했는데 profile=bis_right 가 로드됐다(08.22).
+    #   __post_init__ 에서 **인스턴스 속성**으로 강제한 뒤 베이스 resolve 를 태운다.
+    #   (기본 인자 바인딩 `_pn=profile.name` 은 루프 late-binding 함정 방지.)
+    _play = play
+
+    def __post_init__(self, _pn=profile.name, _play=_play):
+        self.profile_name = _pn
+        if _play:
             self.scene.num_envs = 50
-            GraspLiftFabricEnvCfg.__post_init__(self)
-        ns["__post_init__"] = __post_init__
-    cls = type(name, (GraspLiftFabricEnvCfg,), ns)
+        GraspLiftFabricEnvCfg.__post_init__(self)
+
+    cls = type(name, (GraspLiftFabricEnvCfg,), {"__post_init__": __post_init__})
     globals()[name] = cls          # entry point 는 "모듈:속성" 문자열이라 노출 필요
     return cls
 
