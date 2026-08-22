@@ -326,7 +326,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         self.observations.policy.joint_vel.params["asset_cfg"] = _left_joints()
         self.rewards.joint_vel.params["asset_cfg"] = _left_joints()
 
-        # ── 리프트 판정: 이진 게이트가 아니라 **연속 램프** ─────────
+        # ── 리프트 판정: **이진 하드 게이트** ───────────────────────
         # ★★리프트 임계는 **놓인 컵의 원점 + 4 cm** 다(하드 게이트).
         #   08.22 연속 램프에서 되돌렸다 — 램프의 근거였던 "IK test3 이 총보상 149 인데
         #   3.6 mm 만 올렸다"는 게이트 모양이 아니라 **임계값이 스폰보다 낮았던 것**이
