@@ -19,14 +19,14 @@ fabric_params:
         mass_sharpness: 20.0
         mass_switch_offset: 1.
         conical_sharpness: 20.
-        conical_gain: 1.
+        conical_gain: 3.
     joint_limit_repulsion:
         velocity_gate: True
         breakaway_distance: 0.0
         breakaway_velocity: 0.
         soft_relu_gain: 8.
         metric_scalar: 0.02
-        metric_exploder_offset: 0.1
+        metric_exploder_offset: 0.02   # 0.1 은 j6 홈여유 0.14 rad 바로 안쪽이라 메트릭이 상시 폭발
         max_metric: 100.
         damping_gain: 8.
     hand_attractor:
@@ -46,13 +46,13 @@ fabric_params:
         mass_switch_offset: 0.5
         conical_sharpness: 40.
         conical_gain: 80.
-        damping: 50.
+        damping: 100.
         damping_sharpness: 10.
         damping_radius: .2
     body_repulsion:
       max_depth: 2.
       min_depth: 0.01
-      engage_depth: 0.30
+      engage_depth: 0.04    # 0.30 은 40 cm 작업공간에서 상시 켜짐(좌팔 홈 최근접 47.8 mm)
       breakaway_depth: 0.0
       breakaway_velocity: 0.
       metric_scalar: 1.
@@ -112,11 +112,16 @@ fabric_params:
                                     ["tesollo_right_rl_dg_4_3", "world_body"],
                                     ["tesollo_right_rl_dg_5_1", "world_body"],
                                     ["tesollo_right_rl_dg_5_3", "world_body"],
-                                    # arm link vs world_body (로봇 몸통 충돌 회피)
-                                    ["openarm_right_link2", "world_body"],
-                                    ["openarm_right_link4", "world_body"],
-                                    ["openarm_right_link6", "world_body"],
-                                    ["openarm_right_link7", "world_body"]]
+                                    # ★arm link ↔ world_body 쌍은 **제거했다**.
+                                    #   world_body 는 base 축 위 합성 구 3개(z 0.15/0.45/0.70,
+                                    #   r 0.18/0.15/0.12)로 몸통을 근사한 것인데, 좌팔은 그 몸통에
+                                    #   **직접 마운트**돼 있어 어깨·상완이 구조적으로 구 안에 있다.
+                                    #   좌팔 홈 실측: 8쌍이 최대 83 mm 관통, 156쌍 중 103쌍이 engage
+                                    #   (scratchpad/spheres.py). 반경을 줄여 풀리는 배치가 아니다
+                                    #   (필요 반경 <0.04 = 기둥이 무의미해짐).
+                                    #   palm·손가락 ↔ world_body 쌍은 위에 **남겨 두었다** — 그쪽은
+                                    #   실제로 몸통을 향해 휘두를 수 있어 회피가 유효하다.
+                                    ]
     cspace_damping:
       gain: 10.
     speed_control:

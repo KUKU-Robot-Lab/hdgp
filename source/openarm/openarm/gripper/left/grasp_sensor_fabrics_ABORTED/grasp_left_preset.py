@@ -116,9 +116,18 @@ RIGHT_REST_JOINT_POS = {**RIGHT_ARM_REST_JOINT_POS, **RIGHT_HAND_REST_JOINT_POS}
 # ⚠ `l_hl_gripper_tcp` 는 physics USD 에서 고정 프레임이 강체로 병합돼 **존재하지 않는다**.
 #   ContactSensor 대상으로도, body_pos_w 조회 대상으로도 쓸 수 없다.
 #   TCP 는 `l_hl_gripper_base` 에서 FK 오프셋(TCP_OFFSET_IN_BASE_Z)으로 계산한다.
+# ★08.21 자산 이력 주의. 08:02 재빌드(ffe4239)는 고정조인트를 병합해
+#   `l_hl_gripper_base` 가 강체에서 사라졌고 태스크가 `body_names.index()` 에서 죽었다.
+#   13:49 재빌드(81dfcf0 "keep fixed joints unmerged")로 **되돌아왔다** — 실측 확인.
+#   같은 수정으로 `l_hl_gripper_tcp` 도 이제 강체로 존재한다(강체 39 → 57).
+#   그래도 앵커는 base + 오프셋을 유지한다: 기존 보상·IK·테스트가 전부 이 규약으로
+#   검증돼 있고, 바꿀 이유가 없다. tcp 바디는 필요해지면 그때 쓴다.
 GRIPPER_BASE_BODY = "l_hl_gripper_base"
 GRIPPER_FINGER_BODIES = ("l_hl_gripper_left_finger", "l_hl_gripper_right_finger")
 TCP_OFFSET_IN_BASE_Z = 0.08     # m, l_hj_gripper_tcp origin
+# 그리퍼 base 원점 기준 팁 거리 — 앵커가 바뀌어도 이 값은 그리퍼 고유값이라 불변이다.
+_TIP_FROM_GRIPPER_BASE_Z = 0.0954
+_TCP_FROM_GRIPPER_BASE_Z = 0.08
 
 # Fabrics (openarm_tesollo_sensor_left_gripper URDF) — palm_link == 그리퍼 TCP
 FABRIC_ROBOT_DIR = "openarm_tesollo_sensor_left_gripper"
@@ -179,7 +188,7 @@ GRASP_DEPTH = 0.02
 
 # 핑거 팁이 TCP 보다 접근축 방향으로 앞서 있는 거리 [m].
 # gripper_base 기준 팁 z=0.0954, TCP z=0.08 (probe_gripper_opening 실측).
-FINGERTIP_AHEAD_OF_TCP = 0.0954 - TCP_OFFSET_IN_BASE_Z
+FINGERTIP_AHEAD_OF_TCP = _TIP_FROM_GRIPPER_BASE_Z - _TCP_FROM_GRIPPER_BASE_Z
 
 # 액션 기준점(pregrasp)은 파지 자세에서 접근축 **반대**로 물러난 곳.
 # action=0 이면 Fabrics 가 홈에서 여기까지 스스로 접근하고, 정책은 마지막 진입과 폐쇄를 학습한다.

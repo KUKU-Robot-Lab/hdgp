@@ -1,0 +1,54 @@
+# OpenArm **좌팔** + 2지 그리퍼 전용 fabric world.
+#
+# ★왜 별도 파일인가: 좌팔 태스크가 우팔용 `open_tesollo_boxes_no_table.yaml` 을 그대로 쓰고
+#   있었고, 그 파일에는 **좌팔과 좌팔의 컵을 장애물로 세워둔 항목 2개**가 있다
+#   (`left_arm_body`, `left_target_cup`). 우팔 태스크에서는 옳다 — 우팔이 좌측으로 넘어오는
+#   것을 막는 대역물이다. 그러나 제어 대상이 좌팔이 되면 뜻이 뒤집힌다:
+#     · `left_arm_body`  = 좌팔이 **자기 자신의 대역물**에서 밀려난다
+#     · `left_target_cup`= **잡아야 할 컵**이 회피 대상이 된다
+#   좌팔 홈 TCP (0.2391, 0.2443, 0.2947) 는 두 장애물 바로 옆이다. 실측 결과 fabric 이
+#   hold 지령에도 palm 을 13~30 mm 밀어냈고(run 마다 편차), 이 월드를 끄면 1.8~5.4 mm 로
+#   떨어졌다 (probe_fabric_tracking.py --no_world_mesh).
+#
+# 벽·천장·몸통 기둥은 우팔판과 동일하다 — 그건 실제 작업공간 경계다.
+
+left_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 .03 1.1
+  transform: 0.45 -.45 .75 0. 0. 0. 1.
+
+right_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 .03 1.1
+  transform: 0.45 .60 .75 0. 0. 0. 1.
+
+back_wall:
+  env_index: all
+  type: box
+  scaling: .03 1.1 1.1
+  transform: -0.4 0.075 .75 0. 0. 0. 1.
+
+top_wall:
+  env_index: all
+  type: box
+  scaling: 1.7 1.1 .03
+  transform: 0.45 0.08 1.30 0. 0. 0. 1.
+
+# ★`robot_torso` 기둥은 **의도적으로 없다**. body_repulsion 의
+#   world_body_sphere1/2/3 (z 0.15/0.45/0.70) 이 같은 자리를 이미 덮는 중복이고,
+#   좌팔은 그 몸통에 **직접 마운트**돼 있어 어깨·상완이 구조적으로 기둥 안에 들어간다
+#   (좌팔 홈 실측: 8쌍 최대 83 mm 관통). 월드메시 SDF 경로는 쌍 단위 제외가 불가능해
+#   기둥을 두면 어깨를 상시 밀어낸다. 몸통 회피는 쌍 제외가 가능한 body_repulsion 쪽에
+#   맡긴다.
+
+# 유휴 **우팔** 대역물. 우팔판의 `left_arm_body` 를 y 부호 반전해 옮긴 것이다 —
+# 이제 회피 대상은 반대편 팔이다.
+right_arm_body:
+  env_index: all
+  type: sphere
+  scaling: 0.15 0.15 0.15
+  transform: 0.25 -0.20 0.55 0. 0. 0. 1.
+
+# ★`left_target_cup` 은 **의도적으로 없다**. 좌팔이 잡아야 할 대상이라 장애물이 아니다.

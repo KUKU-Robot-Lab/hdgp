@@ -231,7 +231,10 @@ class GraspLeftGripperEnv(DirectRLEnv):
             batch_size=self.num_envs,
             max_objects_per_env=self.cfg.fabrics_max_objects_per_env,
             device=self.device,
-            world_filename="open_tesollo_boxes_no_table",
+            # ★우팔용 월드를 쓰면 안 된다 — 거기엔 `left_arm_body`(좌팔 대역물)와
+            #   `left_target_cup`(잡아야 할 컵)이 **장애물로** 들어 있어 좌팔이 자기
+            #   자신과 목표물에서 밀려난다. 좌팔 전용 월드 근거는 그 yaml 머리말 참조.
+            world_filename="open_gripper_left_boxes_no_table",
         )
         self.object_ids, self.object_indicator = self.world_model.get_object_ids()
         self.timestep = self.cfg.fabrics_dt
