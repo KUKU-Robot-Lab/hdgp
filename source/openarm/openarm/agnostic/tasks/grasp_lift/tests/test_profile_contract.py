@@ -132,6 +132,19 @@ def test_no_diff_ik_left_behind():
         assert banned not in code, f"diff-IK 잔재: {banned}"
 
 
+def test_no_palm_leash_left_behind():
+    """palm leash 재도입 방지 — 정책이 팔 목표에 대해 전권을 가져야 한다.
+
+    leash 는 목표를 실측±5cm 로 되클램프해 **걸린 축의 액션을 통째로 버렸다**
+    (lstm_test2: leash_active_frac 0.43~0.90). 목표 상한은 워크스페이스 박스만
+    담당한다. 와인드업은 `fabric/palm_err_{mean,p95,max}` 로 감시한다.
+    """
+    for fname in ("grasp_lift_env.py", "grasp_lift_env_cfg.py"):
+        src = (_TASK_DIR / fname).read_text(encoding="utf-8")
+        code = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
+        assert "leash" not in code, f"{fname}: leash 재도입"
+
+
 def test_no_fabric_literals_in_task_code():
     """fabric 자산 이름도 프로필 경유 — 태스크 코드에 리터럴 금지."""
     for fname in ("grasp_lift_env.py", "grasp_lift_env_cfg.py", "rewards.py"):

@@ -334,16 +334,13 @@ class GraspLiftEnv(DirectRLEnv):
         step = torch.zeros_like(self.palm_targets)
         step[:, :3] = self.actions[:, :3] * float(self.cfg.arm_pos_scale)
         step[:, 3:] = self.actions[:, 3:6] * float(self.cfg.arm_rot_scale)
-        tgt = (self.palm_targets + step).clamp(self._palm_lo, self._palm_hi)
-        # 와인드업 방지: 물리적으로 막혔을 때 목표만 계속 전진하는 것을 leash 로 막는다.
-        # 자유공간에서는 추종오차가 mm 대라 물리지 않는다.
-        meas = self._palm_pose_6d()
-        leash = torch.cat([
-            torch.full((3,), float(self.cfg.palm_leash_pos), device=self.device),
-            torch.full((3,), float(self.cfg.palm_leash_rot), device=self.device),
-        ])
-        self.palm_targets = torch.max(torch.min(tgt, meas + leash), meas - leash)
-        self._leash_active = (tgt - self.palm_targets).abs().max(dim=1).values > 1e-6
+        # ★leash(목표를 실측±5cm 로 재클램프) 제거(08.22). 자유공간 추종오차는 mm 대라
+        #   "막혔을 때의 와인드업 방지"가 명목이었지만, 정책이 상시 최대속도를 명령하는
+        #   실제 학습에서는 **rate lag** 가 leash 폭을 상시 채웠다(lstm_test2 실측:
+        #   palm_err_mean 0.051~0.065 vs 축별 한계 0.05 → 노름 천장 0.0866,
+        #   leash_active_frac 0.43~0.90). 걸린 축의 액션 성분은 효과도 gradient 도 0 —
+        #   즉 팔 액션의 절반이 버려지고 있었다. 목표 상한은 워크스페이스 박스가 맡는다.
+        self.palm_targets = (self.palm_targets + step).clamp(self._palm_lo, self._palm_hi)
 
         # ---- 손: 절대 목표 누산(자유 관절만) + 관절한계 clamp -------------------------
         _delta = torch.zeros_like(self.hand_targets)
@@ -502,7 +499,9 @@ class GraspLiftEnv(DirectRLEnv):
         self.extras["fabric/joint_err_max"] = (
             self.fabric_q[:, : self.profile.num_arm_joints]
             - self.robot.data.joint_pos[:, self._arm_ids_t]).abs().max()
-        self.extras["fabric/leash_active_frac"] = self._leash_active.float().mean()
+        # leash 제거 후 목표-실측 격차는 위 palm_err_{mean,p95} 가 그대로 와인드업
+        # 감시기 역할을 한다(상한이 없어졌으므로 발산하면 여기서 먼저 보인다).
+        self.extras["fabric/palm_err_max"] = _perr.max()
         self.extras["curriculum/difficulty_mean"] = self.difficulty.float().mean()
         self.extras["curriculum/difficulty_max_frac"] = (
             self.difficulty == int(self.cfg.curriculum_max_level)).float().mean()

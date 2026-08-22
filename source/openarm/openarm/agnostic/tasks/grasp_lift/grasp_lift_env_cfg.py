@@ -161,10 +161,9 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     fabrics_damping_gain: float = 20.0
     fabrics_max_objects_per_env: int = 8
     fabric_use_cuda_graph: bool = False
-    # palm 목표가 실측에서 이만큼 이상 앞서지 못한다(와인드업 방지). 자유공간 추종오차가
-    # mm 대라 평소엔 안 물리고, 테이블·컵에 막혔을 때만 물린다.
-    palm_leash_pos: float = 0.05
-    palm_leash_rot: float = 0.35
+    # ★palm leash 는 제거됐다(08.22) — 정책이 팔 목표에 대해 전권을 갖는다.
+    #   목표의 유일한 상한은 아래 워크스페이스 박스(profile.palm_box_*)다.
+    #   근거는 grasp_lift_env.py `_pre_physics_step` 주석 참조.
 
     # ---- 액션 스케일 (스텝당 delta, 60 Hz) ----------------------------------------
     # 팔: palm 절대 목표 누산 delta — pos 1cm/스텝(최대 0.6 m/s), rot 0.05 rad/스텝.
