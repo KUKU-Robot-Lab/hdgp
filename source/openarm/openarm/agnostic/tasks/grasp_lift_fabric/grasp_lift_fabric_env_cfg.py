@@ -277,6 +277,18 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     console_log_interval: int = 600
     goal_height_offset: float = 0.15
     success_pos_tolerance: float = 0.05
+    # ---- goal 랜덤화 (이송 학습, 08.22 사용자 디렉션) --------------------------------
+    # ★goal 이 스폰의 결정론적 함수(수직 +offset)면 정책은 goal obs 를 무시하고
+    #   "제자리 들기"만 배운다 — 배포에서 사용자 지정 위치에 반응하지 않는 정책이 된다.
+    #   그래서 goal 오프셋을 스폰과 **독립**으로 샘플링하고 반경을 ADR 축으로 확장한다.
+    #   initial 0.0 = 구 고정 goal 과 정확히 동치(ADR off 여도 동치) — 초기 난이도 불변.
+    goal_xy_radius_initial: float = 0.0
+    goal_xy_radius_final: float = 0.10
+    goal_z_radius_initial: float = 0.0
+    goal_z_radius_final: float = 0.05        # goal z = 스폰 z + goal_height_offset ± 이 값
+    # 샘플된 goal 은 palm 워크스페이스 박스 안쪽으로 클램프한다(마진만큼 축소).
+    # 박스 밖 goal 은 정책이 도달 불가 — 액션 포화 학습의 재발 경로라 원천 차단.
+    goal_box_margin: float = 0.03
     # ★08.22 리스폰 → **종료** 로 전환(사용자 지시, grasp_v1 선례).
     #   grasp_v1 은 out_x|out_y|fallen|tipped 전부 에피소드 종료로 처리하고 98% 파지까지
     #   갔다(grasp_right_env._get_dones). 쓰러진/떨어진 컵을 에피소드에 방치하면

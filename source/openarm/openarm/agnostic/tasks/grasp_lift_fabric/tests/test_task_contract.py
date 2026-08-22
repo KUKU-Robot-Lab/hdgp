@@ -412,3 +412,22 @@ def test_fabricless_profile_fails_loud_on_resolve():
     cfg.profile_name = "rh56_left"           # fabric 자산 없음
     with pytest.raises(RuntimeError, match="Fabrics"):
         C.resolve_cfg(cfg)
+
+
+# =============================================================================
+# goal 랜덤화 (이송 학습, 08.22)
+# =============================================================================
+def test_goal_radius_starts_at_zero():
+    """★ADR goal 축의 initial 은 **0** 이어야 한다 — 반경 0 = 구 고정 goal 과 동치라는
+    보장이 있어야 초기 학습 난이도가 바뀌지 않는다(reward-audit Check 4 의 전제).
+    바꾸려면 이 테스트를 의도적으로 고쳐야 한다.
+    """
+    C = _cfg_module()
+    real = C.GraspLiftFabricEnvCfg()
+    assert real.goal_xy_radius_initial == 0.0
+    assert real.goal_z_radius_initial == 0.0
+    # final 은 이송을 실제로 배울 만큼 양수여야 한다 (0 이면 축이 죽은 코드)
+    assert real.goal_xy_radius_final > 0.0
+    assert real.goal_z_radius_final >= 0.0
+    # 클램프 마진은 박스 절반보다 작아야 한다 (아니면 클램프가 goal 을 한 점으로 붕괴시킨다)
+    assert 0.0 < real.goal_box_margin < 0.05

@@ -253,9 +253,12 @@ class GraspLiftFabricEnv(DirectRLEnv):
             self._onehot = torch.nn.functional.one_hot(
                 self.object_idx, num_classes=self.bank.onehot_dim).float()
 
-        # ---- ADR (축 하나: 스폰 반경) -------------------------------------------------
+        # ---- ADR (축 둘: 스폰 반경 · goal 오프셋 반경) --------------------------------
+        # goal 축은 initial 0 이라 반경 0 = 구 고정 goal 과 동치로 시작한다.
         self.adr = _adr.TaskADR(
-            {"spawn": {"xy_range": (cfg.spawn_range_initial, cfg.spawn_range_final)}},
+            {"spawn": {"xy_range": (cfg.spawn_range_initial, cfg.spawn_range_final)},
+             "goal": {"xy_radius": (cfg.goal_xy_radius_initial, cfg.goal_xy_radius_final),
+                      "z_radius": (cfg.goal_z_radius_initial, cfg.goal_z_radius_final)}},
             num_increments=cfg.adr_num_increments,
             increment_interval=cfg.adr_increment_interval,
             trigger_threshold=cfg.adr_trigger_threshold,
@@ -732,6 +735,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.extras["debug/hand/torque_mean"] = tau.mean()
         self.extras["debug/hand/torque_max"] = tau.max()
         self.extras.update(self.adr.log_dict())
+        self.extras["adr/goal_xy_radius"] = self.adr.get_param("goal", "xy_radius")
         self.extras["adr/trigger_metric"] = self._goal_reached_now.float().mean()
 
         # ── 학습 로그(stdout)에 주기적으로 한 줄 남긴다 ────────────────────────
@@ -823,8 +827,20 @@ class GraspLiftFabricEnv(DirectRLEnv):
         spawn[:, 1] = p.object_spawn_center[1] + offs[:, 1]
         spawn[:, 2] = self._object_rest_z[env_ids] + float(self.cfg.object_spawn_pad)
         self.object_spawn_pos[env_ids] = spawn
-        self.goal_pos[env_ids] = spawn + torch.tensor(
-            [0.0, 0.0, float(self.cfg.goal_height_offset)], device=self.device)
+        # ---- goal: 스폰과 독립 오프셋 (반경은 ADR 축, 0 이면 구 고정 goal 과 동치) ----
+        # ★스폰의 결정론적 함수로 두면 goal obs 가 변별력 없는 입력이 돼 정책이 무시한다
+        #   (배포에서 사용자 지정 위치에 반응하지 않음). 이송 학습의 전제 조건.
+        g_xy = self.adr.get_param("goal", "xy_radius")
+        g_z = self.adr.get_param("goal", "z_radius")
+        goal = spawn.clone()
+        goal[:, 2] += float(self.cfg.goal_height_offset)
+        goal[:, :2] += (torch.rand(n, 2, device=self.device) - 0.5) * 2.0 * g_xy
+        goal[:, 2] += (torch.rand(n, device=self.device) - 0.5) * 2.0 * g_z
+        # palm 박스 안쪽으로 클램프 — 박스 밖 goal 은 도달 불가(액션 포화 학습 재발 경로).
+        _m = float(self.cfg.goal_box_margin)
+        # palm_lo/hi 는 (1,6) — env 브로드캐스트로 클램프한다
+        goal = torch.max(torch.min(goal, self.palm_hi[0, :3] - _m), self.palm_lo[0, :3] + _m)
+        self.goal_pos[env_ids] = goal
 
         root = torch.zeros(n, 13, device=self.device)
         root[:, :3] = spawn + self.scene.env_origins[env_ids]
