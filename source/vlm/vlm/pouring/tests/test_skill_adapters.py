@@ -18,10 +18,12 @@ from vlm.pouring.tests.test_state_provider import valid_state
 class FakeBackend:
     def __init__(self, action_dim: int) -> None:
         self.action_dim = action_dim
+        self.env_ids: tuple[int, ...] = ()
         self.observations: tuple[tuple[float, ...], ...] = ()
         self.resets: list[tuple[int, ...]] = []
 
-    def infer(self, observations):
+    def infer(self, env_ids, observations):
+        self.env_ids = env_ids
         self.observations = observations
         return tuple((0.25,) * self.action_dim for _ in observations)
 
@@ -62,6 +64,8 @@ def test_grasp_adapter_validates_106d_observation_and_11d_action() -> None:
         artifacts("open-tesol_r_grasp_v1-lstm"),
         observation_builder=lambda states: tuple((0.0,) * 106 for _ in states),
         backend=backend,
+        observation_dim=106,
+        action_dim=11,
     )
 
     command = skill.infer((3,), (valid_state(),))[0]
@@ -72,18 +76,37 @@ def test_grasp_adapter_validates_106d_observation_and_11d_action() -> None:
     assert backend.resets == [(3,)]
 
 
-def test_pour_adapter_validates_55d_observation_and_12d_action() -> None:
-    backend = FakeBackend(action_dim=12)
+def test_adapter_reads_dimensions_from_the_run_env_yaml(tmp_path: Path) -> None:
+    env_yaml = tmp_path / "env.yaml"
+    env_yaml.write_text(
+        "seed: 42\nobservation_space: 51\nnum_observations: 51\n"
+        "action_space: 15\nnum_actions: 15\n"
+    )
+    backend = FakeBackend(action_dim=15)
     skill = BimanualPourSkill(
-        artifacts("open-tesol_r_pour_v1-lstm"),
-        observation_builder=lambda states: tuple((0.0,) * 55 for _ in states),
+        PolicyArtifacts("open-tesol_b_pour_v1-lstm", tmp_path, tmp_path / "model.pth",
+                        tmp_path / "agent.yaml", env_yaml),
+        observation_builder=lambda states: tuple((0.0,) * 51 for _ in states),
         backend=backend,
     )
 
     command = skill.infer((0,), (valid_state(),))[0]
 
-    assert len(backend.observations[0]) == 55
-    assert len(command.values) == 12
+    assert (skill.observation_dim, skill.action_dim) == (51, 15)
+    assert len(backend.observations[0]) == 51
+    assert len(command.values) == 15
+
+
+def test_adapter_rejects_env_yaml_without_contract_keys(tmp_path: Path) -> None:
+    env_yaml = tmp_path / "env.yaml"
+    env_yaml.write_text("scene: {}\n")
+    with pytest.raises(ValueError, match="contract keys"):
+        BimanualPourSkill(
+            PolicyArtifacts("open-tesol_b_pour_v1-lstm", tmp_path, tmp_path / "model.pth",
+                            tmp_path / "agent.yaml", env_yaml),
+            observation_builder=lambda states: ((0.0,) * 51,),
+            backend=FakeBackend(15),
+        )
 
 
 @pytest.mark.parametrize(
@@ -94,14 +117,18 @@ def test_pour_adapter_validates_55d_observation_and_12d_action() -> None:
                 artifacts("open-tesol_r_grasp_v1-lstm"),
                 observation_builder=lambda states: ((0.0,) * 105,),
                 backend=FakeBackend(11),
+                observation_dim=106,
+                action_dim=11,
             ),
             "observation",
         ),
         (
             lambda: BimanualPourSkill(
-                artifacts("open-tesol_r_pour_v1-lstm"),
+                artifacts("open-tesol_b_pour_v1-lstm"),
                 observation_builder=lambda states: ((0.0,) * 55,),
                 backend=FakeBackend(11),
+                observation_dim=55,
+                action_dim=12,
             ),
             "action",
         ),

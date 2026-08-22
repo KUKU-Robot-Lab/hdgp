@@ -46,6 +46,19 @@ Two modules realize the boundary for the `agnostic` fabric tasks
   `SemanticState` batches from a narrow `FabricSceneView` protocol (a thin
   adapter over the env buffers) plus the skill manager's routing state.
 
+Learned skills connect through two more pieces:
+
+- `checkpoint_resolver.read_policy_contract` reads the obs/action dimensions
+  from a run's own `params/env.yaml`, and `ReferencedPolicySkill` derives its
+  dimensions from there (or an explicit override) — never from per-skill
+  constants, since retrained tracks ship different contracts (bimanual pour
+  is 51D/15D where the legacy right-arm pour was 55D/12D).
+- `rl_games_backend.RlGamesPolicyBackend` is a standalone rl_games player
+  over one run's artifacts: `env_info` is injected from the contract so no
+  simulator is created, `load()` is the GPU boundary, recurrent state is
+  kept for the full env batch while the hard router sends subsets, and
+  `reset(env_ids)` zeroes those envs' hidden state on skill entry.
+
 `scripts/vlm/run_pouring_demo.py` wires both into a live Isaac scene with a
 stubbed task specification (the Qwen GPU boundary stays closed): the approach
 skill drives the arm to a pregrasp point through Fabrics, the deterministic
