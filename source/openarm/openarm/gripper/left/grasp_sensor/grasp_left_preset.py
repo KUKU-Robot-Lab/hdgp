@@ -31,14 +31,27 @@ import math as _math
 # ---------------------------------------------------------------------------
 LEFT_ARM_JOINT_NAMES = [f"l_aj_{i}" for i in range(1, 8)]
 
-# ★그리퍼는 관절 2개지만 자유도는 1이다. `l_hj_gripper_2` 는 USD 에서 PhysX mimic
-#   (gearing=-1, referenceJoint=l_hj_gripper_1)으로 gripper_1 을 따라간다.
-#   IsaacLab 관례는 "mimic 을 시뮬에 안 넣고 두 손가락에 같은 타깃을 뿌리는 것"이지만
-#   우리 USD 에는 진짜 mimic 제약이 있으므로 **gripper_1 에만 지령**한다.
-#   액추에이터 커버리지는 두 관절 모두에 준다 — 없으면 무구동으로 자유이동한다.
+# ★★그리퍼는 관절 2개다. **둘 다에 지령해야 한다.**
+#   예전에는 "USD 에 PhysX mimic 이 있으니 gripper_1 만 주면 gripper_2 가 따라온다"고 적혀
+#   있었다. **08.22 그 전제가 깨진 것을 실측했다** — 자산 재빌드(urdf 6d065f7) 후 USD 의
+#   `l_hj_gripper_2` 에 붙은 스키마는 `PhysicsDriveAPI` 뿐이고 mimic API 가 없다.
+#   URDF 에는 `<mimic joint="l_hj_gripper_1"/>` 가 그대로 있는데 headless 빌드가 USD 로
+#   옮기지 않았다(GUI 임포터는 옮겼다).
+#   결과: 액션 대상이 아닌 관절은 PD 목표가 0 이라 **두 번째 조가 닫힌 채 고정**됐다.
+#       open 지령 → j1=44.00 mm / **j2=0.00 mm**, 조 간격 56 mm (정상은 100 mm)
+#   컵 몸통이 58~88 mm 라 그 상태로는 물지 못한다. 두 조는 축이 반대(`0 -1 0` vs `0 1 0`)라
+#   같은 값을 주면 함께 벌어진다 → `GRIPPER_JOINT_NAMES` 전체에 지령한다(계약으로 고정).
+#   액추에이터 커버리지도 두 관절 모두에 준다 — 없으면 무구동으로 자유이동한다.
+#   ⚠ 자산 쪽에서 mimic 을 복원하더라도 두 조 지령은 무해한 중복이므로 되돌리지 말 것.
 GRIPPER_DRIVE_JOINT = "l_hj_gripper_1"
 GRIPPER_JOINT_NAMES = ["l_hj_gripper_1", "l_hj_gripper_2"]
 
+# ★08.21 자산 이력 주의. 08:02 재빌드(ffe4239)는 고정조인트를 병합해
+#   `l_hl_gripper_base` 가 강체에서 사라졌고 태스크가 `body_names.index()` 에서 죽었다.
+#   13:49 재빌드(81dfcf0 "keep fixed joints unmerged")로 **되돌아왔다** — 실측 확인.
+#   같은 수정으로 `l_hl_gripper_tcp` 도 이제 강체로 존재한다(강체 39 → 57).
+#   그래도 앵커는 base + 오프셋을 유지한다: 기존 보상·IK·테스트가 전부 이 규약으로
+#   검증돼 있고, 바꿀 이유가 없다. tcp 바디는 필요해지면 그때 쓴다.
 GRIPPER_BASE_BODY = "l_hl_gripper_base"
 # ⚠ `l_hl_gripper_tcp` 는 URDF 에는 있지만 physics USD 에서 고정 프레임이 강체로 병합돼
 #   **사라진다**. FrameTransformer 대상으로 쓸 수 없어 base + z 오프셋으로 TCP 를 만든다.
@@ -251,8 +264,18 @@ CUP_BASE_RADIUS = 0.0295                # shaker 바닥 원판 반경 (bottom_pl
 CUP_TIP_RISE_MAX = (
     math.sqrt(CUP_BOTTOM_TO_ORIGIN**2 + CUP_BASE_RADIUS**2) - CUP_BOTTOM_TO_ORIGIN
 )                                       # 0.00461 — 기울여서 얻을 수 있는 최대 원점 상승
-LIFT_RAMP_ZERO_Z = CUP_SPAWN_Z + CUP_TIP_RISE_MAX * 1.3   # 램프 0 지점
-LIFT_RAMP_SPAN = 0.04                   # 이만큼 올라가면 램프 1 (레퍼런스 리프트 높이)
+# ★★리프트 판정은 **하드 게이트**다 — 08.22 램프에서 되돌렸다.
+#   램프는 "IK test3 이 총보상 149 인데 컵을 3.6 mm 만 올렸다"를 보고 넣은 것인데, 그 런의
+#   진짜 원인은 게이트 모양이 아니라 **임계값이 스폰보다 낮았던 것**이다
+#   (`minimal_height 0.27709` < 놓인 컵 원점 0.29209 → 상시 참 = 공짜).
+#   같은 하드 게이트를 **스폰+4 cm** 로 제대로 준 관절공간 런은 실제로 들어 올렸다:
+#       test13 lift 0.83 · test16 lift 0.84 (상한 대비) — 즉 절벽이 아니었다.
+#   "IK 1 차가 827 epoch 동안 lifting 0.000" 은 제어기(diff-IK 처짐·변화율 무제한) 문제였고
+#   내가 그걸 보상 탓으로 오진했다. 검증된 구성으로 복귀한다.
+MINIMAL_LIFT_HEIGHT = CUP_SPAWN_Z + 0.04
+# 램프 상수는 남겨 둔다 — 되살릴 때 근거와 함께 쓰라고. 지금은 아무도 참조하지 않는다.
+LIFT_RAMP_ZERO_Z = CUP_SPAWN_Z + CUP_TIP_RISE_MAX * 1.3   # (미사용) 램프 0 지점
+LIFT_RAMP_SPAN = 0.04                   # (미사용) 이만큼 올라가면 램프 1
 
 # ★★리프트 판정에 "TCP 가 컵 곁에 있는가"를 AND 로 건다.
 #   z 만 보는 레퍼런스 판정으로는 **컵을 위로 쳐 날리는 것**이 최적 전략이 된다

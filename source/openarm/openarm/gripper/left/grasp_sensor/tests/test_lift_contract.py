@@ -130,50 +130,33 @@ def test_work_surface_matches_env_usd_mesh_points():
     assert "P.ENV_USD_REL" in src and "rigid_props" not in src.split("P.ENV_USD_REL")[1][:200]
 
 
-def test_lift_is_a_ramp_not_a_binary_gate():
-    """★★세 번 틀린 자리. 이진 게이트는 **양쪽 다** 실패했다.
+def test_lift_gate_is_measured_from_the_resting_cup_origin():
+    """★리프트 임계는 **놓인 컵의 원점 + 4 cm** 여야 한다.
 
-    1차 — 기준선을 테이블 상면으로 잡음(0.255 < 놓인 원점). lifting 상시 1(test1-r2).
-    2차 — "놓인 원점 + 4 cm = 0.34709" 로 닫음 → 레퍼런스에 없는 **절벽**. 컵이 4 cm
-          오르기 전까지 이 게이트를 곱하는 모든 항이 0 이라, 태스크공간 1 차가
-          **827 epoch 동안 `lifting_object` 정확히 0.000** 이었다(reaching 0.43 = 팔은
-          컵 곁에 있었다).
-    3차 — 레퍼런스처럼 놓인 상태에서 열어둠 → **공짜**. IK test3 은 4000 epoch 완주에
-          총보상 149 를 냈지만 실측하면 컵 상승 **최대 +3.6 mm**, 1 cm 이상 올린 스텝
-          **0.0%**, 그리퍼 개도 1.2 mm — 컵 옆에 서서 그리퍼만 닫고 가만히 있었다.
-          정지 보상이 **안 움직일수록 최대**라 이 전략을 특히 강하게 떠받친다.
-          (레퍼런스에서 같은 구조가 되는 건 목표가 놓인 큐브에서 멀기 때문이다.)
-
-    → 높이 항은 **연속 램프**여야 한다: 놓인 높이에서 0, +span 에서 1.
-      절벽 없음(첫 밀리미터부터 gradient) · 공짜 없음(가만히 있으면 0).
-
-    ⚠ 1·2차 때는 **이 테스트가 틀린 쪽을 옳다고 고정하고 있었다**. 그래서 이제 절대값이
-      아니라 **구조**(램프인지, 0 지점이 놓인 높이인지)를 고정한다.
+    이 태스크에서 두 번 태운 자리다.
+      · 상면(0.200)만 더한 0.24 는 놓인 컵 원점(0.29209)보다 **낮아** 게이트가 상시 열린다
+        (test1-r2: lifting 14.63/15 인데 reaching 은 0.007 로 떨어졌다 = 가만히 있는 것이 최적).
+      · IK test3 은 `minimal_height 0.27709` 로 같은 함정에 빠져 총보상 149 를 냈지만
+        컵을 3.6 mm 만 올렸다.
+    08.22 연속 램프에서 하드 게이트로 되돌렸다 — 램프의 근거는 위 IK 런이었는데 그 원인은
+    게이트 모양이 아니라 임계값이었고, 제대로 준 관절공간 런(test13/16)은 lift 0.83~0.84 로
+    실제로 들어 올렸다.
     """
-    # ★램프 0 지점은 놓인 원점 **바로 위**여야 한다 — 정확히 원점에 두면 컵을 바닥
-    #   모서리로 기울이는 것만으로 +4.61 mm 를 공짜로 얻는다(test4/test6 실측 최대
-    #   +4.9/+4.6 mm, 1 cm 이상 올린 스텝 0.0%). 기울임 상한은 자산 기하에서 나온다.
-    assert P.LIFT_RAMP_ZERO_Z > P.CUP_SPAWN_Z + P.CUP_TIP_RISE_MAX, (
-        "기울여서 얻는 상승이 램프에 들어온다 — 흔들기가 리프트로 계산된다"
+    assert math.isclose(P.MINIMAL_LIFT_HEIGHT, P.CUP_SPAWN_Z + 0.04, abs_tol=1e-9), (
+        "리프트 임계가 '놓인 컵 원점 + 4 cm' 에서 파생되지 않았다"
     )
-    assert P.LIFT_RAMP_ZERO_Z < P.CUP_SPAWN_Z + 0.015, "램프 시작이 너무 높아 절벽이 된다"
-    assert math.isclose(
-        P.CUP_TIP_RISE_MAX,
-        math.sqrt(P.CUP_BOTTOM_TO_ORIGIN**2 + P.CUP_BASE_RADIUS**2) - P.CUP_BOTTOM_TO_ORIGIN,
-        abs_tol=1e-9,
-    ), "기울임 상한이 자산 기하에서 파생되지 않았다"
-    assert 0.0 < P.LIFT_RAMP_SPAN <= 0.10, "램프 구간이 비었거나 지나치게 길다"
+    assert P.MINIMAL_LIFT_HEIGHT > P.CUP_SPAWN_Z, "임계가 놓인 높이보다 낮다 = 공짜 게이트"
+    # 목표 z 하한도 임계 위여야 "먼저 들어라 → 옮겨라" 순서가 유지된다.
+    assert P.GOAL_POS_Z[0] > P.MINIMAL_LIFT_HEIGHT
 
     rsrc = (
         Path(__file__).resolve().parents[1] / "grasp_left_rewards.py"
     ).read_text(encoding="utf-8")
-    # 이진 비교로 되돌아가면 실패해야 한다.
-    assert "lift_zero_z) / lift_span).clamp(0.0, 1.0)" in rsrc, "높이 항이 램프가 아니다"
-    assert "obj_pos_w[:, 2] > " not in rsrc, "이진 리프트 게이트가 되살아났다"
+    assert "obj_pos_w[:, 2] > minimal_height" in rsrc, "높이 항이 이진 게이트가 아니다"
+    assert "lift_span" not in rsrc, "램프 파라미터가 남아 있다"
 
-    # 램프를 곱하는 항이 셋 이상이어야 한다(lifting/goal/goal_fine + settle/pose).
     src = _cfg_source()
-    assert src.count("P.LIFT_RAMP_ZERO_Z") >= 3
+    assert src.count("P.MINIMAL_LIFT_HEIGHT") >= 3, "게이트를 곱하는 항이 셋 미만이다"
     # 공짜 보상 차단의 나머지 절반은 TCP 근접 게이트다 — 없어지면 test3 던지기가 돌아온다.
     assert "GRASP_MAX_EE_DISTANCE" in src
 
@@ -339,25 +322,73 @@ def test_left_arm_velocity_limit_matches_the_reference():
     assert max(P.ARM_VELOCITY_LIMIT.values()) < 5.0
 
 
+def _urdf_parent_joint(root, link_name):
+    for j in root.iter("joint"):
+        ch = j.find("child")
+        if ch is not None and ch.get("link") == link_name:
+            return j
+    return None
+
+
+_MANIFEST = _ROBOT_URDF.parent / "openarm_tesollo_sensor_rl_manifest.yaml"
+
+
+@pytest.mark.skipif(not _MANIFEST.is_file(), reason="자산 매니페스트 없음")
+def test_tcp_anchor_exists_as_a_rigid_body_in_the_built_asset():
+    """★TCP 앵커는 **빌드된 USD 의 강체**여야 한다 — URDF 에 링크가 있는 것만으론 부족하다.
+
+    08.21 08:02 빌드(ffe4239)는 고정조인트를 병합해 `l_hl_gripper_base` 가 강체에서
+    사라졌고 태스크가 `body_names.index()` 에서 죽었다. 그때 계약 37개가 **전부 통과**했다 —
+    URDF 링크 존재만 봤기 때문이다. 13:49 빌드(81dfcf0)가 병합을 껐지만, 병합 여부는
+    **빌드 도구의 정책**이라 URDF 로는 예측할 수 없다. 그래서 산출물의 자기기록인
+    매니페스트 `link_order` 를 근거로 삼는다(실측: 57개 = USD 강체 57개와 일치).
+    """
+    text = _MANIFEST.read_text()
+    block = text[text.index("link_order:"):]
+    links = re.findall(r"^  - (\S+)$", block, re.M)
+    assert len(links) > 10, "link_order 를 못 읽었다"
+    assert P.GRIPPER_BASE_BODY in links, (
+        f"{P.GRIPPER_BASE_BODY} 가 빌드 산출물의 강체 목록에 없다 — 고정조인트로 병합됐을 수 있다. "
+        f"살아남는 링크로 앵커를 옮기고 TCP_OFFSET_IN_BASE_Z 에 병합된 변환을 합산할 것."
+    )
+    for body in P.GRIPPER_FINGER_BODIES:
+        assert body in links, f"{body} 가 강체 목록에 없다"
+
+
 @pytest.mark.skipif(not _ROBOT_URDF.is_file(), reason="로봇 URDF 없음")
 def test_tcp_offset_lands_inside_the_fingers():
     """TCP 가 손가락 범위 밖이면 정책이 조준하는 점과 실제 파지점이 어긋난다.
 
-    URDF 기준: 손가락 링크 원점은 base 에서 z=0.015, 손가락 메시는 링크 기준
-    z∈[-0.0145, +0.0804] → base 기준 z∈[+0.0005, +0.0954]. TCP 는 +0.08 로 그 안이다.
+    앵커(`GRIPPER_BASE_BODY`)에서 TCP 까지의 오프셋은 **URDF 고정조인트 체인의 합**이어야
+    한다. 현재 체인: l_al_7 --(l_hj_gripper_mount 0.1001)--> l_hl_gripper_base
+    --(l_hj_gripper_tcp 0.08)--> l_hl_gripper_tcp = 0.1801.
+    손가락 메시는 gripper_base 기준 z∈[+0.0005, +0.0954] 이고 TCP 0.08 은 그 안이다.
     """
     root = ET.parse(_ROBOT_URDF).getroot()
-    tcp_joint = next(
-        j for j in root.iter("joint") if j.get("name") == "l_hj_gripper_tcp"
+    # 앵커에서 TCP 링크까지 거슬러 올라가며 고정 변환을 합산한다.
+    total_z, link = 0.0, "l_hl_gripper_tcp"
+    chain = []
+    while link != P.GRIPPER_BASE_BODY:
+        j = _urdf_parent_joint(root, link)
+        assert j is not None, f"{link} 위로 체인이 끊겼다"
+        assert j.get("type") == "fixed", (
+            f"{j.get('name')} 이 fixed 가 아니다 — 오프셋 상수로 표현할 수 없다"
+        )
+        o = j.find("origin")
+        xyz = [float(v) for v in ((o.get("xyz") if o is not None else "") or "0 0 0").split()]
+        assert xyz[0] == 0.0 and xyz[1] == 0.0, f"{j.get('name')} 이 중심선에서 벗어났다"
+        rpy = [float(v) for v in ((o.get("rpy") if o is not None else "") or "0 0 0").split()]
+        assert all(v == 0.0 for v in rpy), f"{j.get('name')} 에 회전이 있어 z 합산이 무효다"
+        total_z += xyz[2]
+        chain.append(j.get("name"))
+        link = j.find("parent").get("link")
+    assert math.isclose(total_z, P.TCP_OFFSET_IN_BASE_Z, abs_tol=1e-6), (
+        f"체인 {chain} 합계 {total_z} != TCP_OFFSET_IN_BASE_Z {P.TCP_OFFSET_IN_BASE_Z}"
     )
-    origin = tcp_joint.find("origin")
-    assert origin is not None
-    xyz = [float(v) for v in (origin.get("xyz") or "").split()]
-    assert math.isclose(xyz[2], P.TCP_OFFSET_IN_BASE_Z, abs_tol=1e-6)
-    assert xyz[0] == 0.0 and xyz[1] == 0.0, "TCP 가 그리퍼 중심선에서 벗어났다"
-    # 손가락 메시 범위(base 기준, 실측) 안이어야 한다
+    # 손가락 메시 범위는 gripper_base 기준이므로 그쪽 오프셋으로 검사한다.
     finger_span = (0.0005, 0.0954)
-    assert finger_span[0] < P.TCP_OFFSET_IN_BASE_Z < finger_span[1]
+    tcp_from_gripper_base = 0.08
+    assert finger_span[0] < tcp_from_gripper_base < finger_span[1]
 
 
 def test_idle_joints_get_an_explicit_pd_target():
@@ -464,14 +495,35 @@ def test_arm_action_keeps_lift_recipe_settings():
     assert not [m for m in imported if "fabric" in m.lower()], "Fabrics 임포트 금지"
 
 
-def test_gripper_action_is_binary_and_targets_only_the_drive_joint():
-    """mimic 관절(gripper_2)까지 지령하면 PhysX mimic 제약과 싸운다."""
+def test_gripper_action_commands_both_jaws_not_just_the_drive_joint():
+    """★두 조 모두에 지령해야 한다 — USD 에 mimic 이 없다.
+
+    예전 계약은 정반대였다("mimic 이 따라오니 gripper_1 만 지령"). 08.22 자산 재빌드
+    (urdf 6d065f7) 후 USD 의 `l_hj_gripper_2` 에는 `PhysicsDriveAPI` 만 있고 mimic API 가
+    없다. 액션 대상이 아닌 관절은 PD 목표가 0 이므로 두 번째 조가 닫힌 채 고정되고,
+    open 지령에도 조 간격이 **56 mm**(정상 100 mm)에 그쳐 컵(58~88 mm)을 물지 못한다.
+    URDF 의 `<mimic>` 태그만 보고 "시뮬에도 있겠지"라고 넘기면 조용히 재발한다.
+    """
     src = _cfg_source()
     assert "BinaryJointPositionActionCfg" in src
-    assert "P.GRIPPER_DRIVE_JOINT" in src
-    assert P.GRIPPER_DRIVE_JOINT == "l_hj_gripper_1"
-    # 액추에이터 커버리지는 두 관절 모두 (없으면 무구동 자유이동)
+    assert "P.GRIPPER_JOINT_NAMES" in src, "두 조 모두에 지령해야 한다"
+    assert set(P.GRIPPER_JOINT_NAMES) == {"l_hj_gripper_1", "l_hj_gripper_2"}
+    # 액추에이터 커버리지도 두 관절 모두 (없으면 무구동 자유이동)
     assert "l_hj_gripper_[1-2]" in src
+
+
+def test_self_collision_is_enabled():
+    """self-collision 을 켠 채 학습한다 (08.22).
+
+    자산이 self-collision-safe 로 재빌드됐고(콜라이더 전부 convexDecomposition,
+    감사 WARN 쌍 전부 filtered_pairs), 이 태스크 홈에서 랜덤 액션 롤아웃을 돌려도
+    팔 링크 자기충돌력이 0.00 N 이다(`probe_selfcollision_gate.py`).
+    ⚠ 폐기된 ABORTED 홈에서는 `l_al_5↔l_al_7` 이 5.4 kN 으로 유령접촉한다 —
+      **홈이 다르면 자기충돌 결론이 이식되지 않는다.**
+    """
+    src = _cfg_source()
+    assert "enabled_self_collisions=True" in src
+    assert "disable_gravity=False" in src, "중력도 켠 채 학습한다"
 
 
 @pytest.mark.skipif(not _ROBOT_URDF.is_file(), reason="로봇 URDF 없음")

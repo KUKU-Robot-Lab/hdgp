@@ -92,7 +92,16 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                     max_depenetration_velocity=5.0,
                 ),
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                    enabled_self_collisions=False,
+                    # ★08.22 켰다. 자산이 self-collision-safe 로 재빌드됐고(urdf 5023977:
+                    #   콜라이더 전부 convexDecomposition + 감사 WARN 쌍 전부 filtered_pairs),
+                    #   좌우 팔을 **이 태스크의 실제 학습 자세**로 놓고 감사하면 깨끗하다:
+                    #     audit_self_collision.py --pose (좌팔 홈 7개 + r_aj_2=0.3 r_aj_4=2.0)
+                    #       → PASS (0 fail, 4 warn), WARN 4개 전부 우측·이미 필터됨
+                    #   ⚠ 폐기된 `grasp_sensor_fabrics_ABORTED` 홈(j6=−0.67, j7=+1.36)에서는
+                    #     `l_al_5 ↔ l_al_7` 이 5.4 kN 으로 유령접촉한다(raw 여유 3.2 mm).
+                    #     **홈이 다르면 자기충돌 결론이 이식되지 않는다** — 트랙별로 재감사할 것.
+                    #     이 태스크 홈은 j6=+0.0003 / j7=−0.3306 으로 안전 구간이다.
+                    enabled_self_collisions=True,
                     solver_position_iteration_count=16,
                     solver_velocity_iteration_count=1,
                 ),
@@ -124,7 +133,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                     damping=4.0,
                 ),
                 # 그리퍼: 두 관절 모두 커버리지를 준다(없으면 무구동 자유이동).
-                # 지령은 gripper_1 에만 간다 — mimic 과 싸우지 않게.
+                # ★지령도 두 관절 모두에 간다 — USD 에 mimic 이 없다(preset 주석 참조).
                 "left_gripper": ImplicitActuatorCfg(
                     joint_names_expr=["l_hj_gripper_[1-2]"],
                     velocity_limit_sim=0.2,
@@ -174,11 +183,20 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         # ⚠ gripper_2 는 USD PhysX mimic 이라 지령 대상에서 뺀다. BinaryJointPositionAction 은
         #   joint_names 가 하나라도 안 풀리면 ValueError 로 즉사하므로 정규식이 아니라 정확한
         #   이름을 쓴다.
+        # ★08.22 **두 조 모두에 지령한다.** 예전에는 `gripper_1` 에만 줬는데, 그건 USD 에
+        #   PhysX mimic 제약이 있어 `gripper_2` 가 따라온다는 전제였다. **그 전제가 깨졌다** —
+        #   자산 재빌드(urdf 6d065f7) 후 USD 의 `l_hj_gripper_2` 에는 mimic API 가 없고
+        #   `PhysicsDriveAPI` 만 있다(실측: 적용 스키마에 PhysxMimicJointAPI 없음).
+        #   액션 대상이 아닌 관절은 PD 목표가 0 이므로 두 번째 조가 **닫힌 채 고정**됐다:
+        #       open 지령에도 j1=44.00 mm / **j2=0.00 mm**, 조 간격 56 mm (예전 자산은 j2=40.26)
+        #   컵 몸통이 58~88 mm 라 이 상태로는 물리적으로 물 수 없다.
+        #   두 조는 축이 서로 반대(`0 -1 0` vs `0 1 0`)라 같은 값을 주면 함께 벌어진다.
+        #   ※ 자산 쪽에서 mimic 을 복원하면 이 지령은 무해하게 중복될 뿐이다.
         self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
             asset_name="robot",
-            joint_names=[P.GRIPPER_DRIVE_JOINT],
-            open_command_expr={P.GRIPPER_DRIVE_JOINT: P.GRIPPER_OPEN_POS},
-            close_command_expr={P.GRIPPER_DRIVE_JOINT: P.GRIPPER_CLOSED_POS},
+            joint_names=list(P.GRIPPER_JOINT_NAMES),
+            open_command_expr={j: P.GRIPPER_OPEN_POS for j in P.GRIPPER_JOINT_NAMES},
+            close_command_expr={j: P.GRIPPER_CLOSED_POS for j in P.GRIPPER_JOINT_NAMES},
         )
 
         # ── 씬: 테이블 (로컬 자산) ──────────────────────────────────
@@ -297,17 +315,19 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         self.rewards.joint_vel.params["asset_cfg"] = _left_joints()
 
         # ── 리프트 판정: 이진 게이트가 아니라 **연속 램프** ─────────
-        # ★놓인 높이에서 0, +4 cm 에서 1. 이진 게이트는 양쪽 다 실패했다 — 닫으면 절벽
-        #   (IK 1 차 827 epoch 동안 lifting 0.000), 열면 공짜(IK test3 은 총보상 149 인데
-        #   컵 상승 최대 +3.6 mm). 근거는 grasp_left_rewards._held docstring.
+        # ★★리프트 임계는 **놓인 컵의 원점 + 4 cm** 다(하드 게이트).
+        #   08.22 연속 램프에서 되돌렸다 — 램프의 근거였던 "IK test3 이 총보상 149 인데
+        #   3.6 mm 만 올렸다"는 게이트 모양이 아니라 **임계값이 스폰보다 낮았던 것**이
+        #   원인이었다(0.27709 < 0.29209). 같은 하드 게이트를 제대로 준 관절공간 런은
+        #   실제로 들어 올렸다: test13 lift 0.83 / test16 lift 0.84.
+        #   근거 전문은 `grasp_left_rewards._held` docstring 과
+        #   `log/rl_games/open-grip/left/grasp-sensor/analysis.md`.
         for _term in (
             self.rewards.lifting_object,
             self.rewards.object_goal_tracking,
             self.rewards.object_goal_tracking_fine_grained,
         ):
-            _term.params.pop("minimal_height", None)
-            _term.params["lift_zero_z"] = P.LIFT_RAMP_ZERO_Z
-            _term.params["lift_span"] = P.LIFT_RAMP_SPAN
+            _term.params["minimal_height"] = P.MINIMAL_LIFT_HEIGHT
 
         # ── 리프트 판정에 "쥐고 있는가"를 AND ────────────────────────
         # ★★weight 는 그대로 두고 **판정 함수만** 바꾼다. z 만 보는 레퍼런스 판정으로는
@@ -346,24 +366,13 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   `rewards.ActionJerkL2` 는 남겨 두되, 커리큘럼이 평탄해진 뒤에도 진동이 남을
         #   때에만 꺼내 쓴다. 한 런에 한 가설만 바꾼다.
 
-        # ── 그리퍼 폐쇄 보너스 (신설) ───────────────────────────────
-        # ★닭-달걀 차단. 닫는 이득이 "들어올린 뒤"에만 생기니 정책이 아예 안 닫는다
-        #   (test6: 개도 평균 42.2 mm, 거의 열림 95.6%, '열기' 지령 89.9%).
-        #   허공에서 닫는 건 straddle 이 0 이라 공짜가 아니다. 근거는 rewards 참조.
-        self.rewards.grasp_closure = RewTerm(
-            func=rewards.gripper_closure_on_cup,
-            weight=P.GRIPPER_CLOSURE_REWARD_WEIGHT,
-            params={
-                "along_std": P.STRADDLE_ALONG_STD,
-                "lateral_std": P.STRADDLE_LATERAL_STD,
-                "open_pos": P.GRIPPER_OPEN_POS,
-                "drive_joint": P.GRIPPER_DRIVE_JOINT,
-                "robot_cfg": SceneEntityCfg(
-                    "robot", body_names=list(P.GRIPPER_FINGER_BODIES), preserve_order=True
-                ),
-                "object_cfg": SceneEntityCfg("object", body_names=P.CUP_BODY_NAME),
-            },
-        )
+        # ── 그리퍼 폐쇄 보너스는 **배선하지 않는다** ────────────────
+        # ★한때 넣었다(weight 3.0). "닫는 이득이 들어올린 뒤에만 생기니 정책이 아예 안
+        #   닫는다"는 test6 관찰이 근거였는데, 그 test6 은 **자세 게이트로 학습이 죽은**
+        #   런이라 근거로 못 쓴다. 정상 학습된 test13/16 은 게이트 없이도 lift 0.83~0.84 로
+        #   실제로 잡고 들었다. 한 런에 한 가설만 바꾼다 — 검증된 구성 복귀가 먼저다.
+        #   `rewards.gripper_closure_on_cup` 은 남겨 두되, 이번 런에서 파지 실패가
+        #   확인되면 그때 꺼내 쓴다.
 
         # ── 목표에서 정지 보너스 (신설) ─────────────────────────────
         # 레퍼런스 goal-tracking 은 **거리만** 본다. "옮겨서 가만히 세워 둔다"를 표현하려면
@@ -375,8 +384,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "std": P.SETTLE_POS_STD,
                 "lin_vel_std": P.SETTLE_LIN_VEL_STD,
                 "ang_vel_std": P.SETTLE_ANG_VEL_STD,
-                "lift_zero_z": P.LIFT_RAMP_ZERO_Z,
-                "lift_span": P.LIFT_RAMP_SPAN,
+                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "command_name": "object_pose",
             },
@@ -386,8 +394,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             func=rewards.held_with_good_pose,
             weight=P.GRASP_POSE_REWARD_WEIGHT,
             params={
-                "lift_zero_z": P.LIFT_RAMP_ZERO_Z,
-                "lift_span": P.LIFT_RAMP_SPAN,
+                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "body_name": P.GRIPPER_BASE_BODY,
                 "upright_zero_at_cos": P.CUP_UPRIGHT_ZERO_AT_COS,
