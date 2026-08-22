@@ -70,3 +70,78 @@ def test_env_reward_import_free_of_profiles_constants():
     """env 는 PROFILES 조회 외에 특정 프로필 상수를 import 하지 않는다."""
     src = (_TASK_DIR / "grasp_lift_env.py").read_text(encoding="utf-8")
     assert "TESOLLO_RIGHT" not in src and "GRIPPER_LEFT" not in src
+
+
+# ---------------------------------------------------------------------------
+# Fabrics 전환(2026-08-22) 계약
+# ---------------------------------------------------------------------------
+_FABRIC_URDF_DIR = (
+    _TASK_DIR.parents[4] / "FABRICS" / "src" / "fabrics_sim" / "models" / "robots" / "urdf"
+)
+
+
+@pytest.mark.parametrize("name", list(PROFILES))
+def test_fabric_asset_exists(name):
+    """fabric_class 가 있으면 URDF 자산이 실제로 있어야 한다(조용한 폴백 금지)."""
+    p = PROFILES[name]
+    if p.fabric_class is None:
+        assert p.fabric_robot_dir is None, f"{name}: class 없는데 robot_dir 만 있다"
+        return
+    assert p.fabric_robot_dir, f"{name}: fabric_class 만 있고 robot_dir 이 없다"
+    urdf = _FABRIC_URDF_DIR / p.fabric_robot_dir / f"{p.fabric_robot_dir}.urdf"
+    assert urdf.is_file(), f"{name}: fabric URDF 없음 {urdf}"
+
+
+@pytest.mark.parametrize("name", list(PROFILES))
+def test_fabric_joint_order(name):
+    """★articulation(depth-major) ↔ fabric URDF(finger-major) 순서 계약.
+
+    틀리면 fabric 이 엉뚱한 손 자세로 충돌구 FK 를 계산해 없는 자기충돌을 피하려 팔을 민다.
+    """
+    p = PROFILES[name]
+    if p.fabric_class is None:
+        return
+    order = p.fabric_joint_order
+    assert len(order) == p.num_arm_joints + p.num_hand_joints, f"{name}: 길이 불일치"
+    assert len(set(order)) == len(order), f"{name}: 중복 관절"
+    arm_re, hand_re = re.compile(p.arm_joint_regex), re.compile(p.hand_joint_regex)
+    for j in order[: p.num_arm_joints]:
+        assert arm_re.fullmatch(j), f"{name}: 앞 {p.num_arm_joints}개는 팔이어야 한다 ({j})"
+    for j in order[p.num_arm_joints:]:
+        assert hand_re.fullmatch(j), f"{name}: 뒤는 손이어야 한다 ({j})"
+    missing = [j for j in order if j not in p.init_joint_pos]
+    assert not missing, f"{name}: init_joint_pos 에 없는 관절 {missing}"
+
+
+@pytest.mark.parametrize("name", list(PROFILES))
+def test_palm_box_sane(name):
+    """palm 워크스페이스 박스는 리프트 여유를 덮어야 한다."""
+    p = PROFILES[name]
+    if p.fabric_class is None:
+        return
+    lo, hi = p.palm_box_min, p.palm_box_max
+    assert all(a < b for a, b in zip(lo, hi)), f"{name}: palm_box min>=max"
+    assert hi[2] - lo[2] >= 0.15, f"{name}: z 여유가 goal_height_offset(0.15) 보다 작다"
+
+
+def test_no_diff_ik_left_behind():
+    """diff-IK 재도입 방지 — 복원력 0 이 전환의 이유였다."""
+    src = (_TASK_DIR / "grasp_lift_env.py").read_text(encoding="utf-8")
+    code = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
+    for banned in ("DifferentialIKController", "get_jacobians"):
+        assert banned not in code, f"diff-IK 잔재: {banned}"
+
+
+def test_no_fabric_literals_in_task_code():
+    """fabric 자산 이름도 프로필 경유 — 태스크 코드에 리터럴 금지."""
+    for fname in ("grasp_lift_env.py", "grasp_lift_env_cfg.py", "rewards.py"):
+        src = (_TASK_DIR / fname).read_text(encoding="utf-8")
+        code = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
+        for lit in ("openarm_tesollo_sensor_right", "open_tesollo_boxes"):
+            assert lit not in code, f"{fname}: fabric 리터럴 {lit}"
+
+
+def test_spawn_z_is_single_source():
+    """스폰 높이 이중 패딩 구조적 차단 — 프로필에 object_spawn_z 필드가 있으면 안 된다."""
+    p = PROFILES["tesollo_right"]
+    assert not hasattr(p, "object_spawn_z"), "프로필에 object_spawn_z 가 되살아났다"

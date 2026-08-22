@@ -25,7 +25,46 @@ from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg, MassPropertiesCfg
 from isaaclab.utils import configclass
 
+from isaaclab.envs import mdp as _mdp
+from isaaclab.managers import EventTermCfg, SceneEntityCfg
+
 from .robot_profiles import PROFILES, RobotProfile
+
+_FRICTION = 0.75
+
+
+@configclass
+class GraspLiftEventCfg:
+    """물리 재질 — startup 1회. 값은 절대값이다(배율 아님).
+
+    ★씬 기본(SimulationCfg.physics_material)만으로는 부족하다: 로봇·컵 콜라이더는 각자
+    재질을 갖고, PhysX 결합이 average 라 한쪽만 올리면 실효 μ 가 중간값이 된다.
+    mode="startup" 인 이유 = 이 term 은 CPU 텐서로 버킷을 만들어 초기화 때만 쓰라고
+    상류가 명시한다(events.py:167-170). 고정값이라 reset 마다 다시 걸 이유도 없다.
+    """
+
+    robot_material = EventTermCfg(
+        func=_mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "static_friction_range": (_FRICTION, _FRICTION),
+            "dynamic_friction_range": (_FRICTION, _FRICTION),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 1,
+        },
+    )
+    object_material = EventTermCfg(
+        func=_mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("object", body_names=".*"),
+            "static_friction_range": (_FRICTION, _FRICTION),
+            "dynamic_friction_range": (_FRICTION, _FRICTION),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 1,
+        },
+    )
 
 _HDGP_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), *([".."] * 6)))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
@@ -45,14 +84,16 @@ def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
                 max_depenetration_velocity=1.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                # ★False 유지. True 로 켜면 손가락 겹침은 막히지만(손관절합 25.8→18.9)
-                #   **유휴에서 팔이 못 선다** — zero-action 480스텝 실측: palm 드리프트
-                #   max 180mm·팔 |qd| 2~4 rad/s 지속·컵 171mm 이동(OFF 는 0.0mm).
-                #   홈 자세에서 이미 접촉 중인 링크쌍이 상시 반발력을 만드는 것으로,
-                #   fabric 트랙이 기록한 "자기충돌이 팔을 한계 밖으로 민다"와 같은 현상.
-                #   → 손가락 겹침은 자산 레벨 pair 필터(인접 링크 제외)로 풀어야 한다.
-                enabled_self_collisions=False,
-                solver_position_iteration_count=16,
+                # ★True (08.21 자산 재생성으로 해소). 구 자산에서는 홈 자세의 상시 접촉쌍이
+                #   반발력을 만들어 유휴 480스텝에 palm 이 180mm 표류했으나, 신규 USD 가
+                #   감사로 찾은 6쌍을 PhysicsFilteredPairsAPI 로 필터하고 convexHull(64-vert
+                #   외접) → convex_decomposition 으로 되돌려 유령 접촉을 없앴다.
+                #   실측: 유휴 480스텝 palm 드리프트 0.00mm·|qd| 0.00,
+                #        full-grip 손관절합 24.1(OFF) → 18.8(ON) = 손가락 겹침 차단.
+                enabled_self_collisions=True,
+                # 16 → 32: 47-DOF + 동시 마찰접촉에서 마찰 구속이 미수렴해 겉보기 미끄러짐이
+                # 생긴다. 관통 프록시(contact/force_max)와 fps 를 P-9 에서 분리 계측한 값.
+                solver_position_iteration_count=32,
                 solver_velocity_iteration_count=1,
             ),
         ),
@@ -80,6 +121,15 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 120.0,
         render_interval=2,
+        # ★씬 기본 물리 재질. 지정이 없으면 IsaacLab 기본 μ=0.5 로 돌고, PhysX 결합모드가
+        #   **average** 라 컵만 0.75 로 올려도 실효는 (0.75+0.5)/2 = 0.625 다.
+        #   → 씬 기본 + 로봇 + 컵 + 테이블 **네 곳 전부** 0.75 여야 한다.
+        #   파지 용량 ∝ (μcosα + sinα): 0.565 → 0.814 (×1.44).
+        #   restitution 0.0 — grasp_v1 의 (1.0,1.0) 은 "중립 1.0배" 주석과 달리 **절대값**이라
+        #   그대로 복사하면 컵이 완전탄성이 된다(randomize_rigid_body_material 은 배율 아님).
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            static_friction=0.75, dynamic_friction=0.75, restitution=0.0,
+        ),
         physx=sim_utils.PhysxCfg(
             bounce_threshold_velocity=0.01,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
@@ -100,8 +150,21 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     observation_space: int = 0
     state_space: int = 0
 
+    # ---- Fabrics (grasp_sensor 검증값 승계) ----------------------------------------
+    # ★정책 스텝(1/60)당 fabrics_dt × fabric_decimation 만큼 fabric 시간이 흐른다.
+    #   1/120 × 2 = 1/60 으로 실시간과 일치시킨다(1/60 × 2 는 2배속이 된다).
+    fabrics_dt: float = 1.0 / 120.0
+    fabric_decimation: int = 2
+    fabrics_damping_gain: float = 20.0
+    fabrics_max_objects_per_env: int = 8
+    fabric_use_cuda_graph: bool = False
+    # palm 목표가 실측에서 이만큼 이상 앞서지 못한다(와인드업 방지). 자유공간 추종오차가
+    # mm 대라 평소엔 안 물리고, 테이블·컵에 막혔을 때만 물린다.
+    palm_leash_pos: float = 0.05
+    palm_leash_rot: float = 0.35
+
     # ---- 액션 스케일 (스텝당 delta, 60 Hz) ----------------------------------------
-    # 팔: diff IK relative pose — pos 1cm/스텝(최대 0.6 m/s), rot 0.05 rad/스텝.
+    # 팔: palm 절대 목표 누산 delta — pos 1cm/스텝(최대 0.6 m/s), rot 0.05 rad/스텝.
     arm_pos_scale: float = 0.01
     arm_rot_scale: float = 0.05
     # 손: relative joint position (dexsuite RelativeJointPositionAction scale=0.1 동일)
@@ -129,9 +192,25 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     # 관절한계 위반 종료 페널티 (diff IK 는 관절한계 무방비 → 종료+페널티로 처리)
     abnormal_penalty: float = -1.0
 
+    # ---- 스폰 높이: 단일 소스 -------------------------------------------------------
+    # ★이중 패딩 재발 차단(08.21). 프로필이 완성값(0.282)을 들고 env 가 +5mm 를 또 얹어
+    #   컵이 정착고보다 9.7mm 높이 스폰됐다 → 정지 상태 height_delta −9.7mm, lift 보상의
+    #   첫 9.7mm 데드존, 실효 목표 159.7mm. 게다가 두 프로필이 0.282/0.297 로 갈렸다.
+    #   이제 여기 세 값에서만 파생한다(프로필의 object_spawn_z 필드는 삭제됨).
+    table_surface_z: float = 0.200           # env.usd top_plate 상면(점군 실측)
+    object_origin_offset_z: float = 0.0773   # cup_big USD 원점 ↔ 바닥
+    object_spawn_pad: float = 0.005          # 스폰 침투 반동 방지
+    # 위 셋에서 __post_init__ 이 파생시키는 캐시. 직접 쓰지 말 것(단일 소스 유지).
+    object_spawn_z: float = 0.0
+
     # ---- goal / 성공 판정 ---------------------------------------------------------
     goal_height_offset: float = 0.15         # goal = 물체 스폰 위치 + z 0.15
-    success_pos_tolerance: float = 0.05      # 난이도 스케줄러 판정 (tracking_std/2, dexsuite)
+    # dexsuite 규약은 **success 항의 pos_std/2**(dexsuite_env_cfg.py:432). 우리 success_std 가
+    # 0.05 이므로 0.025 다. 구 값 0.05 는 참조를 tracking_std/2 로 잘못 적은 것이라 판정선이
+    # 보상선보다 5배 헐거웠다 — 정책이 못 하는 난이도로 계속 승급했다.
+    success_pos_tolerance: float = 0.025
+    # 이전 12,000ep 런과의 연속성 비교 전용(보상·커리큘럼 미사용, 로깅만)
+    success_pos_tolerance_loose: float = 0.05
 
     # ---- 커리큘럼 (per-env 난이도 0~10) --------------------------------------------
     curriculum_max_level: int = 10
@@ -176,7 +255,7 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
             #   파지 조임 중 손끝이 컵 벽을 파고든다(사용자 영상 08.20).
             #   값은 grasp_v1·grasp_lift_fabric 과 동일.
             rigid_props=RigidBodyPropertiesCfg(
-                solver_position_iteration_count=16,
+                solver_position_iteration_count=32,
                 solver_velocity_iteration_count=1,
                 max_angular_velocity=100.0,
                 max_linear_velocity=100.0,
@@ -188,6 +267,11 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
 
     # 물체 rigid body 는 USD 안 baseLink 에 있다(cup_big_rl.usd 규약)
     object_contact_filter: tuple = ("/World/envs/env_.*/Object/baseLink",)
+
+    # 물리 재질 이벤트(로봇·컵). 테이블은 scene 자산이 아니라 정적 프림이라
+    # env 가 clone 전에 bind_physics_material 로 직접 건다.
+    events: GraspLiftEventCfg = GraspLiftEventCfg()
+    surface_friction: float = _FRICTION
 
     robot_cfg: ArticulationCfg = None  # __post_init__ 에서 프로필로 조립
 
@@ -207,10 +291,14 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
         )
         # critic = 관측 + 물체 속도(6) + 난이도(1)
         self.state_space = self.observation_space + 7
-        # 물체 스폰 중심을 프로필로 정렬
+        # 스폰 높이는 cfg 세 값에서만 파생(단일 소스) — 프로필은 xy 만 준다
+        self.object_spawn_z = (
+            self.table_surface_z + self.object_origin_offset_z + self.object_spawn_pad)
         self.object_cfg.init_state.pos = [
-            profile.object_spawn_center[0], profile.object_spawn_center[1], profile.object_spawn_z,
+            profile.object_spawn_center[0], profile.object_spawn_center[1], self.object_spawn_z,
         ]
+
+
 
 
 @configclass

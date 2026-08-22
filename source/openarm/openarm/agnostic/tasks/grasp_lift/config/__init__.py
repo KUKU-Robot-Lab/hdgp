@@ -24,9 +24,13 @@ def _play(cls):
     return _Play
 
 
+# ★gym id 규약: train.py 의 run_naming 정규식 ^(open-\w+)_([rbl])_(.+)$ 에 걸려야
+#   로그가 log/rl_games/<robot>/<side>/<task>/ 로 분리된다. 구 id
+#   (open-agn_grasp_lift_tesollo_r)는 두 번째 슬롯이 r/l/b 가 아니라 매칭에 실패해
+#   로그가 pipeline/left/... 로 오분류됐다.
 _CFGS = {
-    "tesollo_r": GraspLiftTesolloRightEnvCfg,
-    "gripper_l": GraspLiftGripperLeftEnvCfg,
+    "sens_r": GraspLiftTesolloRightEnvCfg,
+    "sens_l": GraspLiftGripperLeftEnvCfg,
 }
 
 for _tag, _cls in _CFGS.items():
@@ -41,7 +45,7 @@ for _tag, _cls in _CFGS.items():
         ("-play-lstm", _play_cls.__name__, "rl_games_ppo_lstm_cfg.yaml"),
     ):
         gym.register(
-            id=f"open-agn_grasp_lift_{_tag}{_suffix}",
+            id=f"open-{_tag}_grasp_lift{_suffix}",
             entry_point=_ENTRY,
             disable_env_checker=True,
             kwargs={

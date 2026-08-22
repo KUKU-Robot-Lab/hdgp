@@ -35,9 +35,23 @@ class RobotProfile:
     hand_locked_joint_regex: str = ""
     num_locked_hand_joints: int = 0      # 공간 계산용(regex 해석 결과와 대조 검증)
 
-    # ---- diff IK ---------------------------------------------------------------
-    palm_body: str = ""                  # IK 가 추종하는 EE body
-    tcp_offset_pos: tuple = (0.0, 0.0, 0.0)
+    # ---- 팔 제어: Fabrics ---------------------------------------------------------
+    palm_body: str = ""                  # Fabrics palm attractor 가 추종하는 EE body
+    # fabrics_sim 클래스 **이름**(문자열). None 이면 이 태스크로 못 띄운다(fail-loud).
+    fabric_class: str | None = None
+    # FABRICS/models/robots/urdf/<dir>/<dir>.urdf — robot_dir_name·robot_name 양쪽에 쓰인다.
+    fabric_robot_dir: str | None = None
+    # ★articulation 은 depth-major(index_1, middle_1, …), fabric URDF 는 finger-major
+    #   (thumb_1..4, index_1..4, …) 다. cat([arm, hand]) 로 만들면 손 20관절이 통째로
+    #   어긋나 fabric 이 없는 자기충돌을 피하려 팔을 민다(병행 트랙 실측: palm 이 2초에
+    #   61mm 만 움직이면서 관절속도 20 rad/s 포화). 이 순서가 유일한 방어선이다.
+    fabric_joint_order: tuple = ()
+    # palm 목표 워크스페이스(env-local 절대). 액션 누산 결과를 여기로 clamp 한다.
+    palm_box_min: tuple = (0.0, 0.0, 0.0)
+    palm_box_max: tuple = (0.0, 0.0, 0.0)
+    palm_rot_center_deg: tuple = (90.0, 0.0, 90.0)   # euler_zyx (ez, ey, ex)
+    palm_rot_half_deg: float = 45.0
+    palm_box_verified: bool = False      # probe 로 도달성 확인했는가
 
     # ---- 접촉 (보상의 대향 게이트) ----------------------------------------------
     # finger 이름 → body 이름 튜플. body 마다 ContactSensor 를 **개별** 생성해
@@ -61,7 +75,9 @@ class RobotProfile:
 
     # ---- 씬 배치 (로봇 서 있는 쪽에 따라 다름) -----------------------------------
     object_spawn_center: tuple = (0.30, -0.20)   # env-local (x, y)
-    object_spawn_z: float = 0.297                # 테이블 위 안착 높이(cup_big)
+    # ★object_spawn_z 는 여기 없다 — 높이는 cfg(table_surface_z + origin_offset + pad)
+    #   한 곳에서만 파생한다. 프로필이 완성값을 들고 env 가 패딩을 또 더해 9.7mm
+    #   어긋났던 이중 패딩(08.21)의 구조적 재발 차단.
 
 
 # =============================================================================
@@ -88,9 +104,30 @@ TESOLLO_RIGHT = RobotProfile(
     hand_locked_joint_regex="r_hj_(index|middle|ring)_1",
     num_locked_hand_joints=3,
     palm_body="r_hl_palm",
-    # 원위마디(_4)와 센서팁 둘 다 — 인벨롭(마디 접촉)과 핀치(팁 접촉) 어느 쪽이든
-    # 접촉으로 인정(tesollo 팁은 인벨롭에서 안 닿기 쉬움, 07.29 교훈).
-    finger_sensor_bodies={f: (f"r_hl_{f}_4", f"r_hl_{f}_tip") for f in _FINGERS},
+    # ---- Fabrics (DG-5F 계보) ----
+    fabric_class="OpenArmTeoslloPoseFabric",
+    # ★FK 게이트 0.0um 로 sensor_rl 에서 재생성한 자산(08.22). 레거시 openarm_tesollo /
+    #   openarm_tesollo_sensor 는 같은 DG-5F 손이지만 팔 베이스가 +8mm 어긋나
+    #   RL URDF 대비 worst 17.93mm 였다.
+    fabric_robot_dir="openarm_tesollo_sensor_right",
+    # 팔 7 + 손 20, **finger-major**(생성기 FINGERS 순서 = thumb,index,middle,ring,pinky)
+    fabric_joint_order=(
+        tuple(f"r_aj_{i}" for i in range(1, 8))
+        + tuple(f"r_hj_{f}_{j}" for f in _FINGERS for j in range(1, 5))
+    ),
+    # grasp_sensor 프리셋(같은 DG-5F 자산에서 검증된 palm workspace) 승계.
+    # ★modules/robots.py 의 _BOX_R 은 bi_s(DG-5FS) 실측이라 palm 이 54.8mm 달라 못 쓴다.
+    palm_box_min=(0.20, -0.55, 0.20),
+    palm_box_max=(0.55, 0.22, 0.70),
+    palm_rot_center_deg=(90.0, 0.0, 90.0),
+    palm_rot_half_deg=45.0,
+    palm_box_verified=False,             # P-2 통과 후 True 로
+    # 중간마디(_3)·원위마디(_4)·센서팁 — 감쌈(마디 접촉)과 핀치(팁 접촉) 모두 인정.
+    # ★_3 추가(08.22): 직경 72~90mm 컵에 우월한 감쌈 자세가 _4/_tip 만으로는 게이트를
+    #   못 켰다. grasp_v1 도 _4 와 _3 두 곳에 센서를 단다. 손가락별 합산이라 obs 차원 불변.
+    finger_sensor_bodies={
+        f: (f"r_hl_{f}_3", f"r_hl_{f}_4", f"r_hl_{f}_tip") for f in _FINGERS
+    },
     contact_group_a=("thumb",),
     contact_group_b=("index", "middle", "ring", "pinky"),
     fingertip_bodies=tuple(f"r_hl_{f}_tip" for f in _FINGERS),
@@ -124,9 +161,6 @@ TESOLLO_RIGHT = RobotProfile(
     },
     # grasp_v1 원좌표. palm-pose 홈 기준 x0.22~0.38 × y-0.30~-0.10 전 격자 quiet 실측.
     object_spawn_center=(0.30, -0.20),
-    # env.usd 상면 0.200 + cup_big 원점-바닥 0.0773 + 5mm 패딩 (낙하 정착 실측 0.2773).
-    # ★스폰을 낮게 잡으면 1cm 상판을 터널링한다(z0.24 실측) — 정착+5mm 유지.
-    object_spawn_z=0.282,
 )
 
 
@@ -134,6 +168,13 @@ TESOLLO_RIGHT = RobotProfile(
 # gripper_left — 같은 자산의 좌팔 2-DOF 평행 그리퍼. agnosticism 검증용(Phase 2):
 # 이 프로필 추가 외에 태스크 코드 수정이 0 이어야 합격.
 # 대향 그룹 = jaw1 / jaw2. l_hj_gripper_2 는 USD PhysX mimic(gearing=-1).
+# =============================================================================
+# =============================================================================
+# gripper_left — Phase 2(agnosticism 검증)용. ★fabric_class=None:
+#   sensor_left_gripper fabric 자산은 존재하지만 그 URDF 의 손은 2지 그리퍼가 아니라
+#   DG-5F 이고, 그리퍼 트랙은 Fabrics 로 jaw 수평(손목 ±45°·effort 7N·m)을 못 내
+#   자세오차 28° 로 ABORTED 된 이력이 있다. 조용히 폴백하지 말고 env 부팅에서 죽인다.
+#   → 이 프로필로 Phase 2 를 하려면 전용 fabric 자산부터 만들어야 한다.
 # =============================================================================
 GRIPPER_LEFT = RobotProfile(
     name="gripper_left",
@@ -172,7 +213,6 @@ GRIPPER_LEFT = RobotProfile(
         "head":              dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
     },
     object_spawn_center=(0.30, 0.20),    # 좌측 미러
-    object_spawn_z=0.297,
 )
 
 

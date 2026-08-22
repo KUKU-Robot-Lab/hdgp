@@ -89,12 +89,15 @@ def tilt_penalty(object_tilt_deg: torch.Tensor, free_deg: float) -> torch.Tensor
 
 
 def action_l2_clamped(actions: torch.Tensor, clamp: float = 1.0) -> torch.Tensor:
-    return torch.sum(actions**2, dim=-1).clamp(max=clamp)
+    """★sum+clamp 는 죽은 항이었다 — action_dim 23·clip 1.0 이라 Σa² 가 상시 1.0 에 포화해
+    전 12,652 iter 동안 값이 정확히 −0.00500(min=max), 즉 **gradient 0**. mean 으로 바꾸면
+    포화가 사라지고 액션 차원에도 불변이다."""
+    return torch.mean(actions**2, dim=-1).clamp(max=clamp)
 
 
 def action_rate_l2_clamped(actions: torch.Tensor, prev_actions: torch.Tensor,
                            clamp: float = 1.0) -> torch.Tensor:
-    return torch.sum((actions - prev_actions) ** 2, dim=-1).clamp(max=clamp)
+    return torch.mean((actions - prev_actions) ** 2, dim=-1).clamp(max=clamp)
 
 
 def compute_grasp_lift_rewards(

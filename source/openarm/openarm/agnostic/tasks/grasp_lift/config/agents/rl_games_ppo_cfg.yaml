@@ -81,7 +81,9 @@ params:
     critic_coef: 4
     clip_value: True
     clip_actions: False
-    bound_loss_type: regularization
+    bound_loss_type: bound   # ★rl_games 는 'regularisation'(영국식)/'bound' 만 인식 —
+                             #   'regularization' 은 어느 분기에도 안 걸려 bounds loss 가
+                             #   12,652 iter 내내 꺼져 있었다(로그 0.0 이 증거)
     bounds_loss_coef: 0.005
 
     # Asymmetric Actor-Critic: critic은 143D privileged obs 사용

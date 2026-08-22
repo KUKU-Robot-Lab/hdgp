@@ -2,34 +2,51 @@
 
 로봇 종속 정보는 전부 RobotProfile 이 공급한다 — 이 파일에 조인트/바디 이름 하드코딩 금지.
 
-제어 스택 (사용자 결정, 2026-08-20):
-  팔  = IsaacLab DifferentialIKController(dls, relative pose) — PhysX Jacobian 만 사용,
-        사전 자산 0 (Fabrics 폐기: 로봇당 4종 수제 자산 + droop/오픈루프 결함).
+제어 스택 (사용자 결정, 2026-08-22 — diff-IK 에서 전환):
+  팔  = Fabrics(geometric fabrics) 절대 palm 6D pose attractor.
+        액션은 내부 절대 목표 누산기를 움직인다(a=0 = 목표 고정 = 유지).
+        ★전환 근거: diff-IK relative 모드는 매 스텝 목표를 실측 pose 로 재기준화해
+          action=0 이면 PD 오차가 0 → **복원력 0**. 만중력 zero-action 실측에서
+          240스텝에 palm −22.3mm 처짐·무명령 기울기 18.7°·480스텝에 컵 낙하였다.
+        ⚠대가: Fabrics 는 로봇당 fabric URDF 1벌이 필요하다 — 프로필만 추가하면 되던
+          agnosticism 이 "프로필 + 자산 1벌"로 후퇴한다. 자산 생성은
+          urdf/tools/gen_fabric_urdfs.py (FK 게이트 0.2mm).
   손  = relative joint position (dexsuite 방식) — 동결 게이트·커플링·PCA·latch·
-        스크립트 램프 전부 없음. thumb 외전 포함 전 관절이 정책 제어 대상.
+        스크립트 램프 전부 없음. 외전 3축만 홈 고정.
 
-커리큘럼: per-env 난이도(0~10, 성공 ±1) → 물체 반중력 보상력(유효 중력 0→g) +
-스폰 범위 보간. lift 보상 항이 필요 없는 이유가 이것이다(dexsuite 검증).
+중력: **만중력 고정**(반중력 커리큘럼 제거, 08.22). 난이도는 스폰 반경만 담당한다.
 """
 
 from __future__ import annotations
+
+import math
 
 import torch
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
-from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import (
-    combine_frame_transforms,
-    matrix_from_quat,
-    quat_apply,
-    quat_inv,
-    skew_symmetric_matrix,
-    subtract_frame_transforms,
-)
+from isaaclab.sim.utils import bind_physics_material
+from isaaclab.utils.math import euler_xyz_from_quat, quat_apply
+
+# Fabrics (벤더링: hdgp/source/FABRICS/src — openarm/tasks/__init__ 가 sys.path 주입)
+import fabrics_sim.fabrics.openarm_tesollo_pose_fabric as _fab_tesollo
+from fabrics_sim.integrator.integrators import DisplacementIntegrator
+from fabrics_sim.utils.utils import initialize_warp
+from fabrics_sim.worlds.world_mesh_model import WorldMeshesModel
+
+_FABRIC_MODULES = (_fab_tesollo,)
+
+
+def _fabric_class(name: str):
+    """프로필의 클래스 **이름 문자열** → 클래스. env 에 로봇 이름 하드코딩 금지 계약."""
+    for mod in _FABRIC_MODULES:
+        cls = getattr(mod, name, None)
+        if cls is not None:
+            return cls
+    raise RuntimeError(f"fabric 클래스 '{name}' 를 찾을 수 없다: {[m.__name__ for m in _FABRIC_MODULES]}")
 
 from .grasp_lift_env_cfg import GraspLiftEnvCfg
 from .rewards import compute_grasp_lift_rewards
@@ -86,21 +103,8 @@ class GraspLiftEnv(DirectRLEnv):
             self.tip_ids.append(ids[0])
         self._tip_ids_t = torch.tensor(self.tip_ids, device=self.device, dtype=torch.long)
 
-        # fixed-base articulation: jacobian body 인덱스는 base 제외라 -1
-        if self.robot.is_fixed_base:
-            self._jacobi_body_idx = self.palm_idx - 1
-        else:
-            self._jacobi_body_idx = self.palm_idx
-
-        # ---- diff IK -------------------------------------------------------------
-        self._ik = DifferentialIKController(
-            DifferentialIKControllerCfg(command_type="pose", use_relative_mode=True, ik_method="dls"),
-            num_envs=self.num_envs, device=self.device,
-        )
-        self._tcp_offset = torch.tensor(p.tcp_offset_pos, device=self.device).repeat(self.num_envs, 1)
-        self._has_tcp_offset = any(abs(v) > 1e-9 for v in p.tcp_offset_pos)
-        self._tcp_offset_rot = torch.zeros(self.num_envs, 4, device=self.device)
-        self._tcp_offset_rot[:, 0] = 1.0
+        # ---- 팔 제어: Fabrics -------------------------------------------------------
+        self._setup_fabrics()
 
         # ---- 목표/버퍼 -------------------------------------------------------------
         jl = self.robot.data.soft_joint_pos_limits  # (N, J, 2)
@@ -118,9 +122,7 @@ class GraspLiftEnv(DirectRLEnv):
 
         # ---- 커리큘럼 ---------------------------------------------------------------
         self.difficulty = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self._gate_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._goal_reached_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self._object_mass = self.object.root_physx_view.get_masses().to(self.device).view(self.num_envs, 1)
 
         # ---- 접촉 그룹 인덱스 ---------------------------------------------------------
         fingers = list(p.finger_sensor_bodies.keys())
@@ -137,9 +139,54 @@ class GraspLiftEnv(DirectRLEnv):
                 f"finger_sensor_bodies({len(fingers)}) 의 손가락 수가 달라 그룹 인덱스를 공유할 수 없다"
             )
 
+        self._init_home_palm()
+
         print(f"[grasp_lift] profile={p.name} arm={len(self.arm_ids)} hand={len(self.hand_ids)} "
-              f"tips={len(self.tip_ids)} action={self.cfg.action_space} obs={self.cfg.observation_space}",
+              f"tips={len(self.tip_ids)} action={self.cfg.action_space} obs={self.cfg.observation_space} "
+              f"fabric={p.fabric_robot_dir}",
               flush=True)
+
+    # ------------------------------------------------------------------
+    def _init_home_palm(self) -> None:
+        """홈 palm pose 실측 + fabric FK 정합 검사.
+
+        ★`__init__` 시점의 body_pos_w 는 stale 이다(로봇이 아직 홈에 안 놓임). 반드시
+          관절을 써넣고 물리를 2스텝 돌린 뒤 읽는다 — 병행 트랙이 이 함정에 당했다.
+        """
+        q0 = self.robot.data.default_joint_pos
+        self.robot.write_joint_state_to_sim(q0, torch.zeros_like(q0))
+        self.robot.set_joint_position_target(q0)
+        self.scene.write_data_to_sim()
+        for _ in range(2):
+            self.sim.step(render=False)
+            self.scene.update(self.physics_dt)
+
+        home = self._palm_pose_6d()[0]
+        self._home_palm = home.clone()
+        self.palm_targets[:] = home.unsqueeze(0)
+
+        out = (home < self._palm_lo) | (home > self._palm_hi)
+        if bool(out.any()):
+            raise RuntimeError(
+                f"[{self.profile.name}] 홈 palm 이 워크스페이스 박스 밖이다: "
+                f"home={[round(v, 3) for v in home.tolist()]} "
+                f"lo={[round(v, 3) for v in self._palm_lo.tolist()]} "
+                f"hi={[round(v, 3) for v in self._palm_hi.tolist()]}"
+            )
+
+        # ★fabric FK ↔ USD palm 정합. 이 한 줄이 (fabric URDF 오선택 / joint_order 오류 /
+        #   palm_body 오지정) 3대 배선 사고를 부팅에서 전부 잡는다.
+        fab = self.fabric.get_palm_pose(self.fabric_q.detach(), "euler_zyx")[0]
+        dp = float(torch.norm(fab[:3] - home[:3]))
+        dr = float(torch.max(torch.abs(fab[3:] - home[3:])))
+        print(f"[grasp_lift] 홈 palm={[round(v, 4) for v in home.tolist()]} | "
+              f"fabric FK 정합 pos {dp * 1000:.2f}mm rot {math.degrees(dr):.2f}°", flush=True)
+        if dp > 0.005 or dr > math.radians(2.0):
+            raise RuntimeError(
+                f"[{self.profile.name}] fabric FK 가 USD palm 과 어긋난다: "
+                f"{dp * 1000:.1f}mm / {math.degrees(dr):.1f}° (허용 5mm/2°). "
+                "fabric_robot_dir·fabric_joint_order·palm_body 를 확인하라."
+            )
 
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
@@ -154,6 +201,14 @@ class GraspLiftEnv(DirectRLEnv):
             "/World/envs/env_0/Table", tbl.spawn,
             translation=tuple(tbl.init_state.pos), orientation=tuple(tbl.init_state.rot),
         )
+        # ★테이블은 scene 자산이 아니라 정적 프림이라 EventTerm 이 못 건다. 직접 바인딩한다.
+        #   씬 기본 재질만 믿으면 안 된다 — PhysX 결합이 average 라 한쪽만 낮아도 실효 μ 가
+        #   중간값이 되고, 컵-테이블 마찰은 접근·안정에 직접 영향을 준다.
+        _mu = float(self.cfg.surface_friction)
+        _mat = sim_utils.RigidBodyMaterialCfg(
+            static_friction=_mu, dynamic_friction=_mu, restitution=0.0)
+        _mat.func("/World/Materials/taskSurface", _mat)
+        bind_physics_material("/World/envs/env_0/Table", "/World/Materials/taskSurface")
 
         # 손가락별 접촉 센서 — body 마다 개별 생성(다중 body 단일 센서는 force_matrix_w=0,
         # grasp_sensor 실측 함정). Object-only 필터.
@@ -184,65 +239,147 @@ class GraspLiftEnv(DirectRLEnv):
         self.scene.filter_collisions(global_prim_paths=["/World/ground"])
 
     # ------------------------------------------------------------------
-    # 팔 EE(TCP) pose / Jacobian — root frame (IsaacLab task_space_actions 이식)
+    # Fabrics — 절대 palm pose attractor. 목표는 **실측을 참조하지 않는** 자체 상태다.
     # ------------------------------------------------------------------
-    def _ee_pose_b(self) -> tuple[torch.Tensor, torch.Tensor]:
-        ee_pos_w = self.robot.data.body_pos_w[:, self.palm_idx]
-        ee_quat_w = self.robot.data.body_quat_w[:, self.palm_idx]
-        pos_b, quat_b = subtract_frame_transforms(
-            self.robot.data.root_pos_w, self.robot.data.root_quat_w, ee_pos_w, ee_quat_w)
-        if self._has_tcp_offset:
-            pos_b, quat_b = combine_frame_transforms(pos_b, quat_b, self._tcp_offset, self._tcp_offset_rot)
-        return pos_b, quat_b
+    def _palm_pose_6d(self) -> torch.Tensor:
+        """현재 palm pose (env-local xyz + euler_zyx) — fabric 명령과 같은 규약."""
+        pos = self.robot.data.body_pos_w[:, self.palm_idx] - self.scene.env_origins
+        r, pi, y = euler_xyz_from_quat(self.robot.data.body_quat_w[:, self.palm_idx])
+        return torch.cat([pos, torch.stack([y, pi, r], dim=1)], dim=1)
 
-    def _ee_jacobian_b(self) -> torch.Tensor:
-        jac = self.robot.root_physx_view.get_jacobians()[:, self._jacobi_body_idx, :, :][:, :, self._arm_ids_t]
-        rot = matrix_from_quat(quat_inv(self.robot.data.root_quat_w))
-        jac = jac.clone()
-        jac[:, :3, :] = torch.bmm(rot, jac[:, :3, :])
-        jac[:, 3:, :] = torch.bmm(rot, jac[:, 3:, :])
-        if self._has_tcp_offset:
-            jac[:, 0:3, :] += torch.bmm(-skew_symmetric_matrix(self._tcp_offset), jac[:, 3:, :])
-        return jac
+    def _build_fabric_index(self) -> torch.Tensor:
+        """프로필 `fabric_joint_order` → articulation 인덱스. 순서가 유일한 방어선이다."""
+        order = self.profile.fabric_joint_order
+        if len(order) != self.fabric.num_joints:
+            raise RuntimeError(
+                f"[{self.profile.name}] fabric_joint_order 길이 {len(order)} != "
+                f"fabric num_joints {self.fabric.num_joints}"
+            )
+        idx = []
+        for name in order:
+            ids, _ = self.robot.find_joints(name)
+            if len(ids) != 1:
+                raise RuntimeError(f"[{self.profile.name}] fabric 관절 '{name}' 해석 실패: {ids}")
+            idx.append(ids[0])
+        return torch.tensor(idx, device=self.device, dtype=torch.long)
+
+    def _setup_fabrics(self) -> None:
+        p = self.profile
+        if not p.fabric_class or not p.fabric_robot_dir:
+            raise RuntimeError(
+                f"[{p.name}] fabric_class/fabric_robot_dir 가 없다. 이 태스크는 Fabrics 로만 돈다 "
+                "— 자산을 만들거나(urdf/tools/gen_fabric_urdfs.py) 다른 프로필을 쓰라."
+            )
+        initialize_warp(str(self.device)[-1])          # 멀티 GPU 캐시 분리(grasp_v1 규약)
+        self._world = WorldMeshesModel(
+            batch_size=self.num_envs, device=self.device,
+            max_objects_per_env=int(self.cfg.fabrics_max_objects_per_env),
+        )
+        self._world_ids, self._world_indicator = self._world.get_object_ids()
+
+        self.fabric = _fabric_class(p.fabric_class)(
+            batch_size=self.num_envs, device=self.device,
+            timestep=float(self.cfg.fabrics_dt),
+            graph_capturable=bool(self.cfg.fabric_use_cuda_graph),
+            use_hand_fabric=False,                     # 손은 Fabrics 밖(직접 관절 PD)
+            robot_dir_name=p.fabric_robot_dir,
+            robot_name=p.fabric_robot_dir,
+        )
+        self.integrator = DisplacementIntegrator(self.fabric)
+
+        expect = p.num_arm_joints + p.num_hand_joints
+        if self.fabric.num_joints != expect:
+            raise RuntimeError(
+                f"[{p.name}] fabric num_joints={self.fabric.num_joints} != 프로필 {expect}. "
+                "fabric URDF 와 USD 자산이 어긋났다."
+            )
+        self._fab_t = self._build_fabric_index()
+        # 손 구간만: fabric 순서의 손 관절이 hand_ids 안에서 몇 번째인가
+        _hand_pos = {j: i for i, j in enumerate(self.hand_ids)}
+        self._hand_to_fab_local = torch.tensor(
+            [_hand_pos[int(j)] for j in self._fab_t[p.num_arm_joints:].tolist()],
+            device=self.device, dtype=torch.long,
+        )
+        self.fabric_q = self.robot.data.default_joint_pos[:, self._fab_t].contiguous()
+        self.fabric_qd = torch.zeros(self.num_envs, self.fabric.num_joints, device=self.device)
+        self.fabric_qdd = torch.zeros_like(self.fabric_qd)
+        # use_hand_fabric=False 라 무시되지만 원본 계약(B,5 PCA)은 지킨다.
+        self._fabric_hand_cmd = torch.zeros(self.num_envs, 5, device=self.device)
+        # cspace attractor(널스페이스) rest 자세를 프로필 홈으로.
+        self.fabric.default_config.copy_(self.fabric_q)
+        self._fabric_damping = float(self.cfg.fabrics_damping_gain) * torch.ones(
+            self.num_envs, 1, device=self.device)
+
+        # palm 목표 박스(env-local 절대) + 회전 박스
+        d = math.pi / 180.0
+        c = torch.tensor(p.palm_rot_center_deg, device=self.device) * d
+        h = float(p.palm_rot_half_deg) * d
+        self._palm_lo = torch.cat([torch.tensor(p.palm_box_min, device=self.device), c - h])
+        self._palm_hi = torch.cat([torch.tensor(p.palm_box_max, device=self.device), c + h])
+        self.palm_targets = torch.zeros(self.num_envs, 6, device=self.device)
+        self._home_palm = torch.zeros(6, device=self.device)   # _init_home_palm 에서 실측
+        if not p.palm_box_verified:
+            print(f"[grasp_lift] ⚠ palm_box 미검증({p.name}) — P-2 로 도달성 확인 후 승격할 것",
+                  flush=True)
 
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clamp(-1.0, 1.0)
-        # 팔: relative pose 명령 (root frame)
-        cmd = torch.zeros(self.num_envs, 6, device=self.device)
-        cmd[:, :3] = self.actions[:, :3] * float(self.cfg.arm_pos_scale)
-        cmd[:, 3:] = self.actions[:, 3:6] * float(self.cfg.arm_rot_scale)
-        ee_pos, ee_quat = self._ee_pose_b()
-        self._ik.set_command(cmd, ee_pos=ee_pos, ee_quat=ee_quat)
-        # 손: 절대 목표를 delta 로 이동 + 관절한계 clamp
-        # 자유 손관절에만 delta 를 얹는다 — 고정 관절은 홈 목표 그대로 유지.
+
+        # ---- 팔: 내부 절대 목표 누산 -------------------------------------------------
+        # ★diff-IK relative 모드는 매 스텝 목표를 **실측 pose 로 재기준화**해서 action=0 이면
+        #   PD 오차가 0 이 됐다 → 복원력 0. 만중력 zero-action 실측: 240스텝에 palm −22.3mm,
+        #   무명령 기울기 18.7°, 480스텝에 컵 낙하. 여기서는 목표가 자체 상태라 실측이
+        #   흔들려도 되돌아온다. a=0 = "목표 고정 = 유지".
+        step = torch.zeros_like(self.palm_targets)
+        step[:, :3] = self.actions[:, :3] * float(self.cfg.arm_pos_scale)
+        step[:, 3:] = self.actions[:, 3:6] * float(self.cfg.arm_rot_scale)
+        tgt = (self.palm_targets + step).clamp(self._palm_lo, self._palm_hi)
+        # 와인드업 방지: 물리적으로 막혔을 때 목표만 계속 전진하는 것을 leash 로 막는다.
+        # 자유공간에서는 추종오차가 mm 대라 물리지 않는다.
+        meas = self._palm_pose_6d()
+        leash = torch.cat([
+            torch.full((3,), float(self.cfg.palm_leash_pos), device=self.device),
+            torch.full((3,), float(self.cfg.palm_leash_rot), device=self.device),
+        ])
+        self.palm_targets = torch.max(torch.min(tgt, meas + leash), meas - leash)
+        self._leash_active = (tgt - self.palm_targets).abs().max(dim=1).values > 1e-6
+
+        # ---- 손: 절대 목표 누산(자유 관절만) + 관절한계 clamp -------------------------
         _delta = torch.zeros_like(self.hand_targets)
         _delta[:, self._hand_free_local] = self.actions[:, 6:] * float(self.cfg.hand_joint_scale)
         self.hand_targets = (self.hand_targets + _delta).clamp(self._hand_lo, self._hand_hi)
 
-    def _apply_action(self) -> None:
-        # 팔 IK — 물리 스텝마다 최신 상태로 재계산(120 Hz)
-        ee_pos, ee_quat = self._ee_pose_b()
-        joint_pos = self.robot.data.joint_pos[:, self._arm_ids_t]
-        jacobian = self._ee_jacobian_b()
-        arm_des = self._ik.compute(ee_pos, ee_quat, jacobian, joint_pos)
-        # diff IK 는 관절한계 무방비 — 해를 한계 안으로 잘라서 명령한다(태스크 측 처리).
-        arm_des = arm_des.clamp(self._arm_lo + 0.02, self._arm_hi - 0.02)
-        self.robot.set_joint_position_target(arm_des, joint_ids=self.arm_ids)
-        self.robot.set_joint_position_target(self.hand_targets, joint_ids=self.hand_ids)
-        # 유휴 관절(반대팔·헤드 등)은 default 유지 — reset 에서 target 설정됨
+        # ---- Fabrics: 목표 주입 + 적분 (정책 스텝당 **한 번**) ------------------------
+        # 손 목표를 fabric 순서로 넣어야 충돌구 FK 가 실제 손 자세를 본다(안 넣으면
+        # 손이 접힌 줄 모르고 없는 충돌을 피하려 팔을 민다).
+        self.fabric_q[:, self.profile.num_arm_joints:] = self._hand_to_fabric(self.hand_targets)
+        self.fabric.set_features(
+            self._fabric_hand_cmd, self.palm_targets, "euler_zyx",
+            self.fabric_q.detach(), self.fabric_qd.detach(),
+            self._world_ids, self._world_indicator, self._fabric_damping,
+        )
+        # ★`_apply_action` 은 decimation 만큼 불리므로 거기서 적분하면 fabric 시간이 2배로 흐른다.
+        for _ in range(int(self.cfg.fabric_decimation)):
+            self.fabric_q, self.fabric_qd, self.fabric_qdd = self.integrator.step(
+                self.fabric_q.detach(), self.fabric_qd.detach(),
+                self.fabric_qdd.detach(), float(self.cfg.fabrics_dt),
+            )
 
-        # ---- 커리큘럼: 물체 반중력 보상력 (유효 중력 = g × 난이도/max) -------------
-        # ★접촉 성립(대향 게이트 참) 시에만 건다 — 잡기 전엔 정상 중력(컵 안정),
-        #   잡으면 가벼움 = 커리큘럼 의도 그대로. 접촉 전부터 걸면 0.15g 컵이 마찰을
-        #   잃고 떠돌다 낙하(agn_test1 ep1000: episode 323/480, height_delta -11mm).
-        frac = (self.difficulty.float().unsqueeze(1) / float(self.cfg.curriculum_max_level)).clamp(
-            min=float(self.cfg.gravity_min_frac))
-        comp = self._object_mass * _GRAVITY * (1.0 - frac) * self._gate_buf.float().unsqueeze(1)
-        f = torch.zeros(self.num_envs, 1, 3, device=self.device)
-        f[:, 0, 2] = comp.squeeze(1)
-        self.object.set_external_force_and_torque(
-            f, torch.zeros_like(f), body_ids=[0], is_global=True)
+    def _hand_to_fabric(self, hand_q: torch.Tensor) -> torch.Tensor:
+        """손 목표(articulation hand 순서) → fabric 손 구간 순서."""
+        return hand_q[:, self._hand_to_fab_local]
+
+    def _apply_action(self) -> None:
+        # Fabrics 가 만든 참조 궤적을 팔 PD 목표로. fabric_q 는 **오픈루프 plant** —
+        # 실측 관절로 되돌려 동기화하면 팔이 명령을 못 따라간다(E1 사고 2건).
+        arm_target = self.fabric_q[:, : self.profile.num_arm_joints]
+        self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_ids)
+        self.robot.set_joint_velocity_target(
+            torch.zeros_like(arm_target), joint_ids=self.arm_ids)
+        self.robot.set_joint_position_target(self.hand_targets, joint_ids=self.hand_ids)
+        # ★만중력 고정(08.22): 반중력 보상력 제거. 게이트가 유효 중력을 토글하던 결합도
+        #   함께 사라졌다 — 접촉이 순간 끊길 때 컵 무게가 급변하던 절벽이 없다.
 
     # ------------------------------------------------------------------
     def _contact_forces(self) -> torch.Tensor:
@@ -273,7 +410,9 @@ class GraspLiftEnv(DirectRLEnv):
         ).reshape(self.num_envs, -1)
         obj_pos = self._env_local(self.object.data.root_pos_w)
         obj_quat = self.object.data.root_quat_w
-        contact = self._contact_forces().clamp(max=20.0)
+        # ★clip_observations=5.0 이 raw 접촉력을 5N 에서 자른다(env 의 clamp(20) 은 무효였다).
+        #   5로 나눠 20N 에서 4.0 으로 포화시키면 의미(포화점 20N)는 유지하고 클립에 안 걸린다.
+        contact = (self._contact_forces() / 5.0).clamp(max=4.0)
         obs = torch.cat([
             joint_pos, joint_vel, palm_pos, palm_quat, tips,
             obj_pos, obj_quat, self.goal_pos, contact, self.actions,
@@ -314,7 +453,6 @@ class GraspLiftEnv(DirectRLEnv):
             prev_actions=self.prev_actions,
             cfg=self.cfg,
         )
-        self._gate_buf.copy_(gate)   # 반중력 커리큘럼용 (접촉 시에만 보상력)
         # abnormal 종료 페널티(관절한계) — _get_dones 가 같은 스텝에 계산한 플래그 사용
         total = total + float(self.cfg.abnormal_penalty) * self._abnormal_buf.float()
         self.prev_actions.copy_(self.actions)
@@ -350,8 +488,25 @@ class GraspLiftEnv(DirectRLEnv):
         self.extras["task/goal_dist"] = goal_dist.mean()
         self.extras["task/goal_reached"] = self._goal_reached_now.float().mean()
         self.extras["task/object_height_delta"] = (obj_pos[:, 2] - self.object_spawn_pos[:, 2]).mean()
+        # 이전 12,000ep 런과의 연속성 비교 전용(보상·커리큘럼 미사용)
+        self.extras["task/goal_reached_loose"] = (
+            goal_dist < float(self.cfg.success_pos_tolerance_loose)).float().mean()
+        # 게이트가 참인 env 의 평균 기울기 — 이번 런의 1차 판정 지표
+        _g = gate.float()
+        self.extras["task/tilt_at_gate"] = (
+            (tilt_deg * _g).sum() / _g.sum().clamp(min=1.0))
+        # Fabrics 추종(정상상태 오차 포함) — 배선 사고의 조기 신호
+        _perr = torch.norm(self.palm_targets[:, :3] - self._palm_pose_6d()[:, :3], dim=-1)
+        self.extras["fabric/palm_err_mean"] = _perr.mean()
+        self.extras["fabric/palm_err_p95"] = torch.quantile(_perr, 0.95)
+        self.extras["fabric/joint_err_max"] = (
+            self.fabric_q[:, : self.profile.num_arm_joints]
+            - self.robot.data.joint_pos[:, self._arm_ids_t]).abs().max()
+        self.extras["fabric/leash_active_frac"] = self._leash_active.float().mean()
         self.extras["curriculum/difficulty_mean"] = self.difficulty.float().mean()
-        self.extras["curriculum/gravity_frac"] = self.difficulty.float().mean() / float(
+        self.extras["curriculum/difficulty_max_frac"] = (
+            self.difficulty == int(self.cfg.curriculum_max_level)).float().mean()
+        _unused_gravity_frac = self.difficulty.float().mean() / float(
             self.cfg.curriculum_max_level)
         _hand_tau = self.robot.data.applied_torque[:, self._hand_ids_t].abs()
         self.extras["debug/hand/torque_mean"] = _hand_tau.mean()
@@ -409,7 +564,6 @@ class GraspLiftEnv(DirectRLEnv):
             self.difficulty[env_ids] + torch.where(succ, 1, -1)
         ).clamp(0, int(self.cfg.curriculum_max_level))
         self._goal_reached_now[env_ids] = False
-        self._gate_buf[env_ids] = False
 
         # ---- 로봇: 프로필 init 자세 ---------------------------------------------------
         q0 = self._default_q[env_ids].clone()
@@ -417,7 +571,11 @@ class GraspLiftEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim(q0, qd0, env_ids=env_ids)
         self.robot.set_joint_position_target(q0, env_ids=env_ids)
         self.hand_targets[env_ids] = q0[:, self._hand_ids_t]
-        self._ik.reset(env_ids)
+        # Fabrics 상태 씨딩 — 리셋 **외**에는 실측으로 동기화하지 않는다(오픈루프 plant)
+        self.fabric_q[env_ids] = q0[:, self._fab_t]
+        self.fabric_qd[env_ids] = 0.0
+        self.fabric_qdd[env_ids] = 0.0
+        self.palm_targets[env_ids] = self._home_palm.unsqueeze(0)
         self.prev_actions[env_ids] = 0.0
         self.actions[env_ids] = 0.0
 
@@ -430,8 +588,8 @@ class GraspLiftEnv(DirectRLEnv):
         spawn = torch.zeros(n, 3, device=self.device)
         spawn[:, 0] = p.object_spawn_center[0] + offs[:, 0]
         spawn[:, 1] = p.object_spawn_center[1] + offs[:, 1]
-        # +5mm 패딩: 정확 안착 높이는 스폰 침투 반동으로 컵을 튕긴다(실측 침하 -11mm)
-        spawn[:, 2] = p.object_spawn_z + 0.005
+        # 높이는 cfg 단일 소스(table_surface_z + origin_offset + pad). 이중 패딩 금지.
+        spawn[:, 2] = self.cfg.object_spawn_z
         self.object_spawn_pos[env_ids] = spawn
         self.goal_pos[env_ids] = spawn + torch.tensor(
             [0.0, 0.0, float(self.cfg.goal_height_offset)], device=self.device)
