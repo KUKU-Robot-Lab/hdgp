@@ -233,12 +233,18 @@ elif args.gate == "g3":
     approach = torch.tensor([2*(_x*_z + _w*_y), 2*(_y*_z - _w*_x), 1 - 2*(_x*_x + _y*_y)],
                             device=env.device)
     approach = approach / approach.norm()
-    e0 = goto((cup0 - 0.10 * approach).clamp(_BOX_LO, _BOX_HI), grip=+1.0)
+    _gp0 = cup0.clone(); _gp0[:, 2] += P.CUP_ORIGIN_TO_GRASP_Z
+    e0 = goto((_gp0 - 0.10 * approach).clamp(_BOX_LO, _BOX_HI), grip=+1.0)
     for t in (0.06, 0.03):
-        goto((cup0 - t * approach).clamp(_BOX_LO, _BOX_HI), grip=+1.0, iters=2)
-    e1 = goto(cup0, grip=+1.0, iters=4)
-    err_vec = (tcp() - cup0).mean(dim=0) * 1e3
-    per_env = ((tcp() - cup0).norm(dim=-1) * 1e3)
+        goto((_gp0 - t * approach).clamp(_BOX_LO, _BOX_HI), grip=+1.0, iters=2)
+    # ★★진입 목표는 컵 **원점**이 아니라 **파지 대역**이다. 원점은 상면 +92 mm 인데 통과
+    #   대역은 +10~85 mm 라, 원점을 겨냥하면 턱이 컵의 가장 넓은 단(88 mm > 개구 84.5 mm)에
+    #   부딪혀 밀려난다(실측: TCP 오차 100.2 mm, 벡터 −31,+93,+15).
+    grasp_pt = cup0.clone()
+    grasp_pt[:, 2] += P.CUP_ORIGIN_TO_GRASP_Z
+    e1 = goto(grasp_pt, grip=+1.0, iters=4)
+    err_vec = (tcp() - grasp_pt).mean(dim=0) * 1e3
+    per_env = ((tcp() - grasp_pt).norm(dim=-1) * 1e3)
     r1 = float((obj.data.root_pos_w[:, 2] - env.scene.env_origins[:, 2] - cup0[:, 2]).mean()) * 1e3
     print(f"  pregrasp        TCP 오차 {e0:6.1f} mm")
     print(f"  접근(컵 원점)   TCP 오차 {e1:6.1f} mm · 벡터 ({float(err_vec[0]):+.0f},{float(err_vec[1]):+.0f},{float(err_vec[2]):+.0f}) "
@@ -246,12 +252,12 @@ elif args.gate == "g3":
 
     a_close = act_for((cup0 + (cup0 - cup0)).clamp(_BOX_LO, _BOX_HI), grip=-1.0)
     # 폐쇄는 현재 지령 유지 + 그리퍼만 닫기 — goto 의 마지막 보정 지령을 재사용한다.
-    a_close = act_for((tcp() + (cup0 - tcp())).clamp(_BOX_LO, _BOX_HI), grip=-1.0)
+    a_close = act_for((tcp() + (grasp_pt - tcp())).clamp(_BOX_LO, _BOX_HI), grip=-1.0)
     for _ in range(60):
         env.step(a_close)
     print(f"  폐쇄            그리퍼 닫음")
 
-    lift_t = cup0.clone(); lift_t[:, 2] += 0.08
+    lift_t = grasp_pt.clone(); lift_t[:, 2] += 0.08
     e2 = goto(lift_t, grip=-1.0)
     cup = obj.data.root_pos_w - env.scene.env_origins
     r2 = float((cup[:, 2] - cup0[:, 2]).mean()) * 1e3

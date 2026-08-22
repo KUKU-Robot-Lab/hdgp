@@ -77,6 +77,11 @@ parser.add_argument(
     help="student 카메라(depth) occlusion 정량화: N 스텝 돌며 물체 가시 픽셀 비율 측정 후 출력·종료 (0=off). 소수 env 권장.",
 )
 parser.add_argument(
+    "--cup_drift_probe", type=int, default=0,
+    help="컵이 스폰 위치에서 얼마나 끌려오는지 N 스텝 추적 후 리포트·종료 (0=off). "
+         "warm 뱅크 컵 y 가 스폰 중심보다 안쪽인 현상의 발생 구간을 특정한다.",
+)
+parser.add_argument(
     "--grip_probe", action="store_true", default=False,
     help="기하 probe: 정책의 palm 배치는 유지하되 손가락 action 을 강제 full-grip(+1)으로 덮어써 "
          "작은 물체에서 손끝 감쌈·palm 도달 여부를 렌더/DBGC 로 확인. --video --num_envs 8 권장.",
@@ -683,8 +688,39 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                  "cup_idx": None, "cup_finger": None, "cup_n": 0, "cup_hist": None,
                  "obj_finger": None, "obj_n": 0}
     _occ = {"step": 0, "by_obj": {}}  # occlusion probe 누적: obj_name -> [vis_lift_sum, n_lift, vis_pre_sum, n_pre]
+    _cd_n = int(args_cli.cup_drift_probe)
+    _cd_step = 0
+    _cd_ref = None          # 1 스텝 뒤 컵 위치(리셋 직후 버퍼는 stale)
+    _cd_rows = []
     while simulation_app.is_running():
         start_time = time.time()
+        if _cd_n > 0:
+            _ce = env.unwrapped
+            if hasattr(_ce, "env"):
+                _ce = _ce.env.unwrapped
+            if _cd_step == 1:
+                _cd_ref = _ce.object_pos.clone()
+            if _cd_ref is not None and _cd_step % 10 == 0:
+                _d = _ce.object_pos - _cd_ref
+                _pd = torch.norm(_ce.object_pos - _ce.palm_center_pos, dim=-1)
+                _cd_rows.append((
+                    _cd_step,
+                    float(_ce.object_pos[:, 1].mean()),
+                    float(_d[:, 1].mean() * 1000.0),
+                    float(_d[:, 2].mean() * 1000.0),
+                    float(_pd.mean() * 1000.0),
+                ))
+            if _cd_step >= _cd_n:
+                print("\n[CUPDRIFT] 컵 이동 추적 (기준 = 1 스텝 뒤 위치)", flush=True)
+                print("  step |  cup_y(m) |  Δy(mm) |  Δz(mm) | palm-cup(mm)", flush=True)
+                for _r in _cd_rows:
+                    print(f"  {_r[0]:4d} | {_r[1]:+9.4f} | {_r[2]:+7.1f} | {_r[3]:+7.1f} | {_r[4]:11.1f}",
+                          flush=True)
+                if _cd_rows:
+                    print(f"\n  시작 cup_y {_cd_rows[0][1]:+.4f} → 종료 {_cd_rows[-1][1]:+.4f}"
+                          f"  (총 Δy {_cd_rows[-1][2]:+.1f}mm)", flush=True)
+                break
+            _cd_step += 1
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)

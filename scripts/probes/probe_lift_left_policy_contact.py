@@ -51,6 +51,7 @@ import gymnasium as gym
 import torch
 
 import openarm.tasks  # noqa: F401
+from isaaclab.utils.math import matrix_from_quat
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 from openarm.gripper.left.grasp_sensor import grasp_left_preset as P
@@ -100,6 +101,7 @@ def main() -> None:
     names = [n for _, n in left]
     grip_ids, _ = robot.find_joints(P.GRIPPER_JOINT_NAMES, preserve_order=True)
     base_i = robot.body_names.index(P.GRIPPER_BASE_BODY)
+    finger_ids = [robot.body_names.index(n) for n in P.GRIPPER_FINGER_BODIES]
 
     def _tensor(o):
         # RlGamesVecEnvWrapper 는 {'obs': tensor} 를 준다. player 는 텐서를 기대한다.
@@ -143,6 +145,15 @@ def main() -> None:
     spawn_xy = [None]
     # ★그리퍼 지령의 **시계열**이 필요하다. 평균만 보면 '컵에 막혀 멈춘 것'과 '아예
     #   안 닫는 것'을 구분할 수 없다 — 둘 다 중간값으로 나온다.
+    # ★★straddle 실측 — "컵이 턱 사이에 들어왔는가" 의 물리 규모.
+    #   `rewards.cup_between_jaws` 와 **같은 식**으로 잰다. 그래야 여기서 나온 수치를
+    #   그대로 std 산정에 쓸 수 있다(CLAUDE.md: 새 항의 임계는 실측 규모를 재고 정한다).
+    sd_along = []          # 턱 축 방향 어긋남 (m) — 전 env 평균
+    sd_lateral = []        # 턱 축 선까지의 수직거리 (m) — 전 env 평균
+    sd_along_best = []     # 그 스텝에서 가장 잘 맞춘 env (최소값)
+    sd_lateral_best = []
+    sd_enclose = []        # 두 손가락이 컵 축 양쪽에 있는 정도 (0~1)
+    sd_term = []           # `cup_between_jaws` 항의 실제 값 (weight 곱하기 전)
     grip_series = []       # 구동 관절 위치 (m)
     grip_cmd = []          # 이진 그리퍼 액션의 부호 (>0 = 열기 지령)
 
@@ -175,6 +186,28 @@ def main() -> None:
             spawn_xy[0] = cup[:, :2].clone()
         cup_z.append(float(cup[:, 2].mean()))
         cup_dxy.append(float((cup[:, :2] - spawn_xy[0]).norm(dim=-1).mean()))
+        # straddle: 턱 중점 ↔ 컵 축. 보상 함수와 동일한 기하.
+        _f = robot.data.body_pos_w[:, finger_ids, :]
+        _mid = 0.5 * (_f[:, 0, :] + _f[:, 1, :])
+        _jaw = _f[:, 1, :] - _f[:, 0, :]
+        _u = _jaw / _jaw.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        _cz = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]
+        _tm = _mid - obj.data.root_pos_w
+        _cpt = obj.data.root_pos_w + _cz * (_tm * _cz).sum(-1, keepdim=True)
+        _d = _cpt - _mid
+        _al = (_d * _u).sum(-1).abs()
+        _lat = (_d - _u * (_d * _u).sum(-1, keepdim=True)).norm(dim=-1)
+        sd_along.append(float(_al.mean())); sd_along_best.append(float(_al.min()))
+        sd_lateral.append(float(_lat.mean())); sd_lateral_best.append(float(_lat.min()))
+        # enclose: 두 손가락이 컵 축 **양쪽**에 있는가 (보상 함수와 동일)
+        _sl = ((_cpt - _f[:, 0, :]) * _u).sum(-1)
+        _sr = ((_f[:, 1, :] - _cpt) * _u).sum(-1)
+        _enc = (torch.minimum(_sl, _sr) / P.JAW_ENCLOSE_HALF_WIDTH).clamp(0.0, 1.0)
+        _align = 0.5 * (1 - torch.tanh(_al / P.JAW_ALONG_STD)) + 0.5 * (
+            1 - torch.tanh(_lat / P.JAW_LATERAL_STD))
+        sd_enclose.append(float(_enc.mean()))
+        sd_term.append(float((_align * (P.JAW_ENCLOSE_FLOOR
+                                        + (1 - P.JAW_ENCLOSE_FLOOR) * _enc)).mean()))
         # 램프가 0 을 벗어나는 지점 = 실제로 뜨기 시작한 높이
         lifted = cup[:, 2] > P.LIFT_RAMP_ZERO_Z
         tcp_w = ee.data.target_pos_w[:, 0, :] - origins
@@ -291,6 +324,28 @@ def main() -> None:
         print(f"  최대 컵 z {max(cup_z):.5f} (스폰 대비 {(max(cup_z) - P.CUP_SPAWN_Z) * 1e3:+.1f} mm)"
               f" · 스폰보다 1 cm 이상 올라간 스텝 {up:.1%}")
         print("  → 이 값이 0 에 가까우면 **컵을 안 들고 곁에 서 있는 것**이다.")
+
+    if sd_along:
+        import math as _m
+        import statistics as _st
+        na = len(sd_along)
+        am, lm = _st.mean(sd_along), _st.mean(sd_lateral)
+        ab, lb = min(sd_along_best), min(sd_lateral_best)
+        print("\n=== ★컵이 턱 사이에 들어왔는가 (straddle 실측) ===")
+        print(f"  {'':<14}{'평균':>10}{'최선(min)':>12}")
+        print(f"  {'턱축 어긋남':<14}{am * 1e3:9.1f} mm{ab * 1e3:11.1f} mm")
+        print(f"  {'턱축까지 수직':<14}{lm * 1e3:9.1f} mm{lb * 1e3:11.1f} mm")
+        print(f"  현재 프리셋 std: along {P.JAW_ALONG_STD * 1e3:.0f} mm / "
+              f"lateral {P.JAW_LATERAL_STD * 1e3:.0f} mm")
+        for lab, v, std in (("평균 상태", (am, lm), None), ("최선 상태", (ab, lb), None)):
+            q = (1 - _m.tanh(v[0] / P.JAW_ALONG_STD)) * (1 - _m.tanh(v[1] / P.JAW_LATERAL_STD))
+            print(f"    {lab} straddle 품질 = {q:.5f}")
+        print(f"  {'enclose (턱 양쪽)':<14}{_st.mean(sd_enclose):9.3f}    "
+              f"(1 = 두 손가락이 컵 축을 사이에 둠, 0 = 주먹)")
+        print(f"  ★cup_between_jaws 항 = {_st.mean(sd_term):.4f} "
+              f"→ 보상 기여 {_st.mean(sd_term) * P.BETWEEN_JAWS_REWARD_WEIGHT:.3f}"
+              f" (상한 {P.BETWEEN_JAWS_REWARD_WEIGHT:.1f})")
+        print("  → 항 값이 0 에 가까우면 gradient 가 없다(test10/test11 과 같은 함정).")
 
     if grip_series:
         import statistics as _st
