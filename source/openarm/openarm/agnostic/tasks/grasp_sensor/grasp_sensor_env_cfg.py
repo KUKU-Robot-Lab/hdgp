@@ -1,4 +1,4 @@
-"""robot-agnostic grasp-lift 환경 설정.
+"""robot-agnostic grasp-sensor 환경 설정.
 
 태스크: 고정 초기 자세 → 접근 → 파지 → 스폰 지점 위 +15cm goal 로 들어 유지.
 로봇 종속 정보는 전부 RobotProfile 에서 온다(robot_profiles.py 참조).
@@ -34,7 +34,7 @@ _FRICTION = 0.75
 
 
 @configclass
-class GraspLiftEventCfg:
+class GraspSensorEventCfg:
     """물리 재질 — startup 1회. 값은 절대값이다(배율 아님).
 
     ★씬 기본(SimulationCfg.physics_material)만으로는 부족하다: 로봇·컵 콜라이더는 각자
@@ -114,7 +114,7 @@ def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
 
 
 @configclass
-class GraspLiftEnvCfg(DirectRLEnvCfg):
+class GraspSensorEnvCfg(DirectRLEnvCfg):
     # ---- 로봇 선택 (서브클래스가 덮어씀) ----------------------------------------
     profile_name: str = "tesollo_right"
 
@@ -163,7 +163,7 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
     fabric_use_cuda_graph: bool = False
     # ★palm leash 는 제거됐다(08.22) — 정책이 팔 목표에 대해 전권을 갖는다.
     #   목표의 유일한 상한은 아래 워크스페이스 박스(profile.palm_box_*)다.
-    #   근거는 grasp_lift_env.py `_pre_physics_step` 주석 참조.
+    #   근거는 grasp_sensor_env.py `_pre_physics_step` 주석 참조.
 
     # ---- 액션 스케일 (스텝당 delta, 60 Hz) ----------------------------------------
     # 팔: palm 절대 목표 누산 delta — pos 1cm/스텝(최대 0.6 m/s), rot 0.05 rad/스텝.
@@ -291,7 +291,7 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
 
     # 물리 재질 이벤트(로봇·컵). 테이블은 scene 자산이 아니라 정적 프림이라
     # env 가 clone 전에 bind_physics_material 로 직접 건다.
-    events: GraspLiftEventCfg = GraspLiftEventCfg()
+    events: GraspSensorEventCfg = GraspSensorEventCfg()
     surface_friction: float = _FRICTION
 
     robot_cfg: ArticulationCfg = None  # __post_init__ 에서 프로필로 조립
@@ -323,10 +323,10 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
 
 
 @configclass
-class GraspLiftTesolloRightEnvCfg(GraspLiftEnvCfg):
+class GraspSensorTesolloRightEnvCfg(GraspSensorEnvCfg):
     profile_name: str = "tesollo_right"
 
 
 @configclass
-class GraspLiftGripperLeftEnvCfg(GraspLiftEnvCfg):
+class GraspSensorGripperLeftEnvCfg(GraspSensorEnvCfg):
     profile_name: str = "gripper_left"

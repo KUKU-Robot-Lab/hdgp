@@ -1,4 +1,4 @@
-"""로봇 프로필 — robot-agnostic grasp-lift 태스크에서 **로봇 종속 정보가 모이는 유일한 곳**.
+"""로봇 프로필 — robot-agnostic grasp-sensor 태스크에서 **로봇 종속 정보가 모이는 유일한 곳**.
 
 설계 목표(2026-08-20 사용자): 잘 설계된 보상함수와 환경 세팅만으로, assets/robot 의
 어떤 로봇을 소환해도 태스크가 성공해야 한다. 태스크 코드(env/reward/curriculum)는

@@ -13,7 +13,7 @@ agnostic/
 │   ├── physics_dr.py        물리 DR EventTerm + ADR 종점 범위
 │   └── agents.py            rl_games yaml 선택
 └── tasks/
-    ├── grasp_lift/          팔 = Fabrics (a436696 에서 diffIK→전환. 다른 세션이 학습 중 — 수정 금지)
+    ├── grasp_sensor/        팔 = Fabrics (구 grasp_lift, 08.22 개명. 다른 세션이 작업 중 — 수정 금지)
     └── grasp_lift_fabric/   팔 = Fabrics (이 문서의 대상)
 ```
 

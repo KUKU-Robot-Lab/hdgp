@@ -1,4 +1,4 @@
-"""grasp-lift 보상 — 인벨롭 그립 성립 중심 (08.22 재설계). 로봇 무관 텐서 함수.
+"""grasp-sensor 보상 — 인벨롭 그립 성립 중심 (08.22 재설계). 로봇 무관 텐서 함수.
 
 설계 방침(사용자 결정): 최우선 목표는 **인벨롭 그립 성립** — 다음 태스크(pour)의 전제.
 이전 dexsuite 이식(그룹-min reaching + 이진 접촉 AND 게이트)은 rim-hook(림을 한 손가락
@@ -135,7 +135,7 @@ def action_rate_l2_clamped(actions: torch.Tensor, prev_actions: torch.Tensor,
     return torch.mean((actions - prev_actions) ** 2, dim=-1).clamp(max=clamp)
 
 
-def compute_grasp_lift_rewards(
+def compute_grasp_sensor_rewards(
     *,
     palm_pos: torch.Tensor,           # (N, 3) env-local
     fingertip_pos: torch.Tensor,      # (N, T, 3) env-local

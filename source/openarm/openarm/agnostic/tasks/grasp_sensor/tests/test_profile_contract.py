@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from openarm.agnostic.tasks.grasp_lift.robot_profiles import PROFILES
+from openarm.agnostic.tasks.grasp_sensor.robot_profiles import PROFILES
 
 _TASK_DIR = Path(__file__).resolve().parents[1]
 
@@ -59,7 +59,7 @@ def test_arm_hand_regex_disjoint_on_init_pose(name):
 def test_task_code_has_no_robot_names():
     """robot-agnostic 핵심 계약: env/reward 코드에 로봇 조인트/바디 이름 하드코딩 금지."""
     banned = re.compile(r'"(r|l)_(aj|hj|hl)_|\'(r|l)_(aj|hj|hl)_')
-    for fname in ("grasp_lift_env.py", "rewards.py", "grasp_lift_env_cfg.py"):
+    for fname in ("grasp_sensor_env.py", "rewards.py", "grasp_sensor_env_cfg.py"):
         src = (_TASK_DIR / fname).read_text(encoding="utf-8")
         code = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
         m = banned.search(code)
@@ -68,7 +68,7 @@ def test_task_code_has_no_robot_names():
 
 def test_env_reward_import_free_of_profiles_constants():
     """env 는 PROFILES 조회 외에 특정 프로필 상수를 import 하지 않는다."""
-    src = (_TASK_DIR / "grasp_lift_env.py").read_text(encoding="utf-8")
+    src = (_TASK_DIR / "grasp_sensor_env.py").read_text(encoding="utf-8")
     assert "TESOLLO_RIGHT" not in src and "GRIPPER_LEFT" not in src
 
 
@@ -126,7 +126,7 @@ def test_palm_box_sane(name):
 
 def test_no_diff_ik_left_behind():
     """diff-IK 재도입 방지 — 복원력 0 이 전환의 이유였다."""
-    src = (_TASK_DIR / "grasp_lift_env.py").read_text(encoding="utf-8")
+    src = (_TASK_DIR / "grasp_sensor_env.py").read_text(encoding="utf-8")
     code = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
     for banned in ("DifferentialIKController", "get_jacobians"):
         assert banned not in code, f"diff-IK 잔재: {banned}"
@@ -154,7 +154,7 @@ def test_envelope_contract():
     assert "group_reaching" not in rew_code, "그룹-min reaching 재도입 금지 (rim-hook 원인)"
     assert "approach_reward" in rew_code and "envelope_fraction" in rew_code
 
-    env_src = (_TASK_DIR / "grasp_lift_env.py").read_text(encoding="utf-8")
+    env_src = (_TASK_DIR / "grasp_sensor_env.py").read_text(encoding="utf-8")
     env_code = "\n".join(l for l in env_src.split("\n") if not l.lstrip().startswith("#"))
     for needle in ("success_envelope_min", "success_tilt_max_deg"):
         assert needle in env_code, f"성공 판정 3조건 누락: {needle}"
@@ -172,7 +172,7 @@ def test_envelope_discriminates_rim_hook():
     성공 임계 0.6 은 앞의 둘을 배제하고 뒤의 둘만 통과시켜야 한다.
     """
     import torch
-    from openarm.agnostic.tasks.grasp_lift.rewards import envelope_fraction
+    from openarm.agnostic.tasks.grasp_sensor.rewards import envelope_fraction
     thr = 1.0
     F = 5.0  # 접촉력 [N]
 
@@ -195,7 +195,7 @@ def test_envelope_discriminates_rim_hook():
 
     # cfg 모듈은 isaaclab 앱 없이 import 불가 — 소스에서 임계값을 파싱
     import re
-    cfg_src = (_TASK_DIR / "grasp_lift_env_cfg.py").read_text(encoding="utf-8")
+    cfg_src = (_TASK_DIR / "grasp_sensor_env_cfg.py").read_text(encoding="utf-8")
     m = re.search(r"success_envelope_min:\s*float\s*=\s*([0-9.]+)", cfg_src)
     assert m, "success_envelope_min 정의 부재"
     th = float(m.group(1))
@@ -211,7 +211,7 @@ def test_truncation_reset_paired_with_value_bootstrap():
     value_bootstrap 은 True 여야 한다(main + central_value 둘 다).
     """
     import yaml
-    env_src = (_TASK_DIR / "grasp_lift_env.py").read_text(encoding="utf-8")
+    env_src = (_TASK_DIR / "grasp_sensor_env.py").read_text(encoding="utf-8")
     code = "\n".join(l for l in env_src.split("\n") if not l.lstrip().startswith("#"))
     assert "respawn" not in code, "컵 단독 리스폰 재도입 금지 — truncation 리셋이 대체"
     assert "tilt_reset_deg" in code, "전도 truncation 리셋이 사라짐"
@@ -230,7 +230,7 @@ def test_no_palm_leash_left_behind():
     (lstm_test2: leash_active_frac 0.43~0.90). 목표 상한은 워크스페이스 박스만
     담당한다. 와인드업은 `fabric/palm_err_{mean,p95,max}` 로 감시한다.
     """
-    for fname in ("grasp_lift_env.py", "grasp_lift_env_cfg.py"):
+    for fname in ("grasp_sensor_env.py", "grasp_sensor_env_cfg.py"):
         src = (_TASK_DIR / fname).read_text(encoding="utf-8")
         code = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
         assert "leash" not in code, f"{fname}: leash 재도입"
@@ -238,7 +238,7 @@ def test_no_palm_leash_left_behind():
 
 def test_no_fabric_literals_in_task_code():
     """fabric 자산 이름도 프로필 경유 — 태스크 코드에 리터럴 금지."""
-    for fname in ("grasp_lift_env.py", "grasp_lift_env_cfg.py", "rewards.py"):
+    for fname in ("grasp_sensor_env.py", "grasp_sensor_env_cfg.py", "rewards.py"):
         src = (_TASK_DIR / fname).read_text(encoding="utf-8")
         code = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
         for lit in ("openarm_tesollo_sensor_right", "open_tesollo_boxes"):

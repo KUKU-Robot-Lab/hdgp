@@ -1,4 +1,4 @@
-"""robot-agnostic grasp-lift 환경 (direct).
+"""robot-agnostic grasp-sensor 환경 (direct).
 
 로봇 종속 정보는 전부 RobotProfile 이 공급한다 — 이 파일에 조인트/바디 이름 하드코딩 금지.
 
@@ -48,17 +48,17 @@ def _fabric_class(name: str):
             return cls
     raise RuntimeError(f"fabric 클래스 '{name}' 를 찾을 수 없다: {[m.__name__ for m in _FABRIC_MODULES]}")
 
-from .grasp_lift_env_cfg import GraspLiftEnvCfg
-from .rewards import compute_grasp_lift_rewards
+from .grasp_sensor_env_cfg import GraspSensorEnvCfg
+from .rewards import compute_grasp_sensor_rewards
 from .robot_profiles import PROFILES
 
 _GRAVITY = 9.81
 
 
-class GraspLiftEnv(DirectRLEnv):
-    cfg: GraspLiftEnvCfg
+class GraspSensorEnv(DirectRLEnv):
+    cfg: GraspSensorEnvCfg
 
-    def __init__(self, cfg: GraspLiftEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: GraspSensorEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         p = PROFILES[self.cfg.profile_name]
         self.profile = p
@@ -153,7 +153,7 @@ class GraspLiftEnv(DirectRLEnv):
 
         self._init_home_palm()
 
-        print(f"[grasp_lift] profile={p.name} arm={len(self.arm_ids)} hand={len(self.hand_ids)} "
+        print(f"[grasp_sensor] profile={p.name} arm={len(self.arm_ids)} hand={len(self.hand_ids)} "
               f"tips={len(self.tip_ids)} action={self.cfg.action_space} obs={self.cfg.observation_space} "
               f"fabric={p.fabric_robot_dir}",
               flush=True)
@@ -191,7 +191,7 @@ class GraspLiftEnv(DirectRLEnv):
         fab = self.fabric.get_palm_pose(self.fabric_q.detach(), "euler_zyx")[0]
         dp = float(torch.norm(fab[:3] - home[:3]))
         dr = float(torch.max(torch.abs(fab[3:] - home[3:])))
-        print(f"[grasp_lift] 홈 palm={[round(v, 4) for v in home.tolist()]} | "
+        print(f"[grasp_sensor] 홈 palm={[round(v, 4) for v in home.tolist()]} | "
               f"fabric FK 정합 pos {dp * 1000:.2f}mm rot {math.degrees(dr):.2f}°", flush=True)
         if dp > 0.005 or dr > math.radians(2.0):
             raise RuntimeError(
@@ -331,7 +331,7 @@ class GraspLiftEnv(DirectRLEnv):
         self.palm_targets = torch.zeros(self.num_envs, 6, device=self.device)
         self._home_palm = torch.zeros(6, device=self.device)   # _init_home_palm 에서 실측
         if not p.palm_box_verified:
-            print(f"[grasp_lift] ⚠ palm_box 미검증({p.name}) — P-2 로 도달성 확인 후 승격할 것",
+            print(f"[grasp_sensor] ⚠ palm_box 미검증({p.name}) — P-2 로 도달성 확인 후 승격할 것",
                   flush=True)
 
     # ------------------------------------------------------------------
@@ -466,7 +466,7 @@ class GraspLiftEnv(DirectRLEnv):
         # 물체 기울기 — 같은 스텝에 _get_dones 가 계산·캐시한 값(dones 가 rewards 보다 먼저)
         tilt_deg = self._tilt_deg_buf
         palm_pos = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
-        total, terms, gate, env_frac = compute_grasp_lift_rewards(
+        total, terms, gate, env_frac = compute_grasp_sensor_rewards(
             object_tilt_deg=tilt_deg,
             height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
             palm_pos=palm_pos,
