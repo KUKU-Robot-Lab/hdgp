@@ -77,6 +77,18 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
+        # ── PhysX GPU 버퍼 ─────────────────────────────────────────
+        # ★★self-collision 을 켜면 접촉 패치가 폭증한다. 기본값으로 돌리면 첫 스텝부터
+        #   "Patch buffer overflow detected, please increase its size to at least 239679"
+        #   가 쏟아진다(실측, 1024 env). 오버플로는 **접촉이 조용히 유실**되는 것이라
+        #   물리가 신뢰할 수 없게 된다 — 학습을 태우기 전에 반드시 올려야 한다.
+        #   값은 형제 트랙 `agnostic/tasks/grasp_lift_fabric` 에서 2048 env 로 검증된 것을 쓴다.
+        self.sim.physx.gpu_max_rigid_patch_count = 2 ** 22
+        self.sim.physx.gpu_max_rigid_contact_count = 2 ** 22
+        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 8 * 1024 * 1024
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 2 * 1024 * 1024
+        self.sim.physx.gpu_collision_stack_size = 2 ** 28
+
         # ── 로봇 ────────────────────────────────────────────────────
         self.scene.robot = ArticulationCfg(
             prim_path="{ENV_REGEX_NS}/Robot",
