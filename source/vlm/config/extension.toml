@@ -1,0 +1,17 @@
+[package]
+version = "0.1.0"
+category = "isaaclab"
+title = "HDGP VLM Pouring"
+author = "HDGP"
+maintainer = "HDGP"
+description = "Vision-grounded hierarchical pouring orchestration"
+repository = ""
+keywords = ["vlm", "hrl", "pouring", "isaaclab"]
+
+[dependencies]
+"isaaclab" = {}
+"isaaclab_rl" = {}
+"openarm" = {}
+
+[[python.module]]
+name = "vlm"
