@@ -258,3 +258,8 @@ def test_physx_aggregate_pair_buffers_cover_measured_demand():
         ns["gpu_total_aggregate_pairs_capacity"]
         >= ns["gpu_found_lost_aggregate_pairs_capacity"] // 2
     ), "total 이 found_lost 대비 지나치게 작다"
+    # 같은 런에서 함께 드러난 두 버퍼 (실측 요구치)
+    assert ns["gpu_max_rigid_contact_count"] >= 3_191_536, "contact 버퍼가 실측 요구치 미만"
+    assert ns["gpu_collision_stack_size"] >= 68_960_016, (
+        "collisionStackSize 가 실측 요구치 미만 — 'Contacts have been dropped' 가 난다"
+    )

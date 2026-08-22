@@ -96,7 +96,8 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #     멈췄다(08.22 실측). 필요량은 1024 env 에서 패치 24 만이므로 2**20 이면 4 배 여유다.
         #   ★줄인 뒤에는 반드시 오버플로 카운트 0 을 확인할 것 — 부족하면 접촉이 조용히 유실된다.
         self.sim.physx.gpu_max_rigid_patch_count = 2 ** 20
-        self.sim.physx.gpu_max_rigid_contact_count = 2 ** 21
+        # ★2 ** 21 로는 부족했다 — 실측 요구 **3,191,536**(vision-3090 2048 env).
+        self.sim.physx.gpu_max_rigid_contact_count = 2 ** 22
         # ★★08.22 실측으로 올렸다. 2 * 1024 * 1024 로는 **부족했다** — vision-3090 2048 env
         #   에서 PhysX 가 "increase foundLostAggregatePairsCapacity to **4562626**" 를 냈다.
         #   ⚠ 이건 죽지 않고 경고만 내면서 **접촉을 조용히 놓치는** 종류다("the simulation
@@ -106,7 +107,9 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   요구치 4.56M 에 1.8 배 여유. 쌍 버퍼라 VRAM 증가는 수십 MB 수준이다.
         self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 8 * 1024 * 1024
         self.sim.physx.gpu_total_aggregate_pairs_capacity = 4 * 1024 * 1024
-        self.sim.physx.gpu_collision_stack_size = 2 ** 26
+        # ★2 ** 26(67.1M) 이 실측 요구 **68,960,016** 에 아슬아슬하게 못 미쳤다
+        #   ("Contacts have been dropped"). 한 단 올린다.
+        self.sim.physx.gpu_collision_stack_size = 2 ** 27
 
         # ── 로봇 ────────────────────────────────────────────────────
         self.scene.robot = ArticulationCfg(
