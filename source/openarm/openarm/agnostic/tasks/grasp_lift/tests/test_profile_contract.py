@@ -132,6 +132,26 @@ def test_no_diff_ik_left_behind():
         assert banned not in code, f"diff-IK 잔재: {banned}"
 
 
+def test_truncation_reset_paired_with_value_bootstrap():
+    """전도/낙하 truncation 리셋 ↔ value_bootstrap 짝 계약.
+
+    bootstrap 없는 truncation 은 termination 과 같아져(미래 보상 절벽) 접근 회피
+    학습(agn_test2)이 재발한다. env 가 truncation 리셋을 쓰는 한 yaml 의
+    value_bootstrap 은 True 여야 한다(main + central_value 둘 다).
+    """
+    import yaml
+    env_src = (_TASK_DIR / "grasp_lift_env.py").read_text(encoding="utf-8")
+    code = "\n".join(l for l in env_src.split("\n") if not l.lstrip().startswith("#"))
+    assert "respawn" not in code, "컵 단독 리스폰 재도입 금지 — truncation 리셋이 대체"
+    assert "tilt_reset_deg" in code, "전도 truncation 리셋이 사라짐"
+    for name in ("rl_games_ppo_lstm_cfg.yaml", "rl_games_ppo_cfg.yaml"):
+        cfg = yaml.safe_load((_TASK_DIR / "config" / "agents" / name).read_text())
+        conf = cfg["params"]["config"]
+        assert conf["value_bootstrap"] is True, f"{name}: value_bootstrap 이 False"
+        assert conf["central_value_config"]["value_bootstrap"] is True, (
+            f"{name}: central_value value_bootstrap 이 False")
+
+
 def test_no_palm_leash_left_behind():
     """palm leash 재도입 방지 — 정책이 팔 목표에 대해 전권을 가져야 한다.
 

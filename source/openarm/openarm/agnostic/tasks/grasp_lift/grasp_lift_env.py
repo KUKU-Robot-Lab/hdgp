@@ -123,6 +123,8 @@ class GraspLiftEnv(DirectRLEnv):
         # ---- 커리큘럼 ---------------------------------------------------------------
         self.difficulty = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._goal_reached_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # _get_dones 가 매 스텝 갱신, _get_rewards 가 같은 스텝에 재사용(dones 가 먼저다)
+        self._tilt_deg_buf = torch.zeros(self.num_envs, device=self.device)
 
         # ---- 접촉 그룹 인덱스 ---------------------------------------------------------
         fingers = list(p.finger_sensor_bodies.keys())
