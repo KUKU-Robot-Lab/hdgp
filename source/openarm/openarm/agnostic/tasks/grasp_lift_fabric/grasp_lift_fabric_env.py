@@ -74,6 +74,21 @@ class GraspLiftFabricEnv(DirectRLEnv):
         # ★super().__init__ 안에서 _apply_action 이 불릴 수 있으므로 **먼저** 정한다.
         #   중력이 꺼져 있으면 보상은 무의미하므로 0 으로 잠근다(이중 부정 방지).
         self._grav_comp = float(cfg.gravity_compensation) if cfg.enable_gravity else 0.0
+        # ★★부팅 가드: cfg **필드**와 파생 robot_cfg 가 실제로 일치하는지 확인한다.
+        #   `params/env.yaml` 덤프는 resolve_cfg **이전** 상태라 필드만 보고 판단하면
+        #   조용히 틀린 물리로 학습이 돈다(08.22 실측: probe 가 중력 False 를 찍었는데
+        #   USD 는 True 였다. 같은 계열 결함으로 fab_test1~4 를 통째로 날린 적 있다).
+        _sp = cfg.robot_cfg.spawn
+        _gr_off = bool(_sp.rigid_props.disable_gravity)
+        _sc_on = bool(_sp.articulation_props.enabled_self_collisions)
+        if _gr_off == bool(cfg.enable_gravity) or _sc_on != bool(cfg.enable_self_collisions):
+            raise RuntimeError(
+                "물리 스위치가 파생 cfg 에 반영되지 않았다 — resolve_cfg 경로를 확인할 것.\n"
+                f"  enable_gravity={cfg.enable_gravity} 인데 spawn.disable_gravity={_gr_off}\n"
+                f"  enable_self_collisions={cfg.enable_self_collisions} 인데 "
+                f"spawn.enabled_self_collisions={_sc_on}")
+        print(f"[grasp_lift_fabric] 물리: self_collisions={_sc_on} · gravity={not _gr_off}"
+              f" · grav_comp={self._grav_comp}", flush=True)
         super().__init__(cfg, render_mode, **kw)
         p = self.profile
 
