@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-_TASK_LOGS = {
+_DEFAULT_TASK_LOGS: Mapping[str, tuple[str, str]] = {
     "open-tesol_r_grasp_v1-lstm": ("open-tesol/right", "grasp-v1"),
-    "open-tesol_r_pour_v1-lstm": ("open-tesol/right", "pour-v1"),
+    "open-tesol_b_pour_v1-lstm": ("open-tesol/both", "pour-v1"),
 }
 
 
@@ -23,8 +24,14 @@ class PolicyArtifacts:
 class CheckpointResolver:
     """Resolve policy artifacts without copying or guessing across runs."""
 
-    def __init__(self, hdgp_root: Path) -> None:
+    def __init__(
+        self,
+        hdgp_root: Path,
+        *,
+        task_logs: Mapping[str, tuple[str, str]] | None = None,
+    ) -> None:
         self.hdgp_root = hdgp_root.resolve()
+        self.task_logs = dict(task_logs if task_logs is not None else _DEFAULT_TASK_LOGS)
 
     def resolve(
         self,
@@ -41,7 +48,7 @@ class CheckpointResolver:
             selected_run = selected_checkpoint.parent.parent
         else:
             try:
-                side, task_folder = _TASK_LOGS[task_id]
+                side, task_folder = self.task_logs[task_id]
             except KeyError as exc:
                 raise KeyError(f"unsupported task: {task_id}") from exc
             log_root = self.hdgp_root / "log/rl_games" / side / task_folder

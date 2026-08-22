@@ -22,7 +22,7 @@ class PrePourWarmStateBridge:
         expected_palm_bounds: tuple[float, float, float, float, float, float] | None = None,
     ) -> Any:
         bank_class = self._bank_class or self._load_existing_bank_class()
-        warm_path = path or self.hdgp_root / "data/grasp_warm_tesollo.hdf5"
+        warm_path = path or self.hdgp_root / "data/grasp_warm_tesollo_right.hdf5"
         return bank_class.from_hdf5_paths(
             (warm_path,),
             device=device,
@@ -33,7 +33,7 @@ class PrePourWarmStateBridge:
     def _load_existing_bank_class(self) -> type[Any]:
         module_path = (
             self.hdgp_root
-            / "source/openarm/openarm/tesollo/right/pour_v1/warm_state_bank.py"
+            / "source/openarm/openarm/tesollo/both/pour_v1/warm_state_bank.py"
         )
         if not module_path.is_file():
             raise FileNotFoundError(f"existing pour warm-state loader not found: {module_path}")

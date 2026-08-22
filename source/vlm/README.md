@@ -18,12 +18,18 @@ the existing task definitions.
 
 ## Existing artifacts
 
-`CheckpointResolver` resolves these runs relative to the HDGP repository root:
+`CheckpointResolver` resolves runs relative to the HDGP repository root. The
+default task map points at the runs that exist on this machine today:
 
-- `log/rl_games/open-tesol/right/grasp-v1/lstm_test1`
-- `log/rl_games/open-tesol/right/pour-v1/lstm_test2`
+- `open-tesol_r_grasp_v1-lstm` → `log/rl_games/open-tesol/right/grasp-v1/<run>`
+- `open-tesol_b_pour_v1-lstm` → `log/rl_games/open-tesol/both/pour-v1/<run>`
 
-The warm grasp state remains referenced at `data/grasp_warm_tesollo.hdf5`.
+Retrained runs (e.g. the `agnostic` tracks) are injected via the
+`task_logs=` constructor argument or a direct `checkpoint=` path without
+editing this package. The warm grasp state is referenced at
+`data/grasp_warm_tesollo_right.hdf5`, and grasp-to-pour compatibility is
+delegated to the bimanual loader in
+`source/openarm/openarm/tesollo/both/pour_v1/warm_state_bank.py`.
 
 ## CPU verification
 
