@@ -431,3 +431,22 @@ def test_goal_radius_starts_at_zero():
     assert real.goal_z_radius_final >= 0.0
     # 클램프 마진은 박스 절반보다 작아야 한다 (아니면 클램프가 goal 을 한 점으로 붕괴시킨다)
     assert 0.0 < real.goal_box_margin < 0.05
+
+
+# =============================================================================
+# 정적 미정의 이름 (08.22 — TEST1 첫 기동이 epoch 10 에서 죽은 원인)
+# =============================================================================
+def test_no_undefined_names_static():
+    """★런타임 도달이 늦은 코드(console_log_interval=600 스텝마다 발화하는 METRICS
+    라인)는 smoke(150스텝)로는 실행되지 않는다 — `thr` 잔존 참조가 그렇게 검증을
+    통과해 epoch 10 에서 NameError 로 학습을 죽였다. F821 정적 검사로 전 라인을 덮는다.
+    """
+    import os
+    import shutil
+    import subprocess
+    if shutil.which("ruff") is None:
+        pytest.skip("ruff 없음")
+    pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    r = subprocess.run(["ruff", "check", "--select", "F821", pkg],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, f"미정의 이름 존재:\n{r.stdout}"

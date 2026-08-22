@@ -755,7 +755,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
                 # ★max 만 찍으면 오독한다 — 2048x5 중 하나의 스파이크가 전형값처럼 보인다.
                 #   실제로 그랬다(513N 보고 → 전형은 20N). 전형값을 먼저 놓는다.
                 f" F={_best.mean():.1f}N/Fmax={contact.max():.0f}N"
-                f" nF>thr={(contact > thr).float().sum(dim=1).mean():.2f}"
+                f" nF>thr={(contact > _g_thr).float().sum(dim=1).mean():.2f}"
                 f" dz={(obj_pos[:, 2] - self.object_spawn_pos[:, 2]).mean():+.4f}"
                 f" goal={self._goal_reached_now.float().mean():.3f}"
                 f" tip={((tips - obj_pos[:, None, :]).norm(dim=-1).min(dim=1).values).mean():.3f}"
