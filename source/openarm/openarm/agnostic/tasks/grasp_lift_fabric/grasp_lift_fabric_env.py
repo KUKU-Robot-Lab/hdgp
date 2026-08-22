@@ -529,22 +529,32 @@ class GraspLiftFabricEnv(DirectRLEnv):
     def _contact(self) -> tuple[torch.Tensor, torch.Tensor]:
         """(손가락별 총 접촉력 (N,F), 손가락별 wrap 접촉 여부 (N,F)).
 
-        ★wrap(감쌈) 판정은 **참여 임계**(0.1N)를 쓴다 — 게이트 임계(1.0N)와 분리(08.22 E).
+        접촉 총합(tot)은 **참여 임계**(0.1N) 소비자용 원값이다.
+
+        ★★감쌈(wrap) 판정은 08.22 재설계로 **엄격**해졌다: wrap 마디(_3 중간·_4 원위)가
+          **전부** `envelope_force_threshold`(0.5N)를 넘어야 감쌈으로 센다.
+          구 판정은 `maximum` + 0.1N 이라 **마디 하나가 스치기만 해도** 감쌈이었고,
+          그래서 컵을 손바닥에 얹은 "받치기"가 envelope_frac 0.50 으로 계상됐다
+          (영상 관찰: "인벨롭 그립 상태가 아님" — 지표와 실물의 괴리).
+          둘러싸면 중간·원위가 함께 눌리고, 받치면 하나만 닿는다 — 그 차이를 min 이 가른다.
         """
         thr = float(self.cfg.participation_force_threshold)
+        w_thr = float(getattr(self.cfg, "envelope_force_threshold", 0.5))
         tot, wrapped = [], []
         for f in self._fingers:
             roles = self._sensors[f]
             t = torch.zeros(self.num_envs, device=self.device)
-            w = torch.zeros(self.num_envs, device=self.device)
+            w = None
             for s in roles["tip"]:
                 t = t + s.data.force_matrix_w.view(self.num_envs, -1, 3).sum(1).norm(dim=-1)
             for s in roles["wrap"]:
                 m = s.data.force_matrix_w.view(self.num_envs, -1, 3).sum(1).norm(dim=-1)
                 t = t + m
-                w = torch.maximum(w, m)
+                w = m if w is None else torch.minimum(w, m)   # ★전 마디 동시 접촉
+            if w is None:                                     # wrap 센서가 없는 프로필
+                w = torch.zeros(self.num_envs, device=self.device)
             tot.append(t)
-            wrapped.append((w > thr).float())
+            wrapped.append((w > w_thr).float())
         return torch.stack(tot, 1), torch.stack(wrapped, 1)
 
     def _local(self, pos_w: torch.Tensor) -> torch.Tensor:

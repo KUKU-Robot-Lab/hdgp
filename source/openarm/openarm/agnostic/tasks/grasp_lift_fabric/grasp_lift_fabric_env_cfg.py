@@ -220,7 +220,7 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     # ---- 보상 (플랜 §4) -----------------------------------------------------------
     approach_weight: float = 1.0
     approach_sharpness: float = 4.0
-    grasp_quality_weight: float = 3.0
+    grasp_quality_weight: float = 8.0
     # ★08.22 배선 복원: 0.5/0.3 → 0.6/0.4. `persistence` 항을 제거하면서(rewards.py:26)
     #   그 몫 0.2 를 재분배하지 않아 credit 합이 **0.8** 로 남아 있었다 —
     #   가중 3.0 중 0.6 이 아무도 못 받는 천장이었다. rewards.py 기본값과 docstring 은
@@ -231,9 +231,9 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     #   persistence 는 v1·v2 둘 다 credit 0.25 로 유지하는 항 — 래치 없이도 "대향 접촉을
     #   **연속으로** 유지"는 순간 접촉과 다른 신호다(잡았다-놓기 축퇴 억제).
     #   사용자 방향: "최종적으로는 손가락 모두 envelope grip" → envelope 몫이 최대.
-    grasp_envelope_credit: float = 0.5
-    grasp_grip_credit: float = 0.3
-    grasp_persist_credit: float = 0.2
+    grasp_envelope_credit: float = 0.7
+    grasp_grip_credit: float = 0.2
+    grasp_persist_credit: float = 0.1
     persistence_ref_steps: int = 20          # 이 스텝 연속 유지 시 persist=1 (v1/v2 동일)
 
     # ---- A: 대향 파지점 approach (v1/v2 이식) --------------------------------------
@@ -247,14 +247,28 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     enclosure_thumb_weight: float = 0.6      # 그룹A(엄지/조1) 가중, 나머지 1-w (v1/v2 동일)
 
     # ---- E: 접촉 임계 분리 ----------------------------------------------------------
+    # ★★감쌈 판정 임계 (08.22 신설). wrap 마디(_3·_4)가 **전부** 이 값을 넘어야 감쌈.
+    #   구 판정(max + 0.1N)은 마디 하나의 스침도 감쌈으로 세어 "받치기"를 envelope 0.50
+    #   으로 계상했다 — 지표는 오르는데 영상은 인벨롭 그립이 아니었다.
+    envelope_force_threshold: float = 0.5
     # ★게이트(파지 성립)는 1.0N 유지 — 0.1N 까지 낮추면 스침 접촉으로 success 가 열린다.
     #   envelope/grip/persistence **참여 판정**만 0.1N (v1/v2 와 동일) — 가벼운 감쌈
     #   접촉(pinky 등 저힘)을 품질 신호에서 누락시키지 않는다.
     # 자세는 **독립 항이 아니다**. reward-audit REVISE: 컵이 애초에 서 있어 독립 항으로
     # 두면 사실상 접촉 보너스의 중복(공짜 보상)이 된다. lift/success 의 완화 곱수
     # (0.5 + 0.5·upright_quality) 로만 쓰고, 교란은 tilt_penalty 로 처벌한다.
-    upright_max_deg: float = 30.0            # 이 각도에서 upright_quality = 0
+    upright_max_deg: float = 60.0            # 이 각도에서 upright_quality = 0
     lift_weight: float = 2.0
+    # ---- 08.22 우선순위 재설계: ①인벨롭 그립 ②똑바로 ③이송 -----------------------
+    # env_mul — lift/이송을 **감쌈 위에서만** 열어 준다. ref 0.8 = 5지 중 4지 감쌈이면 만점.
+    envelope_reference_frac: float = 0.8
+    envelope_mul_floor: float = 0.3          # ★0 이면 초기에 리프트 신호가 죽는다
+    # upright(신설 독립항) — 곱수 up_mul 만으로는 tilt 개선 이득이 +0.09 로 무의미했다.
+    upright_weight: float = 2.0
+    upright_lift_ref: float = 0.05           # 이만큼 들려야 자세 보상이 열린다(안 들고 만점 방지)
+    # lift 과지남 — 0.20m 초과부터 감쇠(goal 0.15 + 여유 0.05). 실측 표류 dz 0.27.
+    lift_overshoot_start: float = 0.20
+    lift_overshoot_scale: float = 0.06
     lift_success_height: float = 0.10        # goal 높이와 같게 — height_quality 의 분모
     success_weight: float = 10.0
     success_pos_std: float = 0.05

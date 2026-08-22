@@ -165,15 +165,22 @@ class _Cfg:
     participation_force_threshold = 0.1
     approach_weight = 1.0
     approach_sharpness = 4.0
-    grasp_quality_weight = 3.0
-    grasp_envelope_credit = 0.5
-    grasp_grip_credit = 0.3
-    grasp_persist_credit = 0.2
+    grasp_quality_weight = 8.0
+    grasp_envelope_credit = 0.7
+    grasp_grip_credit = 0.2
+    grasp_persist_credit = 0.1
     persistence_ref_steps = 20
     enclosure_radius = 0.03
     enclosure_thumb_weight = 0.6
-    upright_max_deg = 30.0
+    upright_max_deg = 60.0
     lift_weight = 2.0
+    envelope_reference_frac = 0.8
+    envelope_mul_floor = 0.3
+    upright_weight = 2.0
+    upright_lift_ref = 0.05
+    lift_overshoot_start = 0.20
+    lift_overshoot_scale = 0.06
+    envelope_force_threshold = 0.5
     lift_success_height = 0.10
     success_weight = 10.0
     success_pos_std = 0.05
@@ -194,10 +201,10 @@ def _call(**over):
 
 
 def test_five_terms_exactly():
-    """08.22 TEST1: push/tilt 페널티 제거(종료 승격) → 5항."""
+    """08.22 TEST2: upright 독립항 신설 → 6항 (우선순위 ②를 곱수가 아닌 항으로)."""
     _, terms, _, _ = _call()
     assert set(terms) == {
-        "approach", "grasp_quality", "lift", "success", "action_rate",
+        "approach", "grasp_quality", "upright", "lift", "success", "action_rate",
     }
 
 
@@ -242,13 +249,30 @@ def test_persistence_raises_grasp_quality():
     assert abs(c.grasp_envelope_credit + c.grasp_grip_credit + c.grasp_persist_credit - 1.0) < 1e-9
 
 
-def test_local_minimum_ratio_meets_audit_threshold():
-    """reward-audit Check 1: 정체 : 추가 ≥ 1:3."""
-    _, hold, _, _ = _call(object_height_delta=_ones(0.0), object_to_goal=_ones(1.0))
-    _, win, _, _ = _call()
-    stuck = float(hold["approach"][0] + hold["grasp_quality"][0])
-    extra = float(win["lift"][0] + win["success"][0])
-    assert extra / stuck >= 3.0, f"정체 {stuck:.2f} vs 추가 {extra:.2f}"
+def test_progress_beats_standing_still():
+    """reward-audit Check 1 — 08.22 재정의.
+
+    구 기준은 "정체(approach+grasp) : 추가(lift+success) ≥ 1:3" 이었다. 그 전제는
+    '파지는 통과점이고 목표는 드는 것'이었는데, 사용자 우선순위가 **①인벨롭 그립**으로
+    바뀌면서 전제가 뒤집혔다 — 완벽한 감쌈은 '정체'가 아니라 **1단계 달성**이다.
+    (구 기준을 유지하면 grasp 가중을 못 올려 우선순위를 보상에 실을 수 없다.)
+
+    그래서 검사 대상을 비율에서 **단계 진행 유인**으로 바꾼다: 각 단계를 밟을 때마다
+    총보상이 유의미하게 늘어야 하고, 마지막 단계가 가장 커야 한다.
+    """
+    def total(**kw):
+        return float(_call(**kw)[0][0])
+    # ① 감쌈 없이 접근만 → ② 감쌈 완성 → ③ 들기 → ④ 이송 성공
+    s1 = total(envelope_frac=_ones(0.1), grip_frac=_ones(0.2),
+               object_height_delta=_ones(0.0), object_to_goal=_ones(1.0))
+    s2 = total(object_height_delta=_ones(0.0), object_to_goal=_ones(1.0))
+    s3 = total(object_height_delta=_ones(0.15), object_to_goal=_ones(1.0))
+    s4 = total(object_height_delta=_ones(0.15), object_to_goal=_ones(0.0))
+    assert s2 > s1, f"감쌈을 완성해도 보상이 안 는다 ({s1:.2f} → {s2:.2f})"
+    assert s3 > s2, f"감싸고 **들어도** 보상이 안 는다 — 정체 국소최적 ({s2:.2f} → {s3:.2f})"
+    assert s4 > s3, f"이송 성공이 보상되지 않는다 ({s3:.2f} → {s4:.2f})"
+    # 최종 목표(이송)가 가장 큰 증분이어야 한다
+    assert (s4 - s3) > (s3 - s2), "이송 증분이 리프트 증분보다 작다"
 
 
 def test_no_gate_on_approach():
@@ -450,3 +474,45 @@ def test_no_undefined_names_static():
     r = subprocess.run(["ruff", "check", "--select", "F821", pkg],
                        capture_output=True, text=True)
     assert r.returncode == 0, f"미정의 이름 존재:\n{r.stdout}"
+
+
+# =============================================================================
+# 08.22 우선순위 재설계: ①인벨롭 그립 ②똑바로 ③이송
+# =============================================================================
+def test_envelope_completion_beats_lazy_lift():
+    """★핵심 계약: '감쌈 완성'의 이득이 '감쌈 없이 들기'보다 커야 한다.
+
+    구 설계는 반대였다 — envelope 0.50→1.00 이득 +0.59 vs 대충 들기 lift 0.79.
+    그래서 정책이 2.7 지 파지로 수렴했다(우팔 ep950 실측).
+    """
+    lazy = _call(envelope_frac=_ones(0.2), grip_frac=_ones(0.4),
+                 object_height_delta=_ones(0.15))[0][0]
+    full = _call(envelope_frac=_ones(1.0), grip_frac=_ones(1.0),
+                 object_height_delta=_ones(0.15))[0][0]
+    assert full > lazy * 1.5, f"감쌈 완성 {full:.2f} 가 대충 들기 {lazy:.2f} 를 압도하지 못한다"
+
+
+def test_upright_requires_lift():
+    """★audit Check 2: 들지 않고 감싸기만 해도 자세 만점이면 hacking 경로가 된다."""
+    on_table = _call(object_height_delta=_ones(0.0), object_tilt_deg=_ones(0.0))[1]["upright"][0]
+    lifted = _call(object_height_delta=_ones(0.15), object_tilt_deg=_ones(0.0))[1]["upright"][0]
+    assert float(on_table) == 0.0, "테이블 위 컵에서 upright 가 0 이 아니다"
+    assert float(lifted) > 0.0
+
+
+def test_lift_penalizes_overshoot():
+    """★평지 해소: dz 0.10~∞ 가 전부 만점이라 정책이 0.27 까지 표류했다."""
+    at_goal = _call(object_height_delta=_ones(0.15))[1]["lift"][0]
+    over = _call(object_height_delta=_ones(0.30))[1]["lift"][0]
+    assert over < at_goal * 0.5, f"과지남(0.30m) 이 goal(0.15m) 대비 충분히 깎이지 않는다"
+
+
+def test_upright_gradient_alive_at_observed_tilt():
+    """★실측 tilt 31.5° 에서 자세 개선 gradient 가 살아 있어야 한다.
+
+    구 설계(upright_max_deg=30)는 30° 초과가 전부 up_mul 0.5 고정이라
+    롤아웃의 66% 가 '자세를 고쳐도 보상이 안 늘어나는' 평지에 있었다.
+    """
+    worse = _call(object_tilt_deg=_ones(35.0), object_height_delta=_ones(0.15))[0][0]
+    better = _call(object_tilt_deg=_ones(15.0), object_height_delta=_ones(0.15))[0][0]
+    assert better > worse, "31° 대역에서 자세 개선이 보상으로 이어지지 않는다"

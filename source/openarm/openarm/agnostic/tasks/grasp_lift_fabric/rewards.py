@@ -104,17 +104,42 @@ def compute_rewards(
            + _per_credit * persistence.clamp(0.0, 1.0))
     )
 
-    # 3. lift
+    # ★★08.22 우선순위 재설계 (사용자 지시): ①인벨롭 그립 ②컵 똑바로 들기 ③이송.
+    #   구 설계는 정확히 반대였다 — envelope 를 0.50→1.00 으로 **완성**해도 이득이 +0.59
+    #   인데 "대충 잡고 들기"만으로 lift 가 이미 0.79 였다(우팔 ep950 실측 분해).
+    #   그래서 정책은 감쌈을 만들 이유가 없었다.
+    #
+    #   env_mul: 감쌈 성립도. lift/이송은 **인벨롭 그립 위에서만** 온전히 열린다.
+    #   ★하한 0.3 — 0 으로 두면 초기(envelope≈0)에 리프트 신호가 통째로 죽어
+    #     "들기"를 못 배우고, 들지 못하면 감쌈도 못 배우는 폐루프가 된다(audit Check 4).
+    _env_ref = max(_cfg(cfg, "envelope_reference_frac", 0.8), 1e-6)
+    env_mul = _cfg(cfg, "envelope_mul_floor", 0.3) + (
+        1.0 - _cfg(cfg, "envelope_mul_floor", 0.3)
+    ) * (envelope_frac / _env_ref).clamp(0.0, 1.0)
+
+    # 3. upright — ★신설 독립항(우선순위 ②). 곱수만으로는 압력이 없었다:
+    #    up_mul 은 0.5~1.0 이라 tilt 31°→10° 개선의 이득이 +0.09 에 불과했다.
+    #    ★lifted 곱수 필수 — 없으면 테이블 위 컵(tilt 0°)을 감싸기만 해도 만점이다
+    #      (audit Check 2: 들지 않고 보상을 최대화하는 경로).
+    lifted = (object_height_delta / max(_cfg(cfg, "upright_lift_ref", 0.05), 1e-6)).clamp(0.0, 1.0)
+    upright = _cfg(cfg, "upright_weight", 2.0) * gate_f * env_mul * up_q * lifted
+
+    # 4. lift — ★dz 0.10 이상이 전 구간 만점이라 **보상 평지**였다(실측 dz 0.27 표류).
+    #    goal 높이(0.15)+여유(0.05) 를 넘으면 감쇠시켜 "필요 이상으로 올리지 마라"를 준다.
+    #    0.10 미만 구간은 구 설계와 **동일**하다(파지·리프트 초기 학습 불변).
     height_q = (
         object_height_delta / max(_cfg(cfg, "lift_success_height", 0.10), 1e-6)
     ).clamp(0.0, 1.0)
-    lift = _cfg(cfg, "lift_weight", 2.0) * gate_f * height_q * up_mul
+    _over = (object_height_delta - _cfg(cfg, "lift_overshoot_start", 0.20)).clamp(min=0.0)
+    height_q = height_q * torch.exp(-_over / max(_cfg(cfg, "lift_overshoot_scale", 0.06), 1e-6))
+    lift = _cfg(cfg, "lift_weight", 2.0) * gate_f * env_mul * height_q * up_mul
 
-    # 4. success
+    # 5. success (이송)
     success = (
         _cfg(cfg, "success_weight", 10.0)
         * (1.0 - torch.tanh(object_to_goal / _cfg(cfg, "success_pos_std", 0.05))) ** 2
         * gate_f
+        * env_mul
         * up_mul
     )
 
@@ -135,6 +160,7 @@ def compute_rewards(
     terms = {
         "approach": approach,
         "grasp_quality": grasp_quality,
+        "upright": upright,
         "lift": lift,
         "success": success,
         "action_rate": action_rate,
