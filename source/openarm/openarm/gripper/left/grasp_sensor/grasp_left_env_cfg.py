@@ -90,11 +90,16 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   가 쏟아진다(실측, 1024 env). 오버플로는 **접촉이 조용히 유실**되는 것이라
         #   물리가 신뢰할 수 없게 된다 — 학습을 태우기 전에 반드시 올려야 한다.
         #   값은 형제 트랙 `agnostic/tasks/grasp_lift_fabric` 에서 2048 env 로 검증된 것을 쓴다.
-        self.sim.physx.gpu_max_rigid_patch_count = 2 ** 22
-        self.sim.physx.gpu_max_rigid_contact_count = 2 ** 22
-        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 8 * 1024 * 1024
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 2 * 1024 * 1024
-        self.sim.physx.gpu_collision_stack_size = 2 ** 28
+        #   ⚠ 값은 **GPU 메모리에 맞춰야** 한다. 처음엔 98 GB 서버 기준(2**22·8M·2**28)으로
+        #     잡았는데 24 GB(RTX 3090)에서 4096 env 는 CUDA OOM, 2048 env 는 22.9/24.5 GB 로
+        #     포화해 PhysX 가 "Scene state is corrupted" 를 2733 회 뱉으며 epoch 31 에서
+        #     멈췄다(08.22 실측). 필요량은 1024 env 에서 패치 24 만이므로 2**20 이면 4 배 여유다.
+        #   ★줄인 뒤에는 반드시 오버플로 카운트 0 을 확인할 것 — 부족하면 접촉이 조용히 유실된다.
+        self.sim.physx.gpu_max_rigid_patch_count = 2 ** 20
+        self.sim.physx.gpu_max_rigid_contact_count = 2 ** 21
+        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 2 * 1024 * 1024
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 1024 * 1024
+        self.sim.physx.gpu_collision_stack_size = 2 ** 26
 
         # ── 로봇 ────────────────────────────────────────────────────
         self.scene.robot = ArticulationCfg(
