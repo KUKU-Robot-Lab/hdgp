@@ -23,6 +23,10 @@ parser.add_argument("--grid", type=int, default=4, help="축당 격자 수 → g
 parser.add_argument("--settle", type=int, default=150, help="점마다 정착 스텝")
 parser.add_argument("--box", type=str, default=None,
                     help="후보 박스 'xlo,xhi,ylo,yhi,zlo,zhi' (미지정 시 cfg 박스)")
+parser.add_argument("--self_collisions", action="store_true",
+                    help="enabled_self_collisions=True 로 실행")
+parser.add_argument("--gravity", action="store_true",
+                    help="로봇 중력 ON (기본 cfg 는 disable_gravity=True)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -38,6 +42,16 @@ G = args.grid
 pts = list(itertools.product(range(G), repeat=3))
 N = len(pts)
 env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=N)
+# ★스위치는 **cfg 필드**로만 켠다. `robot_cfg.spawn.*` 을 직접 고치면 env.__init__ 의
+#   resolve_cfg 가 robot_cfg 를 재생성하며 조용히 되돌린다(08.22 실측: 중력을 False 로
+#   바꿔 로그까지 찍었는데 USD 는 True 였다). 필드는 resolve_cfg 가 읽으므로 살아남는다.
+if args.self_collisions or args.gravity:
+    from openarm.agnostic.tasks.grasp_lift_fabric.grasp_lift_fabric_env_cfg import resolve_cfg
+    env_cfg.enable_self_collisions = bool(args.self_collisions)
+    env_cfg.enable_gravity = bool(args.gravity)
+    resolve_cfg(env_cfg)
+    print(f"[probe] self_collisions={env_cfg.robot_cfg.spawn.articulation_props.enabled_self_collisions}"
+          f" · disable_gravity={env_cfg.robot_cfg.spawn.rigid_props.disable_gravity}")
 env = gym.make(args.task, cfg=env_cfg).unwrapped
 env.reset()
 zero = torch.zeros(N, env.cfg.action_space, device=env.device)

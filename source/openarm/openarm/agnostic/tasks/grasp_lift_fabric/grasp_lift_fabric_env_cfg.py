@@ -29,7 +29,8 @@ _ASSETS_DIR = _ob.ASSETS_DIR
 # =============================================================================
 # 자산 조립 — 프로필 데이터 → IsaacLab cfg
 # =============================================================================
-def build_robot_cfg(profile: _rb.RobotProfile, self_collisions: bool = True) -> ArticulationCfg:
+def build_robot_cfg(profile: _rb.RobotProfile, self_collisions: bool = True,
+                    gravity: bool = False) -> ArticulationCfg:
     """프로필 → ArticulationCfg. actuator 커버리지는 계약 테스트가 보증한다."""
     return ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
@@ -37,7 +38,12 @@ def build_robot_cfg(profile: _rb.RobotProfile, self_collisions: bool = True) -> 
             usd_path=os.path.join(_ASSETS_DIR, profile.asset.usd_relpath),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                disable_gravity=True,           # 팔 중력보상은 Fabrics 밖에서 다루지 않는다
+                # ★★cfg **필드**(enable_gravity)에서만 바꿀 것. 이 객체를 직접 수정하면
+                #   env.__init__ 의 resolve_cfg 가 robot_cfg 를 재생성하며 **조용히 되돌린다**
+                #   (08.22 실측: probe 가 False 로 바꿔 로그까지 찍었는데 USD 는 True 였다).
+                #   Fabrics 는 중력보상을 하지 않으므로 켜면 관절 PD 의 정상상태 오차가
+                #   그대로 처짐이 된다(URDF 계산 palm 14.4mm · z -12.2mm).
+                disable_gravity=not gravity,
                 # ★5.0 → 1.0. 관통 시 밀어내는 속도가 크면 충격량이 폭증한다 —
                 #   실측 접촉력 전형 13~20N 인데 순간 스파이크가 7218N 까지 찍혔다.
                 #   깨끗한 파지가 아니라 반복 충돌이라는 신호다.
@@ -193,12 +199,36 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     # delta 적분기·래치·시너지·PCA 없음 → 복원할 상태가 fabric_q 하나뿐.
     hand_limit_margin: float = 0.0           # 0 = 전범위(full range)
 
+    # ---- A: 지령 속도 제한 (slew) ---------------------------------------------------
+    # ★실측 근거: 정책(결정론적)이 palm 목표를 **19,676 mm/s** 로 명령하는데 팔은
+    #   200mm/s 에서 정착오차 18mm 로 따라간다 — **약 100배**. 추종률이 축별 0.00~0.01 로
+    #   팔이 지령 변화의 1% 미만만 따라가고, 정책은 Fabrics 를 저역통과 필터 삼아
+    #   **듀티비로** 유효 위치를 만드는 축퇴 해를 학습했다(실기 전이 불가).
+    #   → 지령 자체에 속도 상한을 걸어 구조적으로 막는다.
+    #   4mm/step = 240mm/s. 박스 300mm 를 75스텝(1.25s)에 횡단 — 480스텝 에피소드에 충분.
+    palm_slew_pos: float = 0.004             # [m/step] 0 = 제한 없음
+    palm_slew_rot_deg: float = 2.0           # [deg/step] 0 = 제한 없음
+
+    # ---- D: 방향 대칭 액션 스케일 -----------------------------------------------------
+    # ★실측: home 이 박스 중심이 아니라 액션 단위당 이동량이 방향마다 최대 **7.5배**
+    #   다르다(y: a=+1 이 0.300m, a=-1 이 0.040m). 정책은 대칭 가우시안을 내는데
+    #   물리 효과가 비대칭이라 탐색이 한쪽으로 치우친다.
+    #   → 축마다 **하나의 스케일**(양쪽 중 큰 쪽)을 쓰고 박스로 clamp 한다.
+    #     a=0 → 홈 은 유지되고, 남는 쪽에 생기는 불감대는 과제와 반대 방향이라 무해하다.
+    symmetric_action_scale: bool = True
+
     # ---- 보상 (플랜 §4) -----------------------------------------------------------
     approach_weight: float = 1.0
     approach_sharpness: float = 4.0
     grasp_quality_weight: float = 3.0
-    grasp_envelope_credit: float = 0.5       # envelope / grip / persistence = 0.5/0.3/0.2
-    grasp_grip_credit: float = 0.3
+    # ★08.22 배선 복원: 0.5/0.3 → 0.6/0.4. `persistence` 항을 제거하면서(rewards.py:26)
+    #   그 몫 0.2 를 재분배하지 않아 credit 합이 **0.8** 로 남아 있었다 —
+    #   가중 3.0 중 0.6 이 아무도 못 받는 천장이었다. rewards.py 기본값과 docstring 은
+    #   이미 0.6/0.4 를 말하고 있었고 cfg 만 제거 전 값에 머물러 있었다.
+    #   ※ pinky 를 분모에서 빼는 안은 **기각**했다 — "pinky 기여 구조적 0" 근거가
+    #     자기충돌 ON 실측으로 반증됐다(접촉률 1.000 · 8.679 N).
+    grasp_envelope_credit: float = 0.6
+    grasp_grip_credit: float = 0.4
     # 자세는 **독립 항이 아니다**. reward-audit REVISE: 컵이 애초에 서 있어 독립 항으로
     # 두면 사실상 접촉 보너스의 중복(공짜 보상)이 된다. lift/success 의 완화 곱수
     # (0.5 + 0.5·upright_quality) 로만 쓰고, 교란은 tilt_penalty 로 처벌한다.
@@ -245,6 +275,17 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     #   self-collision ON 도 겹침은 없앴지만(100%→0%) 대가가 컸다(실측):
     #     fps 44k→21k · Fabrics 추종 7.7mm→74.8mm · zero-action 에서 컵 5cm 밀림.
     #   교차 자유도 자체를 없애는 편이 싸고 확실하다. 필요하면 True 로 켤 수 있다.
+    # ★중력은 **반드시 이 필드로만** 켠다. `robot_cfg.spawn.rigid_props` 를 직접 수정하면
+    #   env.__init__ 의 resolve_cfg 가 robot_cfg 를 재생성하며 조용히 되돌린다(08.22 실측).
+    #   ON 이면 Fabrics 가 중력보상을 안 하므로 palm 이 처진다(URDF 계산 14.4mm).
+    #   ※ 켤 때 함께 재검증할 것: palm 워크스페이스 박스 · 홈 기준점(home_palm).
+    enable_gravity: bool = False
+    # 중력보상 피드포워드 **계수**. enable_gravity=False 면 무시된다.
+    #   1.0 = 완전 보상(중력 OFF 와 물리적으로 동치) · 0.9 = 10% 잔류 처짐 · 0.0 = 보상 없음
+    #   실측(보상 0): palm 처짐 57.6mm · 자세 의존 37~72mm · success_pos_std(50mm)와 같은 규모.
+    #   실기 컨트롤러도 질량 모델 오차로 완벽하지 않으므로 이 계수가 s2r DR 축이 된다.
+    gravity_compensation: float = 1.0
+
     enable_self_collisions: bool = False
 
     # ---- 씬 픽스처 ---------------------------------------------------------------------
@@ -293,7 +334,8 @@ def resolve_cfg(cfg: "GraspLiftFabricEnvCfg") -> None:
             f"사유: {profile.notes}"
         )
 
-    cfg.robot_cfg = build_robot_cfg(profile, self_collisions=cfg.enable_self_collisions)
+    cfg.robot_cfg = build_robot_cfg(profile, self_collisions=cfg.enable_self_collisions,
+                                    gravity=cfg.enable_gravity)
     cfg.object_cfg = build_object_cfg(bank)
     # ★접촉 필터는 **RigidBodyAPI prim** 을 가리켜야 한다. 루트 Xform 이면 PhysX 가
     #   force_matrix_w 를 항상 0 으로 준다(보상 7항 중 6항이 접촉 게이트라 치명적).
@@ -313,7 +355,9 @@ def resolve_cfg(cfg: "GraspLiftFabricEnvCfg") -> None:
     cfg.action_space = 6 + n_free_hand
     # joint pos/vel/effort(3j) + 접촉력(f) + 물체 pos/quat(palm 프레임, 7)
     # + goal-object(3) + prev_action
-    cfg.observation_space = 3 * j + f + 7 + 3 + cfg.action_space
+    # +6 = palm 지령(slew 상태). 슬루를 걸면 지령이 액션의 저역통과라 상태가 된다 —
+    #      obs 에 넣지 않으면 부분관측이 된다. 실기에서도 우리가 만드는 값이라 배포 가능.
+    cfg.observation_space = 3 * j + f + 7 + 3 + cfg.action_space + 6
     if cfg.enable_object_onehot:
         cfg.observation_space += bank.onehot_dim
     # critic = policy + 물체 선속도/각속도

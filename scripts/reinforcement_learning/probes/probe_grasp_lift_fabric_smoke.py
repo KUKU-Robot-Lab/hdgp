@@ -21,6 +21,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--task", default="open-bis_r_grasp_lift_fab")
 parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument("--steps", type=int, default=150)
+parser.add_argument("--self_collisions", action="store_true",
+                    help="enabled_self_collisions=True 로 재해석해 실행(자산 갱신 후 검증용)")
+parser.add_argument("--gravity", action="store_true",
+                    help="로봇 중력 ON (기본 cfg 는 disable_gravity=True)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -41,6 +45,16 @@ def banner(t):
 
 # train.py 와 같은 경로로 cfg 를 만들어 넘긴다(gym.make 만으로는 cfg 가 안 채워진다).
 env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
+# ★스위치는 **cfg 필드**로만 켠다. `robot_cfg.spawn.*` 을 직접 고치면 env.__init__ 의
+#   resolve_cfg 가 robot_cfg 를 재생성하며 조용히 되돌린다(08.22 실측: 중력을 False 로
+#   바꿔 로그까지 찍었는데 USD 는 True 였다). 필드는 resolve_cfg 가 읽으므로 살아남는다.
+if args.self_collisions or args.gravity:
+    from openarm.agnostic.tasks.grasp_lift_fabric.grasp_lift_fabric_env_cfg import resolve_cfg
+    env_cfg.enable_self_collisions = bool(args.self_collisions)
+    env_cfg.enable_gravity = bool(args.gravity)
+    resolve_cfg(env_cfg)
+    print(f"[probe] self_collisions={env_cfg.robot_cfg.spawn.articulation_props.enabled_self_collisions}"
+          f" · disable_gravity={env_cfg.robot_cfg.spawn.rigid_props.disable_gravity}")
 env = gym.make(args.task, cfg=env_cfg).unwrapped
 p = env.profile
 
@@ -76,6 +90,11 @@ for _i in range(60):
 _f, _ = env._contact()
 print(f"  손 완전 폐합 시 접촉력 최대 {_f.max():.3f} N · >1N 손가락 "
       f"{( _f > 1.0).float().sum(dim=1).mean():.2f}")
+# ★손가락별로 갈라야 "어느 손가락이 안 닿는가"를 안다. 집계만 보면 pinky 를
+#   reward 분모에서 뺄지 결정할 수 없다(자기충돌 ON/OFF 로 답이 달라진다).
+for _j, _fg in enumerate(env._fingers):
+    print(f"      {_fg:8s} 접촉률 {( _f[:, _j] > 1.0).float().mean():.3f}"
+          f" · 평균힘 {_f[:, _j].mean():6.3f} N")
 print(f"  → {'PASS' if _f.max() > 0.1 else '★FAIL — 접촉 필터 prim 을 확인할 것'}")
 env.reset(); env.step(torch.zeros_like(_a))
 

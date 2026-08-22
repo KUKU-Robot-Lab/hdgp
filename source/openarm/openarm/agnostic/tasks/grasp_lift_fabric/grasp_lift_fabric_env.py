@@ -71,6 +71,9 @@ class GraspLiftFabricEnv(DirectRLEnv):
         _cfg.resolve_cfg(cfg)
         self.profile = _rb.get(cfg.profile_name)
         self.bank = _ob.get(cfg.object_bank, expected_size=cfg.object_bank_expected_size)
+        # ★super().__init__ 안에서 _apply_action 이 불릴 수 있으므로 **먼저** 정한다.
+        #   중력이 꺼져 있으면 보상은 무의미하므로 0 으로 잠근다(이중 부정 방지).
+        self._grav_comp = float(cfg.gravity_compensation) if cfg.enable_gravity else 0.0
         super().__init__(cfg, render_mode, **kw)
         p = self.profile
 
@@ -175,6 +178,23 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self._arm_lo = jl[:, self._arm_t, 0]
         self._arm_hi = jl[:, self._arm_t, 1]
         self._default_q = self.robot.data.default_joint_pos.clone()
+
+        # ---- D: 방향 대칭 액션 스케일 -------------------------------------------
+        # 축마다 하나의 스케일(양쪽 중 **큰 쪽**)을 쓰고 결과를 박스로 clamp 한다.
+        # 작은 쪽을 쓰면 y 범위가 40mm 로 줄어 컵(홈에서 +182mm)에 닿지 못한다.
+        _up = self.palm_hi - self.home_palm
+        _dn = self.home_palm - self.palm_lo
+        self._palm_scale = (torch.maximum(_up, _dn) if bool(cfg.symmetric_action_scale)
+                            else None)
+
+        # ---- A: 지령 속도 제한 ----------------------------------------------------
+        _sp = float(cfg.palm_slew_pos)
+        _sr = float(cfg.palm_slew_rot_deg) * math.pi / 180.0
+        self._slew = torch.tensor([_sp, _sp, _sp, _sr, _sr, _sr], device=self.device)
+        self._slew_on = _sp > 0.0 or _sr > 0.0
+        # 지령 버퍼. 리셋 시 홈으로 되돌린다(안 되돌리면 이전 에피소드 지령이 샌다).
+        self.palm_cmd = self.home_palm.clone()
+        self._prev_cmd = self.home_palm.clone()
 
         A = cfg.action_space
         self.actions = torch.zeros(self.num_envs, A, device=self.device)
@@ -406,11 +426,24 @@ class GraspLiftFabricEnv(DirectRLEnv):
         # 팔: **절대** palm 6D pose. a=0 → 홈, a=+1 → 박스 상한, a=-1 → 박스 하한.
         # 구간별 선형이라 박스 전체에 도달하면서도 상태를 추가하지 않는다.
         a_arm = self.actions[:, :6]
-        self.palm_targets = self.home_palm + torch.where(
-            a_arm >= 0.0,
-            a_arm * (self.palm_hi - self.home_palm),
-            a_arm * (self.home_palm - self.palm_lo),
-        )
+        if self._palm_scale is not None:
+            # D: 축당 스케일 하나 → 방향 대칭. 박스 밖은 clamp(반대편에 불감대가 생기지만
+            #    과제와 반대 방향이라 무해하다).
+            desired = (self.home_palm + a_arm * self._palm_scale).clamp(
+                self.palm_lo, self.palm_hi)
+        else:
+            desired = self.home_palm + torch.where(
+                a_arm >= 0.0,
+                a_arm * (self.palm_hi - self.home_palm),
+                a_arm * (self.home_palm - self.palm_lo),
+            )
+        if self._slew_on:
+            # A: 지령을 목표 쪽으로 **스텝당 상한만큼만** 움직인다.
+            d = (desired - self.palm_cmd).clamp(-self._slew, self._slew)
+            self.palm_cmd = self.palm_cmd + d
+        else:
+            self.palm_cmd = desired
+        self.palm_targets = self.palm_cmd
         # 손: **절대** 관절 목표 (전범위). 손은 홈이 곧 "펴진 상태"라 대칭 매핑으로 둔다 —
         # a=-1 이 완전 개방, a=+1 이 완전 폐합이 되는 편이 학습에 자연스럽다.
         u_hand = 0.5 * (self.actions[:, 6:] + 1.0)
@@ -457,6 +490,29 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.robot.set_joint_position_target(
             self.hand_targets, joint_ids=self._hand_free_t.tolist())
         # 고정 관절은 init 값 유지 — reset 에서 write 한 뒤 target 도 default 로 둔다.
+        self._apply_gravity_compensation()
+
+    # ------------------------------------------------------------------
+    def _apply_gravity_compensation(self) -> None:
+        """중력보상 피드포워드 토크.
+
+        Fabrics 는 중력보상을 하지 않는다. 중력을 켠 채 보상이 없으면 관절 PD 의
+        정상상태 오차가 그대로 처짐이 된다 — **실측 palm 57.6mm**(자세 의존 37~72mm)로
+        `success_pos_std`(50mm)와 같은 규모라 성공 판정 정밀도를 통째로 먹는다.
+
+        ★`gravity_compensation` 은 **계수**다. 1.0 = 완전 보상(중력 OFF 와 물리적으로
+          동치), 0.9 = 10% 잔류 처짐, 0.0 = 보상 없음. 실기 컨트롤러도 질량 모델 오차
+          때문에 완벽하지 않으므로 이 계수가 s2r 에서 의미 있는 DR 축이 된다.
+
+        ImplicitActuator 는 피드포워드 effort 를 받는다(actuator_pd.py:104
+        `computed_effort = stiffness·e_pos + damping·e_vel + joint_efforts`).
+        PhysX 의 `get_gravity_compensation_forces()` 는 fixed-base 에서 (N, dof) 의
+        **관절공간 보상 토크**를 그대로 준다(`get_generalized_gravity_forces` 는 deprecated).
+        """
+        if self._grav_comp <= 0.0:
+            return
+        tau = self.robot.root_physx_view.get_gravity_compensation_forces()
+        self.robot.set_joint_effort_target(self._grav_comp * tau[:, : self.robot.num_joints])
 
     # ==================================================================
     def _contact(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -508,8 +564,14 @@ class GraspLiftFabricEnv(DirectRLEnv):
         contact, _ = self._contact()
         goal_delta = self.goal_pos - self._local(self.object.data.root_pos_w)
 
+        # ★슬루 지령은 액션의 저역통과라 **상태**다. 넣지 않으면 부분관측이 된다.
+        #   홈 기준·스케일 정규화라 로봇이 바뀌어도 규칙이 같다. 실기에서도 우리가
+        #   만드는 값이므로 배포 가능하다(Fabrics 내부 상태와 달리 제어기 바깥 값이다).
+        _sc = self._palm_scale if self._palm_scale is not None else (
+            self.palm_hi - self.palm_lo)
+        cmd_rel = ((self.palm_cmd - self.home_palm) / _sc.clamp(min=1e-6)).clamp(-2.0, 2.0)
         parts = [joint_pos, joint_vel, joint_eff, contact.clamp(max=20.0),
-                 obj_in_palm, obj_quat_in_palm, goal_delta, self.actions]
+                 obj_in_palm, obj_quat_in_palm, goal_delta, self.actions, cmd_rel]
         if self._onehot is not None:
             parts.append(self._onehot)
         obs = torch.cat(parts, dim=1)
@@ -555,6 +617,11 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.extras["action/hand_step_delta"] = (
             self.actions[:, 6:] - self.prev_actions[:, 6:]).abs().mean()
         self.extras["action/arm_abs_mean"] = self.actions[:, :6].abs().mean()
+        # ★슬루를 걸면 "액션 지터"와 "실제 지령 지터"가 갈린다. 액션은 여전히 떨 수
+        #   있지만 지령이 안 떨면 팔은 정상 추종한다 — 그 분리를 봐야 판정이 된다.
+        self.extras["action/cmd_step_mm"] = (
+            self.palm_cmd[:, :3] - self._prev_cmd[:, :3]).norm(dim=-1).mean() * 1000.0
+        self._prev_cmd.copy_(self.palm_cmd)
         self.prev_actions.copy_(self.actions)
         self._goal_reached_now = goal_dist < float(self.cfg.success_pos_tolerance)
 
@@ -686,6 +753,8 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.fabric_qdd[env_ids] = 0.0
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
+        # ★슬루 지령도 홈으로 되돌린다 — 안 하면 이전 에피소드 지령이 새어 들어온다.
+        self.palm_cmd[env_ids] = self.home_palm[env_ids]
         self._respawn_pending[env_ids] = False
         self._goal_reached_now[env_ids] = False
 

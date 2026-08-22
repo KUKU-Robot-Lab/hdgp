@@ -40,8 +40,11 @@ agent_cfg = load_cfg_from_registry(args.task, "rl_games_cfg_entry_point")
 
 env = gym.make(args.task, cfg=env_cfg)
 raw = env.unwrapped
-env = RlGamesVecEnvWrapper(env, args.device, agent_cfg["params"]["config"].get("clip_observations", 5.0),
-                           agent_cfg["params"]["config"].get("clip_actions", 1.0))
+env = RlGamesVecEnvWrapper(env, args.device, agent_cfg["params"]["env"].get("clip_observations", 5.0),
+                           # ★params.config.clip_actions 는 rl_games 내부 플래그(False)다. 래퍼가 쓰는 것은
+                           #   params.env.clip_actions(1.0). 잘못 읽으면 Box(0,0) 이 되어 **모든 액션이 0**
+                           #   → 지표가 전부 정확히 0.0000 으로 나온다(play.py 와 같은 키를 쓸 것).
+                           agent_cfg["params"]["env"].get("clip_actions", 1.0))
 gym.vector.register("rlgpu", lambda cfg_name, nenv, **kw: RlGamesGpuEnv(cfg_name, nenv, **kw))
 from rl_games.common import env_configurations, vecenv  # noqa: E402
 vecenv.register("IsaacRlgWrapper", lambda cn, ne, **kw: env)
