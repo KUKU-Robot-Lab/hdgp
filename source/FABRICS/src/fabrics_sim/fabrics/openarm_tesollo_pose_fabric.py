@@ -617,7 +617,8 @@ class OpenArmGripperLeftPoseFabric(OpenArmTeoslloPoseFabric):
                  robot_dir_name="openarm_tesollo_sensor_left_gripper",
                  robot_name="openarm_tesollo_sensor_left_gripper",
                  default_palm_euler_zyx=(0.0, 1.5708, 0.0),
-                 fabric_params_filename="openarm_gripper_left_pose_params.yaml"):
+                 fabric_params_filename="openarm_gripper_left_pose_params.yaml",
+                 default_config_override=None):
         # 기본 palm 자세 (ez,ey,ex)=(0, π/2, 0) → R = Ry(90°):
         #   palm +z(접근축) = world +X,  palm +y(jaw) = world +Y,  palm +x(핑거 폭) = world -Z.
         #   즉 로봇 앞쪽으로 뻗어 컵의 좌우면을 수평 jaw 로 집는 **측면 파지** 기본자세.
@@ -633,7 +634,15 @@ class OpenArmGripperLeftPoseFabric(OpenArmTeoslloPoseFabric):
             palm_position_only=palm_position_only,
             robot_dir_name=robot_dir_name,
             robot_name=robot_name,
-            default_config_override=_GRIPPER_LEFT_DEFAULT_CONFIG,
+            # ★cspace rest(= attractor 가 팔을 당기는 기본 자세)는 **소비 태스크의 홈**과
+            #   일치해야 한다. 내장값은 ABORTED 트랙 홈(j7=+1.356)인데, lift 트랙 홈은
+            #   j7=−0.331 로 전혀 다르고 j7>0.7 은 l_al_5↔l_al_7 자기충돌 여유가 9 mm
+            #   아래로 떨어지는 구간이다. 태스크가 자기 홈을 넘겨야 한다.
+            default_config_override=(
+                default_config_override
+                if default_config_override is not None
+                else _GRIPPER_LEFT_DEFAULT_CONFIG
+            ),
             default_palm_euler_zyx=default_palm_euler_zyx,
             # ★팔 7 DOF 전용 params. 27 길이 accel/jerk 를 그대로 쓰면 첫 스텝에서
             #   "Number of joints does not match ..." assert 로 죽는다(실측).

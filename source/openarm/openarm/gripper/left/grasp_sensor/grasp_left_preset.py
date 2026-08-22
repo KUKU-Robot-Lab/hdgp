@@ -442,11 +442,17 @@ VIEWER_LOOKAT = (0.34, 0.20, 0.33)
 #   ★env.usd 로 작업면이 15 mm 내려갔으므로 목표도 같이 내린다 — **상면 위 높이**를
 #     보존해야 팔 자세 요구가 그대로다(옛 0.45 = 0.215 + 0.235).
 GOAL_HEIGHT_ABOVE_SURFACE = 0.235
-GOAL_POINT = (0.42, 0.24, TABLE_SURFACE_Z + GOAL_HEIGHT_ABOVE_SURFACE)   # z 0.435
-GOAL_JITTER = 0.02
-GOAL_POS_X = (GOAL_POINT[0] - GOAL_JITTER, GOAL_POINT[0] + GOAL_JITTER)
-GOAL_POS_Y = (GOAL_POINT[1] - GOAL_JITTER, GOAL_POINT[1] + GOAL_JITTER)
-GOAL_POS_Z = (GOAL_POINT[2] - GOAL_JITTER, GOAL_POINT[2] + GOAL_JITTER)
+# ★x 중심을 0.42 → 0.41 로 1 cm 물렸다(08.22). 목표가 영역이 되면서 x 상한이
+#   0.42+0.05 = 0.47 = **판 앞모서리와 정확히 일치**해 컵 반경(44 mm)만큼 판 밖으로
+#   걸치게 되기 때문이다. 0.41 이면 상한 0.46, 모서리까지 10 mm 여유.
+GOAL_POINT = (0.41, 0.24, TABLE_SURFACE_Z + GOAL_HEIGHT_ABOVE_SURFACE)   # z 0.435
+# ★08.22 목표를 점(±2 cm)에서 **영역**으로 확장(사용자 지정: pour 학습에 필요한
+#   목표-조건부 이송). test17 이 ±2 cm 에서 이송까지 성공했으므로 다음 단계로 넓힌다.
+#   y 를 가장 넓게 두는 이유: pour 에서 receiver 위치가 주로 y 로 움직인다.
+GOAL_JITTER = (0.05, 0.07, 0.05)   # 축별 ±m
+GOAL_POS_X = (GOAL_POINT[0] - GOAL_JITTER[0], GOAL_POINT[0] + GOAL_JITTER[0])
+GOAL_POS_Y = (GOAL_POINT[1] - GOAL_JITTER[1], GOAL_POINT[1] + GOAL_JITTER[1])
+GOAL_POS_Z = (GOAL_POINT[2] - GOAL_JITTER[2], GOAL_POINT[2] + GOAL_JITTER[2])
 
 # ---------------------------------------------------------------------------
 # 그리퍼 기하 (probe_gripper_opening.py 실측 — 참고값, 보상/제어에 직접 쓰지 않음)
@@ -471,3 +477,46 @@ STRADDLE_LATERAL_STD = 0.020    # m, 턱 축에서 컵 축까지의 수직 거�
 # ★weight 는 lifting(15) 의 1/5. 폐쇄는 **거쳐 가는 단계**이지 목적이 아니다 — 크면
 #   "물고 가만히 있기" 라는 새 국소최적이 생긴다(test3 에서 그 종류로 한 번 당했다).
 GRIPPER_CLOSURE_REWARD_WEIGHT = 3.0
+
+# ---------------------------------------------------------------------------
+# Fabrics 팔 액션 (`open-grip_l_grasp_sensor_fab`) — grasp_left_fabric_action.py
+# ---------------------------------------------------------------------------
+# ★왜 Fabrics 인가(08.22 사용자 지시): test17(관절공간)은 이송까지 성공했지만 목표에서
+#   못 멈춘다(잔류 0.17 m/s). 정책 raw 지령이 매 스텝 속도한계 포화(|Δa| 2.89, 반전
+#   60.5%)라 물리 평활을 rate limiter 가 억지로 만들고 있었다. Fabrics 는 2차 적분으로
+#   목표까지 감쇠 수렴하므로(hold L1 0.93 mm·오버슈트 0% 실측) 진동 지령을 팔이 흡수하고,
+#   실기에도 같은 제어기가 올라가 s2r 이 성립한다.
+#
+# 액션 = **절대** palm 6D (사용자 규약 08.20: 전부 절대값, a=0 이면 항상 같은 pose).
+#   위치 3: [-1,1] → PALM_BOX 절대 좌표 (a=0 = 박스 중심)
+#   회전 3: 축각 벡터(노름 ≤ PALM_ROT_MAX_RAD), 기준 파지 자세에 세계프레임 합성.
+#   ★회전을 euler 로 주면 안 된다 — 기준 palm 자세 (0, π/2, 0) 이 euler_zyx 짐벌
+#     특이점 정확히 위라 euler 클램프가 퇴화한다. quaternion 으로 set_features 에 넘긴다.
+#
+# PALM_BOX = (컵 스폰 접근 영역) ∪ (확장된 목표 영역) + 여유. TCP 가 컵 옆면을 무니
+#   TCP 목표 ≈ 컵 위치라 컵이 갈 수 있는 곳을 TCP 도 갈 수 있어야 한다.
+#     스폰 접근: x[0.36,0.40] y[0.17,0.21] z≈0.29   /   목표: x[0.37,0.47] y[0.17,0.31] z[0.385,0.485]
+#   ⚠ 수치는 G1 도달성 프로브로 검증 후 확정한다(아래 값은 그 결과로 갱신).
+# ★x 하한은 **홈 TCP(0.239)를 포함**해야 한다. 0.28 로 뒀더니 "제자리 유지" 지령조차
+#   클램프돼 41 mm 이동 지령이 됐다(G2 계측이 이것 때문에 오염). 정책이 홈 근처로
+#   물러날 수도 있어야 하므로 0.22 로 내린다.
+PALM_BOX_X = (0.22, 0.50)
+PALM_BOX_Y = (0.10, 0.35)
+PALM_BOX_Z = (0.22, 0.55)
+# ★★기준 palm 자세 = **이 태스크 홈의 실측 palm 자세** (Isaac FK 리셋 직후, homequat.py).
+#   ⚠ 이 값을 의심하게 만들었던 "홈 자세는 스폰·목표에서 95 mm 실패" 스윕 결과는
+#     **계측 오염**이었다: 프로브의 park_cup 이 치운 컵의 z 를 보존해 매 스텝 2 mm 씩
+#     자유낙하 → ~18 스텝마다 object_dropping 종료 → fabric_q 가 홈으로 리셋되며
+#     수렴이 계속 끊겼다. 그 오염 위에서 "우승 회전"을 찾고 기준을 두 번 갈아치웠다.
+#   리셋이 없는 **fabric 단독 시험**(fab_standalone.py)이 진실: 홈 실측 quat 은
+#     GOAL_POINT L1 0.1 mm · 스폰 접근 0.4 mm 로 **전 후보 중 최고**다.
+#   홈 = 검증된 pregrasp 자세이므로 a=0 = 홈 자세가 절대 규약과도 정합한다.
+#   ⚠ 홈 관절값을 바꾸면 재실측(homequat.py) + 단독 수렴 확인(fab_standalone.py).
+PALM_REF_QUAT_WXYZ = (0.07900154923557093, -0.7797152903667677, -0.11000215716345318, -0.6113119879456266)
+PALM_ROT_MAX_RAD = math.radians(30.0)   # j6 ±45° 안에서 여유
+# fabric 적분: 시간 = 벽시계. env step_dt(0.02) / decimation(2) = 0.01 s × 2회.
+FABRIC_DECIMATION = 2
+FABRIC_DAMPING_GAIN = 20.0              # agnostic 트랙 검증값
+FABRIC_ROBOT_DIR = "openarm_tesollo_sensor_left_gripper"
+FABRIC_WORLD_FILENAME = "open_gripper_left_boxes_no_table"  # ★좌팔 전용 — 우팔용을 쓰면 자기 대역물·컵에서 밀려난다
+

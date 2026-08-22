@@ -71,3 +71,27 @@ gym.register(
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
     },
 )
+
+# ── Fabrics 변형 ─────────────────────────────────────────────────────────
+# 팔 액션만 절대 palm 6D(Fabrics)로 바꾼 것. 보상·씬·목표는 관절공간판과 동일해서
+# test17 과 제어기만 다른 직접 비교가 성립한다. 근거는 `grasp_left_fab_env_cfg.py`.
+gym.register(
+    id="open-grip_l_grasp_sensor_fab",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "openarm.gripper.left.grasp_sensor.grasp_left_fab_env_cfg:GraspLeftGripperFabEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_fab_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="open-grip_l_grasp_sensor_fab-play",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "openarm.gripper.left.grasp_sensor.grasp_left_fab_env_cfg:GraspLeftGripperFabEnvCfg_PLAY",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_fab_cfg.yaml",
+    },
+)
+

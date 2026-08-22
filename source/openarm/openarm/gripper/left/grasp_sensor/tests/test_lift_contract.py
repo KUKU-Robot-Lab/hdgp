@@ -266,20 +266,22 @@ def test_grasp_pose_is_a_bonus_never_a_gate():
     )
 
 
-def test_goal_is_a_specific_point_not_a_wide_range():
-    """★이송 목표는 **우리가 정하는 특정 점**이다(실기에서도 옮길 자리는 우리가 지정한다).
+def test_goal_is_the_user_specified_region_not_wider():
+    """★이송 목표는 **사용자가 지정한 중간 박스**(08.22: x±5 y±7 z±5 cm)다.
 
-    넓은 랜덤 범위는 정밀 도달과 정지를 동시에 어렵게 만든다 — test12 에서 goal_fine 이
-    상한의 8%, settle 이 7.8% 에 머문 이유 중 하나다.
+    이력: 처음엔 넓은 범위(test12: goal_fine 8%·settle 7.8% 정체)→ 점 ±2 cm 로 좁혀
+    test17 이 이송까지 성공 → pour 용 목표-조건부 이송을 위해 **의도적으로** 이만큼만
+    다시 넓혔다. 이보다 넓어지면 test12 의 정체가 돌아온다 — 상한을 계약으로 고정.
     """
-    span_x = P.GOAL_POS_X[1] - P.GOAL_POS_X[0]
-    span_y = P.GOAL_POS_Y[1] - P.GOAL_POS_Y[0]
-    span_z = P.GOAL_POS_Z[1] - P.GOAL_POS_Z[0]
-    for span in (span_x, span_y, span_z):
-        assert span <= 0.06, f"목표 범위가 넓다({span:.3f} m) — 특정 점이어야 한다"
+    assert P.GOAL_JITTER == (0.05, 0.07, 0.05), "사용자 지정 목표 영역이 바뀌었다"
+    for jit, (lo, hi), c in zip(
+        P.GOAL_JITTER, (P.GOAL_POS_X, P.GOAL_POS_Y, P.GOAL_POS_Z), P.GOAL_POINT
+    ):
+        assert math.isclose(hi - lo, 2 * jit, abs_tol=1e-9)
+        assert math.isclose(0.5 * (lo + hi), c, abs_tol=1e-9)
     # 스폰 자리에 그대로 두는 것이 목표가 되면 "들어서 옮기기"가 성립하지 않는다
-    dz = P.GOAL_POINT[2] - P.CUP_SPAWN_Z
-    assert dz > 0.05, "목표가 스폰 높이와 가까우면 이송을 요구하지 못한다"
+    dz = P.GOAL_POS_Z[0] - P.CUP_SPAWN_Z
+    assert dz > 0.05, "목표 하한이 스폰 높이와 가까우면 이송을 요구하지 못한다"
 
 
 @pytest.mark.skipif(not _ROBOT_URDF.is_file(), reason="로봇 URDF 없음")
