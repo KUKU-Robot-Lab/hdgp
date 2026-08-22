@@ -203,18 +203,25 @@ def test_envelope_discriminates_rim_hook():
     assert env3 >= th and env4 >= th, "성공 임계가 정상 인벨롭을 배제한다"
 
 
-def test_truncation_reset_paired_with_value_bootstrap():
-    """전도/낙하 truncation 리셋 ↔ value_bootstrap 짝 계약.
+def test_failure_is_terminated_not_truncated():
+    """실패(전도/낙하/이탈)는 terminated, truncated 는 시간 만기 전용.
 
-    bootstrap 없는 truncation 은 termination 과 같아져(미래 보상 절벽) 접근 회피
-    학습(agn_test2)이 재발한다. env 가 truncation 리셋을 쓰는 한 yaml 의
-    value_bootstrap 은 True 여야 한다(main + central_value 둘 다).
+    ★lstm_test1 ep1600 붕괴의 근본 원인. 실패를 truncated 로 내보내면 IsaacLab 이
+    extras["time_outs"] 로 싣고 rl_games 가 value_bootstrap 으로
+    `shaped_rewards += gamma·V(s_t)` 를 더한다 → **컵을 쓰러뜨릴 때마다 보너스**.
+    실측: 실제 보상 3307→103 인데 shaped_rewards 는 72.8→79.4 로 상승(익스플로잇).
+    bootstrap 자체는 시간 만기에 필요하므로 yaml 은 True 를 유지한다.
     """
     import yaml
     env_src = (_TASK_DIR / "grasp_sensor_env.py").read_text(encoding="utf-8")
     code = "\n".join(l for l in env_src.split("\n") if not l.lstrip().startswith("#"))
-    assert "respawn" not in code, "컵 단독 리스폰 재도입 금지 — truncation 리셋이 대체"
-    assert "tilt_reset_deg" in code, "전도 truncation 리셋이 사라짐"
+    assert "respawn" not in code, "컵 단독 리스폰 재도입 금지 — 전체 리셋이 대체"
+    assert "tilt_reset_deg" in code, "전도 리셋이 사라짐"
+    assert re.search(r"truncated\s*=\s*timeout\s*$", code, re.M), (
+        "truncated 는 timeout 단독이어야 한다 — 실패를 실으면 bootstrap 이 "
+        "실패에 γ·V(s) 보너스를 지급한다(ep1600 붕괴 재발)")
+    assert re.search(r"terminated\s*=.*fell.*tipped.*out_xy", code), (
+        "실패(fell/tipped/out_xy)는 terminated 로 나가야 한다")
     for name in ("rl_games_ppo_lstm_cfg.yaml", "rl_games_ppo_cfg.yaml"):
         cfg = yaml.safe_load((_TASK_DIR / "config" / "agents" / name).read_text())
         conf = cfg["params"]["config"]

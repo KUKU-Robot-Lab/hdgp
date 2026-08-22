@@ -573,24 +573,28 @@ class GraspSensorEnv(DirectRLEnv):
         beyond = (q_arm < self._arm_lo - 0.05) | (q_arm > self._arm_hi + 0.05)
         runaway = qd_arm.abs() > 20.0
         self._abnormal_buf = (beyond | runaway).any(dim=-1)
-        # ---- 전도/낙하/이탈 = env 전체 리셋 (08.22, 사용자 지시) ----------------------
-        # 두 실패한 선행 설계의 교훈을 모두 반영한 형태:
-        #   · termination(agn_test2): done 이 미래 보상 전부를 끊어 **암묵적 대형 페널티**
-        #     → "접근하지 않는" 회피 학습 (reaching 0.056→0.005 붕괴).
-        #   · 컵 단독 리스폰(agn_test4~lstm_test4): 텔레포트 전이가 학습 데이터에 들어가
-        #     value/LSTM 오염 + 손 위 겹침 소환.
-        # → **truncation + value_bootstrap**(yaml): env 는 리셋되지만 V(s′) 부트스트랩이
-        #   미래 보상을 대신해 return 절벽이 없다. 넘어뜨림의 대가는 tilt_penalty 와
-        #   "낮은 V(쓰러진 상태)" 만큼만 — 보상과 무관한 순수 리셋에 가장 가깝다.
+        # ---- 전도/낙하/이탈 = env 전체 리셋, 단 **terminated 로** ---------------------
+        # ★★lstm_test1 ep1600 붕괴의 근본 원인이 여기였다(반증된 설계는 아래 주석 참조).
+        #   실패를 truncated 로 내보내면 IsaacLab wrapper 가 그대로 extras["time_outs"]
+        #   에 싣고(rl_games.py:284), rl_games 가 value_bootstrap 으로
+        #   `shaped_rewards += gamma * V(s_t) * time_outs` 를 더한다(a2c_common.py:777).
+        #   → **컵을 쓰러뜨릴 때마다 γ·V(s) 를 보너스로 지급**. 정책이 잘할수록 V 가
+        #   커져 "잘 잡았다가 넘어뜨리기"가 계속 드는 것보다 이득이 되는 자기강화 루프.
+        #   실측: ep1550→1600 에 실제 보상 3307→103 (32배 붕괴)인데 정책이 최적화하는
+        #   shaped_rewards 는 72.8→79.4 로 **상승**. 에피소드 길이 473→69, tipped_rate
+        #   0→0.019(≈1/55 = 에피소드 길이와 정확히 일치) — 안정적 익스플로잇 수렴.
+        # → 실패는 terminated(부트스트랩 없음, 이후 가치 0). 보상이 전 항 비음수라
+        #   조기 종료는 그 자체로 손해이고, 접근 회피(agn_test2)는 그때 없던 dense
+        #   approach(2.0, 무게이트)가 막는다. bootstrap 은 **진짜 시간 만기에만**.
         _obj_z = quat_apply(
             self.object.data.root_quat_w,
             torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, 3),
         )
         self._tilt_deg_buf = torch.rad2deg(torch.acos(_obj_z[:, 2].clamp(-1.0, 1.0)))
         tipped = self._tilt_deg_buf > float(self.cfg.tilt_reset_deg)
-        terminated = self._abnormal_buf
+        terminated = self._abnormal_buf | fell | tipped | out_xy
         timeout = self.episode_length_buf >= self.max_episode_length - 1
-        truncated = timeout | fell | tipped | out_xy
+        truncated = timeout
         self.extras["task/abnormal_rate"] = self._abnormal_buf.float().mean()
         self.extras["task/fell_rate"] = fell.float().mean()
         self.extras["task/out_xy_rate"] = out_xy.float().mean()
