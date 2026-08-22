@@ -590,8 +590,12 @@ class GraspLiftEnv(DirectRLEnv):
         spawn[:, 1] = p.object_spawn_center[1] + offs[:, 1]
         # 높이는 cfg 단일 소스(table_surface_z + origin_offset + pad). 이중 패딩 금지.
         spawn[:, 2] = self.cfg.object_spawn_z
-        self.object_spawn_pos[env_ids] = spawn
-        self.goal_pos[env_ids] = spawn + torch.tensor(
+        # ★보상 기준선은 스폰점이 아니라 **정착고**다(패딩만큼 가라앉는다). 스폰점을
+        #   기준으로 잡으면 그 패딩이 lift 보상의 데드존이 되고 goal 도 그만큼 멀어진다.
+        settled = spawn.clone()
+        settled[:, 2] = self.cfg.table_surface_z + self.cfg.object_origin_offset_z
+        self.object_spawn_pos[env_ids] = settled
+        self.goal_pos[env_ids] = settled + torch.tensor(
             [0.0, 0.0, float(self.cfg.goal_height_offset)], device=self.device)
 
         root = torch.zeros(n, 13, device=self.device)
