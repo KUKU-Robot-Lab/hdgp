@@ -91,9 +91,12 @@ def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
                 #   실측: 유휴 480스텝 palm 드리프트 0.00mm·|qd| 0.00,
                 #        full-grip 손관절합 24.1(OFF) → 18.8(ON) = 손가락 겹침 차단.
                 enabled_self_collisions=True,
-                # 16 → 32: 47-DOF + 동시 마찰접촉에서 마찰 구속이 미수렴해 겉보기 미끄러짐이
-                # 생긴다. 관통 프록시(contact/force_max)와 fps 를 P-9 에서 분리 계측한 값.
-                solver_position_iteration_count=32,
+                # ★P-9 실측(2048env)으로 16 확정: 32 는 fps 를 25% 깎는데(11.9k→8.9k)
+                #   파지 품질이 나아지지 않았다. 오히려 접촉력이 더 높았다
+                #   (solver32 Fa 28N/Fb 25N vs solver16 Fa 18N/Fb 8N) = 상호침투를 더
+                #   밀어내고 있었다는 뜻. self-collision + convex_decomposition 자산이
+                #   이미 관통을 막으므로 32 는 불필요한 비용이다.
+                solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
             ),
         ),
@@ -255,7 +258,7 @@ class GraspLiftEnvCfg(DirectRLEnvCfg):
             #   파지 조임 중 손끝이 컵 벽을 파고든다(사용자 영상 08.20).
             #   값은 grasp_v1·grasp_lift_fabric 과 동일.
             rigid_props=RigidBodyPropertiesCfg(
-                solver_position_iteration_count=32,
+                solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
                 max_angular_velocity=100.0,
                 max_linear_velocity=100.0,
