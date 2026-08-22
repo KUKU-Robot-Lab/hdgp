@@ -31,6 +31,32 @@ editing this package. The warm grasp state is referenced at
 delegated to the bimanual loader in
 `source/openarm/openarm/tesollo/both/pour_v1/warm_state_bank.py`.
 
+## Isaac integration boundary (fabric tasks)
+
+Two modules realize the boundary for the `agnostic` fabric tasks
+(`grasp_lift_fabric` / `pour_fabric`) whose action space is an absolute palm
+6D pose plus absolute hand joint targets:
+
+- `fabric_bridge.py` — pure math, no Isaac/torch imports. `PalmActionSpace`
+  is the exact inverse of the env's symmetric action decode, and
+  `command_to_action` maps `TASK_SPACE_POSE` (rule-based skills such as
+  approach), `POLICY_ACTION` (RL skills), and `SAFE_STOP`/`NO_OP` (hold the
+  current pose) onto one action row.
+- `isaac_state.py` — `FabricStateProvider` assembles validated
+  `SemanticState` batches from a narrow `FabricSceneView` protocol (a thin
+  adapter over the env buffers) plus the skill manager's routing state.
+
+`scripts/vlm/run_pouring_demo.py` wires both into a live Isaac scene with a
+stubbed task specification (the Qwen GPU boundary stays closed): the approach
+skill drives the arm to a pregrasp point through Fabrics, the deterministic
+HRL advances to DONE on semantic success, and a scene camera saves the RGB
+frames that later become the Qwen input.
+
+```bash
+PYTHONUNBUFFERED=1 ../IsaacLab/isaaclab.sh -p scripts/vlm/run_pouring_demo.py \
+  --num_envs 2 --steps 600 --out outputs/vlm_demo --headless
+```
+
 ## CPU verification
 
 From the HDGP repository root:
