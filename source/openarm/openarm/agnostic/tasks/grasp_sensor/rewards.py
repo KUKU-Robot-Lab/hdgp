@@ -87,32 +87,47 @@ def contact_gate(group_a_force: torch.Tensor, group_b_force: torch.Tensor, thres
     return a & b
 
 
+def envelope_gate(gate: torch.Tensor, envelope_frac: torch.Tensor,
+                  target_frac: float) -> torch.Tensor:
+    """유효 게이트 = 대향 이진 접촉 × clamp(env_frac / target, 0, 1) ∈ [0,1].
+
+    ★lstm_test1 실측: goal 계열(13.5)이 **팁 접촉만으로 성립하는 이진 게이트**로만
+      막혀 있어 감쌈이 순수 비용이었다 — 정책이 ep500 에 스스로 배운 감쌈(0.335)을
+      lift 가 오르면서 되팔았다(ep1000 0.215). ∂(goal 계열)/∂(env_frac)=0 이 원인.
+      영상: 엄지 미접촉·네 손가락으로 컵을 손바닥에 눌러 12cm 리프트(press-grip).
+    이 인자로 감쌈이 goal 계열의 **선행 조건**이 된다. 연속(곱셈)이라 부분 감쌈은
+    부분 보상을 주므로 절벽이 아니고, target(=success_envelope_min)에서 포화한다.
+    이진 대향 게이트 자체는 유지(08.22 사용자 결정).
+    """
+    return gate.float() * (envelope_frac / max(target_frac, 1e-6)).clamp(0.0, 1.0)
+
+
 def tracking_reward(object_pos: torch.Tensor, goal_pos: torch.Tensor, std: float,
                     gate: torch.Tensor) -> torch.Tensor:
-    """(1 − tanh(‖obj − goal‖ / std)) × 접촉게이트."""
+    """(1 − tanh(‖obj − goal‖ / std)) × 유효게이트."""
     d = torch.norm(object_pos - goal_pos, dim=-1)
-    return (1.0 - torch.tanh(d / std)) * gate.float()
+    return (1.0 - torch.tanh(d / std)) * gate
 
 
 def success_reward(object_pos: torch.Tensor, goal_pos: torch.Tensor, pos_std: float,
                    gate: torch.Tensor) -> torch.Tensor:
-    """(1 − tanh(‖obj − goal‖ / pos_std))² × 접촉게이트.
+    """(1 − tanh(‖obj − goal‖ / pos_std))² × 유효게이트.
 
     goal 이 스폰+15cm 고정이라 "쳐올려 저글링" 비접촉 수확이 가능해 게이트 필수
     (reward-audit Check 1). hold 중 상시 참이라 절벽이 아니다.
     """
     d = torch.norm(object_pos - goal_pos, dim=-1)
-    return ((1.0 - torch.tanh(d / pos_std)) ** 2) * gate.float()
+    return ((1.0 - torch.tanh(d / pos_std)) ** 2) * gate
 
 
 def lift_reward(height_delta: torch.Tensor, target_height: float,
                 gate: torch.Tensor) -> torch.Tensor:
-    """스폰 대비 상승분의 선형 진척(0~1) × 접촉게이트.
+    """스폰 대비 상승분의 선형 진척(0~1) × 유효게이트.
 
     tracking(std 0.1)은 초기 몇 cm 리프트에서 tanh 포화 구간이라 gradient 가 사실상
     0 이었다(agn_test12: 잡고 정지 수렴). 부분 진척을 선형으로 되돌려준다.
     """
-    return (height_delta / max(target_height, 1e-6)).clamp(0.0, 1.0) * gate.float()
+    return (height_delta / max(target_height, 1e-6)).clamp(0.0, 1.0) * gate
 
 
 def tilt_penalty(object_tilt_deg: torch.Tensor, free_deg: float) -> torch.Tensor:
@@ -164,16 +179,19 @@ def compute_grasp_sensor_rewards(
         float(cfg.side_radius), float(cfg.approach_sharpness),
     )
     env_frac = envelope_fraction(env_mid_force, env_dist_force, thr)
+    # goal 계열은 **감쌈을 선행 조건으로** 한다 — envelope_gate() 주석 참조.
+    # contact(0.5)만 순수 이진 게이트로 남겨 접촉 자체의 사다리 한 칸을 유지한다.
+    g_eff = envelope_gate(g, env_frac, float(cfg.success_envelope_min))
     terms = {
         "approach": float(cfg.approach_weight) * app,
         "envelope": float(cfg.envelope_weight) * env_frac,
         "contact": float(cfg.contact_weight) * g.float(),
         "tracking": float(cfg.tracking_weight)
-        * tracking_reward(object_pos, goal_pos, float(cfg.tracking_std), g),
+        * tracking_reward(object_pos, goal_pos, float(cfg.tracking_std), g_eff),
         "success": float(cfg.success_weight)
-        * success_reward(object_pos, goal_pos, float(cfg.success_std), g),
+        * success_reward(object_pos, goal_pos, float(cfg.success_std), g_eff),
         "lift": float(cfg.lift_weight)
-        * lift_reward(height_delta, float(cfg.goal_height_offset), g),
+        * lift_reward(height_delta, float(cfg.goal_height_offset), g_eff),
         "tilt_penalty": float(cfg.tilt_penalty_weight)
         * tilt_penalty(object_tilt_deg, float(cfg.tilt_free_deg)),
         "action_l2": float(cfg.action_l2_weight) * action_l2_clamped(actions),
@@ -184,4 +202,5 @@ def compute_grasp_sensor_rewards(
     # 진단용 원거리도 terms 에 실어 로깅 경로 하나로 (가중 0 취급 아님 — env 가 분리 기록)
     terms["_d_palm"] = d_palm
     terms["_d_side"] = d_side
+    terms["_gate_eff"] = g_eff      # 이진 게이트 vs 인벨롭 인자 분리 진단(reward-audit Check 5)
     return total, terms, g, env_frac

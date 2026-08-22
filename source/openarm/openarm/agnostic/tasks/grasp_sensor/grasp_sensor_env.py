@@ -508,6 +508,9 @@ class GraspSensorEnv(DirectRLEnv):
         # 접근 기하 진단(가중 전 원거리) — terms 에 _접두로 실려 온다
         self.extras["task/d_palm"] = terms.pop("_d_palm").mean()
         self.extras["task/d_side"] = terms.pop("_d_side").mean()
+        # 유효 게이트 = 이진 접촉 × 인벨롭 인자. contact_gate 와 나란히 봐야
+        # "접촉이 없음"과 "접촉은 있는데 안 감쌈"이 구분된다.
+        self.extras["task/gate_eff"] = terms.pop("_gate_eff").mean()
         self.extras["task/envelope_frac"] = env_frac.mean()
         # 게이트 참인 env 의 감쌈 — "접촉은 됐는데 감쌈이 안 되는" 상태의 직접 지표
         _gf = gate.float()

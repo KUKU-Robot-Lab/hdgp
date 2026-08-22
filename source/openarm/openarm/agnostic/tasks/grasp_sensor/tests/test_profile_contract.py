@@ -203,6 +203,37 @@ def test_envelope_discriminates_rim_hook():
     assert env3 >= th and env4 >= th, "성공 임계가 정상 인벨롭을 배제한다"
 
 
+def test_goal_family_requires_envelope():
+    """goal 계열(tracking/success/lift)은 감쌈 없이는 수확 불가여야 한다.
+
+    ★lstm_test1 반증: 이진 대향 접촉 게이트는 **팁 접촉만으로 성립**해 press-grip
+    (엄지 미접촉·네 손가락으로 컵을 손바닥에 압착)으로 goal 계열 13.5 를 전부
+    수확했다. ∂(goal)/∂(env_frac)=0 이라 감쌈이 순수 비용이 되어, 정책이 ep500 에
+    스스로 배운 감쌈(0.335)을 lift 가 오르면서 되팔았다(ep1000 0.215).
+    → 유효 게이트 = 이진 접촉 × clamp(env_frac/target). 연속이라 절벽은 아니다.
+    """
+    import torch
+    from openarm.agnostic.tasks.grasp_sensor.rewards import envelope_gate
+    g = torch.tensor([True, True, True, True])
+    env = torch.tensor([0.0, 0.25, 0.6, 1.0])
+    eff = envelope_gate(g, env, 0.6)
+    assert float(eff[0]) == 0.0, "감쌈 0 인데 goal 계열이 열린다"
+    assert 0.0 < float(eff[1]) < 1.0, "부분 감쌈이 부분 보상을 줘야 한다(절벽 금지)"
+    assert float(eff[2]) == 1.0 and float(eff[3]) == 1.0, "임계 이상에서 포화해야 한다"
+    # 접촉 자체가 없으면 감쌈 값과 무관하게 0
+    assert float(envelope_gate(torch.tensor([False]), torch.tensor([1.0]), 0.6)[0]) == 0.0
+
+    src = (_TASK_DIR / "rewards.py").read_text(encoding="utf-8")
+    code = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("#"))
+    # 정의부가 아니라 **호출부**를 본다(정의부는 인자명이 gate 라 오탐).
+    # 중첩 괄호(float(cfg...)) 때문에 괄호 매칭 대신 "호출 직후 g_eff 등장"으로 검사.
+    for term in ("tracking_reward", "success_reward", "lift_reward"):
+        assert re.search(r"\*\s*" + term + r"\(.{0,140}?g_eff", code, re.S), (
+            f"{term} 호출이 유효 게이트(g_eff)를 안 쓴다")
+    assert "contact_weight) * g.float()" in code, (
+        "contact 항은 순수 이진 게이트로 남아야 한다 — 접촉 사다리 한 칸")
+
+
 def test_failure_is_terminated_not_truncated():
     """실패(전도/낙하/이탈)는 terminated, truncated 는 시간 만기 전용.
 
