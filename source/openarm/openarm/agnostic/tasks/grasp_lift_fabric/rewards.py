@@ -7,20 +7,27 @@
     gradient 가 하나도 없다**(보상에 회전 항이 아예 없다). 그래서 엄지가 컵 입구를
     가로지르는 평면 핀치 같은 축퇴를 구조적으로 허용한다.
 
-왜 grasp_v2 구현을 그대로 쓰지 않는가 (실측 3건):
-    ① `lift_latched` 래치가 항을 pre_lift/lift 로 이분한다. 래치가 걸리면
-       `grasp`(가중 12.0)가 즉시 꺼져 기여가 0.0362 → 0.0358 로 **평탄**했다.
-       "만렙 후 감쌈 침식(중간마디 상실)"의 직접 원인이다. → **래치를 쓰지 않는다.**
-    ② `stabilize` 는 게이트 5중첩(lift × lifted × contact × upright × action)이라
-       하나가 0이면 전부 0 → 어느 인자가 막았는지 분리 불가(기여 0.965 = 품질 0.097).
-       → **곱셈은 최대 2단**, 자세는 0 이 아니라 **0.5~1.0 완화 곱수**로 넣는다.
-    ③ 컵 밀기 페널티가 `approach` 안에 묻혀 approach 전체 기여가 1.6% 였고,
-       밀기 0.375 vs 성공 4.572 = **1:12** 라 밀어서 성공하는 게 최적이었다.
-       → **독립 항으로 분리하고 따로 로깅**한다.
+★귀속 정정(08.22): 아래 ①②의 래치/5중첩은 **grasp_v1 과 grasp_reward_core(코어)** 의
+구조다. 활성 grasp_v2 는 코어를 호출하지 않는다(4항 인라인, 래치 없음) — 조사로 확정.
+    ① 래치(v1)가 걸리면 `grasp`(가중 12.0)가 즉시 꺼져 기여가 0.0362 → 0.0358 로
+       **평탄**했다. "만렙 후 감쌈 침식"의 직접 원인. → **래치를 쓰지 않는다.**
+    ② 코어의 `stabilize` 는 게이트 5중첩(lift × lifted × contact × upright × action)이라
+       하나가 0이면 전부 0 → 원인 분리 불가. → **곱셈은 최대 2단**, 자세는 0 이 아니라
+       **0.5~1.0 완화 곱수**로 넣는다.
+    ③ v1 은 밀기 페널티가 `approach` 안에 묻혀 pre-lift 게이트와 함께 꺼졌다.
+       (v2 는 밀기 페널티 자체를 삭제 — object_to_goal 과 충돌해서.)
+
+08.22 TEST1 (reward-audit ACCEPT):
+    · **A. 대향 파지점 approach** — 손끝 목표를 중심 → 대향 파지점(v1/v2 이식).
+      중심 기준은 전 손끝을 같은 점으로 당기는 shaping + 기하 상한 0.57 이었다.
+    · **B. persistence 재도입** — credit 0.5/0.3/0.2 (v1/v2 도 0.25 로 유지하는 항).
+    · **C/D. push·tilt 페널티 제거** — 실측 기여 −0.004/−0.12 무용, 종료(0.35m/60°)가
+      상한 담당. up_mul 은 유지.
+    · **E. 참여 임계 0.1N 분리** — 게이트는 1.0N 유지(스침 success 차단).
 
 reward-audit 판정 이력 (REVISE → ACCEPT):
     · `upright` 독립 항은 컵이 애초에 서 있어 사실상 공짜였다(접촉 보너스 중복)
-      → 독립 항 제거, lift/success 의 완화 곱수로만 사용 + tilt_penalty 신설.
+      → 독립 항 제거, lift/success 의 완화 곱수로만 사용 + tilt_penalty 신설(→08.22 재제거).
     · penalty 가 무한대라 멀리 밀린 뒤 회복 불가 → **상한 클램프**(접근 회피 방지,
       agn_test2 의 종료-회피와 같은 실패 축).
     · `persistence` 는 래치를 없앤 뒤 중복 → 제거(envelope 0.6 / grip 0.4).
@@ -57,6 +64,7 @@ def compute_rewards(
     tip_side_dist: torch.Tensor,      # (N,)  손끝 평균 ↔ 물체 거리
     envelope_frac: torch.Tensor,      # (N,)  감쌈(중간·원위 마디) 접촉 손가락 비율
     grip_frac: torch.Tensor,          # (N,)  아무 마디든 접촉한 손가락 비율
+    persistence: torch.Tensor,        # (N,)  대향 게이트 연속 유지 비율 (0..1)
     object_height_delta: torch.Tensor,
     object_to_goal: torch.Tensor,
     object_xy_displacement: torch.Tensor,
@@ -84,13 +92,16 @@ def compute_rewards(
 
     # 2. grasp_quality — ★래치 없이 **상시** 켜져 있다. 리프트 후 감쌈이 풀리면
     #    바로 깎이므로 "만렙 후 감쌈 침식"에 반대 gradient 가 생긴다.
-    _env_credit = _cfg(cfg, "grasp_envelope_credit", 0.6)
-    _grip_credit = _cfg(cfg, "grasp_grip_credit", 0.4)
+    #    persistence = 대향 게이트 연속 유지 비율(0..1) — 잡았다-놓기 축퇴 억제.
+    _env_credit = _cfg(cfg, "grasp_envelope_credit", 0.5)
+    _grip_credit = _cfg(cfg, "grasp_grip_credit", 0.3)
+    _per_credit = _cfg(cfg, "grasp_persist_credit", 0.2)
     grasp_quality = (
         _cfg(cfg, "grasp_quality_weight", 3.0)
         * gate_f
         * (_env_credit * envelope_frac.clamp(0.0, 1.0)
-           + _grip_credit * grip_frac.clamp(0.0, 1.0))
+           + _grip_credit * grip_frac.clamp(0.0, 1.0)
+           + _per_credit * persistence.clamp(0.0, 1.0))
     )
 
     # 3. lift
@@ -107,22 +118,10 @@ def compute_rewards(
         * up_mul
     )
 
-    # 5. push_penalty — ★상한 클램프. 무한대로 두면 멀리 밀린 뒤 회복 불가라
-    #    "컵에 아예 안 다가감"이 국소최적이 된다(agn_test2 종료-회피와 같은 축).
-    _push_cap = _cfg(cfg, "push_penalty_cap", 0.10)
-    push_penalty = _cfg(cfg, "push_penalty_weight", -2.0) * (
-        (object_xy_displacement - _cfg(cfg, "push_margin", 0.025))
-        .clamp(min=0.0, max=_push_cap)
-    )
+    # (구 5·6 push/tilt 페널티는 08.22 제거 — 0.35m 이탈·60° 전도가 **종료**로 승격되어
+    #  상한 압력을 종료가 담당한다. 실측 기여도 −0.004/−0.12 로 무용했다.)
 
-    # 6. tilt_penalty — push 와 같은 형태(물체를 교란하지 말 것). 마진 안은 면제.
-    _tilt_margin = _cfg(cfg, "tilt_margin_deg", 10.0)
-    _tilt_cap = _cfg(cfg, "tilt_penalty_cap_deg", 30.0)
-    tilt_penalty = _cfg(cfg, "tilt_penalty_weight", -1.0) * (
-        (object_tilt_deg - _tilt_margin).clamp(min=0.0, max=_tilt_cap) / _tilt_cap
-    )
-
-    # 7. action_rate — ★**mean** 이고 clamp 이 없다. 둘 다 실측 근거가 있다.
+    # 5. action_rate — ★**mean** 이고 clamp 이 없다. 둘 다 실측 근거가 있다.
     #   · sum 이면 액션 차원에 비례한다(같은 지터에서 26D=12.0 / 18D=8.3 / 7D=3.2).
     #     robot-agnostic 트랙에서 같은 weight 가 로봇마다 다른 압력이 되므로 mean 을 쓴다.
     #   · clamp(max=1.0) 은 실측 sum 12.0 에서 **12배 포화**해 페널티를 상수로 만들었다.
@@ -138,8 +137,6 @@ def compute_rewards(
         "grasp_quality": grasp_quality,
         "lift": lift,
         "success": success,
-        "push_penalty": push_penalty,
-        "tilt_penalty": tilt_penalty,
         "action_rate": action_rate,
     }
     total = torch.nan_to_num(sum(terms.values()), nan=0.0, posinf=0.0, neginf=0.0)

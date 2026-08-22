@@ -33,7 +33,7 @@ from openarm.agnostic.modules import robots as _rb
 
 from . import grasp_lift_fabric_env_cfg as _cfg
 from .grasp_lift_fabric_env_cfg import GraspLiftFabricEnvCfg
-from .rewards import compute_rewards
+from .rewards import compute_rewards, contact_gate
 
 # Fabrics 경로 (hdgp/source/FABRICS/src 우선)
 _FABRICS_SRC = os.path.normpath(
@@ -225,6 +225,13 @@ class GraspLiftFabricEnv(DirectRLEnv):
         # ---- 접촉 그룹 인덱스 -------------------------------------------------------
         fingers = list(p.fingers)
         self._fingers = fingers
+        # ★A. 대향 파지점 approach 용 — 그룹별 **손끝** 인덱스 (fingertip_bodies 순서 기준)
+        self._tip_grp_a = torch.tensor(
+            [fingers.index(f) for f in p.contact_group_a], device=self.device, dtype=torch.long)
+        self._tip_grp_b = torch.tensor(
+            [fingers.index(f) for f in p.contact_group_b], device=self.device, dtype=torch.long)
+        # ★B. persistence — 대향 게이트 연속 유지 스텝 수
+        self._gate_hold = torch.zeros(self.num_envs, device=self.device)
         self._grp_a = torch.tensor([fingers.index(f) for f in p.contact_group_a],
                                    device=self.device, dtype=torch.long)
         self._grp_b = torch.tensor([fingers.index(f) for f in p.contact_group_b],
@@ -517,8 +524,11 @@ class GraspLiftFabricEnv(DirectRLEnv):
 
     # ==================================================================
     def _contact(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """(손가락별 총 접촉력 (N,F), 손가락별 wrap 접촉 여부 (N,F))."""
-        thr = float(self.cfg.contact_force_threshold)
+        """(손가락별 총 접촉력 (N,F), 손가락별 wrap 접촉 여부 (N,F)).
+
+        ★wrap(감쌈) 판정은 **참여 임계**(0.1N)를 쓴다 — 게이트 임계(1.0N)와 분리(08.22 E).
+        """
+        thr = float(self.cfg.participation_force_threshold)
         tot, wrapped = [], []
         for f in self._fingers:
             roles = self._sensors[f]
@@ -587,9 +597,41 @@ class GraspLiftFabricEnv(DirectRLEnv):
         tips = self.robot.data.body_pos_w[:, self._tip_t] - self.scene.env_origins[:, None, :]
 
         contact, wrapped = self._contact()
-        thr = float(self.cfg.contact_force_threshold)
-        grip_frac = (contact > thr).float().mean(dim=1)
+        # ★E. 임계 분리: 게이트(파지 성립)는 1.0N, **참여 판정**은 0.1N (v1/v2 동일).
+        #   가벼운 감쌈 접촉(pinky 등 저힘)을 품질 신호에서 누락시키지 않는다.
+        p_thr = float(self.cfg.participation_force_threshold)
+        grip_frac = (contact > p_thr).float().mean(dim=1)
         envelope_frac = (wrapped.mean(dim=1) if self.profile.has_wrap_sensors else grip_frac)
+
+        # ★B. persistence — 대향 게이트(1.0N)가 **연속으로** 유지된 비율.
+        #   래치가 아니다: 끊기면 0 부터 다시 센다(잡았다-놓기 축퇴 억제).
+        _gate_now = contact_gate(
+            contact[:, self._grp_a], contact[:, self._grp_b],
+            float(self.cfg.contact_force_threshold)).float()
+        self._gate_hold = (self._gate_hold + 1.0) * _gate_now
+        persistence = (self._gate_hold
+                       / float(self.cfg.persistence_ref_steps)).clamp(0.0, 1.0)
+
+        # ★A. 대향 파지점 — 손끝 목표를 중심이 아니라 중심 ± n·R 로 (v1/v2 이식).
+        #   n = (palm→물체 xy 방향)의 수직축. 부호는 **현재 그룹A(엄지) 손끝이 있는 쪽**을
+        #   매 스텝 선택 — 좌우 로봇/2지 그리퍼에서 방향 가정 없이 대향만 강제한다.
+        _u = obj_pos[:, :2] - palm_pos[:, :2]
+        _u = _u / _u.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        _n = torch.stack([-_u[:, 1], _u[:, 0]], dim=1)                    # (N,2)
+        _tip_a = tips[:, self._tip_grp_a]                                  # (N,A,3)
+        _tip_b = tips[:, self._tip_grp_b]
+        _sgn = torch.sign(
+            ((_tip_a[:, :, :2].mean(dim=1) - obj_pos[:, :2]) * _n).sum(dim=-1))
+        _sgn = torch.where(_sgn == 0, torch.ones_like(_sgn), _sgn)
+        _R = float(self.cfg.enclosure_radius)
+        _off = torch.cat([(_sgn.unsqueeze(1) * _n * _R),
+                          torch.zeros_like(_sgn).unsqueeze(1)], dim=1)     # (N,3)
+        _tgt_a = obj_pos + _off
+        _tgt_b = obj_pos - _off
+        _wa = float(self.cfg.enclosure_thumb_weight)
+        enclosure_dist = (
+            _wa * (_tip_a - _tgt_a[:, None, :]).norm(dim=-1).mean(dim=1)
+            + (1.0 - _wa) * (_tip_b - _tgt_b[:, None, :]).norm(dim=-1).mean(dim=1))
 
         xy_disp = (obj_pos[:, :2] - self.object_spawn_pos[:, :2]).norm(dim=-1)
         tilt = self._object_tilt_deg()
@@ -597,9 +639,10 @@ class GraspLiftFabricEnv(DirectRLEnv):
 
         total, terms, gate, up_q = compute_rewards(
             palm_to_object=(palm_pos - obj_pos).norm(dim=-1),
-            tip_side_dist=(tips - obj_pos[:, None, :]).norm(dim=-1).mean(dim=1),
+            tip_side_dist=enclosure_dist,
             envelope_frac=envelope_frac,
             grip_frac=grip_frac,
+            persistence=persistence,
             object_height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
             object_to_goal=goal_dist,
             object_xy_displacement=xy_disp,
@@ -642,6 +685,8 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.extras["task/contact_gate"] = gate.float().mean()
         self.extras["task/envelope_frac"] = envelope_frac.mean()
         self.extras["task/grip_frac"] = grip_frac.mean()
+        self.extras["task/persistence"] = persistence.mean()
+        self.extras["task/enclosure_dist"] = enclosure_dist.mean()
         self.extras["task/upright_quality"] = up_q.mean()
         # ★접촉력 **원값**. 이게 없으면 grip_frac=0 일 때 "진짜 미접촉"인지
         #   "임계(contact_force_threshold) 바로 아래"인지 구분할 수단이 없다
@@ -765,6 +810,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.fabric_qdd[env_ids] = 0.0
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
+        self._gate_hold[env_ids] = 0.0
         # ★슬루 지령도 홈으로 되돌린다 — 안 하면 이전 에피소드 지령이 새어 들어온다.
         self.palm_cmd[env_ids] = self.home_palm[env_ids]
         self._goal_reached_now[env_ids] = False

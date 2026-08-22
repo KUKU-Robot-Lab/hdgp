@@ -227,8 +227,29 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     #   이미 0.6/0.4 를 말하고 있었고 cfg 만 제거 전 값에 머물러 있었다.
     #   ※ pinky 를 분모에서 빼는 안은 **기각**했다 — "pinky 기여 구조적 0" 근거가
     #     자기충돌 ON 실측으로 반증됐다(접촉률 1.000 · 8.679 N).
-    grasp_envelope_credit: float = 0.6
-    grasp_grip_credit: float = 0.4
+    # ★08.22 TEST1: credit 3분할 (envelope 0.5 / grip 0.3 / persistence 0.2, 합 1.0).
+    #   persistence 는 v1·v2 둘 다 credit 0.25 로 유지하는 항 — 래치 없이도 "대향 접촉을
+    #   **연속으로** 유지"는 순간 접촉과 다른 신호다(잡았다-놓기 축퇴 억제).
+    #   사용자 방향: "최종적으로는 손가락 모두 envelope grip" → envelope 몫이 최대.
+    grasp_envelope_credit: float = 0.5
+    grasp_grip_credit: float = 0.3
+    grasp_persist_credit: float = 0.2
+    persistence_ref_steps: int = 20          # 이 스텝 연속 유지 시 persist=1 (v1/v2 동일)
+
+    # ---- A: 대향 파지점 approach (v1/v2 이식) --------------------------------------
+    # ★손끝 목표를 물체 **중심**이 아니라 **대향 파지점**(중심 ± n·R)으로 둔다.
+    #   중심 기준은 전 손끝을 같은 점으로 당겨 손가락이 한쪽으로 몰리는 shaping 이었고
+    #   기하 상한도 0.57 이었다(중심까지는 못 가므로). 대향점 기준이면 게이트(엄지 AND
+    #   나머지)가 요구하는 기하를 shaping 이 직접 돕고, 손끝 거리가 0 에 갈 수 있다.
+    #   n 의 부호는 **현재 엄지가 있는 쪽**으로 매 스텝 선택 — 좌우 로봇/그리퍼에서
+    #   방향 가정 없이 대향만 강제한다(robot-agnostic).
+    enclosure_radius: float = 0.03           # 파지점 반경 [m] — cup_big 몸통 17.5~30mm
+    enclosure_thumb_weight: float = 0.6      # 그룹A(엄지/조1) 가중, 나머지 1-w (v1/v2 동일)
+
+    # ---- E: 접촉 임계 분리 ----------------------------------------------------------
+    # ★게이트(파지 성립)는 1.0N 유지 — 0.1N 까지 낮추면 스침 접촉으로 success 가 열린다.
+    #   envelope/grip/persistence **참여 판정**만 0.1N (v1/v2 와 동일) — 가벼운 감쌈
+    #   접촉(pinky 등 저힘)을 품질 신호에서 누락시키지 않는다.
     # 자세는 **독립 항이 아니다**. reward-audit REVISE: 컵이 애초에 서 있어 독립 항으로
     # 두면 사실상 접촉 보너스의 중복(공짜 보상)이 된다. lift/success 의 완화 곱수
     # (0.5 + 0.5·upright_quality) 로만 쓰고, 교란은 tilt_penalty 로 처벌한다.
@@ -237,19 +258,15 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     lift_success_height: float = 0.10        # goal 높이와 같게 — height_quality 의 분모
     success_weight: float = 10.0
     success_pos_std: float = 0.05
-    # ★페널티는 **상한을 둔다**. 무한대면 멀리 밀린 뒤 회복 불가라 "컵에 아예 안 다가감"이
-    #   국소최적이 된다(agn_test2 의 종료-회피와 같은 실패 축). 상한 -0.20/step.
-    push_penalty_weight: float = -2.0
-    push_margin: float = 0.025               # 이 이하 이동은 봐준다(스폰 흔들림)
-    push_penalty_cap: float = 0.10           # relu 상한 [m] → 실효 페널티 -0.20/step
-    tilt_penalty_weight: float = -1.0
-    tilt_margin_deg: float = 10.0            # 파지 중 정상 흔들림 면제
-    tilt_penalty_cap_deg: float = 30.0
+    # ★08.22 TEST1: push/tilt 페널티 **제거**(실측 기여 −0.004/−0.12 로 무용했고,
+    #   0.35m 이탈·60° 전도가 **종료**로 승격되며 상한 압력을 종료가 담당한다.
+    #   up_mul(수직으로 들면 더 받는 품질 곱수)은 유지 — 페널티가 아니라 품질 신호).
     # ★-0.005 → -0.3, 그리고 식이 sum.clamp(1.0) → mean 으로 바뀌었다.
     #   구 설정은 실측 sum 12.0 에서 clamp 에 포화해 gradient 가 0 이었다.
     #   현재 지터에서 -0.139 (approach 최대 1.0 의 13.9%).
     action_rate_weight: float = -0.3
-    contact_force_threshold: float = 1.0     # N
+    contact_force_threshold: float = 1.0     # N — **게이트**(대향 파지 성립) 판정
+    participation_force_threshold: float = 0.1   # N — envelope/grip/persist 참여 판정
 
     # ---- 태스크 -------------------------------------------------------------------
     # 안착 높이 바로 위에 놓는다. 정확히 같으면 스폰 침투 반동으로 튕기므로 최소 패딩만.

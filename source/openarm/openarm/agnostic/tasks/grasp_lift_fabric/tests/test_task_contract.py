@@ -162,29 +162,28 @@ def _ones(v=0.0):
 
 class _Cfg:
     contact_force_threshold = 1.0
+    participation_force_threshold = 0.1
     approach_weight = 1.0
     approach_sharpness = 4.0
     grasp_quality_weight = 3.0
-    grasp_envelope_credit = 0.6
-    grasp_grip_credit = 0.4
+    grasp_envelope_credit = 0.5
+    grasp_grip_credit = 0.3
+    grasp_persist_credit = 0.2
+    persistence_ref_steps = 20
+    enclosure_radius = 0.03
+    enclosure_thumb_weight = 0.6
     upright_max_deg = 30.0
     lift_weight = 2.0
     lift_success_height = 0.10
     success_weight = 10.0
     success_pos_std = 0.05
-    push_penalty_weight = -2.0
-    push_margin = 0.025
-    push_penalty_cap = 0.10
-    tilt_penalty_weight = -1.0
-    tilt_margin_deg = 10.0
-    tilt_penalty_cap_deg = 30.0
     action_rate_weight = -0.3        # 실제 cfg 와 동기(test_stub_matches_real_cfg 가 강제)
 
 
 def _call(**over):
     kw = dict(
         palm_to_object=_ones(0.0), tip_side_dist=_ones(0.0),
-        envelope_frac=_ones(1.0), grip_frac=_ones(1.0),
+        envelope_frac=_ones(1.0), grip_frac=_ones(1.0), persistence=_ones(1.0),
         object_height_delta=_ones(0.10), object_to_goal=_ones(0.0),
         object_xy_displacement=_ones(0.0), object_tilt_deg=_ones(0.0),
         group_a_force=torch.full((N, 1), 5.0), group_b_force=torch.full((N, 4), 5.0),
@@ -194,11 +193,11 @@ def _call(**over):
     return RW.compute_rewards(**kw)
 
 
-def test_seven_terms_exactly():
+def test_five_terms_exactly():
+    """08.22 TEST1: push/tilt 페널티 제거(종료 승격) → 5항."""
     _, terms, _, _ = _call()
     assert set(terms) == {
-        "approach", "grasp_quality", "lift", "success",
-        "push_penalty", "tilt_penalty", "action_rate",
+        "approach", "grasp_quality", "lift", "success", "action_rate",
     }
 
 
@@ -233,21 +232,14 @@ def test_no_term_is_zeroed_by_tilt_alone():
         assert (tipped[k] < flat[k]).all(), f"{k} 가 자세를 반영하지 않는다"
 
 
-def test_penalties_are_capped():
-    """무한대 페널티는 '컵에 안 다가감'을 국소최적으로 만든다."""
-    _, near, _, _ = _call(object_xy_displacement=_ones(0.20))
-    _, far, _, _ = _call(object_xy_displacement=_ones(5.00))
-    assert torch.allclose(near["push_penalty"], far["push_penalty"])
-    assert (near["push_penalty"] >= -0.2001).all()
-    _, t1, _, _ = _call(object_tilt_deg=_ones(45.0))
-    _, t2, _, _ = _call(object_tilt_deg=_ones(180.0))
-    assert torch.allclose(t1["tilt_penalty"], t2["tilt_penalty"])
-
-
-def test_margins_forgive_incidental_disturbance():
-    _, r, _, _ = _call(object_xy_displacement=_ones(0.02), object_tilt_deg=_ones(5.0))
-    assert (r["push_penalty"] == 0).all()
-    assert (r["tilt_penalty"] == 0).all()
+def test_persistence_raises_grasp_quality():
+    """08.22 B: 대향 접촉을 연속 유지하면 grasp_quality 가 더 크다(잡았다-놓기 억제)."""
+    _, held, _, _ = _call(persistence=_ones(1.0))
+    _, blink, _, _ = _call(persistence=_ones(0.0))
+    assert (held["grasp_quality"] > blink["grasp_quality"]).all()
+    # credit 합 = 1.0 (persistence 재도입 시 재분배 누락 재발 방지 — 08.22 의 0.8 사고)
+    c = _Cfg()
+    assert abs(c.grasp_envelope_credit + c.grasp_grip_credit + c.grasp_persist_credit - 1.0) < 1e-9
 
 
 def test_local_minimum_ratio_meets_audit_threshold():
