@@ -1,0 +1,120 @@
+# grasp_lift_fabric — rl_games PPO (MLP).
+# 팔 = Fabrics 절대 palm 6D pose, 손 = 관절 절대 전범위.
+# 차원은 프로필마다 다르므로 여기 적지 않는다(rl_games 가 런타임에 잡는다).
+#   예) bis_right: action 26 / policy obs 122 / critic 128
+# 비대칭 actor-critic(has_central_value: True), MLP [512, 256, 128].
+# ★LSTM 이 아니라 MLP 가 기본이다 — obs 가 거의 Markov 라 LSTM 비용을 정당화할
+#   근거가 아직 없다. 부분관측(occlusion)이 실측되면 -lstm id 로 바꾼다.
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [512, 256, 128]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+
+  load_checkpoint: False
+  load_path: ''   # 체크포인트는 --checkpoint 로 준다(남의 경로 잔재 제거)
+
+  config:
+    name: agn_pour_fab
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: True
+    normalize_input: True
+    normalize_value: True
+    value_bootstrap: False
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.998
+    tau: 0.95
+    learning_rate: 3e-4
+    lr_schedule: linear
+    schedule_type: standard
+    kl_threshold: 0.013
+    score_to_win: 100000000
+    max_epochs: 10000
+    save_best_after: 100
+    save_frequency: 50
+    print_stats: True
+    grad_norm: 1.0
+    # ★08.21 fab_test8 실측으로 0.002 → 0.0005. 0.002 는 이 저장소 MLP 최고값이었고,
+    #   ep2100 이후 정책 sigma 가 0.76 → 1.30 으로 팽창해 총보상이 3017 → 2045 로 퇴행했다.
+    #   액션이 **절대 목표값**이라 sigma>1 이면 샘플이 대부분 박스 경계로 클립돼 평균이 묻힌다.
+    #   pour 계열 주석이 같은 실패("0.0008 이 과함 → entropy 상승")를 이미 기록해 뒀다.
+    entropy_coef: 0.0005
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 64
+    # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
+    #   128  envs: batch=   8192 → minibatch= 2048 (4 splits)
+    #   2048 envs: batch= 131072 → minibatch=32768 (4 splits)  ← 학습 권장
+    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 2048로 변경
+    mini_epochs: 4
+    critic_coef: 4
+    clip_value: True
+    clip_actions: False
+    # ★rl_games 는 영국식 'regularisation' 으로 비교한다. 'regularization' 이면 두 분기 모두
+    #   안 걸려 b_loss = zeros — bounds 정규화가 조용히 꺼진다(fab_test8 4110 스텝 전부 정확히 0.0).
+    #   'regularisation'(mu² 전체 벌점)은 a=0 이 홈이라 홈 고착 압력이 되므로 쓰지 않는다.
+    #   'bound' 는 |mu|>1.1 에서만 켜지는 가드레일이라 정상 구간에서 무해하다.
+    bound_loss_type: bound
+    bounds_loss_coef: 0.005
+
+    # Asymmetric Actor-Critic: critic은 143D privileged obs 사용
+    has_central_value: True
+    central_value_config:
+      normalize_input: True
+      normalize_value: True
+      value_bootstrap: False
+      minibatch_size: 32768     # actor와 동일하게 맞출 것
+      mini_epochs: 4
+      learning_rate: 3e-4
+      lr_schedule: linear
+      kl_threshold: 0.013
+      clip_value: True
+      e_clip: 0.2
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [512, 256, 128]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None

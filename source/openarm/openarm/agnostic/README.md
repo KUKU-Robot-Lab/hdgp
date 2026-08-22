@@ -13,7 +13,7 @@ agnostic/
 │   ├── physics_dr.py        물리 DR EventTerm + ADR 종점 범위
 │   └── agents.py            rl_games yaml 선택
 └── tasks/
-    ├── grasp_lift/          팔 = diffIK  (다른 세션이 학습 중 — 수정 금지)
+    ├── grasp_lift/          팔 = Fabrics (a436696 에서 diffIK→전환. 다른 세션이 학습 중 — 수정 금지)
     └── grasp_lift_fabric/   팔 = Fabrics (이 문서의 대상)
 ```
 
@@ -70,12 +70,12 @@ agnostic/
 
 | task id | 자산 | 팔 | 손 | action/obs |
 |---|---|---|---|---|
-| `open-bis_r_grasp_lift_fab` | bi_s_rl (a2) | 우 | DG-5F-S 20 | 26 / 122 |
-| `open-bis_l_grasp_lift_fab` | bi_s_rl (a2) | 좌 | DG-5F-S 20 | 26 / 122 |
-| `open-bi_{r,l}_grasp_lift_fab` | bi_rl (a3) | 좌우 | DG-5F 20 | 26 / 122 |
-| `open-sens_r_grasp_lift_fab` | sensor_rl (a1) | 우 | DG-5F 20 | 26 / 122 |
-| `open-sens_l_grasp_lift_fab` | sensor_rl (a1) | 좌 | 2지 그리퍼 1 | 7 / 43 |
-| `open-rh56_r_grasp_lift_fab` | bi_rh56f1_rl (a0) | 우 | RH56F1 12 | 18 / 90 |
+| `open-bis_r_grasp_lift_fab` | bi_s_rl (a2) | 우 | DG-5F-S 20 | 19 / 121 |
+| `open-bis_l_grasp_lift_fab` | bi_s_rl (a2) | 좌 | DG-5F-S 20 | 19 / 121 |
+| `open-bi_{r,l}_grasp_lift_fab` | bi_rl (a3) | 좌우 | DG-5F 20 | 19 / 121 |
+| `open-sens_r_grasp_lift_fab` | sensor_rl (a1) | 우 | DG-5F 20 | 19 / 121 |
+| `open-sens_l_grasp_lift_fab` | sensor_rl (a1) | 좌 | 2지 그리퍼 1 | 7 / 49 |
+| `open-rh56_r_grasp_lift_fab` | bi_rh56f1_rl (a0) | 우 | RH56F1 12 | 17 / 95 |
 
 각 id 에 `-play` / `-lstm` / `-play-lstm` 접미사가 있다.
 `rh56_left` 는 **fabric URDF 부재로 미등록** — 조용히 우팔 기구학으로 폴백하지 않고 fail-loud 한다.

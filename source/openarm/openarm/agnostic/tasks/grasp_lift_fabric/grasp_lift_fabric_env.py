@@ -220,7 +220,6 @@ class GraspLiftFabricEnv(DirectRLEnv):
 
         self.goal_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.object_spawn_pos = torch.zeros(self.num_envs, 3, device=self.device)
-        self._respawn_pending = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._goal_reached_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # ---- 접촉 그룹 인덱스 -------------------------------------------------------
@@ -470,19 +469,6 @@ class GraspLiftFabricEnv(DirectRLEnv):
             self._world_ids, self._world_indicator, self._fabric_damping,
         )
 
-        # ★떨어진 컵 리스폰은 여기서 한다(보상 계산 중 sim 상태 변경 금지).
-        #   종료(회피 학습, agn_test2)도 방치(죽은 시간, agn_test3)도 아닌 세 번째 선택지.
-        # ★`if tensor.any():` 는 매 스텝 GPU→CPU 동기화를 강제한다(util killer, 저장소 재발).
-        #   분기 없이 **마스크 곱**으로 처리해 sync 를 없앤다: 리스폰 대상이 아니면
-        #   현재 상태를 그대로 다시 써 넣으므로 결과가 같다.
-        _m = self._respawn_pending.unsqueeze(1).float()
-        _cur = self.object.data.root_state_w
-        _resp = torch.zeros_like(_cur)
-        _resp[:, :3] = self.object_spawn_pos + self.scene.env_origins
-        _resp[:, 3] = 1.0
-        self.object.write_root_state_to_sim(_m * _resp + (1.0 - _m) * _cur)
-        self._respawn_pending[:] = False
-
         self._step_fabric()
 
     def _step_fabric(self) -> None:
@@ -640,9 +626,6 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.prev_actions.copy_(self.actions)
         self._goal_reached_now = goal_dist < float(self.cfg.success_pos_tolerance)
 
-        # 떨어진 컵 → 다음 스텝 시작에 리스폰(여기서 sim 을 건드리지 않는다)
-        fell = obj_pos[:, 2] < float(self.cfg.object_min_z)
-        self._respawn_pending |= fell
 
         # ---- ADR (트리거 = **순간** 성공률) --------------------------------------
         if self.adr.maybe_increment(self._goal_reached_now.float().mean()):
@@ -686,7 +669,6 @@ class GraspLiftFabricEnv(DirectRLEnv):
             obj_pos[:, 2] - self.object_spawn_pos[:, 2]).mean()
         self.extras["task/goal_dist"] = goal_dist.mean()
         self.extras["task/goal_reached"] = self._goal_reached_now.float().mean()
-        self.extras["task/respawn_rate"] = fell.float().mean()
         # ★측정 공백 해소: grasp_v1 은 이 값을 보상에 쓰면서 로깅하지 않았다.
         self.extras["obj/xy_displacement"] = xy_disp.mean()
         self.extras["obj/xy_disp_p95"] = torch.quantile(xy_disp, 0.95)
@@ -742,14 +724,29 @@ class GraspLiftFabricEnv(DirectRLEnv):
     # ==================================================================
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # Fabrics 의 JointLimitRepulsion 이 관절한계를 담당하므로 한계 초과는 종료 사유가
-        # 아니다. 남은 물리 위반은 속도 폭주뿐.
-        # ★fell/out 은 종료하지 않는다 — 종료는 "접근 회피"를 가르쳤다(agn_test2 실측:
-        #   reaching 0.056→0.005 붕괴 + episode_lengths 동반 상승). 리스폰으로 처리한다.
+        # 아니다.
+        # ★08.22 리스폰 → **종료** 전환(grasp_v1 `_get_dones` 와 동일 구성:
+        #   fallen | out_xy | tipped | 물리위반). 쓰러진/떨어진 컵을 방치하면 회복 불가
+        #   상태의 전이가 배치를 희석하고 value 오차가 GAE 로 번진다.
+        # ★감시: agn_test2 에서는 같은 종료가 "접근 회피"를 가르쳤다(reaching 0.056→0.005
+        #   + episode_lengths 상승). 그 시그니처(approach↓ + eplen↑ 동시)가 보이면
+        #   이 결정을 되짚는다. grasp_v1 은 같은 종료로 98% 까지 갔으므로 선례는 있다.
         qd = self.robot.data.joint_vel[:, self._arm_t]
         runaway = (qd.abs() > float(self.cfg.runaway_joint_vel)).any(dim=-1)
+
+        obj = self._local(self.object.data.root_pos_w)
+        fallen = obj[:, 2] < float(self.cfg.object_min_z)
+        out_xy = (obj[:, :2] - self.object_spawn_pos[:, :2]).norm(dim=-1) > float(
+            self.cfg.object_out_of_bounds_xy)
+        tipped = self._object_tilt_deg() > float(self.cfg.tipping_termination_deg)
+
+        terminated = runaway | fallen | out_xy | tipped
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         self.extras["task/runaway_rate"] = runaway.float().mean()
-        return runaway, truncated
+        self.extras["term/fallen"] = fallen.float().mean()
+        self.extras["term/out_xy"] = out_xy.float().mean()
+        self.extras["term/tipped"] = tipped.float().mean()
+        return terminated, truncated
 
     # ==================================================================
     def _reset_idx(self, env_ids) -> None:
@@ -770,7 +767,6 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.prev_actions[env_ids] = 0.0
         # ★슬루 지령도 홈으로 되돌린다 — 안 하면 이전 에피소드 지령이 새어 들어온다.
         self.palm_cmd[env_ids] = self.home_palm[env_ids]
-        self._respawn_pending[env_ids] = False
         self._goal_reached_now[env_ids] = False
 
         rng = self.adr.get_param("spawn", "xy_range")

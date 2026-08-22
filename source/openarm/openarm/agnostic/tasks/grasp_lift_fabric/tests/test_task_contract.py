@@ -108,7 +108,9 @@ def _dims(profile, bank, onehot: bool):
     f = len(profile.fingers)
     n_free = profile.num_hand_joints - len(profile.frozen_hand_joints)
     action = 6 + n_free
-    obs = 3 * j + f + 7 + 3 + action + (bank.onehot_dim if onehot else 0)
+    # +6 = palm 지령(slew 상태). 73c2adc 에서 obs 에 들어갔는데 이 공식이 함께
+    # 안 고쳐져 115/121 을 pin 한 채 표류했다(Isaac 밖에선 importorskip 으로 숨음).
+    obs = 3 * j + f + 7 + 3 + action + 6 + (bank.onehot_dim if onehot else 0)
     return action, obs, obs + 6
 
 
@@ -124,9 +126,9 @@ def test_dimension_formula_matches_profile(pname):
 
 
 def test_bis_right_reference_dimensions():
-    """_1 관절 전체 + thumb_2 + pinky_2 = 7 고정 → 액션 6+13=19, obs 115, critic 121."""
+    """_1 관절 전체 + thumb_2 + pinky_2 = 7 고정 → 액션 6+13=19, obs 121, critic 127."""
     action, obs, state = _dims(_rb.get("bis_right"), _ob.get("single_cup"), onehot=False)
-    assert (action, obs, state) == (19, 115, 121), (action, obs, state)
+    assert (action, obs, state) == (19, 121, 127), (action, obs, state)
 
 
 def test_formula_matches_real_cfg():

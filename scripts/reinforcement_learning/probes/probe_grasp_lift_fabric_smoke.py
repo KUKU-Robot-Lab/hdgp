@@ -143,7 +143,8 @@ print(f"    스폰 z 평균 {env.object_spawn_pos[:, 2].mean():.4f} · 계산 �
 print("    ↑ ★낙하량이 크면 lift 보상 기준선이 그만큼 어긋난다(기준선 = 스폰 z).")
 print(f"  보상 평균         : {rew.mean().item():+.4f}")
 for k in ("task/contact_gate", "task/envelope_frac", "obj/xy_displacement",
-          "obj/tilt_deg", "fabric/palm_err_mean", "task/respawn_rate"):
+          "obj/tilt_deg", "fabric/palm_err_mean",
+          "term/fallen", "term/out_xy", "term/tipped"):
     v = info.get("log", info).get(k, env.extras.get(k))
     if v is not None:
         print(f"    {k:24s} = {float(v):+.4f}")

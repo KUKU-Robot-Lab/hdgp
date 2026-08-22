@@ -260,8 +260,15 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     console_log_interval: int = 600
     goal_height_offset: float = 0.15
     success_pos_tolerance: float = 0.05
-    object_min_z: float = 0.15               # 이 아래 = 떨어짐 → 리스폰(종료 아님)
-    object_out_of_bounds_xy: float = 0.35    # 로깅 전용
+    # ★08.22 리스폰 → **종료** 로 전환(사용자 지시, grasp_v1 선례).
+    #   grasp_v1 은 out_x|out_y|fallen|tipped 전부 에피소드 종료로 처리하고 98% 파지까지
+    #   갔다(grasp_right_env._get_dones). 쓰러진/떨어진 컵을 에피소드에 방치하면
+    #   회복 불가 상태의 전이가 배치를 희석하고 value 추정 오차가 GAE 로 번진다.
+    #   ※반대 실측(agn_test2: 종료가 접근 회피를 가르침)이 있으므로 감시 지표를 둔다 —
+    #     approach 하락 + episode_lengths 상승이 동시에 나타나면 그 시그니처다.
+    object_min_z: float = 0.15               # 이 아래 = 낙하 → **종료**
+    object_out_of_bounds_xy: float = 0.35    # 스폰 기준 xy 이탈 → **종료** (구: 로깅 전용)
+    tipping_termination_deg: float = 60.0    # 컵 축이 이보다 기울면 → **종료** (grasp_v1 동일)
     runaway_joint_vel: float = 20.0
 
     # ---- 커리큘럼 (축 하나: 스폰 반경) ------------------------------------------------
