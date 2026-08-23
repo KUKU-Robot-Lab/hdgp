@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from .checkpoint_resolver import PolicyArtifacts, read_policy_contract
-from .contracts import ControlMode, SkillCommand, SkillId
+from .contracts import ChannelCommand, ControlMode, SkillCommand, SkillId
 from .state_provider import SemanticState
 
 
@@ -69,6 +69,7 @@ class ReferencedPolicySkill:
         backend: PolicyInferenceBackend,
         observation_dim: int | None = None,
         action_dim: int | None = None,
+        arm_action_dim: int = 6,
     ) -> None:
         self.artifacts = artifacts
         self.observation_builder = observation_builder
@@ -82,8 +83,15 @@ class ReferencedPolicySkill:
                 f"{self.skill_id.value} dims must be positive, got "
                 f"obs={observation_dim} act={action_dim}"
             )
+        # 팔/손은 분리된 채널이다 — 정책 출력 행을 [팔 | 손] 으로 가르는 경계.
+        # fabric 태스크 규약은 팔 = 절대 palm 6D 가 앞이다.
+        if not 0 < arm_action_dim < action_dim:
+            raise ValueError(
+                f"arm_action_dim must split the action: 0 < {arm_action_dim} < {action_dim}"
+            )
         self.observation_dim = int(observation_dim)
         self.action_dim = int(action_dim)
+        self.arm_action_dim = int(arm_action_dim)
 
     def reset(self, env_ids: tuple[int, ...]) -> None:
         self.backend.reset(env_ids)
@@ -109,7 +117,12 @@ class ReferencedPolicySkill:
         for action in actions:
             if len(action) != self.action_dim:
                 raise ValueError(f"{self.skill_id.value} action must be {self.action_dim}D, got {len(action)}")
+        split = self.arm_action_dim
         return tuple(
-            SkillCommand(ControlMode.POLICY_ACTION, tuple(float(value) for value in action), self.skill_id.value)
+            SkillCommand(
+                ChannelCommand(ControlMode.POLICY_ACTION, tuple(action[:split])),
+                ChannelCommand(ControlMode.POLICY_ACTION, tuple(action[split:])),
+                self.skill_id.value,
+            )
             for action in actions
         )

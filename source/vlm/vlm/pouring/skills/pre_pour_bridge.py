@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..contracts import ControlMode, SkillCommand, SkillId
+from ..contracts import SkillCommand, SkillId
 from ..state_provider import SemanticState
 
 
@@ -43,10 +43,8 @@ class PrePourBridgeSkill:
         if self.bank is None:
             raise RuntimeError("pre-pour warm-state bridge must validate before inference")
         return tuple(
-            SkillCommand(
-                ControlMode.NO_OP if state.warm_state_valid else ControlMode.SAFE_STOP,
-                (),
-                self.skill_id.value,
+            (SkillCommand.no_op if state.warm_state_valid else SkillCommand.safe_stop)(
+                self.skill_id.value
             )
             for state in states
         )

@@ -78,11 +78,12 @@ from vlm.pouring import (  # noqa: E402
     TaskSpecification,
 )
 from vlm.pouring.checkpoint_resolver import CheckpointResolver  # noqa: E402
-from vlm.pouring.contracts import ControlMode  # noqa: E402
+from vlm.pouring.contracts import HOLD_MODES, ControlMode  # noqa: E402
 from vlm.pouring.fabric_bridge import (  # noqa: E402
     PalmActionSpace,
-    command_to_action,
+    arm_channel_to_action,
     euler_zyx_to_quat_wxyz,
+    hand_channel_to_action,
 )
 from vlm.pouring.isaac_state import FabricStateProvider  # noqa: E402
 from vlm.pouring.rl_games_backend import RlGamesPolicyBackend  # noqa: E402
@@ -225,8 +226,21 @@ def main() -> None:
     hand_dim = int(env.cfg.action_space) - 6
     approach_quat = euler_zyx_to_quat_wxyz(space.home[3:6])
 
+    # 손 채널은 env 의 hand_control 모드 규약을 따른다:
+    #   tip IK 모드  → HAND_TIP_TARGETS, a=0 = 손끝 홈(펴진 자세)
+    #   관절/fabric  → HAND_JOINT_TARGETS, a=-1 = 완전 개방
+    tip_mode = bool(getattr(env, "_tip_ik", False))
+    hand_open = (0.0,) * hand_dim if tip_mode else (-1.0,) * hand_dim
+    hand_open_mode = (
+        ControlMode.HAND_TIP_TARGETS if tip_mode else ControlMode.HAND_JOINT_TARGETS
+    )
     skills: list = [
-        ApproachSkill(offset=tuple(args.approach_offset), orientation_wxyz=approach_quat),
+        ApproachSkill(
+            offset=tuple(args.approach_offset),
+            orientation_wxyz=approach_quat,
+            hand_mode=hand_open_mode,
+            hand_targets=hand_open,
+        ),
     ]
     plan = ("approach",)
     obs_holder = {"policy": latest_obs["policy"]}
@@ -295,17 +309,21 @@ def main() -> None:
             result = pipeline.tick()
             palm_now = provider.view.palm_pose_zyx()
             for env_id, command in enumerate(result.commands):
-                # ★hold(NO_OP/SAFE_STOP)는 **마지막 액션 행을 그대로 유지**한다.
+                # 팔/손은 분리 채널 — 각자 독립적으로 갱신한다.
+                # ★hold(NO_OP/SAFE_STOP)는 **해당 채널의 마지막 액션을 그대로 유지**.
                 #   절대 액션이라 목표가 고정된다 — 매 tick 현재 pose 재명령은
                 #   fabric 추종 오차가 래칫이 되어 홈까지 표류했었다(실측 180mm).
                 #   파지 후 hold 에서 손 목표까지 유지되는 것도 이 방식뿐이다.
-                if command.control_mode in (ControlMode.NO_OP, ControlMode.SAFE_STOP):
-                    continue
-                row = command_to_action(
-                    command, space, hand_dim=hand_dim,
-                    hold_pose=tuple(palm_now[env_id]),
-                )
-                actions[env_id] = torch.tensor(row, dtype=torch.float32, device=env.device)
+                if command.arm.control_mode not in HOLD_MODES:
+                    arm_row = arm_channel_to_action(
+                        command.arm, space, hold_pose=tuple(palm_now[env_id])
+                    )
+                    actions[env_id, :6] = torch.tensor(
+                        arm_row, dtype=torch.float32, device=env.device)
+                if command.hand.control_mode not in HOLD_MODES:
+                    hand_row = hand_channel_to_action(command.hand, hand_dim=hand_dim)
+                    actions[env_id, 6:] = torch.tensor(
+                        hand_row, dtype=torch.float32, device=env.device)
             for record in result.transitions:
                 if record.accepted and record.previous_skill is not record.accepted_skill:
                     print(f"[vlm_demo] step {step:4d} env {record.env_id}: "

@@ -63,7 +63,30 @@ def test_high_level_decision_copies_transition_parameters() -> None:
         decision.transition_parameters["height"] = 0.3  # type: ignore[index]
 
 
-def test_skill_command_keeps_control_mode_explicit() -> None:
-    command = SkillCommand(ControlMode.TASK_SPACE_POSE, (0.1, 0.2, 0.3), "approach")
+def test_skill_command_keeps_per_channel_control_mode_explicit() -> None:
+    from vlm.pouring.contracts import ChannelCommand
 
-    assert command.control_mode is ControlMode.TASK_SPACE_POSE
+    command = SkillCommand(
+        ChannelCommand(ControlMode.TASK_SPACE_POSE, (0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0)),
+        ChannelCommand(ControlMode.HAND_JOINT_TARGETS, (-1.0,)),
+        "approach",
+    )
+    assert command.arm.control_mode is ControlMode.TASK_SPACE_POSE
+    assert command.hand.control_mode is ControlMode.HAND_JOINT_TARGETS
+
+    # 채널별 허용 모드: 손 전용 모드는 팔에, 팔 전용 모드는 손에 올 수 없다.
+    with pytest.raises(ValueError, match="arm channel"):
+        SkillCommand(
+            ChannelCommand(ControlMode.HAND_TIP_TARGETS, (0.0,)),
+            ChannelCommand(ControlMode.NO_OP),
+            "bad",
+        )
+    with pytest.raises(ValueError, match="hand channel"):
+        SkillCommand(
+            ChannelCommand(ControlMode.NO_OP),
+            ChannelCommand(ControlMode.TASK_SPACE_POSE, (0.0,) * 7),
+            "bad",
+        )
+    # hold 모드는 값을 가질 수 없다.
+    with pytest.raises(ValueError, match="carries no values"):
+        ChannelCommand(ControlMode.NO_OP, (1.0,))

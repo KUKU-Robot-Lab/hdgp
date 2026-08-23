@@ -41,8 +41,9 @@ def test_approach_skill_builds_source_relative_task_space_target() -> None:
     command = skill.infer((0,), (valid_state(),))[0]
 
     assert skill.skill_id is SkillId.APPROACH
-    assert command.control_mode is ControlMode.TASK_SPACE_POSE
-    assert command.values == (0.2, -0.2, 0.35, 1.0, 0.0, 0.0, 0.0)
+    assert command.arm.control_mode is ControlMode.TASK_SPACE_POSE
+    assert command.arm.values == (0.2, -0.2, 0.35, 1.0, 0.0, 0.0, 0.0)
+    assert command.hand.control_mode is ControlMode.NO_OP
 
 
 def test_pre_grasp_bridge_noops_when_ready_and_bounds_position_correction() -> None:
@@ -53,9 +54,10 @@ def test_pre_grasp_bridge_noops_when_ready_and_bounds_position_correction() -> N
         (valid_state(pregrasp_ready=True), valid_state()),
     )
 
-    assert ready.control_mode is ControlMode.NO_OP
-    assert correcting.control_mode is ControlMode.TASK_SPACE_POSE
-    assert max(abs(value) for value in correcting.values[:3]) <= 0.02
+    assert ready.arm.control_mode is ControlMode.NO_OP
+    assert correcting.arm.control_mode is ControlMode.TASK_SPACE_POSE
+    assert correcting.hand.control_mode is ControlMode.NO_OP
+    assert max(abs(value) for value in correcting.arm.values[:3]) <= 0.02
 
 
 def test_grasp_adapter_validates_106d_observation_and_11d_action() -> None:
@@ -72,7 +74,9 @@ def test_grasp_adapter_validates_106d_observation_and_11d_action() -> None:
     skill.reset((3,))
 
     assert len(backend.observations[0]) == 106
-    assert len(command.values) == 11
+    assert len(command.arm.values) + len(command.hand.values) == 11
+    assert command.arm.control_mode is ControlMode.POLICY_ACTION
+    assert command.hand.control_mode is ControlMode.POLICY_ACTION
     assert backend.resets == [(3,)]
 
 
@@ -94,7 +98,7 @@ def test_adapter_reads_dimensions_from_the_run_env_yaml(tmp_path: Path) -> None:
 
     assert (skill.observation_dim, skill.action_dim) == (51, 15)
     assert len(backend.observations[0]) == 51
-    assert len(command.values) == 15
+    assert len(command.arm.values) == 6 and len(command.hand.values) == 9
 
 
 def test_adapter_rejects_env_yaml_without_contract_keys(tmp_path: Path) -> None:
@@ -154,11 +158,13 @@ def test_pre_pour_bridge_requires_validation_and_semantic_readiness(tmp_path: Pa
         (valid_state(warm_state_valid=True), valid_state(warm_state_valid=False)),
     )
 
-    assert ready.control_mode is ControlMode.NO_OP
-    assert waiting.control_mode is ControlMode.SAFE_STOP
+    assert ready.arm.control_mode is ControlMode.NO_OP
+    assert waiting.arm.control_mode is ControlMode.SAFE_STOP
+    assert waiting.hand.control_mode is ControlMode.SAFE_STOP
 
 
 def test_recovery_skill_always_safe_stops() -> None:
     command = RecoverySkill().infer((0,), (valid_state(),))[0]
 
-    assert command.control_mode is ControlMode.SAFE_STOP
+    assert command.arm.control_mode is ControlMode.SAFE_STOP
+    assert command.hand.control_mode is ControlMode.SAFE_STOP

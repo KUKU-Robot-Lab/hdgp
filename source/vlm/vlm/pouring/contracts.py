@@ -21,12 +21,40 @@ class SkillId(str, Enum):
 
 
 class ControlMode(str, Enum):
-    """Command representations that must never be blended implicitly."""
+    """Command representations that must never be blended implicitly.
+
+    Arm and hand are separate articulations with separate fabric controllers,
+    so a skill command carries one mode per channel (user decision, 08.23):
+    - arm: TASK_SPACE_POSE (xyz + quat wxyz), POLICY_ACTION (normalized palm
+      slice of a trained policy's output), SAFE_STOP, NO_OP.
+    - hand: HAND_JOINT_TARGETS (normalized [-1,1] absolute joint targets,
+      -1 open / +1 closed), HAND_TIP_TARGETS (normalized [-1,1] palm-relative
+      fingertip targets — the fabric tip-IK convention), POLICY_ACTION,
+      SAFE_STOP, NO_OP.
+    """
 
     TASK_SPACE_POSE = "task_space_pose"
     POLICY_ACTION = "policy_action"
+    HAND_JOINT_TARGETS = "hand_joint_targets"
+    HAND_TIP_TARGETS = "hand_tip_targets"
     SAFE_STOP = "safe_stop"
     NO_OP = "no_op"
+
+
+ARM_MODES = frozenset({
+    ControlMode.TASK_SPACE_POSE,
+    ControlMode.POLICY_ACTION,
+    ControlMode.SAFE_STOP,
+    ControlMode.NO_OP,
+})
+HAND_MODES = frozenset({
+    ControlMode.HAND_JOINT_TARGETS,
+    ControlMode.HAND_TIP_TARGETS,
+    ControlMode.POLICY_ACTION,
+    ControlMode.SAFE_STOP,
+    ControlMode.NO_OP,
+})
+HOLD_MODES = frozenset({ControlMode.SAFE_STOP, ControlMode.NO_OP})
 
 
 @dataclass(frozen=True)
@@ -73,12 +101,48 @@ class HighLevelDecision:
 
 
 @dataclass(frozen=True)
-class SkillCommand:
-    """A command with an explicit, skill-owned representation."""
+class ChannelCommand:
+    """One articulation channel's command (arm or hand)."""
 
     control_mode: ControlMode
-    values: tuple[float, ...]
+    values: tuple[float, ...] = ()
+
+    def __post_init__(self) -> None:
+        copied = tuple(float(value) for value in self.values)
+        object.__setattr__(self, "values", copied)
+        if self.control_mode in HOLD_MODES and copied:
+            raise ValueError(f"{self.control_mode.value} carries no values, got {len(copied)}")
+
+
+@dataclass(frozen=True)
+class SkillCommand:
+    """A command with an explicit, skill-owned representation per channel.
+
+    The arm and hand are separate articulations with separate fabric
+    controllers — one skill commands both channels independently (e.g.
+    approach moves the arm while the hand opens; a hold freezes one channel
+    while the other keeps acting).
+    """
+
+    arm: ChannelCommand
+    hand: ChannelCommand
     source: str
+
+    def __post_init__(self) -> None:
+        if self.arm.control_mode not in ARM_MODES:
+            raise ValueError(f"arm channel cannot use {self.arm.control_mode.value}")
+        if self.hand.control_mode not in HAND_MODES:
+            raise ValueError(f"hand channel cannot use {self.hand.control_mode.value}")
+
+    @classmethod
+    def no_op(cls, source: str) -> SkillCommand:
+        return cls(ChannelCommand(ControlMode.NO_OP), ChannelCommand(ControlMode.NO_OP), source)
+
+    @classmethod
+    def safe_stop(cls, source: str) -> SkillCommand:
+        return cls(
+            ChannelCommand(ControlMode.SAFE_STOP), ChannelCommand(ControlMode.SAFE_STOP), source
+        )
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..contracts import ControlMode, SkillCommand, SkillId
+from ..contracts import SkillCommand, SkillId
 from ..state_provider import SemanticState
 
 
@@ -18,4 +18,4 @@ class RecoverySkill:
         states: tuple[SemanticState, ...],
     ) -> tuple[SkillCommand, ...]:
         del env_ids
-        return tuple(SkillCommand(ControlMode.SAFE_STOP, (), self.skill_id.value) for _ in states)
+        return tuple(SkillCommand.safe_stop(self.skill_id.value) for _ in states)

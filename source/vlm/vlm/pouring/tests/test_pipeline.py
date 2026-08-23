@@ -59,7 +59,9 @@ def test_pipeline_routes_two_environments_to_different_skills() -> None:
     result = pipeline.tick()
 
     assert tuple(command.source for command in result.commands) == ("grasp_lift", "bimanual_pour")
-    assert tuple(len(command.values) for command in result.commands) == (11, 12)
+    assert tuple(
+        len(command.arm.values) + len(command.hand.values) for command in result.commands
+    ) == (11, 12)
 
 
 def test_pipeline_turns_safety_violation_into_abort_safe_stop() -> None:
@@ -80,4 +82,5 @@ def test_pipeline_turns_safety_violation_into_abort_safe_stop() -> None:
     result = pipeline.tick()
 
     assert result.decisions[0].skill_id is SkillId.ABORT
-    assert result.commands[0].control_mode is ControlMode.SAFE_STOP
+    assert result.commands[0].arm.control_mode is ControlMode.SAFE_STOP
+    assert result.commands[0].hand.control_mode is ControlMode.SAFE_STOP

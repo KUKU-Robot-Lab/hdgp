@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..contracts import ControlMode, SkillCommand, SkillId
+from ..contracts import ChannelCommand, ControlMode, SkillCommand, SkillId
 from ..state_provider import SemanticState
 
 
@@ -26,7 +26,7 @@ class PreGraspBridgeSkill:
         commands = []
         for state in states:
             if state.pregrasp_ready:
-                commands.append(SkillCommand(ControlMode.NO_OP, (), self.skill_id.value))
+                commands.append(SkillCommand.no_op(self.skill_id.value))
                 continue
             current = state.right_ee_pose[:3]
             desired = state.source_pose[:3]
@@ -37,8 +37,10 @@ class PreGraspBridgeSkill:
             )
             commands.append(
                 SkillCommand(
-                    ControlMode.TASK_SPACE_POSE,
-                    bounded + state.right_ee_pose[3:7],
+                    ChannelCommand(
+                        ControlMode.TASK_SPACE_POSE, bounded + state.right_ee_pose[3:7]
+                    ),
+                    ChannelCommand(ControlMode.NO_OP),
                     self.skill_id.value,
                 )
             )

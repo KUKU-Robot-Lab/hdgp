@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from vlm.pouring.contracts import (
+    ChannelCommand,
     ControlMode,
     HighLevelDecision,
     SkillCommand,
@@ -34,7 +35,11 @@ class FakeSkill:
     ) -> tuple[SkillCommand, ...]:
         self.calls.append(env_ids)
         return tuple(
-            SkillCommand(ControlMode.POLICY_ACTION, (self.value,) * self.action_dim, self.skill_id.value)
+            SkillCommand(
+                ChannelCommand(ControlMode.POLICY_ACTION, (self.value,) * 6),
+                ChannelCommand(ControlMode.POLICY_ACTION, (self.value,) * (self.action_dim - 6)),
+                self.skill_id.value,
+            )
             for _ in states
         )
 
@@ -82,8 +87,8 @@ def test_manager_routes_each_environment_without_action_blending() -> None:
         ),
     )
 
-    assert commands[0].values == (1.0,) * 11
-    assert commands[1].values == (2.0,) * 12
+    assert commands[0].arm.values + commands[0].hand.values == (1.0,) * 11
+    assert commands[1].arm.values + commands[1].hand.values == (2.0,) * 12
     assert grasp.calls == [(0,)]
     assert pour.calls == [(1,)]
     assert all(record.accepted for record in records)
@@ -104,7 +109,7 @@ def test_manager_rejects_disallowed_transition() -> None:
 
     assert not records[0].accepted
     assert records[0].accepted_skill is SkillId.GRASP_LIFT
-    assert commands[0].values == (1.0,) * 11
+    assert commands[0].arm.values + commands[0].hand.values == (1.0,) * 11
     assert pour.calls == []
 
 
@@ -148,12 +153,17 @@ def test_manager_resets_only_environment_that_switches() -> None:
 
 
 def test_safety_supervisor_replaces_non_finite_command() -> None:
-    unsafe = SkillCommand(ControlMode.POLICY_ACTION, (float("nan"),), "bad_skill")
+    unsafe = SkillCommand(
+        ChannelCommand(ControlMode.POLICY_ACTION, (0.0,) * 6),
+        ChannelCommand(ControlMode.POLICY_ACTION, (float("nan"),)),
+        "bad_skill",
+    )
 
     safe = SafetySupervisor().validate(unsafe)
 
-    assert safe.control_mode is ControlMode.SAFE_STOP
-    assert safe.values == ()
+    assert safe.arm.control_mode is ControlMode.SAFE_STOP
+    assert safe.hand.control_mode is ControlMode.SAFE_STOP
+    assert safe.arm.values == () and safe.hand.values == ()
 
 
 def test_manager_maps_terminal_skills_without_registry_entries() -> None:
@@ -170,5 +180,5 @@ def test_manager_maps_terminal_skills_without_registry_entries() -> None:
         ),
     )
 
-    assert commands[0].control_mode is ControlMode.NO_OP
-    assert commands[1].control_mode is ControlMode.SAFE_STOP
+    assert commands[0].arm.control_mode is ControlMode.NO_OP
+    assert commands[1].arm.control_mode is ControlMode.SAFE_STOP

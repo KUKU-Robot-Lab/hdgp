@@ -4,7 +4,6 @@ from collections import defaultdict
 from collections.abc import Mapping
 
 from .contracts import (
-    ControlMode,
     HighLevelDecision,
     SkillCommand,
     SkillId,
@@ -95,11 +94,11 @@ class SkillManager:
         for skill_id, env_ids in grouped.items():
             if skill_id is SkillId.DONE or skill_id is SkillId.WAIT_FOR_TASK:
                 for env_id in env_ids:
-                    commands[env_id] = SkillCommand(ControlMode.NO_OP, (), skill_id.value)
+                    commands[env_id] = SkillCommand.no_op(skill_id.value)
                 continue
             if skill_id is SkillId.ABORT:
                 for env_id in env_ids:
-                    commands[env_id] = SkillCommand(ControlMode.SAFE_STOP, (), skill_id.value)
+                    commands[env_id] = SkillCommand.safe_stop(skill_id.value)
                 continue
             skill = self.registry.get(skill_id)
             env_tuple = tuple(env_ids)

@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .contracts import ControlMode, SkillCommand
+from .contracts import HOLD_MODES, ChannelCommand, ControlMode, SkillCommand
 
 _TWO_PI = 2.0 * math.pi
 
@@ -131,13 +131,13 @@ class HoldPoseLatch:
     def resolve(
         self,
         env_id: int,
-        command: SkillCommand,
+        channel: ChannelCommand,
         current_pose: tuple[float, ...],
     ) -> tuple[float, ...]:
-        """Return the hold pose to use for this env on this tick."""
+        """Return the hold pose to use for this env's arm channel on this tick."""
         if not 0 <= env_id < len(self._held):
             raise IndexError(f"env_id {env_id} out of range 0..{len(self._held) - 1}")
-        if command.control_mode in (ControlMode.SAFE_STOP, ControlMode.NO_OP):
+        if channel.control_mode in HOLD_MODES:
             held = self._held[env_id]
             if held is None:
                 held = tuple(float(value) for value in current_pose)
@@ -147,15 +147,77 @@ class HoldPoseLatch:
         return tuple(float(value) for value in current_pose)
 
 
-def pose_command_to_palm_pose(command: SkillCommand) -> tuple[float, ...]:
+def pose_channel_to_palm_pose(channel: ChannelCommand) -> tuple[float, ...]:
     """TASK_SPACE_POSE values (xyz + quat wxyz) -> palm pose (xyz + euler_zyx)."""
-    if command.control_mode is not ControlMode.TASK_SPACE_POSE:
-        raise ValueError(f"expected task_space_pose command, got {command.control_mode.value}")
-    if len(command.values) != 7:
-        raise ValueError(f"task_space_pose values must be 7D (xyz + quat wxyz), got {len(command.values)}")
-    position = command.values[:3]
-    yaw, pitch, roll = quat_wxyz_to_euler_zyx(command.values[3:])
+    if channel.control_mode is not ControlMode.TASK_SPACE_POSE:
+        raise ValueError(f"expected task_space_pose channel, got {channel.control_mode.value}")
+    if len(channel.values) != 7:
+        raise ValueError(f"task_space_pose values must be 7D (xyz + quat wxyz), got {len(channel.values)}")
+    position = channel.values[:3]
+    yaw, pitch, roll = quat_wxyz_to_euler_zyx(channel.values[3:])
     return (*position, yaw, pitch, roll)
+
+
+def arm_channel_to_action(
+    channel: ChannelCommand,
+    space: PalmActionSpace,
+    *,
+    hold_pose: tuple[float, ...],
+) -> tuple[float, ...]:
+    """Arm channel -> the action row's palm slice (6 values in [-1, 1]).
+
+    - TASK_SPACE_POSE: encode the target palm pose.
+    - POLICY_ACTION: normalized palm slice of a policy output, clamped.
+    - SAFE_STOP / NO_OP: re-encode `hold_pose` — with absolute actions "hold"
+      is re-commanding a pose, never zeroing the action. Callers that keep
+      the previous action row (drift-free) should skip hold channels instead.
+    """
+    if channel.control_mode is ControlMode.POLICY_ACTION:
+        if len(channel.values) != 6:
+            raise ValueError(f"arm policy_action must be 6D, got {len(channel.values)}")
+        return tuple(max(-1.0, min(1.0, float(v))) for v in channel.values)
+    if channel.control_mode is ControlMode.TASK_SPACE_POSE:
+        return space.encode(pose_channel_to_palm_pose(channel))
+    if channel.control_mode in HOLD_MODES:
+        if len(hold_pose) != 6 or not all(math.isfinite(float(v)) for v in hold_pose):
+            raise ValueError("hold_pose must be 6 finite values")
+        return space.encode(hold_pose)
+    raise ValueError(f"arm channel cannot use {channel.control_mode.value}")
+
+
+def hand_channel_to_action(
+    channel: ChannelCommand,
+    *,
+    hand_dim: int,
+    hand_hold: tuple[float, ...] | None = None,
+) -> tuple[float, ...]:
+    """Hand channel -> the action row's hand slice (hand_dim values in [-1, 1]).
+
+    HAND_JOINT_TARGETS, HAND_TIP_TARGETS and POLICY_ACTION are all normalized
+    absolute targets in the running fabric task's own hand convention — the
+    bridge validates width and clamps; which convention applies is fixed by
+    the env's `hand_control` mode and must match the command's mode upstream.
+    SAFE_STOP / NO_OP return `hand_hold` (default: fully open).
+    """
+    if hand_dim <= 0:
+        raise ValueError("hand_dim must be positive")
+    if channel.control_mode in HOLD_MODES:
+        hold = hand_hold if hand_hold is not None else (-1.0,) * hand_dim
+        if len(hold) != hand_dim or not all(math.isfinite(float(v)) for v in hold):
+            raise ValueError(f"hand_hold must be {hand_dim} finite values")
+        return tuple(float(v) for v in hold)
+    if channel.control_mode in (
+        ControlMode.HAND_JOINT_TARGETS,
+        ControlMode.HAND_TIP_TARGETS,
+        ControlMode.POLICY_ACTION,
+    ):
+        if len(channel.values) != hand_dim:
+            raise ValueError(
+                f"{channel.control_mode.value} must be {hand_dim}D for this profile, "
+                f"got {len(channel.values)}"
+            )
+        return tuple(max(-1.0, min(1.0, float(v))) for v in channel.values)
+    raise ValueError(f"hand channel cannot use {channel.control_mode.value}")
 
 
 def command_to_action(
@@ -164,35 +226,13 @@ def command_to_action(
     *,
     hand_dim: int,
     hold_pose: tuple[float, ...],
-    hand_action: float = -1.0,
+    hand_hold: tuple[float, ...] | None = None,
 ) -> tuple[float, ...]:
     """One skill command -> one fabric-task action row (6 + hand_dim).
 
-    - TASK_SPACE_POSE: encode the target palm pose; hand set to `hand_action`.
-    - POLICY_ACTION: pass through unchanged (dimension checked).
-    - SAFE_STOP / NO_OP: hold the current palm pose (`hold_pose`), hand held
-      at `hand_action` — with absolute actions "hold" is re-commanding the
-      current pose, never zeroing the action.
+    Arm and hand are mapped independently — see the channel functions.
     """
-    if hand_dim <= 0:
-        raise ValueError("hand_dim must be positive")
-    if len(hold_pose) != 6 or not all(math.isfinite(float(v)) for v in hold_pose):
-        raise ValueError("hold_pose must be 6 finite values")
-    if not math.isfinite(hand_action) or not -1.0 <= hand_action <= 1.0:
-        raise ValueError("hand_action must be finite and within [-1, 1]")
-
-    if command.control_mode is ControlMode.POLICY_ACTION:
-        expected = 6 + hand_dim
-        if len(command.values) != expected:
-            raise ValueError(
-                f"policy_action must be {expected}D for this profile, got {len(command.values)}"
-            )
-        return tuple(float(value) for value in command.values)
-
-    if command.control_mode is ControlMode.TASK_SPACE_POSE:
-        palm = space.encode(pose_command_to_palm_pose(command))
-    elif command.control_mode in (ControlMode.SAFE_STOP, ControlMode.NO_OP):
-        palm = space.encode(hold_pose)
-    else:  # pragma: no cover - enum is closed, guards future additions
-        raise ValueError(f"unsupported control mode: {command.control_mode.value}")
-    return (*palm, *((hand_action,) * hand_dim))
+    return (
+        *arm_channel_to_action(command.arm, space, hold_pose=hold_pose),
+        *hand_channel_to_action(command.hand, hand_dim=hand_dim, hand_hold=hand_hold),
+    )
