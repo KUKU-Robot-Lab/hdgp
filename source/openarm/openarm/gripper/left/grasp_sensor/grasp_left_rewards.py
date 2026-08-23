@@ -104,6 +104,8 @@ def _held(
     max_ee_distance: float,
     enclose_half_width: float,
     pad_offset: float,
+    lat_ok: float,
+    along_ok: float,
     jaw_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg,
     ee_frame_cfg: SceneEntityCfg,
@@ -151,7 +153,16 @@ def _held(
     #   enclose 를 곱하면 주먹(0.019)도 손을 떠난 컵도 0 이고, 제대로 감싼 상태(0.78~0.85)만
     #   받는다. 부수 효과로 **자동 커리큘럼**이 된다: 감싸기를 배우기 전에는 lift 항이
     #   사실상 0(=하드 게이트와 동일, 치는 유인 없음)이고, 감싼 뒤에 램프가 켜진다.
-    held = _enclose(env, enclose_half_width, pad_offset, jaw_cfg, object_cfg)
+    # ★★08.24 게이트를 `_enclose` 에서 **`grasp_ok`** 로 바꿨다.
+    #   `enclose` 는 판별력이 없다 — fab_test11 이 컵 축에서 **옆으로 85.5 mm** 떨어져
+    #   개도 16.3 mm(컵 58 mm 보다 좁게) 닫은 채 enclose **0.824** 를 받으면서
+    #   컵을 0.2 mm 도 못 들었다(성공 정책 test17 은 0.804 — 구분이 안 된다).
+    #   턱이 벌어져 있으면 멀리 떨어져도 "축이 턱 사이를 지난다"가 성립하기 때문이다.
+    #   `grasp_ok` 는 lateral 을 직접 보므로 그 구멍이 닫힌다(성공 20~22 vs 실패 79~86 mm).
+    #   ⚠ 하드 게이트라 감쌈 이전의 연속 기울기(옛 "자동 커리큘럼")는 사라진다. 그 역할은
+    #     이제 **액션 게이트**가 대신한다 — 접근 전에는 그리퍼가 강제로 열려 있어
+    #     "닫고 서 있기" 국소최적 자체가 도달 불가능해진다.
+    held = grasp_ok(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg).float()
     return lifted * held * (near & upright).float()
 
 
@@ -162,6 +173,8 @@ def held_with_good_pose(
     max_ee_distance: float,
     enclose_half_width: float,
     pad_offset: float,
+    lat_ok: float,
+    along_ok: float,
     jaw_cfg: SceneEntityCfg,
     body_name: str,
     upright_zero_at_cos: float = 0.0,
@@ -185,7 +198,7 @@ def held_with_good_pose(
       학습이 시작조차 못 한다. 자세는 반드시 연속 보너스로만 유도한다.
     """
     gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-                 pad_offset, jaw_cfg, object_cfg, ee_frame_cfg)
+                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg)
     cos_tilt = _cup_upright_cos(env, object_cfg)
     upright = ((cos_tilt - upright_zero_at_cos) / (1.0 - upright_zero_at_cos)).clamp(0.0, 1.0)
     return gate * upright * jaw_level_quality(env, robot_cfg, body_name)
@@ -198,6 +211,8 @@ def object_is_held_and_lifted(
     max_ee_distance: float,
     enclose_half_width: float,
     pad_offset: float,
+    lat_ok: float,
+    along_ok: float,
     jaw_cfg: SceneEntityCfg,
     min_upright_cos: float = -1.0,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
@@ -205,7 +220,7 @@ def object_is_held_and_lifted(
 ) -> torch.Tensor:
     """`mdp.object_is_lifted` 에 근접·컵 자세 조건을 더한 것."""
     return _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-                 pad_offset, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
+                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
 
 
 def object_goal_distance_when_held(
@@ -216,6 +231,8 @@ def object_goal_distance_when_held(
     max_ee_distance: float,
     enclose_half_width: float,
     pad_offset: float,
+    lat_ok: float,
+    along_ok: float,
     jaw_cfg: SceneEntityCfg,
     command_name: str,
     min_upright_cos: float = -1.0,
@@ -235,7 +252,7 @@ def object_goal_distance_when_held(
     )
     distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
     gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-                 pad_offset, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
+                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
     return gate * (1 - torch.tanh(distance / std))
 
 
@@ -249,6 +266,8 @@ def object_settled_at_goal(
     max_ee_distance: float,
     enclose_half_width: float,
     pad_offset: float,
+    lat_ok: float,
+    along_ok: float,
     jaw_cfg: SceneEntityCfg,
     command_name: str,
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -288,7 +307,7 @@ def object_settled_at_goal(
     )
 
     gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-                 pad_offset, jaw_cfg, object_cfg, ee_frame_cfg)
+                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg)
     return gate * near_goal * still
 
 
@@ -356,11 +375,58 @@ def _jaw_frame(
     #   clamp 가 없으면 컵 축이 **무한 직선**이라 컵 위 허공에서 감싸도 만점이 나온다.
     #   fab_test10 이 정확히 그 행동을 학습했다 — 턱이 컵 원점 +157.6 mm(상단 +83 mm 보다
     #   75 mm 위)에서 between 2.15/3.0 을 받으면서 컵은 0.1 mm 도 안 움직였다.
-    axis_t = (to_mid * cup_z).sum(-1, keepdim=True).clamp(
-        P.CUP_GRASP_BAND_AXIS[0], P.CUP_GRASP_BAND_AXIS[1]
-    )
+    axis_t_raw = (to_mid * cup_z).sum(-1, keepdim=True)
+    axis_t = axis_t_raw.clamp(P.CUP_GRASP_BAND_AXIS[0], P.CUP_GRASP_BAND_AXIS[1])
     cup_pt = obj.data.root_pos_w + cup_z * axis_t
-    return p_l, p_r, u, mid, cup_pt
+    # ★clamp **전** 축 좌표도 돌려준다 — "턱이 파지 대역 안인가"는 clamp 된 값으로는
+    #   알 수 없다(밖에 있어도 경계값으로 접혀 들어온다). 접근 성공 판정에 필요하다.
+    return p_l, p_r, u, mid, cup_pt, axis_t_raw.squeeze(-1)
+
+
+def grasp_ok(
+    env: "ManagerBasedRLEnv",
+    lat_ok: float,
+    along_ok: float,
+    pad_offset: float,
+    jaw_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """**접근 성공** — 컵이 실제로 턱 사이 파지 위치에 있는가. (num_envs,) bool
+
+    액션 게이트(그리퍼 강제 개방 해제)와 리프트 보상 게이트가 **같은 술어**를 쓴다.
+    이 트랙에서 두 함수가 서로 다른 자를 쓰다 조용히 어긋난 사고가 반복됐다
+    (패드 중앙 보정 누락 · 컵 축 clamp 누락). 단일 출처로 묶는다.
+
+    ★★기준은 `lateral` 이다. `enclose` 는 **판별력이 없다** — 실측:
+          정책               along    lateral   enclose
+          test17(파지 성공)   13.5 mm   21.7 mm   0.804
+          fab_test8(성공)     12.2 mm   20.2 mm   0.849
+          fab_test1(주먹)     27.8 mm   78.6 mm   0.022
+          fab_test11(옆 대기) 12.0 mm  **85.5 mm** **0.824**
+      턱이 벌어져 있으면 컵 축에서 8.5 cm 떨어져도 "축이 턱 사이를 지난다"가 성립한다.
+      fab_test11 이 정확히 그 상태로 4000 epoch 을 돌며 컵을 0.2 mm 도 못 들었다.
+
+    ★`axis_t` 는 **clamp 전** 값을 쓴다. clamp 된 값은 대역 밖이어도 경계로 접혀 들어와
+      "대역 안"이 항상 참이 된다.
+    """
+    _p_l, _p_r, u, mid, cup_pt, axis_t = _jaw_frame(env, pad_offset, jaw_cfg, object_cfg)
+    d = cup_pt - mid
+    along = (d * u).sum(-1).abs()
+    lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
+    in_band = (axis_t > P.CUP_GRASP_BAND_AXIS[0]) & (axis_t < P.CUP_GRASP_BAND_AXIS[1])
+    return (lateral < lat_ok) & (along < along_ok) & in_band
+
+
+def jaw_lateral(
+    env: "ManagerBasedRLEnv",
+    pad_offset: float,
+    jaw_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """턱 축 직선에서 컵 축까지의 수직거리 (m). 래치 **해제** 판정에 쓴다."""
+    _p_l, _p_r, u, mid, cup_pt, _axis = _jaw_frame(env, pad_offset, jaw_cfg, object_cfg)
+    d = cup_pt - mid
+    return (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
 
 
 def _enclose(
@@ -375,7 +441,7 @@ def _enclose(
     s_l = (컵축점 − 왼손가락)·u,  s_r = (오른손가락 − 컵축점)·u — 둘 다 양수여야 사이에 있다.
     실측 판별력: 주먹 정책 **0.019~0.026** · 제대로 감싼 정책 **0.78~0.85**.
     """
-    p_l, p_r, u, _mid, cup_pt = _jaw_frame(env, pad_offset, robot_cfg, object_cfg)
+    p_l, p_r, u, _mid, cup_pt, _axis = _jaw_frame(env, pad_offset, robot_cfg, object_cfg)
     s_l = ((cup_pt - p_l) * u).sum(-1)
     s_r = ((p_r - cup_pt) * u).sum(-1)
     return (torch.minimum(s_l, s_r) / enclose_half_width).clamp(0.0, 1.0)
@@ -395,7 +461,7 @@ def _jaw_geometry(
     · align   = 평균( 턱 축 방향 정렬, 턱 축 직선까지의 근접 )  — 곱하지 않는다
     · enclose = 두 손가락이 컵 축 **양쪽**에 있는가 (0~1)
     """
-    p_l, p_r, u, mid, cup_pt = _jaw_frame(env, pad_offset, robot_cfg, object_cfg)
+    p_l, p_r, u, mid, cup_pt, _axis = _jaw_frame(env, pad_offset, robot_cfg, object_cfg)
     d = cup_pt - mid
     along = (d * u).sum(-1).abs()
     lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
@@ -499,3 +565,25 @@ def ee_grasp_point_distance(
     grasp_pt = obj.data.root_pos_w + cup_z * grasp_offset
     ee_w = ee_frame.data.target_pos_w[..., 0, :]
     return 1.0 - torch.tanh(torch.norm(grasp_pt - ee_w, dim=1) / std)
+
+
+def gripper_gate_open(env: "ManagerBasedRLEnv", action_term: str = "gripper_action") -> torch.Tensor:
+    """그리퍼 게이트가 열렸는가 (num_envs, 1) float. **관측 항**으로 쓴다.
+
+    ★★하드 게이트는 정책이 볼 수 없는 **숨은 상태**다. phase 0 에서 정책의 그리퍼 지령은
+      롤아웃 버퍼에 기록되지만 실행되지 않아, 그 차원의 gradient 가 환경 응답과 무관해진다.
+      게이트 상태를 관측에 넣어야 정책이 "지금 내 그리퍼 지령은 무시된다"를 알 수 있다.
+      obs 차원이 1 늘어난다 — 체크포인트 호환이 깨지므로 fresh 학습에서만 켤 것.
+    """
+    term = env.action_manager.get_term(action_term)
+    return term.gate_open.float().unsqueeze(-1)
+
+
+def gripper_gate_rate(env: "ManagerBasedRLEnv", action_term: str = "gripper_action") -> torch.Tensor:
+    """게이트가 열린 env 비율. **weight 0 진단 항** — TFEvents 에 찍혀야 조기 판정이 된다.
+
+    이번 런의 1차 관전 지표다. epoch 200 안에 0.1 을 못 넘으면 게이트가 너무 빡빡한 것이고,
+    `GRASP_GATE_LATERAL_OK` 를 0.040 으로 완화해야 한다(fab_test9~11 정체의 재발 방지).
+    """
+    term = env.action_manager.get_term(action_term)
+    return term.gate_open.float()

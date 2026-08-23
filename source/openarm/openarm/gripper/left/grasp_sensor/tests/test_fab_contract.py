@@ -336,26 +336,70 @@ def test_closure_weight_stays_a_stepping_stone():
     assert realistic_max <= 0.10 * (15.0 + 16.0 + P.SETTLE_REWARD_WEIGHT)
 
 
-def test_lift_ramp_is_multiplied_by_enclose():
-    """★★순수 램프는 "쳐 올리기"를 부분 보상해 정책을 주먹으로 고착시킨다.
+def test_lift_ramp_is_gated_by_grasp_ok_not_enclose():
+    """★★08.24 이 계약을 **뒤집었다.** 전에는 램프에 `enclose` 를 곱하는 것을 고정했는데,
+    `enclose` 는 판별력이 없다는 것이 fab_test11 로 드러났다:
 
-    fab_test6(램프, epoch 568 중단) 실측 — fab_test1 의 실패 모드로 정확히 회귀했다:
-        enclose 0.019 · 개도 4.4 mm · 거의닫힘 76.0% · '열기' 지령 2.8% · drop% 0.733
-    같은 구간 fab_test5(하드게이트)는 closure 0.561 · drop% 0.031 로 정상이었다.
-    기전: 학습 초기(1~50 epoch)에 컵이 튀어 오르는 순간이 램프 조건을 만족했고
-    (그 구간 lift 0.002 = 전 구간 최고), 컵을 치기에는 주먹이 유리하다.
-    ⚠ `near` 80 mm 게이트로는 못 막는다 — 툭 치는 거리가 그 안이다.
+        정책               along    lateral   enclose
+        test17(파지 성공)   13.5 mm   21.7 mm   0.804
+        fab_test11(옆 대기) 12.0 mm  **85.5 mm** **0.824**   ← 성공과 구분 불가
 
-    → enclose(주먹 0.019 vs 파지 0.78~0.85)를 곱해 "감싼 상태에서만" 높이 점수를 준다.
-      부수 효과로 자동 커리큘럼이 된다: 감싸기 전에는 사실상 하드 게이트와 같다.
+    턱이 벌어져 있으면 컵 축에서 8.5 cm 떨어져도 "축이 턱 사이를 지난다"가 성립한다.
+    fab_test11 은 그 상태로 4000 epoch 을 돌며 컵을 0.2 mm 도 못 들었다.
+    → 게이트를 `grasp_ok`(lateral 을 직접 보는 하드 술어)로 바꾼다.
     """
     rew = _src("grasp_left_rewards.py")
     body = rew[rew.index("def _held("):rew.index("def held_with_good_pose(")]
-    assert "lifted * held * (near & upright).float()" in body, (
-        "램프에 enclose 가 곱해지지 않았다 — 쳐 올리기가 부분 보상을 받는다"
+    assert "grasp_ok(" in body, "리프트 게이트가 grasp_ok 를 쓰지 않는다"
+    assert "_enclose(env" not in body, "판별력 없는 enclose 게이트가 되살아났다"
+    assert "lifted * held * (near & upright).float()" in body
+
+
+def test_grasp_ok_separates_measured_success_from_failure():
+    """★게이트 문턱은 **실측 분포를 가르는 값**이어야 한다.
+
+    성공 lateral 20.2~21.7 mm · 실패 78.6~85.5 mm — 4배 격차, 겹침 없음.
+    along 은 성공 12.2~13.5 · 실패 12.0~27.8 로 **단독 판별력이 없다**(겹침).
+    """
+    assert P.GRASP_GATE_LATERAL_OK > 0.022, "성공 실측(21.7mm)을 못 통과시킨다"
+    assert P.GRASP_GATE_LATERAL_OK < 0.078, "실패 실측(78.6mm)을 통과시킨다"
+    assert P.GRASP_GATE_RELEASE_LAT > P.GRASP_GATE_LATERAL_OK, (
+        "해제 문턱이 진입 문턱보다 작으면 히스테리시스가 아니라 채터링이 된다"
     )
-    assert "_enclose(env, enclose_half_width, pad_offset, jaw_cfg, object_cfg)" in body
-    # 다섯 term 전부 같은 게이트를 쓴다 — 하나라도 빠지면 그쪽으로 hack 이 되살아난다
+    rew = _src("grasp_left_rewards.py")
+    body = rew[rew.index("def grasp_ok("):]
+    body = body[: body.index("\ndef ")]
+    assert "lateral < lat_ok" in body, "lateral 조건이 없다 — enclose 만으로는 못 가른다"
+    # ★clamp 전 축 좌표를 써야 한다. clamp 된 값은 대역 밖이어도 경계로 접혀 항상 참이 된다.
+    assert "axis_t > P.CUP_GRASP_BAND_AXIS[0]" in body
+
+
+def test_gripper_action_is_hard_gated_open_before_approach():
+    """★★접근 성공 전에는 그리퍼를 **강제로 연다**.
+
+    근거: Fabrics 가 우연한 리프트를 없앴다(적용 관절 목표 변화 test17 2.79 rad/s vs
+    fab_test5 0.38 rad/s → 컵 상승 +138 vs +17 mm). 정책이 "열기·위치·닫기·들기" 연접을
+    우연히 맞춰야 하는 문제를, 앞 두 칸을 코드가 강제해 없앤다.
+    실패 이력: fab_test1 주먹(개도 3.1mm) · fab_test11 옆에서 좁게 닫음(16.3mm) —
+    강제 개방은 둘 다 **구조적으로 불가능**하게 만든다.
+    """
+    act = _src("grasp_left_actions.py")
+    assert "class GatedBinaryJointPositionAction(BinaryJointPositionAction)" in act
+    body = act[act.index("def process_actions", act.index("class GatedBinary")):]
+    body = body[: body.index("def reset")]
+    assert "self._phase | ok" in body, "래치가 없다 — 닫는 순간 문턱을 넘나들면 컵을 놓는다"
+    assert "lateral < self.cfg.release_lateral" in body, "히스테리시스 해제가 없다"
+    assert "self._open_command" in body, "phase 0 에서 강제 개방하지 않는다"
+    # ★판정은 process_actions 에서만. apply_actions 는 decimation 만큼 불린다.
+    assert "grasp_ok" not in act[act.index("def reset", act.index("class GatedBinary")):]
+    rst = act[act.index("def reset", act.index("class GatedBinary")):]
+    assert "_phase" in rst, "reset 에서 래치를 지우지 않는다 — 리셋 오염 네 번째"
+    cfg = _src("grasp_left_env_cfg.py")
+    assert "GatedBinaryJointPositionActionCfg" in cfg
+
+
+def test_all_gated_terms_share_one_jaw_cfg_instance():
+    """★SceneEntityCfg 는 매니저가 제자리 변경하는 가변 객체다 — term 마다 새 인스턴스."""
     cfg = _src("grasp_left_env_cfg.py")
     assert cfg.count("jaw_cfg") >= 3, "jaw_cfg 배선이 빠진 term 이 있다"
     assert cfg.count('SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES))') >= 4, (

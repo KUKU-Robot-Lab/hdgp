@@ -46,8 +46,11 @@ from isaaclab.envs.mdp.actions.actions_cfg import (
     DifferentialInverseKinematicsActionCfg,
     JointPositionActionCfg,
 )
+from isaaclab.envs.mdp.actions.binary_joint_actions import BinaryJointPositionAction
+from isaaclab.envs.mdp.actions.actions_cfg import BinaryJointPositionActionCfg
 from isaaclab.envs.mdp.actions.joint_actions import JointPositionAction
 from isaaclab.envs.mdp.actions.task_space_actions import DifferentialInverseKinematicsAction
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.string import resolve_matching_names_values
 
@@ -251,3 +254,87 @@ class JointLimitedDifferentialIKActionCfg(DifferentialInverseKinematicsActionCfg
 
     rate_limit: dict[str, float] = None
     max_tracking_error: dict[str, float] = None
+
+
+# ---------------------------------------------------------------------------
+# 접근 성공 하드 게이트 (08.24 사용자 지시)
+# ---------------------------------------------------------------------------
+class GatedBinaryJointPositionAction(BinaryJointPositionAction):
+    """접근 성공 전에는 그리퍼를 **강제로 연다**. 성공 후에만 정책이 개폐를 결정한다.
+
+    ★★왜 필요한가 — Fabrics 가 **우연한 리프트를 없앴다.**
+      "적용된 관절 목표 변화 속도"와 리프트가 단조 관계다(결정론 실측):
+          test17(관절공간·성공)   2.79 rad/s (한계의 ~120%) → 컵 +138 mm · 1cm↑ 92.4%
+          fab_test7(Fabrics·성공) 1.34 rad/s (~55%)         → 컵  +32 mm · 70.0%
+          fab_test5(Fabrics·실패) **0.38 rad/s (15%)**       → 컵  +17 mm ·  8.4%
+      관절공간 트랙은 팔을 속도한계로 홱홱 움직여 **컵을 튕겨 올리는 우연**으로 리프트
+      게이트를 넘었고, Fabrics 는 정확히 그 거친 움직임을 없앴다. 그래서 정책이
+      "열기·위치·닫기·들기"의 **연접을 우연히 맞춰야** 하는 문제가 남았다.
+      → 앞 두 칸을 코드가 강제해 정책은 **위치만** 학습하면 되게 만든다.
+
+    실패 이력이 이 설계를 직접 가리킨다:
+      fab_test1  주먹을 쥔 채 컵 옆구리를 눌렀다      (개도 3.1 mm · '열기' 지령 0.0%)
+      fab_test4  감쌌으나 한 번도 닫지 않았다          ('열기' 지령 78%)
+      fab_test11 컵 옆 85 mm 에서 좁게 닫고 대기했다   (개도 16.3 mm · 컵 +0.2 mm)
+    강제 개방은 첫째·셋째를 **구조적으로 불가능**하게 만든다.
+
+    ⚠ 전이는 **래치**한다. 닫는 순간 컵이 미세하게 밀려 lateral 이 문턱을 넘나들면
+      그리퍼가 강제 개방되어 잡은 컵을 놓는다. 해제는 넉넉한 문턱으로만 한다.
+    ⚠ 판정은 `process_actions` 에서만. `apply_actions` 는 decimation 만큼 불린다.
+    ⚠ `reset` 에서 래치 초기화 필수 — 이 트랙에서 리셋 오염에 네 번 당했다.
+    """
+
+    cfg: "GatedBinaryJointPositionActionCfg"
+
+    def __init__(self, cfg: "GatedBinaryJointPositionActionCfg", env) -> None:
+        super().__init__(cfg, env)
+        self._env = env
+        # ★보상 매니저가 해 주던 resolve 를 직접 해야 body_ids 가 채워진다.
+        self._jaw_cfg = SceneEntityCfg("robot", body_names=list(cfg.finger_body_names))
+        self._jaw_cfg.resolve(env.scene)
+        self._object_cfg = SceneEntityCfg(cfg.object_name)
+        self._object_cfg.resolve(env.scene)
+        self._phase = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+    @property
+    def gate_open(self) -> torch.Tensor:
+        """정책이 그리퍼를 닫을 수 있는 상태인가 (num_envs,) bool. 관측·진단이 읽는다."""
+        return self._phase
+
+    def process_actions(self, actions: torch.Tensor) -> None:
+        from . import grasp_left_rewards as rewards  # 순환 임포트 회피
+
+        ok = rewards.grasp_ok(
+            self._env, self.cfg.lateral_ok, self.cfg.along_ok, self.cfg.pad_offset,
+            self._jaw_cfg, self._object_cfg,
+        )
+        lateral = rewards.jaw_lateral(
+            self._env, self.cfg.pad_offset, self._jaw_cfg, self._object_cfg
+        )
+        # 래치: 한 번 성립하면 유지. 해제는 컵이 턱에서 완전히 벗어났을 때만.
+        self._phase = (self._phase | ok) & (lateral < self.cfg.release_lateral)
+
+        super().process_actions(actions)
+        self._processed_actions = torch.where(
+            self._phase.unsqueeze(-1), self._processed_actions, self._open_command
+        )
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        super().reset(env_ids)
+        if env_ids is None:
+            self._phase[:] = False
+        else:
+            self._phase[env_ids] = False
+
+
+@configclass
+class GatedBinaryJointPositionActionCfg(BinaryJointPositionActionCfg):
+    """게이트 파라미터는 전부 프리셋에서 온다(단일 출처, 리터럴 금지)."""
+
+    class_type: type = GatedBinaryJointPositionAction
+    finger_body_names: tuple[str, ...] = ()
+    object_name: str = "object"
+    pad_offset: float = 0.0
+    lateral_ok: float = 0.0
+    along_ok: float = 0.0
+    release_lateral: float = 0.0

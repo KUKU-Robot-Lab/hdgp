@@ -531,7 +531,11 @@ def test_gripper_action_commands_both_jaws_not_just_the_drive_joint():
     URDF 의 `<mimic>` 태그만 보고 "시뮬에도 있겠지"라고 넘기면 조용히 재발한다.
     """
     src = _cfg_source()
-    assert "BinaryJointPositionActionCfg" in src
+    # ⚠ 08.24 게이트 버전으로 교체됐다. 부분문자열이라 옛 단언이 그대로 통과해
+    #   화석이 될 뻔했다 — 명시적으로 게이트 버전을 요구한다.
+    assert "GatedBinaryJointPositionActionCfg" in src, (
+        "그리퍼가 게이트 없는 원본 액션으로 되돌아갔다"
+    )
     assert "P.GRIPPER_JOINT_NAMES" in src, "두 조 모두에 지령해야 한다"
     assert set(P.GRIPPER_JOINT_NAMES) == {"l_hj_gripper_1", "l_hj_gripper_2"}
     # 액추에이터 커버리지도 두 관절 모두 (없으면 무구동 자유이동)
@@ -611,7 +615,9 @@ def test_env_cfg_inherits_isaaclab_lift():
     # 신설 term: grasp_pose · settled_at_goal · cup_between_jaws ·
     #            grip_closure_when_enclosed + 도달 목표점 교정 1
     # 판정 게이트를 늘리는 term 은 여전히 금지 — test6/test7 에서 학습을 죽였다.
-    assert src.count("RewTerm(") <= 5, "신설 term 이 예상보다 많다"
+    # 신설: grasp_pose · settled_at_goal · cup_between_jaws · grip_closure_when_enclosed
+    #      · gate_rate(진단 weight 0) + 도달 목표점 교정 1
+    assert src.count("RewTerm(") <= 6, "신설 term 이 예상보다 많다"
 
 
 def test_smoothing_is_the_reference_curriculum_not_an_extra_term():
