@@ -37,9 +37,13 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
       [23-26] rj_dg_5_1~4              (pinky)
     """
 
+    # 충돌 구 프레임 이름에서 손가락을 가르는 표식(팔·몸통 구와 분리한다).
+    _HAND_FRAME_MARK = "rl_dg_"
+
     def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=True,
                  palm_position_only=False, use_tip_fabric=False, tip_attractor_gain=None,
                  hand_mode="pca", hand_attractor_gain=None,
+                 use_hand_repulsion=False,
                  robot_dir_name="openarm_tesollo", robot_name="openarm_tesollo",
                  default_config_override=None, default_palm_euler_zyx=None,
                  fabric_params_filename=None):
@@ -56,6 +60,10 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         # None = params 값(50). direct 모드에서 손이 목표를 못 따라가면 올린다 —
         # 손끝 attractor 는 같은 구조에서 400 을 쓴다(실측 꼭짓점).
         self._hand_attractor_gain = hand_attractor_gain
+        self.hand_fabric_repulsion = None   # 손 전용 반발(구성될 때만 채워진다)
+        # ★기본 off — 같은 fabric_params 를 쓰는 타 트랙(pour_fabric 등)이 재시작할 때
+        #   손 반발이 갑자기 켜져 거동이 바뀌는 것을 막는다. 켤 트랙만 켠다.
+        self._use_hand_repulsion = use_hand_repulsion
         # ★손끝 attractor(작업공간 손 제어). 기본 off — 켜지 않으면 기존 트랙 거동 불변.
         #   PCA(5D)와 달리 손 20-DOF 를 그대로 두므로 인벨롭 감쌈을 제약하지 않는다.
         self._use_tip_fabric = use_tip_fabric
@@ -335,60 +343,84 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         self.add_fabric(taskmap_name, "fingertip_attractor", fabric)
 
     def add_body_repulsion(self):
-        collision_sphere_frames = self.fabric_params['body_repulsion']['collision_sphere_frames']
-        self.collision_sphere_radii = self.fabric_params['body_repulsion']['collision_sphere_radii']
+        """자기충돌 반발을 **팔·몸통**과 **손가락** 두 그룹으로 나눠 건다.
 
-        assert len(collision_sphere_frames) == len(self.collision_sphere_radii), \
-            "length of link names does not equal length of radii"
+        왜 나누는가: 팔 구는 반경 0.10~0.18m 에 engage_depth 0.30m 인데, 손가락 구는
+        반경 0.009m 에 서로 2~3cm 거리다. 같은 파라미터를 쓰면 손가락 구가 **상시 발동**해
+        fabric 전체가 불안정해진다 — 실측으로 palm 추종오차가 0.6mm → 88~109mm 로 터졌고
+        손가락 관통은 오히려 13.7mm → 7.7mm 로 악화됐다.
 
-        collision_sphere_pairs = self.fabric_params['body_repulsion']['collision_sphere_pairs']
+        ★팔 그룹의 자기충돌 쌍은 **비운다**. 지금까지 한 번도 실행된 적이 없기 때문이다
+          (커널이 환경 메시 early-out 아래에 자기충돌을 두는데 우리 씬은 월드에 메시를
+          등록하지 않는다). 즉 비워도 거동 변화가 0 이고, 켜면 위 실측처럼 팔이 망가진다.
+          팔 구 반경·배치를 손처럼 실측으로 다듬은 뒤에 따로 켜는 것이 순서다.
+        """
+        p = self.fabric_params['body_repulsion']
+        frames = p['collision_sphere_frames']
+        radii = p['collision_sphere_radii']
+        assert len(frames) == len(radii), "length of link names does not equal length of radii"
 
-        collision_matrix = torch.zeros(
-            len(collision_sphere_frames), len(collision_sphere_frames),
-            dtype=int, device=self.device
-        )
+        pairs = list(p['collision_sphere_pairs'])
+        if len(pairs) == 0:
+            for pre1, pre2 in p['collision_link_prefix_pairs']:
+                for s1 in [s for s in frames if pre1 in s]:
+                    for s2 in [s for s in frames if pre2 in s]:
+                        pairs.append([s1, s2])
 
-        if len(collision_sphere_pairs) == 0:
-            collision_link_prefix_pairs = \
-                self.fabric_params['body_repulsion']['collision_link_prefix_pairs']
-            for prefix1, prefix2 in collision_link_prefix_pairs:
-                frames_for_prefix1 = [s for s in collision_sphere_frames if prefix1 in s]
-                frames_for_prefix2 = [s for s in collision_sphere_frames if prefix2 in s]
-                for sphere1 in frames_for_prefix1:
-                    for sphere2 in frames_for_prefix2:
-                        collision_sphere_pairs.append([sphere1, sphere2])
+        is_hand = [self._HAND_FRAME_MARK in f for f in frames]
+        hand_idx = [i for i, h in enumerate(is_hand) if h]
+        arm_idx = [i for i, h in enumerate(is_hand) if not h]
 
-        for sphere1, sphere2 in collision_sphere_pairs:
-            collision_matrix[
-                collision_sphere_frames.index(sphere1),
-                collision_sphere_frames.index(sphere2)
-            ] = 1
+        # 손가락↔손가락 쌍만 손 그룹으로. 나머지(팔·몸통·손↔팔)는 팔 그룹인데,
+        # 위 docstring 대로 팔 그룹의 자기충돌은 비활성으로 둔다.
+        hand_pairs = [(a, b) for a, b in pairs
+                      if self._HAND_FRAME_MARK in a and self._HAND_FRAME_MARK in b]
 
-        taskmap_name = "body_points"
-        taskmap = RobotFrameOriginsTaskMap(self.urdf_path, collision_sphere_frames,
-                                           self.batch_size, self.device)
+        self._add_repulsion_group("body_points", frames, radii, [], p)
+        if (self._use_hand_repulsion and hand_idx and hand_pairs
+                and 'hand_repulsion' in self.fabric_params):
+            h_frames = [frames[i] for i in hand_idx]
+            h_radii = [radii[i] for i in hand_idx]
+            self._add_repulsion_group("hand_points", h_frames, h_radii, hand_pairs,
+                                      self.fabric_params['hand_repulsion'],
+                                      joint_slice=self._hand_joint_slice)
+            print(f"[fabrics] 손 전용 반발: 구 {len(h_frames)} · 쌍 {len(hand_pairs)} "
+                  f"(engage {self.fabric_params['hand_repulsion']['engage_depth']}m) · "
+                  f"팔 구 {len(arm_idx)} 는 자기충돌 비활성", flush=True)
+
+    def _add_repulsion_group(self, taskmap_name, frames, radii, pairs, params,
+                             joint_slice=None):
+        """구 그룹 하나에 대해 taskmap + forcing/geometric 반발 항을 구성한다.
+
+        joint_slice 를 주면 그 관절 구간만 움직인다. ★손 그룹에 필수다 — 일반
+        RobotFrameOriginsTaskMap 은 Jacobian 에 팔 열이 살아 있어 **손 반발이 팔을 민다**
+        (실측 palm 추종오차 0.8mm → 50.9mm). 손끝 attractor 에서 겪은 결합과 같다.
+        """
+        matrix = torch.zeros(len(frames), len(frames), dtype=int, device=self.device)
+        for s1, s2 in pairs:
+            matrix[frames.index(s1), frames.index(s2)] = 1
+
+        if joint_slice is None:
+            taskmap = RobotFrameOriginsTaskMap(self.urdf_path, frames,
+                                               self.batch_size, self.device)
+        else:
+            taskmap = SubchainFrameOriginsTaskMap(self.urdf_path, frames,
+                                                  self.batch_size, self.device, joint_slice)
         self.add_taskmap(taskmap_name, taskmap, graph_capturable=self.graph_capturable)
 
-        sphere_radius = torch.tensor(self.collision_sphere_radii, device=self.device)
-        sphere_radius = sphere_radius.repeat(self.batch_size, 1)
-
-        fabric = BodySphereRepulsion(True, self.fabric_params['body_repulsion'],
-                                     self.batch_size, sphere_radius, collision_matrix,
-                                     self.device, graph_capturable=self.graph_capturable)
-        self.add_fabric(taskmap_name, "repulsion", fabric)
-
-        fabric_geom = BodySphereRepulsion(False, self.fabric_params['body_repulsion'],
-                                          self.batch_size, sphere_radius, collision_matrix,
-                                          self.device, graph_capturable=self.graph_capturable)
-        self.add_fabric(taskmap_name, "geom_repulsion", fabric_geom)
-
-        self.base_fabric_repulsion = BaseFabricRepulsion(
-            self.fabric_params['body_repulsion'],
-            self.batch_size,
-            sphere_radius,
-            collision_matrix,
-            self.device,
-        )
+        radius = torch.tensor(radii, device=self.device).repeat(self.batch_size, 1)
+        self.add_fabric(taskmap_name, "repulsion",
+                        BodySphereRepulsion(True, params, self.batch_size, radius, matrix,
+                                            self.device, graph_capturable=self.graph_capturable))
+        self.add_fabric(taskmap_name, "geom_repulsion",
+                        BodySphereRepulsion(False, params, self.batch_size, radius, matrix,
+                                            self.device, graph_capturable=self.graph_capturable))
+        base = BaseFabricRepulsion(params, self.batch_size, radius, matrix, self.device)
+        if taskmap_name == "body_points":
+            self.collision_sphere_radii = radii
+            self.base_fabric_repulsion = base
+        else:
+            self.hand_fabric_repulsion = base
 
     def add_cspace_energy(self):
         taskmap_name = "identity"
@@ -590,6 +622,16 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         self.fabrics_features["body_points"]["repulsion"] = self.base_fabric_repulsion
         self.fabrics_features["body_points"]["geom_repulsion"] = self.base_fabric_repulsion
 
+        # 손 전용 반발 그룹(있을 때만) — 팔과 파라미터·구 집합이 다르므로 응답도 따로 낸다.
+        if getattr(self, "hand_fabric_repulsion", None) is not None:
+            hp, hjac = self.get_taskmap("hand_points")(batched_cspace_position, None)
+            hvel = torch.bmm(hjac, batched_cspace_velocity.unsqueeze(2)).squeeze(2)
+            self.hand_fabric_repulsion.calculate_response(
+                hp, hvel, object_ids, object_indicator
+            )
+            self.fabrics_features["hand_points"]["repulsion"] = self.hand_fabric_repulsion
+            self.fabrics_features["hand_points"]["geom_repulsion"] = self.hand_fabric_repulsion
+
         if cspace_damping_gain is not None:
             self.fabric_params['cspace_damping']['gain'] = cspace_damping_gain
 
@@ -631,6 +673,7 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
                  robot_dir_name="openarm_tesollo_left",
                  robot_name="openarm_tesollo_left",
                  hand_mode="pca", hand_attractor_gain=None,
+                 use_hand_repulsion=False,
                  use_tip_fabric=False, tip_attractor_gain=None):
         # ★08.17 robot_dir_name/robot_name 패스스루 추가: DG-5FS 전용 URDF
         #   (openarm_tesollo_bi_s_left)를 쓰는 태스크가 기존 URDF 를 건드리지 않고

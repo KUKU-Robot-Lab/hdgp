@@ -26,8 +26,8 @@ parser.add_argument("--self_coll", type=int, default=0)
 parser.add_argument("--hand_control", default="pd", choices=["pd", "fabric"],
                     help="fabric = 손을 Fabrics 가 제어(body_repulsion 이 관통을 막는지 본다)")
 parser.add_argument("--steps", type=int, default=120)
-parser.add_argument("--repulsion", type=float, default=None,
-                    help="body_repulsion forcing/geom metric_scalar override")
+parser.add_argument("--hand_repulsion", type=int, default=0,
+                    help="1 = 손가락 Fabrics 반발을 켠다(계획 단계 겹침 회피)")
 parser.add_argument("--overlap_mm", type=float, default=18.0, help="겹침 기준(두 마디 반경 합)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -49,23 +49,9 @@ env_cfg.enable_gravity = True
 # ★body_repulsion 은 **fabric 이 제어하는 관절**에만 유효하다. pd 모드에서는
 #   손이 fabric 밖이라 쌍을 넣어도 막을 수 없다 — 그 차이를 이 인자로 가른다.
 env_cfg.hand_control = args.hand_control
+env_cfg.use_hand_repulsion = bool(args.hand_repulsion)
 env_cfg.use_tip_fabric = False
 resolve_cfg(env_cfg)
-if args.repulsion is not None:
-    # ★yaml 은 fabric 생성 시 한 번 읽힌다 — env 를 만들기 전에 덮어써야 반영된다.
-    #   손가락 반발이 hand_attractor(mass 8)에 눌리는지 보려면 이 값을 올려야 한다.
-    import yaml as _y
-    from pathlib import Path as _P
-    _pp = _P("source/FABRICS/src/fabrics_sim/fabric_params/openarm_tesollo_pose_params.yaml")
-    _txt = _pp.read_text()
-    _bak = _txt
-    for _k in ("forcing_metric_scalar", "geom_metric_scalar"):
-        _txt = _txt.replace(f"{_k}: .01", f"{_k}: {args.repulsion}")
-    _pp.write_text(_txt)
-    import atexit
-    atexit.register(lambda: _pp.write_text(_bak))     # 원복 보장
-    del _y
-
 env = gym.make(args.task, cfg=env_cfg).unwrapped
 N, A = args.num_envs, env.cfg.action_space
 dev = env.device
@@ -93,6 +79,26 @@ env.reset()
 for i in range(args.steps):
     act[:, 6:] = min(1.0, (i + 1) / 60.0)        # 개방 → 완전 폐합
     env.step(act)
+
+# ★repulsion 은 **fabric_q(계획)** 에 작용한다. 실제 관절(body_pos_w)은 거기에 PD 추종과
+#   물리 접촉까지 얹힌 결과라, 그것만 재면 repulsion 효과를 볼 수 없다.
+#   "정책이 관통 해를 쓰지 못하게 탐색 공간에서 제거하는가" = fabric_q 에서의 겹침이다.
+if getattr(env.fabric, "hand_fabric_repulsion", None) is not None:
+    _hp, _ = env.fabric.get_taskmap("hand_points")(env.fabric_q.detach(), None)
+    _hp = _hp.reshape(N, -1, 3)
+    _d = torch.cdist(_hp, _hp)
+    _eye = torch.eye(_hp.shape[1], device=dev, dtype=torch.bool)
+    _d = _d.masked_fill(_eye.unsqueeze(0), float("inf"))
+    # 같은 손가락 구는 캡슐이라 항상 겹친다 — 프레임 이름으로 손가락을 갈라 제외한다.
+    import re as _re
+    _fr = env.fabric.get_taskmap("hand_points").link_names
+    _own = torch.tensor([int(_re.search(r"dg_(\d+)_", n).group(1)) for n in _fr], device=dev)
+    _cross = (_own[:, None] != _own[None, :])
+    _d = _d.masked_fill(~_cross.unsqueeze(0), float("inf"))
+    _mind = _d.view(N, -1).min(dim=1).values
+    print(f"[fabric_q] 다른 손가락 구 최소거리 {float(_mind.mean())*1000:.1f}mm "
+          f"· 18mm 미만 {float((_mind < 0.018).float().mean())*100:.1f}%  "
+          f"← repulsion 이 계획 단계에서 막는가", flush=True)
 
 _palm = env.robot.data.body_pos_w[:, env.palm_idx] - env.scene.env_origins
 print(f"palm 추종오차 {float((env.palm_targets[:, :3] - _palm).norm(dim=-1).mean())*1000:.1f}mm "

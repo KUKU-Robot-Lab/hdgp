@@ -386,6 +386,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
             use_hand_fabric=self._hand_fabric,
             hand_mode="direct",
             hand_attractor_gain=getattr(self.cfg, "hand_attractor_gain", None),
+            use_hand_repulsion=bool(getattr(self.cfg, "use_hand_repulsion", False)),
             use_tip_fabric=self._tip_ik,     # 손끝 5점 위치 attractor(작업공간 IK)
             tip_attractor_gain=float(self.cfg.tip_attractor_gain) if self._tip_ik else None,
             robot_dir_name=p.fabric_robot_dir,

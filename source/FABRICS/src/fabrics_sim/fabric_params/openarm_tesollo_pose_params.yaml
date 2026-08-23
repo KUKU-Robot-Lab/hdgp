@@ -56,6 +56,27 @@ fabric_params:
       damping: 50.0
       damping_sharpness: 10.0
       damping_radius: 0.2
+    # ★손가락 전용 반발 — 팔과 **분리**한다(2026-08-23).
+    #   팔 구는 반경 0.10~0.18m 에 engage_depth 0.30m 라 30cm 안이면 반발한다. 손가락 구는
+    #   반경 0.009m 에 서로 2~3cm 거리라 그 파라미터로는 **상시 발동**해 fabric 전체가
+    #   불안정해진다(실측: 팔 파라미터로 자기충돌을 켜자 palm 추종오차 0.6mm → 88~109mm).
+    #   engage_depth 는 "이 거리 안이면 반발"이므로 손 스케일(마디 간격 20mm)에 맞춘다.
+    hand_repulsion:
+      max_depth: 0.05
+      min_depth: 0.002
+      engage_depth: 0.006       # 두 구 표면이 6mm 안으로 들어오면 반발 시작
+      breakaway_depth: 0.0
+      breakaway_velocity: 0.
+      metric_scalar: 1.
+      velocity_gate: True
+      velocity_gate_sharpness: 1000.
+      velocity_gate_offset: 0.002
+      rescaled_min_dist: .002
+      forcing_metric_scalar: 1.0
+      geom_metric_scalar: 1.0
+      constant_accel: 2.
+      constant_accel_geom: 3.0
+      damping_gain: 0.
     body_repulsion:
       max_depth: 2.
       min_depth: 0.01
@@ -67,8 +88,8 @@ fabric_params:
       velocity_gate_sharpness: 1000.
       velocity_gate_offset: 0.002
       rescaled_min_dist: .01
-      forcing_metric_scalar: 1.0
-      geom_metric_scalar: 1.0
+      forcing_metric_scalar: .01
+      geom_metric_scalar: .01
       constant_accel: 2.
       constant_accel_geom: 3.0
       damping_gain: 0.

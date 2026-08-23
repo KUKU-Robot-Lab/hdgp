@@ -243,6 +243,10 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     #   같은 구조에서 400 이 꼭짓점이었다. Jacobian 이 손 구간으로 마스킹돼 있어
     #   게인을 올려도 palm 은 오염되지 않는다(tip 실험에서 확인한 구조적 보장).
     hand_attractor_gain: float | None = 400.0
+    # 손가락↔손가락 Fabrics 반발. ★기본 off — 켜면 fabric 이 **계획 단계에서**
+    #   손가락 겹침을 피하려 궤적을 튼다(팔 반발과 파라미터·구 집합이 분리돼 있다).
+    #   PhysX self-collision 을 끄려면 이 항이 관통 해를 탐색 공간에서 제거해야 한다.
+    use_hand_repulsion: bool = False
     use_tip_fabric: bool = False
     # 게인 실측(팔 고정·손끝 20mm 안쪽·300스텝): 80→17.25mm · 200→5.57 · **400→2.94**
     # · 800→9.82 · 1200 이상 발산. 과대 게인은 여유자유도가 팔로 새어 palm 제어를 오염시킨다.
