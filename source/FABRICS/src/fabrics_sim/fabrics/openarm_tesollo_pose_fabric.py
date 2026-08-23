@@ -629,10 +629,17 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
     def __init__(self, batch_size, device, timestep, graph_capturable=True,
                  use_hand_fabric=False, palm_position_only=False,
                  robot_dir_name="openarm_tesollo_left",
-                 robot_name="openarm_tesollo_left"):
+                 robot_name="openarm_tesollo_left",
+                 hand_mode="pca", hand_attractor_gain=None,
+                 use_tip_fabric=False, tip_attractor_gain=None):
         # ★08.17 robot_dir_name/robot_name 패스스루 추가: DG-5FS 전용 URDF
         #   (openarm_tesollo_bi_s_left)를 쓰는 태스크가 기존 URDF 를 건드리지 않고
         #   선택할 수 있게 한다. 기본값은 구 DG-5F(pour 등 기존 소비자 보호).
+        # ★★08.23 손 제어 인자 패스스루 추가. 상위 클래스가 hand_mode/게인/손끝 IK 를
+        #   받게 된 뒤에도 이 서브클래스가 전달하지 않아, 좌팔로 부팅하면
+        #   `TypeError: unexpected keyword argument 'hand_mode'` 로 죽었다
+        #   (실측: open-bis_l_grasp_lift_fab test3-r2 가 params 만 남기고 종료).
+        #   기본값은 상위와 같아 기존 소비자 거동 불변.
         super().__init__(
             batch_size, device, timestep,
             graph_capturable=graph_capturable,
@@ -640,6 +647,10 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
             palm_position_only=palm_position_only,
             robot_dir_name=robot_dir_name,
             robot_name=robot_name,
+            hand_mode=hand_mode,
+            hand_attractor_gain=hand_attractor_gain,
+            use_tip_fabric=use_tip_fabric,
+            tip_attractor_gain=tip_attractor_gain,
             default_config_override=_LEFT_DEFAULT_CONFIG,
             # 우측 기본 palm 자세 (ez,ey,ex)=(π/2,0,π/2) 의 미러 = (-π/2,0,-π/2)
             default_palm_euler_zyx=(-1.5708, 0.0, -1.5708),

@@ -158,6 +158,9 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     fabrics_damping_gain: float = 20.0
     fabrics_max_objects_per_env: int = 8
     fabric_use_cuda_graph: bool = False
+    # 손 attractor 게인 — hand_mode="direct" 용. None = fabric params 기본(50).
+    # grasp_lift_fabric 0aadafd 가 400 채택(추종 이동량 부족 26%→8%). 값 동일 유지.
+    hand_attractor_gain: float | None = 400.0
 
     # ---- 액션 (전부 절대값 + slew — grasp 규약. 앵커만 per-env warm pose) -----------
     # [0:6] source palm 6D · [6:9] receiver palm xyz
@@ -220,7 +223,11 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     spill_step_cap: float = 0.5
     drop_penalty_weight: float = -5.0
     action_rate_weight: float = -0.3
-    contact_force_threshold: float = 1.0      # N (= grasp_lift_fabric)
+    # ★임계 3종 분리 — grasp_lift_fabric 정렬(08.23). 하나로 쓰면 스침을 막으려
+    #   올린 값이 참여 판정까지 올려 약한 접촉을 누락시킨다.
+    contact_force_threshold: float = 1.0      # N — 대향 게이트·감쌈 마디 판정
+    participation_force_threshold: float = 0.1   # N — grip_frac 참여 판정
+    envelope_force_threshold: float = 0.5     # N — 엄격 감쌈(전 마디 동시), 진단 전용
 
     # ---- 태스크 -------------------------------------------------------------------
     console_log_interval: int = 600

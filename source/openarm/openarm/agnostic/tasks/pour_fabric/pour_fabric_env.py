@@ -36,6 +36,9 @@ from . import bimanual as _bm
 from . import pour_fabric_env_cfg as _cfg
 from .bead_flags import BeadGeometry, compute_bead_flags
 from .pour_fabric_env_cfg import PourFabricEnvCfg
+# ★감쌈 판정은 자매 트랙과 **같은 함수**를 쓴다(복사 금지 — 복사하면 갈라진다).
+#   grasp_lift_fabric 도 같은 모듈을 import 한다(그쪽이 공용 원본).
+from ..grasp_sensor.rewards import envelope_fraction
 from .rewards import compute_rewards
 from .warm_bank import PourWarmBank
 
@@ -94,6 +97,10 @@ class _SideRig:
                                   device=device, dtype=torch.long)
         self.grp_b = torch.tensor([fingers.index(f) for f in profile.contact_group_b],
                                   device=device, dtype=torch.long)
+        # ★감쌈 분모 — 굴곡축이 있는 손가락만(tesollo 는 pinky 제외). 비면 전 손가락.
+        _env_fingers = profile.envelope_fingers or tuple(fingers)
+        self.env_f = torch.tensor([fingers.index(f) for f in _env_fingers],
+                                  device=device, dtype=torch.long)
 
         # ---- 지령 버퍼 (앵커 기반 절대 액션 — capture 시점에 확정) ------------------
         self.anchor = torch.zeros(N, 6, device=device)      # warm 측정 palm pose
@@ -113,6 +120,8 @@ class _SideRig:
         self.fabric_qd = None
         self.fabric_qdd = None
         self.hand_hold = None            # (N, num_hand_joints) — warm 파지 자세 PD hold
+        self.fabric_hand_cmd = None      # (N, num_hand_joints) fabric 순서 손 목표
+        self.fab_from_hand = None        # robot 손 순서 → fabric 손 순서
         self.sensors: dict = {}
 
 
@@ -313,7 +322,16 @@ class PourFabricEnv(DirectRLEnv):
                 batch_size=self.num_envs, device=self.device,
                 timestep=float(self.cfg.fabrics_dt),
                 graph_capturable=bool(self.cfg.fabric_use_cuda_graph),
-                use_hand_fabric=False,
+                # ★08.23 grasp_lift_fabric 정렬: 손을 fabric 이 **알게** 한다.
+                #   pour 는 손을 정책이 안 건드리지만(warm 자세 PD hold), fabric 이
+                #   손 자세를 모르면 body_repulsion 을 **틀린 형상**으로 계산해
+                #   없는 자기충돌을 피하려 팔을 민다. 실측(probe_pour_hand_drift):
+                #   손 지령을 PCA zeros 로 주던 구판은 fabric 내부 손이 실제와
+                #   step 200 에 6.2° · step 400 에 16.7° 벌어졌다.
+                #   hand_mode="direct" = 20-DOF 관절 그대로(팔 7열 0 → 팔 불간섭).
+                use_hand_fabric=True,
+                hand_mode="direct",
+                hand_attractor_gain=self.cfg.hand_attractor_gain,
                 robot_dir_name=p.fabric_robot_dir,
                 robot_name=p.fabric_robot_dir)
             rig.integrator = DisplacementIntegrator(rig.fabric)
@@ -334,7 +352,17 @@ class PourFabricEnv(DirectRLEnv):
             rig.fabric_q = self.robot.data.default_joint_pos[:, rig.fab_t].contiguous()
             rig.fabric_qd = torch.zeros(self.num_envs, n_j, device=self.device)
             rig.fabric_qdd = torch.zeros(self.num_envs, n_j, device=self.device)
-            rig.fabric_hand_cmd = torch.zeros(self.num_envs, 5, device=self.device)
+            # 손 지령은 (N, 손DOF) 관절 목표 — hand_mode="direct" 계약.
+            # 홈 자세로 초기화한다(0 으로 두면 첫 스텝 전 대조 시 엄지 대향 -1.57 이
+            # 통째로 오차로 보인다 — 실사용엔 매 스텝 덮어쓰지만 진단이 헷갈린다).
+            rig.fabric_hand_cmd = self.robot.data.default_joint_pos[
+                :, rig.fab_t[p.num_arm_joints:]].contiguous()
+            # robot 손 관절 순서 → fabric 손 구간 순서(목표를 넘길 때 재배열).
+            _fab_hand_ids = rig.fab_t[p.num_arm_joints:].tolist()
+            _robot_hand_ids = rig.hand_t.tolist()
+            rig.fab_from_hand = torch.tensor(
+                [_robot_hand_ids.index(int(j)) for j in _fab_hand_ids],
+                device=self.device, dtype=torch.long)
             # cspace rest = 프로필 홈(리셋 시 warm 자세로 per-env 재앵커).
             rig.fabric.default_config.copy_(rig.fabric_q)
         self._fabric_damping = float(self.cfg.fabrics_damping_gain) * torch.ones(
@@ -437,6 +465,9 @@ class PourFabricEnv(DirectRLEnv):
             desired = rig.anchor + t_ramp * (desired - rig.anchor)
             d = (desired - rig.cmd).clamp(-self._slew, self._slew)
             rig.cmd = rig.cmd + d
+            # ★손 목표 = warm 파지 자세(실제 PD 목표와 **같은 값**). 이걸 안 맞추면
+            #   fabric 이 아는 손과 실제 손이 갈라진다(구판 16.7° 실측).
+            rig.fabric_hand_cmd = rig.hand_hold[:, rig.fab_from_hand]
             rig.fabric.set_features(
                 rig.fabric_hand_cmd, rig.cmd, "euler_zyx",
                 rig.fabric_q.detach(), rig.fabric_qd.detach(),
@@ -479,23 +510,45 @@ class PourFabricEnv(DirectRLEnv):
         self.robot.set_joint_effort_target(self._grav_comp * tau[:, : self.robot.num_joints])
 
     # ==================================================================
-    def _contact(self, store: dict, fingers) -> tuple[torch.Tensor, torch.Tensor]:
-        """(손가락별 총 접촉력 (N,F), wrap 접촉 여부 (N,F)) — grasp 규약."""
-        thr = float(self.cfg.contact_force_threshold)
-        tot, wrapped = [], []
+    def _contact(self, store: dict, fingers) -> tuple[
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """(총 접촉력, 엄격 감쌈 여부, 중간마디 힘, 원위마디 힘) 각 (N,F).
+
+        ★08.23 grasp_lift_fabric 규약으로 정렬(사용자 지시). 세 가지가 바뀐다:
+          · tot   — 참여 임계(0.1N) 소비자용 원값(게이트 임계와 분리).
+          · mid/dist — 마디별 원값. 보상의 감쌈 판정(`envelope_fraction`: 마디
+            **하나라도** 접촉하면 그 손가락은 감쌈)이 이 둘을 받는다.
+          · strict — 전 마디 **동시** 접촉(min). 보상이 아니라 진단 대조용이다.
+            느슨한 판정만 오르고 이쪽이 안 오르면 "받치기"를 감쌈으로 센 것이다
+            (grasp 실측: 같은 정책이 0.503 vs 0.069 로 7배 벌어졌다).
+        구판은 wrap 마디를 max 로 합쳐 게이트 임계(1.0N)로 판정했다 — 느슨한 쪽도
+        엄격한 쪽도 아닌 제3의 정의였다.
+        """
+        w_thr = float(self.cfg.envelope_force_threshold)
+        zero = torch.zeros(self.num_envs, device=self.device)
+        tot, strict, mids, dists = [], [], [], []
         for f in fingers:
             roles = store[f]
             t = torch.zeros(self.num_envs, device=self.device)
-            w = torch.zeros(self.num_envs, device=self.device)
+            w = None
+            mags = []
             for s in roles["tip"]:
                 t = t + s.data.force_matrix_w.view(self.num_envs, -1, 3).sum(1).norm(dim=-1)
             for s in roles["wrap"]:
                 m = s.data.force_matrix_w.view(self.num_envs, -1, 3).sum(1).norm(dim=-1)
                 t = t + m
-                w = torch.maximum(w, m)
+                mags.append(m)
+                w = m if w is None else torch.minimum(w, m)
+            if w is None:                       # wrap 센서 없는 프로필(2지 그리퍼)
+                w = zero
+            # 프로필 규약: wrap_bodies = (중간 _3, 원위 _4). 마디가 하나뿐이면 둘을
+            # 같게 둔다(jaw 접촉 자체가 감쌈) — grasp_sensor 와 같은 규약.
+            mids.append(mags[0] if mags else zero)
+            dists.append(mags[1] if len(mags) > 1 else (mags[0] if mags else zero))
             tot.append(t)
-            wrapped.append((w > thr).float())
-        return torch.stack(tot, 1), torch.stack(wrapped, 1)
+            strict.append((w > w_thr).float())
+        return (torch.stack(tot, 1), torch.stack(strict, 1),
+                torch.stack(mids, 1), torch.stack(dists, 1))
 
     def _local(self, pos_w: torch.Tensor) -> torch.Tensor:
         return pos_w - self.scene.env_origins
@@ -547,7 +600,7 @@ class PourFabricEnv(DirectRLEnv):
         for rig, store, cup in (
                 (self.src, self._src_sensor_store, self.source_cup),
                 (self.rcv, self._rcv_sensor_store, self.receiver_cup)):
-            c, _ = self._contact(store, rig.fingers)
+            c, _, _, _ = self._contact(store, rig.fingers)
             contacts.append(c.clamp(max=20.0))
             palm_pos_w = self.robot.data.body_pos_w[:, rig.palm_idx]
             palm_quat_w = self.robot.data.body_quat_w[:, rig.palm_idx]
@@ -588,13 +641,32 @@ class PourFabricEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         cfg = self.cfg
 
-        src_c, src_w = self._contact(self._src_sensor_store, self.src.fingers)
-        rcv_c, rcv_w = self._contact(self._rcv_sensor_store, self.rcv.fingers)
-        thr = float(cfg.contact_force_threshold)
-        src_grip = (src_c > thr).float().mean(dim=1)
-        rcv_grip = (rcv_c > thr).float().mean(dim=1)
-        src_env = (src_w.mean(dim=1) if self.src.profile.has_wrap_sensors else src_grip)
-        rcv_env = (rcv_w.mean(dim=1) if self.rcv.profile.has_wrap_sensors else rcv_grip)
+        src_c, src_s, src_mid, src_dst = self._contact(
+            self._src_sensor_store, self.src.fingers)
+        rcv_c, rcv_s, rcv_mid, rcv_dst = self._contact(
+            self._rcv_sensor_store, self.rcv.fingers)
+        # ★E. 임계 분리(grasp_lift_fabric 정렬): 게이트=1.0N(스침 차단), **참여 판정**
+        #   =0.1N. 구판은 참여도 1.0N 이라 약하게 닿은 손가락이 grip 에서 누락됐다.
+        p_thr = float(cfg.participation_force_threshold)
+        src_grip = (src_c > p_thr).float().mean(dim=1)
+        rcv_grip = (rcv_c > p_thr).float().mean(dim=1)
+        # ★감쌈은 자매 트랙과 **같은 함수**로 판정한다: 마디(중간∨원위) 하나라도
+        #   접촉하면 그 손가락은 감쌈, 분모는 `profile.envelope_fingers`.
+        #   구판은 5지 전부를 분모에 넣어 굴곡축이 없는 pinky 때문에 상한이 0.8 로
+        #   깎였다(tesollo-pinky-joint-kinematics). 임계도 게이트값(1.0N)을 쓰고
+        #   마디를 max 로 합쳐 느슨·엄격 어느 쪽도 아닌 제3의 정의였다.
+        e_thr = float(cfg.contact_force_threshold)
+        src_env = (envelope_fraction(src_mid[:, self.src.env_f],
+                                     src_dst[:, self.src.env_f], e_thr)
+                   if self.src.profile.has_wrap_sensors else src_grip)
+        rcv_env = (envelope_fraction(rcv_mid[:, self.rcv.env_f],
+                                     rcv_dst[:, self.rcv.env_f], e_thr)
+                   if self.rcv.profile.has_wrap_sensors else rcv_grip)
+        # 진단 대조 — 전 마디 동시접촉(0.5N). 느슨한 쪽만 오르면 받치기다.
+        src_strict = (src_s[:, self.src.env_f].mean(dim=1)
+                      if self.src.profile.has_wrap_sensors else src_grip)
+        rcv_strict = (rcv_s[:, self.rcv.env_f].mean(dim=1)
+                      if self.rcv.profile.has_wrap_sensors else rcv_grip)
 
         # ---- 비드 분류 (pour_v1 이식, 순수 함수) --------------------------------------
         flags = compute_bead_flags(
@@ -665,6 +737,10 @@ class PourFabricEnv(DirectRLEnv):
         self.extras["task/gate_rcv"] = gates["gate_rcv"].float().mean()
         self.extras["task/src_envelope"] = src_env.mean()
         self.extras["task/rcv_envelope"] = rcv_env.mean()
+        # 엄격 감쌈(전 마디 동시 0.5N) — 보상에는 안 들어가는 **대조 지표**.
+        # 느슨한 쪽만 오르면 컵을 감싼 게 아니라 받치고 있는 것이다.
+        self.extras["task/src_envelope_strict"] = src_strict.mean()
+        self.extras["task/rcv_envelope_strict"] = rcv_strict.mean()
         # ★접촉력 원값 — grip=0 이 "미접촉"인지 "임계 아래"인지 구분(fab_test1 교훈).
         self.extras["contact/src_best"] = src_c.max(dim=1).values.mean()
         self.extras["contact/rcv_best"] = rcv_c.max(dim=1).values.mean()
