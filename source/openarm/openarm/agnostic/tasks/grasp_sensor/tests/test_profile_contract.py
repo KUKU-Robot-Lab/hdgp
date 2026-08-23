@@ -380,3 +380,24 @@ def test_gripper_left_is_skipped_not_registered():
     assert not any(i.startswith("open-sens_l_") for i in cfg.REGISTERED), cfg.REGISTERED
     assert "sens_l" in cfg.SKIPPED
     assert "fabric" in cfg.SKIPPED["sens_l"].lower()
+
+
+def test_registration_reads_the_profile_name_from_dataclass_fields():
+    """★실측 결함(349b179 → 77bcb9a): `_cls.profile_name` 은 존재하지 않는다.
+
+    @configclass 가 클래스 속성을 dataclass 필드로 옮기면서 클래스에서 제거하고,
+    기본값도 default_factory 쪽으로 보낸다. 그걸 모르고 클래스 속성으로 읽었더니
+    `isaaclab_tasks` import 자체가 죽어 **어떤 태스크도 못 띄우는** 상태가 됐다.
+    그 결함은 이 파일을 import 해야만 드러나는데 import 에는 isaaclab 이 필요해
+    로컬 테스트가 통째로 놓쳤다 — 그래서 소스 단언으로도 잠근다.
+    """
+    assert "__dataclass_fields__" in _CONFIG_SRC
+    assert "default_factory" in _CONFIG_SRC, "default 만 보면 MISSING 이 나온다"
+    # ★주석에는 그 표현이 **일부러** 남아 있다(왜 안 되는지 설명한다). 코드만 본다.
+    code = "\n".join(
+        line for line in _CONFIG_SRC.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "_cls.profile_name" not in code, (
+        "@configclass 이후에는 클래스 속성으로 남지 않는다"
+    )
+    assert "_profile_name_of(_cls)" in code
