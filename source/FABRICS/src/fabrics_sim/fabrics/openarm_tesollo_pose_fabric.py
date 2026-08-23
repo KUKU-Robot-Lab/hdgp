@@ -35,11 +35,16 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
     """
 
     def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=True,
-                 palm_position_only=False,
+                 palm_position_only=False, use_tip_fabric=False, tip_attractor_gain=None,
                  robot_dir_name="openarm_tesollo", robot_name="openarm_tesollo",
                  default_config_override=None, default_palm_euler_zyx=None,
                  fabric_params_filename=None):
         self._use_hand_fabric = use_hand_fabric
+        # ★손끝 attractor(작업공간 손 제어). 기본 off — 켜지 않으면 기존 트랙 거동 불변.
+        #   PCA(5D)와 달리 손 20-DOF 를 그대로 두므로 인벨롭 감쌈을 제약하지 않는다.
+        self._use_tip_fabric = use_tip_fabric
+        self._tip_attractor_gain = tip_attractor_gain  # None=params 값 사용(튜닝용 override)
+        self._tip_frames_ctrl = [f"rl_dg_{i}_tip" for i in range(1, 6)]
         # [새 구조] palm_position_only=True: palm_link origin 1점(position 3-DOF)만 attractor로
         #   고정하고 orientation은 자유(cspace nullspace가 결정). j6 leak 차단 → IK가 j5 roll을
         #   demo대로 실현. False(기본)=기존 7-point full 6-DOF(v5 대조군 유지).
@@ -274,6 +279,31 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
                            self.device, graph_capturable=self.graph_capturable)
         self.add_fabric(taskmap_name, "palm_attractor", fabric)
 
+    def add_fingertip_attractor(self):
+        """손끝 5점 위치 attractor — PCA 없이 작업공간(IK)으로 손가락을 제어한다.
+
+        ★기본 off(`use_tip_fabric=False`). 켜지 않으면 이 항은 구성되지 않으므로
+          기존 트랙(grasp_lift_fabric·pour_fabric 등)의 거동은 전혀 바뀌지 않는다.
+
+        구조는 palm attractor 와 동일하다: RobotFrameOriginsTaskMap 으로 손끝 5프레임의
+        원점을 뽑고 Attractor 를 건다. 손끝 taskmap 자체는 이미 FK(obs)용으로 만들어져
+        있었으나 attractor 가 붙어 있지 않아 **제어에는 쓰이지 않고 있었다**.
+
+        PCA(5D) 대비 이점: 손 자유도를 20-DOF 그대로 두므로 인벨롭 감쌈을 제약하지 않는다.
+        타깃은 (B, 15) = 손끝 5개 × xyz.
+        """
+        taskmap_name = "fingertips"
+        taskmap = RobotFrameOriginsTaskMap(self.urdf_path, self._tip_frames_ctrl,
+                                           self.batch_size, self.device)
+        self.add_taskmap(taskmap_name, taskmap, graph_capturable=self.graph_capturable)
+        params = dict(self.fabric_params.get('fingertip_attractor',
+                                             self.fabric_params['palm_attractor']))
+        if self._tip_attractor_gain is not None:
+            params['conical_gain'] = float(self._tip_attractor_gain)
+        fabric = Attractor(True, params, self.device,
+                           graph_capturable=self.graph_capturable)
+        self.add_fabric(taskmap_name, "fingertip_attractor", fabric)
+
     def add_body_repulsion(self):
         collision_sphere_frames = self.fabric_params['body_repulsion']['collision_sphere_frames']
         self.collision_sphere_radii = self.fabric_params['body_repulsion']['collision_sphere_radii']
@@ -342,6 +372,8 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         self.add_cspace_attractor(False)
         if self._use_hand_fabric:
             self.add_hand_fabric()
+        if self._use_tip_fabric:
+            self.add_fingertip_attractor()
         self.add_palm_points_attractor()
         self.add_body_repulsion()
         self.add_cspace_energy()
@@ -454,7 +486,7 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
     def set_features(self, hand_target, palm_pose_target, orientation_convention,
                      batched_cspace_position, batched_cspace_velocity,
                      object_ids, object_indicator,
-                     cspace_damping_gain=None):
+                     cspace_damping_gain=None, tip_target=None):
         """
         Pass input features to fabric terms.
 
@@ -471,6 +503,9 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         """
         if "pca_hand" in self.fabrics_features:
             self.fabrics_features["pca_hand"]["hand_attractor"] = hand_target
+        if "fingertips" in self.fabrics_features:
+            assert tip_target is not None, "use_tip_fabric=True 인데 tip_target 이 없다"
+            self.fabrics_features["fingertips"]["fingertip_attractor"] = tip_target
         self.fabrics_features["identity"]["cspace_attractor"] = self.default_config
 
         self._palm_pose_target[:, :3] = palm_pose_target[:, :3]

@@ -39,6 +39,23 @@ fabric_params:
         damping: 50.
         damping_sharpness: 10.
         damping_radius: .2
+    # ★손끝 attractor — PCA 없이 작업공간(IK)으로 손가락을 제어할 때 쓴다.
+    #   `use_tip_fabric=True` 일 때만 구성된다(기본 off → 기존 트랙 거동 불변).
+    #   ★conical_gain 400 은 스윕 실측치다(팔 고정, 손끝 5점을 20mm 안쪽으로):
+    #     80(palm 값 차용) 17.25mm / 200 5.57 / **400 2.94** / 800 9.82 / 1200 23.07 / 2000 26.64
+    #   실용 구간 200~800, 꼭짓점 400. 과대 게인의 실패 방식은 "팔 관절 변화 2.4배"
+    #   = 여유자유도가 팔로 새어 palm 제어를 오염시킨다. 게인은 손이 감당하는 범위 안에.
+    #   나머지 값은 palm_attractor 와 동일(스케일만 다르고 형식은 같은 attractor).
+    fingertip_attractor:
+      min_isotropic_mass: 1.0
+      max_isotropic_mass: 1.0
+      mass_sharpness: 10.0
+      mass_switch_offset: 0.5
+      conical_sharpness: 40.0
+      conical_gain: 400.0
+      damping: 50.0
+      damping_sharpness: 10.0
+      damping_radius: 0.2
     body_repulsion:
       max_depth: 2.
       min_depth: 0.01
