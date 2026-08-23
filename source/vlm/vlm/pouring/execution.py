@@ -40,8 +40,12 @@ class PolicyInferenceBackend(Protocol):
     def reset(self, env_ids: tuple[int, ...]) -> None: ...
 
 
+# env_ids come first so a builder that reads live env buffers (the common
+# Isaac case — the policy obs is the env's own observation vector) can pick
+# exactly the routed rows; builders that derive obs from SemanticState alone
+# may ignore them.
 ObservationBuilder = Callable[
-    [tuple[SemanticState, ...]],
+    [tuple[int, ...], tuple[SemanticState, ...]],
     tuple[tuple[float, ...], ...],
 ]
 
@@ -89,7 +93,7 @@ class ReferencedPolicySkill:
         env_ids: tuple[int, ...],
         states: tuple[SemanticState, ...],
     ) -> tuple[SkillCommand, ...]:
-        observations = self.observation_builder(states)
+        observations = self.observation_builder(env_ids, states)
         if len(observations) != len(states):
             raise ValueError("observation builder must return one observation per environment")
         for observation in observations:

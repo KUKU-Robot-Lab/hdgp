@@ -62,7 +62,7 @@ def test_grasp_adapter_validates_106d_observation_and_11d_action() -> None:
     backend = FakeBackend(action_dim=11)
     skill = GraspLiftSkill(
         artifacts("open-tesol_r_grasp_v1-lstm"),
-        observation_builder=lambda states: tuple((0.0,) * 106 for _ in states),
+        observation_builder=lambda env_ids, states: tuple((0.0,) * 106 for _ in states),
         backend=backend,
         observation_dim=106,
         action_dim=11,
@@ -86,7 +86,7 @@ def test_adapter_reads_dimensions_from_the_run_env_yaml(tmp_path: Path) -> None:
     skill = BimanualPourSkill(
         PolicyArtifacts("open-tesol_b_pour_v1-lstm", tmp_path, tmp_path / "model.pth",
                         tmp_path / "agent.yaml", env_yaml),
-        observation_builder=lambda states: tuple((0.0,) * 51 for _ in states),
+        observation_builder=lambda env_ids, states: tuple((0.0,) * 51 for _ in states),
         backend=backend,
     )
 
@@ -104,7 +104,7 @@ def test_adapter_rejects_env_yaml_without_contract_keys(tmp_path: Path) -> None:
         BimanualPourSkill(
             PolicyArtifacts("open-tesol_b_pour_v1-lstm", tmp_path, tmp_path / "model.pth",
                             tmp_path / "agent.yaml", env_yaml),
-            observation_builder=lambda states: ((0.0,) * 51,),
+            observation_builder=lambda env_ids, states: ((0.0,) * 51,),
             backend=FakeBackend(15),
         )
 
@@ -115,7 +115,7 @@ def test_adapter_rejects_env_yaml_without_contract_keys(tmp_path: Path) -> None:
         (
             lambda: GraspLiftSkill(
                 artifacts("open-tesol_r_grasp_v1-lstm"),
-                observation_builder=lambda states: ((0.0,) * 105,),
+                observation_builder=lambda env_ids, states: ((0.0,) * 105,),
                 backend=FakeBackend(11),
                 observation_dim=106,
                 action_dim=11,
@@ -125,7 +125,7 @@ def test_adapter_rejects_env_yaml_without_contract_keys(tmp_path: Path) -> None:
         (
             lambda: BimanualPourSkill(
                 artifacts("open-tesol_b_pour_v1-lstm"),
-                observation_builder=lambda states: ((0.0,) * 55,),
+                observation_builder=lambda env_ids, states: ((0.0,) * 55,),
                 backend=FakeBackend(11),
                 observation_dim=55,
                 action_dim=12,

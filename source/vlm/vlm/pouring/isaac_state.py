@@ -79,6 +79,8 @@ class FabricStateProvider(StateProvider):
         controlled_side: str = "right",
         approach_offset: tuple[float, float, float] = (0.0, 0.0, 0.10),
         approach_tolerance: float = 0.03,
+        grasp_lift_success_z: float | None = None,
+        grasp_lift_hold_ticks: int = 1,
     ) -> None:
         if controlled_side not in ("right", "left"):
             raise ValueError(f"controlled_side must be 'right' or 'left', got {controlled_side!r}")
@@ -86,11 +88,24 @@ class FabricStateProvider(StateProvider):
             raise ValueError("approach_tolerance must be positive")
         if not all(math.isfinite(float(v)) for v in approach_offset):
             raise ValueError("approach_offset must be finite")
+        if grasp_lift_success_z is not None and not math.isfinite(grasp_lift_success_z):
+            raise ValueError("grasp_lift_success_z must be finite when given")
+        if grasp_lift_hold_ticks < 1:
+            raise ValueError("grasp_lift_hold_ticks must be >= 1")
         self.view = view
         self.routing = routing
         self.controlled_side = controlled_side
         self.approach_offset = approach_offset
         self.approach_tolerance = float(approach_tolerance)
+        # ★absolute-z judgement: the caller must derive this from the *resting
+        #   object origin* (e.g. baseline z after settling + lift height) — a
+        #   surface-height guess poisons the baseline (repo-wide trap).
+        self.grasp_lift_success_z = grasp_lift_success_z
+        # ★순간 z 스파이크(쳐올림·발리스틱 토스)도 임계를 넘는다 — 실측: 정책이
+        #   컵을 띄운 순간 DONE 이 발화하고 hold 동결 후 컵이 떨어졌다.
+        #   성공은 연속 hold_ticks 틱 동안 유지됐을 때만 인정한다.
+        self.grasp_lift_hold_ticks = int(grasp_lift_hold_ticks)
+        self._lift_streaks: list[int] = []
 
     def get_states(self) -> tuple[SemanticState, ...]:
         num_envs = self.view.num_envs
@@ -109,8 +124,11 @@ class FabricStateProvider(StateProvider):
             raise ValueError(
                 f"routing tracks {len(self.routing.current_skills)} envs, view has {num_envs}"
             )
+        if len(self._lift_streaks) != num_envs:
+            self._lift_streaks = [0] * num_envs
         return tuple(
             self._one(
+                env_id=env_id,
                 palm=tuple(float(v) for v in palm[env_id]),
                 source=tuple(float(v) for v in source[env_id]),
                 source_vel=tuple(float(v) for v in source_vel[env_id]),
@@ -127,6 +145,7 @@ class FabricStateProvider(StateProvider):
     def _one(
         self,
         *,
+        env_id: int,
         palm: tuple[float, ...],
         source: tuple[float, ...],
         source_vel: tuple[float, ...],
@@ -138,7 +157,20 @@ class FabricStateProvider(StateProvider):
         elapsed: int,
     ) -> SemanticState:
         ee_pose = (*palm[:3], *euler_zyx_to_quat_wxyz((palm[3], palm[4], palm[5])))
-        success = skill is SkillId.APPROACH and self._approach_reached(palm, source)
+        lifted = (
+            self.grasp_lift_success_z is not None
+            and source[2] >= self.grasp_lift_success_z
+        )
+        if skill is SkillId.GRASP_LIFT and lifted:
+            self._lift_streaks[env_id] += 1
+        else:
+            self._lift_streaks[env_id] = 0
+        if skill is SkillId.APPROACH:
+            success = self._approach_reached(palm, source)
+        elif skill is SkillId.GRASP_LIFT:
+            success = self._lift_streaks[env_id] >= self.grasp_lift_hold_ticks
+        else:
+            success = False
         side_kwargs = {
             f"{self.controlled_side}_arm_joint_pos": arm_pos,
             f"{self.controlled_side}_arm_joint_vel": arm_vel,
@@ -159,6 +191,7 @@ class FabricStateProvider(StateProvider):
             target_pose=(0.0, 0.0, 0.0, *_IDENTITY_QUAT),
             source_velocity=source_vel,
             target_velocity=(0.0,) * 6,
+            source_lifted=lifted,
             current_skill=skill,
             skill_elapsed_steps=max(0, int(elapsed)),
             current_skill_success=success,

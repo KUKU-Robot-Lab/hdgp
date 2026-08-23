@@ -136,6 +136,33 @@ def gate_assets_tracked(paths: list) -> Gate:
     )
 
 
+# 평가 시 물체 pose 를 바깥에서 주입하는 유일한 이음매. `eval_s2r/providers.py` 의
+# LiveProvider/StateFrozenProvider/CameraFileProvider 가 이 속성에 써 넣는다.
+PERCEPTION_SEAM_HOOK = "eval_cup_pos_override"
+
+
+def gate_perception_seam(env_source: Path | None) -> Gate:
+    """perception 이 낸 물체 pose 를 정책 관측에 넣을 수 있는가.
+
+    ★실측: 이 훅은 grasp_v1(좌·우)과 tesollo/right/grasp_sensor **3개 env 에만** 있다.
+      업그레이드된 네 태스크에는 하나도 없다. 없으면 물체 pose 를 sim GT 로만 볼 수
+      있어 "perception_plus_plus 로 평가를 그대로 진행"이 성립하지 않는다.
+      부팅은 되므로 BLOCK 이 아니라 WARN 이다 — 다만 보이지 않으면 안 된다.
+
+    env 소스가 없는 ManagerBased 태스크는 obs 가 ObsTerm 이라 주입 기구 자체가 다르다.
+    """
+    if env_source is None:
+        return Gate(
+            "perception_seam", False, WARN,
+            "ManagerBased — obs 가 ObsTerm 이라 pose 주입 기구가 별도로 필요하다",
+        )
+    has = PERCEPTION_SEAM_HOOK in env_source.read_text(encoding="utf-8")
+    return Gate(
+        "perception_seam", has, WARN,
+        "" if has else f"`{PERCEPTION_SEAM_HOOK}` 훅 없음 — 물체 pose 를 sim GT 로만 볼 수 있다",
+    )
+
+
 def gate_true(name: str, value: bool, severity: str, detail_false: str) -> Gate:
     return Gate(name, bool(value), severity, "" if value else detail_false)
 
@@ -193,6 +220,8 @@ def build_grasp_sensor_rows() -> list[TaskRow]:
             "palm 박스를 probe 로 실측하지 않았다 — 다른 로봇 값을 물려받았을 수 있다",
         ))
         gates.append(gate_assets_tracked(assets))
+        gates.append(gate_perception_seam(
+            AGNOSTIC_DIR / "tasks/grasp_sensor/grasp_sensor_env.py"))
         rows.append(TaskRow(
             task="agnostic/grasp_sensor", variant=name,
             gym_ids=_agnostic_ids(short, side, "grasp_sensor"),
@@ -232,6 +261,8 @@ def build_grasp_lift_fabric_rows() -> list[TaskRow]:
             "물리/IK probe 미통과 — 선언만 된 프로필",
         ))
         gates.append(gate_assets_tracked(assets))
+        gates.append(gate_perception_seam(
+            AGNOSTIC_DIR / "tasks/grasp_lift_fabric/grasp_lift_fabric_env.py"))
         rows.append(TaskRow(
             task="agnostic/grasp_lift_fabric", variant=name,
             gym_ids=_agnostic_ids(profile.asset.short, profile.side, "grasp_lift_fab"),
@@ -267,6 +298,8 @@ def build_pour_fabric_rows() -> list[TaskRow]:
         gates += agent_yaml_gates(cfg_dir, ("rl_games_ppo_cfg.yaml",
                                             "rl_games_ppo_lstm_cfg.yaml"))
         gates.append(gate_assets_tracked(assets))
+        gates.append(gate_perception_seam(
+            AGNOSTIC_DIR / "tasks/pour_fabric/pour_fabric_env.py"))
         rows.append(TaskRow(
             task="agnostic/pour_fabric", variant=name,
             gym_ids=_agnostic_ids(pair.name, "b", "pour_fab"),
@@ -305,6 +338,7 @@ def build_gripper_left_rows() -> list[TaskRow]:
                 FABRIC_WORLD_DIR / f"{preset.FABRIC_WORLD_FILENAME}.yaml",
             ))
         gates.append(gate_assets_tracked(assets))
+        gates.append(gate_perception_seam(None))   # ManagerBased — env 소스가 없다
         rows.append(TaskRow(
             task="gripper/left/grasp_sensor", variant=variant,
             gym_ids=(f"open-grip_l_grasp_sensor{id_suffix}",
@@ -391,9 +425,16 @@ def render_markdown(rows: tuple[TaskRow, ...]) -> str:
         "## 범위 밖 (이 매트릭스가 판정하지 않는 것)",
         "",
         "- **런타임 거동** — 부팅 후 물리·보상·수렴은 정적으로 알 수 없다.",
-        "- **perception_plus_plus 연동** — 저장소가 이 머신에 없다(vision-3090 별도 repo).",
-        "  sim 평가는 물체 pose 를 env GT 로 직독하고, `/cup_pose` ROS 경로는 실기 전용이다.",
-        "  `sim2real/config/global_camera_extrinsics.yaml` 은 아직 PLACEHOLDER 다.",
+        "- **perception 으로 물체 pose 를 대체한 평가** — 기구는 이미 있다:",
+        "  `scripts/eval_s2r/providers.py` 의 `make_provider(live|state_frozen|camera_frozen)` 가",
+        f"  env 의 `{PERCEPTION_SEAM_HOOK}` 에 써 넣고, env 가 관측을 만들 때 그 값을 쓴다.",
+        "  ★그 훅은 `tesollo/{right,left}/grasp_v1` 과 `tesollo/right/grasp_sensor` **3개 env 에만**",
+        "  있고 위 네 태스크에는 하나도 없다(perception_seam 게이트). 없으면 물체 pose 를 sim GT",
+        "  로만 볼 수 있어 \"perception 으로 평가를 그대로\" 가 성립하지 않는다.",
+        "  → 학습이 끝난 뒤 각 env 의 관측 조립부에 같은 훅 2줄을 넣으면 된다(학습 경로라 지금은 동결).",
+        "- **perception_plus_plus 저장소** — 이 머신에 없다(vision-3090 별도 repo).",
+        "  `/cup_pose` ROS 경로는 실기 전용이고, `sim2real/config/global_camera_extrinsics.yaml`",
+        "  은 아직 PLACEHOLDER 라 실기 구동 금지 상태다.",
         "- **체크포인트 계약** — 학습된 정책의 실제 차원은 런의 `params/env.yaml` 이 진실원천이다",
         "  (`scripts/tools/policy_contract.py`). 위 표의 act/obs/state 는 참고값이다.",
         "",

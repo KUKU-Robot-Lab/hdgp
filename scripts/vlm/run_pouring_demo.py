@@ -1,16 +1,23 @@
 """VLM pouring 파이프라인을 fabric 태스크 sim 에서 눈으로 확인하는 데모.
 
 Qwen 은 스텁(고정 TaskSpecification)이다 — GPU 경계(모델 로딩) 밖에서
-파이프라인 → 스킬 라우팅 → fabric 제어 배선만 검증한다.
+파이프라인 → 스킬 라우팅 → fabric 제어 배선을 검증한다.
 
 동작: 규칙 기반 approach 스킬이 `TASK_SPACE_POSE`(물체 위 pregrasp 지점)를 내고,
-`vlm.pouring.fabric_bridge` 가 이를 grasp_lift_fabric 의 절대 액션으로 인코딩해
-Fabrics 가 팔을 보낸다. palm 이 목표 반경 안에 들면 결정론적 HRL 이 DONE 으로
-전이한다. 학습 스킬(grasp_lift 등)은 아직 붙이지 않는다(로드맵 5단계).
+`vlm.pouring.fabric_bridge` 가 이를 fabric 태스크의 절대 액션으로 인코딩해
+Fabrics 가 팔을 보낸다. `--policy_run`(또는 `--policy_checkpoint`)을 주면
+같은 태스크로 학습된 rl_games 체크포인트가 `grasp_lift` 스킬로 접속되어
+approach 성공 후 정책이 파지·리프트를 이어받는다(플랜: approach → grasp_lift).
+정책 obs 는 env 자신의 관측 벡터를 그대로 쓴다(학습과 동일 계약).
 
 실행 (GUI 로 보려면 --headless 빼기):
+    # approach 만 (정책 없음)
     PYTHONUNBUFFERED=1 ../IsaacLab/isaaclab.sh -p scripts/vlm/run_pouring_demo.py \
         --num_envs 2 --steps 600 --out outputs/vlm_demo --headless
+    # 학습 정책 접속 (예: arm4090 open-bis/left test2)
+    PYTHONUNBUFFERED=1 ../IsaacLab/isaaclab.sh -p scripts/vlm/run_pouring_demo.py \
+        --task open-bis_l_grasp_lift_fab-play --policy_run test2 \
+        --num_envs 2 --steps 720 --out outputs/vlm_demo --headless
 
 카메라 프레임은 --out 아래 PNG 로 저장된다 — 이후 Qwen task-grounding 의
 입력 이미지가 되는 바로 그 시점이다.
@@ -19,6 +26,7 @@ Fabrics 가 팔을 보낸다. palm 이 목표 반경 안에 들면 결정론적 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -40,6 +48,13 @@ parser.add_argument("--frame_interval", type=int, default=60, help="카메라 �
 parser.add_argument("--approach_offset", type=float, nargs=3, default=(0.0, 0.0, 0.12),
                     help="물체 기준 pregrasp 오프셋 [m] (env-local)")
 parser.add_argument("--approach_tol", type=float, default=0.03, help="approach 성공 반경 [m]")
+parser.add_argument("--policy_run", type=str, default=None,
+                    help="grasp_lift 로 접속할 rl_games 런 디렉토리 이름(글롭). "
+                         "task id 에서 log/rl_games/<robot>/<side>/<task>/ 를 파생한다.")
+parser.add_argument("--policy_checkpoint", type=str, default=None,
+                    help="명시적 .pth 경로 (없으면 policy_run 의 최신 last_*.pth)")
+parser.add_argument("--lift_height", type=float, default=0.08,
+                    help="grasp_lift 성공 = 안착 기준선 대비 이만큼 상승 [m]")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = args.frame_interval > 0 or args.enable_cameras
@@ -62,16 +77,18 @@ from vlm.pouring import (  # noqa: E402
     SkillId,
     TaskSpecification,
 )
+from vlm.pouring.checkpoint_resolver import CheckpointResolver  # noqa: E402
+from vlm.pouring.contracts import ControlMode  # noqa: E402
 from vlm.pouring.fabric_bridge import (  # noqa: E402
-    HoldPoseLatch,
     PalmActionSpace,
     command_to_action,
     euler_zyx_to_quat_wxyz,
 )
 from vlm.pouring.isaac_state import FabricStateProvider  # noqa: E402
+from vlm.pouring.rl_games_backend import RlGamesPolicyBackend  # noqa: E402
 from vlm.pouring.skill_manager import SkillManager  # noqa: E402
 from vlm.pouring.skill_registry import SkillRegistry  # noqa: E402
-from vlm.pouring.skills import ApproachSkill  # noqa: E402
+from vlm.pouring.skills import ApproachSkill, GraspLiftSkill  # noqa: E402
 
 # 카메라: env_0 에만 붙인다(작업면 조망 — 이후 Qwen 입력 시점).
 _CAM_EYE = (1.35, 0.55, 0.85)
@@ -117,11 +134,61 @@ class _EnvSceneView:
         return self.env.robot.data.joint_vel[:, self.env.hand_ids].cpu().tolist()
 
 
+def _task_identity(task: str) -> tuple[str, str, str]:
+    """gym id → (base_id, '<robot>/<side>', '<task-folder>') — train.py 로그 규약."""
+    base = re.sub(r"(-play|-lstm)+$", "", task)
+    match = re.match(r"^(open-[a-z0-9]+)_([lr])_(.+)$", base)
+    if match is None:
+        raise SystemExit(f"[vlm_demo] task id 규약 해석 실패: {task}")
+    robot, side, task_part = match.groups()
+    side_dir = "left" if side == "l" else "right"
+    return base, f"{robot}/{side_dir}", task_part.replace("_", "-")
+
+
+def _match_training_physics(cfg, env_yaml: Path) -> None:
+    """학습 덤프의 물리 플래그를 데모 env 에 반영한다(obs 분포 정합).
+
+    ★PLAY cfg 기본은 gravity/self_collisions OFF 인데 실제 학습 런(test2)은
+      둘 다 ON 이었다 — 안 맞추면 정책이 본 적 없는 동역학에서 평가된다.
+    """
+    text = env_yaml.read_text()
+    for key in ("enable_gravity", "enable_self_collisions"):
+        match = re.search(rf"^{key}: (true|false)$", text, re.M)
+        if match is not None:
+            setattr(cfg, key, match.group(1) == "true")
+            print(f"[vlm_demo] 학습 정합: {key} = {match.group(1)}", flush=True)
+
+
+def _resolve_policy(task: str):
+    """--policy_run/--policy_checkpoint → PolicyArtifacts (없으면 None)."""
+    if not (args.policy_run or args.policy_checkpoint):
+        return None
+    base_id, side_dir, folder = _task_identity(task)
+    resolver = CheckpointResolver(_HDGP_ROOT, task_logs={base_id: (side_dir, folder)})
+    checkpoint = Path(args.policy_checkpoint) if args.policy_checkpoint else None
+    if checkpoint is None:
+        run_root = _HDGP_ROOT / "log/rl_games" / side_dir / folder
+        runs = sorted(path for path in run_root.glob(args.policy_run) if path.is_dir())
+        if len(runs) != 1:
+            raise SystemExit(f"[vlm_demo] 런 선택자가 정확히 1개여야 한다: {run_root}/{args.policy_run} → {runs}")
+        ckpts = sorted((runs[0] / "nn").glob("*.pth"), key=lambda p: p.stat().st_mtime)
+        if not ckpts:
+            raise SystemExit(f"[vlm_demo] 체크포인트 없음: {runs[0]}/nn")
+        checkpoint = ckpts[-1]
+    return resolver.resolve(base_id, args.policy_run or "ignored", checkpoint=checkpoint)
+
+
 def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    artifacts = _resolve_policy(args.task)
+    _, side_dir, _ = _task_identity(args.task)
+    controlled_side = side_dir.rsplit("/", 1)[-1]
+
     cfg = parse_env_cfg(args.task, num_envs=args.num_envs)
+    if artifacts is not None:
+        _match_training_physics(cfg, artifacts.env_yaml)
     # 데모 중 에피소드 timeout 리셋이 끼면 SkillManager 의 per-env 상태와 어긋난다.
     cfg.episode_length_s = max(cfg.episode_length_s, args.steps / 60.0 + 5.0)
     if args.frame_interval > 0:
@@ -138,7 +205,7 @@ def main() -> None:
     env.reset()
     # ★reset 직후 버퍼는 stale 일 수 있다(반복 실측 함정) — 1스텝 굴린 뒤 읽는다.
     zero = torch.zeros(env.num_envs, env.cfg.action_space, device=env.device)
-    env.step(zero)
+    latest_obs, *_ = env.step(zero)
 
     cam = env.scene.sensors.get("vlm_cam") if args.frame_interval > 0 else None
     if cam is not None:
@@ -157,26 +224,56 @@ def main() -> None:
     )
     hand_dim = int(env.cfg.action_space) - 6
     approach_quat = euler_zyx_to_quat_wxyz(space.home[3:6])
+
+    skills: list = [
+        ApproachSkill(offset=tuple(args.approach_offset), orientation_wxyz=approach_quat),
+    ]
+    plan = ("approach",)
+    obs_holder = {"policy": latest_obs["policy"]}
+    if artifacts is not None:
+        def _policy_obs(env_ids, states):
+            rows = obs_holder["policy"]
+            return tuple(tuple(float(v) for v in rows[i].tolist()) for i in env_ids)
+
+        backend = RlGamesPolicyBackend(
+            artifacts, num_envs=env.num_envs, device=str(env.device),
+        )
+        grasp_skill = GraspLiftSkill(artifacts, observation_builder=_policy_obs, backend=backend)
+        if grasp_skill.action_dim != int(env.cfg.action_space):
+            raise SystemExit(
+                f"[vlm_demo] 정책 action {grasp_skill.action_dim}D ≠ env {env.cfg.action_space}D — "
+                "다른 태스크의 체크포인트다."
+            )
+        backend.load()   # 첫 tick 중간 스톨 방지 — 여기서 미리 로드
+        skills.append(grasp_skill)
+        plan = ("approach", "grasp_lift")
+        print(f"[vlm_demo] 정책 접속: {artifacts.checkpoint} "
+              f"(obs {grasp_skill.observation_dim}D / act {grasp_skill.action_dim}D)", flush=True)
+
     task = TaskSpecification(
         task="pour",
-        source_id="cup_right",
-        target_id="cup_left",
-        nominal_plan=("approach",),
-        allowed_skills=("approach", "recovery"),
+        source_id=f"cup_{controlled_side}",
+        target_id="cup_other",
+        nominal_plan=plan,
+        allowed_skills=plan + ("recovery",),
     )
-    registry = SkillRegistry([
-        ApproachSkill(offset=tuple(args.approach_offset), orientation_wxyz=approach_quat),
-    ])
+    registry = SkillRegistry(skills)
     manager = SkillManager(
         registry=registry,
         num_envs=env.num_envs,
-        minimum_steps={SkillId.APPROACH: 2},
+        minimum_steps={SkillId.APPROACH: 2, SkillId.GRASP_LIFT: 5},
     )
+    # grasp_lift 성공 기준선 = **안착한 물체 원점**(settle 후 실측) + lift_height.
+    view = _EnvSceneView(env)
+    baseline_z = float(np.mean([pose[2] for pose in view.object_pose()]))
     provider = FabricStateProvider(
-        _EnvSceneView(env),
+        view,
         manager,
+        controlled_side=controlled_side,
         approach_offset=tuple(args.approach_offset),
         approach_tolerance=args.approach_tol,
+        grasp_lift_success_z=baseline_z + args.lift_height if artifacts is not None else None,
+        grasp_lift_hold_ticks=3,   # 0.6s 유지 — 쳐올림 스파이크를 성공으로 안 센다
     )
     pipeline = PouringPipeline(
         task=task,
@@ -186,33 +283,36 @@ def main() -> None:
     )
 
     print(f"[vlm_demo] task={args.task} envs={env.num_envs} action={env.cfg.action_space} "
-          f"hand_dim={hand_dim} tick={args.tick_interval}steps home={[round(v, 3) for v in space.home]}",
-          flush=True)
+          f"hand_dim={hand_dim} tick={args.tick_interval}steps side={controlled_side} "
+          f"plan={plan} baseline_z={baseline_z:.4f} "
+          f"home={[round(v, 3) for v in space.home]}", flush=True)
 
     # ---- 루프: 저주파 HRL tick + 고주파 절대 액션 유지 ---------------------------
     actions = zero.clone()
     frames = 0
-    # ★hold 는 진입 시점 pose 를 래치한다 — 매 tick 현재 pose 재명령은 fabric
-    #   추종 오차가 래칫이 되어 홈까지 표류한다(실측 44 tick 에 180mm).
-    hold_latch = HoldPoseLatch(env.num_envs)
     for step in range(args.steps):
         if step % args.tick_interval == 0:
             result = pipeline.tick()
             palm_now = provider.view.palm_pose_zyx()
-            rows = [
-                command_to_action(
+            for env_id, command in enumerate(result.commands):
+                # ★hold(NO_OP/SAFE_STOP)는 **마지막 액션 행을 그대로 유지**한다.
+                #   절대 액션이라 목표가 고정된다 — 매 tick 현재 pose 재명령은
+                #   fabric 추종 오차가 래칫이 되어 홈까지 표류했었다(실측 180mm).
+                #   파지 후 hold 에서 손 목표까지 유지되는 것도 이 방식뿐이다.
+                if command.control_mode in (ControlMode.NO_OP, ControlMode.SAFE_STOP):
+                    continue
+                row = command_to_action(
                     command, space, hand_dim=hand_dim,
-                    hold_pose=hold_latch.resolve(env_id, command, tuple(palm_now[env_id])),
+                    hold_pose=tuple(palm_now[env_id]),
                 )
-                for env_id, command in enumerate(result.commands)
-            ]
-            actions = torch.tensor(rows, dtype=torch.float32, device=env.device)
+                actions[env_id] = torch.tensor(row, dtype=torch.float32, device=env.device)
             for record in result.transitions:
                 if record.accepted and record.previous_skill is not record.accepted_skill:
                     print(f"[vlm_demo] step {step:4d} env {record.env_id}: "
                           f"{record.previous_skill.value} -> {record.accepted_skill.value} "
                           f"({record.reason})", flush=True)
-        env.step(actions)
+        latest_obs, *_ = env.step(actions)
+        obs_holder["policy"] = latest_obs["policy"]
 
         if cam is not None and args.frame_interval > 0 and step % args.frame_interval == 0:
             env.sim.render()
@@ -229,8 +329,9 @@ def main() -> None:
     for env_id in range(env.num_envs):
         target = [object_final[env_id][axis] + args.approach_offset[axis] for axis in range(3)]
         dist = float(np.linalg.norm(np.array(palm_final[env_id][:3]) - np.array(target)))
+        rise = (object_final[env_id][2] - baseline_z) * 1000
         print(f"  env {env_id}: skill={manager.current_skills[env_id].value} "
-              f"palm-target {dist * 1000:.1f}mm", flush=True)
+              f"palm-target {dist * 1000:.1f}mm object-rise {rise:+.1f}mm", flush=True)
     if frames:
         print(f"[vlm_demo] 카메라 프레임 {frames}장 → {out_dir}", flush=True)
 

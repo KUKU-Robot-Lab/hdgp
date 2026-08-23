@@ -166,3 +166,35 @@ def test_every_referenced_asset_is_committed():
         if g.name == "assets_tracked" and not g.ok
     }
     assert not offenders, f"git 미추적 자산: {offenders}"
+
+
+# ---------------------------------------------------------------- perception 이음매
+def test_perception_seam_gate_recognizes_the_existing_override_hook():
+    legacy = (TM.HDGP_ROOT
+              / "source/openarm/openarm/tesollo/right/grasp_v1/grasp_right_env.py")
+    assert TM.gate_perception_seam(legacy).ok is True
+
+
+def test_upgraded_tasks_are_flagged_as_lacking_the_perception_seam():
+    """`eval_cup_pos_override` 는 구 env 3종에만 있다 — 신규 4태스크엔 전무(실측).
+
+    이 이음매가 없으면 perception 이 낸 물체 pose 를 정책 관측에 넣을 방법이 없다.
+    부팅은 되므로 WARN 이지만, 평가 계획의 전제라 보이게 둬야 한다.
+    """
+    flagged = {
+        r.task for r in TM.build_rows()
+        for g in r.gates if g.name == "perception_seam" and not g.ok
+    }
+    assert flagged == {
+        "agnostic/grasp_sensor",
+        "agnostic/grasp_lift_fabric",
+        "agnostic/pour_fabric",
+        "gripper/left/grasp_sensor",
+    }
+
+
+def test_perception_seam_is_a_warning_not_a_blocker():
+    for row in TM.build_rows():
+        for gate in row.gates:
+            if gate.name == "perception_seam":
+                assert gate.severity == TM.WARN

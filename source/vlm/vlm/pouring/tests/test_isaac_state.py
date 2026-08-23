@@ -89,6 +89,53 @@ def test_approach_success_fires_only_within_tolerance_and_only_for_approach() ->
     assert far.get_states()[0].current_skill_success is False
 
 
+def test_grasp_lift_success_fires_on_absolute_z_threshold() -> None:
+    lifted = FabricStateProvider(
+        FakeView(2, object_z=0.39),
+        FakeRouting([SkillId.GRASP_LIFT, SkillId.APPROACH]),
+        grasp_lift_success_z=0.38,
+    ).get_states()
+    # z 임계를 넘으면 GRASP_LIFT 만 성공 — 다른 스킬은 lifted 라도 성공 아님.
+    assert lifted[0].current_skill_success is True
+    assert lifted[0].source_lifted is True
+    assert lifted[1].current_skill_success is False
+    assert lifted[1].source_lifted is True
+
+    resting = FabricStateProvider(
+        FakeView(1, object_z=0.30),
+        FakeRouting([SkillId.GRASP_LIFT]),
+        grasp_lift_success_z=0.38,
+    ).get_states()[0]
+    assert resting.current_skill_success is False
+    assert resting.source_lifted is False
+
+    # 임계 미지정(None)이면 grasp_lift 는 절대 성공하지 않는다.
+    unset = FabricStateProvider(
+        FakeView(1, object_z=0.99), FakeRouting([SkillId.GRASP_LIFT])
+    ).get_states()[0]
+    assert unset.current_skill_success is False
+
+
+def test_grasp_lift_success_requires_sustained_hold_not_a_spike() -> None:
+    view = FakeView(1, object_z=0.39)
+    provider = FabricStateProvider(
+        view,
+        FakeRouting([SkillId.GRASP_LIFT]),
+        grasp_lift_success_z=0.38,
+        grasp_lift_hold_ticks=3,
+    )
+
+    assert provider.get_states()[0].current_skill_success is False   # streak 1
+    assert provider.get_states()[0].current_skill_success is False   # streak 2
+    assert provider.get_states()[0].current_skill_success is True    # streak 3
+
+    # 떨어지면 streak 이 0 으로 — 발리스틱 스파이크는 성공으로 세지 않는다.
+    view.object[0][2] = 0.30
+    assert provider.get_states()[0].current_skill_success is False
+    view.object[0][2] = 0.39
+    assert provider.get_states()[0].current_skill_success is False   # streak 1 재시작
+
+
 def test_left_side_mounts_data_on_left_slots() -> None:
     provider = FabricStateProvider(
         FakeView(1), FakeRouting([SkillId.APPROACH]), controlled_side="left"
