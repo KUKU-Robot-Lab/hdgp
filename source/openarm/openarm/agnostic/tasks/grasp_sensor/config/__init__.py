@@ -3,6 +3,8 @@
 로봇 추가 = robot_profiles.py 프로필 + 여기 _register() 한 줄.
 """
 
+import dataclasses as _dc
+
 import gymnasium as gym
 
 from . import agents
@@ -38,11 +40,33 @@ _CFGS = {
 #   RuntimeError 로 멈춘다(폴백 금지). 그런데 등록은 되고 있어서 `open-sens_l_grasp_sensor`
 #   4종이 "존재하지만 띄우면 죽는" 상태였다. 형제 태스크(grasp_lift_fabric/config)와 같은
 #   SKIPPED 규약으로 **등록하지 않고 사유를 남긴다** — 조용히 빠뜨리지 않기 위해서다.
+def _profile_name_of(cls) -> str:
+    """cfg 클래스가 어느 프로필로 조립되는지 — **인스턴스를 만들지 않고** 읽는다.
+
+    ★`cls.profile_name` 은 안 된다. @configclass 는 클래스 속성을 dataclass 필드로
+      옮기면서 클래스에서 **제거**하고(isaaclab/utils/configclass.py
+      `_process_mutable_types`: "things that became a dataclass field were removed
+      from class members"), 그 과정에서 기본값도 `default_factory` 쪽으로 간다.
+      그래서 `.default` 만 봐도 MISSING 이 나온다 — 둘 다 봐야 한다.
+      인스턴스화는 답이 아니다: __post_init__ 이 로봇 자산까지 조립하므로
+      "등록할지 말지"를 정하는 이 시점에 돌리면 순환이 된다.
+    """
+    f = cls.__dataclass_fields__["profile_name"]
+    if f.default is not _dc.MISSING:
+        return f.default
+    return f.default_factory()
+
+
 SKIPPED: dict[str, str] = {}
 REGISTERED: list[str] = []
 
 for _tag, _cls in _CFGS.items():
-    _profile = _rp.PROFILES[_cls.profile_name]
+    # ★`_cls.profile_name` 으로는 못 읽는다 — @configclass 가 클래스 속성을
+    #   dataclass 필드로 옮기면서 **클래스에서 제거**한다
+    #   (isaaclab/utils/configclass.py `_process_mutable_types`:
+    #    "things that became a dataclass field were removed from class members").
+    #   인스턴스를 만들면 __post_init__ 이 로봇 자산까지 조립하므로 필드 기본값을 읽는다.
+    _profile = _rp.PROFILES[_profile_name_of(_cls)]
     if _profile.fabric_class is None:
         SKIPPED[_tag] = (
             f"프로필 '{_profile.name}': Fabrics 자산 없음(fabric_class=None) — "
