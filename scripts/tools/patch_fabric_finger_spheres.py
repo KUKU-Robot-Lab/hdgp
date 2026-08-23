@@ -170,6 +170,8 @@ def main() -> int:
     ap.add_argument("--robot", default="openarm_tesollo_bi_s")
     ap.add_argument("--params", default="openarm_tesollo_pose_params.yaml")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--skip-params", action="store_true",
+                    help="yaml 은 건드리지 않는다 — 좌우가 같은 params 를 공유하므로\n                         두 번째 자산부터는 URDF 만 패치한다")
     a = ap.parse_args()
 
     urdf = FABRIC_URDF_DIR / a.robot / f"{a.robot}.urdf"
@@ -177,7 +179,10 @@ def main() -> int:
         print(f"URDF 없음: {urdf}")
         return 1
     frames = patch_urdf(urdf, a.dry_run)
-    patch_params(PARAMS_DIR / a.params, frames, a.dry_run)
+    if a.skip_params:
+        print("(yaml 은 건너뛴다 — 좌우가 같은 프레임명·같은 params 를 공유한다)")
+    else:
+        patch_params(PARAMS_DIR / a.params, frames, a.dry_run)
     return 0
 
 
