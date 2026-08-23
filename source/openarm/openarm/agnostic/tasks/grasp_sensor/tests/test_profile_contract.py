@@ -357,8 +357,14 @@ def test_gripper_left_profile_is_the_one_without_fabrics():
 
 # ---- Isaac 이 있을 때만: 실제 등록 결과 ----------------------------------------
 def _config_module():
+    # ★`importorskip("isaaclab")` 만으로는 부족하다 — isaaclab 패키지 자체는 임포트되지만
+    #   cfg 모듈이 끌어오는 isaaclab.utils 는 **앱 기동 후에만** 존재해서 더 깊은 곳에서
+    #   ImportError 가 난다(= skip 이 아니라 FAIL). 실제 임포트를 감싸야 한다.
     pytest.importorskip("isaaclab", reason="gym 등록 확인은 Isaac 환경에서만 가능")
-    from openarm.agnostic.tasks.grasp_sensor import config as _cfg
+    try:
+        from openarm.agnostic.tasks.grasp_sensor import config as _cfg
+    except ImportError as e:
+        pytest.skip(f"Isaac 앱 없이는 cfg 임포트 불가: {e}")
     return _cfg
 
 

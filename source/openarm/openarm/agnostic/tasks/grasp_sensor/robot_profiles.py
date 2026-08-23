@@ -98,7 +98,13 @@ _FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 
 TESOLLO_RIGHT = RobotProfile(
     name="tesollo_right",
-    usd_relpath="robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd",
+    # ★손 27개 링크는 convexDecomposition 유지, 나머지 23개(팔·몸통·헤드)만 convexHull.
+    #   실측(arm5080): 처리량 +13.7%, 접촉력은 오히려 소폭 감소(36.2→32.8N, 반복측정
+    #   편차 8% 안) = 촉각 obs 손실 없음. 컵에 닿는 건 손뿐이고 팔 자기충돌은
+    #   Fabrics body_repulsion 이 계획 단계에서 이미 회피하므로 팔은 껍질로 충분하다.
+    #   ★손까지 hull 로 하면 접촉력이 4배(133N) → 촉각 왜곡으로 s2r 이 깨진다. 금지.
+    #   자산은 physics 레이어만 교체한 얇은 변형(40KB, base 는 원본 심볼릭 링크).
+    usd_relpath="robot/openarm_tesollo_sensor_rl_armhull/openarm_tesollo_sensor_rl.usd",
     num_arm_joints=7,
     num_hand_joints=20,
     arm_joint_regex="r_aj_[1-7]",
@@ -184,7 +190,13 @@ TESOLLO_RIGHT = RobotProfile(
 # =============================================================================
 GRIPPER_LEFT = RobotProfile(
     name="gripper_left",
-    usd_relpath="robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd",
+    # ★손 27개 링크는 convexDecomposition 유지, 나머지 23개(팔·몸통·헤드)만 convexHull.
+    #   실측(arm5080): 처리량 +13.7%, 접촉력은 오히려 소폭 감소(36.2→32.8N, 반복측정
+    #   편차 8% 안) = 촉각 obs 손실 없음. 컵에 닿는 건 손뿐이고 팔 자기충돌은
+    #   Fabrics body_repulsion 이 계획 단계에서 이미 회피하므로 팔은 껍질로 충분하다.
+    #   ★손까지 hull 로 하면 접촉력이 4배(133N) → 촉각 왜곡으로 s2r 이 깨진다. 금지.
+    #   자산은 physics 레이어만 교체한 얇은 변형(40KB, base 는 원본 심볼릭 링크).
+    usd_relpath="robot/openarm_tesollo_sensor_rl_armhull/openarm_tesollo_sensor_rl.usd",
     num_arm_joints=7,
     num_hand_joints=1,
     arm_joint_regex="l_aj_[1-7]",
