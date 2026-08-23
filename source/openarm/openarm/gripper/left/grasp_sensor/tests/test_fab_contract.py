@@ -440,3 +440,32 @@ def test_gravity_droop_compensation_is_wired_and_bounded():
     assert 0.0 < P.GRAVITY_COMP_GAIN <= 0.2, "적분 이득이 너무 크면 과도 구간에서 진동한다"
     # ★저역통과가 아니라 적분이어야 한다 — 저역통과는 정확히 절반만 상쇄한다(실측)
     assert "self._droop + P.GRAVITY_COMP_GAIN * err" in src, "적분 형태가 아니다"
+
+
+def test_cup_axis_point_is_clamped_to_the_graspable_band():
+    """★★보상 구멍 — 컵 축은 **무한 직선**이라 컵 위 허공에서 감싸도 만점이 나온다.
+
+    fab_test10 실측(epoch 500): 턱 중점 축방향 높이 **+157.6 mm**(컵 원점 기준,
+    컵 상단은 +83 mm) = 75 mm 허공. 그 상태로 cup_between_jaws **2.15/3.0** 과 closure 를
+    받으면서 **컵은 0.1 mm 도 움직이지 않았다**(상승 +0.9 mm).
+    학습 지표로도 between 2.1 인데 reach 0.064(TCP 가 파지점에서 171 mm)로 모순이었다.
+    ⚠ 이 구멍이 fab_test9·10 의 "lift 가 0" 을 설명한다 — 리미터 탓이라던 판정이 틀렸다.
+
+    → 최근접점을 잡을 수 있는 높이 대역으로 clamp. 세 항(between·closure·lift 게이트)이
+      모두 `_jaw_frame` 을 쓰므로 한 곳만 고치면 전부 닫힌다.
+    """
+    rew = _src("grasp_left_rewards.py")
+    body = rew[rew.index("def _jaw_frame("):rew.index("def _enclose(")]
+    assert "clamp(" in body and "CUP_GRASP_BAND_AXIS" in body, (
+        "컵 축 최근접점이 clamp 되지 않았다 — 허공에서 감싸도 만점이 된다"
+    )
+    lo, hi = P.CUP_GRASP_BAND_AXIS
+    # 대역은 컵 몸통 안이어야 한다(원점 기준 바닥 −92.09 mm ~ 상단 +82.91 mm)
+    assert -P.CUP_BOTTOM_TO_ORIGIN <= lo < hi <= 0.0, (
+        f"대역 ({lo:.5f}, {hi:.5f}) 이 컵 몸통 밖이거나 뒤집혔다"
+    )
+    # 실측 실패 지점(+157.6 mm)이 대역 밖으로 확실히 걸러져야 한다
+    assert hi < 0.1576, "실측된 허공 straddle 높이가 대역 안이다 — 구멍이 그대로다"
+    # GRASP_HEIGHT_BAND 에서 파생돼야 한다(리터럴 금지)
+    assert abs(lo - (P.GRASP_HEIGHT_BAND[0] - P.CUP_BOTTOM_TO_ORIGIN)) < 1e-9
+    assert abs(hi - (P.GRASP_HEIGHT_BAND[1] - P.CUP_BOTTOM_TO_ORIGIN)) < 1e-9

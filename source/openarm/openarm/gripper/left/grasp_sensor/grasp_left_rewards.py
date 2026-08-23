@@ -43,6 +43,8 @@ from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.sensors import FrameTransformer
 from isaaclab.utils.math import combine_frame_transforms, matrix_from_quat
 
+from . import grasp_left_preset as P
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -350,7 +352,14 @@ def _jaw_frame(
 
     cup_z = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]
     to_mid = mid - obj.data.root_pos_w
-    cup_pt = obj.data.root_pos_w + cup_z * (to_mid * cup_z).sum(-1, keepdim=True)
+    # ★★축 위 최근접점을 **잡을 수 있는 높이 대역**으로 clamp 한다.
+    #   clamp 가 없으면 컵 축이 **무한 직선**이라 컵 위 허공에서 감싸도 만점이 나온다.
+    #   fab_test10 이 정확히 그 행동을 학습했다 — 턱이 컵 원점 +157.6 mm(상단 +83 mm 보다
+    #   75 mm 위)에서 between 2.15/3.0 을 받으면서 컵은 0.1 mm 도 안 움직였다.
+    axis_t = (to_mid * cup_z).sum(-1, keepdim=True).clamp(
+        P.CUP_GRASP_BAND_AXIS[0], P.CUP_GRASP_BAND_AXIS[1]
+    )
+    cup_pt = obj.data.root_pos_w + cup_z * axis_t
     return p_l, p_r, u, mid, cup_pt
 
 

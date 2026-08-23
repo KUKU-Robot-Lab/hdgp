@@ -163,6 +163,7 @@ def main() -> None:
     gz_prev_cmd = [None]
     gz_prev_fab = [None]
     sd_enclose = []        # 두 손가락이 컵 축 양쪽에 있는 정도 (0~1)
+    sd_axis_h = []         # 턱 중점의 **컵 축 방향 높이** (컵 원점 기준, m)
     sd_term = []           # `cup_between_jaws` 항의 실제 값 (weight 곱하기 전)
     grip_series = []       # 구동 관절 위치 (m)
     grip_cmd = []          # 이진 그리퍼 액션의 부호 (>0 = 열기 지령)
@@ -220,6 +221,12 @@ def main() -> None:
         _align = 0.5 * (1 - torch.tanh(_al / P.JAW_ALONG_STD)) + 0.5 * (
             1 - torch.tanh(_lat / P.JAW_LATERAL_STD))
         sd_enclose.append(float(_enc.mean()))
+        # ★★턱이 컵 **몸통**에 있는가, 아니면 축 연장선(허공)에 있는가.
+        #   `cup_between_jaws` 의 cup_pt 는 컵 축의 **무한 직선** 위 최근접점이라,
+        #   컵 위 허공에서 축을 감싸도 만점이 나온다. 그 구멍을 직접 잰다.
+        _mid_h = (_mid - obj.data.root_pos_w)  # 컵 원점 기준
+        _cz2 = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]
+        sd_axis_h.append(float((_mid_h * _cz2).sum(-1).mean()))
         sd_term.append(float((_align * (P.JAW_ENCLOSE_FLOOR
                                         + (1 - P.JAW_ENCLOSE_FLOOR) * _enc)).mean()))
         # 램프가 0 을 벗어나는 지점 = 실제로 뜨기 시작한 높이
@@ -380,6 +387,11 @@ def main() -> None:
         for lab, v, std in (("평균 상태", (am, lm), None), ("최선 상태", (ab, lb), None)):
             q = (1 - _m.tanh(v[0] / P.JAW_ALONG_STD)) * (1 - _m.tanh(v[1] / P.JAW_LATERAL_STD))
             print(f"    {lab} straddle 품질 = {q:.5f}")
+        _ah = _st.mean(sd_axis_h)
+        print(f"  {'턱 중점 축방향 높이':<14}{_ah * 1e3:9.1f} mm  (컵 원점 기준. 파지점은 "
+              f"{-44.6:.1f} mm, 컵 상단은 +{(0.175 - 0.09209) * 1e3:.0f} mm)")
+        if _ah > (0.175 - 0.09209):
+            print("     ★★턱이 **컵 상단보다 위** = 축 연장선(허공)을 감싸고 있다 — 보상 구멍!")
         print(f"  {'enclose (턱 양쪽)':<14}{_st.mean(sd_enclose):9.3f}    "
               f"(1 = 두 손가락이 컵 축을 사이에 둠, 0 = 주먹)")
         print(f"  ★cup_between_jaws 항 = {_st.mean(sd_term):.4f} "

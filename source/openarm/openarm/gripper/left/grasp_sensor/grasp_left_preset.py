@@ -572,6 +572,21 @@ GRIPPER_FINGER_BODIES = ("l_hl_gripper_left_finger", "l_hl_gripper_right_finger"
 #     둘 다 양수여야 컵이 턱 **사이**에 있다. min(s_l, s_r) 을 컵 반경으로 정규화한다.
 #     주먹(span 18 mm)은 min ≤ 9 mm 라 컵 반경에 못 미치고, 벌리면(span 100 mm) 1.0 이 된다.
 #     ★파지 후에도 유지된다: 컵을 물면 span = 컵 지름이라 min = 반경 → clamp 후 1.0.
+# ★★08.23 **보상 구멍 봉합.** `cup_between_jaws`/`closure`/lift 게이트가 쓰는 컵 축 최근접점을
+#   컵 축의 **무한 직선** 위에서 잡고 있었다. 그래서 컵 **위 허공**에서 축을 감싸도 만점이다.
+#   fab_test10 실측(epoch 500 체크포인트)이 정확히 그 행동이었다:
+#       턱 중점 축방향 높이 **+157.6 mm** (컵 원점 기준 · 컵 상단은 +83 mm) = 75 mm 허공
+#       cup_between_jaws **2.15/3.0** · closure 도 받음 · 그런데 **컵 이동 0.1 mm · 상승 +0.9 mm**
+#       학습 지표로도 between 2.1 인데 reach 0.064(= TCP 가 파지점에서 171 mm) 로 모순이었다.
+#   ⚠ 이 구멍이 fab_test9·10 의 "lift 가 0" 을 설명한다. 리미터 탓이라던 내 판정이 틀렸다 —
+#     리미터를 꺼도 같은 실패가 났고, 공통 원인은 이 구멍이었다.
+#   → 최근접점을 **잡을 수 있는 높이 대역**으로 clamp 한다. 컵 축 좌표(원점 기준)로
+#     GRASP_HEIGHT_BAND 를 옮긴 구간이다. 허공에서 감싸면 clamp 된 점까지의 수직거리가
+#     커져 보상이 무너진다.
+CUP_GRASP_BAND_AXIS = (
+    GRASP_HEIGHT_BAND[0] - CUP_BOTTOM_TO_ORIGIN,   # -0.08209 m (상면 +10 mm)
+    GRASP_HEIGHT_BAND[1] - CUP_BOTTOM_TO_ORIGIN,   # -0.00709 m (상면 +85 mm)
+)
 JAW_ENCLOSE_HALF_WIDTH = 0.029   # m, shaker 최소 몸통 반경(58 mm/2). 이 이상 벌리면 enclose 포화
 # ★enclose 가 0 일 때도 **정렬 gradient 는 살려 둔다.** 완전 곱셈이면 주먹 상태에서 항이
 #   통째로 0 이 되어 "가서 정렬하라"는 신호조차 사라진다(= 게이트와 같아진다).
