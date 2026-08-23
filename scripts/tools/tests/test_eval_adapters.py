@@ -204,3 +204,39 @@ def test_play_no_longer_hardcodes_five_finger_labels():
     src = _PLAY.read_text(encoding="utf-8")
     assert '["thumb", "index", "middle", "ring", "pinky"]' not in src
     assert src.count("_eval_adapters.finger_labels(") == 3
+
+
+# ---------------------------------------------------------------- 실제 태스크 대조
+_OPENARM = _TOOLS.parents[1] / "source/openarm/openarm"
+
+
+def _exposes_all_required(env_py: Path) -> bool:
+    src = env_py.read_text(encoding="utf-8")
+    return all(f"self.{a}" in src for a in EA.GRASP_V2_REQUIRED)
+
+
+def test_grasp_v2_family_is_what_the_legacy_block_was_written_for():
+    assert _exposes_all_required(_OPENARM / "tesollo/right/grasp_v2/grasp_right_env.py")
+
+
+def test_none_of_the_upgraded_tasks_exposes_the_legacy_buffers():
+    """어댑터가 필요한 이유 그 자체 — 셋 다 하나도 노출하지 않는다(실측)."""
+    for rel in ("agnostic/tasks/grasp_sensor/grasp_sensor_env.py",
+                "agnostic/tasks/grasp_lift_fabric/grasp_lift_fabric_env.py",
+                "agnostic/tasks/pour_fabric/pour_fabric_env.py"):
+        assert not _exposes_all_required(_OPENARM / rel), rel
+
+
+def test_the_legacy_154d_grasp_sensor_also_fails_the_old_block():
+    """★구 코드는 grasp_v2 말고는 **레거시 태스크에서도** 죽었다.
+
+    arm5080 실측: `open-tesol_r_grasp_sensor-play-lstm` 은 in_success_region /
+    _obj_total_episodes / _obj_success_episodes 3개가 없어 공통 지표로 떨어진다.
+    "grasp_v2 정량 평가"라는 이름이 실제 적용 범위보다 넓게 읽혔다.
+    """
+    legacy = _OPENARM / "tesollo/right/grasp_sensor/grasp_right_env.py"
+    assert not _exposes_all_required(legacy)
+    src = legacy.read_text(encoding="utf-8")
+    missing = [a for a in EA.GRASP_V2_REQUIRED if f"self.{a}" not in src]
+    assert set(missing) == {"in_success_region", "_obj_total_episodes",
+                            "_obj_success_episodes"}, missing
