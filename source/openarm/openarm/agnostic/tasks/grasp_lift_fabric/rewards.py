@@ -53,9 +53,17 @@ def contact_gate(
     return a & b
 
 
-def upright_quality(object_tilt_deg: torch.Tensor, max_deg: float) -> torch.Tensor:
-    """1(수직) → 0(max_deg 이상 기움)."""
-    return (1.0 - object_tilt_deg / max(max_deg, 1e-6)).clamp(0.0, 1.0)
+def upright_quality(object_tilt_deg: torch.Tensor, exponent: float = 4.0) -> torch.Tensor:
+    """1(수직) → 0(90° 기움). `cos(tilt)^exponent`.
+
+    ★08.23 선형(1−tilt/max_deg) 에서 교체. 자매 트랙 grasp_sensor 가 같은 문제로
+      먼저 도달한 규약이다 — cos 는 소각에서 평평해 15~30° 판별력이 없어서 지수를 준다.
+      선형은 전 구간 도당 기울기가 상수(1/60=0.0167)라 "이미 많이 기운" 구간에서
+      개선 압력이 약했다. cos^4 는 20~30° 에서 0.020~0.023 으로 더 가파르다.
+      실측 tilt 38.5° 대역에서 1.2 배.
+    """
+    c = torch.cos(torch.deg2rad(object_tilt_deg)).clamp(0.0, 1.0)
+    return c ** float(exponent)
 
 
 def compute_rewards(
@@ -80,10 +88,11 @@ def compute_rewards(
         group_a_force, group_b_force, _cfg(cfg, "contact_force_threshold", 1.0)
     )
     gate_f = gate.float()
-    up_q = upright_quality(object_tilt_deg, _cfg(cfg, "upright_max_deg", 30.0))
-    # ★자세는 곱수를 0 으로 떨어뜨리지 않는다. 0.5~1.0 완화 — grasp_v2 의
-    #   "인자 하나가 0 이면 항 전체가 0" 붕괴를 구조적으로 막는다.
-    up_mul = 0.5 + 0.5 * up_q
+    up_q = upright_quality(object_tilt_deg, _cfg(cfg, "upright_exponent", 4.0))
+    # ★08.23 `up_mul`(lift/success 에 곱하던 0.5~1.0 자세 완화 곱수) 제거.
+    #   자세 압력을 곱수와 독립항에 이중으로 걸면 원인 분리가 안 되고, 곱수는
+    #   최대 2 배 차이라 실측에서 tilt 38.5°→10° 개선 이득이 +0.09 에 그쳤다.
+    #   자세는 `upright` 항이 **전담**한다(자매 트랙 grasp_sensor 와 동일 구조).
 
     # 1. approach — 게이트 없음(접촉 전 유일한 gradient)
     approach = _cfg(cfg, "approach_weight", 1.0) * torch.exp(
@@ -122,7 +131,7 @@ def compute_rewards(
     #    ★lifted 곱수 필수 — 없으면 테이블 위 컵(tilt 0°)을 감싸기만 해도 만점이다
     #      (audit Check 2: 들지 않고 보상을 최대화하는 경로).
     lifted = (object_height_delta / max(_cfg(cfg, "upright_lift_ref", 0.05), 1e-6)).clamp(0.0, 1.0)
-    upright = _cfg(cfg, "upright_weight", 2.0) * gate_f * env_mul * up_q * lifted
+    upright = _cfg(cfg, "upright_weight", 3.0) * gate_f * env_mul * up_q * lifted
 
     # 4. lift — ★dz 0.10 이상이 전 구간 만점이라 **보상 평지**였다(실측 dz 0.27 표류).
     #    goal 높이(0.15)+여유(0.05) 를 넘으면 감쇠시켜 "필요 이상으로 올리지 마라"를 준다.
@@ -132,15 +141,26 @@ def compute_rewards(
     ).clamp(0.0, 1.0)
     _over = (object_height_delta - _cfg(cfg, "lift_overshoot_start", 0.20)).clamp(min=0.0)
     height_q = height_q * torch.exp(-_over / max(_cfg(cfg, "lift_overshoot_scale", 0.06), 1e-6))
-    lift = _cfg(cfg, "lift_weight", 2.0) * gate_f * env_mul * height_q * up_mul
+    lift = _cfg(cfg, "lift_weight", 2.0) * gate_f * env_mul * height_q
 
-    # 5. success (이송)
+    # 5. tracking — ★08.23 신설. success 의 `tanh(d/0.05)²` 는 **5cm 밖에서 사실상 0**
+    #    이다(d=8cm 계수 0.006). dz 가 0.09~0.15 로 진동하는 것만으로 goal 에서 벗어나
+    #    이송 신호가 끊겼고, 실측에서 success 가 0.24 까지 갔다가 **0.000** 으로 소멸했다.
+    #    완만한 유도(std 0.10)와 날카로운 성공(std 0.05)을 **분리**한다 — 자매 트랙
+    #    grasp_sensor 가 tracking 2.0 / success 10.0 으로 쓰는 구조와 같다.
+    tracking = (
+        _cfg(cfg, "tracking_weight", 2.0)
+        * (1.0 - torch.tanh(object_to_goal / _cfg(cfg, "tracking_std", 0.10)))
+        * gate_f
+        * env_mul
+    )
+
+    # 6. success (이송 성공)
     success = (
         _cfg(cfg, "success_weight", 10.0)
         * (1.0 - torch.tanh(object_to_goal / _cfg(cfg, "success_pos_std", 0.05))) ** 2
         * gate_f
         * env_mul
-        * up_mul
     )
 
     # (구 5·6 push/tilt 페널티는 08.22 제거 — 0.35m 이탈·60° 전도가 **종료**로 승격되어
@@ -162,6 +182,7 @@ def compute_rewards(
         "grasp_quality": grasp_quality,
         "upright": upright,
         "lift": lift,
+        "tracking": tracking,
         "success": success,
         "action_rate": action_rate,
     }

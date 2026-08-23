@@ -165,23 +165,25 @@ class _Cfg:
     participation_force_threshold = 0.1
     approach_weight = 1.0
     approach_sharpness = 4.0
-    grasp_quality_weight = 8.0
+    grasp_quality_weight = 3.0
     grasp_envelope_credit = 0.7
     grasp_grip_credit = 0.2
     grasp_persist_credit = 0.1
     persistence_ref_steps = 20
     enclosure_radius = 0.03
     enclosure_thumb_weight = 0.6
-    upright_max_deg = 60.0
+    upright_exponent = 4.0
     lift_weight = 2.0
     envelope_reference_frac = 0.8
     envelope_mul_floor = 0.3
-    upright_weight = 2.0
+    upright_weight = 3.0
     upright_lift_ref = 0.05
     lift_overshoot_start = 0.20
     lift_overshoot_scale = 0.06
     envelope_force_threshold = 0.5
     lift_success_height = 0.10
+    tracking_weight = 2.0
+    tracking_std = 0.10
     success_weight = 10.0
     success_pos_std = 0.05
     action_rate_weight = -0.3        # 실제 cfg 와 동기(test_stub_matches_real_cfg 가 강제)
@@ -201,10 +203,10 @@ def _call(**over):
 
 
 def test_five_terms_exactly():
-    """08.22 TEST2: upright 독립항 신설 → 6항 (우선순위 ②를 곱수가 아닌 항으로)."""
+    """08.23 TEST3: tracking 신설 → 7항 (이송 유도와 성공 판정을 분리)."""
     _, terms, _, _ = _call()
     assert set(terms) == {
-        "approach", "grasp_quality", "upright", "lift", "success", "action_rate",
+        "approach", "grasp_quality", "upright", "lift", "tracking", "success", "action_rate",
     }
 
 
@@ -230,13 +232,23 @@ def test_grasp_quality_drops_when_wrap_is_lost():
     assert (eroded["grasp_quality"] < full["grasp_quality"]).all()
 
 
-def test_no_term_is_zeroed_by_tilt_alone():
-    """★grasp_v2 의 '인자 하나가 0 이면 항 전체가 0' 붕괴를 막았는지."""
-    _, flat, _, _ = _call(object_tilt_deg=_ones(0.0))
-    _, tipped, _, _ = _call(object_tilt_deg=_ones(90.0))
+def test_tilt_is_handled_by_upright_term_only():
+    """★08.23 자세 압력의 소재를 **upright 항 하나로** 확정한다.
+
+    구 설계는 lift/success 에 `up_mul`(0.5~1.0) 을 곱해 자세를 **이중**으로 걸었다.
+    곱수는 최대 2 배 차이뿐이라 실측에서 tilt 38.5°→10° 개선 이득이 +0.09 에 그쳤고,
+    독립항과 섞여 원인 분리도 안 됐다. 자매 트랙 grasp_sensor 와 같은 구조로 정리한다.
+
+    계약: ① lift/success 는 자세와 무관(파지·높이·거리만) ② 자세 악화는 upright 로
+    반영되어 **총보상**이 줄어든다 ③ grasp_v2 식 "인자 하나가 0 이면 전체 0" 은 없다.
+    """
+    flat_t, flat, _, _ = _call(object_tilt_deg=_ones(0.0))
+    tip_t, tipped, _, _ = _call(object_tilt_deg=_ones(90.0))
     for k in ("lift", "success"):
         assert (tipped[k] > 0).all(), f"{k} 가 자세만으로 0 이 됐다"
-        assert (tipped[k] < flat[k]).all(), f"{k} 가 자세를 반영하지 않는다"
+        assert torch.allclose(tipped[k], flat[k]), f"{k} 가 자세를 곱수로 반영한다(이중 압력)"
+    assert (tipped["upright"] < flat["upright"]).all(), "upright 가 자세를 반영하지 않는다"
+    assert (tip_t < flat_t).all(), "자세가 나빠져도 총보상이 안 줄어든다"
 
 
 def test_persistence_raises_grasp_quality():
@@ -516,3 +528,44 @@ def test_upright_gradient_alive_at_observed_tilt():
     worse = _call(object_tilt_deg=_ones(35.0), object_height_delta=_ones(0.15))[0][0]
     better = _call(object_tilt_deg=_ones(15.0), object_height_delta=_ones(0.15))[0][0]
     assert better > worse, "31° 대역에서 자세 개선이 보상으로 이어지지 않는다"
+
+
+# =============================================================================
+# 08.23 TEST3 — 자매 트랙(grasp_sensor) 교차검증에서 온 계약
+# =============================================================================
+def test_tracking_survives_beyond_success_range():
+    """★success 는 5cm 밖에서 사실상 0 이라 이송 신호가 끊겼다(실측 0.24 → 0.000 소멸).
+
+    tracking(std 0.10)이 그 바깥을 메워야 한다 — 자매 트랙 grasp_sensor 의 구조.
+    """
+    far = _call(object_to_goal=_ones(0.08))[1]
+    assert float(far["success"][0]) < 0.1, "전제 확인: success 는 8cm 에서 거의 0"
+    assert float(far["tracking"][0]) > 0.3, "8cm 에서 tracking 신호가 없다 — 이송 유도 부재"
+    # 가까워질수록 커져야 한다(gradient 생존)
+    near = _call(object_to_goal=_ones(0.03))[1]
+    assert float(near["tracking"][0]) > float(far["tracking"][0])
+
+
+def test_grasp_weight_does_not_dominate_goal_terms():
+    """★자매 트랙 cfg 주석의 금지 조항을 계약으로 고정한다.
+
+    grasp_sensor: "envelope_weight 2.0 초과 금지 — goal 계열의 지배가 깨지면
+    '테이블 위 감싸고 정지' 국소최적". TEST2 에서 8.0 으로 올렸다가 실제로 그 국소최적에
+    빠졌다(감쌈 총보상의 70% · dz 0.09 로 들지 않음).
+    """
+    C = _cfg_module()
+    real = C.GraspLiftFabricEnvCfg()
+    goal_terms = real.tracking_weight + real.success_weight + real.lift_weight
+    assert real.grasp_quality_weight < goal_terms * 0.5, (
+        f"감쌈 {real.grasp_quality_weight} 가 goal 계열 {goal_terms} 의 절반 이상 — "
+        "'감싸고 정지' 국소최적 위험")
+
+
+def test_upright_uses_cosine_not_linear():
+    """★선형(1−tilt/max)은 전 구간 도당 기울기가 상수라 '이미 기운' 구간의 압력이 약하다."""
+    import math
+    q0 = float(RW.upright_quality(torch.tensor([0.0]), 4.0)[0])
+    q30 = float(RW.upright_quality(torch.tensor([30.0]), 4.0)[0])
+    q90 = float(RW.upright_quality(torch.tensor([90.0]), 4.0)[0])
+    assert abs(q0 - 1.0) < 1e-6 and q90 < 1e-6
+    assert abs(q30 - math.cos(math.radians(30)) ** 4) < 1e-6
