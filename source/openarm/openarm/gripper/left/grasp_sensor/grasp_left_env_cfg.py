@@ -363,6 +363,12 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         ):
             _term.params["minimal_height"] = P.MINIMAL_LIFT_HEIGHT
             _term.params["ramp_zero_z"] = P.LIFT_RAMP_ZERO_Z
+            _term.params["enclose_half_width"] = P.JAW_ENCLOSE_HALF_WIDTH
+            _term.params["pad_offset"] = P.JAW_PAD_OFFSET
+            # ★SceneEntityCfg 는 매니저가 제자리 변경하는 가변 객체다 — term 마다 새 인스턴스.
+            _term.params["jaw_cfg"] = SceneEntityCfg(
+                "robot", body_names=list(P.GRIPPER_FINGER_BODIES)
+            )
 
         # ── 리프트 판정에 "쥐고 있는가"를 AND ────────────────────────
         # ★★weight 는 그대로 두고 **판정 함수만** 바꾼다. z 만 보는 레퍼런스 판정으로는
@@ -472,6 +478,9 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "ang_vel_std": P.SETTLE_ANG_VEL_STD,
                 "minimal_height": P.MINIMAL_LIFT_HEIGHT,
                 "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "command_name": "object_pose",
             },
@@ -483,6 +492,9 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             params={
                 "minimal_height": P.MINIMAL_LIFT_HEIGHT,
                 "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "body_name": P.GRIPPER_BASE_BODY,
                 "upright_zero_at_cos": P.CUP_UPRIGHT_ZERO_AT_COS,

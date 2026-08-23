@@ -100,6 +100,9 @@ def _held(
     minimal_height: float,
     ramp_zero_z: float,
     max_ee_distance: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    jaw_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg,
     ee_frame_cfg: SceneEntityCfg,
     min_upright_cos: float = -1.0,
@@ -108,6 +111,8 @@ def _held(
 
     · 높이: **연속 램프**. `ramp_zero_z`(놓인 높이 +6.0 mm)에서 0, `minimal_height`
       (놓인 높이 +40 mm)에서 1. 그 사이가 끊김 없이 이어진다.
+    · **enclose**: 두 손가락이 컵 축 양쪽에 있는 정도(0~1)를 램프에 곱한다 — 치거나 튀긴
+      컵으로는 못 받는다.
     · TCP 가 곁에 있고(그리퍼가 아닌 부위로 떠받치는 것 차단)
     · 컵이 세워져 있다(`min_upright_cos`)
 
@@ -136,7 +141,16 @@ def _held(
     lifted = ((obj_pos_w[:, 2] - ramp_zero_z) / (minimal_height - ramp_zero_z)).clamp(0.0, 1.0)
     near = torch.norm(obj_pos_w - ee_pos_w, dim=1) < max_ee_distance
     upright = _cup_upright_cos(env, object_cfg) > min_upright_cos
-    return lifted * (near & upright).float()
+    # ★★08.23 램프에 **enclose 를 곱한다.** 순수 램프(fab_test6)는 학습 초기에 컵이 튀어
+    #   오르는 순간에도 부분 점수를 줬고(1~50 epoch 의 lift 0.002 가 전 구간 최고), 컵을
+    #   치기에는 주먹이 유리해서 정책이 주먹으로 고착됐다 — fab_test1 의 실패 모드로 회귀했다
+    #   (enclose 0.019 · 개도 4.4 mm · 거의닫힘 76% · drop 0.73).
+    #   ⚠ `near` 80 mm 게이트로는 못 막는다 — 툭 치는 거리가 그 안이다.
+    #   enclose 를 곱하면 주먹(0.019)도 손을 떠난 컵도 0 이고, 제대로 감싼 상태(0.78~0.85)만
+    #   받는다. 부수 효과로 **자동 커리큘럼**이 된다: 감싸기를 배우기 전에는 lift 항이
+    #   사실상 0(=하드 게이트와 동일, 치는 유인 없음)이고, 감싼 뒤에 램프가 켜진다.
+    held = _enclose(env, enclose_half_width, pad_offset, jaw_cfg, object_cfg)
+    return lifted * held * (near & upright).float()
 
 
 def held_with_good_pose(
@@ -144,6 +158,9 @@ def held_with_good_pose(
     minimal_height: float,
     ramp_zero_z: float,
     max_ee_distance: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    jaw_cfg: SceneEntityCfg,
     body_name: str,
     upright_zero_at_cos: float = 0.0,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
@@ -165,7 +182,8 @@ def held_with_good_pose(
           lifting 6.14 → 0.0000 / 에피소드 길이 130 → 13 / 총보상 +34.9 → −0.46
       학습이 시작조차 못 한다. 자세는 반드시 연속 보너스로만 유도한다.
     """
-    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, object_cfg, ee_frame_cfg)
+    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+                 pad_offset, jaw_cfg, object_cfg, ee_frame_cfg)
     cos_tilt = _cup_upright_cos(env, object_cfg)
     upright = ((cos_tilt - upright_zero_at_cos) / (1.0 - upright_zero_at_cos)).clamp(0.0, 1.0)
     return gate * upright * jaw_level_quality(env, robot_cfg, body_name)
@@ -176,12 +194,16 @@ def object_is_held_and_lifted(
     minimal_height: float,
     ramp_zero_z: float,
     max_ee_distance: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    jaw_cfg: SceneEntityCfg,
     min_upright_cos: float = -1.0,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
 ) -> torch.Tensor:
     """`mdp.object_is_lifted` 에 근접·컵 자세 조건을 더한 것."""
-    return _held(env, minimal_height, ramp_zero_z, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
+    return _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+                 pad_offset, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
 
 
 def object_goal_distance_when_held(
@@ -190,6 +212,9 @@ def object_goal_distance_when_held(
     minimal_height: float,
     ramp_zero_z: float,
     max_ee_distance: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    jaw_cfg: SceneEntityCfg,
     command_name: str,
     min_upright_cos: float = -1.0,
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -207,7 +232,8 @@ def object_goal_distance_when_held(
         robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
     )
     distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
-    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, object_cfg, ee_frame_cfg, min_upright_cos)
+    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+                 pad_offset, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
     return gate * (1 - torch.tanh(distance / std))
 
 
@@ -219,6 +245,9 @@ def object_settled_at_goal(
     minimal_height: float,
     ramp_zero_z: float,
     max_ee_distance: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    jaw_cfg: SceneEntityCfg,
     command_name: str,
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
@@ -256,7 +285,8 @@ def object_settled_at_goal(
         1.0 - torch.tanh(ang / ang_vel_std)
     )
 
-    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, object_cfg, ee_frame_cfg)
+    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+                 pad_offset, jaw_cfg, object_cfg, ee_frame_cfg)
     return gate * near_goal * still
 
 
@@ -294,19 +324,13 @@ class ActionJerkL2(ManagerTermBase):
         return jerk
 
 
-def _jaw_geometry(
+def _jaw_frame(
     env: "ManagerBasedRLEnv",
-    along_std: float,
-    lateral_std: float,
-    enclose_half_width: float,
     pad_offset: float,
     robot_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg,
 ):
-    """턱 ↔ 컵 기하 (align, enclose). 두 보상 항이 **같은 기하**를 쓰도록 여기 모은다.
-
-    · align   = 평균( 턱 축 방향 정렬, 턱 축 직선까지의 근접 )  — 곱하지 않는다
-    · enclose = 두 손가락이 컵 축 **양쪽**에 있는가 (0~1)
+    """턱 기준 프레임 — 두 손가락(패드 중앙 보정), 턱 축 u, 중점, 컵 축 최근접점.
 
     ★기준선은 **손가락 패드 중앙**이다. 손가락 강체 원점은 base z=+15 mm 인데 성공 파지의
       컵 축은 z=+46.9 mm 다(test17 13,058 샘플 중앙값). 원점 그대로 쓰면 보상이
@@ -327,7 +351,42 @@ def _jaw_geometry(
     cup_z = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]
     to_mid = mid - obj.data.root_pos_w
     cup_pt = obj.data.root_pos_w + cup_z * (to_mid * cup_z).sum(-1, keepdim=True)
+    return p_l, p_r, u, mid, cup_pt
 
+
+def _enclose(
+    env: "ManagerBasedRLEnv",
+    enclose_half_width: float,
+    pad_offset: float,
+    robot_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """두 손가락이 컵 축 **양쪽**에 있는가 (0~1). 주먹도, 날아간 컵도 0 이다.
+
+    s_l = (컵축점 − 왼손가락)·u,  s_r = (오른손가락 − 컵축점)·u — 둘 다 양수여야 사이에 있다.
+    실측 판별력: 주먹 정책 **0.019~0.026** · 제대로 감싼 정책 **0.78~0.85**.
+    """
+    p_l, p_r, u, _mid, cup_pt = _jaw_frame(env, pad_offset, robot_cfg, object_cfg)
+    s_l = ((cup_pt - p_l) * u).sum(-1)
+    s_r = ((p_r - cup_pt) * u).sum(-1)
+    return (torch.minimum(s_l, s_r) / enclose_half_width).clamp(0.0, 1.0)
+
+
+def _jaw_geometry(
+    env: "ManagerBasedRLEnv",
+    along_std: float,
+    lateral_std: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    robot_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+):
+    """턱 ↔ 컵 기하 (align, enclose). 두 보상 항이 **같은 기하**를 쓰도록 여기 모은다.
+
+    · align   = 평균( 턱 축 방향 정렬, 턱 축 직선까지의 근접 )  — 곱하지 않는다
+    · enclose = 두 손가락이 컵 축 **양쪽**에 있는가 (0~1)
+    """
+    p_l, p_r, u, mid, cup_pt = _jaw_frame(env, pad_offset, robot_cfg, object_cfg)
     d = cup_pt - mid
     along = (d * u).sum(-1).abs()
     lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)

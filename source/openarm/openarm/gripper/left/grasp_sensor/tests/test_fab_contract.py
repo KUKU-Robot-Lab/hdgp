@@ -282,7 +282,8 @@ def test_jaw_reference_line_sits_at_the_measured_grasp_depth():
     assert abs(P.JAW_PAD_OFFSET - 0.0319) < 1e-6
     assert abs(P.TCP_TO_GRASP_DEPTH - 0.0331) < 1e-6
     rew = _src("grasp_left_rewards.py")
-    body = rew[rew.index("def _jaw_geometry("):]
+    # 08.23 프레임 계산이 _jaw_frame 으로 한 번 더 분리됐다 — lift 게이트도 같은 자를 쓴다.
+    body = rew[rew.index("def _jaw_frame("):]
     assert "approach * pad_offset" in body, "기준선을 패드 중앙으로 옮기지 않았다"
     cfg = _src("grasp_left_env_cfg.py")
     assert '"pad_offset": P.JAW_PAD_OFFSET' in cfg
@@ -333,3 +334,30 @@ def test_closure_weight_stays_a_stepping_stone():
     lifting 15 + goal 16 + settle 15 대비 충분히 작아야 파지·이송이 우선이다."""
     realistic_max = 0.32 * P.CLOSURE_WHEN_ENCLOSED_WEIGHT
     assert realistic_max <= 0.10 * (15.0 + 16.0 + P.SETTLE_REWARD_WEIGHT)
+
+
+def test_lift_ramp_is_multiplied_by_enclose():
+    """★★순수 램프는 "쳐 올리기"를 부분 보상해 정책을 주먹으로 고착시킨다.
+
+    fab_test6(램프, epoch 568 중단) 실측 — fab_test1 의 실패 모드로 정확히 회귀했다:
+        enclose 0.019 · 개도 4.4 mm · 거의닫힘 76.0% · '열기' 지령 2.8% · drop% 0.733
+    같은 구간 fab_test5(하드게이트)는 closure 0.561 · drop% 0.031 로 정상이었다.
+    기전: 학습 초기(1~50 epoch)에 컵이 튀어 오르는 순간이 램프 조건을 만족했고
+    (그 구간 lift 0.002 = 전 구간 최고), 컵을 치기에는 주먹이 유리하다.
+    ⚠ `near` 80 mm 게이트로는 못 막는다 — 툭 치는 거리가 그 안이다.
+
+    → enclose(주먹 0.019 vs 파지 0.78~0.85)를 곱해 "감싼 상태에서만" 높이 점수를 준다.
+      부수 효과로 자동 커리큘럼이 된다: 감싸기 전에는 사실상 하드 게이트와 같다.
+    """
+    rew = _src("grasp_left_rewards.py")
+    body = rew[rew.index("def _held("):rew.index("def held_with_good_pose(")]
+    assert "lifted * held * (near & upright).float()" in body, (
+        "램프에 enclose 가 곱해지지 않았다 — 쳐 올리기가 부분 보상을 받는다"
+    )
+    assert "_enclose(env, enclose_half_width, pad_offset, jaw_cfg, object_cfg)" in body
+    # 다섯 term 전부 같은 게이트를 쓴다 — 하나라도 빠지면 그쪽으로 hack 이 되살아난다
+    cfg = _src("grasp_left_env_cfg.py")
+    assert cfg.count("jaw_cfg") >= 3, "jaw_cfg 배선이 빠진 term 이 있다"
+    assert cfg.count('SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES))') >= 4, (
+        "SceneEntityCfg 를 term 간 공유하면 매니저가 제자리 변경해 두 번째 term 이 죽는다"
+    )

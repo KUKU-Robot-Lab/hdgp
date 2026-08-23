@@ -162,7 +162,11 @@ def test_lift_gate_is_measured_from_the_resting_cup_origin():
     assert "(obj_pos_w[:, 2] - ramp_zero_z) / (minimal_height - ramp_zero_z)" in rsrc, (
         "높이 항이 연속 램프가 아니다"
     )
-    assert "lifted * (near & upright).float()" in rsrc, "근접·자세는 게이트로 남아야 한다"
+    # ★08.23 램프에 enclose 를 곱한다 — 순수 램프는 "쳐 올리기" 를 부분 보상해 정책을
+    #   주먹으로 고착시켰다(fab_test6: enclose 0.019 · drop% 0.733). 근거는 test_fab_contract.
+    assert "lifted * held * (near & upright).float()" in rsrc, (
+        "근접·자세 게이트 또는 enclose 인자가 빠졌다"
+    )
     # ★공짜 차단: 램프 0 점은 놓인 높이보다 위여야 하고, 컵을 바닥 모서리로 기울여 얻는
     #   최대 상승(CUP_TIP_RISE_MAX)보다도 위여야 한다. 아니면 "흔들기" 가 보상을 받는다.
     assert P.LIFT_RAMP_ZERO_Z > P.CUP_SPAWN_Z + P.CUP_TIP_RISE_MAX, (
