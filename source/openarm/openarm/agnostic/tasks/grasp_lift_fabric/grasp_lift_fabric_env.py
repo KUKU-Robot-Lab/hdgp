@@ -122,7 +122,12 @@ class GraspLiftFabricEnv(DirectRLEnv):
         # ★tip IK 모드에서는 손 액션이 관절이 아니라 손끝 5점 × xyz 다. frozen_hand_joints
         #   는 이 모드에서 **적용되지 않는다** — fabric 이 손 20-DOF 를 전부 소유하므로
         #   일부만 얼리면 fabric 이 아는 자세와 실제가 어긋난다(그게 바로 고치려는 결함).
-        self._tip_ik = bool(getattr(self.cfg, "use_tip_fabric", False))
+        _hc = str(getattr(self.cfg, "hand_control", "pd"))
+        self._tip_ik = (_hc == "tip") or bool(getattr(self.cfg, "use_tip_fabric", False))
+        # 손 20-DOF 를 Fabrics 가 소유하되 **액션 의미는 관절 그대로**.
+        # fabric 이 손을 알아야 body_repulsion 에 손가락↔손가락 쌍을 넣을 수 있고,
+        # 그래야 PhysX self-collision 을 끌 근거가 생긴다(스텝 시간의 55~64%).
+        self._hand_fabric = (_hc == "fabric") and not self._tip_ik
         _n_hand_act = 3 * len(p.fingertip_bodies) if self._tip_ik else n_free
         if 6 + _n_hand_act != self.cfg.action_space:
             raise RuntimeError(
@@ -229,7 +234,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
         # 자유 관절만 정책이 움직인다. 고정 관절은 default(init) 값 그대로 명령된다.
         # tip IK 모드에서는 손 **전체**가 fabric 산출물이라 크기가 다르다.
         self.hand_targets = self._default_q[
-            :, (self._hand_t if self._tip_ik else self._hand_free_t)].clone()
+            :, (self._hand_t if (self._tip_ik or self._hand_fabric) else self._hand_free_t)].clone()
         self.palm_targets = torch.zeros(self.num_envs, 6, device=self.device)
 
         self.goal_pos = torch.zeros(self.num_envs, 3, device=self.device)
@@ -376,7 +381,9 @@ class GraspLiftFabricEnv(DirectRLEnv):
             batch_size=self.num_envs, device=self.device,
             timestep=float(self.cfg.fabrics_dt),
             graph_capturable=bool(self.cfg.fabric_use_cuda_graph),
-            use_hand_fabric=False,           # PCA 손 fabric 은 쓰지 않는다(5D 로 감쌈을 제약)
+            # PCA(5D)는 감쌈을 제약하므로 쓰지 않는다 — direct 는 20-DOF 관절 그대로다.
+            use_hand_fabric=self._hand_fabric,
+            hand_mode="direct",
             use_tip_fabric=self._tip_ik,     # 손끝 5점 위치 attractor(작업공간 IK)
             tip_attractor_gain=float(self.cfg.tip_attractor_gain) if self._tip_ik else None,
             robot_dir_name=p.fabric_robot_dir,
@@ -401,9 +408,10 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.fabric_q = self._fabric_order(self.robot.data.default_joint_pos).contiguous()
         self.fabric_qd = torch.zeros(self.num_envs, n_j, device=self.device)
         self.fabric_qdd = torch.zeros(self.num_envs, n_j, device=self.device)
-        # use_hand_fabric=False 라 hand_target 은 무시되지만, 원본 계약(B,5 PCA)을 지킨다.
-        self._fabric_hand_cmd = torch.zeros(self.num_envs, 5, device=self.device)
-        if self._tip_ik:
+        # hand_mode="direct" 면 (B, 손DOF) 관절 목표, 아니면 원본 PCA 계약(B,5).
+        _hcmd = p.num_hand_joints if self._hand_fabric else 5
+        self._fabric_hand_cmd = torch.zeros(self.num_envs, _hcmd, device=self.device)
+        if self._tip_ik or self._hand_fabric:
             # fabric 손 구간의 관절 한계(= robot soft limit 을 fabric 순서로 재배열).
             _jl = self.robot.data.soft_joint_pos_limits[0]          # (J,2)
             _m = float(self.cfg.hand_limit_margin)
@@ -413,6 +421,11 @@ class GraspLiftFabricEnv(DirectRLEnv):
             _fab_hand_ids = self._fab_t[n_arm:].tolist()
             self._hand_from_fab = torch.tensor(
                 [_fab_hand_ids.index(int(j)) for j in self._hand_t.tolist()],
+                device=self.device, dtype=torch.long)
+            # robot 손 관절 순서 → fabric 손 구간 순서(목표를 넘길 때 쓴다).
+            _robot_hand_ids = self._hand_t.tolist()
+            self._fab_from_hand = torch.tensor(
+                [_robot_hand_ids.index(int(j)) for j in _fab_hand_ids],
                 device=self.device, dtype=torch.long)
 
         # cspace attractor(널스페이스)의 rest 자세를 **프로필 홈**으로 맞춘다.
@@ -535,7 +548,19 @@ class GraspLiftFabricEnv(DirectRLEnv):
             # 손: **절대** 관절 목표 (전범위). 손은 홈이 곧 "펴진 상태"라 대칭 매핑으로 둔다 —
             # a=-1 이 완전 개방, a=+1 이 완전 폐합이 되는 편이 학습에 자연스럽다.
             u_hand = 0.5 * (self.actions[:, 6:] + 1.0)
-            self.hand_targets = self._hand_lo + u_hand * (self._hand_hi - self._hand_lo)
+            _free_targets = self._hand_lo + u_hand * (self._hand_hi - self._hand_lo)
+            if self._hand_fabric:
+                # ★손 전체(고정 관절 포함)를 fabric 에 넘긴다. 정책이 안 건드리는 외전은
+                #   init 값을 목표로 줘서 fabric 이 그 자세를 **유지**하게 한다 —
+                #   일부만 넘기면 fabric 이 아는 손과 실제가 어긋나 body_repulsion 이
+                #   틀린 형상으로 회피한다(그게 이 배선으로 고치려는 결함이다).
+                _full = self._default_q[:, self._hand_t].clone()
+                _free_cols = self._hand_from_fab.new_tensor(
+                    [self._hand_t.tolist().index(int(j)) for j in self._hand_free_t.tolist()])
+                _full[:, _free_cols] = _free_targets
+                self._fabric_hand_cmd = _full[:, self._fab_from_hand]
+            else:
+                self.hand_targets = _free_targets
             self.fabric.set_features(
                 self._fabric_hand_cmd, self.palm_targets, "euler_zyx",
                 self.fabric_q.detach(), self.fabric_qd.detach(),
@@ -622,7 +647,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_ids)
         self.robot.set_joint_velocity_target(
             torch.zeros_like(arm_target), joint_ids=self.arm_ids)
-        if self._tip_ik:
+        if self._tip_ik or self._hand_fabric:
             # ★손 20-DOF 를 **전부** fabric 이 준다. 일부만 얼리면 fabric 이 아는 자세와
             #   실제가 어긋나 body_repulsion 이 틀린 손으로 회피를 계산한다.
             self.hand_targets = self.fabric_q[:, self.profile.num_arm_joints:][
@@ -991,7 +1016,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim(q0, torch.zeros_like(q0), env_ids=env_ids)
         self.robot.set_joint_position_target(q0, env_ids=env_ids)
         self.hand_targets[env_ids] = q0[
-            :, (self._hand_t if self._tip_ik else self._hand_free_t)]
+            :, (self._hand_t if (self._tip_ik or self._hand_fabric) else self._hand_free_t)]
         self.fabric_q[env_ids] = q0[:, self._fab_t]
         self.fabric_qd[env_ids] = 0.0
         self.fabric_qdd[env_ids] = 0.0

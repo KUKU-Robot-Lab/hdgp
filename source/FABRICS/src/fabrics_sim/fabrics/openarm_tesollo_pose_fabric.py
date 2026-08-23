@@ -39,10 +39,20 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
 
     def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=True,
                  palm_position_only=False, use_tip_fabric=False, tip_attractor_gain=None,
+                 hand_mode="pca",
                  robot_dir_name="openarm_tesollo", robot_name="openarm_tesollo",
                  default_config_override=None, default_palm_euler_zyx=None,
                  fabric_params_filename=None):
         self._use_hand_fabric = use_hand_fabric
+        # "pca"   : 5D PCA 로 손 20-DOF 를 제약(감쌈을 제약할 위험 — grasp_v2 계보)
+        # "direct": 손 20-DOF 를 **관절 그대로** attractor 로 (액션 의미가 관절이라
+        #           정책에 자연스럽고, 손끝 IK 와 달리 실현 불가 목표가 없다).
+        #   ★손끝 IK(use_tip_fabric)는 손끝 5점 15D 를 독립 지시하는데, 다섯 손끝은
+        #     같은 손에 결합돼 있어 대부분의 15D 점이 기구학적으로 불가능하다.
+        #     실측: 일관된 목표는 추종오차 9~43mm, 임의 목표는 81~99mm, 학습 중
+        #     정책이 지시한 목표는 85mm — 사실상 전부 도달 불가였고 게이트가
+        #     23,400 스텝 동안 0.000 이었다.
+        self._hand_mode = hand_mode
         # ★손끝 attractor(작업공간 손 제어). 기본 off — 켜지 않으면 기존 트랙 거동 불변.
         #   PCA(5D)와 달리 손 20-DOF 를 그대로 두므로 인벨롭 감쌈을 제약하지 않는다.
         self._use_tip_fabric = use_tip_fabric
@@ -245,6 +255,12 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
               1.3821e-04,  4.6072e-01,  9.9315e-02, -8.1080e-02,   # ring
               0.0000e+00,  0.0000e+00,  0.0000e+00,  0.0000e+00],  # pinky: fixed
         ], device=self.device)
+
+        if self._hand_mode == "direct":
+            # 손 20-DOF 를 관절 그대로. **팔 7열은 0** 이므로 LinearMap 의 Jacobian 이
+            # 곧 마스킹이 되어 이 항은 팔을 절대 움직이지 않는다(palm attractor 와
+            # 같은 관절을 두고 싸우지 않는다 — 손끝 IK 에서 palm 오차 580mm 를 낸 결합).
+            pca_matrix = torch.eye(20, device=self.device)
 
         self._pca_matrix = torch.clone(pca_matrix.detach())
 

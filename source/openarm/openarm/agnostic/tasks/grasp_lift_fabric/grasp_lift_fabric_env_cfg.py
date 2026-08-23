@@ -228,7 +228,17 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     # tip attractor 는 PCA(5D)와 달리 손 20-DOF 를 그대로 두므로 감쌈을 제약하지 않는다.
     # 액션은 손끝 5점의 **palm 상대** 위치 15D — 절대 좌표면 팔이 움직일 때마다 손 목표가
     # 함께 끌려가 팔·손 제어가 얽힌다.
-    use_tip_fabric: bool = True
+    # 손 제어 경로 — 셋 중 하나.
+    #   "pd"     : 손은 Fabrics 밖. 정책 액션 = 관절 목표 → 직접 PD (구 배선).
+    #   "fabric" : 손 20-DOF 를 Fabrics 가 소유. 정책 액션은 **관절 그대로**(의미 불변),
+    #              fabric 이 관절 한계·자기충돌을 함께 풀어 관절 목표를 만든다. ★권장
+    #   "tip"    : 손끝 5점 위치를 정책이 지시(작업공간 IK).
+    #              ★실측 기각: 다섯 손끝은 같은 손에 결합돼 있어 독립 15D 지시의
+    #                대부분이 기구학적으로 불가능하다. 학습 중 추종오차 85mm(도달 가능
+    #                목표는 9mm)로 게이트가 23,400 스텝 동안 0.000 이었다.
+    #                파라미터화를 실현 가능한 부분공간으로 고치기 전에는 쓰지 않는다.
+    hand_control: str = "fabric"
+    use_tip_fabric: bool = False
     # 게인 실측(팔 고정·손끝 20mm 안쪽·300스텝): 80→17.25mm · 200→5.57 · **400→2.94**
     # · 800→9.82 · 1200 이상 발산. 과대 게인은 여유자유도가 팔로 새어 palm 제어를 오염시킨다.
     tip_attractor_gain: float = 400.0
@@ -408,7 +418,8 @@ def resolve_cfg(cfg: "GraspLiftFabricEnvCfg") -> None:
     # ★tip IK 모드에서는 손 액션이 관절이 아니라 **손끝 5점 × xyz** 다.
     #   frozen_hand_joints 는 이 모드에서 의미가 없다 — fabric 이 손 20-DOF 를 전부
     #   소유하고, 손가락 교차는 자유도 제거가 아니라 body_repulsion 이 막는다.
-    n_hand_action = 3 * len(profile.fingertip_bodies) if cfg.use_tip_fabric else n_free_hand
+    _tip = (cfg.hand_control == "tip") or cfg.use_tip_fabric
+    n_hand_action = 3 * len(profile.fingertip_bodies) if _tip else n_free_hand
     cfg.action_space = 6 + n_hand_action
     # joint pos/vel/effort(3j) + 접촉력(f) + 물체 pos/quat(palm 프레임, 7)
     # + goal-object(3) + prev_action
