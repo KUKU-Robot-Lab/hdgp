@@ -116,6 +116,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
                 raise RuntimeError(f"[{p.name}] 고정 관절 '{jn}' 해석 실패: {ids}")
             _frozen.append(ids[0])
         _fset = set(_frozen)
+        self._frozen_t = torch.tensor(_frozen, device=self.device, dtype=torch.long)
         self._hand_free_t = torch.tensor(
             [i for i in self.hand_ids if i not in _fset], device=self.device, dtype=torch.long)
         n_free = len(self._hand_free_t)
@@ -384,6 +385,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
             # PCA(5D)는 감쌈을 제약하므로 쓰지 않는다 — direct 는 20-DOF 관절 그대로다.
             use_hand_fabric=self._hand_fabric,
             hand_mode="direct",
+            hand_attractor_gain=getattr(self.cfg, "hand_attractor_gain", None),
             use_tip_fabric=self._tip_ik,     # 손끝 5점 위치 attractor(작업공간 IK)
             tip_attractor_gain=float(self.cfg.tip_attractor_gain) if self._tip_ik else None,
             robot_dir_name=p.fabric_robot_dir,
@@ -923,6 +925,30 @@ class GraspLiftFabricEnv(DirectRLEnv):
         # ★"정책이 컵을 겨냥은 하는가"와 "겨냥은 하는데 못 가는가"를 가른다.
         #   target_to_obj 작고 palm_dist 크면 → 추종/도달 문제
         #   target_to_obj 자체가 크면        → 정책이 컵을 안 겨냥 (탐색 문제)
+        if self._hand_fabric:
+            # ★손 제어를 두 층으로 갈라 잰다 — 어디서 막히는지 이 둘이 가른다.
+            #   cmd_err : 정책이 지시한 관절 목표 → fabric attractor 가 실제로 만든
+            #             `fabric_q`. 크면 **fabric 내부**가 목표를 못 따라간다
+            #             (처방: hand_attractor_gain 상향).
+            #   track_err: `fabric_q` → PhysX PD 가 실현한 실제 관절. 크면 **물리 쪽**
+            #             (stiffness/effort)이 못 따라간다.
+            #   손끝 IK 가 막혔던 곳이 정확히 cmd_err 에 해당한다(추종오차 85mm).
+            _fq_hand = self.fabric_q[:, self.profile.num_arm_joints:]
+            _cmd = self._fabric_hand_cmd
+            self.extras["hand/cmd_err_rad"] = (_fq_hand - _cmd).abs().mean()
+            # ★외전 이탈 — hand_control="pd" 는 외전을 init 에 **하드 고정**하지만
+            #   "fabric" 은 fabric 이 손 20개를 전부 소유하므로 외전도 움직일 수 있다.
+            #   목표는 init 으로 주지만 body_repulsion·joint_limit·cspace attractor 가
+            #   함께 작용하면 밀려난다. 손가락이 벌어지면 감쌈이 약해진다
+            #   (실측 fmin: fabric 27~28mm vs pd 23~24mm).
+            _froz = self._frozen_t
+            if _froz.numel() > 0:
+                self.extras["hand/abduction_dev_rad"] = (
+                    self.robot.data.joint_pos[:, _froz]
+                    - self._default_q[:, _froz]).abs().mean()
+            self.extras["hand/track_err_rad"] = (
+                self.robot.data.joint_pos[:, self._hand_t]
+                - _fq_hand[:, self._hand_from_fab]).abs().mean()
         if self._tip_ik:
             # ★손끝 IK 추종오차 — 액션 박스(축별 min/max 직육면체)는 실제 도달 집합보다
             #   크다. 이 값이 크면 정책이 **못 가는 곳**을 계속 지시하고 있다는 뜻이라

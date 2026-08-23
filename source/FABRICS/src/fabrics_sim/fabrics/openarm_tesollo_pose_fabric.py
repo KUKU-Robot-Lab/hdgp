@@ -39,7 +39,7 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
 
     def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=True,
                  palm_position_only=False, use_tip_fabric=False, tip_attractor_gain=None,
-                 hand_mode="pca",
+                 hand_mode="pca", hand_attractor_gain=None,
                  robot_dir_name="openarm_tesollo", robot_name="openarm_tesollo",
                  default_config_override=None, default_palm_euler_zyx=None,
                  fabric_params_filename=None):
@@ -53,6 +53,9 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         #     정책이 지시한 목표는 85mm — 사실상 전부 도달 불가였고 게이트가
         #     23,400 스텝 동안 0.000 이었다.
         self._hand_mode = hand_mode
+        # None = params 값(50). direct 모드에서 손이 목표를 못 따라가면 올린다 —
+        # 손끝 attractor 는 같은 구조에서 400 을 쓴다(실측 꼭짓점).
+        self._hand_attractor_gain = hand_attractor_gain
         # ★손끝 attractor(작업공간 손 제어). 기본 off — 켜지 않으면 기존 트랙 거동 불변.
         #   PCA(5D)와 달리 손 20-DOF 를 그대로 두므로 인벨롭 감쌈을 제약하지 않는다.
         self._use_tip_fabric = use_tip_fabric
@@ -273,8 +276,10 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         taskmap = LinearMap(pca_matrix, self.device)
         self.add_taskmap(taskmap_name, taskmap, graph_capturable=self.graph_capturable)
 
-        fabric = Attractor(True, self.fabric_params['hand_attractor'],
-                           self.device, graph_capturable=self.graph_capturable)
+        _hp = dict(self.fabric_params['hand_attractor'])
+        if self._hand_attractor_gain is not None:
+            _hp['conical_gain'] = float(self._hand_attractor_gain)
+        fabric = Attractor(True, _hp, self.device, graph_capturable=self.graph_capturable)
         self.add_fabric(taskmap_name, "hand_attractor", fabric)
 
     def add_palm_points_attractor(self):

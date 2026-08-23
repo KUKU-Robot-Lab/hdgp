@@ -238,6 +238,11 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     #                목표는 9mm)로 게이트가 23,400 스텝 동안 0.000 이었다.
     #                파라미터화를 실현 가능한 부분공간으로 고치기 전에는 쓰지 않는다.
     hand_control: str = "fabric"
+    # hand_control="fabric" 의 attractor 게인. None = fabric params 기본(50).
+    # ★손이 목표를 못 따라가면(hand/cmd_err 가 크면) 여기를 올린다. 손끝 attractor 는
+    #   같은 구조에서 400 이 꼭짓점이었다. Jacobian 이 손 구간으로 마스킹돼 있어
+    #   게인을 올려도 palm 은 오염되지 않는다(tip 실험에서 확인한 구조적 보장).
+    hand_attractor_gain: float | None = 400.0
     use_tip_fabric: bool = False
     # 게인 실측(팔 고정·손끝 20mm 안쪽·300스텝): 80→17.25mm · 200→5.57 · **400→2.94**
     # · 800→9.82 · 1200 이상 발산. 과대 게인은 여유자유도가 팔로 새어 palm 제어를 오염시킨다.
