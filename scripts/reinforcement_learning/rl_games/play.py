@@ -149,6 +149,10 @@ from isaaclab.utils.io import load_yaml
 
 import yaml as _yaml
 
+# 평가 하네스 범용화 층. scripts/tools 는 패키지가 아니라 경로로 붙인다.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+import eval_adapters as _eval_adapters  # noqa: E402
+
 
 class _RunCfgYamlLoader(_yaml.FullLoader):
     """logged env.yaml 전용 loader.
@@ -687,6 +691,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     _eval_acc = {"in_succ": [], "grip_sum": 0.0, "grip_n": 0, "grip_hist": None, "height": [],
                  "cup_idx": None, "cup_finger": None, "cup_n": 0, "cup_hist": None,
                  "obj_finger": None, "obj_n": 0}
+    # 평가 경로는 첫 스텝에 한 번만 고른다(선택 사유를 로그로 남긴다).
+    _eval_route = None
+    _common_eval = None
     _occ = {"step": 0, "by_obj": {}}  # occlusion probe 누적: obj_name -> [vis_lift_sum, n_lift, vis_pre_sum, n_pre]
     _cd_n = int(args_cli.cup_drift_probe)
     _cd_step = 0
@@ -747,7 +754,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 _raw_finger = actions[:, 6:11].clone()
                 actions = actions.clone()
                 actions[:, 6:11] = -1.0
-            obs, _, dones, _ = env.step(actions)
+            obs, _rew, dones, _ = env.step(actions)
             # last_actions obs(101:106=finger 5D)를 정책 raw 로 원복 — 실기는 정책 자신의 출력을 기록.
             if args_cli.dead_hand_probe:
                 _o_dh = obs["obs"] if isinstance(obs, dict) else obs
@@ -767,7 +774,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     _pd = (((_gp.robot.data.body_pos_w[:, _eei, :] - _gp.scene.env_origins) - _gp.object_pos).norm(dim=-1).mean() if _eei >= 0 else -1.0)
                     _ov = (_gp.cup.data.root_lin_vel_w.norm(dim=-1).mean() if hasattr(_gp, "cup") else -1.0)
                     _oz = _gp.object_pos[:, 2].mean()
-                    _fn = ["thumb", "index", "middle", "ring", "pinky"]
+                    # 라벨 수를 접촉 버퍼 폭에서 받는다 — 2지 그리퍼에서 zip 이
+                    # 조용히 잘리며 엉뚱한 손가락 이름이 붙는 일을 막는다.
+                    _fn = _eval_adapters.finger_labels(
+                        _gp, len(_tc),
+                        default=("thumb", "index", "middle", "ring", "pinky"))
                     print(f"[GRIP] palm_d={_pd:.3f} obj_z={_oz:.3f} obj_v={_ov:.3f}  " + "  ".join(
                         f"{n}:c={c:.2f},f={f:5.1f},d={d:.3f}"
                         for n, c, f, d in zip(_fn, _tc.tolist(), _tf.tolist(), _td.tolist())
@@ -858,8 +869,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     print("OCCSUMMARY" + "=" * 55, flush=True)
                     os._exit(0)
 
+            # === 정량 평가 (--eval_episodes N) ===
+            # 어댑터 선택: env 가 grasp_v2 계열 버퍼를 **전부** 노출할 때만 아래 전용
+            # 블록으로 간다. 하나라도 없으면 블록 안에서 AttributeError 가 나므로
+            # (업그레이드된 신규 태스크가 정확히 그 경우다) 공통 지표로 돌린다.
+            if args_cli.eval_episodes > 0 and _eval_route is None:
+                _ev = env.unwrapped
+                if hasattr(_ev, "env"):
+                    _ev = _ev.env.unwrapped
+                _eval_missing = _eval_adapters.missing_grasp_v2_attrs(_ev)
+                _eval_route = _eval_adapters.select(_ev)
+                if _eval_route == _eval_adapters.COMMON:
+                    _common_eval = _eval_adapters.CommonEvalAccumulator(_ev.num_envs)
+                    print(f"[EVAL] 태스크 고유 어댑터 없음 → 공통 지표로 평가한다. "
+                          f"env 미노출: {', '.join(_eval_missing[:6])}"
+                          f"{' …' if len(_eval_missing) > 6 else ''}", flush=True)
+                else:
+                    print("[EVAL] grasp_v2 어댑터 적용", flush=True)
+
+            if _eval_route == _eval_adapters.COMMON:
+                _common_eval.add_step(_rew, dones, actions, env=_ev)
+                if _common_eval.episodes >= args_cli.eval_episodes:
+                    import os as _os4
+                    print(_common_eval.report(task=str(args_cli.task),
+                                              missing=_eval_missing), flush=True)
+                    _os4._exit(0)
+
             # === grasp_v2 정량 평가 (--eval_episodes N) ===
-            if args_cli.eval_episodes > 0:
+            if args_cli.eval_episodes > 0 and _eval_route == _eval_adapters.GRASP_V2:
                 _ge = env.unwrapped
                 if hasattr(_ge, "env"):
                     _ge = _ge.env.unwrapped
@@ -956,12 +993,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         print(f"  평균 리프트 높이(들었을 때): {_np3.mean(_eval_acc['height']):.3f} m")
                     if _eval_acc["obj_n"] > 0:
                         _of = (_eval_acc["obj_finger"] / _eval_acc["obj_n"]).tolist()
-                        _fl0 = ["thumb", "index", "middle", "ring", "pinky"]
+                        _fl0 = _eval_adapters.finger_labels(
+                            _ge, 5, default=("thumb", "index", "middle", "ring", "pinky"))
                         print(f"  [비-컵 물체] 손가락별 접촉률(들었을 때, near-gate), n={_eval_acc['obj_n']}:")
                         print("        " + "   ".join(f"{n}={v:.2f}" for n, v in zip(_fl0, _of)))
                     if _eval_acc["cup_n"] > 0:
                         _cf = (_eval_acc["cup_finger"] / _eval_acc["cup_n"]).tolist()
-                        _fl = ["thumb", "index", "middle", "ring", "pinky"]
+                        _fl = _eval_adapters.finger_labels(
+                            _ge, 5, default=("thumb", "index", "middle", "ring", "pinky"))
                         print("  ── CUP 전용 (파지 접촉 프레임 기준, 리프트 무관) ──────")
                         print(f"  [CUP] 손가락별 접촉률(envelope tip|mid|distal, 컵 근접), n={_eval_acc['cup_n']}:")
                         print("        " + "   ".join(f"{n}={v:.2f}" for n, v in zip(_fl, _cf)))
