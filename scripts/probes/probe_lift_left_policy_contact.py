@@ -152,6 +152,16 @@ def main() -> None:
     sd_lateral = []        # 턱 축 선까지의 수직거리 (m) — 전 env 평균
     sd_along_best = []     # 그 스텝에서 가장 잘 맞춘 env (최소값)
     sd_lateral_best = []
+    # ★★"목표에 와서도 못 멈춘다"를 층으로 가르는 계측. G3(고정 지령)가 0.054 m/s 를
+    #   냈으므로 제어기는 멈출 수 있다 — 정책이 지령을 계속 흔드는지, 아니면 지령은
+    #   멈췄는데 아래층이 못 따라오는지를 구분해야 처방이 갈린다.
+    #   사슬: 정책 지령(palm 목표) → fabric_q → 실제 관절 → 컵
+    gz_cmd = []            # 목표 근처에서 palm **위치 지령**의 스텝간 변화 (mm/step)
+    gz_fab = []            # 같은 구간 fabric_q 변화 (mrad/step)
+    gz_qd = []             # 같은 구간 실제 관절 속도 (rad/s)
+    gz_cup = []            # 같은 구간 컵 선속도 (m/s)
+    gz_prev_cmd = [None]
+    gz_prev_fab = [None]
     sd_enclose = []        # 두 손가락이 컵 축 양쪽에 있는 정도 (0~1)
     sd_term = []           # `cup_between_jaws` 항의 실제 값 (weight 곱하기 전)
     grip_series = []       # 구동 관절 위치 (m)
@@ -270,6 +280,18 @@ def main() -> None:
             if bool(close.any()):
                 late_lin.append(float(obj.data.root_lin_vel_w.norm(dim=-1)[close].mean()))
 
+            # ★층 분해 — 목표 10 cm 이내 & 쥐고 있는 env 만
+            if bool(close.any()):
+                _at = raw.action_manager.get_term("arm_action")
+                _cmd = _at.processed_actions[:, :3]
+                _fab = _at._fabric_q
+                if gz_prev_cmd[0] is not None:
+                    gz_cmd.append(float((_cmd - gz_prev_cmd[0]).norm(dim=-1)[close].mean()) * 1e3)
+                    gz_fab.append(float((_fab - gz_prev_fab[0]).abs().amax(dim=-1)[close].mean()) * 1e3)
+                gz_prev_cmd[0] = _cmd.clone(); gz_prev_fab[0] = _fab.clone()
+                gz_qd.append(float(robot.data.joint_vel[:, arm_ids].norm(dim=-1)[close].mean()))
+                gz_cup.append(float(obj.data.root_lin_vel_w.norm(dim=-1)[close].mean()))
+
     print("\n=== 리프트 판정 중 컵에 가장 가까운 링크 ===")
     print(f"  z 만 보는 판정(레퍼런스): {lifted_steps / max(total, 1):.1%}")
     print(f"  쥐고 있음까지 요구(신규):   {held_steps / max(total, 1):.1%}"
@@ -328,6 +350,20 @@ def main() -> None:
         print(f"  최대 컵 z {max(cup_z):.5f} (스폰 대비 {(max(cup_z) - P.CUP_SPAWN_Z) * 1e3:+.1f} mm)"
               f" · 스폰보다 1 cm 이상 올라간 스텝 {up:.1%}")
         print("  → 이 값이 0 에 가까우면 **컵을 안 들고 곁에 서 있는 것**이다.")
+
+    if gz_cmd:
+        import statistics as _st
+        print("\n=== ★목표 근처(10 cm)에서 무엇이 움직이는가 — 층 분해 ===")
+        print(f"  샘플 {len(gz_cmd)} 스텝 · 한 스텝 = {1000 * 0.02:.0f} ms")
+        print(f"  {'① palm 위치 지령 변화':<26}{_st.mean(gz_cmd):8.2f} mm/step"
+              f"  = {_st.mean(gz_cmd) / 0.02 / 1000:.3f} m/s")
+        print(f"  {'② fabric_q 변화(최대관절)':<26}{_st.mean(gz_fab):8.2f} mrad/step"
+              f"  = {_st.mean(gz_fab) / 0.02 / 1000:.3f} rad/s")
+        print(f"  {'③ 실제 관절 속도':<26}{_st.mean(gz_qd):8.3f} rad/s")
+        print(f"  {'④ 컵 선속도':<26}{_st.mean(gz_cup):8.3f} m/s")
+        print("  → ①이 크면 **정책이 지령을 흔드는 것**(처방: 액션 쪽).")
+        print("     ①이 작은데 ③④가 크면 **제어기가 못 멈추는 것**(처방: fabric/PD 쪽).")
+        print(f"     참고: G3 고정 지령 실측 잔류 0.054 m/s = 제어기 하한")
 
     if sd_along:
         import math as _m

@@ -117,6 +117,15 @@ class FabricPalmAction(ActionTerm):
         self._droop_limit = torch.tensor(limits, device=device)
         self._droop = torch.zeros(num_envs, 7, device=device)
 
+        # ★★palm 지령 변화율 상한. 실측: 목표 10 cm 안에서도 지령이 52 mm/step(2.6 m/s)
+        #   튄다 — 팔의 능력(약 1 m/s)의 2.6 배다. Fabrics 가 흡수해도 컵에 0.307 m/s 가
+        #   남는다. 보상(settle)은 세 층 아래인 컵 속도를 보므로 이걸 못 고친다.
+        #   ⚠ 리셋 직후 첫 스텝은 클램프하지 않는다 — 이전 에피소드 지령에서 끌려오면
+        #     시작이 오염된다(이 태스크에서 리셋 오염에 세 번 당했다).
+        self._prev_cmd_pos = torch.zeros(num_envs, 3, device=device)
+        self._prev_cmd_rot = torch.zeros(num_envs, 3, device=device)
+        self._cmd_primed = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
         # fabric 상태
         self._fabric_q = self._q_home.unsqueeze(0).repeat(num_envs, 1).contiguous()
         self._fabric_qd = torch.zeros(num_envs, 7, device=device)
@@ -162,9 +171,22 @@ class FabricPalmAction(ActionTerm):
 
         # 위치: [-1,1] 클램프 후 박스 절대 좌표. a=0 = 박스 중심 (절대 규약).
         pos = self._box_center + actions[:, :3].clamp(-1.0, 1.0) * self._box_half
+        # ★변화율 상한 — 팔이 낼 수 있는 속도를 넘는 지령은 포화만 만든다(test13 교훈).
+        _fresh = ~self._cmd_primed | (not P.PALM_CMD_RATE_LIMIT_ENABLED)
+        _d = pos - self._prev_cmd_pos
+        _n = _d.norm(dim=-1, keepdim=True)
+        _s = (P.PALM_CMD_RATE_LIMIT / _n.clamp(min=1e-9)).clamp(max=1.0)
+        pos = torch.where(_fresh.unsqueeze(-1), pos, self._prev_cmd_pos + _d * _s)
+        self._prev_cmd_pos = pos.detach()
 
         # 회전: 축각 벡터(노름 클램프) → 기준 자세에 세계프레임 합성.
         rotvec = actions[:, 3:6] * P.PALM_ROT_MAX_RAD
+        _dr = rotvec - self._prev_cmd_rot  # (리미터 꺼져 있으면 _fresh 로 무효화된다)
+        _nr = _dr.norm(dim=-1, keepdim=True)
+        _sr = (P.PALM_ROT_RATE_LIMIT / _nr.clamp(min=1e-9)).clamp(max=1.0)
+        rotvec = torch.where(_fresh.unsqueeze(-1), rotvec, self._prev_cmd_rot + _dr * _sr)
+        self._prev_cmd_rot = rotvec.detach()
+        self._cmd_primed |= True
         angle = rotvec.norm(dim=-1)
         scale = torch.where(
             angle > P.PALM_ROT_MAX_RAD, P.PALM_ROT_MAX_RAD / angle.clamp(min=1e-9),
@@ -234,6 +256,8 @@ class FabricPalmAction(ActionTerm):
         # ★리셋 시 초기화하지 않으면 직전 에피소드의 처짐이 남아 첫 스텝이 튄다
         #   (이 태스크에서 리셋 오염에 세 번 당했다).
         self._droop[env_ids] = 0.0
+        # 다음 스텝을 "첫 지령"으로 표시 — 이전 에피소드 지령에서 끌려오지 않게 한다.
+        self._cmd_primed[env_ids] = False
 
 
 @configclass
