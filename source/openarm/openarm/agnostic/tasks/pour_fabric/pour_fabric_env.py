@@ -741,6 +741,18 @@ class PourFabricEnv(DirectRLEnv):
         # 느슨한 쪽만 오르면 컵을 감싼 게 아니라 받치고 있는 것이다.
         self.extras["task/src_envelope_strict"] = src_strict.mean()
         self.extras["task/rcv_envelope_strict"] = rcv_strict.mean()
+        # ★손 2층 진단(grasp_lift_fabric 0aadafd 규약). 손은 정책이 안 건드리지만
+        #   fabric 이 손을 소유하므로 내부 표현이 실제와 갈라지면 body_repulsion 이
+        #   틀린 형상으로 회피한다 — 그게 08.23 에 고친 결함이다.
+        #     cmd_err  : 넘긴 목표 → fabric_q      크면 fabric 내부 경합
+        #     track_err: fabric_q → 실제 관절      크면 물리(stiffness/effort)
+        for rig, tag in ((self.src, "src"), (self.rcv, "rcv")):
+            n_arm = rig.profile.num_arm_joints
+            _fq = rig.fabric_q[:, n_arm:]
+            self.extras[f"hand/{tag}_cmd_err_rad"] = (
+                _fq - rig.fabric_hand_cmd).abs().mean()
+            self.extras[f"hand/{tag}_track_err_rad"] = (
+                self.robot.data.joint_pos[:, rig.fab_t[n_arm:]] - _fq).abs().mean()
         # ★접촉력 원값 — grip=0 이 "미접촉"인지 "임계 아래"인지 구분(fab_test1 교훈).
         self.extras["contact/src_best"] = src_c.max(dim=1).values.mean()
         self.extras["contact/rcv_best"] = rcv_c.max(dim=1).values.mean()
