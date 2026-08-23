@@ -156,6 +156,29 @@ IK_ACTION_SCALE = (0.02, 0.02, 0.02, 0.05, 0.05, 0.05)
 #   ⚠ 과거 이 값을 두 번 틀렸다(기록): right/grasp_sensor 의 0.2082 는 컵 bbox 반높이로
 #     역산한 중간값이고, USD BBoxCache 는 extent 에 scale 을 또 곱해 0.2004 를 준다.
 #     지금은 메시 점을 직접 읽으므로 그 두 함정과 무관하다.
+# ---------------------------------------------------------------------------
+# 로봇 자산 — 충돌 근사 변형
+# ---------------------------------------------------------------------------
+# ★★08.23 `_lgrip` 변형을 쓴다. 원본은 50개 콜라이더가 **전부 convexDecomposition** 인데,
+#   이 태스크가 실제로 무언가에 닿는 부위는 **좌 그리퍼 3개뿐**이다:
+#     · 우손 tesollo 27개 — 이 태스크에서 rest 로 고정, 아무것도 만지지 않는다(순수 비용)
+#     · 좌팔 8 · 우팔 8 · 몸통/헤드 4 — 컵에 닿지 않고, 팔 자기충돌은 Fabrics
+#       body_repulsion 이 계획 단계에서 이미 회피한다
+#   → 좌 그리퍼만 decomposition 유지, 나머지 47개는 convexHull.
+#   agnostic 트랙의 `_armhull`(23개 hull)을 **그대로 쓰면 안 된다** — 그쪽은 우손으로
+#   잡는 태스크라 좌 그리퍼를 hull 로 바꿔 뒀다. 우리는 그 부위가 파지 도구다.
+#   ⚠ 그리퍼를 hull 로 바꾸면 개구·접촉이 달라져 GRIPPER_MAX_OPENING(84.5 mm)과
+#     파지 대역이 무효가 된다. 계약으로 고정한다.
+#   생성: scripts/tools/make_armhull_asset.py <asset> --suffix _lgrip --keep-marker l_hl_
+ROBOT_ASSET_DIR = "openarm_tesollo_sensor_rl_lgrip"
+ROBOT_USD_REL = f"robot/{ROBOT_ASSET_DIR}/openarm_tesollo_sensor_rl.usd"
+# 좌 그리퍼 링크 — 이 셋만 convexDecomposition 이어야 한다(계약 검증용).
+GRIPPER_COLLIDER_LINKS = (
+    "l_hl_gripper_base",
+    "l_hl_gripper_left_finger",
+    "l_hl_gripper_right_finger",
+)
+
 ENV_USD_REL = "env/usd/env.usd"
 ENV_POS = (0.0, 0.0, 0.0)          # ★로봇 base link 원점과 일치 — 오프셋 없음
 TABLE_SURFACE_Z = 0.200            # top_plate 상면
@@ -336,9 +359,18 @@ GRASP_POSE_REWARD_WEIGHT = 5.0    # lifting 15 의 1/3 — 자세만 맞추는 �
 #     lifting(11.0) 대비 400 배 작아 조금 개선해도 증가분이 다른 항에 묻혔다.
 #     → 선속도·각속도를 **평균**으로 묶고(같은 상태에서 5 배), 목표 근접을 완화하고,
 #       weight 를 lifting 과 동급으로 올린다. "옮겨서 정지"가 이 태스크의 최종 요구다.
-SETTLE_POS_STD = 0.15             # m  (12 cm → 품질 0.34)
-SETTLE_LIN_VEL_STD = 0.40         # m/s (0.444 → 0.20, 0.1 → 0.76)
-SETTLE_ANG_VEL_STD = 3.00         # rad/s (3.43 → 0.19, 1.0 → 0.68)
+# ★★08.23 속도 임계를 **현재 영역으로 재척도**했다. 임계는 test8 시절 실측
+#   (0.444 m/s · 3.43 rad/s) 기준이었는데, Fabrics 트랙 fab_test7 결정론 실측은
+#   **0.193 m/s · 1.473 rad/s** 로 규모가 2.3 배 좋아졌다. 옛 임계에서는 이미 품질이
+#   0.55/0.54 라 "더 멈춰라"는 압력이 사실상 없다(사용자 관찰: "가만히 있질 못함").
+#     옛 임계  현재 2.87 → 목표 상태 7.33  = 개선 폭 2.6 배
+#     새 임계  현재 1.01 → 목표 상태 6.11  = 개선 폭 **6.0 배**
+#   항 값이 일시 하락하지만 워밍스타트로 파지·이송은 유지되므로 잃는 건 점수뿐이다.
+#   ⚠ `SETTLE_POS_STD` 는 **같이 조이지 않는다** — 세 항을 동시에 조이면 곱이 죽는다
+#     (test10/test11 에서 실증). 목표 거리는 다음 런에서 따로 다룬다.
+SETTLE_POS_STD = 0.15             # m  (12 cm → 품질 0.34) — 이번 런에서 불변
+SETTLE_LIN_VEL_STD = 0.15         # m/s (0.193 → 0.14, 0.05 → 0.68, 0.02 → 0.87)
+SETTLE_ANG_VEL_STD = 1.50         # rad/s (1.473 → 0.24, 0.3 → 0.80)
 SETTLE_REWARD_WEIGHT = 15.0       # lifting 과 동급 — 게이트를 곱하므로 파지가 우선은 유지된다
 
 # ★★액션 jerk(2차 차분) 페널티 — 레퍼런스에 **없는** 항.

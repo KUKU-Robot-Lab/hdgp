@@ -115,10 +115,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         self.scene.robot = ArticulationCfg(
             prim_path="{ENV_REGEX_NS}/Robot",
             spawn=sim_utils.UsdFileCfg(
-                usd_path=_os.path.join(
-                    _ASSETS_DIR,
-                    "robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd",
-                ),
+                usd_path=_os.path.join(_ASSETS_DIR, P.ROBOT_USD_REL),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     # ★중력 켠 채 학습한다. 우측 태스크와 IK 경로는 disable_gravity 를 쓰지만
                     #   그건 포즈 추종을 위한 타협이라 실기 이식성을 해친다.

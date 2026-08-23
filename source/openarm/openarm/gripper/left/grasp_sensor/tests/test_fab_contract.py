@@ -361,3 +361,48 @@ def test_lift_ramp_is_multiplied_by_enclose():
     assert cfg.count('SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES))') >= 4, (
         "SceneEntityCfg 를 term 간 공유하면 매니저가 제자리 변경해 두 번째 term 이 죽는다"
     )
+
+
+def test_left_gripper_colliders_stay_decomposition():
+    """★★파지 도구인 좌 그리퍼 3개는 **convexDecomposition** 이어야 한다.
+
+    agnostic 트랙의 `_armhull` 은 좌 그리퍼까지 hull 로 바꾼다 — 그쪽은 우손으로 잡는
+    태스크라 무해하지만 우리에겐 파지 부위다. hull 이 되면 개구(84.5 mm 실측)와
+    파지 대역(10~85 mm)이 무효가 된다.
+
+    physics 레이어가 바이너리(usdc)라 직접 못 읽는다 → 자산 옆 매니페스트를 본다.
+    갱신: ./isaaclab.sh -p scripts/assets_tools/write_collider_manifest.py <asset>
+    """
+    import json
+    assert P.ROBOT_ASSET_DIR.endswith("_lgrip"), (
+        f"자산이 {P.ROBOT_ASSET_DIR} 다 — _armhull 은 좌 그리퍼를 hull 로 바꾼다"
+    )
+    root = _HDGP / "assets" / "robot" / P.ROBOT_ASSET_DIR
+    assert (root / "openarm_tesollo_sensor_rl.usd").exists(), f"자산이 없다: {root}"
+    man = root / "collider_manifest.json"
+    assert man.is_file(), f"매니페스트가 없다 — write_collider_manifest.py 를 돌릴 것: {man}"
+    links = json.loads(man.read_text())["links"]
+    for link in P.GRIPPER_COLLIDER_LINKS:
+        assert links.get(link) == "convexDecomposition", (
+            f"{link} 가 {links.get(link)} 다 — 파지 기하가 바뀐다"
+        )
+    # 나머지는 hull 이어야 속도 이득이 난다(우손 27개가 가장 큰 몫).
+    hull = sum(1 for v in links.values() if v == "convexHull")
+    assert hull >= 40, f"hull 이 {hull}개뿐 — 속도 이득이 안 난다"
+
+
+def test_settle_velocity_thresholds_match_the_measured_regime():
+    """★임계는 **현재 실측 규모**에서 정한다 — test10/test11 을 죽인 규칙.
+
+    fab_test7 결정론 실측 0.193 m/s · 1.473 rad/s. 옛 임계(0.40/3.00)는 test8 시절
+    0.444 m/s 기준이라 이미 품질 0.55 로 포화 — "더 멈춰라"는 압력이 없다.
+    ⚠ 세 항(near·lin·ang)을 동시에 조이면 곱이 죽는다. 위치 std 는 그대로 둔다.
+    """
+    import math
+    def q(v, std):
+        return 1.0 - math.tanh(v / std)
+    now = 0.5 * q(0.193, P.SETTLE_LIN_VEL_STD) + 0.5 * q(1.473, P.SETTLE_ANG_VEL_STD)
+    goal = 0.5 * q(0.05, P.SETTLE_LIN_VEL_STD) + 0.5 * q(0.30, P.SETTLE_ANG_VEL_STD)
+    assert now > 0.05, f"현재 상태 품질 {now:.3f} — 너무 낮으면 항이 죽는다"
+    assert goal / now >= 3.0, f"현재→목표 개선 폭 {goal / now:.1f}배 — 압력이 부족하다"
+    assert math.isclose(P.SETTLE_POS_STD, 0.15), "위치 std 를 같이 조이면 곱이 죽는다"
