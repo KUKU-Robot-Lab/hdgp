@@ -35,6 +35,13 @@ from isaaclab_rl.rl_games import RlGamesVecEnvWrapper                     # noqa
 import openarm.tasks         # noqa: E402,F401
 
 env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
+# ★학습과 **같은 물리/제어 조건**이어야 손가락 참여를 그대로 읽는다.
+#   기본값으로 돌리면 self-collision 이 켜진 채라 접촉 분포가 달라진다.
+env_cfg.enable_self_collisions = bool(int(__import__("os").environ.get("SC", "0")))
+env_cfg.use_hand_repulsion = bool(int(__import__("os").environ.get("REP", "1")))
+env_cfg.enable_gravity = True
+from openarm.agnostic.tasks.grasp_lift_fabric.grasp_lift_fabric_env_cfg import resolve_cfg
+resolve_cfg(env_cfg)
 agent_cfg = load_cfg_from_registry(args.task, "rl_games_cfg_entry_point")
 env = gym.make(args.task, cfg=env_cfg)
 raw = env.unwrapped
@@ -88,7 +95,7 @@ for i in range(args.steps):
         act = agent.get_action(obs, is_deterministic=True)
     obs = _t(env.step(act)[0])
 
-    force, wrapped = raw._contact()                       # (N,F), (N,F)
+    force, wrapped, _, _ = raw._contact()                       # (N,F), (N,F)
     # tip 만의 힘을 따로 재구성
     tipf = torch.zeros_like(force)
     for j, f in enumerate(F):
@@ -135,7 +142,15 @@ print(f"{'손가락':<8s}{'접촉(any)':>10s}{'감쌈(wrap)':>11s}{'손끝(tip)'
 for j, f in enumerate(F):
     print(f"{f:<8s}{anyC[j]/n:10.3f}{wrapC[j]/n:11.3f}{tipC[j]/n:10.3f}{fsum[j]/n:10.3f}")
 print(f"{'합계':<8s}{anyC.sum()/n:10.3f}{wrapC.sum()/n:11.3f}{tipC.sum()/n:10.3f}")
-print(f"  → grip_frac {anyC.sum()/n/len(F):.3f} · envelope_frac {wrapC.sum()/n/len(F):.3f}")
+# ★이름 주의: 여기 값은 **엄격 판정(전 마디 동시 0.5N) ÷ 5지** 다. 학습 지표
+#   `task/envelope_frac` 은 **느슨 판정(마디 하나라도, 1N) ÷ 4지**(pinky 제외)라
+#   같은 이름이 다른 것을 가리킨다 — 그대로 비교하면 2.6배 차이로 오독한다.
+#   학습의 `task/envelope_strict` 에 대응하는 값이므로 라벨을 그렇게 붙인다.
+_env_idx = [j for j, f in enumerate(F) if f != "pinky"]
+print(f"  → grip_frac(5지) {anyC.sum()/n/len(F):.3f}"
+      f" · strict/5지 {wrapC.sum()/n/len(F):.3f}"
+      f" · strict/4지(학습 envelope_strict 대응) "
+      f"{sum(wrapC[j] for j in _env_idx)/n/len(_env_idx):.3f}")
 
 D = torch.cat(rows, 0)
 nf, tilt, dz, aj = D[:, 0], D[:, 1], D[:, 2], D[:, 3]

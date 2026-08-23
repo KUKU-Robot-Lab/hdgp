@@ -135,7 +135,7 @@ if args.checkpoint:
         _inz = (_zb > 0) & (_zb < H)
         _d = ((cup_radius(_zb) - _rad) * _inz.float()).clamp(min=0)
         max_depth = torch.maximum(max_depth, _d.max(dim=0).values)
-        f_, _ = env._contact()
+        f_, _, _, _ = env._contact()
         gate_steps += int((f_.max(dim=1).values > 1.0).any())
     print(f"\n=== 정책 롤아웃 관통 (마지막 {args.steps-SKIP} 스텝 · 전 env 최대) ===")
     print(f"  접촉 발생 스텝: {gate_steps}/{args.steps-SKIP}")

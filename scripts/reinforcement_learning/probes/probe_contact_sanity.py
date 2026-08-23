@@ -55,7 +55,7 @@ for i in range(args.steps):
     act[:, 6:] = frac                            # 손만 닫는다(팔 액션 0 = 홈 유지)
     env.step(act)
     if i in (0, 10, 30, 60, args.steps - 1):
-        force, wrapped = env._contact()
+        force, wrapped, _, _ = env._contact()
         print(f"  step {i:3d} 폐합 {frac:4.2f} | 힘 최대 {force.max():.4f} N"
               f" · env별최대 평균 {force.max(dim=1).values.mean():.4f}"
               f" · >1N 손가락 {(force > 1.0).float().sum(dim=1).mean():.2f}"
@@ -83,7 +83,7 @@ for f in env._fingers:
     wmax = torch.stack(wr, 0).max(0).values if wr else torch.zeros_like(tp)
     print(f"  {f:8s} {tp.mean():10.3f} {wmax.mean():12.3f} {(tp + sum(wr) if wr else tp).mean():10.3f}")
 
-force, wrapped = env._contact()
+force, wrapped, _, _ = env._contact()
 print(f"\n  _contact() 손가락별 합계 : {[f'{v:.2f}' for v in force.mean(dim=0).tolist()]}")
 print(f"  _contact() wrap 플래그   : {[f'{v:.2f}' for v in wrapped.mean(dim=0).tolist()]}")
 print("\n" + "=" * 56)

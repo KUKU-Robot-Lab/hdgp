@@ -87,7 +87,7 @@ def measure(level: float, eff: float) -> tuple[float, float, float]:
         act[:, 6:] = -1.0 + (tgt + 1.0) * min(1.0, (i + 1) / ramp)
         env.step(act)
     env.object.write_root_state_to_sim(hold)
-    f, _ = env._contact()
+    f, _, _, _ = env._contact()
     tau = env.robot.root_physx_view.get_dof_actuation_forces()[:, hand_t].abs()
     return (f.sum(dim=1).mean().item(),
             (tau >= 0.99 * eff).float().mean().item(),

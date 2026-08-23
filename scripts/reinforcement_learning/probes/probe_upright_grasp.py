@@ -101,7 +101,7 @@ for name, rot in CASES:
     for i in range(args.close):              # 손 폐합 (자세 유지)
         act[:, 6:] = min(1.0, i / (args.close * 0.5))
         env.step(act)
-    f, _ = env._contact()
+    f, _, _, _ = env._contact()
     force = f.max(dim=1).values.mean().item()
     nfing = (f > 1.0).float().sum(dim=1).mean().item()
 

@@ -51,7 +51,7 @@ print("\n[1] 손 폐합")
 for i in range(args.close):
     act[:, 6:] = min(1.0, i / (args.close * 0.5))
     env.step(act)
-f, _ = env._contact()
+f, _, _, _ = env._contact()
 print(f"  접촉력 env별최대 평균 {f.max(dim=1).values.mean():.2f} N · >1N 손가락 "
       f"{(f > 1.0).float().sum(dim=1).mean():.2f}")
 
@@ -66,7 +66,7 @@ for i in range(args.lift):
     if i in (0, 40, 120, args.lift - 1):
         z = (env.object.data.root_pos_w - env.scene.env_origins)[:, 2]
         pz = (env.robot.data.body_pos_w[:, env.palm_idx] - env.scene.env_origins)[:, 2]
-        ff, _ = env._contact()
+        ff, _, _, _ = env._contact()
         print(f"  step {i:3d} palm z {pz.mean():.4f} (+{pz.mean()-palm0[:,2].mean()+env.scene.env_origins[0,2]:.4f})"
               f" | 컵 dz {(z - z0).mean():+.4f} m | 힘 {ff.max(dim=1).values.mean():5.2f} N")
 

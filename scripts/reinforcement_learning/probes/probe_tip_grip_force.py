@@ -156,7 +156,7 @@ def measure(level: float) -> tuple[float, float, float, float]:
     palm_now = env.robot.data.body_pos_w[:, env.palm_idx] - env.scene.env_origins
     perr = float((env.palm_targets[:, :3] - palm_now).norm(dim=-1).mean()) * 1000.0
     dq_hand = (env.robot.data.joint_pos[:, env._hand_t] - q_before).abs().mean()
-    f, wrapped, mid, dist = env._contact()
+    f, wrapped, mid, dist, _, _ = env._contact()
     thr = float(env.cfg.contact_force_threshold)
     n_touch = (f > thr).float().sum(dim=1).mean()
     env_frac = ((mid > thr) | (dist > thr)).float()[:, env._env_f].mean()
