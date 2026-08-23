@@ -194,6 +194,13 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     # 리프트 부분 진척 — gate 곱. goal_height_offset(0.15m)에서 포화.
     # dexsuite 는 이 항을 뺐지만 그 전제(goal=물체 근처 랜덤 pose)가 우리와 다르다.
     lift_weight: float = 1.5
+    # 직립 **양수** 보상(08.23 사용자 지시: "패널티 말고 양수의 보상으로").
+    # (물체 local +z · world +z)^k × 리프트진척 × 유효게이트. 근거는 rewards.upright_reward.
+    # ★k=4 는 cos 의 소각 평탄성을 보정해 15~30° 대 판별력을 만든다(도당 기울기가
+    #   tilt_penalty 의 약 12 배). ★리프트진척 곱이 없으면 컵이 스폰부터 서 있으므로
+    #   "테이블 위 컵 건드리고 정지"가 공짜 수확이 된다.
+    upright_weight: float = 3.0
+    upright_exponent: float = 4.0
     # 전도 페널티 — 20° 여유대(정상 파지 흔들림 무징계) 초과분 비례, 최대 −0.5.
     # 60° 초과 = 사실상 넘어짐 → **truncation 으로 env 전체 리셋**(08.22, 사용자 지시).
     # 컵 단독 리스폰은 폐기 — 텔레포트 전이가 학습 데이터를 오염시키고, 손 위로

@@ -125,6 +125,7 @@ class GraspSensorEnv(DirectRLEnv):
         self._goal_reached_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # _get_dones 가 매 스텝 갱신, _get_rewards 가 같은 스텝에 재사용(dones 가 먼저다)
         self._tilt_deg_buf = torch.zeros(self.num_envs, device=self.device)
+        self._obj_up_buf = torch.ones(self.num_envs, device=self.device)
 
         # ---- 접촉 그룹 인덱스 ---------------------------------------------------------
         fingers = list(p.finger_sensor_bodies.keys())
@@ -468,6 +469,7 @@ class GraspSensorEnv(DirectRLEnv):
         palm_pos = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
         total, terms, gate, env_frac = compute_grasp_sensor_rewards(
             object_tilt_deg=tilt_deg,
+            object_up=self._obj_up_buf,
             height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
             palm_pos=palm_pos,
             fingertip_pos=tips,
@@ -490,11 +492,15 @@ class GraspSensorEnv(DirectRLEnv):
         # ★성공 판정 3조건(08.22): goal 근접 AND 감쌈 AND 직립 — "인벨롭으로 세워 든
         #   것"만 성공. 커리큘럼 승급도 이 기준(리셋 시 마지막 값 사용).
         goal_dist = torch.norm(obj_pos - self.goal_pos, dim=-1)
-        self._goal_reached_now = (
-            (goal_dist < float(self.cfg.success_pos_tolerance))
-            & (env_frac >= float(self.cfg.success_envelope_min))
-            & (tilt_deg < float(self.cfg.success_tilt_max_deg))
-        )
+        _pass_pos = goal_dist < float(self.cfg.success_pos_tolerance)
+        _pass_env = env_frac >= float(self.cfg.success_envelope_min)
+        _pass_tilt = tilt_deg < float(self.cfg.success_tilt_max_deg)
+        self._goal_reached_now = _pass_pos & _pass_env & _pass_tilt
+        # ★조건별 개별 통과율 — AND 결과만 보면 어느 조건이 병목인지 알 수 없다
+        #   (lstm_test2: 위치 0.845·감쌈 0.778 인데 AND 0.023 → 상관을 못 읽었다).
+        self.extras["task/pass_pos"] = _pass_pos.float().mean()
+        self.extras["task/pass_env"] = _pass_env.float().mean()
+        self.extras["task/pass_tilt"] = _pass_tilt.float().mean()
 
         # ★컵 단독 리스폰은 폐기됐다(08.22, 사용자 지시). 텔레포트 전이(s→s′ 불연속)가
         #   학습 데이터에 그대로 들어가 value/LSTM 이 비마르코프 점프를 학습했고, 손이
@@ -593,7 +599,9 @@ class GraspSensorEnv(DirectRLEnv):
             self.object.data.root_quat_w,
             torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, 3),
         )
-        self._tilt_deg_buf = torch.rad2deg(torch.acos(_obj_z[:, 2].clamp(-1.0, 1.0)))
+        # 물체 local +z 와 world +z 의 정렬 = cos(기울기). upright 보상이 직접 쓴다.
+        self._obj_up_buf = _obj_z[:, 2].clamp(-1.0, 1.0)
+        self._tilt_deg_buf = torch.rad2deg(torch.acos(self._obj_up_buf))
         tipped = self._tilt_deg_buf > float(self.cfg.tilt_reset_deg)
         terminated = self._abnormal_buf | fell | tipped | out_xy
         timeout = self.episode_length_buf >= self.max_episode_length - 1

@@ -130,6 +130,29 @@ def lift_reward(height_delta: torch.Tensor, target_height: float,
     return (height_delta / max(target_height, 1e-6)).clamp(0.0, 1.0) * gate
 
 
+def upright_reward(object_up: torch.Tensor, height_delta: torch.Tensor,
+                   target_height: float, exponent: float,
+                   gate: torch.Tensor) -> torch.Tensor:
+    """직립 **양수** 보상: (물체 local +z · world +z)^k × 리프트진척 × 유효게이트.
+
+    사용자 설계 지시(08.23): "lift 할 때는 수직으로만 하면 되고, 이송에는 컵을 똑바로
+    — local +z 가 world +z 와 같게. 패널티 말고 양수의 보상으로."
+    → object_up = cos(기울기) 를 직접 보상한다. 페널티가 "눕지 마라"만 말하는 것과 달리
+      양수항은 "세워라"를 가리켜 끌어당긴다.
+
+    ★설계 근거 두 가지:
+      ① **지수 k**: cos 는 작은 각에서 평평해(dcos/dθ→0) 15~30° 대 판별력이 없다.
+        k=4 면 24°에서 0.698, 19°에서 0.801 — 도당 기울기가 tilt_penalty(0.0056)의
+        약 12 배가 되어 신호가 success 요동에 묻히지 않는다(lstm_test2 ep4000~5133
+        에 22~26° 로 1,100 에폭 고착한 원인이 바로 이 기울기 부족이었다).
+      ② **리프트 진척 곱**: 컵은 **스폰부터 똑바로 서 있다**. 무조건 주면 "테이블 위
+        컵을 건드리고 가만히 있기"가 공짜 수확이 된다(reward-audit Check 1/2).
+        들어 올린 만큼만 지급 → 테이블 위에서는 0, 든 상태에서만 직립이 값을 갖는다.
+    """
+    lifted = (height_delta / max(target_height, 1e-6)).clamp(0.0, 1.0)
+    return object_up.clamp(0.0, 1.0) ** exponent * lifted * gate
+
+
 def tilt_penalty(object_tilt_deg: torch.Tensor, free_deg: float) -> torch.Tensor:
     """전도 페널티: free_deg 초과분을 90°로 정규화한 값(0~1).
 
@@ -163,6 +186,7 @@ def compute_grasp_sensor_rewards(
     env_mid_force: torch.Tensor,      # (N, E) envelope 손가락 중간마디 접촉력
     env_dist_force: torch.Tensor,     # (N, E) envelope 손가락 원위마디 접촉력
     object_tilt_deg: torch.Tensor,    # (N,)
+    object_up: torch.Tensor,          # (N,) 물체 local +z · world +z = cos(기울기)
     height_delta: torch.Tensor,       # (N,) 스폰 대비 상승분 [m]
     actions: torch.Tensor,
     prev_actions: torch.Tensor,
@@ -192,6 +216,9 @@ def compute_grasp_sensor_rewards(
         * success_reward(object_pos, goal_pos, float(cfg.success_std), g_eff),
         "lift": float(cfg.lift_weight)
         * lift_reward(height_delta, float(cfg.goal_height_offset), g_eff),
+        "upright": float(cfg.upright_weight)
+        * upright_reward(object_up, height_delta, float(cfg.goal_height_offset),
+                         float(cfg.upright_exponent), g_eff),
         "tilt_penalty": float(cfg.tilt_penalty_weight)
         * tilt_penalty(object_tilt_deg, float(cfg.tilt_free_deg)),
         "action_l2": float(cfg.action_l2_weight) * action_l2_clamped(actions),
