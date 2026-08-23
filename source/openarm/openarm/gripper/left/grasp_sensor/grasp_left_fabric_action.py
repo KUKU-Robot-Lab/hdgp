@@ -102,6 +102,21 @@ class FabricPalmAction(ActionTerm):
         ]
         self._q_home = torch.tensor(home, device=device)
 
+        # ★★중력 처짐 보상. Fabrics 는 순수 기구학이라 중력을 모르고, PD 는 중력 부하만큼
+        #   뒤처진다(실측 32.9 mrad → TCP 40~48 mm). 지금까지는 정책이 그 선행량을 스스로
+        #   학습했고 그만큼이 목표 정확도에서 빠져나갔다. 관절공간에서 상쇄한다.
+        #   상한 = effort 한계 / 강성 — 그 이상 밀어도 토크가 포화하고 windup 만 쌓인다.
+        limits = []
+        for name in P.LEFT_ARM_JOINT_NAMES:
+            idx = int(name.rsplit("_", 1)[1])
+            limits.append(
+                P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"] if idx <= 2
+                else P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[3-4]"] if idx <= 4
+                else P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[5-7]"]
+            )
+        self._droop_limit = torch.tensor(limits, device=device)
+        self._droop = torch.zeros(num_envs, 7, device=device)
+
         # fabric 상태
         self._fabric_q = self._q_home.unsqueeze(0).repeat(num_envs, 1).contiguous()
         self._fabric_qd = torch.zeros(num_envs, 7, device=device)
@@ -184,9 +199,26 @@ class FabricPalmAction(ActionTerm):
                 self._fabric_qdd.detach(), self._fabric_dt,
             )
 
+        # ★처짐 추정은 **env step 당 한 번**만 갱신한다(apply_actions 는 decimation 번 불린다).
+        #   순간 오차를 그대로 쓰면 가속 구간의 속도 지연까지 보상해 팔이 과격해지므로
+        #   저역통과로 준정적 성분만 남긴다.
+        if P.GRAVITY_COMP_ENABLED:
+            # ★**적분**이다. 저역통과(순간 오차 추종)로 짰다가 처짐이 정확히 절반만 줄었다
+            #   (실측 40.9 → 22.3 mm). 대수적으로 2d = τ_g/kp 에서 멈추기 때문이다.
+            #   적분은 오차가 0 이 될 때까지 쌓여 완전 상쇄한다. clamp 가 anti-windup 이다.
+            err = self._fabric_q - self._asset.data.joint_pos[:, self._arm_joint_ids]
+            self._droop = (self._droop + P.GRAVITY_COMP_GAIN * err.detach()).clamp(
+                -self._droop_limit, self._droop_limit
+            )
+
     def apply_actions(self) -> None:
+        target = self._fabric_q
+        if P.GRAVITY_COMP_ENABLED:
+            # 정상상태에서 τ = kp·(목표 − q) 이므로 관측된 처짐만큼 목표를 더 밀면
+            # 그 토크가 중력을 상쇄해 q → fabric_q 가 된다.
+            target = target + self._droop.clamp(-self._droop_limit, self._droop_limit)
         self._asset.set_joint_position_target(
-            self._fabric_q, joint_ids=self._arm_joint_ids
+            target, joint_ids=self._arm_joint_ids
         )
         self._asset.set_joint_velocity_target(
             torch.zeros_like(self._fabric_q), joint_ids=self._arm_joint_ids
@@ -199,6 +231,9 @@ class FabricPalmAction(ActionTerm):
         self._fabric_q[env_ids] = self._q_home
         self._fabric_qd[env_ids] = 0.0
         self._fabric_qdd[env_ids] = 0.0
+        # ★리셋 시 초기화하지 않으면 직전 에피소드의 처짐이 남아 첫 스텝이 튄다
+        #   (이 태스크에서 리셋 오염에 세 번 당했다).
+        self._droop[env_ids] = 0.0
 
 
 @configclass

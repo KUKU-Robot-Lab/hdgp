@@ -406,3 +406,37 @@ def test_settle_velocity_thresholds_match_the_measured_regime():
     assert now > 0.05, f"현재 상태 품질 {now:.3f} — 너무 낮으면 항이 죽는다"
     assert goal / now >= 3.0, f"현재→목표 개선 폭 {goal / now:.1f}배 — 압력이 부족하다"
     assert math.isclose(P.SETTLE_POS_STD, 0.15), "위치 std 를 같이 조이면 곱이 죽는다"
+
+
+def test_gravity_droop_compensation_is_wired_and_bounded():
+    """★★Fabrics 는 순수 기구학이라 중력을 모른다 — PD 가 중력 부하만큼 뒤처진다.
+
+    실측: 좌팔 PD 추종오차 32.9 mrad → 파지 자세 TCP 40~48 mm 처짐.
+    G4 폐루프로 47~117 mm 앞당기면 TCP 오차 0.2 mm 로 수렴한다.
+    지금까지는 **정책이 그 선행량을 스스로 학습**했고 그만큼이 목표 정확도에서 빠졌다.
+
+    관절공간 보상이라 프레임 정합 문제가 없다. 세 가지가 반드시 함께 있어야 한다:
+      · 상한 = effort/강성 (그 이상은 토크 포화 → windup)
+      · 저역통과 (순간 오차를 쓰면 가속 구간의 속도 지연까지 보상해 팔이 과격해진다)
+      · reset 시 초기화 (직전 에피소드의 처짐이 남으면 첫 스텝이 튄다)
+    """
+    src = _src("grasp_left_fabric_action.py")
+    assert "self._droop" in src, "처짐 보상이 배선되지 않았다"
+    assert "P.GRAVITY_COMP_ENABLED" in src
+    # 상한 = ARM_IK_MAX_TRACKING_ERROR (effort/강성)
+    assert "_droop_limit" in src and "ARM_IK_MAX_TRACKING_ERROR" in src, "상한이 없다"
+    assert "clamp(-self._droop_limit, self._droop_limit)" in src, "clamp 가 빠졌다"
+    # 저역통과 + env step 당 1회 갱신 (apply_actions 는 decimation 번 불린다)
+    proc = src[src.index("def process_actions"):src.index("def apply_actions")]
+    appl = src[src.index("def apply_actions"):src.index("def reset")]
+    assert "GRAVITY_COMP_GAIN" in proc, "적분 갱신이 process_actions 에 없다"
+    assert "GRAVITY_COMP_GAIN" not in appl, (
+        "apply_actions 에서 갱신하면 decimation 배로 빨리 수렴한다"
+    )
+    rst = src[src.index("def reset"):]
+    assert "self._droop[env_ids] = 0.0" in rst, "reset 초기화가 빠졌다"
+    # 상한값 자체 — effort/강성 관계가 유지되는가
+    assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[5-7]"] == 7.0 / P.ARM_IK_STIFFNESS
+    assert 0.0 < P.GRAVITY_COMP_GAIN <= 0.2, "적분 이득이 너무 크면 과도 구간에서 진동한다"
+    # ★저역통과가 아니라 적분이어야 한다 — 저역통과는 정확히 절반만 상쇄한다(실측)
+    assert "self._droop + P.GRAVITY_COMP_GAIN * err" in src, "적분 형태가 아니다"
