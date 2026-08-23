@@ -362,6 +362,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             self.rewards.object_goal_tracking_fine_grained,
         ):
             _term.params["minimal_height"] = P.MINIMAL_LIFT_HEIGHT
+            _term.params["ramp_zero_z"] = P.LIFT_RAMP_ZERO_Z
 
         # ── 리프트 판정에 "쥐고 있는가"를 AND ────────────────────────
         # ★★weight 는 그대로 두고 **판정 함수만** 바꾼다. z 만 보는 레퍼런스 판정으로는
@@ -470,6 +471,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "lin_vel_std": P.SETTLE_LIN_VEL_STD,
                 "ang_vel_std": P.SETTLE_ANG_VEL_STD,
                 "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "command_name": "object_pose",
             },
@@ -480,6 +482,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             weight=P.GRASP_POSE_REWARD_WEIGHT,
             params={
                 "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "body_name": P.GRIPPER_BASE_BODY,
                 "upright_zero_at_cos": P.CUP_UPRIGHT_ZERO_AT_COS,

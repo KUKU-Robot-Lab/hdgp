@@ -152,7 +152,23 @@ def test_lift_gate_is_measured_from_the_resting_cup_origin():
     rsrc = (
         Path(__file__).resolve().parents[1] / "grasp_left_rewards.py"
     ).read_text(encoding="utf-8")
-    assert "obj_pos_w[:, 2] > minimal_height" in rsrc, "높이 항이 이진 게이트가 아니다"
+    # ★★08.23 이 단언을 **뒤집었다.** 원래는 "이진 게이트여야 한다" 를 고정하고 있었는데,
+    #   Fabrics 트랙 세 런(누적 6,747 epoch, 약 17 억 스텝)에서 lifting 이 정확히 0.0000 이었다.
+    #   컵은 +17.2 mm 까지 올라가는데 40 mm 문턱까지 신호가 없어 거기서 멈춘다.
+    #   관절공간 test17 이 문턱을 넘은 것은 지령 포화(한계의 7 배)로 컵을 튕겨 올린 우연이었고,
+    #   Fabrics 는 그 거친 움직임을 없애려고 넣은 것이라 그 메커니즘이 사라졌다.
+    #   → 높이는 **연속 램프**, 근접·자세는 게이트로 남는다.
+    assert "obj_pos_w[:, 2] > minimal_height" not in rsrc, "이진 게이트가 되살아났다"
+    assert "(obj_pos_w[:, 2] - ramp_zero_z) / (minimal_height - ramp_zero_z)" in rsrc, (
+        "높이 항이 연속 램프가 아니다"
+    )
+    assert "lifted * (near & upright).float()" in rsrc, "근접·자세는 게이트로 남아야 한다"
+    # ★공짜 차단: 램프 0 점은 놓인 높이보다 위여야 하고, 컵을 바닥 모서리로 기울여 얻는
+    #   최대 상승(CUP_TIP_RISE_MAX)보다도 위여야 한다. 아니면 "흔들기" 가 보상을 받는다.
+    assert P.LIFT_RAMP_ZERO_Z > P.CUP_SPAWN_Z + P.CUP_TIP_RISE_MAX, (
+        "램프 0 점이 기울임 상한 아래다 — 컵을 흔들기만 해도 보상이 생긴다"
+    )
+    assert P.LIFT_RAMP_ZERO_Z < P.MINIMAL_LIFT_HEIGHT, "램프 0 점이 상단보다 높다"
     assert "lift_span" not in rsrc, "램프 파라미터가 남아 있다"
 
     src = _cfg_source()
