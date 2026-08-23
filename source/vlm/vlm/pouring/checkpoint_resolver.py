@@ -17,6 +17,10 @@ class PolicyContract:
 
     observation_dim: int
     action_dim: int
+    # Asymmetric actor-critic runs log a wider critic group; manager-based runs
+    # (e.g. gripper/left/grasp_sensor) have only a policy group and log none.
+    # None therefore means "this run had no critic group", not "unknown".
+    state_dim: int | None = None
 
     def __post_init__(self) -> None:
         if self.observation_dim <= 0 or self.action_dim <= 0:
@@ -24,9 +28,11 @@ class PolicyContract:
                 f"policy contract dims must be positive, got "
                 f"obs={self.observation_dim} act={self.action_dim}"
             )
+        if self.state_dim is not None and self.state_dim <= 0:
+            raise ValueError(f"state dim must be positive when present, got {self.state_dim}")
 
 
-_CONTRACT_LINE = re.compile(r"^(observation_space|action_space):\s*(\d+)\s*$")
+_CONTRACT_LINE = re.compile(r"^(observation_space|action_space|state_space):\s*(\d+)\s*$")
 
 
 def read_policy_contract(env_yaml: Path) -> PolicyContract:
@@ -49,6 +55,7 @@ def read_policy_contract(env_yaml: Path) -> PolicyContract:
     return PolicyContract(
         observation_dim=found["observation_space"],
         action_dim=found["action_space"],
+        state_dim=found.get("state_space"),
     )
 
 

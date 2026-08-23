@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from vlm.pouring.checkpoint_resolver import CheckpointResolver
+from vlm.pouring.checkpoint_resolver import CheckpointResolver, read_policy_contract
 
 
 def _make_run(root: Path, task: str, run_name: str) -> Path:
@@ -79,3 +79,59 @@ def test_resolver_accepts_injected_task_map_for_retrained_runs(tmp_path: Path) -
     result = resolver.resolve("agn_grasp-fabric", "agn_test1")
 
     assert result.checkpoint == run / "nn/agn_grasp-fabric.pth"
+
+
+# ---------------------------------------------------------------------------
+# read_policy_contract — 학습된 정책의 실제 차원. 소스가 아니라 런 덤프가 진실원천이다.
+# ---------------------------------------------------------------------------
+_REAL_DUMP_HEAD = """\
+seed: 42
+observation_space: 114
+observation_noise_model: null
+state_space: 121
+episode_length_s: 8.0
+action_space: 23
+"""
+
+
+def test_contract_reads_all_three_dims_from_a_real_style_dump(tmp_path: Path) -> None:
+    env_yaml = tmp_path / "env.yaml"
+    env_yaml.write_text(_REAL_DUMP_HEAD)
+
+    contract = read_policy_contract(env_yaml)
+
+    assert contract.observation_dim == 114
+    assert contract.action_dim == 23
+    assert contract.state_dim == 121
+
+
+def test_contract_state_dim_is_none_when_the_run_had_no_critic_group(tmp_path: Path) -> None:
+    """gripper/left/grasp_sensor 는 ManagerBased 라 policy 그룹만 있다."""
+    env_yaml = tmp_path / "env.yaml"
+    env_yaml.write_text("observation_space: 36\naction_space: 8\n")
+
+    assert read_policy_contract(env_yaml).state_dim is None
+
+
+def test_contract_ignores_nested_keys_that_merely_share_the_name(tmp_path: Path) -> None:
+    """Isaac 덤프는 python 태그를 품어 safe_load 가 깨진다 — 최상위 평문 줄만 읽는다."""
+    env_yaml = tmp_path / "env.yaml"
+    env_yaml.write_text(
+        "observation_space: 114\n"
+        "action_space: 23\n"
+        "some_block:\n"
+        "  observation_space: 999\n"
+        "  action_space: 999\n"
+    )
+
+    contract = read_policy_contract(env_yaml)
+
+    assert (contract.observation_dim, contract.action_dim) == (114, 23)
+
+
+def test_contract_refuses_a_dump_without_the_required_keys(tmp_path: Path) -> None:
+    env_yaml = tmp_path / "env.yaml"
+    env_yaml.write_text("seed: 42\n")
+
+    with pytest.raises(ValueError, match="lacks contract keys"):
+        read_policy_contract(env_yaml)
