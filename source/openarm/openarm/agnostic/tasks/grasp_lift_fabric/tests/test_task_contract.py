@@ -17,7 +17,6 @@ import torch
 
 from openarm.agnostic.modules import object_bank as _ob
 from openarm.agnostic.modules import robots as _rb
-from openarm.agnostic.tasks.grasp_lift_fabric import rewards as RW
 
 _TASK_DIR = Path(__file__).resolve().parent.parent
 
@@ -30,7 +29,7 @@ _ROBOT_LITERAL = re.compile(r"\b[rl]_(aj|hj|hl)_")
 
 @pytest.mark.parametrize(
     "fname",
-    ["grasp_lift_fabric_env.py", "grasp_lift_fabric_env_cfg.py", "rewards.py"],
+    ["grasp_lift_fabric_env.py", "grasp_lift_fabric_env_cfg.py"],
 )
 def test_no_robot_specific_literals_in_task_code(fname):
     """로봇 종속 정보는 RobotProfile 에만 있어야 한다."""
@@ -75,10 +74,13 @@ def _identifiers(path: Path) -> set[str]:
 
 
 def test_rewards_do_not_use_a_lift_latch():
-    """래치로 항을 이분하면 grasp gradient 가 죽는다(grasp_v1 실측 0.036 평탄)."""
-    ids = _identifiers(_TASK_DIR / "rewards.py")
+    """래치로 항을 이분하면 grasp gradient 가 죽는다(grasp_v1 실측 0.036 평탄).
+
+    ★08.23 부터 보상은 자매 트랙 것을 쓰므로 검사 대상도 그쪽 파일이다.
+    """
+    ids = _identifiers(_TASK_DIR.parent / "grasp_sensor" / "rewards.py")
     for banned in ("lift_latched", "pre_lift_gate", "lift_gate"):
-        assert banned not in ids, f"rewards.py 가 래치 게이트 {banned} 를 쓴다"
+        assert banned not in ids, f"보상이 래치 게이트 {banned} 를 쓴다"
 
 
 def test_env_does_not_use_a_lift_latch():
@@ -160,207 +162,122 @@ def _ones(v=0.0):
     return torch.full((N,), float(v))
 
 
-class _Cfg:
-    contact_force_threshold = 1.0
-    participation_force_threshold = 0.1
-    approach_weight = 1.0
-    approach_sharpness = 4.0
-    grasp_quality_weight = 3.0
-    grasp_envelope_credit = 0.7
-    grasp_grip_credit = 0.2
-    grasp_persist_credit = 0.1
-    persistence_ref_steps = 20
-    enclosure_radius = 0.03
-    enclosure_thumb_weight = 0.6
-    upright_exponent = 4.0
-    lift_weight = 2.0
-    envelope_reference_frac = 0.8
-    envelope_mul_floor = 0.3
-    upright_weight = 3.0
-    upright_lift_ref = 0.05
-    lift_overshoot_start = 0.20
-    lift_overshoot_scale = 0.06
-    envelope_force_threshold = 0.5
-    lift_success_height = 0.10
-    tracking_weight = 2.0
-    tracking_std = 0.10
-    success_weight = 10.0
-    success_pos_std = 0.05
-    action_rate_weight = -0.3        # 실제 cfg 와 동기(test_stub_matches_real_cfg 가 강제)
+# =============================================================================
+# 보상 — ★08.23 부터 자매 트랙 grasp_sensor 의 함수를 **그대로 import** 한다.
+#
+# 수식 계약(감쌈 판정·goal 계열의 감쌈 선행·직립의 리프트 곱)은 그쪽
+# tests/test_profile_contract.py 가 지킨다. 여기서 같은 수식을 다시 검사하면
+# 두 벌이 갈라졌을 때 **양쪽 다 통과하면서 거동만 달라진다** — 그 실패 방식이
+# 정확히 이번에 고친 결함(lift 분모 0.10 vs 0.15)이었다.
+# 그래서 이 파일이 지키는 것은 **"갈라지지 않았는가"** 하나다.
+# =============================================================================
+_SENSOR_DIR = _TASK_DIR.parent / "grasp_sensor"
 
 
-def _call(**over):
-    kw = dict(
-        palm_to_object=_ones(0.0), tip_side_dist=_ones(0.0),
-        envelope_frac=_ones(1.0), grip_frac=_ones(1.0), persistence=_ones(1.0),
-        object_height_delta=_ones(0.10), object_to_goal=_ones(0.0),
-        object_xy_displacement=_ones(0.0), object_tilt_deg=_ones(0.0),
-        group_a_force=torch.full((N, 1), 5.0), group_b_force=torch.full((N, 4), 5.0),
-        actions=torch.zeros(N, 26), prev_actions=torch.zeros(N, 26), cfg=_Cfg(),
-    )
-    kw.update(over)
-    return RW.compute_rewards(**kw)
+def test_reward_is_imported_from_sibling_track_not_copied():
+    """보상 함수를 복사하지 않고 import 하는가."""
+    assert not (_TASK_DIR / "rewards.py").exists(), (
+        "rewards.py 가 되살아났다 — 복사본은 다시 갈라진다. "
+        "grasp_sensor.rewards 를 import 하라")
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    assert "from ..grasp_sensor.rewards import" in src, (
+        "env 가 자매 트랙 보상을 import 하지 않는다")
+    assert "compute_grasp_sensor_rewards" in src
 
 
-def test_five_terms_exactly():
-    """08.23 TEST3: tracking 신설 → 7항 (이송 유도와 성공 판정을 분리)."""
-    _, terms, _, _ = _call()
-    assert set(terms) == {
-        "approach", "grasp_quality", "upright", "lift", "tracking", "success", "action_rate",
-    }
+@pytest.mark.parametrize("key", [
+    # 보상 수식이 읽는 계수 — 두 트랙이 **같은 값**이어야 비교가 성립한다.
+    "approach_weight", "approach_sharpness", "grasp_z_offset", "side_radius",
+    "envelope_weight", "contact_weight", "contact_force_threshold",
+    "tracking_weight", "tracking_std", "success_weight", "success_std",
+    "lift_weight", "upright_weight", "upright_exponent",
+    "tilt_penalty_weight", "tilt_free_deg",
+    "action_l2_weight", "action_rate_l2_weight",
+    "goal_height_offset", "success_envelope_min", "success_tilt_max_deg",
+    "success_pos_tolerance",
+])
+def test_reward_coefficients_match_sibling_track(key):
+    """계수가 자매 트랙과 동기인가 — 함수만 같고 값이 다르면 비교가 무의미하다."""
+    import re
+
+    def declared(path):
+        out = {}
+        for m in re.finditer(r"^    ([a-z0-9_]+):\s*(?:float|int)\s*=\s*([-\d.]+)",
+                             path.read_text(), re.M):
+            out[m.group(1)] = float(m.group(2))
+        return out
+
+    ours = declared(_TASK_DIR / "grasp_lift_fabric_env_cfg.py")
+    theirs = declared(_SENSOR_DIR / "grasp_sensor_env_cfg.py")
+    assert key in ours, f"{key} 가 우리 cfg 에 없다 — 보상이 하드코딩 기본값으로 돈다"
+    assert key in theirs, f"{key} 가 자매 트랙 cfg 에 없다 — 목록이 낡았다"
+    assert ours[key] == theirs[key], (
+        f"{key} 가 갈라졌다: 우리 {ours[key]} vs grasp_sensor {theirs[key]}")
 
 
-def test_gate_requires_both_opposing_groups():
-    _, _, gate, _ = _call(group_b_force=torch.zeros(N, 4))
-    assert not gate.any(), "그룹 B 접촉 없이 게이트가 열렸다"
-    _, _, gate, _ = _call(group_a_force=torch.zeros(N, 1))
-    assert not gate.any(), "그룹 A 접촉 없이 게이트가 열렸다"
+def test_lift_and_upright_saturate_at_goal_height():
+    """★lift/upright 의 분모는 goal 높이여야 한다.
 
-
-def test_grasp_quality_survives_after_lift():
-    """★래치가 없으므로 리프트 후에도 감쌈 보상이 살아 있어야 한다."""
-    _, low, _, _ = _call(object_height_delta=_ones(0.0))
-    _, high, _, _ = _call(object_height_delta=_ones(0.10))
-    assert torch.allclose(low["grasp_quality"], high["grasp_quality"])
-    assert (high["grasp_quality"] > 0).all()
-
-
-def test_grasp_quality_drops_when_wrap_is_lost():
-    """만렙 후 감쌈 침식에 반대 gradient 가 있어야 한다."""
-    _, full, _, _ = _call(envelope_frac=_ones(1.0))
-    _, eroded, _, _ = _call(envelope_frac=_ones(0.2))
-    assert (eroded["grasp_quality"] < full["grasp_quality"]).all()
-
-
-def test_tilt_is_handled_by_upright_term_only():
-    """★08.23 자세 압력의 소재를 **upright 항 하나로** 확정한다.
-
-    구 설계는 lift/success 에 `up_mul`(0.5~1.0) 을 곱해 자세를 **이중**으로 걸었다.
-    곱수는 최대 2 배 차이뿐이라 실측에서 tilt 38.5°→10° 개선 이득이 +0.09 에 그쳤고,
-    독립항과 섞여 원인 분리도 안 됐다. 자매 트랙 grasp_sensor 와 같은 구조로 정리한다.
-
-    계약: ① lift/success 는 자세와 무관(파지·높이·거리만) ② 자세 악화는 upright 로
-    반영되어 **총보상**이 줄어든다 ③ grasp_v2 식 "인자 하나가 0 이면 전체 0" 은 없다.
+    분모가 goal 보다 작으면 "거기까지만 올리면 만점"이 되어 그 위가 평지가 된다.
+    실측: 분모 0.10 · goal 0.15 이던 우팔이 18cm 까지 들었다가 6cm 로 되돌아왔다
+    (되돌려도 lift 손해가 없으므로 되돌리는 것이 이득이었다).
+    자매 트랙 보상은 둘 다 `goal_height_offset` 을 분모로 쓴다 — 그 규약을 고정한다.
     """
-    flat_t, flat, _, _ = _call(object_tilt_deg=_ones(0.0))
-    tip_t, tipped, _, _ = _call(object_tilt_deg=_ones(90.0))
-    for k in ("lift", "success"):
-        assert (tipped[k] > 0).all(), f"{k} 가 자세만으로 0 이 됐다"
-        assert torch.allclose(tipped[k], flat[k]), f"{k} 가 자세를 곱수로 반영한다(이중 압력)"
-    assert (tipped["upright"] < flat["upright"]).all(), "upright 가 자세를 반영하지 않는다"
-    assert (tip_t < flat_t).all(), "자세가 나빠져도 총보상이 안 줄어든다"
+    src = (_SENSOR_DIR / "rewards.py").read_text()
+    body = src[src.index("def compute_grasp_sensor_rewards"):]
+    for term in ('"lift"', '"upright"'):
+        seg = body[body.index(term):body.index(term) + 400]
+        assert "goal_height_offset" in seg, (
+            f"{term} 의 리프트 분모가 goal_height_offset 이 아니다")
+    assert "lift_success_height" not in src, (
+        "goal 과 어긋나는 별도 분모가 되살아났다")
 
 
-def test_persistence_raises_grasp_quality():
-    """08.22 B: 대향 접촉을 연속 유지하면 grasp_quality 가 더 크다(잡았다-놓기 억제)."""
-    _, held, _, _ = _call(persistence=_ones(1.0))
-    _, blink, _, _ = _call(persistence=_ones(0.0))
-    assert (held["grasp_quality"] > blink["grasp_quality"]).all()
-    # credit 합 = 1.0 (persistence 재도입 시 재분배 누락 재발 방지 — 08.22 의 0.8 사고)
-    c = _Cfg()
-    assert abs(c.grasp_envelope_credit + c.grasp_grip_credit + c.grasp_persist_credit - 1.0) < 1e-9
+def test_envelope_has_no_gate_floor():
+    """★감쌈 곱수에 하한을 두면 감쌈 없이도 이송 보상이 흐른다.
 
-
-def test_progress_beats_standing_still():
-    """reward-audit Check 1 — 08.22 재정의.
-
-    구 기준은 "정체(approach+grasp) : 추가(lift+success) ≥ 1:3" 이었다. 그 전제는
-    '파지는 통과점이고 목표는 드는 것'이었는데, 사용자 우선순위가 **①인벨롭 그립**으로
-    바뀌면서 전제가 뒤집혔다 — 완벽한 감쌈은 '정체'가 아니라 **1단계 달성**이다.
-    (구 기준을 유지하면 grasp 가중을 못 올려 우선순위를 보상에 실을 수 없다.)
-
-    그래서 검사 대상을 비율에서 **단계 진행 유인**으로 바꾼다: 각 단계를 밟을 때마다
-    총보상이 유의미하게 늘어야 하고, 마지막 단계가 가장 커야 한다.
+    실측: 하한 0.3 이던 좌팔이 감쌈 0.21 로 이송(goal 0.58)만 학습했다 —
+    사용자 우선순위 ①(인벨롭 그립)이 무너진 직접 원인.
     """
-    def total(**kw):
-        return float(_call(**kw)[0][0])
-    # ① 감쌈 없이 접근만 → ② 감쌈 완성 → ③ 들기 → ④ 이송 성공
-    s1 = total(envelope_frac=_ones(0.1), grip_frac=_ones(0.2),
-               object_height_delta=_ones(0.0), object_to_goal=_ones(1.0))
-    s2 = total(object_height_delta=_ones(0.0), object_to_goal=_ones(1.0))
-    s3 = total(object_height_delta=_ones(0.15), object_to_goal=_ones(1.0))
-    s4 = total(object_height_delta=_ones(0.15), object_to_goal=_ones(0.0))
-    assert s2 > s1, f"감쌈을 완성해도 보상이 안 는다 ({s1:.2f} → {s2:.2f})"
-    assert s3 > s2, f"감싸고 **들어도** 보상이 안 는다 — 정체 국소최적 ({s2:.2f} → {s3:.2f})"
-    assert s4 > s3, f"이송 성공이 보상되지 않는다 ({s3:.2f} → {s4:.2f})"
-    # 최종 목표(이송)가 가장 큰 증분이어야 한다
-    assert (s4 - s3) > (s3 - s2), "이송 증분이 리프트 증분보다 작다"
+    src = (_SENSOR_DIR / "rewards.py").read_text()
+    seg = src[src.index("def envelope_gate"):src.index("def tracking_reward")]
+    assert "clamp(0.0, 1.0)" in seg
+    for banned in ("floor", "mul_floor", "+ 0.3"):
+        assert banned not in seg, f"감쌈 곱수에 하한 {banned} 가 들어갔다"
 
 
-def test_no_gate_on_approach():
-    """접촉 전 유일한 gradient 라 게이트가 걸리면 탐색이 죽는다."""
-    _, r, gate, _ = _call(group_a_force=torch.zeros(N, 1),
-                          group_b_force=torch.zeros(N, 4))
-    assert not gate.any()
-    assert (r["approach"] > 0).all()
+def test_success_requires_envelope_and_upright():
+    """성공 판정이 goal 거리 하나가 아니라 3조건 AND 인가.
 
-
-def test_action_rate_has_live_gradient_at_realistic_jitter():
-    """★실측 지터에서 gradient 가 살아 있어야 한다.
-
-    구 설정 `-0.005 * sum((Δa)²).clamp(max=1.0)` 은 실측 sum 12.0 에서 **12배 포화**해
-    페널티가 상수였다 — 지터가 12→1 로 줄 때까지 gradient 가 0.
-    (fab_test2 iter15: 팔 |Δa| 0.572 / 손 0.709)
+    거리만 보면 "감쌈 0.21 로 이송만 한" 상태가 성공으로 집계된다(좌팔 0.58).
     """
-    a = torch.zeros(N, 26)
-    lo = _call(actions=a, prev_actions=a)[1]["action_rate"]
-
-    def jitter(scale):
-        d = torch.full((N, 26), scale)
-        return _call(actions=d, prev_actions=torch.zeros(N, 26))[1]["action_rate"]
-
-    r_small, r_mid, r_big = jitter(0.2), jitter(0.5), jitter(0.9)
-    assert (lo == 0).all(), "지터 0 이면 페널티도 0 이어야"
-    # 단조 감소(더 큰 지터 = 더 큰 페널티)이고, 어느 구간도 평탄하지 않아야
-    assert (r_big < r_mid).all() and (r_mid < r_small).all() and (r_small < lo).all()
-    gap_lo = float((r_small - r_mid)[0])
-    gap_hi = float((r_mid - r_big)[0])
-    assert gap_lo > 1e-4 and gap_hi > 1e-4, f"평탄 구간 존재: {gap_lo}, {gap_hi}"
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    body = src[src.index("def _get_rewards"):src.index("def _get_dones")]
+    assert "success_envelope_min" in body, "성공 판정이 감쌈을 안 본다"
+    assert "success_tilt_max_deg" in body, "성공 판정이 직립을 안 본다"
+    assert "_pass_pos & _pass_env & _pass_tilt" in body
 
 
-def test_action_rate_is_dimension_invariant():
-    """★robot-agnostic: 같은 지터면 액션 차원이 달라도 같은 압력이어야 한다.
+def test_envelope_fingers_excludes_pinky_for_tesollo():
+    """감쌈 분모에서 pinky 제외 — 굴곡축이 없어 상한이 0.8 로 깎인다."""
+    rb = pytest.importorskip("openarm.agnostic.modules.robots",
+                             reason="패키지 임포트 불가")
+    for name in ("bis_right", "bis_left"):
+        p = next(x for x in vars(rb).values()
+                 if getattr(x, "name", None) == name)
+        assert p.envelope_fingers, f"{name} envelope_fingers 미정의"
+        assert "pinky" not in p.envelope_fingers, f"{name} 분모에 pinky 가 있다"
+        assert [f for f in p.contact_group_b if f in p.envelope_fingers]
 
-    `sum` 을 쓰면 26D=12.0 / 18D=8.3 / 7D=3.2 로 같은 weight 가 로봇마다
-    다른 압력이 된다.
+
+def test_strict_envelope_is_still_measured():
+    """엄격 감쌈(전 마디 동시접촉)을 대조 지표로 계속 재는가.
+
+    보상은 느슨한 규약(마디 하나라도)을 쓴다. 같은 정책을 두 판정으로 재면
+    0.503 vs 0.069 로 7배가 벌어졌다 — 느슨한 쪽만 오르면 "받치기"다.
     """
-    vals = []
-    for dim in (7, 18, 26):
-        d = torch.full((N, dim), 0.5)
-        z = torch.zeros(N, dim)
-        vals.append(float(_call(actions=d, prev_actions=z)[1]["action_rate"][0]))
-    assert max(vals) - min(vals) < 1e-6, f"차원별 페널티가 다르다: {vals}"
-
-
-def test_action_rate_magnitude_is_meaningful_but_not_dominant():
-    """approach(최대 1.0) 대비 5~30% 여야 한다. 너무 작으면 죽고 크면 얼어붙는다."""
-    d = torch.full((N, 26), 0.68)          # mean((Δa)²) ≈ 0.46 = 실측값
-    pen = abs(float(_call(actions=d, prev_actions=torch.zeros(N, 26))[1]["action_rate"][0]))
-    assert 0.05 <= pen <= 0.30, f"페널티 {pen:.3f} 가 범위 밖"
-
-
-def test_stub_matches_real_cfg_defaults():
-    """★테스트 스텁이 실제 cfg 에서 표류하면 테스트가 옛 값을 검증한다.
-
-    실제로 그랬다: action_rate_weight 를 cfg 에서 -0.3 으로 바꿨는데 스텁은 -0.005 라
-    "페널티가 의미 있는 크기인가" 테스트가 옛 값을 재고 있었다.
-    """
-    C = _cfg_module()
-    real = C.GraspLiftFabricEnvCfg()
-    stub = _Cfg()
-    drift = []
-    for k in dir(stub):
-        if k.startswith("_"):
-            continue
-        if hasattr(real, k) and getattr(real, k) != getattr(stub, k):
-            drift.append(f"{k}: 스텁 {getattr(stub, k)} vs cfg {getattr(real, k)}")
-    assert not drift, "스텁이 실제 cfg 와 다르다: " + " / ".join(drift)
-
-
-def test_total_is_nan_safe():
-    total, _, _, _ = _call(object_to_goal=torch.full((N,), float("nan")))
-    assert torch.isfinite(total).all()
-
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    assert "task/envelope_strict" in src, "엄격 감쌈 대조 지표가 사라졌다"
 
 # =============================================================================
 # cfg ↔ 보상 키 정합
@@ -374,9 +291,9 @@ def test_every_reward_cfg_key_is_declared():
     import re
 
     reward_keys = set(re.findall(
-        r'_cfg\(cfg, "([a-z_]+)"', (_TASK_DIR / "rewards.py").read_text()))
+        r'cfg\.([a-z0-9_]+)\)', (_SENSOR_DIR / "rewards.py").read_text()))
     cfg_src = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
-    declared = set(re.findall(r"^    ([a-z_]+):", cfg_src, re.M))
+    declared = set(re.findall(r"^    ([a-z0-9_]+):", cfg_src, re.M))
     missing = sorted(reward_keys - declared)
     assert not missing, f"보상이 읽는데 cfg 에 선언되지 않음(하드코딩 기본값으로 동작): {missing}"
 
@@ -385,10 +302,10 @@ def test_no_dead_reward_cfg_fields():
     """cfg 에만 있고 아무도 안 읽는 보상 필드 = 죽은 설정(오해를 부른다)."""
     import re
 
-    src = (_TASK_DIR / "rewards.py").read_text() + (
+    src = (_SENSOR_DIR / "rewards.py").read_text() + (
         _TASK_DIR / "grasp_lift_fabric_env.py").read_text()
     cfg_src = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
-    declared = set(re.findall(r"^    ([a-z_]+(?:_weight|_credit|_tau|_std|_deg)):", cfg_src, re.M))
+    declared = set(re.findall(r"^    ([a-z0-9_]+(?:_weight|_credit|_tau|_std|_deg)):", cfg_src, re.M))
     dead = sorted(k for k in declared if k not in src)
     assert not dead, f"죽은 보상 설정: {dead}"
 
@@ -489,83 +406,51 @@ def test_no_undefined_names_static():
 
 
 # =============================================================================
-# 08.22 우선순위 재설계: ①인벨롭 그립 ②똑바로 ③이송
+# 손 제어: Fabrics 손끝 IK (08.23)
+#
+# 손을 Fabrics 밖에 두면 ①fabric 이 아는 손 자세가 홈에 고정되고(body_repulsion 이
+# 실제보다 큰 손으로 회피) ②손가락↔손가락 쌍을 넣을 수 없어 PhysX self-collision 을
+# 못 끈다. 그 구조를 되돌리지 않게 고정한다.
 # =============================================================================
-def test_envelope_completion_beats_lazy_lift():
-    """★핵심 계약: '감쌈 완성'의 이득이 '감쌈 없이 들기'보다 커야 한다.
+def test_tip_ik_action_is_fingertip_positions():
+    """tip IK 모드의 손 액션은 관절이 아니라 손끝 5점 × xyz 다."""
+    cfg_mod = _cfg_module()
+    c = cfg_mod.GraspLiftFabricEnvCfg()
+    profile = _rb.get(c.profile_name)
+    if not c.use_tip_fabric:
+        pytest.skip("use_tip_fabric=False 로 되돌려져 있다(의도된 대조군이면 정상)")
+    assert c.action_space == 6 + 3 * len(profile.fingertip_bodies)
 
-    구 설계는 반대였다 — envelope 0.50→1.00 이득 +0.59 vs 대충 들기 lift 0.79.
-    그래서 정책이 2.7 지 파지로 수렴했다(우팔 ep950 실측).
+
+def test_tip_ik_gives_fabric_the_whole_hand():
+    """손 20-DOF 를 전부 fabric 이 준다 — 일부만 얼리면 fabric 이 아는 자세와 어긋난다."""
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    body = src[src.index("def _apply_action"):src.index("def _apply_gravity_compensation")]
+    assert "self.hand_ids" in body, "tip 모드에서 손 전체에 목표를 주지 않는다"
+    assert "self.fabric_q[:, self.profile.num_arm_joints:]" in body, (
+        "손 목표가 fabric 산출물이 아니다")
+
+
+def test_tip_workspace_is_measured_not_hardcoded():
+    """손끝 도달 박스는 부팅 시 실측한다 — 자산이 바뀌면 값도 따라가야 한다."""
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    assert "_measure_tip_workspace" in src
+    body = src[src.index("def _measure_tip_workspace"):]
+    body = body[:body.index("\n    def ", 10)]
+    assert "_fingertip_taskmap" in body, "FK 로 재지 않는다"
+    # 손끝 좌표 리터럴이 박혀 있으면 실측이 아니다
+    assert not re.search(r"0\.0\d{2}\s*,\s*0\.0\d{2}\s*,\s*0\.0\d{2}", body), (
+        "손끝 좌표가 하드코딩돼 있다")
+
+
+def test_tip_target_uses_actual_palm_not_commanded():
+    """손끝 목표의 palm 기준은 **지령**이 아니라 fabric 이 도달한 palm 이다.
+
+    지령을 쓰면 추종오차만큼 손끝 목표가 컵에서 어긋나고, 그 오차는 파지 순간에 가장 크다.
     """
-    lazy = _call(envelope_frac=_ones(0.2), grip_frac=_ones(0.4),
-                 object_height_delta=_ones(0.15))[0][0]
-    full = _call(envelope_frac=_ones(1.0), grip_frac=_ones(1.0),
-                 object_height_delta=_ones(0.15))[0][0]
-    assert full > lazy * 1.5, f"감쌈 완성 {full:.2f} 가 대충 들기 {lazy:.2f} 를 압도하지 못한다"
-
-
-def test_upright_requires_lift():
-    """★audit Check 2: 들지 않고 감싸기만 해도 자세 만점이면 hacking 경로가 된다."""
-    on_table = _call(object_height_delta=_ones(0.0), object_tilt_deg=_ones(0.0))[1]["upright"][0]
-    lifted = _call(object_height_delta=_ones(0.15), object_tilt_deg=_ones(0.0))[1]["upright"][0]
-    assert float(on_table) == 0.0, "테이블 위 컵에서 upright 가 0 이 아니다"
-    assert float(lifted) > 0.0
-
-
-def test_lift_penalizes_overshoot():
-    """★평지 해소: dz 0.10~∞ 가 전부 만점이라 정책이 0.27 까지 표류했다."""
-    at_goal = _call(object_height_delta=_ones(0.15))[1]["lift"][0]
-    over = _call(object_height_delta=_ones(0.30))[1]["lift"][0]
-    assert over < at_goal * 0.5, f"과지남(0.30m) 이 goal(0.15m) 대비 충분히 깎이지 않는다"
-
-
-def test_upright_gradient_alive_at_observed_tilt():
-    """★실측 tilt 31.5° 에서 자세 개선 gradient 가 살아 있어야 한다.
-
-    구 설계(upright_max_deg=30)는 30° 초과가 전부 up_mul 0.5 고정이라
-    롤아웃의 66% 가 '자세를 고쳐도 보상이 안 늘어나는' 평지에 있었다.
-    """
-    worse = _call(object_tilt_deg=_ones(35.0), object_height_delta=_ones(0.15))[0][0]
-    better = _call(object_tilt_deg=_ones(15.0), object_height_delta=_ones(0.15))[0][0]
-    assert better > worse, "31° 대역에서 자세 개선이 보상으로 이어지지 않는다"
-
-
-# =============================================================================
-# 08.23 TEST3 — 자매 트랙(grasp_sensor) 교차검증에서 온 계약
-# =============================================================================
-def test_tracking_survives_beyond_success_range():
-    """★success 는 5cm 밖에서 사실상 0 이라 이송 신호가 끊겼다(실측 0.24 → 0.000 소멸).
-
-    tracking(std 0.10)이 그 바깥을 메워야 한다 — 자매 트랙 grasp_sensor 의 구조.
-    """
-    far = _call(object_to_goal=_ones(0.08))[1]
-    assert float(far["success"][0]) < 0.1, "전제 확인: success 는 8cm 에서 거의 0"
-    assert float(far["tracking"][0]) > 0.3, "8cm 에서 tracking 신호가 없다 — 이송 유도 부재"
-    # 가까워질수록 커져야 한다(gradient 생존)
-    near = _call(object_to_goal=_ones(0.03))[1]
-    assert float(near["tracking"][0]) > float(far["tracking"][0])
-
-
-def test_grasp_weight_does_not_dominate_goal_terms():
-    """★자매 트랙 cfg 주석의 금지 조항을 계약으로 고정한다.
-
-    grasp_sensor: "envelope_weight 2.0 초과 금지 — goal 계열의 지배가 깨지면
-    '테이블 위 감싸고 정지' 국소최적". TEST2 에서 8.0 으로 올렸다가 실제로 그 국소최적에
-    빠졌다(감쌈 총보상의 70% · dz 0.09 로 들지 않음).
-    """
-    C = _cfg_module()
-    real = C.GraspLiftFabricEnvCfg()
-    goal_terms = real.tracking_weight + real.success_weight + real.lift_weight
-    assert real.grasp_quality_weight < goal_terms * 0.5, (
-        f"감쌈 {real.grasp_quality_weight} 가 goal 계열 {goal_terms} 의 절반 이상 — "
-        "'감싸고 정지' 국소최적 위험")
-
-
-def test_upright_uses_cosine_not_linear():
-    """★선형(1−tilt/max)은 전 구간 도당 기울기가 상수라 '이미 기운' 구간의 압력이 약하다."""
-    import math
-    q0 = float(RW.upright_quality(torch.tensor([0.0]), 4.0)[0])
-    q30 = float(RW.upright_quality(torch.tensor([30.0]), 4.0)[0])
-    q90 = float(RW.upright_quality(torch.tensor([90.0]), 4.0)[0])
-    assert abs(q0 - 1.0) < 1e-6 and q90 < 1e-6
-    assert abs(q30 - math.cos(math.radians(30)) ** 4) < 1e-6
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    body = src[src.index("if self._tip_ik:"):src.index("def _step_fabric")]
+    seg = body[:body.index("set_features")]
+    assert "_palm_frame(self.fabric_q" in seg, "palm 기준이 fabric 실제 자세가 아니다"
+    assert "self.palm_cmd" not in seg.split("_palm_frame")[0][-400:], (
+        "손끝 목표를 지령 palm 기준으로 만들고 있다")

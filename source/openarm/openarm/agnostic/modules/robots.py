@@ -32,15 +32,18 @@ from dataclasses import dataclass, field
 class RobotAsset:
     """USD 파일 하나 = 자산 하나."""
 
-    name: str                  # "openarm_tesollo_bi_s_rl" (= USD 디렉터리/파일 이름)
+    name: str                  # "openarm_tesollo_bi_s_rl" (= USD 파일 이름)
     tag: str                   # run_naming.ASSET_TAGS 와 같은 어휘 ("a2")
     short: str                 # gym id / 로그 경로용 짧은 이름 ("bis")
     note: str = ""
+    # ★얇은 변형(physics 레이어만 교체)은 **디렉터리만** 다르고 파일명은 원본과 같다.
+    #   자산 신원(name/tag/urdf)은 원본 그대로여야 계약 테스트·warm 뱅크가 안 깨진다.
+    dir_name: str | None = None
 
     @property
     def usd_relpath(self) -> str:
         """`hdgp/assets/` 기준 상대 경로."""
-        return f"robot/{self.name}/{self.name}.usd"
+        return f"robot/{self.dir_name or self.name}/{self.name}.usd"
 
     @property
     def urdf_relpath(self) -> str:
@@ -51,6 +54,14 @@ class RobotAsset:
 TESOLLO_BI_S = RobotAsset(
     name="openarm_tesollo_bi_s_rl", tag="a2", short="bis",
     note="좌우 DG-5F-S 20 DOF. grasp_v1/v2 가 쓰는 현행 자산.",
+    # ★08.23 armhull 변형으로 전환 — 손(_hl_) 54개는 convexDecomposition 유지,
+    #   팔·몸통·헤드 20개만 convexHull. 자매 트랙 실측(arm5080 A/B, 256env):
+    #     처리량 +13.7% (런간 편차 1.6% 의 8배 = 실재)
+    #     force_max 36.23 → 32.84N · envelope_frac 0.242 → 0.236 (편차 안 = 변화 없음)
+    #   컵에 닿는 건 손뿐이고 팔 자기충돌은 Fabrics body_repulsion 이 계획 단계에서
+    #   이미 회피하므로 팔은 껍질로 충분하다. ★손까지 hull 로 하면 접촉력 4배(133N).
+    #   생성: scripts/tools/make_armhull_asset.py openarm_tesollo_bi_s_rl
+    dir_name="openarm_tesollo_bi_s_rl_armhull",
 )
 TESOLLO_BI = RobotAsset(
     name="openarm_tesollo_bi_rl", tag="a3", short="bi",
@@ -160,6 +171,11 @@ class RobotProfile:
     # palm 박스를 probe_workspace_reach 로 실측했는가(게이트: 오차<10mm 가 90% 이상).
     # False 면 다른 로봇 값을 물려받은 것이라 신뢰 금지 — 이번 사고의 원인이 정확히 그것이다.
     palm_box_verified: bool = False
+    # envelope_frac 의 **분모**와 d_side 의 wrap 그룹 평균에 들어가는 손가락만.
+    # ★tesollo pinky 는 제대로 된 굴곡축이 없다(pinky_1 손끝이동 12mm vs index_2 42mm,
+    #   메모리 tesollo-pinky-joint-kinematics). 분모에 넣으면 감쌈 상한이 0.8 로 깎여
+    #   "전지 감쌈"이 영원히 1.0 에 못 닿는다 — 제외한다.
+    envelope_fingers: tuple = ()
     notes: tuple = ()
 
     # ------------------------------------------------------------------
@@ -347,6 +363,7 @@ def _tesollo_profile(
         },
         contact_group_a=("thumb",),
         contact_group_b=("index", "middle", "ring", "pinky"),
+        envelope_fingers=("thumb", "index", "middle", "ring"),   # pinky 제외(필드 주석)
         fingertip_bodies=tuple(f"{side}_hl_{f}_tip" for f in _TESOLLO_FINGERS),
         # URDF 한계로 판별: index/middle/ring 의 _1 은 작고 비대칭(외전),
         # _2 는 큰 단방향(MCP 굴곡). ★pinky 만 _1=굴곡 / _2=외전 으로 뒤바뀐다.
@@ -463,6 +480,7 @@ SENS_LEFT_GRIPPER = RobotProfile(
     finger_wrap_bodies={"jaw1": (), "jaw2": ()},
     contact_group_a=("jaw1",),
     contact_group_b=("jaw2",),
+    envelope_fingers=("jaw1", "jaw2"),   # 2지 그리퍼는 양 jaw 접촉이 곧 감쌈
     fingertip_bodies=("l_hl_gripper_left_finger", "l_hl_gripper_right_finger"),
     frozen_hand_joints=(),      # 2지 그리퍼는 1-DOF, 교차 불가
 

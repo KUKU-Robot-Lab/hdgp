@@ -15,6 +15,9 @@ from fabrics_sim.taskmaps.lower_joint_limit import LowerJointLimitMap
 from fabrics_sim.taskmaps.linear_taskmap import LinearMap
 from fabrics_sim.energy.euclidean_energy import EuclideanEnergy
 from fabrics_sim.taskmaps.robot_frame_origins_taskmap import RobotFrameOriginsTaskMap
+from fabrics_sim.taskmaps.robot_frame_origins_taskmap import (
+    SubchainFrameOriginsTaskMap,
+)
 from fabrics_sim.utils.path_utils import get_robot_urdf_path
 from fabrics_sim.utils.rotation_utils import euler_to_matrix, matrix_to_euler
 from fabrics_sim.utils.rotation_utils import quaternion_to_matrix, matrix_to_quaternion
@@ -45,6 +48,8 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         self._use_tip_fabric = use_tip_fabric
         self._tip_attractor_gain = tip_attractor_gain  # None=params 값 사용(튜닝용 override)
         self._tip_frames_ctrl = [f"rl_dg_{i}_tip" for i in range(1, 6)]
+        # URDF 관절 순서: [0-6] 팔 7 · [7-26] 손 20. 손끝 attractor 는 이 구간만 쓴다.
+        self._hand_joint_slice = slice(7, 27)
         # [새 구조] palm_position_only=True: palm_link origin 1점(position 3-DOF)만 attractor로
         #   고정하고 orientation은 자유(cspace nullspace가 결정). j6 leak 차단 → IK가 j5 roll을
         #   demo대로 실현. False(기본)=기존 7-point full 6-DOF(v5 대조군 유지).
@@ -293,8 +298,12 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         타깃은 (B, 15) = 손끝 5개 × xyz.
         """
         taskmap_name = "fingertips"
-        taskmap = RobotFrameOriginsTaskMap(self.urdf_path, self._tip_frames_ctrl,
-                                           self.batch_size, self.device)
+        # ★손 관절만 쓰는 taskmap. 일반 RobotFrameOriginsTaskMap 을 쓰면 Jacobian 에
+        #   팔 열이 살아 있어 손끝 목표가 **팔을 끌고 간다**(실측 palm 오차 580mm).
+        #   팔은 palm attractor 담당 — 두 attractor 가 같은 관절을 두고 싸우면 안 된다.
+        taskmap = SubchainFrameOriginsTaskMap(self.urdf_path, self._tip_frames_ctrl,
+                                              self.batch_size, self.device,
+                                              self._hand_joint_slice)
         self.add_taskmap(taskmap_name, taskmap, graph_capturable=self.graph_capturable)
         params = dict(self.fabric_params.get('fingertip_attractor',
                                              self.fabric_params['palm_attractor']))

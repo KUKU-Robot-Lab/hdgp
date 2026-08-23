@@ -217,76 +217,72 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     #     a=0 → 홈 은 유지되고, 남는 쪽에 생기는 불감대는 과제와 반대 방향이라 무해하다.
     symmetric_action_scale: bool = True
 
-    # ---- 보상 (플랜 §4) -----------------------------------------------------------
-    approach_weight: float = 1.0
-    approach_sharpness: float = 4.0
-    grasp_quality_weight: float = 3.0
-    # ★08.22 배선 복원: 0.5/0.3 → 0.6/0.4. `persistence` 항을 제거하면서(rewards.py:26)
-    #   그 몫 0.2 를 재분배하지 않아 credit 합이 **0.8** 로 남아 있었다 —
-    #   가중 3.0 중 0.6 이 아무도 못 받는 천장이었다. rewards.py 기본값과 docstring 은
-    #   이미 0.6/0.4 를 말하고 있었고 cfg 만 제거 전 값에 머물러 있었다.
-    #   ※ pinky 를 분모에서 빼는 안은 **기각**했다 — "pinky 기여 구조적 0" 근거가
-    #     자기충돌 ON 실측으로 반증됐다(접촉률 1.000 · 8.679 N).
-    # ★08.22 TEST1: credit 3분할 (envelope 0.5 / grip 0.3 / persistence 0.2, 합 1.0).
-    #   persistence 는 v1·v2 둘 다 credit 0.25 로 유지하는 항 — 래치 없이도 "대향 접촉을
-    #   **연속으로** 유지"는 순간 접촉과 다른 신호다(잡았다-놓기 축퇴 억제).
-    #   사용자 방향: "최종적으로는 손가락 모두 envelope grip" → envelope 몫이 최대.
-    grasp_envelope_credit: float = 0.7
-    grasp_grip_credit: float = 0.2
-    grasp_persist_credit: float = 0.1
-    persistence_ref_steps: int = 20          # 이 스텝 연속 유지 시 persist=1 (v1/v2 동일)
+    # ---- 손 제어: Fabrics 손끝 IK (08.23, 사용자 지시) ------------------------------
+    # ★손을 Fabrics 밖(직접 관절 PD)에 두면 세 가지가 동시에 걸린다:
+    #   ① fabric 이 아는 손 자세가 **홈에 고정**된다 — cspace attractor 가 붙잡고 있고
+    #      env 는 손 구간을 갱신하지 않는다. body_repulsion 이 실제보다 큰(펴진) 손으로
+    #      회피를 계산해 팔을 불필요하게 밀어낸다.
+    #   ② `body_repulsion` 에 손가락↔손가락 쌍을 넣을 수 없다 — 제어하지 않는 관절의
+    #      상호 충돌은 계획으로 막을 수 없다. 그래서 PhysX self-collision 을 못 끈다.
+    #   ③ 관절공간 목표라 손끝이 어디로 가는지는 정책이 역기구학을 스스로 배워야 한다.
+    # tip attractor 는 PCA(5D)와 달리 손 20-DOF 를 그대로 두므로 감쌈을 제약하지 않는다.
+    # 액션은 손끝 5점의 **palm 상대** 위치 15D — 절대 좌표면 팔이 움직일 때마다 손 목표가
+    # 함께 끌려가 팔·손 제어가 얽힌다.
+    use_tip_fabric: bool = True
+    # 게인 실측(팔 고정·손끝 20mm 안쪽·300스텝): 80→17.25mm · 200→5.57 · **400→2.94**
+    # · 800→9.82 · 1200 이상 발산. 과대 게인은 여유자유도가 팔로 새어 palm 제어를 오염시킨다.
+    tip_attractor_gain: float = 400.0
+    # 액션 박스 = 부팅 시 실측한 손끝 도달 영역 × 이 비율(홈 기준). 1.0 이면 전 범위.
+    # ★범위 끝은 다른 손가락이 자유일 때의 극값이라 동시 달성이 불가능한 조합이 많다.
+    #   과도한 목표는 attractor 오차를 키워 팔로 새므로 보수적으로 시작한다.
+    tip_action_span_frac: float = 0.8
+    # 워크스페이스 실측 표본 수(부팅 1회, FK 만).
+    tip_workspace_samples: int = 4096
 
-    # ---- A: 대향 파지점 approach (v1/v2 이식) --------------------------------------
-    # ★손끝 목표를 물체 **중심**이 아니라 **대향 파지점**(중심 ± n·R)으로 둔다.
-    #   중심 기준은 전 손끝을 같은 점으로 당겨 손가락이 한쪽으로 몰리는 shaping 이었고
-    #   기하 상한도 0.57 이었다(중심까지는 못 가므로). 대향점 기준이면 게이트(엄지 AND
-    #   나머지)가 요구하는 기하를 shaping 이 직접 돕고, 손끝 거리가 0 에 갈 수 있다.
-    #   n 의 부호는 **현재 엄지가 있는 쪽**으로 매 스텝 선택 — 좌우 로봇/그리퍼에서
-    #   방향 가정 없이 대향만 강제한다(robot-agnostic).
-    enclosure_radius: float = 0.03           # 파지점 반경 [m] — cup_big 몸통 17.5~30mm
-    enclosure_thumb_weight: float = 0.6      # 그룹A(엄지/조1) 가중, 나머지 1-w (v1/v2 동일)
-
-    # ---- E: 접촉 임계 분리 ----------------------------------------------------------
-    # ★★감쌈 판정 임계 (08.22 신설). wrap 마디(_3·_4)가 **전부** 이 값을 넘어야 감쌈.
-    #   구 판정(max + 0.1N)은 마디 하나의 스침도 감쌈으로 세어 "받치기"를 envelope 0.50
-    #   으로 계상했다 — 지표는 오르는데 영상은 인벨롭 그립이 아니었다.
-    envelope_force_threshold: float = 0.5
-    # ★게이트(파지 성립)는 1.0N 유지 — 0.1N 까지 낮추면 스침 접촉으로 success 가 열린다.
-    #   envelope/grip/persistence **참여 판정**만 0.1N (v1/v2 와 동일) — 가벼운 감쌈
-    #   접촉(pinky 등 저힘)을 품질 신호에서 누락시키지 않는다.
-    # 자세는 **독립 항이 아니다**. reward-audit REVISE: 컵이 애초에 서 있어 독립 항으로
-    # 두면 사실상 접촉 보너스의 중복(공짜 보상)이 된다. lift/success 의 완화 곱수
-    # ★08.23 선형 upright_max_deg 폐기 → `cos(tilt)^exponent`(자매 트랙 grasp_sensor 규약).
-    #   선형은 전 구간 도당 기울기가 상수라 "이미 기운" 구간의 개선 압력이 약했다.
-    #   자세 곱수(up_mul)도 제거 — 자세는 upright 독립항이 전담한다.
-    upright_exponent: float = 4.0
-    lift_weight: float = 2.0
-    # ---- 08.22 우선순위 재설계: ①인벨롭 그립 ②똑바로 ③이송 -----------------------
-    # env_mul — lift/이송을 **감쌈 위에서만** 열어 준다. ref 0.8 = 5지 중 4지 감쌈이면 만점.
-    envelope_reference_frac: float = 0.8
-    envelope_mul_floor: float = 0.3          # ★0 이면 초기에 리프트 신호가 죽는다
-    # upright(신설 독립항) — 곱수 up_mul 만으로는 tilt 개선 이득이 +0.09 로 무의미했다.
-    upright_weight: float = 3.0
-    upright_lift_ref: float = 0.05           # 이만큼 들려야 자세 보상이 열린다(안 들고 만점 방지)
-    # lift 과지남 — 0.20m 초과부터 감쇠(goal 0.15 + 여유 0.05). 실측 표류 dz 0.27.
-    lift_overshoot_start: float = 0.20
-    lift_overshoot_scale: float = 0.06
-    lift_success_height: float = 0.10        # goal 높이와 같게 — height_quality 의 분모
-    # ★08.23 tracking 신설 — success(std 0.05)는 5cm 밖에서 사실상 0 이라 이송 신호가
-    #   끊겼다(실측: success 0.24 → 0.000 소멸). 완만한 유도와 날카로운 성공을 분리한다.
+    # ---- 보상 — ★08.23 자매 트랙 grasp_sensor 와 **완전 동일 규약** ---------------
+    # 사용자 결정: "리워드 구조 등은 grasp_sensor 쪽으로 모두 바꾸기. EP3000 에서
+    # 성공 시작됨." 보상 함수 자체를 그쪽에서 import 하므로 여기 계수도 같은 값을 쓴다.
+    # 값이 갈리면 함수만 공유하고 거동은 달라져 비교가 무의미해진다.
+    #
+    # 구 7항에서 실측으로 드러난 결함 셋 — 이 교체로 전부 사라진다:
+    #   · envelope_mul_floor 0.3 → 감쌈 없이도 이송 보상 30% 유출(좌팔 감쌈 0.21/이송 0.58)
+    #   · grasp_quality 의 grip/persist 30% 몫 → 감쌈 아닌 것으로 채워짐(우팔 1.3 중 0.43)
+    #   · lift_success_height 0.10 ≠ goal 0.15 → dz 10cm 포화, 우팔 6cm 고착
+    approach_weight: float = 2.0
+    approach_sharpness: float = 8.0
+    grasp_z_offset: float = 0.0              # 파지중심 = 물체중심 + z 오프셋
+    side_radius: float = 0.03                # 대향 파지점 반경 [m] — cup 몸통 17.5~30mm
+    # 감쌈을 **순수 항**으로 준다(게이트 곱 없음). 접촉 전에는 어차피 0 이고, 게이트를
+    # 곱하면 "게이트를 못 만든 부분 감쌈"이 통째로 안 보인다.
+    envelope_weight: float = 2.0
+    contact_weight: float = 0.5              # 이진 대향 접촉 = 사다리 한 칸
+    contact_force_threshold: float = 1.0     # [N] 게이트·감쌈 판정 공통 (dexsuite 동일)
     tracking_weight: float = 2.0
-    tracking_std: float = 0.10
+    tracking_std: float = 0.1
     success_weight: float = 10.0
-    success_pos_std: float = 0.05
-    # ★08.22 TEST1: push/tilt 페널티 **제거**(실측 기여 −0.004/−0.12 로 무용했고,
-    #   0.35m 이탈·60° 전도가 **종료**로 승격되며 상한 압력을 종료가 담당한다.
-    #   up_mul(수직으로 들면 더 받는 품질 곱수)은 유지 — 페널티가 아니라 품질 신호).
-    # ★-0.005 → -0.3, 그리고 식이 sum.clamp(1.0) → mean 으로 바뀌었다.
-    #   구 설정은 실측 sum 12.0 에서 clamp 에 포화해 gradient 가 0 이었다.
-    #   현재 지터에서 -0.139 (approach 최대 1.0 의 13.9%).
-    action_rate_weight: float = -0.3
-    contact_force_threshold: float = 1.0     # N — **게이트**(대향 파지 성립) 판정
-    participation_force_threshold: float = 0.1   # N — envelope/grip/persist 참여 판정
+    success_std: float = 0.05
+    # ★lift·upright 둘 다 분모가 goal_height_offset(0.15) 이다 — 포화점 = 목표 높이.
+    #   분모를 goal 보다 작게 두면 "거기까지만 올리면 만점"이 되어 그 위 구간이 평지가
+    #   된다. 우팔이 18cm 까지 들었다가 6cm 로 되돌아온 것이 정확히 그 결과였다.
+    lift_weight: float = 1.5
+    upright_weight: float = 3.0
+    upright_exponent: float = 4.0            # cos^4 — 소각 판별력(cos 는 15~30° 에서 평평)
+    tilt_penalty_weight: float = -0.5
+    tilt_free_deg: float = 20.0              # 이 각까지는 무징계(정상 파지 흔들림)
+    action_l2_weight: float = -0.005
+    action_rate_l2_weight: float = -0.005
+    # 성공 판정 3조건 — goal 근접 AND 감쌈 AND 직립.
+    success_envelope_min: float = 0.6        # g_eff 포화점이자 성공 하한
+    success_tilt_max_deg: float = 20.0
+    abnormal_penalty: float = 0.0            # 이 트랙은 관절한계를 Fabrics 가 담당
+
+    # ---- 진단 전용(보상에 안 들어감) -----------------------------------------------
+    persistence_ref_steps: int = 20          # 대향 게이트 연속 유지 → persist=1
+    # 08.22 엄격 감쌈(전 마디 동시 접촉) 대조 지표. 보상은 grasp_sensor 규약(마디 하나
+    # 라도 접촉)을 쓰지만, 같은 정책을 두 판정으로 재면 0.503 vs 0.069 로 7배가 벌어진다.
+    # 느슨한 쪽만 오르고 이쪽이 안 오르면 "받치기"를 감쌈으로 세고 있다는 신호다.
+    envelope_force_threshold: float = 0.5
+    participation_force_threshold: float = 0.1   # N — grip_frac 참여 판정
 
     # ---- 태스크 -------------------------------------------------------------------
     # 안착 높이 바로 위에 놓는다. 정확히 같으면 스폰 침투 반동으로 튕기므로 최소 패딩만.
@@ -296,7 +292,8 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     # 600 스텝 = 약 10초(60Hz) — 로그가 넘치지 않으면서 추세를 볼 수 있는 간격.
     console_log_interval: int = 600
     goal_height_offset: float = 0.15
-    success_pos_tolerance: float = 0.05
+    # dexsuite 규약 = success 항 pos_std 의 절반. success_std 0.05 → 0.025.
+    success_pos_tolerance: float = 0.025
     # ---- goal 랜덤화 (이송 학습, 08.22 사용자 디렉션) --------------------------------
     # ★goal 이 스폰의 결정론적 함수(수직 +offset)면 정책은 goal obs 를 무시하고
     #   "제자리 들기"만 배운다 — 배포에서 사용자 지정 위치에 반응하지 않는 정책이 된다.
@@ -408,7 +405,11 @@ def resolve_cfg(cfg: "GraspLiftFabricEnvCfg") -> None:
     # ★외전 관절은 정책 제어에서 뺀다(손가락 교차 자유도 제거). obs 의 joint_* 에는
     #   여전히 전 관절이 들어간다 — 실기에서도 읽히는 값이고, 고정값이라 해가 없다.
     n_free_hand = profile.num_hand_joints - len(profile.frozen_hand_joints)
-    cfg.action_space = 6 + n_free_hand
+    # ★tip IK 모드에서는 손 액션이 관절이 아니라 **손끝 5점 × xyz** 다.
+    #   frozen_hand_joints 는 이 모드에서 의미가 없다 — fabric 이 손 20-DOF 를 전부
+    #   소유하고, 손가락 교차는 자유도 제거가 아니라 body_repulsion 이 막는다.
+    n_hand_action = 3 * len(profile.fingertip_bodies) if cfg.use_tip_fabric else n_free_hand
+    cfg.action_space = 6 + n_hand_action
     # joint pos/vel/effort(3j) + 접촉력(f) + 물체 pos/quat(palm 프레임, 7)
     # + goal-object(3) + prev_action
     # +6 = palm 지령(slew 상태). 슬루를 걸면 지령이 액션의 저역통과라 상태가 된다 —
