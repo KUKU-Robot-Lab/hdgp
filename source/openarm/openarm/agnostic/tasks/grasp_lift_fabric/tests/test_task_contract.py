@@ -454,3 +454,40 @@ def test_tip_target_uses_actual_palm_not_commanded():
     assert "_palm_frame(self.fabric_q" in seg, "palm 기준이 fabric 실제 자세가 아니다"
     assert "self.palm_cmd" not in seg.split("_palm_frame")[0][-400:], (
         "손끝 목표를 지령 palm 기준으로 만들고 있다")
+
+
+def test_left_fabric_forwards_every_parent_init_arg():
+    """좌팔 fabric 서브클래스가 상위 __init__ 인자를 **빠짐없이** super 로 넘기는가.
+
+    ★같은 부류의 버그가 두 번 났다: `hand_mode` 미전달로 좌팔 부팅이 TypeError 로 죽었고,
+      `use_hand_repulsion` 은 시그니처에만 있고 전달되지 않아 좌팔에서 **조용히 꺼져** 있었다
+      (cfg 에는 true 인데 fabric 은 기본값으로 동작 — 로그가 없어야 알아챈다).
+      조용히 틀리는 쪽이 더 위험해서 정적으로 막는다.
+    """
+    import ast
+
+    src = Path("source/FABRICS/src/fabrics_sim/fabrics/openarm_tesollo_pose_fabric.py")
+    if not src.exists():
+        pytest.skip("fabrics 소스 없음")
+    tree = ast.parse(src.read_text())
+    cls = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    parent = cls.get("OpenArmTeoslloPoseFabric")
+    child = cls.get("OpenArmTeoslloLeftPoseFabric")
+    assert parent and child
+
+    def init_kwargs(c):
+        fn = next(f for f in c.body
+                  if isinstance(f, ast.FunctionDef) and f.name == "__init__")
+        return fn, {a.arg for a in fn.args.args if a.arg != "self"} | {
+            a.arg for a in fn.args.kwonlyargs}
+
+    _, p_args = init_kwargs(parent)
+    c_fn, c_args = init_kwargs(child)
+    call = next(n for n in ast.walk(c_fn)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "__init__")
+    forwarded = {k.arg for k in call.keywords if k.arg} | {
+        a.id for a in call.args if isinstance(a, ast.Name)}
+    # 자식이 받아들이면서 부모도 받는 인자는 전부 넘겨야 한다
+    missing = sorted((c_args & p_args) - forwarded)
+    assert not missing, f"좌팔이 super 로 안 넘기는 인자: {missing}"

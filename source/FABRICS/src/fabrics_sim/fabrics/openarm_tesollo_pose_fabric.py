@@ -692,6 +692,7 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
             robot_name=robot_name,
             hand_mode=hand_mode,
             hand_attractor_gain=hand_attractor_gain,
+            use_hand_repulsion=use_hand_repulsion,
             use_tip_fabric=use_tip_fabric,
             tip_attractor_gain=tip_attractor_gain,
             default_config_override=_LEFT_DEFAULT_CONFIG,
