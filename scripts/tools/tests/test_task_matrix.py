@@ -31,7 +31,10 @@ def test_rows_cover_all_four_upgraded_task_families():
 def test_every_row_carries_at_least_one_gate_and_a_gym_id():
     for row in TM.build_rows():
         assert row.gates, f"{row.task}/{row.variant} 에 게이트가 없다"
-        assert row.gym_ids, f"{row.task}/{row.variant} 에 gym id 가 없다"
+        if row.registered:
+            assert row.gym_ids, f"{row.task}/{row.variant} 에 gym id 가 없다"
+        else:
+            assert not row.gym_ids, "미등록인데 id 를 주장한다"
 
 
 # ---------------------------------------------------------------- 판정
@@ -198,3 +201,13 @@ def test_perception_seam_is_a_warning_not_a_blocker():
         for gate in row.gates:
             if gate.name == "perception_seam":
                 assert gate.severity == TM.WARN
+
+
+def test_profiles_without_fabrics_are_reported_as_unregistered():
+    """config 가 SKIPPED 로 건너뛰므로 그 id 들은 **존재하지 않는다**.
+
+    "4개 id 가 있는데 BLOCK" 과 "id 가 아예 없다" 는 다른 사실이다.
+    """
+    assert _row("agnostic/grasp_sensor", "gripper_left").registered is False
+    assert _row("agnostic/grasp_lift_fabric", "rh56_left").registered is False
+    assert _row("agnostic/grasp_sensor", "tesollo_right").registered is True

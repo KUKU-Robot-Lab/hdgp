@@ -324,3 +324,53 @@ def test_spawn_z_is_single_source():
     """스폰 높이 이중 패딩 구조적 차단 — 프로필에 object_spawn_z 필드가 있으면 안 된다."""
     p = PROFILES["tesollo_right"]
     assert not hasattr(p, "object_spawn_z"), "프로필에 object_spawn_z 가 되살아났다"
+
+
+# ---------------------------------------------------------------------------
+# gym 등록 — Fabrics 자산이 없는 프로필은 등록하지 않는다
+#
+# 이 태스크는 Fabrics 로만 돈다(`_setup_fabrics` 가 fabric_class=None 이면 RuntimeError).
+# 그런데 등록은 되고 있어서 `open-sens_l_grasp_sensor` 4종이 "존재하지만 띄우면 죽는"
+# 상태였다. 형제 태스크(grasp_lift_fabric)는 이미 SKIPPED 규약으로 사유를 남긴다.
+# ---------------------------------------------------------------------------
+_CONFIG_SRC = (
+    __import__("pathlib").Path(__file__).resolve().parents[1] / "config/__init__.py"
+).read_text(encoding="utf-8")
+
+
+def test_registration_skips_profiles_without_fabrics_and_records_why():
+    """정적 검사 — Isaac 없이도 돈다."""
+    assert "SKIPPED" in _CONFIG_SRC, "등록 실패 사유를 남기는 규약이 없다"
+    assert "if _profile.fabric_class is None:" in _CONFIG_SRC
+    assert "continue" in _CONFIG_SRC
+
+
+def test_registration_records_the_ids_it_actually_created():
+    assert "REGISTERED.append(" in _CONFIG_SRC
+
+
+def test_gripper_left_profile_is_the_one_without_fabrics():
+    """SKIPPED 대상이 실제로 어느 프로필인지는 레지스트리가 정한다."""
+    assert PROFILES["gripper_left"].fabric_class is None
+    assert PROFILES["tesollo_right"].fabric_class is not None
+
+
+# ---- Isaac 이 있을 때만: 실제 등록 결과 ----------------------------------------
+def _config_module():
+    pytest.importorskip("isaaclab", reason="gym 등록 확인은 Isaac 환경에서만 가능")
+    from openarm.agnostic.tasks.grasp_sensor import config as _cfg
+    return _cfg
+
+
+def test_tesollo_right_registration_is_unchanged():
+    """★학습 중인 구성이다 — id 4종이 그대로여야 한다."""
+    cfg = _config_module()
+    for suffix in ("", "-play", "-lstm", "-play-lstm"):
+        assert f"open-sens_r_grasp_sensor{suffix}" in cfg.REGISTERED
+
+
+def test_gripper_left_is_skipped_not_registered():
+    cfg = _config_module()
+    assert not any(i.startswith("open-sens_l_") for i in cfg.REGISTERED), cfg.REGISTERED
+    assert "sens_l" in cfg.SKIPPED
+    assert "fabric" in cfg.SKIPPED["sens_l"].lower()

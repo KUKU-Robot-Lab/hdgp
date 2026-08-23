@@ -7,13 +7,13 @@
 
 | 판정 | 태스크 | 구성 | gym id | act/obs/state | 사유 |
 |---|---|---|---|---:|---|
-| **BLOCK** | `agnostic/grasp_sensor` | `gripper_left` | 4 | 7 / 48 / 55 | fabric_class: fabric_class/fabric_robot_dir 가 None — env 가 RuntimeError 로 멈춘다 · (palm_box_verified) · (perception_seam) |
+| **BLOCK** | `agnostic/grasp_sensor` | `gripper_left` | 미등록 | 7 / 48 / 55 | fabric_class: fabric_class/fabric_robot_dir 가 None — env 가 RuntimeError 로 멈춘다 · (palm_box_verified) · (perception_seam) |
 | **WARN** | `agnostic/grasp_sensor` | `tesollo_right` | 4 | 23 / 114 / 121 | (palm_box_verified) · (perception_seam) |
 | **WARN** | `agnostic/grasp_lift_fabric` | `bi_left` | 4 | — | (fabric_manifest) · (palm_box_verified) · (probe_verified) · (perception_seam) |
 | **WARN** | `agnostic/grasp_lift_fabric` | `bi_right` | 4 | — | (fabric_manifest) · (palm_box_verified) · (probe_verified) · (perception_seam) |
 | **WARN** | `agnostic/grasp_lift_fabric` | `bis_left` | 4 | — | (probe_verified) · (perception_seam) |
 | **WARN** | `agnostic/grasp_lift_fabric` | `bis_right` | 4 | 19 / 121 / 127 | (probe_verified) · (perception_seam) |
-| **BLOCK** | `agnostic/grasp_lift_fabric` | `rh56_left` | 4 | — | fabric_class: fabric_class/fabric_robot_dir 가 None — env 가 RuntimeError 로 멈춘다 · (palm_box_verified) · (probe_verified) · (perception_seam) |
+| **BLOCK** | `agnostic/grasp_lift_fabric` | `rh56_left` | 미등록 | — | fabric_class: fabric_class/fabric_robot_dir 가 None — env 가 RuntimeError 로 멈춘다 · (palm_box_verified) · (probe_verified) · (perception_seam) |
 | **WARN** | `agnostic/grasp_lift_fabric` | `rh56_right` | 4 | — | (palm_box_verified) · (probe_verified) · (perception_seam) |
 | **WARN** | `agnostic/grasp_lift_fabric` | `sens_left` | 4 | — | (palm_box_verified) · (probe_verified) · (perception_seam) |
 | **WARN** | `agnostic/grasp_lift_fabric` | `sens_right` | 4 | — | (fabric_manifest) · (palm_box_verified) · (probe_verified) · (perception_seam) |
@@ -28,7 +28,7 @@
 
 ### `agnostic/grasp_sensor` / `gripper_left`
 
-gym id: `open-sens_l_grasp_sensor`, `open-sens_l_grasp_sensor-play`, `open-sens_l_grasp_sensor-lstm`, `open-sens_l_grasp_sensor-play-lstm`
+gym id: **미등록** — config 가 SKIPPED 로 건너뛴다
 
 - ✅ `robot_usd` — 있음: assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd
 - ⛔ `fabric_class` — fabric_class/fabric_robot_dir 가 None — env 가 RuntimeError 로 멈춘다
@@ -126,7 +126,7 @@ gym id: `open-bis_r_grasp_lift_fab`, `open-bis_r_grasp_lift_fab-play`, `open-bis
 
 ### `agnostic/grasp_lift_fabric` / `rh56_left`
 
-gym id: `open-rh56_l_grasp_lift_fab`, `open-rh56_l_grasp_lift_fab-play`, `open-rh56_l_grasp_lift_fab-lstm`, `open-rh56_l_grasp_lift_fab-play-lstm`
+gym id: **미등록** — config 가 SKIPPED 로 건너뛴다
 
 - ✅ `robot_usd` — 있음: assets/robot/openarm_bi_rh56f1_rl/openarm_bi_rh56f1_rl.usd
 - ⛔ `fabric_class` — fabric_class/fabric_robot_dir 가 None — env 가 RuntimeError 로 멈춘다

@@ -71,6 +71,9 @@ class TaskRow:
     gates: tuple[Gate, ...]
     canonical: bool = True          # 같은 태스크의 여러 변형 중 정본인가
     contract: str = ""              # 알려진 경우의 act/obs/state (참고용)
+    # ★Fabrics 자산이 없는 프로필은 config 가 **등록 자체를 건너뛴다**(SKIPPED 규약).
+    #   "존재하지만 띄우면 죽는" id 를 남기지 않기 위해서다 → gym_ids 는 비고 행은 남긴다.
+    registered: bool = True
 
     @property
     def blockers(self) -> tuple[Gate, ...]:
@@ -189,7 +192,10 @@ def agent_yaml_gates(config_dir: Path, names: tuple[str, ...]) -> list[Gate]:
     return [gate_path(f"agent:{n}", config_dir / "agents" / n) for n in names]
 
 
-def _agnostic_ids(short: str, side: str, task_slug: str) -> tuple[str, ...]:
+def _agnostic_ids(short: str, side: str, task_slug: str,
+                  registered: bool = True) -> tuple[str, ...]:
+    if not registered:
+        return ()
     return tuple(f"open-{short}_{side}_{task_slug}{s}" for s in AGNOSTIC_SUFFIXES)
 
 
@@ -222,10 +228,11 @@ def build_grasp_sensor_rows() -> list[TaskRow]:
         gates.append(gate_assets_tracked(assets))
         gates.append(gate_perception_seam(
             AGNOSTIC_DIR / "tasks/grasp_sensor/grasp_sensor_env.py"))
+        registered = profile.fabric_class is not None
         rows.append(TaskRow(
             task="agnostic/grasp_sensor", variant=name,
-            gym_ids=_agnostic_ids(short, side, "grasp_sensor"),
-            gates=tuple(gates), contract=contracts[name],
+            gym_ids=_agnostic_ids(short, side, "grasp_sensor", registered),
+            gates=tuple(gates), contract=contracts[name], registered=registered,
         ))
     return rows
 
@@ -263,10 +270,12 @@ def build_grasp_lift_fabric_rows() -> list[TaskRow]:
         gates.append(gate_assets_tracked(assets))
         gates.append(gate_perception_seam(
             AGNOSTIC_DIR / "tasks/grasp_lift_fabric/grasp_lift_fabric_env.py"))
+        registered = profile.fabric_class is not None
         rows.append(TaskRow(
             task="agnostic/grasp_lift_fabric", variant=name,
-            gym_ids=_agnostic_ids(profile.asset.short, profile.side, "grasp_lift_fab"),
-            gates=tuple(gates),
+            gym_ids=_agnostic_ids(profile.asset.short, profile.side,
+                                  "grasp_lift_fab", registered),
+            gates=tuple(gates), registered=registered,
             contract="19 / 121 / 127" if name == "bis_right" else "",
         ))
     return rows
@@ -370,12 +379,13 @@ def _reasons(row: TaskRow) -> str:
 
 
 def render_table(rows: tuple[TaskRow, ...]) -> str:
-    out = [f"{'판정':6}{'태스크':30}{'구성':16}{'ID':>4}  사유"]
+    out = [f"{'판정':6}{'태스크':30}{'구성':16}{'ID':>6}  사유"]
     out.append("-" * 110)
     for row in rows:
+        ids = str(len(row.gym_ids)) if row.registered else "미등록"
         out.append(
             f"{_MARK[row.verdict]:6}{row.task:30}{row.variant:16}"
-            f"{len(row.gym_ids):>4}  {_reasons(row)}"
+            f"{ids:>6}  {_reasons(row)}"
         )
     n_block = sum(1 for r in rows if r.verdict == BLOCK)
     n_warn = sum(1 for r in rows if r.verdict == WARN)
@@ -403,9 +413,10 @@ def render_markdown(rows: tuple[TaskRow, ...]) -> str:
     ]
     for row in rows:
         canon = "" if row.canonical else " *(비정본)*"
+        ids = str(len(row.gym_ids)) if row.registered else "미등록"
         lines.append(
             f"| **{row.verdict}** | `{row.task}` | `{row.variant}`{canon} | "
-            f"{len(row.gym_ids)} | {row.contract or '—'} | {_reasons(row) or '—'} |"
+            f"{ids} | {row.contract or '—'} | {_reasons(row) or '—'} |"
         )
     lines += [
         "",
@@ -415,7 +426,8 @@ def render_markdown(rows: tuple[TaskRow, ...]) -> str:
     for row in rows:
         lines.append(f"### `{row.task}` / `{row.variant}`")
         lines.append("")
-        lines.append("gym id: " + ", ".join(f"`{i}`" for i in row.gym_ids))
+        lines.append("gym id: " + (", ".join(f"`{i}`" for i in row.gym_ids)
+                                   or "**미등록** — config 가 SKIPPED 로 건너뛴다"))
         lines.append("")
         for gate in row.gates:
             mark = "✅" if gate.ok else ("⛔" if gate.severity == BLOCK else "⚠️")
