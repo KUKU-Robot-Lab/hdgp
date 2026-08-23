@@ -37,11 +37,18 @@ Two modules realize the boundary for the `agnostic` fabric tasks
 (`grasp_lift_fabric` / `pour_fabric`) whose action space is an absolute palm
 6D pose plus absolute hand joint targets:
 
+Arm and hand are **separate articulations with separate fabric controllers**
+(user decision, 08.23): a `SkillCommand` carries one `ChannelCommand` per
+channel. The arm channel takes `TASK_SPACE_POSE` / `POLICY_ACTION` / hold;
+the hand channel takes `HAND_JOINT_TARGETS` (normalized joints, -1 open),
+`HAND_TIP_TARGETS` (the fabric tip-IK convention: normalized palm-relative
+fingertip reach box), `POLICY_ACTION`, or hold. Every mode ends in
+`fabric.set_features` inside the env — there is no non-fabric control path.
+
 - `fabric_bridge.py` — pure math, no Isaac/torch imports. `PalmActionSpace`
-  is the exact inverse of the env's symmetric action decode, and
-  `command_to_action` maps `TASK_SPACE_POSE` (rule-based skills such as
-  approach), `POLICY_ACTION` (RL skills), and `SAFE_STOP`/`NO_OP` (hold the
-  current pose) onto one action row.
+  is the exact inverse of the env's symmetric action decode;
+  `arm_channel_to_action` / `hand_channel_to_action` map each channel onto
+  its action-row slice independently (`command_to_action` composes both).
 - `isaac_state.py` — `FabricStateProvider` assembles validated
   `SemanticState` batches from a narrow `FabricSceneView` protocol (a thin
   adapter over the env buffers) plus the skill manager's routing state.
