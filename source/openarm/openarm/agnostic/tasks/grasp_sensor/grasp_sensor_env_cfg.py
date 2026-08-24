@@ -321,6 +321,9 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     # ①②③ 무게이트가 부트스트랩의 핵심(1차안은 무게이트가 approach 하나뿐이었다).
     stage_approach_weight: float = 1.0
     stage_approach_sharpness: float = 8.0
+    # 정렬 배수의 바닥 — align=−1(손등 쪽)일 때 남기는 비율. 0 이면 초기 오정렬에서
+    # approach gradient 가 사라져 접근 자체를 못 배운다(reward-audit Check1).
+    stage_align_floor: float = 0.25
     stage_grip_weight: float = 2.0
     stage_grip_sharpness: float = 8.0
     # 팁 반경 — **손 기하 상수**(물체 형상 아님). 접촉 감지 실패 시 압입 무한보상 차단.

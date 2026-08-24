@@ -704,6 +704,7 @@ class GraspSensorEnv(DirectRLEnv):
                 _wp - obj_pos[:, None, None, :], dim=-1).min(dim=-1).values   # (N,F)
             _thr = float(self.cfg.contact_force_threshold)
             total, terms, gate, env_frac = compute_tip_cyl_rewards(
+                palm_pos=palm_pos,
                 grasp_center_pos=_gc,
                 wrap_dist=_wrap_dist,
                 palmar_wrap=(mid_f > _thr) | (dist_f > _thr),
@@ -767,7 +768,7 @@ class GraspSensorEnv(DirectRLEnv):
         for _k, _tag in (("_d_palm", "task/d_palm"), ("_d_side", "task/d_side"),
                          ("_gate_eff", "task/gate_eff"), ("_d_max", "task/d_max"),
                          ("_d_gc", "task/d_graspcenter"), ("_grip_dist", "task/grip_dist"),
-                         ("_touch_frac", "task/touch_frac")):
+                         ("_touch_frac", "task/touch_frac"), ("_align", "task/palm_align")):
             _v = terms.pop(_k, None)
             if _v is not None:
                 self.extras[_tag] = _v.mean()

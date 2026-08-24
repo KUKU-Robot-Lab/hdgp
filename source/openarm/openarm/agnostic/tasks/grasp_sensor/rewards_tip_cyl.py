@@ -18,6 +18,7 @@ from .rewards import (
 
 
 def compute_tip_cyl_rewards(
+    palm_pos: torch.Tensor,           # (N, 3) env-local · 정렬 항의 기준점
     grasp_center_pos: torch.Tensor,   # (N, 3) env-local · palm 부착 파지중심(손가락 무관)
     wrap_dist: torch.Tensor,          # (N, F) 손가락별 min(‖mid−obj‖, ‖dist−obj‖)
     palmar_wrap: torch.Tensor,        # (N, F) bool · 손바닥면 감쌈 c_i
@@ -69,10 +70,23 @@ def compute_tip_cyl_rewards(
     g = contact_gate(group_a_force, group_b_force, thr)
     gf = g.float()
 
-    # ① 접근(팔) — 파지중심을 물체로. 무게이트. palm 원점이 아니라 **파지중심**이라
-    #    d=0 이 "컵이 손 한가운데"이고, 손바닥으로 관통하라는 지시가 되지 않는다.
+    # ① 접근(팔) — 파지중심을 물체로 **+ 손바닥이 물체를 향하는가**. 무게이트.
+    #   palm 원점이 아니라 파지중심이라 d=0 이 "컵이 손 한가운데"다.
+    #   ★정렬 배수(08.24 2차 수정): 거리만 쓰면 **방향 요구가 전혀 없다**. lstm_test6
+    #     실측에서 정책이 컵을 손바닥 개구부가 아니라 **엄지 바깥**으로 데려온 채
+    #     approach 를 수확했다(컵 원통각 −36° vs 엄지 −62°·네 손가락 +112~143°;
+    #     네 손가락이 147~179° 반대편이라 게이트가 원리적으로 만족 불가).
+    #     그 상태에서는 손가락별 최적 r 이 서로 반대가 되어(엄지 뻗기 85mm ·
+    #     검지 오므리기 14mm) 협응 파지가 아니라 흩어짐이 최적해가 된다.
+    #   palm_forward = palm→파지중심(손 기하 상수 방향), align=1 이면 컵이 정면 개구부.
+    #   ★바닥(stage_align_floor)을 남기는 이유: 완전 곱셈이면 초기 오정렬에서
+    #     approach gradient 가 0 이 되어 접근 자체를 못 배운다(reward-audit Check1).
     d_gc = torch.norm(grasp_center_pos - object_pos, dim=-1)
-    approach = torch.exp(-float(cfg.stage_approach_sharpness) * d_gc)
+    align = torch.nn.functional.cosine_similarity(
+        grasp_center_pos - palm_pos, object_pos - palm_pos, dim=-1, eps=1e-6)
+    _fl = float(cfg.stage_align_floor)
+    approach = (torch.exp(-float(cfg.stage_approach_sharpness) * d_gc)
+                * (_fl + (1.0 - _fl) * 0.5 * (1.0 + align)))
 
     # ② 파지 접근(손가락) — 아직 안 닿은 손가락만 그 마디를 물체로 당긴다. 무게이트.
     #    바닥값은 **손 기하 상수**(팁 반경)라 물체 형상을 끌어들이지 않는다.
@@ -110,6 +124,7 @@ def compute_tip_cyl_rewards(
 
     # 진단용(보상 아님) — 로깅에서 pop 한다.
     terms["_d_gc"] = d_gc
+    terms["_align"] = align
     terms["_grip_dist"] = wrap_dist.mean(dim=-1)
     terms["_touch_frac"] = any_touch.float().mean(dim=-1)
     return total, terms, g, env_frac
