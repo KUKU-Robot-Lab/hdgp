@@ -203,7 +203,7 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   (reward-audit Check 1).
     envelope_weight: float = 2.0
     contact_weight: float = 0.5
-    contact_force_threshold: float = 1.0     # [N] dexsuite 동일
+    contact_force_threshold: float = 1.0     # [N] dexsuite 동일 (구 보상·자매 트랙 공유)
     # ★감쌈을 **손바닥 접촉만** 인정한다(08.23, reward-audit ACCEPT).
     #   근거 실측(lstm_test3 ep5000): middle_4 가 접촉 시간의 100% 를 손등으로 접촉했고
     #   envelope_frac 은 그걸 감쌈으로 세어 0.746 을 보고했다. 손바닥만 세면 ≈0.55 로
@@ -314,30 +314,89 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     # 10 이면 만점 지점이 0.5 로 깎여 후반 gradient 가 얕다).
     # 위 approach_*~tilt_penalty_* 상수들은 구 보상(공유 함수) 전용 — pd/fabric 모드와
     # 타 트랙(grasp_lift_fabric) 경로에서만 읽힌다.
-    # ---- tip_cyl 2차 재설계(08.24): 형상 비의존 6단계 · 단계마다 상한 증가 --------
-    # 1차안(max 커널)은 palm 이 argmax 를 52.7% 먹어 손가락 gradient 를 굶겼다
-    # (ring·pinky 지목률 0.0%, gate 2,820ep 내내 0.000). 근거는 rewards_tip_cyl 주석.
-    # 상한: 접근1 < 파지2 < 감쌈3 < 리프트5 < 이송8(4+4) < 성공12 — 누적 35.
-    # ①②③ 무게이트가 부트스트랩의 핵심(1차안은 무게이트가 approach 하나뿐이었다).
-    stage_approach_weight: float = 1.0
+    # ---- tip_cyl 3차 재설계(08.25): **소프트 계층** — 하드 스위치 없음 -------------
+    # 2차안(6단계 + 이진 대향 게이트)이 lstm_test7 에서 실패한 원인 3건(실측):
+    #  ①`upright` 가 독립 가산항이라 **테이블에 선 컵이 만점**(2.674 = 총보상의 48%).
+    #    들면 흔들려 그걸 잃으므로 **보상이 "들지 마라"를 가르쳤다** — ep757 h=2.5mm
+    #    (최고) → ep1324 h=0.3mm 로 실제로 되돌아갔다.
+    #  ②`lift = exp(−8.5·|goal_z−obj_z|)` 가 **h=0 에서 0.28 지급**(실측 0.954).
+    #  ③게이트가 손가락 **총접촉**(팁 포함)이라 2지 팁 핀치로 열린다. 실측 수렴 자세는
+    #    파지중심에서 106mm 밖의 컵을 엄지·검지 팁으로 집은 것이고, 중지·약지·소지는
+    #    1,594 에폭 전 구간 `touch` 자체가 0.000 이었다(컵이 손 안에 들어온 적 없음).
+    #
+    # ★래치(`pre_lift_gate`)를 쓰지 않는다. 이 저장소가 두 번 제거한 장치다 —
+    #   grasp_v2 "순수 grasp_v1 이식 3,271ep, latch 이후 항 전 구간 정확히 0 → 제거",
+    #   grasp-sensor lstm_test3 "latch=순손실, 엄지 접촉만 포기하면 영구 차단 → 제거".
+    #   레퍼런스 grasp_v1 의 98% 는 보상이 아니라 **스크립트 리프트**(래치 후 정책 palm
+    #   액션을 폐기하고 z 를 120스텝에 +10cm 램프)의 성과이고, 우리는 팔이 100% 정책
+    #   제어라 전제가 다르다. 절벽 산수: 손익분기 높이 0.197m > 목표 0.15m.
+    #
+    # 계층은 **소프트 인자의 곱셈 깊이**로 만든다(전 인자 [0,1] 연속 → 불연속 없음):
+    #   ③lift 3개 곱 · ④transport 4개 · ⑤stabilize 5개.
+    # 상한 사다리: 접근2 → +파지6=8 → +리프트12=20 → +이송8=28 → +정지4=32 → +성공20=52.
+    # ★tip_cyl 전용 접촉 임계 — 0.1N (사용자 결정, grasp_v1 검증값). 위
+    #   `contact_force_threshold`(1.0)는 구 보상·**자매 트랙 계약**이 공유하므로 못 바꾼다.
+    #   grasp_v1 근거: "손끝 접촉력 p95=7.77 / max=10.37N, 비영 접촉 하위 5분위 =
+    #   1.86N ≫ 0.1 → 접촉 판정이 놓치는 구간 없음". 1.0 은 그 5분위의 절반이라 얕은
+    #   마디 접촉을 잘라낼 수 있다 — lstm_test7 의 "중지·약지·소지 wrap 정확히 0.000"이
+    #   진짜 미접촉인지 임계 미달인지 P-1b probe 로 갈린다.
+    stage_contact_threshold: float = 0.1
+    # ★tip_cyl 전용 성공 감쌈 임계 — 분모가 **4지(엄지 제외)** 라 0.75 = 3지 이상.
+    #   엄지는 대향이라 mid/dist 감쌈이 구조적으로 불가하다(e2e probe: 이상적 파지에서도
+    #   엄지 wrap 0.00). 위 `success_envelope_min`(0.6)은 자매 트랙 공유라 불변.
+    stage_success_envelope_min: float = 0.75
+    # ★파지중심을 5점평균에서 대향중점 쪽으로 옮기는 비율. 0 = 5점평균(엄지가 영원히
+    #   못 닿음, 4지는 관통 31.6N), 1 = 대향중점(4지가 전혀 못 닿음, wrap4=0.00).
+    #   0.39 = 오프셋 스윕 실측 최적 28mm ÷ 대향중점까지 72mm.
+    #   실측(off, thumb, wrap4, G): (0, 0.00, 1.00, 0.25) (15, 0.31, 1.00, 0.41)
+    #   **(28, 1.00, 1.00, 0.83)** (35, 0.94, 0.77, 0.58) (45, 0.56, 0.14, 0.07)
+    #   (60, 1.00, 0.00, 0.00). 자산이 바뀌면 이 스윕을 다시 돌려야 한다.
+    stage_gc_opposition_frac: float = 0.39
+    stage_approach_weight: float = 2.0
     stage_approach_sharpness: float = 8.0
     # 정렬 배수의 바닥 — align=−1(손등 쪽)일 때 남기는 비율. 0 이면 초기 오정렬에서
     # approach gradient 가 사라져 접근 자체를 못 배운다(reward-audit Check1).
     stage_align_floor: float = 0.25
-    stage_grip_weight: float = 2.0
+    # ②grasp = w·(reach 몫 + G 몫). 두 몫의 합이 1 이라 재정규화된다.
+    stage_grasp_weight: float = 6.0
+    stage_graspq_reach: float = 0.4
+    stage_graspq_g: float = 0.6
     stage_grip_sharpness: float = 8.0
     # 팁 반경 — **손 기하 상수**(물체 형상 아님). 접촉 감지 실패 시 압입 무한보상 차단.
     stage_grip_dist_floor: float = 0.009
-    stage_envelope_weight: float = 3.0
-    stage_lift_weight: float = 5.0
-    stage_lift_sharpness: float = 8.5
-    stage_tracking_weight: float = 4.0
+    # 파지품질 G 의 내부 몫 — 얕은 감쌈(wrap)보다 깊은 감쌈(deep=같은 손가락 mid AND
+    # dist)에 무게를 준다. 2지 팁 핀치는 wrap4=0.25·deep4≈0 → G≈0.06, 완전 인벨롭은
+    # G=1.0 으로 **16배** 차이가 난다(이것이 핀치를 죽이는 유일한 장치).
+    stage_gq_thumb_floor: float = 0.25   # 엄지 미대향 시 남기는 비율
+    # ★08.25 실측으로 재가중(구 0.25/0.75 → 0.8/0.2). 엄지 대향이 성립하는 어떤
+    #   조건에서도 `deep4`(같은 손가락 mid AND dist)가 **0.25 를 못 넘는다** — 오프셋
+    #   스윕과 반경 스윕 두 축에서 독립적으로 확인됐다. 손 대향폭 ~100mm 에 컵 반경
+    #   45mm 라 대향 중점에서는 4지가 원위 마디로만 닿는 기하다. deep 에 0.75 를 주면
+    #   최선의 파지도 G 가 0.44 에 갇혀 리프트가 44% 로 깎인다(도달 불가 목표 =
+    #   "엄지를 감쌈 분모에 넣어 상한 0.8" 과 같은 계열의 실수).
+    #   판별력은 wrap4 가 이미 충분하다: test7 핀치 0.25 vs 인벨롭 1.00 = 4배.
+    #   재가중 후 — 인벨롭+대향 0.85 / 대향없는 4지 0.25 / test7 핀치 0.20.
+    stage_gq_wrap: float = 0.8
+    stage_gq_deep: float = 0.2
+    stage_lift_weight: float = 12.0
+    # ★목표(goal_height_offset=0.15)와 **정렬**한다. 포화점을 목표보다 낮게 두면 그
+    #   위에서 gradient 가 0 이라 정책이 포화점에 고착한다(lstm_test3: env 0.65 에
+    #   2,500 에폭 고착 = 정확히 그 포화점. grasp_v1: 4cm 포화 → 평형 3.1cm).
+    stage_lift_height_ref: float = 0.15
+    stage_transport_weight: float = 8.0
     stage_tracking_std: float = 0.1
-    stage_upright_weight: float = 4.0
-    stage_upright_std: float = 0.35      # [rad] ≈ 20° — 성공 임계와 같은 스케일
-    stage_success_weight: float = 12.0
-    stage_success_pos_std: float = 0.05
-    stage_success_rot_std: float = 0.35
+    # 직립은 **독립 항이 아니라 곱셈 인자** exp(−tilt°/τ). 테이블 위 컵에 지급되지 않는다.
+    stage_upright_tau_deg: float = 8.0
+    stage_stabilize_weight: float = 4.0
+    stage_stabilize_sharpness: float = 1.5
+    # 컵 밀림 감쇠 — 제곱역수. 선형 (1−d/L) 은 d≥L 에서 정확히 0 이 되어 하드 게이트와
+    # 같아지고 gradient 가 소실된다(실측: 밀림 0.207 이 300 에폭간 전혀 안 줄어듦).
+    stage_disp_limit: float = 0.06
+    stage_success_weight: float = 20.0
+    stage_success_height: float = 0.12
+    stage_success_wrap_min: float = 0.75
+    stage_success_tilt_deg: float = 15.0
+    stage_success_pos_tol: float = 0.05
 
     dex_approach_weight: float = 2.0
     dex_approach_sharpness: float = 8.0

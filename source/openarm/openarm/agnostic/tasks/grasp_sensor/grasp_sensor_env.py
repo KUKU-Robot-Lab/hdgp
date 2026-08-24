@@ -124,6 +124,8 @@ class GraspSensorEnv(DirectRLEnv):
         # ---- 커리큘럼 ---------------------------------------------------------------
         self.difficulty = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._goal_reached_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # 커리큘럼 승급 전용(리프트 성공) — goal 위치까지 요구하면 승급이 영구 정지한다.
+        self._lift_success_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # _get_dones 가 매 스텝 갱신, _get_rewards 가 같은 스텝에 재사용(dones 가 먼저다)
         self._tilt_deg_buf = torch.zeros(self.num_envs, device=self.device)
         self._obj_up_buf = torch.ones(self.num_envs, device=self.device)
@@ -240,12 +242,65 @@ class GraspSensorEnv(DirectRLEnv):
                 f"[{self.profile.name}] tip_cyl 보상은 마디(mid/dist) 위치가 필요하다 — "
                 "cfg.require_palmar_contact=True 여야 _wrap_body_ids 가 생성된다"
             )
+        # ★상수 정합 fail-loud. 이 저장소에는 오타로 손실항이 12,652 iter 동안 조용히
+        #   꺼져 있던 이력이 있다 — 신설 필드는 전부 여기서 존재·정합을 검증한다.
+        _c = self.cfg
+        _pairs = (
+            ("stage_graspq_reach + stage_graspq_g",
+             float(_c.stage_graspq_reach) + float(_c.stage_graspq_g), 1.0),
+            ("stage_gq_wrap + stage_gq_deep",
+             float(_c.stage_gq_wrap) + float(_c.stage_gq_deep), 1.0),
+        )
+        for _nm, _got, _want in _pairs:
+            if abs(_got - _want) > 1e-6:
+                raise RuntimeError(f"[{self.profile.name}] {_nm} = {_got} ≠ {_want}")
+        if float(_c.stage_success_height) > float(_c.goal_height_offset):
+            raise RuntimeError(
+                f"[{self.profile.name}] stage_success_height({_c.stage_success_height}) 가 "
+                f"goal_height_offset({_c.goal_height_offset}) 보다 크다 — 성공 도달 불가")
+        if float(_c.stage_lift_height_ref) > float(_c.goal_height_offset) + 1e-9:
+            raise RuntimeError(
+                f"[{self.profile.name}] stage_lift_height_ref 가 목표 높이를 넘는다 — "
+                "포화점이 목표 밖이면 목표 근처 gradient 가 0 이다")
+        # ★`_group_b_env_idx` 는 이 함수보다 뒤에 만들어진다(앞의 _wrap_body_ids 와 같은
+        #   순서 함정) — 프로필에서 직접 센다.
+        _p = self.profile
+        _nb = len([f for f in _p.contact_group_b if f in _p.envelope_fingers])
+        _q = float(_c.stage_success_envelope_min) * _nb
+        if abs(_q - round(_q)) > 1e-6:
+            raise RuntimeError(
+                f"[{self.profile.name}] success_envelope_min({_c.success_envelope_min}) 가 "
+                f"1/{_nb} 의 정수배가 아니다 — 도달 불가 임계가 된다")
+        # ★파지중심 = **대향 중점**(엄지 팁과 4지 팁 중심의 중점). 5점 단순평균 c 는
+        #   엄지 1 대 4지 4 의 가중이라 4지 쪽으로 0.3·(엄지−4지중심) 만큼 치우친다.
+        #   그 치우친 점에 컵을 두면 4지는 표면 안쪽까지 파고들고(실측 31.6N) 엄지는
+        #   r 바닥(≈63mm)이 표면 밖 18mm 라 **영원히 못 닿는다**(실측 thumb touch 0.00).
+        #   대향 중점으로 옮기면 실측상 엄지 100% 접촉 + 4지 감쌈 1.00 이 동시 성립한다
+        #   (오프셋 스윕 T-1: 28mm 에서 G 최대, 유도값 0.3×|엄지−4지| ≈ 30mm 와 일치).
+        _fg = list(self.profile.finger_sensor_bodies.keys())
+        _ti = _fg.index(self.profile.contact_group_a[0])
+        _oth = [i for i in range(len(_fg)) if i != _ti]
+        _opp_mid = 0.5 * (rel[_ti] + rel[_oth].mean(dim=0))              # (3,) palm-local
         # 파지중심의 fabric-palm-local 좌표(축=y, 평면=(x,z)) — 보상 ① 의 기준점.
         # ★fabric↔env-local 원점 정합은 여기서 못 한다: 이 시점의 body_pos_w 는 **stale**
         #   이다(로봇이 아직 홈에 안 놓임 — _init_home_palm 주석의 함정). 정합은
         #   물리를 돌린 뒤 _init_home_palm 끝에서 손끝 5점으로 실측한다.
-        self._gc_local = torch.tensor(
-            [float(c[0]), float(self._cyl_z_nom.mean()), float(c[1])], device=self.device)
+        # ★★대향 중점 자체를 쓰면 안 된다(08.25 실측으로 반증). 홈 자세는 손이 **펴져**
+        #   있어 엄지가 멀리 뻗어 있고, 그 중점(5점평균 대비 72mm)은 4지가 전혀 못 닿는
+        #   허공이다(오프셋 스윕: 60mm 에서 이미 wrap4=0.00). 파지는 손가락이 **오므렸을
+        #   때** 만나는 지점에서 일어나며 그것은 5점평균에 훨씬 가깝다.
+        #   실측 최적 = 28mm = 대향중점까지 거리의 0.39 — 이 비율을 상수로 둔다.
+        _c3 = torch.tensor([float(c[0]), float(self._cyl_z_nom.mean()), float(c[1])],
+                           device=self.device)
+        self._gc_local = _c3 + float(self.cfg.stage_gc_opposition_frac) * (_opp_mid - _c3)
+        _shift = float(torch.norm(self._gc_local - _c3))
+        if not (0.010 <= _shift <= 0.050):
+            raise RuntimeError(
+                f"[{self.profile.name}] 파지중심 이동량 {_shift*1000:.0f}mm 이 상식 범위"
+                "(10~50mm) 밖이다 — 자산이 바뀌었으면 오프셋 스윕 probe 로 재실측할 것")
+        print(f"[grasp_sensor] 파지중심 palm-local "
+              f"{[round(float(v) * 1000) for v in self._gc_local]}mm "
+              f"(5점평균 대비 {_shift * 1000:.0f}mm 엄지쪽 이동 · 실측 최적 28mm)", flush=True)
         _th = (self._cyl_theta * 180 / math.pi).tolist()
         print(f"[grasp_sensor] tip_cyl 기하: 중심 palm+({float(c[0])*1000:.0f},{float(c[1])*1000:.0f})mm "
               f"θ°={[round(v) for v in _th]} z₀mm={[round(float(v)*1000) for v in self._cyl_z_nom]} "
@@ -697,23 +752,41 @@ class GraspSensorEnv(DirectRLEnv):
             _o, _R = self._tip_palm_frame(_qa)
             _gc = (_o + torch.einsum("bij,j->bi", _R, self._gc_local)
                    + self._fab_to_env)
-            # ③ 이 판정하는 그 마디(mid/dist)의 위치 — ② 는 이걸 당긴다(팁 아님).
+            # 감쌈 판정이 보는 그 마디(mid/dist)의 위치 — ② 는 이걸 당긴다(팁 아님).
             _wp = (self.robot.data.body_pos_w[:, self._wrap_body_ids]
                    - self.scene.env_origins[:, None, None, :])          # (N,F,2,3)
             _wrap_dist = torch.norm(
                 _wp - obj_pos[:, None, None, :], dim=-1).min(dim=-1).values   # (N,F)
-            _thr = float(self.cfg.contact_force_threshold)
+            _thr = float(self.cfg.stage_contact_threshold)
+            # ★역할 분리 — 엄지(A)는 대향, 나머지(B)는 감쌈. 같은 잣대를 쓰면 둘 중
+            #   하나가 반드시 깨진다. 엄지에 감쌈 기준 off 스위치를 쓰면 대향은 팁으로
+            #   하므로 영원히 안 꺼져 압입된다(lstm_test7 실측 force_max 84.7N).
+            _tip_p = (self.robot.data.body_pos_w[:, self._tip_ids_t]
+                      - self.scene.env_origins[:, None, :])             # (N,F,3)
+            _tip_d = torch.norm(_tip_p - obj_pos[:, None, :], dim=-1)   # (N,F)
+            _mid_c = mid_f > _thr
+            _dist_c = dist_f > _thr
+            _any_c = contact > _thr
+            _pull_dist = _wrap_dist.clone()
+            _touched = (_mid_c | _dist_c)
+            _pull_dist[:, self._group_a_idx] = torch.minimum(
+                _wrap_dist[:, self._group_a_idx], _tip_d[:, self._group_a_idx])
+            _touched[:, self._group_a_idx] = _any_c[:, self._group_a_idx]
+            _b = self._group_b_env_idx
             total, terms, gate, env_frac = compute_tip_cyl_rewards(
                 palm_pos=palm_pos,
                 grasp_center_pos=_gc,
-                wrap_dist=_wrap_dist,
-                palmar_wrap=(mid_f > _thr) | (dist_f > _thr),
-                any_touch=contact > _thr,
                 object_pos=obj_pos,
                 goal_pos=self.goal_pos,
-                object_up=self._obj_up_buf,
-                group_a_force=contact[:, self._group_a_idx],
-                group_b_force=contact[:, self._group_b_idx],
+                pull_dist=_pull_dist,
+                touched=_touched,
+                wrap_c=(_mid_c | _dist_c)[:, _b],
+                deep_c=(_mid_c & _dist_c)[:, _b],
+                oppose=_any_c[:, self._group_a_idx].any(dim=-1),
+                height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
+                tilt_deg=tilt_deg,
+                xy_disp=torch.norm(
+                    obj_pos[:, :2] - self.object_spawn_pos[:, :2], dim=-1),
                 actions=self.actions,
                 prev_actions=self.prev_actions,
                 cfg=self.cfg,
@@ -745,9 +818,23 @@ class GraspSensorEnv(DirectRLEnv):
         #   것"만 성공. 커리큘럼 승급도 이 기준(리셋 시 마지막 값 사용).
         goal_dist = torch.norm(obj_pos - self.goal_pos, dim=-1)
         _pass_pos = goal_dist < float(self.cfg.success_pos_tolerance)
-        _pass_env = env_frac >= float(self.cfg.success_envelope_min)
+        _env_min = float(self.cfg.stage_success_envelope_min if self._tip_cyl
+                         else self.cfg.success_envelope_min)
+        _pass_env = env_frac >= _env_min
         _pass_tilt = tilt_deg < float(self.cfg.success_tilt_max_deg)
         self._goal_reached_now = _pass_pos & _pass_env & _pass_tilt
+        # ★커리큘럼 승급 기준(08.25): goal 위치까지 요구하면 성공률이 0 이라 난이도가
+        #   한 번도 안 올랐다(lstm_test5~7 전부 difficulty_mean 0.0000 고착 = 스폰반경
+        #   0.02m 최저 난이도만 시도). 승급은 **리프트 성공**으로 완화하고, 위치까지
+        #   포함한 엄격 판정은 task/goal_reached 로 계속 로깅한다.
+        if self._tip_cyl:
+            self._lift_success_now = (
+                (obj_pos[:, 2] - self.object_spawn_pos[:, 2] >= 0.05)
+                & (env_frac >= 0.5)
+                & gate
+            )
+        else:
+            self._lift_success_now = self._goal_reached_now
         # ★조건별 개별 통과율 — AND 결과만 보면 어느 조건이 병목인지 알 수 없다
         #   (lstm_test2: 위치 0.845·감쌈 0.778 인데 AND 0.023 → 상관을 못 읽었다).
         self.extras["task/pass_pos"] = _pass_pos.float().mean()
@@ -768,7 +855,9 @@ class GraspSensorEnv(DirectRLEnv):
         for _k, _tag in (("_d_palm", "task/d_palm"), ("_d_side", "task/d_side"),
                          ("_gate_eff", "task/gate_eff"), ("_d_max", "task/d_max"),
                          ("_d_gc", "task/d_graspcenter"), ("_grip_dist", "task/grip_dist"),
-                         ("_touch_frac", "task/touch_frac"), ("_align", "task/palm_align")):
+                         ("_touch_frac", "task/touch_frac"), ("_align", "task/palm_align"),
+                         ("_G", "task/grip_q"), ("_H", "task/lift_q"), ("_U", "task/upright_q"),
+                         ("_deep4", "task/deep4"), ("_reach", "task/reach")):
             _v = terms.pop(_k, None)
             if _v is not None:
                 self.extras[_tag] = _v.mean()
@@ -890,11 +979,12 @@ class GraspSensorEnv(DirectRLEnv):
         n = len(env_ids)
 
         # ---- 커리큘럼 갱신: 에피소드 종료 시점의 goal 근접 여부로 ±1 ----------------
-        succ = self._goal_reached_now[env_ids]
+        succ = self._lift_success_now[env_ids]
         self.difficulty[env_ids] = (
             self.difficulty[env_ids] + torch.where(succ, 1, -1)
         ).clamp(0, int(self.cfg.curriculum_max_level))
         self._goal_reached_now[env_ids] = False
+        self._lift_success_now[env_ids] = False
 
         # ---- 로봇: 프로필 init 자세 ---------------------------------------------------
         q0 = self._default_q[env_ids].clone()
