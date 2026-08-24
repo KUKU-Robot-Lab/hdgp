@@ -41,6 +41,9 @@ class RobotProfile:
     fabric_class: str | None = None
     # FABRICS/models/robots/urdf/<dir>/<dir>.urdf — robot_dir_name·robot_name 양쪽에 쓰인다.
     fabric_robot_dir: str | None = None
+    # FABRICS/fabric_params/<file> — None 이면 fabric 클래스 기본값.
+    # 충돌 구 목록이 URDF 마다 다르면(마디 길이로 개수가 정해진다) 전용 파일이 필요하다.
+    fabric_params_filename: str | None = None
     # ★articulation 은 depth-major(index_1, middle_1, …), fabric URDF 는 finger-major
     #   (thumb_1..4, index_1..4, …) 다. cat([arm, hand]) 로 만들면 손 20관절이 통째로
     #   어긋나 fabric 이 없는 자기충돌을 피하려 팔을 민다(병행 트랙 실측: palm 이 2초에
@@ -68,6 +71,17 @@ class RobotProfile:
     # ★tesollo pinky 는 제대로 된 굴곡축이 없어(pinky_1 손끝이동 12mm vs index_2 42mm,
     #   메모리 tesollo-pinky-joint-kinematics) 분모에 넣으면 상한이 0.8 로 깎인다 — 제외.
     envelope_fingers: tuple = ()
+    # ---- 손바닥면 법선 (감쌈이 **손바닥 접촉인지** 판정) -------------------------
+    # finger 이름 → 그 손가락 마디 링크의 국소 좌표에서 손바닥이 향하는 축.
+    # ★필요한 이유(08.23 실측): 접촉센서는 링크에 붙어 있어 손바닥면이든 **손등**이든
+    #   똑같이 힘을 낸다. lstm_test3 ep5000 에서 middle_4 는 접촉 시간의 **100%** 를
+    #   손등으로 접촉했는데 envelope_frac 은 그걸 감쌈으로 셌다(정직한 값 0.55 vs
+    #   계상값 0.746, 성공 임계 0.6 을 허수로 통과). 손등 파지는 force-closure 가
+    #   아니라서 pour 의 손목 회전에서 그대로 빠진다.
+    # 유도법: URDF 에서 그 마디를 움직이는 관절의 **굴곡축**과 **장축**(자식 관절
+    #   origin 방향)을 읽어 cross(굴곡축, 장축) — 굴곡이 향하는 쪽이 손바닥이다.
+    #   tesollo 실측: 네 손가락 굴곡축 국소+y·장축+z → 손바닥 +x. 엄지만 축이 달라 +z.
+    palmar_axis_local: dict = field(default_factory=dict)
 
     # ---- 관측/보상용 손끝 body (reaching 은 max 거리 = 전 손가락 유도) -----------
     fingertip_bodies: tuple = ()
@@ -121,6 +135,14 @@ TESOLLO_RIGHT = RobotProfile(
     #   openarm_tesollo_sensor 는 같은 DG-5F 손이지만 팔 베이스가 +8mm 어긋나
     #   RL URDF 대비 worst 17.93mm 였다.
     fabric_robot_dir="openarm_tesollo_sensor_right",
+    # ★전용 params — 공유 openarm_tesollo_pose_params.yaml 을 쓸 수 없다(08.23).
+    #   자매 트랙이 손가락 충돌 구를 실측 형상으로 재배치(반경 9mm·마디 방향)했는데,
+    #   구 개수는 **마디 길이 ÷ 지름**으로 자동 산출되고 sensor_rl 자산은 bi_s 와
+    #   링크 길이가 달라 39개 vs 52개로 갈린다. 공유 yaml 을 그대로 쓰면 우리 URDF 에
+    #   없는 `dg_1_2_sph3` 를 찾다 KeyError 로 부팅이 죽는다(실측). 반대로 공유 yaml 을
+    #   덮어쓰면 bi_s 트랙이 깨진다 — 그래서 frames/radii 만 우리 것으로 바꾼 사본을 쓴다.
+    #   쌍(collision_link_prefix_pairs)은 **접두사 매칭**이라 구 개수와 무관해 그대로다.
+    fabric_params_filename="openarm_tesollo_sensor_pose_params.yaml",
     # 팔 7 + 손 20, **finger-major**(생성기 FINGERS 순서 = thumb,index,middle,ring,pinky)
     fabric_joint_order=(
         tuple(f"r_aj_{i}" for i in range(1, 8))
@@ -141,7 +163,17 @@ TESOLLO_RIGHT = RobotProfile(
     },
     contact_group_a=("thumb",),
     contact_group_b=("index", "middle", "ring", "pinky"),
-    envelope_fingers=("thumb", "index", "middle", "ring"),   # pinky 제외 (필드 주석 참조)
+    # ★08.24 pinky 포함으로 복귀(사용자 지시). 구 규약 "pinky 굴곡축 부재 → 분모 제외"는
+    #   **관절공간 액션 시절** 근거다. tip_cyl(손가락별 손끝 IK + 원통 (r,z))에서는
+    #   probe 실측으로 pinky 도 손바닥면 100% 감쌈했다 — 액션 구조가 바뀌면 도달성도 바뀐다.
+    envelope_fingers=("thumb", "index", "middle", "ring", "pinky"),
+    # URDF(openarm_tesollo_sensor_right) 실측 유도 — 필드 주석의 cross(굴곡축, 장축):
+    #   네 손가락 rj_dg_{2..5}_{3,4} 축 (0,1,0) · 장축 (0,0,1) → 손바닥 (1,0,0)
+    #   엄지     rj_dg_1_{3,4}      축 (1,0,0) · 장축 (0,1,0) → 손바닥 (0,0,1)
+    palmar_axis_local={
+        "thumb": (0.0, 0.0, 1.0),
+        **{f: (1.0, 0.0, 0.0) for f in ("index", "middle", "ring", "pinky")},
+    },
     fingertip_bodies=tuple(f"r_hl_{f}_tip" for f in _FINGERS),
     init_joint_pos={
         # 팔: grasp_v1 의 실제 런타임 고정 홈 = reset_home_palm_pose
@@ -209,6 +241,12 @@ GRIPPER_LEFT = RobotProfile(
     contact_group_a=("jaw1",),
     contact_group_b=("jaw2",),
     envelope_fingers=("jaw1", "jaw2"),   # 2지 그리퍼는 양 jaw 접촉이 곧 감쌈
+    # ★미정의 — 실측 전까지 비워 둔다. jaw 링크 국소 프레임에서 "무는 면"이 어느 축인지
+    #   확인되지 않았고, 추측값을 넣으면 판정이 **조용히 뒤집힌다**(손등을 손바닥으로).
+    #   이 프로필은 fabric_class=None 이라 어차피 등록에서 SKIPPED 되지만, Phase 2 에서
+    #   되살릴 때 반드시 실측할 것: jaw1/jaw2 body_quat 을 읽고 서로를 향하는 축을 본다.
+    #   env 부팅이 fail-loud 로 막는다(_palmar_axes).
+    palmar_axis_local={},
     fingertip_bodies=("l_hl_gripper_1", "l_hl_gripper_2"),
     init_joint_pos={
         "l_aj_1": 0.0431, "l_aj_2": 0.6706, "l_aj_3": 0.0961, "l_aj_4": 0.7342,

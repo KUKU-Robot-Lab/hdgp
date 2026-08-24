@@ -120,14 +120,29 @@ def success_reward(object_pos: torch.Tensor, goal_pos: torch.Tensor, pos_std: fl
     return ((1.0 - torch.tanh(d / pos_std)) ** 2) * gate
 
 
+def lift_progress(height_delta: torch.Tensor, target_height: float) -> torch.Tensor:
+    """리프트 진척 ∈ [0,1] — 목표 높이가 **정점**인 비대칭 삼각형.
+
+    상승부(h ≤ 목표): 선형 h/목표 — tracking(std 0.1)은 초기 몇 cm 리프트에서 tanh
+      포화 구간이라 gradient 가 사실상 0 이었다(agn_test12: 잡고 정지 수렴).
+      부분 진척을 선형으로 되돌려준다. test3/4 모두 이 구간 학습은 정상 — 불변.
+    ★하강부(h > 목표): 초과분에 비례해 감소, 기울기는 상승부의 절반(2×목표에서 0).
+      구판 clamp(h/목표)는 목표 위가 **무벌점 포화**라 정책이 h=0.35 까지 표류했다
+      (lstm_test4 실측: 목표 0.15 의 2.3배, gd 0.32 로 tanh 저감도 구간 진입).
+      하강 기울기를 절반으로 두는 이유: 관측된 최대 표류(0.35)까지 gradient 가
+      살아 있어야 되돌아온다(같은 기울기면 0.30 에서 0 이 되어 그 위가 다시 무중력).
+    upright 도 이 진척을 곱하므로 과주행은 두 항에서 동시에 비싸진다.
+    """
+    t = max(target_height, 1e-6)
+    up = height_delta / t
+    down = 1.0 - (height_delta - t) / (2.0 * t)
+    return torch.where(height_delta <= t, up, down).clamp(0.0, 1.0)
+
+
 def lift_reward(height_delta: torch.Tensor, target_height: float,
                 gate: torch.Tensor) -> torch.Tensor:
-    """스폰 대비 상승분의 선형 진척(0~1) × 유효게이트.
-
-    tracking(std 0.1)은 초기 몇 cm 리프트에서 tanh 포화 구간이라 gradient 가 사실상
-    0 이었다(agn_test12: 잡고 정지 수렴). 부분 진척을 선형으로 되돌려준다.
-    """
-    return (height_delta / max(target_height, 1e-6)).clamp(0.0, 1.0) * gate
+    """리프트 진척(목표 정점 삼각형) × 유효게이트 — lift_progress() 주석 참조."""
+    return lift_progress(height_delta, target_height) * gate
 
 
 def upright_reward(object_up: torch.Tensor, height_delta: torch.Tensor,
@@ -149,7 +164,8 @@ def upright_reward(object_up: torch.Tensor, height_delta: torch.Tensor,
         컵을 건드리고 가만히 있기"가 공짜 수확이 된다(reward-audit Check 1/2).
         들어 올린 만큼만 지급 → 테이블 위에서는 0, 든 상태에서만 직립이 값을 갖는다.
     """
-    lifted = (height_delta / max(target_height, 1e-6)).clamp(0.0, 1.0)
+    # ★목표 정점 삼각형(lift_progress) — 과주행이 upright 에서도 비싸진다(08.24 R1).
+    lifted = lift_progress(height_delta, target_height)
     return object_up.clamp(0.0, 1.0) ** exponent * lifted * gate
 
 
@@ -205,7 +221,20 @@ def compute_grasp_sensor_rewards(
     env_frac = envelope_fraction(env_mid_force, env_dist_force, thr)
     # goal 계열은 **감쌈을 선행 조건으로** 한다 — envelope_gate() 주석 참조.
     # contact(0.5)만 순수 이진 게이트로 남겨 접촉 자체의 사다리 한 칸을 유지한다.
-    g_eff = envelope_gate(g, env_frac, float(cfg.success_envelope_min))
+    # ★분모를 성공 임계(0.6)에서 **분리**(08.24 R2, reward-audit ACCEPT). 같은 상수를
+    #   쓰면 임계 위에서 ∂(goal 계열)/∂env=0 — 정책이 3지로 0.6 을 넘는 순간 4지째
+    #   유인이 사라진다(lstm_test3: env 가 0.6 바로 위 0.65 에 2,500 에폭 고착 —
+    #   그 평형점이 정확히 이 포화점이었다). 판정 0.6 은 불변, gradient 만 0.85 까지
+    #   연장한다. tip_cyl probe 로 4지 감쌈(0.68~0.75)이 달성 가능함을 실증한 뒤에야
+    #   유효한 변경이다 — 불가능한 목표에 gradient 를 열면 다른 항을 팔아 쫓는다.
+    #   ★하위호환: 이 함수는 grasp_lift_fabric(타 트랙)도 공유한다. 그쪽 cfg 에는
+    #   이 필드가 없고 "포화점=성공 하한" 결합이 문서화된 의도이므로, 필드 부재 시
+    #   success_envelope_min 으로 폴백해 **그쪽 거동을 그대로 보존**한다(조용한
+    #   하드코딩이 아니다 — 폴백값도 그쪽 cfg 에 선언된 값이라 env.yaml 에 남는다).
+    _sat = getattr(cfg, "envelope_gate_saturation", None)
+    g_eff = envelope_gate(
+        g, env_frac,
+        float(_sat) if _sat is not None else float(cfg.success_envelope_min))
     terms = {
         "approach": float(cfg.approach_weight) * app,
         "envelope": float(cfg.envelope_weight) * env_frac,
@@ -231,3 +260,4 @@ def compute_grasp_sensor_rewards(
     terms["_d_side"] = d_side
     terms["_gate_eff"] = g_eff      # 이진 게이트 vs 인벨롭 인자 분리 진단(reward-audit Check 5)
     return total, terms, g, env_frac
+

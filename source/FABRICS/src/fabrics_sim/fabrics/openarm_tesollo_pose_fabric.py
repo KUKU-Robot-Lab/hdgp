@@ -42,6 +42,7 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
 
     def __init__(self, batch_size, device, timestep, graph_capturable=True, use_hand_fabric=True,
                  palm_position_only=False, use_tip_fabric=False, tip_attractor_gain=None,
+                 tip_per_finger=False,
                  hand_mode="pca", hand_attractor_gain=None,
                  use_hand_repulsion=False,
                  robot_dir_name="openarm_tesollo", robot_name="openarm_tesollo",
@@ -69,6 +70,14 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         self._use_tip_fabric = use_tip_fabric
         self._tip_attractor_gain = tip_attractor_gain  # None=params 값 사용(튜닝용 override)
         self._tip_frames_ctrl = [f"rl_dg_{i}_tip" for i in range(1, 6)]
+        # ★손끝 attractor 를 **손가락별 5개**로 쪼갠다(기본 off — 기존 소비자 불변).
+        #   단일 15D attractor 의 기각 사유가 08.23 에 갈렸다: "15D 가 기구학적으로
+        #   불가능"이 아니라 ①당시 taskmap 이 팔 열을 물고 있어 손끝 목표가 팔을 끌었고
+        #   (palm 오차 580mm, Subchain 도입으로 해소) ②다섯 손끝이 metric 을 공유해
+        #   한 손가락의 도달 불가가 나머지에 번졌다. 손가락별로 쪼개면 각 항은
+        #   "4-DOF 로 3D 목표"(여유자유도 1)의 잘 정의된 IK 이고, 간섭이 metric 층에서
+        #   사라진다. 도달 불가 목표는 그 손가락의 오차로만 남는다.
+        self._tip_per_finger = bool(tip_per_finger)
         # URDF 관절 순서: [0-6] 팔 7 · [7-26] 손 20. 손끝 attractor 는 이 구간만 쓴다.
         self._hand_joint_slice = slice(7, 27)
         # [새 구조] palm_position_only=True: palm_link origin 1점(position 3-DOF)만 attractor로
@@ -326,6 +335,28 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         PCA(5D) 대비 이점: 손 자유도를 20-DOF 그대로 두므로 인벨롭 감쌈을 제약하지 않는다.
         타깃은 (B, 15) = 손끝 5개 × xyz.
         """
+        params = dict(self.fabric_params.get('fingertip_attractor',
+                                             self.fabric_params['palm_attractor']))
+        if self._tip_attractor_gain is not None:
+            params['conical_gain'] = float(self._tip_attractor_gain)
+
+        if self._tip_per_finger:
+            # ★손가락별 taskmap 5개 — 각 항은 **그 손가락 4관절만** 움직인다.
+            #   단일 15D 는 다섯 손끝이 metric 을 공유해 한 손가락의 도달 불가가
+            #   나머지에 번졌다(클래스 docstring). 손가락별이면 각 항이
+            #   "4-DOF 로 3D 목표"(여유자유도 1)의 잘 정의된 IK 다.
+            #   set_features 는 tip_target (B,15) 를 손가락별 (B,3) 으로 잘라 넣는다.
+            for i, frame in enumerate(self._tip_frames_ctrl):
+                nm = f"fingertip_{i}"
+                tm = SubchainFrameOriginsTaskMap(
+                    self.urdf_path, [frame], self.batch_size, self.device,
+                    slice(7 + 4 * i, 7 + 4 * (i + 1)))
+                self.add_taskmap(nm, tm, graph_capturable=self.graph_capturable)
+                self.add_fabric(nm, "fingertip_attractor",
+                                Attractor(True, dict(params), self.device,
+                                          graph_capturable=self.graph_capturable))
+            return
+
         taskmap_name = "fingertips"
         # ★손 관절만 쓰는 taskmap. 일반 RobotFrameOriginsTaskMap 을 쓰면 Jacobian 에
         #   팔 열이 살아 있어 손끝 목표가 **팔을 끌고 간다**(실측 palm 오차 580mm).
@@ -334,10 +365,6 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
                                               self.batch_size, self.device,
                                               self._hand_joint_slice)
         self.add_taskmap(taskmap_name, taskmap, graph_capturable=self.graph_capturable)
-        params = dict(self.fabric_params.get('fingertip_attractor',
-                                             self.fabric_params['palm_attractor']))
-        if self._tip_attractor_gain is not None:
-            params['conical_gain'] = float(self._tip_attractor_gain)
         fabric = Attractor(True, params, self.device,
                            graph_capturable=self.graph_capturable)
         self.add_fabric(taskmap_name, "fingertip_attractor", fabric)
@@ -434,7 +461,7 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         self.add_cspace_attractor(False)
         if self._use_hand_fabric:
             self.add_hand_fabric()
-        if self._use_tip_fabric:
+        if self._use_tip_fabric or self._tip_per_finger:
             self.add_fingertip_attractor()
         self.add_palm_points_attractor()
         self.add_body_repulsion()
@@ -568,6 +595,12 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         if "fingertips" in self.fabrics_features:
             assert tip_target is not None, "use_tip_fabric=True 인데 tip_target 이 없다"
             self.fabrics_features["fingertips"]["fingertip_attractor"] = tip_target
+        if "fingertip_0" in self.fabrics_features:
+            # 손가락별 attractor(tip_per_finger): (B,15) 를 손가락별 (B,3) 으로 분배.
+            assert tip_target is not None, "tip_per_finger=True 인데 tip_target 이 없다"
+            for _i in range(5):
+                self.fabrics_features[f"fingertip_{_i}"]["fingertip_attractor"] = \
+                    tip_target[:, 3 * _i: 3 * _i + 3]
         self.fabrics_features["identity"]["cspace_attractor"] = self.default_config
 
         self._palm_pose_target[:, :3] = palm_pose_target[:, :3]
@@ -674,7 +707,7 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
                  robot_name="openarm_tesollo_left",
                  hand_mode="pca", hand_attractor_gain=None,
                  use_hand_repulsion=False,
-                 use_tip_fabric=False, tip_attractor_gain=None):
+                 use_tip_fabric=False, tip_attractor_gain=None, tip_per_finger=False):
         # ★08.17 robot_dir_name/robot_name 패스스루 추가: DG-5FS 전용 URDF
         #   (openarm_tesollo_bi_s_left)를 쓰는 태스크가 기존 URDF 를 건드리지 않고
         #   선택할 수 있게 한다. 기본값은 구 DG-5F(pour 등 기존 소비자 보호).
@@ -695,6 +728,7 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
             use_hand_repulsion=use_hand_repulsion,
             use_tip_fabric=use_tip_fabric,
             tip_attractor_gain=tip_attractor_gain,
+            tip_per_finger=tip_per_finger,
             default_config_override=_LEFT_DEFAULT_CONFIG,
             # 우측 기본 palm 자세 (ez,ey,ex)=(π/2,0,π/2) 의 미러 = (-π/2,0,-π/2)
             default_palm_euler_zyx=(-1.5708, 0.0, -1.5708),

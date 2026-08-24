@@ -1,0 +1,377 @@
+# OpenArm + Teosllo right arm pose params
+# 7 DOF OpenArm right arm + 20 DOF Teosllo right hand = 27 DOF total
+# Based on kuka_allegro_pose_params.yaml
+
+fabric_params:
+    cspace_attractor:
+        min_isotropic_mass: 1.
+        max_isotropic_mass: 1.
+        mass_sharpness: 20.0
+        mass_switch_offset: 1.
+        conical_sharpness: 20.
+        conical_gain: 1.
+    joint_limit_repulsion:
+        velocity_gate: True
+        breakaway_distance: 0.0
+        breakaway_velocity: 0.
+        soft_relu_gain: 8.
+        metric_scalar: 0.02
+        metric_exploder_offset: 0.1
+        max_metric: 100.
+        damping_gain: 8.
+    hand_attractor:
+        min_isotropic_mass: 8.
+        max_isotropic_mass: 8.
+        mass_sharpness: 20.
+        mass_switch_offset: 0.5
+        conical_sharpness: 40.
+        conical_gain: 50.
+        damping: 50.
+        damping_sharpness: 10.
+        damping_radius: 0.2
+    palm_attractor:
+        min_isotropic_mass: 1.
+        max_isotropic_mass: 1.
+        mass_sharpness: 10.
+        mass_switch_offset: 0.5
+        conical_sharpness: 40.
+        conical_gain: 80.
+        damping: 50.
+        damping_sharpness: 10.
+        damping_radius: .2
+    # ★손끝 attractor — PCA 없이 작업공간(IK)으로 손가락을 제어할 때 쓴다.
+    #   `use_tip_fabric=True` 일 때만 구성된다(기본 off → 기존 트랙 거동 불변).
+    #   ★conical_gain 400 은 스윕 실측치다(팔 고정, 손끝 5점을 20mm 안쪽으로):
+    #     80(palm 값 차용) 17.25mm / 200 5.57 / **400 2.94** / 800 9.82 / 1200 23.07 / 2000 26.64
+    #   실용 구간 200~800, 꼭짓점 400. 과대 게인의 실패 방식은 "팔 관절 변화 2.4배"
+    #   = 여유자유도가 팔로 새어 palm 제어를 오염시킨다. 게인은 손이 감당하는 범위 안에.
+    #   나머지 값은 palm_attractor 와 동일(스케일만 다르고 형식은 같은 attractor).
+    fingertip_attractor:
+      min_isotropic_mass: 1.0
+      max_isotropic_mass: 1.0
+      mass_sharpness: 10.0
+      mass_switch_offset: 0.5
+      conical_sharpness: 40.0
+      conical_gain: 400.0
+      damping: 50.0
+      damping_sharpness: 10.0
+      damping_radius: 0.2
+    # ★손가락 전용 반발 — 팔과 **분리**한다(2026-08-23).
+    #   팔 구는 반경 0.10~0.18m 에 engage_depth 0.30m 라 30cm 안이면 반발한다. 손가락 구는
+    #   반경 0.009m 에 서로 2~3cm 거리라 그 파라미터로는 **상시 발동**해 fabric 전체가
+    #   불안정해진다(실측: 팔 파라미터로 자기충돌을 켜자 palm 추종오차 0.6mm → 88~109mm).
+    #   engage_depth 는 "이 거리 안이면 반발"이므로 손 스케일(마디 간격 20mm)에 맞춘다.
+    hand_repulsion:
+      max_depth: 0.05
+      min_depth: 0.002
+      engage_depth: 0.006       # 두 구 표면이 6mm 안으로 들어오면 반발 시작
+      breakaway_depth: 0.0
+      breakaway_velocity: 0.
+      metric_scalar: 1.
+      velocity_gate: True
+      velocity_gate_sharpness: 1000.
+      velocity_gate_offset: 0.002
+      rescaled_min_dist: .002
+      forcing_metric_scalar: 1.0
+      geom_metric_scalar: 1.0
+      constant_accel: 2.
+      constant_accel_geom: 3.0
+      damping_gain: 0.
+    body_repulsion:
+      max_depth: 2.
+      min_depth: 0.01
+      engage_depth: 0.30
+      breakaway_depth: 0.0
+      breakaway_velocity: 0.
+      metric_scalar: 1.
+      velocity_gate: True
+      velocity_gate_sharpness: 1000.
+      velocity_gate_offset: 0.002
+      rescaled_min_dist: .01
+      forcing_metric_scalar: .01
+      geom_metric_scalar: .01
+      constant_accel: 2.
+      constant_accel_geom: 3.0
+      damping_gain: 0.
+      collision_sphere_frames:
+          ["openarm_right_link2",
+           "openarm_right_link2_sphere2",
+           "openarm_right_link2_sphere3",
+           "openarm_right_link4",
+           "openarm_right_link4_sphere2",
+           "openarm_right_link4_sphere3",
+           "openarm_right_link6_sphere2",
+           "openarm_right_link7",
+           "palm_link",
+           "palm_link_sphere2",
+           "world_body_sphere1",
+           "world_body_sphere2",
+           "world_body_sphere3",
+           "tesollo_right_rl_dg_1_1_sph1",
+           "tesollo_right_rl_dg_1_1_sph2",
+           "tesollo_right_rl_dg_1_1_sph3",
+           "tesollo_right_rl_dg_1_2_sph1",
+           "tesollo_right_rl_dg_1_2_sph2",
+           "tesollo_right_rl_dg_1_3_sph1",
+           "tesollo_right_rl_dg_1_3_sph2",
+           "tesollo_right_rl_dg_1_3_sph3",
+           "tesollo_right_rl_dg_1_4_sph1",
+           "tesollo_right_rl_dg_1_4_sph2",
+           "tesollo_right_rl_dg_1_4_sph3",
+           "tesollo_right_rl_dg_2_1_sph1",
+           "tesollo_right_rl_dg_2_1_sph2",
+           "tesollo_right_rl_dg_2_2_sph1",
+           "tesollo_right_rl_dg_2_2_sph2",
+           "tesollo_right_rl_dg_2_2_sph3",
+           "tesollo_right_rl_dg_2_3_sph1",
+           "tesollo_right_rl_dg_2_3_sph2",
+           "tesollo_right_rl_dg_2_3_sph3",
+           "tesollo_right_rl_dg_2_4_sph1",
+           "tesollo_right_rl_dg_2_4_sph2",
+           "tesollo_right_rl_dg_3_1_sph1",
+           "tesollo_right_rl_dg_3_1_sph2",
+           "tesollo_right_rl_dg_3_2_sph1",
+           "tesollo_right_rl_dg_3_2_sph2",
+           "tesollo_right_rl_dg_3_2_sph3",
+           "tesollo_right_rl_dg_3_3_sph1",
+           "tesollo_right_rl_dg_3_3_sph2",
+           "tesollo_right_rl_dg_3_3_sph3",
+           "tesollo_right_rl_dg_3_4_sph1",
+           "tesollo_right_rl_dg_3_4_sph2",
+           "tesollo_right_rl_dg_4_1_sph1",
+           "tesollo_right_rl_dg_4_1_sph2",
+           "tesollo_right_rl_dg_4_2_sph1",
+           "tesollo_right_rl_dg_4_2_sph2",
+           "tesollo_right_rl_dg_4_2_sph3",
+           "tesollo_right_rl_dg_4_3_sph1",
+           "tesollo_right_rl_dg_4_3_sph2",
+           "tesollo_right_rl_dg_4_3_sph3",
+           "tesollo_right_rl_dg_4_4_sph1",
+           "tesollo_right_rl_dg_4_4_sph2",
+           "tesollo_right_rl_dg_5_1_sph1",
+           "tesollo_right_rl_dg_5_1_sph2",
+           "tesollo_right_rl_dg_5_1_sph3",
+           "tesollo_right_rl_dg_5_2_sph1",
+           "tesollo_right_rl_dg_5_2_sph2",
+           "tesollo_right_rl_dg_5_3_sph1",
+           "tesollo_right_rl_dg_5_3_sph2",
+           "tesollo_right_rl_dg_5_3_sph3",
+           "tesollo_right_rl_dg_5_4_sph1",
+           "tesollo_right_rl_dg_5_4_sph2",
+           "tesollo_right_rl_dg_5_4_sph3"]
+      collision_sphere_radii: [0.12, 0.1, 0.1, 0.125, 0.1, 0.1, 0.1, 0.075, 0.05, 0.075, 0.18, 0.15, 0.12, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009, 0.009]
+      collision_sphere_pairs: []
+      collision_link_prefix_pairs: [
+                                    # ★손가락↔손가락 — self-collision 을 끄기 위한 쌍.
+                                    #   반경 9mm(2r=18mm)라 정상 파지(20.9mm)는 안 걸리고
+                                    #   관통(13.7~16.9mm)만 잡는다.
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_2_1_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_2_2_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_2_3_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_2_4_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_2_1_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_2_2_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_2_3_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_2_4_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_2_1_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_2_2_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_2_3_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_2_4_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_2_1_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_2_2_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_2_3_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_2_4_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_3_1_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_3_2_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_3_3_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_3_4_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_3_1_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_3_2_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_3_3_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_3_4_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_3_1_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_3_2_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_3_3_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_3_4_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_3_1_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_3_2_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_3_3_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_3_4_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_1_1_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_1_2_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_1_3_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_1_4_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_3_1_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_3_2_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_3_3_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_3_4_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_3_1_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_3_2_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_3_3_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_3_4_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_3_1_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_3_2_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_3_3_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_3_4_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_3_1_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_3_2_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_3_3_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_3_4_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_2_1_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_2_2_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_2_3_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_2_4_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_3_1_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_3_1_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_3_1_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_3_1_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_3_2_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_3_2_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_3_2_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_3_2_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_3_3_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_3_3_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_3_3_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_3_3_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_3_4_sph", "tesollo_right_rl_dg_4_1_sph"],
+                                    ["tesollo_right_rl_dg_3_4_sph", "tesollo_right_rl_dg_4_2_sph"],
+                                    ["tesollo_right_rl_dg_3_4_sph", "tesollo_right_rl_dg_4_3_sph"],
+                                    ["tesollo_right_rl_dg_3_4_sph", "tesollo_right_rl_dg_4_4_sph"],
+                                    ["tesollo_right_rl_dg_3_1_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_3_1_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_3_1_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_3_1_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_3_2_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_3_2_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_3_2_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_3_2_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_3_3_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_3_3_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_3_3_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_3_3_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_3_4_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_3_4_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_3_4_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_3_4_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_4_1_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_4_1_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_4_1_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_4_1_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_4_2_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_4_2_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_4_2_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_4_2_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_4_3_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_4_3_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_4_3_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_4_3_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    ["tesollo_right_rl_dg_4_4_sph", "tesollo_right_rl_dg_5_1_sph"],
+                                    ["tesollo_right_rl_dg_4_4_sph", "tesollo_right_rl_dg_5_2_sph"],
+                                    ["tesollo_right_rl_dg_4_4_sph", "tesollo_right_rl_dg_5_3_sph"],
+                                    ["tesollo_right_rl_dg_4_4_sph", "tesollo_right_rl_dg_5_4_sph"],
+                                    # 손가락/palm vs link2 (상완)
+                                    ["palm_link", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_1_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_1_3", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_2_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_2_3", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_3_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_3_3", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_4_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_4_3", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_5_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_5_3", "openarm_right_link2"],
+                                    # 손가락/palm vs body (link0/world) — OpenArm 구조상 몸통 충돌 가능
+                                    ["palm_link", "world_body"],
+                                    ["tesollo_right_rl_dg_1_1", "world_body"],
+                                    ["tesollo_right_rl_dg_1_3", "world_body"],
+                                    ["tesollo_right_rl_dg_2_1", "world_body"],
+                                    ["tesollo_right_rl_dg_2_3", "world_body"],
+                                    ["tesollo_right_rl_dg_3_1", "world_body"],
+                                    ["tesollo_right_rl_dg_3_3", "world_body"],
+                                    ["tesollo_right_rl_dg_4_1", "world_body"],
+                                    ["tesollo_right_rl_dg_4_3", "world_body"],
+                                    ["tesollo_right_rl_dg_5_1", "world_body"],
+                                    ["tesollo_right_rl_dg_5_3", "world_body"],
+                                    # arm link vs world_body (로봇 몸통 충돌 회피)
+                                    ["openarm_right_link2", "world_body"],
+                                    ["openarm_right_link4", "world_body"],
+                                    ["openarm_right_link6", "world_body"],
+                                    ["openarm_right_link7", "world_body"]]
+    cspace_damping:
+      gain: 10.
+    speed_control:
+      active: False
+      energy_target: 10.
+      damping: 100.
+    joint_limits:
+      active: True
+      # 27 DOF: 7 arm (openarm_right_joint1~7) + 20 hand (rj_dg_1..5 _1..4)
+      acceleration: [7.5, 7.5, 10., 10., 10., 20., 20.,
+                     22.5, 22.5, 22.5, 22.5,
+                     22.5, 22.5, 22.5, 22.5,
+                     22.5, 22.5, 22.5, 22.5,
+                     22.5, 22.5, 22.5, 22.5,
+                     22.5, 22.5, 22.5, 22.5]
+      jerk: [3750., 3750., 5000., 5000., 5000., 10000., 10000.,
+             2250., 2250., 2250., 2250.,
+             2250., 2250., 2250., 2250.,
+             2250., 2250., 2250., 2250.,
+             2250., 2250., 2250., 2250.,
+             2250., 2250., 2250., 2250.]

@@ -1075,137 +1075,6 @@
   </joint>
 
   
-  <link name="tesollo_right_rl_dg_1_1_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_1_1_joint_sphere2" type="fixed">
-    <origin xyz="0.02 0. 0." rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_1_1" />
-    <child link="tesollo_right_rl_dg_1_1_sphere2" />
-  </joint>
-
-  <link name="tesollo_right_rl_dg_1_3_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_1_3_joint_sphere2" type="fixed">
-    <origin xyz="0. 0.02 0." rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_1_3" />
-    <child link="tesollo_right_rl_dg_1_3_sphere2" />
-  </joint>
-
-  <link name="tesollo_right_rl_dg_2_1_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_2_1_joint_sphere2" type="fixed">
-    <origin xyz="0.02 0. 0." rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_2_1" />
-    <child link="tesollo_right_rl_dg_2_1_sphere2" />
-  </joint>
-
-  <link name="tesollo_right_rl_dg_2_3_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_2_3_joint_sphere2" type="fixed">
-    <origin xyz="0. 0. 0.02" rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_2_3" />
-    <child link="tesollo_right_rl_dg_2_3_sphere2" />
-  </joint>
-
-  <link name="tesollo_right_rl_dg_3_1_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_3_1_joint_sphere2" type="fixed">
-    <origin xyz="0.02 0. 0." rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_3_1" />
-    <child link="tesollo_right_rl_dg_3_1_sphere2" />
-  </joint>
-
-  <link name="tesollo_right_rl_dg_3_3_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_3_3_joint_sphere2" type="fixed">
-    <origin xyz="0. 0. 0.02" rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_3_3" />
-    <child link="tesollo_right_rl_dg_3_3_sphere2" />
-  </joint>
-
-  <link name="tesollo_right_rl_dg_4_1_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_4_1_joint_sphere2" type="fixed">
-    <origin xyz="0.02 0. 0." rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_4_1" />
-    <child link="tesollo_right_rl_dg_4_1_sphere2" />
-  </joint>
-
-  <link name="tesollo_right_rl_dg_4_3_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_4_3_joint_sphere2" type="fixed">
-    <origin xyz="0. 0. 0.02" rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_4_3" />
-    <child link="tesollo_right_rl_dg_4_3_sphere2" />
-  </joint>
-
-  <link name="tesollo_right_rl_dg_5_1_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_5_1_joint_sphere2" type="fixed">
-    <origin xyz="0. 0. 0.02" rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_5_1" />
-    <child link="tesollo_right_rl_dg_5_1_sphere2" />
-  </joint>
-
-  <link name="tesollo_right_rl_dg_5_3_sphere2">
-    <inertial>
-      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
-      <mass value="0.001" />
-      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
-    </inertial>
-  </link>
-  <joint name="tesollo_right_rl_dg_5_3_joint_sphere2" type="fixed">
-    <origin xyz="0. 0. 0.02" rpy="0. 0. 0." />
-    <parent link="tesollo_right_rl_dg_5_3" />
-    <child link="tesollo_right_rl_dg_5_3_sphere2" />
-  </joint>
-
-  
   
   
   <link name="world_body_sphere1">
@@ -1284,4 +1153,628 @@
     <child link="rl_dg_5_tip" />
   </joint>
 
+  <link name="tesollo_right_rl_dg_1_1_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_1_sph1_joint" type="fixed">
+    <origin xyz="0.006992 0.000000 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_1" />
+    <child link="tesollo_right_rl_dg_1_1_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_1_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_1_sph2_joint" type="fixed">
+    <origin xyz="0.020975 0.000000 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_1" />
+    <child link="tesollo_right_rl_dg_1_1_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_1_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_1_sph3_joint" type="fixed">
+    <origin xyz="0.034958 0.000000 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_1" />
+    <child link="tesollo_right_rl_dg_1_1_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_2_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_2_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.007750 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_2" />
+    <child link="tesollo_right_rl_dg_1_2_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_2_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_2_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.023250 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_2" />
+    <child link="tesollo_right_rl_dg_1_2_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_3_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_3_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.006467 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_3" />
+    <child link="tesollo_right_rl_dg_1_3_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_3_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_3_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.019400 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_3" />
+    <child link="tesollo_right_rl_dg_1_3_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_3_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_3_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.032333 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_3" />
+    <child link="tesollo_right_rl_dg_1_3_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_4_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_4_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.006050 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_4" />
+    <child link="tesollo_right_rl_dg_1_4_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_4_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_4_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.018150 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_4" />
+    <child link="tesollo_right_rl_dg_1_4_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_1_4_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_1_4_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.030250 0.000000" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_1_4" />
+    <child link="tesollo_right_rl_dg_1_4_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_1_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_1_sph1_joint" type="fixed">
+    <origin xyz="0.004412 0.000000 0.006625" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_1" />
+    <child link="tesollo_right_rl_dg_2_1_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_1_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_1_sph2_joint" type="fixed">
+    <origin xyz="0.013237 0.000000 0.019875" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_1" />
+    <child link="tesollo_right_rl_dg_2_1_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_2_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_2_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006467" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_2" />
+    <child link="tesollo_right_rl_dg_2_2_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_2_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_2_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019400" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_2" />
+    <child link="tesollo_right_rl_dg_2_2_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_2_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_2_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.032333" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_2" />
+    <child link="tesollo_right_rl_dg_2_2_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_3_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_3_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006467" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_3" />
+    <child link="tesollo_right_rl_dg_2_3_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_3_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_3_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019400" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_3" />
+    <child link="tesollo_right_rl_dg_2_3_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_3_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_3_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.032333" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_3" />
+    <child link="tesollo_right_rl_dg_2_3_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_4_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_4_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006375" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_4" />
+    <child link="tesollo_right_rl_dg_2_4_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_2_4_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_2_4_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019125" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_2_4" />
+    <child link="tesollo_right_rl_dg_2_4_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_1_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_1_sph1_joint" type="fixed">
+    <origin xyz="0.004412 0.000000 0.006625" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_1" />
+    <child link="tesollo_right_rl_dg_3_1_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_1_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_1_sph2_joint" type="fixed">
+    <origin xyz="0.013237 0.000000 0.019875" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_1" />
+    <child link="tesollo_right_rl_dg_3_1_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_2_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_2_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006467" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_2" />
+    <child link="tesollo_right_rl_dg_3_2_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_2_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_2_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019400" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_2" />
+    <child link="tesollo_right_rl_dg_3_2_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_2_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_2_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.032333" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_2" />
+    <child link="tesollo_right_rl_dg_3_2_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_3_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_3_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006467" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_3" />
+    <child link="tesollo_right_rl_dg_3_3_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_3_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_3_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019400" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_3" />
+    <child link="tesollo_right_rl_dg_3_3_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_3_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_3_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.032333" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_3" />
+    <child link="tesollo_right_rl_dg_3_3_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_4_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_4_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006375" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_4" />
+    <child link="tesollo_right_rl_dg_3_4_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_3_4_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_3_4_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019125" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_3_4" />
+    <child link="tesollo_right_rl_dg_3_4_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_1_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_1_sph1_joint" type="fixed">
+    <origin xyz="0.004412 0.000000 0.006625" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_1" />
+    <child link="tesollo_right_rl_dg_4_1_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_1_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_1_sph2_joint" type="fixed">
+    <origin xyz="0.013237 0.000000 0.019875" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_1" />
+    <child link="tesollo_right_rl_dg_4_1_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_2_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_2_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006467" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_2" />
+    <child link="tesollo_right_rl_dg_4_2_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_2_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_2_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019400" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_2" />
+    <child link="tesollo_right_rl_dg_4_2_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_2_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_2_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.032333" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_2" />
+    <child link="tesollo_right_rl_dg_4_2_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_3_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_3_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006467" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_3" />
+    <child link="tesollo_right_rl_dg_4_3_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_3_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_3_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019400" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_3" />
+    <child link="tesollo_right_rl_dg_4_3_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_3_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_3_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.032333" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_3" />
+    <child link="tesollo_right_rl_dg_4_3_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_4_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_4_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006375" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_4" />
+    <child link="tesollo_right_rl_dg_4_4_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_4_4_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_4_4_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019125" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_4_4" />
+    <child link="tesollo_right_rl_dg_4_4_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_1_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_1_sph1_joint" type="fixed">
+    <origin xyz="0.000000 -0.004667 0.006350" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_1" />
+    <child link="tesollo_right_rl_dg_5_1_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_1_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_1_sph2_joint" type="fixed">
+    <origin xyz="0.000000 -0.014000 0.019050" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_1" />
+    <child link="tesollo_right_rl_dg_5_1_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_1_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_1_sph3_joint" type="fixed">
+    <origin xyz="0.000000 -0.023333 0.031750" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_1" />
+    <child link="tesollo_right_rl_dg_5_1_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_2_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_2_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.007750" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_2" />
+    <child link="tesollo_right_rl_dg_5_2_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_2_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_2_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.023250" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_2" />
+    <child link="tesollo_right_rl_dg_5_2_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_3_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_3_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006467" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_3" />
+    <child link="tesollo_right_rl_dg_5_3_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_3_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_3_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.019400" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_3" />
+    <child link="tesollo_right_rl_dg_5_3_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_3_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_3_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.032333" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_3" />
+    <child link="tesollo_right_rl_dg_5_3_sph3" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_4_sph1">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_4_sph1_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.006050" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_4" />
+    <child link="tesollo_right_rl_dg_5_4_sph1" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_4_sph2">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_4_sph2_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.018150" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_4" />
+    <child link="tesollo_right_rl_dg_5_4_sph2" />
+  </joint>
+  <link name="tesollo_right_rl_dg_5_4_sph3">
+    <inertial>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+      <mass value="0.001" />
+      <inertia ixx="1e-6" ixy="0." ixz="0." iyy="1e-6" iyz="0." izz="1e-6" />
+    </inertial>
+  </link>
+  <joint name="tesollo_right_rl_dg_5_4_sph3_joint" type="fixed">
+    <origin xyz="0.000000 0.000000 0.030250" rpy="0. 0. 0." />
+    <parent link="tesollo_right_rl_dg_5_4" />
+    <child link="tesollo_right_rl_dg_5_4_sph3" />
+  </joint>
 </robot>

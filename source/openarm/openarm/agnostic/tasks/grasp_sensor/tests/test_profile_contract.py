@@ -146,8 +146,12 @@ def test_envelope_contract():
             assert f in p.finger_sensor_bodies, f"{p.name}: envelope 손가락 {f} 센서 없음"
         assert set(p.envelope_fingers) & set(p.contact_group_b), (
             f"{p.name}: contact_group_b ∩ envelope_fingers 공집합")
+    # ★08.24 규약 반전(사용자 지시): tesollo pinky 를 분모에 **포함**한다.
+    #   구 규약("굴곡축 부재 → 제외, 상한 0.8")은 관절공간 액션 시절 근거였다.
+    #   tip_cyl(손가락별 손끝 IK + 원통 (r,z))에서는 probe 실측으로 pinky 도 손바닥면
+    #   100% 감쌈했다 — 액션 구조가 바뀌면 도달성 결론도 바뀐다. 5지 인벨롭이 목표.
     tes = PROFILES["tesollo_right"]
-    assert "pinky" not in tes.envelope_fingers, "tesollo pinky 는 envelope 분모에서 제외"
+    assert "pinky" in tes.envelope_fingers, "tesollo 5지 인벨롭 — pinky 포함 규약"
 
     rew_src = (_TASK_DIR / "rewards.py").read_text(encoding="utf-8")
     rew_code = "\n".join(l for l in rew_src.split("\n") if not l.lstrip().startswith("#"))
@@ -401,3 +405,90 @@ def test_registration_reads_the_profile_name_from_dataclass_fields():
         "@configclass 이후에는 클래스 속성으로 남지 않는다"
     )
     assert "_profile_name_of(_cls)" in code
+
+
+def test_envelope_counts_only_palmar_contact():
+    """감쌈은 **손바닥 접촉만** 인정해야 한다 — 손등으로 밀어도 세면 지표가 허수가 된다.
+
+    ★08.23 lstm_test3 ep5000 실측(64env, 접촉한 스텝만 판정): 손바닥 법선을 URDF 의
+    cross(굴곡축, 장축)으로 유도해 dot(법선, 컵중심−마디위치) 부호를 봤더니
+        thumb_3 +30.6mm(손등비 0.00) · index_3 +45.0mm(0.00) · middle_4 −19.7mm(**1.00**)
+    중지는 접촉 시간 100% 를 손등으로 접촉했다. 원인은 middle_2 가 77% 시간 하한 0 에
+    붙어 밑동이 안 펴진 채 _3/_4 만 최대로 말려 갈고리가 되는 것.
+    크기만 세는 구 판정은 env_frac 0.746 을 보고했지만 손바닥만 세면 ≈0.55 로 성공
+    임계 0.6 미달 — 지표가 실패를 성공으로 통과시키고 있었다.
+    """
+    cfg_src = (_TASK_DIR / "grasp_sensor_env_cfg.py").read_text(encoding="utf-8")
+    assert re.search(r"require_palmar_contact:\s*bool\s*=\s*True", cfg_src), (
+        "손바닥 접촉 판정이 기본 off — 손등 파지가 다시 감쌈으로 계상된다")
+
+    env_src = (_TASK_DIR / "grasp_sensor_env.py").read_text(encoding="utf-8")
+    assert "def _palmar_mask" in env_src, "손바닥/손등 판정 함수가 없다"
+    # 게이팅이 실제로 감쌈 입력에 걸리는가 — 정의만 있고 안 쓰면 무의미하다.
+    assert re.search(r"mid_f\s*=\s*mid_raw\s*\*", env_src), "판정이 mid 힘에 적용되지 않는다"
+    assert re.search(r"dist_f\s*=\s*dist_raw\s*\*", env_src), "판정이 dist 힘에 적용되지 않는다"
+    # ★구 판정을 나란히 남겨야 손등 비중을 상시 관측할 수 있다(회귀 조기 발견).
+    assert "task/envelope_frac_raw" in env_src, "구 판정 비교선이 없다"
+    # 대향 게이트와 obs 는 건드리지 않는다 — 실기 센서도 방향을 모른다(s2r 규약).
+    assert re.search(r"group_a_force=contact\[", env_src), (
+        "대향 게이트가 손바닥 판정에 오염됐다 — obs/게이트는 크기 그대로여야 한다")
+
+
+def test_every_registered_profile_defines_palmar_axes():
+    """손바닥 법선은 프로필이 정의한다 — 기본축 가정은 판정을 조용히 뒤집는다.
+
+    등록되는(= Fabrics 자산이 있는) 프로필은 전 손가락에 축이 있어야 하고,
+    등록되지 않는 프로필은 비워 두되 env 가 fail-loud 로 막아야 한다.
+    """
+    env_src = (_TASK_DIR / "grasp_sensor_env.py").read_text(encoding="utf-8")
+    assert "palmar_axis_local 미정의" in env_src, "미정의 프로필을 조용히 통과시킨다"
+
+    for name, p in PROFILES.items():
+        if p.fabric_class is None:      # 등록 SKIP 대상 — 실측 전까지 비워 두는 게 맞다
+            continue
+        missing = [f for f in p.finger_sensor_bodies if f not in p.palmar_axis_local]
+        assert not missing, f"[{name}] palmar_axis_local 누락: {missing}"
+        for f, ax in p.palmar_axis_local.items():
+            assert len(ax) == 3 and any(abs(v) > 0.0 for v in ax), (
+                f"[{name}] {f} 손바닥축이 영벡터")
+
+
+def test_lift_progress_peaks_at_target_and_decays_beyond():
+    """리프트 진척은 목표에서 정점, 초과분은 감소해야 한다(08.24 R1).
+
+    구판 clamp(h/목표)는 목표 위가 무벌점 포화 → lstm_test4 가 h=0.35(목표의 2.3배)
+    까지 표류하며 gd 0.32 의 tanh 저감도 구간으로 들어갔다. 하강 기울기는 상승의
+    절반 — 관측 최대 표류(0.35)에서도 gradient 가 살아 있어야 되돌아온다.
+    """
+    import torch
+    from openarm.agnostic.tasks.grasp_sensor.rewards import lift_progress
+    h = torch.tensor([0.0, 0.075, 0.15, 0.225, 0.30, 0.45, 0.60])
+    v = lift_progress(h, 0.15)
+    assert float(v[0]) == 0.0 and abs(float(v[1]) - 0.5) < 1e-6, "상승부 선형이 깨졌다"
+    assert abs(float(v[2]) - 1.0) < 1e-6, "목표에서 정점이어야 한다"
+    assert float(v[3]) < 1.0 and float(v[4]) < float(v[3]), "초과분이 감소하지 않는다"
+    assert float(v[4]) > 0.0, "관측 표류 대역(0.30)에서 gradient 가 죽었다"
+    assert float(v[5]) <= 1e-6 and float(v[6]) == 0.0, "2×목표에서 0 이어야 한다"
+    # 하강 기울기 = 상승의 절반
+    up_slope = (float(v[2]) - float(v[1])) / 0.075
+    down_slope = (float(v[3]) - float(v[2])) / 0.075
+    assert abs(abs(down_slope) - up_slope / 2.0) < 1e-4, "하강 기울기가 상승의 절반이 아니다"
+
+
+def test_envelope_gate_saturation_decoupled_from_success_threshold():
+    """g_eff 포화점은 성공 임계보다 **높아야** 한다(08.24 R2).
+
+    같은 상수면 임계 위에서 ∂(goal)/∂env=0 → 정책이 3지에서 멈춘다(lstm_test3:
+    env 0.65 고착 = 포화점 0.6 바로 위). 판정(0.6)과 gradient 연장선(0.85)의 분리.
+    """
+    cfg_src = (_TASK_DIR / "grasp_sensor_env_cfg.py").read_text(encoding="utf-8")
+    m_sat = re.search(r"envelope_gate_saturation:\s*float\s*=\s*([0-9.]+)", cfg_src)
+    m_min = re.search(r"success_envelope_min:\s*float\s*=\s*([0-9.]+)", cfg_src)
+    assert m_sat and m_min, "상수 정의 부재"
+    assert float(m_sat.group(1)) > float(m_min.group(1)), (
+        "포화점이 성공 임계 이하 — 임계 위 감쌈 gradient 가 다시 죽는다")
+    # 호출부가 실제로 분리 상수를 쓰는가
+    rew_src = (_TASK_DIR / "rewards.py").read_text(encoding="utf-8")
+    code = "\n".join(l for l in rew_src.split("\n") if not l.lstrip().startswith("#"))
+    assert 'getattr(cfg, "envelope_gate_saturation"' in code, (
+        "g_eff 가 분리 상수(envelope_gate_saturation)를 읽지 않는다")

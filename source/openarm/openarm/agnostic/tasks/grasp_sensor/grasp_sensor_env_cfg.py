@@ -90,6 +90,23 @@ def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
                 #   외접) → convex_decomposition 으로 되돌려 유령 접촉을 없앴다.
                 #   실측: 유휴 480스텝 palm 드리프트 0.00mm·|qd| 0.00,
                 #        full-grip 손관절합 24.1(OFF) → 18.8(ON) = 손가락 겹침 차단.
+                # ★★True 복귀 (08.24) — hand_repulsion(18mm 벽)이 **감쌈 자체를 금지**하는
+                #   것이 lstm_test4 실측으로 확정됐다(사용자 판정: "fabric 과 관절공간
+                #   제어는 성립할 수 없다"). tip_cyl 전환과 함께 repulsion 을 끄므로
+                #   관통 방지는 PhysX 로 되돌린다 — 둘 다 끄면 막는 장치가 없다.
+                #   처리량 −52% 는 파지가 성립한 뒤 다시 볼 문제다.
+                # (이하는 08.23 OFF 시도의 기록 — 근거가 뒤집힌 경위 보존)
+                # ★★False (08.23) — 손가락 관통 방지를 Fabrics `hand_repulsion` 이
+                #   **계획 단계**에서 맡는다(cfg.use_hand_repulsion). 자기충돌 검출은
+                #   스텝 시간의 55~64% 를 쓰는데(자매 트랙 실측), 그 비용의 원인은
+                #   solver 도 접촉 빈도도 아닌 **손 27링크의 convexDecomposition 조각
+                #   수**였다(08.23 selfcollision-cost-anatomy: 2.2~2.8배·자세 무관).
+                #   자매 트랙 검증: repulsion ON 이면 fabric_q 의 다른 손가락 구 최소거리
+                #   20.1mm·18mm 미만 0.0% — 계획에 관통 해가 없으므로 정책이 관통으로
+                #   이득 보는 전략을 학습할 수 없다. 잔여 관통은 PD 추종오차의 결과라
+                #   정책이 조종할 수 없다.
+                # ★되돌릴 때는 use_hand_repulsion 도 함께 볼 것 — 둘 다 끄면 관통을
+                #   막는 장치가 하나도 없다.
                 enabled_self_collisions=True,
                 # ★P-9 실측(2048env)으로 16 확정: 32 는 fps 를 25% 깎는데(11.9k→8.9k)
                 #   파지 품질이 나아지지 않았다. 오히려 접촉력이 더 높았다
@@ -187,6 +204,53 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     envelope_weight: float = 2.0
     contact_weight: float = 0.5
     contact_force_threshold: float = 1.0     # [N] dexsuite 동일
+    # ★감쌈을 **손바닥 접촉만** 인정한다(08.23, reward-audit ACCEPT).
+    #   근거 실측(lstm_test3 ep5000): middle_4 가 접촉 시간의 100% 를 손등으로 접촉했고
+    #   envelope_frac 은 그걸 감쌈으로 세어 0.746 을 보고했다. 손바닥만 세면 ≈0.55 로
+    #   성공 임계 0.6 미달 — 지표가 실패를 성공으로 통과시키고 있었다. 실제로 제대로
+    #   감싸는 건 엄지+검지 둘뿐(약지 0.20·새끼 0)이라 5지 인벨롭이 아니라 2지 핀치다.
+    #   손등 파지는 force-closure 가 아니라서 pour 의 손목 회전에서 그대로 빠진다.
+    # ★★이 값을 켠 채 **구 체크포인트를 이어받지 말 것** — env_frac 이 떨어지면
+    #   g_eff(goal 계열 전체의 곱)가 같이 떨어져 보상이 통째로 축소된다. fresh 학습만.
+    #   구 판정과의 비교선은 task/envelope_frac_raw 로 계속 로깅된다.
+    #   False = 구 판정(크기만). 프로필에 palmar_axis_local 이 없으면 부팅이 죽는다.
+    require_palmar_contact: bool = True
+
+    # ---- 손을 Fabrics 가 소유한다 (08.23 자매 트랙 grasp_lift_fabric 검증분 이식) ----
+    # "pd"  = 구 배선. 손은 Fabrics 밖(직접 관절 PD). fabric 은 FK 로 손을 보기만 한다.
+    # "fabric" = hand_mode="direct"(20x20 항등)로 손 20-DOF 를 fabric attractor 가 제어.
+    #   액션 차원·의미는 그대로다(관절 절대목표) — 달라지는 건 **중재자**뿐.
+    # ★"tip"(손끝 IK)은 자매 트랙에서 **실측 기각**됐다: 다섯 손끝은 한 손에 결합돼
+    #   있는데 정책이 15D 를 독립 지시하면 대부분 기구학적으로 불가능해 fabric 이
+    #   모순된 목표를 절충하다 아무데도 못 간다(추종오차 학습 중 85mm,
+    #   23,400 스텝 동안 contact_gate 0.000). 게인 문제가 아니라 목표가 불가능한 것.
+    #   → 이 트랙은 tip 을 쓰지 않는다. 08.23 손끝 attractor probe 의 2.94mm 는
+    #     "손끝 다섯을 **일관되게** 안으로 당긴" 목표라 정책 액션 분포와 다르다.
+    # "tip_cyl"(08.24, 기본) — 손가락별 손끝 IK + 원통 액션. 근거 실측 3건:
+    #   ①단일 15D 기각(08.23)의 원인이 "기구학적 불가능"이 아니라 taskmap 의 팔 열
+    #     오염이었음이 갈렸다(Subchain 수리 후 임의목표 85mm→15.9mm).
+    #   ②손가락별 분리(tip_per_finger)로 13.8mm — 겹침(불가능) 목표에서도 엄지만
+    #     32.8mm 를 지고 검지·중지·약지는 2.6~4.6mm(간섭이 metric 층에서 사라짐).
+    #   ③관절공간 fabric(direct)은 lstm_test4 에서 기각 — attractor 가 명령을 보존하지
+    #     않고(잠금 외전 0→−0.234, ring_3 −0.318→−0.750) hand_repulsion(18mm 벽)이
+    #     감쌈 자체를 금지해 2지 파지로 붕괴(사용자 판정: "fabric 과 관절공간 제어는
+    #     성립할 수 없다").
+    hand_control: str = "tip_cyl"
+    # tip_cyl 액션 스케일 — 단위=핑거팁 지름(STL 실측 16.1x19.6mm→18mm).
+    tip_diameter: float = 0.018
+    # r 중심 = 컵 최대반경(45mm)+팁반경(9mm) 대역의 중심. a_r=±1 이 ±2팁지름이라
+    # r ∈ [14, 86]mm — 파지 요구 45~54mm 와 완전 개방을 모두 덮는다(워크스페이스 실측
+    # r 5~95% = 9~121mm 안쪽).
+    tip_r_center: float = 0.050
+    tip_action_span: float = 2.0     # a=±1 → ±(span × tip_diameter)
+    # direct 모드 attractor 게인. 자매 트랙 스윕 채택값(이동량 부족 26%→8%).
+    hand_attractor_gain: float | None = 400.0
+    # ★손가락↔손가락 반발을 Fabrics **계획 단계**에서 건다. PhysX self-collision 을
+    #   끄기 위한 전제다(자기충돌은 스텝 시간의 55~64%).
+    #   자매 트랙 검증: repulsion ON 이면 fabric_q 의 다른 손가락 구 최소거리 20.1mm ·
+    #   18mm 미만 0.0% (OFF 는 계획에 관통 해가 남는다) · palm 추종오차 0.7mm 로 무결.
+    #   계획에 관통 해가 없으므로 정책이 관통으로 이득 보는 전략을 학습할 수 없다.
+    use_hand_repulsion: bool = False
     tracking_weight: float = 2.0
     tracking_std: float = 0.1
     success_weight: float = 10.0
@@ -238,6 +302,51 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     # 0.6 = 테솔로(env 4지)는 3지 이상 감쌈, 2지 그리퍼는 양 jaw(1.0). 0.5 는 두
     # 손가락 rim-hook(0.5)이 통과해 버린다 — P-B probe 반증.
     success_envelope_min: float = 0.6
+    # ★g_eff 의 gradient 포화점 — 성공 임계(0.6)와 **별도 상수**(08.24 R2).
+    #   같은 상수를 쓰면 임계 위에서 감쌈 gradient 가 0 이라 정책이 3지에서 멈춘다
+    #   (lstm_test3: env 0.65 에 2,500 에폭 고착 = 정확히 그 포화점). 판정은 0.6 그대로,
+    #   goal 계열의 감쌈 유인만 0.85 까지 연장. 4지 감쌈 달성 가능은 tip_cyl probe 실증.
+    envelope_gate_saturation: float = 0.85
+
+    # ---- tip_cyl 전용 보상 (08.24 총 재설계 — compute_tip_cyl_rewards) ------------
+    # 5항+정규화·게이트 1개. 값은 레퍼런스 원값(DEXTRAH sharpness 10/8.5·dexsuite
+    # σ·가중치)에서 approach sharpness 만 8 로(완전 파지 시 d_max≈컵반경+α≈7cm 라
+    # 10 이면 만점 지점이 0.5 로 깎여 후반 gradient 가 얕다).
+    # 위 approach_*~tilt_penalty_* 상수들은 구 보상(공유 함수) 전용 — pd/fabric 모드와
+    # 타 트랙(grasp_lift_fabric) 경로에서만 읽힌다.
+    # ---- tip_cyl 2차 재설계(08.24): 형상 비의존 6단계 · 단계마다 상한 증가 --------
+    # 1차안(max 커널)은 palm 이 argmax 를 52.7% 먹어 손가락 gradient 를 굶겼다
+    # (ring·pinky 지목률 0.0%, gate 2,820ep 내내 0.000). 근거는 rewards_tip_cyl 주석.
+    # 상한: 접근1 < 파지2 < 감쌈3 < 리프트5 < 이송8(4+4) < 성공12 — 누적 35.
+    # ①②③ 무게이트가 부트스트랩의 핵심(1차안은 무게이트가 approach 하나뿐이었다).
+    stage_approach_weight: float = 1.0
+    stage_approach_sharpness: float = 8.0
+    stage_grip_weight: float = 2.0
+    stage_grip_sharpness: float = 8.0
+    # 팁 반경 — **손 기하 상수**(물체 형상 아님). 접촉 감지 실패 시 압입 무한보상 차단.
+    stage_grip_dist_floor: float = 0.009
+    stage_envelope_weight: float = 3.0
+    stage_lift_weight: float = 5.0
+    stage_lift_sharpness: float = 8.5
+    stage_tracking_weight: float = 4.0
+    stage_tracking_std: float = 0.1
+    stage_upright_weight: float = 4.0
+    stage_upright_std: float = 0.35      # [rad] ≈ 20° — 성공 임계와 같은 스케일
+    stage_success_weight: float = 12.0
+    stage_success_pos_std: float = 0.05
+    stage_success_rot_std: float = 0.35
+
+    dex_approach_weight: float = 2.0
+    dex_approach_sharpness: float = 8.0
+    dex_tracking_weight: float = 2.0
+    dex_tracking_std: float = 0.1
+    dex_upright_weight: float = 3.0
+    dex_upright_std: float = 0.35        # [rad] ≈ 20° — 성공 임계와 같은 스케일
+    dex_lift_weight: float = 1.0
+    dex_lift_sharpness: float = 8.5
+    dex_success_weight: float = 10.0
+    dex_success_pos_std: float = 0.05
+    dex_success_rot_std: float = 0.35
     success_tilt_max_deg: float = 20.0
 
     # ---- 커리큘럼 (per-env 난이도 0~10) --------------------------------------------
@@ -309,9 +418,16 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
         num_joints = profile.num_arm_joints + profile.num_hand_joints
         num_tips = len(profile.fingertip_bodies)
         num_fingers = len(profile.finger_sensor_bodies)
-        # 액션 = palm 6D delta + 손 관절 delta
-        # 액션 = palm 6D + **자유** 손관절(고정 관절은 정책이 안 건드린다)
-        self.action_space = 6 + profile.num_hand_joints - profile.num_locked_hand_joints
+        # 액션 = palm 6D delta + 손:
+        #   pd/fabric  : **자유** 손관절 delta(고정 관절은 정책이 안 건드린다)
+        #   tip_cyl    : 손가락별 (r, z) 절대 2D × 5 = 10D — θ 는 공칭값 고정.
+        #     원통 좌표가 감쌈 기하를 좌표계에 넣는다: r=개구도(조임이 스칼라 하나),
+        #     θ 고정=두 손가락이 같은 각도에 못 옴(겹침을 구조로 차단),
+        #     z=컵의 어느 높이. 단위=핑거팁 지름이라 "얼마나 가까이"가 물리량이다.
+        if self.hand_control == "tip_cyl":
+            self.action_space = 6 + 2 * len(profile.finger_sensor_bodies)
+        else:
+            self.action_space = 6 + profile.num_hand_joints - profile.num_locked_hand_joints
         # 관측 = q + qd + palm pose(7) + tips(3T) + obj pose(7) + goal(3)
         #        + 손가락별 접촉력 크기(F) + last action
         self.observation_space = (
