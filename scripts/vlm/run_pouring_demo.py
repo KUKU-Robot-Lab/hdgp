@@ -91,6 +91,9 @@ from vlm.pouring.skill_manager import SkillManager  # noqa: E402
 from vlm.pouring.skill_registry import SkillRegistry  # noqa: E402
 from vlm.pouring.skills import ApproachSkill, GraspLiftSkill  # noqa: E402
 
+# hand_control 스위치가 생기기 전 학습된 런의 손 배선(정책 액션 = 관절 목표 → 직접 PD).
+_LEGACY_HAND_CONTROL = "pd"
+
 # 카메라: env_0 에만 붙인다(작업면 조망 — 이후 Qwen 입력 시점).
 _CAM_EYE = (1.35, 0.55, 0.85)
 _CAM_LOOKAT = (0.30, -0.10, 0.30)
@@ -146,11 +149,16 @@ def _task_identity(task: str) -> tuple[str, str, str]:
     return base, f"{robot}/{side_dir}", task_part.replace("_", "-")
 
 
-def _match_training_physics(cfg, env_yaml: Path) -> None:
-    """학습 덤프의 물리 플래그를 데모 env 에 반영한다(obs 분포 정합).
+def _match_training_setup(cfg, env_yaml: Path) -> None:
+    """학습 덤프의 **동역학·제어 경로** 플래그를 데모 env 에 반영한다.
 
-    ★PLAY cfg 기본은 gravity/self_collisions OFF 인데 실제 학습 런(test2)은
-      둘 다 ON 이었다 — 안 맞추면 정책이 본 적 없는 동역학에서 평가된다.
+    체크포인트는 자기가 학습된 env 에서만 의미가 있다. cfg 기본값을 그대로 쓰면
+    정책이 본 적 없는 동역학·제어 배선에서 평가된다 — 실측 2건:
+      · PLAY 기본은 gravity/self_collisions OFF 인데 test2 는 둘 다 ON 이었다.
+      · 현재 기본 `hand_control="fabric"`(손을 Fabrics 가 소유) 인데 test2 는 그
+        스위치가 생기기 **전**에 학습돼 손이 직접 PD("pd")였다. 그대로 돌리면
+        같은 액션이 다른 손 자세가 되어 파지가 무너진다(리프트 31.5mm → 5.9mm).
+    ★키가 **없으면** 그 스위치 이전 런이라는 뜻이라 구 배선 값을 쓴다.
     """
     text = env_yaml.read_text()
     for key in ("enable_gravity", "enable_self_collisions"):
@@ -158,6 +166,16 @@ def _match_training_physics(cfg, env_yaml: Path) -> None:
         if match is not None:
             setattr(cfg, key, match.group(1) == "true")
             print(f"[vlm_demo] 학습 정합: {key} = {match.group(1)}", flush=True)
+
+    if hasattr(cfg, "hand_control"):
+        match = re.search(r"^hand_control: (\w+)$", text, re.M)
+        value = match.group(1) if match is not None else _LEGACY_HAND_CONTROL
+        origin = "덤프" if match is not None else "덤프에 없음 → 구 배선"
+        cfg.hand_control = value
+        print(f"[vlm_demo] 학습 정합: hand_control = {value} ({origin})", flush=True)
+    if hasattr(cfg, "use_tip_fabric"):
+        match = re.search(r"^use_tip_fabric: (true|false)$", text, re.M)
+        cfg.use_tip_fabric = match is not None and match.group(1) == "true"
 
 
 def _resolve_policy(task: str):
@@ -189,7 +207,7 @@ def main() -> None:
 
     cfg = parse_env_cfg(args.task, num_envs=args.num_envs)
     if artifacts is not None:
-        _match_training_physics(cfg, artifacts.env_yaml)
+        _match_training_setup(cfg, artifacts.env_yaml)
     # 데모 중 에피소드 timeout 리셋이 끼면 SkillManager 의 per-env 상태와 어긋난다.
     cfg.episode_length_s = max(cfg.episode_length_s, args.steps / 60.0 + 5.0)
     if args.frame_interval > 0:
