@@ -159,6 +159,35 @@ class GraspSensorEnv(DirectRLEnv):
             device=self.device, dtype=torch.long)
         if len(self._group_b_env_idx) == 0:
             raise RuntimeError(f"[{p.name}] contact_group_b ∩ envelope_fingers 가 비었다")
+        # ★★08.25 **도달 불가능한 손가락을 분모에서 뺀다.** 실측(lstm_test14 전 구간):
+        #   `syn_close/pinky` 0.459 (index 0.402 보다 **더** 닫으라고 명령) 인데
+        #   `touch/pinky` 0.003 · `wrap/pinky` 0.000. 명령은 갔는데 관절이 안 움직인다 —
+        #   자세표에서 pinky `_1`/`_2` 가 open==grip 이라 lerp 결과가 상수이기 때문이다.
+        #   분모에 두면 `touch_f` 상한이 0.8 로 막혀 게이트가 칼날 위에 선다.
+        #   ★임계를 낮추는 것과 다르다 — **분모를 도달가능 집합으로 정의**하는 것이고,
+        #     자세표를 고치면 cfg 한 줄로 되돌아온다.
+        _drop = set(getattr(self.cfg, "hand_unusable_fingers", ()))
+        _bad = _drop - set(fingers)
+        if _bad:
+            raise RuntimeError(f"[{p.name}] hand_unusable_fingers 에 없는 손가락: {sorted(_bad)}")
+        self._usable_idx = torch.tensor(
+            [i for i, f in enumerate(fingers) if f not in _drop],
+            device=self.device, dtype=torch.long)
+        self._wrap_idx = torch.tensor(
+            [i for i, f in enumerate(fingers)
+             if f in p.contact_group_b and f in p.envelope_fingers and f not in _drop],
+            device=self.device, dtype=torch.long)
+        if len(self._usable_idx) < 2 or len(self._wrap_idx) < 1:
+            raise RuntimeError(
+                f"[{p.name}] 가용 손가락이 부족하다 — usable={len(self._usable_idx)} "
+                f"wrap={len(self._wrap_idx)} (hand_unusable_fingers={sorted(_drop)})")
+        if float(self.cfg.stage_gate_contact_n) > len(self._usable_idx):
+            raise RuntimeError(
+                f"[{p.name}] stage_gate_contact_n={self.cfg.stage_gate_contact_n} 이 "
+                f"가용 손가락 {len(self._usable_idx)}개를 넘는다 — μ 게이트가 영원히 안 열린다")
+        print(f"[grasp_sensor] 가용 손가락 {[fingers[i] for i in self._usable_idx.tolist()]} · "
+              f"감쌈 분모 {[fingers[i] for i in self._wrap_idx.tolist()]} · "
+              f"제외 {sorted(_drop) or '없음'}", flush=True)
         # 손바닥면 법선(감쌈 = 손바닥 접촉만 인정). 프로필 미정의는 fail-loud —
         # 기본축을 가정하면 판정이 **조용히 뒤집혀** 손등 파지를 감쌈으로 계속 센다.
         if self.cfg.require_palmar_contact:
@@ -354,27 +383,43 @@ class GraspSensorEnv(DirectRLEnv):
         #   G 가 `five_frac · near_q` 로 바뀌어 혼합비 자체가 없다.
         #   저장소에 "오타로 손실항이 12,652 iter 동안 조용히 꺼져 있던" 이력이 있어
         #   신설 상수는 전부 존재·범위를 부팅에서 확인한다(fail-loud).
-        for _nm in ("stage_grasp_near_tau", "stage_stay_speed_ref", "stage_stay_hold_steps",
+        for _nm in ("stage_stay_speed_ref", "stage_stay_hold_steps",
                     "stage_perp_exponent", "stage_roll_exponent", "stage_orient_floor",
-                    "stage_transfer_weight", "stage_stay_weight",
-                    "stage_upright_tau_deg"):
+                    "stage_transfer_weight", "stage_stay_weight", "stage_contact_weight",
+                    "stage_upright_gate_deg", "stage_thumb_force_ref",
+                    "stage_gate_approach_m", "stage_gate_contact_n",
+                    "stage_gate_lift_m", "stage_gate_transfer_m",
+                    "stage_succ_height_band", "stage_succ_graspq_band",
+                    "stage_succ_tilt_band_deg", "stage_succ_goal_band_m"):
             if not hasattr(_c, _nm):
-                raise RuntimeError(f"[{self.profile.name}] 5단계 상수 누락: {_nm}")
-        # ★직립 τ 는 성공 임계와 같은 스케일이어야 한다. τ 가 임계보다 훨씬 크면
-        #   U 가 임계 근처에서 평평해져 판별력이 사라진다(구 cos 형이 정확히 그랬다:
-        #   실측 U 0.996~0.952 상수, 15.98° 에서도 0.952).
-        _tau, _lim = float(_c.stage_upright_tau_deg), float(_c.stage_success_tilt_deg)
-        if not (0.0 < _tau <= _lim):
+                raise RuntimeError(f"[{self.profile.name}] 계층 보상 상수 누락: {_nm}")
+        # ★Q_g 배합비 합 = 1.0. 오타로 한 항이 빠지면 상한이 조용히 내려간다.
+        _mix = (float(_c.stage_graspq_touch) + float(_c.stage_graspq_deep)
+                + float(_c.stage_graspq_persist))
+        if abs(_mix - 1.0) > 1e-6:
             raise RuntimeError(
-                f"[{self.profile.name}] stage_upright_tau_deg={_tau} 는 (0, "
-                f"stage_success_tilt_deg={_lim}] 범위여야 한다 — 임계에서 U 가 "
-                "충분히 떨어지지 않으면 기울임 억제가 무효다")
+                f"[{self.profile.name}] Q_g 배합비 합이 {_mix} — 1.0 이어야 한다")
+        # ★게이트가 도달 가능해야 한다. λ 임계가 실측 최선 d_gc(83mm)보다 작으면
+        #   계층 전체가 영원히 안 열린다(구 `stage/grasp` 판정 d_gc≤40mm 이 정확히
+        #   그래서 1,617 에폭 내내 0.000 이었다).
+        if float(_c.stage_gate_approach_m) < 0.09:
+            raise RuntimeError(
+                f"[{self.profile.name}] stage_gate_approach_m={_c.stage_gate_approach_m} 가 "
+                "실측 최선 d_gc 0.083m 에 너무 가깝다 — λ 게이트가 안 열린다")
+        if float(_c.stage_gate_lift_m) > float(_c.goal_height_offset):
+            raise RuntimeError(
+                f"[{self.profile.name}] stage_gate_lift_m 이 목표 높이를 넘는다 — ν 미개방")
+        # ★성공 전이대는 게이트보다 **느슨하거나 같아야** 한다. 더 빡빡하면 계층을
+        #   다 통과하고도 성공 보상이 0 인 구간이 생긴다.
+        if float(_c.stage_succ_goal_band_m[0]) < float(_c.stage_gate_transfer_m):
+            raise RuntimeError(
+                f"[{self.profile.name}] succ goal 전이대 하한이 ρ 게이트보다 빡빡하다")
         if not (0.0 <= float(_c.stage_orient_floor) < 1.0):
             raise RuntimeError(
                 f"[{self.profile.name}] stage_orient_floor={_c.stage_orient_floor} ∉ [0,1)")
-        if float(_c.stage_grasp_near_tau) <= 0 or float(_c.stage_stay_speed_ref) <= 0:
+        if float(_c.stage_stay_speed_ref) <= 0:
             raise RuntimeError(
-                f"[{self.profile.name}] near_tau/stay_speed_ref 는 양수여야 한다")
+                f"[{self.profile.name}] stay_speed_ref 는 양수여야 한다")
         # ★가중 사다리가 단조 증가여야 한다 — 인자가 깊어질수록 곱이 작아지므로
         #   상한이 안 커지면 뒤 단계가 앞 단계를 못 이긴다(lstm_test8: 곱이 0.008 로 소멸).
         _ladder = [float(_c.stage_approach_weight), float(_c.stage_grasp_weight),
@@ -383,9 +428,10 @@ class GraspSensorEnv(DirectRLEnv):
         if any(b < a for a, b in zip(_ladder, _ladder[1:])):
             raise RuntimeError(
                 f"[{self.profile.name}] 단계 가중이 단조 증가가 아니다: {_ladder}")
-        if float(_c.stage_success_height) > float(_c.goal_height_offset):
+        if float(_c.stage_succ_height_band[1]) > float(_c.goal_height_offset):
             raise RuntimeError(
-                f"[{self.profile.name}] stage_success_height({_c.stage_success_height}) 가 "
+                f"[{self.profile.name}] succ height 전이대 상한"
+                f"({_c.stage_succ_height_band[1]}) 이 "
                 f"goal_height_offset({_c.goal_height_offset}) 보다 크다 — 성공 도달 불가")
         if float(_c.stage_lift_height_ref) > float(_c.goal_height_offset) + 1e-9:
             raise RuntimeError(
@@ -1046,8 +1092,12 @@ class GraspSensorEnv(DirectRLEnv):
             # 접촉 지속 — 접촉 손가락 수가 임계 이상인 스텝을 세고 정규화(grasp_v1).
             #   끊기면 0 으로 리셋되므로 "닿았다 뗐다"로는 못 채운다.
             _ncon = (_mid_c | _dist_c | _tip_c).sum(dim=-1)
+            # ★★08.25 지속 판정을 **접촉 개수**에서 `deep`(같은 손가락 두 마디 동시)
+            #   으로 바꿨다. 개수 기준은 손끝 스침 4개로도 채워져 핀치를 못 걸렀다
+            #   (실측 정점 deep4 0.155 · full_tip 0.0007 = 감싼 적이 없다).
+            _ndeep = (_mid_c & _dist_c)[:, self._wrap_idx].sum(dim=-1)
             self._persist_buf = torch.where(
-                _ncon >= int(self.cfg.stage_persistence_min_contacts),
+                _ndeep >= 1,
                 self._persist_buf + 1,
                 torch.zeros_like(self._persist_buf))
             _persist = (self._persist_buf.float()
@@ -1062,14 +1112,18 @@ class GraspSensorEnv(DirectRLEnv):
                 tip_c=_tip_c,
                 persist_frac=_persist,
                 wrap_c=(_mid_c | _dist_c)[:, _b],
-                deep_c=(_mid_c & _dist_c)[:, _b],
+                # ★감쌈 분모는 **가용 손가락**만. pinky 는 자세표에서 `_1`/`_2` 가
+                #   open==grip 이라 lerp 결과가 상수 = 폐쇄 명령을 보내도 안 움직인다
+                #   (실측 syn_close/pinky 0.459 vs touch/pinky 0.003). 임계를 낮추는 게
+                #   아니라 분모를 도달가능 집합으로 정의하는 것이다.
+                deep_c=(_mid_c & _dist_c)[:, self._wrap_idx],
                 oppose=_any_c[:, self._group_a_idx].any(dim=-1),
                 height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
                 tilt_deg=tilt_deg,
                 xy_disp=torch.norm(
                     obj_pos[:, :2] - self.object_spawn_pos[:, :2], dim=-1),
-                # ★5지 전부의 손바닥면 접촉 — 엄지 하나 터치는 five_frac 0.2 로 죽는다.
-                five_c=(_mid_c | _dist_c | _tip_c),
+                touch_c=(_mid_c | _dist_c | _tip_c)[:, self._usable_idx],
+                thumb_force=contact[:, self._group_a_idx].sum(dim=-1),
                 # ★자세: palm_ee **+x 가 손바닥 법선**(실측 확정, 네 palm 계열 body 가
                 #   회전은 동일하고 위치만 다르다). 컵 축과 수직이어야 한다.
                 palm_x=self._palm_ee_R()[:, :, 0],
@@ -1083,6 +1137,10 @@ class GraspSensorEnv(DirectRLEnv):
                 prev_actions=self.prev_actions,
                 cfg=self.cfg,
             )
+            # ★단계 판정이 보상과 **같은 게이트**를 쓰도록 여기서 붙든다(로깅 pop 이
+            #   terms 에서 지워 버리기 전에). 두 곳에서 따로 계산하면 조용히 갈린다.
+            _lam, _mu = terms["_lam"], terms["_mu"]
+            _nu, _rho = terms["_nu"], terms["_rho"]
         else:
             total, terms, gate, env_frac = compute_grasp_sensor_rewards(
                 object_tilt_deg=tilt_deg,
@@ -1148,12 +1206,18 @@ class GraspSensorEnv(DirectRLEnv):
                          ("_gate_eff", "task/gate_eff"), ("_d_max", "task/d_max"),
                          ("_d_gc", "task/d_graspcenter"), ("_grip_dist", "task/grip_dist"),
                          ("_touch_frac", "task/touch_frac"), ("_align", "task/palm_align"),
-                         ("_G", "task/grip_q"), ("_H", "task/lift_q"), ("_U", "task/upright_q"),
+                         ("_H", "task/lift_q"), ("_U", "task/upright_q"),
+                         ("_lam", "task/gate/approach"), ("_mu", "task/gate/grasp"),
+                         ("_nu", "task/gate/lift"), ("_rho", "task/gate/transfer"),
+                         ("_touch_frac", "task/touch_frac"), ("_deep_frac", "task/deep_frac"),
+                         ("_opp_soft", "task/opp_soft"), ("_succ_soft", "task/succ_soft"),
+                         ("_succ_s_h", "task/succ/height"), ("_succ_s_c", "task/succ/graspq"),
+                         ("_succ_s_d", "task/succ/goal"), ("_succ_s_t", "task/succ/tilt"),
                          ("_deep4", "task/deep4"), ("_tip_frac", "task/tip_frac"),
                          ("_full_tip", "task/full_tip"), ("_persist", "task/persist"),
                          ("_envelope", "task/envelope"), ("_grasp_q", "task/grasp_q"),
                          ("_envelope", "task/envelope"), ("_grasp_q", "task/grasp_q"),
-                         ("_five_frac", "task/five_frac"), ("_near_q", "task/near_q"),
+
                          ("_perp_q", "task/perp_q"), ("_roll_q", "task/roll_q"),
                          ("_orient_q", "task/orient_q"), ("_T", "task/track_q"),
                          ("_S", "task/stay_q")):
@@ -1161,9 +1225,6 @@ class GraspSensorEnv(DirectRLEnv):
             if _v is not None:
                 self.extras[_tag] = _v.mean()
         # ---- 단계별 성공 누적 (리셋 때만 기록) -----------------------------------
-        _five = (_mid_c | _dist_c | _tip_c)
-        _dgc = torch.norm(_gc - obj_pos, dim=-1) if (self._tip_cyl or self._synergy) \
-            else torch.full_like(goal_dist, 1e9)
         _h = obj_pos[:, 2] - self.object_spawn_pos[:, 2]
         _spd = torch.norm(self.object.data.root_lin_vel_w, dim=-1)
         _tr = (goal_dist <= float(self.cfg.success_pos_tolerance)) & (
@@ -1171,11 +1232,14 @@ class GraspSensorEnv(DirectRLEnv):
         self._stay_run = torch.where(
             _tr & (_spd < float(self.cfg.stage_stay_speed_ref)),
             self._stay_run + 1, torch.zeros_like(self._stay_run))
+        # ★★08.25 단계 판정을 **보상의 계층 게이트와 같은 술어**로 통일했다. 구 ②는
+        #   `5지 전부 접촉 AND d_gc ≤ 40mm` 였는데 실측 최소 d_gc 가 40.3mm 라
+        #   1,617 에폭 내내 정확히 0.000 이었다 — 지표가 도달 불가였다.
         _now = torch.stack([
-            _five.any(dim=-1),                                   # ① 닿을 만큼 갔다
-            _five.all(dim=-1) & (_dgc <= float(self.cfg.stage_grasp_near_tau)),   # ② 5지+밀착
-            _h >= 0.05,                                          # ③ 리프트
-            _tr,                                                 # ④ 이송+직립
+            _lam > 0.5,                                          # ① 접근 열림
+            _mu > 0.5,                                           # ② 파지 열림
+            _nu > 0.5,                                           # ③ 리프트 열림
+            _rho > 0.5,                                          # ④ 이송 열림
             self._stay_run >= int(self.cfg.stage_stay_hold_steps),  # ⑤ 정지 유지
         ], dim=1)
         self._stage_hit |= _now

@@ -144,7 +144,10 @@ def main() -> None:
         fmax = torch.maximum(mid_f, dist_f).max(dim=-1).values
         tilt = core._tilt_deg_buf
 
-    tau = float(core.cfg.stage_grasp_near_tau)
+    # ★`stage_grasp_near_tau` 는 08.25 폐기(near_q → 접촉 기반 Q_g).
+    #   이 probe 는 여전히 d_gc 의 물리 도달성을 재는 도구이므로 참고
+    #   척도로 40mm 를 그대로 쓴다(보상과는 무관).
+    tau = 0.04
     print("\n" + "=" * 86, flush=True)
     print(f"파지중심 palm-local {[round(float(v)*1000) for v in core._gc_local]}mm · "
           f"τ = {tau*1000:.0f}mm · 접촉임계 {thr}N · env {n} · "

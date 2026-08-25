@@ -587,7 +587,23 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   있어 palm 접촉은 배포 불가다. 파지중심은 palm 에 강체로 붙은 점이라 d_gc → 0 이
     #   곧 "물체가 손 깊숙이 = palm 밀착"이고 FK 로만 계산된다.
     #   ★형상 어댑티브: 크기 가정 없음. 엄지 하나 터치는 five_frac 0.2 라 구조적으로 죽는다.
-    stage_grasp_near_tau: float = 0.04   # 40mm
+    # ★★08.25 폐기 — `near_q = exp(−d_gc/τ)` 는 `five_frac` 과 정면으로 싸우고 있었다.
+    #   lstm_test14 ep1102 정점 실측: five_frac 0.780 인데 deep4 0.155 · full_tip 0.0007,
+    #   손가락별 touch 0.63~0.67 vs wrap 0.28~0.48 = **손끝 스침**이었고 near_q 는
+    #   그것을 0.124 로 정확히 깎았다. G = 0.10 고착 → grasp·lift·transfer·stay 전부
+    #   정격의 10% → 이진 success 가 총보상의 67~79% → 두 런 모두 그 직후 붕괴.
+    #   대체 = 접촉 기하 기반 `Q_g`(rewards_tip_cyl.py). d_gc 는 approach 에만 남는다.
+    # stage_grasp_near_tau: 삭제
+    # ── 파지 품질 Q_g 배합 (합 1.0, 부팅 어서션) ────────────────────────────────
+    # ★도달 불가능한 손가락 — 접촉 분모에서 제외한다. 자세표를 고치면 () 로 되돌린다.
+    #   근거: pinky `_1`/`_2` 가 hand_open_pose == hand_grip_pose 라 lerp 가 상수다.
+    hand_unusable_fingers: tuple[str, ...] = ("pinky",)
+    stage_graspq_touch: float = 0.25     # 닿았나
+    stage_graspq_deep: float = 0.55      # **두 마디 동시** = 실제 감쌈. 팁 스침으론 불가
+    stage_graspq_persist: float = 0.20   # 유지하는가
+    stage_graspq_thumb_floor: float = 0.30   # 엄지 없이 4지만 긁으면 상한 30%
+    stage_thumb_force_ref: float = 0.5   # [N] 소프트 대향. 접촉임계 0.1N 의 5배,
+                                         #      실측 p95 7.77N 의 1/15 = 센서 스케일
     # ─ stay(⑤) ────────────────────────────────────────────────────────────────
     #   S = exp(−|v_obj|/v_ref). 구 S 는 액션 변화량이라 "액션을 안 바꾼다"였지
     #   "안 움직인다"가 아니었다. 물체 실제 선속도로 바꾼다.
@@ -597,8 +613,8 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   인자가 깊어질수록 곱이 작아지므로 상한을 키운다(lstm_test8: 네 인자 곱이
     #   0.008 로 소멸해 어느 방향으로도 gradient 가 없었다).
     #     ① approach 2.0 · ② grasp 12.0 · ③ lift 12.0 · ④ transfer 16.0 · ⑤ stay 24.0
-    stage_transfer_weight: float = 16.0
-    stage_stay_weight: float = 24.0
+    stage_transfer_weight: float = 7.0
+    stage_stay_weight: float = 10.0
     # ★08.25 5단계 재편으로 죽은 상수 5개 삭제(코드 참조 0 확인):
     #   stage_transport_weight / stage_stabilize_weight / stage_stabilize_sharpness
     #     → ④transfer(16.0) · ⑤stay(24.0) 로 대체
@@ -622,7 +638,8 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   wrap4 0.00 → 1.279. **감쌈을 버리는 쪽이 이득인 지형이었다.**
     #   grasp_v1 은 grasp_quality 네 항이 **전부 접촉**이라 이 계곡이 구조적으로 없다.
     #   거리 shaping : 접촉 보상 비율 — grasp_v1 1:6, 구 우리 것 1.22:1 (7배 어긋남).
-    stage_grasp_weight: float = 12.0          # grasp_v1 grasp_weight
+    stage_contact_weight: float = 1.0    # 게이트 없음 — λ=1·μ=0 사각지대 방지 shaping
+    stage_grasp_weight: float = 3.0          # grasp_v1 grasp_weight
     # grasp_quality = 0.15s·tip + 0.20s·full_tip + 0.25s·persist + credit·deep4
     #   s = (1 − credit)/0.60 로 합이 1 로 재정규화된다(credit 을 올려도 최대치 불변 →
     #   "감쌈만 하고 안 드는" 국소최적을 구조적으로 못 만든다 — grasp_v1 reward-audit).
@@ -651,7 +668,7 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     stage_approach_xy_margin: float = 0.025    # grasp_v1 grasp_xy_threshold
     stage_approach_tilt_penalty: float = 0.08  # grasp_v1 approach_tilt_penalty_weight
     stage_approach_tilt_margin_deg: float = 8.0  # grasp_v1 grasp_upright_threshold_deg
-    stage_lift_weight: float = 12.0
+    stage_lift_weight: float = 5.0
     # ★목표(goal_height_offset=0.15)와 **정렬**한다. 포화점을 목표보다 낮게 두면 그
     #   위에서 gradient 가 0 이라 정책이 포화점에 고착한다(lstm_test3: env 0.65 에
     #   2,500 에폭 고착 = 정확히 그 포화점. grasp_v1: 4cm 포화 → 평형 3.1cm).
@@ -665,15 +682,23 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #     15° 에서 0.1 로 떨어져 `stage_success_tilt_deg=15.0` 과 자연히 정렬된다.
     #   ★acos 없이 `exp(−2(1−cos)/τ_rad²)` 로 계산한다 — 1−cos ≈ θ²/2 근사라 20° 까지
     #     오차 1% 미만이고, acos 의 cos=±1 미분 발산을 피한다.
-    stage_upright_tau_deg: float = 10.0
+    stage_upright_gate_deg: tuple[float, float] = (25.0, 10.0)  # 내려가는 전이
     # 컵 밀림 감쇠 — 제곱역수. 선형 (1−d/L) 은 d≥L 에서 정확히 0 이 되어 하드 게이트와
     # 같아지고 gradient 가 소실된다(실측: 밀림 0.207 이 300 에폭간 전혀 안 줄어듦).
     stage_disp_limit: float = 0.06
-    stage_success_weight: float = 20.0
-    stage_success_height: float = 0.12
-    stage_success_wrap_min: float = 0.75
-    stage_success_tilt_deg: float = 15.0
-    stage_success_pos_tol: float = 0.05
+    # ── 계층 게이트 λ→μ→ν→ρ (DexPour, IROS 2025 식 3~6) ────────────────────────
+    # 논문값(d_approach 0.1 · c_finger 4 · h_lift 0.15 · d_pour 0.17)을 우리 실측
+    # 스케일로 옮긴 것이다. 논문은 컵을 0.5m 들지만 우리 목표는 스폰+0.15m 다.
+    stage_gate_approach_m: float = 0.12   # d_gc 중앙값 130mm · 최선 83mm → 운전권에서 열림
+    stage_gate_contact_n: float = 3.0     # 가용 4지 중 3지. 논문은 4지 전부
+    stage_gate_lift_m: float = 0.05       # 목표 0.15 의 1/3 에서 이송이 열린다
+    stage_gate_transfer_m: float = 0.08   # d_goal 시작 0.15 의 절반
+    # ── 성공 — 이진 5중 AND 폐기, 연속 곱. 전이 구간은 실측 분포가 걸친 곳 ────────
+    stage_success_weight: float = 6.0
+    stage_succ_height_band: tuple[float, float] = (0.04, 0.12)   # 실측 이봉 0.061/0.12 사이
+    stage_succ_graspq_band: tuple[float, float] = (0.35, 0.70)
+    stage_succ_tilt_band_deg: tuple[float, float] = (22.0, 12.0)  # 내려가는 전이
+    stage_succ_goal_band_m: tuple[float, float] = (0.09, 0.04)    # 내려가는 전이
 
     dex_approach_weight: float = 2.0
     dex_approach_sharpness: float = 8.0

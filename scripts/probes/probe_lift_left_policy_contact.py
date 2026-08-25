@@ -137,7 +137,10 @@ def main() -> None:
     arm_speed = []         # 팔 관절 속도 크기 (rad/s)
     tgt_delta = []         # 적용된 관절 목표의 스텝간 변화 (rad) — 제한기 이후
     prev_tgt = [None]
-    late_lin = []          # 에피소드 후반(목표 근처)에서의 컵 선속도
+    late_lin = []          # 에피소드 후반(목표 근처)에서의 컵 선속도(순간값 — 버즈 포함)
+    net_disp = []          # ★합격 판정용: 목표 근처에서 컵의 **순변위 속도** (m/s)
+    net_win: list = []     # 순변위 창 버퍼
+    NET_WINDOW = 50        # 스텝 (= 1.0 s) — 버즈는 상쇄되고 실제 이동만 남는 길이
     # ★리프트 게이트가 **놓인 상태에서 열려 있으므로**(레퍼런스 정합) 'lifted 비율' 만으로는
     #   들었는지 알 수 없다 — 가만히 있어도 100% 다. 컵 원점 z 를 직접 잰다.
     cup_z = []             # 컵 원점 z (env-local)
@@ -286,6 +289,20 @@ def main() -> None:
             close = held & (gd < 0.10)
             if bool(close.any()):
                 late_lin.append(float(obj.data.root_lin_vel_w.norm(dim=-1)[close].mean()))
+            # ★★합격 판정은 **순변위**로 한다(사용자 결정, fab_test19 실측 근거).
+            #   순간속도 root_lin_vel_w 는 서브밀리미터 솔버 버즈를 잰다 — 지령을 완전히
+            #   동결해도 컵이 71 mm/s 로 읽히는데 5 초 순변위는 11.7 mm(2.3 mm/s)였고,
+            #   중력보상·PD damping·fabric damping 어느 것에도 불변이었다. 정책이 줄일 수
+            #   없는 양이라 합격 기준으로 쓰면 구조적으로 도달 불가다.
+            net_win.append((obj.data.root_pos_w.clone(), close.clone()))
+            if len(net_win) > NET_WINDOW:
+                p0, c0 = net_win.pop(0)
+                both = c0 & close
+                if bool(both.any()):
+                    net_disp.append(
+                        float((obj.data.root_pos_w - p0).norm(dim=-1)[both].mean())
+                        / (NET_WINDOW * 0.02)
+                    )
 
             # ★층 분해 — 목표 10 cm 이내 & 쥐고 있는 env 만
             if bool(close.any()):
@@ -428,8 +445,15 @@ def main() -> None:
                   f"   (관절 속도 한계 2.175~2.61)")
         print(f"  팔 관절 속도            {sum(arm_speed) / len(arm_speed):.3f} rad/s")
         if late_lin:
-            print(f"  목표 10 cm 이내에서 컵 선속도 {sum(late_lin) / len(late_lin):.3f} m/s"
-                  f"   (도달 후에도 이 값이 크면 **멈추지 못하는 것**)")
+            print(f"  목표 10 cm 이내 컵 순간속도 {sum(late_lin) / len(late_lin):.3f} m/s"
+                  f"   (참고값 — 바닥 0.071 이 솔버 버즈다)")
+        if net_disp:
+            v = sum(net_disp) / len(net_disp)
+            print(f"  ★목표 10 cm 이내 컵 **순변위 속도** {v:.4f} m/s "
+                  f"({v * 1000:.1f} mm/s, 창 {NET_WINDOW * 0.02:.1f}s)"
+                  f"   합격 기준 < 0.050 → {'합격' if v < 0.05 else '불합격'}")
+        else:
+            print("  ★순변위 속도: 목표 10 cm 이내 표본이 창 길이만큼 이어지지 않았다")
         print("  → 액션 변화가 크면 정책이 목표를 계속 바꾸는 것이고, 팔 속도만 크면"
               " 목표는 안정한데 추종이 흔들리는 것이다.")
 

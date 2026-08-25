@@ -15,6 +15,17 @@ import torch
 from .rewards import action_l2_clamped, action_rate_l2_clamped
 
 
+def smoothstep(x: torch.Tensor, lo: float, hi: float) -> torch.Tensor:
+    """[0,1] 로 부드럽게 올라가는 전이. `hi < lo` 면 내려가는 전이가 된다.
+
+    게이트 전용. `lo` 아래에서 정확히 0, `hi` 위에서 정확히 **1.0 에 포화**하고
+    사이는 3차 다항으로 잇는다(양 끝 미분 0). 계층 보상에서 게이트가 포화해야
+    깊은 단계가 앞 단계에 의해 깎이지 않는다.
+    """
+    t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
 def compute_tip_cyl_rewards(
     palm_pos: torch.Tensor,           # (N, 3) env-local · 정렬 항의 기준점
     grasp_center_pos: torch.Tensor,   # (N, 3) env-local · palm 부착 파지중심(손가락 무관)
@@ -28,7 +39,8 @@ def compute_tip_cyl_rewards(
     height_delta: torch.Tensor,       # (N,) 스폰 기준 상승 [m]
     tilt_deg: torch.Tensor,           # (N,) 물체 기울기 [deg]
     xy_disp: torch.Tensor,            # (N,) 스폰 기준 수평 밀림 [m]
-    five_c: torch.Tensor,             # (N,5) bool · **5지 전부**의 손바닥면 접촉(mid∨dist∨tip)
+    touch_c: torch.Tensor,            # (N,C) bool · **가용 손가락**의 접촉(mid∨dist∨tip)
+    thumb_force: torch.Tensor,        # (N,) 엄지 총접촉력 [N] — 소프트 대향용
     palm_x: torch.Tensor,             # (N,3) palm_ee +x = **손바닥 법선**(실측 확정)
     palm_y: torch.Tensor,             # (N,3) palm_ee +y — 롤 잠금용
     ref_up: torch.Tensor,             # (N,3) **로봇 베이스 +z** — 자세 항의 기준축
@@ -84,30 +96,65 @@ def compute_tip_cyl_rewards(
     #   계층은 [0,1] 인자의 **곱셈 깊이**로 만든다(하드 스위치·래치 없음).
     d_gc = torch.norm(grasp_center_pos - object_pos, dim=-1)
 
-    # ── ② grasp 품질 = 5지 접촉 × palm 밀착 ─────────────────────────────────
-    # ★"palm 밀착"에 새 센서를 쓰지 않는다 — 실기 센서는 **tip 에만** 있어서
-    #   palm 접촉은 배포 불가다. 파지중심은 palm 에 강체로 붙은 점이므로
-    #   `d_gc → 0` 이 곧 "물체가 손 깊숙이 = palm 밀착"이다. FK 로만 계산된다.
-    # ★형상 어댑티브: 크기 가정이 없다. 어떤 모양이든 5지가 닿고 손 깊숙이 들어오면
-    #   감싼 것이다. 엄지 하나로 툭 건드리는 전략은 five_frac 이 0.2 라 구조적으로 죽는다.
-    five_frac = five_c.float().mean(dim=-1)      # 엄지 포함 5지 — 1지 터치는 0.2
-    near_q = torch.exp(-d_gc / float(cfg.stage_grasp_near_tau))
-    G = five_frac * near_q
+    # ── ② 파지 품질 Q_g — **접촉 기하로만 잰다** ───────────────────────────────
+    # ★★08.25 구 `G = five_frac · exp(−d_gc/τ)` 폐기. 실측 근거(lstm_test14 ep1102 정점):
+    #     five_frac 0.780 인데 deep4 0.155 · full_tip 0.0007
+    #     손가락별 touch 0.63~0.67 vs wrap(mid∨dist) 0.28~0.48
+    #   = 정책의 "최고 파지"는 감싼 게 아니라 **손끝으로 스친 것**이었다.
+    #   `five_c = mid∨dist∨tip` 이라 팁이 표면을 스치기만 해도 1점이고, `near_q` 는
+    #   그것을 0.124 로 정확히 깎았다 — **두 반쪽이 서로 싸워 G 가 0.10 에 고착**했고
+    #   G 가 grasp·lift·transfer·stay 전부에 곱해져 연속 보상 전체가 정격의 10% 였다.
+    #   남은 것은 이진 success(가중 20)뿐이라 그것이 총보상의 67~79% 를 먹었고,
+    #   그 항이 지배한 직후 두 런이 붕괴했다.
+    # ★`deep` 은 **같은 손가락의 두 마디가 동시에** 닿아야 1 이라 팁 스침으로는 못 만든다.
+    #   컵 반지름·높이 같은 형상 상수를 하나도 쓰지 않는다(형상 비의존 유지).
+    # ★실기 센서 제약(tip only)은 **obs** 에 걸리는 것이고 보상은 sim 전용 privileged
+    #   신호다. 현행 `five_c` 도 이미 mid·dist 를 쓰고 있었다 — obs 는 불변이다.
+    touch_f = touch_c.float().mean(dim=-1)       # 가용 손가락의 접촉 비율
+    deep_f = deep_c.float().mean(dim=-1)         # 두 마디 동시 접촉 = 실제 감쌈
+    # 이진 `oppose`(>0.1N) 를 소프트로. 0.5N 기준은 접촉임계 0.1N 의 5배이자 실측
+    # p95 7.77N 의 1/15 — 형상이 아니라 **센서 스케일**에서 온 값이다.
+    opp = 1.0 - torch.exp(-thumb_force / float(cfg.stage_thumb_force_ref))
+    _pf = persist_frac.clamp(0.0, 1.0)
+    _tf = float(cfg.stage_graspq_touch)
+    _df = float(cfg.stage_graspq_deep)
+    _sf = float(cfg.stage_graspq_persist)
+    _of = float(cfg.stage_graspq_thumb_floor)
+    Q_g = (_of + (1.0 - _of) * opp) * (_tf * touch_f + _df * deep_f + _sf * _pf)
+    # 엄지+검지 팁 핀치: touch_f 0.5 · deep_f 0 · persist 0 → Q_g 0.125. 구조적으로 죽는다.
+    # 엄지 없이 4지만 긁으면 상한이 `_of` 배 = 대향 없는 전략이 죽는다. 바닥 `_of` 는
+    # 첫 접촉이 순손실이 되는 것을 막는다(구 엄지 배수 삭제 사유 회피).
 
+    # ── 진척(포화하지 않음 — 각 단계가 **자기 몫으로** 버는 값) ──────────────────
     H = (height_delta / float(cfg.stage_lift_height_ref)).clamp(0.0, 1.0)   # h=0 → 0
-    # ★④ 컵의 +z 가 중력 반대인가 — 축 정렬로 직접 잰다(`tilt_deg` 는 `_get_dones`
-    #   에서 갱신되어 한 스텝 낡았다. 여기서 즉석 계산한 `obj_up` 을 쓴다).
-    # ★★08.25 코사인 그대로 쓰던 것을 **가우시안으로 날카롭게** 바꿨다. cos 는 작은
-    #   각에서 평평해 실측 U 가 0.996~0.952 상수였고 컵이 15.98° 로 누워도 0.952 였다
-    #   = 기울임 억제가 사실상 없었다. exp(−(θ/τ)²) 는 15° 에서 0.105 로 떨어진다.
-    #   1−cos ≈ θ²/2 이므로 acos 없이 등가로 쓴다(미분 발산 회피, 20° 까지 오차 <1%).
+    d_goal = torch.norm(object_pos - goal_pos, dim=-1)
+    T = 1.0 - torch.tanh(d_goal / float(cfg.stage_tracking_std))
+
+    # ── 계층 게이트 λ → μ → ν → ρ (DexPour, IROS 2025 식 3~6) ────────────────────
+    # 논문 구조를 그대로 따른다: **이진 누적 곱**. 각 게이트가 앞 게이트를 곱하므로
+    # 접근이 열려야 파지가, 파지가 열려야 리프트가, 그 위에 이송이 열린다.
+    #   λ = [d_hand_cup < d_approach]
+    #   μ = λ · [접촉 손가락 수 ≥ c_finger]
+    #   ν = μ · [height ≥ h_lift]
+    #   ρ = ν · [d_goal < d_transfer]
+    # ★소프트(smoothstep)가 아니라 이진인 것이 논문의 선택이고, 사용자가 요구한 것도
+    #   이 계층 구조다. 저장소가 과거에 제거한 것은 **래치**(한 번 열리면 유지·역방향
+    #   차단)였고 이것은 매 스텝 재평가되는 **순간 술어**라 성질이 다르다.
+    # ★λ=1 인데 μ=0 인 사각지대에서 보상이 0 이 되지 않도록, 게이트 밖에 항상 열려
+    #   있는 shaping 두 개(`approach`, `contact`)를 둔다 — 논문의 r_finger_cup_dist /
+    #   r_contact 와 같은 역할이다.
+    touch_n = touch_c.float().sum(dim=-1)
+    lam = (d_gc < float(cfg.stage_gate_approach_m)).float()
+    mu = lam * (touch_n >= float(cfg.stage_gate_contact_n)).float()
+    nu = mu * (height_delta >= float(cfg.stage_gate_lift_m)).float()
+    rho = nu * (d_goal < float(cfg.stage_gate_transfer_m)).float()
+    # 컵 축 기울기 — `tilt_deg`(한 스텝 낡음) 대신 즉석 `obj_up` 으로 낸다.
     _cos_up = torch.nn.functional.cosine_similarity(
         obj_up, torch.tensor([0.0, 0.0, 1.0], device=obj_up.device).expand_as(obj_up),
         dim=-1).clamp(-1.0, 1.0)
-    _tau_rad = math.radians(float(cfg.stage_upright_tau_deg))
-    U = torch.exp(-2.0 * (1.0 - _cos_up) / (_tau_rad * _tau_rad))
-    d_goal = torch.norm(object_pos - goal_pos, dim=-1)
-    T = 1.0 - torch.tanh(d_goal / float(cfg.stage_tracking_std))
+    _tilt = torch.rad2deg(torch.acos(_cos_up.clamp(-1.0 + 1e-6, 1.0 - 1e-6)))
+    U = smoothstep(_tilt, float(cfg.stage_upright_gate_deg[0]),
+                   float(cfg.stage_upright_gate_deg[1]))
     # ★⑤ stay = **실제로 안 움직이는가**. 구 S 는 액션 변화량이라 "액션을 안 바꾼다"
     #   였지 "안 움직인다"가 아니었다. 물체 선속도로 바꾼다.
     S = torch.exp(-obj_speed / float(cfg.stage_stay_speed_ref))
@@ -158,36 +205,37 @@ def compute_tip_cyl_rewards(
         * torch.relu(tilt_deg - float(cfg.stage_approach_tilt_margin_deg))
     )
 
-    # ---- ②~⑤ 소프트 게이트 계층 -------------------------------------------------
-    # 인자 수가 단계마다 1 → 2 → 2 → 4 → 5 로 깊어지고, 각 인자가 [0,1] 이라 깊을수록
-    # 값이 작아진다. 가중을 그만큼 키워야 단계가 실제로 열린다(lstm_test8 실측:
-    # 12·G·H·U·F 의 네 인자가 각각 0.2~0.5 인데 곱이 0.008 로 소멸해 gradient 부재).
-    grasp = G                                   # 5지 접촉 × palm 밀착
-    # ★★08.25 `lift` 에 직립 인자 U 를 넣었다. 이전엔 `G·H` 뿐이라 **기울인 채 들어도
-    #   가중 12.0 이 만점**이었고, 직립을 보는 유일한 항 transfer 는 T(목표근접)까지
-    #   요구해 리프트 시점엔 거의 지급되지 않았다 = 리프트 구간이 기울임 무법지대.
-    #   실측 lstm_test12: tilt 3.5°(ep100) → 15.98°(ep350), height 0.143 → 0.036.
-    lift = G * H * U
-    transfer = G * H * U * T                    # ④ 이송 + 컵 직립
-    stay = G * H * U * T * S                    # ⑤ 목표에서 정지
+    # ---- 계층 사다리 — 각 칸은 자기 게이트 × 자기 진척 -----------------------------
+    # 게이트가 이진이므로 열린 칸의 지급 = 가중 × 진척. 가중이 단조 증가하면
+    # **실지급도 단조 증가한다**(구 구조는 인자곱이 매번 <1 이라 역전됐다:
+    # 실지급 grasp 1.469 > lift 0.757 > transfer 0.661 > stay 0.334).
+    contact = touch_f                              # 게이트 없음 — 사각지대 방지 shaping
+    grasp = mu * Q_g                               # 파지가 열려야
+    lift = nu * U * H                              # 리프트가 열려야 (직립 품질 곱)
+    transfer = nu * T                              # 리프트 위에서 목표로
+    stay = rho * S                                 # 목표권 안에서 정지
 
-    # ---- ⑥ 성공(이진 보너스) -----------------------------------------------------
-    success_now = (
-        (height_delta >= float(cfg.stage_success_height))
-        & (five_frac >= float(cfg.stage_success_wrap_min))
-        & oppose
-        & (tilt_deg <= float(cfg.stage_success_tilt_deg))
-        & (d_goal <= float(cfg.stage_success_pos_tol))
-    )
+    # ---- 성공 — 이진 AND 를 **연속 곱**으로 (사용자 요구: 소프트) --------------------
+    # 구 판정은 5중 AND 이진이라 총보상의 67~79% 를 차지하면서 임계에서 깜빡였다
+    # (실측 height 0.101~0.125 vs 임계 0.12 · d_goal 0.067~0.077 vs 임계 0.05).
+    # 전이 구간 하한은 전부 **현재 실측 분포가 걸쳐 있는 곳**에 둔다 = 실패 반쪽에도
+    # gradient 가 생긴다(구 판정은 정확히 0 이었다).
+    s_h = smoothstep(height_delta, *cfg.stage_succ_height_band)
+    s_c = smoothstep(Q_g, *cfg.stage_succ_graspq_band)
+    s_o = 1.0 - torch.exp(-thumb_force / float(cfg.stage_thumb_force_ref))
+    s_t = smoothstep(_tilt, *cfg.stage_succ_tilt_band_deg)
+    s_d = smoothstep(d_goal, *cfg.stage_succ_goal_band_m)
+    succ_soft = s_h * s_c * s_o * s_t * s_d
 
     terms = {
         # ★approach 는 이미 가중·벌점이 반영된 값이다(grasp_v1 배선) — 다시 곱하지 않는다.
         "approach": approach,
+        "contact": float(cfg.stage_contact_weight) * contact,
         "grasp": float(cfg.stage_grasp_weight) * grasp,
         "lift": float(cfg.stage_lift_weight) * lift,
         "transfer": float(cfg.stage_transfer_weight) * transfer,
         "stay": float(cfg.stage_stay_weight) * stay,
-        "success": float(cfg.stage_success_weight) * success_now.float() * F,
+        "success": float(cfg.stage_success_weight) * succ_soft * F,
         "action_l2": float(cfg.action_l2_weight) * action_l2_clamped(actions),
         "action_rate_l2": float(cfg.action_rate_l2_weight)
         * action_rate_l2_clamped(actions, prev_actions),
@@ -197,22 +245,33 @@ def compute_tip_cyl_rewards(
     # 진단용(보상 아님) — env 가 로깅에서 pop 한다.
     terms["_d_gc"] = d_gc
     terms["_align"] = align
-    terms["_G"] = G
     terms["_H"] = H
     terms["_U"] = U
     terms["_deep4"] = deep4
     terms["_tip_frac"] = tip_frac
     terms["_full_tip"] = full_tip
-    terms["_persist"] = persist_frac.clamp(0.0, 1.0)
+    terms["_persist"] = _pf
     terms["_envelope"] = envelope
-    terms["_grasp_q"] = grasp
-    terms["_five_frac"] = five_frac
-    terms["_near_q"] = near_q
+    terms["_grasp_q"] = Q_g
+    terms["_touch_frac"] = touch_f
+    terms["_deep_frac"] = deep_f
+    terms["_opp_soft"] = opp
     terms["_perp_q"] = perp_q
     terms["_roll_q"] = roll_q
     terms["_orient_q"] = orient_q
     terms["_T"] = T
     terms["_S"] = S
-    # 3번째 반환값은 구 `gate` 자리 — 로깅 호환을 위해 "쓸만한 파지" 이진값을 싣는다.
-    grip_ok = G > 0.5
+    # ★계층 게이트 — "어느 단계까지 열렸나"가 로그로 보여야 한다. 지금까지는 어느
+    #   조건이 막는지 알 수 없었다(구 5중 AND 도 같은 병이었다).
+    terms["_lam"] = lam
+    terms["_mu"] = mu
+    terms["_nu"] = nu
+    terms["_rho"] = rho
+    terms["_succ_soft"] = succ_soft
+    terms["_succ_s_h"] = s_h
+    terms["_succ_s_c"] = s_c
+    terms["_succ_s_d"] = s_d
+    terms["_succ_s_t"] = s_t
+    # 3번째 반환값은 구 `gate` 자리 — 계층에서 "파지가 열렸나" = μ 가 그 의미다.
+    grip_ok = mu > 0.5
     return total, terms, grip_ok, wrap4
