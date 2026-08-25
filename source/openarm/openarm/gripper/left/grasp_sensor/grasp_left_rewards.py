@@ -43,6 +43,7 @@ from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.sensors import FrameTransformer
 from isaaclab.utils.math import combine_frame_transforms, matrix_from_quat
 
+from . import grasp_left_observations as obs_mdp
 from . import grasp_left_preset as P
 
 if TYPE_CHECKING:
@@ -973,3 +974,44 @@ def approach_opposed(
     d_side = side_weight_a * d_a + (1.0 - side_weight_a) * d_b
 
     return torch.exp(-sharpness * (d_palm + d_side))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 접촉 보상 — DexPour(IROS 2025) `r_contact` 이식 (fab_test38)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def contact_engage(
+    env: "ManagerBasedRLEnv",
+    sensor_names: tuple[str, ...],
+    force_threshold: float,
+    all_bonus: float,
+) -> torch.Tensor:
+    """턱이 컵에 **닿는 것 자체**에 값을 매긴다. `f + all_bonus·[f == 1]`, f = 닿은 턱 비율.
+
+    ★★t22~t37 열세 판이 전부 `lifting_object` 정확히 0 이었고, 공통 서명은 `drop` 이
+      ep50 안에 0.000 으로 죽는 것이었다. 로그 전수(아카이브 23 런 + 오늘 10 런):
+          drop(ep50-200) ≥ 0.02  →  리프트한 10 개 전부
+          drop(ep50-200) < 0.02  →  9 개 전부 lifting 0
+      성공한 런들은 수백 epoch 컵을 10~50% 넘어뜨리며 돌았다 — 그 실패가 곧 탐색이었다.
+      오늘 판들은 컵을 만지지 않으니 파지를 찾을 **표본 자체가 없다.**
+
+    왜 컵을 안 만지나 — 만져서 얻는 것이 **아무것도 없기 때문이다.** 낙하는 페널티가
+    아니라 종료라 위험만 있고, 파지 계열 보상은 `grasp_quality` 를 지나야 하는데 거기
+    도달하려면 이미 잘 잡고 있어야 한다. DexPour 의 ablation 이 같은 실패를 기록한다 —
+    Config.2(전 보상·커리큘럼 없음)가 *"avoiding cup movement to minimize penalties"* 로
+    조기 수렴해 파지 성공률 0% 다. 그 해법이 이 항이다(논문 III-A Stage 2 `r_contact`).
+
+    ⚠ **`all_bonus`(양 턱 동시 접촉)는 현재 도달 불가**다. 컵 파지대역 단면이 58 mm 인데
+      액션 게이트가 `grasp_ok` 전에는 그리퍼를 84.5 mm 로 강제 개방한다 — 닫히지 않으면
+      두 턱이 동시에 닿을 수 없다. 순환이다. 이번 판은 **한 턱 접촉(f=0.5) 경로만** 열고,
+      게이트 연속화는 다음 단계로 미룬다. 보너스 항은 그때를 위해 배선만 해 둔다.
+    ⚠ 센서 자체가 08.26 까지 죽어 있었다(`force_matrix_w` 최대까지 정확히 0). 필터가
+      `/Object`(프림 루트)를 가리켜 PhysX 가 GPU 접촉 필터를 못 만들었고, 시뮬레이터가
+      env 마다 경고를 찍는데 로그가 길어 묻혔다. `/Object/baseLink` 로 고친 뒤에야
+      이 항이 의미를 갖는다 — 그 전에 넣었으면 상시 0 인 죽은 항이었다.
+    """
+    forces = obs_mdp.finger_contact_forces(env, sensor_names)      # (N, F)
+    touch = (forces > force_threshold).float()
+    frac = touch.mean(dim=-1)
+    return frac + all_bonus * (frac >= 1.0).float()

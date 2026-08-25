@@ -309,6 +309,26 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
             },
         )
 
+        # ── 접촉 보상 — 컵을 **건드리는 것 자체**에 값을 매긴다 (fab_test38) ──
+        # ★★t22~t37 열세 판의 공통 서명이 `drop` ep50 안 0.000 이었다. 컵을 안 만지니
+        #   파지를 찾을 표본이 없다. 만져서 얻는 게 아무것도 없기 때문이다 —
+        #   낙하는 페널티가 아니라 종료라 위험만 있고, 파지 계열 보상은 `grasp_quality`
+        #   를 지나야 하는데 거기 도달하려면 이미 잘 잡고 있어야 한다.
+        #   DexPour(IROS 2025) III-A Stage 2 `r_contact` 이식. 그 논문 ablation 의
+        #   Config.2 가 정확히 같은 실패를 기록한다("avoiding cup movement to minimize
+        #   penalties", 파지 성공률 0%).
+        # ⚠ 가중 2.0 은 실측 산정 — t37 살아있던 항의 순간율 합 0.486 대비 69%.
+        #   지배하지 않으면서 접근과 동급이다. 근거는 preset 주석.
+        self.rewards.contact_engage = RewTerm(
+            func=rewards.contact_engage,
+            weight=P.CONTACT_ENGAGE_WEIGHT,
+            params={
+                "sensor_names": tuple(f"contact_{b}" for b in P.GRIPPER_FINGER_BODIES),
+                "force_threshold": P.CONTACT_FORCE_THRESHOLD,
+                "all_bonus": P.CONTACT_ALL_BONUS,
+            },
+        )
+
         # ── 진단 항 (weight 0 = log-only) ─────────────────────────────
         # ★★fab_test26. **지령과 실제를 나란히 TB 에 띄운다.** 지금까지 이 트랙은 둘을
         #   같이 본 적이 없어서, 추종오차 90 mm 도 회피 국소최적도 전부 사후 프로브로만

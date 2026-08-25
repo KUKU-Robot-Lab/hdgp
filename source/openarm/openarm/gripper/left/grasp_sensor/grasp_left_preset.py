@@ -1012,8 +1012,31 @@ RIGID_ANGULAR_DAMPING = 0.0
 #       j5     7/100 =  70 mrad · j6     7/50  = 140 mrad · j7  7/25 = 280 mrad
 #   구 균일 게인 400 에서는 j5-7 이 **17.5 mrad** 에서 포화했다 — kuka 테이퍼가
 #   우리 저출력 원위 관절에 오히려 더 잘 맞는다(원위로 갈수록 kp 가 낮아지므로).
-# ★★fab_test22 원본 정합 — 에피소드 길이 (kuka `episode_length_s = 10.`)
-EPISODE_LENGTH_S = 10.0
+# ★★★fab_test37: kuka 원본은 10.0 인데 **5.0 으로 되돌린다.**
+#
+# 로그 전수 분석(아카이브 23 런 + 오늘 10 런). `drop`(object_dropping)이 리프트의
+# **필요조건**이다 — 예외가 없다:
+#     drop(ep50-200) ≥ 0.02  →  리프트한 10 개 전부 (t7 0.064 … t14 0.522, t16ctl 0.304)
+#     drop(ep50-200) < 0.02  →  t1·t9·t10·t11·t30·t32·t33·t35·t36  전부 lifting 0
+# 성공한 런들은 수백 epoch 동안 컵을 10~50% 넘어뜨리며 돌았다. 그 실패가 곧 탐색이었다.
+# 오늘 판들은 ep50 안에 drop 이 0.002~0.034 로 죽고, 그 뒤 컵을 만지지 않으니 파지를
+# 찾을 **표본 자체가 없다.**
+#
+# 왜 길이가 개입하나 — `object_dropping` 은 페널티가 아니라 **종료**라 두 전략의 수익이
+# 다르게 스케일한다:
+#     가만히    r_idle × T     (T 에 비례해 커진다)
+#     접근→낙하  r_near × k     (k = 낙하 시각, T 와 무관하다)
+# t36 실측(스텝당 reaching 0.40 · 접근 시 1.2 · 낙하 100 스텝)을 넣으면:
+#     250 스텝(구 런)  가만히 2.00  vs  접근 2.40   → 접근이 이긴다
+#     300 스텝(5 s)    가만히 2.00  vs  접근 2.00   → 무승부
+#     600 스텝(현재)   가만히 4.00  vs  접근 2.00   → **가만히가 이긴다**
+# 분기점이 이 사이다. 길이는 원인이라기보다 **넘어야 할 언덕의 높이**를 정한다.
+#
+# ⚠ 단정하지 말 것 — 600 스텝 런은 전부 kuka env 이고 250 스텝 런은 전부 t16 env 라
+#   지금 데이터로는 **교락되어 있다.** 이 변경이 그 교락을 푸는 단일 변수 실험이다.
+#   250 스텝인데도 drop 이 죽은 런(t1·t9·t10·t11)이 있으므로 길이만으로는 설명되지 않는다.
+# ⚠ sim 1/120 · decimation 2 → 60 Hz 이므로 5.0 s = **300 스텝**이다(구 런은 50 Hz 250 스텝).
+EPISODE_LENGTH_S = 5.0
 
 # ★★fab_test21: fabric 속도를 PD 속도목표로 넘긴다(피드포워드).
 #   기존 배선은 `set_joint_velocity_target(zeros)` 였고 이는 **저장소 전역**이었다
@@ -1072,10 +1095,10 @@ ADR_HORIZON_STEPS = 16         # rl_games_ppo_fab_cfg.yaml 의 horizon_length �
 # ★★fab_test22 원본 정합: kuka `min_steps_for_dr_change = 5 × (에피소드 스텝)`.
 #   에피소드 = 10 s / (decimation 2 × sim_dt 1/120) = 600 스텝 → **3000 env 스텝**.
 #   우리는 150 epoch × horizon 16 = 2400 이었다.
-ADR_MIN_EPOCHS_BETWEEN = 3000 // 16   # 확장 간 최소 간격(epoch)
 # ★★fab_test22: env 스텝으로 **직접** 정의한다. epoch×horizon 로 환산하면 나눗셈
 #   나머지 때문에 원본값(3000)에 못 맞는다(187×16 = 2992). 원본은 env 스텝 기준이다.
-ADR_MIN_STEPS_BETWEEN = 5 * int(round(EPISODE_LENGTH_S / (2 * (1.0 / 120.0))))  # = 3000
+ADR_MIN_STEPS_BETWEEN = 5 * int(round(EPISODE_LENGTH_S / (2 * (1.0 / 120.0))))  # 5 × 에피소드 스텝 (5.0 s @60 Hz → 1500)
+ADR_MIN_EPOCHS_BETWEEN = ADR_MIN_STEPS_BETWEEN // ADR_HORIZON_STEPS
 # ★★fab_test22 원본 정합: kuka `num_adr_increments = 50`. 우리는 5 였다 —
 #   레벨당 난이도 도약이 10 배 컸다. 같은 최종 범위를 50 단계로 잘게 오른다.
 # ★kuka `num_adr_increments`. 카운터는 0(중립) ~ 50(만렙)으로 **51 단계**이고,
@@ -1196,3 +1219,19 @@ APPROACH_SIDE_WEIGHT_A = 0.5
 #     성공(lateral 20.0 · along 13.0 mm) → exp(−20/30)·exp(−13/30) = 0.333
 GRASP_QUALITY_REF = 0.333
 GRASP_BAND_SOFT_TAU = 0.020   # 대역 밖 20 mm 에서 1/e — 경계에 절벽을 안 만든다
+
+
+# ── 접촉 보상 (DexPour `r_contact` 이식, fab_test38) ──────────────────────
+# 가중 산정은 실측이다. t37 ep336-452 에서 살아 있던 항의 순간율 합이 **0.486**
+# (`reaching` 0.245 + `between_jaws` 0.241). 한 턱이 에피소드의 1/3 동안 닿으면
+# 기여 = w × 0.5 × 0.33 = 0.167w 이므로:
+#     w=1.0 → 0.167 (기존의 34%)   약하다
+#     w=2.0 → 0.333 (기존의 69%)   접근과 동급, 지배하지 않는다  ← 채택
+#     w=5.0 → 0.83  (기존의 171%)  접근을 밀어낸다
+CONTACT_ENGAGE_WEIGHT = 2.0
+# N. 접촉 판정 문턱 — 스치는 것과 누르는 것을 가른다. 컵 질량 0.134 kg 이므로
+# 정지 마찰을 이기는 수준(약 1 N)보다 낮게 두어 "닿았다"를 넓게 인정한다.
+CONTACT_FORCE_THRESHOLD = 0.5
+# 양 턱 동시 접촉 보너스. ⚠ **현재 도달 불가** — 액션 게이트가 `grasp_ok` 전에는
+# 그리퍼를 84.5 mm 로 강제 개방하는데 컵 단면은 58 mm 다. 게이트 연속화 이후를 위한 배선.
+CONTACT_ALL_BONUS = 1.5

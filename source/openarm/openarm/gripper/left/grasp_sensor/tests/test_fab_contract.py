@@ -897,9 +897,12 @@ def test_adr_schedule_matches_kuka_reference():
     """
     assert P.ADR_LEVELS == 50, f"레벨 수 {P.ADR_LEVELS} — 원본 num_adr_increments 는 50"
     assert abs(P.ADR_TRIGGER - 0.4) < 1e-9, "원본 success_for_adr 는 0.4(비율)"
-    # 에피소드 스텝 = episode_length_s / (decimation × sim_dt) = 10 / (2 × 1/120) = 600
+    # 에피소드 스텝 = episode_length_s / (decimation × sim_dt). 60 Hz 이므로 5.0 s → 300.
+    # ★fab_test37: 값을 박지 않는다 — 에피소드 길이는 로그 근거로 5.0 s 이고
+    #   (`test_episode_is_short_enough_that_engaging_beats_idling`), 여기서 검사할 것은
+    #   "확장 간격이 **5 × 에피소드**인가"라는 kuka 규약뿐이다.
     episode_steps = int(round(P.EPISODE_LENGTH_S / (2 * (1.0 / 120.0))))
-    assert episode_steps == 600
+    assert episode_steps == 300
     assert P.ADR_MIN_STEPS_BETWEEN == 5 * episode_steps, (
         f"확장 간격 {P.ADR_MIN_STEPS_BETWEEN} — 원본은 5 × 에피소드 스텝 = {5 * episode_steps}"
     )
@@ -916,7 +919,9 @@ def test_reference_physics_and_solver_settings():
     assert P.RIGID_MAX_DEPENETRATION_VELOCITY == 1000.0
     assert P.PHYSX_BOUNCE_THRESHOLD_VELOCITY == 0.2
     assert P.PHYSX_GPU_MAX_RIGID_PATCH_COUNT == 4 * 5 * 2 ** 15
-    assert P.EPISODE_LENGTH_S == 10.0
+    # ★★fab_test37: 에피소드 길이는 **의도적으로 kuka(10.0)와 다르다.**
+    #   근거는 `test_episode_is_short_enough_that_engaging_beats_idling` 의 로그 전수.
+    assert P.EPISODE_LENGTH_S == 5.0
     # 외란 주기 — 원본 wrench_trigger_every = 1 초
     assert P.ADR_DISTURB_INTERVAL_S == (1.0, 1.0)
     fab_src = _src("grasp_left_fab_env_cfg.py")
@@ -1330,3 +1335,57 @@ def test_learner_is_actually_on():
         "'regularisation'(영국식) 만 받는다. 그 외는 조용히 0 이 된다. "
         "그리고 'regularisation'(mu²)은 mu 를 박스 중심=목표 쪽으로 당겨 해롭다."
     )
+
+
+def test_episode_is_short_enough_that_engaging_beats_idling():
+    """★★★fab_test37: 에피소드가 길면 **컵을 안 건드리는 것이 최적**이 된다.
+
+    `object_dropping` 은 페널티가 아니라 **종료**다. 그래서 수익이 다르게 스케일한다 —
+    가만히 있으면 `r_idle × T`(길이에 비례), 접근하다 낙하하면 `r_near × k`(낙하 시각,
+    T 와 무관). 길수록 회피가 유리해진다.
+
+    ⚠ 이 계약은 **모델이 아니라 로그**로 고정한다. 아카이브 23 런 + 오늘 10 런에서
+      리프트한 10 개는 **전부 5.0 s** 이고, 10.0 s 인 열두 판(t22~t36)은 예외 없이
+      `lifting_object` 정확히 0 이었다. 그리고 그 열두 판은 전부 `drop`(ep50-200)이
+      0.002~0.034 로 죽었다 — 컵을 만지지 않으니 파지를 찾을 표본이 없다.
+    ⚠ 교락 주의: 10 s 런은 전부 kuka env 이고 5 s 런은 전부 t16 env 라 지금 데이터로는
+      길이만 따로 분리되지 않는다. 이 상수를 5.0 으로 두는 것이 그 교락을 푸는
+      단일 변수 실험이다. 5 s 인데도 drop 이 죽은 런이 있으므로(t1·t9·t10·t11)
+      길이만으로 전부 설명되지는 않는다.
+    """
+    assert P.EPISODE_LENGTH_S <= 5.0, (
+        f"에피소드 {P.EPISODE_LENGTH_S} s — 리프트한 10 런은 전부 5.0 s 였고 "
+        "10.0 s 인 열두 판은 전부 lifting 0 이었다"
+    )
+
+
+def test_contact_reward_pays_for_touching_the_cup():
+    """★★★fab_test38: 컵을 **건드리는 것 자체**에 값이 있어야 한다.
+
+    t22~t37 열세 판의 공통 서명이 `drop`(ep50-200) 0.000 이었다. 로그 전수에서
+    `drop` 은 리프트의 **필요조건**이다 — ≥0.02 인 10 런은 전부 리프트했고, <0.02 인
+    9 런은 전부 lifting 0 이다. 컵을 안 만지면 파지를 찾을 표본이 없다.
+
+    만지지 않는 이유는 **만져서 얻는 게 없기 때문**이다: 낙하는 페널티가 아니라 종료라
+    위험만 있고, 파지 계열은 `grasp_quality` 를 지나야 하는데 거기 닿으려면 이미 잘
+    잡고 있어야 한다. DexPour ablation 의 Config.2 가 같은 실패를 기록한다.
+
+    ⚠ 이 항은 **접촉 센서가 살아 있을 때만** 의미가 있다. 08.26 까지 필터가 프림 루트를
+      가리켜 `force_matrix_w` 가 최대까지 정확히 0 이었다 — 그때 넣었으면 죽은 항이다.
+      `test_contact_filter_points_at_the_rigid_body` 와 짝으로 봐야 한다.
+    """
+    cfg = _src("grasp_left_fab_env_cfg.py")
+    assert "self.rewards.contact_engage = RewTerm" in cfg, "접촉 보상이 배선되지 않았다"
+    assert "func=rewards.contact_engage" in cfg
+    src = _src("grasp_left_rewards.py")
+    assert "def contact_engage" in src
+    assert "finger_contact_forces" in src, "접촉 보상이 실제 센서를 읽지 않는다"
+
+    # 가중은 기존 항을 지배하면 안 된다 — t37 실측 순간율 합 0.486
+    LIVE_RATE = 0.486
+    contrib = P.CONTACT_ENGAGE_WEIGHT * 0.5 * (1.0 / 3.0)   # 한 턱 · 에피소드 1/3
+    assert 0.25 * LIVE_RATE < contrib < 1.0 * LIVE_RATE, (
+        f"기여 {contrib:.3f} vs 기존 {LIVE_RATE:.3f} — 너무 작으면 무시되고 "
+        "너무 크면 접근 보상을 밀어낸다"
+    )
+    assert P.CONTACT_FORCE_THRESHOLD > 0.0, "문턱 0 이면 수치 잡음도 접촉으로 센다"
