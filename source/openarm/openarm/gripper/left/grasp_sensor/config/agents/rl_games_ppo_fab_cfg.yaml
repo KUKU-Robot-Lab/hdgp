@@ -60,6 +60,57 @@ params:
   load_path: ''
 
   config:
+    # ═══════════════════════════════════════════════════════════════════
+    # ★★★fab_test36: **학습기가 원래 세기의 1/40 로 켜져 있었다.**
+    #
+    # 같은 하네스에서 t16ctl 은 ep105 에 총보상 53.8 · lifting 4.77 을 냈다. t35 는
+    # 같은 구간에 3.43 · lifting 0 이다. 학습 진단을 나란히 놓으니 원인이 둘로 갈렸다
+    # (ep100-200 실측):
+    #     지표             t16ctl(성공)   t35(고장)     비
+    #     losses/a_loss      0.00718      0.00017     **42 배**
+    #     info/last_lr       0.00334      0.000289    **11.6 배**
+    #     losses/bounds_loss 6.18         0.000       — (죽어 있었다)
+    #     losses/c_loss      0.0962       0.0099
+    #
+    # ① `lr_schedule: linear` → **adaptive**.
+    #    t16 은 adaptive 라 KL(0.0155)이 임계 위면 lr 을 **3.3e-3 까지 올렸다.**
+    #    linear 는 3e-4 에서 단조 감쇠만 해서 2.89e-4 에 묶였다. `a_loss` 가 42 배 작은
+    #    이유가 이것이고, 그 상태로는 `c_loss` 0.0099(=가치함수가 "여기가 최선"이라 확신)
+    #    를 뒤집을 힘이 없다. 국소최적에서 못 나온다.
+    #
+    # ② `bound_loss_type: regularization` → **bound**.
+    #    rl_games 는 **영국식 `'regularisation'`** 과 `'bound'` 만 받는다:
+    #        if type == 'regularisation': b_loss = reg_loss(mu)      # mu² — mu 를 0 으로 당김
+    #        elif type == 'bound':        b_loss = bound_loss(mu)    # |mu|>1.1 만 벌
+    #        else:                        b_loss = zeros             # ← 우리가 여기였다
+    #    미국식 z 라 **어느 분기와도 안 맞아 통째로 0** 이었다(`losses/bounds_loss` 전 구간
+    #    정확히 0 으로 확인). kuka 원본도 같은 오타를 갖고 있다 — 원본을 그대로 옮긴 죄다.
+    #    ⚠ `'regularisation'` 으로 고치면 안 된다. `reg_loss = mu²` 는 mu 를 **0 = 박스
+    #      중심**으로 당기는데, 우리 박스 중심은 목표 근처이고 파지는 z ≈ −0.75 다.
+    #      정확히 지금 관찰되는 "목표로 가는 기동"을 **보상 밖에서** 만들어낸다.
+    #      t16(성공)은 이 키가 **미지정**이라 rl_games 기본값 `'bound'` 로 떨어졌다.
+    # ═══════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
+    # ★★fab_test31: **리셋이 gradient 를 오염시키는 것을 막는다.**
+    #
+    # `value_bootstrap: False` 였다. 그러면 rl_games 의 이 보정이 **한 번도 실행되지
+    # 않는다**(a2c_common.py:777):
+    #     if self.value_bootstrap and 'time_outs' in infos:
+    #         shaped_rewards += gamma * values * time_outs
+    # 결과: `time_out`(절단)과 `object_dropping`(진짜 종료)이 **구분되지 않고**, 만기
+    # 시각의 가치가 강제로 0 이 된다. "에피소드가 끝났다"가 아니라 "세상이 끝났다"를
+    # 학습한다. 배선은 이미 있다 — 확인함:
+    #     wrapper  extras["time_outs"] = truncated   (is_finite_horizon=False 일 때만)
+    #     env.yaml is_finite_horizon: false          ✓
+    #     DoneTerm time_out=True (절단) · dropping/workspace 는 플래그 없음(종료) ✓
+    # 즉 켜기만 하면 된다.
+    #
+    # 그리고 이 결함은 **감마와 곱해진다**:
+    #     γ0.99  × 250 스텝(t16)  → γ^N = 0.08   거의 무해
+    #     γ0.998 × 600 스텝(kuka) → γ^N = 0.30   **3.7 배**
+    # bisect 가 지목한 B2(γ·horizon·batch) 와 같은 지점에서 만난다. γ 를 올리면서
+    # 절단 보정을 안 켠 것이 왜곡을 증폭시켰다. 둘을 함께 고친다.
+    # ═══════════════════════════════════════════════════════════════════
     name: open-grip_l_grasp_sensor_fab
     env_name: rlgpu
     device: 'cuda:0'
@@ -69,15 +120,15 @@ params:
     mixed_precision: False
     normalize_input: True
     normalize_value: True
-    value_bootstrap: False
+    value_bootstrap: True  # ★절단 보정 — 아래 주석
     num_actors: -1
     reward_shaper:
       scale_value: 0.01
     normalize_advantage: True
-    gamma: 0.998
+    gamma: 0.99  # ★kuka 0.998 에서 되돌림 — 아래 주석
     tau: 0.95
     learning_rate: 3e-4
-    lr_schedule: linear
+    lr_schedule: adaptive  # ★fab_test36 — 아래 주석
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000
@@ -98,7 +149,7 @@ params:
     critic_coef: 4
     clip_value: True
     seq_length: 16
-    bound_loss_type: regularization
+    bound_loss_type: bound  # ★fab_test36 — 철자/기본값, 아래 주석
     bounds_loss_coef: 0.005
     zero_rnn_on_done: True
 

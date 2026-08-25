@@ -612,8 +612,11 @@ def test_env_cfg_inherits_isaaclab_lift():
     if "self.rewards.reaching_object = " in src:
         blk = src[src.index("self.rewards.reaching_object = "):]
         blk = blk[: blk.index(")\n\n")]
-        assert "weight=1.1" in blk and '"std": 0.1' in blk, (
-            "도달 보상은 목표점만 옮길 수 있다 — weight/std 는 레퍼런스 값 유지"
+    # ★★fab_test32: 접근 보상을 agnostic 트랙 이식본(`approach_opposed`, weight 2.0)으로
+    #   교체했다. 구 계약은 `1 − tanh(d/std)` 전제였고 그 함수는 더 이상 쓰지 않는다.
+        assert "weight=P.APPROACH_WEIGHT" in blk and '"sharpness"' in blk, (
+            "접근 보상이 이식본 규약이 아니다 — weight 는 APPROACH_WEIGHT, "
+            "커널은 exp(−sharpness·(d_palm+d_side))"
         )
     # 판정 게이트를 늘리는 term 은 여전히 금지 — test6/test7 에서 학습을 죽였다.
     # 신설: grasp_pose · settled_at_goal · cup_between_jaws · grip_closure_when_enclosed

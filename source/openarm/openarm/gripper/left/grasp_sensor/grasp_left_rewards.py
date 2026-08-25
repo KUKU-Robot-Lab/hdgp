@@ -162,7 +162,8 @@ def _held(
     #   ⚠ 하드 게이트라 감쌈 이전의 연속 기울기(옛 "자동 커리큘럼")는 사라진다. 그 역할은
     #     이제 **액션 게이트**가 대신한다 — 접근 전에는 그리퍼가 강제로 열려 있어
     #     "닫고 서 있기" 국소최적 자체가 도달 불가능해진다.
-    held = grasp_ok(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg).float()
+    # ★★fab_test33: 이진 `grasp_ok` → **연속 `grasp_quality`**. 근거는 그 함수 docstring.
+    held = grasp_quality(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg)
     return lifted * held * (near & upright).float()
 
 
@@ -525,6 +526,53 @@ def _jaw_frame(
     return p_l, p_r, u, mid, cup_pt, axis_t_raw.squeeze(-1)
 
 
+def grasp_quality(
+    env: "ManagerBasedRLEnv",
+    lat_ok: float,
+    along_ok: float,
+    pad_offset: float,
+    jaw_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """`grasp_ok` 의 **연속판** (0~1). 같은 세 측정을 쓰되 절벽을 없앤다.
+
+    ★★fab_test33: 이 트랙의 sparse 구간을 여기서 연다. `_held()` 안의 이진 `grasp_ok` 가
+      **다섯 항의 공통 목**이었다 — `lifting_object` · `object_goal_tracking(+fine)` ·
+      `settled_at_goal` · `dwell_at_goal` · `grasp_pose`. 그래서 파지가 성립하기 전까지
+      다섯이 **정확히 0** 이었고(t30/t31 790 epoch 실측), 접근에서 파지로 넘어가는
+      지점이 절벽이었다.
+
+    설계는 agnostic 트랙의 단계 사다리를 따른다 — 하드 게이트 대신 **연속 품질을 공통
+    인자로** 곱하고, 인자가 깊어질수록 값이 작아지는 것을 감안한다. 다만 우리는 가중을
+    다시 잡는 대신 **성공 기하에서 1.0 이 되도록 정규화**한다:
+
+        q = exp(−lateral/lat_ok) · exp(−along/along_ok) · band_q
+        G = clamp(q / GRASP_QUALITY_REF, 0, 1)
+
+    그러면 성공 지점의 보상 크기는 **지금과 정확히 같고**(가중 재조정 불필요) 그 아래로만
+    연속 기울기가 생긴다. 실측 기하로 검산:
+
+        성공 (lateral 20.0 · along 13.0 mm)  q = 0.333 → G = **1.00**
+        주먹 (lateral 78.6 · along 27.8 mm)  q = 0.029 → G = 0.086
+        컵 옆(lateral 85.5 · along 12.0 mm)  q = 0.039 → G = 0.116
+
+    ⚠ 던지기 재발 우려는 없다. `_held` 는 G 외에 `near`(TCP 80 mm 이내)·`upright` 를
+      **여전히 게이트로** 곱한다 — 쳐 날린 컵은 즉시 near 가 거짓이라 0 이다
+      (test3 사고의 차단 장치는 그대로 남는다).
+    ⚠ band 는 부드럽게 — 대역 밖으로 나간 거리만큼 지수 감쇠한다. 하드 판정이면
+      대역 경계에서 다시 절벽이 생긴다.
+    """
+    _l, _r, u, mid, cup_pt, axis_t = _jaw_frame(env, pad_offset, jaw_cfg, object_cfg)
+    d = cup_pt - mid
+    along = (d * u).sum(-1).abs()
+    lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
+    lo, hi = P.CUP_GRASP_BAND_AXIS
+    out = (lo - axis_t).clamp(min=0.0) + (axis_t - hi).clamp(min=0.0)
+    q = (torch.exp(-lateral / lat_ok) * torch.exp(-along / along_ok)
+         * torch.exp(-out / P.GRASP_BAND_SOFT_TAU))
+    return (q / P.GRASP_QUALITY_REF).clamp(max=1.0)
+
+
 def grasp_ok(
     env: "ManagerBasedRLEnv",
     lat_ok: float,
@@ -729,3 +777,199 @@ def gripper_gate_rate(env: "ManagerBasedRLEnv", action_term: str = "gripper_acti
     """
     term = env.action_manager.get_term(action_term)
     return term.gate_open.float()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 진단 항 (weight 0) — 지령 위치 · 실제 위치 · 그 차이
+#
+# ★★fab_test26 신설. 이 트랙은 **지령과 실제를 나란히 본 적이 한 번도 없다.**
+#   `Metrics/object_pose/position_error` 는 컵–목표 거리이지 팔 추종오차가 아니고,
+#   `reaching_object` 는 shaping 을 거친 값이라 거리로 못 읽는다. 그 결과:
+#     · 08.25 층 분해에서야 "이송 중 지령과 실제 TCP 가 90 mm 어긋나 있다"를 알았다
+#     · t24 의 회피 국소최적도 실측 대조표를 만들고 나서야 보였다
+#   실측을 못 보면 진단이 전부 사후 프로브가 된다. TB 에 상시로 띄운다.
+#
+# ⚠ weight=0 은 IsaacLab 에서 **log-only** 다(`reward_manager.compute` 의 분기):
+#       self._episode_sums[name] += raw_value * dt
+#   따라서 TB 의 `Episode_Reward/<name>` = **에피소드 시간평균**이다. 위치에 대해서는
+#   "그 에피소드 동안 평균적으로 어디 있었나"가 되고, 그게 우리가 보고 싶은 값이다.
+# ⚠ 전부 **env 로컬 좌표**로 맞춘다. palm 지령은 로봇 base 기준인데 body 위치는 world
+#   기준이라, env_origins 를 안 빼면 두 값이 다른 프레임이 되어 비교가 무의미해진다.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_AXIS = {"x": 0, "y": 1, "z": 2}
+
+
+def _jaw_mid_local(env, pad_offset: float, jaw_cfg: SceneEntityCfg) -> torch.Tensor:
+    """턱 중점(패드 중앙 보정 포함), env 로컬. `_jaw_frame` 과 같은 자다."""
+    robot: Articulation = env.scene[jaw_cfg.name]
+    pos = robot.data.body_pos_w[:, jaw_cfg.body_ids, :]
+    approach = matrix_from_quat(robot.data.body_quat_w[:, jaw_cfg.body_ids[0], :])[:, :, 2]
+    pos = pos + (approach * pad_offset).unsqueeze(1)
+    return pos.mean(dim=1) - env.scene.env_origins
+
+
+def diag_palm_cmd(env, action_term_name: str, axis: str) -> torch.Tensor:
+    """정책이 낸 palm **지령** 위치 성분 (m, env 로컬)."""
+    return env.action_manager.get_term(action_term_name)._palm_pose_target[:, _AXIS[axis]]
+
+
+def diag_jaw_pos(env, axis: str, pad_offset: float, jaw_cfg: SceneEntityCfg) -> torch.Tensor:
+    """**실제** 턱 중점 위치 성분 (m, env 로컬)."""
+    return _jaw_mid_local(env, pad_offset, jaw_cfg)[:, _AXIS[axis]]
+
+
+def diag_cmd_jaw_gap(env, action_term_name: str, pad_offset: float,
+                     jaw_cfg: SceneEntityCfg) -> torch.Tensor:
+    """지령과 실제의 거리 (m) = **추종 오차**.
+
+    ★이 값이 커지면 정책이 낸 지령을 팔이 못 따라가고 있다는 뜻이고, 그러면 정책의
+      액션과 환경 응답의 대응이 끊긴다. 08.25 실측 90 mm 가 그 상태였다.
+    """
+    cmd = env.action_manager.get_term(action_term_name)._palm_pose_target[:, :3]
+    return (cmd - _jaw_mid_local(env, pad_offset, jaw_cfg)).norm(dim=-1)
+
+
+def diag_cmd_step(env, action_term_name: str) -> torch.Tensor:
+    """스텝당 지령 이동량 (m) — **리미터가 실제로 무는지**를 이걸로 확인한다."""
+    return env.action_manager.get_term(action_term_name).cmd_step_norm
+
+
+def diag_jaw_cup_dist(env, pad_offset: float, jaw_cfg: SceneEntityCfg,
+                      object_cfg: SceneEntityCfg = SceneEntityCfg("object")) -> torch.Tensor:
+    """턱 중점 ↔ 컵 원점 거리 (m) — shaping 안 거친 **날 거리**.
+
+    `reaching_object` 는 커널을 통과한 값이라 "얼마나 가까운가"를 못 읽는다.
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    cup = obj.data.root_pos_w - env.scene.env_origins
+    return (_jaw_mid_local(env, pad_offset, jaw_cfg) - cup).norm(dim=-1)
+
+
+def diag_duty(env) -> torch.Tensor:
+    """상수 1.0 — **정규화 분모를 측정한다.**
+
+    ★TB 의 `Episode_Reward/<name>` 은 `(Σ raw·dt)/episode_length_s` 라, 에피소드가 만기
+      전에 끝나면 그 비율만큼 작게 찍힌다. 위치를 m 로 읽으려면 그 비율을 나눠야 하는데,
+      `episode_lengths/iter`(rl_games)는 **다른 집합에서 평균된 값**이라 안 맞는다
+      (실측: 그걸로 정규화하니 `diag_cmd_step` 이 상한 0.10 을 넘는 0.146 이 나왔다).
+    이 항은 raw=1 이므로 로깅값이 정확히 `에피소드 길이 / episode_length_s` 다.
+    다른 diag 값을 **이걸로 나누면** 단위가 정확히 복원된다 — 추정이 아니라 측정이다.
+    """
+    return torch.ones(env.num_envs, device=env.device)
+
+
+def tcp_x_level_quality(
+    env: "ManagerBasedRLEnv",
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    body_name: str = "l_hl_gripper_base",
+    power: float = 4.0,
+) -> torch.Tensor:
+    """TCP 로컬 **+x 축이 world +z 와 수직**인 정도 (0~1). 1 = 완전 수평.
+
+    사용자 지시(08.25): "접근할 때부터 tcp_+x 가 world +z 와 수직이 되게 접근해야 한다."
+
+    품질 = (1 − |x축의 z성분|)^power. |cos| 이 아니라 **sin 의 거듭제곱**이라
+    수직 근처에서 평평하지 않고 기울수록 빠르게 떨어진다(cos^4 규약은 자매 트랙 교훈).
+
+    ⚠ **게이트로 쓰지 말 것.** 이 태스크에서 자세를 AND 게이트로 넣었다가 학습이
+      시작조차 못 한 적이 있다(test6·test7: lifting 0.0000 · 총보상 −0.46 · 에피소드
+      130→13). 양의 보상이 전부 0 이 되면 조기 종료가 최적이 된다.
+      접근 보상에 **곱하는 연속 배수**로만 쓴다 — 0 이 되지 않도록 floor 를 둔다.
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    idx = robot.body_names.index(body_name)
+    w, x, y, z = robot.data.body_quat_w[:, idx, :].unbind(-1)
+    # 회전행렬의 (2,0) 성분 = 로컬 x 축의 world z 성분
+    x_axis_z = 2.0 * (x * z - w * y)
+    return (1.0 - x_axis_z.abs()).clamp(min=0.0) ** power
+
+
+def reach_with_tcp_level(
+    env: "ManagerBasedRLEnv",
+    std: float,
+    grasp_offset: float,
+    level_floor: float = 0.25,
+    level_power: float = 4.0,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """접근 보상 × TCP 수평 품질. 자세를 **접근 단계부터** 유도한다.
+
+    배수 = floor + (1 − floor) · quality  → 최악이어도 `level_floor` 는 남는다.
+    floor 를 두는 이유는 위 docstring 의 test6/test7 사고 때문이다 — 접근 보상은
+    초기에 **유일하게 살아 있는 신호**라 0 이 되면 학습이 시작되지 않는다.
+    """
+    reach = ee_grasp_point_distance(env, std=std, grasp_offset=grasp_offset)
+    q = tcp_x_level_quality(env, robot_cfg=robot_cfg, power=level_power)
+    return reach * (level_floor + (1.0 - level_floor) * q)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 접근 보상 — agnostic/tasks/grasp_sensor 이식 (사용자 지시 08.25)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def approach_opposed(
+    env: "ManagerBasedRLEnv",
+    sharpness: float,
+    side_radius: float,
+    grasp_offset: float,
+    pad_offset: float,
+    jaw_cfg: SceneEntityCfg,
+    palm_body: str = "l_hl_gripper_base",
+    side_weight_a: float = 0.5,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """`exp(−s·(d_palm + d_side))` — agnostic 트랙 `approach_reward` 이식.
+
+    ★★왜 옮겼나. 우리 접근 보상은 `1 − tanh(d/0.1)` 로 **거리만** 봤다. 그래서
+      "컵 근처에 있기"만 하면 만점에 가까웠고, 턱이 컵을 어떻게 감싸는지는 아무 압력도
+      받지 않았다. 실측(fab_test31): 정책이 목표 자리(y 0.321 = 목표 y 0.320)에 머물며
+      턱–컵 거리를 166 → 234 mm 로 **벌리는데도** 총보상이 유지됐다.
+
+    이식본은 거리와 **프리그래스프 기하**를 한 지수 안에서 함께 본다:
+        d_palm  = |palm − 파지중심|
+        d_side  = 턱들이 파지중심 양옆 **대향점**(중심 ± n·side_radius)에 얼마나 가까운가
+                  n = 접근 방향(palm→중심)의 xy 수직 — 즉 **턱 축이 컵을 가로질러야** 작아진다
+    자세를 각도 배수로 유도하던 방식(제가 넣었다가 reaching 을 1/5 로 떨어뜨린 것)을
+    대체한다 — 자세가 **기하로** 강제되므로 별도 배수가 필요 없다.
+
+    ⚠ 원본과 한 곳 다르다. 원본은 `d_side = 0.6·d_a + 0.4·d_b` 로 엄지 쪽에 가중을 준다
+      (5 지 손의 엄지 1 대 4 지 4 비대칭 때문). **우리 두 턱은 대칭**이라 0.5/0.5 로 둔다 —
+      한쪽에 가중을 주면 그 턱만 맞추고 반대쪽이 벌어지는 해가 생긴다.
+    ⚠ n 의 부호는 **현재 A 턱이 있는 쪽**으로 동적 선택한다(원본과 동일). 고정 부호를
+      쓰면 좌우 미러에서 감쌈이 뒤집힌다.
+    """
+    robot: Articulation = env.scene[jaw_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    origin = env.scene.env_origins
+
+    # 파지중심 = 컵 원점 + 파지대역 오프셋 (env 로컬)
+    grasp_center = obj.data.root_pos_w - origin
+    grasp_center = grasp_center + torch.tensor(
+        [0.0, 0.0, grasp_offset], device=grasp_center.device)
+
+    # 턱 위치 — 패드 중앙 보정 포함(보상 전체가 같은 자를 쓴다)
+    tips = robot.data.body_pos_w[:, jaw_cfg.body_ids, :]
+    approach_axis = matrix_from_quat(
+        robot.data.body_quat_w[:, jaw_cfg.body_ids[0], :])[:, :, 2]
+    tips = tips + (approach_axis * pad_offset).unsqueeze(1) - origin.unsqueeze(1)
+
+    palm_idx = robot.body_names.index(palm_body)
+    palm_pos = robot.data.body_pos_w[:, palm_idx, :] - origin
+
+    d_palm = torch.norm(palm_pos - grasp_center, dim=-1)
+
+    a_xy = palm_pos[:, :2] - grasp_center[:, :2]
+    a_xy = a_xy / a_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+    n = torch.stack([-a_xy[:, 1], a_xy[:, 0], torch.zeros_like(a_xy[:, 0])], dim=-1)
+    sign = torch.sign(((tips[:, 0] - grasp_center) * n).sum(dim=-1, keepdim=True))
+    n = n * torch.where(sign == 0, torch.ones_like(sign), sign)
+
+    target_a = grasp_center + n * side_radius
+    target_b = grasp_center - n * side_radius
+    d_a = torch.norm(tips[:, 0] - target_a, dim=-1)
+    d_b = torch.norm(tips[:, 1] - target_b, dim=-1)
+    d_side = side_weight_a * d_a + (1.0 - side_weight_a) * d_b
+
+    return torch.exp(-sharpness * (d_palm + d_side))

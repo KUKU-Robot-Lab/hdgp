@@ -85,6 +85,19 @@ gym.register(
     },
 )
 
+# ★MLP 대조군 — env 는 `_fab` 과 **완전히 같고** 학습기에서 RNN 만 뺐다.
+#   t30 이 ep464 까지 lifting 정확히 0 인 원인이 학습기인지를 단일 변수로 가른다.
+#   env 를 공유하므로 두 런의 차이는 오직 rnn 유무다.
+gym.register(
+    id="open-grip_l_grasp_sensor_fab_mlp",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "openarm.gripper.left.grasp_sensor.grasp_left_fab_env_cfg:GraspLeftGripperFabEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_fab_mlp_cfg.yaml",
+    },
+)
+
 gym.register(
     id="open-grip_l_grasp_sensor_fab-play",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

@@ -104,6 +104,46 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 
+class _TagRegroupWriter:
+    """TB 태그를 `task/` · `Rewards/` 로 재배치하는 writer 프록시.
+
+    rl_games 코어가 `Episode/` 접두사를 **하드코딩**하고(`algo_observer.py`), IsaacLab
+    매니저가 그 뒤에 `Episode_Reward/` · `Episode_Termination/` 등을 붙인다. 결과가
+    `Episode/Episode_Reward/lifting_object` 라 TB 에서 전부 한 폴더에 뭉친다.
+
+    양쪽 다 프레임워크 코드라 이름을 못 바꾸므로, 쓰기 직전에 가로채 바꾼다.
+    **잎 이름은 보존**한다 — 기존 파싱 도구가 접미사로 찾기 때문이다.
+
+    ⚠ `train.py` 는 여러 트랙이 공유한다. 남의 대시보드를 말없이 바꾸지 않도록
+      `HDGP_TB_GROUPS=1` 일 때만 켠다.
+    """
+
+    _MAP = (
+        ("Episode/Episode_Reward/diag_", "task/diag/diag_"),
+        ("Episode/Episode_Reward/", "Rewards/"),
+        ("Episode/Episode_Termination/", "task/termination/"),
+        ("Episode/Metrics/", "task/metrics/"),
+        ("Episode/Curriculum/", "task/curriculum/"),
+        ("Episode/", "task/"),
+    )
+
+    def __init__(self, writer):
+        self._w = writer
+
+    @classmethod
+    def remap(cls, tag: str) -> str:
+        for src, dst in cls._MAP:
+            if tag.startswith(src):
+                return dst + tag[len(src):]
+        return tag
+
+    def add_scalar(self, tag, *a, **kw):
+        return self._w.add_scalar(self.remap(tag), *a, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._w, name)
+
+
 class SingleAxisIsaacObserver(IsaacAlgoObserver):
     """env의 log/* 진단 지표를 frame/iter/time 3중 대신 iter(epoch) 1개만 기록.
 
@@ -136,6 +176,16 @@ class SingleAxisIsaacObserver(IsaacAlgoObserver):
                 category, chart_name = "custom", category
             layout.setdefault(category, {})[chart_name] = ["Multiline", sorted(tags)]
         return layout
+
+    def after_init(self, algo):  # noqa: D102
+        # ★`writer` 는 여기서 만들어진다 — `before_init` 에서 감싸면
+        #   AttributeError: 'SingleAxisIsaacObserver' object has no attribute 'writer'.
+        # ★태그 재배치는 opt-in — 이 스크립트를 다른 트랙도 쓴다.
+        super().after_init(algo)
+        if os.environ.get("HDGP_TB_GROUPS") == "1" and not isinstance(
+            self.writer, _TagRegroupWriter
+        ):
+            self.writer = _TagRegroupWriter(self.writer)
 
     def after_print_stats(self, frame, epoch_num, total_time):
         saved = self.direct_info

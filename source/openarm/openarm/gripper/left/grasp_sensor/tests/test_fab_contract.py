@@ -162,13 +162,21 @@ def test_palm_box_covers_spawn_and_goal_regions():
                P.CUP_SPAWN_X_CENTER + P.CUP_SPAWN_X_RANGE)
     spawn_y = (P.CUP_SPAWN_Y_CENTER - P.CUP_SPAWN_Y_RANGE,
                P.CUP_SPAWN_Y_CENTER + P.CUP_SPAWN_Y_RANGE)
+    # ★★fab_test35 정정. 이 계약은 **팜 지령 z ≈ 물체 z** 를 전제하고 있었는데
+    #   `probe_palm_z_transfer.py` 실측이 그 전제를 깼다 — 팔이 내려갈수록 압축된다:
+    #       지령 z 0.445 → 턱 z 0.465 (목표 상단)   지령 0.315 → 턱 0.325 (목표 하단)
+    #       지령 0.202  → 턱 0.2488 (파지)          지령 ≤0.13 → 턱 0.2300 에서 포화
+    #   그래서 z 만 **지령 축으로 환산한 값**으로 검사한다. x·y 는 1:1 에 가까워 그대로 둔다.
+    #   ⚠ 이 상수들은 전달표에서 읽은 실측이다. 기하로 추정하면 또 틀린다.
+    GOAL_CMD_Z = (0.315, 0.445)
+    GRASP_CMD_Z = 0.202
     for lo, hi, box in [
         (spawn_x[0], spawn_x[1], P.PALM_BOX_X),
         (spawn_y[0], spawn_y[1], P.PALM_BOX_Y),
-        (P.CUP_SPAWN_Z, P.CUP_SPAWN_Z, P.PALM_BOX_Z),
+        (GRASP_CMD_Z, GRASP_CMD_Z, P.PALM_BOX_Z),
         (P.GOAL_POS_X[0], P.GOAL_POS_X[1], P.PALM_BOX_X),
         (P.GOAL_POS_Y[0], P.GOAL_POS_Y[1], P.PALM_BOX_Y),
-        (P.GOAL_POS_Z[0], P.GOAL_POS_Z[1], P.PALM_BOX_Z),
+        (GOAL_CMD_Z[0], GOAL_CMD_Z[1], P.PALM_BOX_Z),
     ]:
         assert box[0] <= lo and hi <= box[1], (
             f"PALM_BOX {box} 가 요구 구간 [{lo}, {hi}] 를 못 덮는다"
@@ -293,6 +301,15 @@ def test_between_jaws_reward_is_wired_and_uses_enclose_not_closure():
     ⚠ 옛 `closure = 1 − drive/open` 을 곱하면 **닫을수록 커져** 그 실패 행동을 보상한다.
     """
     cfg = _src("grasp_left_env_cfg.py")
+    # ★★fab_test32: 접근 보상을 agnostic 트랙 `approach_reward` 로 이식했다.
+    #   TCP 수평 배수(`reach_with_tcp_level`)는 폐기 — 접근 신호를 1/5 로 떨어뜨렸다.
+    #   대역 겨냥은 이제 `grasp_offset` 이 담당한다(파지중심 = 컵 원점 + 오프셋).
+    assert "rewards.approach_opposed" in cfg, "접근 보상이 이식본이 아니다"
+    assert "def approach_opposed" in _src("grasp_left_rewards.py")
+    assert '"grasp_offset": P.CUP_ORIGIN_TO_GRASP_Z' in cfg, (
+        "파지중심이 컵 원점 그대로다 — 대역이 아니라 원점을 겨냥하게 된다"
+    )
+    assert "func=rewards.reach_with_tcp_level" not in cfg, "폐기한 배수판이 아직 배선돼 있다"
     assert "self.rewards.cup_between_jaws" in cfg, "턱 사이 진입 보상이 배선되지 않았다"
     rew = _src("grasp_left_rewards.py")
     assert "def cup_between_jaws(" in rew
@@ -349,7 +366,7 @@ def test_reach_reward_targets_the_graspable_band_not_the_cup_origin():
     grasp_h = P.GRASP_TARGET_Z - P.TABLE_SURFACE_Z
     assert lo < grasp_h < hi, f"파지 목표 높이 {grasp_h * 1e3:.0f} mm 가 대역 밖이다"
     cfg = _src("grasp_left_env_cfg.py")
-    assert "self.rewards.reaching_object" in cfg and "ee_grasp_point_distance" in cfg
+    assert "self.rewards.reaching_object" in cfg
     rew = _src("grasp_left_rewards.py")
     # ★오프셋은 컵 로컬 축을 따라야 한다 — world z 면 컵이 기울 때 파지점이 컵 밖으로 나간다
     body = rew[rew.index("def ee_grasp_point_distance("):]
@@ -471,7 +488,9 @@ def test_lift_ramp_is_gated_by_grasp_ok_not_enclose():
     """
     rew = _src("grasp_left_rewards.py")
     body = rew[rew.index("def _held("):rew.index("def held_with_good_pose(")]
-    assert "grasp_ok(" in body, "리프트 게이트가 grasp_ok 를 쓰지 않는다"
+    # ★fab_test33: 이진 `grasp_ok` → 연속 `grasp_quality`(같은 lateral/along 측정).
+    #   판별력 요구는 그대로다 — 위 실측 대비는 `test_grasp_gate_is_continuous_...` 가 검산한다.
+    assert "grasp_quality(env" in body, "리프트 게이트가 lateral 기반 술어를 쓰지 않는다"
     assert "_enclose(env" not in body, "판별력 없는 enclose 게이트가 되살아났다"
     assert "lifted * held * (near & upright).float()" in body
 
@@ -650,7 +669,15 @@ def test_no_rate_limiter_reference_alignment():
     ⚠ 순서 계약이다 — 셋을 원본으로 되돌린 **뒤에만** 리미터를 뗄 수 있다. 원인을 안
       고친 채 증상 억제기만 떼면 자매 트랙 leash 사고가 반복된다(palm_err 51~65 → 90mm).
     """
-    assert P.PALM_CMD_RATE_LIMIT_ENABLED is False, "리미터가 다시 켜졌다 — 원본에 없다"
+    # ★★fab_test25 뒤집음. 원본에 리미터가 없다는 사실은 그대로지만, t24 실측이
+    #   리미터의 **두 번째 기능**(접촉 속도 제한)을 드러냈다 — 없이 돌리니 초기 낙하가
+    #   역대 최고(0.914)로 뛰고 정책이 컵 회피를 학습했다(reach 0.033 = t16 의 1/17).
+    #   보상 구조는 t16 과 동일했으므로 원인은 제어다. 이 계약은 "리미터가 없어야 한다"가
+    #   아니라 "**떼려면 셋을 먼저 원본으로 되돌려야 한다**"는 순서 계약으로 남긴다.
+    assert P.PALM_CMD_RATE_LIMIT_ENABLED is True, (
+        "리미터가 꺼졌다 — t24 에서 컵 회피 국소최적을 낳았다"
+    )
+    assert P.PALM_CMD_RATE_LIMIT == 0.10, "지령 변화율 상한이 지정값(100 mm/step)이 아니다"
 
     # 셋이 전부 원본값이어야 리미터 제거가 성립한다
     assert P.FABRIC_VEL_FF_SCALE == 1.0, "속도 피드포워드가 원본값(1.0)이 아니다"
@@ -662,9 +689,10 @@ def test_no_rate_limiter_reference_alignment():
         "fabric 시간이 원본 비율이 아니다 — 원본은 fabrics_dt = 정책 스텝, "
         "decimation 회 적분 → 벽시계의 2배속"
     )
-    # 리미터 코드 자체가 남아 있으면 안 된다(플래그만 끄면 화석이 된다)
     proc = src[src.index("def process_actions"):src.index("def apply_actions")]
-    assert "PALM_CMD_RATE_LIMIT" not in proc, "리미터 코드가 process_actions 에 남아 있다"
+    assert "PALM_CMD_RATE_LIMIT" in proc, "리미터가 배선되지 않았다(상수만 있고 코드가 없다)"
+    # ⚠ 리셋 직후에는 걸면 안 된다 — 홈에서 첫 지령까지는 "변화"가 아니라 초기화다.
+    assert "_cmd_primed" in proc, "리셋 직후 예외가 없다 — 리셋마다 팔이 끌려간다"
 
 
 def test_arm_pd_gains_match_reference_taper():
@@ -777,8 +805,15 @@ def test_agent_yaml_matches_kuka_reference():
       ★재학습에서 σ 가 다시 조기 고갈되면 이 항목만 0.001 로 되돌리고 사유를 여기 적을 것.
     """
     yaml_text = (_PKG / "config/agents/rl_games_ppo_fab_cfg.yaml").read_text(encoding="utf-8")
+    # ★★fab_test31: **`gamma` 를 의도적으로 kuka 와 다르게 둔다(0.998 → 0.99).**
+    #   근거는 실측이다. bisect 로 t16 env 위에서 최적화 하이퍼파라미터만 kuka 로 바꾸니
+    #   `lifting` 이 4.03 → 0.000 이 됐고(B 그룹), 그 안에서 다시 B2(γ·horizon·batch)가
+    #   범인으로 갈렸다. 그리고 γ 는 절단 보정 결함과 곱해진다 —
+    #   γ^(에피소드 길이): γ0.99×250 = 0.08 vs γ0.998×600 = 0.30 (**3.7 배**).
+    #   ⚠ 나머지 B2 항목(horizon 16 · mini_epochs 4 · minibatch 16384)은 **아직 kuka 값**이다.
+    #     γ 만으로 회복되는지 먼저 보고, 안 되면 그때 하나씩 되돌린다.
     ref = {
-        "gamma": "0.998", "tau": "0.95", "learning_rate": "3e-4",
+        "tau": "0.95", "learning_rate": "3e-4",
         "kl_threshold": "0.013", "horizon_length": "16", "minibatch_size": "16384",
         "mini_epochs": "4", "critic_coef": "4", "e_clip": "0.2",
         "entropy_coef": "0.002", "bounds_loss_coef": "0.005", "grad_norm": "1.0",
@@ -788,9 +823,15 @@ def test_agent_yaml_matches_kuka_reference():
         assert re.search(rf"{k}:\s*{re.escape(v)}\b", yaml_text), (
             f"{k} 가 kuka 원본값 {v} 이 아니다"
         )
-    assert re.search(r"lr_schedule:\s*linear", yaml_text)
+    assert re.search(r"gamma:\s*0\.99\b", yaml_text), "gamma 는 0.99 여야 한다(위 주석)"
+    assert re.search(r"value_bootstrap:\s*True", yaml_text), "절단 보정은 켜 둔다(kuka 는 False)"
+    # ★★fab_test36: `lr_schedule` 과 `bound_loss_type` 은 **의도적으로 kuka 와 다르다.**
+    #   근거는 `test_learner_is_actually_on` 의 실측(a_loss 42 배 · lr 11.6 배 · bounds 0).
+    #   kuka 원본은 linear + `regularization`(오타) 인데, 후자는 rl_games 에서 아무 분기와도
+    #   안 맞아 bounds loss 가 통째로 꺼진다 — 원본을 그대로 옮기면 그 결함까지 옮긴다.
+    assert re.search(r"lr_schedule:\s*adaptive", yaml_text)
     assert re.search(r"schedule_type:\s*standard", yaml_text)
-    assert re.search(r"bound_loss_type:\s*regularization", yaml_text)
+    assert re.search(r"bound_loss_type:\s*bound\b", yaml_text)
     assert re.search(r"zero_rnn_on_done:\s*True", yaml_text)
 
     # actor LSTM 1024 + critic LSTM 2048 (비대칭)
@@ -817,11 +858,18 @@ def test_reference_obs_includes_fabric_state_and_asymmetric_critic():
     아예 없었다(08.25 실측: 이송 중 |cmd−TCP| 90 mm).
     """
     fab_src = _src("grasp_left_fab_env_cfg.py")
-    for t in ("fabric_q", "fabric_qd", "fabric_qdd"):
+    for t in ("fabric_q", "fabric_qd"):
         assert f"self.observations.policy.{t} = ObsTerm" in fab_src, f"policy obs 에 {t} 누락"
+    # ★★fab_test31 제거: `fabric_qdd`(가속도) · `hand_vel` · critic `arm_torque`.
+    #   `clip_observations 5.0` 아래에서 실측 포화율이 각각 39.2% · — · 41.1% 였다.
+    #   단위가 rad/s² · N·m 라 애초에 clip 5 짜리 obs 에 들어갈 수 없는 값이었고,
+    #   잘린 차원은 정보가 아니라 상수에 가까운 가짜 신호다.
+    assert "policy.fabric_qdd = ObsTerm" not in fab_src, "가속도가 obs 에 남아 있다 — 39% 포화"
+    assert "policy.hand_vel = ObsTerm" not in fab_src, "hand_vel 이 남아 있다 — 중복"
+    assert "func=obs_mdp.arm_applied_torque" not in fab_src, "arm_torque 가 남아 있다 — 41% 포화"
     assert "self.observations.critic = _CriticCfg()" in fab_src, "비대칭 critic 그룹이 없다"
     # critic 은 특권 정보를 봐야 한다(실측 토크·접촉력·물체 속도)
-    for t in ("arm_applied_torque", "finger_contact_forces", "object_lin_ang_vel"):
+    for t in ("finger_contact_forces", "object_lin_ang_vel"):
         assert t in fab_src, f"critic 특권 관측 {t} 누락"
     # critic 은 노이즈를 받지 않는다
     assert "self.enable_corruption = False   # critic" in fab_src
@@ -832,7 +880,8 @@ def test_reference_obs_includes_fabric_state_and_asymmetric_critic():
     for t in ("joint_pos_noisy", "joint_vel_noisy", "object_position_noisy"):
         assert t in fab_src, f"policy 노이즈 관측 {t} 누락"
     # ★원본 policy obs 에 있던 손 직교 상태·물체 자세
-    for t in ("hand_body_pos", "hand_body_vel", "object_rotation"):
+    # ★fab_test31: `hand_body_vel` 은 뺐다(joint_vel·fabric_qd 중복, 12 차원).
+    for t in ("hand_body_pos", "object_rotation"):
         assert t in fab_src, f"원본 policy obs 항목 {t} 누락"
 
 
@@ -1073,3 +1122,211 @@ def test_adr_interpolation_uses_reference_denominator():
     assert "self._level / n" in src, "분모가 num_increments 가 아니다"
     assert "self._level < levels" in src and "self._level < levels - 1" not in src
     assert P.ADR_LEVELS == 50
+
+
+def test_command_and_actual_positions_are_logged():
+    """★★fab_test26: 지령 위치와 실제 위치가 **둘 다** TB 에 찍혀야 한다.
+
+    이 트랙은 둘을 나란히 본 적이 없어서 진단이 전부 사후 프로브였다 —
+    추종오차 90 mm 도, t24 의 컵 회피 국소최적(reach 0.033 = t16 의 1/17)도
+    런이 끝난 뒤 아카이브를 파서야 알았다.
+
+    weight 0 은 IsaacLab 에서 log-only 이므로 총보상을 오염시키지 않는다.
+    """
+    src = _src("grasp_left_fab_env_cfg.py")
+    for name in ("diag_cmd_", "diag_jaw_", "diag_cmd_jaw_gap",
+                 "diag_cmd_step", "diag_jaw_cup_dist"):
+        assert name in src, f"진단 항 {name} 이 배선되지 않았다"
+    # 진단 항은 반드시 weight 0 이어야 한다 — 아니면 보상 지형을 바꾼다
+    seg = src[src.index("진단 항 (weight 0"):src.index("도메인 랜덤화")]
+    assert seg.count("weight=0.0") >= 5, "진단 항 중 weight 0 이 아닌 것이 있다"
+    r = _src("grasp_left_rewards.py")
+    for fn in ("def diag_palm_cmd", "def diag_jaw_pos", "def diag_cmd_jaw_gap",
+               "def diag_cmd_step", "def diag_jaw_cup_dist"):
+        assert fn in r, f"{fn} 이 없다"
+    # ★두 값이 같은 프레임이어야 비교가 성립한다(지령은 base 기준, body 는 world 기준)
+    assert "env.scene.env_origins" in r, "env 로컬 변환이 없다 — 두 값의 프레임이 다르다"
+
+
+def test_log_only_reward_support_is_guarded():
+    """★★fab_test27: weight 0 진단 항이 **조용히 0 이 되는 것**을 가드로 막는다.
+
+    학습 호스트의 IsaacLab 이 upstream 이면 weight==0 항의 func 을 호출조차 하지 않아
+    `diag_*` 가 전부 정확히 0.0000 으로 찍힌다. 에러가 없어서 몇 시간을 태운 뒤에야
+    안다 — 이 저장소가 죽은 접촉센서로 이미 당한 서명이다.
+    """
+    src = _src("grasp_left_fab_env_cfg.py")
+    assert "_require_log_only_reward_terms" in src, "log-only 가드가 없다"
+    assert "_require_log_only_reward_terms()" in src, "가드가 임포트 시점에 실행되지 않는다"
+    assert "raise RuntimeError" in src, "가드가 조용히 통과한다 — fail-loud 여야 한다"
+
+
+def test_cmd_primed_is_actually_set():
+    """★★fab_test29: `_cmd_primed` 가 **실제로 True 가 되는지**.
+
+    이 플래그가 False 로 고정돼 있으면 두 가지가 조용히 죽는다:
+      ① rate limiter 가 한 번도 안 걸린다(게이트가 이 플래그다)
+      ② `cmd_step_norm` 이 항상 0 → `palm_cmd_rate` 보상이 상시 0
+    둘 다 에러 없이 "0"으로만 나타나서, t27 에서 "리미터를 넣었는데 안 낫는다"는
+    가짜 판정을 할 뻔했다 — 넣은 적이 없었다.
+    """
+    src = _src("grasp_left_fabric_action.py")
+    proc = src[src.index("def process_actions"):src.index("def apply_actions")]
+    assert "self._cmd_primed[:] = True" in proc, (
+        "_cmd_primed 를 True 로 만드는 곳이 process_actions 에 없다 — "
+        "리미터와 cmd_step_norm 이 조용히 죽는다"
+    )
+    # 리셋에서는 반드시 다시 False 여야 한다(홈→첫 지령은 '변화'가 아니다)
+    assert "self._cmd_primed[env_ids] = False" in src, "리셋에서 초기화하지 않는다"
+
+
+def test_truncation_does_not_contaminate_the_gradient():
+    """★★fab_test31: 만기(절단)를 **진짜 종료로 학습하면 안 된다.**
+
+    `value_bootstrap: False` 면 rl_games 의 절단 보정이 실행되지 않아
+    (`a2c_common.py`: `if self.value_bootstrap and 'time_outs' in infos`),
+    `time_out` 과 `object_dropping` 이 구분되지 않고 만기 시각의 가치가 0 이 된다.
+    "에피소드가 끝났다"가 아니라 "세상이 끝났다"를 학습하는 것이다.
+
+    ⚠ 왜곡 크기는 **γ^(에피소드 길이)** 다 — γ0.99×250 은 0.08 이라 거의 무해했지만
+      γ0.998×600 은 0.30 으로 3.7 배다. 그래서 감마와 짝으로 고정한다.
+    ⚠ 배선 전제: `is_finite_horizon=False` 여야 wrapper 가 `time_outs` 를 넣는다.
+    """
+    import yaml
+    cfg = yaml.safe_load(
+        (_PKG / "config/agents/rl_games_ppo_fab_cfg.yaml").read_text())["params"]["config"]
+    assert cfg["value_bootstrap"] is True, "절단 보정이 꺼져 있다 — 만기가 죽음으로 학습된다"
+    assert cfg["gamma"] == 0.99, (
+        f"gamma {cfg['gamma']} — 0.998 은 600 스텝 에피소드에서 만기 왜곡을 3.7 배로 키운다"
+    )
+    # 종료 항 분류: 만기만 절단이어야 한다
+    src = _src("grasp_left_fab_env_cfg.py")
+    assert "time_out=True" not in src, (
+        "이 파일에서 종료 항에 time_out=True 를 붙이면 안 된다 — "
+        "물체 낙하·작업공간 이탈은 **진짜 종료**다"
+    )
+
+
+def test_contact_filter_points_at_the_rigid_body():
+    """★★fab_test33: 접촉 필터는 **RigidBodyAPI 가 붙은 프림**을 가리켜야 한다.
+
+    `/Object`(프림 루트)를 가리키면 PhysX 가 GPU 접촉 필터를 지원하지 못하고
+    `force_matrix_w` 가 **정확히 0** 이 된다. 조용히 죽는 게 아니라 시뮬레이터가
+    env 마다 경고를 찍는데(1024 env × 2 센서 = 2,048 줄) 로그가 길어 묻힌다.
+
+        [omni.physx.tensors.plugin] GPU contact filter for collider
+        '/World/envs/env_N/Object' is not supported
+
+    컵 자산의 강체는 `/object_shaker_body/baseLink` 다.
+    """
+    src = _src("grasp_left_fab_env_cfg.py")
+    assert "Object/{P.CUP_BODY_NAME}" in src or "P.CUP_BODY_NAME}\"]" in src, (
+        "접촉 필터가 강체 프림(baseLink)을 가리키지 않는다 — force_matrix_w 가 0 이 된다"
+    )
+    assert 'filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"]' not in src, (
+        "필터가 프림 루트를 가리킨다 — GPU 접촉 필터 미지원"
+    )
+
+
+def test_grasp_gate_is_continuous_and_still_discriminates():
+    """★★fab_test33: 파지 게이트가 **연속**이면서 판별력을 유지해야 한다.
+
+    `_held()` 안의 이진 `grasp_ok` 가 다섯 항(`lifting` · `goal_tracking(+fine)` ·
+    `settled` · `dwell` · `grasp_pose`)의 **공통 목**이라, 파지 전엔 전부 정확히 0 이었다.
+    연속화하되 두 가지를 잃으면 안 된다:
+      ① 판별력 — 성공 기하와 실패 기하가 충분히 벌어져야 한다
+      ② 던지기 차단 — `near`·`upright` 게이트는 **그대로 남아야** 한다(test3 사고)
+    """
+    import math
+    src = _src("grasp_left_rewards.py")
+    assert "def grasp_quality" in src
+    held = src[src.index("def _held("):src.index("def held_with_good_pose")]
+    assert "grasp_quality(env" in held, "_held 가 아직 이진 게이트를 쓴다"
+    assert "grasp_ok(env" not in held, "_held 에 이진 게이트가 남아 있다"
+    assert "(near & upright)" in held, "던지기 차단 게이트가 사라졌다 — test3 사고 재발"
+
+    # 실측 기하로 판별력 검산 (성공 vs 두 실패 모드)
+    def q(lat_mm, alo_mm):
+        v = (math.exp(-lat_mm / 1e3 / P.GRASP_GATE_LATERAL_OK)
+             * math.exp(-alo_mm / 1e3 / P.GRASP_GATE_ALONG_OK))
+        return min(v / P.GRASP_QUALITY_REF, 1.0)
+    ok = q(20.0, 13.0)          # test17 · fab_test8 성공
+    fist = q(78.6, 27.8)        # fab_test1 주먹
+    beside = q(85.5, 12.0)      # fab_test11 컵 옆 대기
+    assert ok > 0.95, f"성공 기하에서 {ok:.3f} — 1.0 이어야 가중 균형이 유지된다"
+    assert ok / max(fist, beside) > 8.0, (
+        f"판별력 부족: 성공 {ok:.3f} vs 실패 {max(fist, beside):.3f}"
+    )
+
+
+def test_approach_sharpness_matches_our_working_distance():
+    """★fab_test34: 접근 커널 sharpness 는 **우리 작업 거리**에 맞춰야 한다.
+
+    이식 원본(agnostic)은 8.0 인데 그 트랙은 홈이 물체에 훨씬 가깝다. 우리 작업 구간은
+    `d_palm + d_side ≈ 0.15~0.40 m` 이고, 8.0 이면 d=0.40 에서 값 0.041 · gradient 0.33/m
+    로 신호가 바닥이다 — t33 이 936 epoch 동안 턱-컵 0.18~0.21 m 에서 정체했다.
+
+    `s·exp(−s·d)` 의 gradient 최대점은 `s = 1/d` 다. 우리 대역이면 s ∈ [2.5, 6.7].
+    """
+    assert 2.5 <= P.APPROACH_SHARPNESS <= 6.7, (
+        f"sharpness {P.APPROACH_SHARPNESS} 가 작업 거리(0.15~0.40 m)의 최적 대역 밖이다"
+    )
+    # 성공 지점 대비가 살아 있어야 한다 — 너무 낮추면 평지가 된다
+    import math
+    near, far = 0.08, 0.40
+    ratio = math.exp(-P.APPROACH_SHARPNESS * near) / math.exp(-P.APPROACH_SHARPNESS * far)
+    assert ratio >= 3.0, f"성공/현재 대비 {ratio:.1f}배 — 3배 미만이면 평지다"
+
+
+def test_grasp_pose_is_inside_the_action_box():
+    """★★★fab_test35: **파지 자세가 액션 박스 안에 있어야 한다.**
+
+    당연해 보이지만 t24~t34 열 판이 이걸 어긴 채 돌았다. `probe_palm_z_transfer.py` 실측:
+        지령 z 0.220(구 박스 바닥) → 턱 z 0.2553  (파지 목표 0.2475 보다 +7.8 mm)
+        지령 z 0.202               → 턱 z 0.2488  ← 이게 필요한데 박스 밖이었다
+    파지 가능 턱 높이 [0.230, 0.285] 을 내는 지령은 [0.13, 0.267]. 구 박스에서는
+    액션 z ∈ [−1.00, −0.72] 로 **범위의 14% 이고 경계에 붙어** 있었다.
+
+    ⚠ 팜 지령 z 와 턱 z 는 1:1 이 아니다(팔이 내려갈수록 압축되고 0.2300 에서 포화).
+      아래 상수는 그 전달표에서 읽은 값이다 — 기하로 추정하지 말 것.
+    """
+    CMD_FOR_BAND = (0.13, 0.267)     # 턱 z [0.230, 0.285] 을 내는 팜 지령 (실측)
+    lo, hi = P.PALM_BOX_Z
+    center, half = 0.5 * (lo + hi), 0.5 * (hi - lo)
+    a_lo = max((CMD_FOR_BAND[0] - center) / half, -1.0)
+    a_hi = (CMD_FOR_BAND[1] - center) / half
+    assert a_hi <= 1.0, "파지 대역 상단이 박스 위로 나갔다"
+    width = a_hi - a_lo
+    assert width >= 0.5, (
+        f"파지 가능 액션 z 창이 {width:.2f} 뿐이다 — 경계에 붙어 탐색이 못 찾는다"
+    )
+    assert a_hi <= -0.2, "파지 창이 액션 0 근처면 목표 유지와 겹쳐 구분이 안 된다"
+    # 목표 유지도 여전히 도달 가능해야 한다 (턱 z 0.465 ← 지령 0.445)
+    assert hi >= 0.46, f"박스 상한 {hi} — 목표 유지 지령(0.445)에 여유가 없다"
+
+
+def test_learner_is_actually_on():
+    """★★★fab_test36: 학습기가 **실제로 작동하는 설정**인지 고정한다.
+
+    t35 는 학습기가 원래 세기의 1/40 로 켜져 있었다(ep100-200 실측, t16ctl 대비):
+        losses/a_loss 0.00718 → 0.00017 (42 배) · info/last_lr 0.00334 → 0.000289 (11.6 배)
+        losses/bounds_loss 6.18 → 0.000 (죽음)
+
+    ① `lr_schedule` 은 **adaptive** — linear 고정 감쇠는 KL 이 임계를 넘어도 lr 을 못 올려
+       국소최적에서 못 나온다.
+    ② `bound_loss_type` 은 rl_games 가 **`'regularisation'`(영국식 s)** 과 `'bound'` 만
+       받는다. 미국식 `regularization` 은 어느 분기에도 안 맞아 **조용히 0** 이 된다.
+       ⚠ `'regularisation'` 을 쓰면 안 된다 — `reg_loss = mu²` 가 mu 를 0(=박스 중심,
+         우리 경우 목표 근처)으로 당겨 "목표로 가는 기동"을 보상 밖에서 만든다.
+    """
+    import yaml
+    cfg = yaml.safe_load(
+        (_PKG / "config/agents/rl_games_ppo_fab_cfg.yaml").read_text())["params"]["config"]
+    assert cfg["lr_schedule"] == "adaptive", (
+        "lr_schedule 이 adaptive 가 아니다 — lr 이 묶여 a_loss 가 42 배 작아진다"
+    )
+    assert cfg["bound_loss_type"] == "bound", (
+        f"bound_loss_type={cfg['bound_loss_type']!r} — rl_games 는 'bound' 또는 "
+        "'regularisation'(영국식) 만 받는다. 그 외는 조용히 0 이 된다. "
+        "그리고 'regularisation'(mu²)은 mu 를 박스 중심=목표 쪽으로 당겨 해롭다."
+    )

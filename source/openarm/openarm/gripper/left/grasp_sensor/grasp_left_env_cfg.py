@@ -430,10 +430,29 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   즉 도달 보상이 학습 내내 **들어갈 수 없는 높이**를 가리키고 있었다.
         #   G3 실측: 컵 원점 겨냥 시 진입 TCP 오차 100.2 mm → 파지 대역 겨냥 시 70.7 mm.
         #   std·weight 는 레퍼런스 그대로(0.1 / 1.1) — 목표점만 옮긴다.
+        # ★★fab_test31 사용자 지시: "접근할 때부터 tcp_+x 가 world +z 와 수직이 되게".
+        #   2 지 그리퍼는 접근 자세가 파지 성패를 정한다 — 기울어진 채 다가가면 두 접촉점이
+        #   컵 지름 양끝에 놓이지 않는다. 그래서 파지 시점이 아니라 **접근 보상 자체에** 건다.
+        #   ⚠ 게이트가 아니라 **배수**다. 이 태스크는 자세를 AND 게이트로 걸었다가 학습이
+        #     시작조차 못 한 전례가 있다(test6·test7: lifting 0.0000 · 총보상 −0.46).
+        #     `level_floor` 가 최악의 경우에도 접근 신호를 남긴다 — 초기에 살아 있는
+        #     유일한 신호라 0 이 되면 회복이 안 된다.
+        # ★★agnostic/tasks/grasp_sensor `approach_reward` 이식 (08.25 사용자 지시).
+        #   구 `1 − tanh(d/0.1)` 은 **거리만** 봐서 "컵 근처에 있기"로 만점에 가까웠다.
+        #   이식본은 거리와 프리그래스프 기하(턱이 컵 양옆 대향점에 놓이는가)를 한
+        #   지수 안에서 본다 — 자세를 각도 배수로 유도하던 것(제가 넣었다가 reaching 을
+        #   1/5 로 떨어뜨린 `reach_with_tcp_level`)을 대체한다.
         self.rewards.reaching_object = RewTerm(
-            func=rewards.ee_grasp_point_distance,
-            weight=1.1,
-            params={"std": 0.1, "grasp_offset": P.CUP_ORIGIN_TO_GRASP_Z},
+            func=rewards.approach_opposed,
+            weight=P.APPROACH_WEIGHT,
+            params={
+                "sharpness": P.APPROACH_SHARPNESS,
+                "side_radius": P.APPROACH_SIDE_RADIUS,
+                "grasp_offset": P.CUP_ORIGIN_TO_GRASP_Z,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                "side_weight_a": P.APPROACH_SIDE_WEIGHT_A,
+                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+            },
         )
 
         # ── 컵이 턱 사이에 들어왔는가 (08.22 신설) ─────────────────

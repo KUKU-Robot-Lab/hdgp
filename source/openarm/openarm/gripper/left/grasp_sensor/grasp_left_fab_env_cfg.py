@@ -52,6 +52,43 @@ from . import grasp_left_rewards as rewards
 from .grasp_left_env_cfg import GraspLeftGripperEnvCfg
 
 
+def _require_log_only_reward_terms() -> None:
+    """weight 0 항이 **log-only 로 동작하는지** 임포트 시점에 확인한다.
+
+    ★★fab_test27 사고. 진단 항(`diag_*`)을 weight 0 으로 걸었는데 TB 에 **정확히 0.0000**
+      만 찍혔다. 원인은 우리 코드가 아니라 **학습 호스트의 IsaacLab 판본**이었다:
+
+        # upstream (vision-3090 에 설치돼 있던 것)
+        # skip if weight is zero (kind of a micro-optimization)
+        if term_cfg.weight == 0.0:
+            self._step_reward[:, term_idx] = 0.0
+            continue          # ← func 을 아예 호출하지 않는다
+
+      로컬 IsaacLab 에는 log-only 분기가 있었는데 그건 **우리 로컬 수정**이었고, 학습
+      호스트에는 전파돼 있지 않았다. 나는 로컬 소스만 읽고 같을 거라 가정했다.
+
+    ⚠ 이 실패는 **조용하다** — 값이 0 으로 찍힐 뿐 에러가 없어서, 몇 시간을 태운 뒤에야
+      "정확히 0.0000" 을 보고 알게 된다. 이 저장소가 죽은 접촉센서로 이미 당한 서명이다.
+      그래서 정적 가드로 바꾼다: 패치가 없으면 **학습이 시작조차 안 된다.**
+
+    호스트 패치: reward_manager.compute 의 weight==0 분기를 로컬과 같게 맞출 것.
+    """
+    import inspect
+
+    from isaaclab.managers.reward_manager import RewardManager
+
+    src = inspect.getsource(RewardManager.compute)
+    if "log-only" not in src:
+        raise RuntimeError(
+            "이 호스트의 IsaacLab RewardManager 는 weight==0 항을 건너뛴다 — "
+            "`diag_*` 진단 항이 전부 정확히 0 으로 찍힌다(조용한 실패). "
+            "reward_manager.compute 의 weight==0 분기를 log-only 로 패치할 것."
+        )
+
+
+_require_log_only_reward_terms()
+
+
 @configclass
 class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
     """왼팔 2지 그리퍼 shaker 파지·이송 — Fabrics 팔 제어."""
@@ -113,7 +150,16 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         for _b in P.GRIPPER_FINGER_BODIES:
             setattr(self.scene, f"contact_{_b}", ContactSensorCfg(
                 prim_path=f"{{ENV_REGEX_NS}}/Robot/{_b}",
-                filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
+                # ★★fab_test33: `/Object` 가 아니라 **`/Object/baseLink`**. 시뮬레이터가
+                #   1024 env × 2 센서 = 2,048 번 경고를 찍고 있었다:
+                #     [omni.physx.tensors.plugin] GPU contact filter for collider
+                #     '/World/envs/env_N/Object' is not supported
+                #   그래서 `force_matrix_w` 가 **최대까지 정확히 0** 이었다(실측).
+                #   컵 자산의 RigidBodyAPI 는 `/object_shaker_body/baseLink` 에 있고
+                #   프림 루트에는 없다 — 필터는 강체 프림을 가리켜야 한다.
+                #   ⚠ 이 저장소 메모리에 같은 함정이 이미 적혀 있었다
+                #     ("접촉필터는 RigidBodyAPI 붙은 baseLink로"). 두 번째로 밟았다.
+                filter_prim_paths_expr=[f"{{ENV_REGEX_NS}}/Object/{P.CUP_BODY_NAME}"],
                 history_length=1,
                 track_air_time=False,
             ))
@@ -122,7 +168,10 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         # ★★정책이 fabric 상태를 못 보고 있었다 — 전문은 grasp_left_observations.py.
         self.observations.policy.fabric_q = ObsTerm(func=obs_mdp.fabric_q)
         self.observations.policy.fabric_qd = ObsTerm(func=obs_mdp.fabric_qd)
-        self.observations.policy.fabric_qdd = ObsTerm(func=obs_mdp.fabric_qdd)
+        # ★★fab_test31 제거: `fabric_qdd`(관절 **가속도**). 실측 |x| 평균 4.39 · 최대 20.0 이라
+        #   `clip_observations 5.0` 에서 **표본의 39.2% 가 잘린다.** 잘린 값은 정보가 아니라
+        #   상수에 가까운 가짜 신호다 — 7 차원이 통째로 그렇게 죽어 있었다.
+        #   단위가 rad/s² 인 값을 clip 5 짜리 obs 에 넣은 것이 애초에 잘못이었다.
         self.observations.policy.palm_pose_target = ObsTerm(func=obs_mdp.palm_pose_target)
 
         # ★★fab_test23 원본 정합 — 노이즈는 `ObsTerm.noise`(Unoise) 가 아니라 전용
@@ -145,11 +194,8 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         self.observations.policy.hand_pos = ObsTerm(
             func=obs_mdp.hand_body_pos,
             params={"asset_cfg": _jaws, "noisy": True, "lever": P.HAND_POINT_NOISE_LEVER})
-        self.observations.policy.hand_vel = ObsTerm(
-            func=obs_mdp.hand_body_vel,
-            params={"asset_cfg": SceneEntityCfg(
-                "robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
-                "noisy": True, "lever": P.HAND_POINT_NOISE_LEVER})
+        # ★fab_test31 제거: `hand_vel`(12D). `joint_vel`(9) + `fabric_qd`(7) 와 중복이고,
+        #   두 턱이 함께 움직이므로 절반이 잉여다. 85 차원 중 12 를 쓰고 있었다.
         # ⚠ `enable_corruption` 은 이제 아무 항에도 걸리지 않는다(noise cfg 가 없다).
         #   노이즈 경로가 하나뿐이어야 "노이즈를 껐는데 왜 흔들리지"를 안 겪는다.
         self.observations.policy.enable_corruption = False
@@ -166,13 +212,9 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
             joint_vel = ObsTerm(func=mdp.joint_vel_rel,
                                 params={"asset_cfg": SceneEntityCfg(
                                     "robot", joint_names=["l_aj_[1-7]", "l_hj_gripper_[1-2]"])})
-            arm_torque = ObsTerm(func=obs_mdp.arm_applied_torque,
-                                 params={"asset_cfg": SceneEntityCfg(
-                                     "robot", joint_names=["l_aj_[1-7]"])})
+            # ★fab_test31 제거: `arm_torque`. 실측 |x| 평균 5.83 · 최대 40.0 →
+            #   clip 5.0 에서 **41.1% 포화**. 단위가 N·m 라 애초에 안 맞았다.
             hand_pos = ObsTerm(func=obs_mdp.hand_body_pos,
-                               params={"asset_cfg": SceneEntityCfg(
-                                   "robot", body_names=list(P.GRIPPER_FINGER_BODIES))})
-            hand_vel = ObsTerm(func=obs_mdp.hand_body_vel,
                                params={"asset_cfg": SceneEntityCfg(
                                    "robot", body_names=list(P.GRIPPER_FINGER_BODIES))})
             object_position = ObsTerm(func=lift_mdp.object_position_in_robot_root_frame)
@@ -187,7 +229,6 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
             actions = ObsTerm(func=mdp.last_action)
             fabric_q = ObsTerm(func=obs_mdp.fabric_q)
             fabric_qd = ObsTerm(func=obs_mdp.fabric_qd)
-            fabric_qdd = ObsTerm(func=obs_mdp.fabric_qdd)
 
             def __post_init__(self):
                 self.enable_corruption = False   # critic 은 실측을 본다
@@ -267,6 +308,38 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
                 "command_name": "object_pose",
             },
         )
+
+        # ── 진단 항 (weight 0 = log-only) ─────────────────────────────
+        # ★★fab_test26. **지령과 실제를 나란히 TB 에 띄운다.** 지금까지 이 트랙은 둘을
+        #   같이 본 적이 없어서, 추종오차 90 mm 도 회피 국소최적도 전부 사후 프로브로만
+        #   발견했다. weight 0 이면 총보상에 안 들어가고 원값만 로깅된다
+        #   (`reward_manager.compute` 의 log-only 분기 — 값은 에피소드 **시간평균**).
+        # ⚠ SceneEntityCfg 는 가변 객체다 — term 마다 **새 인스턴스**를 준다.
+        _diag_jaw = lambda: SceneEntityCfg(  # noqa: E731
+            "robot", body_names=list(P.GRIPPER_FINGER_BODIES))
+        for _ax in ("x", "y", "z"):
+            setattr(self.rewards, f"diag_cmd_{_ax}", RewTerm(
+                func=rewards.diag_palm_cmd, weight=0.0,
+                params={"action_term_name": "arm_action", "axis": _ax}))
+            setattr(self.rewards, f"diag_jaw_{_ax}", RewTerm(
+                func=rewards.diag_jaw_pos, weight=0.0,
+                params={"axis": _ax, "pad_offset": P.JAW_PAD_OFFSET,
+                        "jaw_cfg": _diag_jaw()}))
+        # 추종오차 — 지령을 팔이 따라가고 있는가
+        self.rewards.diag_cmd_jaw_gap = RewTerm(
+            func=rewards.diag_cmd_jaw_gap, weight=0.0,
+            params={"action_term_name": "arm_action", "pad_offset": P.JAW_PAD_OFFSET,
+                    "jaw_cfg": _diag_jaw()})
+        # 스텝당 지령 이동 — **리미터가 실제로 무는지**를 이걸로 확인한다
+        self.rewards.diag_cmd_step = RewTerm(
+            func=rewards.diag_cmd_step, weight=0.0,
+            params={"action_term_name": "arm_action"})
+        # ★정규화 분모 — 이 항의 로깅값이 곧 (에피소드 길이 / episode_length_s) 다.
+        self.rewards.diag_duty = RewTerm(func=rewards.diag_duty, weight=0.0, params={})
+        # 턱–컵 날 거리 — `reaching_object` 는 커널을 거쳐서 거리로 못 읽는다
+        self.rewards.diag_jaw_cup_dist = RewTerm(
+            func=rewards.diag_jaw_cup_dist, weight=0.0,
+            params={"pad_offset": P.JAW_PAD_OFFSET, "jaw_cfg": _diag_jaw()})
 
         # ── 도메인 랜덤화 (fab_test18 신설, 사용자 지시) ──────────────
         # 이 트랙엔 DR 이 사실상 없었다(hold_idle_joints 는 유휴 관절 고정이지 DR 이 아니다).

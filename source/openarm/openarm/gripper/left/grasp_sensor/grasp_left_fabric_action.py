@@ -213,6 +213,16 @@ class FabricPalmAction(ActionTerm):
         #   리미터는 자초한 굼뜸(fabric 60% 속도 · damping 하드끝 · vel_ff 0)의 증상
         #   억제기였다. 셋을 원본으로 되돌렸으므로 함께 뗀다.
         pos = self._box_center + actions[:, :3].clamp(-1.0, 1.0) * self._box_half
+        # ★★fab_test25: 지령 **변화율 상한**. 절대 규약은 그대로다 — 목표는 여전히 박스
+        #   안의 절대 좌표이고, 한 스텝에 갈 수 있는 거리만 묶는다. 근거는 preset 주석.
+        #   ⚠ 리셋 직후(_cmd_primed False)에는 걸지 않는다. 홈에서 첫 지령까지의 거리는
+        #     "변화"가 아니라 초기화라, 여기에 상한을 걸면 리셋마다 팔이 몇 스텝 끌려간다.
+        if P.PALM_CMD_RATE_LIMIT_ENABLED:
+            step = pos - self._prev_cmd_pos
+            dist = step.norm(dim=-1, keepdim=True)
+            scale = (P.PALM_CMD_RATE_LIMIT / dist.clamp(min=1e-9)).clamp(max=1.0)
+            pos = torch.where(self._cmd_primed.unsqueeze(-1),
+                              self._prev_cmd_pos + step * scale, pos)
         # 지령 이동량은 계속 기록한다 — 보상 항(`palm_command_rate_at_goal`)이 읽는다.
         #   리셋 직후(_fresh)는 0. 텔레포트 차분을 벌하면 첫 스텝마다 가짜 벌금이 나간다.
         _fresh = ~self._cmd_primed
@@ -221,6 +231,15 @@ class FabricPalmAction(ActionTerm):
             (pos - self._prev_cmd_pos).norm(dim=-1),
         ).detach()
         self._prev_cmd_pos = pos.detach()
+        # ★★fab_test29 버그 수정. `_cmd_primed` 를 **어디서도 True 로 만들지 않고 있었다** —
+        #   초기화 False, 리셋 False, 끝. 결과가 조용한 0 두 개였다:
+        #     ① 리미터가 한 번도 안 걸렸다(`_cmd_primed` 게이트) → t27 이 리미터 없는 t24 와
+        #        똑같이 돌았다(drop 0.9127 vs 0.914). "리미터를 넣었는데 안 낫는다"는
+        #        판정을 할 뻔했다 — 넣은 적이 없었다.
+        #     ② `cmd_step_norm` 이 항상 0 → 그걸 곱해 쓰는 `palm_cmd_rate` 보상도
+        #        t20 이후 **줄곧 죽어 있었다**(TB 에서 정확히 0.0000).
+        #   ⚠ 이 플래그는 "리셋 후 첫 지령을 이미 냈는가" 다. 첫 지령 **뒤에** 켠다.
+        self._cmd_primed[:] = True
 
         # ★★fab_test21: 회전 = **euler_zyx 절대**(kuka `compute_absolute_action` 규약).
         #   a ∈ [-1,1] → 중심 ± MAX_POSE_ANGLE, 축별 독립. 구 규약(축각 3D 를 기준 quat 에
