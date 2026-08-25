@@ -291,13 +291,16 @@ def test_grasp_pose_is_a_bonus_never_a_gate():
 
 
 def test_goal_is_the_user_specified_region_not_wider():
-    """★이송 목표는 **사용자가 지정한 중간 박스**(08.22: x±5 y±7 z±5 cm)다.
+    """★이송 목표는 **사용자가 지정한 박스**. 08.25 현재 x±8 **y±9** z±7 cm (워크스페이스 스캔 실측 전역).
 
-    이력: 처음엔 넓은 범위(test12: goal_fine 8%·settle 7.8% 정체)→ 점 ±2 cm 로 좁혀
-    test17 이 이송까지 성공 → pour 용 목표-조건부 이송을 위해 **의도적으로** 이만큼만
-    다시 넓혔다. 이보다 넓어지면 test12 의 정체가 돌아온다 — 상한을 계약으로 고정.
+    이력: 처음엔 넓은 범위(test12: goal_fine 8%·settle 7.8% 정체) → 점 ±2 cm 로 좁혀
+    test17 이 이송까지 성공 → pour 용 목표-조건부 이송을 위해 x±5 y±7 z±5 로 확대 →
+    **08.25 사용자 지시(ADR "모드을"=보수적)로 y 를 ±11 로, z 를 ±7 로 확대(도달성 실측이 ±15 를 기각)**.
+    ⚠ 옛 정체(test12)는 **전 축이 넓었을 때** 나온 것이다. 이번엔 x 를 그대로 두고 y 만
+      넓혔다 — 작업면 Y 는 90cm 로 X(40cm)의 2.25배이고 x 는 테이블 앞모서리까지 10mm
+      여유뿐이라 애초에 못 넓힌다. y 확대가 정체를 되살리는지는 fab_test17 이 판정한다.
     """
-    assert P.GOAL_JITTER == (0.05, 0.07, 0.05), "사용자 지정 목표 영역이 바뀌었다"
+    assert P.GOAL_JITTER == (0.08, 0.09, 0.07), "사용자 지정 목표 영역이 바뀌었다"
     for jit, (lo, hi), c in zip(
         P.GOAL_JITTER, (P.GOAL_POS_X, P.GOAL_POS_Y, P.GOAL_POS_Z), P.GOAL_POINT
     ):
@@ -612,12 +615,11 @@ def test_env_cfg_inherits_isaaclab_lift():
         assert "weight=1.1" in blk and '"std": 0.1' in blk, (
             "도달 보상은 목표점만 옮길 수 있다 — weight/std 는 레퍼런스 값 유지"
         )
-    # 신설 term: grasp_pose · settled_at_goal · cup_between_jaws ·
-    #            grip_closure_when_enclosed + 도달 목표점 교정 1
     # 판정 게이트를 늘리는 term 은 여전히 금지 — test6/test7 에서 학습을 죽였다.
     # 신설: grasp_pose · settled_at_goal · cup_between_jaws · grip_closure_when_enclosed
-    #      · gate_rate(진단 weight 0) + 도달 목표점 교정 1
-    assert src.count("RewTerm(") <= 6, "신설 term 이 예상보다 많다"
+    #      · gate_rate(진단 weight 0.001) · dwell_at_goal(fab_test13 — 순회 국소최적을
+    #        가르는 보너스, 게이트 아님) + 도달 목표점 교정 1
+    assert src.count("RewTerm(") <= 7, "신설 term 이 예상보다 많다"
 
 
 def test_smoothing_is_the_reference_curriculum_not_an_extra_term():

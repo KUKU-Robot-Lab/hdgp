@@ -504,6 +504,32 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             },
         )
 
+        # ── dwell 보너스 (fab_test13 신설) ─────────────────────────
+        # settled_at_goal(순간 품질)은 스쳐 지나가도 지급된다 — fab_test12 는 목표 100 mm
+        # 옆 순회가 국소최적으로 굳었다. dwell 은 품질 > 임계의 **연속 유지**에만 지급해
+        # "머무름"과 "지나감"의 리턴을 가른다. 임계 근거는 preset DWELL_* 주석(실측).
+        self.rewards.dwell_at_goal = RewTerm(
+            func=rewards.DwellSettledAtGoal,
+            weight=P.DWELL_REWARD_WEIGHT,
+            params={
+                "q_thresh": P.DWELL_Q_THRESH,
+                "hold_steps": P.DWELL_HOLD_STEPS,
+                "std": P.SETTLE_POS_STD,
+                "lin_vel_std": P.SETTLE_LIN_VEL_STD,
+                "ang_vel_std": P.SETTLE_ANG_VEL_STD,
+                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                "lat_ok": P.GRASP_GATE_LATERAL_OK,
+                "along_ok": P.GRASP_GATE_ALONG_OK,
+                # ★SceneEntityCfg 는 가변 객체 — settled_at_goal 과 공유 금지, 새 인스턴스.
+                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+                "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
+                "command_name": "object_pose",
+            },
+        )
+
         self.rewards.grasp_pose = RewTerm(
             func=rewards.held_with_good_pose,
             weight=P.GRASP_POSE_REWARD_WEIGHT,
@@ -521,7 +547,10 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             },
         )
         # ★진단(weight 0) — 게이트 진입 비율. 이번 런의 1차 관전 지표라 반드시 로깅한다.
-        self.rewards.gate_rate = RewTerm(func=rewards.gripper_gate_rate, weight=0.0, params={})
+        # ⚠ weight 0 이면 RewardManager 가 w·term·dt 를 로깅해 **항상 0.0000** 이 찍힌다
+        #   (fab_test12 에서 1차 관전 지표를 통째로 잃었다). 0.001 은 총보상 ~110/step 대비
+        #   1e-5 수준이라 학습에 무영향이면서 TFEvents 에서 게이트 개방률을 읽을 수 있다.
+        self.rewards.gate_rate = RewTerm(func=rewards.gripper_gate_rate, weight=0.001, params={})
 
         self.terminations.object_dropping.params["minimum_height"] = P.OBJECT_DROP_HEIGHT
 

@@ -27,10 +27,28 @@ palm 6D 로 바꾼다. 보상·씬·커맨드·커리큘럼·물리 플래그는
 
 from __future__ import annotations
 
+from isaaclab.envs import mdp
+# ★`object_position_in_robot_root_frame` 는 isaaclab.envs.mdp 가 아니라 **lift 태스크의**
+#   mdp 에 있다. 부모(grasp_left_env_cfg)도 이쪽을 쓴다 — 같은 자를 써야 한다.
+from isaaclab_tasks.manager_based.manipulation.lift import mdp as lift_mdp
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.sensors import ContactSensorCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
+import isaaclab.sim as sim_utils
+from isaaclab.managers import EventTermCfg
+from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
+from . import grasp_left_curriculums as curriculums
+from . import grasp_left_events as events
+from . import grasp_left_obs_noise as obs_noise
+from . import grasp_left_observations as obs_mdp
 from . import grasp_left_fabric_action as fab
 from . import grasp_left_preset as P
+from . import grasp_left_rewards as rewards
 from .grasp_left_env_cfg import GraspLeftGripperEnvCfg
 
 
@@ -43,14 +61,297 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         # 팔 액션만 교체. 그리퍼(BinaryJointPositionAction 양조 지령)는 부모 그대로.
         self.actions.arm_action = fab.FabricPalmActionCfg()
 
-        # ★태스크공간 추종에는 단단한 PD 가 필요하다(레퍼런스 HIGH_PD 패턴, IK 변형과 동일).
-        #   80/4 로는 중력 처짐이 fabric 목표를 삼킨다 — G2 실측: 관절오차 j4=45 mrad
-        #   (τ = 80×0.045 ≈ 3.6 N·m = 중력토크), TCP 44.8 mm. 400/80 이면 처짐이 1/5.
-        #   ⚠ 레퍼런스 HIGH_PD 는 disable_gravity=True 도 켜지만 우리는 **중력을 켠 채** 간다
-        #     — 실기에는 중력이 있다. 남는 소량의 처짐은 정책이 절대 목표를 보정해 흡수한다
-        #     (관절공간 test17 이 같은 방식으로 성공했다).
-        self.scene.robot.actuators["left_arm"].stiffness = P.ARM_IK_STIFFNESS
-        self.scene.robot.actuators["left_arm"].damping = P.ARM_IK_DAMPING
+        # ★★fab_test21 원본 정합: 정책 주기를 원본과 같은 **60 Hz** 로.
+        #   원본 kuka: sim_dt 1/120 · decimation 2 → 60 Hz. 우리는 sim 0.01(100 Hz) ·
+        #   decimation 2 → 50 Hz 였다. fabric 시간이 정책 스텝에 묶여 있으므로 주기가
+        #   다르면 원본과 같은 비율을 맞춰도 절대 시간이 어긋난다.
+        self.sim.dt = 1.0 / 120.0
+
+        # ── 시뮬 / 에피소드 (kuka 원본값) ────────────────────────────
+        self.sim.physx.bounce_threshold_velocity = P.PHYSX_BOUNCE_THRESHOLD_VELOCITY
+        self.sim.physx.gpu_max_rigid_patch_count = P.PHYSX_GPU_MAX_RIGID_PATCH_COUNT
+        self.episode_length_s = P.EPISODE_LENGTH_S
+        # ★씬 기본 마찰 (kuka SimulationCfg.physics_material static/dynamic 1.0)
+        self.sim.physics_material.static_friction = P.SCENE_STATIC_FRICTION
+        self.sim.physics_material.dynamic_friction = P.SCENE_DYNAMIC_FRICTION
+        self.scene.env_spacing = P.SCENE_ENV_SPACING
+        # ★★fab_test23: 팔 중력을 끈다(kuka `KUKA_ALLEGRO_CFG` `disable_gravity=True`).
+        #   원본에는 중력 보상 항이 없다 — 저수준에서 이미 보상된 팔을 모델링한 것이다.
+        #   같이 꺼지는 것: 우리 `_droop` 적분항(preset `GRAVITY_COMP_ENABLED`).
+        self.scene.robot.spawn.rigid_props.disable_gravity = P.ROBOT_DISABLE_GRAVITY
+        self.scene.robot.spawn.rigid_props.retain_accelerations = P.ROBOT_RETAIN_ACCELERATIONS
+        self.scene.robot.spawn.articulation_props.sleep_threshold = P.ROBOT_SLEEP_THRESHOLD
+        self.scene.robot.spawn.articulation_props.stabilization_threshold = (
+            P.ROBOT_STABILIZATION_THRESHOLD)
+        self.scene.robot.spawn.joint_drive_props = sim_utils.JointDrivePropertiesCfg(
+            drive_type=P.ROBOT_DRIVE_TYPE)
+        # ★솔버·강체 속성 (kuka 로봇 asset). 우리는 16/1 로 원본보다 촘촘했고
+        #   max_depenetration_velocity 도 5.0 으로 200 배 작았다.
+        for _spawn in (self.scene.robot.spawn, self.scene.object.spawn):
+            if getattr(_spawn, "articulation_props", None) is not None:
+                _spawn.articulation_props.solver_position_iteration_count = (
+                    P.ARTICULATION_SOLVER_POSITION_ITER)
+                _spawn.articulation_props.solver_velocity_iteration_count = (
+                    P.ARTICULATION_SOLVER_VELOCITY_ITER)
+            if getattr(_spawn, "rigid_props", None) is not None:
+                _spawn.rigid_props.max_depenetration_velocity = P.RIGID_MAX_DEPENETRATION_VELOCITY
+                _spawn.rigid_props.max_linear_velocity = P.RIGID_MAX_LINEAR_VELOCITY
+                _spawn.rigid_props.max_angular_velocity = P.RIGID_MAX_ANGULAR_VELOCITY
+                _spawn.rigid_props.linear_damping = P.RIGID_LINEAR_DAMPING
+                _spawn.rigid_props.angular_damping = P.RIGID_ANGULAR_DAMPING
+                _spawn.rigid_props.solver_position_iteration_count = (
+                    P.ARTICULATION_SOLVER_POSITION_ITER)
+                _spawn.rigid_props.solver_velocity_iteration_count = (
+                    P.ARTICULATION_SOLVER_VELOCITY_ITER)
+
+        # ── 손가락 접촉 센서 — critic 특권 관측용 (원본 `hand_forces`) ──
+        # ⚠ USD 스폰에서 contact reporter API 를 켜지 않으면 센서 초기화가 실패한다
+        #   ("could not find any bodies with contact reporter API"). 실제로 당했다.
+        self.scene.robot.spawn.activate_contact_sensors = True
+        # ⚠ body 마다 **개별** 센서여야 한다. 다중 body 단일 센서는 force_matrix_w 가
+        #   조용히 0 이 된다(자매 트랙 실측 함정). Object 만 필터.
+        for _b in P.GRIPPER_FINGER_BODIES:
+            setattr(self.scene, f"contact_{_b}", ContactSensorCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/Robot/{_b}",
+                filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
+                history_length=1,
+                track_air_time=False,
+            ))
+
+        # ── 관측: fabric 내부 상태 + 노이즈 (원본 정합) ────────────────
+        # ★★정책이 fabric 상태를 못 보고 있었다 — 전문은 grasp_left_observations.py.
+        self.observations.policy.fabric_q = ObsTerm(func=obs_mdp.fabric_q)
+        self.observations.policy.fabric_qd = ObsTerm(func=obs_mdp.fabric_qd)
+        self.observations.policy.fabric_qdd = ObsTerm(func=obs_mdp.fabric_qdd)
+        self.observations.policy.palm_pose_target = ObsTerm(func=obs_mdp.palm_pose_target)
+
+        # ★★fab_test23 원본 정합 — 노이즈는 `ObsTerm.noise`(Unoise) 가 아니라 전용
+        #   모듈이 건다. 원본은 폭을 env 마다 다시 뽑고 에피소드 고정 bias 를 얹는데
+        #   Unoise 로는 둘 다 표현할 수 없다(상태를 못 든다). obs_noise 모듈 참조.
+        _left_all = SceneEntityCfg("robot", joint_names=["l_aj_[1-7]", "l_hj_gripper_[1-2]"])
+        _jaws = SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES))
+        self.observations.policy.joint_pos = ObsTerm(
+            func=obs_mdp.joint_pos_noisy, params={"asset_cfg": _left_all})
+        self.observations.policy.joint_vel = ObsTerm(
+            func=obs_mdp.joint_vel_noisy,
+            params={"asset_cfg": SceneEntityCfg(
+                "robot", joint_names=["l_aj_[1-7]", "l_hj_gripper_[1-2]"])})
+        self.observations.policy.object_position = ObsTerm(func=obs_mdp.object_position_noisy)
+        # ★원본 policy obs 에 있던 세 항목이 우리에겐 없었다 — 물체 자세, 손 직교 위치,
+        #   손 직교 속도. 이 태스크의 보상은 전부 턱–컵 기하로 정의돼 있는데 그 기하를
+        #   만드는 입력이 관측에 없었다(정책이 관절각에서 FK 를 스스로 배워야 했다).
+        self.observations.policy.object_rotation = ObsTerm(
+            func=obs_mdp.object_rotation, params={"noisy": True})
+        self.observations.policy.hand_pos = ObsTerm(
+            func=obs_mdp.hand_body_pos,
+            params={"asset_cfg": _jaws, "noisy": True, "lever": P.HAND_POINT_NOISE_LEVER})
+        self.observations.policy.hand_vel = ObsTerm(
+            func=obs_mdp.hand_body_vel,
+            params={"asset_cfg": SceneEntityCfg(
+                "robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+                "noisy": True, "lever": P.HAND_POINT_NOISE_LEVER})
+        # ⚠ `enable_corruption` 은 이제 아무 항에도 걸리지 않는다(noise cfg 가 없다).
+        #   노이즈 경로가 하나뿐이어야 "노이즈를 껐는데 왜 흔들리지"를 안 겪는다.
+        self.observations.policy.enable_corruption = False
+
+        # ── critic 전용 특권 관측 (비대칭 actor-critic) ────────────────
+        # ★`critic` 이라는 이름의 그룹은 RlGamesVecEnvWrapper 가 자동으로 states 로 넘긴다.
+        #   원본 `compute_critic_observations` 를 따른다 — 노이즈 없는 실측 + 접촉력 +
+        #   관절토크 + 물체 속도.
+        @configclass
+        class _CriticCfg(ObsGroup):
+            joint_pos = ObsTerm(func=mdp.joint_pos_rel,
+                                params={"asset_cfg": SceneEntityCfg(
+                                    "robot", joint_names=["l_aj_[1-7]", "l_hj_gripper_[1-2]"])})
+            joint_vel = ObsTerm(func=mdp.joint_vel_rel,
+                                params={"asset_cfg": SceneEntityCfg(
+                                    "robot", joint_names=["l_aj_[1-7]", "l_hj_gripper_[1-2]"])})
+            arm_torque = ObsTerm(func=obs_mdp.arm_applied_torque,
+                                 params={"asset_cfg": SceneEntityCfg(
+                                     "robot", joint_names=["l_aj_[1-7]"])})
+            hand_pos = ObsTerm(func=obs_mdp.hand_body_pos,
+                               params={"asset_cfg": SceneEntityCfg(
+                                   "robot", body_names=list(P.GRIPPER_FINGER_BODIES))})
+            hand_vel = ObsTerm(func=obs_mdp.hand_body_vel,
+                               params={"asset_cfg": SceneEntityCfg(
+                                   "robot", body_names=list(P.GRIPPER_FINGER_BODIES))})
+            object_position = ObsTerm(func=lift_mdp.object_position_in_robot_root_frame)
+            object_rotation = ObsTerm(func=obs_mdp.object_rotation)
+            object_vel = ObsTerm(func=obs_mdp.object_lin_ang_vel)
+            contact_forces = ObsTerm(
+                func=obs_mdp.finger_contact_forces,
+                params={"sensor_names": tuple(
+                    f"contact_{b}" for b in P.GRIPPER_FINGER_BODIES)})
+            target_object_position = ObsTerm(func=mdp.generated_commands,
+                                             params={"command_name": "object_pose"})
+            actions = ObsTerm(func=mdp.last_action)
+            fabric_q = ObsTerm(func=obs_mdp.fabric_q)
+            fabric_qd = ObsTerm(func=obs_mdp.fabric_qd)
+            fabric_qdd = ObsTerm(func=obs_mdp.fabric_qdd)
+
+            def __post_init__(self):
+                self.enable_corruption = False   # critic 은 실측을 본다
+                self.concatenate_terms = True
+
+        self.observations.critic = _CriticCfg()
+
+        # ── 종료: 작업공간 이탈 (원본 `_get_dones`) ───────────────────
+        # ★원본은 물체가 스폰 박스 x·y 를 벗어나면 즉시 종료한다. 우리는 낙하만 봐서
+        #   컵이 옆으로 굴러 나가도 에피소드가 끝까지 갔다 — 전부 낭비 표본이었다.
+        self.terminations.object_out_of_workspace = DoneTerm(
+            func=obs_mdp.object_out_of_workspace,
+            params={"x_range": P.OBJECT_WORKSPACE_X, "y_range": P.OBJECT_WORKSPACE_Y},
+        )
+
+        # ── 리셋 관절 노이즈 (원본 `robot_spawn`) ─────────────────────
+        # ★우리는 항상 같은 홈에서 시작했다. 원본은 ADR 로 관절 pos/vel 을 흔든다.
+        self.events.arm_spawn_noise = EventTermCfg(
+            func=mdp.reset_joints_by_offset,
+            mode="reset",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=["l_aj_[1-7]"]),
+                "position_range": (0.0, 0.0),
+                "velocity_range": (0.0, 0.0),
+            },
+        )
+
+        # ★fab_test21 원본 정합: 로봇 표면 물성도 랜덤화한다(kuka `robot_physics_material`).
+        #   파지는 두 표면의 접촉인데 우리는 컵 쪽만 흔들고 있었다.
+        self.events.robot_physics_material = EventTermCfg(
+            func=mdp.randomize_rigid_body_material,
+            mode="reset",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+                "static_friction_range": P.ADR_ROBOT_STATIC_FRICTION[0],
+                "dynamic_friction_range": P.ADR_ROBOT_DYNAMIC_FRICTION[0],
+                "restitution_range": P.ADR_ROBOT_RESTITUTION[0],
+                "num_buckets": 250,
+            },
+        )
+
+        # ★★fab_test21 원본 정합: 팔 PD 를 DEXTRAH kuka 원본의 **테이퍼**로 바꾼다.
+        #   원본 iiwa7: j1-4 300/45 · j5 100/20 · j6 50/15 · j7 25/15 (근위 단단·원위 무름).
+        #   구값 400/80 은 균일했고, 그 값은 DEXTRAH open_tesollo 판본에서 **학습에 쓰지
+        #   않는 반대쪽 팔을 잠그는** 게인과 같다 — 구동축 게인이 아니었다.
+        #   ⚠ 중력은 켠 채 간다(실기에 중력이 있다). 남는 처짐은 `_droop` 적분이 흡수한다.
+        self.scene.robot.actuators["left_arm"].stiffness = dict(P.ARM_FABRIC_STIFFNESS)
+        self.scene.robot.actuators["left_arm"].damping = dict(P.ARM_FABRIC_DAMPING)
+
+        # ── 목표 근처 지령 배회 페널티 — **1차**, 게이트 내장 ──────────
+        # ★★fab_test20. jerk(2차) 를 여기서 뺐다. fab_test19 층 분해가 2차 성분은
+        #   fabric 이 전부 흡수해(팔 관절 방향반전 0.0%) 제어에 도달하지 않음을 보였고,
+        #   벌금은 접근·이송에만 물려 dwell 을 1.02 → 0.005 로 무너뜨렸다.
+        #   실제로 보이는 진동은 dwell 구간 지령 배회(1.16~5.2 mm/step)이고 그건 1차다.
+        #   근거 전문: grasp_left_rewards.py `palm_command_rate_at_goal` docstring.
+        #
+        # ⚠ 이 항은 커리큘럼 게이트가 필요 없다 — 게이트가 항 안에 있다(목표에서 멀면 0).
+        #   fab_test14/19 실패는 "억제가 과제 성립 전에 걸린 것"이었는데, 이 항은 구조적으로
+        #   과제가 성립한 상태(들고 + 목표 근처)에서만 존재한다.
+        # ⚠ fab 전용이다. 관절공간 변형은 palm 지령 자체가 없다.
+        self.rewards.palm_cmd_rate = RewTerm(
+            func=rewards.palm_command_rate_at_goal,
+            weight=P.PALM_CMD_RATE_PENALTY_WEIGHT,
+            params={
+                "action_term_name": "arm_action",
+                "rate_limit": P.PALM_CMD_RATE_REF,
+                "std": P.SETTLE_POS_STD,
+                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                "lat_ok": P.GRASP_GATE_LATERAL_OK,
+                "along_ok": P.GRASP_GATE_ALONG_OK,
+                # ★SceneEntityCfg 는 가변 객체 — 다른 항과 공유 금지, 새 인스턴스.
+                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+                "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
+                "command_name": "object_pose",
+            },
+        )
+
+        # ── 도메인 랜덤화 (fab_test18 신설, 사용자 지시) ──────────────
+        # 이 트랙엔 DR 이 사실상 없었다(hold_idle_joints 는 유휴 관절 고정이지 DR 이 아니다).
+        # grasp_v1/v2 의 요소를 옮긴다. ⚠ **초기값은 전부 중립**이어야 한다 — 처음부터
+        # 미끄럽거나 무거우면 파지 자체를 못 배운다(fab_test14 가 jerk 로 같은 실수를 했다).
+        # 실제 범위는 아래 ADR 커리큘럼이 성공에 따라 넓힌다.
+        self.events.cup_physics_material = EventTermCfg(
+            func=mdp.randomize_rigid_body_material,
+            mode="reset",
+            params={
+                "asset_cfg": SceneEntityCfg("object"),
+                "static_friction_range": P.ADR_CUP_STATIC_FRICTION[0],
+                "dynamic_friction_range": P.ADR_CUP_DYNAMIC_FRICTION[0],
+                "restitution_range": P.ADR_CUP_RESTITUTION[0],
+                "num_buckets": 250,
+            },
+        )
+        self.events.cup_mass = EventTermCfg(
+            func=mdp.randomize_rigid_body_mass,
+            mode="reset",
+            params={
+                "asset_cfg": SceneEntityCfg("object"),
+                "mass_distribution_params": P.ADR_CUP_MASS_SCALE[0],
+                "operation": "scale",
+                "distribution": "uniform",
+            },
+        )
+        # 외란 — 컵에 무작위 렌치. ★★fab_test23: IsaacLab 기본 항을 버리고 원본
+        #   `apply_object_wrench` 를 그대로 옮겼다(등방 방향 · 질량 비례 · 토크 포함 ·
+        #   손이 가까울 때만). 세 가지가 어떻게 갈렸는지는 events 모듈 docstring 참조.
+        self.events.cup_disturbance = EventTermCfg(
+            func=events.apply_object_wrench,
+            mode="interval",
+            interval_range_s=P.ADR_DISTURB_INTERVAL_S,
+            params={
+                "asset_cfg": SceneEntityCfg("object"),
+                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+                "torsional_radius": P.DISTURB_TORSIONAL_RADIUS,
+                "hand_dist_threshold": P.DISTURB_HAND_DIST_THRESHOLD,
+            },
+        )
+        # 관측 노이즈/바이어스 재추첨 — 원본은 `_reset_idx` 에서 한다.
+        self.events.obs_noise_resample = EventTermCfg(func=obs_noise.resample, mode="reset")
+
+        # ★★fab_test21 원본 정합: PD 게인·관절 마찰 도메인 랜덤화.
+        #   원본 kuka ADR: stiffness/damping ×(0.5, 2.0) · joint friction (0., 5.).
+        #   우리에겐 아예 없었다 — 속도 피드포워드·fabric damping 과 함께 **세 번째**로
+        #   "원본 ADR 항목을 통째로 빠뜨리거나 하드 끝값으로 고정한" 사례다.
+        #   ⚠ 초기값은 중립(×1.0, 마찰 0) — ADR 이 넓힌다.
+        self.events.arm_gains = EventTermCfg(
+            func=mdp.randomize_actuator_gains,
+            mode="reset",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=["l_aj_[1-7]"]),
+                "stiffness_distribution_params": P.ADR_ARM_GAIN_SCALE[0],
+                "damping_distribution_params": P.ADR_ARM_GAIN_SCALE[0],
+                "operation": "scale",
+                "distribution": "uniform",
+            },
+        )
+        self.events.arm_friction = EventTermCfg(
+            func=mdp.randomize_joint_parameters,
+            mode="reset",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=["l_aj_[1-7]"]),
+                "friction_distribution_params": P.ADR_ARM_FRICTION[0],
+                "operation": "abs",
+                "distribution": "uniform",
+            },
+        )
+
+        # ── ADR: 성공하면 난이도를 한 단계씩 넓힌다 ────────────────
+        # 원리: 난이도를 올리는 요소는 **과제가 성립한 뒤에** 켠다. fab_test14 가 그 반대를
+        # 해서(억제 항을 epoch 0 부터) 이송 학습을 통째로 잃었다.
+        # 전문은 grasp_left_curriculums.py docstring.
+        self.curriculum.adr = CurrTerm(
+            func=curriculums.adr_expand_on_dwell,
+            params={
+                "metric_term": P.ADR_METRIC_TERM,
+                "trigger": P.ADR_TRIGGER,
+                "levels": P.ADR_LEVELS,
+                "min_steps_between": P.ADR_MIN_STEPS_BETWEEN,
+                "ema_alpha": P.ADR_METRIC_EMA_ALPHA,
+            },
+        )
 
 
 @configclass

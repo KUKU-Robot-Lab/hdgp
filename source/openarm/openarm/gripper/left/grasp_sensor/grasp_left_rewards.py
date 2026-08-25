@@ -288,14 +288,13 @@ def object_settled_at_goal(
     ⚠ 자세와 마찬가지로 **게이트가 아니라 보너스**다. 판정 게이트에 조건을 더 얹으면
       양의 보상이 0 이 되고 조기 종료가 최적이 된다(test6/test7 에서 실증).
     """
-    robot: RigidObject = env.scene[robot_cfg.name]
     obj: RigidObject = env.scene[object_cfg.name]
-    command = env.command_manager.get_command(command_name)
-    des_pos_w, _ = combine_frame_transforms(
-        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
+    # ★게이트 × 목표근접은 억제 항과 **같은 자**를 쓴다(중복 구현 금지 — 조용히 어긋난다).
+    gate_near = held_and_near_goal(
+        env, std, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+        pad_offset, lat_ok, along_ok, jaw_cfg, command_name,
+        robot_cfg, object_cfg, ee_frame_cfg,
     )
-    distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
-    near_goal = 1.0 - torch.tanh(distance / std)
 
     lin = torch.norm(obj.data.root_lin_vel_w, dim=1)
     ang = torch.norm(obj.data.root_ang_vel_w, dim=1)
@@ -306,13 +305,103 @@ def object_settled_at_goal(
         1.0 - torch.tanh(ang / ang_vel_std)
     )
 
+    return gate_near * still
+
+
+def held_and_near_goal(
+    env: "ManagerBasedRLEnv",
+    std: float,
+    minimal_height: float,
+    ramp_zero_z: float,
+    max_ee_distance: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    lat_ok: float,
+    along_ok: float,
+    jaw_cfg: SceneEntityCfg,
+    command_name: str,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """"제대로 들고 목표 근처에 있는가" (0~1) — `object_settled_at_goal` 의 앞 두 인수.
+
+    ★`object_settled_at_goal` 에서 **정지 정도만 뺀** 값이다. 억제 항의 게이트로 쓰려고
+      분리했다. 정지 정도를 게이트에 넣으면 "이미 멈춰 있을 때만 멈추라고 벌하는" 꼴이 돼
+      정작 필요한 곳(아직 배회 중)에서 약해진다.
+
+    ⚠ 같은 판정을 두 함수가 각자 다시 짜면 조용히 어긋난다 — 이 트랙에서 네 번 당했다.
+      그래서 `object_settled_at_goal` 과 **같은 자**(_held · near_goal)를 쓴다.
+    """
+    robot: RigidObject = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    des_pos_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
+    )
+    near_goal = 1.0 - torch.tanh(torch.norm(des_pos_w - obj.data.root_pos_w, dim=1) / std)
     gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
                  pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg)
-    return gate * near_goal * still
+    return gate * near_goal
+
+
+def palm_command_rate_at_goal(
+    env: "ManagerBasedRLEnv",
+    action_term_name: str,
+    rate_limit: float,
+    std: float,
+    minimal_height: float,
+    ramp_zero_z: float,
+    max_ee_distance: float,
+    enclose_half_width: float,
+    pad_offset: float,
+    lat_ok: float,
+    along_ok: float,
+    jaw_cfg: SceneEntityCfg,
+    command_name: str,
+) -> torch.Tensor:
+    """목표 근처에서 **palm 지령이 계속 배회하는 것**을 벌한다 (0~1, weight 는 음수).
+
+    ★★fab_test19 층 분해 실측이 이 항의 근거다. 진동의 층을 나눠 재 보니:
+        ① 정책 raw 액션   |Δ|0.217 |Δ²|0.205  방향반전 **18.8%**
+        ② 리미터 통과 지령 |Δ|11.5mm            방향반전 8.4%
+        ③ fabric 관절목표  |Δ|15.5mrad           방향반전 **0.0%**
+        ④ 실제 팔 관절     |Δ|17.1mrad           방향반전 **0.0%**
+      즉 액션의 **2차 성분(jerk)은 fabric 이 전부 지운다** — 팔은 떨지 않는다.
+      `ActionJerkL2` 가 헛일이었던 이유가 이것이고, 그 벌금은 |Δ²a| 가 큰 접근·이송에서만
+      물려 fab_test19 의 이송 학습을 무너뜨렸다(전문: grasp_left_curriculums.py).
+
+      실제로 눈에 보이는 진동은 **1차**다 — dwell 구간에서 지령이 1.16~5.2 mm/step 씩
+      계속 배회한다(초당 60~260 mm). 그래서 2차가 아니라 1차를 벌한다.
+
+    ⚠ 게이트가 핵심이다. 목표에서 멀면 0 이므로 접근·이송의 빠른 지령은 **전혀** 벌하지
+      않는다. fab_test14/19 의 실패는 억제 항이 "아직 아무것도 못 하는" 구간에 걸린 것이었고,
+      이 항은 구조적으로 그 구간에 존재하지 않는다.
+
+    ⚠ 리미터 상한으로 정규화해 0~1 로 만든다. 그래야 weight 가 "최악의 경우 몇 점"이라는
+      해석 가능한 수가 되고, 상금(settle 15 · dwell 10) 대비 비율을 눈으로 검산할 수 있다.
+
+    ⚠ 잔류 **속도**를 벌하지 않는 이유: 동결 실측에서 컵의 순간속도 바닥값이 71 mm/s 인데
+      5 초 순변위는 11.7 mm(2.3 mm/s)였다. 그 71 은 서브밀리미터 솔버 버즈이지 움직임이
+      아니고, 중력보상·PD damping·fabric damping 어느 것에도 불변이었다. 정책이 줄일 수
+      없는 양을 벌하면 그냥 상수 벌금이다.
+    """
+    term = env.action_manager.get_term(action_term_name)
+    moving = (term.cmd_step_norm / rate_limit).clamp(max=1.0)
+    gate = held_and_near_goal(
+        env, std, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+        pad_offset, lat_ok, along_ok, jaw_cfg, command_name,
+    )
+    return moving * gate
 
 
 class ActionJerkL2(ManagerTermBase):
-    """액션의 **2차 차분**(jerk) 제곱합 페널티.
+    """액션의 **2차 차분**(jerk) 제곱합 페널티. ★★기각됨 — 어디에도 배선하지 말 것.
+
+    기각 근거(fab_test19 층 분해 실측): 액션의 2차 성분은 리미터+fabric 이 전부 흡수해
+    팔 관절의 방향반전이 **정확히 0.0%** 다. 벌금은 |Δ²a| 가 큰 접근·이송에서만 물리고
+    dwell 잔류에는 손도 못 댄다. fab_test19 는 이 항을 켠 뒤 dwell 1.02 → 0.005 로
+    무너졌다. 대체 항은 `palm_command_rate_at_goal`(1차 · 목표 근처 게이트)이다.
 
     ★레퍼런스 lift 에는 `action_rate_l2`(1차 차분)와 `joint_vel_l2` 만 있다. 그런데
       test12 실측은 1차보다 2차가 더 크고 방향 반전이 68.6% 였다:
@@ -343,6 +432,59 @@ class ActionJerkL2(ManagerTermBase):
         jerk = torch.sum(torch.square(delta - self._prev_delta), dim=1)
         self._prev_delta[:] = delta
         return jerk
+
+
+class DwellSettledAtGoal(ManagerTermBase):
+    """정지 상태를 **연속 유지**한 시간에 지급하는 보너스 (fab_test13 신설).
+
+    ★fab_test12 실증: 순간 settle 항만으로는 목표 100 mm 옆 순회(잔류 0.22 m/s)가
+      국소최적으로 굳는다 — 순간 항은 스쳐 지나가도 그 스텝만큼 지급되기 때문이다.
+      순간 품질 q(`object_settled_at_goal` 그대로) > `q_thresh` 가 연속 유지된 스텝을
+      세어 clamp(count/hold_steps, 0, 1) 로 지급한다. 순회는 카운터가 계속 리셋된다.
+
+    임계·상수 근거는 preset `DWELL_*` 주석에 실측과 함께 있다.
+    구현이 클래스인 이유: 연속 유지 카운터는 스텝 간 상태다(`ActionJerkL2` 와 동일 패턴).
+    ⚠ `reset` 누락 금지 — 이 트랙에서 리셋 오염에 네 번 당했다.
+    """
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        self._count = torch.zeros(env.num_envs, device=env.device)
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            self._count[:] = 0.0
+        else:
+            self._count[env_ids] = 0.0
+
+    def __call__(  # noqa: D102
+        self,
+        env,
+        q_thresh: float,
+        hold_steps: int,
+        # 이하 object_settled_at_goal 로 그대로 전달 — RewardManager 의 시그니처 검사가
+        # **kwargs 를 허용하지 않아 명시적으로 나열한다.
+        std: float,
+        lin_vel_std: float,
+        ang_vel_std: float,
+        minimal_height: float,
+        ramp_zero_z: float,
+        max_ee_distance: float,
+        enclose_half_width: float,
+        pad_offset: float,
+        lat_ok: float,
+        along_ok: float,
+        jaw_cfg: SceneEntityCfg,
+        command_name: str,
+    ) -> torch.Tensor:
+        q = object_settled_at_goal(
+            env, std, lin_vel_std, ang_vel_std, minimal_height, ramp_zero_z,
+            max_ee_distance, enclose_half_width, pad_offset, lat_ok, along_ok,
+            jaw_cfg, command_name,
+        )
+        above = q > q_thresh
+        self._count = torch.where(above, self._count + 1.0, torch.zeros_like(self._count))
+        return (self._count / float(hold_steps)).clamp(max=1.0)
 
 
 def _jaw_frame(

@@ -1,15 +1,23 @@
-# gripper/left/grasp_sensor — IsaacLab Isaac-Lift-Cube-OpenArm-v0 의 rl_games 설정 사본.
-# ★하이퍼파라미터를 임의로 바꾸지 말 것 — 이 조합이 lift 레시피가 학습되는 조건의 일부다.
-#   바꾼 것은 experiment name 뿐이다. (fab 변형 사본 — 하이퍼파라미터 동일)
-
+# gripper/left/grasp_sensor (fab) — ★★fab_test22: **DEXTRAH kuka 원본 설정으로 전면 교체**.
+#
+# 사용자 지시: "REWARD 구성 외에는 모든 세팅을 KUKA로 맞춤".
+# 원본: dextrah_lab/tasks/dextrah_kuka_allegro/agents/rl_games_ppo_lstm_cfg.yaml
+#
+# 구 설정은 IsaacLab `Isaac-Lift-Cube-OpenArm-v0` 사본(MLP [256,128,64] · 대칭 critic ·
+# gamma 0.99 · lr 1e-4 adaptive)이었다. 원본과 다음이 갈렸다:
+#   · actor LSTM 1024 부재 · **central value(critic LSTM 2048) 부재**
+#   · gamma 0.998→0.99 · lr 3e-4 linear→1e-4 adaptive · horizon 16→24 · mini_epochs 4→8
+#   · bounds_loss_coef 0.005→0.001 · bound_loss_type regularization 미지정
+#   · clip_observations 5.0→100.0 · clip_actions 1.0→100.0
+# ⚠ LSTM·비대칭 critic 도입으로 체크포인트 모양이 바뀐다 — **fresh 학습 전용**.
+# ⚠ max_epochs 만 원본(20000)과 다르게 둔다. 이유는 config 주석 참조.
 
 params:
   seed: 42
 
-  # environment wrapper clipping
   env:
-    clip_observations: 100.0
-    clip_actions: 100.0
+    clip_observations: 5.0
+    clip_actions: 1.0
 
   algo:
     name: a2c_continuous
@@ -20,11 +28,11 @@ params:
   network:
     name: actor_critic
     separate: False
+
     space:
       continuous:
         mu_activation: None
         sigma_activation: None
-
         mu_init:
           name: default
         sigma_init:
@@ -32,17 +40,24 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [256, 128, 64]
+      units: [512, 512]
       activation: elu
       d2rl: False
-
       initializer:
         name: default
       regularizer:
         name: None
+    rnn:
+      name: lstm
+      units: 1024
+      layers: 1
+      before_mlp: True
+      layer_norm: True
+      concat_input: True
+      concat_output: True
 
-  load_checkpoint: False # flag which sets whether to load the checkpoint
-  load_path: '' # path to the checkpoint to load
+  load_checkpoint: False
+  load_path: ''
 
   config:
     name: open-grip_l_grasp_sensor_fab
@@ -59,26 +74,64 @@ params:
     reward_shaper:
       scale_value: 0.01
     normalize_advantage: True
-    gamma: 0.99
+    gamma: 0.998
     tau: 0.95
-    learning_rate: 1e-4
-    lr_schedule: adaptive
-    schedule_type: legacy
-    kl_threshold: 0.01
-    score_to_win: 100000000
+    learning_rate: 3e-4
+    lr_schedule: linear
+    schedule_type: standard
+    kl_threshold: 0.013
+    score_to_win: 100000
+    # ⚠ 원본은 20000 이다. 우리는 GPU 한 대에 1024 env 라 원본(대규모 분산)과 처리량이
+    #   다르고, 이 트랙의 붕괴 패턴(정점 후 σ 재팽창)을 정점 근처에서 끊어야 한다.
+    #   ★원본값이 아닌 유일한 하이퍼파라미터다.
     max_epochs: 4000
     save_best_after: 100
-    save_frequency: 50
+    save_frequency: 200
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.001
+    entropy_coef: 0.002
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: 24
-    minibatch_size: 24576
-    mini_epochs: 8
+    horizon_length: 16
+    minibatch_size: 16384
+    mini_epochs: 4
     critic_coef: 4
     clip_value: True
-    clip_actions: False
-    seq_len: 4
-    bounds_loss_coef: 0.0001
+    seq_length: 16
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005
+    zero_rnn_on_done: True
+
+    central_value_config:
+      minibatch_size: 16384
+      mini_epochs: 4
+      learning_rate: 5e-5
+      kl_threshold: 0.016
+      clip_value: True
+      normalize_input: True
+      truncate_grads: True
+
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [1024, 512]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
+        rnn:
+          name: lstm
+          units: 2048
+          layers: 1
+          before_mlp: False
+          layer_norm: True
+          concat_input: True
+          concat_output: True
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True
