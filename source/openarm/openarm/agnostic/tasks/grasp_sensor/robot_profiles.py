@@ -56,6 +56,26 @@ class RobotProfile:
     palm_rot_half_deg: float = 45.0
     palm_box_verified: bool = False      # probe 로 도달성 확인했는가
 
+    # ---- 시너지 그립 (hand_control="synergy") -----------------------------------
+    # ★손끝 IK(tip_cyl)가 파워그립을 **만들 수 없음**이 실측으로 확정돼(08.25) 도입한
+    #   관절공간 경로. r 을 86→14mm 로 전 범위 훑어도 검지 MCP 가 0.03→0.18 rad 에
+    #   그쳤다(파워그립 기준 1.90 의 1/10). 관절 목표를 직접 보간하면 말아 쥐는 것이
+    #   구조적으로 보장된다 — grasp_v1(단일컵 98%)의 검증된 방식.
+    # 두 자세는 **손 관절 이름 순서**(`hand_joint_names`)에 대응하는 값 목록이다.
+    #   articulation 순서와 다를 수 있으므로 **슬라이스 금지, 이름으로 매핑**한다.
+    hand_joint_names: tuple = ()
+    hand_open_pose: tuple = ()        # 폐쇄도 0 (접근 자세)
+    hand_grip_pose: tuple = ()        # 폐쇄도 1 (완전 파지) — 관절한계 초과분은 런타임 clamp
+    # 폐쇄 채널 → 관절 대응. 관절 이름 접미사별로 어느 채널이 그 관절을 몰지 지정한다.
+    #   예 tesollo: {"1": 0, "2": 1, "3": 2, "4": 2} = [외전, MCP, PIP·DIP 공통]
+    #   ★채널을 나누는 이유: 손가락당 스칼라 하나를 4관절에 복사하면 관절 목표가
+    #     open→grip 직선 하나 위에만 존재해 **진짜 인벨롭 자세가 액션 공간에 없다**.
+    hand_channel_of_joint: dict = field(default_factory=dict)
+    # 접촉 시 동결할 관절 접미사 — 그 손가락의 원위∨팁 접촉이 성립하면 진행을 멈춘다.
+    #   ★이것이 감쌈 생성 메커니즘이다. 풀면 손가락이 컵 반경보다 작게 말려 손끝만
+    #     닿는 핀치가 된다(grasp_v1 실증: full_envelope 0.176→0.035).
+    hand_freeze_suffixes: tuple = ()
+
     # ---- 접촉 (보상의 대향 게이트) ----------------------------------------------
     # finger 이름 → body 이름 튜플. body 마다 ContactSensor 를 **개별** 생성해
     # 코드에서 합산한다 — 다중 body 단일 센서는 force_matrix_w 가 0 을 반환한다
@@ -148,6 +168,29 @@ TESOLLO_RIGHT = RobotProfile(
         tuple(f"r_aj_{i}" for i in range(1, 8))
         + tuple(f"r_hj_{f}_{j}" for f in _FINGERS for j in range(1, 5))
     ),
+    # ---- 시너지 그립 (grasp_v1 검증값 이식) --------------------------------------
+    # 순서는 아래 hand_joint_names 와 1:1. articulation 은 관절번호-major 라 다르므로
+    # env 가 **이름으로** 매핑한다(슬라이스 금지).
+    hand_joint_names=tuple(f"r_hj_{f}_{j}" for f in _FINGERS for j in range(1, 5)),
+    #                 _1 외전  _2 MCP   _3 PIP  _4 DIP
+    hand_open_pose=(
+        0.0, -1.57, -0.5, 0.0,    # thumb — _2 는 opposition 으로 고정(양 자세 동일),
+        0.0,  0.0,   0.0, 0.0,    #         _3 −0.5 pre-curl(밑마디가 먼저 닿는 것 방지)
+        0.0,  0.0,   0.0, 0.0,    # index / middle / ring / pinky 는 완전 개방
+        0.0,  0.0,   0.0, 0.0,
+        0.0,  0.0,   0.0, 0.0,
+    ),
+    hand_grip_pose=(
+        0.0, -1.57, 1.8, 1.8,     # thumb  — _2 불변(대향 유지)
+        0.0,  1.9,  1.8, 1.8,     # index
+        0.0,  1.9,  1.8, 1.8,     # middle
+        0.0,  1.9,  1.8, 1.8,     # ring
+        0.0,  0.0,  1.8, 1.8,     # pinky  — _2(외전)는 안 쓰고 _3 가 curl 역할
+    ),
+    # ★1.8 은 관절한계(±1.571) 초과 과지령이며 런타임 soft limit 으로 흡수된다 —
+    #   목표를 한계에 정확히 두면 PD 가 한계 직전에서 힘을 못 낸다(grasp_v1 규약).
+    hand_channel_of_joint={"1": 0, "2": 1, "3": 2, "4": 2},
+    hand_freeze_suffixes=("3", "4"),
     # grasp_sensor 프리셋(같은 DG-5F 자산에서 검증된 palm workspace) 승계.
     # ★modules/robots.py 의 _BOX_R 은 bi_s(DG-5FS) 실측이라 palm 이 54.8mm 달라 못 쓴다.
     palm_box_min=(0.20, -0.55, 0.20),

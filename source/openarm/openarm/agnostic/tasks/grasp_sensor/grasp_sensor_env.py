@@ -204,6 +204,95 @@ class GraspSensorEnv(DirectRLEnv):
         ], dim=-1)
         return o, ax
 
+    def _setup_synergy(self) -> None:
+        """시너지 그립 배선 — 관절 목표를 직접 보간해 파워그립을 구조적으로 보장한다.
+
+        ★★관절 순서 함정(이 트랙에서 실제로 밟았다): 프로필의 자세 배열은
+          **finger-major**([thumb_1..4, index_1..4, …])인데 articulation 은
+          **관절번호-major**(index_1, middle_1, pinky_1, ring_1, thumb_1, index_2, …)다.
+          슬라이스로 대응시키면 손 전체가 **조용히** 엉뚱한 자세로 움직인다.
+          여기서 이름으로 한 번만 매핑하고, 이후 전부 이 인덱스를 쓴다.
+        """
+        p = self.profile
+        for _f in ("hand_joint_names", "hand_open_pose", "hand_grip_pose"):
+            if not getattr(p, _f):
+                raise RuntimeError(
+                    f"[{p.name}] hand_control='synergy' 인데 프로필에 {_f} 가 없다")
+        n = len(p.hand_joint_names)
+        if len(p.hand_open_pose) != n or len(p.hand_grip_pose) != n:
+            raise RuntimeError(
+                f"[{p.name}] 자세 배열 길이 불일치: names {n} / open "
+                f"{len(p.hand_open_pose)} / grip {len(p.hand_grip_pose)}")
+        jn = self.robot.data.joint_names
+        # 프로필 순서 k → articulation 인덱스. **이름으로** 찾는다.
+        self._syn_ids = [jn.index(nm) for nm in p.hand_joint_names]
+        self._syn_open = torch.tensor(p.hand_open_pose, device=self.device)
+        self._syn_grip = torch.tensor(p.hand_grip_pose, device=self.device)
+        # 관절 k 를 모는 채널과, 그 관절이 속한 손가락.
+        fingers = list(p.finger_sensor_bodies.keys())
+        ch, fi = [], []
+        for nm in p.hand_joint_names:
+            _sfx = nm.rsplit("_", 1)[1]
+            if _sfx not in p.hand_channel_of_joint:
+                raise RuntimeError(f"[{p.name}] hand_channel_of_joint 에 접미사 {_sfx} 없음")
+            ch.append(int(p.hand_channel_of_joint[_sfx]))
+            _hit = [i for i, f in enumerate(fingers) if f"_{f}_" in nm]
+            if len(_hit) != 1:
+                raise RuntimeError(f"[{p.name}] 관절 {nm} 의 손가락을 특정 못함: {_hit}")
+            fi.append(_hit[0])
+        self._syn_ch = torch.tensor(ch, device=self.device, dtype=torch.long)
+        self._syn_fi = torch.tensor(fi, device=self.device, dtype=torch.long)
+        self._syn_nch = len(set(ch))
+        self._syn_freeze = torch.tensor(
+            [nm.rsplit("_", 1)[1] in p.hand_freeze_suffixes for nm in p.hand_joint_names],
+            device=self.device)
+        # 폐쇄도 버퍼 — 관절별 독립 진행도. 접촉 동결이 관절마다 따로 걸리므로 관절 단위다.
+        self._syn_close = torch.zeros(self.num_envs, n, device=self.device)
+        _lim = self.robot.data.soft_joint_pos_limits[0, self._syn_ids, :]
+        self._syn_lo, self._syn_hi = _lim[:, 0].contiguous(), _lim[:, 1].contiguous()
+        _grip_clamped = self._syn_grip.clamp(self._syn_lo, self._syn_hi)
+        print(f"[grasp_sensor] synergy: 관절 {n}개 · 채널 {self._syn_nch} · "
+              f"동결 {int(self._syn_freeze.sum())}개 · "
+              f"grip 한계clamp {int((self._syn_grip != _grip_clamped).sum())}개", flush=True)
+
+    def _synergy_targets(self, a_hand: torch.Tensor) -> torch.Tensor:
+        """액션(손가락×채널) → 관절 목표. 프로필 순서 (N, n)."""
+        p = self.profile
+        nf = len(p.finger_sensor_bodies)
+        a = a_hand.view(self.num_envs, nf, self._syn_nch)
+        if bool(getattr(self.cfg, "couple_four_fingers", False)):
+            # 대향 그룹(엄지)은 독립, 나머지는 채널별 평균 — "특정 손가락만 안 닫힘"을
+            # 액션 공간에서 제거한다. 접촉 동결은 관절별로 남아 형상 적응은 유지된다.
+            _a_idx = self._group_a_idx
+            _mask = torch.ones(nf, dtype=torch.bool, device=a.device)
+            _mask[_a_idx] = False
+            _common = a[:, _mask, :].mean(dim=1, keepdim=True)
+            a = torch.where(_mask.view(1, nf, 1), _common.expand(-1, nf, -1), a)
+        cmd = 0.5 * (a.clamp(-1.0, 1.0) + 1.0)                    # 절대 폐쇄도 [0,1]
+        cmd_j = cmd[:, self._syn_fi, self._syn_ch]                # (N, n) 관절로 전개
+        rate = float(self.cfg.synergy_close_speed)
+        delta = (cmd_j - self._syn_close).clamp(-rate, rate)      # 변화율 상한(감소 가능)
+        if bool(getattr(self.cfg, "synergy_contact_freeze", True)):
+            _c = self._contact_forces_split()
+            _thr = float(self.cfg.stage_contact_threshold)
+            # 그 손가락의 원위마디 또는 팁이 닿았으면 동결 대상 관절을 멈춘다.
+            _tipf = self._tip_contact_forces()
+            _hold = ((_c[1] > _thr) | (_tipf > _thr))[:, self._syn_fi]   # (N, n)
+            delta = delta * (~(_hold & self._syn_freeze)).float()
+        self._syn_close = (self._syn_close + delta).clamp(0.0, 1.0)
+        tgt = torch.lerp(self._syn_open.unsqueeze(0), self._syn_grip.unsqueeze(0),
+                         self._syn_close)
+        return tgt.clamp(self._syn_lo.unsqueeze(0), self._syn_hi.unsqueeze(0))
+
+    def _tip_contact_forces(self) -> torch.Tensor:
+        """손가락별 **팁만** 접촉력 (N, F). 규약: finger_sensor_bodies 마지막 원소=팁."""
+        out = []
+        for finger in self._finger_names:
+            s = self._finger_sensors[finger][-1]
+            fm = s.data.force_matrix_w
+            out.append(fm.view(self.num_envs, -1, 3).sum(dim=1).norm(dim=-1))
+        return torch.stack(out, dim=1)
+
     def _setup_tip_cyl(self) -> None:
         """원통 액션의 기하 상수를 부팅 시 **홈 자세 FK 로 실측**한다(하드코딩 금지 —
         자산이 바뀌면 파지 기하도 바뀐다).
@@ -300,7 +389,8 @@ class GraspSensorEnv(DirectRLEnv):
                 "(10~50mm) 밖이다 — 자산이 바뀌었으면 오프셋 스윕 probe 로 재실측할 것")
         print(f"[grasp_sensor] 파지중심 palm-local "
               f"{[round(float(v) * 1000) for v in self._gc_local]}mm "
-              f"(5점평균 대비 {_shift * 1000:.0f}mm 엄지쪽 이동 · 실측 최적 28mm)", flush=True)
+              f"(5점평균 대비 {_shift * 1000:.0f}mm 엄지쪽 이동 · "
+              f"frac={float(self.cfg.stage_gc_opposition_frac):.2f})", flush=True)
         _th = (self._cyl_theta * 180 / math.pi).tolist()
         print(f"[grasp_sensor] tip_cyl 기하: 중심 palm+({float(c[0])*1000:.0f},{float(c[1])*1000:.0f})mm "
               f"θ°={[round(v) for v in _th]} z₀mm={[round(float(v)*1000) for v in self._cyl_z_nom]} "
@@ -324,7 +414,7 @@ class GraspSensorEnv(DirectRLEnv):
         self._home_palm = home.clone()
         self.palm_targets[:] = home.unsqueeze(0)
 
-        if self._tip_cyl:
+        if self._tip_cyl or self._synergy:
             # ★fabric FK 프레임과 sim env-local 은 **원점이 다르다**(실측 544mm — 첫
             #   배선에서 palm body 프레임과 섞어 파지중심이 632~728mm 로 나왔다).
             #   같은 물리점(손끝 5개)을 양쪽에서 읽어 상수 오프셋을 실측한다. 회전까지
@@ -449,12 +539,15 @@ class GraspSensorEnv(DirectRLEnv):
         p = self.profile
         # 손 제어 경로 — cfg.hand_control 주석에 세 모드의 실측 근거가 있다.
         _hc = str(self.cfg.hand_control)
-        if _hc not in ("pd", "fabric", "tip_cyl"):
+        if _hc not in ("pd", "fabric", "tip_cyl", "synergy"):
             raise RuntimeError(
-                f"hand_control={_hc!r} 미지원. 'pd'/'fabric'/'tip_cyl' 만."
+                f"hand_control={_hc!r} 미지원. 'pd'/'fabric'/'tip_cyl'/'synergy' 만."
             )
         self._hand_fabric = _hc == "fabric"
         self._tip_cyl = _hc == "tip_cyl"
+        self._synergy = _hc == "synergy"
+        if self._synergy:
+            self._setup_synergy()
         if not p.fabric_class or not p.fabric_robot_dir:
             raise RuntimeError(
                 f"[{p.name}] fabric_class/fabric_robot_dir 가 없다. 이 태스크는 Fabrics 로만 돈다 "
@@ -510,6 +603,20 @@ class GraspSensorEnv(DirectRLEnv):
         # 역치환(fabric 손 구간 순서 → articulation hand 순서). fabric 이 손을 소유하면
         # 이 방향으로 목표를 되읽는다.
         self._fab_to_hand_local = torch.argsort(self._hand_to_fab_local)
+        # ★synergy 자세(프로필 finger-major 순서) → fabric 손 구간 순서.
+        #   `_setup_synergy` 는 이 블록보다 **먼저** 실행되므로 여기서 만든다(순서 함정).
+        #   articulation 인덱스로 대조해 이름 기반 매핑을 유지한다.
+        if getattr(self, "_synergy", False):
+            _syn_pos = {int(j): k for k, j in enumerate(self._syn_ids)}
+            _fab_hand = self._fab_t[p.num_arm_joints:].tolist()
+            _missing = [int(j) for j in _fab_hand if int(j) not in _syn_pos]
+            if _missing:
+                raise RuntimeError(
+                    f"[{p.name}] synergy 자세에 없는 fabric 손 관절 {_missing} — "
+                    "hand_joint_names 가 손 20관절을 모두 덮어야 한다")
+            self._syn_to_fab_idx = torch.tensor(
+                [_syn_pos[int(j)] for j in _fab_hand],
+                device=self.device, dtype=torch.long)
         self.fabric_q = self.robot.data.default_joint_pos[:, self._fab_t].contiguous()
         self.fabric_qd = torch.zeros(self.num_envs, self.fabric.num_joints, device=self.device)
         self.fabric_qdd = torch.zeros_like(self.fabric_qd)
@@ -531,7 +638,8 @@ class GraspSensorEnv(DirectRLEnv):
         self.palm_targets = torch.zeros(self.num_envs, 6, device=self.device)
         self._home_palm = torch.zeros(6, device=self.device)   # _init_home_palm 에서 실측
 
-        if self._tip_cyl:
+        # 파지중심(_gc_local)은 손 제어 모드와 무관한 **손 기하 상수**라 synergy 도 필요하다.
+        if self._tip_cyl or self._synergy:
             self._setup_tip_cyl()
         if not p.palm_box_verified:
             print(f"[grasp_sensor] ⚠ palm_box 미검증({p.name}) — P-2 로 도달성 확인 후 승격할 것",
@@ -558,7 +666,17 @@ class GraspSensorEnv(DirectRLEnv):
         self.palm_targets = (self.palm_targets + step).clamp(self._palm_lo, self._palm_hi)
 
         # ---- 손 ---------------------------------------------------------------------
-        if self._tip_cyl:
+        if self._synergy:
+            # 관절공간 시너지 — 목표를 직접 보간하므로 말아 쥐는 것이 보장된다.
+            self._syn_target = self._synergy_targets(self.actions[:, 6:])
+            # ★fabric 의 손 상태를 실제 손 자세로 덮어쓴다. 안 그러면 fabric 이
+            #   **다른 손**으로 충돌구 FK 를 계산해 없는 자기충돌을 피하려 팔을 민다
+            #   (자매 트랙 경고). use_hand_fabric=False 라 `_fabric_hand_cmd`(PCA 5D)는
+            #   무시되므로, grasp_v1 처럼 상태를 직접 동기화하는 것이 유일한 경로다.
+            #   프로필 순서(finger-major) → fabric 순서 이름 매핑을 반드시 거친다.
+            self.fabric_q[:, self.profile.num_arm_joints:] = self._syn_to_fab(
+                self._syn_target)
+        elif self._tip_cyl:
             # 원통 좌표 (r, z) × 5 → palm-local xyz → 월드(현재 fabric palm 프레임).
             # 절대 매핑(누산 아님): a=±1 → 공칭 ± span. θ 는 부팅 실측 공칭값 고정.
             a = self.actions[:, 6:].view(self.num_envs, 5, 2)
@@ -610,6 +728,10 @@ class GraspSensorEnv(DirectRLEnv):
         """손 목표(articulation hand 순서) → fabric 손 구간 순서."""
         return hand_q[:, self._hand_to_fab_local]
 
+    def _syn_to_fab(self, syn_q: torch.Tensor) -> torch.Tensor:
+        """synergy 자세(프로필 finger-major 순서) → fabric 손 구간 순서."""
+        return syn_q[:, self._syn_to_fab_idx]
+
     def _apply_action(self) -> None:
         # Fabrics 가 만든 참조 궤적을 팔 PD 목표로. fabric_q 는 **오픈루프 plant** —
         # 실측 관절로 되돌려 동기화하면 팔이 명령을 못 따라간다(E1 사고 2건).
@@ -622,6 +744,11 @@ class GraspSensorEnv(DirectRLEnv):
         # ★★`self.hand_targets` 를 덮어쓰면 안 된다 — 이 트랙의 손 액션은 **누산**이라
         #   (hand_targets += delta) 실측값을 되먹이면 액션 의미가 바뀐다. 자매 트랙은
         #   절대 매핑이라 그대로 덮어도 되지만 여기서는 지령만 갈아끼운다.
+        if self._synergy:
+            # ★손은 fabric 밖이다 — 관절 목표를 **이름으로 찾은 인덱스**에 직접 준다.
+            #   fabric 은 같은 자세를 `_fabric_hand_cmd` 로 받아 충돌 모델만 동기화한다.
+            self.robot.set_joint_position_target(self._syn_target, joint_ids=self._syn_ids)
+            return
         _hand_cmd = (
             self.fabric_q[:, self.profile.num_arm_joints:][:, self._fab_to_hand_local]
             if (self._hand_fabric or self._tip_cyl) else self.hand_targets
@@ -742,7 +869,7 @@ class GraspSensorEnv(DirectRLEnv):
         # 물체 기울기 — 같은 스텝에 _get_dones 가 계산·캐시한 값(dones 가 rewards 보다 먼저)
         tilt_deg = self._tilt_deg_buf
         palm_pos = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
-        if self._tip_cyl:
+        if self._tip_cyl or self._synergy:
             # ★08.24 총 재설계 — 5항+정규화, 게이트 1개(공유 세션 분리: 구 함수는
             #   grasp_lift_fabric 이 공유하므로 불변, tip_cyl 경로만 새 함수).
             # 파지중심(팔 전용 기준점). ★FK 입력은 fabric_q(지령)가 아니라 **실측 관절** —
@@ -827,7 +954,7 @@ class GraspSensorEnv(DirectRLEnv):
         #   한 번도 안 올랐다(lstm_test5~7 전부 difficulty_mean 0.0000 고착 = 스폰반경
         #   0.02m 최저 난이도만 시도). 승급은 **리프트 성공**으로 완화하고, 위치까지
         #   포함한 엄격 판정은 task/goal_reached 로 계속 로깅한다.
-        if self._tip_cyl:
+        if self._tip_cyl or self._synergy:
             self._lift_success_now = (
                 (obj_pos[:, 2] - self.object_spawn_pos[:, 2] >= 0.05)
                 & (env_frac >= 0.5)
@@ -992,6 +1119,10 @@ class GraspSensorEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim(q0, qd0, env_ids=env_ids)
         self.robot.set_joint_position_target(q0, env_ids=env_ids)
         self.hand_targets[env_ids] = q0[:, self._hand_ids_t]
+        if self._synergy:
+            # 폐쇄도는 에피소드마다 완전 개방에서 시작한다 — 남기면 이전 에피소드의
+            # 폐쇄가 살아남아 리셋 직후 손이 이미 쥔 상태가 된다.
+            self._syn_close[env_ids] = 0.0
         # Fabrics 상태 씨딩 — 리셋 **외**에는 실측으로 동기화하지 않는다(오픈루프 plant)
         self.fabric_q[env_ids] = q0[:, self._fab_t]
         self.fabric_qd[env_ids] = 0.0

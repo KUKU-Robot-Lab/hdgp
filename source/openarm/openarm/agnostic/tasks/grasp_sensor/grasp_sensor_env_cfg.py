@@ -235,7 +235,15 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #     않고(잠금 외전 0→−0.234, ring_3 −0.318→−0.750) hand_repulsion(18mm 벽)이
     #     감쌈 자체를 금지해 2지 파지로 붕괴(사용자 판정: "fabric 과 관절공간 제어는
     #     성립할 수 없다").
-    hand_control: str = "tip_cyl"
+    #   ④★"synergy"(08.25 신설, 기본값): 관절공간 시너지 그립. tip_cyl 이 파워그립을
+    #     **만들 수 없음**이 실측으로 확정돼 도입했다 — r 을 86→14mm 로 전 범위 훑어도
+    #     검지 [외전,MCP,PIP,DIP] 가 [0.01,−0.01,−0.07,−0.01] 로 파워그립 기준
+    #     [0,1.90,1.80,1.80] 의 1.5% 에 그쳤고(자유공간 실측), 원위마디 접촉이 오프셋×반경
+    #     20 조합 중 17 조합에서 정확히 0.00 이었다. 손끝 위치를 4관절로 푸는 IK 는
+    #     자유도가 하나 남고, 그 잉여가 "펴진 채 안쪽을 가리키는" 해로 풀린다.
+    #     synergy 는 **관절 목표를 직접 보간**하므로 말아 쥐는 것이 구조적으로 보장된다.
+    #     팔은 그대로 fabric 이 몰고, 손만 fabric 밖으로 나간다(자매 트랙 "pd" 와 동형).
+    hand_control: str = "synergy"
     # tip_cyl 액션 스케일 — 단위=핑거팁 지름(STL 실측 16.1x19.6mm→18mm).
     tip_diameter: float = 0.018
     # r 중심 = 컵 최대반경(45mm)+팁반경(9mm) 대역의 중심. a_r=±1 이 ±2팁지름이라
@@ -243,6 +251,22 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     # r 5~95% = 9~121mm 안쪽).
     tip_r_center: float = 0.050
     tip_action_span: float = 2.0     # a=±1 → ±(span × tip_diameter)
+
+    # ---- synergy 그립 상수 (grasp_v1 검증값) --------------------------------------
+    # ★액션은 "속도"가 아니라 **절대 폐쇄도 목표**[0,1]이고, 이 값은 그 목표를 향한
+    #   **변화율 상한**이다. 속도 명령(advance = speed×cmd ≥ 0)으로 두면 단조 증가만
+    #   가능해 탐색 노이즈 평균(cmd≈0.5)만으로 80스텝에 완전 폐쇄에 도달하고 되돌릴 수
+    #   없다 — 정책이 "얼마나 닫을지"를 표현하지 못하게 된다(grasp_v1 실증).
+    synergy_close_speed: float = 0.05
+    # 접촉 시 관절 동결을 켤 것인가. ★이것이 감쌈 생성 메커니즘이다 — 접촉한 마디가
+    #   그 자리에 멈춰 컵 형상에 손가락이 드리워진다. 끄면 손가락이 컵 반경보다 작게
+    #   말려 손끝만 닿는 핀치가 된다(grasp_v1 실증: full_envelope 0.176→0.035,
+    #   five_tip 동시접촉 0.42→0.68 = 접촉이 마디에서 손끝으로 이동).
+    synergy_contact_freeze: bool = True
+    # 검지~소지를 채널별 평균으로 묶어 "특정 손가락만 안 닫힘"을 표현 불가하게 한다.
+    #   3지(또는 1지) 국소최적을 액션 공간에서 원천 차단. 엄지는 대향을 위해 독립.
+    #   ★lstm_test8 이 정확히 이 실패였다(검지만 wrap 0.73, 나머지 0.00).
+    couple_four_fingers: bool = True
     # direct 모드 attractor 게인. 자매 트랙 스윕 채택값(이동량 부족 26%→8%).
     hand_attractor_gain: float | None = 400.0
     # ★손가락↔손가락 반발을 Fabrics **계획 단계**에서 건다. PhysX self-collision 을
@@ -351,7 +375,15 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   실측(off, thumb, wrap4, G): (0, 0.00, 1.00, 0.25) (15, 0.31, 1.00, 0.41)
     #   **(28, 1.00, 1.00, 0.83)** (35, 0.94, 0.77, 0.58) (45, 0.56, 0.14, 0.07)
     #   (60, 1.00, 0.00, 0.00). 자산이 바뀌면 이 스윕을 다시 돌려야 한다.
-    stage_gc_opposition_frac: float = 0.39
+    # ★08.25 재측정(시너지 그립 전환 후): 0.39(28mm) → 0.67(48mm).
+    #   손 제어가 tip_cyl(펴진 손) → synergy(말아 쥠)로 바뀌면서 손가락이 모이는 지점이
+    #   달라졌다. 오프셋 스윕 실측(close 0.7 고정, 값은 wrap4/deep4/oppose/G):
+    #     −40mm 0.09/0.06/0.00/0.022   −20mm 0.48/0.41/0.00/0.117
+    #     +0mm  0.59/0.44/0.81/0.483   **+20mm 1.00/0.92/1.00/0.984**
+    #     +40mm 1.00/0.69/1.00/0.938
+    #   +20mm 에서 **5지 전부 손바닥면 접촉 + 4지 두 마디 동시 + 엄지 대향**이 성립하고
+    #   G 가 0.48→0.98 로 2배가 된다. 손 제어를 바꾸면 이 스윕을 다시 돌려야 한다.
+    stage_gc_opposition_frac: float = 0.67
     stage_approach_weight: float = 2.0
     stage_approach_sharpness: float = 8.0
     # 정렬 배수의 바닥 — align=−1(손등 쪽)일 때 남기는 비율. 0 이면 초기 오정렬에서
@@ -486,7 +518,11 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
         #     원통 좌표가 감쌈 기하를 좌표계에 넣는다: r=개구도(조임이 스칼라 하나),
         #     θ 고정=두 손가락이 같은 각도에 못 옴(겹침을 구조로 차단),
         #     z=컵의 어느 높이. 단위=핑거팁 지름이라 "얼마나 가까이"가 물리량이다.
-        if self.hand_control == "tip_cyl":
+        if self.hand_control == "synergy":
+            # 손가락 × 채널. 채널 수는 프로필의 채널 대응에서 파생(로봇 무관).
+            _nch = len(set(profile.hand_channel_of_joint.values()))
+            self.action_space = 6 + _nch * len(profile.finger_sensor_bodies)
+        elif self.hand_control == "tip_cyl":
             self.action_space = 6 + 2 * len(profile.finger_sensor_bodies)
         else:
             self.action_space = 6 + profile.num_hand_joints - profile.num_locked_hand_joints

@@ -95,7 +95,13 @@ def compute_tip_cyl_rewards(
     grasp = float(cfg.stage_graspq_reach) * reach + float(cfg.stage_graspq_g) * G
 
     # ---- ③④⑤ 소프트 곱셈 계층 (인자 3 → 4 → 5) ----------------------------------
-    lift = G * H * U * F
+    # ★리프트에서 U(직립)·F(밀림)를 뺀다(08.25). 사용자 단계 순서가
+    #   **접근 → 파지 → 리프트 → 기울기 → 이송 → 안정화** 인데, U 를 리프트에 곱하면
+    #   "똑바로 세운 채로만 들 수 있다"가 되어 리프트와 기울기가 한 단계로 뭉개진다.
+    #   lstm_test8 실측: lift = 12·G(0.58)·H(0.025)·U(0.25)·F(0.18) = 0.008 —
+    #   네 인자가 각각 0.2~0.5 인데 곱하면 소멸해 어느 방향으로도 gradient 가 없었다.
+    #   이제 **기울어진 채로 들어도 리프트는 받고**, 세우면 이송 8 이 추가로 열린다.
+    lift = G * H
     transport = G * H * U * T
     stabilize = G * H * U * T * S
 
