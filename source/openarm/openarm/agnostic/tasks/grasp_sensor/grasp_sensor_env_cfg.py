@@ -639,7 +639,15 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   `tip_frac`(5팁) 안에서 자연히 계상된다. 성공 판정은 `oppose` 를 그대로 요구한다.
     # ★컵 밀기·기울임 벌점(grasp_v1 approach 항). 우리에겐 없었고, lstm_test9 는
     #   컵을 평균 ~50mm 밀면서도 벌점을 한 푼도 안 물었다.
-    stage_approach_xy_penalty: float = 25.0    # grasp_v1 approach_xy_penalty_weight
+    # ★★08.25 lstm_test12 실측으로 25.0 → 8.0. 25.0 은 **접근 보상을 통째로 삼켰다**:
+    #   ep300 에 xy_disp 0.050 → 벌점 25.0·(0.050−0.025) = 0.625 인데 그 시점 approach
+    #   양의 항은 ~0.40 이라 `reward/approach = −0.714`. 음수가 되면 `orient_q` 가
+    #   **양의 항에만 곱해지므로** 자세 gradient 가 소멸한다 — 실제로 perp_q 가
+    #   0.929(ep100) → 0.425(ep300) 로 무너졌고, 손이 기울자 컵도 기울어(12.2°)
+    #   높이가 0.143 → 0.036 으로 붕괴했다. 파지는 접촉을 요구하고 접촉은 컵을 반드시
+    #   미세하게 민다 — 25.0 은 사실상 "닿지 마라"였다.
+    #   8.0 이면 xy_disp 0.050 에서 벌점 0.20 = 양의 항의 절반이라 억제는 남는다.
+    stage_approach_xy_penalty: float = 8.0     # grasp_v1 approach_xy_penalty_weight
     stage_approach_xy_margin: float = 0.025    # grasp_v1 grasp_xy_threshold
     stage_approach_tilt_penalty: float = 0.08  # grasp_v1 approach_tilt_penalty_weight
     stage_approach_tilt_margin_deg: float = 8.0  # grasp_v1 grasp_upright_threshold_deg
