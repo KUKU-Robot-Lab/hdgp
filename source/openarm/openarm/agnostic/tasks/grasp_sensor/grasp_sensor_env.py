@@ -872,15 +872,24 @@ class GraspSensorEnv(DirectRLEnv):
         # ★clip_observations=5.0 이 raw 접촉력을 5N 에서 자른다(env 의 clamp(20) 은 무효였다).
         #   5로 나눠 20N 에서 4.0 으로 포화시키면 의미(포화점 20N)는 유지하고 클립에 안 걸린다.
         contact = (self._contact_forces() / 5.0).clamp(max=4.0)
+        # ★★fabric 상태(08.25 신설, DEXTRAH Kuka policy obs 동일). 액션이 **절대 목표**
+        #   이므로 정책은 참조 궤적의 현재 위치를 알아야 한다 — 이게 없으면 "어디로
+        #   가라"만 내고 "지금 어디쯤인지"를 모른다. 관절 순서는 fabric 순서 그대로다
+        #   (obs 규약은 내부 일관성만 있으면 되고, 정책이 학습으로 대응을 배운다).
+        fab = torch.cat([self.fabric_q, self.fabric_qd, self.fabric_qdd], dim=1)
         obs = torch.cat([
             joint_pos, joint_vel, palm_pos, palm_quat, tips,
-            obj_pos, obj_quat, self.goal_pos, contact, self.actions,
+            obj_pos, obj_quat, self.goal_pos, contact, self.actions, fab,
         ], dim=1)
+        # ★measured_joint_torque — Kuka critic obs 동일(privileged). 팔+손 순서로
+        #   policy obs 의 joint_pos/vel 과 같은 정렬을 쓴다.
+        _tau = self.robot.data.applied_torque
         state = torch.cat([
             obs,
             self.object.data.root_lin_vel_w,
             self.object.data.root_ang_vel_w,
             self.difficulty.float().unsqueeze(1) / float(self.cfg.curriculum_max_level),
+            torch.cat([_tau[:, self._arm_ids_t], _tau[:, self._hand_ids_t]], dim=1),
         ], dim=1)
         return {"policy": torch.nan_to_num(obs), "critic": torch.nan_to_num(state)}
 

@@ -282,7 +282,10 @@ def test_failure_is_terminated_not_truncated():
     extras["time_outs"] 로 싣고 rl_games 가 value_bootstrap 으로
     `shaped_rewards += gamma·V(s_t)` 를 더한다 → **컵을 쓰러뜨릴 때마다 보너스**.
     실측: 실제 보상 3307→103 인데 shaped_rewards 는 72.8→79.4 로 상승(익스플로잇).
-    bootstrap 자체는 시간 만기에 필요하므로 yaml 은 True 를 유지한다.
+    ★08.25: `value_bootstrap` 은 **False**(DEXTRAH Kuka 원본값)로 바뀌었다. 위 사고의
+    근본 원인은 "실패가 truncated 로 나간 것"이지 bootstrap 자체가 아니므로, 실패를
+    terminated 로 내보내는 아래 불변조건만 지켜지면 재발하지 않는다. 다만 시간 만기
+    부트스트랩을 잃어 시간제한 편향이 생긴다 — 값 추정이 이상하면 여기부터 되돌린다.
     """
     import yaml
     env_src = (_TASK_DIR / "grasp_sensor_env.py").read_text(encoding="utf-8")
@@ -297,9 +300,12 @@ def test_failure_is_terminated_not_truncated():
     for name in ("rl_games_ppo_lstm_cfg.yaml", "rl_games_ppo_cfg.yaml"):
         cfg = yaml.safe_load((_TASK_DIR / "config" / "agents" / name).read_text())
         conf = cfg["params"]["config"]
-        assert conf["value_bootstrap"] is True, f"{name}: value_bootstrap 이 False"
-        assert conf["central_value_config"]["value_bootstrap"] is True, (
-            f"{name}: central_value value_bootstrap 이 False")
+        # ★Kuka 원본 정합(08.25): 최상위는 False, central_value 는 **키 자체가 없다**
+        #   (Kuka central_value_config 가 지정하지 않아 rl_games 기본값을 쓴다).
+        assert conf["value_bootstrap"] is False, (
+            f"{name}: value_bootstrap 이 Kuka 원본값(False) 이 아니다")
+        assert "value_bootstrap" not in conf["central_value_config"], (
+            f"{name}: central_value 에 value_bootstrap 이 남아 있다 — Kuka 는 미지정")
 
 
 def test_no_palm_leash_left_behind():

@@ -246,11 +246,27 @@ TESOLLO_RIGHT = RobotProfile(
         "head_j_pan": 0.0, "head_j_tilt": 0.0,
     },
     actuator_specs={
-        "right_arm_proximal": dict(joint_names_expr=["r_aj_[1-3]"], stiffness=400.0, damping=80.0, friction=0.213),
-        "right_arm_elbow":    dict(joint_names_expr=["r_aj_4"],     stiffness=400.0, damping=80.0, friction=0.493),
-        "right_arm_wrist":    dict(joint_names_expr=["r_aj_[5-7]"], stiffness=400.0, damping=80.0, friction=0.151),
-        "hand":               dict(joint_names_expr=["r_hj_[a-z]+_[1-4]"], stiffness=5.0, damping=2.0,
-                                   effort_limit_sim=1.5),
+        # ★★08.25 DEXTRAH Kuka(`assets/kuka_allegro/kuka_allegro.py`) 게인으로 전환.
+        #   Kuka 는 팔 게인을 **원위로 갈수록 낮춘다**(kp 300→25, kd 45→15) — 손목이
+        #   부드러워 접촉 시 팔이 물체를 밀어내지 않는다. 우리는 400/80 균일이었다.
+        #   ★이 전환은 real2sim 07.29 실측(friction 0.213/0.493/0.151, 직접 토크 식별로
+        #     실물 우팔 kp ≤13% 오차 검증)을 **덮어쓴다**. 사용자 지시("모두 KUKA
+        #     SETTING으로")에 따른 것이며, 실기 배포 시에는 재검토가 필요하다.
+        #     되돌리려면 이 블록만 아래 구 값으로 복원하면 된다:
+        #       [1-3] 400/80 f0.213 · 4 400/80 f0.493 · [5-7] 400/80 f0.151 · 손 5.0/2.0 e1.5
+        "right_arm_proximal": dict(joint_names_expr=["r_aj_[1-4]"], stiffness=300.0, damping=45.0,
+                                   effort_limit_sim=300.0),
+        "right_arm_j5":       dict(joint_names_expr=["r_aj_5"],     stiffness=100.0, damping=20.0,
+                                   effort_limit_sim=300.0),
+        "right_arm_j6":       dict(joint_names_expr=["r_aj_6"],     stiffness=50.0,  damping=15.0,
+                                   effort_limit_sim=300.0),
+        "right_arm_j7":       dict(joint_names_expr=["r_aj_7"],     stiffness=25.0,  damping=15.0,
+                                   effort_limit_sim=300.0),
+        # 손: Kuka allegro kp 3.0 / kd 0.1 / effort 0.5. 우리 구 값은 5.0/2.0/1.5 로
+        #   kd/kp 가 0.40 vs Kuka 0.033 = **12배 과감쇠**였다. 오늘 "닫는 속도가 컵을
+        #   쳐낸다"를 명령 변화율(synergy_close_speed)로 맞췄는데, 원본은 게인으로 만든다.
+        "hand":               dict(joint_names_expr=["r_hj_[a-z]+_[1-4]"], stiffness=3.0, damping=0.1,
+                                   effort_limit_sim=0.5),
         "left_arm":           dict(joint_names_expr=["l_aj_[1-7]"], stiffness=400.0, damping=80.0),
         "left_gripper":       dict(joint_names_expr=["l_hj_gripper_[1-2]"], stiffness=400.0, damping=80.0),
         "head":               dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),

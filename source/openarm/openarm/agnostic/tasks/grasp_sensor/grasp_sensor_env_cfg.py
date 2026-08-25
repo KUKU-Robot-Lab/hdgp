@@ -77,11 +77,21 @@ def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
         spawn=sim_utils.UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, profile.usd_relpath),
             activate_contact_sensors=True,
+            # ★★08.25 DEXTRAH Kuka(`assets/kuka_allegro/kuka_allegro.py`) 값으로 전환.
+            #   `disable_gravity=True` 는 원래 일치했다.
+            #   ★`max_depenetration_velocity` 1.0 → 1000.0 은 **되돌릴 후보 1순위**다.
+            #     우리가 5.0→1.0 으로 낮춘 근거는 실측이다(전형 접촉 13~20N 인데
+            #     관통 복원 스파이크 7218N). Kuka 는 손 링크가 4개(allegro)이고 우리는
+            #     27개 convexDecomposition 이라 관통 빈도가 다르다.
+            #     접촉력 스파이크가 관측되면 여기부터 본다.
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
-                # 5.0 → 1.0: 관통 시 밀어내는 속도가 크면 충격량이 폭증한다
-                # (fabric 트랙 실측: 전형 13~20N 인데 스파이크 7218N).
-                max_depenetration_velocity=1.0,
+                retain_accelerations=True,
+                linear_damping=0.0,
+                angular_damping=0.0,
+                max_linear_velocity=1000.0,
+                max_angular_velocity=1000.0,
+                max_depenetration_velocity=1000.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 # ★True (08.21 자산 재생성으로 해소). 구 자산에서는 홈 자세의 상시 접촉쌍이
@@ -113,9 +123,15 @@ def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
                 #   (solver32 Fa 28N/Fb 25N vs solver16 Fa 18N/Fb 8N) = 상호침투를 더
                 #   밀어내고 있었다는 뜻. self-collision + convex_decomposition 자산이
                 #   이미 관통을 막으므로 32 는 불필요한 비용이다.
-                solver_position_iteration_count=16,
-                solver_velocity_iteration_count=1,
+                # ★★08.25 Kuka 값(8 / 0)으로 전환. 구 16/1 은 P-9 실측으로 32 대비
+                #   비용만 크고 이득 없음을 확인해 고른 값이고, Kuka 는 8/0 이다.
+                solver_position_iteration_count=8,
+                solver_velocity_iteration_count=0,
+                sleep_threshold=0.005,
+                stabilization_threshold=0.0005,
             ),
+            # Kuka: drive_type="force".
+            joint_drive_props=sim_utils.JointDrivePropertiesCfg(drive_type="force"),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=[0.0, 0.0, 0.0],
@@ -148,11 +164,16 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
         #   파지 용량 ∝ (μcosα + sinα): 0.565 → 0.814 (×1.44).
         #   restitution 0.0 — grasp_v1 의 (1.0,1.0) 은 "중립 1.0배" 주석과 달리 **절대값**이라
         #   그대로 복사하면 컵이 완전탄성이 된다(randomize_rigid_body_material 은 배율 아님).
+        # ★★08.25 DEXTRAH Kuka 값으로 전환 — μ 0.75 → 1.0, bounce 0.01 → 0.2.
+        #   구 0.75 는 "파지 용량 ∝ (μcosα + sinα) 를 1.44배" 근거로 우리가 고른 값이고,
+        #   Kuka 는 1.0/1.0 이다. GPU 버퍼는 Kuka 가 4·5·2^15 만 지정하고 나머지는 기본값
+        #   이지만, 우리는 손 27링크 convexDecomposition 때문에 기본값이면 부팅이 깨진
+        #   이력이 있어 **용량 계열은 유지**한다(물리 거동에 영향 없는 메모리 한도다).
         physics_material=sim_utils.RigidBodyMaterialCfg(
-            static_friction=0.75, dynamic_friction=0.75, restitution=0.0,
+            static_friction=1.0, dynamic_friction=1.0, restitution=0.0,
         ),
         physx=sim_utils.PhysxCfg(
-            bounce_threshold_velocity=0.01,
+            bounce_threshold_velocity=0.2,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
             gpu_max_rigid_patch_count=2**22,
@@ -162,8 +183,12 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
             friction_correlation_distance=0.00625,
         ),
     )
+    # ★Kuka: num_envs 4096 · env_spacing 2.0 · replicate_physics **False**.
+    #   replicate_physics=False 는 Kuka 가 env 마다 **다른 물체**를 스폰하기 때문이고,
+    #   우리는 단일 컵이라 True 가 맞다(False 로 두면 filter_collisions 를 수동으로
+    #   해야 하고 부팅이 느려진다 — MultiAsset 규약). **이 한 항목만 의도적 유지.**
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=2048, env_spacing=2.5, replicate_physics=True,
+        num_envs=4096, env_spacing=2.0, replicate_physics=True,
     )
 
     # ---- 공간 (프로필에서 __post_init__ 이 계산) ----------------------------------
@@ -183,7 +208,9 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   그래도 원본값을 쓴다: 편차를 남길 이유가 없고 손해도 없다.
     fabrics_dt: float = 1.0 / 60.0
     fabric_decimation: int = 2
-    fabrics_damping_gain: float = 20.0
+    # ★08.25 Kuka ADR `fabric_damping.gain = (10., 20.)` — ADR 은 min 에서 시작해
+    #   max 로 확장하므로 **학습 시작값은 10**. 우리에겐 ADR 이 없어 초기값을 쓴다.
+    fabrics_damping_gain: float = 10.0
     fabrics_max_objects_per_env: int = 8
     fabric_use_cuda_graph: bool = False
     # ★★팔 PD 속도 피드포워드(08.25 복구). DEXTRAH 원본은 fabric 이 만든 `fabric_qd` 를
@@ -594,12 +621,20 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
         else:
             self.action_space = 6 + profile.num_hand_joints - profile.num_locked_hand_joints
         # 관측 = q + qd + palm pose(7) + tips(3T) + obj pose(7) + goal(3)
-        #        + 손가락별 접촉력 크기(F) + last action
+        #        + 손가락별 접촉력 크기(F) + last action + **fabric 상태(3×num_joints)**
+        # ★★08.25 fabric_q/qd/qdd 신설(DEXTRAH Kuka policy obs 에 있고 우리엔 없었다).
+        #   액션이 **절대 목표**로 바뀐 지금 정책은 "참조 궤적이 지금 어디 있는지"를
+        #   모른 채 목표를 지정하고 있었다 — 절대 액션과 짝인 관측이다.
+        # ★접촉력(num_fingers)은 Kuka policy obs 에 없지만 **유지**한다. 이 트랙의
+        #   존재 이유가 촉각 s2r 이고(tip F/T 15D 실기 배포 규약), 빼면 트랙이
+        #   성립하지 않는다. Kuka 는 critic 에만 hand_forces 를 둔다.
         self.observation_space = (
             2 * num_joints + 7 + 3 * num_tips + 7 + 3 + num_fingers + self.action_space
+            + 3 * num_joints
         )
-        # critic = 관측 + 물체 속도(6) + 난이도(1)
-        self.state_space = self.observation_space + 7
+        # critic = 관측 + 물체 속도(6) + 난이도(1) + **측정 관절토크(num_joints)**
+        # ★measured_joint_torque 는 Kuka critic obs 에 있다(privileged).
+        self.state_space = self.observation_space + 7 + num_joints
         # 스폰 높이는 cfg 세 값에서만 파생(단일 소스) — 프로필은 xy 만 준다
         self.object_spawn_z = (
             self.table_surface_z + self.object_origin_offset_z + self.object_spawn_pad)

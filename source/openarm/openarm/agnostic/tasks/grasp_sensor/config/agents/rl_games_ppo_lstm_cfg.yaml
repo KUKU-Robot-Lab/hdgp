@@ -61,7 +61,7 @@ params:
     normalize_value: True
     # ★True 필수(08.22): 전도/낙하가 truncation 으로 env 를 리셋한다. bootstrap 이
     # 없으면 truncation=termination 이 되어 미래 보상 절벽 → 회피 학습(agn_test2) 재발.
-    value_bootstrap: True
+    value_bootstrap: False   # ★08.25 Kuka 원본값
     num_actors: -1
     reward_shaper:
       scale_value: 0.01
@@ -69,7 +69,11 @@ params:
     gamma: 0.998
     tau: 0.95
     learning_rate: 3e-4
-    lr_schedule: adaptive   # lstm_test12: KL 0.08~0.14(threshold 8~10배)인데 linear는 미clamp → five_tip 0.42→0.33 드리프트. adaptive로 kl_threshold가 LR 제어(v1과 동일)
+    # ★★08.25 Kuka 원본값 linear. 구 adaptive 의 근거(lstm_test12: KL 0.08~0.14 로
+    #   threshold 의 8~10배인데 linear 는 미clamp → five_tip 0.42→0.33 드리프트)는
+    #   **구 제어층에서 잰 것**이다 — 그때는 속도 피드포워드가 0 이고 액션이 델타
+    #   누산이었다. KL 이 다시 튀면 여기부터 본다.
+    lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000000
@@ -87,36 +91,55 @@ params:
     critic_coef: 4
     clip_value: True
     seq_length: 16
-    bound_loss_type: bound   # ★rl_games 는 'regularisation'(영국식)/'bound' 만 인식 —
+    # ★★08.25 Kuka 원본 문자열 그대로 'regularization'(미국식). rl_games 는
+    #   'regularisation'(영국식)/'bound' 만 분기하고 나머지는 `b_loss = 0` 이므로
+    #   **이 값은 bounds loss 를 끈다** — 즉 Kuka 는 bounds_loss_coef 0.005 를 두고도
+    #   실제로는 bounds loss 없이 학습한다. 우리 구 'bound' 는 |mu|>1.1 에 벌점이
+    #   실제로 걸려 원본보다 엄격했다. 원본 거동에 맞춘다.
+    #   ★절대 액션 + bounds loss OFF 조합이므로 sigma 팽창은 entropy_coef 와
+    #     clip_actions 1.0 만으로 억제된다. losses/bounds 가 0 인 것이 정상이다.
+    bound_loss_type: regularization
                              #   'regularization' 은 어느 분기에도 안 걸려 bounds loss 가
                              #   12,652 iter 내내 꺼져 있었다(로그 0.0 이 증거)
     bounds_loss_coef: 0.005
     zero_rnn_on_done: True
 
     has_central_value: True
+    # ★★08.25 Kuka 원본 central_value_config 를 키 구성까지 그대로 썼다.
+    #   구 설정에 있던 normalize_value / value_bootstrap / lr_schedule / e_clip 은
+    #   Kuka 가 지정하지 않는다(rl_games 기본값 사용).
+    #   ★★critic 에 **LSTM 2048** 을 신설한다 — 우리 critic 은 MLP 만 있었고,
+    #     부분관측 과제에서 value 추정에 직접 영향한다.
+    #     actor 는 before_mlp True(LSTM→MLP), critic 은 before_mlp False(MLP→LSTM) 로
+    #     서로 다르다 — Kuka 그대로다.
     central_value_config:
-      normalize_input: True
-      normalize_value: True
-      value_bootstrap: True
       minibatch_size: 16384
       mini_epochs: 4
       learning_rate: 5e-5
-      lr_schedule: linear
       kl_threshold: 0.016
       clip_value: True
-      e_clip: 0.2
+      normalize_input: True
       truncate_grads: True
+
       network:
         name: actor_critic
         central_value: True
         mlp:
-          units: [512, 512, 256, 128]
+          units: [1024, 512]
           activation: elu
           d2rl: False
           initializer:
             name: default
           regularizer:
             name: None
+        rnn:
+          name: lstm
+          units: 2048
+          layers: 1
+          before_mlp: False
+          layer_norm: True
+          concat_input: True
+          concat_output: True
 
     player:
       deterministic: True
