@@ -76,10 +76,10 @@ params:
     lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
-    score_to_win: 100000000
+    score_to_win: 100000   # ★08.25 Kuka 원본값
     max_epochs: 20000
     save_best_after: 100
-    save_frequency: 500
+    save_frequency: 200   # ★08.25 Kuka 원본값
     print_stats: True
     grad_norm: 1.0
     entropy_coef: 0.002
@@ -104,7 +104,9 @@ params:
     bounds_loss_coef: 0.005
     zero_rnn_on_done: True
 
-    has_central_value: True
+    # has_central_value 는 지정하지 않는다 — rl_games 가 central_value_config
+
+    #   존재 여부로 자동 판정한다(a2c_common.py:142). Kuka 도 미지정.
     # ★★08.25 Kuka 원본 central_value_config 를 키 구성까지 그대로 썼다.
     #   구 설정에 있던 normalize_value / value_bootstrap / lr_schedule / e_clip 은
     #   Kuka 가 지정하지 않는다(rl_games 기본값 사용).

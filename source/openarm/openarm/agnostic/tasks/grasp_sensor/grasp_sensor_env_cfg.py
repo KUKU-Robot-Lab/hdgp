@@ -576,16 +576,24 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 articulation_enabled=False,
             ),
-            # ★물체에도 solver/depenetration 을 명시한다 — 빠지면 PhysX 기본(4회)이라
-            #   파지 조임 중 손끝이 컵 벽을 파고든다(사용자 영상 08.20).
-            #   값은 grasp_v1·grasp_lift_fabric 과 동일.
+            # ★★08.25 물체 물리도 DEXTRAH Kuka 값으로 전환
+            #   (`dextrah_kuka_allegro_env.py:553` object_cfg.rigid_props).
+            #   구 값(solver 16/1 · max_vel 100 · depenetration 1.0)은 "빠지면 PhysX
+            #   기본 4회라 파지 조임 중 손끝이 컵 벽을 파고든다(사용자 영상 08.20)"는
+            #   근거로 우리가 고른 것이다. Kuka 는 8/0 · 1000 · 1000 을 쓴다.
+            #   ★로봇 쪽 `max_depenetration_velocity` 와 함께 되돌릴 후보다 —
+            #     접촉력 스파이크가 보이면 여기부터 본다.
             rigid_props=RigidBodyPropertiesCfg(
-                solver_position_iteration_count=16,
-                solver_velocity_iteration_count=1,
-                max_angular_velocity=100.0,
-                max_linear_velocity=100.0,
-                max_depenetration_velocity=1.0,
+                kinematic_enabled=False,
                 disable_gravity=False,
+                enable_gyroscopic_forces=True,
+                solver_position_iteration_count=8,
+                solver_velocity_iteration_count=0,
+                sleep_threshold=0.005,
+                stabilization_threshold=0.0025,
+                max_linear_velocity=1000.0,
+                max_angular_velocity=1000.0,
+                max_depenetration_velocity=1000.0,
             ),
         ),
     )
