@@ -383,7 +383,9 @@ class GraspSensorEnv(DirectRLEnv):
         #   G 가 `five_frac · near_q` 로 바뀌어 혼합비 자체가 없다.
         #   저장소에 "오타로 손실항이 12,652 iter 동안 조용히 꺼져 있던" 이력이 있어
         #   신설 상수는 전부 존재·범위를 부팅에서 확인한다(fail-loud).
-        for _nm in ("stage_stay_speed_ref", "stage_stay_hold_steps",
+        for _nm in ("stage_tilt_tolerance_deg", "stage_succ_speed_band",
+                    "stage_stay_speed_ref", "stage_stay_hold_steps",
+                    "stage_stay_pos_tol_m", "stage_stay_tilt_deg",
                     "stage_perp_exponent", "stage_roll_exponent", "stage_orient_floor",
                     "stage_transfer_weight", "stage_stay_weight", "stage_contact_weight",
                     "stage_upright_gate_deg", "stage_thumb_force_ref",
@@ -414,6 +416,11 @@ class GraspSensorEnv(DirectRLEnv):
         if float(_c.stage_succ_goal_band_m[0]) < float(_c.stage_gate_transfer_m):
             raise RuntimeError(
                 f"[{self.profile.name}] succ goal 전이대 하한이 ρ 게이트보다 빡빡하다")
+        if float(_c.stage_upright_gate_deg[1]) >= float(_c.stage_tilt_tolerance_deg[1]):
+            raise RuntimeError(
+                f"[{self.profile.name}] 직립 게이트({_c.stage_upright_gate_deg}) 가 이송 "
+                f"관용치({_c.stage_tilt_tolerance_deg}) 보다 느슨하다 — stay 가 lift 보다 "
+                "쉬워져 계층이 뒤집힌다")
         if not (0.0 <= float(_c.stage_orient_floor) < 1.0):
             raise RuntimeError(
                 f"[{self.profile.name}] stage_orient_floor={_c.stage_orient_floor} ∉ [0,1)")
@@ -1206,13 +1213,14 @@ class GraspSensorEnv(DirectRLEnv):
                          ("_gate_eff", "task/gate_eff"), ("_d_max", "task/d_max"),
                          ("_d_gc", "task/d_graspcenter"), ("_grip_dist", "task/grip_dist"),
                          ("_touch_frac", "task/touch_frac"), ("_align", "task/palm_align"),
-                         ("_H", "task/lift_q"), ("_U", "task/upright_q"),
+                         ("_H", "task/lift_q"), ("_U", "task/upright_q"), ("_U_tol", "task/tilt_tol_q"),
                          ("_lam", "task/gate/approach"), ("_mu", "task/gate/grasp"),
                          ("_nu", "task/gate/lift"), ("_rho", "task/gate/transfer"),
                          ("_touch_frac", "task/touch_frac"), ("_deep_frac", "task/deep_frac"),
                          ("_opp_soft", "task/opp_soft"), ("_succ_soft", "task/succ_soft"),
                          ("_succ_s_h", "task/succ/height"), ("_succ_s_c", "task/succ/graspq"),
                          ("_succ_s_d", "task/succ/goal"), ("_succ_s_t", "task/succ/tilt"),
+                         ("_succ_s_v", "task/succ/speed"),
                          ("_deep4", "task/deep4"), ("_tip_frac", "task/tip_frac"),
                          ("_full_tip", "task/full_tip"), ("_persist", "task/persist"),
                          ("_envelope", "task/envelope"), ("_grasp_q", "task/grasp_q"),
@@ -1227,8 +1235,10 @@ class GraspSensorEnv(DirectRLEnv):
         # ---- 단계별 성공 누적 (리셋 때만 기록) -----------------------------------
         _h = obj_pos[:, 2] - self.object_spawn_pos[:, 2]
         _spd = torch.norm(self.object.data.root_lin_vel_w, dim=-1)
-        _tr = (goal_dist <= float(self.cfg.success_pos_tolerance)) & (
-            tilt_deg <= float(self.cfg.success_tilt_max_deg))
+        # ★08.26 사용자 규격 — 목표 5cm 안에서 **직립**으로 정지해야 성공이다.
+        #   공유 계약 상수(success_*) 대신 이 트랙 전용 상수를 쓴다.
+        _tr = (goal_dist <= float(self.cfg.stage_stay_pos_tol_m)) & (
+            tilt_deg <= float(self.cfg.stage_stay_tilt_deg))
         self._stay_run = torch.where(
             _tr & (_spd < float(self.cfg.stage_stay_speed_ref)),
             self._stay_run + 1, torch.zeros_like(self._stay_run))

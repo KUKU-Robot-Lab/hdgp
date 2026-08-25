@@ -153,8 +153,14 @@ def compute_tip_cyl_rewards(
         obj_up, torch.tensor([0.0, 0.0, 1.0], device=obj_up.device).expand_as(obj_up),
         dim=-1).clamp(-1.0, 1.0)
     _tilt = torch.rad2deg(torch.acos(_cos_up.clamp(-1.0 + 1e-6, 1.0 - 1e-6)))
-    U = smoothstep(_tilt, float(cfg.stage_upright_gate_deg[0]),
-                   float(cfg.stage_upright_gate_deg[1]))
+    # ★★08.26 사용자 규격(학습 영상 관찰) — 직립을 **단계별로 다르게** 요구한다.
+    #   "이송 중에 20도 내로 기울여져 있는 상태는 괜찮음. 오히려 목표 좌표 5cm 내로
+    #    오면 가만히 있되 컵을 똑바로 world +z 와 컵 +z 가 같은 곳을 보게 하고
+    #    정지하는게 성공임."
+    #   구 U 는 10° 아래에서만 1.0 이라 **리프트·이송 내내 직립을 강요**했고,
+    #   정작 stay 에는 직립 인자가 없었다 = 요구가 정확히 뒤집혀 있었다.
+    U_tol = smoothstep(_tilt, *cfg.stage_tilt_tolerance_deg)   # 이송 관용 — 20° 까지 1.0
+    U_up = smoothstep(_tilt, *cfg.stage_upright_gate_deg)      # 직립 — stay/success 전용
     # ★⑤ stay = **실제로 안 움직이는가**. 구 S 는 액션 변화량이라 "액션을 안 바꾼다"
     #   였지 "안 움직인다"가 아니었다. 물체 선속도로 바꾼다.
     S = torch.exp(-obj_speed / float(cfg.stage_stay_speed_ref))
@@ -201,7 +207,12 @@ def compute_tip_cyl_rewards(
         * orient_q
         - float(cfg.stage_approach_xy_penalty)
         * torch.relu(xy_disp - float(cfg.stage_approach_xy_margin))
-        - float(cfg.stage_approach_tilt_penalty)
+        # ★★08.26 기울임 벌점을 **리프트 전에만** 건다(`1−ν`). 이 벌점은 접근 중 컵을
+        #   쓰러뜨리는 것을 막으려는 것인데, 상시 걸려 있어 이송 중 18° 에서도 0.8 을
+        #   물었다 — 사용자 규격("이송 중 20도 내는 괜찮음")과 정면으로 어긋났다.
+        #   들어올린 뒤의 기울기는 `U_tol`(30°→20°)과 `U_up`(15°→5°)이 맡는다.
+        #   논문도 벌점을 `(1−λ)` 로 게이팅한다.
+        - (1.0 - nu) * float(cfg.stage_approach_tilt_penalty)
         * torch.relu(tilt_deg - float(cfg.stage_approach_tilt_margin_deg))
     )
 
@@ -211,9 +222,9 @@ def compute_tip_cyl_rewards(
     # 실지급 grasp 1.469 > lift 0.757 > transfer 0.661 > stay 0.334).
     contact = touch_f                              # 게이트 없음 — 사각지대 방지 shaping
     grasp = mu * Q_g                               # 파지가 열려야
-    lift = nu * U * H                              # 리프트가 열려야 (직립 품질 곱)
-    transfer = nu * T                              # 리프트 위에서 목표로
-    stay = rho * S                                 # 목표권 안에서 정지
+    lift = nu * U_tol * H                          # 리프트 — 20° 넘는 것만 벌한다
+    transfer = nu * U_tol * T                      # 이송 — 같은 관용
+    stay = rho * S * U_up                          # ★정지 + **직립**이 성공 조건이다
 
     # ---- 성공 — 이진 AND 를 **연속 곱**으로 (사용자 요구: 소프트) --------------------
     # 구 판정은 5중 AND 이진이라 총보상의 67~79% 를 차지하면서 임계에서 깜빡였다
@@ -225,7 +236,10 @@ def compute_tip_cyl_rewards(
     s_o = 1.0 - torch.exp(-thumb_force / float(cfg.stage_thumb_force_ref))
     s_t = smoothstep(_tilt, *cfg.stage_succ_tilt_band_deg)
     s_d = smoothstep(d_goal, *cfg.stage_succ_goal_band_m)
-    succ_soft = s_h * s_c * s_o * s_t * s_d
+    # ★정지 인자 신설. 구 success 에는 **속도 조건이 아예 없어서** 목표를 스쳐 지나가도
+    #   성공으로 셀 수 있었다. 사용자 규격은 "가만히 있되"를 명시한다.
+    s_v = smoothstep(obj_speed, *cfg.stage_succ_speed_band)
+    succ_soft = s_h * s_c * s_o * s_t * s_d * s_v
 
     terms = {
         # ★approach 는 이미 가중·벌점이 반영된 값이다(grasp_v1 배선) — 다시 곱하지 않는다.
@@ -246,7 +260,8 @@ def compute_tip_cyl_rewards(
     terms["_d_gc"] = d_gc
     terms["_align"] = align
     terms["_H"] = H
-    terms["_U"] = U
+    terms["_U"] = U_up
+    terms["_U_tol"] = U_tol
     terms["_deep4"] = deep4
     terms["_tip_frac"] = tip_frac
     terms["_full_tip"] = full_tip
@@ -272,6 +287,7 @@ def compute_tip_cyl_rewards(
     terms["_succ_s_c"] = s_c
     terms["_succ_s_d"] = s_d
     terms["_succ_s_t"] = s_t
+    terms["_succ_s_v"] = s_v
     # 3번째 반환값은 구 `gate` 자리 — 계층에서 "파지가 열렸나" = μ 가 그 의미다.
     grip_ok = mu > 0.5
     return total, terms, grip_ok, wrap4

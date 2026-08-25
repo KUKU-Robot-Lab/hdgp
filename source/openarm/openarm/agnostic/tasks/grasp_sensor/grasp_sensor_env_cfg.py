@@ -682,7 +682,13 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #     15° 에서 0.1 로 떨어져 `stage_success_tilt_deg=15.0` 과 자연히 정렬된다.
     #   ★acos 없이 `exp(−2(1−cos)/τ_rad²)` 로 계산한다 — 1−cos ≈ θ²/2 근사라 20° 까지
     #     오차 1% 미만이고, acos 의 cos=±1 미분 발산을 피한다.
-    stage_upright_gate_deg: tuple[float, float] = (25.0, 10.0)  # 내려가는 전이
+    # ★★08.26 사용자 규격(학습 영상). 직립을 **단계별로 다르게** 요구한다:
+    #   "이송 중에 20도 내로 기울여져 있는 상태는 괜찮음. 오히려 목표 좌표 5cm 내로
+    #    오면 가만히 있되 컵을 똑바로 world +z 와 컵 +z 가 같은 곳을 보게 하고 정지."
+    #   구 (25,10) 은 리프트·이송 내내 10° 직립을 강요하면서 정작 stay 에는 직립
+    #   인자가 없었다 — 요구가 뒤집혀 있었다.
+    stage_tilt_tolerance_deg: tuple[float, float] = (30.0, 20.0)  # lift/transfer 관용
+    stage_upright_gate_deg: tuple[float, float] = (15.0, 5.0)     # stay/success 직립
     # 컵 밀림 감쇠 — 제곱역수. 선형 (1−d/L) 은 d≥L 에서 정확히 0 이 되어 하드 게이트와
     # 같아지고 gradient 가 소실된다(실측: 밀림 0.207 이 300 에폭간 전혀 안 줄어듦).
     stage_disp_limit: float = 0.06
@@ -697,8 +703,16 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     stage_success_weight: float = 6.0
     stage_succ_height_band: tuple[float, float] = (0.04, 0.12)   # 실측 이봉 0.061/0.12 사이
     stage_succ_graspq_band: tuple[float, float] = (0.35, 0.70)
-    stage_succ_tilt_band_deg: tuple[float, float] = (22.0, 12.0)  # 내려가는 전이
-    stage_succ_goal_band_m: tuple[float, float] = (0.09, 0.04)    # 내려가는 전이
+    stage_succ_tilt_band_deg: tuple[float, float] = (18.0, 6.0)   # 직립 요구(내려가는 전이)
+    # ★구 success 에는 **속도 조건이 아예 없었다** — 목표를 스쳐 지나가도 성공으로
+    #   셀 수 있었다. 사용자 규격이 "가만히 있되"를 명시한다.
+    stage_succ_speed_band: tuple[float, float] = (0.10, 0.03)     # 정지(내려가는 전이)
+    # ★stay 단계 판정(로깅) 전용. `success_pos_tolerance`/`success_tilt_max_deg` 는
+    #   grasp_lift_fabric 과 **동기 계약**이라(그쪽 test_task_contract 가 검사) 건드리지
+    #   않는다. 사용자 규격 "목표 5cm 내에서 정지 + 직립"은 여기로 낸다.
+    stage_stay_pos_tol_m: float = 0.05
+    stage_stay_tilt_deg: float = 10.0
+    stage_succ_goal_band_m: tuple[float, float] = (0.09, 0.05)    # 사용자 규격 5cm
 
     dex_approach_weight: float = 2.0
     dex_approach_sharpness: float = 8.0
