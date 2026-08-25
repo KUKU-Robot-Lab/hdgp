@@ -252,6 +252,10 @@ class GraspSensorEnv(DirectRLEnv):
             device=self.device)
         # 폐쇄도 버퍼 — 관절별 독립 진행도. 접촉 동결이 관절마다 따로 걸리므로 관절 단위다.
         self._syn_close = torch.zeros(self.num_envs, n, device=self.device)
+        # 손 PD 속도 피드포워드용 — 첫 스텝의 이전 목표는 홈 자세(속도 0)다.
+        self._syn_target = self.robot.data.joint_pos[:, self._syn_ids].clone()
+        self._syn_vel = torch.zeros(self.num_envs, n, device=self.device)
+        self._policy_dt = float(self.cfg.sim.dt) * int(self.cfg.decimation)
         _lim = self.robot.data.soft_joint_pos_limits[0, self._syn_ids, :]
         self._syn_lo, self._syn_hi = _lim[:, 0].contiguous(), _lim[:, 1].contiguous()
         _grip_clamped = self._syn_grip.clamp(self._syn_lo, self._syn_hi)
@@ -699,7 +703,13 @@ class GraspSensorEnv(DirectRLEnv):
         # ---- 손 ---------------------------------------------------------------------
         if self._synergy:
             # 관절공간 시너지 — 목표를 직접 보간하므로 말아 쥐는 것이 보장된다.
+            _syn_prev = self._syn_target
             self._syn_target = self._synergy_targets(self.actions[:, 6:])
+            # ★★손 속도 피드포워드(08.25 3차 감사). Kuka 는 팔·손 **23관절 전체**에
+            #   속도 목표를 준다. 우리 손은 fabric 밖(램프)이라 `fabric_qd` 를 쓸 수
+            #   없다 — fabric_q 의 손 구간을 매 스텝 덮어쓰므로 그 qd 는 램프의
+            #   도함수가 아니다. 램프 자체의 도함수를 쓴다(정책 dt = decimation·sim.dt).
+            self._syn_vel = (self._syn_target - _syn_prev) / self._policy_dt
             # ★fabric 의 손 상태를 실제 손 자세로 덮어쓴다. 안 그러면 fabric 이
             #   **다른 손**으로 충돌구 FK 를 계산해 없는 자기충돌을 피하려 팔을 민다
             #   (자매 트랙 경고). use_hand_fabric=False 라 `_fabric_hand_cmd`(PCA 5D)는
@@ -785,6 +795,11 @@ class GraspSensorEnv(DirectRLEnv):
             # ★손은 fabric 밖이다 — 관절 목표를 **이름으로 찾은 인덱스**에 직접 준다.
             #   fabric 은 같은 자세를 `_fabric_hand_cmd` 로 받아 충돌 모델만 동기화한다.
             self.robot.set_joint_position_target(self._syn_target, joint_ids=self._syn_ids)
+            # Kuka 와 동일하게 손에도 속도 목표를 준다 — 없으면 감쇠항 kd·(0 − q̇) 가
+            # 닫는 동작을 상시 반대로 밀어 err ≈ (kd/kp)·q̇ 의 과도 지연이 생긴다.
+            self.robot.set_joint_velocity_target(
+                float(self.cfg.hand_velocity_ff_scale) * self._syn_vel,
+                joint_ids=self._syn_ids)
             return
         _hand_cmd = (
             self.fabric_q[:, self.profile.num_arm_joints:][:, self._fab_to_hand_local]
@@ -860,7 +875,12 @@ class GraspSensorEnv(DirectRLEnv):
         q = self.robot.data.joint_pos
         qd = self.robot.data.joint_vel
         joint_pos = torch.cat([q[:, self._arm_ids_t], q[:, self._hand_ids_t]], dim=1)
-        joint_vel = torch.cat([qd[:, self._arm_ids_t], qd[:, self._hand_ids_t]], dim=1)
+        # ★★측정 속도는 policy obs 에서 0 이 된다(Kuka `observation_annealing` 계수
+        #   (0., 0.) 과 동일 — 시작·종단이 둘 다 0 이라 전 구간 무효화다). 정책이 보는
+        #   속도 정보는 `fabric_qd`(참조 속도)뿐이다. critic 은 아래에서 **원값**을 받는다
+        #   (Kuka critic 도 annealing 을 안 곱한 `robot_dof_vel` 을 쓴다).
+        joint_vel_true = torch.cat([qd[:, self._arm_ids_t], qd[:, self._hand_ids_t]], dim=1)
+        joint_vel = float(self.cfg.obs_measured_velocity_scale) * joint_vel_true
         palm_pos = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
         palm_quat = self.robot.data.body_quat_w[:, self.palm_idx]
         tips = (
@@ -886,6 +906,10 @@ class GraspSensorEnv(DirectRLEnv):
         _tau = self.robot.data.applied_torque
         state = torch.cat([
             obs,
+            # ★critic 은 측정 속도 **원값**을 받는다 — Kuka critic obs 는 annealing 을
+            #   곱하지 않은 `robot_dof_vel` 을 쓴다(env.py:1498). policy 에서 0 이 된
+            #   채널을 critic 에서 되살리는 것이라 비대칭 구조가 Kuka 와 같아진다.
+            joint_vel_true,
             self.object.data.root_lin_vel_w,
             self.object.data.root_ang_vel_w,
             self.difficulty.float().unsqueeze(1) / float(self.cfg.curriculum_max_level),
@@ -1216,6 +1240,10 @@ class GraspSensorEnv(DirectRLEnv):
             # 폐쇄도는 에피소드마다 완전 개방에서 시작한다 — 남기면 이전 에피소드의
             # 폐쇄가 살아남아 리셋 직후 손이 이미 쥔 상태가 된다.
             self._syn_close[env_ids] = 0.0
+            # 속도 피드포워드도 함께 리셋 — 안 하면 리셋 직후 한 스텝 동안 이전
+            # 에피소드의 목표와 홈 자세의 차이가 거대한 가짜 속도로 들어간다.
+            self._syn_target[env_ids] = q0[:, self._syn_ids]
+            self._syn_vel[env_ids] = 0.0
         # 접촉 지속 카운터도 반드시 리셋 — 남기면 이전 에피소드의 지속치가 새 에피소드
         # 첫 스텝부터 보상으로 지급된다(grasp_v1 도 같은 자리에서 0 으로 만든다).
         self._persist_buf[env_ids] = 0

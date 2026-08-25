@@ -274,6 +274,24 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   palm_err 51~65mm → 90mm(최대 435mm)로 악화됐다.
     #   ★이 값이 바뀌면 폐쇄 속도·파지중심 등 제어 위에서 잰 상수는 전부 재측정 대상이다.
     fabric_velocity_ff_scale: float = 1.0
+    # ★★손 PD 속도 피드포워드(08.25 3차 감사). Kuka 는 `set_joint_velocity_target` 을
+    #   **actuated 23관절 전체**(팔 7 + 손 16)에 준다 — 손도 fabric 이 plant 라
+    #   `fabric_qd` 가 그대로 손 관절에 들어간다. 우리는 팔 7개에만 주고 있어서 손은
+    #   암묵적 목표 0 → 감쇠항 kd·(0 − q̇) 가 닫는 동작을 상시 반대로 민다.
+    #   우리 손은 fabric 밖(시너지 램프)이라 `fabric_qd` 를 쓸 수 없다 — fabric_q 의 손
+    #   구간을 매 스텝 덮어쓰므로 그 qd 는 램프의 도함수가 아니다. 대신 **램프 자체의
+    #   도함수**(Δtarget / 정책 dt)를 쓴다. 이것이 Kuka 와 같은 의미의 신호다.
+    #   산수: kd/kp = 0.1/3.0 = 0.0333 s. 폐쇄 0.005 rad/step @60Hz = 0.3 rad/s
+    #        → 지연 err ≈ 0.010 rad(0.57°). 정지 시(v=0) 0 이므로 **과도구간 전용**이다.
+    hand_velocity_ff_scale: float = 1.0
+    # ★★policy obs 의 **측정 속도**를 죽이는 계수. Kuka 는 ADR
+    #   `observation_annealing.coefficient = (0., 0.)` — 시작·종단이 **둘 다 0** 이라
+    #   전 학습 구간에서 `robot_dof_vel_noisy` 와 `hand_vel_noisy` 에 0 을 곱한다
+    #   (env.py:1321, 1337). 즉 Kuka 정책은 측정 속도를 **한 번도 보지 않는다**.
+    #   대신 fabric 의 `fabric_qd`(참조 속도)는 그대로 준다 — 실기에서도 계산 가능한
+    #   양이기 때문이다. 측정 속도는 sim2real 에서 가장 안 맞는 채널이다.
+    #   ★차원은 유지한다(Kuka 도 0 을 곱할 뿐 채널을 지우지 않는다). obs_space 불변.
+    obs_measured_velocity_scale: float = 0.0
     # ★palm leash 는 제거됐다(08.22) — 정책이 팔 목표에 대해 전권을 갖는다.
     #   목표의 유일한 상한은 아래 워크스페이스 박스(profile.palm_box_*)다.
     #   근거는 grasp_sensor_env.py `_pre_physics_step` 주석 참조.
@@ -690,9 +708,13 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
             2 * num_joints + 7 + 3 * num_tips + 7 + 3 + num_fingers + self.action_space
             + 3 * num_joints
         )
-        # critic = 관측 + 물체 속도(6) + 난이도(1) + **측정 관절토크(num_joints)**
+        # critic = 관측 + **측정 관절속도 원값(num_joints)** + 물체 속도(6) + 난이도(1)
+        #          + **측정 관절토크(num_joints)**
         # ★measured_joint_torque 는 Kuka critic obs 에 있다(privileged).
-        self.state_space = self.observation_space + 7 + num_joints
+        # ★★08.25 3차 감사: policy obs 의 관절속도가 0 이 되므로(Kuka
+        #   `observation_annealing` 계수 0) critic 에 원값을 따로 넣는다. Kuka critic 은
+        #   annealing 을 곱하지 않은 `robot_dof_vel` 을 쓴다 — 비대칭 구조가 같아진다.
+        self.state_space = self.observation_space + num_joints + 7 + num_joints
         # 스폰 높이는 cfg 세 값에서만 파생(단일 소스) — 프로필은 xy 만 준다
         self.object_spawn_z = (
             self.table_surface_z + self.object_origin_offset_z + self.object_spawn_pad)
