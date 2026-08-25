@@ -986,6 +986,12 @@ class GraspSensorEnv(DirectRLEnv):
                 tilt_deg=tilt_deg,
                 xy_disp=torch.norm(
                     obj_pos[:, :2] - self.object_spawn_pos[:, :2], dim=-1),
+                # ★헛닫힘 벌점 입력. `grip_close` 는 정책의 **실제 폐쇄도**(지령 누적)이고
+                #   `contact_frac` 은 접촉한 손가락 비율이다. 거리는 안 쓴다 — 물체
+                #   크기마다 "닿기 직전 거리"가 달라 하드 임계가 다물체에서 깨진다.
+                grip_close=(self._syn_close.mean(dim=-1) if self._synergy
+                            else torch.zeros(self.num_envs, device=self.device)),
+                contact_frac=(_mid_c | _dist_c | _tip_c).float().mean(dim=-1),
                 actions=self.actions,
                 prev_actions=self.prev_actions,
                 cfg=self.cfg,
@@ -1058,7 +1064,9 @@ class GraspSensorEnv(DirectRLEnv):
                          ("_G", "task/grip_q"), ("_H", "task/lift_q"), ("_U", "task/upright_q"),
                          ("_deep4", "task/deep4"), ("_tip_frac", "task/tip_frac"),
                          ("_full_tip", "task/full_tip"), ("_persist", "task/persist"),
-                         ("_envelope", "task/envelope"), ("_grasp_q", "task/grasp_q")):
+                         ("_envelope", "task/envelope"), ("_grasp_q", "task/grasp_q"),
+                         ("_contact_frac", "task/contact_frac"),
+                         ("_grip_close", "task/grip_close")):
             _v = terms.pop(_k, None)
             if _v is not None:
                 self.extras[_tag] = _v.mean()

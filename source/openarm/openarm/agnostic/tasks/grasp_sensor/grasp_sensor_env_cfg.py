@@ -569,6 +569,17 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     stage_gc_local_override: tuple | None = (0.057, -0.001, 0.064)
     stage_approach_weight: float = 2.0
     stage_approach_sharpness: float = 8.0
+    # ★★헛닫힘 벌점(08.25 신설) — `−w · 폐쇄도² · (1 − 접촉비율)`.
+    #   사용자 관찰: palm 이 컵에서 멀어져도 주먹을 쥔 채 배회한다. 실측상 보상의
+    #   97.5% 가 approach 인데 그건 손 상태를 안 보므로 쥐는 것이 **공짜**였다.
+    #   주먹은 중립이 아니다 — 닫으면 컵이 밀려나 d_gc 23 → 64.5mm(probe_lateral).
+    #   ★거리 상수를 쓰지 않는다: d_gc 는 물체 **원점**까지 거리라 크기가 바뀌면
+    #     '닿기 직전 거리'가 달라져 하드 임계가 다물체에서 깨진다. 접촉을 쓰면
+    #     크기에 자동 적응한다(큰 물체는 일찍 닿아 벌점이 일찍 사라진다).
+    #   ★제곱: close 0.3(접촉 탐색) → 0.09·w 로 싸고, 1.0(주먹) → 1.0·w 로 비싸다.
+    #   ★뺄셈: approach 에 곱하면 벌점이 컵에 **가까울수록** 커진다(역방향).
+    #   현재 상태(close 0.44) 기준 0.097 = 총보상 0.732 의 13%, 주먹이면 0.5 = 68%.
+    stage_open_penalty: float = 0.5
     # 정렬 배수의 바닥 — align=−1(손등 쪽)일 때 남기는 비율. 0 이면 초기 오정렬에서
     # approach gradient 가 사라져 접근 자체를 못 배운다(reward-audit Check1).
     stage_align_floor: float = 0.25

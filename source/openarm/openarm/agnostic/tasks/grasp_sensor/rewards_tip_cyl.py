@@ -26,6 +26,8 @@ def compute_tip_cyl_rewards(
     height_delta: torch.Tensor,       # (N,) 스폰 기준 상승 [m]
     tilt_deg: torch.Tensor,           # (N,) 물체 기울기 [deg]
     xy_disp: torch.Tensor,            # (N,) 스폰 기준 수평 밀림 [m]
+    grip_close: torch.Tensor,         # (N,) [0,1] · 정책의 실제 폐쇄도(관절 평균)
+    contact_frac: torch.Tensor,       # (N,) [0,1] · 접촉한 손가락 비율(mid∨dist∨tip)
     actions: torch.Tensor,
     prev_actions: torch.Tensor,
     cfg: object,
@@ -127,6 +129,29 @@ def compute_tip_cyl_rewards(
     transport = G * H * U * T
     stabilize = G * H * U * T * S
 
+    # ---- ⑦ 헛닫힘 벌점 — "닿지도 않았는데 주먹" ----------------------------------
+    # ★사용자 렌더링 관찰(증거 2순위): palm 이 컵에서 멀어져도 손가락이 주먹을 쥔 채
+    #   배회한다. 멀어지면 손을 다시 벌려야 재접근이 되는데 그 압력이 없었다.
+    #   실측 근거: 보상의 **97.5%가 approach** 인데(0.714/0.732) approach 는 손 상태를
+    #   전혀 안 본다. 쥐는 것이 보상도 벌점도 아닌 **공짜**라 그쪽으로 흘렀다.
+    #   그리고 주먹은 중립이 아니다 — probe_lateral 실측에서 닫으면 컵이 밀려나
+    #   d_gc 23 → 64.5mm, 접촉력 5~8.7N 인데 손바닥면 wrap 은 0.12~0.50 뿐이었다
+    #   (바깥에서 미는 중). 보상이 그 손해를 못 보고 있었다.
+    #
+    # ★★거리 상수를 쓰지 않는다. `d_gc` 는 **물체 원점까지의 거리**라 물체가 커지면
+    #   표면이 더 일찍 닿고 작아지면 더 깊이 들어와야 한다 — "닿기 직전 거리"가
+    #   크기마다 다르므로 하드 임계는 다물체에서 깨진다. 대신 **접촉 자체**를 쓴다.
+    #   큰 물체는 낮은 폐쇄도에서 닿아 벌점이 일찍 사라지고, 작은 물체는 더 닫아야
+    #   하지만 닿는 순간 똑같이 사라진다 = 크기에 자동 적응.
+    #
+    # ★제곱인 이유: 접촉을 만들려면 어차피 좀 닫아야 한다. 선형이면 그 탐색을 막는다.
+    #     close 0.3(탐색) → 0.09·w   ·   close 1.0(주먹) → 1.00·w
+    # ★뺄셈인 이유: approach 에 곱하면 벌점이 exp(−k·d_gc) 를 따라가 **컵에 가까울수록
+    #   커진다** — 닫아야 할 바로 그 자리에서 최대가 되는 역방향이다.
+    open_pen = (float(cfg.stage_open_penalty)
+                * grip_close.clamp(0.0, 1.0) ** 2
+                * (1.0 - contact_frac.clamp(0.0, 1.0)))
+
     # ---- ⑥ 성공(이진 보너스) -----------------------------------------------------
     success_now = (
         (height_delta >= float(cfg.stage_success_height))
@@ -147,6 +172,7 @@ def compute_tip_cyl_rewards(
         "action_l2": float(cfg.action_l2_weight) * action_l2_clamped(actions),
         "action_rate_l2": float(cfg.action_rate_l2_weight)
         * action_rate_l2_clamped(actions, prev_actions),
+        "open_pen": -open_pen,
     }
     total = torch.nan_to_num(sum(terms.values()), nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -162,6 +188,8 @@ def compute_tip_cyl_rewards(
     terms["_persist"] = persist_frac.clamp(0.0, 1.0)
     terms["_envelope"] = envelope
     terms["_grasp_q"] = grasp
+    terms["_contact_frac"] = contact_frac
+    terms["_grip_close"] = grip_close
     # 3번째 반환값은 구 `gate` 자리 — 로깅 호환을 위해 "쓸만한 파지" 이진값을 싣는다.
     grip_ok = G > 0.5
     return total, terms, grip_ok, wrap4
