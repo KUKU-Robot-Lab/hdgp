@@ -657,7 +657,15 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   2,500 에폭 고착 = 정확히 그 포화점. grasp_v1: 4cm 포화 → 평형 3.1cm).
     stage_lift_height_ref: float = 0.15
     stage_tracking_std: float = 0.1
-    # 직립은 **독립 항이 아니라 곱셈 인자** exp(−tilt°/τ). 테이블 위 컵에 지급되지 않는다.
+    # 직립은 **독립 항이 아니라 곱셈 인자**. 테이블 위 컵에 지급되지 않는다.
+    # ★★08.25 lstm_test12 실측으로 `U = cos(tilt)` 를 **폐기**한다. cos 는 작은 각에서
+    #   평평해 판별력이 없다: 실측 U 가 전 구간 0.996~0.952 상수였고, 컵이 15.98° 로
+    #   누웠을 때도 0.952 였다(손해 4%). 기울임을 막는 인자가 사실상 없었던 것.
+    #   → 가우시안 exp(−(tilt°/τ)²), τ=10°:  3° 0.914 · 7.5° 0.570 · 15° 0.105 · 20° 0.018
+    #     15° 에서 0.1 로 떨어져 `stage_success_tilt_deg=15.0` 과 자연히 정렬된다.
+    #   ★acos 없이 `exp(−2(1−cos)/τ_rad²)` 로 계산한다 — 1−cos ≈ θ²/2 근사라 20° 까지
+    #     오차 1% 미만이고, acos 의 cos=±1 미분 발산을 피한다.
+    stage_upright_tau_deg: float = 10.0
     # 컵 밀림 감쇠 — 제곱역수. 선형 (1−d/L) 은 d≥L 에서 정확히 0 이 되어 하드 게이트와
     # 같아지고 gradient 가 소실된다(실측: 밀림 0.207 이 300 에폭간 전혀 안 줄어듦).
     stage_disp_limit: float = 0.06

@@ -8,6 +8,8 @@ tip_cyl 상수(stage_*)는 이 트랙 전용이므로 파일을 가르는 것이
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from .rewards import action_l2_clamped, action_rate_l2_clamped
@@ -93,10 +95,17 @@ def compute_tip_cyl_rewards(
     G = five_frac * near_q
 
     H = (height_delta / float(cfg.stage_lift_height_ref)).clamp(0.0, 1.0)   # h=0 → 0
-    # ★④ 컵의 +z 가 중력 반대인가 — 기울기 각도가 아니라 축 정렬로 직접 잰다.
-    U = torch.nn.functional.cosine_similarity(
+    # ★④ 컵의 +z 가 중력 반대인가 — 축 정렬로 직접 잰다(`tilt_deg` 는 `_get_dones`
+    #   에서 갱신되어 한 스텝 낡았다. 여기서 즉석 계산한 `obj_up` 을 쓴다).
+    # ★★08.25 코사인 그대로 쓰던 것을 **가우시안으로 날카롭게** 바꿨다. cos 는 작은
+    #   각에서 평평해 실측 U 가 0.996~0.952 상수였고 컵이 15.98° 로 누워도 0.952 였다
+    #   = 기울임 억제가 사실상 없었다. exp(−(θ/τ)²) 는 15° 에서 0.105 로 떨어진다.
+    #   1−cos ≈ θ²/2 이므로 acos 없이 등가로 쓴다(미분 발산 회피, 20° 까지 오차 <1%).
+    _cos_up = torch.nn.functional.cosine_similarity(
         obj_up, torch.tensor([0.0, 0.0, 1.0], device=obj_up.device).expand_as(obj_up),
-        dim=-1).clamp(0.0, 1.0)
+        dim=-1).clamp(-1.0, 1.0)
+    _tau_rad = math.radians(float(cfg.stage_upright_tau_deg))
+    U = torch.exp(-2.0 * (1.0 - _cos_up) / (_tau_rad * _tau_rad))
     d_goal = torch.norm(object_pos - goal_pos, dim=-1)
     T = 1.0 - torch.tanh(d_goal / float(cfg.stage_tracking_std))
     # ★⑤ stay = **실제로 안 움직이는가**. 구 S 는 액션 변화량이라 "액션을 안 바꾼다"
@@ -154,7 +163,11 @@ def compute_tip_cyl_rewards(
     # 값이 작아진다. 가중을 그만큼 키워야 단계가 실제로 열린다(lstm_test8 실측:
     # 12·G·H·U·F 의 네 인자가 각각 0.2~0.5 인데 곱이 0.008 로 소멸해 gradient 부재).
     grasp = G                                   # 5지 접촉 × palm 밀착
-    lift = G * H
+    # ★★08.25 `lift` 에 직립 인자 U 를 넣었다. 이전엔 `G·H` 뿐이라 **기울인 채 들어도
+    #   가중 12.0 이 만점**이었고, 직립을 보는 유일한 항 transfer 는 T(목표근접)까지
+    #   요구해 리프트 시점엔 거의 지급되지 않았다 = 리프트 구간이 기울임 무법지대.
+    #   실측 lstm_test12: tilt 3.5°(ep100) → 15.98°(ep350), height 0.143 → 0.036.
+    lift = G * H * U
     transfer = G * H * U * T                    # ④ 이송 + 컵 직립
     stay = G * H * U * T * S                    # ⑤ 목표에서 정지
 

@@ -356,9 +356,19 @@ class GraspSensorEnv(DirectRLEnv):
         #   신설 상수는 전부 존재·범위를 부팅에서 확인한다(fail-loud).
         for _nm in ("stage_grasp_near_tau", "stage_stay_speed_ref", "stage_stay_hold_steps",
                     "stage_perp_exponent", "stage_roll_exponent", "stage_orient_floor",
-                    "stage_transfer_weight", "stage_stay_weight"):
+                    "stage_transfer_weight", "stage_stay_weight",
+                    "stage_upright_tau_deg"):
             if not hasattr(_c, _nm):
                 raise RuntimeError(f"[{self.profile.name}] 5단계 상수 누락: {_nm}")
+        # ★직립 τ 는 성공 임계와 같은 스케일이어야 한다. τ 가 임계보다 훨씬 크면
+        #   U 가 임계 근처에서 평평해져 판별력이 사라진다(구 cos 형이 정확히 그랬다:
+        #   실측 U 0.996~0.952 상수, 15.98° 에서도 0.952).
+        _tau, _lim = float(_c.stage_upright_tau_deg), float(_c.stage_success_tilt_deg)
+        if not (0.0 < _tau <= _lim):
+            raise RuntimeError(
+                f"[{self.profile.name}] stage_upright_tau_deg={_tau} 는 (0, "
+                f"stage_success_tilt_deg={_lim}] 범위여야 한다 — 임계에서 U 가 "
+                "충분히 떨어지지 않으면 기울임 억제가 무효다")
         if not (0.0 <= float(_c.stage_orient_floor) < 1.0):
             raise RuntimeError(
                 f"[{self.profile.name}] stage_orient_floor={_c.stage_orient_floor} ∉ [0,1)")
