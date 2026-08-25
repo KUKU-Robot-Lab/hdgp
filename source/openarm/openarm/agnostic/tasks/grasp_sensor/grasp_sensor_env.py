@@ -611,6 +611,9 @@ class GraspSensorEnv(DirectRLEnv):
             hand_mode="direct" if self._hand_fabric else "pca",
             hand_attractor_gain=self.cfg.hand_attractor_gain,
             use_hand_repulsion=bool(self.cfg.use_hand_repulsion),
+            # ★Kuka 패턴의 body 반발 쌍(손↔팔뚝)을 실제로 건다. 공유 fabric 클래스의
+            #   기본값은 False 라 이 인자를 주는 트랙만 거동이 바뀐다.
+            use_body_repulsion_pairs=bool(self.cfg.use_body_repulsion_pairs),
             robot_dir_name=p.fabric_robot_dir,
             robot_name=p.fabric_robot_dir,
             **({"fabric_params_filename": p.fabric_params_filename}

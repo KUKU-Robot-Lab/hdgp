@@ -45,6 +45,8 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
                  tip_per_finger=False,
                  hand_mode="pca", hand_attractor_gain=None,
                  use_hand_repulsion=False,
+                 use_body_repulsion_pairs=False,   # ★기본 False = 기존 거동 보존
+
                  robot_dir_name="openarm_tesollo", robot_name="openarm_tesollo",
                  default_config_override=None, default_palm_euler_zyx=None,
                  fabric_params_filename=None):
@@ -65,6 +67,11 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         # ★기본 off — 같은 fabric_params 를 쓰는 타 트랙(pour_fabric 등)이 재시작할 때
         #   손 반발이 갑자기 켜져 거동이 바뀌는 것을 막는다. 켤 트랙만 켠다.
         self._use_hand_repulsion = use_hand_repulsion
+        # ★★08.25 신설. body_points 그룹의 자기충돌 쌍을 실제로 걸지 여부.
+        #   기본 False 는 **기존 거동 그대로**다 — 다른 트랙(grasp_v1/v2, pour_*,
+        #   grasp_adapt …)이 이 클래스를 공유하고 그쪽 params 에는 쌍이 들어 있어,
+        #   무조건 켜면 그 트랙들의 물리가 조용히 바뀐다.
+        self._use_body_repulsion_pairs = use_body_repulsion_pairs
         # ★손끝 attractor(작업공간 손 제어). 기본 off — 켜지 않으면 기존 트랙 거동 불변.
         #   PCA(5D)와 달리 손 20-DOF 를 그대로 두므로 인벨롭 감쌈을 제약하지 않는다.
         self._use_tip_fabric = use_tip_fabric
@@ -403,7 +410,13 @@ class OpenArmTeoslloPoseFabric(BaseFabric):
         hand_pairs = [(a, b) for a, b in pairs
                       if self._HAND_FRAME_MARK in a and self._HAND_FRAME_MARK in b]
 
-        self._add_repulsion_group("body_points", frames, radii, [], p)
+        # 팔·몸통 그룹에 넣을 쌍 — 손↔손 쌍은 손 그룹 몫이라 제외한다.
+        arm_pairs = ([pr for pr in pairs if tuple(pr) not in {tuple(h) for h in hand_pairs}]
+                     if self._use_body_repulsion_pairs else [])
+        self._add_repulsion_group("body_points", frames, radii, arm_pairs, p)
+        if self._use_body_repulsion_pairs:
+            print(f"[fabrics] body 반발: 구 {len(frames)} · 쌍 {len(arm_pairs)} "
+                  f"(engage {p['engage_depth']}m) — Kuka 패턴(손↔팔뚝)", flush=True)
         if (self._use_hand_repulsion and hand_idx and hand_pairs
                 and 'hand_repulsion' in self.fabric_params):
             h_frames = [frames[i] for i in hand_idx]

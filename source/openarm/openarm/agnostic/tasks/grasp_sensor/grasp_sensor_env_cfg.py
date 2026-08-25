@@ -294,12 +294,14 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   palm_err 51~65mm → 90mm(최대 435mm)로 악화됐다.
     #   ★이 값이 바뀌면 폐쇄 속도·파지중심 등 제어 위에서 잰 상수는 전부 재측정 대상이다.
     fabric_velocity_ff_scale: float = 1.0
-    # ★★로봇 자기충돌. Kuka-Allegro 자산은 True 지만 DEXTRAH 저자들이 **같은 로봇**
-    #   (OpenArm+Tesollo)으로 포팅할 때는 False 로 두었다(`open_tesollo.py:43`,
-    #   `open_l_tesollo_r.py:43`). 자기충돌 검출은 스텝 시간의 55~64% 를 쓰고
-    #   (08.23 실측 2.2~2.8배·자세 무관·solver 무관), 전면 convexHull 전환과 함께
-    #   끄는 것이 원저자 구성이다. 관통 방지는 Fabrics `use_hand_repulsion` 이 맡는다.
-    enable_self_collisions: bool = False
+    # ★★로봇 자기충돌 — **Kuka-Allegro 구성(True)**.
+    #   08.25 중 한 번 False 로 내렸었다. 근거는 DEXTRAH 의 OpenArm+Tesollo 포팅이
+    #   False 였다는 것인데, 사용자 결정으로 그 포팅은 참조에서 제거했다. 기준은
+    #   **Kuka-Allegro** 하나다(`assets/kuka_allegro/kuka_allegro.py:42` = True).
+    #   Kuka 는 self-collision 을 켜고 그 위에 fabric 반발까지 이중으로 건다.
+    #   전면 convexHull 이라 조각 수가 링크당 1개여서 decomposition 때의 2.2~2.8배
+    #   비용이 나오지 않는다(그 비용의 본체가 조각 수였다 — 08.23 해부).
+    enable_self_collisions: bool = True
     # ★★손 PD 속도 피드포워드(08.25 3차 감사). Kuka 는 `set_joint_velocity_target` 을
     #   **actuated 23관절 전체**(팔 7 + 손 16)에 준다 — 손도 fabric 이 plant 라
     #   `fabric_qd` 가 그대로 손 관절에 들어간다. 우리는 팔 7개에만 주고 있어서 손은
@@ -445,6 +447,11 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   18mm 미만 0.0% (OFF 는 계획에 관통 해가 남는다) · palm 추종오차 0.7mm 로 무결.
     #   계획에 관통 해가 없으므로 정책이 관통으로 이득 보는 전략을 학습할 수 없다.
     use_hand_repulsion: bool = False
+    # ★★fabric body 반발 쌍을 실제로 걸지 여부(08.25 신설). Kuka 는 13쌍을 건다 —
+    #   `palm_link` + 4지 × 링크 1/2/3, 전부 ↔ `iiwa7_link_2`(팔뚝). 손가락↔손가락은
+    #   **한 쌍도 없다**. 우리 params 도 같은 패턴으로 교체했고 5지라 16쌍이 된다.
+    #   ★공유 fabric 클래스의 기본값은 False 라 다른 트랙 거동은 불변이다.
+    use_body_repulsion_pairs: bool = True
     tracking_weight: float = 2.0
     tracking_std: float = 0.1
     success_weight: float = 10.0
