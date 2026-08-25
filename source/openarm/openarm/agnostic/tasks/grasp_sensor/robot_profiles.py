@@ -132,13 +132,20 @@ _FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 
 TESOLLO_RIGHT = RobotProfile(
     name="tesollo_right",
-    # ★손 27개 링크는 convexDecomposition 유지, 나머지 23개(팔·몸통·헤드)만 convexHull.
-    #   실측(arm5080): 처리량 +13.7%, 접촉력은 오히려 소폭 감소(36.2→32.8N, 반복측정
-    #   편차 8% 안) = 촉각 obs 손실 없음. 컵에 닿는 건 손뿐이고 팔 자기충돌은
-    #   Fabrics body_repulsion 이 계획 단계에서 이미 회피하므로 팔은 껍질로 충분하다.
-    #   ★손까지 hull 로 하면 접촉력이 4배(133N) → 촉각 왜곡으로 s2r 이 깨진다. 금지.
-    #   자산은 physics 레이어만 교체한 얇은 변형(40KB, base 는 원본 심볼릭 링크).
-    usd_relpath="robot/openarm_tesollo_sensor_rl_armhull/openarm_tesollo_sensor_rl.usd",
+    # ★★08.25 `_armhull`(팔 23 hull + 손 27 decomposition) → `_hull`(**50개 전부 hull**).
+    #   사용자 결정: DEXTRAH 는 전면 convexHull + 효율 위주 물리로 teacher→student 를
+    #   끝까지 성공시켰고 우리도 distillation 까지 가야 한다. 실제로 Kuka-Allegro 자산은
+    #   콜라이더 26개가 **손 17개 포함 전부 convexHull** 이다(SDF 0개).
+    #   자산은 physics 레이어만 교체한 얇은 변형(44KB, base 는 원본 108MB 심볼릭 링크).
+    #   ★★반대 실측이 하나 있다 — 되돌릴 때 근거가 되므로 지우지 않는다.
+    #     arm5080 A/B(08.23): 팔만 hull = 처리량 +13.7%, 접촉력 36.2→32.8N(편차 안).
+    #     그러나 **손까지 hull 로 하면 접촉력 133N** 으로 4배 뛰었다.
+    #     재현되면 촉각 obs 가 죽는다: env 가 `contact = (force/5).clamp(max=4)` 라
+    #     20N 에서 포화하므로 133N 이면 5채널이 전부 상수 4.0 이 되고, 감쌈 판정 임계
+    #     `stage_contact_threshold=0.1N` 도 모든 접촉에서 참이 된다.
+    #   ★학습 로그에서 볼 것: `task/contact_*` 포화 · `task/wrap4` 가 1.0 에 붙는지 ·
+    #     `task/deep4` 와의 괴리. 붙으면 이 줄을 `_armhull` 로 되돌린다(1줄).
+    usd_relpath="robot/openarm_tesollo_sensor_rl_hull/openarm_tesollo_sensor_rl.usd",
     num_arm_joints=7,
     num_hand_joints=20,
     arm_joint_regex="r_aj_[1-7]",

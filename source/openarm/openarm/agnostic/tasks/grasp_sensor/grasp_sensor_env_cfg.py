@@ -120,7 +120,8 @@ _HDGP_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), *([".."]
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
 
-def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
+def _build_robot_cfg(profile: RobotProfile,
+                     enable_self_collisions: bool) -> ArticulationCfg:
     """프로필 → ArticulationCfg. 조인트 이름은 전부 프로필에서."""
     return ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
@@ -167,7 +168,17 @@ def _build_robot_cfg(profile: RobotProfile) -> ArticulationCfg:
                 #   정책이 조종할 수 없다.
                 # ★되돌릴 때는 use_hand_repulsion 도 함께 볼 것 — 둘 다 끄면 관통을
                 #   막는 장치가 하나도 없다.
-                enabled_self_collisions=True,
+                # ★★08.25 상수 → cfg 스위치(`enable_self_collisions`)로 뺐고 기본을
+                #   **False** 로 내렸다. 근거: Kuka-Allegro 자산은 True 지만, DEXTRAH
+                #   저자들이 **같은 로봇(OpenArm+Tesollo)으로 포팅할 때는 껐다** —
+                #   `assets/open_tesollo/open_tesollo.py:43` 과 `open_l_tesollo_r.py:43`
+                #   둘 다 `enabled_self_collisions=False`. 우리 로봇에 대한 원저자
+                #   선택이 곧 이 값이다. 전면 convexHull 전환과 짝이다(조각이 하나가
+                #   되면 인접 링크 껍질끼리 상시 겹쳐 자기충돌이 오히려 늘어난다).
+                # ★관통을 막는 장치는 Fabrics `use_hand_repulsion` 하나만 남는다.
+                #   자매 트랙 실측: repulsion ON 이면 fabric_q 의 손가락 구 최소거리
+                #   20.1mm·18mm 미만 0.0% — 계획에 관통 해가 없다. 되돌릴 때 함께 볼 것.
+                enabled_self_collisions=enable_self_collisions,
                 # ★P-9 실측(2048env)으로 16 확정: 32 는 fps 를 25% 깎는데(11.9k→8.9k)
                 #   파지 품질이 나아지지 않았다. 오히려 접촉력이 더 높았다
                 #   (solver32 Fa 28N/Fb 25N vs solver16 Fa 18N/Fb 8N) = 상호침투를 더
@@ -274,6 +285,12 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   palm_err 51~65mm → 90mm(최대 435mm)로 악화됐다.
     #   ★이 값이 바뀌면 폐쇄 속도·파지중심 등 제어 위에서 잰 상수는 전부 재측정 대상이다.
     fabric_velocity_ff_scale: float = 1.0
+    # ★★로봇 자기충돌. Kuka-Allegro 자산은 True 지만 DEXTRAH 저자들이 **같은 로봇**
+    #   (OpenArm+Tesollo)으로 포팅할 때는 False 로 두었다(`open_tesollo.py:43`,
+    #   `open_l_tesollo_r.py:43`). 자기충돌 검출은 스텝 시간의 55~64% 를 쓰고
+    #   (08.23 실측 2.2~2.8배·자세 무관·solver 무관), 전면 convexHull 전환과 함께
+    #   끄는 것이 원저자 구성이다. 관통 방지는 Fabrics `use_hand_repulsion` 이 맡는다.
+    enable_self_collisions: bool = False
     # ★★손 PD 속도 피드포워드(08.25 3차 감사). Kuka 는 `set_joint_velocity_target` 을
     #   **actuated 23관절 전체**(팔 7 + 손 16)에 준다 — 손도 fabric 이 plant 라
     #   `fabric_qd` 가 그대로 손 관절에 들어간다. 우리는 팔 7개에만 주고 있어서 손은
@@ -678,7 +695,8 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
 
     def __post_init__(self):
         profile = PROFILES[self.profile_name]
-        self.robot_cfg = _build_robot_cfg(profile)
+        self.robot_cfg = _build_robot_cfg(
+            profile, bool(self.enable_self_collisions))
         num_joints = profile.num_arm_joints + profile.num_hand_joints
         num_tips = len(profile.fingertip_bodies)
         num_fingers = len(profile.finger_sensor_bodies)
