@@ -720,6 +720,7 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
                  robot_name="openarm_tesollo_left",
                  hand_mode="pca", hand_attractor_gain=None,
                  use_hand_repulsion=False,
+                 use_body_repulsion_pairs=False,
                  use_tip_fabric=False, tip_attractor_gain=None, tip_per_finger=False):
         # ★08.17 robot_dir_name/robot_name 패스스루 추가: DG-5FS 전용 URDF
         #   (openarm_tesollo_bi_s_left)를 쓰는 태스크가 기존 URDF 를 건드리지 않고
@@ -739,6 +740,10 @@ class OpenArmTeoslloLeftPoseFabric(OpenArmTeoslloPoseFabric):
             hand_mode=hand_mode,
             hand_attractor_gain=hand_attractor_gain,
             use_hand_repulsion=use_hand_repulsion,
+            # ★★08.25 추가 누락 재발 방지 — 상위에 인자가 늘 때마다 여기도 전달해야 한다.
+            #   08.23 에 hand_mode 로 같은 사고가 났고(좌팔만 TypeError), 이번엔
+            #   use_body_repulsion_pairs 로 재발했다. 계약 테스트가 시그니처를 대조한다.
+            use_body_repulsion_pairs=use_body_repulsion_pairs,
             use_tip_fabric=use_tip_fabric,
             tip_attractor_gain=tip_attractor_gain,
             tip_per_finger=tip_per_finger,

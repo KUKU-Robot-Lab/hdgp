@@ -1,10 +1,26 @@
-# grasp_lift_fabric — rl_games PPO (MLP).
-# 팔 = Fabrics 절대 palm 6D pose, 손 = 관절 절대 전범위.
-# 차원은 프로필마다 다르므로 여기 적지 않는다(rl_games 가 런타임에 잡는다).
-#   예) bis_right: action 26 / policy obs 122 / critic 128
-# 비대칭 actor-critic(has_central_value: True), MLP [512, 256, 128].
-# ★LSTM 이 아니라 MLP 가 기본이다 — obs 가 거의 Markov 라 LSTM 비용을 정당화할
-#   근거가 아직 없다. 부분관측(occlusion)이 실측되면 -lstm id 로 바꾼다.
+# grasp_lift_fabric — rl_games PPO, **DEXTRAH 논문 E.6 구성**.
+#
+# ★★rl_games_ppo_cfg.yaml 과의 유일한 차이: **critic 에서 LSTM 을 뺐다**.
+#
+# 논문 E.6 Teacher Architecture 원문:
+#   "크리틱은 모든 특권 정보에 접근할 수 있으므로 **시간적 의존성을 포착할 필요가 없으며**,
+#    이에 따라 MLP 네트워크를 사용한다. teacher 정책은 관측의 시간적 의존성을 포착하기
+#    위해 MLP 층 뒤에 LSTM 층을 사용한다. 다만 LSTM 은 학습 안정성이 낮은 경향이 있으므로
+#    LSTM 을 우회하는 **스킵 연결**을 추가하였다."
+#
+# ★원본 레포(2025-06-03)의 `rl_games_ppo_lstm_cfg.yaml` 은 논문과 달리 critic 에도
+#   LSTM 2048 을 둔다. 논문 이후 코드가 바뀐 것으로 보이며, 어느 쪽이 나은지는
+#   실험 문제다 — 그래서 **둘 다 돌릴 수 있게** 별도 파일로 둔다.
+#     기본 태스크         → rl_games_ppo_cfg.yaml        (critic LSTM 2048, 레포 구성)
+#     `-paper` suffix     → 이 파일                       (critic MLP, 논문 구성)
+#
+# ★우리 쪽 근거 보강: 우리 critic 은 물체 회전·접촉력·물체 6D 속도·fabric 속도/가속까지
+#   보고(204D), actor 도 속도를 살렸다(원본은 annealing 계수로 죽인다). 즉 관측이 원본보다
+#   Markov 에 가까워 critic 의 시간 의존성 근거가 더 약하다.
+#
+# ★actor 의 `before_mlp: True`(LSTM → MLP)는 **레포 그대로 둔다**. 논문 서술은
+#   "MLP 뒤에 LSTM" 이라 반대지만 그림 참조로만 기술돼 있고, 한 번에 하나씩 바꿔야
+#   원인이 분리된다.
 
 params:
   seed: 42
@@ -57,7 +73,7 @@ params:
   load_path: ''   # 체크포인트는 --checkpoint 로 준다(남의 경로 잔재 제거)
 
   config:
-    name: agn_grasp_lift_fab
+    name: agn_grasp_lift_fab_paper
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -132,11 +148,3 @@ params:
             name: default
           regularizer:
             name: None
-        rnn:
-          name: lstm
-          units: 2048
-          layers: 1
-          before_mlp: False      # ★critic 만 after-mlp (원본 규약)
-          layer_norm: True
-          concat_input: True
-          concat_output: True

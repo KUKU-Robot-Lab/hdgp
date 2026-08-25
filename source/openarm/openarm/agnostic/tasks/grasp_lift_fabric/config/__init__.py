@@ -62,11 +62,18 @@ for _p in _rb.PROFILES.values():
     _base = f"open-{_p.asset.short}_{_side}_grasp_lift_fab"
     REGISTERED[_p.name] = _base
 
-    for _suffix, _cls, _lstm in (
-        ("", _train_cls, False),
-        ("-play", _play_cls, False),
-        ("-lstm", _train_cls, True),
-        ("-play-lstm", _play_cls, True),
+    # ★`-paper` = DEXTRAH 논문 E.6 구성(critic 을 MLP 로). 레포 yaml 은 critic 에도
+    #   LSTM 2048 을 두는데 논문은 "크리틱은 특권 정보를 다 보므로 시간 의존성이
+    #   불필요" 라며 MLP 라고 명시한다. 어느 쪽이 나은지는 실험 문제라 **둘 다 돌릴 수
+    #   있게** 태스크를 나눠 둔다(기본 태스크는 건드리지 않는다 — 진행 중인 런 보호).
+    _PAPER_CFG = "rl_games_ppo_paper_cfg.yaml"
+    for _suffix, _cls, _agent_yaml in (
+        ("", _train_cls, _ag.resolve_agent_cfg(_p, use_lstm=False)),
+        ("-play", _play_cls, _ag.resolve_agent_cfg(_p, use_lstm=False)),
+        ("-lstm", _train_cls, _ag.resolve_agent_cfg(_p, use_lstm=True)),
+        ("-play-lstm", _play_cls, _ag.resolve_agent_cfg(_p, use_lstm=True)),
+        ("-paper", _train_cls, _PAPER_CFG),
+        ("-play-paper", _play_cls, _PAPER_CFG),
     ):
         gym.register(
             id=f"{_base}{_suffix}",
@@ -74,8 +81,6 @@ for _p in _rb.PROFILES.values():
             disable_env_checker=True,
             kwargs={
                 "env_cfg_entry_point": f"{__name__}:{_cls.__name__}",
-                "rl_games_cfg_entry_point": (
-                    f"{agents.__name__}:{_ag.resolve_agent_cfg(_p, use_lstm=_lstm)}"
-                ),
+                "rl_games_cfg_entry_point": f"{agents.__name__}:{_agent_yaml}",
             },
         )

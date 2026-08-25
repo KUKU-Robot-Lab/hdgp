@@ -171,11 +171,30 @@ class RobotProfile:
     # palm 박스를 probe_workspace_reach 로 실측했는가(게이트: 오차<10mm 가 90% 이상).
     # False 면 다른 로봇 값을 물려받은 것이라 신뢰 금지 — 이번 사고의 원인이 정확히 그것이다.
     palm_box_verified: bool = False
+    # ★★손바닥 **앞쪽** 프레임. palm 원점은 손목 쪽이라 점 하나로는 접근 방향이
+    #   정의되지 않는다 — palm 과 palm_ee 두 점이 있어야 접근 축이 생기고
+    #   정책이 "손바닥이 물체를 향하는가"를 볼 수 있다(08.24 접근축 pitch 20° 결함).
+    #   자산에 없으면 None — obs 차원이 그만큼 줄어든다(계약이 대조한다).
+    palm_ee_body: str | None = None
     # envelope_frac 의 **분모**와 d_side 의 wrap 그룹 평균에 들어가는 손가락만.
-    # ★tesollo pinky 는 제대로 된 굴곡축이 없다(pinky_1 손끝이동 12mm vs index_2 42mm,
-    #   메모리 tesollo-pinky-joint-kinematics). 분모에 넣으면 감쌈 상한이 0.8 로 깎여
-    #   "전지 감쌈"이 영원히 1.0 에 못 닿는다 — 제외한다.
+    # ★★08.25 tesollo pinky 는 5 지 분모에 **남는다**. 다만 08.22 기각("굴곡축 없음")도
+    #   08.24 번복("멀쩡하다")도 반쪽이었다 — palm 좌표계 축 실측이 정확한 답이다:
+    #     · index/middle/ring : _2·_3·_4 가 굴곡축(+y). 밑동 포함 3 개.
+    #     · pinky             : _3·_4 만 굴곡축. _1 은 +z(회전) · _2 는 +x.
+    #   즉 pinky 는 **밑동 굴곡이 기본 자세에 없다**. 그런데 _1 이 굴곡 자유도를
+    #   재분배해서, q1=60° 로 두면 _2 의 굴곡성분이 0.00 → 0.87 이 되어 다른 4 지와
+    #   같은 "외전 1 + 굴곡 3" 구조가 된다(FK: 굴곡 50% 에서 pinky_4 가 파지중심에서
+    #   ring_4 보다 +26.2mm 뒤처지던 것이 −5.1mm 로 뒤집힌다).
+    #   그래서 _1 을 0 에 얼렸던 것이 진짜 결함이었다 — 학습 실측 pinky 접촉률 0.001
+    #   (다른 4 지 0.50~0.86), 양팔 독립 런에서 동일. 분모가 아니라 배선 문제다.
+    #   → _tesollo_hand_rest 가 _1 을 ±60° 로 고정하고 frozen 에서 _2 를 뺐다.
     envelope_fingers: tuple = ()
+    # 감쌈 판정의 손바닥면 축 — wrap 마디 **링크 로컬** 단위벡터, 손가락별.
+    # 유도: cross(굴곡축, 장축). 부호는 반드시 **자산별 실측**(probe_palmar_sign) —
+    # 추측 부호는 판정을 조용히 뒤집어 손등 파지를 감쌈으로 센다(자매 트랙이
+    # GRIPPER 프로필을 의도적 공란으로 둔 이유). 공란이면 palmar 필터를 요구하는
+    # 태스크(require_palmar_contact)가 부팅에서 fail-loud 로 죽는다.
+    palmar_axis_local: dict = field(default_factory=dict)
     notes: tuple = ()
 
     # ------------------------------------------------------------------
@@ -218,7 +237,13 @@ _ARM_GAINS = dict(stiffness=400.0, damping=80.0)
 #   USD 에 이미 들어 있어(maxForce 40/40/27/27/7/7/7) 지정하지 않아도 적용되지만,
 #   **명시해 두면 자산이 바뀌었을 때 조용히 달라지지 않는다.**
 _ARM_EFFORT = {"proximal": 40.0, "elbow": 27.0, "wrist": 7.0}
-_HAND_GAINS = dict(stiffness=5.0, damping=2.0, effort_limit_sim=1.5)
+# ★★KUKA 고정(08.25) 손 감쇠비. 원본 allegro 는 kp 3.0 / kd 0.1 로 kd/kp = 0.033
+#   인데 우리는 5.0 / 2.0 = **0.40 (12 배 과감쇠)** 였다. 손은 fabric 이 아니라 PD
+#   직결이라 속도 목표가 없다 — 감쇠항 kd·(0 − q̇) 가 그대로 상시 지연이 된다
+#   (팔에서 속도 피드포워드를 복구해 B 14.87 → 3.30mm 로 잡은 것과 같은 결함).
+#   kp 5.0 은 08.16 S1~S4 스윕(effort 1.5 N·m 포화 회피) 근거가 있어 유지하고,
+#   비율만 원본에 맞춰 kd = 5.0 × 0.033 = 0.165 로 내린다.
+_HAND_GAINS = dict(stiffness=5.0, damping=0.165, effort_limit_sim=1.5)
 _FRICTION = {"proximal": 0.213, "elbow": 0.493, "wrist": 0.151}
 
 
@@ -261,6 +286,14 @@ def _tesollo_hand_rest(side: str) -> dict:
     q = {f"{side}_hj_{f}_{j}": 0.0 for f in _TESOLLO_FINGERS for j in (1, 2, 3, 4)}
     q[f"{side}_hj_thumb_2"] = sg * -1.57
     q[f"{side}_hj_thumb_3"] = sg * -0.5
+    # ★★08.25 pinky_1 을 한계(60°)에 고정한다. 이 관절은 굴곡을 만드는 게 아니라
+    #   **굴곡 자유도를 재분배**한다(palm 좌표계 축 실측): q1=0 이면 _2 의 굴곡성분이
+    #   0.00 이라 밑동이 아예 안 접히고 _3/_4 끝마디만 굽는다. q1=60° 에서 _2 가
+    #   0.87 로 굴곡축이 되어 다른 4 지와 같은 "외전 1 + 굴곡 3" 구조가 된다.
+    #   FK 실측(굴곡 50%): pinky_4 가 파지중심에서 ring_4 보다 +26.2mm 뒤처지던 것이
+    #   q1=60° 에서 -5.1mm 로 뒤집힌다. q1=0 고정이 pinky 접촉률 0.001 의 원인이었다.
+    #   ★한계 부호가 좌우 반대다(우 [0,+60] · 좌 [-60,0]) — thumb_2 와 같은 부류.
+    q[f"{side}_hj_pinky_1"] = sg * 1.047
     return q
 
 
@@ -352,6 +385,7 @@ def _tesollo_profile(
         fabric_class=fabric_class,
         fabric_robot_dir=fabric_dir,
         palm_body=f"{side}_hl_palm",
+        palm_ee_body=f"{side}_hl_palm_ee",   # URDF 실측 palm+(28,0,40)mm
         fabric_joint_order=(
             tuple(f"{side}_aj_{i}" for i in range(1, 8))
             + tuple(f"{side}_hj_{f}_{j}" for f in _TESOLLO_FINGERS for j in (1, 2, 3, 4))
@@ -363,7 +397,16 @@ def _tesollo_profile(
         },
         contact_group_a=("thumb",),
         contact_group_b=("index", "middle", "ring", "pinky"),
-        envelope_fingers=("thumb", "index", "middle", "ring"),   # pinky 제외(필드 주석)
+        envelope_fingers=("thumb", "index", "middle", "ring", "pinky"),  # 5 지(필드 주석)
+        # 손바닥면 = 링크 로컬 **+y**. 좌우 동일(USD 가 미러가 아니라 같은 프레임 규약).
+        # ①URDF 유도: wrap 마디 굴곡축 (0,0,1) × 장축 (1,0,0) = (0,1,0).
+        # ②실측(probe_palmar_sign, 컵을 파지중심에 두고 70% 폐합, 뼈축 성분 제거):
+        #   우팔 +y 합계 +270mm(9/10 마디 양수) · 좌팔 +175mm(9/10). 반대축 −y 는
+        #   일관 음수, ±z 는 부호가 갈려(+52~−73mm) 배제. 유일한 예외는 엄지 원위
+        #   (우 thumb_4 −5.4 · 좌 thumb_3 −39.7)로, 스크립트 폐합에서 엄지가 컵을
+        #   지나쳐 만 자세 탓이다 — 판정은 마디 단위라 그 마디만 제외된다.
+        # ★자산이 바뀌면 다시 실측할 것(자매 sensor 자산은 palmar 가 (1,0,0)이다).
+        palmar_axis_local={f: (0.0, 1.0, 0.0) for f in _TESOLLO_FINGERS},
         fingertip_bodies=tuple(f"{side}_hl_{f}_tip" for f in _TESOLLO_FINGERS),
         # URDF 한계로 판별: index/middle/ring 의 _1 은 작고 비대칭(외전),
         # _2 는 큰 단방향(MCP 굴곡). ★pinky 만 _1=굴곡 / _2=외전 으로 뒤바뀐다.
@@ -372,10 +415,14 @@ def _tesollo_profile(
         #   grasp_v2 는 thumb_1/thumb_2/index_1/pinky_1/pinky_2 를 고정했다가 ADR 로 열었다.
         #   여기서는 _1 을 전부 고정해 손가락이 벌어지는 자유도를 없앤다.
         #   → 남는 자유도 = 굴곡(_2,_3,_4)뿐이라 손가락이 평행 평면에서만 움직인다.
+        #   ★★08.25 pinky_2 를 고정 목록에서 **뺐다**. pinky 만 _1=회전 / _2=굴곡 으로
+        #     뒤바뀌어 있어(축 실측) _1·_2 를 둘 다 얼리면 밑동 굴곡이 사라진다 —
+        #     실측 접촉률 0.001 의 원인. _1 은 _tesollo_hand_rest 가 60° 로 고정하고
+        #     _2/_3/_4 를 열어 다른 4 지와 같은 구조로 맞춘다.
         frozen_hand_joints=(
             f"{side}_hj_thumb_1", f"{side}_hj_thumb_2",
             f"{side}_hj_index_1", f"{side}_hj_middle_1",
-            f"{side}_hj_ring_1", f"{side}_hj_pinky_1", f"{side}_hj_pinky_2",
+            f"{side}_hj_ring_1", f"{side}_hj_pinky_1",
         ),
         init_joint_pos={
             **_arm_home(side), **_tesollo_hand_rest(side),
