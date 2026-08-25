@@ -1167,6 +1167,29 @@ class GraspSensorEnv(DirectRLEnv):
             #   묻는 데 필요한 값이었는데 로깅 키가 아예 없었다.
             self.extras["task/syn_close"] = self._syn_close.mean()
             self.extras["task/syn_close_max"] = self._syn_close.max()
+            # ★★08.25 손가락별 폐쇄도. 20관절 평균 하나로는 "엄지만 안 닫힌다"를
+            #   반증도 확증도 못 한다(사용자 렌더링 관찰 — 4지는 함께 오므리는데
+            #   엄지는 오히려 펴진다). couple_four_fingers 로 4지가 묶여 있어
+            #   엄지만 독립 분산을 갖는 구조라, 분리 계측이 없으면 진단이 막힌다.
+            for _fi, _fn in enumerate(self._finger_names):
+                _m = (self._syn_fi == _fi)
+                self.extras[f"task/syn_close/{_fn}"] = self._syn_close[:, _m].mean()
+            # ★엄지 실측 관절각. 개방 자세가 `_3 = −0.5 rad`(역굴곡)이라 폐쇄도 0 은
+            #   "가만히"가 아니라 **뒤로 젖혀진 자세**다. 지령이 아니라 실제 각도를 본다.
+            _q = self.robot.data.joint_pos
+            for _sfx in ("3", "4"):
+                _idx = [k for k, nm in enumerate(self.profile.hand_joint_names)
+                        if "thumb" in nm and nm.endswith(f"_{_sfx}")]
+                if _idx:
+                    self.extras[f"task/thumb_q{_sfx}"] = _q[:, self._syn_ids[_idx[0]]].mean()
+        # ★★08.25 palm 축별 추종오차 — 액션이 **절대 매핑**으로 바뀐 뒤 축별로 본 적이
+        #   없다. 박스가 곧 액션 공간이므로 특정 축만 못 따라가면 그 축 액션 구간이
+        #   통째로 gradient 를 잃는다. 지령(`palm_targets`)과 **실측** palm 의 차다.
+        _pp = self._palm_pose_6d()
+        _perr = _pp[:, :3] - self.palm_targets[:, :3]
+        for _k, _ax_nm in enumerate("xyz"):
+            self.extras[f"fabric/palm_ee_{_ax_nm}_err"] = _perr[:, _k].mean()
+            self.extras[f"fabric/palm_ee_{_ax_nm}_abs"] = _perr[:, _k].abs().mean()
         _raw = self._contact_forces()
         self.extras["contact/force_max"] = _raw.max()
         self.extras["contact/force_p95"] = torch.quantile(_raw.reshape(-1), 0.95)
