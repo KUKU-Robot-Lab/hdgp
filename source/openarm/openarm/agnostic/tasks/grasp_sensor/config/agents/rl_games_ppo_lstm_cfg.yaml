@@ -69,11 +69,18 @@ params:
     gamma: 0.998
     tau: 0.95
     learning_rate: 3e-4
-    # ★★08.25 Kuka 원본값 linear. 구 adaptive 의 근거(lstm_test12: KL 0.08~0.14 로
-    #   threshold 의 8~10배인데 linear 는 미clamp → five_tip 0.42→0.33 드리프트)는
-    #   **구 제어층에서 잰 것**이다 — 그때는 속도 피드포워드가 0 이고 액션이 델타
-    #   누산이었다. KL 이 다시 튀면 여기부터 본다.
-    lr_schedule: linear
+    # ★★08.25 Kuka 원본은 `linear`(원본도 `#adaptive` 를 주석으로 남겨뒀다). 위 주석이
+    #   "KL 이 다시 튀면 여기부터 본다"고 사전등록했고 **그 조건이 발동했다** —
+    #   lstm_test14 ep1150 에 KL 0.0922 = threshold(0.013)의 **7배**인데 `linear` 는
+    #   KL 을 아예 보지 않으므로 `lr_mul` 이 1.0000 에 고정된 채 통과했다.
+    #   결과: 보상 8194 → 170 (48배), five_frac 0.776 → 0.015, height 0.101 → 0.000.
+    #   에피소드 종료 이상은 0(abnormal·tipped·out_xy 전부 0.000) = 물리 사고가 아니라
+    #   **한 번의 큰 정책 업데이트**다. 게다가 보상이 곱셈 구조(transfer=G·H·U·T,
+    #   stay=G·H·U·T·S)라 능선에서 떨어지면 곱이 0 근처가 되어 복귀 gradient 가
+    #   거의 없다 — 275 에폭에 five_frac 0.007 → 0.099 밖에 못 올라왔다.
+    #   → `adaptive` 로 켠다. KL 이 threshold 를 넘으면 LR 을 자동으로 낮춰 점프 자체를
+    #     막는다. Kuka 가 주석으로 남겨둔 것을 켜는 것일 뿐이다.
+    lr_schedule: adaptive
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000   # ★08.25 Kuka 원본값
