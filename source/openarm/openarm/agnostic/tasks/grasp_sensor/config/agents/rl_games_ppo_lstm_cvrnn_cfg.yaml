@@ -1,3 +1,7 @@
+# DEXTRAH Kuka **배포 설정 원본** — critic 에도 LSTM 2048(before_mlp False).
+# 논문은 actor LSTM+MLP / critic MLP 라 둘이 어긋난다. 기본은 논문 구조
+# (`rl_games_ppo_lstm_cfg.yaml`)를 쓰고, 배포본을 재현하려면 태스크 id 에
+# `-lstm-cvrnn` 접미사를 붙인다.
 # 5g_grasp_right_v10-3 recurrent actor / MLP critic config
 # Actor 132D MLP [512, 512] -> LSTM 1024 / critic 169D MLP [512, 512, 256, 128], action 26D incremental palm + hand residual.
 # This is a separate non-warm-start config because the LSTM architecture
@@ -50,7 +54,7 @@ params:
   load_path: ''
 
   config:
-    name: agn_grasp_sensor-lstm
+    name: agn_grasp_sensor-lstm-cvrnn
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -134,12 +138,14 @@ params:
             name: default
           regularizer:
             name: None
-        # ★★critic 은 **MLP**(논문 구조). DEXTRAH 배포 설정은 여기에 LSTM 2048 을
-        #   넣지만 논문은 actor LSTM+MLP / critic MLP 다. 구조적으로도 critic 은
-        #   특권 정보(접촉력·물체 자세·관절토크)를 받아 부분관측이 아니므로 은닉상태의
-        #   이득이 actor 보다 작다.
-        #   ★배포본을 그대로 쓰려면 태스크 id 를 `-lstm-cvrnn` 으로 바꾼다
-        #     (`rl_games_ppo_lstm_cvrnn_cfg.yaml`, 이 파일과 rnn 블록만 다르다).
+        rnn:
+          name: lstm
+          units: 2048
+          layers: 1
+          before_mlp: False
+          layer_norm: True
+          concat_input: True
+          concat_output: True
 
     player:
       deterministic: True

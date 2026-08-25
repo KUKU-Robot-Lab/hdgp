@@ -81,8 +81,13 @@ for _tag, _cls in _CFGS.items():
     for _suffix, _cfg_name, _agent in (
         ("", _cls.__name__, "rl_games_ppo_cfg.yaml"),
         ("-play", _play_cls.__name__, "rl_games_ppo_cfg.yaml"),
+        # ★-lstm = **논문 구조**(actor LSTM+MLP / critic MLP)
         ("-lstm", _cls.__name__, "rl_games_ppo_lstm_cfg.yaml"),
         ("-play-lstm", _play_cls.__name__, "rl_games_ppo_lstm_cfg.yaml"),
+        # ★-lstm-cvrnn = DEXTRAH **배포 설정 원본**(critic 에도 LSTM 2048).
+        #   배포본과 논문이 어긋나 둘 다 남긴다 — 태스크 id 접미사로 토글한다.
+        ("-lstm-cvrnn", _cls.__name__, "rl_games_ppo_lstm_cvrnn_cfg.yaml"),
+        ("-play-lstm-cvrnn", _play_cls.__name__, "rl_games_ppo_lstm_cvrnn_cfg.yaml"),
     ):
         gym.register(
             id=f"open-{_tag}_grasp_sensor{_suffix}",
