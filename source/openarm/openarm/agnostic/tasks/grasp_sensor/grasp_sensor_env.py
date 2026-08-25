@@ -568,6 +568,21 @@ class GraspSensorEnv(DirectRLEnv):
         """
         return matrix_from_quat(self.robot.data.body_quat_w[:, self.palm_idx])
 
+    def _base_up_vec(self) -> torch.Tensor:
+        """로봇 **베이스** +z 의 월드 방향 (N,3) — 자세 항의 기준축.
+
+        ★★08.25 자세 기준을 컵(`obj_up`) → **베이스**로 바꿨다(사용자 지적).
+          컵 기준이면 **컵이 기울수록 기울인 접근이 정당해지는 되먹임**이 생긴다:
+          손이 밀어 컵을 기울임 → 기준축이 따라 기움 → 그 자세가 perp/roll 만점 →
+          더 밀어도 벌점 없음. 실제로 lstm_test11 에서 컵이 0.54° → 7.93° 로 단조
+          증가했다. 베이스는 안 움직이므로 그 고리가 구조적으로 끊긴다.
+        ★프로필이 베이스를 기울여 장착해도 맞도록 root_quat 에서 계산한다
+          (현 자산은 rot=[1,0,0,0] 이라 월드 +z 와 같다).
+        """
+        return quat_apply(
+            self.robot.data.root_quat_w,
+            torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, 3))
+
     def _obj_up_vec(self) -> torch.Tensor:
         """물체 local +z 의 월드 방향 (N,3) — 컵 축. 인식 pose 로 실기에서도 나온다.
 
@@ -1049,6 +1064,9 @@ class GraspSensorEnv(DirectRLEnv):
                 #   회전은 동일하고 위치만 다르다). 컵 축과 수직이어야 한다.
                 palm_x=self._palm_ee_R()[:, :, 0],
                 palm_y=self._palm_ee_R()[:, :, 1],
+                # ★자세 항의 기준은 **베이스**(컵이 아니라). 컵 기준이면 기울인 컵이
+                #   기울인 접근을 정당화하는 되먹임이 생긴다.
+                ref_up=self._base_up_vec(),
                 obj_up=self._obj_up_vec(),
                 obj_speed=torch.norm(self.object.data.root_lin_vel_w, dim=-1),
                 actions=self.actions,

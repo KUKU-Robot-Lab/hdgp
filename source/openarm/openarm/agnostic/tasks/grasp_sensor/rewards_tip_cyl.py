@@ -29,6 +29,7 @@ def compute_tip_cyl_rewards(
     five_c: torch.Tensor,             # (N,5) bool · **5지 전부**의 손바닥면 접촉(mid∨dist∨tip)
     palm_x: torch.Tensor,             # (N,3) palm_ee +x = **손바닥 법선**(실측 확정)
     palm_y: torch.Tensor,             # (N,3) palm_ee +y — 롤 잠금용
+    ref_up: torch.Tensor,             # (N,3) **로봇 베이스 +z** — 자세 항의 기준축
     obj_up: torch.Tensor,             # (N,3) 물체 +z(컵 축). 인식 pose 에서 나온다
     obj_speed: torch.Tensor,          # (N,) 물체 선속도 크기 [m/s] — stay 판정
     actions: torch.Tensor,
@@ -107,21 +108,33 @@ def compute_tip_cyl_rewards(
     # ---- ① 접근(팔) — 무게이트 + 컵 밀기·기울임 벌점(grasp_v1) ---------------------
     # ★벌점은 approach_weight 로 곱하지 **않는다**(grasp_v1 배선 그대로 — 벌점이
     #   접근 가중에 비례해 희석되면 "빨리 가되 밀어도 된다"가 된다).
+    # ★★08.25 align 을 **수평 성분만** 보도록 고쳤다.
+    #   구 정의는 접근축과 컵방향의 3D 코사인이었는데, 접근 중 컵이 palm 보다 아래에
+    #   있으므로(홈에서 컵방향 z = −0.594) **손을 숙일수록 align 이 올랐다**:
+    #   홈 0.639 → 완전히 겨누면 1.0 = approach +16%. 기울이기를 **보상**하고 있었다.
+    #   방금 자세 항(perp/roll)을 베이스 기준으로 바꿨는데 align 이 컵 기준으로 남으면
+    #   두 항이 정면으로 싸운다.
+    #   → 두 벡터를 기준축(베이스 +z)에 수직인 평면으로 투영해 **방위각만** 본다.
+    #     "컵 쪽을 향해라"는 유지되고 "숙여라"는 사라진다. 피치는 perp_q 가 맡는다.
+    def _proj(v):
+        return v - (v * ref_up).sum(dim=-1, keepdim=True) * ref_up
+
     align = torch.nn.functional.cosine_similarity(
-        grasp_center_pos - palm_pos, object_pos - palm_pos, dim=-1, eps=1e-6)
+        _proj(grasp_center_pos - palm_pos), _proj(object_pos - palm_pos),
+        dim=-1, eps=1e-6)
     _al = float(cfg.stage_align_floor)
     # ★★자세 인자(08.25 사용자 규약). palm_ee **+x 가 손바닥 법선**이고, 그것이
     #   컵 축(+z)과 **수직**이어야 한다 — 실측으로 홈 자세가 이미 −0.0025 로 만족한다.
     #   `align` 은 접근축이 컵을 겨누는가(1자유도)만 보므로 롤·피치를 전혀 안 잡았고,
     #   오히려 컵이 손보다 아래라 **숙이면 approach 가 +16%** 오르는 역유인이 있었다.
     _perp = 1.0 - torch.nn.functional.cosine_similarity(
-        palm_x, obj_up, dim=-1, eps=1e-6).abs()          # 법선 ⊥ 컵축 → 1.0
+        palm_x, ref_up, dim=-1, eps=1e-6).abs()          # 법선 ⊥ 베이스축 → 1.0
     perp_q = _perp.clamp(0.0, 1.0) ** float(cfg.stage_perp_exponent)
     # ★법선 수직만으로는 **법선 둘레의 롤**이 남는다(90° 굴리면 손가락이 세로 평면으로
     #   감싸는데 perp 는 그대로 1.0). palm_ee +y 가 컵 축과 정렬되면 그 자유도가 잠긴다.
     #   과하면 cfg 로 이 항만 끈다(stage_roll_exponent = 0 → 항상 1.0).
     roll_q = torch.nn.functional.cosine_similarity(
-        palm_y, obj_up, dim=-1, eps=1e-6).clamp(0.0, 1.0) ** float(cfg.stage_roll_exponent)
+        palm_y, ref_up, dim=-1, eps=1e-6).clamp(0.0, 1.0) ** float(cfg.stage_roll_exponent)
     _of = float(cfg.stage_orient_floor)
     orient_q = _of + (1.0 - _of) * perp_q * roll_q
 
