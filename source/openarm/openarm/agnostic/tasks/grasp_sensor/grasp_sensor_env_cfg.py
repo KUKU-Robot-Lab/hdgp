@@ -312,14 +312,14 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   산수: kd/kp = 0.1/3.0 = 0.0333 s. 폐쇄 0.005 rad/step @60Hz = 0.3 rad/s
     #        → 지연 err ≈ 0.010 rad(0.57°). 정지 시(v=0) 0 이므로 **과도구간 전용**이다.
     hand_velocity_ff_scale: float = 1.0
-    # ★★policy obs 의 **측정 속도**를 죽이는 계수. Kuka 는 ADR
-    #   `observation_annealing.coefficient = (0., 0.)` — 시작·종단이 **둘 다 0** 이라
-    #   전 학습 구간에서 `robot_dof_vel_noisy` 와 `hand_vel_noisy` 에 0 을 곱한다
-    #   (env.py:1321, 1337). 즉 Kuka 정책은 측정 속도를 **한 번도 보지 않는다**.
-    #   대신 fabric 의 `fabric_qd`(참조 속도)는 그대로 준다 — 실기에서도 계산 가능한
-    #   양이기 때문이다. 측정 속도는 sim2real 에서 가장 안 맞는 채널이다.
-    #   ★차원은 유지한다(Kuka 도 0 을 곱할 뿐 채널을 지우지 않는다). obs_space 불변.
-    obs_measured_velocity_scale: float = 0.0
+    # ★★policy obs 의 측정 속도 계수. Kuka 는 ADR `observation_annealing.coefficient`
+    #   가 (0., 0.) 이라 전 구간 0 을 곱한다(env.py:1321, 1337) — 측정 속도가
+    #   sim2real 에서 가장 안 맞는 채널이고, distillation student 와 차원을 맞추려고
+    #   채널만 남긴 것이다.
+    # ★08.25 사용자 결정으로 **1.0**(살림). 당장 student 학습을 하지 않으므로 27D 를
+    #   상수 0 으로 버릴 이유가 없다. student 를 붙일 때 이 값을 0 으로 되돌리면
+    #   차원 변경 없이 Kuka 배선으로 복귀한다.
+    obs_measured_velocity_scale: float = 1.0
     # ★palm leash 는 제거됐다(08.22) — 정책이 팔 목표에 대해 전권을 갖는다.
     #   목표의 유일한 상한은 아래 워크스페이스 박스(profile.palm_box_*)다.
     #   근거는 grasp_sensor_env.py `_pre_physics_step` 주석 참조.
@@ -569,17 +569,45 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     stage_gc_local_override: tuple | None = (0.057, -0.001, 0.064)
     stage_approach_weight: float = 2.0
     stage_approach_sharpness: float = 8.0
-    # ★★헛닫힘 벌점(08.25 신설) — `−w · 폐쇄도² · (1 − 접촉비율)`.
-    #   사용자 관찰: palm 이 컵에서 멀어져도 주먹을 쥔 채 배회한다. 실측상 보상의
-    #   97.5% 가 approach 인데 그건 손 상태를 안 보므로 쥐는 것이 **공짜**였다.
-    #   주먹은 중립이 아니다 — 닫으면 컵이 밀려나 d_gc 23 → 64.5mm(probe_lateral).
-    #   ★거리 상수를 쓰지 않는다: d_gc 는 물체 **원점**까지 거리라 크기가 바뀌면
-    #     '닿기 직전 거리'가 달라져 하드 임계가 다물체에서 깨진다. 접촉을 쓰면
-    #     크기에 자동 적응한다(큰 물체는 일찍 닿아 벌점이 일찍 사라진다).
-    #   ★제곱: close 0.3(접촉 탐색) → 0.09·w 로 싸고, 1.0(주먹) → 1.0·w 로 비싸다.
-    #   ★뺄셈: approach 에 곱하면 벌점이 컵에 **가까울수록** 커진다(역방향).
-    #   현재 상태(close 0.44) 기준 0.097 = 총보상 0.732 의 13%, 주먹이면 0.5 = 68%.
-    stage_open_penalty: float = 0.5
+    # ★★08.25 5단계 소프트 게이트 재편(사용자 지정):
+    #   approach → grasp(5지+palm 밀착) → lift → transfer&stabilize → stay
+    # ─ 자세(approach 인자) ─────────────────────────────────────────────────────
+    #   palm_ee **+x 가 손바닥 법선**이고 컵 축(+z)과 **수직**이어야 한다(사용자 규약).
+    #   실측: 홈 자세에서 palm_ee_x·cup_z = −0.0025 로 이미 만족 = 액션 박스 중심이 정답.
+    #   구 `align` 은 접근축이 컵을 겨누는가(1자유도)만 봐서 롤·피치를 안 잡았고,
+    #   컵이 손보다 아래라 **숙이면 approach 가 +16%** 오르는 역유인까지 있었다.
+    stage_perp_exponent: float = 2.0     # (1 − |cos(palm_x, cup_z)|) ** e
+    #   ★법선 수직만으로는 법선 둘레 롤이 남는다(90° 굴리면 손가락이 세로 평면으로
+    #     감싸는데 perp 는 1.0 그대로). palm_ee +y ∥ cup_z 가 그 자유도를 잠근다.
+    #     과하면 이 값을 0.0 으로 → roll_q 가 항상 1.0 이 되어 항이 꺼진다.
+    stage_roll_exponent: float = 4.0
+    stage_orient_floor: float = 0.15     # 자세가 최악이어도 approach 의 15% 는 남긴다
+    # ─ grasp(②) ───────────────────────────────────────────────────────────────
+    #   G = five_frac · exp(−d_gc/τ). **새 센서를 쓰지 않는다** — 실기 센서는 tip 에만
+    #   있어 palm 접촉은 배포 불가다. 파지중심은 palm 에 강체로 붙은 점이라 d_gc → 0 이
+    #   곧 "물체가 손 깊숙이 = palm 밀착"이고 FK 로만 계산된다.
+    #   ★형상 어댑티브: 크기 가정 없음. 엄지 하나 터치는 five_frac 0.2 라 구조적으로 죽는다.
+    stage_grasp_near_tau: float = 0.04   # 40mm
+    # ─ stay(⑤) ────────────────────────────────────────────────────────────────
+    #   S = exp(−|v_obj|/v_ref). 구 S 는 액션 변화량이라 "액션을 안 바꾼다"였지
+    #   "안 움직인다"가 아니었다. 물체 실제 선속도로 바꾼다.
+    stage_stay_speed_ref: float = 0.05   # 0.05 m/s
+    stage_stay_hold_steps: int = 30      # 성공률 로깅용 — 0.5 초 연속 유지
+    # ─ 가중 사다리 ────────────────────────────────────────────────────────────
+    #   인자가 깊어질수록 곱이 작아지므로 상한을 키운다(lstm_test8: 네 인자 곱이
+    #   0.008 로 소멸해 어느 방향으로도 gradient 가 없었다).
+    #     ① approach 2.0 · ② grasp 12.0 · ③ lift 12.0 · ④ transfer 16.0 · ⑤ stay 24.0
+    stage_transfer_weight: float = 16.0
+    stage_stay_weight: float = 24.0
+    # ★08.25 5단계 재편으로 죽은 상수 5개 삭제(코드 참조 0 확인):
+    #   stage_transport_weight / stage_stabilize_weight / stage_stabilize_sharpness
+    #     → ④transfer(16.0) · ⑤stay(24.0) 로 대체
+    #   stage_upright_tau_deg  → U 를 각도 exp 가 아니라 **축 정렬 cos** 로 직접 계산
+    #   stage_lift_envelope_mix → G 가 five_frac·near_q 로 바뀌어 혼합비가 사라짐
+    # ★`stage_open_penalty` 삭제 — 게이트가 대신한다. G = five_frac·near_q 라 닿지도
+    #   않고 쥔 주먹은 G ≈ 0 이고, 주먹이 컵 진입을 막으면 d_gc 가 안 줄어 approach 도
+    #   같이 떨어진다. 무엇보다 그 벌점이 **엄지 단독 터치 전략을 만든 장본인**이었다
+    #   (contact_frac 이 손가락 하나만 닿아도 20% 면제 → 엄지가 통로를 막음).
     # 정렬 배수의 바닥 — align=−1(손등 쪽)일 때 남기는 비율. 0 이면 초기 오정렬에서
     # approach gradient 가 사라져 접근 자체를 못 배운다(reward-audit Check1).
     stage_align_floor: float = 0.25
@@ -606,7 +634,6 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   Q_lift = (1−mix)·tip_frac + mix·envelope_frac,  envelope_frac = 0.5(wrap4 + deep4)
     #   ★항등식: mean(mid)+mean(dist) = mean(mid∨dist)+mean(mid∧dist) 이므로
     #     grasp_v1 의 0.5(mid_frac+dist_frac) 가 우리 0.5(wrap4+deep4) 와 정확히 같다.
-    stage_lift_envelope_mix: float = 0.6       # grasp_v1 lift_envelope_mix
     # ★엄지 바닥값(구 stage_gq_thumb_floor 0.25)은 **삭제**한다. 그 배수가 첫 접촉을
     #   순손실로 만들었다(reach 소등 −0.272 vs G 상승 +0.18). grasp_v1 처럼 엄지는
     #   `tip_frac`(5팁) 안에서 자연히 계상된다. 성공 판정은 `oppose` 를 그대로 요구한다.
@@ -621,12 +648,8 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   위에서 gradient 가 0 이라 정책이 포화점에 고착한다(lstm_test3: env 0.65 에
     #   2,500 에폭 고착 = 정확히 그 포화점. grasp_v1: 4cm 포화 → 평형 3.1cm).
     stage_lift_height_ref: float = 0.15
-    stage_transport_weight: float = 8.0
     stage_tracking_std: float = 0.1
     # 직립은 **독립 항이 아니라 곱셈 인자** exp(−tilt°/τ). 테이블 위 컵에 지급되지 않는다.
-    stage_upright_tau_deg: float = 8.0
-    stage_stabilize_weight: float = 4.0
-    stage_stabilize_sharpness: float = 1.5
     # 컵 밀림 감쇠 — 제곱역수. 선형 (1−d/L) 은 d≥L 에서 정확히 0 이 되어 하드 게이트와
     # 같아지고 gradient 가 소실된다(실측: 밀림 0.207 이 300 에폭간 전혀 안 줄어듦).
     stage_disp_limit: float = 0.06
@@ -749,17 +772,27 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
         # ★접촉력(num_fingers)은 Kuka policy obs 에 없지만 **유지**한다. 이 트랙의
         #   존재 이유가 촉각 s2r 이고(tip F/T 15D 실기 배포 규약), 빼면 트랙이
         #   성립하지 않는다. Kuka 는 critic 에만 hand_forces 를 둔다.
+        # policy = 관절각·속도(2·nj) + palm pos(3) + **palm 회전 2열(6)** + 손끝(3·nt)
+        #          + 물체 pose(7) + goal(3) + last action + fabric q/qd/qdd(3·nj)
+        # ★08.25 변경 2건(사용자 결정):
+        #   · 접촉력(num_fingers) 을 **critic 전용**으로 이동 — Kuka 배선과 동일
+        #   · palm 쿼터니언(4) → **회전행렬 두 열(6)**. 부호 이중성(q ≡ −q) 제거,
+        #     보상의 자세 항(perp_q·roll_q)이 정확히 이 두 축의 함수라 정합이 맞는다.
+        #   · 물체 **자세**(obj_quat 4) 도 critic 으로 — 실기 인식으로 안정적으로 얻기
+        #     어렵다(사용자 결정). policy 는 물체 **위치**만 본다.
+        #   · `fabric_qd`/`fabric_qdd` 54D 제거 — Kuka 가 둘 다 0 으로 죽이고, LSTM 이
+        #     `fabric_q` 시퀀스에서 속도를 뽑으며, 손 구간은 실측상 상수였다.
         self.observation_space = (
-            2 * num_joints + 7 + 3 * num_tips + 7 + 3 + num_fingers + self.action_space
-            + 3 * num_joints
+            2 * num_joints + 3 + 6 + 3 * num_tips + 3 + 3 + self.action_space
+            + num_joints
         )
-        # critic = 관측 + **측정 관절속도 원값(num_joints)** + 물체 속도(6) + 난이도(1)
-        #          + **측정 관절토크(num_joints)**
+        # critic = 관측 + **접촉력(num_fingers)** + 물체 속도(6) + 난이도(1)
+        #          + 측정 관절토크(num_joints)
         # ★measured_joint_torque 는 Kuka critic obs 에 있다(privileged).
-        # ★★08.25 3차 감사: policy obs 의 관절속도가 0 이 되므로(Kuka
-        #   `observation_annealing` 계수 0) critic 에 원값을 따로 넣는다. Kuka critic 은
-        #   annealing 을 곱하지 않은 `robot_dof_vel` 을 쓴다 — 비대칭 구조가 같아진다.
-        self.state_space = self.observation_space + num_joints + 7 + num_joints
+        # ★08.25 구 `joint_vel_true`(num_joints) 삭제 — policy obs 의 joint_vel 이
+        #   이제 실측 원값(scale 1.0)이라 critic 에 같은 값을 또 넣을 이유가 없다.
+        self.state_space = (
+            self.observation_space + num_fingers + 4 + 7 + num_joints)
         # 스폰 높이는 cfg 세 값에서만 파생(단일 소스) — 프로필은 xy 만 준다
         self.object_spawn_z = (
             self.table_surface_z + self.object_origin_offset_z + self.object_spawn_pad)

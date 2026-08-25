@@ -29,7 +29,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.utils import bind_physics_material
-from isaaclab.utils.math import euler_xyz_from_quat, quat_apply
+from isaaclab.utils.math import euler_xyz_from_quat, quat_apply, matrix_from_quat
 
 # Fabrics (벤더링: hdgp/source/FABRICS/src — openarm/tasks/__init__ 가 sys.path 주입)
 import fabrics_sim.fabrics.openarm_tesollo_pose_fabric as _fab_tesollo
@@ -133,6 +133,14 @@ class GraspSensorEnv(DirectRLEnv):
         #   지속치가 새 에피소드에 그대로 보상으로 지급된다.
         self._persist_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._obj_up_buf = torch.ones(self.num_envs, device=self.device)
+        # ★★단계별 성공 플래그(08.25 사용자 요청). env 마다 **에피소드 동안 OR 누적**
+        #   하고 리셋 시점에만 평균을 기록한다 — 스텝마다 안 찍으므로 비용이 없다.
+        #   approach 성공을 **거리가 아니라 접촉 발생**으로 정의한 게 의도적이다:
+        #   물체 크기가 달라지면 "닿기 직전 거리"가 달라져 하드 임계가 다물체에서 깨진다.
+        self._stage_names = ("approach", "grasp", "lift", "transfer", "stay")
+        self._stage_hit = torch.zeros(
+            self.num_envs, len(self._stage_names), dtype=torch.bool, device=self.device)
+        self._stay_run = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         # ---- 접촉 그룹 인덱스 ---------------------------------------------------------
         fingers = list(p.finger_sensor_bodies.keys())
@@ -342,23 +350,29 @@ class GraspSensorEnv(DirectRLEnv):
         # ★상수 정합 fail-loud. 이 저장소에는 오타로 손실항이 12,652 iter 동안 조용히
         #   꺼져 있던 이력이 있다 — 신설 필드는 전부 여기서 존재·정합을 검증한다.
         _c = self.cfg
-        # ★08.25 grasp_v1 구조 전환 — grasp_quality 네 항의 합이 1 이어야 한다
-        #   (credit 을 올려도 최대치가 불변이어야 "감쌈만 하고 안 드는" 국소최적이 안 생긴다).
-        _cred = float(_c.stage_grasp_envelope_credit)
-        _pairs = (
-            ("grasp_quality 항 합", 0.15 * (1.0 - _cred) / 0.60
-             + 0.20 * (1.0 - _cred) / 0.60 + 0.25 * (1.0 - _cred) / 0.60 + _cred, 1.0),
-        )
-        for _nm, _got, _want in _pairs:
-            if abs(_got - _want) > 1e-6:
-                raise RuntimeError(f"[{self.profile.name}] {_nm} = {_got} ≠ {_want}")
-        if not (0.0 <= _cred <= 1.0):
+        # ★★08.25 5단계 재편 어서션. 구 grasp_quality 4항 합(=1) 검사는 폐기했다 —
+        #   G 가 `five_frac · near_q` 로 바뀌어 혼합비 자체가 없다.
+        #   저장소에 "오타로 손실항이 12,652 iter 동안 조용히 꺼져 있던" 이력이 있어
+        #   신설 상수는 전부 존재·범위를 부팅에서 확인한다(fail-loud).
+        for _nm in ("stage_grasp_near_tau", "stage_stay_speed_ref", "stage_stay_hold_steps",
+                    "stage_perp_exponent", "stage_roll_exponent", "stage_orient_floor",
+                    "stage_transfer_weight", "stage_stay_weight"):
+            if not hasattr(_c, _nm):
+                raise RuntimeError(f"[{self.profile.name}] 5단계 상수 누락: {_nm}")
+        if not (0.0 <= float(_c.stage_orient_floor) < 1.0):
             raise RuntimeError(
-                f"[{self.profile.name}] stage_grasp_envelope_credit={_cred} ∉ [0,1]")
-        if not (0.0 <= float(_c.stage_lift_envelope_mix) <= 1.0):
+                f"[{self.profile.name}] stage_orient_floor={_c.stage_orient_floor} ∉ [0,1)")
+        if float(_c.stage_grasp_near_tau) <= 0 or float(_c.stage_stay_speed_ref) <= 0:
             raise RuntimeError(
-                f"[{self.profile.name}] stage_lift_envelope_mix="
-                f"{_c.stage_lift_envelope_mix} ∉ [0,1]")
+                f"[{self.profile.name}] near_tau/stay_speed_ref 는 양수여야 한다")
+        # ★가중 사다리가 단조 증가여야 한다 — 인자가 깊어질수록 곱이 작아지므로
+        #   상한이 안 커지면 뒤 단계가 앞 단계를 못 이긴다(lstm_test8: 곱이 0.008 로 소멸).
+        _ladder = [float(_c.stage_approach_weight), float(_c.stage_grasp_weight),
+                   float(_c.stage_lift_weight), float(_c.stage_transfer_weight),
+                   float(_c.stage_stay_weight)]
+        if any(b < a for a, b in zip(_ladder, _ladder[1:])):
+            raise RuntimeError(
+                f"[{self.profile.name}] 단계 가중이 단조 증가가 아니다: {_ladder}")
         if float(_c.stage_success_height) > float(_c.goal_height_offset):
             raise RuntimeError(
                 f"[{self.profile.name}] stage_success_height({_c.stage_success_height}) 가 "
@@ -544,6 +558,26 @@ class GraspSensorEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     # Fabrics — 절대 palm pose attractor. 목표는 **실측을 참조하지 않는** 자체 상태다.
     # ------------------------------------------------------------------
+    def _palm_ee_R(self) -> torch.Tensor:
+        """palm_ee 회전행렬 (N,3,3). 열 0 = **손바닥 법선(+x)**, 열 1 = +y.
+
+        ★실측(probe_palmee): `r_hl_palm` / `r_hl_palm_ee` / `r_hl_palm_alias` /
+          `r_hl_base` 네 body 가 **회전은 완전히 동일**하고 위치만 다르다(palm_ee 가
+          palm 보다 40mm 앞). 따라서 자세 항에는 palm_idx 를 그대로 써도 같다.
+          홈에서 +x = [0.002, 1.000, −0.002] 로 컵 축(+z)과 −0.0025 = 이미 수직이다.
+        """
+        return matrix_from_quat(self.robot.data.body_quat_w[:, self.palm_idx])
+
+    def _obj_up_vec(self) -> torch.Tensor:
+        """물체 local +z 의 월드 방향 (N,3) — 컵 축. 인식 pose 로 실기에서도 나온다.
+
+        ★`_obj_up_buf` 는 `_get_dones` 에서 갱신되는데 그건 `_get_rewards` **뒤**라
+          한 스텝 낡은 값이다. 보상은 여기서 즉석 계산한 값을 쓴다.
+        """
+        return quat_apply(
+            self.object.data.root_quat_w,
+            torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, 3))
+
     def _palm_pose_6d(self) -> torch.Tensor:
         """현재 palm pose (env-local xyz + euler_zyx) — fabric 명령과 같은 규약."""
         pos = self.robot.data.body_pos_w[:, self.palm_idx] - self.scene.env_origins
@@ -882,10 +916,15 @@ class GraspSensorEnv(DirectRLEnv):
         #   (0., 0.) 과 동일 — 시작·종단이 둘 다 0 이라 전 구간 무효화다). 정책이 보는
         #   속도 정보는 `fabric_qd`(참조 속도)뿐이다. critic 은 아래에서 **원값**을 받는다
         #   (Kuka critic 도 annealing 을 안 곱한 `robot_dof_vel` 을 쓴다).
-        joint_vel_true = torch.cat([qd[:, self._arm_ids_t], qd[:, self._hand_ids_t]], dim=1)
-        joint_vel = float(self.cfg.obs_measured_velocity_scale) * joint_vel_true
+        joint_vel = float(self.cfg.obs_measured_velocity_scale) * torch.cat(
+            [qd[:, self._arm_ids_t], qd[:, self._hand_ids_t]], dim=1)
         palm_pos = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
-        palm_quat = self.robot.data.body_quat_w[:, self.palm_idx]
+        # ★★08.25 쿼터니언(4D) → **회전행렬 두 열**(palm_x, palm_y = 6D).
+        #   쿼터니언은 q 와 −q 가 같은 자세라 부호 이중성이 있고, 신경망이 그
+        #   불연속을 따로 배워야 한다. 그리고 보상의 자세 항(perp_q·roll_q)이
+        #   정확히 이 두 축의 함수라 관측과 보상이 같은 양을 본다.
+        _pR = self._palm_ee_R()
+        palm_ax = torch.cat([_pR[:, :, 0], _pR[:, :, 1]], dim=1)
         tips = (
             self.robot.data.body_pos_w[:, self._tip_ids_t]
             - self.scene.env_origins[:, None, :]
@@ -899,20 +938,38 @@ class GraspSensorEnv(DirectRLEnv):
         #   이므로 정책은 참조 궤적의 현재 위치를 알아야 한다 — 이게 없으면 "어디로
         #   가라"만 내고 "지금 어디쯤인지"를 모른다. 관절 순서는 fabric 순서 그대로다
         #   (obs 규약은 내부 일관성만 있으면 되고, 정책이 학습으로 대응을 배운다).
-        fab = torch.cat([self.fabric_q, self.fabric_qd, self.fabric_qdd], dim=1)
+        # ★★08.25 `fabric_qd`·`fabric_qdd` 54D 제거(사용자 결정). 0 처리되어서가
+        #   아니라 **중복**이라서다:
+        #     ① Kuka 는 둘 다 annealing 계수(0,0)를 곱해 죽인다(env.py:1376-1387).
+        #        Kuka 정책은 속도·가속도를 어디서도 안 받고 위치만으로 학습해
+        #        teacher→student 를 끝까지 성공시켰다.
+        #     ② LSTM 이 있으므로 `fabric_q` 시퀀스에서 속도가 은닉상태로 나온다.
+        #     ③ 실측: 손 20관절 구간은 **상수**(qd 0.1313~0.1318, 25%는 정확히 0) —
+        #        `fabric_q[:, arm:]` 를 매 스텝 덮어써 적분기 속도 상태가 잔재가 된다.
+        #     ④ `qdd` 는 가속도 한계(7.5/10.0)에 상시 포화라 정보량이 더 낮다.
+        #   ★`fabric_q` 는 남긴다 — **절대 액션 매핑의 짝**이다. 정책이 참조 궤적의
+        #     현재 위치를 모르면 절대 목표를 낼 수 없다. Kuka 도 q 만은 원값으로 준다.
+        #   ★fabric 내부에서는 qd 가 살아 있다(적분·반발 속도게이트) — obs 에서만 뺀다.
+        fab = self.fabric_q
+        # ★★08.25 `contact` 5D 를 policy obs 에서 빼 **critic 전용**으로 옮겼다
+        #   (사용자 결정, Kuka 배선과 동일 — Kuka 도 hand_forces 는 critic 에만 둔다).
+        # ★★08.25 `obj_quat` 4D 도 policy 에서 뺐다(사용자 결정) — 물체 **자세**는
+        #   실기 인식으로 안정적으로 얻기 어렵다. 위치(obj_pos)만 정책에 준다.
+        #   보상은 obj_up 을 계속 쓴다(privileged 는 보상·critic 에 허용).
         obs = torch.cat([
-            joint_pos, joint_vel, palm_pos, palm_quat, tips,
-            obj_pos, obj_quat, self.goal_pos, contact, self.actions, fab,
+            joint_pos, joint_vel, palm_pos, palm_ax, tips,
+            obj_pos, self.goal_pos, self.actions, fab,
         ], dim=1)
         # ★measured_joint_torque — Kuka critic obs 동일(privileged). 팔+손 순서로
         #   policy obs 의 joint_pos/vel 과 같은 정렬을 쓴다.
         _tau = self.robot.data.applied_torque
         state = torch.cat([
             obs,
-            # ★critic 은 측정 속도 **원값**을 받는다 — Kuka critic obs 는 annealing 을
-            #   곱하지 않은 `robot_dof_vel` 을 쓴다(env.py:1498). policy 에서 0 이 된
-            #   채널을 critic 에서 되살리는 것이라 비대칭 구조가 Kuka 와 같아진다.
-            joint_vel_true,
+            # ★접촉력·물체 자세는 critic 전용(privileged). policy 는 못 본다.
+            contact,
+            obj_quat,
+            # ★구 `joint_vel_true` 27D 는 삭제 — policy obs 의 joint_vel 이 이제
+            #   실측 원값(scale 1.0)이라 critic 에 같은 값을 또 넣을 이유가 없다.
             self.object.data.root_lin_vel_w,
             self.object.data.root_ang_vel_w,
             self.difficulty.float().unsqueeze(1) / float(self.cfg.curriculum_max_level),
@@ -986,12 +1043,14 @@ class GraspSensorEnv(DirectRLEnv):
                 tilt_deg=tilt_deg,
                 xy_disp=torch.norm(
                     obj_pos[:, :2] - self.object_spawn_pos[:, :2], dim=-1),
-                # ★헛닫힘 벌점 입력. `grip_close` 는 정책의 **실제 폐쇄도**(지령 누적)이고
-                #   `contact_frac` 은 접촉한 손가락 비율이다. 거리는 안 쓴다 — 물체
-                #   크기마다 "닿기 직전 거리"가 달라 하드 임계가 다물체에서 깨진다.
-                grip_close=(self._syn_close.mean(dim=-1) if self._synergy
-                            else torch.zeros(self.num_envs, device=self.device)),
-                contact_frac=(_mid_c | _dist_c | _tip_c).float().mean(dim=-1),
+                # ★5지 전부의 손바닥면 접촉 — 엄지 하나 터치는 five_frac 0.2 로 죽는다.
+                five_c=(_mid_c | _dist_c | _tip_c),
+                # ★자세: palm_ee **+x 가 손바닥 법선**(실측 확정, 네 palm 계열 body 가
+                #   회전은 동일하고 위치만 다르다). 컵 축과 수직이어야 한다.
+                palm_x=self._palm_ee_R()[:, :, 0],
+                palm_y=self._palm_ee_R()[:, :, 1],
+                obj_up=self._obj_up_vec(),
+                obj_speed=torch.norm(self.object.data.root_lin_vel_w, dim=-1),
                 actions=self.actions,
                 prev_actions=self.prev_actions,
                 cfg=self.cfg,
@@ -1065,11 +1124,39 @@ class GraspSensorEnv(DirectRLEnv):
                          ("_deep4", "task/deep4"), ("_tip_frac", "task/tip_frac"),
                          ("_full_tip", "task/full_tip"), ("_persist", "task/persist"),
                          ("_envelope", "task/envelope"), ("_grasp_q", "task/grasp_q"),
-                         ("_contact_frac", "task/contact_frac"),
-                         ("_grip_close", "task/grip_close")):
+                         ("_envelope", "task/envelope"), ("_grasp_q", "task/grasp_q"),
+                         ("_five_frac", "task/five_frac"), ("_near_q", "task/near_q"),
+                         ("_perp_q", "task/perp_q"), ("_roll_q", "task/roll_q"),
+                         ("_orient_q", "task/orient_q"), ("_T", "task/track_q"),
+                         ("_S", "task/stay_q")):
             _v = terms.pop(_k, None)
             if _v is not None:
                 self.extras[_tag] = _v.mean()
+        # ---- 단계별 성공 누적 (리셋 때만 기록) -----------------------------------
+        _five = (_mid_c | _dist_c | _tip_c)
+        _dgc = torch.norm(_gc - obj_pos, dim=-1) if (self._tip_cyl or self._synergy) \
+            else torch.full_like(goal_dist, 1e9)
+        _h = obj_pos[:, 2] - self.object_spawn_pos[:, 2]
+        _spd = torch.norm(self.object.data.root_lin_vel_w, dim=-1)
+        _tr = (goal_dist <= float(self.cfg.success_pos_tolerance)) & (
+            tilt_deg <= float(self.cfg.success_tilt_max_deg))
+        self._stay_run = torch.where(
+            _tr & (_spd < float(self.cfg.stage_stay_speed_ref)),
+            self._stay_run + 1, torch.zeros_like(self._stay_run))
+        _now = torch.stack([
+            _five.any(dim=-1),                                   # ① 닿을 만큼 갔다
+            _five.all(dim=-1) & (_dgc <= float(self.cfg.stage_grasp_near_tau)),   # ② 5지+밀착
+            _h >= 0.05,                                          # ③ 리프트
+            _tr,                                                 # ④ 이송+직립
+            self._stay_run >= int(self.cfg.stage_stay_hold_steps),  # ⑤ 정지 유지
+        ], dim=1)
+        self._stage_hit |= _now
+        # ★컵 밀림 — approach 를 음수로 만드는 유일한 양이다(가중 25.0 은 approach
+        #   상한 2.0 의 12.5배라 50mm 만 밀어도 상한의 31% 를 잃는다). 부팅 실측에서
+        #   스크립트 서보가 309mm 밀자 approach 가 −5.12 까지 갔다. 정책이 "컵 근처에
+        #   가지 마라"를 배우기 시작하면 여기서 먼저 보인다.
+        self.extras["task/xy_disp"] = torch.norm(
+            obj_pos[:, :2] - self.object_spawn_pos[:, :2], dim=-1).mean()
         self.extras["task/envelope_frac"] = env_frac.mean()
         # 게이트 참인 env 의 감쌈 — "접촉은 됐는데 감쌈이 안 되는" 상태의 직접 지표
         _gf = gate.float()
@@ -1280,6 +1367,11 @@ class GraspSensorEnv(DirectRLEnv):
             self._syn_vel[env_ids] = 0.0
         # 접촉 지속 카운터도 반드시 리셋 — 남기면 이전 에피소드의 지속치가 새 에피소드
         # 첫 스텝부터 보상으로 지급된다(grasp_v1 도 같은 자리에서 0 으로 만든다).
+        # ★단계별 성공률 — 끝난 에피소드의 결과를 여기서만 기록하고 비운다.
+        for _i, _nm in enumerate(self._stage_names):
+            self.extras[f"task/stage/{_nm}"] = self._stage_hit[env_ids, _i].float().mean()
+        self._stage_hit[env_ids] = False
+        self._stay_run[env_ids] = 0
         self._persist_buf[env_ids] = 0
         # Fabrics 상태 씨딩 — 리셋 **외**에는 실측으로 동기화하지 않는다(오픈루프 plant)
         self.fabric_q[env_ids] = q0[:, self._fab_t]
