@@ -136,7 +136,8 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     profile_name: str = "tesollo_right"
 
     # ---- 시뮬레이션: 물리 120 Hz / 정책 60 Hz ------------------------------------
-    episode_length_s: float = 8.0            # 480 스텝
+    # ★08.25 DEXTRAH Kuka 원본값(10.0 = 600 스텝). 구 8.0(480)은 우리 임의값이었다.
+    episode_length_s: float = 10.0           # 600 스텝 (Kuka 동일)
     decimation: int = 2
     sim: SimulationCfg = SimulationCfg(
         dt=1.0 / 120.0,
@@ -171,9 +172,16 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     state_space: int = 0
 
     # ---- Fabrics (grasp_sensor 검증값 승계) ----------------------------------------
-    # ★정책 스텝(1/60)당 fabrics_dt × fabric_decimation 만큼 fabric 시간이 흐른다.
-    #   1/120 × 2 = 1/60 으로 실시간과 일치시킨다(1/60 × 2 는 2배속이 된다).
-    fabrics_dt: float = 1.0 / 120.0
+    # ★★08.25 DEXTRAH Kuka 원본값(1/60)으로 복귀. 구 주석은 "1/60 × 2 는 2배속이 된다"며
+    #   실시간 정합을 이유로 절반(1/120)을 썼는데, **원본이 바로 그 2배속**이다
+    #   (Kuka: sim_dt 1/120 · decimation 2 · fabrics_dt 1/60 · fabric_decimation 2
+    #    → 정책 스텝 1/60 s 당 fabric 시간 1/30 s).
+    #   ★실측으로는 **지속 slew 에 영향이 거의 없다**(절대 매핑·목표를 박스 끝에 두고
+    #     +x/+y/+z: 4.873/7.202/5.370 → 4.292/7.440/5.173 mm/step = 0.88/1.03/0.96배).
+    #     과도구간 최댓값만 커진다(11.0 → 14.4mm). 즉 지속 상한은 fabric 의 속도·가속
+    #     한계가 정하지 이 dt 가 아니다 — "fabrics_dt 가 속도를 반토막" 가설은 기각됐다.
+    #   그래도 원본값을 쓴다: 편차를 남길 이유가 없고 손해도 없다.
+    fabrics_dt: float = 1.0 / 60.0
     fabric_decimation: int = 2
     fabrics_damping_gain: float = 20.0
     fabrics_max_objects_per_env: int = 8
@@ -205,8 +213,17 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #     2.048mm) — PD 수정으로는 안 없어진다.
     #   에피소드 예산 검산: 479스텝 × 2mm = 958mm ≫ 홈→컵 파지중심 208mm.
     #   ★arm_rot_scale 은 **재지 않았다** — 회전 상한은 미측정이므로 그대로 둔다.
-    arm_pos_scale: float = 0.002
-    arm_rot_scale: float = 0.05
+    # ★★08.25 DEXTRAH 동일 제어로 전환하면서 **둘 다 미사용**이 됐다. 팔 목표는 이제
+    #   델타 누산이 아니라 워크스페이스 박스 안의 **절대 pose** 다(`_pre_physics_step`).
+    #   실측 근거 — 누산 방식에서 액션 1.0 의 달성률:
+    #     위치 arm_pos_scale 0.01 → 28.2%(palm_err 151mm) · 0.002 → 81.4%(18mm)
+    #     회전 arm_rot_scale 0.05 → rz 25.3% / ry 57.0% / rx 27.7%, euler 오차 최대 84°
+    #   즉 어떤 스케일을 골라도 "지령 속도 vs 팔 능력"을 사람이 맞춰야 했고, 그 상한은
+    #   자세·방향마다 다르다. 절대 매핑에는 그 튜닝 자체가 없다 — fabric attractor 가
+    #   속도를 정한다. 삭제하지 않고 남기는 것은 다른 hand_control 경로·구 체크포인트
+    #   해석에 참조가 남아 있어서다.
+    arm_pos_scale: float = 0.002   # 미사용(절대 매핑)
+    arm_rot_scale: float = 0.05    # 미사용(절대 매핑)
     # 손: relative joint position (dexsuite RelativeJointPositionAction scale=0.1 동일)
     hand_joint_scale: float = 0.1
 
@@ -282,9 +299,11 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   "연 채로 접근 완료 후 서서히 닫기" 스윕(속도 피드포워드 복구 후, wrap4):
     #     0.050(15스텝) 0.45 · 0.020(37) 0.47 · 0.010(75) 0.58 ·
     #     **0.005(150) 0.64** · 0.002(375) 0.80
-    #   단조적으로 느릴수록 좋다. 0.002 가 최선이지만 완전 폐쇄에 375스텝이 들어
-    #   에피소드(479스텝)에서 접근·리프트·이송 예산이 남지 않는다. 0.005 는 150스텝으로
-    #   그 예산을 남기면서 0.05 대비 감쌈을 0.45→0.64 로 올린다.
+    #   단조적으로 느릴수록 좋다. ★grasp_v1 원본값이 0.05 지만 **실측값을 택한다**
+    #   (사용자 결정) — 원본 0.05 가 이 로봇·이 컵 기하에서 가장 나쁜 값이었다.
+    #   0.002 가 최선이지만 완전 폐쇄에 375스텝이 들어 에피소드(600스텝)에서 접근·
+    #   리프트·이송 예산이 빠듯하다. 0.005 는 150스텝으로 예산을 남기면서
+    #   0.05 대비 감쌈을 0.45→0.64 로 올린다.
     #   ★이건 **상한**이지 강제 램프가 아니다 — 접촉 동결이 마디별로 먼저 멈추므로
     #     정책은 자유공간에서 빨리, 접촉 근처에서 천천히 닫는 것을 배울 수 있다.
     synergy_close_speed: float = 0.005

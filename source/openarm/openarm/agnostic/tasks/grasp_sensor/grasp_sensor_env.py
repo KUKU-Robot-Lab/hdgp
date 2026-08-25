@@ -676,21 +676,25 @@ class GraspSensorEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clamp(-1.0, 1.0)
 
-        # ---- 팔: 내부 절대 목표 누산 -------------------------------------------------
-        # ★diff-IK relative 모드는 매 스텝 목표를 **실측 pose 로 재기준화**해서 action=0 이면
-        #   PD 오차가 0 이 됐다 → 복원력 0. 만중력 zero-action 실측: 240스텝에 palm −22.3mm,
-        #   무명령 기울기 18.7°, 480스텝에 컵 낙하. 여기서는 목표가 자체 상태라 실측이
-        #   흔들려도 되돌아온다. a=0 = "목표 고정 = 유지".
-        step = torch.zeros_like(self.palm_targets)
-        step[:, :3] = self.actions[:, :3] * float(self.cfg.arm_pos_scale)
-        step[:, 3:] = self.actions[:, 3:6] * float(self.cfg.arm_rot_scale)
-        # ★leash(목표를 실측±5cm 로 재클램프) 제거(08.22). 자유공간 추종오차는 mm 대라
-        #   "막혔을 때의 와인드업 방지"가 명목이었지만, 정책이 상시 최대속도를 명령하는
-        #   실제 학습에서는 **rate lag** 가 leash 폭을 상시 채웠다(lstm_test2 실측:
-        #   palm_err_mean 0.051~0.065 vs 축별 한계 0.05 → 노름 천장 0.0866,
-        #   leash_active_frac 0.43~0.90). 걸린 축의 액션 성분은 효과도 gradient 도 0 —
-        #   즉 팔 액션의 절반이 버려지고 있었다. 목표 상한은 워크스페이스 박스가 맡는다.
-        self.palm_targets = (self.palm_targets + step).clamp(self._palm_lo, self._palm_hi)
+        # ---- 팔: **절대 목표**(DEXTRAH 원본과 동일) ----------------------------------
+        # ★★08.25 델타 누산 → 절대 매핑. DEXTRAH 는 스케일·누산을 아예 쓰지 않는다:
+        #     palm_pose_targets = compute_absolute_action(a, PALM_POSE_MINS, PALM_POSE_MAXS)
+        #     scale(x, lo, hi) = 0.5·(x + 1)·(hi − lo) + lo
+        #   누산 방식의 문제는 **목표가 상태**라는 것이다. 액션이 한동안 포화하면 목표가
+        #   박스 끝까지 달아나고, 되돌리는 데 다시 여러 스텝이 걸린다(이력 의존).
+        #   실측: arm_pos_scale 0.01 에서 액션 1.0 의 달성률 28.2% · palm_err 151mm,
+        #   arm_rot_scale 0.05 에서 달성률 13.8~25.3% · euler 오차 최대 84°.
+        #   초과분은 이동이 아니라 목표 인플레로만 쌓여 그 구간 액션에 gradient 가 없다.
+        #   절대 매핑에는 이 상태가 없다 — 목표는 항상 박스 안이고 한 스텝에 어디로든
+        #   간다. **속도 제한은 fabric 의 attractor 동역학이 맡는다**(그게 fabric 의 역할).
+        #   ★a=0 은 "유지"가 아니라 **박스 중심**이다. DEXTRAH 도 그 성질을 알고 박스를
+        #     중심이 쓸만한 자세가 되도록 잡는다(open_tesollo 주석: "action=0 → palm z
+        #     target=0.425 … z_max=0.95 면 center=0.625 라 팔이 올라가는 문제 수정").
+        #     우리 박스 중심 = (0.375, −0.165, 0.45) · 회전 (90, 0, 90)° = 홈 회전과 일치.
+        #   구 `arm_pos_scale`·`arm_rot_scale` 은 이 경로에서 쓰이지 않는다.
+        self.palm_targets = (
+            0.5 * (self.actions[:, :6] + 1.0) * (self._palm_hi - self._palm_lo)
+            + self._palm_lo)
 
         # ---- 손 ---------------------------------------------------------------------
         if self._synergy:
