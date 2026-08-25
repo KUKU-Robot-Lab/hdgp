@@ -607,10 +607,10 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
 
     # ---- 커리큘럼 (per-env 난이도 0~10) --------------------------------------------
     curriculum_max_level: int = 10
-    # 물체 반중력 보상력: 유효 중력 = g × max(min_frac, level/max).
-    # min_frac 0.15 = level 0 에서도 컵이 테이블에 앉아 마찰로 고정되게(완전 무중력이면
-    # 수직항력 0 → 부유 표류. probe 실측: 120스텝에 컵이 100mm 떠다님).
-    gravity_min_frac: float = 0.15
+    # ★08.25 `gravity_min_frac` 삭제 — 참조 0건인 죽은 상수였다. 08.22 에 물체 반중력
+    #   보상력을 없앴는데(만중력 고정) 상수와 주석만 남아, 읽는 사람에게 "커리큘럼이
+    #   유효 중력을 스케일한다"고 잘못 알려주고 있었다. 현재 중력 배선은 Kuka 와 같다:
+    #   씬 중력 기본 (0,0,−9.81) · 로봇 `disable_gravity=True` · 물체 `False` · 보상력 없음.
     # 스폰 xy 반경: 초기 → 최종 보간.
     # ★final 은 프로필 스폰 중심 기준 박스 전체가 "홈 팔 quiet 영역" 안이어야 한다
     #   (probe_spawn_map/probe_solve_v1_home 실측 — 관통은 링크 원점 거리로 안 보임).
