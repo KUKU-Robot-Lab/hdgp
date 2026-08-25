@@ -37,3 +37,6 @@ logs/r2s_autotune/
 # git 에 넣지 않는다 — server 는 별도로 내려받을 것 (scripts/distillation/README.md)
 assets/dextrah_textures/
 log_archive/
+
+# 그림자 기록 산출물 — 재생성 가능하고 크다(npz). 판정 결과만 docs 로 남긴다.
+logs/shadow/

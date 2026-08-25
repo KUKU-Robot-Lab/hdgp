@@ -145,36 +145,16 @@ from isaaclab.envs import (
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import load_yaml
 
-import yaml as _yaml
 
 # 평가 하네스 범용화 층. scripts/tools 는 패키지가 아니라 경로로 붙인다.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import eval_adapters as _eval_adapters  # noqa: E402
-
-
-class _RunCfgYamlLoader(_yaml.FullLoader):
-    """logged env.yaml 전용 loader.
-
-    EventCfg의 SceneEntityCfg 기본값 slice(None)이
-    `!!python/object/apply:builtins.slice` 태그로 덤프되는데 FullLoader가
-    거부하므로 해당 태그만 명시적으로 복원한다.
-    """
-
-
-_RunCfgYamlLoader.add_constructor(
-    "tag:yaml.org,2002:python/object/apply:builtins.slice",
-    lambda loader, node: slice(*loader.construct_sequence(node, deep=True)),
+# run 설정 복원은 `scripts/tools/run_cfg_restore.py` 가 소유한다. 그림자 기록
+# 프로브도 같은 복원을 해야 하는데, 사본을 두면 기록과 재생이 조용히 갈린다.
+from run_cfg_restore import (  # noqa: E402
+    restore_run_cfg_if_available as _restore_run_cfg_if_available,
 )
-
-
-def _load_run_yaml(path: str):
-    try:
-        return load_yaml(path)
-    except _yaml.constructor.ConstructorError:
-        with open(path) as f:
-            return _yaml.load(f, Loader=_RunCfgYamlLoader)
 
 
 try:
@@ -318,90 +298,6 @@ def _resolve_checkpoint_path(checkpoint: str) -> str:
         return str(resolved)
 
     raise FileNotFoundError(f"Unable to find the checkpoint file or prefix: {checkpoint}")
-
-
-def _rebase_logged_paths(value, *, workspace_root: str):
-    """Map absolute paths from another machine's logged cfg onto this workspace."""
-    if isinstance(value, dict):
-        return {k: _rebase_logged_paths(v, workspace_root=workspace_root) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_rebase_logged_paths(v, workspace_root=workspace_root) for v in value]
-    if isinstance(value, tuple):
-        return tuple(_rebase_logged_paths(v, workspace_root=workspace_root) for v in value)
-    if not isinstance(value, str) or os.path.exists(value):
-        return value
-
-    marker = "/rl_ws/"
-    if marker not in value:
-        return value
-    rel = value.split(marker, 1)[1]
-    candidate = os.path.join(workspace_root, rel)
-    return candidate if os.path.exists(candidate) else value
-
-
-def _apply_logged_env_cfg(target, logged: dict) -> None:
-    """Recursively copy logged env config values onto the Hydra config object."""
-    if not isinstance(logged, dict):
-        return
-    for key, value in logged.items():
-        if key == "func":
-            continue
-        if isinstance(target, dict):
-            if key not in target:
-                continue
-            current = target[key]
-        elif hasattr(target, key):
-            current = getattr(target, key)
-        else:
-            continue
-        if callable(current):
-            continue
-
-        if isinstance(value, dict) and (isinstance(current, dict) or hasattr(current, "__dict__")):
-            _apply_logged_env_cfg(current, value)
-        elif isinstance(value, list) and isinstance(current, list) and any(
-            isinstance(item, dict) for item in value
-        ):
-            # 설정 객체 리스트(spawn.assets_cfg 등): 통째로 교체하면 configclass가
-            # dict로 바뀌어 asset_cfg.func 접근이 깨진다 → 같은 인덱스끼리 재귀 복원.
-            for cur_item, val_item in zip(current, value):
-                if isinstance(val_item, dict) and (
-                    isinstance(cur_item, dict) or hasattr(cur_item, "__dict__")
-                ):
-                    _apply_logged_env_cfg(cur_item, val_item)
-        else:
-            try:
-                if isinstance(target, dict):
-                    target[key] = value
-                else:
-                    setattr(target, key, value)
-            except Exception:
-                pass
-
-
-def _restore_run_cfg_if_available(env_cfg, agent_cfg: dict, *, resume_path: str, workspace_root: str) -> dict:
-    """Use params saved next to the checkpoint so playback matches training."""
-    run_dir = os.path.dirname(os.path.dirname(resume_path))
-    params_dir = os.path.join(run_dir, "params")
-    env_yaml = os.path.join(params_dir, "env.yaml")
-    agent_yaml = os.path.join(params_dir, "agent.yaml")
-
-    if os.path.exists(env_yaml):
-        logged_env = _rebase_logged_paths(_load_run_yaml(env_yaml), workspace_root=workspace_root)
-        _apply_logged_env_cfg(env_cfg, logged_env)
-        print(f"[INFO] Restored playback env cfg from: {env_yaml}")
-    else:
-        print(f"[WARN] Run env cfg not found; using current source cfg: {env_yaml}")
-
-    if os.path.exists(agent_yaml):
-        logged_agent = _rebase_logged_paths(_load_run_yaml(agent_yaml), workspace_root=workspace_root)
-        if isinstance(logged_agent, dict) and "params" in logged_agent:
-            print(f"[INFO] Restored playback agent cfg from: {agent_yaml}")
-            return logged_agent
-        print(f"[WARN] Ignoring malformed run agent cfg: {agent_yaml}")
-    else:
-        print(f"[WARN] Run agent cfg not found; using current source cfg: {agent_yaml}")
-    return agent_cfg
 
 
 def _apply_playback_env_overrides(env_cfg) -> None:
