@@ -42,6 +42,10 @@ parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--out", type=Path, required=True)
 parser.add_argument("--gravity_comp", choices=["on", "off"], default="on",
                     help="액션 항의 처짐 보상. off 는 HDGP_GRAVITY_COMP=0 과 같다.")
+parser.add_argument("--cup_pose", type=Path, default=None,
+                    help="perception 이 준 컵 pose(json). 주면 리셋 직후 컵을 그 자리로 "
+                         "옮긴다. env 는 건드리지 않는다 — 씬 객체에 직접 쓴다. "
+                         "`sim2real/scripts/cup_pose_capture.py` 가 만든다.")
 parser.add_argument("--keep_drop_termination", action="store_true",
                     help="컵 전도 종료를 살려 둔다. 기본은 끈다 — 리셋마다 팔이 홈으로 "
                          "텔레포트해 **연속 궤적이 아니게** 되고, 그림자 재생에서 그건 "
@@ -142,6 +146,15 @@ def main() -> int:
     env = gym.make(args.task, cfg=env_cfg).unwrapped
     player, wrapped = build_policy(args.checkpoint, agent_cfg, env)
 
+    cup_pose = None
+    if args.cup_pose is not None:
+        sys.path.insert(0, str(_HDGP.parent / "sim2real/scripts"))
+        from cup_pose_capture import load_capture, spawn_box_from_preset, verdict
+
+        cup_pose = load_capture(args.cup_pose, expect_frame="base_link")
+        report = verdict(cup_pose, spawn_box_from_preset(P))
+        print("[CUP] " + report.describe().replace("\n", "\n[CUP] "), flush=True)
+
     robot = env.scene["robot"]
     # ★fabric 의 `palm_link` 은 그리퍼 **TCP** 인데(fabric URDF 주석) USD 에서는 그 프레임이
     #   강체로 병합돼 사라진다. base 바디를 그대로 쓰면 두 점이 구조적으로 80 mm 떨어져
@@ -187,11 +200,32 @@ def main() -> int:
         """rl_games 래퍼는 obs 를 dict 로 준다 — actor 가 먹는 텐서만 꺼낸다."""
         return raw["obs"] if isinstance(raw, dict) else raw
 
+    def place_cup() -> None:
+        """리셋 뒤 컵을 인지가 준 자리로 옮긴다.
+
+        env 를 고치지 않는 이유 두 가지: ①이 태스크 파일은 자매 세션이 지금 고치고 있다
+        ②스폰은 이벤트가 무작위로 하는데, 그걸 바꾸면 학습 경로를 건드리게 된다.
+        씬 객체에 직접 쓰면 둘 다 피하면서 같은 결과를 얻는다.
+        """
+        if cup_pose is None:
+            return
+        cup = env.scene["object"]
+        pose = torch.tensor(
+            [*cup_pose.position, *cup_pose.orientation_wxyz],
+            device=env.device, dtype=torch.float32).unsqueeze(0).repeat(env.num_envs, 1)
+        pose[:, :3] += env.scene.env_origins          # 씬 좌표는 world 다
+        cup.write_root_pose_to_sim(pose)
+        cup.write_root_velocity_to_sim(torch.zeros(env.num_envs, 6, device=env.device))
+
     obs = policy_obs(wrapped.reset())
+    place_cup()
     with torch.inference_mode():
         for step in range(args.steps):
             action = player.get_action(obs, is_deterministic=True)
             raw_obs, reward, dones, _ = wrapped.step(action)
+            if cup_pose is not None and bool(dones.any()):
+                # 리셋이 나면 이벤트가 컵을 다시 무작위로 놓는다 — 되돌린다.
+                place_cup()
             obs = policy_obs(raw_obs)
 
             palm = fabric.get_palm_pose(term._fabric_q, "quaternion")     # xyz + xyzw
@@ -250,6 +284,19 @@ def main() -> int:
     digests = [f"{f.name}:{hashlib.sha256(f.read_bytes()).hexdigest()[:12]}"
                for f in sorted(task_dir.glob("*.py"))]
     arrays["meta_task_sha256"] = np.array(digests)
+    arrays["meta_cup_pose_source"] = np.array(
+        [cup_pose.source if cup_pose is not None else "env 무작위 스폰"])
+    # ★fabric 을 **다른 인터프리터에서 다시 풀어 보려면** 이 다섯이 있어야 한다. 지금은
+    #   전부 preset 상수라 소스만 바뀌면 조용히 달라진다(08.25 에 damping 20→10,
+    #   fabric_dt step_dt/2→step_dt 로 바뀌었다). 기록이 스스로 답하게 한다.
+    arrays["meta_fabric_dt"] = np.array([float(term._fabric_dt)])
+    arrays["meta_fabric_decimation"] = np.array([int(P.FABRIC_DECIMATION)])
+    arrays["meta_fabric_damping"] = np.array([float(term._damping[0, 0].item())])
+    arrays["meta_fabric_vel_ff"] = np.array(
+        [float(getattr(term, "_vel_ff_scale", float("nan")))])
+    arrays["meta_home_q"] = np.array(term._q_home.detach().cpu().numpy())
+    arrays["meta_fabric_robot_dir"] = np.array([str(P.FABRIC_ROBOT_DIR)])
+    arrays["meta_fabric_world"] = np.array([str(P.FABRIC_WORLD_FILENAME)])
     args.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.out, **arrays)
 
