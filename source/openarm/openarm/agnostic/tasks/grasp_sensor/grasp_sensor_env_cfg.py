@@ -30,39 +30,89 @@ from isaaclab.managers import EventTermCfg, SceneEntityCfg
 
 from .robot_profiles import PROFILES, RobotProfile
 
-_FRICTION = 0.75
+# ★08.25 DEXTRAH Kuka EventCfg 값(1.0). 구 0.75 는 우리가 고른 값이다.
+_FRICTION = 1.0
 
 
 @configclass
 class GraspSensorEventCfg:
-    """물리 재질 — startup 1회. 값은 절대값이다(배율 아님).
+    """도메인 랜덤화 — DEXTRAH Kuka `EventCfg` 이식(08.25). 전 term `mode="reset"`.
 
     ★씬 기본(SimulationCfg.physics_material)만으로는 부족하다: 로봇·컵 콜라이더는 각자
     재질을 갖고, PhysX 결합이 average 라 한쪽만 올리면 실효 μ 가 중간값이 된다.
-    mode="startup" 인 이유 = 이 term 은 CPU 텐서로 버킷을 만들어 초기화 때만 쓰라고
-    상류가 명시한다(events.py:167-170). 고정값이라 reset 마다 다시 걸 이유도 없다.
+    재질 term 의 값은 **절대값**이고(배율 아님), 관절/질량 term 은 `operation="scale"`
+    이라 배율이다 — 같은 파일 안에서 의미가 다르니 주의.
+
+    ★구 주석은 mode="startup" 을 "고정값이라 reset 마다 걸 이유가 없다"로 정당화했다.
+      Kuka 는 **reset** 을 쓰는데, ADR 이 매 리셋마다 범위를 넓히기 때문이다. 우리는
+      아직 ADR 이 없어 값이 고정이지만, 모드를 맞춰 두면 ADR 도입이 상수 교체로 끝난다.
     """
 
+    # ★★08.25 DEXTRAH Kuka `EventCfg` 를 그대로 옮긴다(mode="reset", num_buckets 250).
+    #   ★restitution 0.0 → **1.0**. 구 주석은 "(1.0,1.0) 을 그대로 복사하면 컵이
+    #     완전탄성이 된다"고 경고했는데, Kuka 는 `bounce_threshold_velocity=0.2` 와
+    #     **짝으로** 쓴다 — 상대속도 0.2 m/s 이하 접촉에는 반발이 적용되지 않으므로
+    #     느린 파지 접촉에서는 무해하다. 구 우리 조합은 (restitution 0, bounce 0.01)로
+    #     내부적으로는 일관됐지만 Kuka 와 달랐다. 둘 다 Kuka 값으로 간다.
     robot_material = EventTermCfg(
         func=_mdp.randomize_rigid_body_material,
-        mode="startup",
+        mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
             "static_friction_range": (_FRICTION, _FRICTION),
             "dynamic_friction_range": (_FRICTION, _FRICTION),
-            "restitution_range": (0.0, 0.0),
-            "num_buckets": 1,
+            "restitution_range": (1.0, 1.0),
+            "num_buckets": 250,
         },
     )
     object_material = EventTermCfg(
         func=_mdp.randomize_rigid_body_material,
-        mode="startup",
+        mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("object", body_names=".*"),
             "static_friction_range": (_FRICTION, _FRICTION),
             "dynamic_friction_range": (_FRICTION, _FRICTION),
-            "restitution_range": (0.0, 0.0),
-            "num_buckets": 1,
+            "restitution_range": (1.0, 1.0),
+            "num_buckets": 250,
+        },
+    )
+    # ★아래 셋은 Kuka 에 있고 우리엔 없던 EventTerm 이다. 공칭 파라미터에서는 전부
+    #   항등(scale 1.0)이거나 0 이라 **거동이 바뀌지 않지만**, ADR 을 붙일 때 여기가
+    #   확장 지점이다(Kuka adr_cfg_dict: stiffness/damping (0.5,2.) ·
+    #   joint_friction (0.,5.) · mass (0.5,3.)).
+    robot_joint_stiffness_and_damping = EventTermCfg(
+        func=_mdp.randomize_actuator_gains,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "stiffness_distribution_params": (1.0, 1.0),
+            "damping_distribution_params": (1.0, 1.0),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    # ★Kuka 는 `starting_robot_dof_friction_coefficients`(팔 1.0 / 손 0.01)를
+    #   `default_joint_friction_coeff` 에 넣어 두고, 이 term 이 **scale (0,0)** 으로
+    #   곱해 **실효 마찰 0** 으로 만든다(그리고 실제 write 는 주석 처리돼 있다).
+    #   즉 우리가 `friction=0.213/…` 를 제거한 결과와 최종값이 같다.
+    robot_joint_friction = EventTermCfg(
+        func=_mdp.randomize_joint_parameters,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "friction_distribution_params": (0.0, 0.0),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    object_scale_mass = EventTermCfg(
+        func=_mdp.randomize_rigid_body_mass,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("object"),
+            "mass_distribution_params": (1.0, 1.0),
+            "operation": "scale",
+            "distribution": "uniform",
         },
     )
 
