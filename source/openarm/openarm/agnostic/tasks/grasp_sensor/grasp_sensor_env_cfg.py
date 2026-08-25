@@ -175,9 +175,18 @@ def _build_robot_cfg(profile: RobotProfile,
                 #   둘 다 `enabled_self_collisions=False`. 우리 로봇에 대한 원저자
                 #   선택이 곧 이 값이다. 전면 convexHull 전환과 짝이다(조각이 하나가
                 #   되면 인접 링크 껍질끼리 상시 겹쳐 자기충돌이 오히려 늘어난다).
-                # ★관통을 막는 장치는 Fabrics `use_hand_repulsion` 하나만 남는다.
-                #   자매 트랙 실측: repulsion ON 이면 fabric_q 의 손가락 구 최소거리
-                #   20.1mm·18mm 미만 0.0% — 계획에 관통 해가 없다. 되돌릴 때 함께 볼 것.
+                # ★★정정(같은 날): "관통 방지는 use_hand_repulsion 이 맡는다"고 적었으나
+                #   그 값은 **False** 다. 게다가 fabric 의 `body_points` 그룹은 쌍 목록을
+                #   **빈 리스트로 넘긴다**(openarm_tesollo_pose_fabric.py:407 —
+                #   `_add_repulsion_group("body_points", frames, radii, [], p)`).
+                #   따라서 지금 자기충돌을 막는 장치는 **하나도 없다**.
+                #   Kuka 는 fabric 에서 13쌍(전부 `손 링크 ↔ iiwa7_link_2`)을 실제로 걸고
+                #   **그 위에 PhysX self-collision 도 True** 다. 우리는 둘 다 비었다.
+                #   손가락끼리는 외전 관절 `_1` 이 open/grip 양쪽 0.0 이라 핀 고정이라
+                #   측면으로 모일 수 없지만(구조적 안전), **팔↔몸통은 무방비**다.
+                #   선택지: ①`use_hand_repulsion=True`(손 쌍은 params 에 이미 있고
+                #   joint_slice 로 팔 결합 차단됨) ②이 값을 True 로 되돌림
+                #   ③Kuka 처럼 `손↔팔뚝` 쌍을 body_points 에 추가.
                 enabled_self_collisions=enable_self_collisions,
                 # ★P-9 실측(2048env)으로 16 확정: 32 는 fps 를 25% 깎는데(11.9k→8.9k)
                 #   파지 품질이 나아지지 않았다. 오히려 접촉력이 더 높았다
