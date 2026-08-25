@@ -189,7 +189,14 @@ TESOLLO_RIGHT = RobotProfile(
     ),
     # ★1.8 은 관절한계(±1.571) 초과 과지령이며 런타임 soft limit 으로 흡수된다 —
     #   목표를 한계에 정확히 두면 PD 가 한계 직전에서 힘을 못 낸다(grasp_v1 규약).
-    hand_channel_of_joint={"1": 0, "2": 1, "3": 2, "4": 2},
+    # ★★08.25 grasp_v1 과 동일 구조로 복귀 — 손가락당 **스칼라 1개**.
+    #   grasp_v1: `blend.repeat_interleave(4)` — 한 손가락의 4관절이 하나의 값으로
+    #   open→grip 보간된다. 우리는 채널 3개(_1 / _2 / _3·_4)로 쪼갰었고(액션 21D),
+    #   그 때문에 **"MCP 는 닫고 손가락 끝은 편"** 자세가 액션 공간에 존재했다.
+    #   그 자세를 구 `reach` 항이 정확히 보상해 정책이 그리로 수렴했다(lstm_test9).
+    #   스칼라 하나면 "열리거나 굽거나" 둘뿐이라 그 자세 자체를 만들 수 없다.
+    #   액션 21D → 11D (palm 6 + 손가락 5).
+    hand_channel_of_joint={"1": 0, "2": 0, "3": 0, "4": 0},
     hand_freeze_suffixes=("3", "4"),
     # grasp_sensor 프리셋(같은 DG-5F 자산에서 검증된 palm workspace) 승계.
     # ★modules/robots.py 의 _BOX_R 은 bi_s(DG-5FS) 실측이라 palm 이 54.8mm 달라 못 쓴다.

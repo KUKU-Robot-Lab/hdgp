@@ -18,8 +18,8 @@ def compute_tip_cyl_rewards(
     grasp_center_pos: torch.Tensor,   # (N, 3) env-local · palm 부착 파지중심(손가락 무관)
     object_pos: torch.Tensor,         # (N, 3) env-local
     goal_pos: torch.Tensor,           # (N, 3) env-local
-    pull_dist: torch.Tensor,          # (N, F) 손가락별 "당길 마디"까지 거리(역할별)
-    touched: torch.Tensor,            # (N, F) bool · 그 손가락 당김을 끌 조건(역할별)
+    tip_c: torch.Tensor,              # (N, F) bool · 손가락별 팁 접촉(엄지 포함 5지)
+    persist_frac: torch.Tensor,       # (N,) [0,1] · 접촉 지속 스텝 / 정규화 스텝수
     wrap_c: torch.Tensor,             # (N, B) bool · 4지 손바닥면 감쌈(mid ∨ dist)
     deep_c: torch.Tensor,             # (N, B) bool · 4지 깊은 감쌈(mid ∧ dist)
     oppose: torch.Tensor,             # (N,)   bool · 엄지 대향(팁 포함 총접촉)
@@ -58,18 +58,21 @@ def compute_tip_cyl_rewards(
 
     returns (total, terms, grip_ok, wrap4) — 구 함수와 동일 4-tuple 계약(env 배선 호환).
     """
-    # ---- 소프트 인자 (전부 [0,1] 연속) ------------------------------------------
+    # ---- 접촉 지표 (전부 [0,1] 연속) --------------------------------------------
     wrap4 = wrap_c.float().mean(dim=-1)          # 4지 감쌈 비율 — 상한 1.0(엄지 제외)
-    deep4 = deep_c.float().mean(dim=-1)          # 4지 깊은 감쌈 비율
-    opp_f = oppose.float()
+    deep4 = deep_c.float().mean(dim=-1)          # 4지 깊은 감쌈(mid ∧ dist)
+    tip_frac = tip_c.float().mean(dim=-1)        # 5지 팁 접촉 비율(엄지 포함)
+    full_tip = tip_c.all(dim=-1).float()
+    # ★grasp_v1 `envelope_frac` = 0.5(mid_frac + dist_frac). 항등식
+    #   mean(mid)+mean(dist) = mean(mid∨dist)+mean(mid∧dist) 로 우리 지표와 정확히 같다.
+    envelope = 0.5 * (wrap4 + deep4)
 
-    # 파지 품질 G — 얕은 감쌈보다 깊은 감쌈에 무게. deep 몫에 wrap4 를 곱해
-    # "한 손가락만 깊게"가 만점이 되지 않게 한다.
-    # deep_c ⊆ wrap_c (mid∧dist ⇒ mid∨dist) 이므로 deep4 ≤ wrap4 가 자동 보장된다 —
-    # deep 몫에 wrap4 를 다시 곱할 필요가 없다.
-    _fl = float(cfg.stage_gq_thumb_floor)
-    G = (_fl + (1.0 - _fl) * opp_f) * (
-        float(cfg.stage_gq_wrap) * wrap4 + float(cfg.stage_gq_deep) * deep4)
+    # 리프트 계열 접촉 게이팅 — grasp_v1 `graded_contact`.
+    # ★구 G 의 엄지 배수 (0.25 + 0.75·oppose) 는 **삭제**했다. 그 배수 때문에 첫 접촉이
+    #   순손실이었다(reach 소등 −0.272 vs G 상승 +0.18 = −0.09/step). 엄지는 이제
+    #   tip_frac(5팁) 안에서 계상되고, 성공 판정만 oppose 를 그대로 요구한다.
+    _mix = float(cfg.stage_lift_envelope_mix)
+    G = (1.0 - _mix) * tip_frac + _mix * envelope
 
     H = (height_delta / float(cfg.stage_lift_height_ref)).clamp(0.0, 1.0)   # h=0 → 0
     U = torch.exp(-tilt_deg / float(cfg.stage_upright_tau_deg))
@@ -80,19 +83,38 @@ def compute_tip_cyl_rewards(
     _r = xy_disp / float(cfg.stage_disp_limit)
     F = 1.0 / (1.0 + _r * _r)                    # 제곱역수 — 0 에 닿지 않아 gradient 유지
 
-    # ---- ① 접근(팔) — 무게이트 ---------------------------------------------------
+    # ---- ① 접근(팔) — 무게이트 + 컵 밀기·기울임 벌점(grasp_v1) ---------------------
+    # ★벌점은 approach_weight 로 곱하지 **않는다**(grasp_v1 배선 그대로 — 벌점이
+    #   접근 가중에 비례해 희석되면 "빨리 가되 밀어도 된다"가 된다).
     d_gc = torch.norm(grasp_center_pos - object_pos, dim=-1)
     align = torch.nn.functional.cosine_similarity(
         grasp_center_pos - palm_pos, object_pos - palm_pos, dim=-1, eps=1e-6)
     _al = float(cfg.stage_align_floor)
-    approach = (torch.exp(-float(cfg.stage_approach_sharpness) * d_gc)
-                * (_al + (1.0 - _al) * 0.5 * (1.0 + align)))
+    approach = (
+        float(cfg.stage_approach_weight)
+        * torch.exp(-float(cfg.stage_approach_sharpness) * d_gc)
+        * (_al + (1.0 - _al) * 0.5 * (1.0 + align))
+        - float(cfg.stage_approach_xy_penalty)
+        * torch.relu(xy_disp - float(cfg.stage_approach_xy_margin))
+        - float(cfg.stage_approach_tilt_penalty)
+        * torch.relu(tilt_deg - float(cfg.stage_approach_tilt_margin_deg))
+    )
 
-    # ---- ② 파지(손가락) — 무게이트. reach 는 접촉 전 shaping, G 는 접촉 후 품질 ----
-    reach = ((~touched).float() * torch.exp(
-        -float(cfg.stage_grip_sharpness)
-        * pull_dist.clamp(min=float(cfg.stage_grip_dist_floor)))).mean(dim=-1)
-    grasp = float(cfg.stage_graspq_reach) * reach + float(cfg.stage_graspq_g) * G
+    # ---- ② 파지(손가락) — **전부 접촉 항**(grasp_v1 grasp_quality) -----------------
+    # ★거리 항(구 `reach`)을 폐기했다. `reach` 는 mid/dist 링크 → 물체 거리라 컵이 손
+    #   밖에 있으면 **손가락을 펼수록 커졌고**, 정책이 감쌈을 버리고 그걸 취했다
+    #   (lstm_test9: wrap4 0.125→0.042 인데 R_grasp 1.224→1.310). 접촉 개수만 세면
+    #   그 계곡이 구조적으로 생길 수 없다.
+    # ★합이 1 로 재정규화되므로 credit 을 올려도 grasp 최대치는 불변 —
+    #   "감쌈만 하고 안 드는" 국소최적을 못 만든다(grasp_v1 reward-audit 근거).
+    _cred = float(cfg.stage_grasp_envelope_credit)
+    _ts = (1.0 - _cred) / 0.60
+    grasp = (
+        0.15 * _ts * tip_frac
+        + 0.20 * _ts * full_tip
+        + 0.25 * _ts * persist_frac.clamp(0.0, 1.0)
+        + _cred * deep4
+    )
 
     # ---- ③④⑤ 소프트 곱셈 계층 (인자 3 → 4 → 5) ----------------------------------
     # ★리프트에서 U(직립)·F(밀림)를 뺀다(08.25). 사용자 단계 순서가
@@ -115,7 +137,8 @@ def compute_tip_cyl_rewards(
     )
 
     terms = {
-        "approach": float(cfg.stage_approach_weight) * approach,
+        # ★approach 는 이미 가중·벌점이 반영된 값이다(grasp_v1 배선) — 다시 곱하지 않는다.
+        "approach": approach,
         "grasp": float(cfg.stage_grasp_weight) * grasp,
         "lift": float(cfg.stage_lift_weight) * lift,
         "transport": float(cfg.stage_transport_weight) * transport,
@@ -134,7 +157,11 @@ def compute_tip_cyl_rewards(
     terms["_H"] = H
     terms["_U"] = U
     terms["_deep4"] = deep4
-    terms["_reach"] = reach
+    terms["_tip_frac"] = tip_frac
+    terms["_full_tip"] = full_tip
+    terms["_persist"] = persist_frac.clamp(0.0, 1.0)
+    terms["_envelope"] = envelope
+    terms["_grasp_q"] = grasp
     # 3번째 반환값은 구 `gate` 자리 — 로깅 호환을 위해 "쓸만한 파지" 이진값을 싣는다.
     grip_ok = G > 0.5
     return total, terms, grip_ok, wrap4

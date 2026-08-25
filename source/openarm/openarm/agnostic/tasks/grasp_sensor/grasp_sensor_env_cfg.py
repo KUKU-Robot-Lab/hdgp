@@ -178,13 +178,34 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     fabrics_damping_gain: float = 20.0
     fabrics_max_objects_per_env: int = 8
     fabric_use_cuda_graph: bool = False
+    # ★★팔 PD 속도 피드포워드(08.25 복구). DEXTRAH 원본은 fabric 이 만든 `fabric_qd` 를
+    #   그대로 속도 목표로 준다(`velocity_target_factor` 공칭 1.0). 이 저장소는 전 트랙이
+    #   **0** 을 넣고 있었고, 그러면 implicit PD 의 감쇠항이 참조 궤적의 움직임 자체를
+    #   반대로 밀어 **속도에 비례하는 추종 지연**이 생긴다:
+    #     피드포워드 0 → kp·err = kd·v + τ_마찰  →  err ≈ (kd/kp)·v = 0.2·v [rad]
+    #     피드포워드 1 → kp·err = τ_마찰만        →  err ≈ 0.49/400 = 0.0012 rad = 0.07°
+    #   lstm_test9 실측 joint_err_max 0.5~1.3 rad 이 위 식과 일치한다. 구 leash(목표를
+    #   실측±5cm 로 재클램프)는 이 지연의 **증상 억제기**였고, 원인을 안 고친 채 제거해
+    #   palm_err 51~65mm → 90mm(최대 435mm)로 악화됐다.
+    #   ★이 값이 바뀌면 폐쇄 속도·파지중심 등 제어 위에서 잰 상수는 전부 재측정 대상이다.
+    fabric_velocity_ff_scale: float = 1.0
     # ★palm leash 는 제거됐다(08.22) — 정책이 팔 목표에 대해 전권을 갖는다.
     #   목표의 유일한 상한은 아래 워크스페이스 박스(profile.palm_box_*)다.
     #   근거는 grasp_sensor_env.py `_pre_physics_step` 주석 참조.
 
     # ---- 액션 스케일 (스텝당 delta, 60 Hz) ----------------------------------------
-    # 팔: palm 절대 목표 누산 delta — pos 1cm/스텝(최대 0.6 m/s), rot 0.05 rad/스텝.
-    arm_pos_scale: float = 0.01
+    # ★★08.25 실측 정합 0.01 → 0.002. 지령 상한을 **팔이 실제로 낼 수 있는 속도**에
+    #   맞춘다. 초과분은 이동이 되지 않고 목표 인플레로만 쌓이며, 그 구간의 정책 액션은
+    #   효과도 gradient 도 없다(구 leash 제거 당시 "팔 액션의 절반이 버려지고 있었다"의
+    #   정체). probe_armscale 실측 — 지령 대비 실제 palm 변위:
+    #     0.50mm 98.1% · 1.00mm 94.6% · 2.00mm 81.4% · 3.00mm 68.3%
+    #     (5mm 이상은 워크스페이스 박스 포화 100% 라 측정 오염 — 무릎은 2mm 부근)
+    #   구 0.01(10mm/스텝)은 달성률 **28.2%** — 액션의 71.8% 가 버려지고 있었다.
+    #   ★상한은 fabric 자체가 정한다(속도 피드포워드 on/off 와 무관하게 동일: 2.050 vs
+    #     2.048mm) — PD 수정으로는 안 없어진다.
+    #   에피소드 예산 검산: 479스텝 × 2mm = 958mm ≫ 홈→컵 파지중심 208mm.
+    #   ★arm_rot_scale 은 **재지 않았다** — 회전 상한은 미측정이므로 그대로 둔다.
+    arm_pos_scale: float = 0.002
     arm_rot_scale: float = 0.05
     # 손: relative joint position (dexsuite RelativeJointPositionAction scale=0.1 동일)
     hand_joint_scale: float = 0.1
@@ -257,7 +278,16 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   **변화율 상한**이다. 속도 명령(advance = speed×cmd ≥ 0)으로 두면 단조 증가만
     #   가능해 탐색 노이즈 평균(cmd≈0.5)만으로 80스텝에 완전 폐쇄에 도달하고 되돌릴 수
     #   없다 — 정책이 "얼마나 닫을지"를 표현하지 못하게 된다(grasp_v1 실증).
-    synergy_close_speed: float = 0.05
+    # ★★08.25 실측 재조정 0.05 → 0.005. 0.05 는 **스윕에서 가장 나쁜 값**이었다.
+    #   "연 채로 접근 완료 후 서서히 닫기" 스윕(속도 피드포워드 복구 후, wrap4):
+    #     0.050(15스텝) 0.45 · 0.020(37) 0.47 · 0.010(75) 0.58 ·
+    #     **0.005(150) 0.64** · 0.002(375) 0.80
+    #   단조적으로 느릴수록 좋다. 0.002 가 최선이지만 완전 폐쇄에 375스텝이 들어
+    #   에피소드(479스텝)에서 접근·리프트·이송 예산이 남지 않는다. 0.005 는 150스텝으로
+    #   그 예산을 남기면서 0.05 대비 감쌈을 0.45→0.64 로 올린다.
+    #   ★이건 **상한**이지 강제 램프가 아니다 — 접촉 동결이 마디별로 먼저 멈추므로
+    #     정책은 자유공간에서 빨리, 접촉 근처에서 천천히 닫는 것을 배울 수 있다.
+    synergy_close_speed: float = 0.005
     # 접촉 시 관절 동결을 켤 것인가. ★이것이 감쌈 생성 메커니즘이다 — 접촉한 마디가
     #   그 자리에 멈춰 컵 형상에 손가락이 드리워진다. 끄면 손가락이 컵 반경보다 작게
     #   말려 손끝만 닿는 핀치가 된다(grasp_v1 실증: full_envelope 0.176→0.035,
@@ -384,32 +414,50 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   +20mm 에서 **5지 전부 손바닥면 접촉 + 4지 두 마디 동시 + 엄지 대향**이 성립하고
     #   G 가 0.48→0.98 로 2배가 된다. 손 제어를 바꾸면 이 스윕을 다시 돌려야 한다.
     stage_gc_opposition_frac: float = 0.67
+    # ★★08.25 파지중심 직접 지정(자유 컵 실측). 위 보간 유도는 컵을 텔레포트로
+    #   **붙잡아 놓고** 잰 값이라 무효였다 — 자유 컵에서는 손이 닫히며 컵을 쓸어내려
+    #   실제로 무는 지점이 z 로 39mm 더 손바닥 쪽이다. 두 독립 측정 일치:
+    #     probe_seqclose(ff=0) [58, 1, 64]mm · probe_seqclose(ff=1) [56, −3, 64]mm
+    #   None 이면 위 보간식으로 되돌아간다. 자산·손 제어·폐쇄 속도가 바뀌면 재측정.
+    stage_gc_local_override: tuple | None = (0.057, -0.001, 0.064)
     stage_approach_weight: float = 2.0
     stage_approach_sharpness: float = 8.0
     # 정렬 배수의 바닥 — align=−1(손등 쪽)일 때 남기는 비율. 0 이면 초기 오정렬에서
     # approach gradient 가 사라져 접근 자체를 못 배운다(reward-audit Check1).
     stage_align_floor: float = 0.25
     # ②grasp = w·(reach 몫 + G 몫). 두 몫의 합이 1 이라 재정규화된다.
-    stage_grasp_weight: float = 6.0
-    stage_graspq_reach: float = 0.4
-    stage_graspq_g: float = 0.6
-    stage_grip_sharpness: float = 8.0
-    # 팁 반경 — **손 기하 상수**(물체 형상 아님). 접촉 감지 실패 시 압입 무한보상 차단.
-    stage_grip_dist_floor: float = 0.009
-    # 파지품질 G 의 내부 몫 — 얕은 감쌈(wrap)보다 깊은 감쌈(deep=같은 손가락 mid AND
-    # dist)에 무게를 준다. 2지 팁 핀치는 wrap4=0.25·deep4≈0 → G≈0.06, 완전 인벨롭은
-    # G=1.0 으로 **16배** 차이가 난다(이것이 핀치를 죽이는 유일한 장치).
-    stage_gq_thumb_floor: float = 0.25   # 엄지 미대향 시 남기는 비율
-    # ★08.25 실측으로 재가중(구 0.25/0.75 → 0.8/0.2). 엄지 대향이 성립하는 어떤
-    #   조건에서도 `deep4`(같은 손가락 mid AND dist)가 **0.25 를 못 넘는다** — 오프셋
-    #   스윕과 반경 스윕 두 축에서 독립적으로 확인됐다. 손 대향폭 ~100mm 에 컵 반경
-    #   45mm 라 대향 중점에서는 4지가 원위 마디로만 닿는 기하다. deep 에 0.75 를 주면
-    #   최선의 파지도 G 가 0.44 에 갇혀 리프트가 44% 로 깎인다(도달 불가 목표 =
-    #   "엄지를 감쌈 분모에 넣어 상한 0.8" 과 같은 계열의 실수).
-    #   판별력은 wrap4 가 이미 충분하다: test7 핀치 0.25 vs 인벨롭 1.00 = 4배.
-    #   재가중 후 — 인벨롭+대향 0.85 / 대향없는 4지 0.25 / test7 핀치 0.20.
-    stage_gq_wrap: float = 0.8
-    stage_gq_deep: float = 0.2
+    # ★★08.25 grasp_v1 구조로 전면 교체(사용자 지시 "grasp-v1과 동일 구조로").
+    #   구 구성 `6·(0.4·reach + 0.6·G)` 를 폐기한다. `reach` 는 **거리 항**이었고
+    #   (mid/dist 링크 → 물체), 컵이 손 밖에 있으면 **손가락을 펼수록 커진다**.
+    #   lstm_test9 실측 — 정책이 감쌈을 버리고 보상을 올렸다:
+    #     ep550  6·(0.4·0.473 + 0.6·0.025) = 1.225   wrap4 0.125
+    #     ep750  6·(0.4·0.534 + 0.6·0.008) = 1.310   wrap4 0.042  ← 감쌈 −66%, 보상 +0.09
+    #   폐쇄도 스윕(d_gc 60mm, 정책 운전점): wrap4 0.50 → R_grasp 1.157,
+    #   wrap4 0.00 → 1.279. **감쌈을 버리는 쪽이 이득인 지형이었다.**
+    #   grasp_v1 은 grasp_quality 네 항이 **전부 접촉**이라 이 계곡이 구조적으로 없다.
+    #   거리 shaping : 접촉 보상 비율 — grasp_v1 1:6, 구 우리 것 1.22:1 (7배 어긋남).
+    stage_grasp_weight: float = 12.0          # grasp_v1 grasp_weight
+    # grasp_quality = 0.15s·tip + 0.20s·full_tip + 0.25s·persist + credit·deep4
+    #   s = (1 − credit)/0.60 로 합이 1 로 재정규화된다(credit 을 올려도 최대치 불변 →
+    #   "감쌈만 하고 안 드는" 국소최적을 구조적으로 못 만든다 — grasp_v1 reward-audit).
+    stage_grasp_envelope_credit: float = 0.55  # grasp_v1 grasp_envelope_credit
+    # 접촉 지속 — 접촉 손가락 수가 임계 이상인 스텝을 세고 이 스텝수로 정규화.
+    stage_contact_persistence_steps: int = 20  # grasp_v1 grasp_contact_persistence_reward_steps
+    stage_persistence_min_contacts: int = 4    # grasp_v1 stage0_lift_start_min_contacts
+    # 리프트 계열 접촉 게이팅 — grasp_v1 graded_contact.
+    #   Q_lift = (1−mix)·tip_frac + mix·envelope_frac,  envelope_frac = 0.5(wrap4 + deep4)
+    #   ★항등식: mean(mid)+mean(dist) = mean(mid∨dist)+mean(mid∧dist) 이므로
+    #     grasp_v1 의 0.5(mid_frac+dist_frac) 가 우리 0.5(wrap4+deep4) 와 정확히 같다.
+    stage_lift_envelope_mix: float = 0.6       # grasp_v1 lift_envelope_mix
+    # ★엄지 바닥값(구 stage_gq_thumb_floor 0.25)은 **삭제**한다. 그 배수가 첫 접촉을
+    #   순손실로 만들었다(reach 소등 −0.272 vs G 상승 +0.18). grasp_v1 처럼 엄지는
+    #   `tip_frac`(5팁) 안에서 자연히 계상된다. 성공 판정은 `oppose` 를 그대로 요구한다.
+    # ★컵 밀기·기울임 벌점(grasp_v1 approach 항). 우리에겐 없었고, lstm_test9 는
+    #   컵을 평균 ~50mm 밀면서도 벌점을 한 푼도 안 물었다.
+    stage_approach_xy_penalty: float = 25.0    # grasp_v1 approach_xy_penalty_weight
+    stage_approach_xy_margin: float = 0.025    # grasp_v1 grasp_xy_threshold
+    stage_approach_tilt_penalty: float = 0.08  # grasp_v1 approach_tilt_penalty_weight
+    stage_approach_tilt_margin_deg: float = 8.0  # grasp_v1 grasp_upright_threshold_deg
     stage_lift_weight: float = 12.0
     # ★목표(goal_height_offset=0.15)와 **정렬**한다. 포화점을 목표보다 낮게 두면 그
     #   위에서 gradient 가 0 이라 정책이 포화점에 고착한다(lstm_test3: env 0.65 에
