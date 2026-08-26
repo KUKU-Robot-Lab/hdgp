@@ -1131,13 +1131,17 @@ def stage_approach(
       자세는 euler 중심(수평 재센터) + 회전 리미터가, 축 정밀도는 contact 가 맡는다.
     """
     s = _stage(env, jaw_cfg, sensor_names)
-    return 1.0 - torch.tanh(s.d_jaw_cup / P.APPROACH_KERNEL_STD)
+    return s.approach_k
 
 
 def stage_perp_bridge(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
 ) -> torch.Tensor:
-    """bridge① 수평 방향타 — `λ · U_perp` (fab_test53, 사용자 승인).
+    """bridge① 수평 방향타 — `kernel(d) · U_perp` (fab_test55, 사용자 승인).
+
+    ★fab_test55: λ(이진)→접근 커널. t54 에서 λ 정액 지급이 "120mm 안 호버" 무위험
+    소득(0.7/step)이 돼 102mm 평탄 정착(260ep·jaw_l −82mm·σ 10.7→4.7). 커널은
+    102mm 에서 0.23·컵에서 1.0 이라 전진 자체가 다리 소득을 키운다.
 
     t52 실측: 수직 게이트만으로는 정책이 커널 이득(기울여 손끝 내리기)으로 ~28° 에
     정착해 μ 가 완전히 잠겼다(0.0000). 게이트는 막기만 하고 수평으로 돌아갈 gradient
@@ -1145,13 +1149,13 @@ def stage_perp_bridge(
     agnostic/grasp_sensor 의 bridge 구조 이식(2지판).
     """
     s = _stage(env, jaw_cfg, sensor_names)
-    return s.lam * s.U_perp
+    return s.approach_k * s.U_perp
 
 
 def stage_close_bridge(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
 ) -> torch.Tensor:
-    """bridge② 폐쇄 다리 — `λ · U_perp · straddle · 폐쇄도` (fab_test54, 사용자 승인).
+    """bridge② 폐쇄 다리 — `kernel(d) · U_perp · straddle · 폐쇄도` (fab_test55).
 
     리미터가 "우연한 요동" 탐색원을 없애 접촉 발견이 어려워진 공백을 메운다
     (agnostic close_bridge 이식). 근접+수평 상태에서 그리퍼를 닫는 진행 자체에 소액.
@@ -1165,7 +1169,7 @@ def stage_close_bridge(
     gid, _ = robot.find_joints(list(P.GRIPPER_JOINT_NAMES), preserve_order=True)
     closure = (1.0 - robot.data.joint_pos[:, gid].mean(dim=-1)
                / P.GRIPPER_OPEN_POS).clamp(0.0, 1.0)
-    return s.lam * s.U_perp * s.straddle * closure
+    return s.approach_k * s.U_perp * s.straddle * closure
 
 
 def stage_tip(

@@ -950,7 +950,10 @@ def test_failure_dones_match_reward_flow_sign():
     assert P.STAGE_APPROACH_WEIGHT > 0.0
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
-    assert "1.0 - torch.tanh" in rsrc.split("def stage_approach(")[1].split("\ndef ")[0], (
+    ap = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "return s.approach_k" in ap and "1.0 - torch.tanh" in ssrc, (
         "approach 가 양수 커널이 아닌데 terminated 계약을 쓰고 있다"
     )
     assert "value_bootstrap: True" in (Path(__file__).resolve().parents[1] / "config" /
@@ -1558,7 +1561,10 @@ def test_approach_is_reference_pure_distance_kernel():
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
     body = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
-    assert "1.0 - torch.tanh(s.d_jaw_cup / P.APPROACH_KERNEL_STD)" in body, (
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "return s.approach_k" in body, "approach 가 stages 단일 커널을 안 쓴다"
+    assert "s.approach_k = 1.0 - torch.tanh(s.d_jaw_cup / P.APPROACH_KERNEL_STD)" in ssrc, (
         "approach 가 원점 기준 원본 커널이 아니다"
     )
     code = body.split('\"\"\"')[-1]
@@ -1769,9 +1775,13 @@ def test_bridge_terms_give_gradient_the_gate_lacks():
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
     pb = rsrc.split("def stage_perp_bridge(")[1].split("\ndef ")[0]
-    assert "s.lam * s.U_perp" in pb
+    assert "s.approach_k * s.U_perp" in pb, (
+        "perp_bridge 는 커널 게이트여야 한다 — t54: λ(이진) 정액 지급이 102mm 호버"
+        " 정착을 만들었다(260ep 평탄·σ 10.7→4.7)"
+    )
+    assert "s.lam" not in pb.split('\"\"\"')[-1], "perp_bridge 에 λ 이진 게이트 잔존"
     cb = rsrc.split("def stage_close_bridge(")[1].split("\ndef ")[0]
-    assert "s.lam * s.U_perp * s.straddle * closure" in cb, (
+    assert "s.approach_k * s.U_perp * s.straddle * closure" in cb, (
         "close_bridge 는 λ·U_perp·straddle 게이트여야 한다 — t53 실측: λ(등방 120mm)만"
         "으로는 jaw_l 55mm 허공 닫기가 approach 의 70% 수입이 됐고 tipped 0.74"
     )
@@ -1797,3 +1807,14 @@ def test_close_bridge_straddle_single_ruler():
         "straddle 이 _enclose 재사용이 아니다 — 자 두 개 금지"
     )
     assert "P.JAW_ENCLOSE_HALF_WIDTH" in ssrc, "half_width 가 preset 상수가 아니다"
+
+
+def test_approach_kernel_single_ruler():
+    """★fab_test55: 접근 커널은 stages 의 `s.approach_k` 하나다 — 자 두 개 금지."""
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "s.approach_k = 1.0 - torch.tanh(s.d_jaw_cup / P.APPROACH_KERNEL_STD)" in ssrc
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    ap = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
+    assert "return s.approach_k" in ap, "approach 항이 stages 커널을 재사용하지 않는다"

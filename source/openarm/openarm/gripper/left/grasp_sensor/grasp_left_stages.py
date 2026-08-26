@@ -82,6 +82,7 @@ class StageState:
         "axis_tilt_deg", "U_perp",          # 접근축 수직 게이트 (fab_test52)
         "enter_s", "jaw_l", "height_h",     # gripper_base 프레임 3축 분해
         "straddle",                         # 양 턱이 컵 축을 사이에 두는 정도 (fab_test54)
+        "approach_k",                       # 접근 커널 1−tanh(d/0.1) — 단일 출처 (fab_test55)
     )
 
 
@@ -169,6 +170,11 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     # ── 트리거 (논문 식 3~6). **이진**이고 매 스텝 재평가한다 ─────────
     # ⚠ 래치가 아니다. 이 트랙이 과거에 제거한 것은 "한 번 열리면 유지"하는 래치였고,
     #   이건 순간 술어라 성질이 다르다(자매 트랙 rewards_tip_cyl 주석과 같은 판단).
+    # ★fab_test55: 접근 커널을 여기서 한 번 계산 — approach 항과 bridge 2종이 공유.
+    #   t54 실측: bridge 가 λ(이진) 위의 정액 지급이라 "120mm 경계 안 호버"가
+    #   0.7/step 무위험 소득이 됐다(102mm 평탄 260ep·σ 10.7→4.7). 커널 게이트는
+    #   전진할수록 다리 소득이 커져 평탄 정착점이 없다.
+    s.approach_k = 1.0 - torch.tanh(s.d_jaw_cup / P.APPROACH_KERNEL_STD)
     s.lam = (s.d_jaw_cup < P.STAGE_GATE_APPROACH_M).float()
     # ★fab_test52: μ 에 **수직 이진 조건** — 기울여 손끝만 대는 접촉(t51 의 25° 수법)
     #   으로는 파지 단계가 열리지 않는다. ν·ρ·grasp·lift·질량 커리큘럼이 자동 상속.
