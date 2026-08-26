@@ -930,27 +930,34 @@ def test_reference_physics_and_solver_settings():
         assert k in fab_src, f"{k} 가 배선되지 않았다"
 
 
-def test_failure_terminations_removed_for_penalty_reward():
-    """★★fab_test43: 실패 종료 **3종을 전부 제거**했다. 남는 종료는 `time_out` 뿐이다.
+def test_failure_dones_are_truncations_under_penalty_reward():
+    """★★fab_test43: 실패 3종은 **`truncated`**(time_out=True)여야 한다.
 
-    왜 벌점 전환과 한 몸인가 — `approach` 가 벌점이면 파지 전 보상이 전부 음수다.
-    그 상태에서 `terminated`(bootstrap 없음)가 남으면 V<0 이므로 **종료가 V=0 을 주는
-    이득**이 되어 "일부러 쓰러뜨리기/떨어뜨리기"가 최적이 된다. 이 트랙이 이미 겪었다
-    (test6/test7: 보상 0 → 에피소드 130 → 13 → 총보상 −0.46).
-    하나라도 남기면 그게 탈출구가 되므로 **셋 다** 확인한다.
+    세 규약의 손익이 보상 **부호**에 따라 뒤집힌다:
 
-    리셋 관절 노이즈는 그대로 유지한다(원본 `robot_spawn`).
+      | 규약            | 종단 가치        | 벌점 체계(V<0)에서            |
+      | terminated      | 0 으로 못박음    | 0 > V 이라 **자살이 이득**    |
+      | 종료 없음        | —               | 쓰러진 컵으로 300스텝 낭비    |
+      | truncated+bootstrap | γ·V(s)      | 계속의 불편향 추정 = **중립** |
+
+    `value_bootstrap: True` 가 전제다 — 없으면 truncated 가 terminated 와 같아진다.
+    ⚠ `approach` 를 양수 보상으로 되돌린다면 이 셋도 `terminated` 로 되돌려야 한다
+      (V>0 이면 γ·V 가 공짜 상금이 되어 쓰러뜨리기 보너스가 된다).
     """
     fab_src = _fab_src()
-    for term in ("object_out_of_workspace", "object_tipped", "object_dropping"):
-        assert f"self.terminations.{term} = None" in fab_src, (
-            f"{term} 종료가 남아 있다 — 벌점 체계에서 자살 경로가 된다"
-        )
-        assert f"self.terminations.{term} = DoneTerm(" not in fab_src, (
-            f"{term} 이 여전히 종료로 등록돼 있다"
-        )
+    for term in ("object_out_of_workspace", "object_tipped"):
+        block = fab_src.split(f"self.terminations.{term} = DoneTerm(")[1].split(")")[0]
+        assert "time_out=True" in block, f"{term} 이 terminated 다 — 벌점 체계에서 자살 경로"
+    assert "self.terminations.object_dropping.time_out = True" in fab_src, (
+        "낙하가 terminated 다"
+    )
     assert P.STAGE_APPROACH_WEIGHT < 0.0, (
-        "종료를 없앴는데 approach 가 벌점이 아니다 — 둘은 한 몸이다"
+        "truncated 규약을 쓰는데 approach 가 벌점이 아니다 — 둘은 부호로 묶여 있다"
+    )
+    agent = (Path(__file__).resolve().parents[1] / "config" / "agents"
+             / "rl_games_ppo_fab_cfg.yaml").read_text(encoding="utf-8")
+    assert "value_bootstrap: True" in agent, (
+        "value_bootstrap 이 꺼져 있으면 truncated 가 terminated 와 같아진다"
     )
     assert "self.events.arm_spawn_noise = EventTermCfg(" in fab_src, "리셋 관절 노이즈가 없다"
 
@@ -1188,12 +1195,27 @@ def test_truncation_does_not_contaminate_the_gradient():
     assert cfg["gamma"] == 0.99, (
         f"gamma {cfg['gamma']} — 0.998 은 600 스텝 에피소드에서 만기 왜곡을 3.7 배로 키운다"
     )
-    # 종료 항 분류: 만기만 절단이어야 한다
+    # ★★fab_test43: 종료 항 분류 규약이 **보상 부호에 묶여 뒤집혔다.**
+    #   보상이 양수였을 때: 실패는 `terminated` 여야 했다. truncated 면 γ·V(s)>0 이
+    #     공짜 상금이 되어 "쓰러뜨리기 보너스"가 된다(agnostic 트랙 실측).
+    #   보상이 벌점인 지금: 실패는 `truncated` 여야 한다. terminated 는 종단 가치를
+    #     0 으로 못박는데 V<0 이라 **자살이 이득**이 된다(test6/test7 실측).
+    #   truncated+bootstrap 은 γ·V(s) = 계속의 불편향 추정이라 어느 부호에서도 중립이다.
+    #   → 그래서 "실패가 어느 규약인가"를 `STAGE_APPROACH_WEIGHT` 의 부호로 판정한다.
     src = _src("grasp_left_fab_env_cfg.py")
-    assert "time_out=True" not in src, (
-        "이 파일에서 종료 항에 time_out=True 를 붙이면 안 된다 — "
-        "물체 낙하·작업공간 이탈은 **진짜 종료**다"
-    )
+    fail_terms = ("object_out_of_workspace", "object_tipped", "object_dropping")
+    if P.STAGE_APPROACH_WEIGHT < 0.0:
+        for t in fail_terms:
+            assert f"self.terminations.{t}" in src, f"{t} 항이 없다"
+        assert src.count("time_out=True") >= 2 and (
+            "self.terminations.object_dropping.time_out = True" in src), (
+            "벌점 체계인데 실패가 terminated 다 — 일부러 죽는 것이 최적이 된다"
+        )
+    else:
+        assert "time_out=True" not in src, (
+            "양수 보상 체계에서는 실패가 **진짜 종료**여야 한다 — "
+            "truncated 면 γ·V(s) 가 쓰러뜨리기 보너스가 된다"
+        )
 
 
 def test_contact_filter_points_at_the_rigid_body():

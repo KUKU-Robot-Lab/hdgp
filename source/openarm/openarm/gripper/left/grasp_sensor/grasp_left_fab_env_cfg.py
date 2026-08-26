@@ -254,24 +254,38 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         self.observations.critic.palm_action_anchor = ObsTerm(func=obs_mdp.palm_action_anchor)
 
         # ══════════════════════════════════════════════════════════════
-        # ★★fab_test43: **실패 종료 3종을 전부 없앤다.** 남는 종료는 `time_out` 뿐이고
-        #   에피소드는 항상 만기까지 간다.
+        # ★★fab_test43: 실패 3종을 **`truncated` 로** 낸다 (`time_out=True`).
         #
-        # 왜 벌점 전환과 한 몸인가 — `approach` 가 벌점이 되면 파지 전 보상이 전부
-        # 음수다. 그 상태에서 `terminated`(bootstrap 없음)가 남아 있으면 V<0 이므로
-        # **종료가 V=0 을 주는 이득**이 되어 "일부러 컵을 쓰러뜨리기/떨어뜨리기"가
-        # 최적이 된다. 이 트랙이 이미 겪은 실패다(test6/test7: 보상 0 → 에피소드
-        # 130 → 13 → 총보상 −0.46). 하나라도 남기면 그게 탈출구가 된다.
+        # 왜 `terminated` 가 안 되는가 — `approach` 가 벌점이면 파지 전 보상이 전부
+        # 음수라 V<0 이다. `terminated` 는 종단 가치를 **0 으로 못박으므로** 계속하는
+        # 것(V<0)보다 이득이 되어 "일부러 쓰러뜨리기"가 최적이 된다. 이 트랙이 이미
+        # 겪었다(test6/test7: 보상 0 → 에피소드 130 → 13 → 총보상 −0.46).
         #
-        # 대체 수단:
-        #   전도   → `rewards.tip` 벌점 (60° 에서 1.5/스텝, 계속 문다)
-        #   낙하   → 컵이 바닥이면 진입깊이·높이 오차가 캡까지 차 자동으로 최대 벌점
-        #   이탈   → 같은 이유 (턱축 이탈이 캡 0.15 m 까지 찬다)
-        # ⚠ 되살리려면 반드시 `approach` 를 양수로 되돌린 뒤에 해야 한다.
+        # 왜 종료를 아예 없애도 안 되는가 — 쓰러진 컵은 2지 그리퍼로 다시 못 세운다.
+        # 남은 스텝이 통째로 낭비 표본이 된다(사용자 지적, 렌더 관찰).
+        #
+        # `truncated` 가 둘 다 푼다. `value_bootstrap: True` 이므로 rl_games 가
+        #     shaped_rewards += gamma * V(s) * time_outs
+        # 를 얹는데, 이건 **계속했을 때의 추정값 그 자체**라 끝내는 것이 이득도 손해도
+        # 아니다(부호 무관하게 불편향). 에피소드는 리셋되고 탈출구는 안 생긴다.
+        #
+        # ⚠ 부호에 의존하는 판단이다. 저장소 곳곳의 "truncated 는 쓰러뜨리기 보너스"
+        #   경고는 **보상이 양수일 때** 맞는 말이다(V>0 이면 γ·V 가 공짜 상금).
+        #   `approach` 를 양수로 되돌린다면 이 셋도 `terminated` 로 되돌려야 한다.
         # ══════════════════════════════════════════════════════════════
-        self.terminations.object_out_of_workspace = None
-        self.terminations.object_tipped = None
-        self.terminations.object_dropping = None
+        self.terminations.object_out_of_workspace = DoneTerm(
+            func=obs_mdp.object_out_of_workspace,
+            params={"x_range": P.OBJECT_WORKSPACE_X, "y_range": P.OBJECT_WORKSPACE_Y},
+            time_out=True,
+        )
+        self.terminations.object_tipped = DoneTerm(
+            func=obs_mdp.object_tipped,
+            params={"max_tilt_deg": P.OBJECT_TIP_MAX_DEG},
+            time_out=True,
+        )
+        # 낙하는 부모(`LiftEnvCfg`) 항이다 — 임계는 `grasp_left_env_cfg` 가 이미 잡았고
+        # 여기서는 절단 규약만 바꾼다.
+        self.terminations.object_dropping.time_out = True
 
         # ── 리셋 관절 노이즈 (원본 `robot_spawn`) ─────────────────────
         # ★우리는 항상 같은 홈에서 시작했다. 원본은 ADR 로 관절 pos/vel 을 흔든다.
