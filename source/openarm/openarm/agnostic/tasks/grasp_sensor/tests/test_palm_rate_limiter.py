@@ -47,6 +47,14 @@ def test_rate_limit_default_disabled():
         "켜는 것은 fresh 런의 명시적 오버라이드로만.")
 
 
+def test_rot_rate_limit_default_disabled():
+    """회전 리미터도 기본 0.0 — 켜는 것은 런의 명시적 오버라이드로만."""
+    m = re.search(r"palm_cmd_rate_limit_rot_deg:\s*float\s*=\s*([0-9.]+)", _cfg_source())
+    assert m, "cfg 에 palm_cmd_rate_limit_rot_deg 가 없다"
+    assert float(m.group(1)) == 0.0, (
+        f"palm_cmd_rate_limit_rot_deg 기본값이 {m.group(1)} — 0.0(비활성)이어야 한다")
+
+
 def test_rate_limit_wired_in_pre_physics():
     """상수만 있고 배선이 없는 상태(좌팔 트랙에서 실제로 잡은 결함)를 차단."""
     src = _env_source()
@@ -54,6 +62,7 @@ def test_rate_limit_wired_in_pre_physics():
     assert len(pre) == 2, "_pre_physics_step 이 없다"
     body = pre[1].split("\n    def ", 1)[0]
     assert "palm_cmd_rate_limit_m" in body, "리미터가 _pre_physics_step 에 배선되지 않았다"
+    assert "palm_cmd_rate_limit_rot_deg" in body, "회전 리미터가 배선되지 않았다"
     assert "_palm_cmd_primed" in body, "프라이밍 예외가 없다 — 리셋마다 팔이 끌려간다"
     assert "_palm_cmd_step_raw" in body, "클램프 전 원값 로깅이 없다(reward-clamp 규칙)"
 

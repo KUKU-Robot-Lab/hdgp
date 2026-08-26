@@ -149,6 +149,7 @@ class GraspSensorEnv(DirectRLEnv):
         #   리셋 직후 첫 지령은 "변화"가 아니라 초기화라 리미터를 걸지 않는다
         #   (좌팔 트랙 검증 함정: 걸면 리셋마다 팔이 홈에서 몇 스텝 끌려간다).
         self._prev_palm_cmd = torch.zeros(self.num_envs, 3, device=self.device)
+        self._prev_palm_cmd_rot = torch.zeros(self.num_envs, 3, device=self.device)
         self._palm_cmd_primed = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device)
         self._palm_cmd_step_raw = torch.zeros(self.num_envs, device=self.device)
@@ -862,6 +863,17 @@ class GraspSensorEnv(DirectRLEnv):
                 self._prev_palm_cmd + _step3 * _scale,
                 self.palm_targets[:, :3])
         self._prev_palm_cmd = self.palm_targets[:, :3].clone()
+        # 회전(euler zyx) 리미터 — 회전 박스가 축별 ±45° 라 wrap 불요, 보간은 박스 안.
+        _lim_r = math.radians(float(self.cfg.palm_cmd_rate_limit_rot_deg))
+        if _lim_r > 0.0:
+            _dr = self.palm_targets[:, 3:6] - self._prev_palm_cmd_rot
+            _dn = _dr.norm(dim=-1, keepdim=True)
+            _sr = (_lim_r / _dn.clamp(min=1e-9)).clamp(max=1.0)
+            self.palm_targets[:, 3:6] = torch.where(
+                self._palm_cmd_primed.unsqueeze(-1),
+                self._prev_palm_cmd_rot + _dr * _sr,
+                self.palm_targets[:, 3:6])
+        self._prev_palm_cmd_rot = self.palm_targets[:, 3:6].clone()
         self._palm_cmd_primed |= True
 
         # ---- 손 ---------------------------------------------------------------------

@@ -733,6 +733,10 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   ({0, 0.10, 0.05} 재생 대조) 후 다음 fresh 런에서 켠다. 후보 0.05/0.10 은
     #   사용자 지정(좌팔 0.02 는 이 트랙 기준 과도).
     palm_cmd_rate_limit_m: float = 0.0
+    # 회전 지령 rate limit [deg/step]. probe A/B 실측 — 회전 지령도 평균 84°/step
+    # 텔레포트(위치만 묶으면 정책이 회전으로 우회할 통로가 남는다). 0.0 = 비활성.
+    # 값 비례 논리: 위치 0.1 ≈ 박스 대각의 10%/step → 회전 등가 ≈ 15°/step.
+    palm_cmd_rate_limit_rot_deg: float = 0.0
 
     dex_approach_weight: float = 2.0
     dex_approach_sharpness: float = 8.0
