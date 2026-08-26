@@ -713,6 +713,18 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     stage_stay_pos_tol_m: float = 0.05
     stage_stay_tilt_deg: float = 10.0
     stage_succ_goal_band_m: tuple[float, float] = (0.09, 0.05)    # 사용자 규격 5cm
+    # ── 코리더 래치 (08.26 사용자 승인: "래치 + 느슨한 시작(20cm/50°)") ─────────────
+    # probe_lift_trajectory 실측(ep10400 결정론): 낚아챔 = xy 정점 253mm·tilt 49°·
+    # 수평속도 1074mm/s, 60스텝 통행료 ~7% 로 순간 게이트를 우회했다. 래치는 그
+    # 허점을 닫는다 — 에피소드 중 **한 번이라도** 코리더(스폰 기준 xy 이탈·기울기)를
+    # 넘으면 그 에피소드의 ν 이후(lift·transfer·stay·success)를 몰수한다.
+    # (initial, final) — per-env 난이도 0→만렙으로 선형 보간. ADR 확장과 같은 축이라
+    # "난이도가 오르면 보상 요구도 조여진다"(사용자 설계 방향).
+    # 시작값 근거: 20cm/50° 는 현 낚아챔(25cm/49°)은 걸리고 정상 정착(3~4cm/6°)은
+    # 여유 5배. 최종값 근거: xy 5cm = stage_succ_goal_band 하한과 정렬, tilt 20° =
+    # stage_tilt_tolerance_deg 포화점과 정렬.
+    stage_corridor_xy_m: tuple[float, float] = (0.20, 0.05)
+    stage_corridor_tilt_deg: tuple[float, float] = (50.0, 20.0)
 
     dex_approach_weight: float = 2.0
     dex_approach_sharpness: float = 8.0

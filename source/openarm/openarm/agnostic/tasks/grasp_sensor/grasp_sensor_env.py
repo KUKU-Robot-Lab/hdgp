@@ -141,6 +141,10 @@ class GraspSensorEnv(DirectRLEnv):
         self._stage_hit = torch.zeros(
             self.num_envs, len(self._stage_names), dtype=torch.bool, device=self.device)
         self._stay_run = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # ★코리더 래치(08.26) — 에피소드 중 한 번이라도 코리더(xy 이탈·기울기)를 넘으면
+        #   True 로 굳고, 리셋에서만 풀린다. True 면 보상의 ν 이후 전부 몰수.
+        self._corridor_latch = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device)
 
         # ---- 접촉 그룹 인덱스 ---------------------------------------------------------
         fingers = list(p.finger_sensor_bodies.keys())
@@ -444,6 +448,25 @@ class GraspSensorEnv(DirectRLEnv):
             raise RuntimeError(
                 f"[{self.profile.name}] stage_lift_height_ref 가 목표 높이를 넘는다 — "
                 "포화점이 목표 밖이면 목표 근처 gradient 가 0 이다")
+        # ★코리더 래치(08.26) — (initial, final) 은 조여지는 방향이어야 하고, 만렙
+        #   코리더 안에서 성공이 도달가능해야 한다(아니면 만렙에서 success 가 0 상수).
+        if float(_c.stage_corridor_xy_m[0]) < float(_c.stage_corridor_xy_m[1]):
+            raise RuntimeError(
+                f"[{self.profile.name}] corridor_xy {_c.stage_corridor_xy_m} — "
+                "initial 이 final 보다 작다(커리큘럼이 느슨해지는 방향)")
+        if float(_c.stage_corridor_tilt_deg[0]) < float(_c.stage_corridor_tilt_deg[1]):
+            raise RuntimeError(
+                f"[{self.profile.name}] corridor_tilt {_c.stage_corridor_tilt_deg} — "
+                "initial 이 final 보다 작다")
+        if float(_c.stage_corridor_tilt_deg[1]) < float(_c.stage_succ_tilt_band_deg[0]):
+            raise RuntimeError(
+                f"[{self.profile.name}] 만렙 tilt 코리더({_c.stage_corridor_tilt_deg[1]}°)"
+                f" 가 succ tilt 전이대 상한({_c.stage_succ_tilt_band_deg[0]}°) 보다 좁다 — "
+                "성공 gradient 가 래치에 먼저 잘린다")
+        if float(_c.stage_corridor_xy_m[1]) < float(_c.stage_stay_pos_tol_m):
+            raise RuntimeError(
+                f"[{self.profile.name}] 만렙 xy 코리더({_c.stage_corridor_xy_m[1]}) 가 "
+                f"stay 판정 반경({_c.stage_stay_pos_tol_m}) 보다 좁다")
         # ★`_group_b_env_idx` 는 이 함수보다 뒤에 만들어진다(앞의 _wrap_body_ids 와 같은
         #   순서 함정) — 프로필에서 직접 센다.
         _p = self.profile
@@ -1111,6 +1134,19 @@ class GraspSensorEnv(DirectRLEnv):
                         / max(float(self.cfg.stage_contact_persistence_steps), 1.0)
                         ).clamp(max=1.0)
             _b = self._group_b_env_idx
+            # ── 코리더 래치 갱신 (08.26 사용자 승인: 래치 + 느슨한 시작 20cm/50°) ──
+            #   per-env 난이도로 코리더를 보간(스폰 반경과 같은 축) — ADR 이 조여질 때
+            #   보상 요구도 같이 조여진다. 위반은 이력으로 굳는다(래치).
+            _cfr = self.difficulty.float() / float(self.cfg.curriculum_max_level)
+            _cor_xy = (float(self.cfg.stage_corridor_xy_m[0])
+                       + _cfr * (float(self.cfg.stage_corridor_xy_m[1])
+                                 - float(self.cfg.stage_corridor_xy_m[0])))
+            _cor_tilt = (float(self.cfg.stage_corridor_tilt_deg[0])
+                         + _cfr * (float(self.cfg.stage_corridor_tilt_deg[1])
+                                   - float(self.cfg.stage_corridor_tilt_deg[0])))
+            _xy_now = torch.norm(
+                obj_pos[:, :2] - self.object_spawn_pos[:, :2], dim=-1)
+            self._corridor_latch |= (_xy_now > _cor_xy) | (tilt_deg > _cor_tilt)
             total, terms, gate, env_frac = compute_tip_cyl_rewards(
                 palm_pos=palm_pos,
                 grasp_center_pos=_gc,
@@ -1140,6 +1176,7 @@ class GraspSensorEnv(DirectRLEnv):
                 ref_up=self._base_up_vec(),
                 obj_up=self._obj_up_vec(),
                 obj_speed=torch.norm(self.object.data.root_lin_vel_w, dim=-1),
+                corridor_ok=(~self._corridor_latch).float(),
                 actions=self.actions,
                 prev_actions=self.prev_actions,
                 cfg=self.cfg,
@@ -1323,6 +1360,17 @@ class GraspSensorEnv(DirectRLEnv):
         # 감시기 역할을 한다(상한이 없어졌으므로 발산하면 여기서 먼저 보인다).
         self.extras["fabric/palm_err_max"] = _perr.max()
         self.extras["curriculum/difficulty_mean"] = self.difficulty.float().mean()
+        # ── 코리더 래치 진단 (Check 5) — 발동률과 현재 코리더 수준 ────────────────
+        self.extras["task/corridor/latch_frac"] = self._corridor_latch.float().mean()
+        _cfr_log = self.difficulty.float().mean() / float(self.cfg.curriculum_max_level)
+        self.extras["task/corridor/xy_m"] = (
+            float(self.cfg.stage_corridor_xy_m[0])
+            + _cfr_log * (float(self.cfg.stage_corridor_xy_m[1])
+                          - float(self.cfg.stage_corridor_xy_m[0])))
+        self.extras["task/corridor/tilt_deg"] = (
+            float(self.cfg.stage_corridor_tilt_deg[0])
+            + _cfr_log * (float(self.cfg.stage_corridor_tilt_deg[1])
+                          - float(self.cfg.stage_corridor_tilt_deg[0])))
         self.extras["curriculum/difficulty_max_frac"] = (
             self.difficulty == int(self.cfg.curriculum_max_level)).float().mean()
         _unused_gravity_frac = self.difficulty.float().mean() / float(
@@ -1475,6 +1523,8 @@ class GraspSensorEnv(DirectRLEnv):
         self._stage_hit[env_ids] = False
         self._stay_run[env_ids] = 0
         self._persist_buf[env_ids] = 0
+        # ★래치는 리셋에서만 풀린다 — 안 풀면 한 번 위반한 env 가 영구 몰수된다.
+        self._corridor_latch[env_ids] = False
         # Fabrics 상태 씨딩 — 리셋 **외**에는 실측으로 동기화하지 않는다(오픈루프 plant)
         self.fabric_q[env_ids] = q0[:, self._fab_t]
         self.fabric_qd[env_ids] = 0.0

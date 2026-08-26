@@ -46,6 +46,7 @@ def compute_tip_cyl_rewards(
     ref_up: torch.Tensor,             # (N,3) **로봇 베이스 +z** — 자세 항의 기준축
     obj_up: torch.Tensor,             # (N,3) 물체 +z(컵 축). 인식 pose 에서 나온다
     obj_speed: torch.Tensor,          # (N,) 물체 선속도 크기 [m/s] — stay 판정
+    corridor_ok: torch.Tensor,        # (N,) [0,1] · 코리더 래치 통과(에피소드 내 위반 이력 없음)
     actions: torch.Tensor,
     prev_actions: torch.Tensor,
     cfg: object,
@@ -147,6 +148,11 @@ def compute_tip_cyl_rewards(
     lam = (d_gc < float(cfg.stage_gate_approach_m)).float()
     mu = lam * (touch_n >= float(cfg.stage_gate_contact_n)).float()
     nu = mu * (height_delta >= float(cfg.stage_gate_lift_m)).float()
+    # ★코리더 래치 몰수 (08.26 사용자 승인) — 순간 게이트는 낚아챔이 "60스텝 통행료
+    #   7%" 로 우회했다(probe_lift_trajectory: xy 253mm·tilt 49°·1074mm/s). 래치는
+    #   위반 **이력**이 있으면 이 에피소드의 ν 이후 전부를 몰수해 그 허점을 닫는다.
+    #   λ·μ(접근·파지)는 몰수 대상이 아니다 — 파지 자체는 계속 배워야 한다.
+    nu = nu * corridor_ok
     rho = nu * (d_goal < float(cfg.stage_gate_transfer_m)).float()
     # 컵 축 기울기 — `tilt_deg`(한 스텝 낡음) 대신 즉석 `obj_up` 으로 낸다.
     _cos_up = torch.nn.functional.cosine_similarity(
@@ -239,7 +245,9 @@ def compute_tip_cyl_rewards(
     # ★정지 인자 신설. 구 success 에는 **속도 조건이 아예 없어서** 목표를 스쳐 지나가도
     #   성공으로 셀 수 있었다. 사용자 규격은 "가만히 있되"를 명시한다.
     s_v = smoothstep(obj_speed, *cfg.stage_succ_speed_band)
-    succ_soft = s_h * s_c * s_o * s_t * s_d * s_v
+    # ★래치 몰수는 success 에도 적용 — "ν 이후 전부"(사용자 승인 범위). 위반하고도
+    #   종단만 규격에 맞추면 success 를 챙기는 우회로를 막는다.
+    succ_soft = s_h * s_c * s_o * s_t * s_d * s_v * corridor_ok
 
     terms = {
         # ★approach 는 이미 가중·벌점이 반영된 값이다(grasp_v1 배선) — 다시 곱하지 않는다.

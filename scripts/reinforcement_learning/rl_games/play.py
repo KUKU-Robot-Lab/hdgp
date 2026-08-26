@@ -93,6 +93,11 @@ parser.add_argument(
          "팔 후퇴(LSTM 발산) 가설 검증용 — [GRIP] palm_d 추이로 판정.",
 )
 parser.add_argument(
+    "--show_goal", action="store_true", default=False,
+    help="이송 목표(goal_pos) 위치에 초록 구 마커 표시 (재생 전용 — env 코드 불변). "
+         "goal_pos 속성이 있는 태스크(grasp_sensor 등)에서만 동작.",
+)
+parser.add_argument(
     "--cam_eye", type=str, default=None,
     help="Viewer camera position 'x,y,z' (env-local). pour 태스크는 기본 근접뷰 자동 적용.",
 )
@@ -595,6 +600,27 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     _cd_step = 0
     _cd_ref = None          # 1 스텝 뒤 컵 위치(리셋 직후 버퍼는 stale)
     _cd_rows = []
+    # --show_goal: 이송 목표 마커 (재생 전용). env 코드는 안 건드린다 —
+    # play 루프에서 매 스텝 goal_pos + env_origins 로 visualize 만 호출.
+    _goal_marker = None
+    if args_cli.show_goal:
+        _ge = env.unwrapped
+        while hasattr(_ge, "env"):
+            _ge = _ge.env.unwrapped
+        if hasattr(_ge, "goal_pos"):
+            import isaaclab.sim as _sim_utils
+            from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+            _goal_marker = VisualizationMarkers(VisualizationMarkersCfg(
+                prim_path="/Visuals/goal_marker",
+                markers={"goal": _sim_utils.SphereCfg(
+                    radius=0.02,
+                    visual_material=_sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=(0.1, 0.9, 0.2), opacity=0.7),
+                )},
+            ))
+            print("[INFO] 이송 목표 마커 표시 on (초록 구, r=2cm)")
+        else:
+            print("[WARN] --show_goal 무시: env 에 goal_pos 속성이 없음")
     while simulation_app.is_running():
         start_time = time.time()
         if _cd_n > 0:
@@ -651,6 +677,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 actions = actions.clone()
                 actions[:, 6:11] = -1.0
             obs, _rew, dones, _ = env.step(actions)
+            if _goal_marker is not None:
+                _gm = env.unwrapped
+                while hasattr(_gm, "env"):
+                    _gm = _gm.env.unwrapped
+                _goal_marker.visualize(
+                    translations=_gm.goal_pos + _gm.scene.env_origins)
             # last_actions obs(101:106=finger 5D)를 정책 raw 로 원복 — 실기는 정책 자신의 출력을 기록.
             if args_cli.dead_hand_probe:
                 _o_dh = obs["obs"] if isinstance(obs, dict) else obs
