@@ -943,6 +943,11 @@ PALM_CMD_RATE_LIMIT_ENABLED = True
 #   리미터가 아니라 팔이다. 도달 시간은 텔레포트 지령과 동일(337→54 vs 290→49 mm
 #   / 45스텝). 즉 0.02 는 속도 비용 0 에 지터 5배 감소만 산다.
 PALM_CMD_RATE_LIMIT = 0.02
+# ★fab_test48: **회전 리미터** (위치 리미터의 회전판, 사용자 결정).
+#   palm→턱 레버 140 mm 라 회전 지터가 턱을 σ×0.785 rad×0.14 m 로 쓸었다 — σ0.47 에서
+#   ±52 mm/step, 위치 리미터(20 mm)의 2.6배. t45(FINE 이 회전을 ±11.3° 로 조임)만
+#   h −44 까지 하강한 것이 방증. 0.05 rad/step ≈ 2.9°/step → 턱 스윙 기여 ≤ 7 mm/step.
+PALM_EULER_RATE_LIMIT = 0.05
 # 아래 둘은 이제 **리미터가 아니라 보상 정규화 기준**이다(`palm_command_rate_at_goal`).
 #   0.02 m/step 근거: dwell 에서 이 정도 지령 이동은 "배회"로 벌하고, 그보다 크면
 #   비례해 커지되 clamp(1) 로 상한을 둔다. 상금 대비 검산은 그 항 docstring 참조.
@@ -1392,7 +1397,11 @@ STAGE_ENTER_DEPTH_CAP_M = 0.30
 STAGE_JAW_LATERAL_WEIGHT = 6.0     # 여유가 12.75 mm 뿐이라 깊이의 2배 가중
 STAGE_JAW_LATERAL_CAP_M = 0.15
 STAGE_HEIGHT_BAND_HALF_M = 0.5 * (GRASP_HEIGHT_BAND[1] - GRASP_HEIGHT_BAND[0])   # 0.0375
-STAGE_HEIGHT_WEIGHT = 2.0          # 대역 **밖**에서만 문다
+# ★fab_test48: 2.0 → 4.0 (사용자 결정). 접근축이 연직에서 14° 기울어 있어(base z 의
+#   world-z 성분 −0.24) **팔을 올리면 s 가 줄어드는** 뒷문이 있었고, 깊이 3 > 높이 2 라
+#   그 거래가 순이익이었다(t47 실측: s 130→103·h −204→−228 로 상승 이동하며 raw 개선,
+#   +0.147 − 0.106 = +0.04/step). 4.0 이면 같은 거래가 −0.07/step 로 역전된다.
+STAGE_HEIGHT_WEIGHT = 4.0          # 대역 **밖**에서만 문다
 STAGE_HEIGHT_CAP_M = 0.20
 # 자세 — 벌점이라 최대 기여가 0.3 으로 묶인다. 깊이 지렛대(3.0 × 0.153 = 0.46)보다 작아야
 #   "멀리서 자세만 맞추기"가 절대 이길 수 없다. t42 를 망친 것이 정확히 이 순서였다.

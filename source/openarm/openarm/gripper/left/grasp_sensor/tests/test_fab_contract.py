@@ -1718,3 +1718,35 @@ def test_cup_stabilize_curriculum_contract():
     agent = (Path(__file__).resolve().parents[1] / "config" / "agents"
              / "rl_games_ppo_fab_mlp_cfg.yaml").read_text(encoding="utf-8")
     assert "entropy_coef: 0.005" in agent, "벌점 체계에서 entropy 0.002 는 3연속 σ 붕괴를 냈다"
+
+
+def test_euler_rate_limiter_and_height_weight():
+    """★fab_test48: 회전 리미터 + 높이 가중 4.0 — t47 이 실측한 두 결함의 짝.
+
+    ① 회전 리미터: 위치 리미터(0.02 m/step)는 회전을 안 묶는다. palm→턱 레버 140 mm 라
+      회전 지터가 턱을 σ0.47 에서도 ±52 mm/step 쓸었다(위치의 2.6배). s/l/h 는
+      gripper_base 프레임 측정이라 회전이 흔들리면 벌점 지형이 출렁여 하강 신호가
+      씻긴다. 27판 중 유일하게 h −44 까지 내려간 t45 는 회전이 ±11.3° 로 묶인 판이었다.
+    ② 높이 가중: 접근축이 연직에서 14° 기울어(base z 의 world-z −0.24) 팔을 **올리면**
+      s 가 줄어드는 뒷문이 있고, 깊이 3 > 높이 2 면 그 거래가 +0.04/step 순이익이다
+      (t47 실측: cmd_z 423→471 상승 이동하며 raw 개선). 높이 4.0 이면 −0.07 로 역전.
+    """
+    assert 0.0 < P.PALM_EULER_RATE_LIMIT <= 0.05 + 1e-9, "회전 리미터 상수가 없다/너무 크다"
+    # 턱 스윙 기여가 위치 리미터보다 작아야 회전이 지배 지터 채널로 남지 않는다
+    _LEVER = 0.140   # m, palm→턱 (구 PALM_TO_JAW_LEVER — FINE 상수 정리 때 함께 삭제됨)
+    assert P.PALM_EULER_RATE_LIMIT * _LEVER < P.PALM_CMD_RATE_LIMIT, (
+        f"회전 지터의 턱 스윙 {P.PALM_EULER_RATE_LIMIT*_LEVER*1e3:.1f}mm/step 이 "
+        f"위치 리미터 {P.PALM_CMD_RATE_LIMIT*1e3:.0f}mm 를 넘는다"
+    )
+    asrc = _src("grasp_left_fabric_action.py")
+    assert "PALM_EULER_RATE_LIMIT" in asrc and "_prev_cmd_euler" in asrc, "회전 리미터 미배선"
+    body = asrc[asrc.index("def process_actions"):asrc.index("def apply_actions")]
+    assert body.index("d_euler") < body.index("self._cmd_primed[:] = True"), (
+        "회전 리미터가 _cmd_primed=True 뒤에 있으면 리셋 첫 지령까지 묶는다"
+    )
+    # 높이 가중이 깊이의 축 기울기 뒷문을 막을 만큼 커야 한다:
+    # 상승 이동의 깊이 이득(≈ 3.0×|축 z 성분| = 0.72/m) < 높이 손해(가중×1.0/m)
+    assert P.STAGE_HEIGHT_WEIGHT > P.STAGE_ENTER_DEPTH_WEIGHT * 0.24, (
+        "높이 가중이 낮으면 '올라가서 깊이 깎기' 거래가 다시 순이익이 된다"
+    )
+    assert P.STAGE_HEIGHT_WEIGHT >= 4.0, "fab_test48 지정값(4.0) 미달"

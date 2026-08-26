@@ -151,6 +151,7 @@ class FabricPalmAction(ActionTerm):
         #   ⚠ 리셋 직후 첫 스텝은 클램프하지 않는다 — 이전 에피소드 지령에서 끌려오면
         #     시작이 오염된다(이 태스크에서 리셋 오염에 세 번 당했다).
         self._prev_cmd_pos = torch.zeros(num_envs, 3, device=device)
+        self._prev_cmd_euler = torch.zeros(num_envs, 3, device=device)   # fab_test48 회전 리미터
         self._cmd_primed = torch.zeros(num_envs, dtype=torch.bool, device=device)
         self._cmd_step_norm = torch.zeros(num_envs, device=device)
         # 속도 피드포워드 배율 — ADR 이 낮춘다(1.0 → 0.0). 스칼라 하나라 텐서가 아니다.
@@ -265,7 +266,8 @@ class FabricPalmAction(ActionTerm):
         #     ② `cmd_step_norm` 이 항상 0 → 그걸 곱해 쓰는 `palm_cmd_rate` 보상도
         #        t20 이후 **줄곧 죽어 있었다**(TB 에서 정확히 0.0000).
         #   ⚠ 이 플래그는 "리셋 후 첫 지령을 이미 냈는가" 다. 첫 지령 **뒤에** 켠다.
-        self._cmd_primed[:] = True
+        # ★fab_test48: True 세팅을 **회전 리미터 뒤로** 미뤘다 — 같은 스텝에서 회전
+        #   게이트도 "리셋 직후 첫 지령"을 리미터 없이 통과시켜야 하기 때문이다.
 
         # ★★fab_test21: 회전 = **euler_zyx 절대**(kuka `compute_absolute_action` 규약).
         #   a ∈ [-1,1] → 중심 ± MAX_POSE_ANGLE, 축별 독립. 구 규약(축각 3D 를 기준 quat 에
@@ -274,6 +276,21 @@ class FabricPalmAction(ActionTerm):
         #   σ0.35 에서 턱을 38 mm 흔들어 FINE 위치 이득(19·12·14 mm)을 그대로 삼킨다.
         #   FINE 에서는 **회전 중심을 그 시점 지령으로 래치**하고 박스를 ±11.3° 로 좁힌다.
         euler = self._euler_center + actions[:, 3:6].clamp(-1.0, 1.0) * self._euler_half
+        # ★★fab_test48: **회전 리미터** — 위치 리미터(0.02 m/step)의 회전판.
+        #   위치만 묶고 회전을 안 묶은 것이 t46/t47 의 남은 지터 채널이었다:
+        #   palm→턱 레버 140 mm 라 σ0.47 에서도 회전 지터가 턱을 ±52 mm/step 쓸고
+        #   다녔다(위치 20 mm 의 2.6배). s/l/h 는 gripper_base 프레임 측정이라 회전이
+        #   흔들리면 벌점 지형 자체가 출렁여 하강 신호가 씻겼다. 27판 중 유일하게
+        #   h −44·λ 0.8 까지 내려간 t45 는 FINE 래치가 회전을 ±11.3° 로 조여준 판이었다.
+        #   0.05 rad/step(≈2.9°) → 턱 스윙 기여 ≤ 7 mm/step (위치 20 mm 보다 작게).
+        #   도달 범위는 그대로다(±45° 전체, 걸어서 간다 — 위치 리미터와 동일 논리).
+        if P.PALM_CMD_RATE_LIMIT_ENABLED:
+            d_euler = (euler - self._prev_cmd_euler).clamp(
+                -P.PALM_EULER_RATE_LIMIT, P.PALM_EULER_RATE_LIMIT)
+            euler = torch.where(self._cmd_primed.unsqueeze(-1),
+                                self._prev_cmd_euler + d_euler, euler)
+        self._prev_cmd_euler = euler.detach()
+        self._cmd_primed[:] = True
 
         self._palm_pose_target[:, :3] = pos
         self._palm_pose_target[:, 3:6] = euler
