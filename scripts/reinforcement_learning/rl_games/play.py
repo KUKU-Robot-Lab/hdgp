@@ -87,6 +87,11 @@ parser.add_argument(
          "작은 물체에서 손끝 감쌈·palm 도달 여부를 렌더/DBGC 로 확인. --video --num_envs 8 권장.",
 )
 parser.add_argument(
+    "--grip_probe_keep_palm", action="store_true", default=False,
+    help="grip_probe 변형: palm 지령을 물체 위치로 덮지 않고 정책 출력 그대로 둔 채 "
+         "손가락만 full-grip 강제 — '지금 배치에서 닫으면 잡히는가'를 분리 측정.",
+)
+parser.add_argument(
     "--dead_hand_probe", action="store_true", default=False,
     help="sim2real 죽은 손 재현 probe: 손가락 action 을 -1(폐쇄 0)로 강제해 손을 APPROACH 에 물리 동결 "
          "(관절 정지·접촉 0·tips 정지 = 실기 손 하드웨어 두절 상태), last_actions obs 는 정책 raw 로 원복. "
@@ -661,15 +666,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 _pe = env.unwrapped
                 if hasattr(_pe, "env"):
                     _pe = _pe.env.unwrapped
-                _mins = getattr(_pe, "palm_mins_env", None)
-                if _mins is None:   # tesollo: palm_mins/maxs 는 (6,) → (1,6) broadcast
-                    _mins = _pe.palm_mins.unsqueeze(0); _maxs = _pe.palm_maxs.unsqueeze(0)
-                else:
-                    _maxs = _pe.palm_maxs_env   # (N,6)
-                _a_pos = (2.0 * (_pe.object_pos - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
-                actions[:, :3] = _a_pos
-                actions[:, 3:6] = 0.0
-                actions[:, 6:12] = 1.0
+                if not args_cli.grip_probe_keep_palm:
+                    _mins = getattr(_pe, "palm_mins_env", None)
+                    if _mins is None:   # tesollo: palm_mins/maxs 는 (6,) → (1,6) broadcast
+                        _pm = getattr(_pe, "palm_mins", None)
+                        if _pm is not None:
+                            _mins = _pm.unsqueeze(0); _maxs = _pe.palm_maxs.unsqueeze(0)
+                        else:   # grasp_sensor: 6D palm 박스는 _palm_lo/_palm_hi
+                            _mins = _pe._palm_lo.unsqueeze(0); _maxs = _pe._palm_hi.unsqueeze(0)
+                    else:
+                        _maxs = _pe.palm_maxs_env   # (N,6)
+                    _opos = (_pe._env_local(_pe.object.data.root_pos_w)
+                             if hasattr(_pe, "_env_local") else _pe.object_pos)
+                    _a_pos = (2.0 * (_opos - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
+                    actions[:, :3] = _a_pos
+                    actions[:, 3:6] = 0.0
+                actions[:, 6:] = 1.0   # 손 전 채널 full-grip (12D·21D 계약 공통)
             # 죽은 손 probe(--dead_hand_probe): 정책 raw 는 보존하고 env 에는 손가락 -1(폐쇄 0) 주입
             # → 손이 APPROACH 에 물리 동결(관절 정지·접촉 0·tips 정지 = 실기 손 두절 재현).
             if args_cli.dead_hand_probe:
@@ -692,6 +704,42 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             _gp = env.unwrapped
             if hasattr(_gp, "env"):
                 _gp = _gp.env.unwrapped
+            # grasp_sensor 호환 계측: binary_contact_buf 대신 마디별 접촉력 함수 사용
+            if not hasattr(_gp, "binary_contact_buf") and hasattr(_gp, "_tip_contact_forces"):
+                _gp._gpstep = getattr(_gp, "_gpstep", 0) + 1
+                if _gp._gpstep % 30 == 0:
+                    _thr = float(_gp.cfg.stage_contact_threshold)
+                    _cs = _gp._contact_forces_split()
+                    _tipf = _gp._tip_contact_forces()
+                    _oz = float(_gp.object.data.root_pos_w[:, 2].mean())
+                    _ov = float(_gp.object.data.root_lin_vel_w.norm(dim=-1).mean())
+                    print(f"[GRIPS] obj_z={_oz:.3f} obj_v={_ov:.3f}  " + "  ".join(
+                        f"{n}:m={float((_cs[0][:, i] > _thr).float().mean()):.2f}"
+                        f",d={float((_cs[1][:, i] > _thr).float().mean()):.2f}"
+                        f",t={float((_tipf[:, i] > _thr).float().mean()):.2f}"
+                        f",F={float(_tipf[:, i].mean()):4.1f}"
+                        for i, n in enumerate(_gp._finger_names)), flush=True)
+                    if hasattr(_gp, "_syn_close"):
+                        print("[GRIPS] syn_close(state)=" + " ".join(
+                            f"{v:.2f}" for v in _gp._syn_close.mean(0).tolist()), flush=True)
+                    # 원통 축(palm y) vs world z 기울기 + palm→컵 상대 위치 (파지대역 판정)
+                    try:
+                        from isaaclab.utils.math import quat_apply as _qa
+                        _pei = next(i for i, n in enumerate(_gp.robot.data.body_names)
+                                    if n.endswith("palm_ee"))
+                        _pq = _gp.robot.data.body_quat_w[:, _pei]
+                        _pp = _gp.robot.data.body_pos_w[:, _pei] - _gp.scene.env_origins
+                        _yax = _qa(_pq, torch.tensor([0.0, 1.0, 0.0], device=_pq.device
+                                                     ).expand(_pq.shape[0], 3))
+                        _tilt = torch.rad2deg(torch.acos(_yax[:, 2].abs().clamp(max=1.0)))
+                        _rel = (_gp._env_local(_gp.object.data.root_pos_w) - _pp)
+                        print(f"[GRIPS] cyl_tilt°={float(_tilt.mean()):.1f}"
+                              f"±{float(_tilt.std()):.1f}  palm→cup(mm)="
+                              f"({float(_rel[:,0].mean())*1000:+.0f},"
+                              f"{float(_rel[:,1].mean())*1000:+.0f},"
+                              f"{float(_rel[:,2].mean())*1000:+.0f})", flush=True)
+                    except Exception as _e:
+                        print(f"[GRIPS] axis-계측 불가: {_e}", flush=True)
             if hasattr(_gp, "binary_contact_buf"):
                 _gp._gpstep = getattr(_gp, "_gpstep", 0) + 1
                 if _gp._gpstep % 30 == 0:
