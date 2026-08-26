@@ -62,6 +62,14 @@ def compute_tip_cyl_rewards(
     #   있어야 정책이 그 방향으로 액션을 낸다(폐쇄도 스칼라로는 어느 손가락을
     #   어디로 보낼지 못 가른다). 가용 손끝→물체 거리 (N,T). None = 항 비활성.
     tip_obj_dist: torch.Tensor | None = None,
+    # ★★08.26 사용자 지시 — tip_bridge 를 **지령(cmd) 기준·컵 표면 목표**로.
+    #   실측(probe_tip_cmd_placement, h4 e800): 표면 반경 65mm 인데 지령이
+    #   index 173mm(허공)·pinky h−94mm(테이블 밑)·thumb h+137mm 로 흩어졌고,
+    #   지령↔실제 간극이 최대 79mm(ring: 지령 65mm 정확한데 실제 128mm).
+    #   실제 손끝으로 보상하면 그 간극만큼 **정책 액션과 보상의 인과가 끊긴다**.
+    #   지령으로 보상하면 정책이 낸 값이 곧 평가 대상이라 gradient 가 직결된다.
+    #   env 가 표면까지의 거리를 계산해 넘긴다(수식은 형상 비의존 유지 — 거리만 받음).
+    tip_cmd_surf_dist: torch.Tensor | None = None,   # (N,T) 지령→컵 표면 거리[m]
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
     """소프트 계층 — 하드 스위치 없음. 계층은 [0,1] 인자의 **곱셈 깊이**로 만든다.
 
@@ -234,7 +242,13 @@ def compute_tip_cyl_rewards(
     z_ok = smoothstep(_dz_gc, *cfg.stage_approach_z_band)   # (0.15,0.05): 5cm 안 = 1.0
     _zf = float(cfg.stage_approach_z_frac)
     _sharp = float(cfg.stage_approach_sharpness)
-    _kern = (_zf * torch.exp(-_sharp * _dz_gc)
+    # ★★v5 수직 데드밴드(08.26): |dz| ≤ z_dead 에서 수직 gradient 정확히 0.
+    #   구 exp(−s·|dz|) 는 |dz|=0 정확 일치까지 밀어, 파지중심 오프셋이 수평이 되는
+    #   자세에서 손을 테이블로 보냈다(corridor_v3_s777 손바닥-테이블 국소최적 실증).
+    #   데드밴드 안 높이는 접촉 사다리·접촉 동결이 정한다. z-우선 순서(수평 커널의
+    #   z_ok 게이트)는 유지된다. getattr 기본 0.0 = 구식과 항등 — 자매 트랙 하위호환.
+    _zdead = float(getattr(cfg, "stage_approach_z_dead", 0.0))
+    _kern = (_zf * torch.exp(-_sharp * torch.relu(_dz_gc - _zdead))
              + (1.0 - _zf) * z_ok * torch.exp(-_sharp * _dxy_gc))
     approach = (
         float(cfg.stage_approach_weight)
@@ -302,10 +316,15 @@ def compute_tip_cyl_rewards(
         # (min 은 한 손가락만 보고, sum/mean 은 전부 본다 — 여기서는 접촉 전 유도가
         # 목적이라 전 손가락 동시 유도가 맞다). 접촉하면 contact/grasp 가 덮는다
         # (끄지 않음 — grip-contact-cliff). 기본 0.0 = 비활성(자매 synergy 는 불필요).
+        # ★지령 기준(tip_cmd_surf_dist)이 있으면 그것을 쓴다 — 없으면 구 실제-손끝
+        #   기준(tip_obj_dist)으로 하위호환. 둘 다 없으면 항이 0.
         "tip_bridge": float(getattr(cfg, "stage_tip_bridge_weight", 0.0))
         * lam * (torch.exp(
-            -float(getattr(cfg, "stage_tip_bridge_sharpness", 8.0)) * tip_obj_dist
-        ).mean(dim=-1) if tip_obj_dist is not None else torch.zeros_like(lam)),
+            -float(getattr(cfg, "stage_tip_bridge_sharpness", 8.0))
+            * (tip_cmd_surf_dist if tip_cmd_surf_dist is not None else tip_obj_dist)
+        ).mean(dim=-1)
+            if (tip_cmd_surf_dist is not None or tip_obj_dist is not None)
+            else torch.zeros_like(lam)),
         "grasp": float(cfg.stage_grasp_weight) * grasp,
         "lift": float(cfg.stage_lift_weight) * lift,
         "transfer": float(cfg.stage_transfer_weight) * transfer,
