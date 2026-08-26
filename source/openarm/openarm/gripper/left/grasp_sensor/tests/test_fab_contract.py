@@ -1834,3 +1834,14 @@ def test_pregrasp_injection_contract():
     assert abs(P.PREGRASP_JAW_MID[0] - P.CUP_SPAWN_X_CENTER) <= P.CUP_SPAWN_X_RANGE + 0.005
     assert abs(P.PREGRASP_JAW_MID[1] - P.CUP_SPAWN_Y_CENTER) <= P.CUP_SPAWN_Y_RANGE + 0.005
     assert P.PREGRASP_CUP_JITTER_M <= 0.007, "jitter 가 삽입 여유(13.25mm)의 절반을 넘는다"
+
+
+def test_gripper_effort_cannot_crush_through_the_cup():
+    """★★fab_test58: 그리퍼 effort 333N 이 SDF 컵을 뭉개고 들어갔다(t57 관통 익스플로잇 —
+    지름 82mm 높이에서 개도 8mm). 실기 수준의 힘이어야 파지가 마찰로만 성립한다."""
+    assert P.GRIPPER_EFFORT_LIMIT <= 50.0, (
+        f"그리퍼 effort {P.GRIPPER_EFFORT_LIMIT}N — 관통 익스플로잇(t57)의 재현 경로"
+    )
+    esrc = _src("grasp_left_env_cfg.py")
+    assert "effort_limit_sim=P.GRIPPER_EFFORT_LIMIT" in esrc, "env cfg 가 preset 상수를 안 쓴다"
+    assert "333.33" not in esrc.replace("fab_test58", ""), "구값 333.33 잔존"

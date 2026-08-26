@@ -169,7 +169,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "left_gripper": ImplicitActuatorCfg(
                     joint_names_expr=["l_hj_gripper_[1-2]"],
                     velocity_limit_sim=0.2,
-                    effort_limit_sim=333.33,
+                    effort_limit_sim=P.GRIPPER_EFFORT_LIMIT,  # ★fab_test58: 구 333N 관통 사고 — preset 주석
                     stiffness=2e3,
                     damping=1e2,
                 ),

@@ -66,6 +66,11 @@ RIGHT_HAND_JOINT_NAMES = [f"r_hj_{f}_{j}" for f in _R_FINGERS for j in range(1, 
 # 그리퍼 스트로크 (URDF l_hj_gripper_1 limit) — IsaacLab OpenArm 과 동일 값
 # ---------------------------------------------------------------------------
 GRIPPER_OPEN_POS = 0.044
+# ★★fab_test58: 그리퍼 구동력 상한. 구값 333.33N(레퍼런스 lift-cube 유래)은 134g 컵의
+#   SDF 충돌체를 뭉개고 들어갔다 — t57 실측: 지름 82mm 높이에서 개도 8mm(패드가 표면
+#   안쪽 37mm), "리프트"가 전부 관통 익스플로잇. 30N 은 마찰 파지에 충분
+#   (30N×μ0.5×2패드 ≈ 30N 수직 유지 vs 컵 1.3N·×8 커리큘럼 10.7N)하면서 관통 불가.
+GRIPPER_EFFORT_LIMIT = 30.0
 GRIPPER_CLOSED_POS = 0.0
 
 # ---------------------------------------------------------------------------
