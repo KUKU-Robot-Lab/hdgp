@@ -66,11 +66,6 @@ RIGHT_HAND_JOINT_NAMES = [f"r_hj_{f}_{j}" for f in _R_FINGERS for j in range(1, 
 # 그리퍼 스트로크 (URDF l_hj_gripper_1 limit) — IsaacLab OpenArm 과 동일 값
 # ---------------------------------------------------------------------------
 GRIPPER_OPEN_POS = 0.044
-# ★★fab_test58: 그리퍼 구동력 상한. 구값 333.33N(레퍼런스 lift-cube 유래)은 134g 컵의
-#   SDF 충돌체를 뭉개고 들어갔다 — t57 실측: 지름 82mm 높이에서 개도 8mm(패드가 표면
-#   안쪽 37mm), "리프트"가 전부 관통 익스플로잇. 30N 은 마찰 파지에 충분
-#   (30N×μ0.5×2패드 ≈ 30N 수직 유지 vs 컵 1.3N·×8 커리큘럼 10.7N)하면서 관통 불가.
-GRIPPER_EFFORT_LIMIT = 30.0
 GRIPPER_CLOSED_POS = 0.0
 
 # ---------------------------------------------------------------------------
@@ -116,18 +111,6 @@ ACTION_PENALTY_CURRICULUM_STEPS = 36000
 #    "stiffer PD controller for IK tracking to be better" 라고 적어 뒀다).
 #   ⚠ 레퍼런스 HIGH_PD 는 `disable_gravity=True` 도 같이 켠다. 우리는 **중력을 켠 채로**
 #     쓴다 — 실기에는 중력이 있고, 중력을 끄면 sim2real 이 무효가 된다.
-# ★★fab_test21 원본 정합: DEXTRAH kuka 원본은 팔 PD 가 **테이퍼**다(근위 단단, 원위 무름).
-#   원본 `kuka_allegro.py`:
-#       iiwa7_joint_1~4 : kp 300 / kd 45     (kd/kp 0.150)
-#       iiwa7_joint_5   : kp 100 / kd 20     (0.200)
-#       iiwa7_joint_6   : kp  50 / kd 15     (0.300)
-#       iiwa7_joint_7   : kp  25 / kd 15     (0.600)
-#   우리는 **균일 400/80** 이었다. 그리고 그 400/80 은 DEXTRAH open_tesollo 판본에서
-#   **학습에 쓰지 않는 반대쪽 팔을 잠그는** 게인과 정확히 같은 값이다 — 구동축 게인이 아니다.
-#   ⚠ 구값은 아래 IK 변형(`grasp_left_ik_env_cfg.py`)이 계속 쓴다. 그쪽은 태스크공간
-#     diff-IK 라 fabric 정합 대상이 아니므로 건드리지 않는다.
-ARM_FABRIC_STIFFNESS = {"l_aj_[1-4]": 300.0, "l_aj_5": 100.0, "l_aj_6": 50.0, "l_aj_7": 25.0}
-ARM_FABRIC_DAMPING = {"l_aj_[1-4]": 45.0, "l_aj_5": 20.0, "l_aj_6": 15.0, "l_aj_7": 15.0}
 ARM_IK_STIFFNESS = 400.0
 ARM_IK_DAMPING = 80.0
 
@@ -212,13 +195,7 @@ CUP_MASS = 0.134                  # kg, right/grasp_sensor 전 물체 공통값�
 # 메시 bottom → 원점 (probe_gripper_opening.py 실측).
 # ★bbox 반높이(0.0875)가 아니다 — shaker 원점은 기하 중심이 아니라서 반높이로 역산하면
 #   컵이 테이블에 파묻힌다.
-# ★★fab_test59(사용자 결정): 컵 0.8 스케일 커리큘럼 1단계. 원본 몸통 지름 66~88mm 는
-#   개구 84.5mm 대비 삽입 여유가 한쪽 0~9mm 라 자력 삽입이 구조적으로 어렵고, pre-grasp
-#   주입은 폐기됐다("a방법 금지"). 0.8 배면 지름 53~70mm → 여유 7~16mm. 학습 성립 후
-#   원본 크기로 warmstart 파인튠(2단계). 근거: 30% 축소는 과함·20% 후보([[grasp-cup-shrink-test6]]).
-#   ⚠ 아래 컵 기하 상수는 전부 이 스케일에 파생돼야 한다 — 하나라도 원본 값이면 조용히 어긋난다.
-CUP_SCALE = 0.8
-CUP_BOTTOM_TO_ORIGIN = 0.09209 * CUP_SCALE
+CUP_BOTTOM_TO_ORIGIN = 0.09209
 # ★컵의 강체 이름. 레퍼런스는 큐브 prim 이름인 `"Object"` 를 SceneEntityCfg 에 박아 두는데
 #   우리 shaker 는 `baseLink` 라 그대로 두면 매니저가 이름을 resolve 하는 순간 죽는다
 #   (서버 학습 기동 시 실제로 터졌다: "Object: [] / Available strings: ['baseLink']").
@@ -240,37 +217,11 @@ CUP_SPAWN_Z = TABLE_SURFACE_Z + CUP_BOTTOM_TO_ORIGIN     # 0.30709
 #   ⚠ 이 경계는 **홈에 종속**이다. 홈을 바꾸면 반드시 다시 재야 한다 — 실제로 홈을
 #     교체한 뒤 x=0.32~0.34 구간이 새로 관통하기 시작했다(25 조합 중 5 개).
 #     관통 영역은 "x 가 낮고 y 가 높은" 코너다(팔이 그쪽에서 컵 자리를 지난다).
-# ★★fab_test55 스폰 재배치 (사용자 승인 A안). probe_grip_l_spawn_ws_ik 실측:
-#   수평 접근(tcp_z⊥world_z <10°) 도달 상한이 x ≈ 0.355 — 구 스폰 [0.36,0.42] 는
-#   **전체가 그 밖**이었다(x0.39 에서 30mm·x0.42 에서 47mm 구조적 미달). t51 의 25°
-#   기울임·t54 의 102mm 호버(턱 x 0.346 = 도달 경계)가 전부 이 기구학이 원인.
-#   구 하한 0.355(홈 관통 경계)와 수평 도달 상한이 같은 선이라 교집합이 비어 있었다 —
-#   스폰을 도달영역 안으로 내리고 관통 경계는 smoke 1e 로 재실측해 갱신한다.
-SPAWN_X_SAFE_MIN = 0.28           # fab_test59 smoke 1e 재실측 예정 경계           # 재실측 (fab_test55 smoke 1e --sweep_beyond 49/49 조용:
-#   x 0.29~0.41 × y 0.16~0.22 전 구간 이동 ≤0.16mm·기울기 0° — 현 홈은 이 대역을
-#   점유하지 않는다. 0.33 은 스윕 하한 0.29 에 40mm 여유를 둔 값)
-# ★fab_test59: 0.8 컵 원점 z 0.2737 의 수평 도달 지도(45점 IK): ✓ = x ≤ 0.31 (y 0.17~0.21).
-CUP_SPAWN_X_CENTER = 0.30
+SPAWN_X_SAFE_MIN = 0.355          # 실측 관통 경계 (이 아래는 홈 자세와 충돌)
+CUP_SPAWN_X_CENTER = 0.38
 CUP_SPAWN_Y_CENTER = 0.19
-# ★fab_test18 ADR: ±0.02 → ±0.03(중심 0.38→0.39). 상한은 테이블 앞모서리 − 컵 반경
-#   (0.470−0.044=0.426)이 물리 한계, 하한은 SPAWN_X_SAFE_MIN(0.355). 그 사이 최대폭이다.
-#   관통 스윕(probe_lift_left_gripper_smoke 1e) 25/25 조용 확인(최대 0.15 mm).
-CUP_SPAWN_X_RANGE = 0.01          # ±m → x ∈ [0.34, 0.36] (수평 도달영역 안)
-# ★★fab_test17(ADR, 사용자 지시 "모드을"=보수적). X 는 **불변** — 작업면 X 깊이가 40cm 뿐이고
-#   (WORK_SURFACE_X) 현재 스폰 하한 0.36 이 이미 SPAWN_X_SAFE_MIN(0.355)에서 5mm 밖에 안
-#   떨어져 있다. 더 넓히면 홈 자세 충돌 재발(과거 25 조합 중 5 개 관통 실측).
-#   Y 는 작업면이 90cm 로 X 의 2.25배 넓고, 코드에 이미 "y 를 가장 넓게(pour receiver)" 로
-#   지정돼 있어 다양화를 여기로 몬다.
-#   ★★★두 실측이 스폰 Y 확대를 **양쪽에서 기각**했다 — 스폰은 불변으로 둔다.
-#     ① 도달성(probe_adr_reach 56점): y 0.09 는 5/8, y 0.14 는 3/8 미달(최대 198 mm).
-#        왼팔이라 y 가 **작은** 쪽이 워크스페이스 밖이다.
-#     ② 관통 스윕(probe_lift_left_gripper_smoke 1e): y 를 **올리면** 홈 자세의 팔이 컵 자리를
-#        점유한다 — y 0.26 에서 4/5, y 0.29 에서 5/5 관통(최대 22 mm 밀림).
-#        (CLAUDE.md 의 "관통 영역은 x 가 낮고 y 가 높은 코너" 와 일치)
-#     → 스폰 y 의 안전 구간은 사실상 [0.17, 0.21] 뿐이다. **ADR 은 목표(GOAL)에만 적용**한다 —
-#       목표는 컵을 든 **뒤**의 지점이라 홈 자세 점유와 무관하고(기존 계약 주석), 도달성
-#       프로브가 y 0.39 까지 전 높이 도달을 확인했다(오차 0.4~3.4 mm).
-CUP_SPAWN_Y_RANGE = 0.02          # ±m → y ∈ [0.17, 0.21] (불변)
+CUP_SPAWN_X_RANGE = 0.02          # ±m → x ∈ [0.36, 0.40]
+CUP_SPAWN_Y_RANGE = 0.02          # ±m → y ∈ [0.17, 0.21]
 
 # ---------------------------------------------------------------------------
 # 리프트 판정
@@ -333,7 +284,7 @@ CUP_SPAWN_Y_RANGE = 0.02          # ±m → y ∈ [0.17, 0.21] (불변)
 #   → 램프 0 지점을 그 상한 **위**에서 시작한다. 흔들기는 램프 0 이 되고 진짜 리프트만
 #     값을 받는다. 여유 1.3 배는 스폰 시 미세 정착·수치 오차용이다.
 #   ⚠ 리터럴 6 mm 를 박지 않는다 — 컵 자산이 바뀌면 상한도 바뀐다.
-CUP_BASE_RADIUS = 0.0295 * CUP_SCALE    # shaker 바닥 원판 반경 (bottom_plug, 스케일 파생)
+CUP_BASE_RADIUS = 0.0295                # shaker 바닥 원판 반경 (bottom_plug)
 CUP_TIP_RISE_MAX = (
     math.sqrt(CUP_BOTTOM_TO_ORIGIN**2 + CUP_BASE_RADIUS**2) - CUP_BOTTOM_TO_ORIGIN
 )                                       # 0.00461 — 기울여서 얻을 수 있는 최대 원점 상승
@@ -390,19 +341,9 @@ GRASP_MAX_EE_DISTANCE = 0.08
 #     드는 것**이다. 실기에서도 컵 로컬 z 는 파악 가능하므로 그것만 제어하면 된다.
 #   upright 는 cos 를 그대로 쓰면 12.8° 에서 0.975 라 압력이 없어, 30° 를 0 으로 잡아
 #   가파르게 만든다: 0° → 1.0, 12.8° → 0.81, 20° → 0.53, 30° → 0.
-# ★fab_test14: 30.0 → 27.0. weight 상한(1/3 규칙)에 막혀 곡선을 대신 조인다 — 실측(21.2°)
-#   에서 0.495→0.379 로 압력을 올리되, 죽지 않게 6° 여유를 남긴다(27° 까지 0 아님).
-#   더 낮추면(25°) 현재 상태가 0.278 까지 떨어져 개선 이전에 보상이 먼저 크게 깎이고,
-#   탐색으로 잠깐 더 나빠지면(26~27°대) 죽는 폭이 넓어진다 — 과거 dead-zone 사고 패턴.
-CUP_UPRIGHT_ZERO_AT_DEG = 27.0
+CUP_UPRIGHT_ZERO_AT_DEG = 30.0
 CUP_UPRIGHT_ZERO_AT_COS = _math.cos(_math.radians(CUP_UPRIGHT_ZERO_AT_DEG))
-# ★fab_test14 시도 1: weight 5.0→8.0 을 계약 테스트가 막았다(1/3 상한, test_lift_contract.py).
-#   재확인해보니 타당하다 — `settled_at_goal`(w15, 동일 게이트)과 달리 이 항은 **목표 근접을
-#   요구하지 않는다**. weight 를 올리면 "아무 데서나 똑바로 들고 서 있기"가 더 매력적인
-#   국소최적이 된다(reward-audit Check1). weight 는 그대로 두고 **곡선만 조여**(zero_at 아래
-#   참조) 같은 상한(5.0) 안에서 현재 상태의 압력만 올린다 — 국소최적 위험은 weight 가 결정
-#   하므로(만점 상한 불변) 곡선 재척도는 그 위험을 키우지 않는다.
-GRASP_POSE_REWARD_WEIGHT = 5.0    # lifting 15 의 1/3 — 상한 유지(계약 테스트가 강제)
+GRASP_POSE_REWARD_WEIGHT = 5.0    # lifting 15 의 1/3 — 자세만 맞추는 국소최적을 막는 비율
 
 # ★목표까지 옮겨 **가만히 정지**시키는 것이 이 태스크의 최종 요구다.
 #   레퍼런스 lift 의 goal-tracking 은 **거리만** 봐서, 목표 근처에서 컵이 흔들려도 만점이다
@@ -432,55 +373,6 @@ SETTLE_POS_STD = 0.15             # m  (12 cm → 품질 0.34) — 이번 런에
 SETTLE_LIN_VEL_STD = 0.15         # m/s (0.193 → 0.14, 0.05 → 0.68, 0.02 → 0.87)
 SETTLE_ANG_VEL_STD = 1.50         # rad/s (1.473 → 0.24, 0.3 → 0.80)
 SETTLE_REWARD_WEIGHT = 15.0       # lifting 과 동급 — 게이트를 곱하므로 파지가 우선은 유지된다
-
-# ★★dwell 보너스(fab_test13 신설) — "지나가며 잠깐 느려짐"과 "머무름"을 가른다.
-#   fab_test12 실증: 순간 settle 항만으로는 목표 100 mm 옆 순회(잔류 0.22 m/s)가
-#   국소최적으로 굳는다. 순간 항은 스쳐 지나가도 그 스텝만큼 지급되기 때문이다.
-#   dwell 은 순간 품질 q(object_settled_at_goal 그대로) > 임계가 **연속 유지**된 스텝을
-#   세어 clamp(count/HOLD, 0, 1) 로 지급한다. 순회는 카운터가 계속 리셋돼 램프 초입만 받는다.
-#   ★임계는 실측 규모에서(CLAUDE.md 규칙 — test10/test11 사고):
-#     fab_test12 final 실측 q ≈ 0.03 (162mm · 0.225m/s · 1.86rad/s)
-#     중간 달성 상태     q ≈ 0.29 (60mm · 0.10m/s · 0.8rad/s) ← 리미터 켠 제어로 도달 가능
-#     목표 상태          q ≈ 0.60 (30mm · 0.05m/s · 0.3rad/s)   (G3 고정지령 잔류 0.054m/s)
-#   0.25 는 현재 행동(0.03)이 절대 못 받고 중간 상태(0.29)부터 받는 위치다.
-#   ⚠ 임계 위는 이진이라 "0.26 호버"도 만점이지만, smooth settle(w15)이 q 비례 지급을
-#     유지하므로 임계 너머 gradient 는 그 항이 담당한다(reward-audit Check 2).
-#   ⚠ 카운터는 정책이 볼 수 없는 상태지만 obs 에 넣지 않는다 — 머무름이 최적인 이상
-#     최적 액션은 카운터 값과 무관하고, feedforward 정책이라 활용도 못 한다.
-DWELL_Q_THRESH = 0.25
-DWELL_HOLD_STEPS = 25             # 0.5 s (step_dt 0.02) — 순회 통과(~5스텝)와 확실히 구분
-DWELL_REWARD_WEIGHT = 10.0        # settle 15 · lifting 15 보다 낮게 — 보너스이지 주항이 아니다
-
-# ★★fab_test20: jerk(2차) 를 버리고 **1차 지령속도**를 목표 근처에서만 벌한다.
-#
-#   fab_test14 → 16 → 19 로 이어진 jerk 시도는 전부 실패했고, fab_test19 의 층 분해
-#   실측이 그 이유를 확정했다(전문: grasp_left_rewards.py `palm_command_rate_at_goal`):
-#       ① 정책 raw 액션    방향반전 18.8%   ← 진동이 여기서 생기는 건 맞다
-#       ③ fabric 관절 목표 방향반전 **0.0%** ← 그런데 여기서 완전히 지워진다
-#       ④ 실제 팔 관절     방향반전 **0.0%** ← 팔은 떨지 않는다
-#   즉 2차 성분은 제어에 도달하지 않는다. jerk 벌금은 |Δ²a| 가 큰 접근·이송에서만 물렸고
-#   (fab_test19: 래치 직후 −2.17 = 그 시점 정밀신호 합의 88%) dwell 은 1.02 → 0.005 로
-#   무너졌다. 게이트로 **시점**은 고쳤지만 **크기**는 못 고친 것이다.
-#
-#   실제로 보이는 진동은 1차다 — dwell 구간에서 지령이 1.16~5.2 mm/step 배회한다.
-#   그래서 아래 항은 (a) 2차가 아니라 1차를 보고 (b) 목표 근처에서만 걸린다.
-#
-#   weight 산정(리미터 상한으로 정규화해 항이 0~1 이므로 그대로 검산된다):
-#       dwell 실측  moving = 1.16~5.2mm / 20mm = 0.058~0.26
-#       게이트      near_goal(90mm, std 0.15) = 0.46 · held = 1  → 항 0.027~0.12
-#       목표 근처 체류 비율 ~45%  → 에피소드 평균 0.012~0.054
-#       상금 대비 20% 상한: dwell 로그 1.0~2.0 의 20% = 0.2~0.4  → w ≈ 8
-#   ⚠ 최악의 경우(리미터 포화 + 게이트 1)에도 −8 이고 그 순간 settle +15 · dwell +10 이
-#     같이 들어온다 — 억제가 상금을 넘지 않는다(fab_test14/19 가 넘겼던 바로 그 조건).
-PALM_CMD_RATE_PENALTY_WEIGHT = -8.0
-
-# ⚠ 아래 세 상수는 기각된 jerk 경로의 잔재다 — 되살리기 전에 위 실측을 먼저 읽을 것.
-#   FAB_ACTION_JERK_WEIGHT / DWELL_GATE_THRESHOLD / DWELL_GATE_EMA_ALPHA 는
-#   fab_test20 에서 배선을 끊었다. `enable_penalty_after_dwell` 커리큘럼 자체는 남겨 둔다
-#   (다른 억제 항을 나중에 게이트할 때 재사용 가능한 일반 기구다).
-FAB_ACTION_JERK_WEIGHT = -0.03    # ★미사용(기각)
-DWELL_GATE_THRESHOLD = 1.0        # ★미사용(기각)
-DWELL_GATE_EMA_ALPHA = 0.01       # ★미사용(기각)
 
 # ★★액션 jerk(2차 차분) 페널티 — 레퍼런스에 **없는** 항.
 #   test12 실측: 1차 |Δa| 0.943 < **2차 |Δ²a| 1.755**, 방향 반전 **68.6%** = 고주파 채터링.
@@ -530,23 +422,14 @@ OBJECT_DROP_HEIGHT = TABLE_SURFACE_Z + 0.055                      # 0.255
 #   ⚠ 탐색에는 **관통 검사가 반드시 들어가야 한다**. 처음에는 컵 이동을 안 보고 골랐다가
 #     "TCP–컵 124 mm 로 여유 있다"는 추천을 받았는데, 실제로는 그 홈이 스폰 박스 전체를
 #     관통시켜 컵이 튕겨나간 뒤의 거리를 잰 것이었다. 지금 값은 컵 이동 0.00 mm 로 확인됐다.
-# ★★fab_test42 (사용자 지시): 홈을 **책상 위로 들어올린 자세**로 바꾼다.
-#   구 홈은 컵과 같은 높이의 pre-grasp 자세라, 리셋 직후 σ 가 큰 구간에서 팔이 컵을
-#   그대로 쳤다. 실측으로 매 판 초반이 전도 함정이었다:
-#       t39 ep0-20 tipped 0.98 · t40 ep0-80 tipped 0.999(ep길이 17) · t41 ep0-36 tipped 0.93
-#   매번 30~80 epoch 을 여기서 태웠고, 그 구간은 에피소드가 17~30 스텝이라 학습 신호가
-#   거의 없다(자기유지 함정). 위에서 내려오면 그 접촉 자체가 사라진다.
-#   ⚠ 이 값은 fabric 의 cspace rest(`default_config_override`)이기도 하다 — fabric 은
-#     홈에서 출발하는 gradient flow 라 홈이 바뀌면 도달 가능 영역이 바뀐다.
-#     변경 후 zero-action 스모크로 ①컵이 제자리인가 ②턱-컵 초기 거리 를 반드시 재잰다.
 LEFT_ARM_HOME_JOINT_POS = {
-    "l_aj_1": +0.9000,     # ← 사용자 지정
+    "l_aj_1": -0.0136,
     "l_aj_2": -0.3757,
     "l_aj_3": -0.0010,
-    "l_aj_4": +1.5000,     # ← 사용자 지정 (팔꿈치를 더 접어 든다)
+    "l_aj_4": +0.9336,
     "l_aj_5": -0.4655,
     "l_aj_6": +0.0003,
-    "l_aj_7": -0.9000,     # ← 사용자 지정
+    "l_aj_7": -0.3306,
 }
 
 # 유휴 오른팔 = **팔꿈치를 접어 든 자세**.
@@ -610,22 +493,11 @@ GOAL_HEIGHT_ABOVE_SURFACE = 0.235
 # ★x 중심을 0.42 → 0.41 로 1 cm 물렸다(08.22). 목표가 영역이 되면서 x 상한이
 #   0.42+0.05 = 0.47 = **판 앞모서리와 정확히 일치**해 컵 반경(44 mm)만큼 판 밖으로
 #   걸치게 되기 때문이다. 0.41 이면 상한 0.46, 모서리까지 10 mm 여유.
-# ★★fab_test18: 사용자 지시 "도달 가능 전역으로 최대 확대"(pouring 에서 이 왼팔이
-#   receiver 컵을 드는 역할이므로 목표가 넓어야 한다). 워크스페이스 스캔 140점 실측:
-#     y 0.23~0.41 이 스위트스팟(중앙값 1.0~4.6 mm) · y ≤0.17 은 급락(56.9~128.6 mm)
-#     x 0.30~0.46 은 전 구간 유사(중앙값 6.3~38.3 mm) · z 0.33~0.51 도 유사
-#   → 중심을 스위트스팟 중앙으로 옮기고 각 축을 실측 범위까지 넓힌다.
-GOAL_POINT = (0.38, 0.32, 0.44)   # ADR 확대: 워크스페이스 스캔 실측 중심
+GOAL_POINT = (0.41, 0.24, TABLE_SURFACE_Z + GOAL_HEIGHT_ABOVE_SURFACE)   # z 0.435
 # ★08.22 목표를 점(±2 cm)에서 **영역**으로 확장(사용자 지정: pour 학습에 필요한
 #   목표-조건부 이송). test17 이 ±2 cm 에서 이송까지 성공했으므로 다음 단계로 넓힌다.
 #   y 를 가장 넓게 두는 이유: pour 에서 receiver 위치가 주로 y 로 움직인다.
-# ★fab_test17 ADR: y ±0.07 → **±0.11**, z ±0.05 → ±0.07. x 는 불변(테이블 앞모서리 10mm 여유뿐).
-#   ★도달성 실측이 y 하향 확장을 기각했다(y 0.09·0.14 미달) → GOAL_POINT y 를 0.24 → **0.28**
-#     로 옮겨 **하한 0.17 을 그대로 두고**(fab_test16 이 학습한 구간) 상한만 0.31 → 0.39 로
-#     넓힌다. y 0.34·0.39 는 프로브에서 전 높이 도달 확인(오차 0.4~3.4 mm).
-# x ±0.08 → [0.30,0.46] · y ±0.09 → [0.23,0.41] · z ±0.07 → [0.37,0.51].
-# ⚠ z 하한은 CUP_SPAWN_Z+0.05 = 0.357 위여야 한다(계약: 이송을 요구하려면).
-GOAL_JITTER = (0.08, 0.09, 0.07)   # 축별 ±m — 도달 실측 범위 전체
+GOAL_JITTER = (0.05, 0.07, 0.05)   # 축별 ±m
 GOAL_POS_X = (GOAL_POINT[0] - GOAL_JITTER[0], GOAL_POINT[0] + GOAL_JITTER[0])
 GOAL_POS_Y = (GOAL_POINT[1] - GOAL_JITTER[1], GOAL_POINT[1] + GOAL_JITTER[1])
 GOAL_POS_Z = (GOAL_POINT[2] - GOAL_JITTER[2], GOAL_POINT[2] + GOAL_JITTER[2])
@@ -637,7 +509,7 @@ GOAL_POS_Z = (GOAL_POINT[2] - GOAL_JITTER[2], GOAL_POINT[2] + GOAL_JITTER[2])
 # 충돌 근사가 convexHull 이라 통과폭은 가장 안쪽 점인 핑거 팁이 지배한다.
 GRIPPER_MAX_OPENING = 0.0845
 # shaker 는 계단형 원뿔(58/68/78/88 mm)이라 테이블 위 10~85 mm 에서만 개구를 통과한다.
-GRASP_HEIGHT_BAND = (0.010 * CUP_SCALE, 0.085 * CUP_SCALE)   # 상면 기준, 스케일 파생
+GRASP_HEIGHT_BAND = (0.010, 0.085)
 
 # ★★08.22 — **컵 원점은 파지 대역 밖이다.** 여기서 크게 태웠다.
 #   컵 원점은 상면 +92 mm 인데 통과 대역은 상면 +10~85 mm 다. 그 높이의 컵 지름(88 mm)이
@@ -742,7 +614,7 @@ GRASP_GATE_ALONG_OK = 0.030      # m. 성공 12~14. JAW_ENCLOSE_HALF_WIDTH(0.029
 #   개방되어 컵을 놓는다. 컵이 턱에서 **완전히** 벗어난 경우만 접근 단계로 되돌린다.
 GRASP_GATE_RELEASE_LAT = 0.060   # m
 
-JAW_ENCLOSE_HALF_WIDTH = 0.029 * CUP_SCALE   # m, 최소 몸통 반경 (스케일 파생)
+JAW_ENCLOSE_HALF_WIDTH = 0.029   # m, shaker 최소 몸통 반경(58 mm/2). 이 이상 벌리면 enclose 포화
 # ★enclose 가 0 일 때도 **정렬 gradient 는 살려 둔다.** 완전 곱셈이면 주먹 상태에서 항이
 #   통째로 0 이 되어 "가서 정렬하라"는 신호조차 사라진다(= 게이트와 같아진다).
 #   바닥값 0.3 이면 개선 경로가 단조롭다: 정렬(0.05→0.17) → 벌림(→0.55) → 정밀정렬(→1.0).
@@ -804,26 +676,9 @@ CLOSURE_WHEN_ENCLOSED_WEIGHT = 5.0
 #   더 안 줄었다. 즉 정책이 필요한 지령을 **표현할 수 없는** 상태였다.
 #   0.58 = 파지점 상한 0.433 + 선행 여유 0.15.
 #   ⚠ 박스를 넓히면 액션 1 단위가 덮는 거리가 커진다(해상도 −29%). 그래도 표현 불가보다 낫다.
-# ★fab_test18: 상한 0.58 → 0.60. 스폰 x 상한을 0.40 → 0.42 로 넓히면 파지점이 0.453 으로
-#   깊어져 처짐 선행(47~117 mm)을 담으려면 0.583 이 필요하다(계약이 잡았다).
-PALM_BOX_X = (0.22, 0.60)
-# ★fab_test17: 새 스폰 y [0.09,0.29] ∪ 새 목표 y [0.09,0.39] = [0.09,0.39] 를 덮어야 한다.
-#   새 스폰 y [0.17,0.29] ∪ 새 목표 y [0.17,0.39] = [0.17,0.39] 를 덮어야 한다.
-#   기존 여유 폭(하단 −7cm · 상단 +4cm)을 그대로 적용해 0.10~0.43. 하단은 기존과 동일하다.
-PALM_BOX_Y = (0.10, 0.43)
-# ★★★fab_test35: (0.22, 0.55) → **(0.16, 0.50)**. 파지 자세가 액션 박스 **밖**이었다.
-#   `probe_palm_z_transfer.py` 실측 (컵 제거 · 팜 지령 z 를 독립적으로 스윕):
-#       지령 z 0.220(박스 바닥) → 턱 z 0.2553   파지 목표(0.2475)보다 **+7.8 mm**
-#       지령 z 0.202            → 턱 z 0.2488   오차 +1.3 mm  ← **박스 밖**
-#       지령 z 0.130 이하        → 턱 z 0.2300 포화 (팔 한계)
-#   파지 가능한 턱 높이 [0.230, 0.285] 을 내는 지령은 [0.13, 0.267] 이다. 구 박스로
-#   환산하면 **액션 z ∈ [−1.00, −0.72]** — 범위의 14% 이고 **경계에 붙어 있다.**
-#   즉 정책이 z 를 −1 근처로 포화시켜야만 파지가 성립했다.
-#   새 박스: 중심 0.33 · half 0.17 → 액션 z ∈ [−1.00, −0.37], 창이 **2.2 배** 넓어지고
-#   경계에서 떨어진다. 해상도(half)는 165 → 170 mm 로 사실상 불변.
-#   상한 0.50: 목표 유지에 필요한 지령 최대가 0.445(턱 z 0.465)라 여유가 있다.
-#   ⚠ 이 값은 **팜 프레임 z** 다. 턱 z 와 1:1 이 아니다(위 전달표) — 눈대중 금지.
-PALM_BOX_Z = (0.16, 0.50)
+PALM_BOX_X = (0.22, 0.58)
+PALM_BOX_Y = (0.10, 0.35)
+PALM_BOX_Z = (0.22, 0.55)
 # ★★기준 palm 자세 = **이 태스크 홈의 실측 palm 자세** (Isaac FK 리셋 직후, homequat.py).
 #   ⚠ 이 값을 의심하게 만들었던 "홈 자세는 스폰·목표에서 95 mm 실패" 스윕 결과는
 #     **계측 오염**이었다: 프로브의 park_cup 이 치운 컵의 z 를 보존해 매 스텝 2 mm 씩
@@ -834,33 +689,7 @@ PALM_BOX_Z = (0.16, 0.50)
 #   홈 = 검증된 pregrasp 자세이므로 a=0 = 홈 자세가 절대 규약과도 정합한다.
 #   ⚠ 홈 관절값을 바꾸면 재실측(homequat.py) + 단독 수렴 확인(fab_standalone.py).
 PALM_REF_QUAT_WXYZ = (0.07900154923557093, -0.7797152903667677, -0.11000215716345318, -0.6113119879456266)
-# ★★fab_test21 원본 정합: 회전을 **euler_zyx 절대**로 바꾼다(kuka `compute_absolute_action`).
-#   박스 = 중심 ± MAX_POSE_ANGLE, 축별 독립. 중심은 로봇별이므로 우리 기준 파지 자세를
-#   같은 규약(R = Rz(ez)·Ry(ey)·Rx(ex))으로 환산해 쓴다 — 역변환 오차 8.6e-16 확인:
-#       PALM_REF_QUAT_WXYZ → (ez, ey, ex) = (18.1681°, −76.0911°, 177.3070°)
-#   ⚠ ey 중심이 짐벌 특이점(±90°)에서 14° 거리다. 원본 kuka 는 ey 중심이 0° 라 이 문제가
-#     없었다. 정정: 이것은 **불연속이 아니다** — 전방 사상(euler→R)은 ey=±90° 에서도
-#     연속이다. 실제 비용은 **조건수 저하**다: ey≈−90° 근방에서 ez 와 ex 가 같은 회전을
-#     만들어 액션 3D 중 하나가 국소적으로 중복된다. 학습은 되지만 그 구간의 탐색이 낭비된다.
-#   ⚠ fabric 은 euler/quaternion 을 **같은 회전행렬**로 변환하므로(set_features 두 분기가
-#     동일한 9D 를 채운다) 제어 플랜트는 규약과 무관하게 동일하다.
-# ★★fab_test51(사용자 결정, 필수): ey −76.09° → **−85.0°** — 접근축 수평 재센터.
-#   구 중심(홈 실측 자세)은 접근축(TCP z)의 world-z 성분이 −0.240, 즉 수평에서 14°
-#   아래로 숙인 채였다. 사용자 규격 "접근 방향은 테이블에 수평(TCP z ⊥ world z)"인데
-#   a=0 기본값부터 기울어 있으니 정책이 기울인 접근을 냈다(t8 실측 81.2° 의 뿌리).
-#   −85° 재센터로 기울기 14° → 5°. 정확히 −90° 로 안 가는 이유: euler_zyx 는 ey=±90°
-#   에서 ez·ex 가 국소 중복(짐벌 조건수 저하)이라 액션 한 차원이 낭비된다 — 5° 여유로
-#   식별성을 지키고, 남은 5° 는 ±45° 박스에서 정책이 채운다. 검증: diag_stage_perp_q.
-#   ⚠ a=0 이 더 이상 홈 실측 자세와 일치하지 않는다(+9° pitch) — 리셋 직후 회전
-#     리미터(2.9°/step)가 ~3 스텝에 걷는 거리라 무해. 재센터 자세의 fabric 수렴은
-#     기동 전 스모크로 확인함.
-PALM_EULER_ZYX_CENTER = (0.317093862, -1.4835298641951802, 3.094591725)   # rad (ez, ey, ex)
-# ★fab_test52: ±45° → **±20°** (사용자 결정의 기구적 뒷받침). 접근·파지·리프트 전
-#   구간에서 수직 유지가 요구되므로 큰 기울임 자세는 쓸 일이 없고, 회전 리미터
-#   (2.9°/step) 하에서 ±45° 는 잘못 기운 자세에서 돌아오는 데만 30스텝을 쓴다.
-#   yaw(조준)·미세 pitch 는 ±20° 로 충분하다. (구 kuka 실사용값 45.0)
-PALM_MAX_POSE_ANGLE = math.radians(20.0)
-PALM_ROT_MAX_RAD = math.radians(30.0)   # ★구 축각 규약 잔재 — 미사용
+PALM_ROT_MAX_RAD = math.radians(30.0)   # j6 ±45° 안에서 여유
 # ---------------------------------------------------------------------------
 # 중력 처짐 보상 (08.23 사용자 지시)
 # ---------------------------------------------------------------------------
@@ -927,543 +756,20 @@ PALM_ROT_MAX_RAD = math.radians(30.0)   # ★구 축각 규약 잔재 — 미사
 #     그 사이 컵이 밀려난다.
 #   ⚠ 이번 실패의 교훈은 **한 번에 두 변경을 넣은 것**이다(리미터 + 중력보상). 중력보상은
 #     아직 학습에서 검증된 적이 없으므로 그것만 켜고 먼저 확인한다.
-#   ★★08.24 **다시 켠다(fab_test13).** 상황이 fab_test9 때와 다르다:
-#     · fab_test9 의 "리프트 못 감" 은 리미터 탓이 아니었다 — fab_test10(리미터 OFF)이
-#       동일하게 실패했고, 진범은 축 straddle 구멍(axis_t clamp 로 수정 완료)이었다.
-#     · 지금은 접근 하드 게이트가 파지·리프트를 코드로 보장한다(fab_test12 lift 10.3,
-#       컵 +203 mm). "방향 전환이 묶여 리프트를 못 한다"는 우려 자체가 소멸.
-#     · fab_test12 층 분해: 목표 근처 palm **지령** 변화 18~27 mm/step(제어기 하한의
-#       16~25 배)이 정지 실패의 원인. σ 0.34 가 절대좌표 박스를 거치면 42~61 mm/step
-#       노이즈가 되는데, 리미터는 이를 20 mm/step 으로 캡한다(노이즈 오염 없는 유일한 수단 —
-#       action_rate 벌점은 σ 만 줄인다, 위 주석 참조).
-#     fresh 학습(워밍스타트 금지 조건 충족) · dwell 보너스와 짝(달성 가능성 + 리턴 차이).
-# ★★fab_test21 원본 정합: **리미터를 끈다.** DEXTRAH 원본에는 rate limiter 가 없다.
-#   원본 `compute_actions` 는 절대 palm pose 를 박스로 스케일·clamp 할 뿐이고, 지령의
-#   변화율 상한은 **fabric 자체**가 정한다(2차 attractor + damping).
-#   우리가 fab_test13 에 리미터를 붙인 이유는 "지령이 팔보다 빠르다" 였는데, 그 굼뜸의
-#   원인이 원본 대비 자초한 것이었음이 08.25 대조로 드러났다:
-#       · fabric 시간이 원본의 60% (아래 FABRIC_DECIMATION 주석)
-#       · fabric damping 이 원본 ADR 의 가장 어려운 끝값(20 vs 레벨 0 의 10)
-#       · 속도 피드포워드 0 (원본 1.0)
-#   셋을 원본으로 되돌리고 리미터를 뗀다. 순서가 중요하다 — 원인을 안 고친 채 증상
-#   억제기만 떼면 자매 트랙의 leash 사고가 반복된다(palm_err 51~65 → 90mm 악화).
-# ★★★fab_test25 되돌림. 리미터에는 **두 번째 기능**이 있었고 그걸 못 보고 뗐다.
-#   위 근거(추종 지연 = 자초한 굼뜸)는 여전히 맞다. 하지만 리미터는 지연만 억제한 게
-#   아니라 **접촉 속도를 묶고 있었다.** t24 실측이 그것을 드러냈다:
-#       런               drop ep0-50   drop ep50-200   reach ep50-200
-#       t7  성공             0.390         0.088          0.390
-#       t16 최고             0.712         0.209          0.582
-#       t24 (리미터 없음)   **0.914**     **0.009**      **0.033**
-#   리미터가 없으면 palm 지령이 한 스텝에 박스 전체(380 mm)를 건너뛰고 fabric 이 전속으로
-#   따라가 컵을 날린다. 초기 낙하 0.914 는 역대 최고다. 그러자 정책이 **컵을 안 건드리는
-#   것**을 학습했다 — 접근하면 조기 종료로 남은 스텝의 보상을 통째로 잃기 때문이다.
-#   reach 가 t16 의 1/17 이 됐고 에피소드는 600 스텝 만기까지 간다.
-#   ★보상 구조는 t16 과 **동일했다**. 즉 이건 보상 문제가 아니라 제어 문제였다.
-PALM_CMD_RATE_LIMIT_ENABLED = True
-# m/step. ★fab_test45 사용자 결정: 0.10 → **0.02** (= 1.2 m/s, 팔 능력 스케일).
-#
-# 왜 — 레퍼런스 lift(그리고 이 트랙의 성공한 관절공간판)가 학습되는 하중 성질은
-# **탐색 노이즈의 물리량이 기구적으로 묶여 있는 것**이다(관절 델타 + velocity_limit
-# → 스텝당 관절 2°). fab 절대 박스는 그 성질이 없어서 σ×반폭 ≈ 100~170 mm 지령
-# 지터가 컵 근처를 난기류 지대로 만들었고, 24판이 전부 "컵 근처 회피"의 변형으로
-# 실패했다(t42 구석 도피 · t43 상승 · t44 공중부양 −180 mm, σ 0.29 로 고착).
-# 0.02 는 유효 지령을 스텝당 20 mm 로 걷게 해 그 성질의 태스크공간 등가물을 만든다.
-# 접근 소요 300 mm ÷ 20 mm = 15 스텝 — 에피소드 300 스텝 대비 여유 20 배.
-#
-# ⚠ 구판 주석 "0.02 는 추종 지연을 만들었다"는 **fabric 속도 피드포워드 결손 시절의
-#   측정**이라 무효다(결손 수정으로 joint_err 27 배 개선 — [[fabric-velocity-feedforward-missing]]).
-#   t45 착수 전 추종 프로브로 재검증 완료(vision-3090, 8env): 리미터는 정확히
-#   20.0 mm/step 으로 걷고, 팔 실측 속도는 6.3 mm/step(0.38 m/s)라 묶이는 쪽은
-#   리미터가 아니라 팔이다. 도달 시간은 텔레포트 지령과 동일(337→54 vs 290→49 mm
-#   / 45스텝). 즉 0.02 는 속도 비용 0 에 지터 5배 감소만 산다.
-PALM_CMD_RATE_LIMIT = 0.02
-# ★fab_test48: **회전 리미터** (위치 리미터의 회전판, 사용자 결정).
-#   palm→턱 레버 140 mm 라 회전 지터가 턱을 σ×0.785 rad×0.14 m 로 쓸었다 — σ0.47 에서
-#   ±52 mm/step, 위치 리미터(20 mm)의 2.6배. t45(FINE 이 회전을 ±11.3° 로 조임)만
-#   h −44 까지 하강한 것이 방증. 0.05 rad/step ≈ 2.9°/step → 턱 스윙 기여 ≤ 7 mm/step.
-PALM_EULER_RATE_LIMIT = 0.05
-# 아래 둘은 이제 **리미터가 아니라 보상 정규화 기준**이다(`palm_command_rate_at_goal`).
-#   0.02 m/step 근거: dwell 에서 이 정도 지령 이동은 "배회"로 벌하고, 그보다 크면
-#   비례해 커지되 clamp(1) 로 상한을 둔다. 상금 대비 검산은 그 항 docstring 참조.
-PALM_CMD_RATE_REF = 0.02
-PALM_ROT_RATE_REF = 0.05          # rad/step — 회전 성분 정규화 기준(미사용 예비)
+PALM_CMD_RATE_LIMIT_ENABLED = False
+PALM_CMD_RATE_LIMIT = 0.02        # m/step  = 1.0 m/s (IK_ACTION_SCALE 위치 성분과 동일)
+PALM_ROT_RATE_LIMIT = 0.05        # rad/step = 2.5 rad/s (동 회전 성분과 동일)
 
 #   ⚠ 프로브·A/B 용 오버라이드: 정책은 **학습 당시의 제어기**로 재야 한다. 보상 없이 학습한
 #     체크포인트를 보상 켠 채로 재면 액션 의미가 달라져 엉뚱한 결과가 나온다
 #     (rate limiter 를 그렇게 켰다가 "컵을 아예 못 든다"는 가짜 결론을 낼 뻔했다).
 #         HDGP_GRAVITY_COMP=0 ./isaaclab.sh -p <probe>
 _GC = _os.environ.get("HDGP_GRAVITY_COMP")
-# ★★fab_test23: 기본 **꺼짐**. 원본 kuka 는 팔 중력을 끄고(`disable_gravity=True`)
-#   중력 보상 항이 아예 없다 — `set_joint_position_target(fabric_q)` 뿐이다.
-#   우리 적분항은 원본에 없는 제어 루프였고, 08.25 에 **속도 피드포워드 결손을
-#   가려서** 진단을 늦춘 장본인이다(관절 오차를 자기가 먹어치웠다).
-#   ⚠ 중력을 켜고 실험할 때만 `HDGP_GRAVITY_COMP=1` 로 되살린다.
-GRAVITY_COMP_ENABLED = False if _GC is None else _GC not in ("0", "false", "False")
+GRAVITY_COMP_ENABLED = True if _GC is None else _GC not in ("0", "false", "False")
 GRAVITY_COMP_GAIN = 0.05          # 적분 이득. 1/g ≈ 20 스텝(0.4 s) 로 준정적 성분만 쌓는다
 # fabric 적분: 시간 = 벽시계. env step_dt(0.02) / decimation(2) = 0.01 s × 2회.
-# ★★fab_test21 원본 정합 — **fabric 시간이 원본의 60% 였다.**
-#   원본 kuka: sim_dt 1/120 · decimation 2 → 정책 스텝 1/60 s.
-#              fabrics_dt **1/60** · fabric_decimation 2 → fabric 이 **1/30 s** 만큼 적분.
-#              즉 원본은 fabric 시간을 **벽시계의 2배속**으로 돌린다.
-#   우리: 정책 스텝 0.02 s(sim 0.01 · dec 2) 인데 `_fabric_dt = step_dt/2 = 0.01`,
-#         2회 → 0.02 s = **1배속**. 정책 스텝당 적분량이 0.02 vs 0.0333 = 60%.
-#   저장소는 "1/60 × 2 는 2배속이 된다"를 함정으로 기록하고 1배속으로 맞췄지만,
-#   **원본은 그 2배속으로 학습·배포된 시스템**이다. attractor 수렴 속도가 곧 제어 대역폭이라
-#   이 차이가 "정착 시정수 0.64 s · 지령이 팔보다 빠름"의 직접 원인 후보다.
-#   → `_fabric_dt = step_dt`(0.02) × decimation 2 = 0.04 s 로 원본과 **같은 비율**을 만든다.
 FABRIC_DECIMATION = 2
-# ★★fab_test21 원본 정합: 원본은 이 값이 **ADR 파라미터**다 — `fabric_damping.gain (10, 20)`.
-#   레벨 0 = **10**(덜 감쇠 = 빠른 수렴 = 쉬움), 최고 레벨 = 20. 우리는 20 고정,
-#   즉 **원본의 가장 어려운 끝값**을 시작 조건으로 쓰고 있었다. 속도 피드포워드
-#   `(1.0 → 0.0)` 에서 0 을 고른 것과 정확히 같은 실수이고, PD 게인 DR 부재까지 세 번째다.
-FABRIC_DAMPING_GAIN = 10.0              # 원본 ADR 레벨 0
-ADR_FABRIC_DAMPING_GAIN = (10.0, 20.0)  # 원본 kuka `fabric_damping.gain` 그대로
-# ★PD 게인 도메인 랜덤화 — 원본에 있고 우리에겐 없던 것.
-#   원본 kuka ADR: stiffness/damping ×(0.5, 2.0) · joint friction (0., 5.)
-ADR_ARM_GAIN_SCALE = ((1.0, 1.0), (0.5, 2.0))
-ADR_ARM_FRICTION = ((0.0, 0.0), (0.0, 5.0))
-# ★fab_test21 원본 정합: kuka `robot_physics_material` — 로봇 표면 물성도 랜덤화한다.
-#   우리에겐 컵 물성만 있었다. 파지는 두 표면의 접촉이라 한쪽만 흔드는 건 반쪽이다.
-ADR_ROBOT_STATIC_FRICTION = ((1.0, 1.0), (0.5, 1.2))
-ADR_ROBOT_DYNAMIC_FRICTION = ((1.0, 1.0), (0.3, 1.0))
-ADR_ROBOT_RESTITUTION = ((1.0, 1.0), (0.8, 1.0))   # ★kuka 초기값은 1.0 이다
-# ★fab_test21 원본 정합: kuka `robot_spawn.joint_pos_noise (0, 0.35) · joint_vel_noise (0, 1.0)`.
-#   리셋 자세를 흔든다 — 우리는 고정 홈에서만 시작하고 있었다.
-ADR_ROBOT_SPAWN_POS_NOISE = (0.0, 0.35)   # rad
-ADR_ROBOT_SPAWN_VEL_NOISE = (0.0, 1.0)    # rad/s
-
-# ---------------------------------------------------------------------------
-# ★★fab_test22 원본 정합 — 관측 노이즈 (kuka `object_state_noise` · `robot_state_noise`)
-#   우리는 `enable_corruption = False` 로 **노이즈가 전무**했다. 원본은 ADR 로 키운다.
-#   ⚠ 레벨 0 은 전부 0(중립). 처음부터 노이즈를 주면 파지 자체를 못 배운다.
-ADR_OBS_OBJ_POS_NOISE = (0.0, 0.03)      # m
-ADR_OBS_OBJ_ROT_NOISE = (0.0, 0.10)      # rad
-ADR_OBS_JOINT_POS_NOISE = (0.0, 0.08)    # rad
-ADR_OBS_JOINT_VEL_NOISE = (0.0, 0.18)    # rad/s
-# 원본은 noise 와 별개로 **bias**(에피소드 고정 오프셋)도 준다 — pos 0.02 · rot 0.08 ·
-# joint pos 0.08 · joint vel 0.08. bias 는 ObsTerm 노이즈로 표현되지 않아 이번 정합에서
-# 제외했다(에피소드 단위 상태가 필요하다). ★미정합 항목으로 남긴다.
-
-# ★★fab_test22 원본 정합 — 작업공간 이탈 종료 (kuka `_get_dones`)
-#   원본은 물체가 스폰 박스 x·y 를 벗어나거나 z < 0.2 면 즉시 종료한다. 우리는 낙하만
-#   봤고 **옆으로 굴러 나가도 에피소드가 끝까지 갔다**(그 구간은 전부 낭비 표본).
-#   반폭은 목표 박스를 덮도록 GOAL_POINT 와 스폰 중심을 모두 포함하는 여유로 잡는다.
-OBJECT_WORKSPACE_X = (0.15, 0.65)
-OBJECT_WORKSPACE_Y = (0.05, 0.50)
-
-# ★★fab_test22 원본 정합 — physx (kuka SimulationCfg)
-PHYSX_BOUNCE_THRESHOLD_VELOCITY = 0.2            # 우리 0.01 이었다(20배 낮음)
-PHYSX_GPU_MAX_RIGID_PATCH_COUNT = 4 * 5 * 2 ** 15   # 655,360 — 원본 명시값
-# ★★fab_test22 원본 정합 — 씬 기본 물성·솔버·강체 속성 (kuka SimulationCfg / 로봇 asset)
-SCENE_STATIC_FRICTION = 1.0        # 우리 0.5 였다
-SCENE_DYNAMIC_FRICTION = 1.0       # 우리 0.5 였다
-ARTICULATION_SOLVER_POSITION_ITER = 8    # 우리 16 (원본보다 촘촘했다)
-ARTICULATION_SOLVER_VELOCITY_ITER = 0    # 우리 1
-RIGID_MAX_DEPENETRATION_VELOCITY = 1000.0   # 우리 5.0
-RIGID_MAX_LINEAR_VELOCITY = 1000.0
-RIGID_MAX_ANGULAR_VELOCITY = 1000.0
-RIGID_LINEAR_DAMPING = 0.0
-RIGID_ANGULAR_DAMPING = 0.0
-# ⚠ **effort_limit 는 정합 대상이 아니다.** kuka iiwa7 은 팔 전 관절 300 N·m 인데
-#   OpenArm 은 40/27/**7** N·m 다 — 하드웨어 사양이라 바꿀 수 없다.
-#   ★단 게인과 함께 봐야 한다: 포화 오차 = effort/kp 이므로
-#       j1-2  40/300 = 133 mrad · j3-4  27/300 =  90 mrad
-#       j5     7/100 =  70 mrad · j6     7/50  = 140 mrad · j7  7/25 = 280 mrad
-#   구 균일 게인 400 에서는 j5-7 이 **17.5 mrad** 에서 포화했다 — kuka 테이퍼가
-#   우리 저출력 원위 관절에 오히려 더 잘 맞는다(원위로 갈수록 kp 가 낮아지므로).
-# ★★★fab_test37: kuka 원본은 10.0 인데 **5.0 으로 되돌린다.**
-#
-# 로그 전수 분석(아카이브 23 런 + 오늘 10 런). `drop`(object_dropping)이 리프트의
-# **필요조건**이다 — 예외가 없다:
-#     drop(ep50-200) ≥ 0.02  →  리프트한 10 개 전부 (t7 0.064 … t14 0.522, t16ctl 0.304)
-#     drop(ep50-200) < 0.02  →  t1·t9·t10·t11·t30·t32·t33·t35·t36  전부 lifting 0
-# 성공한 런들은 수백 epoch 동안 컵을 10~50% 넘어뜨리며 돌았다. 그 실패가 곧 탐색이었다.
-# 오늘 판들은 ep50 안에 drop 이 0.002~0.034 로 죽고, 그 뒤 컵을 만지지 않으니 파지를
-# 찾을 **표본 자체가 없다.**
-#
-# 왜 길이가 개입하나 — `object_dropping` 은 페널티가 아니라 **종료**라 두 전략의 수익이
-# 다르게 스케일한다:
-#     가만히    r_idle × T     (T 에 비례해 커진다)
-#     접근→낙하  r_near × k     (k = 낙하 시각, T 와 무관하다)
-# t36 실측(스텝당 reaching 0.40 · 접근 시 1.2 · 낙하 100 스텝)을 넣으면:
-#     250 스텝(구 런)  가만히 2.00  vs  접근 2.40   → 접근이 이긴다
-#     300 스텝(5 s)    가만히 2.00  vs  접근 2.00   → 무승부
-#     600 스텝(현재)   가만히 4.00  vs  접근 2.00   → **가만히가 이긴다**
-# 분기점이 이 사이다. 길이는 원인이라기보다 **넘어야 할 언덕의 높이**를 정한다.
-#
-# ⚠ 단정하지 말 것 — 600 스텝 런은 전부 kuka env 이고 250 스텝 런은 전부 t16 env 라
-#   지금 데이터로는 **교락되어 있다.** 이 변경이 그 교락을 푸는 단일 변수 실험이다.
-#   250 스텝인데도 drop 이 죽은 런(t1·t9·t10·t11)이 있으므로 길이만으로는 설명되지 않는다.
-# ⚠ sim 1/120 · decimation 2 → 60 Hz 이므로 5.0 s = **300 스텝**이다(구 런은 50 Hz 250 스텝).
-EPISODE_LENGTH_S = 5.0
-
-# ★★fab_test21: fabric 속도를 PD 속도목표로 넘긴다(피드포워드).
-#   기존 배선은 `set_joint_velocity_target(zeros)` 였고 이는 **저장소 전역**이었다
-#   (pour_v3/v4/v5 · pour_sensor · grasp_v2/v10_3/v11 · grasp_adapt · agnostic/pour_fabric).
-#   DEXTRAH 원본에만 있다 — 그리고 원본에서 이 값은 **ADR 파라미터**다:
-#       "pd_targets": {"velocity_target_factor": (1.0, 0.0)}
-#   레벨 0 에서 1.0(완전 피드포워드)로 시작해 난이도가 오르며 0 으로 걷어낸다.
-#   우리는 그 **가장 어려운 끝값을 시작 조건으로** 쓰고 있었다.
-#
-#   왜 치명적인가 — 속도목표 0 이면 PD 감쇠항이 움직임을 반대로 민다:
-#       없을 때  kp·err = kd·v + τ_마찰  →  err ≈ (kd/kp)·v = 0.2·v [rad]  (kp 400 · kd 80)
-#       있을 때  kp·err = τ_마찰만       →  err ≈ 0.0012 rad = 0.07°
-#   즉 **속도에 비례해 뒤처지도록** 배선돼 있었다. 실측 정합: 정책 구동 중 관절속도
-#   0.855 rad/s → 예측 171 mrad vs 실측 |fabric_q − q| 140 mrad.
-#
-#   ⚠⚠ 이 결함 위에서 잰 값은 전부 재측정 대상이다:
-#       · 실현 가능 최대 TCP 속도 0.217 m/s (계단응답)
-#       · 이송 중 |cmd−TCP| 143 mm · 정착 시정수 0.64 s
-#       · 그래서 PALM_CMD_RATE_LIMIT 도 다시 잡아야 한다(아래 주석 참조)
-#       · leash 제거의 근거였던 "정책이 상시 최대속도를 명령한다"는 관측도 마찬가지
-#     반대로 **동결 구간 측정은 유효하다** — 관절속도 ~0 이라 드래그가 무시할 수준이고,
-#     드래그는 오프셋을 만들지 진동(방향반전)을 만들지 않는다.
-FABRIC_VEL_FF_SCALE = 1.0         # ADR 레벨 0 값. DEXTRAH velocity_target_factor 와 동일 규약
+FABRIC_DAMPING_GAIN = 20.0              # agnostic 트랙 검증값
 FABRIC_ROBOT_DIR = "openarm_tesollo_sensor_left_gripper"
 FABRIC_WORLD_FILENAME = "open_gripper_left_boxes_no_table"  # ★좌팔 전용 — 우팔용을 쓰면 자기 대역물·컵에서 밀려난다
 
-
-
-# ---------------------------------------------------------------------------
-# 도메인 랜덤화 + ADR 커리큘럼 (fab_test18 신설)
-# ---------------------------------------------------------------------------
-# ★사용자 지시: "도메인 랜덤화 요소들도 많이 필요함. grasp v1 이나 v2 는 그런 요소가 많음."
-#   grasp_v1(`tesollo/right/grasp_v1`)의 ADR 구조를 이 트랙에 맞게 옮긴다.
-#
-# ★★왜 정적 DR 이 아니라 ADR 인가 — 이번 트랙이 직접 태운 교훈이다.
-#   fab_test14 에서 jerk 페널티를 epoch 0 부터 켰더니 초기 탐색이 41% 죽고 이송 학습이
-#   통째로 무너졌다(grasp_left_curriculums.py docstring). **난이도를 올리는 요소는 과제가
-#   성립한 뒤에 켜야 한다** — 마찰·질량·스폰폭도 같은 성질이다.
-#   → dwell 게이트와 **같은 원리**로, 성공 지표가 임계를 넘을 때마다 한 단계씩 넓힌다.
-#
-# 진행 지표는 마지막 단계 보상을 쓴다(이미 게이트가 검증한 신호).
-# ★fab_test41: `dwell_at_goal` → **`stay`**. DexPour 계층 재편으로 그 항이 폐기됐고,
-#   같은 역할(목표 5cm 내 정지 + 직립)을 `stay` 가 맡는다. 이름을 안 옮기면 env 생성이
-#   `reward_manager.active_terms.index()` 에서 죽는다(fab_test41 첫 기동에서 실제로 죽었다).
-ADR_ENABLED = True
-# ═══════════════════════════════════════════════════════════════════════════
-# 컵 안정화 커리큘럼 (fab_test47, 사용자 결정 A) — **거꾸로 가는 ADR**
-#
-# ★★t44~t46 세 판이 같은 궤적으로 죽었다: 벌점 체계에서 탐색 노이즈는 순비용이라
-#   σ 가 빨리 줄고(0.29@340 · 0.256@608 · 0.213@407), 그 σ 로 컵(134 g · 175 mm)을
-#   건드리면 넘어져서 tip 벌점 + 기하 벌점만 받는다. 거친 접촉의 보상은
-#   `contact = touch × grasp_quality` 라 기하가 나쁘면 ~0.05 — **시도의 기대값이
-#   음수**다. 그래서 "조심히 만지는 법"보다 "안 만지는 법"이 먼저 수렴했다
-#   (t46: 접촉 경험 후 cmd_x 416 → 323 후퇴, 150 mm 대기 자세 고착).
-#   [[suppression-terms-need-task-first]] 의 재현 — tip 벌점이 과제 성립 전에
-#   탐색을 벌하고 있었다.
-#
-# 처방: 초기엔 컵 질량을 8 배(≈1.07 kg)로 — 전도 임계 토크가 질량에 비례하므로
-#   브러시 접촉으로는 안 넘어진다. 탐색기의 접촉이 벌이 아니라 정보가 된다.
-#   파지(양턱 접촉)가 성립하면 단계적으로 정상 질량(×1)까지 **내린다**.
-#   기존 ADR(아래)과 방향만 반대, 기구는 동일하다.
-#
-# ⚠ 게이트 지표는 stay 가 아니라 **grasp**(μ·품질)다 — 무거운 컵은 손목 effort
-#   7 N·m 로 못 들 수 있어 stay 게이트면 원리적으로 만렙 불가(순환)다.
-#   파지가 되면 내려가고, 내려가야 리프트가 배울 수 있다.
-# ⚠ 기존 ADR 의 cup_mass lerp 는 (1,1)에서 시작하므로, 이 커리큘럼이 ×1 에
-#   도달한 뒤 ADR 이 이어받으면 값이 연속이다. ADR(stay 게이트)이 이보다 먼저
-#   발동할 수는 없다(stay 는 grasp 의 상위 단계).
-CUP_STABILIZE_MASS_START = 8.0     # 시작 질량 배율
-CUP_STABILIZE_LEVELS = 7           # 8.0 → 1.0 을 7 단계 lerp
-CUP_STABILIZE_METRIC_TERM = "lift"   # ★fab_test56: grasp 항 폐지 — 하강 게이트는 리프트 성립
-CUP_STABILIZE_TRIGGER = 0.10       # grasp 스텝보상 > 0 인 env 비율(ADR 과 같은 규약)
-CUP_STABILIZE_EMA_ALPHA = 0.01
-CUP_STABILIZE_MIN_STEPS_BETWEEN = 1500   # = ADR 과 동일(5 에피소드 분량 env 스텝)
-
-ADR_METRIC_TERM = "stay"   # 진행 지표(EMA) — DexPour 사다리의 마지막 칸
-ADR_METRIC_EMA_ALPHA = 0.01
-# ★★fab_test22 원본 정합: kuka 는 **성공 구역에 있는 env 비율 > 0.4** 로 올린다
-#   (`in_success_region.float().mean() > success_for_adr`). 우리는 dwell 보상의 EMA
-#   크기(≥1.0)를 썼다 — 같은 것이 아니다. 보상 크기는 weight 에 따라 달라지지만
-#   비율은 스케일 불변이라 해석·이식이 쉽다. 지표도 '비율' 로 바꾼다.
-ADR_TRIGGER = 0.4        # 성공 구역 env **비율** 임계(kuka success_for_adr)
-# ⚠ 커리큘럼이 볼 수 있는 카운터는 `env.common_step_counter`(= **env 스텝**)뿐이다.
-#   1 epoch = rl_games `horizon_length`(=24) 스텝이므로 epoch 을 스텝으로 환산해 둔다.
-#   이 환산을 빼먹으면 150 epoch 이 아니라 ~6 epoch 마다 확장돼 난이도가 급등한다.
-# ★fab_test22: yaml 의 horizon_length 와 반드시 같아야 한다(계약이 검사한다).
-#   kuka 원본 정합으로 24 → 16.
-ADR_HORIZON_STEPS = 16         # rl_games_ppo_fab_cfg.yaml 의 horizon_length 와 일치해야 한다
-# ★★fab_test22 원본 정합: kuka `min_steps_for_dr_change = 5 × (에피소드 스텝)`.
-#   에피소드 = 10 s / (decimation 2 × sim_dt 1/120) = 600 스텝 → **3000 env 스텝**.
-#   우리는 150 epoch × horizon 16 = 2400 이었다.
-# ★★fab_test22: env 스텝으로 **직접** 정의한다. epoch×horizon 로 환산하면 나눗셈
-#   나머지 때문에 원본값(3000)에 못 맞는다(187×16 = 2992). 원본은 env 스텝 기준이다.
-ADR_MIN_STEPS_BETWEEN = 5 * int(round(EPISODE_LENGTH_S / (2 * (1.0 / 120.0))))  # 5 × 에피소드 스텝 (5.0 s @60 Hz → 1500)
-ADR_MIN_EPOCHS_BETWEEN = ADR_MIN_STEPS_BETWEEN // ADR_HORIZON_STEPS
-# ★★fab_test22 원본 정합: kuka `num_adr_increments = 50`. 우리는 5 였다 —
-#   레벨당 난이도 도약이 10 배 컸다. 같은 최종 범위를 50 단계로 잘게 오른다.
-# ★kuka `num_adr_increments`. 카운터는 0(중립) ~ 50(만렙)으로 **51 단계**이고,
-#   보간 분모는 50 이다(`param_slope = (upper-lower)/num_increments`).
-#   우리는 분모를 LEVELS-1=49 로 쓰고 최고 레벨을 49 로 뒀다 — 끝값은 같지만
-#   단계 폭이 2% 어긋난다. 원본 규약으로 맞춘다.
-ADR_LEVELS = 50           # = num_increments. 레벨 L ∈ [0, 50], frac = L / 50
-
-# 각 항목의 (초기값, 만렙값). 레벨 L 에서 lerp(초기, 만렙, L/(ADR_LEVELS-1)).
-# ★만렙값은 위에서 **실측으로 정한 범위**와 일치해야 한다 — 그래야 ADR 이 끝났을 때
-#   스폰·목표가 정확히 검증된 폭이 된다.
-ADR_SPAWN_X_RANGE = (0.01, CUP_SPAWN_X_RANGE)       # 0.01 → 0.03
-ADR_SPAWN_Y_RANGE = (0.01, CUP_SPAWN_Y_RANGE)       # 0.01 → 0.02
-ADR_GOAL_JITTER_SCALE = (0.35, 1.0)                 # GOAL_JITTER 에 곱하는 배율
-# 물리 DR — grasp_v1 종점과 같은 값(그 트랙이 실측으로 정착시킨 범위).
-#   ⚠ 초기값은 **중립**(1.0)이어야 한다. 처음부터 미끄럽거나 무거우면 파지 자체를 못 배운다.
-ADR_CUP_STATIC_FRICTION = ((1.0, 1.0), (0.5, 1.2))
-ADR_CUP_DYNAMIC_FRICTION = ((1.0, 1.0), (0.3, 1.0))  # 하한 0.3 = 미끄러운 컵
-# ★fab_test21 원본 정합: kuka `object_physics_material.restitution_range = (0.8, 1.0)`.
-#   우리 (0.0, 0.2) 는 근거 없이 보수적이었다. 레벨 0 은 중립(0) 유지.
-ADR_CUP_RESTITUTION = ((1.0, 1.0), (0.8, 1.0))     # ★kuka 초기값은 1.0 이다
-# ★fab_test21 원본 정합: kuka `object_scale_mass.mass_distribution_params = (0.5, 3.0)`.
-ADR_CUP_MASS_SCALE = ((1.0, 1.0), (0.5, 3.0))
-# 외란 — 컵에 무작위 힘. 컵 질량 134 g 기준 0.5 N ≈ 3.7 m/s^2.
-#   ⚠ 2지 평행 그리퍼는 5지 손보다 외란에 약하다(마찰 파지) — v1 의 8 m/s^2 대신 작게 잡는다.
-# ★fab_test21 원본 정합: kuka 외란은 **가속도** 기준 `object_wrench.max_linear_accel (0, 10)`.
-#   컵 질량(≈0.17 kg)을 곱해 힘으로 환산 → 0 ~ 1.7 N. 구값 0.5 N 은 3.4 배 약했다.
-# ★fab_test22 원본 정합: kuka `wrench_trigger_every = 1/(decimation×sim_dt)` = **1 초**.
-ADR_DISTURB_INTERVAL_S = (1.0, 1.0)                  # 외란 재추첨 간격(원본 1 s 고정)
-# ★DEXTRAH 원본과 같은 규약 — 속도 피드포워드를 난이도로 걷어낸다(1.0 → 0.0).
-#   ⚠ **방향이 중요하다**: 레벨 0 = 1.0(완전 피드포워드 = 쉬움), 최고 레벨 = 0.0.
-#     반대로 넣으면 처음부터 드래그가 걸려 지금까지의 결함을 재현한다.
-ADR_VEL_FF_SCALE = (1.0, 0.0)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# fab_test23 — DEXTRAH kuka 3차 전수 대조에서 남아 있던 항목
-#
-# 2차 대조(fab_test22)는 sim/physx/solver/재질/ADR 일정까지 맞췄지만, 아래 넷은
-# **원본 소스를 다시 읽고서야** 드러났다. 공통점이 하나 있다 — 전부 IsaacLab 기본
-# 항목으로 "대충 같은 일을 하는" 것을 썼고, 기본 항목의 **분포**가 원본과 달랐다.
-# 이 트랙에서 반복된 실수의 다섯 번째 사례다(속도 피드포워드·fabric damping·PD DR·
-# 관측 노이즈 폭에 이어).
-# ═══════════════════════════════════════════════════════════════════════════
-
-# ── 로봇 강체/아티큘레이션 속성 (kuka `KUKA_ALLEGRO_CFG.spawn`) ────────────
-# ★★`disable_gravity=True`. 원본은 팔에 **중력을 끈다**.
-#   우리는 켜 두고 `GRAVITY_COMP_GAIN` 적분항으로 처짐을 흡수했는데, 그 적분항이
-#   08.25 에 **속도 피드포워드 결손을 가리고 있었다**(관절오차를 자기가 먹어치워
-#   결손이 지표에 안 나타났다). 원본은 중력이 없으니 그런 보정 자체가 없다.
-#   ⚠ 트레이드오프: 실기 팔에는 중력이 있다. 원본이 이래도 되는 이유는 Kuka 의
-#     저수준 컨트롤러가 하드웨어에서 중력 보상을 하기 때문이다 — 즉 `disable_gravity`
-#     는 "중력이 없다"가 아니라 "중력 보상은 아래 층이 한다"는 모델이다.
-#     OpenArm 실기 배포 때 같은 전제가 서는지 확인해야 한다.
-ROBOT_DISABLE_GRAVITY = True
-ROBOT_RETAIN_ACCELERATIONS = True
-ROBOT_SLEEP_THRESHOLD = 0.005
-ROBOT_STABILIZATION_THRESHOLD = 0.0005
-ROBOT_DRIVE_TYPE = "force"
-
-SCENE_ENV_SPACING = 2.0          # kuka InteractiveSceneCfg(env_spacing=2.)
-
-# ── 외란 렌치 (kuka `apply_object_wrench`) ────────────────────────────────
-# 상세 근거는 grasp_left_events.py `apply_object_wrench` docstring.
-ADR_CUP_MAX_LINEAR_ACCEL = (0.0, 10.0)   # m/s² — 원본 `object_wrench.max_linear_accel`
-DISTURB_TORSIONAL_RADIUS = 0.01          # m — 원본 `torsional_radius`
-DISTURB_HAND_DIST_THRESHOLD = 0.3        # m — 원본 `hand_to_object_dist_threshold`
-
-# ── 관측 bias (kuka `object_state_noise` · `robot_state_noise` 의 bias 항) ──
-# ★per-step 노이즈는 정책이 시간축으로 평균 내 지울 수 있지만 bias 는 못 지운다.
-#   실기에서 실제로 문제가 되는 쪽은 bias 다. 우리에겐 이 층이 통째로 없었다.
-ADR_OBS_OBJ_POS_BIAS = (0.0, 0.02)       # m
-ADR_OBS_OBJ_ROT_BIAS = (0.0, 0.08)       # rad
-ADR_OBS_JOINT_POS_BIAS = (0.0, 0.08)     # rad
-ADR_OBS_JOINT_VEL_BIAS = (0.0, 0.08)     # rad/s
-
-# 손 직교 관측에 관절 노이즈를 옮길 때 쓰는 지렛대 길이.
-# 원본은 노이즈 낀 관절각을 FK 해서 손 위치를 만든다(상관된 노이즈). 우리는 배치 FK
-# taskmap 이 없어 직교 좌표에 직접 건다 — 폭만 등가로 맞춘다.
-# 0.5 m = 팔꿈치~턱 유효 거리 실측 근사(0.08 rad × 0.5 m ≈ 40 mm).
-HAND_POINT_NOISE_LEVER = 0.5
-
-
-# ── 접근 자세: TCP +x ⊥ world +z (fab_test31, 사용자 지시) ────────────────
-# 2 지 평행 그리퍼는 **접근 자세가 파지 성패를 정한다.** 기울어진 채 다가가면 두 접촉점이
-# 컵 지름 양끝에 놓이지 않아, 도착한 뒤에 자세를 고치려 해도 이미 컵을 밀고 있다.
-# 그래서 파지 시점이 아니라 접근 보상에 **곱한다**.
-# floor 를 두는 이유: 접근 보상은 학습 초기에 살아 있는 유일한 신호다. 0 이 되면
-# 조기 종료가 최적이 되는 붕괴가 난다(test6·test7 실측: 에피소드 130 → 13, 총보상 −0.46).
-TCP_LEVEL_FLOOR = 0.25     # 최악 자세에서도 남는 접근 보상 비율
-TCP_LEVEL_POWER = 4.0      # (1-|sin|)^4 — 수직 근처에서 평평하지 않게(cos^4 규약)
-
-
-# ── 접근 보상 (agnostic/tasks/grasp_sensor 이식, 08.25 사용자 지시) ─────────
-# 원본 상수 그대로: weight 2.0 · sharpness 8.0 · side_radius 0.03.
-# side_radius 는 파지 대역 컵 반경(실측 CUP_BASE_RADIUS 0.0295)과도 일치한다.
-APPROACH_WEIGHT = 2.0
-# ★★fab_test34: 원본 8.0 → **4.0**. 원본은 홈이 물체에 훨씬 가까워 8.0 이 작동하지만
-#   우리 작업 구간은 d_palm + d_side ≈ 0.15~0.40 m 다. 실측(t33 ep936):
-#       턱-컵 0.209 m 에서 936 epoch 정체 · lifting 0 · 지령 y 0.329(목표 0.32 에 붙음)
-#   `s·exp(−s·d)` 의 gradient 는 `s = 1/d` 에서 최대다. 우리 대역이면 최적 s = 2.5~6.7.
-#       s=8.0  d=0.40 에서 값 0.041 · gradient 0.33 /m   ← 신호가 바닥
-#       s=4.0  d=0.40 에서 값 0.202 · gradient 0.81 /m   (2.5 배)
-#       s=3.0  d=0.40 에서 값 0.301 · gradient 0.90 /m
-#   3.0 이 gradient 는 근소하게 크지만 성공/현재 **대비**가 2.6 배로 줄어든다(4.0 은 3.6 배).
-#   대비를 지키면서 gradient 를 올리는 4.0 을 고른다.
-#   ⚠ 이식 상수를 우리 기하에 맞춰 바꾸는 것이므로, 원본과 다르다는 사실을 여기 남긴다.
-APPROACH_SHARPNESS = 4.0
-APPROACH_SIDE_RADIUS = 0.03
-# 두 턱이 대칭이라 0.5/0.5 (원본은 엄지 비대칭 때문에 0.6/0.4).
-APPROACH_SIDE_WEIGHT_A = 0.5
-
-
-# ── 파지 품질 연속화 (fab_test33) ─────────────────────────────────────────
-# `grasp_ok`(이진)가 다섯 항의 공통 목이라 파지 전엔 전부 정확히 0 이었다.
-# 연속판 `grasp_quality` 로 바꾸되, **성공 기하에서 1.0** 이 되게 정규화해서
-# 기존 가중 균형을 건드리지 않는다. 실측 기하로 계산한 정규화 상수:
-#     성공(lateral 20.0 · along 13.0 mm) → exp(−20/30)·exp(−13/30) = 0.333
-GRASP_QUALITY_REF = 0.333
-GRASP_BAND_SOFT_TAU = 0.020   # 대역 밖 20 mm 에서 1/e — 경계에 절벽을 안 만든다
-
-
-# ── 접촉 보상 (DexPour `r_contact` 이식, fab_test38) ──────────────────────
-# 가중 산정은 실측이다. t37 ep336-452 에서 살아 있던 항의 순간율 합이 **0.486**
-# (`reaching` 0.245 + `between_jaws` 0.241). 한 턱이 에피소드의 1/3 동안 닿으면
-# 기여 = w × 0.5 × 0.33 = 0.167w 이므로:
-#     w=1.0 → 0.167 (기존의 34%)   약하다
-#     w=2.0 → 0.333 (기존의 69%)   접근과 동급, 지배하지 않는다  ← 채택
-#     w=5.0 → 0.83  (기존의 171%)  접근을 밀어낸다
-CONTACT_ENGAGE_WEIGHT = 2.0
-
-
-# ── fab_test39: 전도 종료 (D3) ────────────────────────────────────────────────
-# ★★이 트랙만 전도 종료가 없었다. 자매 트랙 넷은 전부 명시적 각도 종료를 가진다
-#   (tesollo/right/grasp_v1 60° · agnostic/grasp_sensor 60° · gripper/left·right/grasp_v1 30°).
-#   우리는 OBJECT_DROP_HEIGHT(0.27)가 높이로 전도를 대신하게 뒀는데 원점 z 는 기울기에
-#   둔감해 거의 누워야 걸린다(60° 에서 원점 0.299 > 0.27 통과).
-#   t38 결정론 실측: 컵을 45 mm 비스듬히 밀고 다니는 동안 에피소드가 끝까지 살아 있었다.
-# ⚠ 60° 로 잡는다. 30°(gripper/*/grasp_v1)는 파지 중 흔들림을 끊을 수 있고, 이 트랙은
-#   자세 AND 게이트로 학습을 죽인 이력이 있다(test6/test7: lifting 6.14 → 0.0000).
-#   성공 파지의 실측 컵 기울기는 4.1° 라 60° 는 충분히 넉넉하다.
-OBJECT_TIP_MAX_DEG = 60.0
-
-# ★fab_test46: 2-스케일(FINE) 상수 4종 **삭제** (사용자 결정).
-#   존재 이유(지터 = σ×박스반폭 축소)는 `PALM_CMD_RATE_LIMIT` 0.02 가 박스와 무관하게
-#   대체했다. 남았던 것은 해악뿐 — 앵커 = 진입 순간의 지령인데 리미터 하에서 지령은
-#   턱보다 ~50mm 앞서 걸으므로 앵커가 컵−50mm 에 잠기고, 최전방 = 앵커+57.5 ≈ 컵+7.5mm
-#   < 필요 컵+43mm(턱오프셋 33 + fabric 처짐 10). **삽입 지령이 구조적으로 불가능**했다.
-#   t45 실측: 지령 x 최대 347(필요 423) · 턱-컵 118~121mm 정체 · contact 1e-4.
-# N. 접촉 판정 문턱 — 스치는 것과 누르는 것을 가른다. 컵 질량 0.134 kg 이므로
-# 정지 마찰을 이기는 수준(약 1 N)보다 낮게 두어 "닿았다"를 넓게 인정한다.
-CONTACT_FORCE_THRESHOLD = 0.5
-# 양 턱 동시 접촉 보너스. ⚠ **현재 도달 불가** — 액션 게이트가 `grasp_ok` 전에는
-# 그리퍼를 84.5 mm 로 강제 개방하는데 컵 단면은 58 mm 다. 게이트 연속화 이후를 위한 배선.
-CONTACT_ALL_BONUS = 1.5
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# fab_test41 — DexPour 계층 보상 (5단계 사다리)
-#
-# 논문 Fig. 3:  r_t = (1−λ)·p + μ·r_grasping + μ·r_lift + ν·r_transporting + ρ·r_pouring
-# 우리 5단계(사용자 규격): approach/align → grasp → lift → transfer → stay
-#
-# ★★가중이 **단조 증가**해야 한다. 게이트가 이진이므로 열린 칸의 지급 = 가중 × 진척이고,
-#   단조 증가면 실지급도 단조 증가한다. 구 구조(곱 사슬)는 인자마다 <1 이라 실지급이
-#   역전됐다 — 자매 트랙 실측: grasp 1.469 > lift 0.757 > transfer 0.661 > stay 0.334.
-#   뒤 단계로 갈수록 손해였으니 정책이 앞 칸에 머무는 것이 최적이었다.
-# ★★`approach` 와 `contact` 는 **게이트 밖**이다. 논문은 `r_contact` 를 μ 안에 두는데
-#   그러면 λ=1·μ=0("도착했지만 아직 못 잡음") 구간의 보상이 0 이 된다. 이 트랙은 보상 0 이
-#   조기 종료를 최적으로 만드는 실패를 겪었다(test6/test7: lifting 6.14→0, ep 130→13).
-# ★★fab_test43: `approach` 를 **벌점으로 뒤집는다**(사용자 결정). 양수 shaping 은 상한이
-#   성능이 아니라 **시간**이라(0.6/스텝 × 300스텝) "오래 살기"와 "자세만 올리기"가 둘 다
-#   이득이었다. t42 실측이 그 결말이다 — 1153 epoch 동안 `perp_q` 0.43 → 0.89 로 오르는
-#   사이 턱-컵은 195 → 199 mm 로 제자리였고, approach 상승분(1.45배)이 자세 항 예측
-#   (1.49배)과 소수점까지 일치했다. **후반 학습 전부가 손목 각도 맞추기였다.**
-#   벌점은 상한이 0 이라 파밍할 여지가 원리적으로 없다(논문 `p_approaching` 도 벌점이다).
-# ⚠ 벌점 전환은 **실패 종료 3종 제거와 한 몸이다.** 모든 보상이 음수인데 `terminated` 가
-#   남아 있으면 V<0 이라 **일부러 죽는 것이 최적**이 된다(test6/test7 실증: ep 130 → 13).
-# ★fab_test50: approach = **원본 lift 순수 거리 양수 커널**(1 − tanh(d/std), 가중 1.0).
-#   세 체계 소거 근거는 rewards.stage_approach docstring. 곱셈 인자 금지(t42 의 죄).
-STAGE_APPROACH_WEIGHT = 1.0
-APPROACH_KERNEL_STD = 0.1          # 원본 lift `object_ee_distance` std 그대로
-STAGE_TIP_WEIGHT = -1.0           # 전도 — 구 `object_tipped` **종료를 대체**
-# ★★fab_test56 (사용자 결정): contact·grasp 항 **폐지**. 접촉 기반 단계는 "첫 접촉 =
-#   기대이득 0 · 전도종료 −V" 도박이라 접촉 회피가 합리해진다(t55 실측: 시작 21mm 에서
-#   110mm 로 후퇴 정착·straddle 이 σ와 함께 소멸). 파지는 명시 보상 없이 "들려면 쥘 수
-#   밖에 없다"로 창발시킨다(원본 lift 레시피 철학). 그리퍼 개폐 액션은 자유(무 shaping).
-STAGE_HELD_NEAR_M = 0.06          # held 거리 게이트 [m]. 쳐날리기 방지(test3: 배팅 중
-#   TCP-컵 3044mm) — 리프트 지급은 턱이 컵 곁(60mm, straddle 대역 밖 여유 16mm)일 때만
-STAGE_LIFT_WEIGHT = 5.0
-STAGE_TRANSFER_WEIGHT = 7.0
-STAGE_STAY_WEIGHT = 10.0
-
-# ── 트리거 (논문 식 3~6) ──────────────────────────────────────────────────────
-STAGE_GATE_APPROACH_M = 0.12      # λ. t40 실측 턱-컵 중앙값 133 mm — 운전권에서 열린다
-STAGE_GATE_CONTACT_N = 2.0        # μ. **2지 = 양 턱 동시**(논문은 4지 전부)
-# ν. 리프트 목표 40 mm 의 약 1/3. 논문은 h_lift 0.15 를 그대로 쓰지만 그건 이송 진입
-#   조건이고, 우리는 리프트 자체가 40 mm 라 그 1/3 에서 이송 shaping 을 연다
-#   (자매 트랙도 0.05/0.15 = 1/3 비율).
-#   ⚠ `lift_height` 는 컵 **최저점**이라 기울여서 위조할 수 없다(원점 z 는 4.61 mm 오른다).
-STAGE_GATE_LIFT_M = 0.015
-STAGE_GATE_TRANSFER_M = 0.08      # ρ. d_goal 시작 ~0.20 의 절반 아래
-
-# ── 단계 진척량 ──────────────────────────────────────────────────────────────
-STAGE_LIFT_REF_M = MINIMAL_LIFT_HEIGHT - CUP_SPAWN_Z   # 0.04 — 사용자 규격 "테이블에서 4cm"
-STAGE_TRANSFER_STD_M = 0.15       # exp(−d_goal/std). 시작 ~0.20 에서 0.26
-STAGE_STAY_POS_TOL_M = 0.05       # 사용자 규격 "목표 지점 5cm 이내" (= STAGE_GATE_TRANSFER 와 별도 로깅)
-STAGE_STAY_SPEED_REF = 0.05       # m/s. exp(−v/ref)
-
-# ── 자세 (사용자 규격 "cup+z 와 world+z 는 15도 이내") ────────────────────────
-# 단계별로 요구가 다르다 — 이송 중에는 관용, 목표에서 정지할 때는 직립.
-STAGE_TILT_TOLERANCE_DEG = (25.0, 15.0)   # U_tol: 25°에서 0 → 15°에서 1 (lift/transfer)
-STAGE_UPRIGHT_GATE_DEG = (15.0, 5.0)      # U_up : 15°에서 0 → 5°에서 1 (stay)
-# ★"TCP_+z 가 world_+z 와 수직" — 접근축의 world-z 성분이 0 이어야 한다.
-STAGE_PERP_EXPONENT = 2.0
-# ★★fab_test52(사용자 결정): **수직을 사다리의 게이트로** — lift 성립 전까지 TCP z ⊥
-#   world z 가 유지되어야 contact/grasp/lift 가 열린다. t51 실측: 보상에서 자세를 빼자
-#   정책이 ~25° 기울여 손끝을 컵에 대는 걸로 μ 0.37 을 채웠다(perp_q 0.86→0.32).
-#   게이트는 t42 의 곱셈 파밍과 다르다 — 양수 흐름을 만들지 않고 **막기만** 한다.
-#   · contact 항에는 연속 게이트 U_perp = smoothstep(축기울기, 30°→15°)
-#   · μ 트리거에는 이진 조건 축기울기 < 20° (ν·ρ·grasp·lift 가 자동 상속 —
-#     "lift 도 world+z 로 올린다"는 요구와 정합)
-# ★fab_test53(사용자 정정): 하한 15° → **10°** — 10° 이하 = 1 · 30° 이상 = 0.
-STAGE_PERP_GATE_DEG = (30.0, 10.0)   # U_perp smoothstep (contact·bridge 용)
-# ★★fab_test53 bridge 2종 (사용자 승인) — agnostic/grasp_sensor 의 close/tip_bridge
-#   구조 이식(그 트랙 주석: "리미터가 '우연한 요동' 탐색원을 없애 생긴 공백을 다리로").
-#   t52 실측이 필요성을 증명했다: 수직 게이트만 넣자 정책이 커널 이득(기울여 손끝
-#   내리기)으로 ~28° 에 정착 → U_perp≈0.02 → μ 0.0000 완전 잠김. 게이트는 막기만
-#   하고 **수평으로 돌아갈 gradient 를 못 준다** — 그 방향타가 bridge 다.
-#   · perp_bridge  = w·λ·U_perp          근접 상태의 수평 유지가 매 스텝 지급
-#   · close_bridge = w·λ·U_perp·폐쇄도    근접+수평에서 닫기 진행에 소액(접촉 발견 다리)
-#     ★접촉해도 끄지 않는다([[grip-contact-cliff]] — 닿으면 끄는 보상은 접촉 회피를 가르친다)
-#   파밍 상한: 합계 0.8/step < grasp(3)~stay(10) 사다리. 둘 다 λ·U_perp 라
-#   "멀리서/기울여서"는 0.
-STAGE_PERP_BRIDGE_WEIGHT = 0.5
-# STAGE_CLOSE_BRIDGE_WEIGHT — fab_test56 폐지(그리퍼 shaping 제거, 위 주석)
-STAGE_MU_PERP_MAX_DEG = 20.0         # μ 트리거 이진 조건
-# ★구 `STAGE_ALIGN_FLOOR`·`STAGE_ORIENT_FLOOR` 제거. 곱셈 shaping 의 floor 였는데
-#   fab_test43 에서 approach 가 덧셈 벌점이 되어 floor 개념 자체가 없어졌다.
-#   그 둘의 동적 범위(0.15→1.0 = 6.7배)가 거리 범위(2.4배)를 3배 눌러 t42 를 망쳤다.
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ① approach = **벌점** — gripper_base 프레임 3축 분해 (fab_test43, 사용자 규격)
-#
-# 사용자 규격: `PALM BASE(xyz) — CUP(xy) — TCP(xyz)` 순서여야 한다.
-#   = 컵 축이 팜 베이스와 TCP **사이**에 있어야 두 링크 사이에 컵이 들어온다.
-#
-#   gripper_base 프레임:  z = 접근축 · y = 턱축(손가락이 벌어지는 방향) · x = 나머지
-#
-#       base ────────── 컵 축 ────────── TCP
-#        0              46.9            80.0   [mm, base z]
-#                       ↑ GRASP_DEPTH_IN_BASE_Z (성공 파지 실측 중앙값)
-#       손가락 메시 z ∈ [0.5, 95.4] mm
-#       → 패드 중앙이 컵 축에 닿으면 **손끝이 축을 48.5 mm 지난다**(컵 반경 29.5 + 19).
-#         즉 `s → 46.9 mm` 는 "컵에 가까이"가 아니라 "컵이 두 링크 사이에 있다"와 같다.
-#
-# ★`|s − 46.9|` **대칭** 오차라 한 식이 두 실패를 같이 막는다:
-#     못 미침(t42 의 s ≈ 200 mm)  ·  너무 깊이 박기(s < 0 = 컵이 손바닥에 박힘 —
-#     이 트랙이 실제로 저지른 실수. 파일 위쪽 GRASP_DEPTH_IN_BASE_Z 주석 ② 참조)
-# ★축마다 허용치가 다르므로 **등방 거리(norm)를 쓰지 않는다.** 턱축 여유는 12.75 mm
-#   (개구 84.5 − 컵 지름 59)/2 뿐이고 높이 여유는 37.5 mm 라 3배 차이가 난다.
-# ★전부 **캡**을 둔다. 컵이 굴러 나가면 벌점이 발산해 다른 항을 삼킨다.
-STAGE_ENTER_DEPTH_TARGET_M = GRASP_DEPTH_IN_BASE_Z          # 0.0469 — s 목표
-STAGE_ENTER_DEPTH_WINDOW_M = (0.0, TCP_OFFSET_IN_BASE_Z)    # (0, 0.080) 사용자 순서 조건
-# ★fab_test50: Φ 전용 축별 가중·캡(STAGE_ENTER_DEPTH_WEIGHT/CAP ·
-#   STAGE_JAW_LATERAL_WEIGHT/CAP · STAGE_HEIGHT_WEIGHT/CAP · STAGE_ORIENT_PENALTY_WEIGHT)
-#   **삭제** — approach 가 등방 유클리드 커널이 되어 축별 가중이라는 개념이 사라졌다.
-#   (벌점/PBRS 시절의 "올라가서 깊이 깎기" 뒷문도 등방 거리에서는 존재하지 않는다.)
-#   s·l·h 진단과 STAGE_ENTER_DEPTH_TARGET_M/WINDOW(순서 계약)는 유지.
-# 전도 벌점 — 연속 신호(8° 마진, 60° 에서 1.5). ★fab_test50 부터는 60° **종료도 함께**
-#   되살아난다(양수 흐름에서 truncated 는 γ·V 보너스가 되므로 terminated 로) — 벌점은
-#   그 전 구간의 gradient 를 맡는다. t42 의 회피 함정은 질량 ×8 커리큘럼이 무력화
-#   (tipped 실측 0.003 — 절벽을 만날 일 자체가 드물다).
-STAGE_TIP_MARGIN_DEG = 8.0
-STAGE_TIP_PER_DEG = 0.029
-STAGE_TIP_PENALTY_MAX = 1.5

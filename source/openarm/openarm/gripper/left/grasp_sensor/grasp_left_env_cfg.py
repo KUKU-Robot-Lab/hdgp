@@ -169,7 +169,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "left_gripper": ImplicitActuatorCfg(
                     joint_names_expr=["l_hj_gripper_[1-2]"],
                     velocity_limit_sim=0.2,
-                    effort_limit_sim=P.GRIPPER_EFFORT_LIMIT,  # ★fab_test58: 구 333N 관통 사고 — preset 주석
+                    effort_limit_sim=333.33,
                     stiffness=2e3,
                     damping=1e2,
                 ),
@@ -224,23 +224,23 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   컵 몸통이 58~88 mm 라 이 상태로는 물리적으로 물 수 없다.
         #   두 조는 축이 서로 반대(`0 -1 0` vs `0 1 0`)라 같은 값을 주면 함께 벌어진다.
         #   ※ 자산 쪽에서 mimic 을 복원하면 이 지령은 무해하게 중복될 뿐이다.
-        # ★★fab_test46: 하드 게이트 **제거** (사용자 결정) — 무게이트 이진 개폐.
-        #   구 `GatedBinaryJointPositionAction` 은 접근 성공(lateral<30·along<30) 전에
-        #   그리퍼를 강제로 열었다. 근거였던 "열기·위치·닫기·들기 연접을 정책이 우연히
-        #   맞춰야 한다"는 **양수 shaping + 조기종료 시절**의 문제다. 지금은:
-        #     · 벌점 사다리라 조기 폐합으로 얻을 보상이 없다(contact = 접촉×기하 곱)
-        #     · 잘못 닫고 밀면 tip 벌점이 계속 문다(에피소드는 truncated 리셋)
-        #     · 리미터 0.02 라 닫힌 채 돌진하는 파괴적 탐색 자체가 없다
-        #   레퍼런스 lift 도 DexPour 도 그리퍼는 무게이트다.
-        #   액션 의미(레퍼런스와 동일): 1D 이진, a>0 → 닫힘(0.0) · a≤0 → 열림(0.044).
-        #   mimic 으로 두 조가 함께 움직인다.
-        # ⚠ `gripper_gate` 관측(1D)과 `gate_rate` 진단도 함께 제거 — 게이트 상태가
-        #   사라졌으므로. 관절공간판 obs 36→35, 구 체크포인트와 비호환(fresh 전용).
-        self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
+        # ★★08.24 **접근 성공 하드 게이트**. 접근 전에는 그리퍼를 강제로 연다.
+        #   근거: Fabrics 가 우연한 리프트를 없앴다(관절 목표 변화 test17 2.79 rad/s vs
+        #   fab_test5 0.38 rad/s → 컵 상승 +138 mm vs +17 mm). 정책이 "열기·위치·닫기·들기"
+        #   연접을 우연히 맞춰야 하는 문제를, 앞 두 칸을 코드가 강제해 없앤다.
+        #   ⚠ **부모에서 바꿔야** 관절공간·IK·Fabrics 세 변형에 전파된다
+        #     (fab cfg 에서의 그리퍼 재정의는 계약으로 금지돼 있다).
+        self.actions.gripper_action = actions.GatedBinaryJointPositionActionCfg(
             asset_name="robot",
             joint_names=list(P.GRIPPER_JOINT_NAMES),
             open_command_expr={j: P.GRIPPER_OPEN_POS for j in P.GRIPPER_JOINT_NAMES},
             close_command_expr={j: P.GRIPPER_CLOSED_POS for j in P.GRIPPER_JOINT_NAMES},
+            finger_body_names=tuple(P.GRIPPER_FINGER_BODIES),
+            object_name="object",
+            pad_offset=P.JAW_PAD_OFFSET,
+            lateral_ok=P.GRASP_GATE_LATERAL_OK,
+            along_ok=P.GRASP_GATE_ALONG_OK,
+            release_lateral=P.GRASP_GATE_RELEASE_LAT,
         )
 
         # ── 씬: 테이블 (로컬 자산) ──────────────────────────────────
@@ -271,7 +271,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             ),
             spawn=UsdFileCfg(
                 usd_path=_os.path.join(_ASSETS_DIR, "cup", P.CUP_USD_NAME),
-                scale=(P.CUP_SCALE, P.CUP_SCALE, P.CUP_SCALE),  # ★fab_test59 0.8 커리큘럼
+                scale=(1.0, 1.0, 1.0),
                 rigid_props=RigidBodyPropertiesCfg(
                     solver_position_iteration_count=16,
                     solver_velocity_iteration_count=1,
@@ -354,7 +354,10 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "robot", joint_names=["l_aj_[1-7]", "l_hj_gripper_[1-2]"]
             )
 
-        # ★fab_test46: `gripper_gate` 관측 제거 — 게이트 자체가 사라졌다(위 주석).
+        # ★★게이트 상태를 관측에 노출한다. 하드 게이트는 정책이 볼 수 없는 숨은 상태라,
+        #   phase 0 에서 정책의 그리퍼 지령은 기록되지만 실행되지 않는다(그 차원 gradient 가
+        #   환경 응답과 무관해진다). obs 가 1 늘어난다 — **fresh 학습 전용**.
+        self.observations.policy.gripper_gate = ObsTerm(func=rewards.gripper_gate_open)
         self.observations.policy.joint_pos.params["asset_cfg"] = _left_joints()
         self.observations.policy.joint_vel.params["asset_cfg"] = _left_joints()
         self.rewards.joint_vel.params["asset_cfg"] = _left_joints()
@@ -389,16 +392,8 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   85.9% 동안 TCP–컵 평균 3044 mm). 자세한 근거는 grasp_left_rewards 참조.
         #   ⚠ goal-tracking 두 개도 내부에서 z 게이트를 직접 계산하므로 함께 교체해야 한다 —
         #     하나라도 남기면 그쪽으로 같은 hack 이 되살아난다.
-        # ★★fab_test39: `lifting_object` 의 게이트를 **높이 → 접촉**으로 반전했다.
-        #   DexPour Fig.3 의 `μ·r_lift` — 높이는 보상을 여는 하한이 아니라 끊는 상한이다.
-        #   근거 전문은 `rewards.object_is_held_and_lifted` docstring.
-        #   ⚠ goal_tracking 두 개는 `_held`(높이 게이트) 를 **유지**한다 — 논문 `ν` 에
-        #     해당하고, 이송·정지는 실제로 들린 뒤에만 의미가 있다.
         self.rewards.lifting_object.func = rewards.object_is_held_and_lifted
         self.rewards.lifting_object.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
-        # ⚠ `sensor_names` 는 **여기서 배선하지 않는다.** 이 부모는 접촉 센서가 없는
-        #   관절공간 태스크(t16 계보 positive control)도 쓰고, 그쪽에서 KeyError 로 죽는다.
-        #   fab 태스크는 이 항 자체를 끄고 `stage_lift`(접촉 게이트)를 쓴다.
         for _term in (
             self.rewards.object_goal_tracking,
             self.rewards.object_goal_tracking_fine_grained,
@@ -435,29 +430,10 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   즉 도달 보상이 학습 내내 **들어갈 수 없는 높이**를 가리키고 있었다.
         #   G3 실측: 컵 원점 겨냥 시 진입 TCP 오차 100.2 mm → 파지 대역 겨냥 시 70.7 mm.
         #   std·weight 는 레퍼런스 그대로(0.1 / 1.1) — 목표점만 옮긴다.
-        # ★★fab_test31 사용자 지시: "접근할 때부터 tcp_+x 가 world +z 와 수직이 되게".
-        #   2 지 그리퍼는 접근 자세가 파지 성패를 정한다 — 기울어진 채 다가가면 두 접촉점이
-        #   컵 지름 양끝에 놓이지 않는다. 그래서 파지 시점이 아니라 **접근 보상 자체에** 건다.
-        #   ⚠ 게이트가 아니라 **배수**다. 이 태스크는 자세를 AND 게이트로 걸었다가 학습이
-        #     시작조차 못 한 전례가 있다(test6·test7: lifting 0.0000 · 총보상 −0.46).
-        #     `level_floor` 가 최악의 경우에도 접근 신호를 남긴다 — 초기에 살아 있는
-        #     유일한 신호라 0 이 되면 회복이 안 된다.
-        # ★★agnostic/tasks/grasp_sensor `approach_reward` 이식 (08.25 사용자 지시).
-        #   구 `1 − tanh(d/0.1)` 은 **거리만** 봐서 "컵 근처에 있기"로 만점에 가까웠다.
-        #   이식본은 거리와 프리그래스프 기하(턱이 컵 양옆 대향점에 놓이는가)를 한
-        #   지수 안에서 본다 — 자세를 각도 배수로 유도하던 것(제가 넣었다가 reaching 을
-        #   1/5 로 떨어뜨린 `reach_with_tcp_level`)을 대체한다.
         self.rewards.reaching_object = RewTerm(
-            func=rewards.approach_opposed,
-            weight=P.APPROACH_WEIGHT,
-            params={
-                "sharpness": P.APPROACH_SHARPNESS,
-                "side_radius": P.APPROACH_SIDE_RADIUS,
-                "grasp_offset": P.CUP_ORIGIN_TO_GRASP_Z,
-                "pad_offset": P.JAW_PAD_OFFSET,
-                "side_weight_a": P.APPROACH_SIDE_WEIGHT_A,
-                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
-            },
+            func=rewards.ee_grasp_point_distance,
+            weight=1.1,
+            params={"std": 0.1, "grasp_offset": P.CUP_ORIGIN_TO_GRASP_Z},
         )
 
         # ── 컵이 턱 사이에 들어왔는가 (08.22 신설) ─────────────────
@@ -528,32 +504,6 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             },
         )
 
-        # ── dwell 보너스 (fab_test13 신설) ─────────────────────────
-        # settled_at_goal(순간 품질)은 스쳐 지나가도 지급된다 — fab_test12 는 목표 100 mm
-        # 옆 순회가 국소최적으로 굳었다. dwell 은 품질 > 임계의 **연속 유지**에만 지급해
-        # "머무름"과 "지나감"의 리턴을 가른다. 임계 근거는 preset DWELL_* 주석(실측).
-        self.rewards.dwell_at_goal = RewTerm(
-            func=rewards.DwellSettledAtGoal,
-            weight=P.DWELL_REWARD_WEIGHT,
-            params={
-                "q_thresh": P.DWELL_Q_THRESH,
-                "hold_steps": P.DWELL_HOLD_STEPS,
-                "std": P.SETTLE_POS_STD,
-                "lin_vel_std": P.SETTLE_LIN_VEL_STD,
-                "ang_vel_std": P.SETTLE_ANG_VEL_STD,
-                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
-                "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
-                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
-                "pad_offset": P.JAW_PAD_OFFSET,
-                "lat_ok": P.GRASP_GATE_LATERAL_OK,
-                "along_ok": P.GRASP_GATE_ALONG_OK,
-                # ★SceneEntityCfg 는 가변 객체 — settled_at_goal 과 공유 금지, 새 인스턴스.
-                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
-                "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
-                "command_name": "object_pose",
-            },
-        )
-
         self.rewards.grasp_pose = RewTerm(
             func=rewards.held_with_good_pose,
             weight=P.GRASP_POSE_REWARD_WEIGHT,
@@ -570,7 +520,8 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "upright_zero_at_cos": P.CUP_UPRIGHT_ZERO_AT_COS,
             },
         )
-        # ★fab_test46: `gate_rate` 진단 제거 — 게이트가 사라졌다.
+        # ★진단(weight 0) — 게이트 진입 비율. 이번 런의 1차 관전 지표라 반드시 로깅한다.
+        self.rewards.gate_rate = RewTerm(func=rewards.gripper_gate_rate, weight=0.0, params={})
 
         self.terminations.object_dropping.params["minimum_height"] = P.OBJECT_DROP_HEIGHT
 

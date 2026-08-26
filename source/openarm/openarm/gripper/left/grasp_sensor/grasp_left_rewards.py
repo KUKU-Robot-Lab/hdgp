@@ -43,7 +43,6 @@ from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.sensors import FrameTransformer
 from isaaclab.utils.math import combine_frame_transforms, matrix_from_quat
 
-from . import grasp_left_observations as obs_mdp
 from . import grasp_left_preset as P
 
 if TYPE_CHECKING:
@@ -55,38 +54,6 @@ def _cup_upright_cos(env: "ManagerBasedRLEnv", object_cfg: SceneEntityCfg) -> to
     obj: RigidObject = env.scene[object_cfg.name]
     w, x, y, z = obj.data.root_quat_w.unbind(-1)
     return 1.0 - 2.0 * (x * x + y * y)
-
-
-def lift_height(
-    env: "ManagerBasedRLEnv", object_cfg: SceneEntityCfg = SceneEntityCfg("object")
-) -> torch.Tensor:
-    """컵 **최저점**이 테이블 상면 위로 뜬 높이 [m]. 놓여 있으면 0, 기울여도 0.
-
-    ★★원점 z 로 리프트를 재면 **기울이기가 리프트로 계산된다.** 컵을 바닥 림 모서리로
-      피벗시키면 원점이 실제로 올라간다 — 최대 `CUP_TIP_RISE_MAX` = 4.61 mm @ 17.5°:
-
-          기울기   0°     10°    17.5°   30°    45°
-          원점    0.0    3.6    4.61    2.2   −6.5  mm      ← 오른다
-          최저점  0.0    0.0    0.0     0.0    0.0  mm      ← 안 오른다
-
-      fab_test38(4000 ep 완주) 실측이 정확히 이 함정이었다: 컵 최대 상승 **+2.9 mm**,
-      1 cm 이상 올린 스텝 0.0%. 즉 그 판이 한 것은 리프트가 아니라 **기울이기**였다.
-
-    ★기존 방어는 램프 0 점을 `CUP_TIP_RISE_MAX × 1.3`(= 놓인 높이 +6 mm) 위에 두는
-      것이었다(`LIFT_RAMP_ZERO_Z`). 안전하지만 **첫 6 mm 가 사구간**이라 "접촉했는데
-      아직 못 든" 상태에 gradient 가 전혀 없다. DexPour(IROS 2025) 의 `r_lift` 는
-      접촉만 성립하면 높이에 **선형 비례**해 즉시 지급된다(Fig. 3 의 μ·r_lift).
-      최저점으로 재면 기울이기가 구조적으로 0 이므로 **사구간 없이** 그 구조를 쓸 수 있다.
-
-    기하: 바닥 원판 중심 = 원점 − 컵축 × `CUP_BOTTOM_TO_ORIGIN`,
-          그 원판의 최저점 = 중심 z − `CUP_BASE_RADIUS` × sin(기울기).
-    """
-    obj: RigidObject = env.scene[object_cfg.name]
-    cup_z = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]        # 컵 로컬 +z (world)
-    bottom_c_z = obj.data.root_pos_w[:, 2] - cup_z[:, 2] * P.CUP_BOTTOM_TO_ORIGIN
-    sin_tilt = (1.0 - cup_z[:, 2].square()).clamp(min=0.0).sqrt()
-    lowest_z = bottom_c_z - P.CUP_BASE_RADIUS * sin_tilt
-    return lowest_z - P.TABLE_SURFACE_Z
 
 
 def perpendicular_quality(
@@ -175,12 +142,7 @@ def _held(
     ee_pos_w = ee_frame.data.target_pos_w[..., 0, :]
     # ★★08.23 **연속 램프로 되돌렸다.** `ramp_zero_z`(놓인 높이 +6.0 mm)에서 0,
     #   `minimal_height`(놓인 높이 +40 mm)에서 1. 근접·자세는 게이트로 남는다.
-    # ★★fab_test39: 원점 z 램프 → **최저점 기준**(`lift_height`). 기울이기가 리프트로
-    #   계산되던 구멍을 기하로 닫는다. `ramp_zero_z` 가 막던 것과 같은 해킹인데,
-    #   최저점은 기울여도 정확히 0 이라 **사구간이 필요 없다** — 첫 1 mm 부터 gradient 가 산다.
-    #   근거 전문은 `lift_height` docstring. 인자 `ramp_zero_z` 는 계약 호환을 위해 남기되
-    #   더 이상 램프 0 점이 아니다(상단만 `minimal_height` 에서 온다).
-    lifted = (lift_height(env, object_cfg) / (minimal_height - P.CUP_SPAWN_Z)).clamp(0.0, 1.0)
+    lifted = ((obj_pos_w[:, 2] - ramp_zero_z) / (minimal_height - ramp_zero_z)).clamp(0.0, 1.0)
     near = torch.norm(obj_pos_w - ee_pos_w, dim=1) < max_ee_distance
     upright = _cup_upright_cos(env, object_cfg) > min_upright_cos
     # ★★08.23 램프에 **enclose 를 곱한다.** 순수 램프(fab_test6)는 학습 초기에 컵이 튀어
@@ -200,8 +162,7 @@ def _held(
     #   ⚠ 하드 게이트라 감쌈 이전의 연속 기울기(옛 "자동 커리큘럼")는 사라진다. 그 역할은
     #     이제 **액션 게이트**가 대신한다 — 접근 전에는 그리퍼가 강제로 열려 있어
     #     "닫고 서 있기" 국소최적 자체가 도달 불가능해진다.
-    # ★★fab_test33: 이진 `grasp_ok` → **연속 `grasp_quality`**. 근거는 그 함수 docstring.
-    held = grasp_quality(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg)
+    held = grasp_ok(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg).float()
     return lifted * held * (near & upright).float()
 
 
@@ -236,19 +197,8 @@ def held_with_good_pose(
           lifting 6.14 → 0.0000 / 에피소드 길이 130 → 13 / 총보상 +34.9 → −0.46
       학습이 시작조차 못 한다. 자세는 반드시 연속 보너스로만 유도한다.
     """
-    # ★★fab_test39: 게이트를 `_held` → `grasp_quality` 로 교체했다.
-    #   이 항은 **올바른 물기 자세를 만드는 유일한 gradient** 인데, 자신이 만들어야 할
-    #   결과(리프트) 뒤에 갇혀 있었다. t38 4000 ep 완주 실측이 그 대가다 —
-    #       grasp_pose 0.00001 · TCP z↔컵 z **49.8°**(올바름 90°) · jaw 수평이탈 **37.6°**
-    #       · lateral **62.4 mm**(`grasp_ok` 문턱 30 mm) · 액션 게이트 개방률 **< 0.5%**
-    #   물기가 비스듬해 게이트가 안 열리고, 게이트가 안 열려 못 들고, 못 들어서 물기를
-    #   고칠 신호가 안 온다. 그 순환을 여기서 끊는다.
-    #
-    # ⚠ 게이트를 **그냥 제거하면 안 된다.** `jaw_level_quality` 는 로봇 `body_quat_w` 만
-    #   보고 `upright` 는 컵이 테이블에 서 있기만 해도 1.0 이라, 무게이트면 **아무 데서나
-    #   그리퍼를 수평으로 들고 있으면 만점**이라는 새 해킹면이 생긴다(reward-audit Check 2).
-    #   `grasp_quality` 는 lateral·along·파지대역을 전부 보므로 컵 곁에서만 값이 나온다.
-    gate = grasp_quality(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg)
+    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg)
     cos_tilt = _cup_upright_cos(env, object_cfg)
     upright = ((cos_tilt - upright_zero_at_cos) / (1.0 - upright_zero_at_cos)).clamp(0.0, 1.0)
     return gate * upright * jaw_level_quality(env, robot_cfg, body_name)
@@ -264,48 +214,13 @@ def object_is_held_and_lifted(
     lat_ok: float,
     along_ok: float,
     jaw_cfg: SceneEntityCfg,
-    sensor_names: tuple[str, ...] = (),
-    force_threshold: float = 0.0,
     min_upright_cos: float = -1.0,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
 ) -> torch.Tensor:
-    """리프트 보상. **게이트는 접촉, 높이는 크기.** (num_envs,) ∈ [0, 1]
-
-    ```
-    r_lift = grasp_quality × 닿은_턱_비율 × clamp(최저점_상승 / 40 mm, 0, 1)
-    ```
-
-    ★★fab_test39: 게이트를 **높이 → 접촉**으로 반전했다. DexPour(IROS 2025) Fig. 3 이
-      `r_lift` 를 `μ`(전 손가락 접촉)로 게이트하고 `ν`(높이)로는 게이트하지 **않는다**:
-        *"Once the cup reaches a certain height threshold, the lift reward ceases to
-          accumulate"* — 높이는 보상을 **여는 하한**이 아니라 **끊는 상한**이다.
-      우리는 정반대로 `_held` 안의 `lifted` 가 하한이었고, 그래서 t22~t38 열일곱 판
-      내내 이 항이 0 이었다(t38 최종 **0.00005**, contact_engage 는 1.774).
-      논문 Table II **Config. 4**(리프트/이송 보상 제거)가 우리와 같은 지표를 낸다 —
-      η_ft 0% · P_grasp 0% · *"never discovers a stable lifting motion"*.
-      우리 항은 존재하되 **도달 불가**였으므로 기능적으로 제거된 것과 같았다.
-
-    ★접촉을 게이트로 쓰면 옛 "쳐 날리기"(test3: 리프트 판정 중 TCP–컵 3044 mm)가
-      **구조적으로 불가능**해진다 — 튕겨 날아간 컵은 접촉이 끊겨 `닿은_턱_비율` = 0 이다.
-      옛 방어(`near` AND)보다 강하다.
-
-    ★높이는 `lift_height`(최저점)로 잰다. 원점 z 로 재면 기울이기가 최대 4.61 mm 의
-      가짜 리프트를 만든다 — t38 의 "+2.9 mm 상승"이 바로 그것이었다.
-    """
-    # ⚠ 접촉 센서가 없는 태스크(관절공간 `open-grip_l_grasp_sensor`, t16 계보 positive
-    #   control)에서는 구 `_held` 거동으로 돌아간다. 그쪽 씬에는 `contact_*` 센서가 아예
-    #   없어서 이 함수가 KeyError 로 죽었다(fab_test42 스모크에서 실제로 터졌다).
-    #   fab 태스크는 이 항을 `None` 으로 끄고 `stage_lift` 를 쓰므로 영향이 없다.
-    if not sensor_names:
-        return _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-                     pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg,
-                     min_upright_cos)
-    forces = obs_mdp.finger_contact_forces(env, sensor_names)
-    contact_frac = (forces > force_threshold).float().mean(dim=-1)
-    quality = grasp_quality(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg)
-    rise = (lift_height(env, object_cfg) / (minimal_height - P.CUP_SPAWN_Z)).clamp(0.0, 1.0)
-    return quality * contact_frac * rise
+    """`mdp.object_is_lifted` 에 근접·컵 자세 조건을 더한 것."""
+    return _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
 
 
 def object_goal_distance_when_held(
@@ -373,13 +288,14 @@ def object_settled_at_goal(
     ⚠ 자세와 마찬가지로 **게이트가 아니라 보너스**다. 판정 게이트에 조건을 더 얹으면
       양의 보상이 0 이 되고 조기 종료가 최적이 된다(test6/test7 에서 실증).
     """
+    robot: RigidObject = env.scene[robot_cfg.name]
     obj: RigidObject = env.scene[object_cfg.name]
-    # ★게이트 × 목표근접은 억제 항과 **같은 자**를 쓴다(중복 구현 금지 — 조용히 어긋난다).
-    gate_near = held_and_near_goal(
-        env, std, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-        pad_offset, lat_ok, along_ok, jaw_cfg, command_name,
-        robot_cfg, object_cfg, ee_frame_cfg,
+    command = env.command_manager.get_command(command_name)
+    des_pos_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
     )
+    distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
+    near_goal = 1.0 - torch.tanh(distance / std)
 
     lin = torch.norm(obj.data.root_lin_vel_w, dim=1)
     ang = torch.norm(obj.data.root_ang_vel_w, dim=1)
@@ -390,103 +306,13 @@ def object_settled_at_goal(
         1.0 - torch.tanh(ang / ang_vel_std)
     )
 
-    return gate_near * still
-
-
-def held_and_near_goal(
-    env: "ManagerBasedRLEnv",
-    std: float,
-    minimal_height: float,
-    ramp_zero_z: float,
-    max_ee_distance: float,
-    enclose_half_width: float,
-    pad_offset: float,
-    lat_ok: float,
-    along_ok: float,
-    jaw_cfg: SceneEntityCfg,
-    command_name: str,
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
-) -> torch.Tensor:
-    """"제대로 들고 목표 근처에 있는가" (0~1) — `object_settled_at_goal` 의 앞 두 인수.
-
-    ★`object_settled_at_goal` 에서 **정지 정도만 뺀** 값이다. 억제 항의 게이트로 쓰려고
-      분리했다. 정지 정도를 게이트에 넣으면 "이미 멈춰 있을 때만 멈추라고 벌하는" 꼴이 돼
-      정작 필요한 곳(아직 배회 중)에서 약해진다.
-
-    ⚠ 같은 판정을 두 함수가 각자 다시 짜면 조용히 어긋난다 — 이 트랙에서 네 번 당했다.
-      그래서 `object_settled_at_goal` 과 **같은 자**(_held · near_goal)를 쓴다.
-    """
-    robot: RigidObject = env.scene[robot_cfg.name]
-    obj: RigidObject = env.scene[object_cfg.name]
-    command = env.command_manager.get_command(command_name)
-    des_pos_w, _ = combine_frame_transforms(
-        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
-    )
-    near_goal = 1.0 - torch.tanh(torch.norm(des_pos_w - obj.data.root_pos_w, dim=1) / std)
     gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
                  pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg)
-    return gate * near_goal
-
-
-def palm_command_rate_at_goal(
-    env: "ManagerBasedRLEnv",
-    action_term_name: str,
-    rate_limit: float,
-    std: float,
-    minimal_height: float,
-    ramp_zero_z: float,
-    max_ee_distance: float,
-    enclose_half_width: float,
-    pad_offset: float,
-    lat_ok: float,
-    along_ok: float,
-    jaw_cfg: SceneEntityCfg,
-    command_name: str,
-) -> torch.Tensor:
-    """목표 근처에서 **palm 지령이 계속 배회하는 것**을 벌한다 (0~1, weight 는 음수).
-
-    ★★fab_test19 층 분해 실측이 이 항의 근거다. 진동의 층을 나눠 재 보니:
-        ① 정책 raw 액션   |Δ|0.217 |Δ²|0.205  방향반전 **18.8%**
-        ② 리미터 통과 지령 |Δ|11.5mm            방향반전 8.4%
-        ③ fabric 관절목표  |Δ|15.5mrad           방향반전 **0.0%**
-        ④ 실제 팔 관절     |Δ|17.1mrad           방향반전 **0.0%**
-      즉 액션의 **2차 성분(jerk)은 fabric 이 전부 지운다** — 팔은 떨지 않는다.
-      `ActionJerkL2` 가 헛일이었던 이유가 이것이고, 그 벌금은 |Δ²a| 가 큰 접근·이송에서만
-      물려 fab_test19 의 이송 학습을 무너뜨렸다(전문: grasp_left_curriculums.py).
-
-      실제로 눈에 보이는 진동은 **1차**다 — dwell 구간에서 지령이 1.16~5.2 mm/step 씩
-      계속 배회한다(초당 60~260 mm). 그래서 2차가 아니라 1차를 벌한다.
-
-    ⚠ 게이트가 핵심이다. 목표에서 멀면 0 이므로 접근·이송의 빠른 지령은 **전혀** 벌하지
-      않는다. fab_test14/19 의 실패는 억제 항이 "아직 아무것도 못 하는" 구간에 걸린 것이었고,
-      이 항은 구조적으로 그 구간에 존재하지 않는다.
-
-    ⚠ 리미터 상한으로 정규화해 0~1 로 만든다. 그래야 weight 가 "최악의 경우 몇 점"이라는
-      해석 가능한 수가 되고, 상금(settle 15 · dwell 10) 대비 비율을 눈으로 검산할 수 있다.
-
-    ⚠ 잔류 **속도**를 벌하지 않는 이유: 동결 실측에서 컵의 순간속도 바닥값이 71 mm/s 인데
-      5 초 순변위는 11.7 mm(2.3 mm/s)였다. 그 71 은 서브밀리미터 솔버 버즈이지 움직임이
-      아니고, 중력보상·PD damping·fabric damping 어느 것에도 불변이었다. 정책이 줄일 수
-      없는 양을 벌하면 그냥 상수 벌금이다.
-    """
-    term = env.action_manager.get_term(action_term_name)
-    moving = (term.cmd_step_norm / rate_limit).clamp(max=1.0)
-    gate = held_and_near_goal(
-        env, std, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-        pad_offset, lat_ok, along_ok, jaw_cfg, command_name,
-    )
-    return moving * gate
+    return gate * near_goal * still
 
 
 class ActionJerkL2(ManagerTermBase):
-    """액션의 **2차 차분**(jerk) 제곱합 페널티. ★★기각됨 — 어디에도 배선하지 말 것.
-
-    기각 근거(fab_test19 층 분해 실측): 액션의 2차 성분은 리미터+fabric 이 전부 흡수해
-    팔 관절의 방향반전이 **정확히 0.0%** 다. 벌금은 |Δ²a| 가 큰 접근·이송에서만 물리고
-    dwell 잔류에는 손도 못 댄다. fab_test19 는 이 항을 켠 뒤 dwell 1.02 → 0.005 로
-    무너졌다. 대체 항은 `palm_command_rate_at_goal`(1차 · 목표 근처 게이트)이다.
+    """액션의 **2차 차분**(jerk) 제곱합 페널티.
 
     ★레퍼런스 lift 에는 `action_rate_l2`(1차 차분)와 `joint_vel_l2` 만 있다. 그런데
       test12 실측은 1차보다 2차가 더 크고 방향 반전이 68.6% 였다:
@@ -517,59 +343,6 @@ class ActionJerkL2(ManagerTermBase):
         jerk = torch.sum(torch.square(delta - self._prev_delta), dim=1)
         self._prev_delta[:] = delta
         return jerk
-
-
-class DwellSettledAtGoal(ManagerTermBase):
-    """정지 상태를 **연속 유지**한 시간에 지급하는 보너스 (fab_test13 신설).
-
-    ★fab_test12 실증: 순간 settle 항만으로는 목표 100 mm 옆 순회(잔류 0.22 m/s)가
-      국소최적으로 굳는다 — 순간 항은 스쳐 지나가도 그 스텝만큼 지급되기 때문이다.
-      순간 품질 q(`object_settled_at_goal` 그대로) > `q_thresh` 가 연속 유지된 스텝을
-      세어 clamp(count/hold_steps, 0, 1) 로 지급한다. 순회는 카운터가 계속 리셋된다.
-
-    임계·상수 근거는 preset `DWELL_*` 주석에 실측과 함께 있다.
-    구현이 클래스인 이유: 연속 유지 카운터는 스텝 간 상태다(`ActionJerkL2` 와 동일 패턴).
-    ⚠ `reset` 누락 금지 — 이 트랙에서 리셋 오염에 네 번 당했다.
-    """
-
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        self._count = torch.zeros(env.num_envs, device=env.device)
-
-    def reset(self, env_ids=None):
-        if env_ids is None:
-            self._count[:] = 0.0
-        else:
-            self._count[env_ids] = 0.0
-
-    def __call__(  # noqa: D102
-        self,
-        env,
-        q_thresh: float,
-        hold_steps: int,
-        # 이하 object_settled_at_goal 로 그대로 전달 — RewardManager 의 시그니처 검사가
-        # **kwargs 를 허용하지 않아 명시적으로 나열한다.
-        std: float,
-        lin_vel_std: float,
-        ang_vel_std: float,
-        minimal_height: float,
-        ramp_zero_z: float,
-        max_ee_distance: float,
-        enclose_half_width: float,
-        pad_offset: float,
-        lat_ok: float,
-        along_ok: float,
-        jaw_cfg: SceneEntityCfg,
-        command_name: str,
-    ) -> torch.Tensor:
-        q = object_settled_at_goal(
-            env, std, lin_vel_std, ang_vel_std, minimal_height, ramp_zero_z,
-            max_ee_distance, enclose_half_width, pad_offset, lat_ok, along_ok,
-            jaw_cfg, command_name,
-        )
-        above = q > q_thresh
-        self._count = torch.where(above, self._count + 1.0, torch.zeros_like(self._count))
-        return (self._count / float(hold_steps)).clamp(max=1.0)
 
 
 def _jaw_frame(
@@ -608,53 +381,6 @@ def _jaw_frame(
     # ★clamp **전** 축 좌표도 돌려준다 — "턱이 파지 대역 안인가"는 clamp 된 값으로는
     #   알 수 없다(밖에 있어도 경계값으로 접혀 들어온다). 접근 성공 판정에 필요하다.
     return p_l, p_r, u, mid, cup_pt, axis_t_raw.squeeze(-1)
-
-
-def grasp_quality(
-    env: "ManagerBasedRLEnv",
-    lat_ok: float,
-    along_ok: float,
-    pad_offset: float,
-    jaw_cfg: SceneEntityCfg,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-) -> torch.Tensor:
-    """`grasp_ok` 의 **연속판** (0~1). 같은 세 측정을 쓰되 절벽을 없앤다.
-
-    ★★fab_test33: 이 트랙의 sparse 구간을 여기서 연다. `_held()` 안의 이진 `grasp_ok` 가
-      **다섯 항의 공통 목**이었다 — `lifting_object` · `object_goal_tracking(+fine)` ·
-      `settled_at_goal` · `dwell_at_goal` · `grasp_pose`. 그래서 파지가 성립하기 전까지
-      다섯이 **정확히 0** 이었고(t30/t31 790 epoch 실측), 접근에서 파지로 넘어가는
-      지점이 절벽이었다.
-
-    설계는 agnostic 트랙의 단계 사다리를 따른다 — 하드 게이트 대신 **연속 품질을 공통
-    인자로** 곱하고, 인자가 깊어질수록 값이 작아지는 것을 감안한다. 다만 우리는 가중을
-    다시 잡는 대신 **성공 기하에서 1.0 이 되도록 정규화**한다:
-
-        q = exp(−lateral/lat_ok) · exp(−along/along_ok) · band_q
-        G = clamp(q / GRASP_QUALITY_REF, 0, 1)
-
-    그러면 성공 지점의 보상 크기는 **지금과 정확히 같고**(가중 재조정 불필요) 그 아래로만
-    연속 기울기가 생긴다. 실측 기하로 검산:
-
-        성공 (lateral 20.0 · along 13.0 mm)  q = 0.333 → G = **1.00**
-        주먹 (lateral 78.6 · along 27.8 mm)  q = 0.029 → G = 0.086
-        컵 옆(lateral 85.5 · along 12.0 mm)  q = 0.039 → G = 0.116
-
-    ⚠ 던지기 재발 우려는 없다. `_held` 는 G 외에 `near`(TCP 80 mm 이내)·`upright` 를
-      **여전히 게이트로** 곱한다 — 쳐 날린 컵은 즉시 near 가 거짓이라 0 이다
-      (test3 사고의 차단 장치는 그대로 남는다).
-    ⚠ band 는 부드럽게 — 대역 밖으로 나간 거리만큼 지수 감쇠한다. 하드 판정이면
-      대역 경계에서 다시 절벽이 생긴다.
-    """
-    _l, _r, u, mid, cup_pt, axis_t = _jaw_frame(env, pad_offset, jaw_cfg, object_cfg)
-    d = cup_pt - mid
-    along = (d * u).sum(-1).abs()
-    lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
-    lo, hi = P.CUP_GRASP_BAND_AXIS
-    out = (lo - axis_t).clamp(min=0.0) + (axis_t - hi).clamp(min=0.0)
-    q = (torch.exp(-lateral / lat_ok) * torch.exp(-along / along_ok)
-         * torch.exp(-out / P.GRASP_BAND_SOFT_TAU))
-    return (q / P.GRASP_QUALITY_REF).clamp(max=1.0)
 
 
 def grasp_ok(
@@ -841,438 +567,23 @@ def ee_grasp_point_distance(
     return 1.0 - torch.tanh(torch.norm(grasp_pt - ee_w, dim=1) / std)
 
 
-_AXIS = {"x": 0, "y": 1, "z": 2}
+def gripper_gate_open(env: "ManagerBasedRLEnv", action_term: str = "gripper_action") -> torch.Tensor:
+    """그리퍼 게이트가 열렸는가 (num_envs, 1) float. **관측 항**으로 쓴다.
 
-
-# ★fab_test46: `gripper_gate_open`/`gripper_gate_rate` 제거 — 그리퍼 하드 게이트 폐기
-#   (근거는 env cfg 의 fab_test46 주석). 게이트 상태라는 개념 자체가 사라졌다.
-
-def _jaw_mid_local(env, pad_offset: float, jaw_cfg: SceneEntityCfg) -> torch.Tensor:
-    """턱 중점(패드 중앙 보정 포함), env 로컬. `_jaw_frame` 과 같은 자다."""
-    robot: Articulation = env.scene[jaw_cfg.name]
-    pos = robot.data.body_pos_w[:, jaw_cfg.body_ids, :]
-    approach = matrix_from_quat(robot.data.body_quat_w[:, jaw_cfg.body_ids[0], :])[:, :, 2]
-    pos = pos + (approach * pad_offset).unsqueeze(1)
-    return pos.mean(dim=1) - env.scene.env_origins
-
-
-def diag_palm_cmd(env, action_term_name: str, axis: str) -> torch.Tensor:
-    """정책이 낸 palm **지령** 위치 성분 (m, env 로컬)."""
-    return env.action_manager.get_term(action_term_name)._palm_pose_target[:, _AXIS[axis]]
-
-
-def diag_jaw_pos(env, axis: str, pad_offset: float, jaw_cfg: SceneEntityCfg) -> torch.Tensor:
-    """**실제** 턱 중점 위치 성분 (m, env 로컬)."""
-    return _jaw_mid_local(env, pad_offset, jaw_cfg)[:, _AXIS[axis]]
-
-
-def diag_cmd_jaw_gap(env, action_term_name: str, pad_offset: float,
-                     jaw_cfg: SceneEntityCfg) -> torch.Tensor:
-    """지령과 실제의 거리 (m) = **추종 오차**.
-
-    ★이 값이 커지면 정책이 낸 지령을 팔이 못 따라가고 있다는 뜻이고, 그러면 정책의
-      액션과 환경 응답의 대응이 끊긴다. 08.25 실측 90 mm 가 그 상태였다.
+    ★★하드 게이트는 정책이 볼 수 없는 **숨은 상태**다. phase 0 에서 정책의 그리퍼 지령은
+      롤아웃 버퍼에 기록되지만 실행되지 않아, 그 차원의 gradient 가 환경 응답과 무관해진다.
+      게이트 상태를 관측에 넣어야 정책이 "지금 내 그리퍼 지령은 무시된다"를 알 수 있다.
+      obs 차원이 1 늘어난다 — 체크포인트 호환이 깨지므로 fresh 학습에서만 켤 것.
     """
-    cmd = env.action_manager.get_term(action_term_name)._palm_pose_target[:, :3]
-    return (cmd - _jaw_mid_local(env, pad_offset, jaw_cfg)).norm(dim=-1)
+    term = env.action_manager.get_term(action_term)
+    return term.gate_open.float().unsqueeze(-1)
 
 
-def diag_cmd_step(env, action_term_name: str) -> torch.Tensor:
-    """스텝당 지령 이동량 (m) — **리미터가 실제로 무는지**를 이걸로 확인한다."""
-    return env.action_manager.get_term(action_term_name).cmd_step_norm
+def gripper_gate_rate(env: "ManagerBasedRLEnv", action_term: str = "gripper_action") -> torch.Tensor:
+    """게이트가 열린 env 비율. **weight 0 진단 항** — TFEvents 에 찍혀야 조기 판정이 된다.
 
-
-def diag_jaw_cup_dist(env, pad_offset: float, jaw_cfg: SceneEntityCfg,
-                      object_cfg: SceneEntityCfg = SceneEntityCfg("object")) -> torch.Tensor:
-    """턱 중점 ↔ 컵 원점 거리 (m) — shaping 안 거친 **날 거리**.
-
-    `reaching_object` 는 커널을 통과한 값이라 "얼마나 가까운가"를 못 읽는다.
+    이번 런의 1차 관전 지표다. epoch 200 안에 0.1 을 못 넘으면 게이트가 너무 빡빡한 것이고,
+    `GRASP_GATE_LATERAL_OK` 를 0.040 으로 완화해야 한다(fab_test9~11 정체의 재발 방지).
     """
-    obj: RigidObject = env.scene[object_cfg.name]
-    cup = obj.data.root_pos_w - env.scene.env_origins
-    return (_jaw_mid_local(env, pad_offset, jaw_cfg) - cup).norm(dim=-1)
-
-
-def diag_duty(env) -> torch.Tensor:
-    """상수 1.0 — **정규화 분모를 측정한다.**
-
-    ★TB 의 `Episode_Reward/<name>` 은 `(Σ raw·dt)/episode_length_s` 라, 에피소드가 만기
-      전에 끝나면 그 비율만큼 작게 찍힌다. 위치를 m 로 읽으려면 그 비율을 나눠야 하는데,
-      `episode_lengths/iter`(rl_games)는 **다른 집합에서 평균된 값**이라 안 맞는다
-      (실측: 그걸로 정규화하니 `diag_cmd_step` 이 상한 0.10 을 넘는 0.146 이 나왔다).
-    이 항은 raw=1 이므로 로깅값이 정확히 `에피소드 길이 / episode_length_s` 다.
-    다른 diag 값을 **이걸로 나누면** 단위가 정확히 복원된다 — 추정이 아니라 측정이다.
-    """
-    return torch.ones(env.num_envs, device=env.device)
-
-
-def tcp_x_level_quality(
-    env: "ManagerBasedRLEnv",
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    body_name: str = "l_hl_gripper_base",
-    power: float = 4.0,
-) -> torch.Tensor:
-    """TCP 로컬 **+x 축이 world +z 와 수직**인 정도 (0~1). 1 = 완전 수평.
-
-    사용자 지시(08.25): "접근할 때부터 tcp_+x 가 world +z 와 수직이 되게 접근해야 한다."
-
-    품질 = (1 − |x축의 z성분|)^power. |cos| 이 아니라 **sin 의 거듭제곱**이라
-    수직 근처에서 평평하지 않고 기울수록 빠르게 떨어진다(cos^4 규약은 자매 트랙 교훈).
-
-    ⚠ **게이트로 쓰지 말 것.** 이 태스크에서 자세를 AND 게이트로 넣었다가 학습이
-      시작조차 못 한 적이 있다(test6·test7: lifting 0.0000 · 총보상 −0.46 · 에피소드
-      130→13). 양의 보상이 전부 0 이 되면 조기 종료가 최적이 된다.
-      접근 보상에 **곱하는 연속 배수**로만 쓴다 — 0 이 되지 않도록 floor 를 둔다.
-    """
-    robot: Articulation = env.scene[robot_cfg.name]
-    idx = robot.body_names.index(body_name)
-    w, x, y, z = robot.data.body_quat_w[:, idx, :].unbind(-1)
-    # 회전행렬의 (2,0) 성분 = 로컬 x 축의 world z 성분
-    x_axis_z = 2.0 * (x * z - w * y)
-    return (1.0 - x_axis_z.abs()).clamp(min=0.0) ** power
-
-
-def reach_with_tcp_level(
-    env: "ManagerBasedRLEnv",
-    std: float,
-    grasp_offset: float,
-    level_floor: float = 0.25,
-    level_power: float = 4.0,
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """접근 보상 × TCP 수평 품질. 자세를 **접근 단계부터** 유도한다.
-
-    배수 = floor + (1 − floor) · quality  → 최악이어도 `level_floor` 는 남는다.
-    floor 를 두는 이유는 위 docstring 의 test6/test7 사고 때문이다 — 접근 보상은
-    초기에 **유일하게 살아 있는 신호**라 0 이 되면 학습이 시작되지 않는다.
-    """
-    reach = ee_grasp_point_distance(env, std=std, grasp_offset=grasp_offset)
-    q = tcp_x_level_quality(env, robot_cfg=robot_cfg, power=level_power)
-    return reach * (level_floor + (1.0 - level_floor) * q)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 접근 보상 — agnostic/tasks/grasp_sensor 이식 (사용자 지시 08.25)
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def approach_opposed(
-    env: "ManagerBasedRLEnv",
-    sharpness: float,
-    side_radius: float,
-    grasp_offset: float,
-    pad_offset: float,
-    jaw_cfg: SceneEntityCfg,
-    palm_body: str = "l_hl_gripper_base",
-    side_weight_a: float = 0.5,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-) -> torch.Tensor:
-    """`exp(−s·(d_palm + d_side))` — agnostic 트랙 `approach_reward` 이식.
-
-    ★★왜 옮겼나. 우리 접근 보상은 `1 − tanh(d/0.1)` 로 **거리만** 봤다. 그래서
-      "컵 근처에 있기"만 하면 만점에 가까웠고, 턱이 컵을 어떻게 감싸는지는 아무 압력도
-      받지 않았다. 실측(fab_test31): 정책이 목표 자리(y 0.321 = 목표 y 0.320)에 머물며
-      턱–컵 거리를 166 → 234 mm 로 **벌리는데도** 총보상이 유지됐다.
-
-    이식본은 거리와 **프리그래스프 기하**를 한 지수 안에서 함께 본다:
-        d_palm  = |palm − 파지중심|
-        d_side  = 턱들이 파지중심 양옆 **대향점**(중심 ± n·side_radius)에 얼마나 가까운가
-                  n = 접근 방향(palm→중심)의 xy 수직 — 즉 **턱 축이 컵을 가로질러야** 작아진다
-    자세를 각도 배수로 유도하던 방식(제가 넣었다가 reaching 을 1/5 로 떨어뜨린 것)을
-    대체한다 — 자세가 **기하로** 강제되므로 별도 배수가 필요 없다.
-
-    ⚠ 원본과 한 곳 다르다. 원본은 `d_side = 0.6·d_a + 0.4·d_b` 로 엄지 쪽에 가중을 준다
-      (5 지 손의 엄지 1 대 4 지 4 비대칭 때문). **우리 두 턱은 대칭**이라 0.5/0.5 로 둔다 —
-      한쪽에 가중을 주면 그 턱만 맞추고 반대쪽이 벌어지는 해가 생긴다.
-    ⚠ n 의 부호는 **현재 A 턱이 있는 쪽**으로 동적 선택한다(원본과 동일). 고정 부호를
-      쓰면 좌우 미러에서 감쌈이 뒤집힌다.
-    """
-    robot: Articulation = env.scene[jaw_cfg.name]
-    obj: RigidObject = env.scene[object_cfg.name]
-    origin = env.scene.env_origins
-
-    # 파지중심 = 컵 원점 + 파지대역 오프셋 (env 로컬)
-    grasp_center = obj.data.root_pos_w - origin
-    grasp_center = grasp_center + torch.tensor(
-        [0.0, 0.0, grasp_offset], device=grasp_center.device)
-
-    # 턱 위치 — 패드 중앙 보정 포함(보상 전체가 같은 자를 쓴다)
-    tips = robot.data.body_pos_w[:, jaw_cfg.body_ids, :]
-    approach_axis = matrix_from_quat(
-        robot.data.body_quat_w[:, jaw_cfg.body_ids[0], :])[:, :, 2]
-    tips = tips + (approach_axis * pad_offset).unsqueeze(1) - origin.unsqueeze(1)
-
-    palm_idx = robot.body_names.index(palm_body)
-    palm_pos = robot.data.body_pos_w[:, palm_idx, :] - origin
-
-    d_palm = torch.norm(palm_pos - grasp_center, dim=-1)
-
-    a_xy = palm_pos[:, :2] - grasp_center[:, :2]
-    a_xy = a_xy / a_xy.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-    n = torch.stack([-a_xy[:, 1], a_xy[:, 0], torch.zeros_like(a_xy[:, 0])], dim=-1)
-    sign = torch.sign(((tips[:, 0] - grasp_center) * n).sum(dim=-1, keepdim=True))
-    n = n * torch.where(sign == 0, torch.ones_like(sign), sign)
-
-    target_a = grasp_center + n * side_radius
-    target_b = grasp_center - n * side_radius
-    d_a = torch.norm(tips[:, 0] - target_a, dim=-1)
-    d_b = torch.norm(tips[:, 1] - target_b, dim=-1)
-    d_side = side_weight_a * d_a + (1.0 - side_weight_a) * d_b
-
-    return torch.exp(-sharpness * (d_palm + d_side))
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 접촉 보상 — DexPour(IROS 2025) `r_contact` 이식 (fab_test38)
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def contact_engage(
-    env: "ManagerBasedRLEnv",
-    sensor_names: tuple[str, ...],
-    force_threshold: float,
-    all_bonus: float,
-) -> torch.Tensor:
-    """턱이 컵에 **닿는 것 자체**에 값을 매긴다. `f + all_bonus·[f == 1]`, f = 닿은 턱 비율.
-
-    ★★t22~t37 열세 판이 전부 `lifting_object` 정확히 0 이었고, 공통 서명은 `drop` 이
-      ep50 안에 0.000 으로 죽는 것이었다. 로그 전수(아카이브 23 런 + 오늘 10 런):
-          drop(ep50-200) ≥ 0.02  →  리프트한 10 개 전부
-          drop(ep50-200) < 0.02  →  9 개 전부 lifting 0
-      성공한 런들은 수백 epoch 컵을 10~50% 넘어뜨리며 돌았다 — 그 실패가 곧 탐색이었다.
-      오늘 판들은 컵을 만지지 않으니 파지를 찾을 **표본 자체가 없다.**
-
-    왜 컵을 안 만지나 — 만져서 얻는 것이 **아무것도 없기 때문이다.** 낙하는 페널티가
-    아니라 종료라 위험만 있고, 파지 계열 보상은 `grasp_quality` 를 지나야 하는데 거기
-    도달하려면 이미 잘 잡고 있어야 한다. DexPour 의 ablation 이 같은 실패를 기록한다 —
-    Config.2(전 보상·커리큘럼 없음)가 *"avoiding cup movement to minimize penalties"* 로
-    조기 수렴해 파지 성공률 0% 다. 그 해법이 이 항이다(논문 III-A Stage 2 `r_contact`).
-
-    ⚠ **`all_bonus`(양 턱 동시 접촉)는 현재 도달 불가**다. 컵 파지대역 단면이 58 mm 인데
-      액션 게이트가 `grasp_ok` 전에는 그리퍼를 84.5 mm 로 강제 개방한다 — 닫히지 않으면
-      두 턱이 동시에 닿을 수 없다. 순환이다. 이번 판은 **한 턱 접촉(f=0.5) 경로만** 열고,
-      게이트 연속화는 다음 단계로 미룬다. 보너스 항은 그때를 위해 배선만 해 둔다.
-    ⚠ 센서 자체가 08.26 까지 죽어 있었다(`force_matrix_w` 최대까지 정확히 0). 필터가
-      `/Object`(프림 루트)를 가리켜 PhysX 가 GPU 접촉 필터를 못 만들었고, 시뮬레이터가
-      env 마다 경고를 찍는데 로그가 길어 묻혔다. `/Object/baseLink` 로 고친 뒤에야
-      이 항이 의미를 갖는다 — 그 전에 넣었으면 상시 0 인 죽은 항이었다.
-    """
-    forces = obs_mdp.finger_contact_forces(env, sensor_names)      # (N, F)
-    touch = (forces > force_threshold).float()
-    frac = touch.mean(dim=-1)
-    return frac + all_bonus * (frac >= 1.0).float()
-
-
-def diag_lift_height(
-    env: "ManagerBasedRLEnv", object_cfg: SceneEntityCfg = SceneEntityCfg("object")
-) -> torch.Tensor:
-    """★진단(weight 0.001) — 컵 **최저점** 상승 [m]. 기울여도 0 이라 가짜 리프트가 안 섞인다.
-
-    t38 은 원점 기준으로 최대 +2.9 mm 였는데 그건 기울기였다. 이 값이 0 을 벗어나야
-    진짜로 든 것이다. `lifting_object` 가 0 일 때 원인이 "안 들었다"인지 "게이트가
-    막았다"인지를 이 항 하나로 가른다.
-    """
-    return lift_height(env, object_cfg)
-
-
-def diag_jaw_lateral(
-    env: "ManagerBasedRLEnv", pad_offset: float, jaw_cfg: SceneEntityCfg,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-) -> torch.Tensor:
-    """★진단(weight 0.001) — 턱축까지의 **수직거리** lateral [m]. `grasp_ok` 의 1차 조건.
-
-    t38 결정론 실측 62.4 mm(최선 27.4) vs 문턱 `GRASP_GATE_LATERAL_OK` 30 mm.
-    액션 게이트 개방률이 0.5% 였던 직접 원인이고, D2(`grasp_pose` 게이트 교체)가
-    겨냥하는 값이다. TB 에 없어서 t38 내내 사후 프로브로만 볼 수 있었다.
-    """
-    return jaw_lateral(env, pad_offset, jaw_cfg, object_cfg)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# DexPour 계층 보상 (fab_test41) — 5단계 사다리
-#
-# 논문 Fig. 3:  r_t = (1−λ)·p + μ·r_grasping + μ·r_lift + ν·r_transporting + ρ·r_pouring
-# 우리 5단계(사용자 규격): approach/align → grasp → lift → transfer → stay
-#
-# ★단계 상태(λ/μ/ν/ρ · 진척량)는 `grasp_left_stages.compute` 가 **스텝당 한 번** 계산해
-#   캐시한다. 항마다 재계산하면 자를 일곱 개 두는 것이고, 이 트랙은 그렇게 조용히
-#   어긋난 사고를 이미 겪었다(패드 중앙 보정 · 컵 축 clamp).
-# ★가중은 preset 에서 오고 **단조 증가**한다(2→1→3→5→7→10). 근거는 그쪽 주석.
-# ★TB 태그 = 보상 슬롯 이름이므로 함수 이름·슬롯 이름·태그가 전부 일치한다.
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _stage(env, jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]):
-    from . import grasp_left_stages as stages
-    return stages.compute(env, jaw_cfg, sensor_names)
-
-
-def stage_approach(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
-) -> torch.Tensor:
-    """① 접근 — **원본 lift 형태의 순수 거리 양수 커널** (fab_test50, 사용자 결정).
-
-        approach = 1 − tanh( d(턱중점 → 컵 파지점) / 0.1 )
-
-    세 보상 체계를 실측으로 소거한 끝의 복귀다:
-      · t42 양수+곱셈인자  → orient 지렛대(6.7배) 파밍. **죄는 양수가 아니라 곱셈 인자**
-      · t44~48 절대 벌점   → critic 조건부 advantage 순환 + σ 조기 붕괴(반감기 ep90~200)
-      · t49 PBRS 차분      → 정지가 보상 중립이라 "컵 앞 무한 대기"가 최적
-    원본 커널은 **가까이 서 있는 상태 자체를 매 스텝 지급**해 대기 자세가 인력이 되고,
-    인자가 거리 하나뿐이라 우회 파밍이 없다(t16/t17 관절공간판이 같은 씬에서 이 형태로
-    파지·리프트까지 성공한 실증). 30 mm 호버(0.74/step)는 사다리 lift(5)~stay(10)에
-    언제든 역전된다.
-
-    ★기준점 = **컵 원점** (fab_test51, 사용자 결정). 초안은 파지점(원점 −44.6 mm =
-      실측 대역 중앙)이었으나 기각 — std 0.1 커널에 44.6 mm 는 미세 조준이 아니라
-      **바닥 쪽 바이어스**다(테이블 위 47 mm 를 가리켜 테이블 근접 위험만 키운다).
-      미세 z 는 contact/grasp 품질(파지대역 인코딩 유지)이 사다리에서 찾는다.
-    ⚠ 자세(perp)·축분해 가중은 커널에 넣지 않는다 — t42 의 죄를 되살리는 길이다.
-      자세는 euler 중심(수평 재센터) + 회전 리미터가, 축 정밀도는 contact 가 맡는다.
-    """
-    s = _stage(env, jaw_cfg, sensor_names)
-    return s.approach_k
-
-
-def stage_perp_bridge(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
-) -> torch.Tensor:
-    """bridge① 수평 방향타 — `kernel(d) · U_perp` (fab_test55, 사용자 승인).
-
-    ★fab_test55: λ(이진)→접근 커널. t54 에서 λ 정액 지급이 "120mm 안 호버" 무위험
-    소득(0.7/step)이 돼 102mm 평탄 정착(260ep·jaw_l −82mm·σ 10.7→4.7). 커널은
-    102mm 에서 0.23·컵에서 1.0 이라 전진 자체가 다리 소득을 키운다.
-
-    t52 실측: 수직 게이트만으로는 정책이 커널 이득(기울여 손끝 내리기)으로 ~28° 에
-    정착해 μ 가 완전히 잠겼다(0.0000). 게이트는 막기만 하고 수평으로 돌아갈 gradient
-    를 못 준다 — 이 항이 근접 상태(λ)의 수평 유지를 **매 스텝** 지급해 방향타가 된다.
-    agnostic/grasp_sensor 의 bridge 구조 이식(2지판).
-    """
-    s = _stage(env, jaw_cfg, sensor_names)
-    return s.approach_k * s.U_perp
-
-
-def stage_tip(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
-) -> torch.Tensor:
-    """전도 — **벌점 크기(양수)**. 구 `object_tipped` **종료를 대체**한다.
-
-    ★★종료였을 때 무슨 일이 있었나(t42 실측): 컵 앞에 있으면 tipped 0.82 · 에피소드 83
-      스텝 · 리턴 0.72. 물러서면 tipped 0.00 · 300 스텝 · 리턴 2.95. **도망이 4.1배**였고
-      정책은 정확히 그렇게 했다. 종료는 "조심해서 잡아라"가 아니라 "근처에 가지 마라"를
-      가르친다. 벌점으로 바꾸면 미래 보상이 안 끊기므로 도망칠 이유가 사라진다.
-    ★리프트 후에는 `(1−ν)` 로 끈다 — 이송 중 기울기는 `U_tol`·`U_up` 이 맡는다.
-      상시 걸면 사용자 규격("15° 이내면 됨")과 어긋난다.
-    ★크기: 60° 에서 1.5 로 잡아 **물러서 있기(≈0.85)보다 나쁘게** 한다. 그래야
-      "쓰러뜨리기 < 물러서기 < 제대로 잡기" 순서가 선다.
-    """
-    s = _stage(env, jaw_cfg, sensor_names)
-    excess = (s.tilt_deg - P.STAGE_TIP_MARGIN_DEG).clamp(min=0.0)
-    return (P.STAGE_TIP_PER_DEG * excess).clamp(max=P.STAGE_TIP_PENALTY_MAX) * (1.0 - s.nu)
-
-
-def stage_lift(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
-) -> torch.Tensor:
-    """④ 리프트 — `μ(held) · U_tol · clamp(최저점상승 / 40 mm)`.
-
-    ★fab_test56(사용자 결정): μ = 거리(60mm)+수평 — 접촉 조건 폐지. 파지는 명시 보상
-      없이 "들려면 쥘 수밖에 없다"로 창발(원본 lift 레시피 철학). 거리 게이트가
-      쳐날리기(test3)를, lift_height(최저점)가 기울임 위조를 막는다.
-    ★★게이트가 **μ** 이지 높이가 아니다. 논문 Fig. 3 이 Transporting 을
-      `μ·r_lift + ν·r_transporting` 로 쪼개 놓았고, 본문이 *"the lift reward ceases to
-      accumulate"* 라고 못 박는다 — 높이는 **여는 하한이 아니라 끊는 상한**이다.
-      우리 구 `_held` 는 높이가 하한이라 이 항이 열아홉 판 내내 0 이었다.
-      접촉만 성립하면 **1 mm 만 올려도 지급**되고 40 mm 에서 포화한다.
-    ★높이는 `lift_height`(컵 **최저점**)로 잰다. 원점 z 로 재면 컵을 바닥 림으로
-      피벗시켜 최대 4.61 mm 를 위조할 수 있다 — t38 의 "+2.9 mm 상승"이 그것이었다.
-    ★사용자 규격 "그 자세로" = `U_tol`(기울기 25°→15° 전이). 20° 정도는 관용한다.
-    """
-    s = _stage(env, jaw_cfg, sensor_names)
-    return s.mu * s.U_tol * s.H
-
-
-def stage_transfer(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
-) -> torch.Tensor:
-    """⑤ 이송 — `ν · U_tol · exp(−d_goal / std)`.
-
-    ★게이트가 `ν`(= μ 이고 리프트 성립)다. 논문 식 5 그대로 — 이송은 실제로 들린
-      뒤에만 의미가 있다. 사용자 규격 "이때도 cup+z 가 최대한 world+z 와 같은 방향"
-      = `U_tol`.
-    """
-    s = _stage(env, jaw_cfg, sensor_names)
-    return s.nu * s.U_tol * s.T
-
-
-def stage_stay(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
-) -> torch.Tensor:
-    """⑥ 정지 — `ρ · exp(−컵속도 / 0.05) · U_up`.
-
-    ★사용자 규격 "팔을 가만히 (목표 지점 **5cm 이내**)" + "cup+z 와 world+z 15도 이내".
-      `ρ` 가 목표 근접, `S` 가 정지, `U_up`(15°→5°)이 직립이다. **셋을 다 요구한다** —
-      구 `settled_at_goal` 은 직립 인자가 없어 기울인 채로도 성립했다.
-    ★정지를 **컵 속도**로 잰다. 액션 변화량으로 재면 "액션을 안 바꾼다"이지
-      "안 움직인다"가 아니다(자매 트랙이 같은 실수를 고쳤다).
-    """
-    s = _stage(env, jaw_cfg, sensor_names)
-    return s.rho * s.S * s.U_up
-
-
-# ── 단계 진단 (weight 0.001) — TB 값 매칭용 ────────────────────────────────
-# ⚠ IsaacLab 은 `weight == 0` 항을 건너뛴다(호스트 패치 전제이지만 0.001 이 안전하다).
-#   총보상 대비 1e-4 수준이라 학습에 무영향이면서 단계 진입률을 TB 에서 읽을 수 있다.
-def _mk_diag(attr: str):
-    def _f(env, jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]) -> torch.Tensor:
-        v = getattr(_stage(env, jaw_cfg, sensor_names), attr)
-        return v.float() if v.dtype != torch.float32 else v
-    _f.__name__ = f"stage_diag_{attr}"
-    _f.__doc__ = f"★진단 — 단계 상태 `{attr}`. λ/μ/ν/ρ 는 각 단계 진입률이다."
-    return _f
-
-
-stage_diag_lam = _mk_diag("lam")
-stage_diag_mu = _mk_diag("mu")
-stage_diag_nu = _mk_diag("nu")
-stage_diag_rho = _mk_diag("rho")
-stage_diag_tilt_deg = _mk_diag("tilt_deg")
-stage_diag_perp_q = _mk_diag("perp_q")
-stage_diag_d_goal = _mk_diag("d_goal")
-# ★사용자 규격 `BASE — CUP(xy) — TCP` 를 TB 에서 직접 본다.
-#   `enter_s` 가 (0, 80) mm 창 안으로 들어와 46.9 mm 로 수렴하면 순서가 성립한 것이다.
-stage_diag_enter_s = _mk_diag("enter_s")
-stage_diag_jaw_l = _mk_diag("jaw_l")
-stage_diag_height_h = _mk_diag("height_h")
-stage_diag_straddle = _mk_diag("straddle")
-
-
-def stage_palm_cmd_rate(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
-    action_term_name: str, rate_limit: float,
-) -> torch.Tensor:
-    """목표에서 **팜 지령이 계속 배회하는 것**을 벌한다 (0~1, weight 는 음수).
-
-    ★fab_test41: 게이트를 `held_and_near_goal`(구 높이 게이트) → **`ρ`** 로 옮겼다.
-      DexPour 사다리의 ρ 가 정확히 "리프트해서 목표 5cm 안에 왔다"이고, 두 함수가 서로
-      다른 자를 쓰면 조용히 어긋난다(이 트랙이 반복한 사고: 패드 중앙 보정 · 컵 축 clamp).
-
-    ★재는 층이 `action_rate`·`joint_vel` 과 다르다. fab_test19 층 분해 실측:
-        ① 정책 raw 액션   |Δ|0.217 |Δ²|0.205  방향반전 18.8%   ← action_rate 가 보는 층
-        ② 리미터 통과 지령 |Δ|11.5mm            방향반전  8.4%   ← **이 항이 보는 층**
-        ③ fabric 관절목표  |Δ|15.5mrad          방향반전  0.0%
-        ④ 실제 팔 관절     |Δ|17.1mrad          방향반전  0.0%   ← joint_vel 이 보는 층
-      눈에 보이는 배회는 ②의 **1차** 성분이다(dwell 구간 1.16~5.2 mm/step = 초당 60~260 mm).
-      ①은 σ 노이즈가 지배해 "정책을 부드럽게" 대신 "σ 를 줄이기"로 최적화되고,
-      ④는 fabric 이 이미 평활화한 뒤라 남는 신호가 없다.
-
-    ⚠ 게이트가 핵심이다. 목표에서 멀면 0 이므로 접근·이송의 빠른 지령은 **전혀** 안 벌한다.
-      이 트랙은 억제 항을 "아직 아무것도 못 하는" 구간에 걸어 두 번 학습을 죽였다
-      (fab_test14 jerk · fab_test19). [[suppression-terms-need-task-first]]
-    ⚠ 잔류 **속도**는 안 벌한다. 동결 실측에서 컵 순간속도 바닥이 71 mm/s 인데 5 초 순변위는
-      11.7 mm(2.3 mm/s)였다 — 그 71 은 서브밀리미터 솔버 버즈이고 게인·damping 어느 것에도
-      불변이었다. 정책이 못 줄이는 양을 벌하면 그냥 상수 벌금이다.
-    """
-    term = env.action_manager.get_term(action_term_name)
-    moving = (term.cmd_step_norm / rate_limit).clamp(max=1.0)
-    return moving * _stage(env, jaw_cfg, sensor_names).rho
+    term = env.action_manager.get_term(action_term)
+    return term.gate_open.float()

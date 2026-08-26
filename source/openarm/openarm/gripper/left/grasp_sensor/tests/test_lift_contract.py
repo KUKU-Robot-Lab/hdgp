@@ -159,18 +159,8 @@ def test_lift_gate_is_measured_from_the_resting_cup_origin():
     #   Fabrics 는 그 거친 움직임을 없애려고 넣은 것이라 그 메커니즘이 사라졌다.
     #   → 높이는 **연속 램프**, 근접·자세는 게이트로 남는다.
     assert "obj_pos_w[:, 2] > minimal_height" not in rsrc, "이진 게이트가 되살아났다"
-    # ★★fab_test39: 램프의 **기준점**을 원점 z → 컵 **최저점**(`lift_height`)으로 옮겼다.
-    #   원점 z 는 기울기에 민감해 컵을 바닥 림으로 피벗시키면 최대 4.61 mm 가 **실제로 오른다**.
-    #   그래서 옛 설계는 램프 0 점을 그 위(놓인 높이 +6 mm)에 둬 방어했는데, 그러면 첫 6 mm 가
-    #   사구간이라 "접촉했는데 아직 못 든" 상태에 gradient 가 없다.
-    #   t38(4000 ep 완주) 실측이 정확히 그 함정이었다 — 컵 최대 상승 +2.9 mm(= 사구간 안),
-    #   1 cm 이상 올린 스텝 0.0%. 그 판이 한 것은 리프트가 아니라 **기울이기**였다.
-    #   최저점은 기울여도 정확히 0 이므로 사구간 없이 첫 1 mm 부터 신호가 산다.
-    assert "lift_height(env, object_cfg) / (minimal_height - P.CUP_SPAWN_Z)" in rsrc, (
-        "높이 항이 최저점 기준 연속 램프가 아니다"
-    )
-    assert "P.CUP_BASE_RADIUS * sin_tilt" in rsrc, (
-        "`lift_height` 가 기울기를 보정하지 않는다 — 기울이기가 가짜 리프트로 계산된다"
+    assert "(obj_pos_w[:, 2] - ramp_zero_z) / (minimal_height - ramp_zero_z)" in rsrc, (
+        "높이 항이 연속 램프가 아니다"
     )
     # ★08.23 램프에 enclose 를 곱한다 — 순수 램프는 "쳐 올리기" 를 부분 보상해 정책을
     #   주먹으로 고착시켰다(fab_test6: enclose 0.019 · drop% 0.733). 근거는 test_fab_contract.
@@ -301,16 +291,13 @@ def test_grasp_pose_is_a_bonus_never_a_gate():
 
 
 def test_goal_is_the_user_specified_region_not_wider():
-    """★이송 목표는 **사용자가 지정한 박스**. 08.25 현재 x±8 **y±9** z±7 cm (워크스페이스 스캔 실측 전역).
+    """★이송 목표는 **사용자가 지정한 중간 박스**(08.22: x±5 y±7 z±5 cm)다.
 
-    이력: 처음엔 넓은 범위(test12: goal_fine 8%·settle 7.8% 정체) → 점 ±2 cm 로 좁혀
-    test17 이 이송까지 성공 → pour 용 목표-조건부 이송을 위해 x±5 y±7 z±5 로 확대 →
-    **08.25 사용자 지시(ADR "모드을"=보수적)로 y 를 ±11 로, z 를 ±7 로 확대(도달성 실측이 ±15 를 기각)**.
-    ⚠ 옛 정체(test12)는 **전 축이 넓었을 때** 나온 것이다. 이번엔 x 를 그대로 두고 y 만
-      넓혔다 — 작업면 Y 는 90cm 로 X(40cm)의 2.25배이고 x 는 테이블 앞모서리까지 10mm
-      여유뿐이라 애초에 못 넓힌다. y 확대가 정체를 되살리는지는 fab_test17 이 판정한다.
+    이력: 처음엔 넓은 범위(test12: goal_fine 8%·settle 7.8% 정체)→ 점 ±2 cm 로 좁혀
+    test17 이 이송까지 성공 → pour 용 목표-조건부 이송을 위해 **의도적으로** 이만큼만
+    다시 넓혔다. 이보다 넓어지면 test12 의 정체가 돌아온다 — 상한을 계약으로 고정.
     """
-    assert P.GOAL_JITTER == (0.08, 0.09, 0.07), "사용자 지정 목표 영역이 바뀌었다"
+    assert P.GOAL_JITTER == (0.05, 0.07, 0.05), "사용자 지정 목표 영역이 바뀌었다"
     for jit, (lo, hi), c in zip(
         P.GOAL_JITTER, (P.GOAL_POS_X, P.GOAL_POS_Y, P.GOAL_POS_Z), P.GOAL_POINT
     ):
@@ -337,25 +324,13 @@ def test_home_pose_keeps_action_range_slack_from_joint_limits():
             limits[name] = (float(lim.get("lower", "0")), float(lim.get("upper", "0")))
 
     action_half_range = 0.5          # JointPositionActionCfg(scale=0.5) 의 액션 ±1
-
-    # ★★fab_test42 기록된 예외. 사용자가 홈을 책상 위로 올리면서 `l_aj_1 = +0.9` 를 지정했고,
-    #   상한 1.3963 대비 여유가 **0.496** 으로 기준에 **3.7 mrad** 못 미친다.
-    #   허용하는 근거 두 가지:
-    #     ⑴ 지금 학습하는 fab 태스크는 **관절 델타 액션을 쓰지 않는다**(fabric 팜 6D).
-    #        이 기준은 관절공간 태스크(t16 계보)의 것이다.
-    #     ⑵ 잘리는 양이 액션 반범위의 **0.7%** 다.
-    #   ⚠ 예외를 **값과 함께** 못 박는다 — 홈이 더 움직이면 이 테스트가 다시 터져서
-    #     재검토를 강제한다(조용한 완화가 아니다).
-    ALLOWED = {"l_aj_1": 0.49}       # 관절: 허용 최소 여유
-
     tight = []
     for name, value in P.LEFT_ARM_HOME_JOINT_POS.items():
         lo, hi = limits[name]
         slack = min(value - lo, hi - value)
-        floor = ALLOWED.get(name, action_half_range)
-        if slack < floor:
-            tight.append(f"{name}={value:+.4f} 여유 {slack:.3f} (하한 {floor})")
-    assert not tight, f"한계 여유 부족: {tight}"
+        if slack < action_half_range:
+            tight.append(f"{name}={value:+.4f} 여유 {slack:.3f}")
+    assert not tight, f"한계 여유가 {action_half_range} rad 미만인 관절: {tight}"
 
 
 def test_left_arm_velocity_limit_matches_the_reference():
@@ -506,10 +481,7 @@ def test_spawn_center_is_no_longer_the_left_grasp_v1_position():
     관통 영역이 "x 가 낮고 y 가 높은" 코너로 바뀌어 y 도 함께 내렸다.
     ★스폰 박스는 홈에 종속이다 — 홈을 바꿀 때마다 스윕을 다시 돌려야 한다.
     """
-    # ★fab_test59: 0.8 컵의 수평 도달 상한(x 0.31)이 스폰을 0.30 으로 되돌렸다.
-    #   구 grasp_v1 자리(0.30/0.20) 금지의 실체는 "구 홈 점유"였고, 현 홈은 smoke 1e
-    #   재실측으로 검증한다 — 좌표 자체가 아니라 SPAWN_X_SAFE_MIN 이 계약이다.
-    assert P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE >= P.SPAWN_X_SAFE_MIN - 1e-9
+    assert P.CUP_SPAWN_X_CENTER > 0.30
     assert P.CUP_SPAWN_Y_CENTER <= 0.20
 
 
@@ -561,8 +533,8 @@ def test_gripper_action_commands_both_jaws_not_just_the_drive_joint():
     src = _cfg_source()
     # ⚠ 08.24 게이트 버전으로 교체됐다. 부분문자열이라 옛 단언이 그대로 통과해
     #   화석이 될 뻔했다 — 명시적으로 게이트 버전을 요구한다.
-    assert "BinaryJointPositionActionCfg" in src, (
-        "그리퍼가 이진 액션이 아니다"
+    assert "GatedBinaryJointPositionActionCfg" in src, (
+        "그리퍼가 게이트 없는 원본 액션으로 되돌아갔다"
     )
     assert "P.GRIPPER_JOINT_NAMES" in src, "두 조 모두에 지령해야 한다"
     assert set(P.GRIPPER_JOINT_NAMES) == {"l_hj_gripper_1", "l_hj_gripper_2"}
@@ -637,17 +609,15 @@ def test_env_cfg_inherits_isaaclab_lift():
     if "self.rewards.reaching_object = " in src:
         blk = src[src.index("self.rewards.reaching_object = "):]
         blk = blk[: blk.index(")\n\n")]
-    # ★★fab_test32: 접근 보상을 agnostic 트랙 이식본(`approach_opposed`, weight 2.0)으로
-    #   교체했다. 구 계약은 `1 − tanh(d/std)` 전제였고 그 함수는 더 이상 쓰지 않는다.
-        assert "weight=P.APPROACH_WEIGHT" in blk and '"sharpness"' in blk, (
-            "접근 보상이 이식본 규약이 아니다 — weight 는 APPROACH_WEIGHT, "
-            "커널은 exp(−sharpness·(d_palm+d_side))"
+        assert "weight=1.1" in blk and '"std": 0.1' in blk, (
+            "도달 보상은 목표점만 옮길 수 있다 — weight/std 는 레퍼런스 값 유지"
         )
+    # 신설 term: grasp_pose · settled_at_goal · cup_between_jaws ·
+    #            grip_closure_when_enclosed + 도달 목표점 교정 1
     # 판정 게이트를 늘리는 term 은 여전히 금지 — test6/test7 에서 학습을 죽였다.
     # 신설: grasp_pose · settled_at_goal · cup_between_jaws · grip_closure_when_enclosed
-    #      · gate_rate(진단 weight 0.001) · dwell_at_goal(fab_test13 — 순회 국소최적을
-    #        가르는 보너스, 게이트 아님) + 도달 목표점 교정 1
-    assert src.count("RewTerm(") <= 7, "신설 term 이 예상보다 많다"
+    #      · gate_rate(진단 weight 0) + 도달 목표점 교정 1
+    assert src.count("RewTerm(") <= 6, "신설 term 이 예상보다 많다"
 
 
 def test_smoothing_is_the_reference_curriculum_not_an_extra_term():
@@ -893,92 +863,3 @@ def test_relative_ik_seeds_from_previous_target_and_caps_windup_by_effort():
     assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[5-7]"] < P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"]
     # 속도 한계로 잡던 값(v·dt≈0.026)으로 되돌아가면 j1-2 상한이 그 근처로 내려온다.
     assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"] > 0.05, "토크가 갇힌다"
-
-
-def test_lift_reward_is_gated_by_contact_not_by_height():
-    """★★리프트 보상의 게이트는 **접촉**이어야 한다 — 높이가 아니라.
-
-    논문 Fig.3 이 `μ·r_lift` 로 쓰고 본문이 못 박는다: *"Once the cup reaches a certain
-    height threshold, the lift reward **ceases to accumulate**"* → 높이는 **여는 하한이
-    아니라 끊는 상한**이다. 구 `_held` 는 높이가 하한이라 t22~t40 열아홉 판 내내 0 이었다.
-
-    ★fab_test41 이후 fab 태스크의 리프트 항은 `stage_lift` 다. `object_is_held_and_lifted`
-      는 **관절공간 태스크(t16 계보 positive control)** 가 계속 쓰는 항이고, 그쪽 씬에는
-      접촉 센서가 없으므로 `sensor_names` 가 비면 구 `_held` 로 되돌아간다(그게 옳다).
-    """
-    rsrc = (
-        Path(__file__).resolve().parents[1] / "grasp_left_rewards.py"
-    ).read_text(encoding="utf-8")
-
-    # fab 태스크: stage_lift 가 접촉 게이트여야 한다
-    body = rsrc.split("def stage_lift(")[1].split("\ndef ")[0]
-    assert "s.mu * s.U_tol * s.H" in body, "fab 리프트가 `μ × 자세 × 높이진척` 이 아니다"
-    assert "s.nu" not in body, "fab 리프트가 아직 높이 게이트(ν) 뒤에 있다"
-
-    # 높이는 컵 **최저점** 기준이어야 한다 — 원점 z 는 기울여서 4.61 mm 를 위조한다
-    ssrc = (
-        Path(__file__).resolve().parents[1] / "grasp_left_stages.py"
-    ).read_text(encoding="utf-8")
-    assert "s.lift_h = rewards.lift_height(env)" in ssrc, "높이가 최저점 기준이 아니다"
-    assert "s.H = (s.lift_h / P.STAGE_LIFT_REF_M).clamp(0.0, 1.0)" in ssrc, (
-        "리프트 진척이 목표에서 포화하지 않는다"
-    )
-
-    # 관절공간 태스크: 센서가 없으면 구 거동으로 안전 복귀해야 한다
-    old = rsrc.split("def object_is_held_and_lifted(")[1].split("\ndef ")[0]
-    assert "if not sensor_names:" in old, (
-        "센서 없는 태스크(관절공간)에서 KeyError 로 죽는다 — fab_test42 스모크에서 실제로 터졌다"
-    )
-
-def test_grasp_pose_shapes_the_bite_before_the_lift():
-    """★★`grasp_pose` 는 리프트 **전에** 물기 자세를 만들어야 한다.
-
-    이 항은 올바른 물기 자세를 만드는 유일한 gradient 인데 `_held`(= 리프트 성립) 뒤에
-    갇혀 있었다. t38 4000 ep 완주 실측이 그 대가다:
-        grasp_pose 0.00001 · TCP z↔컵 z **49.8°**(올바름 90°) · jaw 수평이탈 **37.6°**
-        · lateral **62.4 mm**(`grasp_ok` 문턱 30 mm) · 액션 게이트 개방률 **< 0.5%**
-    물기가 비스듬해 게이트가 안 열리고 → 못 들고 → 물기를 고칠 신호가 안 온다.
-
-    ⚠ 게이트를 **그냥 제거하면 안 된다.** `jaw_level_quality` 는 로봇 자세만 보고
-      `upright` 는 컵이 서 있기만 해도 1.0 이라, 무게이트면 아무 데서나 그리퍼를 수평으로
-      들면 만점이다(reward-audit Check 2). 컵 의존 게이트가 반드시 남아야 한다.
-    """
-    rsrc = (
-        Path(__file__).resolve().parents[1] / "grasp_left_rewards.py"
-    ).read_text(encoding="utf-8")
-    body = rsrc.split("def held_with_good_pose")[1].split("\ndef ")[0]
-    assert "_held(" not in body, "`grasp_pose` 가 아직 리프트 게이트 뒤에 있다"
-    assert "gate = grasp_quality(" in body, (
-        "`grasp_pose` 의 게이트가 컵 의존(`grasp_quality`)이 아니다 — 무게이트면 해킹면이 생긴다"
-    )
-
-
-def test_cup_tipping_is_penalty_plus_termination():
-    """★fab_test50: 전도 = 벌점(연속) + **terminated**(60° 절벽, 레퍼런스 규약 복귀).
-
-    절단 규약은 보상 부호에 묶인다: 벌점/차분 흐름에선 truncated(자살 차단),
-    **양수 흐름에선 terminated**(truncated 면 γ·V>0 이 쓰러뜨리기 보너스).
-    t42 의 회피 함정은 질량 ×8 커리큘럼이 무력화(tipped 실측 0.003).
-    """
-    fab_src = (
-        Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py"
-    ).read_text(encoding="utf-8")
-    block = fab_src.split("self.terminations.object_tipped = DoneTerm(")[1].split(")")[0]
-    assert "time_out=True" not in block, "양수 흐름에서 truncated 는 쓰러뜨리기 보너스다"
-    assert "max_tilt_deg" in block, "전도 임계가 없다"
-    assert "self.rewards.tip = RewTerm(" in fab_src, "전도 벌점 항이 없다"
-    assert P.STAGE_TIP_WEIGHT < 0.0
-    assert P.STAGE_TIP_MARGIN_DEG >= 8.0
-
-def test_lift_and_lateral_diagnostics_are_logged():
-    """★t38 은 이 둘을 TB 에서 못 봐 4000 epoch 내내 사후 프로브로만 확인할 수 있었다.
-
-    · `diag_lift_height` — 컵 최저점 상승. `lifting_object` 가 0 일 때 "안 들었다"인지
-      "게이트가 막았다"인지를 가른다.
-    · `diag_jaw_lateral` — `grasp_ok` 의 1차 조건이자 D2 가 겨냥하는 값(t38 62.4 mm).
-    """
-    fab_src = (
-        Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py"
-    ).read_text(encoding="utf-8")
-    for name in ("diag_lift_height", "diag_jaw_lateral"):
-        assert f"self.rewards.{name} = RewTerm(" in fab_src, f"{name} 진단항이 없다"

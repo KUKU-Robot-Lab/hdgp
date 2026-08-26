@@ -27,10 +27,7 @@ import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 
-from . import grasp_left_preset as P
-
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
     from isaaclab.envs import ManagerBasedEnv
 
 
@@ -65,67 +62,3 @@ def hold_joints_at_target(
     asset.set_joint_position_target(
         target.unsqueeze(0).expand(len(env_ids), -1), joint_ids=joint_ids, env_ids=env_ids
     )
-
-
-def apply_object_wrench(
-    env: "ManagerBasedRLEnv",
-    env_ids: torch.Tensor | None,
-    asset_cfg: SceneEntityCfg,
-    jaw_cfg: SceneEntityCfg,
-    torsional_radius: float,
-    hand_dist_threshold: float,
-) -> None:
-    """물체 외란 렌치 — DEXTRAH kuka `apply_object_wrench` 정합.
-
-    ★★원본과 우리 것이 세 군데 갈려 있었다. 전부 IsaacLab 기본
-      `mdp.apply_external_force_torque` 를 쓴 데서 온다:
-
-      ① **방향이 등방이 아니었다.** 기본 항은 `force_range=(0.0, F)` 를 성분마다 균등
-         추출한다 → 세 성분이 전부 양수, 즉 힘이 항상 **+x+y+z 한 팔분면**으로만 간다.
-         정책은 "외란은 오른쪽 위 뒤로 온다"를 외워 버릴 수 있다. 원본은 정규분포
-         방향벡터를 정규화해 **등방**으로 뽑는다.
-      ② **크기가 질량과 무관했다.** 원본은 가속도를 뽑고(`U(0, a_max)`) 질량을 곱한다.
-         그래야 ADR 이 질량을 ×3 로 키워도 외란이 만드는 **가속도**가 일정하다. 고정
-         힘이면 무거운 컵일수록 외란이 약해져, 질량 DR 과 외란 DR 이 서로를 상쇄한다.
-      ③ **토크가 0 이었다.** 원본은 `mass · accel · torsional_radius` 크기의 등방 토크를
-         같이 건다. 병진만 흔들면 컵이 손 안에서 **돌아가는** 실패 모드를 훈련하지 못한다.
-
-    그리고 원본은 렌치를 **손이 물체 근처일 때만** 건다
-    (`hand_to_object_pos_error <= hand_to_object_dist_threshold`). 이유가 있다 — 접근
-    중에 아직 잡지도 않은 컵을 밀어 버리면 그건 외란 강건성이 아니라 그냥 과제가
-    무작위로 바뀌는 것이고, 스폰 랜덤화가 이미 그 역할을 한다.
-
-    ⚠ `mode="interval"` 로 걸어야 한다(원본 `wrench_trigger_every` = 1 s 재추첨).
-      힘은 다음 재추첨까지 유지된다 — 원본도 `torch.where(step % every == 0, new, old)` 로
-      같은 규약이다.
-    """
-    asset = env.scene[asset_cfg.name]
-    robot: Articulation = env.scene[jaw_cfg.name]
-    num_bodies = asset.num_bodies
-    device = env.device
-
-    max_accel = float(getattr(env, "_dextrah_wrench_max_accel", 0.0))
-    if max_accel <= 0.0:
-        return
-
-    # 질량 (num_envs, 1) — ADR 이 질량을 스케일하므로 매 회 새로 읽는다.
-    mass = asset.root_physx_view.get_masses().to(device).sum(dim=-1, keepdim=True)
-    accel = max_accel * torch.rand(env.num_envs, 1, device=device)
-    force_mag = (mass * accel).unsqueeze(-1)                      # (N, 1, 1)
-    torque_mag = force_mag * torsional_radius
-
-    def _isotropic() -> torch.Tensor:
-        return torch.nn.functional.normalize(
-            torch.randn(env.num_envs, num_bodies, 3, device=device), dim=-1)
-
-    forces = force_mag * _isotropic()
-    torques = torque_mag * _isotropic()
-
-    # 손–물체 거리 게이트. 턱 body 들의 중점을 손 위치로 본다.
-    jaw_pos = robot.data.body_pos_w[:, jaw_cfg.body_ids].mean(dim=1)
-    dist = (jaw_pos - asset.data.root_pos_w).norm(dim=-1)
-    near = (dist <= hand_dist_threshold)[:, None, None]
-    forces = torch.where(near, forces, torch.zeros_like(forces))
-    torques = torch.where(near, torques, torch.zeros_like(torques))
-
-    asset.set_external_force_and_torque(forces, torques, env_ids=None)
