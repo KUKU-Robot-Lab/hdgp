@@ -271,7 +271,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             ),
             spawn=UsdFileCfg(
                 usd_path=_os.path.join(_ASSETS_DIR, "cup", P.CUP_USD_NAME),
-                scale=(1.0, 1.0, 1.0),
+                scale=(P.CUP_SCALE, P.CUP_SCALE, P.CUP_SCALE),  # ★fab_test59 0.8 커리큘럼
                 rigid_props=RigidBodyPropertiesCfg(
                     solver_position_iteration_count=16,
                     solver_velocity_iteration_count=1,

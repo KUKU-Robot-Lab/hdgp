@@ -506,7 +506,10 @@ def test_spawn_center_is_no_longer_the_left_grasp_v1_position():
     관통 영역이 "x 가 낮고 y 가 높은" 코너로 바뀌어 y 도 함께 내렸다.
     ★스폰 박스는 홈에 종속이다 — 홈을 바꿀 때마다 스윕을 다시 돌려야 한다.
     """
-    assert P.CUP_SPAWN_X_CENTER > 0.30
+    # ★fab_test59: 0.8 컵의 수평 도달 상한(x 0.31)이 스폰을 0.30 으로 되돌렸다.
+    #   구 grasp_v1 자리(0.30/0.20) 금지의 실체는 "구 홈 점유"였고, 현 홈은 smoke 1e
+    #   재실측으로 검증한다 — 좌표 자체가 아니라 SPAWN_X_SAFE_MIN 이 계약이다.
+    assert P.CUP_SPAWN_X_CENTER - P.CUP_SPAWN_X_RANGE >= P.SPAWN_X_SAFE_MIN - 1e-9
     assert P.CUP_SPAWN_Y_CENTER <= 0.20
 
 

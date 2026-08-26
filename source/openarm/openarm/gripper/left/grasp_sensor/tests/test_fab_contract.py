@@ -1810,30 +1810,37 @@ def test_approach_kernel_single_ruler():
     assert "return s.approach_k" in ap, "approach 항이 stages 커널을 재사용하지 않는다"
 
 
-def test_pregrasp_injection_contract():
-    """★fab_test57(사용자 승인 ①): pre-grasp 리셋 주입 — 조용한 실패 지점 4개 고정.
+def test_pregrasp_injection_is_banned():
+    """★fab_test59(사용자 결정 "a방법은 하면안됨"): pre-grasp 리셋 주입 금지.
 
-    ①fabric 상태 미동기 → PD 가 팔을 홈으로 도로 끌고 감 ②리미터 앵커 미동기 →
-    첫 지령 텔레포트로 이탈 ③컵을 랜덤 스폰에 두면 최대 22mm 어긋나 관통 스폰
-    ④주입 컵이 스폰 분포 밖이면 V-수리가 본 과제 상태와 연결되지 않는다.
+    주입 리셋은 '물고 태어나는' 순간 관통을 만들었다(jitter 5mm > 실여유 3.7mm,
+    영상 실측). 삽입 학습은 컵 0.8 스케일 커리큘럼으로 대체한다.
     """
-    esrc = _src("grasp_left_events.py")
-    body = esrc.split("def inject_pregrasp_reset(")[1].split("\ndef ")[0]
-    assert "act._fabric_q[ids]" in body, "fabric 상태 미동기 — PD 가 홈으로 끌고 간다"
-    assert "act._prev_cmd_pos[ids]" in body and "act._cmd_primed[ids] = True" in body, (
-        "리미터 앵커 미동기 — 첫 지령이 텔레포트다"
-    )
-    assert "P.PREGRASP_JAW_MID[0]" in body, "컵이 달성 jaw_mid 가 아니라 랜덤 스폰 위치다"
     fab = _fab_src()
-    assert "self.events.inject_pregrasp = EventTermCfg(" in fab, "주입 이벤트 미등록"
-    assert fab.index("reset_object_position") < fab.index("inject_pregrasp"), (
-        "주입이 컵 스폰 이벤트보다 앞이라 컵 배치가 덮인다"
-    )
-    assert 0.0 < P.PREGRASP_INJECT_FRACTION <= 0.5, "주입 비율이 과반이면 본 과제가 부업이 된다"
-    # 주입 컵이 스폰 분포 안 (V-수리 연결 조건)
-    assert abs(P.PREGRASP_JAW_MID[0] - P.CUP_SPAWN_X_CENTER) <= P.CUP_SPAWN_X_RANGE + 0.005
-    assert abs(P.PREGRASP_JAW_MID[1] - P.CUP_SPAWN_Y_CENTER) <= P.CUP_SPAWN_Y_RANGE + 0.005
-    assert P.PREGRASP_CUP_JITTER_M <= 0.007, "jitter 가 삽입 여유(13.25mm)의 절반을 넘는다"
+    assert "self.events.inject_pregrasp" not in fab, "주입 이벤트가 되살아났다 — 사용자 금지"
+    esrc = _src("grasp_left_events.py")
+    assert "def inject_pregrasp_reset(" not in esrc, "주입 함수 잔존"
+    assert not hasattr(P, "PREGRASP_ARM_Q"), "주입 상수 잔존"
+
+
+def test_cup_scale_curriculum_stage1():
+    """★fab_test59: 컵 0.8 스케일 — 파생 상수가 전부 스케일을 타야 한다.
+
+    원본 몸통 66~88mm vs 개구 84.5mm 는 삽입 여유 0~9mm/side. 0.8 배로 7~16mm 확보.
+    하나라도 원본 값이면 판정 기하가 조용히 어긋난다(이 트랙 반복 사고 유형).
+    """
+    assert P.CUP_SCALE == 0.8
+    psrc = _src("grasp_left_preset.py")
+    for name in ("CUP_BOTTOM_TO_ORIGIN", "CUP_BASE_RADIUS",
+                 "JAW_ENCLOSE_HALF_WIDTH", "GRASP_HEIGHT_BAND"):
+        line = [l for l in psrc.splitlines() if l.startswith(f"{name} =")][0]
+        assert "CUP_SCALE" in line, f"{name} 이 스케일 파생이 아니다"
+    esrc = _src("grasp_left_env_cfg.py")
+    assert "scale=(P.CUP_SCALE, P.CUP_SCALE, P.CUP_SCALE)" in esrc, "USD 스폰이 스케일을 안 탄다"
+    # 스폰이 0.8 컵 원점 높이의 수평 도달 지도(IK 45점: x≤0.31) 안
+    assert P.CUP_SPAWN_X_CENTER + P.CUP_SPAWN_X_RANGE <= 0.31 + 1e-9
+    # 놓인 원점이 낙하 판정보다 위 (스케일이 낮춘 원점이 임계 아래면 즉시 종료 사고)
+    assert P.CUP_SPAWN_Z > P.OBJECT_DROP_HEIGHT + 0.010
 
 
 def test_gripper_effort_cannot_crush_through_the_cup():

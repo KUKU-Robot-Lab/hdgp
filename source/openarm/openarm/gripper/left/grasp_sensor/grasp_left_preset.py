@@ -212,7 +212,13 @@ CUP_MASS = 0.134                  # kg, right/grasp_sensor 전 물체 공통값�
 # 메시 bottom → 원점 (probe_gripper_opening.py 실측).
 # ★bbox 반높이(0.0875)가 아니다 — shaker 원점은 기하 중심이 아니라서 반높이로 역산하면
 #   컵이 테이블에 파묻힌다.
-CUP_BOTTOM_TO_ORIGIN = 0.09209
+# ★★fab_test59(사용자 결정): 컵 0.8 스케일 커리큘럼 1단계. 원본 몸통 지름 66~88mm 는
+#   개구 84.5mm 대비 삽입 여유가 한쪽 0~9mm 라 자력 삽입이 구조적으로 어렵고, pre-grasp
+#   주입은 폐기됐다("a방법 금지"). 0.8 배면 지름 53~70mm → 여유 7~16mm. 학습 성립 후
+#   원본 크기로 warmstart 파인튠(2단계). 근거: 30% 축소는 과함·20% 후보([[grasp-cup-shrink-test6]]).
+#   ⚠ 아래 컵 기하 상수는 전부 이 스케일에 파생돼야 한다 — 하나라도 원본 값이면 조용히 어긋난다.
+CUP_SCALE = 0.8
+CUP_BOTTOM_TO_ORIGIN = 0.09209 * CUP_SCALE
 # ★컵의 강체 이름. 레퍼런스는 큐브 prim 이름인 `"Object"` 를 SceneEntityCfg 에 박아 두는데
 #   우리 shaker 는 `baseLink` 라 그대로 두면 매니저가 이름을 resolve 하는 순간 죽는다
 #   (서버 학습 기동 시 실제로 터졌다: "Object: [] / Available strings: ['baseLink']").
@@ -240,10 +246,11 @@ CUP_SPAWN_Z = TABLE_SURFACE_Z + CUP_BOTTOM_TO_ORIGIN     # 0.30709
 #   기울임·t54 의 102mm 호버(턱 x 0.346 = 도달 경계)가 전부 이 기구학이 원인.
 #   구 하한 0.355(홈 관통 경계)와 수평 도달 상한이 같은 선이라 교집합이 비어 있었다 —
 #   스폰을 도달영역 안으로 내리고 관통 경계는 smoke 1e 로 재실측해 갱신한다.
-SPAWN_X_SAFE_MIN = 0.33           # 재실측 (fab_test55 smoke 1e --sweep_beyond 49/49 조용:
+SPAWN_X_SAFE_MIN = 0.28           # fab_test59 smoke 1e 재실측 예정 경계           # 재실측 (fab_test55 smoke 1e --sweep_beyond 49/49 조용:
 #   x 0.29~0.41 × y 0.16~0.22 전 구간 이동 ≤0.16mm·기울기 0° — 현 홈은 이 대역을
 #   점유하지 않는다. 0.33 은 스윕 하한 0.29 에 40mm 여유를 둔 값)
-CUP_SPAWN_X_CENTER = 0.35
+# ★fab_test59: 0.8 컵 원점 z 0.2737 의 수평 도달 지도(45점 IK): ✓ = x ≤ 0.31 (y 0.17~0.21).
+CUP_SPAWN_X_CENTER = 0.30
 CUP_SPAWN_Y_CENTER = 0.19
 # ★fab_test18 ADR: ±0.02 → ±0.03(중심 0.38→0.39). 상한은 테이블 앞모서리 − 컵 반경
 #   (0.470−0.044=0.426)이 물리 한계, 하한은 SPAWN_X_SAFE_MIN(0.355). 그 사이 최대폭이다.
@@ -264,23 +271,6 @@ CUP_SPAWN_X_RANGE = 0.01          # ±m → x ∈ [0.34, 0.36] (수평 도달영
 #       목표는 컵을 든 **뒤**의 지점이라 홈 자세 점유와 무관하고(기존 계약 주석), 도달성
 #       프로브가 y 0.39 까지 전 높이 도달을 확인했다(오차 0.4~3.4 mm).
 CUP_SPAWN_Y_RANGE = 0.02          # ±m → y ∈ [0.17, 0.21] (불변)
-
-# ---------------------------------------------------------------------------
-# pre-grasp 리셋 주입 (fab_test57, 사용자 승인 ①)
-# ---------------------------------------------------------------------------
-# ★t54/t55/t56 세 판이 삽입 직전(90~110mm)에서 정지 — 마지막 90mm 는 여유 13.25mm 의
-#   삽입 스윕이라 접촉→전도→terminated 의 기대값이 음수고, V(삽입 구간)가 죽는 자리로
-#   박제됐다. 일부 리셋을 삽입 완료 상태에서 시작해 lift 소득으로 V 를 수리한다.
-# 해 출처: probe_grip_l_spawn_ws_ik --dump_path (512 재시작 중 #132).
-#   선별 조건: 접근축 tilt 0.33° · 액션 박스 표현오차 1.25°(팜 스웨이 3mm < 여유 13.25)
-#   · jaw_mid 가 스폰 분포 안 · |q|max 1.02 rad (팔꿈치 뒤집힘 해 배제).
-# ⚠ 이 상수 5개는 한 몸이다 — q 를 바꾸면 나머지 넷을 프로브로 다시 뽑아야 한다.
-PREGRASP_INJECT_FRACTION = 0.30
-PREGRASP_ARM_Q = (-0.396971, -0.122297, 0.6576, 0.193665, -0.704584, 0.04431, -1.016295)
-PREGRASP_PALM_POS = (0.37711, 0.19117, 0.3036)       # env-local, fabric palm 원점
-PREGRASP_PALM_EULER_ZYX = (0.447994, -1.570796, 2.745526)  # 박스 안 최근접 표현
-PREGRASP_JAW_MID = (0.34408, 0.18964)                # 달성 jaw_mid xy — 컵 배치 기준
-PREGRASP_CUP_JITTER_M = 0.005                        # ±5mm < 여유 13.25mm
 
 # ---------------------------------------------------------------------------
 # 리프트 판정
@@ -343,7 +333,7 @@ PREGRASP_CUP_JITTER_M = 0.005                        # ±5mm < 여유 13.25mm
 #   → 램프 0 지점을 그 상한 **위**에서 시작한다. 흔들기는 램프 0 이 되고 진짜 리프트만
 #     값을 받는다. 여유 1.3 배는 스폰 시 미세 정착·수치 오차용이다.
 #   ⚠ 리터럴 6 mm 를 박지 않는다 — 컵 자산이 바뀌면 상한도 바뀐다.
-CUP_BASE_RADIUS = 0.0295                # shaker 바닥 원판 반경 (bottom_plug)
+CUP_BASE_RADIUS = 0.0295 * CUP_SCALE    # shaker 바닥 원판 반경 (bottom_plug, 스케일 파생)
 CUP_TIP_RISE_MAX = (
     math.sqrt(CUP_BOTTOM_TO_ORIGIN**2 + CUP_BASE_RADIUS**2) - CUP_BOTTOM_TO_ORIGIN
 )                                       # 0.00461 — 기울여서 얻을 수 있는 최대 원점 상승
@@ -647,7 +637,7 @@ GOAL_POS_Z = (GOAL_POINT[2] - GOAL_JITTER[2], GOAL_POINT[2] + GOAL_JITTER[2])
 # 충돌 근사가 convexHull 이라 통과폭은 가장 안쪽 점인 핑거 팁이 지배한다.
 GRIPPER_MAX_OPENING = 0.0845
 # shaker 는 계단형 원뿔(58/68/78/88 mm)이라 테이블 위 10~85 mm 에서만 개구를 통과한다.
-GRASP_HEIGHT_BAND = (0.010, 0.085)
+GRASP_HEIGHT_BAND = (0.010 * CUP_SCALE, 0.085 * CUP_SCALE)   # 상면 기준, 스케일 파생
 
 # ★★08.22 — **컵 원점은 파지 대역 밖이다.** 여기서 크게 태웠다.
 #   컵 원점은 상면 +92 mm 인데 통과 대역은 상면 +10~85 mm 다. 그 높이의 컵 지름(88 mm)이
@@ -752,7 +742,7 @@ GRASP_GATE_ALONG_OK = 0.030      # m. 성공 12~14. JAW_ENCLOSE_HALF_WIDTH(0.029
 #   개방되어 컵을 놓는다. 컵이 턱에서 **완전히** 벗어난 경우만 접근 단계로 되돌린다.
 GRASP_GATE_RELEASE_LAT = 0.060   # m
 
-JAW_ENCLOSE_HALF_WIDTH = 0.029   # m, shaker 최소 몸통 반경(58 mm/2). 이 이상 벌리면 enclose 포화
+JAW_ENCLOSE_HALF_WIDTH = 0.029 * CUP_SCALE   # m, 최소 몸통 반경 (스케일 파생)
 # ★enclose 가 0 일 때도 **정렬 gradient 는 살려 둔다.** 완전 곱셈이면 주먹 상태에서 항이
 #   통째로 0 이 되어 "가서 정렬하라"는 신호조차 사라진다(= 게이트와 같아진다).
 #   바닥값 0.3 이면 개선 경로가 단조롭다: 정렬(0.05→0.17) → 벌림(→0.55) → 정밀정렬(→1.0).

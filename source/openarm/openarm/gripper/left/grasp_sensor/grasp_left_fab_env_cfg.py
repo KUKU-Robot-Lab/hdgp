@@ -491,13 +491,9 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
             },
         )
         # 관측 노이즈/바이어스 재추첨 — 원본은 `_reset_idx` 에서 한다.
-        # ── pre-grasp 리셋 주입 (fab_test57, 사용자 승인 ① — 근거는 preset 주석) ──
-        # ⚠ reset_object_position **뒤**에 등록해야 주입 env 의 컵 배치가 살아남는다.
-        self.events.inject_pregrasp = EventTermCfg(
-            func=events.inject_pregrasp_reset,
-            mode="reset",
-            params={"fraction": P.PREGRASP_INJECT_FRACTION},
-        )
+        # ★fab_test59(사용자 결정): pre-grasp 리셋 주입 **폐기** — 주입 리셋의 물고
+        #   태어나는 순간 관통(jitter 5mm > 실여유 3.7mm)이 영상으로 확인됐고, 사용자
+        #   판정 "a방법은 하면안됨". 삽입 학습은 컵 0.8 스케일 커리큘럼(1단계)로 대체.
         self.events.obs_noise_resample = EventTermCfg(func=obs_noise.resample, mode="reset")
 
         # ★★fab_test21 원본 정합: PD 게인·관절 마찰 도메인 랜덤화.
