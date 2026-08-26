@@ -80,12 +80,14 @@ class StageState:
         "U_tol", "U_up", "H", "T", "S",     # 단계 진척량
         "perp_q", "align_q", "grasp_q",
         "enter_s", "jaw_l", "height_h",     # gripper_base 프레임 3축 분해
+        "phi",                              # 접근 포텐셜 Φ ≤ 0 (fab_test49 PBRS)
     )
 
 
 _CACHE: dict[int, tuple[int, StageState]] = {}
 _SPAWN: dict[int, torch.Tensor] = {}
 _BASE_ID: dict[int, int] = {}
+_PHI: dict[int, "torch.Tensor"] = {}   # fab_test49 PBRS 직전 Φ
 
 
 def _cup_axis_and_tilt(obj: RigidObject) -> tuple[torch.Tensor, torch.Tensor]:
@@ -190,6 +192,23 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     s.H = (s.lift_h / P.STAGE_LIFT_REF_M).clamp(0.0, 1.0)
     s.T = torch.exp(-s.d_goal / P.STAGE_TRANSFER_STD_M)
     s.S = torch.exp(-s.cup_speed / P.STAGE_STAY_SPEED_REF)
+
+    # ── 접근 포텐셜 Φ (fab_test49 PBRS) ──────────────────────────────
+    # ★approach 보상은 이제 **Φ 의 차분**이다(`rewards.stage_approach`). 절대 벌점은
+    #   t44~t48 다섯 판에서 "critic 조건부 advantage 맹점"을 만들었다 — 가까운 상태의
+    #   V 가 '그 상태에서 현 정책이 물러난 이력'으로 학습돼 전진의 advantage 가 안
+    #   나오는 순환. 차분은 전진의 가치를 critic 을 거치지 않고 그 스텝에 지급한다.
+    #   내용물(가중·캡·축분해)은 구 벌점과 동일 — 새 해킹면을 만들지 않는다.
+    depth = (s.enter_s - P.STAGE_ENTER_DEPTH_TARGET_M).abs().clamp(
+        max=P.STAGE_ENTER_DEPTH_CAP_M)
+    lateral = s.jaw_l.abs().clamp(max=P.STAGE_JAW_LATERAL_CAP_M)
+    height = (s.height_h.abs() - P.STAGE_HEIGHT_BAND_HALF_M).clamp(
+        min=0.0, max=P.STAGE_HEIGHT_CAP_M)
+    orient = (1.0 - s.perp_q) * (1.0 - s.mu)
+    s.phi = -(P.STAGE_ENTER_DEPTH_WEIGHT * depth
+              + P.STAGE_JAW_LATERAL_WEIGHT * lateral
+              + P.STAGE_HEIGHT_WEIGHT * height
+              + P.STAGE_ORIENT_PENALTY_WEIGHT * orient)
 
     _CACHE[key] = (step, s)
     return s

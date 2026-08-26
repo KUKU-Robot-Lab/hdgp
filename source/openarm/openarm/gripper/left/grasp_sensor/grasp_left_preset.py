@@ -1335,7 +1335,10 @@ CONTACT_ALL_BONUS = 1.5
 #   벌점은 상한이 0 이라 파밍할 여지가 원리적으로 없다(논문 `p_approaching` 도 벌점이다).
 # ⚠ 벌점 전환은 **실패 종료 3종 제거와 한 몸이다.** 모든 보상이 음수인데 `terminated` 가
 #   남아 있으면 V<0 이라 **일부러 죽는 것이 최적**이 된다(test6/test7 실증: ep 130 → 13).
-STAGE_APPROACH_WEIGHT = -1.0      # func 가 **벌점 크기(양수)** 를 낸다
+# ★fab_test49: −1.0 → **+1.0** — approach 가 절대 벌점에서 **포텐셜 차분(PBRS)**으로
+#   바뀌었다(func 가 Φ(지금)−Φ(직전)을 낸다. 근거 전문은 rewards.stage_approach).
+#   정지 = 0 · 전진 = + · 후퇴 = −. t44~t48 다섯 판의 "부분 접근 후 정지" 순환 절단.
+STAGE_APPROACH_WEIGHT = 1.0
 STAGE_TIP_WEIGHT = -1.0           # 전도 — 구 `object_tipped` **종료를 대체**
 STAGE_CONTACT_WEIGHT = 1.0        # 게이트 없음 — λ=1·μ=0 사각지대 방지 shaping
 STAGE_GRASP_WEIGHT = 3.0

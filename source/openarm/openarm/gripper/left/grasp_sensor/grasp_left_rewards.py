@@ -1110,36 +1110,33 @@ def _stage(env, jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]):
 def stage_approach(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
 ) -> torch.Tensor:
-    """① 접근 — **벌점 크기(양수)**. weight 가 음수라 보상은 ≤ 0 이고 상한이 **0** 이다.
+    """① 접근 — **포텐셜 차분(PBRS)**: `Φ(지금) − Φ(직전)`. 정지 = 0, 전진 = +.
 
-    ★★fab_test43. t42 까지 이 항은 양수 곱셈 shaping 이었고, 그래서 **파밍이 가능**했다.
-      `2·exp(−4d)·align·orient` 에서 `orient` 의 동적 범위(0.15→1.0 = 6.7배)가 거리
-      범위(0.89→0.37 = 2.4배)의 3배라, **거리를 늘리면서 자세만 올려도 보상이 오른다.**
-      t42 실측이 그 결말이다 — 1153 epoch 동안 `perp_q` 0.43 → 0.89, `approach`
-      0.42 → 0.73(1.45배)인데 턱-컵은 195 → 199 mm. 자세 항 예측비 1.49 와 소수점까지
-      맞았다. **후반 학습 전부가 손목 각도 맞추기였다.**
-      벌점은 상한이 0 이라 "닿는 것" 말고는 0 에 도달할 방법이 없다 — 파밍면이 없다.
+    ★★fab_test49. 절대 벌점(t44~t48)이 왜 다섯 판 연속 "부분 접근 후 정지"로 죽었나:
+      ⑴ 벌점 지형에서 노이즈는 순비용 → σ 조기 붕괴(반감기 ep90~200, 양수 t42 는 680)
+      ⑵ 전진 액션의 advantage 는 `r + γV(가까움) − V(지금)` 인데 V(가까움)은 critic 이
+        "그 상태에서 현 정책이 물러난 이력"으로 배운 값이라 전진 가치가 안 보인다 —
+        **정책 조건부 순환**. t48 결정론 프로브: 지형 gradient 는 전진에 ~0.9/step 를
+        약속하는데 μ 는 350ep 동안 뒤로 갔다(cmd_x 406→232).
+      차분은 전진 가치를 critic 을 거치지 않고 **그 스텝의 보상**으로 지급한다(Ng 1999).
 
-    ★사용자 규격 `PALM BASE(xyz) — CUP(xy) — TCP(xyz)` 를 gripper_base 프레임에서 잰다:
-        s = 진입 깊이(base z)  목표 46.9 mm, 창 (0, 80)   ← **지나쳐야 하는 축**
-        l = 턱축 이탈 (base y) 목표 0,       여유 ±12.75 mm
-        h = 높이     (base x)  목표 0,       여유 ±37.5 mm (파지 대역 반폭)
-      `|s − 46.9|` 는 **대칭**이라 못 미침과 "너무 깊이 박기"를 한 식으로 막는다.
+    파밍 불가 구조: 텔레스코핑이라 왕복 = 0, 정지 = 0, 자세 다듬기 = 일회성 ≤0.3
+    (스텝당 흐름이 아님). 에피소드 총합 상한 = Φ(끝) − Φ(시작) = 물리적 진행량.
 
-    ⚠ 이 항이 음수인 것은 **정상이다**(t42 까지는 버그 신호였다 — 곱셈 감쇠였으므로).
+    ⚠ 리셋 첫 스텝은 0 — 홈↔스폰 차이는 진행이 아니다(`_SPAWN` 과 같은 패턴).
+    ⚠ Φ 의 내용물은 구 벌점 그대로(stages.compute) — 축분해·캡·가중 계약 전부 유지.
     """
     s = _stage(env, jaw_cfg, sensor_names)
-    depth = (s.enter_s - P.STAGE_ENTER_DEPTH_TARGET_M).abs().clamp(
-        max=P.STAGE_ENTER_DEPTH_CAP_M)
-    lateral = s.jaw_l.abs().clamp(max=P.STAGE_JAW_LATERAL_CAP_M)
-    height = (s.height_h.abs() - P.STAGE_HEIGHT_BAND_HALF_M).clamp(
-        min=0.0, max=P.STAGE_HEIGHT_CAP_M)
-    # 자세는 파지가 성립하면(μ) 끈다 — 이송 중 손목을 흔들어 파지를 깨면 안 된다.
-    orient = (1.0 - s.perp_q) * (1.0 - s.mu)
-    return (P.STAGE_ENTER_DEPTH_WEIGHT * depth
-            + P.STAGE_JAW_LATERAL_WEIGHT * lateral
-            + P.STAGE_HEIGHT_WEIGHT * height
-            + P.STAGE_ORIENT_PENALTY_WEIGHT * orient)
+    from . import grasp_left_stages as stages
+    key = id(env)
+    prev = stages._PHI.get(key)
+    if prev is None or prev.shape[0] != env.num_envs:
+        prev = s.phi.clone()
+        stages._PHI[key] = prev
+    fresh = env.episode_length_buf <= 1
+    delta = torch.where(fresh, torch.zeros_like(s.phi), s.phi - prev)
+    stages._PHI[key] = s.phi.clone()
+    return delta
 
 
 def stage_tip(

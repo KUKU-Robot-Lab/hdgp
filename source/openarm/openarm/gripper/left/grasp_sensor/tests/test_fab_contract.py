@@ -939,8 +939,10 @@ def test_failure_dones_are_truncations_under_penalty_reward():
     assert "self.terminations.object_dropping.time_out = True" in fab_src, (
         "낙하가 terminated 다"
     )
-    assert P.STAGE_APPROACH_WEIGHT < 0.0, (
-        "truncated 규약을 쓰는데 approach 가 벌점이 아니다 — 둘은 부호로 묶여 있다"
+    assert P.STAGE_APPROACH_WEIGHT < 0.0 or (
+        "s.phi - prev" in _src("grasp_left_rewards.py")), (
+        "truncated 규약인데 approach 가 벌점도 차분도 아니다 — 양수 흐름이면 "
+        "γ·V 가 쓰러뜨리기 보너스가 된다"
     )
     for yaml_name in ("rl_games_ppo_fab_cfg.yaml", "rl_games_ppo_fab_mlp_cfg.yaml"):
         agent = (Path(__file__).resolve().parents[1] / "config" / "agents"
@@ -1193,7 +1195,10 @@ def test_truncation_does_not_contaminate_the_gradient():
     #   → 그래서 "실패가 어느 규약인가"를 `STAGE_APPROACH_WEIGHT` 의 부호로 판정한다.
     src = _src("grasp_left_fab_env_cfg.py")
     fail_terms = ("object_out_of_workspace", "object_tipped", "object_dropping")
-    if P.STAGE_APPROACH_WEIGHT < 0.0:
+    # fab_test49: approach 가 PBRS(차분) 가 되어 weight 는 +1.0 이지만 **흐름은 양수가
+    #   아니다**(정지 0·왕복 0). 파지 전 리턴이 여전히 ≤0 근처라 terminated 는 자살
+    #   경로를 만든다. truncated(γ·V)는 부호 무관 불편향이므로 그대로 유지한다.
+    if P.STAGE_APPROACH_WEIGHT < 0.0 or "s.phi - prev" in _src("grasp_left_rewards.py"):
         for t in fail_terms:
             assert f"self.terminations.{t}" in src, f"{t} 항이 없다"
         assert src.count("time_out=True") >= 2 and (
@@ -1534,42 +1539,36 @@ def test_stage_triggers_are_nested_and_match_the_paper():
     assert P.STAGE_GATE_CONTACT_N == 2.0, "2지 그리퍼는 양 턱 동시 접촉이 μ 다"
 
 
-def test_approach_is_a_penalty_decomposed_by_axis():
-    """★① `approach` 는 **벌점**이고 ② 축별로 분해돼야 한다 (fab_test43, 사용자 규격).
+def test_approach_is_potential_difference():
+    """★★fab_test49: approach = **Φ 차분(PBRS)** — 정지 0 · 전진 + · 후퇴 −.
 
-    양수 곱셈 shaping 이 왜 죽었나 — t42 실측 1153 epoch:
-        `perp_q` 0.43 → 0.89 · `approach` 0.42 → 0.73(1.45배) · 턱-컵 195 → 199 mm
-        자세 항만으로 예측한 상승비 1.49 와 소수점까지 일치 = **전부 각도 파밍**이었다.
-    원인은 인자의 지렛대가 뒤집힌 것: orient 범위 0.15→1.0(6.7배) vs 거리 0.89→0.37(2.4배).
-    벌점은 상한이 0 이라 파밍면이 원리적으로 없다.
+    절대 벌점(t44~t48)의 다섯 판 연속 실패 메커니즘:
+      ⑴ 노이즈 = 순비용 → σ 반감기 ep90~200 (양수 t42 는 680)
+      ⑵ 전진 advantage 가 V(가까움)을 거쳐야 하는데 그 V 는 "현 정책이 거기서 물러난
+        이력"으로 학습됨 — 정책 조건부 순환. t48 프로브: 지형 gradient 는 전진에
+        ~0.9/step 인데 μ 는 350ep 동안 후퇴(cmd_x 406→232).
+    차분은 전진 가치를 그 스텝의 보상으로 직접 지급한다(Ng 1999, 정책 불변 shaping).
 
-    ★등방 거리(norm)를 쓰면 안 된다. 축별 허용치가 3배 넘게 다르다 —
-      진입깊이 목표 46.9 mm · 턱축 ±12.75 mm · 높이 ±37.5 mm.
+    계약:
+      · Φ 는 stages 에서 구 벌점과 **같은 축분해·캡·가중**으로 계산된다(새 해킹면 금지)
+      · approach 는 Φ(지금)−Φ(직전)이고 리셋 첫 스텝은 0 (리셋 오염 — 네 번 당한 함정)
+      · 가중은 +1.0 (차분에 다시 부호를 입히면 의미가 뒤집힌다)
     """
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    for const in ("STAGE_ENTER_DEPTH_WEIGHT", "STAGE_JAW_LATERAL_WEIGHT",
+                  "STAGE_HEIGHT_WEIGHT", "STAGE_ENTER_DEPTH_CAP_M",
+                  "STAGE_JAW_LATERAL_CAP_M", "STAGE_HEIGHT_CAP_M"):
+        assert const in ssrc, f"Φ 에 {const} 가 없다 — 구 벌점과 내용이 갈리면 새 해킹면"
+    assert "P.STAGE_ENTER_DEPTH_TARGET_M).abs()" in ssrc, (
+        "진입 깊이가 대칭 오차가 아니다 — 손바닥에 박기를 못 막는다"
+    )
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
     body = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
-    assert P.STAGE_APPROACH_WEIGHT < 0.0, "approach 가 벌점이 아니다"
-    for axis, const in (("s.enter_s", "STAGE_ENTER_DEPTH_WEIGHT"),
-                        ("s.jaw_l", "STAGE_JAW_LATERAL_WEIGHT"),
-                        ("s.height_h", "STAGE_HEIGHT_WEIGHT")):
-        assert axis in body and const in body, f"{axis} 축 벌점이 없다"
-    assert "P.STAGE_ENTER_DEPTH_TARGET_M).abs()" in body, (
-        "진입 깊이가 **대칭 오차**가 아니다 — 너무 깊이 박기(컵이 손바닥에 박힘)를 못 막는다"
-    )
-    assert "torch.exp" not in body and ".norm(" not in body, (
-        "등방 거리/커널이 남아 있다 — 축별 허용치가 3배 넘게 다르므로 뭉치면 안 된다"
-    )
-    # 자세 벌점의 최대 기여가 깊이 지렛대보다 작아야 t42 의 순서 역전이 재발하지 않는다.
-    depth_lever = P.STAGE_ENTER_DEPTH_WEIGHT * 0.153      # t42 정체점의 깊이 오차
-    assert P.STAGE_ORIENT_PENALTY_WEIGHT < depth_lever, (
-        f"자세 지렛대 {P.STAGE_ORIENT_PENALTY_WEIGHT} 가 거리 지렛대 {depth_lever:.2f} 이상이다"
-        " — t42 를 망친 순서 그대로다"
-    )
-    # 전부 캡이 있어야 컵이 굴러 나갔을 때 벌점이 발산해 다른 항을 삼키지 않는다.
-    for cap in ("STAGE_ENTER_DEPTH_CAP_M", "STAGE_JAW_LATERAL_CAP_M", "STAGE_HEIGHT_CAP_M"):
-        assert cap in body, f"{cap} 캡이 안 걸려 있다"
-
+    assert "s.phi - prev" in body, "approach 가 Φ 차분이 아니다"
+    assert "episode_length_buf <= 1" in body, "리셋 첫 스텝 0 처리가 없다 — 리셋 오염"
+    assert P.STAGE_APPROACH_WEIGHT == 1.0, "차분 보상의 가중은 +1.0 이어야 한다"
 
 def test_tip_penalty_replaces_the_termination_and_is_off_after_lift():
     """★전도는 **종료가 아니라 벌점**이어야 한다 (fab_test43).
@@ -1680,20 +1679,17 @@ def test_stay_requires_goal_stillness_and_upright_together():
 def test_approach_requires_tcp_z_perpendicular_to_world_z():
     """★사용자 규격 "TCP_+z 가 world_+z 와 **수직**이 되게 접근".
 
-    접근축(턱 body 의 z 축)의 world-z 성분이 0 이어야 1.0. 컵이 서 있으면 이 조건은
-    "원통을 옆에서 문다"(CLAUDE.md 규약 90°)와 같아진다.
-    t38 결정론 실측은 **49.8°**(올바름 90°)로 크게 어긋나 있었다.
+    fab_test49 부터 자세 항은 approach 함수가 아니라 **Φ(포텐셜) 안**에 있다 —
+    stages.compute 가 `orient = (1−perp_q)·(1−μ)` 를 Φ 에 넣고, approach 는 Φ 의
+    차분만 지급한다. 조건 자체(world +z 기준 수직)는 불변이다.
     """
     ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
         encoding="utf-8")
     assert "s.perp_q = (1.0 - approach_axis[:, 2].abs())" in ssrc, (
         "접근축 수직 조건이 world +z 기준이 아니다"
     )
-    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
-        encoding="utf-8")
-    body = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
-    assert "s.perp_q" in body, "approach 가 자세 조건을 안 쓴다"
-
+    assert "orient = (1.0 - s.perp_q)" in ssrc, "자세 항이 Φ 에서 빠졌다"
+    assert "s.phi = -(" in ssrc, "Φ 가 없다"
 
 def test_cup_stabilize_curriculum_contract():
     """★fab_test47: 컵 안정화 커리큘럼 — 무거운 컵으로 시작해 grasp 성립 후에만 내린다.
