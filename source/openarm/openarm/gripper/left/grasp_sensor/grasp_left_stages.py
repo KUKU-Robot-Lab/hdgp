@@ -80,14 +80,13 @@ class StageState:
         "U_tol", "U_up", "H", "T", "S",     # 단계 진척량
         "perp_q", "align_q", "grasp_q",
         "enter_s", "jaw_l", "height_h",     # gripper_base 프레임 3축 분해
-        "phi",                              # 접근 포텐셜 Φ ≤ 0 (fab_test49 PBRS)
+        "d_jaw_grasp",                      # 턱중점 ↔ 컵 파지점 유클리드 거리 (fab_test50)
     )
 
 
 _CACHE: dict[int, tuple[int, StageState]] = {}
 _SPAWN: dict[int, torch.Tensor] = {}
 _BASE_ID: dict[int, int] = {}
-_PHI: dict[int, "torch.Tensor"] = {}   # fab_test49 PBRS 직전 Φ
 
 
 def _cup_axis_and_tilt(obj: RigidObject) -> tuple[torch.Tensor, torch.Tensor]:
@@ -182,6 +181,11 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     s.align_q = torch.nn.functional.cosine_similarity(
         approach_axis, to_cup, dim=-1, eps=1e-6).clamp(-1.0, 1.0)
 
+    # ★fab_test50: 턱중점 ↔ **컵 파지점**(원점 −44.6 mm) 유클리드 거리. 원본 lift 의
+    #   `object_ee_distance` 대응 — 단 기준점을 원점이 아니라 파지점으로 둬서
+    #   BASE—CUP—TCP 순서(사용자 규격)가 커널 안에 그대로 들어간다.
+    s.d_jaw_grasp = torch.norm(jaw_mid - (cup_pt - origin), dim=-1)
+
     # ── 단계 진척량 ──────────────────────────────────────────────────
     # ★파지 품질은 **접촉을 곱한다** — 기하만으로는 0 이어야 한다. t38 이 기하 투영만
     #   보는 `enclose` 로 **170 mm 허공에서 closure 를 상한의 74%** 까지 받았다.
@@ -192,23 +196,6 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     s.H = (s.lift_h / P.STAGE_LIFT_REF_M).clamp(0.0, 1.0)
     s.T = torch.exp(-s.d_goal / P.STAGE_TRANSFER_STD_M)
     s.S = torch.exp(-s.cup_speed / P.STAGE_STAY_SPEED_REF)
-
-    # ── 접근 포텐셜 Φ (fab_test49 PBRS) ──────────────────────────────
-    # ★approach 보상은 이제 **Φ 의 차분**이다(`rewards.stage_approach`). 절대 벌점은
-    #   t44~t48 다섯 판에서 "critic 조건부 advantage 맹점"을 만들었다 — 가까운 상태의
-    #   V 가 '그 상태에서 현 정책이 물러난 이력'으로 학습돼 전진의 advantage 가 안
-    #   나오는 순환. 차분은 전진의 가치를 critic 을 거치지 않고 그 스텝에 지급한다.
-    #   내용물(가중·캡·축분해)은 구 벌점과 동일 — 새 해킹면을 만들지 않는다.
-    depth = (s.enter_s - P.STAGE_ENTER_DEPTH_TARGET_M).abs().clamp(
-        max=P.STAGE_ENTER_DEPTH_CAP_M)
-    lateral = s.jaw_l.abs().clamp(max=P.STAGE_JAW_LATERAL_CAP_M)
-    height = (s.height_h.abs() - P.STAGE_HEIGHT_BAND_HALF_M).clamp(
-        min=0.0, max=P.STAGE_HEIGHT_CAP_M)
-    orient = (1.0 - s.perp_q) * (1.0 - s.mu)
-    s.phi = -(P.STAGE_ENTER_DEPTH_WEIGHT * depth
-              + P.STAGE_JAW_LATERAL_WEIGHT * lateral
-              + P.STAGE_HEIGHT_WEIGHT * height
-              + P.STAGE_ORIENT_PENALTY_WEIGHT * orient)
 
     _CACHE[key] = (step, s)
     return s

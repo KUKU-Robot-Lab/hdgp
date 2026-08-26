@@ -950,33 +950,22 @@ def test_grasp_pose_shapes_the_bite_before_the_lift():
     )
 
 
-def test_cup_tipping_is_penalty_plus_truncation():
-    """★fab_test43: 전도는 **벌점 + `truncated`** 다 (사용자 결정).
+def test_cup_tipping_is_penalty_plus_termination():
+    """★fab_test50: 전도 = 벌점(연속) + **terminated**(60° 절벽, 레퍼런스 규약 복귀).
 
-    구 계약은 "전도는 `terminated` 여야 한다"였다. 그 계약 아래 t42 를 1218 epoch
-    돌린 실측이 계약을 뒤집었다 — 종료가 살아 있으면 정책은 **컵 근처에 가지 않는
-    것**을 배운다(컵 앞 리턴 0.72 vs 물러섬 2.95 = 4.1배). λ 가 내내 0.0002 였다.
-
-    지금 계약 두 가지:
-      · 기울기는 `rewards.tip` 벌점이 연속으로 문다(8° 마진, 60°에서 1.5).
-      · 60° 를 넘으면 **truncated** 로 리셋한다 — 쓰러진 컵은 다시 못 세우므로
-        남은 스텝이 낭비 표본이다. `value_bootstrap` 이 γ·V(s) 를 얹어 자살 이득은 없다.
+    절단 규약은 보상 부호에 묶인다: 벌점/차분 흐름에선 truncated(자살 차단),
+    **양수 흐름에선 terminated**(truncated 면 γ·V>0 이 쓰러뜨리기 보너스).
+    t42 의 회피 함정은 질량 ×8 커리큘럼이 무력화(tipped 실측 0.003).
     """
     fab_src = (
         Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py"
     ).read_text(encoding="utf-8")
     block = fab_src.split("self.terminations.object_tipped = DoneTerm(")[1].split(")")[0]
-    assert "time_out=True" in block, "전도가 terminated 다 — 벌점 체계에서 자살 경로가 된다"
+    assert "time_out=True" not in block, "양수 흐름에서 truncated 는 쓰러뜨리기 보너스다"
     assert "max_tilt_deg" in block, "전도 임계가 없다"
     assert "self.rewards.tip = RewTerm(" in fab_src, "전도 벌점 항이 없다"
-    assert P.STAGE_TIP_WEIGHT < 0.0, "전도 항이 벌점이 아니다"
-    assert P.STAGE_TIP_MARGIN_DEG >= 8.0, (
-        f"전도 벌점 마진 {P.STAGE_TIP_MARGIN_DEG}° 가 성공 파지 흔들림(4.1°)에 너무 가깝다"
-    )
-    assert P.STAGE_TIP_MARGIN_DEG < P.OBJECT_TIP_MAX_DEG, (
-        "벌점이 절단 임계보다 늦게 시작하면 연속 신호가 없다"
-    )
-
+    assert P.STAGE_TIP_WEIGHT < 0.0
+    assert P.STAGE_TIP_MARGIN_DEG >= 8.0
 
 def test_lift_and_lateral_diagnostics_are_logged():
     """★t38 은 이 둘을 TB 에서 못 봐 4000 epoch 내내 사후 프로브로만 확인할 수 있었다.

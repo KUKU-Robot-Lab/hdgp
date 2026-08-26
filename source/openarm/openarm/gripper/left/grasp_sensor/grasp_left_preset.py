@@ -1335,10 +1335,10 @@ CONTACT_ALL_BONUS = 1.5
 #   벌점은 상한이 0 이라 파밍할 여지가 원리적으로 없다(논문 `p_approaching` 도 벌점이다).
 # ⚠ 벌점 전환은 **실패 종료 3종 제거와 한 몸이다.** 모든 보상이 음수인데 `terminated` 가
 #   남아 있으면 V<0 이라 **일부러 죽는 것이 최적**이 된다(test6/test7 실증: ep 130 → 13).
-# ★fab_test49: −1.0 → **+1.0** — approach 가 절대 벌점에서 **포텐셜 차분(PBRS)**으로
-#   바뀌었다(func 가 Φ(지금)−Φ(직전)을 낸다. 근거 전문은 rewards.stage_approach).
-#   정지 = 0 · 전진 = + · 후퇴 = −. t44~t48 다섯 판의 "부분 접근 후 정지" 순환 절단.
+# ★fab_test50: approach = **원본 lift 순수 거리 양수 커널**(1 − tanh(d/std), 가중 1.0).
+#   세 체계 소거 근거는 rewards.stage_approach docstring. 곱셈 인자 금지(t42 의 죄).
 STAGE_APPROACH_WEIGHT = 1.0
+APPROACH_KERNEL_STD = 0.1          # 원본 lift `object_ee_distance` std 그대로
 STAGE_TIP_WEIGHT = -1.0           # 전도 — 구 `object_tipped` **종료를 대체**
 STAGE_CONTACT_WEIGHT = 1.0        # 게이트 없음 — λ=1·μ=0 사각지대 방지 shaping
 STAGE_GRASP_WEIGHT = 3.0
@@ -1395,22 +1395,15 @@ STAGE_PERP_EXPONENT = 2.0
 # ★전부 **캡**을 둔다. 컵이 굴러 나가면 벌점이 발산해 다른 항을 삼킨다.
 STAGE_ENTER_DEPTH_TARGET_M = GRASP_DEPTH_IN_BASE_Z          # 0.0469 — s 목표
 STAGE_ENTER_DEPTH_WINDOW_M = (0.0, TCP_OFFSET_IN_BASE_Z)    # (0, 0.080) 사용자 순서 조건
-STAGE_ENTER_DEPTH_WEIGHT = 3.0
-STAGE_ENTER_DEPTH_CAP_M = 0.30
-STAGE_JAW_LATERAL_WEIGHT = 6.0     # 여유가 12.75 mm 뿐이라 깊이의 2배 가중
-STAGE_JAW_LATERAL_CAP_M = 0.15
-STAGE_HEIGHT_BAND_HALF_M = 0.5 * (GRASP_HEIGHT_BAND[1] - GRASP_HEIGHT_BAND[0])   # 0.0375
-# ★fab_test48: 2.0 → 4.0 (사용자 결정). 접근축이 연직에서 14° 기울어 있어(base z 의
-#   world-z 성분 −0.24) **팔을 올리면 s 가 줄어드는** 뒷문이 있었고, 깊이 3 > 높이 2 라
-#   그 거래가 순이익이었다(t47 실측: s 130→103·h −204→−228 로 상승 이동하며 raw 개선,
-#   +0.147 − 0.106 = +0.04/step). 4.0 이면 같은 거래가 −0.07/step 로 역전된다.
-STAGE_HEIGHT_WEIGHT = 4.0          # 대역 **밖**에서만 문다
-STAGE_HEIGHT_CAP_M = 0.20
-# 자세 — 벌점이라 최대 기여가 0.3 으로 묶인다. 깊이 지렛대(3.0 × 0.153 = 0.46)보다 작아야
-#   "멀리서 자세만 맞추기"가 절대 이길 수 없다. t42 를 망친 것이 정확히 이 순서였다.
-STAGE_ORIENT_PENALTY_WEIGHT = 0.3
-# 전도 — 구 `object_tipped` **종료를 대체**한다. 종료가 아니라 계속 물어야 도망칠 곳이
-#   없어진다. 60° 에서 1.5 로, 물러서 있기(≈0.85)보다 **나쁘게** 잡는다.
+# ★fab_test50: Φ 전용 축별 가중·캡(STAGE_ENTER_DEPTH_WEIGHT/CAP ·
+#   STAGE_JAW_LATERAL_WEIGHT/CAP · STAGE_HEIGHT_WEIGHT/CAP · STAGE_ORIENT_PENALTY_WEIGHT)
+#   **삭제** — approach 가 등방 유클리드 커널이 되어 축별 가중이라는 개념이 사라졌다.
+#   (벌점/PBRS 시절의 "올라가서 깊이 깎기" 뒷문도 등방 거리에서는 존재하지 않는다.)
+#   s·l·h 진단과 STAGE_ENTER_DEPTH_TARGET_M/WINDOW(순서 계약)는 유지.
+# 전도 벌점 — 연속 신호(8° 마진, 60° 에서 1.5). ★fab_test50 부터는 60° **종료도 함께**
+#   되살아난다(양수 흐름에서 truncated 는 γ·V 보너스가 되므로 terminated 로) — 벌점은
+#   그 전 구간의 gradient 를 맡는다. t42 의 회피 함정은 질량 ×8 커리큘럼이 무력화
+#   (tipped 실측 0.003 — 절벽을 만날 일 자체가 드물다).
 STAGE_TIP_MARGIN_DEG = 8.0
 STAGE_TIP_PER_DEG = 0.029
 STAGE_TIP_PENALTY_MAX = 1.5

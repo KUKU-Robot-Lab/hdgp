@@ -1110,33 +1110,26 @@ def _stage(env, jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]):
 def stage_approach(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
 ) -> torch.Tensor:
-    """① 접근 — **포텐셜 차분(PBRS)**: `Φ(지금) − Φ(직전)`. 정지 = 0, 전진 = +.
+    """① 접근 — **원본 lift 형태의 순수 거리 양수 커널** (fab_test50, 사용자 결정).
 
-    ★★fab_test49. 절대 벌점(t44~t48)이 왜 다섯 판 연속 "부분 접근 후 정지"로 죽었나:
-      ⑴ 벌점 지형에서 노이즈는 순비용 → σ 조기 붕괴(반감기 ep90~200, 양수 t42 는 680)
-      ⑵ 전진 액션의 advantage 는 `r + γV(가까움) − V(지금)` 인데 V(가까움)은 critic 이
-        "그 상태에서 현 정책이 물러난 이력"으로 배운 값이라 전진 가치가 안 보인다 —
-        **정책 조건부 순환**. t48 결정론 프로브: 지형 gradient 는 전진에 ~0.9/step 를
-        약속하는데 μ 는 350ep 동안 뒤로 갔다(cmd_x 406→232).
-      차분은 전진 가치를 critic 을 거치지 않고 **그 스텝의 보상**으로 지급한다(Ng 1999).
+        approach = 1 − tanh( d(턱중점 → 컵 파지점) / 0.1 )
 
-    파밍 불가 구조: 텔레스코핑이라 왕복 = 0, 정지 = 0, 자세 다듬기 = 일회성 ≤0.3
-    (스텝당 흐름이 아님). 에피소드 총합 상한 = Φ(끝) − Φ(시작) = 물리적 진행량.
+    세 보상 체계를 실측으로 소거한 끝의 복귀다:
+      · t42 양수+곱셈인자  → orient 지렛대(6.7배) 파밍. **죄는 양수가 아니라 곱셈 인자**
+      · t44~48 절대 벌점   → critic 조건부 advantage 순환 + σ 조기 붕괴(반감기 ep90~200)
+      · t49 PBRS 차분      → 정지가 보상 중립이라 "컵 앞 무한 대기"가 최적
+    원본 커널은 **가까이 서 있는 상태 자체를 매 스텝 지급**해 대기 자세가 인력이 되고,
+    인자가 거리 하나뿐이라 우회 파밍이 없다(t16/t17 관절공간판이 같은 씬에서 이 형태로
+    파지·리프트까지 성공한 실증). 30 mm 호버(0.74/step)는 사다리 lift(5)~stay(10)에
+    언제든 역전된다.
 
-    ⚠ 리셋 첫 스텝은 0 — 홈↔스폰 차이는 진행이 아니다(`_SPAWN` 과 같은 패턴).
-    ⚠ Φ 의 내용물은 구 벌점 그대로(stages.compute) — 축분해·캡·가중 계약 전부 유지.
+    ★원본과 두 가지만 다르다: 기준점이 컵 원점이 아니라 **파지점**(원점 −44.6 mm —
+      원점은 파지대역 밖이라 44.6 mm 높은 곳을 가리킨다), 그리고 곱셈 인자 없음.
+    ⚠ 자세(perp)·축분해 가중은 커널에 넣지 않는다 — t42 의 죄를 되살리는 길이다.
+      자세는 euler 중심 + 회전 리미터가, 축 정밀도는 contact(접촉×기하)가 맡는다.
     """
     s = _stage(env, jaw_cfg, sensor_names)
-    from . import grasp_left_stages as stages
-    key = id(env)
-    prev = stages._PHI.get(key)
-    if prev is None or prev.shape[0] != env.num_envs:
-        prev = s.phi.clone()
-        stages._PHI[key] = prev
-    fresh = env.episode_length_buf <= 1
-    delta = torch.where(fresh, torch.zeros_like(s.phi), s.phi - prev)
-    stages._PHI[key] = s.phi.clone()
-    return delta
+    return 1.0 - torch.tanh(s.d_jaw_grasp / P.APPROACH_KERNEL_STD)
 
 
 def stage_tip(

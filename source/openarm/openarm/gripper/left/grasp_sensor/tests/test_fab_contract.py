@@ -918,40 +918,35 @@ def test_reference_physics_and_solver_settings():
         assert k in fab_src, f"{k} 가 배선되지 않았다"
 
 
-def test_failure_dones_are_truncations_under_penalty_reward():
-    """★★fab_test43: 실패 3종은 **`truncated`**(time_out=True)여야 한다.
+def test_failure_dones_match_reward_flow_sign():
+    """★★절단 규약은 보상 **흐름의 부호**에 묶인다 (fab_test43↔50 왕복으로 확정).
 
-    세 규약의 손익이 보상 **부호**에 따라 뒤집힌다:
+      | 흐름            | 올바른 실패 done | 반대로 하면                          |
+      | 벌점/차분(≤0)   | truncated(γ·V)  | terminated: V<0 에서 자살이 이득     |
+      | **양수(t50~)**  | terminated      | truncated: γ·V>0 이 쓰러뜨리기 보너스 |
 
-      | 규약            | 종단 가치        | 벌점 체계(V<0)에서            |
-      | terminated      | 0 으로 못박음    | 0 > V 이라 **자살이 이득**    |
-      | 종료 없음        | —               | 쓰러진 컵으로 300스텝 낭비    |
-      | truncated+bootstrap | γ·V(s)      | 계속의 불편향 추정 = **중립** |
-
-    `value_bootstrap: True` 가 전제다 — 없으면 truncated 가 terminated 와 같아진다.
-    ⚠ `approach` 를 양수 보상으로 되돌린다면 이 셋도 `terminated` 로 되돌려야 한다
-      (V>0 이면 γ·V 가 공짜 상금이 되어 쓰러뜨리기 보너스가 된다).
+    현재(fab_test50)는 원본 lift 형태의 양수 커널이므로 **terminated** 여야 한다.
+    t42 시절 "종료가 회피를 가르친" 함정은 질량 ×8 커리큘럼이 무력화(tipped 0.003).
     """
     fab_src = _fab_src()
     for term in ("object_out_of_workspace", "object_tipped"):
         block = fab_src.split(f"self.terminations.{term} = DoneTerm(")[1].split(")")[0]
-        assert "time_out=True" in block, f"{term} 이 terminated 다 — 벌점 체계에서 자살 경로"
-    assert "self.terminations.object_dropping.time_out = True" in fab_src, (
-        "낙하가 terminated 다"
-    )
-    assert P.STAGE_APPROACH_WEIGHT < 0.0 or (
-        "s.phi - prev" in _src("grasp_left_rewards.py")), (
-        "truncated 규약인데 approach 가 벌점도 차분도 아니다 — 양수 흐름이면 "
-        "γ·V 가 쓰러뜨리기 보너스가 된다"
-    )
-    for yaml_name in ("rl_games_ppo_fab_cfg.yaml", "rl_games_ppo_fab_mlp_cfg.yaml"):
-        agent = (Path(__file__).resolve().parents[1] / "config" / "agents"
-                 / yaml_name).read_text(encoding="utf-8")
-        assert "value_bootstrap: True" in agent, (
-            f"{yaml_name}: value_bootstrap 이 꺼져 있으면 truncated 가 terminated 와 같아진다"
+        assert "time_out=True" not in block, (
+            f"{term} 이 truncated 다 — 양수 흐름에서 γ·V 가 쓰러뜨리기 보너스가 된다"
         )
-    assert "self.events.arm_spawn_noise = EventTermCfg(" in fab_src, "리셋 관절 노이즈가 없다"
-
+    assert "self.terminations.object_dropping.time_out = True" not in fab_src, (
+        "낙하가 truncated 다"
+    )
+    # 부호 전제 자체를 고정 — approach 가 다시 벌점/차분이 되면 이 계약도 함께 뒤집어야 한다
+    assert P.STAGE_APPROACH_WEIGHT > 0.0
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    assert "1.0 - torch.tanh" in rsrc.split("def stage_approach(")[1].split("\ndef ")[0], (
+        "approach 가 양수 커널이 아닌데 terminated 계약을 쓰고 있다"
+    )
+    assert "value_bootstrap: True" in (Path(__file__).resolve().parents[1] / "config" /
+        "agents" / "rl_games_ppo_fab_mlp_cfg.yaml").read_text(encoding="utf-8")
+    assert "self.events.arm_spawn_noise = EventTermCfg(" in fab_src
 
 def test_action_jerk_is_not_wired_anywhere():
     """★★jerk(2차 차분) 항은 **기각**됐다 — 어느 변형에도 배선하면 안 된다.
@@ -1539,58 +1534,49 @@ def test_stage_triggers_are_nested_and_match_the_paper():
     assert P.STAGE_GATE_CONTACT_N == 2.0, "2지 그리퍼는 양 턱 동시 접촉이 μ 다"
 
 
-def test_approach_is_potential_difference():
-    """★★fab_test49: approach = **Φ 차분(PBRS)** — 정지 0 · 전진 + · 후퇴 −.
+def test_approach_is_reference_pure_distance_kernel():
+    """★★fab_test50: approach = 원본 lift 순수 거리 양수 커널 (사용자 결정).
 
-    절대 벌점(t44~t48)의 다섯 판 연속 실패 메커니즘:
-      ⑴ 노이즈 = 순비용 → σ 반감기 ep90~200 (양수 t42 는 680)
-      ⑵ 전진 advantage 가 V(가까움)을 거쳐야 하는데 그 V 는 "현 정책이 거기서 물러난
-        이력"으로 학습됨 — 정책 조건부 순환. t48 프로브: 지형 gradient 는 전진에
-        ~0.9/step 인데 μ 는 350ep 동안 후퇴(cmd_x 406→232).
-    차분은 전진 가치를 그 스텝의 보상으로 직접 지급한다(Ng 1999, 정책 불변 shaping).
+    세 체계 소거 실측:
+      t42 양수+곱셈인자 → orient 지렛대 파밍 (죄는 양수가 아니라 **곱셈 인자**)
+      t44~48 절대 벌점  → critic 조건부 advantage 순환 + σ 반감기 ep90~200
+      t49 PBRS 차분     → 정지가 보상 중립 → "컵 앞 무한 대기"가 최적
+    원본 커널(1−tanh(d/0.1))은 가까이 서 있는 상태 자체를 매 스텝 지급하고,
+    인자가 거리 하나라 우회 파밍이 없다(t16/t17 이 같은 씬에서 이 형태로 성공).
 
     계약:
-      · Φ 는 stages 에서 구 벌점과 **같은 축분해·캡·가중**으로 계산된다(새 해킹면 금지)
-      · approach 는 Φ(지금)−Φ(직전)이고 리셋 첫 스텝은 0 (리셋 오염 — 네 번 당한 함정)
-      · 가중은 +1.0 (차분에 다시 부호를 입히면 의미가 뒤집힌다)
+      · 기준점은 컵 **파지점**(원점 −44.6 mm) — 원점은 파지대역 밖
+      · **곱셈 인자 금지** — perp/align/orient 를 커널에 곱하면 t42 재발
+      · 가중 +1.0, std 0.1 (원본값)
     """
     ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
         encoding="utf-8")
-    for const in ("STAGE_ENTER_DEPTH_WEIGHT", "STAGE_JAW_LATERAL_WEIGHT",
-                  "STAGE_HEIGHT_WEIGHT", "STAGE_ENTER_DEPTH_CAP_M",
-                  "STAGE_JAW_LATERAL_CAP_M", "STAGE_HEIGHT_CAP_M"):
-        assert const in ssrc, f"Φ 에 {const} 가 없다 — 구 벌점과 내용이 갈리면 새 해킹면"
-    assert "P.STAGE_ENTER_DEPTH_TARGET_M).abs()" in ssrc, (
-        "진입 깊이가 대칭 오차가 아니다 — 손바닥에 박기를 못 막는다"
-    )
+    assert "cup_z * P.CUP_ORIGIN_TO_GRASP_Z" in ssrc, "기준점이 파지점이 아니다"
+    assert "s.d_jaw_grasp = torch.norm(jaw_mid - (cup_pt" in ssrc, "파지점 거리가 없다"
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
     body = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
-    assert "s.phi - prev" in body, "approach 가 Φ 차분이 아니다"
-    assert "episode_length_buf <= 1" in body, "리셋 첫 스텝 0 처리가 없다 — 리셋 오염"
-    assert P.STAGE_APPROACH_WEIGHT == 1.0, "차분 보상의 가중은 +1.0 이어야 한다"
+    assert "1.0 - torch.tanh(s.d_jaw_grasp / P.APPROACH_KERNEL_STD)" in body, (
+        "approach 가 원본 커널이 아니다"
+    )
+    code = body.split('"""')[-1]          # docstring 뒤 코드부만 검사
+    for lever in ("perp_q", "align_q", "orient", "s.phi"):
+        assert lever not in code, f"커널에 {lever} 가 곱해져 있다 — t42 파밍 재발 경로"
+    assert P.STAGE_APPROACH_WEIGHT == 1.0 and P.APPROACH_KERNEL_STD == 0.1
 
-def test_tip_penalty_replaces_the_termination_and_is_off_after_lift():
-    """★전도는 **종료가 아니라 벌점**이어야 한다 (fab_test43).
+def test_tip_penalty_and_termination_coexist():
+    """★fab_test50: 전도는 **벌점(연속 gradient) + terminated(60° 절벽)** 병행.
 
-    종료였을 때(t42 실측): 컵 앞 tipped 0.82 · ep 83 스텝 · 리턴 0.72 vs
-    물러섬 tipped 0.00 · 300 스텝 · 리턴 2.95 → **도망이 4.1배**. 종료는 "조심해라"가
-    아니라 "가지 마라"를 가르친다.
-    ★리프트 후에는 `(1−ν)` 로 꺼야 한다 — 이송 중 기울기는 `U_tol`·`U_up` 이 맡는다.
-    ★크기는 물러서 있기(≈0.85/스텝)보다 **나빠야** 한다. 그래야
-      "쓰러뜨리기 < 물러서기 < 제대로 잡기" 순서가 선다.
+    벌점은 8°~60° 구간의 연속 신호를, 종료는 회복 불능 상태의 표본 낭비 차단을 맡는다.
+    t42 의 "종료가 회피를 가르친" 함정은 질량 ×8 커리큘럼이 무력화(tipped 실측 0.003).
+    ★리프트 후에는 (1−ν) 로 벌점이 꺼진다 — 이송 중 기울기는 U_tol·U_up 이 맡는다.
     """
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
     body = rsrc.split("def stage_tip(")[1].split("\ndef ")[0]
     assert "(1.0 - s.nu)" in body, "전도 벌점이 리프트 후에도 걸린다"
     assert P.STAGE_TIP_WEIGHT < 0.0, "전도 항이 벌점이 아니다"
-    standoff = P.STAGE_ENTER_DEPTH_WEIGHT * 0.153 + P.STAGE_JAW_LATERAL_WEIGHT * 0.060
-    assert P.STAGE_TIP_PENALTY_MAX > standoff, (
-        f"전도 최대 벌점 {P.STAGE_TIP_PENALTY_MAX} 이 물러서기 {standoff:.2f} 보다 싸다"
-        " — 쓰러뜨리고 도망가는 것이 최적이 된다"
-    )
-
+    assert P.STAGE_TIP_MARGIN_DEG >= 8.0 and P.STAGE_TIP_MARGIN_DEG < P.OBJECT_TIP_MAX_DEG
 
 def test_grasp_geometry_ordering_base_cup_tcp():
     """★★사용자 규격 `PALM BASE(xyz) — CUP(xy) — TCP(xyz)`.
@@ -1676,20 +1662,21 @@ def test_stay_requires_goal_stillness_and_upright_together():
     assert "s.S = torch.exp(-s.cup_speed" in ssrc, "정지를 컵 속도로 안 잰다"
 
 
-def test_approach_requires_tcp_z_perpendicular_to_world_z():
-    """★사용자 규격 "TCP_+z 가 world_+z 와 **수직**이 되게 접근".
+def test_approach_axis_perp_diag_still_observable():
+    """★자세 규격("TCP+z ⊥ world+z")은 fab_test50 부터 **보상 인자가 아니라 진단**이다.
 
-    fab_test49 부터 자세 항은 approach 함수가 아니라 **Φ(포텐셜) 안**에 있다 —
-    stages.compute 가 `orient = (1−perp_q)·(1−μ)` 를 Φ 에 넣고, approach 는 Φ 의
-    차분만 지급한다. 조건 자체(world +z 기준 수직)는 불변이다.
+    커널에 곱하면 t42 파밍이 재발한다. 자세는 euler 중심 + 회전 리미터(2.9°/step)가
+    기구적으로 유도하고, perp_q 는 TB 진단으로만 관측한다.
     """
     ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
         encoding="utf-8")
     assert "s.perp_q = (1.0 - approach_axis[:, 2].abs())" in ssrc, (
         "접근축 수직 조건이 world +z 기준이 아니다"
     )
-    assert "orient = (1.0 - s.perp_q)" in ssrc, "자세 항이 Φ 에서 빠졌다"
-    assert "s.phi = -(" in ssrc, "Φ 가 없다"
+    fab = _fab_src()
+    assert "diag_stage_perp_q" in fab.replace(" ", "") or "perp_q" in fab, (
+        "perp_q 진단이 TB 에서 빠졌다"
+    )
 
 def test_cup_stabilize_curriculum_contract():
     """★fab_test47: 컵 안정화 커리큘럼 — 무거운 컵으로 시작해 grasp 성립 후에만 내린다.
@@ -1716,33 +1703,19 @@ def test_cup_stabilize_curriculum_contract():
     assert "entropy_coef: 0.005" in agent, "벌점 체계에서 entropy 0.002 는 3연속 σ 붕괴를 냈다"
 
 
-def test_euler_rate_limiter_and_height_weight():
-    """★fab_test48: 회전 리미터 + 높이 가중 4.0 — t47 이 실측한 두 결함의 짝.
+def test_euler_rate_limiter():
+    """★fab_test48: 회전 리미터 — 위치 리미터의 회전판 (t50 에서도 유지).
 
-    ① 회전 리미터: 위치 리미터(0.02 m/step)는 회전을 안 묶는다. palm→턱 레버 140 mm 라
-      회전 지터가 턱을 σ0.47 에서도 ±52 mm/step 쓸었다(위치의 2.6배). s/l/h 는
-      gripper_base 프레임 측정이라 회전이 흔들리면 벌점 지형이 출렁여 하강 신호가
-      씻긴다. 27판 중 유일하게 h −44 까지 내려간 t45 는 회전이 ±11.3° 로 묶인 판이었다.
-    ② 높이 가중: 접근축이 연직에서 14° 기울어(base z 의 world-z −0.24) 팔을 **올리면**
-      s 가 줄어드는 뒷문이 있고, 깊이 3 > 높이 2 면 그 거래가 +0.04/step 순이익이다
-      (t47 실측: cmd_z 423→471 상승 이동하며 raw 개선). 높이 4.0 이면 −0.07 로 역전.
+    palm→턱 레버 140 mm 라 회전 지터가 턱을 σ0.47 에서도 ±52 mm/step 쓸었다.
+    27판 중 유일하게 h −44 까지 내려간 t45 는 회전이 ±11.3° 로 묶인 판이었다.
+    (구 짝이던 '높이 가중 4.0' 계약은 fab_test50 의 등방 커널 전환으로 소멸 —
+    축별 가중이라는 개념 자체가 없어졌고, '올라가서 깊이 깎기' 뒷문도 등방 거리에는 없다.)
     """
     assert 0.0 < P.PALM_EULER_RATE_LIMIT <= 0.05 + 1e-9, "회전 리미터 상수가 없다/너무 크다"
-    # 턱 스윙 기여가 위치 리미터보다 작아야 회전이 지배 지터 채널로 남지 않는다
-    _LEVER = 0.140   # m, palm→턱 (구 PALM_TO_JAW_LEVER — FINE 상수 정리 때 함께 삭제됨)
-    assert P.PALM_EULER_RATE_LIMIT * _LEVER < P.PALM_CMD_RATE_LIMIT, (
-        f"회전 지터의 턱 스윙 {P.PALM_EULER_RATE_LIMIT*_LEVER*1e3:.1f}mm/step 이 "
-        f"위치 리미터 {P.PALM_CMD_RATE_LIMIT*1e3:.0f}mm 를 넘는다"
-    )
+    _LEVER = 0.140
+    assert P.PALM_EULER_RATE_LIMIT * _LEVER < P.PALM_CMD_RATE_LIMIT
     asrc = _src("grasp_left_fabric_action.py")
     assert "PALM_EULER_RATE_LIMIT" in asrc and "_prev_cmd_euler" in asrc, "회전 리미터 미배선"
     body = asrc[asrc.index("def process_actions"):asrc.index("def apply_actions")]
-    assert body.index("d_euler") < body.index("self._cmd_primed[:] = True"), (
-        "회전 리미터가 _cmd_primed=True 뒤에 있으면 리셋 첫 지령까지 묶는다"
-    )
-    # 높이 가중이 깊이의 축 기울기 뒷문을 막을 만큼 커야 한다:
-    # 상승 이동의 깊이 이득(≈ 3.0×|축 z 성분| = 0.72/m) < 높이 손해(가중×1.0/m)
-    assert P.STAGE_HEIGHT_WEIGHT > P.STAGE_ENTER_DEPTH_WEIGHT * 0.24, (
-        "높이 가중이 낮으면 '올라가서 깊이 깎기' 거래가 다시 순이익이 된다"
-    )
-    assert P.STAGE_HEIGHT_WEIGHT >= 4.0, "fab_test48 지정값(4.0) 미달"
+    assert body.index("d_euler") < body.index("self._cmd_primed[:] = True")
+

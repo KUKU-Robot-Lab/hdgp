@@ -249,38 +249,23 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         #   ⚠ critic 그룹은 여기서 만들어지므로 이 줄들은 **반드시 그 뒤**여야 한다.
 
         # ══════════════════════════════════════════════════════════════
-        # ★★fab_test43: 실패 3종을 **`truncated` 로** 낸다 (`time_out=True`).
+        # ★fab_test50: 실패 3종을 **`terminated`**(레퍼런스 규약)로 복귀.
         #
-        # 왜 `terminated` 가 안 되는가 — `approach` 가 벌점이면 파지 전 보상이 전부
-        # 음수라 V<0 이다. `terminated` 는 종단 가치를 **0 으로 못박으므로** 계속하는
-        # 것(V<0)보다 이득이 되어 "일부러 쓰러뜨리기"가 최적이 된다. 이 트랙이 이미
-        # 겪었다(test6/test7: 보상 0 → 에피소드 130 → 13 → 총보상 −0.46).
-        #
-        # 왜 종료를 아예 없애도 안 되는가 — 쓰러진 컵은 2지 그리퍼로 다시 못 세운다.
-        # 남은 스텝이 통째로 낭비 표본이 된다(사용자 지적, 렌더 관찰).
-        #
-        # `truncated` 가 둘 다 푼다. `value_bootstrap: True` 이므로 rl_games 가
-        #     shaped_rewards += gamma * V(s) * time_outs
-        # 를 얹는데, 이건 **계속했을 때의 추정값 그 자체**라 끝내는 것이 이득도 손해도
-        # 아니다(부호 무관하게 불편향). 에피소드는 리셋되고 탈출구는 안 생긴다.
-        #
-        # ⚠ 부호에 의존하는 판단이다. 저장소 곳곳의 "truncated 는 쓰러뜨리기 보너스"
-        #   경고는 **보상이 양수일 때** 맞는 말이다(V>0 이면 γ·V 가 공짜 상금).
-        #   `approach` 를 양수로 되돌린다면 이 셋도 `terminated` 로 되돌려야 한다.
+        # 절단 규약은 보상 부호에 묶여 있다(계약이 강제):
+        #   벌점/차분 흐름(t43~t49): terminated 는 V<0 에서 자살 경로 → truncated
+        #   **양수 흐름(t50~)**: truncated 는 γ·V>0 이 쓰러뜨리기 보너스 → terminated
+        # t42 시절 "종료가 회피를 가르친" 함정(컵 앞 리턴 0.72 vs 도피 2.95)은 질량 ×8
+        # 커리큘럼이 무력화했다 — t47~t49 실측 tipped 0.003, 절벽을 만날 일이 드물다.
         # ══════════════════════════════════════════════════════════════
         self.terminations.object_out_of_workspace = DoneTerm(
             func=obs_mdp.object_out_of_workspace,
             params={"x_range": P.OBJECT_WORKSPACE_X, "y_range": P.OBJECT_WORKSPACE_Y},
-            time_out=True,
         )
         self.terminations.object_tipped = DoneTerm(
             func=obs_mdp.object_tipped,
             params={"max_tilt_deg": P.OBJECT_TIP_MAX_DEG},
-            time_out=True,
         )
-        # 낙하는 부모(`LiftEnvCfg`) 항이다 — 임계는 `grasp_left_env_cfg` 가 이미 잡았고
-        # 여기서는 절단 규약만 바꾼다.
-        self.terminations.object_dropping.time_out = True
+        # 낙하(부모 항)는 기본이 terminated — t43 의 time_out 오버라이드만 제거하면 된다.
 
         # ── 리셋 관절 노이즈 (원본 `robot_spawn`) ─────────────────────
         # ★우리는 항상 같은 홈에서 시작했다. 원본은 ADR 로 관절 pos/vel 을 흔든다.
