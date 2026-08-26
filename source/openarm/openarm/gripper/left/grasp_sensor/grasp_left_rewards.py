@@ -841,48 +841,11 @@ def ee_grasp_point_distance(
     return 1.0 - torch.tanh(torch.norm(grasp_pt - ee_w, dim=1) / std)
 
 
-def gripper_gate_open(env: "ManagerBasedRLEnv", action_term: str = "gripper_action") -> torch.Tensor:
-    """그리퍼 게이트가 열렸는가 (num_envs, 1) float. **관측 항**으로 쓴다.
-
-    ★★하드 게이트는 정책이 볼 수 없는 **숨은 상태**다. phase 0 에서 정책의 그리퍼 지령은
-      롤아웃 버퍼에 기록되지만 실행되지 않아, 그 차원의 gradient 가 환경 응답과 무관해진다.
-      게이트 상태를 관측에 넣어야 정책이 "지금 내 그리퍼 지령은 무시된다"를 알 수 있다.
-      obs 차원이 1 늘어난다 — 체크포인트 호환이 깨지므로 fresh 학습에서만 켤 것.
-    """
-    term = env.action_manager.get_term(action_term)
-    return term.gate_open.float().unsqueeze(-1)
-
-
-def gripper_gate_rate(env: "ManagerBasedRLEnv", action_term: str = "gripper_action") -> torch.Tensor:
-    """게이트가 열린 env 비율. **weight 0 진단 항** — TFEvents 에 찍혀야 조기 판정이 된다.
-
-    이번 런의 1차 관전 지표다. epoch 200 안에 0.1 을 못 넘으면 게이트가 너무 빡빡한 것이고,
-    `GRASP_GATE_LATERAL_OK` 를 0.040 으로 완화해야 한다(fab_test9~11 정체의 재발 방지).
-    """
-    term = env.action_manager.get_term(action_term)
-    return term.gate_open.float()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 진단 항 (weight 0) — 지령 위치 · 실제 위치 · 그 차이
-#
-# ★★fab_test26 신설. 이 트랙은 **지령과 실제를 나란히 본 적이 한 번도 없다.**
-#   `Metrics/object_pose/position_error` 는 컵–목표 거리이지 팔 추종오차가 아니고,
-#   `reaching_object` 는 shaping 을 거친 값이라 거리로 못 읽는다. 그 결과:
-#     · 08.25 층 분해에서야 "이송 중 지령과 실제 TCP 가 90 mm 어긋나 있다"를 알았다
-#     · t24 의 회피 국소최적도 실측 대조표를 만들고 나서야 보였다
-#   실측을 못 보면 진단이 전부 사후 프로브가 된다. TB 에 상시로 띄운다.
-#
-# ⚠ weight=0 은 IsaacLab 에서 **log-only** 다(`reward_manager.compute` 의 분기):
-#       self._episode_sums[name] += raw_value * dt
-#   따라서 TB 의 `Episode_Reward/<name>` = **에피소드 시간평균**이다. 위치에 대해서는
-#   "그 에피소드 동안 평균적으로 어디 있었나"가 되고, 그게 우리가 보고 싶은 값이다.
-# ⚠ 전부 **env 로컬 좌표**로 맞춘다. palm 지령은 로봇 base 기준인데 body 위치는 world
-#   기준이라, env_origins 를 안 빼면 두 값이 다른 프레임이 되어 비교가 무의미해진다.
-# ═══════════════════════════════════════════════════════════════════════════
-
 _AXIS = {"x": 0, "y": 1, "z": 2}
 
+
+# ★fab_test46: `gripper_gate_open`/`gripper_gate_rate` 제거 — 그리퍼 하드 게이트 폐기
+#   (근거는 env cfg 의 fab_test46 주석). 게이트 상태라는 개념 자체가 사라졌다.
 
 def _jaw_mid_local(env, pad_offset: float, jaw_cfg: SceneEntityCfg) -> torch.Tensor:
     """턱 중점(패드 중앙 보정 포함), env 로컬. `_jaw_frame` 과 같은 자다."""

@@ -186,46 +186,14 @@ class FabricPalmAction(ActionTerm):
         )
         self._box_lo, self._box_hi = lo, hi
 
-        # ── 2-스케일 상태 (fab_test40) ─────────────────────────────────
-        # 근거 전문은 preset `PALM_FINE_HALF`. 앵커는 **컵이 아니라 직전 지령**이다 —
-        # 컵을 앵커로 잡으면 a=0 이 곧 정답이 되고, ADR 이 올리는 컵 관측 노이즈(≤0.03 m)가
-        # 앵커를 흔든다.
-        self._fine_phase = torch.zeros(num_envs, dtype=torch.bool, device=device)
-        self._fine_anchor = self._box_center.unsqueeze(0).repeat(num_envs, 1).clone()
-        self._fine_euler_anchor = self._euler_center.clone()
-        self._fine_half = torch.tensor(P.PALM_FINE_HALF, device=device).unsqueeze(0)
-        self._fine_euler_half = torch.full(
-            (1, 3), float(P.PALM_FINE_EULER_HALF_RAD), device=device
-        )
-        self._fine_switch_count = torch.zeros(num_envs, device=device)
-
-    # ------------------------------------------------------------------
-    def _update_scale_phase(self) -> None:
-        """COARSE ⇄ FINE 전환. 래치 + 히스테리시스, 앵커는 진입 시점의 지령."""
-        from . import grasp_left_rewards as rewards  # 순환 임포트 회피
-
-        dist = rewards.diag_jaw_cup_dist(self._env, P.JAW_PAD_OFFSET, self._jaw_cfg)
-        enter = dist < P.PALM_FINE_ENTER_DIST
-        exit_ = dist > P.PALM_FINE_EXIT_DIST
-        # ⚠ 리셋 직후(`_cmd_primed` False)에는 진입시키지 않는다 — 래치할 직전 지령이 없다.
-        enter = enter & self._cmd_primed
-        new_phase = (self._fine_phase | enter) & ~exit_
-        entering = new_phase & ~self._fine_phase
-        if entering.any():
-            self._fine_anchor[entering] = self._prev_cmd_pos[entering]
-            self._fine_euler_anchor[entering] = self._palm_pose_target[entering, 3:6]
-            self._fine_switch_count[entering] += 1.0
-        self._fine_phase = new_phase
-
-    @property
-    def fine_phase(self) -> torch.Tensor:
-        """FINE 스케일인가 (num_envs,) bool. 관측·진단이 읽는다."""
-        return self._fine_phase
-
-    @property
-    def fine_anchor(self) -> torch.Tensor:
-        """현재 앵커 (num_envs, 3), env 로컬. FINE 일 때만 의미가 있다."""
-        return self._fine_anchor
+        # ★★fab_test46: 2-스케일(FINE 래치) **제거** (사용자 결정).
+        #   존재 이유였던 "지터 = σ×박스반폭"은 리미터(PALM_CMD_RATE_LIMIT 0.02)가
+        #   박스 크기와 무관하게 20 mm/step 으로 캡하면서 소멸했다. 남은 것은 해악뿐:
+        #   앵커 = 진입 순간의 지령인데, 리미터 하에서 지령은 턱보다 ~50 mm 앞서 걸으므로
+        #   앵커가 컵 −50 mm 에 잠기고, 최전방 = 앵커+57.5 ≈ 컵+7.5 mm < 필요 컵+43 mm
+        #   (턱오프셋 33 + fabric 처짐 10). **삽입 지령이 구조적으로 불가능**했다.
+        #   t45 실측: 지령 x 최대 347(필요 423), 턱-컵이 FINE 진입선(100) 바로 위
+        #   118~121 mm 에 1218 epoch... 정정: 608 epoch 정체, contact 1e-4.
 
     # ------------------------------------------------------------------
     @property
@@ -267,16 +235,8 @@ class FabricPalmAction(ActionTerm):
         #   은 스케일 + clamp 만 하고, 변화율 상한은 fabric 이 정한다. 우리가 붙였던
         #   리미터는 자초한 굼뜸(fabric 60% 속도 · damping 하드끝 · vel_ff 0)의 증상
         #   억제기였다. 셋을 원본으로 되돌렸으므로 함께 뗀다.
-        # ── 2-스케일: 액션을 무엇에 대해 펼치는가만 문맥 의존 ──────────
-        # ★★fab_test40. 액션 의미는 **절대 규약 그대로**다. 근거 전문은 preset
-        #   `PALM_FINE_HALF` 주석 — 요약하면 지령 지터 = σ×half 라 현재 박스에서는
-        #   어떤 σ 에서도 `grasp_ok` 문턱(lateral 30 mm)을 넘을 수 없다(σ0.20 에서도 47 mm).
-        #   전환은 **래치 + 히스테리시스**. 경계에서 껐다 켜지면 정책이 두 지형을 오간다.
-        self._update_scale_phase()
-        fine = self._fine_phase.unsqueeze(-1)
-        center = torch.where(fine, self._fine_anchor, self._box_center.expand_as(self._fine_anchor))
-        half = torch.where(fine, self._fine_half, self._box_half.expand_as(self._fine_anchor))
-        pos = center + actions[:, :3].clamp(-1.0, 1.0) * half
+        # ★fab_test46: 2-스케일 분기 제거 — 단일 박스 + 리미터. 폐기 근거는 __init__ 주석.
+        pos = self._box_center + actions[:, :3].clamp(-1.0, 1.0) * self._box_half
         # ★FINE 지령도 COARSE 박스 안에 있어야 한다 — 앵커가 박스 가장자리면 밖으로 나간다.
         pos = torch.max(torch.min(pos, self._box_hi), self._box_lo)
         # ★★fab_test25: 지령 **변화율 상한**. 절대 규약은 그대로다 — 목표는 여전히 박스
@@ -313,11 +273,7 @@ class FabricPalmAction(ActionTerm):
         # ★설계안에 없던 항 — 회전도 같은 크기의 지렛대다. 팜→턱 140 mm 라 ±45° 는
         #   σ0.35 에서 턱을 38 mm 흔들어 FINE 위치 이득(19·12·14 mm)을 그대로 삼킨다.
         #   FINE 에서는 **회전 중심을 그 시점 지령으로 래치**하고 박스를 ±11.3° 로 좁힌다.
-        e_center = torch.where(fine, self._fine_euler_anchor,
-                               self._euler_center.expand_as(self._fine_euler_anchor))
-        e_half = torch.where(fine, self._fine_euler_half,
-                             self._euler_half.expand_as(self._fine_euler_anchor))
-        euler = e_center + actions[:, 3:6].clamp(-1.0, 1.0) * e_half
+        euler = self._euler_center + actions[:, 3:6].clamp(-1.0, 1.0) * self._euler_half
 
         self._palm_pose_target[:, :3] = pos
         self._palm_pose_target[:, 3:6] = euler
@@ -395,10 +351,6 @@ class FabricPalmAction(ActionTerm):
         self._cmd_primed[env_ids] = False
         # ★2-스케일 상태도 반드시 지운다. 이 트랙은 리셋 오염에 네 번 당했다 —
         #   앵커가 남으면 새 에피소드의 첫 지령이 지난 에피소드의 파지 자세 주변으로 묶인다.
-        self._fine_phase[env_ids] = False
-        self._fine_anchor[env_ids] = self._box_center
-        self._fine_euler_anchor[env_ids] = self._euler_center[0]
-        self._fine_switch_count[env_ids] = 0.0
 
     # ------------------------------------------------------------------
     # 지령 마커 (GUI 학습용) — 사용자 지시: "tcp 마커말고 액션 지령 마커를 6D 로"

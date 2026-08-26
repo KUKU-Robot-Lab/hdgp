@@ -174,12 +174,9 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         #   단위가 rad/s² 인 값을 clip 5 짜리 obs 에 넣은 것이 애초에 잘못이었다.
         self.observations.policy.palm_pose_target = ObsTerm(func=obs_mdp.palm_pose_target)
 
-        # ── 2-스케일 액션의 문맥 (fab_test40) ────────────────────────
-        # ★★이게 빠지면 POMDP 가 된다. 같은 액션 벡터가 FINE/COARSE 에 따라 다른 절대
-        #   지령이 되는데 그 문맥이 관측에 없으면 정책이 구분할 수 없다.
-        #   **policy** 에 넣는다 — critic 전용이면 정책 쪽 POMDP 가 그대로 남는다.
-        self.observations.policy.palm_action_scale = ObsTerm(func=obs_mdp.palm_action_scale)
-        self.observations.policy.palm_action_anchor = ObsTerm(func=obs_mdp.palm_action_anchor)
+        # ★fab_test46: 2-스케일 문맥 관측(`palm_action_scale`/`anchor`) 제거 — FINE 폐기로
+        #   액션 의미가 다시 단일해져 문맥이 필요 없다. 지령 자체는 `palm_pose_target` 이
+        #   계속 보인다. policy obs 72 → 66.
 
         # ── GUI 마커: TCP 대신 **액션 지령 6D** (사용자 지시) ────────
         # `object_pose` 커맨드의 debug_vis 가 그리는 것이 body_pose(=TCP)와 goal_pose 다.
@@ -250,8 +247,6 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         self.observations.critic = _CriticCfg()
         # ★2-스케일 문맥은 critic 에도 준다(policy 쪽은 위에서 등록했다).
         #   ⚠ critic 그룹은 여기서 만들어지므로 이 줄들은 **반드시 그 뒤**여야 한다.
-        self.observations.critic.palm_action_scale = ObsTerm(func=obs_mdp.palm_action_scale)
-        self.observations.critic.palm_action_anchor = ObsTerm(func=obs_mdp.palm_action_anchor)
 
         # ══════════════════════════════════════════════════════════════
         # ★★fab_test43: 실패 3종을 **`truncated` 로** 낸다 (`time_out=True`).

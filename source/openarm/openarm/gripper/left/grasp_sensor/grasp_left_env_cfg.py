@@ -224,23 +224,23 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   컵 몸통이 58~88 mm 라 이 상태로는 물리적으로 물 수 없다.
         #   두 조는 축이 서로 반대(`0 -1 0` vs `0 1 0`)라 같은 값을 주면 함께 벌어진다.
         #   ※ 자산 쪽에서 mimic 을 복원하면 이 지령은 무해하게 중복될 뿐이다.
-        # ★★08.24 **접근 성공 하드 게이트**. 접근 전에는 그리퍼를 강제로 연다.
-        #   근거: Fabrics 가 우연한 리프트를 없앴다(관절 목표 변화 test17 2.79 rad/s vs
-        #   fab_test5 0.38 rad/s → 컵 상승 +138 mm vs +17 mm). 정책이 "열기·위치·닫기·들기"
-        #   연접을 우연히 맞춰야 하는 문제를, 앞 두 칸을 코드가 강제해 없앤다.
-        #   ⚠ **부모에서 바꿔야** 관절공간·IK·Fabrics 세 변형에 전파된다
-        #     (fab cfg 에서의 그리퍼 재정의는 계약으로 금지돼 있다).
-        self.actions.gripper_action = actions.GatedBinaryJointPositionActionCfg(
+        # ★★fab_test46: 하드 게이트 **제거** (사용자 결정) — 무게이트 이진 개폐.
+        #   구 `GatedBinaryJointPositionAction` 은 접근 성공(lateral<30·along<30) 전에
+        #   그리퍼를 강제로 열었다. 근거였던 "열기·위치·닫기·들기 연접을 정책이 우연히
+        #   맞춰야 한다"는 **양수 shaping + 조기종료 시절**의 문제다. 지금은:
+        #     · 벌점 사다리라 조기 폐합으로 얻을 보상이 없다(contact = 접촉×기하 곱)
+        #     · 잘못 닫고 밀면 tip 벌점이 계속 문다(에피소드는 truncated 리셋)
+        #     · 리미터 0.02 라 닫힌 채 돌진하는 파괴적 탐색 자체가 없다
+        #   레퍼런스 lift 도 DexPour 도 그리퍼는 무게이트다.
+        #   액션 의미(레퍼런스와 동일): 1D 이진, a>0 → 닫힘(0.0) · a≤0 → 열림(0.044).
+        #   mimic 으로 두 조가 함께 움직인다.
+        # ⚠ `gripper_gate` 관측(1D)과 `gate_rate` 진단도 함께 제거 — 게이트 상태가
+        #   사라졌으므로. 관절공간판 obs 36→35, 구 체크포인트와 비호환(fresh 전용).
+        self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
             asset_name="robot",
             joint_names=list(P.GRIPPER_JOINT_NAMES),
             open_command_expr={j: P.GRIPPER_OPEN_POS for j in P.GRIPPER_JOINT_NAMES},
             close_command_expr={j: P.GRIPPER_CLOSED_POS for j in P.GRIPPER_JOINT_NAMES},
-            finger_body_names=tuple(P.GRIPPER_FINGER_BODIES),
-            object_name="object",
-            pad_offset=P.JAW_PAD_OFFSET,
-            lateral_ok=P.GRASP_GATE_LATERAL_OK,
-            along_ok=P.GRASP_GATE_ALONG_OK,
-            release_lateral=P.GRASP_GATE_RELEASE_LAT,
         )
 
         # ── 씬: 테이블 (로컬 자산) ──────────────────────────────────
@@ -354,10 +354,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "robot", joint_names=["l_aj_[1-7]", "l_hj_gripper_[1-2]"]
             )
 
-        # ★★게이트 상태를 관측에 노출한다. 하드 게이트는 정책이 볼 수 없는 숨은 상태라,
-        #   phase 0 에서 정책의 그리퍼 지령은 기록되지만 실행되지 않는다(그 차원 gradient 가
-        #   환경 응답과 무관해진다). obs 가 1 늘어난다 — **fresh 학습 전용**.
-        self.observations.policy.gripper_gate = ObsTerm(func=rewards.gripper_gate_open)
+        # ★fab_test46: `gripper_gate` 관측 제거 — 게이트 자체가 사라졌다(위 주석).
         self.observations.policy.joint_pos.params["asset_cfg"] = _left_joints()
         self.observations.policy.joint_vel.params["asset_cfg"] = _left_joints()
         self.rewards.joint_vel.params["asset_cfg"] = _left_joints()
@@ -573,11 +570,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "upright_zero_at_cos": P.CUP_UPRIGHT_ZERO_AT_COS,
             },
         )
-        # ★진단(weight 0) — 게이트 진입 비율. 이번 런의 1차 관전 지표라 반드시 로깅한다.
-        # ⚠ weight 0 이면 RewardManager 가 w·term·dt 를 로깅해 **항상 0.0000** 이 찍힌다
-        #   (fab_test12 에서 1차 관전 지표를 통째로 잃었다). 0.001 은 총보상 ~110/step 대비
-        #   1e-5 수준이라 학습에 무영향이면서 TFEvents 에서 게이트 개방률을 읽을 수 있다.
-        self.rewards.gate_rate = RewTerm(func=rewards.gripper_gate_rate, weight=0.001, params={})
+        # ★fab_test46: `gate_rate` 진단 제거 — 게이트가 사라졌다.
 
         self.terminations.object_dropping.params["minimum_height"] = P.OBJECT_DROP_HEIGHT
 

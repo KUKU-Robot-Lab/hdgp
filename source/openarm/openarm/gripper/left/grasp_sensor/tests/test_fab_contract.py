@@ -514,29 +514,25 @@ def test_grasp_ok_separates_measured_success_from_failure():
     assert "axis_t > P.CUP_GRASP_BAND_AXIS[0]" in body
 
 
-def test_gripper_action_is_hard_gated_open_before_approach():
-    """★★접근 성공 전에는 그리퍼를 **강제로 연다**.
+def test_gripper_action_is_ungated_binary():
+    """★fab_test46: 그리퍼는 **무게이트 이진**이다 (사용자 결정 — 하드 게이트 폐기).
 
-    근거: Fabrics 가 우연한 리프트를 없앴다(적용 관절 목표 변화 test17 2.79 rad/s vs
-    fab_test5 0.38 rad/s → 컵 상승 +138 vs +17 mm). 정책이 "열기·위치·닫기·들기" 연접을
-    우연히 맞춰야 하는 문제를, 앞 두 칸을 코드가 강제해 없앤다.
-    실패 이력: fab_test1 주먹(개도 3.1mm) · fab_test11 옆에서 좁게 닫음(16.3mm) —
-    강제 개방은 둘 다 **구조적으로 불가능**하게 만든다.
+    구 계약은 `GatedBinaryJointPositionActionCfg`(접근 성공 전 강제 개방)를 요구했다.
+    그 근거("열기·위치·닫기·들기 연접을 정책이 우연히 맞춰야 한다")는 양수 shaping +
+    조기종료 시절의 문제다. 벌점 사다리(fab_test43~)에서는:
+      · 조기 폐합으로 얻을 보상이 없다 — `contact = touch_frac × grasp_quality`
+      · 잘못 닫고 밀면 `tip` 벌점이 계속 문다(truncated 리셋)
+      · 리미터 0.02 라 닫힌 채 돌진하는 파괴적 탐색 자체가 없다
+    레퍼런스 lift 도 DexPour 도 그리퍼는 무게이트다.
     """
-    act = _src("grasp_left_actions.py")
-    assert "class GatedBinaryJointPositionAction(BinaryJointPositionAction)" in act
-    body = act[act.index("def process_actions", act.index("class GatedBinary")):]
-    body = body[: body.index("def reset")]
-    assert "self._phase | ok" in body, "래치가 없다 — 닫는 순간 문턱을 넘나들면 컵을 놓는다"
-    assert "lateral < self.cfg.release_lateral" in body, "히스테리시스 해제가 없다"
-    assert "self._open_command" in body, "phase 0 에서 강제 개방하지 않는다"
-    # ★판정은 process_actions 에서만. apply_actions 는 decimation 만큼 불린다.
-    assert "grasp_ok" not in act[act.index("def reset", act.index("class GatedBinary")):]
-    rst = act[act.index("def reset", act.index("class GatedBinary")):]
-    assert "_phase" in rst, "reset 에서 래치를 지우지 않는다 — 리셋 오염 네 번째"
-    cfg = _src("grasp_left_env_cfg.py")
-    assert "GatedBinaryJointPositionActionCfg" in cfg
-
+    src_ = _src("grasp_left_env_cfg.py")
+    assert "mdp.BinaryJointPositionActionCfg(" in src_, "그리퍼가 이진 액션이 아니다"
+    assert "GatedBinaryJointPositionActionCfg(" not in src_, (
+        "하드 게이트가 되살아났다 — 되살리려면 fab_test46 폐기 근거를 먼저 반박할 것"
+    )
+    # 게이트 부속(관측·진단)도 함께 사라져야 한다 — 남으면 존재하지 않는 attr 를 읽어 죽는다
+    assert "gripper_gate = ObsTerm" not in src_, "게이트 관측이 남아 있다"
+    assert "gripper_gate_rate" not in src_, "게이트 진단이 남아 있다"
 
 def test_all_gated_terms_share_one_jaw_cfg_instance():
     """★SceneEntityCfg 는 매니저가 제자리 변경하는 가변 객체다 — term 마다 새 인스턴스."""
@@ -783,16 +779,6 @@ def test_dwell_term_is_wired_with_counter_reset_and_fresh_jaw_cfg():
     block = block[:block.index("grasp_pose")]
     assert "DwellSettledAtGoal" in block and "DWELL_REWARD_WEIGHT" in block
     assert 'SceneEntityCfg("robot"' in block, "jaw_cfg 를 다른 term 과 공유하면 안 된다"
-
-
-def test_gate_rate_diagnostic_actually_logs():
-    """⚠ RewardManager 는 w·term·dt 를 로깅한다 — weight 0 이면 항상 0.0000 이 찍혀
-    fab_test12 내내 1차 관전 지표(게이트 개방률)를 잃었다. 0 이 아니고 무해해야 한다."""
-    cfg = _src("grasp_left_env_cfg.py")
-    m = re.search(r"gate_rate = RewTerm\(func=rewards\.gripper_gate_rate, weight=([0-9.e-]+)", cfg)
-    assert m, "gate_rate 진단 항이 없다"
-    w = float(m.group(1))
-    assert 0.0 < w <= 0.01, f"gate_rate weight {w} — 0 은 로깅 불가, 크면 학습 오염"
 
 
 def test_agent_yaml_matches_kuka_reference():
@@ -1400,68 +1386,43 @@ def test_contact_reward_pays_for_touching_the_cup():
     assert P.CONTACT_FORCE_THRESHOLD > 0.0, "문턱 0 이면 수치 잡음도 접촉으로 센다"
 
 
-def test_two_scale_palm_action_gives_the_grasp_phase_real_resolution():
-    """★★액션 지터 = σ × box_half 다. 파지가 요구하는 해상도를 박스가 못 낸다.
+def test_single_box_with_limiter_and_insertion_reachable():
+    """★★fab_test46: 2-스케일(FINE) 폐기 — 단일 박스 + 리미터, 그리고 **삽입 도달성**.
 
-    t22~t39 열여덟 판이 `gate_rate < 0.5%` 였던 **정량적 원인**이다. t39 실측이
-    이 식을 그대로 따른다(예측 = σ×half_y):
-        ep 65 σ0.91 → 150mm / 실측  86mm      ep235 σ0.67 → 111mm / 실측 115mm
-        ep321 σ0.57 →  94mm / 실측  95mm      ep406 σ0.60 →  99mm / 실측  85mm
-    `grasp_ok` 문턱은 lateral < 30 mm 이고 물리 여유는 ±13.25 mm 다. 현재 박스
-    (half 165·170 mm)의 노이즈 바닥은 σ0.20 에서도 **47 mm** — 어떤 σ 에서도 못 넘는다.
-
-    박스 축소는 실측으로 기각됐다(`docs/eval/fab_runs/palm_action_resolution.md`,
-    10,240 표본): 이송 지령이 x [0.246, 0.597] 로 박스를 거의 다 쓴다. 반면 파지
-    지령은 그 안 115·66·79 mm 구석에만 몰린다. → 문맥 의존 박스.
+    FINE 이 왜 죽었나 (t45 실측 + 산술):
+      리미터 하에서 지령은 턱보다 ~50mm 앞서 걷는다(추종오차 실측 49mm). 턱-컵 100mm
+      에서 FINE 이 래치되면 앵커 = 컵−50mm, 최전방 = 앵커+57.5 ≈ 컵+7.5mm.
+      필요한 지령은 컵+43mm(턱오프셋 33 + fabric 처짐 10) — **35mm 부족, 구조 불가**.
+      t45: 지령 x 최대 347(필요 423), 턱-컵 118~121mm 정체, contact 1e-4.
+    FINE 의 존재 이유(지터 = σ×반폭)는 리미터 0.02 가 박스와 무관하게 대체했다.
     """
-    import math
-
-    # 1. FINE half 가 실측 파지 포락(115·66·79 mm)의 절반 이하다.
-    for fine, envelope in zip(P.PALM_FINE_HALF, (0.115, 0.066, 0.079)):
-        assert fine <= envelope / 2 + 1e-9, (
-            f"FINE half {fine*1000:.0f}mm 가 실측 파지 포락의 절반({envelope/2*1000:.0f}mm)보다 크다"
-        )
-    # 2. COARSE 박스는 그대로다 — 이송 도달을 잃으면 안 된다.
-    assert P.PALM_BOX_X == (0.22, 0.60) and P.PALM_BOX_Y == (0.10, 0.43)
-    assert P.PALM_BOX_Z == (0.16, 0.50)
-    # 3. FINE 이 실제로 문턱을 넘게 해 주는가 — σ0.45 에서 lateral 지터가 문턱 아래여야 한다.
-    jitter = math.hypot(0.45 * P.PALM_FINE_HALF[1], 0.45 * P.PALM_FINE_HALF[2])
-    assert jitter < P.GRASP_GATE_LATERAL_OK, (
-        f"FINE 지터 {jitter*1000:.0f}mm 가 문턱 {P.GRASP_GATE_LATERAL_OK*1000:.0f}mm 를 못 넘는다"
-    )
-    # 4. ★회전도 같은 크기의 지렛대다. 팜→턱 140 mm 라 ±45° 는 σ0.35 에서 38 mm 를 흔들어
-    #    FINE 위치 이득을 삼킨다. FINE 회전 박스가 반드시 좁아야 한다.
-    rot_jitter = 0.45 * P.PALM_FINE_EULER_HALF_RAD * P.PALM_TO_JAW_LEVER
-    assert rot_jitter < P.GRASP_GATE_LATERAL_OK, (
-        f"FINE 회전 지터 {rot_jitter*1000:.0f}mm 가 문턱을 넘는다 — 위치 이득이 무의미해진다"
-    )
-    assert P.PALM_FINE_EULER_HALF_RAD < P.PALM_MAX_POSE_ANGLE, "FINE 회전이 COARSE 보다 넓다"
-    # 5. 전환은 래치 + 히스테리시스다.
-    assert P.PALM_FINE_ENTER_DIST < P.PALM_FINE_EXIT_DIST, (
-        "ENTER >= EXIT 다 — 경계에서 두 액션 지형을 오간다"
+    rsrc = _src("grasp_left_fabric_action.py")
+    assert "_fine_phase" not in rsrc.replace("fab_test46", ""), "FINE 상태가 남아 있다"
+    assert "_update_scale_phase" not in rsrc, "2-스케일 전환 로직이 남아 있다"
+    assert not hasattr(P, "PALM_FINE_HALF"), "FINE 상수가 남아 있다"
+    # 리미터가 지터 캡을 대신한다
+    assert P.PALM_CMD_RATE_LIMIT_ENABLED and P.PALM_CMD_RATE_LIMIT <= 0.02 + 1e-9
+    # ★삽입 도달성: 박스 상한이 "컵 최전방 + 턱오프셋 + 처짐 여유" 를 덮어야 한다
+    need_x = (P.CUP_SPAWN_X_CENTER + P.CUP_SPAWN_X_RANGE
+              + P.TCP_TO_GRASP_DEPTH + 0.015)
+    assert P.PALM_BOX_X[1] >= need_x, (
+        f"박스 x 상한 {P.PALM_BOX_X[1]} < 삽입 필요 지령 {need_x:.3f} — FINE 벽의 재현"
     )
 
+def test_two_scale_context_obs_removed():
+    """★fab_test46: 2-스케일 문맥 관측(`palm_action_scale`/`anchor`) 제거 확인.
 
-def test_two_scale_state_is_cleared_on_reset_and_exposed_to_the_policy():
-    """★앵커가 리셋에 남으면 새 에피소드의 첫 지령이 지난 파지 자세에 묶인다.
-    ★스케일·앵커가 **policy** obs 에 없으면 POMDP 다 — 같은 액션이 문맥마다 다른 지령이 된다.
+    FINE 폐기로 액션 의미가 단일해졌으므로 문맥 관측은 잉여다. 남겨두면 존재하지 않는
+    `fine_phase` attr 를 읽다 죽거나, 상수 6D 가 obs 를 오염시킨다.
+    지령 관측은 `palm_pose_target`(리미터 통과 유효 지령)이 계속 담당한다 — 리미터의
+    내부 상태(_prev_cmd_pos)가 이것으로 관측 가능해 MDP 가 유지된다.
     """
-    act_src = (
-        Path(__file__).resolve().parents[1] / "grasp_left_fabric_action.py"
-    ).read_text(encoding="utf-8")
-    reset_body = act_src.split("def reset(")[1].split("\n    # ---")[0]
-    for buf in ("_fine_phase[env_ids]", "_fine_anchor[env_ids]", "_fine_euler_anchor[env_ids]"):
-        assert buf in reset_body, f"reset 이 {buf} 를 지우지 않는다 — 리셋 오염"
-    assert "_fine_phase | enter" in act_src and "~exit_" in act_src, "전환이 래치가 아니다"
-
-    fab_src = (
-        Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py"
-    ).read_text(encoding="utf-8")
-    for term in ("palm_action_scale", "palm_action_anchor"):
-        assert f"self.observations.policy.{term} = ObsTerm(" in fab_src, (
-            f"{term} 이 policy obs 에 없다 — critic 전용이면 정책 POMDP 가 남는다"
-        )
-
+    fab = _fab_src()
+    assert "palm_action_scale = ObsTerm" not in fab, "scale 관측이 남아 있다"
+    assert "palm_action_anchor = ObsTerm" not in fab, "anchor 관측이 남아 있다"
+    assert "self.observations.policy.palm_pose_target = ObsTerm" in fab, (
+        "유효 지령 관측이 없다 — 리미터 상태가 숨은 상태(POMDP)가 된다"
+    )
 
 def test_gui_shows_the_action_command_marker_not_the_tcp_marker():
     """★사용자 지시: GUI 학습에서 TCP 마커 대신 **액션 지령 6D 마커**를 띄운다.

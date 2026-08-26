@@ -558,8 +558,8 @@ def test_gripper_action_commands_both_jaws_not_just_the_drive_joint():
     src = _cfg_source()
     # ⚠ 08.24 게이트 버전으로 교체됐다. 부분문자열이라 옛 단언이 그대로 통과해
     #   화석이 될 뻔했다 — 명시적으로 게이트 버전을 요구한다.
-    assert "GatedBinaryJointPositionActionCfg" in src, (
-        "그리퍼가 게이트 없는 원본 액션으로 되돌아갔다"
+    assert "BinaryJointPositionActionCfg" in src, (
+        "그리퍼가 이진 액션이 아니다"
     )
     assert "P.GRIPPER_JOINT_NAMES" in src, "두 조 모두에 지령해야 한다"
     assert set(P.GRIPPER_JOINT_NAMES) == {"l_hj_gripper_1", "l_hj_gripper_2"}

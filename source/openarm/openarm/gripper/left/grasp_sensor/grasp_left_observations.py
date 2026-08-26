@@ -264,30 +264,6 @@ def object_tipped(
     return cos_tilt < math.cos(math.radians(max_tilt_deg))
 
 
-def palm_action_scale(
-    env: "ManagerBasedEnv", action_term: str = "arm_action"
-) -> torch.Tensor:
-    """현재 palm 액션 박스의 half-width (num_envs, 3) [m]. **policy obs 필수.**
-
-    ★★2-스케일 액션(fab_test40)에서 같은 액션 벡터가 문맥에 따라 다른 지령이 된다.
-      그 문맥이 관측에 없으면 POMDP 가 된다 — 정책이 자기 액션의 현재 스케일을 볼 수
-      있어야 한다. FINE 인지 COARSE 인지가 이 값 하나로 드러난다.
-    """
-    term = env.action_manager.get_term(action_term)
-    fine = term.fine_phase.unsqueeze(-1)
-    return torch.where(fine, term._fine_half.expand_as(term.fine_anchor),
-                       term._box_half.expand_as(term.fine_anchor))
-
-
-def palm_action_anchor(
-    env: "ManagerBasedEnv", action_term: str = "arm_action"
-) -> torch.Tensor:
-    """현재 액션 박스의 중심 (num_envs, 3), env 로컬 [m]. **policy obs 필수.**
-
-    COARSE 면 박스 중심, FINE 이면 진입 시점에 래치한 지령이다. 스케일과 짝으로
-    있어야 `[-1,1]` 이 어느 절대 좌표로 펼쳐지는지 정책이 알 수 있다.
-    """
-    term = env.action_manager.get_term(action_term)
-    fine = term.fine_phase.unsqueeze(-1)
-    return torch.where(fine, term.fine_anchor,
-                       term._box_center.expand_as(term.fine_anchor))
+# ★fab_test46: `palm_action_scale`/`palm_action_anchor` 제거 — 2-스케일(FINE) 폐기와
+#   함께 문맥 관측도 사라졌다(액션 의미가 단일해져 POMDP 아님). policy/critic 각 6D 감소.
+#   폐기 근거 전문은 `grasp_left_fabric_action` 의 fab_test46 주석.
