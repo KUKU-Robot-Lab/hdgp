@@ -96,6 +96,43 @@ from openarm.gripper.left.grasp_sensor import grasp_left_preset as P   # noqa: E
 from run_cfg_restore import restore_run_cfg_if_available         # noqa: E402
 
 
+def obs_term_slice(env, name: str, group: str = "policy"):
+    """이름으로 obs 항의 구간을 찾는다.
+
+    ★위치로 찾으면 안 된다. `gripper_gate` 는 base cfg 가 붙이고 fab cfg 가 그 **뒤에**
+      여러 항을 더한다(fabric_q/qd · palm_pose_target · palm_action_scale/anchor ...).
+      `obs_buf["policy"][:, -1]` 이 게이트였던 것은 fab 항이 없던 시절 얘기다 —
+      지금 그렇게 읽으면 조용히 다른 값을 게이트라고 기록한다.
+    """
+    mgr = env.observation_manager
+    terms = list(mgr.active_terms[group])
+    dims = [int(np.prod(d)) for d in mgr.group_obs_term_dim[group]]
+    if name not in terms:
+        return None
+    i = terms.index(name)
+    start = sum(dims[:i])
+    return slice(start, start + dims[i])
+
+
+def reset_rnn_states(player, done_mask) -> None:
+    """순환 정책의 hidden state 를 끝난 env 에 대해 비운다.
+
+    rl_games 의 `BasePlayer.run()` 은 이걸 하는데, 우리처럼 `get_action` 을 직접 부르는
+    루프는 안 한다. 안 비우면 새 에피소드가 **이전 에피소드의 기억을 물고** 시작해서
+    같은 상태에서 다른 액션이 나온다 — 재현도 비교도 안 된다.
+    """
+    if not getattr(player, "is_rnn", False):
+        return
+    states = getattr(player, "states", None)
+    if not states:
+        return
+    idx = torch.nonzero(done_mask.reshape(-1), as_tuple=False).reshape(-1)
+    if idx.numel() == 0:
+        return
+    for s in states:
+        s[:, idx, :] = 0.0
+
+
 def build_policy(checkpoint: Path, agent_cfg: dict, env):
     """rl_games player 를 만들고 체크포인트를 얹는다."""
     from rl_games.torch_runner import Runner
@@ -217,12 +254,23 @@ def main() -> int:
         cup.write_root_pose_to_sim(pose)
         cup.write_root_velocity_to_sim(torch.zeros(env.num_envs, 6, device=env.device))
 
+    gate_slice = obs_term_slice(env, "gripper_gate")
+    if gate_slice is None:
+        print("[probe] ⚠ obs 에 gripper_gate 가 없다 — 게이트 채널은 비운다.")
+    else:
+        print(f"[probe] gripper_gate obs 구간 = {gate_slice.start}:{gate_slice.stop} "
+              f"(전체 {sum(int(np.prod(d)) for d in env.observation_manager.group_obs_term_dim['policy'])})")
+    is_rnn = bool(getattr(player, "is_rnn", False))
+    print(f"[probe] 정책 순환 여부 = {is_rnn}"
+          + ("  (에피소드 종료마다 hidden state 를 비운다)" if is_rnn else ""))
+
     obs = policy_obs(wrapped.reset())
     place_cup()
     with torch.inference_mode():
         for step in range(args.steps):
             action = player.get_action(obs, is_deterministic=True)
             raw_obs, reward, dones, _ = wrapped.step(action)
+            reset_rnn_states(player, dones)
             if cup_pose is not None and bool(dones.any()):
                 # 리셋이 나면 이벤트가 컵을 다시 무작위로 놓는다 — 되돌린다.
                 place_cup()
@@ -232,7 +280,8 @@ def main() -> int:
             body_quat = robot.data.body_quat_w[:, base_body]              # wxyz
             body_pos = (robot.data.body_pos_w[:, base_body] - env.scene.env_origins
                         + quat_apply(body_quat, tcp_offset.expand(env.num_envs, 3)))
-            gate = env.obs_buf["policy"][:, -1] if isinstance(env.obs_buf, dict) else None
+            gate = (env.obs_buf["policy"][:, gate_slice].reshape(env.num_envs)
+                    if gate_slice is not None and isinstance(env.obs_buf, dict) else None)
 
             rec["action"].append(action.detach().cpu().numpy().copy())
             cmd_pos, cmd_quat = palm_command()
@@ -295,6 +344,9 @@ def main() -> int:
     arrays["meta_fabric_vel_ff"] = np.array(
         [float(getattr(term, "_vel_ff_scale", float("nan")))])
     arrays["meta_home_q"] = np.array(term._q_home.detach().cpu().numpy())
+    # 계약을 기록에 박아 둔다 — 배포 쪽이 npz 만 보고도 무엇을 재생하는지 알아야 한다.
+    arrays["meta_obs_dim"] = np.array([int(env.observation_manager.group_obs_dim["policy"][0])])
+    arrays["meta_is_rnn"] = np.array(["yes" if getattr(player, "is_rnn", False) else "no"])
     arrays["meta_fabric_robot_dir"] = np.array([str(P.FABRIC_ROBOT_DIR)])
     arrays["meta_fabric_world"] = np.array([str(P.FABRIC_WORLD_FILENAME)])
     args.out.parent.mkdir(parents=True, exist_ok=True)
