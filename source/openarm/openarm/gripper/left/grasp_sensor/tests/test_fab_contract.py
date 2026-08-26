@@ -677,7 +677,9 @@ def test_no_rate_limiter_reference_alignment():
     assert P.PALM_CMD_RATE_LIMIT_ENABLED is True, (
         "리미터가 꺼졌다 — t24 에서 컵 회피 국소최적을 낳았다"
     )
-    assert P.PALM_CMD_RATE_LIMIT == 0.10, "지령 변화율 상한이 지정값(100 mm/step)이 아니다"
+    # ★fab_test45: 0.10 → 0.02. 탐색 노이즈의 물리량을 관절공간판 수준으로 묶는
+    #   단일 변수(사용자 결정). 근거 전문은 preset 주석.
+    assert P.PALM_CMD_RATE_LIMIT == 0.02, "지령 변화율 상한이 지정값(20 mm/step)이 아니다"
 
     # 셋이 전부 원본값이어야 리미터 제거가 성립한다
     assert P.FABRIC_VEL_FF_SCALE == 1.0, "속도 피드포워드가 원본값(1.0)이 아니다"
