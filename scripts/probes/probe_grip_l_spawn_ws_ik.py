@@ -32,6 +32,8 @@ parser.add_argument("--tilt_tol_deg", type=float, default=10.0)
 parser.add_argument("--xs", type=str, default="0.28,0.31,0.34,0.37,0.40,0.43,0.46")
 parser.add_argument("--ys", type=str, default="0.09,0.13,0.17,0.21,0.25,0.29")
 parser.add_argument("--zs", type=str, default="0.280,0.307")
+parser.add_argument("--dump_path", type=str, default="",
+                    help="성공 해(q7·palm o·euler_zyx·달성 jaw_mid)를 npz 로 저장")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -175,4 +177,23 @@ for z in zs:
             i += 1
         print(f"    y={yv:+.2f}  " + "  ".join(row))
 print("=" * 100 + "\n", flush=True)
+
+# ── 해 덤프 (fab_test57 pre-grasp 리셋 주입용) ────────────────────────────
+if args.dump_path:
+    import numpy as np
+    with torch.no_grad():
+        # euler_zyx 추출: R = Rz(ez)·Ry(ey)·Rx(ex)
+        ey_ = torch.asin((-R[:, 2, 0]).clamp(-1.0, 1.0))
+        ez_ = torch.atan2(R[:, 1, 0], R[:, 0, 0])
+        ex_ = torch.atan2(R[:, 2, 1], R[:, 2, 2])
+        np.savez(
+            args.dump_path,
+            q=q.cpu().numpy(), palm_o=o.cpu().numpy(),
+            euler_zyx=torch.stack([ez_, ey_, ex_], -1).cpu().numpy(),
+            jaw_mid=jm.cpu().numpy(), target=tgt.cpu().numpy(),
+            perr_mm=perr.cpu().numpy(), tilt_deg=tilt.cpu().numpy(),
+            ok=ok.cpu().numpy(),
+        )
+    print(f"[덤프] {args.dump_path}  (성공 {int(ok.sum())}/{B})", flush=True)
+
 env.close(); app.close()

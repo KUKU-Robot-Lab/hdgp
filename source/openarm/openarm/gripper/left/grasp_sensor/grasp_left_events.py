@@ -27,6 +27,8 @@ import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 
+from . import grasp_left_preset as P
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
     from isaaclab.envs import ManagerBasedEnv
@@ -63,6 +65,73 @@ def hold_joints_at_target(
     asset.set_joint_position_target(
         target.unsqueeze(0).expand(len(env_ids), -1), joint_ids=joint_ids, env_ids=env_ids
     )
+
+
+def inject_pregrasp_reset(
+    env: "ManagerBasedEnv",
+    env_ids: torch.Tensor | None,
+    fraction: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> None:
+    """★fab_test57(사용자 승인 ①): 리셋의 일부를 **삽입 완료 pre-grasp** 로 시작한다.
+
+    왜 — t54/t55/t56 세 판이 보상 구조를 바꿔도 삽입 직전(90~110mm)에서 정지했다.
+    마지막 90mm 는 여유 13.25mm 의 삽입 스윕인데 접촉→전도→terminated 라 "첫 삽입"의
+    기대값이 음수고, 그 이력이 V(삽입 구간)를 죽는 자리로 박제했다. 여기서 시작하는
+    env 는 닫기→리프트가 몇 스텝 거리라 lift 소득이 발화하고, V 가 수리되어 자력 접근
+    env 와 연결된다. 보상·종료·자산은 불변 — 경험만 주입한다.
+
+    구현 계약 (전부 어긋나면 조용히 실패한다):
+      · 팔 관절만 쓰면 안 된다 — **fabric 상태**(`_fabric_q`)를 같이 놓아야 PD 목표가
+        홈으로 팔을 도로 끌고 가지 않는다.
+      · `_prev_cmd_*` 를 pre-grasp 팜 자세로, `_cmd_primed=True` 로 — 리미터(0.02)가
+        이 앵커에서 걷기 시작해 첫 지령 텔레포트로 이탈하는 것을 막는다.
+      · 컵은 IK 해의 **달성 jaw_mid** 위(테이블 위 정착 z)에 둔다 — 스폰 랜덤 컵에
+        팔을 맞추면 최대 22mm 어긋나 여유(13.25mm)를 뚫고 관통 스폰이 된다.
+    """
+    if env_ids is None or fraction <= 0.0:
+        return
+    robot: Articulation = env.scene[asset_cfg.name]
+    obj = env.scene[object_cfg.name]
+    dev = robot.device
+    pick = torch.rand(len(env_ids), device=dev) < fraction
+    ids = env_ids[pick]
+    if ids.numel() == 0:
+        return
+
+    act = env.action_manager.get_term("arm_action")
+    n = ids.numel()
+
+    # ① 팔 + 그리퍼(열림) 관절 상태
+    q_arm = torch.tensor(P.PREGRASP_ARM_Q, device=dev).unsqueeze(0).expand(n, -1)
+    arm_ids = act._arm_joint_ids
+    zeros = torch.zeros_like(q_arm)
+    robot.write_joint_state_to_sim(q_arm, zeros, joint_ids=arm_ids, env_ids=ids)
+    robot.set_joint_position_target(q_arm, joint_ids=arm_ids, env_ids=ids)
+    gid, _ = robot.find_joints(list(P.GRIPPER_JOINT_NAMES), preserve_order=True)
+    q_grip = torch.full((n, len(gid)), P.GRIPPER_OPEN_POS, device=dev)
+    robot.write_joint_state_to_sim(q_grip, torch.zeros_like(q_grip), joint_ids=gid, env_ids=ids)
+    robot.set_joint_position_target(q_grip, joint_ids=gid, env_ids=ids)
+
+    # ② fabric·리미터 앵커 동기화
+    act._fabric_q[ids] = q_arm
+    act._fabric_qd[ids] = 0.0
+    act._fabric_qdd[ids] = 0.0
+    act._prev_cmd_pos[ids] = torch.tensor(P.PREGRASP_PALM_POS, device=dev)
+    act._prev_cmd_euler[ids] = torch.tensor(P.PREGRASP_PALM_EULER_ZYX, device=dev)
+    act._cmd_primed[ids] = True
+
+    # ③ 컵을 달성 jaw_mid 바로 아래 테이블 위에 (소 jitter — 여유 13.25mm 안)
+    root = obj.data.default_root_state[ids].clone()
+    jit = (torch.rand(n, 2, device=dev) * 2.0 - 1.0) * P.PREGRASP_CUP_JITTER_M
+    root[:, 0] = env.scene.env_origins[ids, 0] + P.PREGRASP_JAW_MID[0] + jit[:, 0]
+    root[:, 1] = env.scene.env_origins[ids, 1] + P.PREGRASP_JAW_MID[1] + jit[:, 1]
+    root[:, 2] = env.scene.env_origins[ids, 2] + P.CUP_SPAWN_Z
+    root[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=dev)
+    root[:, 7:] = 0.0
+    obj.write_root_pose_to_sim(root[:, :7], env_ids=ids)
+    obj.write_root_velocity_to_sim(root[:, 7:], env_ids=ids)
 
 
 def apply_object_wrench(

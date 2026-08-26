@@ -1808,3 +1808,29 @@ def test_approach_kernel_single_ruler():
         encoding="utf-8")
     ap = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
     assert "return s.approach_k" in ap, "approach 항이 stages 커널을 재사용하지 않는다"
+
+
+def test_pregrasp_injection_contract():
+    """★fab_test57(사용자 승인 ①): pre-grasp 리셋 주입 — 조용한 실패 지점 4개 고정.
+
+    ①fabric 상태 미동기 → PD 가 팔을 홈으로 도로 끌고 감 ②리미터 앵커 미동기 →
+    첫 지령 텔레포트로 이탈 ③컵을 랜덤 스폰에 두면 최대 22mm 어긋나 관통 스폰
+    ④주입 컵이 스폰 분포 밖이면 V-수리가 본 과제 상태와 연결되지 않는다.
+    """
+    esrc = _src("grasp_left_events.py")
+    body = esrc.split("def inject_pregrasp_reset(")[1].split("\ndef ")[0]
+    assert "act._fabric_q[ids]" in body, "fabric 상태 미동기 — PD 가 홈으로 끌고 간다"
+    assert "act._prev_cmd_pos[ids]" in body and "act._cmd_primed[ids] = True" in body, (
+        "리미터 앵커 미동기 — 첫 지령이 텔레포트다"
+    )
+    assert "P.PREGRASP_JAW_MID[0]" in body, "컵이 달성 jaw_mid 가 아니라 랜덤 스폰 위치다"
+    fab = _fab_src()
+    assert "self.events.inject_pregrasp = EventTermCfg(" in fab, "주입 이벤트 미등록"
+    assert fab.index("reset_object_position") < fab.index("inject_pregrasp"), (
+        "주입이 컵 스폰 이벤트보다 앞이라 컵 배치가 덮인다"
+    )
+    assert 0.0 < P.PREGRASP_INJECT_FRACTION <= 0.5, "주입 비율이 과반이면 본 과제가 부업이 된다"
+    # 주입 컵이 스폰 분포 안 (V-수리 연결 조건)
+    assert abs(P.PREGRASP_JAW_MID[0] - P.CUP_SPAWN_X_CENTER) <= P.CUP_SPAWN_X_RANGE + 0.005
+    assert abs(P.PREGRASP_JAW_MID[1] - P.CUP_SPAWN_Y_CENTER) <= P.CUP_SPAWN_Y_RANGE + 0.005
+    assert P.PREGRASP_CUP_JITTER_M <= 0.007, "jitter 가 삽입 여유(13.25mm)의 절반을 넘는다"
