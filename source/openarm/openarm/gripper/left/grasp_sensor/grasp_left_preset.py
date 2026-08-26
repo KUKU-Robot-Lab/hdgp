@@ -1154,7 +1154,7 @@ ADR_ENABLED = True
 #   발동할 수는 없다(stay 는 grasp 의 상위 단계).
 CUP_STABILIZE_MASS_START = 8.0     # 시작 질량 배율
 CUP_STABILIZE_LEVELS = 7           # 8.0 → 1.0 을 7 단계 lerp
-CUP_STABILIZE_METRIC_TERM = "grasp"
+CUP_STABILIZE_METRIC_TERM = "lift"   # ★fab_test56: grasp 항 폐지 — 하강 게이트는 리프트 성립
 CUP_STABILIZE_TRIGGER = 0.10       # grasp 스텝보상 > 0 인 env 비율(ADR 과 같은 규약)
 CUP_STABILIZE_EMA_ALPHA = 0.01
 CUP_STABILIZE_MIN_STEPS_BETWEEN = 1500   # = ADR 과 동일(5 에피소드 분량 env 스텝)
@@ -1362,8 +1362,12 @@ CONTACT_ALL_BONUS = 1.5
 STAGE_APPROACH_WEIGHT = 1.0
 APPROACH_KERNEL_STD = 0.1          # 원본 lift `object_ee_distance` std 그대로
 STAGE_TIP_WEIGHT = -1.0           # 전도 — 구 `object_tipped` **종료를 대체**
-STAGE_CONTACT_WEIGHT = 1.0        # 게이트 없음 — λ=1·μ=0 사각지대 방지 shaping
-STAGE_GRASP_WEIGHT = 3.0
+# ★★fab_test56 (사용자 결정): contact·grasp 항 **폐지**. 접촉 기반 단계는 "첫 접촉 =
+#   기대이득 0 · 전도종료 −V" 도박이라 접촉 회피가 합리해진다(t55 실측: 시작 21mm 에서
+#   110mm 로 후퇴 정착·straddle 이 σ와 함께 소멸). 파지는 명시 보상 없이 "들려면 쥘 수
+#   밖에 없다"로 창발시킨다(원본 lift 레시피 철학). 그리퍼 개폐 액션은 자유(무 shaping).
+STAGE_HELD_NEAR_M = 0.06          # held 거리 게이트 [m]. 쳐날리기 방지(test3: 배팅 중
+#   TCP-컵 3044mm) — 리프트 지급은 턱이 컵 곁(60mm, straddle 대역 밖 여유 16mm)일 때만
 STAGE_LIFT_WEIGHT = 5.0
 STAGE_TRANSFER_WEIGHT = 7.0
 STAGE_STAY_WEIGHT = 10.0
@@ -1410,7 +1414,7 @@ STAGE_PERP_GATE_DEG = (30.0, 10.0)   # U_perp smoothstep (contact·bridge 용)
 #   파밍 상한: 합계 0.8/step < grasp(3)~stay(10) 사다리. 둘 다 λ·U_perp 라
 #   "멀리서/기울여서"는 0.
 STAGE_PERP_BRIDGE_WEIGHT = 0.5
-STAGE_CLOSE_BRIDGE_WEIGHT = 0.3
+# STAGE_CLOSE_BRIDGE_WEIGHT — fab_test56 폐지(그리퍼 shaping 제거, 위 주석)
 STAGE_MU_PERP_MAX_DEG = 20.0         # μ 트리거 이진 조건
 # ★구 `STAGE_ALIGN_FLOOR`·`STAGE_ORIENT_FLOOR` 제거. 곱셈 shaping 의 floor 였는데
 #   fab_test43 에서 approach 가 덧셈 벌점이 되어 floor 개념 자체가 없어졌다.

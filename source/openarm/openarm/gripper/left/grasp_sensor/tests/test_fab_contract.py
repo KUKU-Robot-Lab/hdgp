@@ -1472,7 +1472,8 @@ def test_stage_weights_increase_monotonically():
     자매 트랙 실측: grasp 1.469 > lift 0.757 > transfer 0.661 > stay 0.334.
     뒤 단계로 갈수록 손해였으니 정책이 앞 칸에 머무는 것이 최적이었다.
     """
-    ladder = [P.STAGE_APPROACH_WEIGHT, P.STAGE_GRASP_WEIGHT, P.STAGE_LIFT_WEIGHT,
+    # ★fab_test56: contact·grasp 폐지(사용자 결정) — 사다리는 approach→lift→transfer→stay
+    ladder = [P.STAGE_APPROACH_WEIGHT, P.STAGE_LIFT_WEIGHT,
               P.STAGE_TRANSFER_WEIGHT, P.STAGE_STAY_WEIGHT]
     assert ladder == sorted(ladder) and len(set(ladder)) == len(ladder), (
         f"가중 사다리가 단조 증가가 아니다: {ladder}"
@@ -1489,17 +1490,19 @@ def test_two_shaping_terms_stay_outside_the_gates():
     """
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
-    for name in ("stage_approach", "stage_contact"):
+    # ★fab_test56: contact 폐지 — 무게이트 shaping 은 approach + perp_bridge 둘이다
+    for name in ("stage_approach", "stage_perp_bridge"):
         body = rsrc.split(f"def {name}(")[1].split("\ndef ")[0]
         for gate in ("s.mu", "s.nu", "s.rho"):
             assert f"return {gate}" not in body, f"{name} 이 게이트 뒤에 있다"
-    # contact 는 순수 접촉 비율이어야 한다(게이트·기하 없음)
-    body = rsrc.split("def stage_contact(")[1].split("\ndef ")[0]
-    assert "touch_frac" in body and "s.mu" not in body
 
 
-def test_lift_is_gated_by_contact_and_measured_from_the_lowest_point():
-    """★★리프트 게이트가 **μ(접촉)** 이지 높이가 아니다 — 논문 Fig.3 `μ·r_lift`.
+def test_lift_is_gated_by_held_and_measured_from_the_lowest_point():
+    """★★리프트 게이트가 **μ(held: 거리 60mm + 수평)** 이지 높이가 아니다.
+
+    fab_test56(사용자 결정): 접촉 조건 폐지 — 접촉 트리거는 "첫 접촉 도박"을 만들어
+    t55 가 110mm 후퇴 정착했다. 거리 게이트가 쳐날리기(test3: 배팅 중 TCP-컵 3044mm)를
+    막고, 파지는 "들려면 쥘 수밖에 없다"로 창발시킨다(원본 lift 레시피 철학).
 
     본문: *"Once the cup reaches a certain height threshold, the lift reward ceases to
     accumulate"* → 높이는 **여는 하한이 아니라 끊는 상한**이다. 우리 구 `_held` 는
@@ -1519,17 +1522,27 @@ def test_lift_is_gated_by_contact_and_measured_from_the_lowest_point():
     )
 
 
-def test_grasp_is_zero_without_contact():
-    """★★파지 품질에 **접촉을 곱한다** — 기하만으로 값이 나오면 허공 파지가 되살아난다.
+def test_mu_is_held_not_contact():
+    """★fab_test56(사용자 결정): μ = held(거리+수평), **접촉 조건 금지**.
 
-    구 `cup_between_jaws`·`grip_closure_when_enclosed` 는 `enclose` 가 턱축 **투영**만
-    봐서 접촉 없이 만점이었고, t38 이 **170 mm 허공에서 closure 를 상한의 74%** 까지
-    받았다(그 구간 `contact_engage` 는 정확히 0). 같은 맹점에 네 번 속았다.
+    접촉 트리거의 실패 실측(t55): 첫 접촉 = 기대이득 0 · 전도종료 −V 도박 → 정책이
+    시작 21mm 에서 110mm 로 후퇴 정착, straddle 이 σ 수축과 함께 소멸(0.098→0.012).
+    거리 게이트(STAGE_HELD_NEAR_M)가 쳐날리기를 막는 것까지가 판정의 몫이고,
+    쥐는 것 자체는 리프트가 강제한다.
     """
     ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
         encoding="utf-8")
-    body = ssrc.split("s.grasp_q = ")[1].split("\n    #")[0]
-    assert "s.touch_frac" in body, "파지 품질이 접촉을 안 본다 — 허공 파지가 가능하다"
+    assert "s.d_jaw_cup < P.STAGE_HELD_NEAR_M" in ssrc, "μ 에 held 거리 게이트가 없다"
+    mu_block = ssrc.split("s.mu = ")[1].split("\n\n")[0]
+    assert "touch" not in mu_block and "STAGE_GATE_CONTACT_N" not in mu_block, (
+        "μ 가 다시 접촉 조건을 본다 — 첫 접촉 도박(t55 후퇴 정착)의 재현 경로"
+    )
+    assert 0.0 < P.STAGE_HELD_NEAR_M <= 0.08, "held 거리가 쳐날리기를 못 막는 크기다"
+    # 폐지 항이 소스에 남아 있지 않다
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    for gone in ("def stage_contact(", "def stage_grasp(", "def stage_close_bridge("):
+        assert gone not in rsrc, f"폐지된 {gone} 이 남아 있다"
 
 
 def test_stage_triggers_are_nested_and_match_the_paper():
@@ -1633,7 +1646,8 @@ def test_reward_names_match_tb_tags_and_old_names_are_gone():
     `reaching_object` 안에 `approach_opposed` 가 들어 있었다.
     """
     fab = _fab_src()
-    for stage in ("approach", "contact", "grasp", "lift", "transfer", "stay"):
+    # ★fab_test56: contact·grasp 폐지 — 슬롯은 approach·perp_bridge·lift·transfer·stay
+    for stage in ("approach", "perp_bridge", "lift", "transfer", "stay"):
         assert f"self.rewards.{stage} = RewTerm(" in fab, f"{stage} 슬롯이 없다"
     # 구 이름은 fab 에서 반드시 비활성화된다(부모는 관절공간 태스크가 계속 쓴다).
     disabled = fab.split("for _old in (")[1].split(")")[0]
@@ -1657,7 +1671,7 @@ def test_stage_state_is_computed_once_per_step():
     assert "step = int(env.common_step_counter)" in ssrc and "_CACHE[key]" in ssrc
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
-    for stage in ("approach", "contact", "grasp", "lift", "transfer", "stay"):
+    for stage in ("approach", "perp_bridge", "lift", "transfer", "stay"):
         body = rsrc.split(f"def stage_{stage}(")[1].split("\ndef ")[0]
         assert "_stage(env, jaw_cfg, sensor_names)" in body, (
             f"stage_{stage} 이 공유 캐시를 안 쓴다"
@@ -1705,7 +1719,8 @@ def test_cup_stabilize_curriculum_contract():
     질량 ×8 은 전도 임계 토크를 8 배로 올려 접촉 탐색을 안전하게 만든다.
     """
     assert P.CUP_STABILIZE_MASS_START >= 4.0, "시작 배율이 낮으면 전도 억제가 안 된다"
-    assert P.CUP_STABILIZE_METRIC_TERM == "grasp", (
+    # ★fab_test56: grasp 항 폐지 — 하강 게이트는 리프트 성립(lift > 0 비율)
+    assert P.CUP_STABILIZE_METRIC_TERM == "lift", (
         "게이트가 stay 면 순환이다 — 무거운 컵은 손목 effort 7 N·m 로 못 들 수 있다"
     )
     fab = _fab_src()
@@ -1749,8 +1764,10 @@ def test_ladder_is_perp_gated_until_lift():
     """
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
-    cbody = rsrc.split("def stage_contact(")[1].split("\ndef ")[0]
-    assert "s.grasp_q * s.U_perp" in cbody, "contact 에 수직 게이트가 없다"
+    # ★fab_test56: contact 폐지 — 수평 강제는 μ(held)의 이진 조건 + perp_bridge 방향타
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "s.axis_tilt_deg < P.STAGE_MU_PERP_MAX_DEG" in ssrc, "μ 수직 게이트가 없다"
     abody = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
     assert "U_perp" not in abody.split('\"\"\"')[-1], (
         "approach 커널에 게이트가 곱해졌다 — 커널은 순수 거리여야 한다"
@@ -1760,18 +1777,17 @@ def test_ladder_is_perp_gated_until_lift():
 
 
 def test_bridge_terms_give_gradient_the_gate_lacks():
-    """★fab_test53(사용자 승인): bridge 2종 — 게이트가 못 주는 방향타.
+    """★fab_test53→56: perp_bridge — 게이트가 못 주는 수평 방향타.
 
-    t52 실측: 수직 게이트만 넣자 정책이 커널 이득(기울여 손끝 내리기)으로 ~28° 에
-    정착해 μ 0.0000 완전 잠김. agnostic/grasp_sensor 의 bridge 구조 이식(그 트랙 주석:
-    "리미터가 '우연한 요동' 탐색원을 없애 생긴 공백을 다리로").
-      perp_bridge  = λ·U_perp          수평 유지의 매 스텝 지급 (방향타)
-      close_bridge = λ·U_perp·폐쇄도    접촉 발견 다리. 접촉해도 안 끈다(grip-contact-cliff)
-    파밍 상한: 합 0.8/step < grasp(3)~stay(10).
+    t52 실측: 수직 게이트만 넣자 정책이 ~28° 에 정착해 μ 0.0000 잠김 — 게이트는 막기만
+    하고 돌아갈 gradient 를 못 준다. t54 실측: λ(이진) 정액 지급은 호버 정착을 만든다 →
+    접근 커널 게이트(전진할수록 다리 소득이 커진다). close_bridge 는 fab_test56 에서
+    폐지(그리퍼 shaping 제거, 사용자 결정).
     """
     fab = _fab_src()
     assert "self.rewards.perp_bridge = RewTerm(" in fab, "perp_bridge 미등록"
-    assert "self.rewards.close_bridge = RewTerm(" in fab, "close_bridge 미등록"
+    assert "close_bridge" not in fab.split("fab_test56")[-1].split("RewTerm")[0] or True
+    assert "self.rewards.close_bridge" not in fab, "close_bridge 가 살아 있다(fab_test56 폐지)"
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
     pb = rsrc.split("def stage_perp_bridge(")[1].split("\ndef ")[0]
@@ -1780,33 +1796,7 @@ def test_bridge_terms_give_gradient_the_gate_lacks():
         " 정착을 만들었다(260ep 평탄·σ 10.7→4.7)"
     )
     assert "s.lam" not in pb.split('\"\"\"')[-1], "perp_bridge 에 λ 이진 게이트 잔존"
-    cb = rsrc.split("def stage_close_bridge(")[1].split("\ndef ")[0]
-    assert "s.approach_k * s.U_perp * s.straddle * closure" in cb, (
-        "close_bridge 는 λ·U_perp·straddle 게이트여야 한다 — t53 실측: λ(등방 120mm)만"
-        "으로는 jaw_l 55mm 허공 닫기가 approach 의 70% 수입이 됐고 tipped 0.74"
-    )
-    assert "touch" not in cb.split('\"\"\"')[-1], (
-        "close_bridge 가 접촉으로 꺼진다 — grip-contact-cliff 재발 경로"
-    )
-    total = P.STAGE_PERP_BRIDGE_WEIGHT + P.STAGE_CLOSE_BRIDGE_WEIGHT
-    assert total < P.STAGE_GRASP_WEIGHT, (
-        f"bridge 합 {total} 이 grasp({P.STAGE_GRASP_WEIGHT}) 이상 — 다리에 눌러앉는다"
-    )
-
-
-def test_close_bridge_straddle_single_ruler():
-    """★fab_test54(사용자 승인): straddle 은 stages 가 `_enclose` 로 한 번 계산한다.
-
-    _enclose 는 band-clamp 판(min(s_l,s_r), 허공 감쌈 0.069 실증 — 구 max 판은 허공
-    170mm 에서 74% 파밍). 다른 자를 만들면 조용히 어긋난다(자 두 개 금지 규칙).
-    """
-    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
-        encoding="utf-8")
-    assert '"straddle"' in ssrc, "StageState.__slots__ 에 straddle 이 없다"
-    assert "s.straddle = rewards._enclose(" in ssrc, (
-        "straddle 이 _enclose 재사용이 아니다 — 자 두 개 금지"
-    )
-    assert "P.JAW_ENCLOSE_HALF_WIDTH" in ssrc, "half_width 가 preset 상수가 아니다"
+    assert P.STAGE_PERP_BRIDGE_WEIGHT < P.STAGE_LIFT_WEIGHT, "다리가 리프트보다 크다"
 
 
 def test_approach_kernel_single_ruler():

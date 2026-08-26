@@ -1152,26 +1152,6 @@ def stage_perp_bridge(
     return s.approach_k * s.U_perp
 
 
-def stage_close_bridge(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
-) -> torch.Tensor:
-    """bridge② 폐쇄 다리 — `kernel(d) · U_perp · straddle · 폐쇄도` (fab_test55).
-
-    리미터가 "우연한 요동" 탐색원을 없애 접촉 발견이 어려워진 공백을 메운다
-    (agnostic close_bridge 이식). 근접+수평 상태에서 그리퍼를 닫는 진행 자체에 소액.
-    ★접촉해도 끄지 않는다([[grip-contact-cliff]]). 기울인 채 닫기는 U_perp 가 0 으로.
-    ★★straddle (fab_test54): t53 이 λ(등방 120 mm)만으로 열려 **허공 닫기**가
-      approach 의 70% 수입이 됐다(jaw_l 55 mm·contact 0.0008·tipped 0.74 — 닫힌
-      턱으로 전진해 컵을 침). 컵이 두 턱 **사이**여야만 지급 — "BASE—CUP—TCP" 강제.
-    """
-    s = _stage(env, jaw_cfg, sensor_names)
-    robot: Articulation = env.scene[jaw_cfg.name]
-    gid, _ = robot.find_joints(list(P.GRIPPER_JOINT_NAMES), preserve_order=True)
-    closure = (1.0 - robot.data.joint_pos[:, gid].mean(dim=-1)
-               / P.GRIPPER_OPEN_POS).clamp(0.0, 1.0)
-    return s.approach_k * s.U_perp * s.straddle * closure
-
-
 def stage_tip(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
 ) -> torch.Tensor:
@@ -1191,51 +1171,15 @@ def stage_tip(
     return (P.STAGE_TIP_PER_DEG * excess).clamp(max=P.STAGE_TIP_PENALTY_MAX) * (1.0 - s.nu)
 
 
-def stage_contact(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
-) -> torch.Tensor:
-    """② 접촉 — 무게이트, **파지 기하를 곱한다**: `닿은턱비율 × grasp_quality`.
-
-    ★★fab_test43 에서 기하 곱을 넣었다. approach 가 벌점이 되면 스텝당 값이 작아지는데
-      (정체점 −0.85 · 컵 앞 −0.1), 구 무게이트 `touch_frac` 은 **손끝 하나로 컵 옆구리를
-      누르기만 해도 +0.5** 라 제대로 자리잡고 안 닿은 것보다 네 배 나았다. 그리고 그
-      행동은 컵을 쓰러뜨린다. 실측 기하로 검산:
-          컵 옆구리(lateral 85.5 mm) grasp_quality 0.116 → 0.5 × 0.116 = **0.058**
-          제대로 감쌈(lateral 20 · along 13 mm) 1.00     → 1.0 × 1.00  = **1.00**
-      옆구리 찌르기가 17배 죽는다.
-    ★무게이트를 유지하는 이유(λ=1·μ=0 사각지대)는 그대로다. 다만 그 사각지대는 이제
-      거리 벌점이 s→46.9 mm 까지 **단조**로 이어져 이미 메워져 있다.
-    """
-    s = _stage(env, jaw_cfg, sensor_names)
-    # ★fab_test52: × U_perp — 기울인 접촉은 지급이 죽는다(30°에서 0 ← 15°에서 1).
-    #   사용자 규격 "lift 전까지 TCP z ⊥ world z". 게이트라 양수 흐름을 안 만든다.
-    return s.grasp_q * s.U_perp
-
-
-def stage_grasp(
-    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
-) -> torch.Tensor:
-    """③ 파지 — `μ · (파지기하 × 닿은턱비율)`.
-
-    ★사용자 규격 "가까이 가면 그리퍼 끝단을 **동시에** 닫기 시작". `μ` 가 그것이다 —
-      두 턱이 **모두** 접촉해야 열린다.
-    ★★품질에 **접촉을 곱한다.** 구 `cup_between_jaws`·`grip_closure_when_enclosed` 는
-      `enclose` 가 턱축 **투영**만 봐서 접촉 없이도 만점이었고, t38 이 그걸로
-      **170 mm 허공에서 closure 를 상한의 74%(1.85/2.50)** 까지 받았다. 그 구간
-      `contact_engage` 는 정확히 0 이었다. 같은 맹점에 네 번 속았다
-      (fab_test11 85.5 mm 에 0.824 / t32 195 mm 에 0.852 / t38 closure).
-      접촉을 곱하면 그 해킹이 **구조적으로 불가능**해진다.
-    """
-    s = _stage(env, jaw_cfg, sensor_names)
-    return s.mu * s.grasp_q
-
-
 def stage_lift(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
 ) -> torch.Tensor:
-    """④ 리프트 — `μ · U_tol · clamp(최저점상승 / 40 mm)`.
+    """④ 리프트 — `μ(held) · U_tol · clamp(최저점상승 / 40 mm)`.
 
-    ★★게이트가 **μ(접촉)** 이지 높이가 아니다. 논문 Fig. 3 이 Transporting 을
+    ★fab_test56(사용자 결정): μ = 거리(60mm)+수평 — 접촉 조건 폐지. 파지는 명시 보상
+      없이 "들려면 쥘 수밖에 없다"로 창발(원본 lift 레시피 철학). 거리 게이트가
+      쳐날리기(test3)를, lift_height(최저점)가 기울임 위조를 막는다.
+    ★★게이트가 **μ** 이지 높이가 아니다. 논문 Fig. 3 이 Transporting 을
       `μ·r_lift + ν·r_transporting` 로 쪼개 놓았고, 본문이 *"the lift reward ceases to
       accumulate"* 라고 못 박는다 — 높이는 **여는 하한이 아니라 끊는 상한**이다.
       우리 구 `_held` 는 높이가 하한이라 이 항이 열아홉 판 내내 0 이었다.

@@ -78,7 +78,7 @@ class StageState:
         "d_jaw_cup", "d_goal", "tilt_deg",  # 원시 측정값
         "touch_frac", "lift_h", "cup_speed", "xy_disp",
         "U_tol", "U_up", "H", "T", "S",     # 단계 진척량
-        "perp_q", "align_q", "grasp_q",
+        "perp_q", "align_q",
         "axis_tilt_deg", "U_perp",          # 접근축 수직 게이트 (fab_test52)
         "enter_s", "jaw_l", "height_h",     # gripper_base 프레임 3축 분해
         "straddle",                         # 양 턱이 컵 축을 사이에 두는 정도 (fab_test54)
@@ -178,7 +178,11 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     s.lam = (s.d_jaw_cup < P.STAGE_GATE_APPROACH_M).float()
     # ★fab_test52: μ 에 **수직 이진 조건** — 기울여 손끝만 대는 접촉(t51 의 25° 수법)
     #   으로는 파지 단계가 열리지 않는다. ν·ρ·grasp·lift·질량 커리큘럼이 자동 상속.
-    s.mu = (s.lam * (n_touch >= P.STAGE_GATE_CONTACT_N).float()
+    # ★fab_test56(사용자 결정): μ = **held(거리+수평)** — 접촉 조건 폐지. t55 실측:
+    #   접촉 트리거는 "첫 접촉 도박"(기대이득 0·전도종료 −V)이라 정책이 110mm 후퇴 정착.
+    #   거리 게이트(60mm)가 쳐날리기(test3: 배팅 중 TCP-컵 3044mm)를 막고,
+    #   수평 조건이 기울여 낚아채기(t51 25°)를 막는다. 파지는 리프트로 창발.
+    s.mu = (s.lam * (s.d_jaw_cup < P.STAGE_HELD_NEAR_M).float()
             * (s.axis_tilt_deg < P.STAGE_MU_PERP_MAX_DEG).float())
     s.nu = s.mu * (s.lift_h >= P.STAGE_GATE_LIFT_M).float()
     s.rho = s.nu * (s.d_goal < P.STAGE_GATE_TRANSFER_M).float()
@@ -200,17 +204,12 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     #   사다리 보상으로 스스로 찾는다). cup_pt(파지점)는 s/l/h 진단·순서 계약에만 남는다.
 
     # ── 단계 진척량 ──────────────────────────────────────────────────
-    # ★파지 품질은 **접촉을 곱한다** — 기하만으로는 0 이어야 한다. t38 이 기하 투영만
-    #   보는 `enclose` 로 **170 mm 허공에서 closure 를 상한의 74%** 까지 받았다.
-    # ★fab_test54: close_bridge 게이트 — t53 실측 jaw_l 55 mm(허용 ±12.75)에서
+    # ★fab_test54: straddle (fab_test56 부터 진단 전용) — t53 실측 jaw_l 55 mm(허용 ±12.75)에서
     #   허공 닫기가 approach 의 70% 수입이었다. 컵이 **두 턱 사이**여야만 닫기 지급.
     #   _enclose 는 band-clamp 판(허공 감쌈 0.069 실증) — 접촉 후에도 유지된다.
     s.straddle = rewards._enclose(
         env, P.JAW_ENCLOSE_HALF_WIDTH, P.JAW_PAD_OFFSET, jaw_cfg,
         SceneEntityCfg("object"))
-    s.grasp_q = rewards.grasp_quality(
-        env, P.GRASP_GATE_LATERAL_OK, P.GRASP_GATE_ALONG_OK,
-        P.JAW_PAD_OFFSET, jaw_cfg) * s.touch_frac
     # 리프트 진척 — 목표(4 cm)에서 포화. 논문의 "ceases to accumulate".
     s.H = (s.lift_h / P.STAGE_LIFT_REF_M).clamp(0.0, 1.0)
     s.T = torch.exp(-s.d_goal / P.STAGE_TRANSFER_STD_M)

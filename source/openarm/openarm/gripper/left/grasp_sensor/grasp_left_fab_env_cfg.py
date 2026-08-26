@@ -419,15 +419,11 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         # 전도 벌점 — 아래에서 `object_tipped` **종료를 제거**하고 이것으로 대체한다.
         self.rewards.tip = RewTerm(
             func=rewards.stage_tip, weight=P.STAGE_TIP_WEIGHT, params=_sa())
-        self.rewards.contact = RewTerm(
-            func=rewards.stage_contact, weight=P.STAGE_CONTACT_WEIGHT, params=_sa())
-        # ── bridge 2종 (fab_test53, 사용자 승인 — 근거는 preset STAGE_*_BRIDGE 주석) ──
+        # ★fab_test56(사용자 결정): contact·grasp·close_bridge **폐지** — 접촉 기반
+        #   단계는 "첫 접촉 도박"을 만든다(t55: 110mm 후퇴 정착). 사다리는
+        #   approach → perp_bridge → lift(held 거리+수평 게이트) → transfer → stay.
         self.rewards.perp_bridge = RewTerm(
             func=rewards.stage_perp_bridge, weight=P.STAGE_PERP_BRIDGE_WEIGHT, params=_sa())
-        self.rewards.close_bridge = RewTerm(
-            func=rewards.stage_close_bridge, weight=P.STAGE_CLOSE_BRIDGE_WEIGHT, params=_sa())
-        self.rewards.grasp = RewTerm(
-            func=rewards.stage_grasp, weight=P.STAGE_GRASP_WEIGHT, params=_sa())
         self.rewards.lift = RewTerm(
             func=rewards.stage_lift, weight=P.STAGE_LIFT_WEIGHT, params=_sa())
         self.rewards.transfer = RewTerm(
