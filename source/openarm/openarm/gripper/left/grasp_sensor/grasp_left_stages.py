@@ -79,6 +79,7 @@ class StageState:
         "touch_frac", "lift_h", "cup_speed", "xy_disp",
         "U_tol", "U_up", "H", "T", "S",     # 단계 진척량
         "perp_q", "align_q", "grasp_q",
+        "axis_tilt_deg", "U_perp",          # 접근축 수직 게이트 (fab_test52)
         "enter_s", "jaw_l", "height_h",     # gripper_base 프레임 3축 분해
     )
 
@@ -153,11 +154,25 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     delta = torch.einsum("nji,nj->ni", R_base, cup_pt - robot.data.body_pos_w[:, base_id, :])
     s.height_h, s.jaw_l, s.enter_s = delta[:, 0], delta[:, 1], delta[:, 2]
 
+    # ── 접근축 자세 (fab_test52: μ 트리거가 참조하므로 **트리거보다 먼저**) ──
+    # ★"TCP_+z 가 world_+z 와 **수직**이 되게 접근". 턱 body 의 z 축이 접근축이고
+    #   (`approach_opposed` 도 같은 열을 쓴다), 그 world-z 성분이 0 이어야 한다.
+    #   컵이 서 있으면 이 조건은 "원통을 옆에서 문다"와 같아진다(CLAUDE.md 규약 90°).
+    approach_axis = matrix_from_quat(
+        robot.data.body_quat_w[:, jaw_cfg.body_ids[0], :])[:, :, 2]
+    s.perp_q = (1.0 - approach_axis[:, 2].abs()).clamp(0.0, 1.0) ** P.STAGE_PERP_EXPONENT
+    # 접근축이 수평에서 벗어난 각 [deg] + 연속 게이트 (fab_test52)
+    s.axis_tilt_deg = torch.rad2deg(torch.asin(approach_axis[:, 2].abs().clamp(max=1.0)))
+    s.U_perp = smoothstep(s.axis_tilt_deg, *P.STAGE_PERP_GATE_DEG)
+
     # ── 트리거 (논문 식 3~6). **이진**이고 매 스텝 재평가한다 ─────────
     # ⚠ 래치가 아니다. 이 트랙이 과거에 제거한 것은 "한 번 열리면 유지"하는 래치였고,
     #   이건 순간 술어라 성질이 다르다(자매 트랙 rewards_tip_cyl 주석과 같은 판단).
     s.lam = (s.d_jaw_cup < P.STAGE_GATE_APPROACH_M).float()
-    s.mu = s.lam * (n_touch >= P.STAGE_GATE_CONTACT_N).float()
+    # ★fab_test52: μ 에 **수직 이진 조건** — 기울여 손끝만 대는 접촉(t51 의 25° 수법)
+    #   으로는 파지 단계가 열리지 않는다. ν·ρ·grasp·lift·질량 커리큘럼이 자동 상속.
+    s.mu = (s.lam * (n_touch >= P.STAGE_GATE_CONTACT_N).float()
+            * (s.axis_tilt_deg < P.STAGE_MU_PERP_MAX_DEG).float())
     s.nu = s.mu * (s.lift_h >= P.STAGE_GATE_LIFT_M).float()
     s.rho = s.nu * (s.d_goal < P.STAGE_GATE_TRANSFER_M).float()
 
@@ -167,12 +182,6 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     s.U_tol = smoothstep(s.tilt_deg, *P.STAGE_TILT_TOLERANCE_DEG)
     s.U_up = smoothstep(s.tilt_deg, *P.STAGE_UPRIGHT_GATE_DEG)
 
-    # ★"TCP_+z 가 world_+z 와 **수직**이 되게 접근". 턱 body 의 z 축이 접근축이고
-    #   (`approach_opposed` 도 같은 열을 쓴다), 그 world-z 성분이 0 이어야 한다.
-    #   컵이 서 있으면 이 조건은 "원통을 옆에서 문다"와 같아진다(CLAUDE.md 규약 90°).
-    approach_axis = matrix_from_quat(
-        robot.data.body_quat_w[:, jaw_cfg.body_ids[0], :])[:, :, 2]
-    s.perp_q = (1.0 - approach_axis[:, 2].abs()).clamp(0.0, 1.0) ** P.STAGE_PERP_EXPONENT
 
     # 접근축이 컵을 겨누는가 (1자유도). floor 를 둬 최악에서도 approach 가 안 죽는다.
     jaw_mid = rewards._jaw_mid_local(env, P.JAW_PAD_OFFSET, jaw_cfg)

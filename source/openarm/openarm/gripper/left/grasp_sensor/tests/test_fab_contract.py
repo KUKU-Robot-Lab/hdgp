@@ -57,7 +57,8 @@ def test_fabric_rotation_uses_reference_euler_zyx_convention():
     # 중심은 로봇별(우리 기준 파지 자세), 반폭은 원본 실사용값 45°
     import math as _m
     assert len(P.PALM_EULER_ZYX_CENTER) == 3
-    assert abs(P.PALM_MAX_POSE_ANGLE - _m.radians(45.0)) < 1e-9, (
+    # ★fab_test52: ±45° → ±20° (수직 유지 요구의 기구적 뒷받침 — preset 주석 참조)
+    assert abs(P.PALM_MAX_POSE_ANGLE - _m.radians(20.0)) < 1e-9, (
         "원본 kuka 실사용 max_pose_angle 은 45° 다(env.max_pose_angle=45.0)"
     )
     # 중심이 기준 quat 과 같은 자세를 가리키는지 — 규약이 어긋나면 홈 자세가 통째로 틀어진다
@@ -1536,7 +1537,9 @@ def test_stage_triggers_are_nested_and_match_the_paper():
     """
     ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
         encoding="utf-8")
-    assert "s.mu = s.lam *" in ssrc, "μ 가 λ 를 포함하지 않는다"
+    assert "s.mu = (s.lam *" in ssrc or "s.mu = s.lam *" in ssrc, "μ 가 λ 를 포함하지 않는다"
+    # ★fab_test52: μ 에 수직 이진 조건 — 기울인 손끝 접촉(t51 25° 수법)이 파지로 안 열린다
+    assert "s.axis_tilt_deg < P.STAGE_MU_PERP_MAX_DEG" in ssrc, "μ 수직 게이트가 없다"
     assert "s.nu = s.mu *" in ssrc, "ν 가 μ 를 포함하지 않는다"
     assert "s.rho = s.nu *" in ssrc, "ρ 가 ν 를 포함하지 않는다"
     assert P.STAGE_GATE_CONTACT_N == 2.0, "2지 그리퍼는 양 턱 동시 접촉이 μ 다"
@@ -1729,3 +1732,22 @@ def test_euler_rate_limiter():
     body = asrc[asrc.index("def process_actions"):asrc.index("def apply_actions")]
     assert body.index("d_euler") < body.index("self._cmd_primed[:] = True")
 
+
+
+def test_ladder_is_perp_gated_until_lift():
+    """★fab_test52(사용자 결정): lift 전까지 TCP z ⊥ world z 를 **사다리 게이트**로 강제.
+
+    t51 실측: 보상에서 자세를 빼자 정책이 ~25° 기울여 손끝을 컵에 대는 것으로 μ 0.37
+    을 채웠다(perp_q 0.86→0.32). 게이트는 t42 의 곱셈 파밍과 다르다 — 양수 흐름을
+    만들지 않고 막기만 한다. approach 커널은 순수 거리를 유지한다(게이트 금지).
+    """
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    cbody = rsrc.split("def stage_contact(")[1].split("\ndef ")[0]
+    assert "s.grasp_q * s.U_perp" in cbody, "contact 에 수직 게이트가 없다"
+    abody = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
+    assert "U_perp" not in abody.split('\"\"\"')[-1], (
+        "approach 커널에 게이트가 곱해졌다 — 커널은 순수 거리여야 한다"
+    )
+    assert P.STAGE_MU_PERP_MAX_DEG <= 25.0, "μ 수직 조건이 너무 느슨하다(t51 수법이 25°)"
+    assert P.STAGE_PERP_GATE_DEG[0] > P.STAGE_PERP_GATE_DEG[1], "smoothstep 방향이 뒤집혔다"

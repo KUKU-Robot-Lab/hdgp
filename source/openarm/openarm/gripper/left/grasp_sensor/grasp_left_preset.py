@@ -835,7 +835,11 @@ PALM_REF_QUAT_WXYZ = (0.07900154923557093, -0.7797152903667677, -0.1100021571634
 #     리미터(2.9°/step)가 ~3 스텝에 걷는 거리라 무해. 재센터 자세의 fabric 수렴은
 #     기동 전 스모크로 확인함.
 PALM_EULER_ZYX_CENTER = (0.317093862, -1.4835298641951802, 3.094591725)   # rad (ez, ey, ex)
-PALM_MAX_POSE_ANGLE = math.radians(45.0)   # kuka 실사용값(env.max_pose_angle=45.0)
+# ★fab_test52: ±45° → **±20°** (사용자 결정의 기구적 뒷받침). 접근·파지·리프트 전
+#   구간에서 수직 유지가 요구되므로 큰 기울임 자세는 쓸 일이 없고, 회전 리미터
+#   (2.9°/step) 하에서 ±45° 는 잘못 기운 자세에서 돌아오는 데만 30스텝을 쓴다.
+#   yaw(조준)·미세 pitch 는 ±20° 로 충분하다. (구 kuka 실사용값 45.0)
+PALM_MAX_POSE_ANGLE = math.radians(20.0)
 PALM_ROT_MAX_RAD = math.radians(30.0)   # ★구 축각 규약 잔재 — 미사용
 # ---------------------------------------------------------------------------
 # 중력 처짐 보상 (08.23 사용자 지시)
@@ -1378,6 +1382,15 @@ STAGE_TILT_TOLERANCE_DEG = (25.0, 15.0)   # U_tol: 25°에서 0 → 15°에서 1
 STAGE_UPRIGHT_GATE_DEG = (15.0, 5.0)      # U_up : 15°에서 0 → 5°에서 1 (stay)
 # ★"TCP_+z 가 world_+z 와 수직" — 접근축의 world-z 성분이 0 이어야 한다.
 STAGE_PERP_EXPONENT = 2.0
+# ★★fab_test52(사용자 결정): **수직을 사다리의 게이트로** — lift 성립 전까지 TCP z ⊥
+#   world z 가 유지되어야 contact/grasp/lift 가 열린다. t51 실측: 보상에서 자세를 빼자
+#   정책이 ~25° 기울여 손끝을 컵에 대는 걸로 μ 0.37 을 채웠다(perp_q 0.86→0.32).
+#   게이트는 t42 의 곱셈 파밍과 다르다 — 양수 흐름을 만들지 않고 **막기만** 한다.
+#   · contact 항에는 연속 게이트 U_perp = smoothstep(축기울기, 30°→15°)
+#   · μ 트리거에는 이진 조건 축기울기 < 20° (ν·ρ·grasp·lift 가 자동 상속 —
+#     "lift 도 world+z 로 올린다"는 요구와 정합)
+STAGE_PERP_GATE_DEG = (30.0, 15.0)   # U_perp smoothstep (contact 용)
+STAGE_MU_PERP_MAX_DEG = 20.0         # μ 트리거 이진 조건
 # ★구 `STAGE_ALIGN_FLOOR`·`STAGE_ORIENT_FLOOR` 제거. 곱셈 shaping 의 floor 였는데
 #   fab_test43 에서 approach 가 덧셈 벌점이 되어 floor 개념 자체가 없어졌다.
 #   그 둘의 동적 범위(0.15→1.0 = 6.7배)가 거리 범위(2.4배)를 3배 눌러 t42 를 망쳤다.

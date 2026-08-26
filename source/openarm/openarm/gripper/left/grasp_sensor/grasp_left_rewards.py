@@ -1168,7 +1168,10 @@ def stage_contact(
     ★무게이트를 유지하는 이유(λ=1·μ=0 사각지대)는 그대로다. 다만 그 사각지대는 이제
       거리 벌점이 s→46.9 mm 까지 **단조**로 이어져 이미 메워져 있다.
     """
-    return _stage(env, jaw_cfg, sensor_names).grasp_q
+    s = _stage(env, jaw_cfg, sensor_names)
+    # ★fab_test52: × U_perp — 기울인 접촉은 지급이 죽는다(30°에서 0 ← 15°에서 1).
+    #   사용자 규격 "lift 전까지 TCP z ⊥ world z". 게이트라 양수 흐름을 안 만든다.
+    return s.grasp_q * s.U_perp
 
 
 def stage_grasp(
