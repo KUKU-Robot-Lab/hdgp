@@ -1,31 +1,29 @@
-# gripper/left/grasp_sensor (fab) — **MLP 대조군**. kuka 설정에서 **RNN 만** 뺐다.
+# gripper/left/grasp_sensor (fab) — **MLP 판** (fab_test44, 사용자 결정).
 #
-# 왜: t30 이 ep464 까지 `lifting_object` 정확히 0 이고 best 보상이 ep100 이후 갱신되지
-#   않았다. t16(역대 최고)과 갈린 축이 여럿인데, 그 중 가장 큰 것이 **학습기**다 —
-#   t16 은 MLP[256,128,64]·대칭 critic 이었고 t30 은 LSTM 1024 + central value LSTM 2048 이다.
-#   이 저장소에 "LSTM 은 ep3000~4000 후 상승 시작이 정상"이라는 관찰이 이미 있다(grasp-v2).
-#   ⚠ 다만 그건 **다른 태스크의 관찰**이고, 이 런의 정체가 그 때문이라는 것은 아직
-#     **가설**이다. reach 가 평탄·감소이고 best 가 ep100 에 멈춘 것은 "느린 시작"의
-#     전형적 서명은 아니다. 그래서 단일 변수로 가른다.
+# ★★fab_test43 이 가른 것: 학습기가 최적화하는 목표가 보상이 아니라 **critic 편향**이었다.
+#     shaped = 0.01×보상 + γ·V(s_끝)·절단
+#   에피소드 300스텝의 과제 신호(0.04~0.06)보다 절단 한 스텝의 γ·V(0.10~0.22)가 2~6배
+#   컸고, 그 V 는 관측 리턴(−0.017)과 부호가 반대(+0.20)였다. `normalize_advantage` 라
+#   순위만 남는데 그 순위를 critic 의견이 결정 → 정책이 critic 지형을 올랐다. 실측:
+#   shaped −0.21→+0.21 상승하는 동안 raw −2.5→−5.0 하락, 벌점상 2.2배 좋은 상태를
+#   버리고 박스 구석으로 이동. **학습은 됐다 — 목표가 틀렸다.**
 #
-# 이 파일은 원본에서 `rnn:` 블록 둘(actor·central value)만 제거한 것이다.
-# 나머지(감마 0.998 · lr 3e-4 linear · horizon 16 · minibatch 16384 · mini_epochs 4 ·
-# bounds_loss_coef 0.005 · 비대칭 critic · clip 5.0/1.0)는 **전부 kuka 그대로**다.
-# 사용자 판단: "다른 값들은 KUKA 버전이 옳다".
+# 수정 두 가지(같은 가설의 두 팔):
+#   ① `scale_value` 0.01 → **1.0** — 과제 신호를 critic 초기 편향(O(0.1~1))보다 크게.
+#   ② RNN 제거 — V 가 그렇게 틀린 이유가 **LSTM 2048 critic** 이었다(스텝당 2e-4 짜리
+#     신호를 맞추다 c_loss 0.005 로 조기 확신). 이 태스크는 완전 관측이라 기억이 필요
+#     없고, 이 트랙 역대 최고(t16)도 MLP 였다.
 #
-# 원본(LSTM 판): rl_games_ppo_fab_cfg.yaml
+# 사용자 결정(fab_test44): "CRITIC 은 MLP · ACTOR 는 DexPour 와 같게"
+#   actor  = DexPour Table I 그대로: FC **512·512·256·128** ELU, RNN 없음
+#   critic = central value MLP [1024, 512] (kuka 비대칭 critic 구조 유지, LSTM 만 제거)
 #
-# 사용자 지시: "REWARD 구성 외에는 모든 세팅을 KUKA로 맞춤".
-# 원본: dextrah_lab/tasks/dextrah_kuka_allegro/agents/rl_games_ppo_lstm_cfg.yaml
-#
-# 구 설정은 IsaacLab `Isaac-Lift-Cube-OpenArm-v0` 사본(MLP [256,128,64] · 대칭 critic ·
-# gamma 0.99 · lr 1e-4 adaptive)이었다. 원본과 다음이 갈렸다:
-#   · actor LSTM 1024 부재 · **central value(critic LSTM 2048) 부재**
-#   · gamma 0.998→0.99 · lr 3e-4 linear→1e-4 adaptive · horizon 16→24 · mini_epochs 4→8
-#   · bounds_loss_coef 0.005→0.001 · bound_loss_type regularization 미지정
-#   · clip_observations 5.0→100.0 · clip_actions 1.0→100.0
-# ⚠ LSTM·비대칭 critic 도입으로 체크포인트 모양이 바뀐다 — **fresh 학습 전용**.
-# ⚠ max_epochs 만 원본(20000)과 다르게 둔다. 이유는 config 주석 참조.
+# 학습기 수정 이력은 전부 LSTM 판(rl_games_ppo_fab_cfg.yaml)에서 가져왔다:
+#   value_bootstrap True(t31) · gamma 0.99(t31) · lr adaptive(t36) ·
+#   bound_loss_type bound(t36 — 'regularization' 은 rl_games 의 죽은 분기다)
+# ⚠ 구판 이 파일은 t36/t31 **이전**에 만든 것이라 그 버그 4개가 살아 있었다. 재작성함.
+# ⚠ DexPour Table I 의 나머지(entropy 0.005 · lr 5e-4 · minibatch 4개)는 **아직 이식
+#   안 함** — 이번 판의 변수는 아키텍처와 scale_value 뿐이다(한 번에 한 가설).
 
 params:
   seed: 42
@@ -54,14 +52,16 @@ params:
           name: const_initializer
           val: 0
         fixed_sigma: True
+    # ★DexPour Table I: FC 512·512·256·128 · ELU · RNN 없음
     mlp:
-      units: [512, 512]
+      units: [512, 512, 256, 128]
       activation: elu
       d2rl: False
       initializer:
         name: default
       regularizer:
         name: None
+
   load_checkpoint: False
   load_path: ''
 
@@ -75,21 +75,20 @@ params:
     mixed_precision: False
     normalize_input: True
     normalize_value: True
-    value_bootstrap: False
+    value_bootstrap: True   # ★t31 — 절단(γ·V) 보정. 실패 3종이 truncated 라 필수
     num_actors: -1
     reward_shaper:
-      scale_value: 0.01
+      # ★★fab_test44 핵심 수정. 0.01 은 과제 신호를 critic 초기 편향의 1/100 로 눌러
+      #   순위 결정권을 critic 에 넘겼다(t42 실측 2.8~8.4배, t43 실측 1.7~5.6배 지배).
+      scale_value: 1.0
     normalize_advantage: True
-    gamma: 0.998
+    gamma: 0.99             # ★t31 — 0.998 은 300스텝 절단 왜곡을 3.7배로 키운다
     tau: 0.95
     learning_rate: 3e-4
-    lr_schedule: linear
+    lr_schedule: adaptive   # ★t36 — linear 는 a_loss 를 42배 죽였다
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000
-    # ⚠ 원본은 20000 이다. 우리는 GPU 한 대에 1024 env 라 원본(대규모 분산)과 처리량이
-    #   다르고, 이 트랙의 붕괴 패턴(정점 후 σ 재팽창)을 정점 근처에서 끊어야 한다.
-    #   ★원본값이 아닌 유일한 하이퍼파라미터다.
     max_epochs: 4000
     save_best_after: 100
     save_frequency: 200
@@ -103,10 +102,8 @@ params:
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
-    seq_length: 16
-    bound_loss_type: regularization
+    bound_loss_type: bound  # ★t36 — 'regularization' 은 어느 분기와도 안 맞아 통째로 0
     bounds_loss_coef: 0.005
-    zero_rnn_on_done: True
 
     central_value_config:
       minibatch_size: 16384
@@ -120,6 +117,8 @@ params:
       network:
         name: actor_critic
         central_value: True
+        # ★사용자 결정: critic 은 MLP. LSTM 2048 이 t43 의 틀린 V(+0.20 vs 정답 −0.017)
+        #   의 진원지였다.
         mlp:
           units: [1024, 512]
           activation: elu
@@ -128,6 +127,7 @@ params:
             name: default
           regularizer:
             name: None
+
     player:
       deterministic: True
       games_num: 100000

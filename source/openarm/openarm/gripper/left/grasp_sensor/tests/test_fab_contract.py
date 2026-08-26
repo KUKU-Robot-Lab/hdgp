@@ -954,11 +954,12 @@ def test_failure_dones_are_truncations_under_penalty_reward():
     assert P.STAGE_APPROACH_WEIGHT < 0.0, (
         "truncated 규약을 쓰는데 approach 가 벌점이 아니다 — 둘은 부호로 묶여 있다"
     )
-    agent = (Path(__file__).resolve().parents[1] / "config" / "agents"
-             / "rl_games_ppo_fab_cfg.yaml").read_text(encoding="utf-8")
-    assert "value_bootstrap: True" in agent, (
-        "value_bootstrap 이 꺼져 있으면 truncated 가 terminated 와 같아진다"
-    )
+    for yaml_name in ("rl_games_ppo_fab_cfg.yaml", "rl_games_ppo_fab_mlp_cfg.yaml"):
+        agent = (Path(__file__).resolve().parents[1] / "config" / "agents"
+                 / yaml_name).read_text(encoding="utf-8")
+        assert "value_bootstrap: True" in agent, (
+            f"{yaml_name}: value_bootstrap 이 꺼져 있으면 truncated 가 terminated 와 같아진다"
+        )
     assert "self.events.arm_spawn_noise = EventTermCfg(" in fab_src, "리셋 관절 노이즈가 없다"
 
 
