@@ -1270,11 +1270,16 @@ class GraspSensorEnv(DirectRLEnv):
         #   한 번도 안 올랐다(lstm_test5~7 전부 difficulty_mean 0.0000 고착 = 스폰반경
         #   0.02m 최저 난이도만 시도). 승급은 **리프트 성공**으로 완화하고, 위치까지
         #   포함한 엄격 판정은 task/goal_reached 로 계속 로깅한다.
+        # ★코리더 무위반 요구(08.26): 위반 리프트로도 승급하면 난이도가 정책 정밀도보다
+        #   빨리 올라 코리더가 조여지고, latch 몰수율이 65% 까지 치솟아 ν gradient 가
+        #   죽는 교착이 실측됨(corridor_v2_s42 ep1864→3389: difficulty 0.6→8.4,
+        #   latch 0.11→0.65, gate/lift 0.50→0.00). 깨끗한 리프트만 승급으로 센다.
         if self._tip_cyl or self._synergy:
             self._lift_success_now = (
                 (obj_pos[:, 2] - self.object_spawn_pos[:, 2] >= 0.05)
                 & (env_frac >= 0.5)
                 & gate
+                & ~self._corridor_latch
             )
         else:
             self._lift_success_now = self._goal_reached_now
