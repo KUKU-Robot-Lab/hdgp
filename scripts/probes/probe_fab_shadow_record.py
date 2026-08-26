@@ -27,6 +27,7 @@
 """
 
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -96,6 +97,58 @@ from openarm.gripper.left.grasp_sensor import grasp_left_preset as P   # noqa: E
 from run_cfg_restore import restore_run_cfg_if_available         # noqa: E402
 
 
+def _dump_policy_input(player, obs) -> None:
+    """정책에 들어가기 **직전** 값을 본다. obs 가 유한해도 정규화가 폭발할 수 있다.
+
+    ★`running_var` 가 거의 0 인 채널(=학습 중 사실상 상수였던 obs)이 있으면
+      `(x-mean)/sqrt(var+eps)` 가 그 채널을 수천 배로 키운다. 학습 분포 안에서는
+      안 보이다가 재생에서 터진다.
+    """
+    model = player.model
+    print(f"[probe] obs absmax={obs.abs().max():.4g} finite={bool(torch.isfinite(obs).all())}")
+    try:
+        z = model.norm_obs(obs)
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"[probe] norm_obs 실패: {type(exc).__name__}: {exc}")
+        return
+    print(f"[probe] 정규화 obs absmax={z.abs().max():.4g} "
+          f"finite={bool(torch.isfinite(z).all())}")
+    if not torch.isfinite(z).all():
+        bad = torch.nonzero(~torch.isfinite(z).all(dim=0)).reshape(-1)
+        print(f"[probe]   깨진 obs 인덱스: {bad.tolist()[:20]}")
+    rms = getattr(model, "running_mean_std", None)
+    if rms is not None and hasattr(rms, "running_var"):
+        var = rms.running_var.reshape(-1)
+        order = torch.argsort(var)[:6]
+        print("[probe] 분산이 가장 작은 obs 채널 (상수에 가까움):")
+        for i in order.tolist():
+            print(f"[probe]   idx {i:3d}  var={float(var[i]):.3e}  "
+                  f"증폭≈{1.0/float((var[i]+1e-5).sqrt()):.1f}배  "
+                  f"정규화값 absmax={float(z[:, i].abs().max()):.4g}")
+
+
+def nonfinite_obs_terms(env, group: str = "policy") -> list[str]:
+    """유한하지 않은 obs 항의 이름·위치. **어디가 깨졌는지**를 말해야 고칠 수 있다.
+
+    NaN 이 정책에 들어가면 mu/logstd 가 NaN 이 되고 `torch.normal` 이
+    "std >= 0.0" 로 죽는다 — sigma 가 음수라는 뜻이 아니라 **NaN 이라는 뜻**이다
+    (모델은 exp(logstd) 를 쓰므로 음수가 나올 수 없다). 실제로 이 메시지에 속았다.
+    """
+    buf = env.obs_buf[group] if isinstance(env.obs_buf, dict) else env.obs_buf
+    mgr = env.observation_manager
+    terms = list(mgr.active_terms[group])
+    dims = [int(np.prod(d)) for d in mgr.group_obs_term_dim[group]]
+    bad, start = [], 0
+    for name, width in zip(terms, dims):
+        chunk = buf[:, start:start + width]
+        mask = ~torch.isfinite(chunk)
+        if bool(mask.any()):
+            envs = torch.nonzero(mask.any(dim=1)).reshape(-1).tolist()
+            bad.append(f"{name}[{start}:{start+width}] env={envs[:6]}")
+        start += width
+    return bad
+
+
 def obs_term_slice(env, name: str, group: str = "policy"):
     """이름으로 obs 항의 구간을 찾는다.
 
@@ -139,7 +192,18 @@ def build_policy(checkpoint: Path, agent_cfg: dict, env):
     from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 
     device = agent_cfg["params"]["config"]["device"]
-    wrapped = RlGamesVecEnvWrapper(env, device, np.inf, np.inf, None, True)
+    # ★★clip 값을 **런의 agent.yaml 에서** 읽는다. 하드코딩 금지.
+    #   `clip_actions` 는 래퍼의 action_space 를 Box(-c, +c) 로 만들고, rl_games 의
+    #   `get_action` 은 마지막에 `rescale_actions(actions_low, actions_high, ...)` 를 건다.
+    #   c=inf 면 그 식이 `-inf + inf*x` 가 되어 **모든 액션이 NaN** 이 된다 — 그런데 그
+    #   NaN 은 `torch.normal` 의 "std >= 0.0" 이나 "정책이 이상하다"로 나타나서 원인을
+    #   완전히 다른 데서 찾게 만든다. 실제로 그 길로 갔다.
+    #   fab_test42 는 clip_observations 5.0 / clip_actions 1.0 이다. play.py 와 같은 규약.
+    env_cfg_rl = agent_cfg["params"].get("env", {}) or {}
+    clip_obs = float(env_cfg_rl.get("clip_observations", math.inf))
+    clip_actions = float(env_cfg_rl.get("clip_actions", math.inf))
+    print(f"[probe] clip_observations={clip_obs} · clip_actions={clip_actions} (런 설정)")
+    wrapped = RlGamesVecEnvWrapper(env, device, clip_obs, clip_actions, None, True)
     vecenv_name = "IsaacRlgWrapper"
     from rl_games.common import env_configurations, vecenv
     vecenv.register(vecenv_name, lambda name, num, **kw: RlGamesGpuEnv(name, num, **kw))
@@ -152,9 +216,29 @@ def build_policy(checkpoint: Path, agent_cfg: dict, env):
     runner.load(agent_cfg)
     player = runner.create_player()
     player.restore(str(checkpoint))
-    player.reset()
     if hasattr(player, "has_batch_dimension"):
         player.has_batch_dimension = True
+    # ★순환 정책은 hidden state 를 **env 수에 맞춰** 만들어야 한다.
+    #   `BasePlayer.batch_size` 기본값이 1 이고 `init_rnn()` 이 그 값으로 states 를
+    #   할당한다. rl_games 의 `run()` 은 시작할 때 이걸 채우지만 우리는 `get_action` 을
+    #   직접 부르므로 아무도 안 채운다 → num_envs>1 에서
+    #   "Expected hidden[0] size (1, N, H), got [1, 1, H]" 로 죽는다. 실제로 당했다.
+    player.batch_size = env.num_envs
+    player.reset()          # is_rnn 이면 여기서 init_rnn() 이 돈다
+
+    # ★복원 자기점검. 체크포인트가 멀쩡해도 **모델에 올라가지 않았으면** 결과는 NaN 이고,
+    #   그 NaN 은 정책 출력에서야 보인다. 거기서 보면 원인을 못 짚는다.
+    bad = [n for n, t in player.model.state_dict().items()
+           if t.is_floating_point() and not bool(torch.isfinite(t).all())]
+    if bad:
+        raise SystemExit(f"[probe] 복원 뒤 모델 텐서가 유한하지 않다: {bad[:8]}")
+    print(f"[probe] 복원 OK — 파라미터 {len(player.model.state_dict())} 개 전부 유한, "
+          f"is_rnn={getattr(player, 'is_rnn', False)}, "
+          f"normalize_input={getattr(player, 'normalize_input', '?')}, "
+          f"batch_size={player.batch_size}")
+    st = getattr(player, "states", None)
+    print(f"[probe] rnn states = "
+          + (", ".join(str(tuple(x.shape)) for x in st) if st else "None"))
     return player, wrapped
 
 
@@ -266,9 +350,24 @@ def main() -> int:
 
     obs = policy_obs(wrapped.reset())
     place_cup()
+    bad0 = nonfinite_obs_terms(env)
+    if bad0:
+        raise SystemExit(f"[probe] 리셋 직후부터 obs 가 깨져 있다: {bad0}")
+
     with torch.inference_mode():
         for step in range(args.steps):
+            if not bool(torch.isfinite(obs).all()):
+                raise SystemExit(
+                    f"[probe] step {step}: obs 에 유한하지 않은 값 — "
+                    f"{nonfinite_obs_terms(env)}\n"
+                    "  fabric 이 발산했을 가능성이 크다(metric 역행렬). "
+                    "정책 NaN 은 결과이지 원인이 아니다."
+                )
+            if step == 0:
+                _dump_policy_input(player, obs)
             action = player.get_action(obs, is_deterministic=True)
+            if not bool(torch.isfinite(action).all()):
+                raise SystemExit(f"[probe] step {step}: 정책이 유한하지 않은 액션을 냈다")
             raw_obs, reward, dones, _ = wrapped.step(action)
             reset_rnn_states(player, dones)
             if cup_pose is not None and bool(dones.any()):
