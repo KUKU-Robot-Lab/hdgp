@@ -399,10 +399,9 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #     해당하고, 이송·정지는 실제로 들린 뒤에만 의미가 있다.
         self.rewards.lifting_object.func = rewards.object_is_held_and_lifted
         self.rewards.lifting_object.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
-        self.rewards.lifting_object.params["sensor_names"] = tuple(
-            f"contact_{b}" for b in P.GRIPPER_FINGER_BODIES
-        )
-        self.rewards.lifting_object.params["force_threshold"] = P.CONTACT_FORCE_THRESHOLD
+        # ⚠ `sensor_names` 는 **여기서 배선하지 않는다.** 이 부모는 접촉 센서가 없는
+        #   관절공간 태스크(t16 계보 positive control)도 쓰고, 그쪽에서 KeyError 로 죽는다.
+        #   fab 태스크는 이 항 자체를 끄고 `stage_lift`(접촉 게이트)를 쓴다.
         for _term in (
             self.rewards.object_goal_tracking,
             self.rewards.object_goal_tracking_fine_grained,

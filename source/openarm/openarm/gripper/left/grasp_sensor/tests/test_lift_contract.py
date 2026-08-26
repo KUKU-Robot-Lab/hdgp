@@ -337,13 +337,25 @@ def test_home_pose_keeps_action_range_slack_from_joint_limits():
             limits[name] = (float(lim.get("lower", "0")), float(lim.get("upper", "0")))
 
     action_half_range = 0.5          # JointPositionActionCfg(scale=0.5) 의 액션 ±1
+
+    # ★★fab_test42 기록된 예외. 사용자가 홈을 책상 위로 올리면서 `l_aj_1 = +0.9` 를 지정했고,
+    #   상한 1.3963 대비 여유가 **0.496** 으로 기준에 **3.7 mrad** 못 미친다.
+    #   허용하는 근거 두 가지:
+    #     ⑴ 지금 학습하는 fab 태스크는 **관절 델타 액션을 쓰지 않는다**(fabric 팜 6D).
+    #        이 기준은 관절공간 태스크(t16 계보)의 것이다.
+    #     ⑵ 잘리는 양이 액션 반범위의 **0.7%** 다.
+    #   ⚠ 예외를 **값과 함께** 못 박는다 — 홈이 더 움직이면 이 테스트가 다시 터져서
+    #     재검토를 강제한다(조용한 완화가 아니다).
+    ALLOWED = {"l_aj_1": 0.49}       # 관절: 허용 최소 여유
+
     tight = []
     for name, value in P.LEFT_ARM_HOME_JOINT_POS.items():
         lo, hi = limits[name]
         slack = min(value - lo, hi - value)
-        if slack < action_half_range:
-            tight.append(f"{name}={value:+.4f} 여유 {slack:.3f}")
-    assert not tight, f"한계 여유가 {action_half_range} rad 미만인 관절: {tight}"
+        floor = ALLOWED.get(name, action_half_range)
+        if slack < floor:
+            tight.append(f"{name}={value:+.4f} 여유 {slack:.3f} (하한 {floor})")
+    assert not tight, f"한계 여유 부족: {tight}"
 
 
 def test_left_arm_velocity_limit_matches_the_reference():
@@ -883,31 +895,37 @@ def test_relative_ik_seeds_from_previous_target_and_caps_windup_by_effort():
 def test_lift_reward_is_gated_by_contact_not_by_height():
     """★★리프트 보상의 게이트는 **접촉**이어야 한다 — 높이가 아니라.
 
-    DexPour(IROS 2025) Fig. 3 이 `μ·r_lift` 로 쓴다. `μ` 는 전 손가락 접촉이고 `ν`(높이)는
-    `r_transporting` 만 연다. 본문:
-        *"Once the cup reaches a certain height threshold, the lift reward ceases to
-          accumulate"* — 높이는 보상을 **여는 하한**이 아니라 **끊는 상한**이다.
+    논문 Fig.3 이 `μ·r_lift` 로 쓰고 본문이 못 박는다: *"Once the cup reaches a certain
+    height threshold, the lift reward **ceases to accumulate**"* → 높이는 **여는 하한이
+    아니라 끊는 상한**이다. 구 `_held` 는 높이가 하한이라 t22~t40 열아홉 판 내내 0 이었다.
 
-    우리는 정반대였고(`_held` 안의 `lifted` 가 하한), t22~t38 열일곱 판 내내 이 항이 0 이었다:
-        t38 최종 `lifting_object` **0.00005** vs `contact_engage` **1.774**(양 턱 동시 35%)
-    논문 Table II **Config. 4**(리프트/이송 보상 제거)가 우리와 같은 지표를 낸다 —
-    η_ft 0% · P_grasp 0% · *"never discovers a stable lifting motion"*.
-
-    ★접촉 게이트는 옛 "쳐 날리기"(test3: 리프트 판정 중 TCP–컵 3044 mm)도 막는다 —
-      튕겨 날아간 컵은 접촉이 끊겨 `contact_frac` 이 0 이다. `near` AND 보다 강하다.
+    ★fab_test41 이후 fab 태스크의 리프트 항은 `stage_lift` 다. `object_is_held_and_lifted`
+      는 **관절공간 태스크(t16 계보 positive control)** 가 계속 쓰는 항이고, 그쪽 씬에는
+      접촉 센서가 없으므로 `sensor_names` 가 비면 구 `_held` 로 되돌아간다(그게 옳다).
     """
     rsrc = (
         Path(__file__).resolve().parents[1] / "grasp_left_rewards.py"
     ).read_text(encoding="utf-8")
-    body = rsrc.split("def object_is_held_and_lifted")[1].split("\ndef ")[0]
-    assert "contact_frac" in body, "리프트 보상이 접촉으로 게이트되지 않는다"
-    assert "quality * contact_frac * rise" in body, (
-        "리프트 보상이 `grasp_quality × 접촉비율 × 높이램프` 형태가 아니다"
-    )
-    assert "_held(" not in body, (
-        "리프트 보상이 아직 `_held`(높이 게이트)를 지난다 — 게이트 반전이 안 됐다"
+
+    # fab 태스크: stage_lift 가 접촉 게이트여야 한다
+    body = rsrc.split("def stage_lift(")[1].split("\ndef ")[0]
+    assert "s.mu * s.U_tol * s.H" in body, "fab 리프트가 `μ × 자세 × 높이진척` 이 아니다"
+    assert "s.nu" not in body, "fab 리프트가 아직 높이 게이트(ν) 뒤에 있다"
+
+    # 높이는 컵 **최저점** 기준이어야 한다 — 원점 z 는 기울여서 4.61 mm 를 위조한다
+    ssrc = (
+        Path(__file__).resolve().parents[1] / "grasp_left_stages.py"
+    ).read_text(encoding="utf-8")
+    assert "s.lift_h = rewards.lift_height(env)" in ssrc, "높이가 최저점 기준이 아니다"
+    assert "s.H = (s.lift_h / P.STAGE_LIFT_REF_M).clamp(0.0, 1.0)" in ssrc, (
+        "리프트 진척이 목표에서 포화하지 않는다"
     )
 
+    # 관절공간 태스크: 센서가 없으면 구 거동으로 안전 복귀해야 한다
+    old = rsrc.split("def object_is_held_and_lifted(")[1].split("\ndef ")[0]
+    assert "if not sensor_names:" in old, (
+        "센서 없는 태스크(관절공간)에서 KeyError 로 죽는다 — fab_test42 스모크에서 실제로 터졌다"
+    )
 
 def test_grasp_pose_shapes_the_bite_before_the_lift():
     """★★`grasp_pose` 는 리프트 **전에** 물기 자세를 만들어야 한다.

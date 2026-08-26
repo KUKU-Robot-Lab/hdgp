@@ -264,8 +264,8 @@ def object_is_held_and_lifted(
     lat_ok: float,
     along_ok: float,
     jaw_cfg: SceneEntityCfg,
-    sensor_names: tuple[str, ...],
-    force_threshold: float,
+    sensor_names: tuple[str, ...] = (),
+    force_threshold: float = 0.0,
     min_upright_cos: float = -1.0,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
@@ -293,6 +293,14 @@ def object_is_held_and_lifted(
     ★높이는 `lift_height`(최저점)로 잰다. 원점 z 로 재면 기울이기가 최대 4.61 mm 의
       가짜 리프트를 만든다 — t38 의 "+2.9 mm 상승"이 바로 그것이었다.
     """
+    # ⚠ 접촉 센서가 없는 태스크(관절공간 `open-grip_l_grasp_sensor`, t16 계보 positive
+    #   control)에서는 구 `_held` 거동으로 돌아간다. 그쪽 씬에는 `contact_*` 센서가 아예
+    #   없어서 이 함수가 KeyError 로 죽었다(fab_test42 스모크에서 실제로 터졌다).
+    #   fab 태스크는 이 항을 `None` 으로 끄고 `stage_lift` 를 쓰므로 영향이 없다.
+    if not sensor_names:
+        return _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+                     pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg,
+                     min_upright_cos)
     forces = obs_mdp.finger_contact_forces(env, sensor_names)
     contact_frac = (forces > force_threshold).float().mean(dim=-1)
     quality = grasp_quality(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg)
