@@ -92,6 +92,12 @@ parser.add_argument(
          "손가락만 full-grip 강제 — '지금 배치에서 닫으면 잡히는가'를 분리 측정.",
 )
 parser.add_argument(
+    "--grip_probe_after", type=int, default=0,
+    help="grip_probe 를 이 스텝 이후에만 적용 — 처음부터 강제하면 obs 가 분포 밖으로 "
+         "밀려 정책이 접근 자체를 포기한다(실측: 손끝이 컵 +42cm 위 도피). "
+         "정착(예: 300) 후 강제해야 '그 배치에서 닫으면 잡히는가'가 깨끗하게 나온다.",
+)
+parser.add_argument(
     "--dead_hand_probe", action="store_true", default=False,
     help="sim2real 죽은 손 재현 probe: 손가락 action 을 -1(폐쇄 0)로 강제해 손을 APPROACH 에 물리 동결 "
          "(관절 정지·접촉 0·tips 정지 = 실기 손 하드웨어 두절 상태), last_actions obs 는 정책 raw 로 원복. "
@@ -662,7 +668,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # 정책 무관하게 "손이 물체에 도달·감쌈 가능한가"를 순수 기하로 검증하는 도구.
             # palm_pose=scale(action,mins,maxs) 역: action=2(t-min)/(max-min)-1, box 밖이면 ±1 clamp.
             # GRASP_DEBUG_CONTACT=1 로 tipdist/palm_frac/관절여유 DBGC 동시 출력.
-            if args_cli.grip_probe:
+            _gpb_step = globals().get("_GPB_STEP", 0)
+            globals()["_GPB_STEP"] = _gpb_step + 1
+            if args_cli.grip_probe and _gpb_step >= int(args_cli.grip_probe_after):
                 _pe = env.unwrapped
                 if hasattr(_pe, "env"):
                     _pe = _pe.env.unwrapped
@@ -732,12 +740,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         _yax = _qa(_pq, torch.tensor([0.0, 1.0, 0.0], device=_pq.device
                                                      ).expand(_pq.shape[0], 3))
                         _tilt = torch.rad2deg(torch.acos(_yax[:, 2].abs().clamp(max=1.0)))
-                        _rel = (_gp._env_local(_gp.object.data.root_pos_w) - _pp)
+                        # ★world 프레임 통일 — _env_local 은 fab 오프셋(≈544mm)이 섞여 무효
+                        _ow = _gp.object.data.root_pos_w - _gp.scene.env_origins
+                        _rel = _ow - _pp
                         print(f"[GRIPS] cyl_tilt°={float(_tilt.mean()):.1f}"
                               f"±{float(_tilt.std()):.1f}  palm→cup(mm)="
                               f"({float(_rel[:,0].mean())*1000:+.0f},"
                               f"{float(_rel[:,1].mean())*1000:+.0f},"
                               f"{float(_rel[:,2].mean())*1000:+.0f})", flush=True)
+                        _tipn = [i for i, n in enumerate(_gp.robot.data.body_names)
+                                 if n.endswith("_tip")]
+                        if _tipn:
+                            _tp = _gp.robot.data.body_pos_w[:, _tipn, :] - \
+                                _gp.scene.env_origins.unsqueeze(1)
+                            _tv = _tp - _ow.unsqueeze(1)          # tip→cup 벡터 (N,T,3)
+                            _td = _tv.norm(dim=-1).mean(0) * 1000
+                            _tz = _tv[:, :, 2].mean(0) * 1000     # +면 tip 이 컵원점 위
+                            print("[GRIPS] tip→cup(mm) " + "  ".join(
+                                f"{_gp.robot.data.body_names[b].split('_')[-2]}:"
+                                f"d={float(_td[j]):.0f},dz={float(_tz[j]):+.0f}"
+                                for j, b in enumerate(_tipn)), flush=True)
                     except Exception as _e:
                         print(f"[GRIPS] axis-계측 불가: {_e}", flush=True)
             if hasattr(_gp, "binary_contact_buf"):
