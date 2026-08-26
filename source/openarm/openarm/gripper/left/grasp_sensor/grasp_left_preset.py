@@ -1309,7 +1309,16 @@ CONTACT_ALL_BONUS = 1.5
 # ★★`approach` 와 `contact` 는 **게이트 밖**이다. 논문은 `r_contact` 를 μ 안에 두는데
 #   그러면 λ=1·μ=0("도착했지만 아직 못 잡음") 구간의 보상이 0 이 된다. 이 트랙은 보상 0 이
 #   조기 종료를 최적으로 만드는 실패를 겪었다(test6/test7: lifting 6.14→0, ep 130→13).
-STAGE_APPROACH_WEIGHT = 2.0
+# ★★fab_test43: `approach` 를 **벌점으로 뒤집는다**(사용자 결정). 양수 shaping 은 상한이
+#   성능이 아니라 **시간**이라(0.6/스텝 × 300스텝) "오래 살기"와 "자세만 올리기"가 둘 다
+#   이득이었다. t42 실측이 그 결말이다 — 1153 epoch 동안 `perp_q` 0.43 → 0.89 로 오르는
+#   사이 턱-컵은 195 → 199 mm 로 제자리였고, approach 상승분(1.45배)이 자세 항 예측
+#   (1.49배)과 소수점까지 일치했다. **후반 학습 전부가 손목 각도 맞추기였다.**
+#   벌점은 상한이 0 이라 파밍할 여지가 원리적으로 없다(논문 `p_approaching` 도 벌점이다).
+# ⚠ 벌점 전환은 **실패 종료 3종 제거와 한 몸이다.** 모든 보상이 음수인데 `terminated` 가
+#   남아 있으면 V<0 이라 **일부러 죽는 것이 최적**이 된다(test6/test7 실증: ep 130 → 13).
+STAGE_APPROACH_WEIGHT = -1.0      # func 가 **벌점 크기(양수)** 를 낸다
+STAGE_TIP_WEIGHT = -1.0           # 전도 — 구 `object_tipped` **종료를 대체**
 STAGE_CONTACT_WEIGHT = 1.0        # 게이트 없음 — λ=1·μ=0 사각지대 방지 shaping
 STAGE_GRASP_WEIGHT = 3.0
 STAGE_LIFT_WEIGHT = 5.0
@@ -1338,19 +1347,45 @@ STAGE_TILT_TOLERANCE_DEG = (25.0, 15.0)   # U_tol: 25°에서 0 → 15°에서 1
 STAGE_UPRIGHT_GATE_DEG = (15.0, 5.0)      # U_up : 15°에서 0 → 5°에서 1 (stay)
 # ★"TCP_+z 가 world_+z 와 수직" — 접근축의 world-z 성분이 0 이어야 한다.
 STAGE_PERP_EXPONENT = 2.0
-STAGE_ALIGN_FLOOR = 0.25          # 정렬이 최악이어도 approach 의 25% 는 남긴다
-STAGE_ORIENT_FLOOR = 0.15         # 자세가 최악이어도 15%
+# ★구 `STAGE_ALIGN_FLOOR`·`STAGE_ORIENT_FLOOR` 제거. 곱셈 shaping 의 floor 였는데
+#   fab_test43 에서 approach 가 덧셈 벌점이 되어 floor 개념 자체가 없어졌다.
+#   그 둘의 동적 범위(0.15→1.0 = 6.7배)가 거리 범위(2.4배)를 3배 눌러 t42 를 망쳤다.
 
-# ── 접근 중 컵 교란 벌점 (사용자 결정: "벌점으로 억제") ───────────────────────
-# ★기울임 벌점은 **리프트 전에만**(1−ν) 건다. 상시 걸면 이송 중 기울기를 벌해
-#   사용자 규격("15° 이내면 됨")과 어긋난다 — 들어올린 뒤는 U_tol·U_up 이 맡는다.
-# ★★fab_test41-r3: **곱셈 감쇠**다(뺄셈 아님). r2 에서 뺄셈 벌점이 approach 최대치를
-#   넘어 총보상을 음수로 만들었고(−0.353), 그러면 조기 종료가 최적이 된다.
-#   `approach = reach × (1 − 0.5·push_q) × (1 − 0.5·tilt_q)` — 항상 **비음수**이고
-#   최악이 0.25× 라, 컵 곁(0.34)이 도망(0.29)보다 여전히 낫다.
-STAGE_PUSH_ATTEN = 0.5            # 밀기 최대 감쇠
-STAGE_PUSH_MARGIN_M = 0.025       # 이만큼은 봐준다
-STAGE_PUSH_REF_M = 0.05           # margin 위로 이만큼 밀면 감쇠가 최대
-STAGE_TILT_ATTEN = 0.5            # 기울임 최대 감쇠 (리프트 후 (1−ν) 로 꺼진다)
-STAGE_TILT_MARGIN_DEG = 8.0
-STAGE_TILT_REF_DEG = 30.0         # margin 위로 30° 더 기울면 감쇠가 최대
+# ═══════════════════════════════════════════════════════════════════════════
+# ① approach = **벌점** — gripper_base 프레임 3축 분해 (fab_test43, 사용자 규격)
+#
+# 사용자 규격: `PALM BASE(xyz) — CUP(xy) — TCP(xyz)` 순서여야 한다.
+#   = 컵 축이 팜 베이스와 TCP **사이**에 있어야 두 링크 사이에 컵이 들어온다.
+#
+#   gripper_base 프레임:  z = 접근축 · y = 턱축(손가락이 벌어지는 방향) · x = 나머지
+#
+#       base ────────── 컵 축 ────────── TCP
+#        0              46.9            80.0   [mm, base z]
+#                       ↑ GRASP_DEPTH_IN_BASE_Z (성공 파지 실측 중앙값)
+#       손가락 메시 z ∈ [0.5, 95.4] mm
+#       → 패드 중앙이 컵 축에 닿으면 **손끝이 축을 48.5 mm 지난다**(컵 반경 29.5 + 19).
+#         즉 `s → 46.9 mm` 는 "컵에 가까이"가 아니라 "컵이 두 링크 사이에 있다"와 같다.
+#
+# ★`|s − 46.9|` **대칭** 오차라 한 식이 두 실패를 같이 막는다:
+#     못 미침(t42 의 s ≈ 200 mm)  ·  너무 깊이 박기(s < 0 = 컵이 손바닥에 박힘 —
+#     이 트랙이 실제로 저지른 실수. 파일 위쪽 GRASP_DEPTH_IN_BASE_Z 주석 ② 참조)
+# ★축마다 허용치가 다르므로 **등방 거리(norm)를 쓰지 않는다.** 턱축 여유는 12.75 mm
+#   (개구 84.5 − 컵 지름 59)/2 뿐이고 높이 여유는 37.5 mm 라 3배 차이가 난다.
+# ★전부 **캡**을 둔다. 컵이 굴러 나가면 벌점이 발산해 다른 항을 삼킨다.
+STAGE_ENTER_DEPTH_TARGET_M = GRASP_DEPTH_IN_BASE_Z          # 0.0469 — s 목표
+STAGE_ENTER_DEPTH_WINDOW_M = (0.0, TCP_OFFSET_IN_BASE_Z)    # (0, 0.080) 사용자 순서 조건
+STAGE_ENTER_DEPTH_WEIGHT = 3.0
+STAGE_ENTER_DEPTH_CAP_M = 0.30
+STAGE_JAW_LATERAL_WEIGHT = 6.0     # 여유가 12.75 mm 뿐이라 깊이의 2배 가중
+STAGE_JAW_LATERAL_CAP_M = 0.15
+STAGE_HEIGHT_BAND_HALF_M = 0.5 * (GRASP_HEIGHT_BAND[1] - GRASP_HEIGHT_BAND[0])   # 0.0375
+STAGE_HEIGHT_WEIGHT = 2.0          # 대역 **밖**에서만 문다
+STAGE_HEIGHT_CAP_M = 0.20
+# 자세 — 벌점이라 최대 기여가 0.3 으로 묶인다. 깊이 지렛대(3.0 × 0.153 = 0.46)보다 작아야
+#   "멀리서 자세만 맞추기"가 절대 이길 수 없다. t42 를 망친 것이 정확히 이 순서였다.
+STAGE_ORIENT_PENALTY_WEIGHT = 0.3
+# 전도 — 구 `object_tipped` **종료를 대체**한다. 종료가 아니라 계속 물어야 도망칠 곳이
+#   없어진다. 60° 에서 1.5 로, 물러서 있기(≈0.85)보다 **나쁘게** 잡는다.
+STAGE_TIP_MARGIN_DEG = 8.0
+STAGE_TIP_PER_DEG = 0.029
+STAGE_TIP_PENALTY_MAX = 1.5

@@ -950,35 +950,27 @@ def test_grasp_pose_shapes_the_bite_before_the_lift():
     )
 
 
-def test_cup_tipping_terminates_the_episode():
-    """★컵이 크게 기울면 종료해야 한다. **자매 트랙 넷은 전부 가진 항이고 우리만 없었다.**
+def test_cup_tipping_is_a_penalty_not_a_termination():
+    """★fab_test43 에서 전도는 **종료 → 벌점**으로 강등됐다 (사용자 결정).
 
-        tesollo/right/grasp_v1      60°   agnostic/tasks/grasp_sensor  60°
-        gripper/left/grasp_v1       30°   gripper/right/grasp_v1       30°
+    구 계약은 "전도는 `terminated` 여야 한다"였다. 그 계약 아래 t42 를 1218 epoch 돌린
+    실측이 계약 자체를 뒤집었다 — 종료가 살아 있으면 정책은 **컵 근처에 가지 않는 것**을
+    배운다(컵 앞 리턴 0.72 vs 물러섬 2.95 = 4.1배). λ 가 1153 epoch 내내 0.0002 였다.
 
-    우리는 `OBJECT_DROP_HEIGHT`(0.27) 가 높이로 전도를 대신하게 뒀는데 원점 z 는 기울기에
-    둔감해 거의 누워야 걸린다(60° 에서 원점 0.299 > 0.27 통과). t38 결정론 실측에서
-    컵을 **45 mm 비스듬히 밀고 다니는 동안** 에피소드가 끝까지 살아 있었다.
-
-    ⚠ 반드시 `terminated` 여야 한다(`time_out=True` 금지). truncated 로 내보내면
-      `value_bootstrap` 이 `γ·V(s)` 를 얹어 **쓰러뜨리기가 보너스**가 된다
-      (agnostic 트랙 실측: 실보상 3307→103 붕괴인데 shaped 72.8→79.4 상승).
-    ⚠ 임계는 파지 중 흔들림을 끊지 않을 만큼 넉넉해야 한다 — 이 트랙은 자세 AND 게이트로
-      학습을 죽인 이력이 있다(test6/test7: lifting 6.14 → 0.0000, 에피소드 130 → 13).
-      성공 파지의 실측 컵 기울기는 4.1° 다.
+    지금 계약: 전도를 `rewards.tip` 벌점으로 물고, 에피소드는 만기까지 간다.
+    ⚠ 되살리려면 `approach` 를 양수 보상으로 되돌린 뒤에만 해야 한다 — 벌점 체계에서
+      `terminated` 는 V=0 을 주는 **이득**이 되어 자살이 최적이 된다.
     """
     fab_src = (
         Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py"
     ).read_text(encoding="utf-8")
-    assert "self.terminations.object_tipped = DoneTerm(" in fab_src, "전도 종료가 없다"
-    block = fab_src.split("self.terminations.object_tipped = DoneTerm(")[1].split(")")[0]
-    assert "time_out" not in block, (
-        "전도 종료가 truncated 다 — value_bootstrap 이 쓰러뜨리기에 보너스를 준다"
+    assert "self.terminations.object_tipped = None" in fab_src, "전도 종료가 안 꺼졌다"
+    assert "self.rewards.tip = RewTerm(" in fab_src, "전도 벌점 항이 없다"
+    assert P.STAGE_TIP_WEIGHT < 0.0, "전도 항이 벌점이 아니다"
+    # 임계는 파지 중 흔들림을 벌하지 않을 만큼 넉넉해야 한다(성공 파지 실측 4.1°).
+    assert P.STAGE_TIP_MARGIN_DEG >= 8.0, (
+        f"전도 벌점 마진 {P.STAGE_TIP_MARGIN_DEG}° 가 성공 파지 흔들림(4.1°)에 너무 가깝다"
     )
-    assert 30.0 <= P.OBJECT_TIP_MAX_DEG <= 60.0, (
-        f"전도 임계 {P.OBJECT_TIP_MAX_DEG}° 가 자매 트랙 범위(30~60°) 밖이다"
-    )
-    assert P.OBJECT_TIP_MAX_DEG > 20.0, "임계가 파지 중 흔들림을 끊는다"
 
 
 def test_lift_and_lateral_diagnostics_are_logged():

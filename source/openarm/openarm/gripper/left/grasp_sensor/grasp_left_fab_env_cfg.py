@@ -253,22 +253,25 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         self.observations.critic.palm_action_scale = ObsTerm(func=obs_mdp.palm_action_scale)
         self.observations.critic.palm_action_anchor = ObsTerm(func=obs_mdp.palm_action_anchor)
 
-        # ── 종료: 작업공간 이탈 (원본 `_get_dones`) ───────────────────
-        # ★원본은 물체가 스폰 박스 x·y 를 벗어나면 즉시 종료한다. 우리는 낙하만 봐서
-        #   컵이 옆으로 굴러 나가도 에피소드가 끝까지 갔다 — 전부 낭비 표본이었다.
-        self.terminations.object_out_of_workspace = DoneTerm(
-            func=obs_mdp.object_out_of_workspace,
-            params={"x_range": P.OBJECT_WORKSPACE_X, "y_range": P.OBJECT_WORKSPACE_Y},
-        )
-
-        # ── 종료: 컵 전도 (fab_test39 신설, D3) ──────────────────────
-        # ★이 트랙만 전도 종료가 없었다. 근거 전문은 `obs_mdp.object_tipped` docstring.
-        #   `time_out=False`(기본) 이어야 한다 — truncated 로 내보내면 value_bootstrap 이
-        #   γ·V(s) 를 얹어 "쓰러뜨리기 보너스"가 된다(agnostic 트랙 실측).
-        self.terminations.object_tipped = DoneTerm(
-            func=obs_mdp.object_tipped,
-            params={"max_tilt_deg": P.OBJECT_TIP_MAX_DEG},
-        )
+        # ══════════════════════════════════════════════════════════════
+        # ★★fab_test43: **실패 종료 3종을 전부 없앤다.** 남는 종료는 `time_out` 뿐이고
+        #   에피소드는 항상 만기까지 간다.
+        #
+        # 왜 벌점 전환과 한 몸인가 — `approach` 가 벌점이 되면 파지 전 보상이 전부
+        # 음수다. 그 상태에서 `terminated`(bootstrap 없음)가 남아 있으면 V<0 이므로
+        # **종료가 V=0 을 주는 이득**이 되어 "일부러 컵을 쓰러뜨리기/떨어뜨리기"가
+        # 최적이 된다. 이 트랙이 이미 겪은 실패다(test6/test7: 보상 0 → 에피소드
+        # 130 → 13 → 총보상 −0.46). 하나라도 남기면 그게 탈출구가 된다.
+        #
+        # 대체 수단:
+        #   전도   → `rewards.tip` 벌점 (60° 에서 1.5/스텝, 계속 문다)
+        #   낙하   → 컵이 바닥이면 진입깊이·높이 오차가 캡까지 차 자동으로 최대 벌점
+        #   이탈   → 같은 이유 (턱축 이탈이 캡 0.15 m 까지 찬다)
+        # ⚠ 되살리려면 반드시 `approach` 를 양수로 되돌린 뒤에 해야 한다.
+        # ══════════════════════════════════════════════════════════════
+        self.terminations.object_out_of_workspace = None
+        self.terminations.object_tipped = None
+        self.terminations.object_dropping = None
 
         # ── 리셋 관절 노이즈 (원본 `robot_spawn`) ─────────────────────
         # ★우리는 항상 같은 홈에서 시작했다. 원본은 ADR 로 관절 pos/vel 을 흔든다.
@@ -413,9 +416,15 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
             if hasattr(self.rewards, _old):
                 setattr(self.rewards, _old, None)
 
+        # ★★fab_test43: approach 는 **벌점**이다(weight 음수 · func 는 양수 크기).
+        #   근거 전문은 `rewards.stage_approach` docstring — 요약하면 t42 에서 양수
+        #   shaping 의 자세 인자가 거리 인자를 3배 눌러 "멀리서 각도만 맞추기"가
+        #   1153 epoch 동안 최적이었다.
         self.rewards.approach = RewTerm(
-            func=rewards.stage_approach, weight=P.STAGE_APPROACH_WEIGHT,
-            params={**_sa(), "sharpness": P.APPROACH_SHARPNESS})
+            func=rewards.stage_approach, weight=P.STAGE_APPROACH_WEIGHT, params=_sa())
+        # 전도 벌점 — 아래에서 `object_tipped` **종료를 제거**하고 이것으로 대체한다.
+        self.rewards.tip = RewTerm(
+            func=rewards.stage_tip, weight=P.STAGE_TIP_WEIGHT, params=_sa())
         self.rewards.contact = RewTerm(
             func=rewards.stage_contact, weight=P.STAGE_CONTACT_WEIGHT, params=_sa())
         self.rewards.grasp = RewTerm(
@@ -438,7 +447,8 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         #     성립한 뒤에만 켠다([[suppression-terms-need-task-first]]).
 
         # ── 단계 진단 — "TB events logging 값 매칭"(사용자 지시) ──────
-        for _d in ("lam", "mu", "nu", "rho", "tilt_deg", "perp_q", "d_goal"):
+        for _d in ("lam", "mu", "nu", "rho", "tilt_deg", "perp_q", "d_goal",
+                   "enter_s", "jaw_l", "height_h"):
             setattr(self.rewards, f"diag_stage_{_d}", RewTerm(
                 func=getattr(rewards, f"stage_diag_{_d}"), weight=0.0, params=_sa()))
 

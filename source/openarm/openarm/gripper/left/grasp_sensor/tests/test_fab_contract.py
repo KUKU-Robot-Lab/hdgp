@@ -930,20 +930,29 @@ def test_reference_physics_and_solver_settings():
         assert k in fab_src, f"{k} 가 배선되지 않았다"
 
 
-def test_workspace_exit_termination_and_reset_noise():
-    """★★fab_test22: 원본 `_get_dones` 의 작업공간 이탈 종료 + `robot_spawn` 리셋 노이즈."""
-    fab_src = _src("grasp_left_fab_env_cfg.py")
-    assert "self.terminations.object_out_of_workspace = DoneTerm(" in fab_src
-    assert "self.events.arm_spawn_noise = EventTermCfg(" in fab_src
-    # 작업공간 박스는 스폰과 목표를 모두 덮어야 한다 — 아니면 정상 동작이 종료된다
-    for lo, hi, c, r, name in (
-        (*P.OBJECT_WORKSPACE_X, P.CUP_SPAWN_X_CENTER, P.CUP_SPAWN_X_RANGE, "spawn x"),
-        (*P.OBJECT_WORKSPACE_Y, P.CUP_SPAWN_Y_CENTER, P.CUP_SPAWN_Y_RANGE, "spawn y"),
-    ):
-        assert lo < c - r and c + r < hi, f"{name} 이 작업공간 박스를 벗어난다"
-    gx, gy = P.GOAL_POINT[0], P.GOAL_POINT[1]
-    assert P.OBJECT_WORKSPACE_X[0] < gx - P.GOAL_JITTER[0] and gx + P.GOAL_JITTER[0] < P.OBJECT_WORKSPACE_X[1]
-    assert P.OBJECT_WORKSPACE_Y[0] < gy - P.GOAL_JITTER[1] and gy + P.GOAL_JITTER[1] < P.OBJECT_WORKSPACE_Y[1]
+def test_failure_terminations_removed_for_penalty_reward():
+    """★★fab_test43: 실패 종료 **3종을 전부 제거**했다. 남는 종료는 `time_out` 뿐이다.
+
+    왜 벌점 전환과 한 몸인가 — `approach` 가 벌점이면 파지 전 보상이 전부 음수다.
+    그 상태에서 `terminated`(bootstrap 없음)가 남으면 V<0 이므로 **종료가 V=0 을 주는
+    이득**이 되어 "일부러 쓰러뜨리기/떨어뜨리기"가 최적이 된다. 이 트랙이 이미 겪었다
+    (test6/test7: 보상 0 → 에피소드 130 → 13 → 총보상 −0.46).
+    하나라도 남기면 그게 탈출구가 되므로 **셋 다** 확인한다.
+
+    리셋 관절 노이즈는 그대로 유지한다(원본 `robot_spawn`).
+    """
+    fab_src = _fab_src()
+    for term in ("object_out_of_workspace", "object_tipped", "object_dropping"):
+        assert f"self.terminations.{term} = None" in fab_src, (
+            f"{term} 종료가 남아 있다 — 벌점 체계에서 자살 경로가 된다"
+        )
+        assert f"self.terminations.{term} = DoneTerm(" not in fab_src, (
+            f"{term} 이 여전히 종료로 등록돼 있다"
+        )
+    assert P.STAGE_APPROACH_WEIGHT < 0.0, (
+        "종료를 없앴는데 approach 가 벌점이 아니다 — 둘은 한 몸이다"
+    )
+    assert "self.events.arm_spawn_noise = EventTermCfg(" in fab_src, "리셋 관절 노이즈가 없다"
 
 
 def test_action_jerk_is_not_wired_anywhere():
@@ -1539,27 +1548,90 @@ def test_stage_triggers_are_nested_and_match_the_paper():
     assert P.STAGE_GATE_CONTACT_N == 2.0, "2지 그리퍼는 양 턱 동시 접촉이 μ 다"
 
 
-def test_tilt_penalty_is_off_after_the_lift():
-    """★기울임 벌점은 **리프트 전에만**(1−ν) 건다.
+def test_approach_is_a_penalty_decomposed_by_axis():
+    """★① `approach` 는 **벌점**이고 ② 축별로 분해돼야 한다 (fab_test43, 사용자 규격).
 
-    상시 걸면 이송 중 기울기를 벌해 사용자 규격("cup+z 와 world+z 는 15° 이내면 됨")과
-    어긋난다. 들어올린 뒤의 기울기는 `U_tol`(25°→15°)·`U_up`(15°→5°)이 맡는다.
-    논문도 페널티를 `(1−λ)` 로 게이팅한다.
+    양수 곱셈 shaping 이 왜 죽었나 — t42 실측 1153 epoch:
+        `perp_q` 0.43 → 0.89 · `approach` 0.42 → 0.73(1.45배) · 턱-컵 195 → 199 mm
+        자세 항만으로 예측한 상승비 1.49 와 소수점까지 일치 = **전부 각도 파밍**이었다.
+    원인은 인자의 지렛대가 뒤집힌 것: orient 범위 0.15→1.0(6.7배) vs 거리 0.89→0.37(2.4배).
+    벌점은 상한이 0 이라 파밍면이 원리적으로 없다.
+
+    ★등방 거리(norm)를 쓰면 안 된다. 축별 허용치가 3배 넘게 다르다 —
+      진입깊이 목표 46.9 mm · 턱축 ±12.75 mm · 높이 ±37.5 mm.
     """
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
     body = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
-    assert "tilt_q = (1.0 - s.nu) *" in body, "기울임 벌점이 리프트 후에도 걸린다"
-    assert "push_q = ((s.xy_disp - P.STAGE_PUSH_MARGIN_M)" in body, "컵 밀기 벌점이 없다"
-    # ★★벌점은 **곱셈 감쇠**여야 한다 — 뺄셈이면 approach 가 음수가 될 수 있고,
-    #   총보상이 음수면 조기 종료가 최적이 된다(r2 실측: approach −0.069 · 총보상 −0.353
-    #   → 정책이 148 → 242 mm 로 도망, λ 0.036 → 0.0000).
-    assert "return reach * (1.0 - P.STAGE_PUSH_ATTEN" in body, (
-        "벌점이 뺄셈이다 — approach 가 음수가 되면 조기 종료가 최적이 된다"
+    assert P.STAGE_APPROACH_WEIGHT < 0.0, "approach 가 벌점이 아니다"
+    for axis, const in (("s.enter_s", "STAGE_ENTER_DEPTH_WEIGHT"),
+                        ("s.jaw_l", "STAGE_JAW_LATERAL_WEIGHT"),
+                        ("s.height_h", "STAGE_HEIGHT_WEIGHT")):
+        assert axis in body and const in body, f"{axis} 축 벌점이 없다"
+    assert "P.STAGE_ENTER_DEPTH_TARGET_M).abs()" in body, (
+        "진입 깊이가 **대칭 오차**가 아니다 — 너무 깊이 박기(컵이 손바닥에 박힘)를 못 막는다"
     )
-    assert 0.0 < P.STAGE_PUSH_ATTEN < 1.0 and 0.0 < P.STAGE_TILT_ATTEN < 1.0, (
-        "감쇠가 1.0 이상이면 approach 가 0 이 되어 같은 실패로 돌아간다"
+    assert "torch.exp" not in body and ".norm(" not in body, (
+        "등방 거리/커널이 남아 있다 — 축별 허용치가 3배 넘게 다르므로 뭉치면 안 된다"
     )
+    # 자세 벌점의 최대 기여가 깊이 지렛대보다 작아야 t42 의 순서 역전이 재발하지 않는다.
+    depth_lever = P.STAGE_ENTER_DEPTH_WEIGHT * 0.153      # t42 정체점의 깊이 오차
+    assert P.STAGE_ORIENT_PENALTY_WEIGHT < depth_lever, (
+        f"자세 지렛대 {P.STAGE_ORIENT_PENALTY_WEIGHT} 가 거리 지렛대 {depth_lever:.2f} 이상이다"
+        " — t42 를 망친 순서 그대로다"
+    )
+    # 전부 캡이 있어야 컵이 굴러 나갔을 때 벌점이 발산해 다른 항을 삼키지 않는다.
+    for cap in ("STAGE_ENTER_DEPTH_CAP_M", "STAGE_JAW_LATERAL_CAP_M", "STAGE_HEIGHT_CAP_M"):
+        assert cap in body, f"{cap} 캡이 안 걸려 있다"
+
+
+def test_tip_penalty_replaces_the_termination_and_is_off_after_lift():
+    """★전도는 **종료가 아니라 벌점**이어야 한다 (fab_test43).
+
+    종료였을 때(t42 실측): 컵 앞 tipped 0.82 · ep 83 스텝 · 리턴 0.72 vs
+    물러섬 tipped 0.00 · 300 스텝 · 리턴 2.95 → **도망이 4.1배**. 종료는 "조심해라"가
+    아니라 "가지 마라"를 가르친다.
+    ★리프트 후에는 `(1−ν)` 로 꺼야 한다 — 이송 중 기울기는 `U_tol`·`U_up` 이 맡는다.
+    ★크기는 물러서 있기(≈0.85/스텝)보다 **나빠야** 한다. 그래야
+      "쓰러뜨리기 < 물러서기 < 제대로 잡기" 순서가 선다.
+    """
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    body = rsrc.split("def stage_tip(")[1].split("\ndef ")[0]
+    assert "(1.0 - s.nu)" in body, "전도 벌점이 리프트 후에도 걸린다"
+    assert P.STAGE_TIP_WEIGHT < 0.0, "전도 항이 벌점이 아니다"
+    standoff = P.STAGE_ENTER_DEPTH_WEIGHT * 0.153 + P.STAGE_JAW_LATERAL_WEIGHT * 0.060
+    assert P.STAGE_TIP_PENALTY_MAX > standoff, (
+        f"전도 최대 벌점 {P.STAGE_TIP_PENALTY_MAX} 이 물러서기 {standoff:.2f} 보다 싸다"
+        " — 쓰러뜨리고 도망가는 것이 최적이 된다"
+    )
+
+
+def test_grasp_geometry_ordering_base_cup_tcp():
+    """★★사용자 규격 `PALM BASE(xyz) — CUP(xy) — TCP(xyz)`.
+
+    컵 축이 팜 베이스와 TCP **사이**에 있어야 두 링크 사이에 컵이 들어온다.
+    gripper_base 프레임 z 로 재면 `0 < s < 80 mm`, 목표는 성공 파지 실측 46.9 mm.
+    그 지점에서 손끝(z 95.4 mm)이 컵 축을 48.5 mm 지나므로 컵 반경 29.5 mm 를 넘어선다.
+    """
+    lo, hi = P.STAGE_ENTER_DEPTH_WINDOW_M
+    assert lo == 0.0 and abs(hi - P.TCP_OFFSET_IN_BASE_Z) < 1e-9, (
+        "순서 창이 base~TCP 가 아니다"
+    )
+    assert lo < P.STAGE_ENTER_DEPTH_TARGET_M < hi, (
+        f"목표 진입깊이 {P.STAGE_ENTER_DEPTH_TARGET_M} 가 base–TCP 창 밖이다"
+    )
+    assert P.STAGE_ENTER_DEPTH_TARGET_M == P.GRASP_DEPTH_IN_BASE_Z, (
+        "목표가 성공 파지 실측값이 아니다 — 눈대중 상수는 이 트랙에서 여러 번 태웠다"
+    )
+    # 목표점은 컵 **원점이 아니라 파지 높이의 컵 축 위 점**이어야 한다.
+    # 컵 원점은 테이블 위 92.1 mm 로 파지 대역(10~85 mm) 밖이다.
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "cup_z * P.CUP_ORIGIN_TO_GRASP_Z" in ssrc, (
+        "목표점이 컵 원점이다 — 파지 대역보다 44.6 mm 높은 곳을 가리킨다"
+    )
+    assert P.CUP_ORIGIN_TO_GRASP_Z < 0.0, "파지점은 컵 원점보다 아래여야 한다"
 
 
 def test_reward_names_match_tb_tags_and_old_names_are_gone():

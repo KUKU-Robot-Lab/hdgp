@@ -79,11 +79,13 @@ class StageState:
         "touch_frac", "lift_h", "cup_speed", "xy_disp",
         "U_tol", "U_up", "H", "T", "S",     # 단계 진척량
         "perp_q", "align_q", "grasp_q",
+        "enter_s", "jaw_l", "height_h",     # gripper_base 프레임 3축 분해
     )
 
 
 _CACHE: dict[int, tuple[int, StageState]] = {}
 _SPAWN: dict[int, torch.Tensor] = {}
+_BASE_ID: dict[int, int] = {}
 
 
 def _cup_axis_and_tilt(obj: RigidObject) -> tuple[torch.Tensor, torch.Tensor]:
@@ -133,6 +135,23 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     if fresh.any():
         spawn[fresh] = cup_pos[fresh, :2]
     s.xy_disp = torch.norm(cup_pos[:, :2] - spawn, dim=-1)
+
+    # ── gripper_base 프레임 3축 분해 (사용자 규격 `BASE — CUP(xy) — TCP`) ──
+    # ★★등방 거리(norm)를 쓰지 않는다. 축마다 허용치가 3배 넘게 다르다:
+    #     z(진입 깊이) 목표 46.9 mm · y(턱축) ±12.75 mm · x(높이) ±37.5 mm
+    #   norm 으로 뭉치면 "턱축으로 60 mm 어긋난 채 깊이만 맞춤"과 "제대로 감쌈"이
+    #   같은 값이 된다. t42 가 그 자로 200 mm 밖에서 자세만 다듬었다.
+    base_id = _BASE_ID.get(key)
+    if base_id is None:
+        base_id = robot.body_names.index(P.GRIPPER_BASE_BODY)
+        _BASE_ID[key] = base_id
+    # 목표점은 컵 **원점이 아니라 파지 높이의 컵 축 위 점**이다. 컵 원점은 테이블 위
+    # 92.1 mm 로 파지 대역(10~85 mm) **밖**이라, 원점으로 끌면 44.6 mm 높은 곳에서 멈춘다
+    # (이 트랙이 이미 밟은 함정 — 절대 z 판정의 기준선은 "놓였을 때의 값"이다).
+    cup_pt = obj.data.root_pos_w + cup_z * P.CUP_ORIGIN_TO_GRASP_Z
+    R_base = matrix_from_quat(robot.data.body_quat_w[:, base_id, :])      # base→world
+    delta = torch.einsum("nji,nj->ni", R_base, cup_pt - robot.data.body_pos_w[:, base_id, :])
+    s.height_h, s.jaw_l, s.enter_s = delta[:, 0], delta[:, 1], delta[:, 2]
 
     # ── 트리거 (논문 식 3~6). **이진**이고 매 스텝 재평가한다 ─────────
     # ⚠ 래치가 아니다. 이 트랙이 과거에 제거한 것은 "한 번 열리면 유지"하는 래치였고,

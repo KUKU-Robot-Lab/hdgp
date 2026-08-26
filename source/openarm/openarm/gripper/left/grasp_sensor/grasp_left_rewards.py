@@ -1146,52 +1146,74 @@ def _stage(env, jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]):
 
 def stage_approach(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
-    sharpness: float, palm_body: str = "l_hl_gripper_base",
 ) -> torch.Tensor:
-    """① 접근/정렬 — **무게이트**. 거리 × 겨냥 × 자세 − 컵 교란 벌점.
+    """① 접근 — **벌점 크기(양수)**. weight 가 음수라 보상은 ≤ 0 이고 상한이 **0** 이다.
 
-    ★사용자 규격 "TCP_+z 가 world_+z 와 **수직**이 되게 접근". `perp_q` 가 그것이다 —
-      접근축(턱 body 의 z)의 world-z 성분이 0 이어야 1.0. 컵이 서 있으면 이 조건은
-      "원통을 옆에서 문다"(CLAUDE.md 규약 90°)와 같아진다.
-    ★사용자 규격 "그리퍼 끝단이 컵을 움직여서 쓰러트릴 수도 있음" → **벌점으로 억제**.
-      · 밀기: `relu(컵 xy 이동 − 25 mm)`
-      · 기울임: `relu(기울기 − 8°)`, 단 **(1−ν) 로 리프트 후에는 꺼진다.** 상시 걸면
-        이송 중 기울기를 벌해 사용자 규격("15° 이내면 됨")과 정면으로 어긋난다.
-        논문도 페널티를 `(1−λ)` 로 게이팅한다.
-    ★**게이트 밖**에 둔다. 논문은 접근을 `(1−λ)` 로 꺼 버리는데, λ=1·μ=0 구간에서
-      보상이 0 이 되면 이 트랙은 조기 종료가 최적이 된다(test6/test7 실증).
+    ★★fab_test43. t42 까지 이 항은 양수 곱셈 shaping 이었고, 그래서 **파밍이 가능**했다.
+      `2·exp(−4d)·align·orient` 에서 `orient` 의 동적 범위(0.15→1.0 = 6.7배)가 거리
+      범위(0.89→0.37 = 2.4배)의 3배라, **거리를 늘리면서 자세만 올려도 보상이 오른다.**
+      t42 실측이 그 결말이다 — 1153 epoch 동안 `perp_q` 0.43 → 0.89, `approach`
+      0.42 → 0.73(1.45배)인데 턱-컵은 195 → 199 mm. 자세 항 예측비 1.49 와 소수점까지
+      맞았다. **후반 학습 전부가 손목 각도 맞추기였다.**
+      벌점은 상한이 0 이라 "닿는 것" 말고는 0 에 도달할 방법이 없다 — 파밍면이 없다.
+
+    ★사용자 규격 `PALM BASE(xyz) — CUP(xy) — TCP(xyz)` 를 gripper_base 프레임에서 잰다:
+        s = 진입 깊이(base z)  목표 46.9 mm, 창 (0, 80)   ← **지나쳐야 하는 축**
+        l = 턱축 이탈 (base y) 목표 0,       여유 ±12.75 mm
+        h = 높이     (base x)  목표 0,       여유 ±37.5 mm (파지 대역 반폭)
+      `|s − 46.9|` 는 **대칭**이라 못 미침과 "너무 깊이 박기"를 한 식으로 막는다.
+
+    ⚠ 이 항이 음수인 것은 **정상이다**(t42 까지는 버그 신호였다 — 곱셈 감쇠였으므로).
     """
     s = _stage(env, jaw_cfg, sensor_names)
-    align = P.STAGE_ALIGN_FLOOR + (1.0 - P.STAGE_ALIGN_FLOOR) * 0.5 * (1.0 + s.align_q)
-    orient = P.STAGE_ORIENT_FLOOR + (1.0 - P.STAGE_ORIENT_FLOOR) * s.perp_q
-    reach = torch.exp(-sharpness * s.d_jaw_cup) * align * orient
-    # ★★fab_test41-r3: 벌점을 **뺄셈 → 곱셈 감쇠**로 바꿨다. r2 실측이 이유다 —
-    #   `0.08 × relu(기울기 − 8°)` 는 전도 임계 60° 에서 **4.16** 이라 approach 최대치
-    #   2.0 의 두 배였다. ep0-51 에 approach −0.069 · 총보상 **−0.353** 이 됐고,
-    #   총보상이 음수면 **조기 종료가 최적**이 된다(test6/test7 이 기록한 실패:
-    #   lifting 6.14 → 0.0000, 에피소드 130 → 13, 총보상 +34.9 → −0.46).
-    #   정책이 정확히 그렇게 도망쳤다 — 턱-컵 148 → 242 mm, λ 0.036 → 0.0000.
-    #   자매 트랙이 남긴 원칙도 같다: "보상이 전 항 **비음수**라 조기 종료는 그 자체로 손해".
-    # 감쇠 강도는 0.5 로 잡는다 — 최악(밀고+쓰러뜨림)이 0.25× 라, 컵 곁(1.34×0.25=0.34)이
-    #   도망(0.29)보다 여전히 낫다. 즉 벌점이 "접근 자체"가 아니라 "접근 **방식**"만 벌한다.
-    push_q = ((s.xy_disp - P.STAGE_PUSH_MARGIN_M) / P.STAGE_PUSH_REF_M).clamp(0.0, 1.0)
-    tilt_q = (1.0 - s.nu) * (
-        (s.tilt_deg - P.STAGE_TILT_MARGIN_DEG) / P.STAGE_TILT_REF_DEG).clamp(0.0, 1.0)
-    return reach * (1.0 - P.STAGE_PUSH_ATTEN * push_q) * (1.0 - P.STAGE_TILT_ATTEN * tilt_q)
+    depth = (s.enter_s - P.STAGE_ENTER_DEPTH_TARGET_M).abs().clamp(
+        max=P.STAGE_ENTER_DEPTH_CAP_M)
+    lateral = s.jaw_l.abs().clamp(max=P.STAGE_JAW_LATERAL_CAP_M)
+    height = (s.height_h.abs() - P.STAGE_HEIGHT_BAND_HALF_M).clamp(
+        min=0.0, max=P.STAGE_HEIGHT_CAP_M)
+    # 자세는 파지가 성립하면(μ) 끈다 — 이송 중 손목을 흔들어 파지를 깨면 안 된다.
+    orient = (1.0 - s.perp_q) * (1.0 - s.mu)
+    return (P.STAGE_ENTER_DEPTH_WEIGHT * depth
+            + P.STAGE_JAW_LATERAL_WEIGHT * lateral
+            + P.STAGE_HEIGHT_WEIGHT * height
+            + P.STAGE_ORIENT_PENALTY_WEIGHT * orient)
+
+
+def stage_tip(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
+) -> torch.Tensor:
+    """전도 — **벌점 크기(양수)**. 구 `object_tipped` **종료를 대체**한다.
+
+    ★★종료였을 때 무슨 일이 있었나(t42 실측): 컵 앞에 있으면 tipped 0.82 · 에피소드 83
+      스텝 · 리턴 0.72. 물러서면 tipped 0.00 · 300 스텝 · 리턴 2.95. **도망이 4.1배**였고
+      정책은 정확히 그렇게 했다. 종료는 "조심해서 잡아라"가 아니라 "근처에 가지 마라"를
+      가르친다. 벌점으로 바꾸면 미래 보상이 안 끊기므로 도망칠 이유가 사라진다.
+    ★리프트 후에는 `(1−ν)` 로 끈다 — 이송 중 기울기는 `U_tol`·`U_up` 이 맡는다.
+      상시 걸면 사용자 규격("15° 이내면 됨")과 어긋난다.
+    ★크기: 60° 에서 1.5 로 잡아 **물러서 있기(≈0.85)보다 나쁘게** 한다. 그래야
+      "쓰러뜨리기 < 물러서기 < 제대로 잡기" 순서가 선다.
+    """
+    s = _stage(env, jaw_cfg, sensor_names)
+    excess = (s.tilt_deg - P.STAGE_TIP_MARGIN_DEG).clamp(min=0.0)
+    return (P.STAGE_TIP_PER_DEG * excess).clamp(max=P.STAGE_TIP_PENALTY_MAX) * (1.0 - s.nu)
 
 
 def stage_contact(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
 ) -> torch.Tensor:
-    """② 접촉 — **무게이트 shaping**. 닿은 턱 비율 ∈ {0, 0.5, 1}.
+    """② 접촉 — 무게이트, **파지 기하를 곱한다**: `닿은턱비율 × grasp_quality`.
 
-    ★논문의 `r_contact` 는 `μ·r_grasping` 안에 있어 **전 손가락이 닿기 전에는 죽어 있다**.
-      그 결과 λ=1·μ=0 구간에 보상이 없다. 자매 트랙 `agnostic/tasks/grasp_sensor` 가
-      실측으로 이 사각지대를 발견해 무게이트 shaping 으로 고쳤다
-      (`stage_contact_weight = 1.0  # 게이트 없음 — λ=1·μ=0 사각지대 방지`).
-      우리도 고친 쪽을 쓴다.
+    ★★fab_test43 에서 기하 곱을 넣었다. approach 가 벌점이 되면 스텝당 값이 작아지는데
+      (정체점 −0.85 · 컵 앞 −0.1), 구 무게이트 `touch_frac` 은 **손끝 하나로 컵 옆구리를
+      누르기만 해도 +0.5** 라 제대로 자리잡고 안 닿은 것보다 네 배 나았다. 그리고 그
+      행동은 컵을 쓰러뜨린다. 실측 기하로 검산:
+          컵 옆구리(lateral 85.5 mm) grasp_quality 0.116 → 0.5 × 0.116 = **0.058**
+          제대로 감쌈(lateral 20 · along 13 mm) 1.00     → 1.0 × 1.00  = **1.00**
+      옆구리 찌르기가 17배 죽는다.
+    ★무게이트를 유지하는 이유(λ=1·μ=0 사각지대)는 그대로다. 다만 그 사각지대는 이제
+      거리 벌점이 s→46.9 mm 까지 **단조**로 이어져 이미 메워져 있다.
     """
-    return _stage(env, jaw_cfg, sensor_names).touch_frac
+    return _stage(env, jaw_cfg, sensor_names).grasp_q
 
 
 def stage_grasp(
@@ -1277,6 +1299,11 @@ stage_diag_rho = _mk_diag("rho")
 stage_diag_tilt_deg = _mk_diag("tilt_deg")
 stage_diag_perp_q = _mk_diag("perp_q")
 stage_diag_d_goal = _mk_diag("d_goal")
+# ★사용자 규격 `BASE — CUP(xy) — TCP` 를 TB 에서 직접 본다.
+#   `enter_s` 가 (0, 80) mm 창 안으로 들어와 46.9 mm 로 수렴하면 순서가 성립한 것이다.
+stage_diag_enter_s = _mk_diag("enter_s")
+stage_diag_jaw_l = _mk_diag("jaw_l")
+stage_diag_height_h = _mk_diag("height_h")
 
 
 def stage_palm_cmd_rate(
