@@ -1151,18 +1151,21 @@ def stage_perp_bridge(
 def stage_close_bridge(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
 ) -> torch.Tensor:
-    """bridge② 폐쇄 다리 — `λ · U_perp · 폐쇄도` (fab_test53, 사용자 승인).
+    """bridge② 폐쇄 다리 — `λ · U_perp · straddle · 폐쇄도` (fab_test54, 사용자 승인).
 
     리미터가 "우연한 요동" 탐색원을 없애 접촉 발견이 어려워진 공백을 메운다
     (agnostic close_bridge 이식). 근접+수평 상태에서 그리퍼를 닫는 진행 자체에 소액.
     ★접촉해도 끄지 않는다([[grip-contact-cliff]]). 기울인 채 닫기는 U_perp 가 0 으로.
+    ★★straddle (fab_test54): t53 이 λ(등방 120 mm)만으로 열려 **허공 닫기**가
+      approach 의 70% 수입이 됐다(jaw_l 55 mm·contact 0.0008·tipped 0.74 — 닫힌
+      턱으로 전진해 컵을 침). 컵이 두 턱 **사이**여야만 지급 — "BASE—CUP—TCP" 강제.
     """
     s = _stage(env, jaw_cfg, sensor_names)
     robot: Articulation = env.scene[jaw_cfg.name]
     gid, _ = robot.find_joints(list(P.GRIPPER_JOINT_NAMES), preserve_order=True)
     closure = (1.0 - robot.data.joint_pos[:, gid].mean(dim=-1)
                / P.GRIPPER_OPEN_POS).clamp(0.0, 1.0)
-    return s.lam * s.U_perp * closure
+    return s.lam * s.U_perp * s.straddle * closure
 
 
 def stage_tip(
@@ -1293,6 +1296,7 @@ stage_diag_d_goal = _mk_diag("d_goal")
 stage_diag_enter_s = _mk_diag("enter_s")
 stage_diag_jaw_l = _mk_diag("jaw_l")
 stage_diag_height_h = _mk_diag("height_h")
+stage_diag_straddle = _mk_diag("straddle")
 
 
 def stage_palm_cmd_rate(

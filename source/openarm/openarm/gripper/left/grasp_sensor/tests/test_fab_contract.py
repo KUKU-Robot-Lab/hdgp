@@ -1771,7 +1771,10 @@ def test_bridge_terms_give_gradient_the_gate_lacks():
     pb = rsrc.split("def stage_perp_bridge(")[1].split("\ndef ")[0]
     assert "s.lam * s.U_perp" in pb
     cb = rsrc.split("def stage_close_bridge(")[1].split("\ndef ")[0]
-    assert "s.lam * s.U_perp * closure" in cb, "close_bridge 가 λ·U_perp 게이트를 안 쓴다"
+    assert "s.lam * s.U_perp * s.straddle * closure" in cb, (
+        "close_bridge 는 λ·U_perp·straddle 게이트여야 한다 — t53 실측: λ(등방 120mm)만"
+        "으로는 jaw_l 55mm 허공 닫기가 approach 의 70% 수입이 됐고 tipped 0.74"
+    )
     assert "touch" not in cb.split('\"\"\"')[-1], (
         "close_bridge 가 접촉으로 꺼진다 — grip-contact-cliff 재발 경로"
     )
@@ -1779,3 +1782,18 @@ def test_bridge_terms_give_gradient_the_gate_lacks():
     assert total < P.STAGE_GRASP_WEIGHT, (
         f"bridge 합 {total} 이 grasp({P.STAGE_GRASP_WEIGHT}) 이상 — 다리에 눌러앉는다"
     )
+
+
+def test_close_bridge_straddle_single_ruler():
+    """★fab_test54(사용자 승인): straddle 은 stages 가 `_enclose` 로 한 번 계산한다.
+
+    _enclose 는 band-clamp 판(min(s_l,s_r), 허공 감쌈 0.069 실증 — 구 max 판은 허공
+    170mm 에서 74% 파밍). 다른 자를 만들면 조용히 어긋난다(자 두 개 금지 규칙).
+    """
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert '"straddle"' in ssrc, "StageState.__slots__ 에 straddle 이 없다"
+    assert "s.straddle = rewards._enclose(" in ssrc, (
+        "straddle 이 _enclose 재사용이 아니다 — 자 두 개 금지"
+    )
+    assert "P.JAW_ENCLOSE_HALF_WIDTH" in ssrc, "half_width 가 preset 상수가 아니다"

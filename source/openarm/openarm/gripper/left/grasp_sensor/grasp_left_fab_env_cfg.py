@@ -447,7 +447,7 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
 
         # ── 단계 진단 — "TB events logging 값 매칭"(사용자 지시) ──────
         for _d in ("lam", "mu", "nu", "rho", "tilt_deg", "perp_q", "d_goal",
-                   "enter_s", "jaw_l", "height_h"):
+                   "enter_s", "jaw_l", "height_h", "straddle"):
             setattr(self.rewards, f"diag_stage_{_d}", RewTerm(
                 func=getattr(rewards, f"stage_diag_{_d}"), weight=0.0, params=_sa()))
 

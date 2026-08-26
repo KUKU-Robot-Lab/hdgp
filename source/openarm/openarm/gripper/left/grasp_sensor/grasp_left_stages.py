@@ -81,6 +81,7 @@ class StageState:
         "perp_q", "align_q", "grasp_q",
         "axis_tilt_deg", "U_perp",          # 접근축 수직 게이트 (fab_test52)
         "enter_s", "jaw_l", "height_h",     # gripper_base 프레임 3축 분해
+        "straddle",                         # 양 턱이 컵 축을 사이에 두는 정도 (fab_test54)
     )
 
 
@@ -195,6 +196,12 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     # ── 단계 진척량 ──────────────────────────────────────────────────
     # ★파지 품질은 **접촉을 곱한다** — 기하만으로는 0 이어야 한다. t38 이 기하 투영만
     #   보는 `enclose` 로 **170 mm 허공에서 closure 를 상한의 74%** 까지 받았다.
+    # ★fab_test54: close_bridge 게이트 — t53 실측 jaw_l 55 mm(허용 ±12.75)에서
+    #   허공 닫기가 approach 의 70% 수입이었다. 컵이 **두 턱 사이**여야만 닫기 지급.
+    #   _enclose 는 band-clamp 판(허공 감쌈 0.069 실증) — 접촉 후에도 유지된다.
+    s.straddle = rewards._enclose(
+        env, P.JAW_ENCLOSE_HALF_WIDTH, P.JAW_PAD_OFFSET, jaw_cfg,
+        SceneEntityCfg("object"))
     s.grasp_q = rewards.grasp_quality(
         env, P.GRASP_GATE_LATERAL_OK, P.GRASP_GATE_ALONG_OK,
         P.JAW_PAD_OFFSET, jaw_cfg) * s.touch_frac
