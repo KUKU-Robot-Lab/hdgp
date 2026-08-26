@@ -47,6 +47,7 @@ def compute_tip_cyl_rewards(
     obj_up: torch.Tensor,             # (N,3) 물체 +z(컵 축). 인식 pose 에서 나온다
     obj_speed: torch.Tensor,          # (N,) 물체 선속도 크기 [m/s] — stay 판정
     corridor_ok: torch.Tensor,        # (N,) [0,1] · 코리더 래치 통과(에피소드 내 위반 이력 없음)
+    syn_close_mean: torch.Tensor,     # (N,) [0,1] · 가용 손가락 폐쇄도 평균 — close_bridge 용
     actions: torch.Tensor,
     prev_actions: torch.Tensor,
     cfg: object,
@@ -253,6 +254,10 @@ def compute_tip_cyl_rewards(
         # ★approach 는 이미 가중·벌점이 반영된 값이다(grasp_v1 배선) — 다시 곱하지 않는다.
         "approach": approach,
         "contact": float(cfg.stage_contact_weight) * contact,
+        # close_bridge — 근접(λ) 상태의 폐쇄 진행에 소액. 접촉하면 contact/grasp 가
+        # 덮는다(끄지 않음 — grip-contact-cliff). 기본 가중 0.0 = 비활성.
+        "close_bridge": float(getattr(cfg, "stage_close_bridge_weight", 0.0))
+        * lam * syn_close_mean,
         "grasp": float(cfg.stage_grasp_weight) * grasp,
         "lift": float(cfg.stage_lift_weight) * lift,
         "transfer": float(cfg.stage_transfer_weight) * transfer,

@@ -737,6 +737,14 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     # 텔레포트(위치만 묶으면 정책이 회전으로 우회할 통로가 남는다). 0.0 = 비활성.
     # 값 비례 논리: 위치 0.1 ≈ 박스 대각의 10%/step → 회전 등가 ≈ 15°/step.
     palm_cmd_rate_limit_rot_deg: float = 0.0
+    # ── close_bridge (08.26) — "가까이서 조이기 시작" 구간의 gradient 공백 다리 ────
+    # B(corridor_lim01) 실측: 62~74mm 접근 상태 500ep 동안 폐쇄 미발생, ep778 폐쇄
+    # 시도 시 R 25분의 1 → 회귀. 접근 보상은 손가락 상태 무관·폐쇄 보상은 접촉부터라
+    # "근접+폐쇄 시작"만 무보상 지대다. r = w·λ·syn_close(가용 평균):
+    #   멀면 λ=0 → 펴고 접근 유지(현행 행동 불변) · 가까우면 조임에 소액 지급 ·
+    #   접촉하면 contact/grasp 가 덮는다(★접촉 시 끄지 않음 — grip-contact-cliff 함정).
+    # 0.0 = 비활성(기본). B ep1500 판정 후 오버라이드로만 켠다. reward-audit ACCEPT.
+    stage_close_bridge_weight: float = 0.0
 
     dex_approach_weight: float = 2.0
     dex_approach_sharpness: float = 8.0
