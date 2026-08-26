@@ -145,6 +145,13 @@ class GraspSensorEnv(DirectRLEnv):
         #   True 로 굳고, 리셋에서만 풀린다. True 면 보상의 ν 이후 전부 몰수.
         self._corridor_latch = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device)
+        # ★palm 지령 리미터(08.26 계획서) — 이전 지령 위치와 프라이밍 플래그.
+        #   리셋 직후 첫 지령은 "변화"가 아니라 초기화라 리미터를 걸지 않는다
+        #   (좌팔 트랙 검증 함정: 걸면 리셋마다 팔이 홈에서 몇 스텝 끌려간다).
+        self._prev_palm_cmd = torch.zeros(self.num_envs, 3, device=self.device)
+        self._palm_cmd_primed = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device)
+        self._palm_cmd_step_raw = torch.zeros(self.num_envs, device=self.device)
 
         # ---- 접촉 그룹 인덱스 ---------------------------------------------------------
         fingers = list(p.finger_sensor_bodies.keys())
@@ -837,6 +844,25 @@ class GraspSensorEnv(DirectRLEnv):
         self.palm_targets = (
             0.5 * (self.actions[:, :6] + 1.0) * (self._palm_hi - self._palm_lo)
             + self._palm_lo)
+        # ── palm 지령 리미터 (08.26 계획서 §3, 좌팔 grasp_left_fabric_action 패턴) ──
+        #   지령 **변화율**만 묶는다(위치 3D). 절대 규약 유지 — 목표는 여전히 박스 안
+        #   절대 좌표. 0.0 = 비활성(기본, corridor_test1 무영향). 회전은 1차 범위 밖
+        #   (계획서 §6 — probe 에서 회전 변화율 로깅으로 2차 결정 근거만 확보).
+        _lim = float(self.cfg.palm_cmd_rate_limit_m)
+        _step3 = self.palm_targets[:, :3] - self._prev_palm_cmd
+        # 클램프 **전** 원값 로깅(reward-clamp 규칙) — 상한이 물리는 비율의 근거.
+        self._palm_cmd_step_raw = torch.where(
+            self._palm_cmd_primed, _step3.norm(dim=-1),
+            torch.zeros_like(self._palm_cmd_step_raw))
+        if _lim > 0.0:
+            _dist = _step3.norm(dim=-1, keepdim=True)
+            _scale = (_lim / _dist.clamp(min=1e-9)).clamp(max=1.0)
+            self.palm_targets[:, :3] = torch.where(
+                self._palm_cmd_primed.unsqueeze(-1),
+                self._prev_palm_cmd + _step3 * _scale,
+                self.palm_targets[:, :3])
+        self._prev_palm_cmd = self.palm_targets[:, :3].clone()
+        self._palm_cmd_primed |= True
 
         # ---- 손 ---------------------------------------------------------------------
         if self._synergy:
@@ -1371,6 +1397,8 @@ class GraspSensorEnv(DirectRLEnv):
             float(self.cfg.stage_corridor_tilt_deg[0])
             + _cfr_log * (float(self.cfg.stage_corridor_tilt_deg[1])
                           - float(self.cfg.stage_corridor_tilt_deg[0])))
+        # palm 지령 스텝(클램프 전 원값) — 리미터 결정·포화율 판정의 근거(W-L2).
+        self.extras["fabric/palm_cmd_step_raw"] = self._palm_cmd_step_raw.mean()
         self.extras["curriculum/difficulty_max_frac"] = (
             self.difficulty == int(self.cfg.curriculum_max_level)).float().mean()
         _unused_gravity_frac = self.difficulty.float().mean() / float(
@@ -1525,6 +1553,8 @@ class GraspSensorEnv(DirectRLEnv):
         self._persist_buf[env_ids] = 0
         # ★래치는 리셋에서만 풀린다 — 안 풀면 한 번 위반한 env 가 영구 몰수된다.
         self._corridor_latch[env_ids] = False
+        # ★리미터 프라이밍 해제 — 리셋 후 첫 지령(홈→목표)은 초기화라 안 묶는다.
+        self._palm_cmd_primed[env_ids] = False
         # Fabrics 상태 씨딩 — 리셋 **외**에는 실측으로 동기화하지 않는다(오픈루프 plant)
         self.fabric_q[env_ids] = q0[:, self._fab_t]
         self.fabric_qd[env_ids] = 0.0

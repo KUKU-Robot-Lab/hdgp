@@ -51,6 +51,10 @@ parser.add_argument("--steps", type=int, default=600)
 parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--seed", type=int, default=12345)
 parser.add_argument("--print_every", type=int, default=20)
+parser.add_argument(
+    "--limits", type=str, default="",
+    help="palm 지령 리미터 A/B: 콤마 구분 m/step 값들 (예: '0,0.10,0.05'). "
+         "0=비활성. 지정 시 조건별로 같은 시드 롤아웃을 반복해 비교표를 낸다.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 args_cli.headless = True
@@ -108,6 +112,23 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
     agent = runner.create_player()
     agent.restore(args_cli.checkpoint)
 
+    limits = ([float(v) for v in args_cli.limits.split(",")]
+              if args_cli.limits else [float(getattr(core.cfg, "palm_cmd_rate_limit_m", 0.0))])
+    results = []
+    for limit in limits:
+        results.append(_run_condition(agent, env, core, limit))
+
+    if len(results) > 1:
+        _print_comparison(limits, results)
+    env.close()
+
+
+def _run_condition(agent, env, core, limit: float) -> dict:
+    """리미터 값 하나로 같은 시드 결정론 롤아웃. 요약 dict 반환."""
+    # ★조건 간 통제: 난이도를 0 으로 고정(리셋의 ±1 승급이 스폰 분포를 바꾼다)
+    #   + 같은 시드 → 스폰 동일. LSTM 은닉도 조건마다 초기화(probe_policy_sigma 교훈).
+    core.cfg.palm_cmd_rate_limit_m = float(limit)
+    core.difficulty.zero_()
     torch.manual_seed(args_cli.seed)
     with torch.inference_mode():
         obs = env.reset()
@@ -126,12 +147,13 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
     # 시계열 버퍼
     T = args_cli.steps
     tr = {k: torch.zeros(T, N, device=dev) for k in
-          ("dx", "dy", "dz", "xy", "tilt", "dgoal", "vxy", "vz")}
+          ("dx", "dy", "dz", "xy", "tilt", "dgoal", "vxy", "vz",
+           "cmd_pos", "cmd_rot")}
     gate_first = {k: torch.full((N,), -1, device=dev, dtype=torch.long)
                   for k in ("mu", "nu", "rho")}
 
-    up_w = torch.tensor([0.0, 0.0, 1.0], device=dev)
     prev_pos = None
+    prev_raw = None      # 클램프 전 원시 지령(액션에서 재구성) — 리미터 무관 측정
 
     for t in range(T):
         with torch.inference_mode():
@@ -141,6 +163,17 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
             obs, _r, _d, _i = env.step(actions)
             if isinstance(obs, dict):
                 obs = obs["obs"]
+
+        # 원시 지령 재구성(리미터 클램프 **전**) — 절대 매핑 수식 그대로.
+        _a = actions.clamp(-1.0, 1.0)
+        raw = (0.5 * (_a[:, :6] + 1.0) * (core._palm_hi - core._palm_lo)
+               + core._palm_lo)
+        if prev_raw is not None:
+            tr["cmd_pos"][t] = (raw[:, :3] - prev_raw[:, :3]).norm(dim=-1)
+            # 회전 지령 변화(euler zyx, wrap 처리) — 계획서 §6 2차 결정 근거
+            _dr = (raw[:, 3:6] - prev_raw[:, 3:6] + torch.pi) % (2 * torch.pi) - torch.pi
+            tr["cmd_rot"][t] = torch.rad2deg(_dr.norm(dim=-1))
+        prev_raw = raw.clone()
 
         pos = core._env_local(core.object.data.root_pos_w)
         quat = core.object.data.root_quat_w
@@ -174,7 +207,8 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
     P = args_cli.print_every
     print("\n" + "=" * 100, flush=True)
     print(f"리프트 궤적 실측 — {os.path.basename(args_cli.checkpoint)}", flush=True)
-    print(f"env {N} · {T} 스텝 · 결정론(σ=0) · goal = spawn + (0,0,0.15)", flush=True)
+    print(f"env {N} · {T} 스텝 · 결정론(σ=0) · goal = spawn + (0,0,0.15) · "
+          f"리미터 {limit if limit > 0 else '없음'}", flush=True)
     print("-" * 100, flush=True)
     print(f"{'step':>5} {'Δx(mm)':>8} {'Δy(mm)':>8} {'Δz(mm)':>8} {'xy이탈':>8} "
           f"{'p95xy':>8} {'tilt°':>7} {'p95tilt':>8} {'d_goal':>8} {'v_xy':>7}", flush=True)
@@ -215,9 +249,48 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
     v_end = tr["vxy"][-40:].mean()
     print(f"  수평속도  리프트 창(step {a}-{b}) {v_lift*1e3:6.1f}mm/s · "
           f"종단 {v_end*1e3:6.1f}mm/s  → 비율 {float(v_lift/max(v_end,1e-9)):.1f}배", flush=True)
+    # 지령 통계 (클램프 전 원시) — 리미터 값 결정 근거
+    cp = tr["cmd_pos"][1:].flatten()
+    cr = tr["cmd_rot"][1:].flatten()
+    bind = (cp > limit).float().mean() if limit > 0 else torch.tensor(0.0)
+    print(f"  원시 지령 스텝  pos 평균 {cp.mean()*1e3:6.1f}mm · p95 {cp.quantile(0.95)*1e3:6.1f}mm"
+          f" · p99 {cp.quantile(0.99)*1e3:6.1f}mm · 상한 초과율 {bind*100:5.1f}%", flush=True)
+    print(f"  회전 지령 스텝  평균 {cr.mean():6.2f}° · p95 {cr.quantile(0.95):6.2f}°"
+          f" · p99 {cr.quantile(0.99):6.2f}°", flush=True)
     print("=" * 100, flush=True)
 
-    env.close()
+    return {
+        "xy_max": float(xy_max.mean() * 1e3), "xy_p95": float(xy_max.quantile(0.95) * 1e3),
+        "tilt_max": float(tilt_max.mean()), "tilt_p95": float(tilt_max.quantile(0.95)),
+        "vxy_lift": float(v_lift * 1e3), "dz_end": float(dz_end.mean() * 1e3),
+        "xy_end": float(xy_end.mean() * 1e3),
+        "dgoal_end": float(tr["dgoal"][-40:].mean() * 1e3),
+        "nu_step": int(gate_first["nu"][gate_first["nu"] >= 0].float().median())
+                   if (gate_first["nu"] >= 0).any() else -1,
+        "nu_hit": float((gate_first["nu"] >= 0).float().mean() * 100),
+        "rho_hit": float((gate_first["rho"] >= 0).float().mean() * 100),
+        "cmd_p95": float(cp.quantile(0.95) * 1e3), "bind": float(bind * 100),
+    }
+
+
+def _print_comparison(limits: list, results: list) -> None:
+    rows = [("최대 xy 이탈 mm", "xy_max"), ("  p95 mm", "xy_p95"),
+            ("최대 tilt °", "tilt_max"), ("  p95 °", "tilt_p95"),
+            ("리프트창 v_xy mm/s", "vxy_lift"), ("ν 진입 step", "nu_step"),
+            ("ν 도달 %", "nu_hit"), ("ρ 도달 %", "rho_hit"),
+            ("종단 Δz mm", "dz_end"), ("종단 xy mm", "xy_end"),
+            ("종단 d_goal mm", "dgoal_end"),
+            ("지령 p95 mm(원시)", "cmd_p95"), ("상한 초과율 %", "bind")]
+    W = 24 + 12 * len(limits)
+    print("\n" + "=" * W, flush=True)
+    print("리미터 A/B 비교 (같은 시드·같은 스폰·결정론)", flush=True)
+    print("-" * W, flush=True)
+    print(f"{'지표':<24}" + "".join(
+        f"{('없음' if l == 0 else f'{l:g}m'):>12}" for l in limits), flush=True)
+    for name, key in rows:
+        print(f"{name:<24}" + "".join(
+            f"{r[key]:>12.1f}" for r in results), flush=True)
+    print("=" * W, flush=True)
 
 
 if __name__ == "__main__":

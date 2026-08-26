@@ -725,6 +725,14 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     # stage_tilt_tolerance_deg 포화점과 정렬.
     stage_corridor_xy_m: tuple[float, float] = (0.20, 0.05)
     stage_corridor_tilt_deg: tuple[float, float] = (50.0, 20.0)
+    # ── palm 지령 rate limit (08.26 계획서 승인 — 제어층 대책, 보상과 역할 분리) ────
+    # 절대 매핑은 한 스텝에 박스 대각 983mm 를 점프할 수 있고 σ=1 탐색 지터가
+    # 축별 96~212mm/step 이다(계획서 §1). 리미터는 지령 변화율만 묶는다 — 절대
+    # 규약(목표=박스 안 절대 좌표)은 유지되고 누산식 목표 인플레도 없다.
+    # ★0.0 = 비활성(기본). corridor_test1 등 기존 런은 무영향. 값은 probe A/B
+    #   ({0, 0.10, 0.05} 재생 대조) 후 다음 fresh 런에서 켠다. 후보 0.05/0.10 은
+    #   사용자 지정(좌팔 0.02 는 이 트랙 기준 과도).
+    palm_cmd_rate_limit_m: float = 0.0
 
     dex_approach_weight: float = 2.0
     dex_approach_sharpness: float = 8.0
