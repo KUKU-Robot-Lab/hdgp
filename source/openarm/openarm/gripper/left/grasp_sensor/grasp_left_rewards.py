@@ -1123,13 +1123,15 @@ def stage_approach(
     파지·리프트까지 성공한 실증). 30 mm 호버(0.74/step)는 사다리 lift(5)~stay(10)에
     언제든 역전된다.
 
-    ★원본과 두 가지만 다르다: 기준점이 컵 원점이 아니라 **파지점**(원점 −44.6 mm —
-      원점은 파지대역 밖이라 44.6 mm 높은 곳을 가리킨다), 그리고 곱셈 인자 없음.
+    ★기준점 = **컵 원점** (fab_test51, 사용자 결정). 초안은 파지점(원점 −44.6 mm =
+      실측 대역 중앙)이었으나 기각 — std 0.1 커널에 44.6 mm 는 미세 조준이 아니라
+      **바닥 쪽 바이어스**다(테이블 위 47 mm 를 가리켜 테이블 근접 위험만 키운다).
+      미세 z 는 contact/grasp 품질(파지대역 인코딩 유지)이 사다리에서 찾는다.
     ⚠ 자세(perp)·축분해 가중은 커널에 넣지 않는다 — t42 의 죄를 되살리는 길이다.
-      자세는 euler 중심 + 회전 리미터가, 축 정밀도는 contact(접촉×기하)가 맡는다.
+      자세는 euler 중심(수평 재센터) + 회전 리미터가, 축 정밀도는 contact 가 맡는다.
     """
     s = _stage(env, jaw_cfg, sensor_names)
-    return 1.0 - torch.tanh(s.d_jaw_grasp / P.APPROACH_KERNEL_STD)
+    return 1.0 - torch.tanh(s.d_jaw_cup / P.APPROACH_KERNEL_STD)
 
 
 def stage_tip(

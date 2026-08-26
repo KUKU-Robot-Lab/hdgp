@@ -80,7 +80,6 @@ class StageState:
         "U_tol", "U_up", "H", "T", "S",     # 단계 진척량
         "perp_q", "align_q", "grasp_q",
         "enter_s", "jaw_l", "height_h",     # gripper_base 프레임 3축 분해
-        "d_jaw_grasp",                      # 턱중점 ↔ 컵 파지점 유클리드 거리 (fab_test50)
     )
 
 
@@ -181,10 +180,8 @@ def compute(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
     s.align_q = torch.nn.functional.cosine_similarity(
         approach_axis, to_cup, dim=-1, eps=1e-6).clamp(-1.0, 1.0)
 
-    # ★fab_test50: 턱중점 ↔ **컵 파지점**(원점 −44.6 mm) 유클리드 거리. 원본 lift 의
-    #   `object_ee_distance` 대응 — 단 기준점을 원점이 아니라 파지점으로 둬서
-    #   BASE—CUP—TCP 순서(사용자 규격)가 커널 안에 그대로 들어간다.
-    s.d_jaw_grasp = torch.norm(jaw_mid - (cup_pt - origin), dim=-1)
+    # ★fab_test51: 커널 기준점은 **컵 원점**(= s.d_jaw_cup, 사용자 결정 — z 는 정책이
+    #   사다리 보상으로 스스로 찾는다). cup_pt(파지점)는 s/l/h 진단·순서 계약에만 남는다.
 
     # ── 단계 진척량 ──────────────────────────────────────────────────
     # ★파지 품질은 **접촉을 곱한다** — 기하만으로는 0 이어야 한다. t38 이 기하 투영만

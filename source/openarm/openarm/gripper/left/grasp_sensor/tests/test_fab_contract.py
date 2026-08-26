@@ -73,7 +73,15 @@ def test_fabric_rotation_uses_reference_euler_zyx_convention():
            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]]
     err = max(abs(R_e[i][j] - R_q[i][j]) for i in range(3) for j in range(3))
-    assert err < 1e-6, f"euler 중심이 기준 quat 자세와 다르다 (max |ΔR| = {err:.2e})"
+    # ★fab_test51: euler 중심은 더 이상 홈 quat 과 일치하지 않는다 — 접근축 수평
+    #   재센터(사용자 필수 요구)로 ey 만 −76.09° → −85.0° 로 의도적으로 옮겼다.
+    #   일치 검사 대신 **이탈이 ey 축 하나·+9° 근방**임을 고정한다(다른 축이 어긋나면
+    #   환산 버그다).
+    assert err > 1e-3, "중심이 홈 quat 그대로다 — 수평 재센터(fab_test51)가 되돌려졌다"
+    import math as _m2
+    assert abs(P.PALM_EULER_ZYX_CENTER[0] - 0.317093862) < 1e-6
+    assert abs(P.PALM_EULER_ZYX_CENTER[2] - 3.094591725) < 1e-6
+    assert abs(_m2.degrees(P.PALM_EULER_ZYX_CENTER[1]) - (-85.0)) < 0.1
 
 
 def test_fabric_rest_pose_is_this_tasks_home_not_aborted_home():
@@ -1535,34 +1543,36 @@ def test_stage_triggers_are_nested_and_match_the_paper():
 
 
 def test_approach_is_reference_pure_distance_kernel():
-    """★★fab_test50: approach = 원본 lift 순수 거리 양수 커널 (사용자 결정).
+    """★★fab_test50/51: approach = 원본 lift 순수 거리 양수 커널, 기준점 = **컵 원점**.
 
-    세 체계 소거 실측:
-      t42 양수+곱셈인자 → orient 지렛대 파밍 (죄는 양수가 아니라 **곱셈 인자**)
-      t44~48 절대 벌점  → critic 조건부 advantage 순환 + σ 반감기 ep90~200
-      t49 PBRS 차분     → 정지가 보상 중립 → "컵 앞 무한 대기"가 최적
-    원본 커널(1−tanh(d/0.1))은 가까이 서 있는 상태 자체를 매 스텝 지급하고,
-    인자가 거리 하나라 우회 파밍이 없다(t16/t17 이 같은 씬에서 이 형태로 성공).
-
-    계약:
-      · 기준점은 컵 **파지점**(원점 −44.6 mm) — 원점은 파지대역 밖
-      · **곱셈 인자 금지** — perp/align/orient 를 커널에 곱하면 t42 재발
-      · 가중 +1.0, std 0.1 (원본값)
+    체계 소거 이력: t42 양수+곱셈인자(파밍) → t44~48 벌점(critic 순환·σ붕괴) →
+    t49 차분(정지 중립 = 무한 대기) → 원본 커널 복귀.
+    기준점은 파지점(원점 −44.6) 초안을 기각하고 **원점**(사용자 결정) — std 0.1 커널에
+    44.6 mm 는 미세 조준이 아니라 바닥 쪽 바이어스다. 미세 z 는 사다리(contact/grasp
+    품질의 파지대역 인코딩)가 찾는다.
+    계약: 곱셈 인자 금지(perp/align/orient) · 가중 +1.0 · std 0.1.
     """
-    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
-        encoding="utf-8")
-    assert "cup_z * P.CUP_ORIGIN_TO_GRASP_Z" in ssrc, "기준점이 파지점이 아니다"
-    assert "s.d_jaw_grasp = torch.norm(jaw_mid - (cup_pt" in ssrc, "파지점 거리가 없다"
     rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
         encoding="utf-8")
     body = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
-    assert "1.0 - torch.tanh(s.d_jaw_grasp / P.APPROACH_KERNEL_STD)" in body, (
-        "approach 가 원본 커널이 아니다"
+    assert "1.0 - torch.tanh(s.d_jaw_cup / P.APPROACH_KERNEL_STD)" in body, (
+        "approach 가 원점 기준 원본 커널이 아니다"
     )
-    code = body.split('"""')[-1]          # docstring 뒤 코드부만 검사
-    for lever in ("perp_q", "align_q", "orient", "s.phi"):
-        assert lever not in code, f"커널에 {lever} 가 곱해져 있다 — t42 파밍 재발 경로"
+    code = body.split('\"\"\"')[-1]
+    for lever in ("perp_q", "align_q", "orient", "s.phi", "d_jaw_grasp"):
+        assert lever not in code, f"커널에 {lever} 가 끼어 있다"
     assert P.STAGE_APPROACH_WEIGHT == 1.0 and P.APPROACH_KERNEL_STD == 0.1
+    # 접근축 수평 재센터(사용자 필수 요구) — a=0 의 접근축 world-z 성분이 ~0 이어야 한다
+    import math as _m
+    ez, ey, ex = P.PALM_EULER_ZYX_CENTER
+    axis_z_world = _m.cos(ey) * _m.cos(ex)
+    assert abs(axis_z_world) < 0.10, (
+        f"a=0 접근축이 수평에서 {_m.degrees(_m.asin(abs(axis_z_world))):.1f}° 기울어 있다"
+        " — 정책이 기울인 접근을 낸다(t8 실측 81.2° 의 뿌리)"
+    )
+    assert abs(abs(_m.degrees(ey)) - 90.0) > 3.0, (
+        "ey 가 짐벌 특이점(±90°) 3° 이내다 — ez·ex 중복으로 액션 한 차원이 죽는다"
+    )
 
 def test_tip_penalty_and_termination_coexist():
     """★fab_test50: 전도는 **벌점(연속 gradient) + terminated(60° 절벽)** 병행.
