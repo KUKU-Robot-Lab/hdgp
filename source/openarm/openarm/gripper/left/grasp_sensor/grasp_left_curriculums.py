@@ -233,3 +233,63 @@ class adr_expand_on_dwell(ManagerTermBase):
                 self._ema = 0.0       # 다음 단계는 새로 벌어야 한다
                 self._apply(env)
         return float(self._level)
+
+
+class cup_stabilize_step_down(ManagerTermBase):
+    """컵 질량 배율을 시작값(×8)에서 정상(×1)까지 **단계적으로 내린다** — 거꾸로 가는 ADR.
+
+    왜 있는가 — 벌점 체계에서 탐색 노이즈는 순비용이라 σ 가 빨리 죽는데, 그 전에
+    컵을 만지는 경험이 벌(전도)로만 끝나면 "안 만지는 법"이 먼저 수렴한다(t44~t46
+    3연속 실측). 초기 컵을 8 배 무겁게 하면 전도 임계 토크가 8 배라 브러시 접촉으로는
+    안 넘어지고, 접촉 탐색이 안전해진다. 근거 전문은 preset `CUP_STABILIZE_*` 주석.
+
+    게이트는 ADR 과 같은 규약(성공 구역 env 비율 · weight 불변)이되 지표가 `grasp` 다 —
+    무거운 컵은 못 들 수 있으므로 stay 게이트면 순환이 된다.
+    ★레벨은 단조 감소(질량 기준)만 한다. 되돌리면 정책이 두 물성 사이를 오간다.
+    """
+
+    def __init__(self, cfg: CurriculumTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._metric_idx = env.reward_manager.active_terms.index(cfg.params["metric_term"])
+        self._ema = 0.0
+        self._level = 0
+        self._last_step = -(10 ** 9)
+
+    def _scale(self, levels: int, start: float) -> float:
+        f = min(self._level / max(levels, 1), 1.0)
+        return start + (1.0 - start) * f          # start → 1.0
+
+    def _apply(self, env: ManagerBasedRLEnv, levels: int, start: float) -> None:
+        em = env.event_manager
+        cfg_ = em.get_term_cfg("cup_mass")
+        m = self._scale(levels, start)
+        cfg_.params["mass_distribution_params"] = (m, m)
+        em.set_term_cfg("cup_mass", cfg_)
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        env_ids: Sequence[int],
+        metric_term: str,
+        trigger: float,
+        levels: int,
+        start_scale: float,
+        min_steps_between: int,
+        ema_alpha: float,
+    ) -> float:
+        if self._level == 0 and self._last_step < 0:
+            self._apply(env, levels, start_scale)      # 시작 배율을 명시적으로 써 둔다
+            self._last_step = 0
+        if self._level < levels:
+            cur = float(
+                (env.reward_manager._step_reward[:, self._metric_idx] > 0.0).float().mean()
+            )
+            self._ema = (1.0 - ema_alpha) * self._ema + ema_alpha * cur
+            step = int(env.common_step_counter)
+            if self._ema >= trigger and step - self._last_step >= min_steps_between:
+                self._level += 1
+                self._last_step = step
+                self._ema = 0.0
+                self._apply(env, levels, start_scale)
+        # TB `Curriculum/cup_stabilize` — 현재 **질량 배율**을 그대로 찍는다(레벨 아님).
+        return self._scale(levels, start_scale)

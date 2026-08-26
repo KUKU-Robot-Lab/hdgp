@@ -482,7 +482,10 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
             mode="reset",
             params={
                 "asset_cfg": SceneEntityCfg("object"),
-                "mass_distribution_params": P.ADR_CUP_MASS_SCALE[0],
+                # ★fab_test47: 첫 리셋부터 무거운 컵이어야 한다 — 커리큘럼의 level-0
+                #   _apply 는 첫 curriculum compute 때 오므로 등록값도 시작 배율로 둔다.
+                "mass_distribution_params": (P.CUP_STABILIZE_MASS_START,
+                                             P.CUP_STABILIZE_MASS_START),
                 "operation": "scale",
                 "distribution": "uniform",
             },
@@ -535,6 +538,19 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         # 원리: 난이도를 올리는 요소는 **과제가 성립한 뒤에** 켠다. fab_test14 가 그 반대를
         # 해서(억제 항을 epoch 0 부터) 이송 학습을 통째로 잃었다.
         # 전문은 grasp_left_curriculums.py docstring.
+        # ── 컵 안정화 커리큘럼 (fab_test47, 사용자 결정 A) ────────────
+        # 질량 ×8 → ×1 을 grasp 성립 비율로 단계 하강. 근거는 preset CUP_STABILIZE_*.
+        self.curriculum.cup_stabilize = CurrTerm(
+            func=curriculums.cup_stabilize_step_down,
+            params={
+                "metric_term": P.CUP_STABILIZE_METRIC_TERM,
+                "trigger": P.CUP_STABILIZE_TRIGGER,
+                "levels": P.CUP_STABILIZE_LEVELS,
+                "start_scale": P.CUP_STABILIZE_MASS_START,
+                "min_steps_between": P.CUP_STABILIZE_MIN_STEPS_BETWEEN,
+                "ema_alpha": P.CUP_STABILIZE_EMA_ALPHA,
+            },
+        )
         self.curriculum.adr = CurrTerm(
             func=curriculums.adr_expand_on_dwell,
             params={

@@ -1102,6 +1102,36 @@ FABRIC_WORLD_FILENAME = "open_gripper_left_boxes_no_table"  # ★좌팔 전용 �
 #   같은 역할(목표 5cm 내 정지 + 직립)을 `stay` 가 맡는다. 이름을 안 옮기면 env 생성이
 #   `reward_manager.active_terms.index()` 에서 죽는다(fab_test41 첫 기동에서 실제로 죽었다).
 ADR_ENABLED = True
+# ═══════════════════════════════════════════════════════════════════════════
+# 컵 안정화 커리큘럼 (fab_test47, 사용자 결정 A) — **거꾸로 가는 ADR**
+#
+# ★★t44~t46 세 판이 같은 궤적으로 죽었다: 벌점 체계에서 탐색 노이즈는 순비용이라
+#   σ 가 빨리 줄고(0.29@340 · 0.256@608 · 0.213@407), 그 σ 로 컵(134 g · 175 mm)을
+#   건드리면 넘어져서 tip 벌점 + 기하 벌점만 받는다. 거친 접촉의 보상은
+#   `contact = touch × grasp_quality` 라 기하가 나쁘면 ~0.05 — **시도의 기대값이
+#   음수**다. 그래서 "조심히 만지는 법"보다 "안 만지는 법"이 먼저 수렴했다
+#   (t46: 접촉 경험 후 cmd_x 416 → 323 후퇴, 150 mm 대기 자세 고착).
+#   [[suppression-terms-need-task-first]] 의 재현 — tip 벌점이 과제 성립 전에
+#   탐색을 벌하고 있었다.
+#
+# 처방: 초기엔 컵 질량을 8 배(≈1.07 kg)로 — 전도 임계 토크가 질량에 비례하므로
+#   브러시 접촉으로는 안 넘어진다. 탐색기의 접촉이 벌이 아니라 정보가 된다.
+#   파지(양턱 접촉)가 성립하면 단계적으로 정상 질량(×1)까지 **내린다**.
+#   기존 ADR(아래)과 방향만 반대, 기구는 동일하다.
+#
+# ⚠ 게이트 지표는 stay 가 아니라 **grasp**(μ·품질)다 — 무거운 컵은 손목 effort
+#   7 N·m 로 못 들 수 있어 stay 게이트면 원리적으로 만렙 불가(순환)다.
+#   파지가 되면 내려가고, 내려가야 리프트가 배울 수 있다.
+# ⚠ 기존 ADR 의 cup_mass lerp 는 (1,1)에서 시작하므로, 이 커리큘럼이 ×1 에
+#   도달한 뒤 ADR 이 이어받으면 값이 연속이다. ADR(stay 게이트)이 이보다 먼저
+#   발동할 수는 없다(stay 는 grasp 의 상위 단계).
+CUP_STABILIZE_MASS_START = 8.0     # 시작 질량 배율
+CUP_STABILIZE_LEVELS = 7           # 8.0 → 1.0 을 7 단계 lerp
+CUP_STABILIZE_METRIC_TERM = "grasp"
+CUP_STABILIZE_TRIGGER = 0.10       # grasp 스텝보상 > 0 인 env 비율(ADR 과 같은 규약)
+CUP_STABILIZE_EMA_ALPHA = 0.01
+CUP_STABILIZE_MIN_STEPS_BETWEEN = 1500   # = ADR 과 동일(5 에피소드 분량 env 스텝)
+
 ADR_METRIC_TERM = "stay"   # 진행 지표(EMA) — DexPour 사다리의 마지막 칸
 ADR_METRIC_EMA_ALPHA = 0.01
 # ★★fab_test22 원본 정합: kuka 는 **성공 구역에 있는 env 비율 > 0.4** 로 올린다

@@ -1693,3 +1693,28 @@ def test_approach_requires_tcp_z_perpendicular_to_world_z():
         encoding="utf-8")
     body = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
     assert "s.perp_q" in body, "approach 가 자세 조건을 안 쓴다"
+
+
+def test_cup_stabilize_curriculum_contract():
+    """★fab_test47: 컵 안정화 커리큘럼 — 무거운 컵으로 시작해 grasp 성립 후에만 내린다.
+
+    벌점 체계에서 탐색 노이즈는 순비용이라 σ 가 조기 붕괴하고(t44~t46: 0.29/0.256/0.213),
+    그 전에 컵 접촉 경험이 전도 벌로만 끝나면 "안 만지는 법"이 먼저 수렴한다.
+    질량 ×8 은 전도 임계 토크를 8 배로 올려 접촉 탐색을 안전하게 만든다.
+    """
+    assert P.CUP_STABILIZE_MASS_START >= 4.0, "시작 배율이 낮으면 전도 억제가 안 된다"
+    assert P.CUP_STABILIZE_METRIC_TERM == "grasp", (
+        "게이트가 stay 면 순환이다 — 무거운 컵은 손목 effort 7 N·m 로 못 들 수 있다"
+    )
+    fab = _fab_src()
+    assert "self.curriculum.cup_stabilize = CurrTerm(" in fab, "커리큘럼이 등록되지 않았다"
+    assert "(P.CUP_STABILIZE_MASS_START," in fab, (
+        "cup_mass 이벤트의 등록값이 시작 배율이 아니다 — 첫 curriculum compute 전의 리셋이 정상 질량으로 돈다"
+    )
+    csrc = _src("grasp_left_curriculums.py")
+    assert "class cup_stabilize_step_down(" in csrc
+    assert "start + (1.0 - start) * f" in csrc, "질량이 시작 배율에서 1.0 으로 내려가야 한다"
+    # entropy 짝(사용자 결정 C) — 벌점 체계의 σ 조기 붕괴 대책
+    agent = (Path(__file__).resolve().parents[1] / "config" / "agents"
+             / "rl_games_ppo_fab_mlp_cfg.yaml").read_text(encoding="utf-8")
+    assert "entropy_coef: 0.005" in agent, "벌점 체계에서 entropy 0.002 는 3연속 σ 붕괴를 냈다"
