@@ -1750,4 +1750,32 @@ def test_ladder_is_perp_gated_until_lift():
         "approach 커널에 게이트가 곱해졌다 — 커널은 순수 거리여야 한다"
     )
     assert P.STAGE_MU_PERP_MAX_DEG <= 25.0, "μ 수직 조건이 너무 느슨하다(t51 수법이 25°)"
-    assert P.STAGE_PERP_GATE_DEG[0] > P.STAGE_PERP_GATE_DEG[1], "smoothstep 방향이 뒤집혔다"
+    assert P.STAGE_PERP_GATE_DEG == (30.0, 10.0), "U_perp 상수가 사용자 지정(30→10)이 아니다"
+
+
+def test_bridge_terms_give_gradient_the_gate_lacks():
+    """★fab_test53(사용자 승인): bridge 2종 — 게이트가 못 주는 방향타.
+
+    t52 실측: 수직 게이트만 넣자 정책이 커널 이득(기울여 손끝 내리기)으로 ~28° 에
+    정착해 μ 0.0000 완전 잠김. agnostic/grasp_sensor 의 bridge 구조 이식(그 트랙 주석:
+    "리미터가 '우연한 요동' 탐색원을 없애 생긴 공백을 다리로").
+      perp_bridge  = λ·U_perp          수평 유지의 매 스텝 지급 (방향타)
+      close_bridge = λ·U_perp·폐쇄도    접촉 발견 다리. 접촉해도 안 끈다(grip-contact-cliff)
+    파밍 상한: 합 0.8/step < grasp(3)~stay(10).
+    """
+    fab = _fab_src()
+    assert "self.rewards.perp_bridge = RewTerm(" in fab, "perp_bridge 미등록"
+    assert "self.rewards.close_bridge = RewTerm(" in fab, "close_bridge 미등록"
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    pb = rsrc.split("def stage_perp_bridge(")[1].split("\ndef ")[0]
+    assert "s.lam * s.U_perp" in pb
+    cb = rsrc.split("def stage_close_bridge(")[1].split("\ndef ")[0]
+    assert "s.lam * s.U_perp * closure" in cb, "close_bridge 가 λ·U_perp 게이트를 안 쓴다"
+    assert "touch" not in cb.split('\"\"\"')[-1], (
+        "close_bridge 가 접촉으로 꺼진다 — grip-contact-cliff 재발 경로"
+    )
+    total = P.STAGE_PERP_BRIDGE_WEIGHT + P.STAGE_CLOSE_BRIDGE_WEIGHT
+    assert total < P.STAGE_GRASP_WEIGHT, (
+        f"bridge 합 {total} 이 grasp({P.STAGE_GRASP_WEIGHT}) 이상 — 다리에 눌러앉는다"
+    )

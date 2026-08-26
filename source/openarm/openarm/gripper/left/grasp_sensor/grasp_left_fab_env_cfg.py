@@ -421,6 +421,11 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
             func=rewards.stage_tip, weight=P.STAGE_TIP_WEIGHT, params=_sa())
         self.rewards.contact = RewTerm(
             func=rewards.stage_contact, weight=P.STAGE_CONTACT_WEIGHT, params=_sa())
+        # ── bridge 2종 (fab_test53, 사용자 승인 — 근거는 preset STAGE_*_BRIDGE 주석) ──
+        self.rewards.perp_bridge = RewTerm(
+            func=rewards.stage_perp_bridge, weight=P.STAGE_PERP_BRIDGE_WEIGHT, params=_sa())
+        self.rewards.close_bridge = RewTerm(
+            func=rewards.stage_close_bridge, weight=P.STAGE_CLOSE_BRIDGE_WEIGHT, params=_sa())
         self.rewards.grasp = RewTerm(
             func=rewards.stage_grasp, weight=P.STAGE_GRASP_WEIGHT, params=_sa())
         self.rewards.lift = RewTerm(

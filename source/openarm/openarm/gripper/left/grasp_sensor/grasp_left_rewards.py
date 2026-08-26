@@ -1134,6 +1134,37 @@ def stage_approach(
     return 1.0 - torch.tanh(s.d_jaw_cup / P.APPROACH_KERNEL_STD)
 
 
+def stage_perp_bridge(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
+) -> torch.Tensor:
+    """bridge① 수평 방향타 — `λ · U_perp` (fab_test53, 사용자 승인).
+
+    t52 실측: 수직 게이트만으로는 정책이 커널 이득(기울여 손끝 내리기)으로 ~28° 에
+    정착해 μ 가 완전히 잠겼다(0.0000). 게이트는 막기만 하고 수평으로 돌아갈 gradient
+    를 못 준다 — 이 항이 근접 상태(λ)의 수평 유지를 **매 스텝** 지급해 방향타가 된다.
+    agnostic/grasp_sensor 의 bridge 구조 이식(2지판).
+    """
+    s = _stage(env, jaw_cfg, sensor_names)
+    return s.lam * s.U_perp
+
+
+def stage_close_bridge(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
+) -> torch.Tensor:
+    """bridge② 폐쇄 다리 — `λ · U_perp · 폐쇄도` (fab_test53, 사용자 승인).
+
+    리미터가 "우연한 요동" 탐색원을 없애 접촉 발견이 어려워진 공백을 메운다
+    (agnostic close_bridge 이식). 근접+수평 상태에서 그리퍼를 닫는 진행 자체에 소액.
+    ★접촉해도 끄지 않는다([[grip-contact-cliff]]). 기울인 채 닫기는 U_perp 가 0 으로.
+    """
+    s = _stage(env, jaw_cfg, sensor_names)
+    robot: Articulation = env.scene[jaw_cfg.name]
+    gid, _ = robot.find_joints(list(P.GRIPPER_JOINT_NAMES), preserve_order=True)
+    closure = (1.0 - robot.data.joint_pos[:, gid].mean(dim=-1)
+               / P.GRIPPER_OPEN_POS).clamp(0.0, 1.0)
+    return s.lam * s.U_perp * closure
+
+
 def stage_tip(
     env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
 ) -> torch.Tensor:

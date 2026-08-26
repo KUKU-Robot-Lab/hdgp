@@ -1389,7 +1389,20 @@ STAGE_PERP_EXPONENT = 2.0
 #   · contact 항에는 연속 게이트 U_perp = smoothstep(축기울기, 30°→15°)
 #   · μ 트리거에는 이진 조건 축기울기 < 20° (ν·ρ·grasp·lift 가 자동 상속 —
 #     "lift 도 world+z 로 올린다"는 요구와 정합)
-STAGE_PERP_GATE_DEG = (30.0, 15.0)   # U_perp smoothstep (contact 용)
+# ★fab_test53(사용자 정정): 하한 15° → **10°** — 10° 이하 = 1 · 30° 이상 = 0.
+STAGE_PERP_GATE_DEG = (30.0, 10.0)   # U_perp smoothstep (contact·bridge 용)
+# ★★fab_test53 bridge 2종 (사용자 승인) — agnostic/grasp_sensor 의 close/tip_bridge
+#   구조 이식(그 트랙 주석: "리미터가 '우연한 요동' 탐색원을 없애 생긴 공백을 다리로").
+#   t52 실측이 필요성을 증명했다: 수직 게이트만 넣자 정책이 커널 이득(기울여 손끝
+#   내리기)으로 ~28° 에 정착 → U_perp≈0.02 → μ 0.0000 완전 잠김. 게이트는 막기만
+#   하고 **수평으로 돌아갈 gradient 를 못 준다** — 그 방향타가 bridge 다.
+#   · perp_bridge  = w·λ·U_perp          근접 상태의 수평 유지가 매 스텝 지급
+#   · close_bridge = w·λ·U_perp·폐쇄도    근접+수평에서 닫기 진행에 소액(접촉 발견 다리)
+#     ★접촉해도 끄지 않는다([[grip-contact-cliff]] — 닿으면 끄는 보상은 접촉 회피를 가르친다)
+#   파밍 상한: 합계 0.8/step < grasp(3)~stay(10) 사다리. 둘 다 λ·U_perp 라
+#   "멀리서/기울여서"는 0.
+STAGE_PERP_BRIDGE_WEIGHT = 0.5
+STAGE_CLOSE_BRIDGE_WEIGHT = 0.3
 STAGE_MU_PERP_MAX_DEG = 20.0         # μ 트리거 이진 조건
 # ★구 `STAGE_ALIGN_FLOOR`·`STAGE_ORIENT_FLOOR` 제거. 곱셈 shaping 의 floor 였는데
 #   fab_test43 에서 approach 가 덧셈 벌점이 되어 floor 개념 자체가 없어졌다.
