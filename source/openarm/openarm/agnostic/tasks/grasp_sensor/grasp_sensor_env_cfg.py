@@ -569,6 +569,13 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     stage_gc_local_override: tuple | None = (0.057, -0.001, 0.064)
     stage_approach_weight: float = 2.0
     stage_approach_sharpness: float = 8.0
+    # ★★08.26 Z-우선 접근(사용자 지시). 수직 커널은 무조건, 수평 커널은 높이가
+    #   맞아야(z_ok) 열린다 — 머리 위 호버 로컬최소 제거(좌팔 400ep 정체 실측).
+    #   band (0.15, 0.05): |Δz| 5cm 안 = 수평 커널 완전 개방, 15cm 밖 = 0.
+    #   z_frac 0.5: 수직/수평 커널 반반 — 높이만 맞추고 안 오는 전략은 상한 절반이라
+    #   수평 접근(나머지 절반)이 항상 지배한다.
+    stage_approach_z_band: tuple[float, float] = (0.15, 0.05)
+    stage_approach_z_frac: float = 0.5
     # ★★08.25 5단계 소프트 게이트 재편(사용자 지정):
     #   approach → grasp(5지+palm 밀착) → lift → transfer&stabilize → stay
     # ─ 자세(approach 인자) ─────────────────────────────────────────────────────
@@ -744,7 +751,17 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   멀면 λ=0 → 펴고 접근 유지(현행 행동 불변) · 가까우면 조임에 소액 지급 ·
     #   접촉하면 contact/grasp 가 덮는다(★접촉 시 끄지 않음 — grip-contact-cliff 함정).
     # 0.0 = 비활성(기본). B ep1500 판정 후 오버라이드로만 켠다. reward-audit ACCEPT.
+    # ★v2 (08.26 사용자 지시): mean → **min(엄지, 4지)**. v1 평균은 한쪽만 감아도
+    #   지급됐다 — B(s42)는 엄지만 0.6 감고 점화(시드 운), C(s777)는 엄지를 편 채
+    #   700ep 미점화. min 은 항상 뒤처진 그룹에 gradient 를 준다("모두 잡히게").
     stage_close_bridge_weight: float = 0.0
+    # ── lift_bridge (08.26 사용자 지시) — "파지→리프트" gradient 공백 다리 ─────────
+    # 리프트 보상은 ν 게이트(h≥stage_gate_lift_m=5cm) 아래에서 정확히 0 이라
+    # 0→5cm 가 무보상 지대다. 구 정책은 지령 텔레포트의 우연한 상방 요동으로
+    # 건넜는데 리미터가 그 우연을 제거 → B 가 h 2mm 에서 1,600ep 정체(실측).
+    # r = w·μ·(h/0.05).clamp(0,1): 파지(μ) 상태의 첫 mm 부터 지급, 5cm 에서 ν 가
+    # 이어받음. P1(h=0 → 정확히 0) 충족. 0.0 = 비활성(기본). reward-audit ACCEPT.
+    stage_lift_bridge_weight: float = 0.0
 
     dex_approach_weight: float = 2.0
     dex_approach_sharpness: float = 8.0

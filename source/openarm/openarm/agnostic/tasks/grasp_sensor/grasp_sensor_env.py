@@ -1215,10 +1215,15 @@ class GraspSensorEnv(DirectRLEnv):
                 obj_up=self._obj_up_vec(),
                 obj_speed=torch.norm(self.object.data.root_lin_vel_w, dim=-1),
                 corridor_ok=(~self._corridor_latch).float(),
-                # close_bridge 용 폐쇄도 — 가용 손가락 소속 관절의 평균. synergy 가
-                # 아닌 경로에는 0(브리지 항은 synergy 폐쇄도 정의 위에서만 의미).
-                syn_close_mean=(
-                    self._syn_close[:, torch.isin(self._syn_fi, self._usable_idx)]
+                # close_bridge v2 용 폐쇄도 — 엄지 / 가용 4지(엄지 제외) 분리(min 합성).
+                # synergy 가 아닌 경로에는 0(브리지 항은 synergy 폐쇄도 위에서만 의미).
+                syn_close_thumb=(
+                    self._syn_close[:, torch.isin(self._syn_fi, self._group_a_idx)]
+                    .mean(dim=-1) if self._synergy
+                    else torch.zeros(self.num_envs, device=self.device)),
+                syn_close_fingers=(
+                    self._syn_close[:, torch.isin(self._syn_fi, self._usable_idx)
+                                    & ~torch.isin(self._syn_fi, self._group_a_idx)]
                     .mean(dim=-1) if self._synergy
                     else torch.zeros(self.num_envs, device=self.device)),
                 actions=self.actions,

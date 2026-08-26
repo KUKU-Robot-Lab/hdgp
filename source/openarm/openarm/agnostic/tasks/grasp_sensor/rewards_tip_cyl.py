@@ -47,10 +47,17 @@ def compute_tip_cyl_rewards(
     obj_up: torch.Tensor,             # (N,3) 물체 +z(컵 축). 인식 pose 에서 나온다
     obj_speed: torch.Tensor,          # (N,) 물체 선속도 크기 [m/s] — stay 판정
     corridor_ok: torch.Tensor,        # (N,) [0,1] · 코리더 래치 통과(에피소드 내 위반 이력 없음)
-    syn_close_mean: torch.Tensor,     # (N,) [0,1] · 가용 손가락 폐쇄도 평균 — close_bridge 용
     actions: torch.Tensor,
     prev_actions: torch.Tensor,
     cfg: object,
+    # ── close_bridge 폐쇄도 (전부 keyword·optional — 자매 트랙 하위호환) ────────
+    # ★grasp_lift_fabric(타 세션)이 08.26 이 함수를 재수출(single source)로 전환해
+    #   `syn_close_mean=`(v1)으로 호출한다. 그쪽 파일은 불가침이므로 v1 인자를
+    #   없애지 않고 v2(thumb/fingers 분리, min 합성)를 추가로 받는다.
+    #   v2 가 오면 v2 우선, v1 만 오면 v1(mean) 의미 유지, 둘 다 없으면 0.
+    syn_close_thumb: torch.Tensor | None = None,    # (N,) 엄지 폐쇄도 — v2
+    syn_close_fingers: torch.Tensor | None = None,  # (N,) 가용 4지(엄지 제외) 평균 — v2
+    syn_close_mean: torch.Tensor | None = None,     # (N,) v1 호환(자매 트랙 사용 중)
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
     """소프트 계층 — 하드 스위치 없음. 계층은 [0,1] 인자의 **곱셈 깊이**로 만든다.
 
@@ -207,9 +214,27 @@ def compute_tip_cyl_rewards(
     _of = float(cfg.stage_orient_floor)
     orient_q = _of + (1.0 - _of) * perp_q * roll_q
 
+    # ★★08.26 사용자 지시 — **Z-우선 접근 커널**. 구 exp(−k·d_gc) 는 3D 거리라
+    #   "위에서 27cm"와 "옆에서 27cm"를 같게 쳤고, 머리 위로 들어간 정책은 내려가려면
+    #   컵을 통과할 수 없어 **수평으로 멀어져야만(보상 손실) 내려갈 수 있는** 로컬
+    #   최소에 갇혔다 — grasp_lift_fabric h1 실측: 좌팔이 컵 직상방 수평 24mm ·
+    #   Δz 165mm 에서 400 에폭 정체(XY 먼저), 우팔은 운으로 Z 먼저를 뽑아 진행.
+    #   어느 쪽을 뽑느냐가 시드 운인 보상은 나쁘다. 물체 XYZ 를 아는데 순서를
+    #   보상이 지정하지 않을 이유가 없다.
+    #   구조: 수직 커널은 **무조건** 지급(Z 부터 맞춰라), 수평 커널은 높이가 맞아야
+    #   (z_ok) 열린다 — 머리 위 호버는 수평 커널이 0 이라 아무것도 못 벌고,
+    #   side-to-side 로 같은 높이에서 다가오는 경로만 만점이 된다.
+    _dvec = object_pos - grasp_center_pos
+    _dz_gc = (_dvec * ref_up).sum(dim=-1).abs()
+    _dxy_gc = (_dvec - (_dvec * ref_up).sum(dim=-1, keepdim=True) * ref_up).norm(dim=-1)
+    z_ok = smoothstep(_dz_gc, *cfg.stage_approach_z_band)   # (0.15,0.05): 5cm 안 = 1.0
+    _zf = float(cfg.stage_approach_z_frac)
+    _sharp = float(cfg.stage_approach_sharpness)
+    _kern = (_zf * torch.exp(-_sharp * _dz_gc)
+             + (1.0 - _zf) * z_ok * torch.exp(-_sharp * _dxy_gc))
     approach = (
         float(cfg.stage_approach_weight)
-        * torch.exp(-float(cfg.stage_approach_sharpness) * d_gc)
+        * _kern
         * (_al + (1.0 - _al) * 0.5 * (1.0 + align))
         * orient_q
         - float(cfg.stage_approach_xy_penalty)
@@ -254,10 +279,20 @@ def compute_tip_cyl_rewards(
         # ★approach 는 이미 가중·벌점이 반영된 값이다(grasp_v1 배선) — 다시 곱하지 않는다.
         "approach": approach,
         "contact": float(cfg.stage_contact_weight) * contact,
-        # close_bridge — 근접(λ) 상태의 폐쇄 진행에 소액. 접촉하면 contact/grasp 가
-        # 덮는다(끄지 않음 — grip-contact-cliff). 기본 가중 0.0 = 비활성.
+        # close_bridge v2 — 근접(λ) 상태의 폐쇄 진행에 소액. ★min(엄지, 4지):
+        # 항상 뒤처진 그룹에 gradient("모두 잡히게" — 사용자 지시). 접촉하면
+        # contact/grasp 가 덮는다(끄지 않음 — grip-contact-cliff). 기본 0.0.
+        # v1 호출(syn_close_mean)은 mean 의미 유지(자매 트랙 하위호환).
         "close_bridge": float(getattr(cfg, "stage_close_bridge_weight", 0.0))
-        * lam * syn_close_mean,
+        * lam * (
+            torch.minimum(syn_close_thumb, syn_close_fingers)
+            if syn_close_thumb is not None and syn_close_fingers is not None
+            else (syn_close_mean if syn_close_mean is not None
+                  else torch.zeros_like(lam))),
+        # lift_bridge — 파지(μ) 상태의 상승 첫 mm 부터 ν 게이트(5cm)까지의 다리.
+        # 리미터가 "우연한 상방 요동" 탐색원을 없애 생긴 공백(B 실측 h 2mm 정체).
+        "lift_bridge": float(getattr(cfg, "stage_lift_bridge_weight", 0.0))
+        * mu * (height_delta / float(cfg.stage_gate_lift_m)).clamp(0.0, 1.0),
         "grasp": float(cfg.stage_grasp_weight) * grasp,
         "lift": float(cfg.stage_lift_weight) * lift,
         "transfer": float(cfg.stage_transfer_weight) * transfer,
@@ -271,6 +306,9 @@ def compute_tip_cyl_rewards(
 
     # 진단용(보상 아님) — env 가 로깅에서 pop 한다.
     terms["_d_gc"] = d_gc
+    terms["_dz_gc"] = _dz_gc        # ★수직 성분 — Z-우선이 실제로 먼저 닫히는지 직독
+    terms["_dxy_gc"] = _dxy_gc
+    terms["_z_ok"] = z_ok           # 수평 커널 개방률
     terms["_align"] = align
     terms["_H"] = H
     terms["_U"] = U_up
