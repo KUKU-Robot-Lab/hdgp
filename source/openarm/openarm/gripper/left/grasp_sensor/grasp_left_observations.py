@@ -36,6 +36,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import math
+
 import torch
 
 from isaaclab.assets import Articulation, RigidObject
@@ -226,3 +228,66 @@ def object_position_noisy(
     """로봇 루트 프레임 물체 위치 + 노이즈 + bias (원본 `object_pos_noisy`)."""
     pos = lift_mdp.object_position_in_robot_root_frame(env, robot_cfg, object_cfg)
     return obs_noise.corrupt(env, obs_noise.OBJ_POS, pos)
+
+
+def object_tipped(
+    env: "ManagerBasedRLEnv",
+    max_tilt_deg: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """컵이 규정 각도 이상 기울었는가 (종료 항).
+
+    ★★fab_test39 신설. **이 트랙만 전도 종료가 없었다.** 자매 트랙 넷은 전부 명시적
+      각도 종료를 가진다:
+          tesollo/right/grasp_v1   60° (`cup_tipping_max_deg`, 스크립트 램프 중 면제)
+          agnostic/tasks/grasp_sensor 60° (`tilt_reset_deg`)
+          gripper/left/grasp_v1    30° (`mdp.cup_tipped`)
+          gripper/right/grasp_v1   30°
+      우리는 `OBJECT_DROP_HEIGHT = 0.27` 이 높이로 전도를 대신하게 뒀는데, 원점 z 는
+      기울기에 둔감해 **거의 누워야** 걸린다(60° 에서 원점 0.299 > 임계 0.27 통과).
+
+    그 결과가 fab_test38 이다 — 결정론 실측에서 컵을 **45 mm 비스듬히 밀고 다니는 동안**
+    에피소드가 끝까지 살아 있었고, `drop` 은 0.039 에 머물렀다. 자매 트랙이었으면
+    끊겼을 표본이 전부 학습에 섞였다.
+
+    ⚠ 임계는 **60°** 로 잡는다. 30° 는 파지 중 필연적인 흔들림을 끊을 수 있고, 이 트랙은
+      이미 "자세 조건을 AND 게이트로 걸어 학습을 죽인" 이력이 있다(test6/test7:
+      lifting 6.14 → 0.0000, 에피소드 130 → 13, 총보상 +34.9 → −0.46). 성공 파지의
+      실측 컵 기울기는 4.1° 라 60° 는 충분히 넉넉하다.
+    ⚠ 종료는 반드시 `terminated`(= `time_out=False`)여야 한다. `truncated` 로 내보내면
+      `value_bootstrap` 이 `γ·V(s)` 를 얹어 **컵을 쓰러뜨릴 때마다 보너스**가 된다
+      (agnostic 트랙 실측: 실보상 3307→103 붕괴인데 shaped 72.8→79.4 상승).
+    """
+    obj: RigidObject = env.scene[asset_cfg.name]
+    w, x, y, _z = obj.data.root_quat_w.unbind(-1)
+    cos_tilt = 1.0 - 2.0 * (x * x + y * y)          # 컵 로컬 +z 의 world z 성분
+    return cos_tilt < math.cos(math.radians(max_tilt_deg))
+
+
+def palm_action_scale(
+    env: "ManagerBasedEnv", action_term: str = "arm_action"
+) -> torch.Tensor:
+    """현재 palm 액션 박스의 half-width (num_envs, 3) [m]. **policy obs 필수.**
+
+    ★★2-스케일 액션(fab_test40)에서 같은 액션 벡터가 문맥에 따라 다른 지령이 된다.
+      그 문맥이 관측에 없으면 POMDP 가 된다 — 정책이 자기 액션의 현재 스케일을 볼 수
+      있어야 한다. FINE 인지 COARSE 인지가 이 값 하나로 드러난다.
+    """
+    term = env.action_manager.get_term(action_term)
+    fine = term.fine_phase.unsqueeze(-1)
+    return torch.where(fine, term._fine_half.expand_as(term.fine_anchor),
+                       term._box_half.expand_as(term.fine_anchor))
+
+
+def palm_action_anchor(
+    env: "ManagerBasedEnv", action_term: str = "arm_action"
+) -> torch.Tensor:
+    """현재 액션 박스의 중심 (num_envs, 3), env 로컬 [m]. **policy obs 필수.**
+
+    COARSE 면 박스 중심, FINE 이면 진입 시점에 래치한 지령이다. 스케일과 짝으로
+    있어야 `[-1,1]` 이 어느 절대 좌표로 펼쳐지는지 정책이 알 수 있다.
+    """
+    term = env.action_manager.get_term(action_term)
+    fine = term.fine_phase.unsqueeze(-1)
+    return torch.where(fine, term.fine_anchor,
+                       term._box_center.expand_as(term.fine_anchor))

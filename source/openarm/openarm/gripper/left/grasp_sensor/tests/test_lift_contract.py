@@ -159,8 +159,18 @@ def test_lift_gate_is_measured_from_the_resting_cup_origin():
     #   Fabrics 는 그 거친 움직임을 없애려고 넣은 것이라 그 메커니즘이 사라졌다.
     #   → 높이는 **연속 램프**, 근접·자세는 게이트로 남는다.
     assert "obj_pos_w[:, 2] > minimal_height" not in rsrc, "이진 게이트가 되살아났다"
-    assert "(obj_pos_w[:, 2] - ramp_zero_z) / (minimal_height - ramp_zero_z)" in rsrc, (
-        "높이 항이 연속 램프가 아니다"
+    # ★★fab_test39: 램프의 **기준점**을 원점 z → 컵 **최저점**(`lift_height`)으로 옮겼다.
+    #   원점 z 는 기울기에 민감해 컵을 바닥 림으로 피벗시키면 최대 4.61 mm 가 **실제로 오른다**.
+    #   그래서 옛 설계는 램프 0 점을 그 위(놓인 높이 +6 mm)에 둬 방어했는데, 그러면 첫 6 mm 가
+    #   사구간이라 "접촉했는데 아직 못 든" 상태에 gradient 가 없다.
+    #   t38(4000 ep 완주) 실측이 정확히 그 함정이었다 — 컵 최대 상승 +2.9 mm(= 사구간 안),
+    #   1 cm 이상 올린 스텝 0.0%. 그 판이 한 것은 리프트가 아니라 **기울이기**였다.
+    #   최저점은 기울여도 정확히 0 이므로 사구간 없이 첫 1 mm 부터 신호가 산다.
+    assert "lift_height(env, object_cfg) / (minimal_height - P.CUP_SPAWN_Z)" in rsrc, (
+        "높이 항이 최저점 기준 연속 램프가 아니다"
+    )
+    assert "P.CUP_BASE_RADIUS * sin_tilt" in rsrc, (
+        "`lift_height` 가 기울기를 보정하지 않는다 — 기울이기가 가짜 리프트로 계산된다"
     )
     # ★08.23 램프에 enclose 를 곱한다 — 순수 램프는 "쳐 올리기" 를 부분 보상해 정책을
     #   주먹으로 고착시켰다(fab_test6: enclose 0.019 · drop% 0.733). 근거는 test_fab_contract.
@@ -868,3 +878,100 @@ def test_relative_ik_seeds_from_previous_target_and_caps_windup_by_effort():
     assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[5-7]"] < P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"]
     # 속도 한계로 잡던 값(v·dt≈0.026)으로 되돌아가면 j1-2 상한이 그 근처로 내려온다.
     assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"] > 0.05, "토크가 갇힌다"
+
+
+def test_lift_reward_is_gated_by_contact_not_by_height():
+    """★★리프트 보상의 게이트는 **접촉**이어야 한다 — 높이가 아니라.
+
+    DexPour(IROS 2025) Fig. 3 이 `μ·r_lift` 로 쓴다. `μ` 는 전 손가락 접촉이고 `ν`(높이)는
+    `r_transporting` 만 연다. 본문:
+        *"Once the cup reaches a certain height threshold, the lift reward ceases to
+          accumulate"* — 높이는 보상을 **여는 하한**이 아니라 **끊는 상한**이다.
+
+    우리는 정반대였고(`_held` 안의 `lifted` 가 하한), t22~t38 열일곱 판 내내 이 항이 0 이었다:
+        t38 최종 `lifting_object` **0.00005** vs `contact_engage` **1.774**(양 턱 동시 35%)
+    논문 Table II **Config. 4**(리프트/이송 보상 제거)가 우리와 같은 지표를 낸다 —
+    η_ft 0% · P_grasp 0% · *"never discovers a stable lifting motion"*.
+
+    ★접촉 게이트는 옛 "쳐 날리기"(test3: 리프트 판정 중 TCP–컵 3044 mm)도 막는다 —
+      튕겨 날아간 컵은 접촉이 끊겨 `contact_frac` 이 0 이다. `near` AND 보다 강하다.
+    """
+    rsrc = (
+        Path(__file__).resolve().parents[1] / "grasp_left_rewards.py"
+    ).read_text(encoding="utf-8")
+    body = rsrc.split("def object_is_held_and_lifted")[1].split("\ndef ")[0]
+    assert "contact_frac" in body, "리프트 보상이 접촉으로 게이트되지 않는다"
+    assert "quality * contact_frac * rise" in body, (
+        "리프트 보상이 `grasp_quality × 접촉비율 × 높이램프` 형태가 아니다"
+    )
+    assert "_held(" not in body, (
+        "리프트 보상이 아직 `_held`(높이 게이트)를 지난다 — 게이트 반전이 안 됐다"
+    )
+
+
+def test_grasp_pose_shapes_the_bite_before_the_lift():
+    """★★`grasp_pose` 는 리프트 **전에** 물기 자세를 만들어야 한다.
+
+    이 항은 올바른 물기 자세를 만드는 유일한 gradient 인데 `_held`(= 리프트 성립) 뒤에
+    갇혀 있었다. t38 4000 ep 완주 실측이 그 대가다:
+        grasp_pose 0.00001 · TCP z↔컵 z **49.8°**(올바름 90°) · jaw 수평이탈 **37.6°**
+        · lateral **62.4 mm**(`grasp_ok` 문턱 30 mm) · 액션 게이트 개방률 **< 0.5%**
+    물기가 비스듬해 게이트가 안 열리고 → 못 들고 → 물기를 고칠 신호가 안 온다.
+
+    ⚠ 게이트를 **그냥 제거하면 안 된다.** `jaw_level_quality` 는 로봇 자세만 보고
+      `upright` 는 컵이 서 있기만 해도 1.0 이라, 무게이트면 아무 데서나 그리퍼를 수평으로
+      들면 만점이다(reward-audit Check 2). 컵 의존 게이트가 반드시 남아야 한다.
+    """
+    rsrc = (
+        Path(__file__).resolve().parents[1] / "grasp_left_rewards.py"
+    ).read_text(encoding="utf-8")
+    body = rsrc.split("def held_with_good_pose")[1].split("\ndef ")[0]
+    assert "_held(" not in body, "`grasp_pose` 가 아직 리프트 게이트 뒤에 있다"
+    assert "gate = grasp_quality(" in body, (
+        "`grasp_pose` 의 게이트가 컵 의존(`grasp_quality`)이 아니다 — 무게이트면 해킹면이 생긴다"
+    )
+
+
+def test_cup_tipping_terminates_the_episode():
+    """★컵이 크게 기울면 종료해야 한다. **자매 트랙 넷은 전부 가진 항이고 우리만 없었다.**
+
+        tesollo/right/grasp_v1      60°   agnostic/tasks/grasp_sensor  60°
+        gripper/left/grasp_v1       30°   gripper/right/grasp_v1       30°
+
+    우리는 `OBJECT_DROP_HEIGHT`(0.27) 가 높이로 전도를 대신하게 뒀는데 원점 z 는 기울기에
+    둔감해 거의 누워야 걸린다(60° 에서 원점 0.299 > 0.27 통과). t38 결정론 실측에서
+    컵을 **45 mm 비스듬히 밀고 다니는 동안** 에피소드가 끝까지 살아 있었다.
+
+    ⚠ 반드시 `terminated` 여야 한다(`time_out=True` 금지). truncated 로 내보내면
+      `value_bootstrap` 이 `γ·V(s)` 를 얹어 **쓰러뜨리기가 보너스**가 된다
+      (agnostic 트랙 실측: 실보상 3307→103 붕괴인데 shaped 72.8→79.4 상승).
+    ⚠ 임계는 파지 중 흔들림을 끊지 않을 만큼 넉넉해야 한다 — 이 트랙은 자세 AND 게이트로
+      학습을 죽인 이력이 있다(test6/test7: lifting 6.14 → 0.0000, 에피소드 130 → 13).
+      성공 파지의 실측 컵 기울기는 4.1° 다.
+    """
+    fab_src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py"
+    ).read_text(encoding="utf-8")
+    assert "self.terminations.object_tipped = DoneTerm(" in fab_src, "전도 종료가 없다"
+    block = fab_src.split("self.terminations.object_tipped = DoneTerm(")[1].split(")")[0]
+    assert "time_out" not in block, (
+        "전도 종료가 truncated 다 — value_bootstrap 이 쓰러뜨리기에 보너스를 준다"
+    )
+    assert 30.0 <= P.OBJECT_TIP_MAX_DEG <= 60.0, (
+        f"전도 임계 {P.OBJECT_TIP_MAX_DEG}° 가 자매 트랙 범위(30~60°) 밖이다"
+    )
+    assert P.OBJECT_TIP_MAX_DEG > 20.0, "임계가 파지 중 흔들림을 끊는다"
+
+
+def test_lift_and_lateral_diagnostics_are_logged():
+    """★t38 은 이 둘을 TB 에서 못 봐 4000 epoch 내내 사후 프로브로만 확인할 수 있었다.
+
+    · `diag_lift_height` — 컵 최저점 상승. `lifting_object` 가 0 일 때 "안 들었다"인지
+      "게이트가 막았다"인지를 가른다.
+    · `diag_jaw_lateral` — `grasp_ok` 의 1차 조건이자 D2 가 겨냥하는 값(t38 62.4 mm).
+    """
+    fab_src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py"
+    ).read_text(encoding="utf-8")
+    for name in ("diag_lift_height", "diag_jaw_lateral"):
+        assert f"self.rewards.{name} = RewTerm(" in fab_src, f"{name} 진단항이 없다"

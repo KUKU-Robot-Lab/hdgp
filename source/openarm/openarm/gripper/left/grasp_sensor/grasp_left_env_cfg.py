@@ -392,8 +392,17 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   85.9% 동안 TCP–컵 평균 3044 mm). 자세한 근거는 grasp_left_rewards 참조.
         #   ⚠ goal-tracking 두 개도 내부에서 z 게이트를 직접 계산하므로 함께 교체해야 한다 —
         #     하나라도 남기면 그쪽으로 같은 hack 이 되살아난다.
+        # ★★fab_test39: `lifting_object` 의 게이트를 **높이 → 접촉**으로 반전했다.
+        #   DexPour Fig.3 의 `μ·r_lift` — 높이는 보상을 여는 하한이 아니라 끊는 상한이다.
+        #   근거 전문은 `rewards.object_is_held_and_lifted` docstring.
+        #   ⚠ goal_tracking 두 개는 `_held`(높이 게이트) 를 **유지**한다 — 논문 `ν` 에
+        #     해당하고, 이송·정지는 실제로 들린 뒤에만 의미가 있다.
         self.rewards.lifting_object.func = rewards.object_is_held_and_lifted
         self.rewards.lifting_object.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+        self.rewards.lifting_object.params["sensor_names"] = tuple(
+            f"contact_{b}" for b in P.GRIPPER_FINGER_BODIES
+        )
+        self.rewards.lifting_object.params["force_threshold"] = P.CONTACT_FORCE_THRESHOLD
         for _term in (
             self.rewards.object_goal_tracking,
             self.rewards.object_goal_tracking_fine_grained,

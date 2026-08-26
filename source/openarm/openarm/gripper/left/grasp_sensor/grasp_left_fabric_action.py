@@ -56,7 +56,9 @@ from typing import TYPE_CHECKING, Sequence
 
 import torch
 from isaaclab.managers.action_manager import ActionTerm, ActionTermCfg
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_from_euler_xyz
 
 from . import grasp_left_preset as P
 
@@ -83,6 +85,15 @@ class FabricPalmAction(ActionTerm):
         num_envs = env.num_envs
         device = env.device
         initialize_warp(str(device)[-1])
+
+        # ★2-스케일 전환 술어와 지령 마커가 씬을 읽는다. `SceneEntityCfg` 는 매니저가
+        #   제자리 변경하는 가변 객체라 여기서 직접 `resolve` 해야 body_ids 가 채워진다
+        #   (`GatedBinaryJointPositionAction` 이 쓰는 것과 같은 패턴).
+        self._env = env
+        self._jaw_cfg = SceneEntityCfg(
+            "robot", body_names=list(P.GRIPPER_FINGER_BODIES)
+        )
+        self._jaw_cfg.resolve(env.scene)
 
         self._world_model = WorldMeshesModel(
             batch_size=num_envs,
@@ -170,7 +181,51 @@ class FabricPalmAction(ActionTerm):
         self._euler_center = torch.tensor(
             P.PALM_EULER_ZYX_CENTER, device=device, dtype=torch.float32
         ).unsqueeze(0).repeat(num_envs, 1)
-        self._euler_half = float(P.PALM_MAX_POSE_ANGLE)
+        self._euler_half = torch.full(
+            (num_envs, 3), float(P.PALM_MAX_POSE_ANGLE), device=device
+        )
+        self._box_lo, self._box_hi = lo, hi
+
+        # ── 2-스케일 상태 (fab_test40) ─────────────────────────────────
+        # 근거 전문은 preset `PALM_FINE_HALF`. 앵커는 **컵이 아니라 직전 지령**이다 —
+        # 컵을 앵커로 잡으면 a=0 이 곧 정답이 되고, ADR 이 올리는 컵 관측 노이즈(≤0.03 m)가
+        # 앵커를 흔든다.
+        self._fine_phase = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self._fine_anchor = self._box_center.unsqueeze(0).repeat(num_envs, 1).clone()
+        self._fine_euler_anchor = self._euler_center.clone()
+        self._fine_half = torch.tensor(P.PALM_FINE_HALF, device=device).unsqueeze(0)
+        self._fine_euler_half = torch.full(
+            (1, 3), float(P.PALM_FINE_EULER_HALF_RAD), device=device
+        )
+        self._fine_switch_count = torch.zeros(num_envs, device=device)
+
+    # ------------------------------------------------------------------
+    def _update_scale_phase(self) -> None:
+        """COARSE ⇄ FINE 전환. 래치 + 히스테리시스, 앵커는 진입 시점의 지령."""
+        from . import grasp_left_rewards as rewards  # 순환 임포트 회피
+
+        dist = rewards.diag_jaw_cup_dist(self._env, P.JAW_PAD_OFFSET, self._jaw_cfg)
+        enter = dist < P.PALM_FINE_ENTER_DIST
+        exit_ = dist > P.PALM_FINE_EXIT_DIST
+        # ⚠ 리셋 직후(`_cmd_primed` False)에는 진입시키지 않는다 — 래치할 직전 지령이 없다.
+        enter = enter & self._cmd_primed
+        new_phase = (self._fine_phase | enter) & ~exit_
+        entering = new_phase & ~self._fine_phase
+        if entering.any():
+            self._fine_anchor[entering] = self._prev_cmd_pos[entering]
+            self._fine_euler_anchor[entering] = self._palm_pose_target[entering, 3:6]
+            self._fine_switch_count[entering] += 1.0
+        self._fine_phase = new_phase
+
+    @property
+    def fine_phase(self) -> torch.Tensor:
+        """FINE 스케일인가 (num_envs,) bool. 관측·진단이 읽는다."""
+        return self._fine_phase
+
+    @property
+    def fine_anchor(self) -> torch.Tensor:
+        """현재 앵커 (num_envs, 3), env 로컬. FINE 일 때만 의미가 있다."""
+        return self._fine_anchor
 
     # ------------------------------------------------------------------
     @property
@@ -212,7 +267,18 @@ class FabricPalmAction(ActionTerm):
         #   은 스케일 + clamp 만 하고, 변화율 상한은 fabric 이 정한다. 우리가 붙였던
         #   리미터는 자초한 굼뜸(fabric 60% 속도 · damping 하드끝 · vel_ff 0)의 증상
         #   억제기였다. 셋을 원본으로 되돌렸으므로 함께 뗀다.
-        pos = self._box_center + actions[:, :3].clamp(-1.0, 1.0) * self._box_half
+        # ── 2-스케일: 액션을 무엇에 대해 펼치는가만 문맥 의존 ──────────
+        # ★★fab_test40. 액션 의미는 **절대 규약 그대로**다. 근거 전문은 preset
+        #   `PALM_FINE_HALF` 주석 — 요약하면 지령 지터 = σ×half 라 현재 박스에서는
+        #   어떤 σ 에서도 `grasp_ok` 문턱(lateral 30 mm)을 넘을 수 없다(σ0.20 에서도 47 mm).
+        #   전환은 **래치 + 히스테리시스**. 경계에서 껐다 켜지면 정책이 두 지형을 오간다.
+        self._update_scale_phase()
+        fine = self._fine_phase.unsqueeze(-1)
+        center = torch.where(fine, self._fine_anchor, self._box_center.expand_as(self._fine_anchor))
+        half = torch.where(fine, self._fine_half, self._box_half.expand_as(self._fine_anchor))
+        pos = center + actions[:, :3].clamp(-1.0, 1.0) * half
+        # ★FINE 지령도 COARSE 박스 안에 있어야 한다 — 앵커가 박스 가장자리면 밖으로 나간다.
+        pos = torch.max(torch.min(pos, self._box_hi), self._box_lo)
         # ★★fab_test25: 지령 **변화율 상한**. 절대 규약은 그대로다 — 목표는 여전히 박스
         #   안의 절대 좌표이고, 한 스텝에 갈 수 있는 거리만 묶는다. 근거는 preset 주석.
         #   ⚠ 리셋 직후(_cmd_primed False)에는 걸지 않는다. 홈에서 첫 지령까지의 거리는
@@ -244,7 +310,14 @@ class FabricPalmAction(ActionTerm):
         # ★★fab_test21: 회전 = **euler_zyx 절대**(kuka `compute_absolute_action` 규약).
         #   a ∈ [-1,1] → 중심 ± MAX_POSE_ANGLE, 축별 독립. 구 규약(축각 3D 를 기준 quat 에
         #   합성)은 폐기. 전문·특이점 주석은 preset PALM_EULER_ZYX_CENTER 참조.
-        euler = self._euler_center + actions[:, 3:6].clamp(-1.0, 1.0) * self._euler_half
+        # ★설계안에 없던 항 — 회전도 같은 크기의 지렛대다. 팜→턱 140 mm 라 ±45° 는
+        #   σ0.35 에서 턱을 38 mm 흔들어 FINE 위치 이득(19·12·14 mm)을 그대로 삼킨다.
+        #   FINE 에서는 **회전 중심을 그 시점 지령으로 래치**하고 박스를 ±11.3° 로 좁힌다.
+        e_center = torch.where(fine, self._fine_euler_anchor,
+                               self._euler_center.expand_as(self._fine_euler_anchor))
+        e_half = torch.where(fine, self._fine_euler_half,
+                             self._euler_half.expand_as(self._fine_euler_anchor))
+        euler = e_center + actions[:, 3:6].clamp(-1.0, 1.0) * e_half
 
         self._palm_pose_target[:, :3] = pos
         self._palm_pose_target[:, 3:6] = euler
@@ -320,6 +393,52 @@ class FabricPalmAction(ActionTerm):
         self._droop[env_ids] = 0.0
         # 다음 스텝을 "첫 지령"으로 표시 — 이전 에피소드 지령에서 끌려오지 않게 한다.
         self._cmd_primed[env_ids] = False
+        # ★2-스케일 상태도 반드시 지운다. 이 트랙은 리셋 오염에 네 번 당했다 —
+        #   앵커가 남으면 새 에피소드의 첫 지령이 지난 에피소드의 파지 자세 주변으로 묶인다.
+        self._fine_phase[env_ids] = False
+        self._fine_anchor[env_ids] = self._box_center
+        self._fine_euler_anchor[env_ids] = self._euler_center[0]
+        self._fine_switch_count[env_ids] = 0.0
+
+    # ------------------------------------------------------------------
+    # 지령 마커 (GUI 학습용) — 사용자 지시: "tcp 마커말고 액션 지령 마커를 6D 로"
+    # ★TCP 마커는 `object_pose` 커맨드의 `body_pose` 다. 그쪽 `debug_vis` 를 끄고
+    #   여기서 **정책이 실제로 내는 지령**을 그린다. 큰 프레임 = 팜 지령(6D),
+    #   작은 프레임 = 이송 목표. 지령과 실제가 어긋나는 순간을 눈으로 잡기 위한 것이다
+    #   (이 트랙은 "지령과 실제를 나란히 본 적이 없어" 진단이 늘 사후 프로브가 됐다).
+    def _set_debug_vis_impl(self, debug_vis: bool) -> None:
+        if debug_vis:
+            if not hasattr(self, "_cmd_marker"):
+                from isaaclab.markers import VisualizationMarkers
+                from isaaclab.markers.config import FRAME_MARKER_CFG
+
+                cfg = FRAME_MARKER_CFG.copy()
+                cfg.prim_path = "/Visuals/PalmActionCommand"
+                self._cmd_marker = VisualizationMarkers(cfg)
+            self._cmd_marker.set_visibility(True)
+        elif hasattr(self, "_cmd_marker"):
+            self._cmd_marker.set_visibility(False)
+
+    def _debug_vis_callback(self, event) -> None:
+        # 팜 지령은 env 로컬(로봇 base)이라 world 로 올린다.
+        pos_w = self._palm_pose_target[:, :3] + self._env.scene.env_origins
+        ez, ey, ex = self._palm_pose_target[:, 3], self._palm_pose_target[:, 4], self._palm_pose_target[:, 5]
+        # ★euler_zyx (ez,ey,ex) = Rz·Ry·Rx = XYZ 규약의 (roll=ex, pitch=ey, yaw=ez).
+        quat_w = quat_from_euler_xyz(ex, ey, ez)
+        big = torch.full_like(pos_w, 0.12)
+        try:
+            goal = self._env.command_manager.get_command("object_pose")[:, :3]
+            goal_w = goal + self._env.scene.env_origins
+            ident = torch.zeros_like(quat_w); ident[:, 0] = 1.0
+            self._cmd_marker.visualize(
+                translations=torch.cat([pos_w, goal_w], dim=0),
+                orientations=torch.cat([quat_w, ident], dim=0),
+                scales=torch.cat([big, torch.full_like(big, 0.06)], dim=0),
+            )
+        except (KeyError, AttributeError):
+            self._cmd_marker.visualize(
+                translations=pos_w, orientations=quat_w, scales=big
+            )
 
 
 @configclass

@@ -174,6 +174,19 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         #   단위가 rad/s² 인 값을 clip 5 짜리 obs 에 넣은 것이 애초에 잘못이었다.
         self.observations.policy.palm_pose_target = ObsTerm(func=obs_mdp.palm_pose_target)
 
+        # ── 2-스케일 액션의 문맥 (fab_test40) ────────────────────────
+        # ★★이게 빠지면 POMDP 가 된다. 같은 액션 벡터가 FINE/COARSE 에 따라 다른 절대
+        #   지령이 되는데 그 문맥이 관측에 없으면 정책이 구분할 수 없다.
+        #   **policy** 에 넣는다 — critic 전용이면 정책 쪽 POMDP 가 그대로 남는다.
+        self.observations.policy.palm_action_scale = ObsTerm(func=obs_mdp.palm_action_scale)
+        self.observations.policy.palm_action_anchor = ObsTerm(func=obs_mdp.palm_action_anchor)
+
+        # ── GUI 마커: TCP 대신 **액션 지령 6D** (사용자 지시) ────────
+        # `object_pose` 커맨드의 debug_vis 가 그리는 것이 body_pose(=TCP)와 goal_pose 다.
+        # 그쪽을 끄고, 액션 텀이 정책의 **실제 지령**(큰 프레임)과 목표(작은 프레임)를 그린다.
+        self.commands.object_pose.debug_vis = False
+        self.actions.arm_action.debug_vis = True
+
         # ★★fab_test23 원본 정합 — 노이즈는 `ObsTerm.noise`(Unoise) 가 아니라 전용
         #   모듈이 건다. 원본은 폭을 env 마다 다시 뽑고 에피소드 고정 bias 를 얹는데
         #   Unoise 로는 둘 다 표현할 수 없다(상태를 못 든다). obs_noise 모듈 참조.
@@ -235,6 +248,10 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
                 self.concatenate_terms = True
 
         self.observations.critic = _CriticCfg()
+        # ★2-스케일 문맥은 critic 에도 준다(policy 쪽은 위에서 등록했다).
+        #   ⚠ critic 그룹은 여기서 만들어지므로 이 줄들은 **반드시 그 뒤**여야 한다.
+        self.observations.critic.palm_action_scale = ObsTerm(func=obs_mdp.palm_action_scale)
+        self.observations.critic.palm_action_anchor = ObsTerm(func=obs_mdp.palm_action_anchor)
 
         # ── 종료: 작업공간 이탈 (원본 `_get_dones`) ───────────────────
         # ★원본은 물체가 스폰 박스 x·y 를 벗어나면 즉시 종료한다. 우리는 낙하만 봐서
@@ -242,6 +259,15 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         self.terminations.object_out_of_workspace = DoneTerm(
             func=obs_mdp.object_out_of_workspace,
             params={"x_range": P.OBJECT_WORKSPACE_X, "y_range": P.OBJECT_WORKSPACE_Y},
+        )
+
+        # ── 종료: 컵 전도 (fab_test39 신설, D3) ──────────────────────
+        # ★이 트랙만 전도 종료가 없었다. 근거 전문은 `obs_mdp.object_tipped` docstring.
+        #   `time_out=False`(기본) 이어야 한다 — truncated 로 내보내면 value_bootstrap 이
+        #   γ·V(s) 를 얹어 "쓰러뜨리기 보너스"가 된다(agnostic 트랙 실측).
+        self.terminations.object_tipped = DoneTerm(
+            func=obs_mdp.object_tipped,
+            params={"max_tilt_deg": P.OBJECT_TIP_MAX_DEG},
         )
 
         # ── 리셋 관절 노이즈 (원본 `robot_spawn`) ─────────────────────
@@ -359,6 +385,17 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         # 턱–컵 날 거리 — `reaching_object` 는 커널을 거쳐서 거리로 못 읽는다
         self.rewards.diag_jaw_cup_dist = RewTerm(
             func=rewards.diag_jaw_cup_dist, weight=0.0,
+            params={"pad_offset": P.JAW_PAD_OFFSET, "jaw_cfg": _diag_jaw()})
+        # ★fab_test39 신설 두 개 — t38 은 이 둘을 TB 에서 못 봐서 4000 epoch 내내
+        #   사후 프로브로만 확인할 수 있었다.
+        # 컵 **최저점** 상승 — `lifting_object` 가 0 일 때 "안 들었다"인지 "게이트가
+        #   막았다"인지를 가른다. 기울여도 0 이라 가짜 리프트가 안 섞인다.
+        self.rewards.diag_lift_height = RewTerm(
+            func=rewards.diag_lift_height, weight=0.0, params={})
+        # 턱축까지의 수직거리 — `grasp_ok` 의 1차 조건이자 D2 가 겨냥하는 값.
+        #   t38 실측 62.4 mm(최선 27.4) vs 문턱 30 mm.
+        self.rewards.diag_jaw_lateral = RewTerm(
+            func=rewards.diag_jaw_lateral, weight=0.0,
             params={"pad_offset": P.JAW_PAD_OFFSET, "jaw_cfg": _diag_jaw()})
 
         # ── 도메인 랜덤화 (fab_test18 신설, 사용자 지시) ──────────────

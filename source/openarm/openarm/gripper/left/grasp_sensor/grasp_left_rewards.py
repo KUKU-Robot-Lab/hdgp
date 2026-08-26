@@ -57,6 +57,38 @@ def _cup_upright_cos(env: "ManagerBasedRLEnv", object_cfg: SceneEntityCfg) -> to
     return 1.0 - 2.0 * (x * x + y * y)
 
 
+def lift_height(
+    env: "ManagerBasedRLEnv", object_cfg: SceneEntityCfg = SceneEntityCfg("object")
+) -> torch.Tensor:
+    """컵 **최저점**이 테이블 상면 위로 뜬 높이 [m]. 놓여 있으면 0, 기울여도 0.
+
+    ★★원점 z 로 리프트를 재면 **기울이기가 리프트로 계산된다.** 컵을 바닥 림 모서리로
+      피벗시키면 원점이 실제로 올라간다 — 최대 `CUP_TIP_RISE_MAX` = 4.61 mm @ 17.5°:
+
+          기울기   0°     10°    17.5°   30°    45°
+          원점    0.0    3.6    4.61    2.2   −6.5  mm      ← 오른다
+          최저점  0.0    0.0    0.0     0.0    0.0  mm      ← 안 오른다
+
+      fab_test38(4000 ep 완주) 실측이 정확히 이 함정이었다: 컵 최대 상승 **+2.9 mm**,
+      1 cm 이상 올린 스텝 0.0%. 즉 그 판이 한 것은 리프트가 아니라 **기울이기**였다.
+
+    ★기존 방어는 램프 0 점을 `CUP_TIP_RISE_MAX × 1.3`(= 놓인 높이 +6 mm) 위에 두는
+      것이었다(`LIFT_RAMP_ZERO_Z`). 안전하지만 **첫 6 mm 가 사구간**이라 "접촉했는데
+      아직 못 든" 상태에 gradient 가 전혀 없다. DexPour(IROS 2025) 의 `r_lift` 는
+      접촉만 성립하면 높이에 **선형 비례**해 즉시 지급된다(Fig. 3 의 μ·r_lift).
+      최저점으로 재면 기울이기가 구조적으로 0 이므로 **사구간 없이** 그 구조를 쓸 수 있다.
+
+    기하: 바닥 원판 중심 = 원점 − 컵축 × `CUP_BOTTOM_TO_ORIGIN`,
+          그 원판의 최저점 = 중심 z − `CUP_BASE_RADIUS` × sin(기울기).
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    cup_z = matrix_from_quat(obj.data.root_quat_w)[:, :, 2]        # 컵 로컬 +z (world)
+    bottom_c_z = obj.data.root_pos_w[:, 2] - cup_z[:, 2] * P.CUP_BOTTOM_TO_ORIGIN
+    sin_tilt = (1.0 - cup_z[:, 2].square()).clamp(min=0.0).sqrt()
+    lowest_z = bottom_c_z - P.CUP_BASE_RADIUS * sin_tilt
+    return lowest_z - P.TABLE_SURFACE_Z
+
+
 def perpendicular_quality(
     env: "ManagerBasedRLEnv", robot_cfg: SceneEntityCfg, body_name: str,
     object_cfg: SceneEntityCfg,
@@ -143,7 +175,12 @@ def _held(
     ee_pos_w = ee_frame.data.target_pos_w[..., 0, :]
     # ★★08.23 **연속 램프로 되돌렸다.** `ramp_zero_z`(놓인 높이 +6.0 mm)에서 0,
     #   `minimal_height`(놓인 높이 +40 mm)에서 1. 근접·자세는 게이트로 남는다.
-    lifted = ((obj_pos_w[:, 2] - ramp_zero_z) / (minimal_height - ramp_zero_z)).clamp(0.0, 1.0)
+    # ★★fab_test39: 원점 z 램프 → **최저점 기준**(`lift_height`). 기울이기가 리프트로
+    #   계산되던 구멍을 기하로 닫는다. `ramp_zero_z` 가 막던 것과 같은 해킹인데,
+    #   최저점은 기울여도 정확히 0 이라 **사구간이 필요 없다** — 첫 1 mm 부터 gradient 가 산다.
+    #   근거 전문은 `lift_height` docstring. 인자 `ramp_zero_z` 는 계약 호환을 위해 남기되
+    #   더 이상 램프 0 점이 아니다(상단만 `minimal_height` 에서 온다).
+    lifted = (lift_height(env, object_cfg) / (minimal_height - P.CUP_SPAWN_Z)).clamp(0.0, 1.0)
     near = torch.norm(obj_pos_w - ee_pos_w, dim=1) < max_ee_distance
     upright = _cup_upright_cos(env, object_cfg) > min_upright_cos
     # ★★08.23 램프에 **enclose 를 곱한다.** 순수 램프(fab_test6)는 학습 초기에 컵이 튀어
@@ -199,8 +236,19 @@ def held_with_good_pose(
           lifting 6.14 → 0.0000 / 에피소드 길이 130 → 13 / 총보상 +34.9 → −0.46
       학습이 시작조차 못 한다. 자세는 반드시 연속 보너스로만 유도한다.
     """
-    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg)
+    # ★★fab_test39: 게이트를 `_held` → `grasp_quality` 로 교체했다.
+    #   이 항은 **올바른 물기 자세를 만드는 유일한 gradient** 인데, 자신이 만들어야 할
+    #   결과(리프트) 뒤에 갇혀 있었다. t38 4000 ep 완주 실측이 그 대가다 —
+    #       grasp_pose 0.00001 · TCP z↔컵 z **49.8°**(올바름 90°) · jaw 수평이탈 **37.6°**
+    #       · lateral **62.4 mm**(`grasp_ok` 문턱 30 mm) · 액션 게이트 개방률 **< 0.5%**
+    #   물기가 비스듬해 게이트가 안 열리고, 게이트가 안 열려 못 들고, 못 들어서 물기를
+    #   고칠 신호가 안 온다. 그 순환을 여기서 끊는다.
+    #
+    # ⚠ 게이트를 **그냥 제거하면 안 된다.** `jaw_level_quality` 는 로봇 `body_quat_w` 만
+    #   보고 `upright` 는 컵이 테이블에 서 있기만 해도 1.0 이라, 무게이트면 **아무 데서나
+    #   그리퍼를 수평으로 들고 있으면 만점**이라는 새 해킹면이 생긴다(reward-audit Check 2).
+    #   `grasp_quality` 는 lateral·along·파지대역을 전부 보므로 컵 곁에서만 값이 나온다.
+    gate = grasp_quality(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg)
     cos_tilt = _cup_upright_cos(env, object_cfg)
     upright = ((cos_tilt - upright_zero_at_cos) / (1.0 - upright_zero_at_cos)).clamp(0.0, 1.0)
     return gate * upright * jaw_level_quality(env, robot_cfg, body_name)
@@ -216,13 +264,40 @@ def object_is_held_and_lifted(
     lat_ok: float,
     along_ok: float,
     jaw_cfg: SceneEntityCfg,
+    sensor_names: tuple[str, ...],
+    force_threshold: float,
     min_upright_cos: float = -1.0,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
 ) -> torch.Tensor:
-    """`mdp.object_is_lifted` 에 근접·컵 자세 조건을 더한 것."""
-    return _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
+    """리프트 보상. **게이트는 접촉, 높이는 크기.** (num_envs,) ∈ [0, 1]
+
+    ```
+    r_lift = grasp_quality × 닿은_턱_비율 × clamp(최저점_상승 / 40 mm, 0, 1)
+    ```
+
+    ★★fab_test39: 게이트를 **높이 → 접촉**으로 반전했다. DexPour(IROS 2025) Fig. 3 이
+      `r_lift` 를 `μ`(전 손가락 접촉)로 게이트하고 `ν`(높이)로는 게이트하지 **않는다**:
+        *"Once the cup reaches a certain height threshold, the lift reward ceases to
+          accumulate"* — 높이는 보상을 **여는 하한**이 아니라 **끊는 상한**이다.
+      우리는 정반대로 `_held` 안의 `lifted` 가 하한이었고, 그래서 t22~t38 열일곱 판
+      내내 이 항이 0 이었다(t38 최종 **0.00005**, contact_engage 는 1.774).
+      논문 Table II **Config. 4**(리프트/이송 보상 제거)가 우리와 같은 지표를 낸다 —
+      η_ft 0% · P_grasp 0% · *"never discovers a stable lifting motion"*.
+      우리 항은 존재하되 **도달 불가**였으므로 기능적으로 제거된 것과 같았다.
+
+    ★접촉을 게이트로 쓰면 옛 "쳐 날리기"(test3: 리프트 판정 중 TCP–컵 3044 mm)가
+      **구조적으로 불가능**해진다 — 튕겨 날아간 컵은 접촉이 끊겨 `닿은_턱_비율` = 0 이다.
+      옛 방어(`near` AND)보다 강하다.
+
+    ★높이는 `lift_height`(최저점)로 잰다. 원점 z 로 재면 기울이기가 최대 4.61 mm 의
+      가짜 리프트를 만든다 — t38 의 "+2.9 mm 상승"이 바로 그것이었다.
+    """
+    forces = obs_mdp.finger_contact_forces(env, sensor_names)
+    contact_frac = (forces > force_threshold).float().mean(dim=-1)
+    quality = grasp_quality(env, lat_ok, along_ok, pad_offset, jaw_cfg, object_cfg)
+    rise = (lift_height(env, object_cfg) / (minimal_height - P.CUP_SPAWN_Z)).clamp(0.0, 1.0)
+    return quality * contact_frac * rise
 
 
 def object_goal_distance_when_held(
@@ -1015,3 +1090,28 @@ def contact_engage(
     touch = (forces > force_threshold).float()
     frac = touch.mean(dim=-1)
     return frac + all_bonus * (frac >= 1.0).float()
+
+
+def diag_lift_height(
+    env: "ManagerBasedRLEnv", object_cfg: SceneEntityCfg = SceneEntityCfg("object")
+) -> torch.Tensor:
+    """★진단(weight 0.001) — 컵 **최저점** 상승 [m]. 기울여도 0 이라 가짜 리프트가 안 섞인다.
+
+    t38 은 원점 기준으로 최대 +2.9 mm 였는데 그건 기울기였다. 이 값이 0 을 벗어나야
+    진짜로 든 것이다. `lifting_object` 가 0 일 때 원인이 "안 들었다"인지 "게이트가
+    막았다"인지를 이 항 하나로 가른다.
+    """
+    return lift_height(env, object_cfg)
+
+
+def diag_jaw_lateral(
+    env: "ManagerBasedRLEnv", pad_offset: float, jaw_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """★진단(weight 0.001) — 턱축까지의 **수직거리** lateral [m]. `grasp_ok` 의 1차 조건.
+
+    t38 결정론 실측 62.4 mm(최선 27.4) vs 문턱 `GRASP_GATE_LATERAL_OK` 30 mm.
+    액션 게이트 개방률이 0.5% 였던 직접 원인이고, D2(`grasp_pose` 게이트 교체)가
+    겨냥하는 값이다. TB 에 없어서 t38 내내 사후 프로브로만 볼 수 있었다.
+    """
+    return jaw_lateral(env, pad_offset, jaw_cfg, object_cfg)

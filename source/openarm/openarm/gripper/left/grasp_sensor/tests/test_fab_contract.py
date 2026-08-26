@@ -1389,3 +1389,89 @@ def test_contact_reward_pays_for_touching_the_cup():
         "너무 크면 접근 보상을 밀어낸다"
     )
     assert P.CONTACT_FORCE_THRESHOLD > 0.0, "문턱 0 이면 수치 잡음도 접촉으로 센다"
+
+
+def test_two_scale_palm_action_gives_the_grasp_phase_real_resolution():
+    """★★액션 지터 = σ × box_half 다. 파지가 요구하는 해상도를 박스가 못 낸다.
+
+    t22~t39 열여덟 판이 `gate_rate < 0.5%` 였던 **정량적 원인**이다. t39 실측이
+    이 식을 그대로 따른다(예측 = σ×half_y):
+        ep 65 σ0.91 → 150mm / 실측  86mm      ep235 σ0.67 → 111mm / 실측 115mm
+        ep321 σ0.57 →  94mm / 실측  95mm      ep406 σ0.60 →  99mm / 실측  85mm
+    `grasp_ok` 문턱은 lateral < 30 mm 이고 물리 여유는 ±13.25 mm 다. 현재 박스
+    (half 165·170 mm)의 노이즈 바닥은 σ0.20 에서도 **47 mm** — 어떤 σ 에서도 못 넘는다.
+
+    박스 축소는 실측으로 기각됐다(`docs/eval/fab_runs/palm_action_resolution.md`,
+    10,240 표본): 이송 지령이 x [0.246, 0.597] 로 박스를 거의 다 쓴다. 반면 파지
+    지령은 그 안 115·66·79 mm 구석에만 몰린다. → 문맥 의존 박스.
+    """
+    import math
+
+    # 1. FINE half 가 실측 파지 포락(115·66·79 mm)의 절반 이하다.
+    for fine, envelope in zip(P.PALM_FINE_HALF, (0.115, 0.066, 0.079)):
+        assert fine <= envelope / 2 + 1e-9, (
+            f"FINE half {fine*1000:.0f}mm 가 실측 파지 포락의 절반({envelope/2*1000:.0f}mm)보다 크다"
+        )
+    # 2. COARSE 박스는 그대로다 — 이송 도달을 잃으면 안 된다.
+    assert P.PALM_BOX_X == (0.22, 0.60) and P.PALM_BOX_Y == (0.10, 0.43)
+    assert P.PALM_BOX_Z == (0.16, 0.50)
+    # 3. FINE 이 실제로 문턱을 넘게 해 주는가 — σ0.45 에서 lateral 지터가 문턱 아래여야 한다.
+    jitter = math.hypot(0.45 * P.PALM_FINE_HALF[1], 0.45 * P.PALM_FINE_HALF[2])
+    assert jitter < P.GRASP_GATE_LATERAL_OK, (
+        f"FINE 지터 {jitter*1000:.0f}mm 가 문턱 {P.GRASP_GATE_LATERAL_OK*1000:.0f}mm 를 못 넘는다"
+    )
+    # 4. ★회전도 같은 크기의 지렛대다. 팜→턱 140 mm 라 ±45° 는 σ0.35 에서 38 mm 를 흔들어
+    #    FINE 위치 이득을 삼킨다. FINE 회전 박스가 반드시 좁아야 한다.
+    rot_jitter = 0.45 * P.PALM_FINE_EULER_HALF_RAD * P.PALM_TO_JAW_LEVER
+    assert rot_jitter < P.GRASP_GATE_LATERAL_OK, (
+        f"FINE 회전 지터 {rot_jitter*1000:.0f}mm 가 문턱을 넘는다 — 위치 이득이 무의미해진다"
+    )
+    assert P.PALM_FINE_EULER_HALF_RAD < P.PALM_MAX_POSE_ANGLE, "FINE 회전이 COARSE 보다 넓다"
+    # 5. 전환은 래치 + 히스테리시스다.
+    assert P.PALM_FINE_ENTER_DIST < P.PALM_FINE_EXIT_DIST, (
+        "ENTER >= EXIT 다 — 경계에서 두 액션 지형을 오간다"
+    )
+
+
+def test_two_scale_state_is_cleared_on_reset_and_exposed_to_the_policy():
+    """★앵커가 리셋에 남으면 새 에피소드의 첫 지령이 지난 파지 자세에 묶인다.
+    ★스케일·앵커가 **policy** obs 에 없으면 POMDP 다 — 같은 액션이 문맥마다 다른 지령이 된다.
+    """
+    act_src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_fabric_action.py"
+    ).read_text(encoding="utf-8")
+    reset_body = act_src.split("def reset(")[1].split("\n    # ---")[0]
+    for buf in ("_fine_phase[env_ids]", "_fine_anchor[env_ids]", "_fine_euler_anchor[env_ids]"):
+        assert buf in reset_body, f"reset 이 {buf} 를 지우지 않는다 — 리셋 오염"
+    assert "_fine_phase | enter" in act_src and "~exit_" in act_src, "전환이 래치가 아니다"
+
+    fab_src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py"
+    ).read_text(encoding="utf-8")
+    for term in ("palm_action_scale", "palm_action_anchor"):
+        assert f"self.observations.policy.{term} = ObsTerm(" in fab_src, (
+            f"{term} 이 policy obs 에 없다 — critic 전용이면 정책 POMDP 가 남는다"
+        )
+
+
+def test_gui_shows_the_action_command_marker_not_the_tcp_marker():
+    """★사용자 지시: GUI 학습에서 TCP 마커 대신 **액션 지령 6D 마커**를 띄운다.
+
+    TCP 마커는 `object_pose` 커맨드의 `body_pose` 다. 그쪽 debug_vis 를 끄고
+    액션 텀이 정책의 실제 지령을 그린다. 이 트랙은 "지령과 실제를 나란히 본 적이 없어"
+    진단이 늘 사후 프로브가 됐다(t24 회피·t38 허공 파지 둘 다 그랬다).
+    """
+    fab_src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py"
+    ).read_text(encoding="utf-8")
+    assert "self.commands.object_pose.debug_vis = False" in fab_src, "TCP 마커가 그대로 켜져 있다"
+    assert "self.actions.arm_action.debug_vis = True" in fab_src, "액션 지령 마커가 꺼져 있다"
+
+    act_src = (
+        Path(__file__).resolve().parents[1] / "grasp_left_fabric_action.py"
+    ).read_text(encoding="utf-8")
+    assert "def _set_debug_vis_impl" in act_src and "def _debug_vis_callback" in act_src
+    # 6D — 위치와 자세를 **둘 다** 그린다. 위치만이면 지령 자세 오차를 못 본다.
+    cb = act_src.split("def _debug_vis_callback")[1]
+    assert "quat_from_euler_xyz" in cb, "지령 마커가 자세를 안 그린다(6D 가 아니다)"
+    assert "env_origins" in cb, "지령이 env 로컬인데 world 로 안 올렸다 — 마커가 원점에 몰린다"
