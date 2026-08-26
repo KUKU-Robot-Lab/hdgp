@@ -600,10 +600,29 @@ class GraspSensorEnv(DirectRLEnv):
             return
         p = self.profile
         _zd = float(self.cfg.stage_approach_z_dead)
-        # 목표 gc (env-local): 스폰 중심 xy · rest_z + z_dead (수직 데드밴드 상단).
+        # ★★목표 gc 는 물체 위가 아니라 **케이지 밖 수평 후퇴 지점**이다(08.27 실측 교훈:
+        #   gc 를 컵 직상방에 두면 개방 케이지(반경 r_cage)가 컵과 겹친 채 스폰돼
+        #   depenetration 폭발 — force 6,800N·ep_len 1·컵 350mm 이탈, 3시드 동일).
+        #   "케이지가 물체를 감싼 자세"는 관절 텔레포트로 만들 수 없는 초기화다.
+        #   후퇴량 = λ 임계 + 5cm (전부 손 기하 파생) — 손끝 최근접이 케이지 반경
+        #   여유를 갖고, 난이도 0 은 "마지막 한 뼘 전진 + 폐쇄"부터 학습한다.
+        #   방향 = 홈 gc → 스폰중심의 수평 역방향(접근 경로의 반대쪽으로 물러섬).
+        _back = float(self.cfg.stage_gate_approach_m) + 0.05
+        if _back <= self._r_cage + 0.02:
+            raise RuntimeError(
+                f"[{p.name}] 프리그래스프 후퇴량 {_back*1000:.0f}mm ≤ r_cage"
+                f"+여유({(self._r_cage+0.02)*1000:.0f}mm) — 케이지가 물체와 겹친 채 "
+                "스폰된다(관통 폭발)")
+        _o_h, _R_h = self._tip_palm_frame(
+            self.robot.data.default_joint_pos[:, self._fab_t].contiguous())
+        _gc_home = (_o_h + torch.einsum("bij,j->bi", _R_h, self._gc_local)
+                    + self._fab_to_env)[0]
+        _sp = torch.tensor([float(p.object_spawn_center[0]),
+                            float(p.object_spawn_center[1])], device=self.device)
+        _dir = torch.nn.functional.normalize(_gc_home[:2] - _sp, dim=0)
         gc_tgt = torch.zeros(self.num_envs, 3, device=self.device)
-        gc_tgt[:, 0] = float(p.object_spawn_center[0])
-        gc_tgt[:, 1] = float(p.object_spawn_center[1])
+        gc_tgt[:, 0] = _sp[0] + _dir[0] * _back
+        gc_tgt[:, 1] = _sp[1] + _dir[1] * _back
         gc_tgt[:, 2] = self._object_rest_z + _zd
         # 회전 = 홈 회전(박스 중심 = 파지 자세). R_home 으로 palm 목표 위치를 역산.
         _qh = self.robot.data.default_joint_pos[:, self._fab_t].contiguous()
