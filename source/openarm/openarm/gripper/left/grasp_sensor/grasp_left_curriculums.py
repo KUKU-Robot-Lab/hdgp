@@ -157,7 +157,13 @@ class adr_expand_on_dwell(ManagerTermBase):
              static_friction_range=self._lerp(P.ADR_CUP_STATIC_FRICTION),
              dynamic_friction_range=self._lerp(P.ADR_CUP_DYNAMIC_FRICTION),
              restitution_range=self._lerp(P.ADR_CUP_RESTITUTION))
-        _set("cup_mass", mass_distribution_params=self._lerp(P.ADR_CUP_MASS_SCALE))
+        # ★fab_test47: 레벨 0(중립)에서는 cup_mass 를 **건드리지 않는다** — 안정화
+        #   커리큘럼(cup_stabilize, ×8→×1)이 그 파라미터의 주인이다. ADR 의 중립 쓰기
+        #   (1,1)가 등록 순서상 뒤에 와서 시작 배율 ×8 을 덮어쓰는 사고가 스모크에서
+        #   실측됐다(질량 0.134 kg = 미적용). ADR 이 실제로 레벨을 올릴 때(frac>0)는
+        #   stay 게이트가 열린 뒤라 안정화는 이미 ×1 에 도달해 있어 인계가 연속이다.
+        if self._frac() > 0.0:
+            _set("cup_mass", mass_distribution_params=self._lerp(P.ADR_CUP_MASS_SCALE))
         # ★외란은 **가속도**로 준다(원본 `object_wrench.max_linear_accel`). 이벤트 함수가
         #   질량을 곱해 힘을 만든다 — 그래야 질량 DR 과 외란 DR 이 서로를 상쇄하지 않는다.
         env._dextrah_wrench_max_accel = self._lerp(P.ADR_CUP_MAX_LINEAR_ACCEL)
