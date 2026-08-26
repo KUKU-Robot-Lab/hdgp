@@ -58,6 +58,10 @@ def compute_tip_cyl_rewards(
     syn_close_thumb: torch.Tensor | None = None,    # (N,) 엄지 폐쇄도 — v2
     syn_close_fingers: torch.Tensor | None = None,  # (N,) 가용 4지(엄지 제외) 평균 — v2
     syn_close_mean: torch.Tensor | None = None,     # (N,) v1 호환(자매 트랙 사용 중)
+    # ── tip_bridge (08.26 사용자 지시) — 손끝 IK 트랙은 **손가락별** gradient 가
+    #   있어야 정책이 그 방향으로 액션을 낸다(폐쇄도 스칼라로는 어느 손가락을
+    #   어디로 보낼지 못 가른다). 가용 손끝→물체 거리 (N,T). None = 항 비활성.
+    tip_obj_dist: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
     """소프트 계층 — 하드 스위치 없음. 계층은 [0,1] 인자의 **곱셈 깊이**로 만든다.
 
@@ -293,6 +297,15 @@ def compute_tip_cyl_rewards(
         # 리미터가 "우연한 상방 요동" 탐색원을 없애 생긴 공백(B 실측 h 2mm 정체).
         "lift_bridge": float(getattr(cfg, "stage_lift_bridge_weight", 0.0))
         * mu * (height_delta / float(cfg.stage_gate_lift_m)).clamp(0.0, 1.0),
+        # tip_bridge — λ 상태에서 **손가락별** 손끝→물체 거리 커널의 평균. mean 인
+        # 이유: 각 손가락 항이 독립 기여라 뒤처진 손가락에도 자기 gradient 가 남는다
+        # (min 은 한 손가락만 보고, sum/mean 은 전부 본다 — 여기서는 접촉 전 유도가
+        # 목적이라 전 손가락 동시 유도가 맞다). 접촉하면 contact/grasp 가 덮는다
+        # (끄지 않음 — grip-contact-cliff). 기본 0.0 = 비활성(자매 synergy 는 불필요).
+        "tip_bridge": float(getattr(cfg, "stage_tip_bridge_weight", 0.0))
+        * lam * (torch.exp(
+            -float(getattr(cfg, "stage_tip_bridge_sharpness", 8.0)) * tip_obj_dist
+        ).mean(dim=-1) if tip_obj_dist is not None else torch.zeros_like(lam)),
         "grasp": float(cfg.stage_grasp_weight) * grasp,
         "lift": float(cfg.stage_lift_weight) * lift,
         "transfer": float(cfg.stage_transfer_weight) * transfer,

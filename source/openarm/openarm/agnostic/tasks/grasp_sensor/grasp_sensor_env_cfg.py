@@ -762,6 +762,9 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     # r = w·μ·(h/0.05).clamp(0,1): 파지(μ) 상태의 첫 mm 부터 지급, 5cm 에서 ν 가
     # 이어받음. P1(h=0 → 정확히 0) 충족. 0.0 = 비활성(기본). reward-audit ACCEPT.
     stage_lift_bridge_weight: float = 0.0
+    # ── tip_bridge (08.26) — 손끝 IK 트랙용 손가락별 유도. synergy 트랙은 불필요(0).
+    stage_tip_bridge_weight: float = 0.0
+    stage_tip_bridge_sharpness: float = 8.0
 
     dex_approach_weight: float = 2.0
     dex_approach_sharpness: float = 8.0
