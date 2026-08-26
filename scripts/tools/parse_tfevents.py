@@ -11,12 +11,15 @@ Usage:
 import argparse
 import collections
 import json
+import os
 import struct
 import sys
 from pathlib import Path
 
 
 # ─── TFRecord / protobuf struct 파서 ───────────────────────────
+
+_MAX_RESYNC_BYTES = 1 << 20   # 재동기 예산 1 MB — 넘으면 진짜 손상으로 보고 중단
 
 def _read_varint(buf: bytes, pos: int) -> tuple[int, int]:
     result, shift = 0, 0
@@ -115,12 +118,25 @@ def _parse_event(buf: bytes) -> tuple[int | None, list[tuple[str, float]]]:
 def load_tfevents(path: str) -> dict[str, list[tuple[int, float]]]:
     """TFEvents 파일 → {tag: [(step, value), ...]} (step 오름차순)."""
     tag_rows: dict[str, list[tuple[int, float]]] = collections.defaultdict(list)
+    # ★★fab_test40 사고: 학습 중인 파일을 rsync 하면 마지막 레코드가 토막나고, 그러면
+    #   길이 필드가 쓰레기가 되어 **그 뒤 전체를 버렸다.** 실제로 ep174 이후 3,000 epoch
+    #   분량이 통째로 안 읽혀 "학습이 ep173 에서 멈췄다"로 오판할 뻔했다(로그는 ep661).
+    #   길이가 파일 크기와 안 맞으면 1 바이트씩 전진해 **재동기**한다(TFRecord 표준 복구).
+    size = os.path.getsize(path)
+    resync = 0
     with open(path, "rb") as f:
         while True:
+            pos = f.tell()
             hdr = f.read(12)
             if len(hdr) < 12:
                 break
             data_len = struct.unpack_from("<Q", hdr, 0)[0]
+            if data_len == 0 or data_len > size - pos - 16:
+                f.seek(pos + 1)
+                resync += 1
+                if resync > _MAX_RESYNC_BYTES:
+                    break
+                continue
             data = f.read(data_len)
             f.read(4)  # masked crc (skip)
             if len(data) < data_len:

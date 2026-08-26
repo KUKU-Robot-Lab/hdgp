@@ -315,25 +315,6 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         #   fab_test14/19 실패는 "억제가 과제 성립 전에 걸린 것"이었는데, 이 항은 구조적으로
         #   과제가 성립한 상태(들고 + 목표 근처)에서만 존재한다.
         # ⚠ fab 전용이다. 관절공간 변형은 palm 지령 자체가 없다.
-        self.rewards.palm_cmd_rate = RewTerm(
-            func=rewards.palm_command_rate_at_goal,
-            weight=P.PALM_CMD_RATE_PENALTY_WEIGHT,
-            params={
-                "action_term_name": "arm_action",
-                "rate_limit": P.PALM_CMD_RATE_REF,
-                "std": P.SETTLE_POS_STD,
-                "minimal_height": P.MINIMAL_LIFT_HEIGHT,
-                "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
-                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
-                "pad_offset": P.JAW_PAD_OFFSET,
-                "lat_ok": P.GRASP_GATE_LATERAL_OK,
-                "along_ok": P.GRASP_GATE_ALONG_OK,
-                # ★SceneEntityCfg 는 가변 객체 — 다른 항과 공유 금지, 새 인스턴스.
-                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
-                "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
-                "command_name": "object_pose",
-            },
-        )
 
         # ── 접촉 보상 — 컵을 **건드리는 것 자체**에 값을 매긴다 (fab_test38) ──
         # ★★t22~t37 열세 판의 공통 서명이 `drop` ep50 안 0.000 이었다. 컵을 안 만지니
@@ -397,6 +378,69 @@ class GraspLeftGripperFabEnvCfg(GraspLeftGripperEnvCfg):
         self.rewards.diag_jaw_lateral = RewTerm(
             func=rewards.diag_jaw_lateral, weight=0.0,
             params={"pad_offset": P.JAW_PAD_OFFSET, "jaw_cfg": _diag_jaw()})
+
+        # ══════════════════════════════════════════════════════════════
+        # DexPour 계층 보상 (fab_test41) — 구 보상 전면 교체
+        #
+        # 논문 Fig.3: r_t = (1−λ)·p + μ·r_grasping + μ·r_lift + ν·r_transporting + ρ·r_pouring
+        # 우리 5단계(사용자 규격): approach/align → grasp → lift → transfer → stay
+        #
+        # ★★**보상 슬롯 이름 = TB 태그**다(IsaacLab 이 슬롯 이름으로 로깅한다).
+        #   구 이름은 `LiftEnvCfg` 에서 물려받은 것이라 내용과 어긋나 있었다 —
+        #   `reaching_object` 안에 `approach_opposed` 가 들어 있었다. 전부 교체한다.
+        #   ⚠ 과거 30여 런과 TB 태그 비교가 끊긴다. 대조는
+        #     `docs/eval/fab_runs/README.md` 의 표로만 남는다(사용자 지시).
+        # ★★가중이 **단조 증가**한다(2→1→3→5→7→10). 근거는 preset STAGE_* 주석.
+        # ══════════════════════════════════════════════════════════════
+        _stage_args = dict(
+            jaw_cfg=SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+            sensor_names=tuple(f"contact_{b}" for b in P.GRIPPER_FINGER_BODIES),
+        )
+
+        def _sa():
+            # ⚠ SceneEntityCfg 는 매니저가 제자리 변경하는 가변 객체다 — term 마다 새 인스턴스.
+            return dict(
+                jaw_cfg=SceneEntityCfg(
+                    "robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+                sensor_names=_stage_args["sensor_names"],
+            )
+
+        # 구 항 전부 제거 — 이름이 남아 있으면 TB 가 두 체계로 갈린다.
+        for _old in ("reaching_object", "lifting_object", "object_goal_tracking",
+                     "object_goal_tracking_fine_grained", "cup_between_jaws",
+                     "grip_closure_when_enclosed", "grasp_pose", "settled_at_goal", "palm_cmd_rate",
+                     "dwell_at_goal", "contact_engage", "gate_rate"):
+            if hasattr(self.rewards, _old):
+                setattr(self.rewards, _old, None)
+
+        self.rewards.approach = RewTerm(
+            func=rewards.stage_approach, weight=P.STAGE_APPROACH_WEIGHT,
+            params={**_sa(), "sharpness": P.APPROACH_SHARPNESS})
+        self.rewards.contact = RewTerm(
+            func=rewards.stage_contact, weight=P.STAGE_CONTACT_WEIGHT, params=_sa())
+        self.rewards.grasp = RewTerm(
+            func=rewards.stage_grasp, weight=P.STAGE_GRASP_WEIGHT, params=_sa())
+        self.rewards.lift = RewTerm(
+            func=rewards.stage_lift, weight=P.STAGE_LIFT_WEIGHT, params=_sa())
+        self.rewards.transfer = RewTerm(
+            func=rewards.stage_transfer, weight=P.STAGE_TRANSFER_WEIGHT, params=_sa())
+        self.rewards.stay = RewTerm(
+            func=rewards.stage_stay, weight=P.STAGE_STAY_WEIGHT, params=_sa())
+
+        # ⑦ 평활화 페널티는 **부모의 `action_rate`·`joint_vel` 둘만** 쓴다.
+        # ★★fab_test41: `palm_cmd_rate` 를 **제거**했다(사용자 지적).
+        #   ⑴ 전 이력에서 **정확히 0** 이었다 — 게이트(`held_and_near_goal`)가 한 번도
+        #      안 열렸으므로 지금까지 학습에 아무 영향이 없었다.
+        #   ⑵ fabric 이 ③fabric 관절목표·④실제 관절에서 방향반전을 **0.0%** 로 지운다
+        #      (fab_test19 층 분해 실측). 평활화 항이 셋일 이유가 없다.
+        #   ⑶ DexPour 도 agnostic 도 평활화는 두 항(action_l2 · action_rate_l2)뿐이다.
+        #   ⚠ 되살리려면 게이트를 사다리와 **같은 ρ** 로 두고, 그때도 억제는 과제가
+        #     성립한 뒤에만 켠다([[suppression-terms-need-task-first]]).
+
+        # ── 단계 진단 — "TB events logging 값 매칭"(사용자 지시) ──────
+        for _d in ("lam", "mu", "nu", "rho", "tilt_deg", "perp_q", "d_goal"):
+            setattr(self.rewards, f"diag_stage_{_d}", RewTerm(
+                func=getattr(rewards, f"stage_diag_{_d}"), weight=0.0, params=_sa()))
 
         # ── 도메인 랜덤화 (fab_test18 신설, 사용자 지시) ──────────────
         # 이 트랙엔 DR 이 사실상 없었다(hold_idle_joints 는 유휴 관절 고정이지 DR 이 아니다).

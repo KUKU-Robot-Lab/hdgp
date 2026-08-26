@@ -1115,3 +1115,188 @@ def diag_jaw_lateral(
     겨냥하는 값이다. TB 에 없어서 t38 내내 사후 프로브로만 볼 수 있었다.
     """
     return jaw_lateral(env, pad_offset, jaw_cfg, object_cfg)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DexPour 계층 보상 (fab_test41) — 5단계 사다리
+#
+# 논문 Fig. 3:  r_t = (1−λ)·p + μ·r_grasping + μ·r_lift + ν·r_transporting + ρ·r_pouring
+# 우리 5단계(사용자 규격): approach/align → grasp → lift → transfer → stay
+#
+# ★단계 상태(λ/μ/ν/ρ · 진척량)는 `grasp_left_stages.compute` 가 **스텝당 한 번** 계산해
+#   캐시한다. 항마다 재계산하면 자를 일곱 개 두는 것이고, 이 트랙은 그렇게 조용히
+#   어긋난 사고를 이미 겪었다(패드 중앙 보정 · 컵 축 clamp).
+# ★가중은 preset 에서 오고 **단조 증가**한다(2→1→3→5→7→10). 근거는 그쪽 주석.
+# ★TB 태그 = 보상 슬롯 이름이므로 함수 이름·슬롯 이름·태그가 전부 일치한다.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _stage(env, jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]):
+    from . import grasp_left_stages as stages
+    return stages.compute(env, jaw_cfg, sensor_names)
+
+
+def stage_approach(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
+    sharpness: float, palm_body: str = "l_hl_gripper_base",
+) -> torch.Tensor:
+    """① 접근/정렬 — **무게이트**. 거리 × 겨냥 × 자세 − 컵 교란 벌점.
+
+    ★사용자 규격 "TCP_+z 가 world_+z 와 **수직**이 되게 접근". `perp_q` 가 그것이다 —
+      접근축(턱 body 의 z)의 world-z 성분이 0 이어야 1.0. 컵이 서 있으면 이 조건은
+      "원통을 옆에서 문다"(CLAUDE.md 규약 90°)와 같아진다.
+    ★사용자 규격 "그리퍼 끝단이 컵을 움직여서 쓰러트릴 수도 있음" → **벌점으로 억제**.
+      · 밀기: `relu(컵 xy 이동 − 25 mm)`
+      · 기울임: `relu(기울기 − 8°)`, 단 **(1−ν) 로 리프트 후에는 꺼진다.** 상시 걸면
+        이송 중 기울기를 벌해 사용자 규격("15° 이내면 됨")과 정면으로 어긋난다.
+        논문도 페널티를 `(1−λ)` 로 게이팅한다.
+    ★**게이트 밖**에 둔다. 논문은 접근을 `(1−λ)` 로 꺼 버리는데, λ=1·μ=0 구간에서
+      보상이 0 이 되면 이 트랙은 조기 종료가 최적이 된다(test6/test7 실증).
+    """
+    s = _stage(env, jaw_cfg, sensor_names)
+    align = P.STAGE_ALIGN_FLOOR + (1.0 - P.STAGE_ALIGN_FLOOR) * 0.5 * (1.0 + s.align_q)
+    orient = P.STAGE_ORIENT_FLOOR + (1.0 - P.STAGE_ORIENT_FLOOR) * s.perp_q
+    reach = torch.exp(-sharpness * s.d_jaw_cup) * align * orient
+    # ★★fab_test41-r3: 벌점을 **뺄셈 → 곱셈 감쇠**로 바꿨다. r2 실측이 이유다 —
+    #   `0.08 × relu(기울기 − 8°)` 는 전도 임계 60° 에서 **4.16** 이라 approach 최대치
+    #   2.0 의 두 배였다. ep0-51 에 approach −0.069 · 총보상 **−0.353** 이 됐고,
+    #   총보상이 음수면 **조기 종료가 최적**이 된다(test6/test7 이 기록한 실패:
+    #   lifting 6.14 → 0.0000, 에피소드 130 → 13, 총보상 +34.9 → −0.46).
+    #   정책이 정확히 그렇게 도망쳤다 — 턱-컵 148 → 242 mm, λ 0.036 → 0.0000.
+    #   자매 트랙이 남긴 원칙도 같다: "보상이 전 항 **비음수**라 조기 종료는 그 자체로 손해".
+    # 감쇠 강도는 0.5 로 잡는다 — 최악(밀고+쓰러뜨림)이 0.25× 라, 컵 곁(1.34×0.25=0.34)이
+    #   도망(0.29)보다 여전히 낫다. 즉 벌점이 "접근 자체"가 아니라 "접근 **방식**"만 벌한다.
+    push_q = ((s.xy_disp - P.STAGE_PUSH_MARGIN_M) / P.STAGE_PUSH_REF_M).clamp(0.0, 1.0)
+    tilt_q = (1.0 - s.nu) * (
+        (s.tilt_deg - P.STAGE_TILT_MARGIN_DEG) / P.STAGE_TILT_REF_DEG).clamp(0.0, 1.0)
+    return reach * (1.0 - P.STAGE_PUSH_ATTEN * push_q) * (1.0 - P.STAGE_TILT_ATTEN * tilt_q)
+
+
+def stage_contact(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
+) -> torch.Tensor:
+    """② 접촉 — **무게이트 shaping**. 닿은 턱 비율 ∈ {0, 0.5, 1}.
+
+    ★논문의 `r_contact` 는 `μ·r_grasping` 안에 있어 **전 손가락이 닿기 전에는 죽어 있다**.
+      그 결과 λ=1·μ=0 구간에 보상이 없다. 자매 트랙 `agnostic/tasks/grasp_sensor` 가
+      실측으로 이 사각지대를 발견해 무게이트 shaping 으로 고쳤다
+      (`stage_contact_weight = 1.0  # 게이트 없음 — λ=1·μ=0 사각지대 방지`).
+      우리도 고친 쪽을 쓴다.
+    """
+    return _stage(env, jaw_cfg, sensor_names).touch_frac
+
+
+def stage_grasp(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
+) -> torch.Tensor:
+    """③ 파지 — `μ · (파지기하 × 닿은턱비율)`.
+
+    ★사용자 규격 "가까이 가면 그리퍼 끝단을 **동시에** 닫기 시작". `μ` 가 그것이다 —
+      두 턱이 **모두** 접촉해야 열린다.
+    ★★품질에 **접촉을 곱한다.** 구 `cup_between_jaws`·`grip_closure_when_enclosed` 는
+      `enclose` 가 턱축 **투영**만 봐서 접촉 없이도 만점이었고, t38 이 그걸로
+      **170 mm 허공에서 closure 를 상한의 74%(1.85/2.50)** 까지 받았다. 그 구간
+      `contact_engage` 는 정확히 0 이었다. 같은 맹점에 네 번 속았다
+      (fab_test11 85.5 mm 에 0.824 / t32 195 mm 에 0.852 / t38 closure).
+      접촉을 곱하면 그 해킹이 **구조적으로 불가능**해진다.
+    """
+    s = _stage(env, jaw_cfg, sensor_names)
+    return s.mu * s.grasp_q
+
+
+def stage_lift(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
+) -> torch.Tensor:
+    """④ 리프트 — `μ · U_tol · clamp(최저점상승 / 40 mm)`.
+
+    ★★게이트가 **μ(접촉)** 이지 높이가 아니다. 논문 Fig. 3 이 Transporting 을
+      `μ·r_lift + ν·r_transporting` 로 쪼개 놓았고, 본문이 *"the lift reward ceases to
+      accumulate"* 라고 못 박는다 — 높이는 **여는 하한이 아니라 끊는 상한**이다.
+      우리 구 `_held` 는 높이가 하한이라 이 항이 열아홉 판 내내 0 이었다.
+      접촉만 성립하면 **1 mm 만 올려도 지급**되고 40 mm 에서 포화한다.
+    ★높이는 `lift_height`(컵 **최저점**)로 잰다. 원점 z 로 재면 컵을 바닥 림으로
+      피벗시켜 최대 4.61 mm 를 위조할 수 있다 — t38 의 "+2.9 mm 상승"이 그것이었다.
+    ★사용자 규격 "그 자세로" = `U_tol`(기울기 25°→15° 전이). 20° 정도는 관용한다.
+    """
+    s = _stage(env, jaw_cfg, sensor_names)
+    return s.mu * s.U_tol * s.H
+
+
+def stage_transfer(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
+) -> torch.Tensor:
+    """⑤ 이송 — `ν · U_tol · exp(−d_goal / std)`.
+
+    ★게이트가 `ν`(= μ 이고 리프트 성립)다. 논문 식 5 그대로 — 이송은 실제로 들린
+      뒤에만 의미가 있다. 사용자 규격 "이때도 cup+z 가 최대한 world+z 와 같은 방향"
+      = `U_tol`.
+    """
+    s = _stage(env, jaw_cfg, sensor_names)
+    return s.nu * s.U_tol * s.T
+
+
+def stage_stay(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]
+) -> torch.Tensor:
+    """⑥ 정지 — `ρ · exp(−컵속도 / 0.05) · U_up`.
+
+    ★사용자 규격 "팔을 가만히 (목표 지점 **5cm 이내**)" + "cup+z 와 world+z 15도 이내".
+      `ρ` 가 목표 근접, `S` 가 정지, `U_up`(15°→5°)이 직립이다. **셋을 다 요구한다** —
+      구 `settled_at_goal` 은 직립 인자가 없어 기울인 채로도 성립했다.
+    ★정지를 **컵 속도**로 잰다. 액션 변화량으로 재면 "액션을 안 바꾼다"이지
+      "안 움직인다"가 아니다(자매 트랙이 같은 실수를 고쳤다).
+    """
+    s = _stage(env, jaw_cfg, sensor_names)
+    return s.rho * s.S * s.U_up
+
+
+# ── 단계 진단 (weight 0.001) — TB 값 매칭용 ────────────────────────────────
+# ⚠ IsaacLab 은 `weight == 0` 항을 건너뛴다(호스트 패치 전제이지만 0.001 이 안전하다).
+#   총보상 대비 1e-4 수준이라 학습에 무영향이면서 단계 진입률을 TB 에서 읽을 수 있다.
+def _mk_diag(attr: str):
+    def _f(env, jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...]) -> torch.Tensor:
+        v = getattr(_stage(env, jaw_cfg, sensor_names), attr)
+        return v.float() if v.dtype != torch.float32 else v
+    _f.__name__ = f"stage_diag_{attr}"
+    _f.__doc__ = f"★진단 — 단계 상태 `{attr}`. λ/μ/ν/ρ 는 각 단계 진입률이다."
+    return _f
+
+
+stage_diag_lam = _mk_diag("lam")
+stage_diag_mu = _mk_diag("mu")
+stage_diag_nu = _mk_diag("nu")
+stage_diag_rho = _mk_diag("rho")
+stage_diag_tilt_deg = _mk_diag("tilt_deg")
+stage_diag_perp_q = _mk_diag("perp_q")
+stage_diag_d_goal = _mk_diag("d_goal")
+
+
+def stage_palm_cmd_rate(
+    env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg, sensor_names: tuple[str, ...],
+    action_term_name: str, rate_limit: float,
+) -> torch.Tensor:
+    """목표에서 **팜 지령이 계속 배회하는 것**을 벌한다 (0~1, weight 는 음수).
+
+    ★fab_test41: 게이트를 `held_and_near_goal`(구 높이 게이트) → **`ρ`** 로 옮겼다.
+      DexPour 사다리의 ρ 가 정확히 "리프트해서 목표 5cm 안에 왔다"이고, 두 함수가 서로
+      다른 자를 쓰면 조용히 어긋난다(이 트랙이 반복한 사고: 패드 중앙 보정 · 컵 축 clamp).
+
+    ★재는 층이 `action_rate`·`joint_vel` 과 다르다. fab_test19 층 분해 실측:
+        ① 정책 raw 액션   |Δ|0.217 |Δ²|0.205  방향반전 18.8%   ← action_rate 가 보는 층
+        ② 리미터 통과 지령 |Δ|11.5mm            방향반전  8.4%   ← **이 항이 보는 층**
+        ③ fabric 관절목표  |Δ|15.5mrad          방향반전  0.0%
+        ④ 실제 팔 관절     |Δ|17.1mrad          방향반전  0.0%   ← joint_vel 이 보는 층
+      눈에 보이는 배회는 ②의 **1차** 성분이다(dwell 구간 1.16~5.2 mm/step = 초당 60~260 mm).
+      ①은 σ 노이즈가 지배해 "정책을 부드럽게" 대신 "σ 를 줄이기"로 최적화되고,
+      ④는 fabric 이 이미 평활화한 뒤라 남는 신호가 없다.
+
+    ⚠ 게이트가 핵심이다. 목표에서 멀면 0 이므로 접근·이송의 빠른 지령은 **전혀** 안 벌한다.
+      이 트랙은 억제 항을 "아직 아무것도 못 하는" 구간에 걸어 두 번 학습을 죽였다
+      (fab_test14 jerk · fab_test19). [[suppression-terms-need-task-first]]
+    ⚠ 잔류 **속도**는 안 벌한다. 동결 실측에서 컵 순간속도 바닥이 71 mm/s 인데 5 초 순변위는
+      11.7 mm(2.3 mm/s)였다 — 그 71 은 서브밀리미터 솔버 버즈이고 게인·damping 어느 것에도
+      불변이었다. 정책이 못 줄이는 양을 벌하면 그냥 상수 벌금이다.
+    """
+    term = env.action_manager.get_term(action_term_name)
+    moving = (term.cmd_step_norm / rate_limit).clamp(max=1.0)
+    return moving * _stage(env, jaw_cfg, sensor_names).rho

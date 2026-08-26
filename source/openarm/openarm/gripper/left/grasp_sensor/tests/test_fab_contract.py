@@ -971,47 +971,22 @@ def test_action_jerk_is_not_wired_anywhere():
         assert "self.curriculum.jerk_after_dwell" not in src
 
 
-def test_palm_command_rate_penalty_is_first_order_and_self_gated():
-    """★★jerk 를 대체하는 항의 계약 — **1차**이고 **게이트가 항 안에** 있어야 한다.
+def test_smoothing_penalties_are_only_the_two_inherited_ones():
+    """★★fab_test41: `palm_cmd_rate` 제거(사용자 지적 "fabric 이 대부분 알아서 한다").
 
-    fab_test14/19 실패의 공통 구조는 "억제 항이 과제 성립 전 구간에 걸린 것"이었다.
-    커리큘럼 래치는 그 시점을 늦출 뿐 크기를 정하지 못했다(위 테스트 참조). 이 항은
-    게이트(들고 + 목표 근접)를 항 자체에 곱해, 접근·이송 구간에서 **구조적으로 0** 이다.
-
-    보이는 진동이 1차라는 근거: dwell 구간 지령 배회 1.16~5.2 mm/step(초당 60~260 mm).
+    ⑴ 전 이력에서 **정확히 0** 이었다 — 게이트(`held_and_near_goal`)가 한 번도 안 열렸다.
+    ⑵ fab_test19 층 분해 실측: fabric 이 ③관절목표·④실제 관절의 방향반전을 **0.0%** 로
+       지운다. 평활화 항이 셋일 이유가 없다.
+    ⑶ DexPour 도 자매 트랙도 평활화는 두 항뿐이다(action_l2 · action_rate_l2).
+    ⚠ 되살리려면 게이트를 사다리와 같은 `ρ` 로 두고, 억제는 과제 성립 뒤에만 켠다.
     """
-    fab_src = _src("grasp_left_fab_env_cfg.py")
-    assert "self.rewards.palm_cmd_rate = RewTerm(" in fab_src, "대체 항이 배선되지 않았다"
-    assert "func=rewards.palm_command_rate_at_goal" in fab_src
-    block = fab_src[fab_src.index("self.rewards.palm_cmd_rate = RewTerm("):]
-    block = block[:block.index("\n        )")]
-    # 1) 게이트가 항 안에 있어야 한다 — 목표·파지 판정 인자가 전달돼야 성립한다
-    for key in ('"command_name"', '"jaw_cfg"', '"std"', '"minimal_height"'):
-        assert key in block, f"게이트 인자 {key} 누락 — 게이트 없는 억제 항은 t14/t19 재발"
-    # 2) 리미터 상한으로 정규화해야 weight 가 상금 대비로 검산 가능하다
-    assert '"rate_limit": P.PALM_CMD_RATE_REF' in block
-
-    # 3) 억제가 상금을 넘으면 안 된다 — t14/t19 는 정확히 이걸 넘겨서 죽었다.
-    #    항이 0~1 로 정규화돼 있으므로 최악의 경우 벌금 = |weight| 이고,
-    #    그 순간 함께 들어오는 상금은 settle(15) + dwell(10) 이다.
-    w = abs(P.PALM_CMD_RATE_PENALTY_WEIGHT)
-    assert w > 0.0, "weight 가 0 이면 항이 없는 것과 같다"
-    assert w <= 0.5 * (P.SETTLE_REWARD_WEIGHT + P.DWELL_REWARD_WEIGHT), (
-        f"|weight| {w} 가 상금(settle {P.SETTLE_REWARD_WEIGHT} + dwell "
-        f"{P.DWELL_REWARD_WEIGHT})의 절반을 넘는다 — fab_test14/19 재발 조건"
+    fab = _fab_src()
+    assert "self.rewards.palm_cmd_rate = RewTerm(" not in fab, (
+        "palm_cmd_rate 가 되살아났다 — 전 이력 0 이었고 fabric 이 이미 평활화한다"
     )
-    assert P.PALM_CMD_RATE_PENALTY_WEIGHT < 0.0, "억제 항인데 weight 가 음수가 아니다"
-
-    # 4) 관절공간 변형에는 palm 지령 자체가 없다 — 새어 들어가면 안 된다
-    assert "self.rewards.palm_cmd_rate" not in _src("grasp_left_env_cfg.py")
-
-    # 5) 액션항이 "적용된" 지령 이동량을 노출해야 한다(raw 액션이 아니라 리미터 통과 후)
-    act_src = _src("grasp_left_fabric_action.py")
-    assert "def cmd_step_norm" in act_src, "지령 이동량 노출 프로퍼티가 없다"
-    assert "self._cmd_step_norm[env_ids] = 0.0" in act_src, (
-        "리셋에서 초기화하지 않으면 에피소드 첫 스텝이 텔레포트 차분으로 벌을 받는다"
+    assert '"palm_cmd_rate"' in fab.split("for _old in (")[1].split(")")[0], (
+        "palm_cmd_rate 가 비활성화 목록에 없다"
     )
-
 
 def test_settle_and_gate_share_one_ruler():
     """★같은 판정을 두 함수가 각자 다시 짜면 조용히 어긋난다 — 이 트랙에서 네 번 당했다.
@@ -1475,3 +1450,188 @@ def test_gui_shows_the_action_command_marker_not_the_tcp_marker():
     cb = act_src.split("def _debug_vis_callback")[1]
     assert "quat_from_euler_xyz" in cb, "지령 마커가 자세를 안 그린다(6D 가 아니다)"
     assert "env_origins" in cb, "지령이 env 로컬인데 world 로 안 올렸다 — 마커가 원점에 몰린다"
+
+
+def _fab_src() -> str:
+    return (Path(__file__).resolve().parents[1] / "grasp_left_fab_env_cfg.py").read_text(
+        encoding="utf-8")
+
+
+def test_stage_weights_increase_monotonically():
+    """★★가중이 **단조 증가**해야 뒤 단계가 항상 유리하다.
+
+    게이트가 이진이므로 열린 칸의 지급 = 가중 × 진척이고, 단조 증가면 실지급도
+    단조 증가한다. 구 구조(곱 사슬)는 인자마다 <1 이라 실지급이 역전됐다 —
+    자매 트랙 실측: grasp 1.469 > lift 0.757 > transfer 0.661 > stay 0.334.
+    뒤 단계로 갈수록 손해였으니 정책이 앞 칸에 머무는 것이 최적이었다.
+    """
+    ladder = [P.STAGE_APPROACH_WEIGHT, P.STAGE_GRASP_WEIGHT, P.STAGE_LIFT_WEIGHT,
+              P.STAGE_TRANSFER_WEIGHT, P.STAGE_STAY_WEIGHT]
+    assert ladder == sorted(ladder) and len(set(ladder)) == len(ladder), (
+        f"가중 사다리가 단조 증가가 아니다: {ladder}"
+    )
+
+
+def test_two_shaping_terms_stay_outside_the_gates():
+    """★λ=1·μ=0("도착했지만 아직 못 잡음") 구간에 보상이 0 이면 안 된다.
+
+    논문은 `r_contact` 를 `μ·r_grasping` 안에 두는데 그러면 이 구간이 비어 있다.
+    이 트랙은 보상 0 이 **조기 종료를 최적으로** 만드는 실패를 겪었다
+    (test6/test7: lifting 6.14 → 0.0000, 에피소드 130 → 13, 총보상 +34.9 → −0.46).
+    자매 트랙이 무게이트 shaping 으로 고쳤고 우리도 그 쪽을 쓴다.
+    """
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    for name in ("stage_approach", "stage_contact"):
+        body = rsrc.split(f"def {name}(")[1].split("\ndef ")[0]
+        for gate in ("s.mu", "s.nu", "s.rho"):
+            assert f"return {gate}" not in body, f"{name} 이 게이트 뒤에 있다"
+    # contact 는 순수 접촉 비율이어야 한다(게이트·기하 없음)
+    body = rsrc.split("def stage_contact(")[1].split("\ndef ")[0]
+    assert "touch_frac" in body and "s.mu" not in body
+
+
+def test_lift_is_gated_by_contact_and_measured_from_the_lowest_point():
+    """★★리프트 게이트가 **μ(접촉)** 이지 높이가 아니다 — 논문 Fig.3 `μ·r_lift`.
+
+    본문: *"Once the cup reaches a certain height threshold, the lift reward ceases to
+    accumulate"* → 높이는 **여는 하한이 아니라 끊는 상한**이다. 우리 구 `_held` 는
+    높이가 하한이라 이 항이 t22~t40 열아홉 판 내내 0 이었다(t40 최종 0.00002).
+    ★높이는 컵 **최저점**으로 잰다. 원점 z 는 바닥 림 피벗으로 4.61 mm 를 위조한다.
+    """
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    body = rsrc.split("def stage_lift(")[1].split("\ndef ")[0]
+    assert "s.mu * s.U_tol * s.H" in body, "리프트가 `μ × 자세 × 높이진척` 이 아니다"
+    assert "s.nu" not in body, "리프트가 아직 높이 게이트(ν) 뒤에 있다"
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "s.lift_h = rewards.lift_height(env)" in ssrc, "높이가 최저점 기준이 아니다"
+    assert "s.H = (s.lift_h / P.STAGE_LIFT_REF_M).clamp(0.0, 1.0)" in ssrc, (
+        "리프트 진척이 목표에서 포화하지 않는다"
+    )
+
+
+def test_grasp_is_zero_without_contact():
+    """★★파지 품질에 **접촉을 곱한다** — 기하만으로 값이 나오면 허공 파지가 되살아난다.
+
+    구 `cup_between_jaws`·`grip_closure_when_enclosed` 는 `enclose` 가 턱축 **투영**만
+    봐서 접촉 없이 만점이었고, t38 이 **170 mm 허공에서 closure 를 상한의 74%** 까지
+    받았다(그 구간 `contact_engage` 는 정확히 0). 같은 맹점에 네 번 속았다.
+    """
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    body = ssrc.split("s.grasp_q = ")[1].split("\n    #")[0]
+    assert "s.touch_frac" in body, "파지 품질이 접촉을 안 본다 — 허공 파지가 가능하다"
+
+
+def test_stage_triggers_are_nested_and_match_the_paper():
+    """★트리거가 λ→μ→ν→ρ 순으로 **포함관계**여야 한다(논문 식 3~6).
+
+    각 단계의 활성화가 앞 단계 완료를 내포한다 — *"each stage's activation inherently
+    validates completion of prior phases"*.
+    """
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "s.mu = s.lam *" in ssrc, "μ 가 λ 를 포함하지 않는다"
+    assert "s.nu = s.mu *" in ssrc, "ν 가 μ 를 포함하지 않는다"
+    assert "s.rho = s.nu *" in ssrc, "ρ 가 ν 를 포함하지 않는다"
+    assert P.STAGE_GATE_CONTACT_N == 2.0, "2지 그리퍼는 양 턱 동시 접촉이 μ 다"
+
+
+def test_tilt_penalty_is_off_after_the_lift():
+    """★기울임 벌점은 **리프트 전에만**(1−ν) 건다.
+
+    상시 걸면 이송 중 기울기를 벌해 사용자 규격("cup+z 와 world+z 는 15° 이내면 됨")과
+    어긋난다. 들어올린 뒤의 기울기는 `U_tol`(25°→15°)·`U_up`(15°→5°)이 맡는다.
+    논문도 페널티를 `(1−λ)` 로 게이팅한다.
+    """
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    body = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
+    assert "tilt_q = (1.0 - s.nu) *" in body, "기울임 벌점이 리프트 후에도 걸린다"
+    assert "push_q = ((s.xy_disp - P.STAGE_PUSH_MARGIN_M)" in body, "컵 밀기 벌점이 없다"
+    # ★★벌점은 **곱셈 감쇠**여야 한다 — 뺄셈이면 approach 가 음수가 될 수 있고,
+    #   총보상이 음수면 조기 종료가 최적이 된다(r2 실측: approach −0.069 · 총보상 −0.353
+    #   → 정책이 148 → 242 mm 로 도망, λ 0.036 → 0.0000).
+    assert "return reach * (1.0 - P.STAGE_PUSH_ATTEN" in body, (
+        "벌점이 뺄셈이다 — approach 가 음수가 되면 조기 종료가 최적이 된다"
+    )
+    assert 0.0 < P.STAGE_PUSH_ATTEN < 1.0 and 0.0 < P.STAGE_TILT_ATTEN < 1.0, (
+        "감쇠가 1.0 이상이면 approach 가 0 이 되어 같은 실패로 돌아간다"
+    )
+
+
+def test_reward_names_match_tb_tags_and_old_names_are_gone():
+    """★사용자 지시 "reward naming 교체 · TB events logging 값 매칭 일치".
+
+    IsaacLab 은 **슬롯 이름으로 로깅**하므로 슬롯 이름이 곧 TB 태그다
+    (`_TagRegroupWriter` 는 `Episode/Episode_Reward/` → `Rewards/` 재배치만 한다).
+    구 이름은 `LiftEnvCfg` 에서 물려받은 것이라 내용과 어긋나 있었다 —
+    `reaching_object` 안에 `approach_opposed` 가 들어 있었다.
+    """
+    fab = _fab_src()
+    for stage in ("approach", "contact", "grasp", "lift", "transfer", "stay"):
+        assert f"self.rewards.{stage} = RewTerm(" in fab, f"{stage} 슬롯이 없다"
+    # 구 이름은 fab 에서 반드시 비활성화된다(부모는 관절공간 태스크가 계속 쓴다).
+    disabled = fab.split("for _old in (")[1].split(")")[0]
+    for old in ("reaching_object", "lifting_object", "object_goal_tracking",
+                "cup_between_jaws", "grip_closure_when_enclosed", "grasp_pose",
+                "settled_at_goal", "dwell_at_goal", "contact_engage"):
+        assert f'"{old}"' in disabled, f"구 이름 {old} 이 살아 있다 — TB 가 두 체계로 갈린다"
+    # 단계 트리거 진단이 로깅된다
+    for d in ("lam", "mu", "nu", "rho"):
+        assert f'"{d}"' in fab, f"단계 트리거 {d} 진단이 없다"
+
+
+def test_stage_state_is_computed_once_per_step():
+    """★단계 상태를 항마다 재계산하면 자를 일곱 개 두는 것이다.
+
+    이 트랙은 두 함수가 서로 다른 자를 쓰다 조용히 어긋난 사고를 반복했다
+    (패드 중앙 보정 · 컵 축 clamp). 캐시 키는 `env.common_step_counter` 다.
+    """
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "step = int(env.common_step_counter)" in ssrc and "_CACHE[key]" in ssrc
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    for stage in ("approach", "contact", "grasp", "lift", "transfer", "stay"):
+        body = rsrc.split(f"def stage_{stage}(")[1].split("\ndef ")[0]
+        assert "_stage(env, jaw_cfg, sensor_names)" in body, (
+            f"stage_{stage} 이 공유 캐시를 안 쓴다"
+        )
+
+
+def test_stay_requires_goal_stillness_and_upright_together():
+    """★사용자 규격 "목표 5cm 이내에서 가만히" + "cup+z 와 world+z 15° 이내".
+
+    구 `settled_at_goal` 은 직립 인자가 없어 기울인 채로도 성립했다.
+    정지는 **컵 속도**로 잰다 — 액션 변화량은 "액션을 안 바꾼다"이지 "안 움직인다"가 아니다.
+    """
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    body = rsrc.split("def stage_stay(")[1].split("\ndef ")[0]
+    assert "s.rho * s.S * s.U_up" in body, "stay 가 근접·정지·직립 셋을 다 요구하지 않는다"
+    assert P.STAGE_STAY_POS_TOL_M == 0.05, "사용자 규격 5 cm 가 아니다"
+    assert P.STAGE_UPRIGHT_GATE_DEG[0] <= 15.0, "직립 전이가 15° 보다 느슨하다"
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "s.S = torch.exp(-s.cup_speed" in ssrc, "정지를 컵 속도로 안 잰다"
+
+
+def test_approach_requires_tcp_z_perpendicular_to_world_z():
+    """★사용자 규격 "TCP_+z 가 world_+z 와 **수직**이 되게 접근".
+
+    접근축(턱 body 의 z 축)의 world-z 성분이 0 이어야 1.0. 컵이 서 있으면 이 조건은
+    "원통을 옆에서 문다"(CLAUDE.md 규약 90°)와 같아진다.
+    t38 결정론 실측은 **49.8°**(올바름 90°)로 크게 어긋나 있었다.
+    """
+    ssrc = (Path(__file__).resolve().parents[1] / "grasp_left_stages.py").read_text(
+        encoding="utf-8")
+    assert "s.perp_q = (1.0 - approach_axis[:, 2].abs())" in ssrc, (
+        "접근축 수직 조건이 world +z 기준이 아니다"
+    )
+    rsrc = (Path(__file__).resolve().parents[1] / "grasp_left_rewards.py").read_text(
+        encoding="utf-8")
+    body = rsrc.split("def stage_approach(")[1].split("\ndef ")[0]
+    assert "s.perp_q" in body, "approach 가 자세 조건을 안 쓴다"

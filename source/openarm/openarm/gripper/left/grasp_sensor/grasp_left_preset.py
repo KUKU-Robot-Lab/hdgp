@@ -1077,9 +1077,12 @@ FABRIC_WORLD_FILENAME = "open_gripper_left_boxes_no_table"  # ★좌팔 전용 �
 #   성립한 뒤에 켜야 한다** — 마찰·질량·스폰폭도 같은 성질이다.
 #   → dwell 게이트와 **같은 원리**로, 성공 지표가 임계를 넘을 때마다 한 단계씩 넓힌다.
 #
-# 진행 지표는 `dwell_at_goal` 을 그대로 쓴다(이미 게이트가 검증한 신호).
+# 진행 지표는 마지막 단계 보상을 쓴다(이미 게이트가 검증한 신호).
+# ★fab_test41: `dwell_at_goal` → **`stay`**. DexPour 계층 재편으로 그 항이 폐기됐고,
+#   같은 역할(목표 5cm 내 정지 + 직립)을 `stay` 가 맡는다. 이름을 안 옮기면 env 생성이
+#   `reward_manager.active_terms.index()` 에서 죽는다(fab_test41 첫 기동에서 실제로 죽었다).
 ADR_ENABLED = True
-ADR_METRIC_TERM = "dwell_at_goal"   # 진행 지표(EMA)
+ADR_METRIC_TERM = "stay"   # 진행 지표(EMA) — DexPour 사다리의 마지막 칸
 ADR_METRIC_EMA_ALPHA = 0.01
 # ★★fab_test22 원본 정합: kuka 는 **성공 구역에 있는 env 비율 > 0.4** 로 올린다
 #   (`in_success_region.float().mean() > success_for_adr`). 우리는 dwell 보상의 EMA
@@ -1282,3 +1285,63 @@ CONTACT_FORCE_THRESHOLD = 0.5
 # 양 턱 동시 접촉 보너스. ⚠ **현재 도달 불가** — 액션 게이트가 `grasp_ok` 전에는
 # 그리퍼를 84.5 mm 로 강제 개방하는데 컵 단면은 58 mm 다. 게이트 연속화 이후를 위한 배선.
 CONTACT_ALL_BONUS = 1.5
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# fab_test41 — DexPour 계층 보상 (5단계 사다리)
+#
+# 논문 Fig. 3:  r_t = (1−λ)·p + μ·r_grasping + μ·r_lift + ν·r_transporting + ρ·r_pouring
+# 우리 5단계(사용자 규격): approach/align → grasp → lift → transfer → stay
+#
+# ★★가중이 **단조 증가**해야 한다. 게이트가 이진이므로 열린 칸의 지급 = 가중 × 진척이고,
+#   단조 증가면 실지급도 단조 증가한다. 구 구조(곱 사슬)는 인자마다 <1 이라 실지급이
+#   역전됐다 — 자매 트랙 실측: grasp 1.469 > lift 0.757 > transfer 0.661 > stay 0.334.
+#   뒤 단계로 갈수록 손해였으니 정책이 앞 칸에 머무는 것이 최적이었다.
+# ★★`approach` 와 `contact` 는 **게이트 밖**이다. 논문은 `r_contact` 를 μ 안에 두는데
+#   그러면 λ=1·μ=0("도착했지만 아직 못 잡음") 구간의 보상이 0 이 된다. 이 트랙은 보상 0 이
+#   조기 종료를 최적으로 만드는 실패를 겪었다(test6/test7: lifting 6.14→0, ep 130→13).
+STAGE_APPROACH_WEIGHT = 2.0
+STAGE_CONTACT_WEIGHT = 1.0        # 게이트 없음 — λ=1·μ=0 사각지대 방지 shaping
+STAGE_GRASP_WEIGHT = 3.0
+STAGE_LIFT_WEIGHT = 5.0
+STAGE_TRANSFER_WEIGHT = 7.0
+STAGE_STAY_WEIGHT = 10.0
+
+# ── 트리거 (논문 식 3~6) ──────────────────────────────────────────────────────
+STAGE_GATE_APPROACH_M = 0.12      # λ. t40 실측 턱-컵 중앙값 133 mm — 운전권에서 열린다
+STAGE_GATE_CONTACT_N = 2.0        # μ. **2지 = 양 턱 동시**(논문은 4지 전부)
+# ν. 리프트 목표 40 mm 의 약 1/3. 논문은 h_lift 0.15 를 그대로 쓰지만 그건 이송 진입
+#   조건이고, 우리는 리프트 자체가 40 mm 라 그 1/3 에서 이송 shaping 을 연다
+#   (자매 트랙도 0.05/0.15 = 1/3 비율).
+#   ⚠ `lift_height` 는 컵 **최저점**이라 기울여서 위조할 수 없다(원점 z 는 4.61 mm 오른다).
+STAGE_GATE_LIFT_M = 0.015
+STAGE_GATE_TRANSFER_M = 0.08      # ρ. d_goal 시작 ~0.20 의 절반 아래
+
+# ── 단계 진척량 ──────────────────────────────────────────────────────────────
+STAGE_LIFT_REF_M = MINIMAL_LIFT_HEIGHT - CUP_SPAWN_Z   # 0.04 — 사용자 규격 "테이블에서 4cm"
+STAGE_TRANSFER_STD_M = 0.15       # exp(−d_goal/std). 시작 ~0.20 에서 0.26
+STAGE_STAY_POS_TOL_M = 0.05       # 사용자 규격 "목표 지점 5cm 이내" (= STAGE_GATE_TRANSFER 와 별도 로깅)
+STAGE_STAY_SPEED_REF = 0.05       # m/s. exp(−v/ref)
+
+# ── 자세 (사용자 규격 "cup+z 와 world+z 는 15도 이내") ────────────────────────
+# 단계별로 요구가 다르다 — 이송 중에는 관용, 목표에서 정지할 때는 직립.
+STAGE_TILT_TOLERANCE_DEG = (25.0, 15.0)   # U_tol: 25°에서 0 → 15°에서 1 (lift/transfer)
+STAGE_UPRIGHT_GATE_DEG = (15.0, 5.0)      # U_up : 15°에서 0 → 5°에서 1 (stay)
+# ★"TCP_+z 가 world_+z 와 수직" — 접근축의 world-z 성분이 0 이어야 한다.
+STAGE_PERP_EXPONENT = 2.0
+STAGE_ALIGN_FLOOR = 0.25          # 정렬이 최악이어도 approach 의 25% 는 남긴다
+STAGE_ORIENT_FLOOR = 0.15         # 자세가 최악이어도 15%
+
+# ── 접근 중 컵 교란 벌점 (사용자 결정: "벌점으로 억제") ───────────────────────
+# ★기울임 벌점은 **리프트 전에만**(1−ν) 건다. 상시 걸면 이송 중 기울기를 벌해
+#   사용자 규격("15° 이내면 됨")과 어긋난다 — 들어올린 뒤는 U_tol·U_up 이 맡는다.
+# ★★fab_test41-r3: **곱셈 감쇠**다(뺄셈 아님). r2 에서 뺄셈 벌점이 approach 최대치를
+#   넘어 총보상을 음수로 만들었고(−0.353), 그러면 조기 종료가 최적이 된다.
+#   `approach = reach × (1 − 0.5·push_q) × (1 − 0.5·tilt_q)` — 항상 **비음수**이고
+#   최악이 0.25× 라, 컵 곁(0.34)이 도망(0.29)보다 여전히 낫다.
+STAGE_PUSH_ATTEN = 0.5            # 밀기 최대 감쇠
+STAGE_PUSH_MARGIN_M = 0.025       # 이만큼은 봐준다
+STAGE_PUSH_REF_M = 0.05           # margin 위로 이만큼 밀면 감쇠가 최대
+STAGE_TILT_ATTEN = 0.5            # 기울임 최대 감쇠 (리프트 후 (1−ν) 로 꺼진다)
+STAGE_TILT_MARGIN_DEG = 8.0
+STAGE_TILT_REF_DEG = 30.0         # margin 위로 30° 더 기울면 감쇠가 최대
