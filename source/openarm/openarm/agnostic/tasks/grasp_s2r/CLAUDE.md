@@ -39,10 +39,15 @@ grasp_v1 규약은 `palm = 홈 + delta(a)` 라 **a=0 이 홈**이고 탐색이 �
 
 ## 형상 의존값
 
-**`object_grasp_radius = 0.062`(cup_big 실측) 하나뿐이다.** grasp_v1 의
-`fingertip_side_dist`(엄지는 컵 축 한쪽, 나머지는 반대쪽 대향점)가 반경을 요구한다.
-다물체로 확장할 때 여기부터 물체별 값(object_bank `base_grasp_radius`)이나 손 기하
-파생으로 바꾼다. `object_grasp_z_offset` 도 같은 성격.
+**`object_grasp_z_offset = 0.03`(물체 원점↔파지 높이) 하나뿐이다.**
+
+08.27 에 `object_grasp_radius`·`enclosure_thumb_weight` 를 제거했다. 접근 항이
+컵 반경 기반 "대향 목표점"이 아니라 **손 자신의 대향 중점**(엄지 팁과 4지 팁 평균의
+중점)과 컵 사이 거리(`cage_dist`)를 쓰기 때문이다. 구 수식은 대향축을 접근방향의
+90° 회전으로 잡아 **좌/우 부호가 임의**였고, 그래서 엄지 목표가 실제 엄지의 반대편에
+놓여 손목을 뒤집어야 도달 가능한 자세를 요구했다 — 사용자 GUI 관찰 "4지는 붙는데
+엄지가 걸린다"의 원인이고, 실측으로 `grip_frac 0.20` 인데 `wrap_frac` 이 2,228 iter
+내내 0.000 이었다.
 
 ## 핵심 지표 (TFEvents)
 

@@ -51,7 +51,7 @@ def compute_grasp_s2r_rewards(
     grip_frac: torch.Tensor,              # (N,) tip|mid|distal OR 비율
     # ---- 기하 ----
     palm_to_cup_dist: torch.Tensor,
-    fingertip_side_dist: torch.Tensor,
+    cage_dist: torch.Tensor,             # 대향중점(엄지↔4지) ↔ 컵 파지중심 거리
     cup_height_delta: torch.Tensor,
     cup_xy_disp_now: torch.Tensor,        # 접근 벌점용 — 실시간 수평 변위
     cup_xy_disp_ref: torch.Tensor,        # 감쇠용 — **래치 시점** 변위 스냅샷
@@ -105,7 +105,7 @@ def compute_grasp_s2r_rewards(
     approach = pre_lift_gate * (
         _aw * torch.exp(
             -_f(cfg, "approach_sharpness", 8.0)
-            * (palm_to_cup_dist + fingertip_side_dist))
+            * (palm_to_cup_dist + cage_dist))
         - _penalty
     )
 

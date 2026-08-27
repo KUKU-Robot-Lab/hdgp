@@ -178,6 +178,23 @@ def test_stay_rewards_duration_not_touch():
     assert "self._stay_run" in _code(_ENV)
 
 
+def test_opposition_axis_is_hand_derived():
+    """★대향 중점은 **손 자신의 기하**에서 나와야 한다 — 임의 부호의 수직축 금지.
+
+    구 수식 `axis = (−dir_y, dir_x)` 는 접근방향의 90° 회전이라 좌/우 부호가 임의였다.
+    엄지 목표가 실제 엄지의 반대편에 놓이면 손목을 뒤집어야 도달 가능한 자세를 요구하고,
+    정책은 그쪽으로 못 가서 엄지가 걸린 채 4지만 붙인다(실측: grip_frac 0.20 인데
+    wrap_frac 이 2,228 iter 내내 0.000).
+    """
+    code = _code(_ENV)
+    assert "opp_mid = 0.5 * (tips[:, _a] + tips[:, _others].mean(dim=1))" in code
+    assert "cage_dist = (opp_mid - grasp_center).norm(dim=-1)" in code
+    # 임의 수직축·물체 반경 상수는 남아 있으면 안 된다.
+    assert "axis[:, 0], axis[:, 1] = -_dir[:, 1], _dir[:, 0]" not in code
+    for banned in ("object_grasp_radius", "enclosure_thumb_weight"):
+        assert banned not in code + _code(_CFG), f"제거된 형상 상수 잔재: {banned}"
+
+
 def test_approach_penalty_is_capped():
     """★approach 벌금은 상금(approach_weight)을 못 넘어야 한다 — approach 최솟값 0.
 

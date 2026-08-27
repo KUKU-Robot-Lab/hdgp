@@ -344,19 +344,22 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         height_delta = obj_pos[:, 2] - self.object_spawn_pos[:, 2]
         goal_dist = (obj_pos - self.goal_pos).norm(dim=-1)
 
-        # 대향 목표점까지의 거리 — 엄지는 컵 축 한쪽, 나머지는 반대쪽.
-        _dir = palm_pos[:, :2] - grasp_center[:, :2]
-        _dir = _dir / _dir.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-        axis = torch.zeros(self.num_envs, 3, device=self.device)
-        axis[:, 0], axis[:, 1] = -_dir[:, 1], _dir[:, 0]
-        _r = float(cfgn.object_grasp_radius)
+        # ---- 케이지 중심 ↔ 컵 -----------------------------------------------------
+        # ★★08.27 사용자 GUI 관찰로 확정된 수정: "손바닥·검지~소지는 잘 붙는데 **엄지가
+        #   걸려** 인벨롭이 안 된다".
+        #   구 수식은 대향축을 `접근방향을 90° 회전`으로 잡았다 —
+        #   `axis = (−dir_y, dir_x)` 는 **좌/우 부호가 임의**라, 접근 방향에 따라 엄지
+        #   목표가 실제 엄지의 반대편에 놓인다. 그러면 손목을 뒤집어야 도달 가능한
+        #   자세를 요구하게 되고, 정책은 그 방향으로 갈 수 없어 엄지가 걸린 채 4지만
+        #   붙인다. 실측 귀결: grip_frac 0.20 인데 wrap_frac 이 2,228 iter 내내 0.000.
+        # ★수정: 대향 중점을 **손 자신의 기하**에서 뽑는다. 손잡이 방향이 구조적으로
+        #   맞고(엄지가 어디 있든 정의가 성립), 물체 반경 상수도 필요 없다.
+        #   `opp_mid` 가 컵 중심에 오려면 엄지와 4지가 컵을 **사이에 두어야** 한다 —
+        #   두 그룹이 같은 쪽에 있으면 중점이 그쪽으로 쏠려 거리가 남는다.
         _a = int(self._group_a_idx[0])
-        thumb_d = (tips[:, _a] - (grasp_center + axis * _r)).norm(dim=-1)
         _others = [i for i in range(n_tip) if i != _a]
-        other_d = (tips[:, _others]
-                   - (grasp_center - axis * _r).unsqueeze(1)).norm(dim=-1).mean(dim=-1)
-        _w = float(cfgn.enclosure_thumb_weight)
-        side_dist = _w * thumb_d + (1.0 - _w) * other_d
+        opp_mid = 0.5 * (tips[:, _a] + tips[:, _others].mean(dim=1))
+        cage_dist = (opp_mid - grasp_center).norm(dim=-1)
 
         # 래치 시점 스냅샷 — 감쌈 유지 기준선과 밀림 감쇠 기준.
         self._wrap_at_latch = torch.where(_just, wrap_frac, self._wrap_at_latch)
@@ -393,7 +396,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             wrap_at_latch=self._wrap_at_latch,
             grip_frac=grip_frac,
             palm_to_cup_dist=palm_to_cup,
-            fingertip_side_dist=side_dist,
+            cage_dist=cage_dist,
             cup_height_delta=height_delta,
             cup_xy_disp_now=cup_disp,
             cup_xy_disp_ref=self._disp_at_latch,
@@ -428,7 +431,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["task/height_delta"] = height_delta.mean()
         self.extras["task/cup_disp"] = cup_disp.mean()
         self.extras["task/palm_to_cup"] = palm_to_cup.mean()
-        self.extras["task/side_dist"] = side_dist.mean()
+        self.extras["task/cage_dist"] = cage_dist.mean()
         self.extras["task/tilt_deg"] = self._tilt_deg.mean()
         self.extras["task/latched"] = self._latched.float().mean()
         self.extras["task/success"] = self._success_now.float().mean()
