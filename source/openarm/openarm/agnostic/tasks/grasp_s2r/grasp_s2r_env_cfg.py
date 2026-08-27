@@ -276,6 +276,15 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     contact_force_max: float = 10.0          # N — obs 정규화 포화점
     joint_pos_err_max: float = 1.2           # rad — obs 정규화
 
+    # ---- 진단 계측 (보상·게이트에 쓰이지 않는다 — 로깅 전용) -------------------------
+    # ★08.27: `wrap_frac`(중간 AND 원위)이 4,553 기록점 내내 정확히 0.000 인데 영상에서는
+    #   감쌈이 성립한다. "안 닿았다"와 "닿았는데 못 읽는다"를 가르기 위한 계측이다.
+    diag_contact_threshold_lo: float = 0.1   # N — 스치는 접촉까지 잡는 낮은 임계
+    # 손 PD 가 버틸 수 있는 최대 정적 오차 = effort_limit_sim / stiffness = 1.5 / 5.0.
+    # 이보다 크면 토크가 천장에 붙어 있다는 뜻이라 "막혔다"로 센다.
+    blocked_err_thr_rad: float = 0.30
+    blocked_limit_eps_rad: float = 0.05      # 관절 한계에서 이만큼 떨어져야 "외부에 막힘"
+
     # ---- 래치 (보상 단계 표시 전용 — 팔 지령을 덮지 않는다) --------------------------
     # ★★grasp_v1 의 `torch.where(is_lift, _lift_palm, palm_pose)` z 램프 오버라이드는
     #   **이식하지 않는다**. 래치는 lift/transfer 보상을 여는 신호일 뿐이고, 팔은

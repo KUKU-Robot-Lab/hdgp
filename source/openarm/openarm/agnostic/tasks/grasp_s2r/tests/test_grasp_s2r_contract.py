@@ -453,3 +453,64 @@ def test_approach_targets_the_palm_not_the_cage():
     assert "_dn = (_d * _R[:, :, 0]).sum(dim=-1)" in env
     # 정지는 **실측** palm 선속도다(액션 변화량이 아니다 — 손가락을 말면 안 되니까).
     assert "self.robot.data.body_lin_vel_w[:, self.palm_idx]" in env
+
+
+def test_net_force_reading_is_diagnostic_only():
+    """★★필터 없는 `net_forces_w` 는 **진단 전용**이다 — 보상 경로에 새면 안 된다.
+
+    `force_matrix_w` 는 컵 baseLink 로 필터링된 접촉만 담고 `net_forces_w` 는 그 링크가
+    받은 **모든** 접촉(테이블·자기충돌·다른 손가락)을 담는다. 후자를 보상에 쓰면
+    "테이블을 짚고 있다"가 파지로 계상된다 — 08.22 envelope 판정 사고와 같은 부류.
+
+    둘을 나란히 읽는 이유는 08.27 실측 때문이다: 원위(`_4`)가 다섯 손가락 전부·4,553
+    기록점 내내 정확히 0.000 인데 영상에서는 감쌈이 성립한다. net 이 양수인데 matrix 가
+    0 이면 필터 결함이고, 둘 다 0 이면 진짜 미접촉이다.
+    """
+    ctrl, env = _code(_CTRL), _code(_ENV)
+    assert "net_forces_w" in ctrl, "무필터 판독이 없다 — 두 가설을 못 가른다"
+    # 보상이 쓰는 두 진입점은 **필터판**만 봐야 한다.
+    for _fn in ("_contact_forces_split", "_tip_contact_forces"):
+        _i = ctrl.index(f"def {_fn}")
+        _blk = ctrl[_i:ctrl.index("def ", _i + 10)]
+        assert "_mag_filtered" in _blk, f"{_fn} 이 필터판을 안 쓴다"
+        assert "_mag_net" not in _blk, f"{_fn} 에 무필터가 샜다 — 테이블 접촉이 파지로 계상된다"
+    # 진단 로깅은 보상 총합이 정해진 **뒤**에 불린다(반환값 없음).
+    assert "self._log_diagnostics(" in env
+    assert env.index("self._log_diagnostics(") < env.index("return total")
+    assert "def _log_diagnostics" in env
+
+
+def test_blocked_needs_both_error_and_away_from_limit():
+    """★"더 못 조인다"는 **한계 도달**과 **물체에 막힘** 둘 다에서 성립한다.
+
+    `hand_grip_pose` 가 soft limit 을 넘겨 과지령이라(1.8 rad vs 1.571) 완전 폐쇄만으로
+    모든 관절이 목표를 못 따라가는 상태가 된다 — 허공에서 주먹을 쥐어도 오차 조건은
+    참이다. 관절이 **자기 한계에서 떨어져 있는지**를 함께 봐야 외부 차단이 확정된다.
+    ★가동폭 0° 관절(전 `_1` + pinky_2 + thumb_2)은 항상 오차 상태라 분모에서 빠져야 한다.
+    """
+    ctrl, cfg = _code(_CTRL), _code(_CFG)
+    _i = ctrl.index("def _hand_blocked")
+    blk = ctrl[_i:ctrl.index("def ", _i + 10)]
+    assert "_syn_lo" in blk and "_syn_hi" in blk, "한계 근접 판정이 없다"
+    assert "blocked_err_thr_rad" in blk and "blocked_limit_eps_rad" in blk
+    assert "self._syn_movable" in blk, "가동폭 0° 관절이 분모에 섞인다"
+    assert "&" in blk, "두 조건이 AND 로 묶이지 않았다"
+    assert "blocked_err_thr_rad" in cfg and "diag_contact_threshold_lo" in cfg
+
+
+def test_goal_distance_is_logged_by_component():
+    """★`goal_dist` 스칼라만으로는 높이 탓인지 수평 탓인지 못 가른다.
+
+    08.27 실측 goal_dist 0.281 에서 높이 성분과 수평 성분의 비중이 처방을 가른다 —
+    높이면 `lift_height_ref`(0.10) vs `goal_offset_xyz.z`(0.08) 충돌이고, 수평이면
+    홈 복귀(`a=0` 이 홈)다. 두 원인은 처방이 완전히 다르다.
+    """
+    env = _code(_ENV)
+    assert 'self.extras["task/goal_dz"]' in env
+    assert 'self.extras["task/goal_dxy"]' in env
+    # 홈 복귀 가설의 직접 관측량 — a=0 이 정확히 홈이라 액션 크기가 곧 홈 이탈량이다.
+    assert 'self.extras["task/action_norm_arm"]' in env
+    assert 'self.extras["task/palm_to_home"]' in env
+    # 파지 자세가 명령 박스 안에 있는지 — 축별로 봐야 어느 축이 부족한지 안다.
+    assert 'f"fabric/palm_cmd_box_sat_{_ax}"' in env
+    assert 'self.extras["fabric/palm_cmd_rate_sat"]' in env

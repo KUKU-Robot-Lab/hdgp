@@ -97,6 +97,11 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._palm_cmd_primed = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device)
         self._palm_cmd_step_raw = torch.zeros(self.num_envs, device=self.device)
+        # 진단 전용 — 지령이 **박스**에 잘렸는지 / **리미터**에 잘렸는지. 둘은 원인이
+        # 다르다: 박스 포화는 도달영역이 부족한 것이고 리미터 포화는 너무 빨리 움직이려는
+        # 것이다. 축별로 봐야 어느 축이 부족한지 알 수 있다.
+        self._palm_cmd_box_sat = torch.zeros(self.num_envs, 3, device=self.device)
+        self._palm_cmd_rate_sat = torch.zeros(self.num_envs, device=self.device)
 
         # 닫기 게이트 상태(정렬도) — `_pre_physics_step` 이 매 스텝 갱신한다.
         self._close_gate = torch.ones(self.num_envs, device=self.device)
@@ -222,8 +227,11 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         # a=0 → 홈. 탐색이 홈 주변 유계 오프셋으로 묶여 절대 매핑의 랜덤워크가 없다.
         delta = 0.5 * (self.actions[:, :6] + 1.0) * (self._delta_hi - self._delta_lo) \
             + self._delta_lo
-        self.palm_targets = (self._home_palm.unsqueeze(0) + delta).clamp(
-            self._box_lo, self._box_hi)
+        _raw_targets = self._home_palm.unsqueeze(0) + delta
+        self.palm_targets = _raw_targets.clamp(self._box_lo, self._box_hi)
+        # 축별 박스 포화 — 클램프가 값을 바꿨으면 그 축의 도달영역이 부족한 것이다.
+        self._palm_cmd_box_sat = (
+            self.palm_targets[:, :3] != _raw_targets[:, :3]).float()
 
         # ---- 지령 변화율 리미터 -----------------------------------------------------
         _lim = float(self.cfg.palm_cmd_rate_limit_m)
@@ -234,6 +242,8 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             torch.zeros_like(self._palm_cmd_step_raw))
         if _lim > 0.0:
             _scale = (_lim / _step3.norm(dim=-1, keepdim=True).clamp(min=1e-9)).clamp(max=1.0)
+            self._palm_cmd_rate_sat = (
+                (_scale.squeeze(-1) < 1.0) & self._palm_cmd_primed).float()
             self.palm_targets[:, :3] = torch.where(
                 self._palm_cmd_primed.unsqueeze(-1),
                 self._prev_palm_cmd + _step3 * _scale,
@@ -386,7 +396,8 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
 
         # ---- 접촉 ------------------------------------------------------------------
         _thr = float(cfgn.contact_force_threshold)
-        tip_c = self._tip_contact_forces() > _thr                 # (N, F)
+        tip_f = self._tip_contact_forces()                        # (N, F)
+        tip_c = tip_f > _thr
         mid_f, dist_f = self._contact_forces_split()
         mid_c, dist_c = mid_f > _thr, dist_f > _thr
         n_tip = len(self._finger_names)
@@ -532,6 +543,8 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["task/palm_speed"] = self._palm_speed.mean()
         # ★palm 이 테이블에 쓸리는지 — 사용자 GUI 관찰 "손바닥이 테이블에 쓸리면서
         #   열린다". 접촉 센서는 **컵만** 필터링해서 테이블 접촉이 안 보인다. 높이로 잰다.
+        # ★기준 body 는 프로필 `palm_body` 의 **원점**이다(palm_ee 가 아니다) — 손바닥
+        #   표면·손가락 끝은 이보다 더 내려가므로 이 값은 침범의 **하한**만 말한다.
         _pz = palm_pos[:, 2] - float(self.cfg.table_surface_z)
         self.extras["task/palm_above_table_mean"] = _pz.mean()
         self.extras["task/palm_above_table_min"] = _pz.min()
@@ -565,7 +578,58 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["fabric/joint_err_max"] = _jerr.max()
         self.extras["fabric/palm_err_mean"] = (
             self.palm_targets[:, :3] + self._fab_to_env - palm_pos).norm(dim=-1).mean()
+        self._log_diagnostics(_thr, mid_f, dist_f, tip_f, obj_pos, palm_pos)
         return total
+
+    # ------------------------------------------------------------------
+    def _log_diagnostics(self, thr: float, mid_f: torch.Tensor, dist_f: torch.Tensor,
+                         tip_f: torch.Tensor, obj_pos: torch.Tensor,
+                         palm_pos: torch.Tensor) -> None:
+        """진단 전용 로깅 — 보상·게이트·종료에 **일절 쓰이지 않는다**.
+
+        ★`wrap_frac`(중간 AND 원위)이 s2r_b5 4,553 기록점 내내 정확히 0.000 인데 영상에서는
+          감쌈이 성립한다. 세 가설을 한 런에서 가르기 위한 계측이다:
+            (a) 필터/집계 결함 — `net > 0` 인데 `matrix = 0`
+            (b) 임계 미달      — 낮은 임계에서만 `> 0`
+            (c) 진짜 미접촉    — 둘 다 0. 이때 `hand_blocked_frac` 이
+                                 "컵에 막힘"인지 "자유롭게 말림"인지 가른다
+        """
+        _lo = float(self.cfg.diag_contact_threshold_lo)
+        _n_mid, _n_dist, _n_tip = self._finger_link_forces(self._mag_net)
+        for _nm, _f, _nf in (("mid", mid_f, _n_mid), ("dist", dist_f, _n_dist),
+                             ("tip", tip_f, _n_tip)):
+            self.extras[f"contact/{_nm}_rate"] = (_f > thr).float().mean()
+            self.extras[f"contact/{_nm}_rate_lo"] = (_f > _lo).float().mean()
+            self.extras[f"contact/{_nm}_rate_net"] = (_nf > thr).float().mean()
+            self.extras[f"contact/{_nm}_f_mean"] = _f.mean()
+            self.extras[f"contact/{_nm}_f_net_mean"] = _nf.mean()
+        # 원위가 용의자라 손가락별로 따로 본다 — 어느 손가락이 못 닿는지.
+        for _i, _fg in enumerate(self._finger_names):
+            self.extras[f"contact/dist_rate_{_fg}"] = (dist_f[:, _i] > thr).float().mean()
+            self.extras[f"contact/dist_net_{_fg}"] = (_n_dist[:, _i] > thr).float().mean()
+        self.extras["task/hand_blocked_frac"] = self._hand_blocked().float().mean()
+
+        # ---- goal 성분 분해 -----------------------------------------------------------
+        # `goal_dist` 스칼라만으로는 0.28 이 높이 탓인지 수평 탓인지 알 수 없다.
+        _gd = obj_pos - self.goal_pos
+        self.extras["task/goal_dz"] = _gd[:, 2].abs().mean()
+        self.extras["task/goal_dxy"] = _gd[:, :2].norm(dim=-1).mean()
+
+        # ---- 홈 복귀 확인 -------------------------------------------------------------
+        # 액션 규약이 `palm = 홈 + delta(a)` 라 **a=0 이 정확히 홈**이다. 래치 후 정책이
+        # 홈으로 이완하면 컵이 목표가 아니라 홈 위로 실려 간다.
+        self.extras["task/action_norm_arm"] = self.actions[:, :6].norm(dim=-1).mean()
+        self.extras["task/palm_to_home"] = (
+            palm_pos - self._home_palm[:3].unsqueeze(0)).norm(dim=-1).mean()
+
+        # ---- palm 지령 포화 -----------------------------------------------------------
+        # 박스 포화 = 도달영역 부족, 리미터 포화 = 너무 빨리 움직이려는 것. 원인이 다르다.
+        for _i, _ax in enumerate("xyz"):
+            self.extras[f"fabric/palm_cmd_box_sat_{_ax}"] = \
+                self._palm_cmd_box_sat[:, _i].mean()
+        self.extras["fabric/palm_cmd_rate_sat"] = self._palm_cmd_rate_sat.mean()
+        self.extras["fabric/palm_cmd_z"] = self.palm_targets[:, 2].mean()
+        self.extras["fabric/palm_z_min"] = palm_pos[:, 2].min()
 
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:

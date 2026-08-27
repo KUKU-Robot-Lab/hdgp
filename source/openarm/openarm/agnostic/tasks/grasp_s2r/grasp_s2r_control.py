@@ -464,6 +464,23 @@ class GraspS2RControlMixin:
         _prog = ((_q - self._syn_open.unsqueeze(0)) / _span).clamp(0.0, 1.0)
         return _prog[:, self._syn_movable].mean(dim=1)
 
+    def _hand_blocked(self) -> torch.Tensor:
+        """가동 관절이 **외부에 막혀** 있는가 (N, n_movable) bool — 진단 전용.
+
+        판별: 목표를 못 따라가는데(`|target−q| > blocked_err_thr_rad`) 자기 한계에서는
+        떨어져 있다(`q` 가 `[lo+eps, hi−eps]` 안). 이 두 조건을 함께 봐야 **한계에 부딪힌
+        것**과 **물체에 막힌 것**이 갈린다 — `hand_grip_pose` 가 soft limit 을 넘겨
+        과지령이라(1.8 rad vs 1.571) 완전 폐쇄만으로 모든 관절이 "더 못 조임" 상태가
+        되기 때문이다. 허공에서 주먹을 쥐어도 오차 조건 하나는 성립한다.
+        ★가동폭 0° 관절(전 `_1` + `pinky_2` + `thumb_2`)은 항상 오차 상태라 제외한다.
+        """
+        _q = self.robot.data.joint_pos[:, self._syn_ids]
+        _eps = float(self.cfg.blocked_limit_eps_rad)
+        _free = ((_q > self._syn_lo.unsqueeze(0) + _eps)
+                 & (_q < self._syn_hi.unsqueeze(0) - _eps))
+        _stuck = (self._syn_target - _q).abs() > float(self.cfg.blocked_err_thr_rad)
+        return (_stuck & _free)[:, self._syn_movable]
+
     def _syn_to_fab(self, syn_q: torch.Tensor) -> torch.Tensor:
         """synergy 자세(프로필 순서) → fabric 손 구간 순서."""
         return syn_q[:, self._syn_to_fab_idx]
@@ -482,33 +499,46 @@ class GraspS2RControlMixin:
             mags.append(total)
         return torch.stack(mags, dim=1)
 
-    def _contact_forces_split(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """(중간, 원위) 마디별 접촉력 (N, F) — 감쌈 판정용.
+    def _mag_filtered(self, sensor) -> torch.Tensor:
+        """컵-필터 접촉력 크기 (N,). 보상·게이트가 쓰는 정규 경로."""
+        return sensor.data.force_matrix_w.view(
+            self.num_envs, -1, 3).sum(dim=1).norm(dim=-1)
+
+    def _mag_net(self, sensor) -> torch.Tensor:
+        """**필터 없는** 총 접촉력 크기 (N,) — 진단 전용.
+
+        ★`force_matrix_w` 는 `filter_prim_paths_expr`(컵 baseLink)에 걸린 접촉만 담고
+          `net_forces_w` 는 그 링크가 받은 **모든** 접촉을 담는다. 둘을 나란히 읽으면
+          "링크가 안 닿았다"와 "닿았는데 필터가 못 잡는다"가 갈린다. 08.27 실측에서
+          원위(`_4`)만 다섯 손가락 전부·4,553 기록점 내내 정확히 0.000 이었다.
+        """
+        return sensor.data.net_forces_w.view(
+            self.num_envs, -1, 3).sum(dim=1).norm(dim=-1)
+
+    def _finger_link_forces(self, mag) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """손가락별 (중간, 원위, 팁) 접촉력 (N, F). `mag` 가 필터/무필터를 가른다.
 
         `finger_sensor_bodies` 규약: 마지막 원소 = 팁, 그 앞이 (중간, 원위) 순.
         body 가 하나뿐인 손가락은 그 접촉 자체가 감쌈이다(mid=dist=그 body).
         """
-        mids, dists = [], []
+        mids, dists, tips = [], [], []
         for finger in self._finger_names:
             sensors = self._finger_sensors[finger]
             mid_i, dist_i = (0, 1) if len(sensors) >= 3 else (0, 0)
+            mids.append(mag(sensors[mid_i]))
+            dists.append(mag(sensors[dist_i]))
+            tips.append(mag(sensors[-1]))
+        return (torch.stack(mids, dim=1), torch.stack(dists, dim=1),
+                torch.stack(tips, dim=1))
 
-            def _mag(s):
-                return s.data.force_matrix_w.view(
-                    self.num_envs, -1, 3).sum(dim=1).norm(dim=-1)
-
-            mids.append(_mag(sensors[mid_i]))
-            dists.append(_mag(sensors[dist_i]))
-        return torch.stack(mids, dim=1), torch.stack(dists, dim=1)
+    def _contact_forces_split(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """(중간, 원위) 마디별 접촉력 (N, F) — 감쌈 판정용."""
+        _mid, _dist, _ = self._finger_link_forces(self._mag_filtered)
+        return _mid, _dist
 
     def _tip_contact_forces(self) -> torch.Tensor:
         """손가락별 **팁만** 접촉력 (N, F)."""
-        out = []
-        for finger in self._finger_names:
-            s = self._finger_sensors[finger][-1]
-            out.append(s.data.force_matrix_w.view(
-                self.num_envs, -1, 3).sum(dim=1).norm(dim=-1))
-        return torch.stack(out, dim=1)
+        return self._finger_link_forces(self._mag_filtered)[2]
 
     def _env_local(self, pos_w: torch.Tensor) -> torch.Tensor:
         return pos_w - self.scene.env_origins
