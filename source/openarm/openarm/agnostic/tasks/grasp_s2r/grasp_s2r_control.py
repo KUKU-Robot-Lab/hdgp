@@ -357,6 +357,10 @@ class GraspS2RControlMixin:
         cmd_j = cmd[:, self._syn_fi, self._syn_ch]                # (N, n) 관절 전개
         rate = float(self.cfg.synergy_close_speed)
         delta = (cmd_j - self._syn_close).clamp(-rate, rate)
+        # ★닫는 방향만 정렬 게이트로 스케일한다 — **푸는 방향은 항상 허용**해야
+        #   잘못 오므린 상태에서 빠져나올 수 있다.
+        _g = self._close_gate.unsqueeze(1)
+        delta = torch.where(delta > 0.0, delta * _g, delta)
         if bool(self.cfg.synergy_contact_freeze):
             # ★★감쌈을 만드는 메커니즘: 원위·팁이 닿은 손가락의 동결 대상 관절만
             #   멈춰 컵 형상에 드리워지게 한다. 끄면 핀치가 된다.

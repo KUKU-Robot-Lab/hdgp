@@ -195,6 +195,23 @@ def test_opposition_axis_is_hand_derived():
         assert banned not in code + _code(_CFG), f"제거된 형상 상수 잔재: {banned}"
 
 
+def test_closing_is_gated_on_cage_alignment():
+    """★위치가 맞기 전에는 오므리지 않는다 — 닫는 방향만 게이트, 푸는 방향은 항상 허용.
+
+    래치로는 못 막는다: 래치는 lift/transfer **보상**을 여는 신호일 뿐이고, 닫힘은
+    정책의 손 액션이 직접 만든다. 실측(s2r_a5 iter13): cage_dist 0.293 = 케이지 반경의
+    2.4배인데 syn_close 0.574 까지 닫혀 있었다.
+    """
+    env, ctrl = _code(_ENV), _code(_CTRL)
+    assert "self._close_gate" in env and "close_gate_enabled" in env
+    # 게이트는 손 액션을 만들기 **전에** 계산돼야 한다.
+    assert env.index("self._close_gate =") < env.index("self._synergy_targets(")
+    # 닫는 방향만 스케일 — 푸는 방향(delta<0)은 그대로여야 갇혔을 때 빠져나온다.
+    assert "torch.where(delta > 0.0, delta * _g, delta)" in ctrl
+    # 임계는 손 기하에서 부팅 실측한 케이지 반경이다(물체 상수 아님).
+    assert "self._r_cage" in env
+
+
 def test_approach_penalty_is_capped():
     """★approach 벌금은 상금(approach_weight)을 못 넘어야 한다 — approach 최솟값 0.
 

@@ -98,6 +98,10 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             self.num_envs, dtype=torch.bool, device=self.device)
         self._palm_cmd_step_raw = torch.zeros(self.num_envs, device=self.device)
 
+        # 닫기 게이트 상태(정렬도) — `_pre_physics_step` 이 매 스텝 갱신한다.
+        self._close_gate = torch.ones(self.num_envs, device=self.device)
+        self._cage_xy_dist = torch.zeros(self.num_envs, device=self.device)
+
         # 래치 (보상 단계 표시 전용)
         self._latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -153,6 +157,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         _others = [i for i in range(len(self.tip_ids)) if i != _a]
         cage = 0.5 * (tips[_a] + tips[_others].mean(dim=0))
         r_cage = 0.5 * float((tips[_a] - tips[_others].mean(dim=0)).norm())
+        self._r_cage = r_cage          # 닫기 게이트 임계로도 쓴다
         cup = [p.object_spawn_center[0], p.object_spawn_center[1],
                float(self.cfg.table_surface_z) + float(self.cfg.object_origin_offset_z)
                + float(self.cfg.object_grasp_z_offset)]
@@ -233,6 +238,21 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
 
         # ---- 손: 시너지 -------------------------------------------------------------
         _prev = self._syn_target
+        # ★★닫기 게이트: 컵이 케이지 안(수평)에 들어오기 전에는 오므리지 않는다.
+        #   래치로는 못 막는다 — 래치는 보상을 여는 신호일 뿐이고 닫힘은 손 액션이
+        #   직접 만든다. 경계에서 끊지 않고 램프를 둬 gradient 를 남긴다.
+        _obj_xy = self._env_local(self.object.data.root_pos_w)[:, :2]
+        _tips_xy = (self.robot.data.body_pos_w[:, self._tip_ids_t]
+                    - self.scene.env_origins[:, None, :])[:, :, :2]
+        _a = int(self._group_a_idx[0])
+        _oth = [i for i in range(len(self.tip_ids)) if i != _a]
+        _cage_xy = 0.5 * (_tips_xy[:, _a] + _tips_xy[:, _oth].mean(dim=1))
+        self._cage_xy_dist = (_cage_xy - _obj_xy).norm(dim=-1)
+        if bool(self.cfg.close_gate_enabled):
+            _ramp = max(float(self.cfg.close_gate_ramp) * self._r_cage, 1e-6)
+            self._close_gate = ((self._r_cage - self._cage_xy_dist) / _ramp).clamp(0.0, 1.0)
+        else:
+            self._close_gate = torch.ones(self.num_envs, device=self.device)
         self._syn_target = self._synergy_targets(self.actions[:, 6:])
         self._syn_vel = (self._syn_target - _prev) / self._policy_dt
         # ★fabric 의 손 **상태**를 실제 손 자세로 동기화한다. 안 그러면 fabric 이
@@ -475,6 +495,8 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["task/success"] = self._success_now.float().mean()
         self.extras["task/stay_run"] = self._stay_run.float().mean()
         self.extras["task/syn_close"] = self._syn_close.mean()
+        self.extras["task/close_gate"] = self._close_gate.mean()
+        self.extras["task/cage_xy_dist"] = self._cage_xy_dist.mean()
         self.extras["task/abnormal_rate"] = self._abnormal.float().mean()
         self.extras["contact/force_max"] = self._contact_forces().max()
         self.extras["fabric/palm_cmd_step_raw"] = self._palm_cmd_step_raw.mean()
