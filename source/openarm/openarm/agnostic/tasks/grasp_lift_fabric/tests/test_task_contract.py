@@ -331,6 +331,9 @@ def test_spawn_center_comes_from_profile_and_gap_is_fail_loud_here():
     assert "p.object_spawn_center[0] + offs[:, 0]" in SIB_ENV
     m = re.search(r"def _report_home_cage.*?(?=\n    def |\Z)", ENV, re.S)
     assert m and "raise RuntimeError" in m.group(0)
+    # ★중심 간격만 보면 안 된다 — 컵은 축당 ±spawn_range 로 흩어진다. 최악 스폰의
+    #   여유를 숫자로 남겨야 "가끔 리셋에서 박히는" 산발 사고를 원인까지 읽을 수 있다.
+    assert "2.0 ** 0.5" in m.group(0) and "spawn_range" in m.group(0)
 
 
 # ======================================================================

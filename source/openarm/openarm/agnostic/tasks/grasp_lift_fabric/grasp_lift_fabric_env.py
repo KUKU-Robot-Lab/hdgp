@@ -231,8 +231,23 @@ class GraspLiftFabricEnv(GraspS2REnv):
                 f"[{p.name}] 홈 케이지↔컵 수평 간격 {gap * 1000:.0f}mm 가 케이지 반경 "
                 f"{self._r_cage * 1000:.0f}mm 보다 좁다 — 리셋에서 손가락이 컵을 "
                 "관통한다. object_spawn_center 또는 홈을 조정하라.")
-        print(f"[grasp_lift_fabric] 케이지↔컵 수평 간격 {gap * 1000:.0f}mm > "
-              f"반경 {self._r_cage * 1000:.0f}mm ✓", flush=True)
+        # ★위 판정은 **스폰 중심**만 본다. 실제 컵은 축당 ±spawn_range 로 흩어지므로
+        #   최악의 모서리에서 간격이 √2·range 만큼 더 줄어든다. 여기서 실패로 막지는
+        #   않는다 — 관통이 실제로 일어나는지는 `done/abnormal`·`contact/force_max`·
+        #   `task/cup_disp` 가 판정한다. 다만 **여유를 숫자로 남긴다**(모르고 지나가면
+        #   "가끔 리셋에서 손가락이 컵에 박히는" 산발 사고로만 보인다).
+        _rng = float(self.cfg.spawn_range)
+        _worst = gap - (2.0 ** 0.5) * _rng
+        _mark = "✓" if _worst >= self._r_cage else "⚠"
+        print(f"[grasp_lift_fabric] 케이지↔컵 수평 간격 중심 {gap * 1000:.0f}mm "
+              f"· 최악스폰(±{_rng * 1000:.0f}mm) {_worst * 1000:.0f}mm "
+              f"vs 반경 {self._r_cage * 1000:.0f}mm {_mark}", flush=True)
+        if _worst < self._r_cage:
+            print(f"[grasp_lift_fabric] ⚠ 최악 스폰에서 컵이 케이지 안에 들어온다 — "
+                  f"리셋 관통 가능. 발현되면 done/abnormal·contact/force_max 로 보인다. "
+                  f"해소는 object_spawn_center 를 손 반대쪽으로 "
+                  f"{(self._r_cage - _worst) * 1000:.0f}mm 이상 밀거나 spawn_range 축소.",
+                  flush=True)
 
     # ==================================================================
     # 손 — 자유 관절 절대 목표 (시너지 자리를 대신한다)
