@@ -582,6 +582,38 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         return total
 
     # ------------------------------------------------------------------
+    def _contact_azimuth_spread(self, obj_pos: torch.Tensor,
+                                thr: float) -> torch.Tensor:
+        """접촉한 손끝이 컵 축 둘레에 퍼진 **각폭**(도) 평균 — 진단 전용.
+
+        `360° − 최대 간극`. 한쪽에 몰리면 작고 감싸면 커진다. 접촉 **개수**가 아니라
+        **어디를 눌렀는지**를 보므로 형상에 의존하지 않는다 — force-closure 의 대리량이다.
+        ★08.25 실측: 손끝 방위각을 125°→318° 로 몰아 접촉을 끊으면서 grip 보상을 올린
+          수법이 있었다. 개수만 세면 그 수법이 안 보인다.
+        ★접촉 손끝이 2개 미만이면 각폭이 정의되지 않아 0 을 돌려준다.
+        """
+        _tips = (self.robot.data.body_pos_w[:, self._tip_ids_t]
+                 - self.scene.env_origins[:, None, :])
+        _hit = self._tip_contact_forces() > thr                      # (N, F)
+        _d = _tips[:, :, :2] - obj_pos[:, None, :2]
+        _ang = torch.atan2(_d[:, :, 1], _d[:, :, 0])                 # (N, F) [−π, π]
+        # 미접촉 손끝은 정렬에서 뒤로 몰아 무시한다.
+        _big = torch.full_like(_ang, 1e3)
+        _srt, _ = torch.sort(torch.where(_hit, _ang, _big), dim=1)
+        _n = _hit.sum(dim=1)
+        # 원형 간극: 이웃 차이 + 마지막→첫 랩어라운드. 접촉분만 유효하다.
+        _idx = torch.arange(_hit.shape[1], device=self.device).view(1, -1)
+        _valid = _idx < _n.view(-1, 1)
+        _nxt = torch.roll(_srt, shifts=-1, dims=1)
+        _first = _srt[:, :1]
+        _nxt = torch.where(_idx == (_n.view(-1, 1) - 1),
+                           _first + 2.0 * math.pi, _nxt)
+        _gap = torch.where(_valid, _nxt - _srt, torch.zeros_like(_srt))
+        _spread = 2.0 * math.pi - _gap.max(dim=1).values
+        return torch.where(_n >= 2, torch.rad2deg(_spread),
+                           torch.zeros_like(_spread)).mean()
+
+    # ------------------------------------------------------------------
     def _log_diagnostics(self, thr: float, mid_f: torch.Tensor, dist_f: torch.Tensor,
                          tip_f: torch.Tensor, obj_pos: torch.Tensor,
                          palm_pos: torch.Tensor) -> None:
@@ -608,6 +640,15 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             self.extras[f"contact/dist_rate_{_fg}"] = (dist_f[:, _i] > thr).float().mean()
             self.extras[f"contact/dist_net_{_fg}"] = (_n_dist[:, _i] > thr).float().mean()
         self.extras["task/hand_blocked_frac"] = self._hand_blocked().float().mean()
+        # ★손바닥 — 컵을 실제로 받치는 면이 어디인지. 그동안 계측 자체가 없었다.
+        _palm_f = self._palm_contact_force()
+        self.extras["contact/palm_rate"] = (_palm_f > thr).float().mean()
+        self.extras["contact/palm_rate_lo"] = (_palm_f > _lo).float().mean()
+        self.extras["contact/palm_f_mean"] = _palm_f.mean()
+        # ★대향성 — 접촉점이 컵 둘레에 **퍼져** 있어야 force-closure 다. 한쪽에 몰리면
+        #   팁 개수가 많아도 컵을 밀어낼 뿐이다(08.25 grip 접촉 절벽의 방위각 수법).
+        self.extras["contact/azimuth_spread_deg"] = self._contact_azimuth_spread(
+            obj_pos, thr)
 
         # ---- goal 성분 분해 -----------------------------------------------------------
         # `goal_dist` 스칼라만으로는 0.28 이 높이 탓인지 수평 탓인지 알 수 없다.

@@ -85,6 +85,32 @@ class GraspS2RControlMixin:
                 self.scene.sensors[f"contact_{finger}_{body}"] = s
             self._finger_sensors[finger] = sensors
 
+        # ★★손바닥 접촉 — 08.27 까지 **계측 자체가 없었다**. 손가락 센서만 있어서 컵이
+        #   손바닥에 받쳐 있어도 전혀 보이지 않는다. H1 실측(원위 접촉률 0.01·힘 0.05N)
+        #   으로 감쌈 정의를 다시 짜야 하는데, 그 후보에 손바닥이 들어가므로 먼저 잰다.
+        self._palm_sensor = ContactSensor(ContactSensorCfg(
+            prim_path=f"/World/envs/env_.*/Robot/{p.palm_body}",
+            filter_prim_paths_expr=_filter,
+            history_length=1,
+            track_air_time=False,
+        ))
+        self.scene.sensors["contact_palm"] = self._palm_sensor
+
+        # 진단 카메라 — env 하나당 하나. probe 가 자세를 눈으로 확인할 때만 켠다.
+        if bool(self.cfg.debug_camera):
+            from isaaclab.sensors import TiledCamera, TiledCameraCfg
+            self.scene.sensors["debug_cam"] = TiledCamera(TiledCameraCfg(
+                prim_path="/World/envs/env_.*/DebugCam",
+                offset=TiledCameraCfg.OffsetCfg(
+                    pos=tuple(self.cfg.debug_camera_pos),
+                    rot=tuple(self.cfg.debug_camera_rot), convention="world"),
+                data_types=["rgb"],
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=26.0, focus_distance=0.6,
+                    horizontal_aperture=20.955, clipping_range=(0.05, 6.0)),
+                width=640, height=480,
+            ))
+
         # env.usd 의 platform 상면이 정확히 z=0 이라 기본 지면과 겹친다 — 지면은 내린다.
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(),
                            translation=(0.0, 0.0, -0.05))
@@ -341,6 +367,7 @@ class GraspS2RControlMixin:
         self._syn_ids = [jn.index(nm) for nm in p.hand_joint_names]
         self._syn_open = torch.tensor(p.hand_open_pose, device=self.device)
         self._syn_grip = torch.tensor(p.hand_grip_pose, device=self.device)
+        self._apply_pose_knobs(p)
 
         fingers = list(p.finger_sensor_bodies.keys())
         ch, fi = [], []
@@ -412,7 +439,20 @@ class GraspS2RControlMixin:
         #   잘못 오므린 상태에서 빠져나올 수 있다.
         _g = self._close_gate.unsqueeze(1)
         delta = torch.where(delta > 0.0, delta * _g, delta)
-        if bool(self.cfg.synergy_contact_freeze):
+        if str(self.cfg.synergy_hold_mode) == "blocked":
+            # ★★"막힐 때까지 만다" — 접촉 센서를 안 쓰므로 **형상에 무관**하다. 관절이
+            #   목표를 못 따라가면(토크 포화) 외부에 막힌 것이고, 그때만 전진을 멈춘다.
+            #   닿자마자 멈추는 구판은 감쌈이 시작되기 **전에** 손가락을 세운다.
+            _blk = torch.zeros_like(delta, dtype=torch.bool)
+            _blk[:, self._syn_movable] = self._hand_blocked()
+            delta = torch.where(_blk & (delta > 0.0), torch.zeros_like(delta), delta)
+            # ★여는 방향 래칫 차단 — 구판은 닫기만 막고 열기는 통과시켜, 탐색 노이즈만으로
+            #   동결된 관절이 완전 개방까지 풀렸다(엄지 `_3` 0.36 → 0.00 단조, 08.27 실측).
+            _rdb = float(self.cfg.synergy_release_deadband)
+            if _rdb > 0.0:
+                delta = torch.where(_blk & (delta < 0.0) & (delta > -_rdb),
+                                    torch.zeros_like(delta), delta)
+        elif bool(self.cfg.synergy_contact_freeze):
             # ★★감쌈을 만드는 메커니즘: 닿은 마디의 관절만 멈춰 컵 형상에 드리워지게
             #   한다. 끄면 핀치가 된다. 단 **관절마다 자기 링크**를 봐야 한다 —
             #   팁 하나로 `_3`·`_4` 를 같이 얼리면 감쌈 직전에 감쌈을 잠근다.
@@ -463,6 +503,41 @@ class GraspS2RControlMixin:
         _span = (self._syn_grip - self._syn_open).unsqueeze(0)
         _prog = ((_q - self._syn_open.unsqueeze(0)) / _span).clamp(0.0, 1.0)
         return _prog[:, self._syn_movable].mean(dim=1)
+
+    def _apply_pose_knobs(self, p) -> None:
+        """자세표 실험 노브 — 기본값이면 아무것도 바꾸지 않는다(현행 거동 보존).
+
+        ★프로필의 `hand_open_pose` 와 `hand_grip_pose` 가 **같은 값**인 관절은 시너지가
+          아예 안 건드린다. 그건 "물리적으로 못 움직이는 관절"이 아니다 — URDF 실측으로
+          `r_hj_thumb_2` 는 가동범위 180° 로 손에서 가장 큰데 −1.57 에 고정돼 있었다.
+        ★손가락 이름은 프로필 구조(`contact_group_a`·`hand_channel_of_joint`)에서 끌어와
+          로봇 리터럴을 코드에 넣지 않는다.
+        """
+        def _ch_of(nm: str) -> int | None:
+            return p.hand_channel_of_joint.get(nm.rsplit("_", 1)[1])
+
+        _d = float(self.cfg.oppose_grip_delta_rad)
+        if _d != 0.0:
+            _idx = [i for i, nm in enumerate(p.hand_joint_names)
+                    if _ch_of(nm) == 1 and any(f"_{f}_" in nm for f in p.contact_group_a)]
+            if not _idx:
+                raise RuntimeError(
+                    f"[{p.name}] 대향 손가락{p.contact_group_a} 의 ch1 관절을 못 찾았다 "
+                    "— oppose_grip_delta_rad 가 조용히 무효가 된다")
+            for i in _idx:
+                self._syn_grip[i] = self._syn_open[i] + _d
+            print(f"[grasp_s2r] 대향 관절 {len(_idx)}개 grip = open{_d:+.3f} rad", flush=True)
+
+        _wf, _ws = str(self.cfg.weak_finger), float(self.cfg.weak_finger_curl_scale)
+        if _wf and _ws != 1.0:
+            _idx = [i for i, nm in enumerate(p.hand_joint_names)
+                    if f"_{_wf}_" in nm and _ch_of(nm) == 2]
+            if not _idx:
+                raise RuntimeError(f"[{p.name}] 손가락 '{_wf}' 의 ch2 관절을 못 찾았다")
+            for i in _idx:
+                self._syn_grip[i] = self._syn_open[i] + _ws * (
+                    self._syn_grip[i] - self._syn_open[i])
+            print(f"[grasp_s2r] '{_wf}' 굴곡 grip ×{_ws:.2f} ({len(_idx)}개)", flush=True)
 
     def _hand_blocked(self) -> torch.Tensor:
         """가동 관절이 **외부에 막혀** 있는가 (N, n_movable) bool — 진단 전용.
@@ -530,6 +605,15 @@ class GraspS2RControlMixin:
             tips.append(mag(sensors[-1]))
         return (torch.stack(mids, dim=1), torch.stack(dists, dim=1),
                 torch.stack(tips, dim=1))
+
+    def _palm_contact_force(self) -> torch.Tensor:
+        """손바닥이 물체에서 받는 접촉력 크기 (N,) — 진단 전용.
+
+        ★감쌈 정의의 후보다. 08.27 H1 실측에서 원위 링크 접촉이 사실상 0(힘 0.053N)인데
+          손가락은 컵에 막혀 있었다 — 컵을 실제로 받치는 면이 어디인지 재려면 손바닥을
+          빼놓을 수 없는데, 이 트랙은 그동안 손바닥 센서 자체가 없었다.
+        """
+        return self._mag_filtered(self._palm_sensor)
 
     def _contact_forces_split(self) -> tuple[torch.Tensor, torch.Tensor]:
         """(중간, 원위) 마디별 접촉력 (N, F) — 감쌈 판정용."""

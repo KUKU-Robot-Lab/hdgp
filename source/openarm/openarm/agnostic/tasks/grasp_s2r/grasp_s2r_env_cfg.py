@@ -284,6 +284,30 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # 이보다 크면 토크가 천장에 붙어 있다는 뜻이라 "막혔다"로 센다.
     blocked_err_thr_rad: float = 0.30
     blocked_limit_eps_rad: float = 0.05      # 관절 한계에서 이만큼 떨어져야 "외부에 막힘"
+    # ★probe 가 자세를 **눈으로** 확인할 때만 켠다(기본 OFF — 학습 거동 불변).
+    #   센서는 `clone_environments` 전에 만들어야 초기화되므로 `_setup_scene` 에서
+    #   cfg 플래그로 분기한다. 나중에 붙이면 "TiledCamera could not be initialized" 로 죽는다.
+    # ---- 손 실험 노브 (전부 기본값 = 현행 거동. hydra 로 런마다 오버라이드) ----------
+    # ★코드를 갈래마다 고치면 재현이 깨진다 — 같은 커밋에서 `env.<필드>=값` 으로 가른다.
+    # "contact"(현행: 닿으면 멈춤) | "blocked"(막힐 때까지 만다 — 접촉 센서 불필요).
+    #   ★08.27 실측: "닿으면 멈춤"이 감쌈 **직전**에 멈추게 만든다. 엄지가 중간마디로
+    #     먼저 닿아 `_3` 가 0.28 에서 얼고, 이후 열림 래칫으로 0.00 까지 풀렸다.
+    synergy_hold_mode: str = "contact"
+    # blocked 모드에서 이보다 작은 **여는** 지령은 무시한다(열림 래칫 차단). 0 = 끔.
+    synergy_release_deadband: float = 0.0
+    # 대향 손가락(`contact_group_a`)의 ch1 관절 grip = open + 이 값. 0 = 현행(고정).
+    #   ★URDF 실측 `r_hj_thumb_2` 가동범위 −3.142~0.0(180°)로 손에서 가장 큰데
+    #     프로필이 open=grip=−1.57 로 적어 **엄지 대향각이 학습 대상이 아니었다**.
+    oppose_grip_delta_rad: float = 0.0
+    # 과굴곡 손가락의 ch2(굴곡) grip 각도 배율. 빈 이름 = 끔.
+    #   ★소지는 `_3`·`_4` 가 다른 손가락과 같은 채널로 묶여 **같은 각도**로 말리는데
+    #     길이가 짧아 과도하게 감긴다(사용자 GUI 관찰).
+    weak_finger: str = ""
+    weak_finger_curl_scale: float = 1.0
+
+    debug_camera: bool = False
+    debug_camera_pos: tuple[float, float, float] = (0.72, -0.40, 0.52)
+    debug_camera_rot: tuple[float, float, float, float] = (0.42, 0.24, 0.44, 0.75)
 
     # ---- 래치 (보상 단계 표시 전용 — 팔 지령을 덮지 않는다) --------------------------
     # ★★grasp_v1 의 `torch.where(is_lift, _lift_palm, palm_pose)` z 램프 오버라이드는
