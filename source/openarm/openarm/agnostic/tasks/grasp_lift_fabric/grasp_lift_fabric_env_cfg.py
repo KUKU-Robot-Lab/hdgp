@@ -64,16 +64,20 @@ class GraspLiftFabricEnvCfg(GraspS2REnvCfg):
     # 관절 한계 여유 [rad] — a=+1 이 가는 굴곡 한계에서 뺀다.
     hand_limit_margin: float = 0.0
 
-    # ---- 손 보조 게이트 전부 OFF (08.27 사용자 지시) ----------------------------
+    # ---- 시너지 전용 기구는 OFF, **보상 게이트는 유지** -------------------------
     # 우리 손은 **절대 관절 목표**다: a=−1 이 홈(펴짐), a=+1 이 굴곡 한계.
-    # 정책이 접근 중 손을 열어 둘 수 있으므로 게이트로 대신 막지 않는다.
-    #   · close_gate      — 자매의 케이지 정렬 게이트
-    #   · contact_freeze  — 닿은 마디를 멈춰 감쌈을 만드는 시너지 전용 장치
-    #   · couple_four     — 4 지를 채널별 평균으로 묶는 시너지 전용 장치
-    # 셋 다 시너지 경로의 기구이고, 우리 매핑은 관절을 직접 지시한다.
-    close_gate_enabled: bool = False
+    #   · contact_freeze — 닿은 마디의 **누산 delta** 를 멈추는 장치. 우리 매핑엔
+    #     누산기가 없다(매 스텝 절대 각도) → 표현 불가.
+    #   · couple_four    — 4 지를 채널별 평균으로 묶는 장치. 채널이 없다 → 표현 불가.
     synergy_contact_freeze: bool = False
     couple_four_fingers: bool = False
+    # ★★close_gate 는 **켠다**(08.27 사용자 원칙: "로봇 특수성을 제외하고 reward
+    #   design 은 유지"). 임계가 부팅 FK 로 실측되는 `r_cage` 하나라 로봇 비의존이고,
+    #   자매 `6632002` 부터 `grasp` 항이 이 게이트를 직접 곱한다 — 끄면 우리 보상이
+    #   자매와 갈린다.
+    # ★단 **손 액션에는 걸지 않는다**(핸드 제어는 이 트랙 고유). 자매는 게이트를
+    #   보상과 시너지 delta 양쪽에 걸지만, 우리는 보상 쪽만 받는다.
+    close_gate_enabled: bool = True
 
     def __post_init__(self):
         super().__post_init__()

@@ -107,12 +107,16 @@ class GraspLiftFabricEnv(GraspS2REnv):
             device=self.device, dtype=torch.long)
         # 홈 자세(synergy 순서) — 고정 관절은 여기서 얼어붙는다.
         self._syn_home = self.robot.data.default_joint_pos[0, self._syn_ids].clone()
-        # ★`_close_progress` 의 분모를 **자유 관절**로 바꾼다. 자매는 |grip−open|>0 을
-        #   쓰지만 우리 고정 집합은 그것과 다르다(못 움직이는 관절이 분모에 섞이면
-        #   "닫았다"는 공짜 점수가 생긴다).
-        _mov = torch.zeros_like(self._syn_movable)
-        _mov[self._free_syn_idx] = True
-        self._syn_movable = _mov
+        # ★`_close_progress`(자매, **실측 관절** 기준)의 분모를 우리 자유 관절로
+        #   좁힌다. 고정 관절이 분모에 섞이면 "닫았다"는 공짜 점수가 생긴다.
+        #   ★자매 조건(|grip−open| > 0)도 **함께** 남긴다 — 폐쇄도는 open→grip 구간의
+        #   비율이라 그 구간이 0 인 관절은 실측으로도 정의되지 않는다.
+        _free_mask = torch.zeros_like(self._syn_movable)
+        _free_mask[self._free_syn_idx] = True
+        self._syn_movable = _free_mask & self._syn_movable
+        if not bool(self._syn_movable.any()):
+            raise RuntimeError(
+                f"[{p.name}] 폐쇄도 분모가 비었다 — 자유 관절 중 open≠grip 인 것이 없다")
         print(f"[grasp_lift_fabric] 손 자유 관절 {n_free}개 · 고정 "
               f"{[n.split('hj_')[-1] for n in _frozen_names] or '없음'} · "
               f"액션 {self.cfg.action_space}D", flush=True)
@@ -239,15 +243,18 @@ class GraspLiftFabricEnv(GraspS2REnv):
         `target = 홈 + 0.5(a+1)·(굴곡한계 − 홈)`
         · a=−1 → 홈(펴짐) · a=+1 → 굴곡 한계. 고정 관절은 홈에 머문다.
 
-        ★자매의 변화율 상한·닫기 게이트·접촉 동결은 여기 없다(08.27 사용자 지시).
-          우리 액션은 속도가 아니라 **절대 각도**라 정책이 언제든 되돌릴 수 있고,
-          접근 중 손을 열어 두는 것도 a=−1 로 표현된다.
+        ★자매의 변화율 상한·닫기 게이트·접촉 동결은 여기 없다 — 셋 다 **누산 delta**
+          위에서만 뜻이 있는 시너지 기구다. 우리 액션은 속도가 아니라 절대 각도라
+          정책이 언제든 되돌릴 수 있고, 접근 중 손을 열어 두는 것도 a=−1 로 표현된다.
+          (보상 쪽 `close_gate` 는 자매와 동일하게 살아 있다 — cfg 주석 참조.)
         """
         u = 0.5 * (a_hand.clamp(-1.0, 1.0) + 1.0)                       # (N, n_free)
         tgt = self._syn_home.unsqueeze(0).repeat(self.num_envs, 1)
         tgt[:, self._free_syn_idx] = (
             self._hand_home_free + u * (self._flex_limit - self._hand_home_free))
-        # 폐쇄도 진행률(= grasp 보상의 접촉 전 gradient)은 액션 그 자체다.
+        # ★`_syn_close` 는 **지령** 진행도다(로깅·리셋 정합용). 보상이 쓰는 폐쇄도는
+        #   자매 `_close_progress` 의 **실측 관절** 값이다(72ac912) — 지령을 재면 손이
+        #   테이블에 눌려 펴져도 만점이 나온다.
         self._syn_close = torch.zeros_like(self._syn_close)
         self._syn_close[:, self._free_syn_idx] = u
         return tgt.clamp(self._syn_lo.unsqueeze(0), self._syn_hi.unsqueeze(0))

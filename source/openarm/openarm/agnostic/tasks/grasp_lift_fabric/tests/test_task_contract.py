@@ -192,10 +192,39 @@ def test_frozen_set_covers_abduction_and_pinky():
 # 4. 손 보조 게이트는 없다 (08.27 사용자 지시)
 # ======================================================================
 
-@pytest.mark.parametrize("flag", [
-    "close_gate_enabled", "synergy_contact_freeze", "couple_four_fingers"])
-def test_hand_side_gates_are_off(flag):
+@pytest.mark.parametrize("flag", ["synergy_contact_freeze", "couple_four_fingers"])
+def test_synergy_only_mechanisms_are_off(flag):
+    """누산 delta 위에서만 뜻이 있는 시너지 기구 — 우리 절대 매핑엔 표현 불가."""
     assert re.search(rf"{flag}: bool = False", CFG), f"{flag} 가 켜져 있다"
+
+
+def test_close_gate_stays_on_because_reward_design_is_shared():
+    """★close_gate 는 **보상 설계**의 일부다(자매 6632002 부터 `grasp` 가 곱한다).
+
+    임계가 부팅 FK 로 실측되는 `r_cage` 하나뿐이라 로봇 비의존이므로, 로봇 특수성
+    제거 대상이 아니다 — 끄면 우리 보상이 자매와 갈린다(사용자 원칙 08.27).
+    """
+    assert re.search(r"close_gate_enabled: bool = True", CFG)
+    assert "close_gate.clamp(0.0, 1.0) * grasp_quality" in _src(
+        _SIB / "grasp_s2r_rewards.py"), "자매 grasp 항이 더는 close_gate 를 안 쓴다"
+
+
+def test_close_gate_is_not_applied_to_our_hand_action():
+    """게이트는 **보상 쪽만** 받는다 — 손 액션 경로는 이 트랙 고유다."""
+    m = re.search(r"def _synergy_targets.*?(?=\n    def |\Z)", ENV, re.S)
+    assert m and "_close_gate" not in m.group(0)
+
+
+def test_close_progress_is_measured_joint_not_command():
+    """지령을 재면 손이 테이블에 눌려 펴져도 만점이 나온다(자매 72ac912 실측).
+
+    우리는 `_close_progress` 를 **상속**하므로 자매가 되돌리면 여기서 잡힌다.
+    """
+    m = re.search(r"def _close_progress.*?(?=\n    def )", SIB_CTL, re.S)
+    assert m and "self.robot.data.joint_pos[:, self._syn_ids]" in m.group(0), (
+        "자매 폐쇄도가 지령 기반으로 돌아갔다")
+    # 우리는 분모를 자유 관절 ∩ (open≠grip) 로 좁힌다.
+    assert "self._syn_movable = _free_mask & self._syn_movable" in ENV
 
 
 def test_no_approach_freeze_in_this_track():
