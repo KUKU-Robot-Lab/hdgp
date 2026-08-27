@@ -469,6 +469,13 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
 
         terminated = out_x | out_y | fell | tipped | self._abnormal
         truncated = self.episode_length_buf >= self.max_episode_length - 1
+        # ★종료 원인별 비율. 없으면 "무엇이 에피소드를 끝냈는가"를 다른 지표로
+        #   역산해야 한다(08.27 자살 경로 진단에서 실제로 그랬다).
+        self.extras["done/out_xy"] = (out_x | out_y).float().mean()
+        self.extras["done/fell"] = fell.float().mean()
+        self.extras["done/tipped"] = tipped.float().mean()
+        self.extras["done/abnormal"] = self._abnormal.float().mean()
+        self.extras["done/truncated"] = truncated.float().mean()
         return terminated, truncated
 
     # ------------------------------------------------------------------

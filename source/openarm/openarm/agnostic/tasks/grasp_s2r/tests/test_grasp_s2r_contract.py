@@ -178,6 +178,28 @@ def test_stay_rewards_duration_not_touch():
     assert "self._stay_run" in _code(_ENV)
 
 
+def test_approach_penalty_is_capped():
+    """★approach 벌금은 상금(approach_weight)을 못 넘어야 한다 — approach 최솟값 0.
+
+    상한이 없으면 컵에 닿을수록 손해가 되어 접촉 탐색이 금지되고, 스텝당 보상이
+    순음수라 **조기 종료가 최적**이 된다(s2r_a1 실측: 16스텝 자살 경로 240 iter 고착,
+    접촉 시작 시 grasp +0.43 vs approach −0.96→−2.02 로 순증분 음수).
+    """
+    code = _code(_REW)
+    assert ".clamp(max=_aw)" in code, "밀림·기울기 벌금에 상한이 없다"
+    m = re.search(r"_penalty = \(", code)
+    assert m, "벌금 항이 분리돼 있지 않다"
+    # 밀림 억제 자체는 disp_factor 가 계속 맡는다.
+    assert "disp_factor" in code
+
+
+def test_termination_causes_are_logged():
+    """종료 원인별 비율이 있어야 무엇이 에피소드를 끝냈는지 역산 없이 안다."""
+    code = _code(_ENV)
+    for k in ("done/out_xy", "done/fell", "done/tipped", "done/abnormal"):
+        assert f'"{k}"' in code, f"{k} 로깅 부재"
+
+
 def test_disp_factor_uses_latch_snapshot():
     """★밀림 감쇠는 **래치 시점** 변위 기준이어야 한다.
 

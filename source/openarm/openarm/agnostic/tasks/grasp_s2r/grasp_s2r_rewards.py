@@ -86,15 +86,27 @@ def compute_grasp_s2r_rewards(
     stable_gate = stable.float()
 
     # ---- approach : 래치 전에만 -----------------------------------------------------
+    # ★★08.27 벌금에 **상한**을 씌웠다(상한 = approach_weight). 씌우기 전 실측
+    #   (s2r_a1): 접촉이 시작되자(touch_frac 0→0.014) grasp 가 +0.43 오르는 동시에
+    #   approach 가 −0.96 → −2.02 로 커져 **순증분이 음수**였다 — 컵에 닿을수록
+    #   손해라 접촉 탐색 자체가 금지됐고, 정책은 16스텝 만에 컵을 기울여 끝내는
+    #   자살 경로에 240 iter 고착했다(스텝당 보상이 순음수면 조기 종료가 최적).
+    #   상한을 씌우면 approach 항의 최솟값이 0 이라 "물러서기"가 최적이 아니게 되고,
+    #   grasp(12.0)·transfer(15.0) 로 가는 길만 상승 방향으로 남는다.
+    # ★밀림 억제 자체는 죽지 않는다 — lift·transfer·success 에 곱해지는
+    #   `disp_factor`(래치 시점 스냅샷)가 별도로 계속 감쇠한다.
+    _aw = _f(cfg, "approach_weight", 2.0)
+    _penalty = (
+        _f(cfg, "cup_disp_penalty", 25.0)
+        * torch.relu(cup_xy_disp_now - _f(cfg, "cup_disp_tolerance", 0.025))
+        + _f(cfg, "cup_tilt_penalty", 0.08)
+        * torch.relu(cup_tilt_deg - _f(cfg, "cup_tilt_free_deg", 8.0))
+    ).clamp(max=_aw)
     approach = pre_lift_gate * (
-        _f(cfg, "approach_weight", 2.0)
-        * torch.exp(
+        _aw * torch.exp(
             -_f(cfg, "approach_sharpness", 8.0)
             * (palm_to_cup_dist + fingertip_side_dist))
-        - _f(cfg, "cup_disp_penalty", 25.0)
-        * torch.relu(cup_xy_disp_now - _f(cfg, "cup_disp_tolerance", 0.025))
-        - _f(cfg, "cup_tilt_penalty", 0.08)
-        * torch.relu(cup_tilt_deg - _f(cfg, "cup_tilt_free_deg", 8.0))
+        - _penalty
     )
 
     # ---- grasp : 래치 전에만. credit 이 참조하는 감쌈은 **깊이**(wrap_frac) ----------
