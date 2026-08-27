@@ -1769,3 +1769,63 @@ def test_markers_are_called_in_fabric_path():
     i = src.index("self._fabric_hand_cmd = _full[:, self._fab_from_hand]")
     blk = src[i:i + 2600]
     assert "_update_tip_markers" in blk, "마커 호출이 fabric 경로에 없다"
+
+
+# =============================================================================
+# 08.27 배선 결함 3건 수리 계약 — h7/h8 "손가락이 난리" 의 직접 원인이었다.
+# =============================================================================
+def test_hand_action_maps_home_to_open_not_joint_limit():
+    """★★`a=−1` 은 **홈(펴짐)**, `a=+1` 은 **굴곡 한계**여야 한다.
+
+    구 매핑은 `a∈[−1,1] → [관절 lo, hi]` 선형이었는데 `_3`/`_4` 한계가 좌우 모두
+    대칭 ±90° 라 홈(0)이 한계 **중앙**이다 — 즉 액션 범위의 **절반이 손등 쪽
+    역굴곡**을 지시했다(사용자 사양 "반대로 회전하면 안 됨" 정면 위반).
+    이 매핑에서는 역굴곡이 액션 공간 밖이라 클램프·벌점이 필요 없다.
+    """
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    i = src.index("u_hand = 0.5 * (self.actions[:, 6:] + 1.0)")
+    blk = src[i:i + 400]
+    assert "self._hand_home_free" in blk and "self._flex_limit" in blk, (
+        "손 액션이 홈→굴곡한계 매핑이 아니다")
+    assert "self._hand_lo + u_hand" not in src, (
+        "구 [lo,hi] 매핑이 남아 있다 — 액션 절반이 역굴곡을 지시한다")
+
+
+def test_flexion_sign_is_measured_at_boot_and_fails_loud():
+    """★굴곡 부호는 **부팅 FK 실측**이어야 한다(하드코딩·좌우 상수 금지).
+
+    엄지 `_3`/`_4` 는 우 `+q`·좌 `−q` 가 굴곡인데(URDF origin rpy 가 좌우 뒤집힘,
+    axis 는 둘 다 (0,0,1) 이라 **한계에는 안 드러난다**) 액션 매핑에 미러가 없어
+    좌손 엄지는 `a=+1` 이 완전 개방이었다. 저장소 관례(`_palm_y_sign`)와 같이
+    부팅에서 재고, 판별이 모호하면 fail-loud 한다.
+    """
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    assert "def _measure_flex_signs" in src, "굴곡 부호 실측 메서드 없음"
+    blk = src[src.index("def _measure_flex_signs"):][:4200]
+    assert "_fingertip_taskmap" in blk, "FK 실측이 아니다"
+    assert "contact_group_a" in blk and "contact_group_b" in blk, (
+        "대향 그룹 기준이 아니다 — palm +x 성분만 보면 엄지에서 오판한다")
+    assert "RuntimeError" in blk, "판별 불가 시 fail-loud 가 없다"
+    # 폐쇄도 분모도 같은 굴곡 한계를 써야 좌우 부호가 통일된다
+    assert "_den = self._fab_flex_limit - self._fab_hand_home" in src, (
+        "close 분모가 hi 고정이다 — 좌팔 엄지 폐쇄도 부호가 뒤집힌다")
+
+
+def test_unusable_fingers_is_declared_not_just_commented():
+    """★소지는 감쌈/접촉 분모에서 빠져야 한다 — 필드가 **실제로 선언**돼 있는가.
+
+    이 필드가 없어 `getattr(..., ())` 가 늘 빈 집합이었고, `_1`·`_2` 가 둘 다
+    고정이라 사실상 강체인 pinky 가 μ(touch_n≥3) 를 대신 열고 있었다
+    (h7 우팔 pinky touch 0.543 · wrap 0.290 = 접촉의 절반).
+
+    ★이 검사는 Isaac 없이도 돌아야 한다 — 이 저장소의 계약 20여 건이 Isaac 게이트
+    뒤에서 조용히 skip 되고 있었고, 손가락 동결 계약이 그중 하나라 **구현이 없는데도
+    "통과"로 보였다**. cfg 소스를 직접 읽어 게이트 밖에 둔다.
+    """
+    src = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
+    m = re.search(r"hand_unusable_fingers[^=]*=\s*(\([^)]*\))", src)
+    assert m, "hand_unusable_fingers 가 선언되지 않았다"
+    assert "pinky" in m.group(1), f"소지가 제외 목록에 없다({m.group(1)})"
+    env_src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    assert 'getattr(self.cfg, "hand_unusable_fingers"' in env_src, (
+        "env 가 이 필드를 읽지 않는다")

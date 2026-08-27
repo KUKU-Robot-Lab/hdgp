@@ -428,6 +428,13 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     hand_home_override: tuple[tuple[str, float], ...] | None = (
         ("{side}_hj_pinky_1", 0.0),
     )
+    # ★★08.27 결함 수리 — 이 필드가 **선언조차 안 돼 있어** env 의 getattr 이 늘
+    #   빈 집합을 받았다. 주석은 "소지를 감쌈 분모에서 뺀다"고 전제했지만 실제로는
+    #   pinky 가 `_usable_t` 에 그대로 남아 μ(touch_n≥3)·touch_f 분모를 채우고 있었다.
+    #   pinky 는 `_1`·`_2` 가 둘 다 고정이라 **사실상 강체**다 — h7 우팔 접촉의 절반
+    #   (touch 0.543 · wrap 0.290)이 "굳어 벌어진 손가락의 가짜 접촉"이었고 그게
+    #   파지 게이트를 대신 열고 있었다.
+    hand_unusable_fingers: tuple[str, ...] = ("pinky",)
     frozen_hand_joints_override: tuple[str, ...] | None = (
         "{side}_hj_thumb_1", "{side}_hj_thumb_2",
         "{side}_hj_index_1", "{side}_hj_middle_1",

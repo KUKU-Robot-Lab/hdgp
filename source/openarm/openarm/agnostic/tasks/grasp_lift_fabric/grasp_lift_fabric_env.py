@@ -651,11 +651,6 @@ class GraspLiftFabricEnv(DirectRLEnv):
         # ★단계형 보상이 파지중심을 쓰고, 그 실측(`_measure_tip_workspace`)이 이
         #   인덱스/한계를 쓴다 — 손 제어 방식과 무관하게 만들어야 pd 대조군이 산다.
         if True:
-            # fabric 손 구간의 관절 한계(= robot soft limit 을 fabric 순서로 재배열).
-            _jl = self.robot.data.soft_joint_pos_limits[0]          # (J,2)
-            _m = float(self.cfg.hand_limit_margin)
-            self._fab_hand_lo = _jl[self._fab_t[n_arm:], 0] + _m
-            self._fab_hand_hi = _jl[self._fab_t[n_arm:], 1] - _m
             # fabric 손 순서 → robot 손 관절 순서(적용 시 되돌리는 역매핑).
             _fab_hand_ids = self._fab_t[n_arm:].tolist()
             self._hand_from_fab = torch.tensor(
@@ -703,11 +698,14 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self._palm_y_sign = _ys if _ys != 0.0 else 1.0
         print(f"[grasp_lift_fabric] palm_y 미러 부호 = {self._palm_y_sign:+.0f} "
               f"(cos(palm_y,up) 홈 실측 {float(_R0[0, 2, 1]):+.3f})", flush=True)
-        # close_bridge 용 폐쇄도 기준 — fabric 손 관절 홈과 **닫힘 방향**(hi, 포위중심
-        #   프로브 실측: 개구가 hi 쪽으로 줄어든다). 분모가 0 인 관절(홈==한계)은 제외.
+        # ★★08.27 관절별 **굴곡 부호** 부팅 실측 — 액션 매핑의 기준.
+        self._measure_flex_signs()
+        # close_bridge 용 폐쇄도 기준 — fabric 손 관절 홈과 **닫힘 방향**. 닫힘은
+        #   hi 가 아니라 `_flex_limit`(굴곡 부호 실측) 이다 — 엄지는 좌우가 반대라
+        #   hi 로 고정하면 좌팔 폐쇄도 부호가 뒤집힌다(08.27 URDF FK 실측).
         _n_arm0 = self.profile.num_arm_joints
         self._fab_hand_home = self.fabric_q[0, _n_arm0:].clone()
-        _den = self._fab_hand_hi - self._fab_hand_home
+        _den = self._fab_flex_limit - self._fab_hand_home
         self._close_valid = _den.abs() > 1e-6
         self._close_den = torch.where(
             self._close_valid, _den, torch.ones_like(_den))
@@ -812,10 +810,15 @@ class GraspLiftFabricEnv(DirectRLEnv):
         else:
             self.palm_cmd = desired
         self.palm_targets = self.palm_cmd
-        # 손: **절대** 관절 목표(자유 관절만 정책이 소유). 홈이 곧 "펴진 상태"라
-        # a=-1 완전 개방, a=+1 완전 폐합의 대칭 매핑.
+        # 손: **절대** 관절 목표(자유 관절만 정책이 소유).
+        # ★★08.27 `a=−1 → 홈(펴짐)`, `a=+1 → 굴곡 한계`. 구 매핑은 `[lo, hi]` 선형
+        #   이었는데 `_3`/`_4` 한계가 대칭 ±90° 라 홈이 **중앙**이었다 — 액션 절반이
+        #   손등 쪽 역굴곡을 지시했다. 이 매핑에서는 역굴곡이 **액션 공간 밖**이라
+        #   클램프도 벌점도 필요 없다. `_flex_limit` 은 부팅 FK 실측 부호가 정한다
+        #   (엄지는 좌우가 반대라 상수로 박으면 좌팔이 뒤집힌다).
         u_hand = 0.5 * (self.actions[:, 6:] + 1.0)
-        _free_targets = self._hand_lo + u_hand * (self._hand_hi - self._hand_lo)
+        _free_targets = self._hand_home_free + u_hand * (
+            self._flex_limit - self._hand_home_free)
         # 손 전체(고정 관절 포함)를 fabric 에 넘긴다 — 고정 관절은 init 값을 목표로
         # 줘서 fabric 이 유지. 일부만 넘기면 fabric 이 아는 손과 실제가 어긋난다.
         _full = self._default_q[:, self._hand_t].clone()
@@ -874,6 +877,89 @@ class GraspLiftFabricEnv(DirectRLEnv):
             torch.nn.functional.normalize(pts[:, 15:18] - o, dim=1),
         ], dim=-1)                                    # (N,3,3) 열 = 축
         return o, ax
+
+    def _measure_flex_signs(self) -> None:
+        """부팅 1회 FK — 자유 손관절마다 **굴곡(말림) 방향 부호**를 실측한다.
+
+        ★왜 필요한가(08.27 실측): 액션이 `a∈[-1,1] → [관절 lo, hi]` 선형이었는데
+          `_3`/`_4` 한계가 **좌우 모두 대칭 ±90°** 라 홈(0)이 한계 **중앙**이다.
+          즉 액션 범위의 절반이 손등 쪽 **역굴곡**을 지시하고 있었다("손가락이
+          난리" 의 직접 원인). 게다가 엄지 `_3`/`_4` 는 우 `+q`·좌 `−q` 가 굴곡인데
+          (URDF `thumb_3` origin rpy 가 좌우 뒤집힘, axis 는 둘 다 (0,0,1) 이라
+          한계에는 안 드러난다) 액션 매핑에 미러가 없어 좌손 엄지는 `a=+1` 이
+          완전 개방이었다.
+
+        판정 기준: **대향 그룹 쪽으로 가면 굴곡**이다. 손끝이 `contact_group_a/b`
+        의 반대 그룹 중심에 가까워지는 부호를 굴곡으로 잡는다. palm 로컬 +x(법선)
+        성분으로 재는 `probe_curl_local` 규약은 4지에는 맞지만 **엄지는 대향
+        운동이라 −x 로 움직여** 오판한다(FK 실측). 대향 그룹 거리는 프레임 불변이고
+        로봇 종속 이름도 안 쓴다.
+        """
+        p = self.profile
+        n_arm = p.num_arm_joints
+        _fg = list(p.fingers)
+        _ia = [_fg.index(f) for f in p.contact_group_a]
+        _ib = [_fg.index(f) for f in p.contact_group_b]
+        _jn = list(self.robot.data.joint_names)
+        # 자유 관절(로봇 순서) → fabric 손 슬롯 · 손가락 인덱스
+        _free_fab, _free_fing = [], []
+        for _j in self._hand_free_t.tolist():
+            _slot = int((self._fab_t[n_arm:] == _j).nonzero()[0, 0])
+            _nm = _jn[_j]
+            _hit = [k for k, f in enumerate(_fg) if f in _nm]
+            if len(_hit) != 1:
+                raise RuntimeError(
+                    f"관절 '{_nm}' 의 손가락을 특정할 수 없다(매칭 {_hit}) "
+                    f"— fingers={_fg}. 프로필 이름 규약을 확인할 것")
+            _free_fab.append(_slot)
+            _free_fing.append(_hit[0])
+
+        def _opp_dist(q: torch.Tensor) -> torch.Tensor:
+            """(B,) — 각 배치의 '해당 손가락 손끝 ↔ 대향 그룹 손끝 중심' 거리."""
+            _t, _ = self.fabric._fingertip_taskmap(q, None)
+            _t = _t.reshape(q.shape[0], -1, 3)
+            return _t
+
+        _q0 = self.fabric_q[:1].repeat(self.num_envs, 1)
+        _tips0 = _opp_dist(_q0)[0]                       # (F,3) 홈 손끝
+        _delta = 0.30                                    # [rad] 부호만 보므로 크게
+        signs, worst = [], 1e9
+        _n = len(_free_fab)
+        for _s in range(0, _n, self.num_envs):
+            _chunk = list(range(_s, min(_s + self.num_envs, _n)))
+            _qb = _q0.clone()
+            for _r, _i in enumerate(_chunk):
+                _qb[_r, n_arm + _free_fab[_i]] += _delta
+            _tips = _opp_dist(_qb)
+            for _r, _i in enumerate(_chunk):
+                _f = _free_fing[_i]
+                _opp = _ib if _f in _ia else _ia
+                _c0 = _tips0[_opp].mean(dim=0)
+                _d0 = float(torch.norm(_tips0[_f] - _c0))
+                _c1 = _tips[_r][_opp].mean(dim=0)
+                _d1 = float(torch.norm(_tips[_r][_f] - _c1))
+                _chg = _d0 - _d1                          # >0 = 가까워짐 = 굴곡
+                worst = min(worst, abs(_chg))
+                signs.append(1.0 if _chg > 0.0 else -1.0)
+        if worst < 1e-4:
+            raise RuntimeError(
+                f"굴곡 부호 실측 실패: 대향거리 변화 최소 {worst*1000:.3f}mm 로 "
+                "판별 불가 — taskmap/한계/자산을 확인할 것")
+        self._flex_sign = torch.tensor(signs, device=self.device)   # (n_free,)
+        # 굴곡 쪽 한계. a=+1 이 여기로 간다.
+        self._flex_limit = torch.where(
+            self._flex_sign > 0, self._hand_hi[0], self._hand_lo[0])   # (n_free,)
+        self._hand_home_free = self._default_q[0, self._hand_free_t].clone()
+        # fabric 손 슬롯 순서의 굴곡 한계 — close_bridge 분모용.
+        _fl_fab = self.fabric_q[0, n_arm:].clone()
+        for _i, _slot in enumerate(_free_fab):
+            _fl_fab[_slot] = self._flex_limit[_i]
+        self._fab_flex_limit = _fl_fab
+        _neg = [_jn[int(j)].split("hj_")[-1]
+                for j, s in zip(self._hand_free_t.tolist(), signs) if s < 0]
+        print(f"[grasp_lift_fabric] 굴곡 부호 실측 {len(signs)}관절 · "
+              f"음수(−q 가 굴곡) {_neg if _neg else '없음'} · "
+              f"최소 판별폭 {worst*1000:.1f}mm", flush=True)
 
     def _home_grasp_center_xy(self) -> torch.Tensor:
         """홈 자세 파지중심의 env-local XY (2,) — 컵을 "palm 바로 앞"에 놓을 좌표.
