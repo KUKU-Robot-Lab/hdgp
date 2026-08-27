@@ -716,7 +716,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             if not hasattr(_gp, "binary_contact_buf") and hasattr(_gp, "_tip_contact_forces"):
                 _gp._gpstep = getattr(_gp, "_gpstep", 0) + 1
                 if _gp._gpstep % 30 == 0:
-                    _thr = float(_gp.cfg.stage_contact_threshold)
+                    # 트랙마다 접촉 임계 이름이 다르다(grasp_sensor=stage_contact_threshold,
+                    # grasp_s2r=contact_force_threshold). 있는 쪽을 쓴다.
+                    _thr = float(getattr(_gp.cfg, "stage_contact_threshold", None)
+                                 or getattr(_gp.cfg, "contact_force_threshold", 1.0))
                     _cs = _gp._contact_forces_split()
                     _tipf = _gp._tip_contact_forces()
                     _oz = float(_gp.object.data.root_pos_w[:, 2].mean())
