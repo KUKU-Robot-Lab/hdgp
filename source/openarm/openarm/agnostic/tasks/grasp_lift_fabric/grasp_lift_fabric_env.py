@@ -429,19 +429,6 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self._fingers_free = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device)
         self._palm_normal_dist = torch.zeros(self.num_envs, device=self.device)
-        # ★해제 임계의 기준자 — **파지가 성립한 순간의 법선거리**를 실측해 찍는다.
-        #   d_gc=0(컵 중심 ≡ 파지중심)일 때 palm_ee 법선 방향으로 컵이 얼마나
-        #   앞에 있는가. 임계는 이 값보다 커야(=더 멀리서 풀어야) 손가락이 감쌀
-        #   시간이 생기고, 너무 크면 접근 중에 말려 팔이 컵을 밀어낸다.
-        from isaaclab.utils.math import matrix_from_quat as _mfq0
-        _tcp0 = self._local(self.robot.data.body_pos_w[:1, self._tcp_idx])[0]
-        _R0t = _mfq0(self.robot.data.body_quat_w[:1, self._tcp_idx])[0]
-        _pp0 = self._local(self.robot.data.body_pos_w[:1, self.palm_idx])[0]
-        _R_palm0 = _mfq0(self.robot.data.body_quat_w[:1, self.palm_idx])[0]
-        _gc0 = _pp0 + _R_palm0 @ self._grasp_center_local
-        self._d_grasp_normal = float(((_gc0 - _tcp0) * _R0t[:, 0]).sum())
-        print(f"[grasp_lift_fabric] 파지 성립 법선거리(d_gc=0 기준) "
-              f"{self._d_grasp_normal*1000:+.0f}mm — 해제 임계의 하한", flush=True)
         if self._freeze_fingers:
             print(f"[grasp_lift_fabric] 접근 중 손 동결 ON · 해제 palm_ee 법선거리 "
                   f"{float(cfg.finger_release_dist_m)*1000:.0f}mm "
@@ -512,6 +499,9 @@ class GraspLiftFabricEnv(DirectRLEnv):
                            device=self.device)
         self._grasp_radius = _gr[self.object_idx]          # (N,)
         self._grasp_halfheight = _gh[self.object_idx]      # (N,)
+
+        # ★동결 자세는 컵 지름(개구 검산)을 쓰므로 물체 배정 뒤에 푼다.
+        self._solve_freeze_pose()
 
 
         # ---- ADR (축 둘: 스폰 반경 · goal 오프셋 반경) --------------------------------
@@ -851,7 +841,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
                 self._fingers_free, _dn <= (_rel_m + _hys), _dn <= _rel_m)
             self._fingers_free = _free_now
             _free_targets = torch.where(
-                _free_now.unsqueeze(1), _free_targets, self._hand_home_free)
+                _free_now.unsqueeze(1), _free_targets, self._hand_freeze_targets)
         # 손 전체(고정 관절 포함)를 fabric 에 넘긴다 — 고정 관절은 init 값을 목표로
         # 줘서 fabric 이 유지. 일부만 넘기면 fabric 이 아는 손과 실제가 어긋난다.
         _full = self._default_q[:, self._hand_t].clone()
@@ -910,6 +900,61 @@ class GraspLiftFabricEnv(DirectRLEnv):
             torch.nn.functional.normalize(pts[:, 15:18] - o, dim=1),
         ], dim=-1)                                    # (N,3,3) 열 = 축
         return o, ax
+
+    def _solve_freeze_pose(self) -> None:
+        """부팅 1회 — 접근 중 손을 고정할 자세와 그 간섭 여유를 실측한다."""
+        from isaaclab.utils.math import matrix_from_quat as _mfq0
+        n_arm0 = self.profile.num_arm_joints
+        _free_fab_slots = self._free_fab_slots
+        # ★해제 임계의 기준자 — **파지가 성립한 순간의 법선거리**를 실측해 찍는다.
+        #   d_gc=0(컵 중심 ≡ 파지중심)일 때 palm_ee 법선 방향으로 컵이 얼마나
+        #   앞에 있는가. 임계는 이 값보다 커야(=더 멀리서 풀어야) 손가락이 감쌀
+        #   시간이 생기고, 너무 크면 접근 중에 말려 팔이 컵을 밀어낸다.
+        _tcp0 = self._local(self.robot.data.body_pos_w[:1, self._tcp_idx])[0]
+        _R0t = _mfq0(self.robot.data.body_quat_w[:1, self._tcp_idx])[0]
+        _pp0 = self._local(self.robot.data.body_pos_w[:1, self.palm_idx])[0]
+        _R_palm0 = _mfq0(self.robot.data.body_quat_w[:1, self.palm_idx])[0]
+        _gc0 = _pp0 + _R_palm0 @ self._grasp_center_local
+        self._d_grasp_normal = float(((_gc0 - _tcp0) * _R0t[:, 0]).sum())
+        print(f"[grasp_lift_fabric] 파지 성립 법선거리(d_gc=0 기준) "
+              f"{self._d_grasp_normal*1000:+.0f}mm — 해제 임계의 하한", flush=True)
+        # ★★사용자 지적(08.27): "접근 도중 엄지가 컵에 걸리는 문제". 동결 자세는
+        #   **홈(펴짐)** 인데, 홈에서 각 손끝이 palm_ee 법선 방향으로 얼마나 앞서
+        #   있는지가 곧 간섭 여부다. 손끝이 해제 임계보다 더 앞서 있으면, 컵이
+        #   임계에 닿기 전에 그 손가락이 먼저 컵을 친다.
+        _tips_w, _ = self.fabric._fingertip_taskmap(self.fabric_q, None)
+        _reach = ((_tips_w.reshape(self.num_envs, -1, 3)[0] - _tcp0)
+                  * _R0t[:, 0]).sum(-1)                    # (F,) 법선 방향 전방거리
+        _rel_m0 = float(self.cfg.finger_release_dist_m)
+        _clash = [(f, float(_reach[i]))
+                  for i, f in enumerate(self.profile.fingers)
+                  if float(_reach[i]) > _rel_m0]
+        print("[grasp_lift_fabric] 홈 손끝 법선 전방거리 "
+              + " · ".join(f"{f} {float(_reach[i])*1000:+.0f}mm"
+                           for i, f in enumerate(self.profile.fingers)), flush=True)
+        # ★★사용자 우려("접근 중 엄지가 컵에 걸린다")를 **계약으로 고정**한다.
+        #   실측(bis_right): 홈에서 엄지 손끝이 법선 +93mm, 4지는 −14mm 다. 즉 손의
+        #   개구는 [−14mm, +93mm] 구간이고 컵은 그 사이로 들어와야 한다.
+        #   → **해제 임계가 최전방 손끝보다 앞(≥)이어야 한다.** 임계가 그보다 뒤면
+        #     손이 고정된 채로 엄지가 컵을 이미 지나쳐 밀어낸다(정확히 그 우려).
+        #   ★굴곡으로 엄지를 당기는 안은 기하가 기각했다 — 엄지 굴곡 = 대향(닫힘)
+        #     이라, 엄지가 임계 뒤로 들어올 만큼 말면 개구가 31mm 로 닫혀 최대 컵
+        #     지름 161mm 가 못 들어온다(부팅 실측, fail-loud 로 확인).
+        #   따라서 동결 자세는 **홈(펴짐)** 이고, 임계로 간섭을 막는다.
+        self._hand_freeze_targets = self._hand_home_free.clone()
+        _lead = float(_reach.max())
+        _lead_f = self.profile.fingers[int(_reach.argmax())]
+        _mg_clash = float(self.cfg.finger_freeze_clearance_m)
+        if _rel_m0 < _lead + _mg_clash:
+            raise RuntimeError(
+                f"해제 임계 {_rel_m0*1000:.0f}mm 가 최전방 손끝"
+                f"({_lead_f} {_lead*1000:+.0f}mm) + 여유 {_mg_clash*1000:.0f}mm 보다 "
+                f"앞이 아니다 — 손이 고정된 채 {_lead_f} 가 컵을 지나쳐 밀어낸다.\n"
+                f"  참고: 파지 성립 법선거리 {self._d_grasp_normal*1000:+.0f}mm · "
+                f"홈 개구 {float(torch.norm(_tips_w.reshape(self.num_envs,-1,3)[0][self._grp_a].mean(0) - _tips_w.reshape(self.num_envs,-1,3)[0][self._grp_b].mean(0)))*1000:.0f}mm")
+        print(f"[grasp_lift_fabric] 동결 자세 = 홈(펴짐) · 최전방 손끝 {_lead_f} "
+              f"{_lead*1000:+.0f}mm < 해제 임계 {_rel_m0*1000:.0f}mm ✓ "
+              f"(엄지가 컵에 걸리기 전에 손이 풀린다)", flush=True)
 
     def _measure_flex_signs(self) -> None:
         """부팅 1회 FK — 자유 손관절마다 **굴곡(말림) 방향 부호**를 실측한다.
@@ -994,6 +1039,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
         for _i, _slot in enumerate(_free_fab):
             _fl_fab[_slot] = self._flex_limit[_i]
         self._fab_flex_limit = _fl_fab
+        self._free_fab_slots = list(_free_fab)   # 동결 자세 산출이 재사용
         _neg = [_jn[int(j)].split("hj_")[-1]
                 for j, s in zip(self._hand_free_t.tolist(), signs) if s < 0]
         print(f"[grasp_lift_fabric] 굴곡 부호 실측 {len(signs)}관절 · "

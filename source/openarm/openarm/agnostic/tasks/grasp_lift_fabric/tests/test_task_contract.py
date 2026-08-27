@@ -782,7 +782,27 @@ def test_finger_freeze_releases_on_palm_normal_distance():
     assert "_nrm).sum(-1)" in blk, "부호 있는 법선거리 판정이 아니다"
     assert "stage_gate_contact_n" not in blk, (
         "접촉 수로 손을 푼다 — 손이 고정돼 접촉이 없고 μ 도 안 열리는 순환이 된다")
-    assert "self._hand_home_free)" in blk, "고정 목표가 홈 관절이 아니다"
+    assert "self._hand_freeze_targets)" in blk, (
+        "고정 목표가 동결 자세가 아니다 — 홈으로 고정하면 엄지가 법선 +93mm 로 "
+        "튀어나와(4지 −14mm) 컵이 임계에 닿기 전에 먼저 친다")
+    # ★동결 자세는 **부팅 실측으로 푼다** — 홈도 하드코딩도 아니다.
+    assert "def _solve_freeze_pose" in src, "동결 자세 산출이 없다"
+    _fs = src.index("def _solve_freeze_pose")
+    fblk = src[_fs:_fs + src[_fs:].index("\n    def ", 10)]   # 메서드 경계까지
+    assert "finger_freeze_clearance_m" in fblk, "간섭 여유를 안 본다"
+    # ★★사용자 우려("접근 중 엄지가 컵에 걸린다")를 계약으로 고정한다:
+    #   해제 임계는 **최전방 손끝보다 앞**이어야 한다. 뒤면 손이 고정된 채 엄지가
+    #   컵을 이미 지나쳐 밀어낸다. 실측: 홈에서 엄지 +93mm · 4지 −14mm.
+    #   ★굴곡으로 엄지를 당기는 안은 기하가 기각했다(엄지 굴곡 = 대향 = 닫힘 →
+    #     개구 31mm < 최대 컵 지름 161mm). 그래서 임계로 막는다.
+    assert "_reach.max()" in fblk, "최전방 손끝을 재지 않는다"
+    assert "RuntimeError" in fblk, "임계가 손끝보다 뒤일 때 fail-loud 가 없다"
+    cfg_src2 = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
+    _rel = float(re.search(r"finger_release_dist_m:\s*float\s*=\s*([0-9.]+)",
+                           cfg_src2).group(1))
+    assert _rel >= 0.103, (
+        f"해제 임계 {_rel*1000:.0f}mm 가 실측 최전방 손끝(엄지 +93mm) + 여유 10mm "
+        "보다 뒤다 — 손이 고정된 채 엄지가 컵을 밀어낸다")
     cfg_src = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
     m = re.search(r"finger_release_hysteresis_m:\s*float\s*=\s*([0-9.]+)", cfg_src)
     assert m and float(m.group(1)) > 0.0, "히스테리시스가 없다"

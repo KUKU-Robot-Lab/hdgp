@@ -448,8 +448,19 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     # ★히스테리시스 필수 — 경계에서 손이 떨리면 파지가 성립하지 못한다.
     #   해제는 d ≤ release, 재동결은 d > release + hysteresis.
     freeze_fingers_until_approach: bool = True
-    finger_release_dist_m: float = 0.10      # ★프로브 실측 후 확정 예정(잠정)
-    finger_release_hysteresis_m: float = 0.02
+    # ★08.27 사용자 확정 60/15mm. 부팅 실측 '파지 성립 법선거리' 29mm 의 약 2배 —
+    #   마지막 3cm 를 좁히는 동안 손가락이 감을 시간이 생기는 지점.
+    # ★★60mm 는 실측이 기각했다 — 홈에서 엄지 손끝이 법선 +93mm 라 임계가
+    #   60mm 면 손이 고정된 채 엄지가 컵을 33mm 지나쳐 밀어낸다(사용자 우려
+    #   그대로). 임계는 **최전방 손끝 + 여유**보다 앞이어야 한다 → 93+10=103,
+    #   여기에 7mm 를 더해 110mm. 홈 개구 214mm 라 최대 컵 161mm 는 들어온다.
+    finger_release_dist_m: float = 0.11
+    finger_release_hysteresis_m: float = 0.015
+    # ★동결 자세 간섭 여유 — 손끝이 해제 임계보다 이만큼 뒤에 있어야 한다.
+    #   홈 그대로 고정하면 엄지가 법선 +93mm 로 튀어나와(4지는 −14mm) 컵이
+    #   임계에 닿기 전에 먼저 친다(사용자 지적, 부팅 실측 확인). 엄지는
+    #   굴곡할수록 손끝이 당겨지므로 최소한만 말아 간섭을 없앤다.
+    finger_freeze_clearance_m: float = 0.01
     frozen_hand_joints_override: tuple[str, ...] | None = (
         "{side}_hj_thumb_1", "{side}_hj_thumb_2",
         "{side}_hj_index_1", "{side}_hj_middle_1",
