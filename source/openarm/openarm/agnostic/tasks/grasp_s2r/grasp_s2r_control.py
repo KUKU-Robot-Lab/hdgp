@@ -402,12 +402,22 @@ class GraspS2RControlMixin:
         return tgt.clamp(self._syn_lo.unsqueeze(0), self._syn_hi.unsqueeze(0))
 
     def _close_progress(self) -> torch.Tensor:
-        """가동 손관절 평균 폐쇄도 (N,) [0,1] — grasp 보상의 접촉 전 gradient.
+        """가동 손관절 평균 폐쇄도 (N,) [0,1] — **실측 관절** 기준.
 
-        ★가동폭 0° 관절을 빼야 한다. 안 그러면 못 움직이는 관절 5개(전 `_1` + pinky_2 +
+        ★★지령(`_syn_close`)이 아니라 실측이다. 지령을 재면 손이 테이블에 눌려 쫙 펴져도
+          "닫으라고 명령했으니" 만점이 나온다 — 08.27 실측(s2r_b1 569 iter):
+          hand_joint_err_max 가 최대 3.72 rad(포화 임계 0.30 의 12배)로 손이 물리적으로
+          강제 이탈했는데 grasp 는 4.69/step 를 계속 지급했다(사용자 GUI: "손바닥이
+          테이블에 쓸리면서 열린다").
+        ★실측은 물체에 막히면 스스로 멈춘다 — 그래서 인위적 포화 캡이 필요 없다.
+          "닫다가 컵에 막힘"이 곧 접촉이고, 그게 다음 단계다.
+        ★가동폭 0° 관절은 제외한다. 안 그러면 못 움직이는 5개(전 `_1` + pinky_2 +
           thumb_2)가 분모에 섞여 공짜 점수를 만든다.
         """
-        return self._syn_close[:, self._syn_movable].mean(dim=1)
+        _q = self.robot.data.joint_pos[:, self._syn_ids]
+        _span = (self._syn_grip - self._syn_open).unsqueeze(0)
+        _prog = ((_q - self._syn_open.unsqueeze(0)) / _span).clamp(0.0, 1.0)
+        return _prog[:, self._syn_movable].mean(dim=1)
 
     def _syn_to_fab(self, syn_q: torch.Tensor) -> torch.Tensor:
         """synergy 자세(프로필 순서) → fabric 손 구간 순서."""

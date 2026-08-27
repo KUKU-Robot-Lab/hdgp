@@ -254,8 +254,10 @@ def test_grasp_has_pre_contact_gradient_gated_on_alignment():
 
     계약: grasp = w · pre_lift · **close_gate** · [(1−ecred)·close_credit + ecred·wrap]
     · close_gate 곱 — 정렬 전 공중 폐쇄는 0 이어야 한다.
-    · close_credit 은 **포화**해야 한다. 안 그러면 "동결 전까지 계속 닫기"가 이득이라
-      접촉을 회피한다(08.25 grip 접촉 절벽과 같은 함정).
+    · close_progress 는 **실측 관절**이어야 한다. 지령을 재면 손이 테이블에 눌려 쫙
+      펴져도 만점이 나온다(s2r_b1: hand_joint_err_max 3.72 rad = 임계 0.30 의 12배인데
+      grasp 4.69/step 지급). 실측은 물체에 막히면 스스로 멈추므로 인위적 포화 캡도
+      필요 없다 — 캡을 뒀더니 **그 지점이 정지점**이 됐다(폐쇄도가 캡 0.5 에 고정).
     · 팁 제어 3채널은 폐기됐다 — 팔이 정밀 제어를 하는 지금은 불필요(사용자 확정).
     """
     rew = _code(_REW)
@@ -264,9 +266,14 @@ def test_grasp_has_pre_contact_gradient_gated_on_alignment():
     for banned in ("tip_contact_frac", "full_tip", "persistence"):
         assert banned not in blk, f"폐기된 팁 제어 채널이 grasp 에 되살아남: {banned}"
     assert "close_gate.clamp(0.0, 1.0) * grasp_quality" in rew, "grasp 가 정렬 게이트를 안 탄다"
-    assert "(close_progress / _cref).clamp(0.0, 1.0)" in rew, "close_credit 포화 부재"
+    assert "_cref" not in rew, "포화 캡이 되살아남 — 그 지점이 정지점이 된다"
+    # 폐쇄도는 **실측 관절**이어야 한다(지령 `_syn_close` 를 재면 테이블에 펴져도 만점).
+    ctrl = _code(_CTRL)
+    assert "_q = self.robot.data.joint_pos[:, self._syn_ids]" in ctrl
+    assert "return _prog[:, self._syn_movable].mean(dim=1)" in ctrl
+    assert "return self._syn_close[:, self._syn_movable]" not in ctrl, "폐쇄도가 다시 지령이다"
     # 가동폭 0° 관절(전 `_1`·pinky_2·thumb_2)이 분모에 섞이면 공짜 점수가 된다.
-    assert "self._syn_close[:, self._syn_movable].mean(dim=1)" in _code(_CTRL)
+    assert "self._syn_movable = (self._syn_grip - self._syn_open).abs() > 1e-4" in ctrl
     # graded_contact(리프트 이후 "정말 쥐고 있나")는 팁을 계속 써야 한다 — 폐기 대상 아님.
     assert "graded_contact = (1.0 - _emix) * tip_contact_frac" in rew
 

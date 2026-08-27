@@ -505,6 +505,12 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["task/success"] = self._success_now.float().mean()
         self.extras["task/stay_run"] = self._stay_run.float().mean()
         self.extras["task/syn_close"] = self._syn_close.mean()
+        self.extras["task/close_credit"] = self._close_progress().mean()
+        # ★palm 이 테이블에 쓸리는지 — 사용자 GUI 관찰 "손바닥이 테이블에 쓸리면서
+        #   열린다". 접촉 센서는 **컵만** 필터링해서 테이블 접촉이 안 보인다. 높이로 잰다.
+        _pz = palm_pos[:, 2] - float(self.cfg.table_surface_z)
+        self.extras["task/palm_above_table_mean"] = _pz.mean()
+        self.extras["task/palm_above_table_min"] = _pz.min()
         # ★손 관절 추종오차 — 액추에이터 포화의 직접 지표. τ = k·err 이므로
         #   err ≥ effort_limit/stiffness 면 토크가 천장에 붙어 힘 제어가 무효가 된다
         #   (5.0/1.5 기준 0.30 rad = 17.2°). 지금까지 팔(fabric/joint_err_*)만 있었다.

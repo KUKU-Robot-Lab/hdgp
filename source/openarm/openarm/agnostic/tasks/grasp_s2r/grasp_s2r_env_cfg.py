@@ -285,11 +285,11 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0
     grasp_weight: float = 12.0
-    grasp_envelope_credit: float = 0.55
-    # ★폐쇄 진행도가 이 값에서 **포화**한다. 포화가 없으면 "동결되기 전까지 계속 닫기"가
-    #   이득이라 정책이 접촉을 회피한다(08.25 grip 접촉 절벽과 같은 함정).
-    #   손 기하 상수라 물체가 바뀌어도 성립한다.
-    grasp_close_credit_ref: float = 0.5
+    # ★★감쌈 비중 0.55 → 0.80(폐쇄 0.20). 폐쇄 항은 **큰 상금이 아니라 넛지**여야 한다 —
+    #   approach 가 손 모양을 못 보게 고친 뒤로는 건너야 할 계곡이 없어졌고, 08.27 실측
+    #   (s2r_b1)에서 폐쇄 상금 5.1/step 이 전체의 93% 를 먹으며 주차장이 됐다.
+    #   이제 폐쇄 2.4 < 감쌈 9.6 < lift 30·q 로 상한이 확실히 갈린다.
+    grasp_envelope_credit: float = 0.80
     lift_weight: float = 30.0
     lift_envelope_mix: float = 0.6
     transfer_weight: float = 15.0

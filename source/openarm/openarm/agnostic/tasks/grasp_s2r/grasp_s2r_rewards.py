@@ -118,11 +118,13 @@ def compute_grasp_s2r_rewards(
     #   가는 길이 확실히 나쁜 **계곡**이었다(느린 학습이 아니라 장벽).
     # ★팁 제어 3채널은 폐기한다(사용자 확정): 팔이 정밀 제어를 못 하던 시절의 보조였고,
     #   이제 palm 강체 케이지가 컵 19~28mm 안에 들어온다 — 팁을 따로 유도할 이유가 없다.
-    # ★close_progress 는 0.5 에서 **포화**시킨다. 안 그러면 "동결되기 전까지 계속 닫기"가
-    #   이득이라 접촉을 회피한다(08.25 grip 접촉 절벽과 같은 함정).
+    # ★close_progress 는 **실측 관절** 폐쇄도다(지령 아님). 지령을 재면 손이 테이블에
+    #   눌려 쫙 펴져도 "닫으라 명령했으니" 만점이 나온다.
     _ecred = _f(cfg, "grasp_envelope_credit", 0.55)
-    _cref = max(_f(cfg, "grasp_close_credit_ref", 0.5), 1e-6)
-    close_credit = (close_progress / _cref).clamp(0.0, 1.0)
+    # ★포화 캡을 뒀다가 **그 지점이 정지점**이 됐다(s2r_b1: 폐쇄도가 캡 0.5 에 고정,
+    #   grasp 4.69/step = 전체의 93% 인데 wrap 0.002 · latched 0.005 · h_del 0.005).
+    #   실측 폐쇄는 물체에 막히면 스스로 멈추므로 인위적 캡이 필요 없다.
+    close_credit = close_progress.clamp(0.0, 1.0)
     grasp_quality = (
         (1.0 - _ecred) * close_credit
         + _ecred * wrap_frac.clamp(0.0, 1.0)
