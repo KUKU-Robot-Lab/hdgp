@@ -236,11 +236,30 @@ def test_close_gate_center_is_rigid_to_palm():
     # 게이트 계산 구간에 손끝 위치가 등장하면 안 된다(되먹임 재발 방지).
     assert "_tip_ids_t" not in blk, "게이트가 다시 손끝을 참조한다 — 되먹임 재발"
     # 3D 거리 — xy 슬라이스로 되돌아가면 z 조건이 사라진다.
-    assert "self._cage_ctr_dist = (_cage - _obj).norm(dim=-1)" in blk
+    # ★단 z 는 **데드밴드**를 통과한다(±grasp_z_deadband). 3D 노름이 z 를 xy 와 똑같이
+    #   벌하는 바람에 palm 이 파지높이 아래로 눌려 내려갔다(s2r_b2 실측:
+    #   palm_above_table mean 0.088 vs 파지중심 0.107, min 0.066 < 컵 원점 0.077).
+    assert "self._cage_ctr_dist = self._banded_dist(_cage - _obj)" in blk
+    ctrl_all = _code(_CTRL)
+    assert "_dz = torch.relu(delta[:, 2].abs() - _b)" in ctrl_all, "z 데드밴드 부재"
+    assert "palm_to_cup = self._banded_dist(palm_pos - grasp_center)" in env
     # 오프셋은 홈 자세에서 한 번만 실측한다(부팅 보고 안 — 게이트 블록 밖).
     assert "self._cage_offset_palm = _R.transpose(0, 1) @ (cage - _palm)" in env
     # 래치 후에는 해제 — 이송 중 컵이 흔들려도 다시 쥘 수 있어야 한다.
     assert "self._latched" in blk
+
+
+def test_palm_command_box_clears_the_table():
+    """★palm 지령 박스 바닥이 테이블 상면과 같으면 지령이 테이블을 뚫는다.
+
+    프로필 palm_box_min z = 0.200 = table_surface_z 로 **정확히 같았다**(도달영역
+    상수라 프로필은 안 건드리고 태스크에서 올린다). 사용자 GUI: "아예 테이블을 박히고 간다".
+    실측(s2r_b2): palm_above_table min **0.066** — 컵 원점(0.077)보다 아래.
+    """
+    ctrl, cfg = _code(_CTRL), _code(_CFG)
+    assert "palm_min_above_table" in cfg
+    assert "float(self.cfg.palm_min_above_table)" in ctrl
+    assert "_box_lo[2] = _floor" in ctrl
 
 
 def test_grasp_has_pre_contact_gradient_gated_on_alignment():

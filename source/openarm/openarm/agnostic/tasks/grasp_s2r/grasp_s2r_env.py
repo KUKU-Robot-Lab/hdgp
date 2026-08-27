@@ -262,7 +262,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         _obj = self._env_local(self.object.data.root_pos_w)
         _palm = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
         _cage = _palm + (self._palm_ee_R() @ self._cage_offset_palm)
-        self._cage_ctr_dist = (_cage - _obj).norm(dim=-1)
+        self._cage_ctr_dist = self._banded_dist(_cage - _obj)
         if bool(self.cfg.close_gate_enabled):
             _ramp = max(float(self.cfg.close_gate_ramp) * self._r_cage, 1e-6)
             _g = ((self._r_cage - self._cage_ctr_dist) / _ramp).clamp(0.0, 1.0)
@@ -406,7 +406,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         # ---- 기하 --------------------------------------------------------------------
         grasp_center = obj_pos.clone()
         grasp_center[:, 2] += float(cfgn.object_grasp_z_offset)
-        palm_to_cup = (palm_pos - grasp_center).norm(dim=-1)
+        palm_to_cup = self._banded_dist(palm_pos - grasp_center)
         cup_disp = (obj_pos[:, :2] - self.object_spawn_pos[:, :2]).norm(dim=-1)
         height_delta = obj_pos[:, 2] - self.object_spawn_pos[:, 2]
         goal_dist = (obj_pos - self.goal_pos).norm(dim=-1)

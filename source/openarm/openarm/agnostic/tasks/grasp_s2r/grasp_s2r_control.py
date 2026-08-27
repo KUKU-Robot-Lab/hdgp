@@ -185,7 +185,16 @@ class GraspS2RControlMixin:
         d = math.pi / 180.0
         c = torch.tensor(p.palm_rot_center_deg, device=self.device) * d
         h = float(p.palm_rot_half_deg) * d
-        self._palm_lo = torch.cat([torch.tensor(p.palm_box_min, device=self.device), c - h])
+        # ★박스 바닥에 테이블 여유를 준다 — 프로필 palm_box_min z 는 table_surface_z 와
+        #   같아서(0.200) 지령이 테이블 상면까지 내려가는 것이 허용돼 있었다.
+        _box_lo = list(p.palm_box_min)
+        _floor = float(self.cfg.table_surface_z) + float(self.cfg.palm_min_above_table)
+        if _box_lo[2] < _floor:
+            print(f"[grasp_s2r] palm 박스 바닥 z {_box_lo[2]:.3f} → {_floor:.3f} "
+                  f"(테이블 {self.cfg.table_surface_z:.3f} + 여유 "
+                  f"{self.cfg.palm_min_above_table:.3f})", flush=True)
+            _box_lo[2] = _floor
+        self._palm_lo = torch.cat([torch.tensor(_box_lo, device=self.device), c - h])
         self._palm_hi = torch.cat([torch.tensor(p.palm_box_max, device=self.device), c + h])
         self.palm_targets = torch.zeros(self.num_envs, 6, device=self.device)
         self._home_palm = torch.zeros(6, device=self.device)   # _init_home_palm 에서 실측
@@ -400,6 +409,17 @@ class GraspS2RControlMixin:
         tgt = torch.lerp(self._syn_open.unsqueeze(0), self._syn_grip.unsqueeze(0),
                          self._syn_close)
         return tgt.clamp(self._syn_lo.unsqueeze(0), self._syn_hi.unsqueeze(0))
+
+    def _banded_dist(self, delta: torch.Tensor) -> torch.Tensor:
+        """z 데드밴드를 넣은 거리 (N,). `delta` = (N,3) 차이벡터.
+
+        ★★3D 노름은 z 오차를 xy 오차와 **똑같이** 벌한다. 파지 높이는 원래 여유가 있는
+          축인데 그 여유가 없어서 palm 이 파지높이 아래로 눌려 내려갔다(08.27 실측:
+          palm_above_table mean 0.088 vs 파지중심 0.107). 밴드 안에서는 z 를 0 으로 본다.
+        """
+        _b = float(self.cfg.grasp_z_deadband)
+        _dz = torch.relu(delta[:, 2].abs() - _b)
+        return torch.sqrt(delta[:, :2].pow(2).sum(dim=-1) + _dz.pow(2))
 
     def _close_progress(self) -> torch.Tensor:
         """가동 손관절 평균 폐쇄도 (N,) [0,1] — **실측 관절** 기준.
