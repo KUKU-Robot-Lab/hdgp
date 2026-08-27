@@ -1,86 +1,89 @@
-"""gym 등록 — 로봇 프로필마다 id 4개(train/play × mlp/lstm).
+"""gym 등록 — grasp_lift_fabric. 로봇당 id 4개(train/play × mlp/lstm).
 
-로봇 추가 = `modules/robots.py` 프로필 1개 추가가 전부다. 여기는 손댈 필요가 없다.
+★프로필 소스가 `grasp_s2r.robot_profiles` 다(08.27 전면 동기). 자매와 **같은 로봇
+  자산·같은 palm 박스·같은 컵 스폰 중심**을 쓰므로 두 트랙의 차이가 손 제어 하나로
+  좁혀진다 — 그게 이 트랙의 목적이다.
 
-★id 의 로봇 슬롯에 **자산 short** 를 넣는다:
-      open-<short>_<side>_grasp_lift_fab
-  train.py 가 `open-<robot>_<side>_<task>` → `log/rl_games/<robot>/<side>/<task-ver>/`
-  로 푸는 기존 규약을 그대로 타므로, **train.py 수정 없이** 로봇 USD 별로 로그가 갈린다.
-      open-bis_r_grasp_lift_fab  →  log/rl_games/open-bis/right/grasp-lift-fab/
+★gym id 규약: train.py 의 run_naming 정규식 `^(open-\\w+)_([rbl])_(.+)$` 에 걸려야
+  로그가 `log/rl_games/<robot>/<side>/<task>/` 로 분리된다.
+      open-sens_r_grasp_lift_fab → log/rl_games/open-sens/right/grasp-lift-fab/
+★`-play` id 를 반드시 같이 등록해야 `play.py`·warm-state 수집이 동작한다.
 """
+
+import dataclasses as _dc
 
 import gymnasium as gym
 
-from openarm.agnostic.modules import agents as _ag
-from openarm.agnostic.modules import robots as _rb
-
 from . import agents
-from ..grasp_lift_fabric_env_cfg import GraspLiftFabricEnvCfg
+from ..grasp_lift_fabric_env_cfg import (
+    GraspLiftFabricGripperLeftEnvCfg,
+    GraspLiftFabricTesolloRightEnvCfg,
+)
+from ...grasp_s2r import robot_profiles as _rp
 
 _ENTRY = (
     "openarm.agnostic.tasks.grasp_lift_fabric.grasp_lift_fabric_env:GraspLiftFabricEnv"
 )
 
-# Fabrics 자산이 없는 프로필은 등록하지 않는다. **조용히 빠뜨리지 않고** 사유를 남긴다.
-SKIPPED: dict[str, str] = {}
-REGISTERED: dict[str, str] = {}
 
-
-def _cfg_class(profile, play: bool):
-    name = f"GraspLiftFabric_{profile.name}{'_PLAY' if play else ''}_Cfg"
-
-    # ★★클래스 속성으로 두면 안 된다. 베이스가 configclass(데이터클래스)라 상속된
-    #   __init__ 이 **베이스 필드 기본값**("bis_right")을 인스턴스 속성으로 다시 쓴다 —
-    #   서브클래스의 일반 클래스 속성은 조용히 가려진다. 실측: 좌팔 id
-    #   `open-bis_l_...` 로 부팅했는데 profile=bis_right 가 로드됐다(08.22).
-    #   __post_init__ 에서 **인스턴스 속성**으로 강제한 뒤 베이스 resolve 를 태운다.
-    #   (기본 인자 바인딩 `_pn=profile.name` 은 루프 late-binding 함정 방지.)
-    _play = play
-
-    def __post_init__(self, _pn=profile.name, _play=_play):
-        self.profile_name = _pn
-        if _play:
+def _play(cls):
+    class _Play(cls):
+        def __post_init__(self):
+            super().__post_init__()
             self.scene.num_envs = 50
-        GraspLiftFabricEnvCfg.__post_init__(self)
-
-    cls = type(name, (GraspLiftFabricEnvCfg,), {"__post_init__": __post_init__})
-    globals()[name] = cls          # entry point 는 "모듈:속성" 문자열이라 노출 필요
-    return cls
+            self.scene.env_spacing = 2.5
+    _Play.__name__ = cls.__name__ + "_PLAY"
+    return _Play
 
 
-for _p in _rb.PROFILES.values():
-    if _p.fabric_class is None:
-        SKIPPED[_p.name] = (
-            "Fabrics 자산 없음(fabric_class=None). "
-            + " / ".join(_p.notes[-1:])
-        )
+_CFGS = {
+    "sens_r": GraspLiftFabricTesolloRightEnvCfg,
+    "sens_l": GraspLiftFabricGripperLeftEnvCfg,
+}
+
+
+def _profile_name_of(cls) -> str:
+    """cfg 클래스가 어느 프로필로 조립되는지 — **인스턴스를 만들지 않고** 읽는다.
+
+    ★`cls.profile_name` 은 안 된다. @configclass 는 클래스 속성을 dataclass 필드로
+      옮기면서 클래스에서 제거하고, 기본값이 `default_factory` 로 가기도 한다.
+    """
+    f = cls.__dataclass_fields__["profile_name"]
+    if f.default is not _dc.MISSING:
+        return f.default
+    return f.default_factory()
+
+
+SKIPPED: dict[str, str] = {}
+REGISTERED: list[str] = []
+
+for _tag, _cls in _CFGS.items():
+    # 이 태스크는 Fabrics 로만 돈다(폴백 금지). 자산이 없는 프로필을 등록하면
+    # "존재하지만 띄우면 죽는" id 가 생기므로, 등록하지 않고 사유를 남긴다.
+    _profile = _rp.PROFILES[_profile_name_of(_cls)]
+    if _profile.fabric_class is None:
+        SKIPPED[_tag] = (
+            f"프로필 '{_profile.name}': Fabrics 자산 없음(fabric_class=None) — "
+            "이 태스크는 Fabrics 전용이라 띄울 수 없다")
         continue
 
-    _train_cls = _cfg_class(_p, play=False)
-    _play_cls = _cfg_class(_p, play=True)
-    _side = "r" if _p.side == "r" else "l"
-    _base = f"open-{_p.asset.short}_{_side}_grasp_lift_fab"
-    REGISTERED[_p.name] = _base
-
-    # ★`-paper` = DEXTRAH 논문 E.6 구성(critic 을 MLP 로). 레포 yaml 은 critic 에도
-    #   LSTM 2048 을 두는데 논문은 "크리틱은 특권 정보를 다 보므로 시간 의존성이
-    #   불필요" 라며 MLP 라고 명시한다. 어느 쪽이 나은지는 실험 문제라 **둘 다 돌릴 수
-    #   있게** 태스크를 나눠 둔다(기본 태스크는 건드리지 않는다 — 진행 중인 런 보호).
-    _PAPER_CFG = "rl_games_ppo_paper_cfg.yaml"
-    for _suffix, _cls, _agent_yaml in (
-        ("", _train_cls, _ag.resolve_agent_cfg(_p, use_lstm=False)),
-        ("-play", _play_cls, _ag.resolve_agent_cfg(_p, use_lstm=False)),
-        ("-lstm", _train_cls, _ag.resolve_agent_cfg(_p, use_lstm=True)),
-        ("-play-lstm", _play_cls, _ag.resolve_agent_cfg(_p, use_lstm=True)),
-        ("-paper", _train_cls, _PAPER_CFG),
-        ("-play-paper", _play_cls, _PAPER_CFG),
+    _play_cls = _play(_cls)
+    # config entry point 는 "모듈:속성" 문자열 — 동적 클래스를 모듈 네임스페이스에 노출.
+    globals()[_cls.__name__] = _cls
+    globals()[_play_cls.__name__] = _play_cls
+    for _suffix, _cfg_name, _agent in (
+        ("", _cls.__name__, "rl_games_ppo_cfg.yaml"),
+        ("-play", _play_cls.__name__, "rl_games_ppo_cfg.yaml"),
+        ("-lstm", _cls.__name__, "rl_games_ppo_lstm_cfg.yaml"),
+        ("-play-lstm", _play_cls.__name__, "rl_games_ppo_lstm_cfg.yaml"),
     ):
         gym.register(
-            id=f"{_base}{_suffix}",
+            id=f"open-{_tag}_grasp_lift_fab{_suffix}",
             entry_point=_ENTRY,
             disable_env_checker=True,
             kwargs={
-                "env_cfg_entry_point": f"{__name__}:{_cls.__name__}",
-                "rl_games_cfg_entry_point": f"{agents.__name__}:{_agent_yaml}",
+                "env_cfg_entry_point": f"{__name__}:{_cfg_name}",
+                "rl_games_cfg_entry_point": f"{agents.__name__}:{_agent}",
             },
         )
+        REGISTERED.append(f"open-{_tag}_grasp_lift_fab{_suffix}")

@@ -1,10 +1,7 @@
-# grasp_lift_fabric — rl_games PPO (MLP).
-# 팔 = Fabrics 절대 palm 6D pose, 손 = 관절 절대 전범위.
-# 차원은 프로필마다 다르므로 여기 적지 않는다(rl_games 가 런타임에 잡는다).
-#   예) bis_right: action 26 / policy obs 122 / critic 128
-# 비대칭 actor-critic(has_central_value: True), MLP [512, 256, 128].
-# ★LSTM 이 아니라 MLP 가 기본이다 — obs 가 거의 Markov 라 LSTM 비용을 정당화할
-#   근거가 아직 없다. 부분관측(occlusion)이 실측되면 -lstm id 로 바꾼다.
+# 5g_grasp_right_v1-2 rl_games PPO 설정
+# v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
+# 관측: actor 106D / critic 143D (asymmetric), 액션: 11D
+# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
 
 params:
   seed: 42
@@ -33,28 +30,16 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [512, 512]          # KUKA 고정
+      units: [512, 256, 128]
       activation: elu
       d2rl: False
       initializer:
         name: default
       regularizer:
         name: None
-    # ★★KUKA 고정(08.25). 원본 teacher 는 actor LSTM 1024(before_mlp) + critic LSTM 2048.
-    #   구 주석("obs 가 거의 Markov 라 LSTM 비용을 정당화할 근거가 없다")은 접촉 이력을
-    #   빼고 본 판단이었다 — 파지는 "지금 닿았나"가 아니라 "닿은 채로 유지했나"이고,
-    #   그건 순간 관측으로 안 보인다. horizon_length/minibatch/seq_length 가 함께 따라온다.
-    rnn:
-      name: lstm
-      units: 1024
-      layers: 1
-      before_mlp: True
-      layer_norm: True
-      concat_input: True
-      concat_output: True
 
   load_checkpoint: False
-  load_path: ''   # 체크포인트는 --checkpoint 로 준다(남의 경로 잔재 제거)
+  load_path: ''
 
   config:
     name: agn_grasp_lift_fab
@@ -63,10 +48,12 @@ params:
     device_name: 'cuda:0'
     multi_gpu: False
     ppo: True
-    mixed_precision: False       # KUKA 고정
+    mixed_precision: True
     normalize_input: True
     normalize_value: True
-    value_bootstrap: False
+    # ★True 필수(08.22): 전도/낙하가 truncation 으로 env 를 리셋한다. bootstrap 이
+    # 없으면 truncation=termination 이 되어 미래 보상 절벽 → 회피 학습(agn_test2) 재발.
+    value_bootstrap: False   # ★08.25 Kuka 원본값
     num_actors: -1
     reward_shaper:
       scale_value: 0.01
@@ -74,53 +61,30 @@ params:
     gamma: 0.998
     tau: 0.95
     learning_rate: 3e-4
-    # ★★08.26 `linear` → `adaptive`. KUKA 정합을 **이 항에서만** 깬다.
-    #   실측 근거 3 중:
-    #     ① 우리 kuka5 — KL 이 전 구간의 98% 에서 임계(0.013)를 넘고 최근500 평균
-    #        **0.038(임계의 3배)**. linear 는 max_epochs=20000 기준이라 e7,000 에서
-    #        23% 만 감쇠(2.55e-4 → 1.96e-4)해 큰 스텝을 그대로 방치했다. σ 가 좁아진
-    #        정책(entropy 22.4, σ≈0.72)이 큰 스텝을 밟아 좋은 해에서 이탈 —
-    #        좌·우 모두 peak 후 퇴행(좌 11.60→5.3 · 우 4.40→0.4)한 기계적 원인이다.
-    #     ② 자매 트랙(grasp_sensor)이 **같은 증상으로 같은 수정**을 이미 했다:
-    #        커밋 8db1449 "lr_schedule linear → adaptive (KL 폭주 붕괴)".
-    #        그 뒤 hier_test1 은 KL 0.015~0.017 로 임계 근처에 붙고 LR 이
-    #        8.9e-5 → 2.6e-5 로 **3.4배 감쇠**하며 e14,416 을 안정적으로 돌았다.
-    #     ③ DexPour(IROS 2025) Table I — Learning Rate Schedule: **Adaptive**.
-    #   ★두 트랙의 나머지 하이퍼(gamma·tau·lr·kl_threshold·max_epochs·entropy_coef·
-    #     horizon·minibatch·mini_epochs·e_clip·grad_norm)는 **전부 동일**하다. 그래서
-    #     이 한 항만 바꾼 런이 "퇴행이 스케줄 탓인가"에 대한 깨끗한 대조가 된다.
-    lr_schedule: adaptive
+    lr_schedule: linear
     schedule_type: standard
     kl_threshold: 0.013
-    score_to_win: 100000       # KUKA 고정
-    max_epochs: 20000            # KUKA 고정
+    score_to_win: 100000000
+    max_epochs: 10000
     save_best_after: 100
-    save_frequency: 200          # KUKA 고정
+    save_frequency: 50
     print_stats: True
     grad_norm: 1.0
-    # ★08.21 fab_test8 실측으로 0.002 → 0.0005. 0.002 는 이 저장소 MLP 최고값이었고,
-    #   ep2100 이후 정책 sigma 가 0.76 → 1.30 으로 팽창해 총보상이 3017 → 2045 로 퇴행했다.
-    #   액션이 **절대 목표값**이라 sigma>1 이면 샘플이 대부분 박스 경계로 클립돼 평균이 묻힌다.
-    #   pour 계열 주석이 같은 실패("0.0008 이 과함 → entropy 상승")를 이미 기록해 뒀다.
-    entropy_coef: 0.002          # KUKA 고정(LSTM 전제)
+    entropy_coef: 0.002
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: 16           # KUKA 고정(seq_length 16 과 짝)
+    horizon_length: 64
     # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
     #   128  envs: batch=   8192 → minibatch= 2048 (4 splits)
     #   2048 envs: batch= 131072 → minibatch=32768 (4 splits)  ← 학습 권장
-    minibatch_size: 16384     # KUKA 고정. --num_envs 2048 기준
+    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 2048로 변경
     mini_epochs: 4
     critic_coef: 4
     clip_value: True
     clip_actions: False
-    # ★rl_games 는 영국식 'regularisation' 으로 비교한다. 'regularization' 이면 두 분기 모두
-    #   안 걸려 b_loss = zeros — bounds 정규화가 조용히 꺼진다(fab_test8 4110 스텝 전부 정확히 0.0).
-    #   'regularisation'(mu² 전체 벌점)은 a=0 이 홈이라 홈 고착 압력이 되므로 쓰지 않는다.
-    #   'bound' 는 |mu|>1.1 에서만 켜지는 가드레일이라 정상 구간에서 무해하다.
-    seq_length: 16               # KUKA 고정(LSTM BPTT 창)
-    zero_rnn_on_done: True       # KUKA 고정 — 에피소드 경계에서 은닉상태 리셋
-    bound_loss_type: bound
+    bound_loss_type: bound   # ★rl_games 는 'regularisation'(영국식)/'bound' 만 인식 —
+                             #   'regularization' 은 어느 분기에도 안 걸려 bounds loss 가
+                             #   12,652 iter 내내 꺼져 있었다(로그 0.0 이 증거)
     bounds_loss_coef: 0.005
 
     # Asymmetric Actor-Critic: critic은 143D privileged obs 사용
@@ -128,36 +92,21 @@ params:
     central_value_config:
       normalize_input: True
       normalize_value: True
-      value_bootstrap: False
-      minibatch_size: 16384     # KUKA 고정(actor와 동일)
+      minibatch_size: 32768     # actor와 동일하게 맞출 것
       mini_epochs: 4
-      learning_rate: 5e-5       # KUKA 고정
-      # ★08.26 critic 도 actor 와 함께 adaptive. 같은 `linear` 결함을 공유한다.
-      #   ★이 키는 원래 **KUKA 원본에 없다**(자매 주석: "구 설정에 있던
-      #     normalize_value / value_bootstrap / lr_schedule / e_clip 은 Kuka 가
-      #     지정하지 않는다"). 우리가 추가한 것이므로 정합을 깨는 게 아니라
-      #     우리 쪽 이탈을 바로잡는 것이다. 지우지 않고 명시하는 이유는
-      #     rl_games 기본값이 버전에 따라 달라 조용히 바뀔 수 있어서다.
-      lr_schedule: adaptive
-      kl_threshold: 0.016       # KUKA 고정
+      learning_rate: 3e-4
+      lr_schedule: linear
+      kl_threshold: 0.013
       clip_value: True
       e_clip: 0.2
       network:
         name: actor_critic
         central_value: True
         mlp:
-          units: [1024, 512]     # KUKA 고정
+          units: [512, 256, 128]
           activation: elu
           d2rl: False
           initializer:
             name: default
           regularizer:
             name: None
-        rnn:
-          name: lstm
-          units: 2048
-          layers: 1
-          before_mlp: False      # ★critic 만 after-mlp (원본 규약)
-          layer_norm: True
-          concat_input: True
-          concat_output: True
