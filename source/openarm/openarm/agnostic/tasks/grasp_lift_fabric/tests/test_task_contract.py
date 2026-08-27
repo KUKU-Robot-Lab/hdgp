@@ -332,10 +332,16 @@ def test_no_dead_reward_cfg_fields():
                   "observation_space", "state_space", "seed"}
     cfg_src = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
     consumers = cfg_src
+    # ★보상 상수는 **import 한 grasp_v1 보상 파일**이 `getattr(cfg, name)` 로 읽는다
+    #   — 소비처에 넣지 않으면 이식한 가중치가 전부 "죽은 필드"로 오판된다.
+    _V1 = _TASK_DIR.parent.parent.parent / "tesollo" / "right" / "grasp_v1"
     for f in ((_TASK_DIR / "grasp_lift_fabric_env.py"),
               (_TASK_DIR / "rewards_tip.py"),
-              (_TASK_DIR.parent / "grasp_sensor" / "rewards_tip_cyl.py"),
-              (_TASK_DIR.parent / "grasp_sensor" / "rewards.py"),
+              (_TASK_DIR / "rewards_stage.py"),
+              (_V1 / "grasp_reward.py"),
+              (_V1 / "grasp_right_utils.py"),
+              (_TASK_DIR.parent.parent.parent / "common" / "grasp_v2_contract.py"),
+              (_TASK_DIR.parent.parent.parent / "common" / "grasp_reward_core.py"),
               (_TASK_DIR.parent.parent / "modules" / "adr.py")):
         consumers += f.read_text()
     fields = set(re.findall(r"^\s{4}([a-z_][a-z_0-9]*)\s*:\s*[a-zA-Z]", cfg_src, re.M))
@@ -1289,47 +1295,6 @@ def _stage_terms(**over):
     return compute_stage_rewards(**_stage_inputs(**over))[1]
 
 
-def test_align_is_compatible_with_zero_grasp_distance():
-    """★★align=1 과 d_gc=0 은 **동시에 달성 가능**해야 한다 — 양립성 계약.
-
-    08.26 하루에 두 번 뒤집힌 항이다. 법선(palm_x) 방위 판은 파지중심 오프셋
-    (법선에서 52.8°)과 기하 충돌해 d_gc 바닥을 121mm 로 만들었다 — 좌팔이 정확히
-    거기서 정체했고, λ 가 열리는 순간 접촉이 0.55→0.00 붕괴했다(컵이 파지중심
-    옆 90mm = 손가락 박스 밖). 포위중심 프로브: **오므려도** 중점 방위각 50~68°
-    (50% 굴곡 49.8°) — 컵이 법선의 50° 옆에 앉는 것이 이 손의 기하다.
-
-    그래서 "무엇을 재는가" 대신 **불변식**을 검사한다: 컵이 파지중심에 정확히
-    앉은 배치에서 align 이 1 이어야 한다. 법선 판은 여기서 cos(52.8°)≈0.60 로
-    떨어진다 — 어떤 재작성이 와도 이 함정은 다시 못 들어온다.
-    """
-    # ★배치는 반드시 **side-to-side 자세**로 짠다: palm_y=연직, palm_x/z=수평.
-    #   원위 성분(92mm)을 연직에 두면(홈 자세) 오프셋의 수평 투영이 법선과 거의
-    #   겹쳐(70,7) 법선 판도 0.995 로 통과해 버린다 — 처음에 그렇게 짰다가
-    #   RED 가 0.004 차이로만 걸리는 걸 보고 고쳤다. 실제 파지 자세에서는 원위가
-    #   **수평**이라 두 판이 52.8° 로 갈린다.
-    palm = torch.zeros(1, 3)
-    px = torch.tensor([[1.0, 0.0, 0.0]])          # 법선(수평)
-    py = torch.tensor([[0.0, 0.0, 1.0]])          # 연직 — side-to-side
-    pz = torch.tensor([[0.0, -1.0, 0.0]])         # 원위(수평) = x × y
-    off = 0.070 * px + 0.007 * py + 0.092 * pz    # 실측 (70,7,92) 을 world 로
-    for k in (1.0, 2.5):                    # 컵이 파지중심 위(=d_gc=0)와 그 연장선 밖
-        t = _stage_terms(
-            palm_pos=palm, grasp_center_pos=off, object_pos=k * off,
-            goal_pos=k * off, palm_x=px, palm_y=py,
-        )
-        assert float(t["_align"]) > 0.999, (
-            f"컵이 파지중심 연장선(k={k})에 있는데 align={float(t['_align']):.3f} — "
-            "d_gc=0 과 양립하지 않는 기준을 보고 있다(법선 판이면 0.60 이 나온다)")
-    # 반례: 컵이 오프셋 방위에서 **수평면 안에서** 90° 옆이면 align ≈ 0.
-    _ox, _oy = float(off[0, 0]), float(off[0, 1])
-    side = _stage_terms(
-        palm_pos=palm, grasp_center_pos=off,
-        object_pos=torch.tensor([[-_oy, _ox, float(off[0, 2])]]),
-        palm_x=px, palm_y=py)
-    assert abs(float(side["_align"])) < 0.05, (
-        f"컵이 90° 옆인데 align={float(side['_align']):.3f}")
-
-
 def test_pose_and_object_position_are_logged_with_reward():
     """자세·물체 위치를 보상과 **같은 스텝**에 남긴다(08.26 사용자 요청).
 
@@ -1343,32 +1308,6 @@ def test_pose_and_object_position_are_logged_with_reward():
         assert tag in src, f"자세 로깅 누락: {tag}"
 
 
-def test_stage_cfg_standin_matches_real_cfg():
-    """대역 cfg(`_STAGE_CFG`) 가 실제 cfg 와 어긋나면 자세 계약이 **거짓 통과**한다.
-
-    Isaac 없이 돌리려고 둔 대역이라, 실제 cfg 가 바뀌면 조용히 낡는다. 소스에서
-    직접 읽어 대조한다(실제로 밴드 두 개를 서로 바꿔 적어 이 검사가 잡았다).
-    """
-    import ast
-    src = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
-
-    def _norm(x):
-        return tuple(float(i) for i in x) if isinstance(x, (list, tuple)) else float(x)
-
-    bad = []
-    for k, v in vars(_STAGE_CFG).items():
-        if not k.startswith("stage_"):
-            continue
-        m = re.search(rf"^\s*{k}\s*:[^=\n]*=\s*(\(.*?\)|[^\s#]+)", src, re.M)
-        if m is None:
-            bad.append((k, "cfg 에 없음"))
-            continue
-        real = ast.literal_eval(m.group(1).rstrip(","))
-        if _norm(real) != _norm(v):
-            bad.append((k, f"대역 {_norm(v)} vs cfg {_norm(real)}"))
-    assert not bad, f"대역 cfg 가 낡았다: {bad}"
-
-
 def test_zx_tilt_is_logged_directly_not_derived():
     """ZX 기울기는 **직접** 로깅해야 한다 — 평균 orient_q 에서 역산하면 안 된다.
 
@@ -1378,71 +1317,6 @@ def test_zx_tilt_is_logged_directly_not_derived():
     src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
     assert "task/pose/palm/zx_tilt_deg" in src, "ZX 기울기 로깅 없음"
     assert "zx_tilt_p95_deg" in src, "ZX 기울기 p95 없음 — 평균만으로는 꼬리가 숨는다"
-
-
-def test_reward_formula_is_single_source():
-    """★★수식은 자매 파일 **하나**다(08.26 사용자 확정: "리워드 이름부터 수식 모두
-    동일, 로봇 대상만 다름"). 복제는 이름이 같아도 드리프트를 못 막는다 — 실제로
-    같은 날 자매가 진화(코리더 래치)한 것을 복제본은 모르고 지나쳤다. import 가 막는다.
-    """
-    from openarm.agnostic.tasks.grasp_lift_fabric import rewards_stage as rs
-    from openarm.agnostic.tasks.grasp_sensor import rewards_tip_cyl as sib
-    assert rs.compute_stage_rewards is sib.compute_tip_cyl_rewards, (
-        "compute_stage_rewards 가 자매 함수의 재수출이 아니다 — 수식이 갈라졌다")
-    src = (_TASK_DIR / "rewards_stage.py").read_text()
-    assert "d_gc" not in src.replace("test", ""), (
-        "rewards_stage.py 에 수식 본문이 남아 있다 — 재수출만 있어야 한다")
-
-
-def test_mirror_sign_is_input_adaptation_not_formula_change():
-    """★roll_q 미러 사망(h4 좌팔: cos(palm_y,up)=−1 → orient_q≡floor)의 방지책은
-    **수식이 아니라 입력**이다 — env 가 부팅 실측 부호(_palm_y_sign)를 곱해 넘긴다.
-    수식을 abs 로 바꾸면 자매와 갈라진다(실제로 하루 그랬다가 되돌렸다).
-    """
-    env_src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
-    assert "_palm_y_sign * _R_tcp[:, :, 1]" in env_src, "palm_y 미러 부호 미적용"
-    assert "_palm_y_sign" in env_src and "sign(_R0" in env_src.replace(
-        "torch.sign(_R0", "sign(_R0"), "부호가 부팅 실측이 아니다"
-
-
-def test_corridor_latch_and_persist_are_wired_and_reset():
-    """자매 08.26 승인분(코리더 래치·deep persist)이 배선되고 **리셋에서 지워지는가**.
-    래치가 에피소드를 넘으면 이전 위반이 새 에피소드의 ν 를 몰수한다.
-    """
-    env_src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
-    for pat in ("self._corridor_latch |=", "corridor_ok=(~self._corridor_latch)",
-                "self._persist_buf = torch.where", "persist_frac=_persist"):
-        assert pat in env_src, f"배선 누락: {pat}"
-    i_reset = env_src.index("self._persist_buf[env_ids] = 0")
-    tail = env_src[i_reset:i_reset + 600]
-    assert "self._corridor_latch[env_ids] = False" in tail, "래치 리셋 누락"
-    assert "self._persist_buf[env_ids] = 0" in tail, "persist 리셋 누락"
-
-
-def test_stage_new_constants_match_sibling_source():
-    """신규 동기화 상수(코리더·persist·접촉임계·gc오버라이드)가 자매 cfg 와 같은 값."""
-    import ast
-    sib = (_TASK_DIR.parent / "grasp_sensor" / "grasp_sensor_env_cfg.py").read_text()
-    ours = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
-    for k in ("stage_contact_threshold", "stage_contact_persistence_steps",
-              "stage_corridor_xy_m", "stage_corridor_tilt_deg",
-              "stage_gc_local_override", "stage_stay_hold_steps",
-              "stage_approach_z_band", "stage_approach_z_frac",
-              "stage_stay_pos_tol_m", "stage_stay_tilt_deg",
-              "stage_success_envelope_min"):
-        vs = []
-        m_sib = re.search(rf"^\s*{k}\s*:[^=\n]*=\s*(\(.*?\)|[^\s#]+)", sib, re.M)
-        if m_sib is None:
-            # ★자매 세션이 그 필드를 제거/개편 중일 수 있다(불가침 — 실제로 08.26
-            #   stage_gc_* 가 자매 WIP 로 사라졌다). 자매에 없는 필드는 대조 생략 —
-            #   우리 쪽 존재만 확인한다.
-            assert re.search(rf"^\s*{k}\s*:", ours, re.M), f"우리 cfg 에 {k} 없음"
-            continue
-        m_our = re.search(rf"^\s*{k}\s*:[^=\n]*=\s*(\(.*?\)|[^\s#]+)", ours, re.M)
-        assert m_our, f"우리 cfg 에 {k} 없음"
-        vs = [ast.literal_eval(m_sib.group(1).rstrip(",")),
-              ast.literal_eval(m_our.group(1).rstrip(","))]
-        assert vs[0] == vs[1], f"{k}: 자매 {vs[0]} vs 우리 {vs[1]}"
 
 
 def test_stage_hit_semantics_match_sibling():
@@ -1469,85 +1343,6 @@ def test_adr_increments_on_lift_success_not_strict_goal():
     env_src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
     assert "maybe_increment(self._lift_success_now" in env_src, (
         "ADR 이 엄격 goal_reached 로 승급한다")
-
-
-def test_approach_kernel_is_z_first():
-    """★★Z-우선 접근(08.26 사용자 지시) — "Z 를 먼저 맞추지 못하면 side-to-side
-    접근이 안 된다." 구 3D 커널은 위 27cm 와 옆 27cm 를 같게 쳐서, 머리 위로 들어간
-    정책이 내려가려면 수평으로 멀어져야만 하는 **로컬 최소**를 만들었다(h1 좌팔이
-    컵 직상방 수평 24mm·Δz 165mm 에서 400 에폭 정체 — XY 먼저 뽑은 시드 운).
-
-    계약: 같은 3D 거리에서 ①옆(같은 높이) ≫ ②머리 위 여야 하고, 머리 위에서는
-    수평 커널이 닫혀(z_ok≈0) 접근 보상이 수직 성분에서만 나와야 한다.
-    """
-    def _appr(dz, dxy):
-        # 파지중심을 원점에 두고 컵을 (dxy, 0, dz) 에 — 접근 항만 읽는다.
-        t = _stage_terms(
-            grasp_center_pos=torch.zeros(1, 3),
-            object_pos=torch.tensor([[dxy, 0.0, dz]]),
-            goal_pos=torch.tensor([[dxy, 0.0, dz]]),
-            palm_pos=torch.tensor([[-0.05, 0.0, 0.0]]),
-        )
-        return float(t["approach"]), float(t["_z_ok"])
-    side, z_side = _appr(0.01, 0.17)     # 같은 높이, 옆 17cm
-    over, z_over = _appr(0.17, 0.01)     # 머리 위 17cm, 수평 1cm
-    assert z_side > 0.95, f"높이 맞춤이 z_ok 를 안 연다: {z_side:.3f}"
-    assert z_over < 0.05, f"머리 위인데 z_ok 가 열려 있다: {z_over:.3f}"
-    assert side > 2.0 * over, (
-        f"Z-우선 비대칭이 없다: 옆 {side:.3f} vs 머리위 {over:.3f} — "
-        "구 3D 커널이면 둘이 같다(호버 로컬최소 재발)")
-
-
-def test_close_bridge_is_wired_with_real_closure_for_tip_ik():
-    """close_bridge(자매 05b6a3f)가 **실제 폐쇄도**로 배선됐는가.
-
-    자매의 비-synergy 경로는 0 을 넘겨 항이 죽는다 — 우리가 0 을 넘기면 가중 0.5 를
-    줘도 게이트 개방 후 gradient 공백(실측 P(n지≥3) 0.6%)이 그대로다. tip-IK 는
-    fabric 손 관절 폐쇄도(홈→닫힘한계 정규화)로 같은 의미를 만든다.
-    """
-    env_src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
-    # v2(자매 3ac85a9): 엄지/4지 **분리** 폐쇄도 — min 합성이 뒤처진 그룹에
-    # gradient 를 주려면 두 입력이 실제 관절 폐쇄도여야 한다.
-    for key in ("syn_close_thumb=(", "syn_close_fingers=("):
-        assert key in env_src, f"{key} 미배선"
-        i = env_src.index(key)
-        blk = env_src[i:i + 400]
-        assert "_fab_hand_home" in blk and "_close_den" in blk, (
-            f"{key} 가 상수 0 이다 — close_bridge 가 죽는다")
-    cfg_src = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
-    m = re.search(r"stage_close_bridge_weight\s*:\s*float\s*=\s*([0-9.]+)", cfg_src)
-    # 0.5→0.25 (08.26 seed-robust): 허공 오므림 대비 접촉의 상대가치 4배 교정.
-    assert m and float(m.group(1)) == 0.25, "close_bridge 가중이 0.25 가 아니다"
-
-
-def test_all_three_bridges_are_active_and_correctly_shaped():
-    """★브리지 3종(08.26 사용자 지시) — 리미터가 "우연한 탐색"을 없앤 자리마다
-    gradient 다리가 있어야 한다: 접근 뒤(close v2 min(엄지,4지)) · 손가락별
-    (tip_bridge — 폐쇄도 스칼라로는 어느 손가락을 어디로 보낼지 못 가른다) ·
-    파지 뒤 리프트 첫 mm(lift_bridge, 자매 실측 h 2mm 정체).
-    """
-    import ast as _ast
-    cfg_src = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
-    for k, want in (("stage_close_bridge_weight", 0.25),
-                    ("stage_lift_bridge_weight", 1.0),
-                    ("stage_tip_bridge_weight", 0.5)):
-        m = re.search(rf"{k}\s*:\s*float\s*=\s*([0-9.]+)", cfg_src)
-        assert m and float(m.group(1)) == want, f"{k} != {want}"
-    # 수식(공유): tip_bridge 는 λ 게이트 + per-finger 커널 mean
-    sib = (_TASK_DIR.parent / "grasp_sensor" / "rewards_tip_cyl.py").read_text()
-    i = sib.index('"tip_bridge"')
-    blk = sib[i:i + 500]
-    # 08.26 지령 기준으로 전환 — 지령 거리 우선, 실-손끝은 하위호환으로만 남는다.
-    assert "lam" in blk and "tip_cmd_surf_dist" in blk and "mean(dim=-1)" in blk
-    # env: v2 분리 폐쇄도 + 지령-표면 거리 배선(상수 0 이면 항이 죽는다)
-    env_src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
-    for pat in ("syn_close_thumb=(", "syn_close_fingers=(",
-                "tip_cmd_surf_dist=self._tip_cmd_surface_dist",
-                "_close_thumb_m", "_close_fingers_m"):
-        assert pat in env_src, f"배선 누락: {pat}"
-    # lift_bridge 는 μ 게이트 — λ 로 걸면 잡기 전에 낚아채기를 유도한다
-    j = sib.index('"lift_bridge"')
-    assert "mu" in sib[j:j + 260], "lift_bridge 가 μ 게이트가 아니다"
 
 
 def test_spawn_sits_inside_measured_side_grasp_region():
@@ -1580,30 +1375,6 @@ def test_spawn_sits_inside_measured_side_grasp_region():
     assert "object_spawn_center_override" in blk, "스폰이 오버라이드를 안 읽는다"
     assert "abs(float(_ovr_sp[1]))" in blk, (
         "y 부호가 미러 자동이 아니다 — 좌팔 스폰이 반대쪽에 떨어진다")
-
-
-def test_tip_bridge_rewards_command_not_actual_tip():
-    """★★tip_bridge 는 **지령(cmd)** 을 평가해야 한다(08.26 사용자 지시).
-
-    실측(probe_tip_cmd_placement, h4 e800): 지령↔실제 간극이 손가락별 18~79mm.
-    실 손끝으로 보상하면 그 간극만큼 정책 액션과 보상의 인과가 끊긴다 —
-    900 에폭 동안 4지 접촉이 정확히 0.00 이었던 이유다. 지령을 평가하면
-    정책이 낸 값이 곧 평가 대상이 된다.
-    목표는 컵 **표면**(측면 띠) — 지령 실측이 표면 65mm 를 두고 index 173mm,
-    pinky h−94mm 로 흩어져 있었다.
-    """
-    env_src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
-    assert "tip_cmd_surf_dist=self._tip_cmd_surface_dist" in env_src, (
-        "tip_bridge 가 지령 기준이 아니다")
-    assert "tip_obj_dist=(" not in env_src, "구 실-손끝 기준이 아직 배선돼 있다"
-    i = env_src.index("def _tip_cmd_surface_dist")
-    blk = env_src[i:i + 1200]
-    for pat in ("self._tip_cmd_local", "root_quat_w", "radial", "relu(h.abs()"):
-        assert pat in blk, f"표면 거리 계산 누락: {pat}"
-    # 형상 가정은 env 에만 — 공유 수식은 거리만 받는다
-    sib = (_TASK_DIR.parent / "grasp_sensor" / "rewards_tip_cyl.py").read_text()
-    j = sib.index('"tip_bridge"')
-    assert "radius" not in sib[j:j + 400], "공유 수식에 형상 상수가 들어갔다"
 
 
 def test_palm_box_z_override_only_relaxes():
@@ -1852,3 +1623,42 @@ def test_unusable_fingers_is_declared_not_just_commented():
     env_src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
     assert 'getattr(self.cfg, "hand_unusable_fingers"' in env_src, (
         "env 가 이 필드를 읽지 않는다")
+
+
+def test_reward_is_grasp_v1_import_not_copy():
+    """★★보상은 `tesollo/right/grasp_v1` 을 **import** 한다(08.27 사용자 사양).
+
+    수식·가중치를 복사하면 두 트랙이 조용히 갈라진다 — 저장소 단일소스 규약.
+    로봇 적응은 **입력 조립**에서만 한다(우리 손은 13자유 관절, grasp_v1 은 시너지).
+
+    ★h7 실패를 겨냥하는 지점: grasp 항의 55% 를 **엄격 감쌈**(per-finger mid AND
+      dist)이 차지하고, wrap_retention_loss 가 래치 대비 침식을 처벌한다. 계층
+      보상의 μ 는 접촉 수만 세어 "닿게만 하고 받쳐 들기" 를 성공으로 셌다.
+    """
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    assert "from openarm.tesollo.right.grasp_v1.grasp_reward import" in src, (
+        "grasp_v1 보상을 import 하지 않는다")
+    assert "def compute_grasp_reward_terms" not in src, "보상 수식을 복사했다"
+    for need in ("wrap_frac=", "wrap_at_latch=", "compute_lift_readiness",
+                 "compute_grasp_v2_stability"):
+        assert need in src, f"grasp_v1 입력/헬퍼 누락: {need}"
+    # 래치·감쌈 스냅샷은 리셋에서 반드시 되돌아야 한다.
+    for buf in ("_lift_latched", "_wrap_at_latch", "_contact_hold", "_lift_hold"):
+        assert f"self.{buf}[env_ids]" in src, f"{buf} 가 리셋되지 않는다"
+
+
+def test_stage_gates_are_diagnostic_only():
+    """★λμνρ 계층은 **진단 전용**이다 — 보상에 들어가면 안 된다(08.27).
+
+    μ 가 접촉 수만 세고 감쌈을 안 봐서 h7 좌팔이 μ hit 0.153 인데 엄격 감쌈은
+    0.05~0.07 이었다(envelope_strict 0.100). 게이트를 보상으로 쓰면 그 경로가
+    다시 열린다. 판정 지표로만 남긴다.
+    """
+    rs = (_TASK_DIR / "rewards_stage.py").read_text()
+    assert "def compute_stage_gates_only" in rs, "진단 게이트 함수가 없다"
+    assert "weight" not in rs.lower().replace("weighted", ""), (
+        "게이트 파일에 가중치가 있다 — 보상으로 되돌아갔다")
+    src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
+    assert "compute_stage_rewards" not in src, "계층 보상 호출이 남아 있다"
+
+

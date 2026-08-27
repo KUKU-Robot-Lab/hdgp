@@ -429,6 +429,15 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self._fingers_free = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device)
         self._palm_normal_dist = torch.zeros(self.num_envs, device=self.device)
+        # ── grasp_v1 보상 상태 버퍼(08.27 이식) ─────────────────────────
+        #   ★리셋에서 전부 되돌린다 — 안 하면 이전 에피소드의 래치·감쌈
+        #     스냅샷이 새 에피소드로 새어 보상이 조용히 틀린다.
+        self._lift_hold = torch.zeros(self.num_envs, device=self.device)
+        self._lift_latched = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device)
+        self._wrap_at_latch = torch.zeros(self.num_envs, device=self.device)
+        self._contact_hold = torch.zeros(self.num_envs, device=self.device)
+        self._prev_ntip = torch.zeros(self.num_envs, device=self.device)
         if self._freeze_fingers:
             print(f"[grasp_lift_fabric] 접근 중 손 동결 ON · 해제 palm_ee 법선거리 "
                   f"{float(cfg.finger_release_dist_m)*1000:.0f}mm "
@@ -1396,7 +1405,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
             if True:
                 # 계층 보상(λμνρ) — 수식은 자매 공유 파일 하나뿐. 여기는 입력
                 # 조립만 하며, 로봇 종속 적응(미러 부호·폐쇄도·표면 거리)이 모인다.
-                from .rewards_stage import compute_stage_rewards
+                from .rewards_stage import compute_stage_gates_only
                 _R_tcp = matrix_from_quat(
                     self.robot.data.body_quat_w[:, self._tcp_idx])
                 # 파지중심 = palm 부착 상수(인벨롭 목표 — 손끝 평균이면 핀치가 접근 보상을 먹는다).
@@ -1434,51 +1443,117 @@ class GraspLiftFabricEnv(DirectRLEnv):
                 self._corridor_latch |= (xy_disp > _cor_xy) | (tilt > _cor_tilt)
                 _ref_up = torch.zeros_like(palm_pos)
                 _ref_up[:, 2] = 1.0          # 이 자산은 베이스 +z ≡ world +z
-                total, terms, gate, envelope_frac = compute_stage_rewards(
-                    palm_pos=palm_pos,
+                # ── λμνρ 계층 게이트는 **진단 전용**으로만 남는다(08.27) ──────────
+                #   보상은 grasp_v1 이식본이 낸다. μ 가 접촉 수만 세고 감쌈을 안 봐서
+                #   "닿게만 하고 받쳐 드는" 경로를 성공으로 셌던 것이 h7 실패의 뿌리다
+                #   (좌팔 wrap in/mi/ri 0.05~0.07 인데 μ hit 0.153).
+                _gate_stage, envelope_frac = compute_stage_gates_only(
                     grasp_center_pos=_gc_palm,
                     object_pos=obj_pos,
                     goal_pos=self.goal_pos,
-                    tip_c=_tip_c,
-                    persist_frac=_persist,
-                    wrap_c=(_mid_c | _dist_c)[:, self._grp_b_env_t],
-                    deep_c=_deep_c,
-                    oppose=(contact > _thr_c)[:, self._grp_a].any(dim=-1),
-                    height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
-                    tilt_deg=tilt,
-                    xy_disp=xy_disp,
                     touch_c=_touch_c,
-                    thumb_force=contact[:, self._grp_a].sum(dim=-1),
-                    palm_x=_R_tcp[:, :, 0],
-                    # ★로봇 적응: 좌손은 미러라 palm_y 가 아래를 향한다(부팅 실측
-                    #   cos(palm_y,up) 우 +1 / 좌 −1). 수식(clamp^4)은 자매와 동일하게
-                    #   두고 **입력에 부호를 곱해** 넘긴다 — roll_q≡0 사망 방지.
-                    palm_y=self._palm_y_sign * _R_tcp[:, :, 1],
-                    ref_up=_ref_up,
-                    obj_up=matrix_from_quat(
-                        self.object.data.root_quat_w)[:, :, 2],
-                    obj_speed=self.object.data.root_lin_vel_w.norm(dim=-1),
+                    wrap_c=(_mid_c | _dist_c)[:, self._grp_b_env_t],
+                    height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
                     corridor_ok=(~self._corridor_latch).float(),
-                    # ★로봇 적응: 자매는 synergy 폐쇄 지령의 평균을 넘긴다. 우리는
-                    #   tip-IK 라 **fabric 손 관절의 실제 폐쇄도**(홈→닫힘한계 정규화,
-                    #   유효 관절 평균)로 같은 의미를 만든다 — close_bridge 는
-                    #   λ 상태에서 "손을 오므리는 진행" 자체에 소액을 주는 항이다.
-                    syn_close_thumb=(
-                        ((self.fabric_q[:, self.profile.num_arm_joints:]
-                          - self._fab_hand_home) / self._close_den)
-                        .clamp(0.0, 1.0)[:, self._close_thumb_m].mean(dim=-1)),
-                    syn_close_fingers=(
-                        ((self.fabric_q[:, self.profile.num_arm_joints:]
-                          - self._fab_hand_home) / self._close_den)
-                        .clamp(0.0, 1.0)[:, self._close_fingers_m].mean(dim=-1)),
-                    # ★손가락별 gradient — **지령** 손끝에서 컵 **표면**까지의 거리.
-                    #   d = sqrt((radial-R)^2 + relu(|h|-H)^2), 컵 축 기준 분해.
-                    #   실 손끝 기준은 하위호환으로 수식에 남아 있으나 넘기지 않는다.
-                    tip_cmd_surf_dist=self._tip_cmd_surface_dist(obj_pos),
-                    actions=self.actions,
-                    prev_actions=self.prev_actions,
                     cfg=self.cfg,
                 )
+                gate = _gate_stage
+                # ── 보상 = grasp_v1 이식(사용자 사양 08.27) ────────────────────────
+                #   수식·가중치는 `tesollo/right/grasp_v1/grasp_reward.py` 를 **import**
+                #   한다(복사 금지 — 저장소 단일소스 규약). 로봇 적응은 입력 조립뿐.
+                #   ★핵심: grasp 항의 55% 를 **엄격 감쌈 wrap_frac**(마디 mid AND dist)이
+                #     차지하고, wrap_retention_loss 가 래치 대비 침식을 처벌한다.
+                #     h7 의 "받치기로 μ 열기" 가 더 이상 이득이 아니다.
+                from openarm.tesollo.right.grasp_v1.grasp_reward import (
+                    compute_grasp_reward_terms)
+                from openarm.common.grasp_v2_contract import (
+                    compute_grasp_v2_stability)
+                from openarm.tesollo.right.grasp_v1.grasp_right_utils import (
+                    compute_lift_readiness)
+
+                _n_use = float(len(self._usable_t))
+                _wrap_frac = _deep_all[:, self._usable_t].float().mean(dim=-1)
+                _tipc = _tip_c[:, self._usable_t]
+                _ntip = _tipc.sum(dim=-1)
+                _tip_frac = _ntip.float() / _n_use
+                _height_delta = obj_pos[:, 2] - self.object_spawn_pos[:, 2]
+                # 리프트 래치 — 3지 접촉 8스텝 유지(grasp_v1 규약, 단조 OR).
+                _grasp_phase = torch.ones_like(self._lift_latched)
+                self._lift_hold, _ready_now, _latched = compute_lift_readiness(
+                    _ntip, _grasp_phase, self._lift_hold, self._lift_latched,
+                    int(self.cfg.lift_start_min_grip_fingers),
+                    int(self.cfg.grasp_ready_hold_steps))
+                _just_latched = _latched & (~self._lift_latched)
+                self._lift_latched = _latched
+                # 래치 순간의 감쌈 깊이를 스냅샷 — 유지 페널티의 기준선.
+                self._wrap_at_latch = torch.where(
+                    _just_latched, _wrap_frac, self._wrap_at_latch)
+                # contact persistence — tip 접촉이 임계 이상인 연속 스텝 / 기준.
+                self._contact_hold = torch.where(
+                    _ntip >= int(self.cfg.stage0_lift_start_min_contacts),
+                    self._contact_hold + 1.0,
+                    torch.zeros_like(self._contact_hold))
+                _persist_v1 = (self._contact_hold / float(
+                    self.cfg.grasp_contact_persistence_reward_steps)).clamp(0.0, 1.0)
+                _upright_q = torch.exp(
+                    -tilt / float(self.cfg.stabilize_upright_reward_scale_deg))
+                _act_dn = (self.actions - self.prev_actions).norm(dim=-1)
+                # 대향 파지점까지의 거리 — 접근 항의 절반(엄지 ↔ 4지가 컵을 사이에 둔다).
+                _c2p = _gc_palm[:, :2] - obj_pos[:, :2]
+                _adir = _c2p / _c2p.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                _eax = torch.zeros_like(obj_pos)
+                _eax[:, 0] = -_adir[:, 1]
+                _eax[:, 1] = _adir[:, 0]
+                _rad = self._grasp_radius.unsqueeze(-1)
+                _a_dist = (tips[:, self._grp_a]
+                           - (obj_pos + _eax * _rad).unsqueeze(1)).norm(dim=-1).mean(-1)
+                _b_dist = (tips[:, self._grp_b]
+                           - (obj_pos - _eax * _rad).unsqueeze(1)).norm(dim=-1).mean(-1)
+                _w_a = float(self.cfg.enclosure_thumb_weight)
+                _side_dist = _w_a * _a_dist + (1.0 - _w_a) * _b_dist
+                _stab = compute_grasp_v2_stability(
+                    cup_lin_vel=self.object.data.root_lin_vel_w,
+                    cup_ang_vel=self.object.data.root_ang_vel_w,
+                    contact_delta=(_ntip.float() - self._prev_ntip).abs(),
+                    action_delta_norm=_act_dn, cfg=self.cfg)
+                self._prev_ntip = _ntip.float()
+                _lifted = _height_delta >= float(self.cfg.lift_success_height)
+                # 성공 — grasp_v1 5항 AND. 엄지 AND 를 강제해 "엄지 없는 4지 그립"을 배제.
+                _success_now = (
+                    self._lift_latched & _lifted
+                    & (_ntip >= int(self.cfg.success_min_grip_fingers))
+                    & (contact[:, self._grp_a] > _thr_c).any(dim=-1)
+                    & (tilt <= float(self.cfg.stabilize_upright_max_deg))
+                    & _stab.stable)
+                total, terms, _gv1 = compute_grasp_reward_terms(
+                    num_tip_contacts=_ntip,
+                    tip_contact_frac=_tip_frac,
+                    full_tip_contact=(_ntip >= int(_n_use)),
+                    contact_persistence_frac=_persist_v1,
+                    envelope_frac=envelope_frac,
+                    grip_frac=grip_frac,
+                    wrap_frac=_wrap_frac,
+                    wrap_at_latch=self._wrap_at_latch,
+                    palm_to_cup_dist=(obj_pos - _gc_palm).norm(dim=-1),
+                    fingertip_side_dist=_side_dist,
+                    cup_height_delta=_height_delta,
+                    cup_xy_displacement=xy_disp,
+                    cup_tilt_deg=tilt,
+                    upright_quality=_upright_q,
+                    lift_latched=self._lift_latched,
+                    action_delta_norm=_act_dn,
+                    stabilize_reward_gate=self._lift_latched,
+                    success_now=_success_now,
+                    stable=_stab.stable,
+                    stability_quality=_stab.quality,
+                    cfg=self.cfg,
+                )
+                self.extras["task/wrap_frac"] = _wrap_frac.mean()
+                self.extras["contact/wrap_at_latch"] = self._wrap_at_latch.mean()
+                self.extras["task/lift_latched"] = self._lift_latched.float().mean()
+                self.extras["task/success_now"] = _success_now.float().mean()
+                terms = dict(terms)
+                terms["_d_gc"] = (obj_pos - _gc_palm).norm(dim=-1)
                 enclosure_dist = terms["_d_gc"]
                 # ── 단계 판정 — 자매 규약(08.26 동일 세팅): **에피소드 누적 hit**.
                 #   순간 게이트 평균이 아니라 "이 에피소드에서 한 번이라도 열렸나"를
@@ -1492,27 +1567,37 @@ class GraspLiftFabricEnv(DirectRLEnv):
                 self._stay_run = torch.where(
                     _tr_now, self._stay_run + 1, torch.zeros_like(self._stay_run))
                 self._stage_hit |= torch.stack([
-                    terms["_lam"] > 0.5,
-                    terms["_mu"] > 0.5,
-                    terms["_nu"] > 0.5,
-                    terms["_rho"] > 0.5,
+                    gate[:, 0] > 0.5, gate[:, 1] > 0.5,
+                    gate[:, 2] > 0.5, gate[:, 3] > 0.5,
                     self._stay_run >= int(self.cfg.stage_stay_hold_steps),
                 ], dim=1)
                 # 순간 게이트도 남긴다(이름 분리) — hit 는 리셋 주기라 굼뜨다.
-                for _k, _tag in (("_lam", "approach"), ("_mu", "grasp"),
-                                 ("_nu", "lift"), ("_rho", "transfer")):
-                    self.extras[f"task/gate_now/{_tag}"] = terms[_k].mean()
-                # 진단 키는 자매 함수의 것 그대로다(_grasp_q, _touch_frac, …).
-                for _k, _tag in (("_grasp_q", "grip_q"), ("_touch_frac", "touch_f"),
-                                 ("_deep_frac", "deep_f"), ("_align", "palm_align"),
-                                 ("_orient_q", "orient_q"), ("_U", "upright_q"),
-                                 ("_U_tol", "tilt_tol_q"), ("_H", "lift_q"),
-                                 ("_S", "still_q"), ("_opp_soft", "opp_soft"),
-                                 ("_envelope", "stage_envelope"),
-                                 ("_z_ok", "z_ok"), ("_dz_gc", "dz_gc"),
-                                 ("_dxy_gc", "dxy_gc"),
-                                 ("_succ_soft", "succ_soft")):
-                    self.extras[f"task/{_tag}"] = terms[_k].mean()
+                for _i_g, _tag in enumerate(
+                        ("approach", "grasp", "lift", "transfer")):
+                    self.extras[f"task/gate_now/{_tag}"] = gate[:, _i_g].mean()
+                # ── 진단 지표 — 계층 함수가 주던 것을 여기서 직접 계산한다(08.27).
+                #   보상은 grasp_v1 이 내지만 **판정 사슬은 유지**해야 한다:
+                #   느슨한 접촉(touch_f)과 엄격 감쌈(deep_f/wrap)의 간극이 곧
+                #   "받치기냐 감쌈이냐"이고, 그 간극을 못 보면 h7 오독이 재발한다.
+                _rc = self._grasp_center_local
+                _dvec = obj_pos - _gc_palm
+                _up_ref = torch.zeros_like(_dvec); _up_ref[:, 2] = 1.0
+                _dz = (_dvec * _up_ref).sum(-1).abs()
+                self.extras["task/touch_f"] = _touch_c.float().mean()
+                self.extras["task/deep_f"] = _deep_c.float().mean()
+                self.extras["task/grip_q"] = _wrap_frac.mean()
+                self.extras["task/palm_align"] = (
+                    (_R_tcp[:, :, 0] * torch.nn.functional.normalize(
+                        _dvec, dim=-1, eps=1e-6)).sum(-1).clamp(-1, 1).mean())
+                self.extras["task/orient_q"] = _upright_q.mean()
+                self.extras["task/upright_q"] = up_cos.clamp(0.0, 1.0).mean()
+                self.extras["task/lift_q"] = (
+                    _height_delta / float(self.cfg.lift_height_ref)
+                ).clamp(0.0, 1.0).mean()
+                self.extras["task/dz_gc"] = _dz.mean()
+                self.extras["task/dxy_gc"] = (_dvec - _up_ref * _dz.unsqueeze(-1)
+                                              ).norm(dim=-1).mean()
+                self.extras["task/stage_envelope"] = envelope_frac.mean()
                 # 코리더 — 몰수가 얼마나 걸리는지 상설 감시(자매 규약).
                 self.extras["task/corridor_ok"] = (
                     (~self._corridor_latch).float().mean())
@@ -1619,26 +1704,6 @@ class GraspLiftFabricEnv(DirectRLEnv):
                                (_vp * _e1[:, None, :]).sum(-1))
             self.extras["dir/tip_azimuth_span_deg"] = torch.rad2deg(
                 _phi.max(dim=1).values - _phi.min(dim=1).values).mean()
-        else:
-            total, terms, gate, envelope_frac = compute_grasp_sensor_rewards(
-                palm_pos=palm_pos,
-                fingertip_pos=tips,
-                object_pos=obj_pos,
-                goal_pos=self.goal_pos,
-                group_a_force=contact[:, self._grp_a],
-                group_b_force=contact[:, self._grp_b],
-                group_a_tip_idx=self._grp_a,
-                group_b_env_tip_idx=self._grp_b_env,
-                env_mid_force=mid_f[:, self._env_f],
-                env_dist_force=dist_f[:, self._env_f],
-                object_tilt_deg=tilt,
-                object_up=up_cos,
-                height_delta=obj_pos[:, 2] - self.object_spawn_pos[:, 2],
-                actions=self.actions,
-                prev_actions=self.prev_actions,
-                cfg=self.cfg,
-            )
-            enclosure_dist = terms["_d_side"]
         up_q = up_cos.clamp(0.0, 1.0) ** float(self.cfg.upright_exponent)
         # ★지터는 prev_actions 갱신 **전에** 재야 한다(갱신 후엔 항상 0).
         #   절대 액션이라 정책 노이즈가 곧 목표 순간이동이 된다 — 이 값이 크면
@@ -1677,12 +1742,10 @@ class GraspLiftFabricEnv(DirectRLEnv):
         #   lstm_test5~7 difficulty 0.0000 고착). 승급은 **리프트 성공**(들었고·감쌈
         #   절반·파지 게이트)으로 완화하고, 엄격 판정은 task/goal_reached 로 계속 본다.
         #   ADR 이 안 오르면 코리더(느슨한 시작값)도 영영 안 조여진다 — 같은 축이다.
-        if True:
-            self._lift_success_now = (
-                (obj_pos[:, 2] - self.object_spawn_pos[:, 2] >= 0.05)
-                & (envelope_frac >= 0.5) & gate)
-        else:
-            self._lift_success_now = self._goal_reached_now
+        # ★★08.27 ADR 승급 = grasp_v1 의 success. 계층 게이트(접촉 수)로 승급하면
+        #   "받치기"로 난이도가 올라간다 — h7 이 정확히 그랬다. 감쌈·기울기·안정까지
+        #   본 success_now 를 쓴다.
+        self._lift_success_now = _success_now
         self.extras["task/lift_success"] = self._lift_success_now.float().mean()
         if self.adr.maybe_increment(self._lift_success_now.float().mean()):
             em = getattr(self, "event_manager", None)
@@ -1698,7 +1761,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self.extras["reward/total"] = total.mean()
         self.extras["task/pose/palm/normal_dist_m"] = self._palm_normal_dist.mean()
         self.extras["task/fingers_free"] = self._fingers_free.float().mean()
-        self.extras["task/contact_gate"] = gate.float().mean()
+        self.extras["task/contact_gate"] = gate[:, 1].mean()   # μ(파지) 순간게이트
         self.extras["task/envelope_frac"] = envelope_frac.mean()
         # ★대조: 전 마디 동시접촉(0.5N) 기준. 느슨한 쪽만 오르면 "받치기"다.
         self.extras["task/envelope_strict"] = strict_env.mean()
@@ -1803,7 +1866,7 @@ class GraspLiftFabricEnv(DirectRLEnv):
                 f"[METRICS] step={self._log_tick:>8d}"
                 f" rew={total.mean():+.3f}"
                 f" approach={terms['approach'].mean():+.3f}"
-                f" gate={gate.float().mean():.3f}"
+                f" gate={gate[:, 1].mean():.3f}"
                 f" grip={grip_frac.mean():.3f}"
                 f" env={envelope_frac.mean():.3f}"
                 # ★max 만 찍으면 오독한다 — 2048x5 중 하나의 스파이크가 전형값처럼 보인다.
@@ -1885,6 +1948,11 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self._persist_buf[env_ids] = 0
         # 손 동결 래치 — 새 에피소드는 반드시 **편 손 고정**에서 시작한다.
         self._fingers_free[env_ids] = False
+        self._lift_hold[env_ids] = 0.0
+        self._lift_latched[env_ids] = False
+        self._wrap_at_latch[env_ids] = 0.0
+        self._contact_hold[env_ids] = 0.0
+        self._prev_ntip[env_ids] = 0.0
         self._corridor_latch[env_ids] = False
         # 단계 hit 는 **리셋 때** 기록한다(자매 규약 — 에피소드 단위 지표).
         for _i, _nm in enumerate(("approach", "grasp", "lift", "transfer", "stay")):

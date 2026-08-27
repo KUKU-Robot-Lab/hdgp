@@ -305,34 +305,12 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     stage_gate_lift_m: float = 0.05          # ν — 상승 높이
     stage_gate_transfer_m: float = 0.08      # ρ — 목표 거리
 
-    # 파지 품질 Q_g. deep(같은 손가락 두 마디 동시)이 지배적 — 팁 스침으로는 못 만든다.
-    stage_graspq_touch: float = 0.25
-    stage_graspq_deep: float = 0.55
-    stage_graspq_persist: float = 0.20
-    stage_graspq_thumb_floor: float = 0.30   # 엄지 없는 전략의 상한
-    stage_thumb_force_ref: float = 0.5       # [N] 소프트 대향 스케일(센서 스케일 기준)
     stage_contact_persistence_steps: int = 20
 
-    # 진척 스케일
-    stage_lift_height_ref: float = 0.15
-    stage_tracking_std: float = 0.1
     stage_stay_speed_ref: float = 0.05       # [m/s] 정지 판정
     stage_disp_limit: float = 0.06           # [m] 밀림 F = 1/(1+(xy/limit)²)
 
-    # 직립 — **단계별로 다르게** 요구한다(자매 e6aecb9, 사용자 영상 규격).
-    #   이송은 20° 까지 관용, 정지·성공만 5° 직립. 구 배선은 정확히 뒤집혀 있었다.
-    stage_tilt_tolerance_deg: tuple[float, float] = (30.0, 20.0)   # U_tol
-    stage_upright_gate_deg: tuple[float, float] = (15.0, 5.0)      # U_up
 
-    # 자세(접근) — align 은 **수평 성분만**, perp/roll 이 피치·롤을 잡는다.
-    stage_align_floor: float = 0.25
-    stage_perp_exponent: float = 2.0
-    # ★★08.26 동일 세팅 — 자매 수식(clamp^4)으로 복귀. smoothstep 밴드 (20,5) 를
-    #   하루 썼는데(h1: ZX 3~5° 유지 실증) 사용자 확정("리워드 수식 자매와 동일")으로
-    #   되돌린다. 미러 사망은 수식이 아니라 **입력**(palm_y 부호 실측 곱)이 막는다.
-    #   지수판의 약한 물림(10° 에서 0.941)이 다시 문제가 되면 자매와 **함께** 바꾼다.
-    stage_roll_exponent: float = 4.0         # 0 이면 롤 항 무효화(자매 규약)
-    stage_orient_floor: float = 0.15
 
     # ── 08.26 동일 세팅 — 자매 신규 필드(값 자매와 동일) ─────────────────────────
     # 접촉 판정 단일 임계 — 자매는 참여/감쌈 구분 없이 0.1N 하나를 쓴다.
@@ -358,29 +336,6 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     # 성공 판정의 감쌈 하한 — 공유 계약 상수(success_envelope_min)와 분리된 트랙 전용.
     stage_success_envelope_min: float = 0.75
 
-    # 단계 가중 — 단조 증가(계층 역전 금지). 게이트가 이진이라 실지급도 단조다.
-    stage_approach_weight: float = 2.0
-    stage_approach_sharpness: float = 8.0
-    # ★★08.26 Z-우선 접근(사용자 지시). 수직 커널은 무조건, 수평 커널은 높이가
-    #   맞아야(z_ok) 열린다 — 머리 위 호버 로컬최소 제거(좌팔 400ep 정체 실측).
-    #   band (0.15, 0.05): |Δz| 5cm 안 = 수평 커널 완전 개방, 15cm 밖 = 0.
-    #   z_frac 0.5: 수직/수평 커널 반반 — 높이만 맞추고 안 오는 전략은 상한 절반이라
-    #   수평 접근(나머지 절반)이 항상 지배한다.
-    stage_approach_z_band: tuple[float, float] = (0.15, 0.05)
-    stage_approach_z_frac: float = 0.5
-    # close_bridge(자매 05b6a3f) — λ(근접) 상태의 **폐쇄 진행**에 소액. 게이트 개방 후
-    # 첫 접촉까지의 gradient 공백(실측: 눈먼 탐색 P(n지≥3) 0.6%)을 다리 놓는다.
-    # 접촉하면 contact/grasp 가 덮는다(끄지 않음 — grip-contact-cliff 재발 방지).
-    # ★자매 기본값은 0.0(비활성)이고 우리는 사용자 지시로 0.5 — 의도된 값 차이.
-    stage_close_bridge_weight: float = 0.25
-    # lift_bridge(자매 3ac85a9) — 파지(μ) 상태의 상승 첫 mm~5cm 다리. 리미터가
-    # "우연한 상방 요동" 탐색원을 없애 생긴 공백(자매 실측 h 2mm 정체). 상한 1.0.
-    stage_lift_bridge_weight: float = 1.0
-    # tip_bridge(08.26 사용자 지시) — 손끝 IK 는 **손가락별** gradient 필수:
-    # 폐쇄도 스칼라로는 어느 손가락을 어디로 보낼지 못 가른다. λ 상태에서
-    # 손끝→물체 거리 커널 평균. 상한 = weight(모든 손끝이 물체 중심 부근일 때).
-    stage_tip_bridge_weight: float = 0.5
-    stage_tip_bridge_sharpness: float = 8.0
     # ★★08.26 도달 지도 — 컵 스폰을 side-to-side 도달 영역 안으로. 프로필 상수
     #   (_SPAWN_R/L (0.30,∓0.20))는 자매와 공유라 **트랙 전용 오버라이드**로 옮긴다.
     #   실측: 구 스폰 주변엔 성공 셀이 사실상 없고(최근접 62mm 오차), (0.24,∓0.26)
@@ -440,6 +395,57 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     #   파지 게이트를 대신 열고 있었다.
     hand_unusable_fingers: tuple[str, ...] = ("pinky",)
 
+
+    # =========================================================================
+    # 보상 — `tesollo/right/grasp_v1` 이식 (08.27 사용자 사양)
+    # =========================================================================
+    # 수식은 grasp_v1 의 `compute_grasp_reward_terms` 를 **import** 한다(복사 금지).
+    # 여기 있는 값은 grasp_v1 cfg 의 실제 값 그대로다 — 손 배선만 우리 13자유
+    # 관절로 적응했다. 이번 판 범위는 **lift 까지**이고 이송/goal 항은 다음 판이다
+    # (grasp_v1 에도 transfer 항이 없다).
+    #
+    # ★h7 실패를 직접 겨냥하는 부분: grasp(12.0) 의 55% 를 **엄격 감쌈 wrap_frac**
+    #   (per-finger mid AND dist)이 차지하고, wrap_retention_loss(−6.0) 가 래치 시점
+    #   대비 감쌈 침식을 처벌한다. "닿게만 하고 엄지+손바닥으로 받쳐 들기" 가 더
+    #   이상 이득이 아니다.
+    # ★지배 구조(원본 실측 주석): lift + success_bonus 가 총보상의 ~86%, approach 는 1.6%.
+    approach_weight: float = 2.0
+    approach_sharpness: float = 8.0
+    approach_xy_penalty_weight: float = 25.0     # ★60 이상 금지 — "컵에 안 다가감"이 국소최적
+    approach_tilt_penalty_weight: float = 0.08
+    grasp_weight: float = 12.0
+    grasp_envelope_credit: float = 0.55          # grasp 의 55% 를 엄격 감쌈에
+    lift_envelope_mix: float = 0.6
+    lift_reward_weight: float = 30.0
+    lift_success_height: float = 0.04
+    lift_height_ref: float = 0.10                # ★성공 임계(0.04)와 분리 — 미끄러짐 구분
+    stabilize_weight: float = 10.0
+    stabilize_action_sharpness: float = 1.5
+    stability_reward_weight: float = 1.0
+    success_bonus_weight: float = 20.0
+    post_lift_contact_loss_weight: float = -8.0
+    wrap_retention_loss_weight: float = -6.0     # 래치 대비 **감소분만** 처벌
+    action_smooth_weight: float = -0.02
+    # ★제곱역수 감쇠 — 선형(1−d/L)은 d≥L 에서 정확히 0 이라 하드게이트가 되어
+    #   gradient 가 소실됐다(실측: 밀림 0.207 vs L=0.08 에서 300ep 간 전혀 안 줄었다).
+    cup_xy_disp_limit: float = 0.16
+    grasp_xy_threshold: float = 0.025
+    grasp_upright_threshold_deg: float = 8.0
+    success_upright_max_deg: float = 20.0
+    stabilize_upright_max_deg: float = 5.0       # success 판정 tilt 임계
+    stabilize_upright_reward_scale_deg: float = 5.0
+    stability_cup_lin_vel_threshold: float = 0.04
+    stability_cup_ang_vel_threshold: float = 0.5
+    stability_contact_delta_threshold: float = 1.0
+    stability_action_delta_threshold: float = 0.2
+    # 래치·persistence — 3지 접촉 8스텝 유지 시 리프트 래치(단조 OR, 히스테리시스 없음).
+    lift_start_min_grip_fingers: int = 3
+    grasp_ready_hold_steps: int = 8
+    stage0_lift_start_min_contacts: int = 4
+    grasp_contact_persistence_reward_steps: int = 20
+    success_min_grip_fingers: int = 4            # 5(전손가락)는 wrap 진동 이력
+    enclosure_thumb_weight: float = 0.6
+
     # ---- 접근 중 손 동결 (08.27 사용자 사양) ----------------------------------------
     # "천천히 side-to-side 로 접근(핸드 고정) → palm 이 닿을 정도가 되면(palm_ee x
     #  거리) 고정을 풀고 액션으로 말리게 함."
@@ -466,34 +472,12 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
         "{side}_hj_index_1", "{side}_hj_middle_1",
         "{side}_hj_ring_1", "{side}_hj_pinky_1", "{side}_hj_pinky_2",
     )
-    stage_approach_xy_penalty: float = 8.0
-    stage_approach_xy_margin: float = 0.025
-    stage_approach_tilt_penalty: float = 0.08
-    stage_approach_tilt_margin_deg: float = 8.0
-    # ★seed-robust(08.26, h6 좌우=2-seed 실측): 좌팔만 e652→745 에 n지 0.21→1.00
-    #   급전이, 우팔은 1300ep 배회. 갈림 전 우팔의 close_bridge 가 오히려 높았다
-    #   (허공 오므림으로 벌 수 있음) — 접촉의 한계 유인(손가락 1개당 w/5)이
-    #   절벽의 원인. 접촉 유인 2배↑ + close_bridge ½ 로 상대가치 4배 교정.
-    stage_contact_weight: float = 2.0        # 게이트 밖 shaping — 손가락 1개당 +0.4
-    stage_grasp_weight: float = 3.0
-    stage_lift_weight: float = 5.0
-    stage_transfer_weight: float = 7.0
-    stage_stay_weight: float = 10.0
-    stage_success_weight: float = 6.0
 
-    # 성공 — 6 인자 연속곱. 전이 하한을 **실측 분포가 걸친 곳**에 둬 실패 반쪽에도
-    # gradient 가 남게 한다. ★s_v(속도)는 "목표를 스쳐 지나가도 성공"을 막는다.
-    stage_succ_height_band: tuple[float, float] = (0.04, 0.12)
-    stage_succ_graspq_band: tuple[float, float] = (0.35, 0.70)
     stage_succ_tilt_band_deg: tuple[float, float] = (18.0, 6.0)
-    stage_succ_goal_band_m: tuple[float, float] = (0.09, 0.05)
-    stage_succ_speed_band: tuple[float, float] = (0.10, 0.03)
 
 
     contact_force_threshold: float = 1.0     # [N] 게이트·감쌈 판정 공통 (dexsuite 동일)
     upright_exponent: float = 4.0            # cos^4 — 소각 판별력(구 관절 모드 전용)
-    action_l2_weight: float = -0.005
-    action_rate_l2_weight: float = -0.005
     # 성공 판정 3조건 — goal 근접 AND 감쌈 AND 직립.
     success_envelope_min: float = 0.6        # g_eff 포화점이자 성공 하한
     success_tilt_max_deg: float = 20.0
