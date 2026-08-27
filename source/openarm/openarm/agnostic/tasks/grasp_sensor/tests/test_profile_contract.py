@@ -238,6 +238,43 @@ def test_goal_family_requires_envelope():
         "contact 항은 순수 이진 게이트로 남아야 한다 — 접촉 사다리 한 칸")
 
 
+def test_upright_is_positive_and_requires_lift():
+    """직립은 양수 보상이고, 든 상태에서만 지급된다.
+
+    사용자 설계 지시(08.23): "lift 할 때는 수직으로만 하면 되고 이송에는 컵을 똑바로
+    (local +z = world +z). 패널티 말고 양수의 보상으로."
+    ★리프트 진척 곱이 계약의 핵심 — 컵은 스폰부터 서 있으므로 무조건 주면
+      "테이블 위 컵 건드리고 정지"가 공짜 수확이 된다.
+    ★지수 k>1 은 cos 의 소각 평탄성 보정 — 없으면 15~30° 대 기울기가 너무 작아
+      lstm_test2 의 22~26° 고착이 재발한다.
+    """
+    import torch
+    from openarm.agnostic.tasks.grasp_sensor.rewards import upright_reward
+    g = torch.ones(1)
+    up_0 = torch.tensor([1.0])          # 완전 직립
+    lifted = torch.tensor([0.15])       # 목표 높이 도달
+    on_table = torch.tensor([0.0])      # 안 들었음
+
+    assert float(upright_reward(up_0, on_table, 0.15, 4.0, g)) == 0.0, (
+        "테이블 위(미리프트)에서 직립 보상이 나온다 — 공짜 수확 경로")
+    assert float(upright_reward(up_0, lifted, 0.15, 4.0, g)) == 1.0, "직립 리프트 만점 아님"
+    # 기울수록 단조 감소 + 누운 컵은 0
+    import math
+    vals = [float(upright_reward(torch.tensor([math.cos(math.radians(d))]),
+                                 lifted, 0.15, 4.0, g)) for d in (0, 10, 20, 24, 30, 90)]
+    assert all(a > b for a, b in zip(vals, vals[1:])), f"기울기에 단조 감소 아님: {vals}"
+    assert vals[-1] == 0.0, "완전히 누운 컵에 보상이 남는다"
+    # k=4 의 판별력: 24°→19° 이득이 tilt_penalty 도당 기울기(0.0056/도)의 5배 이상
+    v24 = float(upright_reward(torch.tensor([math.cos(math.radians(24))]), lifted, 0.15, 4.0, g))
+    v19 = float(upright_reward(torch.tensor([math.cos(math.radians(19))]), lifted, 0.15, 4.0, g))
+    cfg_src = (_TASK_DIR / "grasp_sensor_env_cfg.py").read_text(encoding="utf-8")
+    w = float(re.search(r"upright_weight:\s*float\s*=\s*([0-9.]+)", cfg_src).group(1))
+    assert w * (v19 - v24) > 5 * 0.0056 * 5, "직립 신호가 여전히 잡음에 묻힌다"
+
+    # 게이트 없이는 0 — 안 잡고 있으면 직립은 무의미
+    assert float(upright_reward(up_0, lifted, 0.15, 4.0, torch.zeros(1))) == 0.0
+
+
 def test_failure_is_terminated_not_truncated():
     """실패(전도/낙하/이탈)는 terminated, truncated 는 시간 만기 전용.
 
@@ -399,7 +436,7 @@ def test_envelope_counts_only_palmar_contact():
     # ★구 판정을 나란히 남겨야 손등 비중을 상시 관측할 수 있다(회귀 조기 발견).
     assert "task/envelope_frac_raw" in env_src, "구 판정 비교선이 없다"
     # 대향 게이트와 obs 는 건드리지 않는다 — 실기 센서도 방향을 모른다(s2r 규약).
-    assert re.search(r"thumb_force=contact\[", env_src), (
+    assert re.search(r"group_a_force=contact\[", env_src), (
         "대향 게이트가 손바닥 판정에 오염됐다 — obs/게이트는 크기 그대로여야 한다")
 
 
@@ -443,3 +480,21 @@ def test_lift_progress_peaks_at_target_and_decays_beyond():
     down_slope = (float(v[3]) - float(v[2])) / 0.075
     assert abs(abs(down_slope) - up_slope / 2.0) < 1e-4, "하강 기울기가 상승의 절반이 아니다"
 
+
+def test_envelope_gate_saturation_decoupled_from_success_threshold():
+    """g_eff 포화점은 성공 임계보다 **높아야** 한다(08.24 R2).
+
+    같은 상수면 임계 위에서 ∂(goal)/∂env=0 → 정책이 3지에서 멈춘다(lstm_test3:
+    env 0.65 고착 = 포화점 0.6 바로 위). 판정(0.6)과 gradient 연장선(0.85)의 분리.
+    """
+    cfg_src = (_TASK_DIR / "grasp_sensor_env_cfg.py").read_text(encoding="utf-8")
+    m_sat = re.search(r"envelope_gate_saturation:\s*float\s*=\s*([0-9.]+)", cfg_src)
+    m_min = re.search(r"success_envelope_min:\s*float\s*=\s*([0-9.]+)", cfg_src)
+    assert m_sat and m_min, "상수 정의 부재"
+    assert float(m_sat.group(1)) > float(m_min.group(1)), (
+        "포화점이 성공 임계 이하 — 임계 위 감쌈 gradient 가 다시 죽는다")
+    # 호출부가 실제로 분리 상수를 쓰는가
+    rew_src = (_TASK_DIR / "rewards.py").read_text(encoding="utf-8")
+    code = "\n".join(l for l in rew_src.split("\n") if not l.lstrip().startswith("#"))
+    assert 'getattr(cfg, "envelope_gate_saturation"' in code, (
+        "g_eff 가 분리 상수(envelope_gate_saturation)를 읽지 않는다")
