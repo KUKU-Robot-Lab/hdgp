@@ -445,6 +445,17 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   ★배포는 만렙 체크포인트만(실기 = 항상 홈 시작 = 만렙 분포).
     start_pose_frac: tuple[float, float] = (0.0, 1.0)
 
+    # ---- 디버그 시각화 (GUI/카메라 렌더일 때만 — headless 학습에 비용 0) --------------
+    # ★액션은 **절대 palm 6D 목표**라 "지금 어디로 가라고 내려가는지"가 눈에 안 보이면
+    #   추종 실패와 지령 오류를 구분할 수 없다. env0 한 대만 그린다(프림 수 = 렌더 병목).
+    #   그리는 것: 리미터 **통과 후** 실제 지령(palm_targets) 위치·자세 3축 + 실제 palm.
+    enable_cmd_markers: bool = True
+    cmd_marker_axis_len: float = 0.06        # 지령 자세 3축 길이 (m)
+    cmd_marker_radius: float = 0.006
+    gui_focus_env0: bool = True              # 기본 뷰는 전체 씬이라 확인용으로 무용
+    gui_camera_eye: tuple[float, float, float] = (1.1, -0.9, 0.75)
+    gui_camera_target: tuple[float, float, float] = (0.35, -0.2, 0.35)
+
     # ---- 씬 --------------------------------------------------------------------------
     # 실기 환경 USD (테이블 상면 z 0.200, 기둥/받침/바닥판 포함 전부 충돌체).
     table_cfg: RigidObjectCfg = RigidObjectCfg(
@@ -502,11 +513,16 @@ def resolve_cfg(cfg: GraspSensorEnvCfg) -> None:
     cfg.action_space = 6 + _nch * len(profile.finger_sensor_bodies)
     # policy obs = 관절각·속도(2·nj) + palm pos(3) + palm 회전 2열(6) + 손끝(3·nt)
     #              + 물체 pos(3) + goal(3) + last action + fabric q(nj)
+    #              + palm 지령 6D(리미터 통과 후, 액션과 같은 정규화 좌표)
     # ★물체 치수·질량·클래스·scale·onehot 은 **넣지 않는다** — 형상 비의존 + 배포
     #   시 알 수 없는 정보(사용자 결정 08.26). 접촉력·obj_quat 은 critic 전용.
+    # ★★08.27 palm 지령 6D 신설(사용자 결정). `actions` 는 리미터 **전** 요청값이라
+    #   리미터가 물리면 요청 ≠ 실제 지령이 된다(상한 0.1m/15° 는 거의 매 스텝 문다).
+    #   절대 목표 규약에서 정책이 "직전에 실제로 내려간 지령"을 모르면 과거·현재를
+    #   비교할 수 없다. 지령은 우리가 만드는 값이라 실기에서도 그대로 안다(sim2real).
     cfg.observation_space = (
         2 * num_joints + 3 + 6 + 3 * num_tips + 3 + 3 + cfg.action_space
-        + num_joints
+        + num_joints + 6
     )
     # critic = 관측 + 접촉력(num_fingers) + 물체 quat(4) + 물체 속도(6)+난이도(1)
     #          + 측정 관절토크(num_joints)

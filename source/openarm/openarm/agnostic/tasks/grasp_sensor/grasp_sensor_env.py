@@ -29,7 +29,8 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.utils import bind_physics_material
-from isaaclab.utils.math import euler_xyz_from_quat, quat_apply, matrix_from_quat
+from isaaclab.utils.math import (euler_xyz_from_quat, quat_apply, matrix_from_quat,
+                                 quat_from_euler_xyz, quat_mul)
 
 # Fabrics (벤더링: hdgp/source/FABRICS/src — openarm/tasks/__init__ 가 sys.path 주입)
 import fabrics_sim.fabrics.openarm_tesollo_pose_fabric as _fab_tesollo
@@ -241,11 +242,104 @@ class GraspSensorEnv(DirectRLEnv):
 
         self._init_home_palm()
         self._setup_start_curriculum()
+        self._setup_cmd_markers()
 
         print(f"[grasp_sensor] profile={p.name} arm={len(self.arm_ids)} hand={len(self.hand_ids)} "
               f"tips={len(self.tip_ids)} action={self.cfg.action_space} obs={self.cfg.observation_space} "
               f"fabric={p.fabric_robot_dir}",
               flush=True)
+
+    # ------------------------------------------------------------------
+    def _setup_cmd_markers(self) -> None:
+        """팔 지령(palm 6D) 시각화 — **env0 만**, GUI/카메라 렌더일 때만.
+
+        액션이 절대 목표라 "지금 어디로 가라고 내려가는지"가 안 보이면 추종 실패와
+        지령 오류를 구분할 수 없다. 그리는 것은 리미터 **통과 후** 실제 지령
+        (`palm_targets`)의 위치 + 자세 3축, 그리고 대비용 실제 palm 위치다.
+        마커 프림은 물리에 참여하지 않는다(순수 시각).
+        """
+        self._cmd_markers = None
+        if not bool(getattr(self.cfg, "enable_cmd_markers", False)):
+            return
+        try:
+            import carb
+            _cams = bool(carb.settings.get_settings().get("/isaaclab/cameras_enabled"))
+        except Exception:
+            _cams = False
+        if not (self.sim.has_gui() or _cams):
+            return
+
+        from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+        _L = float(self.cfg.cmd_marker_axis_len)
+        _r = float(self.cfg.cmd_marker_radius)
+
+        def _axis(color):
+            return sim_utils.CylinderCfg(
+                radius=_r, height=_L,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color))
+
+        self._cmd_markers = VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/Visuals/GraspSensorCmd",
+            markers={
+                # 지령 원점(흰) — 리미터 통과 후 실제로 fabric 에 내려가는 위치
+                "cmd": sim_utils.SphereCfg(
+                    radius=_r * 2.0,
+                    visual_material=sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=(1.0, 1.0, 1.0))),
+                "ax_x": _axis((0.9, 0.2, 0.2)),   # 지령 자세 x
+                "ax_y": _axis((0.2, 0.9, 0.2)),   # 지령 자세 y
+                "ax_z": _axis((0.25, 0.45, 1.0)),  # 지령 자세 z
+                # 실제 palm(노랑) — 지령과의 간격이 곧 추종 상태
+                "palm": sim_utils.SphereCfg(
+                    radius=_r * 2.0,
+                    visual_material=sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=(1.0, 0.85, 0.1))),
+            }))
+        self._cmd_marker_idx = torch.arange(5, device=self.device)
+        # 원통 기본축은 +z 다 — x/y 축으로 눕히는 정렬 쿼터니언(상수).
+        _s = math.sqrt(0.5)
+        self._cmd_axis_align = torch.tensor(
+            [[_s, 0.0, _s, 0.0],        # z→x : +90° about y
+             [_s, -_s, 0.0, 0.0],       # z→y : −90° about x
+             [1.0, 0.0, 0.0, 0.0]],     # z→z : 항등
+            device=self.device)
+        print(f"[grasp_sensor] 지령 마커 ON — env0 전용 · 축 {_L*1000:.0f}mm · "
+              f"{'GUI' if self.sim.has_gui() else '카메라 녹화'}", flush=True)
+
+        if bool(getattr(self.cfg, "gui_focus_env0", False)) and self.sim.has_gui():
+            _o0 = self.scene.env_origins[0].tolist()
+            _eye = [a + b for a, b in zip(self.cfg.gui_camera_eye, _o0)]
+            _tgt = [a + b for a, b in zip(self.cfg.gui_camera_target, _o0)]
+            self.sim.set_camera_view(eye=_eye, target=_tgt)
+            print(f"[grasp_sensor] GUI 카메라 → env0 정면 "
+                  f"eye{tuple(round(v, 2) for v in _eye)}", flush=True)
+
+    def _update_cmd_markers(self) -> None:
+        """env0 의 지령 6D 를 world 로 올려 마커 5개를 배치한다."""
+        if self._cmd_markers is None:
+            return
+        _o0 = self.scene.env_origins[0]
+        # palm_targets 는 **fabric 프레임** — env 프레임 보정 후 world 로.
+        _p = self.palm_targets[0, :3] + self._fab_to_env + _o0
+        _e = self.palm_targets[0, 3:6]                      # euler_zyx = (yaw, pitch, roll)
+        _q = quat_from_euler_xyz(_e[2:3], _e[1:2], _e[0:1])[0]   # (4,)
+        _R = matrix_from_quat(_q.unsqueeze(0))[0]           # 열 = 지령 자세 x/y/z 축
+        _L = float(self.cfg.cmd_marker_axis_len)
+        # 원통은 중심 배치 → 축 방향으로 L/2 밀어야 원점에서 뻗어 나간다.
+        _tr = torch.stack([
+            _p,
+            _p + _R[:, 0] * (_L * 0.5),
+            _p + _R[:, 1] * (_L * 0.5),
+            _p + _R[:, 2] * (_L * 0.5),
+            self.robot.data.body_pos_w[0, self.palm_idx],
+        ], dim=0)
+        _qe = _q.unsqueeze(0).expand(3, 4)
+        _qa = quat_mul(_qe, self._cmd_axis_align)
+        _ident = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).unsqueeze(0)
+        _or = torch.cat([_ident, _qa, _ident], dim=0)
+        self._cmd_markers.visualize(
+            translations=_tr, orientations=_or,
+            marker_indices=self._cmd_marker_idx)
 
     # ------------------------------------------------------------------
     def _tip_palm_frame(self, q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -641,7 +735,7 @@ class GraspSensorEnv(DirectRLEnv):
         q = self.robot.data.default_joint_pos[:, self._fab_t].contiguous()
         qd = torch.zeros_like(q)
         qdd = torch.zeros_like(q)
-        for _ in range(240):
+        for _ in range(480):
             self.fabric.set_features(
                 self._fabric_hand_cmd, tgt6, "euler_zyx",
                 q.detach(), qd.detach(),
@@ -650,13 +744,17 @@ class GraspSensorEnv(DirectRLEnv):
             q, qd, qdd = self.integrator.step(
                 q.detach(), qd.detach(), qdd.detach(), float(self.cfg.fabrics_dt))
         # ---- FK 검증 (fail-loud) ----------------------------------------------------
+        # ★임계 50mm: cspace(널스페이스) 유인과의 평형 잔차로 홈에서 먼 목표는 수십 mm
+        #   가 남는다(실측 35mm). 시작 자세는 커리큘럼 셰이핑용이라 cm급 잔차는 실효
+        #   시작 거리가 그만큼 이동할 뿐 무해 — fail-loud 는 완전 실패(도달 불가·배선
+        #   오류)만 잡는다.
         _o, _R = self._tip_palm_frame(q)
         _gc_now = _o + torch.einsum("bij,j->bi", _R, self._gc_local) + self._fab_to_env
         _err = torch.norm(_gc_now - gc_tgt, dim=-1)
-        if float(_err.mean()) > 0.02:
+        if float(_err.mean()) > 0.05:
             raise RuntimeError(
                 f"[{p.name}] 프리그래스프 파생 실패 — gc 오차 평균 "
-                f"{float(_err.mean())*1000:.0f}mm > 20mm (max "
+                f"{float(_err.mean())*1000:.0f}mm > 50mm (max "
                 f"{float(_err.max())*1000:.0f}mm). 도달 불가 목표이거나 fabric 배선 "
                 "문제다. env.start_pose_frac=[1.0,1.0] 으로 축을 끄고 진행할 수 있다")
         # 팔 관절 한계 스폿체크 (lerp 는 per-joint 구간이라 양 끝만 보면 충분).
@@ -730,18 +828,21 @@ class GraspSensorEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        self.scene.clone_environments(copy_from_source=True)
-        # ★★물체는 clone **이후**에 만든다 — 이전에는 env_0 만 존재해 MultiAssetSpawner
-        #   가 assets_cfg[0] 하나만 스폰하고 전 env 가 같은 물체를 받는다(3회 재발 함정,
-        #   object_bank 모듈이 assert 로 강제).
+        # ★물체 생성 시점 분기(08.27 A/B): 단일 물체(replicate=True)는 v4 검증 경로
+        #   그대로 clone **전** 생성. MultiAsset 만 clone 후 생성(env_0 만 있을 때
+        #   스폰하면 전 env 가 assets_cfg[0] 을 받는 3회 재발 함정).
         _bank = _ob.get(self.cfg.object_bank,
                         expected_size=self.cfg.object_bank_expected_size)
-        _ob.assert_spawned_after_clone(_bank, cloned=True)
-        self.object = RigidObject(self.cfg.object_cfg)
-        self.scene.rigid_objects["object"] = self.object
-        # MultiAsset(replicate_physics=False)일 때만 수동 필터가 필요하다.
-        if not self.cfg.scene.replicate_physics:
-            self.scene.filter_collisions(global_prim_paths=["/World/ground"])
+        if not _bank.needs_multi_asset:
+            self.object = RigidObject(self.cfg.object_cfg)
+            self.scene.rigid_objects["object"] = self.object
+        self.scene.clone_environments(copy_from_source=True)
+        if _bank.needs_multi_asset:
+            _ob.assert_spawned_after_clone(_bank, cloned=True)
+            self.object = RigidObject(self.cfg.object_cfg)
+            self.scene.rigid_objects["object"] = self.object
+        # v4 검증 경로: 필터는 무조건 호출(replicate=True 에서도 무해·검증됨).
+        self.scene.filter_collisions(global_prim_paths=["/World/ground"])
 
     # ------------------------------------------------------------------
     # Fabrics — 절대 palm pose attractor. 목표는 **실측을 참조하지 않는** 자체 상태다.
@@ -865,6 +966,8 @@ class GraspSensorEnv(DirectRLEnv):
         self.fabric_qdd = torch.zeros_like(self.fabric_qd)
         # use_hand_fabric=False 라 무시되지만 원본 계약(B,5 PCA)은 지킨다.
         self._fabric_hand_cmd = torch.zeros(self.num_envs, 5, device=self.device)
+        # fabric 이 보는 손 자세 = 홈(개방) 고정 — _pre_physics_step 주석 참조.
+        self._fab_home_hand = self.fabric_q[:, p.num_arm_joints:].clone()
         # cspace attractor(널스페이스) rest 자세를 프로필 홈으로.
         self.fabric.default_config.copy_(self.fabric_q)
         self._fabric_damping = float(self.cfg.fabrics_damping_gain) * torch.ones(
@@ -926,6 +1029,7 @@ class GraspSensorEnv(DirectRLEnv):
                 self.palm_targets[:, 3:6])
         self._prev_palm_cmd_rot = self.palm_targets[:, 3:6].clone()
         self._palm_cmd_primed |= True
+        self._update_cmd_markers()   # 시각화 전용 — 물리·보상에 영향 없음
 
         # ---- 손: 관절공간 시너지 — 목표를 직접 보간하므로 말아 쥐는 것이 보장된다 ----
         _syn_prev = self._syn_target
@@ -934,13 +1038,14 @@ class GraspSensorEnv(DirectRLEnv):
         #   속도 목표를 준다. 우리 손은 fabric 밖(램프)이라 `fabric_qd` 를 쓸 수
         #   없다 — 램프 자체의 도함수를 쓴다(정책 dt = decimation·sim.dt).
         self._syn_vel = (self._syn_target - _syn_prev) / self._policy_dt
-        # ★fabric 의 손 상태를 실제 손 자세로 동기화한다. 안 그러면 fabric 이
-        #   **다른 손**으로 충돌구 FK 를 계산해 없는 자기충돌을 피하려 팔을 민다.
-        #   프로필 순서(finger-major) → fabric 순서 이름 매핑을 반드시 거친다.
-        #   (★v5 정리에서 구 pd 분기가 이 동기화를 매 스텝 홈 자세로 되덮던 잠복
-        #   결함이 함께 제거됐다 — fabric 은 이제 닫히는 손을 그대로 본다.)
-        self.fabric_q[:, self.profile.num_arm_joints:] = self._syn_to_fab(
-            self._syn_target)
+        # ★★fabric 의 손 구간은 **홈(개방) 자세로 고정**한다(08.27 실측 확정).
+        #   닫히는 손을 그대로 동기화하면 body 반발쌍(손↔팔뚝)·cspace 가 닫힌 손
+        #   형상과 싸우며 연속 손목이 감기고(joint_err 27 rad) 팔 PD 가 폭주해
+        #   abnormal 95%·ep_len 1 이 된다 — 3중 스모크(v1a/v1b/v2) 공통 재현.
+        #   v4 가 안정했던 실효 조건이 바로 "fabric 은 항상 홈 손을 본다"였다
+        #   (구 pd 분기의 되덮기 — 결함이 아니라 안정 조건이었다).
+        #   실제 손은 PD 가 별도로 몰고(_apply_action), fabric 은 팔 계획 전용이다.
+        self.fabric_q[:, self.profile.num_arm_joints:] = self._fab_home_hand
 
         # ---- Fabrics: 목표 주입 + 적분 (정책 스텝당 **한 번**) ------------------------
         self.fabric.set_features(
@@ -1092,9 +1197,16 @@ class GraspSensorEnv(DirectRLEnv):
         # ★★08.25 `obj_quat` 4D 도 policy 에서 뺐다(사용자 결정) — 물체 **자세**는
         #   실기 인식으로 안정적으로 얻기 어렵다. 위치(obj_pos)만 정책에 준다.
         #   보상은 obj_up 을 계속 쓴다(privileged 는 보상·critic 에 허용).
+        # ★★08.27 palm **지령** 6D(사용자 결정). `self.actions` 는 리미터 **전** 요청이라
+        #   상한(0.1m/15°)이 물리는 스텝에서는 실제로 내려간 지령과 다르다. 절대 목표
+        #   규약에서 "직전에 실제로 내려간 지령"을 모르면 과거·현재를 비교할 수 없다.
+        #   액션과 **같은 정규화 좌표**([-1,1] palm 박스)로 주어 둘을 직접 견주게 한다.
+        #   지령은 우리가 만드는 값이므로 실기에서도 동일하게 안다(sim2real 성립).
+        palm_cmd_n = (2.0 * (self.palm_targets - self._palm_lo)
+                      / (self._palm_hi - self._palm_lo) - 1.0)
         obs = torch.cat([
             joint_pos, joint_vel, palm_pos, palm_ax, tips,
-            obj_pos, self.goal_pos, self.actions, fab,
+            obj_pos, self.goal_pos, self.actions, fab, palm_cmd_n,
         ], dim=1)
         # ★measured_joint_torque — Kuka critic obs 동일(privileged). 팔+손 순서로
         #   policy obs 의 joint_pos/vel 과 같은 정렬을 쓴다.

@@ -64,6 +64,26 @@ def test_obs_has_no_object_identity():
         "observation_space 가 물체 뱅크에서 파생된다")
 
 
+def test_obs_carries_issued_palm_command():
+    """policy obs 에 리미터 **통과 후** palm 지령 6D 가 있어야 한다.
+
+    `actions` 는 리미터 전 요청이라, 상한이 물리는 스텝에서는 실제로 내려간 지령과
+    다르다. 절대 목표 규약에서 정책이 직전 지령을 모르면 과거·현재를 비교할 수 없다.
+    """
+    env_code = _code(_ENV)
+    m = re.search(r"obs = torch\.cat\(\[([\s\S]*?)\], dim=1\)", env_code)
+    assert m, "obs 결합식 부재"
+    assert "palm_cmd_n" in m.group(1), "obs 에 palm 지령이 없다"
+    # 지령은 액션과 같은 정규화 좌표여야 둘을 직접 견줄 수 있다.
+    assert re.search(
+        r"palm_cmd_n\s*=\s*\(2\.0 \* \(self\.palm_targets - self\._palm_lo\)",
+        env_code), "palm 지령이 액션과 같은 [-1,1] 박스 정규화가 아니다"
+    cfg_code = _code(_CFG)
+    m = re.search(r"cfg\.observation_space\s*=\s*\(([\s\S]*?)\)", cfg_code)
+    assert "+ 6" in m.group(1).replace("\n", " "), (
+        "observation_space 에 지령 6D 가 반영되지 않았다")
+
+
 def test_gc_and_gate_are_hand_derived():
     """파지중심·λ 임계는 부팅 FK 손 기하 파생 — 물체 실측 상수 금지."""
     env_code = _code(_ENV)
