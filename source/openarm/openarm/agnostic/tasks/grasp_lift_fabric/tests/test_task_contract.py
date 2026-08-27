@@ -755,26 +755,39 @@ def test_stage_constants_match_sibling():
     assert C.stage_lift_height_ref == 0.15 and C.stage_disp_limit == 0.06
 
 
-def test_finger_freeze_uses_approach_gate_not_grasp_gate():
-    """접근 중 손가락 고정은 **λ**(파지중심↔컵)로 열려야 한다 — μ 가 아니다.
+def test_finger_freeze_releases_on_palm_normal_distance():
+    """★★접근 중 손은 **편 채 고정**되고, palm_ee 법선거리로 풀린다(08.27 사양).
 
-    μ(손가락 3 개 접촉)를 쓰면 손이 고정돼 접촉이 없고, 접촉이 없으니 μ 가 안 열리는
-    **순환 의존**이 된다. λ 는 팔만으로 만족할 수 있어 사슬이 끊기지 않는다.
+    "천천히 side-to-side 로 접근(핸드 고정) → palm 이 닿을 정도가 되면(palm_ee x
+     거리) 고정을 풀고 액션으로 말리게 함."
 
-    ★실측 근거(hierarchical1 e150): 손가락을 자유로 두자 `n_over_thr` 가 **0.00**
-      까지 떨어졌다(kuka6 2.5). 5 지가 각자 15D 를 독립 지시하니 접촉 자체가
-      성립하지 않았다 — 사용자 지적("너무 자유분방, 오히려 난이도가 높음")과 일치.
+    계약 4중:
+      ①판정이 **부호 있는 법선거리** — 3D norm 은 "옆에 나란히 선 것"과 "정면에서
+        다가온 것"을 못 가른다. μ(접촉 수)로 풀면 손이 고정돼 접촉이 없고 접촉이
+        없으니 μ 가 안 열리는 **순환 의존**이 되므로 접촉 기반도 금지.
+      ②고정 목표는 **홈 관절**(`_hand_home_free`) — 손 경로가 08.27 부터 관절
+        직결이라 손끝 좌표로 고정할 수단이 없다.
+      ③히스테리시스 > 0 — 경계에서 손이 떨리면 파지가 성립하지 못한다.
+      ④리셋에서 래치 해제 — 안 하면 이전 에피소드의 "풀림"이 새 에피소드로 샌다.
+
+    ★이 계약은 Isaac 게이트 밖에 둔다. 구판은 게이트 뒤라 **구현이 통째로 없는데도
+      한 번도 실행되지 않아 "통과"로 보였다**(로컬·서버 모두 skip).
     """
-    C = _cfg_module().GraspLiftFabricEnvCfg()
     src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
-    i = src.index("if self._freeze_fingers:")
-    blk = src[i:i + 1200]
-    assert "stage_gate_approach_m" in blk, "λ 게이트를 쓰지 않는다"
+    # ★적용부 기준으로 찾는다 — 부팅 로그 블록도 같은 플래그를 읽어 첫 매치가
+    #   그쪽으로 밀린다(실제로 그래서 계약이 헛짚었다).
+    i = src.index("_rel_m = float(self.cfg.finger_release_dist_m)")
+    blk = src[max(0, i - 700):i + 700]
+    assert "finger_release_dist_m" in blk, "해제 임계를 안 읽는다"
+    assert "_nrm).sum(-1)" in blk, "부호 있는 법선거리 판정이 아니다"
     assert "stage_gate_contact_n" not in blk, (
-        "μ 게이트로 손을 푼다 — 손이 고정돼 접촉이 없고 μ 도 안 열리는 순환이 된다")
-    assert "_tip_home" in blk, "고정 목표가 홈이 아니다"
-    # 히스테리시스 — 경계에서 손이 떨리면 파지가 성립하지 못한다.
-    assert float(C.finger_release_hysteresis_m) > 0.0, "히스테리시스가 없다"
+        "접촉 수로 손을 푼다 — 손이 고정돼 접촉이 없고 μ 도 안 열리는 순환이 된다")
+    assert "self._hand_home_free)" in blk, "고정 목표가 홈 관절이 아니다"
+    cfg_src = (_TASK_DIR / "grasp_lift_fabric_env_cfg.py").read_text()
+    m = re.search(r"finger_release_hysteresis_m:\s*float\s*=\s*([0-9.]+)", cfg_src)
+    assert m and float(m.group(1)) > 0.0, "히스테리시스가 없다"
+    assert "self._fingers_free[env_ids] = False" in src, "리셋에서 래치를 안 푼다"
+    assert 'task/pose/palm/normal_dist_m' in src, "법선거리 지표가 로깅되지 않는다"
 
 
 def test_action_cmd_markers_render_in_gui_and_video():
@@ -1542,9 +1555,7 @@ def test_spawn_sits_inside_measured_side_grasp_region():
     assert BAND_Y[0] - 1e-9 <= py_lo and py_hi <= BAND_Y[1] + 1e-9, (
         f"palm_|y| 창 [{py_lo:.3f},{py_hi:.3f}] 가 밴드 {BAND_Y} 밖")
     env_src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
-    # ★스폰 적용부 기준으로 찾는다 — pregrasp IK 도 같은 필드를 읽어 첫 매치가
-    #   그쪽으로 밀릴 수 있다(실제로 그래서 계약이 헛짚었다).
-    i = env_src.index("spawn[:, 0] = (1.0 - _f)")
+    i = env_src.index("spawn[:, 0] = _scx")
     blk = env_src[max(0, i - 900):i]
     assert "object_spawn_center_override" in blk, "스폰이 오버라이드를 안 읽는다"
     assert "abs(float(_ovr_sp[1]))" in blk, (
@@ -1698,28 +1709,20 @@ def test_grasp_surface_is_per_object_not_scalar():
         "기본 뱅크가 cup_family 가 아니다(다양한 컵 목표)")
 
 
-def test_reverse_curriculum_moves_the_cup_not_the_arm():
-    """★역순 커리큘럼(08.27 재구현) — **컵**이 손 앞에서 테이블 스폰으로 물러난다.
+def test_no_reverse_curriculum_cup_spawns_on_table():
+    """★08.27 역순 커리큘럼 폐기 — 컵은 늘 테이블 스폰 위치에 나온다(사용자 사양
+    "천천히 컵으로 side-to-side 접근"). 팔 IK 텔레포트도, 컵 근접 스폰도 없다.
 
-    계약 4중: ①팔 IK 텔레포트가 없다(h7 우팔 데드락의 원인 — 단일 IK 해를 뽑고
-    그 다양성 해제를 lift_success 로 게이팅해 나쁜 시드가 2172ep 영구 고착했다)
-    ②근접 스폰은 홈 파지중심 **FK** 실측(하드코딩 금지) ③만렙(f=1)에서 스폰이
-    테이블 중심과 항등 — 배포 분포 계약 ④스폰 노이즈는 보간 **뒤**에 더해져
-    f=0 에서도 시작 다양성이 산다.
+    이력: ①팔을 IK 로 컵 옆에 텔레포트 → 단일 해가 나쁜 시드를 뽑은 팔을 영구
+    고착시켰다(h7 우팔 2172ep 동결·ADR 승급 0). ②컵을 손 앞에 놓는 방식으로
+    바꿨으나 사양이 "멀리서 천천히 접근"이라 이번 판에서 폐기.
     """
     src = (_TASK_DIR / "grasp_lift_fabric_env.py").read_text()
-    assert "_solve_pregrasp_ik" not in src, (
-        "팔 IK 텔레포트가 부활했다 — 커리큘럼은 컵을 옮겨서 만든다(grasp_v1 규약)")
-    assert "def _home_grasp_center_xy" in src, "근접 스폰 FK 산출 없음"
-    blk = src[src.index("def _home_grasp_center_xy"):][:1200]
-    assert "_grasp_center_local" in blk and "_palm_frame" in blk, (
-        "근접 스폰이 홈 파지중심 FK 실측이 아니다")
-    assert '"reset_near": {"frac": (0.0, 1.0)}' in src, "ADR 축 미등록"
-    j = src.index('self.adr.get_param("reset_near", "frac")')
-    rblk = src[j:j + 800]
-    assert "(1.0 - _f) * self._cup_near_xy[0] + _f * _scx" in rblk, (
-        "스폰 보간식이 만렙 항등이 아니다")
-    assert "+ offs[:, 0]" in rblk, "스폰 노이즈가 보간 뒤에 더해지지 않는다"
+    for banned in ("_solve_pregrasp_ik", "_cup_near_xy", "_home_grasp_center_xy",
+                   "reset_near"):
+        assert banned not in src, f"역순 커리큘럼 잔재: {banned}"
+    j = src.index("spawn[:, 0] = _scx")
+    assert "+ offs[:, 0]" in src[j:j + 120], "스폰 노이즈가 빠졌다"
 
 
 def test_hand_is_outside_fabric():

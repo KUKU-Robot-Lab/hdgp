@@ -424,6 +424,29 @@ class GraspLiftFabricEnv(DirectRLEnv):
         # 손 PD 속도 피드포워드용 — 지령 램프의 도함수(자매 트랙 `_syn_vel` 규약).
         self._policy_dt = float(self.cfg.sim.dt) * float(self.cfg.decimation)
         self._hand_vel = torch.zeros_like(self.hand_targets)
+        # 접근 중 손 동결 — env 별 래치(히스테리시스). 리셋에서 False 로 돌린다.
+        self._freeze_fingers = bool(cfg.freeze_fingers_until_approach)
+        self._fingers_free = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device)
+        self._palm_normal_dist = torch.zeros(self.num_envs, device=self.device)
+        # ★해제 임계의 기준자 — **파지가 성립한 순간의 법선거리**를 실측해 찍는다.
+        #   d_gc=0(컵 중심 ≡ 파지중심)일 때 palm_ee 법선 방향으로 컵이 얼마나
+        #   앞에 있는가. 임계는 이 값보다 커야(=더 멀리서 풀어야) 손가락이 감쌀
+        #   시간이 생기고, 너무 크면 접근 중에 말려 팔이 컵을 밀어낸다.
+        from isaaclab.utils.math import matrix_from_quat as _mfq0
+        _tcp0 = self._local(self.robot.data.body_pos_w[:1, self._tcp_idx])[0]
+        _R0t = _mfq0(self.robot.data.body_quat_w[:1, self._tcp_idx])[0]
+        _pp0 = self._local(self.robot.data.body_pos_w[:1, self.palm_idx])[0]
+        _R_palm0 = _mfq0(self.robot.data.body_quat_w[:1, self.palm_idx])[0]
+        _gc0 = _pp0 + _R_palm0 @ self._grasp_center_local
+        self._d_grasp_normal = float(((_gc0 - _tcp0) * _R0t[:, 0]).sum())
+        print(f"[grasp_lift_fabric] 파지 성립 법선거리(d_gc=0 기준) "
+              f"{self._d_grasp_normal*1000:+.0f}mm — 해제 임계의 하한", flush=True)
+        if self._freeze_fingers:
+            print(f"[grasp_lift_fabric] 접근 중 손 동결 ON · 해제 palm_ee 법선거리 "
+                  f"{float(cfg.finger_release_dist_m)*1000:.0f}mm "
+                  f"(재동결 +{float(cfg.finger_release_hysteresis_m)*1000:.0f}mm)",
+                  flush=True)
         self.palm_targets = torch.zeros(self.num_envs, 6, device=self.device)
 
         self.goal_pos = torch.zeros(self.num_envs, 3, device=self.device)
@@ -490,23 +513,13 @@ class GraspLiftFabricEnv(DirectRLEnv):
         self._grasp_radius = _gr[self.object_idx]          # (N,)
         self._grasp_halfheight = _gh[self.object_idx]      # (N,)
 
-        # ── 역순 커리큘럼(08.27 재구현): **팔이 아니라 컵을 옮긴다**.
-        #   ★★grasp_v1 이 하는 방식이 이것이다(사용자가 두 번 근거로 든 선례):
-        #       obj_xy = palm_xy − pregrasp_offset + noise ,  obj_z = 테이블 높이
-        #     (tesollo/right/grasp_v1/demo_grasp_reset.py: compute_demo_cup_spawn_local)
-        #   이전 판은 반대로 **팔을 컵 옆으로 IK 텔레포트**했고, 그 IK 하나가
-        #   h7 우팔 데드락(단일 해 → 나쁜 시드 → 2172ep 동결)과 play 경로 IK 실패
-        #   (잔차 300mm)를 둘 다 만들었다. 컵을 옮기면 IK 가 통째로 사라진다.
-        #   시작 자세는 항상 홈이므로 시작 다양성이 성공 지표에 게이팅되지 않는다.
-        self._cup_near_xy = self._home_grasp_center_xy()
 
         # ---- ADR (축 둘: 스폰 반경 · goal 오프셋 반경) --------------------------------
         # goal 축은 initial 0 이라 반경 0 = 구 고정 goal 과 동치로 시작한다.
         # ★★KUKA 고정(08.25): 원본 ADR 축을 전부 연결한다. 시작값만 맞추고 끝으로 가는
         #   경로가 없으면 커리큘럼이 아니라 고정값이다(보상 가중치 축은 지시로 제외).
         self.adr = _adr.TaskADR(
-            {"reset_near": {"frac": (0.0, 1.0)},   # 0=컵 옆 시작 → 1=홈(만렙=배포 분포)
-             "spawn": {"xy_range": (cfg.spawn_range_initial, cfg.spawn_range_final),
+            {"spawn": {"xy_range": (cfg.spawn_range_initial, cfg.spawn_range_final),
                        "rotation": (0.0, cfg.adr_object_rotation_final)},
              "goal": {"xy_radius": (cfg.goal_xy_radius_initial, cfg.goal_xy_radius_final),
                       "z_radius": (cfg.goal_z_radius_initial, cfg.goal_z_radius_final)},
@@ -819,6 +832,26 @@ class GraspLiftFabricEnv(DirectRLEnv):
         u_hand = 0.5 * (self.actions[:, 6:] + 1.0)
         _free_targets = self._hand_home_free + u_hand * (
             self._flex_limit - self._hand_home_free)
+        # ★★08.27 사용자 사양 — **접근 구간에는 손을 편 채 고정**한다.
+        #   "천천히 side-to-side 로 다가가고(핸드 고정), palm 이 닿을 정도가 되면
+        #    (palm_ee x 거리) 고정을 풀어 액션으로 말리게 한다."
+        #   판정은 palm_ee 로컬 +x(손바닥 법선) 방향 **부호 있는** 거리다 — 3D norm
+        #   으로는 "옆에 나란히 선 것"과 "정면에서 다가온 것"을 못 가른다.
+        #   히스테리시스 필수: 경계에서 손이 떨리면 파지가 성립하지 못한다.
+        if self._freeze_fingers:
+            from isaaclab.utils.math import matrix_from_quat as _mfq
+            _tcp = self._local(self.robot.data.body_pos_w[:, self._tcp_idx])
+            _nrm = _mfq(self.robot.data.body_quat_w[:, self._tcp_idx])[:, :, 0]
+            _rel = self._local(self.object.data.root_pos_w) - _tcp
+            _dn = (_rel * _nrm).sum(-1)                            # (N,) 법선거리
+            self._palm_normal_dist = _dn
+            _rel_m = float(self.cfg.finger_release_dist_m)
+            _hys = float(self.cfg.finger_release_hysteresis_m)
+            _free_now = torch.where(
+                self._fingers_free, _dn <= (_rel_m + _hys), _dn <= _rel_m)
+            self._fingers_free = _free_now
+            _free_targets = torch.where(
+                _free_now.unsqueeze(1), _free_targets, self._hand_home_free)
         # 손 전체(고정 관절 포함)를 fabric 에 넘긴다 — 고정 관절은 init 값을 목표로
         # 줘서 fabric 이 유지. 일부만 넘기면 fabric 이 아는 손과 실제가 어긋난다.
         _full = self._default_q[:, self._hand_t].clone()
@@ -947,9 +980,15 @@ class GraspLiftFabricEnv(DirectRLEnv):
                 "판별 불가 — taskmap/한계/자산을 확인할 것")
         self._flex_sign = torch.tensor(signs, device=self.device)   # (n_free,)
         # 굴곡 쪽 한계. a=+1 이 여기로 간다.
-        self._flex_limit = torch.where(
-            self._flex_sign > 0, self._hand_hi[0], self._hand_lo[0])   # (n_free,)
-        self._hand_home_free = self._default_q[0, self._hand_free_t].clone()
+        # ★한계·홈을 여기서 직접 읽는다 — 이 메서드는 `_setup_fabrics` 안에서 돌고
+        #   그때는 `_hand_lo/_hand_hi/_default_q` 가 아직 없다(__init__ 뒷부분).
+        _jl0 = self.robot.data.soft_joint_pos_limits[0]
+        _mg = float(self.cfg.hand_limit_margin)
+        _lo = _jl0[self._hand_free_t, 0] + _mg
+        _hi = _jl0[self._hand_free_t, 1] - _mg
+        self._flex_limit = torch.where(self._flex_sign > 0, _hi, _lo)   # (n_free,)
+        self._hand_home_free = self.robot.data.default_joint_pos[
+            0, self._hand_free_t].clone()
         # fabric 손 슬롯 순서의 굴곡 한계 — close_bridge 분모용.
         _fl_fab = self.fabric_q[0, n_arm:].clone()
         for _i, _slot in enumerate(_free_fab):
@@ -960,26 +999,6 @@ class GraspLiftFabricEnv(DirectRLEnv):
         print(f"[grasp_lift_fabric] 굴곡 부호 실측 {len(signs)}관절 · "
               f"음수(−q 가 굴곡) {_neg if _neg else '없음'} · "
               f"최소 판별폭 {worst*1000:.1f}mm", flush=True)
-
-    def _home_grasp_center_xy(self) -> torch.Tensor:
-        """홈 자세 파지중심의 env-local XY (2,) — 컵을 "palm 바로 앞"에 놓을 좌표.
-
-        파지중심(`_grasp_center_local`)은 palm 프레임에 붙은 점이고, d_gc=0 이
-        곧 "컵이 손 안에 있다"이다. 그 점을 홈 palm 프레임으로 world 변환한 XY 에
-        컵을 놓으면 정책은 **Z 만 내리면** 되는 상태에서 시작한다(grasp_v1 규약:
-        XY 는 palm 을 따라가고 Z 는 테이블 높이 고정).
-
-        ★IK 가 아니다 — 순방향 FK 한 번이다. 실패할 자유도가 없다.
-        """
-        with torch.no_grad():
-            o, R = self._palm_frame(self.fabric_q)
-            gc_w = o + torch.einsum(
-                "bij,j->bi", R, self._grasp_center_local.to(o.dtype))
-        xy = gc_w[0, :2].clone()
-        print(f"[grasp_lift_fabric] 컵 근접 스폰 XY = 홈 파지중심 "
-              f"[{float(xy[0]):.3f}, {float(xy[1]):.3f}] "
-              f"(ADR reset_near 로 테이블 스폰까지 후퇴)", flush=True)
-        return xy
 
     def _measure_tip_workspace(self) -> None:
         """부팅 1회 FK — 홈 손끝(`_tip_home`)과 파지중심(`_grasp_center_local`) 유도.
@@ -1631,6 +1650,8 @@ class GraspLiftFabricEnv(DirectRLEnv):
             # `_` 로 시작하는 키는 보상이 아니라 진단 원값이다(d_palm/d_side/gate_eff).
             self.extras[(f"task/{k[1:]}" if k.startswith("_") else f"reward/{k}")] = v.mean()
         self.extras["reward/total"] = total.mean()
+        self.extras["task/pose/palm/normal_dist_m"] = self._palm_normal_dist.mean()
+        self.extras["task/fingers_free"] = self._fingers_free.float().mean()
         self.extras["task/contact_gate"] = gate.float().mean()
         self.extras["task/envelope_frac"] = envelope_frac.mean()
         # ★대조: 전 마디 동시접촉(0.5N) 기준. 느슨한 쪽만 오르면 "받치기"다.
@@ -1816,6 +1837,8 @@ class GraspLiftFabricEnv(DirectRLEnv):
         # 자매 보상 상태 — 에피소드 경계에서 반드시 지운다. 코리더 래치가
         # 넘어가면 이전 에피소드의 위반이 새 에피소드의 ν 를 몰수한다.
         self._persist_buf[env_ids] = 0
+        # 손 동결 래치 — 새 에피소드는 반드시 **편 손 고정**에서 시작한다.
+        self._fingers_free[env_ids] = False
         self._corridor_latch[env_ids] = False
         # 단계 hit 는 **리셋 때** 기록한다(자매 규약 — 에피소드 단위 지표).
         for _i, _nm in enumerate(("approach", "grasp", "lift", "transfer", "stay")):
@@ -1846,15 +1869,10 @@ class GraspLiftFabricEnv(DirectRLEnv):
             _scx, _scy = float(_ovr_sp[0]), _sy * abs(float(_ovr_sp[1]))
         else:
             _scx, _scy = p.object_spawn_center[0], p.object_spawn_center[1]
-        # ★★역순 커리큘럼(08.27) — **컵**이 손 앞에서 테이블 스폰으로 물러난다.
-        #   f = adr("reset_near","frac") ∈ [0,1] : 0 = 홈 파지중심 바로 아래(Z 만 내리면
-        #   되는 상태) → 1 = 테이블 스폰(만렙 = 배포 분포 계약). 팔은 항상 홈이다.
-        #   ★스폰 노이즈는 보간 **뒤**에 더한다 — f=0 에서도 시작 다양성이 살아 있어야
-        #     한다(다양성을 성공에 게이팅하면 나쁜 시드가 영구 고착한다: h7 우팔).
-        _f = (float(self.adr.get_param("reset_near", "frac"))
-              if bool(getattr(self.cfg, "curriculum_reset_near", True)) else 1.0)
-        spawn[:, 0] = (1.0 - _f) * self._cup_near_xy[0] + _f * _scx + offs[:, 0]
-        spawn[:, 1] = (1.0 - _f) * self._cup_near_xy[1] + _f * _scy + offs[:, 1]
+        # ★08.27 컵은 늘 테이블 스폰 위치에 나온다(사용자 사양). 역순 커리큘럼
+        #   (컵을 손 앞에 놓았다가 물리기)은 폐기 — 사양이 "천천히 컵으로 접근"이다.
+        spawn[:, 0] = _scx + offs[:, 0]
+        spawn[:, 1] = _scy + offs[:, 1]
         spawn[:, 2] = self._object_rest_z[env_ids] + float(self.cfg.object_spawn_pad)
         self.object_spawn_pos[env_ids] = spawn
         # ---- goal: 스폰과 독립 오프셋 (반경은 ADR 축, 0 이면 구 고정 goal 과 동치) ----

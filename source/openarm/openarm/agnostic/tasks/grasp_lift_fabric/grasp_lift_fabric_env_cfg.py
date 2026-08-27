@@ -392,7 +392,12 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     #   컵 중심 허용창은 x [0.184, 0.264] · |y| [0.06, 0.223] — 중앙부 (0.22, 0.16) 채택.
     #   구 (0.24, 0.26) 은 |y| 가 창 밖(만렙에서 palm_|y| 0.377 > 0.34).
     #   ※(0.24,0.26) 은 동역학 정착 지도의 산물이었고 그 지도는 3중 오염으로 철회됨.
-    object_spawn_center_override: tuple[float, float] | None = (0.22, 0.16)
+    # ★08.27 사용자 사양 — 컵 y = −0.20(우) / +0.20(좌). 규약은 (x, |y|) 이고
+    #   y 부호는 프로필 스폰 중심이 준다. 도달성 검산(제약 IK 실측 밴드 대비):
+    #   palm x = 0.22−0.064±0.06 = [0.096, 0.216] ⊂ [0.06, 0.26] ✓
+    #   palm |y| = 0.20+0.057±0.06 = [0.197, 0.317] ⊂ [0.06, 0.34] ✓
+    #   테이블 상면(x 0.070~0.470 · |y| ≤ 0.45) 안 ✓
+    object_spawn_center_override: tuple[float, float] | None = (0.22, 0.20)
     # ★palm 박스 z바닥 완화(08.26 사용자 인정). 프로필 _BOX_*(0.34)는 자매 공유라
     #   트랙 전용 오버라이드로 낮춘다. 제약 IK 는 z 0.278 도달을 증명했고 실측
     #   palm_ee z 최소가 0.340 = 박스 바닥에 붙어 dz 가 61mm 에서 안 줄었다.
@@ -403,7 +408,6 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     # ── 역순 커리큘럼 — 컵 옆 pregrasp 시작, ADR reset_near 로 홈까지 후퇴.
     #   play/디버그에서 끌 수 있게 선언 필드로 둔다(getattr 전용이면 hydra
     #   오버라이드가 거부된다 — 실제로 play 가 그렇게 막혔다).
-    curriculum_reset_near: bool = True
 
     # ── sim2real obs 정규화 상수 — **실기 노드와 공유하는 계약**(grasp_v1 동일값).
     #   어긋나면 obs 는 형상만 맞고 값이 틀린다. 실기: F/T 는 손끝 wrench 토픽의
@@ -435,6 +439,17 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     #   (touch 0.543 · wrap 0.290)이 "굳어 벌어진 손가락의 가짜 접촉"이었고 그게
     #   파지 게이트를 대신 열고 있었다.
     hand_unusable_fingers: tuple[str, ...] = ("pinky",)
+
+    # ---- 접근 중 손 동결 (08.27 사용자 사양) ----------------------------------------
+    # "천천히 side-to-side 로 접근(핸드 고정) → palm 이 닿을 정도가 되면(palm_ee x
+    #  거리) 고정을 풀고 액션으로 말리게 함."
+    # ★판정은 palm_ee 로컬 +x(손바닥 법선) 방향 **부호 있는** 거리다. 3D norm 은
+    #   "옆에 나란히 선 것"과 "정면에서 다가온 것"을 못 가른다.
+    # ★히스테리시스 필수 — 경계에서 손이 떨리면 파지가 성립하지 못한다.
+    #   해제는 d ≤ release, 재동결은 d > release + hysteresis.
+    freeze_fingers_until_approach: bool = True
+    finger_release_dist_m: float = 0.10      # ★프로브 실측 후 확정 예정(잠정)
+    finger_release_hysteresis_m: float = 0.02
     frozen_hand_joints_override: tuple[str, ...] | None = (
         "{side}_hj_thumb_1", "{side}_hj_thumb_2",
         "{side}_hj_index_1", "{side}_hj_middle_1",
@@ -514,7 +529,8 @@ class GraspLiftFabricEnvCfg(DirectRLEnvCfg):
     runaway_joint_vel: float = 20.0
 
     # ---- 커리큘럼 (축 하나: 스폰 반경) ------------------------------------------------
-    spawn_range_initial: float = 0.02
+    # ★08.27 사용자 사양이 산포를 ±0.06 **고정**으로 줬다 — ADR 램프를 쓰지 않는다.
+    spawn_range_initial: float = 0.06
     # ★08.26 도달 지도(probe_sidegrasp_reach_map) — side-to-side 도달 영역은
     #   x≤0.26·|y|≥0.22 로 좁다. 만렙 ±0.10 이면 컵이 영역을 벗어나 그 에피소드는
     #   기구학적으로 파지 불가(학습 노이즈)다. 0.06 으로 영역 안에 묶는다.
