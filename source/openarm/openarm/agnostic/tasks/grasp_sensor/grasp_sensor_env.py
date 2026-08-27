@@ -966,8 +966,6 @@ class GraspSensorEnv(DirectRLEnv):
         self.fabric_qdd = torch.zeros_like(self.fabric_qd)
         # use_hand_fabric=False 라 무시되지만 원본 계약(B,5 PCA)은 지킨다.
         self._fabric_hand_cmd = torch.zeros(self.num_envs, 5, device=self.device)
-        # fabric 이 보는 손 자세 = 홈(개방) 고정 — _pre_physics_step 주석 참조.
-        self._fab_home_hand = self.fabric_q[:, p.num_arm_joints:].clone()
         # cspace attractor(널스페이스) rest 자세를 프로필 홈으로.
         self.fabric.default_config.copy_(self.fabric_q)
         self._fabric_damping = float(self.cfg.fabrics_damping_gain) * torch.ones(
@@ -1038,14 +1036,17 @@ class GraspSensorEnv(DirectRLEnv):
         #   속도 목표를 준다. 우리 손은 fabric 밖(램프)이라 `fabric_qd` 를 쓸 수
         #   없다 — 램프 자체의 도함수를 쓴다(정책 dt = decimation·sim.dt).
         self._syn_vel = (self._syn_target - _syn_prev) / self._policy_dt
-        # ★★fabric 의 손 구간은 **홈(개방) 자세로 고정**한다(08.27 실측 확정).
-        #   닫히는 손을 그대로 동기화하면 body 반발쌍(손↔팔뚝)·cspace 가 닫힌 손
-        #   형상과 싸우며 연속 손목이 감기고(joint_err 27 rad) 팔 PD 가 폭주해
-        #   abnormal 95%·ep_len 1 이 된다 — 3중 스모크(v1a/v1b/v2) 공통 재현.
-        #   v4 가 안정했던 실효 조건이 바로 "fabric 은 항상 홈 손을 본다"였다
-        #   (구 pd 분기의 되덮기 — 결함이 아니라 안정 조건이었다).
-        #   실제 손은 PD 가 별도로 몰고(_apply_action), fabric 은 팔 계획 전용이다.
-        self.fabric_q[:, self.profile.num_arm_joints:] = self._fab_home_hand
+        # ★★fabric 의 손 **상태**를 실제 손 자세로 덮어쓴다. 안 그러면 fabric 이
+        #   **다른 손**으로 충돌구 FK 를 계산해 없는 자기충돌을 피하려 팔을 민다
+        #   (자매 트랙 경고). `use_hand_fabric=False` 라 `_fabric_hand_cmd`(PCA 5D)는
+        #   무시되므로 상태 직접 동기화가 유일한 경로다. 프로필 순서(finger-major)
+        #   → fabric 순서 이름 매핑을 반드시 거친다.
+        #   ★★08.27 홈 고정(`_fab_home_hand`)으로 바꿨다가 **되돌렸다**: 홈 고정은
+        #     fabric 이 실재하지 않는 열린 손을 회피하게 만들어 팔을 밀어낸다.
+        #     E1 실측 — palm_err 475mm(v4 165) · joint_err 0.71rad(v4 0.062) ·
+        #     팔이 테이블을 5,086N 으로 찍고 abnormal 0.82 · ep_len 1.2.
+        self.fabric_q[:, self.profile.num_arm_joints:] = self._syn_to_fab(
+            self._syn_target)
 
         # ---- Fabrics: 목표 주입 + 적분 (정책 스텝당 **한 번**) ------------------------
         self.fabric.set_features(
