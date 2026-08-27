@@ -360,7 +360,11 @@ def test_contact_freeze_is_per_joint_link():
     """
     ctrl = _code(_CTRL)
     assert "self._syn_freeze_mid" in ctrl and "self._syn_freeze_dist" in ctrl
-    # `_3` 은 중간마디, `_4` 는 원위(팁 포함) — 소스가 둘을 섞으면 안 된다.
+    # `_3` 은 중간마디, `_4` 는 **원위 링크만** — 팁은 트리거가 아니다.
+    # 팁은 원위와 별개 body 라, 팁으로 `_4` 를 얼리면 원위가 닿을 기회가 사라져
+    # wrap(중간 AND 원위)이 영원히 0 이 된다(s2r_a8 817 iter 실측).
+    assert "_h_dist = (_dist > _thr)[:, self._syn_fi]" in ctrl
+    assert "self._tip_contact_forces() > _thr" not in ctrl, "팁이 동결 트리거로 되살아남"
     assert "_hold = (_h_mid & self._syn_freeze_mid) | (_h_dist & self._syn_freeze_dist)" in ctrl
     # 푸는 방향은 항상 허용.
     assert "torch.where(_hold & (delta > 0.0), torch.zeros_like(delta), delta)" in ctrl

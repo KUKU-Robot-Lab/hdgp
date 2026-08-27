@@ -523,6 +523,13 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["task/success"] = self._success_now.float().mean()
         self.extras["task/stay_run"] = self._stay_run.float().mean()
         self.extras["task/syn_close"] = self._syn_close.mean()
+        # ★손 관절 추종오차 — 액추에이터 포화의 직접 지표. τ = k·err 이므로
+        #   err ≥ effort_limit/stiffness 면 토크가 천장에 붙어 힘 제어가 무효가 된다
+        #   (5.0/1.5 기준 0.30 rad = 17.2°). 지금까지 팔(fabric/joint_err_*)만 있었다.
+        _herr = (self._syn_target
+                 - self.robot.data.joint_pos[:, self._syn_ids]).abs()
+        self.extras["task/hand_joint_err_mean"] = _herr.mean()
+        self.extras["task/hand_joint_err_max"] = _herr.max()
         # ★채널별 폐쇄도 — 전체 평균만 보면 "어느 채널이 안 닫히는지"를 못 본다.
         #   08.27: 평균 0.278 이 채널1(`_2`)만 폐쇄한 예측치 0.250 과 맞아떨어졌고,
         #   GUI 관찰(`_2` 완전굴곡·`_3`/`_4` 정지)과 일치했다. ch2 가 낮은 이유가

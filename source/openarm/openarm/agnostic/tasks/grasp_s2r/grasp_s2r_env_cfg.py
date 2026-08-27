@@ -266,7 +266,12 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
 
     # ---- 목표(goal) — 수평 이동 포함 -------------------------------------------------
     # goal = 물체 **정착 위치** + offset. 스폰점 기준이면 패딩이 이중으로 실린다.
-    goal_offset_xyz: tuple[float, float, float] = (0.0, 0.20, 0.15)
+    # ★목표는 컵 스폰 기준 **0.1 m 이내**(사용자 지시, 08.27). 구 (0.0, 0.20, 0.15)
+    #   = 0.25 m 는 transfer 의 exp(−6·d) 를 0.22 로 깎아 리프트 후 갈 이유가 없었다.
+    #   0.094 m 면 0.57 — 2.6배. y 는 컵 y −0.16 기준 −0.11 로 **음수 유지**(y≥0 회피).
+    #   z 0.08 > lift_success_height 0.04 라 목표 도달 전에 "들렸다"가 먼저 성립한다.
+    #   ★나중에 커리큘럼으로 늘려나갈 값이다.
+    goal_offset_xyz: tuple[float, float, float] = (0.0, 0.05, 0.08)
     goal_pos_tolerance: float = 0.025        # 성공 반경
     goal_pos_tolerance_loose: float = 0.05   # 연속성 비교 로깅 전용
     stay_hold_steps: int = 60                # 1초 — stay 항이 만점이 되는 유지 시간

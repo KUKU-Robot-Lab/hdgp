@@ -378,9 +378,14 @@ class GraspS2RControlMixin:
             #   팁 하나로 `_3`·`_4` 를 같이 얼리면 감쌈 직전에 감쌈을 잠근다.
             _mid, _dist = self._contact_forces_split()
             _thr = float(self.cfg.contact_force_threshold)
+            # ★★팁은 동결 트리거가 **아니다**. 팁은 원위와 별개 body·별개 센서이고,
+            #   손가락이 말릴 때 팁이 원위 링크보다 먼저 닿는다. 팁으로 `_4` 를 얼리면
+            #   원위 링크가 컵에 닿을 기회 자체가 사라져 wrap(중간 AND 원위)이 영원히 0 이다.
+            #   08.27 실측(s2r_a8, 817 iter): touch_frac 0.10~0.31 · grip_frac 0.20~0.50
+            #   인데 wrap_frac 0.000. ★대향 손가락인 **엄지가 가장 먼저** 닿아 제일 먼저
+            #   얼었다 — 사용자 관찰 "4지는 말리는데 엄지 _3/_4 는 홈자세 그대로".
             _h_mid = (_mid > _thr)[:, self._syn_fi]
-            _h_dist = ((_dist > _thr)
-                       | (self._tip_contact_forces() > _thr))[:, self._syn_fi]
+            _h_dist = (_dist > _thr)[:, self._syn_fi]
             _hold = (_h_mid & self._syn_freeze_mid) | (_h_dist & self._syn_freeze_dist)
             # ★닫는 방향만 얼린다 — 푸는 방향까지 막으면 갇혀서 빠져나올 수 없다
             #   (닫기 게이트와 같은 원칙).

@@ -287,11 +287,18 @@ TESOLLO_RIGHT = RobotProfile(
                                    effort_limit_sim=300.0),
         "right_arm_j7":       dict(joint_names_expr=["r_aj_7"],     stiffness=25.0,  damping=15.0,
                                    effort_limit_sim=300.0),
-        # 손: Kuka allegro kp 3.0 / kd 0.1 / effort 0.5. 우리 구 값은 5.0/2.0/1.5 로
-        #   kd/kp 가 0.40 vs Kuka 0.033 = **12배 과감쇠**였다. 오늘 "닫는 속도가 컵을
-        #   쳐낸다"를 명령 변화율(synergy_close_speed)로 맞췄는데, 원본은 게인으로 만든다.
-        "hand":               dict(joint_names_expr=["r_hj_[a-z]+_[1-4]"], stiffness=3.0, damping=0.1,
-                                   effort_limit_sim=0.5),
+        # ★★손 게인은 **Tesollo 실측**으로 간다(Kuka Allegro 값 3.0/0.1/0.5 로 덮였던 것을
+        #   되돌림). grasp_v1 에 남아 있는 이 손의 kd 스윕이 근거다:
+        #     kd 6.71 → 포화 20.5%(감쇠항 자체가 토크를 포화) · kd ≤ 0.5 → 정착속도 2배(채터)
+        #     · **kd 2.0 이 포화 0.8% + 최저 채터로 양쪽 최적**
+        #   kd 0.1 은 그 스윕이 기각한 채터 영역이었다. Allegro 는 다른 손이고,
+        #   "KUKA 충실은 1순위 기준이 아니다"가 이 트랙의 확정 사항이다.
+        # ★effort 0.5 는 유지 가능한 위치오차가 0.5/3.0 = 9.5° 뿐이라 컵을 눌러 감쌀 힘이
+        #   안 났다(08.27: wrap_frac 이 전 런에서 0.000). 1.5/5.0 = 17.2° 로 회복.
+        #   ⚠실기 d=0.0 이므로 이 damping 은 기계마찰의 sim 대역품 —
+        #   r2s 복구 후 armature/joint friction 실측치로 교체할 것(grasp_v1 규약).
+        "hand":               dict(joint_names_expr=["r_hj_[a-z]+_[1-4]"], stiffness=5.0, damping=2.0,
+                                   effort_limit_sim=1.5),
         "left_arm":           dict(joint_names_expr=["l_aj_[1-7]"], stiffness=400.0, damping=80.0),
         "left_gripper":       dict(joint_names_expr=["l_hj_gripper_[1-2]"], stiffness=400.0, damping=80.0),
         "head":               dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
