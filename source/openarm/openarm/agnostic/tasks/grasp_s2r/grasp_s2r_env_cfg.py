@@ -258,10 +258,18 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   (컵 원점보다 11mm 아래), 사용자 GUI "아예 테이블을 박히고 간다".
     #   밴드 안에서는 z 오차를 0 으로 본다: d = √(dxy² + relu(|dz| − band)²).
     grasp_z_deadband: float = 0.03
-    # ★palm 지령 박스 바닥의 테이블 여유. 프로필 palm_box_min z 가 table_surface_z 와
-    #   **정확히 같아서**(0.200) 지령이 테이블 상면까지 내려가는 것이 허용돼 있었다.
-    #   프로필은 도달영역(reach map)이라 안 건드리고 태스크에서 올린다.
-    palm_min_above_table: float = 0.05
+    # ★★테이블을 **fabric 장애물**로 등록한다. 08.27 발견: `WorldMeshesModel` 에 world 를
+    #   안 넘겨서 `object_indicator == 0` → 반발 커널이 첫 줄에서 early-out 했다.
+    #   **fabric 이 테이블을 아예 모르는 상태**로 계획하고 있었다(형제 tesollo 트랙은
+    #   전부 world_filename 을 넘긴다 — agnostic 트랙만 빠져 있었다).
+    #   params 의 `body_repulsion.collision_sphere_frames` 에 palm·5지 전 마디(소지
+    #   14개 포함)·팔 링크 충돌구가 **이미** 등록돼 있어, 테이블만 넣으면 손 전체가
+    #   한꺼번에 보호된다 — params 파일은 건드릴 필요가 없다.
+    # ★박스는 palm 도달영역(프로필 palm_box)에서 **파생**시킨다. 상수를 따로 적으면
+    #   물리 테이블과 조용히 어긋난다(08.25 "안 적은 물리 파라미터는 조용한 기본값").
+    fabric_table_obstacle: bool = True
+    fabric_table_margin_xy: float = 0.10     # 도달영역 밖으로 넓힐 여유
+    fabric_table_thickness: float = 0.05
 
     # ---- 접촉 판정 -------------------------------------------------------------------
     contact_force_threshold: float = 1.0     # N — 접촉으로 셀 최소 힘

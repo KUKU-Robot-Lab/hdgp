@@ -249,17 +249,30 @@ def test_close_gate_center_is_rigid_to_palm():
     assert "self._latched" in blk
 
 
-def test_palm_command_box_clears_the_table():
-    """★palm 지령 박스 바닥이 테이블 상면과 같으면 지령이 테이블을 뚫는다.
+def test_fabric_knows_about_the_table():
+    """★★fabric 에 world 를 안 넘기면 테이블을 **아예 모르는 상태**로 계획한다.
 
-    프로필 palm_box_min z = 0.200 = table_surface_z 로 **정확히 같았다**(도달영역
-    상수라 프로필은 안 건드리고 태스크에서 올린다). 사용자 GUI: "아예 테이블을 박히고 간다".
-    실측(s2r_b2): palm_above_table min **0.066** — 컵 원점(0.077)보다 아래.
+    `WorldMeshesModel` 에 world_dict/world_filename 이 없으면 `object_indicator == 0`
+    이라 반발 커널이 첫 줄에서 early-out 한다. 형제 tesollo 트랙은 전부
+    `world_filename` 을 넘기는데 agnostic 트랙만 빠져 있었다 — 08.27 발견.
+    사용자 GUI: "아예 테이블을 박히고 간다", 실측 palm_above_table min 0.066
+    (컵 원점 0.077 보다 아래).
+
+    ★params 의 body_repulsion.collision_sphere_frames 에 palm·5지 전 마디(소지 dg_5
+      14개 포함)·팔 링크 충돌구가 이미 있어 테이블 하나로 손 전체가 보호된다 —
+      params 파일은 건드리지 않는다.
+    ★박스는 palm 도달영역에서 **파생**해야 한다. 숫자를 따로 적으면 물리 테이블과
+      조용히 어긋난다.
     """
     ctrl, cfg = _code(_CTRL), _code(_CFG)
-    assert "palm_min_above_table" in cfg
-    assert "float(self.cfg.palm_min_above_table)" in ctrl
-    assert "_box_lo[2] = _floor" in ctrl
+    assert "world_dict=self._build_fabric_world()" in ctrl, "fabric 이 빈 세계를 본다"
+    assert "fabric_table_obstacle" in cfg
+    # 상면은 table_surface_z 그 자체에서 파생 — 별도 상수 금지.
+    assert "float(self.cfg.table_surface_z) - 0.5 * _th" in ctrl
+    # 크기는 프로필 도달영역에서 파생.
+    assert "_lo, _hi = p.palm_box_min, p.palm_box_max" in ctrl
+    # 근거 없던 박스-바닥 클램프는 되돌렸다(fabric 반발이 정공법).
+    assert "palm_min_above_table" not in ctrl + cfg
 
 
 def test_grasp_has_pre_contact_gradient_gated_on_alignment():

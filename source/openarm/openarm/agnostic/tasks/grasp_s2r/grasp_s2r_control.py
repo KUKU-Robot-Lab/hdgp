@@ -99,6 +99,39 @@ class GraspS2RControlMixin:
     # ------------------------------------------------------------------
     # Fabrics — 팔은 절대 palm pose attractor 로만 움직인다
     # ------------------------------------------------------------------
+    def _build_fabric_world(self) -> dict | None:
+        """fabric 장애물 세계 — 테이블 박스 1개. 없으면 None(빈 세계).
+
+        ★★08.27 발견: 여기에 아무것도 안 넘겨서 `object_indicator == 0` 이었고,
+          반발 커널이 첫 줄에서 early-out 했다. **fabric 이 테이블을 아예 모르는 상태**로
+          계획하고 있었다(사용자 GUI: "아예 테이블을 박히고 간다").
+          형제 tesollo 트랙은 전부 `world_filename` 을 넘긴다 — agnostic 트랙만 빠졌었다.
+        ★params 의 `body_repulsion.collision_sphere_frames` 에 palm·5지 전 마디
+          (소지 `dg_5` 14개 포함)·팔 링크 충돌구가 **이미** 등록돼 있다. 테이블 하나만
+          넣으면 손 전체가 한꺼번에 보호되므로 params 는 건드리지 않는다.
+        ★박스 크기는 palm 도달영역에서 **파생**한다 — 숫자를 따로 적으면 물리 테이블과
+          조용히 어긋난다. 상면 z 는 `table_surface_z` 그 자체다.
+        """
+        if not bool(self.cfg.fabric_table_obstacle):
+            print("[grasp_s2r] ⚠fabric 테이블 장애물 OFF — fabric 이 테이블을 모른다",
+                  flush=True)
+            return None
+        p = self.profile
+        _lo, _hi = p.palm_box_min, p.palm_box_max
+        _m = float(self.cfg.fabric_table_margin_xy)
+        _sx = (_hi[0] - _lo[0]) + 2.0 * _m
+        _sy = (_hi[1] - _lo[1]) + 2.0 * _m
+        _cx = 0.5 * (_lo[0] + _hi[0])
+        _cy = 0.5 * (_lo[1] + _hi[1])
+        _th = float(self.cfg.fabric_table_thickness)
+        _cz = float(self.cfg.table_surface_z) - 0.5 * _th
+        print(f"[grasp_s2r] fabric 테이블 장애물: 크기 {_sx:.3f}×{_sy:.3f}×{_th:.3f} "
+              f"· 중심 ({_cx:.3f}, {_cy:.3f}, {_cz:.3f}) · 상면 z "
+              f"{self.cfg.table_surface_z:.3f}", flush=True)
+        return {"table": {"env_index": "all", "type": "box",
+                          "scaling": f"{_sx} {_sy} {_th}",
+                          "transform": f"{_cx} {_cy} {_cz} 0. 0. 0. 1."}}
+
     def _build_fabric_index(self) -> torch.Tensor:
         """프로필 `fabric_joint_order` → articulation 인덱스.
 
@@ -132,6 +165,7 @@ class GraspS2RControlMixin:
         self._world = WorldMeshesModel(
             batch_size=self.num_envs, device=self.device,
             max_objects_per_env=int(self.cfg.fabrics_max_objects_per_env),
+            world_dict=self._build_fabric_world(),
         )
         self._world_ids, self._world_indicator = self._world.get_object_ids()
 
@@ -185,16 +219,7 @@ class GraspS2RControlMixin:
         d = math.pi / 180.0
         c = torch.tensor(p.palm_rot_center_deg, device=self.device) * d
         h = float(p.palm_rot_half_deg) * d
-        # ★박스 바닥에 테이블 여유를 준다 — 프로필 palm_box_min z 는 table_surface_z 와
-        #   같아서(0.200) 지령이 테이블 상면까지 내려가는 것이 허용돼 있었다.
-        _box_lo = list(p.palm_box_min)
-        _floor = float(self.cfg.table_surface_z) + float(self.cfg.palm_min_above_table)
-        if _box_lo[2] < _floor:
-            print(f"[grasp_s2r] palm 박스 바닥 z {_box_lo[2]:.3f} → {_floor:.3f} "
-                  f"(테이블 {self.cfg.table_surface_z:.3f} + 여유 "
-                  f"{self.cfg.palm_min_above_table:.3f})", flush=True)
-            _box_lo[2] = _floor
-        self._palm_lo = torch.cat([torch.tensor(_box_lo, device=self.device), c - h])
+        self._palm_lo = torch.cat([torch.tensor(p.palm_box_min, device=self.device), c - h])
         self._palm_hi = torch.cat([torch.tensor(p.palm_box_max, device=self.device), c + h])
         self.palm_targets = torch.zeros(self.num_envs, 6, device=self.device)
         self._home_palm = torch.zeros(6, device=self.device)   # _init_home_palm 에서 실측
