@@ -205,12 +205,15 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # ★y 만 범위가 큰 이유: 홈 y −0.38 → 컵 y −0.20 을 액션으로 덮어야 한다.
     palm_delta_xyz: tuple[float, float, float] = (0.15, 0.35, 0.15)
     palm_delta_rot_deg: float = 20.0
-    # ★지령 변화율 상한. grasp_v1 에는 없던 항목이다(0.0 = 완전 v1 재현).
-    #   08.27 실측: 0.1 → 0.05 로 내리자 지령↔실제 간격 155 → 101mm(−35%),
-    #   abnormal 변화 없음. 델타 규약은 연속 스텝 간 최대 점프가 2×delta 라
-    #   이 상한이 그 과도를 흡수한다.
-    palm_cmd_rate_limit_m: float = 0.05
-    palm_cmd_rate_limit_rot_deg: float = 7.5
+    # ★★지령 변화율 상한 — `gripper/left/grasp_sensor`(t59 fabric 배선) 값과 동일하게 맞췄다
+    #   (08.27 사용자 지시 "fabric·액션 세팅을 좌팔과 동일하게").
+    #     좌팔 `PALM_CMD_RATE_LIMIT` 0.02 m/step = **1.0 m/s** (IK 액션 스케일 위치 성분과 동일)
+    #     좌팔 `PALM_ROT_RATE_LIMIT` 0.05 rad/step = **2.9°/step** (동 회전 성분과 동일)
+    #   구 값(0.05 m/step = 3.0 m/s · 7.5°)은 좌팔의 2.5~2.6배였고, 사용자 GUI 관찰
+    #   "정책 명령이 너무 빠르게 변한다"가 그 차이였다.
+    #   ※fabric 쪽(dt 1/60 · decimation 2 · damping 10 · vel_ff 1.0)은 이미 좌팔과 동일하다.
+    palm_cmd_rate_limit_m: float = 0.02
+    palm_cmd_rate_limit_rot_deg: float = 2.9
 
     # ---- 손: 관절공간 시너지 ---------------------------------------------------------
     # 액션은 **절대 폐쇄도 목표**[0,1] 이고 아래는 그 목표를 향한 **변화율 상한**이다

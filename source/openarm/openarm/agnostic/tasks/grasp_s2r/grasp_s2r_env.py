@@ -117,6 +117,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             self.num_envs, len(self._stage_names), dtype=torch.bool, device=self.device)
 
         self._init_home_palm()
+        self._report_home_cage()
         self._assert_goal_reachable()
         self._setup_cmd_markers()
 
@@ -133,6 +134,43 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
               f"hand={len(self.hand_ids)} tips={len(self.tip_ids)} "
               f"action={self.cfg.action_space} obs={self.cfg.observation_space} "
               f"state={self.cfg.state_space} fabric={p.fabric_robot_dir}", flush=True)
+
+    # ------------------------------------------------------------------
+    def _report_home_cage(self) -> None:
+        """홈 자세의 **케이지 중심**(엄지 팁 ↔ 4지 팁 중점)이 컵 대비 어디인지 실측·보고.
+
+        ★★이 수치가 접근 난이도를 결정한다. 케이지가 컵보다 **앞(+x)** 에 있으면 정책은
+          팔을 **후진**시켰다가 다시 들어가야 하고, 3D 대각선 이동이라 훨씬 어렵다.
+          케이지가 컵보다 **위** 에 있으면 지령이 계속 아래로 가면서 엄지가 컵에 걸리고,
+          걸린 채 눌리다 풀리면 손이 테이블까지 내려간다(둘 다 사용자 GUI 관찰).
+        ★좌팔 그리퍼 트랙 결론: "컵을 앞에 둔다"와 "홈을 뒤로 물린다"는 로봇 기준
+          상대 배치가 같아 물리적으로 동등하다 — 그쪽은 스폰을 앞으로 밀어 해결했다.
+        """
+        p = self.profile
+        tips = (self.robot.data.body_pos_w[:, self._tip_ids_t]
+                - self.scene.env_origins[:, None, :])[0]
+        _a = int(self._group_a_idx[0])
+        _others = [i for i in range(len(self.tip_ids)) if i != _a]
+        cage = 0.5 * (tips[_a] + tips[_others].mean(dim=0))
+        r_cage = 0.5 * float((tips[_a] - tips[_others].mean(dim=0)).norm())
+        cup = [p.object_spawn_center[0], p.object_spawn_center[1],
+               float(self.cfg.table_surface_z) + float(self.cfg.object_origin_offset_z)
+               + float(self.cfg.object_grasp_z_offset)]
+        d = [round(float(cage[i]) - cup[i], 4) for i in range(3)]
+        print(f"[grasp_s2r] 홈 케이지 중심={[round(float(v), 4) for v in cage]} "
+              f"· 반경 {r_cage * 1000:.0f}mm | 컵 파지중심={[round(v, 4) for v in cup]} "
+              f"| 케이지−컵 = {d} m", flush=True)
+        # 전진축 정렬 허용오차 — 케이지 반경의 1/6(20mm) 안이면 후진이 필요 없다.
+        if d[0] > 0.02:
+            print(f"[grasp_s2r] ⚠ 케이지가 컵보다 {d[0] * 1000:.0f}mm **앞(+x)** 이다 — "
+                  "정책이 후진 후 재접근해야 한다(3D 대각선). 컵 스폰을 앞으로 밀거나 "
+                  "홈을 뒤로 물릴 것.", flush=True)
+        # 접근 간격이 케이지 반경보다 좁으면 리셋 순간 손가락이 컵을 관통한다.
+        _gap_xy = float((cage[:2] - torch.tensor(cup[:2], device=cage.device)).norm())
+        if _gap_xy < r_cage:
+            print(f"[grasp_s2r] ⚠ 홈 케이지↔컵 수평 간격 {_gap_xy * 1000:.0f}mm 가 "
+                  f"케이지 반경 {r_cage * 1000:.0f}mm 보다 좁다 — 리셋에서 관통 위험.",
+                  flush=True)
 
     # ------------------------------------------------------------------
     def _assert_goal_reachable(self) -> None:
