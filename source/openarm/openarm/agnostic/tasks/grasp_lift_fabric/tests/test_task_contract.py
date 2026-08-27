@@ -264,6 +264,31 @@ def test_wrap_denominator_source_in_sibling_is_group_b_cap_envelope():
 # 6. 자매에서 상속받는 세팅 (전면 동기의 실체)
 # ======================================================================
 
+@pytest.mark.parametrize("field", [
+    "palm_delta_xyz", "palm_delta_rot_deg",
+    "palm_cmd_rate_limit_m", "palm_cmd_rate_limit_rot_deg",
+    "palm_box_z_min_override", "palm_slew_pos", "palm_slew_rot_deg",
+    "fabrics_dt", "fabric_decimation", "fabrics_damping_gain",
+    "fabric_velocity_ff_scale",
+])
+def test_arm_command_fields_are_never_overridden_here(field):
+    """★★팔 지령 규약은 **한 글자도 갈리면 안 된다**(08.27 사용자: "제일 중요").
+
+    `palm_cmd_step_raw`(클램프 전 요청량)는 리미터 포화율의 유일한 근거이고, 그
+    값이 두 트랙에서 같은 의미를 가지려면 델타 박스·리미터·fabric 시간축이 전부
+    같아야 한다. 여기서 하나라도 덮으면 자매와 수치를 비교할 근거가 사라진다.
+    """
+    assert field not in CFG, f"{field} 를 이 트랙이 덮고 있다 — 자매 값을 상속하라"
+
+
+def test_arm_command_path_is_not_reimplemented_here():
+    """팔 액션·리미터·fabric 적분은 상속 그대로 — 오버라이드 자체를 금지한다."""
+    for sym in ("_pre_physics_step", "palm_targets", "_prev_palm_cmd",
+                "_delta_lo", "_delta_hi", "_step_fabric", "_apply_action",
+                "_palm_cmd_step_raw"):
+        assert sym not in ENV, f"팔 경로 재정의 발견: {sym}"
+
+
 def test_arm_action_is_home_plus_delta_with_slew():
     assert "palm_delta_xyz" in SIB_CFG and "palm_delta_rot_deg" in SIB_CFG
     assert "palm_cmd_rate_limit_m: float = 0.02" in SIB_CFG
