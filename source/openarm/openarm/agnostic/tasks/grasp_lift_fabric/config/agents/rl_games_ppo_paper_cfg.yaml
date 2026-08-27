@@ -90,7 +90,7 @@ params:
     gamma: 0.998
     tau: 0.95
     learning_rate: 3e-4
-    lr_schedule: linear
+    lr_schedule: adaptive
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000       # KUKA 고정
@@ -133,7 +133,7 @@ params:
       minibatch_size: 16384     # KUKA 고정(actor와 동일)
       mini_epochs: 4
       learning_rate: 5e-5       # KUKA 고정
-      lr_schedule: linear
+      lr_schedule: adaptive
       kl_threshold: 0.016       # KUKA 고정
       clip_value: True
       e_clip: 0.2

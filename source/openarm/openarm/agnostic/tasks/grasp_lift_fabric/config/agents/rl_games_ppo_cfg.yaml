@@ -74,7 +74,22 @@ params:
     gamma: 0.998
     tau: 0.95
     learning_rate: 3e-4
-    lr_schedule: linear
+    # ★★08.26 `linear` → `adaptive`. KUKA 정합을 **이 항에서만** 깬다.
+    #   실측 근거 3 중:
+    #     ① 우리 kuka5 — KL 이 전 구간의 98% 에서 임계(0.013)를 넘고 최근500 평균
+    #        **0.038(임계의 3배)**. linear 는 max_epochs=20000 기준이라 e7,000 에서
+    #        23% 만 감쇠(2.55e-4 → 1.96e-4)해 큰 스텝을 그대로 방치했다. σ 가 좁아진
+    #        정책(entropy 22.4, σ≈0.72)이 큰 스텝을 밟아 좋은 해에서 이탈 —
+    #        좌·우 모두 peak 후 퇴행(좌 11.60→5.3 · 우 4.40→0.4)한 기계적 원인이다.
+    #     ② 자매 트랙(grasp_sensor)이 **같은 증상으로 같은 수정**을 이미 했다:
+    #        커밋 8db1449 "lr_schedule linear → adaptive (KL 폭주 붕괴)".
+    #        그 뒤 hier_test1 은 KL 0.015~0.017 로 임계 근처에 붙고 LR 이
+    #        8.9e-5 → 2.6e-5 로 **3.4배 감쇠**하며 e14,416 을 안정적으로 돌았다.
+    #     ③ DexPour(IROS 2025) Table I — Learning Rate Schedule: **Adaptive**.
+    #   ★두 트랙의 나머지 하이퍼(gamma·tau·lr·kl_threshold·max_epochs·entropy_coef·
+    #     horizon·minibatch·mini_epochs·e_clip·grad_norm)는 **전부 동일**하다. 그래서
+    #     이 한 항만 바꾼 런이 "퇴행이 스케줄 탓인가"에 대한 깨끗한 대조가 된다.
+    lr_schedule: adaptive
     schedule_type: standard
     kl_threshold: 0.013
     score_to_win: 100000       # KUKA 고정
@@ -117,7 +132,13 @@ params:
       minibatch_size: 16384     # KUKA 고정(actor와 동일)
       mini_epochs: 4
       learning_rate: 5e-5       # KUKA 고정
-      lr_schedule: linear
+      # ★08.26 critic 도 actor 와 함께 adaptive. 같은 `linear` 결함을 공유한다.
+      #   ★이 키는 원래 **KUKA 원본에 없다**(자매 주석: "구 설정에 있던
+      #     normalize_value / value_bootstrap / lr_schedule / e_clip 은 Kuka 가
+      #     지정하지 않는다"). 우리가 추가한 것이므로 정합을 깨는 게 아니라
+      #     우리 쪽 이탈을 바로잡는 것이다. 지우지 않고 명시하는 이유는
+      #     rl_games 기본값이 버전에 따라 달라 조용히 바뀔 수 있어서다.
+      lr_schedule: adaptive
       kl_threshold: 0.016       # KUKA 고정
       clip_value: True
       e_clip: 0.2

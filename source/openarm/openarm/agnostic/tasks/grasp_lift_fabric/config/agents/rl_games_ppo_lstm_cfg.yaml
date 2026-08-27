@@ -97,7 +97,7 @@ params:
       minibatch_size: 16384
       mini_epochs: 4
       learning_rate: 5e-5
-      lr_schedule: linear
+      lr_schedule: adaptive   # ★08.26 actor 와 함께 — critic 만 linear 면 같은 결함이 value 쪽에 남는다
       kl_threshold: 0.016
       clip_value: True
       e_clip: 0.2
