@@ -113,8 +113,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         # 판정 버퍼 — `_get_dones` 가 먼저 돌고 `_get_rewards` 가 같은 스텝에 재사용한다.
         self._tilt_deg = torch.zeros(self.num_envs, device=self.device)
         self._abnormal = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        # ★접촉 지속 카운터. 끊기면 0 이라 "닿았다 뗐다"로는 못 채운다.
-        self._persist = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._stay_run = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._success_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # 단계 도달 플래그 — 에피소드 동안 OR 누적, 리셋에서만 평균 기록(스텝 비용 0).
@@ -381,8 +379,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         cfgn = self.cfg
         obj_pos = self._env_local(self.object.data.root_pos_w)
         palm_pos = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
-        tips = self.robot.data.body_pos_w[:, self._tip_ids_t] \
-            - self.scene.env_origins[:, None, :]
 
         # ---- 접촉 ------------------------------------------------------------------
         _thr = float(cfgn.contact_force_threshold)
@@ -391,27 +387,12 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         mid_c, dist_c = mid_f > _thr, dist_f > _thr
         n_tip = len(self._finger_names)
         tip_frac = tip_c.float().sum(dim=1) / n_tip
-        full_tip = tip_c.all(dim=1)
         grip_c = tip_c | mid_c | dist_c
         grip_frac = grip_c.float().sum(dim=1) / n_tip
         # 감쌈 **깊이** = per-finger (중간 AND 원위). 서로 다른 손가락에 얕게 닿는 것을
         # 깊은 감쌈으로 오인하지 않는다.
         wrap_frac = (mid_c & dist_c)[:, self._wrap_idx].float().mean(dim=1)
         n_grip = grip_c.float().sum(dim=1)
-
-        # 접촉 지속 — 끊기면 0 으로 되돌아간다.
-        # ★★임계는 래치와 같은 손가락 수다. `>= 1` 이면 **손가락 하나를 컵에 대고
-        #   가만히 있는 것**이 만점이 된다 — 08.27 실측(s2r_a6, 202 iter):
-        #   contact_persistence 0.918 인데 touch_frac 0.003·wrap_frac 0.000 이었고,
-        #   grasp 항 2.07/step 이 전체 보상의 88% 였다(0.75·0.25·0.918·12 = 2.07 로
-        #   산술 일치). 정책은 594 스텝 내내 한 손가락만 대고 있는 데 수렴했다.
-        #   래치 조건과 묶으면 persist_frac 은 **래치까지의 진척도**가 되어, 주차해도
-        #   그 자리가 파지 직전이다.
-        _touch = n_grip >= int(cfgn.lift_start_min_grip_fingers)
-        self._persist = torch.where(_touch, self._persist + 1,
-                                    torch.zeros_like(self._persist))
-        persist_frac = (self._persist.float()
-                        / float(cfgn.grasp_ready_hold_steps)).clamp(max=1.0)
 
         # ---- 래치 (보상 단계 표시 전용 — 팔 지령은 건드리지 않는다) ------------------
         _ready = n_grip >= int(cfgn.lift_start_min_grip_fingers)
@@ -442,10 +423,11 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         #   맞고(엄지가 어디 있든 정의가 성립), 물체 반경 상수도 필요 없다.
         #   `opp_mid` 가 컵 중심에 오려면 엄지와 4지가 컵을 **사이에 두어야** 한다 —
         #   두 그룹이 같은 쪽에 있으면 중점이 그쪽으로 쏠려 거리가 남는다.
-        _a = int(self._group_a_idx[0])
-        _others = [i for i in range(n_tip) if i != _a]
-        opp_mid = 0.5 * (tips[:, _a] + tips[:, _others].mean(dim=1))
-        cage_dist = (opp_mid - grasp_center).norm(dim=-1)
+        # ★★approach 가 쓰는 케이지 거리는 **palm 강체**다(닫기 게이트와 같은 양).
+        #   실시간 손끝을 쓰면 "쭉 편 손가락으로 팁을 컵에 모으기"가 이 항의 최적이 되어
+        #   파지 예비자세를 정면으로 방해한다 — s2r_a9 실측 corr(ch2, approach) = −0.702.
+        cage_dist = self._cage_ctr_dist
+        _a = int(self._group_a_idx[0])          # 대향(엄지) 인덱스 — success 판정용
 
         # 래치 시점 스냅샷 — 감쌈 유지 기준선과 밀림 감쇠 기준.
         self._wrap_at_latch = torch.where(_just, wrap_frac, self._wrap_at_latch)
@@ -476,13 +458,13 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
 
         total, terms, gates = compute_grasp_s2r_rewards(
             tip_contact_frac=tip_frac,
-            full_tip_contact=full_tip,
-            contact_persistence_frac=persist_frac,
             wrap_frac=wrap_frac,
             wrap_at_latch=self._wrap_at_latch,
             grip_frac=grip_frac,
             palm_to_cup_dist=palm_to_cup,
             cage_dist=cage_dist,
+            close_gate=self._close_gate,
+            close_progress=self._close_progress(),
             cup_height_delta=height_delta,
             cup_xy_disp_now=cup_disp,
             cup_xy_disp_ref=self._disp_at_latch,
@@ -624,7 +606,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._hold_count[env_ids] = 0
         self._wrap_at_latch[env_ids] = 0.0
         self._disp_at_latch[env_ids] = 0.0
-        self._persist[env_ids] = 0
         self._stay_run[env_ids] = 0
         self._success_now[env_ids] = False
         self._abnormal[env_ids] = False

@@ -187,8 +187,12 @@ def test_opposition_axis_is_hand_derived():
     wrap_frac 이 2,228 iter 내내 0.000).
     """
     code = _code(_ENV)
-    assert "opp_mid = 0.5 * (tips[:, _a] + tips[:, _others].mean(dim=1))" in code
-    assert "cage_dist = (opp_mid - grasp_center).norm(dim=-1)" in code
+    # ★★08.27: approach 의 cage_dist 는 **palm 강체**여야 한다. 실시간 손끝을 쓰면
+    #   "쭉 편 손가락으로 팁을 컵 중심에 모으기"가 이 항의 최적이 되어 파지 예비자세를
+    #   정면으로 방해한다 — s2r_a9 실측 corr(ch2 폐쇄, approach) = −0.702. ch2 가
+    #   0.271 → 0.004 로 펴지는 동안 approach 0.61 → 0.75, touch_frac 0.000 유지.
+    assert "cage_dist = self._cage_ctr_dist" in code
+    assert "opp_mid" not in code, "보상용 케이지가 다시 실시간 손끝을 참조한다"
     # 임의 수직축·물체 반경 상수는 남아 있으면 안 된다.
     assert "axis[:, 0], axis[:, 1] = -_dir[:, 1], _dir[:, 0]" not in code
     for banned in ("object_grasp_radius", "enclosure_thumb_weight"):
@@ -239,19 +243,32 @@ def test_close_gate_center_is_rigid_to_palm():
     assert "self._latched" in blk
 
 
-def test_contact_persistence_requires_grasp_many_fingers():
-    """★★`persistence` 는 손가락 하나로 만점이 되면 안 된다.
+def test_grasp_has_pre_contact_gradient_gated_on_alignment():
+    """★★`grasp` 는 **첫 접촉 전에도** 손가락을 내라는 gradient 를 줘야 한다.
 
-    08.27 실측(s2r_a6): 임계가 `n_grip >= 1` 이던 시절 contact_persistence 0.918 인데
-    touch_frac 0.003 · wrap_frac 0.000. grasp 항 2.07/step 이 전체 보상의 88% 였고
-    (0.75·0.25·0.918·12 = 2.07 로 산술 일치) 정책은 594 스텝 내내 **손가락 하나를
-    컵에 대고 가만히 있는 데** 수렴했다. 임계를 래치와 묶으면 persist_frac 이
-    래치까지의 진척도가 되어, 주차해도 그 자리가 파지 직전이다.
+    구판은 네 채널(팁접촉·전팁·지속·감쌈)이 전부 접촉 임계 뒤라 첫 접촉까지 정확히 0
+    이었다. 그래서 접촉 전 손 모양을 정하는 보상이 approach 하나뿐이었고, approach 가
+    실시간 손끝을 쓰는 바람에 최적 손 모양이 "쭉 편 손가락"이 됐다 — 손가락을 말면
+    approach 가 즉시 깎이는데 grasp 는 닿아야 나오니 가는 길이 확실히 나쁜 **계곡**
+    이었다(s2r_a9 526 iter: touch_frac 0.000 · wrap_frac 0.000 · ch2 0.004).
+
+    계약: grasp = w · pre_lift · **close_gate** · [(1−ecred)·close_credit + ecred·wrap]
+    · close_gate 곱 — 정렬 전 공중 폐쇄는 0 이어야 한다.
+    · close_credit 은 **포화**해야 한다. 안 그러면 "동결 전까지 계속 닫기"가 이득이라
+      접촉을 회피한다(08.25 grip 접촉 절벽과 같은 함정).
+    · 팁 제어 3채널은 폐기됐다 — 팔이 정밀 제어를 하는 지금은 불필요(사용자 확정).
     """
-    env = _code(_ENV)
-    assert "_touch = n_grip >= int(cfgn.lift_start_min_grip_fingers)" in env
-    assert "_touch = n_grip >= 1" not in env
-
+    rew = _code(_REW)
+    blk = _assign_block(rew, "grasp_quality")
+    assert "close_credit" in blk and "wrap_frac" in blk
+    for banned in ("tip_contact_frac", "full_tip", "persistence"):
+        assert banned not in blk, f"폐기된 팁 제어 채널이 grasp 에 되살아남: {banned}"
+    assert "close_gate.clamp(0.0, 1.0) * grasp_quality" in rew, "grasp 가 정렬 게이트를 안 탄다"
+    assert "(close_progress / _cref).clamp(0.0, 1.0)" in rew, "close_credit 포화 부재"
+    # 가동폭 0° 관절(전 `_1`·pinky_2·thumb_2)이 분모에 섞이면 공짜 점수가 된다.
+    assert "self._syn_close[:, self._syn_movable].mean(dim=1)" in _code(_CTRL)
+    # graded_contact(리프트 이후 "정말 쥐고 있나")는 팁을 계속 써야 한다 — 폐기 대상 아님.
+    assert "graded_contact = (1.0 - _emix) * tip_contact_frac" in rew
 
 def test_approach_penalty_is_capped():
     """★approach 벌금은 상금(approach_weight)을 못 넘어야 한다 — approach 최솟값 0.

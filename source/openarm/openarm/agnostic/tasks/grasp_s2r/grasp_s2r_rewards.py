@@ -43,15 +43,15 @@ def _f(cfg: object, name: str, default: float) -> float:
 def compute_grasp_s2r_rewards(
     *,
     # ---- 접촉 ----
-    tip_contact_frac: torch.Tensor,       # (N,) 팁 접촉 손가락 비율
-    full_tip_contact: torch.Tensor,       # (N,) bool — 전 팁 접촉
-    contact_persistence_frac: torch.Tensor,
+    tip_contact_frac: torch.Tensor,       # (N,) 팁 접촉 손가락 비율 — graded_contact 전용
     wrap_frac: torch.Tensor,              # (N,) per-finger (middle AND distal) 비율 = 감쌈 **깊이**
     wrap_at_latch: torch.Tensor,          # (N,) 래치 시점 깊이 스냅샷
     grip_frac: torch.Tensor,              # (N,) tip|mid|distal OR 비율
     # ---- 기하 ----
     palm_to_cup_dist: torch.Tensor,
-    cage_dist: torch.Tensor,             # 대향중점(엄지↔4지) ↔ 컵 파지중심 거리
+    cage_dist: torch.Tensor,             # **palm 강체** 케이지중심 ↔ 컵 거리(손 모양 무관)
+    close_gate: torch.Tensor,            # (N,) 케이지 정렬도 [0,1] — 손 액션을 여는 게이트
+    close_progress: torch.Tensor,        # (N,) 가동 손관절 평균 폐쇄도 [0,1]
     cup_height_delta: torch.Tensor,
     cup_xy_disp_now: torch.Tensor,        # 접근 벌점용 — 실시간 수평 변위
     cup_xy_disp_ref: torch.Tensor,        # 감쇠용 — **래치 시점** 변위 스냅샷
@@ -71,8 +71,6 @@ def compute_grasp_s2r_rewards(
 
     lift_gate = lift_latched.float()
     pre_lift_gate = 1.0 - lift_gate
-    full_tip = full_tip_contact.float()
-    persistence = contact_persistence_frac.clamp(0.0, 1.0)
 
     # 접촉 품질 — 하드 게이트(전 팁 접촉)는 검지가 구조적으로 미접촉이라 영원히 0 이
     # 된다. 부분 접촉에도 gradient 가 남도록 graded 로 간다.
@@ -109,18 +107,28 @@ def compute_grasp_s2r_rewards(
         - _penalty
     )
 
-    # ---- grasp : 래치 전에만. credit 이 참조하는 감쌈은 **깊이**(wrap_frac) ----------
-    # 합이 1 로 재정규화되므로 credit 을 올려도 grasp 최대치는 불변 —
-    # "감쌈만 하고 안 드는" 국소최적을 구조적으로 못 만든다.
+    # ---- grasp : 래치 전에만. **close_gate 가 열리면 손가락을 내라**가 이 항의 계약 ------
+    # ★★08.27 재설계. 구판은 네 채널(팁접촉·전팁·지속·감쌈)이 **전부 접촉 임계 뒤**라
+    #   첫 접촉까지 정확히 0 이었다. 그래서 접촉 전 손 모양을 정하는 보상이 approach
+    #   하나뿐이었고, approach 가 **실시간 손끝** 거리를 쓰는 바람에 최적 손 모양이
+    #   "쭉 편 손가락으로 팁을 컵 중심에 모으기"가 됐다 — 파지 예비자세의 정반대다.
+    #   실측(s2r_a9, iter 300~526 n=227): corr(ch2 폐쇄, approach) = **−0.702**,
+    #   ch2 가 0.271 → 0.004 로 펴지는 동안 approach 0.61 → 0.75, touch_frac 0.000 유지.
+    #   손가락을 말면 approach −0.19/step 즉시 손실인데 grasp 는 닿아야만 나오므로,
+    #   가는 길이 확실히 나쁜 **계곡**이었다(느린 학습이 아니라 장벽).
+    # ★팁 제어 3채널은 폐기한다(사용자 확정): 팔이 정밀 제어를 못 하던 시절의 보조였고,
+    #   이제 palm 강체 케이지가 컵 19~28mm 안에 들어온다 — 팁을 따로 유도할 이유가 없다.
+    # ★close_progress 는 0.5 에서 **포화**시킨다. 안 그러면 "동결되기 전까지 계속 닫기"가
+    #   이득이라 접촉을 회피한다(08.25 grip 접촉 절벽과 같은 함정).
     _ecred = _f(cfg, "grasp_envelope_credit", 0.55)
-    _tip_scale = (1.0 - _ecred) / 0.60
+    _cref = max(_f(cfg, "grasp_close_credit_ref", 0.5), 1e-6)
+    close_credit = (close_progress / _cref).clamp(0.0, 1.0)
     grasp_quality = (
-        0.15 * _tip_scale * tip_contact_frac.clamp(0.0, 1.0)
-        + 0.20 * _tip_scale * full_tip
-        + 0.25 * _tip_scale * persistence
+        (1.0 - _ecred) * close_credit
         + _ecred * wrap_frac.clamp(0.0, 1.0)
     )
-    grasp = _f(cfg, "grasp_weight", 12.0) * pre_lift_gate * grasp_quality
+    grasp = (_f(cfg, "grasp_weight", 12.0) * pre_lift_gate
+             * close_gate.clamp(0.0, 1.0) * grasp_quality)
 
     # ---- lift : 높이 정규화 기준은 성공 임계와 분리(손 미끄러짐 구분) ----------------
     _h_ref = max(_f(cfg, "lift_height_ref", 0.10), 1e-6)
@@ -218,8 +226,8 @@ def compute_grasp_s2r_rewards(
         "at_goal": at_goal,
         "stable": stable_gate,
         "graded_contact": graded_contact,
-        "full_tip_contact": full_tip,
-        "contact_persistence": persistence,
+        "close_gate": close_gate.clamp(0.0, 1.0),
+        "close_credit": close_credit,
         "action_quality": action_quality,
         "disp_factor": disp_factor,
         "success_now": success_now.float(),

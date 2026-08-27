@@ -286,6 +286,10 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     approach_sharpness: float = 8.0
     grasp_weight: float = 12.0
     grasp_envelope_credit: float = 0.55
+    # ★폐쇄 진행도가 이 값에서 **포화**한다. 포화가 없으면 "동결되기 전까지 계속 닫기"가
+    #   이득이라 정책이 접촉을 회피한다(08.25 grip 접촉 절벽과 같은 함정).
+    #   손 기하 상수라 물체가 바뀌어도 성립한다.
+    grasp_close_credit_ref: float = 0.5
     lift_weight: float = 30.0
     lift_envelope_mix: float = 0.6
     transfer_weight: float = 15.0

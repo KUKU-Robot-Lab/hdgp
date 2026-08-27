@@ -336,6 +336,12 @@ class GraspS2RControlMixin:
             [s in p.hand_freeze_suffixes and s == "3" for s in _sfx], device=self.device)
         self._syn_freeze_dist = torch.tensor(
             [s in p.hand_freeze_suffixes and s != "3" for s in _sfx], device=self.device)
+        # ★가동 관절 마스크 — open == grip 인 관절은 명령해도 안 움직인다
+        #   (실측: r_hj_pinky_2 · r_hj_thumb_2 · 전 `_1` 이 가동폭 0°). 폐쇄 보상의
+        #   분모에 넣으면 "못 움직이는 관절을 닫았다"는 공짜 점수가 생긴다.
+        self._syn_movable = (self._syn_grip - self._syn_open).abs() > 1e-4
+        if not bool(self._syn_movable.any()):
+            raise RuntimeError(f"[{p.name}] 가동 손관절이 하나도 없다 — open/grip 자세 확인")
         # 폐쇄도는 **관절별** 독립 진행도다 — 접촉 동결이 관절마다 따로 걸린다.
         self._syn_close = torch.zeros(self.num_envs, n, device=self.device)
         self._syn_target = self.robot.data.joint_pos[:, self._syn_ids].clone()
@@ -394,6 +400,14 @@ class GraspS2RControlMixin:
         tgt = torch.lerp(self._syn_open.unsqueeze(0), self._syn_grip.unsqueeze(0),
                          self._syn_close)
         return tgt.clamp(self._syn_lo.unsqueeze(0), self._syn_hi.unsqueeze(0))
+
+    def _close_progress(self) -> torch.Tensor:
+        """가동 손관절 평균 폐쇄도 (N,) [0,1] — grasp 보상의 접촉 전 gradient.
+
+        ★가동폭 0° 관절을 빼야 한다. 안 그러면 못 움직이는 관절 5개(전 `_1` + pinky_2 +
+          thumb_2)가 분모에 섞여 공짜 점수를 만든다.
+        """
+        return self._syn_close[:, self._syn_movable].mean(dim=1)
 
     def _syn_to_fab(self, syn_q: torch.Tensor) -> torch.Tensor:
         """synergy 자세(프로필 순서) → fabric 손 구간 순서."""
