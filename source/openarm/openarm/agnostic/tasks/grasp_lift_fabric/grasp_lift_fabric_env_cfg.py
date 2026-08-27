@@ -17,7 +17,7 @@ from __future__ import annotations
 from isaaclab.utils import configclass
 
 from ..grasp_s2r.grasp_s2r_env_cfg import GraspS2REnvCfg
-from ..grasp_s2r.robot_profiles import PROFILES
+from .robot_profiles import PROFILES
 
 
 def side_of(profile_name: str) -> str:
@@ -112,3 +112,13 @@ class GraspLiftFabricTesolloRightEnvCfg(GraspLiftFabricEnvCfg):
 @configclass
 class GraspLiftFabricGripperLeftEnvCfg(GraspLiftFabricEnvCfg):
     profile_name: str = "gripper_left"
+
+
+@configclass
+class GraspLiftFabricBisRightEnvCfg(GraspLiftFabricEnvCfg):
+    """양팔 Tesollo 자산(bi_s) 우팔 — **USD 교체 검증용**.
+
+    자매와 같은 과제·같은 보상·같은 제어인데 로봇만 다르다. 이 트랙의 존재 이유다.
+    """
+
+    profile_name: str = "bis_right"

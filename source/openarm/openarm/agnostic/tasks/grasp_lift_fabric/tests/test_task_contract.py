@@ -32,6 +32,7 @@ def _src(p: pathlib.Path) -> str:
 ENV = _src(_TRACK / "grasp_lift_fabric_env.py")
 CFG = _src(_TRACK / "grasp_lift_fabric_env_cfg.py")
 REG = _src(_TRACK / "config" / "__init__.py")
+PROF = _src(_TRACK / "robot_profiles.py")
 SIB_ENV = _src(_SIB / "grasp_s2r_env.py")
 SIB_CTL = _src(_SIB / "grasp_s2r_control.py")
 SIB_CFG = _src(_SIB / "grasp_s2r_env_cfg.py")
@@ -336,14 +337,14 @@ def test_spawn_center_comes_from_profile_and_gap_is_fail_loud_here():
 # 7. 등록
 # ======================================================================
 
-def test_registration_uses_sibling_profiles_and_keeps_play_ids():
-    assert "from ...grasp_s2r import robot_profiles as _rp" in REG
+def test_registration_uses_our_profile_registry_and_keeps_play_ids():
+    assert "from .. import robot_profiles as _rp" in REG
     assert '"-play"' in REG and '"-play-lstm"' in REG
     ids = re.findall(r'f"open-\{_tag\}_grasp_lift_fab\{_suffix\}"', REG)
     assert ids, "id 규약(open-<tag>_<r|l>_grasp_lift_fab)이 깨졌다"
     # run_naming 정규식 `^(open-\w+)_([rbl])_(.+)$` 두 번째 슬롯이 r/l/b 여야 한다.
-    tags = re.findall(r'"(sens_[rl])":', REG)
-    assert set(tags) == {"sens_r", "sens_l"}
+    tags = re.findall(r'"(\w+_[rl])":', REG)
+    assert set(tags) == {"sens_r", "sens_l", "bis_r"}
 
 
 def test_agent_yaml_matches_sibling_except_name():
@@ -358,6 +359,58 @@ def test_agent_yaml_matches_sibling_except_name():
 # ======================================================================
 # 8. 자매 파일 불가침
 # ======================================================================
+
+# ======================================================================
+# 7-b. USD 교체 — 이 트랙의 존재 이유
+# ======================================================================
+
+def test_new_robot_is_a_field_diff_not_a_new_profile_literal():
+    """자산 교체는 자매 프로필의 **필드 차분**이어야 한다 — 통째로 다시 쓰면 드리프트."""
+    assert "dataclasses.replace(" in PROF
+    assert '_SENSOR_R = _s2r.PROFILES["tesollo_right"]' in PROF
+    # 자매 레지스트리에 **등록**은 하되 기존 키는 절대 덮지 않는다.
+    assert "_s2r.PROFILES[_n] = _p" in PROF
+    assert "덮으려 한다 — 금지" in PROF
+
+
+def test_palm_normal_axis_is_declared_per_robot_not_assumed():
+    """★★손바닥 법선축은 자산마다 다르다(sensor +x / bi_s +y).
+
+    자매 approach 는 `_palm_ee_R()` 열 0 이 법선이라고 **가정**한다. 프로필마다
+    선언하고 env 가 재정렬하지 않으면, 자산을 바꾼 순간 밀착도가 엉뚱한 축을 잰다.
+    """
+    from openarm.agnostic.tasks.grasp_lift_fabric import robot_profiles as rp
+    assert rp.PALM_NORMAL_COL["tesollo_right"] == 0
+    assert rp.PALM_NORMAL_COL["bis_right"] == 1
+    assert set(rp.PALM_NORMAL_COL) >= set(rp.PROFILES), "선언 안 된 프로필이 있다"
+    # env 가 accessor 한 곳에서 재정렬하고, **순환 치환**이라 det=+1 이 보존된다.
+    m = re.search(r"def _palm_ee_R.*?(?=\n    # =)", ENV, re.S)
+    assert m and "PALM_NORMAL_COL[self.cfg.profile_name]" in m.group(0)
+    assert "[k % 3, (k + 1) % 3, (k + 2) % 3]" in m.group(0)
+    # 주석/독스트링을 뺀 **코드**에서 판단한다.
+    code = re.sub(r"#.*", "", re.sub(r'"""[\s\S]*?"""', "", m.group(0)))
+    assert "self.profile" not in code, (
+        "`self.profile` 은 `_report_home_cage` 시점에 아직 없다 — cfg 에서 읽어야 한다")
+
+
+def test_bis_profile_swaps_only_asset_dependent_fields():
+    from openarm.agnostic.tasks.grasp_lift_fabric import robot_profiles as rp
+    s, b = rp.PROFILES["tesollo_right"], rp.PROFILES["bis_right"]
+    # 자산이 바꾸는 것
+    assert "bi_s" in b.usd_relpath and b.fabric_robot_dir == "openarm_tesollo_bi_s"
+    assert b.palm_box_min != s.palm_box_min          # palm 오프셋 54.8mm 차
+    # 자산이 바꾸지 **않는** 것 — 이름 규약·시너지 자세·접촉 그룹은 상속
+    for f in ("hand_joint_names", "hand_open_pose", "hand_grip_pose",
+              "hand_channel_of_joint", "contact_group_a", "contact_group_b",
+              "finger_sensor_bodies", "fingertip_bodies", "palm_body",
+              "arm_joint_regex", "hand_joint_regex", "fabric_joint_order",
+              "palm_rot_center_deg", "palm_rot_half_deg"):
+        assert getattr(b, f) == getattr(s, f), f"{f} 가 자산 교체로 바뀌면 안 된다"
+    # 반대편 팔 구성이 다르다 — 없는 관절 이름이 남으면 Articulation 조립이 죽는다
+    assert not [k for k in b.init_joint_pos if "gripper" in k]
+    assert "left_gripper" not in b.actuator_specs
+    assert len([k for k in b.init_joint_pos if k.startswith("l_hj_")]) == 20
+
 
 def test_track_only_imports_sibling_never_writes_it():
     """자매 트랙은 다른 세션 소유다. 우리 소스는 import 만 해야 한다."""

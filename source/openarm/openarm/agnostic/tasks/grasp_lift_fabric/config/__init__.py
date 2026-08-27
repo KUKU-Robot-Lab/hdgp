@@ -16,10 +16,11 @@ import gymnasium as gym
 
 from . import agents
 from ..grasp_lift_fabric_env_cfg import (
+    GraspLiftFabricBisRightEnvCfg,
     GraspLiftFabricGripperLeftEnvCfg,
     GraspLiftFabricTesolloRightEnvCfg,
 )
-from ...grasp_s2r import robot_profiles as _rp
+from .. import robot_profiles as _rp
 
 _ENTRY = (
     "openarm.agnostic.tasks.grasp_lift_fabric.grasp_lift_fabric_env:GraspLiftFabricEnv"
@@ -39,6 +40,8 @@ def _play(cls):
 _CFGS = {
     "sens_r": GraspLiftFabricTesolloRightEnvCfg,
     "sens_l": GraspLiftFabricGripperLeftEnvCfg,
+    # ★USD 교체 검증 — 같은 과제·같은 보상·같은 제어, 로봇만 양팔 Tesollo(bi_s).
+    "bis_r": GraspLiftFabricBisRightEnvCfg,
 }
 
 
