@@ -12,25 +12,20 @@
 | `fabric_class`/`fabric_robot_dir`/`fabric_params_filename` | Fabrics URDF 가 자산마다 다르다 |
 | `init_joint_pos`/`actuator_specs` | **반대편 팔의 구성이 다르다**(sensor=2 지 그리퍼 / bi_s=Tesollo 20 DOF). 없는 관절 이름을 남겨두면 Articulation 조립이 실패한다 |
 | `palm_box_min/max`·`object_spawn_center` | palm 오프셋이 54.8mm 다르다 → 도달영역과 컵 배치가 따라 바뀐다 |
-| `PALM_NORMAL_COL` | ★★**손바닥 법선축이 자산마다 다르다** — 아래 참조 |
 
 반대로 **바뀌지 않는 것**은 전부 상속한다: 관절/바디 이름 규약, 시너지 자세
-(`hand_open_pose`/`hand_grip_pose`), 접촉 그룹, 우팔 액추에이터 게인, 회전 박스.
+(`hand_open_pose`/`hand_grip_pose`), 접촉 그룹, 우팔 액추에이터 게인, 회전 박스,
+그리고 **손바닥 법선축**.
 
-## ★★손바닥 법선축 (`PALM_NORMAL_COL`)
+## 손바닥 법선은 `palm_ee` **+x** — 자산 무관 (사용자 확정 08.27)
 
-자매 코드는 `_palm_ee_R()` 의 **열 0 이 손바닥 법선**이라고 가정하고, approach 항이
-`palm_normal_dist = |d_local.x|` 로 밀착도를 잰다. 이 가정은 **자산마다 다르다**:
+자매 approach 가 `palm_normal_dist = |d_local.x|` 로 밀착도를 재는 근거이고, 이
+규약은 자산이 바뀌어도 같다(palm 계열 body 는 회전이 동일하고 위치만 다르다).
 
-- `openarm_tesollo_sensor_rl` : 법선 = 링크 로컬 **+x** (열 0)
-- `openarm_tesollo_bi_s_rl`   : 법선 = 링크 로컬 **+y** (열 1)
-  (`modules/robots.py` `palmar_axis_local` 실측 주석: URDF 유도 + probe_palmar_sign
-   실측 우팔 +y 합계 +270mm/9-of-10 마디. "자매 sensor 자산은 palmar 가 (1,0,0)이다"
-   라고 같은 주석이 명시한다.)
-
-그래서 프로필마다 법선이 몇 번째 열인지 적고, env 가 `_palm_ee_R()` 을 **순환
-치환**으로 재정렬해 downstream 전부(approach 거리·케이지 오프셋·obs palm_ax)가 한
-번에 맞게 한다. 순환이라 오른손 좌표계(det=+1)가 보존된다.
+★혼동 주의: `modules/robots.py` 의 `palmar_axis_local` 은 **손가락 마디 링크**의
+  손바닥면 방향(마디별 dict)이지 palm body 의 법선이 아니다. 그 값이 자산마다
+  (0,1,0)/(1,0,0) 로 갈리는 것은 **손가락 링크 프레임** 이야기다 — palm 법선축을
+  자산별로 바꾸면 approach 가 엉뚱한 축을 재게 된다.
 """
 
 from __future__ import annotations
@@ -71,13 +66,6 @@ BIS_RIGHT = dataclasses.replace(
     object_spawn_center=_rb.BIS_RIGHT.object_spawn_center,
 )
 
-# 손바닥 법선이 `_palm_ee_R()` 의 몇 번째 열인가 — 파일 상단 설명 참조.
-PALM_NORMAL_COL: dict[str, int] = {
-    "tesollo_right": 0,
-    "gripper_left": 0,
-    "bis_right": 1,
-}
-
 _OURS: dict[str, RobotProfile] = {"bis_right": BIS_RIGHT}
 
 # 자매 것 + 우리 것. 자매 프로필을 **덮어쓰지 않는다**(같은 이름이면 fail-loud).
@@ -86,12 +74,6 @@ if _dupe:
     raise RuntimeError(
         f"자매 프로필과 이름이 겹친다: {sorted(_dupe)} — 자매 정의를 가리게 된다")
 PROFILES: dict[str, RobotProfile] = {**_s2r.PROFILES, **_OURS}
-
-_missing = [n for n in PROFILES if n not in PALM_NORMAL_COL]
-if _missing:
-    raise RuntimeError(
-        f"PALM_NORMAL_COL 미선언 프로필 {_missing} — 손바닥 법선축은 자산마다 다르므로 "
-        "추정하면 안 된다(probe_palmar_sign 으로 실측할 것)")
 
 # ★자매 `GraspS2REnv.__init__` 이 자기 모듈의 `PROFILES[cfg.profile_name]` 을 직접
 #   읽는다. 우리 프로필을 그 레지스트리에 **등록**해야 상속이 성립한다(자매 *파일* 은

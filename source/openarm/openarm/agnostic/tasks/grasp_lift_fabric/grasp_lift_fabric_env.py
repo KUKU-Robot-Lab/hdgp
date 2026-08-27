@@ -29,7 +29,6 @@ import torch
 
 from ..grasp_s2r.grasp_s2r_env import GraspS2REnv
 from .grasp_lift_fabric_env_cfg import GraspLiftFabricEnvCfg, resolve_frozen
-from .robot_profiles import PALM_NORMAL_COL
 
 
 class GraspLiftFabricEnv(GraspS2REnv):
@@ -52,27 +51,6 @@ class GraspLiftFabricEnv(GraspS2REnv):
             print(f"[grasp_lift_fabric] 감쌈 분모 = "
                   f"{[self._finger_names[i] for i in _keep]} "
                   f"(제외 {list(_unusable)})", flush=True)
-
-    # ==================================================================
-    # 로봇 종속 — 손바닥 법선축
-    # ==================================================================
-    def _palm_ee_R(self):
-        """palm 회전행렬 (N,3,3) — **열 0 이 손바닥 법선**이 되도록 재정렬한다.
-
-        ★★자매 코드는 열 0 = 법선(+x)을 가정한다(approach 의 `palm_normal_dist =
-          |d_local.x|`, 케이지 오프셋, obs `palm_ax`). 그런데 **법선축은 자산마다
-          다르다** — sensor 자산은 +x, bi_s 자산은 +y 다(`robot_profiles.py` 상단
-          근거: URDF 굴곡축×장축 유도 + probe_palmar_sign 실측).
-          여기서 한 번 재정렬하면 그 accessor 를 쓰는 downstream 이 전부 맞는다.
-        ★순환 치환만 쓴다 — 열을 임의로 바꾸면 det=−1(왼손계)이 되어 회전이 아니게 된다.
-        """
-        R = super()._palm_ee_R()
-        # ★`self.profile` 은 부모 `__init__` 후반에야 생긴다. `_report_home_cage` 가
-        #   그보다 먼저 이 accessor 를 쓰므로 **cfg** 에서 읽는다.
-        k = PALM_NORMAL_COL[self.cfg.profile_name]
-        if k == 0:
-            return R
-        return R[:, :, [k % 3, (k + 1) % 3, (k + 2) % 3]]
 
     # ==================================================================
     # 부팅 — 홈 오버라이드 → fabric → 굴곡 부호 실측

@@ -373,24 +373,17 @@ def test_new_robot_is_a_field_diff_not_a_new_profile_literal():
     assert "덮으려 한다 — 금지" in PROF
 
 
-def test_palm_normal_axis_is_declared_per_robot_not_assumed():
-    """★★손바닥 법선축은 자산마다 다르다(sensor +x / bi_s +y).
+def test_palm_normal_axis_is_not_made_robot_specific():
+    """★손바닥 법선은 `palm_ee` **+x** 이고 자산이 바뀌어도 같다(사용자 확정 08.27).
 
-    자매 approach 는 `_palm_ee_R()` 열 0 이 법선이라고 **가정**한다. 프로필마다
-    선언하고 env 가 재정렬하지 않으면, 자산을 바꾼 순간 밀착도가 엉뚱한 축을 잰다.
+    한때 `modules/robots.py` 의 `palmar_axis_local` 을 palm 법선으로 오독해 자산별
+    축 치환을 넣었다가 되돌렸다 — 그 필드는 **손가락 마디 링크**의 손바닥면 방향
+    (마디별 dict)이지 palm body 의 법선이 아니다. 자매의 `_palm_ee_R()`(열 0 = 법선)
+    을 그대로 상속한다.
     """
-    from openarm.agnostic.tasks.grasp_lift_fabric import robot_profiles as rp
-    assert rp.PALM_NORMAL_COL["tesollo_right"] == 0
-    assert rp.PALM_NORMAL_COL["bis_right"] == 1
-    assert set(rp.PALM_NORMAL_COL) >= set(rp.PROFILES), "선언 안 된 프로필이 있다"
-    # env 가 accessor 한 곳에서 재정렬하고, **순환 치환**이라 det=+1 이 보존된다.
-    m = re.search(r"def _palm_ee_R.*?(?=\n    # =)", ENV, re.S)
-    assert m and "PALM_NORMAL_COL[self.cfg.profile_name]" in m.group(0)
-    assert "[k % 3, (k + 1) % 3, (k + 2) % 3]" in m.group(0)
-    # 주석/독스트링을 뺀 **코드**에서 판단한다.
-    code = re.sub(r"#.*", "", re.sub(r'"""[\s\S]*?"""', "", m.group(0)))
-    assert "self.profile" not in code, (
-        "`self.profile` 은 `_report_home_cage` 시점에 아직 없다 — cfg 에서 읽어야 한다")
+    assert "_palm_ee_R" not in ENV, "palm 법선축을 이 트랙에서 재정의하고 있다"
+    assert "PALM_NORMAL_COL" not in ENV and "PALM_NORMAL_COL" not in PROF
+    assert "열 0 = 손바닥 법선(+x)" in SIB_CTL, "자매의 법선 규약이 바뀌었다"
 
 
 def test_bis_profile_swaps_only_asset_dependent_fields():
