@@ -59,8 +59,10 @@ parser.add_argument("--fabrics_src", type=Path, default=None,
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
-if args.gravity_comp == "off":
-    os.environ["HDGP_GRAVITY_COMP"] = "0"     # ★preset import 전에 설정해야 한다
+# ★두 방향 다 명시한다. `on` 일 때 아무것도 안 하면 preset 기본값
+#   (`GRAVITY_COMP_ENABLED = False`)이 그대로 남는데, 기록에는 'on' 이라고 적히므로
+#   **요청을 측정으로 오독**하게 된다. 실제로 그렇게 한 벌을 뽑았다.
+os.environ["HDGP_GRAVITY_COMP"] = "0" if args.gravity_comp == "off" else "1"
 
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
@@ -418,10 +420,23 @@ def main() -> int:
                       f"done {int(rec['done'][-1][0])}", flush=True)
 
     arrays = {k: np.stack(v) for k, v in rec.items()}
+    # 팔 게인은 "액션이 얼마나 따라와지는가"의 절반이다 — 기록이 스스로 말해야 한다.
+    _left_arm_group = next(
+        (g for g, a in env.scene["robot"].actuators.items()
+         if any(n.startswith("l_aj_") for n in a.joint_names)), None)
     arrays["meta_joint_names"] = np.array([robot.joint_names[i] for i in arm_ids])
     arrays["meta_grip_names"] = np.array([robot.joint_names[i] for i in grip_ids])
     arrays["meta_step_dt"] = np.array([env.step_dt])
-    arrays["meta_gravity_comp"] = np.array([args.gravity_comp])
+    # 요청이 아니라 **실제로 켜졌는지**를 적는다.
+    arrays["meta_gravity_comp"] = np.array(["on" if P.GRAVITY_COMP_ENABLED else "off"])
+    arrays["meta_gravity_comp_requested"] = np.array([args.gravity_comp])
+    if _left_arm_group is not None:
+        _act = env.scene["robot"].actuators[_left_arm_group]
+        arrays["meta_arm_group"] = np.array([_left_arm_group])
+        arrays["meta_arm_stiffness"] = np.array([float(_act.stiffness.reshape(-1)[0])])
+        arrays["meta_arm_damping"] = np.array([float(_act.damping.reshape(-1)[0])])
+    else:
+        print("[REC] ⚠ 좌팔 액추에이터 그룹을 못 찾았다 — 게인을 기록하지 못한다.")
     arrays["meta_checkpoint"] = np.array([str(args.checkpoint)])
     arrays["meta_fabrics"] = np.array([str(_FABRICS_FILE)])
     # ★소스 신원. 이 트랙은 살아 있는 동안 태스크 파일이 바뀐다(08.25 실측: 기록 도중
