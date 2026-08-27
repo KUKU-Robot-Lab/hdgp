@@ -325,6 +325,17 @@ class GraspS2RControlMixin:
         self._syn_freeze = torch.tensor(
             [nm.rsplit("_", 1)[1] in p.hand_freeze_suffixes for nm in p.hand_joint_names],
             device=self.device)
+        # ★★동결은 **관절별로 자기 링크가 닿았을 때** 걸어야 한다.
+        #   구판은 (원위|팁) 접촉 하나로 `_3`·`_4` 를 통째로 얼렸는데, `_2` 가 굽으면
+        #   손끝이 가장 먼저 닿으므로 **감쌈이 시작되기 직전에 감쌈 관절을 잠갔다** —
+        #   08.27 실측: wrap_frac 이 전 런에서 정확히 0.000, syn_close 0.278 ≈
+        #   "채널1(`_2`)만 폐쇄" 예측 0.250.
+        #   `_3` → 중간마디 접촉 / `_4` → 원위 또는 팁(팁은 원위 링크에 고정).
+        _sfx = [nm.rsplit("_", 1)[1] for nm in p.hand_joint_names]
+        self._syn_freeze_mid = torch.tensor(
+            [s in p.hand_freeze_suffixes and s == "3" for s in _sfx], device=self.device)
+        self._syn_freeze_dist = torch.tensor(
+            [s in p.hand_freeze_suffixes and s != "3" for s in _sfx], device=self.device)
         # 폐쇄도는 **관절별** 독립 진행도다 — 접촉 동결이 관절마다 따로 걸린다.
         self._syn_close = torch.zeros(self.num_envs, n, device=self.device)
         self._syn_target = self.robot.data.joint_pos[:, self._syn_ids].clone()
@@ -362,12 +373,18 @@ class GraspS2RControlMixin:
         _g = self._close_gate.unsqueeze(1)
         delta = torch.where(delta > 0.0, delta * _g, delta)
         if bool(self.cfg.synergy_contact_freeze):
-            # ★★감쌈을 만드는 메커니즘: 원위·팁이 닿은 손가락의 동결 대상 관절만
-            #   멈춰 컵 형상에 드리워지게 한다. 끄면 핀치가 된다.
-            _, _dist = self._contact_forces_split()
+            # ★★감쌈을 만드는 메커니즘: 닿은 마디의 관절만 멈춰 컵 형상에 드리워지게
+            #   한다. 끄면 핀치가 된다. 단 **관절마다 자기 링크**를 봐야 한다 —
+            #   팁 하나로 `_3`·`_4` 를 같이 얼리면 감쌈 직전에 감쌈을 잠근다.
+            _mid, _dist = self._contact_forces_split()
             _thr = float(self.cfg.contact_force_threshold)
-            _hold = ((_dist > _thr) | (self._tip_contact_forces() > _thr))[:, self._syn_fi]
-            delta = delta * (~(_hold & self._syn_freeze)).float()
+            _h_mid = (_mid > _thr)[:, self._syn_fi]
+            _h_dist = ((_dist > _thr)
+                       | (self._tip_contact_forces() > _thr))[:, self._syn_fi]
+            _hold = (_h_mid & self._syn_freeze_mid) | (_h_dist & self._syn_freeze_dist)
+            # ★닫는 방향만 얼린다 — 푸는 방향까지 막으면 갇혀서 빠져나올 수 없다
+            #   (닫기 게이트와 같은 원칙).
+            delta = torch.where(_hold & (delta > 0.0), torch.zeros_like(delta), delta)
         self._syn_close = (self._syn_close + delta).clamp(0.0, 1.0)
         tgt = torch.lerp(self._syn_open.unsqueeze(0), self._syn_grip.unsqueeze(0),
                          self._syn_close)

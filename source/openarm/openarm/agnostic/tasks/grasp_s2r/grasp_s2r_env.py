@@ -523,6 +523,13 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["task/success"] = self._success_now.float().mean()
         self.extras["task/stay_run"] = self._stay_run.float().mean()
         self.extras["task/syn_close"] = self._syn_close.mean()
+        # ★채널별 폐쇄도 — 전체 평균만 보면 "어느 채널이 안 닫히는지"를 못 본다.
+        #   08.27: 평균 0.278 이 채널1(`_2`)만 폐쇄한 예측치 0.250 과 맞아떨어졌고,
+        #   GUI 관찰(`_2` 완전굴곡·`_3`/`_4` 정지)과 일치했다. ch2 가 낮은 이유가
+        #   "명령이 안 나간다"인지 "명령은 나가는데 동결이 먹는다"인지 가른다.
+        for _c in range(self._syn_nch):
+            _m = self._syn_ch == _c
+            self.extras[f"task/syn_close_ch{_c}"] = self._syn_close[:, _m].mean()
         self.extras["task/close_gate"] = self._close_gate.mean()
         self.extras["task/cage_ctr_dist"] = self._cage_ctr_dist.mean()
         self.extras["task/abnormal_rate"] = self._abnormal.float().mean()

@@ -345,3 +345,24 @@ def test_fabric_integrates_once_per_policy_step():
     assert ctrl.count("self.integrator.step(") == 1
     m = re.search(r"def _apply_action\(self\)([\s\S]*?)\n    def ", ctrl)
     assert m and "integrator" not in m.group(1)
+
+
+def test_contact_freeze_is_per_joint_link():
+    """★★동결은 관절마다 **자기 링크**가 닿았을 때만 걸려야 한다.
+
+    구판은 (원위|팁) 접촉 하나로 `_3`·`_4` 를 통째로 얼렸다. 그런데 `_2` 가 굽으면
+    손끝이 가장 먼저 닿으므로 **감쌈이 시작되기 직전에 감쌈 관절을 잠그는** 구조였다 —
+    wrap_frac 이 전 런에서 정확히 0.000 이었고, syn_close 0.278 이 "채널1(`_2`)만
+    폐쇄" 예측 0.250 과 일치했다(사용자 GUI: `_2` 완전굴곡·`_3`/`_4` 정지).
+
+    또한 동결은 **닫는 방향에만** 걸려야 한다. 양방향을 막으면 잘못 얼린 자세에서
+    빠져나올 수 없다(닫기 게이트와 같은 원칙).
+    """
+    ctrl = _code(_CTRL)
+    assert "self._syn_freeze_mid" in ctrl and "self._syn_freeze_dist" in ctrl
+    # `_3` 은 중간마디, `_4` 는 원위(팁 포함) — 소스가 둘을 섞으면 안 된다.
+    assert "_hold = (_h_mid & self._syn_freeze_mid) | (_h_dist & self._syn_freeze_dist)" in ctrl
+    # 푸는 방향은 항상 허용.
+    assert "torch.where(_hold & (delta > 0.0), torch.zeros_like(delta), delta)" in ctrl
+    # 구판 배선이 되살아나면 실패시킨다.
+    assert "delta * (~(_hold & self._syn_freeze)).float()" not in ctrl
