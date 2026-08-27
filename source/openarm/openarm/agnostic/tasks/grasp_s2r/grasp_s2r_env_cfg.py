@@ -302,7 +302,16 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
 
     # ---- 보상 가중치 (grasp_v1 8항 + 이송 2항) ---------------------------------------
     approach_weight: float = 2.0
-    approach_sharpness: float = 8.0
+    approach_sharpness: float = 8.0          # 손바닥 **면** 어긋남(y·z)
+    # ★★법선(palm_ee_x) 방향은 더 날카롭게 — "손바닥이 물체에 밀착"이 인벨롭의 전제다.
+    #   08.27 구조 실측: 홈에서 케이지 중심이 palm 에서 **106mm 앞**이라
+    #   (cage−palm = 82.2, 66.4, 3.4 mm), approach 가 cage_dist→0 을 요구하면
+    #   palm 은 컵에서 106mm 떨어져야 한다 — "밀착"과 **양립 불가**였다.
+    #   실측 타협점: palm_to_cup 0.126 / cage_dist 0.041 → 사용자 GUI 관찰
+    #   "palm_ee → 손가락 → 컵 순서로 온다"가 여기서 나온다.
+    approach_sharpness_normal: float = 12.0
+    # ★밀착 상태에서 **정지**해야 손가락이 말릴 시간이 생긴다. palm 실측 선속도 기준.
+    palm_still_gain: float = 10.0
     grasp_weight: float = 12.0
     # ★★감쌈 비중 0.55 → 0.80(폐쇄 0.20). 폐쇄 항은 **큰 상금이 아니라 넛지**여야 한다 —
     #   approach 가 손 모양을 못 보게 고친 뒤로는 건너야 할 계곡이 없어졌고, 08.27 실측

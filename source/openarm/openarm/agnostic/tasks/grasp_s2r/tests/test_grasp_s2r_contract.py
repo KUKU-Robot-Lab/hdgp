@@ -426,3 +426,30 @@ def test_contact_freeze_is_per_joint_link():
     assert "torch.where(_hold & (delta > 0.0), torch.zeros_like(delta), delta)" in ctrl
     # 구판 배선이 되살아나면 실패시킨다.
     assert "delta * (~(_hold & self._syn_freeze)).float()" not in ctrl
+
+
+def test_approach_targets_the_palm_not_the_cage():
+    """★★접근 목표는 **palm** 이어야 한다 — 케이지를 목표로 두면 핀치가 강제된다.
+
+    홈 실측: 케이지 중심이 palm 앞 **106mm**(cage−palm = 82.2, 66.4, 3.4 mm).
+    approach 가 `cage_dist → 0` 을 요구하면 palm 은 컵에서 106mm 떨어져야 하므로
+    "손바닥 밀착"과 **구조적으로 양립 불가**다. 실측 타협점 palm_to_cup 0.126 /
+    cage_dist 0.041 이 사용자 GUI 관찰 "palm_ee → 손가락 → 컵 순서"의 정체다.
+
+    · cage_dist 는 approach 에서 빠지고 **닫기 게이트 전용**으로 남는다.
+    · 거리는 palm 프레임으로 분해해 법선(palm_ee_x)=밀착도를 더 날카롭게 본다.
+      법선거리는 컵 표면에서 물리적으로 포화하므로 형상 상수가 필요 없다.
+    · `palm_still` 을 곱해 **밀착한 채 멈추게** 한다 — 그래야 시너지 손가락이 말린다.
+      "멀리서 정지" 회피는 성립 안 함: 홈(d 0.36) 정지 0.055 vs 밀착(d 0.05) 정지 0.67.
+    """
+    rew, env, cfg = _code(_REW), _code(_ENV), _code(_CFG)
+    _i = rew.index("approach = pre_lift_gate")
+    blk = rew[_i:rew.index("grasp_quality", _i)]
+    assert "cage_dist" not in blk, "approach 가 다시 케이지를 목표로 삼는다(핀치 강제)"
+    assert "palm_normal_dist" in blk and "palm_lateral_dist" in blk
+    assert "palm_still" in blk, "밀착 후 정지 요건이 없다"
+    assert "approach_sharpness_normal" in cfg and "palm_still_gain" in cfg
+    # 법선은 palm 회전행렬 열 0(손바닥 법선)에서 나온다.
+    assert "_dn = (_d * _R[:, :, 0]).sum(dim=-1)" in env
+    # 정지는 **실측** palm 선속도다(액션 변화량이 아니다 — 손가락을 말면 안 되니까).
+    assert "self.robot.data.body_lin_vel_w[:, self.palm_idx]" in env

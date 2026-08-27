@@ -101,6 +101,10 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         # 닫기 게이트 상태(정렬도) — `_pre_physics_step` 이 매 스텝 갱신한다.
         self._close_gate = torch.ones(self.num_envs, device=self.device)
         self._cage_ctr_dist = torch.zeros(self.num_envs, device=self.device)
+        # palm 프레임 분해 거리·속도(로깅용) — `_get_rewards` 가 매 스텝 갱신한다.
+        self._palm_normal_dist = torch.zeros(self.num_envs, device=self.device)
+        self._palm_lateral_dist = torch.zeros(self.num_envs, device=self.device)
+        self._palm_speed = torch.zeros(self.num_envs, device=self.device)
         # 케이지 중심의 palm-local 오프셋 — `_report_home_cage` 가 홈에서 실측해 고정한다.
         self._cage_offset_palm = torch.zeros(3, device=self.device)
 
@@ -407,6 +411,22 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         grasp_center = obj_pos.clone()
         grasp_center[:, 2] += float(cfgn.object_grasp_z_offset)
         palm_to_cup = self._banded_dist(palm_pos - grasp_center)
+        # ★★palm 프레임 분해 — 법선(palm_ee_x)이 **밀착도**다. `_palm_ee_R()` 열 0 이
+        #   손바닥 법선이다. 접근 목표를 케이지가 아니라 palm 이 맡게 하는 핵심 양.
+        _d = grasp_center - palm_pos
+        _R = self._palm_ee_R()
+        _dn = (_d * _R[:, :, 0]).sum(dim=-1)                 # 법선 성분(부호 포함)
+        _dy = (_d * _R[:, :, 1]).sum(dim=-1)
+        _dz = (_d * _R[:, :, 2]).sum(dim=-1)
+        palm_normal_dist = _dn.abs()
+        # 손바닥 면 안의 어긋남 — z 는 데드밴드를 통과시킨다(파지 높이는 여유 축).
+        _dzb = torch.relu(_dz.abs() - float(self.cfg.grasp_z_deadband))
+        palm_lateral_dist = torch.sqrt(_dy.pow(2) + _dzb.pow(2))
+        # ★밀착한 채 **정지**해야 시너지 손가락이 말릴 시간이 생긴다.
+        _vp = self.robot.data.body_lin_vel_w[:, self.palm_idx].norm(dim=-1)
+        palm_still = torch.exp(-float(self.cfg.palm_still_gain) * _vp)
+        self._palm_normal_dist, self._palm_lateral_dist, self._palm_speed = (
+            palm_normal_dist, palm_lateral_dist, _vp)
         cup_disp = (obj_pos[:, :2] - self.object_spawn_pos[:, :2]).norm(dim=-1)
         height_delta = obj_pos[:, 2] - self.object_spawn_pos[:, 2]
         goal_dist = (obj_pos - self.goal_pos).norm(dim=-1)
@@ -461,8 +481,9 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             wrap_frac=wrap_frac,
             wrap_at_latch=self._wrap_at_latch,
             grip_frac=grip_frac,
-            palm_to_cup_dist=palm_to_cup,
-            cage_dist=cage_dist,
+            palm_normal_dist=palm_normal_dist,
+            palm_lateral_dist=palm_lateral_dist,
+            palm_still=palm_still,
             close_gate=self._close_gate,
             close_progress=self._close_progress(),
             cup_height_delta=height_delta,
@@ -506,6 +527,9 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["task/stay_run"] = self._stay_run.float().mean()
         self.extras["task/syn_close"] = self._syn_close.mean()
         self.extras["task/close_credit"] = self._close_progress().mean()
+        self.extras["task/palm_normal_dist"] = self._palm_normal_dist.mean()
+        self.extras["task/palm_lateral_dist"] = self._palm_lateral_dist.mean()
+        self.extras["task/palm_speed"] = self._palm_speed.mean()
         # ★palm 이 테이블에 쓸리는지 — 사용자 GUI 관찰 "손바닥이 테이블에 쓸리면서
         #   열린다". 접촉 센서는 **컵만** 필터링해서 테이블 접촉이 안 보인다. 높이로 잰다.
         _pz = palm_pos[:, 2] - float(self.cfg.table_surface_z)

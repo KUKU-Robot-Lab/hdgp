@@ -48,8 +48,9 @@ def compute_grasp_s2r_rewards(
     wrap_at_latch: torch.Tensor,          # (N,) 래치 시점 깊이 스냅샷
     grip_frac: torch.Tensor,              # (N,) tip|mid|distal OR 비율
     # ---- 기하 ----
-    palm_to_cup_dist: torch.Tensor,
-    cage_dist: torch.Tensor,             # **palm 강체** 케이지중심 ↔ 컵 거리(손 모양 무관)
+    palm_normal_dist: torch.Tensor,      # |법선(palm_ee_x) 성분| — **밀착도**
+    palm_lateral_dist: torch.Tensor,     # 손바닥 면(y·z) 어긋남, z 는 데드밴드 통과
+    palm_still: torch.Tensor,            # (N,) exp(−gain·‖v_palm‖) [0,1]
     close_gate: torch.Tensor,            # (N,) 케이지 정렬도 [0,1] — 손 액션을 여는 게이트
     close_progress: torch.Tensor,        # (N,) 가동 손관절 평균 폐쇄도 [0,1]
     cup_height_delta: torch.Tensor,
@@ -100,10 +101,23 @@ def compute_grasp_s2r_rewards(
         + _f(cfg, "cup_tilt_penalty", 0.08)
         * torch.relu(cup_tilt_deg - _f(cfg, "cup_tilt_free_deg", 8.0))
     ).clamp(max=_aw)
-    approach = pre_lift_gate * (
+    # ★★08.27 재설계 — 접근 목표가 palm 이 아니라 **케이지**였다.
+    #   홈에서 케이지 중심은 palm 앞 **106mm**(cage−palm = 82.2, 66.4, 3.4 mm)라
+    #   `cage_dist → 0` 은 palm 이 컵에서 106mm 떨어질 것을 요구한다 — "손바닥 밀착"과
+    #   구조적으로 양립 불가다. 실측 타협점 palm_to_cup 0.126 / cage_dist 0.041 이
+    #   사용자 GUI 관찰 "palm_ee → 손가락 → 컵 순서"의 정체다(= 핀치 강제).
+    #   → cage_dist 를 approach 에서 **뺀다**. 케이지는 닫기 게이트(컵이 손가락 사이인가)
+    #     전용으로 남는다 — 그 판정에는 손가락 도달범위가 맞다.
+    # ★거리를 palm 프레임으로 분해해 **법선(palm_ee_x) = 밀착도**를 더 날카롭게 본다.
+    #   법선거리는 컵 표면에서 물리적으로 포화하므로(관통 불가) 형상 상수 없이
+    #   "밀착"이 정의된다.
+    # ★`palm_still` 을 곱한다 — 밀착한 채 **멈춰 있어야** 시너지 손가락이 말릴 시간이
+    #   생긴다. 멀리서 정지하는 회피는 성립하지 않는다: 홈(d 0.36)에서 정지하면
+    #   exp(−8·0.36)=0.055, 밀착(d 0.05) 후 정지면 0.67 로 12배다.
+    approach = pre_lift_gate * palm_still.clamp(0.0, 1.0) * (
         _aw * torch.exp(
-            -_f(cfg, "approach_sharpness", 8.0)
-            * (palm_to_cup_dist + cage_dist))
+            -(_f(cfg, "approach_sharpness_normal", 12.0) * palm_normal_dist
+              + _f(cfg, "approach_sharpness", 8.0) * palm_lateral_dist))
         - _penalty
     )
 
