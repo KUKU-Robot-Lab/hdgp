@@ -100,7 +100,9 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
 
         # 닫기 게이트 상태(정렬도) — `_pre_physics_step` 이 매 스텝 갱신한다.
         self._close_gate = torch.ones(self.num_envs, device=self.device)
-        self._cage_xy_dist = torch.zeros(self.num_envs, device=self.device)
+        self._cage_ctr_dist = torch.zeros(self.num_envs, device=self.device)
+        # 케이지 중심의 palm-local 오프셋 — `_report_home_cage` 가 홈에서 실측해 고정한다.
+        self._cage_offset_palm = torch.zeros(3, device=self.device)
 
         # 래치 (보상 단계 표시 전용)
         self._latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -158,6 +160,18 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         cage = 0.5 * (tips[_a] + tips[_others].mean(dim=0))
         r_cage = 0.5 * float((tips[_a] - tips[_others].mean(dim=0)).norm())
         self._r_cage = r_cage          # 닫기 게이트 임계로도 쓴다
+
+        # ★★케이지 중심을 **palm 에 강체로 붙인다**. 홈 자세에서 한 번 재고 그 뒤로는
+        #   손가락이 어떻게 움직이든 이 오프셋이 변하지 않는다.
+        #   08.27 실측(s2r_a6): 중심을 실시간 손끝으로 두면 팔이 정지한 구간
+        #   (palm_to_cup 0.120~0.140, n=147)에서 corr(syn_close, cage_dist) = −0.974 —
+        #   **팔을 안 움직이고 손만 오므려도 중심이 컵 쪽으로 50mm 당겨져** 게이트가
+        #   저절로 열렸다(램프 폭 60mm 의 83%). "정렬되면 닫아라"가 아니라
+        #   "닫으면 닫아도 된다"는 양의 되먹임이라 게이트가 아무것도 막지 못했다.
+        _palm = (self.robot.data.body_pos_w[:, self.palm_idx]
+                 - self.scene.env_origins)[0]
+        _R = self._palm_ee_R()[0]                       # (3,3), 열 = palm 축
+        self._cage_offset_palm = _R.transpose(0, 1) @ (cage - _palm)
         cup = [p.object_spawn_center[0], p.object_spawn_center[1],
                float(self.cfg.table_surface_z) + float(self.cfg.object_origin_offset_z)
                + float(self.cfg.object_grasp_z_offset)]
@@ -238,19 +252,26 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
 
         # ---- 손: 시너지 -------------------------------------------------------------
         _prev = self._syn_target
-        # ★★닫기 게이트: 컵이 케이지 안(수평)에 들어오기 전에는 오므리지 않는다.
+        # ★★닫기 게이트: 컵이 케이지 안에 들어오기 전에는 오므리지 않는다.
         #   래치로는 못 막는다 — 래치는 보상을 여는 신호일 뿐이고 닫힘은 손 액션이
         #   직접 만든다. 경계에서 끊지 않고 램프를 둬 gradient 를 남긴다.
-        _obj_xy = self._env_local(self.object.data.root_pos_w)[:, :2]
-        _tips_xy = (self.robot.data.body_pos_w[:, self._tip_ids_t]
-                    - self.scene.env_origins[:, None, :])[:, :, :2]
-        _a = int(self._group_a_idx[0])
-        _oth = [i for i in range(len(self.tip_ids)) if i != _a]
-        _cage_xy = 0.5 * (_tips_xy[:, _a] + _tips_xy[:, _oth].mean(dim=1))
-        self._cage_xy_dist = (_cage_xy - _obj_xy).norm(dim=-1)
+        # ★케이지 중심은 palm 강체 오프셋(`_cage_offset_palm`, 홈 실측)으로 만든다.
+        #   실시간 손끝 평균이면 손을 오므리는 것만으로 게이트가 열린다(위 실측 근거).
+        #   이제 게이트는 **팔 지령에만** 의존한다 — 정책이 위치를 맞춰야 열린다.
+        # ★거리는 3D. xy 투영은 z 를 못 봐서 palm·검지가 컵보다 내려간 잘못된 자세도
+        #   통과시켰다(사용자 GUI 관찰: 엄지가 컵에 걸린 채 접근). 3D 로 바꾸면
+        #   상수를 늘리지 않고 높이 조건이 같이 들어온다.
+        _obj = self._env_local(self.object.data.root_pos_w)
+        _palm = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
+        _cage = _palm + (self._palm_ee_R() @ self._cage_offset_palm)
+        self._cage_ctr_dist = (_cage - _obj).norm(dim=-1)
         if bool(self.cfg.close_gate_enabled):
             _ramp = max(float(self.cfg.close_gate_ramp) * self._r_cage, 1e-6)
-            self._close_gate = ((self._r_cage - self._cage_xy_dist) / _ramp).clamp(0.0, 1.0)
+            _g = ((self._r_cage - self._cage_ctr_dist) / _ramp).clamp(0.0, 1.0)
+            # ★래치 후에는 해제한다. 게이트는 **접근 구간 전용**이다 — 들고 가는 중에
+            #   컵이 흔들려 게이트가 닫히면 다시 쥘 길이 막힌다(audit Check 3).
+            self._close_gate = torch.where(
+                self._latched, torch.ones_like(_g), _g)
         else:
             self._close_gate = torch.ones(self.num_envs, device=self.device)
         self._syn_target = self._synergy_targets(self.actions[:, 6:])
@@ -379,7 +400,14 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         n_grip = grip_c.float().sum(dim=1)
 
         # 접촉 지속 — 끊기면 0 으로 되돌아간다.
-        _touch = n_grip >= 1
+        # ★★임계는 래치와 같은 손가락 수다. `>= 1` 이면 **손가락 하나를 컵에 대고
+        #   가만히 있는 것**이 만점이 된다 — 08.27 실측(s2r_a6, 202 iter):
+        #   contact_persistence 0.918 인데 touch_frac 0.003·wrap_frac 0.000 이었고,
+        #   grasp 항 2.07/step 이 전체 보상의 88% 였다(0.75·0.25·0.918·12 = 2.07 로
+        #   산술 일치). 정책은 594 스텝 내내 한 손가락만 대고 있는 데 수렴했다.
+        #   래치 조건과 묶으면 persist_frac 은 **래치까지의 진척도**가 되어, 주차해도
+        #   그 자리가 파지 직전이다.
+        _touch = n_grip >= int(cfgn.lift_start_min_grip_fingers)
         self._persist = torch.where(_touch, self._persist + 1,
                                     torch.zeros_like(self._persist))
         persist_frac = (self._persist.float()
@@ -496,13 +524,19 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["task/stay_run"] = self._stay_run.float().mean()
         self.extras["task/syn_close"] = self._syn_close.mean()
         self.extras["task/close_gate"] = self._close_gate.mean()
-        self.extras["task/cage_xy_dist"] = self._cage_xy_dist.mean()
+        self.extras["task/cage_ctr_dist"] = self._cage_ctr_dist.mean()
         self.extras["task/abnormal_rate"] = self._abnormal.float().mean()
         self.extras["contact/force_max"] = self._contact_forces().max()
         self.extras["fabric/palm_cmd_step_raw"] = self._palm_cmd_step_raw.mean()
         _jerr = (self.fabric_q[:, : self.profile.num_arm_joints]
                  - self.robot.data.joint_pos[:, self._arm_ids_t]).abs()
         self.extras["fabric/joint_err_mean"] = _jerr.mean()
+        # ★`fabric_q` 는 오픈루프 적분 plant 라 리셋 전까지 실측으로 되돌아오지 않는다.
+        #   에피소드 **안에서** 팔이 막히면(접촉·관절한계) fabric 만 계속 적분해 격차가
+        #   벌어지는데, 평균은 그 순간을 묻어버린다. 08.27 실측으로 **누적은 반증**됐지만
+        #   (ep_len 16→594 로 37배인데 joint_err 0.040→0.033 로 감소, 전 구간 0.023~0.053)
+        #   그건 평균 얘기다 — 최대값을 따로 봐야 막힘 구간을 잡는다.
+        self.extras["fabric/joint_err_max"] = _jerr.max()
         self.extras["fabric/palm_err_mean"] = (
             self.palm_targets[:, :3] + self._fab_to_env - palm_pos).norm(dim=-1).mean()
         return total

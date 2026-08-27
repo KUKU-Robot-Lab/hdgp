@@ -212,6 +212,47 @@ def test_closing_is_gated_on_cage_alignment():
     assert "self._r_cage" in env
 
 
+def test_close_gate_center_is_rigid_to_palm():
+    """★★게이트 영역은 **손가락을 따라 움직이면 안 된다**.
+
+    08.27 실측(s2r_a6, 202 iter): 중심을 실시간 손끝 평균으로 두니 팔이 정지한 구간
+    (palm_to_cup 0.120~0.140, n=147)에서 corr(syn_close, cage_dist) = −0.974 —
+    팔을 안 움직이고 손만 오므려도 중심이 컵 쪽으로 50mm(램프 폭의 83%) 당겨져
+    게이트가 저절로 열렸다. "정렬되면 닫아라"가 아니라 "닫으면 닫아도 된다"는
+    양의 되먹임이라 게이트가 아무것도 막지 못했다.
+
+    또한 거리는 **3D** 여야 한다. xy 투영은 z 를 못 봐서 palm·검지가 컵보다 내려간
+    잘못된 자세도 통과시켰다(사용자 GUI 관찰: 엄지가 컵에 걸린 채 접근).
+    """
+    env = _code(_ENV)
+    blk = env[env.index("_obj = self._env_local(self.object.data.root_pos_w)"):]
+    blk = blk[:blk.index("self._synergy_targets(")]
+    # 중심 = palm + R_palm · (홈에서 실측한 고정 오프셋)
+    assert "self._cage_offset_palm" in blk and "self._palm_ee_R()" in blk
+    # 게이트 계산 구간에 손끝 위치가 등장하면 안 된다(되먹임 재발 방지).
+    assert "_tip_ids_t" not in blk, "게이트가 다시 손끝을 참조한다 — 되먹임 재발"
+    # 3D 거리 — xy 슬라이스로 되돌아가면 z 조건이 사라진다.
+    assert "self._cage_ctr_dist = (_cage - _obj).norm(dim=-1)" in blk
+    # 오프셋은 홈 자세에서 한 번만 실측한다(부팅 보고 안 — 게이트 블록 밖).
+    assert "self._cage_offset_palm = _R.transpose(0, 1) @ (cage - _palm)" in env
+    # 래치 후에는 해제 — 이송 중 컵이 흔들려도 다시 쥘 수 있어야 한다.
+    assert "self._latched" in blk
+
+
+def test_contact_persistence_requires_grasp_many_fingers():
+    """★★`persistence` 는 손가락 하나로 만점이 되면 안 된다.
+
+    08.27 실측(s2r_a6): 임계가 `n_grip >= 1` 이던 시절 contact_persistence 0.918 인데
+    touch_frac 0.003 · wrap_frac 0.000. grasp 항 2.07/step 이 전체 보상의 88% 였고
+    (0.75·0.25·0.918·12 = 2.07 로 산술 일치) 정책은 594 스텝 내내 **손가락 하나를
+    컵에 대고 가만히 있는 데** 수렴했다. 임계를 래치와 묶으면 persist_frac 이
+    래치까지의 진척도가 되어, 주차해도 그 자리가 파지 직전이다.
+    """
+    env = _code(_ENV)
+    assert "_touch = n_grip >= int(cfgn.lift_start_min_grip_fingers)" in env
+    assert "_touch = n_grip >= 1" not in env
+
+
 def test_approach_penalty_is_capped():
     """★approach 벌금은 상금(approach_weight)을 못 넘어야 한다 — approach 최솟값 0.
 

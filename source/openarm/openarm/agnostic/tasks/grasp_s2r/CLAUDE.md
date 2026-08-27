@@ -58,6 +58,9 @@ grasp_v1 규약은 `palm = 홈 + delta(a)` 라 **a=0 이 홈**이고 탐색이 �
 | `task/goal_dist` · `task/stay_run` | 이송·정지 |
 | `fabric/palm_cmd_step_raw` | 클램프 **전** 요청량 — 리미터 포화율 |
 | `fabric/joint_err_mean` · `palm_err_mean` | 팔 추종. 정상 0.06 rad / 0.16 m 대역 |
+| `fabric/joint_err_max` | ★오픈루프 적분 격차의 **최대**. 평균은 막힘 구간을 묻는다 |
+| `task/close_gate` · `task/cage_ctr_dist` | 닫기 게이트. ★중심은 palm 강체·거리는 3D — 팔이 정지한 구간에서 `syn_close` 와 상관이 붙으면 되먹임 재발이다 |
+| `gate/contact_persistence` | ★`grip_frac` 과 **동행**해야 한다. 혼자 1.0 으로 가면 소수 손가락 파밍이다 |
 | `gate/disp_factor` | 래치 시점 밀림 감쇠 |
 | `task/abnormal_rate` · `contact/force_max` | 물리 건강 |
 
