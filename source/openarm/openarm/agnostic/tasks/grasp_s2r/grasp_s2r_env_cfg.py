@@ -351,6 +351,18 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     envelope_group_a_weight: float = 0.3     # 대향(엄지) 그룹
     envelope_group_b_weight: float = 0.4     # 반대(4지) 그룹
 
+    # ---- 포위도 (08.28 신설 — 기본 0.0 = 항 비활성) -----------------------------------
+    # ★인벨롭을 **접촉이 아니라 기하**로 잰다. Hu et al. 2020 의 `r_topology`(가중 10)
+    #   에 대응하며, 우리가 갖고 있지 않던 절반이다. 접촉 기반 지표는 팁 파지로
+    #   포화하므로(G 라운드 실증) 정의를 고치는 것만으로는 자세가 바뀌지 않는다.
+    # ★형상 정보를 쓰지 않는다 — 물체 중심 하나뿐이라 컵 종류를 늘려도 성립한다.
+    #   hull 대신 방향 분산을 쓰는 이유는 sim2real 이다(링크 위치 = FK 는 전이되지만
+    #   접촉점 개수는 contact discretization·마찰·강성에 민감해 전이되지 않는다).
+    enclosure_weight: float = 0.0
+    enclosure_palm_weight: float = 0.3
+    enclosure_group_a_weight: float = 0.3
+    enclosure_group_b_weight: float = 0.4
+
     # ---- 보상 가중치 (grasp_v1 8항 + 이송 2항) ---------------------------------------
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0          # 손바닥 **면** 어긋남(y·z)

@@ -24,6 +24,7 @@ import torch
 # 이 트랙의 보상 항 계약. 순서는 로깅 순서이기도 하다.
 GRASP_S2R_REWARD_TERMS: tuple[str, ...] = (
     "approach",
+    "enclosure",
     "grasp",
     "lift",
     "transfer",
@@ -47,6 +48,7 @@ def compute_grasp_s2r_rewards(
     wrap_frac: torch.Tensor,              # (N,) per-finger (middle AND distal) 비율 = 감쌈 **깊이**
     wrap_at_latch: torch.Tensor,          # (N,) 래치 시점 깊이 스냅샷
     grip_frac: torch.Tensor,              # (N,) tip|mid|distal OR 비율
+    enclosure: torch.Tensor,              # (N,) 물체를 둘러싼 정도 [0,1] — 기하(접촉 아님)
     # ---- 기하 ----
     palm_normal_dist: torch.Tensor,      # |법선(palm_ee_x) 성분| — **밀착도**
     palm_lateral_dist: torch.Tensor,     # 손바닥 면(y·z) 어긋남, z 는 데드밴드 통과
@@ -119,6 +121,20 @@ def compute_grasp_s2r_rewards(
             -(_f(cfg, "approach_sharpness_normal", 12.0) * palm_normal_dist
               + _f(cfg, "approach_sharpness", 8.0) * palm_lateral_dist))
         - _penalty
+    )
+
+    # ---- enclosure(신설) : 물체를 **둘러싸라** — 접촉이 아니라 기하 -------------------
+    # ★★08.28. Hu et al. 2020(arXiv:2002.04498)은 인벨롭을 두 항으로 나눈다:
+    #   `r_topology`(손 키포인트 hull 안에 물체가 들었는가, 가중 **10**) + `r_contact`
+    #   (접촉 개수, 가중 2). 우리는 접촉 쪽만 갖고 있었다. 그래서 팁 파지가 감쌈 지표를
+    #   만점 받았고(G 라운드: `wrap_frac` 0.91 인데 `dist_rate` 0.02), 접촉 기반 정의를
+    #   두 번 고쳤지만 두 번 다 같은 자세로 수렴했다.
+    # ★래치 **전후 모두** 살린다 — 접근 단계 유도가 이 항의 핵심이고, 들고 가는 중에
+    #   자세가 풀리는 것도 막아야 한다. `graded_contact` 를 곱해 멀리서 포위 자세만
+    #   잡는 경로를 차단한다(접촉 없이는 0).
+    enclosure_term = (
+        _f(cfg, "enclosure_weight", 0.0)
+        * enclosure.clamp(0.0, 1.0) * graded_contact
     )
 
     # ---- grasp : 래치 전에만. **close_gate 가 열리면 손가락을 내라**가 이 항의 계약 ------
@@ -221,6 +237,7 @@ def compute_grasp_s2r_rewards(
 
     terms = {
         "approach": approach,
+        "enclosure": enclosure_term,
         "grasp": grasp,
         "lift": lift,
         "transfer": transfer,

@@ -563,3 +563,58 @@ def test_envelope_metric_defaults_to_legacy():
     assert 'envelope_metric: str = "deep_and"' in cfg
     assert "success_require_lifted: bool = True" in cfg
     assert "success_require_holding: bool = True" in cfg
+
+
+def test_enclosure_is_reward_not_gate():
+    """★★포위도는 **보상**이지 게이트가 아니다 — 되먹임 함정 잠금.
+
+    이 트랙은 "케이지를 실시간 손끝으로 계산 금지"를 이미 계약으로 잠가 뒀다: 팔이
+    정지한 구간에서 `corr(syn_close, cage_dist) = −0.974` 로, 손만 오므려도 중심이
+    당겨져 게이트가 저절로 열렸다.
+
+    포위도는 실시간 링크 위치를 쓰지만 같은 함정에 걸리지 않는다 — ①게이트가 아니라
+    보상이라 `close_gate`·래치·종료 어디에도 안 들어간다 ②물체가 멀면 손을 아무리
+    오므려도 모든 단위벡터가 같은 방향이라 값이 0 이다. 그 ①을 여기서 강제한다.
+    """
+    env = _code(_ENV)
+    _i = env.index("def _enclosure")
+    # ★내부에 중첩 `def _u` 가 있어 다음 "def " 로 자르면 블록이 잘린다.
+    #   최상위 메서드 경계(4칸 들여쓰기 def)로 자른다.
+    blk = env[_i:env.index("\n    def ", _i + 10)]
+    # 포위도 계산 자체가 게이트·래치를 읽으면 안 된다(순환).
+    assert "close_gate" not in blk and "_latched" not in blk
+    # ★그리고 게이트·래치를 **쓰는** 어떤 줄도 포위도를 참조하면 안 된다.
+    #   (`close_gate=self._close_gate` 처럼 별개 인자로 넘기는 것은 정상이다 —
+    #    금지 대상은 게이트/래치의 **대입식**에 포위도가 섞이는 것이다.)
+    for _line in env.splitlines():
+        if "self._close_gate =" in _line or "self._latched =" in _line:
+            assert "enclosure" not in _line, f"포위도가 게이트/래치에 섞였다: {_line}"
+    # 종료 판정에도 들어가면 안 된다.
+    _i2 = env.index("def _get_dones")
+    _dones = env[_i2:env.index("\n    def ", _i2 + 10)]
+    assert "enclosure" not in _dones, "포위도가 종료 판정에 들어갔다"
+
+
+def test_enclosure_uses_no_shape_constant():
+    """★포위도는 물체 **중심 하나**만 쓴다 — 반경·높이·메시를 쓰면 형상 의존이 된다.
+
+    형상 정보를 안 쓰는 것이 다종 컵으로 확장하는 전제이고, 링크 위치(FK)만 쓰는 것이
+    sim2real 의 근거다(접촉점 개수는 시뮬레이터 contact discretization 에 민감하다).
+    """
+    env = _code(_ENV)
+    _i = env.index("def _enclosure")
+    # ★내부에 중첩 `def _u` 가 있어 다음 "def " 로 자르면 블록이 잘린다.
+    #   최상위 메서드 경계(4칸 들여쓰기 def)로 자른다.
+    blk = env[_i:env.index("\n    def ", _i + 10)]
+    assert "root_pos_w" in blk, "물체 중심을 안 쓴다"
+    for banned in ("radius", "half", "bbox", "extent", "grasp_z_offset"):
+        assert banned not in blk, f"포위도가 형상량 '{banned}' 을 참조한다"
+    # 손바닥과 양 그룹이 모두 들어가야 "다섯 손가락과 손바닥" 정의가 성립한다.
+    assert "self.palm_idx" in blk and "_hull_a_t" in blk and "_hull_b_t" in blk
+
+
+def test_enclosure_defaults_off():
+    """★기본 가중 0 — 대조군이 이전 런과 **항등**이어야 A/B 가 성립한다."""
+    cfg = _code(_CFG)
+    assert "enclosure_weight: float = 0.0" in cfg
+    assert '"enclosure"' in _code(_REW), "보상 항 튜플에 enclosure 가 없다"

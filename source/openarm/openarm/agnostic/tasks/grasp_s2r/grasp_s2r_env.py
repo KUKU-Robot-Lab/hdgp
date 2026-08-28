@@ -85,6 +85,29 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
              if f in p.contact_group_b and f in p.envelope_fingers],
             device=self.device, dtype=torch.long)
 
+        # ---- 포위도 키포인트 (08.28 신설) ---------------------------------------------
+        # ★이 트랙은 지금까지 마디 링크의 **위치**를 한 번도 읽지 않았다 —
+        #   `finger_sensor_bodies` 는 ContactSensor 만 만들고 힘만 읽었다.
+        #   포위도는 접촉이 아니라 기하라서 마디 위치가 필요하다.
+        # 손가락별로 프로필 튜플 순서를 보존한다(그룹별로 평균 내야 하므로).
+        self._hull_ids: dict[str, list[int]] = {}
+        for _f in fingers:
+            _row = []
+            for _b in p.finger_sensor_bodies[_f]:
+                _ids, _ = self.robot.find_bodies(_b)
+                if len(_ids) != 1:
+                    raise RuntimeError(f"[{p.name}] 포위도 body '{_b}' 해석 실패: {_ids}")
+                _row.append(_ids[0])
+            self._hull_ids[_f] = _row
+        # 그룹별 평면 인덱스 — 손가락마다 링크 수가 같다는 보장이 없어 펼친다.
+        # 2지 그리퍼(손가락당 body 1개)에서도 그대로 성립한다.
+        self._hull_a_t = torch.tensor(
+            [i for _f in p.contact_group_a for i in self._hull_ids[_f]],
+            device=self.device, dtype=torch.long)
+        self._hull_b_t = torch.tensor(
+            [i for _f in p.contact_group_b for i in self._hull_ids[_f]],
+            device=self.device, dtype=torch.long)
+
         # ---- 팔·손 제어 배선 ----------------------------------------------------------
         self._policy_dt = float(self.cfg.sim.dt) * int(self.cfg.decimation)
         self._setup_fabrics()
@@ -530,7 +553,11 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         action_delta = (self.actions - self.prev_actions).pow(2).mean(dim=-1).sqrt()
         self.prev_actions = self.actions.clone()
 
+        enclosure = self._enclosure(obj_pos)
+        self.extras["task/enclosure"] = enclosure.mean()
+
         total, terms, gates = compute_grasp_s2r_rewards(
+            enclosure=enclosure,
             tip_contact_frac=tip_frac,
             wrap_frac=wrap_frac,
             wrap_at_latch=self._wrap_at_latch,
@@ -625,6 +652,47 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         return total
 
     # ------------------------------------------------------------------
+    def _enclosure(self, obj_pos: torch.Tensor) -> torch.Tensor:
+        """물체를 **둘러싼 정도** [0,1] — 접촉이 아니라 기하다.
+
+        물체 중심에서 손 키포인트로 향하는 단위벡터들이 서로 상쇄되는 정도를 잰다.
+        한쪽에서만 잡으면 벡터가 모두 같은 방향이라 합의 크기가 1 에 가깝고(→0),
+        둘러싸면 상쇄되어 0 에 가깝다(→1).
+
+        ★★08.28 신설. 근거: Hu et al. 2020(arXiv:2002.04498)은 인벨롭을 **두 항**으로
+        나눈다 — `r_topology`(손 키포인트 hull 안에 물체가 들었는가, 가중 **10**)와
+        `r_contact`(접촉 개수, 가중 2). 우리는 접촉 쪽만 갖고 있었고, 그래서 팁 파지가
+        감쌈 지표를 만점 받았다(G 라운드 실측: `wrap_frac` 0.91 인데 `dist_rate` 0.02).
+        접촉 기반 정의를 아무리 고쳐도 같은 자세로 수렴한다.
+
+        ★형상 정보를 **하나도** 쓰지 않는다 — 물체 중심 하나뿐이다. 반경·높이·메시가
+        필요 없으므로 컵 종류를 늘려도 그대로 성립한다. hull 대신 방향 분산을 쓰는
+        이유는 sim2real 이다: 링크 **위치**(FK)는 실기에서도 정확하지만 접촉점 개수는
+        시뮬레이터의 contact discretization·마찰·강성에 민감해 전이되지 않는다.
+
+        ★되먹임 함정 반증 — 이 트랙은 "케이지를 실시간 손끝으로 계산 금지"를 계약으로
+        잠가 뒀다(팔 정지 구간 `corr(syn_close, cage_dist) = −0.974`, 손만 오므려도
+        게이트가 열렸다). 포위도는 그 함정에 걸리지 않는다: ①게이트가 아니라 **보상**이라
+        `close_gate` 에 넣지 않는다 ②물체가 멀면 손을 아무리 오므려도 모든 단위벡터가
+        여전히 같은 방향이라 값이 0 이다 — **빈 공간에서 오므려서는 못 올린다**.
+        """
+        # ★월드 좌표로 계산한다 — 손과 물체의 **차분**이라 env 원점이 상쇄되므로
+        #   env-local 변환이 불필요하다(그 변환은 (N,3) 라 (N,B,3) 에 브로드캐스트도 안 된다).
+        _p = self.robot.data.body_pos_w                           # (N, B, 3)
+        _o = self.object.data.root_pos_w.unsqueeze(1)             # (N, 1, 3)
+
+        def _u(ids) -> torch.Tensor:
+            _d = _p[:, ids] - _o
+            return _d / _d.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+
+        _wp = float(self.cfg.enclosure_palm_weight)
+        _wa = float(self.cfg.enclosure_group_a_weight)
+        _wb = float(self.cfg.enclosure_group_b_weight)
+        _bar = (_wp * _u([self.palm_idx]).squeeze(1)
+                + _wa * _u(self._hull_a_t).mean(dim=1)
+                + _wb * _u(self._hull_b_t).mean(dim=1)) / max(_wp + _wa + _wb, 1e-6)
+        return (1.0 - _bar.norm(dim=-1)).clamp(0.0, 1.0)
+
     def _contact_azimuth_spread(self, obj_pos: torch.Tensor,
                                 thr: float) -> torch.Tensor:
         """접촉한 손끝이 컵 축 둘레에 퍼진 **각폭**(도) 평균 — 진단 전용.
