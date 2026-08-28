@@ -108,6 +108,28 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             [i for _f in p.contact_group_b for i in self._hull_ids[_f]],
             device=self.device, dtype=torch.long)
 
+        # ---- 손등 접촉 배제 (08.28 신설 — Hu et al. 의 `p_collision` 대응) -------------
+        # ★프로필 미정의는 fail-loud. 기본축을 가정하면 판정이 **조용히 뒤집혀**
+        #   손등 파지를 감쌈으로 계속 센다(자매 트랙의 명시 경고).
+        # ★`palmar_axis_local` 은 **손가락 마디 링크**의 로컬 축이지 palm body 의
+        #   법선이 아니다. 손바닥 법선은 `palm_ee +x`(`_palm_ee_R()` 열 0)로 별개다.
+        #   두 규약을 섞으면 조용히 반대 판정이 된다.
+        self._palmar_axes = None
+        if bool(self.cfg.require_palmar_contact):
+            _missing = [f for f in fingers if f not in p.palmar_axis_local]
+            if _missing:
+                raise RuntimeError(
+                    f"[{p.name}] palmar_axis_local 미정의: {_missing} — 손바닥/손등 "
+                    "구분 불가. URDF 의 cross(굴곡축, 장축)으로 실측하거나 "
+                    "cfg.require_palmar_contact=False 로 구 판정(크기만)을 명시할 것")
+            self._palmar_axes = torch.tensor(
+                [p.palmar_axis_local[f] for f in fingers],
+                device=self.device, dtype=torch.float32)          # (F, 3)
+            # 센서 튜플과 **같은 순서**의 마디 body id — 힘 배열과 축을 맞춰야 한다.
+            self._palmar_body_ids = torch.tensor(
+                [self._hull_ids[f] for f in fingers],
+                device=self.device, dtype=torch.long)             # (F, L)
+
         # ---- 팔·손 제어 배선 ----------------------------------------------------------
         self._policy_dt = float(self.cfg.sim.dt) * int(self.cfg.decimation)
         self._setup_fabrics()
@@ -431,11 +453,30 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         tip_c = tip_f > _thr
         mid_f, dist_f = self._contact_forces_split()
         mid_c, dist_c = mid_f > _thr, dist_f > _thr
+        # ★손등 접촉 배제 — 켜져 있으면 손바닥면이 물체를 향하는 접촉만 남긴다.
+        #   센서 튜플 순서가 (mid, dist, tip) 이라 열 0/1/-1 로 맞춘다.
+        if self._palmar_axes is not None:
+            _pm = self._palmar_mask()                             # (N, F, L)
+            mid_c = mid_c & _pm[:, :, 0]
+            dist_c = dist_c & _pm[:, :, 1 if _pm.shape[2] >= 3 else 0]
+            tip_c = tip_c & _pm[:, :, -1]
         n_tip = len(self._finger_names)
         tip_frac = tip_c.float().sum(dim=1) / n_tip
         grip_c = tip_c | mid_c | dist_c
         grip_frac = grip_c.float().sum(dim=1) / n_tip
         n_grip = grip_c.float().sum(dim=1)
+
+        # ★이진 케이지 게이트 (DexPoint `r_contact`) — 엄지 ∧ (대향 ≥ n).
+        #   프로필의 `contact_group_a/b` 로 일반화해 2지 그리퍼에서도 성립한다.
+        #   0 이면 끈다(기본). 접촉 **개수** 그 자체를 보상하지 않는 것이 핵심이다 —
+        #   이 저장소에 "손끝을 몰아 개수만 채우는" 실패 이력이 두 건 있다.
+        _cg_n = int(cfgn.cage_gate_min_opposing)
+        if _cg_n > 0:
+            _cage_ok = (grip_c[:, self._group_a_idx].any(dim=1)
+                        & (grip_c[:, self._group_b_idx].sum(dim=1) >= _cg_n))
+            self.extras["gate/cage_ok"] = _cage_ok.float().mean()
+        else:
+            _cage_ok = None
 
         # ---- 감쌈 -------------------------------------------------------------------
         # ★★08.28 재정의. 구 정의(`deep_and`)는 두 가지가 동시에 틀렸다:
@@ -555,6 +596,12 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
 
         enclosure = self._enclosure(obj_pos)
         self.extras["task/enclosure"] = enclosure.mean()
+        # ★케이지 게이트가 켜져 있으면 포위도에 곱한다 — DexPoint 는 이진 접촉 게이트를
+        #   `r_lift` 에 곱하지만, 여기서는 **신설 항에만** 걸어 한 번에 하나의 가설을
+        #   지킨다(기존 lift/transfer/stay 의 척도를 건드리지 않는다).
+        if _cage_ok is not None:
+            enclosure = enclosure * _cage_ok.float()
+            self.extras["task/enclosure_gated"] = enclosure.mean()
 
         total, terms, gates = compute_grasp_s2r_rewards(
             enclosure=enclosure,
@@ -652,6 +699,26 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         return total
 
     # ------------------------------------------------------------------
+    def _palmar_mask(self) -> torch.Tensor:
+        """손가락 마디의 **손바닥면**이 물체를 향하는 접촉만 True (N, F, L).
+
+        Hu et al. 2020 의 `p_collision`(손등 접촉 벌점, 가중 −1) 대응이다. 벌점 대신
+        **접촉에서 배제**하는 방식을 쓴다 — 자매 트랙에서 검증된 형태이고, 벌점은
+        접촉 탐색 자체를 억제한 이력이 있다(s2r_a1: 닿을수록 순증분이 음수).
+
+        ★힘 벡터가 아니라 **기하**로 판정한다. `force_matrix_w` 의 부호 규약이 실측
+        확정되지 않아, 뒤집히면 조용히 반대 판정이 된다. 기하 판정은 자매 트랙에서
+        probe 로 분리 검증됐다(손바닥 +30.6/+45.0 mm vs 손등 −19.7 mm).
+        """
+        from isaaclab.utils.math import quat_apply
+        _pos = self.robot.data.body_pos_w[:, self._palmar_body_ids]      # (N, F, L, 3)
+        _quat = self.robot.data.body_quat_w[:, self._palmar_body_ids]    # (N, F, L, 4)
+        _ax = self._palmar_axes[None, :, None, :].expand_as(_pos)
+        _palmar_w = quat_apply(_quat.reshape(-1, 4),
+                               _ax.reshape(-1, 3)).view_as(_pos)
+        _to_obj = self.object.data.root_pos_w[:, None, None, :] - _pos
+        return (_palmar_w * _to_obj).sum(dim=-1) > 0.0
+
     def _enclosure(self, obj_pos: torch.Tensor) -> torch.Tensor:
         """물체를 **둘러싼 정도** [0,1] — 접촉이 아니라 기하다.
 

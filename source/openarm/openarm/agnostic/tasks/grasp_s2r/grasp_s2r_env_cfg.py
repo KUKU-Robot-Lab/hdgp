@@ -363,6 +363,16 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     enclosure_group_a_weight: float = 0.3
     enclosure_group_b_weight: float = 0.4
 
+    # ---- 손등 접촉 배제 (Hu et al. `p_collision` 대응 — 기본 꺼짐) --------------------
+    # 켜면 손바닥면이 물체를 향하는 접촉만 인정한다. ★`palmar_axis_local` 이 프로필에
+    # 없으면 부팅에서 fail-loud — 기본축을 가정하면 판정이 조용히 뒤집힌다.
+    require_palmar_contact: bool = False
+
+    # ---- 이진 케이지 게이트 (DexPoint `r_contact` — 0 = 꺼짐) -------------------------
+    # `엄지 접촉 ∧ (대향 손가락 ≥ n)`. 접촉 **개수 자체를 보상하지 않는** 것이 핵심이다 —
+    # 개수 보상은 "손끝을 몰아 개수만 채우는" 수법에 취약하다(저장소 실패 이력 2건).
+    cage_gate_min_opposing: int = 0
+
     # ---- 보상 가중치 (grasp_v1 8항 + 이송 2항) ---------------------------------------
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0          # 손바닥 **면** 어긋남(y·z)
