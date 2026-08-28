@@ -333,6 +333,24 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     stable_lin_vel: float = 0.04
     stable_ang_vel: float = 0.5
 
+    # ---- 성공 판정 절 (08.28 신설 — 기본값 = 현행 동작) -------------------------------
+    # 사용자 확정: 과제 목적은 "컵이 목표에 제대로 놓여 멈춰 있는가" 다. 아래 두 절은
+    # 산술로 `at_goal ∧ stable` 에 함축되므로 끌 수 있다(근거는 env 쪽 주석).
+    # `success_min_grip_fingers` 는 구 코드의 리터럴 `n_grip >= 4` 를 cfg 로 올린 것 —
+    # 그 리터럴은 2지 그리퍼 프로필에서 절대 성립 불가였다.
+    success_require_lifted: bool = True
+    success_require_holding: bool = True
+    success_min_grip_fingers: int = 4
+
+    # ---- 감쌈 지표 (08.28 신설 — 기본값 = 현행 `deep_and`) ----------------------------
+    # "deep_and"     : per-finger (중간 AND 원위), 분모 = contact_group_b (엄지 제외)
+    # "surface_count": 손바닥 + 대향그룹 + 반대그룹의 **표면 참여**, 마디 조합 무관
+    # 가중치는 합으로 정규화되므로 손바닥이 닿지 않는 프로필은 palm 을 0 으로 두면 된다.
+    envelope_metric: str = "deep_and"
+    envelope_palm_weight: float = 0.3
+    envelope_group_a_weight: float = 0.3     # 대향(엄지) 그룹
+    envelope_group_b_weight: float = 0.4     # 반대(4지) 그룹
+
     # ---- 보상 가중치 (grasp_v1 8항 + 이송 2항) ---------------------------------------
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0          # 손바닥 **면** 어긋남(y·z)

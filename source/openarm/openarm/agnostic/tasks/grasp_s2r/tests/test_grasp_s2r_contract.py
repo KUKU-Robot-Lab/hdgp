@@ -514,3 +514,52 @@ def test_goal_distance_is_logged_by_component():
     # 파지 자세가 명령 박스 안에 있는지 — 축별로 봐야 어느 축이 부족한지 안다.
     assert 'f"fabric/palm_cmd_box_sat_{_ax}"' in env
     assert 'self.extras["fabric/palm_cmd_rate_sat"]' in env
+
+
+def test_success_clauses_are_cfg_gated():
+    """★성공 판정에서 **파지 품질**을 뺄 수 있어야 한다 (08.28 사용자 확정).
+
+    과제 목적은 "컵이 목표에 제대로 놓여 멈춰 있는가" 다. 구 판정의 두 절은 산술로
+    `at_goal ∧ stable` 에 함축된다 — 목표 z 가 스폰 +0.08 이고 허용 반경이 0.025 라
+    `at_goal` 이면 높이 임계 0.04 를 자동으로 넘고(lifted), 8cm 뜬 컵이 정지해
+    있으면 무언가가 받치고 있다(holding).
+    ★그리고 `n_grip >= 4` 리터럴은 2지 그리퍼 프로필에서 **절대 성립 불가**였다.
+    """
+    env = _code(_ENV)
+    cfg = _code(_CFG)
+    assert "success_require_lifted" in cfg and "success_require_holding" in cfg
+    assert "success_min_grip_fingers" in cfg
+    assert "n_grip >= 4" not in env, "로봇 의존 리터럴이 판정에 남아 있다"
+    assert "cfgn.success_min_grip_fingers" in env
+
+
+def test_envelope_surface_count_includes_palm_and_thumb():
+    """★★신 감쌈은 **손바닥과 엄지를 분모에 넣어야** 한다.
+
+    구 정의 `wrap_frac` 은 분모가 `contact_group_b` 뿐이라 엄지 감쌈이 원리적으로
+    반영되지 않았고, 손바닥은 센서를 붙이고도 진단 로깅에만 쓰였다. 사용자 확정
+    정의는 "다섯 손가락과 손바닥이 유기적으로 감싸는 것" 이다.
+    ★마디 조합(중간 AND 원위)을 요구하면 안 된다 — 실측상 이 손 형상에서 도달
+    불가이고(원위 전부 0.00 인데 굴곡은 1.00), 작은 물체/큰 물체의 정답 자세가
+    서로 달라 마디를 특정하는 순간 형상 의존이 된다.
+    """
+    env = _code(_ENV)
+    _i = env.index('str(cfgn.envelope_metric) == "surface_count"')
+    _blk = env[_i - 900:_i + 600]
+    assert "_palm_contact_force()" in _blk, "손바닥이 감쌈 분모에 없다"
+    assert "self._group_a_idx" in _blk, "엄지 그룹이 감쌈 분모에 없다"
+    assert "self._group_b_idx" in _blk
+    assert "grip_c[" in _blk, "마디 무관(tip|mid|dist)이어야 한다"
+    assert "envelope_palm_weight" in _code(_CFG)
+    # 세 성분은 활성 metric 과 무관하게 항상 로깅 — 구 정의 갈래에서도 사후 비교 가능해야
+    assert 'self.extras["task/envelope_surf_palm"]' in env
+    assert 'self.extras["task/envelope_surf_a"]' in env
+    assert 'self.extras["task/envelope_surf_b"]' in env
+
+
+def test_envelope_metric_defaults_to_legacy():
+    """★기본값은 구 정의여야 한다 — 대조군이 이전 런과 **항등**이어야 A/B 가 성립한다."""
+    cfg = _code(_CFG)
+    assert 'envelope_metric: str = "deep_and"' in cfg
+    assert "success_require_lifted: bool = True" in cfg
+    assert "success_require_holding: bool = True" in cfg

@@ -76,6 +76,14 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             device=self.device, dtype=torch.long)
         if len(self._wrap_idx) < 1:
             raise RuntimeError(f"[{p.name}] contact_group_b ∩ envelope_fingers 가 비었다")
+        # ★08.28 `surface_count` 감쌈용 — 대향 그룹의 반대편(4지 / jaw2).
+        #   `_wrap_idx` 와 집합은 같지만 의미가 다르다: 저쪽은 "깊이 분모", 이쪽은
+        #   "표면 그룹"이다. 신 정의는 여기에 `_group_a_idx`(엄지)와 손바닥을 더해
+        #   **여섯 표면 전부**를 분모에 넣는다 — 구 정의는 엄지를 원리적으로 뺐다.
+        self._group_b_idx = torch.tensor(
+            [i for i, f in enumerate(fingers)
+             if f in p.contact_group_b and f in p.envelope_fingers],
+            device=self.device, dtype=torch.long)
 
         # ---- 팔·손 제어 배선 ----------------------------------------------------------
         self._policy_dt = float(self.cfg.sim.dt) * int(self.cfg.decimation)
@@ -404,10 +412,35 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         tip_frac = tip_c.float().sum(dim=1) / n_tip
         grip_c = tip_c | mid_c | dist_c
         grip_frac = grip_c.float().sum(dim=1) / n_tip
-        # 감쌈 **깊이** = per-finger (중간 AND 원위). 서로 다른 손가락에 얕게 닿는 것을
-        # 깊은 감쌈으로 오인하지 않는다.
-        wrap_frac = (mid_c & dist_c)[:, self._wrap_idx].float().mean(dim=1)
         n_grip = grip_c.float().sum(dim=1)
+
+        # ---- 감쌈 -------------------------------------------------------------------
+        # ★★08.28 재정의. 구 정의(`deep_and`)는 두 가지가 동시에 틀렸다:
+        #   ①분모가 `contact_group_b` 뿐이라 **엄지 감쌈이 원리적으로 반영 안 된다**.
+        #   ②손바닥은 08.27 에 센서를 붙이고도 진단 로깅에만 쓰였다.
+        #   실측(E1 play 900스텝): 다섯 손가락 원위가 전부 0.00 인데 `syn_close` 3·4번
+        #   마디는 1.00 완전 굴곡이고 `palm_rate` 0.55~0.82 다 — 손바닥도 손끝도
+        #   닿는데 그 사이 마디만 빈다. 즉 `mid ∧ dist` 는 이 손 형상에서 도달 불가다.
+        # 사용자 확정 정의: 잡는 방식에 제한을 두지 않되 **다섯 손가락과 손바닥이
+        #   유기적으로 감싸는 것**. 작은 물체는 손바닥+4지가 말고 엄지가 위를 얹는
+        #   주먹 자세, 큰 물체는 엄지까지 감싸는 자세 — 둘 다 정답이므로 마디 조합을
+        #   요구하지 않고 **표면 참여 여부**만 센다.
+        # ★2지 그리퍼 호환: group_a=jaw1 · group_b=jaw2 로 그대로 성립하고,
+        #   손바닥이 닿지 않는 프로필은 `envelope_palm_weight=0.0` 으로 끄면
+        #   가중 합 정규화가 척도를 유지한다.
+        _surf_palm = (self._palm_contact_force() > _thr).float()
+        _surf_a = grip_c[:, self._group_a_idx].float().mean(dim=1)
+        _surf_b = grip_c[:, self._group_b_idx].float().mean(dim=1)
+        self._surf_palm, self._surf_a, self._surf_b = _surf_palm, _surf_a, _surf_b
+        if str(cfgn.envelope_metric) == "surface_count":
+            _wp = float(cfgn.envelope_palm_weight)
+            _wa = float(cfgn.envelope_group_a_weight)
+            _wb = float(cfgn.envelope_group_b_weight)
+            _wsum = max(_wp + _wa + _wb, 1e-6)
+            wrap_frac = (_wp * _surf_palm + _wa * _surf_a + _wb * _surf_b) / _wsum
+        else:
+            # 구 정의 = per-finger (중간 AND 원위). 기본값이라 G0 는 E1 과 항등이다.
+            wrap_frac = (mid_c & dist_c)[:, self._wrap_idx].float().mean(dim=1)
 
         # ---- 래치 (보상 단계 표시 전용 — 팔 지령은 건드리지 않는다) ------------------
         _ready = n_grip >= int(cfgn.lift_start_min_grip_fingers)
@@ -474,10 +507,20 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         # ---- 성공 · stay 유지 ---------------------------------------------------------
         lifted = height_delta >= float(cfgn.lift_success_height)
         at_goal = goal_dist <= float(cfgn.goal_pos_tolerance)
-        holding = (n_grip >= 4) & tip_c[:, _a]        # 4지 이상 + 엄지 접촉
-        self._success_now = (
-            lifted & at_goal & holding & stable
-            & (self._tilt_deg <= float(cfgn.success_tilt_max_deg)))
+        # ★★08.28 사용자 확정: 과제 목적은 "컵이 목표에 제대로 놓여 멈춰 있는가" 이고
+        #   파지 여부는 거기에 **이미 함축**된다. 두 절이 산술로 중복임을 확인했다:
+        #   ①`lifted` — 목표 z = 스폰 +0.08, 허용 반경 0.025 라 `at_goal` 이면
+        #     컵 z ≥ 스폰 +0.055 로 임계 0.04 를 자동으로 넘는다.
+        #   ②`holding` — 테이블에서 8cm 뜬 컵이 `lin_v ≤ 0.04 m/s` 면 무언가가 받치고
+        #     있다는 뜻이다(무지지 낙하는 물리 스텝 하나 8.3ms 에 0.08 m/s 초과).
+        #   게다가 `n_grip >= 4` 는 코드 리터럴이라 2지 그리퍼에서 절대 성립 불가였다.
+        #   → 기본값은 현행 유지, 플래그로 끈다.
+        _ok = at_goal & stable & (self._tilt_deg <= float(cfgn.success_tilt_max_deg))
+        if bool(cfgn.success_require_lifted):
+            _ok = _ok & lifted
+        if bool(cfgn.success_require_holding):
+            _ok = _ok & (n_grip >= int(cfgn.success_min_grip_fingers)) & tip_c[:, _a]
+        self._success_now = _ok
         _stay_ok = at_goal & stable & (n_grip >= 2)
         self._stay_run = torch.where(_stay_ok, self._stay_run + 1,
                                      torch.zeros_like(self._stay_run))
@@ -645,6 +688,11 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["contact/palm_rate"] = (_palm_f > thr).float().mean()
         self.extras["contact/palm_rate_lo"] = (_palm_f > _lo).float().mean()
         self.extras["contact/palm_f_mean"] = _palm_f.mean()
+        # ★신 감쌈의 세 성분을 **활성 metric 과 무관하게 항상** 찍는다 — 구 정의로 도는
+        #   갈래에서도 신 지표를 관측해야 사후 비교가 된다.
+        self.extras["task/envelope_surf_palm"] = self._surf_palm.mean()
+        self.extras["task/envelope_surf_a"] = self._surf_a.mean()
+        self.extras["task/envelope_surf_b"] = self._surf_b.mean()
         # ★대향성 — 접촉점이 컵 둘레에 **퍼져** 있어야 force-closure 다. 한쪽에 몰리면
         #   팁 개수가 많아도 컵을 밀어낼 뿐이다(08.25 grip 접촉 절벽의 방위각 수법).
         self.extras["contact/azimuth_spread_deg"] = self._contact_azimuth_spread(
