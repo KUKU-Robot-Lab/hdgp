@@ -733,6 +733,55 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     if hasattr(_gp, "_syn_close"):
                         print("[GRIPS] syn_close(state)=" + " ".join(
                             f"{v:.2f}" for v in _gp._syn_close.mean(0).tolist()), flush=True)
+                    # ★★액션↔지령↔실제 3층 분해 (08.31) — "손이 왜 안 닿나"를 층으로 가른다.
+                    #   ①정책이 무엇을 요구했나(raw action → 폐쇄 지령 cmd)
+                    #   ②게이트·동결이 얼마나 깎았나(close_gate · 지령 관절각)
+                    #   ③실제로 어디까지 갔나(달성 관절각) — 층마다 손실을 따로 본다.
+                    #   전례: 08.18 "정책 액션 못 따라감"이 계약/자산/속도 3층이었다.
+                    try:
+                        _a = actions.detach()
+                        _ah = _a[:, 6:]                       # 손 액션(팔 6 뒤)
+                        _cmd = (0.5 * (_ah.clamp(-1, 1) + 1)).mean(0)
+                        _tgt = _gp._syn_target.mean(0)        # 기입된 관절 목표
+                        _act = _gp.robot.data.joint_pos[:, _gp._syn_ids].mean(0)
+                        _err = (_tgt - _act).abs()
+                        _nm = [n.split("hj_")[-1] for n in _gp.profile.hand_joint_names]
+                        _flex = [i for i, n in enumerate(_nm)
+                                 if n.rsplit("_", 1)[1] in ("2", "3", "4")]
+                        _g = float(_gp._close_gate.mean()) if hasattr(_gp, "_close_gate") else -1
+                        print(f"[LAYERS] ①액션 폐쇄지령 평균={float(_cmd.mean()):.2f} "
+                              f"max={float(_cmd.max()):.2f} · ②close_gate={_g:.2f} "
+                              f"· ③굴곡관절 지령↔실제 오차 평균="
+                              f"{float(_err[_flex].mean()):.3f}rad "
+                              f"max={float(_err[_flex].max()):.3f}", flush=True)
+                        _worst = sorted(_flex, key=lambda i: -float(_err[i]))[:4]
+                        print("[LAYERS]   최대오차 관절: " + "  ".join(
+                            f"{_nm[i]} 지령{float(_tgt[i]):+.2f}→실제{float(_act[i]):+.2f}"
+                            for i in _worst), flush=True)
+                        # ★종별 분해 — "작은 컵이 어려운" 원인이 폐쇄 요구량인지 접촉인지 가른다.
+                        #   물체 정체성은 obs 에 없다(sim2real 계약) — 진단 출력에만 쓴다.
+                        if getattr(_gp, "_n_species", 1) > 1:
+                            _sp = _gp._species_ids
+                            _cmd_e = (0.5 * (_ah.clamp(-1, 1) + 1)).mean(dim=1)  # env별
+                            _tipf_n = (_tipf > _thr).float().mean(dim=1)         # env별 팁접촉
+                            # wrap 은 env 지역변수라 노출이 없다 — 접촉 배열로 직접 센다
+                            #   (손가락별 중간 AND 원위 동시접촉 = 감쌈 깊이, env 정의와 동일).
+                            _wi = getattr(_gp, "_wrap_idx", None)
+                            _wrap = (((_cs[0] > _thr) & (_cs[1] > _thr))[:, _wi]
+                                     .float().mean(dim=1)) if _wi is not None else None
+                            for _s in range(_gp._n_species):
+                                _m = _sp == _s
+                                if not bool(_m.any()):
+                                    continue
+                                _w = (float(_wrap[_m].mean()) if _wrap is not None else -1.0)
+                                print(f"[SPECIES] {_gp._species_names[_s]:<18} "
+                                      f"n={int(_m.sum()):2d} 폐쇄지령={float(_cmd_e[_m].mean()):.2f} "
+                                      f"팁접촉={float(_tipf_n[_m].mean()):.2f} "
+                                      f"wrap={_w:.3f} "
+                                      f"objz={float(_gp.object.data.root_pos_w[_m, 2].mean()):.3f}",
+                                      flush=True)
+                    except Exception as _e:
+                        print(f"[LAYERS] 분해 실패: {_e}", flush=True)
                     # 원통 축(palm y) vs world z 기울기 + palm→컵 상대 위치 (파지대역 판정)
                     try:
                         from isaaclab.utils.math import quat_apply as _qa

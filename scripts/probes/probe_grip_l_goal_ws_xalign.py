@@ -1,4 +1,9 @@
-"""컵 스폰 위치 적합성 — grip_l (manager-based) 제약 IK 판.
+"""이송 목표 영역 적합성 — **tcp_z ∥ world +x** 제약 IK 판 (사용자 지시 08.27).
+
+질문: "goal 을 임의로 정하지 말고, tcp_z 가 world +x 를 향할 때 **실제로 도달 가능한**
+  공간 분포를 재서 그 안으로 goal 영역을 정하자."
+구 판(probe_grip_l_spawn_ws_ik.py)은 접근축이 **수평이기만** 하면 통과였다(방위각 자유).
+여기서는 방위각까지 묶는다 — 파지·이송 내내 같은 자세를 유지해야 하기 때문이다.
 
 `probe_arm_ws_ik.py`(agnostic 직접 env 전용, `env._palm_frame`)의 grip_l 어댑터.
 질문(사용자 08.26): **현 컵 스폰 영역이, gripper base 가 도달할 수 있으면서
@@ -28,7 +33,10 @@ parser.add_argument("--num_envs", type=int, default=672)
 parser.add_argument("--iters", type=int, default=400)
 parser.add_argument("--restarts", type=int, default=8)
 parser.add_argument("--pos_tol_mm", type=float, default=15.0)
-parser.add_argument("--tilt_tol_deg", type=float, default=10.0)
+parser.add_argument("--tilt_weight", type=float, default=0.3,
+                    help="자세 항 가중치. 0 이면 **위치만** 푸는 자세 무관 지도")
+parser.add_argument("--tilt_tol_deg", type=float, default=15.0,
+                    help="tcp_z 와 world +x 의 허용 사잇각")
 parser.add_argument("--xs", type=str, default="0.28,0.31,0.34,0.37,0.40,0.43,0.46")
 parser.add_argument("--ys", type=str, default="0.09,0.13,0.17,0.21,0.25,0.29")
 parser.add_argument("--zs", type=str, default="0.280,0.307")
@@ -130,8 +138,10 @@ for it in range(args.iters):
     a_w = torch.einsum("nij,j->ni", R, a_local)
     jm = o + torch.einsum("nij,j->ni", R, d_local)
     l_pos = ((jm - tgt) ** 2).sum(-1)
-    l_tilt = a_w[:, 2] ** 2
-    (l_pos + 0.3 * l_tilt).sum().backward()
+    # ★tcp_z 를 world +x 로 정렬: y·z 성분을 동시에 0 으로 민다(= a_w → (1,0,0)).
+    #   구 판은 z 성분만 봐서 방위각이 자유였다(옆에서 잡든 뒤에서 잡든 통과).
+    l_tilt = a_w[:, 1] ** 2 + a_w[:, 2] ** 2
+    (l_pos + args.tilt_weight * l_tilt).sum().backward()
     opt.step()
     if it % 100 == 99:
         print(f"  iter {it+1}/{args.iters}  pos_rmse "
@@ -143,7 +153,8 @@ with torch.no_grad():
     a_w = torch.einsum("nij,j->ni", R, a_local)
     jm = o + torch.einsum("nij,j->ni", R, d_local)
     perr = (jm - tgt).norm(dim=-1) * 1000.0
-    tilt = torch.rad2deg(torch.asin(a_w[:, 2].abs().clamp(max=1.0)))
+    # +x 축과의 사잇각. 0° = tcp_z 가 정확히 world +x.
+    tilt = torch.rad2deg(torch.acos(a_w[:, 0].clamp(-1.0, 1.0)))
     in_box = ((o - act._box_center).abs() <= act._box_half).all(dim=-1)
     ok = (perr < args.pos_tol_mm) & (tilt < args.tilt_tol_deg)
     okb = ok & in_box
@@ -154,9 +165,9 @@ with torch.no_grad():
                             torch.full_like(tilt.view(NP, K), 99.0)).min(dim=1).values
 
 print("\n" + "=" * 100)
-print(f"컵 스폰 적합성 IK — 그리드 {NP}점 × 재시작 {K} · 성공 {int(ok_p.sum())}/{NP}"
+print(f"목표 영역 적합성 IK (tcp_z ∥ world +x) — 그리드 {NP}점 × 재시작 {K} · 성공 {int(ok_p.sum())}/{NP}"
       f" (박스 안 {int(okb_p.sum())}/{NP})")
-print(f"  ✓=성공(수평∧위치, palm 지령 박스 안) · b=성공이나 박스 밖 · 숫자=최선 위치오차 mm")
+print(f"  ✓=성공(+x정렬∧위치, palm 지령 박스 안) · b=성공이나 박스 밖 · 숫자=최선 위치오차 mm")
 print(f"  현 스폰: x∈[{P.CUP_SPAWN_X_CENTER-P.CUP_SPAWN_X_RANGE:.2f},"
       f"{P.CUP_SPAWN_X_CENTER+P.CUP_SPAWN_X_RANGE:.2f}] · "
       f"y∈[{P.CUP_SPAWN_Y_CENTER-P.CUP_SPAWN_Y_RANGE:.2f},"

@@ -40,6 +40,9 @@ parser.add_argument("--steps", type=int, default=250)
 # ★태스크를 고정하면 안 된다. 관절공간판(obs 36·action 8)과 태스크공간 IK 판(35·7)은
 #   체크포인트 모양이 달라, 하드코딩하면 IK 체크포인트가 size mismatch 로 죽는다.
 parser.add_argument("--task", type=str, default="open-grip_l_grasp_sensor")
+parser.add_argument("--freeze_after", type=int, default=0,
+                    help="N 스텝 뒤 액션을 고정해 **정적** 처짐만 남긴다(0=끔)")
+parser.add_argument("--no_inject", action="store_true", help="pre-grasp 주입 끄고 자력 평가")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -54,7 +57,9 @@ import openarm.tasks  # noqa: F401
 from isaaclab.utils.math import matrix_from_quat
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper
 from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
+from isaaclab.managers import SceneEntityCfg
 from openarm.gripper.left.grasp_sensor import grasp_left_preset as P
+from openarm.gripper.left.grasp_sensor import grasp_left_rewards as _R
 from rl_games.common import env_configurations, vecenv
 from rl_games.torch_runner import Runner
 
@@ -70,6 +75,9 @@ def _quat_tilt_deg(quat: torch.Tensor) -> torch.Tensor:
 
 def main() -> None:
     env_cfg = parse_env_cfg(TASK, device=args.device, num_envs=args.num_envs)
+    if args.no_inject and hasattr(env_cfg.events, "inject_pregrasp"):
+        env_cfg.events.inject_pregrasp = None
+        print("[주입 OFF] 자력 평가 모드")
     agent_cfg = load_cfg_from_registry(TASK, "rl_games_cfg_entry_point")
 
     env = gym.make(TASK, cfg=env_cfg)
@@ -129,6 +137,18 @@ def main() -> None:
     lin_speed = []         # 쥐고 있을 때 컵 선속도 (m/s)
     ang_speed = []         # 쥐고 있을 때 컵 각속도 (rad/s)
     goal_dist = []         # 컵 ↔ 목표 거리 (m)
+    goal_axis = []         # 목표−컵 의 축별 성분 (m, held 평균) — 수직/수평 중 무엇이 병목인지
+    goal_min_env = [None]  # env 별 에피소드 중 최소 목표거리 (도달 시도의 상한)
+    goal_pairs = []        # (목표, 컵) 축별 좌표쌍 — 목표를 **조건부로** 추종하는지 회귀로 본다
+    _gate_jaw_cfg = SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES))
+    _gate_jaw_cfg.resolve(raw.scene)
+    gate_rows = []         # (gate, 램프, grasp_ok, near, 컵순간속도) — 게이트 손익 구조 실측
+    cmd_goal_rows = []     # (목표, palm 지령, 컵) env-local — **지령**이 목표를 보는지
+    axis_rows = []         # (raw 액션 3, 지령 xyz) — 축별 포화·클램프 진단
+    droop_rows = []        # (관절별 추종오차, 컵 z, held) — 중력 처짐 진단
+    approach_rows = []     # ★접근 국면 포함 전 스텝: (mu, 지령, TCP실측, 컵) — 지령이 컵으로 가는지
+    _frozen = [None]       # --freeze_after 용 고정 액션
+
     # ★진동 진단: 제어는 IK 가 아니라 **관절 위치 델타**(JointPositionAction)다.
     #   정책이 매 스텝 관절 목표를 내므로, 그 목표가 스텝마다 흔들리면 팔이 멈추지 않는다.
     act_delta = []         # |a_t − a_{t−1}| (1차 차분 — action_rate 가 벌하는 양)
@@ -171,9 +191,15 @@ def main() -> None:
     grip_series = []       # 구동 관절 위치 (m)
     grip_cmd = []          # 이진 그리퍼 액션의 부호 (>0 = 열기 지령)
 
-    for _ in range(args.steps):
+    for _step in range(args.steps):
         with torch.inference_mode():
             act = agent.get_action(agent.obs_to_torch(obs), is_deterministic=True)
+            # ★★지령을 고정하면 남는 오차가 **정적 처짐**이다. 정책이 지령을 흔드는 동안의
+            #   동적 추종 지연이 섞이면 중력 보상의 실효를 판단할 수 없다.
+            if args.freeze_after and _step >= args.freeze_after:
+                if _frozen[0] is None:
+                    _frozen[0] = act.clone()
+                act = _frozen[0]
         if prev_act is not None:
             d = act - prev_act
             act_delta.append(float(d.norm(dim=-1).mean()))
@@ -199,6 +225,10 @@ def main() -> None:
         if spawn_xy[0] is None:
             spawn_xy[0] = cup[:, :2].clone()
         cup_z.append(float(cup[:, 2].mean()))
+        if "cup_z_env_max" not in dir():
+            cup_z_env_max = cup[:, 2].clone()
+        else:
+            cup_z_env_max = torch.maximum(cup_z_env_max, cup[:, 2])
         cup_dxy.append(float((cup[:, :2] - spawn_xy[0]).norm(dim=-1).mean()))
         # straddle: 턱 중점 ↔ 컵 축. 보상 함수와 동일한 기하.
         _f = robot.data.body_pos_w[:, finger_ids, :]
@@ -236,9 +266,34 @@ def main() -> None:
         lifted = cup[:, 2] > P.LIFT_RAMP_ZERO_Z
         tcp_w = ee.data.target_pos_w[:, 0, :] - origins
         held = lifted & ((tcp_w - cup).norm(dim=-1) < P.GRASP_MAX_EE_DISTANCE)
+        # ★★보상이 실제로 곱하는 게이트를 그대로 계산한다. 프로브의 `held`(lifted & near)는
+        #   근사라 `grasp_ok` 를 빼먹는다 — 손익 구조를 보려면 진짜 게이트여야 한다.
+        _ramp = ((cup[:, 2] - P.LIFT_RAMP_ZERO_Z)
+                 / (P.MINIMAL_LIFT_HEIGHT - P.LIFT_RAMP_ZERO_Z)).clamp(0.0, 1.0)
+        _ok = _R.grasp_ok(raw, P.GRASP_GATE_LATERAL_OK, P.GRASP_GATE_ALONG_OK,
+                          P.JAW_PAD_OFFSET, _gate_jaw_cfg,
+                          SceneEntityCfg("object")).float()
+        _near = ((tcp_w - cup).norm(dim=-1) < P.GRASP_MAX_EE_DISTANCE).float()
+        _spd = obj.data.root_lin_vel_w.norm(dim=-1)
+        gate_rows.append((_ramp.detach().cpu(), _ok.detach().cpu(),
+                          _near.detach().cpu(), _spd.detach().cpu()))
         held_steps += int(held.sum())
         total += int(lifted.numel())
         lifted_steps += int(lifted.sum())
+        # ★★사용자 질문(08.27): "지령 자체가 컵을 지나치게 안 나온다."
+        #   기존 지령 진단은 전부 `lifted` 뒤에 있어 **접근 국면이 통째로 빠져 있었다**.
+        #   두 링크 사이로 컵이 안 들어가는 이유는 접근 국면에서만 보인다 — 무조건 잰다.
+        try:
+            _a = raw.action_manager.get_term("arm_action")
+            approach_rows.append((
+                _a._raw_actions[:, :3].detach().cpu(),        # 정책 mu (결정론)
+                _a._palm_pose_target[:, :3].detach().cpu(),   # clamp+리미터 통과한 지령
+                tcp_w.detach().cpu(),                          # 실제 TCP (env-local)
+                cup.detach().cpu(),                            # 컵 (env-local)
+                lifted.detach().cpu(),
+            ))
+        except (AttributeError, KeyError):
+            pass
         if not bool(lifted.any()):
             continue
         pos = robot.data.body_pos_w[:, idx, :] - origins.unsqueeze(1)
@@ -285,6 +340,49 @@ def main() -> None:
             )
             gd = (des_w - obj.data.root_pos_w).norm(dim=-1)
             goal_dist.append(float(gd[held].mean()))
+            _dv = des_w - obj.data.root_pos_w
+            goal_axis.append([float(_dv[held, i].mean()) for i in range(3)])
+            if held.any():
+                # ★env-local 로 낮춘다. world 좌표 그대로 회귀하면 env 그리드 간격(수 m)이
+                #   분산을 지배해 기울기가 늘 1.000 으로 나온다(실측 σ 5.7 m = 오염).
+                _o = raw.scene.env_origins
+                goal_pairs.append(
+                    ((des_w - _o)[held].detach().cpu().tolist(),
+                     (obj.data.root_pos_w - _o)[held].detach().cpu().tolist())
+                )
+            # ★★사용자 지적의 분기점: **지령**이 목표를 따라가는가.
+            #   컵의 조건부 추종(0.17)은 결과다. 지령이 목표를 따라가는데 컵이 안 따라가면
+            #   제어 문제이고, 지령부터 목표와 무관하면 학습 문제다.
+            try:
+                _at = raw.action_manager.get_term("arm_action")
+                _pc = _at._palm_pose_target[:, :3]      # env-local (로봇 base) 절대 지령
+                # ★★축별 포화 진단. 액션이 박스 경계에 붙으면 clamp 의 미분이 0 이라
+                #   그 축의 조건부 학습이 **구조적으로 불가능**해진다.
+                axis_rows.append((_at._raw_actions[:, :3].detach().cpu(),
+                                  _pc.detach().cpu()))
+                # ★★사용자 가설(08.27): 중력 처짐 때문에 "올렸다 내려갔다"를 반복한다.
+                #   fabric 은 중력을 모르므로 PD 가 처지고, 보상이 꺼져 있으면 정책이
+                #   매 스텝 지령으로 그 처짐을 밀어야 한다. 실측으로 가린다.
+                _aid = _at._arm_joint_ids
+                _q = robot.data.joint_pos[:, _aid]
+                _tq = robot.data.joint_pos_target[:, _aid]
+                droop_rows.append((
+                    (_tq - _q).abs().detach().cpu(),      # (E, 7) 관절별 보존
+                    cup[:, 2].detach().cpu(),
+                    held.detach().cpu(),
+                ))
+                _o = raw.scene.env_origins
+                cmd_goal_rows.append((
+                    (des_w - _o)[held].detach().cpu().tolist(),
+                    _pc[held].detach().cpu().tolist(),
+                    (obj.data.root_pos_w - _o)[held].detach().cpu().tolist(),
+                ))
+            except (AttributeError, KeyError):
+                pass
+            if goal_min_env[0] is None:
+                goal_min_env[0] = gd.clone()
+            else:
+                goal_min_env[0] = torch.minimum(goal_min_env[0], gd)
             # 목표에 이미 가까운(≤10 cm) env 만 골라 "도달 후에도 움직이는가"를 본다
             close = held & (gd < 0.10)
             if bool(close.any()):
@@ -359,6 +457,205 @@ def main() -> None:
             q = 1.0 - _m.tanh(val / std)
             print(f"    {name}: 현재 std={std} → 품질 {q:.4f}")
         print("  → 품질이 0 에 가까우면 보상 신호가 없어 gradient 가 생기지 않는다.")
+        # ★이송이 정체하는 곳을 보려면 **거리의 시계열과 축 분해**가 필요하다.
+        #   평균 한 값은 "접근 시도조차 없다" 와 "가다가 막힌다" 를 구분하지 못한다.
+        print("\n=== 이송 진행 (목표−컵) ===")
+        print(f"  {'구간':<10}{'거리':>9}{'dx':>9}{'dy':>9}{'dz':>9}")
+        for lab, a, b in (("초반", 0, n // 4), ("중반", n // 4, n // 2),
+                          ("후반", n // 2, 3 * n // 4), ("종반", 3 * n // 4, n)):
+            if b <= a:
+                continue
+            d_ = sum(goal_dist[a:b]) / (b - a)
+            ax = [sum(r[i] for r in goal_axis[a:b]) / (b - a) for i in range(3)]
+            print(f"  {lab:<10}{d_ * 1e3:8.0f}mm{ax[0] * 1e3:+8.0f}{ax[1] * 1e3:+8.0f}{ax[2] * 1e3:+8.0f}")
+        if goal_min_env[0] is not None:
+            _gm = goal_min_env[0]
+            print(f"  ★env 별 최소 목표거리: 중앙값 {float(_gm.median()) * 1e3:.0f} mm"
+                  f" · 최소 {float(_gm.min()) * 1e3:.0f} mm"
+                  f" · 30 mm 이내 도달 env {float((_gm < 0.03).float().mean()):.1%}")
+        print("  → dz 가 크게 남으면 **높이**가, dx/dy 가 남으면 **수평 이송**이 병목이다.")
+        # ★★목표는 에피소드마다 **다시 뽑힌다**. 컵이 목표와 무관하게 늘 같은 자리로 가면
+        #   거리 평균만 봐서는 "가까스로 못 간다" 로 보이지만 실제로는 **목표를 안 보는 것**이다.
+        #   축별로 컵 좌표를 목표 좌표에 회귀시킨다: 기울기 1 = 완전 조건부 추종, 0 = 무시.
+        if goal_pairs:
+            _late = goal_pairs[len(goal_pairs) // 2:]
+            for _i, _ax in enumerate("xyz"):
+                _d = [p_[_i] for step in _late for p_ in step[0]]
+                _c = [p_[_i] for step in _late for p_ in step[1]]
+                _n = len(_d)
+                if _n < 10:
+                    continue
+                _md, _mc = sum(_d) / _n, sum(_c) / _n
+                _sdd = sum((v - _md) ** 2 for v in _d)
+                _sdc = sum((v - _md) * (c - _mc) for v, c in zip(_d, _c))
+                _slope = _sdc / _sdd if _sdd > 1e-9 else float("nan")
+                print(f"  ★목표 조건부 추종 {_ax}: 기울기 {_slope:+.3f}"
+                      f"  (목표 산포 σ={(_sdd / _n) ** 0.5 * 1e3:.0f} mm"
+                      f" · 컵 평균 {_mc:.3f} · 목표 평균 {_md:.3f})")
+            print("  → 기울기가 0 근처면 목표를 무시하고 **늘 같은 자리**로 가는 것이다"
+                  " (보상 gradient 가 아니라 조건부 표현이 병목).")
+            # ★★조건부 반응이 없을 때 원인은 둘 중 하나다:
+            #   (가) **기구학 제약** — 어떤 목표는 컵을 든 채 도달 자체가 불가능하다.
+            #   (나) **학습 실패** — 도달은 가능한데 보상이 조건부 정밀도를 못 만들었다.
+            #   목표를 축별 3분위로 나눠 최종 거리를 비교하면 갈린다. (가)면 한쪽 분위만
+            #   크게 나쁘고, (나)면 세 분위가 고르게 나쁘다.
+            _fin = goal_pairs[-1]
+            for _i, _ax in enumerate("xyz"):
+                _rows = sorted(zip([p_[_i] for p_ in _fin[0]],
+                                   [((a - b) ** 2 for a, b in zip(p_, c_)) for p_, c_ in zip(*_fin)]),
+                               key=lambda r: r[0])
+                _rows = sorted(
+                    [(_fin[0][k][_i],
+                      sum((_fin[0][k][j] - _fin[1][k][j]) ** 2 for j in range(3)) ** 0.5)
+                     for k in range(len(_fin[0]))],
+                    key=lambda r: r[0])
+                _m = len(_rows)
+                if _m < 9:
+                    continue
+                _t = _m // 3
+                _grp = [_rows[:_t], _rows[_t:2 * _t], _rows[2 * _t:]]
+                _txt = "  ".join(
+                    f"{sum(r[0] for r in g) / len(g):.3f}→{sum(r[1] for r in g) / len(g) * 1e3:4.0f}mm"
+                    for g in _grp)
+                print(f"  목표 {_ax} 3분위별 최종거리:  {_txt}")
+    if droop_rows:
+        import torch as _t
+        _e = _t.stack([r[0] for r in droop_rows])     # (T, E)
+        _z = _t.stack([r[1] for r in droop_rows])
+        _h = _t.stack([r[2] for r in droop_rows])
+        print("\n=== ★중력 처짐이 goal 유지를 막는가 (사용자 가설) ===")
+        print(f"  GRAVITY_COMP_ENABLED = {P.GRAVITY_COMP_ENABLED}")
+        if bool(_h.any()):
+            # _e: (T, E, 7)
+            _sel = _e[_h]                                   # (N, 7)
+            print(f"  들고 있을 때 관절 추종오차 평균 {float(_sel.mean())*1e3:6.1f} mrad"
+                  f"   (이 트랙 실측: 32.9 mrad ≈ TCP 40~48 mm 처짐)")
+            if args.freeze_after:
+                print(f"  ※ --freeze_after {args.freeze_after} → 위 값은 **정적** 성분이다")
+            # ★관절별 분해 + 보상 상한 대비. 상한을 넘는 관절은 중력 보상으로도 못 메운다.
+            _lim = [0.100, 0.100, 0.0675, 0.0675, 0.0175, 0.0175, 0.0175]
+            print(f"  {'관절':<6}{'오차(mrad)':>12}{'보상상한':>10}{'상한대비':>10}")
+            for j in range(_sel.shape[-1]):
+                v = float(_sel[:, j].mean())
+                print(f"  j{j+1:<5}{v*1e3:12.1f}{_lim[j]*1e3:10.1f}{v/_lim[j]:9.0%}")
+            print("  → 상한대비 100% 를 넘는 관절은 `ARM_IK_MAX_TRACKING_ERROR` 가 막아"
+                  " 중력 보상을 켜도 그만큼은 남는다.")
+        # 컵 z 의 "올렸다 내려갔다" — env 별로 최고점 이후 얼마나 내려가는가
+        _drop_after_peak = []
+        for e in range(_z.shape[1]):
+            col = _z[:, e]
+            k = int(col.argmax())
+            if k < col.numel() - 5:
+                _drop_after_peak.append(float(col[k] - col[k:].min()))
+        if _drop_after_peak:
+            _d = _t.tensor(_drop_after_peak)
+            print(f"  최고점 이후 하강폭: 중앙값 {float(_d.median())*1e3:5.1f} mm"
+                  f" · 평균 {float(_d.mean())*1e3:5.1f} mm · 최대 {float(_d.max())*1e3:5.1f} mm")
+            print(f"  20 mm 이상 내려간 env {float((_d > 0.02).float().mean()):.1%}")
+        # 들고 있는 동안의 z 액션만 (국면 분리 — 접근 구간이 섞이면 평균이 무의미하다)
+        if axis_rows and bool(_h.any()):
+            _az = _t.stack([r[0][:, 2] for r in axis_rows])
+            _m = _h[: _az.shape[0]]
+            _v = _az[_m]
+            print(f"  ★들고 있을 때만의 z 액션: 평균 {float(_v.mean()):+.3f}"
+                  f" · std {float(_v.std()):.3f}"
+                  f" · a>+0.95 {float((_v > 0.95).float().mean()):.1%}"
+                  f" · a<-0.95 {float((_v < -0.95).float().mean()):.1%}")
+        print("  → 추종오차가 30 mrad 대이고 하강폭이 크면 **처짐이 원인**이다"
+              " (처방: GRAVITY_COMP_ENABLED).")
+
+    if axis_rows:
+        import torch as _t
+        _a = _t.cat([r[0] for r in axis_rows]); _c = _t.cat([r[1] for r in axis_rows])
+        _lo = _t.tensor([P.PALM_BOX_X[0], P.PALM_BOX_Y[0], P.PALM_BOX_Z[0]])
+        _hi = _t.tensor([P.PALM_BOX_X[1], P.PALM_BOX_Y[1], P.PALM_BOX_Z[1]])
+        print("\n=== ★축별 액션 포화 (조건부 학습이 가능한 상태인가) ===")
+        print("  액션이 ±1 경계에 붙으면 clamp 미분이 0 이라 그 축은 목표를 따라갈 수 없다.")
+        print(f"  {'축':<4}{'raw 평균':>10}{'raw std':>9}{'|a|>0.95':>10}{'a>+0.95':>9}"
+              f"{'a<-0.95':>9}{'지령 평균':>10}{'박스':>16}")
+        for _i, _ax in enumerate("xyz"):
+            _v = _a[:, _i]
+            print(f"  {_ax:<4}{float(_v.mean()):10.3f}{float(_v.std()):9.3f}"
+                  f"{float((_v.abs() > 0.95).float().mean()):9.1%}"
+                  f"{float((_v > 0.95).float().mean()):9.1%}"
+                  f"{float((_v < -0.95).float().mean()):9.1%}"
+                  f"{float(_c[:, _i].mean()):10.3f}"
+                  f"   [{float(_lo[_i]):.2f},{float(_hi[_i]):.2f}]")
+        print("  → 한 축만 포화율이 높으면 그 축이 병목이다(박스 상향 또는 중심 재조정 대상).")
+
+    if approach_rows:
+        import torch as _t
+        _mu = _t.cat([r[0] for r in approach_rows])
+        _cd = _t.cat([r[1] for r in approach_rows])
+        _tp = _t.cat([r[2] for r in approach_rows])
+        _cp = _t.cat([r[3] for r in approach_rows])
+        _lf = _t.cat([r[4] for r in approach_rows])
+        print("\n[접근 국면 포함] 지령이 컵으로 가는가 — 전 스텝(E×T)")
+        for _lbl, _m in (("접근(미리프트)", ~_lf), ("리프트 후", _lf)):
+            if not bool(_m.any()):
+                continue
+            print(f"  · {_lbl}  n={int(_m.sum())}")
+            print(f"    {'축':<3}{'mu평균':>9}{'|mu|>1':>8}{'지령':>9}"
+                  f"{'TCP실측':>9}{'컵':>9}{'지령-TCP':>10}{'지령-컵':>9}")
+            for _i, _ax in enumerate("xyz"):
+                _mm = _mu[_m, _i]; _cc = _cd[_m, _i]
+                _tt = _tp[_m, _i]; _pp = _cp[_m, _i]
+                print(f"    {_ax:<3}{_mm.mean():9.3f}{(_mm.abs() > 1.0).float().mean():8.1%}"
+                      f"{_cc.mean():9.3f}{_tt.mean():9.3f}{_pp.mean():9.3f}"
+                      f"{(_cc - _tt).mean() * 1e3:9.1f}mm{(_cc - _pp).mean() * 1e3:8.1f}mm")
+            _dct = (_cd[_m] - _tp[_m]).norm(dim=-1) * 1e3
+            _dcc = (_cd[_m] - _cp[_m]).norm(dim=-1) * 1e3
+            _dtc = (_tp[_m] - _cp[_m]).norm(dim=-1) * 1e3
+            print(f"    3D: 지령-TCP {_dct.mean():6.1f}mm (p95 {_dct.quantile(0.95):.1f})"
+                  f" · 지령-컵 {_dcc.mean():6.1f}mm · TCP-컵 {_dtc.mean():6.1f}mm")
+    if cmd_goal_rows:
+        print("\n=== ★지령이 목표를 보는가 (사용자 지적의 분기점) ===")
+        _late = cmd_goal_rows[len(cmd_goal_rows) // 2:]
+        for _i, _ax in enumerate("xyz"):
+            _g = [r[_i] for st in _late for r in st[0]]
+            _c = [r[_i] for st in _late for r in st[1]]
+            _u = [r[_i] for st in _late for r in st[2]]
+            _n = len(_g)
+            if _n < 10:
+                continue
+            _mg = sum(_g) / _n
+            _sgg = sum((v - _mg) ** 2 for v in _g)
+            if _sgg < 1e-9:
+                continue
+            _sl_cmd = sum((v - _mg) * (c - sum(_c) / _n) for v, c in zip(_g, _c)) / _sgg
+            _sl_cup = sum((v - _mg) * (u - sum(_u) / _n) for v, u in zip(_g, _u)) / _sgg
+            print(f"  {_ax}: 목표→**지령** 기울기 {_sl_cmd:+.3f}"
+                  f"   목표→컵 기울기 {_sl_cup:+.3f}"
+                  f"   (지령 평균 {sum(_c)/_n:.3f} · 컵 {sum(_u)/_n:.3f} · 목표 {_mg:.3f})")
+        print("  → 지령 기울기가 0 근처면 **정책이 목표를 안 보는 것**(학습 문제),")
+        print("     지령은 따라가는데 컵 기울기만 낮으면 **제어·기구학 문제**다.")
+
+    if gate_rows:
+        import torch as _t
+        _ramp = _t.cat([r[0] for r in gate_rows]); _ok = _t.cat([r[1] for r in gate_rows])
+        _near = _t.cat([r[2] for r in gate_rows]); _spd = _t.cat([r[3] for r in gate_rows])
+        _gate = _ramp * _ok * _near
+        print("\n=== ★보상 게이트의 손익 구조 (사용자 가설 검증) ===")
+        print("  lifting(15) · goal(16) · fine(5) · settled(15) 가 **같은 게이트를 공유**한다.")
+        print("  게이트가 한 스텝 깨지면 그 스텝의 51 이 동시에 0 이 된다.")
+        print(f"  전체 스텝 게이트 평균 {float(_gate.mean()):.3f}"
+              f"  (램프 {float(_ramp.mean()):.3f} · grasp_ok {float(_ok.mean()):.3f}"
+              f" · near {float(_near.mean()):.3f})")
+        # 들고 있는 스텝만 추려 "움직일 때 vs 멈춰 있을 때" 게이트 유지율을 가른다.
+        _up = _ramp > 0.99
+        if bool(_up.any()):
+            _mv = _up & (_spd > 0.15)     # 이송 시도로 볼 만한 속도
+            _st_ = _up & (_spd <= 0.05)   # 사실상 정지
+            for _lab, _m in (("이동 중(>0.15 m/s)", _mv), ("정지 중(<0.05 m/s)", _st_)):
+                if not bool(_m.any()):
+                    continue
+                print(f"  {_lab:<22} n={int(_m.sum()):6d}"
+                      f"  게이트 {float(_gate[_m].mean()):.3f}"
+                      f"  grasp_ok {float(_ok[_m].mean()):.3f}"
+                      f"  near {float(_near[_m].mean()):.3f}")
+            print("  → 이동 중 게이트가 정지 중보다 낮으면, **이송 시도가 리프트 보상까지"
+                  " 거는 도박**이라는 뜻이다(가만히 있는 것이 유리해진다).")
+
     if cup_z:
         import statistics as _st
         nz = len(cup_z)
@@ -373,6 +670,13 @@ def main() -> None:
         up = sum(1 for z in cup_z if z > P.CUP_SPAWN_Z + 0.01) / nz
         print(f"  최대 컵 z {max(cup_z):.5f} (스폰 대비 {(max(cup_z) - P.CUP_SPAWN_Z) * 1e3:+.1f} mm)"
               f" · 스폰보다 1 cm 이상 올라간 스텝 {up:.1%}")
+        try:
+            _lifted = (cup_z_env_max > P.CUP_SPAWN_Z + 0.01)
+            print(f"  ★env 별 분해: 에피소드 중 한 번이라도 +1cm 든 env "
+                  f"{int(_lifted.sum())}/{len(_lifted)} ({float(_lifted.float().mean()):.1%})"
+                  f" · env별 최대상승 중앙값 {float((cup_z_env_max - P.CUP_SPAWN_Z).median()) * 1e3:+.1f} mm")
+        except NameError:
+            pass
         print("  → 이 값이 0 에 가까우면 **컵을 안 들고 곁에 서 있는 것**이다.")
 
     if gz_cmd:

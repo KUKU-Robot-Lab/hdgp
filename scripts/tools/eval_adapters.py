@@ -108,6 +108,14 @@ class CommonEvalAccumulator:
         self.nan_steps = 0
         self._action_elems = 0
         self._saturated_elems = 0
+        # ★08.30 신설 — 성공률. env 가 `_success_now`(순간 성공 플래그)를 노출하면
+        #   **매 스텝 OR 누적**해 "에피소드 중 한 번이라도 성공"을 센다.
+        #   ★★종료 시점에 읽으면 안 된다 — `_reset_idx` 가 `step()` 안에서 그 버퍼를
+        #   0 으로 지우고 나서 반환하므로 항상 False 다(08.30 실측: 9조건 전부 0.0000).
+        #   env 의 `stage/success` 도 같은 OR 누적 규약이라 의미가 일치한다.
+        self.successes = 0
+        self.success_episodes = 0
+        self._succ_flag = torch.zeros(self.num_envs, dtype=torch.bool)
 
     # ------------------------------------------------------------------
     def add_step(self, rewards, dones, actions, env=None) -> None:
@@ -127,10 +135,22 @@ class CommonEvalAccumulator:
         self._action_elems += act.numel()
         self._saturated_elems += int((finite.abs() >= SATURATION_LEVEL).sum())
 
+        # 성공은 **매 스텝** OR 누적한다(리셋이 버퍼를 지우기 전에 읽는 유일한 방법).
+        _succ = getattr(env, "_success_now", None) if env is not None else None
+        _has_succ = _succ is not None
+        if _has_succ:
+            _s = torch.as_tensor(_succ).detach().reshape(-1).cpu().bool()
+            if _s.numel() == self._succ_flag.numel():
+                self._succ_flag |= _s
+
         if not bool(done.any()):
             return
 
         idx = torch.nonzero(done, as_tuple=False).reshape(-1)
+        if _has_succ:
+            self.successes += int(self._succ_flag[idx].sum())
+            self.success_episodes += int(idx.numel())
+            self._succ_flag[idx] = False
         for i in idx.tolist():
             self.episode_returns.append(float(self._returns[i]))
             self.episode_lengths.append(int(self._lengths[i]))
@@ -170,6 +190,12 @@ class CommonEvalAccumulator:
                 + (f" (중앙 {statistics.median(ret):.4g})" if len(ret) > 1 else "")
             )
             lines.append(f"  에피소드 길이 평균 {statistics.fmean(ln):.1f} 스텝")
+            if self.success_episodes:
+                lines.append(
+                    f"  ★성공률 {self.successes / self.success_episodes:.4f} "
+                    f"({self.successes}/{self.success_episodes})")
+            else:
+                lines.append("  성공률 — env 가 _success_now 를 안 낸다")
             if self.terminated or self.truncated:
                 total = self.terminated + self.truncated
                 lines.append(
