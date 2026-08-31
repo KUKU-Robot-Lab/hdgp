@@ -39,13 +39,13 @@ LEFT_GRIPPER_JOINT_NAMES = ["l_hj_gripper_1", "l_hj_gripper_2"]
 LEFT_ARM_AND_GRIPPER_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + LEFT_GRIPPER_JOINT_NAMES
 
 LEFT_ARM_REST_JOINT_POS = {
-    "l_aj_1": -0.0431,
-    "l_aj_2": -0.6706,
-    "l_aj_3": -0.0961,
-    "l_aj_4": +0.7342,
-    "l_aj_5": -0.3750,
-    "l_aj_6": -0.5678,
-    "l_aj_7": -0.6709,
+    "l_aj_1": 0.0,
+    "l_aj_2": 0.0,
+    "l_aj_3": 0.0,
+    "l_aj_4": 0.0,
+    "l_aj_5": 0.0,
+    "l_aj_6": 0.0,
+    "l_aj_7": 0.0,
     # 좌측 그리퍼(sensor_rl)는 이 태스크에서 쓰지 않는다 — 0.044(개방)로 고정만 한다.
     "l_hj_gripper_1": 0.044,
     "l_hj_gripper_2": 0.044,
@@ -109,11 +109,11 @@ HAND_START_POSE = [
 #   → episode 중 action[0]=1 → lerp → HAND_GRASP_POSE (thumb_2 = -1.5, ≈ 유지)
 #   → 나머지 손가락(1~4)은 0에서 시작하여 lerp로 curl
 HAND_APPROACH_POSE = [
-    0.0, -1.57, -0.5, 0.0,   # thumb: _2=-1.57(opposition 유지), _3=-0.5(PIP curl → _3 부분이 컵에 먼저 닿는 문제 방지)
-    0.0,  0.0,   0.0, 0.0,   # index: fully open
-    0.0,  0.0,   0.0, 0.0,   # middle: fully open
-    0.0,  0.0,   0.0, 0.0,   # ring: fully open
-    0.0,  0.0,   0.0, 0.0,   # pinky: fully open
+    0.0, 0.0, 0.0, 0.0,   # thumb: 4개 관절 모두 0.0 (손바닥 및 다른 4개 손가락과 완전 나란히 펴짐)
+    0.0, 0.0, 0.0, 0.0,   # index: fully open
+    0.0, 0.0, 0.0, 0.0,   # middle: fully open
+    0.0, 0.0, 0.0, 0.0,   # ring: fully open
+    0.0, 0.0, 0.0, 0.0,   # pinky: fully open
 ]
 
 # 파지 자세 (per-finger lerp action=+1 목표)
@@ -138,10 +138,8 @@ HAND_FULL_GRIP_POSE = [
     0.0,  0.0,  1.8, 1.8,   # pinky
 ]
 
-# 팔 시작 자세 (Q_REF 근처 안전 자세; old ARM_START_POSE에서 FK ≈ sim (delta≈0))
-# Fabrics rollout이 [cup_x-0.167, cup_y-0.09, cup_z+0.04]로 수렴
-# j4=0.60: FK z≈0.282, 테이블 안전, 물리 충돌 없음
-RIGHT_ARM_START_POSE = [0.5, 0.1, 0.4, 0.60, -0.2, 0.0, 0.0]
+# 오른쪽 팔 시작 자세 (몸통 옆 수직 차렷 포즈)
+RIGHT_ARM_START_POSE = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,13 @@ TEST="${2:?'Usage: ./train.sh <task_id> <test_name> [args...]'}"
 shift 2
 
 HDGP_ROOT="$(cd "$(dirname "$0")" && pwd)"
-ISAACLAB_ROOT="${ISAACLAB_ROOT:-$(cd "${HDGP_ROOT}/.." && pwd)/IsaacLab}"
+if [ -z "${ISAACLAB_ROOT:-}" ]; then
+    if [ -d "/home/user/rl_ws/IsaacLab" ]; then
+        ISAACLAB_ROOT="/home/user/rl_ws/IsaacLab"
+    else
+        ISAACLAB_ROOT="$(cd "${HDGP_ROOT}/.." && pwd)/IsaacLab"
+    fi
+fi
 
 echo "============================================"
 echo " RL 학습 시작"

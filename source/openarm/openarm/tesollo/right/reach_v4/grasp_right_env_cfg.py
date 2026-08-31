@@ -207,12 +207,10 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # -----------------------------------------------------------------------
     # Reset pregrasp (FABRICS IK rollout)
     # -----------------------------------------------------------------------
-    pregrasp_fabric_steps: int   = 60
+    pregrasp_fabric_steps: int   = 0      # 0으로 설정하여 컵 옆 붙이기 비활성화 (차렷/홈 대기 포즈 시작)
     reset_fabric_chunk_size: int = 128
-    # 17×17 grid(1cm 간격, ±8cm) IK 사전 계산 → reset 시 lookup. design §위치 ADR:
-    # spawn xy_range가 ADR로 0.02→0.08까지 커지므로 캐시는 항상 최대범위(±8cm)를 커버해야
-    # ADR가 range를 넓혀도 lookup이 grid 밖으로 벗어나지 않는다(2026-07-26, 13×13/±6cm→17×17/±8cm).
-    cache_pregrasp_reset:  bool  = True
+    cache_pregrasp_reset:  bool  = False  # 차렷 자세(RIGHT_ARM_START_POSE)에서 시작하도록 캐시 비활성화
+
     pregrasp_cache_xy_range: float = 0.08   # 캐시 grid 반경(고정) — object_spawn_xy_range(ADR 초기값)와 별개
     pregrasp_offset_x:     float = -0.06
     pregrasp_offset_y:     float = -0.07
