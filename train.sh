@@ -43,4 +43,8 @@ RUN_LABEL="$TEST" NOTE="${NOTE:-}" \
     "${HDGP_ROOT}/scripts/reinforcement_learning/rl_games/train.py" \
     --task "$TASK" \
     --headless \
+    --track \
+    --wandb-entity "pumky-konkuk-university" \
+    --wandb-project-name "KUKU-Robot-reach" \
+    --wandb-name "${TASK}_${TEST}" \
     "$@"
