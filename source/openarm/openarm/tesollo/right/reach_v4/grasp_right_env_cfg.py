@@ -49,6 +49,8 @@ from .grasp_right_preset import (
     LEFT_ARM_AND_GRIPPER_JOINT_NAMES,
     LEFT_ARM_REST_JOINT_POS,
     RIGHT_ACTUATED_JOINT_NAMES,
+    VIEWER_EYE,
+    VIEWER_LOOKAT,
 )
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
@@ -253,7 +255,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     # action=0 → pregrasp 위치 유지, action=±1 → pregrasp ± delta
     # -----------------------------------------------------------------------
     palm_delta_xyz:     float = 0.15   # ±0.15m per axis
-    palm_delta_rot_deg: float = 20.0   # ±20° per axis
+    palm_delta_rot_deg: float = 35.0   # ±35° per axis (Reach 과제에 맞게 회전 자유도 완화)
 
     # -----------------------------------------------------------------------
     # Reach v4 Core Parameters (Decoupled XY Standoff, Alignment, Damping & Guards)
@@ -771,3 +773,13 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     hand_body_names:      list = HAND_BODY_NAMES_USD
     actuated_joint_names: list = RIGHT_ACTUATED_JOINT_NAMES
     left_arm_joint_names: list = LEFT_ARM_AND_GRIPPER_JOINT_NAMES
+
+    def __post_init__(self):
+        super().__post_init__()
+        # ── 학습/검증 영상 뷰어 설정: 단일 로봇 전신 + 테이블 작업공간 ──
+        self.viewer.origin_type = "env"
+        self.viewer.env_index = 0
+        self.viewer.eye = VIEWER_EYE
+        self.viewer.lookat = VIEWER_LOOKAT
+        self.viewer.resolution = (1280, 720)
+

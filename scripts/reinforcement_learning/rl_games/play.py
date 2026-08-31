@@ -418,8 +418,25 @@ def _apply_playback_env_overrides(env_cfg) -> None:
 
     task_name = args_cli.task.split(":")[-1]
     is_pour = "pour" in task_name.lower()
-    cam_eye = _parse_xyz(args_cli.cam_eye) if args_cli.cam_eye else (None if not is_pour else (1.4, 1.0, 0.9))
-    cam_lookat = _parse_xyz(args_cli.cam_lookat) if args_cli.cam_lookat else (None if not is_pour else (0.3, -0.15, 0.45))
+    is_reach_or_grasp = ("reach" in task_name.lower()) or ("grasp" in task_name.lower())
+
+    if args_cli.cam_eye:
+        cam_eye = _parse_xyz(args_cli.cam_eye)
+    elif is_pour:
+        cam_eye = (1.4, 1.0, 0.9)
+    elif is_reach_or_grasp:
+        cam_eye = (1.4, -0.5, 0.75)
+    else:
+        cam_eye = None
+
+    if args_cli.cam_lookat:
+        cam_lookat = _parse_xyz(args_cli.cam_lookat)
+    elif is_pour:
+        cam_lookat = (0.3, -0.15, 0.45)
+    elif is_reach_or_grasp:
+        cam_lookat = (0.35, -0.05, 0.35)
+    else:
+        cam_lookat = None
     if cam_eye is not None and hasattr(env_cfg, "viewer"):
         env_cfg.viewer.eye = cam_eye
         env_cfg.viewer.lookat = cam_lookat

@@ -1344,8 +1344,8 @@ class GraspRightEnv(DirectRLEnv):
         palm_to_cup_dir[:, :2] = palm_to_cup_xy / palm_to_cup_dist_xy.unsqueeze(-1).clamp(min=1e-6)
 
         palm_quat = self.robot.data.body_quat_w[:, self.palm_body_index]
-        # +Y 축 = 진짜 손바닥 피부 정면 (장풍 방향: 컵의 옆면을 정확히 대면)
-        palm_normal_local = torch.tensor([0.0, 1.0, 0.0], device=self.device).expand(self.num_envs, -1)
+        # +X 축 = 진짜 손바닥 피부 정면 (장풍 방향: 컵의 옆면을 정확히 대면)
+        palm_normal_local = torch.tensor([1.0, 0.0, 0.0], device=self.device).expand(self.num_envs, -1)
         palm_normal_world = quat_apply(palm_quat, palm_normal_local)
         palm_alignment = torch.sum(palm_normal_world * palm_to_cup_dir, dim=-1).clamp(min=0.0)
 
@@ -1951,25 +1951,15 @@ class GraspRightEnv(DirectRLEnv):
             ], dim=1)
             pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
 
-            if self.cfg.pregrasp_fabric_steps == 0:
-                # 진짜 수직 차렷 대기 자세 (몸통 옆, 손가락이 바닥 -Z 향함) 기준 palm pose
-                pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
-                pregrasp_palm_pose[:, 0] = 0.05
-                pregrasp_palm_pose[:, 1] = -0.22
-                pregrasp_palm_pose[:, 2] = 0.22
-                pregrasp_palm_pose[:, 3] = math.radians(0.0)
-                pregrasp_palm_pose[:, 4] = math.radians(90.0)
-                pregrasp_palm_pose[:, 5] = math.radians(0.0)
-            else:
-                pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
-                pregrasp_palm_pose[:, :3] = pregrasp_pos
-                pregrasp_palm_pose[:, 3] = math.radians(90.0)
-                pregrasp_palm_pose[:, 4] = math.radians(0.0)
-                pregrasp_palm_pose[:, 5] = math.radians(90.0)
-                pregrasp_palm_pose = torch.max(
-                    torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
-                    self.palm_mins.unsqueeze(0),
-                )
+            pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
+            pregrasp_palm_pose[:, :3] = pregrasp_pos
+            pregrasp_palm_pose[:, 3] = math.radians(90.0)
+            pregrasp_palm_pose[:, 4] = math.radians(0.0)
+            pregrasp_palm_pose[:, 5] = math.radians(90.0)
+            pregrasp_palm_pose = torch.max(
+                torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
+                self.palm_mins.unsqueeze(0),
+            )
 
             if self.cfg.cache_pregrasp_reset:
                 # cache lookup: spawn 위치(x,y) → 가장 가까운 grid point arm IK.

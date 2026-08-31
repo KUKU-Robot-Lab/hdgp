@@ -37,3 +37,6 @@ logs/r2s_autotune/
 # git 에 넣지 않는다 — server 는 별도로 내려받을 것 (scripts/distillation/README.md)
 assets/dextrah_textures/
 log_archive/
+videos/
+*.mp4
+*.webm
