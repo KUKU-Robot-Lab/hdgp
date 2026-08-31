@@ -1,0 +1,143 @@
+# ⚠⚠ 자동 생성 — 손으로 고치지 말 것. `openarm_gripper_left_pose_params.yaml` 의 A/B 사본이다.
+# 08.29 라운드 2: 자매 트랙(`agnostic/grasp_sensor`)이 이송에 성공한 원인이 **fabric 앵커가
+#   팔을 home 으로 복귀시키던 것**이라는 사용자 제보에 따라, 우리 params 를 자매
+#   (`openarm_tesollo_sensor_pose_params.yaml`)와 대조해 만든 변이판이다.
+#   실측 근거: 지령 963 mm/s → TCP 259 mm/s(27% 만 통과) · 목표 근처에서 못 머묾 ·
+#   네 판 모두 정점 후 이송만 붕괴(lift 는 유지).
+# 쓰는 법: HDGP_FABRIC_PARAMS=<이 파일명> 으로 런타임에 선택한다(기본은 원본).
+# ── F1: cspace_attractor.conical_gain 3. → 1. (자매와 동일). 나머지는 원본 그대로.
+# OpenArm 좌팔 + 2지 그리퍼 pose params — **팔 7 DOF 전용**
+#
+# openarm_tesollo_pose_params.yaml 과 딱 한 가지만 다르다: joint_limits 의
+# acceleration / jerk 를 **팔 7 관절분만** 남겼다. 그 리스트 길이가 곧 cspace_dim 이고
+# (fabric.py:155 `cspace_dim = accel_limits.shape[0]`), Fabrics 는 매 스텝
+# `qdd.shape[1] == cspace_dim` 을 assert 한다.
+#
+# 왜 필요한가: 좌팔 그리퍼 fabric URDF 는 손 20관절을 fixed 로 굳혀 revolute 가 7개뿐이다.
+# 27 길이 리스트를 그대로 쓰면 첫 스텝에서
+#   "Number of joints does not match number of values specified in yaml" 로 죽는다(실측).
+#
+# 나머지 항목(충돌구 프레임 33개·prefix pair 26쌍 등)은 **이름 기반**이라 그대로 유효하다 —
+# 그래서 생성 URDF 가 우측과 동일한 링크 이름을 유지해야 한다.
+
+fabric_params:
+    cspace_attractor:
+        min_isotropic_mass: 1.
+        max_isotropic_mass: 1.
+        mass_sharpness: 20.0
+        mass_switch_offset: 1.
+        conical_sharpness: 20.
+        conical_gain: 1.
+    joint_limit_repulsion:
+        velocity_gate: True
+        breakaway_distance: 0.0
+        breakaway_velocity: 0.
+        soft_relu_gain: 8.
+        metric_scalar: 0.02
+        metric_exploder_offset: 0.02   # 0.1 은 j6 홈여유 0.14 rad 바로 안쪽이라 메트릭이 상시 폭발
+        max_metric: 100.
+        damping_gain: 8.
+    hand_attractor:
+        min_isotropic_mass: 8.
+        max_isotropic_mass: 8.
+        mass_sharpness: 20.
+        mass_switch_offset: 0.5
+        conical_sharpness: 40.
+        conical_gain: 50.
+        damping: 50.
+        damping_sharpness: 10.
+        damping_radius: 0.2
+    palm_attractor:
+        min_isotropic_mass: 1.
+        max_isotropic_mass: 1.
+        mass_sharpness: 10.
+        mass_switch_offset: 0.5
+        conical_sharpness: 40.
+        conical_gain: 80.
+        damping: 100.
+        damping_sharpness: 10.
+        damping_radius: .2
+    body_repulsion:
+      max_depth: 2.
+      min_depth: 0.01
+      engage_depth: 0.04    # 0.30 은 40 cm 작업공간에서 상시 켜짐(좌팔 홈 최근접 47.8 mm)
+      breakaway_depth: 0.0
+      breakaway_velocity: 0.
+      metric_scalar: 1.
+      velocity_gate: True
+      velocity_gate_sharpness: 1000.
+      velocity_gate_offset: 0.002
+      rescaled_min_dist: .01
+      forcing_metric_scalar: .01
+      geom_metric_scalar: .01
+      constant_accel: 2.
+      constant_accel_geom: 3.0
+      damping_gain: 0.
+      collision_sphere_frames:
+          ["openarm_right_link2", "openarm_right_link2_sphere2", "openarm_right_link2_sphere3",
+           "openarm_right_link4", "openarm_right_link4_sphere2", "openarm_right_link4_sphere3",
+           "openarm_right_link6_sphere2",
+           "openarm_right_link7", "palm_link", "palm_link_sphere2",
+           "tesollo_right_rl_dg_1_1", "tesollo_right_rl_dg_1_1_sphere2", "tesollo_right_rl_dg_1_3", "tesollo_right_rl_dg_1_3_sphere2",
+           "tesollo_right_rl_dg_2_1", "tesollo_right_rl_dg_2_1_sphere2", "tesollo_right_rl_dg_2_3", "tesollo_right_rl_dg_2_3_sphere2",
+           "tesollo_right_rl_dg_3_1", "tesollo_right_rl_dg_3_1_sphere2", "tesollo_right_rl_dg_3_3", "tesollo_right_rl_dg_3_3_sphere2",
+           "tesollo_right_rl_dg_4_1", "tesollo_right_rl_dg_4_1_sphere2", "tesollo_right_rl_dg_4_3", "tesollo_right_rl_dg_4_3_sphere2",
+           "tesollo_right_rl_dg_5_1", "tesollo_right_rl_dg_5_1_sphere2", "tesollo_right_rl_dg_5_3", "tesollo_right_rl_dg_5_3_sphere2",
+           "world_body_sphere1", "world_body_sphere2", "world_body_sphere3"]
+      collision_sphere_radii: [0.12, 0.10, 0.10,
+                               0.125, 0.10, 0.10,
+                               0.10,
+                               0.075, 0.05, 0.075,
+                               0.02, 0.02, 0.02, 0.02,
+                               0.02, 0.02, 0.02, 0.02,
+                               0.02, 0.02, 0.02, 0.02,
+                               0.02, 0.02, 0.02, 0.02,
+                               0.02, 0.02, 0.02, 0.02,
+                               0.18, 0.15, 0.12]
+      collision_sphere_pairs: []
+      collision_link_prefix_pairs: [
+                                    # 손가락/palm vs link2 (상완)
+                                    ["palm_link", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_1_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_1_3", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_2_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_2_3", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_3_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_3_3", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_4_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_4_3", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_5_1", "openarm_right_link2"],
+                                    ["tesollo_right_rl_dg_5_3", "openarm_right_link2"],
+                                    # 손가락/palm vs body (link0/world) — OpenArm 구조상 몸통 충돌 가능
+                                    ["palm_link", "world_body"],
+                                    ["tesollo_right_rl_dg_1_1", "world_body"],
+                                    ["tesollo_right_rl_dg_1_3", "world_body"],
+                                    ["tesollo_right_rl_dg_2_1", "world_body"],
+                                    ["tesollo_right_rl_dg_2_3", "world_body"],
+                                    ["tesollo_right_rl_dg_3_1", "world_body"],
+                                    ["tesollo_right_rl_dg_3_3", "world_body"],
+                                    ["tesollo_right_rl_dg_4_1", "world_body"],
+                                    ["tesollo_right_rl_dg_4_3", "world_body"],
+                                    ["tesollo_right_rl_dg_5_1", "world_body"],
+                                    ["tesollo_right_rl_dg_5_3", "world_body"],
+                                    # ★arm link ↔ world_body 쌍은 **제거했다**.
+                                    #   world_body 는 base 축 위 합성 구 3개(z 0.15/0.45/0.70,
+                                    #   r 0.18/0.15/0.12)로 몸통을 근사한 것인데, 좌팔은 그 몸통에
+                                    #   **직접 마운트**돼 있어 어깨·상완이 구조적으로 구 안에 있다.
+                                    #   좌팔 홈 실측: 8쌍이 최대 83 mm 관통, 156쌍 중 103쌍이 engage
+                                    #   (scratchpad/spheres.py). 반경을 줄여 풀리는 배치가 아니다
+                                    #   (필요 반경 <0.04 = 기둥이 무의미해짐).
+                                    #   palm·손가락 ↔ world_body 쌍은 위에 **남겨 두었다** — 그쪽은
+                                    #   실제로 몸통을 향해 휘두를 수 있어 회피가 유효하다.
+                                    ]
+    cspace_damping:
+      gain: 10.
+    speed_control:
+      active: False
+      energy_target: 10.
+      damping: 100.
+    joint_limits:
+      active: True
+      # 27 DOF: 7 arm (openarm_right_joint1~7) + 20 hand (rj_dg_1..5 _1..4)
+      acceleration: [7.5, 7.5, 10., 10., 10., 20., 20.]
+      jerk: [3750., 3750., 5000., 5000., 5000., 10000., 10000.]
