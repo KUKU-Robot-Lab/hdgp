@@ -243,6 +243,55 @@ def object_goal_distance_when_held(
     """`mdp.object_goal_distance` 의 게이트를 근접 조건까지 요구하도록 바꾼 것.
 
     레퍼런스와 마찬가지로 목표 위치는 **로봇 베이스 기준** 명령을 world 로 변환해 쓴다.
+
+    ★★fab_test73(사용자 지시): 거리를 **TCP** 로 잰다(레퍼런스는 컵 원점).
+      이유는 프레임 정합이다 — 목표 상자 `GOAL_POINT`/`GOAL_JITTER` 는
+      `probe_grip_l_goal_ws_xalign.py` 의 **TCP 제약 IK**(tcp_z ∥ world +x)로
+      "도달 가능한 곳만" 골라 만든 것이다. 채점을 컵 원점으로 하면 도달성을 검증한
+      바디와 채점하는 바디가 달라진다. 실측 계통차 약 30 mm(턱 중점이 컵 원점보다
+      30.3 mm 아래).
+      ⚠ 대신 컵은 게이트의 `near` 임계(`max_ee_distance` 80 mm)만큼 목표에서 벗어날 수
+        있다. **최종 합격 판정은 반드시 컵–목표로 읽는다** — `diag_cup_goal_dist`(컵)와
+        `diag_tcp_goal_dist`(TCP)를 나란히 찍어 벌어지는 순간을 본다.
+    """
+    robot: RigidObject = env.scene[robot_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    des_pos_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
+    )
+    distance = torch.norm(des_pos_w - ee_frame.data.target_pos_w[..., 0, :], dim=1)
+    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
+                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
+    return gate * (1 - torch.tanh(distance / std))
+
+
+def object_goal_distance_height_gated(
+    env: "ManagerBasedRLEnv",
+    std: float,
+    gate_height: float,
+    command_name: str,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """레퍼런스 `mdp.object_goal_distance` **그대로** — 게이트도 거리도 컵 원점.
+
+    ★★fab_test74(E1) 의 단일 변수다. IsaacLab `manager_based/manipulation/lift` 대조에서
+      나온 유일한 구조적 차이가 **goal 신호가 도는 시점**이었다:
+        레퍼런스  게이트 `cube.z > 0.04` 인데 스폰이 0.055 → **step 0 부터 항상 참**.
+                  정책이 조건부 목표 추종을 맨 처음부터 배우고 파지가 그 위에 얹힌다.
+                  (부수적으로 `lifting_object` 15 는 스폰부터 상수라 gradient 가 없다 —
+                   레퍼런스에서 컵을 실제로 들게 만드는 건 goal 보상이다.)
+        우리      `_held` = 램프 ∧ grasp_ok ∧ near ∧ upright → 파지·리프트를 **완성한 뒤**.
+                  이미 굳은 정책에 조건부 신호가 늦게 도착한다.
+      실측 증거: t73 결정론 프로브의 목표 조건부 추종 기울기가 x 0.109 · y 0.297 · z 0.053
+      (1.0 이어야 한다). 정책이 목표가 어디든 **늘 같은 자리**(0.475, 0.208, 0.406)에 놓는다.
+
+    ⚠⚠ **거리는 반드시 컵 원점이다**(사용자 지적). 게이트를 높이 하나로 낮추면서 거리를
+      TCP 로 재면 **빈 그리퍼를 목표에 가져다 놓기만 해도 만점**이 된다 — 컵은 테이블에 둔 채로.
+      t73 이 TCP 채점으로 안전했던 건 `_held` 가 파지를 요구해 그 구멍을 막고 있었기 때문이고,
+      게이트를 여는 순간 그 전제가 사라진다. TCP 채점은 `held` 모드 전용이다.
+      부수 효과로 이 모드는 **보상이 재는 값과 합격을 재는 값이 같아진다**(`diag_cup_goal_dist`).
     """
     robot: RigidObject = env.scene[robot_cfg.name]
     obj: RigidObject = env.scene[object_cfg.name]
@@ -250,10 +299,9 @@ def object_goal_distance_when_held(
     des_pos_w, _ = combine_frame_transforms(
         robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
     )
-    distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
-    gate = _held(env, minimal_height, ramp_zero_z, max_ee_distance, enclose_half_width,
-                 pad_offset, lat_ok, along_ok, jaw_cfg, object_cfg, ee_frame_cfg, min_upright_cos)
-    return gate * (1 - torch.tanh(distance / std))
+    obj_pos_w = obj.data.root_pos_w
+    distance = torch.norm(des_pos_w - obj_pos_w, dim=1)
+    return (obj_pos_w[:, 2] > gate_height).float() * (1 - torch.tanh(distance / std))
 
 
 def object_settled_at_goal(
@@ -577,6 +625,105 @@ def gripper_gate_open(env: "ManagerBasedRLEnv", action_term: str = "gripper_acti
     """
     term = env.action_manager.get_term(action_term)
     return term.gate_open.float().unsqueeze(-1)
+
+
+def diag_action_z_mu(env: "ManagerBasedRLEnv", action_term: str = "arm_action") -> torch.Tensor:
+    """palm 액션 z 성분의 평균. **weight 0 진단 항.**
+
+    ★★fab_test64 실측이 이 항을 만든 이유다: z 의 raw 액션 평균이 **1.336** 으로 상한 +1 을
+      넘어 있었고 |a|>0.95 가 **90.3%** 였다. `FabricPalmAction` 은 액션을 clamp 하므로
+      그 구간의 미분이 0 이고, 그래서 z 는 목표를 따라갈 수단 자체가 없었다
+      (목표 조건부 기울기 z **0.005** vs x 1.019 · y 0.921).
+    ⚠ 지금까지 이 값은 **프로브로만** 볼 수 있어 판이 끝난 뒤에야 알았다. TFEvents 에
+      찍어 학습 중 판정한다 — 1.0 을 넘기 시작하는 epoch 이 곧 병목의 발생 시점이다.
+    """
+    return env.action_manager.get_term(action_term).raw_actions[:, 2]
+
+
+def diag_action_z_sat(env: "ManagerBasedRLEnv", action_term: str = "arm_action") -> torch.Tensor:
+    """palm 액션 z 가 경계(|a|>0.95)에 붙어 있는 비율. **weight 0 진단 항.**
+
+    포화율이 높으면 그 축은 clamp 미분 0 이라 **조건부 학습이 구조적으로 불가능**하다.
+    판정: 이 값이 0.3 을 넘으면 박스 상한이 다시 천장 노릇을 하는 것이다.
+    """
+    return (env.action_manager.get_term(action_term).raw_actions[:, 2].abs() > 0.95).float()
+
+
+def diag_action_axis_mu(
+    env: "ManagerBasedRLEnv", axis: int, action_term: str = "arm_action"
+) -> torch.Tensor:
+    """palm 액션의 축별 평균. **weight 0 진단 항.**
+
+    ★★fab_test68 이 이 항을 만든 이유: z 만 찍어 두고 x·y 를 못 봐서, t67 의 진짜
+      병목(리프트 후 y 포화 99.7% · mu 3.11)을 판이 끝난 뒤 프로브로야 알았다.
+      세 축을 다 찍는다 — 어느 축이 언제 박스를 벗어나는지가 곧 병목의 발생 시점이다.
+    """
+    return env.action_manager.get_term(action_term).raw_actions[:, axis]
+
+
+def diag_action_axis_sat(
+    env: "ManagerBasedRLEnv", axis: int, action_term: str = "arm_action"
+) -> torch.Tensor:
+    """palm 액션의 축별 경계(|a|>0.95) 부착률. **weight 0 진단 항.**"""
+    return (
+        env.action_manager.get_term(action_term).raw_actions[:, axis].abs() > 0.95
+    ).float()
+
+
+def diag_cup_goal_dz(
+    env: "ManagerBasedRLEnv",
+    command_name: str = "object_pose",
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """목표 z − 컵 z (m). **weight 0 진단 항.**
+
+    fab_test64 결정론 실측에서 남은 거리 103 mm 의 최대 성분이 **dz −64 mm** 였다.
+    x·y 는 이미 목표를 따라가므로(기울기 1.02 / 0.92) 이 값 하나가 이송의 병목이다.
+    """
+    robot: RigidObject = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    des_pos_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
+    )
+    return des_pos_w[:, 2] - obj.data.root_pos_w[:, 2]
+
+
+def diag_cup_goal_dist(
+    env: "ManagerBasedRLEnv",
+    command_name: str = "object_pose",
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """목표 ↔ **컵 원점** 거리 (m). **weight 0 진단 항.**
+
+    ★★보상은 TCP 로 채점하지만 **합격 판정은 컵이다**. 둘이 벌어지면 여기서 보인다
+    (게이트의 `near` 80 mm 만큼 벌어질 수 있다 — reward-audit Check 2).
+    """
+    robot: RigidObject = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    des_pos_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
+    )
+    return torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
+
+
+def diag_tcp_goal_dist(
+    env: "ManagerBasedRLEnv",
+    command_name: str = "object_pose",
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """목표 ↔ **TCP** 거리 (m) = 보상이 실제로 재는 값. **weight 0 진단 항.**"""
+    robot: RigidObject = env.scene[robot_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    des_pos_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3]
+    )
+    return torch.norm(des_pos_w - ee_frame.data.target_pos_w[..., 0, :], dim=1)
 
 
 def gripper_gate_rate(env: "ManagerBasedRLEnv", action_term: str = "gripper_action") -> torch.Tensor:

@@ -53,7 +53,7 @@ params:
   load_path: '' # path to the checkpoint to load
 
   config:
-    name: open-grip_l_grasp_sensor_fab
+    name: open-grip_l_grasp_sensor_v2
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -62,7 +62,16 @@ params:
     mixed_precision: False
     normalize_input: True
     normalize_value: True
-    value_bootstrap: False
+    # ★★08.31 라운드 17 — False → True. **truncation 을 가치로 보정한다.**
+    #   `goal_dwell`(목표 체류 10 스텝 → 에피소드 끝)을 넣으면서 필수가 됐다.
+    #   IsaacLab 래퍼가 `extras["time_outs"]=truncated` 를 넘기고(rl_games.py:284)
+    #   rl_games 는 `if self.value_bootstrap and 'time_outs' in infos` 일 때만
+    #   `shaped_rewards += gamma * values * time_outs` 로 보정한다(a2c_common:777).
+    #   꺼두면 **성공이 곧 남은 보상 포기**가 된다 — stage 3 스텝당 최대 0.9 인데
+    #   100 스텝에서 끝나면 150×0.9 ≈ 135 를 버린다(에피소드 총보상 63~77).
+    #   실측 정합: A 의 `diag_at_goal` 이 0.215 → 0.002 로 100 배 떨어졌다.
+    #   ⚠ 기존 250 스텝 time_out 도 함께 보정된다 — I·L·M 과는 이 점이 다르다.
+    value_bootstrap: True
     num_actors: -1
     reward_shaper:
       scale_value: 0.01
@@ -74,7 +83,7 @@ params:
     schedule_type: legacy
     kl_threshold: 0.01
     score_to_win: 100000000
-    max_epochs: 4000
+    max_epochs: 2500   # ★라운드 3: run0-s43 정점 ep861 · 라운드 1 정점 1162~2294 — 2500 이면 정점과 붕괴 여부를 다 본다
     save_best_after: 100
     save_frequency: 50
     print_stats: True

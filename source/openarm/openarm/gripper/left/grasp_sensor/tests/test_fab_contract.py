@@ -34,19 +34,31 @@ def _src(name: str) -> str:
     return (_PKG / name).read_text(encoding="utf-8")
 
 
-def test_fabric_rotation_goes_through_quaternion_not_euler():
-    """★기준 palm 자세 (0, π/2, 0) 은 euler_zyx 짐벌 특이점 정확히 위다.
+def test_fabric_rotation_uses_reference_euler_zyx_convention():
+    """★★fab_test61: 회전은 원본 kuka 와 같은 **euler_zyx 절대** 규약이다.
 
-    euler 로 지령하면 표현이 퇴화한다(08.21 회전 계단 오버슈트 19~32% 실측이 그 정체).
-    set_features 에는 quaternion (B,7) 경로로만 넘긴다.
+    ⚠ 이 계약은 t60(성공기 복원)의 반대 계약을 **의도적으로 뒤집은 것**이다.
+      t60 계약은 "quaternion 경로만" 이었고 근거는 08.21 실측 — 당시 기준 palm 자세가
+      (0, π/2, 0) 으로 euler_zyx 짐벌 특이점 **정확히 위**였고 회전 계단 오버슈트가
+      19~32% 였다.
+
+    뒤집는 이유는 이번 판의 **질문 자체**다(사용자 지시): "t60 의 나머지 세팅을 그대로
+    두고 fabric 배선만 t59 로 했을 때도 리프트가 되는가." 회전 규약은 그 배선 8종
+    중 하나이므로 t59 값이어야 한다. 부수 근거 둘도 유효하다:
+      ① 현 기준 자세의 ey 중심은 −76.09° 로 특이점에서 14° 떨어져 있다.
+      ② 그 19~32% 는 결함 있는 플랜트(vel_ff 0 · fabric 60% 속도 · damping 하드끝)
+         위에서 잰 값인데, 이 판은 셋을 전부 t59(=원본) 배선으로 되돌린다.
+
+    ★fab_test61 이 리프트에 실패하고 회전이 원인으로 지목되면 이 계약을 t60 판으로
+      되돌리고 사유를 여기 적을 것. 되돌릴 원문은 git 8b62997 에 있다.
+
+    ⚠ 짐벌 특이점은 불연속이 아니다 — 전방 사상(euler→R)은 ey=±90° 에서도 연속이고
+      비용은 조건수 저하다(ez 와 ex 가 같은 회전을 만들어 액션 1D 가 국소 중복).
     """
     src = _src("grasp_left_fabric_action.py")
-    assert '"quaternion"' in src
-    assert '"euler_zyx"' not in src, "euler 경로가 되살아났다"
-    # set_features 의 quaternion 규약은 xyzw ([6,3,4,5] 재배열) — wxyz 를 그대로 넘기면
-    # 조용히 다른 회전이 된다.
-    assert "q_target[:, 1:4]" in src and "q_target[:, 0]" in src, "wxyz→xyzw 변환이 없다"
-
+    assert '"euler_zyx"' in src, "set_features 에 euler_zyx 규약을 넘기지 않는다"
+    assert '"quaternion"' not in src, "구 quaternion 경로가 남아 있다"
+    assert "PALM_EULER_ZYX_CENTER" in src, "euler 중심 상수를 안 쓴다"
 
 def test_fabric_rest_pose_is_this_tasks_home_not_aborted_home():
     """★fabric cspace rest 는 **이 태스크의 홈**이어야 한다.
@@ -115,6 +127,14 @@ def test_palm_box_covers_spawn_and_goal_regions():
 def test_goal_region_is_the_user_specified_box():
     """08.22 사용자 지정: 목표 영역 x±5 y±7 z±5 cm. 하한은 리프트 임계 위여야
     '먼저 들어라 → 옮겨라' 순서가 유지된다(기존 계약과 동일 논리)."""
+    # ★★fab_test77: E2(t75/76) 확대를 **되돌린다**. 산포를 키우면 조건부 추종 압력이
+    #   커진다는 가설이 실측으로 기각됐다 — 목표→지령 기울기가
+    #     t73(옛 상자) x 0.109 · y 0.297 · z 0.053
+    #     t75(넓힌 상자) x 0.099 · y 0.016 · z 0.006   ← **오히려 나빠졌다**
+    #   병목은 목표 분포가 아니라 **액션 축 포화**였다(t75 best 프로브: y mu 1.504 포화
+    #   99.1% · z mu 1.319 포화 86.4% · 덜 포화된 x 만 기울기가 산다). clamp 미분이 0 이라
+    #   포화된 축은 목표를 따라갈 수 없다. ⇒ 상자는 t73 기준선으로 되돌리고 처방은
+    #   `bounds_loss_coef` 로 건다(한 판에 한 변수).
     assert P.GOAL_JITTER == (0.05, 0.07, 0.05)
     assert P.GOAL_POS_Z[0] > P.MINIMAL_LIFT_HEIGHT
 
@@ -480,7 +500,10 @@ def test_gravity_droop_compensation_is_wired_and_bounded():
     rst = src[src.index("def reset"):]
     assert "self._droop[env_ids] = 0.0" in rst, "reset 초기화가 빠졌다"
     # 상한값 자체 — effort/강성 관계가 유지되는가
-    assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[5-7]"] == 7.0 / P.ARM_IK_STIFFNESS
+    # ★fab_test66: effort/강성 파생 관계는 끊겼다(위 주석 참조). 값 자체를 고정한다.
+    assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[5-7]"] == 0.0175
+    assert isinstance(P.ARM_IK_STIFFNESS, dict), "관절별 kp 테이퍼가 풀렸다"
+    assert P.GRAVITY_COMP_ENABLED, "포화가 풀린 뒤의 중력 보상이 이 판의 전제다"
     assert 0.0 < P.GRAVITY_COMP_GAIN <= 0.2, "적분 이득이 너무 크면 과도 구간에서 진동한다"
     # ★저역통과가 아니라 적분이어야 한다 — 저역통과는 정확히 절반만 상쇄한다(실측)
     assert "self._droop + P.GRAVITY_COMP_GAIN * err" in src, "적분 형태가 아니다"
@@ -513,3 +536,154 @@ def test_cup_axis_point_is_clamped_to_the_graspable_band():
     # GRASP_HEIGHT_BAND 에서 파생돼야 한다(리터럴 금지)
     assert abs(lo - (P.GRASP_HEIGHT_BAND[0] - P.CUP_BOTTOM_TO_ORIGIN)) < 1e-9
     assert abs(hi - (P.GRASP_HEIGHT_BAND[1] - P.CUP_BOTTOM_TO_ORIGIN)) < 1e-9
+
+
+def test_mu_drift_is_held_by_hinge_not_by_squashing():
+    """★★t67(표류)·t68(동결) 두 실패의 처방 — 둘 중 하나로 풀면 다른 하나가 재발한다.
+
+    t67: 선형 mu + `bounds_loss_coef` 1e-4 → mu 가 y=3.11 · z=2.04 로 표류.
+         샘플이 전부 clamp 에 뭉개져(포화 y 99.7%) 그 축의 학습 신호가 사라졌다.
+    t68: mu 를 tanh 로 가뒀더니 zmu 가 -0.97 에 붙어 **동결**됐다.
+         tanh'(0.97)=0.059 로 gradient 가 17 배 감쇠하는데, 하필 이 태스크의
+         접근 자세가 거기다(t67 접근 지령 z=0.180 = a -0.909). 전 구간 lift 0.00.
+    ⇒ mu 는 자유롭게(None) 두고, 표류만 hinge 벌점으로 막는다. `bound_loss_type`
+      기본값 'bound' 는 |mu| ≤ 1.1 에서 정확히 0 이라 박스 안 행동을 안 건드린다.
+    """
+    yaml_txt = (_PKG / "config" / "agents" / "rl_games_ppo_fab_cfg.yaml").read_text()
+    assert "mu_activation: None" in yaml_txt, "tanh 로 가두면 t68 의 동결이 재발한다"
+    assert "mu_activation: tanh" not in yaml_txt
+    coef = [ln for ln in yaml_txt.splitlines()
+            if ln.strip().startswith("bounds_loss_coef:")]
+    assert len(coef) == 1
+    assert float(coef[0].split(":")[1]) >= 5e-3, (
+        "복원력이 없으면 표류가 재발한다 — t71 의 ymu 는 -4.04 까지 갔다"
+    )
+
+
+def test_obs_set_default_is_the_winning_pose_variant():
+    """★★t70 vs t71 귀속 결과. 지령(`palm_cmd`)과 실측(`tcp_pos`)은 공선이라 둘 다 주면
+    안 되고(t68·t69 가 lift 0.00 으로 죽었다), 둘 중 **실측**이 이겼다(fine 0.57 vs 0.28).
+    """
+    src = _src("grasp_left_fab_env_cfg.py")
+    assert 'os.environ.get("HDGP_OBS_SET", "pose")' in src
+
+
+def test_all_three_action_axes_are_logged():
+    """★t67 의 진짜 병목은 y 였는데 z 만 찍고 있어 판이 끝난 뒤에야 알았다."""
+    src = _src("grasp_left_env_cfg.py")
+    assert 'for _ax, _i in (("x", 0), ("y", 1)):' in src
+    assert "diag_act_z_mu" in src
+
+
+def test_absolute_action_has_pose_feedback_in_obs():
+    """★★절대 태스크공간 액션은 **피드백 없이는 닫힌 루프가 아니다**.
+
+    t67 의 obs 에는 raw `last_action` 뿐이라 정책이 (a) 자기 palm 위치와
+    (b) 리미터가 옮겨 놓은 실제 지령을 못 봤다. (b) 는 적분기 상태라
+    메모리 없는 MLP 에는 원리적으로 관측 불가능했다.
+    """
+    src = _src("grasp_left_fab_env_cfg.py")
+    for term in ("palm_cmd", "tcp_pos", "palm_rot"):
+        assert f"self.observations.policy.{term} = ObsTerm(" in src, f"{term} 관측이 빠졌다"
+    obs_src = _src("grasp_left_observations.py")
+    # ★지령은 raw 가 아니라 리미터를 통과한 값이어야 한다 — 그게 이 항의 존재 이유다.
+    assert "term.processed_actions" in obs_src
+    assert "raw_actions" not in obs_src, "raw 액션은 last_action 과 중복이라 의미가 없다"
+    # ★euler 로 자세를 내면 roll 중심 3.095 rad 가 ±π 경계에서 6.28 을 널뛴다.
+    assert "matrix_from_quat" in obs_src
+
+
+def test_command_state_is_reset_with_the_episode():
+    """★지령 상태가 obs 에 들어간 순간 그것도 리셋 오염원이 된다(이 트랙 5번째)."""
+    src = _src("grasp_left_fabric_action.py")
+    reset = src[src.index("def reset("):src.index("def _debug_vis_callback")
+                if "def _debug_vis_callback" in src else len(src)]
+    assert "_palm_pose_target[env_ids" in reset, "리셋 직후 첫 관측이 직전 에피소드 지령이다"
+
+
+def test_body_scoped_obs_cfg_is_passed_through_params():
+    """★IsaacLab 함정: `SceneEntityCfg` 는 **params 에 있는 것만** resolve 된다.
+
+    기본 인자로 두면 `body_ids` 가 slice(None) 인 채 들어와 인덱싱에서 죽는다
+    (fab_test68 첫 기동이 여기서 죽었다).
+    """
+    src = _src("grasp_left_fab_env_cfg.py")
+    blk = src[src.index("palm_rot = ObsTerm("):]
+    assert 'params={"robot_cfg": SceneEntityCfg(' in blk[:400]
+    obs_src = _src("grasp_left_observations.py")
+    assert "isinstance(robot_cfg.body_ids, slice)" in obs_src, "resolve 누락이 조용히 지나간다"
+
+
+def test_goal_is_scored_on_tcp_but_judged_on_cup():
+    """★★fab_test73(사용자 지시): 목표 상자는 **TCP 제약 IK** 로 도달 가능한 곳만 골라
+    만든 것이라, 채점도 TCP 로 해야 검증한 바디와 채점하는 바디가 같아진다.
+
+    ⚠ 대신 컵이 게이트 `near`(80 mm) 만큼 벌어질 수 있으므로 **합격 판정은 컵**이다.
+      두 진단이 함께 있어야 벌어지는 순간을 본다.
+    """
+    src = _src("grasp_left_rewards.py")
+    # ⚠ 슬라이스 끝은 **다음 함수**다 — fab_test74 가 그 사이에 height 판을 끼워 넣었고,
+    #   그건 의도적으로 컵 원점을 쓴다(모드마다 기준이 다르다).
+    blk = src[src.index("def object_goal_distance_when_held"):
+              src.index("def object_goal_distance_height_gated")]
+    assert "ee_frame.data.target_pos_w" in blk, "held 모드의 목표 채점이 TCP 가 아니다"
+    assert "obj.data.root_pos_w" not in blk.split('"""')[-1], "컵 원점으로 되돌아갔다"
+    cfg = _src("grasp_left_env_cfg.py")
+    for d in ("diag_cup_goal_dist", "diag_tcp_goal_dist"):
+        assert f"self.rewards.{d} = RewTerm(" in cfg, f"{d} 진단이 빠졌다"
+
+
+def test_goal_gate_ab_switch_and_cup_basis():
+    """★★fab_test74(E1): goal 보상의 **신호 시점**을 가르는 A/B.
+
+    IsaacLab 레퍼런스는 게이트가 `cube.z > 0.04` 하나뿐인데 스폰이 0.055라
+    **step 0 부터 참**이다 — 정책이 조건부 목표 추종을 맨 처음부터 배운다.
+    우리는 `_held`(파지·리프트 완성) 뒤에야 신호가 돌아, t73 실측 조건부 추종
+    기울기가 x 0.109 · y 0.297 · z 0.053 이었다(1.0 이어야 한다).
+
+    ⚠⚠ `height` 모드의 거리는 **반드시 컵 원점**이다. TCP 로 재면 빈 그리퍼를
+      목표에 놓기만 해도 만점이라 컵을 아예 안 든다. TCP 채점은 `_held` 가 파지를
+      요구하는 `held` 모드에서만 안전하다 — 게이트와 거리 기준은 한 쌍이다.
+    """
+    cfg = _src("grasp_left_env_cfg.py")
+    assert '_os.environ.get("HDGP_GOAL_GATE", "held")' in cfg, "기본값이 held 가 아니다"
+    assert "rewards.object_goal_distance_height_gated" in cfg
+    assert "rewards.object_goal_distance_when_held" in cfg, "기존 모드가 사라졌다"
+    assert '"gate_height": P.OBJECT_DROP_HEIGHT' in cfg
+
+    src = _src("grasp_left_rewards.py")
+    blk = src[src.index("def object_goal_distance_height_gated"):
+              src.index("def object_settled_at_goal")]
+    body = blk.split('"""')[-1]
+    assert "obj_pos_w = obj.data.root_pos_w" in body and "des_pos_w - obj_pos_w" in body, (
+        "거리 기준이 컵 원점이 아니다 — 빈 그리퍼 해킹이 열린다"
+    )
+    assert "target_pos_w" not in body, "height 모드에서 TCP 를 쓰면 안 된다"
+    assert "_held(" not in body, "레퍼런스형이면 파지 게이트가 없어야 한다"
+
+def test_action_rate_curriculum_is_disabled_but_joint_vel_is_not():
+    """★`action_rate` 커리큘럼(−1e-4 → −1e-1, 1000 배)만 꺼져 있어야 한다.
+
+    이 항은 목적을 달성하지 못한다 — 저장소 실측: "action_rate_l2 는 액션공간 통계라
+    탐색 노이즈(σ)에 오염돼, 옵티마이저가 σ 만 줄이고 정책 평균의 평활도는 1000 epoch
+    동안 평탄했다". 그리고 t73/t75 가 정확히 발동 시점(36000 step ÷ horizon 24 = ep1500)에
+    꺾였다(t75 fine 0.320→0.156 · t73 rew 124→92, cupd 131→180 mm).
+
+    기전: 표류한 축(mu 1.5)에서 goal 은 clamp 미분 0 이라 gradient 가 없는데
+    `action_rate_l2` 는 clamp **이전** raw 액션을 재므로 살아 있다. 발동 후 그 축에 남는
+    유일한 힘이 "흔들지 마라"가 되고, σ 가 줄면 포화가 굳는다.
+
+    ⚠ `joint_vel` 은 유지한다 — 관절속도는 물리량이라 σ 오염이 훨씬 덜하고, 실측 크기가
+      `action_rate` 의 1/14.6(−0.047 vs −0.68)이다. 둘을 같이 끄면 무엇이 들었는지 못 가린다.
+    ⚠ 항 자체와 base weight −1e-4 는 남는다 — TFEvents 로 채터를 계속 관측해야 한다.
+    """
+    src = _src("grasp_left_env_cfg.py")
+    assert "self.curriculum.action_rate = None" in src, (
+        "action_rate 커리큘럼이 다시 켜졌다 — ep1500 에 1000 배 승격이 돌아온다"
+    )
+    assert 'self.curriculum.joint_vel.params["num_steps"]' in src, (
+        "joint_vel 커리큘럼까지 끄면 단일 변수가 깨진다"
+    )
+    # 항 자체는 살아 있어야 로깅된다 (레퍼런스 정의를 지운 것이 아니다)
+    ref = _src("_vendored_lift_openarm_env_cfg.py")
+    assert "action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)" in ref

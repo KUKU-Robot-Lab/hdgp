@@ -394,12 +394,38 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #     하나라도 남기면 그쪽으로 같은 hack 이 되살아난다.
         self.rewards.lifting_object.func = rewards.object_is_held_and_lifted
         self.rewards.lifting_object.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+        # ★★fab_test74(E1): goal 보상의 **신호 시점**을 가르는 A/B.
+        #   HDGP_GOAL_GATE = held(기본) | height
+        #     held   — 지금까지의 판. `_held`(램프 ∧ grasp_ok ∧ near ∧ upright) 게이트,
+        #              거리는 **TCP**(t73, 목표 상자가 TCP 제약 IK 산물이라 프레임 정합).
+        #     height — IsaacLab 레퍼런스 그대로. 게이트가 컵 높이 하나뿐이고 임계가
+        #              스폰(0.29209)보다 낮아 **step 0 부터 참**이다. 거리도 **컵 원점**.
+        #              ⚠ 이 모드에서 거리를 TCP 로 재면 빈 그리퍼만 목표에 놔도 만점이라
+        #                해킹이 된다 — 게이트와 거리 기준은 한 쌍으로 움직인다.
+        #   근거 전문은 `rewards.object_goal_distance_height_gated` docstring.
+        _goal_gate = _os.environ.get("HDGP_GOAL_GATE", "held")
+        if _goal_gate not in ("held", "height"):
+            raise ValueError(f"HDGP_GOAL_GATE 은 held|height — 받은 값: {_goal_gate!r}")
         for _term in (
             self.rewards.object_goal_tracking,
             self.rewards.object_goal_tracking_fine_grained,
         ):
-            _term.func = rewards.object_goal_distance_when_held
-            _term.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+            if _goal_gate == "height":
+                # 레퍼런스 시그니처로 **갈아끼운다** — `_held` 게이트 인자는 전부 뺀다.
+                _term.func = rewards.object_goal_distance_height_gated
+                _term.params = {
+                    "std": _term.params["std"],
+                    "gate_height": P.OBJECT_DROP_HEIGHT,
+                    "command_name": "object_pose",
+                }
+            else:
+                _term.func = rewards.object_goal_distance_when_held
+                _term.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+        # ★★fab_test63: 커널 폭을 **목표 영역 규모**에 맞춘다. 레퍼런스 0.3 은 이 영역
+        #   (축별 ±50~70 mm)에서 이미 포화라 "정확히 맞추는 것"의 이득이 25% 뿐이었다.
+        #   근거·판정 기준 전문은 preset GOAL_TRACK_STD 주석.
+        self.rewards.object_goal_tracking.params["std"] = P.GOAL_TRACK_STD
+        self.rewards.object_goal_tracking_fine_grained.params["std"] = P.GOAL_TRACK_FINE_STD
 
         # ── 파지 자세 보너스 (신설) ─────────────────────────────────
         # ★★자세는 **연속 보너스로만** 유도한다. 게이트로 넣으면 파지 중 필연적인 흔들림이
@@ -407,11 +433,36 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   끝내는 것이 최적**이 된다. 실제로 그렇게 죽였다(test6/test7):
         #       lifting 6.14 → 0.0000 / 에피소드 130 → 13 / 총보상 +34.9 → −0.46
         #   별도 term 이라 TFEvents 에 로깅돼 자세 개선을 학습 중 관측할 수 있다.
-        # ── 평활화 페널티 커리큘럼 시점만 뒤로 민다 ─────────────────
-        # 항도 weight 도 레퍼런스 그대로다. **켜는 시점**만 옮긴다. 근거는 프리셋
-        # `ACTION_PENALTY_CURRICULUM_STEPS` 주석에 test15 붕괴 로그와 함께 있다.
-        for _curr in (self.curriculum.action_rate, self.curriculum.joint_vel):
-            _curr.params["num_steps"] = P.ACTION_PENALTY_CURRICULUM_STEPS
+        # ── 평활화 페널티 커리큘럼 ─────────────────────────────────
+        # `joint_vel` 은 항·weight·시점 모두 유지한다(시점만 레퍼런스 10000 → 36000).
+        # 근거는 프리셋 `ACTION_PENALTY_CURRICULUM_STEPS` 주석에 test15 붕괴 로그와 함께.
+        self.curriculum.joint_vel.params["num_steps"] = P.ACTION_PENALTY_CURRICULUM_STEPS
+
+        # ★★fab_test79/80: `action_rate` 커리큘럼만 **끈다**(사용자 결정, reward-audit ACCEPT).
+        #   항 자체와 base weight −1e-4 는 남긴다 — TFEvents 로 채터를 계속 관측하기 위함이고,
+        #   그 크기는 총보상 ~110 대비 −0.001 로 사실상 0 이다. 끄는 것은 **1000 배 승격**이다.
+        #
+        #   근거 ① 이 항은 목적을 달성하지 못한다. 이 저장소에 이미 두 번 적혀 있다 —
+        #     "action_rate_l2 는 액션공간 통계라 탐색 노이즈(σ)에 오염돼, 옵티마이저가 σ 만
+        #      줄이고 정책 평균의 평활도는 1000 epoch 동안 평탄했다"
+        #     산수도 맞는다: σ≈1 · 6 차원이면 독립 샘플 차분 기댓값 2σ²×6 = 12, ×0.1 = −1.2
+        #     (t75 실측 −0.68). 이 항이 재는 것의 대부분이 정책의 거칢이 아니라 **σ** 다.
+        #   근거 ② t73·t75 가 **정확히 발동 시점**(36000 step ÷ horizon 24 = ep1500)에 꺾였다:
+        #       t75  fine 0.320 → 0.156 · rew 118.9 → 98.3
+        #       t73  rew 124 → 92 (이후 회복하지만 cupd 는 131 → 180 mm 로 악화)
+        #   근거 ③ ★기전 — 표류한 축(mu 1.5)에서 goal 은 clamp 미분이 0 이라 gradient 가
+        #     없는데, `action_rate_l2` 는 **clamp 이전 raw 액션**을 재므로 살아 있다. 발동 후
+        #     그 축에 남는 유일한 힘이 "흔들지 마라"이고, 그건 σ 를 줄여 포화를 굳힌다.
+        #     t73 의 xsat 가 발동 직후 0.5 → 0.94~0.98 로 올라가 끝까지 유지된 것이 그 모양이다.
+        #
+        #   ⚠ 사전 등록 ①: ep1500 이후 총보상이 t73 보다 낮은 것은 **실패가 아니다**.
+        #     t73 의 best 156.93 은 커리큘럼 이후에 나왔지만 그 구간의 이송은 더 나빴다.
+        #     판정은 `diag_cup_goal_dist` 와 목표→지령 기울기로만 한다 — 총보상으로 고르면
+        #     "얼어붙은 정책"을 다시 고르게 된다.
+        #   ⚠ 사전 등록 ②: 관전 지표는 **ep1500 이후 축별 포화율이 오르지 않는 것**이다.
+        #   ⚠ ep1499 까지는 이 변경이 아무 효과가 없다 — 그 구간은 여전히 t73 대비
+        #     `bounds_loss_coef` **단일 변수** 비교다.
+        self.curriculum.action_rate = None
 
         # ── 액션 jerk 페널티는 **배선하지 않는다** ──────────────────
         # ★한때 넣었다가 뺐다. 근거: 그 처방은 test12 의 고주파 채터링(방향 반전 68.6%,
@@ -522,6 +573,30 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         )
         # ★진단(weight 0) — 게이트 진입 비율. 이번 런의 1차 관전 지표라 반드시 로깅한다.
         self.rewards.gate_rate = RewTerm(func=rewards.gripper_gate_rate, weight=0.0, params={})
+        # ── 진단 항 (weight 0 — 학습에 영향 없음) ─────────────────────
+        # ★★fab_test65: z 액션 포화를 **학습 중에** 본다. 지금까지는 프로브로만 볼 수 있어
+        #   판이 끝난 뒤에야 알았다(t64: mu 1.336 · 포화 90.3% · 조건부 기울기 0.005).
+        #   판정: `diag_act_z_sat` 이 0.3 을 넘으면 박스 상한이 다시 천장이 된 것이고,
+        #        `diag_act_z_mu` 가 1.0 을 넘기 시작하는 epoch 이 병목의 발생 시점이다.
+        self.rewards.diag_act_z_mu = RewTerm(
+            func=rewards.diag_action_z_mu, weight=0.0, params={})
+        self.rewards.diag_act_z_sat = RewTerm(
+            func=rewards.diag_action_z_sat, weight=0.0, params={})
+        self.rewards.diag_cup_goal_dz = RewTerm(
+            func=rewards.diag_cup_goal_dz, weight=0.0, params={})
+        # ★★fab_test73: 보상은 **TCP** 로 채점하되(프레임 정합), 합격 판정은 **컵**이다.
+        #   둘을 나란히 찍어 게이트 `near`(80 mm) 만큼 벌어지는 순간을 본다.
+        self.rewards.diag_cup_goal_dist = RewTerm(
+            func=rewards.diag_cup_goal_dist, weight=0.0, params={})
+        self.rewards.diag_tcp_goal_dist = RewTerm(
+            func=rewards.diag_tcp_goal_dist, weight=0.0, params={})
+        # ★★fab_test69: x·y 도 찍는다. t67 의 진짜 병목은 y(mu 3.11 · 포화 99.7%)였는데
+        #   z 만 보고 있어 판이 끝난 뒤 프로브로야 알았다.
+        for _ax, _i in (("x", 0), ("y", 1)):
+            setattr(self.rewards, f"diag_act_{_ax}_mu", RewTerm(
+                func=rewards.diag_action_axis_mu, weight=0.0, params={"axis": _i}))
+            setattr(self.rewards, f"diag_act_{_ax}_sat", RewTerm(
+                func=rewards.diag_action_axis_sat, weight=0.0, params={"axis": _i}))
 
         self.terminations.object_dropping.params["minimum_height"] = P.OBJECT_DROP_HEIGHT
 

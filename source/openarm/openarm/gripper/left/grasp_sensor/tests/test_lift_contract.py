@@ -235,7 +235,13 @@ def test_settling_at_the_goal_is_rewarded():
     assert "settled_at_goal" in src
     assert "lin_vel_std" in src and "ang_vel_std" in src, "각속도 항이 빠졌다"
     assert P.SETTLE_LIN_VEL_STD > 0 and P.SETTLE_ANG_VEL_STD > 0
-    assert 0.0 < P.SETTLE_REWARD_WEIGHT <= 15.0, (
+    # ★★fab_test67(사용자 결정): **weight 0 으로 뺐다.** 항·배선은 남긴다(계속 로깅).
+    #   삼중 곱(gate × near_goal × still)이라 세 인자가 중간값이면 곱이 죽는다 —
+    #   t66 실측 0.755 × 0.256 × 0.262 = 상한의 5%. 게다가 "멈추는 것"의 이득이
+    #   총보상의 0.08% 라, 정책이 배회하며 거리만 줄이는 쪽이 합리적 선택이 됐다.
+    #   되살릴 때는 `cup_between_jaws` 의 floor 패턴(0.3 + 0.7·still)을 먼저 검토할 것.
+    #   ⚠ 지금은 **정지를 요구하는 항이 없다** — 그 상태를 계약으로 못박아 둔다.
+    assert 0.0 <= P.SETTLE_REWARD_WEIGHT <= 15.0, (
         "정지 보너스가 lifting(15) 을 넘으면 파지보다 정지가 우선이 된다"
     )
     # ★★임계는 **실측 규모에 맞춰야** 신호가 산다. 처음에 0.10 m/s·1.00 rad/s 로 잡았다가
@@ -297,7 +303,28 @@ def test_goal_is_the_user_specified_region_not_wider():
     test17 이 이송까지 성공 → pour 용 목표-조건부 이송을 위해 **의도적으로** 이만큼만
     다시 넓혔다. 이보다 넓어지면 test12 의 정체가 돌아온다 — 상한을 계약으로 고정.
     """
-    assert P.GOAL_JITTER == (0.05, 0.07, 0.05), "사용자 지정 목표 영역이 바뀌었다"
+    # ★★fab_test77: E2(t75/76) 확대를 **되돌린다**. 산포를 키우면 조건부 추종 압력이
+    #   커진다는 가설이 실측으로 기각됐다 — 목표→지령 기울기가
+    #     t73(옛 상자) x 0.109 · y 0.297 · z 0.053
+    #     t75(넓힌 상자) x 0.099 · y 0.016 · z 0.006   ← **오히려 나빠졌다**
+    #   병목은 목표 분포가 아니라 **액션 축 포화**였다(t75 best 프로브: y mu 1.504 포화
+    #   99.1% · z mu 1.319 포화 86.4% · 덜 포화된 x 만 기울기가 산다). clamp 미분이 0 이라
+    #   포화된 축은 목표를 따라갈 수 없다. ⇒ 상자는 t73 기준선으로 되돌리고 처방은
+    #   `bounds_loss_coef` 로 건다(한 판에 한 변수).
+    assert P.GOAL_JITTER == (0.05, 0.07, 0.05), "목표 영역이 t73 기준선에서 벗어났다"
+    # ★상자는 반드시 **실측 도달 영역 안**이어야 한다 — 그게 test12 정체의 진짜 방지책이다.
+    _EPS = 1e-6   # 중심±jitter 산술의 부동소수 잔차
+    for (lo, hi), (map_lo, map_hi), ax in (
+        # 실측 도달 외곽 — t73 상자(x[0.36,0.46] y[0.17,0.31] z[0.385,0.485])를 감싼다.
+        # z 0.385 는 08.28 지도의 z=0.40 층(구멍 흩어짐)에 걸치지만 t73 이 4000ep 완주로
+        # 실증한 상자다 — 지도는 +x 정렬 제약 IK 라 실제 도달보다 보수적이다.
+        (P.GOAL_POS_X, (0.22, 0.52), "x"),
+        (P.GOAL_POS_Y, (0.10, 0.40), "y"),
+        (P.GOAL_POS_Z, (0.38, 0.56), "z"),
+    ):
+        assert lo >= map_lo - _EPS and hi <= map_hi + _EPS, (
+            f"{ax} 상자가 실측 도달 영역 밖으로 나갔다: [{lo}, {hi}]"
+        )
     for jit, (lo, hi), c in zip(
         P.GOAL_JITTER, (P.GOAL_POS_X, P.GOAL_POS_Y, P.GOAL_POS_Z), P.GOAL_POINT
     ):
@@ -343,7 +370,10 @@ def test_left_arm_velocity_limit_matches_the_reference():
     src = _cfg_source()
     assert "velocity_limit_sim=P.ARM_VELOCITY_LIMIT" in src
     assert set(P.ARM_VELOCITY_LIMIT.values()) == {2.175, 2.61}
-    assert set(P.ARM_EFFORT_LIMIT.values()) == {40.0, 27.0, 7.0}
+    # ★★fab_test66: 액추에이터를 **오른팔 스타일**로 바꿨다 — kp 테이퍼(300/100/50/25),
+    #   effort 300(옛 40/27/7 은 URDF 기본값). 도달 실측: z 오차 30~46 → 16~26 mm,
+    #   j5 포화 456~727% → 0. 근거 전문은 preset ARM_IK_STIFFNESS 주석.
+    assert P.ARM_EFFORT_LIMIT == 300.0, "URDF 기본값(40/27/7)으로 되돌아갔다"
     # URDF 기본값으로 되돌아가지 않도록
     assert max(P.ARM_VELOCITY_LIMIT.values()) < 5.0
 
@@ -617,7 +647,16 @@ def test_env_cfg_inherits_isaaclab_lift():
     # 판정 게이트를 늘리는 term 은 여전히 금지 — test6/test7 에서 학습을 죽였다.
     # 신설: grasp_pose · settled_at_goal · cup_between_jaws · grip_closure_when_enclosed
     #      · gate_rate(진단 weight 0) + 도달 목표점 교정 1
-    assert src.count("RewTerm(") <= 6, "신설 term 이 예상보다 많다"
+    # ★fab_test65: **weight 0 진단 항 3종**(diag_act_z_mu/sat/cup_goal_dz)을 더했다.
+    #   z 액션 포화(t64: mu 1.336 · 90.3%)를 학습 중에 보기 위한 것이고 학습에는
+    #   영향이 없다. 상한을 그만큼만 올린다 — 실제 보상 term 은 여전히 6 개다.
+    # ★fab_test69: 진단 항에 x·y 액션 2축(mu/sat)을 더했다 — t67 의 진짜 병목은
+    #   y(mu 3.11 · 포화 99.7%)였는데 z 만 찍고 있어 판이 끝난 뒤에야 알았다.
+    #   전부 weight 0 이라 학습에는 영향이 없다.
+    # ★fab_test73: 목표 거리 진단 2종(컵 기준·TCP 기준)을 더했다 — 보상은 TCP 로
+    #   채점하지만 합격 판정은 컵이라, 둘이 벌어지는 순간을 상시로 봐야 한다.
+    assert src.count("weight=0.0") >= 8, "진단 항이 사라졌다(gate_rate + diag 7종)"
+    assert src.count("RewTerm(") <= 13, "신설 term 이 예상보다 많다"
 
 
 def test_smoothing_is_the_reference_curriculum_not_an_extra_term():
@@ -855,11 +894,12 @@ def test_relative_ik_seeds_from_previous_target_and_caps_windup_by_effort():
     assert "jacobian, self._prev_target" in act_src, "IK 씨앗이 직전 목표가 아니다"
     assert "self._max_tracking_error" in act_src
 
-    # 상한이 effort/강성 에서 파생돼야 한다 — 리터럴이면 액추에이터를 바꿨을 때 어긋난다.
+    # ★fab_test66: 이 상한은 더 이상 effort/강성 파생이 아니라 **경험적 안전 상한**이다.
+    #   effort 가 300 이 되면서 effort/kp 는 1~12 rad = anti-windup 무의미가 되는데,
+    #   검증된 도달 실측(16~26 mm)은 옛 상한 그대로 낸 값이라 그 값을 유지한다.
     for expr, val in P.ARM_IK_MAX_TRACKING_ERROR.items():
-        assert math.isclose(val * P.ARM_IK_STIFFNESS, val * P.ARM_IK_STIFFNESS)
         assert 0.0 < val < 0.5
-    # j5~7 은 effort 7 N·m 라 가장 작아야 한다.
+    # 원위 관절일수록 작아야 한다(팔 끝일수록 토크 여유가 적다).
     assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[5-7]"] < P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"]
     # 속도 한계로 잡던 값(v·dt≈0.026)으로 되돌아가면 j1-2 상한이 그 근처로 내려온다.
     assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"] > 0.05, "토크가 갇힌다"
