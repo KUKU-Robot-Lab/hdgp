@@ -148,6 +148,26 @@ def _build_robot_cfg(profile: RobotProfile,
 
 @configclass
 class GraspS2REnvCfg(DirectRLEnvCfg):
+    """★★09.01 기본값 = D3 세팅 (`s2r_d3_liftonly_fresh_v2`, 20,000 iter 완주).
+
+    이 전까지 기본값은 "구 동작 보존"이었고 실험은 전부 CLI 오버라이드로 돌았다.
+    D3 가 FRESH 에서 8종 전수 성공을 실증해 그 조합을 기본으로 올린다 —
+    `# ★D3 기본` 주석이 붙은 필드가 승격 대상이다.
+
+    **20,000 iter 실측 (최근 25%)**: `task/success` 0.604 · `species/success_min`
+    0.607 · `stay_run` 14.46 스텝 · `gate/lifted` 0.805 · `abnormal` 0.0000 ·
+    `force_max_postlatch` 17.6 N. 종별 0.774~0.949 (s085 0.774 최저, shaker 0.949 최고).
+
+    **같은 자리 warm(D1, B1 ep_12000 인계) 대조**: success 0.185 · min 0.170 ·
+    stay_run 0.300. LSTM 이 인계받은 "들고 버티기"를 답습해 이송을 못 배웠다
+    (메모리 `fresh-vs-warmstart-lstm-rule`). → 이 세팅은 **FRESH 로 돌리는 것이 기본**.
+
+    승격의 핵심 두 값은 `grasp_weight` 12→4 와 `lift_height_ref` 0.10→0.06 이다.
+    구 값은 pre-lift 구간 수입(grasp 4.69 + enclosure 4.17 = 8.86/step)이 리프트
+    보상(임계에서 7.3)을 넘겨 **안 드는 것이 이득인 주차장**을 만들었고, D2 가 거기서
+    2,500 iter 동안 `lifted` 0.000 으로 멈췄다.
+    """
+
     # ---- 로봇 선택 (서브클래스가 덮어씀) --------------------------------------------
     profile_name: str = "tesollo_right"
 
@@ -194,7 +214,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     hand_velocity_ff_scale: float = 1.0
     use_hand_repulsion: bool = False
     use_body_repulsion_pairs: bool = True
-    enable_self_collisions: bool = True
+    enable_self_collisions: bool = False  # ★D3 기본 (09.01 승격)
 
     # ---- 액션: palm 6D **홈 기준 델타** + 손 시너지 ----------------------------------
     # ★★grasp_v1 규약. `palm = 홈 + scale(a, −delta, +delta)` 이므로 **a=0 이 홈**이다.
@@ -203,8 +223,21 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   (08.27 실측: 클램프 전 요청량 0.33~0.36 m/step 상시 포화). 델타 규약은 탐색을
     #   홈 주변 유계 오프셋으로 묶어 이 문제를 구조적으로 없앤다.
     # ★y 만 범위가 큰 이유: 홈 y −0.38 → 컵 y −0.20 을 액션으로 덮어야 한다.
-    palm_delta_xyz: tuple[float, float, float] = (0.15, 0.35, 0.15)
-    palm_delta_rot_deg: float = 20.0
+    palm_delta_xyz: tuple[float, float, float] = (0.10, 0.10, 0.10)  # ★D3 기본 (09.01 승격)
+    palm_delta_rot_deg: float = 40.0  # ★D3 기본 (09.01 승격)
+    # ---- 액션 앵커 (`a=0` 이 뜻하는 palm 자세) --------------------------------------
+    # ★08.29 Phase 0 실측: 홈(0.280, -0.380, 0.418)은 과제에서 멀다 — 컵 파지고보다
+    #   z **+14 cm**, 이송 목표보다 y **-27 cm**. 그래서 `a=0` 이 "컵에서 도망"을 뜻하고
+    #   LSTM 출력이 조금만 풀리면 palm 이 홈으로 튕긴다. 실측 `palm_post_latch_y`
+    #   -0.399 로 **홈(-0.380)보다 더 뒤**, 목표(-0.110)와는 0.29 m 반대. 정책은
+    #   `action_norm_arm` 2.29~2.40(이론최대 √6=2.449의 93~98%)으로 상시 저항 중이었다.
+    # "spawn" = `object_spawn_pos`(리셋 시 정착 스냅샷) + 아래 오프셋.
+    #   ★에피소드 내 상수라 되먹임이 없다 — 실시간 물체 위치를 쓰면 컵이 밀릴 때
+    #     액션 원점이 같이 움직인다. 스폰 범위가 넓어지거나 다종 컵으로 가도 따라간다.
+    palm_anchor_mode: str = "spawn"          # "home" | "spawn"(D3 기본)
+    # 유도: 파지 palm(0.296,-0.207,0.322) ↔ 목표 palm(0.296,-0.157,0.402) 의 중점
+    #       (0.296,-0.182,0.362) 에서 스폰(0.362,-0.16,0.2773)을 뺀 값.
+    palm_anchor_offset_xyz: tuple[float, float, float] = (-0.066, -0.022, 0.085)
     # ★★지령 변화율 상한 — `gripper/left/grasp_sensor`(t59 fabric 배선) 값과 동일하게 맞췄다
     #   (08.27 사용자 지시 "fabric·액션 세팅을 좌팔과 동일하게").
     #     좌팔 `PALM_CMD_RATE_LIMIT` 0.02 m/step = **1.0 m/s** (IK 액션 스케일 위치 성분과 동일)
@@ -218,6 +251,15 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # ---- 손: 관절공간 시너지 ---------------------------------------------------------
     # 액션은 **절대 폐쇄도 목표**[0,1] 이고 아래는 그 목표를 향한 **변화율 상한**이다
     # (속도 명령이 아니다 — 속도로 두면 탐색 노이즈 평균만으로 완전 폐쇄되고 못 되돌린다).
+    # ---- 손 레이아웃 (08.29 O 라운드) ------------------------------------------------
+    # "coupled3"(기본·현행): 손가락×3채널 + couple_four_fingers 평균.
+    # "per_finger": 프로필 `hand_finger_channels` 의 손가락별 슬롯(엄지 2·검/중/약 각 1·
+    #   소지 1 = 6). 미지정 관절은 고정. ★액션 차원이 바뀌므로 warmstart 전면 무효(FRESH).
+    hand_layout: str = "coupled3"
+    # 동결 범위: "joint"(기본·현행) = 자기 링크 닿은 관절만. "finger" = 그 손가락의
+    #   (중간∨원위) 접촉 시 **그 손가락 굴곡관절 전부** 정지 — 08.29 영상 진단:
+    #   관절별 동결은 언 손끝을 매단 채 근위가 계속 감겨 큰 컵을 밀어냈다.
+    synergy_freeze_scope: str = "joint"
     synergy_close_speed: float = 0.005
     # ★★감쌈을 만드는 메커니즘. 원위·팁이 닿은 손가락의 `_3`/`_4` 만 정지시켜 컵 형상에
     #   드리워지게 한다. 끄면 핀치가 된다(grasp_v1 실증: full_envelope 0.176 → 0.035).
@@ -225,6 +267,17 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # 엄지 독립 · 4지는 채널별 평균으로 묶는다 → "특정 손가락만 안 닫힘"이 액션 공간에서
     # 표현 불가(3지 국소최적 차단).
     couple_four_fingers: bool = True
+    # ★★공통+잔차 손 (08.30 W 라운드 진단 처방). 커플링은 4지 지령을 **평균으로 대체**
+    #   하는데, 그 사이를 잇는 연속 손잡이가 없어 "닫히지만 둔한 손(coupled)" ↔ "손가락은
+    #   독립인데 안 닫히는 손(15ch)" 두 극단뿐이었다. W 실측: `syn_close` coupled 0.320
+    #   vs 15ch 0.106/0.022/0.042 — σ=1.0 잡음이 15채널에 독립으로 걸리면 4지가 동시에
+    #   오므리는 결맞음이 급감한다(커플링은 평균으로 분산을 1/4 로 줄인다).
+    #   지령 = 공통 + scale·(개별 − 공통). 0 = 현행 coupled 항등 · 1 = 15ch 와 동일.
+    #   ★액션 차원 불변(21)이라 커리큘럼 도중 warm 이 깨지지 않는다.
+    finger_residual_scale: float = 0.0
+    # ADR 다섯째 축 — 레벨에 따라 잔차를 연다("쥐는 법 먼저, dexterity 나중").
+    # base(=finger_residual_scale) 이하면 축이 꺼진 것으로 본다.
+    adr_finger_residual_max: float = 0.0
 
     # ---- 닫기 게이트: 위치가 맞기 전에는 오므리지 않는다 -----------------------------
     # ★★08.27 사용자 GUI 관찰: "순간적으로 가깝기만 해도 바로 잡기를 시작한다. 안 가까운데
@@ -280,6 +333,20 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # ★08.27: `wrap_frac`(중간 AND 원위)이 4,553 기록점 내내 정확히 0.000 인데 영상에서는
     #   감쌈이 성립한다. "안 닿았다"와 "닿았는데 못 읽는다"를 가르기 위한 계측이다.
     diag_contact_threshold_lo: float = 0.1   # N — 스치는 접촉까지 잡는 낮은 임계
+    # ★08.29 사용자 제약: 실기 팁 센서 정격 **0~50 N**, 그 위는 측정 불가.
+    #   하드웨어는 넘길 수 있다 — URDF effort 7.5 N·m / 원위 모멘트암 25.5 mm
+    #   ⇒ 실기 최대 294 N, sim(effort_limit_sim 1.5) 58.8 N. 아래 둘은 **초과율
+    #   로깅에만** 쓰인다(보상 경로 없음). 힘 밴드 도입 시 임계의 출발점이 된다.
+    force_sensor_max_n: float = 50.0         # N — 팁 센서 정격 상한
+    force_band_hi_n: float = 30.0            # N — 밴드 감쇠 시작(그 아래는 정확히 무손실)
+    # ★밴드 바닥. **1.0 = 감쇠 없음(현행 동작)**. 켤 때도 0 으로 두면 안 된다 —
+    #   08.25 `grip-contact-cliff` 에서 "닿으면 보상이 꺼지니 접촉을 회피"가 실측됐다.
+    #   세게 쥐는 것이 손해이되 **놓는 것보다는 낫게** 남기는 값이 0.3 이다.
+    force_band_floor: float = 0.5  # ★D3 기본 (09.01 승격)
+    # 손 PD 토크 포화 판정: err ≥ effort_limit_sim / stiffness = 1.5 / 5.0.
+    # ★`blocked_err_thr_rad` 와 값은 같지만 용도가 다르다 — 그쪽은 동결 게이트,
+    #   이쪽은 "가동 관절이 천장에 붙어 있는 비율" 진단이다. 따로 둔다.
+    hand_torque_sat_err_rad: float = 0.30
     # 손 PD 가 버틸 수 있는 최대 정적 오차 = effort_limit_sim / stiffness = 1.5 / 5.0.
     # 이보다 크면 토크가 천장에 붙어 있다는 뜻이라 "막혔다"로 센다.
     blocked_err_thr_rad: float = 0.30
@@ -298,7 +365,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # 대향 손가락(`contact_group_a`)의 ch1 관절 grip = open + 이 값. 0 = 현행(고정).
     #   ★URDF 실측 `r_hj_thumb_2` 가동범위 −3.142~0.0(180°)로 손에서 가장 큰데
     #     프로필이 open=grip=−1.57 로 적어 **엄지 대향각이 학습 대상이 아니었다**.
-    oppose_grip_delta_rad: float = 0.0
+    oppose_grip_delta_rad: float = -0.6  # ★D3 기본 (09.01 승격)
     # 과굴곡 손가락의 ch2(굴곡) grip 각도 배율. 빈 이름 = 끔.
     #   ★소지는 `_3`·`_4` 가 다른 손가락과 같은 채널로 묶여 **같은 각도**로 말리는데
     #     길이가 짧아 과도하게 감긴다(사용자 GUI 관찰).
@@ -315,6 +382,57 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   처음부터 끝까지 정책이 fabric 을 통해 제어한다.
     lift_start_min_grip_fingers: int = 3
     grasp_ready_hold_steps: int = 8
+    # ---- 낙하/전도 재소환 (08.30, 기본 OFF = 현행 종료) ------------------------------
+    # ★종료 대신 이번 에피소드의 **원래 스폰점**으로 컵을 되돌린다(앵커·목표 불변).
+    #   palm 여유 미달이면 보류(자매 v2 검증 규약 — 폴백 텔레포트 금지).
+    respawn_on_fail: bool = True  # ★D3 기본 (09.01 승격)
+    respawn_clearance_m: float = 0.12  # ★D3 기본 (09.01 승격)
+    # ★재소환 1회당 벌점(양수 = 비용). Q3 실측: 벌점 0 이면 접촉력 300N+ 의 거친
+    #   탐색이 공짜가 된다 — 종료(−수백 상당)보다 훨씬 작되 0 이 아니게.
+    respawn_penalty: float = 2.0  # ★D3 기본 (09.01 승격)
+    # ★★보류 예산 (08.30 Q3 실측 처방). 여유 미달로 보류만 하면 넘어진 컵이 팔 옆에
+    #   방치돼 `cup_disp`·`tilt` 벌점이 계속 나오고 approach 가 **순벌점**(−0.35)이 된다
+    #   — 에피소드가 안 끝나니 그 상태로 600 스텝을 버틴다(Q3: defer 0.93·palm 접촉 1.4%
+    #   vs 정상 81.7%). 연속 보류가 이 예산을 넘으면 **종료로 폴백**한다(0 = 무제한).
+    respawn_defer_budget: int = 60  # ★D3 기본 (09.01 승격)
+    # ★여유를 palm 원점이 아니라 **손 전체(palm+손끝) 최소거리**로 잰다. False(현행)면
+    #   손끝이 스폰점에 있어도 통과해 컵이 손가락 안으로 텔레포트된다(08.30 힘 실측).
+    respawn_clearance_uses_tips: bool = True  # ★D3 기본 (09.01 승격)
+    # ★재소환 위치 — "origin"(기본) = 원래 스폰점 복귀(그 자리가 곧 손자리라 보류 0.93).
+    #   "free" = 자매 v2 규약: 스폰 상자 안에서 **손이 없는 자리**를 리젝션 샘플링하고
+    #   스폰 기준·목표를 그 자리로 옮긴다(물체만 새로 리셋하는 것과 동등).
+    respawn_mode: str = "free"  # ★D3 기본 (09.01 승격)
+    respawn_tries: int = 24
+    # ★free 모드 샘플링 반범위 [m]. 0 = 스폰 범위와 동일(기본).
+    #   ★★스폰 범위(ADR level 0 에서 0.02 → 4×4cm)는 **손보다 작아** 어떤 후보도
+    #   여유를 못 채운다 — 08.30 R2a 실측 defer 0.62 · 최선후보 거리 0.056.
+    #   자매 v2 도 같은 한계를 주석에 남겼다. 재소환 상자는 스폰 상자와 분리한다.
+    respawn_range: float = 0.09  # ★D3 기본 (09.01 승격)
+    # ★무접촉 정체 보상 처방 (08.30 W4). enclosure(10)는 접촉 없이도 스텝당 ~7.2 를
+    #   내는 공짜 보상이라 FRESH 에서 "가만히 있기"가 국소최적이 된다(M0·O1 총보상
+    #   실측 일치). floor<1 이면 enclosure_term 에 (floor + (1−floor)·graded_contact)
+    #   를 곱해 무접촉 상한을 10·floor 로 낮춘다. ★H 라운드가 기각한 **완전 곱셈**
+    #   (=floor 0, 접근 구간에서 항이 죽음)과 다르다 — 접근 gradient 의 floor 비율을
+    #   보존한다. 기본 1.0 = 현행 항등.
+    enclosure_contact_floor: float = 0.3  # ★D3 기본 (09.01 승격)
+    # ★★`finger_closure` 의 목표 마디. "tip"(기본·현행) | "wrap".
+    #   08.31 8종 실측이 이 노브를 만들게 했다 — 팁 접촉은 0.65~0.85 로 이미 채워졌는데
+    #   wrap(중간∧원위)은 **전 종 0.000** 이다. `graded_contact = 0.4·팁 + 0.6·wrap`
+    #   에서 정책이 싼 0.4 만 먹고 멈춘 것이고, 팁 기준 소등 항은 바로 그 지점에서
+    #   꺼져 경사를 못 준다. "wrap" 은 소등 조건을 중간∧원위로, 거리를 중간마디로
+    #   옮겨 **손끝을 댄 뒤부터 감아 안기까지** 경사를 잇는다.
+    finger_closure_target: str = "wrap"  # ★D3 기본 (09.01 승격)
+    # ★★접촉 품질의 정의. "tipwrap"(기본·현행) | "anylink".
+    #   "anylink" = 손가락 **어느 마디든**(tip|mid|dist) 닿았는가 + 손바닥 한 표,
+    #   분모 5+1. 08.31 사용자 확정: "어떤 부분이든 5손가락(또는 손바닥까지) 닿고
+    #   안정적으로 유지만 하면 된다". 구 정의는 wrap(중간∧원위 동시)이 8종 전수
+    #   0.000 이라 정책이 팁 0.4 만 먹고 2~3개 접촉에서 멈췄고, 그 상태로는 컵을
+    #   기울이는 과제에서 놓친다.
+    contact_quality_mode: str = "anylink"  # ★D3 기본 (09.01 승격)
+    # ★래치 판정 방식 (08.29). "count"(기본·현행) = 접촉 손가락 수 ≥ min.
+    #   "opposition" = (그룹A) AND (그룹B OR palm) — 실측 성공 파지(엄지+palm)에서
+    #   count 가 래치를 영원히 못 여는 문제의 처방. O1/O2/N1 적용, M1 은 대조 보존.
+    latch_mode: str = "opposition"  # ★D3 기본 (09.01 승격)
 
     # ---- 목표(goal) — 수평 이동 포함 -------------------------------------------------
     # goal = 물체 **정착 위치** + offset. 스폰점 기준이면 패딩이 이중으로 실린다.
@@ -323,11 +441,11 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   0.094 m 면 0.57 — 2.6배. y 는 컵 y −0.16 기준 −0.11 로 **음수 유지**(y≥0 회피).
     #   z 0.08 > lift_success_height 0.04 라 목표 도달 전에 "들렸다"가 먼저 성립한다.
     #   ★나중에 커리큘럼으로 늘려나갈 값이다.
-    goal_offset_xyz: tuple[float, float, float] = (0.0, 0.05, 0.08)
+    goal_offset_xyz: tuple[float, float, float] = (0.0, 0.0, 0.12)  # ★D3 기본 (09.01 승격)
     goal_pos_tolerance: float = 0.025        # 성공 반경
     goal_pos_tolerance_loose: float = 0.05   # 연속성 비교 로깅 전용
     stay_hold_steps: int = 60                # 1초 — stay 항이 만점이 되는 유지 시간
-    lift_height_ref: float = 0.10            # lift 항 높이 정규화 기준
+    lift_height_ref: float = 0.06            # lift 항 높이 정규화 기준  # ★D3 기본 (09.01 승격)
     lift_success_height: float = 0.04        # "들렸다" 판정
     success_tilt_max_deg: float = 5.0
     stable_lin_vel: float = 0.04
@@ -339,7 +457,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # `success_min_grip_fingers` 는 구 코드의 리터럴 `n_grip >= 4` 를 cfg 로 올린 것 —
     # 그 리터럴은 2지 그리퍼 프로필에서 절대 성립 불가였다.
     success_require_lifted: bool = True
-    success_require_holding: bool = True
+    success_require_holding: bool = False  # ★D3 기본 (09.01 승격)
     success_min_grip_fingers: int = 4
 
     # ---- 감쌈 지표 (08.28 신설 — 기본값 = 현행 `deep_and`) ----------------------------
@@ -358,10 +476,22 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # ★형상 정보를 쓰지 않는다 — 물체 중심 하나뿐이라 컵 종류를 늘려도 성립한다.
     #   hull 대신 방향 분산을 쓰는 이유는 sim2real 이다(링크 위치 = FK 는 전이되지만
     #   접촉점 개수는 contact discretization·마찰·강성에 민감해 전이되지 않는다).
-    enclosure_weight: float = 0.0
+    enclosure_weight: float = 10.0  # ★D3 기본 (09.01 승격)
     enclosure_palm_weight: float = 0.3
     enclosure_group_a_weight: float = 0.3
     enclosure_group_b_weight: float = 0.4
+    # ★08.29 I1 실측 비중: enclosure 67.7%(상한의 77% 실현) vs transfer 2.6%(1.9%).
+    #   가중치는 상한일 뿐이고 실제 비중은 **실현율**이 정한다 — 조밀 항(매 스텝 기하)은
+    #   즉시 포화하고 희소·조건부 항은 0~11%만 실현한다. 그래서 가중 30짜리 lift 가
+    #   가중 10짜리 enclosure 의 절반도 못 낸다. 게다가 래치 후에도 포위도는 팔 위치와
+    #   무관하게 계속 지급되어 **리프트 이후 보상 지형이 palm 위치에 평평해진다**.
+    #   래치 **전은 불변**(감쌈을 만든 힘 보존), 래치 **후만** 이 비율로 줄인다.
+    enclosure_post_latch_scale: float = 1.0
+    # ★손가락별 최소참여 혼합비. **0.0 = 그룹 평균만(현행 동작)**.
+    #   위 식은 그룹 키포인트를 평균하므로 손가락 하나가 빠져도 값이 거의 안 떨어진다 —
+    #   `couple_four_fingers` 를 넣게 만든 3지 국소최적의 원인 진단("mean/count 보상엔
+    #   손가락별 최소참여 신호 부재")과 같은 결함이다. **커플링을 풀기 전 선행조건**이다.
+    enclosure_participation_lambda: float = 0.0
 
     # ---- 손등 접촉 배제 (Hu et al. `p_collision` 대응 — 기본 꺼짐) --------------------
     # 켜면 손바닥면이 물체를 향하는 접촉만 인정한다. ★`palmar_axis_local` 이 프로필에
@@ -385,7 +515,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     approach_sharpness_normal: float = 12.0
     # ★밀착 상태에서 **정지**해야 손가락이 말릴 시간이 생긴다. palm 실측 선속도 기준.
     palm_still_gain: float = 10.0
-    grasp_weight: float = 12.0
+    grasp_weight: float = 4.0  # ★D3 기본 (09.01 승격)
     # ★★감쌈 비중 0.55 → 0.80(폐쇄 0.20). 폐쇄 항은 **큰 상금이 아니라 넛지**여야 한다 —
     #   approach 가 손 모양을 못 보게 고친 뒤로는 건너야 할 계곡이 없어졌고, 08.27 실측
     #   (s2r_b1)에서 폐쇄 상금 5.1/step 이 전체의 93% 를 먹으며 주차장이 됐다.
@@ -396,10 +526,15 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     transfer_weight: float = 15.0
     transfer_sharpness: float = 6.0
     stay_weight: float = 8.0
-    stabilize_weight: float = 10.0
+    stabilize_weight: float = 1.0  # ★D3 기본 (09.01 승격)
     stability_weight: float = 1.0
     success_weight: float = 20.0
     post_lift_contact_loss_weight: float = -8.0
+    # ★"멈춤"을 정의하는 항. **0.0 = 꺼짐(현행 동작)**. 08.29 J1 실측:
+    #   `hand_joint_err_movable_mean` 0.16 rad · `hand_torque_sat_frac` 0.21 —
+    #   가동 관절의 20%가 토크 천장에 붙어 있고 보상에는 힘 항이 하나도 없었다.
+    #   sim 이 안전한 이유가 `effort_limit_sim`(1.5) 뿐이고 실기는 7.5 N·m 로 5배다.
+    hand_overdrive_weight: float = 0.0
     wrap_retention_weight: float = -6.0
     action_smooth_weight: float = -0.02
     cup_disp_tolerance: float = 0.025        # 접근 중 허용 밀림
@@ -423,6 +558,12 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     obs_noise_body: float = 0.005
     obs_noise_object: float = 0.015
 
+    # ---- finger_closure (08.29 신설·기본 0 = 항등) -----------------------------------
+    # 접촉 전 손가락별 연속 신호 — (1−접촉)·exp(−k·‖tip−파지중심‖) 평균 × close_gate.
+    # ★가중 상한 1.0 — 소등 항 크기 < 접촉 사다리 이득 부등식(절벽 회피 재발 방지).
+    finger_closure_weight: float = 3.0  # ★D3 기본 (09.01 승격)
+    finger_closure_sharpness: float = 8.0
+
     # ---- 씬 기하 ---------------------------------------------------------------------
     table_surface_z: float = 0.200           # env.usd top_plate 상면(점군 실측)
     object_origin_offset_z: float = 0.0773   # cup_big USD 원점 ↔ 바닥
@@ -433,6 +574,28 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # ---- 커리큘럼 --------------------------------------------------------------------
     # ★ADR 은 끄고 시작한다. 과제 성립 후 스폰 범위부터 켠다.
     enable_adr: bool = False
+    # ★★전역 난이도 스칼라(level 0→1) 하나가 세 축을 선형 스케일한다.
+    #   env 별 난이도 금지 — 성공 게이팅을 env 별로 걸면 나쁜 시드가 영구 고착된다
+    #   (08.27 h7 데드락 실측). 승급은 단조(하강 없음), 판정 창은 종료 에피소드 수.
+    adr_success_threshold: float = 0.7       # 창 성공률이 이 값 이상이면 승급
+    adr_eval_episodes: int = 4096            # 판정 창 크기 (종료 에피소드 수)
+    adr_step: float = 0.1                    # 승급 당 level 증가
+    #   ★최대치는 부팅 검증(`_assert_goal_reachable`)이 **비확장 프로필 박스**로
+    #   잰다 — 도달영역(y 폭 실측 ~0.32m)이 물리 한계라 스폰+이송 합이 그 안이어야 한다.
+    adr_spawn_range_max: float = 0.05        # 축① level=1 의 스폰 xy 반범위
+    adr_goal_y_max: float = 0.12             # 축③ level=1 의 이송 y 오프셋(부호는 base 따름)
+    # ---- 목표 3축 샘플링 (08.30 — 단조 상승의 망각·단일 방향 한계 처방) -------------
+    # ★★실측 근거: m1_final 성공률 지도(1024 ep/칸)에서 이송 y **0.12 → 0.94~0.98**,
+    #   0.085 → 0.84~0.86, **0.05 → 0.000**. 난이도를 단조로 올리기만 하면 정책이
+    #   시작 구간을 잊고 "한 방향으로 14cm" 하나만 배운다(스폰 범위는 ±2→±5cm 로
+    #   넓혀도 −4.4%p 뿐이라 무해했다). → 매 에피소드 **[base, 현재레벨] 안에서 뽑는다**.
+    #   x 는 ±범위(방향 다양성), z 는 [base, max] 구간.
+    adr_goal_sample: bool = False            # False = 현행(레벨 값 고정)
+    adr_goal_x_max: float = 0.0              # level=1 의 x 반범위(0 = 축 끔)
+    adr_goal_z_max: float = 0.08             # level=1 의 z 상한(= base 면 축 끔)
+    # ★base(obs_noise_object=0.015)보다 커야 한다 — 작으면 보간이 거꾸로 가서
+    #   승급할수록 노이즈가 **줄어든다**(V1 스모크 실측 0.0145→0.0125 로 잡음).
+    adr_obs_noise_object_max: float = 0.03   # 축① level=1 의 물체 pose obs 노이즈
 
     # ---- 디버그 시각화 (GUI/카메라 렌더일 때만 — headless 학습에 비용 0) --------------
     enable_cmd_markers: bool = True
@@ -479,29 +642,149 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     object_contact_filter: tuple = ("/World/envs/env_.*/Object/baseLink",)
 
     events: GraspS2REventCfg = GraspS2REventCfg()
+    # ★08.29 진단용. **기본 True = 현행 동작**. `replicate_physics=False` 에서
+    #   `randomize_rigid_body_material` 이 shape 개수를 잘못 세는 것이 확인됐다
+    #   (grasp_v2 는 같은 항에서 `Expected 1163, got 1162` 로 부팅 실패).
+    #   재질이 엉뚱한 shape 에 들어가면 마찰·접촉이 무너진다 — 다물체 폭주의
+    #   남은 후보라 끌 수 있게 연다.
+    enable_events: bool = True
     surface_friction: float = _FRICTION
+
+    # ---- 다물체 (08.29 신설) ----------------------------------------------------------
+    # ★기본 `single_cup` = 현행 동작(단일 USD · replicate_physics=True).
+    #   `cup_family` 로 바꾸면 8종이 `env_id % 8` 로 결정론 배정된다.
+    #   물체 **정체성은 obs 에 들어가지 않는다** — onehot 도 뱅크 인덱스도 넣지 않는다.
+    #   policy obs 는 상대 위치(`palm_to_obj`·`obj_to_tips`·`goal_rel`)뿐이라 다물체로
+    #   가도 차원·의미가 불변이다. 원점 오프셋은 **스폰·보상 경로에만** 쓴다(특권 정보).
+    object_bank: str = "cup_family"  # ★D3 기본 (09.01 승격)
 
     robot_cfg: ArticulationCfg = None  # __post_init__ 에서 프로필로 조립
 
-    def __post_init__(self):
+    def finalize_after_overrides(self) -> None:
+        """cfg 필드에서 **파생되는 구조**를 다시 만든다. 멱등이어야 한다.
+
+        ★★hydra 는 `__post_init__` **뒤에** `env_cfg.from_dict(...)` 로 오버라이드를
+          적용하고 `__post_init__` 를 다시 부르지 않는다(IsaacLab `hydra_task_config`).
+          그래서 `env.object_bank=cup_family` 같은 오버라이드는 파생 구조에 반영되지
+          않는다 — 08.29 스모크에서 `replicate_physics` 가 True 로 남아 실측됐다.
+          env `__init__` 이 `super()` **전에** 이 메서드를 다시 부른다.
+          `replicate_physics` 는 `InteractiveScene.__init__` 이 소비하므로
+          `_setup_scene` 에서 고치면 이미 늦다.
+        """
         profile = PROFILES[self.profile_name]
+        # ★robot_cfg 도 파생 구조다 — `enable_self_collisions` 를 `__post_init__` 에서만
+        #   소비하면 CLI 오버라이드가 조용한 no-op 이 된다. 08.29 확정: 다물체
+        #   (`replicate_physics=False` per-env 파싱)에서 손 hull 초기 겹침 ×
+        #   자기충돌 ON 이 폭주의 근본 원인(sick 0/256 완치 실측) → 다물체 학습은
+        #   `env.enable_self_collisions=False` 로 기동해야 하고, 그게 실리려면
+        #   재구축이 여기 있어야 한다.
         self.robot_cfg = _build_robot_cfg(
             profile, bool(self.enable_self_collisions))
+        if not bool(self.enable_events):
+            self.events = None
+        self._apply_object_bank()
         # 스폰 높이는 여기 한 곳에서만 파생한다(이중 패딩 사고 차단).
+        # ★다물체면 이 값은 **뱅크 최댓값**이다 — env 별 실제 높이는 런타임에서 준다
+        #   (`_obj_origin_off`). 여기서 작은 값을 쓰면 큰 컵이 테이블을 뚫고 스폰된다.
         self.object_spawn_z = (
             self.table_surface_z + self.object_origin_offset_z + self.object_spawn_pad)
         self.object_cfg.init_state.pos = [
             profile.object_spawn_center[0], profile.object_spawn_center[1],
             self.object_spawn_z,
         ]
+        self._derive_spaces(profile)
 
+    def _apply_object_bank(self) -> None:
+        """뱅크 크기에 따라 스폰·물리복제·접촉필터를 한 곳에서 조립한다.
+
+        ★함정 3개를 여기서 막는다(전부 재발 이력):
+          ①뱅크>1 인데 `replicate_physics=True` 면 전 env 가 같은 물체를 받는다.
+          ②접촉 필터가 루트 Xform 을 가리키면 `force_matrix_w` 가 **항상 0** 이다 —
+            뱅크의 `rigid_body_name`(전 스펙 동일해야 함)에서 만든다.
+          ③`base_origin_offset_z` 미측정 스펙이 섞이면 안착 높이를 못 구한다 →
+            `origin_offset_z` 프로퍼티가 fail-loud 한다.
+        """
+        from openarm.agnostic.modules import object_bank as _ob
+
+        # ★멱등성 — 이 메서드는 `__post_init__` 과 env `__init__` 에서 **두 번** 불린다.
+        #   원본 단일 스폰을 보존해 두지 않으면 두 번째 호출이 MultiAsset 을 또 감싸고
+        #   `replace(...)` 가 usd_path 없는 cfg 에서 터진다.
+        if getattr(self, "_object_spawn_base", None) is None:
+            self._object_spawn_base = self.object_cfg.spawn
+            self._table_usd_base = self.table_cfg.spawn.usd_path
+        bank = _ob.get(self.object_bank)
+        _missing = bank.missing_files()
+        if _missing:
+            raise RuntimeError(
+                f"물체 뱅크 '{bank.name}' 의 USD 누락: {list(_missing)}")
+        _offs = [s.origin_offset_z for s in bank.specs]      # 미측정이면 여기서 fail-loud
+        self.object_origin_offset_z = max(_offs)
+        self.object_contact_filter = (
+            f"/World/envs/env_.*/Object/{bank.rigid_body_name}",)
+        if not bank.needs_multi_asset:
+            # ★`replicate_physics` 를 여기서 True 로 되돌리지 않는다 — 명시 오버라이드
+            #   (`env.scene.replicate_physics=False`)를 덮어쓰면 분리 실험을 못 한다.
+            #   기본값은 cfg 선언(True)이 이미 준다.
+            self.object_cfg.spawn = self._object_spawn_base
+            self.table_cfg.spawn.usd_path = self._table_usd_base
+            return
+
+        from dataclasses import replace
+
+        from isaaclab.sim.spawners.wrappers import wrappers_cfg as _wrap
+
+        self.scene.replicate_physics = False
+        # ★★다물체는 `replicate_physics=False` 가 필수이고, 그때는 `clone_environments`
+        #   의 `enable_env_ids` env 간 충돌 격리가 사라진다. 작업면이 원시 정적 프림이면
+        #   전 env 가 한 충돌 그룹에 남아 팔이 물린다 — 08.29 분리 실측: 단일 컵으로
+        #   고정하고 플래그만 뒤집어도 abnormal 0.0000→0.849 · joint_err 0.058→0.74 rad.
+        #   그래서 다물체에서는 kinematic RigidBodyAPI 를 저작한 사본을 쓰고 테이블을
+        #   **씬 자산**(`RigidObject`)으로 올린다(자매 `tesollo/grasp_v2` 와 같은 규약).
+        #   사본 생성: `scripts/assets_tools/build_env_rigid_usd.py`
+        _rigid_usd = _os.path.join(_ASSETS_DIR, "env", "usd", "env_rigid.usd")
+        if not _os.path.isfile(_rigid_usd):
+            raise RuntimeError(
+                f"다물체({bank.name})는 kinematic 작업면이 필요하다: {_rigid_usd} 없음 — "
+                "`python3 scripts/assets_tools/build_env_rigid_usd.py` 로 먼저 빌드할 것")
+        self.table_cfg.spawn.usd_path = _rigid_usd
+        _base = self._object_spawn_base
+        self.object_cfg.spawn = _wrap.MultiAssetSpawnerCfg(
+            assets_cfg=[
+                replace(_base, usd_path=s.usd_path, scale=tuple(s.scale),
+                        mass_props=MassPropertiesCfg(mass=float(s.mass)))
+                for s in bank.specs
+            ],
+            random_choice=False,          # env_id % N — `assign_indices` 와 같은 규약
+            activate_contact_sensors=True,
+        )
+
+    def __post_init__(self):
+        # robot_cfg·공간 차원 전부 finalize_after_overrides 가 만든다
+        # (★hydra 는 __post_init__ 뒤에 덮고 재호출하지 않는다 — CLI 반영 지점).
+        self.finalize_after_overrides()
+
+    def _derive_spaces(self, profile) -> None:
+        """액션/관측 차원 파생 — `hand_layout` 을 소비하므로 finalize 에서 불려야
+        `env.hand_layout=per_finger` CLI 가 실린다(O1 부팅 fail-loud 실측 08.29)."""
         n_arm = profile.num_arm_joints
         n_hand = profile.num_hand_joints
         num_tips = len(profile.fingertip_bodies)
         num_fingers = len(profile.finger_sensor_bodies)
-        # 액션 = palm 6D 델타 + 손가락 × 시너지 채널(프로필 파생).
-        n_ch = len(set(profile.hand_channel_of_joint.values()))
-        self.action_space = 6 + n_ch * num_fingers
+        # 액션 = palm 6D 델타 + 손 슬롯(레이아웃 파생).
+        if str(self.hand_layout) == "per_finger":
+            _slots = [s for m in profile.hand_finger_channels.values()
+                      for s in m.values()]
+            if not _slots:
+                raise RuntimeError(
+                    f"[{profile.name}] hand_layout=per_finger 인데 "
+                    "hand_finger_channels 가 비어 있다")
+            if sorted(set(_slots)) != list(range(max(_slots) + 1)):
+                raise RuntimeError(
+                    f"[{profile.name}] 액션 슬롯이 연속이 아니다: {sorted(set(_slots))}")
+            self.action_space = 6 + max(_slots) + 1
+        else:
+            n_ch = len(set(profile.hand_channel_of_joint.values()))
+            self.action_space = 6 + n_ch * num_fingers
 
         # policy obs (grasp_v1 계열 + 목표, **물체 정체성 없음**):
         #   arm q/qd(2·n_arm) + hand q/qd(2·n_hand) + palm_pos(3) + palm_ax(6)

@@ -37,6 +37,12 @@ VISDEX_ROOT = os.path.join(ASSETS_DIR, "visdex_objects", "USD")
 #   물체마다 절대 질량이 2.6배 벌어져 무거운 물체만 미검증 외삽 영역으로 튄다.
 BASE_OBJECT_MASS = 0.134
 
+# bead 가 컵 바닥에 가라앉았을 때도 "안"으로 세기 위한 바닥 위 여유 [m].
+# ★bead 반경(≈0.010)보다 작아야 한다 — 크면 가라앉은 bead 가 판정에서 빠지고,
+#   pour_sensor 의 spill 식이 그것을 "손실"로 세어 성공을 실패로 뒤집는다.
+#   구 상수(-0.070 = cup_big 바닥 -0.0773 + 0.0073)의 여유를 그대로 승계한다.
+BEAD_FLOOR_MARGIN = 0.0073
+
 # grasp_v2 에서 구조적으로 못 잡는다고 판정된 물체(반경이 작아 force closure 불가).
 VISDEX_EXCLUDED = (
     "small_5_cyl", "small_8_cyl", "small_12_cyl",
@@ -62,6 +68,77 @@ class ObjectSpec:
     #   force_matrix_w 가 **항상 0** 이 된다(fab_test1~4 를 그렇게 날렸다).
     #   실측: cup/shaker/visdex 표본 전부 "baseLink". 새 자산은 확인 후 채울 것.
     rigid_body_name: str = "baseLink"
+    # ★파지 표면 기하 [m, scale 적용 전] — tip_bridge 의 목표면(측면 원통 띠).
+    #   None = 미측정 → 그 뱅크를 쓰면 env 가 fail-loud(조용히 틀린 목표면 금지).
+    #   실측 출처: cup_big 반경 0.062(접촉 실측 중앙 59~65mm) · shaker 0.044(메시).
+    base_grasp_radius: float | None = None
+    base_grasp_halfheight: float | None = None
+    # ★림(입구) z [m, scale 적용 전, **원점 기준**] — 붓기 지점·받는 입구의 진실원천.
+    #   pour 는 이 값을 `cup_pose + R·[0,0,rim_z]` 로 써서 붓는 점을 만든다. 다물체에서
+    #   상수 하나(구 `SOURCE_CUP_POUR_POINT_POS_B=0.100`)를 쓰면 −17~+30 mm 어긋난다:
+    #     cup_big s085 0.0853 · s100 0.1003 · s130 0.1304 · shaker 0.0829 (09.01 pxr 실측).
+    #   None = 미측정 → 소비 시 fail-loud(조용히 허공에 붓는 것 금지).
+    base_rim_z: float | None = None
+    # ★내벽/외벽 반경 [m, scale 적용 전] — bead 의 "컵 안" 판정과 배출구 위치의 진실원천.
+    #   내벽은 **림 높이 단면의 안쪽 반경**을 쓴다(아래로 갈수록 좁아지므로 가장 느슨한
+    #   상한이고, 벽이 물리적으로 그보다 큰 반경을 막아준다 → 안에 있는 bead 를 놓치지
+    #   않으면서 밖의 bead 를 넣지도 않는다).
+    #   09.01 pxr 실측(림 상단 5mm 밴드): cup_big 내 0.0409 / 외 0.0467,
+    #                                     shaker_closed 내 0.0432 / 외 0.0440.
+    #   None = 미측정 → 소비 시 fail-loud.
+    base_inner_radius: float | None = None
+    base_outer_radius: float | None = None
+
+    @property
+    def grasp_radius_m(self) -> float:
+        if self.base_grasp_radius is None:
+            raise RuntimeError(
+                f"물체 '{self.id}' 의 base_grasp_radius 미측정 — tip_bridge 목표면을 "
+                "만들 수 없다. bbox/접촉 실측으로 채워라.")
+        return self.base_grasp_radius * float(self.scale[0])
+
+    @property
+    def grasp_halfheight_m(self) -> float:
+        if self.base_grasp_halfheight is None:
+            raise RuntimeError(f"물체 '{self.id}' 의 base_grasp_halfheight 미측정")
+        return self.base_grasp_halfheight * float(self.scale[2])
+
+    @property
+    def rim_z(self) -> float:
+        """스케일 적용 림 z. 원점→입구 높이."""
+        if self.base_rim_z is None:
+            raise RuntimeError(
+                f"물체 '{self.id}' 의 base_rim_z 미측정 — 붓기 지점을 만들 수 없다. "
+                "pxr bbox 로 실측해 채워라.")
+        return self.base_rim_z * float(self.scale[2])
+
+    @property
+    def inner_radius_m(self) -> float:
+        """스케일 적용 내벽 반경 — bead 의 "컵 안" xy 판정 상한."""
+        if self.base_inner_radius is None:
+            raise RuntimeError(
+                f"물체 '{self.id}' 의 base_inner_radius 미측정 — bead 내부 판정을 "
+                "만들 수 없다. pxr 로 림 단면 반경을 실측해 채워라.")
+        return self.base_inner_radius * float(self.scale[0])
+
+    @property
+    def outer_radius_m(self) -> float:
+        """스케일 적용 외벽 반경 — 기울였을 때 실제 배출구(최하단 림 점) 계산용."""
+        if self.base_outer_radius is None:
+            raise RuntimeError(
+                f"물체 '{self.id}' 의 base_outer_radius 미측정 — 배출구 위치를 "
+                "만들 수 없다. pxr 로 림 단면 반경을 실측해 채워라.")
+        return self.base_outer_radius * float(self.scale[0])
+
+    @property
+    def inside_z_min(self) -> float:
+        """바닥에 가라앉은 bead 를 "안"으로 세는 하한 [m, 원점 기준].
+
+        바닥(`-origin_offset_z`)보다 `BEAD_FLOOR_MARGIN` 만큼 위. 이 여유는 bead
+        반경(≈0.010)보다 **작아야** 가라앉은 bead(중심 = 바닥+반경)가 하한 위에 남는다.
+        컵을 키워도 bead 는 안 커지므로 관계는 스케일과 무관하게 유지된다.
+        """
+        return -self.origin_offset_z + BEAD_FLOOR_MARGIN
 
     @property
     def origin_offset_z(self) -> float:
@@ -131,14 +208,28 @@ _SHAKER = os.path.join(CUP_ROOT, "shaker_closed_rl.usd")
 
 # 실측(pxr bbox, scale=1): cup_big 바닥 -0.0773 / 상단 +0.1003
 _CUP_BIG_ORIGIN_OFFSET = 0.0773
+# 09.01 pxr 실측(scale=1): cup_big 상단 +0.1003 / shaker_closed 상단 +0.0829.
+_CUP_BIG_RIM_Z = 0.1003
+_SHAKER_RIM_Z = 0.0829
 _SHAKER_ORIGIN_OFFSET = 0.0921      # 메모리 기록 "shaker 원점은 바닥+92mm" 와 일치
+# 09.01 pxr 실측(림 상단 5mm 밴드의 반경 분포, scale=1):
+#   cup_big        내 0.0409 ~ 외 0.0467 (벽 두께 5.8mm, 아래로 갈수록 좁아져 몸통 최소 0.0277)
+#   shaker_closed  내 0.0432 ~ 외 0.0440 (얇은 벽 0.8mm, 몸통 최소 0.0332)
+_CUP_BIG_INNER_R = 0.0409
+_CUP_BIG_OUTER_R = 0.0467
+_SHAKER_INNER_R = 0.0432
+_SHAKER_OUTER_R = 0.0440
 
 
 def _cup(scale: float) -> ObjectSpec:
     # ★round 필수 — int(1.15 * 100) 은 부동소수 때문에 114 가 된다(id 가 조용히 어긋남).
     return ObjectSpec(id=f"cup_big_s{round(scale * 100):03d}",
                       usd_path=_CUP_BIG, scale=(scale, scale, scale),
-                      base_origin_offset_z=_CUP_BIG_ORIGIN_OFFSET)
+                      base_origin_offset_z=_CUP_BIG_ORIGIN_OFFSET,
+                      base_rim_z=_CUP_BIG_RIM_Z,
+                      base_inner_radius=_CUP_BIG_INNER_R,
+                      base_outer_radius=_CUP_BIG_OUTER_R,
+                      base_grasp_radius=0.062, base_grasp_halfheight=0.05)
 
 
 SINGLE_CUP = ObjectBank(
@@ -152,7 +243,11 @@ CUP_FAMILY = ObjectBank(
     specs=(
         _cup(0.85), _cup(1.00), _cup(1.15), _cup(1.30),
         ObjectSpec(id="shaker_closed", usd_path=_SHAKER,
-                   base_origin_offset_z=_SHAKER_ORIGIN_OFFSET),
+                   base_origin_offset_z=_SHAKER_ORIGIN_OFFSET,
+                   base_rim_z=_SHAKER_RIM_Z,
+                   base_inner_radius=_SHAKER_INNER_R,
+                   base_outer_radius=_SHAKER_OUTER_R,
+                   base_grasp_radius=0.044, base_grasp_halfheight=0.05),
         _cup(0.90), _cup(1.05), _cup(1.20),
     ),
     note=("grasp_v1 의 8종. 순서가 env_id % 8 배정과 onehot 인덱스를 동시에 정하므로 "
@@ -211,6 +306,22 @@ def get(name: str, *, expected_size: int | None = None) -> ObjectBank:
 # =============================================================================
 # 스폰 순서 강제
 # =============================================================================
+def spec_by_id(spec_id: str) -> ObjectSpec:
+    """전 뱅크에서 스펙 하나를 id 로 찾는다.
+
+    ★받는 컵처럼 **뱅크 밖에서 단독으로 쓰는 자산**도 기하(림·바닥·반경)의 진실원천을
+      뱅크와 공유하기 위한 조회구다. 자산 경로만 바꾸고 상수를 안 고치는 드리프트가
+      실제로 났다(받는 컵 cup_big→shaker 교체 시 입구 z 가 17.4mm 어긋남, 09.01).
+    """
+    for bank in BANKS.values():
+        for sp in bank.specs:
+            if sp.id == spec_id:
+                return sp
+    raise KeyError(
+        f"물체 스펙 '{spec_id}' 을 어느 뱅크에서도 못 찾았다. "
+        f"보유: {sorted({sp.id for b in BANKS.values() for sp in b.specs})}")
+
+
 def assert_spawned_after_clone(bank: ObjectBank, cloned: bool) -> None:
     """MultiAsset 물체를 clone 이전에 만들면 전 env 가 assets_cfg[0] 하나만 받는다.
 

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os as _os
 from dataclasses import dataclass, field
 
 
@@ -71,6 +72,12 @@ class RobotProfile:
     #   ★채널을 나누는 이유: 손가락당 스칼라 하나를 4관절에 복사하면 관절 목표가
     #     open→grip 직선 하나 위에만 존재해 **진짜 인벨롭 자세가 액션 공간에 없다**.
     hand_channel_of_joint: dict = field(default_factory=dict)
+    # ---- 손가락별 레이아웃 (cfg.hand_layout="per_finger", 08.29 O 라운드) ---------
+    # finger 이름 → {관절 접미사: **전역 액션 슬롯**}. 빠진 접미사는 **고정**(폐쇄도 0).
+    # ★사용자 확정 설계: 엄지 2슬롯(근위/원위 분리) · 검/중/약 각 1슬롯(j2/3/4 공통)
+    #   · 소지 1슬롯(j3/4 — j2 는 실측 가동폭 0 이라 자연 고정) · 외전(_1) 전부 고정.
+    #   L1 의 완전 해제(12ch)와 달리 손 차원 15→6 **축소** 재편이다.
+    hand_finger_channels: dict = field(default_factory=dict)
     # 접촉 시 동결할 관절 접미사 — 그 손가락의 원위∨팁 접촉이 성립하면 진행을 멈춘다.
     #   ★이것이 감쌈 생성 메커니즘이다. 풀면 손가락이 컵 반경보다 작게 말려 손끝만
     #     닿는 핀치가 된다(grasp_v1 실증: full_envelope 0.176→0.035).
@@ -206,6 +213,14 @@ TESOLLO_RIGHT = RobotProfile(
     #   분리가 의미를 가지려면 절대 폐쇄도 전환이 필수 — 둘은 한 묶음").
     #   액션 = palm 6 + 손가락 5×3 = 21D.
     hand_channel_of_joint={"1": 0, "2": 1, "3": 2, "4": 2},
+    hand_finger_channels={
+        # 엄지 j2 는 실측 가동폭 0 → "j2/j3·4" 의도를 "j3/j4"(근위/원위 분리)로 구현.
+        "thumb": {"3": 0, "4": 1},
+        "index": {"2": 2, "3": 2, "4": 2},
+        "middle": {"2": 3, "3": 3, "4": 3},
+        "ring": {"2": 4, "3": 4, "4": 4},
+        "pinky": {"3": 5, "4": 5},
+    },
     hand_freeze_suffixes=("3", "4"),
     # grasp_sensor 프리셋(같은 DG-5F 자산에서 검증된 palm workspace) 승계.
     # ★modules/robots.py 의 _BOX_R 은 bi_s(DG-5FS) 실측이라 palm 이 54.8mm 달라 못 쓴다.
@@ -279,14 +294,94 @@ TESOLLO_RIGHT = RobotProfile(
         #     SETTING으로")에 따른 것이며, 실기 배포 시에는 재검토가 필요하다.
         #     되돌리려면 이 블록만 아래 구 값으로 복원하면 된다:
         #       [1-3] 400/80 f0.213 · 4 400/80 f0.493 · [5-7] 400/80 f0.151 · 손 5.0/2.0 e1.5
-        "right_arm_proximal": dict(joint_names_expr=["r_aj_[1-4]"], stiffness=300.0, damping=45.0,
-                                   effort_limit_sim=300.0),
-        "right_arm_j5":       dict(joint_names_expr=["r_aj_5"],     stiffness=100.0, damping=20.0,
-                                   effort_limit_sim=300.0),
-        "right_arm_j6":       dict(joint_names_expr=["r_aj_6"],     stiffness=50.0,  damping=15.0,
-                                   effort_limit_sim=300.0),
-        "right_arm_j7":       dict(joint_names_expr=["r_aj_7"],     stiffness=25.0,  damping=15.0,
-                                   effort_limit_sim=300.0),
+        # ★★08.31 실기 배포 — 위 주석이 예고한 "재검토" 시점이 왔다.
+        #   `HDGP_S2R_REAL_GAINS=1` 이면 **실기 실측 게인**으로 바꾼다(기본값은 KUKA 유지).
+        #   근거: 07.29 계단 실측 kp 74.7/75.1/69.5/60.9/10.8/14.5/10.5(벤더 스펙과 ≤4%)
+        #   + autotune damping 6.376/5.635/2.154(벤더 kd 가 2.6~3.6배 부족했다는 발견).
+        #   ★이 자산은 **로봇 중력이 꺼져 있다**(env_cfg:118 disable_gravity=True). 실기에
+        #     중력보상을 켜면 같은 조건이 된다 — 08.31 실기에서 그 조합으로 추종오차
+        #     RMSE 0.94° 를 얻었다. 즉 게인만 맞추면 sim↔실기가 같은 물리가 된다.
+        #   ⚠기본값을 바꾸지 않는 이유: 현 배포 정책 b1_ep10800 이 KUKA 게인에서 학습됐다.
+        #     게인을 바꾸면 재학습이 필요하다.
+        # ★★09.01 갱신 — R3 자세 여진(r2s collect ×3 → fit)으로 **관절별** 재식별.
+        #   07.29 값(kp 73.1/60.9/11.9 · kd 6.376/5.635/2.154, 3그룹)을 대체한다.
+        #   그때는 **손이 없거나 다른 조건**의 정적 계단이었고, 지금은 테솔로 손
+        #   1.763 kg 을 단 채 동적으로 쟀다. 손목 관성이 10~12배 달라지므로 손목
+        #   게인이 다른 것이 당연하다 — 07.29 를 기준으로 삼지 않는다(사용자 판단).
+        #   근거 파일: sim2real/logs/r2s/right_R3_s065_fit.json (holdout 1런 보유)
+        #   ★자기정합: fit 이 낸 kd/√kp 하위 셋(j5 0.14·j7 0.21·j6 0.30)이 실측
+        #     오버슈트 상위 셋(×1.47·×1.58·×2.07)과 정확히 일치한다. 나머지 넷은
+        #     kd/√kp ≥ 0.55 이고 오버슈트가 전부 ≈1.00 이다.
+        # ★★09.01 2차 모델 fit 으로 재계산 — `sim2real/scripts/fit_excite_model.py`.
+        #   `robotctl r2s fit` 은 모델에 **armature 가 없어** kp 를 부풀려 맞춘다. 여진
+        #   응답에 관절별 2차계 `J q̈ + kd q̇ + kp q = kp q_des` 를 직접 맞추면 (ωn, ζ)
+        #   가 kp 와 무관하게 결정되고, kp 를 주면 J = kp/ωn² · kd = 2ζωn J ·
+        #   armature = J − J_link 가 따라온다. holdout 런 RMSE 가 fit 과 거의 같다
+        #   (0.43~2.05° vs 0.41~1.90°) — 과적합이 아니다.
+        #   ★모델에 Coulomb 마찰을 **포함**한다. 빼면 그 감쇠가 ζ 로 흡수되고, sim 에
+        #     kd 와 friction 을 둘 다 넣게 되어 감쇠가 이중 계산된다 — 실제로 그렇게
+        #     했더니 sim 오버슈트가 실기보다 작았다(j6 1.51 vs 2.01). 마찰을 넣자
+        #     잔차가 7관절 전부에서 줄었다(j3 0.847→0.727 · j5 0.860→0.711).
+        #   측정된 ωn[Hz]/ζ: j1 1.45/0.372 · j2 2.58/0.579 · j3 1.46/0.163 ·
+        #     j4 1.24/0.292 · **j5 1.40/0.071 · j6 2.36/0.012 · j7 1.39/0.069**
+        #   ★손목은 거의 무감쇠이고 저항의 대부분이 마찰이다. armature 는 마찰을
+        #     넣든 빼든 0.82±0.01 로 거의 안 변한다 — 그만큼 강건한 추정이다.
+        #   ⚠속도 피드포워드 모델(kd·q̇_des 항 포함)도 시험했으나 팔에서 잔차가 크고
+        #     (j1 0.81 vs 0.52) 지연을 57~149 ms 로 잡아 비현실적이다. 컨트롤러가
+        #     `interpolation_method: "none"` 이라 속도 지령이 서지 않는 것과 정합한다.
+        #
+        # ★★armature(모터 반사관성 = 기어비²×회전자). 없으면 sim 은
+        #   실기 공진을 **재현하지 못한다**. 근거: 공진에서 역산한 등가 관성
+        #   I_eq = kp/ωn² 이 손목 3관절에서 0.853/1.088/1.006 으로 모이는데,
+        #   URDF 링크 관성은 0.027/0.043/0.051 로 서로 2배 차이다. 같은 모터면
+        #   반사관성이 같다는 것과 정합하고, 손목이 느끼는 관성의 95~97%가 모터다.
+        #   ⇒ 손 1.763 kg 는 등가 관성의 3~5% 에 불과하다(오버슈트의 주원인이 아니다).
+        #   실측 대조(여진 오버슈트 실기 j5 1.46·j6 2.01·j7 1.56):
+        #     armature 없이 KUKA 게인   → 1.24·0.74·0.54 (손목 평균오차 0.843)
+        #     armature 없이 실측 게인   → 1.24·1.01·1.10 (0.564)
+        #   ★j1~j4 는 armature 를 넣지 않는다. 과감쇠라 공진 피크가 없어 fn 추정이
+        #     거칠었고, 거기서 나온 값(j4 2.726)을 넣자 sim 이 0.7 Hz 에서 공진해
+        #     실기 1.00 대비 1.50 으로 **악화**했다(09.01 실측). 팔은 원래 오버슈트가
+        #     없는 관절이므로 링크 관성만으로 충분하다.
+        #   ⚠friction 은 중력보상을 켠 채로 잰 값이라 잔여 중력을 일부 흡수했다
+        #     (fit 경고: "standing load has landed in bias"). j2·j3 가 큰 이유일 수
+        #     있다 — 보상 OFF 대조군을 받으면 갈라진다.
+        **(
+            {
+                "right_arm_j1": dict(joint_names_expr=["r_aj_1"], stiffness=96.2,
+                                     damping=7.87, friction=0.643, armature=0.959,
+                                     effort_limit_sim=300.0),
+                "right_arm_j2": dict(joint_names_expr=["r_aj_2"], stiffness=150.2,
+                                     damping=10.74, friction=0.631, armature=0.472,
+                                     effort_limit_sim=300.0),
+                "right_arm_j3": dict(joint_names_expr=["r_aj_3"], stiffness=71.0,
+                                     damping=2.52, friction=1.343, armature=0.641,
+                                     effort_limit_sim=300.0),
+                "right_arm_j4": dict(joint_names_expr=["r_aj_4"], stiffness=58.0,
+                                     damping=4.34, friction=0.178, armature=0.682,
+                                     effort_limit_sim=300.0),
+                "right_arm_j5": dict(joint_names_expr=["r_aj_5"], stiffness=56.9,
+                                     damping=0.92, friction=0.701, armature=0.707,
+                                     effort_limit_sim=300.0),
+                "right_arm_j6": dict(joint_names_expr=["r_aj_6"], stiffness=189.5,
+                                     damping=0.31, friction=1.387, armature=0.821,
+                                     effort_limit_sim=300.0),
+                "right_arm_j7": dict(joint_names_expr=["r_aj_7"], stiffness=67.1,
+                                     damping=1.06, friction=0.698, armature=0.828,
+                                     effort_limit_sim=300.0),
+            }
+            if _os.environ.get("HDGP_S2R_REAL_GAINS") == "1"
+            else {
+                "right_arm_proximal": dict(joint_names_expr=["r_aj_[1-4]"], stiffness=300.0,
+                                           damping=45.0, effort_limit_sim=300.0),
+                "right_arm_j5":       dict(joint_names_expr=["r_aj_5"], stiffness=100.0,
+                                           damping=20.0, effort_limit_sim=300.0),
+                "right_arm_j6":       dict(joint_names_expr=["r_aj_6"], stiffness=50.0,
+                                           damping=15.0, effort_limit_sim=300.0),
+                "right_arm_j7":       dict(joint_names_expr=["r_aj_7"], stiffness=25.0,
+                                           damping=15.0, effort_limit_sim=300.0),
+            }
+        ),
         # ★★손 게인은 **Tesollo 실측**으로 간다(Kuka Allegro 값 3.0/0.1/0.5 로 덮였던 것을
         #   되돌림). grasp_v1 에 남아 있는 이 손의 kd 스윕이 근거다:
         #     kd 6.71 → 포화 20.5%(감쇠항 자체가 토크를 포화) · kd ≤ 0.5 → 정착속도 2배(채터)

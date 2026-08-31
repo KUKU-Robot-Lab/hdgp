@@ -49,15 +49,39 @@ class GraspS2RControlMixin:
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.scene.articulations["robot"] = self.robot
+        # ★★씬 등록은 `clone_environments` **이후**로 미룬다 — DEXTRAH 원본 규약.
+        #   clone 전에 등록하면 env 가 1개인 상태로 자산 뷰가 잡힐 수 있고,
+        #   `replicate_physics=True` 는 cloner 의 physics replication 이 뷰를
+        #   갱신해 주지만 **False 에서는 갱신되지 않는다**. 08.29 실측 증상:
+        #   리셋의 `write_joint_state_to_sim` 이 안 먹어 관절 편차 18.7 rad ·
+        #   속도 2,973 rad/s · `episode_lengths` 260 → 1.2(무한 리셋).
+        _sensors: dict = {}
 
-        # 정적 환경 USD(env.usd: RigidBodyAPI 없음, 전 메시 충돌체) —
-        # env_0 에 spawn 하면 clone_environments 가 복제한다.
+        from openarm.agnostic.modules import object_bank as _ob
+
+        _bank = _ob.get(self.cfg.object_bank)
+        _multi = _bank.needs_multi_asset
+
+        # ---- 작업면 --------------------------------------------------------------------
+        # ★★단일/다물체로 표현이 갈린다. `UsdFileCfg.rigid_props` 로는 못 바꾼다 —
+        #   그 경로는 기존 API 를 **수정만** 하지 적용하지 않아 원본 `env.usd`
+        #   (`/Env` Xform + 충돌 Mesh 9개, RigidBodyAPI 없음)를 `RigidObject` 로 감싸면
+        #   부팅에서 죽는다(`Failed to find a rigid body when resolving '.../Table'`).
+        #
+        #   단일 물체 : 원시 정적 프림 + `clone_environments` 복제(기존 동작, 불변).
+        #   다물체    : `replicate_physics=False` 라 `enable_env_ids` 격리가 없어져
+        #               원시 프림이면 전 env 작업면이 한 충돌 그룹에 남고 팔이 물린다
+        #               (08.29 분리 실측 abnormal 0.849 · joint_err 0.74 rad).
+        #               → kinematic 사본(`env_rigid.usd`)을 **씬 자산**으로 올린다.
         tbl = self.cfg.table_cfg
-        tbl.spawn.func(
-            "/World/envs/env_0/Table", tbl.spawn,
-            translation=tuple(tbl.init_state.pos), orientation=tuple(tbl.init_state.rot),
-        )
+        if _multi:
+            self.table = RigidObject(tbl)
+        else:
+            tbl.spawn.func(
+                "/World/envs/env_0/Table", tbl.spawn,
+                translation=tuple(tbl.init_state.pos),
+                orientation=tuple(tbl.init_state.rot),
+            )
         # ★테이블은 scene 자산이 아니라 정적 프림이라 EventTerm 이 못 건다. 직접 바인딩한다.
         #   PhysX 결합이 average 라 한쪽만 낮아도 실효 μ 가 중간값이 되고, 컵-테이블
         #   마찰은 접근·안정에 직접 영향을 준다.
@@ -65,7 +89,17 @@ class GraspS2RControlMixin:
         _mat = sim_utils.RigidBodyMaterialCfg(
             static_friction=_mu, dynamic_friction=_mu, restitution=0.0)
         _mat.func("/World/Materials/taskSurface", _mat)
-        bind_physics_material("/World/envs/env_0/Table", "/World/Materials/taskSurface")
+        # ★`bind_physics_material` 은 regex 가 아니라 **실제 프림**만 받는다
+        #   (`Prim at path '.../env_.*/Table' is not valid` 로 fail-loud). 열거해 건다.
+        #   replicate_physics=True 면 이 시점에 env_0 만 있고 clone 이 바인딩까지 복제한다.
+        from isaaclab.sim.utils import find_matching_prim_paths
+
+        _tables = find_matching_prim_paths(self.cfg.table_cfg.prim_path)
+        if not _tables:
+            raise RuntimeError(
+                f"[grasp_s2r] 테이블 프림이 없다: {self.cfg.table_cfg.prim_path}")
+        for _tp in _tables:
+            bind_physics_material(_tp, "/World/Materials/taskSurface")
 
         # ★★손가락별 접촉 센서 — body **하나당 센서 하나**. 다중 body 를 한 센서에
         #   묶으면 `force_matrix_w` 가 무증상 0 을 반환한다(실측 함정).
@@ -82,7 +116,7 @@ class GraspS2RControlMixin:
                     track_air_time=False,
                 ))
                 sensors.append(s)
-                self.scene.sensors[f"contact_{finger}_{body}"] = s
+                _sensors[f"contact_{finger}_{body}"] = s
             self._finger_sensors[finger] = sensors
 
         # ★★손바닥 접촉 — 08.27 까지 **계측 자체가 없었다**. 손가락 센서만 있어서 컵이
@@ -94,12 +128,12 @@ class GraspS2RControlMixin:
             history_length=1,
             track_air_time=False,
         ))
-        self.scene.sensors["contact_palm"] = self._palm_sensor
+        _sensors["contact_palm"] = self._palm_sensor
 
         # 진단 카메라 — env 하나당 하나. probe 가 자세를 눈으로 확인할 때만 켠다.
         if bool(self.cfg.debug_camera):
             from isaaclab.sensors import TiledCamera, TiledCameraCfg
-            self.scene.sensors["debug_cam"] = TiledCamera(TiledCameraCfg(
+            _sensors["debug_cam"] = TiledCamera(TiledCameraCfg(
                 prim_path="/World/envs/env_.*/DebugCam",
                 offset=TiledCameraCfg.OffsetCfg(
                     pos=tuple(self.cfg.debug_camera_pos),
@@ -117,10 +151,45 @@ class GraspS2RControlMixin:
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        self.object = RigidObject(self.cfg.object_cfg)
-        self.scene.rigid_objects["object"] = self.object
-        self.scene.clone_environments(copy_from_source=True)
+        # ★★clone → **씬 등록** → 물체 생성. DEXTRAH 원본(`GRASP/DEXTRAH`)이 이 순서다:
+        #   `Articulation`/`RigidObject` 를 만들고, `clone_environments()` 를 부른 **뒤에**
+        #   `scene.articulations[...]`/`scene.rigid_objects[...]` 에 등록한다.
+        #   clone 전에 등록하면 env 가 1개인 상태로 자산 뷰가 잡히고,
+        #   `replicate_physics=True` 는 cloner 의 physics replication 이 뷰를 갱신해 주지만
+        #   **False 에서는 갱신되지 않는다** — 08.29 실측: 리셋의 `write_joint_state_to_sim`
+        #   이 반영 안 돼 관절 편차 18.7 rad · 속도 2,973 rad/s · `episode_lengths` 1.2.
+        # ★다물체는 `InteractiveScene.__init__` 이 이미 env xform 을 복제했으므로
+        #   여기서 다시 부르지 않는다(부르면 env_0 내용을 전 env 에 덮어쓴다).
+        # ★★`clone_environments` 는 **`replicate_physics=True` 일 때만** 부른다.
+        #   False 면 `InteractiveScene.__init__` 이 이미 env xform 을 복제했고, 여기서
+        #   또 부르면 env_0 내용을 전 env 에 덮어써 프림이 중복·변형된다. 그것이
+        #   리셋 직후 관절 폭발(편차 18~28 rad · 속도 2,500~4,700 rad/s ·
+        #   `episode_lengths` 260→1.2)의 남은 유일한 후보다.
+        #   ★`filter_collisions` 는 **양쪽 다** 부른다 — True 경로는 clone 의
+        #   `enable_env_ids` 가 격리해 주지만 False 경로는 이 호출이 유일한 격리다.
+        _replicate = bool(self.cfg.scene.replicate_physics)
+        if not _multi:
+            # 단일 물체는 clone 이 복제해 줘야 하므로 **clone 전에** 만든다.
+            _ob.assert_spawned_after_clone(_bank, cloned=not _replicate)
+            self.object = RigidObject(self.cfg.object_cfg)
+        if _replicate:
+            self.scene.clone_environments(copy_from_source=True)
+        if _multi:
+            # 다물체는 전 env prim 이 존재해야 `env_id % N` 배정이 성립한다.
+            _ob.assert_spawned_after_clone(_bank, cloned=True)
+            self.object = RigidObject(self.cfg.object_cfg)
         self.scene.filter_collisions(global_prim_paths=["/World/ground"])
+
+        # ---- 씬 등록은 clone **이후** (위 주석의 DEXTRAH 규약) --------------------------
+        self.scene.articulations["robot"] = self.robot
+        for _k, _v in _sensors.items():
+            self.scene.sensors[_k] = _v
+        if _multi:
+            self.scene.rigid_objects["table"] = self.table
+        self.scene.rigid_objects["object"] = self.object
+        print(f"[grasp_s2r] 물체 뱅크 '{_bank.name}' {len(_bank)}종 · "
+              f"replicate_physics={self.cfg.scene.replicate_physics} · "
+              f"센서 {len(_sensors)}개 등록", flush=True)
 
     # ------------------------------------------------------------------
     # Fabrics — 팔은 절대 palm pose attractor 로만 움직인다
@@ -383,6 +452,24 @@ class GraspS2RControlMixin:
         self._syn_ch = torch.tensor(ch, device=self.device, dtype=torch.long)
         self._syn_fi = torch.tensor(fi, device=self.device, dtype=torch.long)
         self._syn_nch = len(set(ch))
+        # ---- per_finger 레이아웃 (08.29 O 라운드) — 관절 → 전역 액션 슬롯(-1=고정) ----
+        if str(self.cfg.hand_layout) == "per_finger":
+            _map = p.hand_finger_channels
+            _act = []
+            for k, nm in enumerate(p.hand_joint_names):
+                _f = fingers[fi[k]]
+                _s = nm.rsplit("_", 1)[1]
+                _act.append(int(_map.get(_f, {}).get(_s, -1)))
+            self._syn_act = torch.tensor(_act, device=self.device, dtype=torch.long)
+            _n_act = int(self._syn_act.max().item()) + 1
+            if 6 + _n_act != int(self.cfg.action_space):
+                raise RuntimeError(
+                    f"[{p.name}] per_finger 슬롯 {_n_act} ≠ action_space-6 "
+                    f"{int(self.cfg.action_space) - 6}")
+        # 손가락 단위 동결용 — 굴곡 관절(_2/_3/_4) 마스크.
+        self._syn_flex = torch.tensor(
+            [nm.rsplit("_", 1)[1] in ("2", "3", "4") for nm in p.hand_joint_names],
+            device=self.device)
         self._syn_freeze = torch.tensor(
             [nm.rsplit("_", 1)[1] in p.hand_freeze_suffixes for nm in p.hand_joint_names],
             device=self.device)
@@ -423,16 +510,30 @@ class GraspS2RControlMixin:
         """
         p = self.profile
         nf = len(p.finger_sensor_bodies)
-        a = a_hand.view(self.num_envs, nf, self._syn_nch)
-        if bool(self.cfg.couple_four_fingers):
-            # 대향 그룹(엄지)만 독립, 나머지는 채널별 평균 — "특정 손가락만 안 닫힘"을
-            # 액션 공간에서 제거한다. 접촉 동결은 관절별로 남아 형상 적응은 유지된다.
-            _mask = torch.ones(nf, dtype=torch.bool, device=a.device)
-            _mask[self._group_a_idx] = False
-            _common = a[:, _mask, :].mean(dim=1, keepdim=True)
-            a = torch.where(_mask.view(1, nf, 1), _common.expand(-1, nf, -1), a)
-        cmd = 0.5 * (a.clamp(-1.0, 1.0) + 1.0)                    # 절대 폐쇄도 [0,1]
-        cmd_j = cmd[:, self._syn_fi, self._syn_ch]                # (N, n) 관절 전개
+        if str(self.cfg.hand_layout) == "per_finger":
+            # 손가락별 슬롯(엄지 2·검/중/약 각 1·소지 1). 미지정 관절은 폐쇄도 0 고정.
+            cmd_flat = 0.5 * (a_hand.clamp(-1.0, 1.0) + 1.0)      # (N, n_act)
+            cmd_j = torch.where(
+                (self._syn_act >= 0).unsqueeze(0),
+                cmd_flat[:, self._syn_act.clamp(min=0)],
+                torch.zeros(self.num_envs, len(self._syn_act),
+                            device=self.device))
+        else:
+            a = a_hand.view(self.num_envs, nf, self._syn_nch)
+            if bool(self.cfg.couple_four_fingers):
+                # 대향 그룹(엄지)만 독립, 나머지는 채널별 평균 — "특정 손가락만 안 닫힘"을
+                # 액션 공간에서 제거한다. 접촉 동결은 관절별로 남아 형상 적응은 유지된다.
+                _mask = torch.ones(nf, dtype=torch.bool, device=a.device)
+                _mask[self._group_a_idx] = False
+                _common = a[:, _mask, :].mean(dim=1, keepdim=True).expand(-1, nf, -1)
+                # ★공통 + 잔차 — scale 0 이면 평균 대체(구 coupled 항등), 1 이면 개별 지령
+                #   그대로(15ch 와 동일). 그 사이가 연속이라 ADR 축으로 열 수 있다.
+                _rs = float(getattr(self, "_adr_residual",
+                                    self.cfg.finger_residual_scale))
+                _blend = _common if _rs == 0.0 else _common + _rs * (a - _common)
+                a = torch.where(_mask.view(1, nf, 1), _blend, a)
+            cmd = 0.5 * (a.clamp(-1.0, 1.0) + 1.0)                # 절대 폐쇄도 [0,1]
+            cmd_j = cmd[:, self._syn_fi, self._syn_ch]            # (N, n) 관절 전개
         rate = float(self.cfg.synergy_close_speed)
         delta = (cmd_j - self._syn_close).clamp(-rate, rate)
         # ★닫는 방향만 정렬 게이트로 스케일한다 — **푸는 방향은 항상 허용**해야
@@ -466,7 +567,14 @@ class GraspS2RControlMixin:
             #   얼었다 — 사용자 관찰 "4지는 말리는데 엄지 _3/_4 는 홈자세 그대로".
             _h_mid = (_mid > _thr)[:, self._syn_fi]
             _h_dist = (_dist > _thr)[:, self._syn_fi]
-            _hold = (_h_mid & self._syn_freeze_mid) | (_h_dist & self._syn_freeze_dist)
+            if str(self.cfg.synergy_freeze_scope) == "finger":
+                # ★손가락 단위 — (중간∨원위) 접촉이면 그 손가락 굴곡관절 **전부** 정지.
+                #   관절별 동결은 언 손끝을 매단 채 근위(_2)가 계속 감겨 큰 컵을
+                #   밀어냈다(08.29 s130 영상 + M1 잔여 실패 진단).
+                _hold = (_h_mid | _h_dist) & self._syn_flex
+            else:
+                _hold = ((_h_mid & self._syn_freeze_mid)
+                         | (_h_dist & self._syn_freeze_dist))
             # ★닫는 방향만 얼린다 — 푸는 방향까지 막으면 갇혀서 빠져나올 수 없다
             #   (닫기 게이트와 같은 원칙).
             delta = torch.where(_hold & (delta > 0.0), torch.zeros_like(delta), delta)

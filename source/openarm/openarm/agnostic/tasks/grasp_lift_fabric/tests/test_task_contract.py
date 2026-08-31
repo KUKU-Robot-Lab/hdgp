@@ -81,7 +81,11 @@ def test_absolute_palm_mapping_is_not_resurrected():
     """
     assert "_kuka_absolute" not in ENV
     assert "_pre_physics_step" not in ENV, "팔 액션 경로를 덮으면 델타 규약이 깨진다"
-    assert "self._home_palm.unsqueeze(0) + delta" in SIB_ENV
+    # ★09.01 자매 리팩터 추적 — 앵커가 `_palm_anchor()` 로 추출됐다(홈/스폰 분기).
+    #   델타 규약 자체는 불변이므로 **앵커 + 델타** 형태를 잠근다.
+    assert "self._palm_anchor() + delta" in SIB_ENV, "앵커+델타 규약이 깨졌다"
+    assert "self._home_palm.unsqueeze(0).expand(self.num_envs, 6)" in SIB_ENV, \
+        "홈 앵커 경로가 사라졌다 — 절대 매핑 회귀 위험"
 
 
 # ======================================================================
@@ -316,7 +320,11 @@ def test_failures_terminate_and_only_timeout_truncates():
 
 def test_goal_is_measured_from_settled_height_not_spawn():
     assert "settled[:, 2] = float(self.cfg.table_surface_z)" in SIB_ENV
-    assert "self.goal_pos[env_ids] = settled + torch.tensor" in SIB_ENV
+    # ★09.01 자매 리팩터 추적 — ADR 목표 샘플링이 생기며 오프셋이 `_goff` 로 추출됐다.
+    #   잠글 계약은 그대로 "**정착고 기준**(스폰 아님)"이다.
+    assert "self.goal_pos[env_ids] = settled + _goff" in SIB_ENV
+    assert "self.goal_pos[env_ids] = spawn" not in SIB_ENV, \
+        "목표가 스폰 기준으로 회귀했다 — 스폰 패드 이중 패딩 사고"
 
 
 def test_adr_off_and_single_cup():

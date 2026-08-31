@@ -25,6 +25,7 @@ import torch
 GRASP_S2R_REWARD_TERMS: tuple[str, ...] = (
     "approach",
     "enclosure",
+    "finger_closure",
     "grasp",
     "lift",
     "transfer",
@@ -33,6 +34,7 @@ GRASP_S2R_REWARD_TERMS: tuple[str, ...] = (
     "stability",
     "success_bonus",
     "post_lift_contact_loss",
+    "hand_overdrive",
     "action_smooth",
 )
 
@@ -47,8 +49,12 @@ def compute_grasp_s2r_rewards(
     tip_contact_frac: torch.Tensor,       # (N,) 팁 접촉 손가락 비율 — graded_contact 전용
     wrap_frac: torch.Tensor,              # (N,) per-finger (middle AND distal) 비율 = 감쌈 **깊이**
     wrap_at_latch: torch.Tensor,          # (N,) 래치 시점 깊이 스냅샷
-    grip_frac: torch.Tensor,              # (N,) tip|mid|distal OR 비율
+    grip_frac: torch.Tensor,
+    anylink_frac: torch.Tensor,          # (N,) (어느 마디든 닿은 손가락 + 손바닥)/(5+1)              # (N,) tip|mid|distal OR 비율
     enclosure: torch.Tensor,              # (N,) 물체를 둘러싼 정도 [0,1] — 기하(접촉 아님)
+    finger_closure: torch.Tensor,         # (N,) 미접촉 손가락의 컵 접근도 [0,1] — 닿으면 소등
+    force_quality: torch.Tensor,          # (N,) 힘 밴드 [바닥,1] — 팁 최대힘이 셀수록 낮다
+    hand_overdrive: torch.Tensor,         # (N,) 가동 손관절의 도달불가 지령량 [0,1]
     # ---- 기하 ----
     palm_normal_dist: torch.Tensor,      # |법선(palm_ee_x) 성분| — **밀착도**
     palm_lateral_dist: torch.Tensor,     # 손바닥 면(y·z) 어긋남, z 는 데드밴드 통과
@@ -78,9 +84,26 @@ def compute_grasp_s2r_rewards(
     # 접촉 품질 — 하드 게이트(전 팁 접촉)는 검지가 구조적으로 미접촉이라 영원히 0 이
     # 된다. 부분 접촉에도 gradient 가 남도록 graded 로 간다.
     # 여기에 감쌈 비중을 섞어 **손끝만으로 드는 것**을 부드럽게 억제한다.
-    _emix = _f(cfg, "lift_envelope_mix", 0.6)
-    graded_contact = (1.0 - _emix) * tip_contact_frac.clamp(0.0, 1.0) \
-        + _emix * wrap_frac.clamp(0.0, 1.0)
+    # ★★08.31 사용자 정의 — `contact_quality_mode="anylink"` 면 "손가락 어느 마디든
+    #   (손바닥 포함) 닿았는가"로 센다. 구 정의(0.4·팁 + 0.6·wrap)는 wrap 이
+    #   **중간∧원위 동시**라 8종 전수 0.000 이었고, 정책이 싼 팁 0.4 만 먹고 2~3개
+    #   접촉에서 멈췄다. 붓기처럼 기울이는 과제에서는 그 상태로 컵을 놓친다.
+    if str(getattr(cfg, "contact_quality_mode", "tipwrap")) == "anylink":
+        graded_contact = anylink_frac.clamp(0.0, 1.0)
+    else:
+        _emix = _f(cfg, "lift_envelope_mix", 0.6)
+        graded_contact = (1.0 - _emix) * tip_contact_frac.clamp(0.0, 1.0) \
+            + _emix * wrap_frac.clamp(0.0, 1.0)
+    # ★08.29 힘 밴드. 접촉 임계(1 N)를 넘는 순간 만점이고 그 위로는 **완전 무차별**이라
+    #   "멈춤"이 정의된 적이 없었다. 반면 접촉을 잃으면 이 곱셈 게이트로 lift(30)·
+    #   transfer(15)·stay(8) 가 전부 0 이 되고 post_lift_contact_loss(-8)·
+    #   wrap_retention(-6) 까지 붙는다 — 상실 -50 이상 vs 과접촉 0 의 완전 비대칭이라
+    #   정책이 "최대한 세게, 절대 놓지 않기"로 밀린다.
+    # ★★바닥(`force_band_floor`)을 0 으로 두면 안 된다 — 08.25 `grip-contact-cliff`
+    #   에서 "닿으면 보상이 꺼지니 접촉을 회피"가 실측됐다. 세게 쥐는 것이 손해이되
+    #   **놓는 것보다는 낫게** 남겨야 한다.
+    # 기본 1.0 = 감쇠 없음(현행 동작).
+    graded_contact = graded_contact * force_quality.clamp(0.0, 1.0)
 
     lifted_gate = (cup_height_delta >= _f(cfg, "lift_success_height", 0.04)).float()
     at_goal = (goal_dist <= _f(cfg, "goal_pos_tolerance", 0.025)).float()
@@ -141,9 +164,38 @@ def compute_grasp_s2r_rewards(
     # ★곱셈 없이도 "멀리서 포위 자세만" 경로는 성립하지 않는다 — `enclosure` 는 물체
     #   중심 기준이라 손이 멀면 모든 단위벡터가 동방향이 되어 0.046 까지 떨어진다.
     #   물체를 실제로 감싸야만 오른다.
+    # ★08.29 래치 후 감쇠. I1 실측 비중은 enclosure 67.7% vs transfer 2.6% 였고,
+    #   포위도는 **팔이 어디 있든** 같은 값을 내므로 리프트 이후 보상 지형이 palm
+    #   위치에 평평해진다 — 그러면 palm 은 액션공간 기본값으로 흘러간다(실측
+    #   `palm_post_latch_y` -0.399, 목표 -0.110). 래치 **전은 건드리지 않는다**:
+    #   감쌈을 처음 만들어낸 힘이 그 구간에 있다(I1 dist_rate 0.195, 대조 0.075).
+    _encl_scale = torch.where(
+        lift_latched, torch.full_like(
+            enclosure, _f(cfg, "enclosure_post_latch_scale", 1.0)),
+        torch.ones_like(enclosure))
     enclosure_term = (
-        _f(cfg, "enclosure_weight", 0.0) * enclosure.clamp(0.0, 1.0)
+        _f(cfg, "enclosure_weight", 0.0) * enclosure.clamp(0.0, 1.0) * _encl_scale
     )
+    # ★08.30 무접촉 정체 처방 — floor<1 이면 접촉 결합 블렌드. H 라운드가 기각한
+    #   완전 곱셈(접근 구간에서 항 사망)과 달리 floor 비율의 접근 gradient 를 남긴다.
+    _encl_floor = _f(cfg, "enclosure_contact_floor", 1.0)
+    if _encl_floor < 1.0:
+        enclosure_term = enclosure_term * (
+            _encl_floor + (1.0 - _encl_floor) * graded_contact.clamp(0.0, 1.0))
+
+    # ---- finger_closure(08.29 신설, 기본 가중 0) : 접촉 전 **손가락별 연속** 신호 ------
+    # ★K1 실측 진단 — 검지~약지가 접촉 직전에서 정지한다(dist_rate 0.000·mid 0.005).
+    #   graded_contact 유인(+0.08/손가락 × lift30·transfer15·stay8·stabilize10)은 크지만
+    #   per-finger 접촉이 **이진**이라 닿기 전 gradient 가 정확히 0 이고, 낙하 상실
+    #   비대칭(−50급) 탓에 탐색이 절벽을 못 넘는다. 이 항이 그 절벽 앞에 경사를 깐다.
+    # ★(1−c_i) 소등 — 닿은 손가락은 이 항에서 빠진다: 압입 유인 없음, 조임량은 물리와
+    #   사다리가 정한다(grasp_sensor v2 심사 통과 설계).
+    # ★★소등 항 크기 < 접촉 사다리 이득이어야 "떼서 다시 받기"가 성립하지 않는다
+    #   (08.25 grip 접촉 절벽 재발 방지) — 가중 상한 1.0 이 그 부등식이다.
+    # ★close_gate 곱 — 컵이 케이지 밖일 때 빈손을 말아쥐는 유인을 차단한다.
+    finger_closure_term = (
+        _f(cfg, "finger_closure_weight", 0.0)
+        * close_gate.clamp(0.0, 1.0) * finger_closure.clamp(0.0, 1.0))
 
     # ---- grasp : 래치 전에만. **close_gate 가 열리면 손가락을 내라**가 이 항의 계약 ------
     # ★★08.27 재설계. 구판은 네 채널(팁접촉·전팁·지속·감쌈)이 **전부 접촉 임계 뒤**라
@@ -163,9 +215,24 @@ def compute_grasp_s2r_rewards(
     #   grasp 4.69/step = 전체의 93% 인데 wrap 0.002 · latched 0.005 · h_del 0.005).
     #   실측 폐쇄는 물체에 막히면 스스로 멈추므로 인위적 캡이 필요 없다.
     close_credit = close_progress.clamp(0.0, 1.0)
+    # ★★08.31 anylink 모드면 이 자리의 감쌈 성분도 같이 갈아끼운다. 갈기 전 실측
+    #   (s2r_b1 ep_3400): `wrap_frac` 0.02 라 grasp 의 **_ecred(0.80) 만큼이 죽어**
+    #   grasp_quality 0.082 → grasp 0.98/step 뿐이었다. `contact_quality_mode` 를
+    #   `graded_contact`(곱셈)에만 걸었던 것이 절반 적용이었던 셈이다.
+    # ★곱셈 유인만으로는 접촉 개수가 안 오른다 — ∂R/∂접촉 = (lift+transfer+…)/6 이라
+    #   사다리가 작을 때 경사도 같이 작아진다. B1 실측이 그대로다: 접촉 2.58 정점 뒤
+    #   리프트가 굳으면서 2.05 로 하락(1,100 iter 회복 없음). 여기 넣으면 손가락
+    #   하나당 +_ecred/6·grasp_weight 의 **가산·단조** 경사가 생긴다.
+    # ★force_quality 를 곱한다 — 이 자리는 graded_contact 를 거치지 않으므로 곱하지
+    #   않으면 "더 세게 눌러 더 많이 닿기"에 상한이 없다(reward-audit Check 3).
+    if str(getattr(cfg, "contact_quality_mode", "tipwrap")) == "anylink":
+        _envelope_credit = (anylink_frac.clamp(0.0, 1.0)
+                            * force_quality.clamp(0.0, 1.0))
+    else:
+        _envelope_credit = wrap_frac.clamp(0.0, 1.0)
     grasp_quality = (
         (1.0 - _ecred) * close_credit
-        + _ecred * wrap_frac.clamp(0.0, 1.0)
+        + _ecred * _envelope_credit
     )
     grasp = (_f(cfg, "grasp_weight", 12.0) * pre_lift_gate
              * close_gate.clamp(0.0, 1.0) * grasp_quality)
@@ -225,6 +292,19 @@ def compute_grasp_s2r_rewards(
 
     success_bonus = _f(cfg, "success_weight", 20.0) * success_now.float()
 
+    # ---- hand_overdrive : "멈춤"을 정의하는 항 (08.29 신설, 기본 가중 0) ---------------
+    # ★힘이 아니라 **관절 오차**를 벌한다. 이유 셋:
+    #   ①실기 엔코더로 정확히 측정된다(힘 센서보다 신뢰도가 높다)
+    #   ②무게·마찰·형상에 무관하다 — 무거운 컵이라 더 쥐는 것은 *도달 가능한 각도까지*
+    #     더 닫는 것이라 벌점이 안 붙고, 벌점은 *도달 불가능한 각도를 미는 것*만 잡는다.
+    #     사용자 제약 "컵 안 내용물로 무게가 달라지므로 파지력은 써야 한다"와 양립한다.
+    #   ③임계가 물리에서 나온다 — effort_limit_sim/stiffness 를 넘으면 토크가 천장이다.
+    # ★실기 effort 는 7.5 N·m 로 sim(1.5)의 5배다. sim 에서 안전한 이유가 보상이 아니라
+    #   액추에이터 상한이라 그 상한이 커지면 그대로 위험이 된다 — 이 항이 그 갭을 막는다.
+    hand_overdrive_term = (
+        _f(cfg, "hand_overdrive_weight", 0.0) * hand_overdrive.clamp(0.0, 1.0)
+    )
+
     # ---- 컵 밀림 감쇠 — **래치 시점** 변위 기준 ---------------------------------------
     # ★실시간 변위를 쓰면 의도된 수평 이송이 통째로 처벌된다(이 트랙의 과제가 이송이다).
     #   래치 시점 스냅샷을 쓰면 "접근 중 밀지 마라"는 원래 의도만 남는다.
@@ -246,6 +326,7 @@ def compute_grasp_s2r_rewards(
     terms = {
         "approach": approach,
         "enclosure": enclosure_term,
+        "finger_closure": finger_closure_term,
         "grasp": grasp,
         "lift": lift,
         "transfer": transfer,
@@ -254,6 +335,7 @@ def compute_grasp_s2r_rewards(
         "stability": stability,
         "success_bonus": success_bonus,
         "post_lift_contact_loss": post_lift_contact_loss,
+        "hand_overdrive": hand_overdrive_term,
         "action_smooth": action_smooth,
     }
     _missing = set(GRASP_S2R_REWARD_TERMS) - set(terms)

@@ -797,6 +797,17 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     # 팔 관절이 (soft) 한계의 이 비율을 넘으면 abnormal 종료
     arm_joint_limit_frac: float = 0.99
 
+    # ---- 디버그 시각화 (GUI/카메라 렌더일 때만 — headless 학습에 비용 0) --------------
+    # ★액션은 **절대 palm 6D 목표**라 "지금 어디로 가라고 내려가는지"가 눈에 안 보이면
+    #   추종 실패와 지령 오류를 구분할 수 없다. env0 한 대만 그린다(프림 수 = 렌더 병목).
+    #   그리는 것: 리미터 **통과 후** 실제 지령(palm_targets) 위치·자세 3축 + 실제 palm.
+    enable_cmd_markers: bool = True
+    cmd_marker_axis_len: float = 0.06        # 지령 자세 3축 길이 (m)
+    cmd_marker_radius: float = 0.006
+    gui_focus_env0: bool = True              # 기본 뷰는 전체 씬이라 확인용으로 무용
+    gui_camera_eye: tuple[float, float, float] = (1.1, -0.9, 0.75)
+    gui_camera_target: tuple[float, float, float] = (0.35, -0.2, 0.35)
+
     # ---- 씬 --------------------------------------------------------------------------
     # 실기 환경 USD (테이블 상면 z 0.200, 기둥/받침/바닥판 포함 전부 충돌체).
     # 원점을 로봇 base link 원점(env 원점)에 그대로 붙인다 — 사용자 지정 08.20.

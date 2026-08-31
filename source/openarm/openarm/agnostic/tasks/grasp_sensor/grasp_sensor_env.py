@@ -29,7 +29,8 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.utils import bind_physics_material
-from isaaclab.utils.math import euler_xyz_from_quat, quat_apply, matrix_from_quat
+from isaaclab.utils.math import (euler_xyz_from_quat, quat_apply, matrix_from_quat,
+                                 quat_from_euler_xyz, quat_mul)
 
 # Fabrics (벤더링: hdgp/source/FABRICS/src — openarm/tasks/__init__ 가 sys.path 주입)
 import fabrics_sim.fabrics.openarm_tesollo_pose_fabric as _fab_tesollo
@@ -227,6 +228,7 @@ class GraspSensorEnv(DirectRLEnv):
             )
 
         self._init_home_palm()
+        self._setup_cmd_markers()
 
         if self._hand_fabric:
             print(f"[grasp_sensor] 손 제어=fabric(direct, gain={self.cfg.hand_attractor_gain}) "
@@ -238,6 +240,98 @@ class GraspSensorEnv(DirectRLEnv):
               f"tips={len(self.tip_ids)} action={self.cfg.action_space} obs={self.cfg.observation_space} "
               f"fabric={p.fabric_robot_dir}",
               flush=True)
+
+    # ------------------------------------------------------------------
+    def _setup_cmd_markers(self) -> None:
+        """팔 지령(palm 6D) 시각화 — **env0 만**, GUI/카메라 렌더일 때만.
+
+        액션이 절대 목표라 "지금 어디로 가라고 내려가는지"가 안 보이면 추종 실패와
+        지령 오류를 구분할 수 없다. 그리는 것은 리미터 **통과 후** 실제 지령
+        (`palm_targets`)의 위치 + 자세 3축, 그리고 대비용 실제 palm 위치다.
+        마커 프림은 물리에 참여하지 않는다(순수 시각).
+        """
+        self._cmd_markers = None
+        if not bool(getattr(self.cfg, "enable_cmd_markers", False)):
+            return
+        try:
+            import carb
+            _cams = bool(carb.settings.get_settings().get("/isaaclab/cameras_enabled"))
+        except Exception:
+            _cams = False
+        if not (self.sim.has_gui() or _cams):
+            return
+
+        from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+        _L = float(self.cfg.cmd_marker_axis_len)
+        _r = float(self.cfg.cmd_marker_radius)
+
+        def _axis(color):
+            return sim_utils.CylinderCfg(
+                radius=_r, height=_L,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color))
+
+        self._cmd_markers = VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/Visuals/GraspSensorCmd",
+            markers={
+                # 지령 원점(흰) — 리미터 통과 후 실제로 fabric 에 내려가는 위치
+                "cmd": sim_utils.SphereCfg(
+                    radius=_r * 2.0,
+                    visual_material=sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=(1.0, 1.0, 1.0))),
+                "ax_x": _axis((0.9, 0.2, 0.2)),   # 지령 자세 x
+                "ax_y": _axis((0.2, 0.9, 0.2)),   # 지령 자세 y
+                "ax_z": _axis((0.25, 0.45, 1.0)),  # 지령 자세 z
+                # 실제 palm(노랑) — 지령과의 간격이 곧 추종 상태
+                "palm": sim_utils.SphereCfg(
+                    radius=_r * 2.0,
+                    visual_material=sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=(1.0, 0.85, 0.1))),
+            }))
+        self._cmd_marker_idx = torch.arange(5, device=self.device)
+        # 원통 기본축은 +z 다 — x/y 축으로 눕히는 정렬 쿼터니언(상수).
+        _s = math.sqrt(0.5)
+        self._cmd_axis_align = torch.tensor(
+            [[_s, 0.0, _s, 0.0],        # z→x : +90° about y
+             [_s, -_s, 0.0, 0.0],       # z→y : −90° about x
+             [1.0, 0.0, 0.0, 0.0]],     # z→z : 항등
+            device=self.device)
+        print(f"[grasp_sensor] 지령 마커 ON — env0 전용 · 축 {_L*1000:.0f}mm · "
+              f"{'GUI' if self.sim.has_gui() else '카메라 녹화'}", flush=True)
+
+        if bool(getattr(self.cfg, "gui_focus_env0", False)) and self.sim.has_gui():
+            _o0 = self.scene.env_origins[0].tolist()
+            _eye = [a + b for a, b in zip(self.cfg.gui_camera_eye, _o0)]
+            _tgt = [a + b for a, b in zip(self.cfg.gui_camera_target, _o0)]
+            self.sim.set_camera_view(eye=_eye, target=_tgt)
+            print(f"[grasp_sensor] GUI 카메라 → env0 정면 "
+                  f"eye{tuple(round(v, 2) for v in _eye)}", flush=True)
+
+    def _update_cmd_markers(self) -> None:
+        """env0 의 지령 6D 를 world 로 올려 마커 5개를 배치한다."""
+        if self._cmd_markers is None:
+            return
+        _o0 = self.scene.env_origins[0]
+        # palm_targets 는 **fabric 프레임** — env 프레임 보정 후 world 로.
+        _p = self.palm_targets[0, :3] + self._fab_to_env + _o0
+        _e = self.palm_targets[0, 3:6]                      # euler_zyx = (yaw, pitch, roll)
+        _q = quat_from_euler_xyz(_e[2:3], _e[1:2], _e[0:1])[0]   # (4,)
+        _R = matrix_from_quat(_q.unsqueeze(0))[0]           # 열 = 지령 자세 x/y/z 축
+        _L = float(self.cfg.cmd_marker_axis_len)
+        # 원통은 중심 배치 → 축 방향으로 L/2 밀어야 원점에서 뻗어 나간다.
+        _tr = torch.stack([
+            _p,
+            _p + _R[:, 0] * (_L * 0.5),
+            _p + _R[:, 1] * (_L * 0.5),
+            _p + _R[:, 2] * (_L * 0.5),
+            self.robot.data.body_pos_w[0, self.palm_idx],
+        ], dim=0)
+        _qe = _q.unsqueeze(0).expand(3, 4)
+        _qa = quat_mul(_qe, self._cmd_axis_align)
+        _ident = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).unsqueeze(0)
+        _or = torch.cat([_ident, _qa, _ident], dim=0)
+        self._cmd_markers.visualize(
+            translations=_tr, orientations=_or,
+            marker_indices=self._cmd_marker_idx)
 
     # ------------------------------------------------------------------
     def _tip_palm_frame(self, q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -602,9 +696,9 @@ class GraspSensorEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.object = RigidObject(self.cfg.object_cfg)
         self.scene.articulations["robot"] = self.robot
-        self.scene.rigid_objects["object"] = self.object
+        # [I-A0] 물체 생성을 조명 뒤로 옮긴다 — v5 순서 재현(다물체 분기 자리).
+        #   클론 의존 가설 시험용 최소 변경.
         # 정적 환경 USD (env.usd: RigidBodyAPI 없음, 전 메시 충돌체) —
         # env_0 에 spawn 하면 clone_environments 가 복제한다.
         tbl = self.cfg.table_cfg
@@ -646,6 +740,8 @@ class GraspSensorEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
+        self.object = RigidObject(self.cfg.object_cfg)          # [I-A0]
+        self.scene.rigid_objects["object"] = self.object        # [I-A0]
         self.scene.clone_environments(copy_from_source=True)
         self.scene.filter_collisions(global_prim_paths=["/World/ground"])
 
@@ -875,6 +971,7 @@ class GraspSensorEnv(DirectRLEnv):
                 self.palm_targets[:, 3:6])
         self._prev_palm_cmd_rot = self.palm_targets[:, 3:6].clone()
         self._palm_cmd_primed |= True
+        self._update_cmd_markers()   # 시각화 전용 — 물리·보상에 영향 없음
 
         # ---- 손 ---------------------------------------------------------------------
         if self._synergy:

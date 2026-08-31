@@ -84,18 +84,52 @@ def test_registration_skips_profiles_without_fabric():
 
 
 # ---------------------------------------------------------------- 액션
-def test_palm_action_is_home_relative_delta():
-    """★palm 액션은 **홈 기준 델타**여야 한다 — `a=0` 이 홈.
+def test_palm_action_is_anchor_relative_delta():
+    """★palm 액션은 **앵커 기준 유계 델타**여야 한다 — `a=0` 이 앵커.
 
     절대 매핑(`a=0` = 박스 중심)은 저장소 공통 σ=1.0 과 곱해지면 매 스텝 작업공간
     전역에서 목표를 재추첨해 접근이 랜덤워크가 된다(선행 트랙 실측: 클램프 전
-    지령 요청량 0.33~0.36 m/step 상시 포화).
+    지령 요청량 0.33~0.36 m/step 상시 포화). 이 계약이 막는 것은 그 랜덤워크이지
+    앵커가 홈이어야 한다는 뜻이 아니다 — 08.29 Phase 0 로 홈 앵커가 과제에서
+    z +14 cm · y -27 cm 떨어져 있음이 실측돼 앵커를 재중심 가능하게 열었다.
     """
     code = _code(_ENV)
-    assert "self._home_palm.unsqueeze(0) + delta" in code, "palm 지령이 홈 기준 델타가 아니다"
+    assert "self._palm_anchor() + delta" in code, "palm 지령이 앵커 기준 델타가 아니다"
     assert "palm_delta_xyz" in _code(_CFG) and "palm_delta_rot_deg" in _code(_CFG)
-    # 홈이 박스에 잘리면 a=0 의 의미가 깨진다.
+    # 앵커가 박스에 잘리면 a=0 의 의미가 깨진다(홈 모드는 박스를 홈까지 넓히고,
+    # 스폰 모드는 부팅에서 fail-loud 로 잡는다).
     assert "torch.minimum(self._palm_lo, self._home_palm)" in code
+    assert "액션 앵커" in code and "밖이다" in code, "앵커 박스 검증이 없다"
+
+
+def test_palm_anchor_is_episode_constant():
+    """★앵커는 **에피소드 내 상수**여야 한다.
+
+    실시간 물체 위치를 앵커에 쓰면 컵이 밀릴 때 액션 원점이 따라가는 되먹임이 되고,
+    래치를 쓰면 이 트랙이 걷어낸 grasp_v1 의 단계 스크립트가 부활한다(트랙 계약:
+    "래치는 보상 단계 표시 전용"). 허용되는 소스는 홈과 **스폰 스냅샷**뿐이다.
+    """
+    src = _code(_ENV)
+    i = src.index("    def _palm_anchor(")
+    body = src[i:src.index("\n    def ", i + 10)]
+    assert "self.object_spawn_pos" in body, "스폰 스냅샷을 앵커로 쓰지 않는다"
+    for banned in ("self._latched", "root_pos_w", "self.object.data"):
+        assert banned not in body, f"앵커가 에피소드 중 변하는 양({banned})을 참조한다"
+
+
+def test_palm_anchor_defaults_to_spawn():
+    """★09.01 D3 승격 — 기본 앵커가 홈에서 **스폰**으로 바뀌었다.
+    홈 앵커는 `a=0` 이 "컵에서 도망"을 뜻해 정책이 상시 저항했다(08.29 실측
+    `action_norm_arm` 2.29~2.40 = 이론최대의 93~98%). "home" 경로는 대조용으로 남긴다."""
+    cfg = _code(_CFG)
+    assert 'palm_anchor_mode: str = "spawn"' in cfg
+    # "home" 분기 자체가 살아 있는지는 env 쪽에서 잠근다(_code 는 주석을 지운다).
+    env = _code(_ENV)
+    assert 'self._anchor_mode not in ("home", "spawn")' in env, \
+        "앵커 모드 검증이 두 경로를 다 안 받는다"
+    assert env.count('self._anchor_mode == "home"') == 2, \
+        "구 home 분기가 사라져 대조 실험이 불가능해졌다"
+    assert "palm_anchor_offset_xyz" in cfg
 
 
 def test_command_rate_limiter_logs_preclamp_value():
@@ -294,7 +328,10 @@ def test_grasp_has_pre_contact_gradient_gated_on_alignment():
     """
     rew = _code(_REW)
     blk = _assign_block(rew, "grasp_quality")
-    assert "close_credit" in blk and "wrap_frac" in blk
+    # 08.31: 감쌈 성분은 `_envelope_credit` 으로 한 단계 빠졌다(모드별 wrap/anylink).
+    # 여기서는 **두 성분이 다 있는가**만 잠그고, 어느 쪽이 실리는지는
+    # `test_anylink_replaces_grasp_envelope_credit` 가 잠근다.
+    assert "close_credit" in blk and "_envelope_credit" in blk
     for banned in ("tip_contact_frac", "full_tip", "persistence"):
         assert banned not in blk, f"폐기된 팁 제어 채널이 grasp 에 되살아남: {banned}"
     assert "close_gate.clamp(0.0, 1.0) * grasp_quality" in rew, "grasp 가 정렬 게이트를 안 탄다"
@@ -421,7 +458,8 @@ def test_contact_freeze_is_per_joint_link():
     # wrap(중간 AND 원위)이 영원히 0 이 된다(s2r_a8 817 iter 실측).
     assert "_h_dist = (_dist > _thr)[:, self._syn_fi]" in ctrl
     assert "self._tip_contact_forces() > _thr" not in ctrl, "팁이 동결 트리거로 되살아남"
-    assert "_hold = (_h_mid & self._syn_freeze_mid) | (_h_dist & self._syn_freeze_dist)" in ctrl
+    # 08.29 O 라운드: finger 스코프 분기가 생겨 기본(joint) 경로는 else 로 이동했다.
+    assert "_hold = ((_h_mid & self._syn_freeze_mid)" in ctrl
     # 푸는 방향은 항상 허용.
     assert "torch.where(_hold & (delta > 0.0), torch.zeros_like(delta), delta)" in ctrl
     # 구판 배선이 되살아나면 실패시킨다.
@@ -562,7 +600,9 @@ def test_envelope_metric_defaults_to_legacy():
     cfg = _code(_CFG)
     assert 'envelope_metric: str = "deep_and"' in cfg
     assert "success_require_lifted: bool = True" in cfg
-    assert "success_require_holding: bool = True" in cfg
+    # ★09.01 D3 승격 — holding(팁접촉 ∧ n_grip≥4)은 기본에서 뺀다. anylink 정의가
+    #   접촉을 이미 세는데 holding 이 구 tip 기준으로 한 번 더 걸어 이중 게이트였다.
+    assert "success_require_holding: bool = False" in cfg
 
 
 def test_enclosure_is_reward_not_gate():
@@ -613,8 +653,654 @@ def test_enclosure_uses_no_shape_constant():
     assert "self.palm_idx" in blk and "_hull_a_t" in blk and "_hull_b_t" in blk
 
 
-def test_enclosure_defaults_off():
-    """★기본 가중 0 — 대조군이 이전 런과 **항등**이어야 A/B 가 성립한다."""
+def test_enclosure_default_weight_is_d3():
+    """★09.01 D3 승격 — 기본 가중 0 → 10. 무접촉 기하 유도항이고, 정체 방지는
+    `enclosure_contact_floor` 0.3 이 담당한다(둘은 세트로만 의미가 있다)."""
     cfg = _code(_CFG)
-    assert "enclosure_weight: float = 0.0" in cfg
+    assert "enclosure_weight: float = 10.0" in cfg
+    assert "enclosure_contact_floor: float = 0.3" in cfg, \
+        "floor 없이 가중 10 만 켜면 무접촉 정체가 공짜가 된다(M0·O1 실측 7.2/step)"
     assert '"enclosure"' in _code(_REW), "보상 항 튜플에 enclosure 가 없다"
+
+
+def test_enclosure_post_latch_scale_defaults_off():
+    """★래치 후 포위도 감쇠는 기본 1.0 (= 현행 동작). 래치 **전**은 건드리지 않는다.
+
+    08.29 I1 실측: enclosure 비중 67.7% vs transfer 2.6%. 포위도는 팔 위치와 무관하게
+    지급되므로 리프트 이후 보상 지형이 palm 위치에 평평해지고, 그러면 palm 이
+    액션공간 기본값으로 흘러간다(`palm_post_latch_y` -0.399 vs 목표 -0.110).
+    감쌈을 처음 만들어낸 힘은 **래치 전**에 있으므로 그 구간은 불변이어야 한다.
+    """
+    assert "enclosure_post_latch_scale: float = 1.0" in _code(_CFG)
+    rew = _code(_REW)
+    i = rew.index("_encl_scale = torch.where(")
+    blk = rew[i:i + 400]
+    assert "lift_latched" in blk, "감쇠가 래치 조건이 아니다"
+    assert "torch.ones_like(enclosure)" in blk, "래치 전이 1.0 로 보존되지 않는다"
+
+
+def test_force_band_defaults_off_and_has_floor():
+    """★힘 밴드는 기본 꺼짐(1.0)이고, 켤 때도 **바닥이 0 이면 안 된다**.
+
+    08.25 `grip-contact-cliff`: 닿으면 보상을 끄니 정책이 접촉 자체를 회피했다
+    (grip 0.243→0.322 가 오르는 동안 n_over_thr 0.593→0.046). 세게 쥐는 것이
+    손해이되 **놓는 것보다는 낫게** 남겨야 한다.
+    """
+    # ★09.01 D3 승격 — 1.0(꺼짐) → 0.5. 바닥은 여전히 0 이 아니다(절벽 회피).
+    assert "force_band_floor: float = 0.5" in _code(_CFG)
+    env = _code(_ENV)
+    assert "force_quality = 1.0 - (1.0 - _floor) * _over" in env
+    # ★게이트가 쓰는 이진 마스크를 깎으면 케이지·판정이 조용히 흔들린다.
+    i = env.index("_fb_lo = float(cfgn.force_band_hi_n)")
+    _end = 'self.extras["gate/force_quality_min"]'
+    blk = env[i:env.index(_end, i) + len(_end)]
+    for banned in ("tip_c =", "grip_c =", "mid_c =", "dist_c ="):
+        assert banned not in blk, f"힘 밴드가 이진 마스크({banned})를 건드린다"
+    # 보상 경로에만 곱한다.
+    assert "graded_contact = graded_contact * force_quality" in _code(_REW)
+
+
+def test_force_band_uses_max_tip_force():
+    """밴드는 **최대** 팁 힘으로 정한다 — 손가락 하나만 과해도 하드웨어가 위험하다.
+
+    사용자 제약: 실기 팁 센서 정격 0~50 N. 평균을 쓰면 한 손가락의 과압이 묻힌다.
+    """
+    env = _code(_ENV)
+    assert "tip_f.max(dim=1).values" in env, "밴드가 최대 팁 힘 기준이 아니다"
+    assert "force_sensor_max_n" in env and "force_band_hi_n" in env
+
+
+def test_hand_overdrive_penalises_joint_error_not_force():
+    """★"멈춤"은 힘이 아니라 **관절 오차**로 정의한다.
+
+    ①실기 엔코더로 정확히 측정된다 ②무게·마찰·형상에 무관하다 — 무거운 컵이라
+    더 쥐는 것은 *도달 가능한 각도까지* 닫는 것이라 안 걸리고, *도달 불가능한
+    각도를 미는 것*만 걸린다 ③임계가 물리에서 나온다(effort_limit/stiffness).
+    가동폭 0 인 관절은 오차가 상수로 깔리므로 반드시 제외한다.
+    """
+    assert "hand_overdrive_weight: float = 0.0" in _code(_CFG)
+    assert '"hand_overdrive"' in _code(_REW)
+    env = _code(_ENV)
+    i = env.index("hand_overdrive = (torch.relu(")
+    blk = env[i - 300:i + 300]
+    assert "self._syn_movable" in blk, "가동폭 0 관절을 제외하지 않는다"
+    assert "hand_torque_sat_err_rad" in blk, "임계가 effort/stiffness 파생이 아니다"
+    # 힘 센서를 끌어오면 안 된다(그러면 무게 의존이 된다).
+    for banned in ("tip_f", "force_matrix_w", "_contact_forces"):
+        assert banned not in blk, f"과지령 항이 힘({banned})에 의존한다"
+
+
+def test_enclosure_participation_defaults_off():
+    """★손가락별 최소참여는 기본 꺼짐(λ=0) — 그때 그룹 평균 판과 **항등**이어야 한다.
+
+    이 항은 `couple_four_fingers` 를 푸는 것의 **선행조건**이다. 커플링은 3지
+    국소최적을 막으려고 넣은 것이고, 당시 진단이 "mean/count 보상엔 손가락별
+    최소참여 신호가 없다"였다. 그룹 평균만 쓰면 손가락 하나가 빠져도 그 단위벡터가
+    나머지와 비슷한 방향이라 값이 거의 안 떨어진다 — 같은 결함이 남아 있다.
+    """
+    assert "enclosure_participation_lambda: float = 0.0" in _code(_CFG)
+    env = _code(_ENV)
+    i = env.index("_lam = float(self.cfg.enclosure_participation_lambda)")
+    assert "if _lam <= 0.0:" in env[i:i + 200], "λ=0 조기반환(항등성)이 없다"
+    # 최약 손가락 기준이어야 한다 — 평균을 또 쓰면 같은 결함이 반복된다.
+    blk = env[i:i + 900]
+    assert "_c.min(dim=1).values" in blk, "최소참여가 **최약** 손가락 기준이 아니다"
+    assert "task/enclosure_weakest" in blk, "최약 손가락 로깅이 없다"
+
+
+def test_participation_keeps_finger_axis():
+    """최소참여는 손가락 축을 살린 (F_b, L) 인덱스를 써야 한다.
+
+    평평하게 편 `_hull_b_t` 로는 "어느 손가락이 빠졌는지"를 잴 수 없다. 손가락별
+    링크 수가 다르면 정렬이 불가능하므로 부팅에서 fail-loud 로 잡는다.
+    """
+    env = _code(_ENV)
+    assert "self._hull_part_t = torch.tensor(_rows" in env
+    assert "최소참여 계산이 손가락을 정렬할 수 없다" in _ENV, "링크 수 불일치 fail-loud 부재"
+    assert "self._hull_part_t" in env[env.index("def _enclosure("):], "포위도가 그 축을 안 쓴다"
+
+
+# ---------------------------------------------------------------- 다물체
+def test_object_bank_defaults_to_cup_family():
+    """★09.01 D3 승격 — 기본이 다물체(8종)다. D3 가 8종 전수 0.774~0.949 로
+    성공했으므로 단일 컵은 더 이상 기본 대조군이 아니다."""
+    assert 'object_bank: str = "cup_family"' in _code(_CFG)
+
+
+def test_multi_asset_turns_off_replicate_physics():
+    """★뱅크>1 인데 `replicate_physics=True` 면 전 env 가 같은 물체를 받는다.
+
+    MultiAsset(env 별 다른 물체)은 physics 복제가 불가능하다. 배정이 어긋나면
+    판정·warm 이 조용히 붕괴한다.
+    """
+    cfg = _code(_CFG)
+    i = cfg.index("def _apply_object_bank")
+    blk = cfg[i:cfg.index("\n    def ", i + 10)]
+    assert "if not bank.needs_multi_asset:" in blk and "return" in blk
+    assert "self.scene.replicate_physics = False" in blk
+    assert "random_choice=False" in blk, "env_id % N 결정론 배정이 아니다"
+
+
+def test_table_representation_splits_by_physics_replication():
+    """★★작업면 표현이 `replicate_physics` 여부로 갈린다.
+
+    다물체는 `replicate_physics=False` 가 필수인데, 그러면 `clone_environments` 의
+    `enable_env_ids` env 간 충돌 격리가 사라진다. 작업면이 원시 정적 프림이면
+    `InteractiveScene` 이 추적하지 못해 전 env 가 한 충돌 그룹에 남고 팔이 물린다 —
+    08.29 분리 실측: **단일 컵으로 고정하고 플래그만 뒤집어도**
+    abnormal 0.0000 → 0.849 · joint_err 0.058 → 0.74 rad.
+    그래서 다물체에서는 kinematic 사본을 **씬 자산**으로 올린다(grasp_v2 규약).
+    단일 물체 경로는 기존 원시 프림 그대로 둔다 — 항등성이 검증된 물리다.
+    """
+    ctrl = _code(_CTRL)
+    i = ctrl.index("tbl = self.cfg.table_cfg")
+    blk = ctrl[i:i + 700]
+    assert "if _multi:" in blk
+    _m = blk.index("if _multi:")
+    _e = blk.index("else:", _m)
+    assert "RigidObject(tbl)" in blk[_m:_e], "다물체 경로가 테이블을 씬 자산으로 안 올린다"
+    # ★등록은 clone 이후로 미뤄졌다(DEXTRAH 규약) — 생성 블록이 아니라 뒤에 있다.
+    assert 'self.scene.rigid_objects["table"] = self.table' in ctrl
+    assert "tbl.spawn.func(" in blk[_e:], "단일 경로의 원시 스폰이 사라졌다"
+    assert "env_0/Table" in blk[_e:], "단일 경로는 env_0 + clone 규약을 지켜야 한다"
+
+
+def test_multi_asset_requires_kinematic_table_asset():
+    """★kinematic 작업면 사본이 없으면 **부팅에서 fail-loud** 해야 한다.
+
+    원본 `env.usd` 로 다물체를 돌리면 조용히 물리가 깨진다(팔이 41° 어긋난 채 고착).
+    사본은 `scripts/assets_tools/build_env_rigid_usd.py` 가 만든다.
+    """
+    cfg = _code(_CFG)
+    assert '"env_rigid.usd"' in cfg
+    assert "build_env_rigid_usd.py" in _CFG, "빌드 방법 안내가 없다"
+    i = cfg.index('"env_rigid.usd"')
+    blk = cfg[i:i + 500]
+    assert "_os.path.isfile" in blk and "raise RuntimeError" in blk, "존재 검사가 없다"
+    # 단일 물체로 되돌아가면 원본 USD 로 복원돼야 한다(멱등성).
+    assert "self.table_cfg.spawn.usd_path = self._table_usd_base" in cfg
+
+
+def test_clone_is_conditional_on_physics_replication():
+    """★★`clone_environments` 는 **`replicate_physics=True` 일 때만** 부른다.
+
+    False 면 `InteractiveScene.__init__` 이 이미 env xform 을 복제했다. 여기서 또
+    부르면 env_0 내용을 전 env 에 덮어써 프림이 중복·변형되고, 리셋 직후 관절이
+    폭발한다 — 08.29 실측: 편차 18~28 rad · 속도 2,500~4,700 rad/s ·
+    `episode_lengths` 260 → 1.2(무한 리셋).
+    ★`filter_collisions` 는 **양쪽 다** 부른다. True 경로는 clone 의 `enable_env_ids`
+    가 격리해 주지만, False 경로에서는 이 호출이 유일한 env 간 충돌 격리다.
+    ★다물체는 전 env prim 이 존재해야 `env_id % N` 배정이 되므로 물체를 clone
+    **이후**에 만든다(grasp_v2 probe 실측: 그 전이면 16env 전부 같은 물체).
+    """
+    ctrl = _code(_CTRL)
+    assert "_replicate = bool(self.cfg.scene.replicate_physics)" in ctrl
+    i = ctrl.index("_replicate = bool(")
+    blk = ctrl[i:i + 800]
+    assert "if _replicate:" in blk and "clone_environments" in blk
+    # clone 은 조건부, filter 는 무조건
+    _c = blk.index("clone_environments")
+    _f = blk.index("filter_collisions")
+    assert blk.rindex("if _replicate:", 0, _c) < _c, "clone 이 조건부가 아니다"
+    assert "if" not in blk[blk.rindex("\n", 0, _f):_f], "filter_collisions 가 조건부다"
+    # 다물체 물체 생성은 clone 이후
+    assert blk.index("if _multi:", _c) > _c
+    assert "assert_spawned_after_clone" in blk
+
+
+def test_origin_offset_is_per_env_not_scalar():
+    """★원점 오프셋은 물체마다 다르다 — 스칼라를 쓰면 큰 컵이 테이블을 뚫는다.
+
+    스폰고·정착고·목표가 전부 이 값에서 파생되므로 env 별이어야 한다.
+    부팅 검증(앵커·목표 도달성)은 **최저·최고 둘 다** 봐야 한 극단을 놓치지 않는다.
+    """
+    env = _code(_ENV)
+    assert "self._obj_origin_off = torch.tensor(" in env
+    assert "_bank.assign_indices(self.num_envs)" in env, "env_id % N 배정을 안 쓴다"
+    # 리셋 스폰이 env 별 값을 쓰는지
+    i = env.index("_off = self._obj_origin_off[env_ids]")
+    blk = env[i:i + 400]
+    assert "spawn[:, 2] = float(self.cfg.table_surface_z) + _off" in blk
+    assert "settled[:, 2] = float(self.cfg.table_surface_z) + _off" in blk
+    # 부팅 검증이 양 극단을 본다
+    assert "self._obj_origin_off.min()" in env and "self._obj_origin_off.max()" in env
+
+
+def test_multi_object_leaks_no_identity_into_obs():
+    """★다물체로 가도 policy obs 는 상대 위치뿐 — 정체성이 새면 안 된다."""
+    m = re.search(r"_noisy = torch\.cat\(\[([\s\S]*?)\], dim=1\)", _ENV)
+    assert m, "policy obs 결합식 부재"
+    blk = m.group(1)
+    for banned in ("_obj_origin_off", "object_bank", "bank_idx", "obj_id"):
+        assert banned not in blk, f"policy obs 에 물체 정체성 누출: {banned}"
+
+
+def test_derived_cfg_is_rebuilt_after_hydra_overrides():
+    """★★hydra 는 `__post_init__` **뒤에** `from_dict` 로 오버라이드를 적용하고
+    `__post_init__` 를 **다시 부르지 않는다**(IsaacLab `hydra_task_config` 실측).
+
+    그래서 cfg 필드에서 파생되는 구조(스폰 cfg·replicate_physics·접촉필터·스폰고)는
+    env `__init__` 이 `super()` **전에** 다시 만들어야 한다. `replicate_physics` 는
+    `InteractiveScene.__init__` 이 소비하므로 `_setup_scene` 에서 고치면 늦다.
+    08.29 실측: `env.object_bank=cup_family` 를 줬는데 replicate_physics 가 True 로 남았다.
+    """
+    cfg = _code(_CFG)
+    assert "def finalize_after_overrides" in cfg
+    assert "self.finalize_after_overrides()" in cfg, "__post_init__ 이 안 부른다"
+    env = _code(_ENV)
+    i = env.index("def __init__")
+    blk = env[i:i + 700]
+    assert blk.index("cfg.finalize_after_overrides()") < blk.index("super().__init__"), \
+        "재파생이 super() 이후다 — InteractiveScene 이 이미 replicate_physics 를 소비한다"
+    # 멱등이어야 한다(두 번 불린다).
+    assert "_object_spawn_base" in cfg, "원본 스폰 보존이 없다 — 두 번째 호출이 이중 래핑된다"
+    # ★공간 차원도 파생이다(hand_layout 소비) — __post_init__ 에만 있으면
+    #   env.hand_layout CLI 가 no-op 이 된다(O1 부팅 fail-loud 실측 08.29).
+    i2 = cfg.index("def finalize_after_overrides")
+    fin_blk = cfg[i2:cfg.index("def _apply_object_bank")]
+    assert "self._derive_spaces(profile)" in fin_blk, \
+        "공간 차원 파생이 finalize 밖이다 — hand_layout CLI 오버라이드가 no-op"
+
+
+def test_self_collision_override_lands_in_robot_cfg():
+    """★★다물체 폭주의 근본 원인 잠금 (08.29 확정).
+
+    `replicate_physics=False`(per-env 파싱)에서 손 hull 초기 겹침 × 자기충돌 ON 이
+    손가락을 340~660mm 튕기고 palm 173kN 을 만든다 — self-collision OFF 로 sick
+    0/256 완치 실측. 다물체 학습은 `env.enable_self_collisions=False` 로 기동하는데,
+    `robot_cfg` 재구축이 `__post_init__` 에만 있으면 이 CLI 오버라이드가 **조용한
+    no-op** 이 된다(hydra 는 __post_init__ 를 다시 부르지 않는다). 재구축은
+    `finalize_after_overrides` 안에 있어야 한다.
+    """
+    cfg = _code(_CFG)
+    i = cfg.index("def finalize_after_overrides")
+    j = cfg.index("def ", i + 10)
+    blk = cfg[i:j]
+    assert "_build_robot_cfg" in blk, \
+        "robot_cfg 재구축이 finalize 밖이다 — enable_self_collisions CLI 오버라이드가 no-op"
+    assert "enable_self_collisions" in blk
+
+
+# ---------------------------------------------------------------------------
+# ADR (08.29 신설) — 전역 level 하나가 스폰 범위·이송 y·물체 obs 노이즈를 스케일한다.
+# ---------------------------------------------------------------------------
+
+def _adr_apply_block() -> str:
+    env = _code(_ENV)
+    i = env.index("def _adr_apply")
+    return env[i:env.index("def ", i + 10)]
+
+
+def test_adr_defaults_off_and_identity():
+    """기본값 OFF = 현행 항등. OFF 면 level 이 0 으로 강제돼 전부 base 값이다."""
+    cfg = _code(_CFG)
+    assert "enable_adr: bool = False" in cfg
+    for k in ("adr_success_threshold", "adr_eval_episodes", "adr_step",
+              "adr_spawn_range_max", "adr_goal_y_max",
+              "adr_obs_noise_object_max"):
+        assert k in cfg, f"cfg 에 {k} 가 없다"
+    blk = _adr_apply_block()
+    assert "if bool(cfgn.enable_adr) else 0.0" in blk, \
+        "OFF 항등 보장이 없다 — enable_adr=False 인데 level 이 실릴 수 있다"
+    env = _code(_ENV)
+    assert "rng = float(self._adr_spawn_range)" in env, \
+        "리셋 스폰이 실효값이 아니라 cfg 원값을 읽는다"
+    # 08.30 3축 샘플링으로 목표가 env 별이 됐다 — 샘플링 OFF 면 `_adr_goal_offset`
+    # 를 그대로 브로드캐스트하므로 의미는 같다(cfg 원값 직독만 아니면 된다).
+    assert "settled + _goff" in env and "self._adr_goal_offset.unsqueeze(0)" in env, \
+        "goal 이 실효 오프셋이 아니라 cfg 원값을 읽는다"
+
+
+def test_adr_goal_growth_expands_delta_box():
+    """★축③ 구조 제약 — 목표 y 확장분만큼 델타 박스 y 도 커져야 한다.
+    palm 지령 박스(base ±0.10)가 이송 거리를 물리적으로 막는다."""
+    blk = _adr_apply_block()
+    assert "_d_eff[1] = _d_eff[1] + (abs(_y_eff) - abs(_by))" in blk
+    assert "_delta_lo" in blk and "_delta_hi" in blk, \
+        "델타 박스가 재계산되지 않는다"
+
+
+def test_adr_level_is_global_and_monotonic():
+    """★env 별 난이도 금지(h7 데드락 이력) + 하강 없는 단조 승급."""
+    env = _code(_ENV)
+    assert "self._adr_level = 0.0" in env
+    assert "self._adr_level = min(" in env, "승급이 상한 없이 자란다"
+    assert "self._adr_level -" not in env and "self._adr_level =-" not in env, \
+        "level 하강 경로가 있다 — 단조 규약 위반"
+    assert "adr_success_threshold" in env, "승급이 성공률 판정 없이 일어난다"
+
+
+def test_adr_max_goal_validated_at_boot():
+    """승급 후 목표가 프로필 박스 밖이면 조용히 과제가 죽는다 — 부팅 fail-loud 로 잠근다."""
+    env = _code(_ENV)
+    i = env.index("def _assert_goal_reachable")
+    blk = env[i:env.index("def ", i + 10)]
+    assert "adr_goal_y_max" in blk and "adr_spawn_range_max" in blk
+    assert "RuntimeError" in blk
+
+
+def test_respawn_on_fail_defaults_on_and_is_safe():
+    """08.30 — 종료가 유일한 실패 처리면 무접촉 정체가 국소최적(M0·O1 실측 7.2/step).
+    재소환 계약: ①기본 OFF ②원래 스폰점 복귀(앵커·목표 불변 — 새 자리 샘플링 금지)
+    ③palm 여유 미달 시 보류(폴백 텔레포트 금지 — 자매 v2 규약) ④abnormal 은 여전히 종료
+    ⑤파지 단계 상태 되감기."""
+    cfg = _code(_CFG)
+    # ★09.01 D3 승격 — 기본 ON. 아래 ②~⑤ 안전 계약은 그대로 잠근다.
+    assert "respawn_on_fail: bool = True" in cfg
+    env = _code(_ENV)
+    i = env.index('respawn_on_fail", False))')
+    blk = env[i:i + 6000]
+    assert "self.object_spawn_pos[_go]" in blk, "원래 스폰점 복귀가 아니다"
+    assert "respawn_clearance_m" in blk and "respawn_defer" in blk, "보류 규약이 없다"
+    # 08.30 보류 예산 신설로 분기가 생겼다 — 두 경로 모두 abnormal 을 종료로 유지한다.
+    assert "terminated = self._abnormal.clone()" in blk \
+        and "terminated = self._abnormal | _stuck" in blk, "abnormal 종료가 사라졌다"
+    assert "self._latched[_go] = False" in blk, "파지 단계 되감기가 없다"
+
+
+def test_finger_residual_blend_and_adr_axis():
+    """08.30 W 진단 처방 — 커플링은 4지 지령을 평균으로 **대체**해 두 극단만 있었다:
+    닫히지만 둔한 손(coupled `syn_close` 0.320) ↔ 손가락 독립인데 안 닫히는 손
+    (15ch 0.022~0.106). 공통+잔차로 그 사이를 연속으로 잇는다.
+    계약: ①기본 0.0 = 구 coupled 항등(평균 대체) ②블렌드 = 공통 + scale·(개별−공통)
+    ③ADR 다섯째 축으로 열리되 max<=base 면 꺼짐 ④액션 차원 불변(warm 보존)."""
+    cfg = _code(_CFG)
+    assert "finger_residual_scale: float = 0.0" in cfg
+    assert "adr_finger_residual_max: float = 0.0" in cfg
+    ctl = _code(_CTRL)
+    i = ctl.index("_adr_residual")
+    blk = ctl[i - 400:i + 400]
+    assert "_common + _rs * (a - _common)" in blk, "공통+잔차 블렌드가 아니다"
+    assert "_common if _rs == 0.0 else" in blk, "scale 0 항등 분기가 없다"
+    env = _code(_ENV)
+    j = env.index("self._adr_residual =")
+    assert "lvl * max(0.0, _rm - _rb)" in env[j:j + 160], "ADR 축이 base 기준이 아니다"
+    assert 'adr/finger_residual' in env, "잔차 로깅이 없다"
+    # 액션 차원은 잔차와 무관해야 한다 — 커리큘럼 도중 warm 이 깨지면 안 된다.
+    assert "finger_residual" not in _code(_CFG).split("_derive_spaces")[-1][:1200], \
+        "잔차가 액션 차원 계산에 새어 들어갔다"
+
+
+def test_contact_quality_anylink_mode():
+    """08.31 사용자 정의 — "어떤 부분이든 5손가락(또는 손바닥까지) 닿고 안정적으로
+    유지만 하면 된다". 구 정의(0.4·팁 + 0.6·wrap)는 wrap 이 **중간∧원위 동시**라
+    8종 전수 0.000 이었고, 정책이 팁 0.4 만 먹고 2~3개 접촉에서 멈췄다 — 그 상태로는
+    컵을 기울이는 과제에서 놓친다. 계약: ①기본 "tipwrap"(현행 항등) ②"anylink" 는
+    `grip_c`(tip|mid|dist) 기반 ③**손바닥이 한 표**로 들어가고 분모는 손가락+1."""
+    cfg = _code(_CFG)
+    # ★09.01 D3 승격 — 기본이 "anylink". "tipwrap" 경로는 대조용으로 남긴다.
+    assert 'contact_quality_mode: str = "anylink"' in cfg
+    rew = _code(_REW)
+    i = rew.index('contact_quality_mode", "tipwrap")) == "anylink"')
+    blk = rew[i:i + 420]
+    assert "graded_contact = anylink_frac" in blk, "anylink 를 접촉 품질로 안 쓴다"
+    assert "_emix" in blk, "구 tipwrap 경로가 사라졌다"
+    env = _code(_ENV)
+    j = env.index("anylink_frac=")
+    b2 = env[j:j + 220]
+    assert "grip_c.float().sum(dim=1) + self._surf_palm" in b2, "손바닥 표가 빠졌다"
+    assert "(n_tip + 1.0)" in b2, "분모가 손가락+1 이 아니다"
+    assert "task/anylink_frac" in env and "task/n_contact" in env, "진단 로깅이 없다"
+
+
+def test_anylink_replaces_grasp_envelope_credit():
+    """08.31 B1 실측 처방 — `contact_quality_mode="anylink"` 를 `graded_contact`
+    (곱셈)에만 걸었더니 접촉 개수가 2.58 정점 뒤 2.05 로 하락했다(1,100 iter 회복
+    없음). 곱셈은 ∂R/∂접촉 = (lift+transfer+…)/6 이라 사다리가 작을 때 경사도 같이
+    작아진다. 같은 시점 `grasp_quality` 는 _ecred(0.80)이 `wrap_frac` 0.02 에
+    묶여 0.082 뿐 — grasp 의 80% 가 죽어 있었다. 계약: ①anylink 면 grasp 의 감쌈
+    성분도 `anylink_frac` ②거기에 `force_quality` 를 곱해 "세게 눌러 더 닿기"를
+    막는다(audit Check 3) ③기본 tipwrap 은 `wrap_frac` 그대로(항등)."""
+    rew = _code(_REW)
+    i = rew.index("_envelope_credit = ")
+    blk = rew[i - 260:i + 320]
+    assert 'contact_quality_mode", "tipwrap")) == "anylink"' in blk, \
+        "grasp 감쌈 성분이 모드 분기를 안 탄다"
+    assert "anylink_frac.clamp(0.0, 1.0)" in blk, "anylink 경로가 없다"
+    assert "force_quality.clamp(0.0, 1.0)" in blk, \
+        "force_quality 가 안 곱해져 과압 상한이 없다"
+    assert "_envelope_credit = wrap_frac.clamp(0.0, 1.0)" in blk, \
+        "tipwrap 기본 분기(항등)가 사라졌다"
+    assert "_ecred * _envelope_credit" in rew, "grasp_quality 가 새 성분을 안 쓴다"
+    assert "_ecred * wrap_frac" not in rew, "옛 직접 참조가 남아 분기가 무효다"
+
+
+def test_finger_closure_wrap_target():
+    """08.31 8종 실측 처방 — 팁 접촉 0.65~0.85 인데 wrap 은 **전 종 0.000**.
+    `graded_contact = 0.4·팁 + 0.6·wrap` 에서 싼 0.4 만 먹고 멈췄고, 팁 기준
+    소등 항은 그 지점에서 이미 꺼져 경사를 못 준다. 계약: ①기본 "tip"(현행 항등)
+    ②"wrap" 이면 소등 = 중간∧원위, 거리 = **중간마디** 기준 ③중간마디 인덱스는
+    프로필 `finger_sensor_bodies` 첫 원소에서 이름 해석(리터럴 금지)."""
+    cfg = _code(_CFG)
+    # ★09.01 D3 승격 — 기본이 "wrap". "tip" 분기는 아래에서 계속 잠근다.
+    assert 'finger_closure_target: str = "wrap"' in cfg
+    env = _code(_ENV)
+    assert "self._mid_ids_t" in env, "중간마디 인덱스가 없다"
+    i = env.index("finger_sensor_bodies[f][0]")
+    assert "find_bodies" in env[i - 120:i], "중간마디를 이름 해석으로 안 찾는다"
+    j = env.index('finger_closure_target", "tip")) == "wrap"')
+    blk = env[j:j + 600]
+    assert "self._mid_ids_t" in blk, "wrap 모드가 중간마디 거리를 안 쓴다"
+    assert "_cl_off = mid_c & dist_c" in blk, "소등 조건이 중간∧원위가 아니다"
+    assert "_cl_d, _cl_off = _tip_d, tip_c" in blk, "tip 기본 분기가 사라졌다"
+
+
+def test_enclosure_contact_floor_blend():
+    """08.30 W4 — enclosure(10)는 무접촉으로도 ~7.2/step 공짜라 FRESH 정체의 원천
+    (M0·O1 총보상 실측 일치). floor 블렌드는 무접촉 상한을 10·floor 로 낮추되
+    ★H 라운드가 기각한 완전 곱셈(접근 구간 항 사망)과 달리 floor 비율의 접근
+    gradient 를 보존한다. 계약: ①기본 1.0 = 항등(floor<1 조건 분기) ②블렌드 수식
+    = floor + (1−floor)·graded_contact ③enclosure_term 자체에 곱한다(별항 아님)."""
+    cfg = _code(_CFG)
+    # ★09.01 D3 승격 — 기본 1.0(항등) → 0.3. floor<1 분기가 이제 상시 경로다.
+    assert "enclosure_contact_floor: float = 0.3" in cfg
+    rew = _code(_REW)
+    i = rew.index('enclosure_contact_floor", 1.0)')
+    blk = rew[i:i + 400]
+    assert "if _encl_floor < 1.0:" in blk, "기본값 항등 분기가 없다"
+    assert "_encl_floor + (1.0 - _encl_floor) * graded_contact" in blk, \
+        "floor 블렌드 수식이 아니다 — 완전 곱셈(H 기각)으로 퇴행 금지"
+    assert "enclosure_term = enclosure_term * (" in blk, \
+        "enclosure_term 에 곱하지 않는다"
+
+
+def test_adr_goal_three_axis_sampling():
+    """08.30 성공률 지도 처방 — 이송 y 0.12 에서 0.94~0.98 인데 **0.05 에서 0.000**.
+    난이도를 단조로 올리기만 하면 시작 구간을 잊고 "한 방향 14cm" 하나만 배운다.
+    계약: ①기본 OFF(현행 항등) ②[base, 레벨] 구간 **에피소드별 샘플링**
+    ③x 는 ±범위·z 는 [base,max] ④델타 박스가 세 축 모두 연동 ⑤부팅 검증이 x·z 극단도 본다."""
+    cfg = _code(_CFG)
+    assert "adr_goal_sample: bool = False" in cfg
+    assert "adr_goal_x_max" in cfg and "adr_goal_z_max" in cfg
+    env = _code(_ENV)
+    i = env.index('adr_goal_sample", False))')
+    blk = env[i:i + 700]
+    assert "_u[:, 0] * 2.0 - 1.0) * _xs" in blk, "x 가 ± 대칭 샘플이 아니다"
+    assert "_u[:, 1] * (abs(_ys) - abs(_by))" in blk, "y 가 [base,레벨] 구간이 아니다"
+    assert "_bz + _u[:, 2] * (_zs - _bz)" in blk, "z 가 [base,max] 구간이 아니다"
+    j = env.index("_d_eff[0] = _d_eff[0] + _x_eff")
+    assert "_d_eff[2] = _d_eff[2] + (_z_eff - _bz)" in env[j:j + 400], \
+        "델타 박스가 x·z 확장을 못 따라간다 — 지령이 목표를 못 덮는다"
+    k = env.index("def _assert_goal_reachable")
+    vblk = env[k:env.index("def ", k + 10)]
+    assert "adr_goal_x_max" in vblk and "adr_goal_z_max" in vblk, \
+        "부팅 검증이 x·z 극단을 안 본다"
+
+
+def test_respawn_free_mode_moves_spawn_reference():
+    """08.30 자매 v2 규약 이식 — "원래 스폰점 복귀"는 그 자리가 곧 손자리라 보류가
+    0.93 까지 갔다(Q3 실측). free 모드는 스폰 상자에서 손 없는 자리를 리젝션
+    샘플링한다. 계약: ①기본 origin(현행) ②손 전체(palm+팁) 기준 거리 ③새 자리로
+    가면 **스폰 기준·목표를 같이 옮긴다**(안 옮기면 cup_disp 가 즉시 커져 approach 가
+    순벌점이 된다 — Q3 −0.35 의 정체) ④후보 전부 실패면 보류(폴백 텔레포트 금지)."""
+    cfg = _code(_CFG)
+    # ★09.01 D3 승격 — 기본이 "free". "origin" 경로는 대조용으로 남긴다.
+    assert 'respawn_mode: str = "free"' in cfg
+    assert "respawn_range: float = 0.09" in cfg, "free 모드인데 샘플링 반경이 0 이다"
+    env = _code(_ENV)
+    i = env.index('respawn_mode", "origin")) == "free"')
+    blk = env[i:i + 1800]
+    assert "_hand.unsqueeze(1)" in blk and "min(dim=2)" in blk, "손 전체 최소거리가 아니다"
+    assert "_clear = _has" in blk, "후보 전부 실패 시 보류가 아니다"
+    j = env.index("self.object_spawn_pos[_go] = _tgt_go")
+    upd = env[j:j + 200]
+    assert "self.goal_pos[_go]" in upd, "목표를 같이 옮기지 않는다 — approach 순벌점 재발"
+
+
+def test_respawn_defer_budget_falls_back_to_terminate():
+    """08.30 Q3 실측 처방 — 보류만 하면 넘어진 컵이 팔 옆에 방치돼 approach 가
+    순벌점(−0.35)이 되고 에피소드가 그 상태로 600 스텝을 버틴다(defer 0.93 ·
+    palm 접촉 1.4% vs 정상 81.7%). 연속 보류가 예산을 넘으면 종료로 폴백해야 한다.
+    기본 0 = 무제한(현행)."""
+    cfg = _code(_CFG)
+    # ★09.01 D3 승격 — 기본 0(무제한) → 60. 무제한은 Q3 의 defer 0.93 정체를 낳았다.
+    assert "respawn_defer_budget: int = 60" in cfg
+    env = _code(_ENV)
+    assert "self._defer_count" in env, "연속 보류 카운터가 없다"
+    i = env.index("respawn_defer_budget")
+    blk = env[i:i + 700]
+    assert "terminated = self._abnormal | _stuck" in blk, "종료 폴백이 없다"
+    assert "done/respawn_stuck" in blk, "폴백 발생률 로깅이 없다"
+
+
+def test_latch_mode_defaults_to_opposition():
+    """08.29 — count 래치는 실측 성공 파지(엄지+palm, n_grip=1)에서 영원히 안 열려
+    lift/transfer/stay/stabilize 가 사장됐다. opposition = (A) AND (B OR palm),
+    hold 스텝 유지. 기본값은 count(현행 항등, M1 대조 보존)."""
+    cfg = _code(_CFG)
+    # ★09.01 D3 승격 — 기본이 "opposition". "count" 경로는 대조용으로 남긴다.
+    assert 'latch_mode: str = "opposition"' in cfg
+    env = _code(_ENV)
+    i = env.index('latch_mode", "count")) == "opposition"')
+    blk = env[i:i + 400]
+    assert "_a_c & (_b_c | _p_c)" in blk, "대향 형식이 아니다"
+    assert "grasp_ready_hold_steps" in env[i:i + 900], "hold 필터가 사라졌다"
+
+
+def test_per_finger_layout_defaults_off_and_matches_user_spec():
+    """08.29 O 라운드 — 사용자 확정 손가락별 레이아웃. 잠그는 계약:
+    ①기본 hand_layout="coupled3"·freeze_scope="joint" = 현행 항등
+    ②엄지 2슬롯·검/중/약 각 1슬롯·소지 1슬롯(j3/4) — 외전(_1)은 어디에도 없음
+    ③per_finger 는 액션 차원이 바뀌므로 슬롯 연속성·action_space 정합 fail-loud"""
+    cfg = _code(_CFG)
+    assert 'hand_layout: str = "coupled3"' in cfg
+    assert 'synergy_freeze_scope: str = "joint"' in cfg
+    assert "hand_finger_channels" in cfg, "action_space 가 per_finger 분기를 모른다"
+    prof = _code((_HERE / "robot_profiles.py").read_text(encoding="utf-8"))
+    i = prof.index("hand_finger_channels={")
+    blk = prof[i:i + 500]
+    assert '"thumb": {"3": 0, "4": 1}' in blk, "엄지 근위/원위 2슬롯이 아니다"
+    assert '"pinky": {"3": 5, "4": 5}' in blk, "소지는 j3/4 단일 슬롯이어야 한다"
+    assert '"1"' not in blk, "외전(_1)이 액션에 배정됐다 — 고정 계약 위반"
+    ctrl = _code(_CTRL)
+    assert "self._syn_act" in ctrl and 'hand_layout) == "per_finger"' in ctrl
+    assert "per_finger 슬롯" in ctrl, "슬롯↔action_space 정합 fail-loud 가 없다"
+
+
+def test_finger_scope_freeze_stops_whole_finger():
+    """08.29 진단 잠금 — 관절별 동결은 언 손끝을 매단 채 근위(_2)가 계속 감겨
+    큰 컵을 밀어낸다(s130 영상). finger 스코프는 (중간∨원위) 접촉 시 그 손가락
+    굴곡관절 전부를 세운다. 기본값은 joint(현행 항등)."""
+    ctrl = _code(_CTRL)
+    i = ctrl.index('synergy_freeze_scope) == "finger"')
+    blk = ctrl[i:i + 400]
+    assert "(_h_mid | _h_dist) & self._syn_flex" in blk
+    assert "_syn_flex" in ctrl and '("2", "3", "4")' in ctrl, \
+        "굴곡관절 마스크에 _2 가 빠졌다 — 파고듦이 그대로다"
+
+
+def test_species_diagnostics_stay_out_of_obs():
+    """08.29 신설 — 집계 success 는 종별 실패를 가린다(사용자 지적). 종별 EMA 는
+    extras 진단 전용이고, ①obs 에 새면 정체성 계약 위반 ②per-step 리셋 경로라
+    .any()/.item() 루프 금지(무동기 index_add 집계)."""
+    env = _code(_ENV)
+    assert "species/success_min" in env, "종별 최소 성공률 로깅이 없다"
+    assert "index_add_" in env, "종별 집계가 무동기 벡터화가 아니다"
+    i = env.index("def _get_observations")
+    obs_blk = env[i:env.index("def ", i + 10)]
+    for banned in ("_species_ids", "_species_succ", "species/"):
+        assert banned not in obs_blk, f"obs 경로에 종 정보가 샜다: {banned}"
+
+
+def test_finger_closure_extinguishes_on_contact():
+    """08.29 신설 — 접촉 전 손가락별 연속 신호. 잠그는 계약 셋:
+    ①기본 가중 0 = 현행 항등 ②(1−접촉) 소등 — 압입 유인 금지, 조임량은 물리 몫
+    ③close_gate 곱 — 빈손 말아쥐기 차단(케이지 되먹임 함정 계열)."""
+    cfg = _code(_CFG)
+    # ★09.01 D3 승격 — 기본 가중 0 → 3.0. 소등·게이트 계약은 그대로 잠근다.
+    assert "finger_closure_weight: float = 3.0" in cfg
+    rew = _code(_REW)
+    assert '"finger_closure"' in rew, "TERMS 에 미등록 — fail-loud 가 안 잡는다"
+    i = rew.index("finger_closure_term = (")
+    blk = rew[i - 1200:i + 300]
+    assert "close_gate.clamp(0.0, 1.0) * finger_closure.clamp(0.0, 1.0)" in blk
+    env = _code(_ENV)
+    # 08.31 target 노브 신설로 소등 대상이 분기됐다 — tip 기본값과 wrap 양쪽 모두
+    # "닿으면 소등"을 유지해야 한다(압입 유인 차단은 두 경로 공통 계약).
+    assert "(~_cl_off).float()" in env and "_cl_d, _cl_off = _tip_d, tip_c" in env, \
+        "접촉 소등이 없다 — 압입 유인이 생긴다"
+    assert "grasp_center.unsqueeze(1)" in env, \
+        "거리 기준이 파지중심이 아니다 — 형상 비의존 계약 위반"
+
+
+def test_adr_obs_noise_wired_to_actor_only():
+    """물체 pose 노이즈는 actor obs 에만 — critic 은 clean state 를 유지한다."""
+    env = _code(_ENV)
+    i = env.index("def _get_observations")
+    blk = env[i:env.index("def ", i + 10)]
+    assert blk.count("self._adr_obs_noise_object") == 2, \
+        "palm_to_obj·obj_to_tips 두 항 모두 실효 노이즈를 써야 한다"
+    _clean = blk[blk.index("clean = torch.cat"):blk.index("state = torch.cat")]
+    assert "_adr_obs_noise_object" not in _clean, "clean(critic) 경로에 노이즈가 샜다"
+
+
+def test_d3_default_set_is_intact():
+    """★★09.01 — 기본값 전체가 D3(`s2r_d3_liftonly_fresh_v2`) 세팅인지 한 곳에서 잠근다.
+
+    D3 는 20,000 iter FRESH 로 8종 전수 성공(0.774~0.949 · `success_min` 0.607)을
+    낸 첫 런이고, 그 조합을 기본값으로 올렸다. 개별 필드는 각자의 테스트가 메커니즘을
+    잠그지만, **조합이 통째로 유효**하다는 것은 여기서만 보장된다 — 한 값만 되돌아가도
+    (예: `grasp_weight` 12 복귀) D2 의 pre-lift 주차장이 되살아난다.
+
+    되돌리려면 이 테스트를 먼저 고쳐야 하고, 그때 D3 를 이긴 실측을 근거로 남길 것.
+    """
+    cfg = _code(_CFG)
+    d3 = {
+        # 물체·자기충돌
+        'object_bank: str = "cup_family"': "다물체 8종",
+        "enable_self_collisions: bool = False": "자기충돌 OFF",
+        # 액션 앵커
+        'palm_anchor_mode: str = "spawn"': "스폰 앵커",
+        "palm_delta_xyz: tuple[float, float, float] = (0.10, 0.10, 0.10)": "델타 등방 0.10",
+        "palm_delta_rot_deg: float = 40.0": "회전 델타 40°",
+        # 접촉 정의
+        'contact_quality_mode: str = "anylink"': "어느 마디든 + 손바닥",
+        'finger_closure_target: str = "wrap"': "소등 = 중간∧원위",
+        "force_band_floor: float = 0.5": "과압 감쇠 바닥",
+        # 래치
+        'latch_mode: str = "opposition"': "대향 래치",
+        "oppose_grip_delta_rad: float = -0.6": "엄지 대향축 활성(a상태)",
+        # 목표·리프트
+        "goal_offset_xyz: tuple[float, float, float] = (0.0, 0.0, 0.12)": "수직 12cm",
+        "lift_height_ref: float = 0.06": "리프트 정규화 기준",
+        "success_require_lifted: bool = True": "성공은 리프트 필수",
+        "success_require_holding: bool = False": "holding 이중 게이트 제거",
+        # 가중치 — ★D2 주차장의 직접 처방
+        "grasp_weight: float = 4.0": "pre-lift 수입 억제",
+        "enclosure_weight: float = 10.0": "무접촉 기하 유도",
+        "enclosure_contact_floor: float = 0.3": "정체 방지 floor",
+        "stabilize_weight: float = 1.0": "정지 항 축소",
+        "finger_closure_weight: float = 3.0": "접촉 전 연속 경사",
+        # 재소환
+        "respawn_on_fail: bool = True": "실패 시 재소환",
+        'respawn_mode: str = "free"': "손 없는 자리 샘플링",
+        "respawn_clearance_uses_tips: bool = True": "손 전체 기준 여유",
+        "respawn_clearance_m: float = 0.12": "여유 거리",
+        "respawn_range: float = 0.09": "샘플링 반경",
+        "respawn_defer_budget: int = 60": "보류 예산",
+        "respawn_penalty: float = 2.0": "재소환 비용",
+    }
+    missing = [f"{k}  ({why})" for k, why in d3.items() if k not in cfg]
+    assert not missing, "D3 기본값이 어긋났다:\n  " + "\n  ".join(missing)
+    # ADR 은 D3 에서도 꺼져 있었다 — 승격 대상이 아니라 **원래 기본**이다.
+    assert "enable_adr: bool = False" in cfg
