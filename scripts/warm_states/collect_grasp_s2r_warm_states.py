@@ -151,6 +151,9 @@ class WarmCollector:
         self._spec_idx = torch.tensor(_bank.assign_indices(n), device=env.device,
                                       dtype=torch.long)
         self.rows: dict[str, list] = {}
+        # 에피소드 최고 후보 (env → 행). 점수는 접촉 수 우선.
+        self._best_score = torch.full((n,), -1.0, device=env.device)
+        self._best_row: dict[int, dict] = {}
 
     # -- 기하 -------------------------------------------------------------
 
@@ -190,22 +193,63 @@ class WarmCollector:
         t = self.terms()
         return t["lifted"] & t["still"] & t["grip"]
 
-    def on_done(self, done: torch.Tensor) -> None:
-        """에피소드가 끝나면 그 env 의 1회-제한과 유지 카운터를 푼다."""
+    def on_done(self, done: torch.Tensor) -> int:
+        """에피소드 종료 시 그 env 의 **최고 후보를 확정**하고 카운터를 푼다."""
+        n = self.commit(torch.nonzero(done).reshape(-1).tolist())
         self._captured_ep &= ~done
         self._hold[done] = 0
+        return n
 
     def step(self) -> int:
+        """에피소드마다 **가장 잘 잡은 순간**을 하나 고른다.
+
+        ★왜 "첫 적격 프레임"이 아니라 "최고 접촉"인가. pour 은 붓는 동안 손가락을
+          **전 구간 freeze** 한다 — 뱅크에 담긴 파지 품질이 그대로 붓기 내내의 상한이
+          된다. 접촉 2개짜리를 담으면 깊은 tilt 에서 컵이 빠지고, 그때는 되잡을 수단이
+          없다. 그래서 접촉 수(동률이면 팁힘 합)가 가장 큰 프레임을 고른다.
+        ★후보는 계속 갱신하고 **에피소드 종료 시 확정**한다(`on_done`).
+        """
         ok = self.eligible()
         self._hold = torch.where(ok, self._hold + 1, torch.zeros_like(self._hold))
-        take = (self._hold == self.hold_steps) & (~self._captured_ep)
-        ids = torch.nonzero(take).reshape(-1)
+        ready = (self._hold >= self.hold_steps) & (~self._captured_ep)
+        ids = torch.nonzero(ready).reshape(-1)
         if ids.numel():
-            self._capture(ids)
-            self._captured_ep |= take
-        return int(ids.numel())
+            tips = self._tip_forces()[ids]
+            n_c = (tips > self.thr).sum(dim=-1).float()
+            # 점수 = 접촉 수 + 팁힘 합의 미세 가중(동률 깨기). 접촉 수가 항상 우선한다.
+            score = n_c + 0.001 * tips.sum(dim=-1).clamp(max=100.0)
+            better = score > self._best_score[ids]
+            upd = ids[better]
+            if upd.numel():
+                self._best_score[upd] = score[better]
+                self._stash(upd)
+        return 0
 
-    def _capture(self, ids: torch.Tensor) -> None:
+    def _stash(self, ids: torch.Tensor) -> None:
+        """후보 갱신 — env 별로 **한 줄만** 들고 있는다(확정은 on_done)."""
+        rows = self._make_rows(ids)
+        for k, i in enumerate(ids.tolist()):
+            self._best_row[i] = {name: arr[k] for name, arr in rows.items()}
+
+    def commit(self, ids) -> int:
+        """보유 중인 최고 후보를 뱅크에 확정한다."""
+        n = 0
+        for i in ids:
+            row = self._best_row.get(int(i))
+            if row is None:
+                continue
+            for name, v in row.items():
+                self.rows.setdefault(name, []).append(v[None, ...])
+            self._best_row.pop(int(i), None)
+            self._best_score[int(i)] = -1.0
+            n += 1
+        return n
+
+    def flush_all(self) -> int:
+        """수집 종료 시 아직 안 끝난 에피소드의 후보도 거둔다."""
+        return self.commit(list(self._best_row.keys()))
+
+    def _make_rows(self, ids: torch.Tensor) -> dict:
         env, d = self.env, self.env.robot.data
         ee_pos_w, palm_quat, link_pos_w = self._palm_ee_pose_w()
         origin = env.scene.env_origins
@@ -222,8 +266,10 @@ class WarmCollector:
         from pour_traj_capture import relative_pose  # 같은 규약을 한 곳에서만 정의한다
         cup_in_hand = relative_pose(ee_pos_w[ids], quat_wxyz, env.object.data.root_pos_w[ids], cup_quat)
 
+        out: dict = {}
+
         def add(k, v):
-            self.rows.setdefault(k, []).append(v.detach().float().cpu().numpy())
+            out[k] = v.detach().float().cpu().numpy()
 
         add("arm_joint_pos", d.joint_pos[ids][:, env.arm_ids])
         add("hand_joint_pos", d.joint_pos[ids][:, env.hand_ids])
@@ -245,7 +291,8 @@ class WarmCollector:
         add("per_finger_contact", contact)
         add("tip_force", tips)
         add("object_spec_idx", self._spec_idx[ids].float())
-        self.rows.setdefault("env_id", []).append(ids.detach().cpu().numpy())
+        add("env_id", ids.float())
+        return out
 
     # -- 산출 -------------------------------------------------------------
 
@@ -353,8 +400,8 @@ def main(env_cfg, agent_cfg: dict):
             if agent.is_rnn and agent.states is not None and len(dones) > 0:
                 for h in agent.states:
                     h[:, dones, :] = 0.0
-        col.on_done(dones.to(raw.device).bool().reshape(-1))
-        got = col.step()
+        got = col.on_done(dones.to(raw.device).bool().reshape(-1))   # 에피소드 종료 = 확정
+        col.step()                                                    # 후보 갱신만
         if got and col.count % 128 < got:
             print(f"[WARM] {col.count}/{args_cli.target_count} (step {step})", flush=True)
         elif step % 200 == 0:
@@ -381,6 +428,11 @@ def main(env_cfg, agent_cfg: dict):
                   flush=True)
         if col.count >= args_cli.target_count:
             break
+
+    # 아직 안 끝난 에피소드의 후보도 거둔다(끝까지 안 죽은 env 를 버리지 않는다).
+    _flushed = col.flush_all()
+    if _flushed:
+        print(f"[WARM] 미종료 에피소드 후보 {_flushed} 건 확정", flush=True)
 
     if col.count < args_cli.target_count:
         # ★부분 뱅크를 저장하지 않는다. 반쯤 찬 캐시를 뒤에 학습이 조용히 집어먹는다.
