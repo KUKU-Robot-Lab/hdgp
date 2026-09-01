@@ -37,6 +37,10 @@ parser.add_argument("--order", choices=("right_first", "left_first", "together")
                     default="right_first",
                     help="두 팔을 움직이는 순서. together 가 가장 위험한 경우다.")
 parser.add_argument("--out", type=Path, default=None, help="판정 json")
+parser.add_argument("--render", type=Path, default=None, help="PNG 시퀀스를 쓸 디렉토리")
+parser.add_argument("--render-every", type=int, default=4, help="몇 프레임마다 한 장 찍나")
+parser.add_argument("--waypoint-json", type=Path, default=None,
+                    help="주면 시작→경유→목표 로 끊어서 간다 (직선이 몸에 걸릴 때)")
 parser.add_argument("--gui", action="store_true")
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -49,6 +53,9 @@ AppLauncher.add_app_launcher_args(parser)
 args, hydra_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + hydra_args
 args.headless = not args.gui
+# ★렌더는 카메라 확장이 켜져야 한다 — 안 켜면 headless 에서 omni.replicator 가 없다.
+if args.render is not None:
+    args.enable_cameras = True
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
@@ -59,13 +66,14 @@ import torch                                                      # noqa: E402
 import openarm  # noqa: E402,F401
 from isaaclab.envs import DirectRLEnvCfg                          # noqa: E402
 from isaaclab.sensors import ContactSensor, ContactSensorCfg      # noqa: E402
+from isaaclab.utils.math import combine_frame_transforms, subtract_frame_transforms  # noqa: E402
 from isaaclab_tasks.utils.hydra import hydra_task_config          # noqa: E402
 
 from transition_plan import (                                     # noqa: E402
     contact_set,
     describe_transition,
     new_contacts,
-    ramp,
+    ramp_via,
 )
 
 #: json 키 → 그 그룹의 관절 이름을 만드는 규칙.
@@ -123,6 +131,13 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
           f"· 임계 {args.contact_threshold} N · 램프 {args.max_vel} rad/s")
 
     start, goal = _load_pose(args.start_json), _load_pose(args.goal_json)
+    vias: dict[str, list[list[float]]] = {}
+    if args.waypoint_json:
+        raw = json.loads(args.waypoint_json.read_text())
+        for key in ("r_aj", "l_aj"):
+            if key in raw:
+                vias[key] = [[float(v) for v in wp] for wp in raw[key]]
+                print(f"[경유] {key}: {len(vias[key])}개")
     env.reset()
 
     def force_norms() -> np.ndarray:
@@ -136,23 +151,71 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
             robot.write_joint_state_to_sim(q, torch.zeros_like(q), joint_ids=ids)
             robot.set_joint_position_target(q, joint_ids=ids)
 
-    def pin_left_cup() -> None:
-        """★env 은 **매 스텝** 받는 컵을 고정 pose 로 다시 쓴다(`pour_right_env.py:1531`).
+    _src_offset = {"pos": None, "quat": None}
 
-        이 프로브는 `env.step` 이 아니라 `sim.step` 을 직접 밟으므로 그 경로가 돌지
-        않는다. 안 넣으면 컵이 흘러내려 엉뚱한 자리에서 그리퍼와 부딪히고, 그것을
-        전환 충돌로 오독한다(09.01 실측: 컵과 11 cm 떨어진 곳에서 83.9 N).
+    def capture_source_grip() -> None:
+        """붓는 컵을 **우 palm 에 강체로 물린 것처럼** 기억한다.
+
+        ★이 프로브는 파지 정책을 돌리지 않으므로 우손이 컵을 실제로 잡지 않는다.
+          그냥 두면 컵이 넘어져 테이블에 눕고, 좌팔이 지나가다 그것을 쳐서
+          **없는 충돌**이 잡힌다(09.01 실측: l_hl_gripper_base 83.9 N — 렌더로 확인).
+          실제 시퀀스에서는 우팔이 들고 있으므로 여기서도 붙여 둔다.
+        """
+        cup = getattr(base, "cup", None)
+        if cup is None:
+            return
+        palm_i = robot.body_names.index("r_hl_palm")
+        p_w = robot.data.body_pos_w[0, palm_i]
+        q_w = robot.data.body_quat_w[0, palm_i]
+        _src_offset["pos"] = (cup.data.root_pos_w[0] - p_w).clone()
+        _src_offset["quat"] = q_w.clone()
+        _src_offset["cup_quat"] = cup.data.root_quat_w[0].clone()
+
+    def pin_source_cup() -> None:
+        cup = getattr(base, "cup", None)
+        if cup is None or _src_offset["pos"] is None:
+            return
+        palm_i = robot.body_names.index("r_hl_palm")
+        pos = (robot.data.body_pos_w[0, palm_i] + _src_offset["pos"]).unsqueeze(0)
+        quat = _src_offset["cup_quat"].unsqueeze(0)
+        cup.write_root_pose_to_sim(torch.cat([pos, quat], dim=-1))
+        cup.write_root_velocity_to_sim(torch.zeros(1, 6, device=base.device))
+
+    _recv = {"pos": None, "quat": None}
+    _grip_i = robot.body_names.index("l_hl_gripper_base")
+
+    def capture_receiver_grip() -> None:
+        """받는 컵을 **좌 그리퍼에 물린 것처럼** 기억한다 (목표 자세 기준).
+
+        ★env 은 받는 컵을 **상수 위치**에 고정한다(`_get_left_cup_fk_pose` 는 좌팔 rest
+          자세의 FK 로 미리 계산된 값). pour 동안 좌팔이 내내 정지라 그것으로 충분하다.
+          그런데 **전환에서는 좌팔이 컵을 들고 간다.** 컵을 공중에 세워 두면 좌팔이
+          그리로 들어가며 그리퍼 base 가 컵을 뚫고, 그것이 전환 충돌로 오독된다
+          (09.01 실측 83.9 N — 렌더로 확인했다).
+          그래서 목표 자세에서의 (그리퍼 ← 컵) 상대 자세를 기억해 그대로 들고 간다.
         """
         cup = getattr(base, "left_target_cup", None)
         if cup is None:
             return
-        pose = base._get_left_target_cup_fixed_pose()
-        cup.write_root_pose_to_sim(pose)
-        cup.write_root_velocity_to_sim(torch.zeros(base.num_envs, 6, device=base.device))
+        target = base._get_left_target_cup_fixed_pose()[0]
+        _recv["pos"], _recv["quat"] = subtract_frame_transforms(
+            robot.data.body_pos_w[0:1, _grip_i], robot.data.body_quat_w[0:1, _grip_i],
+            target[:3].unsqueeze(0), target[3:].unsqueeze(0))
+
+    def pin_left_cup() -> None:
+        cup = getattr(base, "left_target_cup", None)
+        if cup is None or _recv["pos"] is None:
+            return
+        pos, quat = combine_frame_transforms(
+            robot.data.body_pos_w[0:1, _grip_i], robot.data.body_quat_w[0:1, _grip_i],
+            _recv["pos"], _recv["quat"])
+        cup.write_root_pose_to_sim(torch.cat([pos, quat], dim=-1))
+        cup.write_root_velocity_to_sim(torch.zeros(1, 6, device=base.device))
 
     def hold(steps: int) -> None:
         for _ in range(steps):
             pin_left_cup()
+            pin_source_cup()
             robot.write_data_to_sim()
             base.sim.step(render=False)
             robot.update(dt)
@@ -165,11 +228,18 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
     # ★시작 **과** 목표 양쪽에서 잰다. 목표에서 닿는 것은 구조다 — 받는 컵은 좌팔 rest
     #   자세의 FK 로 손 앞 5 cm 에 고정되므로, 좌팔이 목표에 도착하면 그리퍼가 **자기 컵**을
     #   만난다. 그것을 충돌로 세면 무엇을 해도 실패한다(09.01 실측: 142 N 오탐).
+    # ★물림을 기억하기 **전에 반드시 스텝을 밟는다.** `write_joint_state_to_sim` 직후의
+    #   `body_pos_w` 는 아직 이전 자세다 — 그걸 읽으면 컵이 엉뚱한 곳에 물린다(실측).
     write_pose(goal)
     hold(args.settle)
+    capture_receiver_grip()
+    hold(max(args.settle // 2, 5))
     at_goal = contact_set(body_names, force_norms(), threshold=args.contact_threshold)
+
     write_pose(start)
     hold(args.settle)
+    capture_source_grip()
+    hold(max(args.settle // 2, 5))
     at_start = contact_set(body_names, force_norms(), threshold=args.contact_threshold)
     baseline = at_start | at_goal
     baseline_z = body_z()
@@ -182,12 +252,41 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
         arm_keys = sorted(arm_keys, reverse=True)
     stages = [arm_keys] if args.order == "together" else [[k] for k in arm_keys]
 
+    shot = None
+    if args.render:
+        import omni.replicator.core as rep  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
+        args.render.mkdir(parents=True, exist_ok=True)
+        origin = base.scene.env_origins[0].cpu().numpy()
+        # 양팔과 테이블이 다 들어오는 자리. 로봇 앞쪽 비스듬 위.
+        center = origin + np.array([0.32, 0.0, 0.32])
+        cam = rep.create.camera(position=tuple(float(v) for v in center + np.array([1.15, -0.85, 0.55])),
+                                look_at=tuple(float(v) for v in center))
+        rp = rep.create.render_product(cam, (1280, 800))
+        annot = rep.AnnotatorRegistry.get_annotator("rgb")
+        annot.attach([rp])
+        _count = [0]
+
+        def shot(tag: str) -> None:
+            base.sim.render()
+            arr = np.asarray(annot.get_data())
+            if arr.size == 0:
+                return
+            Image.fromarray(arr[:, :, :3]).save(args.render / f"{_count[0]:04d}_{tag}.png")
+            _count[0] += 1
+
+        print(f"[렌더] {args.render} · {args.render_every} 프레임마다")
+
     report, ok = {}, True
     for stage in stages:
-        paths = {k: ramp(start[k], goal[k], max_vel=args.max_vel, dt=dt) for k in stage}
+        paths = {k: ramp_via(start[k], vias.get(k, []), goal[k],
+                             max_vel=args.max_vel, dt=dt) for k in stage}
         n = max(p.shape[0] for p in paths.values())
         worst: dict[str, tuple[int, float]] = {}
         where: dict[str, list[float]] = {}
+        # ★접촉은 양쪽에 힘을 남긴다. 임계 아래라도 상위 목록을 보면 **무엇에** 닿았는지
+        #   드러난다 — "닿았다"만 알면 고칠 수가 없다.
+        partners: dict[str, list] = {}
         min_z: dict[str, float] = {name: 1e9 for name in body_names}
         for f in range(n):
             for key, path in paths.items():
@@ -199,6 +298,8 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
             robot.write_data_to_sim()
             base.sim.step(render=False)
             robot.update(dt)
+            if shot is not None and f % args.render_every == 0:
+                shot(f"{'+'.join(stage)}_{f:04d}")
             forces = force_norms()
             for name in new_contacts(baseline,
                                      contact_set(body_names, forces, threshold=args.contact_threshold)):
@@ -209,6 +310,9 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
                     where[name] = [round(float(v), 4) for v in
                                    (robot.data.body_pos_w[0, robot.body_names.index(name)]
                                     - base.scene.env_origins[0]).cpu().numpy()]
+                    order = np.argsort(-forces)[:6]
+                    partners[name] = [[body_names[i], round(float(forces[i]), 2)]
+                                      for i in order if forces[i] > 0.01]
             for name, z in body_z().items():
                 if name in min_z:
                     min_z[name] = min(min_z[name], z)
@@ -219,7 +323,8 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
                                          baseline_z=baseline_z))
         report[label] = {"frames": int(n), "seconds": round((n - 1) * dt, 2),
                          "new_contacts": {k: {"frame": v[0], "N": round(v[1], 2),
-                                              "pos_env_local": where.get(k)}
+                                              "pos_env_local": where.get(k),
+                                              "top_forces": partners.get(k)}
                                           for k, v in worst.items()},
                          "min_z": {k: round(v, 4) for k, v in sorted(min_z.items(),
                                                                     key=lambda kv: kv[1])[:5]}}
