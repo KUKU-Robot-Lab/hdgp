@@ -222,7 +222,7 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
                     args.render / f"{shots[0]:04d}_{tag}.png")
                 shots[0] += 1
 
-    def cup_z() -> float:
+    def _cup_obj():
         for name in ("cup", "object", "left_target_cup"):
             obj = getattr(base, name, None)
             if obj is None:
@@ -231,9 +231,23 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
                 except (KeyError, TypeError):
                     obj = None
             if obj is not None and hasattr(obj, "data"):
-                return float(obj.data.root_pos_w[args.env_id, 2]
-                             - base.scene.env_origins[args.env_id, 2])
-        return float("nan")
+                return obj
+        return None
+
+    def cup_z() -> float:
+        obj = _cup_obj()
+        if obj is None:
+            return float("nan")
+        return float(obj.data.root_pos_w[args.env_id, 2]
+                     - base.scene.env_origins[args.env_id, 2])
+
+    def cup_pos3() -> np.ndarray:
+        """컵 위치 env-local 3D — 폐루프 러너의 스폰·검증 기준."""
+        obj = _cup_obj()
+        if obj is None:
+            return np.full(3, np.nan, dtype=np.float32)
+        return (obj.data.root_pos_w[args.env_id] -
+                base.scene.env_origins[args.env_id]).cpu().numpy().astype(np.float32)
 
     _other_q = (torch.tensor([other], dtype=torch.float32, device=base.device)
                 .repeat(base.num_envs, 1) if other_ids is not None else None)
@@ -347,9 +361,45 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
         player.init_rnn()
     z0 = cup_z()
     streak = [0]
-    stream: dict[str, list] = {"arm_target": [], "hand_target": [], "cup_pos": []}
+    cup_spawn = cup_pos3()          # 정책 시작 직전 정착 스폰 — 러너가 이 자리에 컵을 놓는다
+    from collections import defaultdict
+    stream: dict[str, list] = defaultdict(list)
+
+    def _rec(obs_t, action) -> None:
+        """스텝 하나의 (관측→액션→지령→상태) 전부 — 폐루프 러너 오프라인 대조의 근거.
+
+        actions/obs 는 스텝 **전**(액션을 만든 관측), 지령·상태는 스텝 **후**다.
+        우팔은 사슬 내부 상태(gate·latch)도 남긴다 — 오프라인 재현 때 주입해
+        순수 수학부(앵커+델타+리미터+시너지+fabric)만 따로 검증하기 위해서다.
+        """
+        e = args.env_id
+        a = action.detach().cpu().numpy()
+        stream["actions"].append((a[e] if a.ndim > 1 else a).copy())
+        o = obs_t["obs"] if isinstance(obs_t, dict) else obs_t
+        stream["obs"].append(torch.as_tensor(o)[e].detach().cpu().numpy().copy())
+        stream["arm_target"].append(
+            robot.data.joint_pos_target[e, arm_ids].cpu().numpy().copy())
+        stream["hand_target"].append(
+            robot.data.joint_pos_target[e, hand_ids].cpu().numpy().copy())
+        stream["arm_meas"].append(robot.data.joint_pos[e, arm_ids].cpu().numpy().copy())
+        stream["hand_meas"].append(robot.data.joint_pos[e, hand_ids].cpu().numpy().copy())
+        stream["cup_pos"].append(np.array([cup_z()], dtype=np.float32))
+        stream["cup_pos3"].append(cup_pos3())
+        if side == "r":
+            stream["goal"].append(base.goal_pos[e].cpu().numpy().copy())
+            stream["palm_targets"].append(base.palm_targets[e].cpu().numpy().copy())
+            stream["syn_target"].append(base._syn_target[e].cpu().numpy().copy())
+            stream["close_gate"].append(np.float32(base._close_gate[e].item()))
+            stream["latched"].append(np.float32(base._latched[e].item()))
+        else:
+            stream["goal"].append(
+                base.command_manager.get_command("object_pose")[e].cpu().numpy().copy())
+            term = base.action_manager.get_term("arm_action")
+            stream["palm_targets"].append(term.processed_actions[e].cpu().numpy().copy())
+
     with torch.inference_mode():
         for step in range(args.policy_steps):
+            obs_t = obs
             action = player.get_action(player.obs_to_torch(obs), is_deterministic=True)
             obs, _, dones, _ = wrapped.step(action)
             if isinstance(obs, dict):
@@ -360,12 +410,7 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
             stand_other()
             pin_other_cup()
             if args.save_stream is not None:
-                stream["arm_target"].append(
-                    robot.data.joint_pos_target[args.env_id, arm_ids].cpu().numpy().copy())
-                stream["hand_target"].append(
-                    robot.data.joint_pos_target[args.env_id, hand_ids].cpu().numpy().copy())
-                stream["cup_pos"].append(
-                    np.array([cup_z()], dtype=np.float32))
+                _rec(obs_t, action)
             if args.stop_on_lift > 0:
                 lifted_now = (cup_z() - z0) > args.stop_on_lift
                 streak[0] = streak[0] + 1 if lifted_now else 0
@@ -438,17 +483,19 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
 
     if args.save_stream is not None:
         args.save_stream.parent.mkdir(parents=True, exist_ok=True)
+        arrays = {k: np.stack(v) for k, v in stream.items() if k != "cup_pos" and v}
         np.savez_compressed(
             args.save_stream,
-            arm_target=np.stack(stream["arm_target"]),
-            hand_target=np.stack(stream["hand_target"]),
             cup_z=np.stack(stream["cup_pos"]),
+            **arrays,
+            meta_cup_spawn=cup_spawn,
             meta_arm_names=np.array(_ARM[side]),
             meta_hand_names=np.array(_HAND[side]),
             meta_step_dt=np.float32(dt),
             meta_checkpoint=str(args.checkpoint),
             meta_task=str(args.task))
-        print(f"[스트림] {len(stream['arm_target'])}프레임 → {args.save_stream}")
+        print(f"[스트림] {len(stream['arm_target'])}프레임 · 키 {sorted(arrays)} "
+              f"→ {args.save_stream}")
 
     if args.save_state is not None:
         args.save_state.parent.mkdir(parents=True, exist_ok=True)

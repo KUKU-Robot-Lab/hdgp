@@ -37,6 +37,15 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         #   `_setup_scene` 은 이미 늦다 — super() **전에** 재파생해야 한다.
         cfg.finalize_after_overrides()
         super().__init__(cfg, render_mode, **kwargs)
+        self._init_task_state()
+
+    def _init_task_state(self) -> None:
+        """씬 이후의 태스크 상태 부트스트랩 전부 — `__init__` 꼬리를 그대로 추출했다.
+
+        ★bimanual 폐루프 shim(`scripts/probes/bimanual_chain.py`)이 pour 씬 위에서
+          이 메서드를 그대로 불러 같은 사슬(인덱스·fabric·시너지·앵커·박스)을 세운다.
+          로직 복제를 금지하기 위한 추출이라, 여기가 바뀌면 shim 도 자동으로 따라간다.
+        """
         p = PROFILES[self.cfg.profile_name]
         self.profile = p
 
