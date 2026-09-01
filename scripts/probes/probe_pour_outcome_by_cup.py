@@ -135,8 +135,16 @@ def main(env_cfg, agent_cfg: dict):
     spec = spec.long()
     print(f"[CUP] env→컵 배정: {[names[i] for i in spec[:n_cup].tolist()]} … (반복)", flush=True)
 
-    acc = {k: torch.zeros(n_cup, device=raw.device) for k in ("bead", "spill", "mouth", "n")}
+    acc = {k: torch.zeros(n_cup, device=raw.device)
+           for k in ("bead", "spill", "mouth", "n",
+                     "c_hold", "c_done", "c_min", "f_done", "drift", "drift_max")}
     ep_done = torch.zeros(raw.num_envs, device=raw.device)
+    # ★"파지가 중간에 풀리는가" 를 재려면 done 시점 값만으로는 부족하다.
+    #   hold 직후(=복원된 파지)와 에피소드 내 **최저치**를 같이 본다.
+    hold_n = int(getattr(raw.cfg, "episode_hold_steps", 60))
+    ep_cmin = torch.full((raw.num_envs,), 5.0, device=raw.device)
+    ep_dmax = torch.zeros(raw.num_envs, device=raw.device)
+    ep_chold = torch.zeros(raw.num_envs, device=raw.device)
 
     for step in range(args_cli.max_steps):
         with torch.inference_mode():
@@ -145,6 +153,14 @@ def main(env_cfg, agent_cfg: dict):
             if agent.is_rnn and agent.states is not None and len(dones) > 0:
                 for h in agent.states:
                     h[:, dones, :] = 0.0
+        # 에피소드 내 추적 (비드 소환 전 hold 구간은 제외)
+        nc_now = raw.num_contacts_buf.float()
+        drift_now = raw._cup_rel_drift_deg
+        active = raw.episode_length_buf >= hold_n
+        ep_cmin = torch.where(active, torch.minimum(ep_cmin, nc_now), ep_cmin)
+        ep_dmax = torch.where(active, torch.maximum(ep_dmax, drift_now), ep_dmax)
+        ep_chold = torch.where(raw.episode_length_buf == hold_n, nc_now, ep_chold)
+
         d = dones.to(raw.device).bool().reshape(-1)
         if d.any():
             ids = d.nonzero(as_tuple=False).reshape(-1)
@@ -152,8 +168,17 @@ def main(env_cfg, agent_cfg: dict):
             acc["bead"].index_add_(0, s, raw._last_done_bead[ids])
             acc["spill"].index_add_(0, s, raw._last_done_spill[ids])
             acc["mouth"].index_add_(0, s, raw._last_done_mouth_xy[ids])
+            acc["c_hold"].index_add_(0, s, ep_chold[ids])
+            acc["c_done"].index_add_(0, s, nc_now[ids])
+            acc["c_min"].index_add_(0, s, ep_cmin[ids])
+            acc["f_done"].index_add_(0, s, raw.contact_force_raw[ids].mean(dim=-1))
+            acc["drift"].index_add_(0, s, drift_now[ids])
+            acc["drift_max"].index_add_(0, s, ep_dmax[ids])
             acc["n"].index_add_(0, s, torch.ones_like(s, dtype=torch.float))
             ep_done[ids] += 1
+            ep_cmin[ids] = 5.0
+            ep_dmax[ids] = 0.0
+            ep_chold[ids] = 0.0
         if step % 600 == 0:
             print(f"[CUP] step {step}/{args_cli.max_steps} · 에피소드 "
                   f"{int(ep_done.min())}~{int(ep_done.max())} / {args_cli.episodes}", flush=True)
@@ -163,17 +188,25 @@ def main(env_cfg, agent_cfg: dict):
     n = acc["n"].clamp(min=1.0)
     bead, spill, mouth = acc["bead"] / n, acc["spill"] / n, acc["mouth"] / n
     print(f"\n[CUP] 컵별 결과 (에피소드 {int(acc['n'].min())}~{int(acc['n'].max())}개씩)", flush=True)
-    print(f"  {'컵':16s}{'n':>5s}{'bead':>8s}{'spill':>8s}{'잔량':>8s}{'mouth_xy mm':>13s}")
+    print(f"  {'컵':16s}{'n':>5s}{'bead':>8s}{'spill':>8s}{'잔량':>7s}"
+          f"{'c_hold':>8s}{'c_min':>7s}{'c_done':>8s}{'f_done':>8s}{'drift°':>8s}{'d_max°':>8s}")
     order = sorted(range(n_cup), key=lambda i: -float(bead[i]))
     for i in order:
         rest = 1.0 - float(bead[i]) - float(spill[i])
         print(f"  {names[i]:16s}{int(acc['n'][i]):5d}{float(bead[i]):8.3f}"
-              f"{float(spill[i]):8.3f}{rest:8.3f}{float(mouth[i])*1e3:13.1f}")
+              f"{float(spill[i]):8.3f}{rest:7.3f}"
+              f"{float(acc['c_hold'][i]/n[i]):8.2f}{float(acc['c_min'][i]/n[i]):7.2f}"
+              f"{float(acc['c_done'][i]/n[i]):8.2f}{float(acc['f_done'][i]/n[i]):8.2f}"
+              f"{float(acc['drift'][i]/n[i]):8.1f}{float(acc['drift_max'][i]/n[i]):8.1f}")
     tot = acc["n"].sum().clamp(min=1.0)
     print(f"  {'전체':16s}{int(acc['n'].sum()):5d}"
-          f"{float((acc['bead'].sum()/tot)):8.3f}{float((acc['spill'].sum()/tot)):8.3f}"
-          f"{1.0-float(acc['bead'].sum()/tot)-float(acc['spill'].sum()/tot):8.3f}"
-          f"{float(acc['mouth'].sum()/tot)*1e3:13.1f}", flush=True)
+          f"{float(acc['bead'].sum()/tot):8.3f}{float(acc['spill'].sum()/tot):8.3f}"
+          f"{1.0-float(acc['bead'].sum()/tot)-float(acc['spill'].sum()/tot):7.3f}"
+          f"{float(acc['c_hold'].sum()/tot):8.2f}{float(acc['c_min'].sum()/tot):7.2f}"
+          f"{float(acc['c_done'].sum()/tot):8.2f}{float(acc['f_done'].sum()/tot):8.2f}"
+          f"{float(acc['drift'].sum()/tot):8.1f}{float(acc['drift_max'].sum()/tot):8.1f}", flush=True)
+    print(f"\n  c_hold=hold 종료 시 접촉 · c_min=에피소드 내 최저 · c_done=종료 시 · "
+          f"drift=컵 상대 회전(종료/최대)", flush=True)
 
     env.close()
 

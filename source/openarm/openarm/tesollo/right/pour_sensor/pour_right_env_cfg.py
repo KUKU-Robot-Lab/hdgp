@@ -712,10 +712,17 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         # ★뱅크를 바꾸면 **손 액추에이터 게인도 같이** 확인할 것 — warm 상태는 그것을
         #   만든 게인 아래서만 재현된다(09.01). d3 = grasp_s2r s2r_d3_liftonly_fresh_v2
         #   ep20000 (md5 485d8abf, k=5 · d=2 · effort 1.5 — 위 손 액추에이터와 일치).
-        #   n2048_maxgrip = 에피소드 **최대 접촉** 프레임만 골라 모은 판(09.01):
-        #   접촉 평균 3.05→4.22 · 5접촉 0→881 · 팁힘 0.53→1.79N. pour 은 붓는 동안
-        #   손가락을 freeze 하므로 뱅크의 파지 품질이 그대로 붓기 내내의 상한이 된다.
-        _os.path.normpath(_os.path.join(_HDGP_ROOT, "data", "grasp_warm_s2r_d3_n2048_maxgrip.hdf5")),
+        #   n2048_maxgrip = 에피소드 **최대 접촉** 프레임만 골라 모은 판. pour 은 붓는
+        #   동안 손가락을 freeze 하므로 뱅크의 파지 품질이 그대로 붓기 내내의 상한이 된다.
+        #   ★09.01 실측(d3 뱅크로 학습한 pour, 컵당 64~75 에피소드):
+        #     corr(bead_at_done, 뱅크 ≥4지 비율) = **+0.935** — 컵별 이송률을 파지가
+        #     거의 그대로 설명한다. 컵을 놓쳐서가 아니다(grasp_broken 0, 에피소드 중
+        #     접촉 낙폭도 약한 컵이 더 작다) — 처음부터 손가락이 덜 닿은 채로 끝까지 간다.
+        #   그래서 뱅크 교체가 pour 성능의 직접 지렛대다. e1 = e1_perc 최종
+        #   (md5 fc48c5cc, 손 게인 d3 와 동일 k=5/d=2/effort 1.5):
+        #     ≥4지 79.3%→94.0% · 5지 42%→55% · 엄지 접촉 46%→58% · 엄지 팁힘 0.26→1.33N
+        #     최약 컵 40%(s100)→81%(s090)
+        _os.path.normpath(_os.path.join(_HDGP_ROOT, "data", "grasp_warm_s2r_e1_n2048_maxgrip.hdf5")),
     )
     freeze_grasp_hand_during_episode: bool = True
     # 최상위 비드 z=0.063m (림 0.100에서 3.7cm 아래, 리셋 시 기울어진 컵에서 탈출 방지)
