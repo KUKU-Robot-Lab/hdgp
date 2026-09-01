@@ -231,6 +231,10 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._wrap_at_latch = torch.zeros(self.num_envs, device=self.device)
         self._disp_at_latch = torch.zeros(self.num_envs, device=self.device)
+        # ★래치 순간의 palm 프레임 물체 위치 `Rᵀ(obj−palm)`. `obs_object_rigid_after_latch`
+        #   가 이걸 굴려 "손에 가려 안 보이는 컵"을 추정한다. 위치만 있으면 충분하다 —
+        #   obs 의 물체 항 3개(palm_to_obj·obj_to_tips·goal_rel)가 전부 위치다.
+        self._obj_off_palm = torch.zeros(self.num_envs, 3, device=self.device)
 
         # 판정 버퍼 — `_get_dones` 가 먼저 돌고 `_get_rewards` 가 같은 스텝에 재사용한다.
         self._tilt_deg = torch.zeros(self.num_envs, device=self.device)
@@ -264,6 +268,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._adr_level = 0.0
         self._adr_succ = 0
         self._adr_epis = 0
+        self._assert_adr_monotonic()
         self._adr_apply()
 
         print(f"[grasp_s2r] profile={p.name} arm={len(self.arm_ids)} "
@@ -433,6 +438,77 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         _bn = float(cfgn.obs_noise_object)
         self._adr_obs_noise_object = _bn + lvl * (
             float(cfgn.adr_obs_noise_object_max) - _bn)
+        # ---- sim2real 축 (09.01) — 관절 상태 노이즈 ----------------------------------
+        _bq = float(cfgn.obs_noise_qpos)
+        self._adr_obs_noise_qpos = _bq + lvl * (
+            float(getattr(cfgn, "adr_obs_noise_qpos_max", _bq)) - _bq)
+        _bv = float(cfgn.obs_noise_qvel)
+        self._adr_obs_noise_qvel = _bv + lvl * (
+            float(getattr(cfgn, "adr_obs_noise_qvel_max", _bv)) - _bv)
+        self._adr_apply_physics(lvl)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _lerp_range(terminal, lvl: float) -> tuple[float, float]:
+        """(1,1) → terminal 을 level 로 선형 보간. 순수 함수 — 시뮬 없이 테스트한다.
+
+        이식 출처: `tesollo/right/grasp_v2/grasp_adr.py:118-135 _expand_physics_ranges`.
+        """
+        lo, hi = float(terminal[0]), float(terminal[1])
+        return (1.0 + lvl * (lo - 1.0), 1.0 + lvl * (hi - 1.0))
+
+    def _adr_apply_physics(self, lvl: float) -> None:
+        """물리 DR 범위를 level 로 넓힌다. 종점 (1,1) 이면 전부 항등이라 no-op.
+
+        ★★반드시 `self.event_manager` 를 고친다. `self.cfg.events` 는 ManagerBase 가
+          **deepcopy** 해 갔으므로 그쪽을 고치면 조용히 아무 일도 일어나지 않는다.
+
+        ★★마찰(`*_material`)은 **여기 없다**. `randomize_rigid_body_material` 은
+          `material_buckets` 를 term 인스턴스 생성 시 1회만 샘플링하고 `__call__` 은
+          그 고정 버킷에서 뽑기만 해서 런타임 확장이 **무증상 no-op** 이다(자매
+          `grasp_adr.py` 가 재질을 확장하지만 실제 물리는 안 바뀐다). 마찰은
+          `object_friction_range` 로 cfg 단계에서 고정 범위를 연다.
+        """
+        em = getattr(self, "event_manager", None)
+        if em is None:                      # enable_events=False 면 속성 자체가 없다
+            return
+        _m = self._lerp_range(
+            getattr(self.cfg, "adr_mass_scale_max", (1.0, 1.0)), lvl)
+        em.get_term_cfg("object_scale_mass").params[
+            "mass_distribution_params"] = _m
+        _g = self._lerp_range(
+            getattr(self.cfg, "adr_joint_gain_scale_max", (1.0, 1.0)), lvl)
+        _gt = em.get_term_cfg("robot_joint_stiffness_and_damping")
+        _gt.params["stiffness_distribution_params"] = _g
+        _gt.params["damping_distribution_params"] = _g
+        self._adr_mass_range = _m
+        self._adr_gain_range = _g
+
+    # ------------------------------------------------------------------
+    def _assert_adr_monotonic(self) -> None:
+        """ADR 축은 **base → max 로 단조 증가**여야 한다. 아니면 부팅에서 죽인다.
+
+        ★이 가드가 없어서 `adr_goal_z_max=0.08 < base 0.12` 가 조용히 살아 있었다 —
+          승급할수록 목표가 **낮아지는**(쉬워지는) 역방향 축이었다. 같은 함정을
+          obs 노이즈 축 주석이 이미 경고하고 있었는데도 z 축에서 재발했으므로,
+          주석이 아니라 코드로 막는다.
+        """
+        c = self.cfg
+        _bz = abs(float(c.goal_offset_xyz[2]))
+        for name, base, mx in (
+            ("goal_z", _bz, abs(float(c.adr_goal_z_max))),
+            ("obs_noise_object", float(c.obs_noise_object),
+             float(c.adr_obs_noise_object_max)),
+            ("obs_noise_qpos", float(c.obs_noise_qpos),
+             float(getattr(c, "adr_obs_noise_qpos_max", c.obs_noise_qpos))),
+            ("obs_noise_qvel", float(c.obs_noise_qvel),
+             float(getattr(c, "adr_obs_noise_qvel_max", c.obs_noise_qvel))),
+            ("spawn_range", float(c.spawn_range), float(c.adr_spawn_range_max)),
+        ):
+            if mx < base:
+                raise RuntimeError(
+                    f"[grasp_s2r][ADR] {name}: max({mx}) < base({base}) — "
+                    "승급할수록 쉬워지는 역방향 축이다. max 를 base 이상으로 올려라.")
 
     # ------------------------------------------------------------------
     def _assert_goal_reachable(self) -> None:
@@ -601,6 +677,31 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         err = self._syn_target - self.robot.data.joint_pos[:, self._syn_ids]
         return (err / float(self.cfg.joint_pos_err_max)).clamp(-1.0, 1.0)
 
+    def _perceived_object(self, obj_pos: torch.Tensor, palm_pos: torch.Tensor,
+                          R: torch.Tensor) -> torch.Tensor:
+        """정책이 **믿는** 물체 위치 (N,3). obs 전용 — 보상·판정·critic 은 참값이다.
+
+        두 노브가 각각 독립적으로 실기 정합을 올린다.
+
+        ①`obs_object_rigid_after_latch` — 래치 뒤엔 손이 컵을 가려 비전이 잃는다.
+          래치 순간의 palm 상대위치를 현재 palm 자세로 굴려 "잡았으니 손과 같이
+          움직인다"를 추정한다. 컵이 손안에서 미끄러져도 정책은 모른다 —
+          실기와 동일하게 **접촉력으로만** 알 수 있다.
+
+        ②`obs_object_noise_coherent` — 노이즈를 **한 번만** 뽑는다. 세 항이 같은
+          추정값을 쓰므로 평균으로 노이즈를 상쇄하는 우회가 막힌다. 항등 경로에서는
+          각 항이 따로 뽑으므로(구 동작) 이 함수의 반환값을 쓰지 않는다.
+        """
+        obj_est = obj_pos
+        if bool(getattr(self.cfg, "obs_object_rigid_after_latch", False)):
+            _rigid = palm_pos + torch.einsum("nij,nj->ni", R, self._obj_off_palm)
+            obj_est = torch.where(self._latched.unsqueeze(1), _rigid, obj_pos)
+            # ★강체 가정의 오차 = 실제 미끄러짐. 이 값이 크면 obs 가 거짓말을 하는 중이다.
+            self.extras["perc/obj_est_err"] = float(
+                (obj_est - obj_pos).norm(dim=-1).mean())
+        return obj_est + torch.randn_like(obj_est) * self._adr_obs_noise_object
+
+    # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
         q = self.robot.data.joint_pos
         qd = self.robot.data.joint_vel
@@ -627,18 +728,34 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         joint_err = self._joint_pos_err()
         goal_rel = self.goal_pos - obj_pos
 
+        # ★★지각 모델 — 물체 파생 obs 를 **하나의 추정값**에서 뽑는다(기본은 항등).
+        #   구 경로는 `goal_rel` 에만 노이즈가 없어 `obj = goal_pos − goal_rel` 로
+        #   참값이 복원됐다(goal_pos 는 에피소드 상수) — `obs_noise_object` 축이
+        #   사실상 무효였던 원인이다. 여기서 세 항을 같은 값으로 묶어 막는다.
+        if bool(getattr(cfgn, "obs_object_noise_coherent", False)):
+            _obj_obs = self._perceived_object(obj_pos, palm_pos, _R)
+            _n_palm_to_obj = _obj_obs - palm_pos
+            _n_obj_to_tips = (tips_w - self.scene.env_origins[:, None, :]
+                              - _obj_obs.unsqueeze(1)).reshape(n, -1)
+            _n_goal_rel = self.goal_pos - _obj_obs
+        else:
+            _n_palm_to_obj = (palm_to_obj
+                              + torch.randn_like(palm_to_obj) * self._adr_obs_noise_object)
+            _n_obj_to_tips = (obj_to_tips
+                              + torch.randn_like(obj_to_tips) * self._adr_obs_noise_object)
+            _n_goal_rel = goal_rel
+
         # actor 에만 노이즈 — critic 은 clean state 를 받는다.
         _noisy = torch.cat([
-            arm_q + torch.randn_like(arm_q) * cfgn.obs_noise_qpos,
-            arm_qd + torch.randn_like(arm_qd) * cfgn.obs_noise_qvel,
-            hand_q + torch.randn_like(hand_q) * cfgn.obs_noise_qpos,
-            hand_qd + torch.randn_like(hand_qd) * cfgn.obs_noise_qvel,
+            arm_q + torch.randn_like(arm_q) * self._adr_obs_noise_qpos,
+            arm_qd + torch.randn_like(arm_qd) * self._adr_obs_noise_qvel,
+            hand_q + torch.randn_like(hand_q) * self._adr_obs_noise_qpos,
+            hand_qd + torch.randn_like(hand_qd) * self._adr_obs_noise_qvel,
             palm_pos + torch.randn_like(palm_pos) * cfgn.obs_noise_body,
             palm_ax,
             tips_rel_palm + torch.randn_like(tips_rel_palm) * cfgn.obs_noise_body,
-            palm_to_obj + torch.randn_like(palm_to_obj) * self._adr_obs_noise_object,
-            obj_to_tips + torch.randn_like(obj_to_tips) * self._adr_obs_noise_object,
-            tip_force, joint_err, self.actions, goal_rel,
+            _n_palm_to_obj, _n_obj_to_tips,
+            tip_force, joint_err, self.actions, _n_goal_rel,
         ], dim=1)
 
         clean = torch.cat([
@@ -767,6 +884,14 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                         torch.zeros_like(self._hold_count)))
         _just = (~self._latched) & (self._hold_count >= int(cfgn.grasp_ready_hold_steps))
         self._latched = self._latched | _just
+        # ★래치 순간의 palm 상대 물체위치를 스냅샷 — 지각 모델(강체 부착)의 기준.
+        #   `_cage_offset_palm` 과 같은 규약이다(Rᵀ(x−palm)). 여기서 뜨는 이유는
+        #   `_get_rewards` 가 `_get_observations` **앞**에 돌아 같은 스텝의 래치가
+        #   즉시 obs 에 반영되기 때문이다(DirectRLEnv: dones→rewards→reset→obs).
+        _R_latch = self._palm_ee_R()
+        _off_latch = torch.einsum("nji,nj->ni", _R_latch, obj_pos - palm_pos)
+        self._obj_off_palm = torch.where(
+            _just.unsqueeze(1), _off_latch, self._obj_off_palm)
 
         # ---- 기하 --------------------------------------------------------------------
         grasp_center = obj_pos.clone()
@@ -1402,6 +1527,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                     self._hold_count[_go] = 0
                     self._wrap_at_latch[_go] = 0.0
                     self._disp_at_latch[_go] = 0.0
+                    self._obj_off_palm[_go] = 0.0
                     self._stay_run[_go] = 0
             else:
                 self.extras["done/respawn_rate"] = torch.zeros(
@@ -1461,6 +1587,8 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.prev_actions[env_ids] = 0.0
         self._latched[env_ids] = False
         self._hold_count[env_ids] = 0
+        # ★래치 스냅샷은 래치 상태와 **항상 짝지어** 지운다(계약 테스트가 잠근다).
+        self._obj_off_palm[env_ids] = 0.0
         # ---- ADR 승급 판정 — 종료 에피소드의 success 집계(전역 level·단조 상승) -----
         #   ★`_success_now` 를 0 으로 되돌리기 **전에** 읽어야 한다.
         if bool(self.cfg.enable_adr):
@@ -1473,11 +1601,17 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                     self._adr_level = min(
                         1.0, self._adr_level + float(self.cfg.adr_step))
                     self._adr_apply()
+                    _mr = getattr(self, "_adr_mass_range", (1.0, 1.0))
+                    _gr = getattr(self, "_adr_gain_range", (1.0, 1.0))
                     print(f"[grasp_s2r][ADR] 승급 level={self._adr_level:.2f} "
                           f"(창 성공률 {_rate:.3f} · spawn_range "
                           f"{self._adr_spawn_range:.3f} · goal_y "
                           f"{float(self._adr_goal_offset[1]):.3f} · obs_noise "
-                          f"{self._adr_obs_noise_object:.4f})", flush=True)
+                          f"{self._adr_obs_noise_object:.4f} · qpos "
+                          f"{self._adr_obs_noise_qpos:.4f} · qvel "
+                          f"{self._adr_obs_noise_qvel:.3f} · mass "
+                          f"[{_mr[0]:.2f},{_mr[1]:.2f}] · gain "
+                          f"[{_gr[0]:.2f},{_gr[1]:.2f}])", flush=True)
                 self._adr_succ = 0
                 self._adr_epis = 0
         self.extras["adr/level"] = self._adr_level
@@ -1490,6 +1624,15 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["adr/goal_y_sampled_mean"] = self._goal_off_env[:, 1].abs().mean()
         self.extras["adr/goal_dist_mean"] = self._goal_off_env.norm(dim=1).mean()
         self.extras["adr/obs_noise_object"] = self._adr_obs_noise_object
+        # ---- sim2real 축 (09.01) — 종점이 base 면 전부 상수라 판독 비용만 든다 --------
+        self.extras["adr/obs_noise_qpos"] = self._adr_obs_noise_qpos
+        self.extras["adr/obs_noise_qvel"] = self._adr_obs_noise_qvel
+        _mr = getattr(self, "_adr_mass_range", (1.0, 1.0))
+        self.extras["adr/mass_lo"] = _mr[0]
+        self.extras["adr/mass_hi"] = _mr[1]
+        _gr = getattr(self, "_adr_gain_range", (1.0, 1.0))
+        self.extras["adr/gain_lo"] = _gr[0]
+        self.extras["adr/gain_hi"] = _gr[1]
 
         # ---- 종별 success/latched EMA — 집계가 가리는 종별 실패를 드러낸다 ----------
         #   ★무동기 집계(index_add) — per-step 리셋 경로라 .any()/.item() 루프 금지

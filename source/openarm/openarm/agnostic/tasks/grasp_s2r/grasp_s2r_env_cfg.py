@@ -115,6 +115,28 @@ def _build_robot_cfg(profile: RobotProfile,
             usd_path=_os.path.join(_ASSETS_DIR, profile.usd_relpath),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                # ★★09.01 확정: **켜지 않는다.** 실기는 중력보상을 켠 채로 운용하므로
+                #   PD 가 보는 것은 중력이 상쇄된 잔차뿐이고, `disable_gravity=True` 가
+                #   바로 그 상태다. 여기서 중력을 켜면 **중력을 두 번 세는 것**이 된다.
+                #   실기 실측(08.31 우팔): 무보상 처짐 12.76° → 중력보상 후 **2.05°**.
+                #
+                #   ★09.01 sim probe 실측 (`probe_s2r_gravity_droop.py`, 손목 최대
+                #     지령↔실제 오차 [deg], 4 env · 300 스텝 정착):
+                #         게인      중력 OFF   중력 ON   중력 기여분
+                #         KUKA        1.889     4.791     +2.90
+                #         r2s 정합    1.162     5.668     **+4.51**
+                #     ⚠OFF 의 1~2° 는 처짐이 아니라 **fabric 정상상태 추종 오차**다
+                #       (무부하). 중력 성분은 두 열의 **차분**으로 읽는다.
+                #     ⚠실기 12.76°/2.05° 와 직접 비교하면 안 된다 — 저쪽은 정적 유지
+                #       측정이고 이쪽은 제어 루프가 능동적으로 버티는 중의 오차다.
+                #
+                #   판정: 중력을 켜면 실기(보상 ON, 잔차 2.05°)에 **없는** 2.9~4.5° 오차가
+                #   더해진다. 정합 게인에서 그 폭이 1.6배로 커지는 것도 확인됐다 —
+                #   그 게인 자체가 **중력보상을 전제로 동정된 값**이기 때문이다
+                #   (r2s collect 가 `gravity_comp_node.py` 를 필수로 요구하는 이유).
+                #   남는 실제 격차는 보상 잔차 2.05° 뿐이고, 그건 중력이 아니라 관절
+                #   바이어스로 넣을 문제다(현재는 안 넣는다 — obs qpos 노이즈 0.01 rad
+                #   이 실측의 10배라 그 안에 묻힌다).
                 disable_gravity=True,
                 retain_accelerations=True,
                 linear_damping=0.0,
@@ -215,6 +237,20 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     use_hand_repulsion: bool = False
     use_body_repulsion_pairs: bool = True
     enable_self_collisions: bool = False  # ★D3 기본 (09.01 승격)
+
+    # ---- 실기 정합 액추에이터 게인 (r2s 파이프라인 산출) ------------------------------
+    # ★★재생 무결성 필드다. 실제 게인 선택은 `robot_profiles.py` 가 **import 시점**에
+    #   `HDGP_S2R_REAL_GAINS` 환경변수로 하는데, 환경변수는 `params/env.yaml` dump 에
+    #   **안 남는다**. 그래서 이 게인으로 학습한 체크포인트를 나중에 환경변수 없이
+    #   재생하면 조용히 KUKA 게인으로 돌아간다 — m1_final 이 죽은 것과 같은 계열
+    #   (차원은 맞는데 의미가 다른 실패)이다.
+    #   이 필드는 **의도를 dump 에 남기고**, `finalize_after_overrides` 가 실제 프로필과
+    #   대조해 어긋나면 부팅에서 죽인다. 조용히 틀리는 대신 크게 실패한다.
+    #   기본값은 환경변수를 따르므로 기존 워크플로(`HDGP_S2R_REAL_GAINS=1 python train.py`)가
+    #   그대로 동작하고, dump 에는 해석된 bool 이 기록된다.
+    #   실측 근거: `sim2real/docs/R2S_FRAMEWORK.md` — 오버슈트 재현 오차 0.429 → 0.084.
+    #   ⚠이 게인은 **중력보상 전제**다(위 `disable_gravity=True` 주석 참조).
+    use_real_gains: bool = _os.environ.get("HDGP_S2R_REAL_GAINS") == "1"
 
     # ---- 액션: palm 6D **홈 기준 델타** + 손 시너지 ----------------------------------
     # ★★grasp_v1 규약. `palm = 홈 + scale(a, −delta, +delta)` 이므로 **a=0 이 홈**이다.
@@ -553,10 +589,35 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     abnormal_penalty: float = -1.0
 
     # ---- 관측 노이즈 (actor 전용 — critic 은 clean) ----------------------------------
+    # ★★09.01 실기 rosbag 실측 (sim2real/logs 의 6개 bag · /joint_states):
+    #     팔 position 양자화 3.815e-4 rad(=100/2^18) · velocity 양자화 4.9e-3~2.2e-2 rad/s
+    #     정지 구간 σ: pos 2e-4 rad · vel 4e-3 rad/s
+    #     운동 구간 σ(0.2s 이동평균 하이패스, 6 bag 중앙값): **pos 9e-4 · vel 4.5e-2**
+    #     손(dg5f) pos 양자화 1.745e-3 rad(0.1°) · 정지 σ 1e-3 rad
+    #   ⇒ `obs_noise_qvel` 0.05 는 운동 구간 실측과 거의 일치한다(우연이지만 맞다).
+    #   ⇒ ★`obs_noise_qpos` 0.01 은 **실측의 10배**다(0.01 rad = 0.57° = 26 LSB).
+    #     정밀 파지 트랙에서 매 관절에 실기의 10배 잡음을 넣고 있었다는 뜻이라
+    #     실측값 0.001 로 낮추는 것이 옳지만, **D3 기본값 정합을 위해 지금은 두고**
+    #     E 라운드에서 단일변수로 검증한 뒤 승격한다(노이즈는 줄이는 방향이라
+    #     성능은 오르면 올랐지 떨어지지 않는다).
     obs_noise_qpos: float = 0.01
     obs_noise_qvel: float = 0.05
     obs_noise_body: float = 0.005
     obs_noise_object: float = 0.015
+
+    # ---- 지각 모델 (09.01 신설 — 둘 다 기본 False = 현행 항등) ------------------------
+    # ★★실기에서는 손이 컵을 감싼 순간 비전이 컵을 잃는다. 그런데 지금 actor obs 는
+    #   래치 뒤에도 시뮬 **참값** 물체 pose 를 받는다 — 정책이 실기에 없는 정보에
+    #   의존하도록 학습되고 있다. True 면 래치 순간의 palm 상대위치를 스냅샷해
+    #   이후엔 현재 palm 자세로 굴린 값을 준다(= "잡았으니 손과 같이 움직인다" 추정).
+    #   컵이 손안에서 미끄러져도 정책은 모른다 — 실기와 동일하게 접촉력으로만 안다.
+    obs_object_rigid_after_latch: bool = False
+    # ★★누수 차단. `goal_rel = goal_pos − obj_pos` 인데 `goal_pos` 는 에피소드 상수라
+    #   `obj_pos = goal_pos − goal_rel` 로 **참값이 그대로 복원된다**. 즉 지금까지
+    #   `obs_noise_object` 를 아무리 키워도 정책은 깨끗한 물체 위치를 볼 수 있었고,
+    #   그 축은 사실상 무효였다. True 면 노이즈를 **한 번만** 뽑아 palm_to_obj ·
+    #   obj_to_tips · goal_rel 세 항에 **같은 추정값**을 실어 우회를 막는다.
+    obs_object_noise_coherent: bool = False
 
     # ---- finger_closure (08.29 신설·기본 0 = 항등) -----------------------------------
     # 접촉 전 손가락별 연속 신호 — (1−접촉)·exp(−k·‖tip−파지중심‖) 평균 × close_gate.
@@ -583,7 +644,12 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   ★최대치는 부팅 검증(`_assert_goal_reachable`)이 **비확장 프로필 박스**로
     #   잰다 — 도달영역(y 폭 실측 ~0.32m)이 물리 한계라 스폰+이송 합이 그 안이어야 한다.
     adr_spawn_range_max: float = 0.05        # 축① level=1 의 스폰 xy 반범위
-    adr_goal_y_max: float = 0.12             # 축③ level=1 의 이송 y 오프셋(부호는 base 따름)
+    # ★★09.01 이송 축 무력화(사용자 확정: "목표 이송 부분은 일단 빼도 됨 — IK 로 풀어도 됨").
+    #   ADR 의 성격을 **과제 난이도**에서 **sim2real 랜덤화**로 바꿨다. y/z/x 세 축 전부
+    #   base 와 같은 값을 넣어 폭 0 으로 만든다. **필드를 지우지 않는 이유**는 아카이브된
+    #   런 118개의 `params/env.yaml` dump 정합 때문이다(`run_cfg_restore` 는 미지 키를
+    #   조용히 건너뛰므로 삭제해도 안 죽지만, 남겨 두는 편이 재생 이력에 정직하다).
+    adr_goal_y_max: float = 0.0              # = |base y| → 폭 0 (구 0.12 = 이송 축)
     # ---- 목표 3축 샘플링 (08.30 — 단조 상승의 망각·단일 방향 한계 처방) -------------
     # ★★실측 근거: m1_final 성공률 지도(1024 ep/칸)에서 이송 y **0.12 → 0.94~0.98**,
     #   0.085 → 0.84~0.86, **0.05 → 0.000**. 난이도를 단조로 올리기만 하면 정책이
@@ -592,10 +658,37 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   x 는 ±범위(방향 다양성), z 는 [base, max] 구간.
     adr_goal_sample: bool = False            # False = 현행(레벨 값 고정)
     adr_goal_x_max: float = 0.0              # level=1 의 x 반범위(0 = 축 끔)
-    adr_goal_z_max: float = 0.08             # level=1 의 z 상한(= base 면 축 끔)
+    # ★★09.01 역방향 버그 수정. 구 0.08 은 base z(=goal_offset_xyz[2]=0.12)보다 **작아**
+    #   `_z_eff = 0.12 + lvl·(0.08−0.12)` 가 되어 **승급할수록 목표가 낮아졌다**(level 1
+    #   에서 −4cm). 아래 obs 노이즈 주석이 경고하던 바로 그 함정이 z 축에도 있었다.
+    #   base 와 같은 값으로 맞춰 폭 0 + 버그 동시 제거. 재발은 `_assert_adr_monotonic`
+    #   부팅 가드가 막는다.
+    adr_goal_z_max: float = 0.12             # = base z → 폭 0 (구 0.08 = 역방향)
     # ★base(obs_noise_object=0.015)보다 커야 한다 — 작으면 보간이 거꾸로 가서
     #   승급할수록 노이즈가 **줄어든다**(V1 스모크 실측 0.0145→0.0125 로 잡음).
     adr_obs_noise_object_max: float = 0.03   # 축① level=1 의 물체 pose obs 노이즈
+
+    # ---- sim2real 랜덤화 축 (09.01 신설 — 전부 기본 = base = 항등) --------------------
+    # ★관절 상태 노이즈. 실측 근거는 `obs_noise_qpos` 블록 참조.
+    #   승격 목표: qpos 0.003(실측 최악 2.5e-3 의 1.2배) · qvel 0.12(실측 최악 1.05e-1).
+    adr_obs_noise_qpos_max: float = 0.01     # = base → 폭 0
+    adr_obs_noise_qvel_max: float = 0.05     # = base → 폭 0
+    # ★물체 질량 배율. 승격 목표 (0.5, 2.0) — 붓기 과제로 가면 내용물이 질량으로 온다
+    #   (빈 컵 ↔ 물 찬 컵). 런타임 확장 가능(`__call__` 인자로 매 reset 읽는다).
+    adr_mass_scale_max: tuple[float, float] = (1.0, 1.0)
+    # ★관절 PD 게인 배율. 승격 목표 (0.8, 1.2).
+    #   실효성 확인: `grasp_s2r_control.py` 는 `set_joint_position_target` 으로 **목표만**
+    #   쓰고 토크는 articulation 의 ImplicitActuator PD 가 만든다 → 게인 DR 이 그대로 실린다.
+    #   ⚠하한 0.8 은 손 파지력도 20% 깎는다. 손 PD 는 이미 토크 포화 21% 라
+    #     파지가 무너지면 하한을 0.9 로 좁힌다(스모크로 판정).
+    adr_joint_gain_scale_max: tuple[float, float] = (1.0, 1.0)
+    # ★★마찰은 **ADR 축이 될 수 없다**. `randomize_rigid_body_material` 은
+    #   `material_buckets` 를 term 인스턴스 생성 시 **1회만** 샘플링하고(PhysX 재질
+    #   64,000개 상한) `__call__` 은 그 고정 버킷에서 뽑기만 한다 — 런타임에 범위를
+    #   바꿔도 **무증상 no-op** 이다(자매 `grasp_v2/grasp_adr.py` 가 재질을 확장하지만
+    #   실제로는 아무 일도 안 일어난다). 그래서 여기만 **cfg 고정 범위**로 연다.
+    #   절대값이지 배율이 아니다. 승격 목표 (0.5, 1.5).
+    object_friction_range: tuple[float, float] = (1.0, 1.0)
 
     # ---- 디버그 시각화 (GUI/카메라 렌더일 때만 — headless 학습에 비용 0) --------------
     enable_cmd_markers: bool = True
@@ -660,6 +753,33 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
 
     robot_cfg: ArticulationCfg = None  # __post_init__ 에서 프로필로 조립
 
+    def _assert_gain_branch(self, profile) -> None:
+        """`use_real_gains` 의도와 **실제로 조립된 게인**이 일치하는지 부팅에서 대조.
+
+        ★게인 선택은 `robot_profiles.py` 가 import 시점에 환경변수로 하므로 cfg
+          오버라이드로는 못 바꾼다. 그래서 여기서 할 수 있는 일은 "조용히 다른 게인으로
+          도는" 것을 막는 것뿐이다 — 어긋나면 **어떻게 고치는지까지** 알려주고 죽인다.
+
+        재생 시나리오: dump 가 `use_real_gains: true` 를 복원했는데 환경변수를 안 켜면
+        여기서 걸린다. 이게 없으면 4배 단단한 KUKA 게인으로 조용히 재생돼
+        "정책이 이상하다"는 오진으로 이어진다(m1_final 계열의 실패).
+        """
+        _specs = set(profile.actuator_specs)
+        _kuka = "right_arm_proximal" in _specs
+        _real = "right_arm_j1" in _specs
+        if not (_kuka or _real):
+            return                      # 게인 분기가 없는 프로필(gripper_left 등)
+        if bool(self.use_real_gains) != _real:
+            _want = "실측 정합(r2s)" if self.use_real_gains else "KUKA 기본"
+            _got = "실측 정합(r2s)" if _real else "KUKA 기본"
+            raise RuntimeError(
+                f"[grasp_s2r] 게인 분기 불일치 — cfg 는 {_want} 을 요구하는데 "
+                f"프로필은 {_got} 으로 조립됐다.\n"
+                "  환경변수로 맞춰라: "
+                f"HDGP_S2R_REAL_GAINS={'1' if self.use_real_gains else '0'} "
+                "(robot_profiles.py 가 **import 시점**에 읽는다)\n"
+                "  ★재생이라면 dump 의 use_real_gains 가 진실이다.")
+
     def finalize_after_overrides(self) -> None:
         """cfg 필드에서 **파생되는 구조**를 다시 만든다. 멱등이어야 한다.
 
@@ -680,8 +800,18 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
         #   재구축이 여기 있어야 한다.
         self.robot_cfg = _build_robot_cfg(
             profile, bool(self.enable_self_collisions))
+        self._assert_gain_branch(profile)
         if not bool(self.enable_events):
             self.events = None
+        else:
+            # ★마찰은 **여기서만** 열 수 있다 — ManagerBase 가 cfg 를 deepcopy 하므로
+            #   런타임(`env.cfg.events`) 수정은 무효고, 재질 버킷은 term 인스턴스
+            #   생성 시 1회 샘플링이라 `event_manager` 를 고쳐도 no-op 다. 즉
+            #   **cfg 단계(= deepcopy 이전)가 유일한 유효 지점**이다.
+            #   기본 (1.0, 1.0) 이면 구 동작과 동일한 상수 재질이다.
+            _fr = tuple(float(v) for v in self.object_friction_range)
+            self.events.object_material.params["static_friction_range"] = _fr
+            self.events.object_material.params["dynamic_friction_range"] = _fr
         self._apply_object_bank()
         # 스폰 높이는 여기 한 곳에서만 파생한다(이중 패딩 사고 차단).
         # ★다물체면 이 값은 **뱅크 최댓값**이다 — env 별 실제 높이는 런타임에서 준다

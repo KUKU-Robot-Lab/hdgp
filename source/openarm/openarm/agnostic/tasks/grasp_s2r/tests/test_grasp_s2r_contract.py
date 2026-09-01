@@ -1304,3 +1304,235 @@ def test_d3_default_set_is_intact():
     assert not missing, "D3 기본값이 어긋났다:\n  " + "\n  ".join(missing)
     # ADR 은 D3 에서도 꺼져 있었다 — 승격 대상이 아니라 **원래 기본**이다.
     assert "enable_adr: bool = False" in cfg
+
+
+# ======================================================================
+# 09.01 — ADR 재설계: 과제 난이도 → sim2real 랜덤화
+# ======================================================================
+
+def _fn_block(src: str, name: str) -> str:
+    """`def name(...)` 부터 다음 `def ` 전까지. 함수 단위 계약 검사용."""
+    i = src.index(f"def {name}(")
+    j = src.find("\n    def ", i + 1)
+    return src[i:j if j > 0 else len(src)]
+
+
+def test_object_perception_defaults_are_identity():
+    """★09.01 신설 — 지각 모델 두 노브는 **기본 False = 현행 항등**이다.
+
+    D3(`544c88b` 기본값)로 학습된 체크포인트가 그대로 재생돼야 하고, 아카이브된
+    118런의 dump 복원도 같은 obs 를 봐야 한다. 켜는 것은 CLI 로만.
+    """
+    cfg = _code(_CFG)
+    assert "obs_object_rigid_after_latch: bool = False" in cfg
+    assert "obs_object_noise_coherent: bool = False" in cfg
+
+
+def test_goal_rel_is_not_a_clean_object_channel():
+    """★★09.01 누수 회귀 방지 — `goal_rel` 은 물체 위치의 **깨끗한 우회로**였다.
+
+    `goal_rel = goal_pos − obj_pos` 이고 `goal_pos` 는 에피소드 상수라
+    `obj_pos = goal_pos − goal_rel` 로 참값이 그대로 복원된다. 그래서
+    `palm_to_obj`·`obj_to_tips` 에 노이즈를 아무리 키워도 **`obs_noise_object`
+    축 자체가 무효**였다(켠 적은 없지만 켰어도 안 먹었다).
+
+    계약: coherent 모드에서 세 항이 **하나의** 추정값 `_obj_obs` 에서 나온다.
+    그래야 `goal_rel + palm_to_obj = goal_pos − palm_pos` 로만 소거되고 그 식엔
+    물체 정보가 없다.
+    """
+    env = _code(_ENV)
+    blk = _fn_block(env, "_get_observations")
+    assert 'obs_object_noise_coherent", False)' in blk, "coherent 분기가 없다"
+    i = blk.index("_obj_obs = self._perceived_object")
+    tail = blk[i:i + 700]
+    assert "_n_palm_to_obj = _obj_obs - palm_pos" in tail
+    assert "- _obj_obs.unsqueeze(1)" in tail, "obj_to_tips 가 추정값을 안 쓴다"
+    assert "_n_goal_rel = self.goal_pos - _obj_obs" in tail, \
+        "goal_rel 이 여전히 참값 기반이다 — 누수가 살아 있다"
+    # 항등 경로(else)는 구 동작 그대로여야 한다.
+    assert "_n_goal_rel = goal_rel" in blk, "기본 경로가 바뀌었다"
+
+
+def test_perceived_object_is_rigid_attached_after_latch():
+    """★09.01 — 래치 뒤 물체 obs 는 **palm 강체 부착 추정**이다.
+
+    실기에서는 손이 컵을 감싼 순간 비전이 컵을 잃는다. 참값을 계속 주면 정책이
+    실기에 없는 정보에 의존한다. 컵이 손안에서 미끄러져도 정책은 몰라야 하고,
+    그게 실기와 같은 조건이다(접촉력으로만 안다).
+    """
+    env = _code(_ENV)
+    blk = _fn_block(env, "_perceived_object")
+    assert 'obs_object_rigid_after_latch", False)' in blk, "플래그 분기가 없다"
+    assert "palm_pos + torch.einsum(\"nij,nj->ni\", R, self._obj_off_palm)" in blk, \
+        "현재 palm 자세로 스냅샷을 굴리지 않는다"
+    assert "torch.where(self._latched.unsqueeze(1)" in blk, "래치 게이트가 없다"
+    assert "perc/obj_est_err" in blk, "강체가정 오차(=실제 미끄러짐) 로깅이 없다"
+    # 노이즈는 이 함수에서 **한 번만** 뽑는다.
+    assert blk.count("self._adr_obs_noise_object") == 1, \
+        "추정값에 노이즈가 두 번 이상 실린다"
+
+
+def test_latch_snapshot_is_palm_frame_and_cleared_on_both_resets():
+    """★09.01 — 스냅샷은 palm 프레임 `Rᵀ(obj−palm)` 이고, 리셋 **두 경로 모두**에서
+    지워야 한다. 재소환 경로를 빠뜨리면 컵이 새 자리로 갔는데 옛 오프셋이 남아
+    obs 가 조용히 틀린다(`_disp_at_latch` 가 이미 같은 규율을 따른다).
+    """
+    env = _code(_ENV)
+    assert 'torch.einsum("nji,nj->ni", _R_latch, obj_pos - palm_pos)' in env, \
+        "스냅샷이 palm 프레임 역변환이 아니다"
+    assert "_just.unsqueeze(1), _off_latch, self._obj_off_palm" in env, \
+        "래치 순간(_just)에만 기록하지 않는다"
+    assert "self._obj_off_palm[_go] = 0.0" in env, "재소환 경로 초기화 누락"
+    assert "self._obj_off_palm[env_ids] = 0.0" in env, "_reset_idx 초기화 누락"
+
+
+def test_adr_sim2real_axes_default_to_identity():
+    """★09.01 — 신규 sim2real 축은 전부 base 와 같은 값 = 폭 0 = 항등이다."""
+    cfg = _code(_CFG)
+    for line in (
+        "adr_obs_noise_qpos_max: float = 0.01",   # = obs_noise_qpos
+        "adr_obs_noise_qvel_max: float = 0.05",   # = obs_noise_qvel
+        "adr_mass_scale_max: tuple[float, float] = (1.0, 1.0)",
+        "adr_joint_gain_scale_max: tuple[float, float] = (1.0, 1.0)",
+        "object_friction_range: tuple[float, float] = (1.0, 1.0)",
+    ):
+        assert line in cfg, f"항등 기본값이 아니다: {line}"
+    # 관절 노이즈가 실제로 ADR 실효값을 타는지(cfg 상수 직독이면 축이 죽은 것)
+    env = _code(_ENV)
+    blk = _fn_block(env, "_get_observations")
+    assert "self._adr_obs_noise_qpos" in blk and "self._adr_obs_noise_qvel" in blk, \
+        "관절 노이즈가 ADR 실효값을 안 쓴다"
+    assert "cfgn.obs_noise_qpos" not in blk, "cfg 상수를 직독해 축이 무효다"
+
+
+def test_goal_transfer_axes_are_neutralized():
+    """★09.01 사용자 확정 — 이송은 IK 로 푼다. ADR 의 목표 축 셋을 폭 0 으로 만든다.
+
+    ★필드를 **지우지 않는다** — 아카이브된 118런의 `params/env.yaml` dump 정합.
+    동시에 구 `adr_goal_z_max=0.08` 은 base z(0.12)보다 작아 **승급할수록 목표가
+    낮아지는** 역방향 축이었다. base 로 맞춰 폭 0 과 버그를 함께 없앤다.
+    """
+    cfg = _code(_CFG)
+    assert "adr_goal_y_max: float = 0.0" in cfg
+    assert "adr_goal_z_max: float = 0.12" in cfg, "base z(0.12)와 달라 폭이 남는다"
+    assert "adr_goal_x_max: float = 0.0" in cfg
+    assert "adr_goal_sample: bool = False" in cfg
+
+
+def test_adr_axes_never_invert_guard():
+    """★09.01 — `max < base` 를 **부팅에서** 죽인다.
+
+    구 `adr_goal_z_max=0.08 < base 0.12` 가 조용히 살아 있었다. obs 노이즈 축
+    주석이 같은 함정을 이미 경고했는데도 z 축에서 재발했으므로 주석이 아니라
+    코드로 막는다.
+    """
+    env = _code(_ENV)
+    blk = _fn_block(env, "_assert_adr_monotonic")
+    assert "if mx < base:" in blk and "raise RuntimeError" in blk
+    for axis in ("goal_z", "obs_noise_object", "obs_noise_qpos",
+                 "obs_noise_qvel", "spawn_range"):
+        assert f'"{axis}"' in blk, f"{axis} 축이 가드에서 빠졌다"
+    assert "self._assert_adr_monotonic()" in env, "부팅에서 안 부른다"
+
+
+def test_adr_physics_writes_event_manager_not_cfg():
+    """★★09.01 — 물리 DR 확장은 `event_manager` 를 고쳐야 한다.
+
+    ManagerBase 가 cfg 를 **deepcopy** 하므로 `self.cfg.events` 를 고치면 조용히
+    아무 일도 일어나지 않는다. 그리고 `enable_events=False` 면 속성 자체가 없다.
+    """
+    env = _code(_ENV)
+    blk = _fn_block(env, "_adr_apply_physics")
+    assert 'getattr(self, "event_manager", None)' in blk, "guard 없이 접근한다"
+    assert "if em is None:" in blk, "enable_events=False 에서 죽는다"
+    assert 'em.get_term_cfg("object_scale_mass")' in blk
+    assert 'em.get_term_cfg("robot_joint_stiffness_and_damping")' in blk
+    assert "self.cfg.events" not in blk, \
+        "cfg.events 를 고친다 — deepcopy 라 무효다"
+    assert "self._adr_apply_physics(lvl)" in _fn_block(env, "_adr_apply"), \
+        "_adr_apply 가 물리 확장을 안 부른다"
+
+
+def test_friction_is_fixed_dr_not_adr():
+    """★★09.01 — 마찰은 ADR 축이 **될 수 없다**.
+
+    `randomize_rigid_body_material` 은 `material_buckets` 를 term 인스턴스 생성
+    시 1회만 샘플링하고(PhysX 재질 64,000개 상한) `__call__` 은 그 고정 버킷에서
+    뽑기만 한다 → 런타임 확장은 **무증상 no-op**. 자매 `grasp_v2/grasp_adr.py` 가
+    재질을 확장하지만 실제 물리는 안 바뀐다. 그래서 cfg 단계(deepcopy 이전)에서만
+    연다. 이 테스트는 "나중에 누가 _adr_apply 에 마찰을 넣는" 재발을 막는다.
+    """
+    env = _code(_ENV)
+    for fn in ("_adr_apply", "_adr_apply_physics"):
+        blk = _fn_block(env, fn)
+        assert "material" not in blk, \
+            f"{fn} 이 재질을 건드린다 — 버킷 캐시라 no-op 다"
+    cfg = _code(_CFG)
+    assert 'object_material.params["static_friction_range"]' in cfg, \
+        "cfg 단계 마찰 배선이 없다"
+    assert 'object_material.params["dynamic_friction_range"]' in cfg
+
+
+def test_lerp_range_is_pure_and_numerically_correct():
+    """★09.01 — `_lerp_range` 는 순수 함수라 **시뮬 없이** 수치를 검증한다.
+
+    이식 출처: `tesollo/right/grasp_v2/grasp_adr.py:118-135`.
+    """
+    import ast
+    tree = ast.parse(_ENV)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_lerp_range")
+    fn.decorator_list = []                      # staticmethod 데코레이터 제거
+    ns: dict = {}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "<lerp>", "exec"), ns)
+    lerp = ns["_lerp_range"]
+    assert lerp((0.5, 2.0), 0.0) == (1.0, 1.0), "level 0 은 항등이어야 한다"
+    assert lerp((0.5, 2.0), 1.0) == (0.5, 2.0), "level 1 은 종점이어야 한다"
+    _mid = lerp((0.5, 2.0), 0.5)
+    assert abs(_mid[0] - 0.75) < 1e-9 and abs(_mid[1] - 1.5) < 1e-9
+    assert lerp((1.0, 1.0), 1.0) == (1.0, 1.0), "종점이 항등이면 전 구간 항등"
+
+
+def test_real_gain_branch_is_recorded_and_verified():
+    """★★09.01 재생 무결성 — r2s 정합 게인 사용 여부가 dump 에 남고 부팅에서 대조된다.
+
+    게인 선택은 `robot_profiles.py` 가 **import 시점**에 `HDGP_S2R_REAL_GAINS` 로
+    하는데 환경변수는 `params/env.yaml` 에 **안 남는다**. 그래서 그 게인으로 학습한
+    체크포인트를 환경변수 없이 재생하면 4배 단단한 KUKA 게인으로 조용히 돌아간다 —
+    m1_final 이 죽은 것과 같은 계열(차원은 맞는데 의미가 다른)이다.
+
+    계약: ①`use_real_gains` 가 cfg 필드라 dump 에 실린다 ②기본값은 환경변수를 따라
+    기존 워크플로가 깨지지 않는다 ③`finalize_after_overrides` 가 실제 조립 결과와
+    대조해 어긋나면 **부팅에서 죽인다**(조용히 틀리지 않는다).
+    """
+    cfg = _code(_CFG)
+    assert 'use_real_gains: bool = _os.environ.get("HDGP_S2R_REAL_GAINS") == "1"' in cfg, \
+        "cfg 필드가 아니거나 환경변수 기본값을 안 따른다"
+    blk = _fn_block(cfg, "_assert_gain_branch")
+    assert '"right_arm_proximal" in _specs' in blk, "KUKA 분기 판별이 없다"
+    assert '"right_arm_j1" in _specs' in blk, "실측 분기 판별이 없다"
+    assert "if not (_kuka or _real):" in blk, \
+        "게인 분기가 없는 프로필(gripper_left)에서 오탐한다"
+    assert "raise RuntimeError" in blk, "불일치를 조용히 넘긴다"
+    assert "self._assert_gain_branch(profile)" in cfg, \
+        "finalize_after_overrides 가 대조를 안 부른다"
+
+
+def test_robot_gravity_stays_disabled():
+    """★★09.01 확정 — 로봇 중력은 **켜지 않는다**(실기가 중력보상을 켠 채로 돈다).
+
+    켜면 중력을 두 번 세는 것이다. 실측(08.31 우팔): 무보상 처짐 **12.76°** →
+    보상 후 **2.05°**. sim 중력 ON 은 12.76° 쪽을 모델링해 실기와 10° 벌어진다.
+    r2s 정합 게인에서 더 치명적이다 — 손목 kp 50→10 이라 테솔로 손 1.763 kg 의
+    토크(≈2.1 N·m)에 0.21 rad = 12° 처진다. 그 게인 자체가 **중력보상 전제**로
+    동정됐다(r2s collect 가 `gravity_comp_node.py` 를 필수로 요구한다).
+
+    ★물체(컵)는 별개다 — `object_cfg` 는 `disable_gravity=False` 로 무게가 살아 있어야
+    파지·리프트가 물리적으로 성립한다.
+    """
+    cfg = _code(_CFG)
+    _rb = cfg[cfg.index("def _build_robot_cfg"):]
+    _rb = _rb[:_rb.index("max_depenetration_velocity")]
+    assert "disable_gravity=True" in _rb, \
+        "로봇 중력이 켜졌다 — 실기 중력보상과 이중 계산된다"
+    assert "disable_gravity=False" in cfg, "물체 중력이 꺼졌다 — 파지가 무의미해진다"
