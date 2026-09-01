@@ -318,7 +318,76 @@ TESOLLO_RIGHT = RobotProfile(
         #   가 kp 와 무관하게 결정되고, kp 를 주면 J = kp/ωn² · kd = 2ζωn J ·
         #   armature = J − J_link 가 따라온다. holdout 런 RMSE 가 fit 과 거의 같다
         #   (0.43~2.05° vs 0.41~1.90°) — 과적합이 아니다.
-        #   ★모델에 Coulomb 마찰을 **포함**한다. 빼면 그 감쇠가 ζ 로 흡수되고, sim 에
+        # ★★★09.01 최종본 — **kp 는 벤더 실기값, kd 만 맞춘다.**
+        #   kp 를 ωn 에서 역산해 바꿨더니(j2 70→40.8) preset 궤적 재생에서
+        #   **j2 RMSE 10.77° · max 42.80°** 로 무너졌다(실기는 RMSE 0.94°). 여진은
+        #   R3 한 자세에서 ±3~9° 만 흔드는데 preset 은 ±50° 를 움직인다 — 관성이
+        #   자세에 따라 변하므로 **작은 진폭에서 맞춘 kp 는 큰 움직임에서 안 맞는다.**
+        #   ⇒ kp 는 실기 그대로(70/70/70/60/10/10/10) 두고, kd 로만 ζ 를 맞춘다:
+        #     `kd = 2ζ·√(kp·J_sim)` · 손목은 여기에 스윕 배율(j5 ×5.0 · j6 ×4.0 · j7 ×0.5).
+        #   armature 는 0 — sim 자산의 관성이 이미 대체로 옳다(sim 관성 + 실기 ωn 으로
+        #   역산한 kp 가 벤더 값과 6~12 % 안: j1 75.8/70 · j5 10.6/10 · j6 8.8/10).
+        #
+        # ※폐기한 시도(sim 관성 기준으로 kp 까지 바꾸는 것):
+        #   여기 kp/kd 는 **실기 하드웨어 게인이 아니다.** sim 로봇의 관성으로 실기가
+        #   보인 (ωn, ζ)를 내도록 푼 값이다: kp = ωn²·J_sim · kd = 2ζ·ωn·J_sim.
+        #   실기 하드웨어 게인은 따로 있고 확인됐다 —
+        #   `openarm_description/config/arm/v10/control_gains.yaml`(사본 8개 동일):
+        #   kp 70/70/70/60/**10/10/10** · kd 2.75/2.5/2.0/2.0/0.7/0.6/0.5,
+        #   `v10_simple_hardware.cpp:65-71,276` 이 이걸 읽어 모터에 그대로 보낸다.
+        #   ★둘이 가까운 것이 검증이다: 위 kp 필요값 75.8/40.8/84.8/91.7/**10.6/8.8**/17.4
+        #     vs 벤더 70/70/70/60/**10/10/10** — j1·j5·j6 은 6~12% 안에 든다.
+        #     즉 **sim 자산의 관성이 대체로 옳다.**
+        #   ★★armature 는 넣지 않는다(0). 세션 중반에 0.8~1.0 을 넣었던 것은
+        #     링크 관성을 point-mass(`Σm·d²`)로 어림해 **링크 자체 회전관성을 빼먹은**
+        #     탓이다. sim 실측 관성은 그 어림의 4.5~5.6배였다(j1 0.914 vs 0.203).
+        #     "반사관성"이라고 불렀던 것의 정체가 그 빠뜨린 항이다.
+        # ★★09.01 손목 kd 는 **병렬 스윕으로 관절별 최적화**했다
+        #   (`probe_excite_sim_replay.py --num-envs 16 --kd-scale`). `Articulation` 이
+        #   env_ids 를 받으므로(`articulation.py:640`) 6분 한 번에 16개 조합을 본다.
+        #   점수는 **lock-in 주파수 응답**(0.7/1.3/2.1/3.7 Hz)이다 — ptp 비(최대−최소)로
+        #   재면 kd 를 3배 키워도 12 % 밖에 안 변해 최적화가 서지 않는다.
+        #   관절별 최적 배율 j5 ×5.0 · j6 ×4.0 · j7 ×0.5 → 오차 0.689→0.486.
+        #   ⚠j7 은 스윕 **범위 끝**에서 최적이라 더 낮출 여지가 있다.
+        #   ⚠팔(j1~j4)은 오차 0.051 로 이미 맞아 스윕에서 제외했다.
+        #   ⚠아직 sim 재생 검증 전이다. 직전 라운드 기록:
+        #     KUKA 0.429 · 실측게인+손목armature 0.185 · 실기kp+armature 0.326.
+        #
+        # ※이전 라운드 주석(kp 를 파일에서 확인한 경위):
+        #   `v10_simple_hardware.cpp:65-71,276` 이 URDF hardware_parameters 의
+        #   kp1..7/kd1..7 을 읽어 모터에 그대로 보내고, 그 출처인
+        #   `openarm_description/config/arm/v10/control_gains.yaml` 은 워크스페이스
+        #   **사본 8개가 전부 동일**하다: kp 70/70/70/60/**10/10/10** ·
+        #   kd 2.75/2.5/2.0/2.0/0.7/0.6/0.5. 오버라이드 없음.
+        #   ⇒ `r2s fit` 이 낸 kp(96~190)는 **틀렸다**. armature 가 없는 모델이라
+        #     관성을 kp 로 흡수해 j6 을 19배 부풀렸다.
+        #   ★★검증: kp=10 으로 풀면 j6 의 J = 10/(2π·2.36)² = **0.0456** 이고 URDF
+        #     링크 관성이 **0.0426** 이다 — armature 0.003, 즉 거의 0 이고 소수점
+        #     셋째 자리까지 맞는다. 우연일 수 없다.
+        #   ⇒ **손목 관성의 93 %가 손(1.763 kg)이다**(손 없으면 0.0040). 사용자가
+        #     처음부터 말한 "손 무게 때문"이 옳았다. 세션 중간에 "모터 반사관성이
+        #     지배한다"고 뒤집었던 것은 잘못된 kp 를 믿은 결과다.
+        #   ⚠kd 는 fit(손목 0.43/0.15/0.37)과 벤더 설정(0.7/0.6/0.5)이 같은 자릿수지만
+        #     j6 만 4배 차이나고, 팔은 fit 이 2~3배 크다. 아직 정합하지 않는다.
+        #   ⚠아래 값은 **sim 재생 검증을 아직 못 했다**(세션 종료). 다음 세션에서
+        #     `probe_excite_sim_replay.py` 로 오버슈트를 대조할 것.
+        #     직전 검증본(kp 96~190 전제, 오차 0.185)은 git 이력에 있다.
+        #
+        # ※이전 라운드 기록: 아래 조합이 실기 오버슈트를 가장 잘 재현했다(오차 0.185,
+        #   현행 KUKA 0.429 대비 2.3배). 5개 조합을 sim 재생으로 실측 대조한 결과다:
+        #     KUKA(현행 기본값)            0.429
+        #     실측 게인만                  0.341
+        #     ★실측 게인 + **손목만** armature  0.185   ← 이것
+        #     2차모델 fit(kd 재계산)        0.211
+        #     2차모델 + 마찰 분리           0.216 (손목 0.148 로 최선이나 팔이 0.266 로 악화)
+        #   ⚠**sim 의 friction 은 작동하지 않는다.** friction 을 1.019→0 으로 바꿔도
+        #     재생 결과가 소수점까지 동일했다(09.01 실측). 감쇠는 kd 로만 들어간다 —
+        #     아래 friction 값은 기록용이지 sim 동특성에 기여하지 않는다.
+        #   ⚠남는 오차: j6 1.45 vs 실기 2.01. j5·j6 armature 미세조정이 다음 과제다.
+        #
+        #   ※참고: 2차 모델 fit 은 `sim2real/scripts/fit_excite_model.py` 에 남아 있고
+        #     결과는 logs/r2s/excite_model_fit{,_fric}.json 이다. 모델에 Coulomb 마찰을
+        #     넣으면 빼면 그 감쇠가 ζ 로 흡수되고, sim 에
         #     kd 와 friction 을 둘 다 넣게 되어 감쇠가 이중 계산된다 — 실제로 그렇게
         #     했더니 sim 오버슈트가 실기보다 작았다(j6 1.51 vs 2.01). 마찰을 넣자
         #     잔차가 7관절 전부에서 줄었다(j3 0.847→0.727 · j5 0.860→0.711).
@@ -348,26 +417,26 @@ TESOLLO_RIGHT = RobotProfile(
         #     있다 — 보상 OFF 대조군을 받으면 갈라진다.
         **(
             {
-                "right_arm_j1": dict(joint_names_expr=["r_aj_1"], stiffness=96.2,
-                                     damping=7.87, friction=0.643, armature=0.959,
+                "right_arm_j1": dict(joint_names_expr=["r_aj_1"], stiffness=70.0,
+                                     damping=7.053, friction=0.0,
                                      effort_limit_sim=300.0),
-                "right_arm_j2": dict(joint_names_expr=["r_aj_2"], stiffness=150.2,
-                                     damping=10.74, friction=0.631, armature=0.472,
+                "right_arm_j2": dict(joint_names_expr=["r_aj_2"], stiffness=70.0,
+                                     damping=4.182, friction=0.0,
                                      effort_limit_sim=300.0),
-                "right_arm_j3": dict(joint_names_expr=["r_aj_3"], stiffness=71.0,
-                                     damping=2.52, friction=1.343, armature=0.641,
+                "right_arm_j3": dict(joint_names_expr=["r_aj_3"], stiffness=70.0,
+                                     damping=7.804, friction=0.0,
                                      effort_limit_sim=300.0),
-                "right_arm_j4": dict(joint_names_expr=["r_aj_4"], stiffness=58.0,
-                                     damping=4.34, friction=0.178, armature=0.682,
+                "right_arm_j4": dict(joint_names_expr=["r_aj_4"], stiffness=60.0,
+                                     damping=6.531, friction=0.0,
                                      effort_limit_sim=300.0),
-                "right_arm_j5": dict(joint_names_expr=["r_aj_5"], stiffness=56.9,
-                                     damping=0.92, friction=0.701, armature=0.707,
+                "right_arm_j5": dict(joint_names_expr=["r_aj_5"], stiffness=10.0,
+                                     damping=2.236, friction=0.0,
                                      effort_limit_sim=300.0),
-                "right_arm_j6": dict(joint_names_expr=["r_aj_6"], stiffness=189.5,
-                                     damping=0.31, friction=1.387, armature=0.821,
+                "right_arm_j6": dict(joint_names_expr=["r_aj_6"], stiffness=10.0,
+                                     damping=0.580, friction=0.0,
                                      effort_limit_sim=300.0),
-                "right_arm_j7": dict(joint_names_expr=["r_aj_7"], stiffness=67.1,
-                                     damping=1.06, friction=0.698, armature=0.828,
+                "right_arm_j7": dict(joint_names_expr=["r_aj_7"], stiffness=10.0,
+                                     damping=0.242, friction=0.0,
                                      effort_limit_sim=300.0),
             }
             if _os.environ.get("HDGP_S2R_REAL_GAINS") == "1"
