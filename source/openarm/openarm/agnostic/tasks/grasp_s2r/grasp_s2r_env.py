@@ -275,6 +275,27 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
               f"hand={len(self.hand_ids)} tips={len(self.tip_ids)} "
               f"action={self.cfg.action_space} obs={self.cfg.observation_space} "
               f"state={self.cfg.state_space} fabric={p.fabric_robot_dir}", flush=True)
+        # ★★s2r 정합 상태를 **매 학습 로그에 남긴다**. 이 셋은 전부 "조용히 틀릴 수
+        #   있는" 축이라(게인은 환경변수, DR 대상·마찰은 cfg 단계에서만 확정된다)
+        #   나중에 로그만 보고도 어느 조합으로 돌았는지 알 수 있어야 한다.
+        _specs = getattr(p, "actuator_specs", {})
+        _real = "right_arm_j1" in _specs
+        _hs = next((v for k, v in _specs.items() if "hand" in k), {})
+        _hand_g = f"kp{_hs.get('stiffness', '?')}/kd{_hs.get('damping', '?')}"
+        _em = getattr(self, "event_manager", None)
+        _dr = "(events 꺼짐)"
+        if _em is not None:
+            try:
+                _t = _em.get_term_cfg("robot_joint_stiffness_and_damping")
+                _dr = str(_t.params["asset_cfg"].joint_names)
+            except Exception:                      # noqa: BLE001
+                _dr = "(조회 실패)"
+        print(f"[grasp_s2r][s2r] 팔게인={'r2s 정합' if _real else 'KUKA 기본'}"
+              f"(cfg use_real_gains={bool(self.cfg.use_real_gains)}) · "
+              f"손게인={_hand_g} · "
+              f"게인DR대상={_dr} · 마찰범위={tuple(self.cfg.object_friction_range)} · "
+              f"로봇중력={'ON' if not self.cfg.robot_cfg.spawn.rigid_props.disable_gravity else 'OFF'}",
+              flush=True)
 
     # ------------------------------------------------------------------
     def _report_home_cage(self) -> None:

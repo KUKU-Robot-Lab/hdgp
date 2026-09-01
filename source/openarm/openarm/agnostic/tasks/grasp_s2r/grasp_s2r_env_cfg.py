@@ -676,12 +676,27 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # ★물체 질량 배율. 승격 목표 (0.5, 2.0) — 붓기 과제로 가면 내용물이 질량으로 온다
     #   (빈 컵 ↔ 물 찬 컵). 런타임 확장 가능(`__call__` 인자로 매 reset 읽는다).
     adr_mass_scale_max: tuple[float, float] = (1.0, 1.0)
-    # ★관절 PD 게인 배율. 승격 목표 (0.8, 1.2).
+    # ★관절 PD 게인 배율. 승격 목표 **(0.7, 2.0)**.
     #   실효성 확인: `grasp_s2r_control.py` 는 `set_joint_position_target` 으로 **목표만**
     #   쓰고 토크는 articulation 의 ImplicitActuator PD 가 만든다 → 게인 DR 이 그대로 실린다.
-    #   ⚠하한 0.8 은 손 파지력도 20% 깎는다. 손 PD 는 이미 토크 포화 21% 라
-    #     파지가 무너지면 하한을 0.9 로 좁힌다(스모크로 판정).
+    #   ★범위 근거는 R2S 문서의 감도 스윕이다 — `probe_excite_sim_replay.py --kd-scale`
+    #     에서 우팔 손목이 배율 **0.7~2.0** 구간에서 주파수응답 0.666→0.498 로 **완만하게**
+    #     변했다. 즉 그 구간이 동특성이 무너지지 않고 흔들리는 폭이다.
+    #     (구 (0.8,1.2)는 근거 없이 제가 정한 값이었다.)
+    #   ★중심은 `use_real_gains=True` 일 때 곧 실측값이 된다 — 문서가 "ADR 중심을
+    #     실측값으로 옮기면 sim2real 강건성이 오른다"고 지목한 그 조합이다.
     adr_joint_gain_scale_max: tuple[float, float] = (1.0, 1.0)
+    # ★★게인 DR 대상 관절. "arm"(기본) | "all".
+    #   09.01 손 튜닝 완료로 **손은 대상에서 뺀다.** 근거 둘:
+    #     ① 손은 이제 불확실하지 않다 — 실기 JTC p 를 1.5→4.5 로 **우리가 써 넣었고**,
+    #        같은 주먹 램프에서 실기 정상오차 0.39° vs sim 0.05° 로 차이가 0.34°
+    #        (손가락 끝 1 mm 이하)임이 실측됐다. 랜덤화할 미지가 없다.
+    #     ② sim `kp 5.0` 은 **파지력 기준으로 정해진 값**이다(grasp_v1 kd 스윕).
+    #        배율 0.7 을 걸면 파지력이 30% 깎인다 — 없는 불확실성을 모델링하려고
+    #        의도적으로 맞춘 값을 훼손하는 셈이다.
+    #   반면 팔 게인은 벤더 고정값이라 진짜 불확실성이 남아 있다.
+    #   ⚠범위가 (1,1) 이면 이 노브는 아무 효과가 없다(항등이라 대상이 무의미).
+    gain_dr_joints: str = "arm"
     # ★★마찰은 **ADR 축이 될 수 없다**. `randomize_rigid_body_material` 은
     #   `material_buckets` 를 term 인스턴스 생성 시 **1회만** 샘플링하고(PhysX 재질
     #   64,000개 상한) `__call__` 은 그 고정 버킷에서 뽑기만 한다 — 런타임에 범위를
@@ -812,6 +827,12 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             _fr = tuple(float(v) for v in self.object_friction_range)
             self.events.object_material.params["static_friction_range"] = _fr
             self.events.object_material.params["dynamic_friction_range"] = _fr
+            # ★게인 DR 대상 좁히기 — 손은 09.01 튜닝 완료로 미지가 아니다(필드 주석 참조).
+            #   term 의 `joint_names` 는 cfg 단계에서만 의미가 있다(EventManager 가
+            #   생성 시 인덱스를 굳힌다) — 마찰과 같은 이유로 여기서 정한다.
+            if str(self.gain_dr_joints) == "arm":
+                self.events.robot_joint_stiffness_and_damping.params[
+                    "asset_cfg"].joint_names = [profile.arm_joint_regex]
         self._apply_object_bank()
         # 스폰 높이는 여기 한 곳에서만 파생한다(이중 패딩 사고 차단).
         # ★다물체면 이 값은 **뱅크 최댓값**이다 — env 별 실제 높이는 런타임에서 준다

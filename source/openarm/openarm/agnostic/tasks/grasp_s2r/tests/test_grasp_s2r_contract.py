@@ -1536,3 +1536,42 @@ def test_robot_gravity_stays_disabled():
     assert "disable_gravity=True" in _rb, \
         "로봇 중력이 켜졌다 — 실기 중력보상과 이중 계산된다"
     assert "disable_gravity=False" in cfg, "물체 중력이 꺼졌다 — 파지가 무의미해진다"
+
+
+def test_hand_sim_gains_stay_at_grip_force_value():
+    """★★09.01 손 튜닝 확정 — sim 손 게인은 `kp 5.0 · kd 2.0` 을 **그대로 둔다**.
+
+    정합은 **실기 쪽을 올려서** 했다: ros2_control JTC PID 의 p 를 벤더 1.5 →
+    **4.5** 로 써 넣었다(`SetJointGain*` 서비스로 쓸 수 있는 것이 팔에 없던 자유도).
+    같은 주먹 램프에서 실기 정상오차 0.39°(최대 1.50°) vs sim 0.05°(최대 0.60°) —
+    차이 0.34° 는 손가락 끝에서 1 mm 이하라 파지에 영향이 없다.
+
+    ★sim kp 를 실기에 맞춰 **낮추면 안 된다** — 5.0 은 파지력 기준으로 정해진 값이고
+      (grasp_v1 kd 스윕: kd 6.71 포화 20.5% · kd ≤0.5 채터 · kd 2.0 이 양쪽 최적),
+      낮추면 파지력이 그만큼 준다. 반대로 실기 p 를 더 올리는 길은 **p=6 진동**이
+      막는다(σ 0.095° → 0.160°). 지금이 양쪽 한계 안에서의 최선이다.
+
+    ⚠실기 p=4.5 는 **bringup 마다 벤더 기본으로 돌아간다** — vendor yaml 은 안 고쳤다.
+      `sim2real/scripts/apply_hand_gains.py --execute` 를 매번 돌려야 한다.
+    """
+    prof = (_HERE / "robot_profiles.py").read_text(encoding="utf-8")
+    assert 'stiffness=5.0, damping=2.0' in prof, \
+        "손 sim 게인이 바뀌었다 — 파지력 기준값(kp 5.0)을 실기에 맞춰 낮추지 말 것"
+    assert "effort_limit_sim=1.5" in prof, "손 effort 한계가 바뀌었다"
+
+
+def test_gain_dr_excludes_hand_by_default():
+    """★09.01 — 게인 DR 은 **팔만** 대상이다.
+
+    손은 이제 미지가 아니다(위 테스트 참조 — 실기 p 를 우리가 써 넣었고 격차가
+    0.34° 로 실측됐다). 없는 불확실성을 랜덤화하면서 파지력 기준값을 훼손할 이유가
+    없다. 팔 게인은 벤더 고정값이라 진짜 불확실성이 남는다.
+
+    ★대상 좁히기는 **cfg 단계**에서만 가능하다 — EventManager 가 생성 시 관절
+      인덱스를 굳히므로 런타임에 `joint_names` 를 바꿔도 늦다(마찰 버킷과 같은 계열).
+    """
+    cfg = _code(_CFG)
+    assert 'gain_dr_joints: str = "arm"' in cfg, "기본이 팔 한정이 아니다"
+    assert 'if str(self.gain_dr_joints) == "arm":' in cfg
+    assert '"asset_cfg"].joint_names = [profile.arm_joint_regex]' in cfg, \
+        "팔 regex 를 프로필에서 안 읽는다(리터럴 금지)"
