@@ -143,6 +143,14 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     # [B-full 복귀] 새 구조(soft cspace) 3814ep 완주 검증: j5 미구동(gap 1.6 정체) → soft 불가 확정.
     #   explicit B-full만 palm 고정+j5 강제 가능 → palm_position_only=False(7-point), bfull=True 복귀.
     palm_position_only: bool = False
+
+    # Fabrics params 파일 재정의. None = 공유 기본값(`openarm_tesollo_pose_params.yaml`).
+    #   ★공유 yaml 은 2026-08-23 `cbff1ce` 에서 충돌구 프레임이 구 `*_sphere2` → 신 `*_sph1`
+    #     으로 바뀌었는데, 신 링크는 a2(`openarm_tesollo_bi_s.urdf`) 에만 들어갔다. 이 트랙은
+    #     a1(`openarm_tesollo.urdf`) 을 읽으므로 그대로 두면 env 생성이 KeyError 로 죽는다.
+    #   a1 체크포인트를 **학습 당시 fabric 으로** 재생하려면
+    #     `openarm_tesollo_pose_params_pre0823.yaml` 을 지정한다.
+    fabric_params_filename: str | None = None
     pour_bfull_nullspace: bool = True
     bfull_step:   float = 0.04   # arm→demo 향한 per-step 관절증분 상한 [rad]
     bfull_lambda: float = 0.05   # DLS pseudo-inverse 댐핑(특이점 방지)

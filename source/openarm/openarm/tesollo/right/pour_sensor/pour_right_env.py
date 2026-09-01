@@ -190,6 +190,73 @@ class PourRightEnv(DirectRLEnv):
         fallback_unit = fallback / fallback_norm
         return torch.where(norm > 1e-6, vec / norm.clamp(min=1e-6), fallback_unit)
 
+    def _bank_to_env_perm(self, env_dof_indices, group: str) -> list:
+        """뱅크 열 순서(USD 아티큘레이션) → env 열 순서(cfg 이름 목록) 치환 인덱스.
+
+        수집기는 `robot.find_joints(regex)` 로 담는데 그 반환은 **USD 순서**다. env 는
+        `actuated_joint_names` 순서로 쓴다. 두 규약이 다르면 관절 값이 조용히 뒤섞인다.
+        이름으로 맞추므로 어느 쪽 규약이 바뀌어도 안전하다.
+        """
+        import re as _re
+        names = list(self.robot.data.joint_names)
+        pat = (_re.compile(r"r_hj_(thumb|index|middle|ring|pinky)_[1-4]") if group == "hand"
+               else _re.compile(r"r_aj_[1-7]"))
+        bank_names = [n for n in names if pat.fullmatch(n)]     # 수집기가 담은 순서
+        env_names = [names[i] for i in env_dof_indices]         # env 가 쓰는 순서
+        if sorted(bank_names) != sorted(env_names):
+            raise RuntimeError(
+                f"warm 뱅크 {group} 관절 집합 불일치: 뱅크 {len(bank_names)}개 vs "
+                f"env {len(env_names)}개 — 로봇 자산/정규식을 확인하라.")
+        perm = [bank_names.index(n) for n in env_names]
+        if perm != list(range(len(perm))):
+            print(f"[5g_pour_right_v4] warm 뱅크 {group} 관절 순서 치환 "
+                  f"({sum(a != b for a, b in enumerate(perm))}/{len(perm)}칸): "
+                  f"뱅크 {bank_names[:3]}… → env {env_names[:3]}…", flush=True)
+        return perm
+
+    def _build_source_geometry(self) -> None:
+        """env 별 **붓는 컵 기하**를 만든다 (림 오프셋·내외벽 반경·내부 z 범위).
+
+        ★다물체에서 상수 하나를 쓰면 전부 어긋난다 — 09.01 실측(8종):
+          림 0.0829~0.1304(구 상수 0.100 대비 **−17 ~ +30 mm**) · 내벽 0.0348~0.0532 ·
+          바닥 −0.0657~−0.1005. 상수를 쓰면 큰 컵에선 바닥에 가라앉은 bead 가
+          "컵 안"에서 빠지고, 작은 컵에선 벽 밖 bead 를 안이라고 센다.
+        배정은 스폰과 **같은 함수**(`assign_indices`)로 구한다.
+        """
+        from openarm.agnostic.modules import object_bank as _ob
+
+        bank = _ob.get(self.cfg.object_bank)
+        specs = [bank.specs[k] for k in bank.assign_indices(self.num_envs)]
+
+        def _col(attr: str) -> torch.Tensor:
+            return torch.tensor([getattr(sp, attr) for sp in specs],
+                                dtype=torch.float32, device=self.device)
+
+        off = torch.zeros(self.num_envs, 3, device=self.device)
+        off[:, 2] = _col("rim_z")
+        self._src_rim_offset = off
+        # bead 판정은 (N, K) 와 브로드캐스트되므로 (N, 1) 로 둔다.
+        self._src_inner_r = _col("inner_radius_m").unsqueeze(-1)
+        self._src_z_min = _col("inside_z_min").unsqueeze(-1)
+        self._src_z_max = _col("rim_z").unsqueeze(-1)
+        # 배출구 계산은 (N,) 스칼라열로 쓴다(z 항이 (N,) 라 (N,1) 이면 (N,N) 이 된다).
+        self._src_outer_r = _col("outer_radius_m")
+
+        def _uniq(t: torch.Tensor) -> list:
+            return sorted({round(v, 4) for v in t.flatten().tolist()})
+
+        print(f"[5g_pour_right_v4] 붓는 컵 {len(bank.specs)}종 기하 — "
+              f"림 {_uniq(self._src_z_max)} · 내벽 {_uniq(self._src_inner_r)} · "
+              f"내부하한 {_uniq(self._src_z_min)} m", flush=True)
+        print(f"[5g_pour_right_v4] 받는 컵 '{self.cfg.left_target_cup_spec}' — "
+              f"림 {self.cfg.target_mouth_z:.4f} · 내벽 {self.cfg.target_inner_radius:.4f} · "
+              f"내부하한 {self.cfg.target_inside_z_min:.4f} m", flush=True)
+
+    def _src_pour_offset(self, env_ids=None) -> torch.Tensor:
+        """(n, 3) 소스 붓기 지점 오프셋. env_ids 를 주면 그 부분집합."""
+        return (self._src_rim_offset if env_ids is None
+                else self._src_rim_offset[torch.as_tensor(env_ids, device=self.device)])
+
     def _build_cup_local_tilt_rotvec(self, delta_local: torch.Tensor) -> torch.Tensor:
         """Map local tilt commands to a world-frame rotvec.
 
@@ -204,7 +271,7 @@ class PourRightEnv(DirectRLEnv):
 
         source_pour_point_w = self.cup.data.root_pos_w + quat_apply(
             cup_quat_w,
-            self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
+            self._src_pour_offset(),
         )
         target_opening_w = left_target_pos_w + quat_apply(
             left_target_quat_w,
@@ -241,6 +308,12 @@ class PourRightEnv(DirectRLEnv):
         )
 
     def __init__(self, cfg: GraspRightEnvCfg, render_mode: str | None = None, **kwargs):
+        # ★★hydra 오버라이드는 `__post_init__` **뒤**에 `from_dict` 로 적용되고
+        #   `__post_init__` 를 다시 부르지 않는다. 따라서 `env.object_bank=cup_family` 는
+        #   파생 구조(스폰 cfg·replicate_physics·접촉필터·스폰고)에 반영되지 않은 채
+        #   런타임에만 보인다. 그리고 `replicate_physics` 는 `InteractiveScene.__init__`
+        #   이 소비하므로 `_setup_scene` 은 이미 늦다 — super() **전에** 재파생한다.
+        cfg.finalize_after_overrides()
         super().__init__(cfg, render_mode, **kwargs)
 
         # ----------------------------------------------------------------
@@ -581,6 +654,7 @@ class PourRightEnv(DirectRLEnv):
         self._bead_spawn_pos_source_cup_b = to_torch(self.cfg.bead_spawn_pos_source_cup_b, device=self.device)
         self._bead_spawn_quat_source_cup = to_torch(self.cfg.bead_spawn_quat_source_cup_wxyz, device=self.device)
         self._source_cup_pour_point_pos_b = to_torch(self.cfg.source_cup_pour_point_pos_b, device=self.device)
+        self._build_source_geometry()
         self._target_cup_opening_pos_b = to_torch(self.cfg.target_cup_opening_pos_b, device=self.device)
         self._source_cup_pour_axis_b = to_torch(self.cfg.source_cup_pour_axis_b, device=self.device)
         self._source_cup_up_axis_b = to_torch(self.cfg.source_cup_up_axis_b, device=self.device)
@@ -682,6 +756,9 @@ class PourRightEnv(DirectRLEnv):
         cache_size = max(int(self.cfg.warmstart_cache_size), 1)
         self._warmstart_arm_pos = torch.zeros(cache_size, NUM_ARM_DOF, device=self.device)
         self._warmstart_hand_pos = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
+        # 손 지령(hold 목표). 디스크 뱅크 로드 시 채워진다. 롤아웃 수집 경로는 pour 자신의
+        # 게인으로 잡은 상태라 그 시점의 지령을 싣는다.
+        self._warmstart_hand_cmd = torch.zeros(cache_size, NUM_HAND_DOF, device=self.device)
         self._warmstart_palm_pose = torch.zeros(cache_size, 7, device=self.device)
         self._warmstart_cup_pose = torch.zeros(cache_size, 7, device=self.device)
 
@@ -734,7 +811,9 @@ class PourRightEnv(DirectRLEnv):
         self.scene.rigid_objects["table"] = self.table
 
         # Actor: fingertip 개별 ContactSensor (Cup-only, real FT sensor 대응)
-        _CUP_FILTER = ["/World/envs/env_.*/Cup"]
+        # ★루트 Xform 하드코딩 금지 — 다물체에서 `force_matrix_w` 가 항상 0 이 된다.
+        #   뱅크에서 파생한 `object_contact_filter`(rigid_body_name 포함)를 쓴다.
+        _CUP_FILTER = list(self.cfg.object_contact_filter)
         self._tip_sensors: list[ContactSensor] = []
         for link_name in self.cfg.right_tip_contact_links:
             sensor = ContactSensor(ContactSensorCfg(
@@ -754,10 +833,29 @@ class PourRightEnv(DirectRLEnv):
         self._middle_sensor = ContactSensor(self.cfg.middle_sensor_cfg)
         self.scene.sensors["middle_sensor"] = self._middle_sensor
 
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        # ★생산자(grasp_s2r)와 동일 — `env.usd` 의 platform 상면이 **정확히 z=0** 이라
+        #   기본 지면(z=0)과 겹친다. 안 내리면 지면이 platform 을 덮어 씬이 반쪽만
+        #   보이고(09.01 대조 사진: 좌측 베이스 플레이트 소실), z-fighting 도 난다.
+        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(),
+                           translation=(0.0, 0.0, -0.05))
         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-        self.scene.clone_environments(copy_from_source=True)
+
+        # ★★`clone_environments` 는 **`replicate_physics=True` 일 때만** 부른다
+        #   (grasp_s2r 08.29 규약 이식). False 면 `InteractiveScene.__init__` 이 이미
+        #   env xform 을 복제했고(interactive_scene.py:146), 여기서 또 부르면
+        #   `copy_from_source=True` 로 env_0 을 전 env 에 덮어써 프림이 중복된다.
+        # ★★`filter_collisions` 는 **양쪽 다** 부른다. True 경로는 clone 의
+        #   `enable_env_ids` 가 env 간 충돌을 걸러 주지만, False 경로에서는 그 인자가
+        #   무효이고 IsaacLab 의 자동 폴백도 `_is_scene_setup_from_cfg()` 가 False 인
+        #   DirectRLEnv 에선 **경고만 찍고 건너뛴다**(interactive_scene.py:259~268).
+        #   그래서 이 호출이 유일한 격리다. 없으면 전 env 의 콜라이더가 서로 페어링되어
+        #   브로드페이즈가 폭발한다 — 09.01 로컬 실측: 1024 env 에서 PhysX 가
+        #   `foundLostPairsCapacity` 를 **220,800,635** 로 요구하고 GPU 메모리
+        #   31.9/32.6 GB 를 먹은 뒤 `CUDA error, code 2` 로 씬이 죽었다.
+        if bool(self.cfg.scene.replicate_physics):
+            self.scene.clone_environments(copy_from_source=True)
+        self.scene.filter_collisions(global_prim_paths=["/World/ground"])
 
     # ------------------------------------------------------------------
     # Fabrics collision box 파싱 (시각화 전용)
@@ -811,6 +909,10 @@ class PourRightEnv(DirectRLEnv):
             graph_capturable=False,
             use_hand_fabric=False,
             palm_position_only=self.cfg.palm_position_only,  # [새 구조] palm position 3-DOF attractor
+            fabric_params_filename=self.cfg.fabric_params_filename,
+            **({} if self.cfg.fabric_robot_dir is None else
+               {"robot_dir_name": self.cfg.fabric_robot_dir,
+                "robot_name": self.cfg.fabric_robot_dir}),
         )
         # [lstm_test5] nullspace(cspace) 어트랙터 무게 강화 — demo j1-4(elbow-up) default_config를
         #   palm-pose task에 덜 밀리게 유지. params는 Attractor가 매 step live로 읽음(스칼라 float).
@@ -839,6 +941,10 @@ class PourRightEnv(DirectRLEnv):
             graph_capturable=False,
             use_hand_fabric=False,
             palm_position_only=self.cfg.palm_position_only,  # [새 구조] reset fabric도 동일 모드
+            fabric_params_filename=self.cfg.fabric_params_filename,
+            **({} if self.cfg.fabric_robot_dir is None else
+               {"robot_dir_name": self.cfg.fabric_robot_dir,
+                "robot_name": self.cfg.fabric_robot_dir}),
         )
         self._reset_integrator = DisplacementIntegrator(self._reset_fabric)
 
@@ -1014,9 +1120,9 @@ class PourRightEnv(DirectRLEnv):
         pos_in_source = quat_apply_inverse(cup_quat_flat, cup_rel_flat).reshape(n, k, 3)
         bead_xy_to_source = torch.norm(pos_in_source[..., :2], dim=-1)
         bead_in_source = (
-            (bead_xy_to_source <= self.cfg.source_inner_radius)
-            & (pos_in_source[..., 2] >= self.cfg.source_inside_z_min)
-            & (pos_in_source[..., 2] <= self.cfg.source_inside_z_max)
+            (bead_xy_to_source <= self._src_inner_r)
+            & (pos_in_source[..., 2] >= self._src_z_min)
+            & (pos_in_source[..., 2] <= self._src_z_max)
         )
         self._bead_in_source.copy_(bead_in_source)
 
@@ -1465,7 +1571,7 @@ class PourRightEnv(DirectRLEnv):
         # rim center (world)
         _rim_center_w = self.cup.data.root_pos_w + quat_apply(
             self.cup.data.root_quat_w,
-            self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
+            self._src_pour_offset(),
         )
         self._source_rim_center_w = _rim_center_w  # rim 입구 중심 (approach rim-xy 거리용)
         # cup up axis (world)
@@ -1508,9 +1614,10 @@ class PourRightEnv(DirectRLEnv):
         self._pour_point_dyn_w = _dyn_w.squeeze(-1)  # 로깅: 0=정적(이송)/1=동적(붓기)
         _blended_dir = (1.0 - _dyn_w) * _static_dir_hat + _dyn_w * _dynamic_dir_hat
         _pour_dir_hat = _blended_dir / _blended_dir.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-        _pp_xy = _rim_center_w[:, :2] + self.cfg.source_outer_radius * _perp_xy_mag * _pour_dir_hat
+        _pp_xy = (_rim_center_w[:, :2]
+                  + self._src_outer_r.unsqueeze(-1) * _perp_xy_mag * _pour_dir_hat)
         _pp_z = (
-            _rim_center_w[:, 2] + self.cfg.source_outer_radius * _gravity_perp_hat[:, 2]
+            _rim_center_w[:, 2] + self._src_outer_r * _gravity_perp_hat[:, 2]
         ).unsqueeze(-1)
         self._source_pour_point_w = torch.cat([_pp_xy, _pp_z], dim=-1)
         self._source_pour_axis_w = quat_apply(
@@ -2335,6 +2442,17 @@ class PourRightEnv(DirectRLEnv):
             ),
             "log/deep_tilt_f_boot":      torch.tensor(float(self._deep_tilt_f_boot_log), device=self.device),
             "log/grasp_broken":          self._grasp_broken_rate,
+            # ★★outcome ADR(붓기 보상 0→50)을 여는 **바로 그 값**. 이게 안 찍혀서
+            #   b1_multicup1 은 커리큘럼 2단계가 왜 안 열리는지 로그로 볼 수 없었다
+            #   (log/adr_ep_success_rate 는 전체 성공률이라 다른 값이다).
+            "log/pose_success_rate": torch.tensor(
+                self._pose_successful_episodes / max(self._total_episodes, 1),
+                device=self.device),
+            # ★파지 품질 원시값. "손가락이 벌어진 채 컵이 끼워진" 실패는 기존 가드
+            #   (dropped_by_force=힘 **max**, grasp_broken=상대 드리프트)를 **둘 다**
+            #   통과한다. 접촉 **개수**와 평균 팁힘은 그 상태를 바로 드러낸다.
+            "log/grip_contacts":  self.num_contacts_buf.float().mean(),
+            "log/grip_tip_force": self.contact_force_raw.mean(),
             "log/corridor_score":        corridor_score.mean(),
             "log/approach_corridor_score": _approach_corridor_score.mean(),
             "log/approach_corridor_miss": approach_corridor_miss.mean(),
@@ -2783,9 +2901,24 @@ class PourRightEnv(DirectRLEnv):
         return bead_state
 
     def _hide_beads(self, env_ids: Sequence[int]) -> None:
+        """비드를 씬 아래로 치운다. 위치는 **env 원점 기준**이어야 한다.
+
+        ★`write_object_state_to_sim` 은 월드 프레임을 받는다. env 원점을 안 더하면
+          전 env 의 비드가 월드 한 점 (0,0,-10) 에 겹쳐 쌓인다. 그러면 브로드페이즈
+          페어가 (num_envs × num_beads)² 로 폭발한다 — 09.01 로컬 실측: 1024 env ×
+          20 비드 = 20,480 개가 한 점에 모여 C(20480,2) ≈ 2.10억, PhysX 가
+          `foundLostPairsCapacity` 를 **220,919,737** 로 요구하고 GPU 메모리
+          31.9/32.6 GB 를 먹은 뒤 `CUDA error, code 2` 로 씬이 죽었다.
+        ★왜 지금까지 안 터졌나: `replicate_physics=True` 에선 clone 의 `enable_env_ids`
+          가 **브로드페이즈 안에서** env 간 페어를 걸러 겹침이 무증상이었다. 다물체가
+          강제하는 False 에선 그 인자가 무효라 `filter_collisions` 의 충돌 그룹으로
+          거르는데, 그것은 페어를 **찾은 뒤** 버리므로 용량은 그대로 먹는다.
+        """
         n = len(env_ids)
+        origins = self.scene.env_origins[env_ids]          # (n, 3)
         bead_state = torch.zeros(n, self.num_beads, 13, device=self.device)
-        bead_state[..., 2] = -10.0
+        bead_state[..., :3] = origins.unsqueeze(1)
+        bead_state[..., 2] -= 10.0
         bead_state[..., 3] = 1.0
         self.beads.write_object_state_to_sim(bead_state, env_ids=env_ids)
 
@@ -2823,9 +2956,42 @@ class PourRightEnv(DirectRLEnv):
             return False
 
         # 버퍼를 디스크 캐시 크기로 재할당 (warmstart_cache_size 무관, 전량 활용)
-        self._warmstart_arm_pos = bank.arm_joint_pos.clone()
-        self._warmstart_hand_pos = bank.hand_joint_pos.clone()
-        self._warmstart_palm_pose = bank.palm_pose_quat_xyzw.clone()  # (n,7) pos+quat_xyzw
+        # ★★★관절 **순서** 정합. 수집기는 `find_joints(regex)` = **USD 아티큘레이션 순서**로
+        #   담고(index_1, middle_1, pinky_1, ring_1, thumb_1, index_2, …), pour 은
+        #   `RIGHT_HAND_JOINT_NAMES` = **손가락 우선 순서**(thumb_1..4, index_1..4, …)로 쓴다.
+        #   20칸 중 **19칸이 어긋난다**. 팔 7칸은 양쪽 다 `r_aj_[1-7]` 이라 우연히 같아서,
+        #   팔·팜·컵 기하는 완벽한데 **손가락만 뒤섞이는** 아주 찾기 어려운 형태로 나온다
+        #   (09.01: 컵−palm_ee 거리는 뱅크와 1~3mm 일치하는데 접촉은 0, 컵이 스르르 빠짐).
+        #   그래서 이름으로 치환한다 — 순서 규약에 기대지 않는다.
+        _perm_hand = self._bank_to_env_perm(self.hand_dof_indices, "hand")
+        _perm_arm = self._bank_to_env_perm(self.arm_dof_indices, "arm")
+        self._warmstart_arm_pos = bank.arm_joint_pos[:, _perm_arm].clone()
+        self._warmstart_hand_pos = bank.hand_joint_pos[:, _perm_hand].clone()
+        # ★손 **지령**. 없으면 여기서 죽는다 — 측정으로 조용히 대체하면 PD 오차가 0 이
+        #   되어 파지력이 사라지고, 손가락이 벌어진 채 컵이 끼워지기만 한다. 그 상태는
+        #   접촉 가드(힘 max·상대 드리프트)를 **둘 다** 통과해 4,575 epoch 동안 안 걸렸다.
+        if bank.hand_joint_pos_target is None:
+            raise RuntimeError(
+                "warm 뱅크에 `hand_joint_pos_target` 이 없다 — 파지를 유지시킬 지령이 "
+                "없어 hold 목표를 만들 수 없다. 수집기 최신본으로 재수집할 것. "
+                f"(뱅크: {list(bank.source_paths)})")
+        self._warmstart_hand_cmd = bank.hand_joint_pos_target[:, _perm_hand].clone()
+        # ★★프레임 변환: 뱅크는 **palm_ee**(r_hl_palm + R·offset)를 저장하는데
+        #   `palm_pose_targets` 는 Fabrics 가 추종하는 **palm_link(r_hl_palm)** 좌표다
+        #   (액션 경로가 pour_right_env.py 의 `_palm_ee_target - R·offset` 로 역변환해
+        #   넣는다). 변환 없이 넣으면 리셋 순간 팜 어트랙터 목표가 **48.8 mm**
+        #   (=|offset (0.028,0,0.04)|) 어긋난 채 시작하고, Fabrics 가 그 격차를 좁히려
+        #   팔을 끌어 **컵을 손에서 뜯어낸다**.
+        #   09.01 실측(제로 액션): 팜목표오차 49mm → 팔지령오차 0.06→0.32 rad →
+        #   컵 드리프트 7°→95° (15스텝) → 컵 낙하. 8종 전부.
+        #   ⚠롤아웃 수집 경로(`_warmstart_palm_pose[start:end] = palm_pose_targets`)는
+        #   이미 palm_link 이므로 변환하지 않는다 — 두 소스의 프레임을 여기서 통일한다.
+        _ee = bank.palm_pose_quat_xyzw.clone()                       # (n,7) pos(palm_ee)+quat_xyzw
+        _q_wxyz = _ee[:, 3:7][:, [3, 0, 1, 2]]
+        _ee[:, :3] = _ee[:, :3] - quat_apply(
+            _q_wxyz, self._palm_ee_offset_local.unsqueeze(0).expand(_ee.shape[0], -1))
+        self._warmstart_palm_pose = _ee                              # (n,7) pos(palm_link)+quat_xyzw
+        self._build_warmstart_spec_pools(bank)
         # cup 은 grasp 성공 당시의 실제 자세로 텔레포트한다.
         # upright(identity) 강제는 손-컵 상대 자세를 깨뜨려(손가락이 컵 벽을
         # 파고듦) hold 중 컵 이탈/손가락 끼임을 유발한다. bead 는 hold 종료
@@ -2961,7 +3127,8 @@ class PourRightEnv(DirectRLEnv):
         cup_pose[:, 3:7] = self.cup.data.root_quat_w[ids]        # 실제 quat (upright 강제 안 함)
         bead_state = self.beads.data.object_state_w[ids].clone()  # (m, num_beads, 13)
         bead_state[:, :, :3] = bead_state[:, :, :3] - self.scene.env_origins[ids].unsqueeze(1)  # env-local
-        bank.store(arm, hand, palm_pose, cup_pose, bead_state)
+        bank.store(arm, hand, self.hand_joint_targets[ids].clone(),
+                   palm_pose, cup_pose, bead_state)
 
     def _maybe_store_warmstart_successes(self, env_ids: Sequence[int]) -> None:
         """에피소드 종료 시 v7-2 final state를 warmstart 캐시에 저장.
@@ -3006,6 +3173,7 @@ class PourRightEnv(DirectRLEnv):
         end = start + count
         self._warmstart_arm_pos[start:end] = self.robot.data.joint_pos[success_env_ids][:, self.arm_dof_indices]
         self._warmstart_hand_pos[start:end] = self.robot.data.joint_pos[success_env_ids][:, self.hand_dof_indices]
+        self._warmstart_hand_cmd[start:end] = self.hand_joint_targets[success_env_ids]
         self._warmstart_palm_pose[start:end] = self.palm_pose_targets[success_env_ids]
         self._warmstart_cup_pose[start:end, :3] = self.cup.data.root_pos_w[success_env_ids] - self.scene.env_origins[success_env_ids]
         # cup orientation은 upright(identity)로 저장 (기울어진 채 저장 시 bead 소환 위치 오류 방지)
@@ -3015,11 +3183,63 @@ class PourRightEnv(DirectRLEnv):
         self._warmstart_env_captured[success_env_ids] = True
         self._warmstart_cache_count = end
 
+    def _build_warmstart_spec_pools(self, bank) -> None:
+        """물체별 warm state 풀과 env 별 배정 물체를 만든다.
+
+        ★`MultiAssetSpawnerCfg(random_choice=False)` 는 env_i 의 물체를 `i % N` 로
+          **고정**한다. 그런데 뱅크에서 무작위로 뽑으면 s130(컵-손 61.9mm)에서 수집한
+          손 자세를 s085(45.8mm) env 에 복원하게 된다 — 손 개구와 컵 크기가 어긋나
+          파지가 성립하지 않는다. 그래서 **같은 물체 풀에서만** 뽑는다.
+        """
+        self._warm_spec_pools: list[torch.Tensor] | None = None
+        self._warm_env_spec: torch.Tensor | None = None
+        idx = getattr(bank, "object_spec_idx", None)
+        if idx is None:
+            print("[5g_pour_right_v4][WARN] warm 뱅크에 object_spec_idx 가 없다 — 무작위 "
+                  "샘플링으로 떨어진다. 다물체면 손 개구와 컵 크기가 어긋날 수 있다"
+                  "(단일 물체 뱅크면 무해).", flush=True)
+            return
+
+        from openarm.agnostic.modules import object_bank as _ob
+
+        bank_specs = _ob.get(self.cfg.object_bank).specs
+        self._warm_env_spec = torch.tensor(
+            _ob.get(self.cfg.object_bank).assign_indices(self.num_envs),
+            device=self.device, dtype=torch.long)
+        pools = [torch.nonzero(idx == k, as_tuple=False).reshape(-1)
+                 for k in range(len(bank_specs))]
+        empty = [bank_specs[k].id for k in self._warm_env_spec.unique().tolist()
+                 if pools[k].numel() == 0]
+        if empty:
+            # 조용히 다른 컵 상태를 넣느니 여기서 죽는다.
+            raise RuntimeError(
+                f"warm 뱅크에 물체 {empty} 의 상태가 하나도 없다 — 그 컵이 배정된 env 를 "
+                "복원할 수 없다. 뱅크를 재수집하거나 object_bank 를 맞출 것.")
+        self._warm_spec_pools = pools
+        print("[5g_pour_right_v4] warm 물체별 상태 수: "
+              + " · ".join(f"{bank_specs[k].id}={pools[k].numel()}"
+                           for k in range(len(bank_specs))), flush=True)
+
+    def _pick_warmstart_indices(self, env_ids) -> torch.Tensor:
+        """env 별 배정 물체와 **같은 물체**에서 수집한 상태를 고른다."""
+        n = len(env_ids)
+        if self._warm_spec_pools is None:
+            return torch.randint(self._warmstart_cache_count, (n,), device=self.device)
+        ids_t = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        want = self._warm_env_spec[ids_t]
+        out = torch.empty(n, dtype=torch.long, device=self.device)
+        for k in want.unique().tolist():
+            m = want == k
+            pool = self._warm_spec_pools[k]
+            out[m] = pool[torch.randint(pool.numel(), (int(m.sum()),), device=self.device)]
+        return out
+
     def _reset_from_warmstart_cache(self, env_ids: Sequence[int]) -> None:
         n = len(env_ids)
-        pick = torch.randint(self._warmstart_cache_count, (n,), device=self.device)
+        pick = self._pick_warmstart_indices(env_ids)
         arm_pos = self._warmstart_arm_pos[pick]
-        hand_pos = self._warmstart_hand_pos[pick]
+        hand_pos = self._warmstart_hand_pos[pick]      # 측정 → 물리 상태 복원
+        hand_cmd = self._warmstart_hand_cmd[pick]      # 지령 → hold 목표(파지력의 원천)
         palm_pose = self._warmstart_palm_pose[pick]
         cup_pose_local = self._warmstart_cup_pose[pick]
 
@@ -3037,7 +3257,9 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_qdd[env_ids].zero_()
 
         self.pregrasp_arm_pos_buf[env_ids] = arm_pos
-        self.grasp_hold_hand_pos_buf[env_ids] = hand_pos
+        # ★물리 상태는 **측정**(위 write_joint_state_to_sim), hold 목표는 **지령**이다.
+        #   같은 값을 넣으면 PD 오차가 0 이라 파지력이 사라진다(09.01 사고).
+        self.grasp_hold_hand_pos_buf[env_ids] = hand_cmd
 
         warmstart_palm_pose = palm_pose.clone()
         if self.cfg.warmstart_palm_z_boost > 0.0:
@@ -3051,7 +3273,7 @@ class PourRightEnv(DirectRLEnv):
         _ws_clamp_delta = (warmstart_palm_pose[:, :3] - palm_pose[:, :3]).abs().max().item()
         self.pregrasp_palm_pose_buf[env_ids] = warmstart_palm_pose
         self.palm_pose_targets[env_ids] = warmstart_palm_pose
-        self.hand_joint_targets[env_ids] = hand_pos
+        self.hand_joint_targets[env_ids] = hand_cmd
         self.object_init_pos[env_ids] = cup_pose_local[:, :3]
         self.object_init_pos[env_ids, 2] = self.cfg.object_spawn_z  # z는 테이블 높이 기준으로 고정 (캐시 lifted z 사용 시 cup_height_delta=0 버그)
         self._grasp_rel_palm_to_cup_init[env_ids] = cup_pose_local[:, :3] - palm_pose[:, :3]
@@ -3078,7 +3300,7 @@ class PourRightEnv(DirectRLEnv):
         if not self._warmstart_reset_debug_printed:
             source_pour_point_w = cup_pose_world[:, :3] + quat_apply(
                 cup_pose_world[:, 3:7],
-                self._source_cup_pour_point_pos_b.unsqueeze(0).expand(n, -1),
+                self._src_pour_offset(env_ids),
             )
             target_opening_w = left_cup_pose[:, :3] + quat_apply(
                 left_cup_pose[:, 3:7],
@@ -3205,7 +3427,8 @@ class PourRightEnv(DirectRLEnv):
         n = len(env_ids)
         pick = bank.sample(n)
         arm_pos = bank.arm[pick]
-        hand_pos = bank.hand[pick]
+        hand_pos = bank.hand[pick]        # 측정 → 물리 상태 복원
+        hand_cmd = bank.hand_cmd[pick]    # 지령 → hold 목표
         palm_pose = bank.palm_pose[pick]
         cup_pose_local = bank.cup_pose[pick]          # pos(env-local) + 실제 quat_wxyz
         bead_state_local = bank.bead_state[pick]      # (n, num_beads, 13), pos env-local
@@ -3224,7 +3447,7 @@ class PourRightEnv(DirectRLEnv):
         self.fabric_qdd[env_ids].zero_()
 
         self.pregrasp_arm_pos_buf[env_ids] = arm_pos
-        self.grasp_hold_hand_pos_buf[env_ids] = hand_pos
+        self.grasp_hold_hand_pos_buf[env_ids] = hand_cmd
 
         boot_palm_pose = palm_pose.clone()
         boot_palm_pose[:, :3] = torch.max(
@@ -3233,7 +3456,7 @@ class PourRightEnv(DirectRLEnv):
         )
         self.pregrasp_palm_pose_buf[env_ids] = boot_palm_pose
         self.palm_pose_targets[env_ids] = boot_palm_pose
-        self.hand_joint_targets[env_ids] = hand_pos
+        self.hand_joint_targets[env_ids] = hand_cmd
         self.object_init_pos[env_ids] = cup_pose_local[:, :3]
         self.object_init_pos[env_ids, 2] = self.cfg.object_spawn_z  # 테이블 높이 기준 (warmstart와 동일)
         self._grasp_rel_palm_to_cup_init[env_ids] = cup_pose_local[:, :3] - palm_pose[:, :3]

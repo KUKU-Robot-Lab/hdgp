@@ -144,6 +144,10 @@ _V2_HOME_LEVEL = _os.environ.get("HDGP_V2_HOME_LEVEL", "0") == "1"
 _V2_HOME_LOW = _os.environ.get("HDGP_V2_HOME_LOW", "0") == "1"
 # 라운드 22c — 중간 홈 C96(구 홈 높이 유지 + 각도 −14°)
 _V2_HOME_MID = _os.environ.get("HDGP_V2_HOME_MID", "0") == "1"
+# 라운드 24 — 실기 벤더 kp/kd 로 팔 액추에이터 교체 (FRESH 전용)
+_V2_VENDOR_GAINS = _os.environ.get("HDGP_V2_VENDOR_GAINS", "0") == "1"
+# 라운드 24b — 벤더 kp 는 그대로, kd 만 R2S 우팔 산출값으로(과감쇠 쪽 끝)
+_V2_KD_R2S = _os.environ.get("HDGP_V2_KD_R2S", "0") == "1"
 
 
 @configclass
@@ -171,6 +175,8 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
     v2_home_level: bool = _V2_HOME_LEVEL        # 접근축 수평 홈 (FRESH 전용)
     v2_home_low: bool = _V2_HOME_LOW            # 낮고 덜 기운 홈 B100 (FRESH 전용)
     v2_home_mid: bool = _V2_HOME_MID            # 중간 홈 C96 (FRESH 전용)
+    v2_vendor_gains: bool = _V2_VENDOR_GAINS    # 실기 벤더 kp/kd (FRESH 전용)
+    v2_kd_r2s: bool = _V2_KD_R2S                # kd 만 R2S 산출값 (VENDOR_GAINS 와 함께)
 
     def __post_init__(self):
         super().__post_init__()
@@ -229,6 +235,17 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
         #   `action_rate_l2` 가 재는 것의 대부분은 정책의 거칢이 아니라 σ 였다.
         self.curriculum.action_rate = None
         self.curriculum.joint_vel = None
+        # ── 라운드 23: action_rate 커리큘럼 (사용자 설계) ──────────
+        #   처음엔 약하게(−0.002) 두고 지정 epoch 에서 목표치로 **계단 상승**한다.
+        #   `modify_reward_weight` 는 `common_step_counter > num_steps` 일 때 적용된다.
+        #   ⚠ 위 주석의 "커리큘럼 금지"는 σ 가 살아 있던 시절 근거다. R22 실측에서
+        #     원값 0.080(σ≈1 이면 2.0)이라 σ 는 붕괴했고 전제가 바뀌었다.
+        if P.ACTION_RATE_CURR:
+            self.curriculum.action_rate = CurrTerm(
+                func=mdp.modify_reward_weight,
+                params={"term_name": "action_rate",
+                        "weight": P.ACTION_RATE_TARGET,
+                        "num_steps": P.ACTION_RATE_AT_STEPS})
 
         # ── 진단 (weight 0) ───────────────────────────────────────
         # 계단은 보상 항이 하나라 이게 없으면 안이 안 보인다. 이 저장소의
@@ -335,6 +352,22 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
         #     **같은 높이**를 유지하면서 각도만 14° 세운다.
         if self.v2_home_mid:
             self.scene.robot.init_state.joint_pos.update(P.LEFT_ARM_HOME_MID)
+
+        # ── 라운드 24: 실기 벤더 게인 정합 ────────────────────────
+        #   부모(`grasp_left_fab_env_cfg`)가 꽂은 ARM_IK_STIFFNESS/DAMPING 을 덮어쓴다.
+        #   ★sim 이 실기보다 4~10배 뻣뻣해 정책 진동이 팔에 그대로 실린다 — 벤더값이
+        #     진실이므로 그쪽에 맞춘다. 근거·주의는 `v2_preset.LEFT_ARM_VENDOR_*` 주석.
+        #   ⚠ 동특성이 바뀌므로 기존 체크포인트와 **호환되지 않는다**(FRESH 전용).
+        if self.v2_vendor_gains:
+            self.scene.robot.actuators["left_arm"].stiffness = dict(
+                P.LEFT_ARM_VENDOR_STIFFNESS)
+            self.scene.robot.actuators["left_arm"].damping = dict(
+                P.LEFT_ARM_VENDOR_DAMPING)
+            # ★kd 브래킷 — 벤더 kd(덜 감쇠) ↔ R2S 산출 kd(과감쇠). 좌팔 여진 측정이
+            #   없어 진짜 값을 모르므로 양 끝을 잡아 민감도를 본다.
+            if self.v2_kd_r2s:
+                self.scene.robot.actuators["left_arm"].damping = dict(
+                    P.LEFT_ARM_R2S_DAMPING)
 
         # ── 라운드 17: 목표 체류 N 스텝이면 에피소드 종료 ──────────
         #   ⚠⚠ `time_out=True` (truncation) 여야 한다. 진짜 종료로 두면 부트스트랩이

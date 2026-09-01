@@ -1858,3 +1858,92 @@ def test_lift_ramp_low_is_env_gated_and_still_needs_a_real_grasp():
     i = st.index("def stage_lift")
     assert "stage_close(env, jaw_cfg, object_cfg) * move_up" in st[i:i + 900], (
         "리프트는 폐쇄 성공을 곱해야 한다")
+
+
+def test_action_rate_weight_is_env_overridable_and_defaults_small():
+    """★기본값은 작게 유지한다(과제 형성 중에는 억제가 탐색을 죽인다).
+    다만 env 로 열어 둬 **과제가 선 뒤 웜스타트에서** 키울 수 있어야 한다 —
+    R22 실측으로 σ 오염 근거가 무효화됐기 때문이다(원값 0.080, σ≈1 이면 2.0)."""
+    src = _src("v2_preset.py")
+    assert '_os.environ.get("HDGP_V2_ARATE_W", "")' in src
+    assert "ACTION_RATE_WEIGHT = -abs(float(_arate_w))" in src, "부호는 항상 음수여야 한다"
+    import os as _o
+    assert not _o.environ.get("HDGP_V2_ARATE_W"), "테스트 환경에선 기본값이어야 한다"
+    assert P.ACTION_RATE_WEIGHT == -0.002, "기본값은 작게"
+
+
+def test_action_rate_curriculum_is_a_step_at_a_given_epoch():
+    """사용자 설계 — 처음엔 약하게, 지정 epoch 에서 목표치로 올린다.
+
+    ★`common_step_counter` 는 env 스텝이므로 **epoch × horizon_length** 여야 한다.
+    (라운드 10 에 같은 단위 오독으로 ADR 게이트를 17배로 잡은 전례가 있다.)
+    """
+    assert P.ACTION_RATE_AT_STEPS == P.ACTION_RATE_AT_EPOCH * P.RL_HORIZON_LENGTH
+    assert P.RL_HORIZON_LENGTH == 24, "yaml 의 horizon_length 와 일치해야 한다"
+    assert P.ACTION_RATE_TARGET < 0.0, "억제 항이므로 음수"
+    assert abs(P.ACTION_RATE_TARGET) > abs(P.ACTION_RATE_WEIGHT), "올라가야 한다"
+    src = _src("v2_env_cfg.py")
+    i = src.index("if P.ACTION_RATE_CURR:")
+    seg = src[i:i + 600]
+    assert "mdp.modify_reward_weight" in seg
+    assert '"term_name": "action_rate"' in seg
+    assert "P.ACTION_RATE_AT_STEPS" in seg
+
+
+def test_vendor_gains_match_the_vendor_yaml_and_are_env_gated():
+    """★실기 벤더 파일이 진실이다(R2S §1). 사본 3곳 md5 일치를 확인했고, 그 값과
+    코드 상수가 어긋나면 sim 이 다른 로봇을 흉내내게 된다."""
+    assert P.LEFT_ARM_VENDOR_STIFFNESS == {
+        "l_aj_1": 70.0, "l_aj_2": 70.0, "l_aj_3": 70.0, "l_aj_4": 60.0,
+        "l_aj_5": 10.0, "l_aj_6": 10.0, "l_aj_7": 10.0}
+    assert P.LEFT_ARM_VENDOR_DAMPING == {
+        "l_aj_1": 2.75, "l_aj_2": 2.50, "l_aj_3": 2.00, "l_aj_4": 2.00,
+        "l_aj_5": 0.70, "l_aj_6": 0.60, "l_aj_7": 0.50}
+    src = _src("v2_env_cfg.py")
+    assert '_os.environ.get("HDGP_V2_VENDOR_GAINS", "0") == "1"' in src, "기본 꺼짐"
+    assert 'actuators["left_arm"].stiffness' in src
+
+
+def test_vendor_gains_are_much_softer_than_the_sim_default():
+    """★이 격차가 '제어기가 정책 진동을 그대로 따라가는' 원인이다 —
+    기록으로 남겨 다음 사람이 배율을 다시 재지 않게 한다."""
+    from openarm.gripper.left.grasp_sensor import grasp_left_preset as V1
+    assert V1.ARM_IK_STIFFNESS["l_aj_[1-4]"] / P.LEFT_ARM_VENDOR_STIFFNESS["l_aj_1"] > 4.0
+    assert V1.ARM_IK_DAMPING["l_aj_7"] / P.LEFT_ARM_VENDOR_DAMPING["l_aj_7"] > 20.0
+
+
+def test_kd_bracket_requires_vendor_gains_and_straddles_it():
+    """★좌팔 여진 측정이 없어 kd 진짜 값을 모른다 — 벤더 kd(덜 감쇠)와 R2S 산출
+    kd(과감쇠)로 **양 끝을 잡는다**. 두 판의 차이가 작으면 그 자체가 결론이다."""
+    src = _src("v2_env_cfg.py")
+    assert '_os.environ.get("HDGP_V2_KD_R2S", "0") == "1"' in src, "기본 꺼짐"
+    i = src.index("if self.v2_vendor_gains:")
+    seg = src[i:i + 900]
+    assert "if self.v2_kd_r2s:" in seg, "VENDOR_GAINS 블록 안에 있어야 한다(kp 는 벤더 고정)"
+    # j1~j5 는 R2S 쪽이 더 크고(과감쇠), 손목 j6·j7 은 더 작다 — 배율이 제각각이라는 기록
+    for j in ("l_aj_1", "l_aj_2", "l_aj_3", "l_aj_4", "l_aj_5"):
+        assert P.LEFT_ARM_R2S_DAMPING[j] > P.LEFT_ARM_VENDOR_DAMPING[j]
+    for j in ("l_aj_6", "l_aj_7"):
+        assert P.LEFT_ARM_R2S_DAMPING[j] < P.LEFT_ARM_VENDOR_DAMPING[j]
+
+
+def test_tip_floor_margin_and_weight_are_env_overridable():
+    """★Y24 실측 — 이 항이 작동점에서 죽어 있었다(기여 0.67%, 힌지 원값 0.017).
+    마진이 병목이므로 env 로 열어 스윕할 수 있어야 한다. 기본값은 유지."""
+    src = _src("v2_preset.py")
+    assert '_os.environ.get("HDGP_V2_TIP_MARGIN", "")' in src
+    assert '_os.environ.get("HDGP_V2_TIP_W", "")' in src
+    assert "TIP_FLOOR_WEIGHT = -abs(float(_tf_w))" in src, "부호는 항상 음수"
+    import os as _o
+    if not _o.environ.get("HDGP_V2_TIP_MARGIN"):
+        assert P.TIP_FLOOR_MARGIN == 0.020, "기본 마진 유지"
+    if not _o.environ.get("HDGP_V2_TIP_W"):
+        assert P.TIP_FLOOR_WEIGHT == -6.0, "기본 가중치 유지"
+
+
+def test_tip_floor_margin_stays_within_the_measured_graspable_band():
+    """★이 항은 파지와 역방향이다. 실측상 손끝 중앙 27.3mm(R22, ⑤100%)·
+    31.8mm(N22, ⑤97.1%)는 파지와 양립했다 — 마진을 그 범위 밖(≥40mm)으로 올리면
+    파지 자체를 벌하게 된다. 상한을 계약으로 고정한다."""
+    assert P.TIP_FLOOR_MARGIN <= 0.035, (
+        f"마진 {P.TIP_FLOOR_MARGIN*1000:.0f}mm 는 실측 파지 대역(27~32mm)을 넘는다")

@@ -128,10 +128,14 @@ def _make_bank(capacity=4, num_arm=7, num_hand=20, num_beads=3):
 
 
 def _rows(m, *, num_arm=7, num_hand=20, num_beads=3, fill=1.0):
-    # order mirrors the env restore tuple: arm, hand, palm_pose(7), cup_pose(7), bead_state
+    # order mirrors the env restore tuple:
+    #   arm, hand(측정), hand_cmd(지령), palm_pose(7), cup_pose(7), bead_state
+    # ★hand 와 hand_cmd 는 **다른 값**을 넣는다 — 같으면 둘을 맞바꿔 써도 테스트가
+    #   통과해버려, 파지력이 사라지는 실제 버그(09.01)를 못 잡는다.
     return (
         torch.full((m, num_arm), fill),
         torch.full((m, num_hand), fill),
+        torch.full((m, num_hand), fill + 100.0),
         torch.full((m, 7), fill),
         torch.full((m, 7), fill),
         torch.full((m, num_beads, 13), fill),
@@ -189,12 +193,16 @@ def test_bank_roundtrip_preserves_stored_tensors():
     bank = _make_bank(capacity=4, num_beads=3)
     arm = torch.randn(2, 7)
     hand = torch.randn(2, 20)
+    hand_cmd = torch.randn(2, 20)
     palm = torch.randn(2, 7)
     cup = torch.randn(2, 7)
     bead = torch.randn(2, 3, 13)
-    bank.store(arm, hand, palm, cup, bead)
+    bank.store(arm, hand, hand_cmd, palm, cup, bead)
     assert torch.allclose(bank.arm[:2], arm)
     assert torch.allclose(bank.hand[:2], hand)
+    # ★측정과 지령이 각자 제 슬롯에 들어가야 한다. 섞이면 파지력이 사라진다(09.01).
+    assert torch.allclose(bank.hand_cmd[:2], hand_cmd)
+    assert not torch.allclose(bank.hand[:2], bank.hand_cmd[:2])
     assert torch.allclose(bank.palm_pose[:2], palm)
     assert torch.allclose(bank.cup_pose[:2], cup)
     assert torch.allclose(bank.bead_state[:2], bead)
