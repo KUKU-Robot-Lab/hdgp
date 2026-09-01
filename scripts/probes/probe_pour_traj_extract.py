@@ -24,9 +24,11 @@ parser.add_argument("--task", default="open-tesol_b_pour_sensor-play-lstm")
 parser.add_argument("--checkpoint", type=Path, default=Path(
     "/home/user/rl_ws/sim2real/logs/policy/pour_lstm_test4/nn/"
     "last_open-tesol_b_pour_sensor-lstm_ep_1300_rew__33892.785_.pth"))
-parser.add_argument("--warm", type=Path, default=Path(
-    "/home/user/rl_ws/archive/hdf5_2026-08-17_pre_dg5fs/_quarantined_from_hdgp_data/"
-    "grasp_warm_tesollo.hdf5"))
+parser.add_argument(
+    "--warm", type=Path, default=None,
+    help="warm 뱅크 오버라이드. 생략하면 태스크 cfg 의 warm_state_paths 를 쓴다. "
+         "★both/pour_sensor 는 08.17 격리 아카이브 본이 필요하다 — "
+         "archive/hdf5_2026-08-17_pre_dg5fs/_quarantined_from_hdgp_data/grasp_warm_tesollo.hdf5")
 parser.add_argument("--out", type=Path, default=Path(
     "/home/user/rl_ws/sim2real/logs/shadow/pour_traj"))
 parser.add_argument("--num_envs", type=int, default=4)
@@ -34,11 +36,22 @@ parser.add_argument("--success_episodes", type=int, default=3, help="이만큼 �
 parser.add_argument("--max_steps", type=int, default=6000, help="안전 상한(정책 스텝)")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--gui", action="store_true")
+parser.add_argument(
+    "--source-tree", type=str, default="/home/user/rl_ws/hdgp_pour23",
+    help="openarm 을 읽어올 트리. 'main' 이면 이 저장소의 source/openarm 을 쓴다. "
+         "★both/pour_sensor(act15) 는 worktree 9b43f40 이 필요하고, "
+         "right/pour_sensor(act12) 는 본진에서 돈다.",
+)
 
 # ★sys.path 는 AppLauncher **이전** — 안 그러면 옆 세션의 live hdgp 를 조용히 읽는다
 #   (08.27 소스 오염 사고 재발 방지).
-_WT = Path("/home/user/rl_ws/hdgp_pour23")
+args_pre, _ = parser.parse_known_args()
+_REPO = Path(__file__).resolve().parents[2]
+_WT = _REPO if args_pre.source_tree == "main" else Path(args_pre.source_tree)
+if not (_WT / "source" / "openarm").is_dir():
+    raise SystemExit(f"소스 트리에 source/openarm 이 없다: {_WT}")
 sys.path.insert(0, str(_WT / "source" / "openarm"))
+sys.path.insert(0, str(_WT / "scripts" / "tools"))   # run_cfg_restore
 
 from isaaclab.app import AppLauncher                              # noqa: E402
 AppLauncher.add_app_launcher_args(parser)
@@ -75,6 +88,20 @@ def _assert_source_tree() -> None:
             raise RuntimeError(f"{mod.__name__} 이 worktree 밖에서 로드됨: {p}")
 
 
+def _git_commit() -> str:
+    """재생 정합을 위해 **추출 시점의 소스 커밋**을 남긴다. 하드코딩하면 거짓이 된다."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(_WT), "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=10)
+        head = out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+    dirty = subprocess.run(["git", "-C", str(_WT), "status", "--porcelain"],
+                           capture_output=True, text=True, timeout=20).stdout.strip()
+    return head + ("-dirty" if dirty else "")
+
+
 def _pose_of(asset, origins: torch.Tensor) -> np.ndarray:
     """(N,7) env-local pos(3)+quat wxyz(4)."""
     pos = (asset.data.root_pos_w - origins).cpu().numpy()
@@ -87,13 +114,23 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
     _assert_source_tree()
     if not args.checkpoint.is_file():
         raise FileNotFoundError(args.checkpoint)
-    if not args.warm.is_file():
+    if args.warm is not None and not args.warm.is_file():
         raise FileNotFoundError(f"warm 캐시 없음: {args.warm}")
+
+    # ★학습 때의 cfg 를 되씌운다. 이것 없이는 태스크 기본값으로 돌아 **다른 환경**에서
+    #   재생하게 된다 — layout2 같은 라운드 설정이 통째로 날아간다.
+    from run_cfg_restore import restore_run_cfg_if_available  # noqa: PLC0415
+    agent_cfg = restore_run_cfg_if_available(
+        env_cfg, agent_cfg, resume_path=str(args.checkpoint), workspace_root=str(_WT.parent))
 
     env_cfg.scene.num_envs = args.num_envs
     env_cfg.seed = args.seed
     agent_cfg["params"]["seed"] = args.seed
-    env_cfg.warm_state_paths = (str(args.warm),)
+    if args.warm is not None:
+        env_cfg.warm_state_paths = (str(args.warm),)
+        print(f"[설정] warm 뱅크 오버라이드 = {args.warm}")
+    else:
+        print(f"[설정] warm 뱅크 = cfg 기본값 {getattr(env_cfg, 'warm_state_paths', '?')}")
     # 추출은 학습이 아니다 — 난이도 자동조절이 남아 있으면 시작 조건이 흔들린다.
     for attr in ("enable_adr", "enable_success_adr"):
         if hasattr(env_cfg, attr):
@@ -124,7 +161,8 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
     origins = base.scene.env_origins
     jn = list(robot.joint_names)
     palm_i = robot.body_names.index("r_hl_palm")
-    ltcp_i = robot.body_names.index("l_hl_gripper_base")
+    ltcp_i = (robot.body_names.index("l_hl_gripper_base")
+              if "l_hl_gripper_base" in robot.body_names else None)
     fill_hi = float(base.cfg.success_target_fill_ratio)
     spill_hi = float(base.cfg.success_spill_max)
     step_dt = float(base.step_dt)
@@ -155,7 +193,8 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
             rec["qd_meas"].append(robot.data.joint_vel.cpu().numpy().astype(np.float32))
             rec["q_target"].append(robot.data.joint_pos_target.cpu().numpy().astype(np.float32))
             rec["palm_r"].append(_body_pose(palm_i))
-            rec["tcp_l"].append(_body_pose(ltcp_i))
+            rec["tcp_l"].append(_body_pose(ltcp_i) if ltcp_i is not None
+                                else np.zeros((base.num_envs, 7), np.float32))
             rec["cup_src"].append(_pose_of(base.cup, origins))
             rec["cup_recv"].append(_pose_of(base.left_target_cup, origins))
             rec["fill"].append(base._bead_in_target_fraction.cpu().numpy().astype(np.float32))
@@ -217,7 +256,8 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
     seg = slice(s0, e + 1)
     args.out.mkdir(parents=True, exist_ok=True)
     meta = dict(meta_joint_names=np.array(jn), meta_step_dt=np.float32(step_dt),
-                meta_checkpoint=str(args.checkpoint), meta_commit="9b43f40",
+                meta_checkpoint=str(args.checkpoint), meta_commit=_git_commit(),
+                meta_task=str(args.task), meta_source_tree=str(_WT),
                 meta_success=np.array([fill_hi, spill_hi], np.float32))
     traj = args.out / f"pour_traj_env{i}_s{s0}_e{e}.npz"
     np.savez_compressed(traj, **{k: A[k][seg, i] for k in A}, **meta)
