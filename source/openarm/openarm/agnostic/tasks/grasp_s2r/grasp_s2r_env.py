@@ -1051,6 +1051,32 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         ).min(dim=1).values
         self.extras["task/hand_z_min"] = _hand_z_min.mean()
         self.extras["task/hand_z_min_worst"] = _hand_z_min.min()
+        # ★09.01 신설 — `hand_floor` 벌점이 `min` 으로 링크 25개를 스칼라 하나로 뭉개
+        #   "손 전체를 눕히기"와 "손끝 하나 스치기"가 같은 값이 된다(사용자 지적).
+        #   벌점 수식을 고치기 전에 **몇 개 링크가 얼마나 내려가는지**부터 계측한다.
+        _z_links = (
+            self.robot.data.body_pos_w[:, self._hand_body_ids_t, 2]
+            - self.scene.env_origins[:, 2].unsqueeze(1)
+        )
+        _viol = torch.relu(float(self.cfg.hand_floor_z) - _z_links)     # (N, K)
+        self.extras["task/hand_floor_n_links"] = (_viol > 0).float().sum(dim=1).mean()
+        self.extras["task/hand_floor_depth_sum"] = _viol.sum(dim=1).mean()
+        self.extras["task/hand_floor_depth_max"] = _viol.max()
+        # ★09.01 신설 — palm 접근축 자세. 사용자 요구는 "palm_ee_x ⟂ world z"(= 90°)인데
+        #   구속은 `palm_rot_half_deg` ±45° 박스뿐이고 중심으로 당기는 보상 항이 없다.
+        #   회전이 지금까지 **어디에도 로깅되지 않아** 드리프트를 볼 수 없었다.
+        #   ★진단 전용 — 보상·게이트·obs 어디에도 쓰지 않는다.
+        from isaaclab.utils.math import matrix_from_quat
+        _px = matrix_from_quat(self.robot.data.body_quat_w[:, self.palm_idx])[:, :, 0]
+        _ang = torch.rad2deg(torch.arccos(_px[:, 2].clamp(-1.0, 1.0)))  # (N,) 90° = 수직
+        self.extras["palm/x_vs_worldz_deg"] = _ang.mean()
+        _pre = ~self._latched
+        _n_pre = _pre.float().sum().clamp(min=1.0)
+        self.extras["palm/x_vs_worldz_deg_prelatch"] = (_ang * _pre.float()).sum() / _n_pre
+        _n_post = self._latched.float().sum().clamp(min=1.0)
+        self.extras["palm/x_vs_worldz_deg_postlatch"] = (
+            (_ang * self._latched.float()).sum() / _n_post)
+        self.extras["palm/x_vs_worldz_dev_max"] = (_ang - 90.0).abs().max()
 
         total, terms, gates = compute_grasp_s2r_rewards(
             enclosure=enclosure,

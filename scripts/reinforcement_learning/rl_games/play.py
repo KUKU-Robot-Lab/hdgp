@@ -117,6 +117,12 @@ parser.add_argument(
     help="Viewer camera lookat 'x,y,z' (env-local).",
 )
 parser.add_argument(
+    "--dump_extras", type=str, default=None,
+    help="쉼표로 구분한 부분문자열에 걸리는 env.extras 키를 30스텝마다 출력한다. "
+         "학습 로그(TFEvents)에만 있고 play 에는 안 나오던 계측을 체크포인트 단위로 "
+         "읽기 위한 것이다. 예: --dump_extras palm/,hand_floor",
+)
+parser.add_argument(
     "--view_env_index", type=int, default=0,
     help="Viewer/비디오 근접뷰가 따라갈 env index (env-local 카메라 기준). 물체별 개별 영상 촬영용.",
 )
@@ -712,6 +718,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             _gp = env.unwrapped
             if hasattr(_gp, "env"):
                 _gp = _gp.env.unwrapped
+            if args_cli.dump_extras:
+                _gp._dxstep = getattr(_gp, "_dxstep", 0) + 1
+                if _gp._dxstep % 30 == 0:
+                    _pats = [p for p in args_cli.dump_extras.split(",") if p]
+                    _ex = getattr(_gp, "extras", {}) or {}
+                    _hit = sorted(k for k in _ex if any(p in k for p in _pats))
+                    if _hit:
+                        print("[EXTRAS] " + "  ".join(
+                            f"{k}={float(_ex[k]):.3f}" for k in _hit), flush=True)
+                    else:
+                        print(f"[EXTRAS] 일치 키 없음 — 패턴 {_pats}", flush=True)
             # grasp_sensor 호환 계측: binary_contact_buf 대신 마디별 접촉력 함수 사용
             if not hasattr(_gp, "binary_contact_buf") and hasattr(_gp, "_tip_contact_forces"):
                 _gp._gpstep = getattr(_gp, "_gpstep", 0) + 1
