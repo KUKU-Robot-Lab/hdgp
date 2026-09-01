@@ -62,6 +62,16 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                 raise RuntimeError(f"[{p.name}] fingertip body '{n}' 해석 실패: {ids}")
             self.tip_ids.append(ids[0])
         self._tip_ids_t = torch.tensor(self.tip_ids, device=self.device, dtype=torch.long)
+        # ★★손 **전 링크** 인덱스 — 바닥 벌점(`hand_floor`)의 기준이다.
+        #   팁만 보면 안 된다: 09.01 실측에서 최하단은 `r_hl_pinky_tip` 이었지만
+        #   손을 굽히면 중간마디가 더 내려갈 수 있다. 이름 접두사로 손 전체를 모은다.
+        #   (palm 은 뺀다 — palm 원점은 손 최하단보다 5.0~5.7cm 위라 판정을 무디게 한다.)
+        _side = p.hand_joint_names[0].split("_hj_")[0]
+        _hb = [i for i, nm in enumerate(self.robot.data.body_names)
+               if nm.startswith(f"{_side}_hl_") and "palm" not in nm]
+        if not _hb:
+            raise RuntimeError(f"[{p.name}] 손 링크 해석 실패 — 접두사 '{_side}_hl_'")
+        self._hand_body_ids_t = torch.tensor(_hb, device=self.device, dtype=torch.long)
         # ---- 접촉 그룹 (프로필 정의) --------------------------------------------------
         fingers = list(p.finger_sensor_bodies.keys())
         self._finger_names = fingers
@@ -1032,11 +1042,22 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                           / max(_thr_od, 1e-6)).clamp(max=1.0).mean(dim=1)
         self.extras["task/hand_overdrive"] = hand_overdrive.mean()
 
+        # ---- 손 최저 높이 (바닥 벌점 기준) ----------------------------------------
+        # ★env-local 로 변환한다 — 월드 z 를 그대로 쓰면 env 격자 오프셋이 섞인다.
+        #   `_env_local` 은 (N,3) 브로드캐스트라 (N,K,3) 에는 못 쓴다 — z 만 직접 뺀다.
+        _hand_z_min = (
+            self.robot.data.body_pos_w[:, self._hand_body_ids_t, 2]
+            - self.scene.env_origins[:, 2].unsqueeze(1)
+        ).min(dim=1).values
+        self.extras["task/hand_z_min"] = _hand_z_min.mean()
+        self.extras["task/hand_z_min_worst"] = _hand_z_min.min()
+
         total, terms, gates = compute_grasp_s2r_rewards(
             enclosure=enclosure,
             finger_closure=finger_closure,
             force_quality=force_quality,
             hand_overdrive=hand_overdrive,
+            hand_z_min=_hand_z_min,
             tip_contact_frac=tip_frac,
             wrap_frac=wrap_frac,
             wrap_at_latch=self._wrap_at_latch,
@@ -1093,6 +1114,25 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             (grip_c.float().sum(dim=1) + self._surf_palm) / (n_tip + 1.0)).mean()
         self.extras["task/n_contact"] = grip_c.float().sum(dim=1).mean()
         self.extras["task/touch_frac"] = tip_frac.mean()
+        # ---- ★★리프트 이후 접촉 구성 (09.01 신설) ---------------------------------
+        # 위 지표들은 전부 **에피소드 전체 평균**이라 아무것도 안 닿는 접근 구간이
+        # 섞여 희석된다 — "못 감"과 "지나침"을 뭉개는 그 함정이다. pouring 이관 판정은
+        # **컵을 든 뒤에 몇 면이 닿고 있는가**로 해야 하므로 리프트로 게이팅해 따로 쓴다.
+        # 사용자 기준(09.01): "손바닥과 손끝으로라도 정확히 5개가 지탱해 주면
+        # 강체처럼 움직이므로 그게 중요하다."
+        _lm = gates["lifted"].float()
+        _ln = _lm.sum().clamp(min=1.0)
+        def _g(x):                      # 리프트된 env 만의 평균
+            return float((x * _lm).sum() / _ln)
+        self.extras["lifted/n_tip"] = _g(tip_c.float().sum(dim=1))
+        self.extras["lifted/n_mid"] = _g(mid_c.float().sum(dim=1))
+        self.extras["lifted/n_dist"] = _g(dist_c.float().sum(dim=1))
+        self.extras["lifted/n_finger"] = _g(grip_c.float().sum(dim=1))
+        self.extras["lifted/palm"] = _g(self._surf_palm)
+        # ★"5점 + 손바닥" 달성률 — 사용자 기준의 직접 판정
+        self.extras["lifted/full_support"] = _g(
+            ((grip_c.float().sum(dim=1) >= 5.0) & (self._surf_palm > 0.5)).float())
+        self.extras["lifted/frac"] = float(_lm.mean())
         self.extras["task/goal_dist"] = goal_dist.mean()
         self.extras["task/height_delta"] = height_delta.mean()
         self.extras["task/cup_disp"] = cup_disp.mean()

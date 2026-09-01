@@ -55,6 +55,9 @@ parser.add_argument("--press", type=int, default=240, help="아래로 누르는 
 parser.add_argument("--release", type=int, default=120, help="지령 복귀 후 관찰 스텝")
 parser.add_argument("--envs", type=int, default=4)
 parser.add_argument("--out", default="/tmp/ring.npz")
+parser.add_argument("--cup-friction", default="",
+                    help="컵 마찰 범위 \"lo,hi\" (예: 0.5,1.5). 빈 값이면 events 를 꺼 "
+                         "공칭 마찰 고정. ★E1 은 1.0 고정, E2 는 0.5~1.5 랜덤이다.")
 parser.add_argument("--friction", action="store_true",
                     help="★r2s 가 0 으로 지운 **실측 관절마찰**을 되돌린다. "
                          "R2S 문서는 'sim friction 은 안 먹는다'고 기록했지만 그 검증은 "
@@ -83,7 +86,12 @@ def main() -> None:
     cfg = GraspS2RTesolloRightEnvCfg()
     cfg.scene.num_envs = int(args.envs)
     cfg.object_bank = "single_cup"
-    cfg.enable_events = False           # 마찰 DR 을 빼 게인만 남긴다
+    # ★★09.01 설계 정정 — 이전 판은 여기서 events 를 통째로 껐다. 그 한 줄이
+    #   **E1↔E2 의 실제 차이 중 하나인 컵 마찰 랜덤화(0.5~1.5)를 같이 꺼버려**
+    #   "게인은 원인이 아니다"라는 반쪽 결론을 냈다. 이제 축으로 연다.
+    cfg.enable_events = bool(args.cup_friction)
+    if args.cup_friction:
+        cfg.object_friction_range = tuple(float(v) for v in args.cup_friction.split(","))
     cfg.enable_adr = False
     cfg.enable_self_collisions = False
     cfg.episode_length_s = 10_000.0     # 프로브 중 리셋 방지(관례)

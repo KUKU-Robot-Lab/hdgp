@@ -36,6 +36,7 @@ GRASP_S2R_REWARD_TERMS: tuple[str, ...] = (
     "post_lift_contact_loss",
     "hand_overdrive",
     "action_smooth",
+    "hand_floor",
 )
 
 
@@ -46,6 +47,7 @@ def _f(cfg: object, name: str, default: float) -> float:
 def compute_grasp_s2r_rewards(
     *,
     # ---- 접촉 ----
+    hand_z_min: torch.Tensor,             # (N,) 손 **전 링크** 최저 z (env-local). 바닥 벌점용
     tip_contact_frac: torch.Tensor,       # (N,) 팁 접촉 손가락 비율 — graded_contact 전용
     wrap_frac: torch.Tensor,              # (N,) per-finger (middle AND distal) 비율 = 감쌈 **깊이**
     wrap_at_latch: torch.Tensor,          # (N,) 래치 시점 깊이 스냅샷
@@ -323,6 +325,19 @@ def compute_grasp_s2r_rewards(
 
     action_smooth = _f(cfg, "action_smooth_weight", -0.02) * action_delta_norm
 
+    # ---- 바닥 벌점 (09.01 신설 · 기본 가중 0 = 항등) ---------------------------------
+    # ★★실기 안전 요구(사용자): "손이 적어도 1cm 는 올라가야 로봇이 안 망가진다."
+    #   sim 은 관통해도 안 부서지니 정책이 테이블을 긁는 법을 배운다 — E2 실측에서
+    #   새끼손가락(`r_hl_pinky_tip`, palm 원점 −5.66cm)이 테이블 위 2cm 까지 내려갔다.
+    # ★`palm_box_min` 상향(지령 클램프)이 아니라 **실측 최저 링크 z** 로 건다:
+    #   ①액션 좌표계를 안 건드려 기존 체크포인트 재생이 그대로다
+    #   ②지령이 아니라 실제 위치라 게인이 물러 처져도 걸린다(E2 가 그 경우)
+    # ★상한을 둔다 — 벌점이 크면 "테이블 근처에 아예 안 간다"가 되어 파지를 회피한다.
+    _hf_w = _f(cfg, "hand_floor_penalty", 0.0)
+    hand_floor = -(_hf_w * torch.relu(
+        _f(cfg, "hand_floor_z", 0.21) - hand_z_min)
+    ).clamp(max=_f(cfg, "hand_floor_penalty_max", 5.0))
+
     terms = {
         "approach": approach,
         "enclosure": enclosure_term,
@@ -337,6 +352,7 @@ def compute_grasp_s2r_rewards(
         "post_lift_contact_loss": post_lift_contact_loss,
         "hand_overdrive": hand_overdrive_term,
         "action_smooth": action_smooth,
+        "hand_floor": hand_floor,
     }
     _missing = set(GRASP_S2R_REWARD_TERMS) - set(terms)
     if _missing:
