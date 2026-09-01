@@ -160,9 +160,9 @@ def palm_pose_mins(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
         0.20, -0.55, 0.20,
-        (90.0 - max_pose_angle) * d,
         (0.0 - max_pose_angle) * d,
-        (90.0 - max_pose_angle) * d,
+        (-90.0 - max_pose_angle) * d,
+        (0.0 - max_pose_angle) * d,
     ]
 
 
@@ -171,9 +171,9 @@ def palm_pose_maxs(max_pose_angle: float) -> list:
     d = math.pi / 180.0
     return [
         0.65, 0.22, 0.65,
-        (90.0 + max_pose_angle) * d,
         (0.0 + max_pose_angle) * d,
-        (90.0 + max_pose_angle) * d,
+        (-90.0 + max_pose_angle) * d,
+        (0.0 + max_pose_angle) * d,
     ]
 
 

@@ -1649,7 +1649,7 @@ class GraspRightEnv(DirectRLEnv):
         palm_to_cup_dir = torch.zeros(self.num_envs, 3, device=self.device)
         palm_to_cup_dir[:, :2] = palm_to_cup_xy / dist_xy.unsqueeze(-1).clamp(min=1e-6)
         palm_quat = self.robot.data.body_quat_w[:, self.palm_body_index]
-        palm_normal_local = torch.tensor([1.0, 0.0, 0.0], device=self.device).expand(self.num_envs, -1)
+        palm_normal_local = torch.tensor([0.0, 1.0, 0.0], device=self.device).expand(self.num_envs, -1)
         palm_normal_world = quat_apply(palm_quat, palm_normal_local)
         palm_align = torch.sum(palm_normal_world * palm_to_cup_dir, dim=-1)
 

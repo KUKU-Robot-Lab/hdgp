@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenArm + Tesollo 3D Robot Kinematics Lab</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        body { background: #111418; color: #e1e7ec; overflow: hidden; display: flex; height: 100vh; }
+        #canvas-container { flex: 1; position: relative; height: 100%; }
+        #sidebar { width: 420px; background: #1a1f26; border-left: 1px solid #2d3748; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+        h1 { font-size: 1.25rem; font-weight: 700; color: #60a5fa; display: flex; align-items: center; gap: 8px; }
+        .badge { background: #2563eb; color: white; font-size: 0.7rem; padding: 2px 8px; border-radius: 9999px; }
+        .card { background: #242c37; border-radius: 8px; padding: 14px; border: 1px solid #334155; }
+        .card-title { font-size: 0.85rem; font-weight: 600; color: #94a3b8; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .slider-group { display: flex; flex-direction: column; gap: 10px; }
+        .slider-item { display: flex; flex-direction: column; gap: 4px; }
+        .slider-header { display: flex; justify-content: space-between; font-size: 0.8rem; }
+        .slider-name { color: #cbd5e1; }
+        .slider-val { color: #38bdf8; font-family: monospace; font-weight: 600; }
+        input[type=range] { width: 100%; accent-color: #38bdf8; cursor: pointer; }
+        .metric-row { display: flex; justify-content: space-between; font-size: 0.85rem; padding: 4px 0; border-bottom: 1px dashed #334155; }
+        .metric-row:last-child { border-bottom: none; }
+        .metric-label { color: #94a3b8; }
+        .metric-val { font-family: monospace; font-weight: bold; }
+        .val-good { color: #4ade80; }
+        .val-warn { color: #facc15; }
+        .val-bad { color: #f87171; }
+        .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        button { background: #334155; color: white; border: 1px solid #475569; padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; cursor: pointer; transition: all 0.2s; }
+        button:hover { background: #475569; border-color: #64748b; }
+        button.primary { background: #2563eb; border-color: #3b82f6; }
+        button.primary:hover { background: #1d4ed8; }
+        .axis-legend { display: flex; gap: 12px; font-size: 0.75rem; margin-top: 4px; }
+        .axis-item { display: flex; align-items: center; gap: 4px; }
+        .axis-dot { width: 10px; height: 10px; border-radius: 2px; }
+        #overlay-info { position: absolute; top: 16px; left: 16px; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(8px); padding: 12px 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); pointer-events: none; font-size: 0.8rem; }
+    </style>
+    <!-- Three.js & OrbitControls from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+    <div id="canvas-container">
+        <div id="overlay-info">
+            <div style="font-weight: 700; color: #38bdf8; margin-bottom: 4px;">🖱️ 3D 마우스 조작 안내</div>
+            <div>• 좌클릭 + 드래그: 360° 카메라 회전</div>
+            <div>• 우클릭 + 드래그: 카메라 이동 (Pan)</div>
+            <div>• 휠 스크롤: 줌 인 / 줌 아웃</div>
+        </div>
+    </div>
+
+    <div id="sidebar">
+        <div>
+            <h1>OpenArm + Tesollo <span class="badge">Kinematics Lab</span></h1>
+            <p style="font-size: 0.75rem; color: #64748b; margin-top: 4px;">윈도우 로컬 브라우저 기구학 3D 시뮬레이터</p>
+        </div>
+
+        <!-- Preset Buttons -->
+        <div class="card">
+            <div class="card-title">🚀 대표 포즈 프리셋</div>
+            <div class="btn-group">
+                <button class="primary" onclick="setPreset('side_approach')">정석 Side Approach</button>
+                <button onclick="setPreset('rest')">수직 차렷 (Start)</button>
+                <button onclick="setPreset('clamped_bug')">⚠️ 이전 왜곡 버그 (55,-35,55)</button>
+                <button onclick="setPreset('working')">전방 작업 (Working)</button>
+            </div>
+        </div>
+
+        <!-- Live Metrics -->
+        <div class="card">
+            <div class="card-title">📊 실시간 기구학 지표 (Metrics)</div>
+            <div class="metric-row">
+                <span class="metric-label">손바닥 위치 (X, Y, Z):</span>
+                <span class="metric-val" id="disp-pos">[0.270, -0.100, 0.380]</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">손바닥 피부 정면 (+Y_local):</span>
+                <span class="metric-val" id="disp-normal">[0.00, 1.00, 0.00]</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">4손가락 뻗음 축 (-Z_local):</span>
+                <span class="metric-val" id="disp-finger">[1.00, 0.00, 0.00]</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">손바닥-컵 대면 점수 (Alignment):</span>
+                <span class="metric-val val-good" id="disp-align">1.00 (만점)</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">손가락-전방 정렬 점수:</span>
+                <span class="metric-val val-good" id="disp-finger-align">1.00 (수평 전방)</span>
+            </div>
+
+            <div class="axis-legend">
+                <div class="axis-item"><div class="axis-dot" style="background:#ef4444;"></div> +X 엄지</div>
+                <div class="axis-item"><div class="axis-dot" style="background:#22c55e;"></div> +Y 손바닥피부</div>
+                <div class="axis-item"><div class="axis-dot" style="background:#3b82f6;"></div> -Z 4손가락</div>
+            </div>
+        </div>
+
+        <!-- Euler Rotation Target Controls -->
+        <div class="card">
+            <div class="card-title">🔄 목표 오일러 회전 (Euler ZYX)</div>
+            <div class="slider-group">
+                <div class="slider-item">
+                    <div class="slider-header"><span class="slider-name">Roll (X 회전)</span><span class="slider-val" id="v-roll">0°</span></div>
+                    <input type="range" id="s-roll" min="-180" max="180" value="0" step="1" oninput="onEulerChange()">
+                </div>
+                <div class="slider-item">
+                    <div class="slider-header"><span class="slider-name">Pitch (Y 회전)</span><span class="slider-val" id="v-pitch">-90°</span></div>
+                    <input type="range" id="s-pitch" min="-180" max="180" value="-90" step="1" oninput="onEulerChange()">
+                </div>
+                <div class="slider-item">
+                    <div class="slider-header"><span class="slider-name">Yaw (Z 회전)</span><span class="slider-val" id="v-yaw">0°</span></div>
+                    <input type="range" id="s-yaw" min="-180" max="180" value="0" step="1" oninput="onEulerChange()">
+                </div>
+            </div>
+        </div>
+
+        <!-- 7-DOF Arm Joint Angle Controls -->
+        <div class="card">
+            <div class="card-title">🦾 7-DOF 관절 각도 q (Radians)</div>
+            <div class="slider-group">
+                <div class="slider-item"><div class="slider-header"><span class="slider-name">q1 (Shoulder Pan)</span><span class="slider-val" id="v-q1">0.00</span></div><input type="range" id="s-q1" min="-3.14" max="3.14" value="0.50" step="0.01" oninput="onJointChange()"></div>
+                <div class="slider-item"><div class="slider-header"><span class="slider-name">q2 (Shoulder Lift)</span><span class="slider-val" id="v-q2">0.00</span></div><input type="range" id="s-q2" min="-2.00" max="2.00" value="0.10" step="0.01" oninput="onJointChange()"></div>
+                <div class="slider-item"><div class="slider-header"><span class="slider-name">q3 (Upper Arm Roll)</span><span class="slider-val" id="v-q3">0.00</span></div><input type="range" id="s-q3" min="-3.14" max="3.14" value="0.40" step="0.01" oninput="onJointChange()"></div>
+                <div class="slider-item"><div class="slider-header"><span class="slider-name">q4 (Elbow Flex)</span><span class="slider-val" id="v-q4">0.00</span></div><input type="range" id="s-q4" min="0.00" max="2.20" value="1.30" step="0.01" oninput="onJointChange()"></div>
+                <div class="slider-item"><div class="slider-header"><span class="slider-name">q5 (Wrist Roll)</span><span class="slider-val" id="v-q5">0.00</span></div><input type="range" id="s-q5" min="-3.14" max="3.14" value="-0.20" step="0.01" oninput="onJointChange()"></div>
+                <div class="slider-item"><div class="slider-header"><span class="slider-name">q6 (Wrist Pitch)</span><span class="slider-val" id="v-q6">0.00</span></div><input type="range" id="s-q6" min="-1.57" max="1.57" value="0.00" step="0.01" oninput="onJointChange()"></div>
+                <div class="slider-item"><div class="slider-header"><span class="slider-name">q7 (Wrist Yaw)</span><span class="slider-val" id="v-q7">0.00</span></div><input type="range" id="s-q7" min="-3.14" max="3.14" value="0.00" step="0.01" oninput="onJointChange()"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // -------------------------------------------------------------
+        // Three.js Scene Setup
+        // -------------------------------------------------------------
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0f172a);
+
+        const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.05, 20);
+        camera.position.set(1.4, -0.6, 0.85); // Isaac Sim Viewer Eye
+        camera.up.set(0, 0, 1); // Z-up coordinate system
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.shadowMap.enabled = true;
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.target.set(0.35, -0.05, 0.35); // Look at table & cup
+        controls.update();
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(2, -1, 3);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // Floor Grid (Z=0)
+        const grid = new THREE.GridHelper(3, 30, 0x3b82f6, 0x1e293b);
+        grid.rotation.x = Math.PI / 2;
+        scene.add(grid);
+
+        // -------------------------------------------------------------
+        // Scene Objects: Table & Target Cup
+        // -------------------------------------------------------------
+        // Table: pos=[0.5725, 0.003, 0.20], size=[0.7, 1.2, 0.4]
+        const tableGeo = new THREE.BoxGeometry(0.7, 1.2, 0.4);
+        const tableMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.7 });
+        const table = new THREE.Mesh(tableGeo, tableMat);
+        table.position.set(0.5725, 0.003, 0.20);
+        scene.add(table);
+
+        // Target Cup: pos=[0.27, -0.10, 0.46], radius=0.04 (8cm dia), height=0.12 (12cm)
+        const cupGeo = new THREE.CylinderGeometry(0.042, 0.038, 0.12, 32);
+        const cupMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.3, transparent: true, opacity: 0.85 });
+        const cup = new THREE.Mesh(cupGeo, cupMat);
+        cup.rotation.x = Math.PI / 2; // Cylinder default is along Y in Three.js -> rotate to Z-up
+        cup.position.set(0.27, -0.10, 0.46);
+        scene.add(cup);
+
+        // Robot Base Marker (0,0,0)
+        const baseGeo = new THREE.CylinderGeometry(0.08, 0.10, 0.70, 24);
+        const baseMat = new THREE.MeshStandardMaterial({ color: 0x64748b });
+        const base = new THREE.Mesh(baseGeo, baseMat);
+        base.rotation.x = Math.PI / 2;
+        base.position.set(0, 0, 0.35);
+        scene.add(base);
+
+        // -------------------------------------------------------------
+        // Robot Kinematic Chain (7-DOF OpenArm + Tesollo Hand)
+        // -------------------------------------------------------------
+        const robotGroup = new THREE.Group();
+        scene.add(robotGroup);
+
+        const ARM_JOINTS_DEF = [
+            { xyz: [0, -0.0935, 0.698], rpy: [1.5708, 0, 0], axis: [0, 0, 1] },
+            { xyz: [-0.0301, 0, 0.06],  rpy: [-1.5708, 0, 3.1416], axis: [1, 0, 0] },
+            { xyz: [-0.0301, 0, 0.066], rpy: [0, 0, 3.1416], axis: [0, 0, 1] },
+            { xyz: [0, 0.0315, 0.154],  rpy: [0, 0, 0], axis: [0, 1, 0] },
+            { xyz: [0, -0.0315, 0.0955], rpy: [0, 0, 0], axis: [0, 0, 1] },
+            { xyz: [0.0375, 0, 0.1205], rpy: [0, 0, 0], axis: [1, 0, 0] },
+            { xyz: [-0.0375, 0, 0],     rpy: [0, 0, 0], axis: [0, 1, 0] }
+        ];
+
+        // Hand Visual Group
+        const handGroup = new THREE.Group();
+        // Palm Plate
+        const palmBox = new THREE.Mesh(
+            new THREE.BoxGeometry(0.02, 0.08, 0.09),
+            new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4 })
+        );
+        palmBox.position.set(0.01, 0.0, 0.04);
+        handGroup.add(palmBox);
+
+        // 5 Fingers (Wire representation)
+        const fingerMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8 });
+        for (let i = 0; i < 4; i++) {
+            const f = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.005, 0.06, 8), fingerMat);
+            f.position.set(0.015, -0.03 + i * 0.02, -0.01);
+            f.rotation.x = Math.PI / 2;
+            handGroup.add(f);
+        }
+        // Thumb
+        const thumb = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.006, 0.05, 8), fingerMat);
+        thumb.position.set(0.03, 0.03, 0.03);
+        thumb.rotation.z = -Math.PI / 4;
+        handGroup.add(thumb);
+
+        // Hand Triad Arrows
+        const arrowSkin = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0.02, 0, 0.04), 0.12, 0x22c55e, 0.03, 0.02); // +Y Skin Normal
+        const arrowFinger = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(0.02, 0, 0.04), 0.12, 0x3b82f6, 0.03, 0.02); // -Z Finger
+        const arrowThumb = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0.02, 0, 0.04), 0.10, 0xef4444, 0.03, 0.02); // +X Thumb
+        handGroup.add(arrowSkin);
+        handGroup.add(arrowFinger);
+        handGroup.add(arrowThumb);
+
+        // Link Visual Mesh Line
+        const linkMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.3 });
+        const jointMat = new THREE.MeshStandardMaterial({ color: 0x0ea5e9 });
+        const armSegments = [];
+        const jointMeshes = [];
+
+        for (let i = 0; i < 7; i++) {
+            const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.1, 16), linkMat);
+            const jm = new THREE.Mesh(new THREE.SphereGeometry(0.036, 16, 16), jointMat);
+            scene.add(seg);
+            scene.add(jm);
+            armSegments.push(seg);
+            jointMeshes.push(jm);
+        }
+        scene.add(handGroup);
+
+        // -------------------------------------------------------------
+        // FK Computation Engine
+        // -------------------------------------------------------------
+        function computeFK(q) {
+            let T = new THREE.Matrix4();
+            const jointPositions = [new THREE.Vector3(0, 0, 0.698)];
+
+            for (let i = 0; i < 7; i++) {
+                const def = ARM_JOINTS_DEF[i];
+                const T_origin = new THREE.Matrix4();
+                const euler = new THREE.Euler(def.rpy[0], def.rpy[1], def.rpy[2], 'ZYX');
+                T_origin.makeRotationFromEuler(euler);
+                T_origin.setPosition(def.xyz[0], def.xyz[1], def.xyz[2]);
+
+                const T_rot = new THREE.Matrix4();
+                const axis = new THREE.Vector3(def.axis[0], def.axis[1], def.axis[2]);
+                T_rot.makeRotationAxis(axis, q[i]);
+
+                T.multiply(T_origin).multiply(T_rot);
+                const p = new THREE.Vector3();
+                p.setFromMatrixPosition(T);
+                jointPositions.push(p);
+            }
+
+            // Palm link offset: [0, 0, 0.133], rpy=[0, 0, -pi/2]
+            const T_palm = new THREE.Matrix4();
+            T_palm.makeRotationZ(-Math.PI / 2);
+            T_palm.setPosition(0, 0, 0.133);
+            T.multiply(T_palm);
+
+            return { T_palm, jointPositions };
+        }
+
+        // -------------------------------------------------------------
+        // UI & Preset Controls
+        // -------------------------------------------------------------
+        function updateSceneFromJoints(q) {
+            const { T_palm, jointPositions } = computeFK(q);
+
+            // Update Link Segments
+            for (let i = 0; i < 7; i++) {
+                const p1 = jointPositions[i];
+                const p2 = jointPositions[i + 1];
+                const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+                const dist = p1.distanceTo(p2);
+
+                jointMeshes[i].position.copy(p1);
+                armSegments[i].position.copy(mid);
+                armSegments[i].scale.set(1, Math.max(dist / 0.1, 0.01), 1);
+                armSegments[i].quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3().subVectors(p2, p1).normalize());
+            }
+
+            // Update Hand Pose
+            handGroup.position.setFromMatrixPosition(T_palm);
+            handGroup.quaternion.setFromRotationMatrix(T_palm);
+
+            // Compute Directions
+            const normal = new THREE.Vector3(0, 1, 0).applyQuaternion(handGroup.quaternion);
+            const finger = new THREE.Vector3(0, 0, -1).applyQuaternion(handGroup.quaternion);
+
+            // Palm to Cup vector (Cup at [0.27, -0.10, 0.46])
+            const cupPos = cup.position.clone();
+            const palmToCup = new THREE.Vector3().subVectors(cupPos, handGroup.position);
+            palmToCup.z = 0; // XY plane alignment
+            palmToCup.normalize();
+
+            const alignScore = Math.max(0, normal.dot(palmToCup)).toFixed(3);
+            const fingerAlignScore = Math.max(0, finger.dot(new THREE.Vector3(1, 0, 0))).toFixed(3);
+
+            // Update Metrics Display
+            document.getElementById('disp-pos').innerText = `[${handGroup.position.x.toFixed(3)}, ${handGroup.position.y.toFixed(3)}, ${handGroup.position.z.toFixed(3)}]`;
+            document.getElementById('disp-normal').innerText = `[${normal.x.toFixed(2)}, ${normal.y.toFixed(2)}, ${normal.z.toFixed(2)}]`;
+            document.getElementById('disp-finger').innerText = `[${finger.x.toFixed(2)}, ${finger.y.toFixed(2)}, ${finger.z.toFixed(2)}]`;
+            
+            const alignElem = document.getElementById('disp-align');
+            alignElem.innerText = `${alignScore} (${alignScore >= 0.85 ? '✅ 완벽 대면' : '❌ 비틀림'})`;
+            alignElem.className = `metric-val ${alignScore >= 0.85 ? 'val-good' : alignScore >= 0.5 ? 'val-warn' : 'val-bad'}`;
+
+            const fingerElem = document.getElementById('disp-finger-align');
+            fingerElem.innerText = `${fingerAlignScore} (${fingerAlignScore >= 0.85 ? '✅ 전방 수평' : '❌ 바닥 꺾임'})`;
+            fingerElem.className = `metric-val ${fingerAlignScore >= 0.85 ? 'val-good' : 'val-bad'}`;
+        }
+
+        function onJointChange() {
+            const q = [
+                parseFloat(document.getElementById('s-q1').value),
+                parseFloat(document.getElementById('s-q2').value),
+                parseFloat(document.getElementById('s-q3').value),
+                parseFloat(document.getElementById('s-q4').value),
+                parseFloat(document.getElementById('s-q5').value),
+                parseFloat(document.getElementById('s-q6').value),
+                parseFloat(document.getElementById('s-q7').value),
+            ];
+            for (let i = 1; i <= 7; i++) {
+                document.getElementById(`v-q${i}`).innerText = q[i - 1].toFixed(2);
+            }
+            updateSceneFromJoints(q);
+        }
+
+        function onEulerChange() {
+            const roll = parseFloat(document.getElementById('s-roll').value);
+            const pitch = parseFloat(document.getElementById('s-pitch').value);
+            const yaw = parseFloat(document.getElementById('s-yaw').value);
+
+            document.getElementById('v-roll').innerText = `${roll}°`;
+            document.getElementById('v-pitch').innerText = `${pitch}°`;
+            document.getElementById('v-yaw').innerText = `${yaw}°`;
+
+            // Apply orientation directly to Hand Group for Euler test
+            const euler = new THREE.Euler(THREE.MathUtils.degToRad(roll), THREE.MathUtils.degToRad(pitch), THREE.MathUtils.degToRad(yaw), 'ZYX');
+            handGroup.quaternion.setFromEuler(euler);
+            handGroup.position.set(0.27, -0.22, 0.46); // Standoff pos
+
+            const normal = new THREE.Vector3(0, 1, 0).applyQuaternion(handGroup.quaternion);
+            const finger = new THREE.Vector3(0, 0, -1).applyQuaternion(handGroup.quaternion);
+            const palmToCup = new THREE.Vector3(0, 1, 0); // Directly facing +Y
+
+            const alignScore = Math.max(0, normal.dot(palmToCup)).toFixed(3);
+            const fingerAlignScore = Math.max(0, finger.dot(new THREE.Vector3(1, 0, 0))).toFixed(3);
+
+            document.getElementById('disp-pos').innerText = `[${handGroup.position.x.toFixed(3)}, ${handGroup.position.y.toFixed(3)}, ${handGroup.position.z.toFixed(3)}]`;
+            document.getElementById('disp-normal').innerText = `[${normal.x.toFixed(2)}, ${normal.y.toFixed(2)}, ${normal.z.toFixed(2)}]`;
+            document.getElementById('disp-finger').innerText = `[${finger.x.toFixed(2)}, ${finger.y.toFixed(2)}, ${finger.z.toFixed(2)}]`;
+
+            const alignElem = document.getElementById('disp-align');
+            alignElem.innerText = `${alignScore} (${alignScore >= 0.85 ? '✅ 완벽 대면' : '❌ 비틀림'})`;
+            alignElem.className = `metric-val ${alignScore >= 0.85 ? 'val-good' : 'val-bad'}`;
+
+            const fingerElem = document.getElementById('disp-finger-align');
+            fingerElem.innerText = `${fingerAlignScore} (${fingerAlignScore >= 0.85 ? '✅ 전방 수평' : '❌ 바닥 꺾임'})`;
+            fingerElem.className = `metric-val ${fingerAlignScore >= 0.85 ? 'val-good' : 'val-bad'}`;
+        }
+
+        function setPreset(name) {
+            if (name === 'side_approach') {
+                document.getElementById('s-roll').value = 0;
+                document.getElementById('s-pitch').value = -90;
+                document.getElementById('s-yaw').value = 0;
+                onEulerChange();
+            } else if (name === 'clamped_bug') {
+                document.getElementById('s-roll').value = 55;
+                document.getElementById('s-pitch').value = -35;
+                document.getElementById('s-yaw').value = 55;
+                onEulerChange();
+            } else if (name === 'rest') {
+                const q = [0, 0, 0, 0, 0, 0, 0];
+                setSliders(q);
+            } else if (name === 'working') {
+                const q = [0.5, 0.1, 0.4, 1.3, -0.2, 0.0, 0.0];
+                setSliders(q);
+            }
+        }
+
+        function setSliders(q) {
+            for (let i = 1; i <= 7; i++) {
+                document.getElementById(`s-q${i}`).value = q[i - 1];
+            }
+            onJointChange();
+        }
+
+        // Initial Pose
+        setPreset('side_approach');
+
+        // Render Loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+    </script>
+</body>
+</html>
