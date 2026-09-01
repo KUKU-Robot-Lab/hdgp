@@ -1344,15 +1344,17 @@ class GraspRightEnv(DirectRLEnv):
         palm_to_cup_dir[:, :2] = palm_to_cup_xy / palm_to_cup_dist_xy.unsqueeze(-1).clamp(min=1e-6)
 
         palm_quat = self.robot.data.body_quat_w[:, self.palm_body_index]
-        # +X 축 = 진짜 손바닥 피부 정면 (장풍 방향: 컵의 옆면을 정확히 대면)
-        palm_normal_local = torch.tensor([1.0, 0.0, 0.0], device=self.device).expand(self.num_envs, -1)
+        # +Y 축 = 진짜 손바닥 피부 정면 (장풍 방향: 컵의 옆면을 정확히 대면)
+        palm_normal_local = torch.tensor([0.0, 1.0, 0.0], device=self.device).expand(self.num_envs, -1)
         palm_normal_world = quat_apply(palm_quat, palm_normal_local)
         palm_alignment = torch.sum(palm_normal_world * palm_to_cup_dir, dim=-1).clamp(min=0.0)
 
-        # +Z 축 = 손가락 뻗는 방향 (바닥 -Z_world 방향을 향하도록 유도)
-        palm_down_local = torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(self.num_envs, -1)
-        palm_down_world = quat_apply(palm_quat, palm_down_local)
-        palm_down_alignment = (-palm_down_world[:, 2]).clamp(min=0.0)
+        # -Z 축 = 4손가락 뻗는 방향 (월드 +X_world 전방 방향을 향하도록 유도)
+        palm_finger_local = torch.tensor([0.0, 0.0, -1.0], device=self.device).expand(self.num_envs, -1)
+        palm_finger_world = quat_apply(palm_quat, palm_finger_local)
+        world_x_dir = torch.tensor([1.0, 0.0, 0.0], device=self.device).expand(self.num_envs, -1)
+        # 월드 +X_world 축([1.0, 0.0, 0.0])과 4손가락 내적이 1.0 일 때 만점
+        palm_down_alignment = torch.sum(palm_finger_world * world_x_dir, dim=-1).clamp(min=0.0)
 
         # success: 엄지-컵 접촉을 명시 요구 + 나머지 완화(≥success_min_grip_fingers).
         thumb_cup_grip = any_finger_contact[:, 0]
@@ -1950,12 +1952,14 @@ class GraspRightEnv(DirectRLEnv):
                 (torch.rand(n, device=self.device) - 0.5) * 2.0 * self.cfg.pregrasp_noise_z,
             ], dim=1)
             pregrasp_pos = obj_pos_local + self.pregrasp_offset.unsqueeze(0) + noise
+            # 테이블 모서리 충돌 방지: 차렷 자세에서 테이블 상공(Z >= 0.35m)으로 먼저 들어올리도록 강제
+            pregrasp_pos[:, 2] = torch.clamp(pregrasp_pos[:, 2], min=0.35)
 
             pregrasp_palm_pose = torch.zeros(n, 6, device=self.device)
             pregrasp_palm_pose[:, :3] = pregrasp_pos
-            pregrasp_palm_pose[:, 3] = math.radians(90.0)
-            pregrasp_palm_pose[:, 4] = math.radians(0.0)
-            pregrasp_palm_pose[:, 5] = math.radians(90.0)
+            pregrasp_palm_pose[:, 3] = math.radians(0.0)
+            pregrasp_palm_pose[:, 4] = math.radians(-90.0)
+            pregrasp_palm_pose[:, 5] = math.radians(0.0)
             pregrasp_palm_pose = torch.max(
                 torch.min(pregrasp_palm_pose, self.palm_maxs.unsqueeze(0)),
                 self.palm_mins.unsqueeze(0),

@@ -107,12 +107,17 @@ def compute_grasp_reward_terms(
     std_z = _cfg_float(cfg, "approach_z_fine_std", 0.03)
     reward_z = -w_z_coarse * height_error + w_z_fine * (1.0 - torch.tanh(height_error / std_z))
 
-    # 3. [자세 정렬 보상] 손바닥 정면(+X) 컵 대면 + 손가락(+Z) 하향 자세 안정
+    # ★ [보상 해킹 방지 게이트] Z 높이가 컵 높이에 10cm 이내로 들어와야만 XY 수평 정렬 양수 보상을 지급
+    # (테이블 아래에 서서 수평 정렬만으로 보상을 챙기는 Shortcut Learning 원천 차단)
+    height_gate = (1.0 - (height_error / 0.10).clamp(max=1.0))
+    reward_xy = torch.where(reward_xy > 0.0, reward_xy * height_gate, reward_xy)
+
+    # 3. [자세 정렬 보상] 손바닥 정면(+X) 컵 대면 + 손가락(+Z) 수평(Horizontal) 자세 안정
     align_facing = upright_quality if palm_alignment is None else palm_alignment.clamp(0.0, 1.0)
     align_down = torch.ones_like(align_facing) if palm_down_alignment is None else palm_down_alignment.clamp(0.0, 1.0)
     w_align_facing = _cfg_float(cfg, "approach_align_weight", 0.20)
     w_align_down = _cfg_float(cfg, "approach_down_align_weight", 0.10)
-    reward_align = w_align_facing * align_facing + w_align_down * align_down
+    reward_align = (w_align_facing * align_facing + w_align_down * align_down) * height_gate
 
     # 4. [목표 지점 감속 정지 보상] Standoff 근접 게이트 내에서 손바닥 선속도 감속 유도
     w_vel_damp = _cfg_float(cfg, "approach_vel_damping_weight", 0.0)
