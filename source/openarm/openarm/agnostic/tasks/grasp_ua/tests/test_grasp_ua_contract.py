@@ -2114,3 +2114,36 @@ def test_constant_indices_are_cached_for_hot_path():
     assert "_a = self._group_a0" in env, "매 스텝 int(self._group_a_idx[0]) 로 돌아갔다"
     assert "self._syn_has_fixed = bool(" in ctl
     assert "self._syn_has_fixed" in env, "매 스텝 bool((~_mv).any()) 로 돌아갔다"
+
+
+def test_palm_normal_diagnostic_uses_the_task_frame():
+    """★진단도 `palm_frame_remap` 이 적용된 축을 봐야 한다.
+
+    `palm/x_vs_worldz_deg` 는 "손바닥 법선이 world z 에 수직인가(=90°)"를 재는데,
+    원 프레임의 +x 를 읽으면 RH56F1 에서는 손바닥 판의 **긴 변**(61mm 방향)을 재게
+    된다 — 손바닥 메시 실측 61×28×3.6mm · 면적 89%가 ±z 를 향한다(법선 = 국소 +z).
+    09.02 로그의 26.7° 는 그래서 의미 없는 값이었다.
+    """
+    env = (_HERE / "grasp_ua_env.py").read_text(encoding="utf-8")
+    blk = env.split('self.extras["palm/x_vs_worldz_deg"]')[0][-1400:]
+    assert "_px = self._palm_ee_R()[:, :, 0]" in blk, (
+        "palm 법선 진단이 원 프레임(matrix_from_quat)으로 되돌아갔다")
+    assert "matrix_from_quat(self.robot.data.body_quat_w[:, self.palm_idx])[:, :, 0]" \
+        not in env
+
+
+def test_approach_normal_target_is_configurable_and_off_by_default():
+    """★접근의 법선 목표(손바닥 표면 vs 케이지 중심)는 **손 기하 종속**이다.
+
+    09.02 palm-frame 프로브 실측 — 케이지가 법선으로 얼마나 떨어져 있는가:
+        tesollo  +54mm / 반경 120mm → 비율 0.45 → 접근 최적점의 close_gate 1.0
+        RH56F1   +40mm / 반경  54mm → 비율 0.74 → 접근 최적점의 close_gate 0.52
+    tesollo 는 어긋남에도 0.95 까지 학습됐으므로 기본은 끈다(그 경로 보존).
+    """
+    env = (_HERE / "grasp_ua_env.py").read_text(encoding="utf-8")
+    assert 'getattr(cfgn, "approach_target_cage_normal", False)' in env
+    assert "_dn = _dn - self._cage_offset_palm[0]" in env, (
+        "오프셋은 상수를 적지 말고 부팅 실측 `_cage_offset_palm` 에서 읽어야 한다")
+    assert "approach_target_cage_normal: bool = False" in _CFG, "기본이 켜져 있다"
+    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
+    assert "approach_target_cage_normal: bool = True" in sub

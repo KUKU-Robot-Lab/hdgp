@@ -970,6 +970,20 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         _dn = (_d * _R[:, :, 0]).sum(dim=-1)                 # 법선 성분(부호 포함)
         _dy = (_d * _R[:, :, 1]).sum(dim=-1)
         _dz = (_d * _R[:, :, 2]).sum(dim=-1)
+        # ★★★09.02 접근 목표를 **케이지 중심**으로 옮긴다(플래그, 기본 꺼짐).
+        #   법선거리를 0 으로 몰면 컵이 손바닥 **표면**에 붙는데, 컵이 실제로 들어가야
+        #   할 자리는 엄지-4지 사이 케이지이고 그건 법선으로 떨어져 있다.
+        #   09.02 palm-frame 프로브 실측(태스크 표준축 법선 성분):
+        #       tesollo  케이지 오프셋 +54mm · 반경 120mm → 비율 0.45
+        #       RH56F1   케이지 오프셋 +40mm · 반경  54mm → 비율 0.74
+        #   비율이 곧 접근 최적점에서의 닫기 게이트다 — `_g=(r−off)/(0.5r)` 로
+        #   tesollo 는 1.0(완전 개방)인데 RH56F1 은 **0.52(절반)** 다. 즉 이 손에서만
+        #   접근 목표와 파지 조건이 어긋나 있고, 실측 `cage_dist` 48mm 가 그 최적점이다.
+        #   ⚠tesollo 는 이 어긋남에도 0.95 까지 학습됐다 — 그래서 기본은 **끈다**.
+        #     "tesollo 는 오프셋 0" 이라는 앞선 추정은 실측으로 반증됐다.
+        #   오프셋은 상수를 적지 않고 부팅 실측(`_cage_offset_palm`, palm 강체)에서 읽는다.
+        if bool(getattr(cfgn, "approach_target_cage_normal", False)):
+            _dn = _dn - self._cage_offset_palm[0]
         palm_normal_dist = _dn.abs()
         # 손바닥 면 안의 어긋남 — z 는 데드밴드를 통과시킨다(파지 높이는 여유 축).
         _dzb = torch.relu(_dz.abs() - float(self.cfg.grasp_z_deadband))
@@ -1081,8 +1095,14 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         #   구속은 `palm_rot_half_deg` ±45° 박스뿐이고 중심으로 당기는 보상 항이 없다.
         #   회전이 지금까지 **어디에도 로깅되지 않아** 드리프트를 볼 수 없었다.
         #   ★진단 전용 — 보상·게이트·obs 어디에도 쓰지 않는다.
-        from isaaclab.utils.math import matrix_from_quat
-        _px = matrix_from_quat(self.robot.data.body_quat_w[:, self.palm_idx])[:, :, 0]
+        # ★★★09.02 원 프레임 `matrix_from_quat(...)[:, :, 0]` → `_palm_ee_R()` 열0.
+        #   `_palm_ee_R()` 에는 `palm_frame_remap` 이 들어 있는데 이 진단만 **원 프레임**
+        #   의 +x 를 읽고 있었다. RH56F1 에서 `r_hl_palm_sensor` 의 원 +x 는 손바닥 판의
+        #   **긴 변**(61mm 방향)이지 법선이 아니다 — 손바닥 메시 실측: 판이
+        #   61×28×3.6mm 이고 면적의 89%가 ±z 를 향한다(법선 = 국소 +z).
+        #   그래서 로그의 26.7° 는 아무 의미가 없는 값이었다(보상·게이트·obs 에는
+        #   안 쓰여 학습 오염은 없었다).
+        _px = self._palm_ee_R()[:, :, 0]            # 태스크 표준 법선
         _ang = torch.rad2deg(torch.arccos(_px[:, 2].clamp(-1.0, 1.0)))  # (N,) 90° = 수직
         self.extras["palm/x_vs_worldz_deg"] = _ang.mean()
         _pre = ~self._latched

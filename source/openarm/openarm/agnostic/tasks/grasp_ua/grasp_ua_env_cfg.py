@@ -570,6 +570,11 @@ class GraspUAEnvCfg(DirectRLEnvCfg):
     cage_gate_min_opposing: int = 0
 
     # ---- 보상 가중치 (grasp_v1 8항 + 이송 2항) ---------------------------------------
+    # ★★접근의 법선 목표를 손바닥 표면(0)이 아니라 **케이지 중심**으로 둘 것인가.
+    #   기본 False = 현행(tesollo 검증 경로). 엄지가 손바닥 앞으로 크게 튀어나온 손은
+    #   True 로 켠다 — 안 켜면 접근 최적점이 컵을 케이지 **가장자리**에 놓아 닫기
+    #   게이트가 절반만 열린다(09.02 RH56F1 실측 0.52). 상세 근거는 env 의 사용처 주석.
+    approach_target_cage_normal: bool = False
     approach_weight: float = 2.0
     approach_sharpness: float = 8.0          # 손바닥 **면** 어긋남(y·z)
     # ★★법선(palm_ee_x) 방향은 더 날카롭게 — "손바닥이 물체에 밀착"이 인벨롭의 전제다.
@@ -1063,6 +1068,9 @@ class GraspUARh56f1RightEnvCfg(GraspUAEnvCfg):
     #   ★부드럽게 잡히면 접촉력은 정상이다(결정론 파지 스크립트: 정착 7~15 N,
     #     mimic_err 0.29 로 단조 감소). 즉 물리나 기하가 깨진 게 아니라 **충돌 속도**다.
     #   ⚠컵까지 ~0.1 m 라 20스텝이면 닿는다(에피소드 600스텝) — 학습에 지장 없다.
+    # ★접근 최적점을 케이지 중심으로 — 이 손은 엄지가 손바닥 앞 80mm 로 튀어나온
+    #   대향형이라 법선 0 목표가 "엄지를 컵 안으로 밀어넣는" 자세를 만든다(사용자 관찰).
+    approach_target_cage_normal: bool = True
     palm_cmd_rate_limit_m: float = 0.005
     # ★프로필이 실기 벤더 게인으로 **고정** 조립되므로 cfg 도 그렇게 선언한다
     #   (`_check_gain_branch` 가 cfg 의도와 실제 조립을 대조한다).
