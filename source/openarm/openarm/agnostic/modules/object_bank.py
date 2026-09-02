@@ -283,6 +283,25 @@ SHAKER_FAMILY = ObjectBank(
 )
 
 
+SHAKER_SMALL = ObjectBank(
+    name="shaker_small",
+    specs=(
+        _shaker(0.55), _shaker(0.58), _shaker(0.61), _shaker(0.64),
+        _shaker(0.67), _shaker(0.70), _shaker(0.73), _shaker(0.75),
+    ),
+    note=("★★09.03 RH56F1 재설계 — `shaker_family`(0.80~1.10 = 지름 70~97mm)조차 "
+          "이 손에 **물리적으로 안 들어간다**. 실측 근거 3가지:\n"
+          "  · 엄지-4지 법선 간극이 **83.7mm 가 최대**다(엄지 외전 스윕: 1.57 에서 최대, "
+          "    2.09 로 더 벌리면 73.9mm 로 오히려 줄어든다 — 1.57 이 이미 최적).\n"
+          "  · 컵을 케이지 중심에 고정하고 재면 s090(79.2mm)부터 **열린 손에서 이미 접촉**\n"
+          "    (s085 74.8mm 만 접촉 0). 링크 두께를 빼면 실사용 한계는 ~70mm.\n"
+          "  · 그 결과 세 학습 런(rh_b1/c1/d1)에서 `wrap_frac` 이 0.002 에 붙어 있었고,\n"
+          "    엄지가 옆으로 못 돌아 컵 rim 안으로 들어가는 접근이 관찰됐다(사용자).\n"
+          "지름 48.4~66.0mm — 실제 병·작은 컵 크기대라 s2r 관점에서도 유효한 물체군이다.\n"
+          "★순서는 오름차순(종 인덱스 = 크기 순서)."),
+)
+
+
 def _visdex_bank() -> ObjectBank:
     """visdex 디렉터리를 sorted-glob 한다(grasp_v2 규약).
 
@@ -313,7 +332,7 @@ def _visdex_bank() -> ObjectBank:
 VISDEX = _visdex_bank()
 
 BANKS: dict[str, ObjectBank] = {
-    b.name: b for b in (SINGLE_CUP, CUP_FAMILY, SHAKER_FAMILY, VISDEX)
+    b.name: b for b in (SINGLE_CUP, CUP_FAMILY, SHAKER_FAMILY, SHAKER_SMALL, VISDEX)
 }
 DEFAULT_BANK = "single_cup"
 

@@ -489,12 +489,14 @@ class GraspUAEnvCfg(DirectRLEnvCfg):
     #   (=floor 0, 접근 구간에서 항이 죽음)과 다르다 — 접근 gradient 의 floor 비율을
     #   보존한다. 기본 1.0 = 현행 항등.
     enclosure_contact_floor: float = 0.3  # ★D3 기본 (09.01 승격)
-    # ★★`finger_closure` 의 목표 마디. "tip"(기본·현행) | "wrap".
+    # ★★`finger_closure` 의 목표 마디. "tip"(기본·현행) | "wrap" | "distal".
     #   08.31 8종 실측이 이 노브를 만들게 했다 — 팁 접촉은 0.65~0.85 로 이미 채워졌는데
     #   wrap(중간∧원위)은 **전 종 0.000** 이다. `graded_contact = 0.4·팁 + 0.6·wrap`
     #   에서 정책이 싼 0.4 만 먹고 멈춘 것이고, 팁 기준 소등 항은 바로 그 지점에서
     #   꺼져 경사를 못 준다. "wrap" 은 소등 조건을 중간∧원위로, 거리를 중간마디로
     #   옮겨 **손끝을 댄 뒤부터 감아 안기까지** 경사를 잇는다.
+    #   ★"distal" = 09.03 신설. 손가락당 마디가 2개인 손(RH56F1)에서 슬롯0 은
+    #   중간마디가 아니라 **근위마디**라 "wrap" 의 소등 조건이 영원히 거짓이 된다.
     finger_closure_target: str = "wrap"  # ★D3 기본 (09.01 승격)
     # ★★접촉 품질의 정의. "tipwrap"(기본·현행) | "anylink".
     #   "anylink" = 손가락 **어느 마디든**(tip|mid|dist) 닿았는가 + 손바닥 한 표,
@@ -538,6 +540,9 @@ class GraspUAEnvCfg(DirectRLEnvCfg):
     # "deep_and"     : per-finger (중간 AND 원위), 분모 = contact_group_b (엄지 제외)
     # "surface_count": 손바닥 + 대향그룹 + 반대그룹의 **표면 참여**, 마디 조합 무관
     # 가중치는 합으로 정규화되므로 손바닥이 닿지 않는 프로필은 palm 을 0 으로 두면 된다.
+    # 감쌈 지표. "deep_and"(중간∧원위 — tesollo 기본) · "surface_count"(손바닥+양군
+    # 표면 참여) · ★"opposed_distal"(저자유도 결합 손 — 양군이 **동시에 원위∨팁**으로
+    # 참여할 때만 성립). 상세 근거는 `grasp_ua_env.py` 의 사용처 주석.
     envelope_metric: str = "deep_and"
     envelope_palm_weight: float = 0.3
     envelope_group_a_weight: float = 0.3     # 대향(엄지) 그룹
@@ -1038,14 +1043,21 @@ class GraspUARh56f1RightEnvCfg(GraspUAEnvCfg):
     #   (`_2 = _1 × 1.1169`)이 만든다. 그래서 형상 무관한 토크 포화 기준을 쓴다 —
     #   "막힐 때까지 만다". 접촉 센서를 안 보므로 마디 수에 의존하지 않는다.
     synergy_hold_mode: str = "blocked"
-    # 감쌈 **지표**는 트랙 기본(`deep_and` = 중간∧원위 접촉)을 그대로 쓴다.
-    #   ★근거: 지표는 관절이 아니라 **링크 접촉**으로 재고, 프로필의 (중간, 원위, 팁)
-    #     삼중이 로봇마다 다른 마디 구조를 흡수한다. RH56F1 4지는 (`_1`, `_2`, `_tip`)
-    #     로 중간·원위가 실재하므로 새 모드가 필요 없다.
-    #   ⚠첫 런에서 `task/wrap_frac` 이 계속 0 이면 `env.envelope_metric=surface_count`
-    #     로 바꿔 표면 접촉(손바닥+대향+반대 그룹 가중합)으로 재라 — s2r 트랙이
-    #     08.28 에 같은 이유로 만든 스위치다.
-    envelope_metric: str = "deep_and"
+    # ★★★09.03 감쌈 지표 재설계. 구 `deep_and`(중간∧원위)는 이 손에서 **부호가
+    #   반대**였다 — 컵을 케이지에 고정하고 완전히 닫아 손가락별 링크를 분해하니
+    #     자리가 있는 s085(74.8mm): thumb:.D. middle:.DT pinky:.DT  ← 원위·팁으로 잡음
+    #     자리가 없는 s110(96.8mm): thumb:M.T 나머지 전부 .        ← 엄지에 얹힘
+    #   즉 좋은 파지는 원위·팁이고 **중간마디는 나쁜 파지에서만** 뜬다. 세 학습 런의
+    #   `wrap_frac` 0.002 는 정책 실패가 아니라 지표가 못 잡은 것이다.
+    #   (앞서 "삼중이 마디 구조를 흡수하므로 새 모드가 불필요"라고 판단했던 것을
+    #    측정으로 뒤집었다.)
+    # ★근위마디는 컵에 닿을 수 없다 — "wrap" 이면 소등이 영원히 안 되어
+    #   "손 전체를 컵에 밀어넣어라"가 된다(rh_b1/c1/d1 의 밀어내기 양상).
+    finger_closure_target: str = "distal"
+    envelope_metric: str = "opposed_distal"
+    # ★이 손은 손바닥이 닿지 않는다(전 종·전 자세에서 palm 접촉 0). 가중을 남기면
+    #   감쌈 상한이 0.7 로 깎인다.
+    envelope_palm_weight: float = 0.0
     # ★`OpenArmRh56f1PoseFabric` 은 손/몸통 반발 인자를 아예 받지 않는다(자매 트랙
     #   시그니처). 조용히 버리지 않고 여기서 명시적으로 끈다 — 켠 채로 두면 부팅에서
     #   죽는다(`_filter_fabric_kwargs`).
@@ -1064,7 +1076,11 @@ class GraspUARh56f1RightEnvCfg(GraspUAEnvCfg):
     #   105~161mm)는 tesollo DG-5F 기준이라 RH56F1 으로는 감쌈이 구조적으로 불가능하다
     #   — 검지가 URDF 실측 MCP→팁 72.5mm 다. shaker(r44mm) × 0.80~1.10 = 지름
     #   70~97mm 로 바꾼다(사용자 지시 09.02: "손이 엄청 작아").
-    object_bank: str = "shaker_family"
+    # ★★★09.03 `shaker_family`(70~97mm) → `shaker_small`(48~66mm). 이 손의 엄지-4지
+    #   법선 간극이 **83.7mm 가 최대**이고(엄지 외전 스윕: 1.57 이 최적, 2.09 로 더
+    #   벌리면 73.9mm 로 줄어든다), 컵을 케이지에 고정해 재면 79.2mm 부터 열린 손에
+    #   이미 닿는다. 링크 두께를 빼면 실사용 한계가 ~70mm 다.
+    object_bank: str = "shaker_small"
     # ★★★09.02 palm 돌진 속도 제한. 기본 0.02 m/step 은 정책 주기 60 Hz 에서
     #   **1.2 m/s** 다 — tesollo(손 20관절·effort 1.5)는 견디지만 이 손은 못 견딘다.
     #   이 손은 관절 effort 가 1 N·m 인데 팔은 kp 300 이라, palm 목표가 컵 안쪽에

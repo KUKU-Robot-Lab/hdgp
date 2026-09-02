@@ -93,6 +93,16 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
             [self.robot.find_bodies(p.finger_sensor_bodies[f][0])[0][0]
              for f in fingers],
             device=self.device, dtype=torch.long)
+        # ★★원위마디 인덱스 — `finger_closure_target="distal"` 전용.
+        #   09.03: RH56F1 은 손가락당 마디가 **2개**라 슬롯0 이 tesollo 의 중간마디가
+        #   아니라 손바닥에 붙은 **근위마디**다. 근위마디는 컵 중심에 닿을 수 없어
+        #   "wrap" 의 소등 조건(중간∧원위)이 구조적으로 성립하지 않는다 → 항이 영원히
+        #   켜진 채 "손 전체를 컵에 밀어넣어라"가 된다. 마디 수가 다른 손은 이 슬롯으로
+        #   흡수한다.
+        self._dist_ids_t = torch.tensor(
+            [self.robot.find_bodies(p.finger_sensor_bodies[f][1])[0][0]
+             for f in fingers],
+            device=self.device, dtype=torch.long)
         if len(p.fingertip_bodies) != len(fingers):
             raise RuntimeError(
                 f"[{p.name}] fingertip_bodies({len(p.fingertip_bodies)}) 와 "
@@ -905,7 +915,26 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         _surf_a = grip_c[:, self._group_a_idx].float().mean(dim=1)
         _surf_b = grip_c[:, self._group_b_idx].float().mean(dim=1)
         self._surf_palm, self._surf_a, self._surf_b = _surf_palm, _surf_a, _surf_b
-        if str(cfgn.envelope_metric) == "surface_count":
+        # ★★★09.03 `opposed_distal` — 저자유도 결합 손(RH56F1) 전용 감쌈 정의.
+        #   측정 근거(컵을 케이지에 고정하고 완전 폐쇄, 손가락별 링크 분해):
+        #     자리가 있는 s085(74.8mm)  thumb:.D.  middle:.DT  pinky:.DT  → 원위/팁만
+        #     자리가 없는 s110(96.8mm)  thumb:M.T  나머지 전부 .        → 엄지에 얹힘
+        #   즉 이 손에서 **좋은 파지는 원위·팁**으로 잡고, **중간마디(M)는 나쁜 파지
+        #   에서만** 뜬다(컵이 엄지 근위부에 얹힌 상태). `any` 로 세면 그 둘이 구별되지
+        #   않고, `mid ∧ dist` 는 좋은 파지에서 0 이라 부호가 반대다.
+        #   정의: (엄지군 ∧ 4지군)이 **동시에 원위∨팁**으로 참여할 때만 성립하고,
+        #        값은 두 군의 참여 비율 가중합이다. 손바닥은 이 손에서 안 닿으므로 뺀다.
+        #   검산 — s085: (0.3·1.0 + 0.4·0.5)/0.7 = 0.714 · s110: 대향 불성립 → 0
+        if str(cfgn.envelope_metric) == "opposed_distal":
+            _dt = (dist_c | tip_c)                       # 손가락별 (원위 ∨ 팁)
+            _oa = _dt[:, self._group_a_idx].float().mean(dim=1)
+            _ob_ = _dt[:, self._group_b_idx].float().mean(dim=1)
+            _wa = float(cfgn.envelope_group_a_weight)
+            _wb = float(cfgn.envelope_group_b_weight)
+            _opposed = ((_oa > 0.0) & (_ob_ > 0.0)).float()
+            wrap_frac = _opposed * (_wa * _oa + _wb * _ob_) / max(_wa + _wb, 1e-6)
+            self._surf_a, self._surf_b = _oa, _ob_
+        elif str(cfgn.envelope_metric) == "surface_count":
             _wp = float(cfgn.envelope_palm_weight)
             _wa = float(cfgn.envelope_group_a_weight)
             _wb = float(cfgn.envelope_group_b_weight)
@@ -953,7 +982,15 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         _tips_l = (self.robot.data.body_pos_w[:, self._tip_ids_t]
                    - self.scene.env_origins[:, None, :])
         _tip_d = (_tips_l - grasp_center.unsqueeze(1)).norm(dim=-1)     # (N, 5)
-        if str(getattr(cfgn, "finger_closure_target", "tip")) == "wrap":
+        _clt = str(getattr(cfgn, "finger_closure_target", "tip"))
+        if _clt == "distal":
+            # ★저자유도 2마디 손 — 소등은 "원위∨팁", 거리는 **원위마디** 기준.
+            #   좋은 파지의 실측 접촉면이 원위·팁이고 근위는 나쁜 파지에만 뜬다.
+            _dl = (self.robot.data.body_pos_w[:, self._dist_ids_t]
+                   - self.scene.env_origins[:, None, :])
+            _cl_d = (_dl - grasp_center.unsqueeze(1)).norm(dim=-1)      # (N, F)
+            _cl_off = dist_c | tip_c
+        elif _clt == "wrap":
             # ★감쌈 기준 — 소등 조건이 "중간∧원위 동시접촉", 거리도 **중간마디** 기준.
             #   팁 기준(구판)은 팁이 닿는 순간 꺼져서 "손끝만 대는" 지점이 종착지가
             #   된다. 감쌈까지 경사를 이으려면 그 다음 마디를 목표로 삼아야 한다.

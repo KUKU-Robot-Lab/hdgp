@@ -1085,7 +1085,7 @@ def test_finger_closure_wrap_target():
     assert "self._mid_ids_t" in env, "중간마디 인덱스가 없다"
     i = env.index("finger_sensor_bodies[f][0]")
     assert "find_bodies" in env[i - 120:i], "중간마디를 이름 해석으로 안 찾는다"
-    j = env.index('finger_closure_target", "tip")) == "wrap"')
+    j = env.index('elif _clt == "wrap":')
     blk = env[j:j + 600]
     assert "self._mid_ids_t" in blk, "wrap 모드가 중간마디 거리를 안 쓴다"
     assert "_cl_off = mid_c & dist_c" in blk, "소등 조건이 중간∧원위가 아니다"
@@ -1985,14 +1985,14 @@ def test_mimic_coupling_is_monitored_at_runtime():
 
 
 def test_rh56f1_uses_a_hand_sized_object_bank():
-    """★물체 뱅크는 **엔드이펙터 종속**이다.
+    """★물체 크기는 **엔드이펙터 종속**이고, 기준은 손가락 길이가 아니라 **개구**다.
 
-    `cup_family`(cup_big r62mm × 0.85~1.30 = 지름 105~161mm)는 tesollo DG-5F 기준이라
-    RH56F1 으로는 감쌈이 기하적으로 불가능하다 — 검지 MCP→팁이 URDF 실측 72.5mm 다.
-    그대로 두면 "정책이 못 배운다"로 오진하기 딱 좋다(물체가 애초에 손보다 크다).
+    09.02 에 "검지 72.5mm 니 지름 70~97mm" 로 잡았던 것을 09.03 실측으로 뒤집었다 —
+    제약은 엄지-4지 **법선 간극 83.7mm**(엄지 외전 스윕에서 그게 최대)이고, 컵을
+    케이지에 고정해 재면 79.2mm 부터 열린 손에 이미 닿는다.
     """
     sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
-    assert 'object_bank: str = "shaker_family"' in sub
+    assert 'object_bank: str = "shaker_small"' in sub
 
     import importlib.util
     import sys
@@ -2001,17 +2001,14 @@ def test_rh56f1_uses_a_hand_sized_object_bank():
     mod = importlib.util.module_from_spec(spec)
     sys.modules["_gua_ob"] = mod
     spec.loader.exec_module(mod)
-    bank = mod.BANKS["shaker_family"]
+    bank = mod.BANKS["shaker_small"]
     assert len(bank.specs) == 8
     d = [2.0 * s.base_grasp_radius * s.scale[0] for s in bank.specs]
-    assert 0.070 <= min(d) and max(d) <= 0.097, f"지름 범위 {min(d):.3f}~{max(d):.3f} m"
+    assert max(d) <= 0.070, f"최대 지름 {max(d) * 1000:.1f}mm — 손 개구 한계 초과"
     assert d == sorted(d), "종 인덱스와 크기 순서가 어긋나면 종별 진단을 못 읽는다"
     for s in bank.specs:
-        assert s.base_origin_offset_z is not None, f"{s.id} 원점 오프셋 미측정"
-        assert s.base_rim_z is not None, f"{s.id} 림 z 미측정"
+        assert s.base_origin_offset_z is not None and s.base_rim_z is not None
 
-
-# ------------------------------------------------- 09.02 홈/앵커/스폰 캘리브
 def test_rh56f1_home_is_not_the_sibling_track_literal():
     """★같은 팔이라도 손이 바뀌면 같은 관절값이 전혀 다른 palm 자세를 낸다.
 
@@ -2194,3 +2191,64 @@ def test_diagnostics_can_be_subsampled():
     env = _code(_ENV)
     assert 'getattr(cfgn, "diag_every", 1)' in env
     assert "diag_every: int = " in _CFG
+
+
+# ============================================ 09.03 저자유도 결합 손 보상 재설계
+def test_opposed_distal_metric_exists_and_is_opt_in():
+    """★★`deep_and`(중간∧원위)는 이 손에서 **부호가 반대**다.
+
+    컵을 케이지에 고정하고 완전히 닫아 손가락별 링크를 분해한 실측:
+        자리 있는 s085(74.8mm): thumb:.D. middle:.DT pinky:.DT  ← 원위·팁으로 잡음
+        자리 없는 s110(96.8mm): thumb:M.T 나머지 전부 .        ← 엄지에 얹힘
+    좋은 파지는 원위·팁이고 중간마디는 나쁜 파지에서만 뜬다. 세 학습 런의
+    `wrap_frac` 0.002 는 정책 실패가 아니라 **지표가 못 잡은 것**이다.
+    """
+    env = _code(_ENV)
+    assert '"opposed_distal"' in env
+    assert "_dt = (dist_c | tip_c)" in env, "원위∨팁 참여로 세지 않는다"
+    assert "_opposed = ((_oa > 0.0) & (_ob_ > 0.0))" in env, (
+        "대향 조건이 없다 — 엄지에 얹힌 자세가 감쌈으로 계상된다")
+    assert 'envelope_metric: str = "deep_and"' in _CFG, "기본이 바뀌었다(tesollo 파괴)"
+    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
+    assert 'envelope_metric: str = "opposed_distal"' in sub
+    assert "envelope_palm_weight: float = 0.0" in sub, (
+        "손바닥이 안 닿는 손인데 가중이 남아 감쌈 상한이 깎인다")
+
+
+def test_rh56f1_bank_fits_the_hand_opening():
+    """★엄지-4지 법선 간극이 **83.7mm 가 최대**다(엄지 외전 스윕 실측: 1.57 이 최적,
+    2.09 로 더 벌리면 73.9mm 로 줄어든다). 컵을 케이지에 고정해 재면 79.2mm 부터
+    열린 손에 이미 닿는다 — 링크 두께를 빼면 실사용 한계가 ~70mm 다."""
+    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
+    assert 'object_bank: str = "shaker_small"' in sub
+    import importlib.util
+    import sys
+    _ob = _HERE.parents[1] / "modules" / "object_bank.py"
+    spec = importlib.util.spec_from_file_location("_gua_ob2", _ob)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_gua_ob2"] = mod
+    spec.loader.exec_module(mod)
+    bank = mod.BANKS["shaker_small"]
+    d = [2.0 * s.base_grasp_radius * s.scale[0] for s in bank.specs]
+    assert max(d) <= 0.070, f"최대 지름 {max(d) * 1000:.1f}mm — 손 개구 한계를 넘는다"
+    assert d == sorted(d), "종 인덱스와 크기 순서가 어긋난다"
+    assert len(bank.specs) == 8
+
+
+def test_finger_closure_target_matches_phalanx_count():
+    """★★소등 조건이 **구조적으로 성립 불가**하면 보상 항은 영원히 켜진 채 남는다.
+
+    `finger_sensor_bodies` 슬롯0 은 tesollo(마디 3개)에서 중간마디지만 RH56F1(마디
+    2개)에서는 **근위마디**다. 근위마디는 컵 중심에 닿을 수 없으므로 "wrap" 의 소등
+    조건 `mid_c & dist_c` 가 절대 참이 되지 않는다 → `finger_closure` 가 "근위마디를
+    컵 중심으로 가져가라" = **손 전체를 컵에 밀어넣어라** 로 읽힌다. 세 런에서 관찰된
+    "컵을 밀며 접근 보상만 먹는" 양상과 "엄지를 rim 안에 넣는" 접근의 직접 원인이다.
+    """
+    env = _code(_ENV)
+    assert 'if _clt == "distal":' in env
+    assert "_cl_off = dist_c | tip_c" in env, "원위∨팁으로 소등하지 않는다"
+    assert "self._dist_ids_t" in env and "finger_sensor_bodies[f][1]" in env, (
+        "거리 기준이 원위마디가 아니다")
+    assert 'finger_closure_target: str = "wrap"' in _CFG, "기본이 바뀌었다(tesollo 파괴)"
+    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
+    assert 'finger_closure_target: str = "distal"' in sub
