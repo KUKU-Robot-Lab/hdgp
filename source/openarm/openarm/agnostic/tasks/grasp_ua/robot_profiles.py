@@ -701,12 +701,12 @@ RH56F1_RIGHT = RobotProfile(
         #     부팅 게이트가 "홈이 워크스페이스 박스 밖"으로 막았다).
         "r_aj_1": -0.2069, "r_aj_2": 0.4203, "r_aj_3": 0.3880, "r_aj_4": 1.5941,
         "r_aj_5": 0.4569, "r_aj_6": 0.3426, "r_aj_7": -0.4174,
-        # 손 구동 6 = hand_open_pose
-        "r_hj_thumb_1": 1.57, "r_hj_thumb_2": 0.0,
-        **{f"r_hj_{f}_1": 0.0 for f in _RH_FLEX},
+        # 손 구동 6 = hand_open_pose (★하한 0 에서 0.05 띄운 값)
+        "r_hj_thumb_1": 1.57, "r_hj_thumb_2": 0.05,
+        **{f"r_hj_{f}_1": 0.05 for f in _RH_FLEX},
         # ★종속 6 = 구동 × 배율. 결합값으로 시작하지 않으면 첫 스텝에 snap 이 난다.
-        "r_hj_thumb_3": 0.0, "r_hj_thumb_4": 0.0,
-        **{f"r_hj_{f}_2": 0.0 for f in _RH_FLEX},
+        "r_hj_thumb_3": 0.05 * 1.1425, "r_hj_thumb_4": 0.05 * 1.1425 * 0.7508,
+        **{f"r_hj_{f}_2": 0.05 * 1.1169 for f in _RH_FLEX},
         # 유휴 좌팔 — fabric default_config 의 _ARM_REST_L 과 같은 값(정합 유지).
         "l_aj_1": -0.315, "l_aj_2": -0.290, "l_aj_3": 0.400, "l_aj_4": 0.513,
         "l_aj_5": 0.666, "l_aj_6": -0.729, "l_aj_7": -0.957,
