@@ -713,9 +713,13 @@ RH56F1_RIGHT = RobotProfile(
         #     hand_drive |qd| 101 · hand_mimic |qd| **181 rad/s** — 위치는 아직 범위
         #     안(0.38 rad)이고 **속도만** 폭주했다. 감쇠 부재가 유일한 설명이다.
         #   kp=0 이면 위치항이 없어 제약과 안 싸우고, kd 만 에너지를 뽑는다.
+        #   ★effort 상한을 따로 올린다. 기본(USD 값 1 N·m)이면 감쇠 토크가 1 rad/s
+        #     에서 이미 포화해 **에너지를 못 뽑는다** — 09.02 실측에서 감쇠를 넣고도
+        #     종속 |qd| 가 87 rad/s 였다. kp=0 이라 이 상한은 **소산에만** 쓰이고
+        #     에너지를 주입할 수 없다(파지력과 무관하다 — 파지력은 구동관절 몫).
         "right_hand_mimic_damp": dict(
             joint_names_expr=["r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"],
-            stiffness=0.0, damping=2.0),
+            stiffness=0.0, damping=2.0, effort_limit_sim=20.0),
         **({
             # ★★09.02 실기 벤더 게인 — `control_gains.yaml` 이 진실원천이고, 같은 값이
             #   이번 자산 갱신으로 USD DriveAPI 에도 실렸다(단위 변환된 형태로 확인).
