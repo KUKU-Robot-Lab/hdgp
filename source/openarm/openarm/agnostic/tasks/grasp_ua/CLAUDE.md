@@ -54,10 +54,12 @@ RUN_LABEL=<라벨> PYTHONPATH=$PWD/source/openarm \
 | 홈/박스/앵커/스폰 | ✅ 캘리브 완료 — 완화 없이 부팅된다 |
 | mimic 결합 | ✅ physx, 오차 0.07 mrad |
 | 물체 뱅크 | ✅ `shaker_family` 지름 70~97mm |
-| **자산 shape 회계** | ❌ 460 vs 459 · `l_al_3`=14 vs `r_al_3`=15 → **`enable_events=False` 로만 돈다** |
+| 이벤트(마찰·질량·게인 DR) | ✅ `robot_material` 을 body-무관으로 돌려 자산 결함을 우회 |
 
-★shape 회계가 안 고쳐지면 마찰·질량·게인 DR 을 통째로 못 쓴다. 이 트랙 목적이
-sim-to-real 이므로, 공칭 물리로 본학습을 태우는 것은 낭비다(스모크는 가능).
+★자산 shape 회계(460 vs 459 · `l_al_3`=14 vs `r_al_3`=15)는 **아직 미해결**이다.
+지금은 `robot_material` 이 `body_names` 없이 전 shape 에 균일 적용하므로 우회되고
+물리도 동일하다(마찰 범위가 단일값이라). ⚠**링크별로 다른 마찰**을 주려면 그때는
+자산부터 고쳐야 한다 — `scripts/probes/probe_usd_shape_audit.py` 가 판정한다.
 
 ## 태스크 정체성
 

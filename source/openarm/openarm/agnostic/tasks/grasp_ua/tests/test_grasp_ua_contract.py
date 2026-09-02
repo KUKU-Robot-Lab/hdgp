@@ -1880,12 +1880,19 @@ def test_fabric_kwargs_are_filtered_loudly():
     assert "raise RuntimeError" in body, "중립값이 아닌 미지원 인자는 죽여야 한다"
 
 
-def test_robot_material_body_names_must_stay_wildcard():
-    """★`.*` 가 아니면 IsaacLab 이 body 별 shape 수 검사를 켜고, 콜라이더 없는 링크가
-    있는 자산에서 죽는다. 게다가 그 예외를 EventManager 가 삼켜 첫 리셋에서야
-    엉뚱한 TypeError 로 터진다(09.02 RH56F1 실측 460 vs 459)."""
-    assert 'SceneEntityCfg("robot", body_names=".*")' in _CFG
-    assert "body 별 shape" in _CFG or "shape 수" in _CFG
+def test_robot_material_is_body_agnostic():
+    """★`body_names` 를 주면 IsaacLab 이 "링크별 shape 수 합 == 전체" 검사를 켜고,
+    자산의 shape 회계가 어긋나면 죽는다. 게다가 그 예외를 EventManager 가 **삼켜서**
+    첫 리셋에서야 `asset_cfg 를 모르는 인자` 라는 엉뚱한 TypeError 로 터진다
+    (09.02 RH56F1 실측 460 vs 459 · `l_al_3`=14 vs `r_al_3`=15).
+
+    `body_names` 를 안 주면 `body_ids` 가 slice(None) 로 남아 그 분기를 건너뛰고
+    전 shape 에 균일 적용한다 — 마찰 범위가 단일값이라 **물리는 동일**하다.
+    """
+    assert 'SceneEntityCfg("robot")' in _CFG
+    assert 'SceneEntityCfg("robot", body_names' not in _CFG, (
+        "body_names 를 되살리면 자산 결함이 다시 부팅을 막는다 — 자산부터 고칠 것")
+    assert "shape 회계" in _CFG
 
 
 # ---------------------------------------------- 09.02 mimic USD 반영

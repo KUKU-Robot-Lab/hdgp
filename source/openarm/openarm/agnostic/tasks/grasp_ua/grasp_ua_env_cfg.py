@@ -55,14 +55,21 @@ class GraspUAEventCfg:
         func=_mdp.randomize_rigid_body_material,
         mode="reset",
         params={
-            # ★★`body_names` 를 **좁히지 마라**. `.*` 면 `body_ids` 가 slice(None) 이라
-            #   IsaacLab 이 "body 별 shape 수" 검사를 건너뛰는데, 하나라도 좁히면 그
-            #   검사가 켜지고 콜라이더 없는 링크가 있는 자산에서 죽는다
-            #   (09.02 RH56F1 실측: `*_hl_palm_1` 이 visual 전용 → 460 vs 459).
-            #   ★게다가 그 예외를 EventManager 콜백이 **삼켜서** term 이 클래스인 채
-            #     남고, 첫 리셋에서야 `asset_cfg 를 모르는 인자` 라는 엉뚱한 TypeError
-            #     로 터진다 — 원인이 전혀 안 보이는 실패다.
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            # ★★`body_names` 를 **주지 않는다**(구판은 `.*` 였다).
+            #   IsaacLab 은 `body_names` 가 주어지면 `body_ids` 를 리스트로 풀고,
+            #   그때만 "링크별 shape 수 합 == 전체 shape 수" 검사를 켠다. 그 검사는
+            #   자산의 shape 회계가 어긋나면 죽는데(09.02 RH56F1 실측 460 vs 459 ·
+            #   `l_al_3`=14 vs `r_al_3`=15 좌우 비대칭), ★그 예외를 EventManager
+            #   콜백이 **삼켜서** term 이 클래스인 채 남고 첫 리셋에서야
+            #   `asset_cfg 를 모르는 인자` 라는 엉뚱한 TypeError 로 터진다.
+            #   `body_names=None` 이면 `body_ids` 가 slice(None) 로 남아 그 분기를
+            #   통째로 건너뛰고 `materials[env_ids] = samples` 로 **전 shape 에 균일
+            #   적용**한다 — 우리 마찰 범위는 단일값(정적 DR)이라 물리가 **동일**하다.
+            #   즉 자산 결함을 우회하면서 잃는 것이 없다.
+            #   ⚠물체별/링크별로 **다른** 마찰을 주려면 이 우회를 되돌려야 하고,
+            #     그때는 자산의 shape 회계부터 고쳐야 한다
+            #     (`scripts/probes/probe_usd_shape_audit.py` 가 합격/불합격을 낸다).
+            "asset_cfg": SceneEntityCfg("robot"),
             "static_friction_range": (_FRICTION, _FRICTION),
             "dynamic_friction_range": (_FRICTION, _FRICTION),
             "restitution_range": (1.0, 1.0),
