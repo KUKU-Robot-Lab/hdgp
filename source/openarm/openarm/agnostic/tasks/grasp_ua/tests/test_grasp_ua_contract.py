@@ -2063,3 +2063,54 @@ def test_rh56f1_anchor_and_spawn_are_mutually_derived():
     # ★앵커 ± 델타가 박스를 넘으면 그 축이 상시 클램프된다(구 홈 규약의 y 92% 포화).
     assert sx + off[0] - 0.10 >= lo[0] - 1e-9, (
         f"앵커 x {sx + off[0]:.3f} − 델타 0.10 이 박스 하한 {lo[0]} 밑이다")
+
+
+def test_hot_path_has_no_gpu_sync():
+    """★★매 스텝 경로에서 GPU 텐서에 `bool()`/`int()`/`float()`/`.item()` 을 걸면
+    GPU 큐가 다 비워질 때까지 CPU 가 멈춘다 — util 이 등락하고 fps 가 깎인다.
+
+    09.02 arm4090 실측: `nvidia-smi dmon` 이 42~95% 로 등락했고, hot path 에서
+    상수(`_group_a_idx`·`_syn_movable`)를 매 스텝 CPU 로 내리고 있었다.
+    선례 08.06 grasp_adapt: 같은 처방으로 dip 50→83% · fps +13.5%.
+    """
+    import ast as _ast
+    src = (_HERE / "grasp_ua_env.py").read_text(encoding="utf-8")
+    lines = src.split("\n")
+    hot = {"_get_rewards", "_get_dones", "_get_observations", "_pre_physics_step",
+           "_log_diagnostics"}
+    # cfg 값에 거는 bool()/float() 은 CPU 상수라 무해하다 — 텐서에 거는 것만 본다.
+    bad = re.compile(r"\.item\(\)|\.tolist\(\)|\.cpu\(\)"
+                     r"|bool\(\s*[^)]*\.any\(\)|bool\(\s*[^)]*\.all\(\)"
+                     r"|int\(\s*self\._|float\(\s*self\._"
+                     r"|float\(\s*_[a-z]\w*\.(mean|max|min|sum)\(")
+    # ★면제 2건 — 이유가 분명한 것만, 이유와 함께 적는다.
+    #   `_adr_spawn_range` : 파이썬 float 이다(텐서 아님) → 동기화 없음.
+    #   `_need.any()`      : 안쪽 `torch.nonzero` 가 **본질적으로** 동기화라
+    #                        가드를 없애도 스텝당 동기화 수가 그대로다. 진짜로 없애려면
+    #                        nonzero 없이 마스크만으로 리스폰을 다시 짜야 한다(별건).
+    allow = ("_adr_spawn_range", "_need.any()")
+    hits = []
+    for node in _ast.walk(_ast.parse(src)):
+        if not (isinstance(node, _ast.FunctionDef) and node.name in hot):
+            continue
+        for i in range(node.lineno, (node.end_lineno or node.lineno) + 1):
+            code = lines[i - 1].split("#")[0]
+            if "self.cfg" in code or "cfgn." in code:
+                continue
+            if any(a in code for a in allow):
+                continue
+            if bad.search(code):
+                hits.append(f"{node.name} L{i}: {lines[i - 1].strip()[:90]}")
+    assert not hits, (
+        "hot path 에 GPU 동기화가 있다 — 상수는 부팅에서 캐시하고, 로깅은 텐서로 두고,\n"
+        "가드는 마스크 연산으로 무조건화하라:\n  " + "\n  ".join(hits))
+
+
+def test_constant_indices_are_cached_for_hot_path():
+    """상수를 매 스텝 CPU 로 내리지 않도록 부팅 캐시가 있어야 한다."""
+    env = (_HERE / "grasp_ua_env.py").read_text(encoding="utf-8")
+    ctl = (_HERE / "grasp_ua_control.py").read_text(encoding="utf-8")
+    assert "self._group_a0 = fingers.index(" in env
+    assert "_a = self._group_a0" in env, "매 스텝 int(self._group_a_idx[0]) 로 돌아갔다"
+    assert "self._syn_has_fixed = bool(" in ctl
+    assert "self._syn_has_fixed" in env, "매 스텝 bool((~_mv).any()) 로 돌아갔다"

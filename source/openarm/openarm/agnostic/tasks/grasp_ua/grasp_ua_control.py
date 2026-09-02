@@ -582,6 +582,9 @@ class GraspUAControlMixin:
         #   (실측: r_hj_pinky_2 · r_hj_thumb_2 · 전 `_1` 이 가동폭 0°). 폐쇄 보상의
         #   분모에 넣으면 "못 움직이는 관절을 닫았다"는 공짜 점수가 생긴다.
         self._syn_movable = (self._syn_grip - self._syn_open).abs() > 1e-4
+        # ★09.02 hot path 동기화 제거 — `_get_rewards` 가 매 스텝
+        #   `bool((~_mv).any())` 로 물어 GPU 를 동기화하던 것을 부팅에서 확정한다.
+        self._syn_has_fixed = bool((~self._syn_movable).any())
         if not bool(self._syn_movable.any()):
             raise RuntimeError(f"[{p.name}] 가동 손관절이 하나도 없다 — open/grip 자세 확인")
         # 폐쇄도는 **관절별** 독립 진행도다 — 접촉 동결이 관절마다 따로 걸린다.

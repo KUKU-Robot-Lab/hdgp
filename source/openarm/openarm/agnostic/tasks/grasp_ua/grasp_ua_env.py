@@ -98,6 +98,12 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
                 f"[{p.name}] fingertip_bodies({len(p.fingertip_bodies)}) 와 "
                 f"finger_sensor_bodies({len(fingers)}) 의 손가락 수가 달라 "
                 "그룹 인덱스를 공유할 수 없다")
+        # ★★09.02 hot path 동기화 제거용 캐시. `_get_rewards` 가 매 스텝
+        #   `int(self._group_a_idx[0])` 를 하던 것을 여기서 한 번만 내린다 —
+        #   GPU 텐서에 `int()`/`bool()` 을 걸면 GPU 큐가 다 비워질 때까지 CPU 가
+        #   멈춘다(util dip). 08.06 grasp_adapt 에서 같은 처방으로 dip 50→83% ·
+        #   fps +13.5% 를 얻었다(메모리 isaac-reset-item-sync-util-killer).
+        self._group_a0 = fingers.index(p.contact_group_a[0])
         self._group_a_idx = torch.tensor(
             [fingers.index(f) for f in p.contact_group_a],
             device=self.device, dtype=torch.long)
@@ -993,7 +999,7 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         #   실시간 손끝을 쓰면 "쭉 편 손가락으로 팁을 컵에 모으기"가 이 항의 최적이 되어
         #   파지 예비자세를 정면으로 방해한다 — s2r_a9 실측 corr(ch2, approach) = −0.702.
         cage_dist = self._cage_ctr_dist
-        _a = int(self._group_a_idx[0])          # 대향(엄지) 인덱스 — success 판정용
+        _a = self._group_a0                     # 대향(엄지) 인덱스 — 부팅에서 캐시(동기화 0)
 
         # 래치 시점 스냅샷 — 감쌈 유지 기준선과 밀림 감쇠 기준.
         self._wrap_at_latch = torch.where(_just, wrap_frac, self._wrap_at_latch)
@@ -1167,7 +1173,7 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         # ★"5점 + 손바닥" 달성률 — 사용자 기준의 직접 판정
         self.extras["lifted/full_support"] = _g(
             ((grip_c.float().sum(dim=1) >= 5.0) & (self._surf_palm > 0.5)).float())
-        self.extras["lifted/frac"] = float(_lm.mean())
+        self.extras["lifted/frac"] = _lm.mean()   # ★float() 금지 — 매 스텝 GPU 동기화
         self.extras["task/goal_dist"] = goal_dist.mean()
         self.extras["task/height_delta"] = height_delta.mean()
         self.extras["task/cup_disp"] = cup_disp.mean()
@@ -1204,8 +1210,10 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         _mv = self._syn_movable
         self.extras["task/hand_joint_err_movable_mean"] = _herr[:, _mv].mean()
         self.extras["task/hand_joint_err_movable_max"] = _herr[:, _mv].max()
+        # ★`_mv`(`_syn_movable`)는 부팅 상수다 — 매 스텝 `bool(...any())` 로 물으면
+        #   그때마다 GPU 동기화가 걸린다. 부팅에서 판정해 캐시한다.
         self.extras["task/hand_joint_err_fixed_mean"] = (
-            _herr[:, ~_mv].mean() if bool((~_mv).any()) else _herr.new_zeros(()))
+            _herr[:, ~_mv].mean() if self._syn_has_fixed else _herr.new_zeros(()))
         self.extras["task/hand_torque_sat_frac"] = (
             _herr[:, _mv] >= float(self.cfg.hand_torque_sat_err_rad)).float().mean()
         # ★채널별 폐쇄도 — 전체 평균만 보면 "어느 채널이 안 닫히는지"를 못 본다.
@@ -1498,14 +1506,17 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         #   마지막 미검증 후보다. `_reset_idx` 가 `write_joint_state_to_sim` 으로 홈을
         #   써도 물리가 이전 자세를 유지하면, fabric 은 홈 기준으로 명령하고 실제는
         #   다른 자세라 거대한 토크가 걸린다. 방금 리셋된 env 만 골라 편차를 잰다.
+        #   ★09.02 `if bool(_fresh.any())` 가드를 없앴다 — 매 스텝 GPU 동기화였다.
+        #     대신 마스크 가중평균으로 빈 집합에서도 안전하게 만든다(nan 없음).
         _fresh = self.episode_length_buf <= 1
-        if bool(_fresh.any()):
-            _dev = (q_arm[_fresh]
-                    - self._default_q[_fresh][:, self._arm_ids_t]).abs()
-            self.extras["reset/arm_q_dev_mean"] = _dev.mean()
-            self.extras["reset/arm_q_dev_max"] = _dev.max()
-            self.extras["reset/arm_qd_max_fresh"] = qd_arm[_fresh].abs().max()
-            self.extras["reset/fresh_frac"] = _fresh.float().mean()
+        _fm = _fresh.float()
+        _fn = _fm.sum().clamp(min=1.0)
+        _dev = ((q_arm - self._default_q[:, self._arm_ids_t]).abs()
+                * _fm.unsqueeze(1))
+        self.extras["reset/arm_q_dev_mean"] = _dev.sum() / (_fn * _dev.shape[1])
+        self.extras["reset/arm_q_dev_max"] = _dev.max()
+        self.extras["reset/arm_qd_max_fresh"] = (qd_arm.abs() * _fm.unsqueeze(1)).max()
+        self.extras["reset/fresh_frac"] = _fm.mean()
         # ★★env 인덱스 정렬 검사 — 로봇 base 는 **자기 env 원점**에 있어야 한다
         #   (`robot_cfg.init_state.pos = [0,0,0]`). `replicate_physics=False` 에서
         #   ArticulationView 가 프림을 모으는 순서가 `env_ids` 와 어긋나면
