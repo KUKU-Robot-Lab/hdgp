@@ -135,8 +135,12 @@ class RightChainShim(GraspS2RControlMixin):
         self._obj_off_palm = torch.where(_just.unsqueeze(1), _off, self._obj_off_palm)
 
     # ------------------------------------------------------------------
-    def step_policy(self, action: torch.Tensor, *, render: bool) -> torch.Tensor:
-        """DirectRLEnv.step 의 물리 경로만 — 보상·리셋 없음. actor obs 를 돌려준다."""
+    def step_policy(self, action: torch.Tensor, *, render: bool,
+                    on_substep=None) -> torch.Tensor:
+        """DirectRLEnv.step 의 물리 경로만 — 보상·리셋 없음. actor obs 를 돌려준다.
+
+        on_substep: 물리스텝마다 부르는 훅(실기로 관절목표 송출) — 좌 체인과 동일 규약.
+        """
         self.prev_actions.copy_(self.actions)
         self._pre_physics_step(action)
         for _ in range(int(self.cfg.decimation)):
@@ -144,6 +148,8 @@ class RightChainShim(GraspS2RControlMixin):
             self.scene.write_data_to_sim()
             self.sim.step(render=render)
             self.scene.update(self.physics_dt)
+            if on_substep is not None:
+                on_substep()
         self.episode_length_buf += 1
         self.update_latch()
         return self._get_observations()["policy"]
@@ -201,7 +207,15 @@ class LeftChain:
     def gate_open(self) -> torch.Tensor:
         return self.grip.gate_open
 
-    def step_policy(self, action: torch.Tensor, *, render: bool) -> None:
+    def step_policy(self, action: torch.Tensor, *, render: bool,
+                    on_substep=None) -> None:
+        """액션 1회 → fabric 이 **물리스텝마다** 관절목표를 재생성 → PD.
+
+        ★on_substep 은 그 관절목표를 실기로 흘리기 위한 훅이다. 정책 주기(50Hz)로만
+        솎아 보내면 fabric 이 만들어 둔 보간이 버려져 실기엔 4~6° 씩 점프해 도착한다
+        (09.02 bag 실측). 학습·s2r 모두 fabric 을 쓰므로 실기 PD 도 같은 신호를 받아야
+        한다: action → fabric IK → 관절목표 → PD.
+        """
         na = int(self.arm.action_dim)
         self.arm.process_actions(action[:, :na])
         self.grip.process_actions(action[:, na:])
@@ -211,6 +225,8 @@ class LeftChain:
             self.host.scene.write_data_to_sim()
             self.host.sim.step(render=render)
             self.host.scene.update(self.host.physics_dt)
+            if on_substep is not None:
+                on_substep()
 
     def freeze_targets(self) -> None:
         robot = self.host.robot
