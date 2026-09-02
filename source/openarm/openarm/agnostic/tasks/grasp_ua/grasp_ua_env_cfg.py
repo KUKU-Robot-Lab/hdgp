@@ -362,6 +362,10 @@ class GraspUAEnvCfg(DirectRLEnvCfg):
     #   = −0.974 — 손을 오므리는 것만으로 게이트가 열려 아무것도 막지 못했다.
     #   xy 투영이던 시절엔 palm·검지가 컵보다 내려간 자세도 통과했다(z 항 부재).
     close_gate_enabled: bool = True
+    # ★★닫기 게이트를 폐쇄도의 **상한**으로도 쓸 것인가. 기본 False = 구 거동
+    #   (증가율만 스케일). True 면 정렬 전에 손이 펴진 채로 유지된다 — 상세 근거는
+    #   `_synergy_targets` 의 사용처 주석.
+    close_gate_as_ceiling: bool = False
     close_gate_ramp: float = 0.5      # r_cage 의 이 비율 구간에서 0→1 로 램프
 
     # ---- 파지 기하 ---------------------------------------------------------------
@@ -398,6 +402,10 @@ class GraspUAEnvCfg(DirectRLEnvCfg):
     # ---- 진단 계측 (보상·게이트에 쓰이지 않는다 — 로깅 전용) -------------------------
     # ★08.27: `wrap_frac`(중간 AND 원위)이 4,553 기록점 내내 정확히 0.000 인데 영상에서는
     #   감쌈이 성립한다. "안 닿았다"와 "닿았는데 못 읽는다"를 가르기 위한 계측이다.
+    # ★진단 로깅 주기(스텝). 1 = 매 스텝(구 거동). `_log_diagnostics` 는 보상·게이트·
+    #   종료에 **일절 쓰이지 않고** tfevents 도 iteration 당 한 값만 남기므로 매 스텝
+    #   돌 이유가 없다 — 안에 무필터 2차 센서 패스·quantile 2회·방위각 sort 가 있다.
+    diag_every: int = 8
     diag_contact_threshold_lo: float = 0.1   # N — 스치는 접촉까지 잡는 낮은 임계
     # ★08.29 사용자 제약: 실기 팁 센서 정격 **0~50 N**, 그 위는 측정 불가.
     #   하드웨어는 넘길 수 있다 — URDF effort 7.5 N·m / 원위 모멘트암 25.5 mm
@@ -1071,6 +1079,9 @@ class GraspUARh56f1RightEnvCfg(GraspUAEnvCfg):
     # ★접근 최적점을 케이지 중심으로 — 이 손은 엄지가 손바닥 앞 80mm 로 튀어나온
     #   대향형이라 법선 0 목표가 "엄지를 컵 안으로 밀어넣는" 자세를 만든다(사용자 관찰).
     approach_target_cage_normal: bool = True
+    # ★정렬 전 손을 펴 둔다. 이 손은 손가락당 구동 1개라 잘못 걸친 채 래치되면
+    #   자세를 고칠 경로가 없다 — 조기 폐쇄가 tesollo 보다 훨씬 치명적이다.
+    close_gate_as_ceiling: bool = True
     palm_cmd_rate_limit_m: float = 0.005
     # ★프로필이 실기 벤더 게인으로 **고정** 조립되므로 cfg 도 그렇게 선언한다
     #   (`_check_gain_branch` 가 cfg 의도와 실제 조립을 대조한다).

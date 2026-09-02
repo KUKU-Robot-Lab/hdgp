@@ -794,7 +794,21 @@ class GraspUAControlMixin:
             # ★닫는 방향만 얼린다 — 푸는 방향까지 막으면 갇혀서 빠져나올 수 없다
             #   (닫기 게이트와 같은 원칙).
             delta = torch.where(_hold & (delta > 0.0), torch.zeros_like(delta), delta)
-        self._syn_close = (self._syn_close + delta).clamp(0.0, 1.0)
+        # ★★★09.02 닫기 게이트를 **상한**으로도 쓴다(플래그, 기본 꺼짐).
+        #   구 코드에서 게이트는 증가율만 스케일했다 — 속도 제한이지 상한이 아니다.
+        #   `synergy_close_speed=0.005` × 에피소드 600스텝 = 3.0 이라, 게이트가 g 여도
+        #   `3.0·g` 까지 쌓인다: **g > 0.33 이면 정렬과 무관하게 완전히 닫힌다.**
+        #   실측(rh_b1 it150): 게이트 0.070 인데 `syn_close` 가 이미 0.060 이었고,
+        #   그 상태로 컵을 스치면 래치(엄지+아무 손가락 8스텝)가 걸린다. 래치 후엔
+        #   게이트가 강제로 1 이 되어 그 뒤로는 정렬이 아예 불필요해진다 —
+        #   "멀리서 쥐고 스쳐서 래치" 가 보상 최적이 되는 고리다.
+        #   상한으로 쓰면 정렬 전에는 손이 **펴진 채로 유지**된다(사용자 지적:
+        #   "손바닥에 충분히 가까워지기 전까지 손가락을 최대한 피고 있어야 한다").
+        #   ★래치 후에는 게이트가 1 이라 상한이 사라진다 — 이송 중 파지 유지에 무영향.
+        _hi = torch.ones_like(self._syn_close)
+        if bool(getattr(self.cfg, "close_gate_as_ceiling", False)):
+            _hi = self._close_gate.unsqueeze(1).expand_as(self._syn_close)
+        self._syn_close = (self._syn_close + delta).clamp(0.0, 1.0).minimum(_hi)
         tgt = torch.lerp(self._syn_open.unsqueeze(0), self._syn_grip.unsqueeze(0),
                          self._syn_close)
         return tgt.clamp(self._syn_lo.unsqueeze(0), self._syn_hi.unsqueeze(0))
@@ -887,8 +901,30 @@ class GraspUAControlMixin:
     # ------------------------------------------------------------------
     # 접촉 · 좌표 헬퍼
     # ------------------------------------------------------------------
+    def _contact_step_reset(self) -> None:
+        """스텝 캐시 무효화 — `_pre_physics_step` 이 매 스텝 한 번 부른다.
+
+        ★09.02 계측: 접촉 센서 16개를 한 스텝에 **78회** 읽고 있었다(필요한 건 16회).
+          `_contact_forces` 3회 · `_palm_contact_force` 3회 · `_tip_contact_forces` 2회
+          · `_finger_link_forces` 필터/무필터 2패스. 읽기마다 view→sum→norm 3커널이라
+          스텝당 ~230 커널이 접촉 읽기에만 쓰였다. 물리는 스텝 안에서 안 바뀌므로 같은
+          값이다 — 캐시로 약 1/5 로 줄인다(거동 완전 동일).
+        """
+        self._cf_cache = {}
+
+    def _cached(self, key: str, fn):
+        _c = getattr(self, "_cf_cache", None)
+        if _c is None:
+            _c = self._cf_cache = {}
+        if key not in _c:
+            _c[key] = fn()
+        return _c[key]
+
     def _contact_forces(self) -> torch.Tensor:
-        """손가락별 물체 접촉력 크기 (N, F). body 별 센서 합산, Object-필터."""
+        """손가락별 물체 접촉력 크기 (N, F). body 별 센서 합산, Object-필터. 스텝 캐시."""
+        return self._cached("cf", self._contact_forces_raw)
+
+    def _contact_forces_raw(self) -> torch.Tensor:
         mags = []
         for finger in self._finger_names:
             total = torch.zeros(self.num_envs, device=self.device)
@@ -937,16 +973,20 @@ class GraspUAControlMixin:
           손가락은 컵에 막혀 있었다 — 컵을 실제로 받치는 면이 어디인지 재려면 손바닥을
           빼놓을 수 없는데, 이 트랙은 그동안 손바닥 센서 자체가 없었다.
         """
-        return self._mag_filtered(self._palm_sensor)
+        return self._cached("palm", lambda: self._mag_filtered(self._palm_sensor))
+
+    def _link_forces_filtered(self):
+        """(중간, 원위, 팁) 필터 접촉력 — 스텝 캐시(구 코드는 2회 중복 계산했다)."""
+        return self._cached("lf", lambda: self._finger_link_forces(self._mag_filtered))
 
     def _contact_forces_split(self) -> tuple[torch.Tensor, torch.Tensor]:
         """(중간, 원위) 마디별 접촉력 (N, F) — 감쌈 판정용."""
-        _mid, _dist, _ = self._finger_link_forces(self._mag_filtered)
+        _mid, _dist, _ = self._link_forces_filtered()
         return _mid, _dist
 
     def _tip_contact_forces(self) -> torch.Tensor:
         """손가락별 **팁만** 접촉력 (N, F)."""
-        return self._finger_link_forces(self._mag_filtered)[2]
+        return self._link_forces_filtered()[2]
 
     def _env_local(self, pos_w: torch.Tensor) -> torch.Tensor:
         return pos_w - self.scene.env_origins

@@ -507,10 +507,17 @@ def test_net_force_reading_is_diagnostic_only():
     ctrl, env = _code(_CTRL), _code(_ENV)
     assert "net_forces_w" in ctrl, "무필터 판독이 없다 — 두 가설을 못 가른다"
     # 보상이 쓰는 두 진입점은 **필터판**만 봐야 한다.
+    # ★09.02 스텝 캐시 도입으로 한 단계 간접이 생겼다(`_link_forces_filtered`).
+    #   계약의 뜻은 그대로다 — 두 진입점은 **필터판만** 봐야 한다.
+    _src = ctrl.index("def _link_forces_filtered")
+    _lf = ctrl[_src:ctrl.index("def ", _src + 10)]
+    assert "_mag_filtered" in _lf and "_mag_net" not in _lf, (
+        "_link_forces_filtered 가 필터판을 안 쓴다")
     for _fn in ("_contact_forces_split", "_tip_contact_forces"):
         _i = ctrl.index(f"def {_fn}")
         _blk = ctrl[_i:ctrl.index("def ", _i + 10)]
-        assert "_mag_filtered" in _blk, f"{_fn} 이 필터판을 안 쓴다"
+        assert "_link_forces_filtered" in _blk or "_mag_filtered" in _blk, \
+            f"{_fn} 이 필터판을 안 쓴다"
         assert "_mag_net" not in _blk, f"{_fn} 에 무필터가 샜다 — 테이블 접촉이 파지로 계상된다"
     # 진단 로깅은 보상 총합이 정해진 **뒤**에 불린다(반환값 없음).
     assert "self._log_diagnostics(" in env
@@ -2147,3 +2154,43 @@ def test_approach_normal_target_is_configurable_and_off_by_default():
     assert "approach_target_cage_normal: bool = False" in _CFG, "기본이 켜져 있다"
     sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
     assert "approach_target_cage_normal: bool = True" in sub
+
+
+def test_close_gate_can_act_as_ceiling_not_just_rate():
+    """★★게이트가 **증가율만** 스케일하면 정렬 전에도 손이 닫힌다.
+
+    `synergy_close_speed 0.005 × 에피소드 600스텝 = 3.0` 이라 게이트 g 에서 `3.0·g`
+    까지 쌓인다 — **g > 0.33 이면 정렬과 무관하게 완전 폐쇄**다. 실측(rh_b1 it150):
+    게이트 0.070 인데 `syn_close` 0.060. 그 상태로 스치면 래치가 걸리고, 래치 후엔
+    게이트가 1 로 고정돼 정렬이 아예 불필요해진다.
+    """
+    ctl = _code(_CTRL)
+    assert 'getattr(self.cfg, "close_gate_as_ceiling", False)' in ctl
+    assert ".minimum(_hi)" in ctl, "상한이 적용되지 않는다"
+    assert "close_gate_as_ceiling: bool = False" in _CFG, "기본이 켜져 있다"
+    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
+    assert "close_gate_as_ceiling: bool = True" in sub
+
+
+def test_contact_reads_are_cached_per_step():
+    """★접촉 센서 16개를 한 스텝에 78회 읽고 있었다(필요한 건 16회).
+
+    ★캐시 무효화는 **두 곳**이어야 한다 — 물리 전과 후는 값이 다르다. 한 곳만 비우면
+    tesollo 의 `synergy_contact_freeze` 가 `_pre_physics_step` 에서 읽은 물리 **전** 값을
+    보상이 재사용해 거동이 바뀐다.
+    """
+    ctl, env = _code(_CTRL), _code(_ENV)
+    assert "def _contact_step_reset" in ctl and "def _cached" in ctl
+    assert ctl.count("self._cached(") >= 3, "캐시를 안 거치는 진입점이 있다"
+    pre = env.split("def _pre_physics_step")[1].split("\n    def ")[0]
+    don = env.split("def _get_dones")[1].split("\n    def ")[0]
+    assert "self._contact_step_reset()" in pre, "_pre_physics_step 에서 무효화 없음"
+    assert "self._contact_step_reset()" in don, "_get_dones(물리 직후)에서 무효화 없음"
+
+
+def test_diagnostics_can_be_subsampled():
+    """진단은 보상·게이트·종료에 안 쓰이고 tfevents 도 iteration 당 한 값만 남는다.
+    안에 무필터 2차 센서 패스·quantile 2회·방위각 sort 가 있어 매 스텝 돌 이유가 없다."""
+    env = _code(_ENV)
+    assert 'getattr(cfgn, "diag_every", 1)' in env
+    assert "diag_every: int = " in _CFG

@@ -620,6 +620,11 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
 
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        # ★스텝 접촉 캐시 무효화. **물리 전과 후는 값이 다르므로** 여기와
+        #   `_get_dones`(물리 직후) 두 곳에서 비운다. 한 곳만 비우면 tesollo 의
+        #   `synergy_contact_freeze` 가 `_pre_physics_step` 안에서 읽은 **물리 전** 값을
+        #   보상이 재사용해 거동이 바뀐다.
+        self._contact_step_reset()
         self.actions = actions.clamp(-1.0, 1.0)
 
         # ---- 팔: palm 6D = **앵커 + 델타** -----------------------------------------
@@ -1268,7 +1273,15 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         self.extras["fabric/joint_err_max"] = _jerr.max()
         self.extras["fabric/palm_err_mean"] = (
             self.palm_targets[:, :3] + self._fab_to_env - palm_pos).norm(dim=-1).mean()
-        self._log_diagnostics(_thr, mid_f, dist_f, tip_f, obj_pos, palm_pos)
+        # ★★09.02 진단을 매 스텝이 아니라 `diag_every` 스텝마다 돌린다.
+        #   이 블록에 `_mag_net` **무필터 2차 패스**(센서 15회) · `torch.quantile` 2회
+        #   (정렬 수반) · 방위각 sort 가 들어 있어 스텝 비용의 큰 덩어리다.
+        #   tfevents 는 iteration 당 한 값만 남으므로 해상도 손실이 사실상 없다
+        #   (평균 → 표본으로 바뀌는 것뿐이고, 보상·게이트·종료에는 일절 안 쓰인다).
+        _de = max(1, int(getattr(cfgn, "diag_every", 1)))
+        self._diag_step = getattr(self, "_diag_step", 0) + 1
+        if _de == 1 or (self._diag_step % _de) == 1:
+            self._log_diagnostics(_thr, mid_f, dist_f, tip_f, obj_pos, palm_pos)
         return total
 
     # ------------------------------------------------------------------
@@ -1490,6 +1503,7 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
 
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        self._contact_step_reset()      # ★물리 직후 — 여기부터 보상·진단이 값을 공유한다
         obj_pos = self._env_local(self.object.data.root_pos_w)
         from isaaclab.utils.math import quat_apply
         _up = quat_apply(
