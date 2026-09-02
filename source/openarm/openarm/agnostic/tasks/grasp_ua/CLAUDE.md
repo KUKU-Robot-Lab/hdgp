@@ -26,6 +26,39 @@
 프로필의 `(중간, 원위, 팁)` 링크 삼중이 마디 수 차이를 흡수한다. 로봇별 기본값은
 EnvCfg 서브클래스가 정한다.
 
+## 학습 기동 (RH56F1)
+
+★기동 전 확인 3가지 — 하나라도 빠지면 조용히 다른 걸 학습한다.
+
+```bash
+cd ~/rl_ws/hdgp
+# ① 계약 테스트 (Isaac 불필요, 2초)
+python3 -m pytest source/openarm/openarm/agnostic/tasks/grasp_ua/tests -q
+# ② 자산 shape 회계 — 둘 다 OK 여야 events 를 켤 수 있다
+~/rl_ws/IsaacLab/isaaclab.sh -p scripts/probes/probe_usd_shape_audit.py
+# ③ 기동
+RUN_LABEL=<라벨> PYTHONPATH=$PWD/source/openarm \
+  ~/rl_ws/IsaacLab/isaaclab.sh -p scripts/reinforcement_learning/rl_games/train.py \
+  --task open-rh_r_grasp_ua-lstm --headless --num_envs 2048
+```
+
+- `num_envs` 는 **1024 의 배수**여야 한다(rl_games `batch_size % minibatch_size == 0`).
+- `HDGP_S2R_REAL_GAINS=1` 을 붙이면 팔이 벤더 게인으로 바뀐다. **kd 는 벤더값이지
+  r2s 정합값이 아니다**(RH56F1 손으로 재식별 전) — 붙일지는 의도적으로 정할 것.
+- 로그는 `log/rl_games/open-rh/right/grasp-ua/<RUN_LABEL>/` 로 떨어진다.
+
+### 기동을 막는 것 (2026-09-02 현재)
+
+| | 상태 |
+|---|---|
+| 홈/박스/앵커/스폰 | ✅ 캘리브 완료 — 완화 없이 부팅된다 |
+| mimic 결합 | ✅ physx, 오차 0.07 mrad |
+| 물체 뱅크 | ✅ `shaker_family` 지름 70~97mm |
+| **자산 shape 회계** | ❌ 460 vs 459 · `l_al_3`=14 vs `r_al_3`=15 → **`enable_events=False` 로만 돈다** |
+
+★shape 회계가 안 고쳐지면 마찰·질량·게인 DR 을 통째로 못 쓴다. 이 트랙 목적이
+sim-to-real 이므로, 공칭 물리로 본학습을 태우는 것은 낭비다(스모크는 가능).
+
 ## 태스크 정체성
 
 **제자리 파지 → 리프트 → 목표 지점 이송 → 정지.** 팔은 처음부터 끝까지 정책이
