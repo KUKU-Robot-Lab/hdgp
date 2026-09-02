@@ -624,13 +624,20 @@ RH56F1_RIGHT = RobotProfile(
     # 선행 rh56f1 트랙 `grasp_right_preset.palm_pose_mins/maxs` 승계(같은 OpenArm 팔).
     palm_box_min=(0.20, -0.55, 0.20),
     palm_box_max=(0.65, 0.22, 0.65),
-    # ez 180° = side grasp 에서 palm_sensor +z(법선)가 컵을 향하는 자세,
-    # ex 90°  = 선행 트랙 PREGRASP_EULER_EX_DEG. tesollo 와 다른 이유는 프레임이 다르기
-    #           때문이다(아래 palm_frame_remap 참조).
-    palm_rot_center_deg=(180.0, 0.0, 90.0),
+    # ★★09.02 캘리브로 확정. 태스크가 기대하는 기준 자세는 tesollo 홈에서 읽는다 —
+    #   **손바닥 법선 +y(컵 쪽) · 손가락 +x(수평)**. 그걸 이 프레임으로 옮기면
+    #   R_ps = palm_frame_remap 이 되는데, 그 오일러가 정확히 **짐벌락(ey=−90°)** 이다.
+    #   그래서 손가락을 25° 아래로 기울여 특이점에서 떼어냈다: ez 0 · ey −65 · ex −90.
+    #     · 손바닥 법선은 여전히 정확히 +y (컵을 향한다)
+    #     · 손가락이 25° 아래를 향해 테이블 위 컵으로 내려가기 자연스럽다
+    #     · 짐벌락 자세(ey −90°)가 ±45° 박스 **안**이라 정책이 수평 파지도 낼 수 있다
+    #   ⚠선행 트랙 프리셋 (180, 0, 90) 을 그대로 쓰면 안 된다 — 그건 손가락이 **위**를
+    #     향하는 자세이고, 실측에서 fabric 이 도달 못 해 130mm/51° 로 포화했다.
+    palm_rot_center_deg=(0.0, -65.0, -90.0),
     palm_rot_half_deg=45.0,
-    # ★probe 미실시 — `_init_home_palm` 부팅 게이트가 홈이 박스 안인지 먼저 잡는다.
-    palm_box_verified=False,
+    # ★홈은 이 중심과 **같다**(위 init_joint_pos 가 그 자세로 수렴한 값이다) —
+    #   `_palm_anchor` 가 회전 성분을 홈 그대로 두므로, 홈 자세 = 액션 회전 원점이다.
+    palm_box_verified=False,      # ← 델타박스 도달성 격자 통과 후 True 로 승격
     # ★★URDF 실측 유도: r_hj_palm_sensor 의 rpy=(90°,0,90°) → 회전행렬 R(ps→base) 의
     #   열이 (base+y, base+z, base+x). 손바닥 법선은 base +x 이므로 palm_sensor 국소
     #   **+z** 가 법선이다(선행 트랙 주석 "palm_sensor +z(법선)"과 일치).
@@ -662,9 +669,18 @@ RH56F1_RIGHT = RobotProfile(
     },
     fingertip_bodies=("r_hl_thumb_tip", *tuple(f"r_hl_{f}_tip" for f in _RH_FLEX)),
     init_joint_pos={
-        # 팔 홈 — 선행 rh56f1 트랙 grasp_v2 init_state 승계.
-        "r_aj_1": 0.5, "r_aj_2": 0.1, "r_aj_3": 0.4, "r_aj_4": 0.60,
-        "r_aj_5": -0.2, "r_aj_6": 0.0, "r_aj_7": 0.0,
+        # ★★09.02 캘리브 실측 — `scripts/probes/probe_ua_home_calib.py` 로 목표 palm
+        #   포즈(0.310, −0.300, 0.419 / ez 0° ey −65° ex −90°)를 fabric 으로 추종시켜
+        #   수렴한 관절값이다(오차 0.14mm / 0.07°).
+        #   ★위치는 **홈 케이지가 컵과 x 정렬**되도록 역산했다 — 케이지는 palm 에 강체로
+        #     붙어 있고 이 자세에서 world 오프셋이 실측 (+0.070, +0.035, −0.017) m 이라
+        #     home_x = 스폰_x − 0.070 이면 접근이 y-z 평면 2D 가 된다(tesollo 와 같은 처방).
+        #   ⚠선행 트랙 값(0.5, 0.1, 0.4, 0.60, −0.2, 0, 0)을 그대로 쓰면 안 된다 —
+        #     같은 팔이라도 손이 바뀌면 palm 프레임이 달라져 같은 관절값이 전혀 다른
+        #     자세를 낸다(그 값은 이 프레임에서 ez −9.6° ey −62.7° ex −99.1° 를 냈고,
+        #     부팅 게이트가 "홈이 워크스페이스 박스 밖"으로 막았다).
+        "r_aj_1": -0.2069, "r_aj_2": 0.4203, "r_aj_3": 0.3880, "r_aj_4": 1.5941,
+        "r_aj_5": 0.4569, "r_aj_6": 0.3426, "r_aj_7": -0.4174,
         # 손 구동 6 = hand_open_pose
         "r_hj_thumb_1": 1.57, "r_hj_thumb_2": 0.0,
         **{f"r_hj_{f}_1": 0.0 for f in _RH_FLEX},
@@ -721,10 +737,12 @@ RH56F1_RIGHT = RobotProfile(
                                 stiffness=30.0, damping=5.0),
         "head":            dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
     },
-    # ★tesollo 의 (0.362,−0.16)은 **그 손의 홈 케이지**에 맞춘 값이다. RH56F1 은 손이
-    #   달라 케이지가 다르므로 그대로 쓰면 안 된다 — 부팅 `_report_home_cage` 로 재고
-    #   그 값으로 갱신할 것. 그때까지는 트랙 원래 기본값(0.30, −0.20)을 둔다.
-    object_spawn_center=(0.30, -0.20),
+    # ★★09.02 캘리브. 두 제약을 동시에 만족하는 값이다:
+    #   ① 액션 앵커(= 스폰 + `palm_anchor_offset_xyz`) ± 델타 0.10 이 palm 박스 안 —
+    #      x 하한 0.20 때문에 스폰 x 는 0.367 이상이어야 한다(0.38 채택).
+    #   ② 홈 케이지(0.467, −0.280, 0.445)와 컵이 충분히 떨어져 리셋 순간 손가락
+    #      메시가 컵을 관통하지 않는다 — 실측 거리 204mm ≫ 케이지 반경 54mm.
+    object_spawn_center=(0.38, -0.16),
 )
 
 # =============================================================================

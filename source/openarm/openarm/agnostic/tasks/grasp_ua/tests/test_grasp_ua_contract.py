@@ -1971,3 +1971,64 @@ def test_rh56f1_uses_a_hand_sized_object_bank():
     for s in bank.specs:
         assert s.base_origin_offset_z is not None, f"{s.id} 원점 오프셋 미측정"
         assert s.base_rim_z is not None, f"{s.id} 림 z 미측정"
+
+
+# ------------------------------------------------- 09.02 홈/앵커/스폰 캘리브
+def test_rh56f1_home_is_not_the_sibling_track_literal():
+    """★같은 팔이라도 손이 바뀌면 같은 관절값이 전혀 다른 palm 자세를 낸다.
+
+    선행 rh56f1 트랙 홈(0.5, 0.1, 0.4, 0.60, −0.2, 0, 0)은 이 palm 프레임에서
+    `ez −9.6° ey −62.7° ex −99.1°` 를 내고, 부팅 게이트가 "홈이 워크스페이스 박스
+    밖"으로 막는다(09.02 실측). 그 리터럴이 되살아나면 안 된다.
+    """
+    rp = _load_profiles()
+    ip = rp.PROFILES["rh56f1_right"].init_joint_pos
+    sibling = {"r_aj_1": 0.5, "r_aj_2": 0.1, "r_aj_3": 0.4, "r_aj_4": 0.60,
+               "r_aj_5": -0.2, "r_aj_6": 0.0, "r_aj_7": 0.0}
+    assert any(abs(ip[k] - v) > 1e-6 for k, v in sibling.items()), \
+        "선행 트랙 팔 홈 리터럴이 그대로 들어와 있다"
+    for j in range(1, 8):
+        assert f"r_aj_{j}" in ip
+
+
+def test_rh56f1_rotation_center_avoids_gimbal_lock():
+    """★태스크 기준 자세(손바닥 +y · 손가락 +x 수평)는 이 프레임에서 **짐벌락**
+    (ey = −90°)이다. 손가락을 아래로 기울여 특이점에서 떼어내야 한다.
+
+    선행 트랙 프리셋 (180, 0, 90) 은 손가락이 **위**를 향하는 자세라 fabric 이
+    도달 못 하고 130mm/51° 로 포화했다(09.02 실측).
+    """
+    rp = _load_profiles()
+    p = rp.PROFILES["rh56f1_right"]
+    ez, ey, ex = p.palm_rot_center_deg
+    assert (ez, ey, ex) != (180.0, 0.0, 90.0), "도달 불가 프리셋이 되살아났다"
+    assert abs(abs(ey) - 90.0) >= 10.0, f"ey={ey}° 가 짐벌락(±90°)에 너무 가깝다"
+    # 짐벌락 자세가 액션 회전 박스 안에 있어야 정책이 수평 파지도 낼 수 있다.
+    assert abs(-90.0 - ey) <= p.palm_rot_half_deg, (
+        f"수평 파지 자세(ey −90°)가 ±{p.palm_rot_half_deg}° 박스 밖이다")
+
+
+def test_rh56f1_anchor_and_spawn_are_mutually_derived():
+    """앵커·스폰·홈이 **케이지 오프셋 하나**에서 파생돼야 한다.
+
+    ★케이지는 palm 에 강체로 붙어 있고, 이 손의 world 오프셋은 홈 자세에서 실측
+      (+0.070, +0.035, −0.017) m 다. tesollo 값을 그대로 쓰면 케이지가 파지중심보다
+      110mm 위에 떠 델타 0.10 으로 못 내려온다.
+    """
+    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
+    m = re.search(r"palm_anchor_offset_xyz: tuple = \(([-\d., ]+)\)", sub)
+    assert m, "rh56f1 전용 앵커 오프셋이 없다(tesollo 값을 물려받고 있다)"
+    off = [float(v) for v in m.group(1).split(",")]
+    cage = (0.070, 0.035, -0.017)          # 홈 자세에서의 케이지 world 오프셋 실측
+    # 앵커에서의 케이지 = 스폰 + off + cage · 파지중심 = 스폰 + (0,0,0.03)
+    dz = off[2] + cage[2] - 0.03
+    assert abs(off[0] + cage[0]) < 0.005, "앵커 케이지가 컵과 x 정렬이 아니다"
+    assert abs(off[1] + cage[1]) < 0.005, "앵커 케이지가 컵과 y 정렬이 아니다"
+    assert 0.03 <= dz <= 0.07, f"앵커 케이지가 파지중심 위 {dz * 1000:.0f}mm — 30~70mm 로"
+
+    rp = _load_profiles()
+    sx, sy = rp.PROFILES["rh56f1_right"].object_spawn_center
+    lo = rp.PROFILES["rh56f1_right"].palm_box_min
+    # ★앵커 ± 델타가 박스를 넘으면 그 축이 상시 클램프된다(구 홈 규약의 y 92% 포화).
+    assert sx + off[0] - 0.10 >= lo[0] - 1e-9, (
+        f"앵커 x {sx + off[0]:.3f} − 델타 0.10 이 박스 하한 {lo[0]} 밑이다")
