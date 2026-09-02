@@ -1937,7 +1937,19 @@ def test_rh56f1_mimic_mode_matches_its_actuator_coverage():
             f"software 인데 PD 미커버 종속관절 {set(p.hand_mimic) - set(covered)} — "
             "무구동 자유회전한다")
     elif p.hand_mimic_mode == "physx":
-        assert not covered, f"physx 인데 {covered} 에 PD 가 걸려 제약과 싸운다"
+        # ★physx 에서 종속관절에 걸어도 되는 것은 **감쇠뿐**(kp=0). 위치항을 주면
+        #   제약과 싸우고, 아무것도 안 주면 감쇠가 0 이라 stiff 제약만 남아 링잉이
+        #   발산한다(09.02 실측: 종속관절 |qd| 181 rad/s).
+        for gname, spec in p.actuator_specs.items():
+            pats_g = spec.get("joint_names_expr") or []
+            hit = [d for d in p.hand_mimic if any(re.fullmatch(e, d) for e in pats_g)]
+            if hit:
+                assert float(spec.get("stiffness", 0.0)) == 0.0, (
+                    f"physx 인데 '{gname}' 가 종속관절 {hit} 에 kp="
+                    f"{spec.get('stiffness')} 를 건다 — 제약과 싸운다")
+                assert float(spec.get("damping", 0.0)) > 0.0, (
+                    f"'{gname}' 가 종속관절 {hit} 에 감쇠를 안 준다 — 링잉이 발산한다")
+        assert covered, "종속관절에 감쇠 그룹이 하나도 없다(무구동 = 감쇠 0)"
 
 
 def test_rh56f1_real_gain_branch_uses_vendor_values():

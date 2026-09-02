@@ -704,8 +704,18 @@ RH56F1_RIGHT = RobotProfile(
         "head_j_pan": 0.0, "head_j_tilt": 0.0,
     },
     actuator_specs={
-        # ★종속 6 은 PD 를 걸지 않는다 — PhysX mimic 이 몬다. 걸면 제약과 싸운다
-        #   (09.02 실측: software 로 PD 를 걸었더니 a=0 에서도 mimic_err 32.8 rad).
+        # ★★★종속 6 — **위치 PD 는 안 걸고 감쇠만** 건다(kp=0).
+        #   위치 목표를 주면 PhysX mimic 제약과 싸운다(09.02 실측: software 로 PD 를
+        #   걸었더니 a=0 에서도 mimic_err 32.8 rad). 그렇다고 아무것도 안 걸면 그
+        #   관절엔 **감쇠가 0** 이라 stiff 제약(naturalFrequency 500, dt 1/120 에서
+        #   ω·dt≈4.2)만 작용해 링잉이 발산한다.
+        #   09.02 파탄 순간 실측(random 액션 step 20): 팔은 |qd| 2.8 rad/s 로 멀쩡한데
+        #     hand_drive |qd| 101 · hand_mimic |qd| **181 rad/s** — 위치는 아직 범위
+        #     안(0.38 rad)이고 **속도만** 폭주했다. 감쇠 부재가 유일한 설명이다.
+        #   kp=0 이면 위치항이 없어 제약과 안 싸우고, kd 만 에너지를 뽑는다.
+        "right_hand_mimic_damp": dict(
+            joint_names_expr=["r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"],
+            stiffness=0.0, damping=2.0),
         **({
             # ★★09.02 실기 벤더 게인 — `control_gains.yaml` 이 진실원천이고, 같은 값이
             #   이번 자산 갱신으로 USD DriveAPI 에도 실렸다(단위 변환된 형태로 확인).
