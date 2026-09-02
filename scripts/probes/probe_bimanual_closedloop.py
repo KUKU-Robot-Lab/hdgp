@@ -35,6 +35,12 @@ parser.add_argument("--left-stream", type=Path,
                     help="goal·컵 스폰·(--verify 시) 대조 기준")
 parser.add_argument("--right-stream", type=Path,
                     default=_SR / "logs/shadow/pour_entry/stream_right_g1.npz")
+parser.add_argument("--left-cup-json", type=Path, default=None,
+                    help="FD++ capture JSON (base_link) — shaker 스폰을 실측으로 대체")
+parser.add_argument("--right-cup-json", type=Path, default=None,
+                    help="FD++ capture JSON — cup_big 스폰을 실측으로 대체")
+parser.add_argument("--force-spawn", action="store_true",
+                    help="실측 스폰이 학습 분포 상자 밖이어도 진행 (기본은 거부+재배치 안내)")
 parser.add_argument("--left-steps", type=int, default=300)
 parser.add_argument("--right-steps", type=int, default=420)
 parser.add_argument("--stop-lift", type=float, default=0.08)
@@ -43,15 +49,15 @@ parser.add_argument("--settle", type=int, default=120)
 parser.add_argument("--hold", type=int, default=120)
 parser.add_argument("--final-hold", type=int, default=300)
 parser.add_argument("--pour-checkpoint", type=Path,
-                    default=_SR / "logs/policy/pour_e1/nn/e1_pour1_ep6000.pth",
-                    help="e1_pour1 스냅샷 (학습 종료 후 최종본으로 교체)")
+                    default=_SR / "logs/policy/pour_e1/nn/e1_pour1_ep6500.pth",
+                    help="e1_pour1 최종본 (ep6500 — 학습이 그 시점에 종료됨, md5 6e3366d5)")
 parser.add_argument("--pour-steps", type=int, default=900)
 parser.add_argument("--pour-mode", choices=("follow", "policy"), default="follow",
                     help="follow=네이티브 성공 에피소드의 관절 궤적 추종(사용자 지시 09.02) · "
                          "policy=폐루프 (현재 β=0 미해결)")
 parser.add_argument("--pour-traj", type=Path,
-                    default=_SR / "logs/shadow/pour_entry/pour_traj_receiver_live.npz",
-                    help="기본 = 실측 받는점(0.265,0.045,0.296) 기준 성공 궤적")
+                    default=_SR / "logs/shadow/pour_entry/pour_traj_receiver_live_ep6500.npz",
+                    help="기본 = ep6500 · 실측 받는점(0.265,0.045,0.296) 기준 성공 궤적 20/20")
 parser.add_argument("--skip-pour", action="store_true", help="파지 4국면까지만")
 parser.add_argument("--receiver-up-contract", action="store_true",
                     help="pour obs 의 tgt_up 을 훈련 상수로 고정 — pour 훈련에서 받는컵"
@@ -146,6 +152,29 @@ def main() -> int:
     right_goal = zr["goal"][0].astype(np.float32)             # 3D (env-local)
     left_spawn = zl["meta_cup_spawn"].astype(np.float32)
     right_spawn = zr["meta_cup_spawn"].astype(np.float32)
+
+    # FD++ capture JSON 스폰 (Step 1) — base_link ≡ env-local (로봇 베이스가 원점).
+    # 분포 상자 가드: 실물 배치가 학습 분포 밖이면 정책이 조용히 이상해진다 — 거부한다.
+    from cup_pose_capture import load_capture, spawn_box_for_side, verdict  # noqa: PLC0415
+    for _side, _jpath, _tag in (("left", args.left_cup_json, "shaker"),
+                                ("right", args.right_cup_json, "cup_big")):
+        if _jpath is None:
+            continue
+        _cp = load_capture(_jpath, expect_frame="base_link")
+        _vd = verdict(_cp, spawn_box_for_side(_side))
+        print(f"[FD++ 스폰] {_tag} ← {_jpath.name}: "
+              f"{[round(v, 4) for v in _cp.position]} · "
+              f"{'분포 안 ✅' if _vd.inside else '분포 밖 ❌'}", flush=True)
+        if not _vd.inside and not args.force_spawn:
+            raise SystemExit(
+                f"[FD++ 스폰] {_tag} 이 학습 분포 밖이다:\n{_vd.describe()}\n"
+                "실물 컵을 상자 안으로 재배치하거나 --force-spawn 으로 강행하라.")
+        if _side == "left":
+            left_spawn = np.array(_cp.position, dtype=np.float32)
+        else:
+            right_spawn = np.array(_cp.position, dtype=np.float32)
+            right_goal = right_spawn + np.array([0.0, 0.0, 0.12], dtype=np.float32)
+            print("[FD++ 스폰] 우 goal = 스폰 + (0,0,0.12) (E1/g1 liftonly 규약)", flush=True)
 
     left_yaml = yaml.unsafe_load(
         (args.left_checkpoint.parent.parent / "params" / "env.yaml").read_text())
@@ -668,7 +697,7 @@ def main() -> int:
         pr = pour_report
         print(f"[판정] pour {'✅' if pr['success'] else '진행중/미성공'} — "
               f"{pr['steps']}스텝 · 구슬 교차 {pr['crossed']}/{pr['beads']} "
-              f"(체크포인트 ep6000 중간본 — 학습 진행에 따라 갱신)")
+              f"(e1_pour1 최종본 ep6500)")
 
     if args.verify:
         _verify(trace, zl, zr)
