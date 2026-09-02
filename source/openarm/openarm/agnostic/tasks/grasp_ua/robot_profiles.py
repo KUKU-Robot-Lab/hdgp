@@ -551,7 +551,18 @@ RH56F1_RIGHT = RobotProfile(
     name="rh56f1_right",
     # ★tesollo 처럼 `_armhull` 변형 자산이 아직 없다. 손 접촉력 왜곡을 피하려면
     #   (손 decomposition + 팔 hull) 변형이 필요하다 — 만들기 전까지 원본을 쓴다.
-    usd_relpath="robot/openarm_bi_rh56f1_rl/openarm_bi_rh56f1_rl.usd",
+    # ★★★09.02 PhysxMimicJoint **없는** 사본을 쓴다(= e4512df 이전 자산).
+    #   mimic 이 들어간 자산으로는 cfg 레버를 다 써도 학습이 못 돈다 — 게인 400→5 ·
+    #   depenetration 1000→1 · 종속 감쇠(+effort 20) · 물리 dt 1/8 · 회전 액션 0 ·
+    #   손 개방 고정 · respawn off · solver 8/0→32/4 를 전부 시험했고 모두 발산했다.
+    #   근본 이유: 구동관절이 접촉에 밀려 하한(0) 밑으로 나가면 mimic 이 요구하는
+    #   종속 위치가 **종속 한계 밖**이 되어 두 제약이 동시에 만족 불가가 된다
+    #   (실측 step 8: thumb_2 −0.2469 → thumb_3 요구 −0.282 vs 한계 −0.1084 ·
+    #    1024 env 중 400 개 동시 위반 → 종속 |qd| 291 rad/s → 씬 발산).
+    #   software 경로는 같은 하중에서 실측 안정이다(폐쇄 300스텝 오차 ≤4.6 mrad).
+    #   ⚠자산이 안정한 mimic 을 내면(종속 한계 확대 + naturalFrequency 하향) 다시
+    #     `openarm_bi_rh56f1_rl` + `hand_mimic_mode="physx"` 로 돌아간다.
+    usd_relpath="robot/openarm_bi_rh56f1_rl_nomimic/openarm_bi_rh56f1_rl.usd",
     num_arm_joints=7,
     num_hand_joints=6,
     arm_joint_regex="r_aj_[1-7]",
@@ -615,10 +626,8 @@ RH56F1_RIGHT = RobotProfile(
         "r_hj_thumb_4": ("r_hj_thumb_3", 0.7508, 0.0),   # ★체인 — 부팅에서 전개된다
         **{f"r_hj_{f}_2": (f"r_hj_{f}_1", 1.1169, 0.0) for f in _RH_FLEX},
     },
-    # ★★09.02 physx 유지. software 로 되돌려 봤으나 **더 나빴다** — USD 의
-    #   PhysxMimicJoint 제약이 그대로 남아 있어 우리 PD 와 싸운다(a=0 에서도
-    #   mimic_err 32.8 rad). 자산에 제약이 박힌 이상 physx 가 유일한 경로다.
-    hand_mimic_mode="physx",
+    # ★09.02 위 usd_relpath 주석 참조 — 이 자산엔 PhysX 제약이 없어 우리가 몬다.
+    hand_mimic_mode="software",
     # ---- palm 워크스페이스 -------------------------------------------------------
     # 선행 rh56f1 트랙 `grasp_right_preset.palm_pose_mins/maxs` 승계(같은 OpenArm 팔).
     # ★★단 **z 하한만 0.20 → 0.30 으로 올렸다**(09.02 실측). 이 손은 palm 원점에서
@@ -704,22 +713,11 @@ RH56F1_RIGHT = RobotProfile(
         "head_j_pan": 0.0, "head_j_tilt": 0.0,
     },
     actuator_specs={
-        # ★★★종속 6 — **위치 PD 는 안 걸고 감쇠만** 건다(kp=0).
-        #   위치 목표를 주면 PhysX mimic 제약과 싸운다(09.02 실측: software 로 PD 를
-        #   걸었더니 a=0 에서도 mimic_err 32.8 rad). 그렇다고 아무것도 안 걸면 그
-        #   관절엔 **감쇠가 0** 이라 stiff 제약(naturalFrequency 500, dt 1/120 에서
-        #   ω·dt≈4.2)만 작용해 링잉이 발산한다.
-        #   09.02 파탄 순간 실측(random 액션 step 20): 팔은 |qd| 2.8 rad/s 로 멀쩡한데
-        #     hand_drive |qd| 101 · hand_mimic |qd| **181 rad/s** — 위치는 아직 범위
-        #     안(0.38 rad)이고 **속도만** 폭주했다. 감쇠 부재가 유일한 설명이다.
-        #   kp=0 이면 위치항이 없어 제약과 안 싸우고, kd 만 에너지를 뽑는다.
-        #   ★effort 상한을 따로 올린다. 기본(USD 값 1 N·m)이면 감쇠 토크가 1 rad/s
-        #     에서 이미 포화해 **에너지를 못 뽑는다** — 09.02 실측에서 감쇠를 넣고도
-        #     종속 |qd| 가 87 rad/s 였다. kp=0 이라 이 상한은 **소산에만** 쓰이고
-        #     에너지를 주입할 수 없다(파지력과 무관하다 — 파지력은 구동관절 몫).
-        "right_hand_mimic_damp": dict(
+        # ★종속 6 — software 모드라 우리가 위치를 몬다. 구동과 **같은 게인**이어야
+        #   결합비가 지령 수준에서 유지된다.
+        "right_hand_mimic": dict(
             joint_names_expr=["r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"],
-            stiffness=0.0, damping=2.0, effort_limit_sim=20.0),
+            stiffness=5.0, damping=2.0),
         **({
             # ★★09.02 실기 벤더 게인 — `control_gains.yaml` 이 진실원천이고, 같은 값이
             #   이번 자산 갱신으로 USD DriveAPI 에도 실렸다(단위 변환된 형태로 확인).
