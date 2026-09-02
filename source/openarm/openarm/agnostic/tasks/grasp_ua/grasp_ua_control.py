@@ -409,7 +409,10 @@ class GraspUAControlMixin:
         self.robot.write_joint_state_to_sim(q0, torch.zeros_like(q0))
         self.robot.set_joint_position_target(q0)
         self.scene.write_data_to_sim()
-        for _ in range(2):
+        # ★★09.02 2 → 24 스텝. 게인이 부드러우면(RH56F1 실기 벤더 kp 10~70) 2 스텝으로는
+        #   홈에 정착하지 않아 손끝 FK 산포가 게이트(2mm)를 넘는다(실측 2.6mm).
+        #   단단한 게인에서는 어차피 즉시 정착하므로 tesollo 거동은 안 바뀐다.
+        for _ in range(24):
             self.sim.step(render=False)
             self.scene.update(self.physics_dt)
 
