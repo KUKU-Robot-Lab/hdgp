@@ -157,8 +157,16 @@ def _build_robot_cfg(profile: RobotProfile,
                 angular_damping=0.0,
                 max_linear_velocity=1000.0,
                 max_angular_velocity=1000.0,
-                # ★접촉력 스파이크가 보이면 되돌릴 1순위(구 값 1.0).
-                max_depenetration_velocity=1000.0,
+                # ★★★09.02 1000.0 → **1.0 으로 되돌렸다**(이 주석이 예고한 그 사고).
+                #   RH56F1 학습 두 런이 접촉력 스파이크로 발산했다 —
+                #   rh_a1_fresh: iter1 117 N → iter20 8.4e12 N · 물체 13.9 m · PhysX 정지
+                #   rh_a2_gain5: iter1  85 N → iter17 1,596 N (게인 수정 뒤에도 동일)
+                #   두 런 다 `palm_above_table_min` 이 79~107mm 라 손(palm−최하단 71mm)이
+                #   테이블을 파고들었고, 그때 PhysX 가 **최대 1000 m/s 로 밀어내면서**
+                #   에너지를 주입했다. 그 속도가 stiff mimic 제약(nf 500)에 그대로
+                #   실려 `mimic_err` 이 0.5 → 21.9 → 4.8e5 rad 로 갔다.
+                #   ⚠tesollo 프로필도 같이 바뀐다(이 트랙 안에서만). 대조군이므로 감수한다.
+                max_depenetration_velocity=1.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=enable_self_collisions,
@@ -773,7 +781,7 @@ class GraspUAEnvCfg(DirectRLEnvCfg):
                 stabilization_threshold=0.0025,
                 max_linear_velocity=1000.0,
                 max_angular_velocity=1000.0,
-                max_depenetration_velocity=1000.0,
+                max_depenetration_velocity=1.0,   # ★09.02 로봇과 같은 이유(위 주석)
             ),
         ),
     )
