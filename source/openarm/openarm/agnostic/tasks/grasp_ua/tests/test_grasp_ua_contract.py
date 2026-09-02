@@ -1915,17 +1915,29 @@ def test_rh56f1_fabric_order_matches_the_manifest_contract():
     assert list(rp.PROFILES["rh56f1_right"].fabric_joint_order) == list(order)
 
 
-def test_rh56f1_has_no_pd_group_on_mimic_joints():
-    """★★mimic 을 켜면 종속관절의 DriveAPI 가 사라진다. 거기에 PD 를 걸면 PhysX
-    제약과 싸운다 — mimic 이 없던 시절의 우회책이 남아 있으면 안 된다."""
+def test_rh56f1_mimic_mode_matches_its_actuator_coverage():
+    """★모드와 액추에이터 커버리지는 **한 묶음**이다.
+
+    - software: 우리가 종속목표를 쓰므로 종속관절에 PD 그룹이 **있어야** 한다.
+    - physx   : PhysX 가 몰므로 PD 를 걸면 제약과 **싸운다**(그룹이 없어야 한다).
+
+    ★09.02 physx → software 환원 근거: USD 의 `naturalFrequency=500` 이 sim dt
+      1/120 에서 ω·dt=4.2 로 안정 한계를 넘는다. 무하중 2 env 에서는 오차
+      0.00007 rad 였는데 2048 env 학습에서는 **iteration 1 에 1.83 rad** 로 터졌고
+      씬 전체가 발산했다(rh_a1_fresh). software 는 같은 하중에서 ≤4.6 mrad.
+    """
     rp = _load_profiles()
     p = rp.PROFILES["rh56f1_right"]
-    assert p.hand_mimic_mode == "physx"
-    exprs = " ".join(str(v.get("joint_names_expr")) for v in p.actuator_specs.values())
-    for dep in p.hand_mimic:
-        stem = dep.split("r_hj_")[1]                     # thumb_3 / index_2 …
-        assert stem not in exprs, f"{dep} 에 아직 PD 그룹이 걸려 있다"
-    assert "right_hand_mimic" not in p.actuator_specs
+    # ★정규식으로 **실제 해석**해야 한다 — 문자열 포함 검사는 `thumb_[34]` 같은
+    #   패턴을 놓쳐 커버돼 있는데도 미커버로 읽는다.
+    pats = [e for v in p.actuator_specs.values() for e in (v.get("joint_names_expr") or [])]
+    covered = [d for d in p.hand_mimic if any(re.fullmatch(e, d) for e in pats)]
+    if p.hand_mimic_mode == "software":
+        assert len(covered) == len(p.hand_mimic), (
+            f"software 인데 PD 미커버 종속관절 {set(p.hand_mimic) - set(covered)} — "
+            "무구동 자유회전한다")
+    elif p.hand_mimic_mode == "physx":
+        assert not covered, f"physx 인데 {covered} 에 PD 가 걸려 제약과 싸운다"
 
 
 def test_rh56f1_real_gain_branch_uses_vendor_values():

@@ -615,10 +615,9 @@ RH56F1_RIGHT = RobotProfile(
         "r_hj_thumb_4": ("r_hj_thumb_3", 0.7508, 0.0),   # ★체인 — 부팅에서 전개된다
         **{f"r_hj_{f}_2": (f"r_hj_{f}_1", 1.1169, 0.0) for f in _RH_FLEX},
     },
-    # ★★09.02 자산 갱신 — USD 에 PhysxMimicJoint 가 들어왔다(실측: 종속 6관절이
-    #   `physxMimicJoint:rotZ:gearing` −1.1169/−1.1425/−0.7508, **DriveAPI 없음**).
-    #   이제 PhysX 가 결합을 강제하므로 우리가 종속목표를 쓰면 제약과 싸운다.
-    #   `hand_mimic` 표는 남긴다 — URDF 대조 계약과 부팅 검증이 쓴다.
+    # ★★09.02 physx 유지. software 로 되돌려 봤으나 **더 나빴다** — USD 의
+    #   PhysxMimicJoint 제약이 그대로 남아 있어 우리 PD 와 싸운다(a=0 에서도
+    #   mimic_err 32.8 rad). 자산에 제약이 박힌 이상 physx 가 유일한 경로다.
     hand_mimic_mode="physx",
     # ---- palm 워크스페이스 -------------------------------------------------------
     # 선행 rh56f1 트랙 `grasp_right_preset.palm_pose_mins/maxs` 승계(같은 OpenArm 팔).
@@ -705,12 +704,8 @@ RH56F1_RIGHT = RobotProfile(
         "head_j_pan": 0.0, "head_j_tilt": 0.0,
     },
     actuator_specs={
-        # ★★09.02 `right_hand_mimic` 그룹을 **없앴다**. mimic 을 켜면 종속 6관절의
-        #   DriveAPI 가 사라지므로(USD 실측), 거기에 PD 를 걸면 PhysX 제약과 싸운다.
-        #   그 그룹은 mimic 이 없던 시절의 우회책이었다.
-        #   ⚠같은 우회책이 `rh56f1/right/grasp_v1|v2/grasp_right_env_cfg.py` 와
-        #     `scripts/r2s_autotune/configs/bi_rh56f1.yaml` 에 아직 남아 있다 — 그
-        #     트랙들은 이 자산으로는 그대로 못 돈다(별도 후속).
+        # ★종속 6 은 PD 를 걸지 않는다 — PhysX mimic 이 몬다. 걸면 제약과 싸운다
+        #   (09.02 실측: software 로 PD 를 걸었더니 a=0 에서도 mimic_err 32.8 rad).
         **({
             # ★★09.02 실기 벤더 게인 — `control_gains.yaml` 이 진실원천이고, 같은 값이
             #   이번 자산 갱신으로 USD DriveAPI 에도 실렸다(단위 변환된 형태로 확인).
@@ -736,13 +731,21 @@ RH56F1_RIGHT = RobotProfile(
         # ⚠이 자산의 손 effort 는 **1 N·m** 다(벤더 URDF 값, tesollo 1.5~7.5 대비 낮다).
         #   게인 400 은 그 상한에서 포화할 수 있다 — 파지력 실측 전까지 미지수다
         #   (선례: tesollo 400/60 이 effort 에서 포화해 k=5/kd=2 로 재설정됐다).
+        # ★★★09.02 게인 400/60 · 200/35 → **5/2**. effort 가 1 N·m 인데 kp 400 이면
+        #   오차 0.0025 rad 에서 포화해 사실상 **정토크원**이 된다 — 접촉이 들어오면
+        #   관절이 그대로 역구동돼 한계 밖으로 밀린다(rh_a1_fresh iteration 1 실측:
+        #   `hand_joint_err_max` 1.94 rad > 가동범위 1.53 rad). 그 상태에서 stiff
+        #   mimic 제약이 에너지를 주입해 씬 전체가 발산했다.
+        #   ★tesollo 가 08.16 에 겪은 것과 **같은 함정**이고 처방도 같다(400/60 → 5/2).
+        #   ⚠파지력은 안 줄어든다 — 파지력은 effort(1 N·m ≈ 손가락당 25 N, 5지 12 kg)가
+        #     정하고 kp 는 그 토크에 도달하는 **오차 폭**만 정한다. kp 5 면 0.2 rad 에서
+        #     effort 에 닿는다(선형 구간 확보).
         "right_hand_flex":  dict(joint_names_expr=["r_hj_(thumb_2|index_1|middle_1|ring_1|pinky_1)"],
-                                 stiffness=400.0, damping=60.0),
-        "right_hand_abd":   dict(joint_names_expr=["r_hj_thumb_1"], stiffness=200.0, damping=35.0),
+                                 stiffness=5.0, damping=2.0),
+        "right_hand_abd":   dict(joint_names_expr=["r_hj_thumb_1"], stiffness=5.0, damping=2.0),
         # 유휴 좌팔·좌손 (hold). ★좌손도 구동 6만 — 좌측 종속 6도 DriveAPI 가 없다.
         "left_arm":        dict(joint_names_expr=["l_aj_[1-7]"], stiffness=400.0, damping=80.0),
-        "left_hand":       dict(joint_names_expr=["l_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"],
-                                stiffness=30.0, damping=5.0),
+        "left_hand":       dict(joint_names_expr=["l_hj_[a-z]+_[1-4]"], stiffness=30.0, damping=5.0),
         "head":            dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
     },
     # ★★09.02 캘리브. 두 제약을 동시에 만족하는 값이다:
