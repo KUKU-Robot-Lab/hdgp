@@ -18,6 +18,7 @@ _HERE = Path(__file__).resolve().parent.parent
 _ENV = (_HERE / "grasp_ua_env.py").read_text(encoding="utf-8")
 _CTRL = (_HERE / "grasp_ua_control.py").read_text(encoding="utf-8")
 _CFG = (_HERE / "grasp_ua_env_cfg.py").read_text(encoding="utf-8")
+_PROF = (_HERE / "robot_profiles.py").read_text(encoding="utf-8")
 _REW = (_HERE / "grasp_ua_rewards.py").read_text(encoding="utf-8")
 _REG = (_HERE / "config" / "__init__.py").read_text(encoding="utf-8")
 
@@ -1984,31 +1985,6 @@ def test_mimic_coupling_is_monitored_at_runtime():
     assert 'self.extras["hand/mimic_err_max"]' in _code(_ENV)
 
 
-def test_rh56f1_uses_a_hand_sized_object_bank():
-    """★물체 크기는 **엔드이펙터 종속**이고, 기준은 손가락 길이가 아니라 **개구**다.
-
-    09.02 에 "검지 72.5mm 니 지름 70~97mm" 로 잡았던 것을 09.03 실측으로 뒤집었다 —
-    제약은 엄지-4지 **법선 간극 83.7mm**(엄지 외전 스윕에서 그게 최대)이고, 컵을
-    케이지에 고정해 재면 79.2mm 부터 열린 손에 이미 닿는다.
-    """
-    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
-    assert 'object_bank: str = "shaker_small"' in sub
-
-    import importlib.util
-    import sys
-    _ob = _HERE.parents[1] / "modules" / "object_bank.py"
-    spec = importlib.util.spec_from_file_location("_gua_ob", _ob)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["_gua_ob"] = mod
-    spec.loader.exec_module(mod)
-    bank = mod.BANKS["shaker_small"]
-    assert len(bank.specs) == 8
-    d = [2.0 * s.base_grasp_radius * s.scale[0] for s in bank.specs]
-    assert max(d) <= 0.070, f"최대 지름 {max(d) * 1000:.1f}mm — 손 개구 한계 초과"
-    assert d == sorted(d), "종 인덱스와 크기 순서가 어긋나면 종별 진단을 못 읽는다"
-    for s in bank.specs:
-        assert s.base_origin_offset_z is not None and s.base_rim_z is not None
-
 def test_rh56f1_home_is_not_the_sibling_track_literal():
     """★같은 팔이라도 손이 바뀌면 같은 관절값이 전혀 다른 palm 자세를 낸다.
 
@@ -2215,26 +2191,6 @@ def test_opposed_distal_metric_exists_and_is_opt_in():
         "손바닥이 안 닿는 손인데 가중이 남아 감쌈 상한이 깎인다")
 
 
-def test_rh56f1_bank_fits_the_hand_opening():
-    """★엄지-4지 법선 간극이 **83.7mm 가 최대**다(엄지 외전 스윕 실측: 1.57 이 최적,
-    2.09 로 더 벌리면 73.9mm 로 줄어든다). 컵을 케이지에 고정해 재면 79.2mm 부터
-    열린 손에 이미 닿는다 — 링크 두께를 빼면 실사용 한계가 ~70mm 다."""
-    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
-    assert 'object_bank: str = "shaker_small"' in sub
-    import importlib.util
-    import sys
-    _ob = _HERE.parents[1] / "modules" / "object_bank.py"
-    spec = importlib.util.spec_from_file_location("_gua_ob2", _ob)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["_gua_ob2"] = mod
-    spec.loader.exec_module(mod)
-    bank = mod.BANKS["shaker_small"]
-    d = [2.0 * s.base_grasp_radius * s.scale[0] for s in bank.specs]
-    assert max(d) <= 0.070, f"최대 지름 {max(d) * 1000:.1f}mm — 손 개구 한계를 넘는다"
-    assert d == sorted(d), "종 인덱스와 크기 순서가 어긋난다"
-    assert len(bank.specs) == 8
-
-
 def test_finger_closure_target_matches_phalanx_count():
     """★★소등 조건이 **구조적으로 성립 불가**하면 보상 항은 영원히 켜진 채 남는다.
 
@@ -2252,3 +2208,76 @@ def test_finger_closure_target_matches_phalanx_count():
     assert 'finger_closure_target: str = "wrap"' in _CFG, "기본이 바뀌었다(tesollo 파괴)"
     sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
     assert 'finger_closure_target: str = "distal"' in sub
+
+
+# ======================================== 09.03 무효 프로토콜 철회 + 실측 재작성
+def test_rh56f1_bank_is_the_measured_cup_band():
+    """★★09.02~03 에 이 자리에 있던 두 계약(`shaker_small` 48~66mm · "지름 ≤70mm")을
+    **철회한다**. 그 근거는 전부 무효 프로토콜에서 나왔다:
+
+      · 컵을 케이지에 **고정**하고 닫아 접촉 링크를 셌다 → 임계값 근처에서 튄다
+        (배치 4mm 차이에 5링크→1링크). 같은 격자점이 실행마다 다른 답을 냈다.
+      · 고정한 채 닫으면 **관통 에너지**가 쌓여 놓는 순간 컵이 발사된다(실측 2,085mm).
+      · 컵을 palm 기준 **공중**에 띄웠다 — 실제 과제에서 컵은 테이블(z 0.200)에 서 있고
+        홈 손바닥은 z 0.419 로 165mm 위다. 도달 가능성조차 없는 배치를 재고 있었다.
+      · 판정 기준 `완전 폐쇄(1.0)`가 파지 자세가 아니다 — 엄지↔검지 간극이 폐쇄 0.65 의
+        14.1mm 에서 1.00 의 34.6mm 로 **되벌어진다**(두 손끝이 서로를 지나쳐 엇갈린다).
+
+    유효 프로토콜은 **스크립트 롤아웃**이다: 컵 자유(고정 없음·중력 있음)·테이블 위,
+    팔이 env 액션과 fabric 으로 실제 접근, 폐쇄, **리프트**. 테이블은 손을 따라올 수
+    없으므로 '지지'와 '파지'가 이진으로 갈린다. 거기서 cup_big 0.58 이 **2회 재현**으로
+    들렸다(36점 중 11/8 성립 · 7점 교집합 · `thumb:MDT` + 4지 팁).
+    """
+    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
+    assert 'object_bank: str = "cup_small"' in sub
+    assert "shaker_small" not in sub, "철회한 뱅크가 남아 있다"
+
+    import importlib.util
+    import sys
+    _ob = _HERE.parents[1] / "modules" / "object_bank.py"
+    spec = importlib.util.spec_from_file_location("_gua_ob", _ob)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_gua_ob"] = mod
+    spec.loader.exec_module(mod)
+    bank = mod.BANKS["cup_small"]
+    assert len(bank.specs) == 8
+    d = [2.0 * s.base_grasp_radius * s.scale[0] for s in bank.specs]
+    assert d == sorted(d), "종 인덱스와 크기 순서가 어긋나면 종별 진단을 못 읽는다"
+    # ★검증점 0.58(71.9mm)을 반드시 품고, 그 주변으로만 벌린다 — 스케일 스윕 전이다.
+    assert any(abs(x - 0.0719) < 5e-4 for x in d), "재현 검증된 0.58 이 뱅크에 없다"
+    assert min(d) > 0.055 and max(d) < 0.085, (
+        f"검증 안 된 대역까지 벌렸다: {min(d)*1000:.1f}~{max(d)*1000:.1f}mm")
+    for s in bank.specs:
+        assert s.base_origin_offset_z is not None and s.base_rim_z is not None
+
+
+def test_cage_is_measured_at_partial_closure():
+    """★★케이지는 **열린 손** 손끝으로 정의되는데 손가락은 닫히며 다른 점으로 모인다.
+
+    엄지↔검지 중점(palm mm): 폐쇄 0.00 (34.8,31.0,71.8) → 0.50 (49.2,34.8,62.4)
+                              → 1.00 (42.4,34.8,39.7)
+    스크립트 롤아웃에서 **실제로 컵이 들리는 영역의 중심은 (48,24,64)** 로 폐쇄 0.5 의
+    수렴점과 맞고, 열린손 케이지 (34.9,14.0,71.2) 와는 법선으로 13mm 어긋난다.
+    이 어긋남이 rh_e1 의 "지표는 만족(cage_ctr_dist 19mm)인데 접촉 0.055" 를 만들었다 —
+    정책은 시킨 대로 했고, 그 자리가 잡히는 자리가 아니었다.
+    """
+    prof = _code(_PROF)
+    assert "cage_close_frac: float = 0.0" in prof, "기본이 0(열린손)이 아니다 — tesollo 파괴"
+    assert "cage_close_frac=0.5," in prof, "rh56f1 이 부분 폐쇄에서 안 잰다"
+    env = _code(_ENV)
+    assert 'getattr(p, "cage_close_frac", 0.0)' in env
+    assert "write_joint_state_to_sim" in env and "_saved" in env, (
+        "측정 후 원래 관절 상태로 복원하지 않는다 — 홈이 조용히 바뀐다")
+
+
+def test_palm_box_floor_reaches_the_cup():
+    """★`palm_box` 바닥 0.30 은 케이지를 컵 높이에 **못 가게** 막았다.
+
+    09.03 실측(케이지 겨냥 스크립트 롤아웃): 도달오차가 dz 에 대해 완벽히 선형이었다 —
+    dz +40mm 0.3mm · +20mm 13.0mm · 0mm 33.0mm · −20mm 53.0mm. 도달 가능한 최저가
+    컵 원점 +34mm 였다. 리프트도 지령 80mm 에 실제 27.8mm 였다. 부팅 경고
+    `⚠박스에 잘리는 축 ['z']` 가 계속 이것을 말하고 있었다.
+    """
+    prof = _code(_PROF)
+    sub = prof.split("RH56F1_RIGHT = RobotProfile")[1]
+    assert "palm_box_min=(0.20, -0.55, 0.26)" in sub

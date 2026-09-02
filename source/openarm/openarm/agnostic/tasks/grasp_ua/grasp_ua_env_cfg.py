@@ -1076,11 +1076,7 @@ class GraspUARh56f1RightEnvCfg(GraspUAEnvCfg):
     #   105~161mm)는 tesollo DG-5F 기준이라 RH56F1 으로는 감쌈이 구조적으로 불가능하다
     #   — 검지가 URDF 실측 MCP→팁 72.5mm 다. shaker(r44mm) × 0.80~1.10 = 지름
     #   70~97mm 로 바꾼다(사용자 지시 09.02: "손이 엄청 작아").
-    # ★★★09.03 `shaker_family`(70~97mm) → `shaker_small`(48~66mm). 이 손의 엄지-4지
-    #   법선 간극이 **83.7mm 가 최대**이고(엄지 외전 스윕: 1.57 이 최적, 2.09 로 더
-    #   벌리면 73.9mm 로 줄어든다), 컵을 케이지에 고정해 재면 79.2mm 부터 열린 손에
-    #   이미 닿는다. 링크 두께를 빼면 실사용 한계가 ~70mm 다.
-    object_bank: str = "shaker_small"
+    object_bank: str = "cup_small"
     # ★★★09.02 palm 돌진 속도 제한. 기본 0.02 m/step 은 정책 주기 60 Hz 에서
     #   **1.2 m/s** 다 — tesollo(손 20관절·effort 1.5)는 견디지만 이 손은 못 견딘다.
     #   이 손은 관절 effort 가 1 N·m 인데 팔은 kp 300 이라, palm 목표가 컵 안쪽에

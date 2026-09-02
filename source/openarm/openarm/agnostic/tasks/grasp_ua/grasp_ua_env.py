@@ -344,6 +344,22 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
           상대 배치가 같아 물리적으로 동등하다 — 그쪽은 스폰을 앞으로 밀어 해결했다.
         """
         p = self.profile
+        # ★★프로필이 요구하면 **부분 폐쇄**에서 잰다. 열린 손 손끝은 파지 지점이 아니다
+        #   (필드 주석의 실측 근거 참조). 잰 뒤 반드시 원래 상태로 되돌린다.
+        _cf = float(getattr(p, "cage_close_frac", 0.0))
+        _saved = None
+        if _cf > 0.0:
+            _saved = (self.robot.data.joint_pos.clone(), self.robot.data.joint_vel.clone())
+            _pose = torch.lerp(self._syn_open, self._syn_grip, _cf).clamp(
+                self._syn_lo, self._syn_hi).unsqueeze(0).expand(self.num_envs, -1)
+            _q = _saved[0].clone()
+            _q[:, self._syn_ids] = _pose
+            self.robot.write_joint_state_to_sim(_q, torch.zeros_like(_saved[1]))
+            for _ in range(6):
+                self.robot.set_joint_position_target(_pose, joint_ids=self._syn_ids)
+                self.scene.write_data_to_sim()
+                self.sim.step(render=False)
+                self.scene.update(self.physics_dt)
         tips = (self.robot.data.body_pos_w[:, self._tip_ids_t]
                 - self.scene.env_origins[:, None, :])[0]
         _a = int(self._group_a_idx[0])
@@ -363,6 +379,15 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
                  - self.scene.env_origins)[0]
         _R = self._palm_ee_R()[0]                       # (3,3), 열 = palm 축
         self._cage_offset_palm = _R.transpose(0, 1) @ (cage - _palm)
+        if _saved is not None:
+            self.robot.write_joint_state_to_sim(_saved[0], _saved[1])
+            for _ in range(2):
+                self.scene.write_data_to_sim()
+                self.sim.step(render=False)
+                self.scene.update(self.physics_dt)
+            print(f"[grasp_ua] 케이지 측정 폐쇄율 {_cf:.2f} · 오프셋(palm) "
+                  f"{[round(float(v) * 1000, 1) for v in self._cage_offset_palm]}mm "
+                  f"· 반경 {r_cage * 1000:.1f}mm", flush=True)
         cup = [p.object_spawn_center[0], p.object_spawn_center[1],
                float(self.cfg.table_surface_z) + float(self.cfg.object_origin_offset_z)
                + float(self.cfg.object_grasp_z_offset)]

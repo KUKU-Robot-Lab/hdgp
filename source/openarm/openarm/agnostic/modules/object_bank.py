@@ -302,6 +302,26 @@ SHAKER_SMALL = ObjectBank(
 )
 
 
+CUP_SMALL = ObjectBank(
+    name="cup_small",
+    specs=(
+        _cup(0.50), _cup(0.52), _cup(0.54), _cup(0.56),
+        _cup(0.58), _cup(0.60), _cup(0.62), _cup(0.64),
+    ),
+    note=("★★09.03 RH56F1 전용. 지름 62.0~79.4mm(파지반경 62mm × scale × 2).\n"
+          "★대역은 **검증점 0.58 주변으로만** 잡았다 — 스케일 스윕은 아직 안 했다.\n"
+          "cup_family 주석의 \"cup_big 은 감쌈 구조적 불가\" 판정은 **0.85~1.30**\n"
+          "(105~161mm)만 보고 내린 것이라 이 대역과 무관하다.\n"
+          "근거 — 스크립트 롤아웃(컵 자유·팔이 fabric 으로 실제 접근·폐쇄 후 리프트)에서\n"
+          "cup_big 0.58 이 2회 재현으로 들렸다(36점 중 11/8 성립, 7점 교집합).\n"
+          "파지 자세는 `thumb:MDT` + 4지 팁 — **엄지로 무는** 파지다.\n"
+          "★shaker 를 버린 이유 둘: FP++ 가 텍스처 없는 메시를 놓치고(인식),\n"
+          "  파지 창이 좁고 비단조다(셰이커는 테이퍼·림이 있어 스케일을 바꾸면\n"
+          "  손가락 평면에 오는 단면이 바뀐다 — 지름이 간섭 기하의 대리값이 못 된다).\n"
+          "★순서는 오름차순(종 인덱스 = 크기 순서)."),
+)
+
+
 def _visdex_bank() -> ObjectBank:
     """visdex 디렉터리를 sorted-glob 한다(grasp_v2 규약).
 
@@ -332,7 +352,8 @@ def _visdex_bank() -> ObjectBank:
 VISDEX = _visdex_bank()
 
 BANKS: dict[str, ObjectBank] = {
-    b.name: b for b in (SINGLE_CUP, CUP_FAMILY, SHAKER_FAMILY, SHAKER_SMALL, VISDEX)
+    b.name: b for b in (SINGLE_CUP, CUP_FAMILY, CUP_SMALL,
+                        SHAKER_FAMILY, SHAKER_SMALL, VISDEX)
 }
 DEFAULT_BANK = "single_cup"
 
