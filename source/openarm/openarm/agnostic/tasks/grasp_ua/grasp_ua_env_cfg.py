@@ -1024,6 +1024,11 @@ class GraspUARh56f1RightEnvCfg(GraspUAEnvCfg):
     #   ★RH56F1 의 대향은 `thumb_1`(외전)이고 그 open 1.57 → grip 1.20 이 이미
     #     자매 트랙에서 검증된 값이라, 여기에 델타를 또 얹으면 이중 적용이다.
     oppose_grip_delta_rad: float = 0.0
+    # ★★물체 뱅크도 EE 종속이다. `cup_family`(cup_big r62mm × 0.85~1.30 = 지름
+    #   105~161mm)는 tesollo DG-5F 기준이라 RH56F1 으로는 감쌈이 구조적으로 불가능하다
+    #   — 검지가 URDF 실측 MCP→팁 72.5mm 다. shaker(r44mm) × 0.80~1.10 = 지름
+    #   70~97mm 로 바꾼다(사용자 지시 09.02: "손이 엄청 작아").
+    object_bank: str = "shaker_family"
 
 
 @configclass

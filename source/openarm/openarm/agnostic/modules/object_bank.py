@@ -232,6 +232,17 @@ def _cup(scale: float) -> ObjectSpec:
                       base_grasp_radius=0.062, base_grasp_halfheight=0.05)
 
 
+def _shaker(scale: float) -> ObjectSpec:
+    """shaker 를 크기별로. ★`_cup` 과 같은 round 규약(부동소수로 id 가 어긋난다)."""
+    return ObjectSpec(id=f"shaker_s{round(scale * 100):03d}",
+                      usd_path=_SHAKER, scale=(scale, scale, scale),
+                      base_origin_offset_z=_SHAKER_ORIGIN_OFFSET,
+                      base_rim_z=_SHAKER_RIM_Z,
+                      base_inner_radius=_SHAKER_INNER_R,
+                      base_outer_radius=_SHAKER_OUTER_R,
+                      base_grasp_radius=0.044, base_grasp_halfheight=0.05)
+
+
 SINGLE_CUP = ObjectBank(
     name="single_cup",
     specs=(_cup(1.00),),
@@ -252,6 +263,23 @@ CUP_FAMILY = ObjectBank(
     ),
     note=("grasp_v1 의 8종. 순서가 env_id % 8 배정과 onehot 인덱스를 동시에 정하므로 "
           "바꾸면 기존 체크포인트와 어긋난다."),
+)
+
+
+SHAKER_FAMILY = ObjectBank(
+    name="shaker_family",
+    specs=(
+        _shaker(0.80), _shaker(0.85), _shaker(0.90), _shaker(0.95),
+        _shaker(1.00), _shaker(1.03), _shaker(1.07), _shaker(1.10),
+    ),
+    note=("★저자유도·소형 손(RH56F1) 전용 8종. `cup_family` 를 그대로 쓸 수 없어서 만든다 "
+          "— cup_big r62mm 를 0.85~1.30 으로 쓰면 지름 105~161mm 인데, RH56F1 검지는 "
+          "MCP→팁이 URDF 실측 72.5mm(_1 32.9 + _2 39.6)라 감쌈이 구조적으로 불가능하다. "
+          "shaker(r44mm)를 0.80~1.10 으로 쓰면 지름 70~97mm 로 손 크기에 들어온다"
+          "(사용자 지시 09.02). "
+          "★순서는 **오름차순**이다 — env_id % 8 배정과 종별 진단 인덱스를 동시에 정하므로 "
+          "크기 순서와 종 인덱스가 일치해 로그를 그대로 읽을 수 있다. 바꾸면 기존 "
+          "체크포인트와 어긋난다."),
 )
 
 
@@ -284,7 +312,9 @@ def _visdex_bank() -> ObjectBank:
 
 VISDEX = _visdex_bank()
 
-BANKS: dict[str, ObjectBank] = {b.name: b for b in (SINGLE_CUP, CUP_FAMILY, VISDEX)}
+BANKS: dict[str, ObjectBank] = {
+    b.name: b for b in (SINGLE_CUP, CUP_FAMILY, SHAKER_FAMILY, VISDEX)
+}
 DEFAULT_BANK = "single_cup"
 
 

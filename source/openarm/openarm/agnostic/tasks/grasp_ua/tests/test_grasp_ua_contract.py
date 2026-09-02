@@ -1944,3 +1944,30 @@ def test_mimic_coupling_is_monitored_at_runtime():
     ctl = _code(_CTRL)
     assert "_mimic_tracking_err" in ctl
     assert 'self.extras["hand/mimic_err_max"]' in _code(_ENV)
+
+
+def test_rh56f1_uses_a_hand_sized_object_bank():
+    """★물체 뱅크는 **엔드이펙터 종속**이다.
+
+    `cup_family`(cup_big r62mm × 0.85~1.30 = 지름 105~161mm)는 tesollo DG-5F 기준이라
+    RH56F1 으로는 감쌈이 기하적으로 불가능하다 — 검지 MCP→팁이 URDF 실측 72.5mm 다.
+    그대로 두면 "정책이 못 배운다"로 오진하기 딱 좋다(물체가 애초에 손보다 크다).
+    """
+    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
+    assert 'object_bank: str = "shaker_family"' in sub
+
+    import importlib.util
+    import sys
+    _ob = _HERE.parents[1] / "modules" / "object_bank.py"
+    spec = importlib.util.spec_from_file_location("_gua_ob", _ob)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_gua_ob"] = mod
+    spec.loader.exec_module(mod)
+    bank = mod.BANKS["shaker_family"]
+    assert len(bank.specs) == 8
+    d = [2.0 * s.base_grasp_radius * s.scale[0] for s in bank.specs]
+    assert 0.070 <= min(d) and max(d) <= 0.097, f"지름 범위 {min(d):.3f}~{max(d):.3f} m"
+    assert d == sorted(d), "종 인덱스와 크기 순서가 어긋나면 종별 진단을 못 읽는다"
+    for s in bank.specs:
+        assert s.base_origin_offset_z is not None, f"{s.id} 원점 오프셋 미측정"
+        assert s.base_rim_z is not None, f"{s.id} 림 z 미측정"
