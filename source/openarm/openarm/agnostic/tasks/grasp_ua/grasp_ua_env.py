@@ -1224,6 +1224,8 @@ class GraspUAEnv(GraspUAControlMixin, DirectRLEnv):
         _cfm = self._contact_forces().max(dim=1).values             # (N,)
         _z = torch.zeros_like(_cfm)
         self.extras["contact/force_max"] = _cfm.max()
+        # ★언더액추 결합 감시 — physx 모드에서 USD 제약이 실제로 걸렸는지 보는 유일한 창.
+        self.extras["hand/mimic_err_max"] = self._mimic_tracking_err().max()
         self.extras["contact/force_max_prelatch"] = torch.where(self._latched, _z, _cfm).max()
         self.extras["contact/force_max_postlatch"] = torch.where(self._latched, _cfm, _z).max()
         self.extras["fabric/palm_cmd_step_raw"] = self._palm_cmd_step_raw.mean()

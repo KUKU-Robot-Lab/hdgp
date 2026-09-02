@@ -1886,3 +1886,61 @@ def test_robot_material_body_names_must_stay_wildcard():
     엉뚱한 TypeError 로 터진다(09.02 RH56F1 실측 460 vs 459)."""
     assert 'SceneEntityCfg("robot", body_names=".*")' in _CFG
     assert "body 별 shape" in _CFG or "shape 수" in _CFG
+
+
+# ---------------------------------------------- 09.02 mimic USD 반영
+_RH_MANIFEST = (_HERE.parents[5] / "assets" / "robot" / "openarm_bi_rh56f1_rl"
+                / "openarm_bi_rh56f1_rl_manifest.yaml")
+
+
+def test_rh56f1_fabric_order_matches_the_manifest_contract():
+    """★자산이 진실원천이다 — `control_joint_order`(26)와 순서까지 같아야 한다.
+
+    fabric cspace 순서가 어긋나면 손 상태 동기화가 엉뚱한 관절에 실려 fabric 이
+    없는 자기충돌을 피하려 팔을 민다(선행 트랙 실측).
+    """
+    if not _RH_MANIFEST.exists():
+        import pytest
+        pytest.skip(f"자산 없음: {_RH_MANIFEST}")
+    import yaml
+    order = yaml.safe_load(_RH_MANIFEST.read_text(encoding="utf-8"))["control_joint_order"]
+    rp = _load_profiles()
+    assert list(rp.PROFILES["rh56f1_right"].fabric_joint_order) == list(order)
+
+
+def test_rh56f1_has_no_pd_group_on_mimic_joints():
+    """★★mimic 을 켜면 종속관절의 DriveAPI 가 사라진다. 거기에 PD 를 걸면 PhysX
+    제약과 싸운다 — mimic 이 없던 시절의 우회책이 남아 있으면 안 된다."""
+    rp = _load_profiles()
+    p = rp.PROFILES["rh56f1_right"]
+    assert p.hand_mimic_mode == "physx"
+    exprs = " ".join(str(v.get("joint_names_expr")) for v in p.actuator_specs.values())
+    for dep in p.hand_mimic:
+        stem = dep.split("r_hj_")[1]                     # thumb_3 / index_2 …
+        assert stem not in exprs, f"{dep} 에 아직 PD 그룹이 걸려 있다"
+    assert "right_hand_mimic" not in p.actuator_specs
+
+
+def test_rh56f1_real_gain_branch_uses_vendor_values():
+    """`HDGP_S2R_REAL_GAINS=1` 이 벤더 `control_gains.yaml` 값을 싣는지.
+
+    ★kd 는 **벤더값**이지 r2s 정합값이 아니다(RH56F1 손으로 재식별 전). tesollo 의
+      kd 를 복사하면 안 된다 — 손 질량이 달라 손목 관성이 다르다.
+    """
+    prof = (_HERE / "robot_profiles.py").read_text(encoding="utf-8")
+    blk = prof.split("RH56F1_RIGHT = RobotProfile(")[1].split("\nPROFILES")[0]
+    for j, kp, kd in ((1, 70.0, 2.75), (2, 70.0, 2.50), (3, 70.0, 2.00),
+                      (4, 60.0, 2.00), (5, 10.0, 0.70), (6, 10.0, 0.60),
+                      (7, 10.0, 0.50)):
+        assert re.search(rf'"right_arm_j{j}":.*?r_aj_{j}.*?stiffness={kp}, damping={kd}',
+                         blk, re.S), f"r_aj_{j} 벤더 게인 불일치"
+    assert 'HDGP_S2R_REAL_GAINS' in blk
+    assert '"right_arm_proximal"' in blk, "KUKA 기본 분기가 있어야 게이트가 동작한다"
+
+
+def test_mimic_coupling_is_monitored_at_runtime():
+    """★physx 모드에서 USD 제약이 안 걸려 있으면 종속관절이 init 각도에 굳는데,
+    그 상태는 접촉·보상 어느 지표에도 안 나타난다 — 전용 진단이 있어야 한다."""
+    ctl = _code(_CTRL)
+    assert "_mimic_tracking_err" in ctl
+    assert 'self.extras["hand/mimic_err_max"]' in _code(_ENV)

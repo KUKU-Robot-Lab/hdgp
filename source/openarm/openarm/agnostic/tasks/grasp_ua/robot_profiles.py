@@ -615,7 +615,11 @@ RH56F1_RIGHT = RobotProfile(
         "r_hj_thumb_4": ("r_hj_thumb_3", 0.7508, 0.0),   # ★체인 — 부팅에서 전개된다
         **{f"r_hj_{f}_2": (f"r_hj_{f}_1", 1.1169, 0.0) for f in _RH_FLEX},
     },
-    hand_mimic_mode="software",
+    # ★★09.02 자산 갱신 — USD 에 PhysxMimicJoint 가 들어왔다(실측: 종속 6관절이
+    #   `physxMimicJoint:rotZ:gearing` −1.1169/−1.1425/−0.7508, **DriveAPI 없음**).
+    #   이제 PhysX 가 결합을 강제하므로 우리가 종속목표를 쓰면 제약과 싸운다.
+    #   `hand_mimic` 표는 남긴다 — URDF 대조 계약과 부팅 검증이 쓴다.
+    hand_mimic_mode="physx",
     # ---- palm 워크스페이스 -------------------------------------------------------
     # 선행 rh56f1 트랙 `grasp_right_preset.palm_pose_mins/maxs` 승계(같은 OpenArm 팔).
     palm_box_min=(0.20, -0.55, 0.20),
@@ -677,26 +681,44 @@ RH56F1_RIGHT = RobotProfile(
         "head_j_pan": 0.0, "head_j_tilt": 0.0,
     },
     actuator_specs={
-        # ★그룹 이름 `right_arm_proximal` 은 `_check_gain_branch` 가 "KUKA 기본"으로
-        #   읽는 키다. 일부러 그렇게 둔다 — RH56F1 자산으로 r2s 식별을 **아직 안 했고**,
-        #   tesollo 손(1.763 kg)으로 잡은 손목 게인을 여기 복사하면 거짓이 된다.
-        #   `HDGP_S2R_REAL_GAINS=1` 로 띄우면 부팅에서 불일치로 죽는다(의도된 게이트).
-        "right_arm_proximal": dict(joint_names_expr=["r_aj_[1-4]"], stiffness=300.0, damping=45.0),
-        "right_arm_j5":       dict(joint_names_expr=["r_aj_5"], stiffness=100.0, damping=25.0),
-        "right_arm_j6":       dict(joint_names_expr=["r_aj_6"], stiffness=50.0, damping=20.0),
-        "right_arm_j7":       dict(joint_names_expr=["r_aj_7"], stiffness=25.0, damping=15.0),
+        # ★★09.02 `right_hand_mimic` 그룹을 **없앴다**. mimic 을 켜면 종속 6관절의
+        #   DriveAPI 가 사라지므로(USD 실측), 거기에 PD 를 걸면 PhysX 제약과 싸운다.
+        #   그 그룹은 mimic 이 없던 시절의 우회책이었다.
+        #   ⚠같은 우회책이 `rh56f1/right/grasp_v1|v2/grasp_right_env_cfg.py` 와
+        #     `scripts/r2s_autotune/configs/bi_rh56f1.yaml` 에 아직 남아 있다 — 그
+        #     트랙들은 이 자산으로는 그대로 못 돈다(별도 후속).
+        **({
+            # ★★09.02 실기 벤더 게인 — `control_gains.yaml` 이 진실원천이고, 같은 값이
+            #   이번 자산 갱신으로 USD DriveAPI 에도 실렸다(단위 변환된 형태로 확인).
+            #   팔은 tesollo 와 **같은 OpenArm** 이라 kp 가 그 트랙 실기 분기와 동일하다.
+            #   ⚠kd 는 벤더값이다 — tesollo 는 손 1.763 kg 을 단 채 r2s 로 **재식별**한
+            #     kd 를 쓰는데, RH56F1 손은 질량이 달라 그 값을 쓸 수 없다. RH56F1 로
+            #     r2s 를 돌리기 전까지 이건 **출발점이지 정합값이 아니다**.
+            "right_arm_j1": dict(joint_names_expr=["r_aj_1"], stiffness=70.0, damping=2.75),
+            "right_arm_j2": dict(joint_names_expr=["r_aj_2"], stiffness=70.0, damping=2.50),
+            "right_arm_j3": dict(joint_names_expr=["r_aj_3"], stiffness=70.0, damping=2.00),
+            "right_arm_j4": dict(joint_names_expr=["r_aj_4"], stiffness=60.0, damping=2.00),
+            "right_arm_j5": dict(joint_names_expr=["r_aj_5"], stiffness=10.0, damping=0.70),
+            "right_arm_j6": dict(joint_names_expr=["r_aj_6"], stiffness=10.0, damping=0.60),
+            "right_arm_j7": dict(joint_names_expr=["r_aj_7"], stiffness=10.0, damping=0.50),
+        } if _os.environ.get("HDGP_S2R_REAL_GAINS") == "1" else {
+            # KUKA 기본(DEXTRAH) — 원위로 갈수록 낮춘다. tesollo 트랙과 같은 값.
+            "right_arm_proximal": dict(joint_names_expr=["r_aj_[1-4]"], stiffness=300.0, damping=45.0),
+            "right_arm_j5":       dict(joint_names_expr=["r_aj_5"], stiffness=100.0, damping=25.0),
+            "right_arm_j6":       dict(joint_names_expr=["r_aj_6"], stiffness=50.0, damping=20.0),
+            "right_arm_j7":       dict(joint_names_expr=["r_aj_7"], stiffness=25.0, damping=15.0),
+        }),
         # 손 구동 6 — 선행 rh56f1 트랙 값(굴곡 400/60 · 엄지 외전 200/35).
+        # ⚠이 자산의 손 effort 는 **1 N·m** 다(벤더 URDF 값, tesollo 1.5~7.5 대비 낮다).
+        #   게인 400 은 그 상한에서 포화할 수 있다 — 파지력 실측 전까지 미지수다
+        #   (선례: tesollo 400/60 이 effort 에서 포화해 k=5/kd=2 로 재설정됐다).
         "right_hand_flex":  dict(joint_names_expr=["r_hj_(thumb_2|index_1|middle_1|ring_1|pinky_1)"],
                                  stiffness=400.0, damping=60.0),
         "right_hand_abd":   dict(joint_names_expr=["r_hj_thumb_1"], stiffness=200.0, damping=35.0),
-        # ★종속 6 — `hand_mimic_mode="software"` 에서 우리가 목표를 써넣으므로 **구동과
-        #   같은 게인**이어야 결합비가 유지된다. physx 모드로 바꾸면 PhysX 가 몰기 때문에
-        #   이 그룹은 그때 강성을 낮추거나 빼야 한다.
-        "right_hand_mimic": dict(joint_names_expr=["r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"],
-                                 stiffness=400.0, damping=60.0),
-        # 유휴 좌팔·좌손 (hold)
+        # 유휴 좌팔·좌손 (hold). ★좌손도 구동 6만 — 좌측 종속 6도 DriveAPI 가 없다.
         "left_arm":        dict(joint_names_expr=["l_aj_[1-7]"], stiffness=400.0, damping=80.0),
-        "left_hand":       dict(joint_names_expr=["l_hj_[a-z]+_[1-4]"], stiffness=30.0, damping=5.0),
+        "left_hand":       dict(joint_names_expr=["l_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"],
+                                stiffness=30.0, damping=5.0),
         "head":            dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
     },
     # ★tesollo 의 (0.362,−0.16)은 **그 손의 홈 케이지**에 맞춘 값이다. RH56F1 은 손이

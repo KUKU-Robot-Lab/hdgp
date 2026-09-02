@@ -680,6 +680,20 @@ class GraspUAControlMixin:
                   "(구동관절만 굽혀 종속관절이 배율대로 따라오는지). 결합이 없으면 "
                   "손가락이 init 각도에 굳은 채 조용히 학습된다.", flush=True)
 
+    def _mimic_tracking_err(self) -> torch.Tensor:
+        """종속관절이 결합식에서 벗어난 양 (N,) rad — **모드 무관** 진단.
+
+        ★physx 모드의 유일한 감시 수단이다. USD 의 PhysxMimicJoint 가 실제로 안 걸려
+          있으면 종속관절이 init 각도에 굳는데, 그 상태는 접촉·보상 어느 지표에도
+          안 나타난다 — 여기서만 보인다(구동관절이 굽을수록 값이 커진다).
+        """
+        if self._mim_dep_ids is None:
+            return torch.zeros(self.num_envs, device=self.device)
+        _q = self.robot.data.joint_pos
+        _dep = _q[:, self._mim_dep_ids]
+        _src = _q[:, self._syn_ids][:, self._mim_src_local]
+        return (_dep - (_src * self._mim_mult + self._mim_off)).abs().max(dim=1).values
+
     def _apply_mimic_targets(self) -> None:
         """구동 목표에서 종속 목표를 만들어 써넣는다 — `software` 모드 전용.
 
