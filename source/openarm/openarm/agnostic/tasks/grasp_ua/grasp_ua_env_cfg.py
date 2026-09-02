@@ -170,8 +170,16 @@ def _build_robot_cfg(profile: RobotProfile,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=enable_self_collisions,
-                solver_position_iteration_count=8,
-                solver_velocity_iteration_count=0,
+                # ★★★09.02 8/0 → 32/4. RH56F1 은 mimic 제약과 관절한계가 **동시에**
+                #   걸린 손이라 반복이 부족하면 둘이 서로 못 만족한다.
+                #   실측(random 1024 env step 8): `r_hj_thumb_2` 가 하한 0 밑 −0.2469
+                #   로 밀렸고, 그러면 mimic 이 요구하는 `thumb_3` = 1.1425×(−0.2469)
+                #   = −0.282 가 thumb_3 한계 −0.1084 **밖**이 된다. 두 제약이 동시에
+                #   만족 불가가 되면 해결기가 에너지를 주입하고, 그게 종속관절
+                #   |qd| 291 rad/s → 씬 발산으로 이어졌다(1024 env 중 400 개가 동시에).
+                #   ⚠tesollo 프로필도 같이 느려진다(이 트랙 안에서만) — 대조군이라 감수.
+                solver_position_iteration_count=32,
+                solver_velocity_iteration_count=4,
                 sleep_threshold=0.005,
                 stabilization_threshold=0.0005,
             ),
