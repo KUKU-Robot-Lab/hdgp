@@ -1835,21 +1835,6 @@ def test_rh56f1_init_pose_is_mimic_consistent():
         assert abs(ip[nm] - o) < 1e-9, f"{nm} init 이 hand_open_pose 와 다르다"
 
 
-def test_rh56f1_gain_branch_is_honest():
-    """★RH56F1 자산으로 r2s 식별을 아직 안 했다. tesollo 손(1.763 kg)으로 잡은
-    손목 게인을 복사하면 거짓이 되므로, KUKA 분기 키를 써서 `use_real_gains=1`
-    이 부팅에서 죽게 둔다(의도된 게이트)."""
-    rp = _load_profiles()
-    p = rp.PROFILES["rh56f1_right"]
-    assert "right_arm_proximal" in p.actuator_specs
-    assert "right_arm_j1" not in p.actuator_specs
-    # 전 DOF 커버리지: 구동·종속·팔·좌측·헤드가 모두 어느 그룹엔가 들어가야 한다.
-    exprs = " ".join(str(v.get("joint_names_expr")) for v in p.actuator_specs.values())
-    for nm in list(p.hand_joint_names) + list(p.hand_mimic):
-        stem = nm.split("r_hj_")[1]
-        assert stem.split("_")[0] in exprs, f"{nm} 이 어느 액추에이터 그룹에도 없다"
-
-
 def test_dead_joint_guard_exists():
     """★"지령상 움직이는데 한계로 못 움직이는" 관절을 부팅에서 죽인다.
 
@@ -1952,21 +1937,36 @@ def test_rh56f1_mimic_mode_matches_its_actuator_coverage():
         assert covered, "종속관절에 감쇠 그룹이 하나도 없다(무구동 = 감쇠 0)"
 
 
-def test_rh56f1_real_gain_branch_uses_vendor_values():
-    """`HDGP_S2R_REAL_GAINS=1` 이 벤더 `control_gains.yaml` 값을 싣는지.
+def test_rh56f1_arm_gains_are_the_real_vendor_values():
+    """★★RH56F1 은 실기 벤더 게인이 **기본**이다(분기 없음).
 
-    ★kd 는 **벤더값**이지 r2s 정합값이 아니다(RH56F1 손으로 재식별 전). tesollo 의
-      kd 를 복사하면 안 된다 — 손 질량이 달라 손목 관성이 다르다.
+    tesollo 트랙이 쓰는 KUKA 게인(300/100/50/25)은 실기보다 4배 단단하고, 그 강성이
+    09.02 발산의 직접 원인이었다 — 관절 effort 1 N·m 인 이 손이 팔에 짓이겨졌다.
+    ⚠kd 는 벤더값이지 r2s 정합값이 아니다(RH56F1 손으로 재식별 전).
     """
-    prof = (_HERE / "robot_profiles.py").read_text(encoding="utf-8")
-    blk = prof.split("RH56F1_RIGHT = RobotProfile(")[1].split("\nPROFILES")[0]
-    for j, kp, kd in ((1, 70.0, 2.75), (2, 70.0, 2.50), (3, 70.0, 2.00),
-                      (4, 60.0, 2.00), (5, 10.0, 0.70), (6, 10.0, 0.60),
-                      (7, 10.0, 0.50)):
-        assert re.search(rf'"right_arm_j{j}":.*?r_aj_{j}.*?stiffness={kp}, damping={kd}',
-                         blk, re.S), f"r_aj_{j} 벤더 게인 불일치"
-    assert 'HDGP_S2R_REAL_GAINS' in blk
-    assert '"right_arm_proximal"' in blk, "KUKA 기본 분기가 있어야 게이트가 동작한다"
+    rp = _load_profiles()
+    p = rp.PROFILES["rh56f1_right"]
+    want = {1: (70.0, 2.75), 2: (70.0, 2.50), 3: (70.0, 2.00), 4: (60.0, 2.00),
+            5: (10.0, 0.70), 6: (10.0, 0.60), 7: (10.0, 0.50)}
+    for j_, (kp, kd) in want.items():
+        spec = p.actuator_specs.get(f"right_arm_j{j_}")
+        assert spec, f"right_arm_j{j_} 그룹이 없다"
+        assert spec["joint_names_expr"] == [f"r_aj_{j_}"]
+        assert float(spec["stiffness"]) == kp and float(spec["damping"]) == kd, (
+            f"r_aj_{j_} {spec['stiffness']}/{spec['damping']} != 벤더 {kp}/{kd}")
+    assert "right_arm_proximal" not in p.actuator_specs, "KUKA 분기가 되살아났다"
+    # cfg 의도와 실제 조립이 어긋나면 부팅이 죽는다(`_check_gain_branch`).
+    sub = _CFG.split("class GraspUARh56f1RightEnvCfg")[1].split("\n@configclass")[0]
+    assert "use_real_gains: bool = True" in sub
+
+
+def test_rh56f1_actuators_cover_every_hand_joint():
+    """★커버리지 누락 관절은 조용히 무구동 자유회전한다(adf0b24 교훈)."""
+    rp = _load_profiles()
+    p = rp.PROFILES["rh56f1_right"]
+    pats = [e for v in p.actuator_specs.values() for e in (v.get("joint_names_expr") or [])]
+    for nm in list(p.hand_joint_names) + list(p.hand_mimic):
+        assert any(re.fullmatch(e, nm) for e in pats), f"{nm} 이 어느 그룹에도 없다"
 
 
 def test_mimic_coupling_is_monitored_at_runtime():

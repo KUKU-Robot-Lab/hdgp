@@ -1064,6 +1064,9 @@ class GraspUARh56f1RightEnvCfg(GraspUAEnvCfg):
     #     mimic_err 0.29 로 단조 감소). 즉 물리나 기하가 깨진 게 아니라 **충돌 속도**다.
     #   ⚠컵까지 ~0.1 m 라 20스텝이면 닿는다(에피소드 600스텝) — 학습에 지장 없다.
     palm_cmd_rate_limit_m: float = 0.005
+    # ★프로필이 실기 벤더 게인으로 **고정** 조립되므로 cfg 도 그렇게 선언한다
+    #   (`_check_gain_branch` 가 cfg 의도와 실제 조립을 대조한다).
+    use_real_gains: bool = True
     # ★★액션 원점(a=0)에서 **케이지가 컵 파지중심 50mm 위**에 오도록 재유도했다.
     #   케이지는 palm 에 강체로 붙어 있고 이 손의 오프셋은 실측 (+0.070, +0.035, −0.017) m
     #   이므로(홈 자세 ez 0 · ey −65 · ex −90 에서의 world 오프셋),

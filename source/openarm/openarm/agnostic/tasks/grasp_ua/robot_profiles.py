@@ -722,27 +722,24 @@ RH56F1_RIGHT = RobotProfile(
         "right_hand_mimic": dict(
             joint_names_expr=["r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"],
             stiffness=5.0, damping=2.0),
-        **({
-            # ★★09.02 실기 벤더 게인 — `control_gains.yaml` 이 진실원천이고, 같은 값이
-            #   이번 자산 갱신으로 USD DriveAPI 에도 실렸다(단위 변환된 형태로 확인).
-            #   팔은 tesollo 와 **같은 OpenArm** 이라 kp 가 그 트랙 실기 분기와 동일하다.
-            #   ⚠kd 는 벤더값이다 — tesollo 는 손 1.763 kg 을 단 채 r2s 로 **재식별**한
-            #     kd 를 쓰는데, RH56F1 손은 질량이 달라 그 값을 쓸 수 없다. RH56F1 로
-            #     r2s 를 돌리기 전까지 이건 **출발점이지 정합값이 아니다**.
-            "right_arm_j1": dict(joint_names_expr=["r_aj_1"], stiffness=70.0, damping=2.75),
-            "right_arm_j2": dict(joint_names_expr=["r_aj_2"], stiffness=70.0, damping=2.50),
-            "right_arm_j3": dict(joint_names_expr=["r_aj_3"], stiffness=70.0, damping=2.00),
-            "right_arm_j4": dict(joint_names_expr=["r_aj_4"], stiffness=60.0, damping=2.00),
-            "right_arm_j5": dict(joint_names_expr=["r_aj_5"], stiffness=10.0, damping=0.70),
-            "right_arm_j6": dict(joint_names_expr=["r_aj_6"], stiffness=10.0, damping=0.60),
-            "right_arm_j7": dict(joint_names_expr=["r_aj_7"], stiffness=10.0, damping=0.50),
-        } if _os.environ.get("HDGP_S2R_REAL_GAINS") == "1" else {
-            # KUKA 기본(DEXTRAH) — 원위로 갈수록 낮춘다. tesollo 트랙과 같은 값.
-            "right_arm_proximal": dict(joint_names_expr=["r_aj_[1-4]"], stiffness=300.0, damping=45.0),
-            "right_arm_j5":       dict(joint_names_expr=["r_aj_5"], stiffness=100.0, damping=25.0),
-            "right_arm_j6":       dict(joint_names_expr=["r_aj_6"], stiffness=50.0, damping=20.0),
-            "right_arm_j7":       dict(joint_names_expr=["r_aj_7"], stiffness=25.0, damping=15.0),
-        }),
+        # ★★★09.02 RH56F1 은 **실기 벤더 게인이 기본**이다(env 변수 분기 없음).
+        #   `control_gains.yaml` 이 진실원천 — kp 70/70/70/60/10/10/10 ·
+        #   kd 2.75/2.5/2.0/2.0/0.7/0.6/0.5. 같은 값이 이번 자산 갱신으로 USD
+        #   DriveAPI 에도 실렸다.
+        #   ⚠tesollo 트랙이 쓰는 KUKA 게인(300/100/50/25)은 **실기보다 4배 단단하다**.
+        #     08.25 "모두 KUKA SETTING으로" 지시로 채택된 값인데, 그건 손 20관절·
+        #     effort 1.5 인 tesollo 기준이다. RH56F1 은 관절 effort 가 1 N·m 라
+        #     그 강성으로는 팔이 손가락을 컵·테이블 사이에 짓이긴다(09.02 발산의
+        #     직접 원인). RH56F1 은 물려받을 체크포인트도 없으니 처음부터 실기값으로 간다.
+        #   ⚠kd 는 **벤더값이지 r2s 정합값이 아니다** — RH56F1 손을 단 채 재식별하기
+        #     전까지는 출발점이다(tesollo 는 손 1.763 kg 을 달고 여진으로 재식별했다).
+        "right_arm_j1": dict(joint_names_expr=["r_aj_1"], stiffness=70.0, damping=2.75),
+        "right_arm_j2": dict(joint_names_expr=["r_aj_2"], stiffness=70.0, damping=2.50),
+        "right_arm_j3": dict(joint_names_expr=["r_aj_3"], stiffness=70.0, damping=2.00),
+        "right_arm_j4": dict(joint_names_expr=["r_aj_4"], stiffness=60.0, damping=2.00),
+        "right_arm_j5": dict(joint_names_expr=["r_aj_5"], stiffness=10.0, damping=0.70),
+        "right_arm_j6": dict(joint_names_expr=["r_aj_6"], stiffness=10.0, damping=0.60),
+        "right_arm_j7": dict(joint_names_expr=["r_aj_7"], stiffness=10.0, damping=0.50),
         # 손 구동 6 — 선행 rh56f1 트랙 값(굴곡 400/60 · 엄지 외전 200/35).
         # ⚠이 자산의 손 effort 는 **1 N·m** 다(벤더 URDF 값, tesollo 1.5~7.5 대비 낮다).
         #   게인 400 은 그 상한에서 포화할 수 있다 — 파지력 실측 전까지 미지수다
