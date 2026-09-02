@@ -35,6 +35,11 @@ from openarm.agnostic.tasks.grasp_s2r.robot_profiles import PROFILES
 LEFT9 = [f"l_aj_{i}" for i in range(1, 8)] + ["l_hj_gripper_1", "l_hj_gripper_2"]
 
 
+def _v(field, joint: str) -> float:
+    """액추에이터 cfg 필드(스칼라 또는 관절별 dict) → 해당 관절 값."""
+    return float(field[joint] if isinstance(field, dict) else field)
+
+
 # ───────────────────────────── 우팔: grasp_s2r shim ─────────────────────────
 class RightChainShim(GraspS2RControlMixin):
     """grasp_s2r 의 제어·관측 사슬을 pour 씬 로봇 위에 세운다.
@@ -254,7 +259,9 @@ def make_show_env(pour_env_cls):
             from isaaclab.sim.utils import find_matching_prim_paths  # noqa: PLC0415
             mats = (
                 ("shakerMat", 0.8, 0.65, ("/World/envs/env_.*/LeftTargetCup",)),
-                ("jawMat", 1.0, 0.85,
+                # 턱 마찰은 DR 상단쪽(범위 0.6~1.4) — 09.02 전환 램프에서 중앙값(1.0)으로는
+                # 쥔 컵이 이송 중 미끄러져 빠졌다. 이송 여유가 필요하고 범위 안이다.
+                ("jawMat", 1.3, 1.1,
                  ("/World/envs/env_.*/Robot/l_hl_gripper_left_finger",
                   "/World/envs/env_.*/Robot/l_hl_gripper_right_finger")),
                 ("cupMat", 1.0, 1.0, ("/World/envs/env_.*/Cup",)),
@@ -304,7 +311,28 @@ def _eff(actuator: dict) -> float:
     return float(v)
 
 
-def align_pour_cfg(env_cfg, *, left_scene: dict,
+def _expand_right_gains(dump_actuators: dict) -> dict:
+    """우팔 dump 액추에이터(그룹 구성이 KUKA/real 분기마다 다름) → 관절별 (kp,kd).
+
+    real 분기는 관절별 그룹(right_arm_j1..j7), KUKA 분기는 [1-4]/5/6/7 그룹이다.
+    joint_names_expr 를 r_aj_1..7 에 정규식 매칭해 관절별 맵으로 편다.
+    """
+    import re
+    names = [f"r_aj_{i}" for i in range(1, 8)]
+    out: dict = {}
+    for grp in dump_actuators.values():
+        exprs = grp.get("joint_names_expr") or []
+        for n in names:
+            if any(re.fullmatch(e, n) for e in exprs):
+                kp, kd = grp.get("stiffness"), grp.get("damping")
+                out[n] = (float(kp[n] if isinstance(kp, dict) else kp),
+                          float(kd[n] if isinstance(kd, dict) else kd))
+    if len(out) != 7:
+        raise RuntimeError(f"우팔 게인 전개 실패 — {sorted(out)} (7관절이어야 한다)")
+    return out
+
+
+def align_pour_cfg(env_cfg, *, left_scene: dict, right_actuators: dict,
                    lgrip_usd: str, left_spawn, physics_dt: float) -> list[str]:
     """pour 씬을 두 학습 env 의 물리와 정합 (09.02 감사 결과). 적용 로그를 반환.
 
@@ -357,6 +385,14 @@ def align_pour_cfg(env_cfg, *, left_scene: dict,
         acts["openarm_left_gripper"].velocity_limit_sim = float(vg)
     log.append("좌 게인 → 벤더 (kp 70/…/10 · 그리퍼 2000/100 · ★속도한계 2.175/2.61 · 그리퍼 0.2)")
 
+    # ★우팔 게인 — `arm_gain_profile` 지정이 정공법. pour cfg 의 finalize 가
+    #   `_apply_arm_gain_profile()` 로 액추에이터를 **재구성**하므로, 값 직접 주입은
+    #   env 부팅에서 조용히 덮인다(09.02 실측 — cl_g1 의 "우 게인 → dump" 는 무효였다).
+    #   "r2s" 프로필은 g1 dump(HDGP_S2R_REAL_GAINS) 실측값과 동일함이 cfg 주석에 명시.
+    _real = any(k.startswith("right_arm_j") for k in right_actuators)
+    env_cfg.arm_gain_profile = "r2s" if _real else "kuka"
+    log.append(f"우 게인 프로필 → {env_cfg.arm_gain_profile} (우 dump 분기 자동)")
+
     # shaker: pour 의 kinematic 마커 → **자유 강체** (여기가 미러 시대의 유령이었다)
     lt = env_cfg.left_target_cup_cfg
     lt.spawn.rigid_props.kinematic_enabled = False
@@ -374,16 +410,133 @@ def align_pour_cfg(env_cfg, *, left_scene: dict,
     log.append(f"shaker → 동적 강체 · mass {lt.spawn.mass_props.mass} · "
                f"스폰 {tuple(round(float(v), 3) for v in left_spawn)}")
 
-    # ★pour 테이블 상면이 학습 테이블보다 높다 — 09.02 컵 정착 실측:
-    #   좌 shaker +15mm(0.307 vs 기록 0.292) · 우 cup_big +10mm(0.292 vs 0.282).
-    #   15mm 는 좌 2지 게이트의 along 대역(±30mm)의 절반을 먹는다 — 게이트가 안 열려
-    #   강제 개방 턱이 컵을 쳐냈다(diagL 실측: step 20~40 사이 이탈, gate 내내 0).
-    #   정밀 파지인 좌 기준(−15mm)으로 내린다. 우 파워그립은 +10mm 에서도 이미 성공.
+    # ★테이블 상면 정합 — pour 원판 테이블(scene_objects/table.usd)은 학습 테이블보다
+    #   15mm 높다(09.02 컵 정착 실측: 좌 +15mm·우 +10mm — 좌 게이트 along 대역의 절반).
+    #   단, e1_pour1 dump 복원이 테이블을 env_rigid.usd(E1 테이블, 상면 정확히 0.2)로
+    #   바꾸면 보정이 오히려 어긋난다 — 그 테이블은 그대로가 정합이다.
     tb = env_cfg.table_cfg.init_state
-    tb.pos = (float(tb.pos[0]), float(tb.pos[1]), float(tb.pos[2]) - 0.015)
-    log.append("테이블 z −15mm (학습 테이블 상면과 정합 — 컵 정착 실측 근거)")
+    if "scene_objects/table.usd" in str(env_cfg.table_cfg.spawn.usd_path):
+        tb.pos = (float(tb.pos[0]), float(tb.pos[1]), float(tb.pos[2]) - 0.015)
+        log.append("테이블 z −15mm (pour 원판 테이블 → 학습 상면 정합)")
+    else:
+        log.append(f"테이블 {str(env_cfg.table_cfg.spawn.usd_path).rsplit('/', 1)[-1]}"
+                   " — 보정 없음 (학습 테이블 그대로)")
 
     # 물리 dt: 좌 국면(먼저)의 100 Hz 로 부팅. 우 국면 전에 러너가 1/120 로 전환.
     env_cfg.sim.dt = float(physics_dt)
     log.append(f"sim.dt → {physics_dt} (좌 국면 기준, 우 국면 전 1/120 전환)")
     return log
+
+
+# ───────────────────────────── pour 국면 (e1_pour1) ─────────────────────────
+def init_pour_from_live(env, right_shim, pour_actuators: dict) -> None:
+    """pour 에피소드 상태를 **현재 물리 상태**로 초기화 — warm 텔레포트의 라이브 대응물.
+
+    `_reset_from_warmstart_cache`(pour_right_env.py L3301~)가 뱅크에서 세우는 것과
+    같은 버퍼들을, 텔레포트 없이 지금 씬의 실측/지령으로 채운다. 항목별 대응은
+    그 함수 본문과 1:1 이다 — 여기 로직이 아니라 **값의 출처**만 다르다.
+
+    ★뱅크 규약 그대로: 물리 상태는 실측, hold 목표는 **지령**(파지력의 원천).
+      palm 도 지령(`right_shim.palm_targets` — 파지 종료 시 팔이 유지 중인 목표)을
+      pour 형식(pos3+quat_xyzw)으로 변환해 넣는다. 실측을 넣으면 파지력이 사라진다.
+    ★좌팔: pour 는 매 스텝 `left_arm_zero_pos` 를 좌 9관절(그리퍼 포함!)에 명령한다.
+      그리퍼 원본값은 0.044(열림) — 그대로 두면 **쥔 컵을 놓는다**. 현재 홀드
+      지령으로 교체한다.
+    """
+    robot = env.robot
+    q = robot.data.joint_pos
+    arm = q[:, env.arm_dof_indices].clone()
+    hand_meas = q[:, env.hand_dof_indices].clone()
+    hand_cmd = robot.data.joint_pos_target[:, env.hand_dof_indices].clone()
+
+    n_arm = arm.shape[1]
+    env.fabric_q.zero_()
+    env.fabric_q[:, :n_arm] = arm
+    env.fabric_q[:, n_arm:] = hand_meas
+    env.fabric_qd.zero_()
+    env.fabric_qdd.zero_()
+    env.pregrasp_arm_pos_buf[:] = arm
+    env.grasp_hold_hand_pos_buf[:] = hand_cmd
+    env.hand_joint_targets[:] = hand_cmd
+    env.open_tesollo_fabric.default_config[:, :n_arm] = arm
+
+    # palm 기준: **램프 후 실측** — ⑤′ 우 FK 세팅 램프가 파지 종료 지령을 무의미하게
+    # 만들었다(팔이 뱅크 mean 자세로 이동). 정지 정착 상태라 실측≈지령이고, pour 의
+    # palm_pose_targets 는 회전 액션의 기준점이므로 실제 자세가 정확한 원점이다.
+    p6 = right_shim._palm_pose_6d().clone()
+    pose7 = torch.zeros(env.num_envs, 7, device=env.device)
+    pose7[:, :3] = torch.max(
+        torch.min(p6[:, :3], env.palm_maxs[:3].unsqueeze(0)),
+        env.palm_mins[:3].unsqueeze(0))
+    pose7[:, 3:7] = env._quat_xyzw_from_euler_zyx(p6[:, 3:6])
+    env.palm_pose_targets[:] = pose7
+    env.pregrasp_palm_pose_buf[:] = pose7
+
+    cup_local = env.cup.data.root_pos_w - env.scene.env_origins
+    palm_local = pose7[:, :3]
+    env.object_init_pos[:] = cup_local
+    env.object_init_pos[:, 2] = float(env.cfg.object_spawn_z)
+    env._grasp_rel_palm_to_cup_init[:] = cup_local - palm_local
+    env._grasp_cup_height_init[:] = cup_local[:, 2]
+
+    # 받는 컵: 훈련의 FK 상수 대신 **진짜 쥔 컵의 현재 자세** — obs·조준이 이걸 본다
+    live_left = torch.cat([env.left_target_cup.data.root_pos_w,
+                           env.left_target_cup.data.root_quat_w], dim=-1)
+    env._left_target_cup_fixed_pose_w[:] = live_left
+
+    # 좌팔 상시 명령 = 현재 홀드 지령 (REST7 도착 뒤라 팔은 동일, 그리퍼만 교체 효과)
+    left_hold = robot.data.joint_pos_target[:, env.left_arm_dof_indices].clone()
+    env.left_arm_zero_pos[:] = left_hold
+
+    # ★국면별 플랜트 게인 — pour 정책은 자기 학습 게인의 팔을 전제한다
+    #   (각 국면의 플랜트 = 그 국면 정책의 학습 플랜트). 파지 국면은 우 dump 프로필
+    #   (g1=r2s)로 돌았으므로, 여기서 **pour dump 의 우팔 게인**(e1_pour1=kuka
+    #   300/45…25/15)으로 전환해 sim 에 즉시 기입한다.
+    _rg = _expand_right_gains(pour_actuators)
+    _kp = {n: _rg[n][0] for n in _rg}
+    _kd = {n: _rg[n][1] for n in _rg}
+    _names = [f"r_aj_{i}" for i in range(1, 8)]
+    _rids = [robot.joint_names.index(n) for n in _names]
+    robot.write_joint_stiffness_to_sim(
+        torch.tensor([[float(_kp[n]) for n in _names]], device=env.device), joint_ids=_rids)
+    robot.write_joint_damping_to_sim(
+        torch.tensor([[float(_kd[n]) for n in _names]], device=env.device), joint_ids=_rids)
+    print(f"[pour init] 우팔 게인 → pour 학습값 kp {[round(float(_kp[n])) for n in _names]}",
+          flush=True)
+
+    ids = torch.arange(env.num_envs, device=env.device)
+    # ★기하 버퍼 즉시 갱신 — 원본은 rewards/dones 첫머리에서만 갱신하므로, 여기서 안
+    #   부르면 **첫 관측이 부팅 시점의 낡은 pour_point/opening/축**을 본다(LSTM 오염).
+    env._compute_intermediate_values()
+    env._hide_beads(ids)
+    env._beads_spawned[:] = False          # → _pre_physics_step 이 hold 뒤 자동 소환
+    env._clear_episode_buffers(ids)
+    env.episode_length_buf[:] = 0
+    env.actions.zero_()
+    env.prev_actions.zero_()
+    print(f"[pour init] palm 지령 {[round(float(v), 3) for v in pose7[0, :3]]} · "
+          f"컵 {[round(float(v), 3) for v in cup_local[0]]} · "
+          f"받는컵 {[round(float(v), 3) for v in live_left[0, :3]]} · "
+          f"구슬 {int(env.num_beads)}개 {int(env.cfg.episode_hold_steps)}스텝 후 자동 소환",
+          flush=True)
+
+
+def disarm_receiver_pin(env) -> None:
+    """pour `_apply_action` 의 받는 컵 고정핀을 **원천 무효화** — ⑥에서 1회 호출.
+
+    원본은 받는 컵(훈련에선 kinematic 마커)에 매 스텝 (고정 pose, 속도 0)을 박는다.
+    여기선 진짜 쥔 컵이다. 1차 시도(라이브 상태 되쓰기)는 반스텝 지연 상태 주입이
+    돼 컵이 그리퍼에서 떨려 빠져나갔다(09.02 렌더 실측 — 미러 사고의 축소판).
+    write 메서드 자체를 인스턴스 수준 no-op 으로 갈아끼우면 컵은 **순수 물리**다.
+    """
+    cup = env.left_target_cup
+    cup.write_root_pose_to_sim = lambda *a, **k: None
+    cup.write_root_velocity_to_sim = lambda *a, **k: None
+    print("[pour] 받는컵 고정핀 무장해제 — 순수 물리 (좌손이 쥔다)", flush=True)
+
+
+def refresh_receiver_buffer(env) -> None:
+    """obs·조준이 읽는 받는컵 버퍼를 라이브 실측으로 — 매 정책스텝 호출."""
+    cup = env.left_target_cup
+    env._left_target_cup_fixed_pose_w[:] = torch.cat(
+        [cup.data.root_pos_w, cup.data.root_quat_w], dim=-1)

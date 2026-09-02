@@ -534,5 +534,7 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: dict):
 
 if __name__ == "__main__":
     code = main()
-    simulation_app.close()
-    raise SystemExit(code or 0)
+    # ★simulation_app.close() 가 행 — 좀비 GPU 방지 (09.02, closedloop 러너와 동일)
+    sys.stdout.flush()
+    import os
+    os._exit(int(code or 0))

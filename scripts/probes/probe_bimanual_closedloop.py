@@ -27,12 +27,14 @@ _SR = Path("/home/user/rl_ws/sim2real")
 parser.add_argument("--left-checkpoint", type=Path,
                     default=_SR / "logs/policy/left_v2B25/nn/v2B25_tip30_ep2150.pth")
 parser.add_argument("--right-checkpoint", type=Path,
-                    default=_SR / "logs/policy/right_e1/nn/e1_best.pth")
+                    default=_SR / "logs/policy/right_g1/nn/g1_ep17000.pth",
+                    help="우팔 grasp_s2r (09.02 사용자 지정 g1 — use_real_gains 런은 "
+                         "HDGP_S2R_REAL_GAINS=1 로 실행)")
 parser.add_argument("--left-stream", type=Path,
                     default=_SR / "logs/shadow/pour_entry/stream_left_v2b25.npz",
                     help="goal·컵 스폰·(--verify 시) 대조 기준")
 parser.add_argument("--right-stream", type=Path,
-                    default=_SR / "logs/shadow/pour_entry/stream_right_e1_v2.npz")
+                    default=_SR / "logs/shadow/pour_entry/stream_right_g1.npz")
 parser.add_argument("--left-steps", type=int, default=300)
 parser.add_argument("--right-steps", type=int, default=420)
 parser.add_argument("--stop-lift", type=float, default=0.08)
@@ -40,6 +42,26 @@ parser.add_argument("--lift-hold", type=int, default=40)
 parser.add_argument("--settle", type=int, default=120)
 parser.add_argument("--hold", type=int, default=120)
 parser.add_argument("--final-hold", type=int, default=300)
+parser.add_argument("--pour-checkpoint", type=Path,
+                    default=_SR / "logs/policy/pour_e1/nn/e1_pour1_ep6000.pth",
+                    help="e1_pour1 스냅샷 (학습 종료 후 최종본으로 교체)")
+parser.add_argument("--pour-steps", type=int, default=900)
+parser.add_argument("--pour-mode", choices=("follow", "policy"), default="follow",
+                    help="follow=네이티브 성공 에피소드의 관절 궤적 추종(사용자 지시 09.02) · "
+                         "policy=폐루프 (현재 β=0 미해결)")
+parser.add_argument("--pour-traj", type=Path,
+                    default=_SR / "logs/shadow/pour_entry/pour_traj_receiver_live.npz",
+                    help="기본 = 실측 받는점(0.265,0.045,0.296) 기준 성공 궤적")
+parser.add_argument("--skip-pour", action="store_true", help="파지 4국면까지만")
+parser.add_argument("--receiver-up-contract", action="store_true",
+                    help="pour obs 의 tgt_up 을 훈련 상수로 고정 — pour 훈련에서 받는컵"
+                         " 자세는 kinematic 상수 계약이었다 (실컵 기울기 편차는 계약 밖)")
+parser.add_argument("--diag-spoof-left-obs", action="store_true",
+                    help="진단: pour obs 의 좌팔 18D 를 훈련 상수(REST·qd0)로 교체 — 좌팔 원인 분리")
+parser.add_argument("--carry-vel", type=float, default=0.25,
+                    help="전환 램프 관절속도 상한 [rad/s]")
+parser.add_argument("--pour-entry-joints", default="0.512,0.414,-0.487,0.243,0.084,0.546,1.168",
+                    help="⑤′ 우팔 pour 세팅 관절 7 — 기본 = E1 뱅크 mean (n=2107)")
 parser.add_argument("--auto", action="store_true")
 parser.add_argument("--verify", action="store_true",
                     help="기록 에피소드와 같은 스폰·goal 로 돌고 궤적 편차를 보고")
@@ -127,11 +149,24 @@ def main() -> int:
 
     left_yaml = yaml.unsafe_load(
         (args.left_checkpoint.parent.parent / "params" / "env.yaml").read_text())
+    right_yaml = yaml.unsafe_load(
+        (args.right_checkpoint.parent.parent / "params" / "env.yaml").read_text())
+    pour_yaml = yaml.unsafe_load(
+        (args.pour_checkpoint.parent.parent / "params" / "env.yaml").read_text()) \
+        if not args.skip_pour else None
 
     pour_cfg = parse_env_cfg(POUR_TASK, device=DEVICE, num_envs=1)
+    pour_agent = load_cfg_from_registry(POUR_TASK, "rl_games_cfg_entry_point")
+    if not args.skip_pour:
+        # ★e1_pour1 런 cfg 복원 — 씬 필드는 뒤의 align 이 다시 정리하고, 사슬이 읽는
+        #   런타임 파라미터(리미터·게이트·보상 상수·freeze·구슬 수)가 학습본으로 잠긴다.
+        pour_agent = restore_run_cfg_if_available(
+            pour_cfg, pour_agent, resume_path=str(args.pour_checkpoint),
+            workspace_root=str(_REPO.parent))
     lgrip = str(_REPO / "assets/robot/openarm_tesollo_sensor_rl_lgrip"
                 / "openarm_tesollo_sensor_rl.usd")
     for line in align_pour_cfg(pour_cfg, left_scene=left_yaml["scene"],
+                               right_actuators=right_yaml["robot_cfg"]["actuators"],
                                lgrip_usd=lgrip, left_spawn=left_spawn,
                                physics_dt=float(left_cfg.sim.dt)):
         print(f"[정합] {line}")
@@ -353,6 +388,271 @@ def main() -> int:
 
         gate("④ 양팔 유지 — 두 컵")
         passive("4final", args.final_hold)
+        # 파지 판정은 여기서 캐시 — pour 가 컵을 내리면 최종값으로는 못 잰다
+        grasp_lz = float(env.left_target_cup.data.root_pos_w[0, 2] - scene.env_origins[0, 2])
+        grasp_rz = float(env.cup.data.root_pos_w[0, 2] - scene.env_origins[0, 2])
+
+        pour_report = None
+        if not args.skip_pour:
+            # ── ⑤ 좌팔 전환 — pour 받는 자세(학습 REST)로, 쥔 채 관절 램프 ──────
+            gate("⑤ 좌팔 전환 — 받는 자세로 (쥔 채)")
+            rest7 = env.left_arm_zero_pos[0, :7].clone()      # 학습 상수 (덮어쓰기 전)
+            lids = list(env.left_arm_dof_indices[:7])
+            cur = robot.data.joint_pos_target[0, lids].clone()
+            # ★2단 램프 — 한 번에 lerp 하면 경로가 낮게 스쳐 컵 바닥이 테이블면 아래로
+            #   ~16mm 파고든다(09.02 사용자 관찰 + z 추적 실측). 1단: j1(베이스 요)만
+            #   돌려 수평 이동 → 2단: 나머지 6관절로 자세 조정(목표 지점 위에서 수직).
+            via = cur.clone()
+            via[0] = rest7[0]
+            steps = 0
+            for seg_from, seg_to in ((cur, via), (via, rest7)):
+                seg_n = max(int(float((seg_to - seg_from).abs().max())
+                               / (args.carry_vel * dt_box[0])), 1)
+                for f in range(seg_n):
+                    a = (f + 1) / seg_n
+                    robot.set_joint_position_target(
+                        (seg_from * (1 - a) + seg_to * a).unsqueeze(0), joint_ids=lids)
+                    scene.write_data_to_sim()
+                    env.sim.step(render=args.gui)
+                    scene.update(dt_box[0])
+                    watch()
+                    if steps % 40 == 0:
+                        _sz = (env.left_target_cup.data.root_pos_w[0]
+                               - scene.env_origins[0]).cpu().numpy()
+                        print(f"  [전환{steps:3d}] shaker ({_sz[0]:.3f},{_sz[1]:.3f},"
+                              f"{_sz[2]:.3f})", flush=True)
+                    if steps % (args.render_every * 3) == 0:
+                        shot("5carry")
+                    steps += 1
+            for f in range(90):                                # 정착
+                scene.write_data_to_sim()
+                env.sim.step(render=args.gui)
+                scene.update(dt_box[0])
+                watch()
+                if f % args.render_every == 0:
+                    shot("5carry")
+            # 받는점 잔차 — **서보는 3방식 모두 발산해 폐기**(09.02: fabric v1 euler
+            #   클램프 / v2 palm 프레임 불일치 / v3 자코비안 노이즈 지배). 대신 pour
+            #   궤적을 실측 받는점 기준으로 재추출한다(probe_pour_native_check
+            #   --receiver-pos) — 궤적이 실컵을 노리므로 좌팔은 REST 도착이면 충분하다.
+            _ref_src = pour_cfg.left_target_cup_pos_env_local
+            if args.pour_mode == "follow" and args.pour_traj.exists():
+                _zt0 = np.load(args.pour_traj)
+                if "meta_receiver" in _zt0:
+                    _ref_src = tuple(float(v) for v in _zt0["meta_receiver"])
+            ref = T(_ref_src)
+            lz2 = float(env.left_target_cup.data.root_pos_w[0, 2]
+                        - scene.env_origins[0, 2])
+            res = float((ref - (env.left_target_cup.data.root_pos_w[0]
+                                - scene.env_origins[0])).norm())
+            print(f"[전환] {steps}+90스텝 · shaker z {lz2:.3f} · 받는점 잔차 "
+                  f"{res * 1000:.0f}mm {'✅' if res < 0.05 and lz2 > 0.28 else '⚠'}",
+                  flush=True)
+
+            # ── ⑤′ 우팔 FK 세팅 램프 — pour-sensor 세팅 자세로 (사용자 지시) ─────
+            # ★교차 0 의 판명 원인: E1 이 transfer 목표까지 이송한 진입 palm 이 뱅크
+            #   분포 밖(y −2.6cm·z −3.4cm). 뱅크 mean 관절로 쥔 채 램프하면 컵도 뱅크
+            #   mean 위치(0.363,−0.159,0.400) 부근으로 따라와 분포 정중앙에서 시작한다.
+            rest9_orig = env.left_arm_zero_pos[0].clone()      # 스푸핑 진단용 (덮어쓰기 전)
+            gate("⑤′ 우팔 세팅 — pour 진입 자세로 (쥔 채)")
+            entry7 = T([float(v) for v in args.pour_entry_joints.split(",")])
+            rids = list(right.arm_ids)
+            cur_r = robot.data.joint_pos_target[0, rids].clone()
+            right.freeze_targets()                     # 속도 FF 잔재 제거
+            steps_r = max(int(float((entry7 - cur_r).abs().max())
+                              / (args.carry_vel * dt_box[0])), 1)
+            for f in range(steps_r):
+                a = (f + 1) / steps_r
+                robot.set_joint_position_target(
+                    (cur_r * (1 - a) + entry7 * a).unsqueeze(0), joint_ids=rids)
+                scene.write_data_to_sim()
+                env.sim.step(render=args.gui)
+                scene.update(dt_box[0])
+                watch()
+                if f % (args.render_every * 3) == 0:
+                    shot("5entry")
+            for f in range(90):
+                scene.write_data_to_sim()
+                env.sim.step(render=args.gui)
+                scene.update(dt_box[0])
+                watch()
+                if f % args.render_every == 0:
+                    shot("5entry")
+            cpos = (env.cup.data.root_pos_w[0] - scene.env_origins[0]).cpu().numpy()
+            print(f"[우세팅] {steps_r}+90스텝 · 컵 ({cpos[0]:.3f},{cpos[1]:.3f},{cpos[2]:.3f})"
+                  f" (뱅크 mean 0.363,-0.159,0.400) · "
+                  f"{'✅쥔 채' if cpos[2] > 0.33 else '❌이탈'}", flush=True)
+
+            # ── ⑥ pour 초기화 — warm 텔레포트의 라이브 대응 ────────────────────
+            gate("⑥ pour 초기화 (구슬 자동 소환 예약)")
+            from bimanual_chain import (  # noqa: PLC0415
+                disarm_receiver_pin, init_pour_from_live, refresh_receiver_buffer)
+            disarm_receiver_pin(env)
+            init_pour_from_live(env, right, pour_yaml["robot_cfg"]["actuators"])
+            player_p = make_player(pour_agent, args.pour_checkpoint,
+                                   int(pour_cfg.observation_space),
+                                   int(pour_cfg.action_space))
+
+            if args.pour_mode == "follow":
+                # ── ⑦ pour 궤적 추종 — 네이티브 성공 에피소드의 실측 관절을 따라간다
+                #   (사용자 지시 09.02). 실측 궤적은 동역학적으로 실현 가능하고,
+                #   속도 FF 를 함께 주면 PD 지연이 사라진다(vel_ff 교훈 그대로).
+                gate("⑦ pour — 성공 궤적 추종 (우팔)")
+                ztr = np.load(args.pour_traj)
+                tq = torch.tensor(ztr["arm_q"], dtype=torch.float32, device=env.device)
+                tqd = torch.tensor(ztr["arm_qd"], dtype=torch.float32, device=env.device)
+                print(f"[추종] 궤적 {tq.shape[0]}스텝 · 원본 교차 "
+                      f"{int(ztr['meta_final_cross'])}/20", flush=True)
+                rids2 = [robot.joint_names.index(f"r_aj_{i}") for i in range(1, 8)]
+                cur2 = robot.data.joint_pos_target[0, rids2].clone()
+                st = max(int(float((tq[0] - cur2).abs().max())
+                             / (args.carry_vel * dt_box[0])), 1)
+                for f in range(st + 60):                      # 궤적 시작점으로 램프+정착
+                    a = min((f + 1) / st, 1.0)
+                    robot.set_joint_position_target(
+                        (cur2 * (1 - a) + tq[0] * a).unsqueeze(0), joint_ids=rids2)
+                    scene.write_data_to_sim()
+                    env.sim.step(render=args.gui)
+                    scene.update(dt_box[0])
+                    watch()
+                    if f % (args.render_every * 3) == 0:
+                        shot("6pour")
+                # 구슬 주입 — env 자체 샘플러로 쥔 컵 안에 (원본 리셋과 같은 규약)
+                cup_pose_now = torch.cat([env.cup.data.root_pos_w,
+                                          env.cup.data.root_quat_w], dim=-1)
+                bead_state = env._sample_bead_states_inside_cup(cup_pose_now)
+                env.beads.write_object_state_to_sim(
+                    bead_state, env_ids=torch.arange(1, device=env.device))
+                env._beads_spawned[:] = True
+                for f in range(60):                            # 구슬 정착
+                    scene.write_data_to_sim()
+                    env.sim.step(render=args.gui)
+                    scene.update(dt_box[0])
+                    watch()
+                    if f % args.render_every == 0:
+                        shot("6pour")
+                print("[추종] 구슬 주입 완료 — 추종 시작", flush=True)
+                for i in range(tq.shape[0]):
+                    robot.set_joint_position_target(tq[i:i + 1], joint_ids=rids2)
+                    robot.set_joint_velocity_target(tqd[i:i + 1], joint_ids=rids2)
+                    for _ in range(int(pour_cfg.decimation)):
+                        scene.write_data_to_sim()
+                        env.sim.step(render=args.gui)
+                        scene.update(dt_box[0])
+                    refresh_receiver_buffer(env)
+                    env._get_rewards()                         # 교차 계수 갱신
+                    watch()
+                    if i % 30 == 0:
+                        _ins = int(env._bead_in_source[0].sum())
+                        _int = int(env._bead_in_target[0].sum())
+                        _bz = env.beads.data.object_pos_w[0, :, 2]
+                        _floor = int((_bz < scene.env_origins[0, 2] + 0.25).sum())
+                        print(f"  [추종{i:3d}] 교차 {int(env._bead_cross_count[0])}"
+                              f"/{int(env.num_beads)} · 소스안 {_ins} · 받는안 {_int} · "
+                              f"바닥 {_floor} · 소스컵 z "
+                              f"{float(env.cup.data.root_pos_w[0, 2] - scene.env_origins[0, 2]):.3f}",
+                              flush=True)
+                    if i % args.render_every == 0:
+                        shot("6pour")
+                robot.set_joint_velocity_target(
+                    torch.zeros(1, 7, device=env.device), joint_ids=rids2)
+                # 받는컵 안 구슬 = 직접 계산 (env 카운터는 이 실행 경로에서 stale)
+                _rc = env.left_target_cup.data.root_pos_w[0]
+                _bp = env.beads.data.object_pos_w[0]
+                _inb = int((((_bp[:, :2] - _rc[:2]).norm(dim=-1) < 0.043)
+                            & (_bp[:, 2] > _rc[2] - 0.10)
+                            & (_bp[:, 2] < _rc[2] + 0.12)).sum())
+                pour_report = {"steps": int(tq.shape[0]),
+                               "crossed": _inb,
+                               "beads": int(env.num_beads),
+                               "success": _inb >= 10}
+                gate("⑧ 마무리 유지")
+                passive("7end", args.hold)
+            if args.pour_mode == "policy":
+                    # ── ⑦ pour 폐루프 (e1_pour1) ────────────────────────────────────
+                    gate("⑦ pour — 우팔이 왼손 shaker 에 붓는다")
+                    if player_p.is_rnn:
+                        player_p.init_rnn()
+                    obs_p = env._get_observations()["policy"]
+                    _nat_p = _SR / "logs/shadow/pour_entry/pour_obs0_native.npz"
+                    if _nat_p.exists():
+                        # obs0 결백 검사 — native 리셋 직후 표본의 min/max 범위 밖 세그먼트를 짚는다
+                        _nat = np.load(_nat_p)["obs"]
+                        _segs = (("arm_q", 7), ("arm_qd", 7), ("grasp_prog", 5), ("l_q", 9),
+                                 ("l_qd", 9), ("pp_to_open", 3), ("pour_axis", 3),
+                                 ("src_up", 3), ("tgt_up", 3), ("last_act", 6))
+                        _mine = obs_p.reshape(-1).detach().cpu().numpy()
+                        _i = 0
+                        for _nm, _dd in _segs:
+                            _lo = _nat[:, _i:_i + _dd].min(0) - 0.05
+                            _hi = _nat[:, _i:_i + _dd].max(0) + 0.05
+                            _out = float(np.maximum(_lo - _mine[_i:_i + _dd],
+                                                    _mine[_i:_i + _dd] - _hi).max())
+                            if _out > 0:
+                                print(f"  [pour obs0 밖] {_nm}: 이탈 {_out:.3f} · "
+                                      f"내 {np.round(_mine[_i:_i + _dd], 3).tolist()}", flush=True)
+                            _i += _dd
+                    succ_streak, p_steps = 0, 0
+                    tgt_up_const = None
+                    if args.receiver_up_contract:
+                        # 훈련 받는컵 up = R(cfg quat)·ẑ — cfg 상수에서 직접 파생
+                        from isaaclab.utils.math import quat_apply  # noqa: PLC0415
+                        _q = T(pour_cfg.left_target_cup_quat_wxyz).unsqueeze(0)
+                        tgt_up_const = quat_apply(_q, T([0.0, 0.0, 1.0]).unsqueeze(0))[0]
+                        print(f"[pour] tgt_up 계약 상수 고정: "
+                              f"{[round(float(v), 3) for v in tgt_up_const]}", flush=True)
+                    for step in range(args.pour_steps):
+                        if tgt_up_const is not None:
+                            obs_p = obs_p.clone()
+                            obs_p.view(-1)[46:49] = tgt_up_const
+                        if args.diag_spoof_left_obs:
+                            obs_p = obs_p.clone()
+                            obs_p.view(-1)[19:28] = rest9_orig
+                            obs_p.view(-1)[28:37] = 0.0
+                        act = player_p.get_action(obs_p.reshape(1, -1), is_deterministic=True)
+                        env._pre_physics_step(act.reshape(1, -1))
+                        for _ in range(int(pour_cfg.decimation)):
+                            env._apply_action()                # 컵 고정핀은 ⑥에서 무장해제됨
+                            scene.write_data_to_sim()
+                            env.sim.step(render=args.gui)
+                            scene.update(dt_box[0])
+                        refresh_receiver_buffer(env)           # obs 가 읽는 받는컵 버퍼 = 라이브
+                        env.episode_length_buf += 1
+                        env._get_rewards()                     # 상태·계수 갱신 (상태쓰기 없음 검증)
+                        env._get_dones()
+                        obs_p = env._get_observations()["policy"]
+                        watch()
+                        p_steps = step + 1
+                        if step % 30 == 0:
+                            _su = env._source_up_axis_w[0]
+                            print(f"  [pour{step:3d}] mouth_xy {float(env._mouth_xy_distance[0]):.3f} · "
+                                  f"gate {float(env._action_tilt_gate[0]):.2f} · "
+                                  f"β {float(env._beta_cmd[0]):.2f} · "
+                                  f"src_up_z {float(_su[2]):+.2f} · "
+                                  f"교차 {int(env._bead_cross_count[0])}"
+                                  f"/{int(env.num_beads)} · 성공 {bool(env.episode_success_buf[0])}"
+                                  f" · 소스컵 z {float(env.cup.data.root_pos_w[0, 2] - scene.env_origins[0, 2]):.3f}",
+                                  flush=True)
+                        if step % args.render_every == 0:
+                            shot("6pour")
+                        if bool(env.episode_success_buf[0]):
+                            succ_streak += 1
+                            if succ_streak >= 60:
+                                print(f"[pour] step {step}: 성공 판정 60스텝 유지 — 종료", flush=True)
+                                break
+                        else:
+                            succ_streak = 0
+                    robot.set_joint_velocity_target(
+                        torch.zeros(1, len(env.arm_dof_indices), device=env.device),
+                        joint_ids=list(env.arm_dof_indices))
+                    pour_report = {
+                        "steps": p_steps,
+                        "crossed": int(env._bead_cross_count[0]),
+                        "beads": int(env.num_beads),
+                        "success": bool(env.episode_success_buf[0]),
+                    }
+                    gate("⑧ 마무리 유지")
+                    passive("7end", args.hold)
 
     # ── 보고 ────────────────────────────────────────────────────────────────
     lz = float(env.left_target_cup.data.root_pos_w[0, 2] - scene.env_origins[0, 2])
@@ -360,9 +660,15 @@ def main() -> int:
     print(f"\n[결과] 좌 {l_steps}스텝 · 우 {r_steps}스텝 · {cups_z()}")
     print(f"[감시] |q̇|max {worst['qd']:.2f} rad/s · 컵속도 max {worst['cupv']:.2f} m/s "
           f"(임계 12 / 3 — 미러는 여기서 죽었다)")
-    ok_l, ok_r = lz > float(left_spawn[2]) + 0.05, rz > float(right_spawn[2]) + 0.05
-    print(f"[판정] 좌 파지 {'✅' if ok_l else '❌'} (shaker z {lz:.3f}) · "
-          f"우 파지 {'✅' if ok_r else '❌'} (cup_big z {rz:.3f})")
+    ok_l = grasp_lz > float(left_spawn[2]) + 0.05
+    ok_r = grasp_rz > float(right_spawn[2]) + 0.05
+    print(f"[판정] 좌 파지 {'✅' if ok_l else '❌'} (파지시 z {grasp_lz:.3f} · 최종 {lz:.3f}) · "
+          f"우 파지 {'✅' if ok_r else '❌'} (파지시 z {grasp_rz:.3f} · 최종 {rz:.3f})")
+    if pour_report is not None:
+        pr = pour_report
+        print(f"[판정] pour {'✅' if pr['success'] else '진행중/미성공'} — "
+              f"{pr['steps']}스텝 · 구슬 교차 {pr['crossed']}/{pr['beads']} "
+              f"(체크포인트 ep6000 중간본 — 학습 진행에 따라 갱신)")
 
     if args.verify:
         _verify(trace, zl, zr)
