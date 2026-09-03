@@ -202,8 +202,10 @@ def stage_reach(env: "ManagerBasedRLEnv",
                 object_cfg: SceneEntityCfg = SceneEntityCfg("object")) -> torch.Tensor:
     """`D(p_tcp, p_grasp, s_r, 0)`. 목표는 컵 원점이 아니라 **파지점**이다.
 
-    컵 원점은 상면 +92 mm 이고 그 높이의 컵 지름(88 mm)이 개구(84.5 mm)보다 넓어
-    턱이 물리적으로 못 들어간다 — v1 이 이 함정을 실측으로 잡았다.
+    컵 원점(상면 +92 mm)을 겨냥하면 안 된다 — v1 이 실측으로 잡은 함정이다.
+    ※09.02 정정: 그 근거였던 "지름 88 mm 가 개구 84.5 mm 보다 넓어 못 들어간다"는
+      **틀렸다**. PhysX 실측 개구는 100 mm 이고 상면 +92 mm 의 지름은 68 mm 다.
+      결론(대역으로 clamp)은 유효하나 근거가 바뀌었다.
     """
     ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
     tcp = ee_frame.data.target_pos_w[..., 0, :]
@@ -220,11 +222,14 @@ def stage_close(env: "ManagerBasedRLEnv",
     부분 점수는 v1 의 `grip_closure_when_enclosed`(align × enclose × closure) 구조를
     그대로 쓴다 — "감싸지 않은 폐쇄"가 정확히 0 이어야 옛 주먹 해킹이 안 살아난다.
     """
+    # ★`band=` 를 반드시 넘긴다 — v2 의 파지 대역은 v1(판 위 10~85 mm)이 아니라
+    #   판 위 80~150 mm 다. 안 넘기면 v1 기본값으로 조용히 되돌아간다.
     ok = grasp_ok(env, P.GRASP_GATE_LATERAL_OK, P.GRASP_GATE_ALONG_OK,
-                  P.JAW_PAD_OFFSET, jaw_cfg, object_cfg).float()
+                  P.JAW_PAD_OFFSET, jaw_cfg, object_cfg,
+                  band=P.CUP_GRASP_BAND_AXIS).float()
     align, enclose = _jaw_geometry(env, P.JAW_ALONG_STD, P.JAW_LATERAL_STD,
                                    P.JAW_ENCLOSE_HALF_WIDTH, P.JAW_PAD_OFFSET,
-                                   jaw_cfg, object_cfg)
+                                   jaw_cfg, object_cfg, band=P.CUP_GRASP_BAND_AXIS)
     robot: Articulation = env.scene[jaw_cfg.name]
     drive = robot.data.joint_pos[:, robot.joint_names.index(P.GRIPPER_DRIVE_JOINT)]
     closure = (1.0 - drive / P.GRIPPER_OPEN_POS).clamp(0.0, 1.0)
@@ -353,7 +358,8 @@ def all_stages(env: "ManagerBasedRLEnv",
                jaw_cfg: SceneEntityCfg,
                ee_frame_cfg: SceneEntityCfg,
                object_cfg: SceneEntityCfg,
-               net_speed: torch.Tensor | None = None) -> tuple[tuple, tuple]:
+               net_speed: torch.Tensor | None = None,
+               lift_only: bool = False) -> tuple[tuple, tuple]:
     """`(pos, val)` — 판정용 양과 보상용 진행도. **의미가 다른 두 벌**이다.
 
       · `pos = (r_grasp, r_lift, r_transport, ok3)` → **stage 인덱스 판정**에만 쓴다.
@@ -386,6 +392,16 @@ def all_stages(env: "ManagerBasedRLEnv",
     move_up = ((z - P.LIFT_RAMP_ZERO_Z)
                / (P.MINIMAL_LIFT_HEIGHT - P.LIFT_RAMP_ZERO_Z)).clamp(0.0, 1.0)
     r_lift = r_close * move_up
+
+    # ── ★★09.03 리프트 전용 (사용자 결정: "goal 은 필요없고 lift 만") ──────────
+    #   계단을 **2 단(grasp → lift)** 으로 줄이고 리프트를 **최종 단계**로 만든다.
+    #   왜: 4 단에서는 리프트가 중간 계단이라 "잡고 가만히"(v_0)와 이득 차이가 작았고,
+    #   재소환을 끄자 정책이 그 국소최적에 갇혔다(G1 실측 — r_grasp 0.765 인데
+    #   r_lift 0.0115, 400 epoch 평평). 리프트를 만점으로 두면 그 이득 차가 2 배가 된다.
+    #   ⚠ 이송·정지 능력은 **의도적으로 버린다.** 목표 상자는 obs 에만 남는다.
+    if lift_only:
+        zero = torch.zeros_like(r_grasp)
+        return (r_grasp, r_lift, zero, zero), (r_grasp, move_up, zero, zero)
 
     dist = cup_goal_distance(env, command_name, robot_cfg, object_cfg)
     r_transport = r_lift * d_shape(dist, P.TRANSPORT_S, P.TRANSPORT_TAU)
@@ -456,46 +472,6 @@ def upright_shaped(env: "ManagerBasedRLEnv",
       직립이 stage 3 의 `p_upright` 로 그대로 이어진다(두 신호가 안 싸운다).
     """
     return smoothstep(_cup_upright_cos(env, object_cfg), *P.P_UPRIGHT_BAND)
-
-
-def still_shaped(env: "ManagerBasedRLEnv", command_name: str,
-                 robot_cfg: SceneEntityCfg,
-                 object_cfg: SceneEntityCfg) -> torch.Tensor:
-    """감속 셰이핑 값 [0,1] = `p_still × p_near(dist)`.
-
-    ★라운드 14(정지 처방). 계단 밖 가산항 전용.
-      · `p_still` 은 `v_3` 과 **같은 밴드**(`P_STILL_BAND`) — 두 신호가 안 싸운다.
-      · `p_near` 는 `P_DIST_BAND` — 목표 150 mm 밖에서 0 이라 "멀리서 멈추기" 차단.
-      · 속도는 **순간속도**다(순변위로 재면 제자리 진동이 만점 — 라운드 1 함정).
-    """
-    obj: RigidObject = env.scene[object_cfg.name]
-    speed = torch.norm(obj.data.root_lin_vel_w, dim=1)
-    dist = cup_goal_distance(env, command_name, robot_cfg, object_cfg)
-    # ★★08.31 실측 정정 — 직립 인자가 **없으면 "눕혀서 정지"가 열린다**.
-    #   E 판 ep2150 스냅샷 실측: `at_goal` 은 올랐는데(0.282→0.359) 전도(cos<0.5 경험)가
-    #   **14.1% → 85.0%**, 직립(도달 대비) 91.4% → 73.7%, ⑤ 41.4% → 25.3%.
-    #   계단의 `v_3 = p_still × p_upright` 는 곱이라 이걸 막고 있었는데, 계단 밖 가산항을
-    #   `p_upright`(처방 A)와 `p_still`(정지 처방)로 **따로** 만들면서 보호가 사라졌다.
-    #   ⇒ 감속 보상에 직립을 곱한다. 눕히면 0 이라 해킹면이 닫힌다.
-    upright = smoothstep(_cup_upright_cos(env, object_cfg), *P.P_UPRIGHT_BAND)
-    return (smoothstep(speed, *P.P_STILL_BAND) * smoothstep(dist, *P.STILL_NEAR_BAND)
-            * upright)
-
-
-def still_at_goal(env: "ManagerBasedRLEnv", command_name: str,
-                  robot_cfg: SceneEntityCfg,
-                  object_cfg: SceneEntityCfg) -> torch.Tensor:
-    """목표 **안에서만** 켜지는 감속 셰이핑 [0,1] (라운드 16).
-
-    `smoothstep(speed, *STILL_GOAL_BAND) × (dist < SETTLE_RADIUS)`.
-    ★게이트가 콜라이더 자체다 — D 판처럼 "도착 전에 멈춰 버는" 경로가 없다.
-    ★속도는 **순간속도**. 합격 판정에는 여전히 안 들어간다(셰이핑 전용).
-    """
-    obj: RigidObject = env.scene[object_cfg.name]
-    speed = torch.norm(obj.data.root_lin_vel_w, dim=1)
-    dist = cup_goal_distance(env, command_name, robot_cfg, object_cfg)
-    inside = (dist < P.SETTLE_RADIUS).to(speed.dtype)
-    return smoothstep(speed, *P.STILL_GOAL_BAND) * inside
 
 
 def progress_terms(env: "ManagerBasedRLEnv",

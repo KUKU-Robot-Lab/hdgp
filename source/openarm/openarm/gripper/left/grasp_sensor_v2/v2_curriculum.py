@@ -47,7 +47,16 @@ class ADRLadder(ManagerTermBase):
         super().__init__(cfg, env)
         # ★라운드 13 — `fixed_level >= 0` 이면 그 레벨에 **고정**하고 승급·강등을 끈다.
         #   대조군 B(사다리 없이 처음부터 만렙)를 같은 코드 경로로 만든다.
-        self._fixed = int(getattr(cfg, "params", {}).get("fixed_level", -1))
+        # ★★09.03 — 값을 **env.cfg 에서 직접** 읽는다. term params 로 받으면
+        #   `__post_init__` 실행 시점에 구워져 hydra CLI 오버라이드
+        #   (`env.v2_adr_fixed_level=-1`)가 **조용히 무시된다** — 실제로 F2 가
+        #   그렇게 E29 의 완전한 재실행이 되어 버렸다. params 는 명시된 경우에만
+        #   우선하고, 없으면 cfg 를 본다.
+        _p = getattr(cfg, "params", {}) or {}
+        if "fixed_level" in _p:
+            self._fixed = int(_p["fixed_level"])
+        else:
+            self._fixed = int(getattr(env.cfg, "v2_adr_fixed_level", -1))
         self._level = max(self._fixed, 0)
         self._ema = 0.0
         self._last_promo = 0

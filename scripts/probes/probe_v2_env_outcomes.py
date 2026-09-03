@@ -72,6 +72,13 @@ parser.add_argument("--no_obs_noise", action="store_true",
 parser.add_argument("--stochastic", action="store_true",
                     help="★σ 를 켜고 샘플링한다 — 학습 로그와 같은 조건. "
                          "결정론과 갈리면 정책이 탐색 노이즈에 기대고 있다는 뜻이다.")
+parser.add_argument("--cup_z_bias", type=float, default=0.0,
+                    help="컵 **인지** z 에 상수 편향(m)을 주입한다 — FP++ 원점 규약 불일치 "
+                         "모사. 두 obs 경로(`object_position`·`goal_minus_cup`)에 같이 "
+                         "먹인다(실기에서는 같은 인지값에서 파생되므로). 보상·판정은 "
+                         "ground truth 그대로라 '정책이 속았을 때 무슨 일이 나는가'를 잰다.")
+parser.add_argument("--cup_z_bias_obs_only", action="store_true",
+                    help="편향을 `object_position` 에만 준다 — 그 축이 정말 무시되는지 분리 측정.")
 parser.add_argument("--tip_cos", type=float, default=0.50,
                     help="이 코사인 아래면 '넘어뜨렸다'(0.50 = 60°)")
 AppLauncher.add_app_launcher_args(parser)
@@ -154,6 +161,36 @@ def main() -> None:
     #   ⚠ `reset_object_position` 의 pose_range 는 **스폰 중심 기준 오프셋**이다.
     #     절대 좌표를 그대로 넣으면 컵이 테이블 밖으로 날아간다(부호 함정).
     # ── ★스텝 잡음 차단 (진동 원인 분리) ──────────────────────────────
+    if args.cup_z_bias != 0.0:
+        # ★인지 편향 주입. `object_position` 은 기존 에피소드 bias 버퍼를 그대로 쓰고
+        #   (리셋마다 재샘플되므로 매 스텝 덮어써야 한다), `goal_minus_cup` 은 sim 에서
+        #   ground truth 를 쓰므로 함수를 감싸서 같은 양을 뺀다(목표−컵 이므로 부호 반대).
+        import openarm.gripper.left.grasp_sensor_v2.v2_observations as _obs
+        _bz = float(args.cup_z_bias)
+        _terms = raw.observation_manager._group_obs_term_cfgs["policy"]
+        _names = raw.observation_manager._group_obs_term_names["policy"]
+        for nm, cfg in zip(_names, _terms):
+            if "step_noise" in getattr(cfg, "params", {}):
+                _orig0 = cfg.func
+                def _w0(env, *a, __o=_orig0, __b=_bz, **k):
+                    out = __o(env, *a, **k)
+                    out = out.clone(); out[:, 2] += __b
+                    return out
+                cfg.func = _w0
+                print(f"[probe] {nm} z 에 {_bz*1000:+.1f} mm", flush=True)
+        if not args.cup_z_bias_obs_only:
+            for nm, cfg in zip(_names, _terms):
+                if getattr(cfg.func, "__name__", "") == "goal_minus_cup":
+                    _orig = cfg.func
+                    def _wrapped(env, *a, __o=_orig, __b=_bz, **k):
+                        out = __o(env, *a, **k)
+                        out = out.clone(); out[:, 2] -= __b
+                        return out
+                    cfg.func = _wrapped
+                    print(f"[probe] goal_minus_cup z 에 {-_bz*1000:+.1f} mm", flush=True)
+        print(f"[probe] 컵 인지 z 편향 {_bz*1000:+.1f} mm"
+              f"{' (object_position 만)' if args.cup_z_bias_obs_only else ''}", flush=True)
+
     if args.no_obs_noise:
         t = raw.observation_manager._group_obs_term_cfgs["policy"]
         names = raw.observation_manager._group_obs_term_names["policy"]
@@ -239,6 +276,12 @@ def main() -> None:
     min_cos = torch.ones(N, device=dev)
     min_dist = torch.full((N,), 9.9, device=dev)
     max_z = torch.zeros(N, device=dev)
+    # ★09.03 — **실제 파지 높이**. 대역은 범위일 뿐이고 정책이 그 안 어디서 잡는지는
+    #   따로 재야 한다. "대역 중앙에서 잡는다"는 가정이 H2/H3 에서 깨졌다
+    #   (대역을 60mm 올렸는데 손끝 최저가 14mm 그대로).
+    #   첫 grasp_ok 순간의 TCP 높이(판 위)와 턱 최저 높이를 기록한다.
+    grasp_tcp_z = torch.full((N,), float("nan"), device=dev)
+    grasp_tip_z = torch.full((N,), float("nan"), device=dev)
     # 리셋된 env 는 새 에피소드다 — 누적을 이어 붙이면 결말이 섞인다.
     # 첫 에피소드만 세기 위해 종료된 env 를 잠근다.
     done_lock = z()
@@ -285,7 +328,11 @@ def main() -> None:
 
             # `r_close == 1.0` ⟺ `grasp_ok` (그 외에는 ≤ 0.5) — v2_stages 계약 참조
             ever_grasp |= live & (r_close > 0.5)
-            ever_lift |= live & (cup_z > P.MINIMAL_LIFT_HEIGHT)
+            # ★★09.03 — `ever_lift` 에 **파지 조건을 AND** 한다. 높이만 보면 잡지 않고
+            #   튕겨 날아간 컵과 재소환 텔레포트 순간까지 "들었다"로 세어, 결말 분류가
+            #   배타적이지 않게 된다(합 117% 로 관측). 이 저장소가 이미 기록해 둔 함정:
+            #   "판정 ✅ 는 날아간 물체도 센다".
+            ever_lift |= live & (cup_z > P.MINIMAL_LIFT_HEIGHT) & (r_close > 0.5)
             ever_goal |= live & (dist < P.SETTLE_RADIUS)
             ever_succ |= live & succ
             ever_tip |= live & (cos < args.tip_cos)
@@ -301,6 +348,10 @@ def main() -> None:
             _low = (torch.minimum(_jz.min(dim=1).values, _ez)
                     - raw.scene.env_origins[:, 2] - P.TABLE_SURFACE_Z)
             tip_min = torch.where(live, torch.minimum(tip_min, _low), tip_min)
+            _newly = live & (r_close > 0.5) & torch.isnan(grasp_tcp_z)
+            grasp_tcp_z = torch.where(_newly, _ez - raw.scene.env_origins[:, 2]
+                                      - P.TABLE_SURFACE_Z, grasp_tcp_z)
+            grasp_tip_z = torch.where(_newly, _low, grasp_tip_z)
             _q = raw.scene["robot"].data.body_quat_w[:, base_bi, :]
             _azc = (1.0 - 2.0 * (_q[:, 1] ** 2 + _q[:, 2] ** 2)).clamp(-1.0, 1.0)
             _ang = torch.rad2deg(torch.acos(_azc))
@@ -335,6 +386,13 @@ def main() -> None:
     c3 = ever_lift & ~ever_goal
     c2 = ever_grasp & ~ever_lift
     c1 = ~ever_grasp
+    # ★분류가 배타적인지 자체 검산한다 — 합이 100% 가 아니면 정의가 겹친 것이다.
+    _sum = float((c1 | c2 | c3 | c4 | c5).float().mean())
+    _tot = sum(float(c.float().mean()) for c in (c1, c2, c3, c4, c5))
+    if abs(_tot - 1.0) > 1e-3 or abs(_sum - 1.0) > 1e-3:
+        print(f"[probe] ⚠ 결말 분류가 배타적이 아니다 — 합 {_tot*100:.1f}% "
+              f"(합집합 {_sum*100:.1f}%). 정의가 겹쳤다.", flush=True)
+
     rows = [("⑤ 성공 (도달+정지+직립+파지)", c5),
             ("④ 도달 (반경 50mm 진입)", c4),
             ("③ 리프트 (들었으나 미도달)", c3),
@@ -451,7 +509,15 @@ def main() -> None:
               f" · p90 {qq(ptm,0.9):.1f} · 최소 {ptm.min().item():.1f} mm")
         for th in (30.0, 20.0, 10.0, 0.0):
             print(f"      판 위 {th:4.0f} mm 아래로 내려간 env   {(ptm < th).float().mean().item():6.1%}")
-        print(f"    접근 각도(그리퍼 +z ∠ world +z)  평균 중앙 {qq(pav,0.5):.1f}°"
+        _g = grasp_tcp_z[~torch.isnan(grasp_tcp_z)] * 1000.0
+        _t = grasp_tip_z[~torch.isnan(grasp_tip_z)] * 1000.0
+        if _g.numel() > 0:
+            print(f"  ★**실제 파지 높이** (첫 grasp_ok 순간 · 판 위 mm · n={_g.numel()})")
+            print(f"    TCP    p10 {torch.quantile(_g,0.1):.1f} · 중앙 {_g.median():.1f} · p90 {torch.quantile(_g,0.9):.1f}"
+                  f"   (대역 {P.GRASP_HEIGHT_BAND[0]*1000:.0f}~{P.GRASP_HEIGHT_BAND[1]*1000:.0f} · 중앙 {(P.GRASP_HEIGHT_BAND[0]+P.GRASP_HEIGHT_BAND[1])*500:.0f})")
+            print(f"    턱최저 p10 {torch.quantile(_t,0.1):.1f} · 중앙 {_t.median():.1f} · p90 {torch.quantile(_t,0.9):.1f}"
+                  f"   → 파지 순간 TCP−턱최저 = {(_g.median()-_t.median()):.1f} mm")
+            print(f"    접근 각도(그리퍼 +z ∠ world +z)  평균 중앙 {qq(pav,0.5):.1f}°"
               f" · 최대 중앙 {qq(pam,0.5):.1f}° · 최대 p90 {qq(pam,0.9):.1f}°")
         for th in (90.0, 100.0, 110.0, 120.0):
             print(f"      한 번이라도 {th:5.0f}° 초과(아래로 기욺) env   "

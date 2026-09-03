@@ -20,6 +20,7 @@
 
 import math
 import os
+import re
 from pathlib import Path
 
 from openarm.gripper.left.grasp_sensor import grasp_left_preset as V1
@@ -29,8 +30,10 @@ _PKG = Path(__file__).resolve().parents[1]
 _EPS = 1e-9
 
 
-def _src(name: str) -> str:
-    return (_PKG / name).read_text(encoding="utf-8")
+def _src(name: str, v1: bool = False) -> str:
+    """모듈 소스를 문자열로. `v1=True` 면 자매 트랙(`grasp_sensor`)에서 읽는다."""
+    base = _PKG.parent / "grasp_sensor" if v1 else _PKG
+    return (base / name).read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -553,18 +556,6 @@ def test_fine_limiter_is_off_by_default_so_v1_is_untouched():
     assert "return base" in fa
 
 
-# ---------------------------------------------------------------------------
-# 실험 스위치 — 단일 변수 대조가 성립하는가
-# ---------------------------------------------------------------------------
-def test_still_switch_defaults_to_instantaneous_speed():
-    """스위치 기본값 off = arm A(순간속도). 켜는 것은 환경변수의 명시적 행위여야 한다."""
-    src = _src("v2_env_cfg.py")
-    assert 'os.environ.get("HDGP_V2_STILL_NET", "0") == "1"' in src.replace("_os.", "os.")
-    # 값이 cfg 필드에 박혀야 env.yaml dump 에 남는다(학습 전 확인 규칙 ②)
-    assert "v2_still_net: bool" in src
-    assert '"still_net": self.v2_still_net' in src, "cfg 필드가 보상 항으로 전달돼야 한다"
-
-
 def test_rejected_round12_switches_are_gone():
     """라운드 1·2 의 기각된 처방이 코드에 남아 있으면 안 된다.
 
@@ -588,25 +579,6 @@ def test_rejected_round12_switches_are_gone():
         assert f"\n{gone} =" not in pre, f"{gone} 상수가 아직 정의돼 있다"
         assert not hasattr(P, gone), f"P.{gone} 이 아직 임포트 가능하다"
     assert "def speed_scale_from_dist" not in st, "R2 함수가 아직 살아 있다"
-
-
-def test_goal_offset_is_switchable_for_the_baseline_comparison():
-    """★★라운드 4 — R3(목표 상자 이동)를 **다시 스위치로** 되돌렸다.
-
-    라운드 3 에서 상시 적용한 결과 baseline(run0-s43)과 목표 z 가 18 mm 달라져
-    (0.415~0.515 vs 0.397~0.497) 7 판 치 비교가 통째로 근사치가 됐다. `cupd`
-    124 mm vs 89 mm 격차의 최대 절반이 이 교란이다.
-
-    끌 수 있어야 baseline 과 **같은 상자**에서 보상 효과를 단일 변수로 잴 수 있다.
-    기본값은 실측 오프셋(True) — 물리적으로 옳은 쪽이 기본이어야 한다.
-    """
-    src = _src("v2_env_cfg.py")
-    assert 'os.environ.get("HDGP_V2_GOAL_MEASURED", "1") == "1"' in src.replace("_os.", "os.")
-    assert "v2_goal_measured: bool" in src, "값이 env.yaml 에 남아야 증명 가능하다"
-    assert "P.GRASP_OFFSET_ROOT if self.v2_goal_measured else P.GRASP_OFFSET_ROOT_V1" in src
-    # 두 값의 차가 실제로 18 mm 인지 — 대조 해석의 근거
-    dz = P.GRASP_OFFSET_ROOT[2] - P.GRASP_OFFSET_ROOT_V1[2]
-    assert abs(dz - 0.018) < 1e-9, f"목표 z 차이가 18 mm 가 아니다: {dz*1000:.1f} mm"
 
 
 # ---------------------------------------------------------------------------
@@ -973,30 +945,6 @@ def test_bands_are_calibrated_to_the_measured_operating_point():
     assert _smoothstep(0.9747, *P.P_UPRIGHT_BAND) < 0.5, "p10 직립이 밴드 하단에 있어야"
 
 
-# ---------------------------------------------------------------------------
-# ★★08.29 라운드 6 — 제어 층(회전 자유도 · env 별 앵커)
-# ---------------------------------------------------------------------------
-def test_control_switches_default_off_so_v1_is_untouched():
-    """두 스위치 모두 cfg 기본값이 `None` 이라 **v1 거동이 안 바뀐다.**
-
-    액션 파일은 v1(`grasp_sensor`)과 **공유**한다. v1 은 챔피언이자 폴백이라 동결이고,
-    이 기본값이 그 불변의 유일한 보증이다.
-    """
-    fa = (_PKG.parent / "grasp_sensor" / "grasp_left_fabric_action.py").read_text(
-        encoding="utf-8")
-    assert "palm_max_pose_angle: float | None = None" in fa
-    assert "anchor_relatch_cup_z: float | None = None" in fa
-    # 켜지 않으면 preset 값을 그대로 쓴다
-    assert "P.PALM_MAX_POSE_ANGLE if self.cfg.palm_max_pose_angle is None" in fa
-    # 재앵커는 조건부 블록 안에서만 일어난다
-    assert "if self.cfg.anchor_relatch_cup_z is not None:" in fa
-    src = _src("v2_env_cfg.py")
-    for k, d in (("HDGP_V2_ROT_WIDE", "0"), ("HDGP_V2_ANCHOR_RELATCH", "0")):
-        assert f'os.environ.get("{k}", "{d}") == "1"' in src.replace("_os.", "os.")
-    for k in ("v2_rot_wide: bool", "v2_anchor_relatch: bool"):
-        assert k in src, f"{k} 가 cfg 필드로 안 박혀 있으면 env.yaml 로 증명 못 한다"
-
-
 def test_rotation_box_is_widened_past_the_measured_span():
     """★회전 박스는 실측이 요구하는 스팬을 덮어야 한다.
 
@@ -1005,31 +953,20 @@ def test_rotation_box_is_widened_past_the_measured_span():
         ey  접근 +0.594  ·  이송 −0.885         → **부호가 뒤집힌다 = 40° 스팬 필요**
         ex  리프트 후 −0.886                     → 리프트 후 −20° 를 넘는다
     구 박스는 ±20° = 스팬 40° 로 `ey` 요구와 정확히 같아 여유가 0 이었다.
+
+    ★09.03 — 이 요구는 **이송이 있을 때**의 것이다. `ey` 부호 반전(접근 + / 이송 −)이
+    넓은 스팬을 강제했는데, 리프트 전용에서는 이송이 없어 그 요구가 사라진다.
+    오히려 넓은 박스가 "위에서 내리꽂기"를 허용해 해가 된다
+    (`test_rotation_box_is_narrow_while_transport_is_off` 가 그쪽을 지킨다).
     """
     span_old = 2 * P.PALM_MAX_POSE_ANGLE
-    span_new = 2 * P.PALM_MAX_POSE_ANGLE_WIDE
     assert abs(span_old - math.radians(40.0)) < 1e-6, "구 박스 스팬이 40° 가 아니다"
+    if "v2_lift_only: bool = True" in _src("v2_env_cfg.py"):
+        return          # 리프트 전용 — 넓은 스팬 요구는 적용되지 않는다
+    span_new = 2 * P.PALM_MAX_POSE_ANGLE_WIDE
     assert span_new >= math.radians(100.0), (
         f"새 스팬 {math.degrees(span_new):.0f}° — ey 요구 40° 에 여유가 부족하다")
-    # 중심 오류(ez)도 흡수돼야 한다: 구 박스 한계를 넘어설 수 있어야
     assert P.PALM_MAX_POSE_ANGLE_WIDE > 2 * P.PALM_MAX_POSE_ANGLE
-
-
-def test_anchor_relatch_is_monotone_and_reset_restores_home():
-    """★재앵커는 **단조 래치**이고 리셋에서 홈으로 되돌아와야 한다.
-
-    깜빡이면 널스페이스 목표가 흔들려 지령이 더 떨고, 안 되돌리면 직전 에피소드의
-    파지 자세가 다음 에피소드의 앵커가 되어 **리셋 오염**이 된다(이 트랙에서 리셋
-    오염에 이미 세 번 당했다).
-    """
-    fa = (_PKG.parent / "grasp_sensor" / "grasp_left_fabric_action.py").read_text(
-        encoding="utf-8")
-    assert "self._anchor_latched |= _new" in fa, "단조 래치(OR 누적)여야 한다"
-    assert "(~self._anchor_latched) &" in fa, "이미 래치된 env 는 다시 안 쓴다"
-    assert "self._anchor_home" in fa, "홈 앵커를 보존해야 되돌릴 수 있다"
-    assert "self._anchor_latched[env_ids] = False" in fa
-    assert "self._fabric.default_config[env_ids] = self._anchor_home[env_ids]" in fa
-    assert P.ANCHOR_RELATCH_CUP_Z == P.MINIMAL_LIFT_HEIGHT
 
 
 def test_rotation_axis_diagnostics_are_registered():
@@ -1043,19 +980,6 @@ def test_rotation_axis_diagnostics_are_registered():
     for ax, i in (("ez", 3), ("ey", 4), ("ex", 5)):
         assert f'("{ax}", {i})' in src, f"회전 축 {ax}(={i}) 진단이 없다"
     assert '("x", 0), ("y", 1), ("z", 2)' in src, "위치 축 진단은 유지돼야 한다"
-
-
-# ---------------------------------------------------------------------------
-# ★★08.29 라운드 7 — 지속 정착 프리미엄 (hold)
-# ---------------------------------------------------------------------------
-def test_hold_premium_defaults_off_and_is_cfg_visible():
-    """기본 off — 켜는 것은 환경변수의 명시적 행위이고 값은 env.yaml 에 남아야 한다."""
-    src = _src("v2_env_cfg.py")
-    assert 'os.environ.get("HDGP_V2_HOLD", "0") == "1"' in src.replace("_os.", "os.")
-    assert "v2_hold_premium: bool" in src
-    assert '"hold_weight": P.HOLD_WEIGHT if self.v2_hold_premium else 0.0' in src
-    rw = _src("v2_rewards.py")
-    assert "hold_weight: float = 0.0" in rw, "파라미터 기본값이 0 이어야 기존 판이 불변이다"
 
 
 def test_hold_counter_resets_on_break_and_on_env_reset():
@@ -1104,24 +1028,6 @@ def test_hold_premium_flips_the_break_even():
     assert 10 <= P.HOLD_RAMP_STEPS <= 150
 
 
-# ---------------------------------------------------------------------------
-# ★★08.29 라운드 8 — 낙하/전도 재소환
-# ---------------------------------------------------------------------------
-def test_respawn_defaults_off_and_disables_drop_termination_together():
-    """기본 off. 켜면 **종료 항 제거와 이벤트 등록이 한 몸**이어야 한다.
-
-    재소환 문턱과 종료 문턱이 같은 높이(`OBJECT_DROP_HEIGHT`)라, 종료를 안 끄면
-    종료가 먼저 발화해 재소환이 영영 안 일어난다 — 조용히 "실험을 안 한 것"이 된다.
-    """
-    src = _src("v2_env_cfg.py")
-    assert 'os.environ.get("HDGP_V2_RESPAWN", "0") == "1"' in src.replace("_os.", "os.")
-    assert "v2_respawn: bool" in src
-    blk = src[src.index("if self.v2_respawn:"):]
-    blk = blk[:blk.index("\n\n")]
-    assert "self.terminations.object_dropping = None" in blk
-    assert "respawn_cup = EventTermCfg" in blk and 'mode="interval"' in blk
-
-
 def test_respawn_keeps_clearance_and_lands_upright():
     """재소환은 **TCP 여유 · 직립 · 속도 0** 를 보장해야 한다.
 
@@ -1152,24 +1058,6 @@ def test_respawn_thresholds_reuse_task_constants():
     assert "P.RESPAWN_TIPPED_COS" in ev
     assert 0.3 <= P.RESPAWN_TIPPED_COS <= 0.7, "전도 판정 60° 근방이어야"
     assert "P.CUP_SPAWN_X_CENTER" in ev and "P.CUP_SPAWN_Z" in ev, "스폰 상자 재사용"
-
-
-# ---------------------------------------------------------------------------
-# ★★08.30 라운드 9 — DR + ADR 사다리
-# ---------------------------------------------------------------------------
-def test_dr_defaults_off_and_level0_equals_current_task():
-    """기본 off. 켜도 **레벨 0 은 현행 과제와 완전히 동일**해야 한다 — 그래야
-    HR(챔피언 후보)과의 대조가 성립하고, 사다리가 진짜 사다리가 된다."""
-    src = _src("v2_env_cfg.py")
-    assert 'os.environ.get("HDGP_V2_DR", "0") == "1"' in src.replace("_os.", "os.")
-    assert "v2_dr: bool" in src
-    assert '"mass_distribution_params": (1.0, 1.0)' in src, "레벨 0 질량 = 무변경"
-    cur = _src("v2_curriculum.py")
-    # 레벨 0 에서 보간 f=0 → 현행 상수 그대로
-    assert "f = self._level / (P.ADR_LEVELS - 1)" in cur
-    assert "P.GOAL_JITTER_V2[1] + f *" in cur
-    # ★08.30 라운드 13 — 스폰은 **절대 상자 보간**으로 바뀌었다(구 대칭 오프셋 폐기)
-    assert "b0[i] + f * (bm[i] - b0[i])" in cur
 
 
 def test_adr_promotion_needs_success_and_spacing_and_halves_ema():
@@ -1218,45 +1106,6 @@ def test_upright_shaping_is_additive_gated_and_cannot_skip_a_stage():
         "셰이핑이 v_3 과 다른 밴드를 쓴다(두 신호가 싸운다)"
 
 
-def test_hold_ramp_matches_measured_dwell():
-    """★08.31 라운드 15 — hold 는 "오래 머물수록" 커져야 한다(사용자 지시).
-
-    새 기준(속도 제거)에서 실측 체류가 중앙 61 · p90 191 스텝이라 램프 30 은
-    대부분 만점 → gradient 소멸. 램프가 실측 중앙값보다 충분히 커야 한다.
-    ⚠ 무한 증가는 금지 — 계단 최대 1.0 대비 스케일이 터지면 앞 단계가 죽는다.
-    """
-    import openarm.gripper.left.grasp_sensor_v2.v2_preset as P
-    assert P.HOLD_RAMP_STEPS >= 100, "램프가 짧아 대부분 만점 — 더 오래에 유인이 없다"
-    rw = _src("v2_rewards.py")
-    assert "(self._hold / P.HOLD_RAMP_STEPS).clamp(max=1.0)" in rw, \
-        "hold 가 유계가 아니다(스케일 폭주)"
-
-
-def test_still_at_goal_is_gated_by_the_collider_not_a_band():
-    """★★08.31 라운드 16 — 목표 안 안정화 셰이핑의 불변식.
-
-    ① 게이트가 **콜라이더 자체**여야 한다. D 판은 근접 밴드(0.16 m)를 써서 평균 컵–목표
-       125 mm 에 멈춰 보상을 받았다(`at_goal` 0.066 vs 기준선 0.235). 밖에서 못 벌게 한다.
-    ② 밴드는 **실측 운전점**(목표 안 평균 속도 중앙 0.144 · p10 0.104)을 덮어야 한다.
-    ③ 가산항이고 가중치 < 계단 한 칸(0.25).
-    ④ 합격 판정에는 들어가지 않는다 — 속도를 다시 게이트로 쓰면 진동체가 통과한다.
-    """
-    import openarm.gripper.left.grasp_sensor_v2.v2_preset as P
-    st = _src("v2_stages.py")
-    body = st.split("def still_at_goal(")[1].split("\ndef ")[0]
-    assert "(dist < P.SETTLE_RADIUS)" in body, "게이트가 콜라이더가 아니다"
-    assert "P.P_DIST_BAND" not in body and "P.STILL_NEAR_BAND" not in body, \
-        "근접 밴드를 쓰면 도착 전에 멈춰 벌 수 있다(D 판 실패)"
-    lo, hi = P.STILL_GOAL_BAND[1], P.STILL_GOAL_BAND[0]
-    assert lo < 0.104 < hi, f"밴드 {P.STILL_GOAL_BAND} 가 실측 운전점(p10 0.104)을 안 덮는다"
-    assert lo < 0.144 < hi, f"밴드 {P.STILL_GOAL_BAND} 가 실측 중앙(0.144)을 안 덮는다"
-    assert P.STILL_GOAL_WEIGHT < 1.0 / P.N_STAGES
-    rw = _src("v2_rewards.py")
-    assert "r = r + still_goal_weight * S.still_at_goal(" in rw, "가산항이 아니다"
-    su = st.split("def success_ok(")[1].split("\ndef ")[0]
-    assert "STILL_GOAL" not in su, "합격 판정에 속도가 되살아났다"
-
-
 def test_obs_noise_is_gated_on_grasp():
     """★★08.31 라운드 15 (사용자 지적) — 스텝 잡음은 **파지 전에만** 얹는다.
 
@@ -1271,55 +1120,6 @@ def test_obs_noise_is_gated_on_grasp():
     assert "noise * (~held)" in ob
     assert '"jaw_cfg": _jaw()' in _src("v2_env_cfg.py"), \
         "jaw_cfg 를 주입하지 않으면 게이팅이 조용히 꺼진다(기본값 None)"
-
-
-def test_still_shaping_mirrors_upright_shaping_invariants():
-    """★라운드 14 정지 처방 — 처방 A 와 **같은 불변식 넷**을 지켜야 한다.
-
-    ① 가산(곱하면 라운드 3 실패 재현) ② 가중치 < 계단 한 칸 ③ 이송 게이팅
-    ④ `p_still` 은 `v_3` 과 같은 밴드 · `p_near` 는 `P_DIST_BAND`(150 mm 밖 0)
-       — ④ 가 없으면 "멀리서 멈춰 점수 벌기"가 열린다.
-    ⑤ 속도는 **순간속도**여야 한다(순변위면 제자리 진동이 만점 — 라운드 1 함정).
-    """
-    import openarm.gripper.left.grasp_sensor_v2.v2_preset as P
-    rew = _src("v2_rewards.py")
-    assert "r = r + still_weight * S.still_shaped(" in rew, \
-        "감속 셰이핑이 가산항이 아니다"
-    assert "(idx >= P.STILL_MIN_STAGE)" in rew, "이송 게이팅이 없다"
-    assert P.STILL_WEIGHT < 1.0 / P.N_STAGES, \
-        f"가중치 {P.STILL_WEIGHT} 가 계단 한 칸 이상 — 단계 건너뛰기 가능"
-    assert P.STILL_MIN_STAGE >= 2.0
-    st = _src("v2_stages.py")
-    assert "def still_shaped(" in st
-    assert "smoothstep(speed, *P.P_STILL_BAND) * smoothstep(dist, *P.STILL_NEAR_BAND)" in st, \
-        "밴드가 v_3 과 다르거나 거리 게이트가 없다"
-    # ★★08.31 — 감속 보상은 **직립을 곱해야** 한다. 안 그러면 "눕혀서 정지"가 열린다
-    #   (E 판 ep2150: at_goal 은 올랐는데 전도 14.1% → 85.0%, ⑤ 41.4% → 25.3%).
-    body = st.split("def still_shaped(")[1].split("\ndef ")[0]
-    assert "_cup_upright_cos(env, object_cfg), *P.P_UPRIGHT_BAND" in body and "* upright" in body, \
-        "감속 보상에 직립 인자가 없다 — 눕힌 채 정지해도 보상을 받는다"
-    # ★08.30 D 판 실측 — `P_DIST_BAND`(0.16) 재사용은 "도착 전 멈추기"에 돈을 준다.
-    #   평균 컵–목표 125 mm 가 그 밴드 한가운데였고 at_goal 이 기준선의 1/3.5 로 무너졌다.
-    #   근접 게이트는 **운전 거리보다 확실히 안쪽**이어야 한다.
-    assert P.STILL_NEAR_BAND[0] <= 0.10, \
-        f"근접 게이트 {P.STILL_NEAR_BAND[0]} 가 넓다 — 목표 밖에 멈춰도 보상을 받는다"
-    assert P.STILL_NEAR_BAND[0] > P.STILL_NEAR_BAND[1] >= 0.0
-    assert "torch.norm(obj.data.root_lin_vel_w, dim=1)" in st.split("def still_shaped(")[1] \
-        .split("def ")[0], "감속 판정이 순간속도가 아니다"
-
-
-def test_still_shaping_is_off_by_default():
-    cfg = _src("v2_env_cfg.py")
-    assert '_V2_STILL_SHAPE = _os.environ.get("HDGP_V2_STILL_SHAPE", "0") == "1"' in cfg
-    assert "if self.v2_still_shaping else 0.0" in cfg
-
-
-def test_upright_shaping_is_off_by_default():
-    """스위치는 기본 off — 대조군 조건이 코드 기본값으로 남아야 한다."""
-    cfg = _src("v2_env_cfg.py")
-    assert '_V2_UPRIGHT = _os.environ.get("HDGP_V2_UPRIGHT", "0") == "1"' in cfg
-    assert "P.UPRIGHT_WEIGHT\n" in cfg or "P.UPRIGHT_WEIGHT" in cfg
-    assert "if self.v2_upright_shaping else 0.0" in cfg
 
 
 def test_adr_spawn_box_stays_inside_measured_envelope():
@@ -1349,18 +1149,6 @@ def test_adr_spawn_box_stays_inside_measured_envelope():
              for i in range(4)]
         assert b[0] >= xl - 1e-9 and b[1] <= max(xh, P.ADR_SPAWN_BOX_L0[1]) + 1e-9
         assert b[2] >= yl - 1e-9 and b[3] <= yh + 1e-9
-
-
-def test_adr_goal_and_bias_max_match_measurement():
-    """★08.30 P1 — 목표 만렙은 1.4 배(⑤ 72.2%), obs bias 는 실기 오차 41 mm 를 덮는다."""
-    import openarm.gripper.left.grasp_sensor_v2.v2_preset as P
-    # ★08.31 — y 만렙은 `HDGP_V2_GOAL_Y_MAX` 로 오버라이드한다(호스트별 단일 변수).
-    #   기본값은 현행 0.100 이어야 대조군 조건이 코드 기본값으로 남는다.
-    assert '_os.environ.get("HDGP_V2_GOAL_Y_MAX", "0.100")' in _src("v2_preset.py")
-    assert P.ADR_GOAL_JITTER_MAX == (0.050, 0.100, 0.065)
-    # ★bias 상한은 합격 반경의 절반이다(계약 test_obs_noise_... 가 강제).
-    #   실기 41 mm 는 DR 로 덮을 수 없다 — 관측이 치우치면 그만큼 실제 컵이 벗어난다.
-    assert 0.020 < P.ADR_OBS_BIAS_MAX <= P.SETTLE_RADIUS * 0.5
 
 
 def test_adr_ladder_can_demote_with_hysteresis():
@@ -1455,68 +1243,6 @@ def test_obs_noise_is_policy_eye_only_and_bias_is_episodic():
     assert P.ADR_OBS_BIAS_MAX <= P.SETTLE_RADIUS * 0.5
 
 
-# ---------------------------------------------------------------------------
-# 라운드 17 — 홈 교체(J1·J4·J7) + 이송에서 끝나는 에피소드
-# ---------------------------------------------------------------------------
-def test_home_j147_uses_only_three_joints():
-    """사용자 지시: j2·j3·j5·j6 은 정확히 0 이어야 한다."""
-    home = P.LEFT_ARM_HOME_J147
-    assert set(home) == {f"l_aj_{i}" for i in range(1, 8)}
-    for jn in ("l_aj_2", "l_aj_3", "l_aj_5", "l_aj_6"):
-        assert home[jn] == 0.0, f"{jn} 는 0 이어야 한다 (실제 {home[jn]})"
-    for jn in ("l_aj_1", "l_aj_4", "l_aj_7"):
-        assert home[jn] != 0.0, f"{jn} 는 자세를 만드는 축이라 0 이면 안 된다"
-
-
-def test_home_j147_keeps_action_range_slack():
-    """액션 반범위 0.5 rad 를 온전히 쓰려면 한계에서 0.5 rad 여유가 필요하다.
-
-    ★j1 은 상한 1.3963 이라 0.2484 에서 여유 1.148 — 충분하다. 사용자가 처음 제안한
-      0.9 는 여유 0.496 으로 아슬아슬했고, 도달성에서 기각됐다.
-    """
-    import xml.etree.ElementTree as ET
-    urdf = _PKG.resolve().parents[5] / (
-        "assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.urdf")
-    if not urdf.exists():          # 자산 미배포 호스트에서는 건너뛴다
-        return
-    lim = {}
-    for j in ET.parse(urdf).getroot().iter("joint"):
-        n = j.get("name") or ""
-        el = j.find("limit")
-        if n.startswith("l_aj_") and el is not None:
-            lim[n] = (float(el.get("lower")), float(el.get("upper")))
-    for jn in ("l_aj_1", "l_aj_4", "l_aj_7"):
-        q = P.LEFT_ARM_HOME_J147[jn]
-        lo, hi = lim[jn]
-        assert min(q - lo, hi - q) >= 0.5, (
-            f"{jn}={q} 한계여유 {min(q - lo, hi - q):.4f} < 0.5 — 액션 범위가 잘린다")
-
-
-def test_home_j147_j2_clipping_is_known_and_accepted():
-    """★j2 를 0 으로 두면 **액션 범위가 위쪽으로 잘린다** — 알려진 대가다.
-
-    `l_aj_2` 한계는 (-3.3161, +0.1745) 라 q=0 에서 위쪽 여유가 0.1745 rad 뿐이다.
-    액션 반범위 0.5 의 35% 다. 현재 홈은 j2=-0.3757 로 이 한계를 피해 여유 0.550 을
-    확보하고 있었다.
-
-    ⚠ 그래도 이 홈을 쓰는 근거: 도달성 실측이 **이 클리핑을 포함한 상태**에서
-      나왔다(프로브가 표본을 한계로 clamp 한다). 컵 30 mm + 물기자세 0.07% 로
-      현재 홈(0.02%)의 3.5 배다. 즉 잘린 채로도 현재보다 낫다.
-    """
-    import xml.etree.ElementTree as ET
-    urdf = _PKG.resolve().parents[5] / (
-        "assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.urdf")
-    if not urdf.exists():
-        return
-    for j in ET.parse(urdf).getroot().iter("joint"):
-        if (j.get("name") or "") == "l_aj_2":
-            el = j.find("limit")
-            hi = float(el.get("upper"))
-            assert abs(hi - 0.1745) < 1e-3, "j2 상한이 바뀌었다 — 클리핑 계산 재확인"
-            assert P.LEFT_ARM_HOME_J147["l_aj_2"] == 0.0
-            return
-
-
 def test_dwell_end_is_truncation_not_termination():
     """★★이 계약이 깨지면 정책이 성공을 **회피**하도록 학습한다.
 
@@ -1529,28 +1255,12 @@ def test_dwell_end_is_truncation_not_termination():
     assert "time_out=True" in seg, "goal_dwell 은 반드시 truncation 이어야 한다"
 
 
-def test_dwell_threshold_is_short_and_hold_ramp_can_follow():
-    """이송에서 끝내는 과제라 체류 문턱은 짧아야 하고, hold 램프가 그보다 길면
-    정책은 프리미엄 만점을 **한 번도 못 받는다**(램프가 종료보다 늦게 찬다)."""
-    assert 1 <= P.EPISODE_DWELL_STEPS <= 30
-    src = _src("v2_preset.py")
-    assert "HDGP_V2_HOLD_RAMP" in src, "램프를 종료 문턱에 맞출 수 있어야 한다"
-    assert "HDGP_V2_DWELL_STEPS" in src
-
-
 def test_goal_dwell_counter_resets_on_break():
     """연속이어야 한다 — 반경을 들락거리는 진동이 문턱에 닿으면 안 된다."""
     src = _src("v2_terminations.py")
     assert "torch.zeros_like(self._dwell)" in src, "체류가 끊기면 0 으로 되돌려야 한다"
     assert "def reset" in src, "에피소드 경계에서 카운터를 비워야 한다"
     assert "settle_success" in src, "합격 판정은 보상과 같은 정의를 써야 한다"
-
-
-def test_home_switches_are_off_by_default():
-    """기존 체크포인트 재생을 위해 새 스위치는 기본 off 여야 한다."""
-    src = _src("v2_env_cfg.py")
-    for var in ("HDGP_V2_HOME_J147", "HDGP_V2_DWELL_END"):
-        assert f'_os.environ.get("{var}", "0")' in src, f"{var} 기본값이 off 가 아니다"
 
 
 def test_truncation_is_actually_bootstrapped():
@@ -1596,8 +1306,11 @@ def test_tip_floor_is_compatible_with_grasping():
 
 def test_tip_floor_weight_stays_under_one_stair():
     """계단 밖 가산·감산항은 한 칸(0.25)보다 작아야 계단 골격이 안 깨진다."""
+    # ★한 칸의 크기는 계단 수에 달렸다 — 4 단이면 0.25, 리프트 전용 2 단이면 0.5.
+    n_st = 2 if "v2_lift_only: bool = True" in _src("v2_env_cfg.py") else P.N_STAGES
+    one_stair = 1.0 / n_st
     ratio = abs(P.TIP_FLOOR_WEIGHT) / P.STAIRCASE_WEIGHT
-    assert ratio < 0.25, f"벌점 최대 기여 {ratio:.3f} 가 계단 한 칸 0.25 이상이다"
+    assert ratio < one_stair, f"벌점 최대 기여 {ratio:.3f} 가 계단 한 칸 {one_stair} 이상이다"
     assert P.TIP_FLOOR_WEIGHT < 0.0, "마진 위반은 벌점이어야 한다"
 
 
@@ -1618,292 +1331,6 @@ def test_tip_floor_uses_lowest_point_not_one_body():
     assert "min(dim=1)" in seg and "minimum" in seg, "턱 링크들과 TCP 의 최소를 써야 한다"
 
 
-# ---------------------------------------------------------------------------
-# 라운드 20 — 접근 자세 제약 (형상 비의존)
-# ---------------------------------------------------------------------------
-def test_approach_dir_peaks_at_horizontal_not_at_vertical():
-    """★순수 벌점판이 실패한 지점 — 90° 이하가 전부 같은 값이면 정책은 **위로 세워서**
-    제약을 피하고 파지를 포기한다(F 실측: 접근각 17.5° · lift 0.002).
-    보상은 **수평(a_z=0)에서 최대**여야 하고 위로 세우면 BASE 만 받아야 한다.
-    """
-    src = _src("v2_rewards.py")
-    i = src.index("def approach_dir_bonus")
-    seg = src[i:i + 1400]
-    assert "torch.exp(-((az / P.APPROACH_DIR_SIGMA) ** 2))" in seg, "수평에서 최대인 봉우리여야 한다"
-    assert "az < 0.0" in seg, "아래로 기울면(90° 초과) 0 이어야 한다"
-    assert P.APPROACH_DIR_BASE < 0.05, (
-        f"BASE {P.APPROACH_DIR_BASE} 가 크면 '위로 세우기'가 다시 값어치를 갖는다")
-
-
-def test_approach_dir_is_multiplied_by_reach_progress():
-    """★"수평으로 서서 안 잡기"를 막는 유일한 장치다 — 접근 진행도를 곱해야
-    컵 근처까지 가야만 보너스가 생긴다."""
-    src = _src("v2_rewards.py")
-    i = src.index("def approach_dir_bonus")
-    seg = src[i:i + 1400]
-    assert "S.stage_reach(" in seg, "접근 진행도를 곱하지 않으면 제자리 해킹이 성립한다"
-    assert "~held" in seg, "파지 후에는 0 이어야 한다(무는 동작·리프트 면제)"
-
-
-def test_approach_dir_weight_is_positive_and_bounded():
-    assert P.APPROACH_DIR_WEIGHT > 0.0, "방향은 벌점이 아니라 보너스여야 한다"
-    assert abs(P.APPROACH_DIR_WEIGHT) / P.STAIRCASE_WEIGHT < 0.25
-
-
-def test_approach_penalty_is_zero_at_or_above_horizontal():
-    """90° 이하(수평·위쪽)에서 **정확히 0** 이어야 한다.
-
-    그래야 "수평으로 접근하라"가 아니라 "아래로 기울지 마라"가 된다 — 수평 접근에
-    gradient 를 주면 정책이 필요 이상으로 손목을 세워 파지가 어려워진다.
-    """
-    src = _src("v2_rewards.py")
-    i = src.index("def approach_tilt_penalty")
-    seg = src[i:i + 800]
-    assert "(-_approach_az(env)).clamp(0.0, 1.0)" in seg, (
-        "a_z ≥ 0 구간이 0 으로 잘려야 한다")
-
-
-def test_approach_penalty_is_gated_off_after_grasp():
-    """무는 동작(j7 을 드는 것)과 리프트·이송은 면제되어야 한다."""
-    src = _src("v2_rewards.py")
-    i = src.index("def approach_tilt_penalty")
-    seg = src[i:i + 800]
-    assert "stage_close" in seg and "~held" in seg, "파지 후에는 0 이어야 한다"
-
-
-def test_approach_weight_stays_under_one_stair():
-    ratio = abs(P.APPROACH_AZ_WEIGHT) / P.STAIRCASE_WEIGHT
-    assert ratio < 0.25, f"최대 기여 {ratio:.3f} 가 계단 한 칸 0.25 이상이다"
-    assert P.APPROACH_AZ_WEIGHT < 0.0, "아래로 기욺은 벌점이어야 한다"
-
-
-def test_approach_constraint_is_shape_agnostic():
-    """★파지 대역(`GRASP_HEIGHT_BAND`)은 컵이 바뀌면 무의미해지는 **형상 상수**다.
-    접근 자세 제약은 거기 의존하면 안 된다 — 다물체로 갈 때 같이 죽는다."""
-    src = _src("v2_rewards.py")
-    i = src.index("def _approach_az")
-    seg = src[i:src.index("def diag_approach_down")]
-    for forbidden in ("GRASP_HEIGHT_BAND", "TABLE_SURFACE_Z", "CUP_"):
-        assert forbidden not in seg, f"{forbidden} 에 의존하면 형상 비의존이 깨진다"
-
-
-def test_approach_dir_is_pbrs_not_level():
-    """★레벨 지급은 실패했다 — 각도는 90.1° 로 내려갔지만 정책이 그 자세로 250 스텝 중
-    **239 스텝을 떠 있기만** 하고 안 잡았다(⑤ 0.0%). 에피소드가 목표 도달 10 스텝에
-    끝나므로 **버티기가 완수와 값이 같아진다.** 차분으로 줘야 그 경로가 사라진다.
-    """
-    src = _src("v2_rewards.py")
-    assert "class ApproachDirPBRS" in src, "차분 지급 클래스가 있어야 한다"
-    i = src.index("class ApproachDirPBRS")
-    seg = src[i:]
-    assert "out = phi - self._prev" in seg, "레벨이 아니라 차분을 지급해야 한다"
-    assert "def reset" in seg, "에피소드 경계에서 Φ 를 비워야 한다"
-    assert "torch.where(held, self._prev, phi)" in seg, (
-        "파지 후 Φ 동결 — 게이트로 0 을 만들면 파지하는 순간 −Φ 절벽이 생겨 파지를 벌한다")
-
-
-def test_approach_weight_below_stall_breakeven():
-    """★정체 손익분기를 넘기면 "수평으로 떠서 버티기"가 완수와 값이 같아진다.
-
-        버티기 = 250 스텝 × w × dt = 5w
-        완수   = 약 60 스텝 × 계단 0.6 ≈ 36   (목표 체류 10 스텝에 에피소드가 끝난다)
-        ⇒ 손익분기 w ≈ 7.2.  w=7.0 으로 돌렸다가 ⑤ 0.0% 를 봤다(G 실측).
-    """
-    breakeven = 36.0 / (250 * 0.02)
-    assert P.APPROACH_DIR_WEIGHT < 0.5 * breakeven, (
-        f"w={P.APPROACH_DIR_WEIGHT} 가 손익분기 {breakeven:.1f} 에 너무 가깝다")
-
-
-def test_pbrs_variant_is_kept_but_not_wired():
-    """★차분판은 **정의상 최적 정책을 못 바꾼다**(policy invariance). 실측도 그랬다 —
-    H(PBRS) 접근 각도 118.7° = B(무개입) 117.5°. 행동을 바꾸려면 레벨이어야 한다.
-    코드는 근거로 남기되 배선하지 않는다."""
-    src = _src("v2_rewards.py")
-    assert "class ApproachDirPBRS" in src, "기각 근거로 남겨둔다"
-    cfg = _src("v2_env_cfg.py")
-    i = cfg.index("self.rewards.approach_dir")
-    assert "R.approach_dir_bonus" in cfg[i:i + 300], "레벨판이 배선돼 있어야 한다"
-
-
-# ===========================================================================
-# 라운드 22 · Part 1 — 곱셈형 방향 (`HDGP_V2_DIRMUL`)
-# ===========================================================================
-def test_dirq_has_gradient_below_horizontal():
-    """★★I2(라운드 21) 실패의 회귀 방지 — **가장 중요한 계약**.
-
-    지시받은 모양("90° 초과면 0")을 그대로 쓰면 `az<0` 이 값도 기울기도 0 인 평지가
-    된다. 정책이 110° 에 자리잡은 순간 되돌아올 신호가 사라져 **1000 epoch 동안
-    각도가 미동도 안 했다**(수령률 상한의 0.05%). 하향 구간은 반드시 0 이 아니어야
-    한다.
-    """
-    import math
-    sg = P.APPROACH_DIR_SIGMA_DN
-    q = lambda deg: math.exp(-((math.cos(math.radians(deg)) / sg) ** 2))
-    for deg, lo in ((103.9, 0.30), (110.0, 0.15), (117.5, 0.05)):
-        assert q(deg) > lo, (
-            f"{deg}° 에서 방향 품질 {q(deg):.3f} — 기울기가 사실상 죽었다(I2 재현)")
-    assert q(103.9) > q(110.0) > q(117.5), "아래로 갈수록 단조 감소해야 한다"
-
-
-def test_dirq_is_full_marks_at_or_above_horizontal():
-    """사용자 지시의 핵심 — **90° 이하는 만점**이다. 위로 더 세운다고 더 받지 않는다
-    (그러면 '위로 세우고 안 잡기'가 값어치를 갖는다 — F 실측의 실패)."""
-    src = _src("v2_rewards.py")
-    i = src.index("def _approach_dirq")
-    seg = src[i:i + 1400]
-    assert "torch.where(az >= 0.0, torch.ones_like(az), below)" in seg, (
-        "90° 이하는 평지 1.0 이어야 한다")
-
-
-def test_dirmul_multiplier_never_creates_a_stall():
-    """★G(w=7.0) 가 만든 함정의 구조적 차단.
-
-    배수가 1 미만이면 stage 0 천장(0.25)이 stage 1 바닥(mult×0.25)보다 커져
-    **나쁜 각도의 파지가 손해**가 된다 — 정확히 G 의 −11.1 이다.
-    가산 배수(1 이상)여야 경계에 절벽이 안 생긴다.
-    """
-    assert P.DIRMUL_GAIN > 0.0
-    src = _src("v2_rewards.py")
-    i = src.index("if dirmul_gain > 0.0:")
-    seg = src[i:i + 800]
-    assert "r * (1.0 + dirmul_gain * self.dir_quality())" in seg, (
-        "배수는 (1 + gain×품질) 이어야 한다 — 감액형은 파지 절벽을 만든다")
-    stage0_ceiling = 1.0 / P.N_STAGES
-    stage1_floor = (1.0 + P.DIRMUL_GAIN * 0.0) * (1.0 / P.N_STAGES)
-    assert stage1_floor >= stage0_ceiling, "파지 순간에 보상이 떨어지면 안 된다"
-
-
-def test_dirmul_is_paid_only_after_grasp():
-    """머물기로는 못 딴다 — stage 0 에서는 배수가 안 붙어야 정체 유인이 안 생긴다.
-    (레벨 지급 G 는 파지 전에 지급해서 250 스텝 정체를 만들었다.)"""
-    src = _src("v2_rewards.py")
-    i = src.index("if dirmul_gain > 0.0:")
-    seg = src[i:i + 800]
-    assert "pre = idx < 1.0" in seg
-    assert "torch.where(pre, r, r *" in seg, "파지 전에는 원래 계단 그대로여야 한다"
-
-
-def test_dirmul_uses_pre_grasp_average_not_instant_value():
-    """★순간값이면 '파지 직전 한 스텝만 수평'으로 만점을 딸 수 있다 — 접근 내내
-    테이블을 긁고도 보너스를 챙기는 해킹면이다. 접근 구간 **평균**이어야 한다."""
-    src = _src("v2_rewards.py")
-    i = src.index("if dirmul_gain > 0.0:")
-    seg = src[i:i + 800]
-    assert "self._dir_sum + _approach_dirq(env)" in seg
-    assert "self._dir_cnt + 1.0" in seg
-    src2 = src[src.index("def dir_quality"):][:400]
-    assert "self._dir_sum / self._dir_cnt.clamp(min=1.0)" in src2
-
-
-def test_dirmul_state_resets_per_episode():
-    """에피소드 경계에서 안 지우면 이전 에피소드의 접근 품질이 새 판에 새어든다."""
-    src = _src("v2_rewards.py")
-    i = src.index("    def reset(self, env_ids=None):")
-    seg = src[i:i + 900]
-    for tok in ("self._dir_sum[:] = 0.0", "self._dir_cnt[:] = 0.0",
-                "self._dir_sum[env_ids] = 0.0", "self._dir_cnt[env_ids] = 0.0"):
-        assert tok in seg, f"reset 에 {tok} 이 없다"
-
-
-def test_level_home_is_env_gated_and_fresh_only():
-    """★홈 교체는 액션 상자를 통째로 옮긴다 — 기본 꺼짐이어야 기존 체크포인트
-    (B ep800 · E19 ep1800)의 재생 경로가 살아 있다."""
-    src = _src("v2_env_cfg.py")
-    assert '_os.environ.get("HDGP_V2_HOME_LEVEL", "0") == "1"' in src, "기본 꺼짐"
-    assert "P.LEFT_ARM_HOME_LEVEL" in src
-
-
-def test_home_low_is_lower_and_less_tilted_than_home_level():
-    """★A94(HOME_LEVEL) 선정 실패의 회귀 방지.
-
-    각도만 보고 홈을 고르면 TCP 가 파지점보다 80mm 위로 떠서, 정책이 잡으러
-    내려가며 접근각이 도로 107° 로 돌아간다(K22 실측). B100 은 **높이도** 낮다.
-    """
-    assert set(P.LEFT_ARM_HOME_LOW) == set(P.LEFT_ARM_HOME_LEVEL)
-    src = _src("v2_env_cfg.py")
-    assert '_os.environ.get("HDGP_V2_HOME_LOW", "0") == "1"' in src, "기본 꺼짐"
-    assert "P.LEFT_ARM_HOME_LOW" in src
-    # j4(팔꿈치)를 더 접고 j7(손목)을 더 젖혀 TCP 를 낮춘다
-    assert P.LEFT_ARM_HOME_LOW["l_aj_4"] < P.LEFT_ARM_HOME_LEVEL["l_aj_4"]
-    assert P.LEFT_ARM_HOME_LOW["l_aj_7"] < P.LEFT_ARM_HOME_LEVEL["l_aj_7"]
-
-
-def test_home_mid_keeps_the_working_home_height():
-    """★B100 실패의 회귀 방지 — 홈을 낮추면 컵이 램프(+6mm)에 못 닿아 리프트가
-    통째로 죽는다(P22: grasp_ok 0.765 인데 컵 +4.9mm, ② 파지만 99.2%).
-    C96 은 구 홈 높이를 지키므로 j4 가 B100 보다 커야 한다(팔을 덜 접는다)."""
-    assert P.LEFT_ARM_HOME_MID["l_aj_4"] > P.LEFT_ARM_HOME_LOW["l_aj_4"]
-    src = _src("v2_env_cfg.py")
-    assert '_os.environ.get("HDGP_V2_HOME_MID", "0") == "1"' in src, "기본 꺼짐"
-    assert "P.LEFT_ARM_HOME_MID" in src
-
-
-def test_only_one_home_switch_is_meant_to_be_on():
-    """홈 스위치 4 종은 배타적이다 — 프로브·재생 때 학습과 같은 것만 켜야 한다."""
-    src = _src("v2_env_cfg.py")
-    for name in ("HDGP_V2_HOME_J147", "HDGP_V2_HOME_LEVEL",
-                 "HDGP_V2_HOME_LOW", "HDGP_V2_HOME_MID"):
-        assert f'_os.environ.get("{name}", "0") == "1"' in src
-
-
-def test_lift_ramp_low_is_env_gated_and_still_needs_a_real_grasp():
-    """★P22 의 1.1mm 함정을 겨냥한 스위치. 기본 꺼짐이어야 기존 판과 비교가 선다.
-
-    그리고 `stage_lift = stage_close × move_up` 구조가 유지돼야 한다 — 안 그러면
-    "안 잡고 컵만 기울이기"가 리프트로 지급되는 해킹면이 열린다.
-    """
-    src = _src("v2_preset.py")
-    assert '_os.environ.get("HDGP_V2_LIFT_RAMP_LOW", "0") == "1"' in src, "기본 꺼짐"
-    st = _src("v2_stages.py")
-    i = st.index("def stage_lift")
-    assert "stage_close(env, jaw_cfg, object_cfg) * move_up" in st[i:i + 900], (
-        "리프트는 폐쇄 성공을 곱해야 한다")
-
-
-def test_action_rate_weight_is_env_overridable_and_defaults_small():
-    """★기본값은 작게 유지한다(과제 형성 중에는 억제가 탐색을 죽인다).
-    다만 env 로 열어 둬 **과제가 선 뒤 웜스타트에서** 키울 수 있어야 한다 —
-    R22 실측으로 σ 오염 근거가 무효화됐기 때문이다(원값 0.080, σ≈1 이면 2.0)."""
-    src = _src("v2_preset.py")
-    assert '_os.environ.get("HDGP_V2_ARATE_W", "")' in src
-    assert "ACTION_RATE_WEIGHT = -abs(float(_arate_w))" in src, "부호는 항상 음수여야 한다"
-    import os as _o
-    assert not _o.environ.get("HDGP_V2_ARATE_W"), "테스트 환경에선 기본값이어야 한다"
-    assert P.ACTION_RATE_WEIGHT == -0.002, "기본값은 작게"
-
-
-def test_action_rate_curriculum_is_a_step_at_a_given_epoch():
-    """사용자 설계 — 처음엔 약하게, 지정 epoch 에서 목표치로 올린다.
-
-    ★`common_step_counter` 는 env 스텝이므로 **epoch × horizon_length** 여야 한다.
-    (라운드 10 에 같은 단위 오독으로 ADR 게이트를 17배로 잡은 전례가 있다.)
-    """
-    assert P.ACTION_RATE_AT_STEPS == P.ACTION_RATE_AT_EPOCH * P.RL_HORIZON_LENGTH
-    assert P.RL_HORIZON_LENGTH == 24, "yaml 의 horizon_length 와 일치해야 한다"
-    assert P.ACTION_RATE_TARGET < 0.0, "억제 항이므로 음수"
-    assert abs(P.ACTION_RATE_TARGET) > abs(P.ACTION_RATE_WEIGHT), "올라가야 한다"
-    src = _src("v2_env_cfg.py")
-    i = src.index("if P.ACTION_RATE_CURR:")
-    seg = src[i:i + 600]
-    assert "mdp.modify_reward_weight" in seg
-    assert '"term_name": "action_rate"' in seg
-    assert "P.ACTION_RATE_AT_STEPS" in seg
-
-
-def test_vendor_gains_match_the_vendor_yaml_and_are_env_gated():
-    """★실기 벤더 파일이 진실이다(R2S §1). 사본 3곳 md5 일치를 확인했고, 그 값과
-    코드 상수가 어긋나면 sim 이 다른 로봇을 흉내내게 된다."""
-    assert P.LEFT_ARM_VENDOR_STIFFNESS == {
-        "l_aj_1": 70.0, "l_aj_2": 70.0, "l_aj_3": 70.0, "l_aj_4": 60.0,
-        "l_aj_5": 10.0, "l_aj_6": 10.0, "l_aj_7": 10.0}
-    assert P.LEFT_ARM_VENDOR_DAMPING == {
-        "l_aj_1": 2.75, "l_aj_2": 2.50, "l_aj_3": 2.00, "l_aj_4": 2.00,
-        "l_aj_5": 0.70, "l_aj_6": 0.60, "l_aj_7": 0.50}
-    src = _src("v2_env_cfg.py")
-    assert '_os.environ.get("HDGP_V2_VENDOR_GAINS", "0") == "1"' in src, "기본 꺼짐"
-    assert 'actuators["left_arm"].stiffness' in src
-
-
 def test_vendor_gains_are_much_softer_than_the_sim_default():
     """★이 격차가 '제어기가 정책 진동을 그대로 따라가는' 원인이다 —
     기록으로 남겨 다음 사람이 배율을 다시 재지 않게 한다."""
@@ -1912,38 +1339,279 @@ def test_vendor_gains_are_much_softer_than_the_sim_default():
     assert V1.ARM_IK_DAMPING["l_aj_7"] / P.LEFT_ARM_VENDOR_DAMPING["l_aj_7"] > 20.0
 
 
-def test_kd_bracket_requires_vendor_gains_and_straddles_it():
-    """★좌팔 여진 측정이 없어 kd 진짜 값을 모른다 — 벤더 kd(덜 감쇠)와 R2S 산출
-    kd(과감쇠)로 **양 끝을 잡는다**. 두 판의 차이가 작으면 그 자체가 결론이다."""
-    src = _src("v2_env_cfg.py")
-    assert '_os.environ.get("HDGP_V2_KD_R2S", "0") == "1"' in src, "기본 꺼짐"
-    i = src.index("if self.v2_vendor_gains:")
-    seg = src[i:i + 900]
-    assert "if self.v2_kd_r2s:" in seg, "VENDOR_GAINS 블록 안에 있어야 한다(kp 는 벤더 고정)"
-    # j1~j5 는 R2S 쪽이 더 크고(과감쇠), 손목 j6·j7 은 더 작다 — 배율이 제각각이라는 기록
-    for j in ("l_aj_1", "l_aj_2", "l_aj_3", "l_aj_4", "l_aj_5"):
-        assert P.LEFT_ARM_R2S_DAMPING[j] > P.LEFT_ARM_VENDOR_DAMPING[j]
-    for j in ("l_aj_6", "l_aj_7"):
-        assert P.LEFT_ARM_R2S_DAMPING[j] < P.LEFT_ARM_VENDOR_DAMPING[j]
-
-
-def test_tip_floor_margin_and_weight_are_env_overridable():
-    """★Y24 실측 — 이 항이 작동점에서 죽어 있었다(기여 0.67%, 힌지 원값 0.017).
-    마진이 병목이므로 env 로 열어 스윕할 수 있어야 한다. 기본값은 유지."""
-    src = _src("v2_preset.py")
-    assert '_os.environ.get("HDGP_V2_TIP_MARGIN", "")' in src
-    assert '_os.environ.get("HDGP_V2_TIP_W", "")' in src
-    assert "TIP_FLOOR_WEIGHT = -abs(float(_tf_w))" in src, "부호는 항상 음수"
-    import os as _o
-    if not _o.environ.get("HDGP_V2_TIP_MARGIN"):
-        assert P.TIP_FLOOR_MARGIN == 0.020, "기본 마진 유지"
-    if not _o.environ.get("HDGP_V2_TIP_W"):
-        assert P.TIP_FLOOR_WEIGHT == -6.0, "기본 가중치 유지"
-
-
 def test_tip_floor_margin_stays_within_the_measured_graspable_band():
     """★이 항은 파지와 역방향이다. 실측상 손끝 중앙 27.3mm(R22, ⑤100%)·
     31.8mm(N22, ⑤97.1%)는 파지와 양립했다 — 마진을 그 범위 밖(≥40mm)으로 올리면
     파지 자체를 벌하게 된다. 상한을 계약으로 고정한다."""
     assert P.TIP_FLOOR_MARGIN <= 0.035, (
         f"마진 {P.TIP_FLOOR_MARGIN*1000:.0f}mm 는 실측 파지 대역(27~32mm)을 넘는다")
+
+
+def test_measured_opening_covers_the_whole_cup():
+    """실측 개구 100mm 는 컵 최대 지름 88mm 를 넘는다 — 상한의 물리 근거가 없다.
+    (`probe_gripper_opening_sim.py`: 지름 78 → 간격 81.4mm · 88 → 89.7mm 에서 통과)"""
+    assert V1.GRIPPER_MAX_OPENING >= 0.090, (
+        f"개구 {V1.GRIPPER_MAX_OPENING*1000:.1f}mm 로는 컵 상단(88mm)이 안 지난다")
+
+
+def test_approach_pose_diagnostics_are_registered_with_a_shared_denominator():
+    """★진단은 `sum(raw·dt)/max_ep_len_s` 로 쌓여 에피소드 길이에 비례한다.
+    그래서 각도·TCP 는 **파지 전 스텝 수**를 짝으로 찍어 나눠야 뜻이 산다."""
+    cfg = _src("v2_env_cfg.py")
+    for name in ("diag_appr_steps", "diag_appr_angle",
+                 "diag_tcp_x", "diag_tcp_y", "diag_tcp_z"):
+        assert f'("{name}", R.{name})' in cfg, f"{name} 미등록"
+    rew = _src("v2_rewards.py")
+    assert "def diag_appr_steps" in rew and "def diag_appr_angle" in rew
+    # 프로브와 같은 정의여야 숫자를 그대로 비교할 수 있다.
+    assert "torch.acos(_approach_az(env))" in rew, "접근각은 _approach_az 기반"
+    # 전부 파지 전 구간으로 게이트 — 이송 중 자세가 섞이면 뜻이 흐려진다.
+    #   각도·스텝은 직접, tcp 3 축은 `_tcp_axis` 를 거쳐 한 번만 게이트한다.
+    for fn in ("diag_tcp_x", "diag_tcp_y", "diag_tcp_z"):
+        body = rew.split(f"def {fn}(")[1].split("\ndef ")[0]
+        assert "_tcp_axis(env," in body, f"{fn} 은 _tcp_axis 를 거쳐야 한다"
+    axis_body = rew.split("def _tcp_axis(")[1].split("\ndef ")[0]
+    assert "_pre_grasp(env" in axis_body, "_tcp_axis 가 파지 전으로 게이트되지 않았다"
+    assert "env.scene.env_origins" in axis_body, "env 로컬 좌표여야 한다"
+
+
+def test_home_high_leaves_room_for_the_action_box():
+    """★액션 0 = 홈이다(`use_default_offset`). 관절 한계에 붙은 홈은 액션 상자의
+    절반을 못 쓴다. 탐색이 `--min_slack 0.5` 를 걸었고 채택 후보는 0.500rad 이었다."""
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    urdf = Path(__file__).resolve().parents[5] / (
+        "assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.urdf")
+    if not urdf.exists():
+        return          # 자산이 없는 환경에서는 건너뛴다
+    lim = {}
+    for j in ET.parse(urdf).getroot().iter("joint"):
+        n = j.get("name") or ""
+        l = j.find("limit")
+        if n.startswith("l_aj_") and l is not None:
+            lim[n] = (float(l.get("lower")), float(l.get("upper")))
+    for n, q in P.LEFT_ARM_HOME_HIGH.items():
+        lo, hi = lim[n]
+        assert min(q - lo, hi - q) >= 0.5, f"{n} 한계 여유 부족 (액션 상자 잘림)"
+
+
+
+# ---------------------------------------------------------------------------
+# ★★09.03 — v2E29 동결 계약
+# ---------------------------------------------------------------------------
+# 라운드 3~30 의 실험 스위치를 걷어내고 이긴 값을 기본값으로 박았다. 아래 테스트는
+# "그 값이 지금도 그 값인가"를 지킨다 — 배포 체크포인트가 이 설정으로 학습됐으므로
+# 하나라도 어긋나면 재생이 깨진다.
+# ---------------------------------------------------------------------------
+
+def test_no_experiment_env_switches_survive_except_dwell_end():
+    """★환경변수로 과제 정의가 바뀌면 `env.yaml` 만 봐서는 무슨 판인지 알 수 없다.
+
+    판정 프로토콜이 끄고 재야 하는 `DWELL_END` 하나만 남긴다(학습=1 · 프로브=0).
+    """
+    import re
+    for name in ("v2_preset.py", "v2_env_cfg.py", "v2_stages.py", "v2_rewards.py"):
+        found = set(re.findall(r'environ\.get\(\s*"(HDGP_[A-Z0-9_]+)"', _src(name)))
+        assert found <= {"HDGP_V2_DWELL_END"}, f"{name} 에 실험 스위치 잔존: {found}"
+
+
+def test_frozen_switches_are_the_e29_values():
+    """v2E29 가 켠 것만 True 다. 켜고 끄는 실험은 hydra CLI 로 한다."""
+    src = _src("v2_env_cfg.py")
+    # ★`v2_respawn` 은 09.03 에 **False 로 뒤집었다** — 전용 테스트가 따로 지킨다
+    #   (`test_respawn_off_leaves_the_drop_termination_alive`).
+    for field, want in (("v2_rot_wide", "True"), ("v2_hold_premium", "True"),
+                        ("v2_upright_shaping", "True"),
+                        ("v2_dr", "True"), ("v2_zfloor", "True"),
+                        ("v2_home_low", "True"), ("v2_vendor_gains", "True")):
+        assert re.search(rf"{field}: bool = {want}\b", src), f"{field} 기본값이 {want} 가 아니다"
+    assert re.search(r"v2_adr_fixed_level: int = 4\b", src), "ADR 은 만렙 고정이다"
+
+
+def test_v2_grasp_band_is_raised_and_v1_is_untouched():
+    """★파지 대역이 이 트랙의 주 변수다. 낮은 파지점(판 위 47.5mm)이 팔을 과신전시켜
+    접근각을 118° 로 강제했고, 올리자 각도 보상 없이 92° 가 됐다.
+    v1 은 동결이라 어떤 대역을 고르든 건드리면 안 된다."""
+    lo, hi = P.GRASP_HEIGHT_BAND
+    assert V1.GRASP_HEIGHT_BAND == (0.010, 0.085), "v1 대역이 오염됐다"
+    assert lo > V1.GRASP_HEIGHT_BAND[0], "v2 대역 하한은 v1 보다 위여야 한다"
+    assert 0.070 <= 0.5 * (lo + hi) <= 0.130, "파지점이 실측 도달 구간 밖이다"
+    assert P.CUP_GRASP_BAND_AXIS != V1.CUP_GRASP_BAND_AXIS
+
+
+def test_grasp_point_is_derived_from_the_v2_band_not_v1():
+    """★67 mm 함정. `CUP_ORIGIN_TO_GRASP_Z` 는 대역에서 파생되는데, v1 값을 그대로
+    물려받으면 조준점이 −44.6 mm(v1) vs +22.9 mm(v2) 로 어긋난다 — 정책이 컵의
+    전혀 다른 높이를 겨냥하게 된다."""
+    mid = 0.5 * (P.GRASP_HEIGHT_BAND[0] + P.GRASP_HEIGHT_BAND[1])
+    assert abs(P.GRASP_TARGET_Z - (P.TABLE_SURFACE_Z + mid)) < 1e-9
+    assert abs(P.CUP_ORIGIN_TO_GRASP_Z - (P.GRASP_TARGET_Z - P.CUP_SPAWN_Z)) < 1e-9
+    # ★핵심: v1 값을 그대로 물려받으면 안 된다. 두 파생값의 차이는 **대역 중심의 차이**와
+    #   정확히 같아야 한다 — 어긋나면 어느 한쪽을 재계산하지 않았다는 뜻이다.
+    v1_mid = 0.5 * (V1.GRASP_HEIGHT_BAND[0] + V1.GRASP_HEIGHT_BAND[1])
+    assert abs((P.CUP_ORIGIN_TO_GRASP_Z - V1.CUP_ORIGIN_TO_GRASP_Z)
+               - (mid - v1_mid)) < 1e-9
+
+
+def test_band_is_passed_explicitly_to_every_consumer():
+    """★보상과 **게이트**가 같은 대역을 봐야 한다. 어긋나면 "보상은 받는데 그리퍼가
+    안 열리는" 상태가 조용히 생긴다. 예전엔 환경변수로 v1 모듈 상수를 통째로
+    바꿔서 맞췄는데, 그 방식은 같은 프로세스의 v1 까지 오염시켰다."""
+    st = _src("v2_stages.py")
+    assert st.count("band=P.CUP_GRASP_BAND_AXIS") >= 2, "grasp_ok·_jaw_geometry 둘 다"
+    assert "self.actions.gripper_action.grasp_band = P.CUP_GRASP_BAND_AXIS" in \
+        _src("v2_env_cfg.py"), "그리퍼 액션 게이트에도 같은 대역을 넣어야 한다"
+    act = _src("grasp_left_actions.py", v1=True)
+    # ★래치를 **거는** 판정(grasp_ok)과 **푸는** 판정(jaw_lateral)이 둘 다 받아야 한다.
+    #   한쪽만 넘기면 `cup_pt` 가 컵 축의 다른 높이로 clamp 되어 채터링이 된다 —
+    #   09.03 정리에서 실제로 이걸 빠뜨려 grasp_ok 가 0.033 → 0.455 로 바뀌었다.
+    assert act.count("band=self.cfg.grasp_band") == 2, "grasp_ok·jaw_lateral 둘 다"
+    rew = _src("grasp_left_rewards.py", v1=True)
+    assert rew.count("band if band is not None else P.CUP_GRASP_BAND_AXIS") >= 2, \
+        "v1 기본값 폴백이 있어야 v1 거동이 안 바뀐다"
+
+
+def test_hold_ramp_is_reachable_within_an_episode():
+    """램프가 종료 문턱보다 길면 정책은 프리미엄 만점을 **한 번도 못 받는다**."""
+    assert P.HOLD_RAMP_STEPS <= P.EPISODE_DWELL_STEPS
+    assert 1 <= P.EPISODE_DWELL_STEPS <= 30
+
+
+def test_frozen_ranges_match_the_measured_envelope():
+    """스폰 x 상한 0.360 · 목표 y 0.100 — 둘 다 도달성 실측으로 고른 값이다."""
+    assert P.ADR_SPAWN_BOX_MAX[1] == 0.360, "x 0.380 은 접근각 문턱 미달이었다"
+    assert P.ADR_SPAWN_BOX_MAX[0] == 0.330, "하한은 실측 봉투 경계라 고정"
+    assert P.ADR_GOAL_JITTER_MAX == (0.050, 0.100, 0.065)
+    assert 0.020 < P.ADR_OBS_BIAS_MAX <= P.SETTLE_RADIUS * 0.5
+
+
+def test_tip_floor_margin_is_the_measured_safe_value():
+    """★30 mm. A26 이 35 mm 로 올렸다가 긁힘이 4.8% → 36.4% 로 7 배 악화됐다 —
+    마진이 작동점 밖으로 나가면 힌지가 상시 벌점이 되어 기울기가 사라진다."""
+    assert P.TIP_FLOOR_MARGIN == 0.030
+    assert P.GRASP_HEIGHT_BAND[0] > P.TIP_FLOOR_MARGIN, "대역 하한이 마진 위여야 파지와 양립"
+
+
+def test_vendor_gains_match_the_vendor_yaml():
+    """★실기 벤더 파일이 진실이다(R2S §1). 사본 3 곳 md5 일치를 확인했다."""
+    assert P.LEFT_ARM_VENDOR_STIFFNESS == {
+        "l_aj_1": 70.0, "l_aj_2": 70.0, "l_aj_3": 70.0, "l_aj_4": 60.0,
+        "l_aj_5": 10.0, "l_aj_6": 10.0, "l_aj_7": 10.0}
+    assert P.LEFT_ARM_VENDOR_DAMPING == {
+        "l_aj_1": 2.75, "l_aj_2": 2.50, "l_aj_3": 2.00, "l_aj_4": 2.00,
+        "l_aj_5": 0.70, "l_aj_6": 0.60, "l_aj_7": 0.50}
+    assert 'actuators["left_arm"].stiffness' in _src("v2_env_cfg.py")
+
+
+def test_respawn_removes_the_drop_termination_in_the_same_block():
+    """재소환 문턱과 종료 문턱이 같은 높이라, 종료를 안 끄면 종료가 먼저 발화해
+    재소환이 영영 안 일어난다 — 조용히 "실험을 안 한 것"이 된다."""
+    src = _src("v2_env_cfg.py")
+    blk = src[src.index("if self.v2_respawn:"):]
+    blk = blk[:blk.index("\n\n")]
+    assert "self.terminations.object_dropping = None" in blk
+    assert "respawn_cup = EventTermCfg" in blk and 'mode="interval"' in blk
+
+
+def test_lift_ramp_span_is_deliberately_not_recomputed():
+    """★E29 는 램프 **시작점만** 낮추고 스팬은 v1 파생값을 그대로 썼다. 스팬까지
+    다시 계산하면 리프트 보상의 기울기가 달라져 배포 체크포인트와 어긋난다."""
+    assert abs(P.LIFT_RAMP_ZERO_Z - (P.CUP_SPAWN_Z + 0.002)) < 1e-9
+    assert P.LIFT_RAMP_SPAN == V1.LIFT_RAMP_SPAN
+
+
+def test_rejected_rounds_left_no_dead_code():
+    """라운드 20~28 의 기각 코드가 되살아나지 않게 못을 박는다."""
+    rew = _src("v2_rewards.py")
+    for gone in ("approach_dir_bonus", "ApproachDirPBRS", "_approach_dirq",
+                 "approach_tilt_penalty", "dirmul_gain", "still_net"):
+        assert gone not in rew, f"기각된 {gone} 가 남아 있다"
+    assert "_approach_az" in rew, "접근각 **진단**은 남아야 한다(판정에 쓴다)"
+    fab = _src("grasp_left_fabric_action.py", v1=True)
+    assert "appr_ey_max" not in fab, "라운드 28 ey 상한은 fabric 이 회전을 포기해 무효였다"
+
+
+def test_adr_level_is_read_at_runtime_not_baked_into_params():
+    """★hydra 오버라이드는 `__post_init__` **뒤에** 적용된다. `fixed_level` 을 term
+    params 로 구우면 `env.v2_adr_fixed_level=-1` 이 조용히 무시되고, 사다리를 켰다고
+    믿은 판이 실제로는 만렙 고정으로 돈다 — F2 가 실제로 그렇게 200 epoch 을 버렸다."""
+    src = _src("v2_env_cfg.py")
+    assert "CurrTerm(func=C.ADRLadder)" in src, "fixed_level 을 params 로 굽지 말 것"
+    assert '"fixed_level"' not in src
+    cur = _src("v2_curriculum.py")
+    assert 'getattr(env.cfg, "v2_adr_fixed_level"' in cur, "런타임에 cfg 에서 읽어야 한다"
+
+
+def test_adr_level0_box_is_inside_the_max_box():
+    """★사다리는 **쉬운 데서 어려운 데로** 가야 한다. 만렙 상자를 좁히면서 L0 를 안
+    옮기면 둘이 겹치지 않아 사다리가 거꾸로 돈다 — F2 가 레벨 0(x 0.360~0.400)에서
+    450 epoch 동안 `r_lift` 0.0002 로 갇혔다. 그 구역은 파지 대역을 판 위 80mm 로
+    올린 뒤 접근각 문턱 미달이라, 잡고도 못 드는 자리다."""
+    l0, mx = P.ADR_SPAWN_BOX_L0, P.ADR_SPAWN_BOX_MAX
+    assert l0[0] >= mx[0] - 1e-9 and l0[1] <= mx[1] + 1e-9, f"L0 x {l0[:2]} ⊄ MAX x {mx[:2]}"
+    assert l0[2] >= mx[2] - 1e-9 and l0[3] <= mx[3] + 1e-9, f"L0 y {l0[2:]} ⊄ MAX y {mx[2:]}"
+    assert l0[1] - l0[0] <= mx[1] - mx[0], "L0 가 만렙보다 넓으면 사다리가 아니다"
+
+
+def test_respawn_off_leaves_the_drop_termination_alive():
+    """★재소환을 끄면 전도/낙하가 **다시 에피소드를 끝내야** 한다. 둘 다 없으면
+    전도가 무비용이 되어 "밀어 넘어뜨리고 다시 시도"가 공짜가 된다 — E29 가 그렇게
+    env 의 84% 에서 컵을 60° 넘게 넘어뜨렸고(재소환 3,233회/1024env), 실기에서
+    접근→전도→후퇴→재접근 궤적으로 그대로 나왔다."""
+    src = _src("v2_env_cfg.py")
+    assert re.search(r"v2_respawn: bool = False", src), "재소환은 기본 꺼짐이다"
+    # 종료항을 지우는 코드는 재소환 블록 **안**에만 있어야 한다.
+    blk = src[src.index("if self.v2_respawn:"):]
+    blk = blk[:blk.index("\n\n")]
+    assert "self.terminations.object_dropping = None" in blk
+    assert src.count("terminations.object_dropping = None") == 1, \
+        "종료항을 재소환 블록 밖에서도 지우면 끄는 의미가 없다"
+
+
+def test_lift_only_makes_lift_the_top_stage():
+    """★09.03 — 과제를 리프트 전용으로 좁혔다. 리프트가 **최종 단계**여야 한다.
+
+    4 단에서는 리프트가 중간 계단이라 "잡고 가만히"(v_0)와의 이득 차가 작았고,
+    재소환을 끄자 정책이 그 국소최적에 갇혔다(G1: r_grasp 0.765인데 r_lift 0.0115가
+    400 epoch 평평). 2 단으로 줄이면 그 차이가 2 배가 된다.
+    """
+    st = _src("v2_stages.py")
+    assert "if lift_only:" in st
+    assert "return (r_grasp, r_lift, zero, zero), (r_grasp, move_up, zero, zero)" in st, \
+        "값의 최상단은 move_up 이어야 리프트 문턱에서 만점이 된다"
+    rw = _src("v2_rewards.py")
+    assert 'n_st = 2.0 if getattr(env.cfg, "v2_lift_only", False)' in rw, \
+        "2 단인데 4 로 나누면 만점이 0.5 로 눌려 벌점과의 균형이 깨진다"
+
+
+def test_lift_only_truncates_on_lift_not_on_goal():
+    """끊는 자와 보상의 최상단이 **같아야** 한다. 다르면 '보상은 만점인데 안 끊긴다'."""
+    src = _src("v2_env_cfg.py")
+    assert "if self.v2_dwell_end and self.v2_lift_only:" in src
+    assert "func=T.LiftDwellDone, time_out=True" in src, \
+        "★truncation 이어야 한다 — 진짜 종료면 성공이 곧 남은 보상 포기가 된다"
+    t = _src("v2_terminations.py")
+    seg = t[t.index("class LiftDwellDone"):]
+    assert "P.MINIMAL_LIFT_HEIGHT" in seg and "stage_close" in seg, \
+        "계단 stage 1 과 같은 자(파지 + 리프트 높이)를 써야 한다"
+
+
+def test_lift_only_disables_goal_based_shaping():
+    """hold(목표 도달 기준)·upright(idx>=2 게이트)는 리프트 전용에서 도달 불가다.
+    켜두면 죽은 계산만 남고, 로그에서 '켰는데 0' 으로 오독된다."""
+    src = _src("v2_env_cfg.py")
+    assert '"hold_weight": (0.0 if self.v2_lift_only' in src
+    assert '"upright_weight": (0.0 if self.v2_lift_only' in src
+
+
+def test_rotation_box_is_narrow_while_transport_is_off():
+    """★이송을 빼면 접근 자세를 규제하던 것이 사라져 정책이 `ey` 를 상한까지 밀어
+    위에서 내리꽂는다(G2 실측: ey_mu +0.99 · 포화 55% · 접근각 138~147°).
+    각도 ≈ 94.99° + Δey 이므로 박스가 곧 각도 상한이다."""
+    import math as _m
+    half = _m.degrees(P.PALM_MAX_POSE_ANGLE_WIDE)
+    lo, hi = 94.99 - half, 94.99 + half
+    if getattr(P, "GRASP_HEIGHT_BAND", None) and _src("v2_env_cfg.py").count(
+            "v2_lift_only: bool = True"):
+        assert hi <= 125.0, f"접근각 상한 {hi:.0f}° — 내리꽂기를 못 막는다"
+        assert lo >= 60.0, f"접근각 하한 {lo:.0f}° — 너무 좁으면 파지 자체가 막힌다"

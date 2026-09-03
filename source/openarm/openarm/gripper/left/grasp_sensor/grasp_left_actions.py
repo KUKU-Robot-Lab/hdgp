@@ -306,10 +306,11 @@ class GatedBinaryJointPositionAction(BinaryJointPositionAction):
 
         ok = rewards.grasp_ok(
             self._env, self.cfg.lateral_ok, self.cfg.along_ok, self.cfg.pad_offset,
-            self._jaw_cfg, self._object_cfg,
+            self._jaw_cfg, self._object_cfg, band=self.cfg.grasp_band,
         )
         lateral = rewards.jaw_lateral(
-            self._env, self.cfg.pad_offset, self._jaw_cfg, self._object_cfg
+            self._env, self.cfg.pad_offset, self._jaw_cfg, self._object_cfg,
+            band=self.cfg.grasp_band,
         )
         # 래치: 한 번 성립하면 유지. 해제는 컵이 턱에서 완전히 벗어났을 때만.
         self._phase = (self._phase | ok) & (lateral < self.cfg.release_lateral)
@@ -338,3 +339,7 @@ class GatedBinaryJointPositionActionCfg(BinaryJointPositionActionCfg):
     lateral_ok: float = 0.0
     along_ok: float = 0.0
     release_lateral: float = 0.0
+    # 파지 대역(컵 축 좌표). None 이면 v1 기본값. v2 는 판 위 80~150 mm 를 넣는다 —
+    # ★게이트와 보상이 **같은 대역**을 봐야 한다. 어긋나면 정책이 보상은 받는데
+    #   그리퍼는 안 열리는(또는 그 반대) 상태가 조용히 생긴다.
+    grasp_band: tuple[float, float] | None = None

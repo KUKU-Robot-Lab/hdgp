@@ -72,111 +72,54 @@ def _stage_params() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# ★★08.29 라운드 3 실험 스위치 — 단일 변수는 **속도 입력 하나**뿐이다
+# 환경변수 스위치 — **하나만 남았다**
 # ---------------------------------------------------------------------------
-#   arm A = False → 속도 입력 = 순간속도 (재구성 단독)
-#   arm B = True  → 속도 입력 = 순변위   (재구성 + 순변위)
+# 09.03 정리: 라운드 3~30 의 실험 스위치 22 종은 v2E29 확정과 함께 제거하고, 이긴 쪽
+# 값을 아래 cfg 필드의 기본값으로 **동결**했다. 기각된 분기는 코드에서 지웠다
+# (경위·근거는 `docs/grasp_sensor_v2_rounds.md`).
 #
-# 이 값은 `P_still` 과 stage 3 승급 조건의 속도 항 **양쪽 모두**에 같은 입력으로
-# 들어간다. 식은 완전히 동일하고 입력만 바뀌므로 단일 변수가 구조적으로 성립한다.
-#
-# ★라운드 1·2 의 스위치는 제거했다(전부 실측 기각):
-#   `HDGP_V2_REWARD_FIX`(R1 순변위 still + R2 stage 2 속도 shaping + R3 오프셋 z)
-#   `HDGP_V2_ACTION_FIX`(A1 이송 국면 리미터 1/4)
-#   R3(오프셋 z 30 mm)는 채점점·합격점 정렬이라 v2 의 전제로 **상시 적용**한다.
-#
-# ⚠ 환경변수로 받되 **cfg 필드에 박는다** — 그래야 `env.yaml` dump 에 남아
-#   "무슨 설정으로 돌았는지"를 나중에 증명할 수 있다(학습 전 확인 규칙 ②).
-_V2_STILL_NET = _os.environ.get("HDGP_V2_STILL_NET", "0") == "1"
-
-# ★★08.29 라운드 4 — R3(목표 상자 이동)를 **다시 스위치로 되돌린다.**
-#   라운드 3 에서 "v2 의 전제"라며 상시 적용했는데, 그 결과 baseline(run0-s43)과
-#   목표 z 가 18 mm 달라져(0.415~0.515 vs 0.397~0.497) **7 판 치 비교가 통째로
-#   근사치가 됐다**. `cupd` 124 mm vs 89 mm 격차의 최대 절반이 이 교란이다.
-#   ⇒ 끌 수 있게 두고, 라운드 4 의 한 팔을 baseline 과 같은 상자로 돌려
-#     "보상 효과"를 처음으로 깨끗하게 잰다.
-_V2_GOAL_MEASURED = _os.environ.get("HDGP_V2_GOAL_MEASURED", "1") == "1"
-
-# ★★08.29 라운드 6 — 제어 층 스위치 2 종. 기본 off 라 켜는 것은 명시적 행위다.
-#   ROT   : palm 회전 박스 ±20° → ±60°  (euler 박스 포화 98% 실측)
-#   ANCHOR: env 별 cspace 재앵커        (앵커가 액션 박스 밖 · env 공용 하나)
-_V2_ROT_WIDE = _os.environ.get("HDGP_V2_ROT_WIDE", "0") == "1"
-_V2_ANCHOR_RELATCH = _os.environ.get("HDGP_V2_ANCHOR_RELATCH", "0") == "1"
-
-# ★★08.29 라운드 7 — 지속 정착 프리미엄(hold). '정점 후 붕괴'의 기대값 구조를 친다.
-#   근거·수치는 `v2_preset.HOLD_WEIGHT` 주석. 기본 off.
-_V2_HOLD = _os.environ.get("HDGP_V2_HOLD", "0") == "1"
-_V2_UPRIGHT = _os.environ.get("HDGP_V2_UPRIGHT", "0") == "1"
-_V2_STILL_SHAPE = _os.environ.get("HDGP_V2_STILL_SHAPE", "0") == "1"
-_V2_STILL_GOAL = _os.environ.get("HDGP_V2_STILL_GOAL", "0") == "1"
-_V2_ADR_FIXED = int(_os.environ.get("HDGP_V2_ADR_FIXED", "-1"))  # >=0 이면 레벨 고정
-
-# ★★08.29 라운드 8 후보 — 낙하/전도 재소환. 종료 절벽을 회복 가능한 비용으로 바꾼다.
-#   근거·수치는 `v2_events.py` 와 `v2_preset.RESPAWN_*` 주석. 기본 off.
-_V2_RESPAWN = _os.environ.get("HDGP_V2_RESPAWN", "0") == "1"
-
-# ★★08.30 라운드 9 — DR + ADR 사다리(질량·마찰·스폰·목표). 기본 off.
-#   근거·범위는 `v2_preset.ADR_*`/`DR_*` 주석과 `v2_curriculum.py`.
-_V2_DR = _os.environ.get("HDGP_V2_DR", "0") == "1"
-
-# ★★08.31 라운드 17 — S2R 에서 드러난 두 건(사용자 지시 + 좌팔 보정 실측 문서).
-#   HOME_J147 : 리셋 홈을 **J1·J4·J7 만** 쓰는 자세로 교체. 판 위 여유가 최저 링크
-#               기준 59 → 122 mm 로 2.1 배가 된다(테이블 절대높이 미실측에 대한 마진).
-#   DWELL_END : 목표 반경 안 연속 N 스텝이면 에피소드를 **truncation** 으로 끊는다.
-#               이송까지가 과제이고 그 뒤 자세는 IK 가 잡는다.
-#   근거·수치는 `v2_preset.LEFT_ARM_HOME_J147` / `EPISODE_DWELL_STEPS` 주석.
-_V2_HOME_J147 = _os.environ.get("HDGP_V2_HOME_J147", "0") == "1"
-_V2_DWELL_END = _os.environ.get("HDGP_V2_DWELL_END", "0") == "1"
-
-# ★★08.31 라운드 18 — 경로 z 마진(좌팔 보정 문서 §2-2 권고). 기본 off.
-#   손끝·TCP 가 판 위 `TIP_FLOOR_MARGIN` 아래로 내려가면 벌점. 근거는 preset 주석.
-_V2_ZFLOOR = _os.environ.get("HDGP_V2_ZFLOOR", "0") == "1"
-
-# ★★08.31 라운드 20 — 접근 자세 제약. 기본 off.
-#   파지 전 그리퍼 +z 가 아래로 기울면 벌점(90° 이하는 0). 근거는 preset 주석 —
-#   실측 접근 각도 117.5°, 90° 초과 env 100%.
-_V2_APPR = _os.environ.get("HDGP_V2_APPR", "0") == "1"
-# 라운드 22 Part 1 — 곱셈형 방향(접근 평균 품질 × 파지 후 계단)
-_V2_DIRMUL = _os.environ.get("HDGP_V2_DIRMUL", "0") == "1"
-# 라운드 22 Part 2 — 접근축을 수평으로 세운 리셋 홈
-_V2_HOME_LEVEL = _os.environ.get("HDGP_V2_HOME_LEVEL", "0") == "1"
-# 라운드 22b — 낮고 덜 기운 홈(B100). HOME_LEVEL(A94)과 배타적이다
-_V2_HOME_LOW = _os.environ.get("HDGP_V2_HOME_LOW", "0") == "1"
-# 라운드 22c — 중간 홈 C96(구 홈 높이 유지 + 각도 −14°)
-_V2_HOME_MID = _os.environ.get("HDGP_V2_HOME_MID", "0") == "1"
-# 라운드 24 — 실기 벤더 kp/kd 로 팔 액추에이터 교체 (FRESH 전용)
-_V2_VENDOR_GAINS = _os.environ.get("HDGP_V2_VENDOR_GAINS", "0") == "1"
-# 라운드 24b — 벤더 kp 는 그대로, kd 만 R2S 우팔 산출값으로(과감쇠 쪽 끝)
-_V2_KD_R2S = _os.environ.get("HDGP_V2_KD_R2S", "0") == "1"
+# `DWELL_END` 만 남긴 이유: 판정 프로토콜이 이걸 끄고 잰다. 학습은 "목표 체류 N 스텝"
+# 에서 에피소드를 끊지만(=1), 결정론 프로브는 250 스텝을 끝까지 굴려 결말을 봐야
+# 하므로 `HDGP_V2_DWELL_END=0` 으로 호출한다.
+_V2_DWELL_END = _os.environ.get("HDGP_V2_DWELL_END", "1") == "1"
 
 
 @configclass
 class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
     """왼팔 2지 그리퍼 shaker 파지·이송 — Lee 계단식 보상."""
 
-    # 실험 스위치(런타임에 환경변수로 세팅되지만 값은 cfg 에 남는다)
-    v2_still_net: bool = _V2_STILL_NET   # 속도 입력: False=순간속도 · True=순변위
-    # 목표 상자 오프셋: True=v2 실측 46.1 mm(z+30) · False=구 값(z+12, run0 과 동일)
-    v2_goal_measured: bool = _V2_GOAL_MEASURED
-    v2_rot_wide: bool = _V2_ROT_WIDE            # palm 회전 박스 ±60°
-    v2_anchor_relatch: bool = _V2_ANCHOR_RELATCH  # env 별 cspace 재앵커
-    v2_hold_premium: bool = _V2_HOLD            # 지속 정착 누진 프리미엄
-    v2_upright_shaping: bool = _V2_UPRIGHT     # 이송 구간 직립 셰이핑(처방 A)
-    v2_still_shaping: bool = _V2_STILL_SHAPE   # 목표 접근 감속 셰이핑(정지 처방)
-    v2_still_goal: bool = _V2_STILL_GOAL       # 목표 **안** 안정화 셰이핑(라운드 16)
-    v2_adr_fixed_level: int = _V2_ADR_FIXED    # >=0 이면 그 레벨 고정(승급·강등 끔)
-    v2_respawn: bool = _V2_RESPAWN              # 낙하/전도 시 에피소드 내 재소환
-    v2_dr: bool = _V2_DR                        # DR(마찰) + ADR 사다리(질량·스폰·목표)
-    v2_home_j147: bool = _V2_HOME_J147          # 리셋 홈을 J1·J4·J7 자세로 교체
-    v2_dwell_end: bool = _V2_DWELL_END          # 목표 체류 N 스텝 → 에피소드 종료
-    v2_zfloor: bool = _V2_ZFLOOR                # 경로 손끝-테이블 z 마진 벌점
-    v2_approach_tilt: bool = _V2_APPR           # 파지 전 접근 자세(수평 이상) 제약
-    v2_dirmul: bool = _V2_DIRMUL                # 방향 품질을 파지 후 계단에 곱한다
-    v2_home_level: bool = _V2_HOME_LEVEL        # 접근축 수평 홈 (FRESH 전용)
-    v2_home_low: bool = _V2_HOME_LOW            # 낮고 덜 기운 홈 B100 (FRESH 전용)
-    v2_home_mid: bool = _V2_HOME_MID            # 중간 홈 C96 (FRESH 전용)
-    v2_vendor_gains: bool = _V2_VENDOR_GAINS    # 실기 벤더 kp/kd (FRESH 전용)
-    v2_kd_r2s: bool = _V2_KD_R2S                # kd 만 R2S 산출값 (VENDOR_GAINS 와 함께)
+    # ── v2E29 확정 설정 (09.03 동결) ─────────────────────────────
+    # 값은 cfg 필드에 남으므로 `env.yaml` dump 가 "무슨 설정으로 돌았는지"를 증명한다.
+    # 실험적으로 바꿔야 하면 hydra CLI 로 덮는다 (`env.v2_dr=False` 등).
+    # ⚠⚠ hydra 오버라이드는 `__post_init__` **뒤에** 적용된다. 그래서 여기서 읽어
+    #   다른 객체에 **구워 넣은 값**은 오버라이드가 안 닿는다(항이 등록되냐 마냐를
+    #   가르는 `if self.v2_*` 분기도 마찬가지다). 런타임에 다시 읽어야 하는 값은
+    #   term params 로 굽지 말고 해당 term 이 `env.cfg` 에서 직접 읽게 할 것.
+    #   ★F2 가 이걸로 E29 의 완전한 재실행이 되어 200 epoch 을 버렸다.
+    v2_rot_wide: bool = True             # palm 회전 박스 ±60°
+    v2_hold_premium: bool = True         # 지속 정착 누진 프리미엄
+    v2_upright_shaping: bool = True      # 이송 구간 직립 셰이핑(처방 A)
+    v2_adr_fixed_level: int = 4          # ADR 만렙 고정. −1 이면 사다리 승급·강등
+    # ★★09.03 — **재소환을 끈다**(사용자 결정). 라운드 8 에서 "실패의 비용을 줄인다"는
+    #   의도로 넣었는데, 비용을 0 으로 만들어 **전도가 학습 대상에서 빠졌다**:
+    #     E29 결정론 실측 — 컵을 60° 이상 넘어뜨린 env **84.0%** · 78° 이상 52.1% ·
+    #     재소환 누적 3,233회/1024env(에피소드당 3.2회). B25 는 89.6% · 4,264회로 더 심하다.
+    #   실기에는 되돌림이 없으므로 그대로 **접근→전도→후퇴→재접근** 궤적이 된다
+    #   (S2R 실기 관찰과 일치). 끄면 부모의 `object_dropping`(root z < 0.255)이 살아나
+    #   전도가 다시 에피소드를 끝낸다 — 컵이 옆으로 누우면 원점이 0.244 로 내려간다.
+    #   ⚠ 라운드 8 이전의 위험이 되살아난다: "낙하=종료=잔여 몰수"가 손익분기 실패율
+    #     22.9% 로 가혹했다. 지금은 목표 체류 truncation 이 있어 전제가 다르다 — 이 판이
+    #     그 재검증이다.
+    v2_respawn: bool = False             # 낙하/전도 시 에피소드 내 재소환 (끔)
+    v2_dr: bool = True                   # DR(마찰) + ADR(질량·스폰·목표·obs bias)
+    v2_dwell_end: bool = _V2_DWELL_END   # 목표 체류 N 스텝 → 에피소드 종료(truncation)
+    v2_zfloor: bool = True               # 경로 손끝-테이블 z 마진 벌점
+    v2_home_low: bool = True             # 리셋 홈 B100 (낮고 덜 기운 자세)
+    v2_vendor_gains: bool = True         # 팔 액추에이터를 실기 벤더 kp/kd 로
+    # ★★09.03 — **리프트 전용 과제**(사용자 결정: "goal 은 필요없고 lift 만").
+    #   계단이 grasp → lift 2 단이 되고 리프트가 만점이다. 목표 상자는 obs 에만 남는다.
+    #   끊는 조건도 목표 도달 → 리프트 유지로 바뀐다(`LiftDwellDone`).
+    v2_lift_only: bool = True
 
     def __post_init__(self):
         super().__post_init__()
@@ -187,12 +130,10 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
         # 남아 합격 예산 57 mm 의 65% 를 계통 오프셋이 먼저 먹었다.
         # 상자를 통째로 그만큼 옮기면 **컵이 새 상자에 놓일 때 TCP 는 옛 상자(= TCP 제약
         # IK 로 도달성이 검증된 자리)** 에 있다 — 검증을 버리지 않고 채점만 정렬한다.
-        # ★R3 — 라운드 4 부터 다시 **스위치**다(위 `_V2_GOAL_MEASURED` 주석 참조).
-        #   True  = v2 정책 실측 오프셋(z +30 mm). 컵이 목표에 있을 때 TCP 가 제약 IK 로
-        #           도달성이 검증된 상자 안에 정확히 놓인다 — 물리적으로 옳은 쪽.
-        #   False = 구 값(z +12 mm) = **run0-s43 과 같은 목표 상자**. 보상 효과를
-        #           단일 변수로 재기 위한 대조군 조건.
-        _off = P.GRASP_OFFSET_ROOT if self.v2_goal_measured else P.GRASP_OFFSET_ROOT_V1
+        # ★오프셋은 구 값(z +12 mm)으로 확정했다. 라운드 4 에서 실측 오프셋(z +30 mm)과
+        #   대조한 결과, 상자를 30 mm 올리면 목표가 팔의 도달 봉투 위쪽으로 밀려
+        #   이득이 없었다. v2E29 까지 전 판이 이 값으로 돌았다.
+        _off = P.GRASP_OFFSET_ROOT_V1
         _goal = tuple(P.GOAL_POINT[i] + _off[i] for i in range(3))
         self.commands.object_pose.ranges.pos_x = (_goal[0] - P.GOAL_JITTER_V2[0],
                                                   _goal[0] + P.GOAL_JITTER_V2[0])
@@ -214,15 +155,14 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
             func=R.Staircase,
             weight=P.STAIRCASE_WEIGHT,
             params={**_stage_params(), "use_sr": False,
-                    "still_net": self.v2_still_net,
-                    "hold_weight": P.HOLD_WEIGHT if self.v2_hold_premium else 0.0,
-                    "upright_weight": (P.UPRIGHT_WEIGHT
-                                       if self.v2_upright_shaping else 0.0),
-                    "still_weight": (P.STILL_WEIGHT
-                                     if self.v2_still_shaping else 0.0),
-                    "still_goal_weight": (P.STILL_GOAL_WEIGHT
-                                          if self.v2_still_goal else 0.0),
-                    "dirmul_gain": P.DIRMUL_GAIN if self.v2_dirmul else 0.0},
+                    # ★리프트 전용에서는 둘 다 끈다 — hold 는 목표 도달(`settle_success`)
+                    #   기준이고 upright 셰이핑은 `idx >= 2`(이송) 게이트라 둘 다
+                    #   도달 불가다. 켜두면 죽은 계산만 남는다.
+                    "hold_weight": (0.0 if self.v2_lift_only
+                                    else (P.HOLD_WEIGHT if self.v2_hold_premium else 0.0)),
+                    "upright_weight": (0.0 if self.v2_lift_only
+                                       else (P.UPRIGHT_WEIGHT
+                                             if self.v2_upright_shaping else 0.0))},
         )
         # ⚠ `use_sr`(Hundt 진행도 역전 차단)은 기본 off. 원문은 이산 primitive 태스크라
         #   안전하지만 우리는 50 Hz 연속제어라 경계 근처에서 매 스텝 보상을 0 으로 만들
@@ -233,19 +173,9 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
                                            weight=P.ACTION_RATE_WEIGHT)
         # ★커리큘럼을 걸지 않는다 — t73/t75 가 발동 시점(ep1500)에 정확히 꺾였고,
         #   `action_rate_l2` 가 재는 것의 대부분은 정책의 거칢이 아니라 σ 였다.
+        #   라운드 23 에서 계단 상승 커리큘럼을 다시 시도했으나 채택하지 않았다.
         self.curriculum.action_rate = None
         self.curriculum.joint_vel = None
-        # ── 라운드 23: action_rate 커리큘럼 (사용자 설계) ──────────
-        #   처음엔 약하게(−0.002) 두고 지정 epoch 에서 목표치로 **계단 상승**한다.
-        #   `modify_reward_weight` 는 `common_step_counter > num_steps` 일 때 적용된다.
-        #   ⚠ 위 주석의 "커리큘럼 금지"는 σ 가 살아 있던 시절 근거다. R22 실측에서
-        #     원값 0.080(σ≈1 이면 2.0)이라 σ 는 붕괴했고 전제가 바뀌었다.
-        if P.ACTION_RATE_CURR:
-            self.curriculum.action_rate = CurrTerm(
-                func=mdp.modify_reward_weight,
-                params={"term_name": "action_rate",
-                        "weight": P.ACTION_RATE_TARGET,
-                        "num_steps": P.ACTION_RATE_AT_STEPS})
 
         # ── 진단 (weight 0) ───────────────────────────────────────
         # 계단은 보상 항이 하나라 이게 없으면 안이 안 보인다. 이 저장소의
@@ -257,7 +187,14 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
                        ("diag_r_transport", R.diag_r_transport),
                        # ★구 `diag_r_settle`(네 인자 곱, 6 판 최대 0.0106)의 후계.
                        #   뜻이 완전히 달라져 같은 키를 재사용하지 않는다.
-                       ("diag_stage3_ok", R.diag_stage3_ok)):
+                       ("diag_stage3_ok", R.diag_stage3_ok),
+                       # ★라운드 27 — 접근 자세. `diag_appr_angle / diag_appr_steps`
+                       #   가 평균 접근각(도)이고, tcp_* 도 같은 분모를 쓴다.
+                       ("diag_appr_steps", R.diag_appr_steps),
+                       ("diag_appr_angle", R.diag_appr_angle),
+                       ("diag_tcp_x", R.diag_tcp_x),
+                       ("diag_tcp_y", R.diag_tcp_y),
+                       ("diag_tcp_z", R.diag_tcp_z)):
             setattr(self.rewards, _n, RewTerm(func=_f, weight=0.0, params=_stage_params()))
 
         _goal_only = {"command_name": "object_pose",
@@ -284,39 +221,14 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
                        ("diag_p_upright", R.diag_p_upright),
                        ("diag_p_center", R.diag_p_center)):
             setattr(self.rewards, _n, RewTerm(func=_f, weight=0.0, params=dict(_goal_only)))
-        # ── 라운드 20: 접근 자세 제약 (파지 전, 수평 이상) ─────────
-        #   ★높이가 아니라 **자세**를 친다. z 마진이 +1.7 mm 로 끝난 것은 정책이
-        #     기울기를 유지한 채 전체를 살짝 들었기 때문이다(라운드 19 실측).
-        if self.v2_approach_tilt:
-            # ★★라운드 20b — 순수 벌점(`approach_tilt_penalty`)은 기각됐다. 90° 이하가
-            #   전부 0 이라 정책이 그리퍼를 위로 세워 벌점만 피하고 파지를 포기했다.
-            #   방향에 **+보상**을 주되 `stage_reach` 를 곱해 "서서 안 잡기"를 막는다.
-            self.rewards.approach_dir = RewTerm(
-                func=R.approach_dir_bonus, weight=P.APPROACH_DIR_WEIGHT,
-                params={"jaw_cfg": _jaw(),
-                        "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-                        "object_cfg": SceneEntityCfg("object")})
-            self.rewards.diag_approach_deg = RewTerm(
-                func=R.diag_approach_deg, weight=0.0, params={})
-            self.rewards.diag_approach_down = RewTerm(
-                func=R.diag_approach_down, weight=0.0,
-                params={"jaw_cfg": _jaw(), "object_cfg": SceneEntityCfg("object")})
-
-        # ── 라운드 22 Part 1: 곱셈형 방향의 진단 ──────────────────
-        #   가중 0 항이라 보상에 안 들어가고 값만 기록된다(hdgp reward_manager 패치).
-        if self.v2_dirmul:
-            self.rewards.diag_dir_quality = RewTerm(
-                func=R.diag_dir_quality, weight=0.0, params={})
-            self.rewards.diag_approach_deg = RewTerm(
-                func=R.diag_approach_deg, weight=0.0, params={})
-            self.rewards.diag_approach_down = RewTerm(
-                func=R.diag_approach_down, weight=0.0,
-                params={"jaw_cfg": _jaw(), "object_cfg": SceneEntityCfg("object")})
+        # ★접근각을 **보상으로** 세우려던 라운드 20~22 는 전부 기각됐다(5 종 시도).
+        #   실제 해법은 파지 대역을 판 위 80~150 mm 로 올리는 것이었다 — 낮은 파지점이
+        #   팔을 과신전시켜 기울기를 강제하고 있었다. 접근각 118° → 98.6°.
 
         # ── 라운드 18: 경로 z 마진 벌점 ───────────────────────────
-        #   ★파지와 **역방향**인 항이다. 하한(판 위 20 mm) 위에서는 정확히 0 이라
-        #     파지 구간에 gradient 를 만들지 않는다. 컵 파지 대역이 10~85 mm 이므로
-        #     하단 10 mm 만 포기하고 65 mm 가 남는다.
+        #   ★파지와 **역방향**인 항이다. 마진(판 위 30 mm) 위에서는 정확히 0 이라
+        #     파지 구간에 gradient 를 만들지 않는다. v2 파지 대역은 판 위 80~150 mm
+        #     이므로 이 항과 파지 구간은 **아예 안 겹친다**.
         if self.v2_zfloor:
             self.rewards.tip_floor = RewTerm(
                 func=R.tip_floor_penalty, weight=P.TIP_FLOOR_WEIGHT,
@@ -326,32 +238,16 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
             self.rewards.diag_tip_violation = RewTerm(
                 func=R.diag_tip_violation, weight=0.0, params={"tip_cfg": _jaw()})
 
-        # ── 라운드 17: 리셋 홈 교체 (J1·J4·J7) ────────────────────
-        #   ★액션 0 = 이 자세다(`use_default_offset`). 홈을 바꾸면 액션 상자가
-        #     통째로 옮겨가므로 **기존 체크포인트와 호환되지 않는다** — FRESH 전용.
-        if self.v2_home_j147:
-            self.scene.robot.init_state.joint_pos.update(P.LEFT_ARM_HOME_J147)
-
-        # ── 라운드 22 Part 2: 접근축 수평 홈 ──────────────────────
-        #   ★홈 각도(103.9°)가 곧 "각도 유지 비용"이다. G(w=7.0) 는 이 14° 를 정책이
-        #     스스로 세우느라 액션 6축 중 4축을 포화시키고도 파지점 48 mm 앞에서
-        #     멈췄다. 홈에서 이미 수평이면 그 비용이 0 이 된다.
-        #   ⚠ 홈 교체는 액션 상자를 통째로 옮긴다 — **기존 체크포인트와 비호환**.
-        if self.v2_home_level:
-            self.scene.robot.init_state.joint_pos.update(P.LEFT_ARM_HOME_LEVEL)
-
-        # ── 라운드 22b: 낮고 덜 기운 홈 B100 ──────────────────────
-        #   ★A94 는 각도만 세우고 TCP 를 파지점보다 80mm 위에 두는 바람에 정책이
-        #     다시 기울었다. B100 은 각도·높이를 동시에 개선한다.
-        #   ⚠ HOME_LEVEL 과 동시에 켜면 뒤엣것이 이긴다 — 둘 중 하나만 켠다.
+        # ── 리셋 홈 B100 ─────────────────────────────────────────
+        #   ★액션 0 = 이 자세다(`use_default_offset`). 홈을 바꾸면 액션 상자가 통째로
+        #     옮겨가고 fabric 의 널스페이스 앵커까지 바뀌므로 **기존 체크포인트와
+        #     호환되지 않는다** — 홈을 건드리는 판은 항상 FRESH 다.
+        #   ★홈 후보 4 종(J147 · A94 수평 · B100 · C96 · 라운드 30 고홈)을 전부 돌린
+        #     결과 B100 이 이겼다. 특히 "홈을 판에서 띄우면 턱 긁힘이 준다"는 직관은
+        #     **반대로** 나왔다(라운드 30: 접근각 116° · 긁힘 42 배). 홈은 첫 순간만
+        #     정하고, 그 뒤는 fabric 이 액션 박스 중심으로 끌고 간다.
         if self.v2_home_low:
             self.scene.robot.init_state.joint_pos.update(P.LEFT_ARM_HOME_LOW)
-
-        # ── 라운드 22c: 중간 홈 C96 ───────────────────────────────
-        #   ★B100 은 낮춰서 리프트를 잃었다(컵 +4.9mm, 램프는 +6.0mm). C96 은 구 홈과
-        #     **같은 높이**를 유지하면서 각도만 14° 세운다.
-        if self.v2_home_mid:
-            self.scene.robot.init_state.joint_pos.update(P.LEFT_ARM_HOME_MID)
 
         # ── 라운드 24: 실기 벤더 게인 정합 ────────────────────────
         #   부모(`grasp_left_fab_env_cfg`)가 꽂은 ARM_IK_STIFFNESS/DAMPING 을 덮어쓴다.
@@ -363,17 +259,19 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
                 P.LEFT_ARM_VENDOR_STIFFNESS)
             self.scene.robot.actuators["left_arm"].damping = dict(
                 P.LEFT_ARM_VENDOR_DAMPING)
-            # ★kd 브래킷 — 벤더 kd(덜 감쇠) ↔ R2S 산출 kd(과감쇠). 좌팔 여진 측정이
-            #   없어 진짜 값을 모르므로 양 끝을 잡아 민감도를 본다.
-            if self.v2_kd_r2s:
-                self.scene.robot.actuators["left_arm"].damping = dict(
-                    P.LEFT_ARM_R2S_DAMPING)
 
         # ── 라운드 17: 목표 체류 N 스텝이면 에피소드 종료 ──────────
         #   ⚠⚠ `time_out=True` (truncation) 여야 한다. 진짜 종료로 두면 부트스트랩이
         #      끊겨 성공이 곧 남은 보상 포기가 되고, 정책은 목표 밖을 맴돌며 stage 3
         #      보상을 계속 빠는 쪽을 배운다. 계약 테스트가 이 플래그를 고정한다.
-        if self.v2_dwell_end:
+        if self.v2_dwell_end and self.v2_lift_only:
+            # ★리프트를 든 채 유지하면 끊는다. 보상의 stage 1 과 **같은 자**를 쓴다.
+            self.terminations.goal_dwell = DoneTerm(
+                func=T.LiftDwellDone, time_out=True,
+                params={"jaw_cfg": _jaw(), "object_cfg": SceneEntityCfg("object")})
+            self.rewards.diag_goal_dwell = RewTerm(
+                func=T.diag_lift_dwell, weight=0.0, params={})
+        elif self.v2_dwell_end:
             self.terminations.goal_dwell = DoneTerm(
                 func=T.GoalDwellDone, time_out=True,
                 params={"command_name": "object_pose",
@@ -436,13 +334,16 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
                         "restitution_range": P.DR_RESTITUTION,
                         "num_buckets": P.DR_FRICTION_BUCKETS,
                         "make_consistent": True})
-            # ADR 사다리 — 스폰·목표·질량·obs bias 를 성공에 맞춰 넓힌다. `Curriculum/adr`.
-            #   ★라운드 13 대조군 B: `HDGP_V2_ADR_FIXED=4` 면 **레벨을 만렙에 고정**하고
-            #     승급·강등을 끈다(커리큘럼 없이 처음부터 전범위). 노브를 여기서 직접
-            #     건드리지 않는 이유 — 스폰 상자는 부모 골격 소유라 계약이 금지한다.
-            #     같은 `_apply` 경로를 쓰므로 A 와 B 의 만렙 정의가 구조적으로 동일하다.
-            self.curriculum.adr = CurrTerm(func=C.ADRLadder,
-                                           params={"fixed_level": _V2_ADR_FIXED})
+            # ADR 사다리 — 스폰·목표·질량·obs bias 를 넓힌다. `Curriculum/adr`.
+            #   ★`v2_adr_fixed_level >= 0` 이면 그 레벨에 **고정**하고 승급·강등을 끈다.
+            #     라운드 13 대조에서 사다리(A)와 만렙 고정(B)을 갈랐고 B 가 이겼다 —
+            #     처음부터 전범위로 두는 쪽이 사다리보다 낫다.
+            #     노브를 여기서 직접 건드리지 않는 이유: 스폰 상자는 부모 골격 소유라
+            #     계약이 금지한다. 같은 `_apply` 경로를 써야 만렙 정의가 일치한다.
+            #   ⚠ `fixed_level` 을 params 로 넘기지 않는다 — 여기서 넘기면 값이
+            #     `__post_init__` 시점에 구워져 hydra 오버라이드가 조용히 무시된다.
+            #     `ADRLadder` 가 `env.cfg.v2_adr_fixed_level` 을 런타임에 읽는다.
+            self.curriculum.adr = CurrTerm(func=C.ADRLadder)
 
         # ★라운드 7 — hold 카운터 관찰(성과 지표: 흔들기는 이 값을 못 올린다)
         self.rewards.diag_hold = RewTerm(func=R.diag_hold, weight=0.0, params={})
@@ -459,11 +360,19 @@ class GraspLeftV2EnvCfg(GraspLeftGripperFabEnvCfg):
             setattr(self.rewards, f"diag_act_{_ax}_sat",
                     RewTerm(func=R.diag_action_axis_sat, weight=0.0, params={"axis": _i}))
 
-        # ── 라운드 6: 제어 층 스위치 ──────────────────────────────
+        # ── 파지 대역을 **게이트에도** 넣는다 ────────────────────
+        #   v2 는 판 위 80~150 mm 를 잡는다(v1 은 10~85). 보상(`v2_stages`)만 바꾸고
+        #   그리퍼 게이트를 두면 "보상은 받는데 그리퍼가 안 열리는" 상태가 생긴다.
+        self.actions.gripper_action.grasp_band = P.CUP_GRASP_BAND_AXIS
+
+        # ── 제어 층 — palm 회전 박스 ±20° → ±60° ────────────────
+        #   euler 박스 포화 98% 실측. 접근(ey 양)과 이송(ey 음)의 부호가 뒤집혀
+        #   최소 40° 스팬이 필요하다.
+        #   ★접근각을 이 박스의 `ey` 상한으로 자르려던 라운드 28 은 기각됐다 —
+        #     fabric 은 위치·자세가 상충하면 **자세를 조용히 포기**해서, 명령을 잘라도
+        #     실제 접근각이 안 따라온다.
         if self.v2_rot_wide:
             self.actions.arm_action.palm_max_pose_angle = P.PALM_MAX_POSE_ANGLE_WIDE
-        if self.v2_anchor_relatch:
-            self.actions.arm_action.anchor_relatch_cup_z = P.ANCHOR_RELATCH_CUP_Z
 
         # ★★회전 축(3·4·5) 진단 — **지금까지 계측 공백이었다.** 액션은 6 차원인데
         #   `diag_act_*` 는 위치 축 0·1·2 만 등록돼 있어 회전 포화를 한 번도 못 봤다.

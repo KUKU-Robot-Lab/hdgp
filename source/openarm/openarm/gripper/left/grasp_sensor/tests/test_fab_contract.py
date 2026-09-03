@@ -391,7 +391,10 @@ def test_grasp_ok_separates_measured_success_from_failure():
     body = body[: body.index("\ndef ")]
     assert "lateral < lat_ok" in body, "lateral 조건이 없다 — enclose 만으로는 못 가른다"
     # ★clamp 전 축 좌표를 써야 한다. clamp 된 값은 대역 밖이어도 경계로 접혀 항상 참이 된다.
-    assert "axis_t > P.CUP_GRASP_BAND_AXIS[0]" in body
+    assert "in_band = (axis_t > _band[0]) & (axis_t < _band[1])" in body
+    # ★대역은 호출자가 줄 수 있다(v2 는 판 위 80~150 mm). 안 주면 **v1 값**이어야
+    #   한다 — 09.03 이전엔 환경변수가 이 모듈 상수를 통째로 바꿔 v1 까지 오염시켰다.
+    assert "band if band is not None else P.CUP_GRASP_BAND_AXIS" in body
 
 
 def test_gripper_action_is_hard_gated_open_before_approach():

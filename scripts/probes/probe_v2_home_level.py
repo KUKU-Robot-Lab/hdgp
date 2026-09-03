@@ -69,6 +69,17 @@ parser.add_argument("--reach", type=str, default="",
                     help="도달성 검사 모드. j1..j7 7 개 값을 홈으로 두고 액션 상자를 훑는다")
 parser.add_argument("--num_reach", type=int, default=8192)
 parser.add_argument("--reach_span", type=float, default=0.5)
+parser.add_argument("--nograv", action="store_true",
+                    help="중력을 끄고 잰다. 도달성·홈 자세는 **기구학** 질문인데 벤더 게인"
+                         "(손목 kp 10)에 중력보상이 없어 PD 홀드가 처진다(실측 +12° 이상). "
+                         "홈의 참값을 물을 땐 반드시 켠다")
+parser.add_argument("--seek", type=str, default="",
+                    help="자유 탐색 모드 'x,y,h_mm' — 홈 주변이 아니라 **관절 전 범위**에서 "
+                         "그 점(판 위 h_mm)을 접근각 --seek_deg 이하로 잡는 자세를 찾는다. "
+                         "±0.5rad 국소 표본은 홈이 나쁘면 좋은 해를 아예 못 본다")
+parser.add_argument("--seek_deg", type=float, default=100.0)
+parser.add_argument("--seek_tol", type=float, default=0.0225, help="TCP–목표 허용 (m)")
+parser.add_argument("--num_seek", type=int, default=16384)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -109,6 +120,8 @@ def _approach_deg(quat: torch.Tensor) -> torch.Tensor:
 
 def _build(n: int):
     env_cfg = parse_env_cfg(TASK, device=args.device, num_envs=n)
+    if args.nograv:
+        env_cfg.sim.gravity = (0.0, 0.0, 0.0)
     env_cfg.events.reset_object_position.params["pose_range"] = {
         "x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0)
     }
@@ -128,6 +141,14 @@ def _hold(env, target):
     robot.write_joint_state_to_sim(target, torch.zeros_like(target))
     robot.data.default_joint_pos[:] = target
     dt = env.sim.get_physics_dt()
+    # ★09.02 — 도달성은 **기구학** 질문이다. PD 로만 버티면 벤더 게인(손목 kp 10)에
+    #   중력보상이 없어 30 스텝 사이에 처진다(A94 홈이 94.6° 설계인데 120.1° 로 읽혔다).
+    #   매 스텝 관절을 다시 써 넣어 처짐을 제거한다.
+    # ⚠ 이 홀드는 PD 로만 버틴다 — 벤더 게인(손목 kp 10)에 중력보상이 없어 자세가
+    #   처진다(A94 홈 94.6° 설계가 120.1° 로 읽힌다). 09.02 에 두 가지 수정을 시도했고
+    #   둘 다 프로브를 깨뜨렸다: 매 스텝 텔레포트 → 솔버 폭발 · 정착 후 텔레포트 →
+    #   FrameTransformer 가 무효값(TCP 54 m). **처짐은 알려진 편향으로 두고**, 절대값이
+    #   아니라 같은 편향이 걸린 조건 간 **상대 비교**로만 읽어야 한다.
     for _ in range(args.steps):
         robot.set_joint_position_target(target)
         robot.write_data_to_sim()
@@ -309,6 +330,15 @@ def _reach() -> None:
 
     print(f"\n  컵 ({cup[0]:.3f},{cup[1]:.3f},{cup[2]:.3f}) · 파지점 z {grasp[2]:.4f}")
     print(f"  홈에서: 접근각 {deg[0]:.2f}° · TCP–파지점 {d[0]*1e3:.1f}mm")
+    # ★09.02 — **홈 자세에서 턱이 판에 닿는가.** 프리셋에 "최저 링크가 판 위 59mm
+    #   뿐이라 리셋 직후 상면을 쓸고 지나간다" 는 기록이 있어 현재 홈을 직접 잰다.
+    lsel = [i for i, nm in enumerate(robot.body_names) if nm.startswith("l_")]
+    lz = (robot.data.body_pos_w[0, lsel, 2] - origins[0, 2]).cpu()
+    order = lz.argsort()[:6]
+    print(f"\n  ★홈 자세 좌팔 링크 높이 (판 상면 {P.TABLE_SURFACE_Z:.3f} 기준, 낮은 순)")
+    for r in order.tolist():
+        nm = robot.body_names[lsel[r]]
+        print(f"    {nm:<34} z {float(lz[r]):.4f}  판 위 {(float(lz[r])-P.TABLE_SURFACE_Z)*1e3:+7.1f} mm")
     print(f"\n  {'문턱':>8} {'도달':>9} {'+접근각≤100° 동시':>20}")
     for thr in (0.0225, 0.030, 0.050, 0.080):
         hit = d < thr
@@ -324,12 +354,99 @@ def _reach() -> None:
               f"· 최대 {float(dz.max())*1e3:+.1f}")
         for h in (0.02, 0.04, 0.06):
             print(f"    +{h*1e3:.0f}mm 이상  {100.0*(dz > h).float().mean():6.2f}%")
+    # ★09.02 — **파지점 높이 스윕**. TCP 표본은 그대로 두고 목표 높이만 바꿔 거리를
+    #   다시 잰다(한 판으로 곡선이 나온다). "몇 mm 로 올려야 ≤100° 로 닿는가" 가 질문.
+    print(f"\n  ★파지점 높이별 도달성 (같은 표본 {n} · 컵 xy 고정 · 문턱 22.5mm)")
+    print(f"    {'판위(mm)':>9} {'<=100최소':>10} {'<=100통과':>10} {'전체최소':>9} {'리프트여유중앙':>14}")
+    for gh_mm in (40, 50, 60, 70, 80, 90, 100, 110, 120, 140):
+        g = cup.clone()
+        g[2] = P.TABLE_SURFACE_Z + gh_mm / 1000.0
+        dd = (tcp - g).norm(dim=-1)
+        ok = (dd < 0.0225) & lvl
+        m_lvl = float(dd[lvl].min()) * 1e3 if bool(lvl.any()) else float("nan")
+        nr = dd < 0.08
+        dzm = (float((tcp[nr, 2] - cup[2]).quantile(0.5)) * 1e3
+               if bool(nr.any()) else float("nan"))
+        print(f"    {gh_mm:9d} {m_lvl:9.1f}mm {100.0*ok.float().mean():9.2f}% "
+              f"{float(dd.min())*1e3:8.1f}mm {dzm:+13.1f}")
+    # ★09.02 — **컵 x × 파지높이 2 차원 지도**. TCP 표본은 컵 위치와 무관하므로
+    #   같은 표본으로 둘을 동시에 훑을 수 있다. 값 = 접근각 ≤100° 표본 중 최소 거리(mm),
+    #   문턱 22.5mm 미만이면 그 조합에서 **선 자세로 파지 가능**하다는 뜻이다.
+    hs = (40, 60, 80, 100, 120, 140)
+    print(f"\n  ★컵 x × 파지높이 — 접근각 <=100° 최소거리(mm) · 문턱 22.5")
+    print("    cup_x  " + " ".join(f"{h:>7d}mm" for h in hs))
+    for cx in (0.30, 0.32, 0.34, 0.35, 0.36, 0.38, 0.40, 0.42):
+        row = []
+        for h in hs:
+            g = cup.clone()
+            g[0] = cx
+            g[2] = P.TABLE_SURFACE_Z + h / 1000.0
+            dd = (tcp - g).norm(dim=-1)
+            row.append(float(dd[lvl].min()) * 1e3 if bool(lvl.any()) else float("nan"))
+        mark = "".join("*" if v < 22.5 else " " for v in row)
+        print(f"    {cx:5.3f}  " + " ".join(f"{v:9.1f}" for v in row) + f"   [{mark}]")
+    print("    (* = 문턱 통과)")
     print("HOMELEVEL_DONE")
     env.close()
 
 
+def _seek() -> None:
+    """관절 한계 전 범위를 훑어 **목표점을 선 자세로 잡는 홈**을 찾는다.
+
+    `_reach` 는 주어진 홈의 ±span 만 보므로 "지금 홈이 나쁘다" 는 가설을 검정할 수
+    없다(홈이 나쁘면 그 주변도 나쁘다). 여기서는 홈을 전제하지 않는다.
+    """
+    limits = _joint_limits()
+    cx, cy, hmm = (float(v) for v in args.seek.split(","))
+    n = args.num_seek
+    print(f"[seek] 목표 ({cx:.3f}, {cy:.3f}, 판위 {hmm:.0f}mm) · 접근각 ≤{args.seek_deg}° "
+          f"· 허용 {args.seek_tol*1e3:.1f}mm · 표본 {n} · 관절 전 범위")
+
+    gen = torch.Generator(device="cpu").manual_seed(0)
+    q = torch.zeros(n, 7)
+    for j in range(1, 8):
+        lo, hi = limits[f"l_aj_{j}"]
+        lo, hi = lo + ACTION_HALF_RANGE, hi - ACTION_HALF_RANGE   # 액션 상자 여유 확보
+        q[:, j - 1] = torch.rand(n, generator=gen) * (hi - lo) + lo
+
+    env = _build(n)
+    robot = env.scene["robot"]
+    ee = env.scene["ee_frame"]
+    origins = env.scene.env_origins
+    arm_ids, _ = robot.find_joints(P.LEFT_ARM_JOINT_NAMES, preserve_order=True)
+    base_i = robot.body_names.index(P.GRIPPER_BASE_BODY)
+    target = robot.data.default_joint_pos.clone()
+    target[:, arm_ids] = q.to(target.device)
+    _hold(env, target)
+
+    tcp = ee.data.target_pos_w[:, 0, :] - origins
+    deg = _approach_deg(robot.data.body_quat_w[:, base_i, :])
+    lsel = [i for i, nm in enumerate(robot.body_names) if nm.startswith("l_")]
+    minz = (robot.data.body_pos_w[:, lsel, 2] - origins[:, 2:3]).min(dim=1).values
+
+    goal = torch.tensor([cx, cy, P.TABLE_SURFACE_Z + hmm / 1000.0], device=tcp.device)
+    d = (tcp - goal).norm(dim=-1)
+    ok = (d < args.seek_tol) & (deg <= args.seek_deg) & (minz > P.TABLE_SURFACE_Z + args.clear)
+    print(f"  도달 {int((d < args.seek_tol).sum())} · +각도 {int(((d < args.seek_tol) & (deg <= args.seek_deg)).sum())} "
+          f"· +무관통 {int(ok.sum())}   / {n}")
+    print(f"  전체 최소거리 {float(d.min())*1e3:.1f}mm · 각도조건 표본 중 최소 "
+          f"{(float(d[deg <= args.seek_deg].min())*1e3 if bool((deg <= args.seek_deg).any()) else float('nan')):.1f}mm")
+    if bool(ok.any()):
+        idx = torch.nonzero(ok).flatten()
+        order = idx[deg[idx].argsort()][: args.top]
+        print(f"\n  {'순':>3} {'접근각':>7} {'거리':>7} {'최저z':>7}   관절(j1..j7)")
+        for r, i in enumerate(order.tolist()):
+            js = " ".join(f"{q[i, k]:+.4f}" for k in range(7))
+            print(f"  {r+1:>3} {deg[i]:>6.2f}° {d[i]*1e3:>6.1f}mm {minz[i]:>7.4f}   {js}")
+    print("SEEK_DONE")
+    env.close()
+
+
 def main() -> None:
-    _reach() if args.reach else _search()
+    if args.seek:
+        _seek()
+    else:
+        _reach() if args.reach else _search()
 
 
 main()

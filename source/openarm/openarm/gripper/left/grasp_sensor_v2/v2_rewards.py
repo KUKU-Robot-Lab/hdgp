@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import math
 import torch
 
 from isaaclab.assets import RigidObject
@@ -87,9 +88,6 @@ class Staircase(ManagerTermBase):
       **stage 1 고원(∂r/∂dist = 0)이 사라진다** — 그 고원이 시드 의존의 기계적
       원인이었다(붕괴 후 `cupd` 146·160·170 mm = stage 2 문턱 150~161 mm 바깥).
 
-    ★`still_net=True` 면 속도 입력이 **순변위**, False 면 **순간속도**다. 그 하나만
-      바뀌고 식은 동일하다 — 라운드 3 의 단일 변수(arm A ↔ arm B).
-
     ⚠ `1_SR`(Hundt 의 진행도 역전 차단)은 **기본 off** 다. 우리는 50 Hz 연속제어라
       경계 근처에서 매 스텝 보상을 0 으로 만들 위험이 있다. 별도 단일 변수로 켠다.
     """
@@ -100,10 +98,6 @@ class Staircase(ManagerTermBase):
         # ★라운드 7 — 지속 정착 카운터. success_ok 가 깨지면 0 으로 리셋(단조 아님).
         self._hold = torch.zeros(env.num_envs, device=env.device)
         self._tracker = S._NetSpeedTracker(env.num_envs, P.NET_SPEED_WINDOW, env.device)
-        # ★라운드 22 Part 1 — 접근 구간 방향 품질의 누적(합·개수). stage 0 에서만
-        #   전진하므로 파지 후에는 얼어붙는다 = 별도 래치가 필요 없다.
-        self._dir_sum = torch.zeros(env.num_envs, device=env.device)
-        self._dir_cnt = torch.zeros(env.num_envs, device=env.device)
         # 진단 항이 같은 스텝에 다시 계산하지 않도록 캐시한다(트래커 중복 갱신 방지).
         self._cache_step = -1
         self._cache: tuple | None = None
@@ -114,13 +108,9 @@ class Staircase(ManagerTermBase):
         if env_ids is None:
             self._prev_idx[:] = 0.0
             self._hold[:] = 0.0
-            self._dir_sum[:] = 0.0
-            self._dir_cnt[:] = 0.0
         else:
             self._prev_idx[env_ids] = 0.0
             self._hold[env_ids] = 0.0
-            self._dir_sum[env_ids] = 0.0
-            self._dir_cnt[env_ids] = 0.0
         self._tracker.reset(env_ids)
 
     def net_speed(self, env) -> torch.Tensor:
@@ -129,32 +119,34 @@ class Staircase(ManagerTermBase):
         return self._tracker.get(env, obj.data.root_pos_w)
 
     def stages(self, env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg,
-               object_cfg, still_net: bool) -> tuple[tuple, tuple]:
+               object_cfg) -> tuple[tuple, tuple]:
         """`(pos, val)`. 같은 스텝 안에서는 캐시를 돌려준다 — 진단 항이 여러 번
         불러도 트래커가 두 번 전진하지 않도록."""
         step = int(getattr(env, "common_step_counter", -1))
         if step == self._cache_step and self._cache is not None and step >= 0:
             return self._cache
-        ns = self.net_speed(env) if still_net else None
+        # ★속도 입력은 **순간속도**로 확정(라운드 3 arm A). 순변위(`net_speed`)는
+        #   제자리 왕복에 만점을 줘 기각됐다 — 반환점에서 순간속도가 0 이 되는
+        #   문제는 `P_still` 을 `P_dist` 와 곱해서 막는다.
         out = S.all_stages(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg,
-                           object_cfg, net_speed=ns)
+                           object_cfg, net_speed=None,
+                           lift_only=bool(getattr(env.cfg, "v2_lift_only", False)))
         self._cache_step, self._cache = step, out
         return out
 
     def __call__(self, env, command_name: str, robot_cfg: SceneEntityCfg,
                  jaw_cfg: SceneEntityCfg, ee_frame_cfg: SceneEntityCfg,
                  object_cfg: SceneEntityCfg, use_sr: bool = False,
-                 still_net: bool = False,
                  hold_weight: float = 0.0,
-                 upright_weight: float = 0.0,
-                 still_weight: float = 0.0,
-                 still_goal_weight: float = 0.0,
-                 dirmul_gain: float = 0.0) -> torch.Tensor:
+                 upright_weight: float = 0.0) -> torch.Tensor:
         pos, val = self.stages(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg,
-                               object_cfg, still_net)
+                               object_cfg)
         idx = _stage_index(*pos)          # ★판정 = 위치·파지·AND 조건
         v = _stage_value(idx, *val)       # ★값 = 다음 문턱까지의 진행도
-        r = (idx + v) / P.N_STAGES
+        # ★리프트 전용이면 계단이 2 단이라 분모도 2 여야 만점이 1.0 이 된다.
+        #   4 로 나누면 최대가 0.5 로 눌려 다른 항(벌점)과의 균형이 깨진다.
+        n_st = 2.0 if getattr(env.cfg, "v2_lift_only", False) else float(P.N_STAGES)
+        r = (idx + v) / n_st
         # ── ★라운드 7: 지속 정착 프리미엄 ────────────────────────────
         #   흔들기(0.814/step)와 정착(1.0/step)의 기대값이 낙하 종료 앞에서 역전되는
         #   구조를 깬다 — success_ok 를 **연속 유지**해야만 누진으로 벌 수 있고,
@@ -173,37 +165,11 @@ class Staircase(ManagerTermBase):
         if upright_weight > 0.0:
             gate = (idx >= P.UPRIGHT_MIN_STAGE).to(r.dtype)
             r = r + upright_weight * S.upright_shaped(env, object_cfg) * gate
-        # ── ★라운드 14: 감속 셰이핑 (정지 처방) ────────────────────────
-        #   처방 A 와 **같은 구조**다 — 감속도 도착 전에 시작해야 하는 행동인데
-        #   `p_still` 이 stage 3 안에만 있어 신용 할당에 시차가 있었다.
-        #   `p_near` 가 150 mm 밖에서 0 이라 멀리서 멈춰 점수를 벌 수 없다.
-        if still_weight > 0.0:
-            gate = (idx >= P.STILL_MIN_STAGE).to(r.dtype)
-            r = r + still_weight * S.still_shaped(env, command_name, robot_cfg,
-                                                  object_cfg) * gate
-        # ── ★라운드 16: 목표 안 안정화 셰이핑 ─────────────────────────
-        if still_goal_weight > 0.0:
-            r = r + still_goal_weight * S.still_at_goal(env, command_name,
-                                                        robot_cfg, object_cfg)
-        # ── ★라운드 22 Part 1: 곱셈형 방향 ──────────────────────────
-        #   접근 구간(stage 0)의 **평균** 방향 품질을 파지 후 계단 전체에 곱한다.
-        #   · 배수는 1.0~1.5 — **감액이 아니라 가산**이라 0→1 경계에 절벽이 없다.
-        #   · 파지해야만 받는다 ⇒ 머무는 유인이 생기지 않는다(stage 0 천장 0.25).
-        #   · 순간값이 아닌 평균이라 "파지 직전에만 잠깐 세우기"로 못 딴다.
-        if dirmul_gain > 0.0:
-            pre = idx < 1.0
-            self._dir_sum = torch.where(pre, self._dir_sum + _approach_dirq(env),
-                                        self._dir_sum)
-            self._dir_cnt = torch.where(pre, self._dir_cnt + 1.0, self._dir_cnt)
-            r = torch.where(pre, r, r * (1.0 + dirmul_gain * self.dir_quality()))
+        # ★감속 셰이핑(라운드 14)·목표 안 안정화(16)·곱셈형 방향(22)은 전부 기각됐다.
         if use_sr:
             r = torch.where(idx < self._prev_idx, torch.zeros_like(r), r)
         self._prev_idx[:] = idx
         return r
-
-    def dir_quality(self) -> torch.Tensor:
-        """접근 구간 평균 방향 품질 (0~1). 파지 전에는 진행 중인 평균이다."""
-        return self._dir_sum / self._dir_cnt.clamp(min=1.0)
 
     def hold_norm(self) -> torch.Tensor:
         """진단용 — 정규화된 hold 카운터 (0~1)."""
@@ -251,8 +217,7 @@ def _diag_stages(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg
     sc = _staircase(env)
     if sc is None:      # 계약상 있어야 하지만, 없으면 run 0 식으로 폴백
         return S.all_stages(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg)
-    sn = bool(sc.cfg.params.get("still_net", False))
-    return sc.stages(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg, sn)
+    return sc.stages(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg)
 
 
 def diag_stage_index(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg,
@@ -260,6 +225,61 @@ def diag_stage_index(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg,
     """평균 단계 인덱스 (0~3). ★위치 기준(`pos`) — 보상 판정과 같은 정의다."""
     pos, _ = _diag_stages(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg)
     return _stage_index(*pos)
+
+
+# ---------------------------------------------------------------------------
+# ★09.02 라운드 27 — **접근 자세를 학습 로그에서 직접 본다**
+# ---------------------------------------------------------------------------
+# 접근각은 지금까지 프로브로만 볼 수 있었다(체크포인트 하나에 수 분). 파지 대역
+# 게이트를 연 뒤 각도가 실제로 서는지는 **학습 도중에** 봐야 하므로 진단으로 뽑는다.
+#
+# ⚠ weight 0 진단은 `sum(raw · dt) / max_episode_length_s` 로 누적된다 — 값이
+#   에피소드 길이에 비례해 늘어난다. 각도를 그냥 찍으면 길이 변화와 뒤섞인다.
+#   ★처방: **파지 전 스텝 수**를 같은 방식으로 찍는 짝 항을 둔다.
+#     `diag_appr_angle / diag_appr_steps` 로 나누면 스케일이 상쇄돼 **평균 각도(°)**
+#     가 그대로 나온다. tcp x/y/z 도 같은 분모를 쓴다.
+def _pre_grasp(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg):
+    """파지 전(stage 0) 여부 0/1. 프로브의 "파지 전(접근) 구간만" 과 같은 뜻이다."""
+    pos, _ = _diag_stages(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg)
+    return (_stage_index(*pos) < 1.0).to(torch.float32)
+
+
+def diag_appr_steps(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg):
+    """파지 전 스텝 = 1. 아래 네 진단의 **공통 분모**다."""
+    return _pre_grasp(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg)
+
+
+def diag_appr_angle(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg):
+    """파지 전 **접근각(도)** — 그리퍼 +z ∠ world +z. 90° 수평 · >90° 아래로 기욺.
+
+    `probe_v2_env_outcomes.py` 와 **같은 정의**(`_approach_az` = R[2,2])라 프로브
+    숫자와 그대로 비교할 수 있다.
+    """
+    ang = torch.acos(_approach_az(env)) * (180.0 / math.pi)
+    return ang * _pre_grasp(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg)
+
+
+def _tcp_axis(env, axis, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg):
+    ee = env.scene[ee_frame_cfg.name]
+    # env 원점을 빼 **환경 로컬 좌표**로 만든다 — world 그대로면 격자 오프셋이 섞인다.
+    p = ee.data.target_pos_w[..., 0, :] - env.scene.env_origins
+    return p[:, axis] * _pre_grasp(env, command_name, robot_cfg, jaw_cfg,
+                                   ee_frame_cfg, object_cfg)
+
+
+def diag_tcp_x(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg):
+    """파지 전 TCP x (m, env 로컬)."""
+    return _tcp_axis(env, 0, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg)
+
+
+def diag_tcp_y(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg):
+    """파지 전 TCP y (m, env 로컬)."""
+    return _tcp_axis(env, 1, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg)
+
+
+def diag_tcp_z(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg):
+    """파지 전 TCP z (m, env 로컬). 판 상면은 `TABLE_SURFACE_Z`(0.200)."""
+    return _tcp_axis(env, 2, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg)
 
 
 def _pos_pick(env, which, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg):
@@ -308,11 +328,7 @@ def diag_success(env, command_name: str,
     """
     obj: RigidObject = env.scene[object_cfg.name]
     dist = S.cup_goal_distance(env, command_name, robot_cfg, object_cfg)
-    sc = _staircase(env)
-    if sc is not None and bool(sc.cfg.params.get("still_net", False)):
-        speed = sc.net_speed(env)
-    else:
-        speed = torch.norm(obj.data.root_lin_vel_w, dim=1)
+    speed = torch.norm(obj.data.root_lin_vel_w, dim=1)
     return S.success_ok(dist, speed, _cup_upright_cos(env, object_cfg),
                         S.stage_close(env, jaw_cfg, object_cfg))
 
@@ -327,12 +343,8 @@ def diag_v_stage(env, command_name, robot_cfg, jaw_cfg, ee_frame_cfg, object_cfg
 
 
 def _progress(env, which, command_name, robot_cfg, object_cfg):
-    """`(P_dist, P_still, P_upright)` 중 하나. 보상 경로와 **같은 인스턴스**의 속도를 쓴다."""
-    sc = _staircase(env)
-    ns = None
-    if sc is not None and bool(sc.cfg.params.get("still_net", False)):
-        ns = sc.net_speed(env)
-    return S.progress_terms(env, command_name, robot_cfg, object_cfg, net_speed=ns)[which]
+    """`(P_dist, P_still, P_upright)` 중 하나. 보상 경로와 **같은 속도 정의**를 쓴다."""
+    return S.progress_terms(env, command_name, robot_cfg, object_cfg, net_speed=None)[which]
 
 
 def diag_p_dist(env, command_name: str,
@@ -463,117 +475,3 @@ def _approach_az(env: "ManagerBasedRLEnv") -> torch.Tensor:
     bi = robot.body_names.index(P.GRIPPER_BASE_BODY)
     q = robot.data.body_quat_w[:, bi, :]
     return (1.0 - 2.0 * (q[:, 1] ** 2 + q[:, 2] ** 2)).clamp(-1.0, 1.0)
-
-
-def approach_tilt_penalty(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
-                          object_cfg: SceneEntityCfg) -> torch.Tensor:
-    """**파지 전** 그리퍼가 아래로 기운 정도 (0~1). 90° 이하에서 정확히 0.
-
-    파지 후에는 0 이다 — 무는 동작(j7 을 드는 것)과 리프트·이송은 이 항의 대상이
-    아니다. 게이트는 파지 판정과 같은 `stage_close` 를 쓴다.
-    """
-    held = S.stage_close(env, jaw_cfg, object_cfg) > 0.5
-    return (-_approach_az(env)).clamp(0.0, 1.0) * (~held).to(torch.float32)
-
-
-def _approach_dirq(env: "ManagerBasedRLEnv") -> torch.Tensor:
-    """방향 품질 0~1 — **90° 이하는 만점 평지, 초과는 완만한 감쇠**.
-
-    ★★라운드 21(I2) 이 이 모양 때문에 죽었다. 지시받은 "90° 초과면 0" 을 그대로
-      `where(az < 0, 0, ...)` 로 구현했더니 `az<0` 이 **값도 기울기도 0 인 평지**가
-      됐고, 정책이 110° 에 자리잡은 뒤로 되돌아올 신호가 없어 1000 epoch 동안
-      각도가 미동도 안 했다(수령률 상한의 0.05%).
-      의도(90° 이하 만점 · 아래로 기울면 벌)는 그대로 두고 하향만 감쇠로 바꾼다.
-        103.9°(홈) 0.527 · 110° 0.273 · 117.5° 0.093
-    """
-    az = _approach_az(env)
-    below = torch.exp(-((az / P.APPROACH_DIR_SIGMA_DN) ** 2))
-    return torch.where(az >= 0.0, torch.ones_like(az), below)
-
-
-def diag_dir_quality(env: "ManagerBasedRLEnv") -> torch.Tensor:
-    """진단 — 접근 구간 평균 방향 품질(계단이 누적한 값)."""
-    sc = _staircase(env)
-    return sc.dir_quality() if sc is not None else torch.zeros(env.num_envs,
-                                                               device=env.device)
-
-
-def diag_approach_deg(env: "ManagerBasedRLEnv") -> torch.Tensor:
-    """진단 — 접근 각도(도). 90° = 수평, 초과면 아래로 기욺."""
-    return torch.rad2deg(torch.acos(_approach_az(env)))
-
-
-def diag_approach_down(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
-                       object_cfg: SceneEntityCfg) -> torch.Tensor:
-    """진단 — 파지 전에 90° 를 넘긴 스텝의 비율(0/1)."""
-    held = S.stage_close(env, jaw_cfg, object_cfg) > 0.5
-    return ((_approach_az(env) < 0.0) & (~held)).to(torch.float32)
-
-
-def approach_dir_bonus(env: "ManagerBasedRLEnv", jaw_cfg: SceneEntityCfg,
-                       ee_frame_cfg: SceneEntityCfg,
-                       object_cfg: SceneEntityCfg) -> torch.Tensor:
-    """**접근 방향 보너스** — 수평(90°)에서 최대, 아래로 기울면 0. 파지 전에만.
-
-    `r_grasp`(접근 진행도)를 곱한다. 이게 없으면 "수평으로 서서 안 잡기"가 해킹면이
-    된다 — 곱하면 컵 근처까지 가야만 보너스가 생긴다.
-
-    ★순수 벌점판(`approach_tilt_penalty`)이 실패한 이유는 90° 이하가 전부 0 이라
-      **위로 세우는 것이 최적**이었기 때문이다. 여기서는 수평에서만 최대라 그 경로가
-      막힌다(위로 세우면 `APPROACH_DIR_BASE` = 1% 만 받는다).
-    """
-    az = _approach_az(env)
-    peak = torch.exp(-((az / P.APPROACH_DIR_SIGMA) ** 2))
-    dirq = torch.where(az < 0.0, torch.zeros_like(az),
-                       P.APPROACH_DIR_BASE + (1.0 - P.APPROACH_DIR_BASE) * peak)
-    held = S.stage_close(env, jaw_cfg, object_cfg) > 0.5
-    # ★`stage_reach` = 순수 접근 근접도(TCP → 파지점). `stage_grasp` 는 닫기까지
-    #   포함하므로 여기엔 안 맞다 — 우리가 곱하고 싶은 것은 "얼마나 다가왔는가" 뿐이다.
-    r_reach = S.stage_reach(env, ee_frame_cfg, object_cfg)
-    return dirq * r_reach * (~held).to(dirq.dtype)
-
-
-class ApproachDirPBRS(ManagerTermBase):
-    """접근 방향 shaping — **차분 지급(PBRS)**.
-
-    ★레벨 지급(`approach_dir_bonus`)은 실패했다. 각도는 목표대로 117.5° → **90.1°**
-      로 내려갔지만, 정책이 그 자세로 **250 스텝 중 239 스텝을 떠 있기만** 하고 컵을
-      안 잡았다(⑤ 0.0%). 원인은 크기가 아니라 **지급 방식과 종료 조건의 상호작용**이다 —
-      과제를 완수하면 에피소드가 54 스텝에 끝나는데(목표 체류 10 스텝 종료), 떠 있으면
-      250 스텝 내내 받는다. 버티기와 완수의 가치가 같아졌다.
-
-    차분으로 주면 그 경로가 사라진다: Φ 가 변하지 않으면 **0 원**이고, 자세를 수평으로
-    **개선할 때만** 받는다. 저장소 원칙 "절단은 truncated, 지급은 차분(PBRS)으로" 그대로다.
-
-        Φ = dir(a_z) · r_reach,   r = Φ_t − Φ_{t−1}
-        dir(a_z) = 0                                  a_z < 0  (90° 초과 = 아래로 기욺)
-                 = BASE + (1−BASE)·exp(−(a_z/σ)²)     a_z ≥ 0  (수평에서 1.0)
-
-    ⚠ 파지 후에는 Φ 를 **직전 값으로 동결**한다. 게이트로 0 을 만들면 파지하는 순간
-      −Φ 의 절벽이 생겨 **파지를 벌하게** 된다.
-    """
-
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        self._prev = torch.zeros(env.num_envs, device=env.device)
-
-    def reset(self, env_ids=None):
-        # 에피소드 경계에서 0 으로. 안 하면 리셋 텔레포트가 거대한 차분으로 읽힌다.
-        if env_ids is None:
-            self._prev[:] = 0.0
-        else:
-            self._prev[env_ids] = 0.0
-
-    def __call__(self, env, jaw_cfg: SceneEntityCfg, ee_frame_cfg: SceneEntityCfg,
-                 object_cfg: SceneEntityCfg) -> torch.Tensor:
-        az = _approach_az(env)
-        peak = torch.exp(-((az / P.APPROACH_DIR_SIGMA) ** 2))
-        dirq = torch.where(az < 0.0, torch.zeros_like(az),
-                           P.APPROACH_DIR_BASE + (1.0 - P.APPROACH_DIR_BASE) * peak)
-        phi = dirq * S.stage_reach(env, ee_frame_cfg, object_cfg)
-        held = S.stage_close(env, jaw_cfg, object_cfg) > 0.5
-        # 파지 후에는 Φ 를 동결 ⇒ 차분 0 (절벽 없음)
-        phi = torch.where(held, self._prev, phi)
-        out = phi - self._prev
-        self._prev = phi
-        return out

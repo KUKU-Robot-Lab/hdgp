@@ -398,6 +398,7 @@ def _jaw_frame(
     pad_offset: float,
     robot_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg,
+    band: tuple[float, float] | None = None,
 ):
     """턱 기준 프레임 — 두 손가락(패드 중앙 보정), 턱 축 u, 중점, 컵 축 최근접점.
 
@@ -423,8 +424,12 @@ def _jaw_frame(
     #   clamp 가 없으면 컵 축이 **무한 직선**이라 컵 위 허공에서 감싸도 만점이 나온다.
     #   fab_test10 이 정확히 그 행동을 학습했다 — 턱이 컵 원점 +157.6 mm(상단 +83 mm 보다
     #   75 mm 위)에서 between 2.15/3.0 을 받으면서 컵은 0.1 mm 도 안 움직였다.
+    #   ★대역은 **호출자가 줄 수 있다** — v2 는 판 위 80~150 mm 로 올려 쓴다.
+    #     기본값(v1 값)을 쓰면 v1 거동은 그대로다. 예전엔 환경변수로 이 모듈의 상수를
+    #     통째로 바꿨는데, 그러면 같은 프로세스의 v1 까지 조용히 오염된다.
+    _band = band if band is not None else P.CUP_GRASP_BAND_AXIS
     axis_t_raw = (to_mid * cup_z).sum(-1, keepdim=True)
-    axis_t = axis_t_raw.clamp(P.CUP_GRASP_BAND_AXIS[0], P.CUP_GRASP_BAND_AXIS[1])
+    axis_t = axis_t_raw.clamp(_band[0], _band[1])
     cup_pt = obj.data.root_pos_w + cup_z * axis_t
     # ★clamp **전** 축 좌표도 돌려준다 — "턱이 파지 대역 안인가"는 clamp 된 값으로는
     #   알 수 없다(밖에 있어도 경계값으로 접혀 들어온다). 접근 성공 판정에 필요하다.
@@ -438,6 +443,7 @@ def grasp_ok(
     pad_offset: float,
     jaw_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    band: tuple[float, float] | None = None,
 ) -> torch.Tensor:
     """**접근 성공** — 컵이 실제로 턱 사이 파지 위치에 있는가. (num_envs,) bool
 
@@ -457,11 +463,13 @@ def grasp_ok(
     ★`axis_t` 는 **clamp 전** 값을 쓴다. clamp 된 값은 대역 밖이어도 경계로 접혀 들어와
       "대역 안"이 항상 참이 된다.
     """
-    _p_l, _p_r, u, mid, cup_pt, axis_t = _jaw_frame(env, pad_offset, jaw_cfg, object_cfg)
+    _band = band if band is not None else P.CUP_GRASP_BAND_AXIS
+    _p_l, _p_r, u, mid, cup_pt, axis_t = _jaw_frame(env, pad_offset, jaw_cfg, object_cfg,
+                                                    band=_band)
     d = cup_pt - mid
     along = (d * u).sum(-1).abs()
     lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
-    in_band = (axis_t > P.CUP_GRASP_BAND_AXIS[0]) & (axis_t < P.CUP_GRASP_BAND_AXIS[1])
+    in_band = (axis_t > _band[0]) & (axis_t < _band[1])
     return (lateral < lat_ok) & (along < along_ok) & in_band
 
 
@@ -470,9 +478,17 @@ def jaw_lateral(
     pad_offset: float,
     jaw_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    band: tuple[float, float] | None = None,
 ) -> torch.Tensor:
-    """턱 축 직선에서 컵 축까지의 수직거리 (m). 래치 **해제** 판정에 쓴다."""
-    _p_l, _p_r, u, mid, cup_pt, _axis = _jaw_frame(env, pad_offset, jaw_cfg, object_cfg)
+    """턱 축 직선에서 컵 축까지의 수직거리 (m). 래치 **해제** 판정에 쓴다.
+
+    ★★`band` 를 **반드시 `grasp_ok` 와 같은 값으로** 넘겨야 한다. 래치는 `grasp_ok`
+      로 걸리고 이 함수로 풀리는데, 둘이 다른 대역을 보면 `cup_pt` 가 컵 축의 다른
+      높이로 clamp 되어 "걸자마자 풀리는" 채터링이 된다. 09.03 정리에서 실제로
+      이 인자를 빠뜨려 grasp_ok 가 0.033 → 0.455 로 바뀌었다.
+    """
+    _p_l, _p_r, u, mid, cup_pt, _axis = _jaw_frame(env, pad_offset, jaw_cfg, object_cfg,
+                                                   band=band)
     d = cup_pt - mid
     return (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)
 
@@ -503,13 +519,15 @@ def _jaw_geometry(
     pad_offset: float,
     robot_cfg: SceneEntityCfg,
     object_cfg: SceneEntityCfg,
+    band: tuple[float, float] | None = None,
 ):
     """턱 ↔ 컵 기하 (align, enclose). 두 보상 항이 **같은 기하**를 쓰도록 여기 모은다.
 
     · align   = 평균( 턱 축 방향 정렬, 턱 축 직선까지의 근접 )  — 곱하지 않는다
     · enclose = 두 손가락이 컵 축 **양쪽**에 있는가 (0~1)
     """
-    p_l, p_r, u, mid, cup_pt, _axis = _jaw_frame(env, pad_offset, robot_cfg, object_cfg)
+    p_l, p_r, u, mid, cup_pt, _axis = _jaw_frame(env, pad_offset, robot_cfg, object_cfg,
+                                                 band=band)
     d = cup_pt - mid
     along = (d * u).sum(-1).abs()
     lateral = (d - u * (d * u).sum(-1, keepdim=True)).norm(dim=-1)

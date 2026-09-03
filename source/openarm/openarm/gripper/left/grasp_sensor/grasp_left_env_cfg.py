@@ -110,7 +110,12 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         self.sim.physx.gpu_total_aggregate_pairs_capacity = 4 * 1024 * 1024
         # ★2 ** 26(67.1M) 이 실측 요구 **68,960,016** 에 아슬아슬하게 못 미쳤다
         #   ("Contacts have been dropped"). 한 단 올린다.
-        self.sim.physx.gpu_collision_stack_size = 2 ** 27
+        # ★★09.02 또 넘었다 — E30(새 홈)에서 2 ** 27(134.2MB)이 실측 요구 **135,184,744**
+        #   에 1MB 차이로 못 미쳐 4000 epoch 중 58 회 "Contacts have been dropped".
+        #   같은 판의 E29/E28/A26 은 0 회였다 — 홈이 j1 을 +0.219rad 돌리면서 접촉 부하가
+        #   늘었다. ⚠ 이건 죽지 않고 **접촉만 조용히 유실**되는 종류라 파지 태스크에서
+        #   학습 신호를 오염시킨다. 여유를 2 배로 둔다(VRAM +134MB).
+        self.sim.physx.gpu_collision_stack_size = 2 ** 28
 
         # ── 로봇 ────────────────────────────────────────────────────
         self.scene.robot = ArticulationCfg(

@@ -87,3 +87,54 @@ def diag_goal_dwell(env: "ManagerBasedRLEnv") -> torch.Tensor:
     if not isinstance(term, GoalDwellDone):
         return torch.zeros(env.num_envs, device=env.device)
     return term.dwell_steps()
+
+
+class LiftDwellDone(ManagerTermBase):
+    """컵을 **든 채** 연속 `EPISODE_DWELL_STEPS` 스텝 유지하면 True (리프트 전용 과제).
+
+    ★09.03 — 과제를 "goal 은 필요없고 lift 만"으로 좁히면서 `GoalDwellDone` 의 자리를
+      대신한다. 끊는 기준이 목표 도달에서 **리프트 유지**로 바뀔 뿐, 구조는 같다.
+
+    조건은 계단의 stage 1 과 **같은 자**를 쓴다 — 파지(`stage_close`)가 살아 있고
+    컵이 `MINIMAL_LIFT_HEIGHT` 이상. 두 자가 다르면 "보상은 만점인데 안 끊긴다"가 된다.
+
+    ⚠⚠ `time_out=True`(truncation)여야 한다. 진짜 종료로 두면 가치 부트스트랩이 끊겨
+      **성공이 곧 남은 보상 포기**가 되고, 정책은 들지 않고 버티는 쪽을 배운다.
+    """
+
+    def __init__(self, cfg, env: "ManagerBasedRLEnv"):
+        super().__init__(cfg, env)
+        self._dwell = torch.zeros(env.num_envs, device=env.device)
+
+    def reset(self, env_ids=None) -> None:
+        if env_ids is None:
+            self._dwell[:] = 0.0
+        else:
+            self._dwell[env_ids] = 0.0
+
+    def __call__(self, env: "ManagerBasedRLEnv",
+                 jaw_cfg: SceneEntityCfg,
+                 object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+                 dwell_steps: int | None = None) -> torch.Tensor:
+        thr = float(P.EPISODE_DWELL_STEPS if dwell_steps is None else dwell_steps)
+        held = S.stage_close(env, jaw_cfg, object_cfg) > P.STAGE3_GRASP_MIN
+        up = env.scene[object_cfg.name].data.root_pos_w[:, 2] >= P.MINIMAL_LIFT_HEIGHT
+        ok = held & up
+        self._dwell = torch.where(ok, self._dwell + 1.0, torch.zeros_like(self._dwell))
+        return self._dwell >= thr
+
+    def dwell_steps(self) -> torch.Tensor:
+        return self._dwell
+
+
+def diag_lift_dwell(env: "ManagerBasedRLEnv") -> torch.Tensor:
+    """등록된 `LiftDwellDone` 의 연속 체류 스텝. 항이 없으면 0."""
+    try:
+        for name in env.termination_manager.active_terms:
+            f = env.termination_manager._term_cfgs[
+                env.termination_manager.active_terms.index(name)].func
+            if isinstance(f, LiftDwellDone):
+                return f.dwell_steps()
+    except Exception:
+        pass
+    return torch.zeros(env.num_envs, device=env.device)
