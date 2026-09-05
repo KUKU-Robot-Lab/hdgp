@@ -686,13 +686,13 @@ class GraspUAEnvCfg(DirectRLEnvCfg):
     #   → 대신 **실측 손 최하단 링크 z** 에 벌점을 건다. 액션 좌표계 불변 + 실제 보장.
     # 실측 근거: `probe_s2r_hand_floor.py` — palm 원점 − 손최하단 = 개방 4.99 / 파지 5.66 cm,
     #   최하단 링크는 `r_hl_pinky_tip`. 테이블 상면 0.200.
-    hand_floor_z: float = 0.21               # 이 높이 아래로 내려가면 벌점 (테이블+1cm)
+    hand_floor_z: float = 0.215              # 이 높이 아래로 내려가면 벌점 (테이블 0.205 + 1cm)
     hand_floor_penalty: float = 0.0          # ★기본 0 = 항등. 켤 때 권장 20~50
     hand_floor_penalty_max: float = 5.0      # ★상한 — 크면 "테이블 근처를 아예 회피"가 된다
     finger_closure_sharpness: float = 8.0
 
     # ---- 씬 기하 ---------------------------------------------------------------------
-    table_surface_z: float = 0.200           # env.usd top_plate 상면(점군 실측)
+    table_surface_z: float = 0.205           # env_v1 top_plate 상면 z 0.195~0.205 (09.05 Fusion CAD 정정 · 실기 줄자 0.205 일치)
     object_origin_offset_z: float = 0.0773   # cup_big USD 원점 ↔ 바닥
     object_spawn_pad: float = 0.005          # 스폰 침투 반동 방지
     object_spawn_z: float = 0.0              # __post_init__ 파생 (단일 소스)
@@ -784,7 +784,7 @@ class GraspUAEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Table",
         init_state=RigidObjectCfg.InitialStateCfg(pos=[0.0, 0.0, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "env/usd/env.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "simulation_setting/env_v1/usd/env_v1.usda"),
         ),
     )
     object_cfg: RigidObjectCfg = RigidObjectCfg(
@@ -957,12 +957,16 @@ class GraspUAEnvCfg(DirectRLEnvCfg):
         #   고정하고 플래그만 뒤집어도 abnormal 0.0000→0.849 · joint_err 0.058→0.74 rad.
         #   그래서 다물체에서는 kinematic RigidBodyAPI 를 저작한 사본을 쓰고 테이블을
         #   **씬 자산**(`RigidObject`)으로 올린다(자매 `tesollo/grasp_v2` 와 같은 규약).
-        #   사본 생성: `scripts/assets_tools/build_env_rigid_usd.py`
-        _rigid_usd = _os.path.join(_ASSETS_DIR, "env", "usd", "env_rigid.usd")
+        #   ★09.05 env_v1(simulation_setting) 은 루트 Xform 에 kinematic RigidBodyAPI 가
+        #     **저작돼 있어** 사본(build_env_rigid_usd.py)이 필요 없다 — 단일/다물체가 같은
+        #     파일이다. 존재·kinematic 저작 여부는 부팅에서 fail-loud 한다.
+        _rigid_usd = _os.path.join(_ASSETS_DIR, "simulation_setting/env_v1/usd/env_v1.usda")
         if not _os.path.isfile(_rigid_usd):
             raise RuntimeError(
-                f"다물체({bank.name})는 kinematic 작업면이 필요하다: {_rigid_usd} 없음 — "
-                "`python3 scripts/assets_tools/build_env_rigid_usd.py` 로 먼저 빌드할 것")
+                f"다물체({bank.name})는 kinematic 작업면이 필요하다: {_rigid_usd} 없음")
+        with open(_rigid_usd, "r", encoding="utf-8") as _f:
+            if "physics:kinematicEnabled = 1" not in _f.read(4096):
+                raise RuntimeError(f"{_rigid_usd} 루트에 kinematic RigidBodyAPI 가 저작돼 있지 않다")
         self.table_cfg.spawn.usd_path = _rigid_usd
         _base = self._object_spawn_base
         self.object_cfg.spawn = _wrap.MultiAssetSpawnerCfg(

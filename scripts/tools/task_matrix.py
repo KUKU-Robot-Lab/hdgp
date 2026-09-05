@@ -217,7 +217,7 @@ def build_grasp_sensor_rows() -> list[TaskRow]:
         assets: list = []
         gates = [gate_path("robot_usd", ASSETS_DIR / profile.usd_relpath, collect=assets)]
         gates += fabric_gates(profile.fabric_class, profile.fabric_robot_dir)
-        gates.append(gate_path("scene_usd", ASSETS_DIR / "env/usd/env.usd", collect=assets))
+        gates.append(gate_path("scene_usd", ASSETS_DIR / "simulation_setting/env_v1/usd/env_v1.usda", collect=assets))
         gates.append(gate_path("object_usd", ASSETS_DIR / "cup/cup_big_rl.usd", collect=assets))
         gates += agent_yaml_gates(cfg_dir, ("rl_games_ppo_cfg.yaml",
                                             "rl_games_ppo_lstm_cfg.yaml"))
@@ -251,7 +251,7 @@ def build_grasp_lift_fabric_rows() -> list[TaskRow]:
         gates = [gate_path("robot_usd", ASSETS_DIR / profile.asset.usd_relpath,
                            collect=assets)]
         gates += fabric_gates(profile.fabric_class, profile.fabric_robot_dir)
-        gates.append(gate_path("scene_usd", ASSETS_DIR / "env/usd/env.usd", collect=assets))
+        gates.append(gate_path("scene_usd", ASSETS_DIR / "simulation_setting/env_v1/usd/env_v1.usda", collect=assets))
         for missing in bank.missing_files():
             gates.append(Gate("object_usd", False, BLOCK, f"없음: {missing}"))
         if not bank.missing_files():

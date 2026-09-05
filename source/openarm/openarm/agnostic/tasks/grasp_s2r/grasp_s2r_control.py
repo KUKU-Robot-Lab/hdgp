@@ -72,7 +72,7 @@ class GraspS2RControlMixin:
         #   다물체    : `replicate_physics=False` 라 `enable_env_ids` 격리가 없어져
         #               원시 프림이면 전 env 작업면이 한 충돌 그룹에 남고 팔이 물린다
         #               (08.29 분리 실측 abnormal 0.849 · joint_err 0.74 rad).
-        #               → kinematic 사본(`env_rigid.usd`)을 **씬 자산**으로 올린다.
+        #               → kinematic 작업면(env_v1, 루트에 저작됨)을 **씬 자산**으로 올린다.
         tbl = self.cfg.table_cfg
         if _multi:
             self.table = RigidObject(tbl)

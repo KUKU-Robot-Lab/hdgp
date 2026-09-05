@@ -11,10 +11,10 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 _OUT = "/home/user/rl_ws/scratchpad_probe_cup_result.txt"
 _TARGETS = {
-    "grasp visdex cup": "/home/user/rl_ws/hdgp/assets/visdex_objects/USD/cup/cup.usd",
+    "grasp visdex cup": "/home/user/rl_ws/hdgp/assets/multi_obj/visdex_objects/USD/cup/cup.usd",
     "pour cup_big_sdf": "/home/user/rl_ws/hdgp/assets/cup/cup_big_sdf.usd",
     "pour cup_big_sdf_cm": "/home/user/rl_ws/hdgp/assets/cup/cup_big_sdf_cm.usd",
-    "grasp visdex large_5_cyl": "/home/user/rl_ws/hdgp/assets/visdex_objects/USD/large_5_cyl/large_5_cyl.usd",
+    "grasp visdex large_5_cyl": "/home/user/rl_ws/hdgp/assets/multi_obj/visdex_objects/USD/large_5_cyl/large_5_cyl.usd",
 }
 
 lines = []

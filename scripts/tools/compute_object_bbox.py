@@ -18,8 +18,8 @@ import struct
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-VISDEX_URDF = REPO / "assets/visdex_objects/urdf"
-PRIMITIVE_URDF = REPO / "assets/primitives/urdf"
+VISDEX_URDF = REPO / "assets/multi_obj/visdex_objects/urdf"
+PRIMITIVE_URDF = REPO / "assets/multi_obj/primitives/urdf"
 OUT_JSON = REPO / "assets/object_bbox.json"
 
 

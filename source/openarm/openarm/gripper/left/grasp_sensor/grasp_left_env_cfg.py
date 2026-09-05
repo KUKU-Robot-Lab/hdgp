@@ -250,12 +250,12 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
 
         # ── 씬: 테이블 (로컬 자산) ──────────────────────────────────
         # 레퍼런스는 클라우드 Nucleus 의 SeattleLabTable 을 쓰는데 이 머신에 캐시가 없다.
-        # ★씬 전체가 `assets/env/usd/env.usd` 한 덩어리다(사용자 지정, 08.20).
+        # ★씬 전체가 `assets/simulation_setting/env_v1/usd/env_v1.usda` 한 덩어리다(09.05 정정).
         #   **Env 원점 = 로봇 base link 원점**이라 오프셋 없이 (0,0,0) 에 붙인다.
         #   상속받은 `scene.table` 슬롯을 그대로 쓴다 — 이름만 table 이고 prim 은 Env 다.
-        #   ⚠ `rigid_props` 를 주면 안 된다. env.usd 의 메시는 PhysicsCollisionAPI 만 가진
-        #     **정적 삼각메시 콜라이더**인데 RigidBodyPropertiesCfg 를 씌우면 rigid body API
-        #     가 붙어 동적 강체가 된다. 레퍼런스도 테이블에 rigid_props 를 주지 않는다.
+        #   ⚠ `rigid_props` 를 주면 안 된다. env_v1 은 루트에 **kinematic RigidBodyAPI** 가
+        #     저작돼 있어(정적 콜라이더와 물리 동등) 그대로 붙이면 되고, RigidBodyPropertiesCfg
+        #     를 씌우면 kinematic 이 풀려 동적 강체가 될 수 있다. 레퍼런스도 주지 않는다.
         self.scene.table = AssetBaseCfg(
             prim_path="{ENV_REGEX_NS}/Env",
             init_state=AssetBaseCfg.InitialStateCfg(
@@ -263,7 +263,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             ),
             spawn=UsdFileCfg(usd_path=_os.path.join(_ASSETS_DIR, P.ENV_USD_REL)),
         )
-        # 바닥면: env.usd 의 base_plate 밑면(-0.025)에 맞춘다. 판 밖으로 떨어진 컵은
+        # 바닥면: env_v1 의 바닥판(Metal_999999) 밑면(-0.025)에 맞춘다. 판 밖으로 떨어진 컵은
         # 여기까지 내려가고, 그전에 object_dropping 이 이미 종료시킨다.
         self.scene.plane.init_state.pos = (0.0, 0.0, P.ENV_FLOOR_Z - 0.010)
 

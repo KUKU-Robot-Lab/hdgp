@@ -22,7 +22,7 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 # hdgp 루트를 __file__ 기준으로 동적 산출(로컬 /home/user, 서버 /home/oem 양쪽 동작).
 _HDGP = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-_VISDEX = f"{_HDGP}/assets/visdex_objects/USD"
+_VISDEX = f"{_HDGP}/assets/multi_obj/visdex_objects/USD"
 _SRC = f"{_HDGP}/assets/cup/cup_middle.usd"
 _DST_DIR = f"{_VISDEX}/cup_middle"
 _DST = f"{_DST_DIR}/cup_middle.usd"

@@ -484,7 +484,7 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
     #   컵이 정착고보다 9.7mm 높이 스폰됐다 → 정지 상태 height_delta −9.7mm, lift 보상의
     #   첫 9.7mm 데드존, 실효 목표 159.7mm. 게다가 두 프로필이 0.282/0.297 로 갈렸다.
     #   이제 여기 세 값에서만 파생한다(프로필의 object_spawn_z 필드는 삭제됨).
-    table_surface_z: float = 0.200           # env.usd top_plate 상면(점군 실측)
+    table_surface_z: float = 0.205           # env_v1 top_plate 상면 z 0.195~0.205 (09.05 Fusion CAD 정정 · 실기 줄자 0.205 일치)
     object_origin_offset_z: float = 0.0773   # cup_big USD 원점 ↔ 바닥
     object_spawn_pad: float = 0.005          # 스폰 침투 반동 방지
     # 위 셋에서 __post_init__ 이 파생시키는 캐시. 직접 쓰지 말 것(단일 소스 유지).
@@ -815,7 +815,7 @@ class GraspSensorEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Table",
         init_state=RigidObjectCfg.InitialStateCfg(pos=[0.0, 0.0, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "env/usd/env.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "simulation_setting/env_v1/usd/env_v1.usda"),
         ),
     )
     # 단일 물체(cup_big, 질량 0.134kg = pour 실컵)로 시작. 다물체는 Phase 3.

@@ -37,7 +37,12 @@ from isaaclab.utils import configclass
 import os as _os
 
 from openarm import OPENARM_ROOT_DIR
-from .pour_right_constants import NUM_OBSERVATIONS, NUM_ACTIONS, NUM_CRITIC_OBSERVATIONS
+from .pour_right_constants import (
+    NUM_OBSERVATIONS,
+    NUM_ACTIONS,
+    NUM_ACTIONS_WITH_LEFT,
+    NUM_CRITIC_OBSERVATIONS,
+)
 from .pour_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
     BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ,
@@ -326,7 +331,13 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   5g_grasp_right_v7_2: palm_delta_xyz=0.15m, palm_delta_rot_deg=20°
     warmstart_collect_palm_delta_xyz: float = 0.15   # v7-2 학습 값과 일치
     warmstart_collect_palm_delta_rot_deg: float = 20.0  # v7-2 학습 값과 일치 (≠ pour 120°)
-    palm_delta_rot_deg: float = 15.0  # current-palm incremental target. 120° absolute target은 Fabrics tracking을 깨뜨림.
+    # 15→8 (09.02). 실측: 게이트 이전 회전 지령이 **상한의 85~95%** 로, 정책이 상한을
+    #   항상 최대로 쓴다. 15°/step(=900°/s)이면 반경 45mm rim 이 한 policy step 에
+    #   8.4mm 를 휩쓸어 컵 벽보다 크고, **CCD 가 꺼져 있으면 그대로 뚫는다**
+    #   (사용자 관측: "물붓기 할 때만 급격 — source rim 이 target rim 으로 순간이동").
+    #   8°면 6.3mm 로 25% 줄지만 벽 두께보단 여전히 크므로 `sim.physx.enable_ccd` 와
+    #   **함께** 써야 한다. 둘 중 하나만으로는 안 닫힌다.
+    palm_delta_rot_deg: float = 8.0
     # 회전(action[3:6])은 타겟컵 근처에서만 충분히 허용.
     # mouth_xy >= far 이면 회전 0, <= near 이면 회전 1, 그 사이는 선형 보간.
     # near < far 여야 선형 보간이 성립하므로 작은 값(가까움) → 1, 큰 값(멀어짐) → 0 순서로 둔다.
@@ -617,6 +628,21 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     outcome_adr_num_increments: int = 8
     outcome_adr_increment_interval: int = 20000
     outcome_adr_trigger_threshold: float = 0.80  # 자세 성공률 80%+ 시 outcome 활성
+    # ── ADR 초기 레벨 고정 ────────────────────────────────────────────────
+    # ★체크포인트 재개의 전제조건이다. ADR 카운터는 **체크포인트에 안 담긴다** —
+    #   재개하면 0 부터 다시 시작해 `weight_pour_bead` 가 50→0 으로 떨어지고,
+    #   increment_interval 이 성능과 무관하게 간격으로만 오르므로(정책이 아무리
+    #   잘해도) 만렙 복귀까지 8×625 = 5,000 epoch 을 날린다.
+    # 값은 **진행률 0~1** 이다(카운터가 아니라). 음수 = 고정 안 함(0 에서 시작).
+    # ★스칼라 4개로 나눈 이유는 hydra 다. 한 문자열("success=1.0,outcome=1.0")로 두면
+    #   쉘이 따옴표를 벗기고 hydra override 문법이 값 안의 '='·',' 를 구조로 읽어
+    #   `mismatched input '='` 로 **런 자체가 시작 전에 죽는다**(09.02 실측). 스칼라면
+    #   `env.adr_initial_progress_outcome=1.0` 으로 끝이라 문법 함정이 아예 없다.
+    adr_initial_progress_success: float = -1.0
+    adr_initial_progress_outcome: float = -1.0
+    adr_initial_progress_noise: float = -1.0
+    adr_initial_progress_spill: float = -1.0
+
     pose_ready_thresh: float = 0.60   # 자세 성공 게이트: corridor_score ≥ (위치 준비)
     pose_tilt_thresh: float = 0.587   # 자세 성공 게이트: tilt_amount ≥ (1-cos100°)/2 → rim_antiparallel ≤ -0.174 (100°+)
 
@@ -699,6 +725,71 @@ class PourRightEnvCfg(DirectRLEnvCfg):
     #   "preset" : 캐시 없이 preset/pregrasp 합성 시작 (디버그용).
     # ★08.18 fail-loud: disk 로드 실패 시 rollout 으로 조용히 degrade 하지 않고
     #   즉시 에러다(env._build_warmstart_reset_cache) — s2r 트랙은 뱅크가 계약이다.
+    # 컵별 outcome 로깅의 EMA 계수(에피소드 배치당). 작을수록 매끄럽고 느리다.
+    #   0.05 = 최근 ~20 배치 규모. 컵당 num_envs/8 개씩 끝나므로 충분히 빠르다.
+    cup_outcome_ema_alpha: float = 0.05
+
+    # ------------------------------------------------------------------
+    # 좌팔(receiver) 액션 — both/pour_sensor 이식
+    # ------------------------------------------------------------------
+    # ★False = 좌팔 고정(12D, 기존 동작 그대로). True = 정책이 좌팔 TCP 를 3D 로 제어(15D).
+    #   켜면 받는 컵이 왼손에 **kinematic-follow** 하므로 목표가 움직인다.
+    #   ⚠액션 차원이 바뀌므로 체크포인트 호환이 깨진다 — 켤 때는 fresh 학습이다.
+    #   실기 관점: 좌팔을 열면 받는 컵 위치 오차를 정책이 능동적으로 흡수한다
+    #   (좌팔 고정 학습은 목표 자세를 **하나만** 봐서 위치 오차에 취약하다).
+    # ── 받는 컵을 **실제 물체로** ───────────────────────────────────────────
+    # ★09.02: "컵이 컵을 통과" 는 결국 이 한 줄에서 나왔다. 받는 컵이
+    #   `kinematic_enabled=True` + 매 스텝 `write_root_pose_to_sim()` 이라 물리적으로
+    #   **이동하지 않고 위치가 대입**된다. 궤적이 없으니 CCD 가 sweep 할 것도 없고
+    #   접촉 응답도 안 생긴다. offset·좌팔게인·CCD 를 차례로 고쳐도 안 닫힌 이유다.
+    #   True = **테이블에 놓인 보통 강체**(중력 on, 아무도 안 잡음). 매 스텝 pose
+    #   대입도 멈춘다. 좌팔 고정 모드 전용이며, 좌팔이 컵을 옮기는 모드에서는
+    #   그리퍼 파지가 필요한데 아직 안 풀렸다(손가락 팁 쐐기 형상, 09.02).
+    left_target_cup_physical: bool = True
+    # (보류) 좌 그리퍼 압착값 — 테이블 안착 모드에서는 안 쓴다. 15D 파지 재개 시 참조.
+    # ★검증된 좌 파지 정책 **v2E29_band80_ep3550** 실측 중앙값(412 파지 프레임):
+    #   q=0.02773 · 손가락 간격 67.8mm · 컵 pos(base 로컬) (−0.005, +0.001, +0.0505)
+    #   — 컵 배치는 우리 `left_cup_follow_local_z=0.05` 와 이미 일치했고, 다른 건
+    #   그리퍼가 `LEFT_ARM_REST_JOINT_POS` 의 **0.044(완전개방)** 이었다는 점뿐이다.
+    #   열린 채로는 컵이 안 물려, 팔이 139mm 움직일 때 컵이 289mm 날아갔다(실측).
+    #   압착하면 미끄럼 0.3mm. 파지 대역(컵 지름 58/68/78mm)과도 정합한다.
+    left_gripper_grip_q: float = 0.02773
+    # 테이블 안착 시 컵 원점 z. `finalize_after_overrides()` 가 스펙에서 파생한다
+    #   (`table_surface_z - spec.inside_z_min`). 리터럴 수정 금지.
+    left_target_cup_rest_z: float = 0.0
+    # ★컵이 손에 물리는 **위치와 자세**도 v2E29 실측을 그대로 쓴다.
+    #   z 만 가져오고 x·y·자세를 버리면 컵의 **다른 단면**이 물린다 — shaker 는 계단형
+    #   원뿔이라 높이마다 지름이 58/68/78mm 로 달라, 12mm 만 어긋나도 67.5mm 간격에
+    #   안 들어가고 첫 스텝에 0.34m/s 로 튕긴다(09.02 실측).
+    #   quat 은 wxyz. 기존 R_y(90°) 고정을 대체한다.
+    left_cup_follow_offset_b: tuple[float, float, float] = (-0.0047, 0.0011, 0.0505)
+    left_cup_follow_quat_b: tuple[float, float, float, float] = (
+        0.0814, 0.7225, 0.0932, 0.6645)
+
+    left_arm_action_enable: bool = False
+    left_tcp_action_delta_m: float = 0.01        # policy step 당 TCP 최대 이동량 [m]
+    left_tcp_workspace_range: tuple[float, float, float] = (0.08, 0.08, 0.08)  # rest 기준 half-extent
+    # ★z 하강만 별도 캡(기본 0 = rest 아래 금지). 컵이 kinematic-follow 라 작업면을 뚫는다.
+    left_tcp_z_down_m: float = 0.0
+    # 컵이 왼손 body frame 에서 얼마나 위인가 [m] — preset `compute_left_cup_pose_from_fk` 와 같은 값
+    # ★0.05 여야 preset 고정배치(LEFT_TARGET_CUP_POS_ENV_LOCAL)와 정확히 일치한다 —
+    #   FK(rest)+R·[0,0,0.05] = (0.2904, 0.0290, 0.3238) = 그 상수. 0.04 로 두면
+    #   고정 모드와 좌팔 모드의 컵 위치가 1cm 어긋나 뱅크 기하가 틀어진다(09.02).
+    left_cup_follow_local_z: float = 0.05
+
+    # ------------------------------------------------------------------
+    # 우팔 게인 프로필 — **warm 뱅크 생산자와 같아야** 한다
+    # ------------------------------------------------------------------
+    # ★같은 grasp_s2r 이라도 런마다 게인 분기가 다르다:
+    #     "kuka" = KUKA 기본 분기 (d3·E1 뱅크가 이 아래서 만들어졌다)
+    #     "r2s"  = 실측 정합 분기 (`HDGP_S2R_REAL_GAINS=1`, G1 뱅크가 여기서 나왔다)
+    #   09.02 실측 대조 — 팔이 **2.5~10배** 다르다:
+    #     r_aj_1-3  k 300→70 · r_aj_4  300→60 · r_aj_5 100→10 · r_aj_6 50→10 · r_aj_7 25→10
+    #   warm 자세는 "그 강성에서 컵 무게에 팔이 이만큼 내준" 평형이므로, 뱅크와 다른
+    #   프로필로 복원하면 평형이 아니라 **초기 응력**이 된다(09.01 에 그렇게 컵이 튕겼다).
+    #   ⚠뱅크를 바꿀 때 이 필드를 같이 바꿔라. 손 게인(k=5/d=2/effort 1.5)은 양쪽 동일이라 불변.
+    arm_gain_profile: str = "kuka"
+
     warm_state_source: str = "disk"
     # ★08.18 pour_sensor(a1) 재배선: right/grasp_sensor(openarm_tesollo_sensor_rl)
     #   산출물 전용. 수집 = collect_grasp_v1_warm_states.py --robot tesollo_sensor.
@@ -758,6 +849,11 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             restitution=0.0,
         ),
         physx=sim_utils.PhysxCfg(
+            # ★연속 충돌 검출. 기본값 False 는 **이산 검출**이라 매 스텝의 위치만 찍어
+            #   겹침을 본다 — 빠르게 도는 소스 컵 rim 이 한 스텝에 받는 컵 벽을 통째로
+            #   건너뛰면 겹친 순간이 샘플링되지 않아 **그냥 통과한다**(09.02 관측).
+            #   self-collision(누가 충돌하나)과는 무관한, "언제 검출하나"의 문제다.
+            enable_ccd=True,
             # [09.01] 0.05→0.2: 생산자(grasp_s2r) 값으로 복귀. 비드 반발을 위해 낮췄던
             #   값인데, 파지 접촉의 반발 거동까지 같이 바꿔 warm 재현을 흔든다.
             bounce_threshold_velocity=0.2,
@@ -793,7 +889,7 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "scene_objects/table.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "multi_obj/scene_objects/table.usd"),
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
                 disable_gravity=True,
@@ -907,8 +1003,15 @@ class PourRightEnvCfg(DirectRLEnvCfg):
             ),
             "openarm_left_arm": ImplicitActuatorCfg(
                 joint_names_expr=["l_aj_[1-7]"],
-                stiffness=2000.0,   # 400→2000: 오른팔 충돌 저항 강화
-                damping=200.0,
+                # ★2000→400 (both/pour_sensor 와 동일). 2000 은 좌팔이 **고정**이던
+                #   12D 시절 "오른팔 충돌 저항"을 노린 값이라, 좌팔이 움직이는 지금은
+                #   근거가 없다. 뻣뻣하면 IK 목표에 순간 스냅하고, 받는 컵은 매 스텝
+                #   write_root_pose_to_sim() 으로 **텔레포트**되므로 한 스텝 이동량이
+                #   커져 **벽을 뚫고 지나간다**(kinematic 강체는 CCD 가 없다).
+                #   09.02 영상에서 "지나치다 급격히 중심으로 오며 벽을 순간이동"으로 관측.
+                #   both 주석도 같은 이유를 적어뒀다: "난폭 snap 완화".
+                stiffness=400.0,
+                damping=80.0,
             ),
             # ★★손 게인은 **warm 뱅크 생산자와 같아야** 한다. 09.01 실측:
             #   생산자(grasp_s2r b1/d3) k=5 · d=2 · effort_limit_sim=1.5 N·m,
@@ -1003,13 +1106,21 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         spawn=UsdFileCfg(
             usd_path=_os.path.join(_ASSETS_DIR, "cup/shaker_closed_rl.usd"),
             activate_contact_sensors=False,
+            # ★`finalize_after_overrides()` 가 `left_target_cup_physical` 에 맞춰
+            #   덮어쓴다. 아래 리터럴은 옛 유령 기본값일 뿐이다.
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
                 disable_gravity=True,
             ),
+            # ★음수 offset 금지. IsaacLab 문서상 이 값들은 **non-negative** 여야 하고
+            #   (None = "USD 값 유지"의 센티널), -0.1 은 실제로 PhysX 에 기록되어
+            #   "10cm 관통할 때까지 접촉 없음" = 컵 지름 9cm 기준 **충돌 무력화**였다.
+            #   pour_v5 에서 물려받은 값이고, 받는 컵이 고정이던 한손 구성에서는
+            #   아무것도 닿지 않아 드러나지 않았다. 좌팔이 그 컵을 움직이는 양팔
+            #   구성에서 컵이 컵을 통과하며 발각됐다(09.02). both/pour_sensor 와 동일값.
             collision_props=CollisionPropertiesCfg(
-                contact_offset=-0.1,
-                rest_offset=-0.1,
+                contact_offset=0.02,
+                rest_offset=0.0,
             ),
         ),
     )
@@ -1039,6 +1150,12 @@ class PourRightEnvCfg(DirectRLEnvCfg):
           `InteractiveScene.__init__` 이 소비하므로 `_setup_scene` 은 이미 늦다
           (grasp_s2r 08.29 실측).
         """
+        # ★액션 차원은 좌팔 플래그에서 **파생**한다. cfg 상수로 두면 hydra 오버라이드
+        #   (`env.left_arm_action_enable=true`)가 차원에 안 실려 조용히 12D 로 돈다.
+        _n_act = NUM_ACTIONS_WITH_LEFT if self.left_arm_action_enable else NUM_ACTIONS
+        self.action_space = _n_act
+        self.num_actions = _n_act
+        self._apply_arm_gain_profile()
         self._apply_object_bank()
         self._apply_target_cup_spec()
         # 스폰 높이는 여기 한 곳에서만 파생한다(이중 패딩 사고 차단).
@@ -1047,6 +1164,55 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         self.cup_cfg.init_state.pos = [
             self.object_spawn_x_center, self.object_spawn_y_center, self.object_spawn_z,
         ]
+
+    #: 우팔 게인 프로필 — (관절 정규식, k, d, joint friction). effort_limit_sim 은 공통 300.
+    #   r2s 는 G1 런 dump(`HDGP_S2R_REAL_GAINS=1`) 실측값. damping 이 관절마다 다르므로
+    #   `r_aj_[1-4]` 로 묶지 못하고 7개로 나눈다.
+    _ARM_GAIN_PROFILES = {
+        "kuka": (
+            ("r_aj_[1-4]", 300.0, 45.0, None),
+            ("r_aj_5", 100.0, 20.0, None),
+            ("r_aj_6", 50.0, 15.0, None),
+            ("r_aj_7", 25.0, 15.0, None),
+        ),
+        "r2s": (
+            ("r_aj_1", 70.0, 7.053, 0.0),
+            ("r_aj_2", 70.0, 4.182, 0.0),
+            ("r_aj_3", 70.0, 7.804, 0.0),
+            ("r_aj_4", 60.0, 6.531, 0.0),
+            ("r_aj_5", 10.0, 2.236, 0.0),
+            ("r_aj_6", 10.0, 0.580, 0.0),
+            ("r_aj_7", 10.0, 0.242, 0.0),
+        ),
+    }
+
+    def _apply_arm_gain_profile(self) -> None:
+        """우팔 액추에이터를 선택한 프로필로 **다시 조립**한다. 멱등.
+
+        ★hydra 오버라이드(`env.arm_gain_profile=r2s`)가 실리려면 여기여야 한다 —
+          클래스 기본 dict 에만 적어두면 오버라이드가 조용히 무시된다.
+        """
+        prof = str(self.arm_gain_profile)
+        if prof not in self._ARM_GAIN_PROFILES:
+            raise RuntimeError(
+                f"arm_gain_profile '{prof}' 를 모른다. "
+                f"가능: {sorted(self._ARM_GAIN_PROFILES)}")
+        acts = self.robot_cfg.actuators
+        for key in [k for k in acts if k.startswith("openarm_right_arm")
+                    or k.startswith("openarm_right_wrist")]:
+            acts.pop(key)
+        for i, (expr, k, d, fr) in enumerate(self._ARM_GAIN_PROFILES[prof]):
+            kw = dict(joint_names_expr=[expr], stiffness=k, damping=d,
+                      effort_limit_sim=300.0)
+            if fr is not None:
+                kw["friction"] = fr
+            acts[f"openarm_right_arm_{i}"] = ImplicitActuatorCfg(**kw)
+        # ★런 dump 는 finalize **전** 스냅샷이라 여기서 정해진 게인이 안 담긴다
+        #   (dump 의 actuators 는 클래스 기본값 그대로다). 로그에 남겨야 나중에
+        #   "이 런이 어떤 팔로 학습했나"를 추론이 아니라 확인으로 답할 수 있다.
+        _g = " · ".join(f"{e} k={k:g}/d={d:g}"
+                        for e, k, d, _ in self._ARM_GAIN_PROFILES[prof])
+        print(f"[pour] 팔 게인 프로필 '{prof}' — {_g}", flush=True)
 
     def _apply_target_cup_spec(self) -> None:
         """받는 컵의 **자산과 기하를 같은 스펙에서** 동시에 파생한다. 멱등.
@@ -1067,6 +1233,31 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         self.target_inside_z_max = spec.rim_z
         self.target_mouth_z = spec.rim_z
         self.target_cup_opening_pos_b = (0.0, 0.0, spec.rim_z)
+        self._apply_target_cup_physical(spec)
+
+    def _apply_target_cup_physical(self, spec) -> None:
+        """받는 컵을 유령(kinematic 텔레포트) / 실물(동적 강체) 중 하나로 조립한다. 멱등.
+
+        중력은 **양쪽 다 끈다**. 실물 모드에서도 컵은 그리퍼 손가락 사이에 스폰되므로
+        중력을 켜면 잡히기 전에 떨어진다. 끈 채로 두면 접촉만으로 붙잡혀 팔을 따라온다.
+        """
+        rp = self.left_target_cup_cfg.spawn.rigid_props
+        if not self.left_target_cup_physical:
+            rp.kinematic_enabled = True                 # 유령: 매 스텝 텔레포트
+            rp.disable_gravity = True
+            return
+        # 실물 = **테이블에 놓인 보통 물체**. 아무도 안 잡는다.
+        #   09.02: 왼손이 든 전제(공중 4.7cm)로는 유령이거나 튕김뿐이었다 —
+        #   그리퍼로 물리려 v2E29 pose·압착까지 이식했으나 손가락이 컵 벽에 박혀
+        #   첫 스텝에 0.46m/s 로 차였다(512/512 이탈). 테이블에 놓으면 그 문제가 없다.
+        if self.left_arm_action_enable:
+            raise RuntimeError(
+                "테이블 안착 실물 컵은 좌팔이 옮길 수 없다 — left_arm_action_enable=False "
+                "로 두거나, 그리퍼 파지를 먼저 해결할 것(손가락 팁 실측 필요).")
+        rp.kinematic_enabled = False
+        rp.disable_gravity = False                      # ★중력 켬 — 테이블이 받친다
+        self.left_target_cup_rest_z = (
+            float(self.table_surface_z) - float(spec.inside_z_min))
 
     def _apply_object_bank(self) -> None:
         """뱅크 크기에 따라 스폰·물리복제·접촉필터를 한 곳에서 조립한다.
@@ -1105,15 +1296,17 @@ class PourRightEnvCfg(DirectRLEnvCfg):
         #   env 간 충돌 격리가 사라진다. 작업면이 원시 정적 프림이면 전 env 가 한 충돌
         #   그룹에 남아 팔이 물린다(08.29 실측 abnormal 0.849 · joint_err 0.74 rad).
         #   pour 는 테이블이 이미 RigidObject 라 USD 만 kinematic 사본으로 바꾸면 된다.
-        _rigid_usd = _os.path.join(_ASSETS_DIR, "env", "usd", "env_rigid.usd")
+        #   ★09.05 env_v1 은 루트에 kinematic RigidBodyAPI 가 저작돼 있다(사본 불필요).
+        #   ⚠상면이 0.205 로 5 mm 올라갔다 — `table_surface_z`(0.2)·warm 뱅크 게이트는
+        #     새 env 로 만든 grasp_s2r 뱅크와 함께 갱신할 것(옛 뱅크는 게이트 1e-4 에 걸린다).
+        _rigid_usd = _os.path.join(_ASSETS_DIR, "simulation_setting/env_v1/usd/env_v1.usda")
         if not _os.path.isfile(_rigid_usd):
             raise RuntimeError(
-                f"다물체({bank.name})는 kinematic 작업면이 필요하다: {_rigid_usd} 없음 — "
-                "`python3 scripts/assets_tools/build_env_rigid_usd.py` 로 먼저 빌드할 것")
+                f"다물체({bank.name})는 kinematic 작업면이 필요하다: {_rigid_usd} 없음")
         self.table_cfg.spawn.usd_path = _rigid_usd
         # ★★USD 만 바꾸고 **위치를 그대로 두면 작업면이 통째로 어긋난다** — 09.01 실측 사고.
         #   `scene_objects/table.usd` 는 [0.5725, 0.003, 0.2] 에 놓도록 만든 소품이고,
-        #   `env/usd/env_rigid.usd` 는 **원점에 놓도록 저작된 씬 전체**다(pxr 실측:
+        #   `simulation_setting/env_v1` 은 **원점에 놓도록 저작된 씬 전체**다(09.05 CAD 정정: 상면 z=+0.205 · 구 env.usd 실측:
         #   상면 z=+0.200 · x[-0.75,+0.47] · y[-0.45,+0.45], env.usd 와 정점까지 동일).
         #   위치를 안 바꾸면 상면이 z=0.4 로 20cm 뜨고 x 가 57cm 밀려, `table_surface_z=0.2`
         #   기준으로 계산한 스폰고·warm 상태와 전부 어긋난다(생산자 grasp_s2r 은 원점 배치).

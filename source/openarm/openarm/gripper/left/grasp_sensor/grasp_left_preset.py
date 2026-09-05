@@ -173,21 +173,20 @@ IK_ACTION_SCALE = (0.02, 0.02, 0.02, 0.05, 0.05, 0.05)
 # ---------------------------------------------------------------------------
 # 씬 기하
 # ---------------------------------------------------------------------------
-# ★씬은 `assets/env/usd/env.usd` 한 덩어리다(사용자 지정, 08.20). **Env 원점 = 로봇
+# ★씬은 `assets/simulation_setting/env_v1/usd/env_v1.usda` 한 덩어리다(09.05 Fusion CAD 정정). **Env 원점 = 로봇
 #   base link 원점**이라 오프셋 없이 (0,0,0) 에 그대로 붙인다.
 #   metersPerUnit=1 · Z-up · 변환(xformOp) 이 하나도 없어 **메시 좌표가 곧 Env 프레임 값**
-#   이다. 정적 삼각메시 콜라이더 9 개(PhysicsCollisionAPI, approximation="none")로
-#   rigid body 가 아니다 — rigid_props 를 씌우면 안 된다(정적 콜라이더가 동적이 된다).
+#   이다. 루트 Xform 에 kinematic RigidBodyAPI 가 저작돼 있고(중력·외력 무시 = 정적과
+#   물리 동등) 충돌은 병합 삼각메시 1개(approximation="none") — rigid_props 를 씌우면 안 된다.
 #
-#   env.usda 의 point3f[] points 를 직접 파싱해 얻은 AABB(단위 m):
-#     base_plate  x[-0.750, 0.450]  y[±0.450]  z[-0.025, -0.015]   바닥판
-#     platform    x[-0.175, 0.035]  y[±0.175]  z[-0.015,  0.000]   로봇 받침(상면 z=0)
-#     pad_c/l/r   x[ 0.038, 0.170]  y 3 대역   z[-0.015,  0.000]
-#     pillar_c/l/r x[0.105, 0.165]  y 3 대역   z[ 0.000,  0.190]
-#     top_plate   x[ 0.070, 0.470]  y[±0.450]  z[ 0.190,  0.200]   ★작업면(상면 z=0.200)
+#   env_v1.usda 의 point3f[] points 를 직접 파싱해 얻은 AABB(단위 m, 메시는 재질별):
+#     Metal_999999(바닥판)      x[-0.750, 0.450]  y[±0.450]  z[-0.025, -0.015]
+#     Plastic_050505(받침+패드) x[-0.175, 0.170]  y[±0.362]  z[-0.015,  0.000]   로봇 받침(상면 z=0)
+#     Generic_B2B2B2(기둥 3)    x[ 0.105, 0.165]  y[±0.330]  z[ 0.000,  0.195]
+#     PaintedMetal_000000(상판) x[ 0.070, 0.470]  y[±0.450]  z[ 0.195,  0.205]   ★작업면(상면 z=0.205)
 #
 #   ⚠ 이전 table.usd 대비 두 가지가 달라졌고 둘 다 파급이 크다:
-#     1. 작업면이 0.215 → **0.200** (15 mm 하강) → 컵 스폰·리프트 임계·종료 임계 전부 이동
+#     1. 작업면이 0.215 → 0.200 → **0.205**(09.05: 받침대 190→195 mm CAD 정정, 실기 줄자 0.205) → 컵 스폰·리프트 임계·종료 임계 전부 이동
 #     2. 판 x 범위가 [0.210, 0.935] → **[0.070, 0.470]** — 로봇 쪽으로 14 cm 다가오고
 #        앞쪽으로 46.5 cm 짧아졌다. 홈 자세 간섭과 도달 범위를 **반드시 재측정**할 것.
 #   ⚠ 과거 이 값을 두 번 틀렸다(기록): right/grasp_sensor 의 0.2082 는 컵 bbox 반높이로
@@ -216,9 +215,9 @@ GRIPPER_COLLIDER_LINKS = (
     "l_hl_gripper_right_finger",
 )
 
-ENV_USD_REL = "env/usd/env.usd"
+ENV_USD_REL = "simulation_setting/env_v1/usd/env_v1.usda"
 ENV_POS = (0.0, 0.0, 0.0)          # ★로봇 base link 원점과 일치 — 오프셋 없음
-TABLE_SURFACE_Z = 0.200            # top_plate 상면
+TABLE_SURFACE_Z = 0.205            # top_plate 상면 (env_v1: z 0.195~0.205, 09.05)
 WORK_SURFACE_X = (0.070, 0.470)    # top_plate x 범위
 WORK_SURFACE_Y = (-0.450, 0.450)   # top_plate y 범위
 ENV_FLOOR_Z = -0.015               # base_plate 상면

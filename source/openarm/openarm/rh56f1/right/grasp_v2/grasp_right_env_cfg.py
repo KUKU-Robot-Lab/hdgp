@@ -91,7 +91,7 @@ _PRIMITIVE_ALL: tuple[str, ...] = _PRIMITIVE_CURRICULUM_STAGE1 + (
 
 # 현재 활성 물체군(초기 학습 = STAGE1).
 # visdex 실물 뱅크(접근 B): 디렉토리 스캔. code = "visdex:<name>".
-_VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
+_VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "multi_obj", "visdex_objects", "USD")
 # <name>/<name>.usd 존재하는 디렉토리만 물체로 인정 (.ruff_cache 등 잡동사니 유입 시
 # onehot N이 틀어지고 MultiAsset spawn이 FileNotFoundError로 깨짐 — 07.10 실측)
 _VISDEX_NAMES: tuple[str, ...] = tuple(sorted(
@@ -586,7 +586,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "scene_objects/table.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "multi_obj/scene_objects/table.usd"),
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
                 disable_gravity=True,

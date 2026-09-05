@@ -100,9 +100,9 @@ def build_robot_cfg(pair: _bm.BimanualPair, self_collisions: bool,
     )
 
 
-# 환경 픽스처 — grasp_lift_fabric 과 동일 (env.usd, top_plate 상면 z=0.200)
+# 환경 픽스처 — grasp_lift_fabric 과 동일 (env_v1.usda, top_plate 상면 z=0.205 · 09.05)
 ENV_FIXTURE_SPAWN = sim_utils.UsdFileCfg(
-    usd_path=os.path.join(_ASSETS_DIR, "env/usd/env.usd"),
+    usd_path=os.path.join(_ASSETS_DIR, "simulation_setting/env_v1/usd/env_v1.usda"),
 )
 ENV_FIXTURE_PRIM = "/World/envs/env_.*/EnvFixture"
 

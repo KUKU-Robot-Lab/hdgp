@@ -32,7 +32,7 @@ import shutil
 from pxr import Sdf, Usd
 
 _HDGP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_VISDEX = os.path.join(_HDGP_ROOT, "assets", "visdex_objects", "USD")
+_VISDEX = os.path.join(_HDGP_ROOT, "assets", "multi_obj", "visdex_objects", "USD")
 _OUT_DIR = os.path.join(_HDGP_ROOT, "assets", "cup")
 
 # 참조 자산(assets/cup/cup_big_sdf.usd, pour 가 실제로 쓰는 것)의 apiSchemas 를 그대로 맞춘다.

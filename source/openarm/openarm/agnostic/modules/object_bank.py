@@ -29,7 +29,7 @@ _MODULES_DIR = os.path.dirname(os.path.abspath(__file__))
 _HDGP_ROOT = os.path.normpath(os.path.join(_MODULES_DIR, "..", "..", "..", "..", ".."))
 ASSETS_DIR = os.path.join(_HDGP_ROOT, "assets")
 CUP_ROOT = os.path.join(ASSETS_DIR, "cup")
-VISDEX_ROOT = os.path.join(ASSETS_DIR, "visdex_objects", "USD")
+VISDEX_ROOT = os.path.join(ASSETS_DIR, "multi_obj", "visdex_objects", "USD")
 
 # 전 물체 공통 기본 질량 [kg] — pour_v1 실컵과 동일.
 # ADR mass DR 의 곱셈 기준이라 여기를 바꾸면 실효 질량 범위 전체가 이동한다.

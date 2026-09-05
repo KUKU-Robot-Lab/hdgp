@@ -509,7 +509,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "scene_objects/table.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "multi_obj/scene_objects/table.usd"),
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
                 disable_gravity=True,

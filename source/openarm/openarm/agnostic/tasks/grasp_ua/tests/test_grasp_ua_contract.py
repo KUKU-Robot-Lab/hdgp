@@ -820,11 +820,11 @@ def test_multi_asset_requires_kinematic_table_asset():
     사본은 `scripts/assets_tools/build_env_rigid_usd.py` 가 만든다.
     """
     cfg = _code(_CFG)
-    assert '"env_rigid.usd"' in cfg
-    assert "build_env_rigid_usd.py" in _CFG, "빌드 방법 안내가 없다"
-    i = cfg.index('"env_rigid.usd"')
-    blk = cfg[i:i + 500]
-    assert "_os.path.isfile" in blk and "raise RuntimeError" in blk, "존재 검사가 없다"
+    assert "simulation_setting/env_v1/usd/env_v1.usda" in cfg
+    # ★09.05: env_v1 은 루트에 kinematic RigidBodyAPI 가 저작돼 있다 — 사본 대신 저작 검사.
+    i = cfg.index("physics:kinematicEnabled = 1")
+    blk = cfg[max(0, i - 800):i + 300]
+    assert "_os.path.isfile" in blk and "raise RuntimeError" in blk, "존재·kinematic 검사가 없다"
     # 단일 물체로 되돌아가면 원본 USD 로 복원돼야 한다(멱등성).
     assert "self.table_cfg.spawn.usd_path = self._table_usd_base" in cfg
 

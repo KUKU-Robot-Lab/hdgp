@@ -92,7 +92,7 @@ _PRIMITIVE_ALL: tuple[str, ...] = _PRIMITIVE_CURRICULUM_STAGE1 + (
 
 # 현재 활성 물체군(초기 학습 = STAGE1).
 # visdex 실물 뱅크(접근 B): 디렉토리 스캔. code = "visdex:<name>".
-_VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
+_VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "multi_obj", "visdex_objects", "USD")
 _VISDEX_NAMES: tuple[str, ...] = tuple(sorted(
     _n for _n in _os.listdir(_VISDEX_ROOT)
     if _os.path.isfile(_os.path.join(_VISDEX_ROOT, _n, f"{_n}.usd"))
@@ -634,7 +634,7 @@ class GraspLeftEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "scene_objects/table.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "multi_obj/scene_objects/table.usd"),
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
                 disable_gravity=True,

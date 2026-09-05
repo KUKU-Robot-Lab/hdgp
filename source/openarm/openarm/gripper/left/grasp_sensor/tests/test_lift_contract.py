@@ -24,7 +24,7 @@ from openarm.gripper.left.grasp_sensor import grasp_left_preset as P
 _HDGP = Path(OPENARM_ROOT_DIR).resolve().parents[2]
 _ROBOT_URDF = _HDGP / "assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.urdf"
 _CUP_USD = _HDGP / "assets/cup" / P.CUP_USD_NAME
-_TABLE_USD = _HDGP / "assets/scene_objects/table.usd"
+_TABLE_USD = _HDGP / "assets/multi_obj/scene_objects/table.usd"
 _CFG_SRC = Path(__file__).resolve().parents[1] / "grasp_left_env_cfg.py"
 # 상속 원본. 커리큘럼 onset 처럼 "레퍼런스가 정하는 값"은 여기서 읽어야
 # 레퍼런스가 바뀌었을 때 계약이 조용히 거짓이 되지 않는다.
@@ -87,7 +87,7 @@ def test_gripper_stroke_matches_urdf_limit():
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(not _TABLE_USD.is_file(), reason="테이블 USD 없음")
 def test_work_surface_matches_env_usd_mesh_points():
-    """★작업면 z 는 `env.usd` 의 `top_plate` 메시 점에서 직접 나와야 한다.
+    """★작업면 z 는 `env_v1.usda` 의 상판 메시(`PaintedMetal_000000`) 점에서 직접 나와야 한다.
 
     env.usd 는 xformOp 이 하나도 없어 **메시 좌표가 곧 Env 프레임 값**이고, Env 원점은
     로봇 base link 원점이다(사용자 지정). 그래서 top_plate 의 max z 가 작업면이다.
@@ -96,9 +96,9 @@ def test_work_surface_matches_env_usd_mesh_points():
       중간값이고, USD BBoxCache 로 읽으면 extent 에 scale 이 **또** 곱해져 0.2004 가 된다.
       메시 점을 직접 읽으면 두 함정과 무관하다.
     """
-    usda = _HDGP / "assets/env/usd/env.usda"
+    usda = _HDGP / "assets/simulation_setting/env_v1/usd/env_v1.usda"
     if not usda.is_file():
-        pytest.skip("env.usda 없음")
+        pytest.skip("env_v1.usda 없음")
     txt = usda.read_text(encoding="utf-8")
 
     def aabb(mesh_name: str):
@@ -114,13 +114,13 @@ def test_work_surface_matches_env_usd_mesh_points():
     assert "xformOp" not in txt, "env.usd 에 변환이 생겼다 — 메시 좌표를 그대로 못 쓴다"
     assert "metersPerUnit = 1" in txt, "단위가 m 이 아니다(0.01 이면 자산이 100 배 작아진다)"
 
-    top = aabb("top_plate")
+    top = aabb("PaintedMetal_000000")   # env_v1: 메시가 재질별로 나뉜다 — 상판 = 검정 도장 금속
     assert math.isclose(P.TABLE_SURFACE_Z, top[2][1], abs_tol=1e-6)
     assert math.isclose(P.WORK_SURFACE_X[0], top[0][0], abs_tol=1e-6)
     assert math.isclose(P.WORK_SURFACE_X[1], top[0][1], abs_tol=1e-6)
     # 로봇이 서는 면과 바닥판
-    assert math.isclose(P.ROBOT_MOUNT_Z, aabb("platform")[2][1], abs_tol=1e-6)
-    assert math.isclose(P.ENV_FLOOR_Z, aabb("base_plate")[2][1], abs_tol=1e-6)
+    assert math.isclose(P.ROBOT_MOUNT_Z, aabb("Plastic_050505")[2][1], abs_tol=1e-6)
+    assert math.isclose(P.ENV_FLOOR_Z, aabb("Metal_999999")[2][1], abs_tol=1e-6)
     # 과거에 틀렸던 두 값이 다시 들어오지 않도록
     assert not math.isclose(P.TABLE_SURFACE_Z, 0.2082, abs_tol=1e-4)
     assert not math.isclose(P.TABLE_SURFACE_Z, 0.2004, abs_tol=1e-4)

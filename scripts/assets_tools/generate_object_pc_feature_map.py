@@ -32,7 +32,7 @@ def build_codes(assets_dir: Path) -> list[str]:
     # cup object used by 5g_grasp_right_v2
     codes.append("cup")
     # primitive bank codes (if present)
-    primitive_root = assets_dir / "primitives" / "USD"
+    primitive_root = assets_dir / "multi_obj" / "primitives" / "USD"
     if primitive_root.exists():
         subdirs = sorted([p.name for p in primitive_root.iterdir() if p.is_dir()])
         for name in subdirs:
@@ -40,7 +40,7 @@ def build_codes(assets_dir: Path) -> list[str]:
     # fallback primitive key
     codes.append("primitive:default")
     # visdex object bank codes (if present)
-    visdex_root = assets_dir / "visdex_objects" / "USD"
+    visdex_root = assets_dir / "multi_obj" / "visdex_objects" / "USD"
     if visdex_root.exists():
         for name in sorted(p.name for p in visdex_root.iterdir() if p.is_dir()):
             codes.append(f"visdex:{name}")
@@ -61,7 +61,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("/home/user/rl_ws/hdgp/assets/object_pc_features/openarm_right_object_code_feat_dim64.pt"),
+        default=Path("/home/user/rl_ws/hdgp/assets/multi_obj/object_pc_features/openarm_right_object_code_feat_dim64.pt"),
     )
     args = parser.parse_args()
 
