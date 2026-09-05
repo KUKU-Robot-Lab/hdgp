@@ -709,6 +709,6 @@
   <joint name="head_j_cam_view" type="fixed">
     <parent link="head_camera" />
     <child link="head_cam_view" />
-    <origin xyz="0.0115 9.6e-05 0.036327" rpy="0 0 0" />
+    <origin xyz="0.01236 0.044096 0.036317" rpy="0 0 0" />
   </joint>
 </robot>

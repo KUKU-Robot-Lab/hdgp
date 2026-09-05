@@ -44,7 +44,8 @@ schema:
 camera_view_frame:
   link: head_cam_view
   parent_link: head_camera
-  xyz: [0.0115, 9.6e-05, 0.036327]
+  rgb_lens_usd_frame: ir_projector_frame  # head_v1.usda label of the aperture that is the RGB lens (hand-eye 2026-09-05)
+  xyz: [0.01236, 0.044096, 0.036317]
   rpy: [0, 0, 0]
 camera_optical_frames:
   parent_link: head_camera
