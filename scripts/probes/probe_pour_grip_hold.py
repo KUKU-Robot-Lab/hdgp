@@ -41,6 +41,11 @@ parser.add_argument("--num_envs", type=int, default=8, help="뱅크 물체 수�
 parser.add_argument("--steps", type=int, default=240)
 parser.add_argument("--out", type=str, default="", help="주면 컵별 PNG 도 저장")
 parser.add_argument("--cam_offset", type=str, default="0.34,0.30,0.16")
+# ★이 프로브는 `parse_env_cfg` 를 쓰므로 hydra `env.x=` 오버라이드가 **안 먹는다**.
+#   (09.02: `env.arm_gain_profile=r2s env.warm_state_paths=[...]` 를 줬는데 조용히
+#    무시되고 옛 뱅크·옛 게인으로 돌았다.) 바꿀 것은 명시 인자로 받는다.
+parser.add_argument("--bank", type=str, default="", help="warm 뱅크 HDF5 경로(비우면 cfg 기본)")
+parser.add_argument("--arm_gains", type=str, default="", help="우팔 게인 프로필 kuka|r2s")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.out:
@@ -84,6 +89,12 @@ def main() -> None:
     # ★`parse_env_cfg` 를 쓴다 — play.py 처럼 run dump 를 복원하면 **지금 고친 cfg** 가
     #   아니라 옛 런의 설정을 검사하게 된다(09.01에 한 번 속았다).
     cfg = parse_env_cfg(args_cli.task, num_envs=args_cli.num_envs)
+    if args_cli.bank:
+        cfg.warm_state_paths = (str(Path(args_cli.bank).expanduser().resolve()),)
+    if args_cli.arm_gains:
+        cfg.arm_gain_profile = args_cli.arm_gains
+    # ★파생 구조(게인 재조립·뱅크 경로)를 다시 태운다 — cfg 필드만 바꾸면 반영 안 된다.
+    cfg.finalize_after_overrides()
     if args_cli.out:
         cfg.scene.shot_cam = CameraCfg(
             prim_path="{ENV_REGEX_NS}/shot_cam", update_period=0.0,
@@ -105,9 +116,9 @@ def main() -> None:
     bank = _ob.get(env.cfg.object_bank)
     names = [bank.specs[k].id for k in bank.assign_indices(env.num_envs)]
 
-    print(f"[GRIP] 손 게인 대조 — cfg 액추에이터:", flush=True)
+    print(f"[GRIP] 게인 프로필 '{env.cfg.arm_gain_profile}' — cfg 액추에이터:", flush=True)
     for key, act in env.cfg.robot_cfg.actuators.items():
-        if "hand" in key:
+        if "hand" in key or "right_arm" in key:
             print(f"        {key:26s} k={act.stiffness} d={act.damping} "
                   f"effort_sim={getattr(act, 'effort_limit_sim', None)}", flush=True)
 
@@ -184,7 +195,8 @@ def main() -> None:
     print("\n[GRIP] 컵별 최종:", flush=True)
     print(f"  {'컵':16s}{'접촉수':>7s}{'팁힘평균N':>11s}{'드리프트°':>11s}")
     for i in range(env.num_envs):
-        print(f"  {names[i]:16s}{int(nc[i]):7d}{float(tf[i]):11.3f}{float(drift[i]):11.1f}")
+        print(f"  {names[i]:16s}{int(nc[i]):7d}{float(tf[i]):11.3f}{float(drift[i]):11.1f}",
+              flush=True)   # ★flush 필수 — 종료 시 stdout 버퍼가 통째로 유실된다(09.02)
 
     if args_cli.out:
         cam = env.scene["shot_cam"]

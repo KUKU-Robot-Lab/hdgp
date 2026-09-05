@@ -62,7 +62,7 @@ import openarm.gripper.left.grasp_sensor  # noqa: F401,E402
 from openarm.gripper.left.grasp_sensor import grasp_left_preset as P  # noqa: E402
 
 TASK = "open-grip_l_grasp_sensor_fab"
-ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets")
 
 
 def main() -> None:
@@ -73,6 +73,9 @@ def main() -> None:
     cfg.curriculum.adr = None
     cfg.scene.robot.spawn.usd_path = os.path.join(
         ASSETS, "robot", args.asset, "openarm_tesollo_sensor_rl.usd")
+    # 아래에서 핑거 body 마다 ContactSensor 를 붙인다 — 스폰에서 리포터 API 를
+    # 켜 두지 않으면 센서 초기화가 "contact reporter API 없음" 으로 죽는다.
+    cfg.scene.robot.spawn.activate_contact_sensors = True
     # 시험 원기둥 — 컵 대신 이걸 턱 사이에 놓는다.
     cfg.scene.object = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",

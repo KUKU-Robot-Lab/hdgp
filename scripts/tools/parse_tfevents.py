@@ -19,7 +19,11 @@ from pathlib import Path
 
 # ─── TFRecord / protobuf struct 파서 ───────────────────────────
 
-_MAX_RESYNC_BYTES = 1 << 20   # 재동기 예산 1 MB — 넘으면 진짜 손상으로 보고 중단
+# ★재동기 예산은 **누적이 아니라 연속 실패분**이어야 한다. 누적으로 세면 100MB 짜리
+#   파일에서 흩어진 작은 손상만으로 예산이 소진돼, 파서가 파일 중간에서 조용히 멈춘다.
+#   09.03 실측: 학습은 epoch 7,978 인데 파서는 5,578 에서 끊겨 **2,400 epoch 분을 놓쳤고**
+#   그 옛 수치로 정기 보고를 계속했다. 조용한 절단이라 눈치채기 어렵다.
+_MAX_RESYNC_BYTES = 1 << 22   # 연속 재동기 예산 4 MB
 
 def _read_varint(buf: bytes, pos: int) -> tuple[int, int]:
     result, shift = 0, 0
@@ -135,8 +139,11 @@ def load_tfevents(path: str) -> dict[str, list[tuple[int, float]]]:
                 f.seek(pos + 1)
                 resync += 1
                 if resync > _MAX_RESYNC_BYTES:
+                    print(f"[parse_tfevents] ⚠ {pos}/{size} 바이트에서 재동기 실패 — "
+                          f"이후 데이터를 버린다. 결과가 **잘린 값**이다.", file=sys.stderr)
                     break
                 continue
+            resync = 0            # ★유효 레코드를 만나면 예산을 되돌린다(연속분만 센다)
             data = f.read(data_len)
             f.read(4)  # masked crc (skip)
             if len(data) < data_len:

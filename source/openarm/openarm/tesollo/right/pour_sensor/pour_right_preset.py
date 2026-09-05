@@ -120,7 +120,10 @@ LEFT_TARGET_CUP_POS_ENV_LOCAL, LEFT_TARGET_CUP_QUAT_WXYZ = compute_left_cup_pose
 )
 
 # 기존 attach 상수 (레거시 — env.py에서 더 이상 사용 안 함)
-LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "openarm_left_hand"
+# ★USD 통일 네이밍 이후 실제 body 는 `l_hl_gripper_base` 다 — "openarm_left_hand" 는
+#   존재하지 않는 낡은 이름이었다(09.02, 좌팔 IK 이식 중 발각). 쓰는 곳이 없어
+#   오래 남아 있었다.
+LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "l_hl_gripper_base"
 LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.10]
 LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]
 

@@ -40,6 +40,17 @@ parser.add_argument("--agent", type=str, default="rl_games_cfg_entry_point")
 parser.add_argument("--num_envs", type=int, default=64, help="컵 종류 수의 배수로 둘 것")
 parser.add_argument("--episodes", type=int, default=8, help="env 당 목표 에피소드 수")
 parser.add_argument("--max_steps", type=int, default=6000)
+parser.add_argument(
+    "--zero_left", action="store_true",
+    help="좌팔 TCP 3채널을 0 으로 막는다(=좌팔 rest 고정). 같은 체크포인트로 이 플래그만 "
+         "바꿔 두 번 돌리면 **좌팔이 실제로 도움이 되는지** 가 직접 나온다. 액션만 막으므로 "
+         "관측·보상·씬은 전부 동일하다.")
+parser.add_argument(
+    "--adr", type=str, default="",
+    help="ADR 레벨 고정 'success=1.0,outcome=0.625,noise=0.0' 형식. "
+         "★play 세션은 ADR 카운터가 0 부터라 고정하지 않으면 **학습 시작 난이도**로 재생된다 "
+         "(실측: 학습 bead 0.738 vs 미고정 프로브 0.498).",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + hydra_args
@@ -81,6 +92,9 @@ import openarm.tasks  # noqa: F401,E402
 from run_cfg_restore import restore_run_cfg_if_available  # noqa: E402
 
 
+NUM_ACTIONS_12D = 12   # 좌팔 채널은 이 뒤에 붙는다(12:15)
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg, agent_cfg: dict):
     resume = Path(args_cli.checkpoint).expanduser().resolve()
@@ -116,6 +130,20 @@ def main(env_cfg, agent_cfg: dict):
     while hasattr(raw, "env"):
         raw = raw.env.unwrapped
 
+    # ★ADR 고정 — 학습이 끝난 정책은 **그때의 ADR 레벨**에서만 그 성능을 낸다.
+    if args_cli.adr:
+        want = dict(kv.split("=") for kv in args_cli.adr.split(","))
+        pinned = []
+        for key, prog in want.items():
+            adr = getattr(raw, f"{key.strip()}_adr", None)
+            if adr is None:
+                raise SystemExit(f"ADR '{key}_adr' 이 없다 — env 를 확인할 것")
+            adr.set_increment(int(round(adr.num_increments * float(prog))))
+            pinned.append(f"{key}={adr.progress:.3f}")
+        print(f"[CUP] ADR 고정: {' · '.join(pinned)}", flush=True)
+    else:
+        print("[CUP] ⚠ADR 미고정 — 학습 시작 난이도로 재생된다(값이 낮게 나옴)", flush=True)
+
     from openarm.agnostic.modules import object_bank as _ob
     bank = _ob.get(raw.cfg.object_bank)
     names = [sp.id for sp in bank.specs]
@@ -149,6 +177,9 @@ def main(env_cfg, agent_cfg: dict):
     for step in range(args_cli.max_steps):
         with torch.inference_mode():
             action = agent.get_action(agent.obs_to_torch(obs), is_deterministic=True)
+            if args_cli.zero_left and action.shape[-1] > NUM_ACTIONS_12D:
+                action = action.clone()
+                action[:, NUM_ACTIONS_12D:] = 0.0
             obs, _, dones, _ = env.step(action)
             if agent.is_rnn and agent.states is not None and len(dones) > 0:
                 for h in agent.states:

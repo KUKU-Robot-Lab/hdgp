@@ -28,6 +28,8 @@ Episode (10s @ 60Hz):
 from __future__ import annotations
 
 import math
+
+import numpy as np
 import sys
 from pathlib import Path
 from collections.abc import Sequence
@@ -51,7 +53,14 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_from_angle_axis, quat_mul
+from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
+from isaaclab.utils.math import (
+    quat_apply,
+    quat_apply_inverse,
+    quat_from_angle_axis,
+    quat_mul,
+    subtract_frame_transforms,
+)
 
 from fabrics_sim.fabrics.openarm_tesollo_pose_fabric import OpenArmTeoslloPoseFabric
 from fabrics_sim.integrator.integrators import DisplacementIntegrator
@@ -63,6 +72,8 @@ from .pour_right_constants import (
     NUM_ARM_DOF,
     NUM_HAND_DOF,
     NUM_PALM_ACTION,
+    NUM_ACTIONS,
+    NUM_LEFT_TCP_ACTION,
     NULLSPACE_OFFSET_ARM,
     N_DEMO_NULLSPACE_OFFSET,
     NUM_FINGERTIPS,
@@ -79,7 +90,7 @@ from .pour_right_constants import (
     PALM_POSE_MAXS_FUNC,
 )
 from .r_beta_trajectory import RBETA_BETA, RBETA_ARM, RBETA_N
-from .pour_adr import PourADR
+from .pour_adr import PourADR, collect_adr_progress_pins
 from .pour_adr import PourADR as GraspADR
 from .pour_right_preset import (
     BEAD_SPAWN_POS_SOURCE_CUP_B,
@@ -213,6 +224,61 @@ class PourRightEnv(DirectRLEnv):
                   f"({sum(a != b for a, b in enumerate(perm))}/{len(perm)}칸): "
                   f"뱅크 {bank_names[:3]}… → env {env_names[:3]}…", flush=True)
         return perm
+
+    def _update_cup_outcome_ema(self, done_mask: torch.Tensor) -> None:
+        """done 시점 outcome 을 **컵 종류별로** 누적한다 (지수이동평균).
+
+        ★왜 전 env 평균으로는 부족한가. `outcome/*_at_done` 은 8종을 뭉갠 값이라
+          "어느 컵이 못 하는지" 를 못 본다. 09.02 실측: 같은 정책에서 컵별 bead 가
+          0.093(s130) ~ 0.705(shaker) 로 **7.6배** 벌어진다. 평균만 보면 그 붕괴가
+          안 보이고, 뱅크·기하 중 무엇을 고쳐야 하는지도 못 고른다.
+        ★프로브(play)로 재는 방법은 **ADR 이 0 으로 리셋**돼 학습값과 어긋난다
+          (실측 전체 bead 학습 0.738 vs 프로브 0.498). 학습 안에서 재야 같은 자다.
+        """
+        if getattr(self, "_warm_env_spec", None) is None:
+            return
+        ids = done_mask.nonzero(as_tuple=False).reshape(-1)
+        if ids.numel() == 0:
+            return
+        spec = self._warm_env_spec[ids]
+        n_cup = int(self._cup_bead_ema.shape[0])
+        cnt = torch.zeros(n_cup, device=self.device).index_add_(
+            0, spec, torch.ones_like(spec, dtype=torch.float))
+        hit = cnt > 0
+        if not bool(hit.any()):
+            return
+        a = float(self.cfg.cup_outcome_ema_alpha)
+        for name, src in (("bead", self._last_done_bead),
+                          ("spill", self._last_done_spill)):
+            acc = torch.zeros(n_cup, device=self.device).index_add_(0, spec, src[ids])
+            new = acc[hit] / cnt[hit]
+            buf = self._cup_bead_ema if name == "bead" else self._cup_spill_ema
+            seen = self._cup_seen[hit]
+            # 첫 관측은 그대로 넣는다(0 에서 천천히 올라오는 착시 방지).
+            buf[hit] = torch.where(seen, (1.0 - a) * buf[hit] + a * new, new)
+        self._cup_seen[hit] = True
+
+    def _cup_outcome_log(self) -> dict:
+        """컵별 outcome 을 로그 dict 로. 이름은 뱅크 스펙 id 그대로 쓴다."""
+        if getattr(self, "_warm_env_spec", None) is None or not bool(self._cup_seen.any()):
+            return {}
+        from openarm.agnostic.modules import object_bank as _ob
+        ids = _ob.get(self.cfg.object_bank).ids
+        out: dict = {}
+        for k, name in enumerate(ids):
+            if not bool(self._cup_seen[k]):
+                continue
+            b = self._cup_bead_ema[k]
+            sp = self._cup_spill_ema[k]
+            out[f"cup/{name}/bead"] = b
+            out[f"cup/{name}/spill"] = sp
+            out[f"cup/{name}/rest"] = (1.0 - b - sp).clamp(min=0.0)   # 소스 잔량
+        # 편차 — 한 줄로 "격차가 좁혀지는가" 를 본다.
+        seen = self._cup_seen
+        out["cup/bead_min"] = self._cup_bead_ema[seen].min()
+        out["cup/bead_max"] = self._cup_bead_ema[seen].max()
+        out["cup/bead_spread"] = out["cup/bead_max"] - out["cup/bead_min"]
+        return out
 
     def _build_source_geometry(self) -> None:
         """env 별 **붓는 컵 기하**를 만든다 (림 오프셋·내외벽 반경·내부 z 범위).
@@ -421,8 +487,15 @@ class PourRightEnv(DirectRLEnv):
         # ----------------------------------------------------------------
         # 왼팔 고정 자세
         # ----------------------------------------------------------------
+        # ★실물 컵 모드에서는 그리퍼 항목을 **파지 압착값으로 치환**한다.
+        #   `LEFT_ARM_REST_JOINT_POS` 의 그리퍼는 0.044(완전개방)이라 컵을 못 문다.
+        #   `left_arm_dof_indices` 에는 그리퍼도 들어 있어 12D 경로도 이 값을 지령하므로,
+        #   여기서 바꾸지 않으면 좌팔 고정 모드에서도 손이 벌어진 채로 남는다.
+        _grip_q = float(self.cfg.left_gripper_grip_q)
         left_vals = [
-            LEFT_ARM_REST_JOINT_POS.get(self.robot.joint_names[idx], 0.0)
+            (_grip_q if (self.cfg.left_target_cup_physical
+                         and self.robot.joint_names[idx].startswith("l_hj_gripper_"))
+             else LEFT_ARM_REST_JOINT_POS.get(self.robot.joint_names[idx], 0.0))
             for idx in self.left_arm_dof_indices
         ]
         self.left_arm_zero_pos = (
@@ -560,6 +633,8 @@ class PourRightEnv(DirectRLEnv):
             else None
         )
 
+        self._pin_adr_initial_progress()
+
         self._noise_base_joint_pos = cfg.obs_noise_joint_pos
         self._noise_base_joint_vel = cfg.obs_noise_joint_vel
         self._noise_base_body_pos  = cfg.obs_noise_body_pos
@@ -643,14 +718,29 @@ class PourRightEnv(DirectRLEnv):
         self._demo_j5_w: float = self.cfg.weight_demo_j5
         self._demo_graduate_ema: float = 0.0
 
-        # Left target cup — FK 기반 고정 배치 (LEFT_ARM_REST_JOINT_POS hand local_z=0.04)
+        # Left target cup — FK 기반 고정 배치.
+        # ★실물 모드에서는 **v2E29 실측 오프셋·자세**로 다시 유도한다. preset 상수는
+        #   옛 규약(local_z + R_y(90°))으로 만들어진 값이라 컵의 다른 단면이 물린다.
+        #   실물 모드는 매 스텝 pose 대입을 안 하므로, **리셋 배치가 곧 파지 자세**다 —
+        #   여기를 안 고치면 follow 오프셋을 바꿔도 아무 효과가 없다(09.02 실측).
         self._left_cup_pos_env_local = to_torch(
             self.cfg.left_target_cup_pos_env_local, device=self.device
         )
         self._left_cup_quat_wxyz = to_torch(
             self.cfg.left_target_cup_quat_wxyz, device=self.device
         )
+
+        if self.cfg.left_target_cup_physical:
+            # ★테이블 안착 — x·y 는 기존 FK 배치를 유지해 우팔 도달 기하를 보존하고,
+            #   z 만 컵 바닥이 상면에 닿는 높이로 내린다. 컵 자세는 직립(단위 quat).
+            self._left_cup_pos_env_local = self._left_cup_pos_env_local.clone()
+            self._left_cup_pos_env_local[2] = float(self.cfg.left_target_cup_rest_z)
+            self._left_cup_quat_wxyz = to_torch([1.0, 0.0, 0.0, 0.0], device=self.device)
+            print(f"[pour] 받는 컵 테이블 안착 — env-local "
+                  f"{[round(float(v), 4) for v in self._left_cup_pos_env_local]} "
+                  f"(상면 {self.cfg.table_surface_z} + 바닥오프셋)", flush=True)
         self._left_target_cup_fixed_pose_w = torch.zeros(self.num_envs, 7, device=self.device)
+        self._setup_left_arm_action()
         self._bead_spawn_pos_source_cup_b = to_torch(self.cfg.bead_spawn_pos_source_cup_b, device=self.device)
         self._bead_spawn_quat_source_cup = to_torch(self.cfg.bead_spawn_quat_source_cup_wxyz, device=self.device)
         self._source_cup_pour_point_pos_b = to_torch(self.cfg.source_cup_pour_point_pos_b, device=self.device)
@@ -733,6 +823,13 @@ class PourRightEnv(DirectRLEnv):
         # [렌더-동일 로깅] 에피소드 완료(done) 시점의 outcome 값 보존 (env별 마지막 완료 에피소드).
         #   순간 cross-env 평균(리셋직후 bead=0 희석)과 달리, 완료시점 값 = 렌더 final-frame과 동일 측정.
         #   done 때만 갱신, 리셋에도 유지 → 항상 "각 env의 최근 완료 붓기 결과" 평균을 로깅.
+        # 컵별 outcome EMA — 크기는 뱅크 종수. `_warm_env_spec` 이 env→컵을 준다.
+        from openarm.agnostic.modules import object_bank as _ob_init
+        _n_cup = len(_ob_init.get(self.cfg.object_bank))
+        self._warm_env_spec = None   # env→컵 배정. warm 뱅크 로드 시 채워진다.
+        self._cup_bead_ema = torch.zeros(_n_cup, device=self.device)
+        self._cup_spill_ema = torch.zeros(_n_cup, device=self.device)
+        self._cup_seen = torch.zeros(_n_cup, dtype=torch.bool, device=self.device)
         self._last_done_bead = torch.zeros(self.num_envs, device=self.device)
         self._last_done_spill = torch.zeros(self.num_envs, device=self.device)
         self._last_done_mouth_xy = torch.zeros(self.num_envs, device=self.device)
@@ -1183,6 +1280,22 @@ class PourRightEnv(DirectRLEnv):
 
         palm_action = actions[:, :6]    # (N, 6) ∈ [-1, 1] — 손은 grasp_hold freeze
         self._raw_palm_action.copy_(palm_action)
+        # ---- 좌팔(receiver) TCP 누적 제어 — `left_arm_action_enable` 일 때만 ----
+        #   action[12:15] 를 rest 기준 **누적**으로 쌓고 workspace 박스로 클램프한다.
+        #   hold 구간(물리 안착)은 rest 유지 — 텔레포트 직후 랜덤 액션이 받는 컵을
+        #   흔들면 warm 파지가 깨진다.
+        if self._left_ik is not None:
+            left_action = actions[:, NUM_ACTIONS:NUM_ACTIONS + NUM_LEFT_TCP_ACTION]
+            _new_left = torch.clamp(
+                self.left_tcp_target_pos_b + left_action * self.left_tcp_delta,
+                self._left_tcp_min, self._left_tcp_max,
+            )
+            if self.cfg.episode_hold_steps > 0:
+                _hold = (self.episode_length_buf < self.cfg.episode_hold_steps).unsqueeze(1)
+                _new_left = torch.where(
+                    _hold, self._left_tcp_rest_pos_b.expand(self.num_envs, -1), _new_left)
+            self.left_tcp_target_pos_b = _new_left
+
         alpha_action = actions[:, 6]    # (N,) ∈ [-1, 1] — [2b] arm 잉여 1-DOF (nullspace self-motion)
         self._raw_null_action.copy_(alpha_action)
 
@@ -1518,18 +1631,61 @@ class PourRightEnv(DirectRLEnv):
             torch.zeros_like(self.hand_joint_targets), joint_ids=self.hand_dof_indices
         )
 
-        # ---- 왼팔: 고정 자세 ----
-        self.robot.set_joint_position_target(
-            self.left_arm_zero_pos, joint_ids=self.left_arm_dof_indices
-        )
-        self.robot.set_joint_velocity_target(
-            self.left_arm_zero_vel, joint_ids=self.left_arm_dof_indices
-        )
-
-        left_cup_pose = self._get_left_target_cup_fixed_pose()
-        zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
-        self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
-        self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
+        if self._left_ik is None:
+            # ---- 왼팔: 고정 자세 ----
+            self.robot.set_joint_position_target(
+                self.left_arm_zero_pos, joint_ids=self.left_arm_dof_indices
+            )
+            self.robot.set_joint_velocity_target(
+                self.left_arm_zero_vel, joint_ids=self.left_arm_dof_indices
+            )
+            left_cup_pose = self._get_left_target_cup_fixed_pose()
+        else:
+            # ---- 왼팔: DifferentialIK(DLS) — TCP pose target → l_aj_* joint target ----
+            #   ★jacobian 과 ee_pose 를 **같은 프레임(robot base)** 으로 맞춘다.
+            #     월드 좌표를 그대로 넣으면 IK 가 조용히 엉뚱한 해를 낸다.
+            _jac = self.robot.root_physx_view.get_jacobians()[
+                :, self._left_ee_jacobi_idx, :, self.left_arm_only_dof_indices]
+            _ee_pos_b, _ee_quat_b = subtract_frame_transforms(
+                self.robot.data.root_pos_w, self.robot.data.root_quat_w,
+                self.robot.data.body_pos_w[:, self._left_hand_body_index],
+                self.robot.data.body_quat_w[:, self._left_hand_body_index],
+            )
+            if not self._left_rest_captured:
+                self._left_tcp_rest_pos_b = _ee_pos_b[:1].clone()
+                self._left_tcp_rest_quat_b = _ee_quat_b[:1].clone()
+                self.left_tcp_target_pos_b[:] = self._left_tcp_rest_pos_b
+                self.left_tcp_fixed_quat_b[:] = self._left_tcp_rest_quat_b
+                self._apply_left_workspace_box()
+                self._left_rest_captured = True
+                print(f"[pour] 좌팔 rest 실측 포착 — pos(base) "
+                      f"{[round(float(v), 4) for v in self._left_tcp_rest_pos_b[0]]}",
+                      flush=True)
+            _q_left = self.robot.data.joint_pos[:, self.left_arm_only_dof_indices]
+            self._left_ik.set_command(
+                torch.cat([self.left_tcp_target_pos_b, self.left_tcp_fixed_quat_b], dim=-1))
+            _q_des = self._left_ik.compute(_ee_pos_b, _ee_quat_b, _jac, _q_left)
+            self.robot.set_joint_position_target(
+                _q_des, joint_ids=self.left_arm_only_dof_indices)
+            self.robot.set_joint_velocity_target(
+                torch.zeros_like(_q_des), joint_ids=self.left_arm_only_dof_indices)
+            if self.left_gripper_dof_indices:
+                self.robot.set_joint_position_target(
+                    self.left_gripper_rest, joint_ids=self.left_gripper_dof_indices)
+                self.robot.set_joint_velocity_target(
+                    torch.zeros_like(self.left_gripper_rest),
+                    joint_ids=self.left_gripper_dof_indices)
+            # ★받는 컵은 왼손에 kinematic-follow — 고정 모드의 상수 포즈를 쓰면
+            #   팔은 움직이는데 컵만 제자리에 남는다.
+            left_cup_pose = self._left_cup_follow_pose()
+        # ★실물 모드에서는 **매 스텝 pose 를 대입하지 않는다**. 대입은 물리적 "이동"이
+        #   아니라 "위치 덮어쓰기"라 궤적이 없고, 그래서 CCD 도 접촉 응답도 생기지 않아
+        #   컵이 컵을 통과했다(09.02). 실물 컵은 리셋에서 그리퍼 손가락 사이에 놓고,
+        #   이후에는 **손가락 접촉만으로** 팔을 따라오게 둔다.
+        if not self.cfg.left_target_cup_physical:
+            zero_cup_vel = torch.zeros(self.num_envs, 6, device=self.device)
+            self.left_target_cup.write_root_pose_to_sim(left_cup_pose)
+            self.left_target_cup.write_root_velocity_to_sim(zero_cup_vel)
 
     # ------------------------------------------------------------------
     # Intermediate values
@@ -2502,6 +2658,7 @@ class PourRightEnv(DirectRLEnv):
             "joint_State/j7": arm_joint_pos[:, 6].mean(),
             # [렌더-동일 로깅] 완료(done)시점 outcome = 렌더 final-frame과 동일 측정.
             #   성공/붓기 완성도 판단은 반드시 이 outcome/*_at_done 으로 (순간평균 diag/* 아님).
+            **self._cup_outcome_log(),
             "outcome/bead_at_done":      self._last_done_bead.mean(),
             "outcome/spill_at_done":     self._last_done_spill.mean(),
             "outcome/mouth_xy_at_done":  self._last_done_mouth_xy.mean(),
@@ -2658,6 +2815,7 @@ class PourRightEnv(DirectRLEnv):
             self._last_done_bead[_done_mask] = self._bead_in_target_fraction[_done_mask]
             self._last_done_spill[_done_mask] = self._spill_ratio[_done_mask]
             self._last_done_mouth_xy[_done_mask] = self._mouth_xy_distance[_done_mask]
+            self._update_cup_outcome_ema(_done_mask)
 
         return terminated, truncated
 
@@ -2792,7 +2950,8 @@ class PourRightEnv(DirectRLEnv):
         cup_root_state = torch.cat([obj_pos_world, upright_rot, zero_vel], dim=-1)
         self.cup.write_root_state_to_sim(cup_root_state, env_ids=env_ids)
 
-        left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
+        self._reset_left_tcp_target(env_ids)
+        left_cup_pose = self._reset_left_cup_pose(env_ids)
         self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
@@ -2863,6 +3022,203 @@ class PourRightEnv(DirectRLEnv):
         self._ema_null_action[env_ids] = 0.0
         self._intermediate_values_step = -1
 
+
+    def _pin_adr_initial_progress(self) -> None:
+        """cfg.adr_initial_progress_* 로 ADR 카운터를 초기 고정한다.
+
+        ★왜 필요한가. ADR 카운터는 rl_games 체크포인트에 저장되지 않는다. 재개하면
+        0 부터 다시 올라가는데, `maybe_increment` 는 **간격으로만** 오르므로
+        (정책 품질과 무관) 만렙 복귀에 num_increments × increment_interval 스텝이
+        통째로 든다. outcome ADR 기준 8단계 × 20,000 = 160,000 스텝 ≈ 5,000 epoch.
+        그 동안 `weight_pour_bead` 가 0 이라 이미 배운 붓기가 보상을 못 받고 퇴화한다.
+        """
+        parsed = collect_adr_progress_pins(self.cfg)
+        if not parsed:
+            return
+        pinned = []
+        for key, frac in parsed.items():
+            adr = getattr(self, f"{key}_adr", None)
+            if adr is None:
+                raise ValueError(
+                    f"adr_initial_progress_{key} 를 줬는데 '{key}_adr' 이 없다(또는 "
+                    f"enable_{key}_adr=False). 사용 가능: spill · noise · success · outcome")
+            adr.set_increment(int(round(adr.num_increments * float(frac))))
+            pinned.append(f"{key} {adr.increment_counter}/{adr.num_increments}")
+        print(f"[pour] ADR 초기 레벨 고정 — {' · '.join(pinned)}", flush=True)
+
+    def _setup_left_arm_action(self) -> None:
+        """좌팔 TCP 액션 인프라 (both/pour_sensor 이식). 플래그가 꺼져 있으면 아무것도 안 한다.
+
+        ★왜 필요한가. 좌팔을 고정해 학습하면 정책은 받는 컵 자세를 **하나만** 본다.
+          실기에서 좌팔이 그 자세를 정확히 못 만들면 분포 밖이 된다. 좌팔을 열면
+          정책이 받는 컵을 능동적으로 가져다 대므로 그 오차를 구조적으로 흡수한다.
+        ★관측은 안 바꾼다 — actor obs 의 좌팔 관절 18ch 와 주둥이→입구 상대벡터가
+          좌팔 움직임을 이미 담는다. 액션만 3D 늘린다.
+        """
+        self._left_ik = None
+        if not bool(getattr(self.cfg, "left_arm_action_enable", False)):
+            return
+        from .pour_right_preset import (
+            _left_arm_fk_hand_pose, LEFT_TARGET_CUP_ATTACH_FRAME_NAME)
+
+        names = [self.robot.joint_names[i] for i in self.left_arm_dof_indices]
+        self.left_arm_only_dof_indices = [
+            self.robot.joint_names.index(n) for n in names if n.startswith("l_aj_")]
+        self.left_gripper_dof_indices = [
+            self.robot.joint_names.index(n) for n in names if n.startswith("l_hj_gripper_")]
+        _grip_q = float(self.cfg.left_gripper_grip_q)
+        self.left_gripper_rest = to_torch(
+            [(_grip_q if self.cfg.left_target_cup_physical
+              else LEFT_ARM_REST_JOINT_POS.get(self.robot.joint_names[i], 0.0))
+             for i in self.left_gripper_dof_indices], device=self.device
+        ).unsqueeze(0).repeat(self.num_envs, 1)
+
+        # 컵이 따라붙는 body. jacobian 인덱스는 fixed base 면 -1(루트가 빠진다).
+        # ★프레임 이름을 **preset 상수에서** 가져온다. both/pour_sensor 는
+        #   "l_hl_gripper_base" 지만 이 트랙은 "openarm_left_hand" 다(자산이 다르다).
+        #   both 코드를 그대로 베껴 하드코딩했다가, IK 목표는 openarm_left_hand FK 인데
+        #   현재자세 피드백·컵추종은 l_hl_gripper_base 라 **두 링크 사이 고정 회전만큼
+        #   자세 오차가 상수로 남아 IK 가 발산했다**(09.02: 제로 액션 60스텝에 컵이
+        #   571mm 이탈, 받는 컵이 우팔 사거리 밖으로 나가 접근 학습 자체가 불가능했다).
+        _attach = LEFT_TARGET_CUP_ATTACH_FRAME_NAME
+        if _attach not in self.robot.data.body_names:
+            raise RuntimeError(
+                f"좌팔 부착 프레임 '{_attach}' 가 로봇 body 에 없다. "
+                f"보유: {[b for b in self.robot.data.body_names if 'left' in b or 'l_hl' in b]}")
+        self._left_hand_body_index = self.robot.data.body_names.index(_attach)
+        self._left_ee_jacobi_idx = (
+            self._left_hand_body_index - 1 if self.robot.is_fixed_base
+            else self._left_hand_body_index)
+        self._left_ik = DifferentialIKController(
+            DifferentialIKControllerCfg(
+                command_type="pose", use_relative_mode=False, ik_method="dls"),
+            num_envs=self.num_envs, device=self.device)
+
+        # rest TCP pose 는 **preset FK** 로 만든다 — 리셋 직후 `body_pos_w` 는 stale 이다.
+        _p, _R = _left_arm_fk_hand_pose(LEFT_ARM_REST_JOINT_POS)
+        _q = self._rot_to_quat_wxyz(np.asarray(_R, dtype=float))
+        self._left_tcp_rest_pos_b = to_torch([float(v) for v in _p], device=self.device).unsqueeze(0)
+        self._left_tcp_rest_quat_b = to_torch([float(v) for v in _q], device=self.device).unsqueeze(0)
+        self.left_tcp_target_pos_b = self._left_tcp_rest_pos_b.repeat(self.num_envs, 1).contiguous()
+        self.left_tcp_fixed_quat_b = self._left_tcp_rest_quat_b.repeat(self.num_envs, 1).contiguous()
+        self.left_tcp_delta = float(self.cfg.left_tcp_action_delta_m)
+        self._left_wr = to_torch(
+            list(self.cfg.left_tcp_workspace_range), device=self.device).unsqueeze(0)
+        self._left_wr_min = self._left_wr.clone()
+        self._left_wr_min[0, 2] = float(self.cfg.left_tcp_z_down_m)
+        self._apply_left_workspace_box()
+        # ★rest 를 **실측 pose 로 다시 잡는다**(첫 _apply_action). FK 상수는 어느 프레임을
+        #   내는지 이름으로 보장이 안 된다 — 목표를 FK 프레임에서, 피드백을 body 프레임에서
+        #   가져오면 두 프레임 사이 고정 회전이 상수 오차로 남아 **IK 가 발산한다**
+        #   (09.02: 제로 액션 60스텝에 컵 571mm 이탈). 리셋이 좌팔을 rest 관절로 쓰므로
+        #   첫 스텝의 실측 pose 가 곧 rest 이고, 이러면 목표·피드백이 같은 프레임임이
+        #   구조적으로 보장된다. FK 값은 그때까지의 잠정값일 뿐이다.
+        self._left_rest_captured = False
+
+        # 컵 follow offset — preset `compute_left_cup_pose_from_fk` 와 **같은 식**이어야
+        # 고정 모드와 좌팔 모드의 컵 자세가 일치한다(안 그러면 뱅크 기하가 어긋난다).
+        # ★실물 모드에서는 v2E29 실측 pose 를 쓴다(위치·자세 통째로). 유령 모드는
+        #   기존 규약(z 오프셋 + R_y(90°))을 유지해 옛 런 재생이 깨지지 않게 한다.
+        if self.cfg.left_target_cup_physical:
+            self._left_cup_follow_offset = to_torch(
+                list(self.cfg.left_cup_follow_offset_b), device=self.device)
+            self._left_cup_follow_quat = to_torch(
+                list(self.cfg.left_cup_follow_quat_b), device=self.device).unsqueeze(0)
+            self._left_cup_follow_quat = (
+                self._left_cup_follow_quat
+                / self._left_cup_follow_quat.norm(dim=-1, keepdim=True))
+        else:
+            self._left_cup_follow_offset = to_torch(
+                [0.0, 0.0, float(self.cfg.left_cup_follow_local_z)], device=self.device)
+            self._left_cup_follow_quat = quat_from_angle_axis(
+                torch.tensor([math.pi / 2.0], device=self.device),
+                to_torch([0.0, 1.0, 0.0], device=self.device).unsqueeze(0))
+        print(f"[5g_pour_right_v4] 좌팔 액션 ON — TCP 3D · delta {self.left_tcp_delta} m · "
+              f"workspace ±{tuple(self.cfg.left_tcp_workspace_range)} (z하강 {self.cfg.left_tcp_z_down_m}) · "
+              f"액션 {self.cfg.action_space}D", flush=True)
+
+    @staticmethod
+    def _rot_to_quat_wxyz(R):
+        """3x3 회전행렬 → wxyz 쿼터니언 (Shepperd 분기)."""
+        t = R[0, 0] + R[1, 1] + R[2, 2]
+        if t > 0:
+            s = 2.0 * np.sqrt(t + 1.0)
+            q = [0.25 * s, (R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s, (R[1, 0] - R[0, 1]) / s]
+        elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+            q = [(R[2, 1] - R[1, 2]) / s, 0.25 * s, (R[0, 1] + R[1, 0]) / s, (R[0, 2] + R[2, 0]) / s]
+        elif R[1, 1] > R[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+            q = [(R[0, 2] - R[2, 0]) / s, (R[0, 1] + R[1, 0]) / s, 0.25 * s, (R[1, 2] + R[2, 1]) / s]
+        else:
+            s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+            q = [(R[1, 0] - R[0, 1]) / s, (R[0, 2] + R[2, 0]) / s, (R[1, 2] + R[2, 1]) / s, 0.25 * s]
+        q = np.array(q, dtype=float)
+        return (q / np.linalg.norm(q)).tolist()
+
+    def _rederive_left_cup_rest_placement(self) -> None:
+        """실물 모드의 리셋 배치를 **v2E29 실측 pose** 로 다시 만든다.
+
+        rest FK 로 왼손 pose 를 구하고 거기에 실측 오프셋·자세를 얹는다. preset 상수
+        (`LEFT_TARGET_CUP_POS_ENV_LOCAL`)는 옛 규약 산물이라 12.6mm 어긋나 있었고,
+        그만큼 컵의 굵은 단면이 손가락(간격 67.5mm)에 물려 첫 스텝에 튕겼다.
+        """
+        import numpy as _np
+        from .pour_right_preset import _left_arm_fk_hand_pose, LEFT_ARM_REST_JOINT_POS
+
+        _p, _R = _left_arm_fk_hand_pose(LEFT_ARM_REST_JOINT_POS)
+        _p = _np.asarray(_p, dtype=float)
+        _R = _np.asarray(_R, dtype=float)
+        off = _np.asarray(self.cfg.left_cup_follow_offset_b, dtype=float)
+        cup_pos = _p + _R @ off
+        hand_q = _np.asarray(self._rot_to_quat_wxyz(_R), dtype=float)
+        rel_q = _np.asarray(self.cfg.left_cup_follow_quat_b, dtype=float)
+        rel_q = rel_q / _np.linalg.norm(rel_q)
+        w0, x0, y0, z0 = hand_q
+        w1, x1, y1, z1 = rel_q
+        cup_q = _np.array([
+            w0 * w1 - x0 * x1 - y0 * y1 - z0 * z1,
+            w0 * x1 + x0 * w1 + y0 * z1 - z0 * y1,
+            w0 * y1 - x0 * z1 + y0 * w1 + z0 * x1,
+            w0 * z1 + x0 * y1 - y0 * x1 + z0 * w1,
+        ])
+        self._left_cup_pos_env_local = to_torch(
+            [float(v) for v in cup_pos], device=self.device)
+        self._left_cup_quat_wxyz = to_torch(
+            [float(v) for v in cup_q], device=self.device)
+        print(f"[pour] 받는 컵 리셋 배치 재유도(v2E29) — env-local "
+              f"{[round(float(v), 4) for v in cup_pos]}", flush=True)
+
+    def _apply_left_workspace_box(self) -> None:
+        """rest 기준 TCP 클램프 박스를 (재)계산한다. rest 가 바뀌면 다시 부를 것."""
+        self._left_tcp_max = self._left_tcp_rest_pos_b + self._left_wr
+        self._left_tcp_min = self._left_tcp_rest_pos_b - self._left_wr_min
+
+    def _reset_left_tcp_target(self, env_ids) -> None:
+        """리셋 시 좌팔 TCP 누적 목표를 rest 로 되돌린다(좌팔 모드 전용)."""
+        if self._left_ik is None:
+            return
+        self.left_tcp_target_pos_b[env_ids] = self._left_tcp_rest_pos_b
+        self.left_tcp_fixed_quat_b[env_ids] = self._left_tcp_rest_quat_b
+        self._left_ik.reset(env_ids)   # 컨트롤러 내부 command 버퍼도 함께 되돌린다
+
+    def _reset_left_cup_pose(self, env_ids) -> torch.Tensor:
+        """리셋 시 받는 컵 포즈. 좌팔 고정이면 FK 상수, 좌팔 모드면 왼손 추종.
+
+        ★리셋 직후 `body_pos_w` 는 stale 이므로 좌팔 모드에서도 **rest FK 상수**를 쓴다
+          — 좌팔은 리셋에서 rest 로 되돌려지므로 두 값이 같다. 다음 스텝부터
+          `_apply_action` 이 실시간 추종으로 갱신한다.
+        """
+        return self._get_left_cup_fk_pose(env_ids=env_ids)
+
+    def _left_cup_follow_pose(self) -> torch.Tensor:
+        """받는 컵이 왼손을 따라가는 world pose (좌팔 액션 모드 전용)."""
+        hand_pos = self.robot.data.body_pos_w[:, self._left_hand_body_index]
+        hand_quat = self.robot.data.body_quat_w[:, self._left_hand_body_index]
+        cup_pos = hand_pos + quat_apply(
+            hand_quat, self._left_cup_follow_offset.unsqueeze(0).expand(self.num_envs, -1))
+        cup_quat = quat_mul(hand_quat, self._left_cup_follow_quat.expand(self.num_envs, -1))
+        return torch.cat([cup_pos, cup_quat], dim=-1)
 
     def _get_left_cup_fk_pose(self, env_ids: Sequence[int] | None = None) -> torch.Tensor:
         """FK 상수로 left target cup의 world pose를 반환. stale body_pos_w 불사용."""
@@ -3286,7 +3642,8 @@ class PourRightEnv(DirectRLEnv):
         self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
         self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
+        self._reset_left_tcp_target(env_ids)
+        left_cup_pose = self._reset_left_cup_pose(env_ids)
         self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
@@ -3469,7 +3826,8 @@ class PourRightEnv(DirectRLEnv):
         self.cup.write_root_pose_to_sim(cup_pose_world, env_ids=env_ids)
         self.cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
-        left_cup_pose = self._get_left_cup_fk_pose(env_ids=env_ids)
+        self._reset_left_tcp_target(env_ids)
+        left_cup_pose = self._reset_left_cup_pose(env_ids)
         self._left_target_cup_fixed_pose_w[env_ids] = left_cup_pose
         self.left_target_cup.write_root_pose_to_sim(left_cup_pose, env_ids=env_ids)
         self.left_target_cup.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
