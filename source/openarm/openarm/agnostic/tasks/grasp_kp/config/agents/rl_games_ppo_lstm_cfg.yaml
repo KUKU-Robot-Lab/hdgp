@@ -1,9 +1,15 @@
 # grasp_kp (Track A, SimToolReal 식 progress 보상) — recurrent actor / MLP critic
 # Actor 129D MLP [1024,1024,512,512] -> LSTM 1024 / critic 153D MLP [1024,1024,512,512], action 21D (palm 6D 델타 + 시너지 15D).
 # ★09.07 SimToolReal network 정렬(커밋 8594225). 원본: simtoolreal/isaacgymenvs/cfg/train/
-#   SimToolReal{PPO,LSTMAsymmetricPPO}.yaml — lr 1e-4 · entropy_coef 0.0 · e_clip 0.1 ·
-#   mini_epochs 2(actor·critic) · bound_loss_type bound · bounds_loss_coef 1e-4 ·
-#   mixed_precision True · rnn concat_input/output False · score_to_win 1e6.
+#   ★09.07 22:50 **되돌렸다**(A-viii). 아래 9개 키를 kp_a1(구 grasp_s2r 파생 세트)로 복귀한다.
+#   근거: 서버 dump 대조에서 kp_a1 ↔ kp_a2/a6/a9 의 차이가 **정확히 이 9개**였고, 결과가 갈렸다.
+#     kp_a1(구 세트)     lifted 0.770 @e300, 6,542 epoch 까지 건강            — 1/1 성공
+#     정렬 세트 5런      a2 0.445(e150 에 0.063 함몰) · a6 0.628 · a7·a8·a9 사망 — 깨끗한 성공 0
+#   같은 9개가 Track B 도 갈랐고(fj_b1 성공 / b2~b6 전멸), 되돌린 fj_b9 는 b1 의 **생애 최고치를
+#   1/12 epoch 에 넘었다**(e723 succ 10.12 · b1 e8,551 최고 9.99). 두 트랙 독립 증거다.
+#   ★kp_a9 는 a6 과 설정이 같은데도 죽었다 — 이 세트에서는 성패가 시드에 좌우된다(a2 는 함몰 후 회복).
+#   유지: score_to_win 1e6(학습 하이퍼가 아니라 정지 조건. a1 의 1e5 는 이 보상의 이론 상한
+#     50 목표×1000 + 300 ≈ 50,300 에 2배밖에 안 남는다) · clip_observations 5.0(A 는 원래 5.0).
 # 우리 값 유지: value_bootstrap True(자체 실측 근거) · minibatch 16384(4,096env×16/16,384 = 4개로
 #   원본 24,576×16/98,304 와 등가) · gamma 0.99 · kl 0.016 · horizon/seq 16 · critic lr 1e-4.
 # num_envs 는 1024 의 배수.
@@ -50,8 +56,8 @@ params:
       layer_norm: True
       # ★09.07 SimToolReal 정렬 — 원본은 두 키를 지정하지 않아 rl_games 기본값
       #   False 가 쓰인다(network_builder: `params['rnn'].get('concat_input', False)`).
-      concat_input: False
-      concat_output: False
+      concat_input: True
+      concat_output: True
 
   load_checkpoint: False
   load_path: ''
@@ -63,7 +69,7 @@ params:
     device_name: 'cuda:0'
     multi_gpu: False
     ppo: True
-    mixed_precision: True   # SimToolReal 값(구 False)
+    mixed_precision: False   # a1
     normalize_input: True
     normalize_value: True
     # ★True 필수(DESIGN §6): 이 트랙은 time-out(600 step)과 max_goals 로 **truncation** 이 잦다.
@@ -77,7 +83,7 @@ params:
     normalize_advantage: True
     gamma: 0.99
     tau: 0.95
-    learning_rate: 1e-4   # SimToolReal 값(구 3e-4)
+    learning_rate: 3e-4   # a1
     # ★★08.25 Kuka 원본은 `linear`(원본도 `#adaptive` 를 주석으로 남겨뒀다). 위 주석이
     #   "KL 이 다시 튀면 여기부터 본다"고 사전등록했고 **그 조건이 발동했다** —
     #   lstm_test14 ep1150 에 KL 0.0922 = threshold(0.013)의 **7배**인데 `linear` 는
@@ -104,14 +110,14 @@ params:
     # ★09.07 SimToolReal 은 0.0. 구 0.002 는 접촉보상 시절 값이고, 손실식이
     #   `- entropy*entropy_coef` 라 양수면 엔트로피를 **보상**한다 — sigma 를
     #   억제하는 항이 손실 어디에도 없어 sigma 1.0 → 1.70(A)/2.54(B) 로 팽창했다.
-    entropy_coef: 0.0
+    entropy_coef: 0.002   # a1. ★A 는 이 값이 0 이면 sigma 를 눌러주는 항이 하나도 없다
     truncate_grads: True
-    e_clip: 0.1   # SimToolReal 값(구 0.2)
+    e_clip: 0.2   # a1
     horizon_length: 16
     # ★minibatch 는 이미 SimToolReal 등가다 — 그들 24,576env×16/98,304 = 4 개,
     #   우리 4,096env×16/16,384 = 4 개로 에폭당 미니배치 수가 같다. 바꾸지 않는다.
     minibatch_size: 16384
-    mini_epochs: 2   # SimToolReal 값(구 4)
+    mini_epochs: 4   # a1
     critic_coef: 4
     clip_value: True
     seq_length: 16
@@ -121,8 +127,11 @@ params:
     #   SimToolReal 은 이 키를 지정하지 않아 rl_games 기본값 'bound' 가 쓰인다.
     #   ★주의: bound_loss 는 `clamp(|mu|-1.1,0)²` 로 **mu 만** 벌한다. sigma 는
     #     어느 분기도 건드리지 않는다 — sigma 억제는 entropy_coef 몫이다(위 참조).
-    bound_loss_type: bound
-    bounds_loss_coef: 0.0001   # SimToolReal 값(구 0.005)
+    # ★a1 그대로 = bounds loss **꺼짐**. 'regularization'(미국식 z)은 rl_games 의
+    #   'regularisation'/'bound' 어느 분기에도 안 걸린다(a1 6,542 epoch 내내 losses/bounds_loss 0.000 실측).
+    #   오타를 못 본 게 아니라 a1 의 **실효 상태**를 재현하는 것이다 — 'bound' 로 바꾼 것이 9개 변경 중 하나였다.
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005   # a1 (위 때문에 실효 0)
     zero_rnn_on_done: True
 
     # has_central_value 는 지정하지 않는다 — rl_games 가 central_value_config
@@ -137,8 +146,8 @@ params:
     #     서로 다르다 — Kuka 그대로다.
     central_value_config:
       minibatch_size: 16384
-      mini_epochs: 2   # SimToolReal 값(구 4)
-      learning_rate: 1e-4
+      mini_epochs: 4   # a1
+      learning_rate: 1e-4   # a1 도 critic 은 1e-4
       kl_threshold: 0.016
       clip_value: True
       normalize_input: True

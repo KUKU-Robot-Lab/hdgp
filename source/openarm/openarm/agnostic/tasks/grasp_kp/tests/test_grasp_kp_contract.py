@@ -542,26 +542,42 @@ def test_lstm_yaml_bootstrap_gamma_and_architecture():
     assert "value_bootstrap: True" in _LSTM and "value_bootstrap: False" not in _LSTM
     assert "gamma: 0.99\n" in _LSTM and "gamma: 0.998" not in _LSTM
     assert _LSTM.count("units: [1024, 1024, 512, 512]") == 2, "actor·critic mlp 4층"
-    assert "learning_rate: 1e-4" in _LSTM
+    assert "learning_rate: 3e-4" in _LSTM and _LSTM.count("learning_rate: 1e-4") == 1, "actor 3e-4 · critic 1e-4"
     assert _LSTM.count("kl_threshold: 0.016") == 2 and "kl_threshold: 0.013" not in _LSTM
     assert "name: agn_grasp_kp-lstm" in _LSTM
-    assert "mixed_precision: True" in _LSTM
-    # ★09.07 SimToolReal 정렬 — network 하이퍼파라미터를 원본과 동일하게 맞춘다
-    #   (isaacgymenvs/cfg/train/SimToolReal{PPO,LSTMAsymmetricPPO}.yaml).
-    #   ★bound_loss_type 은 원본이 키를 지정하지 않아 rl_games 기본값 'bound' 가 쓰인다.
-    #     구 'regularization'(미국식 z)은 어느 분기에도 안 걸려 bounds loss 가 꺼져 있었다.
-    # ★검사는 **키 값**만 본다 — 주석이 구값 이름을 설명하므로 단어 검색은 오탐이다.
-    assert "bound_loss_type: bound" in _LSTM
-    assert "bound_loss_type: regularization" not in _LSTM
-    assert "bounds_loss_coef: 0.0001" in _LSTM
-    assert "entropy_coef: 0.0\n" in _LSTM and "entropy_coef: 0.002" not in _LSTM
-    assert "e_clip: 0.1" in _LSTM and "e_clip: 0.2" not in _LSTM
-    assert _LSTM.count("mini_epochs: 2") == 2, "actor·central_value 둘 다 2"
-    assert "concat_input: False" in _LSTM and "concat_input: True" not in _LSTM
-    assert "concat_output: False" in _LSTM and "concat_output: True" not in _LSTM
+    # ★09.07 A-viii: SimToolReal 정렬을 **되돌렸다**. 아래 회귀 가드 테스트에 근거를 적었다.
+    assert "mixed_precision: False" in _LSTM and "mixed_precision: True" not in _LSTM
+    assert "bound_loss_type: regularization" in _LSTM and "bound_loss_type: bound\n" not in _LSTM
+    assert "bounds_loss_coef: 0.005" in _LSTM
+    assert "entropy_coef: 0.002" in _LSTM and "entropy_coef: 0.0\n" not in _LSTM
+    assert "e_clip: 0.2" in _LSTM and "e_clip: 0.1\n" not in _LSTM
+    assert _LSTM.count("mini_epochs: 4") == 2, "actor·central_value 둘 다 4"
+    assert "concat_input: True" in _LSTM and "concat_input: False" not in _LSTM
+    assert "concat_output: True" in _LSTM and "concat_output: False" not in _LSTM
     # ★minibatch 는 바꾸지 않는다 — 4,096env×16/16,384 = 4 개로 원본(24,576×16/98,304)과
     #   에폭당 미니배치 수가 이미 같다. 환경 수에 묶인 값이라 숫자를 그대로 옮기면 안 된다.
     assert "minibatch_size: 16384" in _LSTM
+
+
+def test_agent_hyperparameters_are_the_kp_a1_set_not_the_simtoolreal_alignment():
+    """★09.07 A-viii. 서버 dump 대조: kp_a1 ↔ kp_a2/a6/a9 의 agent.yaml 차이가 **정확히 9개 키**였고
+    결과가 갈렸다 — a1(구 세트) lifted 0.770 @e300 · 6,542 epoch 건강 vs 정렬 세트 5런에서 깨끗한 성공 0
+    (a2 0.445 · a6 0.628 · a7·a8·a9 사망). ★a9 는 a6 과 설정이 같은데 죽었다 = 이 세트에선 시드가 성패를 가른다.
+    같은 9개가 Track B 도 갈랐고(fj_b1 성공 / b2~b6 전멸), 되돌린 fj_b9 가 b1 의 생애 최고치를 1/12 epoch 에 넘었다.
+    두 트랙 독립 증거이므로 A 도 되돌린다. 정지 조건(score_to_win)은 학습 하이퍼가 아니라 유지한다.
+    """
+    for token in ("concat_input: True", "concat_output: True", "mixed_precision: False",
+                  "learning_rate: 3e-4", "entropy_coef: 0.002", "e_clip: 0.2",
+                  "bound_loss_type: regularization", "bounds_loss_coef: 0.005",
+                  "clip_observations: 5.0", "score_to_win: 1000000"):
+        assert token in _LSTM, token
+    assert _LSTM.count("mini_epochs: 4") == 2
+    # B(SAPG)도 같은 세트여야 한다 — 두 트랙이 갈리면 A/B 대조가 하이퍼 차이로 오염된다.
+    _fj = (_HERE.parent / "grasp_fj" / "config" / "agents" /
+           "rl_games_ppo_lstm_sapg_cfg.yaml").read_text(encoding="utf-8")
+    for token in ("concat_input: True", "mixed_precision: False", "learning_rate: 3e-4",
+                  "e_clip: 0.2", "bound_loss_type: regularization"):
+        assert token in _fj, f"grasp_fj SAPG yaml 도 같아야 한다: {token}"
 
 
 def test_mlp_yaml_bootstrap_and_gamma():
