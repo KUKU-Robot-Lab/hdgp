@@ -34,6 +34,10 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
     arm_ema: float = 0.1
     # 선언된 포화 slew(rad/s). finalize 가 α·k_arm/policy_dt 와 대조한다 — 문구와 실효값이 못 갈린다.
     arm_slew_rad_s: float = 1.0
+    # ★09.07 B-v: 리프트 후 팔 액션 **반전** 벌점. 측도 = 1차 차분 RMS/2 ∈ [0,1](A 는 비유계·작동점 ≈10× 라 0.1).
+    #   최악(매 스텝 ±1 반전) −1.0/step, γ 0.99 할인 합 −100 < 리프트 보너스 300 → 리프트가 여전히 이득(Check 1).
+    #   전속 이송(a 일정)은 차분 0 이라 세금이 없다 — 수준 |a| 를 벌하면 이송까지 벌한다.
+    rw_cmd_rate_scale: float = 1.0
 
     def _arm_action_dim(self, profile) -> int:
         """액션의 팔 구간 폭 = 관절 수(B). A 의 `_derive_spaces` 가 이 훅으로 22 를 만든다."""

@@ -33,6 +33,7 @@ _LSTM = (_HERE / "config" / "agents" / "rl_games_ppo_lstm_cfg.yaml").read_text(e
 _MLP = (_HERE / "config" / "agents" / "rl_games_ppo_cfg.yaml").read_text(encoding="utf-8")
 _KP_ENV = (_KP / "grasp_kp_env.py").read_text(encoding="utf-8")
 _KP_CFG = (_KP / "grasp_kp_env_cfg.py").read_text(encoding="utf-8")
+_SAPG = (_HERE / "config" / "agents" / "rl_games_ppo_lstm_sapg_cfg.yaml").read_text(encoding="utf-8")
 
 
 def _calls(src: str, name: str) -> list[str]:
@@ -267,3 +268,64 @@ def test_lstm_yaml_bootstrap_gamma_and_name():
 def test_mlp_yaml_bootstrap_and_name():
     assert "value_bootstrap: True" in _MLP and "gamma: 0.99\n" in _MLP
     assert "name: agn_grasp_fj\n" in _MLP and "agn_grasp_kp" not in _MLP
+
+
+# ---------------------------------------------------------------- 리프트 후 안정 파지 (09.07 B-v)
+def test_arm_cmd_rate_is_rms_action_delta_over_two():
+    """B 는 증분+EMA 라 과지령이 없다(스텝당 목표 변화 = α·k·a) — 진동은 a 의 **반전**이다.
+
+    수준 |a| 를 벌하면 이송(전속 1 rad/s)까지 세금이므로 1차 차분 RMS/2 ∈ [0,1] 을 쓴다
+    (1.0 = 매 스텝 ±1 반전). 리셋 직후는 직전 액션이 0 이라 차분이 |a| 로 튀므로 0.
+    """
+    block = _fn_block(_ENV, "_arm_command")
+    _ordered(block, [
+        "_da = self.actions[:, :n_arm] - self._prev_arm_action",
+        "self._cmd_rate = torch.where(",
+        "self.episode_length_buf == 0",
+        "0.5 * _da.pow(2).mean(dim=1).sqrt()",
+        "self._prev_arm_action = self.actions[:, :n_arm].clone()",
+    ])
+
+
+def test_prev_arm_action_is_allocated_and_zeroed_on_reset():
+    assert "self._prev_arm_action = torch.zeros(" in _fn_block(_ENV, "_setup_fabrics")
+    _ordered(_fn_block(_ENV, "_reset_idx"), [
+        "super()._reset_idx(env_ids)",
+        "self._prev_arm_action[env_ids] = 0.0",
+    ])
+
+
+def test_b_cmd_rate_scale_is_one_because_the_measure_is_bounded():
+    """A 의 0.1 은 작동점 ≈10×(비유계)에 맞춘 값이고, B 의 측도는 [0,1] 이라 1.0 이 같은 자릿수다."""
+    assert "rw_cmd_rate_scale: float = 1.0" in _code(_CFG)
+
+
+def test_log_metrics_include_lifted_action_rate():
+    assert '"ctrl/arm_action_rate_lifted"' in _fn_block(_ENV, "_log_fabric_metrics")
+
+
+# ---------------------------------------------------------------- SAPG yaml = b1 하이퍼 + SAPG 덮개 (09.07 B-iv)
+def test_sapg_yaml_is_b1_hyperparameters_plus_sapg_overlay():
+    """b1→b2 에서 9개 키가 한꺼번에 바뀌었고 b2~b6 는 전부 e100~150 에 같은 서명으로 무너졌다.
+    b1 만 안 무너졌다. 그래서 학습 하이퍼는 b1 그대로, SAPG 는 그 위의 덮개로만 얹는다.
+    `bound_loss_type: regularization` 은 rl_games 두 분기 어디에도 안 걸려 bounds loss OFF — b1 의
+    **실효** 상태를 그대로 재현하는 것이지 오타를 못 본 게 아니다.
+    """
+    for token in ("concat_input: True", "concat_output: True", "mixed_precision: False",
+                  "e_clip: 0.2", "clip_observations: 5.0",
+                  "bound_loss_type: regularization", "bounds_loss_coef: 0.005",
+                  "fixed_sigma: coef_cond", "use_others_experience: lf", "off_policy_ratio: 1.0",
+                  "expl_type: mixed_expl_learn_param", "expl_reward_type: entropy",
+                  "expl_coef_block_size: 2048", "score_to_win: 1000000",
+                  "value_bootstrap: True", "zero_rnn_on_done: True", "entropy_coef: 0.0\n"):
+        assert token in _SAPG, token
+    # 사다리 상단 = b1 의 균일 0.002: linspace(0.5,0,4)×0.004 = [0.002, 0.00133, 0.00067, 0]
+    assert "expl_reward_coef_scale: 0.004" in _SAPG
+    assert _SAPG.count("learning_rate: 3e-4") == 1 and _SAPG.count("learning_rate: 1e-4") == 1, "actor 3e-4 · critic 1e-4 (b1)"
+    assert _SAPG.count("mini_epochs: 4") == 2, "actor·central_value 둘 다 4 (b1)"
+    # 8,192×16 = 131,072 (+lf 증강 32,768) / 32,768 → 5 개. b4~b6 가 실제로 돈 값(CLI 덮어쓰기)을 yaml 에 고정한다.
+    assert _SAPG.count("minibatch_size: 32768") == 2
+    for bad in ("concat_input: False", "concat_output: False", "mixed_precision: True", "e_clip: 0.1",
+                "bound_loss_type: bound", "mini_epochs: 2", "minibatch_size: 65536",
+                "clip_observations: 10.0", "expl_reward_coef_scale: 0.002", "bounds_loss_coef: 0.0001"):
+        assert bad not in _SAPG, bad

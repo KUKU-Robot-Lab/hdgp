@@ -1,4 +1,4 @@
-# grasp_fj SAPG (Track B) — SimToolRealSAPG.yaml 구조를 그대로, 로봇만 우리 환경.
+# grasp_fj SAPG (Track B) — ★09.07 B-iv: 학습 하이퍼는 **fj_b1 그대로**, SAPG 는 그 위의 플래그 덮개.
 # ★이 태스크는 **벤더 rl_games**(hdgp/vendor/rl_games_sapg)를 PYTHONPATH 앞에 붙여야 돈다.
 #   설치본 rl_games 1.6.1 에는 SAPG 가 없어 expl_* 키가 조용히 무시된다(= 그냥 PPO).
 #
@@ -6,19 +6,25 @@
 # 다른 entropy 계수를 주고(마지막 블록 = 0 = 리더), 팔로워가 굴린 경험을 리더 라벨로
 # 다시 붙여 리더 학습에 섞는다(`use_others_experience: lf`).
 #
+# ★왜 b1 인가(09.07 매칭 에포크 대조, 5런 b1/b3/b4/b5/b6):
+#   b1→b2 에서 9개 키가 한꺼번에 바뀌었다(concat_input/output · mixed_precision · lr · entropy ·
+#   e_clip · mini_epochs · bound_loss_type · bounds_loss_coef · score_to_win). b3~b6 는 전부 그 위에서
+#   탐색만 바꾼 것이고, 넷 모두 e25~50 에 손을 뻗다 e100~150 에 무너져 do-nothing 상수(reward ≈ 1.0)에
+#   붙었다(e300 close_gate 0.02~0.11 · ft_dist 0.35~0.65 로 손이 **멀어진다**). b1 만 단조 상승
+#   (e150 close 0.81 · lifted 0.18, e300 lifted 0.73). 탐색 계수는 붕괴에서 빠져나오는 **시간**만
+#   바꿨다(b4 568 · b3 1865 · b2 영원히). → 9개 키를 b1 로 되돌리고 SAPG 덮개만 남긴다.
+#   이번 런이 같은 서명으로 무너지면 범인은 덮개(lf 재라벨 · coef_cond σ · obs +1)로 좁혀진다.
 # ★`entropy_coef: 0.0` 은 **쓰이지 않는 값**이다. expl 경로가 그 줄을 건너뛰고
-#   linspace(0.5, 0, 블록수) × expl_reward_coef_scale 을 쓴다.
-#   16,384 env ÷ 4,096 = 4블록 → [0.001, 0.000667, 0.000333, 0.0].
-# ★num_envs 는 expl_coef_block_size 의 배수여야 하고 **블록이 2개 이상**이어야 한다.
-#   16,384 에 4,096 을 쓰면 4블록. 4,096 에 4,096 을 쓰면 1블록이 되어 계수가 균일해지고
-#   리더/팔로워가 사라진다(= 지금 fj_b3 와 동일). 원본 주석도 8192/24576 을 예로 든다.
-# ★minibatch: 증강 배치 = 16,384×16 + 4,096×16 = 327,680. 65,536 이면 5개.
-#   원본은 24,576×16 + 4,096×16 = 458,752 / 98,304 = 4개(나머지는 마지막이 흡수).
+#   linspace(0.5, 0, 블록수) × expl_reward_coef_scale 을 쓴다(a2c_continuous.calc_gradients).
+#   8,192 env ÷ 2,048 = 4블록, scale 0.004 → [0.002, 0.00133, 0.00067, 0.0]. 상단 = b1 의 균일 0.002.
+# ★num_envs 는 expl_coef_block_size 의 배수여야 하고 **블록이 2개 이상**이어야 한다(런처가 검사).
+# ★minibatch: 증강 배치 = 8,192×16 + 2,048×16(lf, 리더 라벨 한 블록) = 163,840 / 32,768 = 5개.
+#   b4~b6 는 yaml 65,536 을 CLI 로 32,768 로 덮어 돌았다(dump 로 확인) — 실제 돈 값을 yaml 에 고정한다.
 params:
   seed: 42
 
   env:
-    clip_observations: 10.0   # SimToolReal 값(구 5.0). env.obs 클램프와 짝이다
+    clip_observations: 5.0    # b1. (b4~b6 는 SimToolReal 값 10.0)
     clip_actions: 1.0
 
   algo:
@@ -39,8 +45,9 @@ params:
         sigma_init:
           name: const_initializer
           val: 0
-        # ★포크는 fixed_sigma 가 **문자열**이다. coef_cond = 블록마다 sigma 행을 따로 학습.
-        #   True(설치본 규약)를 쓰면 sigma 가 Linear 가 되어 초기화에서 죽는다.
+        # ★포크는 fixed_sigma 가 **문자열**이다. coef_cond = 블록마다 sigma 행을 따로 학습(SAPG 필수).
+        #   b1 은 True(한 행 공유)였다 — 덮개 때문에 b1 과 다른 유일한 network 키.
+        #   True 를 이 포크에 쓰면 sigma 가 Linear 가 되어 초기화에서 죽는다.
         fixed_sigma: coef_cond
     mlp:
       units: [1024, 1024, 512, 512]
@@ -56,10 +63,10 @@ params:
       layers: 1
       before_mlp: True
       layer_norm: True
-      # ★09.07 SimToolReal 정렬 — 원본은 두 키를 지정하지 않아 rl_games 기본값
-      #   False 가 쓰인다(network_builder: `params['rnn'].get('concat_input', False)`).
-      concat_input: False
-      concat_output: False
+      # b1: True/True. b2 부터 SimToolReal 정렬로 False/False 였다 — MLP 가 LSTM 은닉만 보게 되어
+      #   순간 관측을 직접 못 쓴다. 9개 키 중 붕괴 후보 1순위지만 분리 실험은 안 했다(전부 되돌린다).
+      concat_input: True
+      concat_output: True
 
   load_checkpoint: False
   load_path: ''
@@ -71,7 +78,7 @@ params:
     device_name: 'cuda:0'
     multi_gpu: False
     ppo: True
-    mixed_precision: True   # SimToolReal 값(구 False)
+    mixed_precision: False   # b1
     normalize_input: True
     normalize_value: True
     # ★True 필수(DESIGN §6): 이 트랙은 time-out(600 step)과 max_goals 로 **truncation** 이 잦다.
@@ -85,96 +92,59 @@ params:
     normalize_advantage: True
     gamma: 0.99
     tau: 0.95
-    learning_rate: 1e-4   # SimToolReal 값(구 3e-4)
-    # ★★08.25 Kuka 원본은 `linear`(원본도 `#adaptive` 를 주석으로 남겨뒀다). 위 주석이
-    #   "KL 이 다시 튀면 여기부터 본다"고 사전등록했고 **그 조건이 발동했다** —
-    #   lstm_test14 ep1150 에 KL 0.0922 = threshold(0.013)의 **7배**인데 `linear` 는
-    #   KL 을 아예 보지 않으므로 `lr_mul` 이 1.0000 에 고정된 채 통과했다.
-    #   결과: 보상 8194 → 170 (48배), five_frac 0.776 → 0.015, height 0.101 → 0.000.
-    #   에피소드 종료 이상은 0(abnormal·tipped·out_xy 전부 0.000) = 물리 사고가 아니라
-    #   **한 번의 큰 정책 업데이트**다. 게다가 보상이 곱셈 구조(transfer=G·H·U·T,
-    #   stay=G·H·U·T·S)라 능선에서 떨어지면 곱이 0 근처가 되어 복귀 gradient 가
-    #   거의 없다 — 275 에폭에 five_frac 0.007 → 0.099 밖에 못 올라왔다.
-    #   → `adaptive` 로 켠다. KL 이 threshold 를 넘으면 LR 을 자동으로 낮춰 점프 자체를
-    #     막는다. Kuka 가 주석으로 남겨둔 것을 켜는 것일 뿐이다.
+    learning_rate: 3e-4   # b1
     lr_schedule: adaptive
     schedule_type: standard
     kl_threshold: 0.016
-    score_to_win: 1000000   # SimToolReal 값(구 100000). ★rl_games 는 이 값을
-                             #   **shaping 전 원본 에피소드 보상**과 비교해 조기 종료한다
-                             #   (a2c_common: last_mean_rewards > score_to_win → 'Network won!').
-                             #   kp_a1 실측 최고 21,260 이라 100000 은 도달 가능한 거리였다.
+    # ★b1 은 100000 이었다. 되돌리지 **않는다** — rl_games 는 이 값을 shaping 전 원본 에피소드 보상과
+    #   비교해 'Network won!' 으로 조기 종료한다(a2c_common). 이 보상의 이론 상한 = 50 목표 × 1000 + 300
+    #   ≈ 50,300 이라 100000 은 여유 2× 뿐이다(kp_a1 실측 최고 21,260). 학습 하이퍼가 아니라 정지 조건.
+    score_to_win: 1000000
     max_epochs: 20000
     save_best_after: 100
-    save_frequency: 200   # ★08.25 Kuka 원본값
+    save_frequency: 200
     print_stats: True
     grad_norm: 1.0
     # ★SAPG 에서 이 값은 **쓰이지 않는다** — a2c_continuous.calc_gradients 가
-    #   expl 경로일 때 블록별 계수로 갈아끼운다(원본도 0.0 을 적어둔다).
+    #   expl 경로일 때 블록별 계수로 갈아끼운다. b1 의 0.002 는 아래 사다리 상단으로 옮겼다.
     entropy_coef: 0.0
     truncate_grads: True
-    e_clip: 0.1   # SimToolReal 값(구 0.2)
+    e_clip: 0.2   # b1
     horizon_length: 16
-    # ★minibatch 는 이미 SimToolReal 등가다 — 그들 24,576env×16/98,304 = 4 개,
-    #   우리 4,096env×16/16,384 = 4 개로 에폭당 미니배치 수가 같다. 바꾸지 않는다.
-    minibatch_size: 65536
-    mini_epochs: 2   # SimToolReal 값(구 4)
+    minibatch_size: 32768
+    mini_epochs: 4   # b1
     critic_coef: 4
     clip_value: True
     seq_length: 16
-    # ★★09.07 SimToolReal 정렬. 구값 'regularization'(미국식 z)은 rl_games 의
-    #   'regularisation'/'bound' 어느 분기에도 안 걸려 **bounds loss 가 꺼져 있었다**
-    #   (kp_a1·fj_b1 6,500/7,400 epoch 내내 `losses/bounds_loss` 정확히 0.000 실측).
-    #   SimToolReal 은 이 키를 지정하지 않아 rl_games 기본값 'bound' 가 쓰인다.
-    #   ★주의: bound_loss 는 `clamp(|mu|-1.1,0)²` 로 **mu 만** 벌한다. sigma 는
-    #     어느 분기도 건드리지 않는다 — sigma 억제는 entropy_coef 몫이다(위 참조).
-    bound_loss_type: bound
-    bounds_loss_coef: 0.0001   # SimToolReal 값(구 0.005)
-    # ★설치본·포크 기본값이 모두 True 지만, 두 트리에서 기본값이 갈리면 조용히 달라지므로
-    #   명시한다. 원본 SimToolRealSAPG.yaml 은 미지정(= 기본 True).
+    # ★b1 그대로 = bounds loss **꺼짐**. 'regularization'(미국식 z)은 rl_games 의 'regularisation'/'bound'
+    #   어느 분기에도 안 걸린다(b1 6,500 epoch 내내 losses/bounds_loss 정확히 0.000 실측). 오타를 못 본 게
+    #   아니라 b1 의 **실효 상태**를 재현하는 것이다 — b2 가 'bound' 로 바꾼 것이 9개 변경 중 하나였다.
+    #   ★bound 계열은 μ 만 벌한다. σ 는 어느 분기도 건드리지 않는다.
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005   # b1 (위 때문에 실효 0)
+    # ★설치본·포크 기본값이 모두 True 지만, 두 트리에서 기본값이 갈리면 조용히 달라지므로 명시한다.
     zero_rnn_on_done: True
 
-    # ================== SAPG (원본 SimToolRealSAPG.yaml 과 동일) ==================
+    # ================== SAPG 덮개 (원본 SimToolRealSAPG.yaml 과 동일 키) ==================
     use_others_experience: lf        # 리더가 팔로워 경험으로도 학습한다
     off_policy_ratio: 1.0            # 자기 롤아웃 + 다른 블록 하나
     expl_type: mixed_expl_learn_param  # 블록 식별자를 학습되는 32차원 벡터로 바꾼다
     expl_reward_type: entropy        # 내재보상 모델 없음 → 블록별 entropy 계수만 산다
     expl_reward_coef_embd_size: 32
-    # ★09.07 B-ii: 계수 사다리 = linspace(0.5, 0, 블록수) × scale.
-    #   scale 0.002 는 SimToolReal 값이고 맨 위 블록이 0.001 을 받는다. 그런데 **같은 과제에서**
-    #   entropy_coef 의 용량반응이 이미 측정돼 있다 — 전부 같은 env/보상, PPO 하이퍼만 다르다:
-    #     fj_b1  0.002 (전 env 균일) → lifted 0.1 을 epoch  125 에 통과, 최종 0.869
-    #     fj_b3  0.001 (전 env 균일) → lifted 0.1 을 epoch 1865 에 통과, 최종 0.489
-    #     fj_b4  SAPG 맨 위 0.001   → lifted 0.1 을 epoch  568 에 통과
-    #   0.001 은 **용량 부족**이다. 블록을 늘려도 평균 계수는 그대로(0.0005)라 다양성만 늘고
-    #   총 탐색량은 안 는다. 그래서 scale 을 두 배로 올려 맨 위 블록을 b1 이 통과시킨 0.002 에 맞춘다.
-    #   → 사다리 [0.002, 0.00133, 0.00067, 0], 평균 0.001 = b3 의 균일값이라 상한도 물려 있다.
-    # ★09.07 B-iii: **되돌린다**(0.004 → 0.002). 위 추론은 실측에 졌다 —
-    #   같은 epoch 에서 b5(상단 0.002)가 b4(상단 0.001)보다 뒤졌다:
-    #     e476  close_gate  b4 0.535 / b5 0.104   ·   ft_dist  b4 0.103 / b5 0.293
-    #   상단 블록 엔트로피가 35.10 까지 올라 탐색만 하고 수렴을 안 한다. b1 의 0.002 는
-    #   **전 env 균일** 값이었고, 블록의 1/4 에만 몰아주는 것과는 다른 조건이었다.
-    #   블록 4개(B-i)는 유지한다 — 블록 퍼짐 0.03 → 4.24 로 분화 자체는 성공했다.
-    expl_reward_coef_scale: 0.002
+    # ★09.07 B-iv: 사다리 = linspace(0.5, 0, 4) × 0.004 = [0.002, 0.00133, 0.00067, 0.0].
+    #   상단 0.002 = b1 의 전 env 균일값. b5 가 같은 0.004 로 b4(0.002)에 뒤진 적이 있지만 그건
+    #   SimToolReal 하이퍼 위에서였고, 다섯 런의 붕괴 서명이 같아 scale 은 변별 변수가 아니었다.
+    expl_reward_coef_scale: 0.004
     # ★09.07 B-i: 16,384 는 CUDA 700 으로 못 돌아 8,192 로 내렸는데 이 줄을 안 고쳐
     #   블록이 조용히 4 → **2** 가 됐다(fj_b4 실측: 두 블록 엔트로피 31.48/31.47, 구분 없음).
     #   8,192 ÷ 2,048 = 4블록. 배치 수학은 num_envs×horizon 이라 이 값과 무관하다.
     expl_coef_block_size: 2048       # ★num_envs 8192 ÷ 2048 = 4블록
 
-    # has_central_value 는 지정하지 않는다 — rl_games 가 central_value_config
-
-    #   존재 여부로 자동 판정한다(a2c_common.py:142). Kuka 도 미지정.
-    # ★★08.25 Kuka 원본 central_value_config 를 키 구성까지 그대로 썼다.
-    #   구 설정에 있던 normalize_value / value_bootstrap / lr_schedule / e_clip 은
-    #   Kuka 가 지정하지 않는다(rl_games 기본값 사용).
-    #   ★★critic 에 **LSTM 2048** 을 신설한다 — 우리 critic 은 MLP 만 있었고,
-    #     부분관측 과제에서 value 추정에 직접 영향한다.
-    #     actor 는 before_mlp True(LSTM→MLP), critic 은 before_mlp False(MLP→LSTM) 로
-    #     서로 다르다 — Kuka 그대로다.
+    # has_central_value 는 지정하지 않는다 — rl_games 가 central_value_config 존재 여부로 자동 판정한다.
     central_value_config:
-      minibatch_size: 65536
-      mini_epochs: 2   # SimToolReal 값(구 4)
-      learning_rate: 1e-4
+      minibatch_size: 32768
+      mini_epochs: 4   # b1
+      learning_rate: 1e-4   # b1 (critic 은 b1 도 1e-4)
       kl_threshold: 0.016
       clip_value: True
       normalize_input: True
@@ -191,12 +161,7 @@ params:
             name: default
           regularizer:
             name: None
-        # ★★critic 은 **MLP**(논문 구조). DEXTRAH 배포 설정은 여기에 LSTM 2048 을
-        #   넣지만 논문은 actor LSTM+MLP / critic MLP 다. 구조적으로도 critic 은
-        #   특권 정보(접촉력·물체 자세·관절토크)를 받아 부분관측이 아니므로 은닉상태의
-        #   이득이 actor 보다 작다.
-        #   ★배포본을 그대로 쓰려면 태스크 id 를 `-lstm-cvrnn` 으로 바꾼다
-        #     (`rl_games_ppo_lstm_cvrnn_cfg.yaml`, 이 파일과 rnn 블록만 다르다).
+        # critic 은 **MLP**(논문 구조) — 특권 정보를 받아 부분관측이 아니므로 은닉상태의 이득이 작다.
 
     player:
       deterministic: True

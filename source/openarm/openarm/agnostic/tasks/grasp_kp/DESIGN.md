@@ -7,7 +7,7 @@
 
 ```
 agnostic/modules/keypoint_goal.py      키포인트 · d(o,g) · 목표열 샘플러 · 진행 추적기 · 허용오차 커리큘럼 (순수 torch)
-agnostic/modules/progress_reward.py    progress-only 보상 7항 + hand_floor 기하 벌점 (순수 torch)
+agnostic/modules/progress_reward.py    progress-only 보상 7항 + hand_floor 기하 벌점 + cmd_rate 지령변화 벌점(09.07) (순수 torch)
 agnostic/modules/perception_delay.py   지연 큐(obs/action/object) + 코히런트 자세 노이즈 (순수 torch)
 agnostic/modules/object_wrench.py      리프트 후 질량정규화 힘/토크 외란 (순수 torch)
 agnostic/tasks/grasp_kp/               A: GraspKPEnvCfg(GraspS2REnvCfg) · GraspKPEnv(GraspS2REnv)  — fabric palm 6D + 시너지 15D
@@ -24,7 +24,7 @@ agnostic/tasks/grasp_fj/               B: GraspFJEnvCfg(GraspKPEnvCfg) · GraspF
 | | A grasp_kp | B grasp_fj |
 |---|---|---|
 | 차원 | 21 = palm 6D 델타 + 손 15D | 22 = 팔 7D + 손 15D |
-| 팔 | grasp_s2r 그대로: anchor+delta → 박스 클램프 → 속도 리미터 → fabric → `set_joint_position_target` + `set_joint_velocity_target(fabric_qd)` | `q*_t = clamp(q*_{t-1} + k_arm·a, 관절한계)`, `q*_t = α·q*_t + (1−α)·q*_{t-1}`, **위치 목표만**(속도 목표 없음). EMA 가 누적 목표에 걸리므로 스텝당 변화는 정확히 α·k_arm·a → `k_arm = 0.167 rad/step`, `α = 0.1` ⇒ **실효 포화 slew 1.0 rad/s**(브리지 상한 = `arm_slew_rad_s`, cfg 가 대조). A 의 palm 리미터(0.02 m/step = 1.2 m/s)와 같은 자릿수. 리셋 시 `q*_{-1} = 홈 q` |
+| 팔 | grasp_s2r 그대로: anchor+delta → 박스 클램프 → 속도 리미터 → fabric → `set_joint_position_target` + `set_joint_velocity_target(fabric_qd)` | `q*_t = clamp(q*_{t-1} + k_arm·a, 관절한계)`, `q*_t = α·q*_t + (1−α)·q*_{t-1}`, **위치 목표만**(속도 목표 없음). EMA 가 누적 목표에 걸리므로 스텝당 변화는 정확히 α·k_arm·a → `k_arm = 0.167 rad/step`, `α = 0.1` ⇒ **실효 포화 slew 1.0 rad/s**(브리지 상한 = `arm_slew_rad_s`, cfg 가 대조). A 의 palm 리미터(0.02 m/step = 1.2 m/s)와 같은 자릿수. 리셋 시 `q*_{-1} = 홈 q`. 09.07: 팔 액션 1차 차분 `_prev_arm_action` → `cmd_rate` = RMS(Δa)/2 (리프트 후 반전 벌점 측도) |
 | 손 | `_synergy_targets` 동일(15D → 20 관절, hold_mode=blocked) | 동일 |
 | 액션 지연 | 큐 3 step, 매 스텝 인덱스 재추첨 | 동일 |
 
@@ -40,7 +40,7 @@ B 의 팔 목표 버퍼 `_arm_q_target (N,7)` 은 `self.arm_ids` 순서, 클램�
 `d(o,g) = max_i ‖kp_i(o) − kp_i(g)‖`. 모든 위치는 env-local.
 
 목표열: 리셋 시 첫 목표 = `settled_pos + [U(±first_xy), U(first_z_lo, first_z_hi)]`, 자세 = settled quat(직립).
-성공(`d ≤ tol` 누적 `success_steps=10`) 시 다음 목표 = 이전 목표에서 `±delta_distance` 균일 이동, `goal_box` 로 클램프,
+성공(`d ≤ tol` **연속** `success_steps=10` — 09.07 `force_consecutive=True`; 누적이면 공차 안팎을 오가며 흔들려도 성공을 세어 준다. SimToolReal 논문 런처와 동일) 시 다음 목표 = 이전 목표에서 `±delta_distance` 균일 이동, `goal_box` 로 클램프,
 회전은 `delta_rotation_deg`(기본 0 = 직립 유지; 붓기 확장 시 올린다). `max_goals` 도달 시 truncation.
 에피소드 예산은 **600 step 고정**(목표당 예산 아님; `per_goal_budget=False`).
 허용오차 커리큘럼: `tol_start 0.06 → tol_floor 0.015`, 3000 프레임마다 `mean(prev_episode_successes) ≥ 2.0` 이면 ×0.9.
@@ -65,8 +65,11 @@ r_kp       = 200 · clamp(d*_kp − d_kp, 0, 100) · lifted        d* 는 목표
 r_goal     = (1000/10) · [near_goal]                            near_goal = d_kp ≤ tol
 r_armvel   = −0.03  · Σ|q̇_arm|     r_handvel = −0.003 · Σ|q̇_hand|   (실측 관절속도)
 r_floor    = −clamp(10 · relu(hand_floor_z − hand_z_min), max 5)   hand_floor_z = 0.215 (기하, 센서 아님)
+r_cmd      = −cmd_rate_scale · cmd_rate · lifted                (09.07 A-v/B-v · A 0.1 · B 1.0, 상한 없음, 리프트 전 0)
+             cmd_rate: A = ½(‖Δp_raw‖/0.02 + ‖Δr_raw‖/2.9°) 리미터 **전** 원지령 변화(1 = 리미터에 딱 맞춤, 작동점 ≈10~15)
+                       B = RMS_j(a_j − a_prev_j)/2 ∈ [0,1] 팔 액션 반전(전속 이송은 0)
 ```
-항 이름(로깅 순서): `fingertip_progress, lift, lift_bonus, keypoint_progress, goal_bonus, arm_vel, hand_vel, hand_floor`.
+항 이름(로깅 순서): `fingertip_progress, lift, lift_bonus, keypoint_progress, goal_bonus, arm_vel, hand_vel, hand_floor, cmd_rate`.
 d*_ft 는 에피소드 리셋에서만, d*_kp 는 목표 전진마다 초기화(SimToolReal 동일).
 
 ## 4. 관측
@@ -146,18 +149,19 @@ class ToleranceCurriculum:
 
 ### modules/progress_reward.py
 ```python
-PROGRESS_REWARD_TERMS = ("fingertip_progress","lift","lift_bonus","keypoint_progress","goal_bonus","arm_vel","hand_vel","hand_floor")
+PROGRESS_REWARD_TERMS = ("fingertip_progress","lift","lift_bonus","keypoint_progress","goal_bonus","arm_vel","hand_vel","hand_floor","cmd_rate")
 @dataclass(frozen=True) class ProgressRewardCfg:
     ft_scale=50.0; lift_scale=20.0; lift_base=0.05; lift_clip=0.5; lift_bonus=300.0; lift_latch_height=0.10
     kp_scale=200.0; goal_bonus=1000.0; success_steps=10
     arm_vel_scale=0.03; hand_vel_scale=0.003
-    hand_floor_penalty=10.0; hand_floor_z=0.215; hand_floor_max=5.0
+    hand_floor_penalty=10.0; hand_floor_z=0.215; hand_floor_max=5.0; cmd_rate_scale=0.1  (env cfg rw_cmd_rate_scale: A 0.1 · B 1.0)
 def compute_progress_reward(*, obj_z (N,), settled_z (N,), lifted_prev (N,) bool, ft_dist (N,K), closest_ft (N,K), kp_dist (N,), closest_kp (N,),
-                            near_goal (N,) bool, arm_qd (N,7), hand_qd (N,20), hand_z_min (N,), cfg: ProgressRewardCfg)
+                            near_goal (N,) bool, arm_qd (N,7), hand_qd (N,20), hand_z_min (N,), cmd_rate (N,) ≥0, cfg: ProgressRewardCfg)
     -> (total (N,), terms: dict[str, (N,)] (PROGRESS_REWARD_TERMS 전부, 순서 동일), out: dict(lifted=bool(N,), just_lifted=bool(N,), closest_ft=(N,K), closest_kp=(N,)))
 # lifted = (obj_z - settled_z > lift_latch_height) | lifted_prev ; lift = lift_scale·clamp(lift_base + dz, 0, lift_clip)·(¬lifted) ; lift_bonus = lift_bonus·just_lifted
 # fingertip_progress = ft_scale·Σ_k clamp(progress_delta)·(¬lifted) ; keypoint_progress = kp_scale·progress_delta·lifted ; goal_bonus = (goal_bonus/success_steps)·near_goal
 # arm_vel = -arm_vel_scale·Σ|arm_qd| ; hand_vel = -hand_vel_scale·Σ|hand_qd| ; hand_floor = -clamp(hand_floor_penalty·relu(hand_floor_z - hand_z_min), max=hand_floor_max)
+# cmd_rate = -cmd_rate_scale·clamp(cmd_rate, min 0)·lifted   (측도는 env: A 리미터 전 원지령 변화/리미터 상한 평균 · B 팔 액션 Δ RMS/2; 상한 없음)
 # total = nan_to_num(sum(terms))
 ```
 

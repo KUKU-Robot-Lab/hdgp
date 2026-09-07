@@ -26,6 +26,7 @@ def _inputs(**over):
         arm_qd=torch.zeros(N, ARM),
         hand_qd=torch.zeros(N, HAND),
         hand_z_min=torch.full((N,), 0.40),
+        cmd_rate=torch.zeros(N),
         cfg=PR.ProgressRewardCfg(),
     )
     base.update(over)
@@ -44,7 +45,7 @@ def test_terms_names_and_order_match_contract():
     assert tuple(terms) == PR.PROGRESS_REWARD_TERMS
     assert PR.PROGRESS_REWARD_TERMS == (
         "fingertip_progress", "lift", "lift_bonus", "keypoint_progress",
-        "goal_bonus", "arm_vel", "hand_vel", "hand_floor",
+        "goal_bonus", "arm_vel", "hand_vel", "hand_floor", "cmd_rate",
     )
     assert total.shape == (N,)
     for name, t in terms.items():
@@ -60,6 +61,7 @@ def test_cfg_defaults_match_design():
     assert (c.goal_bonus, c.success_steps) == (1000.0, 10)
     assert (c.arm_vel_scale, c.hand_vel_scale) == (0.03, 0.003)
     assert (c.hand_floor_penalty, c.hand_floor_z, c.hand_floor_max) == (10.0, 0.215, 5.0)
+    assert c.cmd_rate_scale == 0.1
 
 
 def test_shape_mismatch_raises():
@@ -69,6 +71,8 @@ def test_shape_mismatch_raises():
         _run(closest_ft=torch.full((N, K + 1), -1.0))
     with pytest.raises(TypeError):
         _run(near_goal=torch.zeros(N))
+    with pytest.raises(ValueError):
+        _run(cmd_rate=torch.zeros(N + 1))
 
 
 # =============================================================================
@@ -202,6 +206,38 @@ def test_hand_floor_zero_above_threshold_and_capped():
     assert t["hand_floor"][1] == 0.0
     assert math.isclose(t["hand_floor"][2].item(), -cfg.hand_floor_penalty * 0.02, rel_tol=1e-5)
     assert t["hand_floor"][3] == -cfg.hand_floor_max
+
+
+# =============================================================================
+# cmd_rate — 리프트 후 지령 변화 벌점 (09.07 A-v/B-v)
+# =============================================================================
+def test_cmd_rate_penalty_is_lift_gated_linear_and_unclamped():
+    cfg = PR.ProgressRewardCfg()
+    rate = torch.tensor([0.0, 1.0, 12.5, -3.0])
+    # 리프트 전: 0 — 억제 항은 과제가 성립한 뒤에만(suppression-terms-need-task-first)
+    _, pre, _ = _run(cmd_rate=rate)
+    assert (pre["cmd_rate"] == 0).all()
+    # 리프트 후: −scale·rate, 음수 입력은 0 으로
+    lifted = torch.ones(N, dtype=torch.bool)
+    _, post, _ = _run(cmd_rate=rate, lifted_prev=lifted)
+    assert torch.allclose(post["cmd_rate"], -cfg.cmd_rate_scale * rate.clamp(min=0.0))
+    # 상한 없음 — 작동점(≈10×)에서 clamp 되면 항이 상수가 되어 기울기가 죽는다(reward-clamp-kills-gradient)
+    _, big, _ = _run(cmd_rate=torch.full((N,), 30.0), lifted_prev=lifted)
+    assert torch.allclose(big["cmd_rate"], torch.full((N,), -cfg.cmd_rate_scale * 30.0))
+
+
+def test_cmd_rate_fires_on_the_lift_step_itself():
+    """래치가 서는 스텝(just_lifted)부터 벌점 — keypoint_progress 와 같은 lifted_f 게이트."""
+    cfg = PR.ProgressRewardCfg()
+    high = torch.full((N,), 0.30 + cfg.lift_latch_height + 0.01)
+    _, t, o = _run(obj_z=high, cmd_rate=torch.full((N,), 2.0))
+    assert o["just_lifted"].all()
+    assert torch.allclose(t["cmd_rate"], torch.full((N,), -cfg.cmd_rate_scale * 2.0))
+
+
+def test_cmd_rate_scale_must_be_nonnegative():
+    with pytest.raises(ValueError):
+        PR.ProgressRewardCfg(cmd_rate_scale=-0.1)
 
 
 # =============================================================================

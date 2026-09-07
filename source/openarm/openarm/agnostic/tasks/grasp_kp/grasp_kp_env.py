@@ -176,6 +176,10 @@ class GraspKPEnv(GraspS2REnv):
         self._hand_z_min = torch.zeros(n, device=dev)
         self._hand_floor_depth_max = torch.zeros((), device=dev)
         self._last_reward = torch.zeros(n, device=dev)
+        # ★09.07 A-v: 리프트 후 지령 변화 벌점의 측도(정규화 지령 변화율, `_arm_command` 가 매 스텝 채움)
+        #   + 회전 원지령 변화 노름(위치 쪽 `_palm_cmd_step_raw` 는 부모 버퍼).
+        self._cmd_rate = torch.zeros(n, device=dev)
+        self._palm_cmd_step_raw_rot = torch.zeros(n, device=dev)
         self._obs_shape_checked = False
         # 단계 사다리 재정의: 높이 래치 → 목표 1·2·3 (부모 `_reset_idx` 가 이 이름으로 평균 기록).
         self._stage_names = ("lifted", "goal1", "goal2", "goal3")
@@ -397,9 +401,22 @@ class GraspKPEnv(GraspS2REnv):
         self._palm_delta_cmd = self.palm_targets - self._palm_anchor()   # 축별 로깅(앵커 기준 변위)
 
         _lim = float(self.cfg.palm_cmd_rate_limit_m)
+        _lim_r = math.radians(float(self.cfg.palm_cmd_rate_limit_rot_deg))
         _step3 = self.palm_targets[:, :3] - self._prev_palm_cmd
+        _dr = self.palm_targets[:, 3:6] - self._prev_palm_cmd_rot
         self._palm_cmd_step_raw = torch.where(
             self._palm_cmd_primed, _step3.norm(dim=-1), torch.zeros_like(self._palm_cmd_step_raw))
+        self._palm_cmd_step_raw_rot = torch.where(
+            self._palm_cmd_primed, _dr.norm(dim=-1), torch.zeros_like(self._palm_cmd_step_raw_rot))
+        # ★09.07 A-v: 벌점 측도 = 리미터 **전** 원지령 변화를 리미터 상한으로 정규화(위치·회전 평균).
+        #   1.0 = "리미터에 딱 맞게 지령", 10 = "리미터의 10배를 요구"(a2/a6 작동점 step_raw 0.20 m).
+        #   리미터 **후** 값은 포화(rate_sat 0.96)에서 상수라 μ 에 기울기가 없다 — 그래서 원값이다.
+        #   상한도 없다(작동점에서 clamp 되면 항이 상수가 된다). 리셋 첫 스텝(primed False)은 0.
+        self._cmd_rate = torch.where(
+            self._palm_cmd_primed,
+            0.5 * (self._palm_cmd_step_raw / max(_lim, 1e-9)
+                   + self._palm_cmd_step_raw_rot / max(_lim_r, 1e-9)),
+            torch.zeros_like(self._cmd_rate))
         if _lim > 0.0:
             _scale = (_lim / _step3.norm(dim=-1, keepdim=True).clamp(min=1e-9)).clamp(max=1.0)
             self._palm_cmd_rate_sat = ((_scale.squeeze(-1) < 1.0) & self._palm_cmd_primed).float()
@@ -408,9 +425,7 @@ class GraspKPEnv(GraspS2REnv):
                 self.palm_targets[:, :3])
         self._prev_palm_cmd = self.palm_targets[:, :3].clone()
 
-        _lim_r = math.radians(float(self.cfg.palm_cmd_rate_limit_rot_deg))
         if _lim_r > 0.0:
-            _dr = self.palm_targets[:, 3:6] - self._prev_palm_cmd_rot
             _sr = (_lim_r / _dr.norm(dim=-1, keepdim=True).clamp(min=1e-9)).clamp(max=1.0)
             self.palm_targets[:, 3:6] = torch.where(
                 self._palm_cmd_primed.unsqueeze(-1), self._prev_palm_cmd_rot + _dr * _sr,
@@ -571,7 +586,7 @@ class GraspKPEnv(GraspS2REnv):
             ft_dist=ft_dist, closest_ft=self._trk.closest_ft,
             kp_dist=kp_dist, closest_kp=self._trk.closest_kp, near_goal=near_goal,
             arm_qd=qd[:, self._arm_ids_t], hand_qd=qd[:, self._hand_ids_t],
-            hand_z_min=self._hand_z_min, cfg=self._rw_cfg,
+            hand_z_min=self._hand_z_min, cmd_rate=self._cmd_rate, cfg=self._rw_cfg,
         )
         # 상태 되먹임 — 모듈은 무상태. 래치는 에피소드 리셋에서만 풀린다(sticky).
         self._latched = out["lifted"]
@@ -623,6 +638,8 @@ class GraspKPEnv(GraspS2REnv):
         ex["task/tilt_deg"] = self._tilt_deg.mean()
         ex["task/syn_close"] = self._syn_close.mean()
         ex["task/close_gate"] = self._close_gate.mean()
+        # ★09.07 리프트 후 정지 판정의 1차 지표(정책 몫만) — 전체 평균은 리프트 전 env 가 뭉갠다.
+        ex["task/cmd_rate_lifted"] = self._lifted_mean(self._cmd_rate)
         self._log_probe_metrics(dz)
         self._log_fabric_metrics()
 
@@ -662,6 +679,17 @@ class GraspKPEnv(GraspS2REnv):
         ex["diag/arm_qd_p50"] = torch.quantile(_qd, 0.50)
         ex["diag/arm_qd_p95"] = torch.quantile(_qd, 0.95)
         ex["diag/arm_qd_p99"] = torch.quantile(_qd, 0.99)
+        # ★09.07 리프트 후 정지 판정 — lifted env 만. 물체 속도는 외란(≈2 g 킥, Δv 0.33 m/s)과 정책 진동이
+        #   섞인 값이라 `task/cmd_rate_lifted`(정책 몫만)와 나란히 읽는다. nanquantile 이라 per-step 동기화가 없다.
+        _m = self._latched
+        ex["diag/arm_qd_p99_lifted"] = torch.nan_to_num(torch.nanquantile(
+            torch.where(_m.unsqueeze(1), _qd, torch.full_like(_qd, float("nan"))), 0.99), nan=0.0)
+        ex["diag/obj_speed_lifted"] = self._lifted_mean(self.object.data.root_lin_vel_w.norm(dim=-1))
+
+    def _lifted_mean(self, x: torch.Tensor) -> torch.Tensor:
+        """lifted env 만의 평균 (N,)→(). 빈 마스크는 0(nan 금지) · 분기 없음(per-step 동기화 금지)."""
+        m = self._latched.float()
+        return (x * m).sum() / m.sum().clamp(min=1.0)
 
     def _log_fabric_metrics(self) -> None:
         """부모 공식 그대로(joint_err 평균·최대, palm_err, 지령 원값). Track B(fabric 없음)는 건너뛴다."""

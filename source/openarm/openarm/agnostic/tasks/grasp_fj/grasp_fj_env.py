@@ -52,6 +52,7 @@ class GraspFJEnv(GraspKPEnv):
         self._arm_cmd_step_raw = torch.zeros(n, device=dev)     # 클램프 전 |k·a| 평균(진단)
         self._prev_arm_q_target = self._arm_q_target.clone()    # 실현 스텝량 진단용(직전 목표)
         self._arm_limit_sat = torch.zeros(n, device=dev)        # 관절한계 클램프 비율(진단)
+        self._prev_arm_action = torch.zeros(n, int(p.num_arm_joints), device=dev)   # 액션 1차 차분(벌점 측도)
         _k, _a = float(self.cfg.k_arm), float(self.cfg.arm_ema)
         # 실효 slew = α·k_arm/dt (EMA 가 누적 목표에 걸려 스텝당 변화가 정확히 α·k·a) — cfg 가 대조했다.
         print(f"[grasp_fj] fabric OFF · 팔 = 관절 증분 k_arm={_k} rad/step · EMA α={_a} → "
@@ -128,6 +129,14 @@ class GraspFJEnv(GraspKPEnv):
             self._arm_lo, self._arm_hi)
         self._arm_cmd_step_raw = step.abs().mean(dim=1)
         self._arm_limit_sat = (q_raw != q_free).float().mean(dim=1)
+        # ★09.07 B-v: 벌점 측도 = 팔 액션 1차 차분 RMS / 2 ∈ [0, 1] (1.0 = 매 스텝 ±1 반전).
+        #   B 는 증분+EMA 라 과지령이 없다(스텝당 목표 변화 = α·k·a) — 진동은 a 의 **반전**이다.
+        #   리셋 직후는 직전 액션이 0 이라 차분이 |a| 로 튀므로 0.
+        _da = self.actions[:, :n_arm] - self._prev_arm_action
+        self._cmd_rate = torch.where(
+            self.episode_length_buf == 0, torch.zeros_like(self._cmd_rate),
+            0.5 * _da.pow(2).mean(dim=1).sqrt())
+        self._prev_arm_action = self.actions[:, :n_arm].clone()
 
     def _post_command(self) -> None:
         """no-op — fabric 이 없으니 손 상태 동기화·적분이 없다."""
@@ -167,6 +176,7 @@ class GraspFJEnv(GraspKPEnv):
         #   실효 slew 판정: 이 값 × 60 Hz 가 URDF 한계(최저 5.445 rad/s)·브리지 상한과 비교된다.
         ex["ctrl/arm_target_step"] = (self._arm_q_target - self._prev_arm_q_target).abs().mean()
         self._prev_arm_q_target = self._arm_q_target.clone()
+        ex["ctrl/arm_action_rate_lifted"] = self._lifted_mean(self._cmd_rate)   # A 의 task/cmd_rate_lifted 와 같은 측도
 
     def _reset_idx(self, env_ids) -> None:
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -177,3 +187,4 @@ class GraspFJEnv(GraspKPEnv):
         self._prev_arm_q_target[env_ids] = self._arm_q_target[env_ids]   # 리셋 스텝을 큰 이동으로 세지 않는다
         self._arm_cmd_step_raw[env_ids] = 0.0
         self._arm_limit_sat[env_ids] = 0.0
+        self._prev_arm_action[env_ids] = 0.0

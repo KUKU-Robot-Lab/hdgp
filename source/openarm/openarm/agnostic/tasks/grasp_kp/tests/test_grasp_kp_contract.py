@@ -449,6 +449,55 @@ def test_cfg_defaults_match_design_and_reward_audit():
         assert token in code, token
 
 
+# ---------------------------------------------------------------- 리프트 후 안정 파지 (09.07 A-v)
+def test_cmd_rate_is_normalised_raw_command_step_over_both_limiters():
+    """벌하는 양은 리미터 **전** 원지령 변화(리미터 상한으로 정규화, 위치·회전 평균).
+
+    리미터 **후** 값은 포화 구간(a2/a6 rate_sat 0.96)에서 상수라 μ 에 기울기가 없다 —
+    그걸 벌하면 정책은 이미 리미터 안에 들어온 뒤에야 신호를 받는다. 상한(clamp)도 두지 않는다.
+    리셋 첫 스텝(primed False)은 0 — 리셋 점프를 벌점으로 세지 않는다.
+    """
+    block = _fn_block(_ENV, "_arm_command")
+    _ordered(block, [
+        "_step3 = self.palm_targets[:, :3] - self._prev_palm_cmd",
+        "_dr = self.palm_targets[:, 3:6] - self._prev_palm_cmd_rot",
+        "self._palm_cmd_step_raw_rot = torch.where(",
+        "self._cmd_rate = torch.where(",
+        "0.5 * (self._palm_cmd_step_raw / max(_lim, 1e-9)",
+        "+ self._palm_cmd_step_raw_rot / max(_lim_r, 1e-9)",
+    ])
+    assert "0.5 * (" in block, "위치·회전 두 채널의 평균이어야 한다(합이면 작동점이 2배로 커진다)"
+    _seg = block.split("self._cmd_rate = torch.where(")[1].split("torch.zeros_like(self._cmd_rate))")[0]
+    assert ".clamp(" not in _seg, "측도에 상한을 두면 작동점(≈10×)에서 항이 상수가 된다"
+
+
+def test_reward_consumes_cmd_rate_and_cfg_locks_gate_and_scale():
+    assert "cmd_rate=self._cmd_rate" in _fn_block(_ENV, "_get_rewards")
+    code = _code(_CFG)
+    assert "rw_cmd_rate_scale: float = 0.1" in code
+    assert "cmd_rate_scale=float(self.rw_cmd_rate_scale)" in _fn_block(_CFG, "progress_reward_cfg")
+    # ★성공은 **연속** 10 스텝 — 누적이면 공차 안팎을 오가며(흔들리며) 성공을 세어 준다.
+    #   SimToolReal 논문 런처도 forceConsecutiveNearGoalSteps=True 로 강제했다.
+    assert "goal_force_consecutive: bool = True" in code
+
+
+def test_cfg_refuses_cmd_rate_penalty_without_both_limiters():
+    """정규화 분모가 리미터다 — 리미터가 0(꺼짐)이면 벌점이 정의되지 않으니 cfg 에서 죽인다."""
+    block = _fn_block(_CFG, "_validate_kp_fields")
+    for token in ("rw_cmd_rate_scale", "palm_cmd_rate_limit_m", "palm_cmd_rate_limit_rot_deg"):
+        assert token in block, token
+
+
+def test_post_lift_stillness_is_logged_lifted_only():
+    """리프트 후 정지 여부는 전체 평균이 아니라 lifted env 만 따로 봐야 한다(스텝 평균은 뭉갠다)."""
+    assert '"task/cmd_rate_lifted"' in _fn_block(_ENV, "_log_step")
+    probe = _fn_block(_ENV, "_log_probe_metrics")
+    assert '"diag/arm_qd_p99_lifted"' in probe and '"diag/obj_speed_lifted"' in probe
+    helper = _fn_block(_ENV, "_lifted_mean")
+    assert "self._latched" in helper and ".clamp(min=1.0)" in helper, "빈 마스크에서 nan 이 나오면 안 된다"
+    assert ".nonzero(" not in probe and "bool(" not in probe, "per-step GPU 동기화 금지(util killer)"
+
+
 # ---------------------------------------------------------------- PPO yaml (DESIGN §6)
 def test_lstm_yaml_bootstrap_gamma_and_architecture():
     assert "value_bootstrap: True" in _LSTM and "value_bootstrap: False" not in _LSTM

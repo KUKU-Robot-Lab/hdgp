@@ -1,4 +1,4 @@
-"""progress-only 보상 7항 + hand_floor 기하 벌점 (순수 torch, isaaclab 금지).
+"""progress-only 보상 7항 + hand_floor 기하 벌점 + cmd_rate 지령변화 벌점 (순수 torch, isaaclab 금지).
 
 SimToolReal 식 보상: 접촉 센서 항이 **0개**다. 신호는 전부 기하(거리 감소·높이·목표 근접)와
 속도 벌점이라 실기에서 그대로 계산할 수 있다. 계약은 `tasks/grasp_kp/DESIGN.md` §3·§8.
@@ -24,6 +24,7 @@ PROGRESS_REWARD_TERMS = (
     "arm_vel",
     "hand_vel",
     "hand_floor",
+    "cmd_rate",
 )
 
 # 왜: 손끝 진행량 clamp 상한(10 m) — 사실상 무한이지만 NaN/inf 값이 폭주하는 것만 막는다.
@@ -50,12 +51,19 @@ class ProgressRewardCfg:
     hand_floor_penalty: float = 10.0
     hand_floor_z: float = 0.215
     hand_floor_max: float = 5.0
+    # ★09.07 리프트 후 지령 변화 벌점 = −scale · cmd_rate · lifted. 0 = 끔. 측도(cmd_rate)는 env 가 준다 —
+    #   A: 리미터 **전** 원지령 변화 / 리미터 상한(위치·회전 평균). 1.0 = 리미터에 딱 맞춤, 비유계(작동점 ≈10).
+    #   B: 팔 액션 1차 차분 RMS / 2 ∈ [0, 1]. 크기는 트랙 cfg(`rw_cmd_rate_scale`)가 작동점에 맞춰 정한다.
+    #   리프트 전엔 0 — 억제 항을 처음부터 켜면 탐색이 죽는다(fab_test14: σ −41%, 리프트 350 epoch 지연).
+    cmd_rate_scale: float = 0.1
 
     def __post_init__(self):
         if self.success_steps < 1:
             raise ValueError(f"success_steps must be ≥ 1, got {self.success_steps}")
         if self.hand_floor_max < 0.0 or self.lift_clip < 0.0:
             raise ValueError("hand_floor_max / lift_clip must be non-negative")
+        if self.cmd_rate_scale < 0.0:
+            raise ValueError(f"cmd_rate_scale must be non-negative, got {self.cmd_rate_scale}")
 
 
 def _progress_delta(curr: torch.Tensor, closest: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -76,11 +84,11 @@ def _check_shapes(
     n: int,
     *,
     obj_z, settled_z, lifted_prev, ft_dist, closest_ft, kp_dist, closest_kp,
-    near_goal, arm_qd, hand_qd, hand_z_min,
+    near_goal, arm_qd, hand_qd, hand_z_min, cmd_rate,
 ) -> None:
     """부팅 시 차원 불일치를 시끄럽게 잡는다(조용한 브로드캐스트 금지)."""
     vec = dict(obj_z=obj_z, settled_z=settled_z, lifted_prev=lifted_prev, kp_dist=kp_dist,
-               closest_kp=closest_kp, near_goal=near_goal, hand_z_min=hand_z_min)
+               closest_kp=closest_kp, near_goal=near_goal, hand_z_min=hand_z_min, cmd_rate=cmd_rate)
     for name, t in vec.items():
         if t.shape != (n,):
             raise ValueError(f"{name} must be ({n},), got {tuple(t.shape)}")
@@ -106,6 +114,7 @@ def compute_progress_reward(
     arm_qd: torch.Tensor,
     hand_qd: torch.Tensor,
     hand_z_min: torch.Tensor,
+    cmd_rate: torch.Tensor,
     cfg: ProgressRewardCfg,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """DESIGN §3 보상. 반환 (total (N,), terms dict, out dict).
@@ -113,11 +122,12 @@ def compute_progress_reward(
     - lifted 는 sticky 래치(에피소드 리셋에서만 해제 — env 가 lifted_prev 를 False 로 준다).
     - 리프트 전 항(fingertip_progress·lift)은 lifted 에서 0, keypoint_progress 는 lifted 전 0.
     - closest_* 되먹임: fingertip 은 리프트 후에도 계속 갱신(값은 무해, 게이트가 0 으로 만든다).
+    - cmd_rate(N,) ≥ 0 는 env 가 준 정규화 지령 변화율 — lifted 에서만 −cmd_rate_scale 배로 벌한다.
     """
     n = obj_z.shape[0]
     _check_shapes(n, obj_z=obj_z, settled_z=settled_z, lifted_prev=lifted_prev, ft_dist=ft_dist,
                   closest_ft=closest_ft, kp_dist=kp_dist, closest_kp=closest_kp, near_goal=near_goal,
-                  arm_qd=arm_qd, hand_qd=hand_qd, hand_z_min=hand_z_min)
+                  arm_qd=arm_qd, hand_qd=hand_qd, hand_z_min=hand_z_min, cmd_rate=cmd_rate)
 
     dz = obj_z - settled_z
     lifted = (dz > cfg.lift_latch_height) | lifted_prev
@@ -138,6 +148,9 @@ def compute_progress_reward(
         "hand_vel": -cfg.hand_vel_scale * hand_qd.abs().sum(dim=-1),
         # 왜: 센서 없이 상판 관통을 벌하는 기하 항 — 상판(hand_floor_z) 아래 깊이에 비례, 상한 hand_floor_max.
         "hand_floor": -(cfg.hand_floor_penalty * torch.relu(cfg.hand_floor_z - hand_z_min)).clamp(max=cfg.hand_floor_max),
+        # 왜 상한이 없나: 작동점(≈10×)에서 clamp 되면 항이 상수가 되어 μ 에 기울기가 없다(reward-clamp-kills-gradient).
+        #   유계인 것은 lifted 게이트와 할인(γ 0.99 → 합 ≤ 100·scale·작동점)뿐이다 — 크기는 트랙 cfg 가 Check 1 로 잰다.
+        "cmd_rate": -cfg.cmd_rate_scale * cmd_rate.clamp(min=0.0) * lifted_f,
     }
     if tuple(terms) != PROGRESS_REWARD_TERMS:
         raise RuntimeError(f"term order drifted: {tuple(terms)} != {PROGRESS_REWARD_TERMS}")

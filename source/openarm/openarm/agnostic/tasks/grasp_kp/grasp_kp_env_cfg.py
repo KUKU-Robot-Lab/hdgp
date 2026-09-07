@@ -74,7 +74,10 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     goal_box_z_range: tuple[float, float] = (0.10, 0.30)   # 정착고 기준(하한 0.10 = 래치)
     goal_success_steps: int = 10
     goal_max: int = 50
-    goal_force_consecutive: bool = False
+    # ★09.07 True: 성공 = 공차 안 **연속** 10 스텝. 누적(False)이면 공차 안팎을 오가며(흔들리며) 성공을
+    #   세어 준다 — "안정 파지"가 성공 판정에 없었다. SimToolReal 논문 런처도 True 로 강제했다.
+    #   tol 이 0.06 → 0.015 로 조여질수록 이 조건이 곧 "10 스텝 정지"가 된다. goal_bonus(100/step near)는 그대로.
+    goal_force_consecutive: bool = True
     # finalize 파생(단일 소스) — env-local 절대 박스. 직접 쓰지 말 것.
     goal_box_min: tuple[float, float, float] = (0.0, 0.0, 0.0)
     goal_box_max: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -106,6 +109,13 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     #   이 트랙에서는 **미소비**다. 보상·진단(`task/hand_floor_depth_max`) 기준은 이 값이다.
     rw_hand_floor_z: float = 0.215
     rw_hand_floor_max: float = 5.0
+    # ★09.07 A-v: 리프트 후 지령 변화 벌점. 측도(env `_cmd_rate`) = 리미터 전 원지령 변화 / 리미터 상한(위치·회전
+    #   평균), 비유계. a2/a6 작동점 step_raw 0.20 m = 10×(회전은 미계측, 벽↔벽 80° 면 27×) → 평균 ≈ 10~15.
+    #   Check 1(do-nothing): 리프트 전 do-nothing 가치 = 1.0/(1−0.99) = 100. 리프트 후 벌점 −0.1×12.5 = −1.25/step
+    #   할인 합 −125 → 리프트 가치 300 − 125 = 175 > 100. 리프트는 여전히 이득(여유 1.75×). 0.2 면 50 < 100 로 뒤집힌다.
+    #   이송 세금: 리미터에 딱 맞게 지령하며 전속 이송 −0.1/step vs keypoint_progress +4/step(2.5%).
+    #   정지 상태에서는 goal_bonus 100 이 상수라 이 항이 **유일한 변동 신호** — 거기서 학습된다.
+    rw_cmd_rate_scale: float = 0.1
 
     # ---- 지연·지각 노이즈 (DESIGN §4·§5) ------------------------------------------------
     obs_delay_steps: int = 3                  # 큐 길이 L(1 = 지연 없음), 매 스텝 인덱스 재추첨
@@ -200,6 +210,7 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
             hand_floor_penalty=float(self.rw_hand_floor_penalty),
             hand_floor_z=float(self.rw_hand_floor_z),
             hand_floor_max=float(self.rw_hand_floor_max),
+            cmd_rate_scale=float(self.rw_cmd_rate_scale),
         )
 
     def tolerance_curriculum_kwargs(self) -> dict:
@@ -248,6 +259,12 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
             errs.append(f"palm_cmd_anchor_pull 은 [0,1): {self.palm_cmd_anchor_pull}")
         if not (0.0 <= float(self.palm_cmd_leak_reserve) < 1.0):
             errs.append(f"palm_cmd_leak_reserve 는 [0,1): {self.palm_cmd_leak_reserve}")
+        if float(self.rw_cmd_rate_scale) < 0.0:
+            errs.append(f"rw_cmd_rate_scale 는 ≥ 0 (0 = 끔), got {self.rw_cmd_rate_scale}")
+        # 정규화 분모가 두 리미터다 — 벌점을 켜 둔 채 리미터를 끄면 측도가 정의되지 않는다.
+        if float(self.rw_cmd_rate_scale) > 0.0 and (
+                float(self.palm_cmd_rate_limit_m) <= 0.0 or float(self.palm_cmd_rate_limit_rot_deg) <= 0.0):
+            errs.append("rw_cmd_rate_scale > 0 이면 palm_cmd_rate_limit_m 와 palm_cmd_rate_limit_rot_deg 둘 다 > 0 이어야 한다")
         if int(self.arm_cmd_dim) < 1:
             errs.append(f"arm_cmd_dim ≥ 1, got {self.arm_cmd_dim}")
         if errs:
