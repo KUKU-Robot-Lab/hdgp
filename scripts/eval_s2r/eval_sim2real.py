@@ -26,6 +26,11 @@ from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description="grasp_v1 sim2real 평가 하네스 (SP1)")
 parser.add_argument("--robot", required=True, choices=["left", "right"])
+# ★--robot 은 자산/좌우 규약을, --task 는 실행할 gym id 를 정한다. 원래는 TASK_BY_ROBOT
+#   두 개가 전부라 grasp_v1 말고는 이 하네스를 못 썼다. 기본값은 그대로 두어 기존
+#   호출부의 거동을 바꾸지 않는다.
+parser.add_argument("--task", default=None,
+                    help="평가할 gym id (기본: --robot 에 대응하는 grasp_v1 play-lstm)")
 parser.add_argument("--checkpoint", required=True, help="정책 .pth (prefix-glob 허용)")
 parser.add_argument("--pose_source", default="state_frozen",
                     choices=["live", "state_frozen", "camera_frozen"])
@@ -163,6 +168,11 @@ TASK_BY_ROBOT = {
     "left": "open-tesol_l_grasp_v1-play-lstm",
     "right": "open-tesol_r_grasp_v1-play-lstm",
 }
+
+
+def resolve_task(args) -> str:
+    """--task 우선, 없으면 --robot 기본값. 기본값은 grasp_v1 전용이었다."""
+    return args.task or TASK_BY_ROBOT[args.robot]
 # 학습 스폰 분포(cfg 기본): 중심 ±(xy_range + ADR max). 벗어나면 경고만 (분포외 측정이 목적).
 TRAIN_RANGE_WARN = 0.08 + 0.06
 # 인터랙티브 STAGED 대기 위치(스펙 §4.6): obj_out_x_max 밖 원거리라 물리에 안 걸림.
@@ -666,7 +676,7 @@ def _setup(task: str, num_envs: int, mode: str, cells: list, spec: GridSpec | No
 
 
 def main():
-    task = TASK_BY_ROBOT[args_cli.robot]
+    task = resolve_task(args_cli)
     spec, cells, num_envs = _build_grid_and_num_envs(args_cli, MODE)
     print(f"[INFO] mode={MODE} task={task} num_envs={num_envs}")
 
@@ -759,7 +769,7 @@ def interactive_main():
     STAGED(pending is None) 동안은 물리를 스텝하지 않고 simulation_app.update()만 돌리며
     stdin을 논블로킹 폴링한다 — GUI 응답성을 막지 않기 위함(스펙 §4.6). num_envs=1 고정.
     """
-    task = TASK_BY_ROBOT[args_cli.robot]
+    task = resolve_task(args_cli)
     print(f"[INFO] mode={MODE} task={task} num_envs=1")
     env, ge, agent, _resume_path, provider, obs = _setup(task, 1, MODE, [], None)
 

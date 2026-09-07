@@ -307,3 +307,63 @@ def test_registered_cfg_classes_keep_own_pair_name():
                 "베이스 기본값에 가려짐(configclass 상속 함정)")
     play = getattr(reg, f"PourFabric_{sorted(reg.REGISTERED)[0]}_PLAY_Cfg")()
     assert play.scene.num_envs == 50
+
+
+# =============================================================================
+# grasp_lift_fabric 정렬 (08.23, 사용자 지시)
+# =============================================================================
+def test_envelope_uses_shared_function_not_a_copy():
+    """감쌈 판정은 자매 트랙과 **같은 함수**여야 한다 — 복사하면 갈라진다."""
+    src = _ENV
+    assert "from ..grasp_sensor.rewards import envelope_fraction" in src
+    # 로컬 재구현 금지
+    assert "def envelope_fraction" not in src
+    assert "def envelope_fraction" not in _REW
+
+
+def test_envelope_denominator_excludes_non_flexing_fingers():
+    """분모는 profile.envelope_fingers — 전 손가락을 쓰면 pinky 때문에 상한 0.8."""
+    src = _ENV
+    assert "profile.envelope_fingers" in src, "env_f 를 프로필에서 만들어야 한다"
+    assert "self.env_f" in src
+    # 구판 회귀 방지: wrap 인디케이터 전체 평균으로 감쌈을 세면 안 된다.
+    assert "src_w.mean(dim=1)" not in src
+
+
+def test_contact_thresholds_are_split_three_ways():
+    """게이트/참여/엄격 임계 분리 — 하나로 쓰면 스침 차단과 참여 판정이 결합된다."""
+    cfg = _CFG
+    for pat in (r"contact_force_threshold: float = 1\.0",
+                r"participation_force_threshold: float = 0\.1",
+                r"envelope_force_threshold: float = 0\.5"):
+        assert re.search(pat, cfg), f"{pat} 없음"
+    env = _ENV
+    assert "participation_force_threshold" in env, "참여 임계가 소비되지 않는다"
+
+
+def test_thresholds_match_sibling_track():
+    """세 임계값은 grasp_lift_fabric 과 같아야 한다(정렬 계약)."""
+    ours = _CFG
+    sib = (_PKG.parent / "grasp_lift_fabric" / "grasp_lift_fabric_env_cfg.py").read_text()
+    for key in ("contact_force_threshold", "participation_force_threshold",
+                "envelope_force_threshold"):
+        m_o = re.search(rf"{key}: float = ([0-9.]+)", ours)
+        m_s = re.search(rf"{key}: float = ([0-9.]+)", sib)
+        assert m_o and m_s, f"{key} 파싱 실패"
+        assert m_o.group(1) == m_s.group(1), (
+            f"{key}: pour={m_o.group(1)} != grasp={m_s.group(1)}")
+
+
+def test_fabric_owns_the_hand_in_direct_mode():
+    """fabric 이 손 자세를 알아야 body_repulsion 이 맞는 형상으로 계산된다.
+
+    실측(probe_pour_hand_drift): PCA zeros 를 주던 구판은 fabric 내부 손이 실제와
+    step 400 에 16.7° 벌어졌고, direct + warm 자세 지령으로 6.6°(전부 fabric 내부
+    경합, PD 층은 0.0001 rad)로 줄었다.
+    """
+    src = _ENV
+    assert 'hand_mode="direct"' in src
+    assert "use_hand_fabric=True" in src
+    # 구판 회귀 방지: 5D PCA 지령 버퍼
+    assert "fabric_hand_cmd = torch.zeros(self.num_envs, 5" not in src
+    assert "rig.fabric_hand_cmd = rig.hand_hold[:, rig.fab_from_hand]" in src

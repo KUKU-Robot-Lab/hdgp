@@ -75,6 +75,13 @@ NUM_NULLSPACE_ACTION = 1   # [2b] arm 잉여 1-DOF (팔꿈치↔손목 self-moti
 NUM_HAND_ACTION = 5   # [v7 복원] per-finger lerp: action[7:12] ∈[-1,1] → open(approach)~grasp 사이
 NUM_ACTIONS = NUM_PALM_ACTION + NUM_NULLSPACE_ACTION + NUM_HAND_ACTION  # 12 (obs는 불변: finger_grasp_progress가 손 상태)
 
+# ★좌팔(receiver) TCP 위치 3D — `left_arm_action_enable=True` 일 때만 액션에 붙는다.
+#   both/pour_sensor 에서 이식(그쪽은 상시 15D). 관측은 **양쪽 모두 55/144 로 동일**하다
+#   — 좌팔 관절(18ch)과 주둥이→입구 상대벡터가 이미 actor obs 에 있어서, 좌팔이 움직이면
+#   그 채널들이 저절로 따라간다. 그래서 액션만 늘리면 된다.
+NUM_LEFT_TCP_ACTION = 3
+NUM_ACTIONS_WITH_LEFT = NUM_ACTIONS + NUM_LEFT_TCP_ACTION  # 15
+
 # ---------------------------------------------------------------------------
 # Observation space
 # ---------------------------------------------------------------------------

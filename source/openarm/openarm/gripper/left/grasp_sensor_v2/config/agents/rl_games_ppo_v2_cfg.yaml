@@ -1,0 +1,146 @@
+# gripper/left/grasp_sensor — IsaacLab Isaac-Lift-Cube-OpenArm-v0 의 rl_games 설정 사본.
+# ★하이퍼파라미터를 임의로 바꾸지 말 것 — 이 조합이 lift 레시피가 학습되는 조건의 일부다.
+#   바꾼 것은 experiment name 뿐이다. (fab 변형 사본 — 하이퍼파라미터 동일)
+
+
+params:
+  seed: 42
+
+  # environment wrapper clipping
+  env:
+    clip_observations: 100.0
+    clip_actions: 100.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        # ★★fab_test69: tanh 를 **되돌린다**(t68 실측 근거).
+        #   t68 은 mu 를 tanh 로 가뒀는데 접근 국면에서 zmu 가 -0.97 에 붙어 동결됐고
+        #   lift/goal/closure 가 전 구간 정확히 0.00 이었다(reach 0.13 vs t67 0.59).
+        #   기전: tanh'(0.97) = 1 - 0.97^2 = **0.059** — 그 지점 gradient 가 17 배 감쇠한다.
+        #   하필 이 태스크의 접근 자세가 거기다(t67 이 배운 접근 지령 z=0.180 = a -0.909).
+        #   clamp 의 "gradient 정확히 0" 함정을 **박스 안쪽까지 파고드는 gradient 소실**
+        #   함정으로 바꾼 셈이었다. 선형 mu 는 부호 반전까지 자유롭다(t67 zmu -0.80 → +0.76).
+        #   ⇒ mu 는 자유롭게 두고, 표류는 `bounds_loss_coef`(hinge)로 막는다.
+        mu_activation: None
+        sigma_activation: None
+
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [256, 128, 64]
+      activation: elu
+      d2rl: False
+
+      initializer:
+        name: default
+      regularizer:
+        name: None
+
+  load_checkpoint: False # flag which sets whether to load the checkpoint
+  load_path: '' # path to the checkpoint to load
+
+  config:
+    name: open-grip_l_grasp_sensor_v2
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False
+    normalize_input: True
+    normalize_value: True
+    # ★★08.31 라운드 17 — False → True. **truncation 을 가치로 보정한다.**
+    #   `goal_dwell`(목표 체류 10 스텝 → 에피소드 끝)을 넣으면서 필수가 됐다.
+    #   IsaacLab 래퍼가 `extras["time_outs"]=truncated` 를 넘기고(rl_games.py:284)
+    #   rl_games 는 `if self.value_bootstrap and 'time_outs' in infos` 일 때만
+    #   `shaped_rewards += gamma * values * time_outs` 로 보정한다(a2c_common:777).
+    #   꺼두면 **성공이 곧 남은 보상 포기**가 된다 — stage 3 스텝당 최대 0.9 인데
+    #   100 스텝에서 끝나면 150×0.9 ≈ 135 를 버린다(에피소드 총보상 63~77).
+    #   실측 정합: A 의 `diag_at_goal` 이 0.215 → 0.002 로 100 배 떨어졌다.
+    #   ⚠ 기존 250 스텝 time_out 도 함께 보정된다 — I·L·M 과는 이 점이 다르다.
+    value_bootstrap: True
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.99
+    tau: 0.95
+    learning_rate: 1e-4
+    lr_schedule: adaptive
+    schedule_type: legacy
+    kl_threshold: 0.01
+    score_to_win: 100000000
+    max_epochs: 2500   # ★라운드 3: run0-s43 정점 ep861 · 라운드 1 정점 1162~2294 — 2500 이면 정점과 붕괴 여부를 다 본다
+    save_best_after: 100
+    save_frequency: 50
+    print_stats: True
+    grad_norm: 1.0
+    # ★★fab_test82: 0.001 → 0.005. seed 43 이 두 판 연속(t76·t80) 죽은 원인이
+    #   보상이 아니라 **탐색 붕괴**임이 실측으로 좁혀졌다.
+    #   · 홈 턱 중점 (0.3156, 0.3194, 0.3330) → 파지점까지 y 로 **−129 mm** 가야 한다
+    #     (x +65 · z −67 보다 크다). 파지 턱 영역의 y 폭은 40 mm 뿐이다.
+    #   · 무작위 팜 지령 스윕(10240 표본, 자세 ±20° 포함)에서 **파지 적중 1.5%**
+    #     (probe_left_palm_box_usage). 부트스트랩은 좁은 표적 맞히기다.
+    #   · t80 실측 σ: 1.015 → 0.902 → 0.618(ep200) → 0.310 → **0.223**(ep600).
+    #     σ 0.223 이면 y 탐색 폭이 0.223 × half 165 mm = **37 mm** — 129 mm 를 못 덮는다.
+    #     신호가 없어 σ 가 줄고, σ 가 줄어 신호를 못 찾는 자기강화 고리다.
+    #   · 성공판은 같은 구간에서 σ 를 유지한다: t79 0.98~1.04 · t81 0.95~1.59.
+    #   ⚠ `normalize_advantage: True` 라 평탄한 보상 구간에서도 잡음 수준 advantage 가
+    #     단위 크기로 증폭된다 — 신호가 없을수록 σ 를 더 세게 민다. 그래서 붕괴가 빠르다.
+    #   ⚠ 이건 보상 변경이 아니다. 보상 형태는 멀쩡하다 — 같은 보상으로 seed 42 가
+    #     두 GPU 에서 모두 학습한다(t79 RTX3090 · t81 RTX5080).
+    #   ⚠ 상한 주의: σ 가 1 을 넘으면 절대 태스크공간 액션에서 샘플이 clamp 돼
+    #     bang-bang 이 된다(t75 실증). 목표는 σ 를 **키우는 것이 아니라 붕괴를 막는 것**이다.
+    #     t81 이 0.001 에서도 1.59 까지 갔으므로 과잉이면 되돌린다.
+    #   ★★fab_test82 결과: **기각**. entropy 0.005 로 σ 붕괴는 완전히 막혔는데
+    #     (t80 0.22 → t82 1.7~1.8, 8 배) seed 43 의 결과는 **하나도 안 바뀌었다** —
+    #     lifting_object 가 4000 epoch 내내 0.00, reach 0.13 동결(t80 과 동일).
+    #     ⇒ σ 붕괴는 원인이 아니라 증상이었다. 0.001 로 되돌린다.
+    #     ⚠ 부수 교훈: 절대 태스크공간 액션에서 σ 를 키우면 탐색이 넓어지는 게 아니라
+    #       **이산화**된다 — σ 1.77 이면 축당 약 72% 가 clamp 돼 박스 모서리만 튄다.
+    #       엔트로피 수치는 높은데 실제 탐색 품질은 나쁘다.
+    entropy_coef: 0.001
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 24
+    minibatch_size: 24576
+    mini_epochs: 8
+    critic_coef: 4
+    clip_value: True
+    clip_actions: False
+    seq_len: 4
+    # ★★fab_test69: 1e-4 → 5e-3. t67 의 mu 가 y=3.11 · z=2.04 까지 표류했는데
+    #   1e-4 에서 벌점이 4e-4 라 총보상 115 대비 복원력이 없었다.
+    #   ⚠ rl_games 기본 `bound_loss_type: 'bound'` 는 **|mu| ≤ 1.1 에서 정확히 0 인
+    #     hinge** 다(소스 확인). 박스 안 행동에는 아무 영향이 없어, t18 이 겪은
+    #     초기 탐색 억제가 이 손잡이에는 해당하지 않는다. mu=3.1 에서 복원 50 배.
+    # ★★fab_test72: 1e-4 → 5e-3. 표류가 goal tracking 을 죽인다는 인과가 두 판에서
+    #   독립적으로 확인됐다 — 포화율이 오르면 fine 이 떨어진다:
+    #     t70  ysat 0.41→0.88  fine 0.57→0.31   ·  t71  세 축 87~96% 포화  fine 0.22 평평
+    #   리프트는 포화 상태에서도 멀쩡하다(t71 lift 12.4) — "높이 들면 끝"이라 축별
+    #   조건부 표현이 필요 없기 때문이고, 이송만 그걸 요구한다.
+    #   1e-4 에서는 복원력이 없다: t71 의 ymu 가 **-4.04** 까지 갔다(t67 은 3.11).
+    #   ⚠ `bound_loss_type` 기본 'bound' 는 |mu| ≤ 1.1 에서 정확히 0 인 hinge 라
+    #     박스 안 행동은 안 건드린다(소스 확인). t18 의 초기 탐색 억제는 해당 없음.
+    # ★★fab_test77: 5e-3 → 2e-2. t75 best 결정론 프로브가 기전을 확정했다 —
+    #   y mu 1.504 (포화 99.1%) · z mu 1.319 (86.4%) 인데 x 는 mu 0.859 (28.6%) 다.
+    #   목표→지령 기울기가 그 순서 그대로 x +0.099 / z +0.006 / y +0.016 이다:
+    #   **clamp 미분이 0 이라 포화된 축은 목표를 따라갈 수 없다.**
+    #   5e-3 에서는 hinge 가 지고 있다 — ymu 가 1.09(ep300) → 1.50(ep1500) 으로 단조 상승.
+    #   ⚠ 상한은 구조적이다: soft_bound 가 1.1 이라 mu=1.1 은 벌점 0 이고, σ≈1 이면
+    #     그것만으로 이미 54% 가 clamp 된다. 목표는 99% → **55% 대**(t73 의 ysat 0.55 구간에서
+    #     y 기울기가 0.297 로 이 트랙 최고였다)이지 0% 가 아니다.
+    bounds_loss_coef: 0.02

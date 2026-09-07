@@ -12,7 +12,7 @@ _app = SimulationApp({"headless": True})
 import os
 from pxr import Usd, UsdGeom
 
-_ROOT = "/home/user/rl_ws/hdgp/assets/visdex_objects/USD"
+_ROOT = "/home/user/rl_ws/hdgp/assets/multi_obj/visdex_objects/USD"
 _OUT = "/home/user/rl_ws/scratchpad_allscale_result.txt"
 
 names = sorted(

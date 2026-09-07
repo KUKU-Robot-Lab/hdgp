@@ -24,6 +24,10 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from RL-Games.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
+parser.add_argument(
+    "--probe_steps", type=int, default=0,
+    help="0 보다 크면 그만큼 스텝을 돌고 env.extras 의 수치 지표를 **평균 내어** 표로 출력한 뒤 "
+         "종료한다. 재학습 없이 체크포인트를 계측하는 probe 용도(09.07 신설).")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
@@ -77,9 +81,25 @@ parser.add_argument(
     help="student 카메라(depth) occlusion 정량화: N 스텝 돌며 물체 가시 픽셀 비율 측정 후 출력·종료 (0=off). 소수 env 권장.",
 )
 parser.add_argument(
+    "--cup_drift_probe", type=int, default=0,
+    help="컵이 스폰 위치에서 얼마나 끌려오는지 N 스텝 추적 후 리포트·종료 (0=off). "
+         "warm 뱅크 컵 y 가 스폰 중심보다 안쪽인 현상의 발생 구간을 특정한다.",
+)
+parser.add_argument(
     "--grip_probe", action="store_true", default=False,
     help="기하 probe: 정책의 palm 배치는 유지하되 손가락 action 을 강제 full-grip(+1)으로 덮어써 "
          "작은 물체에서 손끝 감쌈·palm 도달 여부를 렌더/DBGC 로 확인. --video --num_envs 8 권장.",
+)
+parser.add_argument(
+    "--grip_probe_keep_palm", action="store_true", default=False,
+    help="grip_probe 변형: palm 지령을 물체 위치로 덮지 않고 정책 출력 그대로 둔 채 "
+         "손가락만 full-grip 강제 — '지금 배치에서 닫으면 잡히는가'를 분리 측정.",
+)
+parser.add_argument(
+    "--grip_probe_after", type=int, default=0,
+    help="grip_probe 를 이 스텝 이후에만 적용 — 처음부터 강제하면 obs 가 분포 밖으로 "
+         "밀려 정책이 접근 자체를 포기한다(실측: 손끝이 컵 +42cm 위 도피). "
+         "정착(예: 300) 후 강제해야 '그 배치에서 닫으면 잡히는가'가 깨끗하게 나온다.",
 )
 parser.add_argument(
     "--dead_hand_probe", action="store_true", default=False,
@@ -88,12 +108,23 @@ parser.add_argument(
          "팔 후퇴(LSTM 발산) 가설 검증용 — [GRIP] palm_d 추이로 판정.",
 )
 parser.add_argument(
+    "--show_goal", action="store_true", default=False,
+    help="이송 목표(goal_pos) 위치에 초록 구 마커 표시 (재생 전용 — env 코드 불변). "
+         "goal_pos 속성이 있는 태스크(grasp_sensor 등)에서만 동작.",
+)
+parser.add_argument(
     "--cam_eye", type=str, default=None,
     help="Viewer camera position 'x,y,z' (env-local). pour 태스크는 기본 근접뷰 자동 적용.",
 )
 parser.add_argument(
     "--cam_lookat", type=str, default=None,
     help="Viewer camera lookat 'x,y,z' (env-local).",
+)
+parser.add_argument(
+    "--dump_extras", type=str, default=None,
+    help="쉼표로 구분한 부분문자열에 걸리는 env.extras 키를 30스텝마다 출력한다. "
+         "학습 로그(TFEvents)에만 있고 play 에는 안 나오던 계측을 체크포인트 단위로 "
+         "읽기 위한 것이다. 예: --dump_extras palm/,hand_floor",
 )
 parser.add_argument(
     "--view_env_index", type=int, default=0,
@@ -140,32 +171,16 @@ from isaaclab.envs import (
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import load_yaml
-
-import yaml as _yaml
 
 
-class _RunCfgYamlLoader(_yaml.FullLoader):
-    """logged env.yaml 전용 loader.
-
-    EventCfg의 SceneEntityCfg 기본값 slice(None)이
-    `!!python/object/apply:builtins.slice` 태그로 덤프되는데 FullLoader가
-    거부하므로 해당 태그만 명시적으로 복원한다.
-    """
-
-
-_RunCfgYamlLoader.add_constructor(
-    "tag:yaml.org,2002:python/object/apply:builtins.slice",
-    lambda loader, node: slice(*loader.construct_sequence(node, deep=True)),
+# 평가 하네스 범용화 층. scripts/tools 는 패키지가 아니라 경로로 붙인다.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+import eval_adapters as _eval_adapters  # noqa: E402
+# run 설정 복원은 `scripts/tools/run_cfg_restore.py` 가 소유한다. 그림자 기록
+# 프로브도 같은 복원을 해야 하는데, 사본을 두면 기록과 재생이 조용히 갈린다.
+from run_cfg_restore import (  # noqa: E402
+    restore_run_cfg_if_available as _restore_run_cfg_if_available,
 )
-
-
-def _load_run_yaml(path: str):
-    try:
-        return load_yaml(path)
-    except _yaml.constructor.ConstructorError:
-        with open(path) as f:
-            return _yaml.load(f, Loader=_RunCfgYamlLoader)
 
 
 try:
@@ -309,90 +324,6 @@ def _resolve_checkpoint_path(checkpoint: str) -> str:
         return str(resolved)
 
     raise FileNotFoundError(f"Unable to find the checkpoint file or prefix: {checkpoint}")
-
-
-def _rebase_logged_paths(value, *, workspace_root: str):
-    """Map absolute paths from another machine's logged cfg onto this workspace."""
-    if isinstance(value, dict):
-        return {k: _rebase_logged_paths(v, workspace_root=workspace_root) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_rebase_logged_paths(v, workspace_root=workspace_root) for v in value]
-    if isinstance(value, tuple):
-        return tuple(_rebase_logged_paths(v, workspace_root=workspace_root) for v in value)
-    if not isinstance(value, str) or os.path.exists(value):
-        return value
-
-    marker = "/rl_ws/"
-    if marker not in value:
-        return value
-    rel = value.split(marker, 1)[1]
-    candidate = os.path.join(workspace_root, rel)
-    return candidate if os.path.exists(candidate) else value
-
-
-def _apply_logged_env_cfg(target, logged: dict) -> None:
-    """Recursively copy logged env config values onto the Hydra config object."""
-    if not isinstance(logged, dict):
-        return
-    for key, value in logged.items():
-        if key == "func":
-            continue
-        if isinstance(target, dict):
-            if key not in target:
-                continue
-            current = target[key]
-        elif hasattr(target, key):
-            current = getattr(target, key)
-        else:
-            continue
-        if callable(current):
-            continue
-
-        if isinstance(value, dict) and (isinstance(current, dict) or hasattr(current, "__dict__")):
-            _apply_logged_env_cfg(current, value)
-        elif isinstance(value, list) and isinstance(current, list) and any(
-            isinstance(item, dict) for item in value
-        ):
-            # 설정 객체 리스트(spawn.assets_cfg 등): 통째로 교체하면 configclass가
-            # dict로 바뀌어 asset_cfg.func 접근이 깨진다 → 같은 인덱스끼리 재귀 복원.
-            for cur_item, val_item in zip(current, value):
-                if isinstance(val_item, dict) and (
-                    isinstance(cur_item, dict) or hasattr(cur_item, "__dict__")
-                ):
-                    _apply_logged_env_cfg(cur_item, val_item)
-        else:
-            try:
-                if isinstance(target, dict):
-                    target[key] = value
-                else:
-                    setattr(target, key, value)
-            except Exception:
-                pass
-
-
-def _restore_run_cfg_if_available(env_cfg, agent_cfg: dict, *, resume_path: str, workspace_root: str) -> dict:
-    """Use params saved next to the checkpoint so playback matches training."""
-    run_dir = os.path.dirname(os.path.dirname(resume_path))
-    params_dir = os.path.join(run_dir, "params")
-    env_yaml = os.path.join(params_dir, "env.yaml")
-    agent_yaml = os.path.join(params_dir, "agent.yaml")
-
-    if os.path.exists(env_yaml):
-        logged_env = _rebase_logged_paths(_load_run_yaml(env_yaml), workspace_root=workspace_root)
-        _apply_logged_env_cfg(env_cfg, logged_env)
-        print(f"[INFO] Restored playback env cfg from: {env_yaml}")
-    else:
-        print(f"[WARN] Run env cfg not found; using current source cfg: {env_yaml}")
-
-    if os.path.exists(agent_yaml):
-        logged_agent = _rebase_logged_paths(_load_run_yaml(agent_yaml), workspace_root=workspace_root)
-        if isinstance(logged_agent, dict) and "params" in logged_agent:
-            print(f"[INFO] Restored playback agent cfg from: {agent_yaml}")
-            return logged_agent
-        print(f"[WARN] Ignoring malformed run agent cfg: {agent_yaml}")
-    else:
-        print(f"[WARN] Run agent cfg not found; using current source cfg: {agent_yaml}")
-    return agent_cfg
 
 
 def _apply_playback_env_overrides(env_cfg) -> None:
@@ -694,6 +625,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(obs, dict):
         obs = obs["obs"]
     timestep = 0
+    # ---- probe 누적기 (09.07) — `--probe_steps` 일 때만 채워진다 ------------------
+    _probe_acc: dict[str, list] = {}
+    _probe_n = 0
     _episode_step = 0
     _episode_buf = []
     # pour 전용 진단 로깅 게이트: grasp 등 다른 태스크에서 '--' 표 스팸 방지
@@ -707,9 +641,64 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     _eval_acc = {"in_succ": [], "grip_sum": 0.0, "grip_n": 0, "grip_hist": None, "height": [],
                  "cup_idx": None, "cup_finger": None, "cup_n": 0, "cup_hist": None,
                  "obj_finger": None, "obj_n": 0}
+    # 평가 경로는 첫 스텝에 한 번만 고른다(선택 사유를 로그로 남긴다).
+    _eval_route = None
+    _common_eval = None
     _occ = {"step": 0, "by_obj": {}}  # occlusion probe 누적: obj_name -> [vis_lift_sum, n_lift, vis_pre_sum, n_pre]
+    _cd_n = int(args_cli.cup_drift_probe)
+    _cd_step = 0
+    _cd_ref = None          # 1 스텝 뒤 컵 위치(리셋 직후 버퍼는 stale)
+    _cd_rows = []
+    # --show_goal: 이송 목표 마커 (재생 전용). env 코드는 안 건드린다 —
+    # play 루프에서 매 스텝 goal_pos + env_origins 로 visualize 만 호출.
+    _goal_marker = None
+    if args_cli.show_goal:
+        _ge = env.unwrapped
+        while hasattr(_ge, "env"):
+            _ge = _ge.env.unwrapped
+        if hasattr(_ge, "goal_pos"):
+            import isaaclab.sim as _sim_utils
+            from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+            _goal_marker = VisualizationMarkers(VisualizationMarkersCfg(
+                prim_path="/Visuals/goal_marker",
+                markers={"goal": _sim_utils.SphereCfg(
+                    radius=0.02,
+                    visual_material=_sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=(0.1, 0.9, 0.2), opacity=0.7),
+                )},
+            ))
+            print("[INFO] 이송 목표 마커 표시 on (초록 구, r=2cm)")
+        else:
+            print("[WARN] --show_goal 무시: env 에 goal_pos 속성이 없음")
     while simulation_app.is_running():
         start_time = time.time()
+        if _cd_n > 0:
+            _ce = env.unwrapped
+            if hasattr(_ce, "env"):
+                _ce = _ce.env.unwrapped
+            if _cd_step == 1:
+                _cd_ref = _ce.object_pos.clone()
+            if _cd_ref is not None and _cd_step % 10 == 0:
+                _d = _ce.object_pos - _cd_ref
+                _pd = torch.norm(_ce.object_pos - _ce.palm_center_pos, dim=-1)
+                _cd_rows.append((
+                    _cd_step,
+                    float(_ce.object_pos[:, 1].mean()),
+                    float(_d[:, 1].mean() * 1000.0),
+                    float(_d[:, 2].mean() * 1000.0),
+                    float(_pd.mean() * 1000.0),
+                ))
+            if _cd_step >= _cd_n:
+                print("\n[CUPDRIFT] 컵 이동 추적 (기준 = 1 스텝 뒤 위치)", flush=True)
+                print("  step |  cup_y(m) |  Δy(mm) |  Δz(mm) | palm-cup(mm)", flush=True)
+                for _r in _cd_rows:
+                    print(f"  {_r[0]:4d} | {_r[1]:+9.4f} | {_r[2]:+7.1f} | {_r[3]:+7.1f} | {_r[4]:11.1f}",
+                          flush=True)
+                if _cd_rows:
+                    print(f"\n  시작 cup_y {_cd_rows[0][1]:+.4f} → 종료 {_cd_rows[-1][1]:+.4f}"
+                          f"  (총 Δy {_cd_rows[-1][2]:+.1f}mm)", flush=True)
+                break
+            _cd_step += 1
         with torch.inference_mode():
             obs = agent.obs_to_torch(obs)
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
@@ -717,26 +706,43 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # 정책 무관하게 "손이 물체에 도달·감쌈 가능한가"를 순수 기하로 검증하는 도구.
             # palm_pose=scale(action,mins,maxs) 역: action=2(t-min)/(max-min)-1, box 밖이면 ±1 clamp.
             # GRASP_DEBUG_CONTACT=1 로 tipdist/palm_frac/관절여유 DBGC 동시 출력.
-            if args_cli.grip_probe:
+            _gpb_step = globals().get("_GPB_STEP", 0)
+            globals()["_GPB_STEP"] = _gpb_step + 1
+            if args_cli.grip_probe and _gpb_step >= int(args_cli.grip_probe_after):
                 _pe = env.unwrapped
                 if hasattr(_pe, "env"):
                     _pe = _pe.env.unwrapped
-                _mins = getattr(_pe, "palm_mins_env", None)
-                if _mins is None:   # tesollo: palm_mins/maxs 는 (6,) → (1,6) broadcast
-                    _mins = _pe.palm_mins.unsqueeze(0); _maxs = _pe.palm_maxs.unsqueeze(0)
-                else:
-                    _maxs = _pe.palm_maxs_env   # (N,6)
-                _a_pos = (2.0 * (_pe.object_pos - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
-                actions[:, :3] = _a_pos
-                actions[:, 3:6] = 0.0
-                actions[:, 6:12] = 1.0
+                if not args_cli.grip_probe_keep_palm:
+                    _mins = getattr(_pe, "palm_mins_env", None)
+                    if _mins is None:   # tesollo: palm_mins/maxs 는 (6,) → (1,6) broadcast
+                        _pm = getattr(_pe, "palm_mins", None)
+                        if _pm is not None:
+                            _mins = _pm.unsqueeze(0); _maxs = _pe.palm_maxs.unsqueeze(0)
+                        else:   # grasp_sensor: 6D palm 박스는 _palm_lo/_palm_hi
+                            _mins = _pe._palm_lo.unsqueeze(0); _maxs = _pe._palm_hi.unsqueeze(0)
+                    else:
+                        _maxs = _pe.palm_maxs_env   # (N,6)
+                    _opos = (_pe._env_local(_pe.object.data.root_pos_w)
+                             if hasattr(_pe, "_env_local") else _pe.object_pos)
+                    _a_pos = (2.0 * (_opos - _mins[:, :3]) / (_maxs[:, :3] - _mins[:, :3] + 1e-6) - 1.0).clamp(-1.0, 1.0)
+                    actions[:, :3] = _a_pos
+                    actions[:, 3:6] = 0.0
+                actions[:, 6:] = 1.0   # 손 전 채널 full-grip (12D·21D 계약 공통)
             # 죽은 손 probe(--dead_hand_probe): 정책 raw 는 보존하고 env 에는 손가락 -1(폐쇄 0) 주입
             # → 손이 APPROACH 에 물리 동결(관절 정지·접촉 0·tips 정지 = 실기 손 두절 재현).
             if args_cli.dead_hand_probe:
                 _raw_finger = actions[:, 6:11].clone()
                 actions = actions.clone()
                 actions[:, 6:11] = -1.0
-            obs, _, dones, _ = env.step(actions)
+            # ★09.07 4번째 반환값은 extras 다. `--probe_steps` 가 이걸 누적한다
+            #   (env.unwrapped.extras 를 따로 읽으려 하면 래퍼 체인에 따라 비어 보인다).
+            obs, _rew, dones, _step_extras = env.step(actions)
+            if _goal_marker is not None:
+                _gm = env.unwrapped
+                while hasattr(_gm, "env"):
+                    _gm = _gm.env.unwrapped
+                _goal_marker.visualize(
+                    translations=_gm.goal_pos + _gm.scene.env_origins)
             # last_actions obs(101:106=finger 5D)를 정책 raw 로 원복 — 실기는 정책 자신의 출력을 기록.
             if args_cli.dead_hand_probe:
                 _o_dh = obs["obs"] if isinstance(obs, dict) else obs
@@ -746,6 +752,124 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             _gp = env.unwrapped
             if hasattr(_gp, "env"):
                 _gp = _gp.env.unwrapped
+            if args_cli.dump_extras:
+                _gp._dxstep = getattr(_gp, "_dxstep", 0) + 1
+                if _gp._dxstep % 30 == 0:
+                    _pats = [p for p in args_cli.dump_extras.split(",") if p]
+                    _ex = getattr(_gp, "extras", {}) or {}
+                    _hit = sorted(k for k in _ex if any(p in k for p in _pats))
+                    if _hit:
+                        print("[EXTRAS] " + "  ".join(
+                            f"{k}={float(_ex[k]):.3f}" for k in _hit), flush=True)
+                    else:
+                        print(f"[EXTRAS] 일치 키 없음 — 패턴 {_pats}", flush=True)
+            # grasp_sensor 호환 계측: binary_contact_buf 대신 마디별 접촉력 함수 사용
+            # ★09.07 `_finger_sensors` 를 같이 본다. 접촉 없는 트랙(grasp_kp·grasp_fj)은
+            #   부모 mixin 에서 `_tip_contact_forces` **메서드**를 물려받지만 센서는 만들지
+            #   않는다 — 메서드 존재만 보는 가드는 통과하고 첫 호출에서 AttributeError 로
+            #   죽는다(09.07 영상 추출 실패 실측). 능력은 메서드가 아니라 자원으로 판정한다.
+            if (not hasattr(_gp, "binary_contact_buf") and hasattr(_gp, "_tip_contact_forces")
+                    and getattr(_gp, "_finger_sensors", None)):
+                _gp._gpstep = getattr(_gp, "_gpstep", 0) + 1
+                if _gp._gpstep % 30 == 0:
+                    # 트랙마다 접촉 임계 이름이 다르다(grasp_sensor=stage_contact_threshold,
+                    # grasp_s2r=contact_force_threshold). 있는 쪽을 쓴다.
+                    _thr = float(getattr(_gp.cfg, "stage_contact_threshold", None)
+                                 or getattr(_gp.cfg, "contact_force_threshold", 1.0))
+                    _cs = _gp._contact_forces_split()
+                    _tipf = _gp._tip_contact_forces()
+                    _oz = float(_gp.object.data.root_pos_w[:, 2].mean())
+                    _ov = float(_gp.object.data.root_lin_vel_w.norm(dim=-1).mean())
+                    print(f"[GRIPS] obj_z={_oz:.3f} obj_v={_ov:.3f}  " + "  ".join(
+                        f"{n}:m={float((_cs[0][:, i] > _thr).float().mean()):.2f}"
+                        f",d={float((_cs[1][:, i] > _thr).float().mean()):.2f}"
+                        f",t={float((_tipf[:, i] > _thr).float().mean()):.2f}"
+                        f",F={float(_tipf[:, i].mean()):4.1f}"
+                        for i, n in enumerate(_gp._finger_names)), flush=True)
+                    if hasattr(_gp, "_syn_close"):
+                        print("[GRIPS] syn_close(state)=" + " ".join(
+                            f"{v:.2f}" for v in _gp._syn_close.mean(0).tolist()), flush=True)
+                    # ★★액션↔지령↔실제 3층 분해 (08.31) — "손이 왜 안 닿나"를 층으로 가른다.
+                    #   ①정책이 무엇을 요구했나(raw action → 폐쇄 지령 cmd)
+                    #   ②게이트·동결이 얼마나 깎았나(close_gate · 지령 관절각)
+                    #   ③실제로 어디까지 갔나(달성 관절각) — 층마다 손실을 따로 본다.
+                    #   전례: 08.18 "정책 액션 못 따라감"이 계약/자산/속도 3층이었다.
+                    try:
+                        _a = actions.detach()
+                        _ah = _a[:, 6:]                       # 손 액션(팔 6 뒤)
+                        _cmd = (0.5 * (_ah.clamp(-1, 1) + 1)).mean(0)
+                        _tgt = _gp._syn_target.mean(0)        # 기입된 관절 목표
+                        _act = _gp.robot.data.joint_pos[:, _gp._syn_ids].mean(0)
+                        _err = (_tgt - _act).abs()
+                        _nm = [n.split("hj_")[-1] for n in _gp.profile.hand_joint_names]
+                        _flex = [i for i, n in enumerate(_nm)
+                                 if n.rsplit("_", 1)[1] in ("2", "3", "4")]
+                        _g = float(_gp._close_gate.mean()) if hasattr(_gp, "_close_gate") else -1
+                        print(f"[LAYERS] ①액션 폐쇄지령 평균={float(_cmd.mean()):.2f} "
+                              f"max={float(_cmd.max()):.2f} · ②close_gate={_g:.2f} "
+                              f"· ③굴곡관절 지령↔실제 오차 평균="
+                              f"{float(_err[_flex].mean()):.3f}rad "
+                              f"max={float(_err[_flex].max()):.3f}", flush=True)
+                        _worst = sorted(_flex, key=lambda i: -float(_err[i]))[:4]
+                        print("[LAYERS]   최대오차 관절: " + "  ".join(
+                            f"{_nm[i]} 지령{float(_tgt[i]):+.2f}→실제{float(_act[i]):+.2f}"
+                            for i in _worst), flush=True)
+                        # ★종별 분해 — "작은 컵이 어려운" 원인이 폐쇄 요구량인지 접촉인지 가른다.
+                        #   물체 정체성은 obs 에 없다(sim2real 계약) — 진단 출력에만 쓴다.
+                        if getattr(_gp, "_n_species", 1) > 1:
+                            _sp = _gp._species_ids
+                            _cmd_e = (0.5 * (_ah.clamp(-1, 1) + 1)).mean(dim=1)  # env별
+                            _tipf_n = (_tipf > _thr).float().mean(dim=1)         # env별 팁접촉
+                            # wrap 은 env 지역변수라 노출이 없다 — 접촉 배열로 직접 센다
+                            #   (손가락별 중간 AND 원위 동시접촉 = 감쌈 깊이, env 정의와 동일).
+                            _wi = getattr(_gp, "_wrap_idx", None)
+                            _wrap = (((_cs[0] > _thr) & (_cs[1] > _thr))[:, _wi]
+                                     .float().mean(dim=1)) if _wi is not None else None
+                            for _s in range(_gp._n_species):
+                                _m = _sp == _s
+                                if not bool(_m.any()):
+                                    continue
+                                _w = (float(_wrap[_m].mean()) if _wrap is not None else -1.0)
+                                print(f"[SPECIES] {_gp._species_names[_s]:<18} "
+                                      f"n={int(_m.sum()):2d} 폐쇄지령={float(_cmd_e[_m].mean()):.2f} "
+                                      f"팁접촉={float(_tipf_n[_m].mean()):.2f} "
+                                      f"wrap={_w:.3f} "
+                                      f"objz={float(_gp.object.data.root_pos_w[_m, 2].mean()):.3f}",
+                                      flush=True)
+                    except Exception as _e:
+                        print(f"[LAYERS] 분해 실패: {_e}", flush=True)
+                    # 원통 축(palm y) vs world z 기울기 + palm→컵 상대 위치 (파지대역 판정)
+                    try:
+                        from isaaclab.utils.math import quat_apply as _qa
+                        _pei = next(i for i, n in enumerate(_gp.robot.data.body_names)
+                                    if n.endswith("palm_ee"))
+                        _pq = _gp.robot.data.body_quat_w[:, _pei]
+                        _pp = _gp.robot.data.body_pos_w[:, _pei] - _gp.scene.env_origins
+                        _yax = _qa(_pq, torch.tensor([0.0, 1.0, 0.0], device=_pq.device
+                                                     ).expand(_pq.shape[0], 3))
+                        _tilt = torch.rad2deg(torch.acos(_yax[:, 2].abs().clamp(max=1.0)))
+                        # ★world 프레임 통일 — _env_local 은 fab 오프셋(≈544mm)이 섞여 무효
+                        _ow = _gp.object.data.root_pos_w - _gp.scene.env_origins
+                        _rel = _ow - _pp
+                        print(f"[GRIPS] cyl_tilt°={float(_tilt.mean()):.1f}"
+                              f"±{float(_tilt.std()):.1f}  palm→cup(mm)="
+                              f"({float(_rel[:,0].mean())*1000:+.0f},"
+                              f"{float(_rel[:,1].mean())*1000:+.0f},"
+                              f"{float(_rel[:,2].mean())*1000:+.0f})", flush=True)
+                        _tipn = [i for i, n in enumerate(_gp.robot.data.body_names)
+                                 if n.endswith("_tip")]
+                        if _tipn:
+                            _tp = _gp.robot.data.body_pos_w[:, _tipn, :] - \
+                                _gp.scene.env_origins.unsqueeze(1)
+                            _tv = _tp - _ow.unsqueeze(1)          # tip→cup 벡터 (N,T,3)
+                            _td = _tv.norm(dim=-1).mean(0) * 1000
+                            _tz = _tv[:, :, 2].mean(0) * 1000     # +면 tip 이 컵원점 위
+                            print("[GRIPS] tip→cup(mm) " + "  ".join(
+                                f"{_gp.robot.data.body_names[b].split('_')[-2]}:"
+                                f"d={float(_td[j]):.0f},dz={float(_tz[j]):+.0f}"
+                                for j, b in enumerate(_tipn)), flush=True)
+                    except Exception as _e:
+                        print(f"[GRIPS] axis-계측 불가: {_e}", flush=True)
             if hasattr(_gp, "binary_contact_buf"):
                 _gp._gpstep = getattr(_gp, "_gpstep", 0) + 1
                 if _gp._gpstep % 30 == 0:
@@ -756,7 +880,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     _pd = (((_gp.robot.data.body_pos_w[:, _eei, :] - _gp.scene.env_origins) - _gp.object_pos).norm(dim=-1).mean() if _eei >= 0 else -1.0)
                     _ov = (_gp.cup.data.root_lin_vel_w.norm(dim=-1).mean() if hasattr(_gp, "cup") else -1.0)
                     _oz = _gp.object_pos[:, 2].mean()
-                    _fn = ["thumb", "index", "middle", "ring", "pinky"]
+                    # 라벨 수를 접촉 버퍼 폭에서 받는다 — 2지 그리퍼에서 zip 이
+                    # 조용히 잘리며 엉뚱한 손가락 이름이 붙는 일을 막는다.
+                    _fn = _eval_adapters.finger_labels(
+                        _gp, len(_tc),
+                        default=("thumb", "index", "middle", "ring", "pinky"))
                     print(f"[GRIP] palm_d={_pd:.3f} obj_z={_oz:.3f} obj_v={_ov:.3f}  " + "  ".join(
                         f"{n}:c={c:.2f},f={f:5.1f},d={d:.3f}"
                         for n, c, f, d in zip(_fn, _tc.tolist(), _tf.tolist(), _td.tolist())
@@ -847,8 +975,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     print("OCCSUMMARY" + "=" * 55, flush=True)
                     os._exit(0)
 
+            # === 정량 평가 (--eval_episodes N) ===
+            # 어댑터 선택: env 가 grasp_v2 계열 버퍼를 **전부** 노출할 때만 아래 전용
+            # 블록으로 간다. 하나라도 없으면 블록 안에서 AttributeError 가 나므로
+            # (업그레이드된 신규 태스크가 정확히 그 경우다) 공통 지표로 돌린다.
+            if args_cli.eval_episodes > 0 and _eval_route is None:
+                _ev = env.unwrapped
+                if hasattr(_ev, "env"):
+                    _ev = _ev.env.unwrapped
+                _eval_missing = _eval_adapters.missing_grasp_v2_attrs(_ev)
+                _eval_route = _eval_adapters.select(_ev)
+                if _eval_route == _eval_adapters.COMMON:
+                    _common_eval = _eval_adapters.CommonEvalAccumulator(_ev.num_envs)
+                    print(f"[EVAL] 태스크 고유 어댑터 없음 → 공통 지표로 평가한다. "
+                          f"env 미노출: {', '.join(_eval_missing[:6])}"
+                          f"{' …' if len(_eval_missing) > 6 else ''}", flush=True)
+                else:
+                    print("[EVAL] grasp_v2 어댑터 적용", flush=True)
+
+            if _eval_route == _eval_adapters.COMMON:
+                _common_eval.add_step(_rew, dones, actions, env=_ev)
+                if _common_eval.episodes >= args_cli.eval_episodes:
+                    import os as _os4
+                    print(_common_eval.report(task=str(args_cli.task),
+                                              missing=_eval_missing), flush=True)
+                    _os4._exit(0)
+
             # === grasp_v2 정량 평가 (--eval_episodes N) ===
-            if args_cli.eval_episodes > 0:
+            if args_cli.eval_episodes > 0 and _eval_route == _eval_adapters.GRASP_V2:
                 _ge = env.unwrapped
                 if hasattr(_ge, "env"):
                     _ge = _ge.env.unwrapped
@@ -945,12 +1099,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         print(f"  평균 리프트 높이(들었을 때): {_np3.mean(_eval_acc['height']):.3f} m")
                     if _eval_acc["obj_n"] > 0:
                         _of = (_eval_acc["obj_finger"] / _eval_acc["obj_n"]).tolist()
-                        _fl0 = ["thumb", "index", "middle", "ring", "pinky"]
+                        _fl0 = _eval_adapters.finger_labels(
+                            _ge, 5, default=("thumb", "index", "middle", "ring", "pinky"))
                         print(f"  [비-컵 물체] 손가락별 접촉률(들었을 때, near-gate), n={_eval_acc['obj_n']}:")
                         print("        " + "   ".join(f"{n}={v:.2f}" for n, v in zip(_fl0, _of)))
                     if _eval_acc["cup_n"] > 0:
                         _cf = (_eval_acc["cup_finger"] / _eval_acc["cup_n"]).tolist()
-                        _fl = ["thumb", "index", "middle", "ring", "pinky"]
+                        _fl = _eval_adapters.finger_labels(
+                            _ge, 5, default=("thumb", "index", "middle", "ring", "pinky"))
                         print("  ── CUP 전용 (파지 접촉 프레임 기준, 리프트 무관) ──────")
                         print(f"  [CUP] 손가락별 접촉률(envelope tip|mid|distal, 컵 근접), n={_eval_acc['cup_n']}:")
                         print("        " + "   ".join(f"{n}={v:.2f}" for n, v in zip(_fl, _cf)))
@@ -1235,6 +1391,31 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.video:
             timestep += 1
             if timestep == args_cli.video_length:
+                break
+
+        # ---- probe: extras 수치 누적 (09.07) ----------------------------------
+        if args_cli.probe_steps > 0:
+            for _k, _v in (_step_extras or {}).items():
+                try:
+                    _fv = float(_v)
+                except (TypeError, ValueError):
+                    continue
+                if _fv != _fv:          # NaN 은 버린다
+                    continue
+                _acc = _probe_acc.setdefault(_k, [0.0, 0])
+                _acc[0] += _fv
+                _acc[1] += 1
+            _probe_n += 1
+            if _probe_n >= args_cli.probe_steps:
+                print("\n" + "=" * 78)
+                print(f"PROBE 요약 — {_probe_n} 스텝 평균 · task={args_cli.task} · "
+                      f"envs={env_cfg.scene.num_envs} · deterministic="
+                      f"{agent_cfg['params'].get('player', {}).get('deterministic')}")
+                print("=" * 78)
+                for _k in sorted(_probe_acc):
+                    _sum, _cnt = _probe_acc[_k]
+                    print(f"  {_k:38s} {_sum / max(_cnt, 1):>12.5f}   (n={_cnt})")
+                print("=" * 78, flush=True)
                 break
 
         sleep_time = dt - (time.time() - start_time)

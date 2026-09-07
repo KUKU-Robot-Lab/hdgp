@@ -97,6 +97,9 @@ class DeepTiltStateBank:
         self._head = 0    # next write position (ring index)
         self.arm = torch.zeros(self.capacity, num_arm, device=device)
         self.hand = torch.zeros(self.capacity, num_hand, device=device)
+        # ★손 **지령**. `hand` 는 컵을 누르며 멈춘 측정이라 그것을 hold 목표로 되쓰면
+        #   PD 오차가 0 이 되어 파지력이 사라진다(warm 뱅크와 같은 함정, 09.01).
+        self.hand_cmd = torch.zeros(self.capacity, num_hand, device=device)
         self.palm_pose = torch.zeros(self.capacity, 7, device=device)  # pos3 + quat_xyzw4 (control ref)
         self.cup_pose = torch.zeros(self.capacity, 7, device=device)  # pos3 + quat_wxyz4 (env-local)
         self.bead_state = torch.zeros(self.capacity, num_beads, 13, device=device)
@@ -112,6 +115,7 @@ class DeepTiltStateBank:
         self,
         arm: torch.Tensor,
         hand: torch.Tensor,
+        hand_cmd: torch.Tensor,
         palm_pose: torch.Tensor,
         cup_pose: torch.Tensor,
         bead_state: torch.Tensor,
@@ -123,6 +127,7 @@ class DeepTiltStateBank:
         idx = (self._head + torch.arange(m, device=self.device)) % self.capacity
         self.arm[idx] = arm.to(self.arm.dtype)
         self.hand[idx] = hand.to(self.hand.dtype)
+        self.hand_cmd[idx] = hand_cmd.to(self.hand_cmd.dtype)
         self.palm_pose[idx] = palm_pose.to(self.palm_pose.dtype)
         self.cup_pose[idx] = cup_pose.to(self.cup_pose.dtype)
         self.bead_state[idx] = bead_state.to(self.bead_state.dtype)

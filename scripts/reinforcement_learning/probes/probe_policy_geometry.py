@@ -73,7 +73,7 @@ for i in range(args.steps):
     palm = raw.robot.data.body_pos_w[:, raw.palm_idx] - raw.scene.env_origins
     tips = raw.robot.data.body_pos_w[:, raw._tip_t] - raw.scene.env_origins[:, None, :]
     tipd = (tips - obj[:, None, :]).norm(dim=-1)
-    force, wrapped = raw._contact()
+    force, wrapped, _, _ = raw._contact()
 
     acc["palm_dist"].append((palm - obj).norm(dim=-1).mean().item())
     acc["tip_mean"].append(tipd.mean().item())

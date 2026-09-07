@@ -59,7 +59,7 @@ from .grasp_right_preset import (
 
 _HDGP_ROOT  = _os.path.normpath(_os.path.join(OPENARM_ROOT_DIR, "../../../"))
 _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
-_VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "visdex_objects", "USD")
+_VISDEX_ROOT = _os.path.join(_ASSETS_DIR, "multi_obj", "visdex_objects", "USD")
 
 # ---------------------------------------------------------------------------
 # 물체 구성 — 8종 (design §물체 구성). 논리 ID(=onehot·bbox 조회 키) 순서가
@@ -623,7 +623,7 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
             rot=[1.0, 0.0, 0.0, 0.0],
         ),
         spawn=UsdFileCfg(
-            usd_path=_os.path.join(_ASSETS_DIR, "scene_objects/table.usd"),
+            usd_path=_os.path.join(_ASSETS_DIR, "multi_obj/scene_objects/table.usd"),
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
                 disable_gravity=True,

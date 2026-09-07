@@ -184,12 +184,12 @@ def main() -> int:
     parser.add_argument(
         "--src_dir",
         type=Path,
-        default=Path("/home/user/rl_ws/hdgp/assets/demograsp_references"),
+        default=Path("/home/user/rl_ws/hdgp/assets/multi_obj/demograsp_references"),
     )
     parser.add_argument(
         "--dst_dir",
         type=Path,
-        default=Path("/home/user/rl_ws/hdgp/assets/demograsp_references/normalized"),
+        default=Path("/home/user/rl_ws/hdgp/assets/multi_obj/demograsp_references/normalized"),
     )
     parser.add_argument("--fit_to_bounds", action="store_true", help="Map PCA sequence into configured PCA bounds.")
     parser.add_argument("--fit_margin", type=float, default=0.95, help="Inner-range occupancy for fit_to_bounds.")

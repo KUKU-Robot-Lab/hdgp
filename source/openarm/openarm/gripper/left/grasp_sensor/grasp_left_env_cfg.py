@@ -40,6 +40,8 @@ lift 레시피는 정반대다:
 
 from __future__ import annotations
 
+from openarm.agnostic.modules import vendor_gains as _vg
+
 import os as _os
 
 import isaaclab.sim as sim_utils
@@ -48,6 +50,7 @@ from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.managers import EventTermCfg, SceneEntityCfg
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.sensors import FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
@@ -55,9 +58,16 @@ from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import configclass
 
 from isaaclab_tasks.manager_based.manipulation.lift import mdp
-from isaaclab_tasks.manager_based.manipulation.lift.config.openarm.lift_openarm_env_cfg import (
-    LiftEnvCfg,
-)
+
+# ★IsaacLab 원본을 먼저, 없으면 vendored 사본. vision-3090 의 IsaacLab(5c2ec81c)에는
+#   openarm lift 레시피가 아직 없어 ModuleNotFoundError 로 죽는다(08.22 실측) —
+#   그 머신의 IsaacLab 을 올리면 퍼셉션 쪽 소비자가 위험해 사본을 동봉했다.
+try:
+    from isaaclab_tasks.manager_based.manipulation.lift.config.openarm.lift_openarm_env_cfg import (
+        LiftEnvCfg,
+    )
+except ModuleNotFoundError:
+    from ._vendored_lift_openarm_env_cfg import LiftEnvCfg
 
 from openarm import OPENARM_ROOT_DIR
 
@@ -83,20 +93,37 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   가 쏟아진다(실측, 1024 env). 오버플로는 **접촉이 조용히 유실**되는 것이라
         #   물리가 신뢰할 수 없게 된다 — 학습을 태우기 전에 반드시 올려야 한다.
         #   값은 형제 트랙 `agnostic/tasks/grasp_lift_fabric` 에서 2048 env 로 검증된 것을 쓴다.
-        self.sim.physx.gpu_max_rigid_patch_count = 2 ** 22
+        #   ⚠ 값은 **GPU 메모리에 맞춰야** 한다. 처음엔 98 GB 서버 기준(2**22·8M·2**28)으로
+        #     잡았는데 24 GB(RTX 3090)에서 4096 env 는 CUDA OOM, 2048 env 는 22.9/24.5 GB 로
+        #     포화해 PhysX 가 "Scene state is corrupted" 를 2733 회 뱉으며 epoch 31 에서
+        #     멈췄다(08.22 실측). 필요량은 1024 env 에서 패치 24 만이므로 2**20 이면 4 배 여유다.
+        #   ★줄인 뒤에는 반드시 오버플로 카운트 0 을 확인할 것 — 부족하면 접촉이 조용히 유실된다.
+        self.sim.physx.gpu_max_rigid_patch_count = 2 ** 20
+        # ★2 ** 21 로는 부족했다 — 실측 요구 **3,191,536**(vision-3090 2048 env).
         self.sim.physx.gpu_max_rigid_contact_count = 2 ** 22
+        # ★★08.22 실측으로 올렸다. 2 * 1024 * 1024 로는 **부족했다** — vision-3090 2048 env
+        #   에서 PhysX 가 "increase foundLostAggregatePairsCapacity to **4562626**" 를 냈다.
+        #   ⚠ 이건 죽지 않고 경고만 내면서 **접촉을 조용히 놓치는** 종류다("the simulation
+        #     will miss interactions"). fab_test1 이 이 상태로 4000 epoch 을 돌 뻔했고,
+        #     내 모니터링 grep 이 "Patch buffer|buffer overflow" 만 봐서 놓쳤다.
+        #     → 모니터링 패턴에 반드시 `PxGpuDynamicsMemoryConfig` 를 넣을 것.
+        #   요구치 4.56M 에 1.8 배 여유. 쌍 버퍼라 VRAM 증가는 수십 MB 수준이다.
         self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 8 * 1024 * 1024
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 2 * 1024 * 1024
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 4 * 1024 * 1024
+        # ★2 ** 26(67.1M) 이 실측 요구 **68,960,016** 에 아슬아슬하게 못 미쳤다
+        #   ("Contacts have been dropped"). 한 단 올린다.
+        # ★★09.02 또 넘었다 — E30(새 홈)에서 2 ** 27(134.2MB)이 실측 요구 **135,184,744**
+        #   에 1MB 차이로 못 미쳐 4000 epoch 중 58 회 "Contacts have been dropped".
+        #   같은 판의 E29/E28/A26 은 0 회였다 — 홈이 j1 을 +0.219rad 돌리면서 접촉 부하가
+        #   늘었다. ⚠ 이건 죽지 않고 **접촉만 조용히 유실**되는 종류라 파지 태스크에서
+        #   학습 신호를 오염시킨다. 여유를 2 배로 둔다(VRAM +134MB).
         self.sim.physx.gpu_collision_stack_size = 2 ** 28
 
         # ── 로봇 ────────────────────────────────────────────────────
         self.scene.robot = ArticulationCfg(
             prim_path="{ENV_REGEX_NS}/Robot",
             spawn=sim_utils.UsdFileCfg(
-                usd_path=_os.path.join(
-                    _ASSETS_DIR,
-                    "robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.usd",
-                ),
+                usd_path=_os.path.join(_ASSETS_DIR, P.ROBOT_USD_REL),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     # ★중력 켠 채 학습한다. 우측 태스크와 IK 경로는 disable_gravity 를 쓰지만
                     #   그건 포즈 추종을 위한 타협이라 실기 이식성을 해친다.
@@ -141,8 +168,9 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                     joint_names_expr=["l_aj_[1-7]"],
                     velocity_limit_sim=P.ARM_VELOCITY_LIMIT,
                     effort_limit_sim=P.ARM_EFFORT_LIMIT,
-                    stiffness=80.0,
-                    damping=4.0,
+                    # 2026-09-06: 팔 게인은 벤더값만. fab/v2 가 같은 값으로 덮으므로 항등식이다.
+                    stiffness=P.ARM_IK_STIFFNESS,
+                    damping=P.ARM_IK_DAMPING,
                 ),
                 # 그리퍼: 두 관절 모두 커버리지를 준다(없으면 무구동 자유이동).
                 # ★지령도 두 관절 모두에 간다 — USD 에 mimic 이 없다(preset 주석 참조).
@@ -163,8 +191,11 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 #   이 팔은 학습에 쓰이지 않는 배경이고 실기로 배포되지도 않으므로,
                 #   sim 에서 자세만 고정되면 된다.
                 "idle_right_arm": ImplicitActuatorCfg(
-                    joint_names_expr=["r_aj_[1-7]"],
-                    stiffness=400.0, damping=80.0, effort_limit_sim=1000.0,
+                    joint_names_expr=["r_aj_[1-7]"], effort_limit_sim=1000.0,
+                    # 유휴측이라도 팔 게인은 벤더값만(2026-09-06) — 같은 로봇이다.
+                    # ★effort 를 게인보다 **앞에** 둔다: 계약 테스트가 소스에서 이 항목을
+                    #   첫 ")," 까지 잘라 읽으므로 _vg.stiffness("r") 뒤에 두면 안 보인다.
+                    stiffness=_vg.stiffness("r"), damping=_vg.damping("r"),
                 ),
                 # 유휴 오른손도 같은 이유로 올린다. effort 1.5 는 실기 정합값이지만
                 # 그건 **파지를 학습하는 손**에 필요한 것이고, 여기 오른손은 배경이다.
@@ -204,21 +235,33 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   컵 몸통이 58~88 mm 라 이 상태로는 물리적으로 물 수 없다.
         #   두 조는 축이 서로 반대(`0 -1 0` vs `0 1 0`)라 같은 값을 주면 함께 벌어진다.
         #   ※ 자산 쪽에서 mimic 을 복원하면 이 지령은 무해하게 중복될 뿐이다.
-        self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
+        # ★★08.24 **접근 성공 하드 게이트**. 접근 전에는 그리퍼를 강제로 연다.
+        #   근거: Fabrics 가 우연한 리프트를 없앴다(관절 목표 변화 test17 2.79 rad/s vs
+        #   fab_test5 0.38 rad/s → 컵 상승 +138 mm vs +17 mm). 정책이 "열기·위치·닫기·들기"
+        #   연접을 우연히 맞춰야 하는 문제를, 앞 두 칸을 코드가 강제해 없앤다.
+        #   ⚠ **부모에서 바꿔야** 관절공간·IK·Fabrics 세 변형에 전파된다
+        #     (fab cfg 에서의 그리퍼 재정의는 계약으로 금지돼 있다).
+        self.actions.gripper_action = actions.GatedBinaryJointPositionActionCfg(
             asset_name="robot",
             joint_names=list(P.GRIPPER_JOINT_NAMES),
             open_command_expr={j: P.GRIPPER_OPEN_POS for j in P.GRIPPER_JOINT_NAMES},
             close_command_expr={j: P.GRIPPER_CLOSED_POS for j in P.GRIPPER_JOINT_NAMES},
+            finger_body_names=tuple(P.GRIPPER_FINGER_BODIES),
+            object_name="object",
+            pad_offset=P.JAW_PAD_OFFSET,
+            lateral_ok=P.GRASP_GATE_LATERAL_OK,
+            along_ok=P.GRASP_GATE_ALONG_OK,
+            release_lateral=P.GRASP_GATE_RELEASE_LAT,
         )
 
         # ── 씬: 테이블 (로컬 자산) ──────────────────────────────────
         # 레퍼런스는 클라우드 Nucleus 의 SeattleLabTable 을 쓰는데 이 머신에 캐시가 없다.
-        # ★씬 전체가 `assets/env/usd/env.usd` 한 덩어리다(사용자 지정, 08.20).
+        # ★씬 전체가 `assets/simulation_setting/env_v1/usd/env_v1.usda` 한 덩어리다(09.05 정정).
         #   **Env 원점 = 로봇 base link 원점**이라 오프셋 없이 (0,0,0) 에 붙인다.
         #   상속받은 `scene.table` 슬롯을 그대로 쓴다 — 이름만 table 이고 prim 은 Env 다.
-        #   ⚠ `rigid_props` 를 주면 안 된다. env.usd 의 메시는 PhysicsCollisionAPI 만 가진
-        #     **정적 삼각메시 콜라이더**인데 RigidBodyPropertiesCfg 를 씌우면 rigid body API
-        #     가 붙어 동적 강체가 된다. 레퍼런스도 테이블에 rigid_props 를 주지 않는다.
+        #   ⚠ `rigid_props` 를 주면 안 된다. env_v1 은 루트에 **kinematic RigidBodyAPI** 가
+        #     저작돼 있어(정적 콜라이더와 물리 동등) 그대로 붙이면 되고, RigidBodyPropertiesCfg
+        #     를 씌우면 kinematic 이 풀려 동적 강체가 될 수 있다. 레퍼런스도 주지 않는다.
         self.scene.table = AssetBaseCfg(
             prim_path="{ENV_REGEX_NS}/Env",
             init_state=AssetBaseCfg.InitialStateCfg(
@@ -226,7 +269,7 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             ),
             spawn=UsdFileCfg(usd_path=_os.path.join(_ASSETS_DIR, P.ENV_USD_REL)),
         )
-        # 바닥면: env.usd 의 base_plate 밑면(-0.025)에 맞춘다. 판 밖으로 떨어진 컵은
+        # 바닥면: env_v1 의 바닥판(Metal_999999) 밑면(-0.025)에 맞춘다. 판 밖으로 떨어진 컵은
         # 여기까지 내려가고, 그전에 object_dropping 이 이미 종료시킨다.
         self.scene.plane.init_state.pos = (0.0, 0.0, P.ENV_FLOOR_Z - 0.010)
 
@@ -322,6 +365,10 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "robot", joint_names=["l_aj_[1-7]", "l_hj_gripper_[1-2]"]
             )
 
+        # ★★게이트 상태를 관측에 노출한다. 하드 게이트는 정책이 볼 수 없는 숨은 상태라,
+        #   phase 0 에서 정책의 그리퍼 지령은 기록되지만 실행되지 않는다(그 차원 gradient 가
+        #   환경 응답과 무관해진다). obs 가 1 늘어난다 — **fresh 학습 전용**.
+        self.observations.policy.gripper_gate = ObsTerm(func=rewards.gripper_gate_open)
         self.observations.policy.joint_pos.params["asset_cfg"] = _left_joints()
         self.observations.policy.joint_vel.params["asset_cfg"] = _left_joints()
         self.rewards.joint_vel.params["asset_cfg"] = _left_joints()
@@ -340,6 +387,15 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             self.rewards.object_goal_tracking_fine_grained,
         ):
             _term.params["minimal_height"] = P.MINIMAL_LIFT_HEIGHT
+            _term.params["ramp_zero_z"] = P.LIFT_RAMP_ZERO_Z
+            _term.params["enclose_half_width"] = P.JAW_ENCLOSE_HALF_WIDTH
+            _term.params["pad_offset"] = P.JAW_PAD_OFFSET
+            _term.params["lat_ok"] = P.GRASP_GATE_LATERAL_OK
+            _term.params["along_ok"] = P.GRASP_GATE_ALONG_OK
+            # ★SceneEntityCfg 는 매니저가 제자리 변경하는 가변 객체다 — term 마다 새 인스턴스.
+            _term.params["jaw_cfg"] = SceneEntityCfg(
+                "robot", body_names=list(P.GRIPPER_FINGER_BODIES)
+            )
 
         # ── 리프트 판정에 "쥐고 있는가"를 AND ────────────────────────
         # ★★weight 는 그대로 두고 **판정 함수만** 바꾼다. z 만 보는 레퍼런스 판정으로는
@@ -349,12 +405,38 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #     하나라도 남기면 그쪽으로 같은 hack 이 되살아난다.
         self.rewards.lifting_object.func = rewards.object_is_held_and_lifted
         self.rewards.lifting_object.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+        # ★★fab_test74(E1): goal 보상의 **신호 시점**을 가르는 A/B.
+        #   HDGP_GOAL_GATE = held(기본) | height
+        #     held   — 지금까지의 판. `_held`(램프 ∧ grasp_ok ∧ near ∧ upright) 게이트,
+        #              거리는 **TCP**(t73, 목표 상자가 TCP 제약 IK 산물이라 프레임 정합).
+        #     height — IsaacLab 레퍼런스 그대로. 게이트가 컵 높이 하나뿐이고 임계가
+        #              스폰(0.29209)보다 낮아 **step 0 부터 참**이다. 거리도 **컵 원점**.
+        #              ⚠ 이 모드에서 거리를 TCP 로 재면 빈 그리퍼만 목표에 놔도 만점이라
+        #                해킹이 된다 — 게이트와 거리 기준은 한 쌍으로 움직인다.
+        #   근거 전문은 `rewards.object_goal_distance_height_gated` docstring.
+        _goal_gate = _os.environ.get("HDGP_GOAL_GATE", "held")
+        if _goal_gate not in ("held", "height"):
+            raise ValueError(f"HDGP_GOAL_GATE 은 held|height — 받은 값: {_goal_gate!r}")
         for _term in (
             self.rewards.object_goal_tracking,
             self.rewards.object_goal_tracking_fine_grained,
         ):
-            _term.func = rewards.object_goal_distance_when_held
-            _term.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+            if _goal_gate == "height":
+                # 레퍼런스 시그니처로 **갈아끼운다** — `_held` 게이트 인자는 전부 뺀다.
+                _term.func = rewards.object_goal_distance_height_gated
+                _term.params = {
+                    "std": _term.params["std"],
+                    "gate_height": P.OBJECT_DROP_HEIGHT,
+                    "command_name": "object_pose",
+                }
+            else:
+                _term.func = rewards.object_goal_distance_when_held
+                _term.params["max_ee_distance"] = P.GRASP_MAX_EE_DISTANCE
+        # ★★fab_test63: 커널 폭을 **목표 영역 규모**에 맞춘다. 레퍼런스 0.3 은 이 영역
+        #   (축별 ±50~70 mm)에서 이미 포화라 "정확히 맞추는 것"의 이득이 25% 뿐이었다.
+        #   근거·판정 기준 전문은 preset GOAL_TRACK_STD 주석.
+        self.rewards.object_goal_tracking.params["std"] = P.GOAL_TRACK_STD
+        self.rewards.object_goal_tracking_fine_grained.params["std"] = P.GOAL_TRACK_FINE_STD
 
         # ── 파지 자세 보너스 (신설) ─────────────────────────────────
         # ★★자세는 **연속 보너스로만** 유도한다. 게이트로 넣으면 파지 중 필연적인 흔들림이
@@ -362,11 +444,36 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   끝내는 것이 최적**이 된다. 실제로 그렇게 죽였다(test6/test7):
         #       lifting 6.14 → 0.0000 / 에피소드 130 → 13 / 총보상 +34.9 → −0.46
         #   별도 term 이라 TFEvents 에 로깅돼 자세 개선을 학습 중 관측할 수 있다.
-        # ── 평활화 페널티 커리큘럼 시점만 뒤로 민다 ─────────────────
-        # 항도 weight 도 레퍼런스 그대로다. **켜는 시점**만 옮긴다. 근거는 프리셋
-        # `ACTION_PENALTY_CURRICULUM_STEPS` 주석에 test15 붕괴 로그와 함께 있다.
-        for _curr in (self.curriculum.action_rate, self.curriculum.joint_vel):
-            _curr.params["num_steps"] = P.ACTION_PENALTY_CURRICULUM_STEPS
+        # ── 평활화 페널티 커리큘럼 ─────────────────────────────────
+        # `joint_vel` 은 항·weight·시점 모두 유지한다(시점만 레퍼런스 10000 → 36000).
+        # 근거는 프리셋 `ACTION_PENALTY_CURRICULUM_STEPS` 주석에 test15 붕괴 로그와 함께.
+        self.curriculum.joint_vel.params["num_steps"] = P.ACTION_PENALTY_CURRICULUM_STEPS
+
+        # ★★fab_test79/80: `action_rate` 커리큘럼만 **끈다**(사용자 결정, reward-audit ACCEPT).
+        #   항 자체와 base weight −1e-4 는 남긴다 — TFEvents 로 채터를 계속 관측하기 위함이고,
+        #   그 크기는 총보상 ~110 대비 −0.001 로 사실상 0 이다. 끄는 것은 **1000 배 승격**이다.
+        #
+        #   근거 ① 이 항은 목적을 달성하지 못한다. 이 저장소에 이미 두 번 적혀 있다 —
+        #     "action_rate_l2 는 액션공간 통계라 탐색 노이즈(σ)에 오염돼, 옵티마이저가 σ 만
+        #      줄이고 정책 평균의 평활도는 1000 epoch 동안 평탄했다"
+        #     산수도 맞는다: σ≈1 · 6 차원이면 독립 샘플 차분 기댓값 2σ²×6 = 12, ×0.1 = −1.2
+        #     (t75 실측 −0.68). 이 항이 재는 것의 대부분이 정책의 거칢이 아니라 **σ** 다.
+        #   근거 ② t73·t75 가 **정확히 발동 시점**(36000 step ÷ horizon 24 = ep1500)에 꺾였다:
+        #       t75  fine 0.320 → 0.156 · rew 118.9 → 98.3
+        #       t73  rew 124 → 92 (이후 회복하지만 cupd 는 131 → 180 mm 로 악화)
+        #   근거 ③ ★기전 — 표류한 축(mu 1.5)에서 goal 은 clamp 미분이 0 이라 gradient 가
+        #     없는데, `action_rate_l2` 는 **clamp 이전 raw 액션**을 재므로 살아 있다. 발동 후
+        #     그 축에 남는 유일한 힘이 "흔들지 마라"이고, 그건 σ 를 줄여 포화를 굳힌다.
+        #     t73 의 xsat 가 발동 직후 0.5 → 0.94~0.98 로 올라가 끝까지 유지된 것이 그 모양이다.
+        #
+        #   ⚠ 사전 등록 ①: ep1500 이후 총보상이 t73 보다 낮은 것은 **실패가 아니다**.
+        #     t73 의 best 156.93 은 커리큘럼 이후에 나왔지만 그 구간의 이송은 더 나빴다.
+        #     판정은 `diag_cup_goal_dist` 와 목표→지령 기울기로만 한다 — 총보상으로 고르면
+        #     "얼어붙은 정책"을 다시 고르게 된다.
+        #   ⚠ 사전 등록 ②: 관전 지표는 **ep1500 이후 축별 포화율이 오르지 않는 것**이다.
+        #   ⚠ ep1499 까지는 이 변경이 아무 효과가 없다 — 그 구간은 여전히 t73 대비
+        #     `bounds_loss_coef` **단일 변수** 비교다.
+        self.curriculum.action_rate = None
 
         # ── 액션 jerk 페널티는 **배선하지 않는다** ──────────────────
         # ★한때 넣었다가 뺐다. 근거: 그 처방은 test12 의 고주파 채터링(방향 반전 68.6%,
@@ -378,13 +485,64 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
         #   `rewards.ActionJerkL2` 는 남겨 두되, 커리큘럼이 평탄해진 뒤에도 진동이 남을
         #   때에만 꺼내 쓴다. 한 런에 한 가설만 바꾼다.
 
-        # ── 그리퍼 폐쇄 보너스는 **배선하지 않는다** ────────────────
-        # ★한때 넣었다(weight 3.0). "닫는 이득이 들어올린 뒤에만 생기니 정책이 아예 안
-        #   닫는다"는 test6 관찰이 근거였는데, 그 test6 은 **자세 게이트로 학습이 죽은**
-        #   런이라 근거로 못 쓴다. 정상 학습된 test13/16 은 게이트 없이도 lift 0.83~0.84 로
-        #   실제로 잡고 들었다. 한 런에 한 가설만 바꾼다 — 검증된 구성 복귀가 먼저다.
-        #   `rewards.gripper_closure_on_cup` 은 남겨 두되, 이번 런에서 파지 실패가
-        #   확인되면 그때 꺼내 쓴다.
+        # ── 도달 보상의 **목표 높이 교정** (08.22) ──────────────────
+        # ★★레퍼런스 `object_ee_distance` 는 컵 **원점**을 겨냥하는데, 우리 shaker 는
+        #   원점이 상면 +92 mm 로 **그리퍼 통과 대역(+10~85 mm) 밖**이다. 그 높이의 컵
+        #   지름 88 mm > 개구 84.5 mm 라 턱이 물리적으로 못 들어간다.
+        #   즉 도달 보상이 학습 내내 **들어갈 수 없는 높이**를 가리키고 있었다.
+        #   G3 실측: 컵 원점 겨냥 시 진입 TCP 오차 100.2 mm → 파지 대역 겨냥 시 70.7 mm.
+        #   std·weight 는 레퍼런스 그대로(0.1 / 1.1) — 목표점만 옮긴다.
+        self.rewards.reaching_object = RewTerm(
+            func=rewards.ee_grasp_point_distance,
+            weight=1.1,
+            params={"std": 0.1, "grasp_offset": P.CUP_ORIGIN_TO_GRASP_Z},
+        )
+
+        # ── 컵이 턱 사이에 들어왔는가 (08.22 신설) ─────────────────
+        # ★★"이번 런에서 파지 실패가 확인되면 그때 꺼내 쓴다"고 적어 뒀던 조건이 **충족됐다.**
+        #   fab_test1 이 684 epoch 동안 lifting 정확히 0 이었고, 결정론 프로브가 원인을 짚었다:
+        #       턱축까지 수직 최선 36.5 mm(≈컵 반경) · 개도 3.1 mm · '열기' 지령 0.0%
+        #   = **주먹을 쥔 채 컵 옆구리를 누르고 있었다.** 닫힌 턱에는 컵이 들어갈 자리가 없다.
+        #   성공한 test17 은 같은 자로 수직 최선 0.4 mm · 개도 26.5 mm 다.
+        #   ⚠ 옛 `gripper_closure_on_cup` 을 그대로 꺼내 쓰면 안 됐다 — closure 를 곱해
+        #     **닫을수록 커지므로** 관측된 실패 행동을 그대로 보상한다. enclose 로 교체했다.
+        #   ⚠ 관절공간 트랙(test17)에도 함께 들어간다 — 항이 태스크의 올바른 서술이고,
+        #     test17 실측 상태에서 이미 만점에 가까워 반대 압력이 없다. 다만 총보상 기준선이
+        #     최대 +3.0 이동하므로 test17 의 171.7 과 직접 비교하지 말 것.
+        self.rewards.cup_between_jaws = RewTerm(
+            func=rewards.cup_between_jaws,
+            weight=P.BETWEEN_JAWS_REWARD_WEIGHT,
+            params={
+                "along_std": P.JAW_ALONG_STD,
+                "lateral_std": P.JAW_LATERAL_STD,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "enclose_floor": P.JAW_ENCLOSE_FLOOR,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                # ★SceneEntityCfg 는 가변 객체다 — term 마다 **새 인스턴스**여야 한다.
+                "robot_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+            },
+        )
+
+        # ── 감싼 상태에서 닫기 (08.23 신설) ────────────────────────
+        # ★★fab_test4 가 이 구멍을 드러냈다: enclose 0.845 로 턱은 컵을 잘 감쌌는데
+        #   '열기' 지령 78.0% · 거의 닫힘 0.0% — **한 번도 닫지 않는다.**
+        #   닫는 것을 보상하는 항이 없고, 닫다가 컵이 밀리면 cup_between_jaws 를 잃으니
+        #   닫지 않는 것이 최적이었다. 리프트는 닫아야만 생기는데 닫을 이유가 없다(닭-달걀).
+        #   ⚠ enclose 를 곱하므로 옛 주먹 해킹(fab_test1, enclose 0.026)은 0 이다.
+        self.rewards.grip_closure_when_enclosed = RewTerm(
+            func=rewards.grip_closure_when_enclosed,
+            weight=P.CLOSURE_WHEN_ENCLOSED_WEIGHT,
+            params={
+                "along_std": P.JAW_ALONG_STD,
+                "lateral_std": P.JAW_LATERAL_STD,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                "open_pos": P.GRIPPER_OPEN_POS,
+                "drive_joint": P.GRIPPER_DRIVE_JOINT,
+                # ★SceneEntityCfg 는 가변 객체다 — term 마다 새 인스턴스여야 한다.
+                "robot_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
+            },
+        )
 
         # ── 목표에서 정지 보너스 (신설) ─────────────────────────────
         # 레퍼런스 goal-tracking 은 **거리만** 본다. "옮겨서 가만히 세워 둔다"를 표현하려면
@@ -397,6 +555,12 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
                 "lin_vel_std": P.SETTLE_LIN_VEL_STD,
                 "ang_vel_std": P.SETTLE_ANG_VEL_STD,
                 "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                "lat_ok": P.GRASP_GATE_LATERAL_OK,
+                "along_ok": P.GRASP_GATE_ALONG_OK,
+                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "command_name": "object_pose",
             },
@@ -407,11 +571,44 @@ class GraspLeftGripperEnvCfg(LiftEnvCfg):
             weight=P.GRASP_POSE_REWARD_WEIGHT,
             params={
                 "minimal_height": P.MINIMAL_LIFT_HEIGHT,
+                "ramp_zero_z": P.LIFT_RAMP_ZERO_Z,
+                "enclose_half_width": P.JAW_ENCLOSE_HALF_WIDTH,
+                "pad_offset": P.JAW_PAD_OFFSET,
+                "lat_ok": P.GRASP_GATE_LATERAL_OK,
+                "along_ok": P.GRASP_GATE_ALONG_OK,
+                "jaw_cfg": SceneEntityCfg("robot", body_names=list(P.GRIPPER_FINGER_BODIES)),
                 "max_ee_distance": P.GRASP_MAX_EE_DISTANCE,
                 "body_name": P.GRIPPER_BASE_BODY,
                 "upright_zero_at_cos": P.CUP_UPRIGHT_ZERO_AT_COS,
             },
         )
+        # ★진단(weight 0) — 게이트 진입 비율. 이번 런의 1차 관전 지표라 반드시 로깅한다.
+        self.rewards.gate_rate = RewTerm(func=rewards.gripper_gate_rate, weight=0.0, params={})
+        # ── 진단 항 (weight 0 — 학습에 영향 없음) ─────────────────────
+        # ★★fab_test65: z 액션 포화를 **학습 중에** 본다. 지금까지는 프로브로만 볼 수 있어
+        #   판이 끝난 뒤에야 알았다(t64: mu 1.336 · 포화 90.3% · 조건부 기울기 0.005).
+        #   판정: `diag_act_z_sat` 이 0.3 을 넘으면 박스 상한이 다시 천장이 된 것이고,
+        #        `diag_act_z_mu` 가 1.0 을 넘기 시작하는 epoch 이 병목의 발생 시점이다.
+        self.rewards.diag_act_z_mu = RewTerm(
+            func=rewards.diag_action_z_mu, weight=0.0, params={})
+        self.rewards.diag_act_z_sat = RewTerm(
+            func=rewards.diag_action_z_sat, weight=0.0, params={})
+        self.rewards.diag_cup_goal_dz = RewTerm(
+            func=rewards.diag_cup_goal_dz, weight=0.0, params={})
+        # ★★fab_test73: 보상은 **TCP** 로 채점하되(프레임 정합), 합격 판정은 **컵**이다.
+        #   둘을 나란히 찍어 게이트 `near`(80 mm) 만큼 벌어지는 순간을 본다.
+        self.rewards.diag_cup_goal_dist = RewTerm(
+            func=rewards.diag_cup_goal_dist, weight=0.0, params={})
+        self.rewards.diag_tcp_goal_dist = RewTerm(
+            func=rewards.diag_tcp_goal_dist, weight=0.0, params={})
+        # ★★fab_test69: x·y 도 찍는다. t67 의 진짜 병목은 y(mu 3.11 · 포화 99.7%)였는데
+        #   z 만 보고 있어 판이 끝난 뒤 프로브로야 알았다.
+        for _ax, _i in (("x", 0), ("y", 1)):
+            setattr(self.rewards, f"diag_act_{_ax}_mu", RewTerm(
+                func=rewards.diag_action_axis_mu, weight=0.0, params={"axis": _i}))
+            setattr(self.rewards, f"diag_act_{_ax}_sat", RewTerm(
+                func=rewards.diag_action_axis_sat, weight=0.0, params={"axis": _i}))
+
         self.terminations.object_dropping.params["minimum_height"] = P.OBJECT_DROP_HEIGHT
 
 

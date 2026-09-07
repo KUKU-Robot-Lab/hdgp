@@ -1,0 +1,2372 @@
+diff --git a/scripts/tools/eval_adapters.py b/scripts/tools/eval_adapters.py
+index e6094d4..ef1dfae 100644
+--- a/scripts/tools/eval_adapters.py
++++ b/scripts/tools/eval_adapters.py
+@@ -108,6 +108,14 @@ class CommonEvalAccumulator:
+         self.nan_steps = 0
+         self._action_elems = 0
+         self._saturated_elems = 0
++        # ★08.30 신설 — 성공률. env 가 `_success_now`(순간 성공 플래그)를 노출하면
++        #   **매 스텝 OR 누적**해 "에피소드 중 한 번이라도 성공"을 센다.
++        #   ★★종료 시점에 읽으면 안 된다 — `_reset_idx` 가 `step()` 안에서 그 버퍼를
++        #   0 으로 지우고 나서 반환하므로 항상 False 다(08.30 실측: 9조건 전부 0.0000).
++        #   env 의 `stage/success` 도 같은 OR 누적 규약이라 의미가 일치한다.
++        self.successes = 0
++        self.success_episodes = 0
++        self._succ_flag = torch.zeros(self.num_envs, dtype=torch.bool)
+ 
+     # ------------------------------------------------------------------
+     def add_step(self, rewards, dones, actions, env=None) -> None:
+@@ -127,10 +135,22 @@ class CommonEvalAccumulator:
+         self._action_elems += act.numel()
+         self._saturated_elems += int((finite.abs() >= SATURATION_LEVEL).sum())
+ 
++        # 성공은 **매 스텝** OR 누적한다(리셋이 버퍼를 지우기 전에 읽는 유일한 방법).
++        _succ = getattr(env, "_success_now", None) if env is not None else None
++        _has_succ = _succ is not None
++        if _has_succ:
++            _s = torch.as_tensor(_succ).detach().reshape(-1).cpu().bool()
++            if _s.numel() == self._succ_flag.numel():
++                self._succ_flag |= _s
++
+         if not bool(done.any()):
+             return
+ 
+         idx = torch.nonzero(done, as_tuple=False).reshape(-1)
++        if _has_succ:
++            self.successes += int(self._succ_flag[idx].sum())
++            self.success_episodes += int(idx.numel())
++            self._succ_flag[idx] = False
+         for i in idx.tolist():
+             self.episode_returns.append(float(self._returns[i]))
+             self.episode_lengths.append(int(self._lengths[i]))
+@@ -170,6 +190,12 @@ class CommonEvalAccumulator:
+                 + (f" (중앙 {statistics.median(ret):.4g})" if len(ret) > 1 else "")
+             )
+             lines.append(f"  에피소드 길이 평균 {statistics.fmean(ln):.1f} 스텝")
++            if self.success_episodes:
++                lines.append(
++                    f"  ★성공률 {self.successes / self.success_episodes:.4f} "
++                    f"({self.successes}/{self.success_episodes})")
++            else:
++                lines.append("  성공률 — env 가 _success_now 를 안 낸다")
+             if self.terminated or self.truncated:
+                 total = self.terminated + self.truncated
+                 lines.append(
+diff --git a/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_control.py b/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_control.py
+index 963a704..27aaec3 100644
+--- a/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_control.py
++++ b/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_control.py
+@@ -49,15 +49,39 @@ class GraspS2RControlMixin:
+     # ------------------------------------------------------------------
+     def _setup_scene(self) -> None:
+         self.robot = Articulation(self.cfg.robot_cfg)
+-        self.scene.articulations["robot"] = self.robot
+-
+-        # 정적 환경 USD(env.usd: RigidBodyAPI 없음, 전 메시 충돌체) —
+-        # env_0 에 spawn 하면 clone_environments 가 복제한다.
++        # ★★씬 등록은 `clone_environments` **이후**로 미룬다 — DEXTRAH 원본 규약.
++        #   clone 전에 등록하면 env 가 1개인 상태로 자산 뷰가 잡힐 수 있고,
++        #   `replicate_physics=True` 는 cloner 의 physics replication 이 뷰를
++        #   갱신해 주지만 **False 에서는 갱신되지 않는다**. 08.29 실측 증상:
++        #   리셋의 `write_joint_state_to_sim` 이 안 먹어 관절 편차 18.7 rad ·
++        #   속도 2,973 rad/s · `episode_lengths` 260 → 1.2(무한 리셋).
++        _sensors: dict = {}
++
++        from openarm.agnostic.modules import object_bank as _ob
++
++        _bank = _ob.get(self.cfg.object_bank)
++        _multi = _bank.needs_multi_asset
++
++        # ---- 작업면 --------------------------------------------------------------------
++        # ★★단일/다물체로 표현이 갈린다. `UsdFileCfg.rigid_props` 로는 못 바꾼다 —
++        #   그 경로는 기존 API 를 **수정만** 하지 적용하지 않아 원본 `env.usd`
++        #   (`/Env` Xform + 충돌 Mesh 9개, RigidBodyAPI 없음)를 `RigidObject` 로 감싸면
++        #   부팅에서 죽는다(`Failed to find a rigid body when resolving '.../Table'`).
++        #
++        #   단일 물체 : 원시 정적 프림 + `clone_environments` 복제(기존 동작, 불변).
++        #   다물체    : `replicate_physics=False` 라 `enable_env_ids` 격리가 없어져
++        #               원시 프림이면 전 env 작업면이 한 충돌 그룹에 남고 팔이 물린다
++        #               (08.29 분리 실측 abnormal 0.849 · joint_err 0.74 rad).
++        #               → kinematic 사본(`env_rigid.usd`)을 **씬 자산**으로 올린다.
+         tbl = self.cfg.table_cfg
+-        tbl.spawn.func(
+-            "/World/envs/env_0/Table", tbl.spawn,
+-            translation=tuple(tbl.init_state.pos), orientation=tuple(tbl.init_state.rot),
+-        )
++        if _multi:
++            self.table = RigidObject(tbl)
++        else:
++            tbl.spawn.func(
++                "/World/envs/env_0/Table", tbl.spawn,
++                translation=tuple(tbl.init_state.pos),
++                orientation=tuple(tbl.init_state.rot),
++            )
+         # ★테이블은 scene 자산이 아니라 정적 프림이라 EventTerm 이 못 건다. 직접 바인딩한다.
+         #   PhysX 결합이 average 라 한쪽만 낮아도 실효 μ 가 중간값이 되고, 컵-테이블
+         #   마찰은 접근·안정에 직접 영향을 준다.
+@@ -65,7 +89,17 @@ class GraspS2RControlMixin:
+         _mat = sim_utils.RigidBodyMaterialCfg(
+             static_friction=_mu, dynamic_friction=_mu, restitution=0.0)
+         _mat.func("/World/Materials/taskSurface", _mat)
+-        bind_physics_material("/World/envs/env_0/Table", "/World/Materials/taskSurface")
++        # ★`bind_physics_material` 은 regex 가 아니라 **실제 프림**만 받는다
++        #   (`Prim at path '.../env_.*/Table' is not valid` 로 fail-loud). 열거해 건다.
++        #   replicate_physics=True 면 이 시점에 env_0 만 있고 clone 이 바인딩까지 복제한다.
++        from isaaclab.sim.utils import find_matching_prim_paths
++
++        _tables = find_matching_prim_paths(self.cfg.table_cfg.prim_path)
++        if not _tables:
++            raise RuntimeError(
++                f"[grasp_s2r] 테이블 프림이 없다: {self.cfg.table_cfg.prim_path}")
++        for _tp in _tables:
++            bind_physics_material(_tp, "/World/Materials/taskSurface")
+ 
+         # ★★손가락별 접촉 센서 — body **하나당 센서 하나**. 다중 body 를 한 센서에
+         #   묶으면 `force_matrix_w` 가 무증상 0 을 반환한다(실측 함정).
+@@ -82,7 +116,7 @@ class GraspS2RControlMixin:
+                     track_air_time=False,
+                 ))
+                 sensors.append(s)
+-                self.scene.sensors[f"contact_{finger}_{body}"] = s
++                _sensors[f"contact_{finger}_{body}"] = s
+             self._finger_sensors[finger] = sensors
+ 
+         # ★★손바닥 접촉 — 08.27 까지 **계측 자체가 없었다**. 손가락 센서만 있어서 컵이
+@@ -94,12 +128,12 @@ class GraspS2RControlMixin:
+             history_length=1,
+             track_air_time=False,
+         ))
+-        self.scene.sensors["contact_palm"] = self._palm_sensor
++        _sensors["contact_palm"] = self._palm_sensor
+ 
+         # 진단 카메라 — env 하나당 하나. probe 가 자세를 눈으로 확인할 때만 켠다.
+         if bool(self.cfg.debug_camera):
+             from isaaclab.sensors import TiledCamera, TiledCameraCfg
+-            self.scene.sensors["debug_cam"] = TiledCamera(TiledCameraCfg(
++            _sensors["debug_cam"] = TiledCamera(TiledCameraCfg(
+                 prim_path="/World/envs/env_.*/DebugCam",
+                 offset=TiledCameraCfg.OffsetCfg(
+                     pos=tuple(self.cfg.debug_camera_pos),
+@@ -117,11 +151,46 @@ class GraspS2RControlMixin:
+         light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
+         light_cfg.func("/World/Light", light_cfg)
+ 
+-        self.object = RigidObject(self.cfg.object_cfg)
+-        self.scene.rigid_objects["object"] = self.object
+-        self.scene.clone_environments(copy_from_source=True)
++        # ★★clone → **씬 등록** → 물체 생성. DEXTRAH 원본(`GRASP/DEXTRAH`)이 이 순서다:
++        #   `Articulation`/`RigidObject` 를 만들고, `clone_environments()` 를 부른 **뒤에**
++        #   `scene.articulations[...]`/`scene.rigid_objects[...]` 에 등록한다.
++        #   clone 전에 등록하면 env 가 1개인 상태로 자산 뷰가 잡히고,
++        #   `replicate_physics=True` 는 cloner 의 physics replication 이 뷰를 갱신해 주지만
++        #   **False 에서는 갱신되지 않는다** — 08.29 실측: 리셋의 `write_joint_state_to_sim`
++        #   이 반영 안 돼 관절 편차 18.7 rad · 속도 2,973 rad/s · `episode_lengths` 1.2.
++        # ★다물체는 `InteractiveScene.__init__` 이 이미 env xform 을 복제했으므로
++        #   여기서 다시 부르지 않는다(부르면 env_0 내용을 전 env 에 덮어쓴다).
++        # ★★`clone_environments` 는 **`replicate_physics=True` 일 때만** 부른다.
++        #   False 면 `InteractiveScene.__init__` 이 이미 env xform 을 복제했고, 여기서
++        #   또 부르면 env_0 내용을 전 env 에 덮어써 프림이 중복·변형된다. 그것이
++        #   리셋 직후 관절 폭발(편차 18~28 rad · 속도 2,500~4,700 rad/s ·
++        #   `episode_lengths` 260→1.2)의 남은 유일한 후보다.
++        #   ★`filter_collisions` 는 **양쪽 다** 부른다 — True 경로는 clone 의
++        #   `enable_env_ids` 가 격리해 주지만 False 경로는 이 호출이 유일한 격리다.
++        _replicate = bool(self.cfg.scene.replicate_physics)
++        if not _multi:
++            # 단일 물체는 clone 이 복제해 줘야 하므로 **clone 전에** 만든다.
++            _ob.assert_spawned_after_clone(_bank, cloned=not _replicate)
++            self.object = RigidObject(self.cfg.object_cfg)
++        if _replicate:
++            self.scene.clone_environments(copy_from_source=True)
++        if _multi:
++            # 다물체는 전 env prim 이 존재해야 `env_id % N` 배정이 성립한다.
++            _ob.assert_spawned_after_clone(_bank, cloned=True)
++            self.object = RigidObject(self.cfg.object_cfg)
+         self.scene.filter_collisions(global_prim_paths=["/World/ground"])
+ 
++        # ---- 씬 등록은 clone **이후** (위 주석의 DEXTRAH 규약) --------------------------
++        self.scene.articulations["robot"] = self.robot
++        for _k, _v in _sensors.items():
++            self.scene.sensors[_k] = _v
++        if _multi:
++            self.scene.rigid_objects["table"] = self.table
++        self.scene.rigid_objects["object"] = self.object
++        print(f"[grasp_s2r] 물체 뱅크 '{_bank.name}' {len(_bank)}종 · "
++              f"replicate_physics={self.cfg.scene.replicate_physics} · "
++              f"센서 {len(_sensors)}개 등록", flush=True)
++
+     # ------------------------------------------------------------------
+     # Fabrics — 팔은 절대 palm pose attractor 로만 움직인다
+     # ------------------------------------------------------------------
+@@ -383,6 +452,24 @@ class GraspS2RControlMixin:
+         self._syn_ch = torch.tensor(ch, device=self.device, dtype=torch.long)
+         self._syn_fi = torch.tensor(fi, device=self.device, dtype=torch.long)
+         self._syn_nch = len(set(ch))
++        # ---- per_finger 레이아웃 (08.29 O 라운드) — 관절 → 전역 액션 슬롯(-1=고정) ----
++        if str(self.cfg.hand_layout) == "per_finger":
++            _map = p.hand_finger_channels
++            _act = []
++            for k, nm in enumerate(p.hand_joint_names):
++                _f = fingers[fi[k]]
++                _s = nm.rsplit("_", 1)[1]
++                _act.append(int(_map.get(_f, {}).get(_s, -1)))
++            self._syn_act = torch.tensor(_act, device=self.device, dtype=torch.long)
++            _n_act = int(self._syn_act.max().item()) + 1
++            if 6 + _n_act != int(self.cfg.action_space):
++                raise RuntimeError(
++                    f"[{p.name}] per_finger 슬롯 {_n_act} ≠ action_space-6 "
++                    f"{int(self.cfg.action_space) - 6}")
++        # 손가락 단위 동결용 — 굴곡 관절(_2/_3/_4) 마스크.
++        self._syn_flex = torch.tensor(
++            [nm.rsplit("_", 1)[1] in ("2", "3", "4") for nm in p.hand_joint_names],
++            device=self.device)
+         self._syn_freeze = torch.tensor(
+             [nm.rsplit("_", 1)[1] in p.hand_freeze_suffixes for nm in p.hand_joint_names],
+             device=self.device)
+@@ -423,16 +510,30 @@ class GraspS2RControlMixin:
+         """
+         p = self.profile
+         nf = len(p.finger_sensor_bodies)
+-        a = a_hand.view(self.num_envs, nf, self._syn_nch)
+-        if bool(self.cfg.couple_four_fingers):
+-            # 대향 그룹(엄지)만 독립, 나머지는 채널별 평균 — "특정 손가락만 안 닫힘"을
+-            # 액션 공간에서 제거한다. 접촉 동결은 관절별로 남아 형상 적응은 유지된다.
+-            _mask = torch.ones(nf, dtype=torch.bool, device=a.device)
+-            _mask[self._group_a_idx] = False
+-            _common = a[:, _mask, :].mean(dim=1, keepdim=True)
+-            a = torch.where(_mask.view(1, nf, 1), _common.expand(-1, nf, -1), a)
+-        cmd = 0.5 * (a.clamp(-1.0, 1.0) + 1.0)                    # 절대 폐쇄도 [0,1]
+-        cmd_j = cmd[:, self._syn_fi, self._syn_ch]                # (N, n) 관절 전개
++        if str(self.cfg.hand_layout) == "per_finger":
++            # 손가락별 슬롯(엄지 2·검/중/약 각 1·소지 1). 미지정 관절은 폐쇄도 0 고정.
++            cmd_flat = 0.5 * (a_hand.clamp(-1.0, 1.0) + 1.0)      # (N, n_act)
++            cmd_j = torch.where(
++                (self._syn_act >= 0).unsqueeze(0),
++                cmd_flat[:, self._syn_act.clamp(min=0)],
++                torch.zeros(self.num_envs, len(self._syn_act),
++                            device=self.device))
++        else:
++            a = a_hand.view(self.num_envs, nf, self._syn_nch)
++            if bool(self.cfg.couple_four_fingers):
++                # 대향 그룹(엄지)만 독립, 나머지는 채널별 평균 — "특정 손가락만 안 닫힘"을
++                # 액션 공간에서 제거한다. 접촉 동결은 관절별로 남아 형상 적응은 유지된다.
++                _mask = torch.ones(nf, dtype=torch.bool, device=a.device)
++                _mask[self._group_a_idx] = False
++                _common = a[:, _mask, :].mean(dim=1, keepdim=True).expand(-1, nf, -1)
++                # ★공통 + 잔차 — scale 0 이면 평균 대체(구 coupled 항등), 1 이면 개별 지령
++                #   그대로(15ch 와 동일). 그 사이가 연속이라 ADR 축으로 열 수 있다.
++                _rs = float(getattr(self, "_adr_residual",
++                                    self.cfg.finger_residual_scale))
++                _blend = _common if _rs == 0.0 else _common + _rs * (a - _common)
++                a = torch.where(_mask.view(1, nf, 1), _blend, a)
++            cmd = 0.5 * (a.clamp(-1.0, 1.0) + 1.0)                # 절대 폐쇄도 [0,1]
++            cmd_j = cmd[:, self._syn_fi, self._syn_ch]            # (N, n) 관절 전개
+         rate = float(self.cfg.synergy_close_speed)
+         delta = (cmd_j - self._syn_close).clamp(-rate, rate)
+         # ★닫는 방향만 정렬 게이트로 스케일한다 — **푸는 방향은 항상 허용**해야
+@@ -466,7 +567,14 @@ class GraspS2RControlMixin:
+             #   얼었다 — 사용자 관찰 "4지는 말리는데 엄지 _3/_4 는 홈자세 그대로".
+             _h_mid = (_mid > _thr)[:, self._syn_fi]
+             _h_dist = (_dist > _thr)[:, self._syn_fi]
+-            _hold = (_h_mid & self._syn_freeze_mid) | (_h_dist & self._syn_freeze_dist)
++            if str(self.cfg.synergy_freeze_scope) == "finger":
++                # ★손가락 단위 — (중간∨원위) 접촉이면 그 손가락 굴곡관절 **전부** 정지.
++                #   관절별 동결은 언 손끝을 매단 채 근위(_2)가 계속 감겨 큰 컵을
++                #   밀어냈다(08.29 s130 영상 + M1 잔여 실패 진단).
++                _hold = (_h_mid | _h_dist) & self._syn_flex
++            else:
++                _hold = ((_h_mid & self._syn_freeze_mid)
++                         | (_h_dist & self._syn_freeze_dist))
+             # ★닫는 방향만 얼린다 — 푸는 방향까지 막으면 갇혀서 빠져나올 수 없다
+             #   (닫기 게이트와 같은 원칙).
+             delta = torch.where(_hold & (delta > 0.0), torch.zeros_like(delta), delta)
+diff --git a/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_env.py b/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_env.py
+index 8c8703b..73c5ed1 100644
+--- a/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_env.py
++++ b/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_env.py
+@@ -29,6 +29,13 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+     cfg: GraspS2REnvCfg
+ 
+     def __init__(self, cfg: GraspS2REnvCfg, render_mode: str | None = None, **kwargs):
++        # ★★hydra 오버라이드는 `__post_init__` **뒤**에 `from_dict` 로 적용되고
++        #   `__post_init__` 를 다시 부르지 않는다(IsaacLab `hydra_task_config` 실측).
++        #   따라서 `env.object_bank=cup_family` 는 파생 구조(스폰 cfg·replicate_physics·
++        #   접촉 필터·스폰고)에 **반영되지 않은 채** 런타임에만 보인다.
++        #   그리고 `replicate_physics` 는 `InteractiveScene.__init__` 이 소비하므로
++        #   `_setup_scene` 은 이미 늦다 — super() **전에** 재파생해야 한다.
++        cfg.finalize_after_overrides()
+         super().__init__(cfg, render_mode, **kwargs)
+         p = PROFILES[self.cfg.profile_name]
+         self.profile = p
+@@ -55,10 +62,18 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+                 raise RuntimeError(f"[{p.name}] fingertip body '{n}' 해석 실패: {ids}")
+             self.tip_ids.append(ids[0])
+         self._tip_ids_t = torch.tensor(self.tip_ids, device=self.device, dtype=torch.long)
+-
+         # ---- 접촉 그룹 (프로필 정의) --------------------------------------------------
+         fingers = list(p.finger_sensor_bodies.keys())
+         self._finger_names = fingers
++        # ★★중간마디(`_3`) 바디 인덱스 — `finger_closure_target="wrap"` 전용.
++        #   08.31 실측: 팁 접촉은 0.65~0.85 로 이미 채워졌는데 wrap(중간∧원위)은
++        #   전 8종에서 0.000 이다. 즉 손끝만 대고 감아 안지 않는다. 팁 기준 소등
++        #   항은 이 지점에서 이미 꺼져 있어 경사를 못 준다 — 중간마디로 재야 한다.
++        #   ★`_finger_names` 확정 **뒤**에 만들 것(순서 뒤집으면 부팅에서 죽는다).
++        self._mid_ids_t = torch.tensor(
++            [self.robot.find_bodies(p.finger_sensor_bodies[f][0])[0][0]
++             for f in fingers],
++            device=self.device, dtype=torch.long)
+         if len(p.fingertip_bodies) != len(fingers):
+             raise RuntimeError(
+                 f"[{p.name}] fingertip_bodies({len(p.fingertip_bodies)}) 와 "
+@@ -107,6 +122,37 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         self._hull_b_t = torch.tensor(
+             [i for _f in p.contact_group_b for i in self._hull_ids[_f]],
+             device=self.device, dtype=torch.long)
++        # ★손가락별 최소참여용 — 위와 같은 body 를 **손가락 축을 살려** (F_b, L) 로 둔다.
++        #   평평하게 편 `_hull_b_t` 로는 "어느 손가락이 빠졌는지"를 잴 수 없다.
++        _rows = [self._hull_ids[_f] for _f in p.contact_group_b]
++        _l = {len(r) for r in _rows}
++        if len(_l) != 1:
++            raise RuntimeError(
++                f"[{p.name}] contact_group_b 손가락별 링크 수가 다르다: "
++                f"{[(f, len(self._hull_ids[f])) for f in p.contact_group_b]} — "
++                "최소참여 계산이 손가락을 정렬할 수 없다")
++        self._hull_part_t = torch.tensor(_rows, device=self.device, dtype=torch.long)
++
++        # ---- 물체 뱅크: env 별 원점 오프셋 (08.29 신설) -------------------------------
++        # ★배정은 `env_id % N` 결정론이고 MultiAssetSpawner(random_choice=False)와 같은
++        #   규약이다. 이 값은 **스폰 높이·정착고·목표**에만 쓴다 — obs 에는 넣지 않는다
++        #   (물체 정체성 금지). 단일 뱅크면 전 env 동일 상수라 현행과 항등이다.
++        from openarm.agnostic.modules import object_bank as _ob
++
++        _bank = _ob.get(self.cfg.object_bank)
++        _off_of = [s.origin_offset_z for s in _bank.specs]
++        self._obj_origin_off = torch.tensor(
++            [_off_of[i] for i in _bank.assign_indices(self.num_envs)],
++            device=self.device, dtype=torch.float32)
++        # ---- 종별 진단 (08.29 신설) — 집계 success 는 종별 실패를 가린다(사용자 지적).
++        #   ★진단 전용: obs 금지(정체성 계약)·보상 미사용. 로깅은 extras 로만.
++        self._species_ids = torch.tensor(
++            _bank.assign_indices(self.num_envs), device=self.device,
++            dtype=torch.long)
++        self._species_names = [s.id for s in _bank.specs]
++        self._n_species = len(_bank.specs)
++        self._species_succ_ema = torch.zeros(self._n_species, device=self.device)
++        self._species_latch_ema = torch.zeros(self._n_species, device=self.device)
+ 
+         # ---- 손등 접촉 배제 (08.28 신설 — Hu et al. 의 `p_collision` 대응) -------------
+         # ★프로필 미정의는 fail-loud. 기본축을 가정하면 판정이 **조용히 뒤집혀**
+@@ -139,6 +185,20 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         self._arm_lo = jl[:, self._arm_ids_t, 0]
+         self._arm_hi = jl[:, self._arm_ids_t, 1]
+         self._default_q = self.robot.data.default_joint_pos.clone()
++        # ★★자산 뷰 정합 검사 — `replicate_physics=False` 에서 리셋의
++        #   `write_joint_state_to_sim` 이 반영되지 않는 원인을 좁히기 위한 계측.
++        #   뷰 인스턴스 수가 num_envs 와 다르면 `env_ids` 기입이 조용히 어긋난다.
++        _ni = int(getattr(self.robot, "num_instances", -1))
++        _dq = self._default_q
++        print(f"[grasp_s2r] 로봇 뷰: num_instances={_ni} (num_envs={self.num_envs}) · "
++              f"default_joint_pos {tuple(_dq.shape)} "
++              f"min={float(_dq.min()):.4f} max={float(_dq.max()):.4f} "
++              f"env간 산포={float(_dq.std(dim=0).max()):.6f} · "
++              f"joint_names={len(self.robot.data.joint_names)}", flush=True)
++        if _ni != self.num_envs:
++            raise RuntimeError(
++                f"[grasp_s2r] 로봇 아티큘레이션 뷰가 {_ni}개인데 env 는 "
++                f"{self.num_envs}개다 — 리셋 기입이 어긋난다")
+         self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
+         self.prev_actions = torch.zeros_like(self.actions)
+         self.goal_pos = torch.zeros(self.num_envs, 3, device=self.device)       # env-local
+@@ -187,14 +247,24 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         self._assert_goal_reachable()
+         self._setup_cmd_markers()
+ 
+-        # 액션 델타 박스 — palm 은 홈 기준 상대다.
++        # 액션 델타 박스 — palm 은 **앵커** 기준 상대다.
+         _d = torch.tensor(self.cfg.palm_delta_xyz, device=self.device)
+         _r = math.radians(float(self.cfg.palm_delta_rot_deg))
+         self._delta_lo = torch.cat([-_d, torch.full((3,), -_r, device=self.device)])
+         self._delta_hi = torch.cat([_d, torch.full((3,), _r, device=self.device)])
+-        # ★홈은 항상 도달 가능해야 한다(박스가 홈을 잘라내면 a=0 의 의미가 깨진다).
++        # ★앵커는 항상 도달 가능해야 한다(박스가 앵커를 잘라내면 a=0 의 의미가 깨진다).
+         self._box_lo = torch.minimum(self._palm_lo, self._home_palm)
+         self._box_hi = torch.maximum(self._palm_hi, self._home_palm)
++        self._setup_palm_anchor()
++
++        # ---- ADR 상태 — 전역 level 하나. OFF(기본)면 전부 base 값 = 현행 항등. --------
++        self._palm_delta_base = _d.clone()
++        # env 별 목표 오프셋 — 샘플링 ON 이면 리셋마다 새로 뽑고, OFF 면 전 env 동일.
++        self._goal_off_env = torch.zeros(self.num_envs, 3, device=self.device)
++        self._adr_level = 0.0
++        self._adr_succ = 0
++        self._adr_epis = 0
++        self._adr_apply()
+ 
+         print(f"[grasp_s2r] profile={p.name} arm={len(self.arm_ids)} "
+               f"hand={len(self.hand_ids)} tips={len(self.tip_ids)} "
+@@ -251,36 +321,192 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+                   f"케이지 반경 {r_cage * 1000:.0f}mm 보다 좁다 — 리셋에서 관통 위험.",
+                   flush=True)
+ 
++    # ------------------------------------------------------------------
++    def _setup_palm_anchor(self) -> None:
++        """액션 원점(`a=0` 이 뜻하는 palm 자세)을 결정하고 부팅에서 검증한다.
++
++        ★`home` 은 팔 **rest 자세**이고 과제 위치가 아니다. 08.29 Phase 0 실측으로
++          그 격차가 확인됐다 — 홈(0.280, -0.380, 0.418)은 컵 파지고보다 z +14 cm,
++          이송 목표보다 y -27 cm 다. `a=0` 이 "컵에서 도망"을 뜻하니 정책은 액션을
++          상시 만재(√6 의 93~98%)로 밀어 저항해야 하고, 출력이 조금만 풀리면 palm 이
++          홈으로 튕긴다. 실측 `palm_post_latch_y` -0.399 는 **홈보다도 뒤**다.
++        ★`spawn` 은 리셋 시 정착 스냅샷 기준이라 **에피소드 내 상수**다. 실시간 물체
++          위치를 앵커에 쓰면 컵이 밀릴 때 액션 원점이 따라가는 되먹임이 된다.
++        """
++        p = self.profile
++        self._anchor_mode = str(self.cfg.palm_anchor_mode)
++        if self._anchor_mode not in ("home", "spawn"):
++            raise RuntimeError(
++                f"[{p.name}] palm_anchor_mode={self._anchor_mode!r} 는 "
++                "'home' 또는 'spawn' 이어야 한다")
++        self._anchor_off = torch.tensor(
++            self.cfg.palm_anchor_offset_xyz, device=self.device, dtype=torch.float32)
++        if self._anchor_mode == "home":
++            print(f"[grasp_s2r] 액션 앵커 = 홈 "
++                  f"{[round(v, 4) for v in self._home_palm[:3].tolist()]}", flush=True)
++            return
++        # 스폰 중심 기준 앵커를 부팅에서 한 번 검증한다 — 오프셋 오타를 여기서 잡는다.
++        # ★다물체면 원점 오프셋이 물체마다 다르므로 **최저·최고 둘 다** 검사한다.
++        #   최댓값만 보면 가장 낮은 컵에서 앵커가 박스 밖으로 나가는 것을 놓친다.
++        _z0 = float(self._obj_origin_off.min())
++        _z1 = float(self._obj_origin_off.max())
++        _lo, _hi = self._palm_lo[:3], self._palm_hi[:3]
++        _a = None
++        for _z in (_z0, _z1):
++            _spawn = torch.tensor(
++                [p.object_spawn_center[0], p.object_spawn_center[1],
++                 float(self.cfg.table_surface_z) + _z],
++                device=self.device, dtype=torch.float32)
++            _a = _spawn + self._anchor_off - self._fab_to_env
++            if bool(((_a < _lo) | (_a > _hi)).any()):
++                raise RuntimeError(
++                    f"[{p.name}] 액션 앵커 {[round(v, 4) for v in _a.tolist()]} "
++                    f"(원점 오프셋 {_z:.4f}) 가 palm 박스 "
++                    f"{[round(v, 3) for v in _lo.tolist()]}~"
++                    f"{[round(v, 3) for v in _hi.tolist()]} 밖이다 — "
++                    "palm_anchor_offset_xyz 를 고치거나 프로필 박스를 넓혀라.")
++        # 앵커±델타가 박스를 넘으면 그 축은 상시 클램프된다(구 홈 규약의 y 92% 포화가
++        # 정확히 그것이었다). 잘리는 축을 부팅에서 이름으로 알려준다.
++        _cut = [ax for i, ax in enumerate("xyz")
++                if float(_a[i] - self._delta_lo[i].abs()) < float(_lo[i])
++                or float(_a[i] + self._delta_hi[i]) > float(_hi[i])]
++        print(f"[grasp_s2r] 액션 앵커 = 스폰 기준 "
++              f"{[round(v, 4) for v in _a.tolist()]} "
++              f"(스폰 {[round(v, 4) for v in _spawn.tolist()]} + "
++              f"{list(self.cfg.palm_anchor_offset_xyz)}) · "
++              f"델타 ±{list(self.cfg.palm_delta_xyz)}"
++              + (f" · ⚠박스에 잘리는 축 {_cut}" if _cut else ""), flush=True)
++
++    # ------------------------------------------------------------------
++    def _palm_anchor(self) -> torch.Tensor:
++        """액션 원점 (N, 6). 회전 성분은 홈 그대로 두고 **위치만** 재중심한다."""
++        _home = self._home_palm.unsqueeze(0).expand(self.num_envs, 6)
++        if self._anchor_mode == "home":
++            return _home
++        # `object_spawn_pos` 는 env-local(정착 스냅샷) — palm_targets 는 fabric 프레임.
++        _pos = self.object_spawn_pos + self._anchor_off - self._fab_to_env
++        # 첫 리셋 전에는 스폰이 0 이다. 그때만 홈으로 대체한다(조용한 0 앵커 방지).
++        _unset = (self.object_spawn_pos.abs().sum(dim=1) < 1e-6).unsqueeze(1)
++        _pos = torch.where(_unset, _home[:, :3], _pos)
++        return torch.cat([_pos, _home[:, 3:]], dim=1)
++
++    # ------------------------------------------------------------------
++    def _adr_apply(self) -> None:
++        """level → 실효값 재계산. 승급 시에만 불린다(스텝 경로 비용 0).
++
++        ★축③ 제약: 목표 y 확장분만큼 **델타 박스 y 를 같이 키운다** — palm 지령 박스
++          (base ±0.10)가 이송 거리를 물리적으로 막는 구조라, 목표만 늘리면 정책이
++          도달 불가능한 과제를 받는다.
++        ★enable_adr=False 면 level 을 0 으로 강제해 전부 base 값 = 현행 항등이다.
++        """
++        cfgn = self.cfg
++        lvl = float(self._adr_level) if bool(cfgn.enable_adr) else 0.0
++        _base_rng = float(cfgn.spawn_range)
++        self._adr_spawn_range = _base_rng + lvl * (
++            float(cfgn.adr_spawn_range_max) - _base_rng)
++        _bx = float(cfgn.goal_offset_xyz[0])
++        _by = float(cfgn.goal_offset_xyz[1])
++        _bz = float(cfgn.goal_offset_xyz[2])
++        _sign = 1.0 if _by >= 0.0 else -1.0
++        _y_eff = _sign * (abs(_by) + lvl * (float(cfgn.adr_goal_y_max) - abs(_by)))
++        # 3축 확장 — x 는 ±반범위, z 는 [base, max]. 둘 다 기본값이면 0 폭이라 항등.
++        _x_eff = lvl * float(getattr(cfgn, "adr_goal_x_max", 0.0))
++        _z_eff = _bz + lvl * (float(getattr(cfgn, "adr_goal_z_max", _bz)) - _bz)
++        self._adr_goal_base = (_bx, _by, _bz, _sign)
++        self._adr_goal_span = (_x_eff, _y_eff, _z_eff)
++        # ★`_adr_goal_offset` 은 **최대 코너**다(샘플링 OFF 면 곧 실효값).
++        self._adr_goal_offset = torch.tensor(
++            [_bx, _y_eff, _bz], device=self.device)
++        _d_eff = self._palm_delta_base.clone()
++        _d_eff[0] = _d_eff[0] + _x_eff
++        _d_eff[1] = _d_eff[1] + (abs(_y_eff) - abs(_by))
++        _d_eff[2] = _d_eff[2] + (_z_eff - _bz)
++        _r = math.radians(float(cfgn.palm_delta_rot_deg))
++        self._delta_lo = torch.cat(
++            [-_d_eff, torch.full((3,), -_r, device=self.device)])
++        self._delta_hi = torch.cat(
++            [_d_eff, torch.full((3,), _r, device=self.device)])
++        # ★손 잔차(다섯째 축) — "쥐는 법 먼저, dexterity 나중". max<=base 면 축 꺼짐.
++        _rb = float(getattr(cfgn, "finger_residual_scale", 0.0))
++        _rm = float(getattr(cfgn, "adr_finger_residual_max", 0.0))
++        self._adr_residual = _rb + lvl * max(0.0, _rm - _rb)
++        _bn = float(cfgn.obs_noise_object)
++        self._adr_obs_noise_object = _bn + lvl * (
++            float(cfgn.adr_obs_noise_object_max) - _bn)
++
+     # ------------------------------------------------------------------
+     def _assert_goal_reachable(self) -> None:
+         """목표가 palm 박스 안인지 부팅에서 확인 — 밖이면 과제가 성립하지 않는다."""
+         p = self.profile
+-        settled_z = float(self.cfg.table_surface_z) + float(self.cfg.object_origin_offset_z)
+-        goal = [
+-            p.object_spawn_center[0] + self.cfg.goal_offset_xyz[0],
+-            p.object_spawn_center[1] + self.cfg.goal_offset_xyz[1],
+-            settled_z + self.cfg.goal_offset_xyz[2],
+-        ]
+         lo = self._palm_lo[:3].tolist()
+         hi = self._palm_hi[:3].tolist()
+-        if any(g < lo[i] or g > hi[i] for i, g in enumerate(goal)):
+-            raise RuntimeError(
+-                f"[{p.name}] 이송 목표 {[round(v, 3) for v in goal]} 가 palm 박스 "
+-                f"{[round(v, 3) for v in lo]}~{[round(v, 3) for v in hi]} 밖이다 — "
+-                "goal_offset_xyz 를 줄이거나 프로필 박스를 넓혀라.")
+-        print(f"[grasp_s2r] 이송 목표 = {[round(v, 3) for v in goal]} "
+-              f"(정착고 {settled_z:.4f} + offset {list(self.cfg.goal_offset_xyz)})",
+-              flush=True)
++        # ★다물체면 정착고가 물체마다 다르다 — **양 극단 모두** 도달 가능해야 한다.
++        _zs = sorted({float(self._obj_origin_off.min()),
++                      float(self._obj_origin_off.max())})
++        for _z in _zs:
++            settled_z = float(self.cfg.table_surface_z) + _z
++            goal = [
++                p.object_spawn_center[0] + self.cfg.goal_offset_xyz[0],
++                p.object_spawn_center[1] + self.cfg.goal_offset_xyz[1],
++                settled_z + self.cfg.goal_offset_xyz[2],
++            ]
++            if any(g < lo[i] or g > hi[i] for i, g in enumerate(goal)):
++                raise RuntimeError(
++                    f"[{p.name}] 이송 목표 {[round(v, 3) for v in goal]} "
++                    f"(원점 오프셋 {_z:.4f}) 가 palm 박스 "
++                    f"{[round(v, 3) for v in lo]}~{[round(v, 3) for v in hi]} 밖이다 — "
++                    "goal_offset_xyz 를 줄이거나 프로필 박스를 넓혀라.")
++            print(f"[grasp_s2r] 이송 목표 = {[round(v, 3) for v in goal]} "
++                  f"(정착고 {settled_z:.4f} = 표면 {self.cfg.table_surface_z} + 원점 "
++                  f"{_z:.4f} · offset {list(self.cfg.goal_offset_xyz)})", flush=True)
++        # ★ADR 이면 **최대 난이도**(goal_y_max + 스폰 코너)도 부팅에서 검증한다 —
++        #   런타임 승급 후에 목표가 박스 밖으로 나가면 소리 없이 과제가 죽는다.
++        #   ★★기준은 **비확장 프로필 박스**다 — 런타임 최종 클램프(`_box_lo/_box_hi`)는
++        #   ADR 로 늘지 않는다(프로필 박스 = 도달영역 실측이라 물리 한계). 델타 확장은
++        #   앵커↔목표 span 용이지 도달영역 확장이 아니다.
++        if bool(self.cfg.enable_adr):
++            _by = float(self.cfg.goal_offset_xyz[1])
++            _sign = 1.0 if _by >= 0.0 else -1.0
++            _y_max = _sign * float(self.cfg.adr_goal_y_max)
++            _rng = float(self.cfg.adr_spawn_range_max)
++            # ★3축 확장이면 x·z 극단도 함께 검사한다 — 한 축만 보면 승급 뒤에
++            #   목표가 조용히 박스 밖으로 나간다.
++            _gx = float(getattr(self.cfg, "adr_goal_x_max", 0.0))
++            _gz = float(getattr(self.cfg, "adr_goal_z_max",
++                                self.cfg.goal_offset_xyz[2]))
++            for _z in _zs:
++              for _ox in ((-_gx, _gx) if _gx > 0.0 else (0.0,)):
++                for _oz in {float(self.cfg.goal_offset_xyz[2]), _gz}:
++                  for _dx in (-_rng, _rng):
++                    for _dy in (-_rng, _rng):
++                        goal = [
++                            p.object_spawn_center[0] + _dx
++                            + self.cfg.goal_offset_xyz[0] + _ox,
++                            p.object_spawn_center[1] + _dy + _y_max,
++                            float(self.cfg.table_surface_z) + _z + _oz,
++                        ]
++                        if any(g < lo[i] or g > hi[i]
++                               for i, g in enumerate(goal)):
++                            raise RuntimeError(
++                                f"[{p.name}] ADR 최대 목표 "
++                                f"{[round(v, 3) for v in goal]} 가 프로필 박스 "
++                                f"{[round(v, 3) for v in lo]}~"
++                                f"{[round(v, 3) for v in hi]} 밖이다 — "
++                                "adr_goal_y_max/adr_spawn_range_max 를 줄여라.")
++            print(f"[grasp_s2r][ADR] 최대 난이도 검증 통과: goal_y {_y_max:+.3f} · "
++                  f"spawn ±{_rng:.3f}", flush=True)
+ 
+     # ------------------------------------------------------------------
+     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+         self.actions = actions.clamp(-1.0, 1.0)
+ 
+-        # ---- 팔: palm 6D = **홈 + 델타** -------------------------------------------
+-        # a=0 → 홈. 탐색이 홈 주변 유계 오프셋으로 묶여 절대 매핑의 랜덤워크가 없다.
++        # ---- 팔: palm 6D = **앵커 + 델타** -----------------------------------------
++        # a=0 → 앵커. 탐색이 앵커 주변 유계 오프셋으로 묶여 절대 매핑의 랜덤워크가 없다.
++        # ★앵커는 에피소드 내 상수다(홈 또는 스폰 스냅샷) — 실시간 물체·래치를 쓰면
++        #   액션 원점이 에피소드 중 움직여 되먹임/스크립트가 된다. `_palm_anchor` 참조.
+         delta = 0.5 * (self.actions[:, :6] + 1.0) * (self._delta_hi - self._delta_lo) \
+             + self._delta_lo
+-        _raw_targets = self._home_palm.unsqueeze(0) + delta
++        _raw_targets = self._palm_anchor() + delta
+         self.palm_targets = _raw_targets.clamp(self._box_lo, self._box_hi)
+         # 축별 박스 포화 — 클램프가 값을 바꿨으면 그 축의 도달영역이 부족한 것이다.
+         self._palm_cmd_box_sat = (
+@@ -410,8 +636,8 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+             palm_pos + torch.randn_like(palm_pos) * cfgn.obs_noise_body,
+             palm_ax,
+             tips_rel_palm + torch.randn_like(tips_rel_palm) * cfgn.obs_noise_body,
+-            palm_to_obj + torch.randn_like(palm_to_obj) * cfgn.obs_noise_object,
+-            obj_to_tips + torch.randn_like(obj_to_tips) * cfgn.obs_noise_object,
++            palm_to_obj + torch.randn_like(palm_to_obj) * self._adr_obs_noise_object,
++            obj_to_tips + torch.randn_like(obj_to_tips) * self._adr_obs_noise_object,
+             tip_force, joint_err, self.actions, goal_rel,
+         ], dim=1)
+ 
+@@ -462,6 +688,21 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+             tip_c = tip_c & _pm[:, :, -1]
+         n_tip = len(self._finger_names)
+         tip_frac = tip_c.float().sum(dim=1) / n_tip
++
++        # ---- 힘 밴드 (08.29 신설) — `graded_contact` 에 곱할 품질계수 [바닥, 1] --------
++        # ★그 env 의 **최대 팁 힘** 하나로 정한다. 사용자 제약이 "팁 센서 정격 0~50 N"
++        #   이고 손가락 하나만 과해도 하드웨어가 위험하므로 평균이 아니라 최댓값이다.
++        #   `force_band_hi_n` 아래는 정확히 1.0(현행과 동일) → 정상 파지는 손해가 없다.
++        # ★게이트가 쓰는 이진 마스크(`tip_c`·`grip_c`)는 **건드리지 않는다** — 여기서
++        #   깎으면 케이지·판정까지 조용히 흔들린다. 보상 곱셈 경로에만 넣는다.
++        _fb_lo = float(cfgn.force_band_hi_n)
++        _fb_hi = float(cfgn.force_sensor_max_n)
++        _floor = float(cfgn.force_band_floor)
++        _over = ((tip_f.max(dim=1).values - _fb_lo)
++                 / max(_fb_hi - _fb_lo, 1e-6)).clamp(0.0, 1.0)
++        force_quality = 1.0 - (1.0 - _floor) * _over
++        self.extras["gate/force_quality"] = force_quality.mean()
++        self.extras["gate/force_quality_min"] = force_quality.min()
+         grip_c = tip_c | mid_c | dist_c
+         grip_frac = grip_c.float().sum(dim=1) / n_tip
+         n_grip = grip_c.float().sum(dim=1)
+@@ -507,7 +748,19 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+             wrap_frac = (mid_c & dist_c)[:, self._wrap_idx].float().mean(dim=1)
+ 
+         # ---- 래치 (보상 단계 표시 전용 — 팔 지령은 건드리지 않는다) ------------------
+-        _ready = n_grip >= int(cfgn.lift_start_min_grip_fingers)
++        # ★★08.29 "opposition" 신설 — count(기본·현행)는 실측 성공 파지(엄지+palm)에서
++        #   n_grip=1 < min 3 이라 **래치가 영원히 0** → lift30·transfer15·stay8·
++        #   stabilize10 이 전부 사장되고 postlatch 힘 감시도 0 이었다(K1/M1/N1 공통).
++        #   대향 판정 = (그룹A 접촉) AND (그룹B 접촉 OR palm 접촉) — force-closure
++        #   독트린 그대로이고, 손바닥은 사용자 정의상 정당한 파지 요소다.
++        #   hold 8스텝은 유지(브러시 접촉 필터).
++        if str(getattr(cfgn, "latch_mode", "count")) == "opposition":
++            _a_c = grip_c[:, self._group_a_idx].any(dim=1)
++            _b_c = grip_c[:, self._group_b_idx].any(dim=1)
++            _p_c = self._palm_contact_force() > _thr
++            _ready = _a_c & (_b_c | _p_c)
++        else:
++            _ready = n_grip >= int(cfgn.lift_start_min_grip_fingers)
+         self._hold_count = torch.where(
+             _ready & ~self._latched, self._hold_count + 1,
+             torch.where(self._latched, self._hold_count,
+@@ -519,6 +772,26 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         grasp_center = obj_pos.clone()
+         grasp_center[:, 2] += float(cfgn.object_grasp_z_offset)
+         palm_to_cup = self._banded_dist(palm_pos - grasp_center)
++        # ---- finger_closure — 미접촉 손가락별 컵 접근도(닿으면 소등) ------------------
++        #   형상 비의존: 파지중심 하나만 쓴다(반경·표면 없음). 상세 근거는 rewards 참조.
++        _tips_l = (self.robot.data.body_pos_w[:, self._tip_ids_t]
++                   - self.scene.env_origins[:, None, :])
++        _tip_d = (_tips_l - grasp_center.unsqueeze(1)).norm(dim=-1)     # (N, 5)
++        if str(getattr(cfgn, "finger_closure_target", "tip")) == "wrap":
++            # ★감쌈 기준 — 소등 조건이 "중간∧원위 동시접촉", 거리도 **중간마디** 기준.
++            #   팁 기준(구판)은 팁이 닿는 순간 꺼져서 "손끝만 대는" 지점이 종착지가
++            #   된다. 감쌈까지 경사를 이으려면 그 다음 마디를 목표로 삼아야 한다.
++            _mid_l = (self.robot.data.body_pos_w[:, self._mid_ids_t]
++                      - self.scene.env_origins[:, None, :])
++            _cl_d = (_mid_l - grasp_center.unsqueeze(1)).norm(dim=-1)   # (N, 5)
++            _cl_off = mid_c & dist_c
++        else:
++            _cl_d, _cl_off = _tip_d, tip_c
++        finger_closure = (
++            (~_cl_off).float()
++            * torch.exp(-float(cfgn.finger_closure_sharpness) * _cl_d)
++        ).mean(dim=1)
++        self.extras["task/finger_closure"] = finger_closure.mean()
+         # ★★palm 프레임 분해 — 법선(palm_ee_x)이 **밀착도**다. `_palm_ee_R()` 열 0 이
+         #   손바닥 법선이다. 접근 목표를 케이지가 아니라 palm 이 맡게 하는 핵심 양.
+         _d = grasp_center - palm_pos
+@@ -603,12 +876,32 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+             enclosure = enclosure * _cage_ok.float()
+             self.extras["task/enclosure_gated"] = enclosure.mean()
+ 
++        # ★과지령 = 가동 손관절이 **도달 불가능한 각도**를 미는 정도 [0,1].
++        #   τ = k·err 이므로 err ≥ effort_limit/stiffness 면 토크가 천장이다. 가동폭 0 인
++        #   관절(pinky_2·thumb_2·전 `_1`)은 오차가 상수로 깔려 평균을 오염시키므로 뺀다.
++        _thr_od = float(cfgn.hand_torque_sat_err_rad)
++        _od_err = (self._syn_target
++                   - self.robot.data.joint_pos[:, self._syn_ids]).abs()[:, self._syn_movable]
++        hand_overdrive = (torch.relu(_od_err - _thr_od)
++                          / max(_thr_od, 1e-6)).clamp(max=1.0).mean(dim=1)
++        self.extras["task/hand_overdrive"] = hand_overdrive.mean()
++
+         total, terms, gates = compute_grasp_s2r_rewards(
+             enclosure=enclosure,
++            finger_closure=finger_closure,
++            force_quality=force_quality,
++            hand_overdrive=hand_overdrive,
+             tip_contact_frac=tip_frac,
+             wrap_frac=wrap_frac,
+             wrap_at_latch=self._wrap_at_latch,
+             grip_frac=grip_frac,
++            # ★★손바닥 포함 "닿기만 하면 된다" 지표 (08.31 사용자 정의).
++            #   손가락은 **어느 마디든**(tip|mid|dist) 닿으면 1, 손바닥도 동등한 한 표.
++            #   분모 = 손가락 수 + 1. 붓기 과제에서 컵을 놓치지 않으려면 접촉 **개수**가
++            #   중요하지 특정 마디 조합이 중요한 게 아니다 — wrap(중간∧원위)은 2~3개만
++            #   닿는 현 상태를 못 벗어나게 만든 정의였다.
++            anylink_frac=((grip_c.float().sum(dim=1) + self._surf_palm)
++                          / (n_tip + 1.0)),
+             palm_normal_dist=palm_normal_dist,
+             palm_lateral_dist=palm_lateral_dist,
+             palm_still=palm_still,
+@@ -629,6 +922,13 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+             cfg=cfgn,
+         )
+         total = total + float(cfgn.abnormal_penalty) * self._abnormal.float()
++        # ---- 재소환 벌점 (기본 0 = 항등) — 직전 스텝 재소환 발생 env 에 1회 차감 ----
++        _rp = float(getattr(cfgn, "respawn_penalty", 0.0))
++        if _rp > 0.0 and hasattr(self, "_respawn_pen_buf"):
++            total = total - _rp * self._respawn_pen_buf
++            self.extras["reward/respawn_penalty"] = \
++                (-_rp * self._respawn_pen_buf).mean()
++            self._respawn_pen_buf.zero_()
+ 
+         # 단계 도달 누적 (리셋에서만 평균 기록 — 스텝 비용 0)
+         self._stage_hit[:, 0] |= self._latched
+@@ -643,6 +943,9 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+             self.extras[f"gate/{k}"] = v.mean()
+         self.extras["task/wrap_frac"] = wrap_frac.mean()
+         self.extras["task/grip_frac"] = grip_frac.mean()
++        self.extras["task/anylink_frac"] = (
++            (grip_c.float().sum(dim=1) + self._surf_palm) / (n_tip + 1.0)).mean()
++        self.extras["task/n_contact"] = grip_c.float().sum(dim=1).mean()
+         self.extras["task/touch_frac"] = tip_frac.mean()
+         self.extras["task/goal_dist"] = goal_dist.mean()
+         self.extras["task/height_delta"] = height_delta.mean()
+@@ -672,6 +975,18 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+                  - self.robot.data.joint_pos[:, self._syn_ids]).abs()
+         self.extras["task/hand_joint_err_mean"] = _herr.mean()
+         self.extras["task/hand_joint_err_max"] = _herr.max()
++        # ★Phase 0(08.29): 위 평균에는 **가동폭 0인 관절**이 섞여 있다(실측 `_syn_movable`
++        #   기준 pinky_2·thumb_2·전 `_1`). 지령이 나가도 안 움직이니 오차가 상수로 깔리고,
++        #   그러면 "닿은 뒤에도 계속 더 닫고 있다"를 평균으로 판정할 수 없다. 갈라서 잰다.
++        #   τ = k·err 이므로 **가동 관절의** err ≥ effort/stiffness(1.5/5.0 = 0.30 rad)
++        #   여야 진짜 토크 포화다.
++        _mv = self._syn_movable
++        self.extras["task/hand_joint_err_movable_mean"] = _herr[:, _mv].mean()
++        self.extras["task/hand_joint_err_movable_max"] = _herr[:, _mv].max()
++        self.extras["task/hand_joint_err_fixed_mean"] = (
++            _herr[:, ~_mv].mean() if bool((~_mv).any()) else _herr.new_zeros(()))
++        self.extras["task/hand_torque_sat_frac"] = (
++            _herr[:, _mv] >= float(self.cfg.hand_torque_sat_err_rad)).float().mean()
+         # ★채널별 폐쇄도 — 전체 평균만 보면 "어느 채널이 안 닫히는지"를 못 본다.
+         #   08.27: 평균 0.278 이 채널1(`_2`)만 폐쇄한 예측치 0.250 과 맞아떨어졌고,
+         #   GUI 관찰(`_2` 완전굴곡·`_3`/`_4` 정지)과 일치했다. ch2 가 낮은 이유가
+@@ -682,7 +997,14 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         self.extras["task/close_gate"] = self._close_gate.mean()
+         self.extras["task/cage_ctr_dist"] = self._cage_ctr_dist.mean()
+         self.extras["task/abnormal_rate"] = self._abnormal.float().mean()
+-        self.extras["contact/force_max"] = self._contact_forces().max()
++        # ★Phase 0(08.29): `force_max` 는 손가락별 **3마디 합산**의 최댓값이라 사용자
++        #   제약(팁 센서 단독 0~50 N)과 직접 비교가 안 된다. 또 평균(1~2 N)과 60배
++        #   어긋나 이 값이 파지력인지 접근 충돌 스파이크인지 알 수 없었다 — 래치로 가른다.
++        _cfm = self._contact_forces().max(dim=1).values             # (N,)
++        _z = torch.zeros_like(_cfm)
++        self.extras["contact/force_max"] = _cfm.max()
++        self.extras["contact/force_max_prelatch"] = torch.where(self._latched, _z, _cfm).max()
++        self.extras["contact/force_max_postlatch"] = torch.where(self._latched, _cfm, _z).max()
+         self.extras["fabric/palm_cmd_step_raw"] = self._palm_cmd_step_raw.mean()
+         _jerr = (self.fabric_q[:, : self.profile.num_arm_joints]
+                  - self.robot.data.joint_pos[:, self._arm_ids_t]).abs()
+@@ -755,10 +1077,32 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         _wp = float(self.cfg.enclosure_palm_weight)
+         _wa = float(self.cfg.enclosure_group_a_weight)
+         _wb = float(self.cfg.enclosure_group_b_weight)
+-        _bar = (_wp * _u([self.palm_idx]).squeeze(1)
++        _up = _u([self.palm_idx]).squeeze(1)                       # (N, 3)
++        _bar = (_wp * _up
+                 + _wa * _u(self._hull_a_t).mean(dim=1)
+                 + _wb * _u(self._hull_b_t).mean(dim=1)) / max(_wp + _wa + _wb, 1e-6)
+-        return (1.0 - _bar.norm(dim=-1)).clamp(0.0, 1.0)
++        _encl = (1.0 - _bar.norm(dim=-1)).clamp(0.0, 1.0)
++
++        # ---- 손가락별 최소참여 (08.29 신설, λ=0 이면 위와 항등) -----------------------
++        # ★위 식은 그룹 키포인트를 **평균**한다. 손가락 하나가 빠져도 그 손가락의
++        #   단위벡터가 나머지와 비슷한 방향이라 평균이 거의 안 떨어진다 — 즉
++        #   **손가락별 최소참여 신호가 없다**. 이것이 `couple_four_fingers` 를 넣게 만든
++        #   3지 국소최적의 원인 진단("mean/count 보상엔 손가락별 최소참여 신호 부재")과
++        #   같은 결함이고, 커플링을 풀기 전에 반드시 메워야 한다.
++        # 손가락 f 의 참여도 = 손바닥과 **반대편**에 있는 정도.
++        #   c_f = 1 − ‖(û_palm + û_f)/2‖  ∈ [0,1] (정반대면 1)
++        _lam = float(self.cfg.enclosure_participation_lambda)
++        if _lam <= 0.0:
++            return _encl
++        # ★`_u` 는 1D 인덱스 전용이다 — 여기 인덱스는 (F_b, L) 2D 라 물체 축을
++        #   한 번 더 펴야 한다((N,F_b,L,3) vs (N,1,3) 은 브로드캐스트가 깨진다).
++        _dp = _p[:, self._hull_part_t] - _o.unsqueeze(1)           # (N, F_b, L, 3)
++        _uf = (_dp / _dp.norm(dim=-1, keepdim=True).clamp(min=1e-6)).mean(dim=2)
++        _uf = _uf / _uf.norm(dim=-1, keepdim=True).clamp(min=1e-6)  # (N, F_b, 3)
++        _c = 1.0 - (0.5 * (_up.unsqueeze(1) + _uf)).norm(dim=-1)   # (N, F_b)
++        _weak = _c.min(dim=1).values.clamp(0.0, 1.0)
++        self.extras["task/enclosure_weakest"] = _weak.mean()
++        return ((1.0 - _lam) * _encl + _lam * _weak).clamp(0.0, 1.0)
+ 
+     def _contact_azimuth_spread(self, obj_pos: torch.Tensor,
+                                 thr: float) -> torch.Tensor:
+@@ -828,6 +1172,28 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         self.extras["task/envelope_surf_palm"] = self._surf_palm.mean()
+         self.extras["task/envelope_surf_a"] = self._surf_a.mean()
+         self.extras["task/envelope_surf_b"] = self._surf_b.mean()
++
++        # ---- Phase 0: 팁 단독 힘 분포 (08.29 신설) ------------------------------------
++        # ★실기 팁 센서 정격은 **0~50 N** 이고 그 위는 측정 자체가 안 된다. 그런데
++        #   하드웨어는 그것을 넘길 능력이 있다 — URDF effort 7.5 N·m / 원위 모멘트암
++        #   25.5 mm(`_4` 축→`_tip`) ⇒ 실기 최대 294 N, sim(effort_limit 1.5) 58.8 N.
++        #   즉 지금 팁 힘이 1~2 N 인 것은 보상 설계가 아니라 **정책이 아직 그 자세를
++        #   안 만들었기 때문**이고, 보상에는 힘 항이 하나도 없다(grep 0건).
++        #   밴드 임계를 추측으로 정하지 않기 위해 분포부터 잰다. 평균만으로는 못 본다.
++        _tf = tip_f.reshape(-1)
++        self.extras["contact/tip_f_p95"] = torch.quantile(_tf, 0.95)
++        self.extras["contact/tip_f_p99"] = torch.quantile(_tf, 0.99)
++        self.extras["contact/tip_f_max"] = _tf.max()
++        # 접촉 중인 팁만 — 미접촉 0 이 섞인 분위수는 접촉 세기를 과소평가한다.
++        _tc = _tf[_tf > thr]
++        self.extras["contact/tip_f_c_mean"] = (
++            _tc.mean() if _tc.numel() > 0 else _tf.new_zeros(()))
++        self.extras["contact/tip_f_c_p95"] = (
++            torch.quantile(_tc, 0.95) if _tc.numel() > 0 else _tf.new_zeros(()))
++        self.extras["contact/tip_over_band_frac"] = (
++            _tf > float(self.cfg.force_band_hi_n)).float().mean()
++        self.extras["contact/tip_over_sensor_frac"] = (
++            _tf > float(self.cfg.force_sensor_max_n)).float().mean()
+         # ★대향성 — 접촉점이 컵 둘레에 **퍼져** 있어야 force-closure 다. 한쪽에 몰리면
+         #   팁 개수가 많아도 컵을 밀어낼 뿐이다(08.25 grip 접촉 절벽의 방위각 수법).
+         self.extras["contact/azimuth_spread_deg"] = self._contact_azimuth_spread(
+@@ -855,6 +1221,22 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         self.extras["fabric/palm_cmd_z"] = self.palm_targets[:, 2].mean()
+         self.extras["fabric/palm_z_min"] = palm_pos[:, 2].min()
+ 
++        # ---- Phase 0: 액션 앵커 재설계용 palm 실측 (08.29 신설, 진단 전용) -------------
++        # ★앵커 오프셋을 추측하지 않기 위한 계측이다. 지금까지 z 지령 하나만 찍혀 있어
++        #   "파지할 때 palm 이 어디에 있고 이송할 때 어디로 가는지"를 답할 수 없었다.
++        #   래치로 두 구간을 갈라 각각의 palm 실위치를 잰다(래치는 보상 단계 표시이고
++        #   여기서도 **읽기만** 한다 — 액션·게이트·종료 경로에는 들어가지 않는다).
++        for _i, _ax in enumerate("xy"):
++            self.extras[f"fabric/palm_cmd_{_ax}"] = self.palm_targets[:, _i].mean()
++        _lat = self._latched.float()
++        _den_l = _lat.sum().clamp(min=1.0)
++        _den_n = (1.0 - _lat).sum().clamp(min=1.0)
++        for _i, _ax in enumerate("xyz"):
++            self.extras[f"fabric/palm_post_latch_{_ax}"] = \
++                (palm_pos[:, _i] * _lat).sum() / _den_l
++            self.extras[f"fabric/palm_pre_latch_{_ax}"] = \
++                (palm_pos[:, _i] * (1.0 - _lat)).sum() / _den_n
++
+     # ------------------------------------------------------------------
+     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+         obj_pos = self._env_local(self.object.data.root_pos_w)
+@@ -877,8 +1259,165 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         beyond = (q_arm < self._arm_lo - 0.05) | (q_arm > self._arm_hi + 0.05)
+         runaway = qd_arm.abs() > float(self.cfg.abnormal_qd)
+         self._abnormal = (beyond | runaway).any(dim=-1)
+-
+-        terminated = out_x | out_y | fell | tipped | self._abnormal
++        # ★08.29 신설 — `abnormal` 은 두 원인의 OR 라 합쳐 보면 처방이 갈리지 않는다.
++        #   `beyond`(관절 한계 밖) = 초기 자세·리셋 기입 문제.
++        #   `runaway`(속도 폭주)   = 스폰 겹침 → depenetration 반발
++        #   (`max_depenetration_velocity=1000` 이라 겹치면 엄청나게 튕긴다).
++        #   다물체에서 `episode_lengths` 가 260 → **1.2 스텝**으로 붕괴하고
++        #   `done/abnormal` 만 0.838 로 발화했다(fell·out_xy 는 0) — 무한 리셋이다.
++        self.extras["done/abnormal_beyond"] = beyond.any(dim=-1).float().mean()
++        self.extras["done/abnormal_runaway"] = runaway.any(dim=-1).float().mean()
++        self.extras["done/arm_qd_max"] = qd_arm.abs().max()
++        # 어느 관절인지 — 팔 관절별 위반율(처방이 관절마다 다르다).
++        for _i in range(beyond.shape[-1]):
++            self.extras[f"done/beyond_j{_i + 1}"] = beyond[:, _i].float().mean()
++        # ★★리셋이 실제로 먹었는가 — `replicate_physics=False` 에서 폭주하는 이유의
++        #   마지막 미검증 후보다. `_reset_idx` 가 `write_joint_state_to_sim` 으로 홈을
++        #   써도 물리가 이전 자세를 유지하면, fabric 은 홈 기준으로 명령하고 실제는
++        #   다른 자세라 거대한 토크가 걸린다. 방금 리셋된 env 만 골라 편차를 잰다.
++        _fresh = self.episode_length_buf <= 1
++        if bool(_fresh.any()):
++            _dev = (q_arm[_fresh]
++                    - self._default_q[_fresh][:, self._arm_ids_t]).abs()
++            self.extras["reset/arm_q_dev_mean"] = _dev.mean()
++            self.extras["reset/arm_q_dev_max"] = _dev.max()
++            self.extras["reset/arm_qd_max_fresh"] = qd_arm[_fresh].abs().max()
++            self.extras["reset/fresh_frac"] = _fresh.float().mean()
++        # ★★env 인덱스 정렬 검사 — 로봇 base 는 **자기 env 원점**에 있어야 한다
++        #   (`robot_cfg.init_state.pos = [0,0,0]`). `replicate_physics=False` 에서
++        #   ArticulationView 가 프림을 모으는 순서가 `env_ids` 와 어긋나면
++        #   리셋이 엉뚱한 env 에 쓰이고 원래 env 는 초기화되지 않는다 — 관절이 임의
++        #   값이 되고(실측 27.85 rad) 속도가 폭주한다(3,232 rad/s).
++        #   어긋나면 이 값이 env_spacing(2.0 m) 배수로 튄다.
++        _off = (self.robot.data.root_pos_w[:, :2]
++                - self.scene.env_origins[:, :2]).abs()
++        self.extras["diag/root_vs_origin_max"] = _off.max()
++        self.extras["diag/root_vs_origin_mean"] = _off.mean()
++
++        # ---- 낙하/전도 재소환 (08.30 신설, 기본 OFF) --------------------------------
++        # ★★종료가 유일한 실패 처리면 "시도 → 실패 → 미래 보상 전액 상실"이라
++        #   무접촉 정체(공짜 enclosure)가 국소최적이 된다(M0·O1 실측 7.2/step 일치).
++        #   자매 grip/left/grasp_sensor_v2 가 재소환 도입 직후 성공이 활발해진 실증.
++        # ★자매와 다른 점: 우리 앵커·목표가 **스폰 스냅샷**이라 새 자리 샘플링 대신
++        #   **이번 에피소드의 원래 스폰점으로 되돌린다** — 에피소드 중 액션 의미 불변.
++        # ★palm 여유 게이트 — 손 옆 텔레포트는 depenetration(1000) 폭발 위험.
++        #   여유 미달이면 **보류**(컵은 쓰러진 채, 다음 스텝 재시도 — 자매의 검증 규약.
++        #   정체 데드락은 없다: 그 자리 보상은 stage 0 뿐이라 gradient 가 밀어낸다).
++        if bool(getattr(self.cfg, "respawn_on_fail", False)):
++            _need = out_x | out_y | fell | tipped
++            if bool(_need.any()):
++                _ids = torch.nonzero(_need).squeeze(-1)
++                if str(getattr(self.cfg, "respawn_mode", "origin")) == "free":
++                    # ★★자매 v2 규약 — 스폰 상자 안에서 **손이 없는 자리**를 리젝션
++                    #   샘플링한다. "원래 스폰점 복귀"는 그 지점이 곧 손자리라 보류가
++                    #   0.93 까지 갔다(08.30 Q3 실측). 상자는 리셋 때와 같은 범위라
++                    #   물체만 새로 리셋하는 것과 의미가 같다.
++                    _p = self.profile
++                    _rng = float(getattr(self.cfg, "respawn_range", 0.0)) \
++                        or float(self._adr_spawn_range)
++                    _k = int(getattr(self.cfg, "respawn_tries", 24))
++                    _m = _ids.numel()
++                    _off2 = (torch.rand(_m, _k, 2, device=self.device) - 0.5) \
++                        * 2.0 * _rng
++                    _cand = torch.zeros(_m, _k, 3, device=self.device)
++                    _cand[:, :, 0] = _p.object_spawn_center[0] + _off2[:, :, 0]
++                    _cand[:, :, 1] = _p.object_spawn_center[1] + _off2[:, :, 1]
++                    _cand[:, :, 2] = (float(self.cfg.table_surface_z)
++                                      + self._obj_origin_off[_ids].unsqueeze(1))
++                    _hand = torch.cat([
++                        self.robot.data.body_pos_w[:, self.palm_idx].unsqueeze(1),
++                        self.robot.data.body_pos_w[:, self._tip_ids_t],
++                    ], dim=1)[_ids] - self.scene.env_origins[_ids].unsqueeze(1)
++                    # (m, k, hand) → 후보별 손 최소거리
++                    _dk = (_cand.unsqueeze(2) - _hand.unsqueeze(1)).norm(dim=-1) \
++                        .min(dim=2).values
++                    _ok = _dk >= float(self.cfg.respawn_clearance_m)
++                    _has = _ok.any(dim=1)
++                    _first = torch.argmax(_ok.int(), dim=1)
++                    _pick = _cand[torch.arange(_m, device=self.device), _first]
++                    # ★후보 전부 실패한 env 는 보류(자매 규약 — 폴백 텔레포트 금지).
++                    _clear = _has
++                    _tgt = _pick
++                    self.extras["done/respawn_cand_dist"] = _dk.max(dim=1).values.mean()
++                else:
++                    _tgt = self.object_spawn_pos[_ids]
++                # ★★여유는 **손 전체**로 재야 한다 — palm 원점만 재면 손끝(palm 에서
++                #   10~15cm)이 스폰점에 있어도 통과해 컵이 오므린 손가락 안으로
++                #   텔레포트된다. 08.30 실측: 여유 0.15(Q3) postlatch 216N 대비
++                #   여유 0.06(R0a/R0b) 479~531N — 여유를 줄일수록 관통이 늘었다.
++                    if bool(getattr(self.cfg, "respawn_clearance_uses_tips", False)):
++                        _pts = torch.cat([
++                            self.robot.data.body_pos_w[:, self.palm_idx].unsqueeze(1),
++                            self.robot.data.body_pos_w[:, self._tip_ids_t],
++                        ], dim=1)[_ids] - self.scene.env_origins[_ids].unsqueeze(1)
++                        _d_hand = (_pts - _tgt.unsqueeze(1)).norm(dim=-1) \
++                            .min(dim=1).values
++                    else:
++                        _d_hand = (self._env_local(
++                            self.robot.data.body_pos_w[:, self.palm_idx])[_ids]
++                            - _tgt).norm(dim=-1)
++                    _clear = _d_hand >= float(self.cfg.respawn_clearance_m)
++                _go = _ids[_clear]
++                _tgt_go = _tgt[_clear]
++                self.extras["done/respawn_rate"] = _need.float().mean()
++                self.extras["done/respawn_defer"] = (~_clear).float().mean()
++                # 연속 보류 카운트 — 예산 초과 env 는 아래에서 종료로 폴백한다.
++                if not hasattr(self, "_defer_count"):
++                    self._defer_count = torch.zeros(
++                        self.num_envs, dtype=torch.long, device=self.device)
++                _defer_ids = _ids[~_clear]
++                self._defer_count += 1
++                _keep = torch.zeros_like(self._defer_count, dtype=torch.bool)
++                _keep[_defer_ids] = True
++                self._defer_count = torch.where(
++                    _keep, self._defer_count, torch.zeros_like(self._defer_count))
++                self.extras["done/defer_streak_max"] = self._defer_count.max()
++                if _go.numel() > 0:
++                    _n = _go.numel()
++                    # ★free 모드는 새 자리로 가므로 **스폰 기준·목표를 같이 옮긴다** —
++                    #   안 옮기면 `cup_xy_disp` 가 즉시 큰 값이 되어 approach 가
++                    #   순벌점이 된다(08.30 Q3 −0.35 의 정체). 물체만 새로 리셋하는
++                    #   것과 의미가 같고, 실시간 추종이 아니라 **이산 사건**이라
++                    #   앵커 되먹임 계약(실시간 물체 추종 금지)에 걸리지 않는다.
++                    if str(getattr(self.cfg, "respawn_mode", "origin")) == "free":
++                        #   앵커는 `_palm_anchor()` 가 `object_spawn_pos` 를 그때그때
++                        #   읽으므로 이 대입만으로 같이 따라간다(재검증 불필요).
++                        self.object_spawn_pos[_go] = _tgt_go
++                        # 목표 오프셋은 **이 에피소드에 뽑힌 값**을 유지한다.
++                        self.goal_pos[_go] = _tgt_go + self._goal_off_env[_go]
++                    _pose = torch.zeros(_n, 7, device=self.device)
++                    _pose[:, :3] = (self.object_spawn_pos[_go]
++                                    + self.scene.env_origins[_go])
++                    _pose[:, 2] += float(self.cfg.object_spawn_pad)
++                    _pose[:, 3] = 1.0                       # 직립 (w,x,y,z)
++                    self.object.write_root_pose_to_sim(_pose, env_ids=_go)
++                    self.object.write_root_velocity_to_sim(
++                        torch.zeros(_n, 6, device=self.device), env_ids=_go)
++                    # 파지 단계 상태 되감기 — 컵이 시작점으로 돌아갔다.
++                    if not hasattr(self, "_respawn_pen_buf"):
++                        self._respawn_pen_buf = torch.zeros(
++                            self.num_envs, device=self.device)
++                    self._respawn_pen_buf[_go] = 1.0
++                    self._latched[_go] = False
++                    self._hold_count[_go] = 0
++                    self._wrap_at_latch[_go] = 0.0
++                    self._disp_at_latch[_go] = 0.0
++                    self._stay_run[_go] = 0
++            else:
++                self.extras["done/respawn_rate"] = torch.zeros(
++                    (), device=self.device)
++            # ★보류 예산 초과 = 재소환으로 구제 불가 → 옛 규약(종료)으로 폴백.
++            _budget = int(getattr(self.cfg, "respawn_defer_budget", 0))
++            if _budget > 0 and hasattr(self, "_defer_count"):
++                _stuck = self._defer_count >= _budget
++                self.extras["done/respawn_stuck"] = _stuck.float().mean()
++                terminated = self._abnormal | _stuck
++                self._defer_count = torch.where(
++                    _stuck, torch.zeros_like(self._defer_count), self._defer_count)
++            else:
++                terminated = self._abnormal.clone()
++        else:
++            terminated = out_x | out_y | fell | tipped | self._abnormal
+         truncated = self.episode_length_buf >= self.max_episode_length - 1
+         # ★종료 원인별 비율. 없으면 "무엇이 에피소드를 끝냈는가"를 다른 지표로
+         #   역산해야 한다(08.27 자살 경로 진단에서 실제로 그랬다).
+@@ -922,6 +1461,66 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+         self.prev_actions[env_ids] = 0.0
+         self._latched[env_ids] = False
+         self._hold_count[env_ids] = 0
++        # ---- ADR 승급 판정 — 종료 에피소드의 success 집계(전역 level·단조 상승) -----
++        #   ★`_success_now` 를 0 으로 되돌리기 **전에** 읽어야 한다.
++        if bool(self.cfg.enable_adr):
++            self._adr_succ += int(self._success_now[env_ids].sum())
++            self._adr_epis += n
++            if self._adr_epis >= int(self.cfg.adr_eval_episodes):
++                _rate = self._adr_succ / max(self._adr_epis, 1)
++                if (_rate >= float(self.cfg.adr_success_threshold)
++                        and self._adr_level < 1.0):
++                    self._adr_level = min(
++                        1.0, self._adr_level + float(self.cfg.adr_step))
++                    self._adr_apply()
++                    print(f"[grasp_s2r][ADR] 승급 level={self._adr_level:.2f} "
++                          f"(창 성공률 {_rate:.3f} · spawn_range "
++                          f"{self._adr_spawn_range:.3f} · goal_y "
++                          f"{float(self._adr_goal_offset[1]):.3f} · obs_noise "
++                          f"{self._adr_obs_noise_object:.4f})", flush=True)
++                self._adr_succ = 0
++                self._adr_epis = 0
++        self.extras["adr/level"] = self._adr_level
++        self.extras["adr/spawn_range"] = self._adr_spawn_range
++        self.extras["adr/goal_y"] = float(self._adr_goal_offset[1])
++        self.extras["adr/finger_residual"] = float(self._adr_residual)
++        self.extras["adr/goal_x_span"] = float(self._adr_goal_span[0])
++        self.extras["adr/goal_z_max"] = float(self._adr_goal_span[2])
++        # 실제로 뽑힌 목표 분포 — 샘플링이 살아있는지 여기서 본다(폭 0 이면 OFF).
++        self.extras["adr/goal_y_sampled_mean"] = self._goal_off_env[:, 1].abs().mean()
++        self.extras["adr/goal_dist_mean"] = self._goal_off_env.norm(dim=1).mean()
++        self.extras["adr/obs_noise_object"] = self._adr_obs_noise_object
++
++        # ---- 종별 success/latched EMA — 집계가 가리는 종별 실패를 드러낸다 ----------
++        #   ★무동기 집계(index_add) — per-step 리셋 경로라 .any()/.item() 루프 금지
++        #   (Isaac reset 동기화 = util killer 이력). `_latched` 는 1262 에서 지워지므로
++        #   여기(그 전)서 읽어야 종료 에피소드의 값이다.
++        if self._n_species > 1:
++            _sp = self._species_ids[env_ids]
++            _one = torch.ones(n, device=self.device)
++            _cnt = torch.zeros(
++                self._n_species, device=self.device).index_add_(0, _sp, _one)
++            _s_sum = torch.zeros(
++                self._n_species, device=self.device).index_add_(
++                0, _sp, self._success_now[env_ids].float())
++            _l_sum = torch.zeros(
++                self._n_species, device=self.device).index_add_(
++                0, _sp, self._latched[env_ids].float())
++            _has = _cnt > 0
++            _a = 0.05
++            self._species_succ_ema = torch.where(
++                _has, (1 - _a) * self._species_succ_ema
++                + _a * (_s_sum / _cnt.clamp(min=1.0)), self._species_succ_ema)
++            self._species_latch_ema = torch.where(
++                _has, (1 - _a) * self._species_latch_ema
++                + _a * (_l_sum / _cnt.clamp(min=1.0)), self._species_latch_ema)
++            for _k, _nm in enumerate(self._species_names):
++                self.extras[f"species/success_{_nm}"] = self._species_succ_ema[_k]
++                self.extras[f"species/latched_{_nm}"] = self._species_latch_ema[_k]
++            self.extras["species/success_min"] = self._species_succ_ema.min()
++            self.extras["species/success_spread"] = (
++                self._species_succ_ema.max() - self._species_succ_ema.min())
++
+         self._wrap_at_latch[env_ids] = 0.0
+         self._disp_at_latch[env_ids] = 0.0
+         self._stay_run[env_ids] = 0
+@@ -930,18 +1529,33 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
+ 
+         # ---- 물체 스폰 -------------------------------------------------------------------
+         p = self.profile
+-        rng = float(self.cfg.spawn_range)
++        rng = float(self._adr_spawn_range)
+         offs = (torch.rand(n, 2, device=self.device) - 0.5) * 2.0 * rng
+         spawn = torch.zeros(n, 3, device=self.device)
+         spawn[:, 0] = p.object_spawn_center[0] + offs[:, 0]
+         spawn[:, 1] = p.object_spawn_center[1] + offs[:, 1]
+-        spawn[:, 2] = float(self.cfg.object_spawn_z)
++        # ★다물체면 원점 오프셋이 물체마다 다르다 — env 별 값을 쓴다. 스칼라를 쓰면
++        #   작은 컵은 공중에서 떨어지고 큰 컵은 테이블을 뚫은 채 스폰된다.
++        _off = self._obj_origin_off[env_ids]
++        spawn[:, 2] = float(self.cfg.table_surface_z) + _off + float(self.cfg.object_spawn_pad)
+         # ★기준선은 스폰점이 아니라 **정착고**다(스폰 패드가 리프트 기준에 실리면 안 된다).
+         settled = spawn.clone()
+-        settled[:, 2] = float(self.cfg.table_surface_z) + float(self.cfg.object_origin_offset_z)
++        settled[:, 2] = float(self.cfg.table_surface_z) + _off
+         self.object_spawn_pos[env_ids] = settled
+-        self.goal_pos[env_ids] = settled + torch.tensor(
+-            self.cfg.goal_offset_xyz, device=self.device)
++        # ---- 목표 오프셋 — 샘플링 ON 이면 env 별로 [base, 현재레벨] 안에서 뽑는다 ----
++        #   ★단조 상승만 하면 짧은 이송을 잊는다(성공률 지도 실측 y 0.05 에서 0.000).
++        _bx, _by, _bz, _sgn = self._adr_goal_base
++        _xs, _ys, _zs = self._adr_goal_span
++        if bool(getattr(self.cfg, "adr_goal_sample", False)):
++            _u = torch.rand(n, 3, device=self.device)
++            _goff = torch.empty(n, 3, device=self.device)
++            _goff[:, 0] = _bx + (_u[:, 0] * 2.0 - 1.0) * _xs
++            _goff[:, 1] = _sgn * (abs(_by) + _u[:, 1] * (abs(_ys) - abs(_by)))
++            _goff[:, 2] = _bz + _u[:, 2] * (_zs - _bz)
++        else:
++            _goff = self._adr_goal_offset.unsqueeze(0).expand(n, 3)
++        self._goal_off_env[env_ids] = _goff
++        self.goal_pos[env_ids] = settled + _goff
+ 
+         root = torch.zeros(n, 13, device=self.device)
+         root[:, :3] = spawn + self.scene.env_origins[env_ids]
+diff --git a/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_env_cfg.py b/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_env_cfg.py
+index 4e9453b..4b7f3a0 100644
+--- a/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_env_cfg.py
++++ b/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_env_cfg.py
+@@ -205,6 +205,19 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     # ★y 만 범위가 큰 이유: 홈 y −0.38 → 컵 y −0.20 을 액션으로 덮어야 한다.
+     palm_delta_xyz: tuple[float, float, float] = (0.15, 0.35, 0.15)
+     palm_delta_rot_deg: float = 20.0
++    # ---- 액션 앵커 (`a=0` 이 뜻하는 palm 자세) --------------------------------------
++    # ★08.29 Phase 0 실측: 홈(0.280, -0.380, 0.418)은 과제에서 멀다 — 컵 파지고보다
++    #   z **+14 cm**, 이송 목표보다 y **-27 cm**. 그래서 `a=0` 이 "컵에서 도망"을 뜻하고
++    #   LSTM 출력이 조금만 풀리면 palm 이 홈으로 튕긴다. 실측 `palm_post_latch_y`
++    #   -0.399 로 **홈(-0.380)보다 더 뒤**, 목표(-0.110)와는 0.29 m 반대. 정책은
++    #   `action_norm_arm` 2.29~2.40(이론최대 √6=2.449의 93~98%)으로 상시 저항 중이었다.
++    # "spawn" = `object_spawn_pos`(리셋 시 정착 스냅샷) + 아래 오프셋.
++    #   ★에피소드 내 상수라 되먹임이 없다 — 실시간 물체 위치를 쓰면 컵이 밀릴 때
++    #     액션 원점이 같이 움직인다. 스폰 범위가 넓어지거나 다종 컵으로 가도 따라간다.
++    palm_anchor_mode: str = "home"           # "home"(현행) | "spawn"
++    # 유도: 파지 palm(0.296,-0.207,0.322) ↔ 목표 palm(0.296,-0.157,0.402) 의 중점
++    #       (0.296,-0.182,0.362) 에서 스폰(0.362,-0.16,0.2773)을 뺀 값.
++    palm_anchor_offset_xyz: tuple[float, float, float] = (-0.066, -0.022, 0.085)
+     # ★★지령 변화율 상한 — `gripper/left/grasp_sensor`(t59 fabric 배선) 값과 동일하게 맞췄다
+     #   (08.27 사용자 지시 "fabric·액션 세팅을 좌팔과 동일하게").
+     #     좌팔 `PALM_CMD_RATE_LIMIT` 0.02 m/step = **1.0 m/s** (IK 액션 스케일 위치 성분과 동일)
+@@ -218,6 +231,15 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     # ---- 손: 관절공간 시너지 ---------------------------------------------------------
+     # 액션은 **절대 폐쇄도 목표**[0,1] 이고 아래는 그 목표를 향한 **변화율 상한**이다
+     # (속도 명령이 아니다 — 속도로 두면 탐색 노이즈 평균만으로 완전 폐쇄되고 못 되돌린다).
++    # ---- 손 레이아웃 (08.29 O 라운드) ------------------------------------------------
++    # "coupled3"(기본·현행): 손가락×3채널 + couple_four_fingers 평균.
++    # "per_finger": 프로필 `hand_finger_channels` 의 손가락별 슬롯(엄지 2·검/중/약 각 1·
++    #   소지 1 = 6). 미지정 관절은 고정. ★액션 차원이 바뀌므로 warmstart 전면 무효(FRESH).
++    hand_layout: str = "coupled3"
++    # 동결 범위: "joint"(기본·현행) = 자기 링크 닿은 관절만. "finger" = 그 손가락의
++    #   (중간∨원위) 접촉 시 **그 손가락 굴곡관절 전부** 정지 — 08.29 영상 진단:
++    #   관절별 동결은 언 손끝을 매단 채 근위가 계속 감겨 큰 컵을 밀어냈다.
++    synergy_freeze_scope: str = "joint"
+     synergy_close_speed: float = 0.005
+     # ★★감쌈을 만드는 메커니즘. 원위·팁이 닿은 손가락의 `_3`/`_4` 만 정지시켜 컵 형상에
+     #   드리워지게 한다. 끄면 핀치가 된다(grasp_v1 실증: full_envelope 0.176 → 0.035).
+@@ -225,6 +247,17 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     # 엄지 독립 · 4지는 채널별 평균으로 묶는다 → "특정 손가락만 안 닫힘"이 액션 공간에서
+     # 표현 불가(3지 국소최적 차단).
+     couple_four_fingers: bool = True
++    # ★★공통+잔차 손 (08.30 W 라운드 진단 처방). 커플링은 4지 지령을 **평균으로 대체**
++    #   하는데, 그 사이를 잇는 연속 손잡이가 없어 "닫히지만 둔한 손(coupled)" ↔ "손가락은
++    #   독립인데 안 닫히는 손(15ch)" 두 극단뿐이었다. W 실측: `syn_close` coupled 0.320
++    #   vs 15ch 0.106/0.022/0.042 — σ=1.0 잡음이 15채널에 독립으로 걸리면 4지가 동시에
++    #   오므리는 결맞음이 급감한다(커플링은 평균으로 분산을 1/4 로 줄인다).
++    #   지령 = 공통 + scale·(개별 − 공통). 0 = 현행 coupled 항등 · 1 = 15ch 와 동일.
++    #   ★액션 차원 불변(21)이라 커리큘럼 도중 warm 이 깨지지 않는다.
++    finger_residual_scale: float = 0.0
++    # ADR 다섯째 축 — 레벨에 따라 잔차를 연다("쥐는 법 먼저, dexterity 나중").
++    # base(=finger_residual_scale) 이하면 축이 꺼진 것으로 본다.
++    adr_finger_residual_max: float = 0.0
+ 
+     # ---- 닫기 게이트: 위치가 맞기 전에는 오므리지 않는다 -----------------------------
+     # ★★08.27 사용자 GUI 관찰: "순간적으로 가깝기만 해도 바로 잡기를 시작한다. 안 가까운데
+@@ -280,6 +313,20 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     # ★08.27: `wrap_frac`(중간 AND 원위)이 4,553 기록점 내내 정확히 0.000 인데 영상에서는
+     #   감쌈이 성립한다. "안 닿았다"와 "닿았는데 못 읽는다"를 가르기 위한 계측이다.
+     diag_contact_threshold_lo: float = 0.1   # N — 스치는 접촉까지 잡는 낮은 임계
++    # ★08.29 사용자 제약: 실기 팁 센서 정격 **0~50 N**, 그 위는 측정 불가.
++    #   하드웨어는 넘길 수 있다 — URDF effort 7.5 N·m / 원위 모멘트암 25.5 mm
++    #   ⇒ 실기 최대 294 N, sim(effort_limit_sim 1.5) 58.8 N. 아래 둘은 **초과율
++    #   로깅에만** 쓰인다(보상 경로 없음). 힘 밴드 도입 시 임계의 출발점이 된다.
++    force_sensor_max_n: float = 50.0         # N — 팁 센서 정격 상한
++    force_band_hi_n: float = 30.0            # N — 밴드 감쇠 시작(그 아래는 정확히 무손실)
++    # ★밴드 바닥. **1.0 = 감쇠 없음(현행 동작)**. 켤 때도 0 으로 두면 안 된다 —
++    #   08.25 `grip-contact-cliff` 에서 "닿으면 보상이 꺼지니 접촉을 회피"가 실측됐다.
++    #   세게 쥐는 것이 손해이되 **놓는 것보다는 낫게** 남기는 값이 0.3 이다.
++    force_band_floor: float = 1.0
++    # 손 PD 토크 포화 판정: err ≥ effort_limit_sim / stiffness = 1.5 / 5.0.
++    # ★`blocked_err_thr_rad` 와 값은 같지만 용도가 다르다 — 그쪽은 동결 게이트,
++    #   이쪽은 "가동 관절이 천장에 붙어 있는 비율" 진단이다. 따로 둔다.
++    hand_torque_sat_err_rad: float = 0.30
+     # 손 PD 가 버틸 수 있는 최대 정적 오차 = effort_limit_sim / stiffness = 1.5 / 5.0.
+     # 이보다 크면 토크가 천장에 붙어 있다는 뜻이라 "막혔다"로 센다.
+     blocked_err_thr_rad: float = 0.30
+@@ -315,6 +362,57 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     #   처음부터 끝까지 정책이 fabric 을 통해 제어한다.
+     lift_start_min_grip_fingers: int = 3
+     grasp_ready_hold_steps: int = 8
++    # ---- 낙하/전도 재소환 (08.30, 기본 OFF = 현행 종료) ------------------------------
++    # ★종료 대신 이번 에피소드의 **원래 스폰점**으로 컵을 되돌린다(앵커·목표 불변).
++    #   palm 여유 미달이면 보류(자매 v2 검증 규약 — 폴백 텔레포트 금지).
++    respawn_on_fail: bool = False
++    respawn_clearance_m: float = 0.15
++    # ★재소환 1회당 벌점(양수 = 비용). Q3 실측: 벌점 0 이면 접촉력 300N+ 의 거친
++    #   탐색이 공짜가 된다 — 종료(−수백 상당)보다 훨씬 작되 0 이 아니게.
++    respawn_penalty: float = 0.0
++    # ★★보류 예산 (08.30 Q3 실측 처방). 여유 미달로 보류만 하면 넘어진 컵이 팔 옆에
++    #   방치돼 `cup_disp`·`tilt` 벌점이 계속 나오고 approach 가 **순벌점**(−0.35)이 된다
++    #   — 에피소드가 안 끝나니 그 상태로 600 스텝을 버틴다(Q3: defer 0.93·palm 접촉 1.4%
++    #   vs 정상 81.7%). 연속 보류가 이 예산을 넘으면 **종료로 폴백**한다(0 = 무제한).
++    respawn_defer_budget: int = 0
++    # ★여유를 palm 원점이 아니라 **손 전체(palm+손끝) 최소거리**로 잰다. False(현행)면
++    #   손끝이 스폰점에 있어도 통과해 컵이 손가락 안으로 텔레포트된다(08.30 힘 실측).
++    respawn_clearance_uses_tips: bool = False
++    # ★재소환 위치 — "origin"(기본) = 원래 스폰점 복귀(그 자리가 곧 손자리라 보류 0.93).
++    #   "free" = 자매 v2 규약: 스폰 상자 안에서 **손이 없는 자리**를 리젝션 샘플링하고
++    #   스폰 기준·목표를 그 자리로 옮긴다(물체만 새로 리셋하는 것과 동등).
++    respawn_mode: str = "origin"
++    respawn_tries: int = 24
++    # ★free 모드 샘플링 반범위 [m]. 0 = 스폰 범위와 동일(기본).
++    #   ★★스폰 범위(ADR level 0 에서 0.02 → 4×4cm)는 **손보다 작아** 어떤 후보도
++    #   여유를 못 채운다 — 08.30 R2a 실측 defer 0.62 · 최선후보 거리 0.056.
++    #   자매 v2 도 같은 한계를 주석에 남겼다. 재소환 상자는 스폰 상자와 분리한다.
++    respawn_range: float = 0.0
++    # ★무접촉 정체 보상 처방 (08.30 W4). enclosure(10)는 접촉 없이도 스텝당 ~7.2 를
++    #   내는 공짜 보상이라 FRESH 에서 "가만히 있기"가 국소최적이 된다(M0·O1 총보상
++    #   실측 일치). floor<1 이면 enclosure_term 에 (floor + (1−floor)·graded_contact)
++    #   를 곱해 무접촉 상한을 10·floor 로 낮춘다. ★H 라운드가 기각한 **완전 곱셈**
++    #   (=floor 0, 접근 구간에서 항이 죽음)과 다르다 — 접근 gradient 의 floor 비율을
++    #   보존한다. 기본 1.0 = 현행 항등.
++    enclosure_contact_floor: float = 1.0
++    # ★★`finger_closure` 의 목표 마디. "tip"(기본·현행) | "wrap".
++    #   08.31 8종 실측이 이 노브를 만들게 했다 — 팁 접촉은 0.65~0.85 로 이미 채워졌는데
++    #   wrap(중간∧원위)은 **전 종 0.000** 이다. `graded_contact = 0.4·팁 + 0.6·wrap`
++    #   에서 정책이 싼 0.4 만 먹고 멈춘 것이고, 팁 기준 소등 항은 바로 그 지점에서
++    #   꺼져 경사를 못 준다. "wrap" 은 소등 조건을 중간∧원위로, 거리를 중간마디로
++    #   옮겨 **손끝을 댄 뒤부터 감아 안기까지** 경사를 잇는다.
++    finger_closure_target: str = "tip"
++    # ★★접촉 품질의 정의. "tipwrap"(기본·현행) | "anylink".
++    #   "anylink" = 손가락 **어느 마디든**(tip|mid|dist) 닿았는가 + 손바닥 한 표,
++    #   분모 5+1. 08.31 사용자 확정: "어떤 부분이든 5손가락(또는 손바닥까지) 닿고
++    #   안정적으로 유지만 하면 된다". 구 정의는 wrap(중간∧원위 동시)이 8종 전수
++    #   0.000 이라 정책이 팁 0.4 만 먹고 2~3개 접촉에서 멈췄고, 그 상태로는 컵을
++    #   기울이는 과제에서 놓친다.
++    contact_quality_mode: str = "tipwrap"
++    # ★래치 판정 방식 (08.29). "count"(기본·현행) = 접촉 손가락 수 ≥ min.
++    #   "opposition" = (그룹A) AND (그룹B OR palm) — 실측 성공 파지(엄지+palm)에서
++    #   count 가 래치를 영원히 못 여는 문제의 처방. O1/O2/N1 적용, M1 은 대조 보존.
++    latch_mode: str = "count"
+ 
+     # ---- 목표(goal) — 수평 이동 포함 -------------------------------------------------
+     # goal = 물체 **정착 위치** + offset. 스폰점 기준이면 패딩이 이중으로 실린다.
+@@ -362,6 +460,18 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     enclosure_palm_weight: float = 0.3
+     enclosure_group_a_weight: float = 0.3
+     enclosure_group_b_weight: float = 0.4
++    # ★08.29 I1 실측 비중: enclosure 67.7%(상한의 77% 실현) vs transfer 2.6%(1.9%).
++    #   가중치는 상한일 뿐이고 실제 비중은 **실현율**이 정한다 — 조밀 항(매 스텝 기하)은
++    #   즉시 포화하고 희소·조건부 항은 0~11%만 실현한다. 그래서 가중 30짜리 lift 가
++    #   가중 10짜리 enclosure 의 절반도 못 낸다. 게다가 래치 후에도 포위도는 팔 위치와
++    #   무관하게 계속 지급되어 **리프트 이후 보상 지형이 palm 위치에 평평해진다**.
++    #   래치 **전은 불변**(감쌈을 만든 힘 보존), 래치 **후만** 이 비율로 줄인다.
++    enclosure_post_latch_scale: float = 1.0
++    # ★손가락별 최소참여 혼합비. **0.0 = 그룹 평균만(현행 동작)**.
++    #   위 식은 그룹 키포인트를 평균하므로 손가락 하나가 빠져도 값이 거의 안 떨어진다 —
++    #   `couple_four_fingers` 를 넣게 만든 3지 국소최적의 원인 진단("mean/count 보상엔
++    #   손가락별 최소참여 신호 부재")과 같은 결함이다. **커플링을 풀기 전 선행조건**이다.
++    enclosure_participation_lambda: float = 0.0
+ 
+     # ---- 손등 접촉 배제 (Hu et al. `p_collision` 대응 — 기본 꺼짐) --------------------
+     # 켜면 손바닥면이 물체를 향하는 접촉만 인정한다. ★`palmar_axis_local` 이 프로필에
+@@ -400,6 +510,11 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     stability_weight: float = 1.0
+     success_weight: float = 20.0
+     post_lift_contact_loss_weight: float = -8.0
++    # ★"멈춤"을 정의하는 항. **0.0 = 꺼짐(현행 동작)**. 08.29 J1 실측:
++    #   `hand_joint_err_movable_mean` 0.16 rad · `hand_torque_sat_frac` 0.21 —
++    #   가동 관절의 20%가 토크 천장에 붙어 있고 보상에는 힘 항이 하나도 없었다.
++    #   sim 이 안전한 이유가 `effort_limit_sim`(1.5) 뿐이고 실기는 7.5 N·m 로 5배다.
++    hand_overdrive_weight: float = 0.0
+     wrap_retention_weight: float = -6.0
+     action_smooth_weight: float = -0.02
+     cup_disp_tolerance: float = 0.025        # 접근 중 허용 밀림
+@@ -423,6 +538,12 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     obs_noise_body: float = 0.005
+     obs_noise_object: float = 0.015
+ 
++    # ---- finger_closure (08.29 신설·기본 0 = 항등) -----------------------------------
++    # 접촉 전 손가락별 연속 신호 — (1−접촉)·exp(−k·‖tip−파지중심‖) 평균 × close_gate.
++    # ★가중 상한 1.0 — 소등 항 크기 < 접촉 사다리 이득 부등식(절벽 회피 재발 방지).
++    finger_closure_weight: float = 0.0
++    finger_closure_sharpness: float = 8.0
++
+     # ---- 씬 기하 ---------------------------------------------------------------------
+     table_surface_z: float = 0.200           # env.usd top_plate 상면(점군 실측)
+     object_origin_offset_z: float = 0.0773   # cup_big USD 원점 ↔ 바닥
+@@ -433,6 +554,28 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     # ---- 커리큘럼 --------------------------------------------------------------------
+     # ★ADR 은 끄고 시작한다. 과제 성립 후 스폰 범위부터 켠다.
+     enable_adr: bool = False
++    # ★★전역 난이도 스칼라(level 0→1) 하나가 세 축을 선형 스케일한다.
++    #   env 별 난이도 금지 — 성공 게이팅을 env 별로 걸면 나쁜 시드가 영구 고착된다
++    #   (08.27 h7 데드락 실측). 승급은 단조(하강 없음), 판정 창은 종료 에피소드 수.
++    adr_success_threshold: float = 0.7       # 창 성공률이 이 값 이상이면 승급
++    adr_eval_episodes: int = 4096            # 판정 창 크기 (종료 에피소드 수)
++    adr_step: float = 0.1                    # 승급 당 level 증가
++    #   ★최대치는 부팅 검증(`_assert_goal_reachable`)이 **비확장 프로필 박스**로
++    #   잰다 — 도달영역(y 폭 실측 ~0.32m)이 물리 한계라 스폰+이송 합이 그 안이어야 한다.
++    adr_spawn_range_max: float = 0.05        # 축① level=1 의 스폰 xy 반범위
++    adr_goal_y_max: float = 0.12             # 축③ level=1 의 이송 y 오프셋(부호는 base 따름)
++    # ---- 목표 3축 샘플링 (08.30 — 단조 상승의 망각·단일 방향 한계 처방) -------------
++    # ★★실측 근거: m1_final 성공률 지도(1024 ep/칸)에서 이송 y **0.12 → 0.94~0.98**,
++    #   0.085 → 0.84~0.86, **0.05 → 0.000**. 난이도를 단조로 올리기만 하면 정책이
++    #   시작 구간을 잊고 "한 방향으로 14cm" 하나만 배운다(스폰 범위는 ±2→±5cm 로
++    #   넓혀도 −4.4%p 뿐이라 무해했다). → 매 에피소드 **[base, 현재레벨] 안에서 뽑는다**.
++    #   x 는 ±범위(방향 다양성), z 는 [base, max] 구간.
++    adr_goal_sample: bool = False            # False = 현행(레벨 값 고정)
++    adr_goal_x_max: float = 0.0              # level=1 의 x 반범위(0 = 축 끔)
++    adr_goal_z_max: float = 0.08             # level=1 의 z 상한(= base 면 축 끔)
++    # ★base(obs_noise_object=0.015)보다 커야 한다 — 작으면 보간이 거꾸로 가서
++    #   승급할수록 노이즈가 **줄어든다**(V1 스모크 실측 0.0145→0.0125 로 잡음).
++    adr_obs_noise_object_max: float = 0.03   # 축① level=1 의 물체 pose obs 노이즈
+ 
+     # ---- 디버그 시각화 (GUI/카메라 렌더일 때만 — headless 학습에 비용 0) --------------
+     enable_cmd_markers: bool = True
+@@ -479,29 +622,149 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
+     object_contact_filter: tuple = ("/World/envs/env_.*/Object/baseLink",)
+ 
+     events: GraspS2REventCfg = GraspS2REventCfg()
++    # ★08.29 진단용. **기본 True = 현행 동작**. `replicate_physics=False` 에서
++    #   `randomize_rigid_body_material` 이 shape 개수를 잘못 세는 것이 확인됐다
++    #   (grasp_v2 는 같은 항에서 `Expected 1163, got 1162` 로 부팅 실패).
++    #   재질이 엉뚱한 shape 에 들어가면 마찰·접촉이 무너진다 — 다물체 폭주의
++    #   남은 후보라 끌 수 있게 연다.
++    enable_events: bool = True
+     surface_friction: float = _FRICTION
+ 
++    # ---- 다물체 (08.29 신설) ----------------------------------------------------------
++    # ★기본 `single_cup` = 현행 동작(단일 USD · replicate_physics=True).
++    #   `cup_family` 로 바꾸면 8종이 `env_id % 8` 로 결정론 배정된다.
++    #   물체 **정체성은 obs 에 들어가지 않는다** — onehot 도 뱅크 인덱스도 넣지 않는다.
++    #   policy obs 는 상대 위치(`palm_to_obj`·`obj_to_tips`·`goal_rel`)뿐이라 다물체로
++    #   가도 차원·의미가 불변이다. 원점 오프셋은 **스폰·보상 경로에만** 쓴다(특권 정보).
++    object_bank: str = "single_cup"
++
+     robot_cfg: ArticulationCfg = None  # __post_init__ 에서 프로필로 조립
+ 
+-    def __post_init__(self):
++    def finalize_after_overrides(self) -> None:
++        """cfg 필드에서 **파생되는 구조**를 다시 만든다. 멱등이어야 한다.
++
++        ★★hydra 는 `__post_init__` **뒤에** `env_cfg.from_dict(...)` 로 오버라이드를
++          적용하고 `__post_init__` 를 다시 부르지 않는다(IsaacLab `hydra_task_config`).
++          그래서 `env.object_bank=cup_family` 같은 오버라이드는 파생 구조에 반영되지
++          않는다 — 08.29 스모크에서 `replicate_physics` 가 True 로 남아 실측됐다.
++          env `__init__` 이 `super()` **전에** 이 메서드를 다시 부른다.
++          `replicate_physics` 는 `InteractiveScene.__init__` 이 소비하므로
++          `_setup_scene` 에서 고치면 이미 늦다.
++        """
+         profile = PROFILES[self.profile_name]
++        # ★robot_cfg 도 파생 구조다 — `enable_self_collisions` 를 `__post_init__` 에서만
++        #   소비하면 CLI 오버라이드가 조용한 no-op 이 된다. 08.29 확정: 다물체
++        #   (`replicate_physics=False` per-env 파싱)에서 손 hull 초기 겹침 ×
++        #   자기충돌 ON 이 폭주의 근본 원인(sick 0/256 완치 실측) → 다물체 학습은
++        #   `env.enable_self_collisions=False` 로 기동해야 하고, 그게 실리려면
++        #   재구축이 여기 있어야 한다.
+         self.robot_cfg = _build_robot_cfg(
+             profile, bool(self.enable_self_collisions))
++        if not bool(self.enable_events):
++            self.events = None
++        self._apply_object_bank()
+         # 스폰 높이는 여기 한 곳에서만 파생한다(이중 패딩 사고 차단).
++        # ★다물체면 이 값은 **뱅크 최댓값**이다 — env 별 실제 높이는 런타임에서 준다
++        #   (`_obj_origin_off`). 여기서 작은 값을 쓰면 큰 컵이 테이블을 뚫고 스폰된다.
+         self.object_spawn_z = (
+             self.table_surface_z + self.object_origin_offset_z + self.object_spawn_pad)
+         self.object_cfg.init_state.pos = [
+             profile.object_spawn_center[0], profile.object_spawn_center[1],
+             self.object_spawn_z,
+         ]
++        self._derive_spaces(profile)
++
++    def _apply_object_bank(self) -> None:
++        """뱅크 크기에 따라 스폰·물리복제·접촉필터를 한 곳에서 조립한다.
++
++        ★함정 3개를 여기서 막는다(전부 재발 이력):
++          ①뱅크>1 인데 `replicate_physics=True` 면 전 env 가 같은 물체를 받는다.
++          ②접촉 필터가 루트 Xform 을 가리키면 `force_matrix_w` 가 **항상 0** 이다 —
++            뱅크의 `rigid_body_name`(전 스펙 동일해야 함)에서 만든다.
++          ③`base_origin_offset_z` 미측정 스펙이 섞이면 안착 높이를 못 구한다 →
++            `origin_offset_z` 프로퍼티가 fail-loud 한다.
++        """
++        from openarm.agnostic.modules import object_bank as _ob
++
++        # ★멱등성 — 이 메서드는 `__post_init__` 과 env `__init__` 에서 **두 번** 불린다.
++        #   원본 단일 스폰을 보존해 두지 않으면 두 번째 호출이 MultiAsset 을 또 감싸고
++        #   `replace(...)` 가 usd_path 없는 cfg 에서 터진다.
++        if getattr(self, "_object_spawn_base", None) is None:
++            self._object_spawn_base = self.object_cfg.spawn
++            self._table_usd_base = self.table_cfg.spawn.usd_path
++        bank = _ob.get(self.object_bank)
++        _missing = bank.missing_files()
++        if _missing:
++            raise RuntimeError(
++                f"물체 뱅크 '{bank.name}' 의 USD 누락: {list(_missing)}")
++        _offs = [s.origin_offset_z for s in bank.specs]      # 미측정이면 여기서 fail-loud
++        self.object_origin_offset_z = max(_offs)
++        self.object_contact_filter = (
++            f"/World/envs/env_.*/Object/{bank.rigid_body_name}",)
++        if not bank.needs_multi_asset:
++            # ★`replicate_physics` 를 여기서 True 로 되돌리지 않는다 — 명시 오버라이드
++            #   (`env.scene.replicate_physics=False`)를 덮어쓰면 분리 실험을 못 한다.
++            #   기본값은 cfg 선언(True)이 이미 준다.
++            self.object_cfg.spawn = self._object_spawn_base
++            self.table_cfg.spawn.usd_path = self._table_usd_base
++            return
++
++        from dataclasses import replace
++
++        from isaaclab.sim.spawners.wrappers import wrappers_cfg as _wrap
++
++        self.scene.replicate_physics = False
++        # ★★다물체는 `replicate_physics=False` 가 필수이고, 그때는 `clone_environments`
++        #   의 `enable_env_ids` env 간 충돌 격리가 사라진다. 작업면이 원시 정적 프림이면
++        #   전 env 가 한 충돌 그룹에 남아 팔이 물린다 — 08.29 분리 실측: 단일 컵으로
++        #   고정하고 플래그만 뒤집어도 abnormal 0.0000→0.849 · joint_err 0.058→0.74 rad.
++        #   그래서 다물체에서는 kinematic RigidBodyAPI 를 저작한 사본을 쓰고 테이블을
++        #   **씬 자산**(`RigidObject`)으로 올린다(자매 `tesollo/grasp_v2` 와 같은 규약).
++        #   사본 생성: `scripts/assets_tools/build_env_rigid_usd.py`
++        _rigid_usd = _os.path.join(_ASSETS_DIR, "env", "usd", "env_rigid.usd")
++        if not _os.path.isfile(_rigid_usd):
++            raise RuntimeError(
++                f"다물체({bank.name})는 kinematic 작업면이 필요하다: {_rigid_usd} 없음 — "
++                "`python3 scripts/assets_tools/build_env_rigid_usd.py` 로 먼저 빌드할 것")
++        self.table_cfg.spawn.usd_path = _rigid_usd
++        _base = self._object_spawn_base
++        self.object_cfg.spawn = _wrap.MultiAssetSpawnerCfg(
++            assets_cfg=[
++                replace(_base, usd_path=s.usd_path, scale=tuple(s.scale),
++                        mass_props=MassPropertiesCfg(mass=float(s.mass)))
++                for s in bank.specs
++            ],
++            random_choice=False,          # env_id % N — `assign_indices` 와 같은 규약
++            activate_contact_sensors=True,
++        )
++
++    def __post_init__(self):
++        # robot_cfg·공간 차원 전부 finalize_after_overrides 가 만든다
++        # (★hydra 는 __post_init__ 뒤에 덮고 재호출하지 않는다 — CLI 반영 지점).
++        self.finalize_after_overrides()
+ 
++    def _derive_spaces(self, profile) -> None:
++        """액션/관측 차원 파생 — `hand_layout` 을 소비하므로 finalize 에서 불려야
++        `env.hand_layout=per_finger` CLI 가 실린다(O1 부팅 fail-loud 실측 08.29)."""
+         n_arm = profile.num_arm_joints
+         n_hand = profile.num_hand_joints
+         num_tips = len(profile.fingertip_bodies)
+         num_fingers = len(profile.finger_sensor_bodies)
+-        # 액션 = palm 6D 델타 + 손가락 × 시너지 채널(프로필 파생).
+-        n_ch = len(set(profile.hand_channel_of_joint.values()))
+-        self.action_space = 6 + n_ch * num_fingers
++        # 액션 = palm 6D 델타 + 손 슬롯(레이아웃 파생).
++        if str(self.hand_layout) == "per_finger":
++            _slots = [s for m in profile.hand_finger_channels.values()
++                      for s in m.values()]
++            if not _slots:
++                raise RuntimeError(
++                    f"[{profile.name}] hand_layout=per_finger 인데 "
++                    "hand_finger_channels 가 비어 있다")
++            if sorted(set(_slots)) != list(range(max(_slots) + 1)):
++                raise RuntimeError(
++                    f"[{profile.name}] 액션 슬롯이 연속이 아니다: {sorted(set(_slots))}")
++            self.action_space = 6 + max(_slots) + 1
++        else:
++            n_ch = len(set(profile.hand_channel_of_joint.values()))
++            self.action_space = 6 + n_ch * num_fingers
+ 
+         # policy obs (grasp_v1 계열 + 목표, **물체 정체성 없음**):
+         #   arm q/qd(2·n_arm) + hand q/qd(2·n_hand) + palm_pos(3) + palm_ax(6)
+diff --git a/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_rewards.py b/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_rewards.py
+index bef43f8..f5d7284 100644
+--- a/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_rewards.py
++++ b/source/openarm/openarm/agnostic/tasks/grasp_s2r/grasp_s2r_rewards.py
+@@ -25,6 +25,7 @@ import torch
+ GRASP_S2R_REWARD_TERMS: tuple[str, ...] = (
+     "approach",
+     "enclosure",
++    "finger_closure",
+     "grasp",
+     "lift",
+     "transfer",
+@@ -33,6 +34,7 @@ GRASP_S2R_REWARD_TERMS: tuple[str, ...] = (
+     "stability",
+     "success_bonus",
+     "post_lift_contact_loss",
++    "hand_overdrive",
+     "action_smooth",
+ )
+ 
+@@ -47,8 +49,12 @@ def compute_grasp_s2r_rewards(
+     tip_contact_frac: torch.Tensor,       # (N,) 팁 접촉 손가락 비율 — graded_contact 전용
+     wrap_frac: torch.Tensor,              # (N,) per-finger (middle AND distal) 비율 = 감쌈 **깊이**
+     wrap_at_latch: torch.Tensor,          # (N,) 래치 시점 깊이 스냅샷
+-    grip_frac: torch.Tensor,              # (N,) tip|mid|distal OR 비율
++    grip_frac: torch.Tensor,
++    anylink_frac: torch.Tensor,          # (N,) (어느 마디든 닿은 손가락 + 손바닥)/(5+1)              # (N,) tip|mid|distal OR 비율
+     enclosure: torch.Tensor,              # (N,) 물체를 둘러싼 정도 [0,1] — 기하(접촉 아님)
++    finger_closure: torch.Tensor,         # (N,) 미접촉 손가락의 컵 접근도 [0,1] — 닿으면 소등
++    force_quality: torch.Tensor,          # (N,) 힘 밴드 [바닥,1] — 팁 최대힘이 셀수록 낮다
++    hand_overdrive: torch.Tensor,         # (N,) 가동 손관절의 도달불가 지령량 [0,1]
+     # ---- 기하 ----
+     palm_normal_dist: torch.Tensor,      # |법선(palm_ee_x) 성분| — **밀착도**
+     palm_lateral_dist: torch.Tensor,     # 손바닥 면(y·z) 어긋남, z 는 데드밴드 통과
+@@ -78,9 +84,26 @@ def compute_grasp_s2r_rewards(
+     # 접촉 품질 — 하드 게이트(전 팁 접촉)는 검지가 구조적으로 미접촉이라 영원히 0 이
+     # 된다. 부분 접촉에도 gradient 가 남도록 graded 로 간다.
+     # 여기에 감쌈 비중을 섞어 **손끝만으로 드는 것**을 부드럽게 억제한다.
+-    _emix = _f(cfg, "lift_envelope_mix", 0.6)
+-    graded_contact = (1.0 - _emix) * tip_contact_frac.clamp(0.0, 1.0) \
+-        + _emix * wrap_frac.clamp(0.0, 1.0)
++    # ★★08.31 사용자 정의 — `contact_quality_mode="anylink"` 면 "손가락 어느 마디든
++    #   (손바닥 포함) 닿았는가"로 센다. 구 정의(0.4·팁 + 0.6·wrap)는 wrap 이
++    #   **중간∧원위 동시**라 8종 전수 0.000 이었고, 정책이 싼 팁 0.4 만 먹고 2~3개
++    #   접촉에서 멈췄다. 붓기처럼 기울이는 과제에서는 그 상태로 컵을 놓친다.
++    if str(getattr(cfg, "contact_quality_mode", "tipwrap")) == "anylink":
++        graded_contact = anylink_frac.clamp(0.0, 1.0)
++    else:
++        _emix = _f(cfg, "lift_envelope_mix", 0.6)
++        graded_contact = (1.0 - _emix) * tip_contact_frac.clamp(0.0, 1.0) \
++            + _emix * wrap_frac.clamp(0.0, 1.0)
++    # ★08.29 힘 밴드. 접촉 임계(1 N)를 넘는 순간 만점이고 그 위로는 **완전 무차별**이라
++    #   "멈춤"이 정의된 적이 없었다. 반면 접촉을 잃으면 이 곱셈 게이트로 lift(30)·
++    #   transfer(15)·stay(8) 가 전부 0 이 되고 post_lift_contact_loss(-8)·
++    #   wrap_retention(-6) 까지 붙는다 — 상실 -50 이상 vs 과접촉 0 의 완전 비대칭이라
++    #   정책이 "최대한 세게, 절대 놓지 않기"로 밀린다.
++    # ★★바닥(`force_band_floor`)을 0 으로 두면 안 된다 — 08.25 `grip-contact-cliff`
++    #   에서 "닿으면 보상이 꺼지니 접촉을 회피"가 실측됐다. 세게 쥐는 것이 손해이되
++    #   **놓는 것보다는 낫게** 남겨야 한다.
++    # 기본 1.0 = 감쇠 없음(현행 동작).
++    graded_contact = graded_contact * force_quality.clamp(0.0, 1.0)
+ 
+     lifted_gate = (cup_height_delta >= _f(cfg, "lift_success_height", 0.04)).float()
+     at_goal = (goal_dist <= _f(cfg, "goal_pos_tolerance", 0.025)).float()
+@@ -141,9 +164,38 @@ def compute_grasp_s2r_rewards(
+     # ★곱셈 없이도 "멀리서 포위 자세만" 경로는 성립하지 않는다 — `enclosure` 는 물체
+     #   중심 기준이라 손이 멀면 모든 단위벡터가 동방향이 되어 0.046 까지 떨어진다.
+     #   물체를 실제로 감싸야만 오른다.
++    # ★08.29 래치 후 감쇠. I1 실측 비중은 enclosure 67.7% vs transfer 2.6% 였고,
++    #   포위도는 **팔이 어디 있든** 같은 값을 내므로 리프트 이후 보상 지형이 palm
++    #   위치에 평평해진다 — 그러면 palm 은 액션공간 기본값으로 흘러간다(실측
++    #   `palm_post_latch_y` -0.399, 목표 -0.110). 래치 **전은 건드리지 않는다**:
++    #   감쌈을 처음 만들어낸 힘이 그 구간에 있다(I1 dist_rate 0.195, 대조 0.075).
++    _encl_scale = torch.where(
++        lift_latched, torch.full_like(
++            enclosure, _f(cfg, "enclosure_post_latch_scale", 1.0)),
++        torch.ones_like(enclosure))
+     enclosure_term = (
+-        _f(cfg, "enclosure_weight", 0.0) * enclosure.clamp(0.0, 1.0)
++        _f(cfg, "enclosure_weight", 0.0) * enclosure.clamp(0.0, 1.0) * _encl_scale
+     )
++    # ★08.30 무접촉 정체 처방 — floor<1 이면 접촉 결합 블렌드. H 라운드가 기각한
++    #   완전 곱셈(접근 구간에서 항 사망)과 달리 floor 비율의 접근 gradient 를 남긴다.
++    _encl_floor = _f(cfg, "enclosure_contact_floor", 1.0)
++    if _encl_floor < 1.0:
++        enclosure_term = enclosure_term * (
++            _encl_floor + (1.0 - _encl_floor) * graded_contact.clamp(0.0, 1.0))
++
++    # ---- finger_closure(08.29 신설, 기본 가중 0) : 접촉 전 **손가락별 연속** 신호 ------
++    # ★K1 실측 진단 — 검지~약지가 접촉 직전에서 정지한다(dist_rate 0.000·mid 0.005).
++    #   graded_contact 유인(+0.08/손가락 × lift30·transfer15·stay8·stabilize10)은 크지만
++    #   per-finger 접촉이 **이진**이라 닿기 전 gradient 가 정확히 0 이고, 낙하 상실
++    #   비대칭(−50급) 탓에 탐색이 절벽을 못 넘는다. 이 항이 그 절벽 앞에 경사를 깐다.
++    # ★(1−c_i) 소등 — 닿은 손가락은 이 항에서 빠진다: 압입 유인 없음, 조임량은 물리와
++    #   사다리가 정한다(grasp_sensor v2 심사 통과 설계).
++    # ★★소등 항 크기 < 접촉 사다리 이득이어야 "떼서 다시 받기"가 성립하지 않는다
++    #   (08.25 grip 접촉 절벽 재발 방지) — 가중 상한 1.0 이 그 부등식이다.
++    # ★close_gate 곱 — 컵이 케이지 밖일 때 빈손을 말아쥐는 유인을 차단한다.
++    finger_closure_term = (
++        _f(cfg, "finger_closure_weight", 0.0)
++        * close_gate.clamp(0.0, 1.0) * finger_closure.clamp(0.0, 1.0))
+ 
+     # ---- grasp : 래치 전에만. **close_gate 가 열리면 손가락을 내라**가 이 항의 계약 ------
+     # ★★08.27 재설계. 구판은 네 채널(팁접촉·전팁·지속·감쌈)이 **전부 접촉 임계 뒤**라
+@@ -163,9 +215,24 @@ def compute_grasp_s2r_rewards(
+     #   grasp 4.69/step = 전체의 93% 인데 wrap 0.002 · latched 0.005 · h_del 0.005).
+     #   실측 폐쇄는 물체에 막히면 스스로 멈추므로 인위적 캡이 필요 없다.
+     close_credit = close_progress.clamp(0.0, 1.0)
++    # ★★08.31 anylink 모드면 이 자리의 감쌈 성분도 같이 갈아끼운다. 갈기 전 실측
++    #   (s2r_b1 ep_3400): `wrap_frac` 0.02 라 grasp 의 **_ecred(0.80) 만큼이 죽어**
++    #   grasp_quality 0.082 → grasp 0.98/step 뿐이었다. `contact_quality_mode` 를
++    #   `graded_contact`(곱셈)에만 걸었던 것이 절반 적용이었던 셈이다.
++    # ★곱셈 유인만으로는 접촉 개수가 안 오른다 — ∂R/∂접촉 = (lift+transfer+…)/6 이라
++    #   사다리가 작을 때 경사도 같이 작아진다. B1 실측이 그대로다: 접촉 2.58 정점 뒤
++    #   리프트가 굳으면서 2.05 로 하락(1,100 iter 회복 없음). 여기 넣으면 손가락
++    #   하나당 +_ecred/6·grasp_weight 의 **가산·단조** 경사가 생긴다.
++    # ★force_quality 를 곱한다 — 이 자리는 graded_contact 를 거치지 않으므로 곱하지
++    #   않으면 "더 세게 눌러 더 많이 닿기"에 상한이 없다(reward-audit Check 3).
++    if str(getattr(cfg, "contact_quality_mode", "tipwrap")) == "anylink":
++        _envelope_credit = (anylink_frac.clamp(0.0, 1.0)
++                            * force_quality.clamp(0.0, 1.0))
++    else:
++        _envelope_credit = wrap_frac.clamp(0.0, 1.0)
+     grasp_quality = (
+         (1.0 - _ecred) * close_credit
+-        + _ecred * wrap_frac.clamp(0.0, 1.0)
++        + _ecred * _envelope_credit
+     )
+     grasp = (_f(cfg, "grasp_weight", 12.0) * pre_lift_gate
+              * close_gate.clamp(0.0, 1.0) * grasp_quality)
+@@ -225,6 +292,19 @@ def compute_grasp_s2r_rewards(
+ 
+     success_bonus = _f(cfg, "success_weight", 20.0) * success_now.float()
+ 
++    # ---- hand_overdrive : "멈춤"을 정의하는 항 (08.29 신설, 기본 가중 0) ---------------
++    # ★힘이 아니라 **관절 오차**를 벌한다. 이유 셋:
++    #   ①실기 엔코더로 정확히 측정된다(힘 센서보다 신뢰도가 높다)
++    #   ②무게·마찰·형상에 무관하다 — 무거운 컵이라 더 쥐는 것은 *도달 가능한 각도까지*
++    #     더 닫는 것이라 벌점이 안 붙고, 벌점은 *도달 불가능한 각도를 미는 것*만 잡는다.
++    #     사용자 제약 "컵 안 내용물로 무게가 달라지므로 파지력은 써야 한다"와 양립한다.
++    #   ③임계가 물리에서 나온다 — effort_limit_sim/stiffness 를 넘으면 토크가 천장이다.
++    # ★실기 effort 는 7.5 N·m 로 sim(1.5)의 5배다. sim 에서 안전한 이유가 보상이 아니라
++    #   액추에이터 상한이라 그 상한이 커지면 그대로 위험이 된다 — 이 항이 그 갭을 막는다.
++    hand_overdrive_term = (
++        _f(cfg, "hand_overdrive_weight", 0.0) * hand_overdrive.clamp(0.0, 1.0)
++    )
++
+     # ---- 컵 밀림 감쇠 — **래치 시점** 변위 기준 ---------------------------------------
+     # ★실시간 변위를 쓰면 의도된 수평 이송이 통째로 처벌된다(이 트랙의 과제가 이송이다).
+     #   래치 시점 스냅샷을 쓰면 "접근 중 밀지 마라"는 원래 의도만 남는다.
+@@ -246,6 +326,7 @@ def compute_grasp_s2r_rewards(
+     terms = {
+         "approach": approach,
+         "enclosure": enclosure_term,
++        "finger_closure": finger_closure_term,
+         "grasp": grasp,
+         "lift": lift,
+         "transfer": transfer,
+@@ -254,6 +335,7 @@ def compute_grasp_s2r_rewards(
+         "stability": stability,
+         "success_bonus": success_bonus,
+         "post_lift_contact_loss": post_lift_contact_loss,
++        "hand_overdrive": hand_overdrive_term,
+         "action_smooth": action_smooth,
+     }
+     _missing = set(GRASP_S2R_REWARD_TERMS) - set(terms)
+diff --git a/source/openarm/openarm/agnostic/tasks/grasp_s2r/robot_profiles.py b/source/openarm/openarm/agnostic/tasks/grasp_s2r/robot_profiles.py
+index 936d015..93e8097 100644
+--- a/source/openarm/openarm/agnostic/tasks/grasp_s2r/robot_profiles.py
++++ b/source/openarm/openarm/agnostic/tasks/grasp_s2r/robot_profiles.py
+@@ -71,6 +71,12 @@ class RobotProfile:
+     #   ★채널을 나누는 이유: 손가락당 스칼라 하나를 4관절에 복사하면 관절 목표가
+     #     open→grip 직선 하나 위에만 존재해 **진짜 인벨롭 자세가 액션 공간에 없다**.
+     hand_channel_of_joint: dict = field(default_factory=dict)
++    # ---- 손가락별 레이아웃 (cfg.hand_layout="per_finger", 08.29 O 라운드) ---------
++    # finger 이름 → {관절 접미사: **전역 액션 슬롯**}. 빠진 접미사는 **고정**(폐쇄도 0).
++    # ★사용자 확정 설계: 엄지 2슬롯(근위/원위 분리) · 검/중/약 각 1슬롯(j2/3/4 공통)
++    #   · 소지 1슬롯(j3/4 — j2 는 실측 가동폭 0 이라 자연 고정) · 외전(_1) 전부 고정.
++    #   L1 의 완전 해제(12ch)와 달리 손 차원 15→6 **축소** 재편이다.
++    hand_finger_channels: dict = field(default_factory=dict)
+     # 접촉 시 동결할 관절 접미사 — 그 손가락의 원위∨팁 접촉이 성립하면 진행을 멈춘다.
+     #   ★이것이 감쌈 생성 메커니즘이다. 풀면 손가락이 컵 반경보다 작게 말려 손끝만
+     #     닿는 핀치가 된다(grasp_v1 실증: full_envelope 0.176→0.035).
+@@ -206,6 +212,14 @@ TESOLLO_RIGHT = RobotProfile(
+     #   분리가 의미를 가지려면 절대 폐쇄도 전환이 필수 — 둘은 한 묶음").
+     #   액션 = palm 6 + 손가락 5×3 = 21D.
+     hand_channel_of_joint={"1": 0, "2": 1, "3": 2, "4": 2},
++    hand_finger_channels={
++        # 엄지 j2 는 실측 가동폭 0 → "j2/j3·4" 의도를 "j3/j4"(근위/원위 분리)로 구현.
++        "thumb": {"3": 0, "4": 1},
++        "index": {"2": 2, "3": 2, "4": 2},
++        "middle": {"2": 3, "3": 3, "4": 3},
++        "ring": {"2": 4, "3": 4, "4": 4},
++        "pinky": {"3": 5, "4": 5},
++    },
+     hand_freeze_suffixes=("3", "4"),
+     # grasp_sensor 프리셋(같은 DG-5F 자산에서 검증된 palm workspace) 승계.
+     # ★modules/robots.py 의 _BOX_R 은 bi_s(DG-5FS) 실측이라 palm 이 54.8mm 달라 못 쓴다.
+diff --git a/source/openarm/openarm/agnostic/tasks/grasp_s2r/tests/test_grasp_s2r_contract.py b/source/openarm/openarm/agnostic/tasks/grasp_s2r/tests/test_grasp_s2r_contract.py
+index 913d5e9..b4f11dc 100644
+--- a/source/openarm/openarm/agnostic/tasks/grasp_s2r/tests/test_grasp_s2r_contract.py
++++ b/source/openarm/openarm/agnostic/tasks/grasp_s2r/tests/test_grasp_s2r_contract.py
+@@ -84,18 +84,44 @@ def test_registration_skips_profiles_without_fabric():
+ 
+ 
+ # ---------------------------------------------------------------- 액션
+-def test_palm_action_is_home_relative_delta():
+-    """★palm 액션은 **홈 기준 델타**여야 한다 — `a=0` 이 홈.
++def test_palm_action_is_anchor_relative_delta():
++    """★palm 액션은 **앵커 기준 유계 델타**여야 한다 — `a=0` 이 앵커.
+ 
+     절대 매핑(`a=0` = 박스 중심)은 저장소 공통 σ=1.0 과 곱해지면 매 스텝 작업공간
+     전역에서 목표를 재추첨해 접근이 랜덤워크가 된다(선행 트랙 실측: 클램프 전
+-    지령 요청량 0.33~0.36 m/step 상시 포화).
++    지령 요청량 0.33~0.36 m/step 상시 포화). 이 계약이 막는 것은 그 랜덤워크이지
++    앵커가 홈이어야 한다는 뜻이 아니다 — 08.29 Phase 0 로 홈 앵커가 과제에서
++    z +14 cm · y -27 cm 떨어져 있음이 실측돼 앵커를 재중심 가능하게 열었다.
+     """
+     code = _code(_ENV)
+-    assert "self._home_palm.unsqueeze(0) + delta" in code, "palm 지령이 홈 기준 델타가 아니다"
++    assert "self._palm_anchor() + delta" in code, "palm 지령이 앵커 기준 델타가 아니다"
+     assert "palm_delta_xyz" in _code(_CFG) and "palm_delta_rot_deg" in _code(_CFG)
+-    # 홈이 박스에 잘리면 a=0 의 의미가 깨진다.
++    # 앵커가 박스에 잘리면 a=0 의 의미가 깨진다(홈 모드는 박스를 홈까지 넓히고,
++    # 스폰 모드는 부팅에서 fail-loud 로 잡는다).
+     assert "torch.minimum(self._palm_lo, self._home_palm)" in code
++    assert "액션 앵커" in code and "밖이다" in code, "앵커 박스 검증이 없다"
++
++
++def test_palm_anchor_is_episode_constant():
++    """★앵커는 **에피소드 내 상수**여야 한다.
++
++    실시간 물체 위치를 앵커에 쓰면 컵이 밀릴 때 액션 원점이 따라가는 되먹임이 되고,
++    래치를 쓰면 이 트랙이 걷어낸 grasp_v1 의 단계 스크립트가 부활한다(트랙 계약:
++    "래치는 보상 단계 표시 전용"). 허용되는 소스는 홈과 **스폰 스냅샷**뿐이다.
++    """
++    src = _code(_ENV)
++    i = src.index("    def _palm_anchor(")
++    body = src[i:src.index("\n    def ", i + 10)]
++    assert "self.object_spawn_pos" in body, "스폰 스냅샷을 앵커로 쓰지 않는다"
++    for banned in ("self._latched", "root_pos_w", "self.object.data"):
++        assert banned not in body, f"앵커가 에피소드 중 변하는 양({banned})을 참조한다"
++
++
++def test_palm_anchor_defaults_to_home():
++    """기본값은 현행 동작 — 앵커 모드를 안 주면 홈이다(대조군 항등성)."""
++    cfg = _code(_CFG)
++    assert 'palm_anchor_mode: str = "home"' in cfg
++    assert "palm_anchor_offset_xyz" in cfg
+ 
+ 
+ def test_command_rate_limiter_logs_preclamp_value():
+@@ -294,7 +320,10 @@ def test_grasp_has_pre_contact_gradient_gated_on_alignment():
+     """
+     rew = _code(_REW)
+     blk = _assign_block(rew, "grasp_quality")
+-    assert "close_credit" in blk and "wrap_frac" in blk
++    # 08.31: 감쌈 성분은 `_envelope_credit` 으로 한 단계 빠졌다(모드별 wrap/anylink).
++    # 여기서는 **두 성분이 다 있는가**만 잠그고, 어느 쪽이 실리는지는
++    # `test_anylink_replaces_grasp_envelope_credit` 가 잠근다.
++    assert "close_credit" in blk and "_envelope_credit" in blk
+     for banned in ("tip_contact_frac", "full_tip", "persistence"):
+         assert banned not in blk, f"폐기된 팁 제어 채널이 grasp 에 되살아남: {banned}"
+     assert "close_gate.clamp(0.0, 1.0) * grasp_quality" in rew, "grasp 가 정렬 게이트를 안 탄다"
+@@ -421,7 +450,8 @@ def test_contact_freeze_is_per_joint_link():
+     # wrap(중간 AND 원위)이 영원히 0 이 된다(s2r_a8 817 iter 실측).
+     assert "_h_dist = (_dist > _thr)[:, self._syn_fi]" in ctrl
+     assert "self._tip_contact_forces() > _thr" not in ctrl, "팁이 동결 트리거로 되살아남"
+-    assert "_hold = (_h_mid & self._syn_freeze_mid) | (_h_dist & self._syn_freeze_dist)" in ctrl
++    # 08.29 O 라운드: finger 스코프 분기가 생겨 기본(joint) 경로는 else 로 이동했다.
++    assert "_hold = ((_h_mid & self._syn_freeze_mid)" in ctrl
+     # 푸는 방향은 항상 허용.
+     assert "torch.where(_hold & (delta > 0.0), torch.zeros_like(delta), delta)" in ctrl
+     # 구판 배선이 되살아나면 실패시킨다.
+@@ -618,3 +648,583 @@ def test_enclosure_defaults_off():
+     cfg = _code(_CFG)
+     assert "enclosure_weight: float = 0.0" in cfg
+     assert '"enclosure"' in _code(_REW), "보상 항 튜플에 enclosure 가 없다"
++
++
++def test_enclosure_post_latch_scale_defaults_off():
++    """★래치 후 포위도 감쇠는 기본 1.0 (= 현행 동작). 래치 **전**은 건드리지 않는다.
++
++    08.29 I1 실측: enclosure 비중 67.7% vs transfer 2.6%. 포위도는 팔 위치와 무관하게
++    지급되므로 리프트 이후 보상 지형이 palm 위치에 평평해지고, 그러면 palm 이
++    액션공간 기본값으로 흘러간다(`palm_post_latch_y` -0.399 vs 목표 -0.110).
++    감쌈을 처음 만들어낸 힘은 **래치 전**에 있으므로 그 구간은 불변이어야 한다.
++    """
++    assert "enclosure_post_latch_scale: float = 1.0" in _code(_CFG)
++    rew = _code(_REW)
++    i = rew.index("_encl_scale = torch.where(")
++    blk = rew[i:i + 400]
++    assert "lift_latched" in blk, "감쇠가 래치 조건이 아니다"
++    assert "torch.ones_like(enclosure)" in blk, "래치 전이 1.0 로 보존되지 않는다"
++
++
++def test_force_band_defaults_off_and_has_floor():
++    """★힘 밴드는 기본 꺼짐(1.0)이고, 켤 때도 **바닥이 0 이면 안 된다**.
++
++    08.25 `grip-contact-cliff`: 닿으면 보상을 끄니 정책이 접촉 자체를 회피했다
++    (grip 0.243→0.322 가 오르는 동안 n_over_thr 0.593→0.046). 세게 쥐는 것이
++    손해이되 **놓는 것보다는 낫게** 남겨야 한다.
++    """
++    assert "force_band_floor: float = 1.0" in _code(_CFG)
++    env = _code(_ENV)
++    assert "force_quality = 1.0 - (1.0 - _floor) * _over" in env
++    # ★게이트가 쓰는 이진 마스크를 깎으면 케이지·판정이 조용히 흔들린다.
++    i = env.index("_fb_lo = float(cfgn.force_band_hi_n)")
++    _end = 'self.extras["gate/force_quality_min"]'
++    blk = env[i:env.index(_end, i) + len(_end)]
++    for banned in ("tip_c =", "grip_c =", "mid_c =", "dist_c ="):
++        assert banned not in blk, f"힘 밴드가 이진 마스크({banned})를 건드린다"
++    # 보상 경로에만 곱한다.
++    assert "graded_contact = graded_contact * force_quality" in _code(_REW)
++
++
++def test_force_band_uses_max_tip_force():
++    """밴드는 **최대** 팁 힘으로 정한다 — 손가락 하나만 과해도 하드웨어가 위험하다.
++
++    사용자 제약: 실기 팁 센서 정격 0~50 N. 평균을 쓰면 한 손가락의 과압이 묻힌다.
++    """
++    env = _code(_ENV)
++    assert "tip_f.max(dim=1).values" in env, "밴드가 최대 팁 힘 기준이 아니다"
++    assert "force_sensor_max_n" in env and "force_band_hi_n" in env
++
++
++def test_hand_overdrive_penalises_joint_error_not_force():
++    """★"멈춤"은 힘이 아니라 **관절 오차**로 정의한다.
++
++    ①실기 엔코더로 정확히 측정된다 ②무게·마찰·형상에 무관하다 — 무거운 컵이라
++    더 쥐는 것은 *도달 가능한 각도까지* 닫는 것이라 안 걸리고, *도달 불가능한
++    각도를 미는 것*만 걸린다 ③임계가 물리에서 나온다(effort_limit/stiffness).
++    가동폭 0 인 관절은 오차가 상수로 깔리므로 반드시 제외한다.
++    """
++    assert "hand_overdrive_weight: float = 0.0" in _code(_CFG)
++    assert '"hand_overdrive"' in _code(_REW)
++    env = _code(_ENV)
++    i = env.index("hand_overdrive = (torch.relu(")
++    blk = env[i - 300:i + 300]
++    assert "self._syn_movable" in blk, "가동폭 0 관절을 제외하지 않는다"
++    assert "hand_torque_sat_err_rad" in blk, "임계가 effort/stiffness 파생이 아니다"
++    # 힘 센서를 끌어오면 안 된다(그러면 무게 의존이 된다).
++    for banned in ("tip_f", "force_matrix_w", "_contact_forces"):
++        assert banned not in blk, f"과지령 항이 힘({banned})에 의존한다"
++
++
++def test_enclosure_participation_defaults_off():
++    """★손가락별 최소참여는 기본 꺼짐(λ=0) — 그때 그룹 평균 판과 **항등**이어야 한다.
++
++    이 항은 `couple_four_fingers` 를 푸는 것의 **선행조건**이다. 커플링은 3지
++    국소최적을 막으려고 넣은 것이고, 당시 진단이 "mean/count 보상엔 손가락별
++    최소참여 신호가 없다"였다. 그룹 평균만 쓰면 손가락 하나가 빠져도 그 단위벡터가
++    나머지와 비슷한 방향이라 값이 거의 안 떨어진다 — 같은 결함이 남아 있다.
++    """
++    assert "enclosure_participation_lambda: float = 0.0" in _code(_CFG)
++    env = _code(_ENV)
++    i = env.index("_lam = float(self.cfg.enclosure_participation_lambda)")
++    assert "if _lam <= 0.0:" in env[i:i + 200], "λ=0 조기반환(항등성)이 없다"
++    # 최약 손가락 기준이어야 한다 — 평균을 또 쓰면 같은 결함이 반복된다.
++    blk = env[i:i + 900]
++    assert "_c.min(dim=1).values" in blk, "최소참여가 **최약** 손가락 기준이 아니다"
++    assert "task/enclosure_weakest" in blk, "최약 손가락 로깅이 없다"
++
++
++def test_participation_keeps_finger_axis():
++    """최소참여는 손가락 축을 살린 (F_b, L) 인덱스를 써야 한다.
++
++    평평하게 편 `_hull_b_t` 로는 "어느 손가락이 빠졌는지"를 잴 수 없다. 손가락별
++    링크 수가 다르면 정렬이 불가능하므로 부팅에서 fail-loud 로 잡는다.
++    """
++    env = _code(_ENV)
++    assert "self._hull_part_t = torch.tensor(_rows" in env
++    assert "최소참여 계산이 손가락을 정렬할 수 없다" in _ENV, "링크 수 불일치 fail-loud 부재"
++    assert "self._hull_part_t" in env[env.index("def _enclosure("):], "포위도가 그 축을 안 쓴다"
++
++
++# ---------------------------------------------------------------- 다물체
++def test_object_bank_defaults_to_single_cup():
++    """기본은 단일 컵 = 현행 동작. 다물체는 명시 오버라이드로만 켠다."""
++    assert 'object_bank: str = "single_cup"' in _code(_CFG)
++
++
++def test_multi_asset_turns_off_replicate_physics():
++    """★뱅크>1 인데 `replicate_physics=True` 면 전 env 가 같은 물체를 받는다.
++
++    MultiAsset(env 별 다른 물체)은 physics 복제가 불가능하다. 배정이 어긋나면
++    판정·warm 이 조용히 붕괴한다.
++    """
++    cfg = _code(_CFG)
++    i = cfg.index("def _apply_object_bank")
++    blk = cfg[i:cfg.index("\n    def ", i + 10)]
++    assert "if not bank.needs_multi_asset:" in blk and "return" in blk
++    assert "self.scene.replicate_physics = False" in blk
++    assert "random_choice=False" in blk, "env_id % N 결정론 배정이 아니다"
++
++
++def test_table_representation_splits_by_physics_replication():
++    """★★작업면 표현이 `replicate_physics` 여부로 갈린다.
++
++    다물체는 `replicate_physics=False` 가 필수인데, 그러면 `clone_environments` 의
++    `enable_env_ids` env 간 충돌 격리가 사라진다. 작업면이 원시 정적 프림이면
++    `InteractiveScene` 이 추적하지 못해 전 env 가 한 충돌 그룹에 남고 팔이 물린다 —
++    08.29 분리 실측: **단일 컵으로 고정하고 플래그만 뒤집어도**
++    abnormal 0.0000 → 0.849 · joint_err 0.058 → 0.74 rad.
++    그래서 다물체에서는 kinematic 사본을 **씬 자산**으로 올린다(grasp_v2 규약).
++    단일 물체 경로는 기존 원시 프림 그대로 둔다 — 항등성이 검증된 물리다.
++    """
++    ctrl = _code(_CTRL)
++    i = ctrl.index("tbl = self.cfg.table_cfg")
++    blk = ctrl[i:i + 700]
++    assert "if _multi:" in blk
++    _m = blk.index("if _multi:")
++    _e = blk.index("else:", _m)
++    assert "RigidObject(tbl)" in blk[_m:_e], "다물체 경로가 테이블을 씬 자산으로 안 올린다"
++    # ★등록은 clone 이후로 미뤄졌다(DEXTRAH 규약) — 생성 블록이 아니라 뒤에 있다.
++    assert 'self.scene.rigid_objects["table"] = self.table' in ctrl
++    assert "tbl.spawn.func(" in blk[_e:], "단일 경로의 원시 스폰이 사라졌다"
++    assert "env_0/Table" in blk[_e:], "단일 경로는 env_0 + clone 규약을 지켜야 한다"
++
++
++def test_multi_asset_requires_kinematic_table_asset():
++    """★kinematic 작업면 사본이 없으면 **부팅에서 fail-loud** 해야 한다.
++
++    원본 `env.usd` 로 다물체를 돌리면 조용히 물리가 깨진다(팔이 41° 어긋난 채 고착).
++    사본은 `scripts/assets_tools/build_env_rigid_usd.py` 가 만든다.
++    """
++    cfg = _code(_CFG)
++    assert '"env_rigid.usd"' in cfg
++    assert "build_env_rigid_usd.py" in _CFG, "빌드 방법 안내가 없다"
++    i = cfg.index('"env_rigid.usd"')
++    blk = cfg[i:i + 500]
++    assert "_os.path.isfile" in blk and "raise RuntimeError" in blk, "존재 검사가 없다"
++    # 단일 물체로 되돌아가면 원본 USD 로 복원돼야 한다(멱등성).
++    assert "self.table_cfg.spawn.usd_path = self._table_usd_base" in cfg
++
++
++def test_clone_is_conditional_on_physics_replication():
++    """★★`clone_environments` 는 **`replicate_physics=True` 일 때만** 부른다.
++
++    False 면 `InteractiveScene.__init__` 이 이미 env xform 을 복제했다. 여기서 또
++    부르면 env_0 내용을 전 env 에 덮어써 프림이 중복·변형되고, 리셋 직후 관절이
++    폭발한다 — 08.29 실측: 편차 18~28 rad · 속도 2,500~4,700 rad/s ·
++    `episode_lengths` 260 → 1.2(무한 리셋).
++    ★`filter_collisions` 는 **양쪽 다** 부른다. True 경로는 clone 의 `enable_env_ids`
++    가 격리해 주지만, False 경로에서는 이 호출이 유일한 env 간 충돌 격리다.
++    ★다물체는 전 env prim 이 존재해야 `env_id % N` 배정이 되므로 물체를 clone
++    **이후**에 만든다(grasp_v2 probe 실측: 그 전이면 16env 전부 같은 물체).
++    """
++    ctrl = _code(_CTRL)
++    assert "_replicate = bool(self.cfg.scene.replicate_physics)" in ctrl
++    i = ctrl.index("_replicate = bool(")
++    blk = ctrl[i:i + 800]
++    assert "if _replicate:" in blk and "clone_environments" in blk
++    # clone 은 조건부, filter 는 무조건
++    _c = blk.index("clone_environments")
++    _f = blk.index("filter_collisions")
++    assert blk.rindex("if _replicate:", 0, _c) < _c, "clone 이 조건부가 아니다"
++    assert "if" not in blk[blk.rindex("\n", 0, _f):_f], "filter_collisions 가 조건부다"
++    # 다물체 물체 생성은 clone 이후
++    assert blk.index("if _multi:", _c) > _c
++    assert "assert_spawned_after_clone" in blk
++
++
++def test_origin_offset_is_per_env_not_scalar():
++    """★원점 오프셋은 물체마다 다르다 — 스칼라를 쓰면 큰 컵이 테이블을 뚫는다.
++
++    스폰고·정착고·목표가 전부 이 값에서 파생되므로 env 별이어야 한다.
++    부팅 검증(앵커·목표 도달성)은 **최저·최고 둘 다** 봐야 한 극단을 놓치지 않는다.
++    """
++    env = _code(_ENV)
++    assert "self._obj_origin_off = torch.tensor(" in env
++    assert "_bank.assign_indices(self.num_envs)" in env, "env_id % N 배정을 안 쓴다"
++    # 리셋 스폰이 env 별 값을 쓰는지
++    i = env.index("_off = self._obj_origin_off[env_ids]")
++    blk = env[i:i + 400]
++    assert "spawn[:, 2] = float(self.cfg.table_surface_z) + _off" in blk
++    assert "settled[:, 2] = float(self.cfg.table_surface_z) + _off" in blk
++    # 부팅 검증이 양 극단을 본다
++    assert "self._obj_origin_off.min()" in env and "self._obj_origin_off.max()" in env
++
++
++def test_multi_object_leaks_no_identity_into_obs():
++    """★다물체로 가도 policy obs 는 상대 위치뿐 — 정체성이 새면 안 된다."""
++    m = re.search(r"_noisy = torch\.cat\(\[([\s\S]*?)\], dim=1\)", _ENV)
++    assert m, "policy obs 결합식 부재"
++    blk = m.group(1)
++    for banned in ("_obj_origin_off", "object_bank", "bank_idx", "obj_id"):
++        assert banned not in blk, f"policy obs 에 물체 정체성 누출: {banned}"
++
++
++def test_derived_cfg_is_rebuilt_after_hydra_overrides():
++    """★★hydra 는 `__post_init__` **뒤에** `from_dict` 로 오버라이드를 적용하고
++    `__post_init__` 를 **다시 부르지 않는다**(IsaacLab `hydra_task_config` 실측).
++
++    그래서 cfg 필드에서 파생되는 구조(스폰 cfg·replicate_physics·접촉필터·스폰고)는
++    env `__init__` 이 `super()` **전에** 다시 만들어야 한다. `replicate_physics` 는
++    `InteractiveScene.__init__` 이 소비하므로 `_setup_scene` 에서 고치면 늦다.
++    08.29 실측: `env.object_bank=cup_family` 를 줬는데 replicate_physics 가 True 로 남았다.
++    """
++    cfg = _code(_CFG)
++    assert "def finalize_after_overrides" in cfg
++    assert "self.finalize_after_overrides()" in cfg, "__post_init__ 이 안 부른다"
++    env = _code(_ENV)
++    i = env.index("def __init__")
++    blk = env[i:i + 700]
++    assert blk.index("cfg.finalize_after_overrides()") < blk.index("super().__init__"), \
++        "재파생이 super() 이후다 — InteractiveScene 이 이미 replicate_physics 를 소비한다"
++    # 멱등이어야 한다(두 번 불린다).
++    assert "_object_spawn_base" in cfg, "원본 스폰 보존이 없다 — 두 번째 호출이 이중 래핑된다"
++    # ★공간 차원도 파생이다(hand_layout 소비) — __post_init__ 에만 있으면
++    #   env.hand_layout CLI 가 no-op 이 된다(O1 부팅 fail-loud 실측 08.29).
++    i2 = cfg.index("def finalize_after_overrides")
++    fin_blk = cfg[i2:cfg.index("def _apply_object_bank")]
++    assert "self._derive_spaces(profile)" in fin_blk, \
++        "공간 차원 파생이 finalize 밖이다 — hand_layout CLI 오버라이드가 no-op"
++
++
++def test_self_collision_override_lands_in_robot_cfg():
++    """★★다물체 폭주의 근본 원인 잠금 (08.29 확정).
++
++    `replicate_physics=False`(per-env 파싱)에서 손 hull 초기 겹침 × 자기충돌 ON 이
++    손가락을 340~660mm 튕기고 palm 173kN 을 만든다 — self-collision OFF 로 sick
++    0/256 완치 실측. 다물체 학습은 `env.enable_self_collisions=False` 로 기동하는데,
++    `robot_cfg` 재구축이 `__post_init__` 에만 있으면 이 CLI 오버라이드가 **조용한
++    no-op** 이 된다(hydra 는 __post_init__ 를 다시 부르지 않는다). 재구축은
++    `finalize_after_overrides` 안에 있어야 한다.
++    """
++    cfg = _code(_CFG)
++    i = cfg.index("def finalize_after_overrides")
++    j = cfg.index("def ", i + 10)
++    blk = cfg[i:j]
++    assert "_build_robot_cfg" in blk, \
++        "robot_cfg 재구축이 finalize 밖이다 — enable_self_collisions CLI 오버라이드가 no-op"
++    assert "enable_self_collisions" in blk
++
++
++# ---------------------------------------------------------------------------
++# ADR (08.29 신설) — 전역 level 하나가 스폰 범위·이송 y·물체 obs 노이즈를 스케일한다.
++# ---------------------------------------------------------------------------
++
++def _adr_apply_block() -> str:
++    env = _code(_ENV)
++    i = env.index("def _adr_apply")
++    return env[i:env.index("def ", i + 10)]
++
++
++def test_adr_defaults_off_and_identity():
++    """기본값 OFF = 현행 항등. OFF 면 level 이 0 으로 강제돼 전부 base 값이다."""
++    cfg = _code(_CFG)
++    assert "enable_adr: bool = False" in cfg
++    for k in ("adr_success_threshold", "adr_eval_episodes", "adr_step",
++              "adr_spawn_range_max", "adr_goal_y_max",
++              "adr_obs_noise_object_max"):
++        assert k in cfg, f"cfg 에 {k} 가 없다"
++    blk = _adr_apply_block()
++    assert "if bool(cfgn.enable_adr) else 0.0" in blk, \
++        "OFF 항등 보장이 없다 — enable_adr=False 인데 level 이 실릴 수 있다"
++    env = _code(_ENV)
++    assert "rng = float(self._adr_spawn_range)" in env, \
++        "리셋 스폰이 실효값이 아니라 cfg 원값을 읽는다"
++    # 08.30 3축 샘플링으로 목표가 env 별이 됐다 — 샘플링 OFF 면 `_adr_goal_offset`
++    # 를 그대로 브로드캐스트하므로 의미는 같다(cfg 원값 직독만 아니면 된다).
++    assert "settled + _goff" in env and "self._adr_goal_offset.unsqueeze(0)" in env, \
++        "goal 이 실효 오프셋이 아니라 cfg 원값을 읽는다"
++
++
++def test_adr_goal_growth_expands_delta_box():
++    """★축③ 구조 제약 — 목표 y 확장분만큼 델타 박스 y 도 커져야 한다.
++    palm 지령 박스(base ±0.10)가 이송 거리를 물리적으로 막는다."""
++    blk = _adr_apply_block()
++    assert "_d_eff[1] = _d_eff[1] + (abs(_y_eff) - abs(_by))" in blk
++    assert "_delta_lo" in blk and "_delta_hi" in blk, \
++        "델타 박스가 재계산되지 않는다"
++
++
++def test_adr_level_is_global_and_monotonic():
++    """★env 별 난이도 금지(h7 데드락 이력) + 하강 없는 단조 승급."""
++    env = _code(_ENV)
++    assert "self._adr_level = 0.0" in env
++    assert "self._adr_level = min(" in env, "승급이 상한 없이 자란다"
++    assert "self._adr_level -" not in env and "self._adr_level =-" not in env, \
++        "level 하강 경로가 있다 — 단조 규약 위반"
++    assert "adr_success_threshold" in env, "승급이 성공률 판정 없이 일어난다"
++
++
++def test_adr_max_goal_validated_at_boot():
++    """승급 후 목표가 프로필 박스 밖이면 조용히 과제가 죽는다 — 부팅 fail-loud 로 잠근다."""
++    env = _code(_ENV)
++    i = env.index("def _assert_goal_reachable")
++    blk = env[i:env.index("def ", i + 10)]
++    assert "adr_goal_y_max" in blk and "adr_spawn_range_max" in blk
++    assert "RuntimeError" in blk
++
++
++def test_respawn_on_fail_defaults_off_and_is_safe():
++    """08.30 — 종료가 유일한 실패 처리면 무접촉 정체가 국소최적(M0·O1 실측 7.2/step).
++    재소환 계약: ①기본 OFF ②원래 스폰점 복귀(앵커·목표 불변 — 새 자리 샘플링 금지)
++    ③palm 여유 미달 시 보류(폴백 텔레포트 금지 — 자매 v2 규약) ④abnormal 은 여전히 종료
++    ⑤파지 단계 상태 되감기."""
++    cfg = _code(_CFG)
++    assert "respawn_on_fail: bool = False" in cfg
++    env = _code(_ENV)
++    i = env.index('respawn_on_fail", False))')
++    blk = env[i:i + 6000]
++    assert "self.object_spawn_pos[_go]" in blk, "원래 스폰점 복귀가 아니다"
++    assert "respawn_clearance_m" in blk and "respawn_defer" in blk, "보류 규약이 없다"
++    # 08.30 보류 예산 신설로 분기가 생겼다 — 두 경로 모두 abnormal 을 종료로 유지한다.
++    assert "terminated = self._abnormal.clone()" in blk \
++        and "terminated = self._abnormal | _stuck" in blk, "abnormal 종료가 사라졌다"
++    assert "self._latched[_go] = False" in blk, "파지 단계 되감기가 없다"
++
++
++def test_finger_residual_blend_and_adr_axis():
++    """08.30 W 진단 처방 — 커플링은 4지 지령을 평균으로 **대체**해 두 극단만 있었다:
++    닫히지만 둔한 손(coupled `syn_close` 0.320) ↔ 손가락 독립인데 안 닫히는 손
++    (15ch 0.022~0.106). 공통+잔차로 그 사이를 연속으로 잇는다.
++    계약: ①기본 0.0 = 구 coupled 항등(평균 대체) ②블렌드 = 공통 + scale·(개별−공통)
++    ③ADR 다섯째 축으로 열리되 max<=base 면 꺼짐 ④액션 차원 불변(warm 보존)."""
++    cfg = _code(_CFG)
++    assert "finger_residual_scale: float = 0.0" in cfg
++    assert "adr_finger_residual_max: float = 0.0" in cfg
++    ctl = _code(_CTRL)
++    i = ctl.index("_adr_residual")
++    blk = ctl[i - 400:i + 400]
++    assert "_common + _rs * (a - _common)" in blk, "공통+잔차 블렌드가 아니다"
++    assert "_common if _rs == 0.0 else" in blk, "scale 0 항등 분기가 없다"
++    env = _code(_ENV)
++    j = env.index("self._adr_residual =")
++    assert "lvl * max(0.0, _rm - _rb)" in env[j:j + 160], "ADR 축이 base 기준이 아니다"
++    assert 'adr/finger_residual' in env, "잔차 로깅이 없다"
++    # 액션 차원은 잔차와 무관해야 한다 — 커리큘럼 도중 warm 이 깨지면 안 된다.
++    assert "finger_residual" not in _code(_CFG).split("_derive_spaces")[-1][:1200], \
++        "잔차가 액션 차원 계산에 새어 들어갔다"
++
++
++def test_contact_quality_anylink_mode():
++    """08.31 사용자 정의 — "어떤 부분이든 5손가락(또는 손바닥까지) 닿고 안정적으로
++    유지만 하면 된다". 구 정의(0.4·팁 + 0.6·wrap)는 wrap 이 **중간∧원위 동시**라
++    8종 전수 0.000 이었고, 정책이 팁 0.4 만 먹고 2~3개 접촉에서 멈췄다 — 그 상태로는
++    컵을 기울이는 과제에서 놓친다. 계약: ①기본 "tipwrap"(현행 항등) ②"anylink" 는
++    `grip_c`(tip|mid|dist) 기반 ③**손바닥이 한 표**로 들어가고 분모는 손가락+1."""
++    cfg = _code(_CFG)
++    assert 'contact_quality_mode: str = "tipwrap"' in cfg
++    rew = _code(_REW)
++    i = rew.index('contact_quality_mode", "tipwrap")) == "anylink"')
++    blk = rew[i:i + 420]
++    assert "graded_contact = anylink_frac" in blk, "anylink 를 접촉 품질로 안 쓴다"
++    assert "_emix" in blk, "구 tipwrap 경로가 사라졌다"
++    env = _code(_ENV)
++    j = env.index("anylink_frac=")
++    b2 = env[j:j + 220]
++    assert "grip_c.float().sum(dim=1) + self._surf_palm" in b2, "손바닥 표가 빠졌다"
++    assert "(n_tip + 1.0)" in b2, "분모가 손가락+1 이 아니다"
++    assert "task/anylink_frac" in env and "task/n_contact" in env, "진단 로깅이 없다"
++
++
++def test_anylink_replaces_grasp_envelope_credit():
++    """08.31 B1 실측 처방 — `contact_quality_mode="anylink"` 를 `graded_contact`
++    (곱셈)에만 걸었더니 접촉 개수가 2.58 정점 뒤 2.05 로 하락했다(1,100 iter 회복
++    없음). 곱셈은 ∂R/∂접촉 = (lift+transfer+…)/6 이라 사다리가 작을 때 경사도 같이
++    작아진다. 같은 시점 `grasp_quality` 는 _ecred(0.80)이 `wrap_frac` 0.02 에
++    묶여 0.082 뿐 — grasp 의 80% 가 죽어 있었다. 계약: ①anylink 면 grasp 의 감쌈
++    성분도 `anylink_frac` ②거기에 `force_quality` 를 곱해 "세게 눌러 더 닿기"를
++    막는다(audit Check 3) ③기본 tipwrap 은 `wrap_frac` 그대로(항등)."""
++    rew = _code(_REW)
++    i = rew.index("_envelope_credit = ")
++    blk = rew[i - 260:i + 320]
++    assert 'contact_quality_mode", "tipwrap")) == "anylink"' in blk, \
++        "grasp 감쌈 성분이 모드 분기를 안 탄다"
++    assert "anylink_frac.clamp(0.0, 1.0)" in blk, "anylink 경로가 없다"
++    assert "force_quality.clamp(0.0, 1.0)" in blk, \
++        "force_quality 가 안 곱해져 과압 상한이 없다"
++    assert "_envelope_credit = wrap_frac.clamp(0.0, 1.0)" in blk, \
++        "tipwrap 기본 분기(항등)가 사라졌다"
++    assert "_ecred * _envelope_credit" in rew, "grasp_quality 가 새 성분을 안 쓴다"
++    assert "_ecred * wrap_frac" not in rew, "옛 직접 참조가 남아 분기가 무효다"
++
++
++def test_finger_closure_wrap_target():
++    """08.31 8종 실측 처방 — 팁 접촉 0.65~0.85 인데 wrap 은 **전 종 0.000**.
++    `graded_contact = 0.4·팁 + 0.6·wrap` 에서 싼 0.4 만 먹고 멈췄고, 팁 기준
++    소등 항은 그 지점에서 이미 꺼져 경사를 못 준다. 계약: ①기본 "tip"(현행 항등)
++    ②"wrap" 이면 소등 = 중간∧원위, 거리 = **중간마디** 기준 ③중간마디 인덱스는
++    프로필 `finger_sensor_bodies` 첫 원소에서 이름 해석(리터럴 금지)."""
++    cfg = _code(_CFG)
++    assert 'finger_closure_target: str = "tip"' in cfg
++    env = _code(_ENV)
++    assert "self._mid_ids_t" in env, "중간마디 인덱스가 없다"
++    i = env.index("finger_sensor_bodies[f][0]")
++    assert "find_bodies" in env[i - 120:i], "중간마디를 이름 해석으로 안 찾는다"
++    j = env.index('finger_closure_target", "tip")) == "wrap"')
++    blk = env[j:j + 600]
++    assert "self._mid_ids_t" in blk, "wrap 모드가 중간마디 거리를 안 쓴다"
++    assert "_cl_off = mid_c & dist_c" in blk, "소등 조건이 중간∧원위가 아니다"
++    assert "_cl_d, _cl_off = _tip_d, tip_c" in blk, "tip 기본 분기가 사라졌다"
++
++
++def test_enclosure_contact_floor_blend():
++    """08.30 W4 — enclosure(10)는 무접촉으로도 ~7.2/step 공짜라 FRESH 정체의 원천
++    (M0·O1 총보상 실측 일치). floor 블렌드는 무접촉 상한을 10·floor 로 낮추되
++    ★H 라운드가 기각한 완전 곱셈(접근 구간 항 사망)과 달리 floor 비율의 접근
++    gradient 를 보존한다. 계약: ①기본 1.0 = 항등(floor<1 조건 분기) ②블렌드 수식
++    = floor + (1−floor)·graded_contact ③enclosure_term 자체에 곱한다(별항 아님)."""
++    cfg = _code(_CFG)
++    assert "enclosure_contact_floor: float = 1.0" in cfg
++    rew = _code(_REW)
++    i = rew.index('enclosure_contact_floor", 1.0)')
++    blk = rew[i:i + 400]
++    assert "if _encl_floor < 1.0:" in blk, "기본값 항등 분기가 없다"
++    assert "_encl_floor + (1.0 - _encl_floor) * graded_contact" in blk, \
++        "floor 블렌드 수식이 아니다 — 완전 곱셈(H 기각)으로 퇴행 금지"
++    assert "enclosure_term = enclosure_term * (" in blk, \
++        "enclosure_term 에 곱하지 않는다"
++
++
++def test_adr_goal_three_axis_sampling():
++    """08.30 성공률 지도 처방 — 이송 y 0.12 에서 0.94~0.98 인데 **0.05 에서 0.000**.
++    난이도를 단조로 올리기만 하면 시작 구간을 잊고 "한 방향 14cm" 하나만 배운다.
++    계약: ①기본 OFF(현행 항등) ②[base, 레벨] 구간 **에피소드별 샘플링**
++    ③x 는 ±범위·z 는 [base,max] ④델타 박스가 세 축 모두 연동 ⑤부팅 검증이 x·z 극단도 본다."""
++    cfg = _code(_CFG)
++    assert "adr_goal_sample: bool = False" in cfg
++    assert "adr_goal_x_max" in cfg and "adr_goal_z_max" in cfg
++    env = _code(_ENV)
++    i = env.index('adr_goal_sample", False))')
++    blk = env[i:i + 700]
++    assert "_u[:, 0] * 2.0 - 1.0) * _xs" in blk, "x 가 ± 대칭 샘플이 아니다"
++    assert "_u[:, 1] * (abs(_ys) - abs(_by))" in blk, "y 가 [base,레벨] 구간이 아니다"
++    assert "_bz + _u[:, 2] * (_zs - _bz)" in blk, "z 가 [base,max] 구간이 아니다"
++    j = env.index("_d_eff[0] = _d_eff[0] + _x_eff")
++    assert "_d_eff[2] = _d_eff[2] + (_z_eff - _bz)" in env[j:j + 400], \
++        "델타 박스가 x·z 확장을 못 따라간다 — 지령이 목표를 못 덮는다"
++    k = env.index("def _assert_goal_reachable")
++    vblk = env[k:env.index("def ", k + 10)]
++    assert "adr_goal_x_max" in vblk and "adr_goal_z_max" in vblk, \
++        "부팅 검증이 x·z 극단을 안 본다"
++
++
++def test_respawn_free_mode_moves_spawn_reference():
++    """08.30 자매 v2 규약 이식 — "원래 스폰점 복귀"는 그 자리가 곧 손자리라 보류가
++    0.93 까지 갔다(Q3 실측). free 모드는 스폰 상자에서 손 없는 자리를 리젝션
++    샘플링한다. 계약: ①기본 origin(현행) ②손 전체(palm+팁) 기준 거리 ③새 자리로
++    가면 **스폰 기준·목표를 같이 옮긴다**(안 옮기면 cup_disp 가 즉시 커져 approach 가
++    순벌점이 된다 — Q3 −0.35 의 정체) ④후보 전부 실패면 보류(폴백 텔레포트 금지)."""
++    cfg = _code(_CFG)
++    assert 'respawn_mode: str = "origin"' in cfg
++    env = _code(_ENV)
++    i = env.index('respawn_mode", "origin")) == "free"')
++    blk = env[i:i + 1800]
++    assert "_hand.unsqueeze(1)" in blk and "min(dim=2)" in blk, "손 전체 최소거리가 아니다"
++    assert "_clear = _has" in blk, "후보 전부 실패 시 보류가 아니다"
++    j = env.index("self.object_spawn_pos[_go] = _tgt_go")
++    upd = env[j:j + 200]
++    assert "self.goal_pos[_go]" in upd, "목표를 같이 옮기지 않는다 — approach 순벌점 재발"
++
++
++def test_respawn_defer_budget_falls_back_to_terminate():
++    """08.30 Q3 실측 처방 — 보류만 하면 넘어진 컵이 팔 옆에 방치돼 approach 가
++    순벌점(−0.35)이 되고 에피소드가 그 상태로 600 스텝을 버틴다(defer 0.93 ·
++    palm 접촉 1.4% vs 정상 81.7%). 연속 보류가 예산을 넘으면 종료로 폴백해야 한다.
++    기본 0 = 무제한(현행)."""
++    cfg = _code(_CFG)
++    assert "respawn_defer_budget: int = 0" in cfg
++    env = _code(_ENV)
++    assert "self._defer_count" in env, "연속 보류 카운터가 없다"
++    i = env.index("respawn_defer_budget")
++    blk = env[i:i + 700]
++    assert "terminated = self._abnormal | _stuck" in blk, "종료 폴백이 없다"
++    assert "done/respawn_stuck" in blk, "폴백 발생률 로깅이 없다"
++
++
++def test_latch_opposition_mode_defaults_off():
++    """08.29 — count 래치는 실측 성공 파지(엄지+palm, n_grip=1)에서 영원히 안 열려
++    lift/transfer/stay/stabilize 가 사장됐다. opposition = (A) AND (B OR palm),
++    hold 스텝 유지. 기본값은 count(현행 항등, M1 대조 보존)."""
++    cfg = _code(_CFG)
++    assert 'latch_mode: str = "count"' in cfg
++    env = _code(_ENV)
++    i = env.index('latch_mode", "count")) == "opposition"')
++    blk = env[i:i + 400]
++    assert "_a_c & (_b_c | _p_c)" in blk, "대향 형식이 아니다"
++    assert "grasp_ready_hold_steps" in env[i:i + 900], "hold 필터가 사라졌다"
++
++
++def test_per_finger_layout_defaults_off_and_matches_user_spec():
++    """08.29 O 라운드 — 사용자 확정 손가락별 레이아웃. 잠그는 계약:
++    ①기본 hand_layout="coupled3"·freeze_scope="joint" = 현행 항등
++    ②엄지 2슬롯·검/중/약 각 1슬롯·소지 1슬롯(j3/4) — 외전(_1)은 어디에도 없음
++    ③per_finger 는 액션 차원이 바뀌므로 슬롯 연속성·action_space 정합 fail-loud"""
++    cfg = _code(_CFG)
++    assert 'hand_layout: str = "coupled3"' in cfg
++    assert 'synergy_freeze_scope: str = "joint"' in cfg
++    assert "hand_finger_channels" in cfg, "action_space 가 per_finger 분기를 모른다"
++    prof = _code((_HERE / "robot_profiles.py").read_text(encoding="utf-8"))
++    i = prof.index("hand_finger_channels={")
++    blk = prof[i:i + 500]
++    assert '"thumb": {"3": 0, "4": 1}' in blk, "엄지 근위/원위 2슬롯이 아니다"
++    assert '"pinky": {"3": 5, "4": 5}' in blk, "소지는 j3/4 단일 슬롯이어야 한다"
++    assert '"1"' not in blk, "외전(_1)이 액션에 배정됐다 — 고정 계약 위반"
++    ctrl = _code(_CTRL)
++    assert "self._syn_act" in ctrl and 'hand_layout) == "per_finger"' in ctrl
++    assert "per_finger 슬롯" in ctrl, "슬롯↔action_space 정합 fail-loud 가 없다"
++
++
++def test_finger_scope_freeze_stops_whole_finger():
++    """08.29 진단 잠금 — 관절별 동결은 언 손끝을 매단 채 근위(_2)가 계속 감겨
++    큰 컵을 밀어낸다(s130 영상). finger 스코프는 (중간∨원위) 접촉 시 그 손가락
++    굴곡관절 전부를 세운다. 기본값은 joint(현행 항등)."""
++    ctrl = _code(_CTRL)
++    i = ctrl.index('synergy_freeze_scope) == "finger"')
++    blk = ctrl[i:i + 400]
++    assert "(_h_mid | _h_dist) & self._syn_flex" in blk
++    assert "_syn_flex" in ctrl and '("2", "3", "4")' in ctrl, \
++        "굴곡관절 마스크에 _2 가 빠졌다 — 파고듦이 그대로다"
++
++
++def test_species_diagnostics_stay_out_of_obs():
++    """08.29 신설 — 집계 success 는 종별 실패를 가린다(사용자 지적). 종별 EMA 는
++    extras 진단 전용이고, ①obs 에 새면 정체성 계약 위반 ②per-step 리셋 경로라
++    .any()/.item() 루프 금지(무동기 index_add 집계)."""
++    env = _code(_ENV)
++    assert "species/success_min" in env, "종별 최소 성공률 로깅이 없다"
++    assert "index_add_" in env, "종별 집계가 무동기 벡터화가 아니다"
++    i = env.index("def _get_observations")
++    obs_blk = env[i:env.index("def ", i + 10)]
++    for banned in ("_species_ids", "_species_succ", "species/"):
++        assert banned not in obs_blk, f"obs 경로에 종 정보가 샜다: {banned}"
++
++
++def test_finger_closure_defaults_off_and_extinguishes_on_contact():
++    """08.29 신설 — 접촉 전 손가락별 연속 신호. 잠그는 계약 셋:
++    ①기본 가중 0 = 현행 항등 ②(1−접촉) 소등 — 압입 유인 금지, 조임량은 물리 몫
++    ③close_gate 곱 — 빈손 말아쥐기 차단(케이지 되먹임 함정 계열)."""
++    cfg = _code(_CFG)
++    assert "finger_closure_weight: float = 0.0" in cfg
++    rew = _code(_REW)
++    assert '"finger_closure"' in rew, "TERMS 에 미등록 — fail-loud 가 안 잡는다"
++    i = rew.index("finger_closure_term = (")
++    blk = rew[i - 1200:i + 300]
++    assert "close_gate.clamp(0.0, 1.0) * finger_closure.clamp(0.0, 1.0)" in blk
++    env = _code(_ENV)
++    # 08.31 target 노브 신설로 소등 대상이 분기됐다 — tip 기본값과 wrap 양쪽 모두
++    # "닿으면 소등"을 유지해야 한다(압입 유인 차단은 두 경로 공통 계약).
++    assert "(~_cl_off).float()" in env and "_cl_d, _cl_off = _tip_d, tip_c" in env, \
++        "접촉 소등이 없다 — 압입 유인이 생긴다"
++    assert "grasp_center.unsqueeze(1)" in env, \
++        "거리 기준이 파지중심이 아니다 — 형상 비의존 계약 위반"
++
++
++def test_adr_obs_noise_wired_to_actor_only():
++    """물체 pose 노이즈는 actor obs 에만 — critic 은 clean state 를 유지한다."""
++    env = _code(_ENV)
++    i = env.index("def _get_observations")
++    blk = env[i:env.index("def ", i + 10)]
++    assert blk.count("self._adr_obs_noise_object") == 2, \
++        "palm_to_obj·obj_to_tips 두 항 모두 실효 노이즈를 써야 한다"
++    _clean = blk[blk.index("clean = torch.cat"):blk.index("state = torch.cat")]
++    assert "_adr_obs_noise_object" not in _clean, "clean(critic) 경로에 노이즈가 샜다"

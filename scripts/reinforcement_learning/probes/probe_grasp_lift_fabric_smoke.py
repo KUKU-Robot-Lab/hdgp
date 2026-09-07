@@ -96,7 +96,7 @@ _a = torch.zeros(args.num_envs, env.cfg.action_space, device=env.device)
 for _i in range(60):
     _a[:, 6:] = min(1.0, _i / 24)
     env.step(_a)
-_f, _ = env._contact()
+_f, _, _, _ = env._contact()
 print(f"  손 완전 폐합 시 접촉력 최대 {_f.max():.3f} N · >1N 손가락 "
       f"{( _f > 1.0).float().sum(dim=1).mean():.2f}")
 # ★손가락별로 갈라야 "어느 손가락이 안 닿는가"를 안다. 집계만 보면 pinky 를

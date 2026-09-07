@@ -24,7 +24,7 @@ from openarm.gripper.left.grasp_sensor import grasp_left_preset as P
 _HDGP = Path(OPENARM_ROOT_DIR).resolve().parents[2]
 _ROBOT_URDF = _HDGP / "assets/robot/openarm_tesollo_sensor_rl/openarm_tesollo_sensor_rl.urdf"
 _CUP_USD = _HDGP / "assets/cup" / P.CUP_USD_NAME
-_TABLE_USD = _HDGP / "assets/scene_objects/table.usd"
+_TABLE_USD = _HDGP / "assets/multi_obj/scene_objects/table.usd"
 _CFG_SRC = Path(__file__).resolve().parents[1] / "grasp_left_env_cfg.py"
 # 상속 원본. 커리큘럼 onset 처럼 "레퍼런스가 정하는 값"은 여기서 읽어야
 # 레퍼런스가 바뀌었을 때 계약이 조용히 거짓이 되지 않는다.
@@ -87,7 +87,7 @@ def test_gripper_stroke_matches_urdf_limit():
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(not _TABLE_USD.is_file(), reason="테이블 USD 없음")
 def test_work_surface_matches_env_usd_mesh_points():
-    """★작업면 z 는 `env.usd` 의 `top_plate` 메시 점에서 직접 나와야 한다.
+    """★작업면 z 는 `env_v1.usda` 의 상판 메시(`PaintedMetal_000000`) 점에서 직접 나와야 한다.
 
     env.usd 는 xformOp 이 하나도 없어 **메시 좌표가 곧 Env 프레임 값**이고, Env 원점은
     로봇 base link 원점이다(사용자 지정). 그래서 top_plate 의 max z 가 작업면이다.
@@ -96,9 +96,9 @@ def test_work_surface_matches_env_usd_mesh_points():
       중간값이고, USD BBoxCache 로 읽으면 extent 에 scale 이 **또** 곱해져 0.2004 가 된다.
       메시 점을 직접 읽으면 두 함정과 무관하다.
     """
-    usda = _HDGP / "assets/env/usd/env.usda"
+    usda = _HDGP / "assets/simulation_setting/env_v1/usd/env_v1.usda"
     if not usda.is_file():
-        pytest.skip("env.usda 없음")
+        pytest.skip("env_v1.usda 없음")
     txt = usda.read_text(encoding="utf-8")
 
     def aabb(mesh_name: str):
@@ -114,13 +114,13 @@ def test_work_surface_matches_env_usd_mesh_points():
     assert "xformOp" not in txt, "env.usd 에 변환이 생겼다 — 메시 좌표를 그대로 못 쓴다"
     assert "metersPerUnit = 1" in txt, "단위가 m 이 아니다(0.01 이면 자산이 100 배 작아진다)"
 
-    top = aabb("top_plate")
+    top = aabb("PaintedMetal_000000")   # env_v1: 메시가 재질별로 나뉜다 — 상판 = 검정 도장 금속
     assert math.isclose(P.TABLE_SURFACE_Z, top[2][1], abs_tol=1e-6)
     assert math.isclose(P.WORK_SURFACE_X[0], top[0][0], abs_tol=1e-6)
     assert math.isclose(P.WORK_SURFACE_X[1], top[0][1], abs_tol=1e-6)
     # 로봇이 서는 면과 바닥판
-    assert math.isclose(P.ROBOT_MOUNT_Z, aabb("platform")[2][1], abs_tol=1e-6)
-    assert math.isclose(P.ENV_FLOOR_Z, aabb("base_plate")[2][1], abs_tol=1e-6)
+    assert math.isclose(P.ROBOT_MOUNT_Z, aabb("Plastic_050505")[2][1], abs_tol=1e-6)
+    assert math.isclose(P.ENV_FLOOR_Z, aabb("Metal_999999")[2][1], abs_tol=1e-6)
     # 과거에 틀렸던 두 값이 다시 들어오지 않도록
     assert not math.isclose(P.TABLE_SURFACE_Z, 0.2082, abs_tol=1e-4)
     assert not math.isclose(P.TABLE_SURFACE_Z, 0.2004, abs_tol=1e-4)
@@ -152,7 +152,27 @@ def test_lift_gate_is_measured_from_the_resting_cup_origin():
     rsrc = (
         Path(__file__).resolve().parents[1] / "grasp_left_rewards.py"
     ).read_text(encoding="utf-8")
-    assert "obj_pos_w[:, 2] > minimal_height" in rsrc, "높이 항이 이진 게이트가 아니다"
+    # ★★08.23 이 단언을 **뒤집었다.** 원래는 "이진 게이트여야 한다" 를 고정하고 있었는데,
+    #   Fabrics 트랙 세 런(누적 6,747 epoch, 약 17 억 스텝)에서 lifting 이 정확히 0.0000 이었다.
+    #   컵은 +17.2 mm 까지 올라가는데 40 mm 문턱까지 신호가 없어 거기서 멈춘다.
+    #   관절공간 test17 이 문턱을 넘은 것은 지령 포화(한계의 7 배)로 컵을 튕겨 올린 우연이었고,
+    #   Fabrics 는 그 거친 움직임을 없애려고 넣은 것이라 그 메커니즘이 사라졌다.
+    #   → 높이는 **연속 램프**, 근접·자세는 게이트로 남는다.
+    assert "obj_pos_w[:, 2] > minimal_height" not in rsrc, "이진 게이트가 되살아났다"
+    assert "(obj_pos_w[:, 2] - ramp_zero_z) / (minimal_height - ramp_zero_z)" in rsrc, (
+        "높이 항이 연속 램프가 아니다"
+    )
+    # ★08.23 램프에 enclose 를 곱한다 — 순수 램프는 "쳐 올리기" 를 부분 보상해 정책을
+    #   주먹으로 고착시켰다(fab_test6: enclose 0.019 · drop% 0.733). 근거는 test_fab_contract.
+    assert "lifted * held * (near & upright).float()" in rsrc, (
+        "근접·자세 게이트 또는 enclose 인자가 빠졌다"
+    )
+    # ★공짜 차단: 램프 0 점은 놓인 높이보다 위여야 하고, 컵을 바닥 모서리로 기울여 얻는
+    #   최대 상승(CUP_TIP_RISE_MAX)보다도 위여야 한다. 아니면 "흔들기" 가 보상을 받는다.
+    assert P.LIFT_RAMP_ZERO_Z > P.CUP_SPAWN_Z + P.CUP_TIP_RISE_MAX, (
+        "램프 0 점이 기울임 상한 아래다 — 컵을 흔들기만 해도 보상이 생긴다"
+    )
+    assert P.LIFT_RAMP_ZERO_Z < P.MINIMAL_LIFT_HEIGHT, "램프 0 점이 상단보다 높다"
     assert "lift_span" not in rsrc, "램프 파라미터가 남아 있다"
 
     src = _cfg_source()
@@ -215,13 +235,23 @@ def test_settling_at_the_goal_is_rewarded():
     assert "settled_at_goal" in src
     assert "lin_vel_std" in src and "ang_vel_std" in src, "각속도 항이 빠졌다"
     assert P.SETTLE_LIN_VEL_STD > 0 and P.SETTLE_ANG_VEL_STD > 0
-    assert 0.0 < P.SETTLE_REWARD_WEIGHT <= 15.0, (
+    # ★★fab_test67(사용자 결정): **weight 0 으로 뺐다.** 항·배선은 남긴다(계속 로깅).
+    #   삼중 곱(gate × near_goal × still)이라 세 인자가 중간값이면 곱이 죽는다 —
+    #   t66 실측 0.755 × 0.256 × 0.262 = 상한의 5%. 게다가 "멈추는 것"의 이득이
+    #   총보상의 0.08% 라, 정책이 배회하며 거리만 줄이는 쪽이 합리적 선택이 됐다.
+    #   되살릴 때는 `cup_between_jaws` 의 floor 패턴(0.3 + 0.7·still)을 먼저 검토할 것.
+    #   ⚠ 지금은 **정지를 요구하는 항이 없다** — 그 상태를 계약으로 못박아 둔다.
+    assert 0.0 <= P.SETTLE_REWARD_WEIGHT <= 15.0, (
         "정지 보너스가 lifting(15) 을 넘으면 파지보다 정지가 우선이 된다"
     )
     # ★★임계는 **실측 규모에 맞춰야** 신호가 산다. 처음에 0.10 m/s·1.00 rad/s 로 잡았다가
     #   보상이 학습 내내 정확히 0 이었다(test10). 실측은 0.444 m/s·3.43 rad/s 였고 그
     #   값에 옛 임계를 넣으면 품질이 0.0003·0.0021 이라 곱하면 신호가 사라진다.
-    measured_lin, measured_ang = 0.444, 3.432        # test8 정책, 쥐고 있을 때
+    # ⚠ 08.23 기준 실측을 **갱신했다.** 예전엔 test8 값(0.444 m/s·3.43 rad/s)을 박아
+    #   뒀는데, 그 사이 Fabrics 트랙이 0.193 m/s·1.473 rad/s 로 2.3 배 좋아졌다.
+    #   옛 값에 맞춘 임계(0.40/3.00)는 현재 영역에서 품질 0.55 로 포화해 "더 멈춰라"는
+    #   압력이 사라진다(사용자 관찰: "가만히 있질 못함"). 실측이 바뀌면 임계도 따라간다.
+    measured_lin, measured_ang = 0.193, 1.473        # fab_test7 best, 쥐고 있을 때
     assert 1.0 - math.tanh(measured_lin / P.SETTLE_LIN_VEL_STD) > 0.05, (
         "선속도 임계가 실측 대비 너무 빡빡해 보상 신호가 죽는다"
     )
@@ -266,20 +296,43 @@ def test_grasp_pose_is_a_bonus_never_a_gate():
     )
 
 
-def test_goal_is_a_specific_point_not_a_wide_range():
-    """★이송 목표는 **우리가 정하는 특정 점**이다(실기에서도 옮길 자리는 우리가 지정한다).
+def test_goal_is_the_user_specified_region_not_wider():
+    """★이송 목표는 **사용자가 지정한 중간 박스**(08.22: x±5 y±7 z±5 cm)다.
 
-    넓은 랜덤 범위는 정밀 도달과 정지를 동시에 어렵게 만든다 — test12 에서 goal_fine 이
-    상한의 8%, settle 이 7.8% 에 머문 이유 중 하나다.
+    이력: 처음엔 넓은 범위(test12: goal_fine 8%·settle 7.8% 정체)→ 점 ±2 cm 로 좁혀
+    test17 이 이송까지 성공 → pour 용 목표-조건부 이송을 위해 **의도적으로** 이만큼만
+    다시 넓혔다. 이보다 넓어지면 test12 의 정체가 돌아온다 — 상한을 계약으로 고정.
     """
-    span_x = P.GOAL_POS_X[1] - P.GOAL_POS_X[0]
-    span_y = P.GOAL_POS_Y[1] - P.GOAL_POS_Y[0]
-    span_z = P.GOAL_POS_Z[1] - P.GOAL_POS_Z[0]
-    for span in (span_x, span_y, span_z):
-        assert span <= 0.06, f"목표 범위가 넓다({span:.3f} m) — 특정 점이어야 한다"
+    # ★★fab_test77: E2(t75/76) 확대를 **되돌린다**. 산포를 키우면 조건부 추종 압력이
+    #   커진다는 가설이 실측으로 기각됐다 — 목표→지령 기울기가
+    #     t73(옛 상자) x 0.109 · y 0.297 · z 0.053
+    #     t75(넓힌 상자) x 0.099 · y 0.016 · z 0.006   ← **오히려 나빠졌다**
+    #   병목은 목표 분포가 아니라 **액션 축 포화**였다(t75 best 프로브: y mu 1.504 포화
+    #   99.1% · z mu 1.319 포화 86.4% · 덜 포화된 x 만 기울기가 산다). clamp 미분이 0 이라
+    #   포화된 축은 목표를 따라갈 수 없다. ⇒ 상자는 t73 기준선으로 되돌리고 처방은
+    #   `bounds_loss_coef` 로 건다(한 판에 한 변수).
+    assert P.GOAL_JITTER == (0.05, 0.07, 0.05), "목표 영역이 t73 기준선에서 벗어났다"
+    # ★상자는 반드시 **실측 도달 영역 안**이어야 한다 — 그게 test12 정체의 진짜 방지책이다.
+    _EPS = 1e-6   # 중심±jitter 산술의 부동소수 잔차
+    for (lo, hi), (map_lo, map_hi), ax in (
+        # 실측 도달 외곽 — t73 상자(x[0.36,0.46] y[0.17,0.31] z[0.385,0.485])를 감싼다.
+        # z 0.385 는 08.28 지도의 z=0.40 층(구멍 흩어짐)에 걸치지만 t73 이 4000ep 완주로
+        # 실증한 상자다 — 지도는 +x 정렬 제약 IK 라 실제 도달보다 보수적이다.
+        (P.GOAL_POS_X, (0.22, 0.52), "x"),
+        (P.GOAL_POS_Y, (0.10, 0.40), "y"),
+        (P.GOAL_POS_Z, (0.38, 0.56), "z"),
+    ):
+        assert lo >= map_lo - _EPS and hi <= map_hi + _EPS, (
+            f"{ax} 상자가 실측 도달 영역 밖으로 나갔다: [{lo}, {hi}]"
+        )
+    for jit, (lo, hi), c in zip(
+        P.GOAL_JITTER, (P.GOAL_POS_X, P.GOAL_POS_Y, P.GOAL_POS_Z), P.GOAL_POINT
+    ):
+        assert math.isclose(hi - lo, 2 * jit, abs_tol=1e-9)
+        assert math.isclose(0.5 * (lo + hi), c, abs_tol=1e-9)
     # 스폰 자리에 그대로 두는 것이 목표가 되면 "들어서 옮기기"가 성립하지 않는다
-    dz = P.GOAL_POINT[2] - P.CUP_SPAWN_Z
-    assert dz > 0.05, "목표가 스폰 높이와 가까우면 이송을 요구하지 못한다"
+    dz = P.GOAL_POS_Z[0] - P.CUP_SPAWN_Z
+    assert dz > 0.05, "목표 하한이 스폰 높이와 가까우면 이송을 요구하지 못한다"
 
 
 @pytest.mark.skipif(not _ROBOT_URDF.is_file(), reason="로봇 URDF 없음")
@@ -317,7 +370,10 @@ def test_left_arm_velocity_limit_matches_the_reference():
     src = _cfg_source()
     assert "velocity_limit_sim=P.ARM_VELOCITY_LIMIT" in src
     assert set(P.ARM_VELOCITY_LIMIT.values()) == {2.175, 2.61}
-    assert set(P.ARM_EFFORT_LIMIT.values()) == {40.0, 27.0, 7.0}
+    # ★★fab_test66: 액추에이터를 **오른팔 스타일**로 바꿨다 — kp 테이퍼(300/100/50/25),
+    #   effort 300(옛 40/27/7 은 URDF 기본값). 도달 실측: z 오차 30~46 → 16~26 mm,
+    #   j5 포화 456~727% → 0. 근거 전문은 preset ARM_IK_STIFFNESS 주석.
+    assert P.ARM_EFFORT_LIMIT == 300.0, "URDF 기본값(40/27/7)으로 되돌아갔다"
     # URDF 기본값으로 되돌아가지 않도록
     assert max(P.ARM_VELOCITY_LIMIT.values()) < 5.0
 
@@ -505,7 +561,11 @@ def test_gripper_action_commands_both_jaws_not_just_the_drive_joint():
     URDF 의 `<mimic>` 태그만 보고 "시뮬에도 있겠지"라고 넘기면 조용히 재발한다.
     """
     src = _cfg_source()
-    assert "BinaryJointPositionActionCfg" in src
+    # ⚠ 08.24 게이트 버전으로 교체됐다. 부분문자열이라 옛 단언이 그대로 통과해
+    #   화석이 될 뻔했다 — 명시적으로 게이트 버전을 요구한다.
+    assert "GatedBinaryJointPositionActionCfg" in src, (
+        "그리퍼가 게이트 없는 원본 액션으로 되돌아갔다"
+    )
     assert "P.GRIPPER_JOINT_NAMES" in src, "두 조 모두에 지령해야 한다"
     assert set(P.GRIPPER_JOINT_NAMES) == {"l_hj_gripper_1", "l_hj_gripper_2"}
     # 액추에이터 커버리지도 두 관절 모두 (없으면 무구동 자유이동)
@@ -562,17 +622,41 @@ def test_env_cfg_inherits_isaaclab_lift():
     assert "LiftEnvCfg" in bases
     src = _cfg_source()
     assert "isaaclab_tasks.manager_based.manipulation.lift" in src
-    # ★물려받은 6 개 term 의 weight 는 재정의하지 않는다. 신설은 jaw 수평 보너스 하나뿐이고
-    #   그 weight 는 preset 상수로만 온다(리터럴 금지 — 값이 코드에 흩어지지 않게).
-    inherited = (
-        "reaching_object", "lifting_object", "object_goal_tracking",
+    # ★물려받은 term 의 **weight** 는 재정의하지 않는다. 레시피가 보존되는 이유가 그 비율이다.
+    #   ⚠ 08.22 이 계약을 **좁혔다**. 원래는 `reaching_object` 의 재정의 자체를 금지했는데,
+    #     그 금지가 실제 버그를 고정하고 있었다: 레퍼런스 도달 보상은 컵 **원점**을 겨냥하고,
+    #     우리 shaker 는 원점(상면 +92 mm)이 그리퍼 통과 대역(+10~85 mm) **밖**이라
+    #     보상이 들어갈 수 없는 높이를 가리켰다(G3 실측 진입 오차 100.2 mm).
+    #     → 금지 대상을 "재정의"에서 **"weight/std 변경"**으로 바꾼다. 목표점 교정은 허용하되
+    #       레퍼런스 비율(1.1 / std 0.1)은 그대로여야 한다.
+    #     같은 오해를 공유한 테스트는 버그를 막지 못한다 — 이 파일에서 세 번째다.
+    frozen_weight = (
+        "lifting_object", "object_goal_tracking",
         "object_goal_tracking_fine_grained", "action_rate", "joint_vel",
     )
-    for name in inherited:
+    for name in frozen_weight:
         assert f"self.rewards.{name} = " not in src, f"{name} 을 재정의하지 말 것"
-    # 신설 term 은 보너스 셋(grasp_pose, settled_at_goal, grasp_closure)뿐이다.
-    # 판정 게이트를 늘리는 term 은 금지 — test6/test7 에서 학습을 죽였다.
-    assert src.count("RewTerm(") <= 3, "신설 term 은 보너스 셋뿐이다"
+    if "self.rewards.reaching_object = " in src:
+        blk = src[src.index("self.rewards.reaching_object = "):]
+        blk = blk[: blk.index(")\n\n")]
+        assert "weight=1.1" in blk and '"std": 0.1' in blk, (
+            "도달 보상은 목표점만 옮길 수 있다 — weight/std 는 레퍼런스 값 유지"
+        )
+    # 신설 term: grasp_pose · settled_at_goal · cup_between_jaws ·
+    #            grip_closure_when_enclosed + 도달 목표점 교정 1
+    # 판정 게이트를 늘리는 term 은 여전히 금지 — test6/test7 에서 학습을 죽였다.
+    # 신설: grasp_pose · settled_at_goal · cup_between_jaws · grip_closure_when_enclosed
+    #      · gate_rate(진단 weight 0) + 도달 목표점 교정 1
+    # ★fab_test65: **weight 0 진단 항 3종**(diag_act_z_mu/sat/cup_goal_dz)을 더했다.
+    #   z 액션 포화(t64: mu 1.336 · 90.3%)를 학습 중에 보기 위한 것이고 학습에는
+    #   영향이 없다. 상한을 그만큼만 올린다 — 실제 보상 term 은 여전히 6 개다.
+    # ★fab_test69: 진단 항에 x·y 액션 2축(mu/sat)을 더했다 — t67 의 진짜 병목은
+    #   y(mu 3.11 · 포화 99.7%)였는데 z 만 찍고 있어 판이 끝난 뒤에야 알았다.
+    #   전부 weight 0 이라 학습에는 영향이 없다.
+    # ★fab_test73: 목표 거리 진단 2종(컵 기준·TCP 기준)을 더했다 — 보상은 TCP 로
+    #   채점하지만 합격 판정은 컵이라, 둘이 벌어지는 순간을 상시로 봐야 한다.
+    assert src.count("weight=0.0") >= 8, "진단 항이 사라졌다(gate_rate + diag 7종)"
+    assert src.count("RewTerm(") <= 13, "신설 term 이 예상보다 많다"
 
 
 def test_smoothing_is_the_reference_curriculum_not_an_extra_term():
@@ -810,11 +894,12 @@ def test_relative_ik_seeds_from_previous_target_and_caps_windup_by_effort():
     assert "jacobian, self._prev_target" in act_src, "IK 씨앗이 직전 목표가 아니다"
     assert "self._max_tracking_error" in act_src
 
-    # 상한이 effort/강성 에서 파생돼야 한다 — 리터럴이면 액추에이터를 바꿨을 때 어긋난다.
+    # ★fab_test66: 이 상한은 더 이상 effort/강성 파생이 아니라 **경험적 안전 상한**이다.
+    #   effort 가 300 이 되면서 effort/kp 는 1~12 rad = anti-windup 무의미가 되는데,
+    #   검증된 도달 실측(16~26 mm)은 옛 상한 그대로 낸 값이라 그 값을 유지한다.
     for expr, val in P.ARM_IK_MAX_TRACKING_ERROR.items():
-        assert math.isclose(val * P.ARM_IK_STIFFNESS, val * P.ARM_IK_STIFFNESS)
         assert 0.0 < val < 0.5
-    # j5~7 은 effort 7 N·m 라 가장 작아야 한다.
+    # 원위 관절일수록 작아야 한다(팔 끝일수록 토크 여유가 적다).
     assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[5-7]"] < P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"]
     # 속도 한계로 잡던 값(v·dt≈0.026)으로 되돌아가면 j1-2 상한이 그 근처로 내려온다.
     assert P.ARM_IK_MAX_TRACKING_ERROR["l_aj_[1-2]"] > 0.05, "토크가 갇힌다"

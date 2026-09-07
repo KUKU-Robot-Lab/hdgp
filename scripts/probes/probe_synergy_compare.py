@@ -81,7 +81,7 @@ def set_synergy(basis, anchor, mins, maxs):
 # ---- B) tesollo 실측 PCA ----
 _pca_path = (
     Path(__file__).resolve().parents[1].parent
-    / "assets" / "demograsp_references" / f"tesollo_grasp_pca5_from_{SIDE}.pt"
+    / "assets" / "multi_obj" / "demograsp_references" / f"tesollo_grasp_pca5_from_{SIDE}.pt"
 )
 _d = torch.load(_pca_path, map_location="cpu", weights_only=False)
 _k = "basis_%s" % SIDE

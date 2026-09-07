@@ -24,6 +24,8 @@ from __future__ import annotations
 import dataclasses as _dc
 from dataclasses import dataclass, field
 
+from . import vendor_gains
+
 
 # =============================================================================
 # 자산
@@ -32,15 +34,18 @@ from dataclasses import dataclass, field
 class RobotAsset:
     """USD 파일 하나 = 자산 하나."""
 
-    name: str                  # "openarm_tesollo_bi_s_rl" (= USD 디렉터리/파일 이름)
+    name: str                  # "openarm_tesollo_bi_s_rl" (= USD 파일 이름)
     tag: str                   # run_naming.ASSET_TAGS 와 같은 어휘 ("a2")
     short: str                 # gym id / 로그 경로용 짧은 이름 ("bis")
     note: str = ""
+    # ★얇은 변형(physics 레이어만 교체)은 **디렉터리만** 다르고 파일명은 원본과 같다.
+    #   자산 신원(name/tag/urdf)은 원본 그대로여야 계약 테스트·warm 뱅크가 안 깨진다.
+    dir_name: str | None = None
 
     @property
     def usd_relpath(self) -> str:
         """`hdgp/assets/` 기준 상대 경로."""
-        return f"robot/{self.name}/{self.name}.usd"
+        return f"robot/{self.dir_name or self.name}/{self.name}.usd"
 
     @property
     def urdf_relpath(self) -> str:
@@ -51,6 +56,14 @@ class RobotAsset:
 TESOLLO_BI_S = RobotAsset(
     name="openarm_tesollo_bi_s_rl", tag="a2", short="bis",
     note="좌우 DG-5F-S 20 DOF. grasp_v1/v2 가 쓰는 현행 자산.",
+    # ★08.23 armhull 변형으로 전환 — 손(_hl_) 54개는 convexDecomposition 유지,
+    #   팔·몸통·헤드 20개만 convexHull. 자매 트랙 실측(arm5080 A/B, 256env):
+    #     처리량 +13.7% (런간 편차 1.6% 의 8배 = 실재)
+    #     force_max 36.23 → 32.84N · envelope_frac 0.242 → 0.236 (편차 안 = 변화 없음)
+    #   컵에 닿는 건 손뿐이고 팔 자기충돌은 Fabrics body_repulsion 이 계획 단계에서
+    #   이미 회피하므로 팔은 껍질로 충분하다. ★손까지 hull 로 하면 접촉력 4배(133N).
+    #   생성: scripts/tools/make_armhull_asset.py openarm_tesollo_bi_s_rl
+    dir_name="openarm_tesollo_bi_s_rl_armhull",
 )
 TESOLLO_BI = RobotAsset(
     name="openarm_tesollo_bi_rl", tag="a3", short="bi",
@@ -160,6 +173,30 @@ class RobotProfile:
     # palm 박스를 probe_workspace_reach 로 실측했는가(게이트: 오차<10mm 가 90% 이상).
     # False 면 다른 로봇 값을 물려받은 것이라 신뢰 금지 — 이번 사고의 원인이 정확히 그것이다.
     palm_box_verified: bool = False
+    # ★★손바닥 **앞쪽** 프레임. palm 원점은 손목 쪽이라 점 하나로는 접근 방향이
+    #   정의되지 않는다 — palm 과 palm_ee 두 점이 있어야 접근 축이 생기고
+    #   정책이 "손바닥이 물체를 향하는가"를 볼 수 있다(08.24 접근축 pitch 20° 결함).
+    #   자산에 없으면 None — obs 차원이 그만큼 줄어든다(계약이 대조한다).
+    palm_ee_body: str | None = None
+    # envelope_frac 의 **분모**와 d_side 의 wrap 그룹 평균에 들어가는 손가락만.
+    # ★★08.25 tesollo pinky 는 5 지 분모에 **남는다**. 다만 08.22 기각("굴곡축 없음")도
+    #   08.24 번복("멀쩡하다")도 반쪽이었다 — palm 좌표계 축 실측이 정확한 답이다:
+    #     · index/middle/ring : _2·_3·_4 가 굴곡축(+y). 밑동 포함 3 개.
+    #     · pinky             : _3·_4 만 굴곡축. _1 은 +z(회전) · _2 는 +x.
+    #   즉 pinky 는 **밑동 굴곡이 기본 자세에 없다**. 그런데 _1 이 굴곡 자유도를
+    #   재분배해서, q1=60° 로 두면 _2 의 굴곡성분이 0.00 → 0.87 이 되어 다른 4 지와
+    #   같은 "외전 1 + 굴곡 3" 구조가 된다(FK: 굴곡 50% 에서 pinky_4 가 파지중심에서
+    #   ring_4 보다 +26.2mm 뒤처지던 것이 −5.1mm 로 뒤집힌다).
+    #   그래서 _1 을 0 에 얼렸던 것이 진짜 결함이었다 — 학습 실측 pinky 접촉률 0.001
+    #   (다른 4 지 0.50~0.86), 양팔 독립 런에서 동일. 분모가 아니라 배선 문제다.
+    #   → _tesollo_hand_rest 가 _1 을 ±60° 로 고정하고 frozen 에서 _2 를 뺐다.
+    envelope_fingers: tuple = ()
+    # 감쌈 판정의 손바닥면 축 — wrap 마디 **링크 로컬** 단위벡터, 손가락별.
+    # 유도: cross(굴곡축, 장축). 부호는 반드시 **자산별 실측**(probe_palmar_sign) —
+    # 추측 부호는 판정을 조용히 뒤집어 손등 파지를 감쌈으로 센다(자매 트랙이
+    # GRIPPER 프로필을 의도적 공란으로 둔 이유). 공란이면 palmar 필터를 요구하는
+    # 태스크(require_palmar_contact)가 부팅에서 fail-loud 로 죽는다.
+    palmar_axis_local: dict = field(default_factory=dict)
     notes: tuple = ()
 
     # ------------------------------------------------------------------
@@ -192,43 +229,72 @@ class RobotProfile:
 
 # =============================================================================
 # 액추에이터 게인 — 근거
-#   팔  400/80 + friction(0.213/0.493/0.151)  ← real2sim 07.29 우팔 캘리브
+#   팔  **벤더 control_gains.yaml 만**(2026-09-06 사용자 확정)  ← `vendor_gains`
+#       kp 70/70/70/60/10/10/10 · kd 2.75/2.5/2.0/2.0/0.7/0.6/0.5
+#       ⚠구 400/80(real2sim 07.29 캘리브)은 폐기했다. 실기보다 4~10배 뻣뻣해
+#         정책 진동이 팔에 그대로 실렸고, 무엇보다 **실기 모터에 들어가는 값이
+#         아니었다** — 다른 게인으로 학습한 정책은 배포할 수 없다(09.03 우팔 d3).
+#       ⚠게인이 바뀌면 동특성이 바뀐다 ⇒ 기존 체크포인트와 **호환되지 않는다**
+#         (FRESH 학습 전용).
 #   손  k5/kd2 + effort 1.5 N·m               ← 08.16 S1~S4 스윕
 #       (구 400/60 은 토크 포화 레짐: 요구 143 N·m = effort limit 의 19배라
 #        목표를 더 밀어도 힘이 안 오른다 = retighten/squeeze 실패의 공통 원인)
 # =============================================================================
-_ARM_GAINS = dict(stiffness=400.0, damping=80.0)
 # ★URDF/USD 실측 effort limit [N·m] — 부위별로 다르다.
 #   USD 에 이미 들어 있어(maxForce 40/40/27/27/7/7/7) 지정하지 않아도 적용되지만,
 #   **명시해 두면 자산이 바뀌었을 때 조용히 달라지지 않는다.**
 _ARM_EFFORT = {"proximal": 40.0, "elbow": 27.0, "wrist": 7.0}
-_HAND_GAINS = dict(stiffness=5.0, damping=2.0, effort_limit_sim=1.5)
+#: actuator 그룹 ↔ 관절 번호. friction 이 부위마다 달라 그룹이 나뉜다(게인은 벤더값).
+_ARM_GROUPS = {"proximal": (1, 2, 3), "elbow": (4,), "wrist": (5, 6, 7)}
+_ARM_GROUP_EXPR = {"proximal": "[1-3]", "elbow": "4", "wrist": "[5-7]"}
+# ★2026-09-06 사용자 확정: DG-5F 손도 **벤더 기본(p 1.5 · d 0)** 으로 통일한다.
+#   위 08.25 KUKA 감쇠비 논의(5.0/0.165)와 08.16 스윕(kp 5.0)은 그 결정으로 대체됐다 —
+#   둘 다 실기 드라이버가 받는 값이 아니었다. effort 한계 1.5 N·m 는 게인이 아니라 유지.
+#   ⚠벤더 d=0 이다. sim 관절에는 실기 손의 기계 마찰이 없으므로 채터가 보이면
+#     damping 이 아니라 `friction` 으로 메운다(마찰은 벤더 규칙 밖).
+_TESOLLO_HAND_EFFORT = 1.5
+# ★RH56F1 손은 **벤더 PD 가 존재하지 않는다**(RS-485 위치 서보 — vendor_gains.NO_VENDOR_PD).
+#   규칙의 명시 예외라 기존 값을 그대로 둔다.
+_RH56_HAND_GAINS = dict(stiffness=5.0, damping=0.165, effort_limit_sim=1.5)
 _FRICTION = {"proximal": 0.213, "elbow": 0.493, "wrist": 0.151}
 
 
 def _arm_actuators(prefix: str, side: str) -> dict:
-    """한쪽 팔의 부위별 actuator 3그룹 (friction 이 부위마다 다르다)."""
+    """한쪽 팔의 부위별 actuator 3그룹.
+
+    게인은 관절마다 `vendor_gains` 에서 온다(숫자를 여기 적지 않는다). 그룹이 나뉜
+    이유는 friction·effort limit 이 부위마다 다르기 때문이다.
+    """
     return {
-        f"{prefix}_arm_proximal": dict(joint_names_expr=[f"{side}_aj_[1-3]"],
-                                       friction=_FRICTION["proximal"],
-                                       effort_limit_sim=_ARM_EFFORT["proximal"], **_ARM_GAINS),
-        f"{prefix}_arm_elbow":    dict(joint_names_expr=[f"{side}_aj_4"],
-                                       friction=_FRICTION["elbow"],
-                                       effort_limit_sim=_ARM_EFFORT["elbow"], **_ARM_GAINS),
-        f"{prefix}_arm_wrist":    dict(joint_names_expr=[f"{side}_aj_[5-7]"],
-                                       friction=_FRICTION["wrist"],
-                                       effort_limit_sim=_ARM_EFFORT["wrist"], **_ARM_GAINS),
+        f"{prefix}_arm_{part}": dict(
+            joint_names_expr=[f"{side}_aj_{_ARM_GROUP_EXPR[part]}"],
+            friction=_FRICTION[part], effort_limit_sim=_ARM_EFFORT[part],
+            **vendor_gains.subset(side, joints))
+        for part, joints in _ARM_GROUPS.items()
     }
 
 
-_HEAD_ACTUATOR = {"head": dict(joint_names_expr=["head_j_(pan|tilt)"], **_ARM_GAINS)}
+# ★머리는 Dynamixel 이라 **OpenArm 벤더 게인이 적용되지 않는다**(그 파일은 팔 7관절만
+#   담는다). 실기 머리는 위치 모드 + I게인 400 이고 정책이 명령하지 않는다(상태만 읽는다)
+#   — sim 에서는 자세를 붙들어 두기만 하면 되므로 팔과 무관한 자체 값을 쓴다.
+_HEAD_GAINS = dict(stiffness=400.0, damping=80.0)
+_HEAD_ACTUATOR = {"head": dict(joint_names_expr=["head_j_(pan|tilt)"], **_HEAD_GAINS)}
+
+# ★스톡 2지 그리퍼의 조(prismatic, m). **벤더 게인을 쓸 수 없는 자리**다:
+#   벤더값 GRIPPER_KP 5.0 / GRIPPER_KD 0.1(openarm_real v10_simple_hardware.hpp)은
+#   모터축 회전 게인[N·m/rad]인데 URDF 조는 직동[m]이라 리드스크류 환산 없이는
+#   같은 물리량이 아니다(환산은 아직 아무도 하지 않았다 — 미해결 항목).
+#   숫자는 그래서 이전 값을 그대로 둔다. 배포된 좌 그리퍼 트랙은 자체 cfg 에서
+#   2000/100 을 쓴다(`gripper/left/grasp_sensor/grasp_left_env_cfg.py`).
+#   ⚠팔 액추에이터 게인을 조에 물려 쓰던 것을 끊은 자리다 — 조는 팔과 무관하다.
+_GRIPPER_JAW_GAINS = dict(stiffness=400.0, damping=80.0)
 
 _TESOLLO_FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 
 
 def _tesollo_hand_actuator(prefix: str, side: str) -> dict:
-    return {f"{prefix}_hand": dict(
-        joint_names_expr=[f"{side}_hj_[a-z]+_[1-4]"], **_HAND_GAINS)}
+    return vendor_gains.hand_actuator(f"{prefix}_hand", [f"{side}_hj_[a-z]+_[1-4]"],
+                                      effort_limit_sim=_TESOLLO_HAND_EFFORT)
 
 
 def _tesollo_hand_rest(side: str) -> dict:
@@ -245,6 +311,14 @@ def _tesollo_hand_rest(side: str) -> dict:
     q = {f"{side}_hj_{f}_{j}": 0.0 for f in _TESOLLO_FINGERS for j in (1, 2, 3, 4)}
     q[f"{side}_hj_thumb_2"] = sg * -1.57
     q[f"{side}_hj_thumb_3"] = sg * -0.5
+    # ★★08.25 pinky_1 을 한계(60°)에 고정한다. 이 관절은 굴곡을 만드는 게 아니라
+    #   **굴곡 자유도를 재분배**한다(palm 좌표계 축 실측): q1=0 이면 _2 의 굴곡성분이
+    #   0.00 이라 밑동이 아예 안 접히고 _3/_4 끝마디만 굽는다. q1=60° 에서 _2 가
+    #   0.87 로 굴곡축이 되어 다른 4 지와 같은 "외전 1 + 굴곡 3" 구조가 된다.
+    #   FK 실측(굴곡 50%): pinky_4 가 파지중심에서 ring_4 보다 +26.2mm 뒤처지던 것이
+    #   q1=60° 에서 -5.1mm 로 뒤집힌다. q1=0 고정이 pinky 접촉률 0.001 의 원인이었다.
+    #   ★한계 부호가 좌우 반대다(우 [0,+60] · 좌 [-60,0]) — thumb_2 와 같은 부류.
+    q[f"{side}_hj_pinky_1"] = sg * 1.047
     return q
 
 
@@ -336,6 +410,7 @@ def _tesollo_profile(
         fabric_class=fabric_class,
         fabric_robot_dir=fabric_dir,
         palm_body=f"{side}_hl_palm",
+        palm_ee_body=f"{side}_hl_palm_ee",   # URDF 실측 palm+(28,0,40)mm
         fabric_joint_order=(
             tuple(f"{side}_aj_{i}" for i in range(1, 8))
             + tuple(f"{side}_hj_{f}_{j}" for f in _TESOLLO_FINGERS for j in (1, 2, 3, 4))
@@ -347,6 +422,16 @@ def _tesollo_profile(
         },
         contact_group_a=("thumb",),
         contact_group_b=("index", "middle", "ring", "pinky"),
+        envelope_fingers=("thumb", "index", "middle", "ring", "pinky"),  # 5 지(필드 주석)
+        # 손바닥면 = 링크 로컬 **+y**. 좌우 동일(USD 가 미러가 아니라 같은 프레임 규약).
+        # ①URDF 유도: wrap 마디 굴곡축 (0,0,1) × 장축 (1,0,0) = (0,1,0).
+        # ②실측(probe_palmar_sign, 컵을 파지중심에 두고 70% 폐합, 뼈축 성분 제거):
+        #   우팔 +y 합계 +270mm(9/10 마디 양수) · 좌팔 +175mm(9/10). 반대축 −y 는
+        #   일관 음수, ±z 는 부호가 갈려(+52~−73mm) 배제. 유일한 예외는 엄지 원위
+        #   (우 thumb_4 −5.4 · 좌 thumb_3 −39.7)로, 스크립트 폐합에서 엄지가 컵을
+        #   지나쳐 만 자세 탓이다 — 판정은 마디 단위라 그 마디만 제외된다.
+        # ★자산이 바뀌면 다시 실측할 것(자매 sensor 자산은 palmar 가 (1,0,0)이다).
+        palmar_axis_local={f: (0.0, 1.0, 0.0) for f in _TESOLLO_FINGERS},
         fingertip_bodies=tuple(f"{side}_hl_{f}_tip" for f in _TESOLLO_FINGERS),
         # URDF 한계로 판별: index/middle/ring 의 _1 은 작고 비대칭(외전),
         # _2 는 큰 단방향(MCP 굴곡). ★pinky 만 _1=굴곡 / _2=외전 으로 뒤바뀐다.
@@ -355,10 +440,14 @@ def _tesollo_profile(
         #   grasp_v2 는 thumb_1/thumb_2/index_1/pinky_1/pinky_2 를 고정했다가 ADR 로 열었다.
         #   여기서는 _1 을 전부 고정해 손가락이 벌어지는 자유도를 없앤다.
         #   → 남는 자유도 = 굴곡(_2,_3,_4)뿐이라 손가락이 평행 평면에서만 움직인다.
+        #   ★★08.25 pinky_2 를 고정 목록에서 **뺐다**. pinky 만 _1=회전 / _2=굴곡 으로
+        #     뒤바뀌어 있어(축 실측) _1·_2 를 둘 다 얼리면 밑동 굴곡이 사라진다 —
+        #     실측 접촉률 0.001 의 원인. _1 은 _tesollo_hand_rest 가 60° 로 고정하고
+        #     _2/_3/_4 를 열어 다른 4 지와 같은 구조로 맞춘다.
         frozen_hand_joints=(
             f"{side}_hj_thumb_1", f"{side}_hj_thumb_2",
             f"{side}_hj_index_1", f"{side}_hj_middle_1",
-            f"{side}_hj_ring_1", f"{side}_hj_pinky_1", f"{side}_hj_pinky_2",
+            f"{side}_hj_ring_1", f"{side}_hj_pinky_1",
         ),
         init_joint_pos={
             **_arm_home(side), **_tesollo_hand_rest(side),
@@ -435,7 +524,7 @@ SENS_RIGHT = _dc.replace(
     actuator_specs={
         **_arm_actuators("active", "r"), **_tesollo_hand_actuator("active", "r"),
         **_arm_actuators("idle", "l"),
-        "idle_gripper": dict(joint_names_expr=["l_hj_gripper_[1-2]"], **_ARM_GAINS),
+        "idle_gripper": dict(joint_names_expr=["l_hj_gripper_[1-2]"], **_GRIPPER_JAW_GAINS),
         **_HEAD_ACTUATOR,
     },
 )
@@ -463,6 +552,7 @@ SENS_LEFT_GRIPPER = RobotProfile(
     finger_wrap_bodies={"jaw1": (), "jaw2": ()},
     contact_group_a=("jaw1",),
     contact_group_b=("jaw2",),
+    envelope_fingers=("jaw1", "jaw2"),   # 2지 그리퍼는 양 jaw 접촉이 곧 감쌈
     fingertip_bodies=("l_hl_gripper_left_finger", "l_hl_gripper_right_finger"),
     frozen_hand_joints=(),      # 2지 그리퍼는 1-DOF, 교차 불가
 
@@ -474,7 +564,7 @@ SENS_LEFT_GRIPPER = RobotProfile(
     },
     actuator_specs={
         **_arm_actuators("active", "l"),
-        "active_gripper": dict(joint_names_expr=["l_hj_gripper_[1-2]"], **_ARM_GAINS),
+        "active_gripper": dict(joint_names_expr=["l_hj_gripper_[1-2]"], **_GRIPPER_JAW_GAINS),
         **_arm_actuators("idle", "r"), **_tesollo_hand_actuator("idle", "r"),
         **_HEAD_ACTUATOR,
     },
@@ -502,8 +592,9 @@ def _rh56_hand_rest(side: str) -> dict:
 
 
 def _rh56_hand_actuator(prefix: str, side: str) -> dict:
+    """★벤더 PD 없음(NO_VENDOR_PD['rh56f1_hand']) — 벤더 규칙의 명시 예외."""
     return {f"{prefix}_hand": dict(
-        joint_names_expr=[f"{side}_hj_[a-z]+_[1-4]"], **_HAND_GAINS)}
+        joint_names_expr=[f"{side}_hj_[a-z]+_[1-4]"], **_RH56_HAND_GAINS)}
 
 
 def _rh56_profile(*, side: str, spawn_center: tuple) -> RobotProfile:

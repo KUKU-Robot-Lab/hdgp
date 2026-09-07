@@ -1,0 +1,169 @@
+# grasp_fj SAPG (Track B) — ★09.07 B-iv: 학습 하이퍼는 **fj_b1 그대로**, SAPG 는 그 위의 플래그 덮개.
+# ★이 태스크는 **벤더 rl_games**(hdgp/vendor/rl_games_sapg)를 PYTHONPATH 앞에 붙여야 돈다.
+#   설치본 rl_games 1.6.1 에는 SAPG 가 없어 expl_* 키가 조용히 무시된다(= 그냥 PPO).
+#
+# SAPG 는 별도 알고리즘이 아니라 PPO 위의 플래그 덮개다. 환경을 블록으로 나눠 블록마다
+# 다른 entropy 계수를 주고(마지막 블록 = 0 = 리더), 팔로워가 굴린 경험을 리더 라벨로
+# 다시 붙여 리더 학습에 섞는다(`use_others_experience: lf`).
+#
+# ★왜 b1 인가(09.07 매칭 에포크 대조, 5런 b1/b3/b4/b5/b6):
+#   b1→b2 에서 9개 키가 한꺼번에 바뀌었다(concat_input/output · mixed_precision · lr · entropy ·
+#   e_clip · mini_epochs · bound_loss_type · bounds_loss_coef · score_to_win). b3~b6 는 전부 그 위에서
+#   탐색만 바꾼 것이고, 넷 모두 e25~50 에 손을 뻗다 e100~150 에 무너져 do-nothing 상수(reward ≈ 1.0)에
+#   붙었다(e300 close_gate 0.02~0.11 · ft_dist 0.35~0.65 로 손이 **멀어진다**). b1 만 단조 상승
+#   (e150 close 0.81 · lifted 0.18, e300 lifted 0.73). 탐색 계수는 붕괴에서 빠져나오는 **시간**만
+#   바꿨다(b4 568 · b3 1865 · b2 영원히). → 9개 키를 b1 로 되돌리고 SAPG 덮개만 남긴다.
+#   이번 런이 같은 서명으로 무너지면 범인은 덮개(lf 재라벨 · coef_cond σ · obs +1)로 좁혀진다.
+# ★`entropy_coef: 0.0` 은 **쓰이지 않는 값**이다. expl 경로가 그 줄을 건너뛰고
+#   linspace(0.5, 0, 블록수) × expl_reward_coef_scale 을 쓴다(a2c_continuous.calc_gradients).
+#   8,192 env ÷ 2,048 = 4블록, scale 0.004 → [0.002, 0.00133, 0.00067, 0.0]. 상단 = b1 의 균일 0.002.
+# ★num_envs 는 expl_coef_block_size 의 배수여야 하고 **블록이 2개 이상**이어야 한다(런처가 검사).
+# ★minibatch: 증강 배치 = 8,192×16 + 2,048×16(lf, 리더 라벨 한 블록) = 163,840 / 32,768 = 5개.
+#   b4~b6 는 yaml 65,536 을 CLI 로 32,768 로 덮어 돌았다(dump 로 확인) — 실제 돈 값을 yaml 에 고정한다.
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0    # b1. (b4~b6 는 SimToolReal 값 10.0)
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        # ★포크는 fixed_sigma 가 **문자열**이다. coef_cond = 블록마다 sigma 행을 따로 학습(SAPG 필수).
+        #   b1 은 True(한 행 공유)였다 — 덮개 때문에 b1 과 다른 유일한 network 키.
+        #   True 를 이 포크에 쓰면 sigma 가 Linear 가 되어 초기화에서 죽는다.
+        fixed_sigma: coef_cond
+    mlp:
+      units: [1024, 1024, 512, 512]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    rnn:
+      name: lstm
+      units: 1024
+      layers: 1
+      before_mlp: True
+      layer_norm: True
+      # b1: True/True. b2 부터 SimToolReal 정렬로 False/False 였다 — MLP 가 LSTM 은닉만 보게 되어
+      #   순간 관측을 직접 못 쓴다. 9개 키 중 붕괴 후보 1순위지만 분리 실험은 안 했다(전부 되돌린다).
+      concat_input: True
+      concat_output: True
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: agn_grasp_fj-lstm-sapg
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False   # b1
+    normalize_input: True
+    normalize_value: True
+    # ★True 필수(DESIGN §6): 이 트랙은 time-out(600 step)과 max_goals 로 **truncation** 이 잦다.
+    #   IsaacLab rl_games 래퍼가 `extras["time_outs"]=truncated` 를 채우고 rl_games 는
+    #   value_bootstrap 일 때만 그걸 읽어 V(s') 를 얹는다. False 면 truncation=termination
+    #   이 되어 목표 근처에서 미래 보상 절벽이 생긴다.
+    value_bootstrap: True
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.99
+    tau: 0.95
+    learning_rate: 3e-4   # b1
+    lr_schedule: adaptive
+    schedule_type: standard
+    kl_threshold: 0.016
+    # ★b1 은 100000 이었다. 되돌리지 **않는다** — rl_games 는 이 값을 shaping 전 원본 에피소드 보상과
+    #   비교해 'Network won!' 으로 조기 종료한다(a2c_common). 이 보상의 이론 상한 = 50 목표 × 1000 + 300
+    #   ≈ 50,300 이라 100000 은 여유 2× 뿐이다(kp_a1 실측 최고 21,260). 학습 하이퍼가 아니라 정지 조건.
+    score_to_win: 1000000
+    max_epochs: 20000
+    save_best_after: 100
+    save_frequency: 200
+    print_stats: True
+    grad_norm: 1.0
+    # ★SAPG 에서 이 값은 **쓰이지 않는다** — a2c_continuous.calc_gradients 가
+    #   expl 경로일 때 블록별 계수로 갈아끼운다. b1 의 0.002 는 아래 사다리 상단으로 옮겼다.
+    entropy_coef: 0.0
+    truncate_grads: True
+    e_clip: 0.2   # b1
+    horizon_length: 16
+    minibatch_size: 32768
+    mini_epochs: 4   # b1
+    critic_coef: 4
+    clip_value: True
+    seq_length: 16
+    # ★b1 그대로 = bounds loss **꺼짐**. 'regularization'(미국식 z)은 rl_games 의 'regularisation'/'bound'
+    #   어느 분기에도 안 걸린다(b1 6,500 epoch 내내 losses/bounds_loss 정확히 0.000 실측). 오타를 못 본 게
+    #   아니라 b1 의 **실효 상태**를 재현하는 것이다 — b2 가 'bound' 로 바꾼 것이 9개 변경 중 하나였다.
+    #   ★bound 계열은 μ 만 벌한다. σ 는 어느 분기도 건드리지 않는다.
+    bound_loss_type: regularization
+    bounds_loss_coef: 0.005   # b1 (위 때문에 실효 0)
+    # ★설치본·포크 기본값이 모두 True 지만, 두 트리에서 기본값이 갈리면 조용히 달라지므로 명시한다.
+    zero_rnn_on_done: True
+
+    # ================== SAPG 덮개 (원본 SimToolRealSAPG.yaml 과 동일 키) ==================
+    use_others_experience: lf        # 리더가 팔로워 경험으로도 학습한다
+    off_policy_ratio: 1.0            # 자기 롤아웃 + 다른 블록 하나
+    expl_type: mixed_expl_learn_param  # 블록 식별자를 학습되는 32차원 벡터로 바꾼다
+    expl_reward_type: entropy        # 내재보상 모델 없음 → 블록별 entropy 계수만 산다
+    expl_reward_coef_embd_size: 32
+    # ★09.07 B-iv: 사다리 = linspace(0.5, 0, 4) × 0.004 = [0.002, 0.00133, 0.00067, 0.0].
+    #   상단 0.002 = b1 의 전 env 균일값. b5 가 같은 0.004 로 b4(0.002)에 뒤진 적이 있지만 그건
+    #   SimToolReal 하이퍼 위에서였고, 다섯 런의 붕괴 서명이 같아 scale 은 변별 변수가 아니었다.
+    expl_reward_coef_scale: 0.004
+    # ★09.07 B-i: 16,384 는 CUDA 700 으로 못 돌아 8,192 로 내렸는데 이 줄을 안 고쳐
+    #   블록이 조용히 4 → **2** 가 됐다(fj_b4 실측: 두 블록 엔트로피 31.48/31.47, 구분 없음).
+    #   8,192 ÷ 2,048 = 4블록. 배치 수학은 num_envs×horizon 이라 이 값과 무관하다.
+    expl_coef_block_size: 2048       # ★num_envs 8192 ÷ 2048 = 4블록
+
+    # has_central_value 는 지정하지 않는다 — rl_games 가 central_value_config 존재 여부로 자동 판정한다.
+    central_value_config:
+      minibatch_size: 32768
+      mini_epochs: 4   # b1
+      learning_rate: 1e-4   # b1 (critic 은 b1 도 1e-4)
+      kl_threshold: 0.016
+      clip_value: True
+      normalize_input: True
+      truncate_grads: True
+
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [1024, 1024, 512, 512]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
+        # critic 은 **MLP**(논문 구조) — 특권 정보를 받아 부분관측이 아니므로 은닉상태의 이득이 작다.
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True

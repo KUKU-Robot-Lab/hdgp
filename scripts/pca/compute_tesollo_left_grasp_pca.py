@@ -12,7 +12,7 @@
      재구성 RMS·주각(principal angles).
   4. 물체별 PCA 계수 시그니처 (신규 basis 투영 mean/std).
 출력:
-  - assets/demograsp_references/tesollo_grasp_pca5_from_left.pt  (basis·범위·메타)
+  - assets/multi_obj/demograsp_references/tesollo_grasp_pca5_from_left.pt  (basis·범위·메타)
   - docs/pca/left_grasp_pca_lstm_test7.md  (사람이 읽는 보고서)
 
 실행: python3 scripts/pca/compute_tesollo_left_grasp_pca.py [--npz <path>]
@@ -32,7 +32,7 @@ REPO = Path(__file__).resolve().parents[2]
 LEFT_PKG = REPO / "source/openarm/openarm/tesollo/left/grasp_v2"
 RIGHT_PKG = REPO / "source/openarm/openarm/tesollo/right/grasp_v2"
 DEFAULT_NPZ = REPO / "data/left_grasp_poses_lstm_test7.npz"
-OUT_PT = REPO / "assets/demograsp_references/tesollo_grasp_pca5_from_left.pt"
+OUT_PT = REPO / "assets/multi_obj/demograsp_references/tesollo_grasp_pca5_from_left.pt"
 OUT_MD = REPO / "docs/pca/left_grasp_pca_lstm_test7.md"
 N_PC = 5
 

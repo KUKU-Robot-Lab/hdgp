@@ -62,6 +62,18 @@ class PourWarmStateBank:
     num_contacts: torch.Tensor         # (N,)
     source_meta: dict[str, float]
     source_paths: tuple[str, ...]
+    # ★수집 당시 각 상태가 **어느 물체**에서 나왔는가 (다물체 뱅크 전용, (N,)).
+    #   `MultiAssetSpawnerCfg(random_choice=False)` 는 env_i 의 물체를 `i % N` 로 고정한다.
+    #   그래서 복원은 **같은 물체에서 수집한 상태**에서만 골라야 한다 — 안 그러면 큰 컵
+    #   자세(s130 컵-손 61.9mm)를 작은 컵 env(s085 45.8mm)에 넣게 되고 파지가 성립하지
+    #   않는다. 구 뱅크에는 없으므로 None 을 허용한다(호출부가 fallback 을 고른다).
+    object_spec_idx: torch.Tensor | None = None
+    # ★손 관절 **지령** (N, 20). `hand_joint_pos` 는 컵을 누르며 멈춘 **측정**이다.
+    #   PD 에서 힘을 만드는 것은 위치 오차이므로, 파지를 유지시키려면 hold 목표로
+    #   **이쪽**을 써야 한다. 측정을 목표로 주면 오차가 0 이 되어 파지력이 사라진다
+    #   (09.01 실측: 손가락이 최대 80° 벌어지고 컵이 사이에 끼워지기만 함).
+    #   구 뱅크에는 없으므로 None 을 허용하고, **소비 시점에** fail-loud 한다.
+    hand_joint_pos_target: torch.Tensor | None = None
 
     @property
     def num_states(self) -> int:
@@ -128,7 +140,30 @@ class PourWarmStateBank:
             num_contacts=_to_t(merged["num_contacts"], device),
             source_meta={k: float(v) for k, v in meta.items()},
             source_paths=tuple(str(p) for p in resolved),
+            object_spec_idx=_merged_spec_idx(chunks, device),
+            hand_joint_pos_target=_merged_optional(chunks, "__hand_target__", device),
         )
+
+
+def _merged_optional(chunks: list[dict], key: str, device) -> "torch.Tensor | None":
+    """선택 데이터셋은 **전 파일에 있어야** 이어붙인다. 하나라도 없으면 None.
+
+    일부만 있는 채로 섞으면 "어떤 상태는 지령이 있고 어떤 상태는 없는" 뱅크가 되어,
+    파지가 되는 env 와 안 되는 env 가 뒤섞인다 — 가장 찾기 어려운 종류의 버그다.
+    """
+    parts = [c.get(key) for c in chunks]
+    if any(p is None for p in parts):
+        return None
+    return _to_t(np.concatenate(parts, axis=0), device)
+
+
+def _merged_spec_idx(chunks: list[dict], device) -> "torch.Tensor | None":
+    """물체 인덱스는 **전 파일에 있어야** 이어붙인다. 하나라도 없으면 None 이다 —
+    일부만 있는 채로 섞으면 어느 상태가 어느 컵인지 모르는 뱅크가 된다."""
+    parts = [c.get("__object_spec_idx__") for c in chunks]
+    if any(p is None for p in parts):
+        return None
+    return _to_t(np.concatenate(parts, axis=0), device).long()
 
 
 def _to_t(arr: np.ndarray, device) -> torch.Tensor:
@@ -192,6 +227,15 @@ def _load_path(path: Path) -> dict[str, np.ndarray]:
         out: dict[str, np.ndarray] = {
             key: np.asarray(grp[key], dtype=np.float32) for key in _DATASETS
         }
+        # 선택 데이터셋 — 없으면 None. 필수로 두면 구 뱅크가 전부 막힌다.
+        out["__object_spec_idx__"] = (  # type: ignore[assignment]
+            np.asarray(grp["object_spec_idx"], dtype=np.float32)
+            if "object_spec_idx" in grp else None
+        )
+        out["__hand_target__"] = (  # type: ignore[assignment]
+            np.asarray(grp["hand_joint_pos_target"], dtype=np.float32)
+            if "hand_joint_pos_target" in grp else None
+        )
         # 수치 메타만 로드. grasp_v1/v7_2 collector가 기록하는 문자열 메타
         # (cup_z_mode="actual_lifted", export_mode=...)는 로더 계약상 불필요하므로 건너뛴다.
         # (float() 강제 변환 시 문자열에서 ValueError → warm-state 로드 전체 실패 방지)

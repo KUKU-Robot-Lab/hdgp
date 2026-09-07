@@ -78,7 +78,31 @@ import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
 from rl_games.torch_runner import Runner  # noqa: E402
 
-import openarm.tesollo  # noqa: F401,E402
+# ★전 트랙 등록. `openarm.tesollo` 만 import 하면 agnostic·gripper 트랙 태스크는
+#   gym 에 등록조차 되지 않아 --task 로 지정해도 "task not found" 로 죽는다.
+import openarm.tasks  # noqa: F401,E402
+
+# 이 하네스는 grasp_v1 계보의 **외란 프로토콜**을 잰다(wrench/rotation 램프 × 래치 생존).
+# 그 기구가 없는 태스크에서는 측정 자체가 정의되지 않는다 — 루프 깊은 곳에서 raw
+# AttributeError 로 죽는 대신 진입 시점에 사유를 밝히고 멈춘다.
+REQUIRED_ENV_ATTRS = (
+    "_object_names",
+    "lift_ready_latched_buf",
+    "hand_dof_indices",
+)
+REQUIRED_CFG_ATTRS = ("wrench_max_accel", "hold_rotation_perturb_max_accel")
+
+
+def assert_supported(uenv, task: str) -> None:
+    missing = [a for a in REQUIRED_ENV_ATTRS if not hasattr(uenv, a)]
+    missing += [f"cfg.{a}" for a in REQUIRED_CFG_ATTRS if not hasattr(uenv.cfg, a)]
+    if missing:
+        raise SystemExit(
+            f"[eval] '{task}' 는 이 하네스의 외란 프로토콜을 갖추지 않았다 — 미노출: "
+            f"{', '.join(missing)}\n"
+            f"       이 스크립트는 grasp_v1 계보 전용이다(래치 생존 × wrench 램프). 일반 지표는 "
+            f"`play.py --eval_episodes N` 을 쓰라 — 어댑터가 없으면 공통 지표로 떨어진다."
+        )
 from isaaclab_rl.rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
 
@@ -107,6 +131,7 @@ def main(env_cfg, agent_cfg):
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
     uenv = env.unwrapped
+    assert_supported(uenv, args_cli.task)
     _max_steps = int(uenv.max_episode_length)
     if _need > _max_steps:
         raise RuntimeError(

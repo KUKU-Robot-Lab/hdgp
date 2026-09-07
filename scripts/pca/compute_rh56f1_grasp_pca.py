@@ -17,8 +17,8 @@ from pathlib import Path
 from sklearn.decomposition import PCA
 
 REPO = Path("/home/user/rl_ws/hdgp")
-SRC = REPO / "assets/demograsp_references/grasp_ref_inspire.pkl"
-OUT = REPO / "assets/demograsp_references/rh56f1_grasp_pca5.pt"
+SRC = REPO / "assets/multi_obj/demograsp_references/grasp_ref_inspire.pkl"
+OUT = REPO / "assets/multi_obj/demograsp_references/rh56f1_grasp_pca5.pt"
 
 # RH56F1 6-drive 관절 한계 (grasp_v1 HAND_JOINT_LIMITS_MAX)
 RH_MAX = np.array([2.0943951, 0.4745550, 1.5285594, 1.5285594, 1.5285594, 1.5285594])

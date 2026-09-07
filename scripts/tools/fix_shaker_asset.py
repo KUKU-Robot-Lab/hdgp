@@ -26,7 +26,7 @@ from pxr import Usd, UsdGeom, UsdPhysics  # noqa: E402
 
 _HDGP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _SRC = os.path.join(_HDGP_ROOT, "assets", "cocktail", "usd", "shaker_body.usda")
-_DST_DIR = os.path.join(_HDGP_ROOT, "assets", "visdex_objects", "USD", "shaker_body")
+_DST_DIR = os.path.join(_HDGP_ROOT, "assets", "multi_obj", "visdex_objects", "USD", "shaker_body")
 _DST = os.path.join(_DST_DIR, "shaker_body.usd")
 
 _SHAKER_MASS = 0.2633  # 원본 usda physics:mass

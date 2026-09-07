@@ -167,7 +167,10 @@ def main() -> None:
         captured_ep &= ~done_mask
         streak[done_mask] = 0
 
-        contact, _ = uenv._contact()
+        # ★grasp env 의 `_contact()` 반환 폭은 트랙 개편마다 늘었다
+        #   (08.23: (tot, wrapped) → (tot, strict, mid, dist)). 첫 원소만 쓰되
+        #   위치 언패킹을 하지 않는다 — 하면 트랙이 바뀔 때 조용히 죽는다.
+        contact = uenv._contact()[0]
         gate = ((contact[:, uenv._grp_a] > thr).any(dim=-1)
                 & (contact[:, uenv._grp_b] > thr).any(dim=-1))
         ok = uenv._goal_reached_now & gate

@@ -1012,6 +1012,7 @@ class PourRightEnv(DirectRLEnv):
             graph_capturable=False,
             use_hand_fabric=False,
             palm_position_only=self.cfg.palm_position_only,  # [새 구조] palm position 3-DOF attractor
+            fabric_params_filename=self.cfg.fabric_params_filename,
         )
         # [lstm_test5] nullspace(cspace) 어트랙터 무게 강화 — demo j1-4(elbow-up) default_config를
         #   palm-pose task에 덜 밀리게 유지. params는 Attractor가 매 step live로 읽음(스칼라 float).
@@ -1042,6 +1043,7 @@ class PourRightEnv(DirectRLEnv):
             graph_capturable=False,
             use_hand_fabric=False,
             palm_position_only=self.cfg.palm_position_only,  # [새 구조] reset fabric도 동일 모드
+            fabric_params_filename=self.cfg.fabric_params_filename,
         )
         self._reset_integrator = DisplacementIntegrator(self._reset_fabric)
 

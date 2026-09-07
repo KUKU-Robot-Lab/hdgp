@@ -120,3 +120,33 @@ class RobotFrameOriginsTaskMap(BaseMap):
 
 
 
+
+
+class SubchainFrameOriginsTaskMap(RobotFrameOriginsTaskMap):
+    """프레임 원점 taskmap 인데 **지정한 관절 구간만** 움직이게 한다.
+
+    왜 필요한가: fabric 의 항들은 모두 같은 cspace 에 힘을 준다. 손끝 attractor 의
+    Jacobian 은 팔 열까지 포함하므로, 손끝 목표가 손만으로 도달 불가하면 fabric 은
+    **팔을 움직여서라도** 손끝을 목표로 보낸다. palm attractor 와 손끝 attractor 가
+    같은 팔 관절을 두고 싸우고, 게인이 큰 쪽이 이긴다.
+
+    실측(OpenArm+Tesollo, 손끝 목표를 컵 표면에): 손끝 게인 400 / palm 게인 80 일 때
+    palm 추종오차가 **580mm** 까지 벌어져 파지 자체가 성립하지 않았다. 게인을 palm
+    이하(40~80)로 낮추면 palm 은 3.6mm 로 돌아오지만 이번엔 손이 3.3° 밖에 안 움직인다.
+    게인으로는 못 푸는 딜레마다 — 팔과 손은 **별개 제어 대상**이기 때문이다.
+
+    Jacobian 의 팔 열을 0 으로 두면 이 항이 만드는 가속이 손 관절에만 분배된다.
+    팔은 palm attractor 가, 손은 손끝 attractor 가 담당하는 원래 의도대로 돌아간다.
+    도달 불가한 손끝 목표는 오차로 남을 뿐 팔을 끌고 가지 않는다.
+    """
+
+    def __init__(self, urdf_path, link_names, batch_size, device, joint_slice):
+        """joint_slice: 이 taskmap 이 움직여도 되는 관절 구간(slice). 그 밖은 마스킹된다."""
+        super().__init__(urdf_path, link_names, batch_size, device)
+        self._joint_slice = joint_slice
+
+    def forward_position(self, q, features):
+        x, jacobian = super().forward_position(q, features)
+        mask = torch.zeros_like(jacobian)
+        mask[:, :, self._joint_slice] = 1.0
+        return (x, jacobian * mask)

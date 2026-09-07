@@ -41,6 +41,79 @@ def collision_response(
 
     batch_index, point_index, mesh_index, second_point_index = wp.tid()
 
+    # ★★자기충돌(구-구)은 환경 메시 유무와 **무관**하다. 원본은 이 블록이 아래
+    #   early-out 뒤에 있어서, 월드에 메시를 등록하지 않은 씬에서는 커널이 첫 줄에서
+    #   return 해 **한 번도 실행되지 않았다**(grasp_lift_fabric 이 그 상태였다:
+    #   손가락 쌍을 넣어도 무반응, 반발 강도 100배에도 결과가 소수점까지 동일).
+    #   ★mesh_index == 0 가드 — launch 차원에 mesh 축이 있어 없으면 메시 개수만큼
+    #     중복 누적된다.
+    #   ※켜지는 것은 collision_matrix 에 쌍이 있는 그룹뿐이다. 팔 그룹은 쌍을 비워
+    #     두므로(팔 스케일 파라미터로 켜면 palm 오차가 88~109mm 로 터진다) 이 수정의
+    #     영향을 받지 않는다.
+    if mesh_index == 0:
+        # Now check for body sphere collisions
+        # Check the collision matrix. If value == 1, then calculate distance and collision response
+        if sphere_collision_matrix[point_index, second_point_index] == 1:
+            # Create a vector pointing from the current body point to another body point
+            point1_to_point2 = robot_body_points[batch_index, second_point_index] -\
+                               robot_body_points[batch_index, point_index]
+            # Normalize this vector
+            n = wp.normalize(point1_to_point2)
+
+            # Calculate the distance between these two body spheres by calculating the distance between
+            # the two body points and subtracting the radii of the spheres
+            d_signed = wp.length(point1_to_point2) -\
+                       sphere_radius[batch_index, point_index] -\
+                       sphere_radius[batch_index, second_point_index]
+            
+            # Clamp d so that it is postively bounded
+            d = wp.clamp(d_signed, min_depth, max_depth)
+            
+            # Project robot point velocity along direction to closest collision
+            # Positive dir_vel means means moving away from the mesh
+            dir_vel = -wp.dot(n, robot_body_point_vels[batch_index, point_index])
+
+            # Save off the signed distance if it is the current smallest for this point
+            wp.atomic_min(signed_sphere_distance, batch_index, point_index, d_signed)
+
+            # Since the distance is between a pair of body spheres, update the signed distance
+            # of the other point in the pair too
+            wp.atomic_min(signed_sphere_distance, batch_index, second_point_index, d_signed)
+            
+            # Conditions for creating a metric and acceleration response:
+            # 1) If the body point is too close to the other body point, then create response
+            # 2) If the body point is moving towards the other body point while being sufficiently close
+            #    then, create response
+            #if d_signed <= engage_depth or (dir_vel > breakaway_velocity and d_signed < breakaway_depth):
+            #if dir_vel <= breakaway_velocity or d_signed <= breakaway_depth:
+            #if True:
+            if d_signed <= engage_depth:
+                # Add a weighted acceleration to the existing base acceleration response
+                wp.atomic_add(base_acceleration, batch_index, point_index, metric_scalar * (1./d) * n)
+                # Update second point of pair
+                wp.atomic_add(base_acceleration, batch_index, second_point_index, metric_scalar * (1./d) * (-n))
+
+                # Create a rank deficient metric that cares about the direction towards collision
+                # and scale according to a metric scalar parameter and barrier response
+                point_metric = wp.mat33()
+                point_metric2 = wp.mat33()
+                if d_signed <= breakaway_depth:
+                    point_metric = wp.outer(n, n) * metric_scalar * (1./d)
+                    point_metric2 = wp.outer(-n, -n) * metric_scalar * (1./d)
+                else:
+                    switch = float(1.)
+                    if velocity_gate:
+                        switch = 0.5 * (wp.tanh(-velocity_gate_sharpness*(dir_vel - velocity_gate_offset)) + 1.)
+                    point_metric = wp.outer(n, n) * metric_scalar * (1./d) * switch
+                    point_metric2 = wp.outer(-n, -n) * metric_scalar * (1./d) * switch
+            
+                # Add the metric to the existing metric response
+                for i in range(3):
+                    for j in range(3):
+                        wp.atomic_add(metric, batch_index, point_index * 3 + i, point_index * 3 + j, point_metric[i,j])
+                        # Update second point of pair
+                        wp.atomic_add(metric, batch_index, second_point_index * 3 + i, second_point_index * 3 + j, point_metric2[i,j])
+
     # Early out if env mesh does not exist 
     if object_indicator[batch_index, mesh_index] == 0:
         return
@@ -123,68 +196,6 @@ def collision_response(
                     for j in range(3):
                         wp.atomic_add(metric, batch_index, point_index * 3 + i, point_index * 3 + j, point_metric[i,j])
 
-    # Now check for body sphere collisions
-    # Check the collision matrix. If value == 1, then calculate distance and collision response
-    if sphere_collision_matrix[point_index, second_point_index] == 1:
-        # Create a vector pointing from the current body point to another body point
-        point1_to_point2 = robot_body_points[batch_index, second_point_index] -\
-                           robot_body_points[batch_index, point_index]
-        # Normalize this vector
-        n = wp.normalize(point1_to_point2)
-
-        # Calculate the distance between these two body spheres by calculating the distance between
-        # the two body points and subtracting the radii of the spheres
-        d_signed = wp.length(point1_to_point2) -\
-                   sphere_radius[batch_index, point_index] -\
-                   sphere_radius[batch_index, second_point_index]
-            
-        # Clamp d so that it is postively bounded
-        d = wp.clamp(d_signed, min_depth, max_depth)
-            
-        # Project robot point velocity along direction to closest collision
-        # Positive dir_vel means means moving away from the mesh
-        dir_vel = -wp.dot(n, robot_body_point_vels[batch_index, point_index])
-
-        # Save off the signed distance if it is the current smallest for this point
-        wp.atomic_min(signed_sphere_distance, batch_index, point_index, d_signed)
-
-        # Since the distance is between a pair of body spheres, update the signed distance
-        # of the other point in the pair too
-        wp.atomic_min(signed_sphere_distance, batch_index, second_point_index, d_signed)
-            
-        # Conditions for creating a metric and acceleration response:
-        # 1) If the body point is too close to the other body point, then create response
-        # 2) If the body point is moving towards the other body point while being sufficiently close
-        #    then, create response
-        #if d_signed <= engage_depth or (dir_vel > breakaway_velocity and d_signed < breakaway_depth):
-        #if dir_vel <= breakaway_velocity or d_signed <= breakaway_depth:
-        #if True:
-        if d_signed <= engage_depth:
-            # Add a weighted acceleration to the existing base acceleration response
-            wp.atomic_add(base_acceleration, batch_index, point_index, metric_scalar * (1./d) * n)
-            # Update second point of pair
-            wp.atomic_add(base_acceleration, batch_index, second_point_index, metric_scalar * (1./d) * (-n))
-
-            # Create a rank deficient metric that cares about the direction towards collision
-            # and scale according to a metric scalar parameter and barrier response
-            point_metric = wp.mat33()
-            point_metric2 = wp.mat33()
-            if d_signed <= breakaway_depth:
-                point_metric = wp.outer(n, n) * metric_scalar * (1./d)
-                point_metric2 = wp.outer(-n, -n) * metric_scalar * (1./d)
-            else:
-                switch = float(1.)
-                if velocity_gate:
-                    switch = 0.5 * (wp.tanh(-velocity_gate_sharpness*(dir_vel - velocity_gate_offset)) + 1.)
-                point_metric = wp.outer(n, n) * metric_scalar * (1./d) * switch
-                point_metric2 = wp.outer(-n, -n) * metric_scalar * (1./d) * switch
-            
-            # Add the metric to the existing metric response
-            for i in range(3):
-                for j in range(3):
-                    wp.atomic_add(metric, batch_index, point_index * 3 + i, point_index * 3 + j, point_metric[i,j])
-                    # Update second point of pair
-                    wp.atomic_add(metric, batch_index, second_point_index * 3 + i, second_point_index * 3 + j, point_metric2[i,j])
 
 def eval_collision_response_func(point_positions, point_velocities, allocated_data):
     """

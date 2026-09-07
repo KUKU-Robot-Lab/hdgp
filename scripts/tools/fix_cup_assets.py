@@ -18,7 +18,7 @@ import os
 import shutil
 from pxr import Usd, UsdGeom, UsdPhysics
 
-_VISDEX = "/home/user/rl_ws/hdgp/assets/visdex_objects/USD"
+_VISDEX = "/home/user/rl_ws/hdgp/assets/multi_obj/visdex_objects/USD"
 _CUP_DEXTRAH = f"{_VISDEX}/cup/cup.usd"
 _CUP_BIG_SRC = "/home/user/rl_ws/hdgp/assets/cup/cup_big_sdf.usd"
 _CUP_BIG_DST_DIR = f"{_VISDEX}/cup_big"

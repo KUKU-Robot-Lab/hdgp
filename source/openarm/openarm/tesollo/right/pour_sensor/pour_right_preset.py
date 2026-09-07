@@ -120,14 +120,22 @@ LEFT_TARGET_CUP_POS_ENV_LOCAL, LEFT_TARGET_CUP_QUAT_WXYZ = compute_left_cup_pose
 )
 
 # 기존 attach 상수 (레거시 — env.py에서 더 이상 사용 안 함)
-LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "openarm_left_hand"
+# ★USD 통일 네이밍 이후 실제 body 는 `l_hl_gripper_base` 다 — "openarm_left_hand" 는
+#   존재하지 않는 낡은 이름이었다(09.02, 좌팔 IK 이식 중 발각). 쓰는 곳이 없어
+#   오래 남아 있었다.
+LEFT_TARGET_CUP_ATTACH_FRAME_NAME = "l_hl_gripper_base"
 LEFT_TARGET_CUP_ATTACH_POS_B = [0.0, 0.0, 0.10]
 LEFT_TARGET_CUP_ATTACH_QUAT_WXYZ_B = [0.70710678, 0.0, 0.70710678, 0.0]
 
 BEAD_SPAWN_POS_SOURCE_CUP_B = [0.0, 0.0, 0.04]
 BEAD_SPAWN_QUAT_SOURCE_CUP_WXYZ = [1.0, 0.0, 0.0, 0.0]
-SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
-TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.100]   # 실제 컵 림(입구) z=+0.100m (origin=컵 중앙)
+# ★다물체에서는 **fallback 일 뿐**이다 — env 가 `_build_source_rim_offsets()` 로
+#   env 별 실제 림(`ObjectSpec.rim_z`)을 쓴다. 여기 값을 고쳐도 다물체엔 안 실린다.
+SOURCE_CUP_POUR_POINT_POS_B = [0.0, 0.0, 0.1003]   # cup_big scale=1 실측
+# ★받는 컵은 **단일 shaker_closed_rl** 이다(09.01 사용자 결정: 소스만 다종).
+#   pxr 실측 림 z = +0.0829 (cup_big 은 +0.1003) — 자산을 바꾸면서 이 값을 안 고치면
+#   실제 입구보다 17.4mm 위를 조준한다. 자산과 이 상수는 **함께** 바뀐다.
+TARGET_CUP_OPENING_POS_B = [0.0, 0.0, 0.0829]
 SOURCE_CUP_POUR_AXIS_B = [1.0, 0.0, 0.0]
 SOURCE_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]
 TARGET_CUP_UP_AXIS_B = [0.0, 0.0, 1.0]

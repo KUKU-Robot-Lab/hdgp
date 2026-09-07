@@ -7,7 +7,7 @@ compute_tesollo_left_grasp_pca.py 의 right 판. 차이:
   2. 현행 basis(Allegro retarget) 비교에 더해 left 추출 basis
      (tesollo_grasp_pca5_from_left.pt) 와의 좌우 일관성 비교 추가.
 출력:
-  - assets/demograsp_references/tesollo_grasp_pca5_from_right.pt
+  - assets/multi_obj/demograsp_references/tesollo_grasp_pca5_from_right.pt
   - docs/pca/right_grasp_pca_lstm_test1.md
 
 실행: python3 scripts/pca/compute_tesollo_right_grasp_pca.py [--npz <path>]
@@ -27,8 +27,8 @@ REPO = Path(__file__).resolve().parents[2]
 LEFT_PKG = REPO / "source/openarm/openarm/tesollo/left/grasp_v2"
 RIGHT_PKG = REPO / "source/openarm/openarm/tesollo/right/grasp_v2"
 DEFAULT_NPZ = REPO / "data/right_grasp_poses_lstm_test1.npz"
-LEFT_PT = REPO / "assets/demograsp_references/tesollo_grasp_pca5_from_left.pt"
-OUT_PT = REPO / "assets/demograsp_references/tesollo_grasp_pca5_from_right.pt"
+LEFT_PT = REPO / "assets/multi_obj/demograsp_references/tesollo_grasp_pca5_from_left.pt"
+OUT_PT = REPO / "assets/multi_obj/demograsp_references/tesollo_grasp_pca5_from_right.pt"
 OUT_MD = REPO / "docs/pca/right_grasp_pca_lstm_test1.md"
 N_PC = 5
 
