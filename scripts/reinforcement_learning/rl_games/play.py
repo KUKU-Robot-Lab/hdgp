@@ -430,6 +430,26 @@ def _patch_optimizer_restore() -> None:
     a2c_common.A2CBase._hdgp_optimizer_restore_patched = True
 
 
+def _with_sapg_block_id(agent: BasePlayer, obs):
+    """SAPG(mixed_expl) 체크포인트의 obs 는 **블록 id 한 칸이 더 붙는다**(학습 때 rl_games 가 붙였다).
+
+    ★이 루프는 player 의 `env_step`/`env_reset` 을 쓰지 않고 env 를 직접 굴린다 — 그래서 그 두 곳에
+      있던 concat 이 건너뛰어졌고, SAPG 체크포인트 재생이
+      `IndexError: index 131 is out of bounds` 로 죽었다(09.07 fj_b9). 여기서 같은 열을 붙인다.
+      비-SAPG 체크포인트는 `intr_reward_coef_embd` 가 None 이라 그대로 통과한다.
+    """
+    embd = getattr(agent, "intr_reward_coef_embd", None)
+    if embd is None:
+        return obs
+    if isinstance(obs, dict):
+        raise RuntimeError("SAPG 재생은 텐서 obs 만 지원한다(dict obs 는 미구현)")
+    if obs.shape[0] != embd.shape[0]:
+        raise RuntimeError(
+            f"SAPG 블록 라벨 {tuple(embd.shape)} 와 obs {tuple(obs.shape)} 의 env 수가 다르다 — "
+            "재생 num_envs 가 학습 블록 구성과 안 맞는다")
+    return torch.cat([obs, embd.to(obs.device, obs.dtype)], dim=1)
+
+
 def _install_player_recurrent_gate(agent: BasePlayer, agent_cfg: dict) -> None:
     """Install v4 recurrent gate modules before loading gated checkpoints."""
     cfg = agent_cfg.get("params", {}).get("config", {})
@@ -675,7 +695,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 break
             _cd_step += 1
         with torch.inference_mode():
-            obs = agent.obs_to_torch(obs)
+            obs = _with_sapg_block_id(agent, agent.obs_to_torch(obs))
             actions = agent.get_action(obs, is_deterministic=agent.is_deterministic)
             # 기하 probe(--grip_probe): palm 을 물체 위치로 직접 지령(box unscale) + 손가락 full-grip.
             # 정책 무관하게 "손이 물체에 도달·감쌈 가능한가"를 순수 기하로 검증하는 도구.
