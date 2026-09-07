@@ -50,6 +50,7 @@ class GraspFJEnv(GraspKPEnv):
         # ---- B 의 팔 목표 버퍼 (N, n_arm) — `self.arm_ids` 순서, 클램프는 `_arm_lo/_arm_hi` ----
         self._arm_q_target = self.robot.data.default_joint_pos[:, self._arm_ids_t].clone()
         self._arm_cmd_step_raw = torch.zeros(n, device=dev)     # 클램프 전 |k·a| 평균(진단)
+        self._prev_arm_q_target = self._arm_q_target.clone()    # 실현 스텝량 진단용(직전 목표)
         self._arm_limit_sat = torch.zeros(n, device=dev)        # 관절한계 클램프 비율(진단)
         _k, _a = float(self.cfg.k_arm), float(self.cfg.arm_ema)
         # 실효 slew = α·k_arm/dt (EMA 가 누적 목표에 걸려 스텝당 변화가 정확히 α·k·a) — cfg 가 대조했다.
@@ -161,10 +162,11 @@ class GraspFJEnv(GraspKPEnv):
         ex["ctrl/joint_err_max"] = _jerr.max()          # 평균은 막힘 구간을 묻는다
         ex["ctrl/arm_cmd_step_raw"] = self._arm_cmd_step_raw.mean()
         ex["ctrl/arm_limit_sat"] = self._arm_limit_sat.mean()
-        # ★09.07 목표↔실측 관절속도 격차. B 는 실측 qd 가 URDF 한계(최저 5.445 rad/s)를
-        #   넘는지가 sim2real 판정의 1차 조건이라 지령 쪽도 같이 남긴다.
-        ex["ctrl/arm_target_step"] = (self._arm_q_target
-                                      - self.robot.data.joint_pos[:, self._arm_ids_t]).abs().mean()
+        # ★09.07 목표가 **스텝당 실제로 얼마나 움직였나**(rad/step). 지령 요청량
+        #   `arm_cmd_step_raw`(=k·|a|)는 EMA·클램프 전 값이라, 통과 후 남은 양을 따로 본다.
+        #   실효 slew 판정: 이 값 × 60 Hz 가 URDF 한계(최저 5.445 rad/s)·브리지 상한과 비교된다.
+        ex["ctrl/arm_target_step"] = (self._arm_q_target - self._prev_arm_q_target).abs().mean()
+        self._prev_arm_q_target = self._arm_q_target.clone()
 
     def _reset_idx(self, env_ids) -> None:
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -172,5 +174,6 @@ class GraspFJEnv(GraspKPEnv):
         super()._reset_idx(env_ids)       # A: 목표·추적기·큐·외란 / 부모: 홈 텔레포트·시너지
         # 리셋은 홈 텔레포트라 q*_{-1} = 홈 q = 실측 q (DESIGN §1 B).
         self._arm_q_target[env_ids] = self._default_q[env_ids][:, self._arm_ids_t]
+        self._prev_arm_q_target[env_ids] = self._arm_q_target[env_ids]   # 리셋 스텝을 큰 이동으로 세지 않는다
         self._arm_cmd_step_raw[env_ids] = 0.0
         self._arm_limit_sat[env_ids] = 0.0

@@ -1,8 +1,12 @@
 # grasp_fj (Track B, SimToolReal 식 progress 보상 · Fabrics 없음) — recurrent actor / MLP critic
-# Actor 135D MLP [1024,1024,512,512] -> LSTM 1024 / critic 159D MLP [1024,1024,512,512], action 22D (팔 관절 7D 증분+EMA + 시너지 15D).
-# grasp_kp LSTM cfg 사본(이름만 다르다) + DESIGN.md §6: value_bootstrap True · gamma 0.99 · actor/critic mlp 4층 ·
-# critic lr 1e-4 · kl 0.016/0.016. 나머지(minibatch 16384 · mini_epochs 4 · horizon 16 · seq 16 ·
-# entropy 0.002 · e_clip 0.2 · mixed_precision False)는 그대로. num_envs 는 1024 의 배수.
+# Actor 131D MLP [1024,1024,512,512] -> LSTM 1024 / critic 155D MLP [1024,1024,512,512], action 22D (팔 관절 7D 증분+EMA + 시너지 15D).
+# ★09.07 SimToolReal network 정렬(커밋 8594225). 원본: simtoolreal/isaacgymenvs/cfg/train/
+#   SimToolReal{PPO,LSTMAsymmetricPPO}.yaml — lr 1e-4 · entropy_coef 0.0 · e_clip 0.1 ·
+#   mini_epochs 2(actor·critic) · bound_loss_type bound · bounds_loss_coef 1e-4 ·
+#   mixed_precision True · rnn concat_input/output False · score_to_win 1e6.
+# 우리 값 유지: value_bootstrap True(자체 실측 근거) · minibatch 16384(4,096env×16/16,384 = 4개로
+#   원본 24,576×16/98,304 와 등가) · gamma 0.99 · kl 0.016 · horizon/seq 16 · critic lr 1e-4.
+# num_envs 는 1024 의 배수.
 params:
   seed: 42
 
@@ -87,7 +91,10 @@ params:
     lr_schedule: adaptive
     schedule_type: standard
     kl_threshold: 0.016
-    score_to_win: 100000   # ★08.25 Kuka 원본값
+    score_to_win: 1000000   # SimToolReal 값(구 100000). ★rl_games 는 이 값을
+                             #   **shaping 전 원본 에피소드 보상**과 비교해 조기 종료한다
+                             #   (a2c_common: last_mean_rewards > score_to_win → 'Network won!').
+                             #   kp_a1 실측 최고 21,260 이라 100000 은 도달 가능한 거리였다.
     max_epochs: 20000
     save_best_after: 100
     save_frequency: 200   # ★08.25 Kuka 원본값
