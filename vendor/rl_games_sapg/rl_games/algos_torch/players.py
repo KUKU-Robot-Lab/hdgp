@@ -46,12 +46,20 @@ class PpoPlayerContinuous(BasePlayer):
         } 
         
         if self.expl_type.startswith('mixed_expl'):
-            # TODO: remove the hardcoded value 6. Change it manually to number of blocks tilll then.
-            if 'disjoint' in self.expl_type or 'learn_param' in self.expl_type:
-                ids = torch.linspace(50.0, 0.0, 6).to(self.device_name).reshape(-1,1)
-            else:
-                ids = create_sinusoidal_encoding(torch.linspace(50.0, 0.0, 6), self.config.get('expl_reward_coef_embd_size', 32), n=100).to(self.device_name)
-            config['coef_ids'] = ids[::self.num_agents,0]
+            # ★hdgp 수정(09.07): 원본은 블록 수를 **6 으로 하드코딩**했다(원본 주석: "TODO: remove the
+            #   hardcoded value 6"). 6블록이 아닌 체크포인트는 여기서 sigma(6,A)·extra_params(6,32)를
+            #   만들어 load_state_dict 가 shape mismatch 로 죽는다 — 즉 **재생·배포가 불가능**했다.
+            #   실측: 4블록(8192env ÷ 2048)으로 학습한 fj_b9 재생이
+            #     "size mismatch for a2c_network.sigma: checkpoint [4,22] vs current [6,22]" 로 실패.
+            #   학습쪽(a2c_continuous.py:34)은 `intr_reward_coef_embd[::intr_coef_block_size, 0]` 로
+            #   **유도**한다. 같은 식을 쓴다 — common/player.py 가 같은 규칙으로 만든 임베딩을 재사용하므로
+            #   블록 수가 바뀌어도 자동으로 따라간다.
+            _embd = self.intr_reward_coef_embd
+            if _embd is None:
+                raise RuntimeError(
+                    "expl_type 이 mixed_expl 인데 intr_reward_coef_embd 가 없다 — "
+                    "common/player.py 의 블록 라벨 생성이 건너뛰어졌다")
+            config['coef_ids'] = _embd[::self.intr_coef_block_size, 0]
             config['coef_id_idx'] = self.obs_shape[0]
                     
         self.model = self.network.build(config)

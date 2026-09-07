@@ -105,6 +105,9 @@ class BasePlayer(object):
                         f"재생 num_envs({self.env.num_envs}) 가 expl_coef_block_size({_bs}) 로 "
                         "나누어떨어져야 학습과 같은 블록 라벨이 나온다")
                 _nb = self.env.num_envs // _bs
+                # ★hdgp 수정(09.07): 블록 크기를 보관한다 — algos_torch/players.py 가 네트워크의
+                #   coef_ids(=sigma 행 수 · extra_params 행 수)를 학습과 **같은 식**으로 만들어야 한다.
+                self.intr_coef_block_size = _bs
                 _env_ids = torch.arange(_nb).repeat_interleave(_bs).to(self.device_name)
                 embedding_genvec = torch.linspace(50.0, 0.0, _nb).to(self.device_name)[_env_ids]
                 if 'disjoint' in self.expl_type or 'learn_param' in self.expl_type:
@@ -115,6 +118,8 @@ class BasePlayer(object):
                 self.intr_reward_coef_embd = None
         else:
             self.intr_reward_coef_embd = None
+        if not hasattr(self, "intr_coef_block_size"):
+            self.intr_coef_block_size = 1
 
         if self.evaluation and self.dir_to_monitor is not None:
             self.checkpoint_mutex = threading.Lock()

@@ -194,3 +194,29 @@ def test_block_coefficients_match_the_fork_formula():
     fork_embd = torch.linspace(50.0, 0.0, nb)[env_ids].reshape(-1, 1)
     assert torch.allclose(b.entropy_coef, fork_coef)
     assert torch.allclose(b.embedding, fork_embd)
+
+
+# =============================================================================
+# 벤더 재생 경로 — 블록 수 하드코딩 회귀 가드 (09.07)
+# =============================================================================
+def _vendor(rel: str) -> str:
+    """hdgp/vendor/rl_games_sapg/rl_games/<rel> 원문. 경로는 이 파일의 기존 `_VENDOR` 상수 하나에서만 온다."""
+    return (_VENDOR / "rl_games" / rel).read_text(encoding="utf-8")
+
+
+def test_vendor_player_derives_block_count_instead_of_hardcoding_six():
+    """★원본 SAPG 포크는 재생 네트워크의 블록 수를 6 으로 박아 뒀다(자체 TODO 로 남겨둔 결함).
+
+    6블록이 아닌 체크포인트는 sigma(6,A)·extra_params(6,32)를 만들어 load_state_dict 가 죽는다 —
+    즉 **재생도 배포도 불가능**했다. 실측: 4블록으로 학습한 fj_b9 재생이
+    "size mismatch for a2c_network.sigma: checkpoint [4,22] vs current [6,22]" 로 실패(09.07).
+    학습쪽 a2c_continuous 는 `intr_reward_coef_embd[::intr_coef_block_size, 0]` 로 유도하므로 같은 식을 쓴다.
+    """
+    players = _vendor("algos_torch/players.py")
+    assert "torch.linspace(50.0, 0.0, 6)" not in players, "블록 수 6 하드코딩이 되살아났다"
+    assert "config['coef_ids'] = _embd[::self.intr_coef_block_size, 0]" in players
+    common = _vendor("common/player.py")
+    assert "self.intr_coef_block_size = _bs" in common, "재생 블록 크기를 보관하지 않는다"
+    # 학습쪽도 같은 임베딩을 블록 크기로 잘라 쓴다 — 두 트리가 갈리면 조용히 다른 블록 라벨이 된다.
+    trainer = _vendor("algos_torch/a2c_continuous.py").replace(" ", "")
+    assert "coef_ids']=self.intr_reward_coef_embd[::self.intr_coef_block_size,0]" in trainer
