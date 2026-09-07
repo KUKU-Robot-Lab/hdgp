@@ -75,3 +75,18 @@ B(fj_b7)는 같은 게이트에 lifted env 당 −0.29/step 라 견뎠으나 b1 
 enable_penalty_after_dwell 규약을 per-env 플래그로 대체했던 것을 되돌림. ② hold 게이트 lifted ∧ dz > 0.03(drop_frac 판정선):
 떨어뜨린 컵을 다시 쥐러 가는 이동은 벌하지 않는다. 크기 0.1/1.0 유지. → kp_a8 / fj_b8.
 Check 1 재계산(arm 뒤): 리프트 후 들고 있는 env 만 −1.25/step, 나머지 0 → 300 − 125 = 175 > 100 그대로.
+
+--- 09.07 kp_a8 실측 후 REVERT (성공 술어) ---
+kp_a8 은 cmd_rate 벌점이 **한 번도 armed 되지 않은 채**(task/cmd_rate_armed 0.000, reward/cmd_rate 0.000 전 구간) 실패했다.
+a6→a8 의 hydra dump env 차이는 `goal_force_consecutive: false→true` 한 줄뿐(cmd_rate 4필드는 비활성). 따라서 a7 붕괴를
+"벌점이 우연 리프트 env 에 붙었다"로만 본 진단은 **부분적으로 틀렸다** — 벌점은 가속 요인이었고 근본 원인은 이 술어다.
+기전(Check 1 재발): 연속 판정 → 성공 ≈0 → 목표 미전진 → closest_kp 가 에피소드 최소에 고정 → keypoint_progress 고갈.
+리프트는 `lift`(20×0.05 = 1.0/step)와 `fingertip_progress` 를 끄므로, 목표로 수렴 못 하는 리프트 env 수입 ≈ 0/step
+< 안 든 env 1.0/step → **리프트가 순손실**. 실측 a8: kp_dist_min 0.201 고정(a6 0.109), succ 0.000(a6 4.25),
+r_goal 0.00(a6 18.90), r_lift 1.0019(= 전 env 미리프트), lifted e50 0.108 → e200 0.0000.
+B 도 같은 길: fj_b8 e215 succ 0.0044 vs fj_b1 0.1475(33배), lifted e150 이후 0.31 에서 정체(b1 은 0.18→0.75 가속).
+★내 Check 4 는 이 변경을 "successes 가 낮게 간다(의도)"로 적었다 — **리프트 결정의 부호가 뒤집히는 것**을 못 봤다.
+★SimToolReal 이 forceConsecutive 를 쓰는 전제는 시작 공차 0.075×keypointScale 1.5 = 0.1125 m 로 우리(0.06)의 2배라는 것.
+  술어만 이식하고 공차를 안 맞춘 것이 오류. 되살리려면 tol_start 를 함께 올려야 한다.
+조치: goal_force_consecutive → False 복귀(A·B). 안정 파지는 cmd_rate 벌점이 단독으로 담당한다(완료 판정과 분리).
+→ kp_a9 = kp_a6 + cmd_rate(전역 arm 래치 + hold 게이트) 단일 변수 시험. fj_b9 = fj_b8 − 연속 판정.

@@ -476,9 +476,8 @@ def test_reward_consumes_cmd_rate_and_cfg_locks_gate_and_scale():
     code = _code(_CFG)
     assert "rw_cmd_rate_scale: float = 0.1" in code
     assert "cmd_rate_scale=float(self.rw_cmd_rate_scale)" in _fn_block(_CFG, "progress_reward_cfg")
-    # ★성공은 **연속** 10 스텝 — 누적이면 공차 안팎을 오가며(흔들리며) 성공을 세어 준다.
-    #   SimToolReal 논문 런처도 forceConsecutiveNearGoalSteps=True 로 강제했다.
-    assert "goal_force_consecutive: bool = True" in code
+    # ★09.07 kp_a8 실측으로 **되돌렸다**(True → False). 아래 회귀 가드 참조.
+    assert "goal_force_consecutive: bool = False" in code
 
 
 def test_cmd_rate_is_armed_by_a_global_lift_ema_latch_and_hold_gated():
@@ -503,6 +502,21 @@ def test_cmd_rate_is_armed_by_a_global_lift_ema_latch_and_hold_gated():
     assert "_DROP_DZ = 0.03" in _code(_ENV), "hold_dz 는 drop_frac 판정선과 같은 값이어야 한다(같은 개념)"
     log = _fn_block(_ENV, "_log_step")
     assert '"task/cmd_rate_armed"' in log and '"task/lift_ema"' in log
+
+
+def test_success_is_cumulative_because_consecutive_starves_the_post_lift_branch():
+    """★kp_a8(09.07): a6 와의 유일한 활성 차이가 `goal_force_consecutive: True` 였고, 그것만으로 리프트가 사라졌다
+    (e50 lifted 0.108 → e200 0.0000). 기전: 연속 판정이면 성공이 거의 안 나 목표가 전진하지 않는다 →
+    closest_kp 가 에피소드 최소에 고정돼 keypoint_progress 가 마르고, goal_bonus 는 tol 0.06 안에 있는 스텝에만 나온다.
+    그런데 리프트는 `lift`(1.0/step 상수)와 `fingertip_progress` 를 **끄므로**, 목표로 수렴 못 하는 리프트 env 의
+    수입은 ≈0/step 이다 — 안 든 env 의 1.0/step 보다 **낮다**. 정책이 리프트를 손해로 배우고 되돌린다.
+    실측: a8 kp_dist_min 0.201 에서 안 내려감(a6 0.109) · succ 0.000(a6 4.25) · r_goal 0.00(a6 18.9) · r_lift 1.0019(전 env 미리프트).
+    SimToolReal 이 연속을 쓰는 건 시작 공차가 0.075×1.5 = **0.1125 m** 로 우리(0.06)의 2배라 유지가 가능해서다.
+    ★안정성은 성공 술어가 아니라 cmd_rate 벌점이 담당한다 — 완료 판정과 매끄러움을 한 항에 섞지 않는다.
+    """
+    code = _code(_CFG)
+    assert "goal_force_consecutive: bool = False" in code
+    assert "tol_start: float = 0.06" in code, "연속 판정을 되살리려면 공차부터 SimToolReal 0.1125 로 맞춰야 한다"
 
 
 def test_cfg_refuses_cmd_rate_penalty_without_both_limiters():

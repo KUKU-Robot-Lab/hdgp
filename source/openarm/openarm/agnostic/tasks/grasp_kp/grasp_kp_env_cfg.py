@@ -74,10 +74,16 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     goal_box_z_range: tuple[float, float] = (0.10, 0.30)   # 정착고 기준(하한 0.10 = 래치)
     goal_success_steps: int = 10
     goal_max: int = 50
-    # ★09.07 True: 성공 = 공차 안 **연속** 10 스텝. 누적(False)이면 공차 안팎을 오가며(흔들리며) 성공을
-    #   세어 준다 — "안정 파지"가 성공 판정에 없었다. SimToolReal 논문 런처도 True 로 강제했다.
-    #   tol 이 0.06 → 0.015 로 조여질수록 이 조건이 곧 "10 스텝 정지"가 된다. goal_bonus(100/step near)는 그대로.
-    goal_force_consecutive: bool = True
+    # ★09.07 True 로 올렸다가 kp_a8 실측으로 **되돌렸다**. a6 와의 유일한 활성 차이가 이 한 줄이었고,
+    #   그것만으로 리프트가 사라졌다(e50 lifted 0.108 → e200 0.0000, succ 4.25 → 0.000, kp_dist_min 0.109 → 0.201).
+    #   기전(REWARD_AUDIT Check 1 그 자체): 연속이면 성공이 거의 안 나 **목표가 전진하지 않는다** →
+    #   closest_kp 가 에피소드 최소에 고정돼 keypoint_progress 가 마르고, goal_bonus 는 tol 안 스텝에만 나온다.
+    #   그런데 리프트는 `lift`(1.0/step 상수)와 `fingertip_progress` 를 끈다 → 목표로 수렴 못 하는 리프트 env 의
+    #   수입 ≈ 0/step < 안 든 env 의 1.0/step. **리프트가 순손실이 되어** 정책이 되돌렸다.
+    #   SimToolReal 이 연속을 쓸 수 있는 건 시작 공차가 0.075×1.5 = 0.1125 m 로 우리(0.06)의 2배이기 때문이다 —
+    #   술어만 베끼고 공차를 안 맞춘 것이 오류였다. 되살리려면 tol_start 를 같이 올려야 한다.
+    #   ★안정 파지는 성공 술어가 아니라 `rw_cmd_rate_scale` 벌점이 담당한다(완료 판정과 매끄러움을 섞지 않는다).
+    goal_force_consecutive: bool = False
     # finalize 파생(단일 소스) — env-local 절대 박스. 직접 쓰지 말 것.
     goal_box_min: tuple[float, float, float] = (0.0, 0.0, 0.0)
     goal_box_max: tuple[float, float, float] = (0.0, 0.0, 0.0)

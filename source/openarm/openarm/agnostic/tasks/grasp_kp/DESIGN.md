@@ -40,9 +40,10 @@ B 의 팔 목표 버퍼 `_arm_q_target (N,7)` 은 `self.arm_ids` 순서, 클램�
 `d(o,g) = max_i ‖kp_i(o) − kp_i(g)‖`. 모든 위치는 env-local.
 
 목표열: 리셋 시 첫 목표 = `settled_pos + [U(±first_xy), U(first_z_lo, first_z_hi)]`, 자세 = settled quat(직립).
-성공(`d ≤ tol` **연속** `success_steps=10` — 09.07 `force_consecutive=True`; 누적이면 공차 안팎을 오가며 흔들려도 성공을 세어 준다. SimToolReal 논문 런처와 동일) 시 다음 목표 = 이전 목표에서 `±delta_distance` 균일 이동, `goal_box` 로 클램프,
+성공(`d ≤ tol` **누적** `success_steps=10`) 시 다음 목표 = 이전 목표에서 `±delta_distance` 균일 이동, `goal_box` 로 클램프,
 회전은 `delta_rotation_deg`(기본 0 = 직립 유지; 붓기 확장 시 올린다). `max_goals` 도달 시 truncation.
 에피소드 예산은 **600 step 고정**(목표당 예산 아님; `per_goal_budget=False`).
+★09.07: `force_consecutive=True` 를 썼다가 되돌렸다(kp_a8) — 연속이면 성공이 안 나 목표가 안 전진하고, 리프트가 `lift` 1.0/step 을 끄므로 리프트 수입이 do-nothing 보다 낮아진다. SimToolReal 은 시작 공차가 0.1125 m(0.075×1.5)로 우리 0.06 의 2배라 연속이 성립한다 — 되살리려면 공차를 같이 올릴 것. 안정성은 `cmd_rate` 벌점이 담당한다.
 허용오차 커리큘럼: `tol_start 0.06 → tol_floor 0.015`, 3000 프레임마다 `mean(prev_episode_successes) ≥ 2.0` 이면 ×0.9.
 
 기본값: `first_xy 0.05` · `first_z (0.16, 0.24)` · `delta_distance 0.08` · `goal_box = spawn_center ± (0.08, 0.08)`,
