@@ -130,3 +130,67 @@ def test_off_policy_ratio_one_mixes_exactly_one_other_block():
     """SimToolReal 값 1.0 → 자기 롤아웃 + 다른 블록 하나."""
     got = sample_repeat_idxs(4, 1.0)
     assert len(got) == 2 and got[0] == 0 and got[1] != 0
+
+
+# ============================================================ 벤더 포크와의 등가성
+# `hdgp/vendor/rl_games_sapg` 는 SimToolReal 포크를 그대로 들여온 것이고, 학습은 그쪽 코드로
+# 돈다. 위 모듈은 같은 산술의 **독립 구현**이다. 둘이 갈라지면 우리가 문서·테스트로 믿고 있는
+# 동작과 실제 학습이 달라지므로, 여기서 직접 대조한다.
+import pathlib
+import sys
+
+_VENDOR = pathlib.Path(__file__).resolve().parents[6] / "vendor" / "rl_games_sapg"
+
+
+def _vendor_custom_utils():
+    if not (_VENDOR / "rl_games" / "common" / "custom_utils.py").is_file():
+        pytest.skip("벤더 rl_games_sapg 가 없다")
+    if str(_VENDOR) not in sys.path:
+        sys.path.insert(0, str(_VENDOR))
+    from rl_games.common import custom_utils
+    if not str(pathlib.Path(custom_utils.__file__)).startswith(str(_VENDOR)):
+        pytest.skip(f"설치본 rl_games 가 먼저 잡혔다: {custom_utils.__file__}")
+    return custom_utils
+
+
+@pytest.mark.parametrize("idxs", [[0, 1], [0, 2], [0, 3], [0, 1, 3]])
+def test_filter_leader_matches_vendor_fork(idxs):
+    """우리 `filter_leader` 가 포크 원본과 **같은 행**을 남기는지."""
+    cu = _vendor_custom_utils()
+    b = _blocks()
+    val = torch.arange(b.num_actors * len(idxs), dtype=torch.float32)
+    ours = filter_leader(val, b.num_actors, idxs, b.num_blocks)
+    theirs = cu.filter_leader(val, b.num_actors, idxs, b.num_blocks)
+    assert torch.equal(ours, theirs)
+
+
+def test_vendor_axis_heuristic_requires_single_layer_rnn():
+    """★포크의 축 선택은 `len(val) > 1` 휴리스틱이라 **층 수가 1일 때만** 맞는다.
+
+    `filter_leader` 는 rnn_states 를 (layers, batch, hidden) 으로 받아 **배치축**을 잘라야 한다.
+    그런데 원본은 첫 축 길이가 1 일 때만 축 1 로 간다 — 2층 이상이면 층 축을 자르며 조용히
+    틀린다. 우리 SAPG 설정이 `layers: 1` 인 한 안전하므로, 여기서 그 전제를 직접 잠근다.
+    """
+    cu = _vendor_custom_utils()
+    b = _blocks()
+    idxs = [0, 2]
+    one_layer = torch.arange(b.num_actors * len(idxs), dtype=torch.float32).reshape(1, -1)
+    assert torch.equal(cu.filter_leader(one_layer, b.num_actors, idxs, b.num_blocks),
+                       filter_leader(one_layer, b.num_actors, idxs, b.num_blocks, dim=1))
+
+    cfg = (pathlib.Path(__file__).resolve().parents[3] / "tasks" / "grasp_fj" / "config" /
+           "agents" / "rl_games_ppo_lstm_sapg_cfg.yaml")
+    if cfg.is_file():
+        rnn = cfg.read_text(encoding="utf-8").split("rnn:")[1].split("load_checkpoint")[0]
+        assert "layers: 1" in rnn, "SAPG 설정의 LSTM 층이 1 이 아니다 — 포크 축 휴리스틱이 깨진다"
+
+
+def test_block_coefficients_match_the_fork_formula():
+    """포크 `A2CBase.__init__` 의 계수식을 그대로 재현하는지 — 식을 여기 박아 대조한다."""
+    b = _blocks()
+    nb, bs = b.num_blocks, b.block_size
+    env_ids = torch.arange(nb).repeat_interleave(bs)
+    fork_coef = torch.linspace(0.5, 0.0, nb)[env_ids] * _SCALE
+    fork_embd = torch.linspace(50.0, 0.0, nb)[env_ids].reshape(-1, 1)
+    assert torch.allclose(b.entropy_coef, fork_coef)
+    assert torch.allclose(b.embedding, fork_embd)

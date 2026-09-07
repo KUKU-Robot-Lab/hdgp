@@ -47,6 +47,11 @@ for _tag, _cls in _CFGS.items():
         ("-play", _play_cls.__name__, "rl_games_ppo_cfg.yaml"),
         ("-lstm", _cls.__name__, "rl_games_ppo_lstm_cfg.yaml"),
         ("-play-lstm", _play_cls.__name__, "rl_games_ppo_lstm_cfg.yaml"),
+        # ★SAPG 변형. **벤더 rl_games**(hdgp/vendor/rl_games_sapg)를 PYTHONPATH 앞에
+        #   붙여야 돈다 — 설치본 1.6.1 에는 SAPG 가 없어 expl_* 가 조용히 무시되고
+        #   `fixed_sigma: coef_cond` 도 해석 못 해 죽는다. 그래서 id 를 따로 둔다.
+        ("-lstm-sapg", _cls.__name__, "rl_games_ppo_lstm_sapg_cfg.yaml"),
+        ("-play-lstm-sapg", _play_cls.__name__, "rl_games_ppo_lstm_sapg_cfg.yaml"),
     ):
         gym.register(
             id=f"open-{_tag}_grasp_fj{_suffix}",

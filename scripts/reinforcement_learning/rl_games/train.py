@@ -234,7 +234,9 @@ def _resolve_pipeline_log_components(task_name: str) -> tuple[str, str]:
     task_key = task_name.split(":")[-1]
 
     # 신규 형식 감지: open-<robot>_<side>_<task>_... 패턴
-    new_fmt = re.match(r"^(open-[A-Za-z0-9]+)_([rbl])_(.+?)(?:-play|-lstm|-bc|-il.*|-diffusion)?$", task_key, re.IGNORECASE)
+    # ★09.07 `-sapg` 추가 + 접미를 **반복** 허용(`*`). 전에는 하나만 벗겨서
+    #   `grasp_fj-lstm-sapg` 가 통째로 태스크명이 되어 로그가 `grasp-fj` 와 갈렸다.
+    new_fmt = re.match(r"^(open-[A-Za-z0-9]+)_([rbl])_(.+?)(?:-play|-lstm|-sapg|-bc|-il.*|-diffusion)*$", task_key, re.IGNORECASE)
     if new_fmt:
         robot = new_fmt.group(1)          # open-tesol
         side = SIDE_MAP.get(new_fmt.group(2), new_fmt.group(2))   # right

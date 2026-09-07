@@ -139,7 +139,7 @@ def test_robot_registry_arm_actuators_are_vendor():
         _assert_vendor(robots._arm_actuators("active", side), f"robots._arm_actuators({side})")
 
 
-@pytest.mark.parametrize("track", ["grasp_s2r", "grasp_kp", "grasp_fj", "grasp_ua"])
+@pytest.mark.parametrize("track", ["grasp_s2r", "grasp_kp", "grasp_fj"])
 def test_active_track_profiles_are_vendor(track):
     module = __import__(f"openarm.agnostic.tasks.{track}.robot_profiles", fromlist=["x"])
     profiles = [v for v in vars(module).values() if hasattr(v, "actuator_specs")]
@@ -186,10 +186,12 @@ def test_hand_loader_refuses_integral_gain(tmp_path):
 
 
 #: 손이 **벤더 PD 를 갖지 않는** actuator — `NO_VENDOR_PD` 에 사유가 있다.
-HAND_EXCEPTIONS = {("grasp_ua", "rh56f1_right")}
+# ★09.07 grasp_ua 트랙은 의도적으로 제거됐다(사용자 확정) — 예외 목록도 함께 비운다.
+#   목록에 남겨두면 "왜 비어 있나"를 다시 조사하게 된다.
+HAND_EXCEPTIONS: set[tuple[str, str]] = set()
 
 
-@pytest.mark.parametrize("track", ["grasp_s2r", "grasp_kp", "grasp_fj", "grasp_ua"])
+@pytest.mark.parametrize("track", ["grasp_s2r", "grasp_kp", "grasp_fj"])
 def test_active_track_dg5f_hands_are_vendor(track):
     module = __import__(f"openarm.agnostic.tasks.{track}.robot_profiles", fromlist=["x"])
     checked = 0
