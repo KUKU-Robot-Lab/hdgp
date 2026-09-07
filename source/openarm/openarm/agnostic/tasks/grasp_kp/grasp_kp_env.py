@@ -237,6 +237,8 @@ class GraspKPEnv(GraspS2REnv):
         ★부팅에서도 불러야 한다 — 씨딩 전에 `_arm_command` 가 돌면 이전 지령이 0 이라
           지령이 박스 구석으로 튄다(첫 리셋 전에는 `_palm_anchor` 가 홈을 준다).
         """
+        if not bool(self.cfg.palm_cmd_incremental):
+            return      # 절대 매핑은 매 스텝 앵커에서 새로 계산한다 — 유지할 적분기 상태가 없다.
         _anc = self._palm_anchor()[env_ids]
         self.palm_targets[env_ids] = _anc
         self._prev_palm_cmd[env_ids] = _anc[:, :3]
@@ -317,6 +319,8 @@ class GraspKPEnv(GraspS2REnv):
             # ★A-i(증분): 도달성은 "델타 안인가"가 아니라 "에피소드 안에 걸어갈 수 있는가"다.
             #   적분기는 박스 전체를 덮으므로 남는 제약은 **시간**뿐 — 걸음 수가 예산을 넘으면
             #   목표열이 조용히 멈춘다(구식의 델타 부족과 증상이 같다).
+            if not bool(c.palm_cmd_incremental):
+                continue        # 절대 매핑은 한 스텝에 박스 어디로든 지령한다 — 시간 제약이 없다
             steps = (max(abs(need_hi), abs(need_lo)) + tol) / max(gain[i], 1e-9)
             worst = max(worst, steps)
             if steps > budget:
@@ -327,7 +331,9 @@ class GraspKPEnv(GraspS2REnv):
             raise RuntimeError(
                 "[grasp_kp] 목표 박스가 팔 지령 범위를 넘는다(±tol_floor 여유) — "
                 "palm_cmd_rate_limit_m 을 키우거나 goal_box_* 를 줄여라: " + " · ".join(bad))
-        print(f"[grasp_kp] 목표 박스 ⊂ 팔 지령 범위 ✓ (최악 이동 {worst:.0f} 스텝 / 예산 {budget:.0f} · "
+        _mode = ("증분 · 최악 이동 %.0f 스텝 / 예산 %.0f" % (worst, budget)
+                 if bool(c.palm_cmd_incremental) else "절대 · 시간 제약 없음")
+        print(f"[grasp_kp] 목표 박스 ⊂ 팔 지령 범위 ✓ ({_mode} · "
               f"클램프 z [{b_lo[2]:.3f},{b_hi[2]:.3f}] · tol 여유 {tol})", flush=True)
 
     def _read_object_mass(self) -> torch.Tensor:
@@ -357,28 +363,35 @@ class GraspKPEnv(GraspS2REnv):
         self._apply_wrench()
 
     def _arm_command(self) -> None:
-        """★09.07 A-i: **증분** 매핑 — 이전 지령 + 게인·a → 박스 클램프 → 리미터(안전망) → 마커.
+        """팔 palm 6D 지령 → 박스 클램프 → 리미터(안전망) → 마커. 매핑은 cfg 로 고른다.
 
-        구식(grasp_s2r)은 `앵커 + 델타(a)` 절대 매핑이라 `a` 가 위치를 뜻했고, 그 위치 변화의
-        2.9% 만 리미터를 통과했다. 그래서 "레일에 붙여두면 리미터가 대신 밀어준다"가 최적이 되어
-        `rate_sat` 0.98 로 굳었다 — 안정을 위해 건 제한을 정책이 "더 세게 내라"로 오해한 것이다.
-        증분식은 `a=±1` 이 허용된 최대 걸음이라 그 오해가 구조적으로 불가능하다(`_setup_palm_step_gain`).
+        **절대**(기본, `palm_cmd_incremental=False`) — `앵커 + 델타(a)`. `a` 가 위치를 뜻한다.
+        구식 grasp_s2r 와 같은 식이고 kp_a1/kp_a2 가 이걸로 컵을 들었다(a2 e476 lifted 0.658).
+        대가는 포화다 — 지령 변화의 2.9% 만 리미터를 통과해 `rate_sat` 0.99 · `step_raw` 0.17 m
+        (리미터 0.02 m 의 10.8배)로 굳는다. 즉 액션의 크기 정보가 버려지고 방향만 남는다.
+
+        **증분**(`palm_cmd_incremental=True`) — `이전지령 + 복원 + 게인·a`. `a=±1` 이 허용된 최대
+        걸음이라 "레일에 붙이면 리미터가 대신 밀어준다"가 구조적으로 불가능하다. 실측으로
+        `rate_sat` 0.000 · `step_raw` 0.0067 m · `arm_qd_p99` 2.30 → 1.30 을 얻었다.
+        ★그런데 과제를 못 배웠다 — a3/a4/a5 세 번 모두 lifted 0.0000(사유는 cfg 주석).
+          제어 품질만 보면 이쪽이 맞으므로 경로를 지우지 않고 스위치 뒤에 남긴다.
 
         ★적분기는 **클램프된 값**을 저장한다 — 원값을 저장하면 박스 밖에서 와인드업이 생겨
           정책이 방향을 바꿔도 한동안 지령이 안 움직인다.
-        ★`a=0` 의 뜻이 "앵커 유지"에서 "지금 지령 유지"로 바뀐다. 그건 Track B 를 막은 구조라
-          `_reset_idx` 가 적분기 출발점을 **앵커**로 씨딩해 에피소드 첫 자세를 보존한다.
-        `_delta_lo/_delta_hi` 는 이 경로에서 더 쓰지 않는다(부모 부팅 검증만 읽는다).
         """
-        step = self._palm_step_gain * self.actions[:, :6]
-        _prev6 = torch.cat([self._prev_palm_cmd, self._prev_palm_cmd_rot], dim=1)
-        # ★A-ii 복원항: a=0 이면 앵커로 서서히 되돌아온다. 없으면 정책이 표류해도 돌아올 힘이
-        #   없어 컵에서 멀어진 채 굳는다(kp_a3 실측 epoch 437 리프트 0.0 · 보상 = do-nothing 상수).
-        #   노름 상한이 있어 액션 몫과 합쳐도 리미터를 넘지 않는다.
-        _pull = self._palm_pull * (self._palm_anchor() - _prev6)
-        _pull[:, :3] = _clamp_norm(_pull[:, :3], self._palm_pull_cap[0])
-        _pull[:, 3:6] = _clamp_norm(_pull[:, 3:6], self._palm_pull_cap[1])
-        _raw_targets = _prev6 + _pull + step                 # a=0 → 앵커로 서서히 복귀
+        if bool(self.cfg.palm_cmd_incremental):
+            # a=0 → 앵커로 서서히 복귀. 복원 노름 상한이 있어 액션 몫과 합쳐도 리미터를 못 넘는다.
+            step = self._palm_step_gain * self.actions[:, :6]
+            _prev6 = torch.cat([self._prev_palm_cmd, self._prev_palm_cmd_rot], dim=1)
+            _pull = self._palm_pull * (self._palm_anchor() - _prev6)
+            _pull[:, :3] = _clamp_norm(_pull[:, :3], self._palm_pull_cap[0])
+            _pull[:, 3:6] = _clamp_norm(_pull[:, 3:6], self._palm_pull_cap[1])
+            _raw_targets = _prev6 + _pull + step
+        else:
+            # a=0 → 앵커. 탐색이 앵커 주변 유계 오프셋으로 묶인다(grasp_s2r 와 동일 식).
+            delta = 0.5 * (self.actions[:, :6] + 1.0) * (self._delta_hi - self._delta_lo) \
+                + self._delta_lo
+            _raw_targets = self._palm_anchor() + delta
         self.palm_targets = _raw_targets.clamp(self._box_lo, self._box_hi)
         self._palm_cmd_box_sat = (self.palm_targets[:, :3] != _raw_targets[:, :3]).float()
         self._palm_delta_cmd = self.palm_targets - self._palm_anchor()   # 축별 로깅(앵커 기준 변위)

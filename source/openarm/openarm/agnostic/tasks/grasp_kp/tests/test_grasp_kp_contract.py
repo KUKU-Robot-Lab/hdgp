@@ -270,20 +270,46 @@ def test_pre_physics_step_is_delay_then_arm_hand_post_wrench():
     ])
 
 
-def test_arm_command_is_incremental_with_limiters_as_safety_net():
-    """★09.07 A-i: `이전 지령 + 게인·a`. 절대(앵커+델타) 매핑으로 되돌리면 포화가 재발한다.
+def test_arm_command_has_both_mappings_behind_one_switch():
+    """★09.07 A-iv: 절대·증분 두 매핑이 `palm_cmd_incremental` 하나로 갈린다.
 
-    구식은 `a` 가 위치를 뜻해 스텝당 이동의 2.9% 만 리미터를 통과했고, 남는 몫을 리미터가
-    대신 밀어줘 "레일에 붙어 있기"가 최적이 됐다(kp_a1 rate_sat 0.94 · kp_a2 0.98).
+    증분(A-i/A-ii/A-iii)은 포화를 없애는 데는 성공했지만(rate_sat 0.98 → 0.000,
+    step_raw 0.17 → 0.0067 m, arm_qd_p99 2.30 → 1.30) **과제를 세 번 다 못 배웠다** —
+    kp_a3/a4/a5 모두 lifted 0.0000. 같은 보상·박스의 kp_a2(절대)는 e476 에 0.658 이다.
+    그래서 기본을 절대로 되돌리되 증분 경로는 지우지 않는다(제어 품질 목표는 여전히 유효).
     """
     block = _fn_block(_ENV, "_arm_command")
-    for token in ("self._palm_step_gain * self.actions[:, :6]", "self._prev_palm_cmd",
-                  "self._prev_palm_cmd_rot", "palm_cmd_rate_limit_m",
-                  "palm_cmd_rate_limit_rot_deg", "self._update_cmd_markers()"):
+    assert "if bool(self.cfg.palm_cmd_incremental):" in block, "매핑 스위치가 없다"
+    # 증분 가지 — 게인·복원·클램프된 적분기 저장
+    for token in ("self._palm_step_gain * self.actions[:, :6]",
+                  "_pull = self._palm_pull * (self._palm_anchor() - _prev6)",
+                  "_prev6 + _pull + step"):
+        assert token in block, "증분 가지가 사라졌다: " + token
+    # 절대 가지 — 앵커 + 델타
+    for token in ("self._palm_anchor() + delta", "self._delta_hi - self._delta_lo"):
+        assert token in block, "절대 가지가 없다: " + token
+    # 리미터는 두 가지 공통의 안전망이다
+    for token in ("palm_cmd_rate_limit_m", "palm_cmd_rate_limit_rot_deg",
+                  "self._update_cmd_markers()"):
         assert token in block, token
-    assert "self._palm_anchor() + delta" not in block, "절대 매핑 복귀 — A-i 가 무효화된다"
     # 적분기는 **클램프된** 값을 저장해야 한다(원값 저장 = 박스 밖 와인드업).
     assert "self._prev_palm_cmd = self.palm_targets[:, :3].clone()" in block
+
+
+def test_absolute_mapping_is_the_default():
+    """기본이 증분으로 되돌아가면 검증된 유일한 리프트 경로(kp_a2)를 잃는다."""
+    assert "palm_cmd_incremental: bool = False" in _code(_CFG), \
+        "기본이 절대가 아니다 — a3/a4/a5 가 전부 lifted 0.0000 이었다"
+
+
+def test_increment_only_state_is_skipped_under_absolute_mapping():
+    """절대 매핑에는 유지할 적분기 상태도, 걸어갈 시간 제약도 없다 — 둘 다 스위치로 꺼져야 한다."""
+    seed = _fn_block(_ENV, "_seed_palm_integrator")
+    assert "if not bool(self.cfg.palm_cmd_incremental):" in seed and "return" in seed, \
+        "절대 매핑에서 앵커 씨딩이 안 꺼진다 — 부모의 홈 리셋을 덮어쓴다"
+    reach = _fn_block(_ENV, "_assert_goal_box_in_arm_reach")
+    assert "if not bool(c.palm_cmd_incremental):" in reach, \
+        "절대 매핑에서 traverse 예산 검사가 안 꺼진다 — 없는 제약으로 부팅이 죽는다"
 
 
 def test_palm_step_gain_is_derived_from_the_rate_limiter():
