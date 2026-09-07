@@ -163,9 +163,13 @@ def test_goal_box_reach_assert_exists_and_runs_at_boot():
     _ordered(init, ["self._apply_palm_floor_override()", "self._goal_cfg = c.goal_seq_cfg()",
                     "self._assert_goal_box_in_arm_reach()"])
     block = _fn_block(_ENV, "_assert_goal_box_in_arm_reach")
-    for token in ("_delta_lo", "_delta_hi", "_box_lo", "_box_hi", "_anchor_off", "box_min", "box_max",
+    # ★09.07 A-i: 증분 매핑이라 "이동량 ⊂ 델타"가 아니라 "걸음 수 ≤ 에피소드 예산"을 본다.
+    for token in ("_palm_step_gain", "_TRAVERSE_BUDGET_FRAC", "self.max_episode_length",
+                  "_box_lo", "_box_hi", "_anchor_off", "box_min", "box_max",
                   "spawn_range", "_obj_origin_off", "tol_floor", "raise RuntimeError"):
         assert token in block, token
+    assert "_delta_lo" not in block and "_delta_hi" not in block, \
+        "증분 매핑에서 델타 도달성 검사는 의미가 없다 — 되살아나면 구식 전제가 섞인 것"
     assert 'getattr(self, "fabric", None) is None' in block, "Track B(관절공간)는 건너뛰어야 한다"
     code = _code(_CFG)
     assert "palm_delta_xyz: tuple[float, float, float] = (0.10, 0.10, 0.35)" in code
@@ -266,12 +270,47 @@ def test_pre_physics_step_is_delay_then_arm_hand_post_wrench():
     ])
 
 
-def test_arm_command_is_anchor_relative_delta_with_limiters():
-    """grasp_s2r 팔 구간 그대로 — 절대 매핑으로 되돌리면 랜덤워크 재발."""
+def test_arm_command_is_incremental_with_limiters_as_safety_net():
+    """★09.07 A-i: `이전 지령 + 게인·a`. 절대(앵커+델타) 매핑으로 되돌리면 포화가 재발한다.
+
+    구식은 `a` 가 위치를 뜻해 스텝당 이동의 2.9% 만 리미터를 통과했고, 남는 몫을 리미터가
+    대신 밀어줘 "레일에 붙어 있기"가 최적이 됐다(kp_a1 rate_sat 0.94 · kp_a2 0.98).
+    """
     block = _fn_block(_ENV, "_arm_command")
-    for token in ("self._palm_anchor() + delta", "palm_cmd_rate_limit_m",
+    for token in ("self._palm_step_gain * self.actions[:, :6]", "self._prev_palm_cmd",
+                  "self._prev_palm_cmd_rot", "palm_cmd_rate_limit_m",
                   "palm_cmd_rate_limit_rot_deg", "self._update_cmd_markers()"):
         assert token in block, token
+    assert "self._palm_anchor() + delta" not in block, "절대 매핑 복귀 — A-i 가 무효화된다"
+    # 적분기는 **클램프된** 값을 저장해야 한다(원값 저장 = 박스 밖 와인드업).
+    assert "self._prev_palm_cmd = self.palm_targets[:, :3].clone()" in block
+
+
+def test_palm_step_gain_is_derived_from_the_rate_limiter():
+    """게인을 상수로 적으면 리미터를 바꿀 때 조용히 어긋난다 — 반드시 파생시킨다."""
+    block = _fn_block(_ENV, "_setup_palm_step_gain")
+    for token in ("palm_cmd_rate_limit_m", "palm_cmd_rate_limit_rot_deg",
+                  "math.sqrt(3.0)", "raise RuntimeError"):
+        assert token in block, token
+    # √3 로 나눠야 정육면체 최악(대각) 노름이 리미터와 같아진다. ★거기서 **여유**를 더 빼야
+    #   float32 오차로 리미터가 nm 단위로 걸려 rate_sat 진단이 오염되는 것을 막는다(스모크 0.0625).
+    assert "_STEP_GAIN_MARGIN" in block and "_lm * _k" in block and "_lr * _k" in block
+
+
+def test_reset_seeds_the_increment_integrator_from_the_anchor():
+    """A-i 의 유일한 방어선 — 안 하면 `a=0` 이 홈 유지가 되어 Track B 의 긴 무보상 이동을 물려받는다."""
+    seed = _fn_block(_ENV, "_seed_palm_integrator")
+    for token in ("self._palm_anchor()[env_ids]", "self.palm_targets[env_ids] = _anc",
+                  "self._prev_palm_cmd[env_ids] = _anc[:, :3]",
+                  "self._prev_palm_cmd_rot[env_ids] = _anc[:, 3:6]",
+                  "self._palm_cmd_primed[env_ids] = True"):
+        assert token in seed, token
+    # 부모가 홈으로 되돌린 **뒤에** 씌워야 한다.
+    _ordered(_fn_block(_ENV, "_reset_idx"),
+             ["super()._reset_idx(env_ids)", "self._seed_palm_integrator(env_ids)"])
+    # 부팅에서도 씨딩해야 첫 `_arm_command` 의 이전 지령이 0(→박스 구석)이 되지 않는다.
+    _ordered(_fn_block(_ENV, "_init_task_state"),
+             ["self._setup_palm_step_gain()", "self._seed_palm_integrator(slice(None))"])
 
 
 def test_post_command_syncs_fabric_hand_and_integrates_once():

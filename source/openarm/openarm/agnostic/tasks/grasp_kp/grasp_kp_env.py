@@ -42,6 +42,12 @@ from ..grasp_s2r.grasp_s2r_env import GraspS2REnv
 from .grasp_kp_env_cfg import GraspKPEnvCfg
 
 _OBJ_POSE_DIM = 7   # pos(3) + quat wxyz(4) — 물체 지연 큐의 폭
+# 목표 박스 코너까지 걸어가는 데 쓸 수 있는 에피소드 비율(A-i 증분 매핑 도달성 가드).
+_TRAVERSE_BUDGET_FRAC = 0.25
+# 대각 걸음의 노름이 리미터에 **정확히** 닿으면 float32 오차로 리미터가 nm 단위로 걸려
+# `palm_cmd_rate_sat` 진단이 오염된다(스모크 실측 0.0625 = 16 env 중 1). 0.1% 여유를 둬
+# 어떤 액션에서도 구조적으로 0 이 되게 한다 — 이 지표는 A-i 의 성공 판정선이다.
+_STEP_GAIN_MARGIN = 0.999
 #: 진단용 낙하 판정 — 래치는 섰는데 정착고 대비 이만큼도 안 뜬 상태(=놓쳤다).
 #: 보상·종료에는 쓰지 않는다(관측 전용).
 _DROP_DZ = 0.03
@@ -138,6 +144,7 @@ class GraspKPEnv(GraspS2REnv):
         self._hand_action_offset = int(self.cfg._arm_action_dim(self.profile))
         self._apply_palm_floor_override()
         n, dev, c = self.num_envs, self.device, self.cfg
+        self._setup_palm_step_gain()
         self._kp_offsets = keypoint_offsets(c.keypoint_half_height(), dev)     # (4,3)
         self._goal_cfg = c.goal_seq_cfg()
         self._rw_cfg = c.progress_reward_cfg()
@@ -167,6 +174,7 @@ class GraspKPEnv(GraspS2REnv):
         # 단계 사다리 재정의: 높이 래치 → 목표 1·2·3 (부모 `_reset_idx` 가 이 이름으로 평균 기록).
         self._stage_names = ("lifted", "goal1", "goal2", "goal3")
         self._stage_hit = torch.zeros(n, len(self._stage_names), dtype=torch.bool, device=dev)
+        self._seed_palm_integrator(slice(None))       # 첫 리셋 전에도 지령 출발점이 있어야 한다
         print(f"[grasp_kp] 키포인트 s={c.keypoint_half_height():.3f}m · 목표 박스 "
               f"{[round(v, 3) for v in self._goal_cfg.box_min]}~"
               f"{[round(v, 3) for v in self._goal_cfg.box_max]} · "
@@ -174,6 +182,54 @@ class GraspKPEnv(GraspS2REnv):
               f"지연 obs/act/obj {c.obs_delay_steps}/{c.action_delay_steps}/{c.object_delay_steps} · "
               f"외란 {c.wrench_force_scale}N/kg·{c.wrench_torque_scale}N·m/kg · "
               f"질량 {float(self._obj_mass.min()):.3f}~{float(self._obj_mass.max()):.3f}kg", flush=True)
+
+    def _setup_palm_step_gain(self) -> None:
+        """★09.07 A-i: 팔 지령을 절대(앵커+델타) → **증분**으로 바꾸며 쓰는 걸음 크기.
+
+        왜 바꾸나. 구식은 `a` 가 **위치**를 뜻했다 — a=−1 이 박스 맨 아래, +1 이 맨 위다.
+        그런데 스텝당 실제 이동은 리미터가 `palm_cmd_rate_limit_m`(0.02 m)로 자른다.
+        z 액션 범위가 0.70 m 이니 **한 스텝에 쓸 수 있는 건 범위의 2.9%** 뿐이고, 남는 몫은
+        리미터가 다음 스텝에도 계속 같은 방향으로 밀어준다. 즉 레일에 붙어 있는 것이 공짜로
+        이득이라 정책이 그리 수렴한다 — kp_a1/kp_a2 실측 `palm_cmd_rate_sat` 0.94/0.98,
+        `palm_cmd_box_sat_z` 0.89/0.87. bounds_loss·entropy 로는 못 고친다(둘 다 mu 를
+        벌할 뿐 게인 불일치를 못 건드린다. a2 에서 σ 만 24% 줄고 지령은 오히려 커졌다).
+
+        증분식에서는 `a=±1` 이 곧 **허용된 최대 걸음**이라 더 크게 낼 이득이 사라진다.
+        ★게인은 리미터에서 **파생**시킨다 — 상수로 적으면 리미터를 바꿀 때 조용히 어긋난다.
+          정육면체 a∈[-1,1]³ 의 최악(대각) 노름이 리미터와 **정확히** 같도록 /√3 한다.
+          그래야 어떤 액션에서도 리미터가 걸리지 않아 방향 왜곡이 생기지 않는다.
+        """
+        c, dev = self.cfg, self.device
+        _lm = float(c.palm_cmd_rate_limit_m)
+        _lr = math.radians(float(c.palm_cmd_rate_limit_rot_deg))
+        if _lm <= 0.0 or _lr <= 0.0:
+            raise RuntimeError(
+                f"[grasp_kp] 증분 매핑은 걸음 크기를 리미터에서 파생시킨다 — "
+                f"palm_cmd_rate_limit_m({c.palm_cmd_rate_limit_m}) 와 "
+                f"palm_cmd_rate_limit_rot_deg({c.palm_cmd_rate_limit_rot_deg}) 는 둘 다 > 0 이어야 한다")
+        _k = _STEP_GAIN_MARGIN / math.sqrt(3.0)
+        self._palm_step_gain = torch.cat([
+            torch.full((3,), _lm * _k, device=dev),
+            torch.full((3,), _lr * _k, device=dev)])
+        print(f"[grasp_kp] 팔 지령 = 증분 · 걸음 {_lm * _k:.5f} m / "
+              f"{math.degrees(_lr * _k):.3f}° (리미터 {_lm} m / {c.palm_cmd_rate_limit_rot_deg}° "
+              f"× {_STEP_GAIN_MARGIN}/√3) · a=±1 이 최대 걸음이라 리미터는 안전망으로만 남는다", flush=True)
+
+    def _seed_palm_integrator(self, env_ids) -> None:
+        """증분 적분기의 출발점 = 액션 앵커(스폰 추종). 부팅 1회 + 리셋마다.
+
+        부모는 리셋에서 `palm_targets` 를 **홈**으로 되돌리고 primed 를 내린다. 증분 매핑에서
+        그대로 두면 `a=0` 이 홈 유지가 되어 컵에서 25 cm 떨어진 곳에서 출발한다 — Track B 를
+        막은 바로 그 구조(긴 무보상 이동)를 A 가 물려받는다. 앵커로 씨딩하면 에피소드 첫 지령이
+        구식과 같은 자리라 발견 조건이 보존되고, 바뀌는 것은 그 뒤의 **이동 규칙**뿐이다.
+        ★부팅에서도 불러야 한다 — 씨딩 전에 `_arm_command` 가 돌면 이전 지령이 0 이라
+          지령이 박스 구석으로 튄다(첫 리셋 전에는 `_palm_anchor` 가 홈을 준다).
+        """
+        _anc = self._palm_anchor()[env_ids]
+        self.palm_targets[env_ids] = _anc
+        self._prev_palm_cmd[env_ids] = _anc[:, :3]
+        self._prev_palm_cmd_rot[env_ids] = _anc[:, 3:6]
+        self._palm_cmd_primed[env_ids] = True      # 출발점이 실제 지령이라 첫 스텝도 리미터 대상
 
     def _assert_kp_contract(self) -> None:
         """CLI 오버라이드가 접촉 의존 분기를 되살리면 부팅에서 죽는다(조용한 무시 금지)."""
@@ -220,7 +276,9 @@ class GraspKPEnv(GraspS2REnv):
 
         왜: 부모 `_assert_goal_reachable` 은 구 `goal_offset_xyz` 한 점만 본다. 목표 박스가 지령
         범위를 넘으면 목표열·tol 커리큘럼이 **조용히** 멈춘다(09.06 리뷰). 팔이 물체를 앵커
-        오프셋으로 쥔 채 옮긴다고 보고, 목표−스폰 이동량 ∈ 델타, 목표+오프셋 ∈ 클램프 박스를 본다.
+        오프셋으로 쥔 채 옮긴다고 보고, 목표+오프셋 ∈ 클램프 박스와 **이동 시간 예산**을 본다.
+        ★09.07 A-i 로 매핑이 증분이 되어 "이동량 ∈ 델타" 전제가 사라졌다 — 적분기는 박스 전체를
+          덮으므로 남는 제약은 걸음 수뿐이다.
         스폰 xy ±spawn_range·뱅크 정착고 최저/최고 극단, 허용오차 하한(tol_floor)만큼 여유.
         """
         if getattr(self, "fabric", None) is None:
@@ -235,21 +293,29 @@ class GraspKPEnv(GraspS2REnv):
         s_hi = (cx + r, cy + r, _tz + float(self._obj_origin_off.max()))
         g_lo, g_hi = self._goal_cfg.box_min, self._goal_cfg.box_max
         off = (self._anchor_off - self._fab_to_env).tolist()      # 목표(env-local) → palm 지령(fabric 프레임)
-        d_lo, d_hi = self._delta_lo[:3].tolist(), self._delta_hi[:3].tolist()
         b_lo, b_hi = self._box_lo[:3].tolist(), self._box_hi[:3].tolist()
-        bad = []
+        gain = self._palm_step_gain[:3].tolist()
+        budget = _TRAVERSE_BUDGET_FRAC * float(self.max_episode_length)
+        bad, worst = [], 0.0
         for i, ax in enumerate("xyz"):
             need_hi, need_lo = g_hi[i] - s_lo[i], g_lo[i] - s_hi[i]          # 최악 이동량
-            if need_hi > d_hi[i] + tol or need_lo < d_lo[i] - tol:
-                bad.append(f"{ax}: 이동량 [{need_lo:+.3f},{need_hi:+.3f}] ⊄ 델타 [{d_lo[i]:+.3f},{d_hi[i]:+.3f}]")
             p_hi, p_lo = g_hi[i] + off[i], g_lo[i] + off[i]                  # 필요한 palm 지령
             if p_hi > b_hi[i] + tol or p_lo < b_lo[i] - tol:
                 bad.append(f"{ax}: palm [{p_lo:.3f},{p_hi:.3f}] ⊄ 클램프 박스 [{b_lo[i]:.3f},{b_hi[i]:.3f}]")
+            # ★A-i(증분): 도달성은 "델타 안인가"가 아니라 "에피소드 안에 걸어갈 수 있는가"다.
+            #   적분기는 박스 전체를 덮으므로 남는 제약은 **시간**뿐 — 걸음 수가 예산을 넘으면
+            #   목표열이 조용히 멈춘다(구식의 델타 부족과 증상이 같다).
+            steps = (max(abs(need_hi), abs(need_lo)) + tol) / max(gain[i], 1e-9)
+            worst = max(worst, steps)
+            if steps > budget:
+                bad.append(f"{ax}: 이동 {max(abs(need_hi), abs(need_lo)):.3f} m 에 {steps:.0f} 스텝 "
+                           f"> 예산 {budget:.0f} (에피소드 {int(self.max_episode_length)} 의 "
+                           f"{_TRAVERSE_BUDGET_FRAC:.0%})")
         if bad:
             raise RuntimeError(
                 "[grasp_kp] 목표 박스가 팔 지령 범위를 넘는다(±tol_floor 여유) — "
-                "palm_delta_xyz 를 키우거나 goal_box_* 를 줄여라: " + " · ".join(bad))
-        print(f"[grasp_kp] 목표 박스 ⊂ 팔 지령 범위 ✓ (델타 ±{[round(v, 3) for v in d_hi]} · "
+                "palm_cmd_rate_limit_m 을 키우거나 goal_box_* 를 줄여라: " + " · ".join(bad))
+        print(f"[grasp_kp] 목표 박스 ⊂ 팔 지령 범위 ✓ (최악 이동 {worst:.0f} 스텝 / 예산 {budget:.0f} · "
               f"클램프 z [{b_lo[2]:.3f},{b_hi[2]:.3f}] · tol 여유 {tol})", flush=True)
 
     def _read_object_mass(self) -> torch.Tensor:
@@ -279,13 +345,25 @@ class GraspKPEnv(GraspS2REnv):
         self._apply_wrench()
 
     def _arm_command(self) -> None:
-        """grasp_s2r `_pre_physics_step` 팔 구간 그대로: 앵커+델타 → 박스 → 리미터 → 마커."""
-        delta = 0.5 * (self.actions[:, :6] + 1.0) * (self._delta_hi - self._delta_lo) \
-            + self._delta_lo
-        self._palm_delta_cmd = delta                         # 축별 로깅 전용
-        _raw_targets = self._palm_anchor() + delta           # a=0 → 앵커(에피소드 상수)
+        """★09.07 A-i: **증분** 매핑 — 이전 지령 + 게인·a → 박스 클램프 → 리미터(안전망) → 마커.
+
+        구식(grasp_s2r)은 `앵커 + 델타(a)` 절대 매핑이라 `a` 가 위치를 뜻했고, 그 위치 변화의
+        2.9% 만 리미터를 통과했다. 그래서 "레일에 붙여두면 리미터가 대신 밀어준다"가 최적이 되어
+        `rate_sat` 0.98 로 굳었다 — 안정을 위해 건 제한을 정책이 "더 세게 내라"로 오해한 것이다.
+        증분식은 `a=±1` 이 허용된 최대 걸음이라 그 오해가 구조적으로 불가능하다(`_setup_palm_step_gain`).
+
+        ★적분기는 **클램프된 값**을 저장한다 — 원값을 저장하면 박스 밖에서 와인드업이 생겨
+          정책이 방향을 바꿔도 한동안 지령이 안 움직인다.
+        ★`a=0` 의 뜻이 "앵커 유지"에서 "지금 지령 유지"로 바뀐다. 그건 Track B 를 막은 구조라
+          `_reset_idx` 가 적분기 출발점을 **앵커**로 씨딩해 에피소드 첫 자세를 보존한다.
+        `_delta_lo/_delta_hi` 는 이 경로에서 더 쓰지 않는다(부모 부팅 검증만 읽는다).
+        """
+        step = self._palm_step_gain * self.actions[:, :6]
+        _prev6 = torch.cat([self._prev_palm_cmd, self._prev_palm_cmd_rot], dim=1)
+        _raw_targets = _prev6 + step                         # a=0 → 지금 지령 유지
         self.palm_targets = _raw_targets.clamp(self._box_lo, self._box_hi)
         self._palm_cmd_box_sat = (self.palm_targets[:, :3] != _raw_targets[:, :3]).float()
+        self._palm_delta_cmd = self.palm_targets - self._palm_anchor()   # 축별 로깅(앵커 기준 변위)
 
         _lim = float(self.cfg.palm_cmd_rate_limit_m)
         _step3 = self.palm_targets[:, :3] - self._prev_palm_cmd
@@ -602,6 +680,9 @@ class GraspKPEnv(GraspS2REnv):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)       # stage/* 기록 · 홈 · fabric 씨딩 · object_spawn_pos(정착고)
+        # ★09.07 A-i: 부모가 palm_targets 를 홈으로 되돌린 **뒤** 앵커로 다시 씌운다
+        #   (사유는 `_seed_palm_integrator`). `object_spawn_pos` 는 위 super() 가 갱신했다.
+        self._seed_palm_integrator(env_ids)
         settled = self.object_spawn_pos[env_ids]
         self.goal_pos[env_ids], self.goal_quat[env_ids] = sample_first_goal(
             settled, self._settled_quat[env_ids], self._goal_cfg)
