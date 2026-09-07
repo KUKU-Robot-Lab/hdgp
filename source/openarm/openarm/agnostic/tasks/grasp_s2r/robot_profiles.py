@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os as _os
 from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 
 from openarm.agnostic.modules import vendor_gains as _vg
 
@@ -541,6 +542,35 @@ GRIPPER_LEFT = RobotProfile(
 )
 
 
+# ★09.07 오른팔 전용 변형 — TESOLLO_RIGHT 와 **자산 경로만** 다르다.
+#   왜: `replicate_physics=False`(다물체 필수)는 env 마다 articulation 을 통째로 PhysX 가
+#       파싱한다. 우리는 오른팔만 학습하는데 왼팔 39링크·39관절이 env 마다 파싱된다.
+#       16,384 env 실측에서 PhysX 가 요구한 접촉이 24,777,720(env 당 1,512)이었고 그게
+#       기동 실패의 직접 원인이었다(버퍼를 키우자 요구치도 7.6M→24.8M 로 같이 늘었다).
+#   자산은 base USD 를 subLayer 로 물고 왼팔 subtree 를 `active=false` 로 끄는 **오버레이**다.
+#   메시를 다시 만들지 않는다. 실측 감소: prim 1,477→799 · 충돌형상 75→40 · 가동관절 56→29.
+#   ★관절 이름·게인·palm 박스는 전부 TESOLLO_RIGHT 와 같다 — 오른쪽은 손대지 않았다.
+#   ★체크포인트 비호환: articulation 관절 수가 바뀌므로 FRESH 학습이 필요하다.
+def _drop_left(profile: RobotProfile, name: str, usd_relpath: str) -> RobotProfile:
+    """좌측 관절을 `init_joint_pos`·`actuator_specs` 에서 뺀 변형을 만든다.
+
+    ★자산에서만 빼면 안 된다 — 두 dict 에 남은 좌측 항목의 정규식이 매칭에 실패해
+      IsaacLab 이 `Not all regular expressions are matched!` 로 부팅에서 죽는다(실측).
+    head 는 자산에 남아 있으므로 그대로 둔다.
+    """
+    ijp = {k: v for k, v in profile.init_joint_pos.items() if not k.startswith("l_")}
+    acts = {k: v for k, v in profile.actuator_specs.items()
+            if not any(str(e).startswith("l_") for e in v.get("joint_names_expr", []))}
+    return _dc_replace(profile, name=name, usd_relpath=usd_relpath,
+                       init_joint_pos=ijp, actuator_specs=acts)
+
+
+TESOLLO_RIGHT_ONLY = _drop_left(
+    TESOLLO_RIGHT,
+    "tesollo_right_only",
+    "robot/openarm_dg5f-m_bi_rl/openarm_dg5f-m_bi_rl_right.usda",
+)
+
 PROFILES: dict[str, RobotProfile] = {
-    p.name: p for p in (TESOLLO_RIGHT, GRIPPER_LEFT)
+    p.name: p for p in (TESOLLO_RIGHT, TESOLLO_RIGHT_ONLY, GRIPPER_LEFT)
 }
