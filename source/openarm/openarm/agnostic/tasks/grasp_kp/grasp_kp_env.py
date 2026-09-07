@@ -42,6 +42,12 @@ from ..grasp_s2r.grasp_s2r_env import GraspS2REnv
 from .grasp_kp_env_cfg import GraspKPEnvCfg
 
 _OBJ_POSE_DIM = 7   # pos(3) + quat wxyz(4) — 물체 지연 큐의 폭
+def _clamp_norm(v: torch.Tensor, cap: torch.Tensor) -> torch.Tensor:
+    """행별 노름을 `cap` 이하로 — 방향은 보존한다(축별 클램프는 방향을 왜곡한다)."""
+    n = v.norm(dim=-1, keepdim=True).clamp(min=1e-9)
+    return v * (cap / n).clamp(max=1.0)
+
+
 # 목표 박스 코너까지 걸어가는 데 쓸 수 있는 에피소드 비율(A-i 증분 매핑 도달성 가드).
 _TRAVERSE_BUDGET_FRAC = 0.25
 # 대각 걸음의 노름이 리미터에 **정확히** 닿으면 float32 오차로 리미터가 nm 단위로 걸려
@@ -207,13 +213,19 @@ class GraspKPEnv(GraspS2REnv):
                 f"[grasp_kp] 증분 매핑은 걸음 크기를 리미터에서 파생시킨다 — "
                 f"palm_cmd_rate_limit_m({c.palm_cmd_rate_limit_m}) 와 "
                 f"palm_cmd_rate_limit_rot_deg({c.palm_cmd_rate_limit_rot_deg}) 는 둘 다 > 0 이어야 한다")
-        _k = _STEP_GAIN_MARGIN / math.sqrt(3.0)
+        # ★A-ii: 리미터 예산을 복원(pull)과 액션(step)이 **나눠 쓴다**. 안 나누면 둘이 겹칠 때
+        #   합이 리미터를 넘어 A-i 가 없애려던 포화가 되돌아온다.
+        _res = float(c.palm_cmd_leak_reserve)
+        _k = (1.0 - _res) * _STEP_GAIN_MARGIN / math.sqrt(3.0)
         self._palm_step_gain = torch.cat([
             torch.full((3,), _lm * _k, device=dev),
             torch.full((3,), _lr * _k, device=dev)])
-        print(f"[grasp_kp] 팔 지령 = 증분 · 걸음 {_lm * _k:.5f} m / "
-              f"{math.degrees(_lr * _k):.3f}° (리미터 {_lm} m / {c.palm_cmd_rate_limit_rot_deg}° "
-              f"× {_STEP_GAIN_MARGIN}/√3) · a=±1 이 최대 걸음이라 리미터는 안전망으로만 남는다", flush=True)
+        self._palm_pull = float(c.palm_cmd_anchor_pull)
+        self._palm_pull_cap = torch.tensor([_lm * _res, _lr * _res], device=dev)   # (xyz, rot)
+        print(f"[grasp_kp] 팔 지령 = 증분+복원 · 걸음 {_lm * _k:.5f} m / "
+              f"{math.degrees(_lr * _k):.3f}° · 복원 {self._palm_pull} (상한 {_lm * _res:.5f} m) · "
+              f"리미터 {_lm} m / {c.palm_cmd_rate_limit_rot_deg}° 를 {1 - _res:.0%}/{_res:.0%} 로 "
+              f"나눠 쓴다 → 합이 리미터를 못 넘는다", flush=True)
 
     def _seed_palm_integrator(self, env_ids) -> None:
         """증분 적분기의 출발점 = 액션 앵커(스폰 추종). 부팅 1회 + 리셋마다.
@@ -360,7 +372,13 @@ class GraspKPEnv(GraspS2REnv):
         """
         step = self._palm_step_gain * self.actions[:, :6]
         _prev6 = torch.cat([self._prev_palm_cmd, self._prev_palm_cmd_rot], dim=1)
-        _raw_targets = _prev6 + step                         # a=0 → 지금 지령 유지
+        # ★A-ii 복원항: a=0 이면 앵커로 서서히 되돌아온다. 없으면 정책이 표류해도 돌아올 힘이
+        #   없어 컵에서 멀어진 채 굳는다(kp_a3 실측 epoch 437 리프트 0.0 · 보상 = do-nothing 상수).
+        #   노름 상한이 있어 액션 몫과 합쳐도 리미터를 넘지 않는다.
+        _pull = self._palm_pull * (self._palm_anchor() - _prev6)
+        _pull[:, :3] = _clamp_norm(_pull[:, :3], self._palm_pull_cap[0])
+        _pull[:, 3:6] = _clamp_norm(_pull[:, 3:6], self._palm_pull_cap[1])
+        _raw_targets = _prev6 + _pull + step                 # a=0 → 앵커로 서서히 복귀
         self.palm_targets = _raw_targets.clamp(self._box_lo, self._box_hi)
         self._palm_cmd_box_sat = (self.palm_targets[:, :3] != _raw_targets[:, :3]).float()
         self._palm_delta_cmd = self.palm_targets - self._palm_anchor()   # 축별 로깅(앵커 기준 변위)

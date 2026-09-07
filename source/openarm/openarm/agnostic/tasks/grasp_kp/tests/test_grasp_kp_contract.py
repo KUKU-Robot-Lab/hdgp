@@ -297,6 +297,35 @@ def test_palm_step_gain_is_derived_from_the_rate_limiter():
     assert "_STEP_GAIN_MARGIN" in block and "_lm * _k" in block and "_lr * _k" in block
 
 
+def test_anchor_pull_shares_the_rate_budget_with_the_action():
+    """★A-ii: 복원항과 액션이 리미터 예산을 **나눠 써야** A-i 가 없앤 포화가 안 돌아온다.
+
+    안 나누면 pull 과 step 이 같은 방향일 때 합이 리미터를 넘어 다시 잘리기 시작한다.
+    """
+    gain = _fn_block(_ENV, "_setup_palm_step_gain")
+    assert "palm_cmd_leak_reserve" in gain
+    assert "(1.0 - _res) * _STEP_GAIN_MARGIN / math.sqrt(3.0)" in gain, "액션 게인이 남은 예산 기준이 아니다"
+    assert "_palm_pull_cap" in gain
+
+    arm = _fn_block(_ENV, "_arm_command")
+    for token in ("_pull = self._palm_pull * (self._palm_anchor() - _prev6)",
+                  "_clamp_norm(_pull[:, :3]", "_clamp_norm(_pull[:, 3:6]",
+                  "_prev6 + _pull + step"):
+        assert token in arm, token
+    # 방향 보존 — 축별 클램프는 대각 지령의 방향을 왜곡한다(09.07 진단 이력).
+    assert "norm(dim=-1, keepdim=True)" in _fn_block(_ENV, "_clamp_norm")
+
+
+def test_pull_and_step_budget_cannot_exceed_the_limiter():
+    """수치로도 확인 — 최악(대각·최대 이탈)에서 pull+step 노름이 리미터 이하인가."""
+    import math
+    lim, res, margin = 0.02, 0.2, 0.999
+    k = (1.0 - res) * margin / math.sqrt(3.0)
+    worst_step = (lim * k) * math.sqrt(3.0)      # a=(±1,±1,±1)
+    worst_pull = lim * res                        # 노름 상한
+    assert worst_step + worst_pull <= lim + 1e-12, (worst_step, worst_pull, lim)
+
+
 def test_reset_seeds_the_increment_integrator_from_the_anchor():
     """A-i 의 유일한 방어선 — 안 하면 `a=0` 이 홈 유지가 되어 Track B 의 긴 무보상 이동을 물려받는다."""
     seed = _fn_block(_ENV, "_seed_palm_integrator")

@@ -123,6 +123,15 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     hand_floor_terminate_depth: float = 0.03  # 손 링크가 상판보다 이만큼 아래 → 종료
     # 왜 0.27: 손 최하단이 palm 원점 −57 mm, 상판 0.205 → 관통 방지(09.06 "a=0 에서 49 mm 뚫림").
     #   0 이면 끔. env 가 `_palm_lo[2]`·`_box_lo[2]` 를 **올리기만** 한다(낮추지 않음).
+    # ★09.07 A-ii: 증분 매핑의 **복원력**. `a=0` 이 "지금 지령 유지"가 되면 정책이 표류해도
+    #   돌아올 힘이 없다 — kp_a3 실측 epoch 437 에 리프트 0.0, 보상 1.038(= 아무것도 안 할 때
+    #   주는 상수), ft_dist 0.313(a2 는 같은 시점 0.101). 그래서 매 스텝 앵커 쪽으로 조금 끈다.
+    #     pull = clamp(palm_cmd_anchor_pull · (앵커 − 이전지령), 노름 ≤ 리미터·leak_reserve)
+    #   ★리미터 예산을 액션과 **나눠 쓴다**. 안 나누면 pull+step 이 리미터를 넘어 A-i 가
+    #     되살리려던 포화가 되돌아온다. 액션 게인은 남은 예산으로 고정 계산해 정책이 보는
+    #     기울기가 위치에 따라 변하지 않게 한다.
+    palm_cmd_anchor_pull: float = 0.01      # 반감기 ln2/0.01 ≈ 69 스텝 ≈ 1.15 s
+    palm_cmd_leak_reserve: float = 0.2      # 리미터의 20% 를 복원에 배정
     palm_box_min_z_override: float = 0.27
     arm_cmd_dim: int = 6                      # obs cmd_state 폭: A = palm_targets−anchor(6)
 
@@ -209,6 +218,10 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
             errs.append(f"wrench_prob_range 는 0 < lo ≤ hi ≤ 1: {self.wrench_prob_range}")
         if float(self.hand_floor_terminate_depth) < 0.0 or float(self.palm_box_min_z_override) < 0.0:
             errs.append("hand_floor_terminate_depth / palm_box_min_z_override 는 ≥ 0")
+        if not (0.0 <= float(self.palm_cmd_anchor_pull) < 1.0):
+            errs.append(f"palm_cmd_anchor_pull 은 [0,1): {self.palm_cmd_anchor_pull}")
+        if not (0.0 <= float(self.palm_cmd_leak_reserve) < 1.0):
+            errs.append(f"palm_cmd_leak_reserve 는 [0,1): {self.palm_cmd_leak_reserve}")
         if int(self.arm_cmd_dim) < 1:
             errs.append(f"arm_cmd_dim ≥ 1, got {self.arm_cmd_dim}")
         if errs:
