@@ -180,6 +180,9 @@ class GraspKPEnv(GraspS2REnv):
         #   + 회전 원지령 변화 노름(위치 쪽 `_palm_cmd_step_raw` 는 부모 버퍼).
         self._cmd_rate = torch.zeros(n, device=dev)
         self._palm_cmd_step_raw_rot = torch.zeros(n, device=dev)
+        # ★A-vi 전역 arm 래치 상태(0-dim 텐서 — 분기 없이 `|=` 로 래치, per-step 동기화 금지). 프로세스 로컬.
+        self._lift_ema = torch.zeros((), device=dev)
+        self._cmd_rate_armed = torch.zeros((), dtype=torch.bool, device=dev)
         self._obs_shape_checked = False
         # 단계 사다리 재정의: 높이 래치 → 목표 1·2·3 (부모 `_reset_idx` 가 이 이름으로 평균 기록).
         self._stage_names = ("lifted", "goal1", "goal2", "goal3")
@@ -581,12 +584,18 @@ class GraspKPEnv(GraspS2REnv):
         kp_dist = keypoint_max_dist(kp_obj, kp_goal)
         dz = obj_pos[:, 2] - self.object_spawn_pos[:, 2]
         near_goal, is_success = update_near_goal(kp_dist, self._tol.tol, self._trk, self._goal_cfg)
+        # ★09.07 A-vi: 벌점은 **전역** 래치 뒤에만 — lifted_frac EMA ≥ 임계(a6 는 e130 에 0.30)면 sticky 로 arm.
+        #   per-env lifted 만으로 켠 a7 은 e25 의 우연한 리프트(튕겨 올라갔다 상판에 놓인 컵, sticky 래치)에
+        #   −1.35/step 이 500 스텝 붙어 접근 자체가 죽었다(e25 close 0.37 → e50 0.007). 래치는 되돌리지 않는다.
+        _a = float(c.rw_cmd_rate_arm_ema)
+        self._lift_ema = (1.0 - _a) * self._lift_ema + _a * self._latched.float().mean()
+        self._cmd_rate_armed = self._cmd_rate_armed | (self._lift_ema >= float(c.rw_cmd_rate_arm_lifted_frac))
         total, terms, out = compute_progress_reward(
             obj_z=obj_pos[:, 2], settled_z=self.object_spawn_pos[:, 2], lifted_prev=self._latched,
             ft_dist=ft_dist, closest_ft=self._trk.closest_ft,
             kp_dist=kp_dist, closest_kp=self._trk.closest_kp, near_goal=near_goal,
             arm_qd=qd[:, self._arm_ids_t], hand_qd=qd[:, self._hand_ids_t],
-            hand_z_min=self._hand_z_min, cmd_rate=self._cmd_rate, cfg=self._rw_cfg,
+            hand_z_min=self._hand_z_min, cmd_rate=self._cmd_rate * self._cmd_rate_armed.float(), cfg=self._rw_cfg,
         )
         # 상태 되먹임 — 모듈은 무상태. 래치는 에피소드 리셋에서만 풀린다(sticky).
         self._latched = out["lifted"]
@@ -598,6 +607,9 @@ class GraspKPEnv(GraspS2REnv):
         self._last_reward = total
         if self._tol.update(self._trk.prev_episode_successes):
             print(f"[grasp_kp] 허용오차 커리큘럼 → tol {self._tol.tol:.4f}", flush=True)
+        # arm 시점 기록 — 2000 스텝마다 한 번만 동기화(bool)한다.
+        if self.common_step_counter % 2000 == 0 and bool(self._cmd_rate_armed):
+            print(f"[grasp_kp] cmd_rate 벌점 ARMED · lift_ema {float(self._lift_ema):.3f} · step {self.common_step_counter}", flush=True)
         self._stage_hit[:, 0] |= self._latched
         for k in (1, 2, 3):
             self._stage_hit[:, k] |= self._trk.successes >= k
@@ -640,6 +652,8 @@ class GraspKPEnv(GraspS2REnv):
         ex["task/close_gate"] = self._close_gate.mean()
         # ★09.07 리프트 후 정지 판정의 1차 지표(정책 몫만) — 전체 평균은 리프트 전 env 가 뭉갠다.
         ex["task/cmd_rate_lifted"] = self._lifted_mean(self._cmd_rate)
+        ex["task/cmd_rate_armed"] = self._cmd_rate_armed.float()
+        ex["task/lift_ema"] = self._lift_ema
         self._log_probe_metrics(dz)
         self._log_fabric_metrics()
 

@@ -65,7 +65,8 @@ r_kp       = 200 · clamp(d*_kp − d_kp, 0, 100) · lifted        d* 는 목표
 r_goal     = (1000/10) · [near_goal]                            near_goal = d_kp ≤ tol
 r_armvel   = −0.03  · Σ|q̇_arm|     r_handvel = −0.003 · Σ|q̇_hand|   (실측 관절속도)
 r_floor    = −clamp(10 · relu(hand_floor_z − hand_z_min), max 5)   hand_floor_z = 0.215 (기하, 센서 아님)
-r_cmd      = −cmd_rate_scale · cmd_rate · lifted                (09.07 A-v/B-v · A 0.1 · B 1.0, 상한 없음, 리프트 전 0)
+r_cmd      = −cmd_rate_scale · cmd_rate · [lifted ∧ dz > 0.03] · ARMED   (09.07 A-v/B-v · A 0.1 · B 1.0, 상한 없음)
+             ARMED = 전역 sticky 래치, lifted_frac EMA(α 0.002) ≥ 0.30 부터(a7: per-env 게이트만으로는 e25 우연 리프트에 붙어 접근 사망)
              cmd_rate: A = ½(‖Δp_raw‖/0.02 + ‖Δr_raw‖/2.9°) 리미터 **전** 원지령 변화(1 = 리미터에 딱 맞춤, 작동점 ≈10~15)
                        B = RMS_j(a_j − a_prev_j)/2 ∈ [0,1] 팔 액션 반전(전속 이송은 0)
 ```
@@ -154,14 +155,14 @@ PROGRESS_REWARD_TERMS = ("fingertip_progress","lift","lift_bonus","keypoint_prog
     ft_scale=50.0; lift_scale=20.0; lift_base=0.05; lift_clip=0.5; lift_bonus=300.0; lift_latch_height=0.10
     kp_scale=200.0; goal_bonus=1000.0; success_steps=10
     arm_vel_scale=0.03; hand_vel_scale=0.003
-    hand_floor_penalty=10.0; hand_floor_z=0.215; hand_floor_max=5.0; cmd_rate_scale=0.1  (env cfg rw_cmd_rate_scale: A 0.1 · B 1.0)
+    hand_floor_penalty=10.0; hand_floor_z=0.215; hand_floor_max=5.0; cmd_rate_scale=0.1; cmd_rate_hold_dz=0.03  (env cfg rw_cmd_rate_scale: A 0.1 · B 1.0)
 def compute_progress_reward(*, obj_z (N,), settled_z (N,), lifted_prev (N,) bool, ft_dist (N,K), closest_ft (N,K), kp_dist (N,), closest_kp (N,),
                             near_goal (N,) bool, arm_qd (N,7), hand_qd (N,20), hand_z_min (N,), cmd_rate (N,) ≥0, cfg: ProgressRewardCfg)
     -> (total (N,), terms: dict[str, (N,)] (PROGRESS_REWARD_TERMS 전부, 순서 동일), out: dict(lifted=bool(N,), just_lifted=bool(N,), closest_ft=(N,K), closest_kp=(N,)))
 # lifted = (obj_z - settled_z > lift_latch_height) | lifted_prev ; lift = lift_scale·clamp(lift_base + dz, 0, lift_clip)·(¬lifted) ; lift_bonus = lift_bonus·just_lifted
 # fingertip_progress = ft_scale·Σ_k clamp(progress_delta)·(¬lifted) ; keypoint_progress = kp_scale·progress_delta·lifted ; goal_bonus = (goal_bonus/success_steps)·near_goal
 # arm_vel = -arm_vel_scale·Σ|arm_qd| ; hand_vel = -hand_vel_scale·Σ|hand_qd| ; hand_floor = -clamp(hand_floor_penalty·relu(hand_floor_z - hand_z_min), max=hand_floor_max)
-# cmd_rate = -cmd_rate_scale·clamp(cmd_rate, min 0)·lifted   (측도는 env: A 리미터 전 원지령 변화/리미터 상한 평균 · B 팔 액션 Δ RMS/2; 상한 없음)
+# cmd_rate = -cmd_rate_scale·clamp(cmd_rate, min 0)·(lifted ∧ dz > cmd_rate_hold_dz)   (측도는 env: A 리미터 전 원지령 변화/리미터 상한 평균 · B 팔 액션 Δ RMS/2; 상한 없음; 전역 arm 래치는 env 가 cmd_rate 에 곱해 준다)
 # total = nan_to_num(sum(terms))
 ```
 

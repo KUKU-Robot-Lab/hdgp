@@ -62,6 +62,7 @@ def test_cfg_defaults_match_design():
     assert (c.arm_vel_scale, c.hand_vel_scale) == (0.03, 0.003)
     assert (c.hand_floor_penalty, c.hand_floor_z, c.hand_floor_max) == (10.0, 0.215, 5.0)
     assert c.cmd_rate_scale == 0.1
+    assert c.cmd_rate_hold_dz == 0.03
 
 
 def test_shape_mismatch_raises():
@@ -217,13 +218,26 @@ def test_cmd_rate_penalty_is_lift_gated_linear_and_unclamped():
     # 리프트 전: 0 — 억제 항은 과제가 성립한 뒤에만(suppression-terms-need-task-first)
     _, pre, _ = _run(cmd_rate=rate)
     assert (pre["cmd_rate"] == 0).all()
-    # 리프트 후: −scale·rate, 음수 입력은 0 으로
+    # 리프트 후 **들고 있을 때**(dz > hold_dz): −scale·rate, 음수 입력은 0 으로
     lifted = torch.ones(N, dtype=torch.bool)
-    _, post, _ = _run(cmd_rate=rate, lifted_prev=lifted)
+    hold = torch.full((N,), 0.30 + cfg.cmd_rate_hold_dz + 0.05)
+    _, post, _ = _run(cmd_rate=rate, lifted_prev=lifted, obj_z=hold)
     assert torch.allclose(post["cmd_rate"], -cfg.cmd_rate_scale * rate.clamp(min=0.0))
     # 상한 없음 — 작동점(≈10×)에서 clamp 되면 항이 상수가 되어 기울기가 죽는다(reward-clamp-kills-gradient)
-    _, big, _ = _run(cmd_rate=torch.full((N,), 30.0), lifted_prev=lifted)
+    _, big, _ = _run(cmd_rate=torch.full((N,), 30.0), lifted_prev=lifted, obj_z=hold)
     assert torch.allclose(big["cmd_rate"], torch.full((N,), -cfg.cmd_rate_scale * 30.0))
+
+
+def test_cmd_rate_is_zero_when_latched_but_object_is_back_down():
+    """★a7 붕괴 원인: 래치는 sticky 라 튕겨 올라갔다 상판에 놓인 컵도 에피소드 끝까지 lifted 다.
+    그 env 에 −1.35/step 이 500 스텝 붙어 "컵을 건드리지 말자"를 배웠다. 들고 있을 때(dz > hold_dz)만 벌한다."""
+    cfg = PR.ProgressRewardCfg()
+    lifted = torch.ones(N, dtype=torch.bool)
+    z = torch.tensor([0.30, 0.30 + cfg.cmd_rate_hold_dz - 1e-3, 0.30 + cfg.cmd_rate_hold_dz + 1e-3, 0.45])
+    _, t, o = _run(cmd_rate=torch.full((N,), 10.0), lifted_prev=lifted, obj_z=z)
+    assert o["lifted"].all(), "래치는 그대로(sticky)"
+    assert t["cmd_rate"][0] == 0.0 and t["cmd_rate"][1] == 0.0, "내려온 컵(dz < hold_dz)은 면제"
+    assert torch.allclose(t["cmd_rate"][2:], torch.full((2,), -cfg.cmd_rate_scale * 10.0))
 
 
 def test_cmd_rate_fires_on_the_lift_step_itself():
@@ -238,6 +252,8 @@ def test_cmd_rate_fires_on_the_lift_step_itself():
 def test_cmd_rate_scale_must_be_nonnegative():
     with pytest.raises(ValueError):
         PR.ProgressRewardCfg(cmd_rate_scale=-0.1)
+    with pytest.raises(ValueError):
+        PR.ProgressRewardCfg(cmd_rate_hold_dz=-0.01)
 
 
 # =============================================================================

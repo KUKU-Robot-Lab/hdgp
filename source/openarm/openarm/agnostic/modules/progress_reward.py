@@ -56,6 +56,10 @@ class ProgressRewardCfg:
     #   B: 팔 액션 1차 차분 RMS / 2 ∈ [0, 1]. 크기는 트랙 cfg(`rw_cmd_rate_scale`)가 작동점에 맞춰 정한다.
     #   리프트 전엔 0 — 억제 항을 처음부터 켜면 탐색이 죽는다(fab_test14: σ −41%, 리프트 350 epoch 지연).
     cmd_rate_scale: float = 0.1
+    # ★09.07 kp_a7: 래치는 sticky 라 튕겨 올라갔다 상판에 놓인 컵도 lifted 다 — 그 env 에 벌점이 500 스텝 붙어
+    #   접근 자체가 죽었다(e25 close 0.37 → e50 0.007). **들고 있을 때**(dz > hold_dz)만 벌한다. env 의 drop_frac
+    #   판정선(_DROP_DZ 0.03)과 같은 값 — 같은 개념("물체가 다시 내려왔다").
+    cmd_rate_hold_dz: float = 0.03
 
     def __post_init__(self):
         if self.success_steps < 1:
@@ -64,6 +68,8 @@ class ProgressRewardCfg:
             raise ValueError("hand_floor_max / lift_clip must be non-negative")
         if self.cmd_rate_scale < 0.0:
             raise ValueError(f"cmd_rate_scale must be non-negative, got {self.cmd_rate_scale}")
+        if self.cmd_rate_hold_dz < 0.0:
+            raise ValueError(f"cmd_rate_hold_dz must be non-negative, got {self.cmd_rate_hold_dz}")
 
 
 def _progress_delta(curr: torch.Tensor, closest: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -122,7 +128,8 @@ def compute_progress_reward(
     - lifted 는 sticky 래치(에피소드 리셋에서만 해제 — env 가 lifted_prev 를 False 로 준다).
     - 리프트 전 항(fingertip_progress·lift)은 lifted 에서 0, keypoint_progress 는 lifted 전 0.
     - closest_* 되먹임: fingertip 은 리프트 후에도 계속 갱신(값은 무해, 게이트가 0 으로 만든다).
-    - cmd_rate(N,) ≥ 0 는 env 가 준 정규화 지령 변화율 — lifted 에서만 −cmd_rate_scale 배로 벌한다.
+    - cmd_rate(N,) ≥ 0 는 env 가 준 정규화 지령 변화율 — lifted 이고 **들고 있을 때**(dz > cmd_rate_hold_dz)만
+      −cmd_rate_scale 배로 벌한다. 전역 arm 래치(lifted_frac EMA)는 env 가 cmd_rate 에 곱해서 준다.
     """
     n = obj_z.shape[0]
     _check_shapes(n, obj_z=obj_z, settled_z=settled_z, lifted_prev=lifted_prev, ft_dist=ft_dist,
@@ -150,7 +157,7 @@ def compute_progress_reward(
         "hand_floor": -(cfg.hand_floor_penalty * torch.relu(cfg.hand_floor_z - hand_z_min)).clamp(max=cfg.hand_floor_max),
         # 왜 상한이 없나: 작동점(≈10×)에서 clamp 되면 항이 상수가 되어 μ 에 기울기가 없다(reward-clamp-kills-gradient).
         #   유계인 것은 lifted 게이트와 할인(γ 0.99 → 합 ≤ 100·scale·작동점)뿐이다 — 크기는 트랙 cfg 가 Check 1 로 잰다.
-        "cmd_rate": -cfg.cmd_rate_scale * cmd_rate.clamp(min=0.0) * lifted_f,
+        "cmd_rate": -cfg.cmd_rate_scale * cmd_rate.clamp(min=0.0) * (lifted & (dz > cfg.cmd_rate_hold_dz)).float(),
     }
     if tuple(terms) != PROGRESS_REWARD_TERMS:
         raise RuntimeError(f"term order drifted: {tuple(terms)} != {PROGRESS_REWARD_TERMS}")

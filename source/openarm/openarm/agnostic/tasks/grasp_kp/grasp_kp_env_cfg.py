@@ -116,6 +116,18 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     #   이송 세금: 리미터에 딱 맞게 지령하며 전속 이송 −0.1/step vs keypoint_progress +4/step(2.5%).
     #   정지 상태에서는 goal_bonus 100 이 상수라 이 항이 **유일한 변동 신호** — 거기서 학습된다.
     rw_cmd_rate_scale: float = 0.1
+    # ★09.07 A-vi(kp_a7 붕괴 후): 크기(0.1)는 맞았는데 **누구에게 붙었나**가 틀렸다. per-env lifted 만으로 게이트하니
+    #   e25 의 "lifted"(우연히 튕겨 올라가 상판에 다시 놓인 컵, sticky 래치·done/fell 사망)에 −1.35/step 이 500 스텝
+    #   붙어 "컵을 건드리지 말자"를 배웠다(e25 close 0.37 → e50 0.007, a2/a6 는 같은 시점 0.15/0.38).
+    #   ① 전역 래치: 매 스텝 lifted_frac 의 EMA(α=arm_ema, 창 ≈500 스텝 ≈ 31 epoch)가 arm_lifted_frac 이상이면
+    #      sticky 로 arm. 임계는 성공 런이 실제 도달한 값(a6 e130 ≈ 0.30, 최종 0.79; a2 0.66)에서 잡는다
+    #      (suppression-terms-need-task-first: "게이트는 시점만 정한다 — 크기는 Check 1 로 따로").
+    #   ② hold 게이트: lifted 이고 dz > hold_dz(= drop_frac 판정선 0.03)일 때만. 떨어뜨린 컵을 다시 쥐러 가는 이동은
+    #      벌하지 않는다 — 벌하면 재파지 대신 회피를 배운다.
+    #   체크포인트 재개 시 arm 상태는 없다(tol 커리큘럼과 같은 프로세스 로컬) — FRESH 전제.
+    rw_cmd_rate_hold_dz: float = 0.03
+    rw_cmd_rate_arm_lifted_frac: float = 0.30
+    rw_cmd_rate_arm_ema: float = 0.002
 
     # ---- 지연·지각 노이즈 (DESIGN §4·§5) ------------------------------------------------
     obs_delay_steps: int = 3                  # 큐 길이 L(1 = 지연 없음), 매 스텝 인덱스 재추첨
@@ -211,6 +223,7 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
             hand_floor_z=float(self.rw_hand_floor_z),
             hand_floor_max=float(self.rw_hand_floor_max),
             cmd_rate_scale=float(self.rw_cmd_rate_scale),
+            cmd_rate_hold_dz=float(self.rw_cmd_rate_hold_dz),
         )
 
     def tolerance_curriculum_kwargs(self) -> dict:
@@ -265,6 +278,12 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
         if float(self.rw_cmd_rate_scale) > 0.0 and (
                 float(self.palm_cmd_rate_limit_m) <= 0.0 or float(self.palm_cmd_rate_limit_rot_deg) <= 0.0):
             errs.append("rw_cmd_rate_scale > 0 이면 palm_cmd_rate_limit_m 와 palm_cmd_rate_limit_rot_deg 둘 다 > 0 이어야 한다")
+        if not (0.0 <= float(self.rw_cmd_rate_arm_lifted_frac) <= 1.0):
+            errs.append(f"rw_cmd_rate_arm_lifted_frac 는 [0,1] (0 = 즉시 arm): {self.rw_cmd_rate_arm_lifted_frac}")
+        if not (0.0 < float(self.rw_cmd_rate_arm_ema) <= 1.0):
+            errs.append(f"rw_cmd_rate_arm_ema 는 (0,1]: {self.rw_cmd_rate_arm_ema}")
+        if float(self.rw_cmd_rate_hold_dz) < 0.0:
+            errs.append(f"rw_cmd_rate_hold_dz 는 ≥ 0: {self.rw_cmd_rate_hold_dz}")
         if int(self.arm_cmd_dim) < 1:
             errs.append(f"arm_cmd_dim ≥ 1, got {self.arm_cmd_dim}")
         if errs:

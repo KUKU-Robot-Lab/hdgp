@@ -63,3 +63,15 @@ Check 6 (표본 상태·작동점 — task-observer #12/#6/#10): ✓ — 액션 
   → A diag/arm_qd_p99_lifted 2.5 → < 1.0 rad/s · B ctrl/arm_action_rate_lifted ≈0.7(노이즈 바닥) → < 0.3
   → task/successes_mean: 연속 판정이라 a6 보다 낮게 시작, tol 0.015 도달 지연 가능(tol_success_threshold 2.0)
   → diag/obj_speed_lifted 는 외란 킥(Δv 0.33 m/s · p 0.001~0.1)이 바닥 — 0 이 되지 않는다. 정책 진동은 cmd_rate_lifted 로 읽는다.
+
+--- 09.07 kp_a7 실측 후 REVISE (A-vi) ---
+kp_a7 은 e25 까지 a2/a6 와 동일(close 0.37·ft 0.18·step_raw 0.168)했다가 e25→e50 에 접근이 죽었다(close 0.007·ft 0.39,
+reward 0.84 = do-nothing). 그 구간 reward/cmd_rate −0.0215(lifted 0.016 → lifted env 당 **−1.35/step**, 위 산수 −1.25 와 일치).
+★크기는 맞았고 **표본**이 틀렸다(Check 6 미완): e25 의 lifted 는 파지가 아니라 우연히 튕겨 올라간 컵이고, 래치가 sticky 인 데다
+done/fell 이 죽어 있어(0.15 < 상판 0.205) 상판에 다시 놓인 컵도 에피소드 끝까지 lifted 다 → 진행 항이 꺼진 채 −1.35/step 이
+500 스텝 붙는다. 그 env 들의 공통 행동이 "컵을 세게 건드림"이라 정책이 **회피**를 배웠다(penalty-reward-regime-triad ②③).
+B(fj_b7)는 같은 게이트에 lifted env 당 −0.29/step 라 견뎠으나 b1 보다 3배 느렸다(e200 0.17 vs 0.54) — 같은 원인 의심.
+수정: ① 전역 sticky 래치(lifted_frac EMA α0.002 ≥ 0.30, a6 e130) 뒤에만 벌점 — suppression-terms-need-task-first 의
+enable_penalty_after_dwell 규약을 per-env 플래그로 대체했던 것을 되돌림. ② hold 게이트 lifted ∧ dz > 0.03(drop_frac 판정선):
+떨어뜨린 컵을 다시 쥐러 가는 이동은 벌하지 않는다. 크기 0.1/1.0 유지. → kp_a8 / fj_b8.
+Check 1 재계산(arm 뒤): 리프트 후 들고 있는 env 만 −1.25/step, 나머지 0 → 300 − 125 = 175 > 100 그대로.

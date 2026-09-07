@@ -481,10 +481,35 @@ def test_reward_consumes_cmd_rate_and_cfg_locks_gate_and_scale():
     assert "goal_force_consecutive: bool = True" in code
 
 
+def test_cmd_rate_is_armed_by_a_global_lift_ema_latch_and_hold_gated():
+    """★kp_a7(09.07): per-env lifted 게이트만으로 켰더니 e25→e50 에 접근 자체가 죽었다(close 0.37→0.007).
+    e25 의 lifted 는 파지가 아니라 튕겨 올라간 컵이고, 래치가 sticky 라 상판에 놓여도 벌점이 500 스텝 붙었다.
+    → ① 전역 래치: lifted_frac EMA ≥ 임계(a6 는 e130 에 0.30)면 sticky 로 arm(suppression-terms-need-task-first 의
+      enable_penalty_after_dwell 규약). ② 들고 있을 때(dz > hold_dz = drop_frac 판정선)만 벌한다.
+    분기(`if`)로 하면 per-step GPU 동기화라 텐서 `|=` 로 래치한다.
+    """
+    block = _fn_block(_ENV, "_get_rewards")
+    _ordered(block, [
+        "self._lift_ema = (1.0 - _a) * self._lift_ema + _a * self._latched.float().mean()",
+        "self._cmd_rate_armed = self._cmd_rate_armed | (self._lift_ema >= float(c.rw_cmd_rate_arm_lifted_frac))",
+        "compute_progress_reward(",
+        "cmd_rate=self._cmd_rate * self._cmd_rate_armed.float()",
+    ])
+    code = _code(_CFG)
+    for token in ("rw_cmd_rate_arm_lifted_frac: float = 0.30", "rw_cmd_rate_arm_ema: float = 0.002",
+                  "rw_cmd_rate_hold_dz: float = 0.03"):
+        assert token in code, token
+    assert "cmd_rate_hold_dz=float(self.rw_cmd_rate_hold_dz)" in _fn_block(_CFG, "progress_reward_cfg")
+    assert "_DROP_DZ = 0.03" in _code(_ENV), "hold_dz 는 drop_frac 판정선과 같은 값이어야 한다(같은 개념)"
+    log = _fn_block(_ENV, "_log_step")
+    assert '"task/cmd_rate_armed"' in log and '"task/lift_ema"' in log
+
+
 def test_cfg_refuses_cmd_rate_penalty_without_both_limiters():
     """정규화 분모가 리미터다 — 리미터가 0(꺼짐)이면 벌점이 정의되지 않으니 cfg 에서 죽인다."""
     block = _fn_block(_CFG, "_validate_kp_fields")
-    for token in ("rw_cmd_rate_scale", "palm_cmd_rate_limit_m", "palm_cmd_rate_limit_rot_deg"):
+    for token in ("rw_cmd_rate_scale", "palm_cmd_rate_limit_m", "palm_cmd_rate_limit_rot_deg",
+                  "rw_cmd_rate_arm_lifted_frac", "rw_cmd_rate_arm_ema", "rw_cmd_rate_hold_dz"):
         assert token in block, token
 
 
