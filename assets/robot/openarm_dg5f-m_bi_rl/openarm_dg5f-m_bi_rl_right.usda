@@ -8,19 +8,16 @@
     ]
 )
 
-# ★09.07 오른팔 전용 오버레이 — 왼팔 subtree 를 합성 단계에서 끈다.
+# ★오른팔 전용 오버레이 — 왼팔 subtree 를 합성 단계에서 끈다(생성기:
+#   scripts/tools/make_right_only_overlay.py, 이름 목록은 자산 manifest 에서 온다).
 #   왜: replicate_physics=False 는 env 마다 articulation 을 통째로 PhysX 가 파싱한다.
-#       우리는 오른팔만 학습하는데 왼팔 39링크·39관절이 12,288~16,384 env 마다 파싱된다.
-#       16,384 env 실측에서 PhysX 가 요구한 접촉이 24,777,720(=env 당 1,512)이었고 그게
-#       기동 실패의 직접 원인이었다. 충돌 형상 74 → 37 이면 접촉도 대략 절반이 된다.
-#   방법: active=false 는 prim 을 **합성에서 제외**한다 — PhysX 가 아예 보지 못한다.
-#       메시를 다시 만들 필요가 없고 base USD 는 그대로 둔다.
-#   ★관절도 함께 꺼야 한다. 링크만 끄면 관절이 없는 body 를 참조해 PhysX 가 죽는다.
+#       왼쪽을 끄면 dg5f-m 2,048 env 실측에서 처리량 +63%, 물리 지표는 완전 동일했다.
+#   ★관절도 함께 꺼야 한다 — 링크만 끄면 관절이 없는 body 를 참조해 PhysX 가 죽는다.
 #   남는 것: body_root · body_link · head_* · r_al_* · r_hl_* · root_joint · body_j_base
 
 over "openarm_dg5f_m_bi_rl"
 {
-    # --- 왼팔·왼손 링크 39개 ---
+    # --- 왼팔·왼손 링크 37개 ---
     over "l_al_0" (
         active = false
     ) {
@@ -53,10 +50,6 @@ over "openarm_dg5f_m_bi_rl"
         active = false
     ) {
     }
-    over "l_hl_mount" (
-        active = false
-    ) {
-    }
     over "l_hl_adapter" (
         active = false
     ) {
@@ -66,6 +59,30 @@ over "openarm_dg5f_m_bi_rl"
     ) {
     }
     over "l_hl_palm" (
+        active = false
+    ) {
+    }
+    over "l_hl_palm_ee" (
+        active = false
+    ) {
+    }
+    over "l_hl_thumb_1" (
+        active = false
+    ) {
+    }
+    over "l_hl_thumb_2" (
+        active = false
+    ) {
+    }
+    over "l_hl_thumb_3" (
+        active = false
+    ) {
+    }
+    over "l_hl_thumb_4" (
+        active = false
+    ) {
+    }
+    over "l_hl_thumb_tip" (
         active = false
     ) {
     }
@@ -109,11 +126,23 @@ over "openarm_dg5f_m_bi_rl"
         active = false
     ) {
     }
-    over "l_hl_palm_alias" (
+    over "l_hl_ring_1" (
         active = false
     ) {
     }
-    over "l_hl_palm_ee" (
+    over "l_hl_ring_2" (
+        active = false
+    ) {
+    }
+    over "l_hl_ring_3" (
+        active = false
+    ) {
+    }
+    over "l_hl_ring_4" (
+        active = false
+    ) {
+    }
+    over "l_hl_ring_tip" (
         active = false
     ) {
     }
@@ -137,50 +166,10 @@ over "openarm_dg5f_m_bi_rl"
         active = false
     ) {
     }
-    over "l_hl_ring_1" (
-        active = false
-    ) {
-    }
-    over "l_hl_ring_2" (
-        active = false
-    ) {
-    }
-    over "l_hl_ring_3" (
-        active = false
-    ) {
-    }
-    over "l_hl_ring_4" (
-        active = false
-    ) {
-    }
-    over "l_hl_ring_tip" (
-        active = false
-    ) {
-    }
-    over "l_hl_thumb_1" (
-        active = false
-    ) {
-    }
-    over "l_hl_thumb_2" (
-        active = false
-    ) {
-    }
-    over "l_hl_thumb_3" (
-        active = false
-    ) {
-    }
-    over "l_hl_thumb_4" (
-        active = false
-    ) {
-    }
-    over "l_hl_thumb_tip" (
-        active = false
-    ) {
-    }
 
     over "joints"
     {
-        # --- 왼팔·왼손 관절 39개 ---
+        # --- 왼팔·왼손 관절 37개 ---
         over "l_aj_base" (
             active = false
         ) {
@@ -217,15 +206,35 @@ over "openarm_dg5f_m_bi_rl"
             active = false
         ) {
         }
-        over "l_hj_adapter" (
-            active = false
-        ) {
-        }
         over "l_hj_base" (
             active = false
         ) {
         }
         over "l_hj_palm" (
+            active = false
+        ) {
+        }
+        over "l_hj_palm_ee" (
+            active = false
+        ) {
+        }
+        over "l_hj_thumb_1" (
+            active = false
+        ) {
+        }
+        over "l_hj_thumb_2" (
+            active = false
+        ) {
+        }
+        over "l_hj_thumb_3" (
+            active = false
+        ) {
+        }
+        over "l_hj_thumb_4" (
+            active = false
+        ) {
+        }
+        over "l_hj_thumb_tip" (
             active = false
         ) {
         }
@@ -269,34 +278,6 @@ over "openarm_dg5f_m_bi_rl"
             active = false
         ) {
         }
-        over "l_hj_palm_alias" (
-            active = false
-        ) {
-        }
-        over "l_hj_palm_ee" (
-            active = false
-        ) {
-        }
-        over "l_hj_pinky_1" (
-            active = false
-        ) {
-        }
-        over "l_hj_pinky_2" (
-            active = false
-        ) {
-        }
-        over "l_hj_pinky_3" (
-            active = false
-        ) {
-        }
-        over "l_hj_pinky_4" (
-            active = false
-        ) {
-        }
-        over "l_hj_pinky_tip" (
-            active = false
-        ) {
-        }
         over "l_hj_ring_1" (
             active = false
         ) {
@@ -317,23 +298,23 @@ over "openarm_dg5f_m_bi_rl"
             active = false
         ) {
         }
-        over "l_hj_thumb_1" (
+        over "l_hj_pinky_1" (
             active = false
         ) {
         }
-        over "l_hj_thumb_2" (
+        over "l_hj_pinky_2" (
             active = false
         ) {
         }
-        over "l_hj_thumb_3" (
+        over "l_hj_pinky_3" (
             active = false
         ) {
         }
-        over "l_hj_thumb_4" (
+        over "l_hj_pinky_4" (
             active = false
         ) {
         }
-        over "l_hj_thumb_tip" (
+        over "l_hj_pinky_tip" (
             active = false
         ) {
         }

@@ -22,7 +22,10 @@ _ROBOT = pathlib.Path(__file__).resolve().parents[6] / "assets" / "robot"
 #: ★자산이 늘면 여기 한 줄만 추가한다 — 오버레이는 `scripts/tools/make_right_only_overlay.py`
 #:   가 manifest 에서 생성하므로 이름 목록을 손으로 적지 않는다.
 _CASES = {
-    "openarm_dg5f-m_bi_rl": dict(right_links=39, right_mov=29, left_links=39, base_mov=56,
+    # ★2026-09-09 39 → 37: 주소용 더미 프레임 `*_hl_mount`·`*_hl_palm_alias` 를 자산에서
+    #   뺐다(항등변환·지오메트리 없음·1e-5 kg. generate_rl_urdf.DROP_ADDRESSING_FRAMES).
+    #   빠진 조인트는 둘 다 fixed 라 가동관절 수는 그대로다.
+    "openarm_dg5f-m_bi_rl": dict(right_links=37, right_mov=29, left_links=37, base_mov=56,
                                  profiles=("tesollo_right", "tesollo_right_only"), init_keys=29),
     "openarm_rh56f1_bi_rl": dict(right_links=35, right_mov=21, left_links=35, base_mov=40,
                                  profiles=("rh56f1_right", "rh56f1_right_only"), init_keys=21),
