@@ -206,9 +206,13 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             bounce_threshold_velocity=0.2,
             gpu_found_lost_aggregate_pairs_capacity=8 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=2 * 1024 * 1024,
-            gpu_max_rigid_patch_count=2**22,
-            gpu_max_rigid_contact_count=2**22,
-            gpu_collision_stack_size=2**28,
+            # ★09.09 env 4096 → 24576(SimToolReal 규모, 6블록)으로 올리면서 상향.
+            #   접촉/패치 버퍼는 env 수에 비례한다. 4096 에서도 부팅 시 overflow 가
+            #   났던 이력이 있고(자산 hull 전환으로 사라짐), 6배 규모에서 같은 상한을
+            #   쓰면 다시 넘친다. SimToolReal 은 contact 16,777,216 / patch 8,388,608.
+            gpu_max_rigid_patch_count=2**23,
+            gpu_max_rigid_contact_count=2**24,
+            gpu_collision_stack_size=2**29,
             gpu_max_num_partitions=8,
             friction_correlation_distance=0.00625,
         ),
