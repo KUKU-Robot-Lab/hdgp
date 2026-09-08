@@ -909,7 +909,18 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             # ★`replicate_physics` 를 여기서 True 로 되돌리지 않는다 — 명시 오버라이드
             #   (`env.scene.replicate_physics=False`)를 덮어쓰면 분리 실험을 못 한다.
             #   기본값은 cfg 선언(True)이 이미 준다.
-            self.object_cfg.spawn = self._object_spawn_base
+            # ★★09.08 버그 수정 — 단일 물체 뱅크도 **스펙을 적용한다**. 구 코드는 기본 spawn
+            #   (cup_big, scale 1)을 그대로 되돌려 놓고 끝나서, 뱅크가 컵이 아니면 **엉뚱한
+            #   물체가 스폰**됐다. 높이는 뱅크 값(`object_origin_offset_z`)으로 계산되므로
+            #   컵(원점 0.0773)이 셰이커 높이(0.0599)에 놓여 **바닥이 상판 19mm 아래**가 되고,
+            #   물체가 테이블에 박힌 채 튕겨 나와 아무 액션 없이도 넘어졌다
+            #   (실측: 무액션 300스텝에 리셋 386회 · 기울기 60° · 물체 z 가 기대보다 +7.5mm).
+            #   `single_cup` 은 기본 spawn 이 마침 같은 컵이라 이 결함이 드러나지 않았다.
+            from dataclasses import replace as _replace
+            _spec = bank.specs[0]
+            self.object_cfg.spawn = _replace(
+                self._object_spawn_base, usd_path=_spec.usd_path,
+                scale=tuple(_spec.scale), mass_props=MassPropertiesCfg(mass=float(_spec.mass)))
             self.table_cfg.spawn.usd_path = self._table_usd_base
             return
 
