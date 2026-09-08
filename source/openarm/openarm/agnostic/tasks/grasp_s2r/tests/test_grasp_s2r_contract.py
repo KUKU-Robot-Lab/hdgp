@@ -1666,3 +1666,51 @@ def test_table_top_matches_the_env_v1_asset_geometry():
     # 마운트 플레이트 상면이 곧 원점이어야 한다(로봇 spawn z=0 의 전제).
     assert abs(min(z for z in zs if z >= -1e-9)) < 1e-6, \
         "z=0 평면이 없다 — 마운트 플레이트 상면이 원점이 아니다"
+
+
+def test_profile_poses_are_inside_asset_joint_limits():
+    """프로필의 기본/개방/파지 자세가 **자산 URDF 한계 안**이어야 한다.
+
+    ★09.09 사고: 자산 한계를 좁히면서(`thumb_3` → [0, 1.05]) 프로필 `init_joint_pos` 의
+      −0.5 를 같이 안 고쳤다. 런타임 clamp 는 있었지만 IsaacLab 은 **그 앞에서** 기본자세를
+      한계와 대조해 거부한다 — 서버 3런이 동시에 죽고 나서야 발견했다. 여기서 막는다.
+
+    `init_joint_pos` 는 하드 실패(위 사고)이고, `hand_open_pose` 도 리셋 경로가 그대로
+    쓰므로 같은 기준으로 본다. `hand_grip_pose` 는 **지령**이라 런타임 clamp 대상이므로
+    한계 초과가 설계상 허용된다(주석에 명시돼 있다) — 검사하지 않는다.
+    """
+    import re
+    from pathlib import Path
+
+    from openarm.agnostic.tasks.grasp_s2r.robot_profiles import PROFILES
+
+    profile = PROFILES["tesollo_right"]
+    # ★env_cfg 를 import 하지 않는다 — 이 스위트는 Isaac 없이 도는 소스 검사다.
+    #   _HERE = .../source/openarm/openarm/agnostic/tasks/grasp_s2r → parents[5] = hdgp 루트
+    urdf = (_HERE.parents[5] / "assets" / profile.usd_relpath).with_suffix(".urdf")
+    if not urdf.is_file():
+        import pytest
+        pytest.skip(f"자산 URDF 없음: {urdf}")
+    text = urdf.read_text()
+    limits = {}
+    for m in re.finditer(r'<joint name="([^"]+)" type="revolute"(.*?)</joint>', text, re.S):
+        block = re.search(r"<limit([^/>]*)", m.group(2)).group(1)
+        limits[m.group(1)] = (float(re.search(r'lower="([^"]+)"', block).group(1)),
+                              float(re.search(r'upper="([^"]+)"', block).group(1)))
+
+    bad = []
+    for name, value in dict(profile.init_joint_pos).items():
+        if name not in limits:
+            continue
+        lo, hi = limits[name]
+        if not (lo - 1e-6 <= value <= hi + 1e-6):
+            bad.append(f"init_joint_pos {name}={value:+.4f} 한계 [{lo:+.4f},{hi:+.4f}]")
+    if profile.hand_open_pose:
+        for name, value in zip(profile.hand_joint_names, profile.hand_open_pose):
+            if name not in limits:
+                continue
+            lo, hi = limits[name]
+            if not (lo - 1e-6 <= value <= hi + 1e-6):
+                bad.append(f"hand_open_pose {name}={value:+.4f} 한계 [{lo:+.4f},{hi:+.4f}]")
+    assert not bad, "자산 한계 밖 자세 — 부팅에서 죽는다:\n  " + "\n  ".join(bad)
+

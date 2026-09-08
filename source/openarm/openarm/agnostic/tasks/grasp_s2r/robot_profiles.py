@@ -211,8 +211,9 @@ TESOLLO_RIGHT = RobotProfile(
     hand_joint_names=tuple(f"r_hj_{f}_{j}" for f in _FINGERS for j in range(1, 5)),
     #                 _1 외전  _2 MCP   _3 PIP  _4 DIP
     hand_open_pose=(
-        0.0, -1.57, -0.5, 0.0,    # thumb — _2 는 opposition 으로 고정(양 자세 동일),
-        0.0,  0.0,   0.0, 0.0,    #         _3 −0.5 pre-curl(밑마디가 먼저 닿는 것 방지)
+        0.0, -1.57, 0.0, 0.0,     # thumb — _2 는 opposition 으로 고정(양 자세 동일),
+        0.0,  0.0,   0.0, 0.0,    #   ★09.09 구 `_3 −0.5` pre-curl 폐기 — 음수는 손등 과신전
+                                  #   방향이라 자산 한계 [0,1.05] 밖이다(도달 불가).
         0.0,  0.0,   0.0, 0.0,    # index / middle / ring / pinky 는 완전 개방
         0.0,  0.0,   0.0, 0.0,
         0.0,  0.0,   0.0, 0.0,
@@ -300,7 +301,12 @@ TESOLLO_RIGHT = RobotProfile(
         "r_aj_1": 0.0380, "r_aj_2": 0.4012, "r_aj_3": 0.6015, "r_aj_4": 0.9643,
         "r_aj_5": 0.0294, "r_aj_6": 0.7060, "r_aj_7": 0.4213,
         # 손: 엄지 대향 + 나머지 폄
-        "r_hj_thumb_1": 0.0, "r_hj_thumb_2": -1.57, "r_hj_thumb_3": -0.5, "r_hj_thumb_4": 0.0,
+        # ★09.09 `thumb_3` −0.5 → 0.0. 자산 한계가 [0, 1.05] 로 좁혀져(음수 = 손등 과신전)
+        #   −0.5 는 **도달 불가능**해졌고, IsaacLab 이 부팅에서 기본자세를 한계와 대조해
+        #   거부한다(fj_e 3런 동시 크래시: "default positions out of the limits").
+        #   구 값의 의도(open pre-curl, 밑마디가 먼저 닿는 것 방지)는 음수 방향이라 애초에
+        #   물리적으로 불가능한 자세였다. B 트랙은 이미 런타임에서 0 으로 clamp 해 심고 있었다.
+        "r_hj_thumb_1": 0.0, "r_hj_thumb_2": -1.57, "r_hj_thumb_3": 0.0, "r_hj_thumb_4": 0.0,
         **{f"r_hj_{f}_{j}": 0.0 for f in ("index", "middle", "ring", "pinky") for j in (1, 2, 3, 4)},
         # 유휴 좌팔(파지 팔 홈의 부호 미러, DG-5F IK 실측 — grasp_sensor preset 승계)
         "l_aj_1": -0.0431, "l_aj_2": -0.6706, "l_aj_3": -0.0961, "l_aj_4": 0.7342,
