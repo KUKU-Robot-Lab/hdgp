@@ -212,7 +212,10 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             #   쓰면 다시 넘친다. SimToolReal 은 contact 16,777,216 / patch 8,388,608.
             gpu_max_rigid_patch_count=2**23,
             gpu_max_rigid_contact_count=2**24,
-            gpu_collision_stack_size=2**29,
+            # ★09.09 2^29(537MB) → 2^30(1.07GB). 자기충돌 ON × 24576 env 에서 PhysX 가
+            #   "collisionStackSize buffer overflow … increase to at least 994,438,608" 로
+            #   죽었다(fj_f1 1차). 자기충돌은 손 링크 쌍을 통째로 늘려 스택 사용량을 키운다.
+            gpu_collision_stack_size=2**30,
             gpu_max_num_partitions=8,
             friction_correlation_distance=0.00625,
         ),
