@@ -1,0 +1,185 @@
+# grasp_fj_rh (Track B · RH56F1) — recurrent actor / MLP+LSTM critic
+# Actor 94D MLP [1024,1024,512,512] -> LSTM 1024 / critic 118D, action 13D
+# (팔 관절 7D 증분+EMA + 손가락별 시너지 6D). 자매 tesollo B 는 131/155/22 다 —
+# 네트워크·하이퍼파라미터는 같고 입출력 폭만 로봇에서 온다.
+#
+# ★★★09.07 학습 하이퍼는 **fj_b1 세트**다(SimToolReal 정렬본이 아니다).
+#   근거(서버 실측): 정렬본으로 돈 tesollo B 다섯 런(b2~b6)이 e100~150 에 같은 서명
+#   — `close_gate` 0.02~0.11 · `ft_dist` 0.35~0.65 로 **멀어짐** · `reward/total` 1.0(do-nothing 상수) —
+#   으로 무너졌고, b1 세트만 안 무너졌다(fj_b1 8,551 ep: lifted 0.826 · succ 5.37 ·
+#   fj_b9 880 ep: lifted 0.841 · succ 10.10). A 트랙도 같은 9키를 a1 로 되돌렸다(커밋 d6cdbff8).
+#   ★우리 첫 런 `rh_b3` 이 정렬본으로 돌아 8,010 epoch 내내 정확히 그 서명이었다
+#     (close 0.001 · ft_dist 0.19→0.63 · reward 1.016 · lifted 0.0000 · kp_dist 완전 평탄).
+#   ⇒ 되돌린 9키: concat_input/output True · mixed_precision False · lr 3e-4 ·
+#     entropy_coef 0.002 · e_clip 0.2 · mini_epochs 4(actor·critic) · bound_loss_type
+#     regularization(= bounds loss OFF) · bounds_loss_coef 0.005 · clip_observations 5.0(동일).
+#   ⚠`regularization` 은 rl_games 의 어느 분기에도 안 걸리는 **오타**다. 그걸 고치면 sigma 를
+#     누르는 항이 생겨 탐색이 죽는다 — 즉 이 트랙에서 sigma 를 살리는 것은 entropy_coef 0.002 와
+#     이 오타 둘뿐이다. 고치려면 대체 탐색 수단을 함께 넣어야 한다.
+# ★09.07 SimToolReal network 정렬(커밋 8594225). 원본: simtoolreal/isaacgymenvs/cfg/train/
+#   SimToolReal{PPO,LSTMAsymmetricPPO}.yaml — lr 1e-4 · entropy_coef 0.0 · e_clip 0.1 ·
+#   mini_epochs 2(actor·critic) · bound_loss_type bound · bounds_loss_coef 1e-4 ·
+#   mixed_precision True · rnn concat_input/output False · score_to_win 1e6.
+# 우리 값 유지: value_bootstrap True(자체 실측 근거) · minibatch 16384(4,096env×16/16,384 = 4개로
+#   원본 24,576×16/98,304 와 등가) · gamma 0.99 · kl 0.016 · horizon/seq 16 · critic lr 1e-4.
+# num_envs 는 1024 의 배수.
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    mlp:
+      units: [1024, 1024, 512, 512]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    rnn:
+      name: lstm
+      units: 1024
+      layers: 1
+      before_mlp: True
+      layer_norm: True
+      # ★09.07 SimToolReal 정렬 — 원본은 두 키를 지정하지 않아 rl_games 기본값
+      #   False 가 쓰인다(network_builder: `params['rnn'].get('concat_input', False)`).
+      concat_input: True     # ★b1
+      concat_output: True    # ★b1
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    name: agn_grasp_fj_rh-lstm
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False  # ★b1
+    normalize_input: True
+    normalize_value: True
+    # ★True 필수(DESIGN §6): 이 트랙은 time-out(600 step)과 max_goals 로 **truncation** 이 잦다.
+    #   IsaacLab rl_games 래퍼가 `extras["time_outs"]=truncated` 를 채우고 rl_games 는
+    #   value_bootstrap 일 때만 그걸 읽어 V(s') 를 얹는다. False 면 truncation=termination
+    #   이 되어 목표 근처에서 미래 보상 절벽이 생긴다.
+    value_bootstrap: True
+    num_actors: -1
+    reward_shaper:
+      scale_value: 0.01
+    normalize_advantage: True
+    gamma: 0.99
+    tau: 0.95
+    learning_rate: 3e-4   # ★b1 (critic 은 b1 도 1e-4)
+    # ★★08.25 Kuka 원본은 `linear`(원본도 `#adaptive` 를 주석으로 남겨뒀다). 위 주석이
+    #   "KL 이 다시 튀면 여기부터 본다"고 사전등록했고 **그 조건이 발동했다** —
+    #   lstm_test14 ep1150 에 KL 0.0922 = threshold(0.013)의 **7배**인데 `linear` 는
+    #   KL 을 아예 보지 않으므로 `lr_mul` 이 1.0000 에 고정된 채 통과했다.
+    #   결과: 보상 8194 → 170 (48배), five_frac 0.776 → 0.015, height 0.101 → 0.000.
+    #   에피소드 종료 이상은 0(abnormal·tipped·out_xy 전부 0.000) = 물리 사고가 아니라
+    #   **한 번의 큰 정책 업데이트**다. 게다가 보상이 곱셈 구조(transfer=G·H·U·T,
+    #   stay=G·H·U·T·S)라 능선에서 떨어지면 곱이 0 근처가 되어 복귀 gradient 가
+    #   거의 없다 — 275 에폭에 five_frac 0.007 → 0.099 밖에 못 올라왔다.
+    #   → `adaptive` 로 켠다. KL 이 threshold 를 넘으면 LR 을 자동으로 낮춰 점프 자체를
+    #     막는다. Kuka 가 주석으로 남겨둔 것을 켜는 것일 뿐이다.
+    lr_schedule: adaptive
+    schedule_type: standard
+    kl_threshold: 0.016
+    score_to_win: 1000000   # SimToolReal 값(구 100000). ★rl_games 는 이 값을
+                             #   **shaping 전 원본 에피소드 보상**과 비교해 조기 종료한다
+                             #   (a2c_common: last_mean_rewards > score_to_win → 'Network won!').
+                             #   kp_a1 실측 최고 21,260 이라 100000 은 도달 가능한 거리였다.
+    max_epochs: 20000
+    save_best_after: 100
+    save_frequency: 200   # ★08.25 Kuka 원본값
+    print_stats: True
+    grad_norm: 1.0
+    # ★09.07 SimToolReal 은 0.0. 구 0.002 는 접촉보상 시절 값이고, 손실식이
+    #   `- entropy*entropy_coef` 라 양수면 엔트로피를 **보상**한다 — sigma 를
+    #   억제하는 항이 손실 어디에도 없어 sigma 1.0 → 1.70(A)/2.54(B) 로 팽창했다.
+    entropy_coef: 0.002   # ★b1
+    truncate_grads: True
+    e_clip: 0.2   # ★b1
+    horizon_length: 16
+    # ★minibatch 는 SimToolReal 등가 유지(그들 24,576env×16/98,304 = 4 개).
+    #   ★이 트랙의 기본 운전점은 **로컬 2,048 env** 다: 2,048×16 = 32,768 → 미니배치 2 개.
+    #     env 수를 바꾸면 num_envs×16 이 이 값으로 나누어떨어지는지 확인할 것
+    #     (스모크 16 env 는 CLI 로 minibatch_size=256 을 준다).
+    minibatch_size: 16384
+    mini_epochs: 4   # ★b1
+    critic_coef: 4
+    clip_value: True
+    seq_length: 16
+    # ★★09.07 SimToolReal 정렬. 구값 'regularization'(미국식 z)은 rl_games 의
+    #   'regularisation'/'bound' 어느 분기에도 안 걸려 **bounds loss 가 꺼져 있었다**
+    #   (kp_a1·fj_b1 6,500/7,400 epoch 내내 `losses/bounds_loss` 정확히 0.000 실측).
+    #   SimToolReal 은 이 키를 지정하지 않아 rl_games 기본값 'bound' 가 쓰인다.
+    #   ★주의: bound_loss 는 `clamp(|mu|-1.1,0)²` 로 **mu 만** 벌한다. sigma 는
+    #     어느 분기도 건드리지 않는다 — sigma 억제는 entropy_coef 몫이다(위 참조).
+    bound_loss_type: regularization   # ★b1 — rl_games 의 어느 분기에도 안 걸려 bounds loss 가 꺼진다
+    bounds_loss_coef: 0.005   # ★b1 (위 때문에 실효 0)
+    zero_rnn_on_done: True
+
+    # has_central_value 는 지정하지 않는다 — rl_games 가 central_value_config
+
+    #   존재 여부로 자동 판정한다(a2c_common.py:142). Kuka 도 미지정.
+    # ★★08.25 Kuka 원본 central_value_config 를 키 구성까지 그대로 썼다.
+    #   구 설정에 있던 normalize_value / value_bootstrap / lr_schedule / e_clip 은
+    #   Kuka 가 지정하지 않는다(rl_games 기본값 사용).
+    #   ★★critic 에 **LSTM 2048** 을 신설한다 — 우리 critic 은 MLP 만 있었고,
+    #     부분관측 과제에서 value 추정에 직접 영향한다.
+    #     actor 는 before_mlp True(LSTM→MLP), critic 은 before_mlp False(MLP→LSTM) 로
+    #     서로 다르다 — Kuka 그대로다.
+    central_value_config:
+      minibatch_size: 16384
+      mini_epochs: 4   # ★b1
+      learning_rate: 1e-4
+      kl_threshold: 0.016
+      clip_value: True
+      normalize_input: True
+      truncate_grads: True
+
+      network:
+        name: actor_critic
+        central_value: True
+        mlp:
+          units: [1024, 1024, 512, 512]
+          activation: elu
+          d2rl: False
+          initializer:
+            name: default
+          regularizer:
+            name: None
+        # ★★critic 은 **MLP**(논문 구조). DEXTRAH 배포 설정은 여기에 LSTM 2048 을
+        #   넣지만 논문은 actor LSTM+MLP / critic MLP 다. 구조적으로도 critic 은
+        #   특권 정보(접촉력·물체 자세·관절토크)를 받아 부분관측이 아니므로 은닉상태의
+        #   이득이 actor 보다 작다.
+        #   ★배포본을 그대로 쓰려면 태스크 id 를 `-lstm-cvrnn` 으로 바꾼다
+        #     (`rl_games_ppo_lstm_cvrnn_cfg.yaml`, 이 파일과 rnn 블록만 다르다).
+
+    player:
+      deterministic: True
+      games_num: 100000
+      print_stats: True

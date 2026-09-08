@@ -302,6 +302,21 @@ SHAKER_SMALL = ObjectBank(
 )
 
 
+SHAKER_ONE = ObjectBank(
+    name="shaker_one",
+    specs=(_shaker(0.65),),
+    note=("★★09.07 RH56F1 Track B 전용 — **단일** 셰이커(지름 57.2mm · 높이 114mm).\n"
+          "왜 단일인가 둘:\n"
+          "  · 다물체(MultiAsset)는 `replicate_physics=False` 를 강제해 env 마다 씬을 통째로\n"
+          "    파싱한다. 첫 과제 성립을 보는 단계에서는 비용만 크다.\n"
+          "  · 크기 8종은 파지 창(열림 105.5 / 폐쇄 46.6mm)에 다 들어오지만, 종횡비 1.99 라\n"
+          "    접촉하면 잘 넘어진다 — 크기 변동까지 얹으면 원인이 섞인다.\n"
+          "0.65 를 고른 이유: shaker_small 대역(0.55~0.75)의 중앙이고 지름 57mm 가 폐쇄 종점\n"
+          "46.6mm 보다 크고(접촉 성립) 열림 105.5mm 보다 작다(들어옴).\n"
+          "★사용자 지시(09.08): '셰이커로 하고'. 컵으로 바꾸지 않는다."),
+)
+
+
 CUP_SMALL = ObjectBank(
     name="cup_small",
     specs=(
@@ -353,7 +368,7 @@ VISDEX = _visdex_bank()
 
 BANKS: dict[str, ObjectBank] = {
     b.name: b for b in (SINGLE_CUP, CUP_FAMILY, CUP_SMALL,
-                        SHAKER_FAMILY, SHAKER_SMALL, VISDEX)
+                        SHAKER_FAMILY, SHAKER_SMALL, SHAKER_ONE, VISDEX)
 }
 DEFAULT_BANK = "single_cup"
 

@@ -1,8 +1,6 @@
-# 5g_grasp_right_v1-2 rl_games PPO 설정
-# v7: Fabrics 팔 학습(6D palm) + per-finger lerp(5D) + sim2real 가능 obs
-# 관측: actor 106D / critic 143D (asymmetric), 액션: 11D
-# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]
-
+# grasp_fj_rh (RH56F1) (Track B · Fabrics 없음) rl_games PPO MLP 설정 — grasp_kp 사본(이름만 다르다) + DESIGN §6(value_bootstrap True · gamma 0.99)
+# 관측: actor 94D / critic 118D (asymmetric), 액션: 13D (팔 관절 7D 증분+EMA + 손가락별 시너지 6D)
+# Asymmetric Actor-Critic (has_central_value: True), MLP [512, 256, 128]. num_envs 는 512 의 배수.
 params:
   seed: 42
 
@@ -42,7 +40,7 @@ params:
   load_path: ''
 
   config:
-    name: agn_grasp_ua
+    name: agn_grasp_fj_rh
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
@@ -51,14 +49,14 @@ params:
     mixed_precision: True
     normalize_input: True
     normalize_value: True
-    # ★True 필수(08.22): 전도/낙하가 truncation 으로 env 를 리셋한다. bootstrap 이
-    # 없으면 truncation=termination 이 되어 미래 보상 절벽 → 회피 학습(agn_test2) 재발.
-    value_bootstrap: False   # ★08.25 Kuka 원본값
+    # ★True 필수(DESIGN §6): time-out·max_goals truncation 이 잦다 — rl_games 래퍼의
+    #   `time_outs` 로 V(s') 를 얹어야 목표 근처의 미래 보상 절벽이 생기지 않는다.
+    value_bootstrap: True
     num_actors: -1
     reward_shaper:
       scale_value: 0.01
     normalize_advantage: True
-    gamma: 0.998
+    gamma: 0.99
     tau: 0.95
     learning_rate: 3e-4
     lr_schedule: linear
