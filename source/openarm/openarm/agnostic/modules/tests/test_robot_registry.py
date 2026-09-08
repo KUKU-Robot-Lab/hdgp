@@ -75,10 +75,43 @@ IDS = [p.name for p in ALL_PROFILES]
 # --------------------------------------------------------------------------
 # 자산
 # --------------------------------------------------------------------------
-def test_usd_assets_exist():
-    """USD 는 학습 서버에도 있어야 한다."""
+def test_live_registry_assets_have_their_usd():
+    """살아있는 자산의 USD 는 학습 서버에도 있어야 한다.
+
+    ★09.08: 이 레지스트리의 네 엔트리(a0~a3)는 **09.05 자산 교체로 폐기**됐고 USD 가
+      저장소에 없다. 지우지 않은 이유는 `run_naming.ASSET_TAGS` 가 지난 런 라벨을
+      파싱하는 데 a0~a3 를 쓰기 때문이다. 그래서 폐기된 것은 건너뛰되, **사유가 적혀
+      있는지**를 대신 강제한다 — 사유 없이 파일만 사라지면 여전히 실패한다.
+      "폐기로 표시해서 검사를 피하는" 우회를 막는 것이 이 단언의 목적이다.
+    """
     for a in R.ASSETS.values():
+        if a.archived:
+            assert len(a.archived) > 40, f"{a.name}: 폐기 사유가 너무 짧다 — 대체 자산을 적어라"
+            assert not (_ASSET_DIR / a.usd_relpath).is_file(), (
+                f"{a.name}: 폐기라고 적혔는데 USD 가 실재한다 — archived 를 지워라")
+            continue
         assert (_ASSET_DIR / a.usd_relpath).is_file(), f"USD 없음: {a.usd_relpath}"
+
+
+def test_every_usd_an_active_track_loads_exists():
+    """★진짜 보장은 여기다 — **활성 트랙이 실제로 여는 USD** 가 전부 있어야 한다.
+
+    구 `test_usd_assets_exist` 는 폐기된 레지스트리만 봤기 때문에, 09.05 자산 교체 뒤로는
+    "현행 자산이 하나도 없어도 통과할 수 있는" 상태였다(그리고 실제로 계속 실패만 했다).
+    활성 트랙은 각자 `tasks/<track>/robot_profiles.py` 의 `usd_relpath` 로 자산을 연다.
+    """
+    import importlib
+
+    seen: dict[str, list[str]] = {}
+    for track in ("grasp_s2r", "grasp_kp", "grasp_fj"):
+        mod = importlib.import_module(f"openarm.agnostic.tasks.{track}.robot_profiles")
+        for prof in mod.PROFILES.values():
+            rel = getattr(prof, "usd_relpath", None)
+            if rel:
+                seen.setdefault(rel, []).append(f"{track}:{prof.name}")
+    assert seen, "활성 트랙에서 usd_relpath 를 하나도 못 찾았다 — 이 테스트가 무의미해졌다"
+    missing = {rel: who for rel, who in seen.items() if not (_ASSET_DIR / rel).is_file()}
+    assert not missing, f"활성 트랙이 여는 USD 가 없다: {missing}"
 
 
 @_SKIP_NO_URDF

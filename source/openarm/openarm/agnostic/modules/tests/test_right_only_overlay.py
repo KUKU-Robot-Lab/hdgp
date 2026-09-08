@@ -16,9 +16,25 @@ import pytest
 pxr = pytest.importorskip("pxr", reason="pxr(USD) 없음")
 from pxr import Usd, UsdPhysics  # noqa: E402
 
-_ASSETS = pathlib.Path(__file__).resolve().parents[6] / "assets" / "robot" / "openarm_dg5f-m_bi_rl"
-_BASE = _ASSETS / "openarm_dg5f-m_bi_rl.usd"
-_RIGHT = _ASSETS / "openarm_dg5f-m_bi_rl_right.usda"
+_ROBOT = pathlib.Path(__file__).resolve().parents[6] / "assets" / "robot"
+
+#: 자산 → (오른쪽 링크 수, 오버레이 후 가동관절, base 왼쪽 링크 수, base 가동관절, 프로필 쌍)
+#: ★자산이 늘면 여기 한 줄만 추가한다 — 오버레이는 `scripts/tools/make_right_only_overlay.py`
+#:   가 manifest 에서 생성하므로 이름 목록을 손으로 적지 않는다.
+_CASES = {
+    "openarm_dg5f-m_bi_rl": dict(right_links=39, right_mov=29, left_links=39, base_mov=56,
+                                 profiles=("tesollo_right", "tesollo_right_only"), init_keys=29),
+    "openarm_rh56f1_bi_rl": dict(right_links=35, right_mov=21, left_links=35, base_mov=40,
+                                 profiles=("rh56f1_right", "rh56f1_right_only"), init_keys=21),
+}
+
+
+def _base(asset):
+    return _ROBOT / asset / f"{asset}.usd"
+
+
+def _right(asset):
+    return _ROBOT / asset / f"{asset}_right.usda"
 
 
 def _stage(p):
@@ -37,16 +53,20 @@ def _parts(path):
     return st, links, joints, mov
 
 
-def test_overlay_removes_every_left_link_and_joint():
-    _, links, _, mov = _parts(_RIGHT)
+@pytest.mark.parametrize("asset", sorted(_CASES))
+def test_overlay_removes_every_left_link_and_joint(asset):
+    exp = _CASES[asset]
+    _, links, _, mov = _parts(_right(asset))
     assert [n for n in links if n.startswith(("l_al_", "l_hl_"))] == []
-    assert len([n for n in links if n.startswith(("r_al_", "r_hl_"))]) == 39, "오른쪽이 줄면 안 된다"
-    assert len(mov) == 29, f"가동관절 29 여야 한다(팔 7 + 손 20 + head 2), got {len(mov)}"
+    assert len([n for n in links if n.startswith(("r_al_", "r_hl_"))]) == exp["right_links"], (
+        "오른쪽이 줄면 안 된다")
+    assert len(mov) == exp["right_mov"], f"{asset}: 가동관절 {exp['right_mov']} 여야 한다, got {len(mov)}"
 
 
-def test_overlay_leaves_no_dangling_joint_reference():
+@pytest.mark.parametrize("asset", sorted(_CASES))
+def test_overlay_leaves_no_dangling_joint_reference(asset):
     """★링크만 끄고 관절을 남기면 PhysX 가 없는 body 를 참조해 죽는다."""
-    st, _, joints, _ = _parts(_RIGHT)
+    st, _, joints, _ = _parts(_right(asset))
     bad = []
     for j in joints:
         api = UsdPhysics.Joint(j)
@@ -58,26 +78,33 @@ def test_overlay_leaves_no_dangling_joint_reference():
     assert bad == [], f"끊긴 관절 참조: {bad[:5]}"
 
 
-def test_base_asset_is_untouched():
+@pytest.mark.parametrize("asset", sorted(_CASES))
+def test_base_asset_is_untouched(asset):
     """오버레이는 base 를 수정하지 않는다 — 양팔 트랙(grasp_s2r 등)이 그대로 써야 한다."""
-    _, links, _, mov = _parts(_BASE)
-    assert len([n for n in links if n.startswith(("l_al_", "l_hl_"))]) == 39
-    assert len(mov) == 56
+    exp = _CASES[asset]
+    _, links, _, mov = _parts(_base(asset))
+    assert len([n for n in links if n.startswith(("l_al_", "l_hl_"))]) == exp["left_links"]
+    assert len(mov) == exp["base_mov"]
 
 
-def test_overlay_sublayers_the_base_rather_than_copying():
+@pytest.mark.parametrize("asset", sorted(_CASES))
+def test_overlay_sublayers_the_base_rather_than_copying(asset):
     """복사본이면 base 캘리브 갱신이 조용히 안 실린다 — subLayer 여야 한다."""
-    st = _stage(_RIGHT)
+    st = _stage(_right(asset))
     subs = [str(x) for x in st.GetRootLayer().subLayerPaths]
-    assert any(_BASE.name in x for x in subs), subs
+    assert any(_base(asset).name in x for x in subs), subs
 
 
-def test_profile_drops_left_entries_from_cfg_dicts():
+@pytest.mark.parametrize("asset", sorted(_CASES))
+def test_profile_drops_left_entries_from_cfg_dicts(asset):
     """자산에서만 빼면 IsaacLab 이 `Not all regular expressions are matched!` 로 죽는다(실측)."""
     from openarm.agnostic.tasks.grasp_kp.robot_profiles import PROFILES
-    full, right = PROFILES["tesollo_right"], PROFILES["tesollo_right_only"]
+    exp = _CASES[asset]
+    full, right = PROFILES[exp["profiles"][0]], PROFILES[exp["profiles"][1]]
     assert [k for k in right.init_joint_pos if k.startswith("l_")] == []
-    assert len(right.init_joint_pos) == 29
+    assert len(right.init_joint_pos) == exp["init_keys"]
+    assert [n for n, spec in right.actuator_specs.items()
+            if any(str(e).startswith("l_") for e in spec["joint_names_expr"])] == []
     for spec in right.actuator_specs.values():
         assert not any(str(e).startswith("l_") for e in spec.get("joint_names_expr", []))
     # 오른쪽 계약은 원본과 동일해야 한다 — 게인·정규식·palm 박스를 건드리지 않았다.

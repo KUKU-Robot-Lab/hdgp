@@ -41,6 +41,11 @@ class RobotAsset:
     # ★얇은 변형(physics 레이어만 교체)은 **디렉터리만** 다르고 파일명은 원본과 같다.
     #   자산 신원(name/tag/urdf)은 원본 그대로여야 계약 테스트·warm 뱅크가 안 깨진다.
     dir_name: str | None = None
+    # ★09.08 폐기 사유. 비어 있지 않으면 **USD 가 더 이상 배포되지 않는** 자산이다.
+    #   지우지 않는 이유: `run_naming.ASSET_TAGS` 의 a0~a3 가 **지난 런 이름**을 파싱하는 데
+    #   여전히 쓰인다(라벨 `X-E1-cond-a2-s42`). 엔트리를 지우면 옛 런 라벨이 해석 불가가 된다.
+    #   대신 테스트가 "폐기된 것은 사유가 적혀 있어야" 하고 "살아있는 것은 파일이 있어야" 한다.
+    archived: str = ""
 
     @property
     def usd_relpath(self) -> str:
@@ -64,18 +69,22 @@ TESOLLO_BI_S = RobotAsset(
     #   이미 회피하므로 팔은 껍질로 충분하다. ★손까지 hull 로 하면 접촉력 4배(133N).
     #   생성: scripts/tools/make_armhull_asset.py openarm_tesollo_bi_s_rl
     dir_name="openarm_tesollo_bi_s_rl_armhull",
+    archived="★09.05 자산 라인업 교체로 폐기 — 이 USD 는 저장소에 더 이상 없다. 현행 4종은 openarm_{dg5f-m,dg5f-s,rh56f1,gripper}_bi_rl 이고, 활성 트랙은 각자 tasks/<track>/robot_profiles.py 의 usd_relpath 로 그것을 가리킨다. 이 엔트리는 지난 런 라벨(run_naming.ASSET_TAGS a0~a3) 해석용으로만 남는다. 대체: openarm_dg5f-s_bi_rl.",
 )
 TESOLLO_BI = RobotAsset(
     name="openarm_tesollo_bi_rl", tag="a3", short="bi",
     note="좌우 DG-5F 20 DOF (구 기구학). ★run_naming.ASSET_TAGS 에 원래 없어 추가했다.",
+    archived="★09.05 자산 라인업 교체로 폐기 — 이 USD 는 저장소에 더 이상 없다. 현행 4종은 openarm_{dg5f-m,dg5f-s,rh56f1,gripper}_bi_rl 이고, 활성 트랙은 각자 tasks/<track>/robot_profiles.py 의 usd_relpath 로 그것을 가리킨다. 이 엔트리는 지난 런 라벨(run_naming.ASSET_TAGS a0~a3) 해석용으로만 남는다. 대체: openarm_dg5f-m_bi_rl.",
 )
 TESOLLO_SENSOR = RobotAsset(
     name="openarm_tesollo_sensor_rl", tag="a1", short="sens",
     note="우 DG-5F 20 DOF + 좌 2-DOF 평행 그리퍼(prismatic) + D435i 헤드.",
+    archived="★09.05 자산 라인업 교체로 폐기 — 이 USD 는 저장소에 더 이상 없다. 현행 4종은 openarm_{dg5f-m,dg5f-s,rh56f1,gripper}_bi_rl 이고, 활성 트랙은 각자 tasks/<track>/robot_profiles.py 의 usd_relpath 로 그것을 가리킨다. 이 엔트리는 지난 런 라벨(run_naming.ASSET_TAGS a0~a3) 해석용으로만 남는다. 대체: openarm_dg5f-m_bi_rl + openarm_gripper_bi_rl.",
 )
 RH56F1_BI = RobotAsset(
     name="openarm_bi_rh56f1_rl", tag="a0", short="rh56",
     note="좌우 Inspire RH56F1. 엄지 4 + 나머지 2×4 = 12 관절.",
+    archived="★09.05 자산 라인업 교체로 폐기 — 이 USD 는 저장소에 더 이상 없다. 현행 4종은 openarm_{dg5f-m,dg5f-s,rh56f1,gripper}_bi_rl 이고, 활성 트랙은 각자 tasks/<track>/robot_profiles.py 의 usd_relpath 로 그것을 가리킨다. 이 엔트리는 지난 런 라벨(run_naming.ASSET_TAGS a0~a3) 해석용으로만 남는다. 대체: openarm_rh56f1_bi_rl.",
 )
 
 ASSETS: dict[str, RobotAsset] = {
