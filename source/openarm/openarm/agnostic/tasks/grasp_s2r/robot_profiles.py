@@ -463,11 +463,19 @@ TESOLLO_RIGHT = RobotProfile(
         #   안 났다(08.27: wrap_frac 이 전 런에서 0.000). 1.5/5.0 = 17.2° 로 회복.
         #   ⚠실기 d=0.0 이므로 이 damping 은 기계마찰의 sim 대역품 —
         #   r2s 복구 후 armature/joint friction 실측치로 교체할 것(grasp_v1 규약).
-        # 손 게인 = DG-5F 벤더 PID(2026-09-06). effort 는 게인이 아니라 유지.
-        **_vg.hand_actuator("hand", ["r_hj_[a-z]+_[1-4]"], effort_limit_sim=1.5),
+        # 손 게인 = DG-5F 벤더 PID(2026-09-06).
+        # ★★09.08 `effort_limit_sim=1.5` **삭제** → USD 드라이브의 **벤더 7.5 N·m** 이 산다
+        #   (`<limit effort="7.5">`, CAD 릴리스·드라이버 사본 둘 다 20관절 전부).
+        #   1.5 는 08.19 A4 가 "7.5 레짐은 thumb_1 하드스톱 밖 −0.94rad" 를 보고 **증상을
+        #   덮으려고** 내린 값이었다. 덮기에 실패했다는 것이 09.08 계측으로 확정됐다 —
+        #   같은 관절이 접촉 중 **−4.075 rad**(한계 밖 3.69 rad)까지 밀려난다. 원인은 토크
+        #   상한이 아니라 자산 쪽(손 collider 가 벤더 `convex_hull` 이 아니라 decomposition)이라,
+        #   증상을 덮던 비벤더 값을 먼저 걷어내고 진짜 원인을 고친다.
+        #   계측: `scripts/analysis/fj_joint_limit_viol.py`(baseline max_viol 3.74 ± 0.09 rad).
+        **_vg.hand_actuator("hand", ["r_hj_[a-z]+_[1-4]"]),
         **_vg.arm_actuators("left_arm", "l"),          # 유휴측도 벤더 게인(같은 로봇이다)
         # 유휴 좌손도 같은 로봇이므로 벤더 DG-5F PID 를 쓴다(자산에 그리퍼는 없다).
-        **_vg.hand_actuator("left_hand", ["l_hj_[a-z]+_[1-4]"], effort_limit_sim=1.5),
+        **_vg.hand_actuator("left_hand", ["l_hj_[a-z]+_[1-4]"]),
         # head 는 Dynamixel 이라 벤더 팔 파일에 없다(`vendor_gains.NO_VENDOR_PD`). 현행값 유지.
         "head":               dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
     },
