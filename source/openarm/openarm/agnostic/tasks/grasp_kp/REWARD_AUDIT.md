@@ -337,3 +337,8 @@ kp_a12(HEAD, seed 7)가 e227 부근에 arm 되어 e4000+ 까지 살아 있다 �
 기타: 엄지 `_3` 하한 −0.5 는 예외가 아니라 "하한 = open 자세" 규칙(pre-curl, 08.23 엄지 음수는 팔마) — 프로필 주석 정정.
 `thumb_2` 는 외전이 아니라 대향(180° 전폭) — 좁힐지 별도 확정 대상. `goal_clock_restart_step` 0/1 을 검증기가 거부.
 SimToolReal 은 soft 가 아니라 **하드**(`joint_pos_limits`) 한계에 매핑 — factor 1.0 을 부팅에서 대조. 판정 ACCEPT 유지.
+
+### 09.08 3판 — 사용자 재확정: 엄지 `_3` 하한 0 · `thumb_2` URDF 실제 범위
+override 를 `_3/_4` 10개 하한 0 한 줄로 통일. 프로필 리셋 자세(엄지 `_3` −0.5)는 A 것이라 불변, B 리셋이 손 관절 상태·EMA
+시드를 액션한계로 clamp(`hand_reset_clamp_max_rad` 0.6). 보상·목표열 불변이라 Check 1~5 판정 그대로(ACCEPT). 바뀌는 것은
+접근 손 모양의 출발점(엄지 `_3` 0 = 곧게 편 상태)뿐 — `task/syn_close`·영상으로 관찰.

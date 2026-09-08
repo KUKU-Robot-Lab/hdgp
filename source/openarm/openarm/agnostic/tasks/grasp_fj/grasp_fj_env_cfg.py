@@ -80,6 +80,10 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
     #   (테솔로: `_3/_4` 하한 0 — 손등 과신전 차단). 폐쇄도·램프·close_gate·blocked 는 **없다**
     #   (09.08 사용자 확정: "SimToolReal 처럼 풀 조인트"). 1.0 = 평활 없음, (0,1] 만 허용.
     hand_ema: float = 0.1
+    # ★09.08 hand_direct 리셋: 프로필 리셋 자세(시너지 open, 엄지 `_3` −0.5 pre-curl)가 액션한계 밖이면 B 는 그
+    #   관절을 **한계로 clamp 해 심는다**(관절 상태 + EMA 시드 둘 다). 이 값보다 크게 움직여야 하면 리셋 자세가
+    #   범위와 아예 다른 자세라는 뜻이라 부팅을 죽인다. 0.5(엄지 `_3` −0.5 → 0) 가 현재 유일한 사례.
+    hand_reset_clamp_max_rad: float = 0.6
     # ★09.08 성공마다 에피소드 시계를 이 값으로 되돌린다(SimToolReal env.py:2437-2439 의
     #   `progress_buf[is_success > 0] = 0`) = 스텝 예산이 **에피소드당**이 아니라 **목표당**이 된다.
     #   −1 = 끔 = 현행. 왜 0 이 아니라 2 를 권하나(leaf 참조): episode_length_buf 가 0/1 일 때
@@ -146,6 +150,8 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
             # 목표가 영원히 안 움직인다(≤0).
             if not (0.0 < float(self.hand_ema) <= 1.0):
                 errs.append(f"hand_ema 는 (0, 1], got {self.hand_ema}")
+            if float(self.hand_reset_clamp_max_rad) < 0.0:
+                errs.append(f"hand_reset_clamp_max_rad 는 ≥ 0, got {self.hand_reset_clamp_max_rad}")
             # ★속도 피드포워드 금지: 램프가 없으므로 `_syn_vel` = 목표 차분/dt 가 최대
             #   (hi−lo)·α/dt ≈ 3.14×0.1×60 ≈ 19 rad/s 까지 뛴다. SimToolReal 은 위치 목표만 준다.
             if float(self.hand_velocity_ff_scale) != 0.0:

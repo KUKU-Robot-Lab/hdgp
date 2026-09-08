@@ -204,8 +204,9 @@ class GraspFJEnv(GraspKPEnv):
         점수를 받는다(08.23 실측 exploit). 하한 0 이 유일한 방어선이므로 부팅에서 세 가지를 죽인다:
           · 정규식이 아무 관절도 못 잡음(`_hand_mask`) — 오타가 조용히 "전폭" 으로 돌지 않게
           · 폭 0 액션 칸 — 20칸을 선언했으면 20칸이 다 무언가를 해야 한다
-          · 리셋 자세(default_joint_pos)가 범위 밖 — EMA 가 그 자세에서 출발하므로(SimToolReal
-            `prev_targets = joint_pos`) 밖이면 첫 스텝에 clamp 로 튀고 그 자세를 영원히 못 만든다
+          · 리셋 자세(default_joint_pos)가 범위 밖으로 `hand_reset_clamp_max_rad` 넘게 벗어남 — 그 안이면
+            리셋에서 관절 상태·EMA 시드를 한계로 clamp 해 심는다(`_hand_reset_q`, SimToolReal 처럼 EMA 가
+            실측 자세에서 출발). 엄지 `_3` 의 −0.5(시너지 open) → 0 이 현재 유일한 사례
         ★관절 **이름**은 프로필이 소유한다 — 여기서는 정규식을 해석만 한다(계약: env 에 관절명 금지).
         """
         lo, hi = self._syn_lo.clone(), self._syn_hi.clone()
@@ -230,19 +231,21 @@ class GraspFJEnv(GraspKPEnv):
             raise RuntimeError(f"[{self.profile.name}] 폭 0 액션 칸: {_dead} — override 가 한계를 뒤집었거나 "
                                f"soft limit 이 잠겨 있다")
         q0 = self.robot.data.default_joint_pos[0, self._syn_ids]
-        _out = [f"{n}={q:+.3f}∉[{a:+.3f},{b:+.3f}]" for n, q, a, b in
-                zip(_nm, q0.tolist(), lo.tolist(), hi.tolist()) if q < a - 1e-6 or q > b + 1e-6]
-        if _out:
-            raise RuntimeError(f"[{self.profile.name}] 리셋 손 자세가 액션한계 밖이다: {_out} — EMA 가 "
-                               f"거기서 출발하므로 첫 스텝에 튄다. override 하한을 리셋 자세까지 내릴 것")
+        self._hand_reset_q = q0.clamp(lo, hi)                     # B 리셋이 심는 손 자세(관절 상태 + EMA 시드)
+        _mv = (self._hand_reset_q - q0).abs()
+        _cl = [f"{n} {q:+.3f}→{c:+.3f}" for n, q, c, m in
+               zip(_nm, q0.tolist(), self._hand_reset_q.tolist(), _mv.tolist()) if m > 1e-6]
+        if float(_mv.max()) > float(self.cfg.hand_reset_clamp_max_rad):
+            raise RuntimeError(f"[{self.profile.name}] 리셋 손 자세가 액션한계에서 {float(_mv.max()):.3f} rad 벗어난다"
+                               f"(상한 {self.cfg.hand_reset_clamp_max_rad}): {_cl} — 범위와 다른 자세다")
         self._act_lo, self._act_hi, self._act_span = lo, hi, span
         # 전부 가동 관절이다 — `_hand_blocked`(진단)·`ctrl/hand_joint_err_max` 가 20칸을 다 본다.
         self._syn_movable = torch.ones_like(self._syn_movable)
         _narrow = int((lo > self._syn_lo + 1e-6).sum() + (hi < self._syn_hi - 1e-6).sum())
         print(f"[grasp_fj] 손 액션한계 full-joint — {len(_nm)}관절 · soft limit ∩ override "
-              f"{len(self.profile.hand_action_limit_override)}규칙 · 좁힌 끝 {_narrow}개 · 리셋 자세 범위 안 ✓",
-              flush=True)
-        for n, a, b, q in zip(_nm, lo.tolist(), hi.tolist(), q0.tolist()):
+              f"{len(self.profile.hand_action_limit_override)}규칙 · 좁힌 끝 {_narrow}개 · "
+              f"리셋 clamp {len(_cl)}개 {_cl if _cl else '(없음)'}", flush=True)
+        for n, a, b, q in zip(_nm, lo.tolist(), hi.tolist(), self._hand_reset_q.tolist()):
             print(f"           {n:18s} [{a:+.3f}, {b:+.3f}]  reset {q:+.3f}", flush=True)
 
     def _hand_mask(self, regex: str) -> torch.Tensor:
@@ -438,9 +441,14 @@ class GraspFJEnv(GraspKPEnv):
             self.robot.write_joint_state_to_sim(_q, torch.zeros_like(_q), env_ids=env_ids)
             self._arm_q_target[env_ids] = _q[:, self._arm_ids_t]
             self._prev_arm_q_target[env_ids] = self._arm_q_target[env_ids]
-        # ★손: 부모가 `_syn_target[env_ids] = q0`(리셋 자세)로 심었다 — full-joint EMA 는 거기서
-        #   출발한다(SimToolReal `prev_targets = joint_pos`). 진단용 정규화 목표도 같은 값으로.
+        # ★손: 부모가 `_syn_target[env_ids] = q0`(프로필 리셋 자세)로 심었다. full-joint 는 그 자세를 액션한계로
+        #   clamp 한 `_hand_reset_q`(엄지 `_3` −0.5 → 0) 를 **관절 상태와 EMA 시드 둘 다**에 심는다 — SimToolReal
+        #   `prev_targets = joint_pos` 처럼 EMA 가 실측 자세에서 출발하고, 첫 스텝에 clamp 로 튀지 않는다.
         if bool(self.cfg.hand_direct):
+            _qh = self.robot.data.joint_pos[env_ids].clone()
+            _qh[:, self._syn_ids] = self._hand_reset_q.unsqueeze(0)
+            self.robot.write_joint_state_to_sim(_qh, torch.zeros_like(_qh), env_ids=env_ids)
+            self._syn_target[env_ids] = self._hand_reset_q.unsqueeze(0)
             self._syn_close[env_ids] = ((self._syn_target[env_ids] - self._act_lo.unsqueeze(0))
                                         / self._act_span.unsqueeze(0))
         self._prev_syn_target[env_ids] = self._syn_target[env_ids]

@@ -58,7 +58,8 @@ class _Hand:
         self._ht = types.MethodType(m["_hand_targets"], self)
         self._build_hand_action_range = types.MethodType(m["_build_hand_action_range"], self)
         self._hand_mask = types.MethodType(m["_hand_mask"], self)
-        self.cfg = types.SimpleNamespace(hand_direct=direct, hand_ema=ema, synergy_close_speed=0.005)
+        self.cfg = types.SimpleNamespace(hand_direct=direct, hand_ema=ema, synergy_close_speed=0.005,
+                                         hand_reset_clamp_max_rad=0.6)
         self.device = "cpu"
         self._syn_lo = (_LO if lo is None else torch.tensor(lo)).clone()
         self._syn_hi = (_HI if hi is None else torch.tensor(hi)).clone()
@@ -84,6 +85,8 @@ class _Hand:
             data=types.SimpleNamespace(default_joint_pos=_q0.unsqueeze(0), joint_pos_limits=_hard),
             find_joints=_find)
         self._build_hand_action_range()
+        if direct:
+            self._syn_target = self._hand_reset_q.unsqueeze(0).repeat(N, 1)   # B `_reset_idx` 가 심는 값
 
     def step(self, a):
         t = self._ht(a)
@@ -169,13 +172,21 @@ def test_zero_width_action_slot_is_a_boot_error():
         _Hand(override={r"j_b_3$": (1.571, None)})      # 하한을 상한까지 올림
 
 
-def test_reset_pose_outside_the_range_is_a_boot_error():
-    """★엄지 _3 축소판: 리셋 −0.5 인데 하한 0 을 적으면 첫 스텝에 0.5 rad 튄다 → 부팅 거부."""
-    with pytest.raises(RuntimeError, match="리셋 손 자세가 액션한계 밖"):
-        _Hand(override={r"j_a_3$": (0.0, None)})
-    # 하한을 리셋 자세까지 내리면 통과한다(테솔로 프로필이 thumb_3 에 −0.5 를 준 이유).
-    h = _Hand(override={r"j_a_3$": (-0.5, None)})
-    assert h._act_lo[1].item() == pytest.approx(-0.5)
+def test_reset_pose_outside_the_range_is_clamped_into_the_seed_not_rejected():
+    """★엄지 _3 축소판: 프로필 리셋 −0.5 인데 하한 0 → B 는 리셋에서 0 으로 clamp 해 관절 상태·EMA 시드에 심는다.
+    첫 스텝(a=0)의 이동은 α·(중앙−0) 뿐이다 — 0.5 rad 튐이 없다.
+    """
+    h = _Hand(override={r"j_a_3$": (0.0, None)})
+    assert h._hand_reset_q.tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
+    t = h.step(_act(0, 0, 0, 0))
+    mid = 0.5 * (h._act_lo + h._act_hi)
+    assert torch.allclose(t[0], h._hand_reset_q + 0.1 * (mid - h._hand_reset_q), atol=1e-6)
+
+
+def test_reset_pose_far_outside_the_range_is_a_boot_error():
+    """clamp 이동량이 `hand_reset_clamp_max_rad` 를 넘으면 범위와 다른 자세다 → 부팅 거부."""
+    with pytest.raises(RuntimeError, match="벗어난다"):
+        _Hand(override={r"j_a_3$": (0.2, None)})           # −0.5 → 0.2 = 0.7 rad > 0.6
 
 
 # ---------------------------------------------------------------- ⑤ 진단 정규화
@@ -207,12 +218,11 @@ def test_tesollo_right_override_floors_exactly_the_twelve_distal_flexions():
                 assert n not in hit, f"{n} 이 규칙 두 개에 걸린다"
                 hit[n] = (lo, hi)
     assert set(hit) == {n for n in p.hand_joint_names if n.endswith(("_3", "_4"))}
-    assert hit["r_hj_thumb_3"] == (-0.5, None)
-    assert all(v == (0.0, None) for n, v in hit.items() if n != "r_hj_thumb_3")
-    # 리셋(open) 자세가 하한 위에 있다 — env 부팅 assert 의 순수 파이썬 선검사.
+    assert all(v == (0.0, None) for v in hit.values()), "엄지 _3 포함 전부 하한 0(사용자 재확정)"
+    # 리셋(open) 자세가 하한 아래인 관절은 B 리셋이 clamp 한다 — 이동량이 cfg 상한(0.6) 안이어야 한다.
     for n, q in zip(p.hand_joint_names, p.hand_open_pose):
-        if n in hit:
-            assert q >= hit[n][0] - 1e-9, (n, q, hit[n])
+        if n in hit and q < hit[n][0]:
+            assert hit[n][0] - q <= 0.6, (n, q, hit[n])
 
 
 # ---------------------------------------------------------------- 목표당 스텝 예산

@@ -173,18 +173,14 @@ TESOLLO_RIGHT = RobotProfile(
     hand_locked_joint_regex="r_hj_(index|middle|ring)_1",
     num_locked_hand_joints=3,
     # 엄지 대향은 손가락열에서 떨어져 있다 — 침범 원인이 아니므로 넓게 연다.
-    # ★09.08 full-joint 손 액션한계(사용자 확정 "URDF 한계 + _3/_4 하한 0"). 네 손가락 _3/_4 와 엄지 _4 는
-    #   굴곡 전용 [0, 1.571]. 엄지 _3 만 하한 −0.5 — 규칙의 정확한 형태는 "**하한 = open 자세**" 다: −0.5 는
-    #   grasp_v1 계보의 open(pre-curl) 자세이자 A/grasp_s2r 시너지 envelope 의 하단(open −0.5 → grip 1.8)이고,
-    #   08.23 실측 기록도 엄지 `_3` 음수는 팔마 접촉(정상)이라 "음수=역굴곡" 을 엄지에 적용하지 말라고 적었다.
-    #   env 는 리셋 자세가 범위 안임을 부팅에서 대조한다(0 으로 자르면 첫 스텝에 0.5 rad 튐 + 자세 도달 불가).
-    #   외전 `_1`·`_2`(MCP) 는 URDF 전폭(외전 잠금 해제 = 09.08 사용자 결정, 겹침은 영상으로 관찰).
-    #   ⚠`thumb_2` 는 외전이 아니라 **대향**(URDF [−π, 0] = 손에서 가장 넓은 180°) — 전폭이면 a=0 이 현 고정값
-    #   −1.571. SimToolReal 엄지 CMC_AA 는 ±0.35 rad 였다. 좁힐지는 별도 확정 대상(현재 전폭, 부팅 표에 찍힌다).
+    # ★09.08 full-joint 손 액션한계(사용자 확정 "URDF 한계 + _3/_4 하한 0"). 다섯 손가락 `_3/_4` 10개 전부
+    #   굴곡 전용 [0, 1.571] — 엄지 `_3` 도 0 이다(사용자 재확정 09.08: "−0.5 면 꺾이는 자세"). 시너지 시절 open
+    #   자세 −0.5(pre-curl)는 A/grasp_s2r 것이라 프로필 init 은 그대로 두고, **B 는 리셋에서 손 관절 상태를 액션한계로
+    #   clamp 해 심는다**(grasp_fj `_reset_idx`, 이동량 상한 cfg `hand_reset_clamp_max_rad`) — 리셋 자세와 범위가
+    #   어긋나 첫 스텝에 튀는 일이 없다. 외전 `_1`·`_2`(MCP) 는 URDF 전폭(외전 잠금 해제 = 09.08 사용자 결정).
+    #   `thumb_2` 는 외전이 아니라 **대향**(URDF [−π, 0] 180°) — 사용자 확정(09.08): URDF 실제 범위 그대로.
     hand_action_limit_override={
-        r"r_hj_(index|middle|ring|pinky)_[34]$": (0.0, None),
-        r"r_hj_thumb_4$": (0.0, None),
-        r"r_hj_thumb_3$": (-0.5, None),
+        r"r_hj_(thumb|index|middle|ring|pinky)_[34]$": (0.0, None),
     },
     palm_body="r_hl_palm",
     # ---- Fabrics (DG-5F 계보) ----

@@ -359,7 +359,8 @@ def test_hand_action_range_is_soft_limit_intersect_profile_override_and_fails_lo
         "torch.minimum(hi, torch.full_like(hi, float(ohi)))",      # 교집합: 상한은 내리기만
         "폭 0 액션 칸",
         "self.robot.data.default_joint_pos[0, self._syn_ids]",
-        "리셋 손 자세가 액션한계 밖이다",
+        "self._hand_reset_q = q0.clamp(lo, hi)",                 # 리셋 자세는 거부가 아니라 clamp 시드
+        "hand_reset_clamp_max_rad",
         "self._act_lo, self._act_hi, self._act_span = lo, hi, span",
         "self._syn_movable = torch.ones_like(self._syn_movable)",
     ])
@@ -368,19 +369,22 @@ def test_hand_action_range_is_soft_limit_intersect_profile_override_and_fails_lo
     # IsaacLab find_joints 는 fullmatch + 미매칭 ValueError — 우리 메시지로 감싼다(죽은 분기 금지).
     mask = _fn_block(_ENV, "_hand_mask")
     assert "except ValueError as e:" in mask and "아무것도 못 잡았다" in mask and "if not ids" not in mask
-    assert rng.count("raise RuntimeError") >= 2, "폭 0·리셋 범위 밖 둘 다 부팅에서 죽어야 한다"
+    assert rng.count("raise RuntimeError") >= 2, "폭 0·리셋 자세 과이탈 둘 다 부팅에서 죽어야 한다"
+    # B 리셋은 clamp 된 손 자세를 관절 상태와 EMA 시드 둘 다에 심는다(A 산술 불변 — 프로필 init 은 그대로).
+    rs = _fn_block(_ENV, "_reset_idx")
+    _ordered(rs, ["super()._reset_idx(env_ids)", "_qh[:, self._syn_ids] = self._hand_reset_q.unsqueeze(0)",
+                  "self.robot.write_joint_state_to_sim(_qh", "self._syn_target[env_ids] = self._hand_reset_q.unsqueeze(0)"])
     assert "hand_open_pose" not in _code(rng) and "hand_grip_pose" not in _code(rng), \
         "full-joint 범위는 시너지 자세와 무관하다(soft limit ∩ override 만)"
-    # 프로필(관절명 소유자)에 테솔로 override 가 실재하고 10개 원위·중위 굴곡(5손가락 × _3/_4)이
-    # 잡힌다 — 9개는 하한 0, 엄지 _3 만 리셋 자세(−0.5).
+    # 프로필(관절명 소유자)에 테솔로 override 가 실재하고 10개 원위·중위 굴곡(5손가락 × _3/_4) 전부 하한 0 이다
+    # (09.08 사용자 재확정: 엄지 _3 도 0, −0.5 는 꺾이는 자세). thumb_2 는 URDF 실제 범위 그대로.
     from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
     ov = dict(PROFILES["tesollo_right"].hand_action_limit_override)
     names = PROFILES["tesollo_right"].hand_joint_names
-    floor0 = [n for n in names if any(re.match(rx, n) and lo == 0.0 for rx, (lo, _) in ov.items())]
-    assert len(floor0) == 9 and all(n.endswith(("_3", "_4")) for n in floor0), floor0
+    floor0 = [n for n in names if any(re.fullmatch(rx, n) and lo == 0.0 for rx, (lo, _) in ov.items())]
+    assert len(floor0) == 10 and all(n.endswith(("_3", "_4")) for n in floor0), floor0
     assert sum(n.endswith(("_3", "_4")) for n in names) == 10
-    assert any(re.match(rx, "r_hj_thumb_3") and lo == -0.5 for rx, (lo, _) in ov.items()), \
-        "엄지 _3 하한은 리셋 자세(−0.5 pre-curl)까지 내려야 한다"
+    assert not any(re.fullmatch(rx, "r_hj_thumb_2") for rx in ov), "thumb_2 는 URDF 실제 범위 그대로(사용자 확정)"
     assert all(hi is None for _, (_, hi) in ov.items()), "상한은 URDF 그대로"
 
 
@@ -692,6 +696,7 @@ def _run_validator(**over):
         arm_dof_speed_scale=1.5,
         arm_reset_offset_rad=(),
         hand_layout="coupled3", hand_direct=True, hand_ema=0.1, hand_velocity_ff_scale=0.0,
+        hand_reset_clamp_max_rad=0.6,
         episode_length_s=10.0, goal_clock_restart_step=2,
         goal_force_consecutive=True, tol_start=0.1125, goal_max=5, tol_success_threshold=2.0,
         goal_delta_distance=0.0,
