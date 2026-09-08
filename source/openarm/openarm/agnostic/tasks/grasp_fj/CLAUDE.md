@@ -54,7 +54,7 @@ PYTHONPATH=source/openarm python3 -m pytest source/openarm/openarm/agnostic/modu
 ```
 로그 `log/rl_games/open-sens/right/grasp-fj-lstm-sapg/<label>/`. 부팅 라인: 손 액션한계 20관절 표(리셋 자세 범위 안 ✓) ·
 `시작 거리 가드 ✓ ~105 mm`. 스모크 게이트: `ctrl/arm_target_step` ≤ 0.0025 rad(×60 = 0.15 rad/s) · abnormal ≈ 0 ·
-`ctrl/joint_err_max` < 0.1 · `hand_floor_depth_max` ≈ 0 · `reset/arm_q_dev_max` 가 b9 대역.
+`ctrl/joint_err_max` < 0.1 · `hand_floor_depth_max` ≈ 0 · `reset/arm_q_dev_max` ≈ **0.38**(= `arm_reset_offset_rad` 최대 성분 0.3813 — 진단이 홈 기준 편차를 재므로 고정 오프셋이 그대로 보인다; b9 의 ~0 과 다른 것이 정상).
 
 **판정 지표(matched-tol, matched-epoch 금지)**: `ctrl/drop_sticky_frac`(1순위) · `task/lifted_frac` · `task/successes_mean`(상한 5)
 · `ctrl/prev_ep_successes_mean`(게이트 2.0 까지의 거리) · `episode_lengths`(유능해지면 600 → 200~300; 성공 에피소드의
