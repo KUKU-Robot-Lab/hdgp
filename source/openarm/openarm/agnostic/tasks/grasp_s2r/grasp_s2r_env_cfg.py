@@ -109,7 +109,13 @@ class GraspS2REventCfg:
 
 def _build_robot_cfg(profile: RobotProfile,
                      enable_self_collisions: bool,
-                     enable_gravity: bool = True) -> ArticulationCfg:
+                     enable_gravity: bool = True,
+                     *,
+                     solver_position_iterations: int = 8,
+                     solver_velocity_iterations: int = 0,
+                     max_depenetration_velocity: float = 1000.0,
+                     contact_offset: float | None = None,
+                     rest_offset: float | None = None) -> ArticulationCfg:
     """프로필 → ArticulationCfg. 조인트 이름은 전부 프로필에서 온다.
 
     ★`enable_gravity` 는 **반드시 인자**여야 한다. USD spawn 속성이라 env 생성 뒤에는
@@ -133,12 +139,17 @@ def _build_robot_cfg(profile: RobotProfile,
                 max_linear_velocity=1000.0,
                 max_angular_velocity=1000.0,
                 # ★접촉력 스파이크가 보이면 되돌릴 1순위(구 값 1.0).
-                max_depenetration_velocity=1000.0,
+                max_depenetration_velocity=max_depenetration_velocity,
             ),
+            # ★None 이면 collision_props 자체를 얹지 않는다(= PhysX 기본, 현행 동작).
+            collision_props=(
+                None if contact_offset is None and rest_offset is None
+                else sim_utils.CollisionPropertiesCfg(
+                    contact_offset=contact_offset, rest_offset=rest_offset)),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=enable_self_collisions,
-                solver_position_iteration_count=8,
-                solver_velocity_iteration_count=0,
+                solver_position_iteration_count=solver_position_iterations,
+                solver_velocity_iteration_count=solver_velocity_iterations,
                 sleep_threshold=0.005,
                 stabilization_threshold=0.0005,
             ),
@@ -226,6 +237,18 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     use_hand_repulsion: bool = False
     use_body_repulsion_pairs: bool = True
     enable_self_collisions: bool = False  # ★D3 기본 (09.01 승격)
+
+    # ---- 물리 솔버 knob (진단용 A/B) -------------------------------------------------
+    # ★★반드시 **cfg 필드**여야 한다. `robot_cfg.spawn.*` 에 직접 얹으면
+    #   `GraspS2REnv.__init__` 의 `finalize_after_overrides()` 가 robot_cfg 를 재조립하며
+    #   **조용히 지운다**(09.06 `probe_s2r_gravity_droop.py --gravity` 무효, 09.09 프로브의
+    #   armature/vel_iters/max_depen 스윕이 통째로 no-op 이었던 것이 같은 원인).
+    #   기본값 = 현행 동작. None 인 offset 은 collision_props 를 아예 안 얹는다.
+    robot_solver_position_iterations: int = 8
+    robot_solver_velocity_iterations: int = 0
+    robot_max_depenetration_velocity: float = 1000.0
+    robot_contact_offset: float | None = None
+    robot_rest_offset: float | None = None
 
     # ---- 중력 (2026-09-06 사용자 확정) -----------------------------------------------
     # **로봇 자체 중력 ON + 중력보상 ON.** 둘 다 켠다. 이유는 실기와 같게 만들기 위해서다.
@@ -795,6 +818,12 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   policy obs 는 상대 위치(`palm_to_obj`·`obj_to_tips`·`goal_rel`)뿐이라 다물체로
     #   가도 차원·의미가 불변이다. 원점 오프셋은 **스폰·보상 경로에만** 쓴다(특권 정보).
     object_bank: str = "cup_family"  # ★D3 기본 (09.01 승격)
+    # 물체 USD 를 같은 파일명으로 이 디렉터리 것으로 갈아끼운다(콜라이더 변형 A/B 진단용).
+    # ★spawn 을 직접 고치면 안 된다 — `_apply_object_bank()` 는 `__post_init__` 과 env
+    #   `__init__` 에서 **두 번** 불리고, 두 번째 호출이 `bank.specs` 경로로 spawn 을 다시
+    #   만들어 얹은 값을 지운다(09.09 실측: 교체 로그는 찍히는데 물리 결과가 비트 단위로 동일).
+    #   그래서 **재조립이 읽는 입력** 쪽에 둔다.
+    object_usd_dir_override: str = ""
 
     robot_cfg: ArticulationCfg = None  # __post_init__ 에서 프로필로 조립
 
@@ -847,7 +876,12 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
         #   `env.enable_self_collisions=False` 로 기동해야 하고, 그게 실리려면
         #   재구축이 여기 있어야 한다.
         self.robot_cfg = _build_robot_cfg(
-            profile, bool(self.enable_self_collisions), bool(self.enable_gravity))
+            profile, bool(self.enable_self_collisions), bool(self.enable_gravity),
+            solver_position_iterations=int(self.robot_solver_position_iterations),
+            solver_velocity_iterations=int(self.robot_solver_velocity_iterations),
+            max_depenetration_velocity=float(self.robot_max_depenetration_velocity),
+            contact_offset=self.robot_contact_offset,
+            rest_offset=self.robot_rest_offset)
         self._assert_vendor_gains(profile)
         if not bool(self.enable_events):
             self.events = None
@@ -877,6 +911,16 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             self.object_spawn_z,
         ]
         self._derive_spaces(profile)
+
+    def _remap_object_usd(self, usd_path: str) -> str:
+        """`object_usd_dir_override` 가 있으면 같은 파일명을 그 디렉터리에서 찾아 바꾼다."""
+        if not self.object_usd_dir_override:
+            return usd_path
+        cand = _os.path.join(self.object_usd_dir_override, _os.path.basename(usd_path))
+        if not _os.path.isfile(cand):
+            raise RuntimeError(
+                f"object_usd_dir_override: {cand} 없음 — 뱅크의 모든 USD 사본이 필요하다")
+        return cand
 
     def _apply_object_bank(self) -> None:
         """뱅크 크기에 따라 스폰·물리복제·접촉필터를 한 곳에서 조립한다.
@@ -919,7 +963,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             from dataclasses import replace as _replace
             _spec = bank.specs[0]
             self.object_cfg.spawn = _replace(
-                self._object_spawn_base, usd_path=_spec.usd_path,
+                self._object_spawn_base, usd_path=self._remap_object_usd(_spec.usd_path),
                 scale=tuple(_spec.scale), mass_props=MassPropertiesCfg(mass=float(_spec.mass)))
             self.table_cfg.spawn.usd_path = self._table_usd_base
             return
@@ -949,7 +993,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
         _base = self._object_spawn_base
         self.object_cfg.spawn = _wrap.MultiAssetSpawnerCfg(
             assets_cfg=[
-                replace(_base, usd_path=s.usd_path, scale=tuple(s.scale),
+                replace(_base, usd_path=self._remap_object_usd(s.usd_path), scale=tuple(s.scale),
                         mass_props=MassPropertiesCfg(mass=float(s.mass)))
                 for s in bank.specs
             ],

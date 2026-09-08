@@ -1580,7 +1580,10 @@ def test_robot_gravity_is_enabled():
     """
     cfg = _code(_CFG)
     _rb = cfg[cfg.index("def _build_robot_cfg"):]
-    _rb = _rb[:_rb.index("max_depenetration_velocity")]
+    # ★시그니처를 건너뛰고 **본문**만 본다. 09.09 에 `max_depenetration_velocity` 가
+    #   인자로도 생기면서 "첫 등장까지 자르기"가 시그니처 안에서 끊겨 오탐이 났다.
+    _rb = _rb[_rb.index("-> ArticulationCfg:"):]
+    _rb = _rb[:_rb.index("articulation_props")]
     assert "disable_gravity=not enable_gravity" in _rb, \
         "로봇 중력이 cfg 에서 파생되지 않는다 — 하드코딩하면 오버라이드가 조용히 죽는다"
     assert "enable_gravity: bool = True" in cfg, "로봇 중력 기본값이 ON 이 아니다"

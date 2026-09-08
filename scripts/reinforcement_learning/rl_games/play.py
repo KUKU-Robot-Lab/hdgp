@@ -121,6 +121,20 @@ parser.add_argument(
     help="Viewer camera lookat 'x,y,z' (env-local).",
 )
 parser.add_argument(
+    "--phys", type=str, default=None,
+    help="물리 솔버 knob A/B: 'pos_iters=32,vel_iters=4,max_depen=5,contact_offset=0.002'. "
+         "★cfg 필드로 실린다 — robot_cfg.spawn 에 직접 얹으면 finalize_after_overrides 가 지운다.")
+parser.add_argument(
+    "--object_usd_dir", type=str, default=None,
+    help="물체 USD 를 이 디렉터리의 **같은 파일명**으로 갈아끼운다(콜라이더 변형 A/B 용). "
+         "물체 뱅크가 다물체면 spawn 이 MultiAssetSpawnerCfg 라 항목마다 바꿔야 하므로 "
+         "단일 경로가 아니라 디렉터리 매핑이다. 복원(restore_run_cfg)이 logged 경로를 "
+         "되씌우므로 반드시 복원 **이후**인 _apply_playback_env_overrides 에서 적용한다.")
+parser.add_argument(
+    "--dump_hand_q", type=str, default=None,
+    help="손 20관절 실측/목표를 매 스텝 npz 로 적는다(경로). 파지 형태를 관절값으로 판정하기 위한 것 — "
+         "렌더 프레임으로는 벌림(_1) 각도를 못 잰다.")
+parser.add_argument(
     "--dump_extras", type=str, default=None,
     help="쉼표로 구분한 부분문자열에 걸리는 env.extras 키를 30스텝마다 출력한다. "
          "학습 로그(TFEvents)에만 있고 play 에는 안 나오던 계측을 체크포인트 단위로 "
@@ -326,6 +340,34 @@ def _resolve_checkpoint_path(checkpoint: str) -> str:
     raise FileNotFoundError(f"Unable to find the checkpoint file or prefix: {checkpoint}")
 
 
+def _rescale_sapg_block_size(agent_cfg: dict, envs_train, envs_play) -> None:
+    """재생 규모에 맞춰 SAPG 블록 크기를 다시 잡는다(블록 **수**는 학습과 동일).
+
+    왜. vendor player 는 `arange(nb).repeat_interleave(bs)` 로 블록 라벨을 만들고
+    임베딩을 `linspace(50, 0, nb)[label]` 로 고른다 — 값을 정하는 건 블록 **수**뿐이다.
+    그런데 학습 블록 크기(4096/4 = 1024)를 그대로 들고 오면 재생 num_envs 8 이
+    1024 로 안 나누어져 죽는다. 블록 수를 보존한 채 크기만 줄인다.
+    """
+    cfg = agent_cfg.get("params", {}).get("config", {})
+    bs_train = cfg.get("expl_coef_block_size")
+    if not bs_train or not envs_train or not envs_play:
+        return
+    bs_train, envs_train, envs_play = int(bs_train), int(envs_train), int(envs_play)
+    if envs_train % bs_train:
+        raise ValueError(f"학습 설정이 이미 어긋난다: {envs_train} % {bs_train} != 0")
+    n_blocks = envs_train // bs_train
+    if envs_play == envs_train:
+        return
+    if envs_play % n_blocks:
+        raise ValueError(
+            f"재생 num_envs({envs_play}) 가 학습 블록 수({n_blocks})의 배수여야 "
+            f"학습과 같은 블록 임베딩이 나온다 — {n_blocks}의 배수로 --num_envs 를 잡을 것")
+    cfg["expl_coef_block_size"] = envs_play // n_blocks
+    print(f"[INFO] SAPG 블록 재조정: 블록수 {n_blocks} 유지 · 크기 {bs_train} → "
+          f"{cfg['expl_coef_block_size']} (num_envs {envs_train} → {envs_play}). "
+          f"리더 블록 = 마지막 {cfg['expl_coef_block_size']}개 env")
+
+
 def _apply_playback_env_overrides(env_cfg) -> None:
     """Apply CLI-only playback overrides after any logged cfg restore."""
     if args_cli.num_envs is not None:
@@ -338,6 +380,27 @@ def _apply_playback_env_overrides(env_cfg) -> None:
         print("[INFO] pour_point 마커 표시 off (playback).")
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
+    if args_cli.phys:
+        _KEYS = {"pos_iters": "robot_solver_position_iterations",
+                 "vel_iters": "robot_solver_velocity_iterations",
+                 "max_depen": "robot_max_depenetration_velocity",
+                 "contact_offset": "robot_contact_offset",
+                 "rest_offset": "robot_rest_offset"}
+        for _kv in args_cli.phys.split(","):
+            _k, _, _v = _kv.partition("=")
+            _k = _k.strip()
+            if _k not in _KEYS:
+                raise ValueError(f"--phys: 모르는 키 '{_k}' (가능: {sorted(_KEYS)})")
+            _field = _KEYS[_k]
+            _cast = int if "iters" in _k else float
+            setattr(env_cfg, _field, _cast(_v))
+            print(f"[INFO] 물리 knob {_field} = {getattr(env_cfg, _field)}")
+
+    if args_cli.object_usd_dir:
+        if not hasattr(env_cfg, "object_usd_dir_override"):
+            raise ValueError("--object_usd_dir: 이 태스크 cfg 에 object_usd_dir_override 가 없다")
+        env_cfg.object_usd_dir_override = args_cli.object_usd_dir
+        print(f"[INFO] 물체 USD 디렉터리 오버라이드: {args_cli.object_usd_dir}")
 
     # 뷰어 카메라: logged env.yaml이 기본(먼) 카메라를 복원하므로 복원 이후 여기서 덮어쓴다.
     #   pour 태스크는 컵/손이 작아 기본 7.5m 뷰가 너무 멀다 → env-따라가는 근접뷰 기본 적용.
@@ -526,15 +589,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         resume_path = _resolve_checkpoint_path(args_cli.checkpoint)
     log_dir = os.path.dirname(os.path.dirname(resume_path))
     workspace_root = os.path.abspath(os.path.join(sbm_root, ".."))
+    # `-play` id 는 tol_eval 을 tol_floor 로 고정한다(커리큘럼은 체크포인트에 없다).
+    # 그런데 logged env.yaml 에는 학습값 tol_eval=0.0(커리큘럼)이 박혀 있어 복원이
+    # 그 고정을 **조용히 되돌린다** → play 가 tol_start(느슨한 공차)에서 다시 굴러
+    # 성공수가 학습 종료 시점과 비교 불가가 된다. 복원 뒤 되살린다.
+    _tol_eval_play = getattr(env_cfg, "tol_eval", None)
     agent_cfg = _restore_run_cfg_if_available(
         env_cfg,
         agent_cfg,
         resume_path=resume_path,
         workspace_root=workspace_root,
     )
+    if _tol_eval_play is not None and float(_tol_eval_play) > 0.0 and float(
+        getattr(env_cfg, "tol_eval", 0.0)
+    ) != float(_tol_eval_play):
+        env_cfg.tol_eval = _tol_eval_play
+        print(f"[INFO] play tol_eval 복구: {_tol_eval_play} (logged run 값으로 덮이는 것 방지)")
+
+    # ★SAPG 블록: 학습 num_envs 는 여기(복원 직후)에만 남아 있다 — 아래 playback override 가
+    #   args_cli.num_envs 로 덮어쓴다. 블록 임베딩 값은 linspace(50,0,블록수)[블록id] 라
+    #   **블록 수만** 보존하면 학습과 같은 라벨이 나온다. 블록 크기를 그대로 두면 재생
+    #   num_envs 가 학습 블록 크기(예: 1024)로 안 나누어져 vendor player 가 죽는다.
+    _sapg_envs_train = getattr(getattr(env_cfg, "scene", None), "num_envs", None)
     agent_cfg["params"]["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["params"]["seed"]
     env_cfg.seed = agent_cfg["params"]["seed"]
     _apply_playback_env_overrides(env_cfg)
+    _rescale_sapg_block_size(agent_cfg, _sapg_envs_train, env_cfg.scene.num_envs)
 
     # pour_point(빨강) 마커는 렌더에 표시하지 않는다 (cfg 기본 enable_visual_markers=False 존중).
 
@@ -747,6 +827,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             _gp = env.unwrapped
             if hasattr(_gp, "env"):
                 _gp = _gp.env.unwrapped
+            if args_cli.dump_hand_q and hasattr(_gp, "_syn_ids"):
+                _hq = getattr(_gp, "_hand_q_trace", None)
+                if _hq is None:
+                    # ★한계도 같이 적는다. 분석 쪽에 한계표를 손으로 박으면 자산이 바뀔 때
+                    #   조용히 어긋난다 — 이탈량은 "그 런의 한계" 기준이어야 한다.
+                    _lim = _gp.robot.data.joint_pos_limits[0, _gp._syn_ids, :]
+                    _hq = _gp._hand_q_trace = {
+                        "q": [], "tgt": [],
+                        "names": [_gp.robot.data.joint_names[i] for i in _gp._syn_ids],
+                        "lim": _lim.clone().cpu().numpy(),
+                        "act_lo": _gp._act_lo.clone().cpu().numpy(),
+                        "act_hi": _gp._act_hi.clone().cpu().numpy(),
+                    }
+                _hq["q"].append(_gp.robot.data.joint_pos[:, _gp._syn_ids].clone().cpu().numpy())
+                _tg = getattr(_gp, "_syn_target", None)
+                if _tg is not None:
+                    _hq["tgt"].append(_tg.clone().cpu().numpy())
             if args_cli.dump_extras:
                 _gp._dxstep = getattr(_gp, "_dxstep", 0) + 1
                 if _gp._dxstep % 30 == 0:
@@ -1435,6 +1532,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print("=" * 66)
 
     # close the simulator
+    _hqt = getattr(getattr(env, "unwrapped", None), "_hand_q_trace", None)
+    if _hqt is None:
+        _e = env
+        while hasattr(_e, "env"):
+            _e = _e.env
+            _hqt = getattr(getattr(_e, "unwrapped", _e), "_hand_q_trace", None)
+            if _hqt is not None:
+                break
+    if args_cli.dump_hand_q and _hqt:
+        import numpy as _np
+        _out = {"q": _np.stack(_hqt["q"]), "names": _np.array(_hqt["names"]),
+                "lim": _hqt["lim"], "act_lo": _hqt["act_lo"], "act_hi": _hqt["act_hi"]}
+        if _hqt["tgt"]:
+            _out["tgt"] = _np.stack(_hqt["tgt"])
+        _np.savez_compressed(args_cli.dump_hand_q, **_out)
+        print(f"[INFO] 손 관절 궤적 저장: {args_cli.dump_hand_q} q{_out['q'].shape}")
+
     env.close()
 
 
