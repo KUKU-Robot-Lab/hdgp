@@ -73,41 +73,13 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
     #   시너지 램프가 그 이상을 못 만든다. 옆에서 접근하면 손 모양을 못 바꿔 파지가 실패한다.
     hand_direct: bool = False
 
-    # ★09.08 손 폐쇄 EMA(SimToolReal `handMovingAverage` 0.1). 0 = 끔 = 현행 램프.
-    #   > 0 이면 폐쇄도 증분을 α 배로 쓴다 — tgt = lerp(open, grip, c) 가 c 에 **아핀**이라
-    #   c ← α·cmd + (1−α)·c 는 관절공간 EMA 와 항등이다. 범위만 원시 관절한계가 아니라
-    #   보정된 open→grip 인데 이건 **의도한 divergence** 다: `_3`/`_4` 가 ±90° 대칭이라
-    #   원시 한계로 매핑하면 a=−1 이 손등 −90° 를 지령하고, 접촉 항이 **0개**인 이 보상에서
-    #   손등 갈고리 파지가 정상 파지와 같은 점수를 받는다(tesollo-distal-hyperextension-exploit).
-    #   대응책이던 require_palmar_contact 는 이 트랙에서 계약 금지다(ContactSensor 없음).
-    #   ★기본 0 인 이유: `grasp_fj_rh` 가 이 cfg 를 상속한다(그쪽은 `_hand_command` 를 통째로
-    #   덮어 이 필드를 안 읽지만, 기본값으로 남의 트랙 의미를 바꾸지 않는다는 규칙은 지킨다).
-    synergy_close_ema: float = 0.0
-    # ★09.08 폐쇄도 [0,1] 이 매핑되는 **관절 끝점**을 고르는 스위치.
-    #   "synergy"  = 현행 open→grip.
-    #   "per_role" = 시너지가 **폭 0 으로 묶어둔 관절만** 관절 한계로 풀어준다.
-    #   왜 그것만 푸나(실측 09.08): 굴곡 관절(_2/_3/_4)의 open→grip 은 이미 관절 한계와
-    #   실질적으로 같다 — index_3 은 [0, 1.8] 을 지령하고 soft limit 1.571 이 흡수하니 도달집합이
-    #   [max(0,lo), hi] 와 같다. 반면 **폭 0 인 6개**(다섯 손가락 _1 외전 + pinky_2)는 하드웨어가
-    #   ±0.4~0.6 rad 를 낼 수 있는데 액션 슬롯이 죽어 있다 — 20칸 중 실제 가동은 14칸뿐이었다.
-    #   손이 좌우로 못 벌어지고, 이것이 09.08 영상의 "옆에서 파지 실패 · 손가락이 묶여 보임" 과
-    #   직접 대응하는 자유도다.
-    #   ★굴곡을 raw 한계로 풀지 **않는** 이유: _3/_4 가 ±1.571 대칭이라 a=−1 이 손등 −90° 를
-    #     지령하고, 접촉 항이 0개인 이 보상에서 손등 갈고리 파지가 정상 파지와 같은 점수를 받는다.
-    #     대책이던 require_palmar_contact 는 이 트랙에서 계약 금지다(ContactSensor 없음).
-    #   ★판별은 **이름이 아니라 폭**으로 한다 — 로봇 관절명을 env 에 박지 않는다(계약).
-    hand_range_mode: str = "synergy"
-    # ★09.08 per_role 에서 **풀린 외전의 홈 기준 반폭**(rad). 왜 한계까지 안 푸나:
-    #   우리 sim 은 `enable_self_collisions=False` 다(08.29 다물체 무한 리셋 대책) — 손가락이
-    #   서로 **관통한다**. 접촉 항도 0개라 벌점도 없다. 즉 외전을 크게 열면 정책이 실기에서
-    #   재현 불가한 "손가락 교차" 자세로 물체를 가둘 수 있다(원위 과신전 익스플로잇과 같은 형태).
-    #   실측 기하(09.08): 인접 손끝 간격 24.8mm · 손가락 길이 130.8mm ⇒ 서로 마주 돌 때
-    #   끝단이 닿기 시작하는 각 ≈ 0.084 rad(4.8°). 손가락 두께를 무시한 값이라 **상한**이다.
-    #   0.035 는 SimToolReal 이 URDF 에서 AA 를 자른 값과 같고 그 상한의 2.4배 안쪽이다.
-    hand_shape_span_rad: float = 0.035
-    # 프로필 `hand_wide_shape_joint_regex` 에 걸린 외전의 반폭 — 손가락열에서 떨어진 것(엄지).
-    # 0.35 ≈ SimToolReal 이 엄지 CMC_AA 에 남긴 폭(0.48 rad)의 절반 반폭.
-    hand_wide_span_rad: float = 0.35
+    # ★09.08 **full-joint 손의 관절 목표 EMA**(SimToolReal `handMovingAverage` 0.1). `hand_direct`
+    #   전용이다 — 시너지 경로(A·`grasp_fj_rh`)는 안 읽는다. 법칙은 팔과 같은 꼴이다:
+    #     raw = lo + ½(a+1)(hi−lo)  →  q*_t = α·raw + (1−α)·q*_{t-1}  →  clamp(lo, hi)
+    #   여기서 [lo, hi] 는 articulation soft limit ∩ 프로필 `hand_action_limit_override`
+    #   (테솔로: `_3/_4` 하한 0 — 손등 과신전 차단). 폐쇄도·램프·close_gate·blocked 는 **없다**
+    #   (09.08 사용자 확정: "SimToolReal 처럼 풀 조인트"). 1.0 = 평활 없음, (0,1] 만 허용.
+    hand_ema: float = 0.1
     # ★09.08 성공마다 에피소드 시계를 이 값으로 되돌린다(SimToolReal env.py:2437-2439 의
     #   `progress_buf[is_success > 0] = 0`) = 스텝 예산이 **에피소드당**이 아니라 **목표당**이 된다.
     #   −1 = 끔 = 현행. 왜 0 이 아니라 2 를 권하나(leaf 참조): episode_length_buf 가 0/1 일 때
@@ -170,13 +142,15 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
         if str(self.hand_layout) == "per_finger" and not self._supports_per_finger_hand():
             errs.append("hand_layout=per_finger 는 팔 폭 훅(_arm_slot_width)을 덮은 트랙만 쓴다")
         if bool(self.hand_direct):
-            # 직접 지령은 시너지의 **폐쇄도 상태**(_syn_close·open/grip 자세)를 그대로 재사용한다.
-            # 채널 전개만 건너뛰므로 레이아웃과 무관하지만, 아래 둘은 전제라 꺼져 있으면 죽인다.
-            if float(self.synergy_close_speed) <= 0.0:
-                errs.append(f"hand_direct 는 synergy_close_speed > 0 이 필요하다: {self.synergy_close_speed}")
-            if str(self.synergy_hold_mode) != "blocked":
-                errs.append(f"hand_direct 는 synergy_hold_mode='blocked' 를 전제한다(접촉 항 0개인 이 보상에서 "
-                            f"감쌈을 만드는 유일한 장치): {self.synergy_hold_mode}")
+            # full-joint 손: 관절 목표 EMA 하나가 법칙의 전부다. 범위 밖이면 평활이 발산하거나(>1)
+            # 목표가 영원히 안 움직인다(≤0).
+            if not (0.0 < float(self.hand_ema) <= 1.0):
+                errs.append(f"hand_ema 는 (0, 1], got {self.hand_ema}")
+            # ★속도 피드포워드 금지: 램프가 없으므로 `_syn_vel` = 목표 차분/dt 가 최대
+            #   (hi−lo)·α/dt ≈ 3.14×0.1×60 ≈ 19 rad/s 까지 뛴다. SimToolReal 은 위치 목표만 준다.
+            if float(self.hand_velocity_ff_scale) != 0.0:
+                errs.append(f"hand_direct 는 hand_velocity_ff_scale = 0 을 요구한다(위치 목표만): "
+                            f"{self.hand_velocity_ff_scale}")
         # ★09.08 k_arm 은 dof_speed_scale·dt 를 접은 값이다(위 필드 주석). 정책 dt 가 바뀌면
         #   k_arm 을 다시 접어야 하는데 그걸 지켜주는 것이 없었다. 선언값과 대조한다 —
         #   의도적 이탈(대조군)은 선언을 같이 바꾸면 통과하고, dt 만 바뀐 실수는 죽는다.
@@ -187,36 +161,17 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
         elif abs(_implied_speed_scale - _declared) > 0.02 * _declared:
             errs.append(f"k_arm/정책_dt = {_implied_speed_scale:.3f} ≠ 선언 dofSpeedScale {_declared} "
                         f"(k_arm {self.k_arm} · dt {_dt:.5f}) — dt 를 바꿨으면 k_arm 도 환산해야 한다")
-        if str(self.hand_range_mode) not in ("synergy", "per_role"):
-            errs.append(f"hand_range_mode 는 'synergy' | 'per_role', got {self.hand_range_mode}")
         _ro = tuple(self.arm_reset_offset_rad)
         if _ro and len(_ro) != int(profile.num_arm_joints):
             errs.append(f"arm_reset_offset_rad 길이 {len(_ro)} ≠ num_arm_joints {profile.num_arm_joints}")
         if _ro and max(abs(float(v)) for v in _ro) > 1.5:
             errs.append(f"arm_reset_offset_rad 이 |1.5| rad 를 넘는다 — 홈에서 그렇게 멀면 "
                         f"고정 자세가 아니라 다른 홈이다: {_ro}")
-        for _f in ("hand_shape_span_rad", "hand_wide_span_rad"):
-            if float(getattr(self, _f)) < 0.0:
-                errs.append(f"{_f} 는 ≥ 0, got {getattr(self, _f)}")
-        # ★자기충돌이 꺼진 채로 외전을 크게 열면 손가락이 관통한다(실측 침범각 0.084 rad).
-        if str(self.hand_range_mode) == "per_role" and float(self.hand_shape_span_rad) > 0.08:
-            errs.append(f"hand_shape_span_rad {self.hand_shape_span_rad} > 0.08 — 실측 침범각"
-                        f"(0.084 rad, 손가락 두께 무시한 상한)을 넘는다. self-collision 이 꺼져 "
-                        f"있어 물리도 보상도 이걸 못 막는다")
-        if str(self.hand_range_mode) == "per_role" and not bool(self.hand_direct):
-            errs.append("per_role 범위는 hand_direct 전용이다 — 결합 상태에서는 여러 관절이 채널 하나를 "
-                        "공유해 외전만 따로 풀 수가 없다")
-        if not (0.0 <= float(self.synergy_close_ema) <= 1.0):
-            errs.append(f"synergy_close_ema 는 [0, 1] (0 = 끔), got {self.synergy_close_ema}")
-        # EMA 를 켜면 램프는 **증명 가능하게** 무력이어야 한다 — 폐쇄도가 [0,1] 이라 rate ≥ 1 이면
-        # clamp 가 항등이다. 둘이 동시에 걸리면 실효 속도가 어느 쪽인지 어떤 지표로도 못 가른다.
-        if float(self.synergy_close_ema) > 0.0 and float(self.synergy_close_speed) < 1.0:
-            errs.append(f"synergy_close_ema > 0 은 synergy_close_speed ≥ 1.0 을 요구한다"
-                        f"(램프 무력화 증명): {self.synergy_close_speed}")
         _max_steps = int(round(float(self.episode_length_s) / _dt))
         _r = int(self.goal_clock_restart_step)
-        if _r < -1 or _r >= _max_steps - 1:
-            errs.append(f"goal_clock_restart_step 는 −1(끔) 또는 [0, {_max_steps - 2}], got {_r}")
+        # 0/1 은 지연 flush·`_fresh` 리셋 진단·`ctrl/start_ft_dist`(≤1 을 '리셋 직후' 로 읽는다)를 오염시킨다.
+        if _r < -1 or _r in (0, 1) or _r >= _max_steps - 1:
+            errs.append(f"goal_clock_restart_step 는 −1(끔) 또는 [2, {_max_steps - 2}], got {_r}")
         # ★kp_a8 잠금쌍: 연속 판정은 SimToolReal 공차(0.075 × keypointScale 1.5 = 0.1125)와
         #   **같이만** 켠다. 술어만 베끼고 공차를 안 맞춘 것이 리프트를 죽였다.
         if bool(self.goal_force_consecutive) and float(self.tol_start) < 0.10:
@@ -229,6 +184,13 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
         if _zfloor < float(self.rw_lift_latch_height) - 1e-9:
             errs.append(f"goal_first_z_range[0] − tol_start = {_zfloor:.4f} < 리프트 래치 "
                         f"{self.rw_lift_latch_height} — 물체를 안 들고도 goal_bonus 가 나간다")
+        # ★D1-a 짝: 커리큘럼은 mean(prev_episode_successes) ≥ tol_success_threshold 에서만 전진하는데
+        #   성공 수는 goal_max 에서 잘린다. goal_max ≤ 게이트면 tol 이 영원히 못 조여진다(조용한 교착).
+        if int(self.goal_max) <= float(self.tol_success_threshold):
+            errs.append(f"goal_max {self.goal_max} ≤ tol_success_threshold {self.tol_success_threshold} — "
+                        f"커리큘럼이 영원히 안 전진한다")
+        if float(self.goal_delta_distance) < 0.0:
+            errs.append(f"goal_delta_distance 는 ≥ 0 (0 = 제자리 유지), got {self.goal_delta_distance}")
         if errs:
             raise RuntimeError("[grasp_fj cfg] " + " · ".join(errs))
 
@@ -277,18 +239,16 @@ class GraspFJTesolloRightEnvCfg(GraspFJEnvCfg):
     #   `arm_limit_sat` 0.49 · `ft_dist` 0.13→0.69). 손끝 z 최저 0.273 m > 테이블 0.215 m.
     arm_reset_offset_rad: tuple = (-0.1967, -0.3729, -0.2159, -0.0179, -0.2384, -0.3813, 0.3810)
 
-    # ★09.08 폭 0 으로 묶여 있던 6개(다섯 _1 외전 + pinky_2)를 관절 한계로 푼다.
-    #   이걸 안 하면 액션 20칸 중 14칸만 움직이고 손이 좌우로 못 벌어진다 —
-    #   "20관절 독립"이 아니라 "14관절 독립"이었다. 굴곡은 이미 한계와 같아 안 건드린다.
-    hand_range_mode: str = "per_role"
-    # ★손 속도는 SimToolReal 동일성(handMovingAverage 0.1). 램프는 clamp 항등으로 무력화한다.
-    #   08.25 스윕(빠를수록 감쌈 악화, 단조)은 **결합된 시너지**에서 잰 값이라 적용 범위 밖이고,
-    #   위험은 런을 태우는 대신 계기로 관찰한다:
-    #     ctrl/hand_blocked_frac · ctrl/hand_joint_err_max · diag/obj_speed_lifted
-    synergy_close_speed: float = 1.0
-    synergy_close_ema: float = 0.1
-    # ★위치 목표만 준다(SimToolReal 원본). 램프를 풀면 `_syn_vel` 피드포워드가 최대 20배로
-    #   뛴다(≈10.8 rad/s). `grasp_fj_rh` 도 같은 이유로 0 이다. 3팔이 이 축에서 같아야 한다.
+    # ★09.08 손 법칙은 SimToolReal 과 **같은 순수 full-joint** 다(사용자 확정: "보정 open→grip 매핑,
+    #   close_gate+blocked 홀드 — 이걸 안 하려고 했음"). 액션 20칸이 각 관절의 액션한계
+    #   [lo, hi] 에 선형 매핑되고 관절 목표 EMA(`hand_ema` 0.1, base)만 걸린다. 폐쇄도·램프·
+    #   게이트·blocked·외전 반폭 같은 것은 없다. [lo, hi] = soft limit ∩ 프로필
+    #   `hand_action_limit_override`(테솔로: `_3/_4` 하한 0 = 손등 과신전 차단, 나머지 URDF 전폭).
+    #   08.25 폐쇄속도 스윕(빠를수록 감쌈 악화)은 결합 시너지에서 잰 값이라 적용 범위 밖이고,
+    #   위험은 런을 태우는 대신 계기로 관찰한다: ctrl/hand_joint_err_max · ctrl/hand_blocked_frac
+    #   (진단 전용) · diag/obj_speed_lifted · 영상(손등 접근 여부 — 하한 0 이 유일한 방어선).
+    # ★위치 목표만 준다(SimToolReal 원본). 램프가 없어 `_syn_vel` 이 최대 ≈19 rad/s 까지 뛴다 —
+    #   cfg 검증기가 hand_direct 에서 0 을 강제한다. `grasp_fj_rh` 도 같은 이유로 0 이다.
     hand_velocity_ff_scale: float = 0.0
 
     # ── 성공·목표·에피소드 의미 ───────────────────────────────────────────────
@@ -297,7 +257,12 @@ class GraspFJTesolloRightEnvCfg(GraspFJEnvCfg):
     # ★tol 과 **짝**이다 — 0.2125 − 0.1125 = 0.10 = 리프트 래치. 안 올리면 물체가 4.75cm 만
     #   떠도 goal_bonus 가 나간다(REWARD_AUDIT Check 2). goal_box_z_range (0.10, 0.30) 안.
     goal_first_z_range: tuple[float, float] = (0.2125, 0.28)
-    tol_success_threshold: float = 3.0          # utils.py:238 하드코딩
+    # ★09.08 리뷰 정정: 커리큘럼 게이트 = mean(prev_episode_successes) ≥ threshold 인데 successes 는 goal_max 에서
+    #   잘린다. SimToolReal 3/50 = 6%, A 2/50 = 4% 였고, goal_max 5 에 3.0 을 그대로 쓰면 **60%** — 10배 엄격.
+    #   D1-a 는 결과가 0/5 ↔ 5/5 로 이분되므로 "env 60% 가 완주해야 tol 이 처음 조여진다" 가 된다. 2.0(40%)으로
+    #   낮춘다 — 6%(0.3)는 완주 env 6% 에 조여져 kp_a8 형 붕괴(연속 판정 + 좁은 공차) 위험. 게이트 입력은
+    #   `ctrl/prev_ep_successes_mean` 으로 본다.
+    tol_success_threshold: float = 2.0
     goal_force_consecutive: bool = True         # 연속 10회 — cfg 가 tol_start 와 짝을 대조한다
     goal_clock_restart_step: int = 2            # 목표당 스텝 예산(왜 2 인지는 base 필드 주석)
 
@@ -306,8 +271,15 @@ class GraspFJTesolloRightEnvCfg(GraspFJEnvCfg):
     wrench_force_scale: float = 2.7
     wrench_torque_scale: float = 0.27
 
-    # ★`goal_delta_distance`(0.08) / `goal_delta_rotation_deg`(0.0) 는 **일부러 없다** —
-    #   사용자가 "목표델타는 제외" 라고 명시했다. A 값을 그대로 상속한다.
+    # ★09.08 D1-a(사용자 확정): 과제 목적이 **grasp-lift 만**이라 목표열을 "제자리 유지(dwell)" 로 바꾼다.
+    #   첫 목표는 그대로 리프트 높이(dz ∈ goal_first_z_range), 그 다음 목표는 이전 목표와 **같은 자리**
+    #   (Δ 0) — 연속 10스텝 판정과 합쳐지면 "들어올린 채 정지" 가 곧 성공이다. 목표 5개 = 50스텝(0.83 s)
+    #   외란 아래 유지 후 truncated(값 부트스트랩) → 재접근 연습. 회전 델타는 A 값(0°) 상속.
+    #   ★goal_max 는 커리큘럼 게이트(tol_success_threshold 2.0)보다 **커야** 한다 — 같거나 작으면
+    #     tol 이 영원히 안 조여진다(검증기가 죽인다). 게이트 2.0 = cap 의 40%(리뷰 정정, 아래 필드 주석).
+    #   REWARD_AUDIT.md 09.08 D1-a 절: 목표당 keypoint_progress 잔여 ≤ 200×tol = 22.5 ≪ goal_bonus 1000.
+    goal_delta_distance: float = 0.0
+    goal_max: int = 5
 
 
 @configclass

@@ -38,12 +38,14 @@ class RobotProfile:
     # 빈 문자열이면 전 손관절이 정책 제어.
     hand_locked_joint_regex: str = ""
     num_locked_hand_joints: int = 0      # 공간 계산용(regex 해석 결과와 대조 검증)
-    # ★09.08 외전 중 **넓게** 열어도 되는 것 — 손가락열에서 떨어져 있어 이웃 침범의
-    #   원인이 아닌 관절(엄지 대향). 위 lock 이 "절대 안 움직인다"면 이쪽은 "크게 움직여도
-    #   된다"이고, 둘 중 어디에도 없는 외전은 좁은 반폭(cfg `hand_shape_span_rad`)만 받는다.
-    #   근거: SimToolReal 도 손가락 AA 는 ±0.035 로 자르고 엄지 CMC_AA 만 0.48 rad 를 남겼다
-    #   (`iiwa14_left_sharpa_adjusted_restricted.urdf` — 학습이 실제로 로드하는 자산).
-    hand_wide_shape_joint_regex: str = ""
+    # ★09.08 **full-joint 손**(grasp_fj `hand_direct`)의 관절별 액션한계 override: 정규식 → (lo, hi).
+    #   env 는 articulation soft limit 과 **교집합**만 취한다(좁히기만, 넓히기 불가). None = 그 끝은 그대로.
+    #   왜 필요한가: SimToolReal 은 액션을 URDF 한계에 선형 매핑한다. SHARPA 는 PIP/DIP 하한이 0 이라
+    #   그게 안전했지만 테솔로 `_3/_4` 는 ±1.571 **대칭**이라 a=−1 이 손등 −90° 를 지령한다 — 접촉
+    #   항이 0개인 보상에서 손등 갈고리 파지가 정상 파지와 같은 점수를 받는다(08.23 실측 exploit).
+    #   그래서 "URDF 한계 + `_3/_4` 하한 0" 이 사용자 확정값이다(09.08). 정규식이 아무 관절도 못
+    #   잡으면 부팅이 죽고, 리셋 자세(init_joint_pos)가 범위 밖이어도 부팅이 죽는다.
+    hand_action_limit_override: dict = field(default_factory=dict)
 
     # ---- 팔 제어: Fabrics ---------------------------------------------------------
     palm_body: str = ""                  # Fabrics palm attractor 가 추종하는 EE body
@@ -167,10 +169,23 @@ TESOLLO_RIGHT = RobotProfile(
     # index/middle/ring 의 _1 = 외전. grasp_v2 도 이 축들을 정책에서 뺐다.
     # ★thumb_1(대향 벌림)과 pinky_1(= Z-flex, 외전 아님 — tesollo pinky 운동학 메모)은
     #   파지에 필수라 자유 유지.
+    # ★09.08 아래 두 필드는 **소비자 없음**(grep) — full-joint(hand_direct) 에서는 전 20관절이 정책 제어라 무효. 이력용.
     hand_locked_joint_regex="r_hj_(index|middle|ring)_1",
     num_locked_hand_joints=3,
     # 엄지 대향은 손가락열에서 떨어져 있다 — 침범 원인이 아니므로 넓게 연다.
-    hand_wide_shape_joint_regex="r_hj_thumb_1",
+    # ★09.08 full-joint 손 액션한계(사용자 확정 "URDF 한계 + _3/_4 하한 0"). 네 손가락 _3/_4 와 엄지 _4 는
+    #   굴곡 전용 [0, 1.571]. 엄지 _3 만 하한 −0.5 — 규칙의 정확한 형태는 "**하한 = open 자세**" 다: −0.5 는
+    #   grasp_v1 계보의 open(pre-curl) 자세이자 A/grasp_s2r 시너지 envelope 의 하단(open −0.5 → grip 1.8)이고,
+    #   08.23 실측 기록도 엄지 `_3` 음수는 팔마 접촉(정상)이라 "음수=역굴곡" 을 엄지에 적용하지 말라고 적었다.
+    #   env 는 리셋 자세가 범위 안임을 부팅에서 대조한다(0 으로 자르면 첫 스텝에 0.5 rad 튐 + 자세 도달 불가).
+    #   외전 `_1`·`_2`(MCP) 는 URDF 전폭(외전 잠금 해제 = 09.08 사용자 결정, 겹침은 영상으로 관찰).
+    #   ⚠`thumb_2` 는 외전이 아니라 **대향**(URDF [−π, 0] = 손에서 가장 넓은 180°) — 전폭이면 a=0 이 현 고정값
+    #   −1.571. SimToolReal 엄지 CMC_AA 는 ±0.35 rad 였다. 좁힐지는 별도 확정 대상(현재 전폭, 부팅 표에 찍힌다).
+    hand_action_limit_override={
+        r"r_hj_(index|middle|ring|pinky)_[34]$": (0.0, None),
+        r"r_hj_thumb_4$": (0.0, None),
+        r"r_hj_thumb_3$": (-0.5, None),
+    },
     palm_body="r_hl_palm",
     # ---- Fabrics (DG-5F 계보) ----
     fabric_class="OpenArmTeoslloPoseFabric",

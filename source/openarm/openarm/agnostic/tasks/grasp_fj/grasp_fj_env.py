@@ -1,10 +1,14 @@
-"""grasp_fj — Track B: 팔 7D 관절 증분(+EMA) + 시너지 15D, **Fabrics 없음**.
+"""grasp_fj — Track B: 팔 7D 관절 증분(+EMA) + 손 20관절 full-joint(+EMA), **Fabrics 없음**.
 
-`GraspKPEnv`(Track A)를 상속해 팔 액션 어댑터에 해당하는 훅만 덮어쓴다(DESIGN §1 B,
-`scratchpad/maps/control.md` §6-7 우회 목록). 목표열·보상·관측·종료·지연·외란은 전부 A 그대로.
+`GraspKPEnv`(Track A)를 상속해 팔·손 액션 어댑터에 해당하는 훅만 덮어쓴다(DESIGN §1 B,
+`scratchpad/maps/control.md` §6-7 우회 목록). 목표열·관측·종료·지연·외란은 A 그대로, 보상은
+포크(`fj_reward.py`, goal_bonus 한 항만 다름).
 
 팔: `q*_t = clamp(q*_{t-1} + k_arm·a)` → `q*_t = α·q*_t + (1−α)·q*_{t-1}` → 위치 목표만
-(`set_joint_velocity_target` 은 팔에 주지 않는다 — 실기 JTC 규약). 손: A 와 동일(시너지 + PD).
+(`set_joint_velocity_target` 은 팔에 주지 않는다 — 실기 JTC 규약).
+손(`hand_direct`, 09.08 사용자 확정 "SimToolReal 처럼 풀 조인트"): `raw = lo + ½(a+1)(hi−lo)` →
+`q*_t = α·raw + (1−α)·q*_{t-1}` → clamp(lo, hi). [lo, hi] = soft limit ∩ 프로필 override
+(테솔로 `_3/_4` 하한 0). 폐쇄도·램프·close_gate·blocked 는 없다. `hand_direct` 가 꺼지면 A 의 시너지.
 
 ★fabric 관련 부모 버퍼(`fabric_q/qd/qdd`, `_fab_t`, `_syn_to_fab_idx`, `palm_targets`,
   `_palm_lo/_hi`, `_home_palm`, `_fab_to_env`)는 부모의 리셋·앵커·박스 부트스트랩이 읽으므로
@@ -59,6 +63,11 @@ class GraspFJEnv(GraspKPEnv):
         self._arm_limit_sat = torch.zeros(n, device=dev)        # 관절한계 클램프 비율(진단)
         self._prev_arm_action = torch.zeros(n, int(p.num_arm_joints), device=dev)   # 액션 1차 차분(벌점 측도)
         self._prev_syn_target = torch.zeros(n, len(self._syn_ids), device=dev)   # 손 목표 스텝량(진단)
+        # ★09.08 낙하 sticky 플래그 — `done/fell` 은 판정선 0.15 < 상판 0.205 라 죽어 있다(학습분석 §6).
+        #   `diag/drop_frac` 은 스텝 단면이라 "이 에피소드에서 한 번이라도 놓쳤나" 를 못 센다. 리셋에서만 풀린다.
+        self._drop_sticky = torch.zeros(n, dtype=torch.bool, device=dev)
+        self._start_ft_checked = False       # 시작 거리 부팅 가드(첫 리셋 뒤 한 번만)
+        self._start_ft_last = torch.zeros((), device=dev)   # fresh env 없는 스텝의 진단값(직전값 유지)
         self._build_hand_action_range()
         _ro = tuple(self.cfg.arm_reset_offset_rad)
         self._arm_reset_off = (torch.tensor(_ro, device=dev, dtype=torch.float) if _ro else None)
@@ -71,12 +80,11 @@ class GraspFJEnv(GraspKPEnv):
               f"실효 포화 slew {_a * _k / self._policy_dt:.3f} rad/s "
               f"(선언 {float(self.cfg.arm_slew_rad_s)}) · 위치 목표만 · "
               f"환산 dofSpeedScale {_k / self._policy_dt:.3f}", flush=True)
-        _hd, _hm = bool(self.cfg.hand_direct), float(self.cfg.synergy_close_ema)
-        _hlaw = (f"EMA α={_hm} (τ≈{self._policy_dt / _hm:.2f}s)" if _hm > 0.0
-                 else f"램프 {float(self.cfg.synergy_close_speed)}/step "
-                      f"({1.0 / float(self.cfg.synergy_close_speed) * self._policy_dt:.2f}s 완전폐쇄)")
+        _hd, _hm = bool(self.cfg.hand_direct), float(self.cfg.hand_ema)
+        _hlaw = (f"full-joint 선형 [lo,hi] + 관절 EMA α={_hm} (τ≈{self._policy_dt / _hm:.2f}s)" if _hd
+                 else f"시너지 램프 {float(self.cfg.synergy_close_speed)}/step")
         _gc = int(self.cfg.goal_clock_restart_step)
-        print(f"[grasp_fj] 손 = {'20관절 독립' if _hd else '시너지'} · 폐쇄 {_hlaw} · "
+        print(f"[grasp_fj] 손 = {_hlaw} · "
               f"vel_ff {float(self.cfg.hand_velocity_ff_scale)} · "
               f"스텝 예산 {'목표당(성공 시 시계→' + str(_gc) + ')' if _gc >= 0 else '에피소드당'} · "
               f"성공 {'연속' if bool(self.cfg.goal_force_consecutive) else '누적'}"
@@ -183,61 +191,59 @@ class GraspFJEnv(GraspKPEnv):
               f"폭 {[round(float(v), 3) for v in (self._arm_hi - self._arm_lo)[0]]}", flush=True)
 
     def _build_hand_action_range(self) -> None:
-        """폐쇄도 [0,1] 이 매핑되는 관절 **끝점**(`_act_lo`/`_act_hi`)을 정한다.
+        """full-joint 손의 **관절별 액션한계** `[_act_lo, _act_hi]` 를 정한다(프로필 순서 = `_syn_ids`).
 
-        `synergy`(기본) = open→grip 그대로. A 와 `grasp_fj_rh` 가 여기 머문다.
+        `hand_direct` 가 꺼져 있으면 A 의 시너지 끝점(open→grip)을 그대로 둔다 — `grasp_fj_rh` 가 여기.
 
-        `per_role` = **폭 0 으로 묶인 관절만** 관절 한계로 푼다. 판별은 이름이 아니라
-        `|grip − open| ≈ 0` 이다 — 로봇 관절명을 env 에 박지 않기 위해서다(계약 테스트).
-        tesollo_right 실측(09.08)으로 여섯 개가 걸린다: 다섯 손가락 `_1` 외전 + pinky `_2`.
-        하드웨어는 ±0.4~0.6 rad 를 낼 수 있는데 액션 슬롯이 죽어 있었다(20칸 중 가동 14칸).
-
-        ★굴곡 관절은 왜 그대로 두나: open→grip 이 이미 한계와 실질적으로 같다. index_3 은
-          [0, 1.8] 을 지령하고 soft limit 1.571 이 흡수하니 도달집합이 [max(0,lo), hi] 와 같다.
-          raw 한계로 풀면 하한이 −1.571 이 되어 a=−1 이 **손등 −90°** 를 지령하는데, 접촉 항이
-          0개인 이 보상에서는 손등 갈고리 파지가 정상 파지와 같은 점수를 받는다.
-        ★푼 관절은 `close_gate` 를 **면제**한다: 게이트는 "정렬 전에 오므리지 마라"는 밸브인데
-          외전은 오므림이 아니라 **접근 중에 바꿔야 하는 손 모양**이다. 옆에서 접근할 때
-          손을 벌리는 것이 바로 이 판에서 풀어주려는 자유도다. `blocked` hold 는 그대로 건다
-          (외전이 물체에 막히면 미는 것을 멈추는 게 맞다).
-        ★푼 관절은 폐쇄도 0 이 중립이 **아니다**(한쪽 끝이다). 리셋 폐쇄도를 open 자세에
-          대응하는 값(`_close_home`)으로 심는다 — 안 그러면 손이 벌어진 채로 시작한다.
+        켜져 있으면 SimToolReal(`reset_utils.py:52,59-62` — `joint_pos_limits` = URDF **하드** 한계)과 같은
+        출발점에서 프로필 `hand_action_limit_override`(정규식 → (lo, hi)) 와 **교집합**만 취한다. 우리 `_syn_lo/_hi`
+        는 soft 한계라 `soft_joint_pos_limit_factor` 1.0 일 때만 같다 — 부팅에서 하드 한계와 대조해 잠근다. 넓히기는 불가 —
+        지령이 물리적으로 불가능한 곳을 가리키지 않는다. 왜 override 가 필요한가: SHARPA 는 URDF 에서
+        PIP/DIP 하한이 0 이라 원시 한계 매핑이 안전했지만 테솔로 `_3/_4` 는 ±1.571 **대칭**이라 a=−1 이
+        손등 −90° 를 지령한다. 접촉 항이 0개인 이 보상에서는 손등 갈고리 파지가 정상 파지와 같은
+        점수를 받는다(08.23 실측 exploit). 하한 0 이 유일한 방어선이므로 부팅에서 세 가지를 죽인다:
+          · 정규식이 아무 관절도 못 잡음(`_hand_mask`) — 오타가 조용히 "전폭" 으로 돌지 않게
+          · 폭 0 액션 칸 — 20칸을 선언했으면 20칸이 다 무언가를 해야 한다
+          · 리셋 자세(default_joint_pos)가 범위 밖 — EMA 가 그 자세에서 출발하므로(SimToolReal
+            `prev_targets = joint_pos`) 밖이면 첫 스텝에 clamp 로 튀고 그 자세를 영원히 못 만든다
+        ★관절 **이름**은 프로필이 소유한다 — 여기서는 정규식을 해석만 한다(계약: env 에 관절명 금지).
         """
-        lo, hi, op, gr = self._syn_lo, self._syn_hi, self._syn_open, self._syn_grip
-        frozen = (gr - op).abs() <= 1e-4
-        if str(self.cfg.hand_range_mode) != "per_role":
-            self._act_lo, self._act_hi = op, gr
-            self._shape_mask = torch.zeros_like(frozen)
-            self._close_home = torch.zeros_like(op)
+        lo, hi = self._syn_lo.clone(), self._syn_hi.clone()
+        if not bool(self.cfg.hand_direct):
+            self._act_lo, self._act_hi = self._syn_open, self._syn_grip
+            self._act_span = (self._syn_grip - self._syn_open).abs().clamp(min=1e-6)
             return
-        wide = self._hand_mask(self.profile.hand_wide_shape_joint_regex)
-        freed = frozen
-        span = torch.where(wide, torch.full_like(op, float(self.cfg.hand_wide_span_rad)),
-                           torch.full_like(op, float(self.cfg.hand_shape_span_rad)))
-        self._act_lo = torch.where(freed, torch.maximum(op - span, lo), op)
-        self._act_hi = torch.where(freed, torch.minimum(op + span, hi), gr)
-        self._shape_mask = freed
-        # ★굴곡은 open→grip 밖으로 절대 안 나간다 — `_3`/`_4` 가 ±90° **대칭**이라
-        #   하한을 풀면 a=−1 이 손등 −90° 를 지령한다. SHARPA 는 URDF 하한이 0(PIP·DIP)이라
-        #   전 범위 매핑이 안전했지만 테솔로는 기구적으로 대칭이다 — 같은 매핑을 쓰면 안 된다.
-        _flex = ~freed
-        if not torch.equal(self._act_lo[_flex], op[_flex]) or not torch.equal(self._act_hi[_flex], gr[_flex]):
-            raise RuntimeError("굴곡 관절의 액션 범위가 open→grip 을 벗어났다 — 손등 과신전이 열린다")
-        _w = (self._act_hi - self._act_lo).clamp(min=1e-6)
-        self._close_home = torch.where(freed, (op - self._act_lo) / _w, torch.zeros_like(op))
-        # 푼 관절도 blocked 판정 대상이다 — 안 넣으면 외전이 막혀도 계속 민다.
-        self._syn_movable = self._syn_movable | freed
-        self._syn_close[:] = self._close_home.unsqueeze(0)
         _nm = list(self.profile.hand_joint_names)
-        _fr = [n for n, f in zip(_nm, freed.tolist()) if f]
-        _wd = [n for n, f in zip(_nm, (freed & wide).tolist()) if f]
-        _dead = int((self._act_hi - self._act_lo).abs().le(1e-6).sum())
-        _mflex = float((self._act_lo[_flex] - lo[_flex]).min()) if bool(_flex.any()) else 0.0
-        print(f"[grasp_fj] 손 범위 per_role — 벌림 {len(_fr)}개 해방(그중 넓게 {len(_wd)}) · "
-              f"가동 {int(self._syn_movable.sum())}/{len(op)} · **죽은 액션 칸 {_dead}개** · "
-              f"반폭 좁 {self.cfg.hand_shape_span_rad}/넓 {self.cfg.hand_wide_span_rad} rad · "
-              f"굴곡 하한 여유 {_mflex:+.3f} rad(과신전 차단) · close_gate 면제\n"
-              f"           해방={_fr} · 넓게={_wd}", flush=True)
+        _hard = self.robot.data.joint_pos_limits[0, self._syn_ids, :]
+        if not (torch.allclose(_hard[:, 0], lo, atol=1e-6) and torch.allclose(_hard[:, 1], hi, atol=1e-6)):
+            raise RuntimeError(f"[{self.profile.name}] soft 한계 ≠ 하드(URDF) 한계 — soft_joint_pos_limit_factor 가 "
+                               f"1.0 이 아니다. SimToolReal 은 하드 한계에 매핑한다")
+        for regex, (olo, ohi) in dict(self.profile.hand_action_limit_override).items():
+            m = self._hand_mask(regex)                     # 못 잡으면 여기서 죽는다
+            if olo is not None:
+                lo = torch.where(m, torch.maximum(lo, torch.full_like(lo, float(olo))), lo)
+            if ohi is not None:
+                hi = torch.where(m, torch.minimum(hi, torch.full_like(hi, float(ohi))), hi)
+        span = hi - lo
+        _dead = [n for n, w in zip(_nm, span.tolist()) if w <= 1e-6]
+        if _dead:
+            raise RuntimeError(f"[{self.profile.name}] 폭 0 액션 칸: {_dead} — override 가 한계를 뒤집었거나 "
+                               f"soft limit 이 잠겨 있다")
+        q0 = self.robot.data.default_joint_pos[0, self._syn_ids]
+        _out = [f"{n}={q:+.3f}∉[{a:+.3f},{b:+.3f}]" for n, q, a, b in
+                zip(_nm, q0.tolist(), lo.tolist(), hi.tolist()) if q < a - 1e-6 or q > b + 1e-6]
+        if _out:
+            raise RuntimeError(f"[{self.profile.name}] 리셋 손 자세가 액션한계 밖이다: {_out} — EMA 가 "
+                               f"거기서 출발하므로 첫 스텝에 튄다. override 하한을 리셋 자세까지 내릴 것")
+        self._act_lo, self._act_hi, self._act_span = lo, hi, span
+        # 전부 가동 관절이다 — `_hand_blocked`(진단)·`ctrl/hand_joint_err_max` 가 20칸을 다 본다.
+        self._syn_movable = torch.ones_like(self._syn_movable)
+        _narrow = int((lo > self._syn_lo + 1e-6).sum() + (hi < self._syn_hi - 1e-6).sum())
+        print(f"[grasp_fj] 손 액션한계 full-joint — {len(_nm)}관절 · soft limit ∩ override "
+              f"{len(self.profile.hand_action_limit_override)}규칙 · 좁힌 끝 {_narrow}개 · 리셋 자세 범위 안 ✓",
+              flush=True)
+        for n, a, b, q in zip(_nm, lo.tolist(), hi.tolist(), q0.tolist()):
+            print(f"           {n:18s} [{a:+.3f}, {b:+.3f}]  reset {q:+.3f}", flush=True)
 
     def _hand_mask(self, regex: str) -> torch.Tensor:
         """손 관절 정규식 → `_syn_ids` 순서의 bool 마스크 (n_hand,). 빈 문자열이면 전부 False.
@@ -248,9 +254,12 @@ class GraspFJEnv(GraspKPEnv):
         m = torch.zeros(len(self._syn_ids), dtype=torch.bool, device=self.device)
         if not regex:
             return m
-        ids, names = self.robot.find_joints(regex, preserve_order=False)
-        if not ids:
-            raise RuntimeError(f"[{self.profile.name}] 손 관절 정규식 '{regex}' 이 아무것도 못 잡았다")
+        try:
+            # IsaacLab resolve_matching_names 는 **re.fullmatch** 이고, 한 키도 못 잡으면 ValueError 를 던진다.
+            ids, names = self.robot.find_joints(regex, preserve_order=False)
+        except ValueError as e:
+            raise RuntimeError(f"[{self.profile.name}] 손 관절 정규식 '{regex}' 이 아무것도 못 잡았다"
+                               f"(fullmatch)") from e
         pos = {int(j): k for k, j in enumerate(self._syn_ids)}
         for j, nm in zip(ids, names):
             if int(j) not in pos:
@@ -258,72 +267,30 @@ class GraspFJEnv(GraspKPEnv):
             m[pos[int(j)]] = True
         return m
 
-    def _closure_to_target(self, c: torch.Tensor) -> torch.Tensor:
-        """폐쇄도 (N, n_hand) → 관절 목표. 끝점은 `_build_hand_action_range` 가 정한다."""
-        tgt = torch.lerp(self._act_lo.unsqueeze(0), self._act_hi.unsqueeze(0), c)
-        return tgt.clamp(self._syn_lo.unsqueeze(0), self._syn_hi.unsqueeze(0))
-
     def _hand_targets(self, a_hand: torch.Tensor) -> torch.Tensor:
-        """폐쇄도 한 스텝(`_hand_step`) → **선택적 EMA** → 관절 목표.
+        """손 20관절 **full-joint** 한 스텝 — SimToolReal `action_utils.py:61-69` 와 같은 꼴.
 
-        ★`synergy_close_ema` 가 0 이면 `_hand_step` 결과를 그대로 반환한다 — 오늘과 한 글자도
-          다르지 않다. > 0 이면 SimToolReal 의 `handMovingAverage`(α 0.1) 를 재현한다.
-        ★왜 관절이 아니라 **폐쇄도**에 거나: `tgt = lerp(open, grip, c)` 가 c 에 아핀이라
-          `c ← α·cmd + (1−α)·c` 는 관절공간 EMA 와 **항등**이다. 범위만 원시 관절한계가 아니라
-          보정된 open→grip 인데, 그것이 `_hand_step` 이 설명하는 의도한 divergence 다.
-        ★그래서 `close_gate`·`blocked` 가 **그대로 산다**: 둘은 증분(delta)에 곱/영치기로 걸리고
-          EMA 도 delta 에 곱하는 양수 스칼라라 순서가 교환된다(α·(g·d) = g·(α·d), α·0 = 0).
-        ★단, 목표가 최대 20배 빨리 움직이므로 자유공간에서 손 PD 가 못 따라가 `blocked` 임계
-          (1.0 rad)를 오발할 수 있다 — `ctrl/hand_blocked_frac`·`ctrl/hand_joint_err_max` 로 본다.
-        """
-        c0 = self._syn_close.clone()
-        tgt = self._hand_step(a_hand)
-        m = float(self.cfg.synergy_close_ema)
-        if m <= 0.0:
-            return tgt
-        # ★폐쇄도에 EMA 를 건다. tgt = lerp(open, grip, c) 가 c 에 **아핀**이므로
-        #   c ← α·cmd + (1−α)·c 는 관절공간 EMA(SimToolReal action_utils) 와 **항등**이다.
-        #   `close_gate`·`blocked` 는 증분(delta)에 곱/영치기로 걸리고 EMA 도 delta 에 곱하는
-        #   양수 스칼라라 **순서가 교환된다**(α·(g·d) = g·(α·d), α·0 = 0) — 둘 다 그대로 산다.
-        self._syn_close = c0 + m * (self._syn_close - c0)
-        return self._closure_to_target(self._syn_close)
+            raw  = lo + ½(a+1)(hi−lo)                    관절별 절대 목표(액션한계에 선형)
+            q*_t = α·raw + (1−α)·q*_{t-1}                관절 목표 EMA(handMovingAverage)
+            q*_t = clamp(q*_t, lo, hi)
 
-    def _hand_step(self, a_hand: torch.Tensor) -> torch.Tensor:
-        """손 20관절 **독립** 절대 폐쇄도 한 스텝. 결합만 없애고 안전장치는 그대로 둔다.
+        `q*_{t-1}` 은 `_syn_target`(A 의 `_hand_command` 가 이 반환값을 거기 넣는다). 리셋은 부모가
+        `_syn_target[env_ids] = q0` 로 심으므로 EMA 는 실측 자세에서 출발한다(SimToolReal
+        `reset_utils.py:219` 와 동일). 폐쇄도·램프·close_gate·blocked 는 **없다**(09.08 사용자 확정).
+        `_syn_close` 는 진단(`task/syn_close`)용 정규화 목표 (q*−lo)/(hi−lo) 로만 유지한다.
 
-        EMA 는 호출자(`_hand_targets`)가 건다 — 여기는 램프·게이트·blocked 까지다.
-
-        `a_hand[:, j]` 가 관절 j 의 폐쇄도 목표다 — 프로필 순서이고 `_syn_close`/`_syn_open`/
-        `_syn_grip` 과 **같은 순서**라 이름 매핑이 필요 없다(슬라이스 순서가 어긋나 "기하는 완벽한데
-        접촉 0"으로 위장되는 고전적 함정을 구조적으로 피한다).
-
-        ★남기는 것과 이유:
-          · `synergy_close_speed` 폐쇄 속도 상한 — 스윕 축이다(fj_c1/c2/c3). EMA 를 켜면 cfg 가
-            이 값을 ≥ 1.0 으로 요구해 clamp 가 항등이 된다(램프 무력화 증명).
-          · `close_gate` — 정렬 전 폐쇄를 막는다. 푸는 방향은 항상 통과(잘못 오므린 상태 탈출).
-          · `blocked` hold — 접촉 항이 **0개**인 이 보상에서 감쌈을 만드는 유일한 장치다.
-            "막힐 때까지 민다"라 형상 무관이고 센서가 필요 없다.
-        ★★범위가 원시 관절한계가 아니라 보정된 open→grip 인 이유:
-          `_3`/`_4` 가 ±90° 대칭이라 원시 한계로 매핑하면 `a=−1` 이 **손등 −90°** 를 지령한다.
-          접촉 보상이 0개인 이 트랙에서는 손등 갈고리 파지가 정상 파지와 **같은 점수**를 받고,
-          과거에 쓴 대책(`require_palmar_contact`)은 이 트랙에서 계약상 금지다(ContactSensor 미생성).
-          grip 자세는 한계를 1.8 까지 넘겨 지령하도록 보정돼 있어 파지력도 그대로 보존된다.
+        `a_hand[:, j]` 가 관절 j 의 목표다 — 프로필 순서이고 `_syn_lo/_syn_hi/_syn_target` 과 **같은
+        순서**라 이름 매핑이 필요 없다(슬라이스 순서가 어긋나 "기하는 완벽한데 접촉 0"으로 위장되는
+        고전적 함정을 구조적으로 피한다).
         """
         if not bool(self.cfg.hand_direct):
             return super()._hand_targets(a_hand)
-        cmd_j = 0.5 * (a_hand.clamp(-1.0, 1.0) + 1.0)          # 관절별 절대 폐쇄도 [0,1]
-        rate = float(self.cfg.synergy_close_speed)
-        delta = (cmd_j - self._syn_close).clamp(-rate, rate)
-        # ★shape 관절(폭 0 이던 외전)은 게이트 면제 — 게이트는 "정렬 전 오므림" 밸브인데
-        #   외전은 오므림이 아니라 접근 중에 바꿔야 하는 손 모양이다(per_role 일 때만 존재).
-        _g = self._close_gate.unsqueeze(1).expand_as(delta)
-        _g = torch.where(self._shape_mask.unsqueeze(0), torch.ones_like(_g), _g)
-        delta = torch.where(delta > 0.0, delta * _g, delta)
-        _blk = torch.zeros_like(delta, dtype=torch.bool)
-        _blk[:, self._syn_movable] = self._hand_blocked()
-        delta = torch.where(_blk & (delta > 0.0), torch.zeros_like(delta), delta)
-        self._syn_close = (self._syn_close + delta).clamp(0.0, 1.0)
-        return self._closure_to_target(self._syn_close)
+        lo, hi = self._act_lo.unsqueeze(0), self._act_hi.unsqueeze(0)
+        raw = lo + 0.5 * (a_hand.clamp(-1.0, 1.0) + 1.0) * (hi - lo)
+        alpha = float(self.cfg.hand_ema)
+        tgt = (alpha * raw + (1.0 - alpha) * self._syn_target).clamp(lo, hi)
+        self._syn_close = (tgt - lo) / self._act_span.unsqueeze(0)
+        return tgt
 
     def _post_command(self) -> None:
         """no-op — fabric 이 없으니 손 상태 동기화·적분이 없다."""
@@ -336,7 +303,8 @@ class GraspFJEnv(GraspKPEnv):
     def _apply_action(self) -> None:
         """decimation 마다. 팔: **위치 목표만**(속도 목표 없음). 손: mixin 412-415 그대로."""
         self.robot.set_joint_position_target(self._arm_q_target, joint_ids=self.arm_ids)
-        # 손은 A 와 동일 경로 — A/B 대조에서 손이 변수가 되면 안 된다.
+        # 손: actuator 경로(set_joint_position_target)만 A 와 공유한다. 법칙은 B 고유(`_hand_targets`),
+        #   속도 FF 는 hand_direct 에서 0(검증기).
         self.robot.set_joint_position_target(self._syn_target, joint_ids=self._syn_ids)
         self.robot.set_joint_velocity_target(
             float(self.cfg.hand_velocity_ff_scale) * self._syn_vel,
@@ -349,6 +317,21 @@ class GraspFJEnv(GraspKPEnv):
     def _cmd_state(self) -> torch.Tensor:
         """정책의 마지막 팔 지령 상태 = q*_{t-1} (N, n_arm)."""
         return self._arm_q_target
+
+    def _action_obs(self) -> torch.Tensor:
+        """관측 액션 블록(27): 팔 7 은 지연 액션 그대로, 손 20 은 **정규화 관절 목표** 2(q*−lo)/(hi−lo)−1.
+
+        SimToolReal 은 raw action 이 아니라 post-EMA `prev_action_targets`(팔+손)를 관측한다
+        (obs_utils.py:136-145 · action_utils.py:70-72). 팔은 `cmd_state` 가 이미 q*_{t-1}(7) 을 주므로
+        그대로 두고, 손은 EMA 상태(τ≈10스텝)가 a_{t-1}·hand_q(1.5 N·m 약한 PD, 접촉 시 목표≠실측)로
+        복원되지 않아 이 칸으로 준다 — 안 주면 MLP 는 구조적 부분관측, LSTM 은 적분을 학습해야 한다
+        (09.08 리뷰). 폭 27 불변(계약 136). `hand_direct` 가 꺼지면 A 그대로.
+        """
+        if not bool(self.cfg.hand_direct):
+            return self.actions
+        off = self._hand_action_offset
+        hand = 2.0 * (self._syn_target - self._act_lo.unsqueeze(0)) / self._act_span.unsqueeze(0) - 1.0
+        return torch.cat([self.actions[:, :off], hand], dim=1)
 
     def _progress_reward(self, **kw):
         """★B 전용 보상(`fj_reward.py`). A 와 제어 방식이 달라 모듈을 공유하지 않는다.
@@ -390,15 +373,48 @@ class GraspFJEnv(GraspKPEnv):
         ex["ctrl/arm_target_step"] = (self._arm_q_target - self._prev_arm_q_target).abs().mean()
         self._prev_arm_q_target = self._arm_q_target.clone()
         ex["ctrl/arm_action_rate_lifted"] = self._lifted_mean(self._cmd_rate)   # A 의 task/cmd_rate_lifted 와 같은 측도
-        # ★09.08 손 건강 3종. `task/hand_blocked_frac`·`task/hand_overdrive` 는 불변 트랙의 진단
-        #   훅에 사는데 그 훅은 접촉 센서 소비자라 이 트랙에서 계약 금지다. 그래서 여기서 잰다.
-        #   용도: 폐쇄가 빨라졌을 때 `blocked` 임계(1.0 rad)를 **자유공간에서** 오발하는지 —
-        #   그러면 폐쇄가 중간에 얼어붙고, 겉보기는 "손이 안 닫힌다"와 구분되지 않는다.
+        # ★09.08 손 건강 3종 — **진단 전용**, 아무것도 얼리지 않는다(법칙에 게이트·hold 없음). `task/hand_*` 는
+        #   불변 트랙의 진단 훅에 사는데 그 훅은 접촉 센서 소비자라 이 트랙에서 계약 금지다. 그래서 여기서 잰다.
+        #   `hand_blocked_frac` = 목표↔실측 > 1.0 rad ∧ 한계 밖 아님(접촉 or 추종 실패). 20관절 전부 대상
+        #   (외전 포함)이라 b9 의 14관절 값과 직접 비교 불가.
         _herr = (self._syn_target - self.robot.data.joint_pos[:, self._syn_ids]).abs()
         ex["ctrl/hand_joint_err_max"] = _herr[:, self._syn_movable].max()
         ex["ctrl/hand_blocked_frac"] = self._hand_blocked().float().mean()
         ex["ctrl/hand_target_step"] = (self._syn_target - self._prev_syn_target).abs().mean()
         self._prev_syn_target = self._syn_target.clone()
+        # ★09.08 파지 품질 1순위 지표 — 들었다가 놓친 에피소드 비율(sticky). `_latched` 는 `_get_rewards`
+        #   가 이 스텝에 갱신한 값이다(호출 순서 _get_rewards → _log_step → 여기).
+        _obj = self._env_local(self.object.data.root_pos_w)
+        _dz = _obj[:, 2] - self.object_spawn_pos[:, 2]
+        self._drop_sticky |= self._latched & (_dz < 0.03)
+        ex["ctrl/drop_sticky_frac"] = self._drop_sticky.float().mean()
+        # 커리큘럼 게이트 입력 그 자체(mean prev_episode_successes ≥ tol_success_threshold) — `task/successes_mean`
+        # 은 에피소드 내 러닝 카운트라 대체가 안 된다. 게이트까지의 거리가 대시보드에 보이게 한다.
+        ex["ctrl/prev_ep_successes_mean"] = self._trk.prev_episode_successes.float().mean()
+        # ★09.08 시작 거리 가드 — `arm_reset_offset_rad` 는 홈 기준 델타 7개 상수라 홈·프로필이 바뀌면
+        #   조용히 틀어진다(104.7 mm 는 IK 로 한 번 잰 값). 리셋 직후 env(`episode_length_buf ≤ 1`; 목표당
+        #   시계 재시작은 2 라 안 섞인다)의 손끝→물체 평균을 매 스텝 로깅한다. ★스텝당 host 동기화 0 —
+        #   마스크 곱·합으로 GPU 에 두고, host 판단(int/float)은 부팅 직후 두 스텝에서만 한다.
+        _fresh = (self.episode_length_buf <= 1).float()
+        _tips = self.robot.data.body_pos_w[:, self._tip_ids_t] - self.scene.env_origins[:, None, :]
+        _ft = (_tips - _obj.unsqueeze(1)).norm(dim=-1).mean(dim=1)              # (N,) 손끝 평균
+        _nf_t = _fresh.sum()
+        _start = (_ft * _fresh).sum() / _nf_t.clamp(min=1.0)
+        self._start_ft_last = torch.where(_nf_t > 0, _start, self._start_ft_last)   # fresh 없으면 직전값 유지
+        ex["ctrl/start_ft_dist"] = self._start_ft_last
+        if (not self._start_ft_checked and self._arm_reset_off is not None
+                and self.common_step_counter <= 2):                    # 첫 두 스텝만 host 로 내려온다
+            _nf = int(_nf_t)
+            if _nf >= min(64, self.num_envs):
+                self._start_ft_checked = True
+                _lo, _hi = 0.07, 0.14
+                if not (_lo <= float(_start) <= _hi):
+                    raise RuntimeError(
+                        f"[{self.profile.name}] 리셋 직후 손끝→물체 평균 {float(_start) * 1e3:.1f} mm 가 "
+                        f"SimToolReal 시작 거리 대역 [{_lo * 1e3:.0f}, {_hi * 1e3:.0f}] mm 밖이다 — "
+                        f"arm_reset_offset_rad 가 이 홈/프로필에서 푼 값이 아니다")
+                print(f"[grasp_fj] 시작 거리 가드 ✓ 손끝→물체 {float(_start) * 1e3:.1f} mm "
+                      f"({_nf} env, 대역 {_lo * 1e3:.0f}~{_hi * 1e3:.0f})", flush=True)
 
     def _reset_idx(self, env_ids) -> None:
         if env_ids is None or len(env_ids) == self.num_envs:
@@ -422,7 +438,10 @@ class GraspFJEnv(GraspKPEnv):
             self.robot.write_joint_state_to_sim(_q, torch.zeros_like(_q), env_ids=env_ids)
             self._arm_q_target[env_ids] = _q[:, self._arm_ids_t]
             self._prev_arm_q_target[env_ids] = self._arm_q_target[env_ids]
-        # ★부모는 `_syn_close[env_ids] = 0` 으로 리셋한다. per_role 에서 푼 관절은 0 이
-        #   중립이 아니라 **한쪽 끝**이라 그대로 두면 손이 벌어진 채 시작한다(synergy 면 0 그대로).
-        self._syn_close[env_ids] = self._close_home.unsqueeze(0)
-        self._prev_syn_target[env_ids] = self._closure_to_target(self._syn_close[env_ids])
+        # ★손: 부모가 `_syn_target[env_ids] = q0`(리셋 자세)로 심었다 — full-joint EMA 는 거기서
+        #   출발한다(SimToolReal `prev_targets = joint_pos`). 진단용 정규화 목표도 같은 값으로.
+        if bool(self.cfg.hand_direct):
+            self._syn_close[env_ids] = ((self._syn_target[env_ids] - self._act_lo.unsqueeze(0))
+                                        / self._act_span.unsqueeze(0))
+        self._prev_syn_target[env_ids] = self._syn_target[env_ids]
+        self._drop_sticky[env_ids] = False

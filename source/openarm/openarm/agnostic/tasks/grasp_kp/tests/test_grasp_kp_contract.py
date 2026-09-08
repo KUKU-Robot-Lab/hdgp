@@ -215,13 +215,16 @@ def test_actor_obs_assembly_matches_design_order():
     _ordered(_call_block(_code(_ENV), "_noisy"), [
         '"arm_q"', '"arm_qd"', '"hand_q"', '"hand_qd"', '"palm_pos"', '"palm_ax"',
         '"tips_rel_palm"', '"cmd_state"', '"n_kp_rel_palm"', '"n_kp_rel_goal"',
-        "self.actions",
+        "_act",
     ])
     _ordered(_call_block(_code(_ENV), "clean"), [
         '"arm_q"', '"arm_qd"', '"hand_q"', '"hand_qd"', '"palm_pos"', '"palm_ax"',
         '"tips_rel_palm"', '"cmd_state"', '"kp_rel_palm"', '"kp_rel_goal"',
-        "self.actions",
+        "_act",
     ])
+    # ★09.08 액션 블록 이음매 — A 는 지연 액션 그대로(산술 불변), 하위 트랙이 자기 지령 상태로 덮는다.
+    assert "_act = self._action_obs()" in _fn_block(_ENV, "_get_observations")
+    assert "return self.actions" in _fn_block(_ENV, "_action_obs")
     # 물체 쿼터니언 금지(09.06 리뷰): 키포인트 밖 정보는 yaw·부호뿐 — 축대칭 실기 yaw 는 임의라 분포 밖 채널.
     obs = _fn_block(_ENV, "_get_observations") + _fn_block(_ENV, "_object_blocks")
     assert "n_quat" not in obs and 'ob["quat"]' not in obs and "quat=" not in obs

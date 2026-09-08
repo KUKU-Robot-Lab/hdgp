@@ -477,11 +477,21 @@ class GraspKPEnv(GraspS2REnv):
     # ------------------------------------------------------------------
     # 관측 — `_derive_spaces` 와 정확히 같은 순서·차원
     # ------------------------------------------------------------------
+    def _action_obs(self) -> torch.Tensor:
+        """관측의 액션 블록(action_space 폭). ★A 는 지연 큐를 통과한 액션 **그대로** — 산술 불변.
+
+        09.08 이음매를 여기 만든 이유: SimToolReal 은 raw action 이 아니라 post-EMA `prev_action_targets`
+        (팔+손)를 관측한다. 하위 트랙(B)이 손 관절 목표 q*_{t-1}(EMA 상태)을 정책에 보이게 하려면 이 한
+        메서드만 덮는다 — 폭은 바뀌지 않고(계약 136), A 의 관측은 한 글자도 안 변한다.
+        """
+        return self.actions
+
     def _get_observations(self) -> dict:
         flush = self.episode_length_buf == 0
         pr = self._proprio_blocks()
         ob = self._object_blocks(pr["palm_pos"], flush)
         _nb = float(self.cfg.obs_noise_body)
+        _act = self._action_obs()
         # actor 에만 노이즈 — 관절은 ADR 스칼라(OFF 면 base), 물체는 `_object_blocks` 의 코히런트 자세.
         _noisy = torch.cat([
             pr["arm_q"] + torch.randn_like(pr["arm_q"]) * self._adr_obs_noise_qpos,
@@ -493,12 +503,12 @@ class GraspKPEnv(GraspS2REnv):
             pr["tips_rel_palm"] + torch.randn_like(pr["tips_rel_palm"]) * _nb,
             pr["cmd_state"],
             ob["n_kp_rel_palm"], ob["n_kp_rel_goal"],
-            self.actions,
+            _act,
         ], dim=1)
         clean = torch.cat([
             pr["arm_q"], pr["arm_qd"], pr["hand_q"], pr["hand_qd"], pr["palm_pos"], pr["palm_ax"],
             pr["tips_rel_palm"], pr["cmd_state"], ob["kp_rel_palm"], ob["kp_rel_goal"],
-            self.actions,
+            _act,
         ], dim=1)
         state = torch.cat([clean] + self._privileged_blocks(ob), dim=1)
         self._check_obs_shapes_once(_noisy, state)

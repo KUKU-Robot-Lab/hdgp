@@ -241,3 +241,99 @@ kp_a12(HEAD, seed 7)가 e227 부근에 arm 되어 e4000+ 까지 살아 있다 �
   (과제 거리 ≈0.28 rad 가 σ 의 4.6배 — 이전엔 1.5배 *작았다*). 이건 보상 문제가 아니라
   액션 스케일 문제이므로 여기서 고치지 않고, 3팔 스윕의 사전 등록 분기로 판정한다:
   **세 팔이 모두** e400 에 `stage/lifted` < 0.02 이면 손이 아니라 팔 속도가 원인이다.
+
+---
+
+## 09.08 · fj_c 시리즈 2판 — 손 full-joint 교체 + D1-a 목표열(제자리 유지) + goal_max 5
+
+변경 대상(전부 **B leaf/base 메커니즘**, A 는 산술 무변화 — `modules/progress_reward.py`·`grasp_kp` cfg git diff 0):
+1. 손 법칙: 폐쇄도·램프·`close_gate`·`blocked`·open→grip 보정·`per_role` **전부 제거** →
+   `raw = lo + ½(a+1)(hi−lo)` → 관절 목표 EMA α 0.1 → clamp. [lo, hi] = soft limit ∩ 프로필 override
+   (`_3/_4` 10개 하한 0, 엄지 `_3` 하한 −0.5 = 리셋 자세). 사용자 확정(09.08): "SimToolReal 처럼 풀 조인트".
+2. `goal_delta_distance` 0.08 → **0.0** (leaf) — 두 번째 목표부터 이전 목표와 같은 자리.
+3. `goal_max` 50 → **5** (leaf).
+4. 계측: `ctrl/drop_sticky_frac`(들었다 놓친 에피소드, sticky) · `ctrl/start_ft_dist`(리셋 직후 손끝→물체) + 부팅 가드.
+
+근거: 사용자 재정의(09.08) "cup 을 grasp-lift 만 — 안정적으로 잘 잡기만 하면 됨" + D1-a 확정 + 손 매핑 확정.
+
+**작동점(예상)**: 리프트 전 do-nothing 수입 = `lift` 1.0/step(위치 무관 상수, 불변). 과제 경로 = 접근(fingertip_progress
+≈ 50×0.1 = 5, 소진형) → 리프트(+300, 그 뒤 `lift`·`fingertip` OFF) → 첫 목표(keypoint_progress ≤ 200×0.2 = 40)
+→ 성공 +1000 → **같은 자리 4회 더** 각 ≥10스텝·+1000 → `successes ≥ 5` truncated(value_bootstrap).
+
+**Check 1 (Local Min): ✓** — 에피소드 총액 비교(γ 0.99 할인 전): do-nothing 600 스텝 × 1.0 = **600** vs 과제 경로
+≈ 300 + 40 + 5×1000 = **5,340**(9×). 스텝당으로도 유지 구간 ≥ 100/step vs 1.0/step. Δ 0 은 목표를 **쉽게** 만드는 방향이라
+"게이트가 목표 분기를 do-nothing 아래로 굶긴다"(task-observer #15, kp_a8 사고)의 반대다. 주차 흡수점(리프트 전
+`lift` 상수)은 이 판에서도 **미해결**이고 변경 대상이 아니다 — a11(σ 폭주)형 실패는 seed 복제 3런으로 가른다.
+  ⚠ 총액 상한이 50목표(≈50,000)에서 5목표(≈5,000)로 줄어 `lift` 600 과의 비율이 80×→9× 로 좁아진다. 3× 기준은
+  여전히 통과하지만, 이전 판보다 주차 흡수점의 상대 매력이 **커진** 것은 사실이다. 감시: `reward/lift` 가 1.0 에
+  장기 고정 + `task/lifted_frac` 0 (Check 1 발동 서명, b2 실측과 동일).
+
+**Check 2 (Hacking): ✓** —
+  · 성공 술어는 연속 10회(task-observer #13, 공차 안팎 진동으로 성공 불가). Δ 0 이라 "이동 없이 유지" 가 곧 의도한 행동.
+  · `goal_bonus` 에 lifted 게이트가 없어도 `goal_first_z_range[0] − tol_start = 0.10 = 래치` 불변식이 near_goal ⇒ dz ≥ 0.10 을
+    기하로 보장한다(검증기·3중 잠금 테스트 그대로). Δ 0 은 이후 목표를 첫 목표와 같은 높이에 두므로 불변식이 목표열 전체에
+    확장된다(이전엔 Δz −0.08 로 내려간 목표가 있었다).
+  · `keypoint_progress` 래칫(running-min, task-observer #17 "제로 액션에서의 값"): 목표 전진 시 `clear_goal` 이 closest 를
+    센티널로 되돌려 첫 스텝 delta 0 · 이후 새 최소값 갱신분만 지급 ≤ 200×tol(0.1125) = **22.5/목표** ≪ 1000. 멀어졌다
+    돌아와도 기존 최소 아래로 못 가면 0 — 왕복으로 짜낼 수 없다.
+  · 손등 갈고리 파지(08.23 exploit)는 접촉 항 0개라 보상이 못 가른다 — 방어선은 보상이 아니라 **범위**(`_3/_4` 하한 0)이고
+    부팅 assert 가 잠근다. 잔여 위험 = 자기충돌 OFF 상태의 손가락 교차(외전 전폭, 사용자 결정) → 영상으로 관찰.
+  · 제로 액션 상태: a=0 이면 손 목표는 범위 중앙(반쯤 굽힘)으로 EMA 수렴 — 파지 전 접근 중 손이 저절로 반쯤 오므려진다.
+    exploit 은 아니지만 **접근 자세가 시너지 시절 open 과 다르다** — 부팅 표(리셋 자세 vs 중앙)를 보고 영상으로 확인.
+
+**Check 3 (Grasp): ✓ (⚠ 2건 관측)** —
+  · Δ 0 + 외란 2.7 N/kg 유지: 이동 중 미끄러짐 요인이 사라져 파지 유지에 **유리**. 유지 시간은 목표당 ≥10 스텝 × 5 = ≥50
+    스텝(0.83 s) 외란 아래 — 이전 판(50목표)보다 짧다. "안정" 의 정의를 더 길게 잡으려면 `goal_success_steps`(leaf) 를 올린다
+    (연속 판정이라 초반 탐색이 어려워지는 대가). 첫 판은 10 유지.
+  · ⚠ 손 `hand_vel` 벌점(−0.003·Σ|q̇|, 20관절)이 처음으로 **실제 크기**를 갖는다: 램프 없이 EMA 0.1 이면 목표 속도가
+    최대 (hi−lo)·α/dt ≈ 3.1×0.1×60 ≈ 19 rad/s(엄지 _2), 손가락이 요동하면 −0.003×20×5 ≈ −0.3/step = 리프트 전
+    수입의 30%. 시너지 시절엔 램프 0.005/step 이 이걸 구조적으로 막았다. **탐색 초기에 손을 얌전히 만드는 세금**이 될 수
+    있다 — 감시 `reward/hand_vel`(b9 대역 대비) · `ctrl/hand_target_step`.
+  · ⚠ 접근 중 손 모양이 a 에 즉시 반응(τ 0.17 s)한다 — 컵을 쳐낼 수 있다(08.25 스윕의 방향). 감시 `task/tilt_deg` ·
+    `done/tipped` · `ctrl/hand_joint_err_max`.
+
+**Check 4 (기존 파괴): ✓ 구조적** — A(`grasp_kp`) diff 0 · `grasp_fj_rh` 는 `hand_direct=False`·자체 `_hand_command` 라
+`hand_ema`/override 를 안 읽는다(18 테스트 무편집 통과) · fj_b9 는 이미 차원 비호환(FRESH) · `goal_max` 는 leaf 라 A 50 유지.
+  방화벽 테스트(`test_task_semantics_live_on_the_leaf…`)가 필드별 소속을 기계 검사한다.
+
+**Check 5 (측정): ✓** — 1 `ctrl/hand_target_step`·`ctrl/hand_joint_err_max`·`task/syn_close`(정규화 목표)·부팅 20관절 표
+/ 2·3 `task/successes_mean`(상한 5)·`done/max_goals`·`episode_lengths`(유능해지면 ↓)·`reward/goal_bonus`·
+`reward/keypoint_progress`(≈ 소량이어야 함) / 4 `ctrl/drop_sticky_frac`(**1순위**)·`ctrl/start_ft_dist`(≈0.105).
+
+**판정: ACCEPT** (Check 3 의 ⚠ 2건은 런을 태우는 대신 지표로 감시 — 3런 복제가 같은 서명으로 죽으면 `hand_vel_scale`
+축소 또는 `hand_ema` 하향이 다음 변수)
+
+예상 지표 이동:
+  → `episode_lengths`: 유능해지면 **600 → 200~300**(5목표 후 truncated). 늘어나면 목표당 시계만 일하고 성공이 없는 것.
+  → `task/successes_mean`: 상한 5. `stage/goal1..3` 은 그대로 유효.
+  → `ctrl/drop_sticky_frac`: 리프트 후 **< 0.05** 가 목표(안정 파지의 직접 정의). `diag/drop_frac` 단면과 같이 본다.
+  → `reward/keypoint_progress`: b9 대비 **크게 하락**(목표 이동이 없으므로 잔여 래칫만).
+  → `reward/hand_vel`: b9 대비 **상승 가능**(위 ⚠). 리프트 전 수입(1.0)의 30% 를 넘으면 개입.
+  → `ctrl/start_ft_dist`: ≈ 0.105 m, 부팅 가드 통과 라인이 로그에 찍혀야 한다.
+
+### 09.08 2판 — 리뷰(4관점 + 반증 2명/건) 반영 정정 5건
+
+① **Check 1 은 할인식으로 다시 쓴다** — 위 "600 vs 5,340(9×)" 는 할인 전 총액이라 critic 이 최적화하는 가치와 관계가 없다.
+   γ 0.99·rl_games V(s_t) 부트스트랩에서 **주차 가치 = 1/(1−γ) = 100**(정확), 과제 가치 ≈ Σ_{t<t_L}γ^t + 300·γ^{t_L}
+   + 1000·γ^{t_G1}·(1+γ^10+…+γ^40 = 4.13) + 소량(fingertip ≈5, keypoint_progress ≤22.5/목표). 첫 목표 도달 시점 t_G1 의
+   지수 함수다: t_L 150·t_G1 200 → ≈700(7×) · t_G1 300 → ≈350(3.5×) · **t_G1 ≳ 330 → 3× 미달**(≥1× 는 항상).
+   → 감시: 성공 에피소드의 `episode_lengths` 분포(첫 목표까지의 스텝). 330 을 넘으면 Check 1 기준 미달로 읽는다.
+   "5목표 후 truncated(value_bootstrap)" 문구 정정: 마지막 스텝 보상은 벌점뿐(보너스는 한 스텝 전 지급)이라 부트스트랩
+   고정점 V = r_pen/(1−γ) ≤ 0 이며 critic 이 successes 를 관측하므로 그 상태는 구별된다. 크기 무시 가능.
+② **커리큘럼 게이트 비율** — `tol_success_threshold` 3.0 은 goal_max 50 기준 6%(SimToolReal) 였는데 goal_max 5 에서는
+   **60%** 가 된다(10배 엄격). D1-a 는 결과가 0/5 ↔ 5/5 로 이분되므로 "env 60% 가 완주해야 tol 이 처음 조여진다".
+   → leaf **2.0(40%)** 으로 낮춤. 6%(0.3) 는 완주 env 6% 에 조여져 kp_a8 형 붕괴 위험이라 택하지 않았다.
+   게이트 입력 `ctrl/prev_ep_successes_mean` 을 신설 로깅(`task/successes_mean` 은 러닝 카운트라 대체 불가).
+③ **손 EMA 상태가 관측에 없었다** — SimToolReal 은 post-EMA `prev_action_targets`(팔+손)를 관측하고 raw action 은 안 준다.
+   우리는 팔만 `cmd_state`(q*_{t-1}) 를 주고 손은 raw action 뿐이라 α 0.1 EMA 상태(τ≈10스텝)가 미관측 = MLP 는 구조적
+   부분관측. 기존 시너지 램프도 같은 결함(더 긴 τ)이었다 — 회귀가 아니라 09.08 정합의 손 쪽 반쪽. → A 에 이음매
+   `_action_obs`(A 는 `self.actions` 그대로, 산술 불변), B 는 손 20칸을 정규화 관절 목표 2(q*−lo)/(hi−lo)−1 로. 폭 27·계약 136 불변.
+④ **hand_vel 산수 정정** — "−0.3/step(30%)" 는 물리 상한을 넘는다: 손 관절 URDF 속도한계 3.14 rad/s × 20 × 0.003 =
+   **상한 −0.19/step**, 기대 ≈ −0.12(스모크 무작위 정책 실측 **−0.11**). 감시선을 "−0.10/step 이상이 리프트 후에도 지속" 으로.
+⑤ **cmd_rate 누락** — B 측도 = 팔 액션 1차 차분 RMS/2, scale 1.0, 게이트 lifted ∧ hold ∧ 전역 래치. D1-a 에서 리프트 후 최적
+   팔 액션은 a≈0 이라 이 항은 **탐색 노이즈 세금 −0.71σ/step**(σ 0.5 → −0.35, 유지 40스텝당 −28σ) = goal 수입 100/step 의
+   0.7%. 방향은 dwell 과 일치(정지 유도)라 유지. 감시: `reward/cmd_rate` + `reward/hand_vel` 합이 리프트 전 수입의 30% 를
+   넘으면 개입 후보(scale 1.0 → 0.1 또는 arming 에 successes ≥ 1).
+기타: 엄지 `_3` 하한 −0.5 는 예외가 아니라 "하한 = open 자세" 규칙(pre-curl, 08.23 엄지 음수는 팔마) — 프로필 주석 정정.
+`thumb_2` 는 외전이 아니라 대향(180° 전폭) — 좁힐지 별도 확정 대상. `goal_clock_restart_step` 0/1 을 검증기가 거부.
+SimToolReal 은 soft 가 아니라 **하드**(`joint_pos_limits`) 한계에 매핑 — factor 1.0 을 부팅에서 대조. 판정 ACCEPT 유지.

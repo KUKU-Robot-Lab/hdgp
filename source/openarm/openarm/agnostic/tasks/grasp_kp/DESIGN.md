@@ -29,6 +29,10 @@ agnostic/tasks/grasp_fj/               B: GraspFJEnvCfg(GraspKPEnvCfg) · GraspF
 | 액션 지연 | 큐 3 step, 매 스텝 인덱스 재추첨 | 동일 |
 
 B 는 `_setup_fabrics/_init_home_palm/_step_fabric/_apply_action/_arm_command` 만 덮어쓴다. `_fab_to_env = 0`.
+
+> ★09.08: 위 B 열(시너지 15D · 22D · 훅 5개)은 **09.06 초판**이다. 이제 B 는 손 20관절 full-joint(선형 [lo,hi] + 관절 EMA 0.1)
+> · 27/136/160 · 보상 포크(`fj_reward.py`) · 관측 액션 블록 이음매(`_action_obs`) · 목표열 제자리(D1-a) 다. B 의 진실원천은
+> `../grasp_fj/CLAUDE.md` 계약표이고 이 표는 A 열만 유효하다.
 B 의 팔 목표 버퍼 `_arm_q_target (N,7)` 은 `self.arm_ids` 순서, 클램프는 `_arm_lo/_arm_hi`.
 
 ## 2. 목표 표현 — 축대칭 키포인트 4개 (yaw 불변)
