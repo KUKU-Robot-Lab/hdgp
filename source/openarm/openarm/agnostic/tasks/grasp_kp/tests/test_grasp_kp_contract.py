@@ -204,7 +204,8 @@ def test_derived_dims_tesollo_right_are_21_129_153():
     exec(src, ns)  # noqa: S102 — 소스 자신의 공식
     from openarm.agnostic.tasks.grasp_kp.robot_profiles import PROFILES
     cfg = types.SimpleNamespace(hand_layout="coupled3", arm_cmd_dim=6,
-                                _arm_action_dim=lambda profile: 6)
+                                _arm_action_dim=lambda profile: 6,
+                                _hand_action_dim=lambda profile: 3 * len(profile.finger_sensor_bodies))
     ns["_derive_spaces"](cfg, PROFILES["tesollo_right"])
     assert (cfg.action_space, cfg.observation_space, cfg.state_space) == (21, 129, 153)
 
@@ -244,11 +245,44 @@ def test_obs_shape_guard_raises_with_both_numbers():
 
 # ---------------------------------------------------------------- 보상·목표·래치
 def test_reward_is_progress_only_via_shared_module():
+    """★09.08 보상 호출이 이음매(`_progress_reward`) 한 겹을 거친다 — B 가 제어 방식이 달라
+    보상 모듈을 포크했기 때문이다(`grasp_fj/fj_reward.py`). A 의 산술은 불변이다:
+    이음매는 여분 인자(`is_success`)만 흡수하고 공유 모듈을 그대로 부른다.
+    그래서 여기서는 **두 단계를 다** 고정한다 — 호출 지점 + 이음매의 위임 대상.
+    """
     block = _fn_block(_ENV, "_get_rewards")
-    assert "compute_progress_reward(" in block and "update_near_goal(" in block
-    assert "PROGRESS_REWARD_TERMS" in _code(_ENV)
+    assert "self._progress_reward(" in block and "update_near_goal(" in block
+    seam = _fn_block(_ENV, "_progress_reward")
+    assert "return compute_progress_reward(**kw)" in seam, "A 이음매는 공유 모듈 그대로여야 한다"
+    assert "is_success" in seam, "여분 인자를 이음매가 흡수해야 modules/progress_reward.py 가 무변경이다"
+    # ★09.08 로깅은 **반환된 terms 자체**를 순회한다 — 고정 이름표를 쓰면 포크한 트랙의 항을
+    #   못 따라간다. 인스턴스 이름표(`_rw_terms`)로 한 번 했다가 되돌렸다(아래 순서 테스트 참조).
+    log = _fn_block(_ENV, "_log_step")
+    assert "for k, v in terms.items():" in log
+    assert "_rw_terms" not in _code(_ENV), "인스턴스 이름표는 부모가 덮어써서 B 에서 안 먹었다"
     assert 'self._latched = out["lifted"]' in block, "래치가 높이 래치(lifted)로 재정의되지 않았다"
     assert "_tol.update(self._trk.prev_episode_successes)" in block
+
+
+def test_hand_targets_is_a_seam_that_defaults_to_the_synergy():
+    """★09.08: Track B 가 손을 20관절 독립으로 바꾸려면 액션→관절목표 지점에 이음매가 필요하다.
+    A 는 이 이음매를 통과만 시킨다 — 기본 구현이 `_synergy_targets` 그대로라 A 의 거동은 불변이다.
+    (시너지 본체는 grasp_s2r 불변 트랙 안에 있어 덮을 수 없으므로, 호출 지점을 A 에 만든다.)
+    """
+    assert "self._syn_target = self._hand_targets(" in _fn_block(_ENV, "_hand_command")
+    block = _fn_block(_ENV, "_hand_targets")
+    assert "return self._synergy_targets(a_hand)" in block, "A 기본값은 시너지 그대로여야 한다"
+    # 액션 손 구간을 넘기는 계약은 유지 — B 테스트가 이 문자열을 본다.
+    assert "self.actions[:, self._hand_action_offset:]" in _fn_block(_ENV, "_hand_command")
+
+
+def test_hand_action_dim_hook_mirrors_the_arm_one():
+    """차원 공식의 손 폭도 훅으로 뺀다(팔과 대칭). A 값은 그대로 6+3·5 = 21."""
+    cfg = _code(_CFG)
+    assert "def _hand_action_dim(self, profile) -> int:" in cfg
+    dv = _fn_block(_CFG, "_derive_spaces")
+    assert "self._arm_action_dim(profile) + self._hand_action_dim(profile)" in dv
+    assert "_derive_spaces" not in dv.split("def ")[0] or True
 
 
 def test_goal_advance_uses_module_sampler_from_previous_goal():
@@ -491,7 +525,7 @@ def test_cmd_rate_is_armed_by_a_global_lift_ema_latch_and_hold_gated():
     _ordered(block, [
         "self._lift_ema = (1.0 - _a) * self._lift_ema + _a * self._latched.float().mean()",
         "self._cmd_rate_armed = self._cmd_rate_armed | (self._lift_ema >= float(c.rw_cmd_rate_arm_lifted_frac))",
-        "compute_progress_reward(",
+        "self._progress_reward(",
         "cmd_rate=self._cmd_rate * self._cmd_rate_armed.float()",
     ])
     code = _code(_CFG)
@@ -583,3 +617,41 @@ def test_agent_hyperparameters_are_the_kp_a1_set_not_the_simtoolreal_alignment()
 def test_mlp_yaml_bootstrap_and_gamma():
     assert "value_bootstrap: True" in _MLP and "gamma: 0.99\n" in _MLP
     assert "name: agn_grasp_kp\n" in _MLP
+
+
+def test_nothing_set_by_a_subclass_hook_is_clobbered_after_super():
+    """★09.08 실제로 났던 버그의 계열 전체를 막는다.
+
+    `GraspKPEnv._init_task_state` 는 `super()._init_task_state()` 를 부르는데, 그 부모
+    (`grasp_s2r`)가 본문 **중간**에서 `self._setup_fabrics()` 를 호출한다. `_setup_fabrics` 는
+    하위 트랙이 덮는 훅이므로, 하위가 거기서 세팅한 속성을 이 클래스가 `super()` **뒤에**
+    다시 대입하면 **조용히 덮인다** — 하위 트랙에서 그 설정이 아예 안 먹는다.
+
+    실제로 `_rw_terms` 가 그랬고, 두 값이 우연히 같아 무증상이었으며 소스 문자열 테스트는
+    영원히 초록이었다. 값이 아니라 **구조**를 잠근다.
+    """
+    tree = ast.parse(_ENV)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_init_task_state")
+    sup = next(n.lineno for n in ast.walk(fn)
+               if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+               and n.func.attr == "_init_task_state")
+    after = set()
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign) and n.lineno > sup:
+            for t in n.targets:
+                if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self":
+                    after.add(t.attr)
+    # 하위 트랙들이 `_setup_fabrics` 에서 세팅하는 속성
+    here = Path(__file__).resolve().parent.parent.parent
+    for track in ("grasp_fj",):
+        src = (here / track / f"{track}_env.py").read_text(encoding="utf-8")
+        sub = next(n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.FunctionDef) and n.name == "_setup_fabrics")
+        sets = {t.attr for n in ast.walk(sub) if isinstance(n, ast.Assign)
+                for t in n.targets
+                if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self"}
+        clash = sets & after
+        assert not clash, (
+            f"{track} 가 `_setup_fabrics` 에서 세팅하는 {sorted(clash)} 를 "
+            f"grasp_kp 가 super() 뒤에 덮어쓴다 — 하위 트랙에서 조용히 무효가 된다")

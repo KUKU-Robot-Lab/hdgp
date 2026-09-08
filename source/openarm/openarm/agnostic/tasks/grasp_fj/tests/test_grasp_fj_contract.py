@@ -17,6 +17,8 @@ import textwrap
 import types
 from pathlib import Path
 
+import pytest
+
 from openarm.agnostic.tasks.grasp_kp.tests.test_grasp_kp_contract import (
     _class_methods,
     _code,
@@ -51,6 +53,14 @@ def _calls(src: str, name: str) -> list[str]:
                     break
             j += 1
     return out
+
+
+def _class_body(src: str, name: str) -> str:
+    """클래스 `name` 의 본문 소스(하위 클래스 제외). 방화벽 검사 = "이 리터럴이 어느 클래스에 있나"."""
+    tree = ast.parse(src)
+    node = next((n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == name), None)
+    assert node is not None, f"클래스 {name} 부재"
+    return "\n".join(src.split("\n")[node.lineno - 1:node.end_lineno])
 
 
 def _is_noop(src: str, name: str) -> bool:
@@ -93,7 +103,12 @@ def test_env_overrides_exactly_the_adapter_hook_set():
     names = _class_methods(_ENV, "GraspFJEnv")
     required = {"_setup_fabrics", "_init_home_palm", "_step_fabric", "_post_command",
                 "_arm_command", "_apply_action", "_cmd_state", "_log_fabric_metrics", "_reset_idx"}
-    helpers = {"_build_joint_index", "_build_syn_to_fab_idx"}
+    helpers = {"_build_joint_index", "_build_syn_to_fab_idx", "_apply_arm_target_box",
+               "_hand_targets", "_hand_step",        # ★09.08 손 20관절 독립판 + 폐쇄 EMA 분리
+               "_progress_reward",                   # ★09.08 B 전용 보상 이음매(모듈 포크)
+               "_restart_goal_clock",                # ★09.08 목표당 스텝 예산
+               "_build_hand_action_range", "_closure_to_target",
+               "_hand_mask"}                          # ★09.08 per_role 범위·정규식 해석
     forbidden = {"__init__", "_setup_scene", "_init_task_state", "_pre_physics_step", "_hand_command",
                  "_get_observations", "_get_rewards", "_get_dones", "_synergy_targets",
                  "_setup_synergy", "_palm_anchor", "_apply_gravity_compensation", "_apply_wrench"}
@@ -201,8 +216,8 @@ def test_track_a_exposes_the_hooks_b_relies_on():
 # ---------------------------------------------------------------- cfg·차원
 def test_cfg_fields_and_arm_action_dim_hook():
     code = _code(_CFG)
-    for token in ("arm_cmd_dim: int = 7", "k_arm: float = 0.167", "arm_ema: float = 0.1",
-                  "arm_slew_rad_s: float = 1.0",
+    for token in ("arm_cmd_dim: int = 7", "k_arm: float = 0.025", "arm_ema: float = 0.1",
+                  "arm_slew_rad_s: float = 0.15",
                   "class GraspFJEnvCfg(GraspKPEnvCfg)", 'profile_name: str = "tesollo_right"'):
         assert token in code, token
     assert "return int(profile.num_arm_joints)" in _fn_block(_CFG, "_arm_action_dim")
@@ -213,20 +228,39 @@ def test_cfg_fields_and_arm_action_dim_hook():
         assert token in val, token
 
 
-def test_effective_arm_slew_is_one_rad_per_s():
-    """EMA 가 누적 목표에 걸려 스텝당 변화 = α·k_arm·a — 구 0.0167 은 실효 0.1 rad/s 로 설계와 10배 어긋났다."""
+def test_effective_arm_slew_matches_simtoolreal():
+    """★09.08 `k_arm` 은 SimToolReal 의 `dof_speed_scale · dt` 를 **상수 하나로 접은 값**이다.
+
+    그들: `arm_raw = prev + dof_speed_scale · dt · a` (action_utils.py:52), dt = 1/60,
+          controlFrequencyInv 1 → 정책 스텝 1/60 s ⇒ 계수 = 1.5 × 1/60 = 0.025.
+    우리: `arm_raw = prev + k_arm · a`, 정책 스텝 = sim.dt(1/120) × decimation 2 = 1/60 s.
+    ⇒ **k_arm ≡ dof_speed_scale × 정책_dt**. 구 0.167 은 dof_speed_scale 10.0 = 그들의 6.7배였다.
+    ★이 등식은 정책 dt 가 양쪽 다 1/60 이라서 성립한다 — dt 를 바꾸면 k_arm 을 다시 접어야 한다.
+      그래서 실효 slew 뿐 아니라 **환산된 dof_speed_scale 자체**를 여기서도, cfg 에서도 잠근다.
+    """
     code = _code(_CFG)
     k = float(re.search(r"k_arm: float = ([0-9.]+)", code).group(1))
     a = float(re.search(r"arm_ema: float = ([0-9.]+)", code).group(1))
     slew = float(re.search(r"arm_slew_rad_s: float = ([0-9.]+)", code).group(1))
-    assert abs(a * k / (2.0 / 120.0) - slew) <= 0.02 * slew, (a, k, slew)   # 정책 dt = 1/120·2
+    _dt = 2.0 / 120.0                                                      # 정책 dt = sim.dt × decimation
+    assert abs(a * k / _dt - slew) <= 0.02 * slew, (a, k, slew)
+    assert abs(k / _dt - 1.5) <= 0.02 * 1.5, f"환산 dofSpeedScale {k / _dt} ≠ 1.5"
+    val = _fn_block(_CFG, "_validate_fj_fields")
+    assert "_implied_speed_scale" in val and "arm_dof_speed_scale" in val, (
+        "환산식이 cfg 검증기에도 잠겨 있어야 한다")
+    assert "arm_dof_speed_scale: float = 1.5" in code, "선언값이 SimToolReal dofSpeedScale 이어야 한다"
     assert "self.tol_eval = self.tol_floor" in _fn_block(_REG, "__post_init__")
     fin = _fn_block(_CFG, "finalize_after_overrides")
     _ordered(fin, ["super().finalize_after_overrides()", "self._validate_fj_fields("])
 
 
-def test_derived_dims_tesollo_right_are_22_131_155():
-    """A 의 `_derive_spaces` 공식을 B 의 훅(7)으로 실행한다 — DESIGN §4 B: 131 / critic +24 = 155."""
+def test_derived_dims_are_22_131_155_when_the_hand_stays_synergic():
+    """A 의 `_derive_spaces` 공식을 B 의 훅(팔 7 · 손 시너지)으로 실행한다 — 131 / critic +24 = 155.
+
+    ★09.08 주의: **등록되는** tesollo_right leaf 는 `hand_direct=True` 라 실제 계약은
+      27/136/160 이다(`test_shipped_tesollo_right_contract_is_27_136_160`). 이 테스트는
+      "손을 시너지로 두면" 이라는 **조건부** 공식 검사다 — fj_b9 체크포인트가 사는 차원.
+    """
     tree = ast.parse(_KP_CFG)
     node = next(n for n in ast.walk(tree)
                 if isinstance(n, ast.FunctionDef) and n.name == "_derive_spaces")
@@ -235,9 +269,82 @@ def test_derived_dims_tesollo_right_are_22_131_155():
     exec(src, ns)  # noqa: S102 — 소스 자신의 공식
     from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
     cfg = types.SimpleNamespace(hand_layout="coupled3", arm_cmd_dim=7,
-                                _arm_action_dim=lambda profile: int(profile.num_arm_joints))
+                                _arm_action_dim=lambda profile: int(profile.num_arm_joints),
+                                _hand_action_dim=lambda profile: 3 * len(profile.finger_sensor_bodies))
     ns["_derive_spaces"](cfg, PROFILES["tesollo_right"])
     assert (cfg.action_space, cfg.observation_space, cfg.state_space) == (22, 131, 155)
+
+
+# ---------------------------------------------------------------- 손 20관절 독립 (09.08)
+def test_hand_direct_is_off_by_default_so_existing_dims_and_siblings_are_untouched():
+    """★기본은 False. 켜는 건 런처의 `env.hand_direct=true` 뿐이다.
+
+    이유 둘: (1) 기존 22/131/155 계약과 fj_b9 체크포인트를 그대로 둔다.
+    (2) `grasp_fj_rh`(RH56F1)가 이 cfg 를 상속하므로, 기본이 True 면 그 트랙의 차원이
+        조용히 바뀐다 — 남의 진행 중 작업을 잡아가지 않는다.
+    """
+    assert "hand_direct: bool = False" in _class_body(_CFG, "GraspFJEnvCfg")
+    # leaf 는 켠다(사용자 지시: 7+20 DOF). base 가 아니라 leaf 라야 fj_rh 가 안 잡힌다.
+    assert "hand_direct: bool = True" in _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
+
+
+def test_hand_direct_widens_only_the_hand_slice():
+    """켜면 손 폭이 관절 수(20)가 된다. 팔 훅은 그대로 7."""
+    block = _fn_block(_CFG, "_hand_action_dim")
+    assert "int(profile.num_hand_joints)" in block
+    assert "super()._hand_action_dim(profile)" in block, "꺼져 있으면 A 공식 그대로"
+
+
+def test_hand_direct_law_keeps_every_guard_but_the_coupling():
+    """★결합만 제거한다. 폐쇄 속도 상한·close_gate·blocked hold 는 남긴다 —
+    접촉 항이 0개인 이 보상에서 감쌈을 만드는 유일한 장치이기 때문이다.
+    ★★범위는 원시 관절한계가 아니라 보정된 open→grip 이다. `_3`/`_4` 가 ±90° 대칭이라
+      원시 한계로 매핑하면 a=−1 이 **손등 −90°** 를 지령하고, 접촉 보상이 없는 이 트랙에서는
+      손등 갈고리 파지가 정상 파지와 같은 점수를 받는다(메모리: 원위 과신전 익스플로잇).
+      그 대책(require_palmar_contact)은 이 트랙에서 계약상 금지다(접촉 센서 0개).
+    """
+    block = _fn_block(_ENV, "_hand_step")
+    _ordered(block, [
+        "if not bool(self.cfg.hand_direct):",
+        "return super()._hand_targets(a_hand)",
+        "cmd_j = 0.5 * (a_hand.clamp(-1.0, 1.0) + 1.0)",
+        "float(self.cfg.synergy_close_speed)",
+        "self._close_gate.unsqueeze(1)",
+        "self._shape_mask.unsqueeze(0)",
+        "self._syn_movable",
+        "self._hand_blocked()",
+        "self._syn_close = (self._syn_close + delta).clamp(0.0, 1.0)",
+        "return self._closure_to_target(self._syn_close)",
+    ])
+    # 끝점은 `_build_hand_action_range` 단일 출처 — 굴곡을 원시 관절한계로 스케일하지 않는다.
+    rng = _fn_block(_ENV, "_build_hand_action_range")
+    assert "soft_joint_pos_limits" not in block and "_hand_lo" not in block
+    for tok in ("frozen = (gr - op).abs() <= 1e-4",     # 폭 0 인 것만 후보
+                "self.profile.hand_wide_shape_joint_regex",
+                "freed = frozen",
+                "torch.maximum(op - span, lo)", "torch.minimum(op + span, hi)"):
+        assert tok in rng, tok
+    assert "torch.where(freed" in rng, "굴곡까지 풀면 손등 −90° 가 열린다"
+    # ★과신전 차단이 **부팅에서 강제**되어야 한다 — 테솔로 _3/_4 는 ±90° 대칭이라
+    #   하한을 조금만 풀어도 a=−1 이 손등 −90° 를 지령한다(SHARPA 는 URDF 하한이 0).
+    assert "_flex = ~freed" in rng and "raise RuntimeError" in rng
+    assert "손등 과신전" in rng
+
+
+def test_hand_direct_dims_are_27_136_160():
+    """A 의 `_derive_spaces` 공식을 B 의 두 훅(팔 7 · 손 20)으로 실행한다."""
+    tree = ast.parse(_KP_CFG)
+    node = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_derive_spaces")
+    src = textwrap.dedent("\n".join(_KP_CFG.split("\n")[node.lineno - 1:node.end_lineno]))
+    ns = {"_KP_DIM": 12, "NUM_KEYPOINTS": 4}
+    exec(src, ns)  # noqa: S102
+    from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
+    cfg = types.SimpleNamespace(hand_layout="coupled3", arm_cmd_dim=7,
+                                _arm_action_dim=lambda profile: int(profile.num_arm_joints),
+                                _hand_action_dim=lambda profile: int(profile.num_hand_joints))
+    ns["_derive_spaces"](cfg, PROFILES["tesollo_right"])
+    assert (cfg.action_space, cfg.observation_space, cfg.state_space) == (27, 136, 160)
 
 
 # ---------------------------------------------------------------- PPO yaml (DESIGN §6)
@@ -329,3 +436,286 @@ def test_sapg_yaml_is_b1_hyperparameters_plus_sapg_overlay():
                 "bound_loss_type: bound", "mini_epochs: 2", "minibatch_size: 65536",
                 "clip_observations: 10.0", "expl_reward_coef_scale: 0.002", "bounds_loss_coef: 0.0001"):
         assert bad not in _SAPG, bad
+
+
+def test_shipped_tesollo_right_contract_is_27_136_160():
+    """★등록부가 인스턴스화하는 것은 leaf 하나뿐이고, leaf 는 `hand_direct=True` 다.
+
+    따라서 **출하되는** 계약은 27/136/160 이다. 위 22/131/155 테스트는 조건부 공식 검사이고
+    이쪽이 실제 계약이다 — 둘이 갈리면 "차원은 통과하는데 체크포인트가 안 맞는" 상태가 된다.
+    fj_b9(22/131/155) 는 이 판과 **호환되지 않는다**. FRESH 로 돌린다.
+    """
+    assert "hand_direct: bool = True" in _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
+    assert re.search(r'"sens_r":\s*GraspFJTesolloRightEnvCfg', _REG), "등록부는 leaf 만 쓴다"
+
+
+# ------------------------------------------------- 09.08 SimToolReal 과제 의미 정합
+def test_hand_ema_wraps_the_ramp_and_is_off_by_default_on_the_base():
+    """★손 폐쇄 EMA(SimToolReal handMovingAverage 0.1)는 `_hand_step` 을 **감싼다**.
+
+    0 이면 `_hand_step` 결과를 그대로 반환한다 — 현행과 한 글자도 다르지 않다.
+    폐쇄도에 거는 이유: `tgt = lerp(open, grip, c)` 가 c 에 아핀이라 관절공간 EMA 와 항등이다.
+    `close_gate`·`blocked` 가 사는 이유: 둘은 delta 에 곱/영치기로 걸리고 EMA 도 delta 에
+    곱하는 양수 스칼라라 순서가 교환된다(α·(g·d) = g·(α·d), α·0 = 0).
+    """
+    assert "synergy_close_ema: float = 0.0" in _class_body(_CFG, "GraspFJEnvCfg")
+    wrap = _fn_block(_ENV, "_hand_targets")
+    _ordered(wrap, [
+        "c0 = self._syn_close.clone()",
+        "tgt = self._hand_step(a_hand)",
+        "float(self.cfg.synergy_close_ema)",
+        "return tgt",
+        "self._syn_close = c0 + m * (self._syn_close - c0)",
+        "return self._closure_to_target(self._syn_close)",
+    ])
+    conv = _fn_block(_ENV, "_closure_to_target")
+    assert "torch.lerp(self._act_lo" in conv and "clamp(self._syn_lo" in conv
+    step = _fn_block(_ENV, "_hand_step")
+    assert "self._close_gate" in step and "self._hand_blocked()" in step, \
+        "게이트와 blocked hold 는 EMA 를 켜도 살아 있어야 한다(접촉 항 0개인 보상의 유일한 감쌈 장치)"
+
+
+def test_cfg_forbids_ema_and_ramp_at_the_same_time():
+    """둘이 동시에 걸리면 실효 폐쇄 속도가 어느 쪽인지 **어떤 지표로도** 못 가른다.
+
+    폐쇄도가 [0,1] 이므로 rate ≥ 1 이면 clamp 가 항등 = 램프 무력화가 증명된다.
+    """
+    val = _fn_block(_CFG, "_validate_fj_fields")
+    assert "float(self.synergy_close_ema) > 0.0 and float(self.synergy_close_speed) < 1.0" in val
+    assert "synergy_close_speed ≥ 1.0" in val and "raise RuntimeError" in val
+    assert "0.0 <= float(self.synergy_close_ema) <= 1.0" in val, "범위 검사도 있어야 한다"
+
+
+def test_goal_clock_restart_is_off_by_default_and_lives_in_the_only_legal_hook():
+    """★목표당 스텝 예산(SimToolReal env.py:2437-2439). 기본은 끔(−1).
+
+    time-out 술어는 불변 트랙(`grasp_s2r_env`)이 소유하고 `_get_dones` 는 B 의 계약 금지 훅이다.
+    `_get_rewards`(성공 확정) → `_log_step` → `_log_fabric_metrics` 순서라, 성공이 확정된
+    **같은 스텝 안**에서 시계를 되돌릴 수 있는 유일한 허용 지점이 로그 훅의 첫 줄이다.
+    """
+    assert "goal_clock_restart_step: int = -1" in _class_body(_CFG, "GraspFJEnvCfg")
+    blk = _fn_block(_ENV, "_restart_goal_clock")
+    assert "self.episode_length_buf.masked_fill_(self._success_now" in blk
+    log = _fn_block(_ENV, "_log_fabric_metrics")
+    assert "self._restart_goal_clock()" in log
+    body = [ln.strip() for ln in log.split("\n") if ln.strip() and not ln.strip().startswith(('"""', "#"))]
+    assert body[1] == "self._restart_goal_clock()", f"로그 훅 첫 줄이어야 한다: {body[:3]}"
+    assert "_get_dones" not in _class_methods(_ENV, "GraspFJEnv"), "종료 술어는 여전히 안 덮는다"
+
+
+def test_goal_clock_restart_value_dodges_the_reset_diagnostic():
+    """★왜 0 이 아니라 2 인가 — `episode_length_buf` 가 0/1 일 때 반응하는 소비자가 넷 있다.
+
+    · 액션·관측 지연 flush(`grasp_kp_env`) — 목표마다 지연 큐가 비워진다(DR 축이 무력화).
+    · **물체** 지연 flush(10스텝) — 목표마다 물체 참값을 훔쳐본다. 보상과 직결이라 제일 나쁘다.
+    · `_fresh <= 1` 리셋 진단(`grasp_s2r_env`) — 영구 오염되면 `reset/arm_q_dev_max` 가
+      `replicate_physics` 오리셋(27.85 rad)을 잡는 fail-loud 가드 기능을 잃는다.
+    2 면 넷 다 피하고 비용은 목표당 600 → 597 스텝(0.5%)이다. 회귀 울타리.
+    """
+    assert "goal_clock_restart_step: int = 2" in _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
+    s2r = (_HERE.parent / "grasp_s2r" / "grasp_s2r_env.py").read_text(encoding="utf-8")
+    assert "_fresh" in s2r and "<= 1" in s2r, "회피 대상인 리셋 진단 술어가 실재해야 한다"
+
+
+def test_tolerance_success_predicate_and_goal_z_are_locked_as_a_triple():
+    """★kp_a8: 연속 판정을 공차 없이 베끼면 리프트가 죽는다. 그리고 공차를 올리면
+    첫 목표 z 하한도 같이 올려야 한다 — `goal_bonus` 는 lifted 게이트가 없어서,
+    near_goal 이 리프트 래치보다 낮은 곳에서 켜지면 물체를 안 들고도 보너스가 나간다.
+
+    현행 A: 0.16 − 0.06 = 0.10 = 래치.  B: 0.2125 − 0.1125 = 0.10 = 래치. 같은 불변식이다.
+    """
+    leaf = _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
+    for token in ("tol_start: float = 0.1125", "goal_force_consecutive: bool = True",
+                  "goal_first_z_range: tuple[float, float] = (0.2125, 0.28)",
+                  "tol_success_threshold: float = 3.0"):
+        assert token in leaf, token
+    z0 = float(re.search(r"goal_first_z_range: tuple\[float, float\] = \(([0-9.]+),", leaf).group(1))
+    tol = float(re.search(r"tol_start: float = ([0-9.]+)", leaf).group(1))
+    latch = float(re.search(r"rw_lift_latch_height: float = ([0-9.]+)", _KP_CFG).group(1))
+    assert z0 - tol >= latch - 1e-9, f"{z0} − {tol} = {z0 - tol} < 래치 {latch}"
+    val = _fn_block(_CFG, "_validate_fj_fields")
+    assert "goal_first_z_range" in val and "rw_lift_latch_height" in val, "짝이 검증기에도 잠겨야 한다"
+    assert "tol_start ≥ 0.10" in val
+
+
+def test_task_semantics_live_on_the_leaf_so_grasp_fj_rh_is_not_captured():
+    """★포획 방화벽의 기계 검사.
+
+    형제 `grasp_fj_rh`(RH56F1, 진행 중)가 `GraspFJEnvCfg` 를 상속한다. 과제 의미 값이 base 에
+    있으면 남의 트랙의 성공 술어·공차·예산·외란이 조용히 바뀐다. 등록부가 인스턴스화하는 것은
+    leaf 하나뿐이므로, 이 값들은 leaf 에만 있어야 한다.
+    ★`k_arm`/`arm_slew_rad_s` 만 base 인 이유: fj_rh 가 이미 동일 값으로 고정·assert 한다.
+    """
+    base = _class_body(_CFG, "GraspFJEnvCfg")
+    leaf = _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
+    for field in ("tol_start", "tol_success_threshold", "goal_force_consecutive",
+                  "goal_first_z_range", "wrench_force_scale", "wrench_torque_scale",
+                  "hand_velocity_ff_scale", "synergy_close_speed"):
+        assert re.search(rf"^\s+{field}:", leaf, re.M), f"{field} 가 leaf 에 없다"
+        assert not re.search(rf"^\s+{field}:", base, re.M), f"{field} 가 base 에 있다 — fj_rh 포획"
+    # 반대로 이 둘은 base 라야 한다(fj_rh 가 같은 값을 이미 고정했으므로 no-op).
+    for field in ("k_arm", "arm_slew_rad_s", "synergy_close_ema", "goal_clock_restart_step"):
+        assert re.search(rf"^\s+{field}:", base, re.M), f"{field} 는 base 메커니즘이어야 한다"
+
+
+def test_goal_delta_is_deliberately_not_aligned():
+    """★사용자 지시 "목표델타는 제외" — SimToolReal 은 0.1 m / 90° 지만 우리 값을 유지한다.
+    leaf 가 이 둘을 덮으면 지시 위반이므로 **없어야** 한다(A 값 0.08 / 0° 상속).
+    """
+    leaf = _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
+    assert "goal_delta_distance" not in leaf and "goal_delta_rotation_deg" not in leaf
+    assert "goal_delta_distance: float = 0.08" in _KP_CFG
+
+
+def test_disturbance_is_scaled_by_the_shoulder_torque_ratio():
+    """★사용자 확정 "외란이 arm 이 못버티는 양임" — Kuka 어깨 300 N·m vs OpenArm 40 N·m = 7.5배.
+    20.0/7.5 = 2.67 ≈ 2.7 · 2.0/7.5 = 0.27. A 값(20.0/2.0)은 그대로 둔다.
+    """
+    leaf = _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
+    assert "wrench_force_scale: float = 2.7" in leaf and "wrench_torque_scale: float = 0.27" in leaf
+    assert "wrench_force_scale: float = 20.0" in _KP_CFG, "A 는 안 건드린다"
+
+
+def test_reward_module_is_forked_for_track_b():
+    """★09.08 사용자 확정: A(fabric/palm)와 B(관절 직접)는 제어 방식이 달라 보상 모듈을 안 나눈다.
+
+    `_get_rewards` 는 B 의 계약 금지 훅이므로 통째로 덮지 않는다 — A 가 만든 이음매
+    `_progress_reward` 하나만 덮는다. 갈리는 항은 `goal_bonus` 뿐(성공 순간 1회 전액).
+    """
+    assert "return compute_fj_reward(**kw)" in _fn_block(_ENV, "_progress_reward")
+    # ★로깅 이름표를 인스턴스에 두지 않는다 — 부모 `_init_task_state` 가 super() 뒤에 덮어써서
+    #   B 에서 아예 안 먹었다(09.08 감사에서 실행 재현). A 의 `_log_step` 이 terms 를 직접 순회한다.
+    assert "_rw_terms" not in _ENV, "인스턴스 이름표는 부모가 덮어쓴다"
+    assert "_get_rewards" not in _class_methods(_ENV, "GraspFJEnv")
+    fj = (_HERE / "fj_reward.py").read_text(encoding="utf-8")
+    assert "cfg.goal_bonus * is_success.float()" in fj, "B 는 성공 순간 1회 전액"
+    assert "is_success: torch.Tensor," in fj, "선택 인자면 안 넘겼을 때 조용히 0 이 된다"
+    # 1회성 보너스는 **연속 판정과 짝**이다 — 누적에서는 성공 순간이 목표 이탈 뒤에 올 수 있다.
+    assert "goal_force_consecutive: bool = True" in _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
+
+
+def test_hand_health_metrics_exist_for_the_faster_closure_risk():
+    """★폐쇄가 빨라지면 자유공간에서 손 PD 가 목표를 못 따라가 `blocked` 임계(1.0 rad)를
+    오발할 수 있다 — 폐쇄가 중간에 얼어붙고 겉보기는 "손이 안 닫힌다"와 구분되지 않는다.
+    `task/hand_blocked_frac` 은 `_log_diagnostics` 에 사는데 그 토큰은 이 트랙 계약 금지다.
+    """
+    log = _fn_block(_ENV, "_log_fabric_metrics")
+    for key in ("ctrl/hand_joint_err_max", "ctrl/hand_blocked_frac", "ctrl/hand_target_step"):
+        assert f'"{key}"' in log, key
+    assert "_log_diagnostics" not in _ENV, "계약 금지 토큰"
+
+
+# ------------------------------------------------- 검증기를 **실행**한다 (isaaclab 없이)
+def _run_validator(**over):
+    """`_validate_fj_fields` 소스를 leaf 기본값 + 덮어쓴 값으로 **실제 실행**한다.
+
+    왜 필요한가: 위 테스트들은 전부 소스 문자열 검사라 검증기 안의 오타·NameError 를 못 잡는다.
+    이 트랙은 "부팅에서 시끄럽게 죽는 것"이 안전장치의 전부이므로, 그 코드가 도는지 자체를 본다.
+    """
+    tree = ast.parse(_CFG)
+    node = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_validate_fj_fields")
+    src = textwrap.dedent("\n".join(_CFG.split("\n")[node.lineno - 1:node.end_lineno]))
+    ns: dict = {}
+    exec(src, ns)  # noqa: S102 — 소스 자신의 검증기
+    base = dict(
+        arm_cmd_dim=7, k_arm=0.025, arm_ema=0.1, arm_slew_rad_s=0.15, arm_target_box_rad=0.0,
+        arm_dof_speed_scale=1.5, hand_shape_span_rad=0.035, hand_wide_span_rad=0.35,
+        arm_reset_offset_rad=(),
+        hand_layout="coupled3", hand_direct=True, hand_range_mode="per_role",
+        synergy_close_speed=1.0, synergy_close_ema=0.1, synergy_hold_mode="blocked",
+        episode_length_s=10.0, goal_clock_restart_step=2,
+        goal_force_consecutive=True, tol_start=0.1125,
+        goal_first_z_range=(0.2125, 0.28), rw_lift_latch_height=0.10,
+        sim=types.SimpleNamespace(dt=1.0 / 120.0), decimation=2,
+        _supports_per_finger_hand=lambda: False,
+    )
+    base.update(over)
+    cfg = types.SimpleNamespace(**base)
+    ns["_validate_fj_fields"](cfg, types.SimpleNamespace(num_arm_joints=7))
+
+
+def test_validator_accepts_the_shipped_leaf_values():
+    """출하 값이 검증기를 통과한다 — 안 그러면 부팅이 안 된다."""
+    _run_validator()
+    # 팔 속도 대조군(fj_c1x): 둘을 **같이** 줘야 통과한다 — 하나만 주면 짝이 깨져 부팅이 죽는다.
+    _run_validator(k_arm=0.167, arm_slew_rad_s=1.0, arm_dof_speed_scale=10.0)
+
+
+def test_validator_kills_every_broken_pair():
+    """★잘못된 hydra 오버라이드가 조용한 하이브리드로 도는 대신 부팅에서 죽는다."""
+    cases = {
+        "EMA+램프 동시": dict(synergy_close_speed=0.005),                 # ema 가 0.1 인 채로
+        "EMA 범위": dict(synergy_close_ema=1.5),
+        "slew 짝 이탈": dict(k_arm=0.167),                                 # slew 0.15 인 채로
+        "dofSpeedScale 선언 누락": dict(k_arm=0.167, arm_slew_rad_s=1.0),   # 선언은 1.5 인 채로
+        "per_role + 결합손": dict(hand_direct=False),
+        "범위 모드 오타": dict(hand_range_mode="per-role"),
+        "외전 반폭 과다": dict(hand_shape_span_rad=0.20),   # 실측 교차각 0.094 초과
+        "리셋 오프셋 길이": dict(arm_reset_offset_rad=(0.1, 0.1)),
+        "리셋 오프셋 과다": dict(arm_reset_offset_rad=(2.0,) * 7),
+        "연속+낮은 공차": dict(tol_start=0.06, goal_first_z_range=(0.16, 0.24)),
+        "z짝 위반": dict(goal_first_z_range=(0.16, 0.24)),                # tol 0.1125 인 채로
+        "시계 범위": dict(goal_clock_restart_step=600),
+        "hand_direct + hold_mode": dict(synergy_hold_mode="none"),
+    }
+    for name, over in cases.items():
+        try:
+            _run_validator(**over)
+        except RuntimeError as e:
+            assert "grasp_fj cfg" in str(e), (name, e)
+        else:
+            raise AssertionError(f"'{name}' 을 검증기가 안 잡았다: {over}")
+
+
+def test_validator_kills_a_dt_change_that_unfolds_k_arm():
+    """★`k_arm ≡ dof_speed_scale × 정책_dt` — decimation 을 바꾸면 k_arm 도 환산해야 한다.
+
+    슬루 짝 검사만으로는 못 잡는다. 현실적인 실수는 "decimation 을 바꾸고 **선언 slew 는 성실히
+    고쳤는데** k_arm 이 자기 dt 를 품고 있다는 걸 잊는" 것이다:
+      decimation 4 (dt 1/30) · k_arm 0.025 그대로 · slew 0.075  → α·k/dt 짝은 **맞는다**.
+      그런데 k/dt = 0.75 ≠ 1.5 — 팔이 원본의 절반 속도가 된 채로 조용히 돈다.
+    올바른 환산은 k_arm 0.05 · slew 0.15 이고, 그건 통과해야 한다.
+    """
+    _run_validator(decimation=4, k_arm=0.05, arm_slew_rad_s=0.15)      # 제대로 환산 → 통과
+    with pytest.raises(RuntimeError, match=r"dofSpeedScale"):
+        _run_validator(decimation=4, k_arm=0.025, arm_slew_rad_s=0.075)   # 짝은 맞고 환산만 틀림
+
+
+def test_arm_reset_offset_is_fixed_not_cup_relative():
+    """★08.18 에 컵 **참값** pregrasp 텔레포트를 버렸다 — 실기에서 컵 위치는 지각 결과라
+    재현이 불가능했기 때문이다. 시작 거리를 맞추더라도 그 결정을 되돌리면 안 된다:
+    오프셋은 물체 상태를 읽지 않는 **고정 상수**여야 한다.
+
+    SimToolReal 도 같은 구조다 — 고정 팔 리셋 자세(`desired_kuka_pos`)가 물체의 스폰 분포
+    **평균**에 대해 가까울 뿐, 매 리셋마다 물체를 보고 자세를 계산하지 않는다.
+    """
+    assert "arm_reset_offset_rad: tuple = ()" in _code(_CFG), "기본은 끔(홈 그대로)"
+    blk = _fn_block(_ENV, "_reset_idx")
+    assert "self._arm_reset_off" in blk
+    for banned in ("object", "obj_pos", "goal_pos", "root_pos_w", "spawn"):
+        assert banned not in blk.split("_arm_reset_off")[1][:900], (
+            f"리셋 오프셋 계산이 물체 상태('{banned}')를 읽는다 — 컵 상대 텔레포트 부활")
+    # 지령 목표와 실측을 같이 옮겨야 한다(안 그러면 첫 스텝이 거대한 추종 오차로 시작한다).
+    off = blk.split("self._arm_reset_off is not None")[1]
+    _ordered(off, ["self.robot.write_joint_state_to_sim(_q", "self._arm_q_target[env_ids] = _q",
+                   "self._prev_arm_q_target[env_ids] = self._arm_q_target[env_ids]"])
+    assert "torch.clamp(" in off and "self._arm_lo[env_ids]" in off, "관절 한계를 넘으면 안 된다"
+
+
+def test_registry_leaves_and_arm_specific_values_do_not_leak_to_the_short_arm():
+    """★등록부는 leaf **두 개**를 쓴다: `sens_r`(tesollo_right)와 `short_r`(tesollo_right_short).
+    그리고 Short 는 Right 를 **상속**한다 — 09.08 에 내가 "leaf 하나뿐"이라고 잘못 전제했다.
+
+    과제 의미 값(공차·성공 술어·예산·외란·손 범위)은 팔 기하와 무관하므로 상속이 맞다.
+    그러나 **팔 리셋 오프셋은 홈 관절값 기준 델타**라 홈이 다른 팔에 얹으면 TCP 가 어긋난다
+    (Short 는 docstring 이 "팔 홈 관절값이 다르다"고 명시한다). 그래서 Short 는 반드시 끈다.
+    """
+    assert "GraspFJTesolloRightShortEnvCfg" in _REG, "등록부가 short 판을 쓴다"
+    short = _class_body(_CFG, "GraspFJTesolloRightShortEnvCfg")
+    assert "class GraspFJTesolloRightShortEnvCfg(GraspFJTesolloRightEnvCfg)" in _code(_CFG)
+    assert "arm_reset_offset_rad: tuple = ()" in short, (
+        "Short 가 부모의 리셋 오프셋을 상속하면 안 된다 — 홈이 달라 104.7mm 보장이 깨진다")
+    # 반대로 팔 기하와 무관한 값들은 상속해야 한다(Short 가 덮지 않아야 한다).
+    for field in ("tol_start", "goal_force_consecutive", "wrench_force_scale", "hand_range_mode"):
+        assert not re.search(rf"^\s+{field}:", short, re.M), f"{field} 는 상속해야 한다"

@@ -17,6 +17,7 @@ from .. import robot_profiles as _rp
 from ..grasp_s2r_env_cfg import (
     GraspS2RGripperLeftEnvCfg,
     GraspS2RTesolloRightEnvCfg,
+    GraspS2RTesolloRightShortEnvCfg,
 )
 
 _ENTRY = "openarm.agnostic.tasks.grasp_s2r.grasp_s2r_env:GraspS2REnv"
@@ -35,6 +36,7 @@ def _play(cls):
 _CFGS = {
     "sens_r": GraspS2RTesolloRightEnvCfg,
     "sens_l": GraspS2RGripperLeftEnvCfg,
+    "short_r": GraspS2RTesolloRightShortEnvCfg,
 }
 
 

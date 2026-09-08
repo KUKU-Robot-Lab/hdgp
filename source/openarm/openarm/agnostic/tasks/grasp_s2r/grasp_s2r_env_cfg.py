@@ -1010,3 +1010,16 @@ class GraspS2RTesolloRightEnvCfg(GraspS2REnvCfg):
 @configclass
 class GraspS2RGripperLeftEnvCfg(GraspS2REnvCfg):
     profile_name: str = "gripper_left"
+
+
+@configclass
+class GraspS2RTesolloRightShortEnvCfg(GraspS2RTesolloRightEnvCfg):
+    """DG-5F short base 판 — 프로필만 다르고 과제 정의는 GraspS2RTesolloRightEnvCfg 와 동일하다.
+
+    ★손가락 체인·관절 이름·액션 공간이 dg5f-m 과 같고 홈 palm 포즈도 IK 로 맞췄으므로
+      과제 상수는 전부 그대로 유효하다(손 프레임 일치 오차 0.023mm). 달라지는 것은
+      자산·fabric variant·팔 홈 관절값이며 전부 프로필이 들고 있다.
+    ⚠`palm_box` 는 미검증이다 — 부팅 시 경고가 뜬다. probe 후 승격할 것.
+    """
+
+    profile_name: str = "tesollo_right_short"

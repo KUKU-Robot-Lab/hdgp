@@ -501,10 +501,11 @@ class GraspS2RControlMixin:
                 _act.append(int(_map.get(_f, {}).get(_s, -1)))
             self._syn_act = torch.tensor(_act, device=self.device, dtype=torch.long)
             _n_act = int(self._syn_act.max().item()) + 1
-            if 6 + _n_act != int(self.cfg.action_space):
+            _arm_w = self._arm_slot_width()
+            if _arm_w + _n_act != int(self.cfg.action_space):
                 raise RuntimeError(
-                    f"[{p.name}] per_finger 슬롯 {_n_act} ≠ action_space-6 "
-                    f"{int(self.cfg.action_space) - 6}")
+                    f"[{p.name}] per_finger 슬롯 {_n_act} + 팔 {_arm_w} "
+                    f"≠ action_space {int(self.cfg.action_space)}")
         # 손가락 단위 동결용 — 굴곡 관절(_2/_3/_4) 마스크.
         self._syn_flex = torch.tensor(
             [nm.rsplit("_", 1)[1] in ("2", "3", "4") for nm in p.hand_joint_names],
@@ -539,6 +540,16 @@ class GraspS2RControlMixin:
         print(f"[grasp_s2r] synergy: 관절 {n}개 · 채널 {self._syn_nch} · "
               f"동결 {int(self._syn_freeze.sum())}개 · "
               f"grip 한계clamp {int((self._syn_grip != _grip_clamped).sum())}개", flush=True)
+
+    def _arm_slot_width(self) -> int:
+        """액션 벡터에서 **팔이 쓰는 슬롯 수**. 기본은 palm 6D(fabric 트랙).
+
+        ★왜 훅인가: per_finger 손 레이아웃 검사가 이 숫자를 알아야 하는데, 팔 액션의
+          폭은 트랙이 정한다(A = palm 6 · B = 관절 7). 리터럴 6 을 두면 관절공간 팔을
+          쓰는 트랙에서 손 슬롯이 맞는데도 부팅이 죽는다. 기본값이 6 이라 기존 트랙의
+          거동은 바뀌지 않는다.
+        """
+        return 6
 
     def _synergy_targets(self, a_hand: torch.Tensor) -> torch.Tensor:
         """액션(손가락×채널) → 관절 목표. 프로필 순서 (N, n).

@@ -12,7 +12,7 @@
 import gymnasium as gym
 
 from . import agents
-from ..grasp_fj_env_cfg import GraspFJTesolloRightEnvCfg
+from ..grasp_fj_env_cfg import GraspFJTesolloRightEnvCfg, GraspFJTesolloRightShortEnvCfg
 
 _ENTRY = "openarm.agnostic.tasks.grasp_fj.grasp_fj_env:GraspFJEnv"
 
@@ -32,6 +32,7 @@ def _play(cls):
 
 _CFGS = {
     "sens_r": GraspFJTesolloRightEnvCfg,
+    "short_r": GraspFJTesolloRightShortEnvCfg,
 }
 
 SKIPPED: dict[str, str] = {}

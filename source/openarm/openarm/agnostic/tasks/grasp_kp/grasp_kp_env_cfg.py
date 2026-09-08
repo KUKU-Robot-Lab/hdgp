@@ -310,23 +310,29 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
         """액션의 팔 구간 폭. A = palm 6D. Track B 는 이 훅만 덮어써 `num_arm_joints` 를 준다."""
         return 6
 
-    def _derive_spaces(self, profile) -> None:
-        """액션/관측 차원 파생 — 부모와 같은 자리(finalize)에서 불린다."""
-        n_arm = profile.num_arm_joints
-        n_hand = profile.num_hand_joints
-        num_tips = len(profile.fingertip_bodies)
-        # `finger_sensor_bodies` 는 여기서 **손가락 목록**으로만 쓴다 — 센서는 만들지 않는다.
-        num_fingers = len(profile.finger_sensor_bodies)
+    def _hand_action_dim(self, profile) -> int:
+        """액션의 손 구간 폭. A = 시너지 채널(coupled3 → 3·5 = 15 / per_finger → 슬롯 수).
+
+        ★09.08 팔 훅과 대칭으로 뺐다 — Track B 가 손을 20관절 독립으로 바꿀 때 차원 공식을
+          덮어쓰지 않고 이 훅만 덮는다(`_derive_spaces` 는 A 단일 출처라는 계약을 지킨다).
+          A 의 반환값은 이전 인라인 식과 **같다**.
+        """
         if str(self.hand_layout) == "per_finger":
             _slots = [s for m in profile.hand_finger_channels.values() for s in m.values()]
             if not _slots:
                 raise RuntimeError(f"[{profile.name}] hand_layout=per_finger 인데 hand_finger_channels 가 비어 있다")
             if sorted(set(_slots)) != list(range(max(_slots) + 1)):
                 raise RuntimeError(f"[{profile.name}] 액션 슬롯이 연속이 아니다: {sorted(set(_slots))}")
-            self.action_space = self._arm_action_dim(profile) + max(_slots) + 1
-        else:
-            n_ch = len(set(profile.hand_channel_of_joint.values()))
-            self.action_space = self._arm_action_dim(profile) + n_ch * num_fingers   # 6 + 3·5 = 21
+            return max(_slots) + 1
+        n_ch = len(set(profile.hand_channel_of_joint.values()))
+        return n_ch * len(profile.finger_sensor_bodies)
+
+    def _derive_spaces(self, profile) -> None:
+        """액션/관측 차원 파생 — 부모와 같은 자리(finalize)에서 불린다."""
+        n_arm = profile.num_arm_joints
+        n_hand = profile.num_hand_joints
+        num_tips = len(profile.fingertip_bodies)
+        self.action_space = self._arm_action_dim(profile) + self._hand_action_dim(profile)  # A: 6 + 3·5 = 21
 
         # actor obs (DESIGN §4 순서 — env `_get_observations` 의 cat 순서와 **정확히** 같아야 한다):
         #   arm q/qd(2·n_arm) + hand q/qd(2·n_hand) + palm_pos(3) + palm_ax(6) + tips_rel_palm(3·nt)
@@ -347,3 +353,16 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
 @configclass
 class GraspKPTesolloRightEnvCfg(GraspKPEnvCfg):
     profile_name: str = "tesollo_right"
+
+
+@configclass
+class GraspKPTesolloRightShortEnvCfg(GraspKPTesolloRightEnvCfg):
+    """DG-5F short base 판 — 프로필만 다르고 과제 정의는 GraspKPTesolloRightEnvCfg 와 동일하다.
+
+    ★손가락 체인·관절 이름·액션 공간이 dg5f-m 과 같고 홈 palm 포즈도 IK 로 맞췄으므로
+      과제 상수는 전부 그대로 유효하다(손 프레임 일치 오차 0.023mm). 달라지는 것은
+      자산·fabric variant·팔 홈 관절값이며 전부 프로필이 들고 있다.
+    ⚠`palm_box` 는 미검증이다 — 부팅 시 경고가 뜬다. probe 후 승격할 것.
+    """
+
+    profile_name: str = "tesollo_right_short"

@@ -37,7 +37,7 @@ from ...modules.keypoint_goal import (
 )
 from ...modules.object_wrench import WrenchDR
 from ...modules.perception_delay import DelayQueue, noisy_pose
-from ...modules.progress_reward import PROGRESS_REWARD_TERMS, compute_progress_reward
+from ...modules.progress_reward import compute_progress_reward
 from ..grasp_s2r.grasp_s2r_env import GraspS2REnv
 from .grasp_kp_env_cfg import GraspKPEnvCfg
 
@@ -451,8 +451,17 @@ class GraspKPEnv(GraspS2REnv):
             self._close_gate = torch.where(self._latched, torch.ones_like(_g), _g)
         else:
             self._close_gate = torch.ones(self.num_envs, device=self.device)
-        self._syn_target = self._synergy_targets(self.actions[:, self._hand_action_offset:])
+        self._syn_target = self._hand_targets(self.actions[:, self._hand_action_offset:])
         self._syn_vel = (self._syn_target - _prev) / self._policy_dt
+
+    def _hand_targets(self, a_hand: torch.Tensor) -> torch.Tensor:
+        """액션 손 구간 → 관절 목표 (N, n_hand). **A 는 시너지 그대로다.**
+
+        ★09.08 이음매를 여기 만든 이유: 시너지 본체(`_synergy_targets`)는 grasp_s2r 불변 트랙
+          안에 있어 Track B 가 덮을 수 없다. 호출 지점을 A 에 두면 B 는 이 한 메서드만 덮어
+          손 제어법을 바꾸고, A 의 거동은 한 글자도 안 변한다.
+        """
+        return self._synergy_targets(a_hand)
 
     def _post_command(self) -> None:
         """fabric 손 상태를 실제 지령으로 동기화 → 적분 한 번(정책 스텝당)."""
@@ -590,10 +599,11 @@ class GraspKPEnv(GraspS2REnv):
         _a = float(c.rw_cmd_rate_arm_ema)
         self._lift_ema = (1.0 - _a) * self._lift_ema + _a * self._latched.float().mean()
         self._cmd_rate_armed = self._cmd_rate_armed | (self._lift_ema >= float(c.rw_cmd_rate_arm_lifted_frac))
-        total, terms, out = compute_progress_reward(
+        total, terms, out = self._progress_reward(
             obj_z=obj_pos[:, 2], settled_z=self.object_spawn_pos[:, 2], lifted_prev=self._latched,
             ft_dist=ft_dist, closest_ft=self._trk.closest_ft,
             kp_dist=kp_dist, closest_kp=self._trk.closest_kp, near_goal=near_goal,
+            is_success=is_success,
             arm_qd=qd[:, self._arm_ids_t], hand_qd=qd[:, self._hand_ids_t],
             hand_z_min=self._hand_z_min, cmd_rate=self._cmd_rate * self._cmd_rate_armed.float(), cfg=self._rw_cfg,
         )
@@ -616,6 +626,18 @@ class GraspKPEnv(GraspS2REnv):
         self._log_step(terms, total, kp_dist, ft_dist, near_goal, out, dz)
         return total
 
+    def _progress_reward(self, *, is_success: torch.Tensor, **kw):
+        """보상 계산 이음매. ★A 는 공유 모듈 그대로 — `is_success` 를 받아서 **버린다**.
+
+        A 의 `goal_bonus` 는 near_goal 스텝마다 `goal_bonus/success_steps` 를 나눠 주므로
+        성공 순간이 필요 없다. 그래도 여기서 인자를 받는 이유는 `modules/progress_reward.py` 를
+        **한 글자도 안 건드리기** 위해서다 — 여분 인자를 이음매가 흡수한다.
+
+        B(`grasp_fj`)는 제어 방식이 달라 보상 모듈을 포크했고(09.08 사용자 확정) 이 메서드만
+        덮는다. `_get_rewards` 본체는 양쪽이 공유한다.
+        """
+        return compute_progress_reward(**kw)
+
     def _advance_goals(self, is_success: torch.Tensor) -> None:
         """성공 env: successes+1 · 추적기 초기화 · **이전 목표** 기준 델타 목표(박스 클램프).
 
@@ -630,8 +652,15 @@ class GraspKPEnv(GraspS2REnv):
 
     def _log_step(self, terms, total, kp_dist, ft_dist, near_goal, out, dz) -> None:
         ex = self.extras
-        for k in PROGRESS_REWARD_TERMS:
-            ex[f"reward/{k}"] = terms[k].mean()
+        # ★09.08 모듈 전역 상수가 아니라 **반환된 terms 자체**를 순회한다.
+        #   하위 트랙(B)이 보상 모듈을 포크했는데, 고정 이름표를 쓰면 포크한 항을 못 따라간다.
+        #   ★인스턴스 이름표(`_rw_terms`)로 했다가 되돌렸다: B 는 그것을 `_setup_fabrics` 에서
+        #   세팅하는데, 그 훅이 부모 `_init_task_state` **본문 중간**에서 불리고 그 뒤 이 클래스가
+        #   다시 덮어써서 **B 에서 이음매가 아예 안 먹었다**(감사 실행 재현). 두 이름표가 우연히
+        #   같아 무증상이었고, "그 줄이 있는가"만 보는 소스 테스트는 영원히 초록이었다.
+        #   dict 는 삽입 순서를 보존하고 두 모듈 모두 순서 가드를 갖고 있으므로 이게 안전하다.
+        for k, v in terms.items():
+            ex[f"reward/{k}"] = v.mean()
         ex["reward/total"] = total.mean()
         _ck = self._trk.closest_kp
         ex["task/kp_dist"] = kp_dist.mean()

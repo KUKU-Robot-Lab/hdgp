@@ -38,6 +38,12 @@ class RobotProfile:
     # 빈 문자열이면 전 손관절이 정책 제어.
     hand_locked_joint_regex: str = ""
     num_locked_hand_joints: int = 0      # 공간 계산용(regex 해석 결과와 대조 검증)
+    # ★09.08 외전 중 **넓게** 열어도 되는 것 — 손가락열에서 떨어져 있어 이웃 침범의
+    #   원인이 아닌 관절(엄지 대향). 위 lock 이 "절대 안 움직인다"면 이쪽은 "크게 움직여도
+    #   된다"이고, 둘 중 어디에도 없는 외전은 좁은 반폭(cfg `hand_shape_span_rad`)만 받는다.
+    #   근거: SimToolReal 도 손가락 AA 는 ±0.035 로 자르고 엄지 CMC_AA 만 0.48 rad 를 남겼다
+    #   (`iiwa14_left_sharpa_adjusted_restricted.urdf` — 학습이 실제로 로드하는 자산).
+    hand_wide_shape_joint_regex: str = ""
 
     # ---- 팔 제어: Fabrics ---------------------------------------------------------
     palm_body: str = ""                  # Fabrics palm attractor 가 추종하는 EE body
@@ -163,6 +169,8 @@ TESOLLO_RIGHT = RobotProfile(
     #   파지에 필수라 자유 유지.
     hand_locked_joint_regex="r_hj_(index|middle|ring)_1",
     num_locked_hand_joints=3,
+    # 엄지 대향은 손가락열에서 떨어져 있다 — 침범 원인이 아니므로 넓게 연다.
+    hand_wide_shape_joint_regex="r_hj_thumb_1",
     palm_body="r_hl_palm",
     # ---- Fabrics (DG-5F 계보) ----
     fabric_class="OpenArmTeoslloPoseFabric",
@@ -470,6 +478,211 @@ TESOLLO_RIGHT = RobotProfile(
 
 
 # =============================================================================
+# tesollo_right_short — DG-5F **short base** 판(openarm_dg5f-m-short_bi_rl).
+#
+# 같은 DG-5F 손인데 mount/base 구간이 짧다: `*j_dg_palm` z 0.0698 → 0.022, 즉
+# **손바닥이 플랜지 쪽으로 47.8mm 당겨졌다.** 손가락 체인은 이름·원점·축이
+# TESOLLO_RIGHT 와 완전히 동일하고 manifest 의 control_joint_order(54)·link_order(84)·
+# source_to_canonical_joints 도 바이트 동일하다. 그래서 이 프로필은 `_dc_replace` 로
+# **바뀐 것만** 덮어쓴다 — 손 관련 필드를 복제하면 두 벌이 조용히 갈라진다.
+#
+# ★자산 출처가 dg5f-m 과 다르다: 이쪽은 `vendor/tesollo_model/dg5f`(CAD 릴리스, 사용자
+#   지시)이고 dg5f-m 은 `vendor/delto_m_ros2`(드라이버 사본)다. 결과로 **손 질량이
+#   1.763 → 1.570 kg**(CAD 는 질량·관성이 정합, 드라이버 사본은 라운드 임시값)이고
+#   **9개 관절의 한계가 다르다**(예: `_hj_thumb_1` 상한 0.890 → 1.344 rad,
+#   `_hj_pinky_2` 상한 0.611 → 1.571 rad). 아래 `hand_open_pose`/`hand_grip_pose`/
+#   `init_joint_pos` 값은 전부 새 한계 안이라 그대로 승계된다(확인 완료).
+#   ⚠실기 첫 구동 전 그 9개 관절의 실제 가동범위를 확인할 것 — 드라이버가 배포하는
+#     description 보다 넓게 지령할 수 있다.
+#
+# ★팔 홈은 **재산출했다**(복사 아님). 손이 47.8mm 짧으므로 dg5f-m 의 관절값을 그대로
+#   쓰면 palm 이 47.3mm 어긋난다. dg5f-m 홈의 palm 월드 포즈를 목표로 IK 를 풀었고
+#   (수렴 0.0002mm / 0.0000°, 관절한계 여유 0.136 rad), 그 결과 **palm 이후 손 전 프레임이
+#   dg5f-m 홈과 0.023mm 이내로 일치**한다(손끝 10개 실측). 그래서 손 기하에 종속인
+#   `object_spawn_center`(홈 케이지)·`finger_sensor_bodies`·`palmar_axis_local` 은
+#   재측정 없이 유효하다. 달라지는 것은 `*_hl_base` 뿐(47.80mm).
+#
+# ⚠`palm_box` 는 **미검증**이다. palm 이 손목에 가까워졌으므로 같은 palm 목표를 내려면
+#   팔이 그만큼 더 뻗어야 한다 — 박스의 도달 가능 영역이 줄어든다. 방향(palm_rot_center)
+#   은 IK 가 자세까지 맞췄으므로 그대로 유효하다. 학습 전 probe_boxreach / probe_taskreach
+#   로 재확인하고 `palm_box_verified=True` 로 승격할 것.
+# =============================================================================
+TESOLLO_RIGHT_SHORT = _dc_replace(
+    TESOLLO_RIGHT,
+    name="tesollo_right_short",
+    usd_relpath="robot/openarm_dg5f-m-short_bi_rl/openarm_dg5f-m-short_bi_rl.usd",
+    fabric_robot_dir="openarm_dg5f-m-short_bi_right",
+    fabric_params_filename="openarm_dg5f-m-short_right_pose_params.yaml",
+    palm_box_verified=False,
+    init_joint_pos={
+        **TESOLLO_RIGHT.init_joint_pos,
+        # 우팔: dg5f-m 홈 palm 포즈를 목표로 재산출(IK 오차 0.0002mm / 0.0000°)
+        "r_aj_1": 0.2667, "r_aj_2": 0.4487, "r_aj_3": 0.4923, "r_aj_4": 0.7184,
+        "r_aj_5": -0.0460, "r_aj_6": 0.6496, "r_aj_7": 0.4762,
+        # 유휴 좌팔도 같은 방식으로 재산출(IK 오차 0.0000mm / 0.0000°)
+        "l_aj_1": -0.3610, "l_aj_2": -0.6357, "l_aj_3": 0.0322, "l_aj_4": 0.4330,
+        "l_aj_5": -0.2661, "l_aj_6": -0.5842, "l_aj_7": -0.7274,
+    },
+)
+
+
+# =============================================================================
+# rh56f1_right — Inspire RH56F1 우손. **물리 12관절 중 구동 6**(언더액추에이션).
+#
+# ★이 프로필은 **Track B(`grasp_fj_rh`) 전용**이다. fabric 을 쓰는 트랙
+#   (grasp_s2r / grasp_kp)으로는 못 띄운다 — `fabric_class=None` 이라 부팅에서 죽는다.
+#   여기 두는 이유는 이 파일이 로봇 레지스트리의 단일 출처이기 때문이다(파일 상단 설계
+#   목표: "새 로봇 추가 = 이 파일에 프로필 1개 추가"). 부모 cfg 의
+#   `finalize_after_overrides` 가 이 모듈의 `PROFILES` 를 읽으므로 다른 곳에 두면
+#   조용한 KeyError 가 된다.
+#
+# ★언더액추에이션은 **자산이 들고 있다**(09.05 재생성본 USD 실측):
+#     구동 6 = thumb_1(외전) · thumb_2(굴곡) · {index,middle,ring,pinky}_1
+#              → PhysicsDriveAPI 보유
+#     종속 6 = thumb_3(=thumb_2×1.1425) · thumb_4(=thumb_3×0.7508)
+#              · {index,middle,ring,pinky}_2(=같은 손가락 _1 × 1.1169)
+#              → **DriveAPI 없음** · physxMimicJoint(naturalFrequency 200 · dampingRatio 1.0)
+#   09.02 씬 폭발(1024 env 중 400개 동시 위반)의 원인이던 "종속 한계가 좁아 mimic 제약과
+#   관절한계가 동시에 만족 불가"는 자산 쪽에서 고쳐졌다 — 종속 한계가 리더 오버슈트
+#   0.5 rad 여유로 넓혀져 있다(thumb_3 −0.571~+1.113 rad). 그래서 software mimic 을
+#   이식하지 않는다. 종속관절 액추에이터는 **0/0** 으로 덮어 제약과 싸우지 않게 한다
+#   (IsaacLab 은 전 관절 액추에이터 커버리지를 요구한다 — articulation.py:1769).
+#
+# 출처: assets/robot/openarm_rh56f1_bi_rl/*(URDF·USD 실측) + 09.02~09.03 grasp_ua 캘리브.
+# =============================================================================
+_RH_FLEX = ("index", "middle", "ring", "pinky")
+
+RH56F1_RIGHT = RobotProfile(
+    name="rh56f1_right",
+    usd_relpath="robot/openarm_rh56f1_bi_rl/openarm_rh56f1_bi_rl.usd",
+    num_arm_joints=7,
+    num_hand_joints=6,
+    arm_joint_regex="r_aj_[1-7]",
+    # ★구동 6개만. 종속 6개는 정책이 보지도 몰지도 않는다(PhysX mimic 이 몬다).
+    hand_joint_regex="r_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)",
+    palm_body="r_hl_palm_sensor",
+    # ---- Fabrics 없음(Track B 전용) ----
+    fabric_class=None,
+    fabric_joint_order=(),          # 비우면 env 가 cat([arm, hand]) 순서를 쓴다
+    # ---- 시너지 그립 ------------------------------------------------------------
+    hand_joint_names=(
+        "r_hj_thumb_1", "r_hj_thumb_2",
+        *tuple(f"r_hj_{f}_1" for f in _RH_FLEX),
+    ),
+    # ★thumb_1 은 **외전(대향)** 이지 굴곡이 아니다. open 1.57 = 벌려서 컵이 들어올 gap 을
+    #   만들고, grip 1.20 으로 내려 컵을 받친다 — open→grip 이 **감소**한다(lerp 는 부호 무관).
+    #   09.03 실측: 엄지-4지 법선 간극은 1.57 에서 83.7mm 로 최대이고 2.09 로 더 벌리면
+    #   73.9mm 로 오히려 줄어든다.
+    hand_open_pose=(1.57, 0.00, 0.00, 0.00, 0.00, 0.00),
+    hand_grip_pose=(1.20, 0.24, 1.08, 1.08, 0.85, 0.85),
+    # 접미사 → 채널. RH56F1 은 접미사가 `1`(엄지 외전 / 4지 굴곡)과 `2`(엄지 굴곡)뿐이다.
+    hand_channel_of_joint={"1": 0, "2": 1},
+    # ★per_finger 레이아웃 전용 — 6슬롯이 구동 6관절과 1:1. 채널 레이아웃(2×5=10)을 쓰면
+    #   4지의 채널1 이 아무 관절에도 안 걸려 액션 4개가 그냥 죽는다.
+    hand_finger_channels={
+        "thumb": {"1": 0, "2": 1},
+        "index": {"1": 2},
+        "middle": {"1": 3},
+        "ring": {"1": 4},
+        "pinky": {"1": 5},
+    },
+    # 손가락당 구동관절이 하나라 tesollo 식 "닿은 마디만 정지" 드레이프가 구조적으로
+    # 불가능하다 — 감쌈은 하드웨어 결합(_2 = _1 × 1.1169)이 만든다.
+    hand_freeze_suffixes=("1", "2"),
+    # ---- palm 워크스페이스 (Track B 는 제어에 안 쓴다 — 홈 검사·앵커 부트스트랩용) ----
+    # ★z 하한 0.26: palm 원점~최하단 링크가 114mm 라 palm z 가 0.314 밑이면 손이 테이블
+    #   안이다(09.02). 0.30 은 케이지가 컵 높이에 못 내려가 0.26 으로 내렸다(09.03).
+    palm_box_min=(0.20, -0.55, 0.26),
+    palm_box_max=(0.65, 0.22, 0.65),
+    # ★09.02 캘리브: 태스크 기준자세(손바닥 +y · 손가락 +x)가 이 프레임에선 짐벌락(ey −90°)
+    #   이라 손가락을 25° 내려 특이점에서 뗐다. 선행 트랙 프리셋 (180,0,90)은 손가락이
+    #   **위**를 향해 도달 불가였다(130mm/51° 포화).
+    palm_rot_center_deg=(0.0, -65.0, -90.0),
+    palm_rot_half_deg=45.0,
+    palm_box_verified=False,
+    # ---- 접촉 링크 (Track B 는 센서를 만들지 않는다 — 손가락 목록·손끝으로만 쓰인다) ----
+    # 규약: (중간, 원위, 팁). RH56F1 4지는 2마디라 (_1, _2, _tip), 엄지는 원위 2마디가
+    # 종속이라 (_3, _4, _tip).
+    finger_sensor_bodies={
+        "thumb": ("r_hl_thumb_3", "r_hl_thumb_4", "r_hl_thumb_tip"),
+        **{f: (f"r_hl_{f}_1", f"r_hl_{f}_2", f"r_hl_{f}_tip") for f in _RH_FLEX},
+    },
+    contact_group_a=("thumb",),
+    contact_group_b=_RH_FLEX,
+    envelope_fingers=("thumb", *_RH_FLEX),
+    # URDF 실측 유도 — cross(굴곡축, 장축), 마디 링크 국소 프레임:
+    #   4지: 축 (0,0,-1) · 장축 ≈ +y → (+1,0,0)
+    #   엄지: 축 (0,0,-1) · 장축 (−0.602, 0.799, 0) → (0.799, 0.602, 0)
+    palmar_axis_local={
+        "thumb": (0.799, 0.602, 0.0),
+        **{f: (1.0, 0.0, 0.0) for f in _RH_FLEX},
+    },
+    fingertip_bodies=("r_hl_thumb_tip", *tuple(f"r_hl_{f}_tip" for f in _RH_FLEX)),
+    init_joint_pos={
+        # ★★09.02 캘리브(probe_ua_home_calib) — 목표 palm (0.310, −0.300, 0.419 /
+        #   ez 0° ey −65° ex −90°) 로 수렴한 관절값. 09.07 재확인: 새 자산에서도 그대로 나온다.
+        # ★★★09.08 되돌림 — 접근거리를 케이지 반경의 2.7배 → 1.6배로 당겼던 3차·4차 홈을
+        #   **폐기**한다. 근거(무액션 실측): 그 홈에서는 **아무 액션 없이도** 물체가 21° 기울고
+        #   7~23mm 떠오른다 — 열린 손가락이 케이지 중심에서 53mm 밖으로 뻗어 있어, 케이지가
+        #   62mm 앞에 서면 손끝이 물체 반경(28.6mm) 안으로 들어간다(62 − 53 = 9mm < 28.6).
+        #   즉 리셋 순간 손과 물체가 겹친다. 부팅 검사는 "xy 간격 > 케이지 반경"만 보고
+        #   **물체 반경을 안 본다** — 그래서 조용히 통과했다(영상에서 셰이커가 상판에 박혀 보였다).
+        #   구 홈은 xy 간격 106mm 라 106 − 53 = 53mm > 28.6mm 로 여유가 있다.
+        #   ⇒ 접근거리 비율(tesollo 1.57)을 맞추려던 시도는 **기각**. 손이 작으면 손가락이
+        #     상대적으로 더 튀어나오므로 같은 비율이 같은 여유를 뜻하지 않는다.
+        "r_aj_1": -0.2069, "r_aj_2": 0.4203, "r_aj_3": 0.3880, "r_aj_4": 1.5941,
+        "r_aj_5": 0.4569, "r_aj_6": 0.3426, "r_aj_7": -0.4174,
+        # 손 구동 6 = hand_open_pose
+        "r_hj_thumb_1": 1.57, "r_hj_thumb_2": 0.0,
+        **{f"r_hj_{f}_1": 0.0 for f in _RH_FLEX},
+        # ★종속 6 = 구동 × 배율. 결합값으로 시작하지 않으면 첫 스텝에 snap 이 난다.
+        "r_hj_thumb_3": 0.0, "r_hj_thumb_4": 0.0,
+        **{f"r_hj_{f}_2": 0.0 for f in _RH_FLEX},
+        # 유휴 좌팔 — fabric default_config 의 _ARM_REST_L 과 같은 값(정합 유지).
+        "l_aj_1": -0.315, "l_aj_2": -0.290, "l_aj_3": 0.400, "l_aj_4": 0.513,
+        "l_aj_5": 0.666, "l_aj_6": -0.729, "l_aj_7": -0.957,
+        # 유휴 좌손 — 좌우 한계가 같아(둘 다 하한 0) 0 이 전부 범위 안이다(URDF 실측).
+        "l_hj_thumb_1": 0.0, "l_hj_thumb_2": 0.0,
+        **{f"l_hj_{f}_1": 0.0 for f in _RH_FLEX},
+        "l_hj_thumb_3": 0.0, "l_hj_thumb_4": 0.0,
+        **{f"l_hj_{f}_2": 0.0 for f in _RH_FLEX},
+        "head_j_pan": 0.0, "head_j_tilt": 0.0,
+    },
+    actuator_specs={
+        **_vg.arm_actuators("right_arm", "r"),
+        **_vg.arm_actuators("left_arm", "l"),         # 유휴측도 벤더 게인(같은 로봇이다)
+        # ★★손 게인 5.0/2.0 — 벤더 PD 가 **없다**(`vendor_gains.NO_VENDOR_PD["rh56f1_hand"]`:
+        #   RS-485 위치 서보라 PD 개념이 없다). 자산 USD 는 fallback 100/1 이지만
+        #   이 관절들의 effort 는 1 N·m 라 kp 100 이면 오차 0.01 rad 에서 포화해
+        #   사실상 정토크원이 된다 — 접촉이 들어오면 관절이 역구동돼 한계 밖으로 밀린다
+        #   (09.02 실측 hand_joint_err_max 1.94 rad > 가동범위 1.53 rad → 씬 발산).
+        #   kp 5 면 0.2 rad 에서 effort 에 닿아 선형 구간이 남는다. 파지력은 effort 가
+        #   정하므로 줄지 않는다.
+        "right_hand_drive": dict(
+            joint_names_expr=["r_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"],
+            stiffness=5.0, damping=2.0),
+        "left_hand_drive": dict(
+            joint_names_expr=["l_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"],
+            stiffness=5.0, damping=2.0),
+        # ★★종속 12 = **0/0**. 이 관절들은 USD 에 DriveAPI 가 없고 PhysX mimic 제약이
+        #   위치를 정한다. 액추에이터를 두는 이유는 IsaacLab 이 전 관절 커버리지를
+        #   요구하기 때문이고(articulation.py:1769), 게인을 0 으로 두는 이유는 드라이브가
+        #   살아나면 mimic 제약과 싸우기 때문이다.
+        "right_hand_mimic": dict(
+            joint_names_expr=["r_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"],
+            stiffness=0.0, damping=0.0),
+        "left_hand_mimic": dict(
+            joint_names_expr=["l_hj_(thumb_[34]|index_2|middle_2|ring_2|pinky_2)"],
+            stiffness=0.0, damping=0.0),
+        "head": dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
+    },
+    # ★09.02 캘리브: 홈 케이지가 컵과 x 정렬되도록 역산(케이지는 palm 에 강체).
+    #   ⚠자산 재생성 후 `probe_fjrh_calib.py` 로 재확인한다.
+    object_spawn_center=(0.38, -0.16),
+)
+
+
+# =============================================================================
 # gripper_left — 같은 자산의 좌팔 2-DOF 평행 그리퍼. agnosticism 검증용(Phase 2):
 # 이 프로필 추가 외에 태스크 코드 수정이 0 이어야 합격.
 # 대향 그룹 = jaw1 / jaw2. l_hj_gripper_2 는 USD PhysX mimic(gearing=-1).
@@ -571,6 +784,17 @@ TESOLLO_RIGHT_ONLY = _drop_left(
     "robot/openarm_dg5f-m_bi_rl/openarm_dg5f-m_bi_rl_right.usda",
 )
 
+# ★오른팔 전용 오버레이 판 — 왼팔 subtree 를 합성에서 끈 자산(`*_right.usda`).
+#   dg5f-m 2,048 env 실측에서 처리량 +63%(24,155 → 39,448 fps)이고 물리 지표는 동일했다.
+#   RH56F1 은 왼쪽 링크 35·관절 35 를 끈다(`scripts/tools/make_right_only_overlay.py`).
+#   ★체크포인트 비호환 — articulation 관절 수가 바뀌므로 FRESH 학습이 필요하다.
+RH56F1_RIGHT_ONLY = _drop_left(
+    RH56F1_RIGHT,
+    "rh56f1_right_only",
+    "robot/openarm_rh56f1_bi_rl/openarm_rh56f1_bi_rl_right.usda",
+)
+
 PROFILES: dict[str, RobotProfile] = {
-    p.name: p for p in (TESOLLO_RIGHT, TESOLLO_RIGHT_ONLY, GRIPPER_LEFT)
+    p.name: p for p in (TESOLLO_RIGHT, TESOLLO_RIGHT_ONLY, TESOLLO_RIGHT_SHORT,
+                        RH56F1_RIGHT, RH56F1_RIGHT_ONLY, GRIPPER_LEFT)
 }

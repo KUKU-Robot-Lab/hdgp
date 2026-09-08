@@ -1606,9 +1606,14 @@ def test_hand_sim_gains_are_the_vendor_driver_pid():
 
     prof = (_HERE / "robot_profiles.py").read_text(encoding="utf-8")
     assert "_vg.hand_actuator(" in prof, "손 게인이 벤더 모듈을 거치지 않는다"
-    assert "stiffness=5.0, damping=2.0" not in prof, "구 손 게인(5.0/2.0)이 되살아났다"
     assert "effort_limit_sim=1.5" in prof, "손 effort 한계가 바뀌었다"
     assert VG.hand_gains() == (1.5, 0.0)
+    # ★구 손 게인(5.0/2.0) 금지는 **DG-5F 프로필 구간에만** 건다. 이 파일은 로봇
+    #   레지스트리라 벤더 PD 가 없는 손(RH56F1: RS-485 위치 서보 — `VG.NO_VENDOR_PD`)도
+    #   같이 산다. 파일 전체 텍스트 금지는 그 예외까지 잡아 규칙과 무관한 실패를 낸다.
+    _dg5f = prof[prof.index("TESOLLO_RIGHT = RobotProfile("):prof.index("RH56F1_RIGHT = RobotProfile(")]
+    assert "stiffness=5.0, damping=2.0" not in _dg5f, "구 DG-5F 손 게인(5.0/2.0)이 되살아났다"
+    assert "rh56f1_hand" in VG.NO_VENDOR_PD, "벤더 PD 없는 손의 예외 사유가 사라졌다"
 
 
 def test_gain_dr_excludes_hand_by_default():

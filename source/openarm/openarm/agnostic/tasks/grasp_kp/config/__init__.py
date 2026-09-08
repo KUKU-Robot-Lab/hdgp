@@ -15,7 +15,7 @@ import gymnasium as gym
 
 from . import agents
 from .. import robot_profiles as _rp
-from ..grasp_kp_env_cfg import GraspKPTesolloRightEnvCfg
+from ..grasp_kp_env_cfg import GraspKPTesolloRightEnvCfg, GraspKPTesolloRightShortEnvCfg
 
 _ENTRY = "openarm.agnostic.tasks.grasp_kp.grasp_kp_env:GraspKPEnv"
 
@@ -35,6 +35,7 @@ def _play(cls):
 
 _CFGS = {
     "sens_r": GraspKPTesolloRightEnvCfg,
+    "short_r": GraspKPTesolloRightShortEnvCfg,
 }
 
 
