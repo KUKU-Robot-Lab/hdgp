@@ -207,7 +207,15 @@ def test_synergy_path_is_untouched_when_hand_direct_is_off():
 
 # ---------------------------------------------------------------- 실제 프로필 대조 (URDF 없이)
 def test_tesollo_right_override_floors_exactly_the_twelve_distal_flexions():
-    """프로필(관절명 소유자)의 override 가 `_3/_4` 10개를 모두 잡고, 그 외는 안 건드린다."""
+    """프로필 override 가 **관절 의미별**로 정확히 걸린다(09.10 사용자 확정 해부).
+
+        thumb_1   엄지 자체 회전(대향 아님)        → 매뉴얼 전폭
+        thumb_2   **대향** — 인벨롭의 핵심          → 매뉴얼 전폭
+        _3/_4     조이는 관절(10개)                → 굴곡 전용(하한 0)
+        index~ring _1 · pinky_2   외전 — 열수록 손가락끼리 충돌 → ±0.16
+        pinky_1   손바닥 쪽으로 마는 관절(손바닥 관절) → 매뉴얼 전폭. 인벨롭에 쓰인다.
+                  ⚠구 코드가 외전과 한 규칙으로 묶어 ±9.2° 로 잠가 뒀다 — 회귀 금지.
+    """
     from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
     p = PROFILES["tesollo_right"]
     ov = dict(p.hand_action_limit_override)
@@ -217,8 +225,15 @@ def test_tesollo_right_override_floors_exactly_the_twelve_distal_flexions():
             if re.fullmatch(rx, n):                      # IsaacLab 과 같은 의미
                 assert n not in hit, f"{n} 이 규칙 두 개에 걸린다"
                 hit[n] = (lo, hi)
-    assert set(hit) == {n for n in p.hand_joint_names if n.endswith(("_3", "_4"))}
-    assert all(v == (0.0, None) for v in hit.values()), "엄지 _3 포함 전부 하한 0(사용자 재확정)"
+    flex = {n for n in p.hand_joint_names if n.endswith(("_3", "_4"))}
+    abduct = {n for n in p.hand_joint_names
+              if re.fullmatch(r"r_hj_(index|middle|ring)_1", n) or n == "r_hj_pinky_2"}
+    assert set(hit) == flex | abduct, set(hit) ^ (flex | abduct)
+    assert all(hit[n] == (0.0, None) for n in flex), "조이는 관절은 전부 하한 0(사용자 재확정)"
+    assert all(hit[n] == (-0.16, 0.16) for n in abduct), "외전은 ±0.16(손가락 충돌 때문)"
+    # ★자유롭게 열려 있어야 하는 것들 — 하나라도 규칙에 걸리면 인벨롭 자유도를 막는 회귀다.
+    for free in ("r_hj_thumb_1", "r_hj_thumb_2", "r_hj_pinky_1"):
+        assert free not in hit, f"{free} 은 매뉴얼 전폭이어야 한다(09.10 사용자 확정 해부)"
     # 리셋(open) 자세가 하한 아래인 관절은 B 리셋이 clamp 한다 — 이동량이 cfg 상한(0.6) 안이어야 한다.
     for n, q in zip(p.hand_joint_names, p.hand_open_pose):
         if n in hit and q < hit[n][0]:

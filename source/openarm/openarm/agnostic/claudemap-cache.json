@@ -1,0 +1,3302 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-06T12:07:42.032Z",
+  "fileCount": 68,
+  "files": [
+    {
+      "path": "__init__.py",
+      "relativePath": "__init__.py",
+      "name": "__init__.py",
+      "directory": "",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788594747642.483,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "modules/__init__.py",
+      "relativePath": "modules/__init__.py",
+      "name": "__init__.py",
+      "directory": "modules",
+      "lineCount": 8,
+      "language": "python",
+      "mtimeMs": 1788594747642.483,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "modules/adr.py",
+      "relativePath": "modules/adr.py",
+      "name": "adr.py",
+      "directory": "modules",
+      "lineCount": 140,
+      "language": "python",
+      "mtimeMs": 1788594747642.483,
+      "imports": [
+        "__future__",
+        "copy"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/agents.py",
+      "relativePath": "modules/agents.py",
+      "name": "agents.py",
+      "directory": "modules",
+      "lineCount": 31,
+      "language": "python",
+      "mtimeMs": 1788594747642.483,
+      "imports": [
+        "__future__"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/keypoint_goal.py",
+      "relativePath": "modules/keypoint_goal.py",
+      "name": "keypoint_goal.py",
+      "directory": "modules",
+      "lineCount": 260,
+      "language": "python",
+      "mtimeMs": 1788691417995.4255,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "math\nfrom dataclasses import dataclass\n\nimport torch"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/object_bank.py",
+      "relativePath": "modules/object_bank.py",
+      "name": "object_bank.py",
+      "directory": "modules",
+      "lineCount": 406,
+      "language": "python",
+      "mtimeMs": 1788687103359.2227,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "os\nfrom dataclasses import dataclass",
+        "field"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/object_wrench.py",
+      "relativePath": "modules/object_wrench.py",
+      "name": "object_wrench.py",
+      "directory": "modules",
+      "lineCount": 78,
+      "language": "python",
+      "mtimeMs": 1788691417995.4255,
+      "imports": [
+        "__future__",
+        "math\n\nimport torch"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/perception_delay.py",
+      "relativePath": "modules/perception_delay.py",
+      "name": "perception_delay.py",
+      "directory": "modules",
+      "lineCount": 125,
+      "language": "python",
+      "mtimeMs": 1788691417995.4255,
+      "imports": [
+        "__future__",
+        "math\n\nimport torch"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/physics_dr.py",
+      "relativePath": "modules/physics_dr.py",
+      "name": "physics_dr.py",
+      "directory": "modules",
+      "lineCount": 135,
+      "language": "python",
+      "mtimeMs": 1788594747642.483,
+      "imports": [
+        "__future__",
+        "isaaclab.managers",
+        "isaaclab.utils",
+        "isaaclab.envs.mdp"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/progress_reward.py",
+      "relativePath": "modules/progress_reward.py",
+      "name": "progress_reward.py",
+      "directory": "modules",
+      "lineCount": 149,
+      "language": "python",
+      "mtimeMs": 1788691417995.4255,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "torch"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/robots.py",
+      "relativePath": "modules/robots.py",
+      "name": "robots.py",
+      "directory": "modules",
+      "lineCount": 684,
+      "language": "python",
+      "mtimeMs": 1788687103359.2227,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        ".",
+        "field\n\nfrom . import vendor_gains"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/tests/__init__.py",
+      "relativePath": "modules/tests/__init__.py",
+      "name": "__init__.py",
+      "directory": "modules/tests",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788594747642.483,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "modules/tests/test_keypoint_goal.py",
+      "relativePath": "modules/tests/test_keypoint_goal.py",
+      "name": "test_keypoint_goal.py",
+      "directory": "modules/tests",
+      "lineCount": 239,
+      "language": "python",
+      "mtimeMs": 1788691417995.4255,
+      "imports": [
+        "__future__",
+        "openarm.agnostic.modules",
+        "math\n\nimport pytest\nimport torch\n\nfrom openarm.agnostic.modules import keypoint_goal"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/tests/test_modules.py",
+      "relativePath": "modules/tests/test_modules.py",
+      "name": "test_modules.py",
+      "directory": "modules/tests",
+      "lineCount": 153,
+      "language": "python",
+      "mtimeMs": 1788594747642.483,
+      "imports": [
+        "__future__",
+        "openarm.agnostic.modules",
+        "pytest\n\nfrom openarm.agnostic.modules import adr",
+        "dataclasses"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/tests/test_object_wrench.py",
+      "relativePath": "modules/tests/test_object_wrench.py",
+      "name": "test_object_wrench.py",
+      "directory": "modules/tests",
+      "lineCount": 93,
+      "language": "python",
+      "mtimeMs": 1788691417995.4255,
+      "imports": [
+        "__future__",
+        "openarm.agnostic.modules",
+        "pytest\nimport torch\n\nfrom openarm.agnostic.modules import object_wrench"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/tests/test_perception_delay.py",
+      "relativePath": "modules/tests/test_perception_delay.py",
+      "name": "test_perception_delay.py",
+      "directory": "modules/tests",
+      "lineCount": 154,
+      "language": "python",
+      "mtimeMs": 1788691417995.4255,
+      "imports": [
+        "__future__",
+        "openarm.agnostic.modules",
+        "math\n\nimport pytest\nimport torch\n\nfrom openarm.agnostic.modules import perception_delay"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/tests/test_progress_reward.py",
+      "relativePath": "modules/tests/test_progress_reward.py",
+      "name": "test_progress_reward.py",
+      "directory": "modules/tests",
+      "lineCount": 224,
+      "language": "python",
+      "mtimeMs": 1788691417995.4255,
+      "imports": [
+        "__future__",
+        "openarm.agnostic.modules",
+        "math\n\nimport pytest\nimport torch\n\nfrom openarm.agnostic.modules import progress_reward"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/tests/test_robot_registry.py",
+      "relativePath": "modules/tests/test_robot_registry.py",
+      "name": "test_robot_registry.py",
+      "directory": "modules/tests",
+      "lineCount": 317,
+      "language": "python",
+      "mtimeMs": 1788594747642.483,
+      "imports": [
+        "__future__",
+        "pathlib",
+        "openarm.agnostic.modules",
+        "re\nfrom pathlib import Path\n\nimport pytest\n\nfrom openarm.agnostic.modules import robots",
+        "importlib.util\n    import sys"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/tests/test_vendor_gains.py",
+      "relativePath": "modules/tests/test_vendor_gains.py",
+      "name": "test_vendor_gains.py",
+      "directory": "modules/tests",
+      "lineCount": 249,
+      "language": "python",
+      "mtimeMs": 1788692443233.6267,
+      "imports": [
+        "__future__",
+        "pathlib",
+        "openarm.agnostic.modules",
+        "openarm.gripper.left.grasp_sensor",
+        "openarm.gripper.left.grasp_sensor_v2",
+        "re\nfrom pathlib import Path\n\nimport pytest\n\nfrom openarm.agnostic.modules import vendor_gains"
+      ],
+      "exports": []
+    },
+    {
+      "path": "modules/vendor_gains.py",
+      "relativePath": "modules/vendor_gains.py",
+      "name": "vendor_gains.py",
+      "directory": "modules",
+      "lineCount": 245,
+      "language": "python",
+      "mtimeMs": 1788687103359.2227,
+      "imports": [
+        "__future__",
+        "functools",
+        "pathlib",
+        "re\nfrom functools import lru_cache\nfrom pathlib import Path"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/__init__.py",
+      "relativePath": "tasks/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788594747642.483,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_fj/__init__.py",
+      "relativePath": "tasks/grasp_fj/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_fj",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788692167628.023,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_fj/config/__init__.py",
+      "relativePath": "tasks/grasp_fj/config/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_fj/config",
+      "lineCount": 61,
+      "language": "python",
+      "mtimeMs": 1788694599856.809,
+      "imports": [
+        ".",
+        "..grasp_fj_env_cfg",
+        "gymnasium"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_fj/config/agents/__init__.py",
+      "relativePath": "tasks/grasp_fj/config/agents/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_fj/config/agents",
+      "lineCount": 14,
+      "language": "python",
+      "mtimeMs": 1788693198320.6653,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_fj/grasp_fj_env_cfg.py",
+      "relativePath": "tasks/grasp_fj/grasp_fj_env_cfg.py",
+      "name": "grasp_fj_env_cfg.py",
+      "directory": "tasks/grasp_fj",
+      "lineCount": 69,
+      "language": "python",
+      "mtimeMs": 1788694561787.7134,
+      "imports": [
+        "__future__",
+        "isaaclab.utils",
+        "..grasp_kp.grasp_kp_env_cfg",
+        ".robot_profiles"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_fj/grasp_fj_env.py",
+      "relativePath": "tasks/grasp_fj/grasp_fj_env.py",
+      "name": "grasp_fj_env.py",
+      "directory": "tasks/grasp_fj",
+      "lineCount": 173,
+      "language": "python",
+      "mtimeMs": 1788694561787.7134,
+      "imports": [
+        "__future__",
+        "..grasp_kp.grasp_kp_env",
+        ".grasp_fj_env_cfg",
+        "math\n\nimport torch\n\nfrom ..grasp_kp.grasp_kp_env import GraspKPEnv\nfrom .grasp_fj_env_cfg import GraspFJEnvCfg"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_fj/robot_profiles.py",
+      "relativePath": "tasks/grasp_fj/robot_profiles.py",
+      "name": "robot_profiles.py",
+      "directory": "tasks/grasp_fj",
+      "lineCount": 13,
+      "language": "python",
+      "mtimeMs": 1788692167630.023,
+      "imports": [
+        "..grasp_s2r.robot_profiles"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_fj/tests/__init__.py",
+      "relativePath": "tasks/grasp_fj/tests/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_fj/tests",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788693198320.6653,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_fj/tests/test_grasp_fj_contract.py",
+      "relativePath": "tasks/grasp_fj/tests/test_grasp_fj_contract.py",
+      "name": "test_grasp_fj_contract.py",
+      "directory": "tasks/grasp_fj/tests",
+      "lineCount": 254,
+      "language": "python",
+      "mtimeMs": 1788694770248.2766,
+      "imports": [
+        "__future__",
+        "pathlib",
+        "openarm.agnostic.tasks.grasp_kp.tests.test_grasp_kp_contract",
+        "openarm.agnostic.tasks.grasp_fj",
+        "openarm.agnostic.tasks.grasp_s2r",
+        "openarm.agnostic.tasks.grasp_fj.robot_profiles",
+        "ast\nimport re\nimport textwrap\nimport types\nfrom pathlib import Path"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_kp/__init__.py",
+      "relativePath": "tasks/grasp_kp/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_kp",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788692167628.023,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_kp/config/__init__.py",
+      "relativePath": "tasks/grasp_kp/config/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_kp/config",
+      "lineCount": 87,
+      "language": "python",
+      "mtimeMs": 1788694599856.809,
+      "imports": [
+        ".",
+        "..",
+        "..grasp_kp_env_cfg",
+        "dataclasses"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_kp/config/agents/__init__.py",
+      "relativePath": "tasks/grasp_kp/config/agents/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_kp/config/agents",
+      "lineCount": 14,
+      "language": "python",
+      "mtimeMs": 1788692167631.023,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_kp/grasp_kp_env_cfg.py",
+      "relativePath": "tasks/grasp_kp/grasp_kp_env_cfg.py",
+      "name": "grasp_kp_env_cfg.py",
+      "directory": "tasks/grasp_kp",
+      "lineCount": 269,
+      "language": "python",
+      "mtimeMs": 1788694561787.7134,
+      "imports": [
+        "__future__",
+        "isaaclab.utils",
+        "...modules.keypoint_goal",
+        "...modules.progress_reward",
+        "..grasp_s2r.grasp_s2r_env_cfg",
+        ".robot_profiles"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_kp/grasp_kp_env.py",
+      "relativePath": "tasks/grasp_kp/grasp_kp_env.py",
+      "name": "grasp_kp_env.py",
+      "directory": "tasks/grasp_kp",
+      "lineCount": 563,
+      "language": "python",
+      "mtimeMs": 1788694599856.809,
+      "imports": [
+        "__future__",
+        "isaaclab.assets",
+        "isaaclab.sim.spawners.from_files",
+        "isaaclab.sim.utils",
+        "...modules.keypoint_goal",
+        "...modules.object_wrench",
+        "...modules.perception_delay",
+        "...modules.progress_reward",
+        "..grasp_s2r.grasp_s2r_env",
+        ".grasp_kp_env_cfg",
+        "openarm.agnostic.modules",
+        "isaaclab.sensors",
+        "math\n\nimport torch\n\nimport isaaclab.sim",
+        "RigidObject\nfrom isaaclab.sim.spawners.from_files import GroundPlaneCfg",
+        "spawn_ground_plane\nfrom isaaclab.sim.utils import bind_physics_material"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_kp/robot_profiles.py",
+      "relativePath": "tasks/grasp_kp/robot_profiles.py",
+      "name": "robot_profiles.py",
+      "directory": "tasks/grasp_kp",
+      "lineCount": 13,
+      "language": "python",
+      "mtimeMs": 1788692167629.023,
+      "imports": [
+        "..grasp_s2r.robot_profiles"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_kp/tests/__init__.py",
+      "relativePath": "tasks/grasp_kp/tests/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_kp/tests",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788692167628.023,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_kp/tests/test_grasp_kp_contract.py",
+      "relativePath": "tasks/grasp_kp/tests/test_grasp_kp_contract.py",
+      "name": "test_grasp_kp_contract.py",
+      "directory": "tasks/grasp_kp/tests",
+      "lineCount": 372,
+      "language": "python",
+      "mtimeMs": 1788694689100.0466,
+      "imports": [
+        "__future__",
+        "pathlib",
+        "openarm.agnostic.tasks.grasp_kp",
+        "openarm.agnostic.tasks.grasp_s2r",
+        "openarm.agnostic.tasks.grasp_kp.robot_profiles",
+        "ast\nimport re\nimport textwrap\nimport types\nfrom pathlib import Path"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/__init__.py",
+      "relativePath": "tasks/grasp_s2r/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_s2r",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788687103359.2227,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/config/__init__.py",
+      "relativePath": "tasks/grasp_s2r/config/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_s2r/config",
+      "lineCount": 88,
+      "language": "python",
+      "mtimeMs": 1788687103359.2227,
+      "imports": [
+        ".",
+        "..",
+        "..grasp_s2r_env_cfg",
+        "dataclasses"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/config/agents/__init__.py",
+      "relativePath": "tasks/grasp_s2r/config/agents/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_s2r/config/agents",
+      "lineCount": 14,
+      "language": "python",
+      "mtimeMs": 1788687103359.2227,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/grasp_s2r_control.py",
+      "relativePath": "tasks/grasp_s2r/grasp_s2r_control.py",
+      "name": "grasp_s2r_control.py",
+      "directory": "tasks/grasp_s2r",
+      "lineCount": 871,
+      "language": "python",
+      "mtimeMs": 1788687103359.2227,
+      "imports": [
+        "__future__",
+        "isaaclab.assets",
+        "isaaclab.sensors",
+        "isaaclab.sim.spawners.from_files",
+        "isaaclab.sim.utils",
+        "isaaclab.utils.math",
+        "fabrics_sim.integrator.integrators",
+        "fabrics_sim.utils.utils",
+        "fabrics_sim.worlds.world_mesh_model",
+        ".robot_profiles",
+        "openarm.agnostic.modules",
+        "isaaclab.markers",
+        "math\n\nimport torch\n\nimport isaaclab.sim",
+        "RigidObject\nfrom isaaclab.sensors import ContactSensor",
+        "ContactSensorCfg\nfrom isaaclab.sim.spawners.from_files import GroundPlaneCfg",
+        "spawn_ground_plane\nfrom isaaclab.sim.utils import bind_physics_material",
+        "fabrics_sim.fabrics.openarm_tesollo_pose_fabric",
+        "carb"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/grasp_s2r_env_cfg.py",
+      "relativePath": "tasks/grasp_s2r/grasp_s2r_env_cfg.py",
+      "name": "grasp_s2r_env_cfg.py",
+      "directory": "tasks/grasp_s2r",
+      "lineCount": 1002,
+      "language": "python",
+      "mtimeMs": 1788687103360.2227,
+      "imports": [
+        "__future__",
+        "isaaclab.actuators",
+        "isaaclab.assets",
+        "isaaclab.envs",
+        "isaaclab.scene",
+        "isaaclab.sim",
+        "isaaclab.sim.spawners.from_files.from_files_cfg",
+        "isaaclab.sim.schemas.schemas_cfg",
+        "isaaclab.utils",
+        "isaaclab.managers",
+        "...modules",
+        ".robot_profiles",
+        "openarm.agnostic.modules",
+        "dataclasses",
+        "isaaclab.sim.spawners.wrappers",
+        "os",
+        "RigidObjectCfg\nfrom isaaclab.envs import DirectRLEnvCfg\nfrom isaaclab.scene import InteractiveSceneCfg\nfrom isaaclab.sim import SimulationCfg\nimport isaaclab.sim",
+        "MassPropertiesCfg\nfrom isaaclab.utils import configclass\n\nfrom isaaclab.envs import mdp",
+        "SceneEntityCfg\n\nfrom ...modules import vendor_gains",
+        "RobotProfile"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/grasp_s2r_env.py",
+      "relativePath": "tasks/grasp_s2r/grasp_s2r_env.py",
+      "name": "grasp_s2r_env.py",
+      "directory": "tasks/grasp_s2r",
+      "lineCount": 1832,
+      "language": "python",
+      "mtimeMs": 1788687103360.2227,
+      "imports": [
+        "__future__",
+        "isaaclab.envs",
+        ".grasp_s2r_control",
+        ".grasp_s2r_env_cfg",
+        ".grasp_s2r_rewards",
+        ".robot_profiles",
+        "openarm.agnostic.modules",
+        "isaaclab.utils.math",
+        "math\n\nimport torch\n\nfrom isaaclab.envs import DirectRLEnv\n\nfrom .grasp_s2r_control import GraspS2RControlMixin\nfrom .grasp_s2r_env_cfg import GraspS2REnvCfg\nfrom .grasp_s2r_rewards import GRASP_S2R_REWARD_TERMS",
+        "compute_grasp_s2r_rewards\nfrom .robot_profiles import PROFILES"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/grasp_s2r_rewards.py",
+      "relativePath": "tasks/grasp_s2r/grasp_s2r_rewards.py",
+      "name": "grasp_s2r_rewards.py",
+      "directory": "tasks/grasp_s2r",
+      "lineCount": 376,
+      "language": "python",
+      "mtimeMs": 1788687103360.2227,
+      "imports": [
+        "__future__",
+        "torch"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/robot_profiles.py",
+      "relativePath": "tasks/grasp_s2r/robot_profiles.py",
+      "name": "robot_profiles.py",
+      "directory": "tasks/grasp_s2r",
+      "lineCount": 547,
+      "language": "python",
+      "mtimeMs": 1788687103360.2227,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "openarm.agnostic.modules",
+        "os",
+        "field\n\nfrom openarm.agnostic.modules import vendor_gains"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/tests/__init__.py",
+      "relativePath": "tasks/grasp_s2r/tests/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_s2r/tests",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788687103360.2227,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_s2r/tests/test_grasp_s2r_contract.py",
+      "relativePath": "tasks/grasp_s2r/tests/test_grasp_s2r_contract.py",
+      "name": "test_grasp_s2r_contract.py",
+      "directory": "tasks/grasp_s2r/tests",
+      "lineCount": 1661,
+      "language": "python",
+      "mtimeMs": 1788687103361.2227,
+      "imports": [
+        "__future__",
+        "pathlib",
+        "openarm.agnostic.modules",
+        "openarm.agnostic.tasks.grasp_s2r",
+        "re\nfrom pathlib import Path",
+        "ast"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/__init__.py",
+      "relativePath": "tasks/grasp_ua/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_ua",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788687103361.2227,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/config/__init__.py",
+      "relativePath": "tasks/grasp_ua/config/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_ua/config",
+      "lineCount": 90,
+      "language": "python",
+      "mtimeMs": 1788687103361.2227,
+      "imports": [
+        ".",
+        "..",
+        "..grasp_ua_env_cfg",
+        "dataclasses"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/config/agents/__init__.py",
+      "relativePath": "tasks/grasp_ua/config/agents/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_ua/config/agents",
+      "lineCount": 14,
+      "language": "python",
+      "mtimeMs": 1788687103361.2227,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/grasp_ua_control.py",
+      "relativePath": "tasks/grasp_ua/grasp_ua_control.py",
+      "name": "grasp_ua_control.py",
+      "directory": "tasks/grasp_ua",
+      "lineCount": 1098,
+      "language": "python",
+      "mtimeMs": 1788687103361.2227,
+      "imports": [
+        "__future__",
+        "isaaclab.assets",
+        "isaaclab.sensors",
+        "isaaclab.sim.spawners.from_files",
+        "isaaclab.sim.utils",
+        "isaaclab.utils.math",
+        "fabrics_sim.integrator.integrators",
+        "fabrics_sim.utils.utils",
+        "fabrics_sim.worlds.world_mesh_model",
+        ".robot_profiles",
+        "openarm.agnostic.modules",
+        "isaaclab.markers",
+        "math\n\nimport torch\n\nimport isaaclab.sim",
+        "RigidObject\nfrom isaaclab.sensors import ContactSensor",
+        "ContactSensorCfg\nfrom isaaclab.sim.spawners.from_files import GroundPlaneCfg",
+        "spawn_ground_plane\nfrom isaaclab.sim.utils import bind_physics_material",
+        "fabrics_sim.fabrics.openarm_rh56f1_pose_fabric",
+        "inspect",
+        "carb"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/grasp_ua_env_cfg.py",
+      "relativePath": "tasks/grasp_ua/grasp_ua_env_cfg.py",
+      "name": "grasp_ua_env_cfg.py",
+      "directory": "tasks/grasp_ua",
+      "lineCount": 1118,
+      "language": "python",
+      "mtimeMs": 1788687103362.2227,
+      "imports": [
+        "__future__",
+        "isaaclab.actuators",
+        "isaaclab.assets",
+        "isaaclab.envs",
+        "isaaclab.scene",
+        "isaaclab.sim",
+        "isaaclab.sim.spawners.from_files.from_files_cfg",
+        "isaaclab.sim.schemas.schemas_cfg",
+        "isaaclab.utils",
+        "isaaclab.managers",
+        ".robot_profiles",
+        "openarm.agnostic.modules",
+        "dataclasses",
+        "isaaclab.sim.spawners.wrappers",
+        "os",
+        "RigidObjectCfg\nfrom isaaclab.envs import DirectRLEnvCfg\nfrom isaaclab.scene import InteractiveSceneCfg\nfrom isaaclab.sim import SimulationCfg\nimport isaaclab.sim",
+        "MassPropertiesCfg\nfrom isaaclab.utils import configclass\n\nfrom isaaclab.envs import mdp",
+        "SceneEntityCfg\n\nfrom .robot_profiles import PROFILES",
+        "RobotProfile"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/grasp_ua_env.py",
+      "relativePath": "tasks/grasp_ua/grasp_ua_env.py",
+      "name": "grasp_ua_env.py",
+      "directory": "tasks/grasp_ua",
+      "lineCount": 1912,
+      "language": "python",
+      "mtimeMs": 1788687103361.2227,
+      "imports": [
+        "__future__",
+        "isaaclab.envs",
+        ".grasp_ua_control",
+        ".grasp_ua_env_cfg",
+        ".grasp_ua_rewards",
+        ".robot_profiles",
+        "openarm.agnostic.modules",
+        "isaaclab.utils.math",
+        "math\n\nimport torch\n\nfrom isaaclab.envs import DirectRLEnv\n\nfrom .grasp_ua_control import GraspUAControlMixin\nfrom .grasp_ua_env_cfg import GraspUAEnvCfg\nfrom .grasp_ua_rewards import GRASP_UA_REWARD_TERMS",
+        "compute_grasp_ua_rewards\nfrom .robot_profiles import PROFILES"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/grasp_ua_rewards.py",
+      "relativePath": "tasks/grasp_ua/grasp_ua_rewards.py",
+      "name": "grasp_ua_rewards.py",
+      "directory": "tasks/grasp_ua",
+      "lineCount": 376,
+      "language": "python",
+      "mtimeMs": 1788687103362.2227,
+      "imports": [
+        "__future__",
+        "torch"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/robot_profiles.py",
+      "relativePath": "tasks/grasp_ua/robot_profiles.py",
+      "name": "robot_profiles.py",
+      "directory": "tasks/grasp_ua",
+      "lineCount": 821,
+      "language": "python",
+      "mtimeMs": 1788687103362.2227,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "openarm.agnostic.modules",
+        "os",
+        "field\n\nfrom openarm.agnostic.modules import vendor_gains"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/tests/__init__.py",
+      "relativePath": "tasks/grasp_ua/tests/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/grasp_ua/tests",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788687103362.2227,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/grasp_ua/tests/test_grasp_ua_contract.py",
+      "relativePath": "tasks/grasp_ua/tests/test_grasp_ua_contract.py",
+      "name": "test_grasp_ua_contract.py",
+      "directory": "tasks/grasp_ua/tests",
+      "lineCount": 2284,
+      "language": "python",
+      "mtimeMs": 1788687103362.2227,
+      "imports": [
+        "__future__",
+        "pathlib",
+        "re\nfrom pathlib import Path",
+        "ast",
+        "importlib.util\n    import sys",
+        "pytest",
+        "yaml"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/__init__.py",
+      "relativePath": "tasks/pour_fabric/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/pour_fabric",
+      "lineCount": 6,
+      "language": "python",
+      "mtimeMs": 1788594747647.4827,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/bead_flags.py",
+      "relativePath": "tasks/pour_fabric/bead_flags.py",
+      "name": "bead_flags.py",
+      "directory": "tasks/pour_fabric",
+      "lineCount": 100,
+      "language": "python",
+      "mtimeMs": 1788594747647.4827,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "isaaclab.utils.math",
+        "torch\nfrom isaaclab.utils.math import quat_apply_inverse"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/bimanual.py",
+      "relativePath": "tasks/pour_fabric/bimanual.py",
+      "name": "bimanual.py",
+      "directory": "tasks/pour_fabric",
+      "lineCount": 123,
+      "language": "python",
+      "mtimeMs": 1788594747647.4827,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "openarm.agnostic.modules",
+        "re\nfrom dataclasses import dataclass\n\nfrom openarm.agnostic.modules import robots"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/config/__init__.py",
+      "relativePath": "tasks/pour_fabric/config/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/pour_fabric/config",
+      "lineCount": 67,
+      "language": "python",
+      "mtimeMs": 1788594747647.4827,
+      "imports": [
+        "..",
+        "..pour_fabric_env_cfg",
+        ".",
+        "gymnasium"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/config/agents/__init__.py",
+      "relativePath": "tasks/pour_fabric/config/agents/__init__.py",
+      "name": "__init__.py",
+      "directory": "tasks/pour_fabric/config/agents",
+      "lineCount": 1,
+      "language": "python",
+      "mtimeMs": 1788594747647.4827,
+      "imports": [],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/pour_fabric_env_cfg.py",
+      "relativePath": "tasks/pour_fabric/pour_fabric_env_cfg.py",
+      "name": "pour_fabric_env_cfg.py",
+      "directory": "tasks/pour_fabric",
+      "lineCount": 326,
+      "language": "python",
+      "mtimeMs": 1788687103363.2227,
+      "imports": [
+        "__future__",
+        "isaaclab.actuators",
+        "isaaclab.assets",
+        "isaaclab.envs",
+        "isaaclab.scene",
+        "isaaclab.sim",
+        "isaaclab.utils",
+        "openarm.agnostic.modules",
+        "openarm.common.bead_assets",
+        ".",
+        "os\n\nimport isaaclab.sim",
+        "RigidObjectCfg\nfrom isaaclab.envs import DirectRLEnvCfg\nfrom isaaclab.scene import InteractiveSceneCfg\nfrom isaaclab.sim import SimulationCfg\nfrom isaaclab.utils import configclass\n\nfrom openarm.agnostic.modules import object_bank",
+        "make_beads_cfg\n\nfrom . import bimanual"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/pour_fabric_env.py",
+      "relativePath": "tasks/pour_fabric/pour_fabric_env.py",
+      "name": "pour_fabric_env.py",
+      "directory": "tasks/pour_fabric",
+      "lineCount": 916,
+      "language": "python",
+      "mtimeMs": 1788687103363.2227,
+      "imports": [
+        "__future__",
+        "isaaclab.assets",
+        "isaaclab.envs",
+        "isaaclab.sensors",
+        "isaaclab.sim.spawners.from_files",
+        "openarm.agnostic.modules",
+        ".",
+        ".bead_flags",
+        ".pour_fabric_env_cfg",
+        "..grasp_sensor.rewards",
+        ".rewards",
+        ".warm_bank",
+        "fabrics_sim.integrator.integrators",
+        "fabrics_sim.utils.utils",
+        "fabrics_sim.worlds.world_mesh_model",
+        "isaaclab.utils.math",
+        "openarm.common.bead_assets",
+        "math\nimport os\nimport sys\n\nimport torch\n\nimport isaaclab.sim",
+        "RigidObject",
+        "RigidObjectCollection\nfrom isaaclab.envs import DirectRLEnv\nfrom isaaclab.sensors import ContactSensor",
+        "ContactSensorCfg\nfrom isaaclab.sim.spawners.from_files import GroundPlaneCfg",
+        "spawn_ground_plane\n\nfrom openarm.agnostic.modules import adr",
+        "compute_bead_flags\nfrom .pour_fabric_env_cfg import PourFabricEnvCfg"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/rewards.py",
+      "relativePath": "tasks/pour_fabric/rewards.py",
+      "name": "rewards.py",
+      "directory": "tasks/pour_fabric",
+      "lineCount": 131,
+      "language": "python",
+      "mtimeMs": 1788594747647.4827,
+      "imports": [
+        "__future__",
+        "torch"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/tests/test_bimanual_contract.py",
+      "relativePath": "tasks/pour_fabric/tests/test_bimanual_contract.py",
+      "name": "test_bimanual_contract.py",
+      "directory": "tasks/pour_fabric/tests",
+      "lineCount": 84,
+      "language": "python",
+      "mtimeMs": 1788594747647.4827,
+      "imports": [
+        "openarm.agnostic.modules",
+        "openarm.agnostic.tasks.pour_fabric",
+        "re\n\nimport pytest\n\nfrom openarm.agnostic.modules import robots"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/tests/test_task_contract.py",
+      "relativePath": "tasks/pour_fabric/tests/test_task_contract.py",
+      "name": "test_task_contract.py",
+      "directory": "tasks/pour_fabric/tests",
+      "lineCount": 370,
+      "language": "python",
+      "mtimeMs": 1788687103363.2227,
+      "imports": [
+        "pathlib",
+        "openarm.agnostic.tasks.pour_fabric.warm_bank",
+        "openarm.agnostic.tasks.pour_fabric",
+        "ast\nimport re\nfrom pathlib import Path\n\nimport pytest",
+        "tempfile\n\n    from openarm.agnostic.tasks.pour_fabric.warm_bank import PourWarmBank",
+        "save_bank"
+      ],
+      "exports": []
+    },
+    {
+      "path": "tasks/pour_fabric/warm_bank.py",
+      "relativePath": "tasks/pour_fabric/warm_bank.py",
+      "name": "warm_bank.py",
+      "directory": "tasks/pour_fabric",
+      "lineCount": 175,
+      "language": "python",
+      "mtimeMs": 1788594747647.4827,
+      "imports": [
+        "__future__",
+        "dataclasses",
+        "pathlib",
+        "numpy",
+        "h5py"
+      ],
+      "exports": []
+    }
+  ],
+  "graph": {
+    "nodes": [
+      {
+        "id": "system-shared-modules",
+        "label": "Shared Modules",
+        "type": "system",
+        "icon": "layers",
+        "parentId": null,
+        "filePath": "modules/",
+        "lineCount": 2287,
+        "health": "green",
+        "summary": "Pure-torch building blocks shared by every task"
+      },
+      {
+        "id": "file---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-shared-modules",
+        "filePath": "__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-shared-modules",
+        "filePath": "tasks/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "system-modules-simtoolreal",
+        "label": "SimToolReal Core (new 09-06)",
+        "type": "system",
+        "icon": "zap",
+        "parentId": "system-shared-modules",
+        "filePath": "modules/",
+        "lineCount": 1050,
+        "health": "green",
+        "summary": "New 2026-09-06: goal seq, progress reward, delay, wrench"
+      },
+      {
+        "id": "file-modules-keypoint-goal-py",
+        "label": "keypoint_goal.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-simtoolreal",
+        "filePath": "modules/keypoint_goal.py",
+        "lineCount": 260,
+        "health": "green",
+        "summary": "Axial keypoint goals, goal sequence, tol curriculum"
+      },
+      {
+        "id": "file-modules-progress-reward-py",
+        "label": "progress_reward.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-simtoolreal",
+        "filePath": "modules/progress_reward.py",
+        "lineCount": 149,
+        "health": "green",
+        "summary": "Progress-only 8-term reward, no contact sensors"
+      },
+      {
+        "id": "file-modules-perception-delay-py",
+        "label": "perception_delay.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-simtoolreal",
+        "filePath": "modules/perception_delay.py",
+        "lineCount": 125,
+        "health": "green",
+        "summary": "Obs/action/object delay queues + coherent noise"
+      },
+      {
+        "id": "file-modules-object-wrench-py",
+        "label": "object_wrench.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-simtoolreal",
+        "filePath": "modules/object_wrench.py",
+        "lineCount": 78,
+        "health": "green",
+        "summary": "Mass-normalized post-lift force/torque disturbance"
+      },
+      {
+        "id": "file-modules-tests-test-keypoint-goal-py",
+        "label": "test_keypoint_goal.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-simtoolreal",
+        "filePath": "modules/tests/test_keypoint_goal.py",
+        "lineCount": 239,
+        "health": "green"
+      },
+      {
+        "id": "file-modules-tests-test-progress-reward-py",
+        "label": "test_progress_reward.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-simtoolreal",
+        "filePath": "modules/tests/test_progress_reward.py",
+        "lineCount": 224,
+        "health": "green"
+      },
+      {
+        "id": "file-modules-tests-test-perception-delay-py",
+        "label": "test_perception_delay.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-simtoolreal",
+        "filePath": "modules/tests/test_perception_delay.py",
+        "lineCount": 154,
+        "health": "green"
+      },
+      {
+        "id": "file-modules-tests-test-object-wrench-py",
+        "label": "test_object_wrench.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-simtoolreal",
+        "filePath": "modules/tests/test_object_wrench.py",
+        "lineCount": 93,
+        "health": "green"
+      },
+      {
+        "id": "function-modules-keypoint-goal-py-sample-first-goal",
+        "label": "sample_first_goal",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-modules-keypoint-goal-py",
+        "filePath": "modules/keypoint_goal.py",
+        "lineCount": 20,
+        "health": "green",
+        "summary": "First goal on reset from settled pose"
+      },
+      {
+        "id": "function-modules-keypoint-goal-py-sample-delta-goal",
+        "label": "sample_delta_goal",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-modules-keypoint-goal-py",
+        "filePath": "modules/keypoint_goal.py",
+        "lineCount": 20,
+        "health": "green",
+        "summary": "Next goal: prev +/- delta, box-clamped"
+      },
+      {
+        "id": "function-modules-keypoint-goal-py-update-near-goal",
+        "label": "update_near_goal",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-modules-keypoint-goal-py",
+        "filePath": "modules/keypoint_goal.py",
+        "lineCount": 15,
+        "health": "green",
+        "summary": "Tracks near-goal dwell, emits success"
+      },
+      {
+        "id": "function-modules-progress-reward-py-compute-progress-reward",
+        "label": "compute_progress_reward",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-modules-progress-reward-py",
+        "filePath": "modules/progress_reward.py",
+        "lineCount": 40,
+        "health": "green",
+        "summary": "Single source of the 8-term reward"
+      },
+      {
+        "id": "function-modules-perception-delay-py-push",
+        "label": "push",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-modules-perception-delay-py",
+        "filePath": "modules/perception_delay.py",
+        "lineCount": 15,
+        "health": "green",
+        "summary": "DelayQueue push/roll with flush-on-reset"
+      },
+      {
+        "id": "function-modules-object-wrench-py-step",
+        "label": "step",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-modules-object-wrench-py",
+        "filePath": "modules/object_wrench.py",
+        "lineCount": 15,
+        "health": "green",
+        "summary": "WrenchDR: sample/apply lifted-only wrench"
+      },
+      {
+        "id": "system-modules-robot",
+        "label": "Robot & Assets",
+        "type": "system",
+        "icon": "gear",
+        "parentId": "system-shared-modules",
+        "filePath": "modules/",
+        "lineCount": 1650,
+        "health": "green",
+        "summary": "Robot registry, vendor PD gains, ADR, object bank"
+      },
+      {
+        "id": "file-modules---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/__init__.py",
+        "lineCount": 8,
+        "health": "green"
+      },
+      {
+        "id": "file-modules-vendor-gains-py",
+        "label": "vendor_gains.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/vendor_gains.py",
+        "lineCount": 245,
+        "health": "green",
+        "summary": "Single source of truth for arm PD gains"
+      },
+      {
+        "id": "file-modules-object-bank-py",
+        "label": "object_bank.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/object_bank.py",
+        "lineCount": 406,
+        "health": "yellow",
+        "healthReason": "406 lines, many object-family definitions",
+        "summary": "Graspable object family definitions"
+      },
+      {
+        "id": "file-modules-robots-py",
+        "label": "robots.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/robots.py",
+        "lineCount": 684,
+        "health": "red",
+        "healthReason": "684-line shared robot/asset registry",
+        "summary": "Robot/asset registry consumed by every task"
+      },
+      {
+        "id": "file-modules-adr-py",
+        "label": "adr.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/adr.py",
+        "lineCount": 140,
+        "health": "green",
+        "summary": "Automatic domain randomization curriculum"
+      },
+      {
+        "id": "file-modules-physics-dr-py",
+        "label": "physics_dr.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/physics_dr.py",
+        "lineCount": 135,
+        "health": "green",
+        "summary": "Physics domain-randomization terms"
+      },
+      {
+        "id": "file-modules-agents-py",
+        "label": "agents.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/agents.py",
+        "lineCount": 31,
+        "health": "green"
+      },
+      {
+        "id": "file-modules-tests---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/tests/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-modules-tests-test-modules-py",
+        "label": "test_modules.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/tests/test_modules.py",
+        "lineCount": 153,
+        "health": "green"
+      },
+      {
+        "id": "file-modules-tests-test-robot-registry-py",
+        "label": "test_robot_registry.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/tests/test_robot_registry.py",
+        "lineCount": 317,
+        "health": "green"
+      },
+      {
+        "id": "file-modules-tests-test-vendor-gains-py",
+        "label": "test_vendor_gains.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-modules-robot",
+        "filePath": "modules/tests/test_vendor_gains.py",
+        "lineCount": 249,
+        "health": "green"
+      },
+      {
+        "id": "system-grasp-s2r",
+        "label": "Baseline - grasp_s2r (frozen)",
+        "type": "system",
+        "icon": "lock",
+        "parentId": null,
+        "filePath": "tasks/grasp_s2r/",
+        "lineCount": 5498,
+        "health": "yellow",
+        "healthReason": "Large god-files; kept frozen, not refactored",
+        "summary": "Frozen baseline: contact-sensor reward, fabric palm"
+      },
+      {
+        "id": "file-tasks-grasp-s2r---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r",
+        "filePath": "tasks/grasp_s2r/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-s2r-grasp-s2r-control-py",
+        "label": "grasp_s2r_control.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r",
+        "filePath": "tasks/grasp_s2r/grasp_s2r_control.py",
+        "lineCount": 871,
+        "health": "red",
+        "healthReason": "871-line fabric/control mixin",
+        "summary": "Fabric-IK palm control mixin (arm+hand)"
+      },
+      {
+        "id": "file-tasks-grasp-s2r-grasp-s2r-env-cfg-py",
+        "label": "grasp_s2r_env_cfg.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r",
+        "filePath": "tasks/grasp_s2r/grasp_s2r_env_cfg.py",
+        "lineCount": 1002,
+        "health": "yellow",
+        "healthReason": "1000+ line config, but single concern (schema)",
+        "summary": "DirectRLEnvCfg: scene, actuators, reward wiring"
+      },
+      {
+        "id": "file-tasks-grasp-s2r-grasp-s2r-env-py",
+        "label": "grasp_s2r_env.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r",
+        "filePath": "tasks/grasp_s2r/grasp_s2r_env.py",
+        "lineCount": 1832,
+        "health": "red",
+        "healthReason": "1832-line file: env+control+rewards entangled",
+        "summary": "DirectRLEnv: 15-term contact-sensor reward"
+      },
+      {
+        "id": "file-tasks-grasp-s2r-grasp-s2r-rewards-py",
+        "label": "grasp_s2r_rewards.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r",
+        "filePath": "tasks/grasp_s2r/grasp_s2r_rewards.py",
+        "lineCount": 376,
+        "health": "yellow",
+        "healthReason": "376 lines, 15 reward terms in one function",
+        "summary": "15-term contact-sensor reward computation"
+      },
+      {
+        "id": "file-tasks-grasp-s2r-robot-profiles-py",
+        "label": "robot_profiles.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r",
+        "filePath": "tasks/grasp_s2r/robot_profiles.py",
+        "lineCount": 547,
+        "health": "red",
+        "healthReason": "547-line profile/gain registry",
+        "summary": "Per-robot pose/box/gain profiles"
+      },
+      {
+        "id": "function-tasks-grasp-s2r-grasp-s2r-env-py--pre-physics-step",
+        "label": "_pre_physics_step",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-tasks-grasp-s2r-grasp-s2r-env-py",
+        "filePath": "tasks/grasp_s2r/grasp_s2r_env.py",
+        "lineCount": 40,
+        "health": "green",
+        "summary": "Arm+hand action entry, fabric step"
+      },
+      {
+        "id": "function-tasks-grasp-s2r-grasp-s2r-env-py--get-rewards",
+        "label": "_get_rewards",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-tasks-grasp-s2r-grasp-s2r-env-py",
+        "filePath": "tasks/grasp_s2r/grasp_s2r_env.py",
+        "lineCount": 40,
+        "health": "green",
+        "summary": "Assembles the 15-term reward"
+      },
+      {
+        "id": "function-tasks-grasp-s2r-grasp-s2r-env-py--get-observations",
+        "label": "_get_observations",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-tasks-grasp-s2r-grasp-s2r-env-py",
+        "filePath": "tasks/grasp_s2r/grasp_s2r_env.py",
+        "lineCount": 40,
+        "health": "green",
+        "summary": "Builds actor/critic obs vectors"
+      },
+      {
+        "id": "function-tasks-grasp-s2r-grasp-s2r-rewards-py-compute-grasp-s2r-rewards",
+        "label": "compute_grasp_s2r_rewards",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-tasks-grasp-s2r-grasp-s2r-rewards-py",
+        "filePath": "tasks/grasp_s2r/grasp_s2r_rewards.py",
+        "lineCount": 60,
+        "health": "green",
+        "summary": "Contact-sensor reward, 15 terms"
+      },
+      {
+        "id": "system-grasp-s2r-config",
+        "label": "grasp_s2r - config & registration",
+        "type": "system",
+        "icon": "route",
+        "parentId": "system-grasp-s2r",
+        "filePath": "tasks/grasp_s2r/config/",
+        "lineCount": 102,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-s2r-config---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r-config",
+        "filePath": "tasks/grasp_s2r/config/__init__.py",
+        "lineCount": 88,
+        "health": "green",
+        "summary": "gymnasium.register for grasp_s2r"
+      },
+      {
+        "id": "file-tasks-grasp-s2r-config-agents---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r-config",
+        "filePath": "tasks/grasp_s2r/config/agents/__init__.py",
+        "lineCount": 14,
+        "health": "green"
+      },
+      {
+        "id": "system-grasp-s2r-tests",
+        "label": "grasp_s2r - tests",
+        "type": "system",
+        "icon": "shield",
+        "parentId": "system-grasp-s2r",
+        "filePath": "tasks/grasp_s2r/tests/",
+        "lineCount": 1662,
+        "health": "yellow",
+        "healthReason": "1661-line monolithic contract test",
+        "summary": "Contract tests locking obs/action shape"
+      },
+      {
+        "id": "file-tasks-grasp-s2r-tests---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r-tests",
+        "filePath": "tasks/grasp_s2r/tests/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-s2r-tests-test-grasp-s2r-contract-py",
+        "label": "test_grasp_s2r_contract.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-s2r-tests",
+        "filePath": "tasks/grasp_s2r/tests/test_grasp_s2r_contract.py",
+        "lineCount": 1661,
+        "health": "yellow",
+        "healthReason": "1661 lines in a single test file"
+      },
+      {
+        "id": "system-grasp-kp",
+        "label": "Track A - grasp_kp (new)",
+        "type": "system",
+        "icon": "zap",
+        "parentId": null,
+        "filePath": "tasks/grasp_kp/",
+        "lineCount": 942,
+        "health": "green",
+        "summary": "Inherits s2r, drops contacts, keypoint goal seq"
+      },
+      {
+        "id": "file-tasks-grasp-kp---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-kp",
+        "filePath": "tasks/grasp_kp/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-kp-grasp-kp-env-cfg-py",
+        "label": "grasp_kp_env_cfg.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-kp",
+        "filePath": "tasks/grasp_kp/grasp_kp_env_cfg.py",
+        "lineCount": 269,
+        "health": "green",
+        "summary": "GraspKPEnvCfg(GraspS2REnvCfg): goal/reward/DR cfg"
+      },
+      {
+        "id": "file-tasks-grasp-kp-grasp-kp-env-py",
+        "label": "grasp_kp_env.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-kp",
+        "filePath": "tasks/grasp_kp/grasp_kp_env.py",
+        "lineCount": 563,
+        "health": "yellow",
+        "healthReason": "563 lines - slimmer than s2r's 1831, still growing",
+        "summary": "GraspKPEnv(GraspS2REnv): no contact sensors"
+      },
+      {
+        "id": "file-tasks-grasp-kp-robot-profiles-py",
+        "label": "robot_profiles.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-kp",
+        "filePath": "tasks/grasp_kp/robot_profiles.py",
+        "lineCount": 13,
+        "health": "green",
+        "summary": "Re-exports grasp_s2r profiles"
+      },
+      {
+        "id": "function-tasks-grasp-kp-grasp-kp-env-py--pre-physics-step",
+        "label": "_pre_physics_step",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-tasks-grasp-kp-grasp-kp-env-py",
+        "filePath": "tasks/grasp_kp/grasp_kp_env.py",
+        "lineCount": 30,
+        "health": "green",
+        "summary": "Action delay queue -> arm/hand -> wrench"
+      },
+      {
+        "id": "function-tasks-grasp-kp-grasp-kp-env-py--get-rewards",
+        "label": "_get_rewards",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-tasks-grasp-kp-grasp-kp-env-py",
+        "filePath": "tasks/grasp_kp/grasp_kp_env.py",
+        "lineCount": 30,
+        "health": "green",
+        "summary": "Progress-only reward via shared module"
+      },
+      {
+        "id": "function-tasks-grasp-kp-grasp-kp-env-py--get-observations",
+        "label": "_get_observations",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-tasks-grasp-kp-grasp-kp-env-py",
+        "filePath": "tasks/grasp_kp/grasp_kp_env.py",
+        "lineCount": 30,
+        "health": "green",
+        "summary": "Keypoint-relative obs, no object identity"
+      },
+      {
+        "id": "system-grasp-kp-config",
+        "label": "grasp_kp - config & registration",
+        "type": "system",
+        "icon": "route",
+        "parentId": "system-grasp-kp",
+        "filePath": "tasks/grasp_kp/config/",
+        "lineCount": 101,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-kp-config---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-kp-config",
+        "filePath": "tasks/grasp_kp/config/__init__.py",
+        "lineCount": 87,
+        "health": "green",
+        "summary": "gymnasium.register for grasp_kp"
+      },
+      {
+        "id": "file-tasks-grasp-kp-config-agents---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-kp-config",
+        "filePath": "tasks/grasp_kp/config/agents/__init__.py",
+        "lineCount": 14,
+        "health": "green"
+      },
+      {
+        "id": "system-grasp-kp-tests",
+        "label": "grasp_kp - tests",
+        "type": "system",
+        "icon": "shield",
+        "parentId": "system-grasp-kp",
+        "filePath": "tasks/grasp_kp/tests/",
+        "lineCount": 373,
+        "health": "green",
+        "summary": "Locks obs129/action21 + goal-box reachability"
+      },
+      {
+        "id": "file-tasks-grasp-kp-tests---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-kp-tests",
+        "filePath": "tasks/grasp_kp/tests/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-kp-tests-test-grasp-kp-contract-py",
+        "label": "test_grasp_kp_contract.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-kp-tests",
+        "filePath": "tasks/grasp_kp/tests/test_grasp_kp_contract.py",
+        "lineCount": 372,
+        "health": "green"
+      },
+      {
+        "id": "system-grasp-fj",
+        "label": "Track B - grasp_fj (new)",
+        "type": "system",
+        "icon": "zap",
+        "parentId": null,
+        "filePath": "tasks/grasp_fj/",
+        "lineCount": 511,
+        "health": "green",
+        "summary": "Inherits grasp_kp, no Fabrics, 7D joint-target arm"
+      },
+      {
+        "id": "file-tasks-grasp-fj---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-fj",
+        "filePath": "tasks/grasp_fj/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-fj-grasp-fj-env-cfg-py",
+        "label": "grasp_fj_env_cfg.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-fj",
+        "filePath": "tasks/grasp_fj/grasp_fj_env_cfg.py",
+        "lineCount": 69,
+        "health": "green",
+        "summary": "GraspFJEnvCfg(GraspKPEnvCfg): k_arm/EMA/slew"
+      },
+      {
+        "id": "file-tasks-grasp-fj-grasp-fj-env-py",
+        "label": "grasp_fj_env.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-fj",
+        "filePath": "tasks/grasp_fj/grasp_fj_env.py",
+        "lineCount": 173,
+        "health": "green",
+        "summary": "GraspFJEnv(GraspKPEnv): joint incr+EMA arm only"
+      },
+      {
+        "id": "file-tasks-grasp-fj-robot-profiles-py",
+        "label": "robot_profiles.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-fj",
+        "filePath": "tasks/grasp_fj/robot_profiles.py",
+        "lineCount": 13,
+        "health": "green",
+        "summary": "Re-exports grasp_s2r profiles"
+      },
+      {
+        "id": "function-tasks-grasp-fj-grasp-fj-env-py--arm-command",
+        "label": "_arm_command",
+        "type": "function",
+        "icon": "code",
+        "parentId": "file-tasks-grasp-fj-grasp-fj-env-py",
+        "filePath": "tasks/grasp_fj/grasp_fj_env.py",
+        "lineCount": 30,
+        "health": "green",
+        "summary": "q*+=k_arm*a, EMA, position-only target"
+      },
+      {
+        "id": "system-grasp-fj-config",
+        "label": "grasp_fj - config & registration",
+        "type": "system",
+        "icon": "route",
+        "parentId": "system-grasp-fj",
+        "filePath": "tasks/grasp_fj/config/",
+        "lineCount": 75,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-fj-config---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-fj-config",
+        "filePath": "tasks/grasp_fj/config/__init__.py",
+        "lineCount": 61,
+        "health": "green",
+        "summary": "gymnasium.register for grasp_fj"
+      },
+      {
+        "id": "file-tasks-grasp-fj-config-agents---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-fj-config",
+        "filePath": "tasks/grasp_fj/config/agents/__init__.py",
+        "lineCount": 14,
+        "health": "green"
+      },
+      {
+        "id": "system-grasp-fj-tests",
+        "label": "grasp_fj - tests",
+        "type": "system",
+        "icon": "shield",
+        "parentId": "system-grasp-fj",
+        "filePath": "tasks/grasp_fj/tests/",
+        "lineCount": 255,
+        "health": "green",
+        "summary": "Locks EMA slew=1.0 rad/s + obs131/action22"
+      },
+      {
+        "id": "file-tasks-grasp-fj-tests---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-fj-tests",
+        "filePath": "tasks/grasp_fj/tests/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-fj-tests-test-grasp-fj-contract-py",
+        "label": "test_grasp_fj_contract.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-fj-tests",
+        "filePath": "tasks/grasp_fj/tests/test_grasp_fj_contract.py",
+        "lineCount": 254,
+        "health": "green"
+      },
+      {
+        "id": "system-sibling-tracks",
+        "label": "Sibling Tracks (legacy)",
+        "type": "system",
+        "icon": "clock",
+        "parentId": null,
+        "filePath": "",
+        "lineCount": 8659,
+        "health": "green",
+        "summary": "Older grasp/pour tracks, lower prominence"
+      },
+      {
+        "id": "system-grasp-ua",
+        "label": "grasp_ua (legacy, RH56F1 underactuated)",
+        "type": "system",
+        "icon": "clock",
+        "parentId": "system-sibling-tracks",
+        "filePath": "tasks/grasp_ua/",
+        "lineCount": 8161,
+        "health": "red",
+        "healthReason": "Multiple 1000+ line god files, oldest track",
+        "summary": "Legacy underactuated RH56F1 grasp track"
+      },
+      {
+        "id": "file-tasks-grasp-ua---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-ua-config---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/config/__init__.py",
+        "lineCount": 90,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-ua-config-agents---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/config/agents/__init__.py",
+        "lineCount": 14,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-ua-grasp-ua-control-py",
+        "label": "grasp_ua_control.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/grasp_ua_control.py",
+        "lineCount": 1098,
+        "health": "red",
+        "healthReason": "1098-line fabric/control mixin"
+      },
+      {
+        "id": "file-tasks-grasp-ua-grasp-ua-env-cfg-py",
+        "label": "grasp_ua_env_cfg.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/grasp_ua_env_cfg.py",
+        "lineCount": 1118,
+        "health": "red",
+        "healthReason": "1118-line config file"
+      },
+      {
+        "id": "file-tasks-grasp-ua-grasp-ua-env-py",
+        "label": "grasp_ua_env.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/grasp_ua_env.py",
+        "lineCount": 1912,
+        "health": "red",
+        "healthReason": "1912-line file: env+control+rewards entangled"
+      },
+      {
+        "id": "file-tasks-grasp-ua-grasp-ua-rewards-py",
+        "label": "grasp_ua_rewards.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/grasp_ua_rewards.py",
+        "lineCount": 376,
+        "health": "yellow",
+        "healthReason": "376 lines, many reward terms in one function"
+      },
+      {
+        "id": "file-tasks-grasp-ua-robot-profiles-py",
+        "label": "robot_profiles.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/robot_profiles.py",
+        "lineCount": 821,
+        "health": "red",
+        "healthReason": "821-line profile/gain registry"
+      },
+      {
+        "id": "file-tasks-grasp-ua-tests---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/tests/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-grasp-ua-tests-test-grasp-ua-contract-py",
+        "label": "test_grasp_ua_contract.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-grasp-ua",
+        "filePath": "tasks/grasp_ua/tests/test_grasp_ua_contract.py",
+        "lineCount": 2284,
+        "health": "red",
+        "healthReason": "2284-line monolithic contract test"
+      },
+      {
+        "id": "system-pour-fabric",
+        "label": "pour_fabric (legacy, bimanual pour)",
+        "type": "system",
+        "icon": "clock",
+        "parentId": "system-sibling-tracks",
+        "filePath": "tasks/pour_fabric/",
+        "lineCount": 2298,
+        "health": "yellow",
+        "healthReason": "916-line env file, weak cohesion",
+        "summary": "Legacy bimanual pour-with-beads track"
+      },
+      {
+        "id": "file-tasks-pour-fabric---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/__init__.py",
+        "lineCount": 6,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-pour-fabric-bead-flags-py",
+        "label": "bead_flags.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/bead_flags.py",
+        "lineCount": 100,
+        "health": "green",
+        "summary": "Bead-in-cup flag geometry"
+      },
+      {
+        "id": "file-tasks-pour-fabric-bimanual-py",
+        "label": "bimanual.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/bimanual.py",
+        "lineCount": 123,
+        "health": "green",
+        "summary": "Bimanual robot pairing config"
+      },
+      {
+        "id": "file-tasks-pour-fabric-config---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/config/__init__.py",
+        "lineCount": 67,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-pour-fabric-config-agents---init---py",
+        "label": "__init__.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/config/agents/__init__.py",
+        "lineCount": 1,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-pour-fabric-pour-fabric-env-cfg-py",
+        "label": "pour_fabric_env_cfg.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/pour_fabric_env_cfg.py",
+        "lineCount": 326,
+        "health": "yellow",
+        "healthReason": "326 lines, > 12 cross-module imports"
+      },
+      {
+        "id": "file-tasks-pour-fabric-pour-fabric-env-py",
+        "label": "pour_fabric_env.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/pour_fabric_env.py",
+        "lineCount": 916,
+        "health": "red",
+        "healthReason": "916-line env, reaches into sibling grasp_sensor"
+      },
+      {
+        "id": "file-tasks-pour-fabric-rewards-py",
+        "label": "rewards.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/rewards.py",
+        "lineCount": 131,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-pour-fabric-tests-test-bimanual-contract-py",
+        "label": "test_bimanual_contract.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/tests/test_bimanual_contract.py",
+        "lineCount": 84,
+        "health": "green"
+      },
+      {
+        "id": "file-tasks-pour-fabric-tests-test-task-contract-py",
+        "label": "test_task_contract.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/tests/test_task_contract.py",
+        "lineCount": 370,
+        "health": "yellow",
+        "healthReason": "370-line contract test"
+      },
+      {
+        "id": "file-tasks-pour-fabric-warm-bank-py",
+        "label": "warm_bank.py",
+        "type": "file",
+        "icon": "file",
+        "parentId": "system-pour-fabric",
+        "filePath": "tasks/pour_fabric/warm_bank.py",
+        "lineCount": 175,
+        "health": "green",
+        "summary": "HDF5 warm-start grasp state bank"
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-system-grasp-s2r-system-shared-modules",
+        "source": "system-grasp-s2r",
+        "target": "system-shared-modules",
+        "type": "imports"
+      },
+      {
+        "id": "edge-system-grasp-kp-system-shared-modules",
+        "source": "system-grasp-kp",
+        "target": "system-shared-modules",
+        "type": "imports"
+      },
+      {
+        "id": "edge-system-grasp-kp-system-grasp-s2r",
+        "source": "system-grasp-kp",
+        "target": "system-grasp-s2r",
+        "type": "imports"
+      },
+      {
+        "id": "edge-system-grasp-fj-system-grasp-kp",
+        "source": "system-grasp-fj",
+        "target": "system-grasp-kp",
+        "type": "imports"
+      },
+      {
+        "id": "edge-system-grasp-fj-system-grasp-s2r",
+        "source": "system-grasp-fj",
+        "target": "system-grasp-s2r",
+        "type": "imports"
+      },
+      {
+        "id": "edge-system-sibling-tracks-system-shared-modules",
+        "source": "system-sibling-tracks",
+        "target": "system-shared-modules",
+        "type": "imports"
+      }
+    ],
+    "meta": {
+      "repoName": "agnostic",
+      "branch": "main",
+      "creditLabel": "ClaudeMap skill",
+      "generatedAt": "2026-09-06T12:07:42.031Z",
+      "source": "claude"
+    },
+    "files": [
+      {
+        "path": "__init__.py",
+        "relativePath": "__init__.py",
+        "name": "__init__.py",
+        "directory": "",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747642.483
+      },
+      {
+        "path": "modules/__init__.py",
+        "relativePath": "modules/__init__.py",
+        "name": "__init__.py",
+        "directory": "modules",
+        "lineCount": 8,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747642.483
+      },
+      {
+        "path": "modules/adr.py",
+        "relativePath": "modules/adr.py",
+        "name": "adr.py",
+        "directory": "modules",
+        "lineCount": 140,
+        "imports": [
+          "__future__",
+          "copy"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747642.483
+      },
+      {
+        "path": "modules/agents.py",
+        "relativePath": "modules/agents.py",
+        "name": "agents.py",
+        "directory": "modules",
+        "lineCount": 31,
+        "imports": [
+          "__future__"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747642.483
+      },
+      {
+        "path": "modules/keypoint_goal.py",
+        "relativePath": "modules/keypoint_goal.py",
+        "name": "keypoint_goal.py",
+        "directory": "modules",
+        "lineCount": 260,
+        "imports": [
+          "__future__",
+          "dataclasses",
+          "math\nfrom dataclasses import dataclass\n\nimport torch"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788691417995.4255
+      },
+      {
+        "path": "modules/object_bank.py",
+        "relativePath": "modules/object_bank.py",
+        "name": "object_bank.py",
+        "directory": "modules",
+        "lineCount": 406,
+        "imports": [
+          "__future__",
+          "dataclasses",
+          "os\nfrom dataclasses import dataclass",
+          "field"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103359.2227
+      },
+      {
+        "path": "modules/object_wrench.py",
+        "relativePath": "modules/object_wrench.py",
+        "name": "object_wrench.py",
+        "directory": "modules",
+        "lineCount": 78,
+        "imports": [
+          "__future__",
+          "math\n\nimport torch"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788691417995.4255
+      },
+      {
+        "path": "modules/perception_delay.py",
+        "relativePath": "modules/perception_delay.py",
+        "name": "perception_delay.py",
+        "directory": "modules",
+        "lineCount": 125,
+        "imports": [
+          "__future__",
+          "math\n\nimport torch"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788691417995.4255
+      },
+      {
+        "path": "modules/physics_dr.py",
+        "relativePath": "modules/physics_dr.py",
+        "name": "physics_dr.py",
+        "directory": "modules",
+        "lineCount": 135,
+        "imports": [
+          "__future__",
+          "isaaclab.managers",
+          "isaaclab.utils",
+          "isaaclab.envs.mdp"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747642.483
+      },
+      {
+        "path": "modules/progress_reward.py",
+        "relativePath": "modules/progress_reward.py",
+        "name": "progress_reward.py",
+        "directory": "modules",
+        "lineCount": 149,
+        "imports": [
+          "__future__",
+          "dataclasses",
+          "torch"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788691417995.4255
+      },
+      {
+        "path": "modules/robots.py",
+        "relativePath": "modules/robots.py",
+        "name": "robots.py",
+        "directory": "modules",
+        "lineCount": 684,
+        "imports": [
+          "__future__",
+          "dataclasses",
+          ".",
+          "field\n\nfrom . import vendor_gains"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103359.2227
+      },
+      {
+        "path": "modules/tests/__init__.py",
+        "relativePath": "modules/tests/__init__.py",
+        "name": "__init__.py",
+        "directory": "modules/tests",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747642.483
+      },
+      {
+        "path": "modules/tests/test_keypoint_goal.py",
+        "relativePath": "modules/tests/test_keypoint_goal.py",
+        "name": "test_keypoint_goal.py",
+        "directory": "modules/tests",
+        "lineCount": 239,
+        "imports": [
+          "__future__",
+          "openarm.agnostic.modules",
+          "math\n\nimport pytest\nimport torch\n\nfrom openarm.agnostic.modules import keypoint_goal"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788691417995.4255
+      },
+      {
+        "path": "modules/tests/test_modules.py",
+        "relativePath": "modules/tests/test_modules.py",
+        "name": "test_modules.py",
+        "directory": "modules/tests",
+        "lineCount": 153,
+        "imports": [
+          "__future__",
+          "openarm.agnostic.modules",
+          "pytest\n\nfrom openarm.agnostic.modules import adr",
+          "dataclasses"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747642.483
+      },
+      {
+        "path": "modules/tests/test_object_wrench.py",
+        "relativePath": "modules/tests/test_object_wrench.py",
+        "name": "test_object_wrench.py",
+        "directory": "modules/tests",
+        "lineCount": 93,
+        "imports": [
+          "__future__",
+          "openarm.agnostic.modules",
+          "pytest\nimport torch\n\nfrom openarm.agnostic.modules import object_wrench"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788691417995.4255
+      },
+      {
+        "path": "modules/tests/test_perception_delay.py",
+        "relativePath": "modules/tests/test_perception_delay.py",
+        "name": "test_perception_delay.py",
+        "directory": "modules/tests",
+        "lineCount": 154,
+        "imports": [
+          "__future__",
+          "openarm.agnostic.modules",
+          "math\n\nimport pytest\nimport torch\n\nfrom openarm.agnostic.modules import perception_delay"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788691417995.4255
+      },
+      {
+        "path": "modules/tests/test_progress_reward.py",
+        "relativePath": "modules/tests/test_progress_reward.py",
+        "name": "test_progress_reward.py",
+        "directory": "modules/tests",
+        "lineCount": 224,
+        "imports": [
+          "__future__",
+          "openarm.agnostic.modules",
+          "math\n\nimport pytest\nimport torch\n\nfrom openarm.agnostic.modules import progress_reward"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788691417995.4255
+      },
+      {
+        "path": "modules/tests/test_robot_registry.py",
+        "relativePath": "modules/tests/test_robot_registry.py",
+        "name": "test_robot_registry.py",
+        "directory": "modules/tests",
+        "lineCount": 317,
+        "imports": [
+          "__future__",
+          "pathlib",
+          "openarm.agnostic.modules",
+          "re\nfrom pathlib import Path\n\nimport pytest\n\nfrom openarm.agnostic.modules import robots",
+          "importlib.util\n    import sys"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747642.483
+      },
+      {
+        "path": "modules/tests/test_vendor_gains.py",
+        "relativePath": "modules/tests/test_vendor_gains.py",
+        "name": "test_vendor_gains.py",
+        "directory": "modules/tests",
+        "lineCount": 249,
+        "imports": [
+          "__future__",
+          "pathlib",
+          "openarm.agnostic.modules",
+          "openarm.gripper.left.grasp_sensor",
+          "openarm.gripper.left.grasp_sensor_v2",
+          "re\nfrom pathlib import Path\n\nimport pytest\n\nfrom openarm.agnostic.modules import vendor_gains"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788692443233.6267
+      },
+      {
+        "path": "modules/vendor_gains.py",
+        "relativePath": "modules/vendor_gains.py",
+        "name": "vendor_gains.py",
+        "directory": "modules",
+        "lineCount": 245,
+        "imports": [
+          "__future__",
+          "functools",
+          "pathlib",
+          "re\nfrom functools import lru_cache\nfrom pathlib import Path"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103359.2227
+      },
+      {
+        "path": "tasks/__init__.py",
+        "relativePath": "tasks/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747642.483
+      },
+      {
+        "path": "tasks/grasp_fj/__init__.py",
+        "relativePath": "tasks/grasp_fj/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_fj",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788692167628.023
+      },
+      {
+        "path": "tasks/grasp_fj/config/__init__.py",
+        "relativePath": "tasks/grasp_fj/config/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_fj/config",
+        "lineCount": 61,
+        "imports": [
+          ".",
+          "..grasp_fj_env_cfg",
+          "gymnasium"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788694599856.809
+      },
+      {
+        "path": "tasks/grasp_fj/config/agents/__init__.py",
+        "relativePath": "tasks/grasp_fj/config/agents/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_fj/config/agents",
+        "lineCount": 14,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788693198320.6653
+      },
+      {
+        "path": "tasks/grasp_fj/grasp_fj_env_cfg.py",
+        "relativePath": "tasks/grasp_fj/grasp_fj_env_cfg.py",
+        "name": "grasp_fj_env_cfg.py",
+        "directory": "tasks/grasp_fj",
+        "lineCount": 69,
+        "imports": [
+          "__future__",
+          "isaaclab.utils",
+          "..grasp_kp.grasp_kp_env_cfg",
+          ".robot_profiles"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788694561787.7134
+      },
+      {
+        "path": "tasks/grasp_fj/grasp_fj_env.py",
+        "relativePath": "tasks/grasp_fj/grasp_fj_env.py",
+        "name": "grasp_fj_env.py",
+        "directory": "tasks/grasp_fj",
+        "lineCount": 173,
+        "imports": [
+          "__future__",
+          "..grasp_kp.grasp_kp_env",
+          ".grasp_fj_env_cfg",
+          "math\n\nimport torch\n\nfrom ..grasp_kp.grasp_kp_env import GraspKPEnv\nfrom .grasp_fj_env_cfg import GraspFJEnvCfg"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788694561787.7134
+      },
+      {
+        "path": "tasks/grasp_fj/robot_profiles.py",
+        "relativePath": "tasks/grasp_fj/robot_profiles.py",
+        "name": "robot_profiles.py",
+        "directory": "tasks/grasp_fj",
+        "lineCount": 13,
+        "imports": [
+          "..grasp_s2r.robot_profiles"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788692167630.023
+      },
+      {
+        "path": "tasks/grasp_fj/tests/__init__.py",
+        "relativePath": "tasks/grasp_fj/tests/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_fj/tests",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788693198320.6653
+      },
+      {
+        "path": "tasks/grasp_fj/tests/test_grasp_fj_contract.py",
+        "relativePath": "tasks/grasp_fj/tests/test_grasp_fj_contract.py",
+        "name": "test_grasp_fj_contract.py",
+        "directory": "tasks/grasp_fj/tests",
+        "lineCount": 254,
+        "imports": [
+          "__future__",
+          "pathlib",
+          "openarm.agnostic.tasks.grasp_kp.tests.test_grasp_kp_contract",
+          "openarm.agnostic.tasks.grasp_fj",
+          "openarm.agnostic.tasks.grasp_s2r",
+          "openarm.agnostic.tasks.grasp_fj.robot_profiles",
+          "ast\nimport re\nimport textwrap\nimport types\nfrom pathlib import Path"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788694770248.2766
+      },
+      {
+        "path": "tasks/grasp_kp/__init__.py",
+        "relativePath": "tasks/grasp_kp/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_kp",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788692167628.023
+      },
+      {
+        "path": "tasks/grasp_kp/config/__init__.py",
+        "relativePath": "tasks/grasp_kp/config/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_kp/config",
+        "lineCount": 87,
+        "imports": [
+          ".",
+          "..",
+          "..grasp_kp_env_cfg",
+          "dataclasses"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788694599856.809
+      },
+      {
+        "path": "tasks/grasp_kp/config/agents/__init__.py",
+        "relativePath": "tasks/grasp_kp/config/agents/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_kp/config/agents",
+        "lineCount": 14,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788692167631.023
+      },
+      {
+        "path": "tasks/grasp_kp/grasp_kp_env_cfg.py",
+        "relativePath": "tasks/grasp_kp/grasp_kp_env_cfg.py",
+        "name": "grasp_kp_env_cfg.py",
+        "directory": "tasks/grasp_kp",
+        "lineCount": 269,
+        "imports": [
+          "__future__",
+          "isaaclab.utils",
+          "...modules.keypoint_goal",
+          "...modules.progress_reward",
+          "..grasp_s2r.grasp_s2r_env_cfg",
+          ".robot_profiles"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788694561787.7134
+      },
+      {
+        "path": "tasks/grasp_kp/grasp_kp_env.py",
+        "relativePath": "tasks/grasp_kp/grasp_kp_env.py",
+        "name": "grasp_kp_env.py",
+        "directory": "tasks/grasp_kp",
+        "lineCount": 563,
+        "imports": [
+          "__future__",
+          "isaaclab.assets",
+          "isaaclab.sim.spawners.from_files",
+          "isaaclab.sim.utils",
+          "...modules.keypoint_goal",
+          "...modules.object_wrench",
+          "...modules.perception_delay",
+          "...modules.progress_reward",
+          "..grasp_s2r.grasp_s2r_env",
+          ".grasp_kp_env_cfg",
+          "openarm.agnostic.modules",
+          "isaaclab.sensors",
+          "math\n\nimport torch\n\nimport isaaclab.sim",
+          "RigidObject\nfrom isaaclab.sim.spawners.from_files import GroundPlaneCfg",
+          "spawn_ground_plane\nfrom isaaclab.sim.utils import bind_physics_material"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788694599856.809
+      },
+      {
+        "path": "tasks/grasp_kp/robot_profiles.py",
+        "relativePath": "tasks/grasp_kp/robot_profiles.py",
+        "name": "robot_profiles.py",
+        "directory": "tasks/grasp_kp",
+        "lineCount": 13,
+        "imports": [
+          "..grasp_s2r.robot_profiles"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788692167629.023
+      },
+      {
+        "path": "tasks/grasp_kp/tests/__init__.py",
+        "relativePath": "tasks/grasp_kp/tests/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_kp/tests",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788692167628.023
+      },
+      {
+        "path": "tasks/grasp_kp/tests/test_grasp_kp_contract.py",
+        "relativePath": "tasks/grasp_kp/tests/test_grasp_kp_contract.py",
+        "name": "test_grasp_kp_contract.py",
+        "directory": "tasks/grasp_kp/tests",
+        "lineCount": 372,
+        "imports": [
+          "__future__",
+          "pathlib",
+          "openarm.agnostic.tasks.grasp_kp",
+          "openarm.agnostic.tasks.grasp_s2r",
+          "openarm.agnostic.tasks.grasp_kp.robot_profiles",
+          "ast\nimport re\nimport textwrap\nimport types\nfrom pathlib import Path"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788694689100.0466
+      },
+      {
+        "path": "tasks/grasp_s2r/__init__.py",
+        "relativePath": "tasks/grasp_s2r/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_s2r",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103359.2227
+      },
+      {
+        "path": "tasks/grasp_s2r/config/__init__.py",
+        "relativePath": "tasks/grasp_s2r/config/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_s2r/config",
+        "lineCount": 88,
+        "imports": [
+          ".",
+          "..",
+          "..grasp_s2r_env_cfg",
+          "dataclasses"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103359.2227
+      },
+      {
+        "path": "tasks/grasp_s2r/config/agents/__init__.py",
+        "relativePath": "tasks/grasp_s2r/config/agents/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_s2r/config/agents",
+        "lineCount": 14,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103359.2227
+      },
+      {
+        "path": "tasks/grasp_s2r/grasp_s2r_control.py",
+        "relativePath": "tasks/grasp_s2r/grasp_s2r_control.py",
+        "name": "grasp_s2r_control.py",
+        "directory": "tasks/grasp_s2r",
+        "lineCount": 871,
+        "imports": [
+          "__future__",
+          "isaaclab.assets",
+          "isaaclab.sensors",
+          "isaaclab.sim.spawners.from_files",
+          "isaaclab.sim.utils",
+          "isaaclab.utils.math",
+          "fabrics_sim.integrator.integrators",
+          "fabrics_sim.utils.utils",
+          "fabrics_sim.worlds.world_mesh_model",
+          ".robot_profiles",
+          "openarm.agnostic.modules",
+          "isaaclab.markers",
+          "math\n\nimport torch\n\nimport isaaclab.sim",
+          "RigidObject\nfrom isaaclab.sensors import ContactSensor",
+          "ContactSensorCfg\nfrom isaaclab.sim.spawners.from_files import GroundPlaneCfg",
+          "spawn_ground_plane\nfrom isaaclab.sim.utils import bind_physics_material",
+          "fabrics_sim.fabrics.openarm_tesollo_pose_fabric",
+          "carb"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103359.2227
+      },
+      {
+        "path": "tasks/grasp_s2r/grasp_s2r_env_cfg.py",
+        "relativePath": "tasks/grasp_s2r/grasp_s2r_env_cfg.py",
+        "name": "grasp_s2r_env_cfg.py",
+        "directory": "tasks/grasp_s2r",
+        "lineCount": 1002,
+        "imports": [
+          "__future__",
+          "isaaclab.actuators",
+          "isaaclab.assets",
+          "isaaclab.envs",
+          "isaaclab.scene",
+          "isaaclab.sim",
+          "isaaclab.sim.spawners.from_files.from_files_cfg",
+          "isaaclab.sim.schemas.schemas_cfg",
+          "isaaclab.utils",
+          "isaaclab.managers",
+          "...modules",
+          ".robot_profiles",
+          "openarm.agnostic.modules",
+          "dataclasses",
+          "isaaclab.sim.spawners.wrappers",
+          "os",
+          "RigidObjectCfg\nfrom isaaclab.envs import DirectRLEnvCfg\nfrom isaaclab.scene import InteractiveSceneCfg\nfrom isaaclab.sim import SimulationCfg\nimport isaaclab.sim",
+          "MassPropertiesCfg\nfrom isaaclab.utils import configclass\n\nfrom isaaclab.envs import mdp",
+          "SceneEntityCfg\n\nfrom ...modules import vendor_gains",
+          "RobotProfile"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103360.2227
+      },
+      {
+        "path": "tasks/grasp_s2r/grasp_s2r_env.py",
+        "relativePath": "tasks/grasp_s2r/grasp_s2r_env.py",
+        "name": "grasp_s2r_env.py",
+        "directory": "tasks/grasp_s2r",
+        "lineCount": 1832,
+        "imports": [
+          "__future__",
+          "isaaclab.envs",
+          ".grasp_s2r_control",
+          ".grasp_s2r_env_cfg",
+          ".grasp_s2r_rewards",
+          ".robot_profiles",
+          "openarm.agnostic.modules",
+          "isaaclab.utils.math",
+          "math\n\nimport torch\n\nfrom isaaclab.envs import DirectRLEnv\n\nfrom .grasp_s2r_control import GraspS2RControlMixin\nfrom .grasp_s2r_env_cfg import GraspS2REnvCfg\nfrom .grasp_s2r_rewards import GRASP_S2R_REWARD_TERMS",
+          "compute_grasp_s2r_rewards\nfrom .robot_profiles import PROFILES"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103360.2227
+      },
+      {
+        "path": "tasks/grasp_s2r/grasp_s2r_rewards.py",
+        "relativePath": "tasks/grasp_s2r/grasp_s2r_rewards.py",
+        "name": "grasp_s2r_rewards.py",
+        "directory": "tasks/grasp_s2r",
+        "lineCount": 376,
+        "imports": [
+          "__future__",
+          "torch"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103360.2227
+      },
+      {
+        "path": "tasks/grasp_s2r/robot_profiles.py",
+        "relativePath": "tasks/grasp_s2r/robot_profiles.py",
+        "name": "robot_profiles.py",
+        "directory": "tasks/grasp_s2r",
+        "lineCount": 547,
+        "imports": [
+          "__future__",
+          "dataclasses",
+          "openarm.agnostic.modules",
+          "os",
+          "field\n\nfrom openarm.agnostic.modules import vendor_gains"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103360.2227
+      },
+      {
+        "path": "tasks/grasp_s2r/tests/__init__.py",
+        "relativePath": "tasks/grasp_s2r/tests/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_s2r/tests",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103360.2227
+      },
+      {
+        "path": "tasks/grasp_s2r/tests/test_grasp_s2r_contract.py",
+        "relativePath": "tasks/grasp_s2r/tests/test_grasp_s2r_contract.py",
+        "name": "test_grasp_s2r_contract.py",
+        "directory": "tasks/grasp_s2r/tests",
+        "lineCount": 1661,
+        "imports": [
+          "__future__",
+          "pathlib",
+          "openarm.agnostic.modules",
+          "openarm.agnostic.tasks.grasp_s2r",
+          "re\nfrom pathlib import Path",
+          "ast"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103361.2227
+      },
+      {
+        "path": "tasks/grasp_ua/__init__.py",
+        "relativePath": "tasks/grasp_ua/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_ua",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103361.2227
+      },
+      {
+        "path": "tasks/grasp_ua/config/__init__.py",
+        "relativePath": "tasks/grasp_ua/config/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_ua/config",
+        "lineCount": 90,
+        "imports": [
+          ".",
+          "..",
+          "..grasp_ua_env_cfg",
+          "dataclasses"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103361.2227
+      },
+      {
+        "path": "tasks/grasp_ua/config/agents/__init__.py",
+        "relativePath": "tasks/grasp_ua/config/agents/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_ua/config/agents",
+        "lineCount": 14,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103361.2227
+      },
+      {
+        "path": "tasks/grasp_ua/grasp_ua_control.py",
+        "relativePath": "tasks/grasp_ua/grasp_ua_control.py",
+        "name": "grasp_ua_control.py",
+        "directory": "tasks/grasp_ua",
+        "lineCount": 1098,
+        "imports": [
+          "__future__",
+          "isaaclab.assets",
+          "isaaclab.sensors",
+          "isaaclab.sim.spawners.from_files",
+          "isaaclab.sim.utils",
+          "isaaclab.utils.math",
+          "fabrics_sim.integrator.integrators",
+          "fabrics_sim.utils.utils",
+          "fabrics_sim.worlds.world_mesh_model",
+          ".robot_profiles",
+          "openarm.agnostic.modules",
+          "isaaclab.markers",
+          "math\n\nimport torch\n\nimport isaaclab.sim",
+          "RigidObject\nfrom isaaclab.sensors import ContactSensor",
+          "ContactSensorCfg\nfrom isaaclab.sim.spawners.from_files import GroundPlaneCfg",
+          "spawn_ground_plane\nfrom isaaclab.sim.utils import bind_physics_material",
+          "fabrics_sim.fabrics.openarm_rh56f1_pose_fabric",
+          "inspect",
+          "carb"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103361.2227
+      },
+      {
+        "path": "tasks/grasp_ua/grasp_ua_env_cfg.py",
+        "relativePath": "tasks/grasp_ua/grasp_ua_env_cfg.py",
+        "name": "grasp_ua_env_cfg.py",
+        "directory": "tasks/grasp_ua",
+        "lineCount": 1118,
+        "imports": [
+          "__future__",
+          "isaaclab.actuators",
+          "isaaclab.assets",
+          "isaaclab.envs",
+          "isaaclab.scene",
+          "isaaclab.sim",
+          "isaaclab.sim.spawners.from_files.from_files_cfg",
+          "isaaclab.sim.schemas.schemas_cfg",
+          "isaaclab.utils",
+          "isaaclab.managers",
+          ".robot_profiles",
+          "openarm.agnostic.modules",
+          "dataclasses",
+          "isaaclab.sim.spawners.wrappers",
+          "os",
+          "RigidObjectCfg\nfrom isaaclab.envs import DirectRLEnvCfg\nfrom isaaclab.scene import InteractiveSceneCfg\nfrom isaaclab.sim import SimulationCfg\nimport isaaclab.sim",
+          "MassPropertiesCfg\nfrom isaaclab.utils import configclass\n\nfrom isaaclab.envs import mdp",
+          "SceneEntityCfg\n\nfrom .robot_profiles import PROFILES",
+          "RobotProfile"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103362.2227
+      },
+      {
+        "path": "tasks/grasp_ua/grasp_ua_env.py",
+        "relativePath": "tasks/grasp_ua/grasp_ua_env.py",
+        "name": "grasp_ua_env.py",
+        "directory": "tasks/grasp_ua",
+        "lineCount": 1912,
+        "imports": [
+          "__future__",
+          "isaaclab.envs",
+          ".grasp_ua_control",
+          ".grasp_ua_env_cfg",
+          ".grasp_ua_rewards",
+          ".robot_profiles",
+          "openarm.agnostic.modules",
+          "isaaclab.utils.math",
+          "math\n\nimport torch\n\nfrom isaaclab.envs import DirectRLEnv\n\nfrom .grasp_ua_control import GraspUAControlMixin\nfrom .grasp_ua_env_cfg import GraspUAEnvCfg\nfrom .grasp_ua_rewards import GRASP_UA_REWARD_TERMS",
+          "compute_grasp_ua_rewards\nfrom .robot_profiles import PROFILES"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103361.2227
+      },
+      {
+        "path": "tasks/grasp_ua/grasp_ua_rewards.py",
+        "relativePath": "tasks/grasp_ua/grasp_ua_rewards.py",
+        "name": "grasp_ua_rewards.py",
+        "directory": "tasks/grasp_ua",
+        "lineCount": 376,
+        "imports": [
+          "__future__",
+          "torch"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103362.2227
+      },
+      {
+        "path": "tasks/grasp_ua/robot_profiles.py",
+        "relativePath": "tasks/grasp_ua/robot_profiles.py",
+        "name": "robot_profiles.py",
+        "directory": "tasks/grasp_ua",
+        "lineCount": 821,
+        "imports": [
+          "__future__",
+          "dataclasses",
+          "openarm.agnostic.modules",
+          "os",
+          "field\n\nfrom openarm.agnostic.modules import vendor_gains"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103362.2227
+      },
+      {
+        "path": "tasks/grasp_ua/tests/__init__.py",
+        "relativePath": "tasks/grasp_ua/tests/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/grasp_ua/tests",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103362.2227
+      },
+      {
+        "path": "tasks/grasp_ua/tests/test_grasp_ua_contract.py",
+        "relativePath": "tasks/grasp_ua/tests/test_grasp_ua_contract.py",
+        "name": "test_grasp_ua_contract.py",
+        "directory": "tasks/grasp_ua/tests",
+        "lineCount": 2284,
+        "imports": [
+          "__future__",
+          "pathlib",
+          "re\nfrom pathlib import Path",
+          "ast",
+          "importlib.util\n    import sys",
+          "pytest",
+          "yaml"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103362.2227
+      },
+      {
+        "path": "tasks/pour_fabric/__init__.py",
+        "relativePath": "tasks/pour_fabric/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/pour_fabric",
+        "lineCount": 6,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747647.4827
+      },
+      {
+        "path": "tasks/pour_fabric/bead_flags.py",
+        "relativePath": "tasks/pour_fabric/bead_flags.py",
+        "name": "bead_flags.py",
+        "directory": "tasks/pour_fabric",
+        "lineCount": 100,
+        "imports": [
+          "__future__",
+          "dataclasses",
+          "isaaclab.utils.math",
+          "torch\nfrom isaaclab.utils.math import quat_apply_inverse"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747647.4827
+      },
+      {
+        "path": "tasks/pour_fabric/bimanual.py",
+        "relativePath": "tasks/pour_fabric/bimanual.py",
+        "name": "bimanual.py",
+        "directory": "tasks/pour_fabric",
+        "lineCount": 123,
+        "imports": [
+          "__future__",
+          "dataclasses",
+          "openarm.agnostic.modules",
+          "re\nfrom dataclasses import dataclass\n\nfrom openarm.agnostic.modules import robots"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747647.4827
+      },
+      {
+        "path": "tasks/pour_fabric/config/__init__.py",
+        "relativePath": "tasks/pour_fabric/config/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/pour_fabric/config",
+        "lineCount": 67,
+        "imports": [
+          "..",
+          "..pour_fabric_env_cfg",
+          ".",
+          "gymnasium"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747647.4827
+      },
+      {
+        "path": "tasks/pour_fabric/config/agents/__init__.py",
+        "relativePath": "tasks/pour_fabric/config/agents/__init__.py",
+        "name": "__init__.py",
+        "directory": "tasks/pour_fabric/config/agents",
+        "lineCount": 1,
+        "imports": [],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747647.4827
+      },
+      {
+        "path": "tasks/pour_fabric/pour_fabric_env_cfg.py",
+        "relativePath": "tasks/pour_fabric/pour_fabric_env_cfg.py",
+        "name": "pour_fabric_env_cfg.py",
+        "directory": "tasks/pour_fabric",
+        "lineCount": 326,
+        "imports": [
+          "__future__",
+          "isaaclab.actuators",
+          "isaaclab.assets",
+          "isaaclab.envs",
+          "isaaclab.scene",
+          "isaaclab.sim",
+          "isaaclab.utils",
+          "openarm.agnostic.modules",
+          "openarm.common.bead_assets",
+          ".",
+          "os\n\nimport isaaclab.sim",
+          "RigidObjectCfg\nfrom isaaclab.envs import DirectRLEnvCfg\nfrom isaaclab.scene import InteractiveSceneCfg\nfrom isaaclab.sim import SimulationCfg\nfrom isaaclab.utils import configclass\n\nfrom openarm.agnostic.modules import object_bank",
+          "make_beads_cfg\n\nfrom . import bimanual"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103363.2227
+      },
+      {
+        "path": "tasks/pour_fabric/pour_fabric_env.py",
+        "relativePath": "tasks/pour_fabric/pour_fabric_env.py",
+        "name": "pour_fabric_env.py",
+        "directory": "tasks/pour_fabric",
+        "lineCount": 916,
+        "imports": [
+          "__future__",
+          "isaaclab.assets",
+          "isaaclab.envs",
+          "isaaclab.sensors",
+          "isaaclab.sim.spawners.from_files",
+          "openarm.agnostic.modules",
+          ".",
+          ".bead_flags",
+          ".pour_fabric_env_cfg",
+          "..grasp_sensor.rewards",
+          ".rewards",
+          ".warm_bank",
+          "fabrics_sim.integrator.integrators",
+          "fabrics_sim.utils.utils",
+          "fabrics_sim.worlds.world_mesh_model",
+          "isaaclab.utils.math",
+          "openarm.common.bead_assets",
+          "math\nimport os\nimport sys\n\nimport torch\n\nimport isaaclab.sim",
+          "RigidObject",
+          "RigidObjectCollection\nfrom isaaclab.envs import DirectRLEnv\nfrom isaaclab.sensors import ContactSensor",
+          "ContactSensorCfg\nfrom isaaclab.sim.spawners.from_files import GroundPlaneCfg",
+          "spawn_ground_plane\n\nfrom openarm.agnostic.modules import adr",
+          "compute_bead_flags\nfrom .pour_fabric_env_cfg import PourFabricEnvCfg"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103363.2227
+      },
+      {
+        "path": "tasks/pour_fabric/rewards.py",
+        "relativePath": "tasks/pour_fabric/rewards.py",
+        "name": "rewards.py",
+        "directory": "tasks/pour_fabric",
+        "lineCount": 131,
+        "imports": [
+          "__future__",
+          "torch"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747647.4827
+      },
+      {
+        "path": "tasks/pour_fabric/tests/test_bimanual_contract.py",
+        "relativePath": "tasks/pour_fabric/tests/test_bimanual_contract.py",
+        "name": "test_bimanual_contract.py",
+        "directory": "tasks/pour_fabric/tests",
+        "lineCount": 84,
+        "imports": [
+          "openarm.agnostic.modules",
+          "openarm.agnostic.tasks.pour_fabric",
+          "re\n\nimport pytest\n\nfrom openarm.agnostic.modules import robots"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747647.4827
+      },
+      {
+        "path": "tasks/pour_fabric/tests/test_task_contract.py",
+        "relativePath": "tasks/pour_fabric/tests/test_task_contract.py",
+        "name": "test_task_contract.py",
+        "directory": "tasks/pour_fabric/tests",
+        "lineCount": 370,
+        "imports": [
+          "pathlib",
+          "openarm.agnostic.tasks.pour_fabric.warm_bank",
+          "openarm.agnostic.tasks.pour_fabric",
+          "ast\nimport re\nfrom pathlib import Path\n\nimport pytest",
+          "tempfile\n\n    from openarm.agnostic.tasks.pour_fabric.warm_bank import PourWarmBank",
+          "save_bank"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788687103363.2227
+      },
+      {
+        "path": "tasks/pour_fabric/warm_bank.py",
+        "relativePath": "tasks/pour_fabric/warm_bank.py",
+        "name": "warm_bank.py",
+        "directory": "tasks/pour_fabric",
+        "lineCount": 175,
+        "imports": [
+          "__future__",
+          "dataclasses",
+          "pathlib",
+          "numpy",
+          "h5py"
+        ],
+        "exports": [],
+        "language": "python",
+        "mtimeMs": 1788594747647.4827
+      }
+    ]
+  }
+}
