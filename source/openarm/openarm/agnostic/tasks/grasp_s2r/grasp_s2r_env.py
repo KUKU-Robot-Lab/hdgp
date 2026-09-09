@@ -325,11 +325,22 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         # ★★s2r 정합 상태를 **매 학습 로그에 남긴다**. 이 셋은 전부 "조용히 틀릴 수
         #   있는" 축이라(게인은 환경변수, DR 대상·마찰은 cfg 단계에서만 확정된다)
         #   나중에 로그만 보고도 어느 조합으로 돌았는지 알 수 있어야 한다.
-        _specs = getattr(p, "actuator_specs", {})
-        _as = _specs.get("right_arm_j1", _specs.get("left_arm_j1", {}))
-        _arm_g = f"kp{_as.get('stiffness', '?')}/kd{_as.get('damping', '?')}"
-        _hs = next((v for k, v in _specs.items() if "hand" in k), {})
-        _hand_g = f"kp{_hs.get('stiffness', '?')}/kd{_hs.get('damping', '?')}"
+        # ★09.09 **조립된 `robot_cfg.actuators` 를 읽는다**(프로필이 아니라).
+        #   프로필은 override 이전의 입력이라, 손 게인 override 를 켜도 벤더 1.5 를 찍었다 —
+        #   로그가 "무엇을 시켰나"가 아니라 "무엇이 실제로 실렸나"를 말해야 실험이 검증된다.
+        #   같은 함정을 09.09 에 `task/syn_close`(지령을 실측처럼 기록)에서 또 만났다.
+        _acts = getattr(getattr(self.cfg, "robot_cfg", None), "actuators", {}) or {}
+
+        def _g(a):
+            return f"kp{getattr(a, 'stiffness', '?')}/kd{getattr(a, 'damping', '?')}"
+
+        _aa = _acts.get("right_arm_j1", _acts.get("left_arm_j1"))
+        _arm_g = _g(_aa) if _aa is not None else "?"
+        _ha = next((v for k, v in _acts.items() if k.endswith("hand")), None)
+        _hand_g = _g(_ha) if _ha is not None else "?"
+        _arm_v = getattr(_ha, "armature", None)
+        if _arm_v:
+            _hand_g += f"/armature{_arm_v}"
         _em = getattr(self, "event_manager", None)
         _dr = "(events 꺼짐)"
         if _em is not None:

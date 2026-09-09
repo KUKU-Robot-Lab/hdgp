@@ -1714,3 +1714,65 @@ def test_profile_poses_are_inside_asset_joint_limits():
                 bad.append(f"hand_open_pose {name}={value:+.4f} 한계 [{lo:+.4f},{hi:+.4f}]")
     assert not bad, "자산 한계 밖 자세 — 부팅에서 죽는다:\n  " + "\n  ".join(bad)
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 09.09 손 PD/armature override — **재조립 뒤에도 살아남는가** + **로그가 진실인가**
+#   isaaclab 은 SimulationApp 기동 전 import 가 안 돼 cfg 를 실제로 조립할 수 없다.
+#   그래서 이 파일의 규약대로 소스 텍스트로 배선을 잠근다. 실제 값은 부팅 로그
+#   `[grasp_s2r][s2r] … 손게인=kp…` 가 **조립본**을 찍으므로 거기서 확인한다.
+# ══════════════════════════════════════════════════════════════════════════════
+_CFG_SRC = (_HERE / "grasp_s2r_env_cfg.py").read_text(encoding="utf-8")
+_ENV_SRC = (_HERE / "grasp_s2r_env.py").read_text(encoding="utf-8")
+
+
+def test_hand_override_is_a_cfg_field_not_a_post_hoc_patch():
+    """override 는 cfg 필드여야 한다 — robot_cfg 에 나중에 얹으면 재조립이 지운다.
+
+    09.06·09.09 에 같은 함정으로 네 번 당했다(gravity·tol_eval·object USD·solver knob):
+    A/B 두 팔이 **비트 동일**한 씬을 돌아 스윕이 통째로 no-op 이 됐다.
+    """
+    for field in ("hand_stiffness_override", "hand_damping_override", "hand_armature"):
+        assert re.search(rf"^    {field}: float = ", _CFG_SRC, re.M), \
+            f"{field} 가 cfg 필드가 아니다"
+
+
+def test_hand_override_is_consumed_by_the_rebuild():
+    """`finalize_after_overrides` 의 `_build_robot_cfg` 호출이 세 필드를 넘겨야 한다."""
+    call = re.search(r"self\.robot_cfg = _build_robot_cfg\((.*?)\)\n", _CFG_SRC, re.S)
+    assert call, "_build_robot_cfg 재조립 호출을 못 찾았다"
+    blk = call.group(1)
+    for field in ("hand_stiffness_override", "hand_damping_override", "hand_armature"):
+        assert field in blk, f"재조립이 {field} 를 안 읽는다 — override 가 조용히 지워진다"
+
+
+def test_hand_override_targets_hand_actuators_only():
+    """팔·머리는 손대지 않는다 — 다른 게인으로 학습한 팔 정책은 배포 불가다(09.03 d3)."""
+    fn = re.search(r"def _hand_gain_override\(.*?\n\n\n", _CFG_SRC, re.S)
+    assert fn, "_hand_gain_override 헬퍼가 없다"
+    body = fn.group(0)
+    assert 'name.endswith("hand")' in body, "손 actuator 만 고르는 조건이 없다"
+    assert "return dict(spec)" in body, "원본을 변형한다 — 새 dict 를 돌려줘야 한다(불변)"
+
+
+def test_hand_override_default_is_vendor():
+    """기본값은 벤더값 유지여야 한다 — 예외를 안 켠 런은 현행과 비트 동일해야 한다."""
+    assert re.search(r"^    hand_stiffness_override: float = 0\.0", _CFG_SRC, re.M)
+    assert re.search(r"^    hand_damping_override: float = -1\.0", _CFG_SRC, re.M)
+    assert re.search(r"^    hand_armature: float = 0\.0", _CFG_SRC, re.M)
+    fn = re.search(r"def _hand_gain_override\(.*?\n\n\n", _CFG_SRC, re.S).group(0)
+    assert "if stiffness > 0.0:" in fn and "if damping >= 0.0:" in fn \
+        and "if armature > 0.0:" in fn, "기본값에서 원본을 건드리지 않는다는 보장이 없다"
+
+
+def test_boot_log_reports_assembled_gains_not_the_profile():
+    """부팅 로그가 **조립본**을 찍어야 한다.
+
+    프로필(`actuator_specs`)은 override **이전**의 입력이다. 그걸 찍으면 kp 5.0 으로 돌면서
+    로그에는 벤더 1.5 가 남아, 실험이 사후에 검증 불가가 된다(09.09 실제로 그랬다).
+    """
+    blk = re.search(r"\n        _a\w* = .{0,400}?robot_cfg.{0,2000}?손게인=", _ENV_SRC, re.S)
+    assert blk, "손게인 로그 블록이 robot_cfg 를 안 읽는다(또는 블록을 못 찾았다)"
+    assert "robot_cfg" in blk.group(0), "로그가 조립된 robot_cfg 를 안 읽는다(프로필을 읽는다)"
+    assert 'getattr(p, "actuator_specs"' not in blk.group(0), \
+        "로그가 아직 프로필을 읽는다 — override 가 로그에 안 보인다"

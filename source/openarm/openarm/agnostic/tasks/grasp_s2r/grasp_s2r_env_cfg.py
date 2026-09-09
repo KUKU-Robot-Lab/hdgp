@@ -107,6 +107,28 @@ class GraspS2REventCfg:
     )
 
 
+def _hand_gain_override(name: str, spec: dict, stiffness: float,
+                        damping: float, armature: float) -> dict:
+    """손 actuator 하나에 실험 override 를 얹은 **새 dict** 를 돌려준다(원본 불변).
+
+    대상은 이름이 `hand` 로 끝나는 actuator 뿐이다(프로필 규약: `hand` · `left_hand`).
+    팔·머리·그리퍼는 손대지 않는다 — 팔은 `_assert_vendor_gains` 가 벤더값을 강제한다.
+
+    ★기본값(stiffness ≤ 0 · damping < 0 · armature ≤ 0)이면 원본을 그대로 돌려주므로
+      현행 동작과 **비트 동일**하다. 벤더 원칙의 예외는 켠 사람만 진다.
+    """
+    if not name.endswith("hand"):
+        return dict(spec)
+    out = dict(spec)
+    if stiffness > 0.0:
+        out["stiffness"] = float(stiffness)
+    if damping >= 0.0:
+        out["damping"] = float(damping)
+    if armature > 0.0:
+        out["armature"] = float(armature)
+    return out
+
+
 def _build_robot_cfg(profile: RobotProfile,
                      enable_self_collisions: bool,
                      enable_gravity: bool = True,
@@ -115,7 +137,10 @@ def _build_robot_cfg(profile: RobotProfile,
                      solver_velocity_iterations: int = 0,
                      max_depenetration_velocity: float = 1000.0,
                      contact_offset: float | None = None,
-                     rest_offset: float | None = None) -> ArticulationCfg:
+                     rest_offset: float | None = None,
+                     hand_stiffness: float = 0.0,
+                     hand_damping: float = -1.0,
+                     hand_armature: float = 0.0) -> ArticulationCfg:
     """프로필 → ArticulationCfg. 조인트 이름은 전부 프로필에서 온다.
 
     ★`enable_gravity` 는 **반드시 인자**여야 한다. USD spawn 속성이라 env 생성 뒤에는
@@ -161,7 +186,8 @@ def _build_robot_cfg(profile: RobotProfile,
             joint_pos=dict(profile.init_joint_pos),
         ),
         actuators={
-            name: ImplicitActuatorCfg(**spec)
+            name: ImplicitActuatorCfg(**_hand_gain_override(
+                name, spec, hand_stiffness, hand_damping, hand_armature))
             for name, spec in profile.actuator_specs.items()
         },
         soft_joint_pos_limit_factor=1.0,
@@ -256,6 +282,20 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     robot_max_depenetration_velocity: float = 1000.0
     robot_contact_offset: float | None = None
     robot_rest_offset: float | None = None
+
+    # ---- 손 PD/armature override (09.09 인벨롭 파지 실험) -----------------------------
+    # ★벤더 원칙(`모든 값은 벤더 기준`)의 **명시적 예외**다. 기본값 = 벤더값이고, 켜는 것은
+    #   런처의 `env.hand_stiffness_override=…` 뿐이다. 실험 근거(09.09 ep_3200 재생 계측):
+    #     지령↔실측 실현율이 `_1` 95% · `_2` 72% · `_3` 67% · `_4` 95% — 감쌈에 필요한
+    #     뿌리·중간 마디만 접촉에 막힌다. kp 1.5 에서 낼 수 있는 최대 조임 토크가
+    #     `_2` 1.83 N·m / `_3` 1.67 N·m 로 **벤더 effort 한계 7.5 의 24%** 뿐이다.
+    #     effort 포화가 아니라 **게인이 구속**이라는 뜻이라 kp 를 올리는 것이 직접 처방이다.
+    #   ⚠다른 게인으로 학습한 정책은 다른 로봇에서 배운 것이다(체크포인트 비호환, FRESH 전용).
+    #   ⚠armature 는 벤더가 주지 않는 양이다. 회전자 관성 0 이 물리적으로 불가능하다는 것만이
+    #     근거이므로 **측정으로만 정당화**한다(`scripts/analysis/fj_joint_limit_viol.py`, 시드 2개).
+    hand_stiffness_override: float = 0.0   # ≤0 = 벤더값 유지
+    hand_damping_override: float = -1.0    # <0 = 벤더값 유지
+    hand_armature: float = 0.0             # ≤0 = 미지정(현행)
 
     # ---- 중력 (2026-09-06 사용자 확정) -----------------------------------------------
     # **로봇 자체 중력 ON + 중력보상 ON.** 둘 다 켠다. 이유는 실기와 같게 만들기 위해서다.
@@ -888,7 +928,10 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             solver_velocity_iterations=int(self.robot_solver_velocity_iterations),
             max_depenetration_velocity=float(self.robot_max_depenetration_velocity),
             contact_offset=self.robot_contact_offset,
-            rest_offset=self.robot_rest_offset)
+            rest_offset=self.robot_rest_offset,
+            hand_stiffness=float(self.hand_stiffness_override),
+            hand_damping=float(self.hand_damping_override),
+            hand_armature=float(self.hand_armature))
         self._assert_vendor_gains(profile)
         if not bool(self.enable_events):
             self.events = None
