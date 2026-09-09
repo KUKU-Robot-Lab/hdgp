@@ -109,7 +109,12 @@ def test_env_overrides_exactly_the_adapter_hook_set():
                "_progress_reward",                   # ★09.08 B 전용 보상 이음매(모듈 포크)
                "_restart_goal_clock",                # ★09.08 목표당 스텝 예산
                "_build_hand_action_range",           # ★09.08 관절별 액션한계(soft limit ∩ 프로필 override)
-               "_hand_mask"}                          # 정규식 해석(관절명은 프로필 소유)
+               "_hand_mask",                         # 정규식 해석(관절명은 프로필 소유)
+               "_seg_masks"}                          # ★09.09 마디별 진단 마스크 캐시 — **진단 전용**
+                                                      #   순수 인덱스 헬퍼이고 보상·관측·종료 어디에도 안 쓴다.
+                                                      #   실측 폐쇄도(task/syn_close_actual_seg*)를 마디별로 남기려고
+                                                      #   추가했다: `task/syn_close` 가 지령이라 "안 닫는다"와
+                                                      #   "못 닫는다"가 3200 epoch 동안 구분되지 않았다.
     forbidden = {"__init__", "_setup_scene", "_init_task_state", "_pre_physics_step", "_hand_command",
                  "_get_observations", "_get_rewards", "_get_dones", "_synergy_targets",
                  "_setup_synergy", "_palm_anchor", "_apply_gravity_compensation", "_apply_wrench"}

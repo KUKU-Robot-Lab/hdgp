@@ -270,6 +270,24 @@ class GraspFJEnv(GraspKPEnv):
             m[pos[int(j)]] = True
         return m
 
+    def _seg_masks(self) -> dict[int, torch.Tensor]:
+        """마디 번호(_1.._4) → `_syn_ids` 열 마스크. 첫 호출에 만들고 캐시한다.
+
+        열 순서는 `hand_joint_names` 와 1:1 이다(`grasp_s2r_control.py:475`). 이름 끝의
+        `_<n>` 이 마디 번호이고, 없는 마디는 아예 키를 만들지 않는다(2지 그리퍼 등).
+        """
+        cached = getattr(self, "_seg_mask_cache", None)
+        if cached is not None:
+            return cached
+        names = self.profile.hand_joint_names
+        out: dict[int, torch.Tensor] = {}
+        for seg in (1, 2, 3, 4):
+            m = torch.tensor([n.endswith(f"_{seg}") for n in names], device=self.device)
+            if bool(m.any()):
+                out[seg] = m
+        self._seg_mask_cache = out
+        return out
+
     def _hand_targets(self, a_hand: torch.Tensor) -> torch.Tensor:
         """손 20관절 **full-joint** 한 스텝 — SimToolReal `action_utils.py:61-69` 와 같은 꼴.
 
@@ -380,9 +398,27 @@ class GraspFJEnv(GraspKPEnv):
         #   불변 트랙의 진단 훅에 사는데 그 훅은 접촉 센서 소비자라 이 트랙에서 계약 금지다. 그래서 여기서 잰다.
         #   `hand_blocked_frac` = 목표↔실측 > 1.0 rad ∧ 한계 밖 아님(접촉 or 추종 실패). 20관절 전부 대상
         #   (외전 포함)이라 b9 의 14관절 값과 직접 비교 불가.
-        _herr = (self._syn_target - self.robot.data.joint_pos[:, self._syn_ids]).abs()
+        _hq = self.robot.data.joint_pos[:, self._syn_ids]
+        _herr = (self._syn_target - _hq).abs()
         ex["ctrl/hand_joint_err_max"] = _herr[:, self._syn_movable].max()
         ex["ctrl/hand_blocked_frac"] = self._hand_blocked().float().mean()
+        # ★★09.09 **실측 폐쇄도**. `task/syn_close` 는 (tgt−lo)/span 즉 **지령**이라
+        #   "정책이 안 닫는다"와 "손이 못 닫는다"를 3200 epoch 동안 구분하지 못했다.
+        #   ep_3200 재생 계측: 지령 0.540 vs 실측 0.452 — 마디별 실현율이
+        #   `_1` 95% · `_2` 72% · `_3` 67% · `_4` 95% 로, 감쌈에 필요한 뿌리·중간만 막힌다.
+        #   그 격차가 인벨롭 파지 실패의 절반이므로 **로그에 실측을 남긴다**.
+        _closed = ((_hq.clamp(self._act_lo, self._act_hi) - self._act_lo.unsqueeze(0))
+                   / self._act_span.unsqueeze(0))
+        ex["task/syn_close_actual"] = _closed.mean()
+        # 실현율 = 실측/지령. 1.0 이면 시킨 대로 다 간 것이고, 낮으면 접촉에 막힌 것이다.
+        _cmd = self._syn_close.mean().clamp_min(1e-6)
+        ex["task/syn_realized_frac"] = _closed.mean() / _cmd
+        # 마디별(_1 벌림 · _2 뿌리 · _3 중간 · _4 끝) — 어느 마디가 막히는지가 처방을 가른다.
+        #   ★열 순서는 `_syn_ids = [jn.index(nm) for nm in p.hand_joint_names]` 라
+        #     `hand_joint_names` 와 1:1 이다(관절번호-major 인 articulation 순서가 아니다).
+        for _seg, _m in self._seg_masks().items():
+            ex[f"task/syn_close_actual_seg{_seg}"] = _closed[:, _m].mean()
+            ex[f"task/syn_close_cmd_seg{_seg}"] = self._syn_close[:, _m].mean()
         ex["ctrl/hand_target_step"] = (self._syn_target - self._prev_syn_target).abs().mean()
         self._prev_syn_target = self._syn_target.clone()
         # ★09.08 파지 품질 1순위 지표 — 들었다가 놓친 에피소드 비율(sticky). `_latched` 는 `_get_rewards`
