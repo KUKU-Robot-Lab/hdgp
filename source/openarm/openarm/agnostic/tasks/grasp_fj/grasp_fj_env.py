@@ -360,8 +360,33 @@ class GraspFJEnv(GraspKPEnv):
         갈리는 것은 `goal_bonus` 한 항뿐이다 — A 는 near_goal 스텝마다 `goal_bonus/success_steps`,
         B 는 **성공 순간 1회 전액**(SimToolReal env.py:2656-2659 의 forceConsecutive 분기).
         `_get_rewards` 본체는 A 와 공유한다(계약상 덮을 수 없고, 덮을 이유도 없다).
+
+        ★09.09 `hand_curl` 을 여기서 만들어 넘긴다. 부모 `_get_rewards` 는 계약 금지 훅이라
+          인자를 추가할 수 없는데, 이 이음매는 `self` 를 갖는다 — 그래서 여기가 유일한 지점이다.
         """
-        return compute_fj_reward(**kw)
+        return compute_fj_reward(hand_curl=self._hand_curl(), **kw)
+
+    def _hand_curl(self) -> torch.Tensor:
+        """감쌈 정도 (N,) ∈ [0,1] — 뿌리 `_2` + 중간 `_3` 의 **실측** 정규화 관절각 평균.
+
+        왜 이 두 마디인가(09.09 ep_3200 계측): 실현율이 `_1` 95% · `_2` 72% · `_3` 67% · `_4` 95%
+        로, 끝마디는 시키는 대로 가고 감쌈에 필요한 두 마디만 막힌다. 끝만 굽은 손은 갈고리라
+        컵과 손바닥 사이에 끼인다 — 감쌈을 재려면 **이 두 마디**를 봐야 한다.
+
+        ★**실측**(`joint_pos`)이지 지령이 아니다. 지령에 주면 정책이 시키기만 하고 끝난다.
+        ★clamp 는 액션한계 기준이다 — 접촉에 밀려 한계 밖으로 나간 관절이 1 을 넘겨
+          보상을 부풀리지 않게 한다(09.09 엄지가 한계 밖 3.69 rad 까지 밀린 이력).
+        """
+        segs = self._seg_masks()
+        m = None
+        for k in (2, 3):
+            if k in segs:
+                m = segs[k] if m is None else (m | segs[k])
+        if m is None:
+            return torch.zeros(self.num_envs, device=self.device)
+        q = self.robot.data.joint_pos[:, self._syn_ids].clamp(self._act_lo, self._act_hi)
+        closed = (q - self._act_lo.unsqueeze(0)) / self._act_span.unsqueeze(0)
+        return closed[:, m].mean(dim=-1)
 
     def _restart_goal_clock(self) -> None:
         """성공한 env 의 에피소드 시계를 되돌린다 = **목표당** 스텝 예산.

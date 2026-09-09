@@ -61,6 +61,12 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
     #   최악(매 스텝 ±1 반전) −1.0/step, γ 0.99 할인 합 −100 < 리프트 보너스 300 → 리프트가 여전히 이득(Check 1).
     #   전속 이송(a 일정)은 차분 0 이라 세금이 없다 — 수준 |a| 를 벌하면 이송까지 벌한다.
     rw_cmd_rate_scale: float = 1.0
+    # ★★09.09 감쌈 보상 계수. **기본 0.0 = 끔** — 켜지 않은 런은 현행과 비트 동일하다.
+    #   이게 곧 형제 트랙(`grasp_fj_rh`) 방화벽이다(leaf 가 아니라 base 에 두되 기본값이 off).
+    #   근거·설계는 `fj_reward.FJRewardCfg.wrap_scale` 주석. reward-audit 09.09: REVISE→조건부 ACCEPT
+    #   (근접 게이트 + 실측 기준 + 상한 2.0 + A(kp 5.0) 선행이 조건).
+    rw_wrap_scale: float = 0.0
+    rw_wrap_gate_dist: float = 0.06
 
     # ★09.08 손 20관절 **독립** 지령 스위치. 기본 False.
     #   왜 기본이 False 인가: (1) 기존 계약 22/131/155 와 fj_b9 체크포인트를 그대로 둔다.
@@ -210,7 +216,11 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
         a = super().progress_reward_cfg()
         # ★지급 방식은 성공 술어에서 **유도**한다 — 둘이 갈리면 형제 트랙(`grasp_fj_rh`)이
         #   "누적 판정 + 1회성 보너스" 를 조용히 받는다(09.08 감사에서 발견).
+        # ★`a` 는 **부모** cfg 라 B 고유 필드(wrap_*)를 안 갖는다 — 명시적으로 넘긴다.
+        #   여기 빠뜨리면 계수를 hydra 로 올려도 조용히 0 이 되어 실험이 no-op 이 된다.
         return FJRewardCfg(goal_one_shot=bool(self.goal_force_consecutive),
+                           wrap_scale=float(self.rw_wrap_scale),
+                           wrap_gate_dist=float(self.rw_wrap_gate_dist),
                            **{f.name: getattr(a, f.name) for f in fields(a)})
 
 

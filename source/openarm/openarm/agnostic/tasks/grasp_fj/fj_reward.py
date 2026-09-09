@@ -39,6 +39,7 @@ FJ_REWARD_TERMS = (
     "hand_vel",
     "hand_floor",
     "cmd_rate",
+    "wrap",
 )
 
 # 왜: 손끝 진행량 clamp 상한(10 m) — 사실상 무한이지만 NaN/inf 값이 폭주하는 것만 막는다.
@@ -76,6 +77,20 @@ class FJRewardCfg:
     # ★09.07 리프트 후 지령 변화 벌점 = −scale · cmd_rate · lifted. 0 = 끔. 측도(cmd_rate)는 env 가 준다 —
     #   B: 팔 액션 1차 차분 RMS / 2 ∈ [0, 1]. 크기는 트랙 cfg(`rw_cmd_rate_scale`)가 작동점에 맞춰 정한다.
     #   리프트 전엔 0 — 억제 항을 처음부터 켜면 탐색이 죽는다(fab_test14: σ −41%, 리프트 350 epoch 지연).
+    # ★★09.09 **감쌈 보상**(기본 0.0 = 끔 — 켜지 않은 런은 현행과 비트 동일).
+    #   왜 필요한가(09.09 ep_3200 계측): 중간마디 `_3` 는 **지령 자체가** 0.387 이고 상한 근처까지
+    #   시킨 시간이 index_3 1.0% · middle_3 1.2% 뿐이다. 보상 10항 중 접촉·감쌈 항이 0개라
+    #   쐐기로 끼워 들어도 goal_bonus 는 똑같이 나오고, 손을 움직이면 hand_vel 벌점만 붙는다.
+    #   즉 **감싸면 손해**인 구조였다.
+    #   왜 접촉 센서를 안 쓰나(09.09 사용자 확정): obs 를 바꾸는 접촉 센서는 쓰지 않는다.
+    #   fj 는 접촉 센서를 아예 만들지 않으므로(09.06 확정) 순수 **기하**로 간다 —
+    #   실측 굴곡(뿌리 `_2` + 중간 `_3` 의 정규화 관절각)에 준다.
+    #   ★**실측**에 준다(지령 아님). 지령에 주면 정책이 "시키기만" 하고 끝난다 — 이번 실패의 재현이다.
+    #   ★근접 게이트 필수(reward-audit Check 2): 없으면 **허공에서 주먹만 쥐어도** 만점이다
+    #     (`_hand_blocked` 주석이 같은 상황을 적어 뒀다). 접근 구간 파괴(Check 4)도 이걸로 막는다.
+    #   ★상한: curl ∈ [0,1] 이라 scale 이 곧 스텝당 상한이다. 2.0 이면 goal_bonus 33.7/step 의 6%.
+    wrap_scale: float = 0.0
+    wrap_gate_dist: float = 0.06     # m — 손끝-물체 평균거리가 이 안일 때만 지급
     cmd_rate_scale: float = 0.1
     # ★09.07 kp_a7: 래치는 sticky 라 튕겨 올라갔다 상판에 놓인 컵도 lifted 다 — 그 env 에 벌점이 500 스텝 붙어
     #   접근 자체가 죽었다. **들고 있을 때**(dz > hold_dz)만 벌한다. env 의 drop_frac 판정선과 같은 값.
@@ -142,6 +157,7 @@ def compute_fj_reward(
     hand_qd: torch.Tensor,
     hand_z_min: torch.Tensor,
     cmd_rate: torch.Tensor,
+    hand_curl: torch.Tensor | None = None,
     cfg: FJRewardCfg,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """B 보상. 반환 (total (N,), terms dict, out dict).
@@ -151,6 +167,8 @@ def compute_fj_reward(
     - `goal_bonus` 는 **성공 순간 1회 전액**(A 와 유일하게 다른 항) — `is_success` 는 **필수**다.
       선택 인자로 두면 안 넘겼을 때 조용히 0 이 되어 보상 하나가 통째로 사라진다.
     - cmd_rate(N,) ≥ 0 는 env 가 준 정규화 지령 변화율 — lifted 이고 **들고 있을 때**만 벌한다.
+    - hand_curl(N,) ∈ [0,1] 은 env 가 준 **실측** 뿌리·중간 마디 정규화 굴곡. `wrap_scale`
+      이 0 이거나 안 넘기면 `wrap` 항은 0 이라, 켜지 않은 런은 현행과 비트 동일하다.
     """
     n = obj_z.shape[0]
     _check_shapes(n, obj_z=obj_z, settled_z=settled_z, lifted_prev=lifted_prev, ft_dist=ft_dist,
@@ -181,6 +199,12 @@ def compute_fj_reward(
         "hand_floor": -(cfg.hand_floor_penalty * torch.relu(cfg.hand_floor_z - hand_z_min)).clamp(max=cfg.hand_floor_max),
         # 왜 상한이 없나: 작동점에서 clamp 되면 항이 상수가 되어 μ 에 기울기가 없다(reward-clamp-kills-gradient).
         "cmd_rate": -cfg.cmd_rate_scale * cmd_rate.clamp(min=0.0) * (lifted & (dz > cfg.cmd_rate_hold_dz)).float(),
+        # 왜 게이트가 근접인가: 허공 주먹 farming 차단 + 접근 구간 미개입(reward-audit Check 2·4).
+        #   ft_dist 는 손가락별 (N, F) 이라 평균으로 "손이 물체 곁에 있는가"를 본다.
+        "wrap": (cfg.wrap_scale * hand_curl.clamp(0.0, 1.0)
+                 * (ft_dist.mean(dim=-1) < cfg.wrap_gate_dist).float())
+                if (cfg.wrap_scale > 0.0 and hand_curl is not None)
+                else torch.zeros_like(dz),
     }
     if tuple(terms) != FJ_REWARD_TERMS:
         raise RuntimeError(f"term order drifted: {tuple(terms)} != {FJ_REWARD_TERMS}")

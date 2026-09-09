@@ -110,6 +110,9 @@ def test_env_overrides_exactly_the_adapter_hook_set():
                "_restart_goal_clock",                # ★09.08 목표당 스텝 예산
                "_build_hand_action_range",           # ★09.08 관절별 액션한계(soft limit ∩ 프로필 override)
                "_hand_mask",                         # 정규식 해석(관절명은 프로필 소유)
+               "_hand_curl",                         # ★09.09 감쌈 보상 입력 — **실측** _2/_3 정규화 굴곡.
+                                                      #   보상 이음매(_progress_reward)가 쓴다. 지령이 아니라
+                                                      #   실측이어야 "시키기만 하고 끝"이 안 된다.
                "_seg_masks"}                          # ★09.09 마디별 진단 마스크 캐시 — **진단 전용**
                                                       #   순수 인덱스 헬퍼이고 보상·관측·종료 어디에도 안 쓴다.
                                                       #   실측 폐쇄도(task/syn_close_actual_seg*)를 마디별로 남기려고
@@ -660,7 +663,11 @@ def test_reward_module_is_forked_for_track_b():
     `_get_rewards` 는 B 의 계약 금지 훅이므로 통째로 덮지 않는다 — A 가 만든 이음매
     `_progress_reward` 하나만 덮는다. 갈리는 항은 `goal_bonus` 뿐(성공 순간 1회 전액).
     """
-    assert "return compute_fj_reward(**kw)" in _fn_block(_ENV, "_progress_reward")
+    _pr = _fn_block(_ENV, "_progress_reward")
+    assert "compute_fj_reward(" in _pr and "**kw)" in _pr
+    # ★09.09 이음매가 `hand_curl` 을 만들어 넘긴다. 부모 `_get_rewards` 는 계약 금지 훅이라
+    #   인자를 못 늘리는데 이 이음매는 self 를 갖는다 — 그래서 여기가 유일한 지점이다.
+    assert "hand_curl=self._hand_curl()" in _pr, "감쌈 보상 입력이 이음매에서 안 온다"
     # ★로깅 이름표를 인스턴스에 두지 않는다 — 부모 `_init_task_state` 가 super() 뒤에 덮어써서
     #   B 에서 아예 안 먹었다(09.08 감사에서 실행 재현). A 의 `_log_step` 이 terms 를 직접 순회한다.
     assert "_rw_terms" not in _ENV, "인스턴스 이름표는 부모가 덮어쓴다"
