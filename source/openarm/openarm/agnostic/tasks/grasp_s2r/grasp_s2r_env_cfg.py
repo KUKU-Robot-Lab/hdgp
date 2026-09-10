@@ -297,10 +297,17 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   이 게이트는 09.10 에 **좌표계 오프셋을 빼도록** 고쳐졌다(`_init_home_palm`).
     #   그 전에는 좌표계 차이와 기구학 오차를 섞어 재서 5mm 예산의 절반 가까이를
     #   이미 아는 상수가 먹고 있었다(short 실측: raw 1.86mm 중 ~2mm 가 오프셋).
-    #   지금은 순수 기구학 오차라 원리적으로 0 에 가까워야 하지만, **다른 프로필
-    #   (tesollo_right·gripper_left)의 보정 후 값을 아직 재지 않았다** — 재고 나서
-    #   0.002 로 조일 것. 근거 없이 먼저 조이면 무관한 트랙의 부팅을 막는다.
-    fabric_fk_pos_tol: float = 0.005
+    #   ★09.10 0.005 → 0.002 로 조인다. 근거 셋:
+    #     ①기구학은 **정적으로 0.0000mm 일치**한다 — 자산 URDF 의 r_al_7→palm 누적과
+    #       fabric URDF 의 link7→palm_link 단일 변환이 dg5f-m 0.1233 / short 0.086 으로
+    #       양쪽 다 같다(y 3e-07 만 다름).
+    #     ②잔차 0.76mm 의 정체가 규명됐다 — 부팅 2스텝 중력 처짐의 손바닥↔손끝 차이다
+    #       (중력 OFF 로 띄우면 0.00mm). 즉 노이즈 바닥이 0.76mm 이고 2mm 는 2.6배 여유다.
+    #     ③fabric 을 쓰는 프로필은 tesollo_right{,_only,_short} 셋뿐이고 전부 같은 손·같은
+    #       사슬이다(gripper_left·rh56f1_right 는 fabric_class=None 이라 등록에서 빠진다).
+    #   ⚠이 값은 **중력·게인·자산**이 바뀌면 같이 움직인다(처짐이므로). 부팅이 이 게이트로
+    #     죽으면 먼저 fabric 재생성 여부를 보고, 그다음 처짐 조건이 바뀌었는지 본다.
+    fabric_fk_pos_tol: float = 0.002
     fabrics_max_objects_per_env: int = 8
     # ★09.10: 켜면 `set_features + integrator.step` 을 CUDA Graph 로 캡처해 재생한다.
     #   09.10 이전에는 이 플래그가 fabric 생성자의 `graph_capturable` 로만 전달되고 캡처·재생
