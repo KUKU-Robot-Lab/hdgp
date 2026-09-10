@@ -18,7 +18,7 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from openarm.agnostic.tasks.grasp_kp.tests.test_grasp_kp_contract import (
+from openarm.agnostic.modules.source_contract import (
     _class_methods,
     _code,
     _fn_block,

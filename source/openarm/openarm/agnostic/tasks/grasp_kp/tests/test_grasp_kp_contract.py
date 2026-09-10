@@ -24,68 +24,15 @@ _LSTM = (_HERE / "config" / "agents" / "rl_games_ppo_lstm_cfg.yaml").read_text(e
 _MLP = (_HERE / "config" / "agents" / "rl_games_ppo_cfg.yaml").read_text(encoding="utf-8")
 
 
-def _code(src: str) -> str:
-    """주석·docstring 을 뺀 실행 코드만 — 설명문에 적힌 이름이 계약을 통과시키면 안 된다."""
-    tree = ast.parse(src)
-    doc_lines: set[int] = set()
-    for node in ast.walk(tree):
-        body = getattr(node, "body", None)
-        if not isinstance(body, list) or not body:
-            continue
-        first = body[0]
-        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
-                and isinstance(first.value.value, str):
-            doc_lines.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
-    out = []
-    for i, line in enumerate(src.split("\n"), start=1):
-        if i in doc_lines:
-            continue
-        s = line.split("#", 1)[0]
-        if s.strip():
-            out.append(s)
-    return "\n".join(out)
-
-
-def _fn_block(src: str, name: str) -> str:
-    """`def name(` 함수 본문(주석 제거)."""
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            lines = src.split("\n")[node.lineno - 1:node.end_lineno]
-            return _code(textwrap.dedent("\n".join(lines)))
-    raise AssertionError(f"함수 {name} 부재")
-
-
-def _call_block(src: str, name: str) -> str:
-    """`name = torch.cat(` 다중행 호출의 괄호 안 본문 — 괄호 균형으로 끝을 찾는다."""
-    m = re.search(rf"\n\s*{re.escape(name)} = torch\.cat\(", src)
-    assert m, f"{name} = torch.cat( 부재"
-    i = src.index("(", m.start())
-    depth, j = 0, i
-    while j < len(src):
-        if src[j] == "(":
-            depth += 1
-        elif src[j] == ")":
-            depth -= 1
-            if depth == 0:
-                return src[i + 1:j]
-        j += 1
-    raise AssertionError(f"{name} 호출의 괄호가 안 닫힌다")
-
-
-def _ordered(block: str, tokens: list[str]) -> None:
-    idx = [block.find(t) for t in tokens]
-    missing = [t for t, i in zip(tokens, idx) if i < 0]
-    assert not missing, f"누락 {missing}"
-    assert idx == sorted(idx), f"순서 어긋남 {list(zip(tokens, idx))}"
-
-
-def _class_methods(src: str, cls: str) -> set[str]:
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == cls:
-            return {n.name for n in node.body if isinstance(n, ast.FunctionDef)}
-    raise AssertionError(f"클래스 {cls} 부재")
+# ★09.10 헬퍼는 `modules/source_contract.py` 로 옮겼다(fj 가 이 파일을 import 하고
+#   있었고, 트랙 분리 때 그 의존만 남았다). 이름은 그대로 재수출된다.
+from openarm.agnostic.modules.source_contract import (  # noqa: E402
+    _call_block,
+    _class_methods,
+    _code,
+    _fn_block,
+    _ordered,
+)
 
 
 # ---------------------------------------------------------------- 등록

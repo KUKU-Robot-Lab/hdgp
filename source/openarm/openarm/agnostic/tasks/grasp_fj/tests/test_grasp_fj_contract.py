@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from openarm.agnostic.tasks.grasp_kp.tests.test_grasp_kp_contract import (
+from openarm.agnostic.modules.source_contract import (
     _class_methods,
     _code,
     _fn_block,
@@ -98,9 +98,15 @@ def test_registration_has_no_fabric_gate():
 
 
 def test_robot_profiles_is_a_shared_reexport():
+    """★09.10 단일 출처는 유지하되 출처가 s2r 이 아니라 중립 `modules/` 다.
+
+    사용자 확정 "s2r 하고 fj 는 공유 금지" 는 벤더 값을 두 벌로 만들라는 뜻이 아니다
+    ("모든 값은 벤더 기준, 단일 출처"). 그래서 실체를 `modules/` 로 옮기고 fj 는
+    거기서 읽는다 — fj 에는 `grasp_s2r` 참조가 하나도 남지 않는다.
+    """
+    from openarm.agnostic.modules import robot_profiles as shared
     from openarm.agnostic.tasks.grasp_fj import robot_profiles as fj
-    from openarm.agnostic.tasks.grasp_s2r import robot_profiles as s2r
-    assert fj.PROFILES is s2r.PROFILES and "tesollo_right" in fj.PROFILES
+    assert fj.PROFILES is shared.PROFILES and "tesollo_right" in fj.PROFILES
 
 
 # ---------------------------------------------------------------- 훅 집합·fabric 0

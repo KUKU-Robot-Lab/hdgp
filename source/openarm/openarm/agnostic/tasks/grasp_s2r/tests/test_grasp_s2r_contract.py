@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent.parent
+_SHARED_PROFILES = _HERE.parent.parent / "modules" / "robot_profiles.py"
 _ENV = (_HERE / "grasp_s2r_env.py").read_text(encoding="utf-8")
 _CTL = (_HERE / "grasp_s2r_control.py").read_text(encoding="utf-8")
 _CTRL = (_HERE / "grasp_s2r_control.py").read_text(encoding="utf-8")
@@ -1239,7 +1240,8 @@ def test_per_finger_layout_defaults_off_and_matches_user_spec():
     assert 'hand_layout: str = "coupled3"' in cfg
     assert 'synergy_freeze_scope: str = "joint"' in cfg
     assert "hand_finger_channels" in cfg, "action_space 가 per_finger 분기를 모른다"
-    prof = _code((_HERE / "robot_profiles.py").read_text(encoding="utf-8"))
+    # ★09.10 실체는 `agnostic/modules/robot_profiles.py` 로 옮겼다(s2r 밑은 재수출 shim).
+    prof = _code(_SHARED_PROFILES.read_text(encoding="utf-8"))
     i = prof.index("hand_finger_channels={")
     blk = prof[i:i + 500]
     assert '"thumb": {"3": 0, "4": 1}' in blk, "엄지 근위/원위 2슬롯이 아니다"
@@ -1718,7 +1720,7 @@ def test_hand_sim_gains_are_the_vendor_driver_pid():
     """
     from openarm.agnostic.modules import vendor_gains as VG
 
-    prof = (_HERE / "robot_profiles.py").read_text(encoding="utf-8")
+    prof = _SHARED_PROFILES.read_text(encoding="utf-8")   # ★09.10 modules/ 로 이동
     assert "_vg.hand_actuator(" in prof, "손 게인이 벤더 모듈을 거치지 않는다"
     assert "effort_limit_sim=1.5" in prof, "손 effort 한계가 바뀌었다"
     assert VG.hand_gains() == (1.5, 0.0)
