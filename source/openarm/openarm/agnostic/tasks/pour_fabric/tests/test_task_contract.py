@@ -212,30 +212,13 @@ def test_action_width_is_constant_nine():
     assert re.search(r"^NUM_ACTIONS = 9$", _CFG, re.M)
     m = re.search(r"cfg\.action_space = (\w+)", _CFG)
     assert m.group(1) == "NUM_ACTIONS"
-
-
 # =============================================================================
-# 물리 동일성 (grasp_lift_fabric 값 복사 검증)
 # =============================================================================
-def test_physics_values_match_grasp_lift_fabric():
-    g = (_PKG.parent / "grasp_lift_fabric" / "grasp_lift_fabric_env_cfg.py").read_text()
-    for pat in (r"max_depenetration_velocity=1\.0",
-                r"solver_position_iteration_count=16",
-                r"solver_velocity_iteration_count=1",
-                r"fabrics_dt: float = 1\.0 / 60\.0",
-                r"fabric_decimation: int = 2",
-                r"fabrics_damping_gain: float = 20\.0",
-                r"palm_slew_pos: float = 0\.004",
-                r"palm_slew_rot_deg: float = 2\.0",
-                r"ground_plane_z: float = -0\.10",
-                r"runaway_joint_vel: float = 20\.0",
-                r"contact_force_threshold: float = 1\.0"):
-        assert re.search(pat, _CFG), f"pour cfg 에 없음: {pat}"
-        assert re.search(pat, g), f"grasp cfg 에 없음(원본이 바뀌었다 — 동기화 필요): {pat}"
-    assert re.search(r"dt=1\.0 / 120\.0", _CFG) and re.search(r"dt=1\.0 / 120\.0", g)
-    # pour 기본 물리 스위치 = fab_test10 베이스라인 (grasp 는 CLI 로 켠다)
-    assert re.search(r"enable_gravity: bool = True", _CFG)
-    assert re.search(r"enable_self_collisions: bool = True", _CFG)
+# ★09.10 삭제 — `test_physics_values_match_grasp_lift_fabric` ·
+#   `test_thresholds_match_sibling_track`. 둘 다 형제 트랙
+#   `tasks/grasp_lift_fabric/` 의 cfg 를 읽어 값을 대조했는데 그 트랙이
+#   저장소에서 사라져 FileNotFoundError 로 상시 실패하고 있었다.
+#   비교 대상이 없으므로 고칠 수 없다(사용자 확정 09.10: 필요없음).
 
 
 # =============================================================================
@@ -339,19 +322,6 @@ def test_contact_thresholds_are_split_three_ways():
         assert re.search(pat, cfg), f"{pat} 없음"
     env = _ENV
     assert "participation_force_threshold" in env, "참여 임계가 소비되지 않는다"
-
-
-def test_thresholds_match_sibling_track():
-    """세 임계값은 grasp_lift_fabric 과 같아야 한다(정렬 계약)."""
-    ours = _CFG
-    sib = (_PKG.parent / "grasp_lift_fabric" / "grasp_lift_fabric_env_cfg.py").read_text()
-    for key in ("contact_force_threshold", "participation_force_threshold",
-                "envelope_force_threshold"):
-        m_o = re.search(rf"{key}: float = ([0-9.]+)", ours)
-        m_s = re.search(rf"{key}: float = ([0-9.]+)", sib)
-        assert m_o and m_s, f"{key} 파싱 실패"
-        assert m_o.group(1) == m_s.group(1), (
-            f"{key}: pour={m_o.group(1)} != grasp={m_s.group(1)}")
 
 
 def test_fabric_owns_the_hand_in_direct_mode():
