@@ -404,6 +404,35 @@ class GraspFJEnv(GraspKPEnv):
         self.episode_length_buf.masked_fill_(self._success_now, r)
         self.extras["task/goal_clock_restart"] = self._success_now.float().mean()
 
+    def _log_joint_limit_violation(self, hand_q, ex) -> None:
+        """손 20관절이 **하드 한계 밖으로 밀려난 양**을 관절별로 남긴다.
+
+        왜 필요한가 (09.10). 이탈은 09.08 부터 알려진 문제인데 **TB 에 지표가 없어서**
+        판정을 매번 체크포인트 재생으로만 할 수 있었다. 그날 172개 태그를 다 뒤졌지만
+        이탈을 답하는 것이 하나도 없었고, 대신 쓴 `ctrl/hand_joint_err_max` 는
+        **전 env·전 관절의 최대값**이라 "얼마나 자주"를 못 말한다(중앙값을 비교하면
+        전형적 동작이 아니라 최악 outlier 집단을 비교하게 된다).
+
+        그래서 두 축을 나눠 남긴다.
+          · `viol/frac`      — 얼마나 **자주** (전 env·전 관절 표본 중 이탈 비율)
+          · `viol/max_rad`   — 얼마나 **크게** (최대 이탈량)
+          · `viol/frac_<관절>` — **어느 손가락**이 무너지는가 (20칸)
+        비율과 크기를 같이 봐야 "드물게 크게"와 "자주 조금"이 구분된다.
+
+        기준은 `joint_pos_limits`(= USD 하드 한계)다. 분석 쪽에 한계를 손으로 박으면
+        자산이 바뀔 때 조용히 어긋난다 — `fj_joint_limit_viol.py` 와 같은 규약.
+        """
+        lim = self.robot.data.joint_pos_limits[0, self._syn_ids, :]
+        lo, hi = lim[:, 0].unsqueeze(0), lim[:, 1].unsqueeze(0)
+        viol = torch.maximum(torch.maximum(lo - hand_q, hand_q - hi),
+                             torch.zeros_like(hand_q))          # (N, 20) rad, 안이면 0
+        over = (viol > 1e-3).float()
+        ex["viol/frac"] = over.mean()
+        ex["viol/max_rad"] = viol.max()
+        per = over.mean(dim=0)
+        for _n, _v in zip(self.profile.hand_joint_names, per):
+            ex[f"viol/frac_{_n}"] = _v
+
     def _log_fabric_metrics(self) -> None:
         """fabric/* 대신 ctrl/* — 목표↔실측 관절 오차(sim2sim 정합 1차 지표)·요청량·한계 포화."""
         self._restart_goal_clock()      # ★성공 스텝 안에서 — 아래 지표보다 먼저(같은 스텝 의미)
@@ -427,6 +456,7 @@ class GraspFJEnv(GraspKPEnv):
         _herr = (self._syn_target - _hq).abs()
         ex["ctrl/hand_joint_err_max"] = _herr[:, self._syn_movable].max()
         ex["ctrl/hand_blocked_frac"] = self._hand_blocked().float().mean()
+        self._log_joint_limit_violation(_hq, ex)
         # ★★09.09 **실측 폐쇄도**. `task/syn_close` 는 (tgt−lo)/span 즉 **지령**이라
         #   "정책이 안 닫는다"와 "손이 못 닫는다"를 3200 epoch 동안 구분하지 못했다.
         #   ep_3200 재생 계측: 지령 0.540 vs 실측 0.452 — 마디별 실현율이

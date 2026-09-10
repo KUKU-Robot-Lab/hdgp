@@ -113,6 +113,12 @@ def test_env_overrides_exactly_the_adapter_hook_set():
                "_hand_curl",                         # ★09.09 감쌈 보상 입력 — **실측** _2/_3 정규화 굴곡.
                                                       #   보상 이음매(_progress_reward)가 쓴다. 지령이 아니라
                                                       #   실측이어야 "시키기만 하고 끝"이 안 된다.
+               "_log_joint_limit_violation",         # ★09.10 관절별 한계 이탈 로깅 — **진단 전용**
+                                                      #   09.08~09.10 내내 이탈이 문제였는데 TB 에 지표가 없어
+                                                      #   판정을 매번 체크포인트 재생으로만 할 수 있었다.
+                                                      #   비율(viol/frac)과 크기(viol/max_rad)를 나눠 남긴다 —
+                                                      #   `ctrl/hand_joint_err_max` 는 전 env 최대값이라
+                                                      #   "얼마나 자주"를 못 말한다.
                "_seg_masks"}                          # ★09.09 마디별 진단 마스크 캐시 — **진단 전용**
                                                       #   순수 인덱스 헬퍼이고 보상·관측·종료 어디에도 안 쓴다.
                                                       #   실측 폐쇄도(task/syn_close_actual_seg*)를 마디별로 남기려고

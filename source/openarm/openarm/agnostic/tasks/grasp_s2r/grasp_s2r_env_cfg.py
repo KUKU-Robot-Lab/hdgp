@@ -325,9 +325,17 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   `GraspS2REnv.__init__` 의 `finalize_after_overrides()` 가 robot_cfg 를 재조립하며
     #   **조용히 지운다**(09.06 `probe_s2r_gravity_droop.py --gravity` 무효, 09.09 프로브의
     #   armature/vel_iters/max_depen 스윕이 통째로 no-op 이었던 것이 같은 원인).
-    #   기본값 = 현행 동작. None 인 offset 은 collision_props 를 아예 안 얹는다.
-    robot_solver_position_iterations: int = 8
-    robot_solver_velocity_iterations: int = 0
+    #   None 인 offset 은 collision_props 를 아예 안 얹는다(= PhysX 기본).
+    #
+    # ★★09.10 기본값을 **벤더 Isaac USD** 값으로 맞췄다. Tesollo 가 자기 자산에
+    #   `physxArticulation:solverPositionIterationCount=32`,
+    #   `solverVelocityIterationCount=1` 을 직접 박아 배포한다(dg5f / dg5f-short /
+    #   dg5fs / 15dof 전 변종 동일). 우리 자산 USD 에도 그 값이 그대로 구워져 있는데
+    #   구 기본값 8/0 이 **그걸 덮어써서 낮추고 있었다**. DEXTRAH 의 8/0 은 Allegro
+    #   기준이라 이 손에 대한 근거가 아니다(09.10 확인).
+    #   `max_depenetration_velocity` 는 벤더가 주지 않는다 — USD 임포터 기본값 1000 유지.
+    robot_solver_position_iterations: int = 32
+    robot_solver_velocity_iterations: int = 1
     robot_max_depenetration_velocity: float = 1000.0
     robot_contact_offset: float | None = None
     robot_rest_offset: float | None = None
