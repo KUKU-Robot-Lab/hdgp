@@ -248,6 +248,14 @@ class GraspFJTesolloRightEnvCfg(GraspFJEnvCfg):
     """
 
     profile_name: str = "tesollo_right"
+    #: ★09.10 물체를 **신규 셰이커**로 통일한다(사용자 지시). `assets/simulation_setting/shaker`
+    #:   의 usda 하나를 scale 0.80~1.20(0.05 단위 9종)로만 바꿔 소환한다.
+    #:   구 기본값은 `grasp_s2r` 에서 상속한 `cup_family`(cup_big 7종 + 구 shaker 1종)였다 —
+    #:   A 트랙(`grasp_kp`)은 이미 `shaker_sweep` 인데 B 만 컵을 보고 있어서 두 트랙의
+    #:   비교가 성립하지 않았다.
+    #:   ⚠물체가 바뀌면 원점 규약도 바뀐다: cup_big 은 바닥→원점 0.0773, 신규 셰이커는
+    #:     **바운딩박스 중심** 0.0875. 시작 자세·여유는 반드시 다시 재야 한다.
+    object_bank: str = "shaker_sweep"
 
     # ── 자기충돌 ON (09.09 사용자 확정) ──────────────────────────────────────
     # ★왜 이제 켤 수 있나. 09.01 에 끈 이유는 "손 hull 초기 겹침 × 자기충돌 = 폭주"였고,

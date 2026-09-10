@@ -283,6 +283,53 @@ SHAKER_FAMILY = ObjectBank(
 )
 
 
+# ---------------------------------------------------------------------------
+# ★09.10 신규 자산 — `assets/simulation_setting/shaker` (사용자 지시)
+# ---------------------------------------------------------------------------
+# 기존 `assets/cup/shaker_closed_rl.usd` 와 **다른 물체**다. 원점 규약부터 다르므로
+# 값을 물려받지 말고 아래 실측을 쓸 것(09.10 usda 메시 점 직접 측정, scale=1):
+#   · 높이 0.1750 m · 원점 = **바운딩박스 중심**(usda doc "Origin recentred to the
+#     bounding-box centre") → 바닥에서 원점까지 0.0875 (구 자산은 0.0921).
+#   · 원뿔대다(원통 아님). 외경 바닥 58.0mm → 림 88.0mm 로 선형 확대.
+#     벽 두께 5mm(바닥 안쪽 48.0 · 림 안쪽 78.0). 무게중심 z=+0.00138 ≈ 원점.
+#   · 충돌 근사 `convexDecomposition`(구 자산의 SDF 아님) — VRAM 이 덜 든다.
+#   · 루트 Xform 이름이 `ShakerFDM5mm` 이고 여기에 RigidBodyAPI 가 붙어 있다.
+#     `baseLink` 프림이 **없으므로** rigid_body_name 을 반드시 덮어야 한다.
+_SHAKER_V1 = os.path.join(ASSETS_DIR, "simulation_setting", "shaker", "usd", "shaker.usda")
+_SHAKER_V1_ORIGIN_OFFSET = 0.0875
+_SHAKER_V1_RIM_Z = 0.0875            # 닫힌 몸통이라 림 = 상단 = 원점 + 절반높이
+_SHAKER_V1_INNER_R = 0.0390          # 림 안쪽(실측 39.0mm)
+_SHAKER_V1_OUTER_R = 0.0440          # 림 바깥(실측 44.0mm) = 물체 최대 반경
+_SHAKER_V1_PRIM = "ShakerFDM5mm"
+
+
+def _shaker_v1(scale: float) -> ObjectSpec:
+    """신규 셰이커를 크기별로. ★`_cup` 과 같은 round 규약(부동소수로 id 가 어긋난다)."""
+    return ObjectSpec(id=f"shakerv1_s{round(scale * 100):03d}",
+                      usd_path=_SHAKER_V1, scale=(scale, scale, scale),
+                      base_origin_offset_z=_SHAKER_V1_ORIGIN_OFFSET,
+                      base_rim_z=_SHAKER_V1_RIM_Z,
+                      base_inner_radius=_SHAKER_V1_INNER_R,
+                      base_outer_radius=_SHAKER_V1_OUTER_R,
+                      rigid_body_name=_SHAKER_V1_PRIM,
+                      # 파지 반경은 **파지 높이의 단면**이다. 원뿔대라 높이마다 다르고,
+                      # grasp_kp 는 원점(=무게중심) 높이에서 잡는다 → 외경 73.0mm.
+                      base_grasp_radius=0.0365, base_grasp_halfheight=0.05)
+
+
+SHAKER_SWEEP = ObjectBank(
+    name="shaker_sweep",
+    specs=tuple(_shaker_v1(round(0.80 + 0.05 * i, 2)) for i in range(9)),
+    note=("★09.10 사용자 지시: 신규 셰이커를 scale 0.80~1.20, 0.05 단위 = **9종**. "
+          "파지 높이(원점=무게중심) 단면 외경 73.0mm 기준으로 58.4~87.6mm 대역이다. "
+          "DG5F-M 은 cup_big s100(외경 124mm)을 kp_a1 에서 lifted 0.86 으로 들었으므로 "
+          "이 대역은 파지 창 안쪽이다. "
+          "★9 는 2 의 거듭제곱이 아니다 — assign_indices 는 i % n 이라 무관하지만 "
+          "num_envs 가 9 의 배수가 아니면 종별 env 수가 1개씩 어긋난다(무해). "
+          "★순서는 오름차순(종 인덱스 = 크기 순서) — 기존 뱅크와 같은 규약."),
+)
+
+
 SHAKER_SMALL = ObjectBank(
     name="shaker_small",
     specs=(
@@ -368,7 +415,8 @@ VISDEX = _visdex_bank()
 
 BANKS: dict[str, ObjectBank] = {
     b.name: b for b in (SINGLE_CUP, CUP_FAMILY, CUP_SMALL,
-                        SHAKER_FAMILY, SHAKER_SMALL, SHAKER_ONE, VISDEX)
+                        SHAKER_FAMILY, SHAKER_SMALL, SHAKER_ONE,
+                        SHAKER_SWEEP, VISDEX)
 }
 DEFAULT_BANK = "single_cup"
 
