@@ -1,6 +1,6 @@
 """grasp_kp — SimToolReal 식 목표열·progress 보상, Track A (fabric palm 6D + 시너지 15D).
 
-`GraspS2REnv` 를 상속해 DESIGN.md §8 의 훅만 덮어쓴다. **접촉 센서를 만들지 않는다** —
+`FJCoreEnv` 를 상속해 DESIGN.md §8 의 훅만 덮어쓴다. **접촉 센서를 만들지 않는다** —
 보상·성공·관측·종료 어디에도 접촉이 없다(사용자 확정 09.06). 부모의 접촉 헬퍼
 (`_tip_force_local`·`_contact_forces*`·`_log_diagnostics`·`_palmar_mask`)는 부르지 않는다.
 
@@ -20,7 +20,7 @@ DirectRLEnv 스텝 순서: `_pre_physics_step` → 물리 → `_get_dones` → `
 #   09.10 하루에 두 번 일어났다(extF 를 leaf 가 재선언해 되살림, 질량 DR 0.5~2.5).
 #   ⚠여기 고친 것은 s2r 로 **전파되지 않는다**. 반대도 마찬가지다. 물리·자산 수준의
 #     공통 발견(무질량 프레임·벤더 게인·솔버)은 양쪽에 따로 적용해야 한다.
-#   ⚠주석·docstring 안의 `grasp_s2r_*.py:NNN` 경로 표기는 포크 시점 원본 기준이다.
+#   ⚠파일 안의 경로 표기는 포크본 이름으로 바꿔 두었다(09.10 Phase C).
 
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ from ...modules.keypoint_goal import (
 from ...modules.object_wrench import WrenchDR
 from ...modules.perception_delay import DelayQueue, noisy_pose
 from ...modules.progress_reward import compute_progress_reward
-from .fj_core_env import GraspS2REnv
-from .fj_kp_cfg import GraspKPEnvCfg
+from .fj_core_env import FJCoreEnv
+from .fj_kp_cfg import FJKeypointEnvCfg
 
 _OBJ_POSE_DIM = 7   # pos(3) + quat wxyz(4) — 물체 지연 큐의 폭
 def _clamp_norm(v: torch.Tensor, cap: torch.Tensor) -> torch.Tensor:
@@ -67,8 +67,8 @@ _STEP_GAIN_MARGIN = 0.999
 _DROP_DZ = 0.03
 
 
-class GraspKPEnv(GraspS2REnv):
-    cfg: GraspKPEnvCfg
+class FJKeypointEnv(FJCoreEnv):
+    cfg: FJKeypointEnvCfg
 
     # ------------------------------------------------------------------
     # 씬 — mixin `_setup_scene` 과 동일하되 **ContactSensor 생성부만 없다**
@@ -106,7 +106,7 @@ class GraspKPEnv(GraspS2REnv):
         if _multi:
             self.scene.rigid_objects["table"] = self.table
         self.scene.rigid_objects["object"] = self.object
-        print(f"[grasp_kp] 물체 뱅크 '{_bank.name}' {len(_bank)}종 · "
+        print(f"[grasp_fj] 물체 뱅크 '{_bank.name}' {len(_bank)}종 · "
               f"replicate_physics={self.cfg.scene.replicate_physics} · 접촉 센서 0개(설계)",
               flush=True)
 
@@ -126,7 +126,7 @@ class GraspKPEnv(GraspS2REnv):
 
         _tables = find_matching_prim_paths(tbl.prim_path)     # regex 가 아니라 실제 프림만 바인딩된다
         if not _tables:
-            raise RuntimeError(f"[grasp_kp] 테이블 프림이 없다: {tbl.prim_path}")
+            raise RuntimeError(f"[grasp_fj] 테이블 프림이 없다: {tbl.prim_path}")
         for _tp in _tables:
             bind_physics_material(_tp, "/World/Materials/taskSurface")
 
@@ -196,7 +196,7 @@ class GraspKPEnv(GraspS2REnv):
         self._stage_names = ("lifted", "goal1", "goal2", "goal3")
         self._stage_hit = torch.zeros(n, len(self._stage_names), dtype=torch.bool, device=dev)
         self._seed_palm_integrator(slice(None))       # 첫 리셋 전에도 지령 출발점이 있어야 한다
-        print(f"[grasp_kp] 키포인트 s={c.keypoint_half_height():.3f}m · 목표 박스 "
+        print(f"[grasp_fj] 키포인트 s={c.keypoint_half_height():.3f}m · 목표 박스 "
               f"{[round(v, 3) for v in self._goal_cfg.box_min]}~"
               f"{[round(v, 3) for v in self._goal_cfg.box_max]} · "
               f"tol {'고정 ' + str(c.tol_eval) if float(c.tol_eval) > 0.0 else f'{c.tol_start}→{c.tol_floor}'} · "
@@ -225,7 +225,7 @@ class GraspKPEnv(GraspS2REnv):
         _lr = math.radians(float(c.palm_cmd_rate_limit_rot_deg))
         if _lm <= 0.0 or _lr <= 0.0:
             raise RuntimeError(
-                f"[grasp_kp] 증분 매핑은 걸음 크기를 리미터에서 파생시킨다 — "
+                f"[grasp_fj] 증분 매핑은 걸음 크기를 리미터에서 파생시킨다 — "
                 f"palm_cmd_rate_limit_m({c.palm_cmd_rate_limit_m}) 와 "
                 f"palm_cmd_rate_limit_rot_deg({c.palm_cmd_rate_limit_rot_deg}) 는 둘 다 > 0 이어야 한다")
         # ★A-ii: 리미터 예산을 복원(pull)과 액션(step)이 **나눠 쓴다**. 안 나누면 둘이 겹칠 때
@@ -245,7 +245,7 @@ class GraspKPEnv(GraspS2REnv):
             torch.full((3,), _lr * _k, device=dev)])
         self._palm_pull = float(c.palm_cmd_anchor_pull)
         self._palm_pull_cap = torch.tensor([_lm * _res, _lr * _res], device=dev)   # (xyz, rot)
-        print(f"[grasp_kp] 팔 지령 = 증분+복원 · 걸음 {_lm * _k:.5f} m / "
+        print(f"[grasp_fj] 팔 지령 = 증분+복원 · 걸음 {_lm * _k:.5f} m / "
               f"{math.degrees(_lr * _k):.3f}° · 복원 {self._palm_pull} (상한 {_lm * _res:.5f} m) · "
               f"리미터 {_lm} m / {c.palm_cmd_rate_limit_rot_deg}° 를 {1 - _res:.0%}/{_res:.0%} 로 "
               f"나눠 쓴다 → 합이 리미터를 못 넘는다", flush=True)
@@ -273,18 +273,18 @@ class GraspKPEnv(GraspS2REnv):
         c = self.cfg
         if str(c.synergy_hold_mode) != "blocked" or bool(c.synergy_contact_freeze):
             raise RuntimeError(
-                "[grasp_kp] 시너지 홀드는 'blocked' 만 허용(접촉 센서가 없다): "
+                "[grasp_fj] 시너지 홀드는 'blocked' 만 허용(접촉 센서가 없다): "
                 f"synergy_hold_mode={c.synergy_hold_mode!r} synergy_contact_freeze={c.synergy_contact_freeze}")
         if bool(c.respawn_on_fail):
-            raise RuntimeError("[grasp_kp] respawn_on_fail 은 접촉 래치 규약이다 — 낙하는 리셋(False)")
+            raise RuntimeError("[grasp_fj] respawn_on_fail 은 접촉 래치 규약이다 — 낙하는 리셋(False)")
         if bool(c.enable_adr):
-            raise RuntimeError("[grasp_kp] ADR 금지 — 커리큘럼은 허용오차(tol_*) 하나뿐")
+            raise RuntimeError("[grasp_fj] ADR 금지 — 커리큘럼은 허용오차(tol_*) 하나뿐")
         if bool(getattr(c, "obs_object_rigid_after_latch", False)):
-            raise RuntimeError("[grasp_kp] obs_object_rigid_after_latch 는 이 트랙에서 소비되지 않는다")
+            raise RuntimeError("[grasp_fj] obs_object_rigid_after_latch 는 이 트랙에서 소비되지 않는다")
         _arm_dim = int(c._arm_action_dim(self.profile))      # A palm 6 / B n_arm
         if int(c.arm_cmd_dim) != _arm_dim:
             raise RuntimeError(
-                f"[grasp_kp] cmd_state 폭 arm_cmd_dim={c.arm_cmd_dim} ≠ 팔 액션 폭 {_arm_dim}")
+                f"[grasp_fj] cmd_state 폭 arm_cmd_dim={c.arm_cmd_dim} ≠ 팔 액션 폭 {_arm_dim}")
 
     def _apply_palm_floor_override(self) -> None:
         """palm 지령 박스 z 하한을 **올린다**(낮추지 않음) — 상판 관통 방지. 앵커가 밖이면 죽는다."""
@@ -294,7 +294,7 @@ class GraspKPEnv(GraspS2REnv):
         old_palm, old_box = float(self._palm_lo[2]), float(self._box_lo[2])
         if z >= float(self._palm_hi[2]) or z > float(self._home_palm[2]):
             raise RuntimeError(
-                f"[grasp_kp] palm_box_min_z_override={z} 가 박스 상한 {float(self._palm_hi[2]):.3f} "
+                f"[grasp_fj] palm_box_min_z_override={z} 가 박스 상한 {float(self._palm_hi[2]):.3f} "
                 f"또는 홈 z {float(self._home_palm[2]):.3f} 를 넘는다")
         self._palm_lo[2] = max(old_palm, z)
         self._box_lo[2] = max(old_box, z)
@@ -303,9 +303,9 @@ class GraspKPEnv(GraspS2REnv):
                          + float(self._anchor_off[2]))
             if _anchor_z < z:
                 raise RuntimeError(
-                    f"[grasp_kp] 스폰 앵커 z {_anchor_z:.3f} 가 새 하한 {z} 아래다 — a=0 이 잘린다. "
+                    f"[grasp_fj] 스폰 앵커 z {_anchor_z:.3f} 가 새 하한 {z} 아래다 — a=0 이 잘린다. "
                     "palm_anchor_offset_xyz[2] 를 올리거나 override 를 낮춰라")
-        print(f"[grasp_kp] palm 박스 z 하한 {old_palm:.3f}→{float(self._palm_lo[2]):.3f} · "
+        print(f"[grasp_fj] palm 박스 z 하한 {old_palm:.3f}→{float(self._palm_lo[2]):.3f} · "
               f"최종 클램프 {old_box:.3f}→{float(self._box_lo[2]):.3f}", flush=True)
 
     def _assert_goal_box_in_arm_reach(self) -> None:
@@ -322,7 +322,7 @@ class GraspKPEnv(GraspS2REnv):
             return                           # Track B: 관절공간 증분 — palm 박스가 지령 한계가 아니다
         c, p = self.cfg, self.profile
         if self._anchor_mode != "spawn":
-            raise RuntimeError(f"[grasp_kp] palm_anchor_mode={self._anchor_mode!r} — 목표 박스 도달성은 spawn 앵커 전제다")
+            raise RuntimeError(f"[grasp_fj] palm_anchor_mode={self._anchor_mode!r} — 목표 박스 도달성은 spawn 앵커 전제다")
         tol, r = float(c.tol_floor), float(c.spawn_range)
         cx, cy = (float(v) for v in p.object_spawn_center)
         _tz = float(c.table_surface_z)
@@ -368,7 +368,7 @@ class GraspKPEnv(GraspS2REnv):
                            f"{_TRAVERSE_BUDGET_FRAC:.0%})")
         if bad:
             raise RuntimeError(
-                "[grasp_kp] 목표 박스가 팔 지령 범위를 넘는다(±tol_floor 여유) — "
+                "[grasp_fj] 목표 박스가 팔 지령 범위를 넘는다(±tol_floor 여유) — "
                 "palm_cmd_rate_limit_m 을 키우거나 goal_box_* 를 줄여라: " + " · ".join(bad))
         _mode = ("증분 · 최악 이동 %.0f 스텝 / 예산 %.0f" % (worst, budget)
                  if bool(c.palm_cmd_incremental) else "절대 · 시간 제약 없음")
@@ -378,7 +378,7 @@ class GraspKPEnv(GraspS2REnv):
                    + (" ⚠ 내접: " + ",".join(_tight) if _tight else ""))
         else:
             _mg = ""
-        print(f"[grasp_kp] 목표 박스 ⊂ 팔 지령 범위 ✓ ({_mode} · "
+        print(f"[grasp_fj] 목표 박스 ⊂ 팔 지령 범위 ✓ ({_mode} · "
               f"클램프 z [{b_lo[2]:.3f},{b_hi[2]:.3f}] · tol 여유 {tol}{_mg})", flush=True)
 
     def _read_object_mass(self) -> torch.Tensor:
@@ -386,7 +386,7 @@ class GraspKPEnv(GraspS2REnv):
         m = self.object.data.default_mass
         if m is None or m.ndim != 2 or m.shape[0] != self.num_envs:
             raise RuntimeError(
-                f"[grasp_kp] object default_mass 형상 이상: {None if m is None else tuple(m.shape)} "
+                f"[grasp_fj] object default_mass 형상 이상: {None if m is None else tuple(m.shape)} "
                 f"(기대 ({self.num_envs}, 1))")
         return m[:, 0].to(self.device, dtype=torch.float32)
 
@@ -407,73 +407,14 @@ class GraspKPEnv(GraspS2REnv):
         self._post_command()
         self._apply_wrench()
 
-    def _arm_command(self) -> None:
-        """팔 palm 6D 지령 → 박스 클램프 → 리미터(안전망) → 마커. 매핑은 cfg 로 고른다.
 
-        **절대**(기본, `palm_cmd_incremental=False`) — `앵커 + 델타(a)`. `a` 가 위치를 뜻한다.
-        구식 grasp_s2r 와 같은 식이고 kp_a1/kp_a2 가 이걸로 컵을 들었다(a2 e476 lifted 0.658).
-        대가는 포화다 — 지령 변화의 2.9% 만 리미터를 통과해 `rate_sat` 0.99 · `step_raw` 0.17 m
-        (리미터 0.02 m 의 10.8배)로 굳는다. 즉 액션의 크기 정보가 버려지고 방향만 남는다.
-
-        **증분**(`palm_cmd_incremental=True`) — `이전지령 + 복원 + 게인·a`. `a=±1` 이 허용된 최대
-        걸음이라 "레일에 붙이면 리미터가 대신 밀어준다"가 구조적으로 불가능하다. 실측으로
-        `rate_sat` 0.000 · `step_raw` 0.0067 m · `arm_qd_p99` 2.30 → 1.30 을 얻었다.
-        ★그런데 과제를 못 배웠다 — a3/a4/a5 세 번 모두 lifted 0.0000(사유는 cfg 주석).
-          제어 품질만 보면 이쪽이 맞으므로 경로를 지우지 않고 스위치 뒤에 남긴다.
-
-        ★적분기는 **클램프된 값**을 저장한다 — 원값을 저장하면 박스 밖에서 와인드업이 생겨
-          정책이 방향을 바꿔도 한동안 지령이 안 움직인다.
-        """
-        if bool(self.cfg.palm_cmd_incremental):
-            # a=0 → 앵커로 서서히 복귀. 복원 노름 상한이 있어 액션 몫과 합쳐도 리미터를 못 넘는다.
-            step = self._palm_step_gain * self.actions[:, :6]
-            _prev6 = torch.cat([self._prev_palm_cmd, self._prev_palm_cmd_rot], dim=1)
-            _pull = self._palm_pull * (self._palm_anchor() - _prev6)
-            _pull[:, :3] = _clamp_norm(_pull[:, :3], self._palm_pull_cap[0])
-            _pull[:, 3:6] = _clamp_norm(_pull[:, 3:6], self._palm_pull_cap[1])
-            _raw_targets = _prev6 + _pull + step
-        else:
-            # a=0 → 앵커. 탐색이 앵커 주변 유계 오프셋으로 묶인다(grasp_s2r 와 동일 식).
-            delta = 0.5 * (self.actions[:, :6] + 1.0) * (self._delta_hi - self._delta_lo) \
-                + self._delta_lo
-            _raw_targets = self._palm_anchor() + delta
-        self.palm_targets = _raw_targets.clamp(self._box_lo, self._box_hi)
-        self._palm_cmd_box_sat = (self.palm_targets[:, :3] != _raw_targets[:, :3]).float()
-        self._palm_delta_cmd = self.palm_targets - self._palm_anchor()   # 축별 로깅(앵커 기준 변위)
-
-        _lim = float(self.cfg.palm_cmd_rate_limit_m)
-        _lim_r = math.radians(float(self.cfg.palm_cmd_rate_limit_rot_deg))
-        _step3 = self.palm_targets[:, :3] - self._prev_palm_cmd
-        _dr = self.palm_targets[:, 3:6] - self._prev_palm_cmd_rot
-        self._palm_cmd_step_raw = torch.where(
-            self._palm_cmd_primed, _step3.norm(dim=-1), torch.zeros_like(self._palm_cmd_step_raw))
-        self._palm_cmd_step_raw_rot = torch.where(
-            self._palm_cmd_primed, _dr.norm(dim=-1), torch.zeros_like(self._palm_cmd_step_raw_rot))
-        # ★09.07 A-v: 벌점 측도 = 리미터 **전** 원지령 변화를 리미터 상한으로 정규화(위치·회전 평균).
-        #   1.0 = "리미터에 딱 맞게 지령", 10 = "리미터의 10배를 요구"(a2/a6 작동점 step_raw 0.20 m).
-        #   리미터 **후** 값은 포화(rate_sat 0.96)에서 상수라 μ 에 기울기가 없다 — 그래서 원값이다.
-        #   상한도 없다(작동점에서 clamp 되면 항이 상수가 된다). 리셋 첫 스텝(primed False)은 0.
-        self._cmd_rate = torch.where(
-            self._palm_cmd_primed,
-            0.5 * (self._palm_cmd_step_raw / max(_lim, 1e-9)
-                   + self._palm_cmd_step_raw_rot / max(_lim_r, 1e-9)),
-            torch.zeros_like(self._cmd_rate))
-        if _lim > 0.0:
-            _scale = (_lim / _step3.norm(dim=-1, keepdim=True).clamp(min=1e-9)).clamp(max=1.0)
-            self._palm_cmd_rate_sat = ((_scale.squeeze(-1) < 1.0) & self._palm_cmd_primed).float()
-            self.palm_targets[:, :3] = torch.where(
-                self._palm_cmd_primed.unsqueeze(-1), self._prev_palm_cmd + _step3 * _scale,
-                self.palm_targets[:, :3])
-        self._prev_palm_cmd = self.palm_targets[:, :3].clone()
-
-        if _lim_r > 0.0:
-            _sr = (_lim_r / _dr.norm(dim=-1, keepdim=True).clamp(min=1e-9)).clamp(max=1.0)
-            self.palm_targets[:, 3:6] = torch.where(
-                self._palm_cmd_primed.unsqueeze(-1), self._prev_palm_cmd_rot + _dr * _sr,
-                self.palm_targets[:, 3:6])
-        self._prev_palm_cmd_rot = self.palm_targets[:, 3:6].clone()
-        self._palm_cmd_primed |= True
-        self._update_cmd_markers()          # 시각화 전용(goal_pos 마커 포함) — 물리·보상 영향 없음
+    # ★★09.10 Phase C — 아래 여섯 메서드는 이 포크에서 사문이라 지웠다:
+    #   _arm_command(67) · _log_fabric_metrics(22) · _progress_reward(11) ·
+    #   _action_obs(8) · _cmd_state(6) · _post_command(5).
+    #   `grasp_fj_env` 가 여섯 모두 super 없이 덮는다. 특히 _arm_command 는 A 의
+    #   palm 델타 매핑이고 B 는 관절공간 직접 매핑이라 의미가 아예 다르다 —
+    #   남겨두면 "B 가 A 의 팔 매핑을 쓴다" 는 오해를 남긴다.
+    #   원본은 `tasks/grasp_kp/fj_kp_env.py` 에 있다 — A 트랙 무영향.
 
     def _hand_command(self) -> None:
         """grasp_s2r 손 구간 그대로: 케이지 닫기 게이트(높이 래치 뒤 해제) → 시너지 목표."""
@@ -501,11 +442,6 @@ class GraspKPEnv(GraspS2REnv):
         """
         return self._synergy_targets(a_hand)
 
-    def _post_command(self) -> None:
-        """fabric 손 상태를 실제 지령으로 동기화 → 적분 한 번(정책 스텝당)."""
-        # 끊으면 fabric 이 없는 자기충돌을 피하려 팔을 민다(실측 palm_err 475mm).
-        self.fabric_q[:, self.profile.num_arm_joints:] = self._syn_to_fab(self._syn_target)
-        self._step_fabric()
 
     def _apply_wrench(self) -> None:
         """리프트 후 질량정규화 외란 — 매 스텝 새로 뽑고(decay 0) lifted 게이트, world 프레임."""
@@ -515,14 +451,6 @@ class GraspKPEnv(GraspS2REnv):
     # ------------------------------------------------------------------
     # 관측 — `_derive_spaces` 와 정확히 같은 순서·차원
     # ------------------------------------------------------------------
-    def _action_obs(self) -> torch.Tensor:
-        """관측의 액션 블록(action_space 폭). ★A 는 지연 큐를 통과한 액션 **그대로** — 산술 불변.
-
-        09.08 이음매를 여기 만든 이유: SimToolReal 은 raw action 이 아니라 post-EMA `prev_action_targets`
-        (팔+손)를 관측한다. 하위 트랙(B)이 손 관절 목표 q*_{t-1}(EMA 상태)을 정책에 보이게 하려면 이 한
-        메서드만 덮는다 — 폭은 바뀌지 않고(계약 136), A 의 관측은 한 글자도 안 변한다.
-        """
-        return self.actions
 
     def _get_observations(self) -> dict:
         flush = self.episode_length_buf == 0
@@ -568,12 +496,6 @@ class GraspKPEnv(GraspS2REnv):
             cmd_state=self._cmd_state(),
         )
 
-    def _cmd_state(self) -> torch.Tensor:
-        """정책의 마지막 팔 지령 상태 (N, arm_cmd_dim). A = palm_targets − 앵커(6, 프레임 무관).
-
-        Track B 는 이 훅만 덮어써 `q*_prev`(7) 를 준다.
-        """
-        return self.palm_targets - self._palm_anchor()
 
     def _object_blocks(self, palm_pos: torch.Tensor, flush: torch.Tensor) -> dict:
         """참값 파생(critic·지표) + 지각 파생(actor). 지각은 지연 → 노이즈 → **한 자세**에서 2항.
@@ -623,7 +545,7 @@ class GraspKPEnv(GraspS2REnv):
         _o, _s = int(self.cfg.observation_space), int(self.cfg.state_space)
         if policy.shape[1] != _o or state.shape[1] != _s:
             raise RuntimeError(
-                f"[grasp_kp] obs 조립 폭 ≠ cfg 공식: policy {policy.shape[1]} vs "
+                f"[grasp_fj] obs 조립 폭 ≠ cfg 공식: policy {policy.shape[1]} vs "
                 f"observation_space {_o} · critic {state.shape[1]} vs state_space {_s}")
         self._obs_shape_checked = True
 
@@ -664,27 +586,16 @@ class GraspKPEnv(GraspS2REnv):
         total = total + float(c.abnormal_penalty) * self._abnormal.float()
         self._last_reward = total
         if self._tol.update(self._trk.prev_episode_successes):
-            print(f"[grasp_kp] 허용오차 커리큘럼 → tol {self._tol.tol:.4f}", flush=True)
+            print(f"[grasp_fj] 허용오차 커리큘럼 → tol {self._tol.tol:.4f}", flush=True)
         # arm 시점 기록 — 2000 스텝마다 한 번만 동기화(bool)한다.
         if self.common_step_counter % 2000 == 0 and bool(self._cmd_rate_armed):
-            print(f"[grasp_kp] cmd_rate 벌점 ARMED · lift_ema {float(self._lift_ema):.3f} · step {self.common_step_counter}", flush=True)
+            print(f"[grasp_fj] cmd_rate 벌점 ARMED · lift_ema {float(self._lift_ema):.3f} · step {self.common_step_counter}", flush=True)
         self._stage_hit[:, 0] |= self._latched
         for k in (1, 2, 3):
             self._stage_hit[:, k] |= self._trk.successes >= k
         self._log_step(terms, total, kp_dist, ft_dist, near_goal, out, dz)
         return total
 
-    def _progress_reward(self, *, is_success: torch.Tensor, **kw):
-        """보상 계산 이음매. ★A 는 공유 모듈 그대로 — `is_success` 를 받아서 **버린다**.
-
-        A 의 `goal_bonus` 는 near_goal 스텝마다 `goal_bonus/success_steps` 를 나눠 주므로
-        성공 순간이 필요 없다. 그래도 여기서 인자를 받는 이유는 `modules/progress_reward.py` 를
-        **한 글자도 안 건드리기** 위해서다 — 여분 인자를 이음매가 흡수한다.
-
-        B(`grasp_fj`)는 제어 방식이 달라 보상 모듈을 포크했고(09.08 사용자 확정) 이 메서드만
-        덮는다. `_get_rewards` 본체는 양쪽이 공유한다.
-        """
-        return compute_progress_reward(**kw)
 
     def _advance_goals(self, is_success: torch.Tensor) -> None:
         """성공 env: successes+1 · 추적기 초기화 · **이전 목표** 기준 델타 목표(박스 클램프).
@@ -782,28 +693,6 @@ class GraspKPEnv(GraspS2REnv):
         m = self._latched.float()
         return (x * m).sum() / m.sum().clamp(min=1.0)
 
-    def _log_fabric_metrics(self) -> None:
-        """부모 공식 그대로(joint_err 평균·최대, palm_err, 지령 원값). Track B(fabric 없음)는 건너뛴다."""
-        if getattr(self, "fabric", None) is None:
-            return
-        palm_pos = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
-        self.extras["fabric/palm_cmd_step_raw"] = self._palm_cmd_step_raw.mean()
-        # ★`_arm_command` 가 산출만 하고 로깅은 안 하던 값. 리미터가 실제로 자르는 비율이다.
-        self.extras["fabric/palm_cmd_rate_sat"] = self._palm_cmd_rate_sat.mean()
-        # ★`_arm_command` 가 산출만 하던 축별 박스 포화. 클램프 박스가 실제로 무는지.
-        for _i, _ax in enumerate("xyz"):
-            self.extras[f"fabric/palm_cmd_box_sat_{_ax}"] = self._palm_cmd_box_sat[:, _i].mean()
-        _jerr = (self.fabric_q[:, : self.profile.num_arm_joints]
-                 - self.robot.data.joint_pos[:, self._arm_ids_t]).abs()
-        self.extras["fabric/joint_err_mean"] = _jerr.mean()
-        self.extras["fabric/joint_err_max"] = _jerr.max()     # 평균은 막힘 구간을 묻는다
-        self.extras["fabric/palm_err_mean"] = (
-            self.palm_targets[:, :3] + self._fab_to_env - palm_pos).norm(dim=-1).mean()
-        # ★09.10 `fabric_profile` 이 켜졌을 때만 채워진다 — step_time 에서 fabric 몫을 떼어낸
-        #   유일한 수치이고, CUDA Graph 이득의 상한이 이 값이다(로그에 없으면 판단 불가).
-        _ms = getattr(self, "_fabric_ms", None)
-        if _ms is not None:
-            self.extras["fabric/fabric_ms"] = torch.tensor(_ms, device=self.device)
 
     # ------------------------------------------------------------------
     # 종료 — 부모 기하(tilt·out·fell·abnormal) + 손 바닥 관통 + max_goals truncation

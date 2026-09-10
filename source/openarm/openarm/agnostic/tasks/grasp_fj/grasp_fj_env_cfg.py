@@ -1,7 +1,9 @@
-"""grasp_fj cfg — `GraspKPEnvCfg` 상속, Track B(팔 7D 관절 증분 + EMA, Fabrics 없음).
+"""grasp_fj cfg — `FJKeypointEnvCfg` 상속, Track B(팔 7D 관절 증분 + EMA, Fabrics 없음).
 
-DESIGN.md §1 B 열. 목표열·보상·관측·종료·DR 은 전부 A(`grasp_kp`)와 **같은 cfg** 를
-쓴다 — 여기서 바뀌는 것은 팔 액션 어댑터 세 값뿐이다:
+DESIGN.md §1 B 열. 목표열·보상·관측·종료·DR 의 **정의는 A 에서 유래**하지만,
+★09.10 부터 코드를 공유하지 않는다(사용자 확정 "s2r 하고 fj 는 공유 금지").
+부모는 이 디렉터리 안의 포크본(`fj_kp_cfg` → `fj_core_cfg`)이며, A 트랙을 고쳐도
+여기는 따라오지 않는다. A 대비 바뀌는 것은 팔 액션 어댑터 세 값이다:
 - `arm_cmd_dim = n_arm`(obs 의 cmd_state = 직전 팔 목표 q*_{t-1}),
 - `k_arm`(rad/step per unit action), `arm_ema`(α).
 차원은 A 의 `_derive_spaces` 공식을 그대로 쓰고 `_arm_action_dim` 훅만 n_arm 으로 바꾼다
@@ -14,13 +16,13 @@ from dataclasses import fields
 
 from isaaclab.utils import configclass
 
-from .fj_kp_cfg import GraspKPEnvCfg
+from .fj_kp_cfg import FJKeypointEnvCfg
 from .fj_reward import FJRewardCfg
 from .robot_profiles import PROFILES
 
 
 @configclass
-class GraspFJEnvCfg(GraspKPEnvCfg):
+class GraspFJEnvCfg(FJKeypointEnvCfg):
     """SimToolReal 식 트랙 B: 팔 관절 7D 증분+EMA(위치 목표만) + 시너지 15D, 접촉 항 0개.
 
     왜 B 인가: 실기 배포에서 fabric 노드를 빼고(4노드→3노드) 정책 출력을 pd 노드에 바로

@@ -1,6 +1,6 @@
 """grasp_s2r — 제자리 파지 → 리프트 → 목표 이송 → 정지.
 
-제어 스택은 `grasp_s2r_control.GraspS2RControlMixin`(Fabrics 팔 + 시너지 손),
+제어 스택은 `grasp_s2r_control.FJControlMixin`(Fabrics 팔 + 시너지 손),
 보상은 `grasp_s2r_rewards`, 로봇 종속 정보는 `robot_profiles` 에 있다.
 
 ★액션 규약(grasp_v1 계승): palm 은 **홈 기준 델타**다 — `a=0` 이면 홈을 유지한다.
@@ -17,7 +17,7 @@
 #   09.10 하루에 두 번 일어났다(extF 를 leaf 가 재선언해 되살림, 질량 DR 0.5~2.5).
 #   ⚠여기 고친 것은 s2r 로 **전파되지 않는다**. 반대도 마찬가지다. 물리·자산 수준의
 #     공통 발견(무질량 프레임·벤더 게인·솔버)은 양쪽에 따로 적용해야 한다.
-#   ⚠주석·docstring 안의 `grasp_s2r_*.py:NNN` 경로 표기는 포크 시점 원본 기준이다.
+#   ⚠파일 안의 경로 표기는 포크본 이름으로 바꿔 두었다(09.10 Phase C).
 
 from __future__ import annotations
 
@@ -29,16 +29,16 @@ from isaaclab.envs import DirectRLEnv
 
 from ...modules.object_wrench import WrenchDR
 
-from .fj_core_control import GraspS2RControlMixin
-from .fj_core_cfg import GraspS2REnvCfg
-from .fj_core_rewards import GRASP_S2R_REWARD_TERMS, compute_grasp_s2r_rewards
+from .fj_core_control import FJControlMixin
+from .fj_core_cfg import FJCoreEnvCfg
+from .fj_core_rewards import FJ_CORE_REWARD_TERMS, compute_fj_core_rewards
 from .robot_profiles import PROFILES
 
 
-class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
-    cfg: GraspS2REnvCfg
+class FJCoreEnv(FJControlMixin, DirectRLEnv):
+    cfg: FJCoreEnvCfg
 
-    def __init__(self, cfg: GraspS2REnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: FJCoreEnvCfg, render_mode: str | None = None, **kwargs):
         # ★★hydra 오버라이드는 `__post_init__` **뒤**에 `from_dict` 로 적용되고
         #   `__post_init__` 를 다시 부르지 않는다(IsaacLab `hydra_task_config` 실측).
         #   따라서 `env.object_bank=cup_family` 는 파생 구조(스폰 cfg·replicate_physics·
@@ -81,7 +81,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                            if bool(self.cfg.enable_gravity) else 0.0)
         if self._grav_comp > 0.0 and len(self._grav_ids) == 0:
             raise RuntimeError(
-                "[grasp_s2r] 중력보상을 켰는데 '[rl]_aj_[1-7]' 로 팔 관절을 하나도 못 찾았다")
+                "[grasp_fj] 중력보상을 켰는데 '[rl]_aj_[1-7]' 로 팔 관절을 하나도 못 찾았다")
         self._grav_ids_t = torch.tensor(self._grav_ids, device=self.device, dtype=torch.long)
 
         # ★부팅 가드: cfg 의도와 **실제로 조립된 spawn 속성**을 대조한다.
@@ -90,12 +90,12 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         _gr_off = bool(self.cfg.robot_cfg.spawn.rigid_props.disable_gravity)
         if _gr_off == bool(self.cfg.enable_gravity):
             raise RuntimeError(
-                "[grasp_s2r] 중력 스위치가 robot_cfg 에 반영되지 않았다 — "
+                "[grasp_fj] 중력 스위치가 robot_cfg 에 반영되지 않았다 — "
                 f"enable_gravity={self.cfg.enable_gravity} vs "
                 f"spawn.disable_gravity={_gr_off}")
         if _gr_off and self._grav_comp > 0.0:
             raise RuntimeError(
-                "[grasp_s2r] 중력이 꺼졌는데 중력보상이 켜져 있다 — 중력을 두 번 지운다. "
+                "[grasp_fj] 중력이 꺼졌는데 중력보상이 켜져 있다 — 중력을 두 번 지운다. "
                 "`env.gravity_compensation=0` 으로 끄라")
 
         palm_ids, _ = self.robot.find_bodies(p.palm_body)
@@ -247,14 +247,14 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         #   뷰 인스턴스 수가 num_envs 와 다르면 `env_ids` 기입이 조용히 어긋난다.
         _ni = int(getattr(self.robot, "num_instances", -1))
         _dq = self._default_q
-        print(f"[grasp_s2r] 로봇 뷰: num_instances={_ni} (num_envs={self.num_envs}) · "
+        print(f"[grasp_fj] 로봇 뷰: num_instances={_ni} (num_envs={self.num_envs}) · "
               f"default_joint_pos {tuple(_dq.shape)} "
               f"min={float(_dq.min()):.4f} max={float(_dq.max()):.4f} "
               f"env간 산포={float(_dq.std(dim=0).max()):.6f} · "
               f"joint_names={len(self.robot.data.joint_names)}", flush=True)
         if _ni != self.num_envs:
             raise RuntimeError(
-                f"[grasp_s2r] 로봇 아티큘레이션 뷰가 {_ni}개인데 env 는 "
+                f"[grasp_fj] 로봇 아티큘레이션 뷰가 {_ni}개인데 env 는 "
                 f"{self.num_envs}개다 — 리셋 기입이 어긋난다")
         self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self.prev_actions = torch.zeros_like(self.actions)
@@ -318,7 +318,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._obj_mass = self._read_obj_mass()
         # ★조용한 no-op 방지 3중 확인의 첫 번째 — 부팅 로그에 **실효값**을 찍는다.
         #   (나머지 둘: 런 dump 의 cfg, 그리고 TB `dr/wrench_fire_frac`)
-        print(f"[grasp_s2r] 외란 DR {'ON' if float(_c.wrench_force_scale) > 0.0 else 'OFF'} — "
+        print(f"[grasp_fj] 외란 DR {'ON' if float(_c.wrench_force_scale) > 0.0 else 'OFF'} — "
               f"{float(_c.wrench_force_scale)}N/kg · {float(_c.wrench_torque_scale)}N·m/kg · "
               f"p~logU{tuple(float(v) for v in _c.wrench_prob_range)} · "
               f"게이트=높이래치(lift_success_height {float(_c.lift_success_height)}) · "
@@ -354,10 +354,13 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._assert_adr_monotonic()
         self._adr_apply()
 
-        print(f"[grasp_s2r] profile={p.name} arm={len(self.arm_ids)} "
+        print(f"[grasp_fj] profile={p.name} arm={len(self.arm_ids)} "
               f"hand={len(self.hand_ids)} tips={len(self.tip_ids)} "
               f"action={self.cfg.action_space} obs={self.cfg.observation_space} "
-              f"state={self.cfg.state_space} fabric={p.fabric_robot_dir}", flush=True)
+              # ★09.10 fabric 이름은 안 찍는다 — 트랙 B 는 fabric 을 만들지도, `fabrics_sim`
+              #   을 import 하지도 않는다(Phase C). 프로필에 남은 문자열을 그대로 찍으면
+              #   "B 가 fabric 으로 돈다" 는 오해를 남긴다. 대신 OFF 임을 명시한다.
+              f"state={self.cfg.state_space} fabric=OFF(트랙 B)", flush=True)
         # ★★s2r 정합 상태를 **매 학습 로그에 남긴다**. 이 셋은 전부 "조용히 틀릴 수
         #   있는" 축이라(게인은 환경변수, DR 대상·마찰은 cfg 단계에서만 확정된다)
         #   나중에 로그만 보고도 어느 조합으로 돌았는지 알 수 있어야 한다.
@@ -385,7 +388,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                 _dr = str(_t.params["asset_cfg"].joint_names)
             except Exception:                      # noqa: BLE001
                 _dr = "(조회 실패)"
-        print(f"[grasp_s2r][s2r] 팔게인={_arm_g}(벤더 j1) · "
+        print(f"[grasp_fj][s2r] 팔게인={_arm_g}(벤더 j1) · "
               f"손게인={_hand_g} · "
               f"게인DR대상={_dr} · 마찰범위={tuple(self.cfg.object_friction_range)} · "
               f"로봇중력={'ON' if not self.cfg.robot_cfg.spawn.rigid_props.disable_gravity else 'OFF'}"
@@ -427,18 +430,18 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                float(self.cfg.table_surface_z) + float(self.cfg.object_origin_offset_z)
                + float(self.cfg.object_grasp_z_offset)]
         d = [round(float(cage[i]) - cup[i], 4) for i in range(3)]
-        print(f"[grasp_s2r] 홈 케이지 중심={[round(float(v), 4) for v in cage]} "
+        print(f"[grasp_fj] 홈 케이지 중심={[round(float(v), 4) for v in cage]} "
               f"· 반경 {r_cage * 1000:.0f}mm | 컵 파지중심={[round(v, 4) for v in cup]} "
               f"| 케이지−컵 = {d} m", flush=True)
         # 전진축 정렬 허용오차 — 케이지 반경의 1/6(20mm) 안이면 후진이 필요 없다.
         if d[0] > 0.02:
-            print(f"[grasp_s2r] ⚠ 케이지가 컵보다 {d[0] * 1000:.0f}mm **앞(+x)** 이다 — "
+            print(f"[grasp_fj] ⚠ 케이지가 컵보다 {d[0] * 1000:.0f}mm **앞(+x)** 이다 — "
                   "정책이 후진 후 재접근해야 한다(3D 대각선). 컵 스폰을 앞으로 밀거나 "
                   "홈을 뒤로 물릴 것.", flush=True)
         # 접근 간격이 케이지 반경보다 좁으면 리셋 순간 손가락이 컵을 관통한다.
         _gap_xy = float((cage[:2] - torch.tensor(cup[:2], device=cage.device)).norm())
         if _gap_xy < r_cage:
-            print(f"[grasp_s2r] ⚠ 홈 케이지↔컵 수평 간격 {_gap_xy * 1000:.0f}mm 가 "
+            print(f"[grasp_fj] ⚠ 홈 케이지↔컵 수평 간격 {_gap_xy * 1000:.0f}mm 가 "
                   f"케이지 반경 {r_cage * 1000:.0f}mm 보다 좁다 — 리셋에서 관통 위험.",
                   flush=True)
 
@@ -463,7 +466,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._anchor_off = torch.tensor(
             self.cfg.palm_anchor_offset_xyz, device=self.device, dtype=torch.float32)
         if self._anchor_mode == "home":
-            print(f"[grasp_s2r] 액션 앵커 = 홈 "
+            print(f"[grasp_fj] 액션 앵커 = 홈 "
                   f"{[round(v, 4) for v in self._home_palm[:3].tolist()]}", flush=True)
             return
         # 스폰 중심 기준 앵커를 부팅에서 한 번 검증한다 — 오프셋 오타를 여기서 잡는다.
@@ -491,7 +494,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         _cut = [ax for i, ax in enumerate("xyz")
                 if float(_a[i] - self._delta_lo[i].abs()) < float(_lo[i])
                 or float(_a[i] + self._delta_hi[i]) > float(_hi[i])]
-        print(f"[grasp_s2r] 액션 앵커 = 스폰 기준 "
+        print(f"[grasp_fj] 액션 앵커 = 스폰 기준 "
               f"{[round(v, 4) for v in _a.tolist()]} "
               f"(스폰 {[round(v, 4) for v in _spawn.tolist()]} + "
               f"{list(self.cfg.palm_anchor_offset_xyz)}) · "
@@ -646,7 +649,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         ):
             if mx < base:
                 raise RuntimeError(
-                    f"[grasp_s2r][ADR] {name}: max({mx}) < base({base}) — "
+                    f"[grasp_fj][ADR] {name}: max({mx}) < base({base}) — "
                     "승급할수록 쉬워지는 역방향 축이다. max 를 base 이상으로 올려라.")
 
     # ------------------------------------------------------------------
@@ -671,7 +674,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                     f"(원점 오프셋 {_z:.4f}) 가 palm 박스 "
                     f"{[round(v, 3) for v in lo]}~{[round(v, 3) for v in hi]} 밖이다 — "
                     "goal_offset_xyz 를 줄이거나 프로필 박스를 넓혀라.")
-            print(f"[grasp_s2r] 이송 목표 = {[round(v, 3) for v in goal]} "
+            print(f"[grasp_fj] 이송 목표 = {[round(v, 3) for v in goal]} "
                   f"(정착고 {settled_z:.4f} = 표면 {self.cfg.table_surface_z} + 원점 "
                   f"{_z:.4f} · offset {list(self.cfg.goal_offset_xyz)})", flush=True)
         # ★ADR 이면 **최대 난이도**(goal_y_max + 스폰 코너)도 부팅에서 검증한다 —
@@ -708,7 +711,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                                 f"{[round(v, 3) for v in lo]}~"
                                 f"{[round(v, 3) for v in hi]} 밖이다 — "
                                 "adr_goal_y_max/adr_spawn_range_max 를 줄여라.")
-            print(f"[grasp_s2r][ADR] 최대 난이도 검증 통과: goal_y {_y_max:+.3f} · "
+            print(f"[grasp_fj][ADR] 최대 난이도 검증 통과: goal_y {_y_max:+.3f} · "
                   f"spawn ±{_rng:.3f}", flush=True)
 
     # ------------------------------------------------------------------
@@ -815,7 +818,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             m, _src = self.object.data.default_mass, "default"
         if m is None or m.ndim != 2 or m.shape[0] != self.num_envs:
             raise RuntimeError(
-                f"[grasp_s2r] object 질량 형상 이상({_src}): "
+                f"[grasp_fj] object 질량 형상 이상({_src}): "
                 f"{None if m is None else tuple(m.shape)} (기대 ({self.num_envs}, 1))")
         return m[:, 0].to(self.device, dtype=torch.float32)
 
@@ -1245,7 +1248,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             (_ang * self._latched.float()).sum() / _n_post)
         self.extras["palm/x_vs_worldz_dev_max"] = (_ang - 90.0).abs().max()
 
-        total, terms, gates = compute_grasp_s2r_rewards(
+        total, terms, gates = compute_fj_core_rewards(
             enclosure=enclosure,
             finger_closure=finger_closure,
             force_quality=force_quality,
@@ -1283,7 +1286,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         )
         _abn_pen = float(cfgn.abnormal_penalty) * self._abnormal.float()
         total = total + _abn_pen
-        # ★09.10 신설 — 이 항은 `total` 에 들어가는데 `GRASP_S2R_REWARD_TERMS` 루프를
+        # ★09.10 신설 — 이 항은 `total` 에 들어가는데 `FJ_CORE_REWARD_TERMS` 루프를
         #   안 타서 **어떤 태그로도 보이지 않았다**. `respawn_penalty` 는 태그가 있는데
         #   이것만 없었다. Σ reward/* 와 reward/total 이 어긋나는 유일한 경로다.
         self.extras["reward/abnormal_penalty"] = _abn_pen.mean()
@@ -1301,7 +1304,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._stage_hit[:, 2] |= self._latched & lifted & (goal_dist < 0.10)
         self._stage_hit[:, 3] |= self._success_now
 
-        for k in GRASP_S2R_REWARD_TERMS:
+        for k in FJ_CORE_REWARD_TERMS:
             self.extras[f"reward/{k}"] = terms[k].mean()
         self.extras["reward/total"] = total.mean()
         # ★★09.10 신설 — **조건부** 항 값. all-env 평균은 "항이 죽었다"와 "항은 살아
@@ -1893,7 +1896,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                     self._adr_apply()
                     _mr = getattr(self, "_adr_mass_range", (1.0, 1.0))
                     _gr = getattr(self, "_adr_gain_range", (1.0, 1.0))
-                    print(f"[grasp_s2r][ADR] 승급 level={self._adr_level:.2f} "
+                    print(f"[grasp_fj][ADR] 승급 level={self._adr_level:.2f} "
                           f"(창 성공률 {_rate:.3f} · spawn_range "
                           f"{self._adr_spawn_range:.3f} · goal_y "
                           f"{float(self._adr_goal_offset[1]):.3f} · obs_noise "

@@ -1,11 +1,16 @@
-"""grasp_s2r 제어 스택 — Fabrics 팔 + 관절공간 시너지 손.
+"""grasp_fj 제어 스택(트랙 B 포크) — **관절공간 시너지 손 + 씬 구성·중력보상**.
+
+★09.10 Phase C 로 fabric 경로를 통째로 걷어냈다. 원본(`grasp_s2r_control.py`)은
+"Fabrics 팔 + 시너지 손" 이었지만, 트랙 B 는 팔을 관절공간으로 직접 몰기 때문에
+fabric 을 만들지도 `fabrics_sim` 을 import 하지도 않는다. 팔 지령은
+`grasp_fj_env._arm_command` 가 소유한다.
 
 `agnostic/tasks/grasp_sensor` 에서 검증된 배선을 그대로 이식했다. 그 트랙은 손 제어
 4모드(pd/fabric/tip_cyl/synergy) 분기를 갖고 있었는데, 여기서는 **synergy 하나만**
 남긴다(나머지는 전부 기각된 경로다 — 죽은 분기는 나중에 고칠 때 오해만 만든다).
 
-env 본체(`grasp_s2r_env.py`)가 이 믹스인을 상속한다. 여기 있는 것은 전부 "어떻게
-움직이는가"이고, "무엇을 보상하는가"는 env 와 `grasp_s2r_rewards.py` 에 있다.
+env 본체(`fj_core_env.py`)가 이 믹스인을 상속한다. 여기 있는 것은 전부 "어떻게
+움직이는가"이고, "무엇을 보상하는가"는 env 와 `fj_core_rewards.py` 에 있다.
 """
 
 # ★★09.10 포크 — 이 파일은 `tasks/grasp_s2r/grasp_s2r_control.py` 의 사본이다(포크 시점 0fa2159b).
@@ -14,7 +19,7 @@ env 본체(`grasp_s2r_env.py`)가 이 믹스인을 상속한다. 여기 있는 �
 #   09.10 하루에 두 번 일어났다(extF 를 leaf 가 재선언해 되살림, 질량 DR 0.5~2.5).
 #   ⚠여기 고친 것은 s2r 로 **전파되지 않는다**. 반대도 마찬가지다. 물리·자산 수준의
 #     공통 발견(무질량 프레임·벤더 게인·솔버)은 양쪽에 따로 적용해야 한다.
-#   ⚠주석·docstring 안의 `grasp_s2r_*.py:NNN` 경로 표기는 포크 시점 원본 기준이다.
+#   ⚠파일 안의 경로 표기는 포크본 이름으로 바꿔 두었다(09.10 Phase C).
 
 from __future__ import annotations
 
@@ -34,7 +39,6 @@ from isaaclab.utils.math import (euler_xyz_from_quat, matrix_from_quat,
 from .robot_profiles import PROFILES
 
 
-
 # ★★09.10 Phase C — fabric 기계 제거. 트랙 B(grasp_fj)는 fabric 을 쓰지 않는다
 #   (`grasp_fj_env._setup_fabrics` 가 `self.fabric = None` 로 시작하고 `_step_fabric`
 #   은 no-op 이다). 두 훅을 super 없이 완전히 덮으므로 아래 9개 메서드는 이 포크에서
@@ -43,9 +47,9 @@ from .robot_profiles import PROFILES
 #   _assert_graph_addresses · _fabric_timer_start · _fabric_timer_stop.
 #   함께 `fabrics_sim`·`warp` import 도 사라져 **트랙 B 가 Fabrics 패키지에
 #   의존하지 않게 된다**(등록부 docstring 의 "B 는 Fabrics 자산이 필요 없다" 와 일치).
-#   ⚠원본은 `tasks/grasp_s2r/grasp_s2r_control.py` 에 그대로 있다 — A 트랙은 무영향.
+#   ⚠원본은 `tasks/grasp_s2r/fj_core_control.py` 에 그대로 있다 — A 트랙은 무영향.
 
-class GraspS2RControlMixin:
+class FJControlMixin:
     """씬 구성 · Fabrics · 시너지 손 · 접촉 센서 · 지령 마커."""
 
     # ------------------------------------------------------------------
@@ -101,7 +105,7 @@ class GraspS2RControlMixin:
         _tables = find_matching_prim_paths(self.cfg.table_cfg.prim_path)
         if not _tables:
             raise RuntimeError(
-                f"[grasp_s2r] 테이블 프림이 없다: {self.cfg.table_cfg.prim_path}")
+                f"[grasp_fj] 테이블 프림이 없다: {self.cfg.table_cfg.prim_path}")
         for _tp in _tables:
             bind_physics_material(_tp, "/World/Materials/taskSurface")
 
@@ -191,7 +195,7 @@ class GraspS2RControlMixin:
         if _multi:
             self.scene.rigid_objects["table"] = self.table
         self.scene.rigid_objects["object"] = self.object
-        print(f"[grasp_s2r] 물체 뱅크 '{_bank.name}' {len(_bank)}종 · "
+        print(f"[grasp_fj] 물체 뱅크 '{_bank.name}' {len(_bank)}종 · "
               f"replicate_physics={self.cfg.scene.replicate_physics} · "
               f"센서 {len(_sensors)}개 등록", flush=True)
 
@@ -205,115 +209,17 @@ class GraspS2RControlMixin:
     # ------------------------------------------------------------------
 
 
-    def _init_home_palm(self) -> None:
-        """홈 palm pose 실측 + fabric FK 정합 검사(부팅 게이트 3종).
-
-        ★`__init__` 시점의 `body_pos_w` 는 stale 이다(로봇이 아직 홈에 안 놓임).
-          관절을 써넣고 물리를 2스텝 돌린 뒤 읽는다.
-        """
-        q0 = self.robot.data.default_joint_pos
-        self.robot.write_joint_state_to_sim(q0, torch.zeros_like(q0))
-        self.robot.set_joint_position_target(q0)
-        self.scene.write_data_to_sim()
-        for _ in range(2):
-            self.sim.step(render=False)
-            self.scene.update(self.physics_dt)
-
-        home = self._palm_pose_6d()[0]
-        self._home_palm = home.clone()
-        self.palm_targets[:] = home.unsqueeze(0)
-
-        # ★fabric FK 프레임과 sim env-local 은 **원점이 다르다**(실측 544mm). 같은
-        #   물리점(손끝)을 양쪽에서 읽어 상수 오프셋을 실측한다. 회전까지 다르면
-        #   평행이동으로 못 잇으므로 산포를 보고 fail-loud.
-        q0f = self.robot.data.default_joint_pos[:, self._fab_t].contiguous()
-        _nt = len(self.tip_ids)
-        tips_fab = self.fabric._fingertip_taskmap(q0f, None)[0].reshape(
-            self.num_envs, _nt, 3)[0]
-        tips_sim = (self.robot.data.body_pos_w[:, self._tip_ids_t]
-                    - self.scene.env_origins[:, None, :])[0]
-        delta = tips_sim - tips_fab
-        spread = float(delta.std(dim=0).max())
-        if spread > 2e-3:
-            raise RuntimeError(
-                f"[{self.profile.name}] fabric↔env 프레임이 순수 평행이동이 아니다 "
-                f"(손끝 오프셋 산포 {spread * 1000:.1f}mm > 2mm) — 회전 정합 필요")
-        self._fab_to_env = delta.mean(dim=0)
-        print(f"[grasp_s2r] fabric→env 오프셋 = "
-              f"{[round(float(v) * 1000) for v in self._fab_to_env]}mm "
-              f"(산포 {spread * 1000:.2f}mm)", flush=True)
-
-        out = (home < self._palm_lo) | (home > self._palm_hi)
-        if bool(out.any()):
-            raise RuntimeError(
-                f"[{self.profile.name}] 홈 palm 이 워크스페이스 박스 밖이다: "
-                f"home={[round(v, 3) for v in home.tolist()]}")
-
-        # ★이 한 줄이 (fabric URDF 오선택 / joint_order 오류 / palm_body 오지정)
-        #   3대 배선 사고를 부팅에서 전부 잡는다.
-        # ★★09.10 정정 — **좌표계 오프셋을 빼고 비교한다.** 바로 위에서 손끝 5개로
-        #   `_fab_to_env` 를 이미 쟀는데(env = fab + offset) 이 비교가 그걸 안 썼다.
-        #   그래서 이 게이트는 두 오차를 **섞어서** 재고 있었다:
-        #     ① 부팅 2스텝 중력 처짐 — 기구학과 무관
-        #     ② 진짜 기구학 불일치 — 우리가 잡고 싶은 것
-        #   ★09.10 규명(중력 ON/OFF 짝 스모크): ①은 **좌표계 원점 차이가 아니라 처짐**이다.
-        #     중력 OFF 로 띄우면 오프셋 [0,0,0]mm·산포 0.00mm·정합 0.00mm 로 셋 다 정확히 0 —
-        #     즉 fabric 세계와 env 원점은 **완전히 일치**하고, ON 에서 보이던 [0,0,-2]mm 는
-        #     `_init_home_palm` 이 관절을 써넣고 물리 2스텝 돌린 뒤 USD 를 읽기 때문에 생긴다
-        #     (fabric FK 는 `default_joint_pos` 에서 정확히 계산한다).
-        #   그래서 보정 후에도 0.76mm 가 남는다 — 오프셋을 **손끝**에서 재는데 처짐은 지렛대
-        #     길이에 비례해 손바닥과 손끝이 다르기 때문이다(산포 0.46mm 가 손가락별 처짐 차이).
-        #     0.76mm 는 '손바닥 처짐 − 손끝 처짐'이고 이것이 이 게이트의 **노이즈 바닥**이다.
-        #   실측(dg5f-m-short, 어댑터 반영 후): raw 1.86mm 인데 오프셋이 [0,0,-2]mm 라
-        #   **1.86mm 의 거의 전부가 ①이었고 ②는 사실상 0** 이었다. 자산 URDF 의
-        #   r_al_7→palm 누적(0.0495+0.01+0.0045+0.022 = 0.086)이 fabric URDF 의
-        #   link7→palm_link z=0.086 과 소수점까지 같으니 당연한 결과다.
-        #   섞어 재면 ⓐ이미 아는 상수가 5mm 예산을 잠식하고(진짜 오차 여유 3mm),
-        #   ⓑ오프셋이 크면 기구학이 완벽해도 죽고, ⓒ오프셋이 기구학 오차를 **상쇄해
-        #   가릴** 수도 있다. 셋 다 게이트가 하라는 일의 반대다.
-        #   ⚠회전은 보정하지 않는다 — 위 산포 검사(<2mm)가 두 프레임이 **순수 평행이동**
-        #     임을 이미 보장하므로 오일러 비교는 그대로 유효하다.
-        fab = self.fabric.get_palm_pose(self.fabric_q.detach(), "euler_zyx")[0]
-        _raw = float(torch.norm(fab[:3] - home[:3]))
-        dp = float(torch.norm((fab[:3] + self._fab_to_env) - home[:3]))
-        dr = float(torch.max(torch.abs(fab[3:] - home[3:])))
-        print(f"[grasp_s2r] 홈 palm={[round(v, 4) for v in home.tolist()]} | "
-              f"fabric FK 정합 pos {dp * 1000:.2f}mm rot {math.degrees(dr):.2f}° "
-              f"(좌표계 보정 전 {_raw * 1000:.2f}mm)", flush=True)
-        if dp > float(self.cfg.fabric_fk_pos_tol) or dr > math.radians(2.0):
-            raise RuntimeError(
-                f"[{self.profile.name}] fabric FK 가 USD palm 과 어긋난다: "
-                f"{dp * 1000:.1f}mm / {math.degrees(dr):.1f}° "
-                f"(허용 {float(self.cfg.fabric_fk_pos_tol) * 1000:.0f}mm/2°). "
-                "★좌표계 오프셋은 이미 뺀 값이므로 이건 **기구학** 불일치다 — "
-                "자산을 바꾼 뒤 fabric URDF 를 재생성했는지부터 확인하라 "
-                "(gen_fabric_urdfs.py --sync-hdgp → patch_fabric_finger_spheres.py). "
-                "그래도 남으면 fabric_robot_dir·fabric_joint_order·palm_body 를 본다.")
+    # ★★09.10 Phase C — 아래 두 메서드는 이 포크에서 사문이라 지웠다:
+    #   _init_home_palm(84줄) · _apply_action(18줄).
+    #   `grasp_fj_env` 가 super 없이 완전히 덮으므로 부모 본문은 실행되지 않는다
+    #   (덮은 판본은 fabric FK 게이트가 없고, 팔에 속도 목표를 주지 않는다).
+    #   원본은 `tasks/grasp_s2r/fj_core_control.py` 에 있다 — A 트랙 무영향.
 
 
     # ------------------------------------------------------------------
     # fabric 구간 계측 — PhysX 와 섞인 step_time 에서 fabric 몫을 떼어낸다
     # ------------------------------------------------------------------
 
-
-    def _apply_action(self) -> None:
-        """decimation 마다 불린다 — **적분은 여기서 하지 않는다**."""
-        # fabric_q 는 **오픈루프 plant** — 실측 관절로 되돌려 동기화하면 팔이 명령을
-        # 못 따라간다(선행 트랙 사고 2건).
-        arm_target = self.fabric_q[:, : self.profile.num_arm_joints]
-        self.robot.set_joint_position_target(arm_target, joint_ids=self.arm_ids)
-        # ★속도 피드포워드. 0 을 넣으면 implicit PD 의 감쇠항 kd·(0 − q̇) 이 참조
-        #   궤적의 움직임을 반대로 밀어 err ≈ (kd/kp)·q̇ 의 상시 지연이 생긴다.
-        self.robot.set_joint_velocity_target(
-            float(self.cfg.fabric_velocity_ff_scale)
-            * self.fabric_qd[:, : self.profile.num_arm_joints],
-            joint_ids=self.arm_ids)
-        # 손은 fabric 밖 — 이름으로 찾은 인덱스에 관절 목표를 직접 준다.
-        self.robot.set_joint_position_target(self._syn_target, joint_ids=self._syn_ids)
-        self.robot.set_joint_velocity_target(
-            float(self.cfg.hand_velocity_ff_scale) * self._syn_vel,
-            joint_ids=self._syn_ids)
-        self._apply_gravity_compensation()
 
     def _apply_gravity_compensation(self) -> None:
         """팔 관절 중력 피드포워드 — 실기 pd 노드의 `model_tau_ff` 와 같은 자리.
@@ -437,7 +343,7 @@ class GraspS2RControlMixin:
         _lim = self.robot.data.soft_joint_pos_limits[0, self._syn_ids, :]
         self._syn_lo, self._syn_hi = _lim[:, 0].contiguous(), _lim[:, 1].contiguous()
         _grip_clamped = self._syn_grip.clamp(self._syn_lo, self._syn_hi)
-        print(f"[grasp_s2r] synergy: 관절 {n}개 · 채널 {self._syn_nch} · "
+        print(f"[grasp_fj] synergy: 관절 {n}개 · 채널 {self._syn_nch} · "
               f"동결 {int(self._syn_freeze.sum())}개 · "
               f"grip 한계clamp {int((self._syn_grip != _grip_clamped).sum())}개", flush=True)
 
@@ -584,7 +490,7 @@ class GraspS2RControlMixin:
                     "— oppose_grip_delta_rad 가 조용히 무효가 된다")
             for i in _idx:
                 self._syn_grip[i] = self._syn_open[i] + _d
-            print(f"[grasp_s2r] 대향 관절 {len(_idx)}개 grip = open{_d:+.3f} rad", flush=True)
+            print(f"[grasp_fj] 대향 관절 {len(_idx)}개 grip = open{_d:+.3f} rad", flush=True)
 
         _wf, _ws = str(self.cfg.weak_finger), float(self.cfg.weak_finger_curl_scale)
         if _wf and _ws != 1.0:
@@ -595,7 +501,7 @@ class GraspS2RControlMixin:
             for i in _idx:
                 self._syn_grip[i] = self._syn_open[i] + _ws * (
                     self._syn_grip[i] - self._syn_open[i])
-            print(f"[grasp_s2r] '{_wf}' 굴곡 grip ×{_ws:.2f} ({len(_idx)}개)", flush=True)
+            print(f"[grasp_fj] '{_wf}' 굴곡 grip ×{_ws:.2f} ({len(_idx)}개)", flush=True)
 
     def _hand_blocked(self) -> torch.Tensor:
         """가동 관절이 **외부에 막혀** 있는가 (N, n_movable) bool — 진단 전용.
@@ -746,7 +652,7 @@ class GraspS2RControlMixin:
              [_s, -_s, 0.0, 0.0],       # z→y : −90° about x
              [1.0, 0.0, 0.0, 0.0]],     # z→z : 항등
             device=self.device)
-        print(f"[grasp_s2r] 지령 마커 ON — env0 전용 · 축 {_L * 1000:.0f}mm · "
+        print(f"[grasp_fj] 지령 마커 ON — env0 전용 · 축 {_L * 1000:.0f}mm · "
               f"{'GUI' if self.sim.has_gui() else '카메라 녹화'}", flush=True)
 
         if bool(self.cfg.gui_focus_env0) and self.sim.has_gui():

@@ -1,4 +1,4 @@
-"""grasp_kp cfg — `GraspS2REnvCfg` 상속 + SimToolReal 식 목표열·progress 보상 필드 (Track A).
+"""grasp_fj 코어 cfg(트랙 B 포크) — `FJCoreEnvCfg` 상속 + SimToolReal 식 목표열·progress 보상 필드 (Track A).
 
 설계 원본은 `DESIGN.md` §2~§8. 이 파일이 하는 일 세 가지:
 - 기존 필드 5개 덮어쓰기(respawn OFF · blocked 홀드 · 접촉동결 OFF · 코히런트 노이즈 · ADR OFF).
@@ -18,7 +18,7 @@
 #   09.10 하루에 두 번 일어났다(extF 를 leaf 가 재선언해 되살림, 질량 DR 0.5~2.5).
 #   ⚠여기 고친 것은 s2r 로 **전파되지 않는다**. 반대도 마찬가지다. 물리·자산 수준의
 #     공통 발견(무질량 프레임·벤더 게인·솔버)은 양쪽에 따로 적용해야 한다.
-#   ⚠주석·docstring 안의 `grasp_s2r_*.py:NNN` 경로 표기는 포크 시점 원본 기준이다.
+#   ⚠파일 안의 경로 표기는 포크본 이름으로 바꿔 두었다(09.10 Phase C).
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from isaaclab.utils import configclass
 
 from ...modules.keypoint_goal import NUM_KEYPOINTS, GoalSeqCfg
 from ...modules.progress_reward import ProgressRewardCfg
-from .fj_core_cfg import GraspS2REnvCfg
+from .fj_core_cfg import FJCoreEnvCfg
 from .robot_profiles import PROFILES
 
 # 키포인트 4개 × xyz — actor obs 의 kp_rel_palm / kp_rel_goal 각각의 폭(=12).
@@ -34,7 +34,7 @@ _KP_DIM = 3 * NUM_KEYPOINTS
 
 
 @configclass
-class GraspKPEnvCfg(GraspS2REnvCfg):
+class FJKeypointEnvCfg(FJCoreEnvCfg):
     """SimToolReal 식 트랙 A: fabric palm 6D 델타 + 시너지 15D, 접촉 항 0개.
 
     actor 129 / critic 153 (tesollo_right). 물체 정체성·크기는 obs 에 없다 — 키포인트
@@ -50,7 +50,7 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     # 새 뱅크는 `assets/simulation_setting/shaker` 자산의 scale 0.80~1.20 · 0.05 단위 9종.
     #   구 `assets/cup/shaker_closed_rl.usd` 와 다른 물체다(원점·형상·충돌근사 전부 다름).
     object_bank: str = "shaker_sweep"
-    # ★형상 의존값(grasp_s2r CLAUDE.md 가 "하나뿐"이라고 못 박은 값)이라 뱅크와 함께 바꾼다.
+    # ★형상 의존값이라 물체 뱅크와 함께 바꾼다(원 출처: grasp_s2r/CLAUDE.md, 포크 전 규약).
     #   컵은 원점이 바닥+77.3mm 이고 파지점을 +30mm 위로 잡았다(높이의 60%).
     #   새 셰이커는 원점이 **바운딩박스 중심**이자 무게중심(usda physics:centerOfMass
     #   z=+0.00138)이다. 게다가 원뿔대라 높이가 곧 파지 지름을 정한다
@@ -64,7 +64,7 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
 
     # ---- 물리 솔버 (09.10) --------------------------------------------------------------
     # 부모 기본은 pos 8 / vel 0. 접촉 품질을 위해 이 트랙만 올린다 — 부모는 불변 기준선이라
-    #   거기서 바꾸면 grasp_s2r·grasp_fj 까지 조용히 따라간다.
+    #   ★09.10 포크 이후 이 파일은 fj 전용이다 — 여기 바꿔도 A 트랙은 안 따라온다.
     # ★부모가 이걸 **cfg 필드**로 둔 이유: `finalize_after_overrides()` 가 robot_cfg 를
     #   재조립하므로 `robot_cfg.spawn.*` 에 직접 얹으면 지워진다. 그래서 여기서 덮으면 실린다
     #   (hydra `env.robot_solver_position_iterations=` 도 같은 경로로 먹는다).
@@ -223,7 +223,7 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     #   저장소 공통 `fixed_sigma: True` · σ=1.0 과 곱해지면 매 스텝 목표가 박스 전역에서
     #   재추첨된다. 이 구조에서 **레일에 붙는 것이 유일한 안정해**다 — 클램프가 위치를
     #   고정해 주므로 노이즈가 상쇄되고, 박스 안쪽을 겨냥하면 노이즈가 그대로 흔들림이 된다.
-    #   `grasp_s2r/CLAUDE.md` 가 "팔 액션을 절대 매핑으로 되돌리지 말 것" 이라 못 박은
+    #   A 트랙 문서(`grasp_s2r/CLAUDE.md`)가 "팔 액션을 절대 매핑으로 되돌리지 말 것" 이라 적은
     #   바로 그 현상이고, 08.27 에 같은 실측(지령 0.33~0.36 m/step 상시 포화)이 있었다.
     palm_cmd_incremental: bool = True
 
@@ -356,7 +356,7 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
         if int(self.arm_cmd_dim) < 1:
             errs.append(f"arm_cmd_dim ≥ 1, got {self.arm_cmd_dim}")
         if errs:
-            raise RuntimeError("[grasp_kp cfg] " + " · ".join(errs))
+            raise RuntimeError("[grasp_fj cfg] " + " · ".join(errs))
 
     def _derive_goal_box(self, profile) -> None:
         """목표 박스(env-local 절대) = 스폰 중심 ± xy 반폭, z = 정착고 + goal_box_z_range."""
@@ -413,19 +413,7 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
             self.observation_space + 6 + 6 + 1 + num_tips + 1 + 1 + 1 + 1 + 1 + 1)
 
 
-@configclass
-class GraspKPTesolloRightEnvCfg(GraspKPEnvCfg):
-    profile_name: str = "tesollo_right"
-
-
-@configclass
-class GraspKPTesolloRightShortEnvCfg(GraspKPTesolloRightEnvCfg):
-    """DG-5F short base 판 — 프로필만 다르고 과제 정의는 GraspKPTesolloRightEnvCfg 와 동일하다.
-
-    ★손가락 체인·관절 이름·액션 공간이 dg5f-m 과 같고 홈 palm 포즈도 IK 로 맞췄으므로
-      과제 상수는 전부 그대로 유효하다(손 프레임 일치 오차 0.023mm). 달라지는 것은
-      자산·fabric variant·팔 홈 관절값이며 전부 프로필이 들고 있다.
-    ⚠`palm_box` 는 미검증이다 — 부팅 시 경고가 뜬다. probe 후 승격할 것.
-    """
-
-    profile_name: str = "tesollo_right_short"
+# ★★09.10 Phase C — A 트랙 leaf cfg 를 지웠다: GraspKPTesolloRightEnvCfg · GraspKPTesolloRightShortEnvCfg.
+#   이 포크는 `GraspFJ*` 만 인스턴스화한다(등록부 `config/__init__.py` 참조).
+#   A 의 leaf 를 여기 남겨두면 "fj 가 이 로봇 설정도 쓴다" 는 오해를 남긴다.
+#   원본은 A 트랙 자기 디렉터리에 그대로 있다.

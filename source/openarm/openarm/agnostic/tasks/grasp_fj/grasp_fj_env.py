@@ -1,6 +1,6 @@
 """grasp_fj — Track B: 팔 7D 관절 증분(+EMA) + 손 20관절 full-joint(+EMA), **Fabrics 없음**.
 
-`GraspKPEnv`(Track A)를 상속해 팔·손 액션 어댑터에 해당하는 훅만 덮어쓴다(DESIGN §1 B,
+`FJKeypointEnv`(Track A)를 상속해 팔·손 액션 어댑터에 해당하는 훅만 덮어쓴다(DESIGN §1 B,
 `scratchpad/maps/control.md` §6-7 우회 목록). 목표열·관측·종료·지연·외란은 A 그대로, 보상은
 포크(`fj_reward.py`, goal_bonus 한 항만 다름).
 
@@ -21,12 +21,12 @@ import math
 
 import torch
 
-from .fj_kp_env import GraspKPEnv
+from .fj_kp_env import FJKeypointEnv
 from .fj_reward import compute_fj_reward
 from .grasp_fj_env_cfg import GraspFJEnvCfg
 
 
-class GraspFJEnv(GraspKPEnv):
+class GraspFJEnv(FJKeypointEnv):
     cfg: GraspFJEnvCfg
 
     # ------------------------------------------------------------------
@@ -289,7 +289,7 @@ class GraspFJEnv(GraspKPEnv):
     def _seg_masks(self) -> dict[int, torch.Tensor]:
         """마디 번호(_1.._4) → `_syn_ids` 열 마스크. 첫 호출에 만들고 캐시한다.
 
-        열 순서는 `hand_joint_names` 와 1:1 이다(`grasp_s2r_control.py:475`). 이름 끝의
+        열 순서는 `hand_joint_names` 와 1:1 이다(`fj_core_control.py:475`). 이름 끝의
         `_<n>` 이 마디 번호이고, 없는 마디는 아예 키를 만들지 않는다(2지 그리퍼 등).
         """
         cached = getattr(self, "_seg_mask_cache", None)

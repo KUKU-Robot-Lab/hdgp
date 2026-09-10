@@ -20,7 +20,7 @@ grasp_v1 과의 결정적 차이: grasp_v1 은 접촉 래치가 걸리면 팔 �
 #   09.10 하루에 두 번 일어났다(extF 를 leaf 가 재선언해 되살림, 질량 DR 0.5~2.5).
 #   ⚠여기 고친 것은 s2r 로 **전파되지 않는다**. 반대도 마찬가지다. 물리·자산 수준의
 #     공통 발견(무질량 프레임·벤더 게인·솔버)은 양쪽에 따로 적용해야 한다.
-#   ⚠주석·docstring 안의 `grasp_s2r_*.py:NNN` 경로 표기는 포크 시점 원본 기준이다.
+#   ⚠파일 안의 경로 표기는 포크본 이름으로 바꿔 두었다(09.10 Phase C).
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ _ASSETS_DIR = _os.path.join(_HDGP_ROOT, "assets")
 
 
 @configclass
-class GraspS2REventCfg:
+class FJCoreEventCfg:
     """도메인 랜덤화 — 전 term `mode="reset"`, 공칭 파라미터에서는 전부 항등.
 
     ADR 은 이 트랙에서 **끄고 시작**한다(과제 성립 확인이 먼저). 켤 때 여기가 확장
@@ -188,7 +188,7 @@ def _build_robot_cfg(profile: RobotProfile,
     """프로필 → ArticulationCfg. 조인트 이름은 전부 프로필에서 온다.
 
     ★`enable_gravity` 는 **반드시 인자**여야 한다. USD spawn 속성이라 env 생성 뒤에는
-      못 바꾸는데, `GraspS2REnv.__init__` 이 `finalize_after_overrides()` 를 한 번 더
+      못 바꾸는데, `FJCoreEnv.__init__` 이 `finalize_after_overrides()` 를 한 번 더
       불러 robot_cfg 를 재조립한다. 그래서 생성 직전에 손으로 얹은 값은 지워진다 —
       실제로 `probe_s2r_gravity_droop.py` 의 `--gravity` 플래그가 그렇게 **조용히
       무효**였다(09.06 발견, on/off 가 같은 씬을 돌았다).
@@ -241,7 +241,7 @@ def _build_robot_cfg(profile: RobotProfile,
 
 
 @configclass
-class GraspS2REnvCfg(DirectRLEnvCfg):
+class FJCoreEnvCfg(DirectRLEnvCfg):
     """★★09.01 기본값 = D3 세팅 (`s2r_d3_liftonly_fresh_v2`, 20,000 iter 완주).
 
     이 전까지 기본값은 "구 동작 보존"이었고 실험은 전부 CLI 오버라이드로 돌았다.
@@ -351,7 +351,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
 
     # ---- 물리 솔버 knob (진단용 A/B) -------------------------------------------------
     # ★★반드시 **cfg 필드**여야 한다. `robot_cfg.spawn.*` 에 직접 얹으면
-    #   `GraspS2REnv.__init__` 의 `finalize_after_overrides()` 가 robot_cfg 를 재조립하며
+    #   `FJCoreEnv.__init__` 의 `finalize_after_overrides()` 가 robot_cfg 를 재조립하며
     #   **조용히 지운다**(09.06 `probe_s2r_gravity_droop.py --gravity` 무효, 09.09 프로브의
     #   armature/vel_iters/max_depen 스윕이 통째로 no-op 이었던 것이 같은 원인).
     #   None 인 offset 은 collision_props 를 아예 안 얹는다(= PhysX 기본).
@@ -905,7 +905,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   역방향 축이 됐을 것이다(질량 축은 `_assert_adr_monotonic` 대상이 아니다).
     adr_mass_scale_max: tuple[float, float] = (0.5, 2.5)
     # ★관절 PD 게인 배율. 승격 목표 **(0.7, 2.0)**.
-    #   실효성 확인: `grasp_s2r_control.py` 는 `set_joint_position_target` 으로 **목표만**
+    #   실효성 확인: `fj_core_control.py` 는 `set_joint_position_target` 으로 **목표만**
     #   쓰고 토크는 articulation 의 ImplicitActuator PD 가 만든다 → 게인 DR 이 그대로 실린다.
     #   ★범위 근거는 R2S 문서의 감도 스윕이다 — `probe_excite_sim_replay.py --kd-scale`
     #     에서 우팔 손목이 배율 **0.7~2.0** 구간에서 주파수응답 0.666→0.498 로 **완만하게**
@@ -1007,7 +1007,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     # ★이 이름이 틀리면 `force_matrix_w` 가 **무증상 0** 이 된다.
     object_contact_filter: tuple = ("/World/envs/env_.*/Object/baseLink",)
 
-    events: GraspS2REventCfg = GraspS2REventCfg()
+    events: FJCoreEventCfg = FJCoreEventCfg()
     # ★08.29 진단용. **기본 True = 현행 동작**. `replicate_physics=False` 에서
     #   `randomize_rigid_body_material` 이 shape 개수를 잘못 세는 것이 확인됐다
     #   (grasp_v2 는 같은 항에서 `Expected 1163, got 1162` 로 부팅 실패).
@@ -1057,7 +1057,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
                     got_kp, got_kd = spec.get("stiffness"), spec.get("damping")
                     if (got_kp, got_kd) != (kp, kd):
                         raise RuntimeError(
-                            f"[grasp_s2r] 팔 게인이 벤더값이 아니다 — actuator '{name}' "
+                            f"[grasp_fj] 팔 게인이 벤더값이 아니다 — actuator '{name}' "
                             f"({joint}): kp {got_kp} kd {got_kd}, 벤더는 kp {kp} kd {kd}.\n"
                             "  게인을 바꾸려면 벤더 yaml 을 고친다(태스크 코드가 아니라).\n"
                             f"  출처: {_vg.VENDOR_GAINS_YAML}")
@@ -1127,16 +1127,16 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
         _lo, _hi = (float(v) for v in self.wrench_prob_range)
         if not (0.0 < _lo <= _hi <= 1.0):
             raise RuntimeError(
-                f"[grasp_s2r] wrench_prob_range 는 0 < lo ≤ hi ≤ 1 이어야 한다: "
+                f"[grasp_fj] wrench_prob_range 는 0 < lo ≤ hi ≤ 1 이어야 한다: "
                 f"{self.wrench_prob_range} (logU 샘플러가 log(lo) 를 쓴다)")
         _f, _t = float(self.wrench_force_scale), float(self.wrench_torque_scale)
         if _f < 0.0 or _t < 0.0:
             raise RuntimeError(
-                f"[grasp_s2r] 외란 스케일은 음수일 수 없다: force {_f} · torque {_t}")
+                f"[grasp_fj] 외란 스케일은 음수일 수 없다: force {_f} · torque {_t}")
         # ★한쪽만 켜는 것은 거의 항상 오타다(CLI 로 하나만 넘긴 경우).
         if (_f > 0.0) != (_t > 0.0):
             raise RuntimeError(
-                f"[grasp_s2r] 외란 force/torque 중 하나만 켜져 있다: "
+                f"[grasp_fj] 외란 force/torque 중 하나만 켜져 있다: "
                 f"force {_f} N/kg · torque {_t} N·m/kg — 둘 다 0 이거나 둘 다 >0 이어야 한다")
 
     def _remap_object_usd(self, usd_path: str) -> str:
@@ -1284,24 +1284,7 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             self.observation_space + 6 + 4 + 1 + 1 + num_tips + 1)
 
 
-@configclass
-class GraspS2RTesolloRightEnvCfg(GraspS2REnvCfg):
-    profile_name: str = "tesollo_right"
-
-
-@configclass
-class GraspS2RGripperLeftEnvCfg(GraspS2REnvCfg):
-    profile_name: str = "gripper_left"
-
-
-@configclass
-class GraspS2RTesolloRightShortEnvCfg(GraspS2RTesolloRightEnvCfg):
-    """DG-5F short base 판 — 프로필만 다르고 과제 정의는 GraspS2RTesolloRightEnvCfg 와 동일하다.
-
-    ★손가락 체인·관절 이름·액션 공간이 dg5f-m 과 같고 홈 palm 포즈도 IK 로 맞췄으므로
-      과제 상수는 전부 그대로 유효하다(손 프레임 일치 오차 0.023mm). 달라지는 것은
-      자산·fabric variant·팔 홈 관절값이며 전부 프로필이 들고 있다.
-    ⚠`palm_box` 는 미검증이다 — 부팅 시 경고가 뜬다. probe 후 승격할 것.
-    """
-
-    profile_name: str = "tesollo_right_short"
+# ★★09.10 Phase C — A 트랙 leaf cfg 를 지웠다: GraspS2RTesolloRightEnvCfg · GraspS2RGripperLeftEnvCfg · GraspS2RTesolloRightShortEnvCfg.
+#   이 포크는 `GraspFJ*` 만 인스턴스화한다(등록부 `config/__init__.py` 참조).
+#   A 의 leaf 를 여기 남겨두면 "fj 가 이 로봇 설정도 쓴다" 는 오해를 남긴다.
+#   원본은 A 트랙 자기 디렉터리에 그대로 있다.

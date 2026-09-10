@@ -236,8 +236,13 @@ def test_track_a_exposes_the_hooks_b_relies_on():
     assert "self.actions[:, self._hand_action_offset:]" in _fn_block(_PARENT_ENV, "_hand_command")
     guard = _fn_block(_PARENT_ENV, "_assert_kp_contract")
     assert "c._arm_action_dim(self.profile)" in guard and "!= 6" not in guard
-    assert 'getattr(self, "fabric", None) is None' in _fn_block(_PARENT_ENV, "_log_fabric_metrics")
-    assert "return self.palm_targets - self._palm_anchor()" in _fn_block(_PARENT_ENV, "_cmd_state")
+    # ★09.10 Phase C — `_log_fabric_metrics`·`_cmd_state` 의 부모 본문은 이 포크에서
+    #   사문이라 지웠다(fj 가 super 없이 덮는다). 그래서 불변식을 **fj 소유 위치**에서 본다.
+    #   부모에 남겨두고 검사하면 fj 가 쓰지도 않는 코드를 지키는 no-op 계약이 된다.
+    assert "self.fabric = None" in _fn_block(_ENV, "_setup_fabrics"), "B 는 fabric 을 만들지 않는다"
+    assert "return self._arm_q_target" in _fn_block(_ENV, "_cmd_state"), "B 의 cmd_state 는 관절 목표다"
+    for banned in ("_log_fabric_metrics", "_cmd_state", "_action_obs", "_arm_command"):
+        assert f"def {banned}(" not in _PARENT_ENV, f"부모에 {banned} 사문이 되살아났다"
 
 
 # ---------------------------------------------------------------- cfg·차원
@@ -245,7 +250,7 @@ def test_cfg_fields_and_arm_action_dim_hook():
     code = _code(_CFG)
     for token in ("arm_cmd_dim: int = 7", "k_arm: float = 0.025", "arm_ema: float = 0.1",
                   "arm_slew_rad_s: float = 0.15",
-                  "class GraspFJEnvCfg(GraspKPEnvCfg)", 'profile_name: str = "tesollo_right"'):
+                  "class GraspFJEnvCfg(FJKeypointEnvCfg)", 'profile_name: str = "tesollo_right"'):
         assert token in code, token
     assert "return int(profile.num_arm_joints)" in _fn_block(_CFG, "_arm_action_dim")
     assert "_derive_spaces" not in _class_methods(_CFG, "GraspFJEnvCfg"), "차원 공식은 A 단일 출처"
@@ -364,8 +369,11 @@ def test_hand_target_state_is_observed_through_the_action_obs_seam():
         "hand = 2.0 * (self._syn_target - self._act_lo.unsqueeze(0)) / self._act_span.unsqueeze(0) - 1.0",
         "return torch.cat([self.actions[:, :off], hand], dim=1)",
     ])
-    assert "_act = self._action_obs()" in _fn_block(_PARENT_ENV, "_get_observations"), "A 의 이음매가 사라졌다"
-    assert "return self.actions" in _fn_block(_PARENT_ENV, "_action_obs"), "A 는 산술 불변이어야 한다"
+    # 이음매 자체는 부모가 계속 소유한다(관측 조립은 B 가 안 덮는다).
+    assert "_act = self._action_obs()" in _fn_block(_PARENT_ENV, "_get_observations"), "이음매가 사라졌다"
+    # ★09.10 Phase C — 부모의 `_action_obs`(= `return self.actions`) 본문은 fj 가 super 없이
+    #   덮어 사문이라 지웠다. "산술 불변" 은 이제 A 트랙 원본에서 대조한다.
+    assert "return self.actions" in _fn_block(_KP_ENV, "_action_obs"), "A 는 산술 불변이어야 한다"
 
 
 def test_hand_action_range_is_soft_limit_intersect_profile_override_and_fails_loud():

@@ -1,4 +1,4 @@
-"""grasp_s2r 보상 — grasp_v1 8항 이식 + 이송 2항(transfer·stay) 신설.
+"""grasp_fj 코어 보상(트랙 B 포크) — grasp_v1 8항 이식 + 이송 2항(transfer·stay) 신설.
 
 `tesollo/right/grasp_v1/grasp_reward.py` 의 구조·근거를 그대로 가져오되 두 곳이 다르다.
 
@@ -12,7 +12,7 @@
    처벌한다. 래치(파지 성립) 시점의 변위만 기준으로 삼으면 "접근 중 밀지 마라"는
    원래 의도는 유지되고 이송은 자유롭다.
 
-항 계약(`GRASP_S2R_REWARD_TERMS`)은 **이 트랙 로컬**이다 —
+항 계약(`FJ_CORE_REWARD_TERMS`)은 **이 트랙 로컬**이다 —
 `openarm.common.grasp_v2_contract.GRASP_V2_REWARD_TERMS` 는 8항 고정이고 여러 트랙이
 공유하므로 건드리지 않는다.
 """
@@ -23,14 +23,14 @@
 #   09.10 하루에 두 번 일어났다(extF 를 leaf 가 재선언해 되살림, 질량 DR 0.5~2.5).
 #   ⚠여기 고친 것은 s2r 로 **전파되지 않는다**. 반대도 마찬가지다. 물리·자산 수준의
 #     공통 발견(무질량 프레임·벤더 게인·솔버)은 양쪽에 따로 적용해야 한다.
-#   ⚠주석·docstring 안의 `grasp_s2r_*.py:NNN` 경로 표기는 포크 시점 원본 기준이다.
+#   ⚠파일 안의 경로 표기는 포크본 이름으로 바꿔 두었다(09.10 Phase C).
 
 from __future__ import annotations
 
 import torch
 
 # 이 트랙의 보상 항 계약. 순서는 로깅 순서이기도 하다.
-GRASP_S2R_REWARD_TERMS: tuple[str, ...] = (
+FJ_CORE_REWARD_TERMS: tuple[str, ...] = (
     "approach",
     "enclosure",
     "finger_closure",
@@ -52,7 +52,7 @@ def _f(cfg: object, name: str, default: float) -> float:
     return float(getattr(cfg, name, default))
 
 
-def compute_grasp_s2r_rewards(
+def compute_fj_core_rewards(
     *,
     # ---- 접촉 ----
     hand_z_min: torch.Tensor,             # (N,) 손 **전 링크** 최저 z (env-local). 바닥 벌점용
@@ -371,7 +371,7 @@ def compute_grasp_s2r_rewards(
         "action_smooth": action_smooth,
         "hand_floor": hand_floor,
     }
-    _missing = set(GRASP_S2R_REWARD_TERMS) - set(terms)
+    _missing = set(FJ_CORE_REWARD_TERMS) - set(terms)
     if _missing:
         raise RuntimeError(f"보상 항 누락: {sorted(_missing)}")
 
