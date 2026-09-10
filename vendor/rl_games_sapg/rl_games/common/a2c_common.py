@@ -162,6 +162,21 @@ class A2CBase(BaseAlgorithm):
         self.self_play = config.get('self_play', False)
         self.save_freq = config.get('save_frequency', 0)
         self.save_best_after = config.get('save_best_after', 100)
+        # ★hdgp 추가(09.10) — best 체크포인트 **쓰기 간격 제한**.
+        #   원본은 mean_reward 가 갱신될 때마다 저장한다. 초반에는 거의 매 에포크
+        #   갱신되므로 실측에서 에포크의 80%(198/249)가 저장이었다. 체크포인트는
+        #   per-env LSTM 상태를 담아 env 수에 비례해 커지고(4096 env 140MB /
+        #   16384 env 255MB), 서버 디스크가 58.8MB/s 라 저장 한 번이 2.4~4.3초다.
+        #   실측 벽시계: 보고 12.68s/epoch vs 실제 18.00s/epoch — **42%가 저장 대기**였고
+        #   그 동안 GPU 사용률이 0% 로 떨어진다(프로세스가 D 상태로 블록된다).
+        #   `Time to train epoch` 은 play+update 만 세므로 이 비용이 안 보인다.
+        #   ★`last_mean_rewards`(진짜 최고 기록)는 그대로 매번 갱신한다 — 제한하는 것은
+        #     **파일 쓰기**뿐이다. 저장이 밀린 동안 갱신이 있었는지는 `_best_pending` 이 든다.
+        #   0 이면 원본 동작(매번 저장). 기본은 save_frequency 와 같게 둔다.
+        self.save_best_min_interval = int(
+            config.get('save_best_min_interval', config.get('save_frequency', 0)))
+        self._best_pending = False
+        self._last_best_save_epoch = -10 ** 9
         self.print_stats = config.get('print_stats', True)
         self.rnn_states = None
         self.name = base_name
@@ -1305,9 +1320,15 @@ class DiscreteA2CBase(A2CBase):
                             torch_ext.safe_filesystem_op(os.makedirs, os.path.join(self.experiment_dir, 'last'), exist_ok=True)
                             self.save(os.path.join(self.experiment_dir, 'last', 'model'))
 
+                    # ★hdgp 09.10 — 갱신 추적과 **파일 쓰기**를 분리한다(주석: __init__ save_best_min_interval).
                     if mean_rewards[0] > self.last_mean_rewards and epoch_num >= self.save_best_after:
-                        print('saving next best rewards: ', mean_rewards)
                         self.last_mean_rewards = mean_rewards[0]
+                        self._best_pending = True
+                    if self._best_pending and (
+                            epoch_num - self._last_best_save_epoch) >= self.save_best_min_interval:
+                        print('saving next best rewards: ', mean_rewards)
+                        self._best_pending = False
+                        self._last_best_save_epoch = epoch_num
                         self.save(os.path.join(self.nn_dir, self.config['name']))
                         torch_ext.safe_filesystem_op(os.makedirs, os.path.join(self.experiment_dir, 'best'), exist_ok=True)
                         torch_ext.safe_symlink(os.path.relpath(os.path.join(self.nn_dir, self.config['name'] + '.pth'), start=os.path.join(self.experiment_dir, 'best')), os.path.join(self.experiment_dir, 'best', 'model.pth'))
@@ -1664,9 +1685,15 @@ class ContinuousA2CBase(A2CBase):
                                 os.system(f"cp {os.path.join(self.experiment_dir, 'last', 'model.pth')} {os.path.join(self.experiment_dir, 'last', 'model.pth.old')}")
                             self.save(os.path.join(self.experiment_dir, 'last', 'model'), all_state_dict)
 
+                    # ★hdgp 09.10 — 갱신 추적과 **파일 쓰기**를 분리한다(주석: __init__ save_best_min_interval).
                     if mean_rewards[0] > self.last_mean_rewards and epoch_num >= 10:
-                        print('saving next best rewards: ', mean_rewards)
                         self.last_mean_rewards = mean_rewards[0]
+                        self._best_pending = True
+                    if self._best_pending and (
+                            epoch_num - self._last_best_save_epoch) >= self.save_best_min_interval:
+                        print('saving next best rewards: ', mean_rewards)
+                        self._best_pending = False
+                        self._last_best_save_epoch = epoch_num
                         self.save(os.path.join(self.nn_dir, self.config['name']), all_state_dict)
                         torch_ext.safe_filesystem_op(os.makedirs, os.path.join(self.experiment_dir, 'best'), exist_ok=True)
                         torch_ext.safe_symlink(os.path.relpath(os.path.join(self.nn_dir, self.config['name'] + '.pth'), start=os.path.join(self.experiment_dir, 'best')), os.path.join(self.experiment_dir, 'best', 'model.pth'))
