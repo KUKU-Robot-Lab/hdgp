@@ -384,23 +384,26 @@ def test_hand_action_range_is_soft_limit_intersect_profile_override_and_fails_lo
                   "self.robot.write_joint_state_to_sim(_qh", "self._syn_target[env_ids] = self._hand_reset_q.unsqueeze(0)"])
     assert "hand_open_pose" not in _code(rng) and "hand_grip_pose" not in _code(rng), \
         "full-joint 범위는 시너지 자세와 무관하다(soft limit ∩ override 만)"
-    # 프로필(관절명 소유자)에 테솔로 override 가 실재하고 10개 원위·중위 굴곡(5손가락 × _3/_4) 전부 하한 0 이다
-    # (09.08 사용자 재확정: 엄지 _3 도 0, −0.5 는 꺾이는 자세). thumb_2 는 URDF 실제 범위 그대로.
+    # 프로필(관절명 소유자)에 테솔로 override 가 실재하고, **인벨롭 부호 규약**을 그대로 박는다
+    # (09.10 사용자 확정 — Isaac Sim lula 실측 + URDF FK 대조).
+    #   우손 _1 전부 ±0.01(0 유지) · _2 pinky 만 규칙(0~+) · _3/_4 10개 전부 하한 0.
+    #   ⚠좌손은 `_3/_4` 가 thumb −, `_2` 가 pinky − 로 **부호가 다르다**.
     from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
     ov = dict(PROFILES["tesollo_right"].hand_action_limit_override)
     names = PROFILES["tesollo_right"].hand_joint_names
     floor0 = [n for n in names if any(re.fullmatch(rx, n) and lo == 0.0 for rx, (lo, _) in ov.items())]
-    assert len(floor0) == 10 and all(n.endswith(("_3", "_4")) for n in floor0), floor0
+    assert sorted(floor0) == sorted([n for n in names if n.endswith(("_3", "_4"))] + ["r_hj_pinky_2"]), floor0
     assert sum(n.endswith(("_3", "_4")) for n in names) == 10
-    # ★09.10 사용자 확정 해부: 대향은 `thumb_2` 이고 `thumb_1` 은 엄지 자체 회전이다.
-    #   `pinky_1` 은 외전이 아니라 손바닥을 마는 관절이라 인벨롭에 직접 쓰인다.
-    #   이 셋이 override 에 걸리면 감쌈 자유도를 막는 회귀다.
-    for free in ("r_hj_thumb_1", "r_hj_thumb_2", "r_hj_pinky_1"):
+    zeroed = [n for n in names if any(re.fullmatch(rx, n) and (lo, hi) == (-0.01, 0.01)
+                                      for rx, (lo, hi) in ov.items())]
+    assert sorted(zeroed) == sorted(n for n in names if n.endswith("_1")), zeroed
+    # ★대향(`thumb_2`)은 URDF 전폭이어야 한다 — 규칙에 걸리면 감쌈 범위를 깎는 회귀다.
+    for free in ("r_hj_thumb_2",):
         assert not any(re.fullmatch(rx, free) for rx in ov), f"{free} 은 매뉴얼 전폭이어야 한다"
-    # 외전(검~약지 _1 · 소지 _2)만 대칭 폭으로 좁힌다 — 열수록 손가락끼리 충돌한다.
-    for ab in ("r_hj_index_1", "r_hj_middle_1", "r_hj_ring_1", "r_hj_pinky_2"):
-        got = [v for rx, v in ov.items() if re.fullmatch(rx, ab)]
-        assert got == [(-0.16, 0.16)], f"{ab}: {got}"
+    # 소지 `_2` 는 **감싸는 관절**이다(우손 0~+1.571) — 구 코드가 외전으로 오인해 ±0.16 으로
+    # 잠가 뒀다. 그 값으로 되돌아가면 소지가 감쌈에 참여하지 못한다(09.10 FK 실측: 회귀 금지).
+    got = [v for rx, v in ov.items() if re.fullmatch(rx, "r_hj_pinky_2")]
+    assert got == [(0.0, None)], f"r_hj_pinky_2: {got}"
 
 
 def test_hand_direct_dims_are_27_136_160():

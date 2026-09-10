@@ -206,15 +206,23 @@ def test_synergy_path_is_untouched_when_hand_direct_is_off():
 
 
 # ---------------------------------------------------------------- 실제 프로필 대조 (URDF 없이)
-def test_tesollo_right_override_floors_exactly_the_twelve_distal_flexions():
-    """프로필 override 가 **관절 의미별**로 정확히 걸린다(09.10 사용자 확정 해부).
+def test_tesollo_right_override_encodes_the_envelope_sign_convention():
+    """프로필 override 가 **인벨롭 파지 자세의 부호 규약**을 그대로 박는다(09.10 사용자 확정).
 
-        thumb_1   엄지 자체 회전(대향 아님)        → 매뉴얼 전폭
-        thumb_2   **대향** — 인벨롭의 핵심          → 매뉴얼 전폭
-        _3/_4     조이는 관절(10개)                → 굴곡 전용(하한 0)
-        index~ring _1 · pinky_2   외전 — 열수록 손가락끼리 충돌 → ±0.16
-        pinky_1   손바닥 쪽으로 마는 관절(손바닥 관절) → 매뉴얼 전폭. 인벨롭에 쓰인다.
-                  ⚠구 코드가 외전과 한 규칙으로 묶어 ±9.2° 로 잠가 뒀다 — 회귀 금지.
+    출처는 Isaac Sim lula kinematics 실측이고 우리 자산 URDF FK 로 재확인했다
+    (판정 기준: 엄지끝 ↔ 검지·중지·약지끝 평균 거리).
+
+        우손  _1  전부 0 유지 (±0.01 — 폭 0 은 부팅 가드가 죽인다)
+              _2  thumb −(URDF 가 이미 음수 전용) · index~ring +(URDF 양수 전용) · pinky 0~+
+              _3  전부 +          _4  전부 +
+
+    ⚠**좌손은 부호가 다르다** — `_3/_4` 는 thumb −, `_2` 는 pinky −. 미러는 링크 origin
+      rpy 에 있어 축 벡터와 ±90° 대칭 한계표만 보면 좌우가 같아 보인다. 부호를 표에서
+      추론하면 틀린다(09.10 에 그렇게 추론해 우손 엄지 부호를 반대로 판정한 전례).
+
+    회귀 금지 항목 두 가지가 이 테스트의 핵심이다.
+      · `thumb_3/_4` 를 음수로 여는 것 — 우손에서는 대향의 **반대** 방향이다.
+      · `pinky_2` 를 ±0.16 으로 잠그는 것 — 구 코드가 외전으로 오인해 10%만 열어 뒀다.
     """
     from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
     p = PROFILES["tesollo_right"]
@@ -226,14 +234,13 @@ def test_tesollo_right_override_floors_exactly_the_twelve_distal_flexions():
                 assert n not in hit, f"{n} 이 규칙 두 개에 걸린다"
                 hit[n] = (lo, hi)
     flex = {n for n in p.hand_joint_names if n.endswith(("_3", "_4"))}
-    abduct = {n for n in p.hand_joint_names
-              if re.fullmatch(r"r_hj_(index|middle|ring)_1", n) or n == "r_hj_pinky_2"}
-    assert set(hit) == flex | abduct, set(hit) ^ (flex | abduct)
-    assert all(hit[n] == (0.0, None) for n in flex), "조이는 관절은 전부 하한 0(사용자 재확정)"
-    assert all(hit[n] == (-0.16, 0.16) for n in abduct), "외전은 ±0.16(손가락 충돌 때문)"
-    # ★자유롭게 열려 있어야 하는 것들 — 하나라도 규칙에 걸리면 인벨롭 자유도를 막는 회귀다.
-    for free in ("r_hj_thumb_1", "r_hj_thumb_2", "r_hj_pinky_1"):
-        assert free not in hit, f"{free} 은 매뉴얼 전폭이어야 한다(09.10 사용자 확정 해부)"
+    spread = {n for n in p.hand_joint_names if n.endswith("_1")}
+    assert set(hit) == flex | spread | {"r_hj_pinky_2"}, set(hit) ^ (flex | spread | {"r_hj_pinky_2"})
+    assert all(hit[n] == (0.0, None) for n in flex), "우손 조이는 관절은 전부 양수 전용"
+    assert all(hit[n] == (-0.01, 0.01) for n in spread), "_1 은 0 유지(±0.01)"
+    assert hit["r_hj_pinky_2"] == (0.0, None), "소지 _2 는 음수 차단 + 양수 전폭"
+    # `thumb_2` 는 URDF 가 이미 음수 전용이라 규칙이 필요 없다 — 걸리면 대향 범위를 깎는 회귀다.
+    assert "r_hj_thumb_2" not in hit, "thumb_2(대향)는 URDF 전폭이어야 한다"
     # 리셋(open) 자세가 하한 아래인 관절은 B 리셋이 clamp 한다 — 이동량이 cfg 상한(0.6) 안이어야 한다.
     for n, q in zip(p.hand_joint_names, p.hand_open_pose):
         if n in hit and q < hit[n][0]:

@@ -190,10 +190,23 @@ TESOLLO_RIGHT = RobotProfile(
     #                있었다). 손바닥 오목을 만드는 자유도를 통째로 막고 있었던 셈이다.
     #     pinky_2  손가락을 **벌리는** 관절(검~약지 _1 과 같은 성격) → 같은 이유로 ±0.16
     #     pinky_3/4 다른 손가락과 같은 맥락 → 굴곡 전용
+    # ★★09.10 인벨롭 파지 자세의 **부호 규약**을 액션 한계로 박는다. 이상한 자세가
+    #   애초에 도달 불가능해야 한다(사용자 확정). 출처는 Isaac Sim lula kinematics 실측
+    #   이고 우리 자산 URDF FK 로 재확인했다(엄지끝↔검지·중지·약지끝 거리로 판정).
+    #
+    #     우손:  _1 = 0 유지 · _2 thumb − / index·middle·ring + / pinky 0~+ · _3 전부 + · _4 전부 +
+    #     좌손:  _1 = 0 유지 · _2 thumb + / index·middle·ring + / pinky −~0 · _3 thumb − 나머지 + · _4 동일
+    #
+    #   ⚠**좌우 부호 규약이 다르다.** 미러는 링크 origin 의 rpy 에 있고 관절 **축 벡터는
+    #     좌우가 같다** — `_3/_4` 는 한계도 ±90° 대칭이라 축과 한계표만 보면 좌우가 같아
+    #     보인다. 부호를 표에서 추론하지 말고 FK 로 재라(09.10 에 그렇게 추론했다가 우손
+    #     엄지 부호를 반대로 판정했다). 검증 도구는 `urdf/tools/` 의 FK 대조를 쓴다.
+    #   ★`_1` 을 정확히 0 으로 묶으면 폭 0 액션 칸이라 부팅 가드가 죽인다 — ±0.01 rad
+    #     (0.57°)로 둔다. 리셋 자세가 전부 0.0 이라 clamp 이동은 없다.
     hand_action_limit_override={
         r"r_hj_(thumb|index|middle|ring|pinky)_[34]$": (0.0, None),
-        r"r_hj_(index|middle|ring)_1$": (-0.16, 0.16),
-        r"r_hj_pinky_2$": (-0.16, 0.16),
+        r"r_hj_(thumb|index|middle|ring|pinky)_1$": (-0.01, 0.01),
+        r"r_hj_pinky_2$": (0.0, None),
     },
     palm_body="r_hl_palm",
     # ---- Fabrics (DG-5F 계보) ----
