@@ -289,7 +289,14 @@ class FJCoreEnvCfg(DirectRLEnvCfg):
             #   죽었다(fj_f1 1차). 자기충돌은 손 링크 쌍을 통째로 늘려 스택 사용량을 키운다.
             gpu_collision_stack_size=2**30,
             gpu_max_num_partitions=8,
-            friction_correlation_distance=0.00625,
+            # ★★09.11 사용자 확정 — 0.00625 → **0.025**(SimToolReal 값).
+            #   `simtoolreal/isaacsimenvs/.../simtoolreal_env_cfg.py:529` 와 같은 값이다.
+            #   PhysX 가 이 거리 안의 접촉점을 하나의 마찰 앵커로 묶으므로, 값이 클수록
+            #   마찰 앵커(=솔버가 푸는 제약) 수가 준다. 우리 0.00625 는 4배 촘촘해
+            #   손가락 마디처럼 접촉점이 몰리는 곳에서 앵커가 불필요하게 많이 생긴다.
+            #   ⚠트랙 A(`grasp_s2r_env_cfg.py:284`)는 0.00625 그대로다 — 포크 이후
+            #     두 트랙은 물리 설정을 공유하지 않는다.
+            friction_correlation_distance=0.025,
         ),
     )
     # 단일 물체라 replicate_physics=True 가 맞다(False 는 MultiAsset 규약).
