@@ -645,6 +645,17 @@ TESOLLO_RIGHT_SHORT_TL = _dc_replace(
         r"r_hj_(index|middle|ring|pinky)_1$": (-0.01, 0.01),
         r"r_hj_pinky_2$": (0.0, None),
     },
+    # ★★`hand_open_pose`·`hand_grip_pose` 는 **위치로 색인되는** 자세 배열이다
+    #   (`hand_joint_names` 순서와 1:1). 이름이 안 들어 있어 이름 대조로는 안 잡히고,
+    #   길이가 어긋나면 부팅에서 "자세 배열 길이 불일치" 로 죽는다.
+    #   인덱스를 박지 않고 **이름으로 위치를 계산**한다 — 순서가 바뀌어도 따라간다.
+    #   (short 에서 thumb_1 자리는 open/grip 둘 다 0.0 이라 값 손실은 없다)
+    hand_open_pose=tuple(v for n, v in zip(TESOLLO_RIGHT_SHORT.hand_joint_names,
+                                           TESOLLO_RIGHT_SHORT.hand_open_pose)
+                         if n != "r_hj_thumb_1"),
+    hand_grip_pose=tuple(v for n, v in zip(TESOLLO_RIGHT_SHORT.hand_joint_names,
+                                           TESOLLO_RIGHT_SHORT.hand_grip_pose)
+                         if n != "r_hj_thumb_1"),
     # ★★용접한 관절 이름을 **드는 필드 전부**에서 뺀다. 자산에서 fixed 가 된 관절은
     #   URDF 에 이름은 남지만 **자유도가 아니다** — articulation 의 joint 목록에 없다.
     #   09.10 에 이걸 한 번에 못 찾아 부팅이 두 번 죽었다:

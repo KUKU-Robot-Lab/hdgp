@@ -429,3 +429,28 @@ def test_hand_joint_names_count_matches_num_hand_joints():
         assert len(prof.hand_joint_names) == prof.num_hand_joints, (
             f"{name}: hand_joint_names {len(prof.hand_joint_names)}개 vs "
             f"num_hand_joints {prof.num_hand_joints}")
+
+
+def test_per_hand_joint_arrays_match_hand_joint_count():
+    """손 관절 수만큼이어야 하는 **위치 색인 배열**의 길이를 잠근다.
+
+    ★09.10 왜 별도 테스트인가. `test_profile_literal_names_...` 는 **이름**을 대조하는데,
+      `hand_open_pose` / `hand_grip_pose` 는 숫자만 든 배열이라 이름이 없다 —
+      `hand_joint_names` 와 **순서로만** 묶인다. thumb_1 을 용접하고 이름 목록만 19로
+      줄였더니 배열은 20으로 남아 부팅에서 죽었다("자세 배열 길이 불일치").
+      이름 대조로는 이 부류를 영원히 못 잡으므로 길이로 따로 물어야 한다.
+
+    새 배열을 추가할 때 여기 이름을 같이 적을 것 — 안 적으면 다음 용접에서 같은 일이 난다.
+    """
+    PER_HAND_JOINT = ("hand_open_pose", "hand_grip_pose")
+    for name, prof in PROFILES.items():
+        n = prof.num_hand_joints
+        if not n:
+            continue
+        for attr in PER_HAND_JOINT:
+            arr = getattr(prof, attr, None)
+            if not arr:
+                continue
+            assert len(arr) == n, (
+                f"{name}.{attr}: {len(arr)}칸인데 num_hand_joints 는 {n} — "
+                f"`hand_joint_names` 와 순서로 묶이는 배열이라 길이가 같아야 한다")
