@@ -167,16 +167,34 @@ def test_obs_has_no_object_identity():
         assert banned not in code, f"obs 오염 경로: {banned}"
 
 
-def test_obs_carries_tactile_and_goal():
-    """촉각(tip-local 힘·관절 추종오차)과 이송 목표가 policy obs 에 있어야 한다.
+def test_obs_is_proprioceptive_only_no_tactile():
+    """촉각은 actor·critic **어디에도** 없다(사용자 확정 09.10). 목표·자세는 있어야 한다.
 
-    인벨롭이 잘 될수록 팁 F/T 가 0 을 읽으므로 `joint_pos_err` 가 주 파지력 관측이다.
+    파지 폐쇄 신호는 `joint_err`(엔코더 기반 추종오차)가 단독으로 진다 — 인벨롭이 잘 될수록
+    팁 F/T 가 0 을 읽는 역상관 신호이기 때문이다(`_joint_pos_err` docstring).
+
+    ★이 단언을 **금지 방향으로** 쓰는 이유: 그냥 지우면 다음 라운드에 조용히 되살아난다
+      (이 저장소의 재발 유형). 무엇이 바뀌면 이 계약이 거짓이 되는지 —
+      **사용자가 촉각 사용 금지를 철회하면** 이다. 그때는 이 테스트를 되뒤집는다.
+    ★제거는 **관측 계층 한정**이다. 보상(`graded_contact`·`force_quality`)·래치·
+      손 제어(`synergy_contact_freeze`)는 여전히 접촉을 쓰고, 그건 이 테스트 밖이다.
     """
     m = re.search(r"_noisy = torch\.cat\(\[([\s\S]*?)\], dim=1\)", _ENV)
     assert m, "policy obs 결합식 부재"
     blk = m.group(1)
-    for need in ("tip_force", "joint_err", "goal_rel", "palm_ax"):
+    for need in ("joint_err", "goal_rel", "palm_ax"):
         assert need in blk, f"policy obs 에 {need} 가 없다"
+    assert "tip_force" not in blk, "policy obs 에 촉각이 되살아났다"
+
+    m = re.search(r"clean = torch\.cat\(\[([\s\S]*?)\], dim=1\)", _ENV)
+    assert m, "critic clean 결합식 부재"
+    assert "tip_force" not in m.group(1), "critic clean obs 에 촉각이 되살아났다"
+
+    m = re.search(r"state = torch\.cat\(\[([\s\S]*?)\], dim=1\)", _ENV)
+    assert m, "critic state 결합식 부재"
+    st = m.group(1)
+    for banned in ("tip_force", "_contact_forces_split", "_dist >", "_mid >"):
+        assert banned not in st, f"critic state 에 촉각이 되살아났다: {banned}"
 
 
 def test_obs_dim_formula_matches_layout():
@@ -188,6 +206,19 @@ def test_obs_dim_formula_matches_layout():
         assert need in expr, f"obs 식에 {need} 가 없다"
     # 물체 뱅크·스케일에서 파생되면 안 된다.
     assert "bank" not in expr and "scale" not in expr
+    # ★★09.10 **개수까지** 잠근다. 구 단언(`"3 * num_tips" in expr`)은 항이 3개에서
+    #   2개로 줄어도 참이라, 촉각 제거를 검출하지 못했다 — 존재만 보는 단언은 크기 변화에
+    #   눈이 멀다. tips 파생 항은 `tips_rel_palm` 과 `obj_to_tips` **둘뿐**이다.
+    assert expr.count("3 * num_tips") == 2, (
+        f"tips 파생 항은 2개(tips_rel_palm·obj_to_tips)여야 한다: {expr.count('3 * num_tips')}개")
+
+    # critic 식도 검사한다 — 지금까지 **어떤 테스트도 state_space 식을 안 봤다**.
+    m = re.search(r"self\.state_space = \(([\s\S]*?)\)", _CFG)
+    assert m, "state_space 식 부재"
+    st = m.group(1)
+    assert "self.observation_space" in st, "critic 은 policy obs 위에 얹혀야 한다"
+    assert "num_fingers" not in st, "critic 식에 마디 접촉(4·num_fingers)이 되살아났다"
+    assert "num_tips" in st, "critic 의 fingertip_signed_dist(nt)가 사라졌다"
 
 
 # ---------------------------------------------------------------- 보상
@@ -1328,15 +1359,30 @@ def _fn_block(src: str, name: str) -> str:
     return src[i:j if j > 0 else len(src)]
 
 
-def test_object_perception_defaults_are_identity():
-    """★09.01 신설 — 지각 모델 두 노브는 **기본 False = 현행 항등**이다.
+def test_object_perception_knobs_are_pinned():
+    """지각 모델 두 노브의 **현재 계약**. 09.10 에 하나가 뒤집혔고, 사유를 여기 남긴다.
 
-    D3(`544c88b` 기본값)로 학습된 체크포인트가 그대로 재생돼야 하고, 아카이브된
-    118런의 dump 복원도 같은 obs 를 봐야 한다. 켜는 것은 CLI 로만.
+    ★구 계약(09.01)은 둘 다 False 였고 사유는 "D3 체크포인트 재생·아카이브 dump 복원이
+      같은 obs 를 봐야 한다" 였다. 09.10 에 **같은 커밋에서 촉각 15칸을 뺐으므로**
+      obs 폭이 155→140 으로 바뀌었다 — 그 전제가 스스로 무효가 됐다(체크포인트 재생은
+      어차피 불가능하다). 전제가 사라진 가드를 그대로 두면 올바른 수정을 막는다.
+
+    ①`obs_object_noise_coherent = True` — 촉각을 뺀 상태에서 물체 위치가 sim 참값이면
+      정책이 실기에 없는 정보에 의존한다. 구 경로는 `obj = goal_pos − goal_rel` 로
+      참값 복원이 가능해 `obs_noise_object` 축이 사실상 무효였다.
+    ②`obs_object_rigid_after_latch = False` — **유지**. 촉각을 뺀 판에서 이걸 켜면
+      래치 후 물체 pose 가 palm 강체 가정으로 대체돼, 컵이 손안에서 미끄러져도 정책이
+      알 길이 전혀 없어진다(알 유일한 수단이 촉각인데 방금 뺐다). 둘의 동시 적용은
+      정책에서 파지 상태 관측을 **전부** 없애는 것과 같다 — 그래서 여기서 잠근다.
+
+    무엇이 이 계약을 거짓으로 만드는가: ②는 촉각을 되살리거나 기하 기반 파지 상태 관측을
+    신설한 뒤에만 열 수 있다. 그때 이 테스트를 갱신한다.
     """
     cfg = _code(_CFG)
-    assert "obs_object_rigid_after_latch: bool = False" in cfg
-    assert "obs_object_noise_coherent: bool = False" in cfg
+    assert "obs_object_rigid_after_latch: bool = False" in cfg, (
+        "촉각을 뺀 판에서 강체 가정까지 켜면 파지 상태 관측이 전멸한다")
+    assert "obs_object_noise_coherent: bool = True" in cfg, (
+        "촉각 제거와 물체 참값 누수 차단은 같은 판에 간다")
 
 
 def test_goal_rel_is_not_a_clean_object_channel():
@@ -1856,3 +1902,70 @@ def test_fabric_profile_timer_is_opt_in_and_avoids_sync():
     stop = _fn_block(_CTL, "_fabric_timer_stop")
     assert "_fabric_ev_prev" in stop and ".query()" in stop, \
         "직전 스텝 쌍을 query() 로 확인하고 읽어야 한다(동기화 금지)"
+
+
+# ---------------------------------------------------------------- 외란 DR (09.10 신설)
+def test_wrench_gate_is_height_latch_not_contact_latch():
+    """★외란 게이트는 **높이 래치**(`_lifted`)여야 한다. 접촉 래치(`_latched`)면 안 된다.
+
+    이식원 `grasp_kp` 는 같은 호출을 `self._latched` 로 쓰는데, **kp 의 그 이름은 높이
+    래치**이고 s2r 의 `_latched` 는 접촉 래치다(이름만 같고 뜻이 반대다). 그대로 베끼면
+    컵이 아직 테이블에 있는 접근 구간에 외란이 발화해 `cup_disp` 가 approach 순벌점을
+    만들고, `disp_at_latch` 가 오염돼 lift·transfer·success_bonus 에 곱해지는 감쇠
+    계수를 통째로 망친다. 이 테스트가 그 이식 사고를 잠근다.
+    """
+    # ★조각을 `_code()` 에 넘기지 않는다 — 그 헬퍼는 ast.parse 라 함수 조각에서 죽는다.
+    #   대신 호출식 한 줄을 정확히 잡는다(조각 파싱 없이 조건을 검사한다).
+    m = re.search(r"self\._wrench\.step\(([^)]*)\)", _ENV)
+    assert m, "`_wrench.step` 호출 부재"
+    args = m.group(1)
+    assert "self._lifted" in args, (
+        f"외란 게이트가 `self._lifted`(높이 래치)가 아니다: step({args})")
+    assert "_latched" not in args, (
+        f"외란이 접촉 래치를 게이트로 쓰고 있다 — kp 이식 사고 재발: step({args})")
+
+
+def test_wrench_state_is_rewound_on_reset_and_respawn():
+    """외란 상태(env 별 발화확률)와 높이 래치는 **리셋과 재소환 양쪽**에서 되감긴다.
+
+    재소환은 컵을 스폰점으로 되돌리는 단계 되감기인데, 여기서 외란을 안 끄면 테이블에
+    놓인 컵에 외란이 계속 걸린다(단계 되감기가 불완전해진다).
+    """
+    code = _code(_ENV)
+    assert code.count("self._wrench.reset(") >= 2, (
+        "`_wrench.reset` 이 리셋·재소환 양쪽에 있어야 한다")
+    assert "self._lifted[env_ids] = False" in code, "리셋에서 높이 래치를 안 지운다"
+    assert "self._lifted[_go] = False" in code, "재소환에서 높이 래치를 안 지운다"
+
+
+def test_wrench_defaults_are_identity_and_validated():
+    """기본값은 항등(끔)이고, 부팅 검증이 조용한 no-op·반쪽 설정을 막는다."""
+    assert "wrench_force_scale: float = 0.0" in _CFG, "외란 기본값은 항등이어야 한다"
+    assert "wrench_torque_scale: float = 0.0" in _CFG, "외란 기본값은 항등이어야 한다"
+    code = _code(_CFG)
+    assert "_assert_wrench_sane" in code, "외란 부팅 검증이 없다"
+    # 한쪽만 켜는 것은 CLI 오타의 전형이다 — 반드시 fail-loud.
+    assert "(_f > 0.0) != (_t > 0.0)" in code, "force/torque 반쪽 설정 가드가 없다"
+
+
+def test_wrench_firing_is_observable_in_tb():
+    """조용한 no-op 방지 3중 확인 — 부팅 로그·런 dump·TB 태그.
+
+    cfg 오버라이드가 실렸다는 것과 **실제로 발화했다**는 것은 다른 주장이라, 발화 자체를
+    남긴다(관측 [0023]: dump 는 값이 설정된 것을 증명하지 그것이 존중된 것을 증명하지 않는다).
+    """
+    code = _code(_ENV)
+    for tag in ('"dr/wrench_fire_frac"', '"dr/wrench_f_norm_max"'):
+        assert tag in code, f"외란 발화 지표 {tag} 가 없다"
+
+
+def test_stay_break_cause_is_split_into_two_tags():
+    """`stay_run` 이 끊긴 원인을 `stable` 과 `n_grip` 으로 갈라 남긴다.
+
+    D3 실측 stay_run 14.46 / 60 (24%) 의 원인이 손 미세 진동인지 접촉 들락거림인지에 따라
+    처방이 갈린다. 후자면 그것이 곧 power grip 결손이다. 이 두 태그 없이
+    `stay_weight` 를 만지는 것은 금지(reward-audit Check 5).
+    """
+    code = _code(_ENV)
+    for tag in ('"gate/stay_break_by_stable"', '"gate/stay_break_by_grip"'):
+        assert tag in code, f"stay 끊김 원인 지표 {tag} 가 없다"

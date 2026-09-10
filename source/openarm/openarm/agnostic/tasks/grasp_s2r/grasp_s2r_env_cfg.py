@@ -762,7 +762,11 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   `obs_noise_object` 를 아무리 키워도 정책은 깨끗한 물체 위치를 볼 수 있었고,
     #   그 축은 사실상 무효였다. True 면 노이즈를 **한 번만** 뽑아 palm_to_obj ·
     #   obj_to_tips · goal_rel 세 항에 **같은 추정값**을 실어 우회를 막는다.
-    obs_object_noise_coherent: bool = False
+    # ★09.10 True 로 승격(사용자 확정). 같은 판에서 촉각 obs 를 뺐기 때문이다 —
+    #   촉각을 빼면 "컵이 손 안에 제대로 있나"의 판단이 물체 위치 추정 + 기하로만 남는데,
+    #   그 물체 위치가 sim 참값이면 **실기에 없는 정보에 의존하는 정책**이 만들어진다.
+    #   촉각을 뺀 만큼 이 누수가 더 치명적이 되므로 둘은 같은 판에 간다.
+    obs_object_noise_coherent: bool = True
 
     # ---- finger_closure (08.29 신설·기본 0 = 항등) -----------------------------------
     # 접촉 전 손가락별 연속 신호 — (1−접촉)·exp(−k·‖tip−파지중심‖) 평균 × close_gate.
@@ -867,6 +871,26 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   실제로는 아무 일도 안 일어난다). 그래서 여기만 **cfg 고정 범위**로 연다.
     #   절대값이지 배율이 아니다. 승격 목표 (0.5, 1.5).
     object_friction_range: tuple[float, float] = (1.0, 1.0)
+
+    # ---- 외란(wrench) DR — ★09.10 신설. power grip 을 강제하는 유일한 장치 ------------
+    # 형제 `grasp_kp` 의 무상태 모듈 `modules/object_wrench.WrenchDR` 을 그대로 쓴다.
+    # env 별 발화확률 p ~ logU(prob_range) 를 리셋마다 재추첨하고, 매 스텝 rand<p 인 env 에
+    # randn·질량·scale 을 새로 뽑는다(decay 0 — 발화 안 한 스텝은 외란 0).
+    #
+    # ★★게이트는 **높이 래치**(`cup_height_delta ≥ lift_success_height`)다. kp 의 호출은
+    #   `self._latched` 를 쓰는데 kp 의 그 이름은 높이 래치이고 **s2r 의 `_latched` 는
+    #   접촉 래치**다. 그대로 베끼면 컵이 아직 테이블에 있는 접근 구간에 외란이 발화해
+    #   `cup_disp` → approach 순벌점, 그리고 `disp_at_latch` 오염으로 lift·transfer·
+    #   success_bonus 에 곱해지는 감쇠 계수를 통째로 망친다.
+    #
+    # 기본 0.0 = 항등(끔). W1 = 5.0 / 0.5, W2(승격 목표) = 20.0 / 2.0(kp 정합).
+    # W1 근거(reward-audit 09.10): 컵 0.134kg 에서 축당 σ = 0.134×5.0 = 0.67 N,
+    #   |F| 기댓값 ≈ 1.07 N = 컵 무게 1.31 N 의 0.82배. 발화율 평균 ~2.6%.
+    #   g1 실측 수입비(리프트 후 44.3/step vs 리프트 전 8.3/step = 5.3배)에서
+    #   "안 들면 외란 없음" 회피가 이득이 되지 않는 크기다.
+    wrench_force_scale: float = 0.0           # N / kg
+    wrench_torque_scale: float = 0.0          # N·m / kg
+    wrench_prob_range: tuple[float, float] = (0.001, 0.1)   # env 별 발화확률 logU
 
     # ---- 디버그 시각화 (GUI/카메라 렌더일 때만 — headless 학습에 비용 0) --------------
     enable_cmd_markers: bool = True
@@ -1024,7 +1048,25 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             profile.object_spawn_center[0], profile.object_spawn_center[1],
             self.object_spawn_z,
         ]
+        self._assert_wrench_sane()
         self._derive_spaces(profile)
+
+    def _assert_wrench_sane(self) -> None:
+        """외란 DR 파라미터 부팅 검사 — 조용한 no-op 과 물리 폭주를 둘 다 막는다."""
+        _lo, _hi = (float(v) for v in self.wrench_prob_range)
+        if not (0.0 < _lo <= _hi <= 1.0):
+            raise RuntimeError(
+                f"[grasp_s2r] wrench_prob_range 는 0 < lo ≤ hi ≤ 1 이어야 한다: "
+                f"{self.wrench_prob_range} (logU 샘플러가 log(lo) 를 쓴다)")
+        _f, _t = float(self.wrench_force_scale), float(self.wrench_torque_scale)
+        if _f < 0.0 or _t < 0.0:
+            raise RuntimeError(
+                f"[grasp_s2r] 외란 스케일은 음수일 수 없다: force {_f} · torque {_t}")
+        # ★한쪽만 켜는 것은 거의 항상 오타다(CLI 로 하나만 넘긴 경우).
+        if (_f > 0.0) != (_t > 0.0):
+            raise RuntimeError(
+                f"[grasp_s2r] 외란 force/torque 중 하나만 켜져 있다: "
+                f"force {_f} N/kg · torque {_t} N·m/kg — 둘 다 0 이거나 둘 다 >0 이어야 한다")
 
     def _remap_object_usd(self, usd_path: str) -> str:
         """`object_usd_dir_override` 가 있으면 같은 파일명을 그 디렉터리에서 찾아 바꾼다."""
@@ -1143,21 +1185,32 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             n_ch = len(set(profile.hand_channel_of_joint.values()))
             self.action_space = 6 + n_ch * num_fingers
 
-        # policy obs (grasp_v1 계열 + 목표, **물체 정체성 없음**):
+        # policy obs (grasp_v1 계열 + 목표, **물체 정체성 없음**, **촉각 없음**):
         #   arm q/qd(2·n_arm) + hand q/qd(2·n_hand) + palm_pos(3) + palm_ax(6)
         #   + tips_rel_palm(3·nt) + palm_to_obj(3) + obj_to_tips(3·nt)
-        #   + tip_force_local(3·nt) + joint_pos_err(n_hand) + last_action
-        #   + goal_rel(3)
+        #   + joint_pos_err(n_hand) + last_action + goal_rel(3)
         # ★물체 onehot·치수·질량·클래스는 넣지 않는다 — 배포 시 알 수 없는 정보다.
+        # ★★09.10 촉각 전면 제거(사용자 확정) — 구 `tip_force_local(3·nt)` 을 뺐다.
+        #   근거 셋: ①인벨롭이 잘 될수록 팁 F/T 가 0 을 읽는 **역상관** 신호다
+        #   (`_joint_pos_err` docstring 이 "추종 오차가 주 파지력 관측"이라고 이미 적었다).
+        #   ②obs 에서 유일하게 노이즈가 안 붙던 항이라 실기 F/T 대비 낙관적이었다.
+        #   ③sim 접촉 이산화가 실제 접촉을 놓친다(원위 `_4` 가 4,553 기록점 내내 0.000).
+        #   파지 폐쇄 신호는 `joint_pos_err`(엔코더 기반) 단독이 진다.
+        #   ⚠보상·판정·손 제어(`synergy_contact_freeze`)는 여전히 접촉을 쓴다 —
+        #     제거는 **관측 계층 한정**이다.
         self.observation_space = (
             2 * n_arm + 2 * n_hand + 3 + 6 + 3 * num_tips + 3 + 3 * num_tips
-            + 3 * num_tips + n_hand + self.action_space + 3
+            + n_hand + self.action_space + 3
         )
         # critic = obs + 물체 선/각속도(6) + quat(4) + height_delta(1)
-        #          + distal binary/norm(2·nf) + middle binary/norm(2·nf)
         #          + phase_step_ratio(1) + fingertip_signed_dist(nt) + goal_dist(1)
+        # ★★09.10 critic 의 마디 접촉 4·nf(distal/middle × binary/norm) 도 제거했다.
+        #   critic 은 배포되지 않으므로 sim2real 논거는 여기 적용되지 않는다 — 제거 사유는
+        #   **sim 접촉 신호 자체를 못 믿는다**는 것이다. 이 신호를 가치의 기저로 쓰면
+        #   가치함수가 sim 접촉 아티팩트에 정렬된다. 기하 대체재는 이미 있다
+        #   (fingertip_signed_dist nt 칸).
         self.state_space = (
-            self.observation_space + 6 + 4 + 1 + 4 * num_fingers + 1 + num_tips + 1)
+            self.observation_space + 6 + 4 + 1 + 1 + num_tips + 1)
 
 
 @configclass

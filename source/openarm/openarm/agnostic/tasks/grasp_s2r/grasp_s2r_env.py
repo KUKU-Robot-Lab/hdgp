@@ -19,6 +19,8 @@ import torch
 
 from isaaclab.envs import DirectRLEnv
 
+from ...modules.object_wrench import WrenchDR
+
 from .grasp_s2r_control import GraspS2RControlMixin
 from .grasp_s2r_env_cfg import GraspS2REnvCfg
 from .grasp_s2r_rewards import GRASP_S2R_REWARD_TERMS, compute_grasp_s2r_rewards
@@ -283,6 +285,11 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         #   obs 의 물체 항 3개(palm_to_obj·obj_to_tips·goal_rel)가 전부 위치다.
         self._obj_off_palm = torch.zeros(self.num_envs, 3, device=self.device)
 
+        # ★★09.10 높이 래치 — 외란 게이트 전용. `_latched`(접촉 래치)와 **다른 것**이다.
+        #   `_get_rewards` 가 채우고 다음 스텝의 `_pre_physics_step` 이 읽는다(1스텝 지연,
+        #   kp 와 동일 규약). 접촉 래치를 쓰면 컵이 테이블에 있는 접근 구간에 외란이 발화한다.
+        self._lifted = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
         # 판정 버퍼 — `_get_dones` 가 먼저 돌고 `_get_rewards` 가 같은 스텝에 재사용한다.
         self._tilt_deg = torch.zeros(self.num_envs, device=self.device)
         self._abnormal = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -292,6 +299,23 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._stage_names = ("grasp", "lift", "transfer", "stay")
         self._stage_hit = torch.zeros(
             self.num_envs, len(self._stage_names), dtype=torch.bool, device=self.device)
+
+        # ---- 외란 DR (기본 0.0 = 항등) --------------------------------------------------
+        _c = self.cfg
+        self._wrench = WrenchDR(
+            self.num_envs, self.device,
+            force_scale=float(_c.wrench_force_scale),
+            torque_scale=float(_c.wrench_torque_scale),
+            prob_range=tuple(float(v) for v in _c.wrench_prob_range))
+        self._obj_mass = self._read_obj_mass()
+        # ★조용한 no-op 방지 3중 확인의 첫 번째 — 부팅 로그에 **실효값**을 찍는다.
+        #   (나머지 둘: 런 dump 의 cfg, 그리고 TB `dr/wrench_fire_frac`)
+        print(f"[grasp_s2r] 외란 DR {'ON' if float(_c.wrench_force_scale) > 0.0 else 'OFF'} — "
+              f"{float(_c.wrench_force_scale)}N/kg · {float(_c.wrench_torque_scale)}N·m/kg · "
+              f"p~logU{tuple(float(v) for v in _c.wrench_prob_range)} · "
+              f"게이트=높이래치(lift_success_height {float(_c.lift_success_height)}) · "
+              f"질량 {float(self._obj_mass.min()):.3f}~{float(self._obj_mass.max()):.3f}kg",
+              flush=True)
 
         self._init_home_palm()
         self._report_home_cage()
@@ -728,6 +752,40 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.fabric_q[:, self.profile.num_arm_joints:] = self._syn_to_fab(self._syn_target)
 
         self._step_fabric()
+        self._apply_wrench()
+
+    # ------------------------------------------------------------------
+    # 외란 DR
+    # ------------------------------------------------------------------
+    def _read_obj_mass(self) -> torch.Tensor:
+        """물체 공칭 질량 (N,) — 외란 크기의 기준.
+
+        ★질량 DR 을 켜면 `default_mass` 는 **공칭값**이라 실제와 갈린다. 그때는 리셋 뒤
+          `root_physx_view.get_masses()` 를 다시 읽어야 외란이 실제 질량에 정규화된다 —
+          안 그러면 무거운 개체에 상대적으로 약한 외란이 걸려 두 DR 축이 서로를 상쇄한다.
+          지금은 질량 DR 이 항등(1.0, 1.0)이라 공칭값으로 충분하다.
+        """
+        m = self.object.data.default_mass
+        if m is None or m.ndim != 2 or m.shape[0] != self.num_envs:
+            raise RuntimeError(
+                f"[grasp_s2r] object default_mass 형상 이상: "
+                f"{None if m is None else tuple(m.shape)} (기대 ({self.num_envs}, 1))")
+        return m[:, 0].to(self.device, dtype=torch.float32)
+
+    def _apply_wrench(self) -> None:
+        """리프트 후 질량정규화 외란 — 매 스텝 새로 뽑고(decay 0) **높이 래치** 게이트.
+
+        ★★게이트가 `self._lifted`(높이)이지 `self._latched`(접촉)가 **아니다**. kp 원본은
+          같은 이름의 높이 래치를 넘기지만 s2r 에서 그 이름은 접촉 래치라, 그대로 베끼면
+          컵이 테이블 위에 있는 접근 구간에 외란이 발화한다 → `cup_disp` 가 approach 순벌점을
+          만들고 `disp_at_latch` 가 오염돼 lift·transfer·success_bonus 의 감쇠 계수를 망친다.
+        """
+        forces, torques = self._wrench.step(self._obj_mass, self._lifted)
+        self.object.set_external_force_and_torque(forces, torques, is_global=True)
+        # 조용한 no-op 방지 3중 확인의 세 번째 — 실제로 발화했는지 TB 에 남긴다.
+        _fn = forces.view(self.num_envs, -1).norm(dim=-1)
+        self.extras["dr/wrench_fire_frac"] = (_fn > 0.0).float().mean()
+        self.extras["dr/wrench_f_norm_max"] = _fn.max()
 
     # ------------------------------------------------------------------
     # 관측
@@ -804,7 +862,9 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         palm_to_obj = obj_pos - palm_pos
         obj_to_tips = (tips_w - self.scene.env_origins[:, None, :]
                        - obj_pos.unsqueeze(1)).reshape(n, -1)
-        tip_force = self._tip_force_local()
+        # ★09.10 촉각은 **관측에서 제거**됐다(사용자 확정). 계측은 남긴다 —
+        #   `contact/force_max*` 는 트랙 CLAUDE.md 핵심 지표표에 있고 force_band 감시 근거다.
+        self.extras["diag/tip_force_absmax"] = self._tip_force_local().abs().max()
         joint_err = self._joint_pos_err()
         goal_rel = self.goal_pos - obj_pos
 
@@ -835,25 +895,24 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             palm_ax,
             tips_rel_palm + torch.randn_like(tips_rel_palm) * cfgn.obs_noise_body,
             _n_palm_to_obj, _n_obj_to_tips,
-            tip_force, joint_err, self.actions, _n_goal_rel,
+            joint_err, self.actions, _n_goal_rel,
         ], dim=1)
 
         clean = torch.cat([
             arm_q, arm_qd, hand_q, hand_qd, palm_pos, palm_ax, tips_rel_palm,
-            palm_to_obj, obj_to_tips, tip_force, joint_err, self.actions, goal_rel,
+            palm_to_obj, obj_to_tips, joint_err, self.actions, goal_rel,
         ], dim=1)
 
-        _mid, _dist = self._contact_forces_split()
-        _thr = float(cfgn.contact_force_threshold)
-        _max = float(cfgn.contact_force_max)
+        # ★09.10 critic 의 마디 접촉 4·nf 도 제거했다. critic 은 배포되지 않으니
+        #   sim2real 논거가 아니라 **sim 접촉 신호를 못 믿는다**는 것이 사유다(원위 `_4`
+        #   가 4,553 기록점 내내 0.000 인데 영상에선 감쌈이 성립). 기하 대체재는 아래
+        #   `fingertip_signed_dist` nt 칸이 이미 들고 있다.
         state = torch.cat([
             clean,
             self.object.data.root_lin_vel_w,
             self.object.data.root_ang_vel_w,
             self.object.data.root_quat_w,
             (obj_pos[:, 2] - self.object_spawn_pos[:, 2]).unsqueeze(1),
-            (_dist > _thr).float(), (_dist / _max).clamp(max=1.0),
-            (_mid > _thr).float(), (_mid / _max).clamp(max=1.0),
             (self.episode_length_buf.float()
              / float(self.max_episode_length)).unsqueeze(1),
             (tips_w - self.scene.env_origins[:, None, :] - obj_pos.unsqueeze(1)
@@ -1063,7 +1122,19 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         if bool(cfgn.success_require_holding):
             _ok = _ok & (n_grip >= int(cfgn.success_min_grip_fingers)) & tip_c[:, _a]
         self._success_now = _ok
+        # ★외란 게이트용 높이 래치 — 다음 스텝 `_pre_physics_step` 이 읽는다.
+        self._lifted = lifted
         _stay_ok = at_goal & stable & (n_grip >= 2)
+        # ★★09.10 신설 — `stay_run` 이 **무엇 때문에** 끊기는지. D3 실측 stay_run 14.46 은
+        #   만점 기준 60 의 24% 이고, 성공 점유율 0.604 로 나누면 조건부 평균 ~24 스텝이다.
+        #   "한 번 성공하면 끝까지 유지" 라면 ~110 이어야 하므로 초당 1회 이상 깜빡인다.
+        #   깨는 후보는 둘뿐이라 둘을 갈라 남긴다: 손이 미세 진동(`stable`)인지,
+        #   접촉이 들락거리는지(`n_grip`). 후자면 그것이 곧 power grip 결손이다.
+        #   ⚠분모를 `at_goal` 로 맞춘다 — 목표 밖에서 끊긴 것은 stay 의 문제가 아니다.
+        _ng2 = n_grip >= 2
+        self.extras["gate/stay_break_by_stable"] = (at_goal & ~stable).float().mean()
+        self.extras["gate/stay_break_by_grip"] = (at_goal & stable & ~_ng2).float().mean()
+        self.extras["gate/stay_at_goal_frac"] = at_goal.float().mean()
         self._stay_run = torch.where(_stay_ok, self._stay_run + 1,
                                      torch.zeros_like(self._stay_run))
         stay_frac = (self._stay_run.float()
@@ -1665,6 +1736,10 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                     self._disp_at_latch[_go] = 0.0
                     self._obj_off_palm[_go] = 0.0
                     self._stay_run[_go] = 0
+                    # ★높이 래치도 함께 되감는다 — 컵이 스폰점으로 돌아갔는데 외란이
+                    #   계속 걸리면 단계 되감기가 불완전하다.
+                    self._lifted[_go] = False
+                    self._wrench.reset(_go)
             else:
                 self.extras["done/respawn_rate"] = torch.zeros(
                     (), device=self.device)
@@ -1725,6 +1800,9 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._hold_count[env_ids] = 0
         # ★래치 스냅샷은 래치 상태와 **항상 짝지어** 지운다(계약 테스트가 잠근다).
         self._obj_off_palm[env_ids] = 0.0
+        # ★높이 래치와 외란 상태(env 별 발화확률)를 함께 되감는다.
+        self._lifted[env_ids] = False
+        self._wrench.reset(env_ids)
         # ---- ADR 승급 판정 — 종료 에피소드의 success 집계(전역 level·단조 상승) -----
         #   ★`_success_now` 를 0 으로 되돌리기 **전에** 읽어야 한다.
         if bool(self.cfg.enable_adr):
