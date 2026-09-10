@@ -15,7 +15,6 @@ import gymnasium as gym
 from . import agents
 from .. import robot_profiles as _rp
 from ..grasp_s2r_env_cfg import (
-    GraspS2RGripperLeftEnvCfg,
     GraspS2RTesolloRightEnvCfg,
     GraspS2RTesolloRightShortEnvCfg,
 )
@@ -35,7 +34,7 @@ def _play(cls):
 
 _CFGS = {
     "sens_r": GraspS2RTesolloRightEnvCfg,
-    "sens_l": GraspS2RGripperLeftEnvCfg,
+    # ★09.10 "sens_l" 제거 — 프로필 gripper_left 삭제(사용자 확정).
     "short_r": GraspS2RTesolloRightShortEnvCfg,
 }
 

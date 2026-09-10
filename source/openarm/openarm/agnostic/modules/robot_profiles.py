@@ -825,82 +825,6 @@ RH56F1_RIGHT = RobotProfile(
 )
 
 
-# =============================================================================
-# gripper_left — 같은 자산의 좌팔 2-DOF 평행 그리퍼. agnosticism 검증용(Phase 2):
-# 이 프로필 추가 외에 태스크 코드 수정이 0 이어야 합격.
-# 대향 그룹 = jaw1 / jaw2. l_hj_gripper_2 는 USD PhysX mimic(gearing=-1).
-# =============================================================================
-# =============================================================================
-# gripper_left — Phase 2(agnosticism 검증)용. ★fabric_class=None:
-#   sensor_left_gripper fabric 자산은 존재하지만 그 URDF 의 손은 2지 그리퍼가 아니라
-#   DG-5F 이고, 그리퍼 트랙은 Fabrics 로 jaw 수평(손목 ±45°·effort 7N·m)을 못 내
-#   자세오차 28° 로 ABORTED 된 이력이 있다. 조용히 폴백하지 말고 env 부팅에서 죽인다.
-#   → 이 프로필로 Phase 2 를 하려면 전용 fabric 자산부터 만들어야 한다.
-# =============================================================================
-GRIPPER_LEFT = RobotProfile(
-    name="gripper_left",
-    # ★손 27개 링크는 convexDecomposition 유지, 나머지 23개(팔·몸통·헤드)만 convexHull.
-    #   실측(arm5080): 처리량 +13.7%, 접촉력은 오히려 소폭 감소(36.2→32.8N, 반복측정
-    #   편차 8% 안) = 촉각 obs 손실 없음. 컵에 닿는 건 손뿐이고 팔 자기충돌은
-    #   Fabrics body_repulsion 이 계획 단계에서 이미 회피하므로 팔은 껍질로 충분하다.
-    #   ★손까지 hull 로 하면 접촉력이 4배(133N) → 촉각 왜곡으로 s2r 이 깨진다. 금지.
-    #   자산은 physics 레이어만 교체한 얇은 변형(40KB, base 는 원본 심볼릭 링크).
-    # ★★2026-09-06 이 프로필은 **09.05 자산 라인업에서 고아가 됐다.** 필요한 것은
-    #   "좌 2지 그리퍼 + 우 DG-5F 손" 혼합 로봇인데 새 4종에는 그런 자산이 없다
-    #   (dg5f-m = 좌우 손, gripper = 좌우 그리퍼). 그나마 가까운 자산을 가리켜 두되,
-    #   **되살리려면 아래 3가지를 새로 실측해야 한다**:
-    #     ① 그리퍼 관절명: 새 자산은 `l_hj_gripper_[1-2]` 가 맞는지 확인 필요
-    #     ② 조 body 명: 새 자산은 `l_hl_gripper_{left,right}_finger` 다(구 `_1/_2` 아님)
-    #     ③ 유휴 우측: gripper 자산의 우측은 그리퍼라 `r_hj_[a-z]+_[1-4]` 가 없다
-    #   `fabric_class=None` 이라 등록에서 SKIPPED 되므로 지금은 스폰되지 않는다.
-    #   env 부팅의 regex 해석 대조가 fail-loud 로 다시 막는다.
-    usd_relpath="robot/openarm_gripper_bi_rl/openarm_gripper_bi_rl.usd",
-    num_arm_joints=7,
-    num_hand_joints=1,
-    arm_joint_regex="l_aj_[1-7]",
-    hand_joint_regex="l_hj_gripper_1",   # mimic(_2)은 제어 대상에서 제외
-    palm_body="l_hl_gripper_base" ,      # Phase 2 에서 실제 body 이름 검증 후 확정
-    finger_sensor_bodies={
-        # ★09.10 링크명 정정(위 fingertip_bodies 와 같은 오류) — 관절명이 아니라 링크명이다.
-        "jaw1": ("l_hl_gripper_left_finger",),
-        "jaw2": ("l_hl_gripper_right_finger",),
-    },
-    contact_group_a=("jaw1",),
-    contact_group_b=("jaw2",),
-    envelope_fingers=("jaw1", "jaw2"),   # 2지 그리퍼는 양 jaw 접촉이 곧 감쌈
-    # ★미정의 — 실측 전까지 비워 둔다. jaw 링크 국소 프레임에서 "무는 면"이 어느 축인지
-    #   확인되지 않았고, 추측값을 넣으면 판정이 **조용히 뒤집힌다**(손등을 손바닥으로).
-    #   이 프로필은 fabric_class=None 이라 어차피 등록에서 SKIPPED 되지만, Phase 2 에서
-    #   되살릴 때 반드시 실측할 것: jaw1/jaw2 body_quat 을 읽고 서로를 향하는 축을 본다.
-    #   env 부팅이 fail-loud 로 막는다(_palmar_axes).
-    palmar_axis_local={},
-    # ★09.10 링크명 정정. 여기 있던 `l_hl_gripper_1/2` 는 **관절명**이고 자산의 링크는
-    #   `*_left_finger` / `*_right_finger` 다(`modules/robots.py:565` 는 원래 맞게 적혀
-    #   있었다 — 두 레지스트리가 갈려 있었다). 새 계약 테스트
-    #   `test_profile_literal_names_are_driven_joints_of_its_own_asset` 가 잡았다.
-    fingertip_bodies=("l_hl_gripper_left_finger", "l_hl_gripper_right_finger"),
-    init_joint_pos={
-        "l_aj_1": 0.0431, "l_aj_2": 0.6706, "l_aj_3": 0.0961, "l_aj_4": 0.7342,
-        "l_aj_5": 0.3750, "l_aj_6": 0.5678, "l_aj_7": 0.6709,
-        "l_hj_gripper_1": 0.044, "l_hj_gripper_2": 0.044,
-        # 유휴 우팔+손
-        "r_aj_1": -0.0431, "r_aj_2": -0.6706, "r_aj_3": -0.0961, "r_aj_4": 0.7342,
-        "r_aj_5": -0.3750, "r_aj_6": -0.5678, "r_aj_7": -0.6709,
-        "r_hj_thumb_2": -1.57,
-        **{f"r_hj_{f}_{j}": 0.0 for f in _FINGERS for j in (1, 2, 3, 4) if not (f == "thumb" and j == 2)},
-        "head_j_pan": 0.0, "head_j_tilt": 0.0,
-    },
-    actuator_specs={
-        # 게인=벤더값, friction=r2s 07.29 캘리브(마찰은 PD 게인이 아니라 벤더 규칙 밖).
-        **_vg.arm_actuators("left_arm", "l", friction=_vg.R2S_FRICTION),
-        "left_gripper":      dict(joint_names_expr=["l_hj_gripper_[1-2]"], stiffness=400.0, damping=80.0),
-        **_vg.arm_actuators("right_arm", "r"),         # 유휴측도 벤더 게인(같은 로봇이다)
-        # 손 게인 = DG-5F 벤더 PID(2026-09-06). effort 는 게인이 아니라 유지.
-        **_vg.hand_actuator("right_hand", ["r_hj_[a-z]+_[1-4]"], effort_limit_sim=1.5),
-        "head":              dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
-    },
-    object_spawn_center=(0.30, 0.20),    # 좌측 미러
-)
 
 
 # ★09.07 오른팔 전용 변형 — TESOLLO_RIGHT 와 **자산 경로만** 다르다.
@@ -945,5 +869,14 @@ RH56F1_RIGHT_ONLY = _drop_left(
 PROFILES: dict[str, RobotProfile] = {
     p.name: p for p in (TESOLLO_RIGHT, TESOLLO_RIGHT_ONLY, TESOLLO_RIGHT_SHORT,
                     TESOLLO_RIGHT_SHORT_TL,
-                        RH56F1_RIGHT, RH56F1_RIGHT_ONLY, GRIPPER_LEFT)
+                        RH56F1_RIGHT, RH56F1_RIGHT_ONLY)
 }
+
+# ★★09.10 삭제 — `gripper_left` 프로필(사용자 확정 "gripper_left 제거").
+#   자산 `openarm_gripper_bi_rl` 은 **양쪽 다 그리퍼**인데 이 프로필은 유휴 우측을
+#   DG-5F 손 20관절로 적고 있었다(`init_joint_pos` + actuator "right_hand").
+#   IsaacLab 이 관절명 대조에서 죽으므로 **한 번도 부팅된 적이 없는** 프로필이다
+#   (`palm_body` 옆에 "Phase 2 에서 검증 후 확정" 주석이 미검증 상태로 남아 있었다).
+#   09.10 신설한 `test_profile_literal_names_are_driven_joints_of_its_own_asset` 가
+#   찾아냈다. 레거시 `gripper/left/grasp_sensor` 트랙과 `l_hl_gripper_*` 링크명은
+#   이것과 **무관**하며 그대로 둔다.

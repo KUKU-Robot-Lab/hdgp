@@ -392,18 +392,6 @@ def test_profile_literal_names_are_driven_joints_of_its_own_asset():
     import re as _re
     from dataclasses import fields as _fields
 
-    # ★09.10 **알려진 불일치**. 숨기려는 목록이 아니라 드러내려는 목록이다 —
-    #   여기 없는 프로필이 어긋나면 즉시 실패하고, 여기 있는 것을 고치면
-    #   `test_known_broken_profiles_still_broken` 이 "목록에서 빼라"고 알려준다.
-    KNOWN_BROKEN = {
-        # 자산(openarm_gripper_bi_rl)은 **양쪽 다 그리퍼**인데 프로필이 유휴 우측을
-        # DG-5F 손으로 적어 두었다(init_joint_pos 20관절 + actuator "right_hand").
-        # IsaacLab 이 관절명 대조에서 죽으므로 이 프로필은 현재 **부팅 불가**다.
-        # 고치려면 우측 그리퍼(r_hj_gripper_1/2)의 홈값이 필요한데 그건 이 트랙 담당의
-        # 값이라 여기서 지어내지 않는다. `palm_body` 옆 "Phase 2 에서 검증 후 확정"
-        # 주석이 남아 있는 것으로 보아 애초에 미검증 상태로 커밋된 프로필이다.
-        "gripper_left": {"init_joint_pos"},
-    }
 
     checked = 0
     for name, prof in PROFILES.items():
@@ -423,8 +411,6 @@ def test_profile_literal_names_are_driven_joints_of_its_own_asset():
             for n in names:
                 if not _re.fullmatch(r"[a-z0-9_]+", n):
                     continue          # 정규식 패턴
-                if f.name in KNOWN_BROKEN.get(name, ()):
-                    continue
                 if "_hj_" in n or "_aj_" in n:
                     assert n in driven, (
                         f"{name}.{f.name}: '{n}' 는 자산의 구동관절이 아니다 "
@@ -443,27 +429,3 @@ def test_hand_joint_names_count_matches_num_hand_joints():
         assert len(prof.hand_joint_names) == prof.num_hand_joints, (
             f"{name}: hand_joint_names {len(prof.hand_joint_names)}개 vs "
             f"num_hand_joints {prof.num_hand_joints}")
-
-
-def test_known_broken_profiles_are_still_broken():
-    """예외 목록이 **낡으면 알려준다** — 고쳐졌는데 목록에 남으면 그 필드는 다시 무방비다.
-
-    예외를 두는 순간 그 항목은 영원히 검사 밖으로 나가기 쉽다. 반대 방향 테스트를
-    같이 두어야 목록이 저절로 줄어든다.
-    """
-    import re as _re
-    import xml.etree.ElementTree as ET
-    from dataclasses import fields as _fields
-
-    prof = PROFILES.get("gripper_left")
-    if prof is None:
-        pytest.skip("gripper_left 프로필이 없어졌다 — 예외 목록도 지울 것")
-    got = _asset_names(prof.usd_relpath)
-    if got is None:
-        pytest.skip("gripper 자산이 이 체크아웃에 없다")
-    driven, _ = got
-    ijp = [k for k in prof.init_joint_pos if _re.fullmatch(r"[a-z0-9_]+", k)]
-    bad = [k for k in ijp if ("_hj_" in k or "_aj_" in k) and k not in driven]
-    assert bad, (
-        "gripper_left.init_joint_pos 가 고쳐졌다 — 위 KNOWN_BROKEN 에서 빼서 "
-        "정상 검사 대상으로 되돌릴 것")

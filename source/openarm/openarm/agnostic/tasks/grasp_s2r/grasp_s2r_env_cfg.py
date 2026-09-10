@@ -1282,11 +1282,6 @@ class GraspS2RTesolloRightEnvCfg(GraspS2REnvCfg):
 
 
 @configclass
-class GraspS2RGripperLeftEnvCfg(GraspS2REnvCfg):
-    profile_name: str = "gripper_left"
-
-
-@configclass
 class GraspS2RTesolloRightShortEnvCfg(GraspS2RTesolloRightEnvCfg):
     """DG-5F short base 판 — 프로필만 다르고 과제 정의는 GraspS2RTesolloRightEnvCfg 와 동일하다.
 
@@ -1297,3 +1292,7 @@ class GraspS2RTesolloRightShortEnvCfg(GraspS2RTesolloRightEnvCfg):
     """
 
     profile_name: str = "tesollo_right_short"
+
+
+# ★09.10 삭제 — `GraspS2RGripperLeftEnvCfg`(프로필 `gripper_left` 제거, 사용자 확정).
+#   그 프로필은 자산과 어긋나 한 번도 부팅된 적이 없다.
