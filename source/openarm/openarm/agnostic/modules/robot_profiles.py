@@ -645,6 +645,18 @@ TESOLLO_RIGHT_SHORT_TL = _dc_replace(
         r"r_hj_(index|middle|ring|pinky)_1$": (-0.01, 0.01),
         r"r_hj_pinky_2$": (0.0, None),
     },
+    # ★★용접한 관절 이름을 **드는 필드 전부**에서 뺀다. 자산에서 fixed 가 된 관절은
+    #   URDF 에 이름은 남지만 **자유도가 아니다** — articulation 의 joint 목록에 없다.
+    #   09.10 에 이걸 한 번에 못 찾아 부팅이 두 번 죽었다:
+    #     ① actuator 게인 dict (관성표 키에서 뽑음)  -> urdf 도구에서 fixed 제외로 해결
+    #     ② `_syn_ids = [jn.index(nm) for nm in hand_joint_names]` -> ValueError
+    #   대조는 "URDF 에 이름이 있는가" 가 아니라 **"구동관절인가"** 로 해야 한다.
+    hand_joint_names=tuple(n for n in TESOLLO_RIGHT_SHORT.hand_joint_names
+                           if n != "r_hj_thumb_1"),
+    # fabric 은 트랙 B 가 쓰지 않지만(Phase C 로 의존 제거) 이 목록이 자산과 어긋난 채
+    # 남아 있으면 다음에 이 프로필로 fabric 트랙을 띄우려는 사람이 조용히 당한다.
+    fabric_joint_order=tuple(n for n in TESOLLO_RIGHT_SHORT.fabric_joint_order
+                             if n != "r_hj_thumb_1"),
     # ★★`init_joint_pos` 에서 용접된 관절을 **빼야 한다**. IsaacLab 은 이 dict 의 키를
     #   실제 관절명과 대조하고 매칭이 0 이면 부팅에서 죽는다(`resolve_matching_names_values`).
     #   short 의 값은 `thumb_1: 0.0` 이었고 용접 각도도 정확히 0(URDF origin rpy 0 0 0)이라
@@ -849,8 +861,9 @@ GRIPPER_LEFT = RobotProfile(
     hand_joint_regex="l_hj_gripper_1",   # mimic(_2)은 제어 대상에서 제외
     palm_body="l_hl_gripper_base" ,      # Phase 2 에서 실제 body 이름 검증 후 확정
     finger_sensor_bodies={
-        "jaw1": ("l_hl_gripper_1",),
-        "jaw2": ("l_hl_gripper_2",),
+        # ★09.10 링크명 정정(위 fingertip_bodies 와 같은 오류) — 관절명이 아니라 링크명이다.
+        "jaw1": ("l_hl_gripper_left_finger",),
+        "jaw2": ("l_hl_gripper_right_finger",),
     },
     contact_group_a=("jaw1",),
     contact_group_b=("jaw2",),
@@ -861,7 +874,11 @@ GRIPPER_LEFT = RobotProfile(
     #   되살릴 때 반드시 실측할 것: jaw1/jaw2 body_quat 을 읽고 서로를 향하는 축을 본다.
     #   env 부팅이 fail-loud 로 막는다(_palmar_axes).
     palmar_axis_local={},
-    fingertip_bodies=("l_hl_gripper_1", "l_hl_gripper_2"),
+    # ★09.10 링크명 정정. 여기 있던 `l_hl_gripper_1/2` 는 **관절명**이고 자산의 링크는
+    #   `*_left_finger` / `*_right_finger` 다(`modules/robots.py:565` 는 원래 맞게 적혀
+    #   있었다 — 두 레지스트리가 갈려 있었다). 새 계약 테스트
+    #   `test_profile_literal_names_are_driven_joints_of_its_own_asset` 가 잡았다.
+    fingertip_bodies=("l_hl_gripper_left_finger", "l_hl_gripper_right_finger"),
     init_joint_pos={
         "l_aj_1": 0.0431, "l_aj_2": 0.6706, "l_aj_3": 0.0961, "l_aj_4": 0.7342,
         "l_aj_5": 0.3750, "l_aj_6": 0.5678, "l_aj_7": 0.6709,

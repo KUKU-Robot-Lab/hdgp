@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from openarm.agnostic.modules import robots as R
+from openarm.agnostic.modules.robot_profiles import PROFILES
 
 _HDGP = Path(__file__).resolve().parents[6]          # rl_ws/hdgp
 _REPO = _HDGP.parent                                  # rl_ws/
@@ -347,3 +348,122 @@ def test_wrap_absent_profiles_are_documented():
 def test_unknown_profile_raises():
     with pytest.raises(KeyError):
         R.get("nope")
+
+
+# =============================================================================
+# 프로필의 리터럴 이름 ↔ 자산 대조 (09.10 신설)
+# =============================================================================
+def _asset_names(usd_relpath: str):
+    """프로필 자산의 (구동관절, 링크) 이름 집합. URDF 를 읽는다(isaaclab 불필요)."""
+    import xml.etree.ElementTree as ET
+
+    # 저장소 루트를 **탐색으로** 찾는다 — parents[N] 은 파일이 옮겨지면 조용히 어긋난다
+    # (이 테스트를 쓸 때 실제로 N 을 틀렸고, 아래 `checked >= 2` 가드가 잡았다).
+    here = Path(__file__).resolve()
+    root_dir = next((q / "assets" for q in here.parents if (q / "assets" / "robot").is_dir()), None)
+    if root_dir is None:
+        return None
+    asset_dir = (root_dir / usd_relpath).parent
+    urdfs = list(asset_dir.glob("*.urdf"))
+    if not urdfs:
+        return None
+    root = ET.parse(urdfs[0]).getroot()
+    driven = {j.get("name") for j in root.findall("joint")
+              if j.get("type") in ("revolute", "prismatic", "continuous")}
+    links = {l.get("name") for l in root.findall("link")}
+    return driven, links
+
+
+def test_profile_literal_names_are_driven_joints_of_its_own_asset():
+    """프로필이 드는 **리터럴** 관절 이름은 전부 그 자산의 **구동관절**이어야 한다.
+
+    ★09.10 왜 필요한가. `thumb_1` 을 fixed 로 용접한 자산(`-tl`)을 도입하면서 부팅이
+      두 번 죽었다. 용접한 관절은 URDF 에 **이름은 남지만 자유도가 아니다** —
+      articulation 의 joint 목록에 없다. 그래서
+        ① actuator 게인 dict 가 없는 관절에 게인을 걸어 IsaacLab 이
+           `Not all regular expressions are matched` 로 죽고,
+        ② `_syn_ids = [jn.index(nm) for nm in hand_joint_names]` 가 ValueError 를 냈다.
+      두 번 다 "URDF 에 이름이 있는가"로 대조하면 통과한다 — **구동관절인가**로 물어야
+      한다. 이 테스트가 그 질문을 자산별로 자동으로 던진다.
+
+    정규식 패턴 필드(`*_regex`, `hand_action_limit_override` 키 등)는 대조하지 않는다 —
+    리터럴 이름만 본다. 정규식은 안 걸리면 조용히 0개가 되므로 별도 가드가 필요하다.
+    """
+    import re as _re
+    from dataclasses import fields as _fields
+
+    # ★09.10 **알려진 불일치**. 숨기려는 목록이 아니라 드러내려는 목록이다 —
+    #   여기 없는 프로필이 어긋나면 즉시 실패하고, 여기 있는 것을 고치면
+    #   `test_known_broken_profiles_still_broken` 이 "목록에서 빼라"고 알려준다.
+    KNOWN_BROKEN = {
+        # 자산(openarm_gripper_bi_rl)은 **양쪽 다 그리퍼**인데 프로필이 유휴 우측을
+        # DG-5F 손으로 적어 두었다(init_joint_pos 20관절 + actuator "right_hand").
+        # IsaacLab 이 관절명 대조에서 죽으므로 이 프로필은 현재 **부팅 불가**다.
+        # 고치려면 우측 그리퍼(r_hj_gripper_1/2)의 홈값이 필요한데 그건 이 트랙 담당의
+        # 값이라 여기서 지어내지 않는다. `palm_body` 옆 "Phase 2 에서 검증 후 확정"
+        # 주석이 남아 있는 것으로 보아 애초에 미검증 상태로 커밋된 프로필이다.
+        "gripper_left": {"init_joint_pos"},
+    }
+
+    checked = 0
+    for name, prof in PROFILES.items():
+        got = _asset_names(prof.usd_relpath)
+        if got is None:          # 자산이 이 체크아웃에 없으면 건너뛴다(빌드 산출물)
+            continue
+        driven, links = got
+        checked += 1
+        for f in _fields(prof):
+            v = getattr(prof, f.name)
+            if isinstance(v, dict):
+                names = [k for k in v if isinstance(k, str)]
+            elif isinstance(v, (tuple, list)) and v and all(isinstance(x, str) for x in v):
+                names = list(v)
+            else:
+                continue
+            for n in names:
+                if not _re.fullmatch(r"[a-z0-9_]+", n):
+                    continue          # 정규식 패턴
+                if f.name in KNOWN_BROKEN.get(name, ()):
+                    continue
+                if "_hj_" in n or "_aj_" in n:
+                    assert n in driven, (
+                        f"{name}.{f.name}: '{n}' 는 자산의 구동관절이 아니다 "
+                        f"(용접됐거나 이름이 바뀌었다) — {prof.usd_relpath}")
+                elif "_hl_" in n or "_al_" in n:
+                    assert n in links, (
+                        f"{name}.{f.name}: '{n}' 는 자산에 없는 링크다 — {prof.usd_relpath}")
+    assert checked >= 2, f"자산을 찾은 프로필이 {checked}개뿐 — 경로 규약이 바뀌었나"
+
+
+def test_hand_joint_names_count_matches_num_hand_joints():
+    """`num_hand_joints` 는 공간 계산의 단일 출처다 — 이름 목록과 갈리면 액션 폭이 어긋난다."""
+    for name, prof in PROFILES.items():
+        if not prof.hand_joint_names:
+            continue
+        assert len(prof.hand_joint_names) == prof.num_hand_joints, (
+            f"{name}: hand_joint_names {len(prof.hand_joint_names)}개 vs "
+            f"num_hand_joints {prof.num_hand_joints}")
+
+
+def test_known_broken_profiles_are_still_broken():
+    """예외 목록이 **낡으면 알려준다** — 고쳐졌는데 목록에 남으면 그 필드는 다시 무방비다.
+
+    예외를 두는 순간 그 항목은 영원히 검사 밖으로 나가기 쉽다. 반대 방향 테스트를
+    같이 두어야 목록이 저절로 줄어든다.
+    """
+    import re as _re
+    import xml.etree.ElementTree as ET
+    from dataclasses import fields as _fields
+
+    prof = PROFILES.get("gripper_left")
+    if prof is None:
+        pytest.skip("gripper_left 프로필이 없어졌다 — 예외 목록도 지울 것")
+    got = _asset_names(prof.usd_relpath)
+    if got is None:
+        pytest.skip("gripper 자산이 이 체크아웃에 없다")
+    driven, _ = got
+    ijp = [k for k in prof.init_joint_pos if _re.fullmatch(r"[a-z0-9_]+", k)]
+    bad = [k for k in ijp if ("_hj_" in k or "_aj_" in k) and k not in driven]
+    assert bad, (
+        "gripper_left.init_joint_pos 가 고쳐졌다 — 위 KNOWN_BROKEN 에서 빼서 "
+        "정상 검사 대상으로 되돌릴 것")
