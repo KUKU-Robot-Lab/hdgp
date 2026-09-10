@@ -669,12 +669,23 @@ def test_drop_sticky_and_start_distance_guard_live_in_the_log_hook():
     assert "self._drop_sticky = torch.zeros(" in _fn_block(_ENV, "_setup_fabrics")
 
 
-def test_disturbance_is_scaled_by_the_shoulder_torque_ratio():
-    """★사용자 확정 "외란이 arm 이 못버티는 양임" — Kuka 어깨 300 N·m vs OpenArm 40 N·m = 7.5배.
-    20.0/7.5 = 2.67 ≈ 2.7 · 2.0/7.5 = 0.27. A 값(20.0/2.0)은 그대로 둔다.
+def test_disturbance_is_explicit_in_the_leaf_and_off_by_decision():
+    """외란은 **leaf 에서 명시**되어야 하고, 지금은 사용자 확정(09.10)으로 **꺼져 있다**.
+
+    ★왜 "값" 이 아니라 "명시" 를 잠그나 — 09.10 사고. base 를 0.0 으로 껐는데 이 leaf 가
+      같은 이름을 2.7 로 재선언하고 있어 상속이 닿지 않았고, 두 런이 extF 켜진 채 돌았다.
+      그러니 계약은 (a) leaf 가 두 필드를 **반드시** 자기 값으로 적을 것, (b) 그 값이
+      끄기 결정과 일치할 것 — 이 둘이다. 켤 때 쓸 배율 근거는 별도로 대조한다.
+      (Kuka 어깨 300 N·m vs OpenArm 40 N·m = 7.5배 → 20.0/7.5 = 2.67 ≈ 2.7 · 2.0/7.5 = 0.27)
     """
     leaf = _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
-    assert "wrench_force_scale: float = 2.7" in leaf and "wrench_torque_scale: float = 0.27" in leaf
+    m_f = re.search(r"wrench_force_scale: float = ([\d.]+)", leaf)
+    m_t = re.search(r"wrench_torque_scale: float = ([\d.]+)", leaf)
+    assert m_f and m_t, "leaf 가 외란 두 필드를 명시하지 않으면 base 값이 조용히 산다"
+    f, t = float(m_f.group(1)), float(m_t.group(1))
+    assert (f, t) == (0.0, 0.0), f"사용자 확정 09.10 extF off — leaf 가 ({f}, {t})"
+    # 켜는 경우의 배율 근거는 주석으로 남아 있어야 한다(되살릴 때 값을 다시 짓지 않도록).
+    assert "7.5" in leaf, "외란 배율(어깨 토크비 7.5) 근거가 leaf 주석에서 사라졌다"
     assert "wrench_force_scale: float = 20.0" in _KP_CFG, "A 는 안 건드린다"
 
 
