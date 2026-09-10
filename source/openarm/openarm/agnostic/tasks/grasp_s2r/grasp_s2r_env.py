@@ -1234,7 +1234,12 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             action_delta_norm=action_delta,
             cfg=cfgn,
         )
-        total = total + float(cfgn.abnormal_penalty) * self._abnormal.float()
+        _abn_pen = float(cfgn.abnormal_penalty) * self._abnormal.float()
+        total = total + _abn_pen
+        # ★09.10 신설 — 이 항은 `total` 에 들어가는데 `GRASP_S2R_REWARD_TERMS` 루프를
+        #   안 타서 **어떤 태그로도 보이지 않았다**. `respawn_penalty` 는 태그가 있는데
+        #   이것만 없었다. Σ reward/* 와 reward/total 이 어긋나는 유일한 경로다.
+        self.extras["reward/abnormal_penalty"] = _abn_pen.mean()
         # ---- 재소환 벌점 (기본 0 = 항등) — 직전 스텝 재소환 발생 env 에 1회 차감 ----
         _rp = float(getattr(cfgn, "respawn_penalty", 0.0))
         if _rp > 0.0 and hasattr(self, "_respawn_pen_buf"):
@@ -1252,6 +1257,26 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         for k in GRASP_S2R_REWARD_TERMS:
             self.extras[f"reward/{k}"] = terms[k].mean()
         self.extras["reward/total"] = total.mean()
+        # ★★09.10 신설 — **조건부** 항 값. all-env 평균은 "항이 죽었다"와 "항은 살아
+        #   있는데 그 구간이 짧다"를 구분하지 못한다(구 `reward/approach` 0.022 가 그 예).
+        #   `pre_lift`·`lift` 는 **이진** 마스크라 `Σ항 / Σ마스크` 가 조건부 평균과
+        #   정확히 같다(연속 게이트였다면 이 나눗셈은 틀린다 — 그래서 이 두 개만 쓴다).
+        _pre = gates["pre_lift"]; _lat = gates["lift"]
+        for _k, _m in (("approach", _pre), ("grasp", _pre),
+                       ("lift", _lat), ("transfer", _lat),
+                       ("stay", _lat), ("success_bonus", _lat)):
+            _d = _m.sum()
+            self.extras[f"reward_cond/{_k}"] = torch.where(
+                _d > 0, terms[_k].sum() / _d.clamp(min=1.0), torch.zeros_like(_d))
+        # ★★09.10 신설 — `lift` 평지 계측. `lift_height_quality = clamp(dz/lift_height_ref)`
+        #   인데 목표 반경 안 최소 높이차(goal_z − tol)가 ref 보다 크면 **목표까지 내내
+        #   1.0 으로 포화**한다 — 가중 30 짜리 최대 항이 6cm 부터 경사 0 이라는 뜻이다.
+        #   산술로는 확정되지만(0.095 > 0.06) 런이 실제로 그 구간에 얼마나 앉아 있는지는
+        #   측정해야 안다. Phase 2(절단)의 전제가 이 세 태그다.
+        _hq = (height_delta / max(float(cfgn.lift_height_ref), 1e-6)).clamp(0.0, 1.0)
+        self.extras["task/lift_quality"] = _hq.mean()
+        self.extras["task/lift_quality_sat_frac"] = (_hq >= 0.999).float().mean()
+        self.extras["task/height_delta_p10"] = torch.quantile(height_delta, 0.10)
         for k, v in gates.items():
             self.extras[f"gate/{k}"] = v.mean()
         self.extras["task/wrap_frac"] = wrap_frac.mean()

@@ -98,6 +98,13 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
     #   `reset/arm_q_dev_max` 가 fail-loud 가드 기능을 잃는다. 2 면 넷 다 피하고 비용은 600→597.
     goal_clock_restart_step: int = -1
 
+    #: ★09.10 시작 거리 가드의 대역 — **손바닥 중심 ↔ 물체 중심**(m). 손끝 평균이 아니다:
+    #:   손끝은 손가락 굽힘에 따라 같은 팔 자세에서도 98.8→67.3→82.5 mm 로 요동친다.
+    #:   손바닥은 손가락 관절의 상류라 자세와 무관하다(같은 조건 150.4 mm 불변, 09.10 FK).
+    #:   대역은 자산·물체가 바뀌면 다시 재야 한다 — 물체 반경을 모르는 지표이므로
+    #:   "이 값이면 감쌀 공간이 있다"를 보장하지 않는다. 그건 감쌈 여유 검사가 따로 한다.
+    start_palm_dist_band_m: tuple = (0.10, 0.26)
+
     def _arm_action_dim(self, profile) -> int:
         """액션의 팔 구간 폭 = 관절 수(B). A 의 `_derive_spaces` 가 이 훅으로 22 를 만든다."""
         return int(profile.num_arm_joints)

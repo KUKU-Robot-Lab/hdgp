@@ -651,14 +651,19 @@ def test_drop_sticky_and_start_distance_guard_live_in_the_log_hook():
         "self._drop_sticky |= self._latched & (_dz < 0.03)",
         '"ctrl/drop_sticky_frac"',
         "_fresh = (self.episode_length_buf <= 1).float()",
-        "_start = (_ft * _fresh).sum() / _nf_t.clamp(min=1.0)",      # 마스크 곱·합 — GPU 텐서 유지
-        '"ctrl/start_ft_dist"',
+        "_start = (_pd * _fresh).sum() / _nf_t.clamp(min=1.0)",      # 마스크 곱·합 — GPU 텐서 유지
+        '"ctrl/start_palm_dist"',
         "self.common_step_counter <= 4",                               # host 판단은 부팅 직후 몇 스텝만
         "_nf = int(_nf_t)",
         "raise RuntimeError",
     ])
+    # ★09.10 기준은 **손바닥 중심**이다. 손끝 평균은 같은 팔 자세에서도 손가락 굽힘에 따라
+    #   98.8→67.3→82.5 mm 로 요동쳐(FK 실측) 팔 위치를 못 잰다. 손바닥은 손가락 관절의
+    #   상류라 불변(150.4 mm). 손끝으로 되돌리면 이 테스트가 막는다.
+    assert "self.palm_idx" in log, "손바닥 body 로 재야 한다"
+    assert "_tip_ids_t" not in log, "손끝 평균으로 되돌아가면 안 된다(자세에 흔들린다)"
     # ★스텝당 host 동기화 금지(코드베이스 불변식) — 마스크 인덱싱·무조건 int() 가 되살아나면 안 된다.
-    assert "int(_fresh.sum())" not in log and "_ft[_fresh]" not in log
+    assert "int(_fresh.sum())" not in log and "_pd[_fresh]" not in log
     assert '"ctrl/prev_ep_successes_mean"' in log, "커리큘럼 게이트 입력이 로깅돼야 한다"
     _ordered(_fn_block(_ENV, "_reset_idx"), ["super()._reset_idx(env_ids)", "self._drop_sticky[env_ids] = False"])
     assert "self._drop_sticky = torch.zeros(" in _fn_block(_ENV, "_setup_fabrics")

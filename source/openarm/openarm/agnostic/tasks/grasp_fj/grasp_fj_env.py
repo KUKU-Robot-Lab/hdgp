@@ -501,17 +501,21 @@ class GraspFJEnv(GraspKPEnv):
         # 커리큘럼 게이트 입력 그 자체(mean prev_episode_successes ≥ tol_success_threshold) — `task/successes_mean`
         # 은 에피소드 내 러닝 카운트라 대체가 안 된다. 게이트까지의 거리가 대시보드에 보이게 한다.
         ex["ctrl/prev_ep_successes_mean"] = self._trk.prev_episode_successes.float().mean()
-        # ★09.08 시작 거리 가드 — `arm_reset_offset_rad` 는 홈 기준 델타 7개 상수라 홈·프로필이 바뀌면
-        #   조용히 틀어진다(104.7 mm 는 IK 로 한 번 잰 값). 리셋 직후 env(`episode_length_buf ≤ 1`; 목표당
-        #   시계 재시작은 2 라 안 섞인다)의 손끝→물체 평균을 매 스텝 로깅한다. ★스텝당 host 동기화 0 —
-        #   마스크 곱·합으로 GPU 에 두고, host 판단(int/float)은 부팅 직후 두 스텝에서만 한다.
+        # ★★09.10 시작 거리 가드 — 기준을 **손바닥 중심**으로 바꿨다(사용자 지시).
+        #   구 판본은 손끝 5개의 물체까지 거리 **평균**을 봤다. 그건 팔 위치를 재는 척하면서
+        #   실제로는 **손 자세를 잰다** — 같은 팔 자세에서 손가락 굽힘만 0→0.5→0.9 rad 로
+        #   바꾸면 98.8 → 67.3 → 82.5 mm 로 요동친다(09.10 FK 실측). 손바닥은 모든 손가락
+        #   관절의 **상류**라 같은 조건에서 150.4 mm 로 불변이다.
+        #   `arm_reset_joint_pos` 가 이 홈/자산에서 푼 값인지가 이 가드의 질문이므로,
+        #   답이 손 자세에 흔들리면 안 된다.
+        #   ★스텝당 host 동기화 0 — 마스크 곱·합으로 GPU 에 두고, host 판단은 부팅 직후만.
         _fresh = (self.episode_length_buf <= 1).float()
-        _tips = self.robot.data.body_pos_w[:, self._tip_ids_t] - self.scene.env_origins[:, None, :]
-        _ft = (_tips - _obj.unsqueeze(1)).norm(dim=-1).mean(dim=1)              # (N,) 손끝 평균
+        _palm = self.robot.data.body_pos_w[:, self.palm_idx] - self.scene.env_origins
+        _pd = (_palm - _obj).norm(dim=-1)                       # (N,) 손바닥→물체 중심
         _nf_t = _fresh.sum()
-        _start = (_ft * _fresh).sum() / _nf_t.clamp(min=1.0)
-        self._start_ft_last = torch.where(_nf_t > 0, _start, self._start_ft_last)   # fresh 없으면 직전값 유지
-        ex["ctrl/start_ft_dist"] = self._start_ft_last
+        _start = (_pd * _fresh).sum() / _nf_t.clamp(min=1.0)
+        self._start_ft_last = torch.where(_nf_t > 0, _start, self._start_ft_last)
+        ex["ctrl/start_palm_dist"] = self._start_ft_last
         # ★09.10 **무조건** 검사한다. 구 판본은 `self._arm_reset_off is not None` 을 전제로 걸어,
         #   시작 자세가 미설정이라 거리가 틀린 **바로 그 경우를 건너뛰었다** — dg5f-m-short 가
         #   243.4 mm 로 부팅해 3 iter 를 돌고 exit 0 으로 끝났다(09.10). 결과를 보는 가드가
@@ -520,16 +524,17 @@ class GraspFJEnv(GraspKPEnv):
             _nf = int(_nf_t)
             if _nf >= min(64, self.num_envs):
                 self._start_ft_checked = True
-                _lo, _hi = 0.07, 0.14
+                _lo = float(self.cfg.start_palm_dist_band_m[0])
+                _hi = float(self.cfg.start_palm_dist_band_m[1])
                 if not (_lo <= float(_start) <= _hi):
                     _why = ("`arm_reset_joint_pos` 가 이 프로필에 **미설정**이라 홈에서 시작한다 — "
                             "이 팔로 IK 를 풀어 채울 것"
                             if self._arm_reset_q is None else
                             "`arm_reset_joint_pos` 가 이 홈/자산에서 푼 값이 아니다")
                     raise RuntimeError(
-                        f"[{self.profile.name}] 리셋 직후 손끝→물체 평균 {float(_start) * 1e3:.1f} mm 가 "
-                        f"SimToolReal 시작 거리 대역 [{_lo * 1e3:.0f}, {_hi * 1e3:.0f}] mm 밖이다 — {_why}")
-                print(f"[grasp_fj] 시작 거리 가드 ✓ 손끝→물체 {float(_start) * 1e3:.1f} mm "
+                        f"[{self.profile.name}] 리셋 직후 **손바닥**→물체 {float(_start) * 1e3:.1f} mm 가 "
+                        f"대역 [{_lo * 1e3:.0f}, {_hi * 1e3:.0f}] mm 밖이다 — {_why}")
+                print(f"[grasp_fj] 시작 거리 가드 ✓ 손바닥→물체 {float(_start) * 1e3:.1f} mm "
                       f"({_nf} env, 대역 {_lo * 1e3:.0f}~{_hi * 1e3:.0f})", flush=True)
 
     def _reset_idx(self, env_ids) -> None:
