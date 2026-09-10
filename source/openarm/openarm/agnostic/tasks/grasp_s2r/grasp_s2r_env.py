@@ -553,13 +553,20 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _lerp_range(terminal, lvl: float) -> tuple[float, float]:
-        """(1,1) → terminal 을 level 로 선형 보간. 순수 함수 — 시뮬 없이 테스트한다.
+    def _lerp_range(terminal, lvl: float, base=(1.0, 1.0)) -> tuple[float, float]:
+        """base → terminal 을 level 로 선형 보간. 순수 함수 — 시뮬 없이 테스트한다.
 
         이식 출처: `tesollo/right/grasp_v2/grasp_adr.py:118-135 _expand_physics_ranges`.
+
+        ★★09.10 — `base` 를 인자로 뺐다. 구판은 **(1,1) 을 하드코딩**해서, cfg
+          `EventCfg` 에 적어둔 물리 DR 범위를 level 0 에서 (1,1) 로 **조용히 덮어썼다**
+          (`_adr_apply_physics` 는 부팅 때 `enable_adr` 와 무관하게 한 번 돈다).
+          즉 ADR 을 안 쓰면서 고정 질량 범위를 열 방법이 원리적으로 없었다.
+          기본 인자가 (1,1) 이라 기존 호출·수치 테스트와 정확히 항등이다.
         """
         lo, hi = float(terminal[0]), float(terminal[1])
-        return (1.0 + lvl * (lo - 1.0), 1.0 + lvl * (hi - 1.0))
+        b0, b1 = float(base[0]), float(base[1])
+        return (b0 + lvl * (lo - b0), b1 + lvl * (hi - b1))
 
     def _adr_apply_physics(self, lvl: float) -> None:
         """물리 DR 범위를 level 로 넓힌다. 종점 (1,1) 이면 전부 항등이라 no-op.
@@ -576,12 +583,28 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         em = getattr(self, "event_manager", None)
         if em is None:                      # enable_events=False 면 속성 자체가 없다
             return
+        # ★★09.10 — 부팅 시점 `EventCfg` 값을 **base 로 1회 캡처**한다. 이 함수는
+        #   `enable_adr=False` 여도 `__init__` 에서 한 번 돌고, 구판은 base 를 (1,1) 로
+        #   하드코딩해 cfg 에 적은 질량·게인 범위를 그 자리에서 지워버렸다.
+        #   캡처해두면 ADR 을 안 켜도(level 0) cfg 범위가 그대로 살고, 켜면 그 범위에서
+        #   terminal 까지 넓어진다.
+        if not hasattr(self, "_adr_phys_base"):
+            _mp = em.get_term_cfg("object_scale_mass").params[
+                "mass_distribution_params"]
+            _gp = em.get_term_cfg("robot_joint_stiffness_and_damping").params[
+                "stiffness_distribution_params"]
+            self._adr_phys_base = {
+                "mass": (float(_mp[0]), float(_mp[1])),
+                "gain": (float(_gp[0]), float(_gp[1])),
+            }
         _m = self._lerp_range(
-            getattr(self.cfg, "adr_mass_scale_max", (1.0, 1.0)), lvl)
+            getattr(self.cfg, "adr_mass_scale_max", (1.0, 1.0)), lvl,
+            base=self._adr_phys_base["mass"])
         em.get_term_cfg("object_scale_mass").params[
             "mass_distribution_params"] = _m
         _g = self._lerp_range(
-            getattr(self.cfg, "adr_joint_gain_scale_max", (1.0, 1.0)), lvl)
+            getattr(self.cfg, "adr_joint_gain_scale_max", (1.0, 1.0)), lvl,
+            base=self._adr_phys_base["gain"])
         _gt = em.get_term_cfg("robot_joint_stiffness_and_damping")
         _gt.params["stiffness_distribution_params"] = _g
         _gt.params["damping_distribution_params"] = _g
