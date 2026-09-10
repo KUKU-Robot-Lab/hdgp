@@ -2036,3 +2036,28 @@ def test_lift_plateau_is_instrumented():
     code = _code(_ENV)
     for tag in ('"task/lift_quality_sat_frac"', '"task/height_delta_p10"'):
         assert tag in code, f"lift 평지 계측 태그 {tag} 가 없다"
+
+
+def test_fk_gate_subtracts_frame_offset():
+    """palm FK 게이트는 **좌표계 오프셋을 뺀 뒤** 비교해야 한다.
+
+    `_fab_to_env` 는 손끝 5개로 바로 위에서 측정한 상수다(env = fab + offset).
+    그걸 빼지 않으면 게이트가 두 오차를 섞어 잰다 — ①좌표계 원점 차이(기구학과 무관,
+    이미 측정됨) ②진짜 기구학 불일치(잡고 싶은 것). 섞으면 ⓐ상수가 허용 예산을 잠식하고
+    ⓑ오프셋이 크면 기구학이 완벽해도 죽고 ⓒ오프셋이 기구학 오차를 상쇄해 가릴 수 있다.
+
+    무엇이 이 계약을 거짓으로 만드는가: 두 프레임이 순수 평행이동이 아니게 되는 것.
+    그때는 회전 정합이 필요하고 평행이동 보정만으로는 부족하다 — 바로 위 산포 검사
+    (`spread > 2e-3` 이면 부팅 거부)가 그 조건을 지킨다. 그 검사를 지우면 이 보정도 무효다.
+    """
+    code = _code(_CTL)
+    m = re.search(r"dp\s*=\s*float\(torch\.norm\(([^\n]*)\)\)", code)
+    assert m, "palm FK 게이트의 위치 오차 계산식을 못 찾았다"
+    expr = m.group(1)
+    assert "_fab_to_env" in expr, (
+        f"FK 게이트가 좌표계 오프셋을 빼지 않는다: dp = norm({expr})")
+    # 산포 검사(평행이동 가정의 근거)가 살아 있어야 이 보정이 정당하다.
+    assert "spread > 2e-3" in code or "spread &gt; 2e-3" in code, (
+        "평행이동 가정을 지키는 산포 검사가 사라졌다 — 그러면 오프셋 보정도 무효다")
+    # 허용치는 리터럴이 아니라 cfg 에서 온다.
+    assert "self.cfg.fabric_fk_pos_tol" in code, "FK 허용치가 cfg 필드가 아니다"

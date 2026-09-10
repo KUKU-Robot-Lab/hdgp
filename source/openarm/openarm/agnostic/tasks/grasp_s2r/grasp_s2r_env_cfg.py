@@ -293,6 +293,14 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     fabrics_dt: float = 1.0 / 60.0
     fabric_decimation: int = 2
     fabrics_damping_gain: float = 10.0
+    # ★09.10 신설 — fabric FK ↔ USD palm 정합 허용치(위치, m). 회전은 2° 고정.
+    #   이 게이트는 09.10 에 **좌표계 오프셋을 빼도록** 고쳐졌다(`_init_home_palm`).
+    #   그 전에는 좌표계 차이와 기구학 오차를 섞어 재서 5mm 예산의 절반 가까이를
+    #   이미 아는 상수가 먹고 있었다(short 실측: raw 1.86mm 중 ~2mm 가 오프셋).
+    #   지금은 순수 기구학 오차라 원리적으로 0 에 가까워야 하지만, **다른 프로필
+    #   (tesollo_right·gripper_left)의 보정 후 값을 아직 재지 않았다** — 재고 나서
+    #   0.002 로 조일 것. 근거 없이 먼저 조이면 무관한 트랙의 부팅을 막는다.
+    fabric_fk_pos_tol: float = 0.005
     fabrics_max_objects_per_env: int = 8
     # ★09.10: 켜면 `set_features + integrator.step` 을 CUDA Graph 로 캡처해 재생한다.
     #   09.10 이전에는 이 플래그가 fabric 생성자의 `graph_capturable` 로만 전달되고 캡처·재생

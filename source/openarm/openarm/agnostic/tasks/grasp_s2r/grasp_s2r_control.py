@@ -439,16 +439,36 @@ class GraspS2RControlMixin:
 
         # ★이 한 줄이 (fabric URDF 오선택 / joint_order 오류 / palm_body 오지정)
         #   3대 배선 사고를 부팅에서 전부 잡는다.
+        # ★★09.10 정정 — **좌표계 오프셋을 빼고 비교한다.** 바로 위에서 손끝 5개로
+        #   `_fab_to_env` 를 이미 쟀는데(env = fab + offset) 이 비교가 그걸 안 썼다.
+        #   그래서 이 게이트는 두 오차를 **섞어서** 재고 있었다:
+        #     ① 좌표계 원점 차이 — 이미 측정된 상수, 기구학과 무관
+        #     ② 진짜 기구학 불일치 — 우리가 잡고 싶은 것
+        #   실측(dg5f-m-short, 어댑터 반영 후): raw 1.86mm 인데 오프셋이 [0,0,-2]mm 라
+        #   **1.86mm 의 거의 전부가 ①이었고 ②는 사실상 0** 이었다. 자산 URDF 의
+        #   r_al_7→palm 누적(0.0495+0.01+0.0045+0.022 = 0.086)이 fabric URDF 의
+        #   link7→palm_link z=0.086 과 소수점까지 같으니 당연한 결과다.
+        #   섞어 재면 ⓐ이미 아는 상수가 5mm 예산을 잠식하고(진짜 오차 여유 3mm),
+        #   ⓑ오프셋이 크면 기구학이 완벽해도 죽고, ⓒ오프셋이 기구학 오차를 **상쇄해
+        #   가릴** 수도 있다. 셋 다 게이트가 하라는 일의 반대다.
+        #   ⚠회전은 보정하지 않는다 — 위 산포 검사(<2mm)가 두 프레임이 **순수 평행이동**
+        #     임을 이미 보장하므로 오일러 비교는 그대로 유효하다.
         fab = self.fabric.get_palm_pose(self.fabric_q.detach(), "euler_zyx")[0]
-        dp = float(torch.norm(fab[:3] - home[:3]))
+        _raw = float(torch.norm(fab[:3] - home[:3]))
+        dp = float(torch.norm((fab[:3] + self._fab_to_env) - home[:3]))
         dr = float(torch.max(torch.abs(fab[3:] - home[3:])))
         print(f"[grasp_s2r] 홈 palm={[round(v, 4) for v in home.tolist()]} | "
-              f"fabric FK 정합 pos {dp * 1000:.2f}mm rot {math.degrees(dr):.2f}°", flush=True)
-        if dp > 0.005 or dr > math.radians(2.0):
+              f"fabric FK 정합 pos {dp * 1000:.2f}mm rot {math.degrees(dr):.2f}° "
+              f"(좌표계 보정 전 {_raw * 1000:.2f}mm)", flush=True)
+        if dp > float(self.cfg.fabric_fk_pos_tol) or dr > math.radians(2.0):
             raise RuntimeError(
                 f"[{self.profile.name}] fabric FK 가 USD palm 과 어긋난다: "
-                f"{dp * 1000:.1f}mm / {math.degrees(dr):.1f}° (허용 5mm/2°). "
-                "fabric_robot_dir·fabric_joint_order·palm_body 를 확인하라.")
+                f"{dp * 1000:.1f}mm / {math.degrees(dr):.1f}° "
+                f"(허용 {float(self.cfg.fabric_fk_pos_tol) * 1000:.0f}mm/2°). "
+                "★좌표계 오프셋은 이미 뺀 값이므로 이건 **기구학** 불일치다 — "
+                "자산을 바꾼 뒤 fabric URDF 를 재생성했는지부터 확인하라 "
+                "(gen_fabric_urdfs.py --sync-hdgp → patch_fabric_finger_spheres.py). "
+                "그래도 남으면 fabric_robot_dir·fabric_joint_order·palm_body 를 본다.")
 
     def _step_fabric(self) -> None:
         """목표 주입 + 적분 — **정책 스텝당 한 번**.
