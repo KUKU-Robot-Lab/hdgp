@@ -617,6 +617,47 @@ TESOLLO_RIGHT_SHORT = _dc_replace(
 
 
 # =============================================================================
+# tesollo_right_short_tl — short 판에서 **thumb_1 을 용접(fixed)** 한 변종.
+#
+# ★09.10 왜 별 자산·별 프로필인가 (사용자 확정 "잠그고 재진행").
+#   `thumb_1` 은 액션 한계를 ±0.01 rad 로 묶어도 **접촉이 밀어낸다** — fj_p1/fj_p2
+#   실측에서 한계 밖 체류가 38~57% 였고 학습이 진행될수록 올라갔다. 원인은 드라이브
+#   포화다: 실측 이탈 −4.075 rad(한계 −0.384)를 kp 49.7 로 되돌리려면 202 N·m 인데
+#   벤더 effort 상한이 7.5 N·m 라 **27배 포화**다. 게인·솔버·자기충돌로 못 잡는다
+#   (A/B 실측: 솔버 8/0↔32/1 이탈 0.383↔0.380 · 벤더 게인 33배 상향 효과 미검출).
+#   실기 DG-5F 엄지에는 기계식 하드스톱이 있어 −4 rad 는 물리적으로 불가능하므로,
+#   지금 sim 이 실기보다 틀린 쪽이다. 자유도를 없애면 접촉이 밀 대상 자체가 없다.
+#
+# ★자산을 새로 만든 이유: `openarm_dg5f-m-short_bi_rl` 은 트랙 A(grasp_kp/grasp_s2r)의
+#   short leaf 도 쓴다. 거기를 고치면 A 의 액션·관측 차원이 같이 바뀐다.
+#
+# ★손 관절 20 → 19. `hand_joint_regex` 는 그대로 두어도 thumb_1 이 자산에 없어
+#   19개만 매칭된다. `num_hand_joints` 는 공간 계산의 단일 출처라 반드시 같이 내린다.
+# ★액션 한계에서 `thumb_1` 을 뺀다 — 없는 관절에 한계를 걸면 부팅 가드가 죽는다.
+TESOLLO_RIGHT_SHORT_TL = _dc_replace(
+    TESOLLO_RIGHT_SHORT,
+    name="tesollo_right_short_tl",
+    usd_relpath="robot/openarm_dg5f-m-short-tl_bi_rl/openarm_dg5f-m-short-tl_bi_rl.usd",
+    num_hand_joints=19,
+    hand_action_limit_override={
+        r"r_hj_(thumb|index|middle|ring|pinky)_[34]$": (0.0, None),
+        # thumb_1 은 자산에서 용접됐다 — 목록에서 뺀다(나머지 네 `_1` 은 그대로 ±0.01).
+        r"r_hj_(index|middle|ring|pinky)_1$": (-0.01, 0.01),
+        r"r_hj_pinky_2$": (0.0, None),
+    },
+    # ★★`init_joint_pos` 에서 용접된 관절을 **빼야 한다**. IsaacLab 은 이 dict 의 키를
+    #   실제 관절명과 대조하고 매칭이 0 이면 부팅에서 죽는다(`resolve_matching_names_values`).
+    #   short 의 값은 `thumb_1: 0.0` 이었고 용접 각도도 정확히 0(URDF origin rpy 0 0 0)이라
+    #   리셋 자세는 바뀌지 않는다 — 빼는 것은 값이 아니라 **이제 없는 이름**이다.
+    init_joint_pos={k: v for k, v in TESOLLO_RIGHT_SHORT.init_joint_pos.items()
+                    if k not in ("r_hj_thumb_1", "l_hj_thumb_1")},
+    # ★fabric 자산은 short 것을 그대로 쓴다 — 트랙 B 는 fabric 을 만들지 않으므로
+    #   (Phase C 로 `fabrics_sim` 의존 제거) 이 필드는 이 프로필에서 소비되지 않는다.
+    #   트랙 A 로 이 프로필을 띄우면 손 관절 수가 어긋나 죽는다(의도된 fail-loud).
+)
+
+
+# =============================================================================
 # rh56f1_right — Inspire RH56F1 우손. **물리 12관절 중 구동 6**(언더액추에이션).
 #
 # ★이 프로필은 **Track B(`grasp_fj_rh`) 전용**이다. fabric 을 쓰는 트랙
@@ -886,5 +927,6 @@ RH56F1_RIGHT_ONLY = _drop_left(
 
 PROFILES: dict[str, RobotProfile] = {
     p.name: p for p in (TESOLLO_RIGHT, TESOLLO_RIGHT_ONLY, TESOLLO_RIGHT_SHORT,
+                    TESOLLO_RIGHT_SHORT_TL,
                         RH56F1_RIGHT, RH56F1_RIGHT_ONLY, GRIPPER_LEFT)
 }

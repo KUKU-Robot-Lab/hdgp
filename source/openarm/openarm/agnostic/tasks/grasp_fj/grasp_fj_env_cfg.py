@@ -334,4 +334,8 @@ class GraspFJTesolloRightShortEnvCfg(GraspFJTesolloRightEnvCfg):
     ⚠`palm_box` 는 미검증이다 — 부팅 시 경고가 뜬다. probe 후 승격할 것.
     """
 
-    profile_name: str = "tesollo_right_short"
+    # ★★09.10 사용자 확정 "잠그고 재진행" — `thumb_1` 을 자산에서 용접한 변종으로 옮긴다.
+    #   액션 한계(±0.01)·솔버(8/0↔32/1)·벤더 게인 33배·자기충돌 OFF 가 전부 실패했고,
+    #   드라이브가 27배 포화라 어떤 게인으로도 못 잡는다는 것이 계산으로 확정됐다.
+    #   트랙 A 는 `tesollo_right_short`(용접 없음)를 그대로 쓴다 — 자산이 갈린다.
+    profile_name: str = "tesollo_right_short_tl"
