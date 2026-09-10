@@ -1,12 +1,11 @@
-"""벤더 rl_games 에 우리가 넣은 패치의 **동작**을 검증한다(문자열 대조가 아니라).
+"""벤더 rl_games 의 저장 정책이 **설정을 따르는지** 확인한다.
 
-★09.11 왜 이 파일이 있나. `vendor/rl_games_sapg` 는 외부 코드라 우리 테스트가 안 닿는데,
-  체크포인트 저장 동작을 우리가 고쳤다(창 안 최고 기록을 메모리에 잡아뒀다가 창 끝에
-  한 번만 디스크에 쓴다). 그 핵심 전제가 **스냅샷이 참조가 아니라 복사**라는 것이다 —
-  참조면 저장되는 것이 '창 최고'가 아니라 '창 끝 시점' 가중치가 되고, 증상이 없다.
-
-  a2c_common 전체 import 는 무겁고 isaac 의존이 붙으므로, 해당 메서드만 소스에서 떼어
-  독립 클래스에 붙여 실행한다.
+★09.11 저장 정책은 `tesollo/right/grasp_v1` 과 같게 둔다(save_best_after 100 /
+  save_frequency 500). 그런데 SAPG 포크가 두 곳에 값을 박아 두어 설정이 안 먹었다:
+    · Continuous 의 best 기준이 `epoch_num >= 10` (save_best_after 무시)
+    · 복구용 `last/model` 저장이 `% 3`(Discrete) / `% 200`(Continuous)
+  체크포인트가 16384 env 에서 255MB 이고 디스크가 58.8MB/s 라(실측), 설정이 실제로
+  먹어야 저장 빈도를 제어할 수 있다. 하드코딩이 되살아나면 여기서 잡는다.
 """
 
 from __future__ import annotations
@@ -24,38 +23,6 @@ torch = pytest.importorskip("torch")
 _REL = Path("vendor") / "rl_games_sapg" / "rl_games" / "common" / "a2c_common.py"
 _VENDOR = next((q / _REL for q in Path(__file__).resolve().parents if (q / _REL).exists()),
                Path("/nonexistent"))
-
-
-def _load_method(name: str):
-    if not _VENDOR.exists():
-        pytest.skip(f"벤더 rl_games 없음: {_VENDOR}")
-    src = _VENDOR.read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    fn = next((n for n in ast.walk(tree)
-               if isinstance(n, ast.FunctionDef) and n.name == name), None)
-    assert fn is not None, f"벤더에 {name} 이 없다 — 패치가 사라졌다"
-    body = textwrap.dedent("\n".join(src.splitlines()[fn.lineno - 1:fn.end_lineno]))
-    ns: dict = {}
-    exec("class _Host:\n" + textwrap.indent(body, "    "), {"torch": torch}, ns)
-    return ns["_Host"]
-
-
-def test_best_window_snapshot_is_a_deep_cpu_copy():
-    """스냅샷 뒤 원본이 바뀌어도 스냅샷은 그대로여야 한다."""
-    host = _load_method("_snapshot_full_state_cpu")()
-    host.global_rank = 0
-    live = torch.ones(4)
-    host.get_full_state_weights = lambda: {"model": {"w": live}, "epoch": 3, "opt": [live]}
-
-    snap = host._snapshot_full_state_cpu()
-    live.mul_(99.0)
-
-    assert torch.allclose(snap[0]["model"]["w"], torch.ones(4)), (
-        "참조였다 — 창 끝에 저장되는 것이 창 최고가 아니라 창 끝 시점 가중치가 된다")
-    assert torch.allclose(snap[0]["opt"][0], torch.ones(4)), "리스트 안 텐서가 참조다"
-    assert snap[0]["epoch"] == 3, "텐서가 아닌 값은 그대로 실려야 한다"
-    assert snap[0]["model"]["w"].device.type == "cpu"
-    assert set(snap) == {0}, "save(fn, override_state) 가 받는 rank 형식이어야 한다"
 
 
 def test_checkpoint_save_paths_follow_save_frequency():
