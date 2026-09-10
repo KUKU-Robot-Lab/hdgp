@@ -1877,6 +1877,21 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                 self._adr_succ = 0
                 self._adr_epis = 0
         self.extras["adr/level"] = self._adr_level
+        # ★★09.10 신설 — 물리 DR 의 **런타임 실효 범위**. `params/env.yaml` dump 는
+        #   `self.cfg` 를 찍는데 실제로 물리에 쓰이는 것은 `event_manager` 가 deepcopy 해
+        #   간 사본이다. 09.10 이전 `_adr_apply_physics` 는 그 사본만 (1,1) 로 덮어썼고,
+        #   dump 는 cfg 값을 그대로 보여줘 **버그가 있어도 옳아 보였다**. 그래서 소스가
+        #   아니라 소비되는 자리에서 읽는다.
+        _em = getattr(self, "event_manager", None)
+        if _em is not None:
+            _mr = _em.get_term_cfg("object_scale_mass").params[
+                "mass_distribution_params"]
+            _gr = _em.get_term_cfg("robot_joint_stiffness_and_damping").params[
+                "stiffness_distribution_params"]
+            self.extras["dr/mass_scale_lo"] = float(_mr[0])
+            self.extras["dr/mass_scale_hi"] = float(_mr[1])
+            self.extras["dr/gain_scale_lo"] = float(_gr[0])
+            self.extras["dr/gain_scale_hi"] = float(_gr[1])
         self.extras["adr/spawn_range"] = self._adr_spawn_range
         self.extras["adr/goal_y"] = float(self._adr_goal_offset[1])
         self.extras["adr/finger_residual"] = float(self._adr_residual)

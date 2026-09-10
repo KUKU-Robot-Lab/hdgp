@@ -1993,10 +1993,25 @@ def test_wrench_state_is_rewound_on_reset_and_respawn():
     assert "self._lifted[_go] = False" in code, "재소환에서 높이 래치를 안 지운다"
 
 
-def test_wrench_defaults_are_identity_and_validated():
-    """기본값은 항등(끔)이고, 부팅 검증이 조용한 no-op·반쪽 설정을 막는다."""
-    assert "wrench_force_scale: float = 0.0" in _CFG, "외란 기본값은 항등이어야 한다"
-    assert "wrench_torque_scale: float = 0.0" in _CFG, "외란 기본값은 항등이어야 한다"
+def test_wrench_is_w1_and_validated():
+    """외란은 **W1(5.0 / 0.5)** 로 승격됐고, 부팅 검증이 no-op·반쪽 설정을 막는다.
+
+    ★★09.10 — 구판은 "기본값은 항등(끔)"을 리터럴 `0.0` 두 개로 잠갔다. 그 규칙은
+      **기능을 처음 넣을 때** 맞는 것이지 영구 계약이 아니다(현행 동작 보존이 목적이었다).
+      E1 이 W1 을 기본으로 승격하면서 그 단언이 올바른 변경을 막는 유일한 장애물이
+      됐다 — 지우지 않고 **뒤집어서** 승격을 사유와 함께 잠근다(관측 0179 부수 규칙).
+
+    승격 사유: 과제 정의가 "다양한 무게, **흔들림**에서 파지를 잃지 않는 것"이고,
+      질량 DR 만으로는 흔들림이 생기지 않는다. W1 은 질량 정규화(N/kg)라 질량 DR
+      (0.5~2.5배)과 간섭하지 않는다 — 힘/무게 비가 전 구간 0.81 로 일정하다.
+    ⚠W2(20.0 / 2.0) 로 올릴 때는 래치 전후 수입비를 **다시** 계산할 것.
+      W1 의 원 audit 은 D3 의 5.3배를 근거로 했는데 E1 명목은 2.30배다(1.72배 축소).
+
+    무엇이 이 계약을 거짓으로 만드는가: 외란이 파지 품질을 강제하지 않는다는 실측.
+      그때는 W1 을 끄는 근거를 남기고 이 단언을 다시 뒤집을 것.
+    """
+    assert "wrench_force_scale: float = 5.0" in _CFG, "외란이 W1(5.0 N/kg)이 아니다"
+    assert "wrench_torque_scale: float = 0.5" in _CFG, "외란이 W1(0.5 N·m/kg)이 아니다"
     code = _code(_CFG)
     assert "_assert_wrench_sane" in code, "외란 부팅 검증이 없다"
     # 한쪽만 켜는 것은 CLI 오타의 전형이다 — 반드시 fail-loud.
@@ -2166,6 +2181,27 @@ def test_adr_physics_base_comes_from_eventcfg_not_a_literal():
     assert lerp((2.0, 3.0), 0.0) == (1.0, 1.0), "기본 base 가 (1,1) 이 아니다(하위호환 깨짐)"
     assert lerp((0.5, 2.5), 0.0, base=(0.5, 2.5)) == (0.5, 2.5), \
         "level 0 에서 cfg 범위가 보존되지 않는다"
+
+
+def test_physics_dr_effective_range_is_logged_from_the_consumer():
+    """물리 DR 의 **실효 범위**는 `event_manager` 에서 읽어 로깅해야 한다.
+
+    `params/env.yaml` dump 는 `self.cfg` 를 찍는데, 실제로 물리에 쓰이는 것은
+    `ManagerBase` 가 deepcopy 해 간 `event_manager` 쪽 사본이다. 09.10 이전
+    `_adr_apply_physics` 는 그 사본만 (1,1) 로 덮어썼으므로 **dump 는 버그가 있어도
+    옳아 보였다** — cfg 에 적은 (0.5, 2.5) 가 그대로 찍히고 물리는 (1,1) 로 돌았다.
+    그래서 소스가 아니라 **소비되는 자리**에서 읽은 값을 태그로 남긴다.
+
+    무엇이 이 계약을 거짓으로 만드는가: 물리 DR 이 EventManager 를 떠나는 것.
+    """
+    env = _code(_ENV)
+    for tag in ('"dr/mass_scale_lo"', '"dr/mass_scale_hi"',
+                '"dr/gain_scale_lo"', '"dr/gain_scale_hi"'):
+        assert tag in env, f"실효 DR 범위 태그 {tag} 가 없다"
+    i = env.index('self.extras["dr/mass_scale_lo"]')
+    blk = env[max(0, i - 700):i]
+    assert "get_term_cfg(\"object_scale_mass\")" in blk, \
+        "질량 실효범위를 cfg 가 아니라 event_manager 에서 읽어야 한다"
 
 
 def test_mass_dr_is_open_and_adr_never_narrows_it():
