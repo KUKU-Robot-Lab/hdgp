@@ -2204,6 +2204,38 @@ def test_physics_dr_effective_range_is_logged_from_the_consumer():
         "질량 실효범위를 cfg 가 아니라 event_manager 에서 읽어야 한다"
 
 
+def test_wrench_mass_is_refreshed_when_mass_dr_is_open():
+    """질량 DR 이 열려 있으면 외란의 질량 기준은 **리셋마다 실제 질량**이어야 한다.
+
+    외란은 질량 정규화(N/kg)다. 공칭 질량(`default_mass`)을 `__init__` 에서 한 번만 읽으면
+    scale (0.5, 2.5) 구간에서 힘/무게 비가 0.32~1.62 로 흔들려 **두 DR 축이 서로를
+    상쇄한다** — 무거운 개체일수록 상대적으로 약한 외란을 받는다.
+    질량 DR 은 reset 모드 이벤트라 `super()._reset_idx` 안에서 적용되므로, 그 직후에
+    다시 읽어야 한다.
+
+    ★이 계약은 **조건부**다 — 질량 DR 이 항등이면 공칭값으로 충분하고 갱신은 불필요하다.
+      그래서 cfg 를 먼저 보고, 열려 있을 때만 갱신을 요구한다. (구판 docstring 이
+      이 조건을 정확히 적어 두었는데 코드가 아니라 산문이라, DR 을 여는 사람이
+      그 문장을 읽지 않으면 조용히 깨졌다 — 그래서 테스트로 옮긴다.)
+    """
+    cfg, env = _code(_CFG), _code(_ENV)
+    m = re.search(r'"mass_distribution_params":\s*\(([\d.]+),\s*([\d.]+)\)', cfg)
+    assert m, "질량 DR 항을 못 찾았다"
+    if float(m.group(1)) == 1.0 and float(m.group(2)) == 1.0:
+        return                                    # 질량 DR 꺼짐 — 갱신 불필요
+    blk = _fn_block(env, "_reset_idx")
+    assert "self._obj_mass = self._read_obj_mass()" in blk, (
+        "질량 DR 이 열려 있는데 _reset_idx 가 외란 질량 기준을 갱신하지 않는다")
+    assert blk.index("super()._reset_idx") < blk.index("self._obj_mass ="), (
+        "질량 갱신이 reset 이벤트 적용(super()._reset_idx) 보다 먼저다 — 옛 값을 읽는다")
+    rd = _fn_block(env, "_read_obj_mass")
+    assert "root_physx_view" in rd and "get_masses" in rd, (
+        "실제 질량이 아니라 공칭(default_mass)만 읽는다")
+    # 실효 질량이 로깅돼야 DR 이 물리에 닿았는지 확인할 수 있다.
+    for tag in ('"dr/obj_mass_min"', '"dr/obj_mass_max"'):
+        assert tag in env, f"외란 정규화에 쓰인 실효 질량 태그 {tag} 가 없다"
+
+
 def test_mass_dr_is_open_and_adr_never_narrows_it():
     """무게 DR 이 열려 있어야 한다 — power grip 과제의 정의다(사용자 확정).
 

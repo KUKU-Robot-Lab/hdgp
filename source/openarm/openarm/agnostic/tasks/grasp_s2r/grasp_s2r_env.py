@@ -781,17 +781,29 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
     # 외란 DR
     # ------------------------------------------------------------------
     def _read_obj_mass(self) -> torch.Tensor:
-        """물체 공칭 질량 (N,) — 외란 크기의 기준.
+        """물체 **실제** 질량 (N,) — 외란 크기의 기준.
 
-        ★질량 DR 을 켜면 `default_mass` 는 **공칭값**이라 실제와 갈린다. 그때는 리셋 뒤
-          `root_physx_view.get_masses()` 를 다시 읽어야 외란이 실제 질량에 정규화된다 —
-          안 그러면 무거운 개체에 상대적으로 약한 외란이 걸려 두 DR 축이 서로를 상쇄한다.
-          지금은 질량 DR 이 항등(1.0, 1.0)이라 공칭값으로 충분하다.
+        ★★09.10 — 구판은 `default_mass`(공칭)를 `__init__` 에서 **한 번** 읽었고,
+          docstring 이 그 한계를 정확히 예고하고 있었다: "질량 DR 을 켜면 `default_mass`
+          는 공칭값이라 실제와 갈린다 … 안 그러면 무거운 개체에 상대적으로 약한 외란이
+          걸려 두 DR 축이 서로를 상쇄한다. 지금은 질량 DR 이 항등(1.0,1.0)이라 공칭값으로
+          충분하다."  E1 이 질량 DR 을 (0.5, 2.5) 로 열어 **그 전제를 깼다** —
+          공칭 0.134kg 로 정규화하면 힘/무게 비가 일정하지 않고 0.32~1.62 로 흔들린다.
+          → `root_physx_view.get_masses()` 를 읽고, `_reset_idx` 가 리셋마다 갱신한다.
         """
-        m = self.object.data.default_mass
+        _view = getattr(self.object, "root_physx_view", None)
+        m = None
+        if _view is not None:
+            try:
+                m = _view.get_masses()
+            except Exception:            # 뷰가 아직 없거나 백엔드가 다르면 공칭으로
+                m = None
+        _src = "physx"
+        if m is None:
+            m, _src = self.object.data.default_mass, "default"
         if m is None or m.ndim != 2 or m.shape[0] != self.num_envs:
             raise RuntimeError(
-                f"[grasp_s2r] object default_mass 형상 이상: "
+                f"[grasp_s2r] object 질량 형상 이상({_src}): "
                 f"{None if m is None else tuple(m.shape)} (기대 ({self.num_envs}, 1))")
         return m[:, 0].to(self.device, dtype=torch.float32)
 
@@ -1819,6 +1831,10 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
         n = len(env_ids)
+        # ★★09.10 — 질량 DR 은 **reset 모드 이벤트**라 `super()._reset_idx` 안에서 적용된다.
+        #   외란은 질량 정규화(N/kg)이므로 여기서 다시 읽지 않으면 공칭 질량으로 정규화되어
+        #   두 DR 축이 서로를 상쇄한다(무거운 개체일수록 상대적으로 약한 외란).
+        self._obj_mass = self._read_obj_mass()
 
         # 단계 도달률은 리셋 시점에만 기록한다.
         for i, nm in enumerate(self._stage_names):
@@ -1892,6 +1908,10 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             self.extras["dr/mass_scale_hi"] = float(_mr[1])
             self.extras["dr/gain_scale_lo"] = float(_gr[0])
             self.extras["dr/gain_scale_hi"] = float(_gr[1])
+        # ★실제로 외란 정규화에 쓰인 질량 — DR 이 물리에 닿았는지의 최종 증거다.
+        #   범위가 한 점이면 질량 DR 이 죽은 것이다(cfg 가 뭐라 적혀 있든).
+        self.extras["dr/obj_mass_min"] = self._obj_mass.min()
+        self.extras["dr/obj_mass_max"] = self._obj_mass.max()
         self.extras["adr/spawn_range"] = self._adr_spawn_range
         self.extras["adr/goal_y"] = float(self._adr_goal_offset[1])
         self.extras["adr/finger_residual"] = float(self._adr_residual)
