@@ -162,21 +162,26 @@ class A2CBase(BaseAlgorithm):
         self.self_play = config.get('self_play', False)
         self.save_freq = config.get('save_frequency', 0)
         self.save_best_after = config.get('save_best_after', 100)
-        # ★hdgp 추가(09.10) — best 체크포인트 **쓰기 간격 제한**.
-        #   원본은 mean_reward 가 갱신될 때마다 저장한다. 초반에는 거의 매 에포크
-        #   갱신되므로 실측에서 에포크의 80%(198/249)가 저장이었다. 체크포인트는
-        #   per-env LSTM 상태를 담아 env 수에 비례해 커지고(4096 env 140MB /
-        #   16384 env 255MB), 서버 디스크가 58.8MB/s 라 저장 한 번이 2.4~4.3초다.
-        #   실측 벽시계: 보고 12.68s/epoch vs 실제 18.00s/epoch — **42%가 저장 대기**였고
-        #   그 동안 GPU 사용률이 0% 로 떨어진다(프로세스가 D 상태로 블록된다).
-        #   `Time to train epoch` 은 play+update 만 세므로 이 비용이 안 보인다.
-        #   ★`last_mean_rewards`(진짜 최고 기록)는 그대로 매번 갱신한다 — 제한하는 것은
-        #     **파일 쓰기**뿐이다. 저장이 밀린 동안 갱신이 있었는지는 `_best_pending` 이 든다.
-        #   0 이면 원본 동작(매번 저장). 기본은 save_frequency 와 같게 둔다.
-        self.save_best_min_interval = int(
-            config.get('save_best_min_interval', config.get('save_frequency', 0)))
-        self._best_pending = False
-        self._last_best_save_epoch = -10 ** 9
+        # ★★hdgp 추가(09.10~11) — best 체크포인트는 **창 안의 최고 기록**을 창 끝에 한 번만 쓴다.
+        #   원본은 mean_reward 가 갱신될 때마다 즉시 저장한다. 초반엔 거의 매 에포크
+        #   갱신되므로 실측에서 에포크의 80%(198/249)가 저장이었다.
+        #   체크포인트는 per-env LSTM 상태를 담아 env 수에 비례해 커지고(4096env 140MB /
+        #   16384env 255MB), 서버 디스크가 58.8MB/s 라 저장 한 번이 2.4~4.3초다.
+        #   벽시계 실측: 보고 12.68s/epoch vs 실제 18.00s/epoch — **42%가 저장 대기**였고
+        #   그 동안 GPU 가 0% 로 떨어진다(프로세스가 D 상태로 블록된다).
+        #   `Time to train epoch` 은 play+update 만 세므로 이 비용이 로그에 안 보인다.
+        #
+        #   ★왜 "간격 제한"이 아니라 "창"인가 — 사용자 확정(09.11):
+        #     "현재까지 진행된 200 에포크 중에 최상위 리워드 기록". 간격 제한만 걸면
+        #     간격이 지난 뒤 **처음 갱신된** 시점이 저장되지 창 안의 최고가 아니다.
+        #     그래서 창 최고가 나올 때마다 **메모리에** 스냅샷을 잡아두고 창 끝에 쓴다.
+        #     디스크 4.3초 vs GPU->CPU 복사 수십 ms 라 교환이 성립한다.
+        #   ★`last_mean_rewards`(전체 최고 기록)는 그대로 매번 갱신한다 — 재개 시
+        #     "최고 기록을 덮어쓰지 않는다"는 원본 계약이 살아 있어야 한다.
+        self.save_best_interval = int(config.get('save_best_interval', 200))
+        self._best_window_reward = -10 ** 9
+        self._best_window_epoch = -1
+        self._best_window_state = None
         self.print_stats = config.get('print_stats', True)
         self.rnn_states = None
         self.name = base_name
@@ -706,6 +711,26 @@ class A2CBase(BaseAlgorithm):
 
     def train_central_value(self):
         return self.central_value_net.train_net()
+
+    def _snapshot_full_state_cpu(self):
+        """★hdgp — 전체 상태를 **CPU 로 깊은 복사**해 창 최고 기록을 잡아둔다.
+
+        `get_full_state_weights()` 가 돌려주는 state_dict 는 **살아 있는 텐서 참조**라
+        그대로 들고 있으면 다음 스텝에 값이 바뀐다(스냅샷이 아니다). 그래서 복사한다.
+        `save(fn, override_state)` 가 받는 형식과 같게 rank 로 감싼다.
+        """
+        import torch as _torch
+
+        def _cp(o):
+            if isinstance(o, _torch.Tensor):
+                return o.detach().to("cpu", copy=True)
+            if isinstance(o, dict):
+                return {k: _cp(v) for k, v in o.items()}
+            if isinstance(o, (list, tuple)):
+                return type(o)(_cp(v) for v in o)
+            return o
+
+        return {self.global_rank: _cp(self.get_full_state_weights())}
 
     def get_full_state_weights(self):
         state = self.get_weights()
@@ -1316,20 +1341,26 @@ class DiscreteA2CBase(A2CBase):
                     if self.save_freq > 0:
                         if epoch_num % self.save_freq == 0:
                             self.save(os.path.join(self.nn_dir, 'last_' + checkpoint_name))
-                        if epoch_num % 3 == 0:
+                        # ★hdgp 09.11 — 하드코딩 3 -> save_frequency (원본은 3 에포크마다 전체 상태를 썼다).
+                        if epoch_num % self.save_freq == 0:
                             torch_ext.safe_filesystem_op(os.makedirs, os.path.join(self.experiment_dir, 'last'), exist_ok=True)
                             self.save(os.path.join(self.experiment_dir, 'last', 'model'))
 
-                    # ★hdgp 09.10 — 갱신 추적과 **파일 쓰기**를 분리한다(주석: __init__ save_best_min_interval).
-                    if mean_rewards[0] > self.last_mean_rewards and epoch_num >= self.save_best_after:
-                        self.last_mean_rewards = mean_rewards[0]
-                        self._best_pending = True
-                    if self._best_pending and (
-                            epoch_num - self._last_best_save_epoch) >= self.save_best_min_interval:
-                        print('saving next best rewards: ', mean_rewards)
-                        self._best_pending = False
-                        self._last_best_save_epoch = epoch_num
-                        self.save(os.path.join(self.nn_dir, self.config['name']))
+                    # ★★hdgp 09.11 — 창 안의 최고 기록을 메모리에 잡아뒀다가 창 끝에 한 번 쓴다.
+                    if mean_rewards[0] > self._best_window_reward and epoch_num >= self.save_best_after:
+                        self._best_window_reward = float(mean_rewards[0])
+                        self._best_window_epoch = epoch_num
+                        self._best_window_state = self._snapshot_full_state_cpu()
+                        if mean_rewards[0] > self.last_mean_rewards:
+                            self.last_mean_rewards = mean_rewards[0]
+                    if (self._best_window_state is not None and self.save_best_interval > 0
+                            and epoch_num % self.save_best_interval == 0):
+                        print('saving window best rewards: ', self._best_window_reward,
+                              ' (epoch ', self._best_window_epoch, ')')
+                        _win_state = self._best_window_state
+                        self._best_window_state = None
+                        self._best_window_reward = -10 ** 9
+                        self.save(os.path.join(self.nn_dir, self.config['name']), _win_state)
                         torch_ext.safe_filesystem_op(os.makedirs, os.path.join(self.experiment_dir, 'best'), exist_ok=True)
                         torch_ext.safe_symlink(os.path.relpath(os.path.join(self.nn_dir, self.config['name'] + '.pth'), start=os.path.join(self.experiment_dir, 'best')), os.path.join(self.experiment_dir, 'best', 'model.pth'))
 
@@ -1679,22 +1710,29 @@ class ContinuousA2CBase(A2CBase):
                     if self.save_freq > 0:
                         if int(math.sqrt(epoch_num // self.save_freq)) ** 2 == epoch_num // self.save_freq and epoch_num % self.save_freq == 0:
                             self.save(os.path.join(self.nn_dir, 'last_' + checkpoint_name), all_state_dict)
-                        if epoch_num % 200 == 0:    
+                        # ★hdgp 09.11 — 하드코딩 200 -> save_frequency. 복구용 저장도
+                        #   체크포인트 크기가 같아 같은 I/O 비용을 낸다(설정 하나로 묶는다).
+                        if epoch_num % self.save_freq == 0:
                             torch_ext.safe_filesystem_op(os.makedirs, os.path.join(self.experiment_dir, 'last'), exist_ok=True)
                             if os.path.exists(os.path.join(self.experiment_dir, 'last', 'model.pth')):
                                 os.system(f"cp {os.path.join(self.experiment_dir, 'last', 'model.pth')} {os.path.join(self.experiment_dir, 'last', 'model.pth.old')}")
                             self.save(os.path.join(self.experiment_dir, 'last', 'model'), all_state_dict)
 
-                    # ★hdgp 09.10 — 갱신 추적과 **파일 쓰기**를 분리한다(주석: __init__ save_best_min_interval).
-                    if mean_rewards[0] > self.last_mean_rewards and epoch_num >= 10:
-                        self.last_mean_rewards = mean_rewards[0]
-                        self._best_pending = True
-                    if self._best_pending and (
-                            epoch_num - self._last_best_save_epoch) >= self.save_best_min_interval:
-                        print('saving next best rewards: ', mean_rewards)
-                        self._best_pending = False
-                        self._last_best_save_epoch = epoch_num
-                        self.save(os.path.join(self.nn_dir, self.config['name']), all_state_dict)
+                    # ★★hdgp 09.11 — 창 안의 최고 기록을 메모리에 잡아뒀다가 창 끝에 한 번 쓴다.
+                    if mean_rewards[0] > self._best_window_reward and epoch_num >= 10:
+                        self._best_window_reward = float(mean_rewards[0])
+                        self._best_window_epoch = epoch_num
+                        self._best_window_state = self._snapshot_full_state_cpu()
+                        if mean_rewards[0] > self.last_mean_rewards:
+                            self.last_mean_rewards = mean_rewards[0]
+                    if (self._best_window_state is not None and self.save_best_interval > 0
+                            and epoch_num % self.save_best_interval == 0):
+                        print('saving window best rewards: ', self._best_window_reward,
+                              ' (epoch ', self._best_window_epoch, ')')
+                        _win_state = self._best_window_state
+                        self._best_window_state = None
+                        self._best_window_reward = -10 ** 9
+                        self.save(os.path.join(self.nn_dir, self.config['name']), _win_state)
                         torch_ext.safe_filesystem_op(os.makedirs, os.path.join(self.experiment_dir, 'best'), exist_ok=True)
                         torch_ext.safe_symlink(os.path.relpath(os.path.join(self.nn_dir, self.config['name'] + '.pth'), start=os.path.join(self.experiment_dir, 'best')), os.path.join(self.experiment_dir, 'best', 'model.pth'))
 

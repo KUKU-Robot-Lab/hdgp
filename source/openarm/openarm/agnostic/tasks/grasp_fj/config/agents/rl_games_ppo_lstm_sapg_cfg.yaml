@@ -102,7 +102,10 @@ params:
     score_to_win: 1000000
     max_epochs: 20000
     save_best_after: 100
-    save_frequency: 200
+    # ★09.11 사용자 확정 — 기록용 주기 저장 500, best 는 200 에포크 **창 안 최고 기록**.
+    #   체크포인트가 16384 env 에서 255MB 이고 디스크가 58.8MB/s 라 저장 한 번이 4.3초다.
+    save_frequency: 500
+    save_best_interval: 200
     print_stats: True
     grad_norm: 1.0
     # ★SAPG 에서 이 값은 **쓰이지 않는다** — a2c_continuous.calc_gradients 가
