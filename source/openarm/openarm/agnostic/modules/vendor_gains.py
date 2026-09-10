@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -202,6 +203,67 @@ def load_hand(path: str | None = None) -> dict[str, tuple[float, float]]:
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DG-5F 손 sim 드라이브 게인 — 벤더 **Isaac Sim 자산**이 출처 (2026-09-10)
+# ══════════════════════════════════════════════════════════════════════════════
+# 드라이버 PID(`vendor_dg5f_pid.yaml`, p=1.5 / d=0)는 **실기 드라이버 단위**이지 물리
+# 단위가 아니다. 같은 벤더가 자기 Isaac Sim 자산
+# (`repo/tesollo/tesollo_model/dg5f*/usd/*/configuration/*_physics.usd`)에는 전혀 다른,
+# **관절 관성에 비례하는** 드라이브 게인을 넣어 배포한다. 20관절 전부에서 정확히
+#
+#     stiffness = 625  x JointEquivalentInertia      (USD 각도 단위)
+#     damping   = 0.25 x JointEquivalentInertia
+#
+# 성립한다(dg5f / dg5f-short / dg5fs / 15dof 전 변종 동일). sim 물리값의 벤더 출처는
+# 이쪽이다. 09.06 에 확정했던 flat p=1.5 는 thumb_1 에서 32배, index_1 에서 87배 약했고,
+# 그 약함이 접촉이 하드스톱을 뚫는 이유였다(지령 +1.344 ↔ 실측 −1.838, 09.10 실측).
+#
+# ★숫자를 베끼지 않는다. 우리 자산은 팔이 붙고 마운트 프레임이 추가돼 관성이 다르다.
+#   **규칙을 우리 자산의 관성에 적용**한다 — 관성표는 `tools/dump_joint_inertia.py` 가
+#   빌드된 USD 에서 뽑아 자산 옆 `<asset>_joint_inertia.json` 으로 남긴다.
+VENDOR_ISAAC_K_PER_INERTIA_DEG = 625.0
+VENDOR_ISAAC_D_PER_INERTIA_DEG = 0.25
+#: USD 각도 단위 -> rad 단위 환산 계수.
+_DEG_PER_RAD = 180.0 / math.pi
+#: rad 단위 계수. kp = K_PER_INERTIA * I_eq, kd = D_PER_INERTIA * I_eq
+VENDOR_ISAAC_K_PER_INERTIA = VENDOR_ISAAC_K_PER_INERTIA_DEG * _DEG_PER_RAD
+VENDOR_ISAAC_D_PER_INERTIA = VENDOR_ISAAC_D_PER_INERTIA_DEG * _DEG_PER_RAD
+
+INERTIA_JSON_SUFFIX = "_joint_inertia.json"
+
+
+@lru_cache(maxsize=None)
+def load_joint_inertia(asset_dir: str) -> dict[str, float]:
+    """`<asset_dir>/<asset>_joint_inertia.json` -> {관절명: JointEquivalentInertia}."""
+    base = Path(asset_dir)
+    cands = sorted(base.glob("*" + INERTIA_JSON_SUFFIX))
+    if not cands:
+        raise VendorGainsError(
+            f"{base}: {INERTIA_JSON_SUFFIX} 가 없다 — "
+            "`urdf/tools/dump_joint_inertia.py <asset-dir>` 를 돌려 만들 것")
+    import json
+    table = json.loads(cands[0].read_text(encoding="utf-8"))
+    if not table:
+        raise VendorGainsError(f"{cands[0]}: 비어 있다")
+    return {str(k): float(v) for k, v in table.items()}
+
+
+def hand_gains_by_joint(asset_dir: str, joint_names) -> tuple[dict[str, float], dict[str, float]]:
+    """(kp, kd) 관절별 dict — 벤더 Isaac 규칙을 우리 자산 관성에 적용한다.
+
+    `joint_names` 에 있는데 관성표에 없는 관절이 있으면 죽는다. 조용히 빠지면 그 관절만
+    IsaacLab 기본 게인으로 돌아 원인을 알 수 없는 편차가 된다.
+    """
+    inertia = load_joint_inertia(asset_dir)
+    missing = [n for n in joint_names if n not in inertia]
+    if missing:
+        raise VendorGainsError(
+            f"{asset_dir}: 관성표에 없는 손 관절 {missing} — 자산과 표가 어긋났다(재생성 필요)")
+    kp = {n: VENDOR_ISAAC_K_PER_INERTIA * inertia[n] for n in joint_names}
+    kd = {n: VENDOR_ISAAC_D_PER_INERTIA * inertia[n] for n in joint_names}
+    return kp, kd
+
+
 def hand_gains() -> tuple[float, float]:
     """(p, d) — 모든 DG-5F 관절이 같은 값이라 스칼라 한 쌍이면 충분하다.
 
@@ -210,15 +272,21 @@ def hand_gains() -> tuple[float, float]:
     return next(iter(load_hand().values()))
 
 
-def hand_actuator(name: str, joint_names_expr, *, effort_limit_sim=None, **extra) -> dict:
+def hand_actuator(name: str, joint_names_expr, *, effort_limit_sim=None,
+                  asset_dir=None, joint_names=None, **extra) -> dict:
     """DG-5F 손 actuator kwargs 하나. 게인은 벤더값, 나머지는 호출자가 준다.
 
-    ⚠벤더 d=0 이다. 실기 손은 기계 마찰이 그 자리를 메우지만 sim 관절에는 마찰이 없다 —
-      채터가 보이면 **damping 을 올리지 말고** `friction` 을 넣어라(마찰은 PD 게인이
-      아니라서 벤더 규칙 밖이고, damping 을 올리면 그 순간 벤더값이 아니게 된다).
+    `asset_dir` + `joint_names` 를 주면 **벤더 Isaac 자산 규칙**(관성 비례, 관절별)을 쓴다.
+    안 주면 드라이버 PID 의 flat 값으로 물러난다 — 그건 실기 드라이버 단위라 sim 물리값
+    으로는 32~87배 약하다(09.10 실측). 새 코드는 반드시 자산 경로를 넘길 것.
+
+    ⚠마찰·armature 는 벤더가 주지 않는다. 넣지 않는다.
     """
-    p_gain, d_gain = hand_gains()
-    spec = dict(joint_names_expr=list(joint_names_expr), stiffness=p_gain, damping=d_gain, **extra)
+    if asset_dir is not None and joint_names:
+        kp, kd = hand_gains_by_joint(str(asset_dir), tuple(joint_names))
+    else:
+        kp, kd = hand_gains()
+    spec = dict(joint_names_expr=list(joint_names_expr), stiffness=kp, damping=kd, **extra)
     if effort_limit_sim is not None:
         spec["effort_limit_sim"] = float(effort_limit_sim)
     return {name: spec}

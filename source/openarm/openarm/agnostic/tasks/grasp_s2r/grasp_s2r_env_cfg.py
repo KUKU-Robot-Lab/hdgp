@@ -16,6 +16,8 @@ grasp_v1 과의 결정적 차이: grasp_v1 은 접촉 래치가 걸리면 팔 �
 
 from __future__ import annotations
 
+import re
+
 import os as _os
 
 from isaaclab.actuators import ImplicitActuatorCfg
@@ -107,19 +109,46 @@ class GraspS2REventCfg:
     )
 
 
+def _vendor_isaac_hand_gains(spec: dict, asset_dir: str) -> dict:
+    """손 actuator 의 게인을 **벤더 Isaac 자산 규칙**(관성 비례, 관절별)으로 바꾼 새 dict.
+
+    출처와 규칙은 `vendor_gains` 의 `VENDOR_ISAAC_*` 주석에 있다. 관절 목록은 actuator 의
+    정규식이 아니라 **관성표의 키**에서 뽑는다 — 정규식은 자산마다 다르고, 표는 그 자산의
+    USD 에서 나왔으므로 자산과 반드시 일치한다.
+    """
+    side = "l" if spec.get("_side") == "l" else None
+    inertia = _vg.load_joint_inertia(asset_dir)
+    pats = [re.compile(p) for p in spec["joint_names_expr"]]
+    names = tuple(n for n in sorted(inertia) if any(p.fullmatch(n) for p in pats))
+    if not names:
+        raise RuntimeError(
+            f"{asset_dir}: actuator 정규식 {spec['joint_names_expr']} 에 걸리는 관절이 "
+            "관성표에 하나도 없다 — 표가 자산과 어긋났다")
+    kp, kd = _vg.hand_gains_by_joint(asset_dir, names)
+    out = dict(spec)
+    out["stiffness"], out["damping"] = kp, kd
+    return out
+
+
 def _hand_gain_override(name: str, spec: dict, stiffness: float,
-                        damping: float, armature: float) -> dict:
+                        damping: float, armature: float,
+                        asset_dir: str | None = None,
+                        vendor_isaac_gains: bool = True) -> dict:
     """손 actuator 하나에 실험 override 를 얹은 **새 dict** 를 돌려준다(원본 불변).
 
     대상은 이름이 `hand` 로 끝나는 actuator 뿐이다(프로필 규약: `hand` · `left_hand`).
     팔·머리·그리퍼는 손대지 않는다 — 팔은 `_assert_vendor_gains` 가 벤더값을 강제한다.
 
-    ★기본값(stiffness ≤ 0 · damping < 0 · armature ≤ 0)이면 원본을 그대로 돌려주므로
-      현행 동작과 **비트 동일**하다. 벤더 원칙의 예외는 켠 사람만 진다.
+    ★09.10 기본이 **벤더 Isaac 자산 게인**(관성 비례)으로 바뀌었다. 구 flat p=1.5/d=0 은
+      실기 드라이버 단위였고 sim 물리값으로는 32~87배 약했다. 옛 동작으로 A/B 하려면
+      `env.hand_stiffness_override=1.5 env.hand_damping_override=0.0` 을 주면 된다
+      (스칼라 override 가 관절별 dict 를 덮는다).
     """
     if not name.endswith("hand"):
         return dict(spec)
     out = dict(spec)
+    if vendor_isaac_gains and asset_dir is not None:
+        out = _vendor_isaac_hand_gains(out, asset_dir)
     if stiffness > 0.0:
         out["stiffness"] = float(stiffness)
     if damping >= 0.0:
@@ -140,7 +169,8 @@ def _build_robot_cfg(profile: RobotProfile,
                      rest_offset: float | None = None,
                      hand_stiffness: float = 0.0,
                      hand_damping: float = -1.0,
-                     hand_armature: float = 0.0) -> ArticulationCfg:
+                     hand_armature: float = 0.0,
+                     vendor_isaac_hand_gains: bool = True) -> ArticulationCfg:
     """프로필 → ArticulationCfg. 조인트 이름은 전부 프로필에서 온다.
 
     ★`enable_gravity` 는 **반드시 인자**여야 한다. USD spawn 속성이라 env 생성 뒤에는
@@ -187,7 +217,9 @@ def _build_robot_cfg(profile: RobotProfile,
         ),
         actuators={
             name: ImplicitActuatorCfg(**_hand_gain_override(
-                name, spec, hand_stiffness, hand_damping, hand_armature))
+                name, spec, hand_stiffness, hand_damping, hand_armature,
+                asset_dir=_os.path.dirname(_os.path.join(_ASSETS_DIR, profile.usd_relpath)),
+                vendor_isaac_gains=vendor_isaac_hand_gains))
             for name, spec in profile.actuator_specs.items()
         },
         soft_joint_pos_limit_factor=1.0,
@@ -262,7 +294,24 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     fabric_decimation: int = 2
     fabrics_damping_gain: float = 10.0
     fabrics_max_objects_per_env: int = 8
+    # ★09.10: 켜면 `set_features + integrator.step` 을 CUDA Graph 로 캡처해 재생한다.
+    #   09.10 이전에는 이 플래그가 fabric 생성자의 `graph_capturable` 로만 전달되고 캡처·재생
+    #   코드가 없었다 — 즉 **비용만 내고 이득은 0** 인 반쪽 배선이었다(kp_a1~a12 12런 전부 false).
+    #   이제 `_setup_fabric_graph`/`_step_fabric` 이 실제로 소비한다. OFF 경로는 종전과 동일하다.
     fabric_use_cuda_graph: bool = False
+    # 캡처된 입력 텐서의 주소가 유지되는지 매 스텝 확인(host 호출뿐이라 사실상 공짜).
+    #   끄지 말 것 — 이 버그의 유일한 증상은 "에러 없이 팔이 캡처 시점 목표에 고정"이다.
+    fabric_graph_guard: bool = True
+    # fabric 구간을 CUDA 이벤트로 잰다(`fabric/fabric_ms`). PhysX 와 섞인 step_time 에서
+    #   fabric 몫을 떼어내는 유일한 수단 — CUDA Graph 이득의 상한이 이 값이다.
+    fabric_profile: bool = False
+    # ★09.10 진단용 A/B. `graph_capturable` 은 지금까지 `fabric_use_cuda_graph` 에 묶여 있었다.
+    #   그런데 그 모드는 fabric 항이 재대입 대신 **할당+복사**를 하게 만든다
+    #   (`attractor.metric.copy_(torch.diag_embed(...))` 대 `= torch.diag_embed(...)`).
+    #   즉 그래프를 켜면 두 가지가 동시에 바뀐다 — 런치 오버헤드 제거(이득)와
+    #   캡처가능 모드 산술 비용(손해). 이 노브로 후자만 켜서 둘을 분리해 잰다.
+    #   True = 그래프가 꺼져 있어도 fabric 을 capturable 모드로 만든다. 학습에는 쓰지 말 것.
+    fabric_force_capturable: bool = False
     # ★팔 PD 속도 피드포워드. 0 을 넣으면 감쇠항 kd·(0−q̇) 이 참조 궤적의 움직임을
     #   반대로 밀어 err ≈ (kd/kp)·q̇ 의 상시 지연이 생긴다(실측 −33% 관절오차).
     fabric_velocity_ff_scale: float = 1.0
@@ -295,7 +344,13 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #     근거이므로 **측정으로만 정당화**한다(`scripts/analysis/fj_joint_limit_viol.py`, 시드 2개).
     hand_stiffness_override: float = 0.0   # ≤0 = 벤더값 유지
     hand_damping_override: float = -1.0    # <0 = 벤더값 유지
-    hand_armature: float = 0.0             # ≤0 = 미지정(현행)
+    hand_armature: float = 0.0             # ≤0 = 미지정
+    #: 손 드라이브 게인을 **벤더 Isaac 자산 규칙**(관성 비례 kp=625·I_eq, kd=0.25·I_eq,
+    #: USD 각도 단위)으로 만든다. 출처: Tesollo 가 배포하는 자기 Isaac Sim 자산
+    #: `repo/tesollo/tesollo_model/dg5f*/usd/*/configuration/*_physics.usd` (전 변종 동일).
+    #: False 면 드라이버 PID 의 flat p=1.5/d=0 — 그건 실기 드라이버 단위라 sim 물리값
+    #: 으로는 thumb_1 32배·index_1 87배 약하다(09.10 실측).
+    vendor_isaac_hand_gains: bool = True
 
     # ---- 중력 (2026-09-06 사용자 확정) -----------------------------------------------
     # **로봇 자체 중력 ON + 중력보상 ON.** 둘 다 켠다. 이유는 실기와 같게 만들기 위해서다.
@@ -931,7 +986,8 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
             rest_offset=self.robot_rest_offset,
             hand_stiffness=float(self.hand_stiffness_override),
             hand_damping=float(self.hand_damping_override),
-            hand_armature=float(self.hand_armature))
+            hand_armature=float(self.hand_armature),
+            vendor_isaac_hand_gains=bool(self.vendor_isaac_hand_gains))
         self._assert_vendor_gains(profile)
         if not bool(self.enable_events):
             self.events = None
