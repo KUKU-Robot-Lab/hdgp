@@ -1969,3 +1969,70 @@ def test_stay_break_cause_is_split_into_two_tags():
     code = _code(_ENV)
     for tag in ('"gate/stay_break_by_stable"', '"gate/stay_break_by_grip"'):
         assert tag in code, f"stay 끊김 원인 지표 {tag} 가 없다"
+
+
+# ---------------------------------------------------------------- 보상 회계 (09.10 Phase 0)
+def test_reward_term_set_is_closed_both_ways():
+    """`terms` 딕셔너리 키와 `GRASP_S2R_REWARD_TERMS` 튜플이 **양방향으로** 같아야 한다.
+
+    ★기존 `rewards.py` 의 검사는 `set(TERMS) - set(terms)` 뿐이라 **누락만** 잡는다.
+      새 항을 `terms` 에 넣고 튜플에 안 넣으면 통과하고, 그 항은 `reward/*` 로그에서
+      조용히 빠진다(로깅 루프가 튜플을 돈다). 반대 방향을 여기서 잠근다.
+    """
+    body = re.search(r"terms = \{([\s\S]*?)\n    \}", _REW)
+    assert body, "terms 딕셔너리 부재"
+    keys = set(re.findall(r'"([a-z_]+)":', body.group(1)))
+    tup = re.search(r"GRASP_S2R_REWARD_TERMS[^=]*=\s*\(([\s\S]*?)\)", _REW)
+    assert tup, "GRASP_S2R_REWARD_TERMS 부재"
+    names = set(re.findall(r'"([a-z_]+)"', tup.group(1)))
+    assert keys == names, (
+        f"terms 키와 계약 튜플이 다르다 — 튜플에만: {names - keys} · terms 에만: {keys - names}")
+
+
+def test_penalties_outside_terms_are_still_logged():
+    """`terms` 밖에서 `total` 에 더해지는 벌점은 **전부 자기 태그를 가져야** 한다.
+
+    `abnormal_penalty`·`respawn_penalty` 는 `compute_grasp_s2r_rewards` 반환값 **뒤에**
+    더해지므로 `GRASP_S2R_REWARD_TERMS` 루프를 안 탄다. 태그가 없으면 `total` 에는
+    들어가는데 어떤 그래프에도 안 보인다 — 09.10 이전 `abnormal_penalty` 가 그 상태였다.
+    무엇이 이 계약을 깨는가: `total` 에 더해지는 새 항을 만들면서 태그를 안 붙일 때.
+    """
+    # ★단언을 **코드 모양**(`total = total + …`)이 아니라 **조건**으로 쓴다.
+    #   09.10 에 이 테스트 자신이 그 함정에 걸렸다: `_abn = …; total = total + _abn` 로
+    #   두 줄로 나누자 정규식이 죽었다. 벌점을 한 줄에 쓰든 변수로 빼든 계약은 같아야 한다.
+    #   조건: env.py 가 소비하는 모든 `*_penalty` cfg 노브는 자기 태그를 가진다.
+    code = _code(_ENV)
+    knobs = set(re.findall(r"cfgn?\.([a-z_]+_penalty)\b", code)) | set(
+        re.findall(r'getattr\(\s*cfgn?\s*,\s*"([a-z_]+_penalty)"', code))
+    assert knobs, "env.py 가 소비하는 *_penalty 노브를 못 찾았다 — 명명 규약이 바뀌었나?"
+    for name in sorted(knobs):
+        assert f'"reward/{name}"' in code, (
+            f"`{name}` 을 env.py 가 소비하는데 `reward/{name}` 태그가 없다 — "
+            "total 에는 들어가고 어떤 그래프에도 안 보이는 보상이 된다")
+
+
+def test_conditional_tags_divide_only_by_binary_gates():
+    """조건부 태그(`reward_cond/*`)는 **이진** 마스크로만 나눈다.
+
+    `Σ항 / Σ마스크` 가 조건부 평균과 같으려면 마스크가 0/1 이어야 한다. 연속 게이트
+    (`graded_contact`·`close_gate` 등)로 나누면 E[XY]/E[Y] ≠ E[X|Y] 라 틀린 값이 나온다.
+    `pre_lift = 1 − lift_latched.float()` · `lift = lift_latched.float()` 만 이진이다.
+    """
+    code = _code(_ENV)
+    m = re.search(r'_pre = gates\["(\w+)"\]; _lat = gates\["(\w+)"\]', code)
+    assert m, "조건부 태그의 마스크 출처를 못 찾았다"
+    assert set(m.groups()) == {"pre_lift", "lift"}, (
+        f"이진이 아닌 게이트로 나누고 있다: {m.groups()}")
+
+
+def test_lift_plateau_is_instrumented():
+    """`lift` 높이 품질의 **포화**를 측정하는 태그가 있어야 한다.
+
+    `lift_height_quality = clamp(dz / lift_height_ref)` 는 목표 반경 안 최소 높이차
+    (goal_z − tolerance)가 `lift_height_ref` 보다 크면 목표까지 내내 1.0 이다 —
+    가중 30 짜리 최대 항이 그 구간에서 경사 0 이라는 뜻이고, Phase 2(절단)의 전제다.
+    산술로 확정되지만 **런이 그 구간에 얼마나 앉아 있는지**는 측정해야 안다.
+    """
+    code = _code(_ENV)
+    for tag in ('"task/lift_quality_sat_frac"', '"task/height_delta_p10"'):
+        assert tag in code, f"lift 평지 계측 태그 {tag} 가 없다"
