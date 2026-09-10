@@ -223,7 +223,15 @@ class GraspKPEnv(GraspS2REnv):
         # ★A-ii: 리미터 예산을 복원(pull)과 액션(step)이 **나눠 쓴다**. 안 나누면 둘이 겹칠 때
         #   합이 리미터를 넘어 A-i 가 없애려던 포화가 되돌아온다.
         _res = float(c.palm_cmd_leak_reserve)
-        _k = (1.0 - _res) * _STEP_GAIN_MARGIN / math.sqrt(3.0)
+        # ★★09.10 /√3 제거. 원래 의도는 "정육면체 대각 노름 = 리미터" 였고 근거는
+        #   "그래야 리미터가 안 걸려 **방향 왜곡**이 없다" 였다. 그런데 리미터는 축별 클램프가
+        #   아니라 `_step3 * (lim/‖_step3‖)` 로 **벡터 전체를 균일 축소**한다(_arm_command) —
+        #   방향은 애초에 보존된다. 즉 막으려던 왜곡이 존재하지 않는다.
+        #   대가는 컸다: 실제 이동은 대부분 단축인데 단축 걸음이 리미터의 54.8% 로 깎였고
+        #   (0.0110 m/step), 여기에 앵커 복원까지 끌어당겨 kp_a3~a5 가 세 번 다 제자리를 돌았다
+        #   (`rate_sat` 0.0000 인데 `act_sat_arm0` 0.999 = 벽에 붙었는데 안 움직임).
+        #   이제 `a=±1` 한 축 = 리미터 한 걸음이다. 대각은 리미터가 균일 축소해 방향만 남긴다.
+        _k = (1.0 - _res) * _STEP_GAIN_MARGIN
         self._palm_step_gain = torch.cat([
             torch.full((3,), _lm * _k, device=dev),
             torch.full((3,), _lr * _k, device=dev)])
@@ -316,13 +324,29 @@ class GraspKPEnv(GraspS2REnv):
         off = (self._anchor_off - self._fab_to_env).tolist()      # 목표(env-local) → palm 지령(fabric 프레임)
         b_lo, b_hi = self._box_lo[:3].tolist(), self._box_hi[:3].tolist()
         gain = self._palm_step_gain[:3].tolist()
+        # ★09.10: 절대 매핑에서 실제로 목표를 지령하는 것은 **델타 범위**다. 아래 클램프 박스
+        #   검사는 델타를 안 보므로 목표 박스가 델타에 여유 0.000 으로 내접해도 ✓ 를 찍었다
+        #   (xy: 필요 spawn_range 0.02 + 반폭 0.08 = 0.100 = 델타 0.100). 그 코너는 |a|=1
+        #   정확히에서만 지령되는데 확률적 정책은 그 점을 사실상 못 낸다 — 목표열이 조용히
+        #   가장자리에서 멈춘다. 여유를 **계산해서 찍고**, cfg 게이트로 내린다.
+        need_margin = float(getattr(c, "goal_reach_margin_m", 0.0))
         budget = _TRAVERSE_BUDGET_FRAC * float(self.max_episode_length)
-        bad, worst = [], 0.0
+        bad, worst, margins = [], 0.0, []
         for i, ax in enumerate("xyz"):
             need_hi, need_lo = g_hi[i] - s_lo[i], g_lo[i] - s_hi[i]          # 최악 이동량
             p_hi, p_lo = g_hi[i] + off[i], g_lo[i] + off[i]                  # 필요한 palm 지령
             if p_hi > b_hi[i] + tol or p_lo < b_lo[i] - tol:
                 bad.append(f"{ax}: palm [{p_lo:.3f},{p_hi:.3f}] ⊄ 클램프 박스 [{b_lo[i]:.3f},{b_hi[i]:.3f}]")
+            if not bool(c.palm_cmd_incremental):
+                # 절대 매핑 전용: 여유가 양수여야 극단 목표를 |a|<1 로 지령할 수 있다.
+                #   증분 매핑에서는 적분기가 박스 전체를 덮으므로 이 검사가 무의미하다
+                #   (남는 제약은 아래 걸음 수뿐) — 그래서 분기 안에 있다.
+                _dl, _dh = float(self._delta_lo[i]), float(self._delta_hi[i])
+                _m = min(_dh - need_hi, need_lo - _dl)
+                margins.append(_m)
+                if _m < need_margin:
+                    bad.append(f"{ax}: 델타 여유 {_m:+.4f} m < 요구 {need_margin:.4f} — 필요 이동 "
+                               f"[{need_lo:+.3f},{need_hi:+.3f}] vs 델타 [{_dl:+.3f},{_dh:+.3f}]")
             # ★A-i(증분): 도달성은 "델타 안인가"가 아니라 "에피소드 안에 걸어갈 수 있는가"다.
             #   적분기는 박스 전체를 덮으므로 남는 제약은 **시간**뿐 — 걸음 수가 예산을 넘으면
             #   목표열이 조용히 멈춘다(구식의 델타 부족과 증상이 같다).
@@ -340,8 +364,14 @@ class GraspKPEnv(GraspS2REnv):
                 "palm_cmd_rate_limit_m 을 키우거나 goal_box_* 를 줄여라: " + " · ".join(bad))
         _mode = ("증분 · 최악 이동 %.0f 스텝 / 예산 %.0f" % (worst, budget)
                  if bool(c.palm_cmd_incremental) else "절대 · 시간 제약 없음")
+        if margins:      # 절대 매핑에서만 채워진다
+            _tight = [ax for ax, m in zip("xyz", margins) if m < 1e-6]
+            _mg = (" · 델타 여유 " + " ".join(f"{ax}{m:+.4f}" for ax, m in zip("xyz", margins)) + " m"
+                   + (" ⚠ 내접: " + ",".join(_tight) if _tight else ""))
+        else:
+            _mg = ""
         print(f"[grasp_kp] 목표 박스 ⊂ 팔 지령 범위 ✓ ({_mode} · "
-              f"클램프 z [{b_lo[2]:.3f},{b_hi[2]:.3f}] · tol 여유 {tol})", flush=True)
+              f"클램프 z [{b_lo[2]:.3f},{b_hi[2]:.3f}] · tol 여유 {tol}{_mg})", flush=True)
 
     def _read_object_mass(self) -> torch.Tensor:
         """물체 공칭 질량 (N,) — 외란 크기의 기준. 질량 DR 은 기본 항등이라 공칭값을 쓴다."""
@@ -761,6 +791,11 @@ class GraspKPEnv(GraspS2REnv):
         self.extras["fabric/joint_err_max"] = _jerr.max()     # 평균은 막힘 구간을 묻는다
         self.extras["fabric/palm_err_mean"] = (
             self.palm_targets[:, :3] + self._fab_to_env - palm_pos).norm(dim=-1).mean()
+        # ★09.10 `fabric_profile` 이 켜졌을 때만 채워진다 — step_time 에서 fabric 몫을 떼어낸
+        #   유일한 수치이고, CUDA Graph 이득의 상한이 이 값이다(로그에 없으면 판단 불가).
+        _ms = getattr(self, "_fabric_ms", None)
+        if _ms is not None:
+            self.extras["fabric/fabric_ms"] = torch.tensor(_ms, device=self.device)
 
     # ------------------------------------------------------------------
     # 종료 — 부모 기하(tilt·out·fell·abnormal) + 손 바닥 관통 + max_goals truncation

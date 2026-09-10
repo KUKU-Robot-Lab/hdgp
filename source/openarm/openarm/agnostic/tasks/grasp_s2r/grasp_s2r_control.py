@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 
 import torch
+import warp as wp
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject
@@ -267,7 +268,8 @@ class GraspS2RControlMixin:
         self.fabric = _fabric_class(p.fabric_class)(
             batch_size=self.num_envs, device=self.device,
             timestep=float(self.cfg.fabrics_dt),
-            graph_capturable=bool(self.cfg.fabric_use_cuda_graph),
+            graph_capturable=(bool(self.cfg.fabric_use_cuda_graph)
+                              or bool(getattr(self.cfg, 'fabric_force_capturable', False))),
             # 손은 fabric 밖(관절공간 시너지 + PD)이다. fabric 은 팔 계획 전용이고
             # 손 자세는 **상태 동기화**로만 받아 충돌 모델을 맞춘다.
             use_hand_fabric=False,
@@ -321,6 +323,75 @@ class GraspS2RControlMixin:
         if not p.palm_box_verified:
             print(f"[grasp_s2r] ⚠ palm_box 미검증({p.name}) — 도달성 확인 후 승격할 것",
                   flush=True)
+        self._setup_fabric_graph()
+
+    # ------------------------------------------------------------------
+    # CUDA Graph (선택) — `fabric_use_cuda_graph` 로만 켠다
+    # ------------------------------------------------------------------
+    def _setup_fabric_graph(self) -> None:
+        """`integrator.step` 만 CUDA Graph 로 캡처한다(09.10).
+
+        왜 적분만인가. 비그래프 경로는 `set_features` 를 **한 번** 부르고 적분을
+        `fabric_decimation` 번 돌린다. 두 연산을 한 덩어리로 캡처하면(DEXTRAH·grasp_v2 원본,
+        `capture_fabric`) 재생 N 번이 곧 `set_features` N 번이라 의미가 달라지고 일도 더 한다.
+        ★09.10 실측(로컬 5090, 솔버 32/2): 복합 캡처는 1024env 에서 fabric 12.30 → 17.15 ms
+          (+39.5%), step_fps 9,829 → 9,333. 16env 에서는 7.22 → 2.20 ms 로 3.3배 이득 —
+          런치 오버헤드가 지배하는 구간에서만 남는 장사였다. 적분만 캡처하면 두 경로가
+          **수치적으로 동일**해지고 그 추가 비용이 사라진다.
+
+        왜 이게 안전한가. `graph_capturable=True` 면 fabric 항들이 고정 버퍼에 in-place 로
+        쓴다(`attractor.metric.copy_(...)` 대 비캡처 경로의 재대입). 그래서 그래프 밖에서 부른
+        `set_features` 의 결과를 캡처된 적분 커널이 같은 주소에서 읽는다. 캡처 전에
+        `set_features` 를 한 번 불러 그 버퍼들이 존재하고 주소가 확정되게 해야 한다.
+
+        ★다물체(`replicate_physics=False`)에도 그대로 쓴다. fabric 세계는 테이블 박스 하나뿐이고
+          (`_build_fabric_world`, env_index="all") 파지 대상 물체는 fabric 입력이 아니다.
+          `_world_ids`/`_world_indicator` 는 setup 에서 한 번 만들어지고 갱신되지 않으므로
+          물체 뱅크가 몇 종이든 캡처 입력이 흔들리지 않는다.
+        """
+        self._fabric_graph = None
+        if not bool(self.cfg.fabric_use_cuda_graph):
+            return
+        _dt = float(self.cfg.fabrics_dt)
+        # 캡처 전 1회 — fabric 내부 특징 버퍼를 할당해 주소를 확정시킨다.
+        self._set_fabric_features()
+        _ts = torch.cuda.Stream(device=self.device)
+        _ws = wp.stream_from_torch(_ts)
+        with torch.cuda.stream(_ts), wp.ScopedStream(_ws):
+            for _ in range(3):                       # 워밍업(원본 capture_fabric 과 동일 횟수)
+                self.integrator.step(self.fabric_q.detach(), self.fabric_qd.detach(),
+                                     self.fabric_qdd.detach(), _dt)
+        self._fabric_graph = torch.cuda.CUDAGraph()
+        with wp.ScopedStream(_ws), torch.cuda.graph(self._fabric_graph, stream=_ts):
+            (self.fabric_q_new, self.fabric_qd_new,
+             self.fabric_qdd_new) = self.integrator.step(
+                self.fabric_q.detach(), self.fabric_qd.detach(),
+                self.fabric_qdd.detach(), _dt)
+        # ★조용한 실패를 시끄러운 실패로. 그래프는 캡처 시점 주소를 읽으므로 이 셋이
+        #   재대입되면 지령이 도달하지 않는다(에러 없이 팔이 고정된다). data_ptr 은 host
+        #   호출이라 동기화가 없다 — 스텝당 비용이 무시할 수준이다.
+        self._graph_state_ptrs = (self.fabric_q.data_ptr(), self.fabric_qd.data_ptr(),
+                                  self.fabric_qdd.data_ptr())
+        print(f"[grasp_s2r] fabric CUDA Graph 캡처 ✓ (적분 전용 · set_features 는 그래프 밖 "
+              f"1회 · decimation {int(self.cfg.fabric_decimation)} · 주소 가드 "
+              f"{'ON' if bool(self.cfg.fabric_graph_guard) else 'OFF'})", flush=True)
+
+    def _set_fabric_features(self) -> None:
+        """fabric 특징 주입 — ON/OFF 가 **같은 호출**을 쓴다(수치 동일성의 근거)."""
+        self.fabric.set_features(
+            self._fabric_hand_cmd, self.palm_targets, "euler_zyx",
+            self.fabric_q.detach(), self.fabric_qd.detach(),
+            self._world_ids, self._world_indicator, self._fabric_damping,
+        )
+
+    def _assert_graph_addresses(self) -> None:
+        """캡처 당시 주소가 그대로인지 확인. 어긋나면 그래프는 옛 메모리를 읽고 있다."""
+        now = (self.fabric_q.data_ptr(), self.fabric_qd.data_ptr(), self.fabric_qdd.data_ptr())
+        if now != self._graph_state_ptrs:
+            raise RuntimeError(
+                "[grasp_s2r] CUDA Graph 상태 텐서가 재대입됐다 — 그래프는 캡처 시점 주소를 "
+                "읽으므로 적분 결과가 반영되지 않는다(에러 없이 팔이 고정된다). "
+                "`self.fabric_q = ...` 를 `self.fabric_q.copy_(...)` 로 바꿔라.")
 
     def _init_home_palm(self) -> None:
         """홈 palm pose 실측 + fabric FK 정합 검사(부팅 게이트 3종).
@@ -384,17 +455,51 @@ class GraspS2RControlMixin:
 
         ★`_apply_action` 은 decimation 만큼 불리므로 거기서 적분하면 fabric 시간이
           2배로 흐른다.
+        ★ON/OFF 는 `set_features` 를 **같은 호출**로 한 번씩 쓰고 적분만 다르게 돈다
+          (그래프는 캡처된 커널 재생). 즉 두 경로는 수치적으로 동일하다 —
+          그래프를 켠 런과 끈 런을 같은 실험으로 비교해도 된다.
         """
-        self.fabric.set_features(
-            self._fabric_hand_cmd, self.palm_targets, "euler_zyx",
-            self.fabric_q.detach(), self.fabric_qd.detach(),
-            self._world_ids, self._world_indicator, self._fabric_damping,
-        )
-        for _ in range(int(self.cfg.fabric_decimation)):
-            self.fabric_q, self.fabric_qd, self.fabric_qdd = self.integrator.step(
-                self.fabric_q.detach(), self.fabric_qd.detach(),
-                self.fabric_qdd.detach(), float(self.cfg.fabrics_dt),
-            )
+        _t0 = self._fabric_timer_start()
+        self._set_fabric_features()
+        if self._fabric_graph is None:
+            for _ in range(int(self.cfg.fabric_decimation)):
+                self.fabric_q, self.fabric_qd, self.fabric_qdd = self.integrator.step(
+                    self.fabric_q.detach(), self.fabric_qd.detach(),
+                    self.fabric_qdd.detach(), float(self.cfg.fabrics_dt),
+                )
+        else:
+            if bool(self.cfg.fabric_graph_guard):
+                self._assert_graph_addresses()
+            for _ in range(int(self.cfg.fabric_decimation)):
+                self._fabric_graph.replay()
+                # ★재대입 금지 — 그래프가 읽는 주소를 유지해야 다음 재생이 최신 상태를 본다.
+                self.fabric_q.copy_(self.fabric_q_new)
+                self.fabric_qd.copy_(self.fabric_qd_new)
+                self.fabric_qdd.copy_(self.fabric_qdd_new)
+        self._fabric_timer_stop(_t0)
+
+    # ------------------------------------------------------------------
+    # fabric 구간 계측 — PhysX 와 섞인 step_time 에서 fabric 몫을 떼어낸다
+    # ------------------------------------------------------------------
+    def _fabric_timer_start(self):
+        """`fabric_profile` 이 켜졌을 때만 CUDA 이벤트를 찍는다. 꺼져 있으면 비용 0."""
+        if not bool(getattr(self.cfg, "fabric_profile", False)):
+            return None
+        _ev = torch.cuda.Event(enable_timing=True)
+        _ev.record()
+        return _ev
+
+    def _fabric_timer_stop(self, start) -> None:
+        """★한 스텝 뒤에 읽는다 — 같은 스텝에서 `elapsed_time` 을 부르면 동기화가 걸려
+        측정 대상(런치 오버헤드)을 측정 행위가 덮어쓴다. 그래서 직전 스텝 쌍만 집계한다."""
+        if start is None:
+            return
+        _end = torch.cuda.Event(enable_timing=True)
+        _end.record()
+        _prev = getattr(self, "_fabric_ev_prev", None)
+        if _prev is not None and _prev[1].query():
+            self._fabric_ms = float(_prev[0].elapsed_time(_prev[1]))
+        self._fabric_ev_prev = (start, _end)
 
     def _apply_action(self) -> None:
         """decimation 마다 불린다 — **적분은 여기서 하지 않는다**."""

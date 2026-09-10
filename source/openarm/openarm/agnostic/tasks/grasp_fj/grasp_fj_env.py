@@ -69,11 +69,27 @@ class GraspFJEnv(GraspKPEnv):
         self._start_ft_checked = False       # 시작 거리 부팅 가드(첫 리셋 뒤 한 번만)
         self._start_ft_last = torch.zeros((), device=dev)   # fresh env 없는 스텝의 진단값(직전값 유지)
         self._build_hand_action_range()
-        _ro = tuple(self.cfg.arm_reset_offset_rad)
-        self._arm_reset_off = (torch.tensor(_ro, device=dev, dtype=torch.float) if _ro else None)
-        if self._arm_reset_off is not None:
-            print(f"[grasp_fj] 팔 리셋 **고정** 오프셋 {[round(v, 4) for v in _ro]} rad "
-                  f"(홈 기준 · 컵 상대 아님) — 시작 거리를 SimToolReal 과 맞춘다", flush=True)
+        # ★09.10 시작 자세는 **프로필이 소유하는 절대 관절값**이다(`arm_reset_joint_pos`).
+        #   구 `cfg.arm_reset_offset_rad`(홈 기준 델타)는 출발 자세에 종속이라 자산 간 이식이
+        #   불가능했다 — 사유는 프로필 필드 주석. 빈 튜플이면 홈에서 시작한다.
+        _rq = tuple(self.profile.arm_reset_joint_pos)
+        if _rq and len(_rq) != self.profile.num_arm_joints:
+            raise RuntimeError(
+                f"[{self.profile.name}] arm_reset_joint_pos 길이 {len(_rq)} "
+                f"≠ num_arm_joints {self.profile.num_arm_joints}")
+        self._arm_reset_q = (torch.tensor(_rq, device=dev, dtype=torch.float) if _rq else None)
+        if self._arm_reset_q is not None:
+            # ★홈은 프로필에서 읽는다 — `_default_q` 는 이 시점에 아직 없다(부모가 나중에 만든다).
+            import re as _re
+            _pat = _re.compile(str(self.profile.arm_joint_regex))
+            _home = [float(v) for k, v in self.profile.init_joint_pos.items() if _pat.fullmatch(k)]
+            _dl = ([round(a - b, 4) for a, b in zip(_rq, _home)]
+                   if len(_home) == len(_rq) else "(홈 관절 추출 실패)")
+            print(f"[grasp_fj] 팔 시작 자세(프로필 절대값) {[round(v, 4) for v in _rq]} rad · "
+                  f"홈 대비 델타 {_dl}", flush=True)
+        else:
+            print(f"[grasp_fj] 팔 시작 자세 = **홈**(arm_reset_joint_pos 미설정) — "
+                  f"시작 거리 가드가 대역을 검사한다", flush=True)
         _k, _a = float(self.cfg.k_arm), float(self.cfg.arm_ema)
         # 실효 slew = α·k_arm/dt (EMA 가 누적 목표에 걸려 스텝당 변화가 정확히 α·k·a) — cfg 가 대조했다.
         print(f"[grasp_fj] fabric OFF · 팔 = 관절 증분 k_arm={_k} rad/step · EMA α={_a} → "
@@ -496,17 +512,23 @@ class GraspFJEnv(GraspKPEnv):
         _start = (_ft * _fresh).sum() / _nf_t.clamp(min=1.0)
         self._start_ft_last = torch.where(_nf_t > 0, _start, self._start_ft_last)   # fresh 없으면 직전값 유지
         ex["ctrl/start_ft_dist"] = self._start_ft_last
-        if (not self._start_ft_checked and self._arm_reset_off is not None
-                and self.common_step_counter <= 2):                    # 첫 두 스텝만 host 로 내려온다
+        # ★09.10 **무조건** 검사한다. 구 판본은 `self._arm_reset_off is not None` 을 전제로 걸어,
+        #   시작 자세가 미설정이라 거리가 틀린 **바로 그 경우를 건너뛰었다** — dg5f-m-short 가
+        #   243.4 mm 로 부팅해 3 iter 를 돌고 exit 0 으로 끝났다(09.10). 결과를 보는 가드가
+        #   수단(오프셋 존재)에 조건을 걸면 안 된다. 원인 구분은 **메시지**가 한다.
+        if not self._start_ft_checked and self.common_step_counter <= 4:
             _nf = int(_nf_t)
             if _nf >= min(64, self.num_envs):
                 self._start_ft_checked = True
                 _lo, _hi = 0.07, 0.14
                 if not (_lo <= float(_start) <= _hi):
+                    _why = ("`arm_reset_joint_pos` 가 이 프로필에 **미설정**이라 홈에서 시작한다 — "
+                            "이 팔로 IK 를 풀어 채울 것"
+                            if self._arm_reset_q is None else
+                            "`arm_reset_joint_pos` 가 이 홈/자산에서 푼 값이 아니다")
                     raise RuntimeError(
                         f"[{self.profile.name}] 리셋 직후 손끝→물체 평균 {float(_start) * 1e3:.1f} mm 가 "
-                        f"SimToolReal 시작 거리 대역 [{_lo * 1e3:.0f}, {_hi * 1e3:.0f}] mm 밖이다 — "
-                        f"arm_reset_offset_rad 가 이 홈/프로필에서 푼 값이 아니다")
+                        f"SimToolReal 시작 거리 대역 [{_lo * 1e3:.0f}, {_hi * 1e3:.0f}] mm 밖이다 — {_why}")
                 print(f"[grasp_fj] 시작 거리 가드 ✓ 손끝→물체 {float(_start) * 1e3:.1f} mm "
                       f"({_nf} env, 대역 {_lo * 1e3:.0f}~{_hi * 1e3:.0f})", flush=True)
 
@@ -524,10 +546,10 @@ class GraspFJEnv(GraspKPEnv):
         #   그들 팔 속도(0.15 rad/s)는 손이 물체 옆(104mm)에서 시작하는 것과 한 묶음이다.
         #   ★컵 상대가 아니라 고정값이다(08.18: 컵 참값 텔레포트는 실기 재현 불가라 폐기).
         #   부모가 홈으로 텔레포트한 **뒤에** 관절 상태를 덮어써야 실측 q 와 지령 q* 가 일치한다.
-        if self._arm_reset_off is not None:
+        if self._arm_reset_q is not None:
             _q = self.robot.data.joint_pos[env_ids].clone()
             _q[:, self._arm_ids_t] = torch.clamp(
-                self._default_q[env_ids][:, self._arm_ids_t] + self._arm_reset_off.unsqueeze(0),
+                self._arm_reset_q.unsqueeze(0).expand(len(env_ids), -1),
                 self._arm_lo[env_ids], self._arm_hi[env_ids])
             self.robot.write_joint_state_to_sim(_q, torch.zeros_like(_q), env_ids=env_ids)
             self._arm_q_target[env_ids] = _q[:, self._arm_ids_t]

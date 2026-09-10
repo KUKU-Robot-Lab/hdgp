@@ -434,9 +434,19 @@ def test_fabric_hand_state_is_synced():
 
 
 def test_fabric_integrates_once_per_policy_step():
-    """적분은 `_step_fabric` 한 곳 — `_apply_action` 에서 돌리면 fabric 시간이 2배."""
+    """적분은 `_step_fabric` 한 곳 — `_apply_action` 에서 돌리면 fabric 시간이 2배.
+
+    ★09.10: CUDA Graph 배선이 `_setup_fabric_graph` 에서 워밍업·캡처로 적분을 부른다.
+      그건 **부팅 1회**라 정책 스텝당 적분 횟수와 무관하다. 그래서 전역 개수가 아니라
+      '어느 함수 안에 있는가'를 잠근다 — 개수 프록시는 올바른 구현까지 막는다.
+    """
     ctrl = _code(_CTRL)
-    assert ctrl.count("self.integrator.step(") == 1
+    _allowed = ("_step_fabric", "_setup_fabric_graph")
+    total = ctrl.count("self.integrator.step(")
+    inside = sum(_fn_block(ctrl, fn).count("self.integrator.step(") for fn in _allowed)
+    assert total == inside, f"허용되지 않은 함수에서 적분한다 (전역 {total} vs 허용 {inside})"
+    assert _fn_block(ctrl, "_step_fabric").count("self.integrator.step(") == 1, \
+        "정책 스텝당 적분 호출 지점은 하나여야 한다"
     m = re.search(r"def _apply_action\(self\)([\s\S]*?)\n    def ", ctrl)
     assert m and "integrator" not in m.group(1)
 
@@ -1776,3 +1786,73 @@ def test_boot_log_reports_assembled_gains_not_the_profile():
     assert "robot_cfg" in blk.group(0), "로그가 조립된 robot_cfg 를 안 읽는다(프로필을 읽는다)"
     assert 'getattr(p, "actuator_specs"' not in blk.group(0), \
         "로그가 아직 프로필을 읽는다 — override 가 로그에 안 보인다"
+
+
+# ---------------------------------------------------------------- CUDA Graph (09.10)
+def test_graph_on_off_share_one_set_features_call():
+    """ON/OFF 가 **같은** `set_features` 호출을 쓴다 = 두 경로의 수치가 동일하다.
+
+    원본(`capture_fabric`)은 set_features + step 을 한 덩어리로 캡처해 재생마다
+    set_features 를 다시 돌린다. 그러면 의미가 달라지고(부분스텝마다 특징 재계산)
+    일도 더 한다 — 09.10 실측 1024env fabric 12.30 → 17.15 ms. 호출을 분기 **밖**에
+    한 번만 두는 것이 그 두 문제를 동시에 없앤 계약이다.
+    """
+    blk = _fn_block(_code(_CTL), "_step_fabric")
+    assert blk.count("self._set_fabric_features()") == 1, "set_features 호출은 정확히 한 번"
+    assert blk.index("self._set_fabric_features()") < blk.index("self._fabric_graph is None"), \
+        "set_features 가 ON/OFF 분기보다 앞(= 공통 경로)에 있어야 한다"
+    assert "set_features(" not in blk, "분기 안에서 fabric.set_features 를 직접 부르면 안 된다"
+
+
+def test_only_integrator_is_captured():
+    """캡처 대상은 `integrator.step` 뿐 — set_features 가 그래프 안에 들어가면 안 된다."""
+    blk = _fn_block(_code(_CTL), "_setup_fabric_graph")
+    assert "torch.cuda.graph(" in blk, "캡처 블록이 없다 — 플래그만 있고 이득이 0인 반쪽 배선"
+    # ★캡처 **블록만** 자른다. 함수 끝까지 자르면 뒤따르는 print 의 설명 문자열이
+    #   금지어 검사에 걸린다(설명문이 계약을 깨뜨리는 전형).
+    cap = blk[blk.index("torch.cuda.graph("):blk.index("self._graph_state_ptrs")]
+    assert "self.integrator.step(" in cap, "적분을 캡처하지 않는다"
+    assert "set_features" not in cap, "set_features 가 캡처 블록 안에 있다(재생마다 중복 실행)"
+    # 캡처 전 1회 호출로 fabric 내부 특징 버퍼 주소를 확정시켜야 한다.
+    assert blk.index("self._set_fabric_features()") < blk.index("torch.cuda.graph("), \
+        "캡처 전에 set_features 를 한 번 불러 내부 버퍼 주소를 확정해야 한다"
+
+
+def test_replay_copies_state_back_in_place():
+    """재생 후 상태는 `copy_` 로 되받는다 — 재대입하면 다음 재생이 옛 메모리를 읽는다."""
+    blk = _fn_block(_code(_CTL), "_step_fabric")
+    on = blk.split("else:")[1]
+    for name in ("fabric_q", "fabric_qd", "fabric_qdd"):
+        assert f"self.{name}.copy_(self.{name}_new)" in on, f"{name} 를 copy_ 로 안 받는다"
+    assert "self.fabric_q, self.fabric_qd, self.fabric_qdd =" not in on, \
+        "ON 경로에서 상태를 재대입한다"
+
+
+def test_graph_address_guard_exists_and_is_on_by_default():
+    """조용한 실패를 시끄러운 실패로. 이 버그의 유일한 증상은 '에러 없이 팔이 고정'이다."""
+    assert "fabric_graph_guard: bool = True" in _code(_CFG), "주소 가드 기본값이 True 가 아니다"
+    guard = _fn_block(_CTL, "_assert_graph_addresses")
+    assert "data_ptr()" in guard and "raise RuntimeError" in guard
+    assert "self._assert_graph_addresses()" in _fn_block(_CTL, "_step_fabric"), \
+        "가드가 스텝에서 안 불린다"
+
+
+def test_fabric_world_is_static_so_graph_survives_multi_object():
+    """다물체 전제. fabric 세계는 테이블 하나뿐이고 setup 이후 갱신되지 않아야 한다.
+
+    갱신되면 `_world_ids`/`_world_indicator` 가 재대입되어 캡처된 그래프가 옛 주소를
+    읽는다. 파지 대상 물체는 fabric 입력이 아니므로 뱅크가 몇 종이든 무관해야 한다.
+    """
+    code = _code(_CTL)
+    assert code.count("self._world_ids, self._world_indicator =") == 1, \
+        "world id 를 두 번 이상 대입한다 — 갱신되면 그래프가 깨진다"
+    world = _fn_block(_CTL, "_build_fabric_world")
+    assert '"env_index": "all"' in world, "fabric 장애물이 env 별로 갈리면 다물체에서 흔들린다"
+
+
+def test_fabric_profile_timer_is_opt_in_and_avoids_sync():
+    """fabric 몫을 재는 유일한 수단. 단 같은 스텝에서 읽으면 동기화가 측정을 오염시킨다."""
+    assert "fabric_profile: bool = False" in _code(_CFG), "프로파일 기본값은 OFF 여야 한다"
+    stop = _fn_block(_CTL, "_fabric_timer_stop")
+    assert "_fabric_ev_prev" in stop and ".query()" in stop, \
+        "직전 스텝 쌍을 query() 로 확인하고 읽어야 한다(동기화 금지)"

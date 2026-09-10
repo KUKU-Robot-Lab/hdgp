@@ -168,8 +168,18 @@ def test_goal_box_reach_assert_exists_and_runs_at_boot():
                   "_box_lo", "_box_hi", "_anchor_off", "box_min", "box_max",
                   "spawn_range", "_obj_origin_off", "tol_floor", "raise RuntimeError"):
         assert token in block, token
-    assert "_delta_lo" not in block and "_delta_hi" not in block, \
-        "증분 매핑에서 델타 도달성 검사는 의미가 없다 — 되살아나면 구식 전제가 섞인 것"
+    # ★09.10: 델타 도달성 검사는 **절대 매핑 전용**이다. 증분 매핑에서는 적분기가 박스 전체를
+    #   덮으므로 무의미하고(구식 전제), 절대 매핑에서는 목표를 실제로 지령하는 유일한 한계다.
+    #   그래서 금지가 아니라 **분기 안에 있을 것**을 요구한다 — 분기 밖으로 나오면 증분 런이
+    #   있지도 않은 제약으로 부팅에서 죽는다.
+    _delta_use = [ln for ln in block.splitlines() if "_delta_lo[" in ln or "_delta_hi[" in ln]
+    if _delta_use:
+        _guard = "if not bool(c.palm_cmd_incremental):"
+        assert _guard in block, "델타 여유 검사는 절대 매핑 분기 안에 있어야 한다"
+        # 사용 지점이 분기보다 뒤에 오는지(= 분기 안) 확인.
+        assert block.index(_guard) < min(block.index(ln) for ln in _delta_use), \
+            "델타 여유 검사가 절대 매핑 분기보다 앞에 있다 — 증분 런이 잘못 죽는다"
+        assert "goal_reach_margin_m" in block, "여유 게이트는 cfg 에서 와야 한다(상수 금지)"
     assert 'getattr(self, "fabric", None) is None' in block, "Track B(관절공간)는 건너뛰어야 한다"
     code = _code(_CFG)
     assert "palm_delta_xyz: tuple[float, float, float] = (0.10, 0.10, 0.35)" in code
@@ -333,10 +343,28 @@ def test_arm_command_has_both_mappings_behind_one_switch():
     assert "self._prev_palm_cmd = self.palm_targets[:, :3].clone()" in block
 
 
-def test_absolute_mapping_is_the_default():
-    """기본이 증분으로 되돌아가면 검증된 유일한 리프트 경로(kp_a2)를 잃는다."""
-    assert "palm_cmd_incremental: bool = False" in _code(_CFG), \
-        "기본이 절대가 아니다 — a3/a4/a5 가 전부 lifted 0.0000 이었다"
+def test_incremental_mapping_needs_limiter_matched_gain():
+    """★09.10 기본이 절대 → **증분** 으로 바뀌었다. 이 테스트는 그 전제를 잠근다.
+
+    옛 계약은 "기본은 절대" 였고 근거가 "a3/a4/a5 가 전부 lifted 0.0000" 이었다. 그런데
+    그 세 런은 **두 결함이 겹친** 증분이었다: 걸음이 `/√3` 로 리미터의 54.8% 로 깎였고
+    (0.0110 m/step), 그 위에 앵커 복원이 매 스텝 끌어당겼다. 원인이 분리되지 않은 채
+    "증분은 실패한 방식" 으로 굳었다.
+    절대 매핑을 기각한 실측은 kp_shg_b1(셰이커 9종, 500 iter 완주): `act_sat_arm`
+    0.320 → **0.989**, `palm_delta_z` 0.318(범위의 91%), `close_gate` 0.0000,
+    `lifted_frac` 0.0000. σ=1.0 고정과 절대 위치 지령이 곱해지면 **레일 흡착이 유일한
+    안정해**가 된다.
+    ⚠단, 절대 매핑은 **컵에서는** 이륙했다(a1/a2/a6/a12). 물체가 넓으면 정밀도가 덜
+    필요해 성립한다 — 즉 "절대는 언제나 틀렸다" 가 아니라 "셰이커 폭에서는 못 쓴다" 다.
+    그래서 계약은 증분을 강제하되 **증분이 성립할 조건**(리미터에 맞는 걸음, 복원 0)을
+    함께 잠근다. 이 셋 중 하나만 되돌리면 a3~a5 가 재현된다.
+    """
+    code = _code(_CFG)
+    assert "palm_cmd_incremental: bool = True" in code, "기본이 증분이 아니다"
+    assert "palm_cmd_anchor_pull: float = 0.0\n" in code, "앵커 복원이 켜져 있다 — 순 이동을 지운다"
+    assert "palm_cmd_leak_reserve: float = 0.0\n" in code, "복원이 0 인데 예산을 떼어 놓고 있다"
+    gain = _fn_block(_ENV, "_setup_palm_step_gain")
+    assert "math.sqrt(3.0)" not in gain, "걸음이 다시 42% 깎인다"
 
 
 def test_increment_only_state_is_skipped_under_absolute_mapping():
@@ -352,12 +380,15 @@ def test_increment_only_state_is_skipped_under_absolute_mapping():
 def test_palm_step_gain_is_derived_from_the_rate_limiter():
     """게인을 상수로 적으면 리미터를 바꿀 때 조용히 어긋난다 — 반드시 파생시킨다."""
     block = _fn_block(_ENV, "_setup_palm_step_gain")
-    for token in ("palm_cmd_rate_limit_m", "palm_cmd_rate_limit_rot_deg",
-                  "math.sqrt(3.0)", "raise RuntimeError"):
+    for token in ("palm_cmd_rate_limit_m", "palm_cmd_rate_limit_rot_deg", "raise RuntimeError"):
         assert token in block, token
-    # √3 로 나눠야 정육면체 최악(대각) 노름이 리미터와 같아진다. ★거기서 **여유**를 더 빼야
-    #   float32 오차로 리미터가 nm 단위로 걸려 rate_sat 진단이 오염되는 것을 막는다(스모크 0.0625).
+    # ★09.10 `/ math.sqrt(3.0)` 요구를 뺐다. 원래 근거는 "대각에서 리미터가 걸리면 방향이
+    #   왜곡된다" 였는데, 리미터는 `_step3 * (lim/‖_step3‖)` 로 벡터를 균일 축소해 방향을
+    #   **이미 보존**한다(`_arm_command`). 막으려던 왜곡이 없는데 단축 걸음만 54.8% 로
+    #   깎여 kp_a3~a5 가 제자리를 돌았다. 이제 `a=±1` 한 축 = 리미터 한 걸음이다.
+    #   계약은 공식이 아니라 **파생 여부**를 잠근다 — 상수로 적으면 리미터 변경 시 어긋난다.
     assert "_STEP_GAIN_MARGIN" in block and "_lm * _k" in block and "_lr * _k" in block
+    assert "math.sqrt(3.0)" not in block, "단축 걸음을 다시 42% 깎는다 — 09.10 실측으로 제거됐다"
 
 
 def test_anchor_pull_shares_the_rate_budget_with_the_action():
@@ -367,7 +398,7 @@ def test_anchor_pull_shares_the_rate_budget_with_the_action():
     """
     gain = _fn_block(_ENV, "_setup_palm_step_gain")
     assert "palm_cmd_leak_reserve" in gain
-    assert "(1.0 - _res) * _STEP_GAIN_MARGIN / math.sqrt(3.0)" in gain, "액션 게인이 남은 예산 기준이 아니다"
+    assert "(1.0 - _res) * _STEP_GAIN_MARGIN" in gain, "액션 게인이 남은 예산 기준이 아니다"
     assert "_palm_pull_cap" in gain
 
     arm = _fn_block(_ENV, "_arm_command")
@@ -658,3 +689,26 @@ def test_nothing_set_by_a_subclass_hook_is_clobbered_after_super():
         assert not clash, (
             f"{track} 가 `_setup_fabrics` 에서 세팅하는 {sorted(clash)} 를 "
             f"grasp_kp 가 super() 뒤에 덮어쓴다 — 하위 트랙에서 조용히 무효가 된다")
+
+
+def test_no_duplicate_field_declaration_in_cfg():
+    """같은 필드를 두 번 선언하면 **뒤엣것이 이긴다** — 앞엣것은 조용한 no-op 이 된다.
+
+    09.10 실사고: `palm_cmd_incremental`·`palm_cmd_anchor_pull`·`palm_cmd_leak_reserve` 를
+    파일 위쪽에 새로 선언했는데 아래쪽에 같은 필드가 이미 있어 값이 안 실렸다. 부팅 로그의
+    게인(0.01898)과 도달성 로그("절대")로만 드러났고, 그마저 안 봤으면 잘못된 설정으로
+    500 iter 를 돌릴 뻔했다. dataclass 는 재선언을 에러로 만들지 않으므로 계약이 막는다.
+    """
+    # ★클래스 **안**에서만 센다. 자식 클래스가 부모 필드를 덮는 것은 정상 상속이다
+    #   (`GraspKPTesolloRightEnvCfg.profile_name` 등) — 파일 전체로 세면 오탐이 난다.
+    tree = ast.parse(_CFG)
+    bad = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        names = [n.target.id for n in node.body
+                 if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)]
+        dups = sorted({x for x in names if names.count(x) > 1})
+        if dups:
+            bad[node.name] = dups
+    assert not bad, f"한 클래스 안에서 중복 선언 — 뒤엣것만 실린다: {bad}"

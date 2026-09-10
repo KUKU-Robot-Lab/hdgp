@@ -97,17 +97,6 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
     #   (물체 참값을 훔쳐보게 된다), `_fresh <= 1` 리셋 진단(grasp_s2r_env:1528)이 영구 오염되어
     #   `reset/arm_q_dev_max` 가 fail-loud 가드 기능을 잃는다. 2 면 넷 다 피하고 비용은 600→597.
     goal_clock_restart_step: int = -1
-    # ★09.08 리셋 시 팔 관절을 홈에서 이만큼 **고정** 오프셋한다(rad, 7개). 빈 튜플 = 끔 = 홈 그대로.
-    #   왜: SimToolReal 의 팔 속도(0.15 rad/s)는 **손이 물체 바로 옆에서 시작**하는 것과 한 묶음이다.
-    #   실측(09.08) — 그들 초기 손끝→물체 104mm(KUKA FK), 우리 250mm. 같은 속도로 우리 거리를
-    #   가면 무작위 정책이 600스텝(1 에피소드)에 203mm 중 **14.4mm** 밖에 못 좁힌다
-    #   (256환경 실측, 60mm 안에 든 env 0%). 속도만 베끼고 거리를 안 옮기면 아무도 근거를 못 댄
-    #   조합이 된다. 그래서 시작 거리도 같이 맞춘다.
-    #   ★★**컵 상대가 아니라 고정값**이어야 한다: 08.18 에 컵 참값 pregrasp 텔레포트를 버렸고
-    #   (실기에서 컵 위치는 지각 결과라 재현 불가) 고정 홈 리셋으로 전환했다. 여기서도 스폰
-    #   분포에 대한 **평균**이 100mm 가 되는 고정 자세 하나를 쓴다 — 그들 방식과 같은 구조다.
-    #   값은 damped least squares IK 로 구했다(손바닥 회전 드리프트를 최소노름으로 억제).
-    arm_reset_offset_rad: tuple = ()
 
     def _arm_action_dim(self, profile) -> int:
         """액션의 팔 구간 폭 = 관절 수(B). A 의 `_derive_spaces` 가 이 훅으로 22 를 만든다."""
@@ -173,12 +162,24 @@ class GraspFJEnvCfg(GraspKPEnvCfg):
         elif abs(_implied_speed_scale - _declared) > 0.02 * _declared:
             errs.append(f"k_arm/정책_dt = {_implied_speed_scale:.3f} ≠ 선언 dofSpeedScale {_declared} "
                         f"(k_arm {self.k_arm} · dt {_dt:.5f}) — dt 를 바꿨으면 k_arm 도 환산해야 한다")
-        _ro = tuple(self.arm_reset_offset_rad)
-        if _ro and len(_ro) != int(profile.num_arm_joints):
-            errs.append(f"arm_reset_offset_rad 길이 {len(_ro)} ≠ num_arm_joints {profile.num_arm_joints}")
-        if _ro and max(abs(float(v)) for v in _ro) > 1.5:
-            errs.append(f"arm_reset_offset_rad 이 |1.5| rad 를 넘는다 — 홈에서 그렇게 멀면 "
-                        f"고정 자세가 아니라 다른 홈이다: {_ro}")
+        # ★09.10 시작 자세는 **프로필**이 소유한다(`arm_reset_joint_pos`, 절대 관절값).
+        #   구 `arm_reset_offset_rad`(태스크 cfg 의 홈 기준 델타)는 자산 간 이식이 불가능해 폐기했다.
+        _rq = tuple(profile.arm_reset_joint_pos)
+        if _rq and len(_rq) != int(profile.num_arm_joints):
+            errs.append(f"{profile.name}.arm_reset_joint_pos 길이 {len(_rq)} "
+                        f"≠ num_arm_joints {profile.num_arm_joints}")
+        if _rq:
+            import re as _re
+            _pat = _re.compile(str(profile.arm_joint_regex))
+            _home = [v for k, v in profile.init_joint_pos.items() if _pat.fullmatch(k)]
+            if len(_home) != len(_rq):
+                errs.append(f"{profile.name}: arm_joint_regex 로 뽑은 홈 팔관절 {len(_home)}개 "
+                            f"≠ arm_reset_joint_pos {len(_rq)}개")
+                _home = list(_rq)
+            _d = max(abs(a - float(b)) for a, b in zip(_rq, _home))
+            if _d > 1.5:
+                errs.append(f"{profile.name}.arm_reset_joint_pos 가 홈에서 {_d:.2f} rad 떨어져 있다 "
+                            f"(|1.5| 초과) — 시작 자세가 아니라 다른 홈이다")
         _max_steps = int(round(float(self.episode_length_s) / _dt))
         _r = int(self.goal_clock_restart_step)
         # 0/1 은 지연 flush·`_fresh` 리셋 진단·`ctrl/start_ft_dist`(≤1 을 '리셋 직후' 로 읽는다)를 오염시킨다.
@@ -259,16 +260,6 @@ class GraspFJTesolloRightEnvCfg(GraspFJEnvCfg):
     # ── 손: 7+20 DOF 직접 제어 ────────────────────────────────────────────────
     # 사용자 지시: "simtooreal 하고 동일성을 유지한다면 시너지그립도 제거하고 7+20dof 제어".
     hand_direct: bool = True
-    # ★09.08 시작 거리를 SimToolReal 과 맞춘다 — 손끝→물체 평균 **104.7 mm**(그들 104 mm).
-    #   홈은 248.9 mm 였고, 그 거리에서 그들 팔 속도(0.15 rad/s)로는 무작위 정책이 한 에피소드
-    #   (600스텝)에 203 mm 중 **14.4 mm** 밖에 못 좁힌다(256환경 실측, 60 mm 안에 든 env 0%).
-    #   속도만 베끼고 거리를 안 옮기면 아무도 근거를 못 댄 조합이 된다.
-    #   ★자세는 안 건드렸다 — 홈의 손 자세가 이미 옆면(side) 접근에 맞다. 6D IK 로 회전을
-    #   고정하고 TCP 위치만 옮겼다: 손바닥 이동 [−50.8, +150.7, −94.5] mm · **회전 드리프트 0.01°**.
-    #   ★관절 포화도 확인했다 — 한계 여유 최소 11.6°(홈 4.5°)로 **홈보다 2.6배 낫다**.
-    #   증분 매핑은 적분기라 한계에 붙으면 반사 경계가 되어 정책이 못 돌아온다(RH56F1 실측
-    #   `arm_limit_sat` 0.49 · `ft_dist` 0.13→0.69). 손끝 z 최저 0.273 m > 테이블 0.215 m.
-    arm_reset_offset_rad: tuple = (-0.1967, -0.3729, -0.2159, -0.0179, -0.2384, -0.3813, 0.3810)
 
     # ★09.08 손 법칙은 SimToolReal 과 **같은 순수 full-joint** 다(사용자 확정: "보정 open→grip 매핑,
     #   close_gate+blocked 홀드 — 이걸 안 하려고 했음"). 액션 20칸이 각 관절의 액션한계
@@ -324,11 +315,3 @@ class GraspFJTesolloRightShortEnvCfg(GraspFJTesolloRightEnvCfg):
     """
 
     profile_name: str = "tesollo_right_short"
-    # ★09.08 팔 리셋 오프셋은 **상속하면 안 된다** — 부모의 값은 `tesollo_right` 홈에서
-    #   6D IK 로 푼 **델타**라, 홈 관절값이 다른 이 프로필에 얹으면 TCP 가 어디로 갈지 모른다
-    #   (부모 값의 근거였던 "손끝→물체 104.7mm" 보장이 그대로 깨진다).
-    #   이 판을 SimToolReal 시작 거리에 맞추려면 **이 팔로 IK 를 다시 풀어** 값을 넣어야 한다.
-    #   그때까지는 끔 = 자기 홈 그대로다(09.08 이전 거동).
-    #   ⚠단, 끈 상태에서는 팔 속도(0.15 rad/s)와 시작 거리(≈250mm)가 서로 안 맞는 조합이 된다 —
-    #   실측(256환경): 그 조합에서 무작위 정책은 600스텝에 203mm 중 14.4mm 밖에 못 좁힌다.
-    arm_reset_offset_rad: tuple = ()

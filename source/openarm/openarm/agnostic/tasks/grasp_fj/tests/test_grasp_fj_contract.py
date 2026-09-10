@@ -653,7 +653,7 @@ def test_drop_sticky_and_start_distance_guard_live_in_the_log_hook():
         "_fresh = (self.episode_length_buf <= 1).float()",
         "_start = (_ft * _fresh).sum() / _nf_t.clamp(min=1.0)",      # 마스크 곱·합 — GPU 텐서 유지
         '"ctrl/start_ft_dist"',
-        "self.common_step_counter <= 2",                               # host 판단은 부팅 직후 두 스텝만
+        "self.common_step_counter <= 4",                               # host 판단은 부팅 직후 몇 스텝만
         "_nf = int(_nf_t)",
         "raise RuntimeError",
     ])
@@ -734,7 +734,9 @@ def _run_validator(**over):
     )
     base.update(over)
     cfg = types.SimpleNamespace(**base)
-    ns["_validate_fj_fields"](cfg, types.SimpleNamespace(num_arm_joints=7))
+    ns["_validate_fj_fields"](cfg, types.SimpleNamespace(
+        num_arm_joints=7, arm_reset_joint_pos=(), arm_joint_regex="r_aj_[1-7]",
+        init_joint_pos={}, name="stub"))
 
 
 def test_validator_accepts_the_shipped_leaf_values():
@@ -752,8 +754,6 @@ def test_validator_kills_every_broken_pair():
         "hand_direct + 속도 피드포워드": dict(hand_velocity_ff_scale=1.0),
         "slew 짝 이탈": dict(k_arm=0.167),                                 # slew 0.15 인 채로
         "dofSpeedScale 선언 누락": dict(k_arm=0.167, arm_slew_rad_s=1.0),   # 선언은 1.5 인 채로
-        "리셋 오프셋 길이": dict(arm_reset_offset_rad=(0.1, 0.1)),
-        "리셋 오프셋 과다": dict(arm_reset_offset_rad=(2.0,) * 7),
         "연속+낮은 공차": dict(tol_start=0.06, goal_first_z_range=(0.16, 0.24)),
         "z짝 위반": dict(goal_first_z_range=(0.16, 0.24)),                # tol 0.1125 인 채로
         "시계 범위": dict(goal_clock_restart_step=600),
@@ -792,14 +792,19 @@ def test_arm_reset_offset_is_fixed_not_cup_relative():
     SimToolReal 도 같은 구조다 — 고정 팔 리셋 자세(`desired_kuka_pos`)가 물체의 스폰 분포
     **평균**에 대해 가까울 뿐, 매 리셋마다 물체를 보고 자세를 계산하지 않는다.
     """
-    assert "arm_reset_offset_rad: tuple = ()" in _code(_CFG), "기본은 끔(홈 그대로)"
+    # ★09.10 시작 자세는 **프로필이 소유하는 절대 관절값**(`arm_reset_joint_pos`)이다.
+    #   구 태스크 cfg 델타(`arm_reset_offset_rad`)는 자산 간 이식이 불가능해 폐기했다 —
+    #   dg5f-m-short 가 그래서 홈에 앉아 시작 거리 243mm 로 돌았다(09.10).
+    from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
+    assert "arm_reset_offset_rad" not in _code(_CFG), "폐기된 델타 필드가 되살아났다"
+    assert len(PROFILES["tesollo_right"].arm_reset_joint_pos) == 7, "시작 자세는 프로필이 들고 있다"
     blk = _fn_block(_ENV, "_reset_idx")
-    assert "self._arm_reset_off" in blk
+    assert "self._arm_reset_q" in blk
     for banned in ("object", "obj_pos", "goal_pos", "root_pos_w", "spawn"):
-        assert banned not in blk.split("_arm_reset_off")[1][:900], (
-            f"리셋 오프셋 계산이 물체 상태('{banned}')를 읽는다 — 컵 상대 텔레포트 부활")
+        assert banned not in blk.split("_arm_reset_q")[1][:900], (
+            f"리셋 자세 계산이 물체 상태('{banned}')를 읽는다 — 컵 상대 텔레포트 부활")
     # 지령 목표와 실측을 같이 옮겨야 한다(안 그러면 첫 스텝이 거대한 추종 오차로 시작한다).
-    off = blk.split("self._arm_reset_off is not None")[1]
+    off = blk.split("self._arm_reset_q is not None")[1]
     _ordered(off, ["self.robot.write_joint_state_to_sim(_q", "self._arm_q_target[env_ids] = _q",
                    "self._prev_arm_q_target[env_ids] = self._arm_q_target[env_ids]"])
     assert "torch.clamp(" in off and "self._arm_lo[env_ids]" in off, "관절 한계를 넘으면 안 된다"
@@ -816,8 +821,14 @@ def test_registry_leaves_and_arm_specific_values_do_not_leak_to_the_short_arm():
     assert "GraspFJTesolloRightShortEnvCfg" in _REG, "등록부가 short 판을 쓴다"
     short = _class_body(_CFG, "GraspFJTesolloRightShortEnvCfg")
     assert "class GraspFJTesolloRightShortEnvCfg(GraspFJTesolloRightEnvCfg)" in _code(_CFG)
-    assert "arm_reset_offset_rad: tuple = ()" in short, (
-        "Short 가 부모의 리셋 오프셋을 상속하면 안 된다 — 홈이 달라 104.7mm 보장이 깨진다")
+    # ★09.10 시작 자세는 프로필이 소유한다 — cfg 상속 문제가 아니라 **자산별 값**의 문제다.
+    #   short 는 팔 홈 관절값이 달라(손이 47.8mm 짧아 더 뻗는다) 부모 값을 쓸 수 없다.
+    #   IK 로 풀기 전까지 비어 있어야 하고, 그 상태로 학습하면 시작 거리 가드가 죽인다.
+    from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
+    _p, _s = PROFILES["tesollo_right"], PROFILES["tesollo_right_short"]
+    assert _s.arm_reset_joint_pos != _p.arm_reset_joint_pos, (
+        "short 가 부모의 시작 자세를 그대로 쓰면 안 된다 — 홈 관절값이 다르다")
+    assert "arm_reset_offset_rad" not in short, "폐기된 델타 필드가 되살아났다"
     # 반대로 팔 기하와 무관한 값들은 상속해야 한다(Short 가 덮지 않아야 한다).
     for field in ("tol_start", "goal_force_consecutive", "wrench_force_scale", "hand_direct"):
         assert not re.search(rf"^\s+{field}:", short, re.M), f"{field} 는 상속해야 한다"

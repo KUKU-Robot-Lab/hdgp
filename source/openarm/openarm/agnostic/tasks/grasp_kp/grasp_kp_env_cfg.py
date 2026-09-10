@@ -35,6 +35,37 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     """
 
     # ---- 기존 필드 덮어쓰기 (DESIGN §8) ----------------------------------------------
+    # ---- 물체군 · CUDA Graph (09.10 사용자 지시) ----------------------------------------
+    # 부모 기본은 `cup_family`(컵 8종 + 구 셰이커 1종). kp_a1~a12 12런 전부 이 뱅크로
+    #   돌았고 **이미 다물체**였다(`replicate_physics` 는 `_apply_object_bank` 가 False 로
+    #   내린다). 즉 이번 변경은 "다물체 전환"이 아니라 **뱅크 교체**다.
+    # 새 뱅크는 `assets/simulation_setting/shaker` 자산의 scale 0.80~1.20 · 0.05 단위 9종.
+    #   구 `assets/cup/shaker_closed_rl.usd` 와 다른 물체다(원점·형상·충돌근사 전부 다름).
+    object_bank: str = "shaker_sweep"
+    # ★형상 의존값(grasp_s2r CLAUDE.md 가 "하나뿐"이라고 못 박은 값)이라 뱅크와 함께 바꾼다.
+    #   컵은 원점이 바닥+77.3mm 이고 파지점을 +30mm 위로 잡았다(높이의 60%).
+    #   새 셰이커는 원점이 **바운딩박스 중심**이자 무게중심(usda physics:centerOfMass
+    #   z=+0.00138)이다. 게다가 원뿔대라 높이가 곧 파지 지름을 정한다
+    #   (외경 바닥 58.0 → 림 88.0mm). 종횡비 2.4 로 넘어지기 쉬우므로 전도 토크가
+    #   최소가 되는 **무게중심 높이**에서 잡는다 → 오프셋 0. 그 단면 외경이 73.0mm 다.
+    object_grasp_z_offset: float = 0.0
+    # 적분 전용 캡처. ON/OFF 가 수치적으로 동일하므로 그래프를 켠 런과 끈 런을 같은
+    #   실험으로 비교해도 된다(09.10 재배선). 로컬 1024env 실측은 −4% 였으나 그 손해는
+    #   그래프가 아니라 capturable 모드 세금이고, 그래프 자체는 그 위에서 −5.7% 를 되돌린다.
+    fabric_use_cuda_graph: bool = True
+
+    # ---- 물리 솔버 (09.10) --------------------------------------------------------------
+    # 부모 기본은 pos 8 / vel 0. 접촉 품질을 위해 이 트랙만 올린다 — 부모는 불변 기준선이라
+    #   거기서 바꾸면 grasp_s2r·grasp_fj 까지 조용히 따라간다.
+    # ★부모가 이걸 **cfg 필드**로 둔 이유: `finalize_after_overrides()` 가 robot_cfg 를
+    #   재조립하므로 `robot_cfg.spawn.*` 에 직접 얹으면 지워진다. 그래서 여기서 덮으면 실린다
+    #   (hydra `env.robot_solver_position_iterations=` 도 같은 경로로 먹는다).
+    # ⚠비용: pos 8→32 는 PhysX 몫을 크게 늘린다. `fabric_profile` 로 재는 fabric 비중이
+    #   그만큼 **줄어들어** CUDA Graph 의 상대 이득도 함께 줄어든다 — 계측은 이 값을 확정한
+    #   뒤에 해야 의미가 있다.
+    robot_solver_position_iterations: int = 32
+    robot_solver_velocity_iterations: int = 2
+
     # 왜 OFF: SimToolReal 처럼 낙하는 리셋이다. 재소환은 접촉 래치를 되감는 구판 규약이라
     #   높이 래치와 맞지 않는다(env 가 부팅에서 fail-loud 로 재확인한다).
     respawn_on_fail: bool = False
@@ -84,6 +115,12 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     #   술어만 베끼고 공차를 안 맞춘 것이 오류였다. 되살리려면 tol_start 를 같이 올려야 한다.
     #   ★안정 파지는 성공 술어가 아니라 `rw_cmd_rate_scale` 벌점이 담당한다(완료 판정과 매끄러움을 섞지 않는다).
     goal_force_consecutive: bool = False
+    # ★09.10: 목표 박스 극단 코너를 지령하는 데 필요한 델타 여유(m). env
+    #   `_assert_goal_box_in_arm_reach` 가 축별로 계산해 찍고 이 값 미만이면 부팅에서 죽는다.
+    #   왜 기본 0.0: 현행 xy 는 여유가 **정확히 0.000**(spawn_range 0.02 + 반폭 0.08 = 델타 0.10)이라
+    #   양수를 기본으로 두면 검증된 kp_a1 설정이 부팅을 못 한다. 0.0 = "음수만 거부" + 여유를
+    #   로그에 상시 노출(⚠ 내접). 올리려면 `palm_delta_xyz` xy 를 같이 키워야 한다.
+    goal_reach_margin_m: float = 0.0
     # finalize 파생(단일 소스) — env-local 절대 박스. 직접 쓰지 말 것.
     goal_box_min: tuple[float, float, float] = (0.0, 0.0, 0.0)
     goal_box_max: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -168,7 +205,19 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     #   e100 에서 이미 ft_dist 0.31(a2 는 0.17)로 손이 2배 멀고, syn_close 가 0.02(a2 0.40)다.
     #   ★증분 경로와 그 테스트는 지운 게 아니라 이 스위치 뒤에 남겨 둔다 — 리미터에 기대지 않는
     #     지령이라는 목표 자체는 유효하고, 작동하는 정책 위에서 다시 풀 문제다.
-    palm_cmd_incremental: bool = False
+    # ---- 팔 지령 매핑 (09.10 — 절대 매핑이 학습 자체를 막았다) ------------------------
+    # kp_shg_b1 실측(셰이커 9종, 500 iter 완주): `diag/act_sat_arm` 0.320 → **0.989**,
+    #   `diag/palm_delta_z` 0.153 → **0.318**(지령 범위 0.35 의 91%), `box_sat_z` 0.999,
+    #   `close_gate` 0.064 → **0.0000**, `lifted_frac` 0.0000. 즉 정책이 팔을 박스 벽에
+    #   처박고 정지했다. 물체는 앵커 기준 0 에 있는데 손은 318mm 밖에 있으니 위치 의존
+    #   보상(`fingertip_progress`)이 닿지 않고, 남는 수입은 위치 무관 상수 `lift` 뿐이다.
+    # ★기전: 액션이 **절대 위치**를 지정하는데 범위 0.70m 대 한 스텝 반영 0.02m = 35배다.
+    #   저장소 공통 `fixed_sigma: True` · σ=1.0 과 곱해지면 매 스텝 목표가 박스 전역에서
+    #   재추첨된다. 이 구조에서 **레일에 붙는 것이 유일한 안정해**다 — 클램프가 위치를
+    #   고정해 주므로 노이즈가 상쇄되고, 박스 안쪽을 겨냥하면 노이즈가 그대로 흔들림이 된다.
+    #   `grasp_s2r/CLAUDE.md` 가 "팔 액션을 절대 매핑으로 되돌리지 말 것" 이라 못 박은
+    #   바로 그 현상이고, 08.27 에 같은 실측(지령 0.33~0.36 m/step 상시 포화)이 있었다.
+    palm_cmd_incremental: bool = True
 
     # ↓ 아래 두 값은 palm_cmd_incremental=True 일 때만 쓰인다.
     # ★09.07 A-iii: 복원력 0.01 → 0.004, 복원예산 0.2 → 0.05. 0.01 은 **탐색을 죽였다**.
@@ -184,8 +233,12 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
     #     0.130 → 0.044 로 작아진다. kp_a4 실측 box_sat 0.97 · act_sat_arm0 0.92 —
     #     박스 벽에 붙어 있던 원인이 같이 내려간다.
     #   예산: 걸음 대각 0.010959·√3 + 복원상한 0.02·0.05 = 0.01998 ≤ 리미터 0.02 ✔
-    palm_cmd_anchor_pull: float = 0.004     # 반감기 ln2/0.004 ≈ 173 스텝 ≈ 2.9 s
-    palm_cmd_leak_reserve: float = 0.05     # 리미터의 5% 를 복원에 배정(실제 소요 0.00048 m 의 2.1배)
+    # ★09.10 복원 OFF. kp_a3~a5(증분) 실패의 나머지 절반 — 걸음이 /√3 로 54.8% 깎인
+    #   상태에서 복원이 매 스텝 앵커로 끌어당겨 순 이동이 남지 않았다. 두 원인이 겹쳐
+    #   "증분은 실패한 방식" 이라는 결론이 잘못 굳었다. 복원이 0 이면 예산을 나눌
+    #   필요가 없으므로 reserve 도 0 이다(리미터 전액을 액션이 쓴다).
+    palm_cmd_anchor_pull: float = 0.0
+    palm_cmd_leak_reserve: float = 0.0
     palm_box_min_z_override: float = 0.27
     arm_cmd_dim: int = 6                      # obs cmd_state 폭: A = palm_targets−anchor(6)
 
@@ -269,6 +322,8 @@ class GraspKPEnvCfg(GraspS2REnvCfg):
             errs.append(f"goal_first_z_range {_fz} 가 goal_box_z_range {_bz} 밖이다")
         if float(self.spawn_range) + float(self.goal_first_xy_range) > float(self.goal_box_xy_halfwidth):
             errs.append("spawn_range + goal_first_xy_range 가 goal_box_xy_halfwidth 를 넘어 첫 목표가 잘린다")
+        if float(self.goal_reach_margin_m) < 0.0:
+            errs.append(f"goal_reach_margin_m 은 ≥ 0 (0 = 음수 여유만 거부): {self.goal_reach_margin_m}")
         _lo, _hi = (float(v) for v in self.wrench_prob_range)
         if not (0.0 < _lo <= _hi <= 1.0):
             errs.append(f"wrench_prob_range 는 0 < lo ≤ hi ≤ 1: {self.wrench_prob_range}")

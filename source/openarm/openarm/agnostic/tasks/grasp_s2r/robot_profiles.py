@@ -68,6 +68,20 @@ class RobotProfile:
     palm_rot_half_deg: float = 45.0
     palm_box_verified: bool = False      # probe 로 도달성 확인했는가
 
+    # ---- 에피소드 시작 자세 (홈과 다르다) ----------------------------------------
+    # ★09.10 신설. **팔 관절값 7개(절대)** — 에피소드가 실제로 시작하는 자세다.
+    #   홈(`init_joint_pos`)은 기준 자세이고 리셋 자세가 아니다: 홈은 팔 목표 상자
+    #   (`홈±box`)·컵 스폰 케이지·fabric 시딩의 **기준점**이라, 여기에 시작 자세를
+    #   합쳐버리면 그 셋이 통째로 따라 움직인다. 그래서 둘을 분리해 둔다.
+    #
+    #   ⚠**델타가 아니라 절대값이어야 한다.** 구 `arm_reset_offset_rad`(태스크 cfg 의
+    #     홈 기준 델타 7개)는 출발 관절값에 종속이라 **다른 팔 자세로 이식이 불가능**했다.
+    #     dg5f-m 과 dg5f-m-short 는 홈 palm 포즈는 같지만 관절값이 다르다(손이 47.8mm
+    #     짧아 팔을 더 뻗는다) — 같은 델타를 얹으면 palm 이 딴 데로 간다. 실제로 short 는
+    #     그래서 델타를 비워 뒀고, 시작 거리가 98mm 가 아니라 **243mm** 였다(09.10 실측).
+    #   빈 튜플이면 홈에서 시작한다 — 시작 거리 가드가 대역 밖이면 부팅에서 죽인다.
+    arm_reset_joint_pos: tuple = ()
+
     # ---- 시너지 그립 (hand_control="synergy") -----------------------------------
     # ★손끝 IK(tip_cyl)가 파워그립을 **만들 수 없음**이 실측으로 확정돼(08.25) 도입한
     #   관절공간 경로. r 을 86→14mm 로 전 범위 훑어도 검지 MCP 가 0.03→0.18 rad 에
@@ -297,6 +311,10 @@ TESOLLO_RIGHT = RobotProfile(
     #   ★x span(0.35)이 y span(0.77)의 절반인 것은 사고가 아니라 팔 도달 한계다
     #     (반경 방향은 리치와 베이스에 양쪽으로 잘리고, y 는 스윕 방향이라 넓다).
     palm_box_verified=True,              # P-2 통과 (probe_boxreach / probe_taskreach)
+    # 시작 자세 — 홈 + 09.08 IK 델타를 **절대값으로 굳힌 것**(홈 −0.1967,−0.3729,−0.2159,
+    # −0.0179,−0.2384,−0.3813,+0.3810). 근거: SimToolReal 시작 거리(손끝→물체 ~104mm)에
+    # 맞추려고 이 팔로 6D IK 를 푼 값. 실측 시작 거리 98.1mm(대역 70~140).
+    arm_reset_joint_pos=(-0.1587, 0.0283, 0.3856, 0.9464, -0.2090, 0.3247, 0.8023),
     # 중간마디(_3)·원위마디(_4)·센서팁 — 감쌈(마디 접촉)과 핀치(팁 접촉) 모두 인정.
     # ★_3 추가(08.22): 직경 72~90mm 컵에 우월한 감쌈 자세가 _4/_tip 만으로는 게이트를
     #   못 켰다. grasp_v1 도 _4 와 _3 두 곳에 센서를 단다. 손가락별 합산이라 obs 차원 불변.
@@ -565,6 +583,12 @@ TESOLLO_RIGHT_SHORT = _dc_replace(
     fabric_robot_dir="openarm_dg5f-m-short_bi_right",
     fabric_params_filename="openarm_dg5f-m-short_right_pose_params.yaml",
     palm_box_verified=False,
+    # ★09.10 **명시적으로 비운다** — `_dc_replace` 는 안 적으면 부모 값을 물려주는데,
+    #   부모 시작 자세는 **dg5f-m 팔로 푼 절대 관절값**이라 이 팔에서는 palm 이 딴 데로 간다
+    #   (손이 47.8mm 짧아 홈 관절값 자체가 다르다: r_aj_1 0.038 vs 0.267).
+    #   이 팔로 6D IK 를 풀어 채우기 전까지 비워 둔다 — 그 상태로 학습하면 시작 거리가
+    #   243mm 라 시작 거리 가드가 부팅에서 죽인다(09.10 실측).
+    arm_reset_joint_pos=(),
     init_joint_pos={
         **TESOLLO_RIGHT.init_joint_pos,
         # 우팔: dg5f-m 홈 palm 포즈를 목표로 재산출(IK 오차 0.0002mm / 0.0000°)
