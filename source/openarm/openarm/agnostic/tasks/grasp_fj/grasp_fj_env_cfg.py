@@ -303,10 +303,13 @@ class GraspFJTesolloRightEnvCfg(GraspFJEnvCfg):
     goal_force_consecutive: bool = True         # 연속 10회 — cfg 가 tol_start 와 짝을 대조한다
     goal_clock_restart_step: int = 2            # 목표당 스텝 예산(왜 2 인지는 base 필드 주석)
 
-    # ── 외란: 의도적 divergence(사용자 확정 "외란이 arm 이 못버티는 양임") ────
-    # Kuka 어깨 300 N·m vs OpenArm 어깨 40 N·m = 7.5배 → 20.0/7.5 = 2.67 ≈ 2.7 · 2.0/7.5 = 0.27
-    wrench_force_scale: float = 2.7
-    wrench_torque_scale: float = 0.27
+    # ── 외란: **끔**(사용자 확정 09.10) ─────────────────────────────────────
+    # ★base 가 0.0 으로 껐는데 이 leaf 가 같은 이름을 재선언해 2.7 로 되살리고 있었다.
+    #   fj_sh1/fj_sh2 가 extF 켜진 채로 돌아간 원인이다. leaf 에서도 명시적으로 끈다.
+    #   되살릴 때의 근거값은 지운 게 아니라 여기 남긴다:
+    #   Kuka 어깨 300 N·m vs OpenArm 어깨 40 N·m = 7.5배 → 20.0/7.5 = 2.67 ≈ 2.7 · 2.0/7.5 = 0.27
+    wrench_force_scale: float = 0.0
+    wrench_torque_scale: float = 0.0
 
     # ★09.08 D1-a(사용자 확정): 과제 목적이 **grasp-lift 만**이라 목표열을 "제자리 유지(dwell)" 로 바꾼다.
     #   첫 목표는 그대로 리프트 높이(dz ∈ goal_first_z_range), 그 다음 목표는 이전 목표와 **같은 자리**
