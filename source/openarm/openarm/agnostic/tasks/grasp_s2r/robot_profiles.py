@@ -583,12 +583,13 @@ TESOLLO_RIGHT_SHORT = _dc_replace(
     fabric_robot_dir="openarm_dg5f-m-short_bi_right",
     fabric_params_filename="openarm_dg5f-m-short_right_pose_params.yaml",
     palm_box_verified=False,
-    # ★09.10 **명시적으로 비운다** — `_dc_replace` 는 안 적으면 부모 값을 물려주는데,
-    #   부모 시작 자세는 **dg5f-m 팔로 푼 절대 관절값**이라 이 팔에서는 palm 이 딴 데로 간다
-    #   (손이 47.8mm 짧아 홈 관절값 자체가 다르다: r_aj_1 0.038 vs 0.267).
-    #   이 팔로 6D IK 를 풀어 채우기 전까지 비워 둔다 — 그 상태로 학습하면 시작 거리가
-    #   243mm 라 시작 거리 가드가 부팅에서 죽인다(09.10 실측).
-    arm_reset_joint_pos=(),
+    # ★09.10 **이 팔로 따로 푼 값**이다(부모 값을 물려받으면 palm 이 딴 데로 간다 —
+    #   손이 47.8mm 짧아 홈 관절값 자체가 다르다: r_aj_1 0.038 vs 0.267).
+    #   `urdf/tools/solve_arm_reset_pose.py` 로 dg5f-m 시작 자세의 palm world 포즈
+    #   [0.2292, −0.2294, 0.3232] 를 목표로 6D IK 를 풀었다 — **위치오차 0.0000mm ·
+    #   회전오차 0.0000° · 관절한계 여유 0.207 rad(11.88°)**(dg5f-m 기준선 11.6°와 동등).
+    #   palm 이후 손 체인은 두 자산이 동일하므로 palm 이 맞으면 손끝도 맞는다.
+    arm_reset_joint_pos=(0.0455, 0.0328, 0.4357, 0.7708, -0.2991, 0.3203, 0.7864),
     init_joint_pos={
         **TESOLLO_RIGHT.init_joint_pos,
         # 우팔: dg5f-m 홈 palm 포즈를 목표로 재산출(IK 오차 0.0002mm / 0.0000°)
