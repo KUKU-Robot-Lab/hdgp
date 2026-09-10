@@ -97,12 +97,18 @@ class GraspS2REventCfg:
             "distribution": "uniform",
         },
     )
+    # ★★09.10 E1 — 질량 DR (1.0,1.0) → (0.5, 2.5). 과제 목적이 "다양한 무게·흔들림에서
+    #   파지를 잃지 않는 것"(power grip)인데 질량 축이 **완전히 꺼져** 있었다:
+    #   `cup_family` 8종도 `_cup()` 이 mass 를 안 넘겨 전부 BASE_OBJECT_MASS 0.134 kg 다.
+    #   scale (0.5, 2.5) = 0.067~0.335 kg — 빈 컵부터 내용물이 든 컵까지.
+    #   ⚠이 값이 실제로 살려면 `_adr_apply_physics` 의 base 캡처(09.10)가 필요하다 —
+    #     구판은 부팅 때 여기를 (1,1) 로 덮어썼다.
     object_scale_mass = EventTermCfg(
         func=_mdp.randomize_rigid_body_mass,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("object"),
-            "mass_distribution_params": (1.0, 1.0),
+            "mass_distribution_params": (0.5, 2.5),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -641,7 +647,13 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     goal_pos_tolerance: float = 0.025        # 성공 반경
     goal_pos_tolerance_loose: float = 0.05   # 연속성 비교 로깅 전용
     stay_hold_steps: int = 60                # 1초 — stay 항이 만점이 되는 유지 시간
-    lift_height_ref: float = 0.06            # lift 항 높이 정규화 기준  # ★D3 기본 (09.01 승격)
+    # ★★09.10 E1 개편 — 0.06 → 0.12(= `goal_offset_xyz.z`). 구 0.06 은 목표 반경 안
+    #   최소 높이차(goal_z 0.12 − tol 0.025 = 0.095)보다 **작아** 6cm 부터 목표까지
+    #   `lift_height_quality` 가 내내 1.0 이었다 — 가중 30 짜리 최대 항이 그 구간에서
+    #   경사 0, 즉 **위치 무관 상수 수입**이다(실측 20.049/step = 총보상의 36.6%).
+    #   목표 높이와 같게 두면 목표까지 단조가 된다(6cm 에서 0.5, 목표에서 ≥0.79).
+    #   ⚠`task/lift_quality` 태그는 이 값이 분모라 **옛 런과 비교 불가**하다.
+    lift_height_ref: float = 0.12            # lift 항 높이 정규화 기준 (구 D3 0.06)
     lift_success_height: float = 0.04        # "들렸다" 판정
     success_tilt_max_deg: float = 5.0
     stable_lin_vel: float = 0.04
@@ -700,7 +712,9 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     cage_gate_min_opposing: int = 0
 
     # ---- 보상 가중치 (grasp_v1 8항 + 이송 2항) ---------------------------------------
-    approach_weight: float = 2.0
+    # ★★09.10 E1 개편 — 2.0 → 6.0. 접근·파지 명목 예산이 6.4% 인데 실현은 0.18% 로
+    #   36배 압축돼 있었다(명목 max:min 30:1 → 실현 911:1).
+    approach_weight: float = 6.0
     approach_sharpness: float = 8.0          # 손바닥 **면** 어긋남(y·z)
     # ★★법선(palm_ee_x) 방향은 더 날카롭게 — "손바닥이 물체에 밀착"이 인벨롭의 전제다.
     #   08.27 구조 실측: 홈에서 케이지 중심이 palm 에서 **106mm 앞**이라
@@ -711,20 +725,41 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     approach_sharpness_normal: float = 12.0
     # ★밀착 상태에서 **정지**해야 손가락이 말릴 시간이 생긴다. palm 실측 선속도 기준.
     palm_still_gain: float = 10.0
-    grasp_weight: float = 4.0  # ★D3 기본 (09.01 승격)
+    # ★★09.10 E1 신설 — `palm_still` 을 곱셈이 아니라 블렌드로 쓴다.
+    #   still_eff = floor + (1 − floor)·palm_still. **0.0 = 현행과 항등**(순수 곱셈).
+    #   0.5 면 최악(전속 이동)에도 approach 의 절반이 남아 '다가가면 손해'가 사라진다.
+    approach_still_floor: float = 0.5
+    # ★★09.10 E1 개편 — 4.0 → 8.0(D3 는 4.0). 실현 0.076/step = 명목의 1.9% 로
+    #   `approach` 다음으로 죽어 있었다. `pre_lift_gate` 듀티가 0.151 뿐이라
+    #   명목을 올려야 조건부 경사가 생긴다. D2 의 pre-lift 주차장(구 12.0)과는
+    #   거리가 있다 — 그때 폐쇄 상금이 총보상의 93% 였고 지금 상한은 8/89 = 9.0% 다.
+    grasp_weight: float = 8.0
     # ★★감쌈 비중 0.55 → 0.80(폐쇄 0.20). 폐쇄 항은 **큰 상금이 아니라 넛지**여야 한다 —
     #   approach 가 손 모양을 못 보게 고친 뒤로는 건너야 할 계곡이 없어졌고, 08.27 실측
     #   (s2r_b1)에서 폐쇄 상금 5.1/step 이 전체의 93% 를 먹으며 주차장이 됐다.
     #   이제 폐쇄 2.4 < 감쌈 9.6 < lift 30·q 로 상한이 확실히 갈린다.
     grasp_envelope_credit: float = 0.80
-    lift_weight: float = 30.0
+    # ★★09.10 E1 개편 — 30.0 → 10.0. 위 평지 제거와 한 묶음이다: 평지가 없어져도
+    #   30 은 래치 뒤 예산을 혼자 32% 먹어 접근·파지가 상대적으로 소멸한다.
+    #   옮긴 20 은 `transfer_weight` 로 간다 — 마지막 3.5cm 를 transfer 가 소유한다.
+    lift_weight: float = 10.0
     lift_envelope_mix: float = 0.6
-    transfer_weight: float = 15.0
-    transfer_sharpness: float = 6.0
-    stay_weight: float = 8.0
+    # ★★09.10 E1 개편 — 15.0 → 30.0, sharpness 6.0 → 10.0.
+    #   `lift` 평지에서 회수한 20 이 여기로 온다. 6cm→목표(3.5cm) 구간에서 transfer 가
+    #   주던 총량은 3.63/step 인데 목표 진입 순간 success 가 ~28 을 얹어 **7.7배 비대칭**
+    #   (경사가 아니라 절벽)이었다. sharpness 10 이면 그 구간 Δexp 0.295 → 0.462.
+    transfer_weight: float = 30.0
+    transfer_sharpness: float = 10.0
+    # ★★09.10 E1 개편 — 8.0 → 12.0. 실현/명목 20.2% 로 전 항 중 최저였고,
+    #   `stay_run` 14.46/60 = 24% 다(성공 유지가 초당 1회 이상 끊긴다는 뜻).
+    #   성공 후 붕괴가 이 트랙의 실제 병목이므로 유지 압력을 올린다.
+    stay_weight: float = 12.0
     stabilize_weight: float = 1.0  # ★D3 기본 (09.01 승격)
     stability_weight: float = 1.0
-    success_weight: float = 20.0
+    # ★★09.10 E1 개편 — 20.0 → 8.0. 이 항이 목표 진입 **절벽**의 정체다.
+    #   DEXTRAH 는 성공 보너스가 아예 없고, SimToolReal 은 보너스 대신 새 goal 을 준다.
+    #   연속 경사(transfer 30)로 옮기고 계단은 낮춘다.
+    success_weight: float = 8.0
     post_lift_contact_loss_weight: float = -8.0
     # ★"멈춤"을 정의하는 항. **0.0 = 꺼짐(현행 동작)**. 08.29 J1 실측:
     #   `hand_joint_err_movable_mean` 0.16 rad · `hand_torque_sat_frac` 0.21 —
@@ -857,7 +892,10 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     adr_obs_noise_qvel_max: float = 0.05     # = base → 폭 0
     # ★물체 질량 배율. 승격 목표 (0.5, 2.0) — 붓기 과제로 가면 내용물이 질량으로 온다
     #   (빈 컵 ↔ 물 찬 컵). 런타임 확장 가능(`__call__` 인자로 매 reset 읽는다).
-    adr_mass_scale_max: tuple[float, float] = (1.0, 1.0)
+    # ★09.10 E1 — base 와 같게 둔다(축 비활성, 단 **좁아지지는 않는다**).
+    #   구판은 (1,1) 이라 ADR 승급이 질량 범위를 base 에서 (1,1) 로 **좁히는**
+    #   역방향 축이 됐을 것이다(질량 축은 `_assert_adr_monotonic` 대상이 아니다).
+    adr_mass_scale_max: tuple[float, float] = (0.5, 2.5)
     # ★관절 PD 게인 배율. 승격 목표 **(0.7, 2.0)**.
     #   실효성 확인: `grasp_s2r_control.py` 는 `set_joint_position_target` 으로 **목표만**
     #   쓰고 토크는 articulation 의 ImplicitActuator PD 가 만든다 → 게인 DR 이 그대로 실린다.

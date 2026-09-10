@@ -141,7 +141,16 @@ def compute_grasp_s2r_rewards(
     # ★`palm_still` 을 곱한다 — 밀착한 채 **멈춰 있어야** 시너지 손가락이 말릴 시간이
     #   생긴다. 멀리서 정지하는 회피는 성립하지 않는다: 홈(d 0.36)에서 정지하면
     #   exp(−8·0.36)=0.055, 밀착(d 0.05) 후 정지면 0.67 로 12배다.
-    approach = pre_lift_gate * palm_still.clamp(0.0, 1.0) * (
+    # ★★09.10 E1 개편 — `palm_still` 을 **곱셈에서 블렌드로** 내린다.
+    #   곱셈은 구조적 긴장을 만든다: 다가가려면 움직여야 하는데 움직이면 깎인다
+    #   (0.05 m/s 에서 ×0.61, 0.15 m/s 에서 ×0.22). 실측 결과 이 항의 실집행이
+    #   명목의 1.1% 였다(`reward/approach` 0.022 / 가중 2.0).
+    #   `floor` 만큼은 속도와 무관하게 남기고 나머지만 정지에 건다:
+    #       still_eff = floor + (1 − floor)·palm_still
+    #   ★기본 0.0 = `still_eff = palm_still` 로 **현행과 정확히 항등**이다.
+    _sfl = _f(cfg, "approach_still_floor", 0.0)
+    _still_eff = _sfl + (1.0 - _sfl) * palm_still.clamp(0.0, 1.0)
+    approach = pre_lift_gate * _still_eff * (
         _aw * torch.exp(
             -(_f(cfg, "approach_sharpness_normal", 12.0) * palm_normal_dist
               + _f(cfg, "approach_sharpness", 8.0) * palm_lateral_dist))

@@ -527,7 +527,18 @@ def test_approach_targets_the_palm_not_the_cage():
     blk = rew[_i:rew.index("grasp_quality", _i)]
     assert "cage_dist" not in blk, "approach 가 다시 케이지를 목표로 삼는다(핀치 강제)"
     assert "palm_normal_dist" in blk and "palm_lateral_dist" in blk
-    assert "palm_still" in blk, "밀착 후 정지 요건이 없다"
+    # ★09.10 — 단언을 **리터럴에서 조건으로** 바꿨다. 구판은 `palm_still` 이
+    #   approach 식에 **직접** 적혀 있을 것을 요구했는데, E1 개편이 그것을
+    #   블렌드(`_still_eff = floor + (1−floor)·palm_still`)로 한 줄 위로 올리자
+    #   요건은 그대로인데 단언만 죽었다(관측 0179 의 7번째 재현).
+    #   계약은 "approach 가 **palm 속도에서 유래한 인자**로 스케일된다" 이다.
+    _sf = re.search(r"approach = pre_lift_gate \* (\w+)", rew)
+    assert _sf, "approach 가 pre_lift_gate 로 시작하지 않는다"
+    _fac = _sf.group(1)
+    assert _fac == "palm_still" or re.search(
+        rf"{_fac}\s*=[^\n]*palm_still", rew), (
+        f"approach 의 스케일 인자 {_fac!r} 가 palm_still 에서 유래하지 않는다 "
+        "— 밀착 후 정지 요건이 사라졌다")
     assert "approach_sharpness_normal" in cfg and "palm_still_gain" in cfg
     # 법선은 palm 회전행렬 열 0(손바닥 법선)에서 나온다.
     assert "_dn = (_d * _R[:, :, 0]).sum(dim=-1)" in env
@@ -1324,11 +1335,10 @@ def test_d3_default_set_is_intact():
         "oppose_grip_delta_rad: float = -0.6": "엄지 대향축 활성(a상태)",
         # 목표·리프트
         "goal_offset_xyz: tuple[float, float, float] = (0.0, 0.0, 0.12)": "수직 12cm",
-        "lift_height_ref: float = 0.06": "리프트 정규화 기준",
+
         "success_require_lifted: bool = True": "성공은 리프트 필수",
         "success_require_holding: bool = False": "holding 이중 게이트 제거",
         # 가중치 — ★D2 주차장의 직접 처방
-        "grasp_weight: float = 4.0": "pre-lift 수입 억제",
         "enclosure_weight: float = 10.0": "무접촉 기하 유도",
         "enclosure_contact_floor: float = 0.3": "정체 방지 floor",
         "stabilize_weight: float = 1.0": "정지 항 축소",
@@ -1342,8 +1352,26 @@ def test_d3_default_set_is_intact():
         "respawn_defer_budget: int = 60": "보류 예산",
         "respawn_penalty: float = 2.0": "재소환 비용",
     }
+    # ★★09.10 E1 개편 — 아래 항목은 D3 값을 **의도적으로 승계**했다. 지우지 않고
+    #   여기로 옮겨 잠근다: 무엇이 언제 왜 바뀌었는지가 테스트에 남아야 다음 라운드에
+    #   조용히 되살아나지 않는다(관측 0179 의 부수 규칙).
+    #   근거 문서: `repo/reports/grasp_s2r_보상개편_계획_0910.md`
+    #   ⚠D3 를 이긴 **실측은 아직 없다** — 측정 기반 설계 판정이다. E1 이 D3 에 지면
+    #     이 사전을 되돌리고 위 d3 사전으로 두 항목을 복귀시킨다.
+    e1 = {
+        "lift_height_ref: float = 0.12": "구 0.06 은 목표(0.095)보다 작아 평지를 만들었다",
+        "lift_weight: float = 10.0": "구 30.0 = 위치무관 상수수입 20.05/step",
+        "transfer_weight: float = 30.0": "lift 에서 회수한 몫, 마지막 3.5cm 소유",
+        "transfer_sharpness: float = 10.0": "그 구간 Δexp 0.295 → 0.462",
+        "success_weight: float = 8.0": "구 20.0 = 목표 진입 절벽 ~28/step",
+        "stay_weight: float = 12.0": "실현/명목 20.2% 로 전 항 최저",
+        "approach_weight: float = 6.0": "접근·파지 실현 0.18% → 명목 재분배",
+        "approach_still_floor: float = 0.5": "palm_still 을 곱셈에서 블렌드로",
+        "grasp_weight: float = 8.0": "실현 1.9% (D3 는 4.0)",
+    }
     missing = [f"{k}  ({why})" for k, why in d3.items() if k not in cfg]
-    assert not missing, "D3 기본값이 어긋났다:\n  " + "\n  ".join(missing)
+    missing += [f"[E1] {k}  ({why})" for k, why in e1.items() if k not in cfg]
+    assert not missing, "D3/E1 기본값이 어긋났다:\n  " + "\n  ".join(missing)
     # ADR 은 D3 에서도 꺼져 있었다 — 승격 대상이 아니라 **원래 기본**이다.
     assert "enable_adr: bool = False" in cfg
 
@@ -1446,14 +1474,41 @@ def test_latch_snapshot_is_palm_frame_and_cleared_on_both_resets():
 def test_adr_sim2real_axes_default_to_identity():
     """★09.01 — 신규 sim2real 축은 전부 base 와 같은 값 = 폭 0 = 항등이다."""
     cfg = _code(_CFG)
-    for line in (
-        "adr_obs_noise_qpos_max: float = 0.01",   # = obs_noise_qpos
-        "adr_obs_noise_qvel_max: float = 0.05",   # = obs_noise_qvel
-        "adr_mass_scale_max: tuple[float, float] = (1.0, 1.0)",
-        "adr_joint_gain_scale_max: tuple[float, float] = (1.0, 1.0)",
-        "object_friction_range: tuple[float, float] = (1.0, 1.0)",
+
+    def _scalar(name: str) -> float:
+        m = re.search(rf"{name}:\s*float\s*=\s*([\d.]+)", cfg)
+        assert m, f"{name} 를 못 찾았다"
+        return float(m.group(1))
+
+    def _pair(name: str) -> tuple[float, float]:
+        m = re.search(
+            rf"{name}:\s*tuple\[float, float\]\s*=\s*\(([\d.]+),\s*([\d.]+)\)", cfg)
+        assert m, f"{name} 를 못 찾았다"
+        return float(m.group(1)), float(m.group(2))
+
+    def _event_pair(key: str) -> tuple[float, float]:
+        m = re.search(rf'"{key}":\s*\(([\d.]+),\s*([\d.]+)\)', cfg)
+        assert m, f"EventCfg {key} 를 못 찾았다"
+        return float(m.group(1)), float(m.group(2))
+
+    # ★★09.10 — 단언을 **리터럴에서 조건으로** 바꿨다. 계약의 내용은 위 docstring 이
+    #   이미 정확히 말하고 있다: "**base 와 같은 값 = 폭 0**". 그런데 단언은 그 개념이
+    #   아니라 당시의 base 리터럴 `(1.0, 1.0)` 을 적어 놓았고, E1 이 질량 base 를
+    #   (0.5, 2.5) 로 열자 **폭은 여전히 0 인데** 단언만 죽었다.
+    #   ⚠질량·게인축의 base 는 cfg 필드가 아니라 `EventCfg` 의 분포 파라미터다.
+    for name, terminal, base in (
+        ("obs_noise_qpos", _scalar("adr_obs_noise_qpos_max"), _scalar("obs_noise_qpos")),
+        ("obs_noise_qvel", _scalar("adr_obs_noise_qvel_max"), _scalar("obs_noise_qvel")),
+        ("mass_scale", _pair("adr_mass_scale_max"),
+         _event_pair("mass_distribution_params")),
+        ("joint_gain_scale", _pair("adr_joint_gain_scale_max"),
+         _event_pair("stiffness_distribution_params")),
     ):
-        assert line in cfg, f"항등 기본값이 아니다: {line}"
+        assert terminal == base, (
+            f"ADR 축 {name} 의 폭이 0 이 아니다: terminal={terminal} vs base={base} — "
+            "축을 열려면 그 근거를 남기고 이 테스트를 먼저 고칠 것")
+    # 마찰은 ADR 축이 아니라 cfg 고정 범위다(런타임 확장이 무증상 no-op).
+    assert _pair("object_friction_range") == (1.0, 1.0), "마찰 기본이 항등이 아니다"
     # 관절 노이즈가 실제로 ADR 실효값을 타는지(cfg 상수 직독이면 축이 죽은 것)
     env = _code(_ENV)
     blk = _fn_block(env, "_get_observations")
@@ -2036,6 +2091,102 @@ def test_lift_plateau_is_instrumented():
     code = _code(_ENV)
     for tag in ('"task/lift_quality_sat_frac"', '"task/height_delta_p10"'):
         assert tag in code, f"lift 평지 계측 태그 {tag} 가 없다"
+
+
+def test_lift_ramp_reaches_the_goal_height():
+    """`lift` 의 높이 램프는 **목표 반경 안 최소 높이차까지 단조**여야 한다.
+
+    `lift_height_quality = clamp(dz / lift_height_ref)` 이므로
+    `lift_height_ref < goal_z − goal_pos_tolerance` 이면 그 사이 구간에서 항이 상수가
+    되고, 가중치만큼이 **위치 무관 수입**이 된다(D3 실측: 20.049/step = 총보상 36.6%).
+
+    무엇이 이 계약을 거짓으로 만드는가: `goal_offset_xyz.z` 를 키우거나
+    `goal_pos_tolerance` 를 줄이면서 `lift_height_ref` 를 그대로 두는 것.
+    ★리터럴이 아니라 **부등식**을 잠근다 — 세 값이 같이 움직여도 살아남는다.
+    """
+    cfg = _code(_CFG)
+    ref = float(re.search(r"lift_height_ref:\s*float\s*=\s*([\d.]+)", cfg).group(1))
+    gz = float(re.search(
+        r"goal_offset_xyz:\s*tuple\[float, float, float\]\s*=\s*\([^)]*?,\s*([\d.]+)\)",
+        cfg).group(1))
+    tol = float(re.search(r"goal_pos_tolerance:\s*float\s*=\s*([\d.]+)", cfg).group(1))
+    assert ref >= gz - tol - 1e-9, (
+        f"lift 램프가 목표 전에 포화한다: ref={ref} < goal_z({gz}) − tol({tol}) = {gz - tol:.4f} "
+        "— 그 구간에서 lift_weight 전액이 위치 무관 상수 수입이 된다")
+
+
+def test_approach_still_is_blended_not_a_bare_product():
+    """`palm_still` 은 approach 에 **블렌드**로 들어가야 한다(순수 곱셈 금지).
+
+    순수 곱셈은 구조적 긴장을 만든다 — 다가가려면 움직여야 하는데 움직이면 깎인다
+    (0.05 m/s 에서 ×0.61). D3 실측에서 이 항의 실집행이 명목의 1.1% 였다.
+    floor 는 리터럴이 아니라 cfg 필드에서 와야 한다.
+
+    무엇이 이 계약을 거짓으로 만드는가: `palm_still` 자체를 폐기하는 결정.
+    그때는 이 단언을 지우지 말고 "approach 에 속도 항이 없어야 한다"로 뒤집을 것.
+    """
+    rw, cfg = _code(_REW), _code(_CFG)
+    i = rw.index("approach = pre_lift_gate")
+    blk = rw[i:i + 400]
+    assert "_still_eff" in blk, "approach 가 palm_still 을 그대로 곱하고 있다"
+    assert 'approach_still_floor' in rw and "approach_still_floor: float" in cfg, \
+        "still floor 가 cfg 필드가 아니다"
+    # 블렌드 형태: floor + (1 − floor)·palm_still
+    assert re.search(r"_still_eff\s*=\s*_sfl\s*\+\s*\(1\.0\s*-\s*_sfl\)\s*\*\s*palm_still",
+                     rw), "블렌드 식이 floor + (1−floor)·still 형태가 아니다"
+
+
+def test_adr_physics_base_comes_from_eventcfg_not_a_literal():
+    """물리 DR 의 level-0 값은 **cfg 가 적은 범위**여야 한다.
+
+    `_adr_apply_physics` 는 `enable_adr` 와 무관하게 `__init__` 에서 한 번 돈다.
+    구판 `_lerp_range` 는 base 를 (1,1) 로 하드코딩해서, `EventCfg` 에 적어둔 질량·게인
+    범위를 부팅 시점에 (1,1) 로 **조용히 덮어썼다** — ADR 을 안 쓰면서 고정 물리 DR 을
+    여는 것이 원리적으로 불가능했다.
+
+    무엇이 이 계약을 거짓으로 만드는가: ADR 이 물리축을 `EventCfg` 가 아닌 다른 경로로
+    쓰게 되는 것. 그때는 그 경로에 같은 검사를 옮길 것.
+    """
+    env = _code(_ENV)
+    assert "def _lerp_range(terminal, lvl: float, base=(1.0, 1.0))" in env, \
+        "_lerp_range 가 base 를 인자로 받지 않는다"
+    i = env.index("def _adr_apply_physics")
+    blk = env[i:env.index("\n    def ", i + 10)]
+    assert "_adr_phys_base" in blk, "부팅 시점 EventCfg 값을 base 로 캡처하지 않는다"
+    assert blk.count("base=self._adr_phys_base") == 2, \
+        "질량·게인 두 축 모두 캡처한 base 에서 보간해야 한다"
+    # 순수함수 수치 검증 — base 를 주면 그 값에서 출발한다.
+    import ast as _ast
+    tree = _ast.parse(env)
+    fn = next(n for n in _ast.walk(tree)
+              if isinstance(n, _ast.FunctionDef) and n.name == "_lerp_range")
+    ns: dict = {}
+    exec(compile(_ast.Module(body=[fn], type_ignores=[]), "<t>", "exec"), ns)
+    lerp = ns["_lerp_range"]
+    assert lerp((2.0, 3.0), 0.0) == (1.0, 1.0), "기본 base 가 (1,1) 이 아니다(하위호환 깨짐)"
+    assert lerp((0.5, 2.5), 0.0, base=(0.5, 2.5)) == (0.5, 2.5), \
+        "level 0 에서 cfg 범위가 보존되지 않는다"
+
+
+def test_mass_dr_is_open_and_adr_never_narrows_it():
+    """무게 DR 이 열려 있어야 한다 — power grip 과제의 정의다(사용자 확정).
+
+    "다양한 무게, 흔들림에서 그 파지를 잃지 않는 것"이 이 트랙의 목적인데 질량 축이
+    (1.0, 1.0) 으로 꺼져 있었고, `cup_family` 8종도 전부 같은 0.134 kg 이었다.
+    그리고 ADR 종점이 base 보다 **좁으면** 승급할수록 쉬워지는 역방향 축이 된다 —
+    질량축은 `_assert_adr_monotonic` 대상이 아니라 여기서만 잡힌다.
+    """
+    cfg = _code(_CFG)
+    m = re.search(r'"mass_distribution_params":\s*\(([\d.]+),\s*([\d.]+)\)', cfg)
+    assert m, "질량 DR 항을 못 찾았다"
+    lo, hi = float(m.group(1)), float(m.group(2))
+    assert not (lo == 1.0 and hi == 1.0), "질량 DR 이 꺼져 있다 — power grip 이 강제되지 않는다"
+    assert lo < hi, f"질량 범위가 뒤집혔다: ({lo}, {hi})"
+    a = re.search(r"adr_mass_scale_max:\s*tuple\[float, float\]\s*=\s*\(([\d.]+),\s*([\d.]+)\)", cfg)
+    assert a, "adr_mass_scale_max 를 못 찾았다"
+    alo, ahi = float(a.group(1)), float(a.group(2))
+    assert alo <= lo and ahi >= hi, (
+        f"ADR 종점 ({alo}, {ahi}) 이 base ({lo}, {hi}) 보다 좁다 — 승급이 과제를 쉽게 만든다")
 
 
 def test_fk_gate_subtracts_frame_offset():
