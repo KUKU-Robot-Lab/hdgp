@@ -1362,7 +1362,7 @@ def test_d3_default_set_is_intact():
         "lift_height_ref: float = 0.12": "구 0.06 은 목표(0.095)보다 작아 평지를 만들었다",
         "lift_weight: float = 10.0": "구 30.0 = 위치무관 상수수입 20.05/step",
         "transfer_weight: float = 30.0": "lift 에서 회수한 몫, 마지막 3.5cm 소유",
-        "transfer_sharpness: float = 10.0": "그 구간 Δexp 0.295 → 0.462",
+        "transfer_sharpness: float = 10.0": "그 구간 Δexp 0.295 → 0.392, 증분 4.43 → 11.76",
         "success_weight: float = 8.0": "구 20.0 = 목표 진입 절벽 ~28/step",
         "stay_weight: float = 12.0": "실현/명목 20.2% 로 전 항 최저",
         "approach_weight: float = 6.0": "접근·파지 실현 0.18% → 명목 재분배",
