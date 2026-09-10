@@ -314,7 +314,11 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
               f"{float(_c.wrench_force_scale)}N/kg · {float(_c.wrench_torque_scale)}N·m/kg · "
               f"p~logU{tuple(float(v) for v in _c.wrench_prob_range)} · "
               f"게이트=높이래치(lift_success_height {float(_c.lift_success_height)}) · "
-              f"질량 {float(self._obj_mass.min()):.3f}~{float(self._obj_mass.max()):.3f}kg",
+              f"공칭질량 {float(self._obj_mass.min()):.3f}~"
+              f"{float(self._obj_mass.max()):.3f}kg "
+              f"(★리셋 전 값 — 질량 DR scale "
+              f"{tuple(float(v) for v in self.cfg.events.object_scale_mass.params['mass_distribution_params'])}"
+              f" 적용 후 실효값은 TB `dr/obj_mass_min|max` 를 볼 것)",
               flush=True)
 
         self._init_home_palm()
