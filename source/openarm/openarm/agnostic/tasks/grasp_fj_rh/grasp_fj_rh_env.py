@@ -29,7 +29,7 @@ import xml.etree.ElementTree as ET
 import torch
 
 from ..grasp_fj.grasp_fj_env import GraspFJEnv
-from ..grasp_s2r.grasp_s2r_env_cfg import _ASSETS_DIR
+from ..grasp_fj.fj_core_cfg import _ASSETS_DIR
 from .grasp_fj_rh_env_cfg import GraspFJRHEnvCfg
 
 #: PhysX mimic 제약이 종속관절 prim 에 남기는 속성. 규약은 `q_dep + gearing·q_ref + offset = 0`

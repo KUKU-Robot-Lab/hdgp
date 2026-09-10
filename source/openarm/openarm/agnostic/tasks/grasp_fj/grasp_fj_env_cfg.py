@@ -14,7 +14,7 @@ from dataclasses import fields
 
 from isaaclab.utils import configclass
 
-from ..grasp_kp.grasp_kp_env_cfg import GraspKPEnvCfg
+from .fj_kp_cfg import GraspKPEnvCfg
 from .fj_reward import FJRewardCfg
 from .robot_profiles import PROFILES
 

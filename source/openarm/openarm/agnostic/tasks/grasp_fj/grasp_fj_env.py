@@ -21,7 +21,7 @@ import math
 
 import torch
 
-from ..grasp_kp.grasp_kp_env import GraspKPEnv
+from .fj_kp_env import GraspKPEnv
 from .fj_reward import compute_fj_reward
 from .grasp_fj_env_cfg import GraspFJEnvCfg
 

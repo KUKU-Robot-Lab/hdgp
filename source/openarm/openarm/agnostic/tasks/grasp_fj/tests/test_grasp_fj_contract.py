@@ -33,6 +33,12 @@ _CFG = (_HERE / "grasp_fj_env_cfg.py").read_text(encoding="utf-8")
 _REG = (_HERE / "config" / "__init__.py").read_text(encoding="utf-8")
 _LSTM = (_HERE / "config" / "agents" / "rl_games_ppo_lstm_cfg.yaml").read_text(encoding="utf-8")
 _MLP = (_HERE / "config" / "agents" / "rl_games_ppo_cfg.yaml").read_text(encoding="utf-8")
+# ★★09.10 포크 이후 두 갈래다.
+#   `_PARENT_*` = fj 가 **실제로 상속해 도는** 포크본. fj 의 계약은 여기를 봐야 한다.
+#   `_KP_*`     = 원본 track A. "A 는 안 건드린다" 류 불변만 여기를 본다.
+#   섞으면 fj 가 안 쓰는 파일을 검사하는 무증상 no-op 계약이 된다.
+_PARENT_ENV = (_HERE / "fj_kp_env.py").read_text(encoding="utf-8")
+_PARENT_CFG = (_HERE / "fj_kp_cfg.py").read_text(encoding="utf-8")
 _KP_ENV = (_KP / "grasp_kp_env.py").read_text(encoding="utf-8")
 _KP_CFG = (_KP / "grasp_kp_env_cfg.py").read_text(encoding="utf-8")
 _SAPG = (_HERE / "config" / "agents" / "rl_games_ppo_lstm_sapg_cfg.yaml").read_text(encoding="utf-8")
@@ -220,12 +226,12 @@ def test_log_metrics_are_ctrl_not_fabric():
 def test_track_a_exposes_the_hooks_b_relies_on():
     """A 의 손 슬라이스·cmd_state 폭 검사가 `_arm_action_dim` 훅에서 와야 B(7)가 부팅한다."""
     assert "self._hand_action_offset = int(self.cfg._arm_action_dim(self.profile))" in \
-        _fn_block(_KP_ENV, "_init_task_state")
-    assert "self.actions[:, self._hand_action_offset:]" in _fn_block(_KP_ENV, "_hand_command")
-    guard = _fn_block(_KP_ENV, "_assert_kp_contract")
+        _fn_block(_PARENT_ENV, "_init_task_state")
+    assert "self.actions[:, self._hand_action_offset:]" in _fn_block(_PARENT_ENV, "_hand_command")
+    guard = _fn_block(_PARENT_ENV, "_assert_kp_contract")
     assert "c._arm_action_dim(self.profile)" in guard and "!= 6" not in guard
-    assert 'getattr(self, "fabric", None) is None' in _fn_block(_KP_ENV, "_log_fabric_metrics")
-    assert "return self.palm_targets - self._palm_anchor()" in _fn_block(_KP_ENV, "_cmd_state")
+    assert 'getattr(self, "fabric", None) is None' in _fn_block(_PARENT_ENV, "_log_fabric_metrics")
+    assert "return self.palm_targets - self._palm_anchor()" in _fn_block(_PARENT_ENV, "_cmd_state")
 
 
 # ---------------------------------------------------------------- cfg·차원
@@ -276,10 +282,10 @@ def test_derived_dims_are_22_131_155_when_the_hand_stays_synergic():
       27/136/160 이다(`test_shipped_tesollo_right_contract_is_27_136_160`). 이 테스트는
       "손을 시너지로 두면" 이라는 **조건부** 공식 검사다 — fj_b9 체크포인트가 사는 차원.
     """
-    tree = ast.parse(_KP_CFG)
+    tree = ast.parse(_PARENT_CFG)
     node = next(n for n in ast.walk(tree)
                 if isinstance(n, ast.FunctionDef) and n.name == "_derive_spaces")
-    src = textwrap.dedent("\n".join(_KP_CFG.split("\n")[node.lineno - 1:node.end_lineno]))
+    src = textwrap.dedent("\n".join(_PARENT_CFG.split("\n")[node.lineno - 1:node.end_lineno]))
     ns = {"_KP_DIM": 12, "NUM_KEYPOINTS": 4}
     exec(src, ns)  # noqa: S102 — 소스 자신의 공식
     from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
@@ -352,8 +358,8 @@ def test_hand_target_state_is_observed_through_the_action_obs_seam():
         "hand = 2.0 * (self._syn_target - self._act_lo.unsqueeze(0)) / self._act_span.unsqueeze(0) - 1.0",
         "return torch.cat([self.actions[:, :off], hand], dim=1)",
     ])
-    assert "_act = self._action_obs()" in _fn_block(_KP_ENV, "_get_observations"), "A 의 이음매가 사라졌다"
-    assert "return self.actions" in _fn_block(_KP_ENV, "_action_obs"), "A 는 산술 불변이어야 한다"
+    assert "_act = self._action_obs()" in _fn_block(_PARENT_ENV, "_get_observations"), "A 의 이음매가 사라졌다"
+    assert "return self.actions" in _fn_block(_PARENT_ENV, "_action_obs"), "A 는 산술 불변이어야 한다"
 
 
 def test_hand_action_range_is_soft_limit_intersect_profile_override_and_fails_loud():
@@ -414,10 +420,10 @@ def test_hand_action_range_is_soft_limit_intersect_profile_override_and_fails_lo
 
 def test_hand_direct_dims_are_27_136_160():
     """A 의 `_derive_spaces` 공식을 B 의 두 훅(팔 7 · 손 20)으로 실행한다."""
-    tree = ast.parse(_KP_CFG)
+    tree = ast.parse(_PARENT_CFG)
     node = next(n for n in ast.walk(tree)
                 if isinstance(n, ast.FunctionDef) and n.name == "_derive_spaces")
-    src = textwrap.dedent("\n".join(_KP_CFG.split("\n")[node.lineno - 1:node.end_lineno]))
+    src = textwrap.dedent("\n".join(_PARENT_CFG.split("\n")[node.lineno - 1:node.end_lineno]))
     ns = {"_KP_DIM": 12, "NUM_KEYPOINTS": 4}
     exec(src, ns)  # noqa: S102
     from openarm.agnostic.tasks.grasp_fj.robot_profiles import PROFILES
@@ -597,7 +603,7 @@ def test_tolerance_success_predicate_and_goal_z_are_locked_as_a_triple():
     assert 0.05 <= _thr / _gm <= 0.5, f"게이트 비율 {_thr / _gm:.2f} — 상류 6%~ 절반 사이여야 한다"
     z0 = float(re.search(r"goal_first_z_range: tuple\[float, float\] = \(([0-9.]+),", leaf).group(1))
     tol = float(re.search(r"tol_start: float = ([0-9.]+)", leaf).group(1))
-    latch = float(re.search(r"rw_lift_latch_height: float = ([0-9.]+)", _KP_CFG).group(1))
+    latch = float(re.search(r"rw_lift_latch_height: float = ([0-9.]+)", _PARENT_CFG).group(1))
     assert z0 - tol >= latch - 1e-9, f"{z0} − {tol} = {z0 - tol} < 래치 {latch}"
     val = _fn_block(_CFG, "_validate_fj_fields")
     assert "goal_first_z_range" in val and "rw_lift_latch_height" in val, "짝이 검증기에도 잠겨야 한다"
