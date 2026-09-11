@@ -1375,6 +1375,19 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["diag/action_sat_frac"] = (
             self.actions.abs() >= 0.99).float().mean()
         self.extras["diag/cmd_box_sat"] = self._palm_cmd_box_sat.mean(dim=0).max()
+        # ★★★09.11 F1 — 리미터를 뗐으므로 **속도가 실기 상한 안인가**를 이 런이 직접
+        #   답해야 한다. 기록된 실사고: "정책 속도 1.69 rad/s > 브리지 상한 1.0 →
+        #   잘린 몫이 쌓여 가드가 끊는다". fabric 이 내는 팔 관절속도가 그 상한 안이면
+        #   A 구조(정책→fabric 다이렉트)가 실기에서도 성립한다.
+        #   ⚠평균이 아니라 **최댓값**이어야 한다 — 가드를 끊는 것은 꼬리다.
+        _fqd = self.fabric_qd[:, : self.profile.num_arm_joints].abs()
+        self.extras["diag/arm_qd_max"] = _fqd.max()
+        self.extras["diag/arm_qd_p99"] = torch.quantile(_fqd.reshape(-1), 0.99)
+        # 지령 팜 속도(리미터 없으면 cmd_step_raw 가 곧 스텝당 이동량) → m/s 환산
+        self.extras["diag/palm_vel_cmd"] = (
+            self._palm_cmd_step_raw.mean() / max(self.step_dt, 1e-6))
+        self.extras["diag/palm_vel_cmd_max"] = (
+            self._palm_cmd_step_raw.max() / max(self.step_dt, 1e-6))
         self.extras["diag/palm_track_err"] = (
             self.palm_targets[:, :3] + self._fab_to_env - palm_pos).norm(dim=-1).mean()
         self._log_diagnostics(_thr, mid_f, dist_f, tip_f, obj_pos, palm_pos)

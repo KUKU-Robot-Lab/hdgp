@@ -603,14 +603,27 @@ def test_action_control_coupling_is_instrumented():
     — 요청이 상한의 7.2배라 리미터가 98.4% 포화였다. 08.27 절대매핑 실패의 서명이
     앵커+델타 체제에서도 그대로 나타난 것이고, 이 태그들이 없으면 안 보인다.
 
-    무엇이 이 계약을 거짓으로 만드는가: 박스 클램프나 변화율 리미터를 없애는 결정.
-      그때는 잘림이 존재하지 않으므로 이 단언을 그 사실과 함께 뒤집을 것.
+    ★★09.11 F1 — 예고가 실현됐다. 구 docstring 이 "리미터를 없애는 결정이 이 계약을
+      거짓으로 만든다"고 적어 뒀는데, 실제로 리미터를 뗐다(`palm_cmd_rate_limit_m` 0.0).
+      이제 `cmd_rate_sat` 은 항상 0 이므로 **포화 감시의 역할이 바뀐다**:
+      "얼마나 잘리는가"가 아니라 **"잘리지 않는 것이 유지되는가"** 를 본다.
+      그리고 리미터를 뗀 대가로 새로 물어야 할 질문이 생겼다 — **속도가 실기 상한
+      안인가**. 그래서 `arm_qd_*`·`palm_vel_cmd*` 를 계약에 넣는다.
+
+    무엇이 이 계약을 거짓으로 만드는가: 실기 브리지 속도 상한이 사라지는 것.
+      그 상한이 있는 한 sim 에서 그것을 재지 않으면 배포가 조용히 깨진다.
     """
-    env = _code(_ENV)
+    env, cfg = _code(_ENV), _code(_CFG)
     for tag in ('"diag/action_sat_frac"', '"diag/cmd_box_sat"',
                 '"diag/cmd_rate_sat"', '"diag/cmd_step_raw"',
-                '"diag/palm_track_err"'):
+                '"diag/palm_track_err"',
+                '"diag/arm_qd_max"', '"diag/palm_vel_cmd_max"'):
         assert tag in env, f"action↔제어 정합 태그 {tag} 가 없다"
+    # F1: 리미터가 꺼져 있으면 포화는 0 이어야 한다 — 켜져 있으면 A 구조가 아니다.
+    _lm = float(re.search(r"palm_cmd_rate_limit_m:\s*float\s*=\s*([\d.]+)", cfg).group(1))
+    _lr = float(re.search(r"palm_cmd_rate_limit_rot_deg:\s*float\s*=\s*([\d.]+)", cfg).group(1))
+    assert (_lm > 0.0) == (_lr > 0.0), \
+        f"위치·회전 리미터가 반쪽이다: {_lm} / {_lr} — 한 축만 잘리면 방향이 왜곡된다"
     # 리미터 **전** 원지령이어야 한다 — 자른 뒤를 재면 언제나 상한 이하로 보인다.
     i = env.index("self._palm_cmd_step_raw = torch.where(")
     assert "_step3.norm(dim=-1)" in env[i:i + 260], \
