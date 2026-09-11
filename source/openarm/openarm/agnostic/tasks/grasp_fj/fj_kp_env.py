@@ -600,9 +600,9 @@ class FJKeypointEnv(FJCoreEnv):
         if self._tol.update(self._trk.prev_episode_successes):
             print(f"[grasp_fj] 허용오차 커리큘럼 → tol {self._tol.tol:.4f}", flush=True)
         # ★09.11 감쌈 커리큘럼도 **같은 입력·같은 시점**으로 갱신한다(leaf 가 만들었을 때만).
-        _cc = getattr(self, "_curl_cur", None)
-        if _cc is not None and _cc.update(self._trk.prev_episode_successes):
-            print(f"[grasp_fj] 감쌈 커리큘럼 → curl_tol {_cc.value:.4f}", flush=True)
+        _wc = getattr(self, "_wrap_cur", None)
+        if _wc is not None and _wc.update(self._trk.prev_episode_successes):
+            print(f"[grasp_fj] 감쌈 커리큘럼 → wrap_tol {_wc.value:.4f}", flush=True)
         # arm 시점 기록 — 2000 스텝마다 한 번만 동기화(bool)한다.
         if self.common_step_counter % 2000 == 0 and bool(self._cmd_rate_armed):
             print(f"[grasp_fj] cmd_rate 벌점 ARMED · lift_ema {float(self._lift_ema):.3f} · step {self.common_step_counter}", flush=True)

@@ -82,11 +82,19 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
     #   옛 정의의 실측 0.348 중 두 고정 칸이 실어 나르던 몫이 빠지므로 자연값이 내려간다.
     #   0.35 로 두면 시작부터 성공을 막는다 — 커리큘럼의 자동정지 가드는 **상승**만 막고
     #   시작값은 못 막는다. 새 정의의 추정 자연값 근처에서 출발시킨다.
-    grasp_curl_start: float = 0.25
+    # 오프라인 계산(R 36.5mm · H 50mm · τxy 20mm · τz 30mm, 마디 8개):
+    #   리셋 자세(손이 16cm 밖) 0.01~0.03 · **평평한 손 캐리(영상 실패형) 0.230** ·
+    #   인벨롭 0.886. 0.15 는 평평한 손 캐리를 **통과시키고** 리셋 자세는 막는다 —
+    #   시작부터 성공을 0 으로 만들면 goal_bonus 가 사라져 부트스트랩이 죽는다.
+    grasp_wrap_start: float = 0.15
     # 프로필 `hand_grip_pose` 를 새 정의(8칸)로 계산한 값 = 0.9854.
     #   옛 0.83 은 10칸 정의의 값이었다(thumb_2 0.420 · pinky_2 0.000 이 평균을 끌어내렸다).
-    grasp_curl_max: float = 0.985
-    grasp_curl_factor: float = 1.05
+    # 인벨롭 실측 추정 0.886 바로 아래. 1.0 은 모든 마디가 표면 안에 있어야 해서
+    #   손가락 두께·관절 한계상 도달 불가다 — 닿을 수 없는 천장은 커리큘럼을 멈춘 채 둔다.
+    grasp_wrap_max: float = 0.85
+    # ×1.10 — fj_g2 가 같은 배속을 따라왔다(hand_curl +0.048/100ep, successes 0.96 유지).
+    #   0.15 → 0.85 은 18.2 승급 × 46.9 epoch = **853 epoch**.
+    grasp_wrap_factor: float = 1.10
     # ★★09.11 — 3000 → 750. 3000 프레임 ÷ horizon_length 16 = **187.5 epoch/승급**이라
     #   fj_g1/g2 가 300 epoch 동안 각각 **1회**만 승급했다(tol 커리큘럼도 같이 1회).
     #   0.35 → 0.83 은 ×1.05 로 17.7 승급 = 3,320 epoch, ×1.10 로 9.1 승급 = 1,700 epoch.
@@ -94,8 +102,8 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
     #   같아 **구속력이 없었다** — 전과 같이 goal_bonus 만 먹고 수렴했다(보상 증가분의 91%).
     #   750 → 46.9 epoch/승급. 안전장치는 이미 있다: prev_ep_successes < threshold 면
     #   `RisingCurriculum` 이 승급을 멈춘다(현재 4.66 vs 2.0).
-    grasp_curl_interval: int = 750       # tol 커리큘럼과 같은 프레임 간격(tol 은 그대로)
-    grasp_curl_threshold: float = 2.0    # tol 과 같은 입력(prev_ep_successes_mean)
+    grasp_wrap_interval: int = 750       # tol 커리큘럼과 같은 프레임 간격(tol 은 그대로)
+    grasp_wrap_threshold: float = 2.0    # tol 과 같은 입력(prev_ep_successes_mean)
     # ★09.11 — 기본값을 0.0 → 2.0 으로. fj_g1/g2 는 이 값을 CLI 로만 넘겨 돌았고
     #   (`env.rw_wrap_scale=2.0`), 런처가 빠지면 조용히 감쌈 항이 사라진다. git 에 고정한다.
     #   상한 = scale/step 이다(wrap_frac ∈ [0,1]) — 2.0 은 goal_bonus 44.9/step 의 4.5%.

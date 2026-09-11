@@ -42,15 +42,19 @@ class GraspFJEnv(FJKeypointEnv):
         """mixin `_setup_fabrics` 의 fabric-free 판. 시너지·인덱스·palm 박스 할당은 동일."""
         p = self.profile
         self._setup_synergy()                     # ★`_syn_ids` 가 아래 인덱스보다 먼저(부모 순서 계약)
-        # ★09.11 감쌈 커리큘럼 — 성공의 전제조건(`_grasp_precondition`)이 읽는다.
-        #   start 0 이면 끔. `_syn_ids` 뒤여야 `_hand_curl()` 이 동작한다.
-        _cs = float(self.cfg.grasp_curl_start)
-        self._curl_cur = (RisingCurriculum(
-            start=_cs, ceiling=float(self.cfg.grasp_curl_max),
-            factor=float(self.cfg.grasp_curl_factor),
-            interval=int(self.cfg.grasp_curl_interval),
-            success_threshold=float(self.cfg.grasp_curl_threshold)) if _cs > 0.0 else None)
-        self._curl_last = torch.zeros(self.num_envs, device=self.device)
+        # ★★09.11 감쌈 커리큘럼 — 성공의 전제조건(`_grasp_precondition`)이 읽는다.
+        #   ★기준을 `hand_curl`(손 **자세**)에서 `wrap_frac`(물체 **포위**)으로 바꿨다.
+        #     자세 기준은 물체가 손 **밖**에 있어도 통과한다 — 영상에서 컵이 평평한
+        #     손가락 바깥에 얹혀 실려 가던 것이 정확히 그 구멍이다.
+        #   start 0 이면 끔.
+        _ws = float(self.cfg.grasp_wrap_start)
+        self._wrap_cur = (RisingCurriculum(
+            start=_ws, ceiling=float(self.cfg.grasp_wrap_max),
+            factor=float(self.cfg.grasp_wrap_factor),
+            interval=int(self.cfg.grasp_wrap_interval),
+            success_threshold=float(self.cfg.grasp_wrap_threshold)) if _ws > 0.0 else None)
+        self._wrap_last = torch.zeros(self.num_envs, device=self.device)
+        self._wrap_stamp = -1
         self.fabric = None                        # 명시적 OFF — A 의 `_log_fabric_metrics` 가 None 으로 분기
         self._fab_t = self._build_joint_index()
         self._syn_to_fab_idx = self._build_syn_to_fab_idx()
@@ -415,6 +419,12 @@ class GraspFJEnv(FJKeypointEnv):
         ★exp 를 쓰는 이유: 선형 램프는 도달거리 밖에서 기울기가 **0** 이라 멀리 있는
           마디가 다가올 이유가 없다. exp 는 어디서나 기울기가 산다.
         """
+        # ★★스텝당 1회 캐시. `_grasp_precondition` 이 `_progress_reward` **보다 먼저**
+        #   돌기 때문에, 캐시가 없으면 전제조건이 한 스텝 **늦은** 값을 읽거나 같은
+        #   스텝에 body_pos 를 두 번 읽는다. 스탬프로 둘 다 막는다.
+        _now = int(self.common_step_counter)
+        if getattr(self, "_wrap_stamp", -1) == _now:
+            return self._wrap_last
         rc = self._rw_cfg
         p = (self.robot.data.body_pos_w[:, self._hull_all_t]
              - self.scene.env_origins[:, None, :])                       # (N, L, 3)
@@ -426,6 +436,7 @@ class GraspFJEnv(FJKeypointEnv):
         self._wrap_e_xy, self._wrap_e_z = e_xy, e_z
         w = torch.exp(-e_xy / float(rc.wrap_tau_xy)) * torch.exp(-e_z / float(rc.wrap_tau_z))
         self._wrap_last = w.mean(dim=-1)
+        self._wrap_stamp = _now
         return self._wrap_last
 
     def _hand_curl(self) -> torch.Tensor:
@@ -485,10 +496,9 @@ class GraspFJEnv(FJKeypointEnv):
           성공이 즉시 0 이 되어 총점의 93% 가 사라진다(reward-audit Check 4).
         ★`hand_curl` 은 **실측** 굴곡이다 — 지령에 걸면 시키기만 하고 끝난다.
         """
-        if self._curl_cur is None:
+        if self._wrap_cur is None:
             return is_success
-        self._curl_last = self._hand_curl()
-        return is_success & (self._curl_last >= self._curl_cur.value)
+        return is_success & (self._wrap_frac_geom() >= self._wrap_cur.value)
 
     def _log_joint_limit_violation(self, hand_q, ex) -> None:
         """손 20관절이 **하드 한계 밖으로 밀려난 양**을 관절별로 남긴다.
@@ -544,10 +554,12 @@ class GraspFJEnv(FJKeypointEnv):
         self._log_joint_limit_violation(_hq, ex)
         # ★09.11 감쌈 계측 — 커리큘럼이 조여지는지, 정책이 따라오는지 둘 다 봐야 한다
         #   (reward-audit Check 5: 임계를 거는 값은 반드시 직접 로깅한다).
-        ex["task/hand_curl"] = self._curl_last.mean() if self._curl_cur is not None else self._hand_curl().mean()
-        if self._curl_cur is not None:
-            ex["task/curl_tol"] = torch.tensor(self._curl_cur.value, device=self.device)
-            ex["task/curl_pass"] = (self._curl_last >= self._curl_cur.value).float().mean()
+        # `hand_curl` 은 전제조건에서 내려왔지만 **진단으로는 남긴다** — 감쌈이 안 오를 때
+        #   "손을 안 굽혀서"인지 "손은 굽었는데 물체가 밖에 있어서"인지 갈라준다.
+        ex["task/hand_curl"] = self._hand_curl().mean()
+        if self._wrap_cur is not None:
+            ex["task/wrap_tol"] = torch.tensor(self._wrap_cur.value, device=self.device)
+            ex["task/wrap_pass"] = (self._wrap_last >= self._wrap_cur.value).float().mean()
         # ★09.11 감쌈 기하 3종 — 하나로 뭉치면 "왜 안 감싸는지"를 못 가른다.
         #   `wrap_frac` 이 낮을 때 `wrap_xy_mean` 이 크면 **반경 실패**(손이 물체 곁에
         #   못 간다), `wrap_band_frac` 이 낮으면 **높이 실패**(손이 파지 띠를 벗어나 있다).

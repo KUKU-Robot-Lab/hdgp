@@ -584,41 +584,41 @@ def test_joints_that_never_move_are_pinned_and_excluded_from_curl():
     assert "self._act_span > _CURL_MIN_SPAN_RAD" in _fn_block(_ENV, "_hand_curl")
 
 
-def test_grasp_curl_max_is_the_design_grip_under_the_current_curl_definition():
-    """상한은 임의의 수가 아니라 **프로필 `hand_grip_pose` 를 현재 curl 정의로 계산한 값**이다.
-    정의가 바뀌면(칸을 넣거나 빼면) 이 값도 같이 바뀌어야 한다 — 옛 0.83 은 10칸 정의의
-    값이었고, 고정 칸 2개를 뺀 8칸 정의에서는 0.9854 다. 리터럴을 잠그는 대신 **다시 계산**한다."""
-    import re as _re, xml.etree.ElementTree as _ET
-    from openarm.agnostic.modules.robot_profiles import TESOLLO_RIGHT_SHORT_TL as _P
-    urdf = None
-    for q in Path(__file__).resolve().parents:
-        c = q.parent / "urdf" / "generated" / "rl" / "openarm_dg5f-m-short-tl_bi_rl" / \
-            "openarm_dg5f-m-short-tl_bi_rl.urdf"
-        if c.is_file():
-            urdf = c
-            break
-    if urdf is None:
-        pytest.skip("urdf/ 트리가 이 호스트에 없다(서버는 hdgp 만 pull 한다)")
-    lim = {j.get("name"): (float(j.find("limit").get("lower")), float(j.find("limit").get("upper")))
-           for j in _ET.parse(urdf).getroot().iter("joint") if j.find("limit") is not None}
-    span_min = float(_re.search(r"_CURL_MIN_SPAN_RAD\s*=\s*([0-9.]+)", _ENV).group(1))
-    vals = []
-    for n, g in zip(_P.hand_joint_names, _P.hand_grip_pose):
-        lo, hi = lim[n]
-        for rx, (olo, ohi) in _P.hand_action_limit_override.items():
-            if _re.search(rx, n):
-                if olo is not None: lo = max(lo, olo)
-                if ohi is not None: hi = min(hi, ohi)
-        w = hi - lo
-        assert w > 1e-6, f"폭 0 액션 칸: {n} — 부팅 가드가 죽인다"
-        if n.rsplit("_", 1)[1] in ("2", "3") and w > span_min:
-            vals.append((min(max(g, lo), hi) - lo) / w)
-    assert vals, "curl 칸이 비었다"
-    want = sum(vals) / len(vals)
-    got = float(_re.search(r"grasp_curl_max: float = ([0-9.]+)", _CFG).group(1))
-    assert abs(got - want) < 5e-3, f"grasp_curl_max {got} != 설계 그립 {want:.4f} ({len(vals)}칸)"
-    start = float(_re.search(r"grasp_curl_start: float = ([0-9.]+)", _CFG).group(1))
-    assert 0.0 < start < got, f"시작 {start} 이 상한 {got} 밖이다"
+def test_success_precondition_is_object_enclosure_not_hand_pose():
+    """★★09.11 — 전제조건 기준을 `hand_curl`(손 **자세**)에서 `wrap_frac`(물체 **포위**)으로.
+
+    자세 기준에는 구멍이 있다: 손을 아무리 오므려도 **물체가 손 밖에 있으면** 그만이다.
+    fj_g1/g2 영상이 정확히 그 해였다 — 컵이 평평한 손가락 **바깥**에 얹혀 실려 갔고
+    `hand_curl` 은 0.348, `ft_dist` 는 83mm 였는데 goal_bonus 는 그대로 나왔다.
+    `wrap_frac` 은 마디가 물체 **표면** 띠 안에 들어와야만 오르므로 그 구멍이 닫힌다.
+    """
+    _pc = _fn_block(_ENV, "_grasp_precondition")
+    assert "_wrap_frac_geom()" in _pc, "전제조건이 포위 기하를 안 읽는다"
+    assert "_hand_curl" not in _pc, "자세 기준이 남아 있다 — 물체가 손 밖이어도 통과한다"
+    # `hand_curl` 은 **진단으로는** 남아야 한다. 감쌈이 안 오를 때 "손을 안 굽혀서"인지
+    # "손은 굽었는데 물체가 밖이어서"인지 이 값이 갈라 준다.
+    assert '"task/hand_curl"' in _ENV, "진단 굴곡까지 지우면 실패 원인을 못 가른다"
+
+
+def test_wrap_curriculum_bounds_are_reachable():
+    """`wrap_frac` 은 마디 평균이라 정의상 [0, 1] 이다. 천장을 1.0 위에 두면 커리큘럼이
+    **영원히 못 닿고**, 바닥이 0 이면 커리큘럼 자체가 꺼진다(start>0 이 켜짐 조건).
+    그리고 시작은 천장보다 낮아야 오를 자리가 있다."""
+    lo = float(re.search(r"grasp_wrap_start: float = ([0-9.]+)", _CFG).group(1))
+    hi = float(re.search(r"grasp_wrap_max: float = ([0-9.]+)", _CFG).group(1))
+    f = float(re.search(r"grasp_wrap_factor: float = ([0-9.]+)", _CFG).group(1))
+    assert 0.0 < lo < hi <= 1.0, f"start {lo} · max {hi} 가 [0,1] 안에서 오름차순이 아니다"
+    assert f > 1.0, f"factor {f} 가 1 이하면 올라가지 않는다"
+
+
+def test_wrap_geometry_is_computed_once_per_step():
+    """★`_grasp_precondition` 이 `_progress_reward` **보다 먼저** 돈다(부모 `_get_rewards`).
+    캐시가 없으면 전제조건이 한 스텝 **늦은** 값을 읽거나 같은 스텝에 body_pos 를 두 번
+    읽는다. 스탬프가 둘 다 막는다 — 이 가드가 빠지면 증상이 '조금 이상한 수치' 뿐이라
+    눈으로는 못 잡는다."""
+    _wf = _fn_block(_ENV, "_wrap_frac_geom")
+    assert "_wrap_stamp" in _wf and "common_step_counter" in _wf, "스텝당 1회 캐시가 없다"
+    assert "self._wrap_stamp = _now" in _wf, "스탬프를 갱신하지 않으면 캐시가 영원히 빗나간다"
 
 
 # ---------------------------------------------------------------- SAPG yaml = b1 하이퍼 + SAPG 덮개 (09.07 B-iv)
