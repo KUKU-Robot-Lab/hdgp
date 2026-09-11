@@ -55,6 +55,8 @@ class GraspFJEnv(FJKeypointEnv):
             success_threshold=float(self.cfg.grasp_wrap_threshold)) if _ws > 0.0 else None)
         self._wrap_last = torch.zeros(self.num_envs, device=self.device)
         self._wrap_stamp = -1
+        # 진행형 wrap 의 래칫 — `1 − 최고 포위도`. −1 = 이번 에피소드 관측 없음(센티널).
+        self._wrap_closest = torch.full((self.num_envs,), -1.0, device=self.device)
         self.fabric = None                        # 명시적 OFF — A 의 `_log_fabric_metrics` 가 None 으로 분기
         self._fab_t = self._build_joint_index()
         self._syn_to_fab_idx = self._build_syn_to_fab_idx()
@@ -399,7 +401,12 @@ class GraspFJEnv(FJKeypointEnv):
         ★09.09 `hand_curl` 을 여기서 만들어 넘긴다. 부모 `_get_rewards` 는 계약 금지 훅이라
           인자를 추가할 수 없는데, 이 이음매는 `self` 를 갖는다 — 그래서 여기가 유일한 지점이다.
         """
-        return compute_fj_reward(wrap_frac=self._wrap_frac_geom(), **kw)
+        total, terms, out = compute_fj_reward(
+            wrap_frac=self._wrap_frac_geom(), wrap_closest=self._wrap_closest, **kw)
+        # 무상태 모듈 — 래칫 상태는 여기서 되먹인다(부모가 closest_ft 를 되먹이는 것과 같은 규약).
+        if out["wrap_closest"] is not None:
+            self._wrap_closest = out["wrap_closest"]
+        return total, terms, out
 
     def _wrap_frac_geom(self) -> torch.Tensor:
         """마디들이 **물체 표면**에 얼마나 붙어 있나 (N,) ∈ (0,1] — 접촉 센서 없이 순수 기하.
@@ -568,14 +575,21 @@ class GraspFJEnv(FJKeypointEnv):
             ex["task/wrap_frac"] = self._wrap_last.mean()
             ex["task/wrap_xy_mean"] = _we.mean()
             ex["task/wrap_band_frac"] = (self._wrap_e_z <= 0.0).float().mean()
+            _seen = self._wrap_closest >= 0.0
+            ex["task/wrap_best_mean"] = torch.where(
+                _seen, 1.0 - self._wrap_closest, torch.zeros_like(self._wrap_closest)).mean()
         # ★09.11 — 고정 칸이 실제로 고정돼 있는가. 액션한계로 묶었으므로 지령은 못 벗어나지만
         #   **접촉은 관절을 밀어낼 수 있다**(thumb_1 이 27배 포화로 밀려난 전례). 설계값은
         #   액션창의 중점이다 — 이 값이 커지면 파지가 엄지 대향을 물리적으로 잃고 있다는 뜻.
+        #   ★09.11 관절별로 쪼갠다 — fj_h1 에서 전 관절 max 가 1.79 rad 까지 올랐는데 어느
+        #     관절인지 못 갈랐다(`thumb_2` 는 범위가 넓어 1.57 rad 까지 URDF 이탈 없이 밀린다).
         _pin = self._act_span <= _CURL_MIN_SPAN_RAD
         if bool(_pin.any()):
             _mid = 0.5 * (self._act_lo + self._act_hi)
             _dev = (self.robot.data.joint_pos[:, self._syn_ids] - _mid.unsqueeze(0)).abs()
-            ex["task/pinned_dev_max"] = _dev[:, _pin].max()
+            for _k, _nm in enumerate(self.profile.hand_joint_names):
+                if bool(_pin[_k]):
+                    ex[f"task/pinned_dev_{_nm[5:]}"] = _dev[:, _k].max()
         # ★★09.09 **실측 폐쇄도**. `task/syn_close` 는 (tgt−lo)/span 즉 **지령**이라
         #   "정책이 안 닫는다"와 "손이 못 닫는다"를 3200 epoch 동안 구분하지 못했다.
         #   ep_3200 재생 계측: 지령 0.540 vs 실측 0.452 — 마디별 실현율이
@@ -644,6 +658,9 @@ class GraspFJEnv(FJKeypointEnv):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)       # A: 목표·추적기·큐·외란 / 부모: 홈 텔레포트·시너지
+        # ★진행형 wrap 래칫은 **에피소드 경계에서만** 풀린다. 목표 재시작(`_restart_goal_clock`)
+        #   에서는 안 푼다 — 파지는 목표를 넘어 이어지고, 풀면 같은 포위를 목표마다 재지급한다.
+        self._wrap_closest[env_ids] = -1.0
         # 리셋은 홈 텔레포트라 q*_{-1} = 홈 q = 실측 q (DESIGN §1 B).
         self._arm_q_target[env_ids] = self._default_q[env_ids][:, self._arm_ids_t]
         self._prev_arm_q_target[env_ids] = self._arm_q_target[env_ids]   # 리셋 스텝을 큰 이동으로 세지 않는다

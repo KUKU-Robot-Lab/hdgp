@@ -188,38 +188,52 @@ def test_wrap_is_off_by_default():
     assert torch.all(terms["wrap"] == 0.0), "기본값인데 wrap 이 0 이 아니다"
 
 
-def test_wrap_is_proportional_to_surface_participation():
-    """★09.11 — 항은 이제 **마디의 표면 참여도**에 비례한다(게이트 없음).
+def _wrap_step(cfg, frac_v, closest):
+    kw, frac = _wrap_kw(frac_v, 0.01)
+    _, terms, out = compute_fj_reward(cfg=cfg, wrap_frac=frac, wrap_closest=closest,
+                                      is_success=torch.zeros_like(frac, dtype=torch.bool), **kw)
+    return float(terms["wrap"][0]), out["wrap_closest"]
 
-    옛 정의 `curl × (ft_dist.mean < gate)` 는 두 군데가 틀렸다: `ft_dist` 가 물체 **원점**
-    거리라 기울기가 표면 법선(벽 밀기)을 가리켰고, `curl` 은 물체가 손 **밖**에 있어도
-    만점이었다. fj_g1/g2 283 epoch 동안 게이트가 한 번도 안 열렸다(기여 0.0002%).
-    척도가 물체 표면에 고정되므로 **기하가 곧 게이트다** — 허공 주먹은 exp 가 0 으로 죽고,
-    그 판정은 환경쪽(`_wrap_frac_geom`)이 한다.
+
+def test_wrap_pays_only_new_enclosure_not_holding():
+    """★★09.11 — wrap 은 **진행형**: 에피소드 최고 포위도 대비 증가분만 준다.
+
+    매 스텝 `scale × wrap_frac` 을 주던 판(fj_h1)은 리셋 자세의 wrap_frac 0.21 만으로
+    0.43/step 이 나와 부트스트랩 구간 총보상의 40% 가 공짜였다. ep69 lifted_frac
+    g1 0.618 vs h1 0.0065 — 컵 옆에 붙어 wrap 만 벌고 들지 않았다.
+    이 테스트는 그 해를 정확히 막는다: **붙어 있기만 해서는 0**.
     """
-    cfg = FJRewardCfg(wrap_scale=2.0)
-    for frac_v, want in ((0.0, 0.0), (0.5, 1.0), (1.0, 2.0)):
-        kw, frac = _wrap_kw(frac_v, 0.01)
-        _, terms, _ = compute_fj_reward(cfg=cfg, wrap_frac=frac,
-                                        is_success=torch.zeros_like(frac, dtype=torch.bool), **kw)
-        assert torch.allclose(terms["wrap"], torch.full_like(terms["wrap"], want)), \
-            f"참여도 {frac_v} → {terms['wrap'][0]} (기대 {want})"
+    cfg = FJRewardCfg(wrap_scale=50.0)
+    n = _inputs()["obj_z"].shape[0]
+    cl = torch.full((n,), -1.0)
+    r, cl = _wrap_step(cfg, 0.21, cl)
+    assert r == 0.0, "첫 스텝(센티널)은 0 이어야 한다 — 리셋 자세의 포위를 사면 안 된다"
+    r, cl = _wrap_step(cfg, 0.21, cl)
+    assert r == 0.0, "같은 포위를 유지만 하는데 지급됐다 — fj_h1 의 공짜 보상 해"
+    r, cl = _wrap_step(cfg, 0.50, cl)
+    assert abs(r - 50.0 * 0.29) < 1e-4, f"포위를 늘린 만큼 지급돼야 한다: {r}"
+    r, cl = _wrap_step(cfg, 0.40, cl)
+    assert r == 0.0, "후퇴에 지급됐다"
+    r, cl = _wrap_step(cfg, 0.50, cl)
+    assert r == 0.0, "벌렸다 다시 오므려 같은 최고치에 닿았는데 재지급됐다 — 래칫이 없다"
 
 
-def test_wrap_is_capped_by_scale():
-    """★상한 = scale. wrap_frac 은 [0,1] clamp 라 정규화가 깨져도 보상을 부풀릴 수 없다."""
-    cfg = FJRewardCfg(wrap_scale=2.0)
-    kw, frac = _wrap_kw(5.0, 0.01)          # 정규화가 깨져 1 을 넘긴 경우
-    _, terms, _ = compute_fj_reward(cfg=cfg, wrap_frac=frac,
-                                    is_success=torch.zeros_like(frac, dtype=torch.bool), **kw)
-    assert torch.all(terms["wrap"] == 2.0), "상한이 안 걸린다"
+def test_wrap_inputs_are_required_when_enabled():
+    """켜 놓고 입력을 안 넘기면 조용히 0 이 되는 대신 **죽어야** 한다."""
+    kw, frac = _wrap_kw(0.5, 0.01)
+    with pytest.raises(ValueError):
+        compute_fj_reward(cfg=FJRewardCfg(wrap_scale=50.0), wrap_frac=frac,
+                          is_success=torch.zeros_like(frac, dtype=torch.bool), **kw)
 
 
-def test_wrap_is_small_against_goal_bonus():
-    """★reward-audit Check 1 — local minimum 방지. 기준은 목표 기여의 3배 미만이다.
-
-    실측 작동점: goal_bonus 33.7/step. 상한 2.0 이면 0.06배로 한참 아래다.
-    이 테스트는 계수를 올릴 때 그 여유가 사라지는 것을 잡는다.
-    """
-    cfg = FJRewardCfg(wrap_scale=2.0)
-    assert cfg.wrap_scale <= 0.06 * 33.7 * 3, "wrap 상한이 goal_bonus 기여의 3배 여유를 먹었다"
+def test_wrap_episode_total_is_below_lift_bonus():
+    """★reward-audit Check 1 — 진행형의 **에피소드 총량** 상한은 scale × (1 − 0) 이다.
+    그것이 lift_bonus(1회) 보다 작아야 "감싸기만 하고 안 드는" 해가 드는 해를 못 이긴다."""
+    import re as _re
+    from pathlib import Path as _P
+    here = _P(__file__).resolve().parent.parent
+    leaf = (here / "grasp_fj_env_cfg.py").read_text(encoding="utf-8")
+    base = (here / "fj_kp_cfg.py").read_text(encoding="utf-8")
+    scale = float(_re.search(r"rw_wrap_scale: float = ([0-9.]+)", leaf).group(1))
+    lift_bonus = float(_re.search(r"rw_lift_bonus: float = ([0-9.]+)", base).group(1))
+    assert scale * 1.0 < lift_bonus, f"wrap 총량 상한 {scale} ≥ lift_bonus {lift_bonus}"

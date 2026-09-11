@@ -106,8 +106,10 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
     grasp_wrap_threshold: float = 2.0    # tol 과 같은 입력(prev_ep_successes_mean)
     # ★09.11 — 기본값을 0.0 → 2.0 으로. fj_g1/g2 는 이 값을 CLI 로만 넘겨 돌았고
     #   (`env.rw_wrap_scale=2.0`), 런처가 빠지면 조용히 감쌈 항이 사라진다. git 에 고정한다.
-    #   상한 = scale/step 이다(wrap_frac ∈ [0,1]) — 2.0 은 goal_bonus 44.9/step 의 4.5%.
-    rw_wrap_scale: float = 2.0
+    #   ★★09.11 진행형으로 바뀌어 척도가 달라졌다 — 스텝당이 아니라 **에피소드 총량**이
+    #     scale × (최고 포위도 − 리셋 포위도) ≈ scale × 0.64 다. ft_scale(50) 과 같은 진행형
+    #     척도로 두면 총량 ≈ 32 — kp_progress(~40) · lift_bonus(300) 보다 작다(reward-audit Check 1).
+    rw_wrap_scale: float = 50.0
     rw_wrap_tau_xy: float = 0.02
     rw_wrap_tau_z: float = 0.03
 
