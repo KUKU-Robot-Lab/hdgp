@@ -12,7 +12,7 @@
 #   블록 수가 학습과 달라지면 네트워크의 sigma 행 대조가 전부 거짓이 되어 재생이
 #   **블록 0(가장 탐색적)** 으로 돌아간다(vendor player.py:92 주석).
 #   그래서 여기서는 **블록 수를 학습과 같게** 맞추고 블록 크기만 줄인다:
-#       BLOCKS(기본 12, 학습 24576/2048) · ENVS = BLOCKS × BLOCK_SIZE
+#       BLOCKS(기본 6, 학습 24576/4096 = 상류 고정) · ENVS = BLOCKS × BLOCK_SIZE
 #   마지막 블록이 탐색계수 0 = **리더(그리디)** 라, 기본 시점은 거기를 본다.
 set -o pipefail
 HDGP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,7 +34,7 @@ fi
 export PYTHONPATH="$HDGP/vendor/rl_games_sapg:$HDGP/source/openarm:${PYTHONPATH:-}"
 export CUDA_VISIBLE_DEVICES="${GPU:-0}"
 
-BLOCKS="${BLOCKS:-12}"; BSZ="${BLOCK_SIZE:-2}"
+BLOCKS="${BLOCKS:-6}"; BSZ="${BLOCK_SIZE:-2}"
 E=$((BLOCKS * BSZ))
 VIEW="${VIEW_ENV:-$((E - 1))}"          # 마지막 블록 = 탐색계수 0 = 리더
 echo "[영상] task=$TASK · ckpt=$(basename "$CKPT")"

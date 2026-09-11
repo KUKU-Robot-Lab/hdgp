@@ -81,7 +81,14 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
     grasp_curl_start: float = 0.35       # 실측 0.340 바로 위 — 성공이 죽지 않는 출발점
     grasp_curl_max: float = 0.83         # 프로필 `hand_grip_pose` 의 굴곡(설계 파지) 실측값
     grasp_curl_factor: float = 1.05
-    grasp_curl_interval: int = 3000      # tol 커리큘럼과 같은 프레임 간격
+    # ★★09.11 — 3000 → 750. 3000 프레임 ÷ horizon_length 16 = **187.5 epoch/승급**이라
+    #   fj_g1/g2 가 300 epoch 동안 각각 **1회**만 승급했다(tol 커리큘럼도 같이 1회).
+    #   0.35 → 0.83 은 ×1.05 로 17.7 승급 = 3,320 epoch, ×1.10 로 9.1 승급 = 1,700 epoch.
+    #   판단 주기보다 한 자릿수 느려서 `curl_tol` 0.3675 가 정책의 자연값(0.335~0.348)과
+    #   같아 **구속력이 없었다** — 전과 같이 goal_bonus 만 먹고 수렴했다(보상 증가분의 91%).
+    #   750 → 46.9 epoch/승급. 안전장치는 이미 있다: prev_ep_successes < threshold 면
+    #   `RisingCurriculum` 이 승급을 멈춘다(현재 4.66 vs 2.0).
+    grasp_curl_interval: int = 750       # tol 커리큘럼과 같은 프레임 간격(tol 은 그대로)
     grasp_curl_threshold: float = 2.0    # tol 과 같은 입력(prev_ep_successes_mean)
     rw_wrap_scale: float = 0.0
     rw_wrap_gate_dist: float = 0.06

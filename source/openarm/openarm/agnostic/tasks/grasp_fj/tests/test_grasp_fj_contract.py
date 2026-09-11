@@ -44,6 +44,18 @@ _KP_CFG = (_KP / "grasp_kp_env_cfg.py").read_text(encoding="utf-8")
 _SAPG = (_HERE / "config" / "agents" / "rl_games_ppo_lstm_sapg_cfg.yaml").read_text(encoding="utf-8")
 
 
+def _hdgp_root() -> Path:
+    """런처는 패키지 밖(hdgp 루트)에 산다. `parents[N]` 으로 세지 않고 **표식으로 찾는다** —
+    디렉터리 한 겹만 바뀌어도 N 은 조용히 엉뚱한 곳을 가리킨다."""
+    for q in Path(__file__).resolve().parents:
+        if (q / "run_fj.sh").is_file() and (q / "vendor").is_dir():
+            return q
+    raise AssertionError("hdgp 루트를 못 찾았다 (run_fj.sh + vendor/ 표식)")
+
+
+_RUN = (_hdgp_root() / "run_fj.sh").read_text(encoding="utf-8")
+
+
 def _calls(src: str, name: str) -> list[str]:
     """`self.robot.<name>(...)` 호출의 괄호 안 본문 전부(괄호 균형)."""
     out = []
@@ -514,8 +526,30 @@ def test_b_cmd_rate_scale_is_one_because_the_measure_is_bounded():
     assert "rw_cmd_rate_scale: float = 1.0" in _code(_CFG)
 
 
-def test_log_metrics_include_lifted_action_rate():
-    assert '"ctrl/arm_action_rate_lifted"' in _fn_block(_ENV, "_log_fabric_metrics")
+def test_lifted_action_rate_is_logged_under_exactly_one_name():
+    """★09.11 — `ctrl/arm_action_rate_lifted` 는 `task/cmd_rate_lifted` 와 **완전히 같은 값**
+    이었다(fj_g1 283 epoch 전수 대조: min·max·std 소수점까지 일치). 같은 숫자가 보드에 두
+    이름으로 서면 둘이 다른 측도인 줄 알고 비교하게 된다. 측도는 남기고 이름만 하나로 줄인다."""
+    assert '"task/cmd_rate_lifted"' in _fn_block(_PARENT_ENV, "_log_step")
+    assert "arm_action_rate_lifted" not in _ENV
+
+
+def test_sapg_block_count_is_the_upstream_six_at_the_launcher_env_count():
+    """★★09.11 — 이 줄은 env 수를 따라 **두 번** 어긋났다.
+      09.07: num_envs 16,384 → 8,192 로 내리며 block 4096 을 안 고쳐 4 → **2** 블록
+             (fj_b4 실측 두 블록 엔트로피 31.48/31.47 — 구분이 사라졌다).
+      09.10: num_envs 8,192 → 24,576 으로 되돌리며 block 2048 을 안 고쳐 4 → **12** 블록
+             (fj_g1/g2 가 그렇게 300 epoch 돌았다).
+    두 번 다 **한쪽 파일만** 고쳐서 났고, 두 번 다 이 파일이 블록 크기를 리터럴로 잠그고
+    있었으나 잡지 못했다 — 잠근 것이 불변식이 아니라 값이었기 때문이다.
+    상류 repo/simtoolreal/README.md:96 은 `num_envs=24576` + `expl_coef_block_size=4096`
+    을 주며 "keep it at 6" 이라고 못 박는다. 그래서 **두 파일을 함께** 잠근다."""
+    blk = int(re.search(r"expl_coef_block_size:\s*(\d+)", _SAPG).group(1))
+    envs = int(re.search(r'E="\$\{ENVS:-(\d+)\}"', _RUN).group(1))
+    dflt = int(re.search(r'BLK="\$\{BLK:-(\d+)\}"', _RUN).group(1))
+    assert blk == dflt, f"yaml {blk} 과 런처 기본 {dflt} 이 다르다 — 런처가 이기면 조용히 어긋난다"
+    assert envs % blk == 0, f"{envs} 가 {blk} 의 배수가 아니다"
+    assert envs // blk == 6, f"{envs} ÷ {blk} = {envs // blk} 블록 (상류 고정값은 6)"
 
 
 # ---------------------------------------------------------------- SAPG yaml = b1 하이퍼 + SAPG 덮개 (09.07 B-iv)
@@ -530,15 +564,24 @@ def test_sapg_yaml_is_b1_hyperparameters_plus_sapg_overlay():
                   "bound_loss_type: regularization", "bounds_loss_coef: 0.005",
                   "fixed_sigma: coef_cond", "use_others_experience: lf", "off_policy_ratio: 1.0",
                   "expl_type: mixed_expl_learn_param", "expl_reward_type: entropy",
-                  "expl_coef_block_size: 2048", "score_to_win: 1000000",
+                  "score_to_win: 1000000",
                   "value_bootstrap: True", "zero_rnn_on_done: True", "entropy_coef: 0.0\n"):
         assert token in _SAPG, token
     # 사다리 상단 = b1 의 균일 0.002: linspace(0.5,0,4)×0.004 = [0.002, 0.00133, 0.00067, 0]
     assert "expl_reward_coef_scale: 0.004" in _SAPG
     assert _SAPG.count("learning_rate: 3e-4") == 1 and _SAPG.count("learning_rate: 1e-4") == 1, "actor 3e-4 · critic 1e-4 (b1)"
     assert _SAPG.count("mini_epochs: 4") == 2, "actor·central_value 둘 다 4 (b1)"
-    # 8,192×16 = 131,072 (+lf 증강 32,768) / 32,768 → 5 개. b4~b6 가 실제로 돈 값(CLI 덮어쓰기)을 yaml 에 고정한다.
-    assert _SAPG.count("minibatch_size: 32768") == 2
+    # ★★09.11 — 리터럴 잠금을 **불변식 잠금**으로 바꾼다. 증강 배치 = num_envs×horizon +
+    #   block_size×horizon(lf 로 리더 라벨 한 블록 추가)이고, 상류는 이것을 **4개**로 쪼갠다
+    #   (24,576×16 + 4,096×16 = 458,752 / 98,304). 값만 잠그면 env·블록이 바뀔 때 조용히
+    #   어긋난다 — 09.07·09.10 에 블록 크기가 정확히 그렇게 두 번 어긋났다.
+    _mb = re.findall(r"minibatch_size:\s*(\d+)", _SAPG)
+    assert len(_mb) == 2 and _mb[0] == _mb[1], f"actor·central_value 미니배치가 다르다: {_mb}"
+    _blk = int(re.search(r"expl_coef_block_size:\s*(\d+)", _SAPG).group(1))
+    _hz = int(re.search(r"horizon_length:\s*(\d+)", _SAPG).group(1))
+    _envs = int(re.search(r'E="\$\{ENVS:-(\d+)\}"', _RUN).group(1))
+    _n = ((_envs + _blk) * _hz) // int(_mb[0])
+    assert _n == 4, f"미니배치 {_mb[0]} → epoch 당 {_n}개 (상류는 4개)"
     for bad in ("concat_input: False", "concat_output: False", "mixed_precision: True", "e_clip: 0.1",
                 "bound_loss_type: bound", "mini_epochs: 2", "minibatch_size: 65536",
                 "clip_observations: 10.0", "expl_reward_coef_scale: 0.002", "bounds_loss_coef: 0.0001"):

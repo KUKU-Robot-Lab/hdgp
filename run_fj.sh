@@ -32,7 +32,7 @@ echo "[런처] git HEAD=$(git rev-parse --short HEAD) dirty=$(git status --short
 echo "[런처] EXTRA=${EXTRA:-(없음)}"
 # SAPG 블록 — yaml 기본 expl_coef_block_size 는 num_envs 8192 기준(2048=4블록)이라
 # env 수를 바꾸면 블록 수가 조용히 달라진다. 무엇으로 도는지 로그에 남긴다.
-BLK="${BLK:-2048}"
+BLK="${BLK:-4096}"   # 상류 고정: 24,576 ÷ 4,096 = 6블록
 echo "[런처] SAPG expl_coef_block_size=$BLK -> $((E / BLK))블록 (나머지 $((E % BLK)))"
 [ $((E % BLK)) -ne 0 ] && echo "[런처] 경고: env 수가 블록크기의 배수가 아니다 — SAPG 분할이 어긋난다"
 

@@ -1698,8 +1698,9 @@ class FJCoreEnv(FJControlMixin, DirectRLEnv):
         #   어긋나면 이 값이 env_spacing(2.0 m) 배수로 튄다.
         _off = (self.robot.data.root_pos_w[:, :2]
                 - self.scene.env_origins[:, :2]).abs()
+        # ★09.11 — `_mean` 은 지웠다. 이 가드가 답하는 질문은 "어긋난 env 가 있는가"
+        #   하나이고 그건 max 가 답한다(어긋나면 env_spacing 배수로 튄다).
         self.extras["diag/root_vs_origin_max"] = _off.max()
-        self.extras["diag/root_vs_origin_mean"] = _off.mean()
 
         # ---- 낙하/전도 재소환 (08.30 신설, 기본 OFF) --------------------------------
         # ★★종료가 유일한 실패 처리면 "시도 → 실패 → 미래 보상 전액 상실"이라
@@ -1873,6 +1874,14 @@ class FJCoreEnv(FJControlMixin, DirectRLEnv):
         self._palm_cmd_primed[env_ids] = False
 
         # ---- 버퍼 -----------------------------------------------------------------------
+        # ★★09.11 — 종별 EMA 가 쓸 **소거 전** 래치 상태를 먼저 뜬다(트랙 A 의 09.11 수정 이식).
+        #   아래 `self._latched[env_ids] = False` 가 종별 EMA 블록보다 85줄 **앞서** 돌아
+        #   `species/latched_*` 9개가 fj_g1 283 epoch 내내 정확히 0 이었다. 그 블록의 주석은
+        #   "`_latched` 는 … 지워지므로 여기(그 전)서 읽어야 한다"는 올바른 불변식을 적어
+        #   뒀지만, 파일이 자라며 줄 번호가 낡았고 소거가 읽기보다 앞으로 옮겨졌다.
+        #   출력이 그럴듯한 0 이라 아무도 눈치채지 못했다(`species/success_*` 는 소거가
+        #   뒤라 우연히 살아 있었다). 스냅샷으로 떠 두면 줄 순서가 또 바뀌어도 안 깨진다.
+        self._latched_at_done = self._latched[env_ids].clone()
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
         self._latched[env_ids] = False
@@ -1915,36 +1924,27 @@ class FJCoreEnv(FJControlMixin, DirectRLEnv):
         #   아니라 소비되는 자리에서 읽는다.
         _em = getattr(self, "event_manager", None)
         if _em is not None:
-            _mr = _em.get_term_cfg("object_scale_mass").params[
-                "mass_distribution_params"]
             _gr = _em.get_term_cfg("robot_joint_stiffness_and_damping").params[
                 "stiffness_distribution_params"]
-            self.extras["dr/mass_scale_lo"] = float(_mr[0])
-            self.extras["dr/mass_scale_hi"] = float(_mr[1])
             self.extras["dr/gain_scale_lo"] = float(_gr[0])
             self.extras["dr/gain_scale_hi"] = float(_gr[1])
+        # ★09.11 — `dr/mass_scale_lo/hi`(event_manager 사본)는 지웠다. 바로 아래 두 줄이
+        #   같은 사실을 **더 강하게** 증명한다 — 사본이 맞아도 물리가 안 받으면 여기서 드러난다.
         # ★실제로 외란 정규화에 쓰인 질량 — DR 이 물리에 닿았는지의 최종 증거다.
         #   범위가 한 점이면 질량 DR 이 죽은 것이다(cfg 가 뭐라 적혀 있든).
         self.extras["dr/obj_mass_min"] = self._obj_mass.min()
         self.extras["dr/obj_mass_max"] = self._obj_mass.max()
         self.extras["adr/spawn_range"] = self._adr_spawn_range
-        self.extras["adr/goal_y"] = float(self._adr_goal_offset[1])
-        self.extras["adr/finger_residual"] = float(self._adr_residual)
-        self.extras["adr/goal_x_span"] = float(self._adr_goal_span[0])
-        self.extras["adr/goal_z_max"] = float(self._adr_goal_span[2])
         # 실제로 뽑힌 목표 분포 — 샘플링이 살아있는지 여기서 본다(폭 0 이면 OFF).
         self.extras["adr/goal_y_sampled_mean"] = self._goal_off_env[:, 1].abs().mean()
         self.extras["adr/goal_dist_mean"] = self._goal_off_env.norm(dim=1).mean()
-        self.extras["adr/obs_noise_object"] = self._adr_obs_noise_object
-        # ---- sim2real 축 (09.01) — 종점이 base 면 전부 상수라 판독 비용만 든다 --------
-        self.extras["adr/obs_noise_qpos"] = self._adr_obs_noise_qpos
-        self.extras["adr/obs_noise_qvel"] = self._adr_obs_noise_qvel
-        _mr = getattr(self, "_adr_mass_range", (1.0, 1.0))
-        self.extras["adr/mass_lo"] = _mr[0]
-        self.extras["adr/mass_hi"] = _mr[1]
-        _gr = getattr(self, "_adr_gain_range", (1.0, 1.0))
-        self.extras["adr/gain_lo"] = _gr[0]
-        self.extras["adr/gain_hi"] = _gr[1]
+        # ★★09.11 — adr/* 파생 11개를 지웠다(goal_y·finger_residual·goal_x_span·goal_z_max·
+        #   obs_noise_{object,qpos,qvel}·mass_{lo,hi}·gain_{lo,hi}). 전부 `_adr_apply` 가
+        #   `adr/level` 에서 선형으로 만드는 값이라 **level 하나로 복원된다**. fj_g1 283 epoch
+        #   실측에서 adr/* 15개가 전부 상수였고, 상수인 이유는 level 이 0 이었기 때문이다
+        #   — 즉 15줄이 답한 질문은 "level 이 0 인가" 하나였다.
+        #   ★지운 것 중 `adr/goal_y` 는 CUDA 텐서에 `float()` 을 걸어 리셋마다 GPU 동기화를
+        #     일으켰다(리셋 경로는 24,576 env 에서 사실상 매 스텝 돈다).
 
         # ---- 종별 success/latched EMA — 집계가 가리는 종별 실패를 드러낸다 ----------
         #   ★무동기 집계(index_add) — per-step 리셋 경로라 .any()/.item() 루프 금지
@@ -1960,7 +1960,7 @@ class FJCoreEnv(FJControlMixin, DirectRLEnv):
                 0, _sp, self._success_now[env_ids].float())
             _l_sum = torch.zeros(
                 self._n_species, device=self.device).index_add_(
-                0, _sp, self._latched[env_ids].float())
+                0, _sp, self._latched_at_done.float())
             _has = _cnt > 0
             _a = 0.05
             self._species_succ_ema = torch.where(
@@ -1969,12 +1969,18 @@ class FJCoreEnv(FJControlMixin, DirectRLEnv):
             self._species_latch_ema = torch.where(
                 _has, (1 - _a) * self._species_latch_ema
                 + _a * (_l_sum / _cnt.clamp(min=1.0)), self._species_latch_ema)
-            for _k, _nm in enumerate(self._species_names):
-                self.extras[f"species/success_{_nm}"] = self._species_succ_ema[_k]
-                self.extras[f"species/latched_{_nm}"] = self._species_latch_ema[_k]
+            # ★★09.11 — 종별 낱개 18개를 요약 5개로 줄인다. 9종 × 2측도를 보드에 펼쳐 두면
+            #   "어느 줄이 어느 종인가"를 매번 다시 세게 된다. 판정은 원래 **최악의 종**으로
+            #   하므로 min·spread 면 충분하고, 어느 종인지는 `latched_worst_id` 가 가리킨다
+            #   (`_species_names` 순서의 인덱스). 자세히 봐야 하면 그때 낱개를 되살린다.
             self.extras["species/success_min"] = self._species_succ_ema.min()
             self.extras["species/success_spread"] = (
                 self._species_succ_ema.max() - self._species_succ_ema.min())
+            self.extras["species/latched_min"] = self._species_latch_ema.min()
+            self.extras["species/latched_spread"] = (
+                self._species_latch_ema.max() - self._species_latch_ema.min())
+            self.extras["species/latched_worst_id"] = (
+                self._species_latch_ema.argmin().float())
 
         self._wrap_at_latch[env_ids] = 0.0
         self._disp_at_latch[env_ids] = 0.0

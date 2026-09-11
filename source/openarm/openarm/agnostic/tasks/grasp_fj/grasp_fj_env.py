@@ -491,7 +491,6 @@ class GraspFJEnv(FJKeypointEnv):
         #   실효 slew 판정: 이 값 × 60 Hz 가 URDF 한계(최저 5.445 rad/s)·브리지 상한과 비교된다.
         ex["ctrl/arm_target_step"] = (self._arm_q_target - self._prev_arm_q_target).abs().mean()
         self._prev_arm_q_target = self._arm_q_target.clone()
-        ex["ctrl/arm_action_rate_lifted"] = self._lifted_mean(self._cmd_rate)   # A 의 task/cmd_rate_lifted 와 같은 측도
         # ★09.08 손 건강 3종 — **진단 전용**, 아무것도 얼리지 않는다(법칙에 게이트·hold 없음). `task/hand_*` 는
         #   불변 트랙의 진단 훅에 사는데 그 훅은 접촉 센서 소비자라 이 트랙에서 계약 금지다. 그래서 여기서 잰다.
         #   `hand_blocked_frac` = 목표↔실측 > 1.0 rad ∧ 한계 밖 아님(접촉 or 추종 실패). 20관절 전부 대상

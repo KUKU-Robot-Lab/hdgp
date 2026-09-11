@@ -642,7 +642,6 @@ class FJKeypointEnv(FJCoreEnv):
         ex["task/kp_dist_min_mean"] = torch.where(_ck >= 0.0, _ck, kp_dist).mean()
         ex["task/near_goal"] = near_goal.float().mean()
         ex["task/lifted_frac"] = self._latched.float().mean()
-        ex["task/just_lifted"] = out["just_lifted"].float().mean()
         ex["task/dz"] = dz.mean()
         ex["task/ft_dist_mean"] = ft_dist.mean()
         ex["task/successes_mean"] = self._trk.successes.float().mean()
@@ -650,7 +649,6 @@ class FJKeypointEnv(FJCoreEnv):
         ex["task/hand_z_min"] = self._hand_z_min.mean()
         ex["task/hand_z_min_worst"] = self._hand_z_min.min()
         ex["task/hand_floor_depth_max"] = self._hand_floor_depth_max
-        ex["task/abnormal_rate"] = self._abnormal.float().mean()
         ex["task/tilt_deg"] = self._tilt_deg.mean()
         ex["task/syn_close"] = self._syn_close.mean()
         ex["task/close_gate"] = self._close_gate.mean()

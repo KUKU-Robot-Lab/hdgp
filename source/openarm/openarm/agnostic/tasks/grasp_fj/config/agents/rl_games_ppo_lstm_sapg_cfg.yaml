@@ -16,10 +16,11 @@
 #   이번 런이 같은 서명으로 무너지면 범인은 덮개(lf 재라벨 · coef_cond σ · obs +1)로 좁혀진다.
 # ★`entropy_coef: 0.0` 은 **쓰이지 않는 값**이다. expl 경로가 그 줄을 건너뛰고
 #   linspace(0.5, 0, 블록수) × expl_reward_coef_scale 을 쓴다(a2c_continuous.calc_gradients).
-#   8,192 env ÷ 2,048 = 4블록, scale 0.004 → [0.002, 0.00133, 0.00067, 0.0]. 상단 = b1 의 균일 0.002.
+#   사다리 상단은 항상 linspace(0.5,…)[0] × scale = 0.002 = b1 의 균일값이고, 평균도 항상
+#   0.25 × scale = 0.001 이다 — **블록 수와 무관**하다. 블록 수는 사다리의 촘촘함만 바꾼다.
 # ★num_envs 는 expl_coef_block_size 의 배수여야 하고 **블록이 2개 이상**이어야 한다(런처가 검사).
-# ★minibatch: 증강 배치 = 8,192×16 + 2,048×16(lf, 리더 라벨 한 블록) = 163,840 / 32,768 = 5개.
-#   b4~b6 는 yaml 65,536 을 CLI 로 32,768 로 덮어 돌았다(dump 로 확인) — 실제 돈 값을 yaml 에 고정한다.
+# ★minibatch: 증강 배치 = num_envs×16 + block_size×16(lf, 리더 라벨 한 블록).
+#   24,576×16 + 4,096×16 = 458,752 / 98,304 = 4개(나머지는 마지막이 흡수) = **상류와 동일**.
 params:
   seed: 42
 
@@ -114,7 +115,7 @@ params:
     truncate_grads: True
     e_clip: 0.2   # b1
     horizon_length: 16
-    minibatch_size: 32768
+    minibatch_size: 98304   # ★상류 SimToolRealSAPG.yaml 과 동일
     mini_epochs: 4   # b1
     critic_coef: 4
     clip_value: True
@@ -138,14 +139,20 @@ params:
     #   상단 0.002 = b1 의 전 env 균일값. b5 가 같은 0.004 로 b4(0.002)에 뒤진 적이 있지만 그건
     #   SimToolReal 하이퍼 위에서였고, 다섯 런의 붕괴 서명이 같아 scale 은 변별 변수가 아니었다.
     expl_reward_coef_scale: 0.004
-    # ★09.07 B-i: 16,384 는 CUDA 700 으로 못 돌아 8,192 로 내렸는데 이 줄을 안 고쳐
-    #   블록이 조용히 4 → **2** 가 됐다(fj_b4 실측: 두 블록 엔트로피 31.48/31.47, 구분 없음).
-    #   8,192 ÷ 2,048 = 4블록. 배치 수학은 num_envs×horizon 이라 이 값과 무관하다.
-    expl_coef_block_size: 2048       # ★num_envs 8192 ÷ 2048 = 4블록
+    # ★★09.11 — **상류 고정값으로 복귀**. repo/simtoolreal/README.md:96 이 실행 예시로
+    #   `num_envs=24576` + `expl_coef_block_size=4096` 을 주고 이렇게 못 박는다:
+    #     "num_envs / expl_coef_block_size is the SAPG block count — keep it at 6."
+    #   이 줄은 env 수를 따라 **두 번** 어긋났다. 09.07: 16,384→8,192 로 내리며 안 고쳐
+    #   4→2 블록(fj_b4 두 블록 엔트로피 31.48/31.47, 구분 없음). 09.10: 8,192→24,576 으로
+    #   되돌리며 또 안 고쳐 4→**12** 블록(fj_g1/g2 가 그렇게 돌았다).
+    #   ★블록 수는 관측에 들어간다 — 조건 벡터가 linspace(50,0,블록수) 다. 재생 때
+    #     블록 수가 어긋나면 sigma 행 대조가 거짓이 되어 블록 0 으로 조용히 떨어진다.
+    #   ★env 수를 바꾸면 **이 줄을 반드시 같이 고친다**(24,576 ÷ 4,096 = 6블록 유지).
+    expl_coef_block_size: 4096       # ★num_envs 24576 ÷ 4096 = 6블록 (상류 고정)
 
     # has_central_value 는 지정하지 않는다 — rl_games 가 central_value_config 존재 여부로 자동 판정한다.
     central_value_config:
-      minibatch_size: 32768
+      minibatch_size: 98304   # ★상류와 동일
       mini_epochs: 4   # b1
       learning_rate: 1e-4   # b1 (critic 은 b1 도 1e-4)
       kl_threshold: 0.016
