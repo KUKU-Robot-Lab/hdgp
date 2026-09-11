@@ -26,6 +26,11 @@ from .fj_kp_env import FJKeypointEnv
 from .fj_reward import compute_fj_reward
 from .grasp_fj_env_cfg import GraspFJEnvCfg
 
+# 액션 폭이 이보다 좁은 칸 = **설계상 고정 관절**(프로필이 ±0.01 규약으로 묶은 것).
+# `hand_curl` 은 감쌈을 재는 값이라 감쌈에 기여할 수 없는 칸을 넣으면 안 된다 —
+# 폭 0.02 짜리 칸은 0.01 rad 흔들림만으로 정규화가 0↔1 을 오가 잡음이 되기도 한다.
+_CURL_MIN_SPAN_RAD = 0.05
+
 
 class GraspFJEnv(FJKeypointEnv):
     cfg: GraspFJEnvCfg
@@ -410,6 +415,12 @@ class GraspFJEnv(FJKeypointEnv):
                 m = segs[k] if m is None else (m | segs[k])
         if m is None:
             return torch.zeros(self.num_envs, device=self.device)
+        # ★★09.11 — 설계상 고정된 칸을 뺀다. `thumb_2`(대향 −1.57)·`pinky_2`(0.0)는
+        #   open==grip 이라 감쌈에 기여하지 않는데, 액션한계 정규화가 각각 0.420·0.000 에서
+        #   1.000 으로 오를 여지를 줘서 **대향을 푸는 쪽이 curl 을 올리는** 경사를 만들었다.
+        m = m & (self._act_span > _CURL_MIN_SPAN_RAD)
+        if not bool(m.any()):
+            return torch.zeros(self.num_envs, device=self.device)
         q = self.robot.data.joint_pos[:, self._syn_ids].clamp(self._act_lo, self._act_hi)
         closed = (q - self._act_lo.unsqueeze(0)) / self._act_span.unsqueeze(0)
         return closed[:, m].mean(dim=-1)
@@ -506,6 +517,14 @@ class GraspFJEnv(FJKeypointEnv):
         if self._curl_cur is not None:
             ex["task/curl_tol"] = torch.tensor(self._curl_cur.value, device=self.device)
             ex["task/curl_pass"] = (self._curl_last >= self._curl_cur.value).float().mean()
+        # ★09.11 — 고정 칸이 실제로 고정돼 있는가. 액션한계로 묶었으므로 지령은 못 벗어나지만
+        #   **접촉은 관절을 밀어낼 수 있다**(thumb_1 이 27배 포화로 밀려난 전례). 설계값은
+        #   액션창의 중점이다 — 이 값이 커지면 파지가 엄지 대향을 물리적으로 잃고 있다는 뜻.
+        _pin = self._act_span <= _CURL_MIN_SPAN_RAD
+        if bool(_pin.any()):
+            _mid = 0.5 * (self._act_lo + self._act_hi)
+            _dev = (self.robot.data.joint_pos[:, self._syn_ids] - _mid.unsqueeze(0)).abs()
+            ex["task/pinned_dev_max"] = _dev[:, _pin].max()
         # ★★09.09 **실측 폐쇄도**. `task/syn_close` 는 (tgt−lo)/span 즉 **지령**이라
         #   "정책이 안 닫는다"와 "손이 못 닫는다"를 3200 epoch 동안 구분하지 못했다.
         #   ep_3200 재생 계측: 지령 0.540 vs 실측 0.452 — 마디별 실현율이

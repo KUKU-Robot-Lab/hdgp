@@ -552,6 +552,68 @@ def test_sapg_block_count_is_the_upstream_six_at_the_launcher_env_count():
     assert envs // blk == 6, f"{envs} ÷ {blk} = {envs // blk} 블록 (상류 고정값은 6)"
 
 
+def test_joints_that_never_move_are_pinned_and_excluded_from_curl():
+    """★★09.11 — `hand_open_pose == hand_grip_pose` 인 칸은 **설계상 과제 내내 부동**이다.
+    그런 칸이 액션 자유도로 열려 있으면 `hand_curl`(액션한계 정규화 평균)이 그 칸을 통해
+    감쌈과 무관한 방향을 보상한다. 실제로 그랬다:
+      thumb_2 범위 [−2.7053, 0], 설계 −1.57 → 정규화 0.420. **0 으로 밀면 1.000**(대향 해제).
+      pinky_2 범위 [0, 1.5708], 설계 0 → 정규화 0.000. **굽히면 1.000**.
+    10칸 중 2칸이라 손가락을 전혀 안 굽히고도 curl 을 +0.158 올릴 수 있었고, fj_g1/g2
+    영상에서 엄지가 대향을 놓고 흔들린 것이 이 경사다. 부동 칸은 좁은 창으로 묶고
+    (폭 0 은 부팅 가드가 죽인다) `_CURL_MIN_SPAN_RAD` 아래이므로 curl 에서 빠진다."""
+    import re as _re
+    from openarm.agnostic.modules.robot_profiles import TESOLLO_RIGHT_SHORT_TL as _P
+    span = float(_re.search(r"_CURL_MIN_SPAN_RAD\s*=\s*([0-9.]+)", _ENV).group(1))
+    still = [n for n, o, g in zip(_P.hand_joint_names, _P.hand_open_pose, _P.hand_grip_pose)
+             if abs(o - g) < 1e-9]
+    assert still, "부동 칸을 하나도 못 찾았다 — 자세 배열이 깨졌다"
+    for n in still:
+        wins = [(lo, hi) for rx, (lo, hi) in _P.hand_action_limit_override.items()
+                if _re.search(rx, n) and lo is not None and hi is not None]
+        assert wins, f"{n} 은 open==grip 인데 액션한계 override 가 없다 — 정책이 자유로 민다"
+        assert min(hi - lo for lo, hi in wins) <= span, (
+            f"{n} 창 폭이 {min(hi - lo for lo, hi in wins):.4f} > {span} — curl 에서 안 빠진다")
+    # curl 은 좁은 칸을 반드시 제외해야 한다(그 칸은 0.01 rad 흔들림에 0↔1 을 오간다)
+    assert "self._act_span > _CURL_MIN_SPAN_RAD" in _fn_block(_ENV, "_hand_curl")
+
+
+def test_grasp_curl_max_is_the_design_grip_under_the_current_curl_definition():
+    """상한은 임의의 수가 아니라 **프로필 `hand_grip_pose` 를 현재 curl 정의로 계산한 값**이다.
+    정의가 바뀌면(칸을 넣거나 빼면) 이 값도 같이 바뀌어야 한다 — 옛 0.83 은 10칸 정의의
+    값이었고, 고정 칸 2개를 뺀 8칸 정의에서는 0.9854 다. 리터럴을 잠그는 대신 **다시 계산**한다."""
+    import re as _re, xml.etree.ElementTree as _ET
+    from openarm.agnostic.modules.robot_profiles import TESOLLO_RIGHT_SHORT_TL as _P
+    urdf = None
+    for q in Path(__file__).resolve().parents:
+        c = q.parent / "urdf" / "generated" / "rl" / "openarm_dg5f-m-short-tl_bi_rl" / \
+            "openarm_dg5f-m-short-tl_bi_rl.urdf"
+        if c.is_file():
+            urdf = c
+            break
+    if urdf is None:
+        pytest.skip("urdf/ 트리가 이 호스트에 없다(서버는 hdgp 만 pull 한다)")
+    lim = {j.get("name"): (float(j.find("limit").get("lower")), float(j.find("limit").get("upper")))
+           for j in _ET.parse(urdf).getroot().iter("joint") if j.find("limit") is not None}
+    span_min = float(_re.search(r"_CURL_MIN_SPAN_RAD\s*=\s*([0-9.]+)", _ENV).group(1))
+    vals = []
+    for n, g in zip(_P.hand_joint_names, _P.hand_grip_pose):
+        lo, hi = lim[n]
+        for rx, (olo, ohi) in _P.hand_action_limit_override.items():
+            if _re.search(rx, n):
+                if olo is not None: lo = max(lo, olo)
+                if ohi is not None: hi = min(hi, ohi)
+        w = hi - lo
+        assert w > 1e-6, f"폭 0 액션 칸: {n} — 부팅 가드가 죽인다"
+        if n.rsplit("_", 1)[1] in ("2", "3") and w > span_min:
+            vals.append((min(max(g, lo), hi) - lo) / w)
+    assert vals, "curl 칸이 비었다"
+    want = sum(vals) / len(vals)
+    got = float(_re.search(r"grasp_curl_max: float = ([0-9.]+)", _CFG).group(1))
+    assert abs(got - want) < 5e-3, f"grasp_curl_max {got} != 설계 그립 {want:.4f} ({len(vals)}칸)"
+    start = float(_re.search(r"grasp_curl_start: float = ([0-9.]+)", _CFG).group(1))
+    assert 0.0 < start < got, f"시작 {start} 이 상한 {got} 밖이다"
+
+
 # ---------------------------------------------------------------- SAPG yaml = b1 하이퍼 + SAPG 덮개 (09.07 B-iv)
 def test_sapg_yaml_is_b1_hyperparameters_plus_sapg_overlay():
     """b1→b2 에서 9개 키가 한꺼번에 바뀌었고 b2~b6 는 전부 e100~150 에 같은 서명으로 무너졌다.
