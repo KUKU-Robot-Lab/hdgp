@@ -90,7 +90,19 @@ class FJRewardCfg:
     #     (`_hand_blocked` 주석이 같은 상황을 적어 뒀다). 접근 구간 파괴(Check 4)도 이걸로 막는다.
     #   ★상한: curl ∈ [0,1] 이라 scale 이 곧 스텝당 상한이다. 2.0 이면 goal_bonus 33.7/step 의 6%.
     wrap_scale: float = 0.0
-    wrap_gate_dist: float = 0.06     # m — 손끝-물체 평균거리가 이 안일 때만 지급
+    # ★★09.11 — 게이트+굴곡에서 **표면 기준 exp 커널**로 교체.
+    #   옛 정의 `curl × (ft_dist.mean < 0.06)` 은 두 군데가 틀렸다:
+    #     ① `ft_dist` 는 손끝→물체 **원점** 거리다. 그 기울기는 표면 법선(벽을 밀어넣는
+    #        쪽)을 가리킨다 — 원통을 감싸는 것은 접선 방향이라 **중심 거리로는 감쌈을
+    #        표현할 수 없다**. fj_g1/g2 283 epoch 동안 게이트가 한 번도 안 열렸다(항 기여 0.0002%).
+    #     ② `curl` 은 손 자세만 본다 — 물체가 손 **밖**에 있어도 만점이다.
+    #   새 정의는 마디마다 표면까지의 여유를 재고 exp 로 감쇠한다. 표면에서 1.0 으로
+    #   포화하므로 **밀어넣을 이득이 없다**.
+    #   ★z 는 기울기를 주지 않는다(09.11 사용자 확정): z 까지 당기면 마디가 전부 물체
+    #     중간 높이로 모여 인벨롭이 무너진다. 파지 띠(±H) 안에서는 z 항이 정확히 1.0 이고,
+    #     띠 **밖으로 나간 양**에만 감쇠가 걸린다.
+    wrap_tau_xy: float = 0.02        # m — 표면까지 수평 여유의 감쇠 길이
+    wrap_tau_z: float = 0.03         # m — 파지 띠 밖으로 벗어난 양의 감쇠 길이
     cmd_rate_scale: float = 0.1
     # ★09.07 kp_a7: 래치는 sticky 라 튕겨 올라갔다 상판에 놓인 컵도 lifted 다 — 그 env 에 벌점이 500 스텝 붙어
     #   접근 자체가 죽었다. **들고 있을 때**(dz > hold_dz)만 벌한다. env 의 drop_frac 판정선과 같은 값.
@@ -157,7 +169,7 @@ def compute_fj_reward(
     hand_qd: torch.Tensor,
     hand_z_min: torch.Tensor,
     cmd_rate: torch.Tensor,
-    hand_curl: torch.Tensor | None = None,
+    wrap_frac: torch.Tensor | None = None,
     cfg: FJRewardCfg,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """B 보상. 반환 (total (N,), terms dict, out dict).
@@ -199,11 +211,10 @@ def compute_fj_reward(
         "hand_floor": -(cfg.hand_floor_penalty * torch.relu(cfg.hand_floor_z - hand_z_min)).clamp(max=cfg.hand_floor_max),
         # 왜 상한이 없나: 작동점에서 clamp 되면 항이 상수가 되어 μ 에 기울기가 없다(reward-clamp-kills-gradient).
         "cmd_rate": -cfg.cmd_rate_scale * cmd_rate.clamp(min=0.0) * (lifted & (dz > cfg.cmd_rate_hold_dz)).float(),
-        # 왜 게이트가 근접인가: 허공 주먹 farming 차단 + 접근 구간 미개입(reward-audit Check 2·4).
-        #   ft_dist 는 손가락별 (N, F) 이라 평균으로 "손이 물체 곁에 있는가"를 본다.
-        "wrap": (cfg.wrap_scale * hand_curl.clamp(0.0, 1.0)
-                 * (ft_dist.mean(dim=-1) < cfg.wrap_gate_dist).float())
-                if (cfg.wrap_scale > 0.0 and hand_curl is not None)
+        # 왜 별도 게이트가 없나: 척도가 **물체 표면에 고정**돼 있어 기하가 곧 게이트다 —
+        #   허공 주먹은 수평 여유가 커서 exp 가 0 으로 죽는다(옛 근접 게이트의 역할을 대신한다).
+        "wrap": (cfg.wrap_scale * wrap_frac.clamp(0.0, 1.0))
+                if (cfg.wrap_scale > 0.0 and wrap_frac is not None)
                 else torch.zeros_like(dz),
     }
     if tuple(terms) != FJ_REWARD_TERMS:

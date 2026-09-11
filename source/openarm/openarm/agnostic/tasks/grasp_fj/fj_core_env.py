@@ -189,6 +189,10 @@ class FJCoreEnv(FJControlMixin, DirectRLEnv):
                 f"{[(f, len(self._hull_ids[f])) for f in p.contact_group_b]} — "
                 "최소참여 계산이 손가락을 정렬할 수 없다")
         self._hull_part_t = torch.tensor(_rows, device=self.device, dtype=torch.long)
+        # ★09.11 — 감쌈 기하가 쓰는 **마디 전체** 평면 인덱스(손가락 구분 없음).
+        self._hull_all_t = torch.tensor(
+            [i for _f in fingers for i in self._hull_ids[_f]],
+            device=self.device, dtype=torch.long)
 
         # ---- 물체 뱅크: env 별 원점 오프셋 (08.29 신설) -------------------------------
         # ★배정은 `env_id % N` 결정론이고 MultiAssetSpawner(random_choice=False)와 같은
@@ -198,9 +202,21 @@ class FJCoreEnv(FJControlMixin, DirectRLEnv):
 
         _bank = _ob.get(self.cfg.object_bank)
         _off_of = [s.origin_offset_z for s in _bank.specs]
+        _assign = _bank.assign_indices(self.num_envs)
         self._obj_origin_off = torch.tensor(
-            [_off_of[i] for i in _bank.assign_indices(self.num_envs)],
+            [_off_of[i] for i in _assign],
             device=self.device, dtype=torch.float32)
+        # ★★09.11 — env 별 **파지 표면 기하**(반경 R · 반높이 H). 감쌈 보상이 물체
+        #   **중심**이 아니라 **표면**을 목표로 삼으려면 길이 척도가 있어야 한다.
+        #   뱅크에 이미 측정돼 있다(shaker 9종 R 29.2~43.8mm · H 40~60mm) — 새로 재지 않는다.
+        #   ★스케일 DR 은 여기 안 들어온다: 뱅크 spec 의 `scale` 은 이미 반영돼 있고,
+        #     질량 DR 은 기하를 바꾸지 않는다.
+        _r_of = [s.grasp_radius_m for s in _bank.specs]
+        _h_of = [s.grasp_halfheight_m for s in _bank.specs]
+        self._obj_grasp_r = torch.tensor(
+            [_r_of[i] for i in _assign], device=self.device, dtype=torch.float32)
+        self._obj_grasp_h = torch.tensor(
+            [_h_of[i] for i in _assign], device=self.device, dtype=torch.float32)
         # ---- 종별 진단 (08.29 신설) — 집계 success 는 종별 실패를 가린다(사용자 지적).
         #   ★진단 전용: obs 금지(정체성 계약)·보상 미사용. 로깅은 extras 로만.
         self._species_ids = torch.tensor(

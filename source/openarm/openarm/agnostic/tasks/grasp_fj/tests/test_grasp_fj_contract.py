@@ -134,6 +134,13 @@ def test_env_overrides_exactly_the_adapter_hook_set():
                "_restart_goal_clock",                # ★09.08 목표당 스텝 예산
                "_build_hand_action_range",           # ★09.08 관절별 액션한계(soft limit ∩ 프로필 override)
                "_hand_mask",                         # 정규식 해석(관절명은 프로필 소유)
+               "_wrap_frac_geom",                     # ★09.11 감쌈 보상 입력 — 마디의 **물체 표면** 참여도.
+                                                      #   접촉 센서 없이 순수 기하다(B 는 센서를 안 만든다).
+                                                      #   물체 원점 거리로는 감쌈을 표현할 수 없어서 —
+                                                      #   그 기울기는 표면 법선(벽 밀기)을 가리킨다 — 반경을
+                                                      #   빼 표면에서 포화시키고, z 는 파지 띠 안에서
+                                                      #   기울기 0 으로 둔다(당기면 마디가 중간 높이로 모여
+                                                      #   인벨롭이 무너진다, 09.11 사용자 확정).
                "_hand_curl",                         # ★09.09 감쌈 보상 입력 — **실측** _2/_3 정규화 굴곡.
                                                       #   보상 이음매(_progress_reward)가 쓴다. 지령이 아니라
                                                       #   실측이어야 "시키기만 하고 끝"이 안 된다.
@@ -828,9 +835,17 @@ def test_reward_module_is_forked_for_track_b():
     """
     _pr = _fn_block(_ENV, "_progress_reward")
     assert "compute_fj_reward(" in _pr and "**kw)" in _pr
-    # ★09.09 이음매가 `hand_curl` 을 만들어 넘긴다. 부모 `_get_rewards` 는 계약 금지 훅이라
-    #   인자를 못 늘리는데 이 이음매는 self 를 갖는다 — 그래서 여기가 유일한 지점이다.
-    assert "hand_curl=self._hand_curl()" in _pr, "감쌈 보상 입력이 이음매에서 안 온다"
+    # ★09.11 이음매가 `wrap_frac` 을 만들어 넘긴다(09.09 의 `hand_curl` 을 대체).
+    #   부모 `_get_rewards` 는 계약 금지 훅이라 인자를 못 늘리는데 이 이음매는 self 를
+    #   갖는다 — 그래서 여기가 유일한 지점이다.
+    assert "wrap_frac=self._wrap_frac_geom()" in _pr, "감쌈 보상 입력이 이음매에서 안 온다"
+    # ★감쌈 기하는 **표면** 기준이어야 한다. 물체 원점 거리는 기울기가 표면 법선을
+    #   가리켜 원통 감쌈을 표현할 수 없다(09.11). 그리고 z 에는 기울기를 주면 안 된다 —
+    #   당기면 마디가 전부 물체 중간 높이로 모여 인벨롭이 무너진다(사용자 확정).
+    _wf = _fn_block(_ENV, "_wrap_frac_geom")
+    assert "self._obj_grasp_r" in _wf and "self._obj_grasp_h" in _wf, "표면 기하를 안 쓴다"
+    assert "clamp(min=0.0)" in _wf, "표면 안쪽에서 포화하지 않으면 밀어넣을 이득이 남는다"
+    assert "torch.exp(" in _wf, "선형 램프는 도달거리 밖에서 기울기가 0 이다"
     # ★로깅 이름표를 인스턴스에 두지 않는다 — 부모 `_init_task_state` 가 super() 뒤에 덮어써서
     #   B 에서 아예 안 먹었다(09.08 감사에서 실행 재현). A 의 `_log_step` 이 terms 를 직접 순회한다.
     assert "_rw_terms" not in _ENV, "인스턴스 이름표는 부모가 덮어쓴다"

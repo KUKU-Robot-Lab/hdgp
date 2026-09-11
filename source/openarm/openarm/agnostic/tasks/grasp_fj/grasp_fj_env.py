@@ -395,7 +395,38 @@ class GraspFJEnv(FJKeypointEnv):
         ★09.09 `hand_curl` 을 여기서 만들어 넘긴다. 부모 `_get_rewards` 는 계약 금지 훅이라
           인자를 추가할 수 없는데, 이 이음매는 `self` 를 갖는다 — 그래서 여기가 유일한 지점이다.
         """
-        return compute_fj_reward(hand_curl=self._hand_curl(), **kw)
+        return compute_fj_reward(wrap_frac=self._wrap_frac_geom(), **kw)
+
+    def _wrap_frac_geom(self) -> torch.Tensor:
+        """마디들이 **물체 표면**에 얼마나 붙어 있나 (N,) ∈ (0,1] — 접촉 센서 없이 순수 기하.
+
+        마디(`finger_sensor_bodies` 전체)마다 두 여유를 잰다:
+          `e_xy` = 물체 축까지 수평거리 − 파지반경 R   (표면 안이면 0)
+          `e_z`  = |마디 z − 물체 z| − 파지 반높이 H    (띠 안이면 0)
+        그리고 `exp(-e_xy/τxy) · exp(-e_z/τz)` 의 마디 평균을 낸다.
+
+        왜 중심이 아니라 표면인가: 중심 거리의 기울기는 표면 **법선**(벽을 밀어넣는 쪽)을
+        가리킨다. 원통을 감싸는 것은 **접선** 방향이라 중심 거리로는 감쌈을 표현할 수 없다.
+        R 을 빼면 표면에서 1.0 으로 포화해 밀어넣을 이득이 사라진다.
+
+        ★왜 z 에는 기울기를 안 주나(09.11 사용자 확정): z 까지 당기면 마디가 전부 물체
+          중간 높이로 모여 **인벨롭이 무너진다**. 띠(±H) 안에서 z 항은 정확히 1.0 이고,
+          띠 밖으로 나간 양에만 감쇠가 걸린다 — 공중에 뜬 손을 막는 역할만 한다.
+        ★exp 를 쓰는 이유: 선형 램프는 도달거리 밖에서 기울기가 **0** 이라 멀리 있는
+          마디가 다가올 이유가 없다. exp 는 어디서나 기울기가 산다.
+        """
+        rc = self._rw_cfg
+        p = (self.robot.data.body_pos_w[:, self._hull_all_t]
+             - self.scene.env_origins[:, None, :])                       # (N, L, 3)
+        o = self._env_local(self.object.data.root_pos_w).unsqueeze(1)     # (N, 1, 3)
+        e_xy = ((p[..., :2] - o[..., :2]).norm(dim=-1)
+                - self._obj_grasp_r.unsqueeze(1)).clamp(min=0.0)
+        e_z = ((p[..., 2] - o[..., 2]).abs()
+               - self._obj_grasp_h.unsqueeze(1)).clamp(min=0.0)
+        self._wrap_e_xy, self._wrap_e_z = e_xy, e_z
+        w = torch.exp(-e_xy / float(rc.wrap_tau_xy)) * torch.exp(-e_z / float(rc.wrap_tau_z))
+        self._wrap_last = w.mean(dim=-1)
+        return self._wrap_last
 
     def _hand_curl(self) -> torch.Tensor:
         """감쌈 정도 (N,) ∈ [0,1] — 뿌리 `_2` + 중간 `_3` 의 **실측** 정규화 관절각 평균.
@@ -517,6 +548,14 @@ class GraspFJEnv(FJKeypointEnv):
         if self._curl_cur is not None:
             ex["task/curl_tol"] = torch.tensor(self._curl_cur.value, device=self.device)
             ex["task/curl_pass"] = (self._curl_last >= self._curl_cur.value).float().mean()
+        # ★09.11 감쌈 기하 3종 — 하나로 뭉치면 "왜 안 감싸는지"를 못 가른다.
+        #   `wrap_frac` 이 낮을 때 `wrap_xy_mean` 이 크면 **반경 실패**(손이 물체 곁에
+        #   못 간다), `wrap_band_frac` 이 낮으면 **높이 실패**(손이 파지 띠를 벗어나 있다).
+        _we = getattr(self, "_wrap_e_xy", None)
+        if _we is not None:
+            ex["task/wrap_frac"] = self._wrap_last.mean()
+            ex["task/wrap_xy_mean"] = _we.mean()
+            ex["task/wrap_band_frac"] = (self._wrap_e_z <= 0.0).float().mean()
         # ★09.11 — 고정 칸이 실제로 고정돼 있는가. 액션한계로 묶었으므로 지령은 못 벗어나지만
         #   **접촉은 관절을 밀어낼 수 있다**(thumb_1 이 27배 포화로 밀려난 전례). 설계값은
         #   액션창의 중점이다 — 이 값이 커지면 파지가 엄지 대향을 물리적으로 잃고 있다는 뜻.

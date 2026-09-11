@@ -66,9 +66,10 @@ def test_field_sets_are_identical():
     b = {f.name for f in dataclasses.fields(FJRewardCfg)}
     # ★B 고유 필드는 셋뿐이다:
     #   goal_one_shot            지급 방식을 성공 술어에서 유도(09.08 포크 시점)
-    #   wrap_scale/wrap_gate_dist 감쌈 보상(09.09) — **기본 0.0 = 끔**이라 켜지 않은 런은
-    #     A 와 수치가 같다. 그 동치는 `test_only_goal_bonus_diverged` 가 계속 고정한다.
-    assert b - a == {"goal_one_shot", "wrap_scale", "wrap_gate_dist"}, b - a
+    #   wrap_scale/wrap_tau_xy/wrap_tau_z 감쌈 보상(09.09 도입 → 09.11 표면 기준 재정의).
+    #     `wrap_scale=0.0` 이면 항이 정확히 0 이라 A 와 수치가 같다 — 그 동치는
+    #     `test_only_goal_bonus_diverged` 가 계속 고정한다.
+    assert b - a == {"goal_one_shot", "wrap_scale", "wrap_tau_xy", "wrap_tau_z"}, b - a
     assert a - b == set(), a - b
     # ★항 이름·순서: 공유 9항이 **접두사로** 같고, B 가 끝에 `wrap` 하나를 더 갖는다.
     #   끝에 붙여야 로깅·순서 가드가 기존 항의 자리를 안 바꾼다.
@@ -181,40 +182,36 @@ def _wrap_kw(curl, ft):
 
 def test_wrap_is_off_by_default():
     """기본값이면 wrap 은 정확히 0 — 켜지 않은 런은 현행과 비트 동일해야 한다."""
-    kw, curl = _wrap_kw(1.0, 0.01)          # 최대로 감쌌고 물체 바로 옆인데도
-    _, terms, _ = compute_fj_reward(cfg=FJRewardCfg(), hand_curl=curl,
-                                    is_success=torch.zeros_like(curl, dtype=torch.bool), **kw)
+    kw, frac = _wrap_kw(1.0, 0.01)          # 완전히 감쌌는데도
+    _, terms, _ = compute_fj_reward(cfg=FJRewardCfg(), wrap_frac=frac,
+                                    is_success=torch.zeros_like(frac, dtype=torch.bool), **kw)
     assert torch.all(terms["wrap"] == 0.0), "기본값인데 wrap 이 0 이 아니다"
 
 
-def test_wrap_requires_proximity_gate():
-    """★reward-audit Check 2 — 허공에서 주먹만 쥐면 0 이어야 한다.
+def test_wrap_is_proportional_to_surface_participation():
+    """★09.11 — 항은 이제 **마디의 표면 참여도**에 비례한다(게이트 없음).
 
-    게이트가 없으면 물체 근처에 가지 않고 손만 오므려도 만점이다. `_hand_blocked` 주석이
-    같은 상황을 적어 뒀다("허공에서 주먹을 쥐어도 오차 조건 하나는 성립한다").
+    옛 정의 `curl × (ft_dist.mean < gate)` 는 두 군데가 틀렸다: `ft_dist` 가 물체 **원점**
+    거리라 기울기가 표면 법선(벽 밀기)을 가리켰고, `curl` 은 물체가 손 **밖**에 있어도
+    만점이었다. fj_g1/g2 283 epoch 동안 게이트가 한 번도 안 열렸다(기여 0.0002%).
+    척도가 물체 표면에 고정되므로 **기하가 곧 게이트다** — 허공 주먹은 exp 가 0 으로 죽고,
+    그 판정은 환경쪽(`_wrap_frac_geom`)이 한다.
     """
-    cfg = FJRewardCfg(wrap_scale=2.0, wrap_gate_dist=0.06)
-    far_kw, curl = _wrap_kw(1.0, 0.20)      # 완전히 오므렸지만 물체는 20 cm 밖
-    _, far, _ = compute_fj_reward(cfg=cfg, hand_curl=curl,
-                                  is_success=torch.zeros_like(curl, dtype=torch.bool), **far_kw)
-    assert torch.all(far["wrap"] == 0.0), "멀리서 주먹을 쥐었는데 보상이 나갔다"
-
-    near_kw, curl = _wrap_kw(1.0, 0.01)     # 같은 자세인데 물체 곁
-    _, near, _ = compute_fj_reward(cfg=cfg, hand_curl=curl,
-                                   is_success=torch.zeros_like(curl, dtype=torch.bool), **near_kw)
-    assert torch.all(near["wrap"] == 2.0), "근접인데 보상이 안 나갔다"
+    cfg = FJRewardCfg(wrap_scale=2.0)
+    for frac_v, want in ((0.0, 0.0), (0.5, 1.0), (1.0, 2.0)):
+        kw, frac = _wrap_kw(frac_v, 0.01)
+        _, terms, _ = compute_fj_reward(cfg=cfg, wrap_frac=frac,
+                                        is_success=torch.zeros_like(frac, dtype=torch.bool), **kw)
+        assert torch.allclose(terms["wrap"], torch.full_like(terms["wrap"], want)), \
+            f"참여도 {frac_v} → {terms['wrap'][0]} (기대 {want})"
 
 
 def test_wrap_is_capped_by_scale():
-    """★상한 = scale. curl 은 [0,1] clamp 라 한계 밖으로 밀린 관절이 보상을 부풀릴 수 없다.
-
-    09.09 에 엄지가 접촉에 밀려 한계 밖 3.69 rad 까지 나간 이력이 있다 — clamp 가 없으면
-    가장 심하게 밀린 env 가 가장 큰 보상을 받는 뒤집힌 유인이 생긴다.
-    """
-    cfg = FJRewardCfg(wrap_scale=2.0, wrap_gate_dist=0.06)
-    kw, curl = _wrap_kw(5.0, 0.01)          # 정규화가 깨져 1 을 넘긴 경우
-    _, terms, _ = compute_fj_reward(cfg=cfg, hand_curl=curl,
-                                    is_success=torch.zeros_like(curl, dtype=torch.bool), **kw)
+    """★상한 = scale. wrap_frac 은 [0,1] clamp 라 정규화가 깨져도 보상을 부풀릴 수 없다."""
+    cfg = FJRewardCfg(wrap_scale=2.0)
+    kw, frac = _wrap_kw(5.0, 0.01)          # 정규화가 깨져 1 을 넘긴 경우
+    _, terms, _ = compute_fj_reward(cfg=cfg, wrap_frac=frac,
+                                    is_success=torch.zeros_like(frac, dtype=torch.bool), **kw)
     assert torch.all(terms["wrap"] == 2.0), "상한이 안 걸린다"
 
 

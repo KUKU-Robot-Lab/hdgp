@@ -96,8 +96,12 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
     #   `RisingCurriculum` 이 승급을 멈춘다(현재 4.66 vs 2.0).
     grasp_curl_interval: int = 750       # tol 커리큘럼과 같은 프레임 간격(tol 은 그대로)
     grasp_curl_threshold: float = 2.0    # tol 과 같은 입력(prev_ep_successes_mean)
-    rw_wrap_scale: float = 0.0
-    rw_wrap_gate_dist: float = 0.06
+    # ★09.11 — 기본값을 0.0 → 2.0 으로. fj_g1/g2 는 이 값을 CLI 로만 넘겨 돌았고
+    #   (`env.rw_wrap_scale=2.0`), 런처가 빠지면 조용히 감쌈 항이 사라진다. git 에 고정한다.
+    #   상한 = scale/step 이다(wrap_frac ∈ [0,1]) — 2.0 은 goal_bonus 44.9/step 의 4.5%.
+    rw_wrap_scale: float = 2.0
+    rw_wrap_tau_xy: float = 0.02
+    rw_wrap_tau_z: float = 0.03
 
     # ★09.08 손 20관절 **독립** 지령 스위치. 기본 False.
     #   왜 기본이 False 인가: (1) 기존 계약 22/131/155 와 fj_b9 체크포인트를 그대로 둔다.
@@ -259,7 +263,8 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
         #   여기 빠뜨리면 계수를 hydra 로 올려도 조용히 0 이 되어 실험이 no-op 이 된다.
         return FJRewardCfg(goal_one_shot=bool(self.goal_force_consecutive),
                            wrap_scale=float(self.rw_wrap_scale),
-                           wrap_gate_dist=float(self.rw_wrap_gate_dist),
+                           wrap_tau_xy=float(self.rw_wrap_tau_xy),
+                           wrap_tau_z=float(self.rw_wrap_tau_z),
                            **{f.name: getattr(a, f.name) for f in fields(a)})
 
 
