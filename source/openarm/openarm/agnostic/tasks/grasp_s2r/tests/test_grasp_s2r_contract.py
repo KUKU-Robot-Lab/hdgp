@@ -2206,6 +2206,36 @@ def test_physics_dr_effective_range_is_logged_from_the_consumer():
         "질량 실효범위를 cfg 가 아니라 event_manager 에서 읽어야 한다"
 
 
+def test_species_ema_reads_pre_clear_state():
+    """종별 EMA 는 **소거 전** 에피소드 결과를 읽어야 한다.
+
+    `_reset_idx` 는 종료한 env 의 버퍼를 지우고 같은 함수 안에서 종별 EMA 를 갱신한다.
+    두 일이 한 함수에 있으므로 **소스 순서**가 곧 계약이다. 09.11 실사고:
+    `self._latched[env_ids] = False` 가 EMA 블록보다 85줄 앞서 돌아
+    `species/latched_*` 8개가 15,000 epoch 내내 정확히 0 이었다. 원 주석은 불변식을
+    올바르게 적었지만 근거로 든 **줄 번호가 낡았고**, 출력이 그럴듯한 0 이라
+    아무도 눈치채지 못했다(`species/success_*` 는 소거가 뒤라 우연히 살아 있었다).
+
+    ★그래서 순서를 믿지 않고 **스냅샷을 요구**한다 — 줄이 또 움직여도 안 깨진다.
+    무엇이 이 계약을 거짓으로 만드는가: 종별 EMA 를 `_reset_idx` 밖으로 옮기는 것.
+    그때는 소거와 읽기가 더 이상 한 함수에 있지 않으므로 이 검사를 옮길 것.
+    """
+    env = _code(_ENV)
+    blk = _fn_block(env, "_reset_idx")
+    assert "self._latched_at_done = self._latched[env_ids].clone()" in blk, \
+        "소거 전 래치 스냅샷이 없다"
+    assert blk.index("self._latched_at_done =") < blk.index("self._latched[env_ids] = False"), \
+        "스냅샷이 소거보다 뒤다 — 항상 False 를 뜬다"
+    assert "self._latched_at_done.float())" in blk, \
+        "종별 EMA 가 스냅샷이 아니라 현재 버퍼를 읽는다"
+    assert "self._latched[env_ids].float())" not in blk, \
+        "종별 EMA 가 소거된 버퍼를 직접 읽는다 — 전 구간 0 이 된다"
+    # success 쪽도 같은 함정을 갖는다 — 소거가 읽기보다 뒤에 있어야 한다.
+    assert blk.index("self._success_now[env_ids].float())") < blk.index(
+        "self._success_now[env_ids] = False"), \
+        "종별 success EMA 가 소거 뒤에 읽는다"
+
+
 def test_wrench_mass_is_refreshed_when_mass_dr_is_open():
     """질량 DR 이 열려 있으면 외란의 질량 기준은 **리셋마다 실제 질량**이어야 한다.
 

@@ -1862,6 +1862,15 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self._palm_cmd_primed[env_ids] = False
 
         # ---- 버퍼 -----------------------------------------------------------------------
+        # ★★09.11 — 종별 EMA 가 쓸 **소거 전** 래치 상태를 먼저 뜬다.
+        #   아래 `self._latched[env_ids] = False` 가 종별 EMA 블록보다 85줄 **앞서** 돌아
+        #   `species/latched_*` 8개가 전 학습 구간(15,000 epoch) 정확히 0 이었다.
+        #   그 블록의 주석은 "`_latched` 는 … 지워지므로 여기(그 전)서 읽어야 한다"고
+        #   올바른 불변식을 적어 뒀지만, 파일이 자라며 줄 번호가 낡았고 소거가 읽기보다
+        #   앞으로 옮겨졌다. 출력이 그럴듯한 0 이라 아무도 눈치채지 못했다
+        #   (`species/success_*` 는 소거가 뒤에 있어 우연히 살아 있었다).
+        #   스냅샷으로 떠 두면 줄 순서가 또 바뀌어도 안 깨진다.
+        self._latched_at_done = self._latched[env_ids].clone()
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
         self._latched[env_ids] = False
@@ -1937,8 +1946,9 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
 
         # ---- 종별 success/latched EMA — 집계가 가리는 종별 실패를 드러낸다 ----------
         #   ★무동기 집계(index_add) — per-step 리셋 경로라 .any()/.item() 루프 금지
-        #   (Isaac reset 동기화 = util killer 이력). `_latched` 는 1262 에서 지워지므로
-        #   여기(그 전)서 읽어야 종료 에피소드의 값이다.
+        #   (Isaac reset 동기화 = util killer 이력).
+        # ★★09.11 — 래치는 `self._latched` 를 직접 읽으면 안 된다. 소거가 이 블록보다
+        #   앞서 돌아 전 구간 0 이었다. 위에서 뜬 `_latched_at_done` 스냅샷을 쓴다.
         if self._n_species > 1:
             _sp = self._species_ids[env_ids]
             _one = torch.ones(n, device=self.device)
@@ -1949,7 +1959,7 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                 0, _sp, self._success_now[env_ids].float())
             _l_sum = torch.zeros(
                 self._n_species, device=self.device).index_add_(
-                0, _sp, self._latched[env_ids].float())
+                0, _sp, self._latched_at_done.float())
             _has = _cnt > 0
             _a = 0.05
             self._species_succ_ema = torch.where(
