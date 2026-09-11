@@ -903,7 +903,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                        - obj_pos.unsqueeze(1)).reshape(n, -1)
         # ★09.10 촉각은 **관측에서 제거**됐다(사용자 확정). 계측은 남긴다 —
         #   `contact/force_max*` 는 트랙 CLAUDE.md 핵심 지표표에 있고 force_band 감시 근거다.
-        self.extras["diag/tip_force_absmax"] = self._tip_force_local().abs().max()
         joint_err = self._joint_pos_err()
         goal_rel = self.goal_pos - obj_pos
 
@@ -1094,7 +1093,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             (~_cl_off).float()
             * torch.exp(-float(cfgn.finger_closure_sharpness) * _cl_d)
         ).mean(dim=1)
-        self.extras["task/finger_closure"] = finger_closure.mean()
         # ★★palm 프레임 분해 — 법선(palm_ee_x)이 **밀착도**다. `_palm_ee_R()` 열 0 이
         #   손바닥 법선이다. 접근 목표를 케이지가 아니라 palm 이 맡게 하는 핵심 양.
         _d = grasp_center - palm_pos
@@ -1174,6 +1172,9 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["gate/stay_break_by_stable"] = (at_goal & ~stable).float().mean()
         self.extras["gate/stay_break_by_grip"] = (at_goal & stable & ~_ng2).float().mean()
         self.extras["gate/stay_at_goal_frac"] = at_goal.float().mean()
+        # ★09.11 — `task/stay_run` 에서 이동. 유지 시간은 gate/stay_break_by_* 와 한 묶음이고
+        #   `task/` 는 물체 상태 전용으로 비웠다. 중복 태그가 없는 유일한 신호라 살린다.
+        self.extras["gate/stay_run"] = self._stay_run.float().mean()
         self._stay_run = torch.where(_stay_ok, self._stay_run + 1,
                                      torch.zeros_like(self._stay_run))
         stay_frac = (self._stay_run.float()
@@ -1183,13 +1184,11 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.prev_actions = self.actions.clone()
 
         enclosure = self._enclosure(obj_pos)
-        self.extras["task/enclosure"] = enclosure.mean()
         # ★케이지 게이트가 켜져 있으면 포위도에 곱한다 — DexPoint 는 이진 접촉 게이트를
         #   `r_lift` 에 곱하지만, 여기서는 **신설 항에만** 걸어 한 번에 하나의 가설을
         #   지킨다(기존 lift/transfer/stay 의 척도를 건드리지 않는다).
         if _cage_ok is not None:
             enclosure = enclosure * _cage_ok.float()
-            self.extras["task/enclosure_gated"] = enclosure.mean()
 
         # ★과지령 = 가동 손관절이 **도달 불가능한 각도**를 미는 정도 [0,1].
         #   τ = k·err 이므로 err ≥ effort_limit/stiffness 면 토크가 천장이다. 가동폭 0 인
@@ -1199,7 +1198,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
                    - self.robot.data.joint_pos[:, self._syn_ids]).abs()[:, self._syn_movable]
         hand_overdrive = (torch.relu(_od_err - _thr_od)
                           / max(_thr_od, 1e-6)).clamp(max=1.0).mean(dim=1)
-        self.extras["task/hand_overdrive"] = hand_overdrive.mean()
 
         # ---- 손 최저 높이 (바닥 벌점 기준) ----------------------------------------
         # ★env-local 로 변환한다 — 월드 z 를 그대로 쓰면 env 격자 오프셋이 섞인다.
@@ -1208,8 +1206,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             self.robot.data.body_pos_w[:, self._hand_body_ids_t, 2]
             - self.scene.env_origins[:, 2].unsqueeze(1)
         ).min(dim=1).values
-        self.extras["task/hand_z_min"] = _hand_z_min.mean()
-        self.extras["task/hand_z_min_worst"] = _hand_z_min.min()
         # ★09.01 신설 — `hand_floor` 벌점이 `min` 으로 링크 25개를 스칼라 하나로 뭉개
         #   "손 전체를 눕히기"와 "손끝 하나 스치기"가 같은 값이 된다(사용자 지적).
         #   벌점 수식을 고치기 전에 **몇 개 링크가 얼마나 내려가는지**부터 계측한다.
@@ -1218,9 +1214,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             - self.scene.env_origins[:, 2].unsqueeze(1)
         )
         _viol = torch.relu(float(self.cfg.hand_floor_z) - _z_links)     # (N, K)
-        self.extras["task/hand_floor_n_links"] = (_viol > 0).float().sum(dim=1).mean()
-        self.extras["task/hand_floor_depth_sum"] = _viol.sum(dim=1).mean()
-        self.extras["task/hand_floor_depth_max"] = _viol.max()
         # ★09.01 신설 — palm 접근축 자세. 사용자 요구는 "palm_ee_x ⟂ world z"(= 90°)인데
         #   구속은 `palm_rot_half_deg` ±45° 박스뿐이고 중심으로 당기는 보상 항이 없다.
         #   회전이 지금까지 **어디에도 로깅되지 않아** 드리프트를 볼 수 없었다.
@@ -1229,6 +1222,11 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         _px = matrix_from_quat(self.robot.data.body_quat_w[:, self.palm_idx])[:, :, 0]
         _ang = torch.rad2deg(torch.arccos(_px[:, 2].clamp(-1.0, 1.0)))  # (N,) 90° = 수직
         self.extras["palm/x_vs_worldz_deg"] = _ang.mean()
+        # ★★09.11 신설 — palm_ee 기준 위치(env-local). 정책이 지령하는 프레임 그 자체라
+        #   "어디를 잡고 있는가"가 여기서 바로 읽힌다.
+        self.extras["palm/ee_x"] = palm_pos[:, 0].mean()
+        self.extras["palm/ee_y"] = palm_pos[:, 1].mean()
+        self.extras["palm/ee_z"] = palm_pos[:, 2].mean()
         _pre = ~self._latched
         _n_pre = _pre.float().sum().clamp(min=1.0)
         self.extras["palm/x_vs_worldz_deg_prelatch"] = (_ang * _pre.float()).sum() / _n_pre
@@ -1296,6 +1294,10 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         for k in GRASP_S2R_REWARD_TERMS:
             self.extras[f"reward/{k}"] = terms[k].mean()
         self.extras["reward/total"] = total.mean()
+        # ★★09.11 — `task/` 는 물체 상태 둘만 남긴다(사용자 확정). 나머지 50개는
+        #   gate/·reward/ 와 중복이거나 진단 임무가 끝난 것들이었다.
+        self.extras["task/cup_to_palm_ee"] = (obj_pos - palm_pos).norm(dim=-1).mean()
+        self.extras["task/tilt_deg"] = self._tilt_deg.mean()
         # ★★09.10 신설 — **조건부** 항 값. all-env 평균은 "항이 죽었다"와 "항은 살아
         #   있는데 그 구간이 짧다"를 구분하지 못한다(구 `reward/approach` 0.022 가 그 예).
         #   `pre_lift`·`lift` 는 **이진** 마스크라 `Σ항 / Σ마스크` 가 조건부 평균과
@@ -1313,17 +1315,8 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         #   산술로는 확정되지만(0.095 > 0.06) 런이 실제로 그 구간에 얼마나 앉아 있는지는
         #   측정해야 안다. Phase 2(절단)의 전제가 이 세 태그다.
         _hq = (height_delta / max(float(cfgn.lift_height_ref), 1e-6)).clamp(0.0, 1.0)
-        self.extras["task/lift_quality"] = _hq.mean()
-        self.extras["task/lift_quality_sat_frac"] = (_hq >= 0.999).float().mean()
-        self.extras["task/height_delta_p10"] = torch.quantile(height_delta, 0.10)
         for k, v in gates.items():
             self.extras[f"gate/{k}"] = v.mean()
-        self.extras["task/wrap_frac"] = wrap_frac.mean()
-        self.extras["task/grip_frac"] = grip_frac.mean()
-        self.extras["task/anylink_frac"] = (
-            (grip_c.float().sum(dim=1) + self._surf_palm) / (n_tip + 1.0)).mean()
-        self.extras["task/n_contact"] = grip_c.float().sum(dim=1).mean()
-        self.extras["task/touch_frac"] = tip_frac.mean()
         # ---- ★★리프트 이후 접촉 구성 (09.01 신설) ---------------------------------
         # 위 지표들은 전부 **에피소드 전체 평균**이라 아무것도 안 닿는 접근 구간이
         # 섞여 희석된다 — "못 감"과 "지나침"을 뭉개는 그 함정이다. pouring 이관 판정은
@@ -1334,65 +1327,29 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         _ln = _lm.sum().clamp(min=1.0)
         def _g(x):                      # 리프트된 env 만의 평균
             return float((x * _lm).sum() / _ln)
-        self.extras["lifted/n_tip"] = _g(tip_c.float().sum(dim=1))
-        self.extras["lifted/n_mid"] = _g(mid_c.float().sum(dim=1))
-        self.extras["lifted/n_dist"] = _g(dist_c.float().sum(dim=1))
-        self.extras["lifted/n_finger"] = _g(grip_c.float().sum(dim=1))
-        self.extras["lifted/palm"] = _g(self._surf_palm)
         # ★"5점 + 손바닥" 달성률 — 사용자 기준의 직접 판정
-        self.extras["lifted/full_support"] = _g(
-            ((grip_c.float().sum(dim=1) >= 5.0) & (self._surf_palm > 0.5)).float())
-        self.extras["lifted/frac"] = float(_lm.mean())
-        self.extras["task/goal_dist"] = goal_dist.mean()
-        self.extras["task/height_delta"] = height_delta.mean()
-        self.extras["task/cup_disp"] = cup_disp.mean()
-        self.extras["task/palm_to_cup"] = palm_to_cup.mean()
-        self.extras["task/cage_dist"] = cage_dist.mean()
-        self.extras["task/tilt_deg"] = self._tilt_deg.mean()
-        self.extras["task/latched"] = self._latched.float().mean()
-        self.extras["task/success"] = self._success_now.float().mean()
-        self.extras["task/stay_run"] = self._stay_run.float().mean()
-        self.extras["task/syn_close"] = self._syn_close.mean()
-        self.extras["task/close_credit"] = self._close_progress().mean()
-        self.extras["task/palm_normal_dist"] = self._palm_normal_dist.mean()
-        self.extras["task/palm_lateral_dist"] = self._palm_lateral_dist.mean()
-        self.extras["task/palm_speed"] = self._palm_speed.mean()
         # ★palm 이 테이블에 쓸리는지 — 사용자 GUI 관찰 "손바닥이 테이블에 쓸리면서
         #   열린다". 접촉 센서는 **컵만** 필터링해서 테이블 접촉이 안 보인다. 높이로 잰다.
         # ★기준 body 는 프로필 `palm_body` 의 **원점**이다(palm_ee 가 아니다) — 손바닥
         #   표면·손가락 끝은 이보다 더 내려가므로 이 값은 침범의 **하한**만 말한다.
         _pz = palm_pos[:, 2] - float(self.cfg.table_surface_z)
-        self.extras["task/palm_above_table_mean"] = _pz.mean()
-        self.extras["task/palm_above_table_min"] = _pz.min()
         # ★손 관절 추종오차 — 액추에이터 포화의 직접 지표. τ = k·err 이므로
         #   err ≥ effort_limit/stiffness 면 토크가 천장에 붙어 힘 제어가 무효가 된다
         #   (5.0/1.5 기준 0.30 rad = 17.2°). 지금까지 팔(fabric/joint_err_*)만 있었다.
         _herr = (self._syn_target
                  - self.robot.data.joint_pos[:, self._syn_ids]).abs()
-        self.extras["task/hand_joint_err_mean"] = _herr.mean()
-        self.extras["task/hand_joint_err_max"] = _herr.max()
         # ★Phase 0(08.29): 위 평균에는 **가동폭 0인 관절**이 섞여 있다(실측 `_syn_movable`
         #   기준 pinky_2·thumb_2·전 `_1`). 지령이 나가도 안 움직이니 오차가 상수로 깔리고,
         #   그러면 "닿은 뒤에도 계속 더 닫고 있다"를 평균으로 판정할 수 없다. 갈라서 잰다.
         #   τ = k·err 이므로 **가동 관절의** err ≥ effort/stiffness(1.5/5.0 = 0.30 rad)
         #   여야 진짜 토크 포화다.
         _mv = self._syn_movable
-        self.extras["task/hand_joint_err_movable_mean"] = _herr[:, _mv].mean()
-        self.extras["task/hand_joint_err_movable_max"] = _herr[:, _mv].max()
-        self.extras["task/hand_joint_err_fixed_mean"] = (
-            _herr[:, ~_mv].mean() if bool((~_mv).any()) else _herr.new_zeros(()))
-        self.extras["task/hand_torque_sat_frac"] = (
-            _herr[:, _mv] >= float(self.cfg.hand_torque_sat_err_rad)).float().mean()
         # ★채널별 폐쇄도 — 전체 평균만 보면 "어느 채널이 안 닫히는지"를 못 본다.
         #   08.27: 평균 0.278 이 채널1(`_2`)만 폐쇄한 예측치 0.250 과 맞아떨어졌고,
         #   GUI 관찰(`_2` 완전굴곡·`_3`/`_4` 정지)과 일치했다. ch2 가 낮은 이유가
         #   "명령이 안 나간다"인지 "명령은 나가는데 동결이 먹는다"인지 가른다.
         for _c in range(self._syn_nch):
             _m = self._syn_ch == _c
-            self.extras[f"task/syn_close_ch{_c}"] = self._syn_close[:, _m].mean()
-        self.extras["task/close_gate"] = self._close_gate.mean()
-        self.extras["task/cage_ctr_dist"] = self._cage_ctr_dist.mean()
-        self.extras["task/abnormal_rate"] = self._abnormal.float().mean()
         # ★Phase 0(08.29): `force_max` 는 손가락별 **3마디 합산**의 최댓값이라 사용자
         #   제약(팁 센서 단독 0~50 N)과 직접 비교가 안 된다. 또 평균(1~2 N)과 60배
         #   어긋나 이 값이 파지력인지 접근 충돌 스파이크인지 알 수 없었다 — 래치로 가른다.
@@ -1401,17 +1358,24 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["contact/force_max"] = _cfm.max()
         self.extras["contact/force_max_prelatch"] = torch.where(self._latched, _z, _cfm).max()
         self.extras["contact/force_max_postlatch"] = torch.where(self._latched, _cfm, _z).max()
-        self.extras["fabric/palm_cmd_step_raw"] = self._palm_cmd_step_raw.mean()
+        self.extras["diag/cmd_step_raw"] = self._palm_cmd_step_raw.mean()
         _jerr = (self.fabric_q[:, : self.profile.num_arm_joints]
                  - self.robot.data.joint_pos[:, self._arm_ids_t]).abs()
-        self.extras["fabric/joint_err_mean"] = _jerr.mean()
+        self.extras["diag/arm_joint_err_mean"] = _jerr.mean()
         # ★`fabric_q` 는 오픈루프 적분 plant 라 리셋 전까지 실측으로 되돌아오지 않는다.
         #   에피소드 **안에서** 팔이 막히면(접촉·관절한계) fabric 만 계속 적분해 격차가
         #   벌어지는데, 평균은 그 순간을 묻어버린다. 08.27 실측으로 **누적은 반증**됐지만
         #   (ep_len 16→594 로 37배인데 joint_err 0.040→0.033 로 감소, 전 구간 0.023~0.053)
         #   그건 평균 얘기다 — 최대값을 따로 봐야 막힘 구간을 잡는다.
-        self.extras["fabric/joint_err_max"] = _jerr.max()
-        self.extras["fabric/palm_err_mean"] = (
+        self.extras["diag/arm_joint_err_max"] = _jerr.max()
+        # ★★09.11 신설 — **action ↔ 제어 정합**. 이 네임스페이스는 그것만 담는다.
+        #   ①정책이 ±1 벽에 붙어 있는가(액션 포화) ②지령이 박스에 잘리는가
+        #   ③변화율 리미터에 잘리는가 ④지령을 실제로 따라가는가.
+        #   ②③이 높으면 정책이 내는 **크기 정보가 파괴**되고 방향만 남는다.
+        self.extras["diag/action_sat_frac"] = (
+            self.actions.abs() >= 0.99).float().mean()
+        self.extras["diag/cmd_box_sat"] = self._palm_cmd_box_sat.mean(dim=0).max()
+        self.extras["diag/palm_track_err"] = (
             self.palm_targets[:, :3] + self._fab_to_env - palm_pos).norm(dim=-1).mean()
         self._log_diagnostics(_thr, mid_f, dist_f, tip_f, obj_pos, palm_pos)
         return total
@@ -1497,7 +1461,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         _uf = _uf / _uf.norm(dim=-1, keepdim=True).clamp(min=1e-6)  # (N, F_b, 3)
         _c = 1.0 - (0.5 * (_up.unsqueeze(1) + _uf)).norm(dim=-1)   # (N, F_b)
         _weak = _c.min(dim=1).values.clamp(0.0, 1.0)
-        self.extras["task/enclosure_weakest"] = _weak.mean()
         return ((1.0 - _lam) * _encl + _lam * _weak).clamp(0.0, 1.0)
 
     def _contact_azimuth_spread(self, obj_pos: torch.Tensor,
@@ -1557,7 +1520,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         for _i, _fg in enumerate(self._finger_names):
             self.extras[f"contact/dist_rate_{_fg}"] = (dist_f[:, _i] > thr).float().mean()
             self.extras[f"contact/dist_net_{_fg}"] = (_n_dist[:, _i] > thr).float().mean()
-        self.extras["task/hand_blocked_frac"] = self._hand_blocked().float().mean()
         # ★손바닥 — 컵을 실제로 받치는 면이 어디인지. 그동안 계측 자체가 없었다.
         _palm_f = self._palm_contact_force()
         self.extras["contact/palm_rate"] = (_palm_f > thr).float().mean()
@@ -1565,9 +1527,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         self.extras["contact/palm_f_mean"] = _palm_f.mean()
         # ★신 감쌈의 세 성분을 **활성 metric 과 무관하게 항상** 찍는다 — 구 정의로 도는
         #   갈래에서도 신 지표를 관측해야 사후 비교가 된다.
-        self.extras["task/envelope_surf_palm"] = self._surf_palm.mean()
-        self.extras["task/envelope_surf_a"] = self._surf_a.mean()
-        self.extras["task/envelope_surf_b"] = self._surf_b.mean()
 
         # ---- Phase 0: 팁 단독 힘 분포 (08.29 신설) ------------------------------------
         # ★실기 팁 센서 정격은 **0~50 N** 이고 그 위는 측정 자체가 안 된다. 그런데
@@ -1598,40 +1557,24 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         # ---- goal 성분 분해 -----------------------------------------------------------
         # `goal_dist` 스칼라만으로는 0.28 이 높이 탓인지 수평 탓인지 알 수 없다.
         _gd = obj_pos - self.goal_pos
-        self.extras["task/goal_dz"] = _gd[:, 2].abs().mean()
-        self.extras["task/goal_dxy"] = _gd[:, :2].norm(dim=-1).mean()
 
         # ---- 홈 복귀 확인 -------------------------------------------------------------
         # 액션 규약이 `palm = 홈 + delta(a)` 라 **a=0 이 정확히 홈**이다. 래치 후 정책이
         # 홈으로 이완하면 컵이 목표가 아니라 홈 위로 실려 간다.
-        self.extras["task/action_norm_arm"] = self.actions[:, :6].norm(dim=-1).mean()
-        self.extras["task/palm_to_home"] = (
-            palm_pos - self._home_palm[:3].unsqueeze(0)).norm(dim=-1).mean()
 
         # ---- palm 지령 포화 -----------------------------------------------------------
         # 박스 포화 = 도달영역 부족, 리미터 포화 = 너무 빨리 움직이려는 것. 원인이 다르다.
-        for _i, _ax in enumerate("xyz"):
-            self.extras[f"fabric/palm_cmd_box_sat_{_ax}"] = \
-                self._palm_cmd_box_sat[:, _i].mean()
-        self.extras["fabric/palm_cmd_rate_sat"] = self._palm_cmd_rate_sat.mean()
-        self.extras["fabric/palm_cmd_z"] = self.palm_targets[:, 2].mean()
-        self.extras["fabric/palm_z_min"] = palm_pos[:, 2].min()
+        self.extras["diag/cmd_rate_sat"] = self._palm_cmd_rate_sat.mean()
+        self.extras["palm/ee_z_min"] = palm_pos[:, 2].min()
 
         # ---- Phase 0: 액션 앵커 재설계용 palm 실측 (08.29 신설, 진단 전용) -------------
         # ★앵커 오프셋을 추측하지 않기 위한 계측이다. 지금까지 z 지령 하나만 찍혀 있어
         #   "파지할 때 palm 이 어디에 있고 이송할 때 어디로 가는지"를 답할 수 없었다.
         #   래치로 두 구간을 갈라 각각의 palm 실위치를 잰다(래치는 보상 단계 표시이고
         #   여기서도 **읽기만** 한다 — 액션·게이트·종료 경로에는 들어가지 않는다).
-        for _i, _ax in enumerate("xy"):
-            self.extras[f"fabric/palm_cmd_{_ax}"] = self.palm_targets[:, _i].mean()
         _lat = self._latched.float()
         _den_l = _lat.sum().clamp(min=1.0)
         _den_n = (1.0 - _lat).sum().clamp(min=1.0)
-        for _i, _ax in enumerate("xyz"):
-            self.extras[f"fabric/palm_post_latch_{_ax}"] = \
-                (palm_pos[:, _i] * _lat).sum() / _den_l
-            self.extras[f"fabric/palm_pre_latch_{_ax}"] = \
-                (palm_pos[:, _i] * (1.0 - _lat)).sum() / _den_n
 
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1687,8 +1630,6 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
         #   어긋나면 이 값이 env_spacing(2.0 m) 배수로 튄다.
         _off = (self.robot.data.root_pos_w[:, :2]
                 - self.scene.env_origins[:, :2]).abs()
-        self.extras["diag/root_vs_origin_max"] = _off.max()
-        self.extras["diag/root_vs_origin_mean"] = _off.mean()
 
         # ---- 낙하/전도 재소환 (08.30 신설, 기본 OFF) --------------------------------
         # ★★종료가 유일한 실패 처리면 "시도 → 실패 → 미래 보상 전액 상실"이라

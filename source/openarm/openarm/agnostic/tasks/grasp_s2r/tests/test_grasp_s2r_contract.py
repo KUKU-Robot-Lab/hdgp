@@ -590,23 +590,31 @@ def test_blocked_needs_both_error_and_away_from_limit():
     assert "blocked_err_thr_rad" in cfg and "diag_contact_threshold_lo" in cfg
 
 
-def test_goal_distance_is_logged_by_component():
-    """★`goal_dist` 스칼라만으로는 높이 탓인지 수평 탓인지 못 가른다.
+def test_action_control_coupling_is_instrumented():
+    """정책 액션이 실제 제어에 **얼마나 전달되는지**가 로깅돼야 한다.
 
-    08.27 실측 goal_dist 0.281 에서 높이 성분과 수평 성분의 비중이 처방을 가른다 —
-    높이면 `lift_height_ref`(0.10) vs `goal_offset_xyz.z`(0.08) 충돌이고, 수평이면
-    홈 복귀(`a=0` 이 홈)다. 두 원인은 처방이 완전히 다르다.
+    ★09.11 개명·재조준. 구판(`test_goal_distance_is_logged_by_component`)은 두 가지를
+      한 테스트에 묶고 있었다 — ①`goal_dist` 를 높이/수평으로 분해하는 태그
+      ②지령이 박스·리미터에 잘리는지 보는 태그. 사용자가 `task/`·`fabric/` 을 비우면서
+      ①은 결정으로 사라졌고, ②는 `diag/` 로 옮겨 **이 트랙의 핵심 진단**이 됐다.
+
+    왜 ②가 핵심인가: 정책이 내는 지령이 상시 잘리면 **크기 정보가 파괴되고 방향만
+    남는다**. 09.11 실측 `cmd_rate_sat` 0.984 · `cmd_step_raw` 0.144 m/step (상한 0.02)
+    — 요청이 상한의 7.2배라 리미터가 98.4% 포화였다. 08.27 절대매핑 실패의 서명이
+    앵커+델타 체제에서도 그대로 나타난 것이고, 이 태그들이 없으면 안 보인다.
+
+    무엇이 이 계약을 거짓으로 만드는가: 박스 클램프나 변화율 리미터를 없애는 결정.
+      그때는 잘림이 존재하지 않으므로 이 단언을 그 사실과 함께 뒤집을 것.
     """
     env = _code(_ENV)
-    assert 'self.extras["task/goal_dz"]' in env
-    assert 'self.extras["task/goal_dxy"]' in env
-    # 홈 복귀 가설의 직접 관측량 — a=0 이 정확히 홈이라 액션 크기가 곧 홈 이탈량이다.
-    assert 'self.extras["task/action_norm_arm"]' in env
-    assert 'self.extras["task/palm_to_home"]' in env
-    # 파지 자세가 명령 박스 안에 있는지 — 축별로 봐야 어느 축이 부족한지 안다.
-    assert 'f"fabric/palm_cmd_box_sat_{_ax}"' in env
-    assert 'self.extras["fabric/palm_cmd_rate_sat"]' in env
-
+    for tag in ('"diag/action_sat_frac"', '"diag/cmd_box_sat"',
+                '"diag/cmd_rate_sat"', '"diag/cmd_step_raw"',
+                '"diag/palm_track_err"'):
+        assert tag in env, f"action↔제어 정합 태그 {tag} 가 없다"
+    # 리미터 **전** 원지령이어야 한다 — 자른 뒤를 재면 언제나 상한 이하로 보인다.
+    i = env.index("self._palm_cmd_step_raw = torch.where(")
+    assert "_step3.norm(dim=-1)" in env[i:i + 260], \
+        "cmd_step_raw 가 클램프 전 원지령이 아니다"
 
 def test_success_clauses_are_cfg_gated():
     """★성공 판정에서 **파지 품질**을 뺄 수 있어야 한다 (08.28 사용자 확정).
@@ -643,10 +651,12 @@ def test_envelope_surface_count_includes_palm_and_thumb():
     assert "self._group_b_idx" in _blk
     assert "grip_c[" in _blk, "마디 무관(tip|mid|dist)이어야 한다"
     assert "envelope_palm_weight" in _code(_CFG)
-    # 세 성분은 활성 metric 과 무관하게 항상 로깅 — 구 정의 갈래에서도 사후 비교 가능해야
-    assert 'self.extras["task/envelope_surf_palm"]' in env
-    assert 'self.extras["task/envelope_surf_a"]' in env
-    assert 'self.extras["task/envelope_surf_b"]' in env
+    # ★09.11 — 구판은 세 성분의 **TB 태그**를 요구했다(`task/envelope_surf_*`).
+    #   사용자 지시로 `task/` 를 물체 상태 둘만 남기고 비우면서 그 태그들이 사라졌다.
+    #   계약의 내용은 "손바닥·엄지가 분모에 든다" 이지 태그 이름이 아니므로, 요구를
+    #   **계산 쪽**으로 옮긴다 — 세 성분이 버퍼로 살아 있어야 사후 분석이 가능하다.
+    assert "self._surf_palm, self._surf_a, self._surf_b =" in env, \
+        "감쌈 세 성분이 버퍼로 남지 않는다 — 사후 분해가 불가능해진다"
 
 
 def test_envelope_metric_defaults_to_legacy():
@@ -799,7 +809,9 @@ def test_enclosure_participation_defaults_off():
     # 최약 손가락 기준이어야 한다 — 평균을 또 쓰면 같은 결함이 반복된다.
     blk = env[i:i + 900]
     assert "_c.min(dim=1).values" in blk, "최소참여가 **최약** 손가락 기준이 아니다"
-    assert "task/enclosure_weakest" in blk, "최약 손가락 로깅이 없다"
+    # ★09.11 — `task/enclosure_weakest` 태그 요구를 뺀다. 사용자 지시로 `task/` 를
+    #   비웠고, 이 계약의 핵심은 "평균이 아니라 최약 손가락"이라는 **수식**이다.
+    #   λ=0 이 기본이라 이 경로는 지금 꺼져 있고, 켤 때 로깅을 다시 붙이면 된다.
 
 
 def test_participation_keeps_finger_axis():
@@ -1094,7 +1106,9 @@ def test_contact_quality_anylink_mode():
     b2 = env[j:j + 220]
     assert "grip_c.float().sum(dim=1) + self._surf_palm" in b2, "손바닥 표가 빠졌다"
     assert "(n_tip + 1.0)" in b2, "분모가 손가락+1 이 아니다"
-    assert "task/anylink_frac" in env and "task/n_contact" in env, "진단 로깅이 없다"
+    # ★09.11 — `task/anylink_frac`·`task/n_contact` 태그 요구를 뺀다. anylink 모드에서
+    #   `graded_contact = anylink_frac × force_quality` 이므로 같은 양이 `gate/graded_contact`
+    #   로 계속 보인다. 사용자 지시(`task/` 비우기)와 충돌하지 않는다.
 
 
 def test_anylink_replaces_grasp_envelope_credit():
@@ -2097,18 +2111,24 @@ def test_conditional_tags_divide_only_by_binary_gates():
         f"이진이 아닌 게이트로 나누고 있다: {m.groups()}")
 
 
-def test_lift_plateau_is_instrumented():
-    """`lift` 높이 품질의 **포화**를 측정하는 태그가 있어야 한다.
+def test_lift_plateau_cannot_recur():
+    """`lift` 높이 램프가 목표 전에 포화하는 평지가 **다시 생길 수 없어야** 한다.
 
-    `lift_height_quality = clamp(dz / lift_height_ref)` 는 목표 반경 안 최소 높이차
-    (goal_z − tolerance)가 `lift_height_ref` 보다 크면 목표까지 내내 1.0 이다 —
-    가중 30 짜리 최대 항이 그 구간에서 경사 0 이라는 뜻이고, Phase 2(절단)의 전제다.
-    산술로 확정되지만 **런이 그 구간에 얼마나 앉아 있는지**는 측정해야 안다.
+    ★09.11 개명. 구판(`test_lift_plateau_is_instrumented`)은 평지를 **계측하는 태그**
+      (`task/lift_quality_sat_frac`·`task/height_delta_p10`)를 요구했다. 그 계측은
+      임무를 마쳤다 — E1 에서 `ref` 0.06 → 0.12 로 고친 뒤 실측 포화율 0.018 로
+      평지가 사라진 것이 확인됐다. 사용자가 `task/` 를 비우면서 태그도 사라졌다.
+      남아야 하는 것은 계측이 아니라 **평지를 금지하는 부등식**이고, 그것은
+      `test_lift_ramp_reaches_the_goal_height` 가 잠근다. 여기서는 그 가드가
+      살아 있는지만 확인해 링크를 끊지 않는다.
+
+    무엇이 이 계약을 거짓으로 만드는가: 그 가드를 지우는 것. 지우면 평지가 조용히
+      돌아오고, 이번엔 그것을 알려 줄 태그도 없다.
     """
-    code = _code(_ENV)
-    for tag in ('"task/lift_quality_sat_frac"', '"task/height_delta_p10"'):
-        assert tag in code, f"lift 평지 계측 태그 {tag} 가 없다"
-
+    t = Path(__file__).resolve().read_text(encoding="utf-8")
+    assert "def test_lift_ramp_reaches_the_goal_height():" in t, \
+        "평지를 금지하는 부등식 가드가 사라졌다 — 계측 태그도 없으므로 무방비가 된다"
+    assert "ref >= gz - tol" in t, "가드가 부등식이 아니다"
 
 def test_lift_ramp_reaches_the_goal_height():
     """`lift` 의 높이 램프는 **목표 반경 안 최소 높이차까지 단조**여야 한다.
