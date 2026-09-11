@@ -1269,6 +1269,14 @@ class GraspS2REnv(GraspS2RControlMixin, DirectRLEnv):
             stability_quality=stability_q,
             success_now=self._success_now,
             action_delta_norm=action_delta,
+            # ★09.11 G1 — DEXTRAH 형 입력. 중심은 `grasp_center`(물체 원점 + 파지 z 오프셋) —
+            #   컵 원점이 바닥에 있어 원점 그대로면 손이 컵 밑동을 향한다.
+            #   점 = palm + 손끝 전부. **max** 라 가장 먼 점이 값을 정한다(인벨롭 유도).
+            hand_to_object_err=torch.cat(
+                [(palm_pos - grasp_center).norm(dim=-1, keepdim=True),
+                 (_tips_l - grasp_center.unsqueeze(1)).norm(dim=-1)],
+                dim=1).max(dim=1).values,
+            object_vertical_err=(self.goal_pos[:, 2] - obj_pos[:, 2]).abs(),
             cfg=cfgn,
         )
         _abn_pen = float(cfgn.abnormal_penalty) * self._abnormal.float()

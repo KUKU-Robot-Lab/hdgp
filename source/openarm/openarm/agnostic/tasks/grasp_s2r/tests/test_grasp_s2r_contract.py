@@ -2071,6 +2071,40 @@ def test_stay_break_cause_is_split_into_two_tags():
 
 
 # ---------------------------------------------------------------- 보상 회계 (09.10 Phase 0)
+def test_dextrah_reward_terms_carry_no_gate():
+    """G1: DEXTRAH 모드의 세 항은 **게이트·접촉 계수를 곱하지 않는다**.
+
+    09.11 F1 이 리미터 없이 E1 게이트 사다리로 08.27 을 재현했다(래치 0.596 → 0.0001).
+    DEXTRAH 가 리미터 없이 되는 전제가 "전 구간 0 이 아닌 exp" 이므로, 이 모드의 가치는
+    **곱셈 게이트가 하나도 없다는 것** 그 자체다. 누가 E1 습관대로 `* graded_contact`
+    나 `* lift_gate` 를 붙이면 조용히 F1 로 돌아간다.
+
+    ★리터럴이 아니라 **조건**을 잠근다 — 세 대입문의 우변에 게이트 식별자가 없을 것,
+      그리고 hand_to_object 입력이 palm+손끝의 **max** 일 것(인벨롭 유도의 핵심).
+    무엇이 이 계약을 거짓으로 만드는가: DEXTRAH 원본이 게이트를 갖게 되는 것.
+    """
+    rew, env = _code(_REW), _code(_ENV)
+    i = rew.index('if _mode == "dextrah":')
+    j = rew.index('elif _mode == "e1":', i)
+    blk = rew[i:j]
+    for term in ("hand_to_object", "object_to_goal", "lift"):
+        m = re.search(rf'terms\["{term}"\]\s*=([\s\S]*?)\)\s*\n', blk)
+        assert m, f"dextrah 모드에 {term} 대입이 없다"
+        rhs = m.group(1)
+        for gate in ("graded_contact", "lift_gate", "lifted_gate", "pre_lift_gate",
+                     "close_gate", "disp_factor", "upright_quality", "at_goal", "stable_gate"):
+            assert gate not in rhs, f"dextrah {term} 에 게이트 {gate} 가 곱해졌다 — F1 재현 위험"
+        assert "torch.exp(" in rhs, f"dextrah {term} 가 exp 형태가 아니다"
+    # 인벨롭 유도: palm 과 손끝을 합친 뒤 max
+    k = env.index("hand_to_object_err=")
+    seg = env[k:k + 400]
+    assert "palm_pos - grasp_center" in seg and "_tips_l - grasp_center" in seg, \
+        "hand_to_object 가 palm+손끝 전부를 보지 않는다"
+    assert ".max(dim=1).values" in seg, \
+        "hand_to_object 가 max 가 아니다 — 평균이면 핀치(2개만 근접)도 높게 나온다"
+    assert 'reward_mode: str = "dextrah"' in _code(_CFG), "기본 보상 모드가 dextrah 가 아니다"
+
+
 def test_reward_term_set_is_closed_both_ways():
     """`terms` 딕셔너리 키와 `GRASP_S2R_REWARD_TERMS` 튜플이 **양방향으로** 같아야 한다.
 

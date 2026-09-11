@@ -660,6 +660,22 @@ class GraspS2REnvCfg(DirectRLEnvCfg):
     #   0.000 이라 정책이 팁 0.4 만 먹고 2~3개 접촉에서 멈췄고, 그 상태로는 컵을
     #   기울이는 과제에서 놓친다.
     contact_quality_mode: str = "anylink"  # ★D3 기본 (09.01 승격)
+    # ★★★09.11 G1 — 보상 체계 스위치. "dextrah" | "e1"(09.10 개편판).
+    #   "dextrah" = DEXTRAH compute_rewards 3항(hand_to_object·object_to_goal·lift) 만,
+    #   게이트·접촉항·성공보너스 0. E1 14항은 계산만 하고 0 으로 덮는다(게이트 로깅 유지).
+    #   왜: 리미터를 뗀 F1 이 E1 게이트 사다리에서 08.27 을 재현했다(래치 0.596→0.0001).
+    #   근거 문서: repo/reports/grasp_s2r_보상개편_G1_DEXTRAH_0911.md
+    reward_mode: str = "dextrah"
+    # DEXTRAH 원본 가중·sharpness (dextrah_kuka_allegro_env_cfg.py:314-318, ADR 초기값 :421-423).
+    #   ★원본 그대로 둔다 — 첫 런이 실패하면 이식 편차가 아니라 가중 비율이 원인임이 확정된다.
+    #   편차: goal sharpness 커리큘럼(−15→−20)·lift 가중 감쇠(5→0) 없음, finger_curl_reg 생략
+    #   (우리 손은 시너지 3채널이라 q_curled 대응이 없다).
+    dx_hand_weight: float = 1.0
+    dx_hand_sharpness: float = 10.0
+    dx_goal_weight: float = 5.0
+    dx_goal_sharpness: float = 15.0
+    dx_lift_weight: float = 5.0
+    dx_lift_sharpness: float = 8.5
     # ★래치 판정 방식 (08.29). "count"(기본·현행) = 접촉 손가락 수 ≥ min.
     #   "opposition" = (그룹A) AND (그룹B OR palm) — 실측 성공 파지(엄지+palm)에서
     #   count 가 래치를 영원히 못 여는 문제의 처방. O1/O2/N1 적용, M1 은 대조 보존.

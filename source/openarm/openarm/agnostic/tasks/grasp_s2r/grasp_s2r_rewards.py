@@ -37,6 +37,9 @@ GRASP_S2R_REWARD_TERMS: tuple[str, ...] = (
     "hand_overdrive",
     "action_smooth",
     "hand_floor",
+    # ★09.11 G1 — DEXTRAH 형 항. reward_mode 가 dextrah 일 때만 0 이 아니다.
+    "hand_to_object",
+    "object_to_goal",
 )
 
 
@@ -76,6 +79,8 @@ def compute_grasp_s2r_rewards(
     stability_quality: torch.Tensor,
     success_now: torch.Tensor,            # (N,) bool
     action_delta_norm: torch.Tensor,
+    hand_to_object_err: torch.Tensor | None = None,   # (N,) max_{palm,tips} ‖p − 중심‖
+    object_vertical_err: torch.Tensor | None = None,  # (N,) |goal_z − obj_z|
     cfg: object,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """(total, terms, gates) 반환. 전부 (N,) 텐서."""
@@ -362,7 +367,41 @@ def compute_grasp_s2r_rewards(
         "hand_overdrive": hand_overdrive_term,
         "action_smooth": action_smooth,
         "hand_floor": hand_floor,
+        # ★09.11 G1 — 리터럴에 둔다(계약 튜플과 양방향 일치를 이 블록 하나가 보장).
+        #   아래 모드 분기가 dextrah 일 때만 값을 채운다.
+        "hand_to_object": torch.zeros_like(goal_dist),
+        "object_to_goal": torch.zeros_like(goal_dist),
     }
+    # ★★★09.11 G1 — DEXTRAH 형 보상(`reward_mode="dextrah"`).
+    #   소스: DEXTRAH `dextrah_kuka_allegro_env.py:1620 compute_rewards`
+    #     hand_to_object = 1.0·exp(−10·max_{palm,tips}‖p−obj‖)
+    #     object_to_goal = 5.0·exp(−15·‖obj−goal‖)
+    #     lift           = 5.0·exp(−8.5·|goal_z−obj_z|)
+    #   **게이트 0개 · 접촉항 0개 · 성공보너스 0개.** 셋 다 거리의 exp 라 전 구간에서 0 이 아니다.
+    #   왜: F1(리미터 해제 + E1 게이트 사다리)이 08.27 을 재현했다 — 래치 E1 0.596 vs F1 0.0001.
+    #   리미터 없이 목표가 튀면 게이트 뒤 보상에는 방향이 생기지 않는다. DEXTRAH 가 리미터 없이
+    #   되는 전제가 바로 이 dense 형태다.
+    #   ★max 가 핵심이다 — 손바닥과 **모든** 손끝이 중심에 가까워야 오르므로 핀치는 낮고
+    #     인벨롭이 높다(같은 위치에서 2.46배). 게이트 없이 파지 형태를 유도한다.
+    #   E1 항은 계산은 하되(게이트 로깅용) **전부 0 으로 덮는다** — "e1" 로 한 줄 복귀 가능.
+    _mode = str(getattr(cfg, "reward_mode", "e1"))
+    if _mode == "dextrah":
+        if hand_to_object_err is None or object_vertical_err is None:
+            raise RuntimeError(
+                "reward_mode='dextrah' 인데 hand_to_object_err/object_vertical_err 가 없다")
+        _z = torch.zeros_like(goal_dist)
+        terms = {k: _z for k in terms}          # E1 항 전부 0 (게이트는 아래 gates 로 계속 로깅)
+        terms["hand_to_object"] = _f(cfg, "dx_hand_weight", 1.0) * torch.exp(
+            -_f(cfg, "dx_hand_sharpness", 10.0) * hand_to_object_err)
+        terms["object_to_goal"] = _f(cfg, "dx_goal_weight", 5.0) * torch.exp(
+            -_f(cfg, "dx_goal_sharpness", 15.0) * goal_dist)
+        terms["lift"] = _f(cfg, "dx_lift_weight", 5.0) * torch.exp(
+            -_f(cfg, "dx_lift_sharpness", 8.5) * object_vertical_err)
+    elif _mode == "e1":
+        pass                                   # 두 항은 리터럴에서 이미 0
+    else:
+        raise RuntimeError(f"reward_mode={_mode!r} — 'e1' | 'dextrah' 만 허용")
+
     _missing = set(GRASP_S2R_REWARD_TERMS) - set(terms)
     if _missing:
         raise RuntimeError(f"보상 항 누락: {sorted(_missing)}")
