@@ -21,6 +21,7 @@ import math
 
 import torch
 
+from ...modules.keypoint_goal import RisingCurriculum
 from .fj_kp_env import FJKeypointEnv
 from .fj_reward import compute_fj_reward
 from .grasp_fj_env_cfg import GraspFJEnvCfg
@@ -36,6 +37,15 @@ class GraspFJEnv(FJKeypointEnv):
         """mixin `_setup_fabrics` 의 fabric-free 판. 시너지·인덱스·palm 박스 할당은 동일."""
         p = self.profile
         self._setup_synergy()                     # ★`_syn_ids` 가 아래 인덱스보다 먼저(부모 순서 계약)
+        # ★09.11 감쌈 커리큘럼 — 성공의 전제조건(`_grasp_precondition`)이 읽는다.
+        #   start 0 이면 끔. `_syn_ids` 뒤여야 `_hand_curl()` 이 동작한다.
+        _cs = float(self.cfg.grasp_curl_start)
+        self._curl_cur = (RisingCurriculum(
+            start=_cs, ceiling=float(self.cfg.grasp_curl_max),
+            factor=float(self.cfg.grasp_curl_factor),
+            interval=int(self.cfg.grasp_curl_interval),
+            success_threshold=float(self.cfg.grasp_curl_threshold)) if _cs > 0.0 else None)
+        self._curl_last = torch.zeros(self.num_envs, device=self.device)
         self.fabric = None                        # 명시적 OFF — A 의 `_log_fabric_metrics` 가 None 으로 분기
         self._fab_t = self._build_joint_index()
         self._syn_to_fab_idx = self._build_syn_to_fab_idx()
@@ -420,6 +430,24 @@ class GraspFJEnv(FJKeypointEnv):
         self.episode_length_buf.masked_fill_(self._success_now, r)
         self.extras["task/goal_clock_restart"] = self._success_now.float().mean()
 
+    def _grasp_precondition(self, is_success):
+        """★09.11 **인벨롭 그립을 성공의 전제조건으로** 건다(사용자 확정 + reward-audit).
+
+        성공 = `kp_dist ≤ tol 연속 10회` **AND** `hand_curl ≥ curl_tol`.
+
+        왜: goal_bonus 가 총점의 93.2% 인데 성공 술어에 손 자세가 안 들어가서, 정책이
+        손끝을 물체 표면에서 ~50mm 띄운 채 성공을 받는 해에 수렴했다(ft_dist 90mm,
+        설계 파지 대비 굴곡 41%). 보상은 epoch 300 이후 평평하다.
+
+        ★임계는 **커리큘럼**이다(고정 아님). 설계 파지 0.83 을 바로 걸면 현재 0.34 라
+          성공이 즉시 0 이 되어 총점의 93% 가 사라진다(reward-audit Check 4).
+        ★`hand_curl` 은 **실측** 굴곡이다 — 지령에 걸면 시키기만 하고 끝난다.
+        """
+        if self._curl_cur is None:
+            return is_success
+        self._curl_last = self._hand_curl()
+        return is_success & (self._curl_last >= self._curl_cur.value)
+
     def _log_joint_limit_violation(self, hand_q, ex) -> None:
         """손 20관절이 **하드 한계 밖으로 밀려난 양**을 관절별로 남긴다.
 
@@ -473,6 +501,12 @@ class GraspFJEnv(FJKeypointEnv):
         ex["ctrl/hand_joint_err_max"] = _herr[:, self._syn_movable].max()
         ex["ctrl/hand_blocked_frac"] = self._hand_blocked().float().mean()
         self._log_joint_limit_violation(_hq, ex)
+        # ★09.11 감쌈 계측 — 커리큘럼이 조여지는지, 정책이 따라오는지 둘 다 봐야 한다
+        #   (reward-audit Check 5: 임계를 거는 값은 반드시 직접 로깅한다).
+        ex["task/hand_curl"] = self._curl_last.mean() if self._curl_cur is not None else self._hand_curl().mean()
+        if self._curl_cur is not None:
+            ex["task/curl_tol"] = torch.tensor(self._curl_cur.value, device=self.device)
+            ex["task/curl_pass"] = (self._curl_last >= self._curl_cur.value).float().mean()
         # ★★09.09 **실측 폐쇄도**. `task/syn_close` 는 (tgt−lo)/span 즉 **지령**이라
         #   "정책이 안 닫는다"와 "손이 못 닫는다"를 3200 epoch 동안 구분하지 못했다.
         #   ep_3200 재생 계측: 지령 0.540 vs 실측 0.452 — 마디별 실현율이

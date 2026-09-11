@@ -131,6 +131,12 @@ def test_env_overrides_exactly_the_adapter_hook_set():
                                                       #   비율(viol/frac)과 크기(viol/max_rad)를 나눠 남긴다 —
                                                       #   `ctrl/hand_joint_err_max` 는 전 env 최대값이라
                                                       #   "얼마나 자주"를 못 말한다.
+               "_grasp_precondition",                 # ★09.11 성공의 **전제조건** 이음매(부모는 항등).
+                                                      #   `_get_rewards` 가 계약 금지 훅이라 성공 술어에
+                                                      #   손 자세 조건을 걸 다른 자리가 없다. 여기서
+                                                      #   `hand_curl ≥ curl_tol` 을 AND 로 건다 — goal_bonus 가
+                                                      #   총점의 93% 인데 술어에 손이 안 들어가서, 정책이
+                                                      #   손끝을 표면에서 50mm 띄운 채 성공을 받고 있었다.
                "_seg_masks"}                          # ★09.09 마디별 진단 마스크 캐시 — **진단 전용**
                                                       #   순수 인덱스 헬퍼이고 보상·관측·종료 어디에도 안 쓴다.
                                                       #   실측 폐쇄도(task/syn_close_actual_seg*)를 마디별로 남기려고

@@ -225,6 +225,47 @@ def update_near_goal(kp_dist: torch.Tensor, tol: float, trackers: GoalTrackers, 
 # =============================================================================
 # 허용오차 커리큘럼
 # =============================================================================
+class RisingCurriculum:
+    """★09.11 신설 — `ToleranceCurriculum` 의 **올라가는** 판.
+
+    `tol` 은 성공할수록 **좁아지는**(×factor<1, floor 로) 커리큘럼이다. 감쌈 임계
+    (`hand_curl`)는 반대로 성공할수록 **올라가야** 한다(×factor>1, ceiling 으로).
+    부호만 다르고 구동 규약(interval 프레임마다 prev_episode_successes 평균이
+    threshold 이상이면 한 칸)은 같으므로, 같은 인터페이스로 둔다.
+
+    왜 별 클래스인가: `ToleranceCurriculum` 에 방향 플래그를 달면 그 클래스를 쓰는
+    모든 트랙이 분기를 갖게 된다. 09.10 에 트랙을 분리한 이유와 같은 이유로 나눈다.
+    """
+
+    def __init__(self, start: float, ceiling: float, factor: float = 1.05,
+                 interval: int = 3000, success_threshold: float = 2.0):
+        if not (0.0 < start <= ceiling):
+            raise ValueError(f"RisingCurriculum: need 0 < start ≤ ceiling, got {start}/{ceiling}")
+        if factor <= 1.0 or interval < 1:
+            raise ValueError(f"RisingCurriculum: factor>1, interval≥1; got {factor}/{interval}")
+        self._v = float(start)
+        self._ceiling = float(ceiling)
+        self._factor = float(factor)
+        self._interval = int(interval)
+        self._threshold = float(success_threshold)
+        self._last = 0
+
+    @property
+    def value(self) -> float:
+        return self._v
+
+    def update(self, prev_episode_successes) -> bool:
+        """interval 프레임마다 한 칸. 올렸으면 True."""
+        self._last += 1
+        if self._last < self._interval or self._v >= self._ceiling:
+            return False
+        self._last = 0
+        if float(prev_episode_successes.float().mean()) < self._threshold:
+            return False
+        self._v = min(self._v * self._factor, self._ceiling)
+        return True
+
+
 class ToleranceCurriculum:
     """interval 프레임마다 mean(prev_episode_successes) ≥ threshold 면 tol ← max(tol·factor, floor)."""
 

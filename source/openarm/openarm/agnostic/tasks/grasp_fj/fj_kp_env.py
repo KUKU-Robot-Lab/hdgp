@@ -552,6 +552,14 @@ class FJKeypointEnv(FJCoreEnv):
     # ------------------------------------------------------------------
     # 보상 — progress-only 8항 (접촉 0)
     # ------------------------------------------------------------------
+    def _grasp_precondition(self, is_success):
+        """성공에 추가 조건을 거는 이음매 — 기본 **항등**.
+
+        ★09.11 신설. leaf 가 덮어 "인벨롭 그립이어야 성공" 같은 전제를 건다.
+          여기서 덮지 않으면 `kp_dist ≤ tol 연속 N회` 만으로 성공이다.
+        """
+        return is_success
+
     def _get_rewards(self) -> torch.Tensor:
         c = self.cfg
         qd = self.robot.data.joint_vel
@@ -563,6 +571,10 @@ class FJKeypointEnv(FJCoreEnv):
         kp_dist = keypoint_max_dist(kp_obj, kp_goal)
         dz = obj_pos[:, 2] - self.object_spawn_pos[:, 2]
         near_goal, is_success = update_near_goal(kp_dist, self._tol.tol, self._trk, self._goal_cfg)
+        # ★09.11 성공 전제조건 이음매. 기본은 **항등**이라 안 덮은 트랙은 비트 동일하다.
+        #   `_get_rewards` 는 B 의 계약 금지 훅이라 통째로 덮을 수 없다 — 그래서 여기
+        #   한 줄짜리 이음매를 둔다(`_progress_reward`·`_action_obs` 와 같은 규약).
+        is_success = self._grasp_precondition(is_success)
         # ★09.07 A-vi: 벌점은 **전역** 래치 뒤에만 — lifted_frac EMA ≥ 임계(a6 는 e130 에 0.30)면 sticky 로 arm.
         #   per-env lifted 만으로 켠 a7 은 e25 의 우연한 리프트(튕겨 올라갔다 상판에 놓인 컵, sticky 래치)에
         #   −1.35/step 이 500 스텝 붙어 접근 자체가 죽었다(e25 close 0.37 → e50 0.007). 래치는 되돌리지 않는다.
@@ -587,6 +599,10 @@ class FJKeypointEnv(FJCoreEnv):
         self._last_reward = total
         if self._tol.update(self._trk.prev_episode_successes):
             print(f"[grasp_fj] 허용오차 커리큘럼 → tol {self._tol.tol:.4f}", flush=True)
+        # ★09.11 감쌈 커리큘럼도 **같은 입력·같은 시점**으로 갱신한다(leaf 가 만들었을 때만).
+        _cc = getattr(self, "_curl_cur", None)
+        if _cc is not None and _cc.update(self._trk.prev_episode_successes):
+            print(f"[grasp_fj] 감쌈 커리큘럼 → curl_tol {_cc.value:.4f}", flush=True)
         # arm 시점 기록 — 2000 스텝마다 한 번만 동기화(bool)한다.
         if self.common_step_counter % 2000 == 0 and bool(self._cmd_rate_armed):
             print(f"[grasp_fj] cmd_rate 벌점 ARMED · lift_ema {float(self._lift_ema):.3f} · step {self.common_step_counter}", flush=True)

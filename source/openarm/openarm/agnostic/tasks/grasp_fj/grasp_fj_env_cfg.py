@@ -67,6 +67,22 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
     #   이게 곧 형제 트랙(`grasp_fj_rh`) 방화벽이다(leaf 가 아니라 base 에 두되 기본값이 off).
     #   근거·설계는 `fj_reward.FJRewardCfg.wrap_scale` 주석. reward-audit 09.09: REVISE→조건부 ACCEPT
     #   (근접 게이트 + 실측 기준 + 상한 2.0 + A(kp 5.0) 선행이 조건).
+    # ★★09.11 **인벨롭 그립을 성공의 전제조건으로** (사용자 확정 + reward-audit REVISE).
+    #   왜: goal_bonus 가 총점의 93.2% 를 독점하는데 성공 술어가 `kp_dist ≤ tol 연속 10회`
+    #   뿐이라 **손이 물체를 어떻게 잡았는지가 전혀 안 들어간다**. 그래서 정책이 손끝을
+    #   물체 표면에서 ~50mm 띄운 채(ft_dist 90mm, 설계 파지 대비 굴곡 41%) 성공을 받는
+    #   해에 수렴했고, 보상은 epoch 300 이후 평평하다. wrap 항은 지급 0.0002 로 사실상 0.
+    #
+    #   ★임계를 설계 파지(0.83)로 **바로 걸면 안 된다** — 현재 0.34 라 성공이 즉시 0 이 되고
+    #     총점의 93% 가 사라진다(reward-audit Check 4 파괴). 그래서 커리큘럼으로 올린다:
+    #     현재값 바로 위에서 시작해, 직전 에피소드 성공이 임계를 넘을 때만 한 칸 조인다.
+    #     `tol` 커리큘럼(0.1125 → 0.0598)이 같은 규약으로 이미 작동하고 있다.
+    #   ★0.0 이면 **끔**(전제조건 없음) = 09.11 이전과 비트 동일.
+    grasp_curl_start: float = 0.35       # 실측 0.340 바로 위 — 성공이 죽지 않는 출발점
+    grasp_curl_max: float = 0.83         # 프로필 `hand_grip_pose` 의 굴곡(설계 파지) 실측값
+    grasp_curl_factor: float = 1.05
+    grasp_curl_interval: int = 3000      # tol 커리큘럼과 같은 프레임 간격
+    grasp_curl_threshold: float = 2.0    # tol 과 같은 입력(prev_ep_successes_mean)
     rw_wrap_scale: float = 0.0
     rw_wrap_gate_dist: float = 0.06
 
