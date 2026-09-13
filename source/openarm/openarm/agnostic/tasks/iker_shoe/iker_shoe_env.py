@@ -7,6 +7,8 @@ targets. The reward is the fixed IKER reward toward the target keypoints of one 
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import torch
@@ -58,6 +60,7 @@ class IkerShoeEnv(DirectRLEnv):
         self._gravity_ids, _ = self._robot.find_joints(robot.GRAVITY_COMPENSATION_JOINTS)
         self._palm = self._robot.find_bodies(prof.palm_body)[0][0]
         self._palm_jacobian = self._palm - 1  # fixed-base Jacobians omit the root body
+        scene_config = layout.sample_configs(cfg.config_index + 1)[cfg.config_index]
         expected = {
             "config_index": cfg.config_index,
             "physics_dt": PHYSICS_DT,
@@ -65,7 +68,11 @@ class IkerShoeEnv(DirectRLEnv):
             "solver_position_iterations": robot.SOLVER_POSITION_ITERATIONS,
             "solver_velocity_iterations": robot.SOLVER_VELOCITY_ITERATIONS,
             "gains": gb.gains_metadata(self._robot.data.joint_names, self._robot.data.joint_stiffness[0], self._robot.data.joint_damping[0]),
+            "robot_usd": str(prof.usd_relpath),
+            "shoe_meta_sha256": hashlib.sha256(layout.SHOE_META_PATH.read_bytes()).hexdigest(),
+            "scene_config": vars(scene_config),
         }
+        expected = json.loads(json.dumps(expected))
         bank_doc = run_files.read_json(_artifact(cfg.grasp_bank_path, run_dir / "grasp_bank.json"))
         self._bank = gb.load_bank(bank_doc, self._robot.data.joint_names, expected, dev)
 

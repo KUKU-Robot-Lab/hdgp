@@ -31,6 +31,51 @@ def test_blocked_joint_freezes_but_joint_at_its_limit_does_not():
     assert new_target[0, 1] == pytest.approx(0.6)  # clamped to the joint limit
 
 
+def test_joint_pushed_to_its_opposite_limit_freezes():
+    close = torch.tensor([[0.5, 0.5, 0.5]])
+    target = torch.tensor([[0.5, 0.5, 0.5]])
+    # a closes upward (START -> GRIP is 0 -> 1); pinning it at LOWER is the opposite limit, not its own.
+    joint_pos = torch.tensor([[-1.0, 0.0, 0.5]])
+    new_close, _ = gb.synergy_step(close, target, joint_pos, START, GRIP, LOWER, UPPER)
+    assert new_close[0, 0] == pytest.approx(0.5)  # frozen despite the large error, not exempted
+
+
+def test_hand_state_valid_rejects_a_finger_at_its_opposite_limit():
+    # joint a pinned at LOWER, opposite its upward closing direction.
+    joint_pos = torch.tensor([[-1.0, 0.5, 0.5]])
+    valid = gb.hand_state_valid(joint_pos, START, GRIP, LOWER, UPPER)
+    assert valid.tolist() == [False]
+
+
+def test_hand_state_valid_rejects_joints_beyond_limits_and_accepts_normal_closing():
+    start = START.expand(2, 3)
+    joint_pos = torch.tensor(
+        [
+            [0.5, 0.7, 0.5],  # b exceeds UPPER (0.6) by more than LIMIT_TOLERANCE_RAD
+            [0.5, 0.3, 0.5],  # ordinary mid-closing position, within limits and not at any limit
+        ]
+    )
+    valid = gb.hand_state_valid(joint_pos, start, GRIP, LOWER, UPPER)
+    assert valid.tolist() == [False, True]
+
+
+def test_hand_state_valid_accepts_a_joint_resting_at_its_opposite_limit_from_start():
+    start = torch.tensor(
+        [
+            [-1.0, 0.0, 0.5],  # row0: a already starts at LOWER (its opposite limit for upward closing)
+            [0.0, 0.0, 0.5],  # row1: ordinary mid-range start
+        ]
+    )
+    joint_pos = torch.tensor(
+        [
+            [-1.0, 0.3, 0.5],  # row0: a still sits at LOWER -- it was already there, not driven there
+            [0.5, -1.0, 0.5],  # row1: b started mid-range and reached LOWER -- driven there, still invalid
+        ]
+    )
+    valid = gb.hand_state_valid(joint_pos, start, GRIP, LOWER, UPPER)
+    assert valid.tolist() == [True, False]
+
+
 def test_zero_tilt_palm_faces_down_with_fingers_toward_plus_y():
     rot = gb.palm_rotations(torch.tensor([0.0]), torch.tensor([0.0]))[0]
     assert torch.allclose(rot[:, 0], torch.tensor([0.0, 0.0, -1.0]))  # palmar side

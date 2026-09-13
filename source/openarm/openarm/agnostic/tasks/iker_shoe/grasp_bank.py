@@ -17,6 +17,8 @@ import torch
 BANK_SCHEMA = 1
 BLOCKED_ERR_RAD = 0.2  # a joint this far from its target (and not at a limit) is pressed against the shoe
 LIMIT_MARGIN_RAD = 0.02
+OPPOSITE_LIMIT_MARGIN_RAD = 0.05
+LIMIT_TOLERANCE_RAD = 0.05
 CLOSE_RATE_PER_STEP = 1.0 / 150.0  # full open -> grip in 1.25 s at 120 Hz
 MIN_RISE_M = 0.05  # spec §8: the palm lifts 0.10 m; the shoe must follow at least half of it
 MAX_HOLD_SLIP_M = 0.01  # spec §8: shoe-to-palm drift over the hold after lifting
@@ -90,16 +92,55 @@ def synergy_step(
     """One closing step of the open -> grip synergy with per-joint freeze.
 
     ``close``/``target``/``joint_pos``/``start_pose`` are (N, J); ``grip_pose``/``lower``/``upper`` are (J,).
-    A joint stops closing while it is blocked: farther than ``BLOCKED_ERR_RAD`` from its target and not
-    at a joint limit. Joints whose start and grip poses coincide never move. Returns new (close, target).
+    A joint stops closing while it is blocked: farther than ``BLOCKED_ERR_RAD`` from its target and not at
+    the limit in its own closing direction (the limit the joint approaches while closing from start to
+    grip). A joint pinned at the opposite limit counts as blocked and freezes, rather than being read as
+    "at a limit" and let through. Joints whose start and grip poses coincide never move. Returns new
+    (close, target).
     """
+    direction = torch.sign(grip_pose.unsqueeze(0) - start_pose)
     movable = (grip_pose.unsqueeze(0) - start_pose).abs() > 1e-4
-    free = (joint_pos > lower + LIMIT_MARGIN_RAD) & (joint_pos < upper - LIMIT_MARGIN_RAD)
-    blocked = ((target - joint_pos).abs() > BLOCKED_ERR_RAD) & free
+    at_own_limit = torch.where(
+        direction > 0,
+        joint_pos >= upper - LIMIT_MARGIN_RAD,
+        torch.where(direction < 0, joint_pos <= lower + LIMIT_MARGIN_RAD, torch.zeros_like(joint_pos, dtype=torch.bool)),
+    )
+    blocked = ((target - joint_pos).abs() > BLOCKED_ERR_RAD) & ~at_own_limit
     step = torch.where(movable & ~blocked, torch.full_like(close, CLOSE_RATE_PER_STEP), torch.zeros_like(close))
     new_close = (close + step).clamp(0.0, 1.0)
     new_target = torch.max(torch.min(torch.lerp(start_pose, grip_pose.unsqueeze(0), new_close), upper), lower)
     return new_close, new_target
+
+
+def hand_state_valid(
+    joint_pos: torch.Tensor,
+    start_pose: torch.Tensor,
+    grip_pose: torch.Tensor,
+    lower: torch.Tensor,
+    upper: torch.Tensor,
+) -> torch.Tensor:
+    """(N,) bool: the hand state is a plausible grasp, not a finger pinned at its opposite limit or bent
+    beyond its limits. ``synergy_step`` can only freeze a joint against the shoe or its own closing-direction
+    limit; a finger hyperextended past the limit opposite its closing direction under a saturated drive holds
+    the shoe in sim but is not the specified grasp, so this rejects it. A joint whose start pose already rests
+    within ``OPPOSITE_LIMIT_MARGIN_RAD`` of that same limit is excluded from the opposite-limit check: it was
+    already there before closing began, not driven there by a saturated drive. ``joint_pos``/``start_pose``
+    are (N, J); ``grip_pose``/``lower``/``upper`` are (J,).
+    """
+    direction = torch.sign(grip_pose.unsqueeze(0) - start_pose)
+    movable = (grip_pose.unsqueeze(0) - start_pose).abs() > 1e-4
+    near_lower = joint_pos <= lower + OPPOSITE_LIMIT_MARGIN_RAD
+    near_upper = joint_pos >= upper - OPPOSITE_LIMIT_MARGIN_RAD
+    start_near_lower = start_pose <= lower + OPPOSITE_LIMIT_MARGIN_RAD
+    start_near_upper = start_pose >= upper - OPPOSITE_LIMIT_MARGIN_RAD
+    at_opposite_limit = torch.where(
+        direction > 0,
+        near_lower & ~start_near_lower,
+        torch.where(direction < 0, near_upper & ~start_near_upper, torch.zeros_like(joint_pos, dtype=torch.bool)),
+    )
+    beyond_limit = (joint_pos < lower - LIMIT_TOLERANCE_RAD) | (joint_pos > upper + LIMIT_TOLERANCE_RAD)
+    invalid = (movable & at_opposite_limit).any(dim=-1) | beyond_limit.any(dim=-1)
+    return ~invalid
 
 
 def lift_held(shoe_z_start: torch.Tensor, shoe_z_end: torch.Tensor, rel_after_lift: torch.Tensor, rel_after_hold: torch.Tensor) -> torch.Tensor:

@@ -162,6 +162,8 @@ def main() -> int:
         run(DESCEND_STEPS, goal, palm_quat, start_hand, parked=True)
         write_shoe(start.expand(n, 7))
         run(SETTLE_STEPS, goal, palm_quat, start_hand)
+        # Diagnostic: fingers already bent back before closing means the teleport overlap is the cause.
+        settle_bad = ~gb.hand_state_valid(arm.data.joint_pos[:, hand_ids], start_hand, grip_pose, lower, upper)
         state = {"close": torch.zeros_like(start_hand), "target": start_hand.clone()}
 
         def closing():
@@ -177,6 +179,7 @@ def main() -> int:
             "shoe_pose": torch.cat([shoe.data.root_pos_w - origins, shoe.data.root_quat_w], dim=-1),
             "palm_pose": torch.cat([arm.data.body_pos_w[:, palm] - origins, arm.data.body_quat_w[:, palm]], dim=-1),
         }
+        hand_ok = gb.hand_state_valid(record["joint_pos"][:, hand_ids], start_hand, grip_pose, lower, upper)
         held = lift_test(goal, palm_quat, state["target"])
 
         # Replay: restore the recorded state as an environment reset would, then lift again.
@@ -186,12 +189,27 @@ def main() -> int:
         ik.reset()
         run(SETTLE_STEPS, record["palm_pose"][:, :3], record["palm_pose"][:, 3:], record["joint_target"][:, hand_ids])
         replay_held = lift_test(record["palm_pose"][:, :3], record["palm_pose"][:, 3:], record["joint_target"][:, hand_ids])
-        ok = held & replay_held
+        ok = held & replay_held & hand_ok
         for key in kept:
             kept[key].append(record[key][ok])
         total = sum(int(t.shape[0]) for t in kept["joint_pos"])
-        stats.append({"round": round_index, "held": int(held.sum()), "replay_held": int(replay_held.sum()), "kept": int(ok.sum()), "total": total})
-        print(f"BANK round {round_index} held {int(held.sum())}/{n} replay {int(replay_held.sum())}/{n} kept {int(ok.sum())} total {total} ({time.time() - t0:.0f} s)", flush=True)
+        stats.append(
+            {
+                "round": round_index,
+                "held": int(held.sum()),
+                "replay_held": int(replay_held.sum()),
+                "hand_ok": int(hand_ok.sum()),
+                "settle_bad": int(settle_bad.sum()),
+                "kept": int(ok.sum()),
+                "total": total,
+            }
+        )
+        print(
+            f"BANK round {round_index} held {int(held.sum())}/{n} replay {int(replay_held.sum())}/{n} "
+            f"hand_ok {int(hand_ok.sum())}/{n} settle_bad {int(settle_bad.sum())}/{n} kept {int(ok.sum())} "
+            f"total {total} ({time.time() - t0:.0f} s)",
+            flush=True,
+        )
         if total >= args.min_entries:
             break
 
