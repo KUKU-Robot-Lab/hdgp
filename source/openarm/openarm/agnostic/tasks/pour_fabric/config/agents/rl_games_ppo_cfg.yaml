@@ -100,7 +100,7 @@ params:
       normalize_input: True
       normalize_value: True
       value_bootstrap: False
-      minibatch_size: 32768     # actor와 동일하게 맞출 것
+      minibatch_size: 8192      # actor 와 동일(= 128 env × 64). 09.13 서버 기동이 여기서 죽었다 — actor 만 고치면 안 된다
       mini_epochs: 4
       learning_rate: 3e-4
       lr_schedule: linear
