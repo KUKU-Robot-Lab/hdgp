@@ -1,7 +1,8 @@
 {
- "label": "t2r_i00e1k",
+ "label": "t2r_i00fix",
  "num_envs": 1024,
- "started": 1789281966.457583,
- "commit": "853a4c26",
- "gpu": 1
+ "started": 1789301193.1757088,
+ "commit": "3cb4c8db",
+ "gpu": 1,
+ "note": "nesting fix \ud6c4 iter_00 \ubcf4\uc0c1 \uc7ac\ud559\uc2b5"
 }

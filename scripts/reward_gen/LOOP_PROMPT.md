@@ -27,8 +27,11 @@
      `nohup bash ~/logs/t2r/launch_t2r.sh <label> reward_gen/pour_bi/iter_(NN+1) <num_envs> > ~/logs/t2r/<label>.log 2>&1 < /dev/null &`
    - 로컬: `iter_(NN+1)/launch.json` {"label","num_envs","started","commit","gpu":1} 기록, LOOP_STATE 갱신.
    - 첫 epoch 확인(3분 내 Traceback 이면 2 의 crashed 절차).
-6. 종료 조건: episode_success 최근 평균 ≥ 0.5 가 두 틱 연속(→ 그 런을 끝까지 두고 루프 종료 보고),
-   또는 round ≥ MAX_ROUNDS(8). 종료 시 사용자에게 best iter·지표·체크포인트 경로를 보고한다.
+6. 종료 조건: episode_success 최근 평균 ≥ 0.5 가 두 틱 연속 **그리고** task/nested_rate < 0.1 · bead/spill 정상
+   → 그 런을 끝까지 두고, **종료 선언 전에 서버에서 play 영상을 찍어 프레임을 눈으로 확인**한다
+   (09.13 실측: 지표는 0.73 성공인데 영상은 컵 끼워넣기였다 — 지표만으로 종료하지 않는다).
+   영상이 붓기가 아니면 그 hacking 을 env 판정에 막고(보상이 아니라 판정) 같은 보상으로 재학습.
+   또는 round ≥ MAX_ROUNDS(8). 종료 시 사용자에게 best iter·지표·체크포인트·영상 경로를 보고한다.
 
 금지: pkill/killall · GPU0 사용 · 남의 런 접촉 · env 파일(pour_fabric) 수정(보상 코드만 바뀐다).
 task-observer: 각 라운드 종료(deliverable flush)마다 관측 기록 확인.
