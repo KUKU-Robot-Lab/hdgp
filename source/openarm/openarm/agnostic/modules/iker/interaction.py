@@ -4,17 +4,18 @@ The response must contain exactly one fenced Python block that defines ``get_int
 Only ``import numpy`` is allowed. Attribute access is limited to an explicit list of names, so the
 numpy module graph cannot be walked to other modules (``numpy.lib.npyio.os``) and arrays cannot write
 files (``ndarray.tofile``). Dunder names, ``try``, classes and the builtins that reach the interpreter
-(``open``, ``exec``, ``eval``, ``getattr`` ...) are rejected before anything runs, and the call itself
-runs under a wall-clock limit.
+(``open``, ``exec``, ``eval``, ``getattr`` ...) are rejected before anything runs, and module execution
+and the call run in a forked child process with a 1 GiB address-space limit and a wall-clock limit.
 """
 
 from __future__ import annotations
 
 import ast
 import builtins
+import multiprocessing
+import os
 import re
-import signal
-import threading
+import resource
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -22,6 +23,7 @@ import numpy as np
 
 FUNCTION_NAME = "get_interaction_data"
 DEFAULT_TIMEOUT_S = 2.0
+_MEMORY_LIMIT_BYTES = 1 << 30  # 1 GiB of address space above what the child already uses
 _CODE_BLOCK = re.compile(r"```(?:python|py)?[ \t]*\n(.*?)```", re.DOTALL)
 _BANNED_NAMES = frozenset(
     {
@@ -76,10 +78,6 @@ class Interaction:
     done: bool
 
 
-class _Timeout(BaseException):
-    """Raised by the alarm handler; a BaseException so the checked code cannot catch it."""
-
-
 def extract_code_block(response: str) -> str:
     blocks = _CODE_BLOCK.findall(response)
     if len(blocks) != 1:
@@ -122,7 +120,11 @@ def _check_node(node: ast.AST) -> None:
 def run_interaction(
     code: str, keypoints: Mapping[int, Sequence[float]], timeout_s: float = DEFAULT_TIMEOUT_S
 ) -> Interaction:
-    """Execute checked code on a copy of ``{"1": np.array([x, y, z]), ...}`` and parse its return value."""
+    """Execute checked code on a copy of ``{"1": np.array([x, y, z]), ...}`` and parse its return value.
+
+    Forks a child process to run the module and the call, so this must not be called from a process
+    that has initialized CUDA or Isaac Sim.
+    """
     tree = check_code(code)
     inputs = {}
     for key, xyz in keypoints.items():
@@ -130,18 +132,29 @@ def run_interaction(
         if point.shape != (3,) or not np.all(np.isfinite(point)):
             raise ValueError(f"keypoint {key} must be a finite xyz triple")
         inputs[str(int(key))] = point.copy()
-    namespace = {"__builtins__": dict(_ALLOWED_BUILTINS, __import__=_import_numpy_only), "np": np, "numpy": np}
+
+    ctx = multiprocessing.get_context("fork")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    process = ctx.Process(target=_run_in_child, args=(tree, inputs, child_conn))
+    process.start()
+    child_conn.close()
     try:
-        exec(compile(tree, "<interaction>", "exec"), namespace)
-    except Exception as exc:  # noqa: BLE001 - any failure of untrusted code is reported, not raised
-        raise InteractionError(f"module execution failed: {type(exc).__name__}: {exc}") from None
-    try:
-        result = _call_with_timeout(namespace[FUNCTION_NAME], inputs, timeout_s)
-    except InteractionError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise InteractionError(f"{FUNCTION_NAME} raised {type(exc).__name__}: {exc}") from None
-    return _parse_result(result)
+        if not parent_conn.poll(timeout_s):
+            process.kill()
+            process.join()
+            raise InteractionError(f"{FUNCTION_NAME} exceeded {timeout_s} s")
+        try:
+            status, payload = parent_conn.recv()
+        except EOFError:
+            process.join()
+            raise InteractionError(f"interaction process exited with code {process.exitcode}") from None
+    finally:
+        parent_conn.close()
+        process.join()
+
+    if status == "error":
+        raise InteractionError(payload)
+    return _parse_result(payload)
 
 
 def _import_numpy_only(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002 - builtin signature
@@ -150,22 +163,46 @@ def _import_numpy_only(name, globals=None, locals=None, fromlist=(), level=0):  
     return np
 
 
-def _call_with_timeout(fn, argument, timeout_s: float):
-    if threading.current_thread() is not threading.main_thread():
-        raise InteractionError("interaction code must run on the main thread (the time limit uses SIGALRM)")
+def _run_in_child(tree: ast.Module, inputs: dict, conn) -> None:
+    """Child process entry point: bound its address space, then exec the module and call the function.
 
-    def _on_alarm(signum, frame):
-        raise _Timeout()
-
-    previous = signal.signal(signal.SIGALRM, _on_alarm)
-    signal.setitimer(signal.ITIMER_REAL, timeout_s)
+    Runs entirely inside a forked child. Any failure here - including a checked-code error or a
+    MemoryError from the address-space limit - is sent back as an ("error", text) message, never
+    raised, and the child always exits via ``os._exit`` so no parent cleanup handlers run in it.
+    """
     try:
-        return fn(argument)
-    except _Timeout:
-        raise InteractionError(f"{FUNCTION_NAME} exceeded {timeout_s} s") from None
+        _limit_child_memory()
+        namespace = {"__builtins__": dict(_ALLOWED_BUILTINS, __import__=_import_numpy_only), "np": np, "numpy": np}
+        try:
+            exec(compile(tree, "<interaction>", "exec"), namespace)
+        except BaseException as exc:  # noqa: BLE001 - untrusted code; report, don't propagate
+            _send(conn, "error", f"module execution failed: {type(exc).__name__}: {exc}")
+            return
+        try:
+            result = namespace[FUNCTION_NAME](inputs)
+        except BaseException as exc:  # noqa: BLE001 - untrusted code; report, don't propagate
+            _send(conn, "error", f"{FUNCTION_NAME} raised {type(exc).__name__}: {exc}")
+            return
+        _send(conn, "ok", result)
+    except BaseException as exc:  # noqa: BLE001 - safety net around setup itself (e.g. RLIMIT_AS)
+        _send(conn, "error", f"module execution failed: {type(exc).__name__}: {exc}")
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
-        signal.signal(signal.SIGALRM, previous)
+        os._exit(0)
+
+
+def _limit_child_memory() -> None:
+    with open("/proc/self/statm") as f:
+        current_pages = int(f.read().split()[0])
+    current_bytes = current_pages * resource.getpagesize()
+    limit_bytes = current_bytes + _MEMORY_LIMIT_BYTES
+    resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+
+
+def _send(conn, status: str, payload) -> None:
+    try:
+        conn.send((status, payload))
+    except Exception as exc:  # noqa: BLE001 - unpicklable payload
+        conn.send(("error", f"{FUNCTION_NAME} returned a value that cannot be transferred: {type(exc).__name__}"))
 
 
 def _parse_result(result) -> Interaction:

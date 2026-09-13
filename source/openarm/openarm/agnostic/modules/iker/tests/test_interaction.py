@@ -91,6 +91,22 @@ def test_runtime_errors_and_timeouts_become_interaction_errors():
         run_interaction(_function("while True:\n    pass"), KEYPOINTS, timeout_s=0.2)
 
 
+def test_default_argument_allocation_is_bounded():
+    code = (
+        "import numpy as np\n"
+        "def get_interaction_data(k, _pad=np.zeros((100000, 100000))):\n"
+        "    return 'shoe_move', [1, 2, 3, 4], True, k\n"
+    )
+    with pytest.raises(InteractionError, match="MemoryError"):
+        run_interaction(code, KEYPOINTS)
+
+
+def test_time_limit_covers_module_execution_and_native_loops():
+    code = "def get_interaction_data(k, _x=sum(range(10**12))):\n    return 'shoe_move', [1], True, k\n"
+    with pytest.raises(InteractionError, match="exceeded"):
+        run_interaction(code, KEYPOINTS, timeout_s=0.5)
+
+
 def test_multi_step_done_is_reported():
     result = run_interaction(_function("done = True\nif done:\n    return"), KEYPOINTS)
     assert result.done is True and result.keypoint_ids == ()
