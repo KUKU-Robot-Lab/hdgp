@@ -108,6 +108,9 @@ def cmd_status(a) -> int:
     started = json.loads(meta_p.read_text())["started"] if meta_p.exists() else None
     hours = (time.time() - started) / 3600 if started else None
     succ = summ.get("task/episode_success", {}).get("last", 0.0)
+    # ★nohup 리다이렉트는 stdout 이 블록 버퍼라 로그의 epoch 줄이 크게 뒤처진다 — TB 점 개수가 진실.
+    n_tb = max((v["n"] for v in summ.values()), default=0)
+    st["epoch"] = max(st["epoch"] or 0, n_tb)
     if st["crashed"] or (not st["alive"] and (st["epoch"] or 0) < 10):
         verdict = "crashed"
     elif succ >= ROUND_POLICY["KEEP_SUCCESS"]:
