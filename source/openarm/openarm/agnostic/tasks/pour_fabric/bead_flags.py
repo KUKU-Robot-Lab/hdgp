@@ -78,6 +78,11 @@ def compute_bead_flags(
         & (p_src[..., 2] <= geom_source.inside_z_max)
     )
 
+    # ★09.13 reward hacking 실측: 정책이 소스 컵을 리시버 컵 입구에 **끼워 넣어**(테이퍼 컵) 소스 안의
+    #   비드가 리시버 원통 안에 들어오게 만들었다 — 비드는 한 알도 안 나왔는데 in_target 0.74.
+    #   "리시버 안" 은 "소스 안이 아님" 을 포함해야 한다(두 원통이 겹치면 소스가 이긴다).
+    in_target = in_target & (~in_source)
+
     crossed_now = (
         (xy_tgt <= geom_target.inner_radius)
         & (prev_target_local_z > geom_target.mouth_z)

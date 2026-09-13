@@ -65,7 +65,10 @@ press on that hand's own cup — this is the grasp-established signal. \
 `d_spill` are this step's increments — reward INCREMENTS of beads transferred rather than \
 the level, otherwise the policy is paid for standing still with a filled cup.
 7. `ctx.success` is computed by the environment (enough beads in the receiver cup, little \
-spill, cups close together). You may add a bonus on it but you cannot redefine it.
+spill, cups close together, and the cups NOT nested). You may add a bonus on it but you cannot \
+redefine it. Beads only count as "in the receiver" once they have LEFT the source cup — pushing \
+the source cup into the receiver cup (`ctx.cups_nested`) transfers nothing and is never a success; \
+the beads must fall out of the tilted source cup through the air.
 8. Height above the table: `ctx.src_cup_pos[:, 2] - ctx.src_cup_spawn_pos[:, 2]` is how far \
 the source cup has been lifted (0 while it rests on the table).
 9. Do not keep any state between calls (no globals, no attributes); the function must be pure.

@@ -207,6 +207,10 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     success_spill_max: float = 0.40
     success_xy_thresh: float = 0.20           # 두 컵 중심 xy 거리
     success_hold_steps: int = 10
+    # ★09.13 hacking 차단: 소스 컵을 리시버 입구에 끼워 넣으면 소스 안 비드가 리시버 원통 안에 들어와
+    #   in_target 로 세어졌다(ep 600 영상: 붓기 없이 성공 0.73). 원점 거리가 이보다 짧으면 성공 무효.
+    #   붓는 자세(소스 입구가 리시버 림 위)에서는 원점 거리가 ≥ 12~15 cm 다.
+    cups_nested_dist: float = 0.09
 
     # ---- 종료 --------------------------------------------------------------------
     runaway_joint_vel: float = 20.0

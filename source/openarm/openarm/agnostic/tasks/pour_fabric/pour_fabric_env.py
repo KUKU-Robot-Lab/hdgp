@@ -138,6 +138,8 @@ class PourFabricEnv(DirectRLEnv):
         self._rcv_spawn = torch.zeros(N, 3, device=dev)
         self._src_grasped = torch.zeros(N, dtype=torch.bool, device=dev)
         self._rcv_grasped = torch.zeros(N, dtype=torch.bool, device=dev)
+        self._cups_nested = torch.zeros(N, dtype=torch.bool, device=dev)
+        self._cups_center_dist = torch.zeros(N, device=dev)
         self._last_terms: dict = {}
         self._log_tick = 0
 
@@ -345,7 +347,7 @@ class PourFabricEnv(DirectRLEnv):
             bead_in_source_frac=flags.in_source_frac, bead_in_target_frac=flags.in_target_frac,
             bead_spill_frac=flags.spill_frac, bead_centroid=self._local(flags.centroid_w),
             d_in_target=d_in_target, d_spill=d_spill,
-            success=self._success_now,
+            cups_nested=self._cups_nested, success=self._success_now,
             episode_progress=self.episode_length_buf.float() / float(self.max_episode_length),
             actions=self.actions, prev_actions=self.prev_actions,
         )
@@ -367,9 +369,14 @@ class PourFabricEnv(DirectRLEnv):
         self._flags_fresh[:] = False
 
         xy = (self.source_cup.data.root_pos_w[:, :2] - self.receiver_cup.data.root_pos_w[:, :2]).norm(dim=-1)
+        # ★09.13 hacking 차단: 소스 컵을 리시버에 끼워 넣으면(원점 거리 < 9 cm) 성공이 아니다.
+        center_d = (self.source_cup.data.root_pos_w - self.receiver_cup.data.root_pos_w).norm(dim=-1)
+        self._cups_nested = center_d < float(cfg.cups_nested_dist)
+        self._cups_center_dist = center_d
         self._success_now = ((flags.in_target_frac >= float(cfg.success_fill_ratio))
                              & (flags.spill_frac <= float(cfg.success_spill_max))
-                             & (xy < float(cfg.success_xy_thresh)))
+                             & (xy < float(cfg.success_xy_thresh))
+                             & (~self._cups_nested))
         self._success_streak = torch.where(self._success_now, self._success_streak + 1,
                                            torch.zeros_like(self._success_streak))
 
@@ -402,6 +409,8 @@ class PourFabricEnv(DirectRLEnv):
         self.extras["task/src_tilt_deg"] = torch.rad2deg(ctx.src_cup_tilt).mean()
         self.extras["task/rcv_tilt_deg"] = torch.rad2deg(ctx.rcv_cup_tilt).mean()
         self.extras["task/aim_dist"] = (ctx.src_cup_mouth_pos - ctx.rcv_cup_mouth_pos).norm(dim=-1).mean()
+        self.extras["task/cups_center_dist"] = self._cups_center_dist.mean()
+        self.extras["task/nested_rate"] = self._cups_nested.float().mean()
         self.extras["task/src_palm_to_cup"] = (ctx.src_palm_pos - ctx.src_cup_pos).norm(dim=-1).mean()
         self.extras["task/rcv_palm_to_cup"] = (ctx.rcv_palm_pos - ctx.rcv_cup_pos).norm(dim=-1).mean()
         self.extras["contact/src_max"] = ctx.src_finger_force.max(dim=1).values.mean()

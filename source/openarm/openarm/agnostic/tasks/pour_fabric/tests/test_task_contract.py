@@ -55,6 +55,9 @@ def test_success_is_env_judged_not_reward():
     """성공(fill·spill·xy)은 env 가 판정해 ctx.success 로 넘긴다 — 보상이 못 바꾼다."""
     assert "success_fill_ratio" in _ENV and "success_spill_max" in _ENV
     assert "success=self._success_now" in _ENV
+    # 끼워 넣기(nesting) 는 성공이 아니다 — 09.13 hacking 재발 방지
+    assert "& (~self._cups_nested)" in _ENV
+    assert "in_target = in_target & (~in_source)" in (_PKG / "bead_flags.py").read_text()
 
 
 def test_reward_is_zero_during_hold():

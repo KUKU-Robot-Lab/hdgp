@@ -65,14 +65,15 @@ class RewardContext:
 
     # ---- 비드 ----------------------------------------------------------------------
     bead_in_source_frac: torch.Tensor   # (N,) 소스 컵 안에 있는 비드 비율 [0,1]
-    bead_in_target_frac: torch.Tensor   # (N,) 리시버 컵 안에 있는 비드 비율 [0,1]
+    bead_in_target_frac: torch.Tensor   # (N,) 리시버 컵 안에 있고 소스 컵 밖인 비드 비율 [0,1] (소스 컵째 끼워 넣은 비드는 0)
     bead_spill_frac: torch.Tensor       # (N,) 어느 컵에도 없이 바닥/테이블로 떨어진 비율 [0,1]
     bead_centroid: torch.Tensor         # (N,3) 비드 무게중심 위치
     d_in_target: torch.Tensor           # (N,) 이번 스텝 bead_in_target_frac 증분 (Δ, 음수 가능)
     d_spill: torch.Tensor               # (N,) 이번 스텝 bead_spill_frac 증분
 
     # ---- 과제 판정 / 시간 ------------------------------------------------------------
-    success: torch.Tensor               # (N,) bool 성공 조건 충족 (env 가 판정, 보상이 바꿀 수 없음)
+    cups_nested: torch.Tensor           # (N,) bool 두 컵 원점 거리 < 9 cm — 소스 컵이 리시버 컵에 끼워져 있음(붓기가 아니라 성공 무효)
+    success: torch.Tensor               # (N,) bool 성공 조건 충족 (env 가 판정, 보상이 바꿀 수 없음; cups_nested 면 항상 False)
     episode_progress: torch.Tensor      # (N,) 에피소드 진행도 [0,1]
 
     # ---- 액션 ------------------------------------------------------------------------

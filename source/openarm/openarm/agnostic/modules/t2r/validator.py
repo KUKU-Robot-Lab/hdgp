@@ -127,7 +127,7 @@ def make_fake_context(n: int = 16, *, num_fingers: int = 5, num_arm: int = 7,
     fr = fr / fr.sum(dim=1, keepdim=True)
     kw.update(bead_in_source_frac=fr[:, 0], bead_in_target_frac=fr[:, 1], bead_spill_frac=fr[:, 2],
               bead_centroid=r(n, 3, lo=0.0, hi=0.6), d_in_target=r(n, lo=-0.1, hi=0.1),
-              d_spill=r(n, lo=-0.1, hi=0.1), success=r(n) > 0.8,
+              d_spill=r(n, lo=-0.1, hi=0.1), cups_nested=r(n) > 0.7, success=r(n) > 0.8,
               episode_progress=r(n, lo=0.0, hi=1.0),
               actions=r(n, num_actions), prev_actions=r(n, num_actions))
     return RewardContext(**kw)
