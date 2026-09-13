@@ -156,6 +156,14 @@ def test_env_overrides_exactly_the_adapter_hook_set():
                                                       #   `hand_curl ≥ curl_tol` 을 AND 로 건다 — goal_bonus 가
                                                       #   총점의 93% 인데 술어에 손이 안 들어가서, 정책이
                                                       #   손끝을 표면에서 50mm 띄운 채 성공을 받고 있었다.
+               "_grasp_quality_geom",                 # ★09.13 5손가락 파지 품질 q(`fj_reward.grasp_quality`).
+                                                      #   `_wrap_frac_geom` 이 같은 스텝에 잰 마디 간극을 다시 쓰고
+                                                      #   손바닥 방향을 곱한다 — 들기·성공 보너스 계수의 입력.
+               "_log_grasp_quality",                  # ★09.13 들기·성공 **순간** q 의 이벤트 EMA 로깅 — 진단 전용.
+                                                      #   스텝 평균 `task/wrap_frac` 은 접근 구간이 뭉개서 8천 epoch
+                                                      #   동안 리셋 값 0.213 과 구분되지 않았다.
+               "_event_ema",                          # ★09.13 위 로깅의 순수 헬퍼(마스크 평균 EMA, host 동기화 0)
+               "_record_grasp_trace",                 # ★09.13 play `--dump_grasp` 전용 이벤트 기록 — 학습 경로에선 안 돈다
                "_seg_masks"}                          # ★09.09 마디별 진단 마스크 캐시 — **진단 전용**
                                                       #   순수 인덱스 헬퍼이고 보상·관측·종료 어디에도 안 쓴다.
                                                       #   실측 폐쇄도(task/syn_close_actual_seg*)를 마디별로 남기려고
@@ -619,6 +627,40 @@ def test_wrap_geometry_is_computed_once_per_step():
     _wf = _fn_block(_ENV, "_wrap_frac_geom")
     assert "_wrap_stamp" in _wf and "common_step_counter" in _wf, "스텝당 1회 캐시가 없다"
     assert "self._wrap_stamp = _now" in _wf, "스탬프를 갱신하지 않으면 캐시가 영원히 빗나간다"
+
+
+# ---------------------------------------------------------------- 09.13 5손가락 파지 품질 계측
+def test_grasp_quality_is_measured_at_the_payment_moments():
+    """★09.13 — 들기·성공 보너스에 곱할 q 는 **그 순간**의 값이어야 한다. 스텝 평균(`task/wrap_frac`)은
+    접근 구간이 뭉개서 8천 epoch 동안 리셋 값 0.213 과 구분되지 않았다. 이음매가 들기 순간을
+    남기고, 로그가 들기·성공 순간의 q · 손가락별 값 · 손바닥 방향을 따로 적는다."""
+    _pr = _fn_block(_ENV, "_progress_reward")
+    assert 'self._just_lifted_now = out["just_lifted"]' in _pr, "들기 순간을 이음매가 안 남긴다"
+    log = _fn_block(_ENV, "_log_grasp_quality")
+    for key in ("task/grasp_q_at_lift", "task/grasp_q_at_success", "task/palm_facing_at_success"):
+        assert f'"{key}"' in log, key
+    assert 'f"task/grasp_wf_{' in log, "손가락별 값이 없으면 어느 손가락이 빠졌는지 못 가른다"
+    assert "self._log_grasp_quality(" in _fn_block(_ENV, "_log_fabric_metrics")
+
+
+def test_grasp_quality_logging_has_no_per_step_host_sync():
+    """★관찰 #163 — 매 스텝 도는 로그 경로의 host 변환은 GPU 를 멈춘다. 마스크 곱·합과 where 로만."""
+    blk = _fn_block(_ENV, "_log_grasp_quality")
+    for tok in (".item()", "float(", "int(", "bool(", ".cpu()", ".tolist()", ".nonzero("):
+        assert tok not in blk, f"스텝 로그 경로에 host 동기화 토큰 {tok}"
+
+
+def test_grasp_quality_geometry_reuses_the_cached_surface_gaps():
+    """q 는 `_wrap_frac_geom` 이 같은 스텝에 잰 마디 간극을 다시 쓴다 — body_pos 를 두 번 읽지 않는다."""
+    blk = _fn_block(_ENV, "_grasp_quality_geom")
+    assert "self._wrap_frac_geom()" in blk and "self._wrap_e_xy" in blk and "self._wrap_e_z" in blk
+    assert "grasp_quality(" in blk and "_palm_ee_R()" in blk
+
+
+def test_grasp_trace_is_play_only():
+    """재생 보정용 이벤트 기록은 play 가 `_grasp_trace` 를 켰을 때만 돈다(학습 경로 host 동기화 0)."""
+    assert "self._grasp_trace = None" in _fn_block(_ENV, "_setup_fabrics")
+    assert "if self._grasp_trace is not None:" in _fn_block(_ENV, "_progress_reward")
 
 
 # ---------------------------------------------------------------- SAPG yaml = b1 하이퍼 + SAPG 덮개 (09.07 B-iv)

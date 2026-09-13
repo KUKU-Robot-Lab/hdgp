@@ -25,6 +25,7 @@ cfg 가 부팅에서 그 짝을 대조한다(`grasp_fj_env_cfg._validate_fj_fiel
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -152,6 +153,49 @@ def _check_shapes(
     for name, t in dict(lifted_prev=lifted_prev, near_goal=near_goal, is_success=is_success).items():
         if t.dtype != torch.bool:
             raise TypeError(f"{name} must be a bool tensor, got {t.dtype}")
+
+
+def grasp_quality(
+    *,
+    e_xy: torch.Tensor,
+    e_z: torch.Tensor,
+    finger_sizes: tuple[int, ...],
+    palm_cos: torch.Tensor,
+    tau_xy: float,
+    tau_z: float,
+    tau_q: float,
+    palm_cos_min: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """5손가락 파지 품질 q (N,) ∈ [0,1] 와 손가락별 표면 근접도 w_f (N,F).
+
+        k_l = exp(−e_xy_l/τxy) · exp(−e_z_l/τz)          마디 l 의 표면 커널(구 wrap 과 같은 식)
+        w_f = mean_{l∈f} k_l                              손가락 f 의 마디 평균
+        q   = −τq · log(mean_f exp(−w_f/τq)) · 1[palm_cos > palm_cos_min]
+
+    soft-min 의 성질: min_f w_f ≤ q ≤ mean_f w_f 이고, 다섯 값이 같으면 q 는 그 값이다.
+
+    ★왜 soft-min 인가(09.13 사용자 확정 "안전한 파지를 위해선 5손가락의 개입이 중요"):
+      산술평균(구 `wrap_frac`)은 넷이 붙으면 다섯째가 10 cm 밖이어도 0.80 이다. 가장 약한
+      손가락이 값을 지배해야 "몇 개 손끝으로 잡기"와 "넷만 감싸기"가 낮게 나온다.
+    ★왜 손바닥 방향인가(관찰 #68): 커널은 위치만 봐서 손등으로 감싸도 만점이다.
+    ★`finger_sizes` 는 host 정수 튜플이다 — `e_xy` 의 열은 손가락 순서로 연속 배치돼 있고
+      (`_hull_all_t`), 구조 검증을 GPU 동기화 없이 끝낸다(매 스텝 로그 경로에서 부른다).
+    """
+    if min(tau_xy, tau_z, tau_q) <= 0.0:
+        raise ValueError(f"τ 는 전부 > 0 이어야 한다: τxy {tau_xy} · τz {tau_z} · τq {tau_q}")
+    if e_xy.dim() != 2 or e_xy.shape != e_z.shape:
+        raise ValueError(f"e_xy {tuple(e_xy.shape)} vs e_z {tuple(e_z.shape)} — (N, L) 짝이어야 한다")
+    sizes = tuple(finger_sizes)
+    if not sizes or min(sizes) < 1 or sum(sizes) != e_xy.shape[1]:
+        raise ValueError(f"finger_sizes {sizes} — 손가락마다 마디 ≥ 1, 합 = 열 수 {e_xy.shape[1]}")
+    if palm_cos.shape != (e_xy.shape[0],):
+        raise ValueError(f"palm_cos {tuple(palm_cos.shape)} ≠ ({e_xy.shape[0]},)")
+    k = torch.exp(-e_xy / tau_xy) * torch.exp(-e_z / tau_z)                              # (N, L)
+    w_f = torch.stack([c.mean(dim=1) for c in torch.split(k, list(sizes), dim=1)], dim=1)     # (N, F)
+    q = -tau_q * (torch.logsumexp(-w_f / tau_q, dim=1) - math.log(len(sizes)))
+    # 성질상 [min, mean] 안이지만 logsumexp 반올림이 경계를 1e-7 넘길 수 있다 — 경계를 그대로 잠근다.
+    q = torch.minimum(torch.maximum(q, w_f.min(dim=1).values), w_f.mean(dim=1))
+    return q * (palm_cos > palm_cos_min).float(), w_f
 
 
 def compute_fj_reward(

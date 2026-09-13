@@ -141,6 +141,11 @@ parser.add_argument(
          "읽기 위한 것이다. 예: --dump_extras palm/,hand_floor",
 )
 parser.add_argument(
+    "--dump_grasp", type=str, default=None,
+    help="grasp_fj 전용: 들기·성공 순간과 유지 표본(20스텝마다)의 파지 기하(마디 표면 간극·손가락별 w_f·"
+         "q·손바닥 cos·종·dz)를 npz 로 적는다(경로). 보상 계수 g(q) 의 임계를 재생 분포로 정하기 위한 것.",
+)
+parser.add_argument(
     "--view_env_index", type=int, default=0,
     help="Viewer/비디오 근접뷰가 따라갈 env index (env-local 카메라 기준). 물체별 개별 영상 촬영용.",
 )
@@ -844,6 +849,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 _tg = getattr(_gp, "_syn_target", None)
                 if _tg is not None:
                     _hq["tgt"].append(_tg.clone().cpu().numpy())
+            if args_cli.dump_grasp and getattr(_gp, "_grasp_trace", False) is None:
+                _gp._grasp_trace = []      # 첫 step 뒤에 켠다 → 두 번째 스텝부터 기록(시작 거리 ~16cm 라 첫 스텝엔 들기·성공이 없다)
             if args_cli.dump_extras:
                 _gp._dxstep = getattr(_gp, "_dxstep", 0) + 1
                 if _gp._dxstep % 30 == 0:
@@ -1548,6 +1555,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             _out["tgt"] = _np.stack(_hqt["tgt"])
         _np.savez_compressed(args_cli.dump_hand_q, **_out)
         print(f"[INFO] 손 관절 궤적 저장: {args_cli.dump_hand_q} q{_out['q'].shape}")
+    if args_cli.dump_grasp:
+        _gu = env.unwrapped
+        if hasattr(_gu, "env"):
+            _gu = _gu.env.unwrapped
+        _gt = getattr(_gu, "_grasp_trace", None)
+        if _gt:
+            import numpy as _np
+            _out = {k: _np.concatenate([r[k] for r in _gt]) for k in _gt[0] if k not in ("step", "tol")}
+            for _k in ("step", "tol"):
+                _out[_k] = _np.concatenate([_np.full(len(r["env"]), r[_k]) for r in _gt])
+            _out["finger_names"] = _np.array(list(getattr(_gu, "_finger_names", [])))
+            _np.savez_compressed(args_cli.dump_grasp, **_out)
+            print(f"[INFO] 파지 기하 저장: {args_cli.dump_grasp} · {len(_out['env'])}행 "
+                  f"(성공 {int(_out['success'].sum())} · 들기 {int(_out['just_lifted'].sum())} · "
+                  f"유지표본 {int(_out['hold'].sum())})")
+        else:
+            print("[WARN] --dump_grasp: 기록 0행 — env 에 `_grasp_trace` 가 없거나 이벤트가 없었다")
 
     env.close()
 

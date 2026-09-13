@@ -237,3 +237,88 @@ def test_wrap_episode_total_is_below_lift_bonus():
     scale = float(_re.search(r"rw_wrap_scale: float = ([0-9.]+)", leaf).group(1))
     lift_bonus = float(_re.search(r"rw_lift_bonus: float = ([0-9.]+)", base).group(1))
     assert scale * 1.0 < lift_bonus, f"wrap 총량 상한 {scale} ≥ lift_bonus {lift_bonus}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 09.13 5손가락 파지 품질 q — 들기·성공 보너스에 곱할 계수의 입력
+#   사용자 확정(09.13): "안전한 파지를 위해선 5손가락의 개입이 중요".
+#   손가락마다 마디(_3, _4, tip) 표면 커널을 평균하고, 다섯 손가락을 soft-min 으로
+#   묶는다(가장 약한 손가락이 지배). 손바닥이 물체를 향하지 않으면 0.
+# ══════════════════════════════════════════════════════════════════════════════
+_F, _L_PER = 5, 3   # thumb·index·middle·ring·pinky × (_3, _4, tip)
+
+
+def _gq_inputs(gaps_xy, *, n=2, palm_cos=1.0) -> dict:
+    """손가락별 마디 3개의 수평 간극(m) 표 (F, 3) → `grasp_quality` 입력. z 는 띠 안(0)."""
+    g = torch.tensor(gaps_xy, dtype=torch.float32)
+    e_xy = g.reshape(1, -1).expand(n, -1).clone()             # (n, 15) — 손가락 순서로 펼침
+    return dict(e_xy=e_xy, e_z=torch.zeros_like(e_xy),
+                finger_sizes=(_L_PER,) * _F,
+                palm_cos=torch.full((n,), float(palm_cos)),
+                tau_xy=0.02, tau_z=0.03, tau_q=0.1)
+
+
+def test_grasp_quality_equals_the_common_value_when_all_fingers_agree():
+    """soft-min 의 기준점 — 다섯 손가락이 같으면 q 는 그 값 그대로다(임계 해석이 쉬워진다)."""
+    from openarm.agnostic.tasks.grasp_fj.fj_reward import grasp_quality
+    q, wf = grasp_quality(**_gq_inputs([[0.01] * 3] * _F))
+    expect = torch.exp(torch.tensor(-0.01 / 0.02))
+    assert wf.shape == (2, _F)
+    assert torch.allclose(wf, expect.expand_as(wf), atol=1e-6)
+    assert torch.allclose(q, expect.expand_as(q), atol=1e-6)
+
+
+def test_one_absent_finger_drags_quality_far_below_the_mean():
+    """넷이 완벽하게 감싸도 하나가 빠지면 q 는 낮아야 한다 — 산술평균(구 `wrap_frac`)은 여기서 속는다."""
+    from openarm.agnostic.tasks.grasp_fj.fj_reward import grasp_quality
+    rows = [[0.0] * 3] * 4 + [[0.10] * 3]                     # pinky 만 표면에서 10 cm
+    q, wf = grasp_quality(**_gq_inputs(rows))
+    assert float(wf.mean()) > 0.79, "산술평균은 0.8 이다"
+    assert float(q[0]) < 0.35, f"한 손가락이 빠졌는데 q={float(q[0]):.3f}"
+
+
+def test_fingertip_only_contact_scores_below_an_envelope():
+    """손끝만 대고 중간·끝마디가 뜬 파지(몇 개 손끝 파지) < 마디가 전부 붙은 감쌈."""
+    from openarm.agnostic.tasks.grasp_fj.fj_reward import grasp_quality
+    q_tip, _ = grasp_quality(**_gq_inputs([[0.05, 0.05, 0.0]] * _F))   # (_3, _4, tip)
+    q_env, _ = grasp_quality(**_gq_inputs([[0.0, 0.0, 0.0]] * _F))
+    assert float(q_env[0]) == pytest.approx(1.0)
+    assert float(q_tip[0]) < 0.45, f"손끝만 댄 파지가 q={float(q_tip[0]):.3f}"
+
+
+def test_back_of_hand_enclosure_is_not_a_grasp():
+    """★관찰 #68 — 위치만 보는 커널은 손등으로 감싸도 만점이다. 손바닥이 물체를 향할 때만 인정한다."""
+    from openarm.agnostic.tasks.grasp_fj.fj_reward import grasp_quality
+    q, wf = grasp_quality(**_gq_inputs([[0.0] * 3] * _F, palm_cos=-0.5))
+    assert torch.all(q == 0.0), "손등 파지에 점수가 나갔다"
+    assert torch.all(wf > 0.99), "손가락 기하(진단)는 그대로 보고 q 만 0 이어야 한다"
+
+
+def test_grasp_quality_is_bounded_between_worst_finger_and_mean():
+    """soft-min 성질: min ≤ q ≤ mean, q ∈ [0, 1]. 이게 깨지면 계수 g(q) 의 경계가 무의미하다."""
+    from openarm.agnostic.tasks.grasp_fj.fj_reward import grasp_quality
+    g = torch.Generator().manual_seed(3)
+    n = 64
+    q, wf = grasp_quality(e_xy=torch.rand(n, 15, generator=g) * 0.08,
+                          e_z=torch.rand(n, 15, generator=g) * 0.05,
+                          finger_sizes=(3,) * 5,
+                          palm_cos=torch.ones(n), tau_xy=0.02, tau_z=0.03, tau_q=0.1)
+    assert torch.all(q >= wf.min(dim=1).values - 1e-6)
+    assert torch.all(q <= wf.mean(dim=1) + 1e-6)
+    assert torch.all((q >= 0.0) & (q <= 1.0))
+
+
+def test_grasp_quality_rejects_bad_inputs_loudly():
+    """조용한 브로드캐스트·0/0 평균 금지 — 이 값은 보너스 크기를 정한다."""
+    from openarm.agnostic.tasks.grasp_fj.fj_reward import grasp_quality
+    base = _gq_inputs([[0.0] * 3] * _F)
+    with pytest.raises(ValueError):
+        grasp_quality(**{**base, "tau_q": 0.0})
+    with pytest.raises(ValueError):                             # 마디 0개 손가락 → 평균 0/0
+        grasp_quality(**{**base, "finger_sizes": (15, 0, 0, 0, 0)})
+    with pytest.raises(ValueError):                             # 마디 수 합이 열 수와 다르다
+        grasp_quality(**{**base, "finger_sizes": (3, 3, 3, 3)})
+    with pytest.raises(ValueError):
+        grasp_quality(**{**base, "e_z": torch.zeros(2, 14)})
+    with pytest.raises(ValueError):
+        grasp_quality(**{**base, "palm_cos": torch.ones(3)})

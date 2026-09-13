@@ -23,13 +23,16 @@ import torch
 
 from ...modules.keypoint_goal import RisingCurriculum
 from .fj_kp_env import FJKeypointEnv
-from .fj_reward import compute_fj_reward
+from .fj_reward import compute_fj_reward, grasp_quality
 from .grasp_fj_env_cfg import GraspFJEnvCfg
 
 # 액션 폭이 이보다 좁은 칸 = **설계상 고정 관절**(프로필이 ±0.01 규약으로 묶은 것).
 # `hand_curl` 은 감쌈을 재는 값이라 감쌈에 기여할 수 없는 칸을 넣으면 안 된다 —
 # 폭 0.02 짜리 칸은 0.01 rad 흔들림만으로 정규화가 0↔1 을 오가 잡음이 되기도 한다.
 _CURL_MIN_SPAN_RAD = 0.05
+# 들기·성공 순간 q 의 이벤트 EMA 계수. rl_games 옵저버는 롤아웃 **마지막 스텝**의 extras 만
+# 남기므로(관찰 #9) 순간값 대신 이벤트가 있었던 스텝들의 EMA 를 적는다(≈20 이벤트 스텝 창).
+_Q_EVENT_EMA = 0.05
 
 
 class GraspFJEnv(FJKeypointEnv):
@@ -57,6 +60,18 @@ class GraspFJEnv(FJKeypointEnv):
         self._wrap_stamp = -1
         # 진행형 wrap 의 래칫 — `1 − 최고 포위도`. −1 = 이번 에피소드 관측 없음(센티널).
         self._wrap_closest = torch.full((self.num_envs,), -1.0, device=self.device)
+        # ★★09.13 5손가락 파지 품질 계측(Phase 0 — 보상 불변). 들기·성공 **순간**의 q 를 이벤트
+        #   EMA 로 적는다(스텝 평균 `task/wrap_frac` 은 접근 구간이 뭉개 리셋 값과 구분되지 않았다).
+        #   −1 = 아직 이벤트 없음(센티널).
+        self._grasp_stamp = -1
+        self._grasp_finger_sizes = None           # 첫 계산에서 `_hull_ids` 로 만든다(생성 순서 무관)
+        self._just_lifted_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._q_lift_ema = torch.full((), -1.0, device=self.device)
+        self._q_succ_ema = torch.full((), -1.0, device=self.device)
+        self._palm_face_succ_ema = torch.full((), -1.0, device=self.device)
+        self._wf_succ_ema = None                  # (F,) — 손가락 수는 첫 계산에서 안다
+        # play `--dump_grasp` 가 리스트로 바꿔 켠다. None 이면 학습 경로의 host 동기화 0.
+        self._grasp_trace = None
         self.fabric = None                        # 명시적 OFF — A 의 `_log_fabric_metrics` 가 None 으로 분기
         self._fab_t = self._build_joint_index()
         self._syn_to_fab_idx = self._build_syn_to_fab_idx()
@@ -406,7 +421,98 @@ class GraspFJEnv(FJKeypointEnv):
         # 무상태 모듈 — 래칫 상태는 여기서 되먹인다(부모가 closest_ft 를 되먹이는 것과 같은 규약).
         if out["wrap_closest"] is not None:
             self._wrap_closest = out["wrap_closest"]
+        # ★09.13 들기 순간은 모듈 안에서만 생긴다 — 같은 스텝의 로그(`_log_grasp_quality`)가 읽게 남긴다.
+        self._just_lifted_now = out["just_lifted"]
+        if self._grasp_trace is not None:
+            self._record_grasp_trace(kw, out)
         return total, terms, out
+
+    def _grasp_quality_geom(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """5손가락 파지 품질 (q (N,), w_f (N,F), palm_cos (N,)) — 스텝당 1회 캐시.
+
+        마디 간극은 `_wrap_frac_geom` 이 같은 스텝에 잰 값을 다시 쓴다(body_pos 를 두 번 읽지 않는다).
+        손바닥 방향 = `_palm_ee_R()` 열 0(손바닥 법선)과 손바닥→물체 중심 방향의 cos.
+        ★부호 규약은 09.13 재생(`--dump_grasp`)으로 확인한다 — 들고 있는 동안 cos 가 일관되게
+          음수면 법선이 반대라는 뜻이고, 그때는 q 가 전부 0 으로 찍혀 바로 드러난다.
+        """
+        _now = int(self.common_step_counter)
+        if self._grasp_stamp == _now:
+            return self._grasp_q_last, self._grasp_wf_last, self._palm_cos_last
+        self._wrap_frac_geom()
+        if self._grasp_finger_sizes is None:
+            self._grasp_finger_sizes = tuple(len(self._hull_ids[f]) for f in self._finger_names)
+        palm = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
+        d = self._env_local(self.object.data.root_pos_w) - palm
+        cos = (self._palm_ee_R()[:, :, 0] * d).sum(dim=-1) / d.norm(dim=-1).clamp(min=1e-6)
+        rc = self._rw_cfg
+        q, wf = grasp_quality(
+            e_xy=self._wrap_e_xy, e_z=self._wrap_e_z, finger_sizes=self._grasp_finger_sizes,
+            palm_cos=cos, tau_xy=float(rc.wrap_tau_xy), tau_z=float(rc.wrap_tau_z),
+            tau_q=float(self.cfg.rw_grasp_tau_q), palm_cos_min=float(self.cfg.rw_grasp_palm_cos_min))
+        self._grasp_q_last, self._grasp_wf_last, self._palm_cos_last = q, wf, cos
+        self._grasp_stamp = _now
+        return q, wf, cos
+
+    @staticmethod
+    def _event_ema(prev: torch.Tensor, val: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """마스크된 env 평균으로 EMA 를 한 칸 민다 — 이벤트 없는 스텝은 그대로, 첫 이벤트는 그 값으로.
+
+        `val` 은 (N,) 또는 (N,K), `prev` 는 () 또는 (K,). 음수 `prev` = 아직 이벤트 없음(센티널).
+        """
+        n = mask.sum()
+        w = mask if val.dim() == 1 else mask.unsqueeze(1)
+        m = (val * w).sum(dim=0) / n.clamp(min=1.0)
+        upd = torch.where(prev < 0.0, m, (1.0 - _Q_EVENT_EMA) * prev + _Q_EVENT_EMA * m)
+        return torch.where(n > 0, upd, prev)
+
+    def _log_grasp_quality(self, ex) -> None:
+        """들기·성공 **순간**의 q · 손가락별 w_f · 손바닥 방향을 이벤트 EMA 로 적는다(host 동기화 0).
+
+        왜 순간값인가: 보너스(들기 300·성공 1000)에 곱할 값은 그 스텝의 파지다. 스텝 평균은 접근 중인
+        env 가 뭉갠다. 왜 EMA 인가: rl_games 옵저버는 롤아웃 마지막 스텝의 extras 만 남긴다(관찰 #9).
+        """
+        q, wf, cos = self._grasp_quality_geom()
+        lift = self._just_lifted_now.to(q.dtype)
+        succ = self._success_now.to(q.dtype)
+        ex["task/grasp_q"] = q.mean()
+        self._q_lift_ema = self._event_ema(self._q_lift_ema, q, lift)
+        self._q_succ_ema = self._event_ema(self._q_succ_ema, q, succ)
+        _face = (cos > self.cfg.rw_grasp_palm_cos_min).to(q.dtype)
+        self._palm_face_succ_ema = self._event_ema(self._palm_face_succ_ema, _face, succ)
+        if self._wf_succ_ema is None:
+            self._wf_succ_ema = torch.full((wf.shape[1],), -1.0, device=self.device)
+        self._wf_succ_ema = self._event_ema(self._wf_succ_ema, wf, succ)
+        ex["task/grasp_q_at_lift"] = self._q_lift_ema
+        ex["task/grasp_q_at_success"] = self._q_succ_ema
+        ex["task/palm_facing_at_success"] = self._palm_face_succ_ema
+        for _k, _f in enumerate(self._finger_names):
+            ex[f"task/grasp_wf_{_f}_at_success"] = self._wf_succ_ema[_k]
+
+    def _record_grasp_trace(self, kw, out) -> None:
+        """play `--dump_grasp` 전용 — 들기·성공 순간과 유지 표본(20스텝마다)의 파지 기하를 host 로 적는다.
+
+        ★보상 계수 g(q) 의 임계(q_lo·q_hi)와 τq 를 **재생 분포**에서 정하기 위한 원자료다(관찰 #131:
+          평균이 아니라 env 별 분포). 마디 간극을 통째로 남겨 τ·집계 방식을 재실행 없이 바꿔 본다.
+        ★리셋이 `_success_now` 를 지우기 **전**(보상 이음매)에 적는다 — 마지막 목표의 성공이 안 사라진다(관찰 #203).
+        """
+        q, wf, cos = self._grasp_quality_geom()
+        dz = kw["obj_z"] - kw["settled_z"]
+        hold = out["lifted"] & (dz > float(self._rw_cfg.cmd_rate_hold_dz))
+        if self.common_step_counter % 20 != 0:
+            hold = torch.zeros_like(hold)
+        idx = (kw["is_success"] | out["just_lifted"] | hold).nonzero(as_tuple=False).squeeze(-1)
+        if idx.numel() == 0:
+            return
+
+        def _h(t: torch.Tensor):
+            return t[idx].detach().cpu().numpy()
+
+        self._grasp_trace.append(dict(
+            step=int(self.common_step_counter), tol=float(self._tol.tol),
+            env=idx.detach().cpu().numpy(), success=_h(kw["is_success"]),
+            just_lifted=_h(out["just_lifted"]), hold=_h(hold), dz=_h(dz), q=_h(q), wf=_h(wf),
+            palm_cos=_h(cos), e_xy=_h(self._wrap_e_xy), e_z=_h(self._wrap_e_z),
+            species=_h(self._species_ids)))
 
     def _wrap_frac_geom(self) -> torch.Tensor:
         """마디들이 **물체 표면**에 얼마나 붙어 있나 (N,) ∈ (0,1] — 접촉 센서 없이 순수 기하.
@@ -578,6 +684,8 @@ class GraspFJEnv(FJKeypointEnv):
             _seen = self._wrap_closest >= 0.0
             ex["task/wrap_best_mean"] = torch.where(
                 _seen, 1.0 - self._wrap_closest, torch.zeros_like(self._wrap_closest)).mean()
+        # ★★09.13 5손가락 파지 품질 — 들기·성공 **순간**의 q 와 손가락별 값(Phase 0 계측, 보상 불변).
+        self._log_grasp_quality(ex)
         # ★09.11 — 고정 칸이 실제로 고정돼 있는가. 액션한계로 묶었으므로 지령은 못 벗어나지만
         #   **접촉은 관절을 밀어낼 수 있다**(thumb_1 이 27배 포화로 밀려난 전례). 설계값은
         #   액션창의 중점이다 — 이 값이 커지면 파지가 엄지 대향을 물리적으로 잃고 있다는 뜻.

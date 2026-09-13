@@ -112,6 +112,13 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
     rw_wrap_scale: float = 50.0
     rw_wrap_tau_xy: float = 0.02
     rw_wrap_tau_z: float = 0.03
+    # ★★09.13 5손가락 파지 품질 q(`fj_reward.grasp_quality`) — 사용자 확정 "안전한 파지는 5손가락 개입".
+    #   손가락마다 마디(_3·_4·tip) 표면 커널(위 τxy·τz 그대로)을 평균하고 다섯 손가락을 soft-min 으로
+    #   묶는다. τq 가 작을수록 가장 약한 손가락이 지배한다(0.1: 넷이 1.0·하나가 0.007 이면 q 0.17,
+    #   산술평균은 0.80). 09.13 Phase 0 은 **계측만**(보상 불변) — 재생 분포로 τq·임계를 정한다.
+    rw_grasp_tau_q: float = 0.1
+    # 손바닥 법선(`_palm_ee_R()` 열 0)과 손바닥→물체 방향의 cos 하한. 이하면 q = 0(손등 파지, 관찰 #68).
+    rw_grasp_palm_cos_min: float = 0.0
 
     # ★09.08 손 20관절 **독립** 지령 스위치. 기본 False.
     #   왜 기본이 False 인가: (1) 기존 계약 22/131/155 와 fj_b9 체크포인트를 그대로 둔다.
