@@ -2,9 +2,19 @@
  "iter": 1,
  "label": "t2r_i01",
  "round": 2,
- "best": null,
+ "best": {
+  "iter": 1,
+  "label": "t2r_i01",
+  "epoch": 413,
+  "episode_success_last": 0.7287,
+  "episode_success_max": 0.7507,
+  "in_target_last": 0.6945,
+  "spill_last": 0.0708,
+  "nested_rate": 0.0099,
+  "time": 1789321439.155391
+ },
  "started": 1789282006.5596128,
- "success_ticks": 0,
+ "success_ticks": 2,
  "restart": "09.13 nesting hacking \uc218\uc815 \ud6c4 \uac19\uc740 iter_00 \ubcf4\uc0c1\uc73c\ub85c \uc7ac\ud559\uc2b5",
  "prev": {
   "iter": 0,
@@ -12,5 +22,12 @@
   "epoch": 626,
   "episode_success": 0.0,
   "rcv_grasped": 0.0001
+ },
+ "stopped": {
+  "reason": "episode_success>=0.5 two consecutive ticks AND nested_rate<0.1 AND play video frames confirmed genuine pour (source inverted above upright receiver)",
+  "time": 1789321968.0948014,
+  "epoch": 413,
+  "video": "our_source/pour_t2r_i01_ep350_0914_0251.mp4",
+  "rounds": 2
  }
 }
