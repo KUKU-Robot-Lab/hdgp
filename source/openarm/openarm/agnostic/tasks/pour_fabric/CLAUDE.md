@@ -19,22 +19,22 @@
 render  → reward_gen/<track>/iter_NN/prompt.md      (RewardContext 스텁을 소스에서 렌더)
 (LLM)   → response.md                                (프롬프트 파일만 받는 새 세션/에이전트)
 ingest  → compute_reward.py + validation.json        (정적 검사 + 가짜 ctx 드라이런)
-audit   → reward-audit 스킬 + 사용자 승인             (★학습 전 필수)
+(audit 없음 — 09.13 사용자 결정: 생성 보상의 평가는 학습 지표뿐, 세션 의견 주입 금지)
 train   → env.reward_code_path=<abs path>            (서버, git push→pull)
 reflect → feedback.md + 다음 iter prompt.md          (TFEvents reward/* · task/* 요약)
 ```
 
 - 생성기에는 **프롬프트 파일만** 준다. 저장소를 읽은 세션이 쓰면 "프롬프트만으로 생성"이 아니다.
 - `reward/<항>` 태그는 생성 코드의 dict 키가 그대로 탄다 — 항 이름을 바꾸면 피드백 표도 바뀐다.
-- rl_games `reward_shaper.scale_value=0.01` 이 총보상에 곱해진다. audit 은 이 스케일 뒤의
-  값으로 `score_to_win`·value 정규화를 본다.
+- rl_games `reward_shaper.scale_value=0.01` 이 총보상에 곱해진다. 이 스케일 뒤의
+  값이 `score_to_win`·value 정규화에 들어간다.
 
 ## 검증 게이트 (학습 전)
 
 1. `probe_pour_fabric_boot.py` 무작위 300스텝: NaN 0 · runaway 0 · hold 종료 in_source ≥ 0.9.
 2. 같은 프로브 `--script pour`: 접근→닫기→들기→기울이기 스크립트로 **제어 파이프라인이
    물리적으로 과제를 수행할 수 있는지**(파지 게이트·리프트·tilt 도달). 안 되면 보상 탐색은 무의미.
-3. `ingest` 검증 PASS + reward-audit ACCEPT.
+3. `ingest` 검증 PASS (기계적 검증만 — 보상 품질 판단은 루프의 지표 피드백이 한다).
 
 ## 알려진 함정
 

@@ -20,8 +20,8 @@
    (저장소 탐색 금지 지시 그대로). 완료 후
    `python3 scripts/reward_gen/t2r.py ingest --iter reward_gen/pour_bi/iter_(NN+1)`.
    검증 FAIL 이면 오류를 notes 로 붙여 한 번 재생성(최대 2회), 그래도 FAIL 이면 사용자에게 보고하고 루프 종료.
-5. audit(reward-audit 5 체크, `iter/audit.md` 에 기록). REJECT 면 사유를 notes 로 붙여 재생성(최대 2회).
-   ACCEPT 면 기동:
+5. ★audit 없음(사용자 결정 09.13): 보상의 좋고 나쁨은 학습 지표가 판정한다 — 이 세션의 설계 의견을
+   프롬프트로 흘리지 않는다(생성기 오염 금지). 기계적 검증(ingest) PASS 면 바로 기동:
    - 커밋: `git add reward_gen/pour_bi/iter_(NN+1) && git commit -m "t2r: iter_(NN+1) …" && git push origin main`
    - 서버: `git fetch && git reset --hard origin/main`, 이전 런은 **RUN_LABEL 로 PID 확정 후 kill**(pkill 금지),
      `nohup bash ~/logs/t2r/launch_t2r.sh <label> reward_gen/pour_bi/iter_(NN+1) <num_envs> > ~/logs/t2r/<label>.log 2>&1 < /dev/null &`
