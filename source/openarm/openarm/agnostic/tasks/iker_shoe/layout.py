@@ -25,7 +25,7 @@ SHOE_META_PATH = SHOE_ASSET_DIR / "shoe_meta.json"
 TABLE_USD_PATH = ASSETS_DIR / "simulation_setting" / "env_v1" / "usd" / "env_v1.usda"
 RUNS_DIR = HDGP_ROOT / "iker_runs" / "shoe_place"
 
-PROFILE_NAME = "tesollo_right"
+PROFILE_NAME = "tesollo_right_short"
 TASK_INSTRUCTION = "Place the shoe on the rack next to the other shoe."
 
 TABLE_TOP_Z = 0.205
