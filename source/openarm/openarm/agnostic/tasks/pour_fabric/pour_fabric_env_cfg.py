@@ -1,4 +1,4 @@
-"""pour_fabric 환경 설정 — 양팔 **잡기→들기→붓기** (09.13 재작성).
+"""pour_fabric 환경 설정 — 양팔 **잡기→들기→붓기** (09.13 재작성 · 09.14 s2r DR 추가).
 
 ★09.13 재작성 이유. 구판은 warm 뱅크(이미 잡은 상태)에서 시작하고 손을 동결한 채 붓기만
   배웠다. 이번 트랙은 text2reward 방식의 **보상 자동생성**이 목적이라 과제 문장("양팔로
@@ -6,6 +6,11 @@
   테이블 위 컵 두 개에서 시작하고 손 20관절도 정책(시너지)이 제어한다.
   보상은 이 파일에 **없다**: `reward_code_path` 의 생성 코드가 `RewardContext` 를 읽어
   계산한다(`modules/t2r`). 비어 있으면 영 보상(부팅/무작위 롤아웃용).
+
+★09.14 sim2real(라운드 3, 사용자 지시): actor 관측에서 손 관절속도 제거(실기 드라이버 velocity
+  는 관절속도가 아니다 — 09.07 실측), 컵 pose 지각 지연+코히런트 노이즈, 관절 노이즈,
+  물리 DR(컵 질량·관절 게인·컵 마찰) + 들린 컵 외란 — 전부 grasp_s2r/grasp_kp 모듈 재사용,
+  ADR(순간 성공률 트리거)로 중립 → 종점 확장. 충돌 신호(컵끼리·손↔타물체)를 ctx 에 노출.
 
 제어 스택 = grasp_s2r 현행(팔 Fabrics ×2 · 손 관절공간 시너지 + 접촉 동결) 을 양팔로.
 물리 블록 = 구 pour_fabric(비드 20개×N env 접촉 버퍼) 그대로.
@@ -15,10 +20,12 @@ from __future__ import annotations
 
 import os
 
+import isaaclab.envs.mdp as _mdp
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, RigidObjectCfg
 from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.managers import EventTermCfg, SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
@@ -100,6 +107,52 @@ TABLE_SPAWN = sim_utils.UsdFileCfg(
 
 
 # =============================================================================
+# 물리 DR EventTerm — 초기 범위는 **중립**(항등). ADR 이 종점까지 선형 확장한다
+# (`modules/physics_dr.py` 규약; 자산 이름이 두 개라 여기서 따로 정의).
+# ★재질 term 은 term 생성 시 버킷을 1회 샘플링해 **런타임 확장이 무증상 no-op** 이다
+#   (grasp_s2r `_adr_apply_physics` 주석) → 컵 마찰은 cfg 단계에서 고정 범위로 연다.
+# =============================================================================
+def _material_term(asset: str, lo: float, hi: float) -> EventTermCfg:
+    return EventTermCfg(
+        func=_mdp.randomize_rigid_body_material, mode="reset",
+        params={"asset_cfg": SceneEntityCfg(asset, body_names=".*"),
+                "static_friction_range": (lo, hi), "dynamic_friction_range": (lo, hi),
+                "restitution_range": (1.0, 1.0), "num_buckets": 250})
+
+
+def _mass_term(asset: str) -> EventTermCfg:
+    return EventTermCfg(
+        func=_mdp.randomize_rigid_body_mass, mode="reset",
+        params={"asset_cfg": SceneEntityCfg(asset), "mass_distribution_params": (1.0, 1.0),
+                "operation": "scale", "distribution": "uniform"})
+
+
+@configclass
+class PourFabricEventCfg:
+    robot_material = _material_term("robot", 1.0, 1.0)
+    source_cup_material = _material_term("source_cup", 1.0, 1.0)     # resolve_cfg 가 범위 적용
+    receiver_cup_material = _material_term("receiver_cup", 1.0, 1.0)
+    robot_joint_stiffness_and_damping = EventTermCfg(
+        func=_mdp.randomize_actuator_gains, mode="reset",
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+                "stiffness_distribution_params": (1.0, 1.0),
+                "damping_distribution_params": (1.0, 1.0),
+                "operation": "scale", "distribution": "uniform"})
+    source_cup_scale_mass = _mass_term("source_cup")
+    receiver_cup_scale_mass = _mass_term("receiver_cup")
+
+
+# ADR 종점(grasp_s2r E1 값) — 질량·게인만 ADR 로 확장(재질은 위 이유로 cfg 고정).
+PHYSICS_ADR_TERMINAL = {
+    "source_cup_scale_mass": {"mass_distribution_params": (0.5, 2.5)},
+    "receiver_cup_scale_mass": {"mass_distribution_params": (0.5, 2.5)},
+    "robot_joint_stiffness_and_damping": {
+        "stiffness_distribution_params": (0.5, 2.0),
+        "damping_distribution_params": (0.5, 2.0)},
+}
+
+
+# =============================================================================
 @configclass
 class PourFabricEnvCfg(DirectRLEnvCfg):
     """차원은 resolve_cfg 가 pair 로 확정한다."""
@@ -107,7 +160,7 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     pair_name: str = _bm.DEFAULT_PAIR
 
     # ---- 보상 (text2reward 생성 코드) ----------------------------------------------
-    # 빈 문자열 = 영 보상. 학습 런은 반드시 생성·검증·audit 을 거친 파일을 가리켜야 한다.
+    # 빈 문자열 = 영 보상. 학습 런은 반드시 생성·검증을 거친 파일을 가리켜야 한다.
     reward_code_path: str = ""
 
     # ---- 시뮬레이션 (물리 = 구 pour_fabric, 비드 버퍼 포함) ---------------------------
@@ -128,7 +181,7 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
             friction_correlation_distance=0.00625,
         ),
     )
-    # ★비드가 접촉·메모리를 지배해 128 (pour_v1 과 동일). 서버 98GB 에서 상향 실험 가능.
+    # ★09.14 4096 env 실측 43 GB·10.7k fps(서버 RTX PRO 6000). 128 은 pour_v1 시절 값.
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=128, env_spacing=2.5, replicate_physics=True)
 
@@ -191,7 +244,6 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     oppose_grip_delta_rad: float = -0.6
     hand_velocity_ff_scale: float = 1.0
     joint_pos_err_max: float = 1.2            # obs 정규화 [rad]
-    # 닫기 게이트: palm 이 자기 컵에 이 반경 안으로 와야 오므릴 수 있다(램프). 파지 성립 후 해제.
     # ★09.13 부팅 실측: 시작 자세에서 palm↔컵 중심이 약 0.16 m(손끝이 3 cm 앞) — 반경은
     #   그보다 커야 시작 자세에서 닫을 수 있다. 0.22/램프 0.3 → 0.154 m 안쪽은 게이트 1.0.
     close_gate_enabled: bool = True
@@ -201,6 +253,7 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     # ---- 접촉 --------------------------------------------------------------------
     contact_force_threshold: float = 1.0      # N — 파지(대향) 게이트·동결 판정
     contact_obs_clip: float = 20.0
+    collision_force_threshold: float = 1.0    # N — 컵끼리·손↔타물체 충돌 지표 임계
 
     # ---- 성공 판정 (pour_v1 계승) — 보상과 분리된 **기준 지표** ----------------------
     success_fill_ratio: float = 0.50
@@ -217,6 +270,34 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     drop_below_table_m: float = 0.03          # 컵 원점이 (테이블 상면 + 원점오프셋 − 이 값) 아래면 낙하
 
     console_log_interval: int = 600
+
+    # ---- s2r 관측 (09.14) -----------------------------------------------------------
+    # 상시(ADR 무관) 관절·FK 노이즈. 실측 근거는 grasp_s2r cfg `obs_noise_*` 주석:
+    #   qpos 실측 ~0.001 rad(엔코더 LSB), qvel 운동 구간 0.05, body(FK) 0.005 m.
+    obs_noise_qpos: float = 0.002
+    obs_noise_qvel: float = 0.05
+    obs_noise_body: float = 0.005
+    # 컵 pose 지각(FP++) — 지연 큐 + 코히런트 노이즈. ADR 축(초기 → 종점):
+    perception_delay_max_steps: int = 3       # 종점: 0~3 정책스텝(0~50 ms) 균등
+    perception_delay_base_steps: int = 0
+    obs_noise_object_xyz: float = 0.0         # 초기 [m]
+    adr_obs_noise_object_xyz_max: float = 0.015
+    obs_noise_object_rot_deg: float = 0.0
+    adr_obs_noise_object_rot_max_deg: float = 3.0
+
+    # ---- 물리 DR / ADR (09.14) --------------------------------------------------------
+    enable_events: bool = True
+    events: PourFabricEventCfg = PourFabricEventCfg()
+    cup_friction_range: tuple = (0.7, 1.2)    # 재질은 처음부터 고정 범위(런타임 확장 불가)
+    enable_adr: bool = True
+    adr_num_increments: int = 30
+    adr_increment_interval: int = 3000        # 정책 스텝
+    adr_trigger_threshold: float = 0.30       # 순간 성공률(success_now 평균)
+    # 들린 컵 외란(질량정규화, grasp_s2r W1 값). ADR 로 0 → 종점 스케일.
+    wrench_force_scale_max: float = 5.0       # N/kg
+    wrench_torque_scale_max: float = 0.5      # N·m/kg
+    wrench_prob_range: tuple = (0.001, 0.1)
+    wrench_lift_min_m: float = 0.03           # 이만큼 들렸을 때만 외란
 
     # ---- 파생 자산 cfg -------------------------------------------------------------
     robot_cfg: ArticulationCfg = None
@@ -255,6 +336,15 @@ def resolve_cfg(cfg: "PourFabricEnvCfg") -> None:
     cfg.source_contact_filter = (SOURCE_CUP_PRIM,)
     cfg.receiver_contact_filter = (RECEIVER_CUP_PRIM,)
 
+    # 물리 DR: 컵 마찰은 고정 범위(런타임 확장 불가) — term 생성 전인 cfg 단계에서 적용.
+    if not bool(cfg.enable_events):
+        cfg.events = None
+    elif cfg.events is not None:
+        lo, hi = float(cfg.cup_friction_range[0]), float(cfg.cup_friction_range[1])
+        for term in (cfg.events.source_cup_material, cfg.events.receiver_cup_material):
+            term.params["static_friction_range"] = (lo, hi)
+            term.params["dynamic_friction_range"] = (lo, hi)
+
     for p in (pair.source, pair.receiver):
         if _hand_action_width(p) != _hand_action_width(pair.source):
             raise ValueError("양팔 손 액션 폭이 다르다 — 같은 손 자산이어야 한다")
@@ -262,19 +352,22 @@ def resolve_cfg(cfg: "PourFabricEnvCfg") -> None:
     cfg.num_actions_per_side = 6 + hand_w
     cfg.action_space = 2 * cfg.num_actions_per_side
 
-    # policy obs (팔마다): arm q/qd(2·A) + hand q/qd(2·H) + palm_pos 3 + palm_axes 6
+    # policy obs (팔마다): arm q/qd(2·A) + hand q(H) + palm_pos 3 + palm_axes 6
     #   + tips_rel_palm 3F + palm_to_cup 3 + cup_to_tips 3F + joint_err H + cup_up 3
+    #   ★09.14 hand_qd(H) 는 actor 에서 뺐다(실기 드라이버 velocity ≠ 관절속도) — critic 에만.
     # + 공통: src_cup→rcv_cup 3 + 주둥이→개구 3 + prev_action Dact
     per = 0
+    hand_qd_total = 0
     for p in (pair.source, pair.receiver):
         a, h, f = p.num_arm_joints, p.num_hand_joints, len(p.finger_sensor_bodies)
-        per += 2 * a + 2 * h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3
+        per += 2 * a + h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3
+        hand_qd_total += h
     cfg.observation_space = per + 3 + 3 + cfg.action_space
-    # critic = policy + 비드 분율 4 + 비드 무게중심(rcv 프레임) 3 + 두 컵 lin/ang vel 12
-    #        + 진행도 1 + 손가락 접촉력 2F
+    # critic = policy(clean) + hand_qd(2H) + 비드 분율 4 + 비드 무게중심(rcv 프레임) 3
+    #        + 두 컵 lin/ang vel 12 + 진행도 1 + 손가락 접촉력 2F
     f_src = len(pair.source.finger_sensor_bodies)
     f_rcv = len(pair.receiver.finger_sensor_bodies)
-    cfg.state_space = cfg.observation_space + 4 + 3 + 12 + 1 + f_src + f_rcv
+    cfg.state_space = cfg.observation_space + hand_qd_total + 4 + 3 + 12 + 1 + f_src + f_rcv
 
 
 @configclass

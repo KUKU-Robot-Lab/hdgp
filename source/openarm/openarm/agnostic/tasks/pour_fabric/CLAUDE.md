@@ -36,6 +36,19 @@ reflect → feedback.md + 다음 iter prompt.md          (TFEvents reward/* · t
    물리적으로 과제를 수행할 수 있는지**(파지 게이트·리프트·tilt 도달). 안 되면 보상 탐색은 무의미.
 3. `ingest` 검증 PASS (기계적 검증만 — 보상 품질 판단은 루프의 지표 피드백이 한다).
 
+## sim2real 관측·DR (09.14 라운드 3)
+
+- actor 관측 246 = 팔당 99(팔 q/qd·손 q·palm·손끝·**지각된** 컵 pose 파생·관절오차·컵 up) ×2 + 공통 48.
+  **hand_qd 는 actor 에 없다**(실기 DG-5F 드라이버 velocity ≠ 관절속도, 09.07 실측) — critic 만 316.
+- 컵 pose 는 지각 링버퍼(지연 0→3 스텝, ADR)+코히런트 노이즈(xyz 0→1.5 cm, rot 0→3°)를 거친다(`_perceive`).
+  actor 의 컵 파생 관측 전부(상대 pose·손끝 상대·up·컵 간·개구 간)가 **같은 지각 pose** 에서 나온다.
+- 관절/FK 상시 노이즈 qpos 0.002 rad·qvel 0.05·body 5 mm.
+- 물리 DR(EventTerm, mode=reset): 컵 질량 ×0.5~2.5·관절 게인 ×0.5~2.0 은 ADR 확장, 컵 마찰 0.7~1.2 는 고정
+  (재질 term 은 런타임 확장이 무증상 no-op — grasp_s2r 주석). 들린 컵 외란 0→5 N/kg(`WrenchDR`).
+- ADR 트리거 = 순간 성공률 ≥ 0.3, 30단계, 3000 스텝 간격(`modules/adr.TaskADR`). 로그 `adr/*`, `dr/*`.
+- 충돌 신호: `ctx.cup_cup_force`(소스 컵 센서→리시버 필터), `ctx.*_hand_foreign_force`(net − 자기컵 필터),
+  지표 `task/cup_collision_rate`·`task/*_hand_foreign_rate`. 벌점은 생성 보상이 넣는다(프롬프트 지식 11).
+
 ## 알려진 함정
 
 - **a=0 = 앵커.** 델타 박스가 비대칭이라 선형 매핑(0.5(a+1)(hi−lo)+lo)을 쓰면 a=0 이 박스

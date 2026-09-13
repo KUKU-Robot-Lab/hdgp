@@ -222,6 +222,19 @@ class SideRig:
     def palm_force(self) -> torch.Tensor:
         return self._mag(self.palm_sensor)
 
+    def foreign_force(self) -> torch.Tensor:
+        """손(손가락 마디+손바닥)이 **자기 컵 외**의 것에 닿는 힘 (N,) — 09.14 s2r 충돌 신호.
+
+        `net_forces_w` 는 링크가 받는 모든 접촉, `force_matrix_w` 는 자기 컵 필터 접촉이다.
+        둘의 크기 차(≥0)가 상대 손·상대 컵·테이블과의 접촉이다(grasp_s2r `_mag_net` 진단 규약).
+        """
+        tot = torch.zeros(self.N, device=self.device)
+        sensors = [s for f in self.fingers for s in self.sensors[f]] + [self.palm_sensor]
+        for s in sensors:
+            net = s.data.net_forces_w.view(self.N, -1, 3).sum(dim=1).norm(dim=-1)
+            tot = tot + (net - self._mag(s)).clamp(min=0.0)
+        return tot
+
     def grasped(self, forces: torch.Tensor) -> torch.Tensor:
         thr = float(self.env.cfg.contact_force_threshold)
         return (forces[:, self.grp_a] > thr).any(dim=1) & (forces[:, self.grp_b] > thr).any(dim=1)

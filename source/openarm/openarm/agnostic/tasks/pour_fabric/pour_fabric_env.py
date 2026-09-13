@@ -24,6 +24,9 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sim.utils import bind_physics_material, find_matching_prim_paths
 from isaaclab.utils.math import quat_apply, quat_apply_inverse
 
+from openarm.agnostic.modules.adr import TaskADR
+from openarm.agnostic.modules.object_wrench import WrenchDR
+from openarm.agnostic.modules.perception_delay import noisy_pose
 from openarm.agnostic.modules.t2r.context import RewardContext
 from openarm.agnostic.modules.t2r.loader import call_reward_fn, load_reward_fn
 from openarm.common.bead_assets import bead_offsets_in_cup
@@ -31,7 +34,7 @@ from openarm.common.bead_assets import bead_offsets_in_cup
 from . import bimanual as _bm
 from . import pour_fabric_env_cfg as _cfg
 from .bead_flags import BeadGeometry, compute_bead_flags
-from .pour_fabric_env_cfg import PourFabricEnvCfg
+from .pour_fabric_env_cfg import PHYSICS_ADR_TERMINAL, PourFabricEnvCfg
 from .side_rig import SideRig
 
 _FABRICS_SRC = os.path.normpath(
@@ -141,12 +144,90 @@ class PourFabricEnv(DirectRLEnv):
         self._cups_nested = torch.zeros(N, dtype=torch.bool, device=dev)
         self._cups_center_dist = torch.zeros(N, device=dev)
         self._last_terms: dict = {}
+        self._setup_dr()
         self._log_tick = 0
 
         print(f"[pour_fabric] pair={self.pair.name} usd={self.pair.usd_relpath} "
               f"src={self.src.profile.name} rcv={self.rcv.profile.name} "
               f"action={A} obs={cfg.observation_space} critic={cfg.state_space} "
               f"beads={k} reward={self._reward_src}", flush=True)
+
+    # ==================================================================
+    # s2r DR (09.14): 지각 지연·노이즈 · 물리 DR(EventTerm, ADR 확장) · 들린 컵 외란
+    # ==================================================================
+    def _setup_dr(self) -> None:
+        cfg, N, dev = self.cfg, self.num_envs, self.device
+        em = getattr(self, "event_manager", None)
+        phys = {k: v for k, v in PHYSICS_ADR_TERMINAL.items()} if em is not None else {}
+        self.adr = TaskADR(
+            {"obs": {"object_xyz": (float(cfg.obs_noise_object_xyz), float(cfg.adr_obs_noise_object_xyz_max)),
+                     "object_rot_deg": (float(cfg.obs_noise_object_rot_deg), float(cfg.adr_obs_noise_object_rot_max_deg)),
+                     "delay_steps": (float(cfg.perception_delay_base_steps), float(cfg.perception_delay_max_steps))},
+             "wrench": {"force_scale": (0.0, float(cfg.wrench_force_scale_max)),
+                        "torque_scale": (0.0, float(cfg.wrench_torque_scale_max))}},
+            num_increments=int(cfg.adr_num_increments), increment_interval=int(cfg.adr_increment_interval),
+            trigger_threshold=float(cfg.adr_trigger_threshold), enabled=bool(cfg.enable_adr),
+            event_manager=em, physics_cfg=phys)
+        # 지각 링버퍼 (N, L, 7): pos3 + quat4. 지연 상한은 ADR 진행도로 0 → max.
+        L = int(cfg.perception_delay_max_steps) + 1
+        self._perc_buf = {k: torch.zeros(N, L, 7, device=dev) for k in ("src", "rcv")}
+        self._perc_flush = torch.ones(N, dtype=torch.bool, device=dev)
+        self._perc_arange = torch.arange(N, device=dev)
+        self._wrench = {k: WrenchDR(N, dev, force_scale=1.0, torque_scale=1.0,
+                                    prob_range=tuple(cfg.wrench_prob_range)) for k in ("src", "rcv")}
+        self._cup_mass = {"src": torch.full((N,), _cfg.POUR_CUP_MASS, device=dev),
+                          "rcv": torch.full((N,), _cfg.POUR_CUP_MASS, device=dev)}
+        print(f"[pour_fabric] s2r DR: events={'on' if em is not None else 'OFF'} adr={bool(cfg.enable_adr)} "
+              f"obs_noise(q {cfg.obs_noise_qpos} qd {cfg.obs_noise_qvel} body {cfg.obs_noise_body}) "
+              f"perception delay 0→{cfg.perception_delay_max_steps} step · object noise → "
+              f"{cfg.adr_obs_noise_object_xyz_max} m/{cfg.adr_obs_noise_object_rot_max_deg}° · "
+              f"wrench → {cfg.wrench_force_scale_max} N/kg · cup friction {cfg.cup_friction_range}", flush=True)
+
+    def _read_cup_mass(self, cup: RigidObject) -> torch.Tensor:
+        """실제 질량 (N,) — 질량 DR 뒤 공칭으로 정규화하면 외란 비가 흔들린다(grasp_s2r 09.10)."""
+        view = getattr(cup, "root_physx_view", None)
+        m = None
+        if view is not None:
+            try:
+                m = view.get_masses()
+            except Exception:       # 뷰 미준비 → 공칭
+                m = None
+        if m is None or m.ndim != 2 or m.shape[0] != self.num_envs:
+            return torch.full((self.num_envs,), _cfg.POUR_CUP_MASS, device=self.device)
+        return m[:, 0].to(self.device, dtype=torch.float32)
+
+    def _perceive(self, key: str, cup: RigidObject) -> tuple[torch.Tensor, torch.Tensor]:
+        """컵 pose 지각: 지연(0..d_max 균등, env 별 매 스텝 재추첨) + 코히런트 노이즈. (pos env-local, quat)."""
+        pos = self._local(cup.data.root_pos_w)
+        quat = cup.data.root_quat_w
+        cur = torch.cat([pos, quat], dim=1)
+        buf = self._perc_buf[key]
+        fl = self._perc_flush
+        buf[fl] = cur[fl].unsqueeze(1)
+        buf = torch.roll(buf, shifts=1, dims=1)
+        buf[:, 0] = cur
+        self._perc_buf[key] = buf
+        d_max = int(round(self.adr.get_param("obs", "delay_steps")))
+        idx = torch.randint(0, d_max + 1, (self.num_envs,), device=self.device)
+        got = buf[self._perc_arange, idx]
+        p, q = noisy_pose(got[:, :3], got[:, 3:], self.adr.get_param("obs", "object_xyz"),
+                          self.adr.get_param("obs", "object_rot_deg"))
+        return p, q
+
+    def _apply_wrench(self) -> None:
+        """들린 컵에 질량정규화 외란(매 스텝 재추첨, decay 0). ADR 진행도로 스케일 0 → 종점."""
+        fs = self.adr.get_param("wrench", "force_scale")
+        ts = self.adr.get_param("wrench", "torque_scale")
+        lift_min = float(self.cfg.wrench_lift_min_m)
+        fire = 0.0
+        for key, cup, spawn in (("src", self.source_cup, self._src_spawn), ("rcv", self.receiver_cup, self._rcv_spawn)):
+            w = self._wrench[key]
+            w.force_scale, w.torque_scale = fs, ts
+            lifted = (self._local(cup.data.root_pos_w)[:, 2] - spawn[:, 2]) > lift_min
+            forces, torques = w.step(self._cup_mass[key], lifted)
+            cup.set_external_force_and_torque(forces, torques, is_global=True)
+            fire += float((forces.view(self.num_envs, -1).norm(dim=-1) > 0.0).float().mean())
+        self.extras["dr/wrench_fire_frac"] = fire / 2.0
 
     # ==================================================================
     def _build_fabric_world(self) -> dict | None:
@@ -216,6 +297,11 @@ class PourFabricEnv(DirectRLEnv):
         self.scene.rigid_objects["source_cup"] = self.source_cup
         self.receiver_cup = RigidObject(cfg.receiver_cup_cfg)
         self.scene.rigid_objects["receiver_cup"] = self.receiver_cup
+        # 컵↔컵 접촉(09.14 s2r 충돌 신호): 소스 컵 센서를 리시버 컵으로 필터.
+        self._cup_cup_sensor = ContactSensor(ContactSensorCfg(
+            prim_path=_cfg.SOURCE_CUP_PRIM, filter_prim_paths_expr=[_cfg.RECEIVER_CUP_PRIM],
+            history_length=1, track_air_time=False))
+        self.scene.sensors["contact_cups"] = self._cup_cup_sensor
         self.beads = RigidObjectCollection(cfg.beads_cfg)
         self.scene.rigid_object_collections["beads"] = self.beads
         self.scene.filter_collisions(global_prim_paths=["/World/ground"])
@@ -265,6 +351,7 @@ class PourFabricEnv(DirectRLEnv):
             q_pin = rig.fabric_q
             rig.step_fabric(self._world_ids, self._world_indicator)
             rig.pin_fabric(~active, q_pin)
+        self._apply_wrench()
 
     def _apply_action(self) -> None:
         for rig in self.rigs:
@@ -274,35 +361,65 @@ class PourFabricEnv(DirectRLEnv):
             self.robot.set_joint_effort_target(self._grav_comp * tau[:, : self.robot.num_joints])
 
     # ==================================================================
-    def _side_obs(self, rig: SideRig, cup: RigidObject) -> list[torch.Tensor]:
+    def _side_obs(self, rig: SideRig, cup_p: torch.Tensor, cup_q: torch.Tensor,
+                  noisy: bool) -> list[torch.Tensor]:
+        """한 팔의 actor 관측. cup_p/cup_q 는 **지각된**(perceived: 지연+노이즈) 컵 pose 다.
+
+        ★09.14 s2r: hand_qd 없음(실기 드라이버 velocity ≠ 관절속도). noisy=True 면 관절·FK 에
+          상시 노이즈. critic 은 noisy=False + 참 pose 로 같은 함수를 부른다.
+        """
+        cfg = self.cfg
         q, qd = self.robot.data.joint_pos, self.robot.data.joint_vel
         palm = rig.palm_pos()
         R = rig.palm_R()
         tips = rig.tips_pos()
-        cup_p = self._local(cup.data.root_pos_w)
+        arm_q, arm_qd, hand_q = q[:, rig.arm_t], qd[:, rig.arm_t], q[:, rig.hand_t]
+        if noisy:
+            arm_q = arm_q + torch.randn_like(arm_q) * float(cfg.obs_noise_qpos)
+            arm_qd = arm_qd + torch.randn_like(arm_qd) * float(cfg.obs_noise_qvel)
+            hand_q = hand_q + torch.randn_like(hand_q) * float(cfg.obs_noise_qpos)
+            palm = palm + torch.randn_like(palm) * float(cfg.obs_noise_body)
+            tips = tips + torch.randn_like(tips) * float(cfg.obs_noise_body)
+        z = torch.zeros(self.num_envs, 3, device=self.device)
+        z[:, 2] = 1.0
+        cup_up = quat_apply(cup_q, z)
         return [
-            q[:, rig.arm_t], qd[:, rig.arm_t], q[:, rig.hand_t], qd[:, rig.hand_t],
+            arm_q, arm_qd, hand_q,
             palm, torch.cat([R[:, :, 0], R[:, :, 1]], dim=1),
             (tips - palm.unsqueeze(1)).reshape(self.num_envs, -1),
             cup_p - palm,
             (tips - cup_p.unsqueeze(1)).reshape(self.num_envs, -1),
             rig.joint_err(),
-            self._cup_up(cup),
+            cup_up,
         ]
 
+    def _mouth_from(self, cup_p: torch.Tensor, cup_q: torch.Tensor) -> torch.Tensor:
+        off = torch.zeros(self.num_envs, 3, device=self.device)
+        off[:, 2] = float(self.cfg.cup_mouth_z)
+        return cup_p + quat_apply(cup_q, off)
+
     def _get_observations(self) -> dict:
-        parts = self._side_obs(self.src, self.source_cup) + self._side_obs(self.rcv, self.receiver_cup)
-        src_p = self._local(self.source_cup.data.root_pos_w)
-        rcv_p = self._local(self.receiver_cup.data.root_pos_w)
-        parts += [rcv_p - src_p, self._mouth(self.receiver_cup) - self._mouth(self.source_cup),
-                  self.prev_actions]
+        # ---- actor: 지각된 컵 pose(지연+노이즈) + 노이즈 관절/FK, hand_qd 없음 ----------------
+        sp, sq = self._perceive("src", self.source_cup)
+        rp, rq = self._perceive("rcv", self.receiver_cup)
+        self._perc_flush[:] = False
+        parts = self._side_obs(self.src, sp, sq, noisy=True) + self._side_obs(self.rcv, rp, rq, noisy=True)
+        parts += [rp - sp, self._mouth_from(rp, rq) - self._mouth_from(sp, sq), self.prev_actions]
         obs = torch.cat(parts, dim=1)
+
+        # ---- critic: 참값(clean) + hand_qd + 비드 GT + 속도 + 접촉력 -------------------------
+        tp_s, tq_s = self._local(self.source_cup.data.root_pos_w), self.source_cup.data.root_quat_w
+        tp_r, tq_r = self._local(self.receiver_cup.data.root_pos_w), self.receiver_cup.data.root_quat_w
+        clean = self._side_obs(self.src, tp_s, tq_s, noisy=False) + self._side_obs(self.rcv, tp_r, tq_r, noisy=False)
+        clean += [tp_r - tp_s, self._mouth(self.receiver_cup) - self._mouth(self.source_cup), self.prev_actions]
+        qd = self.robot.data.joint_vel
         bead_fracs = torch.stack([self._prev_in_src, self._prev_in_tgt, self._prev_spill,
                                   self._crossed.float().mean(dim=-1)], dim=1)
         centroid_rel = self.beads.data.object_pos_w.mean(dim=1) - self.receiver_cup.data.root_pos_w
         centroid_local = quat_apply_inverse(self.receiver_cup.data.root_quat_w, centroid_rel)
-        state = torch.cat([
-            obs, bead_fracs, centroid_local,
+        state = torch.cat(clean + [
+            qd[:, self.src.hand_t], qd[:, self.rcv.hand_t],
+            bead_fracs, centroid_local,
             self.source_cup.data.root_lin_vel_w, self.source_cup.data.root_ang_vel_w,
             self.receiver_cup.data.root_lin_vel_w, self.receiver_cup.data.root_ang_vel_w,
             (self.episode_length_buf.float() / float(self.max_episode_length)).unsqueeze(1),
@@ -347,6 +464,9 @@ class PourFabricEnv(DirectRLEnv):
             bead_in_source_frac=flags.in_source_frac, bead_in_target_frac=flags.in_target_frac,
             bead_spill_frac=flags.spill_frac, bead_centroid=self._local(flags.centroid_w),
             d_in_target=d_in_target, d_spill=d_spill,
+            cup_cup_force=self._cup_cup_sensor.data.force_matrix_w.view(self.num_envs, -1, 3).sum(dim=1).norm(dim=-1),
+            src_hand_foreign_force=self.src.foreign_force(),
+            rcv_hand_foreign_force=self.rcv.foreign_force(),
             cups_nested=self._cups_nested, success=self._success_now,
             episode_progress=self.episode_length_buf.float() / float(self.max_episode_length),
             actions=self.actions, prev_actions=self.prev_actions,
@@ -389,6 +509,10 @@ class PourFabricEnv(DirectRLEnv):
 
         self.extras["action/step_delta"] = (self.actions - self.prev_actions).abs().mean()
         self.prev_actions.copy_(self.actions)
+        # ADR: 순간 성공률 트리거(누적 평균은 관성으로 안 오른다 — adr.py 규약)
+        if self.adr.maybe_increment(float(self._success_now.float().mean())):
+            print(f"[pour_fabric][ADR] 증분 {self.adr.increment_counter}/{self.adr.num_increments} "
+                  f"(progress {self.adr.progress:.2f})", flush=True)
         self._log(total, terms, flags, ctx)
         return total
 
@@ -411,6 +535,16 @@ class PourFabricEnv(DirectRLEnv):
         self.extras["task/aim_dist"] = (ctx.src_cup_mouth_pos - ctx.rcv_cup_mouth_pos).norm(dim=-1).mean()
         self.extras["task/cups_center_dist"] = self._cups_center_dist.mean()
         self.extras["task/nested_rate"] = self._cups_nested.float().mean()
+        thr = float(cfg.collision_force_threshold)
+        self.extras["task/cup_collision_rate"] = (ctx.cup_cup_force > thr).float().mean()
+        self.extras["task/src_hand_foreign_rate"] = (ctx.src_hand_foreign_force > thr).float().mean()
+        self.extras["task/rcv_hand_foreign_rate"] = (ctx.rcv_hand_foreign_force > thr).float().mean()
+        self.extras["contact/cup_cup_max"] = ctx.cup_cup_force.max()
+        self.extras.update(self.adr.log_dict())
+        self.extras["dr/obs_object_xyz"] = self.adr.get_param("obs", "object_xyz")
+        self.extras["dr/delay_steps"] = self.adr.get_param("obs", "delay_steps")
+        self.extras["dr/wrench_force_scale"] = self.adr.get_param("wrench", "force_scale")
+        self.extras["dr/src_mass_mean"] = self._cup_mass["src"].mean()
         self.extras["task/src_palm_to_cup"] = (ctx.src_palm_pos - ctx.src_cup_pos).norm(dim=-1).mean()
         self.extras["task/rcv_palm_to_cup"] = (ctx.rcv_palm_pos - ctx.rcv_cup_pos).norm(dim=-1).mean()
         self.extras["contact/src_max"] = ctx.src_finger_force.max(dim=1).values.mean()
@@ -491,6 +625,11 @@ class PourFabricEnv(DirectRLEnv):
         bead[:, :, 3] = 1.0
         self.beads.write_object_state_to_sim(bead, env_ids=env_ids)
 
+        self._perc_flush[env_ids] = True
+        for w in self._wrench.values():
+            w.reset(env_ids)
+        self._cup_mass["src"] = self._read_cup_mass(self.source_cup)
+        self._cup_mass["rcv"] = self._read_cup_mass(self.receiver_cup)
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
         self._success_now[env_ids] = False

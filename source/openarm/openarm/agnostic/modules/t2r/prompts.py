@@ -74,6 +74,13 @@ the source cup has been lifted (0 while it rests on the table).
 9. Do not keep any state between calls (no globals, no attributes); the function must be pure.
 10. Each component you return is logged separately during training and shown back to you \
 after training, so name them meaningfully (e.g. "approach_src", "grasp_rcv", "pour_delta").
+11. This policy will be deployed on the real robot, so collisions are a safety hazard: \
+`ctx.cup_cup_force` is the contact force between the two cups, and \
+`ctx.src_hand_foreign_force` / `ctx.rcv_hand_foreign_force` are the forces each hand exerts on \
+anything other than its own cup (the other hand, the other cup, the table). During a correct \
+pour the cups do not touch each other and the hands touch only their own cup; penalise these \
+forces (bounded, e.g. `torch.tanh(f / 5.0)`) so the policy learns to keep clearance. Cup poses \
+seen by the policy are delayed and noisy as on the real perception system.
 """
 
 OUTPUT_RULES = """\

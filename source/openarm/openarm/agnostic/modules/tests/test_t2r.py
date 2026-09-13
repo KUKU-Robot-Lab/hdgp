@@ -35,7 +35,7 @@ def test_context_fields_split_and_stub_has_every_field():
     for f in C.TENSOR_FIELDS + C.SCALAR_FIELDS:
         assert f in stub, f
     assert "@property" not in stub
-    assert len(C.TENSOR_FIELDS) == 43 and len(C.SCALAR_FIELDS) == 5
+    assert len(C.TENSOR_FIELDS) == 46 and len(C.SCALAR_FIELDS) == 5
 
 
 def test_fake_context_shapes():
