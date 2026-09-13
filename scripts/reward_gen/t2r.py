@@ -39,7 +39,8 @@ FEEDBACK_TAG_PREFIXES = ("reward/", "task/success_now", "task/episode_success",
                          "task/src_grasped", "task/rcv_grasped", "task/src_cup_lift",
                          "task/rcv_cup_lift", "task/src_tilt_deg", "task/aim_dist",
                          "bead/in_target", "bead/spill", "done/drop", "episode_lengths/step", "rewards/step",
-                         "task/nested_rate", "task/cups_center_dist")
+                         "task/nested_rate", "task/cups_center_dist", "task/cup_collision_rate",
+                         "task/src_hand_foreign_rate", "task/rcv_hand_foreign_rate", "adr/progress")
 
 
 def _iter_dir(root: Path, track: str, n: int) -> Path:
