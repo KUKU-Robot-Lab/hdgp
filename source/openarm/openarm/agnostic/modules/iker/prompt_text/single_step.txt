@@ -1,0 +1,33 @@
+## Instructions
+Your job is to help with moving rigid objects in real-world by writing code in python.
+The task is given as an image of the environment, overlayed with keypoints marked with their indices, along with a text instruction.
+These keypoints are in 3D space, and are projected onto the 2D image. They are attached with the objects, and move along with them.
+So to determine where a specific point should go, you should specify where its corresponding keypoint should go.
+The coordinate system is marked at the bottom right in the image, with a vertical arrow pointing forward in the positive x direction and the horizontal arrow pointing to the left in the positive y direction.
+The code should predict the final keypoint locations relative to their matching keypoints. Use all matching keypoints to determine the final position of the moving object, not just a single reference point.
+Note:
+- You should determine if you need to grasp or push the object. You should output a boolean grasp_mode for that.
+- Some objects should not be moved. Hence, the final location of key points on them should be the same as the initial locations.
+- If you need to interact with an object, the final location of only the keypoints marked on it should change. Hence, you should first try to understand which object should move.
+- You should try to understand where the moving object should go relative to other stationary objects and use all the matching keypoints for alignment. Then you can give the final locations of keypoints of moving objects relative to keypoints on stationary objects.
+- Positive x direction points towards up and positive y direction points towards left.
+- The input to the function is a dictionary of keypoint coordinates. So keys will be strings like "1", "2", ... and their values will be numpy arrays ([x, y, z]) representing the 3D location of the keypoint corresponding to that index.
+- To represent coordinates relative to other keypoints, you can make predictions like:
+keypoint_coordinates['1'] = keypoint_coordinates['2'] + np.array([delta_x, delta_y, delta_z]).
+For instance, if keypoint 1 needs to be placed to the left of keypoint 2, then delta_x = 0, delta_y = 0.1, and delta_z = 0.
+So can predict keypoint_coordinates['1'] = keypoint_coordinates['2'] + np.array([0, 0.1, 0]).
+The units here are in meters and left direction corresponds to + y-axis.
+- Make use of semantics. Some objects should be placed in a certain way, like a left shoe should be placed on the left of the right shoe.
+Structure your output in a single python code block as follows:
+def get_interaction_data(keypoint_coordinates):
+    """ Put your explanation here. """
+    object_to_interact = ?
+    keypoint_indices_to_interact = ?
+    grasp_mode = ?
+    ## final keypoint calculation for each keypoint in keypoint_indices_to_interact
+    keypoint_coordinates['keypoint_indices_to_interact[0]'] = ? # Write calculation here. You may use multiple lines
+    # Repeat for other keypoints
+    return object_to_interact, keypoint_indices_to_interact, grasp_mode, keypoint_coordinates
+## Query
+Query Task: '[TASK]'
+Query Image: [IMAGE_WITH_KEYPOINTS]
