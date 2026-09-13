@@ -38,7 +38,8 @@ DEFAULT_ROOT = _HDGP / "reward_gen"
 FEEDBACK_TAG_PREFIXES = ("reward/", "task/success_now", "task/episode_success",
                          "task/src_grasped", "task/rcv_grasped", "task/src_cup_lift",
                          "task/rcv_cup_lift", "task/src_tilt_deg", "task/aim_dist",
-                         "bead/in_target", "bead/spill", "done/drop", "episode_lengths/step", "rewards/step")
+                         "bead/in_target", "bead/spill", "done/drop", "episode_lengths/step", "rewards/step",
+                         "task/nested_rate", "task/cups_center_dist")
 
 
 def _iter_dir(root: Path, track: str, n: int) -> Path:
