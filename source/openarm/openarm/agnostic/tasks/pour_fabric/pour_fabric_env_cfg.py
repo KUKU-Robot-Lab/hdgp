@@ -164,7 +164,7 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     fabric_table_obstacle: bool = True
     fabric_table_margin_xy: float = 0.10
     fabric_table_thickness: float = 0.05
-    fabric_fk_pos_tol: float = 0.002          # 부팅 게이트: fabric FK vs USD palm
+    fabric_fk_pos_tol: float = 0.005          # 부팅 게이트: fabric FK vs USD palm (2스텝 처짐 1~2mm 가 바닥 — 실측 0.5~1.7mm)
 
     # ---- 팔 액션: palm 6D = 앵커(시작 자세 palm 실측) + 델타 ---------------------------
     # 델타 박스 (x,y,z [m] · ez,ey,ex [deg]) — lo/hi 비대칭. a=0 이 앵커(=컵 옆 시작 자세).

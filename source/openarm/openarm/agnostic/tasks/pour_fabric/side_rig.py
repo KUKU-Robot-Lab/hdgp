@@ -301,7 +301,9 @@ class SideRig:
         tips_sim = self.tips_pos()[0]
         delta = tips_sim - tips_fab
         spread = float(delta.std(dim=0).max())
-        if spread > 2e-3:
+        # ★09.13: 물리 2스텝 중력 처짐이 손끝마다 달라 산포 1~2 mm 가 노이즈 바닥이다(2 mm 로 두면
+        #   경계에서 무작위로 죽는다 — 로컬 실측 2.1 mm). 기구학 불일치는 수십 mm 로 나오므로 5 mm.
+        if spread > 5e-3:
             raise RuntimeError(
                 f"[{p.name}] fabric↔env 프레임이 순수 평행이동이 아니다(산포 {spread*1000:.1f}mm)")
         self.fab_to_env = delta.mean(dim=0)
