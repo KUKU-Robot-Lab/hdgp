@@ -82,7 +82,7 @@ params:
     # minibatch_size: num_envs × horizon_length 이 반드시 나누어 떨어져야 함
     #   128  envs: batch=   8192 → minibatch= 2048 (4 splits)
     #   2048 envs: batch= 131072 → minibatch=32768 (4 splits)  ← 학습 권장
-    minibatch_size: 32768     # --num_envs 2048 기준. 128 envs 사용 시 2048로 변경
+    minibatch_size: 8192      # = 128 envs × horizon 64 (배치를 정확히 나눠야 한다). 256 envs 면 2 minibatch.
     mini_epochs: 4
     critic_coef: 4
     clip_value: True

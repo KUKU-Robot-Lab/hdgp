@@ -691,6 +691,108 @@ TESOLLO_RIGHT_SHORT_TL = _dc_replace(
 
 
 # =============================================================================
+# tesollo_left_short — short 판의 **좌팔·좌손** 프로필(양팔 pour_fabric 의 receiver).
+#
+# ★09.13 신설. 자산은 `openarm_dg5f-m-short_bi_rl` 그대로(우 short 와 같은 USD)이고
+#   달라지는 것은 **어느 팔을 정책이 제어하느냐**뿐이다. 그래서 `_dc_replace` 로
+#   측(side) 종속 필드만 덮어쓴다 — 손 구조(채널·동결·접촉 그룹)는 복제하지 않는다.
+#
+# ★미러 규칙(rl-mirror-port Step 1·2, 09.13 FK 실측). 이 URDF 의 좌측은 우측을
+#   XZ 평면(y 반전)으로 반사한 것이다 — 링크 origin 의 y 만 뒤집히고 **관절 축 벡터는
+#   좌우가 같다**. 그래서 부호는 축이 아니라 반사에서 온다: 회전축이 X·Z 면 −1, Y 면 +1.
+#     팔  _ARM_SIGN  = (−1,−1,−1,+1,−1,−1,−1)
+#     손  _HAND_SIGN = thumb(−,−,−,−) · index/middle/ring(−,+,+,+) · pinky(−,−,+,+)
+#   검증: 우 리셋/홈 관절값에 부호를 씌운 좌 관절값의 FK 가 palm·손끝 5개 모두
+#   **0.000 mm / 0.000°** 로 y 반전 미러였다(`urdf/tools/solve_arm_reset_pose.Urdf`).
+#   URDF 한계도 같은 말을 한다 — 비대칭 한계인 관절(thumb_1/2·index_1·ring_1·pinky_1/2)이
+#   정확히 −1 자리이고 좌측에서 구간이 뒤집혀 있다(`l_hj_thumb_2` [0, 2.705]).
+#   ⚠`_3/_4` 는 한계가 ±90° 대칭이라 표만 봐서는 부호를 알 수 없다 — 우 프로필 주석의
+#     경고 그대로, 엄지 `_3/_4` 는 좌측이 **−** 방향으로 조인다(FK 로 확인).
+#
+# ★palm 박스는 y 미러, 자세 중심은 (−90, 0, −90)(좌 fabric 클래스의 기본 palm euler 와
+#   동일). `palm_box_verified=False` — 우 short 와 마찬가지로 probe 후 승격할 것.
+# ★홈(init) 좌팔은 우팔 홈의 **정확한 부호 미러**다(우 short 프로필의 유휴 좌팔 값은
+#   dg5f-m 유휴 자세를 IK 로 옮긴 것이라 palm 이 13 mm 어긋난 비대칭 자세 — 양팔 과제의
+#   활성 팔 홈으로는 미러가 맞다). 양팔 쌍은 각 프로필에서 자기 쪽만 가져간다.
+# =============================================================================
+_ARM_SIGN_L = (-1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0)
+_HAND_SIGN_L = (
+    -1.0, -1.0, -1.0, -1.0,   # thumb  (축 X,Z,X,X)
+    -1.0,  1.0,  1.0,  1.0,   # index  (X,Y,Y,Y)
+    -1.0,  1.0,  1.0,  1.0,   # middle (X,Y,Y,Y)
+    -1.0,  1.0,  1.0,  1.0,   # ring   (X,Y,Y,Y)
+    -1.0, -1.0,  1.0,  1.0,   # pinky  (Z,X,Y,Y)
+)
+
+
+def _mirror_arm(q: tuple) -> tuple:
+    return tuple(s * v for s, v in zip(_ARM_SIGN_L, q))
+
+
+def _mirror_hand(q: tuple) -> tuple:
+    # −0.0 을 0.0 으로 정리(값은 같지만 dump 대조가 헷갈린다).
+    return tuple(float(s * v) + 0.0 for s, v in zip(_HAND_SIGN_L, q))
+
+
+_R_SHORT_ARM_HOME = tuple(
+    TESOLLO_RIGHT_SHORT.init_joint_pos[f"r_aj_{i}"] for i in range(1, 8))
+
+TESOLLO_LEFT_SHORT = _dc_replace(
+    TESOLLO_RIGHT_SHORT,
+    name="tesollo_left_short",
+    arm_joint_regex="l_aj_[1-7]",
+    hand_joint_regex="l_hj_(thumb|index|middle|ring|pinky)_[1-4]",
+    hand_locked_joint_regex="l_hj_(index|middle|ring)_1",
+    # 우 override 의 미러: 굴곡 전용 하한 0 은 **조이는 방향** 기준이다 — 좌 엄지 `_3/_4`
+    # 와 좌 `pinky_2` 는 조이는 방향이 − 라 상한 0 이 된다.
+    hand_action_limit_override={
+        r"l_hj_(index|middle|ring|pinky)_[34]$": (0.0, None),
+        r"l_hj_thumb_[34]$": (None, 0.0),
+        r"l_hj_(thumb|index|middle|ring|pinky)_1$": (-0.01, 0.01),
+        r"l_hj_pinky_2$": (None, 0.0),
+    },
+    palm_body="l_hl_palm",
+    fabric_class="OpenArmTeoslloLeftPoseFabric",
+    fabric_robot_dir="openarm_dg5f-m-short_bi_left",
+    fabric_params_filename="openarm_dg5f-m-short_left_pose_params.yaml",
+    fabric_joint_order=(
+        tuple(f"l_aj_{i}" for i in range(1, 8))
+        + tuple(f"l_hj_{f}_{j}" for f in _FINGERS for j in range(1, 5))
+    ),
+    hand_joint_names=tuple(f"l_hj_{f}_{j}" for f in _FINGERS for j in range(1, 5)),
+    hand_open_pose=_mirror_hand(TESOLLO_RIGHT_SHORT.hand_open_pose),
+    hand_grip_pose=_mirror_hand(TESOLLO_RIGHT_SHORT.hand_grip_pose),
+    palm_box_min=(0.20, -0.22, 0.20),
+    palm_box_max=(0.55, 0.55, 0.70),
+    palm_rot_center_deg=(-90.0, 0.0, -90.0),
+    palm_box_verified=False,
+    arm_reset_joint_pos=_mirror_arm(TESOLLO_RIGHT_SHORT.arm_reset_joint_pos),
+    finger_sensor_bodies={
+        f: (f"l_hl_{f}_3", f"l_hl_{f}_4", f"l_hl_{f}_tip") for f in _FINGERS
+    },
+    # 반사는 링크 로컬 x·z 를 보존한다(y 만 뒤집힘) — 우측 값 그대로.
+    palmar_axis_local=dict(TESOLLO_RIGHT_SHORT.palmar_axis_local),
+    fingertip_bodies=tuple(f"l_hl_{f}_tip" for f in _FINGERS),
+    init_joint_pos={
+        **TESOLLO_RIGHT_SHORT.init_joint_pos,
+        **{f"l_aj_{i + 1}": v for i, v in enumerate(_mirror_arm(_R_SHORT_ARM_HOME))},
+        **{f"l_hj_{f}_{j}": v for (f, j), v in zip(
+            ((f, j) for f in _FINGERS for j in range(1, 5)),
+            _mirror_hand(TESOLLO_RIGHT_SHORT.hand_open_pose))},
+    },
+    # 활성 = 좌팔(friction 0.0 은 우 프로필과 같은 규약) · 유휴 = 우팔. 벤더 게인뿐.
+    actuator_specs={
+        **_vg.arm_actuators("left_arm", "l", friction=0.0),
+        **_vg.hand_actuator("left_hand", ["l_hj_[a-z]+_[1-4]"]),
+        **_vg.arm_actuators("right_arm", "r"),
+        **_vg.hand_actuator("right_hand", ["r_hj_[a-z]+_[1-4]"]),
+        "head": dict(joint_names_expr=["head_j_(pan|tilt)"], stiffness=400.0, damping=80.0),
+    },
+    object_spawn_center=(0.362, 0.16),
+)
+
+
+# =============================================================================
 # rh56f1_right — Inspire RH56F1 우손. **물리 12관절 중 구동 6**(언더액추에이션).
 #
 # ★이 프로필은 **Track B(`grasp_fj_rh`) 전용**이다. fabric 을 쓰는 트랙
@@ -889,7 +991,7 @@ RH56F1_RIGHT_ONLY = _drop_left(
 
 PROFILES: dict[str, RobotProfile] = {
     p.name: p for p in (TESOLLO_RIGHT, TESOLLO_RIGHT_ONLY, TESOLLO_RIGHT_SHORT,
-                    TESOLLO_RIGHT_SHORT_TL,
+                    TESOLLO_RIGHT_SHORT_TL, TESOLLO_LEFT_SHORT,
                         RH56F1_RIGHT, RH56F1_RIGHT_ONLY)
 }
 

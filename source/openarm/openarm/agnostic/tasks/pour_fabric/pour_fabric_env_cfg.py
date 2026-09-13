@@ -1,14 +1,14 @@
-"""pour_fabric 환경 설정.
+"""pour_fabric 환경 설정 — 양팔 **잡기→들기→붓기** (09.13 재작성).
 
-**환경 세팅 동일성 계약**: 물리 블록(sim dt·solver·max_depenetration·중력·자기충돌·
-Fabrics 파라미터·지면·픽스처)은 grasp_lift_fabric 과 **값 동일**해야 한다.
-grasp 트랙은 학습 중이라 교차 임포트하지 않고 값을 복사하되 출처를 주석으로 남긴다.
-다른 것은 action / reward / 태스크 판정뿐이다.
+★09.13 재작성 이유. 구판은 warm 뱅크(이미 잡은 상태)에서 시작하고 손을 동결한 채 붓기만
+  배웠다. 이번 트랙은 text2reward 방식의 **보상 자동생성**이 목적이라 과제 문장("양팔로
+  컵을 각각 잡고 비드 있는 컵을 없는 컵으로 옮긴다")을 통째로 정책이 배워야 한다 —
+  테이블 위 컵 두 개에서 시작하고 손 20관절도 정책(시너지)이 제어한다.
+  보상은 이 파일에 **없다**: `reward_code_path` 의 생성 코드가 `RewardContext` 를 읽어
+  계산한다(`modules/t2r`). 비어 있으면 영 보상(부팅/무작위 롤아웃용).
 
-기본 물리: enable_gravity=True · enable_self_collisions=True —
-서버 베이스라인 fab_test10(open-bis_r_grasp_lift_fab)의 실행 플래그와 일치.
-(grasp cfg 의 **기본값**은 False/False 이고 CLI 로 켠다 — 여기는 pour 가 그 조건을
- 물려받는 것이 정합이므로 기본값 자체를 True 로 둔다.)
+제어 스택 = grasp_s2r 현행(팔 Fabrics ×2 · 손 관절공간 시너지 + 접촉 동결) 을 양팔로.
+물리 블록 = 구 pour_fabric(비드 20개×N env 접촉 버퍼) 그대로.
 """
 
 from __future__ import annotations
@@ -29,26 +29,21 @@ from openarm.common.bead_assets import DEFAULT_BEAD_COUNT, make_beads_cfg
 from . import bimanual as _bm
 
 _ASSETS_DIR = _ob.ASSETS_DIR
-_HDGP_ROOT = os.path.normpath(os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "..", "..", ".."))
 
 # =============================================================================
-# 컵 자산 — pour 전용. ★grasp 뱅크의 cup_big_rl(convex)이 아니라 **SDF** 콜라이더다.
-#   convex hull 은 컵 내부 공동을 메워 비드가 담기지 않는다 — pour_v1 이 그래서
-#   cup_big_sdf.usd 를 쓴다(양쪽 컵 동일). 원점 오프셋은 같은 메시라 cup_big 과 동일.
+# 컵 자산 — pour 전용 **SDF** 콜라이더(convex hull 은 컵 속을 메워 비드가 안 담긴다).
+# 원점 오프셋·내부 기하는 pour_v1 실측(.usd bbox) — bead_flags 판정과 같은 값.
 # =============================================================================
 POUR_CUP_USD = os.path.join(_ASSETS_DIR, "cup", "cup_big_sdf.usd")
-POUR_CUP_ORIGIN_OFFSET_Z = 0.0773     # 실측(pxr bbox): 바닥 -0.0773
-POUR_CUP_MASS = 0.134                 # object_bank.BASE_OBJECT_MASS 와 동일
+POUR_CUP_ORIGIN_OFFSET_Z = 0.0773     # 바닥 −0.0773
+POUR_CUP_MASS = 0.134                 # = object_bank.BASE_OBJECT_MASS
 
-# ★cup_big_sdf 는 RigidBodyAPI 가 루트 prim 에 있다(pour_v1 이 루트 필터로
-#   force_matrix_w 를 정상 수신한 실적). baseLink 류 자산과 다르니 혼동 금지.
 SOURCE_CUP_PRIM = "/World/envs/env_.*/SourceCup"
 RECEIVER_CUP_PRIM = "/World/envs/env_.*/ReceiverCup"
+TABLE_PRIM = "/World/envs/env_.*/Table"
 
 
 def build_cup_cfg(prim_path: str) -> RigidObjectCfg:
-    """pour 컵 하나. 물리 값은 grasp_lift_fabric build_object_cfg 와 동일(출처 주석)."""
     return RigidObjectCfg(
         prim_path=prim_path,
         spawn=sim_utils.UsdFileCfg(
@@ -56,11 +51,11 @@ def build_cup_cfg(prim_path: str) -> RigidObjectCfg:
             activate_contact_sensors=True,
             mass_props=sim_utils.MassPropertiesCfg(mass=POUR_CUP_MASS),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                solver_position_iteration_count=16,   # = grasp_lift_fabric
+                solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
                 max_angular_velocity=100.0,
                 max_linear_velocity=100.0,
-                max_depenetration_velocity=1.0,       # = grasp_lift_fabric (7218N 스파이크 근거)
+                max_depenetration_velocity=1.0,       # 7218N 스파이크 근거(구 pour)
                 disable_gravity=False,
             ),
         ),
@@ -70,20 +65,18 @@ def build_cup_cfg(prim_path: str) -> RigidObjectCfg:
 
 def build_robot_cfg(pair: _bm.BimanualPair, self_collisions: bool,
                     gravity: bool) -> ArticulationCfg:
-    """BimanualPair → ArticulationCfg. 물리 값은 grasp_lift_fabric 과 동일."""
     return ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            usd_path=os.path.join(_ASSETS_DIR, pair.asset.usd_relpath),
+            usd_path=os.path.join(_ASSETS_DIR, pair.usd_relpath),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                # ★cfg 필드(enable_gravity)로만 바꿀 것 — resolve_cfg 가 재생성한다.
                 disable_gravity=not gravity,
-                max_depenetration_velocity=1.0,       # = grasp_lift_fabric
+                max_depenetration_velocity=1.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=self_collisions,
-                solver_position_iteration_count=16,   # = grasp_lift_fabric
+                solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
             ),
         ),
@@ -100,11 +93,10 @@ def build_robot_cfg(pair: _bm.BimanualPair, self_collisions: bool,
     )
 
 
-# 환경 픽스처 — grasp_lift_fabric 과 동일 (env_v1.usda, top_plate 상면 z=0.205 · 09.05)
-ENV_FIXTURE_SPAWN = sim_utils.UsdFileCfg(
+# 작업면 — env_v1.usda (top_plate 상면 z=0.205, 09.05 CAD 정정·실기 줄자 일치).
+TABLE_SPAWN = sim_utils.UsdFileCfg(
     usd_path=os.path.join(_ASSETS_DIR, "simulation_setting/env_v1/usd/env_v1.usda"),
 )
-ENV_FIXTURE_PRIM = "/World/envs/env_.*/EnvFixture"
 
 
 # =============================================================================
@@ -112,34 +104,21 @@ ENV_FIXTURE_PRIM = "/World/envs/env_.*/EnvFixture"
 class PourFabricEnvCfg(DirectRLEnvCfg):
     """차원은 resolve_cfg 가 pair 로 확정한다."""
 
-    # ---- 로봇 (양팔 쌍) ---------------------------------------------------------
     pair_name: str = _bm.DEFAULT_PAIR
 
-    # ---- warm start -------------------------------------------------------------
-    # 빈 문자열 = data/pour_fab_warm_<pair>_{src,rcv}.hdf5 파생.
-    warm_bank_source_path: str = ""
-    warm_bank_receiver_path: str = ""
-    # ★False 는 probe 전용이다: 홈+테이블 위 컵(파지 없음)으로 부팅한다.
-    #   학습을 이 상태로 돌리면 grasp 부터 다시 배워야 한다 — env 가 경고를 찍는다.
-    require_warm_bank: bool = True
-    warm_bank_min_states: int = 64
+    # ---- 보상 (text2reward 생성 코드) ----------------------------------------------
+    # 빈 문자열 = 영 보상. 학습 런은 반드시 생성·검증·audit 을 거친 파일을 가리켜야 한다.
+    reward_code_path: str = ""
 
-    # ---- 좌팔(receiver) 제어 -----------------------------------------------------
-    # frozen: action[6:9] 무시, warm 자세 유지 (액션 폭은 불변 → 체크포인트 인계 가능)
-    receiver_control_mode: str = "frozen"     # "frozen" | "learned"
-
-    # ---- 시뮬레이션 (물리 = grasp_lift_fabric, 용량 = pour_v1) ---------------------
-    episode_length_s: float = 20.0            # 1200 스텝 @60Hz (pour_v1)
-    decimation: int = 2                       # = grasp_lift_fabric
+    # ---- 시뮬레이션 (물리 = 구 pour_fabric, 비드 버퍼 포함) ---------------------------
+    episode_length_s: float = 15.0            # 900 스텝 @60Hz
+    decimation: int = 2
     sim: SimulationCfg = SimulationCfg(
-        dt=1.0 / 120.0,                       # = grasp_lift_fabric
+        dt=1.0 / 120.0,
         render_interval=2,
         physx=sim_utils.PhysxCfg(
             bounce_threshold_velocity=0.01,
-            # ★버퍼만 pour_v1 값으로 확대(비드 20개 × N env 접촉 폭증) — 물리 거동 아님.
-            # pour_v1 검증값(128 env + 비드 20 에서 overflow 크래시 이력 끝에 확정).
-            # ★로컬에서 다른 학습이 VRAM 을 점유 중이면 이 1GB stack 할당이 실패한다 —
-            #   그건 버퍼 결함이 아니라 자원 경합이다(08.22 실측: 22GB 점유 중 부팅 실패).
+            # 비드 20개 × N env 접촉 폭증 — pour_v1 검증값(128 env overflow 크래시 끝에 확정).
             gpu_found_lost_aggregate_pairs_capacity=64 * 1024 * 1024,
             gpu_total_aggregate_pairs_capacity=16 * 1024 * 1024,
             gpu_max_rigid_patch_count=2 ** 24,
@@ -149,173 +128,149 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
             friction_correlation_distance=0.00625,
         ),
     )
-    # ★2048 이 아니라 128 — 비드 20개/env 가 접촉·메모리를 지배한다(pour_v1 과 동일).
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=128, env_spacing=2.5)
+    # ★비드가 접촉·메모리를 지배해 128 (pour_v1 과 동일). 서버 98GB 에서 상향 실험 가능.
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=128, env_spacing=2.5, replicate_physics=True)
 
-    # ---- Fabrics (= grasp_lift_fabric) -------------------------------------------
-    fabrics_dt: float = 1.0 / 60.0
-    fabric_decimation: int = 2
-    fabrics_damping_gain: float = 20.0
-    fabrics_max_objects_per_env: int = 8
-    fabric_use_cuda_graph: bool = False
-    # 손 attractor 게인 — hand_mode="direct" 용. None = fabric params 기본(50).
-    # grasp_lift_fabric 0aadafd 가 400 채택(추종 이동량 부족 26%→8%). 값 동일 유지.
-    hand_attractor_gain: float | None = 400.0
+    # ---- 물리 스위치 --------------------------------------------------------------
+    enable_gravity: bool = True
+    gravity_compensation: float = 1.0
+    enable_self_collisions: bool = True
+    surface_friction: float = 1.0             # 테이블 재질(컵-테이블). grasp_s2r 규약으로 바인딩.
+    ground_plane_z: float = -0.10
 
-    # ---- 액션 (전부 절대값 + slew — grasp 규약. 앵커만 per-env warm pose) -----------
-    # [0:6] source palm 6D · [6:9] receiver palm xyz
-    palm_slew_pos: float = 0.004              # = grasp_lift_fabric (240mm/s)
-    palm_slew_rot_deg: float = 2.0
-    symmetric_action_scale: bool = True
-    # source palm 자세 박스: 중심 = (sign·90, 0, sign·90)° + 아래 비대칭 오프셋.
-    # ★순서는 env 배선대로 **(ex=roll, ey=pitch, ez=yaw)** — euler_xyz 순.
-    #   (구 값은 (ez,ey,ex) 로 착각해 -150 을 yaw 에 놨었다. yaw 는 세계 z 회전이라
-    #    컵 tilt 기여 0°인 데다 -150° 추종도 불가(오차 43.6°/108mm) — P3 실측.)
-    # P3 probe_pour_tilt_reachability 08.22 실측(roll 에 -150, 홈 앵커·중력·self-coll ON):
-    #   roll 스윕 tilt 달성 60/90/110→오차 0.4/0.5/1.5° · 130→123.5° · 150→137.9°(단조)
-    #   깊 tilt+z상승 0.3 조합 115° 달성 · yaw ±45/pitch ±45 정밀 추종.
-    #   → tilt_target 110° 는 오차 1.5° 로 여유, 최대 달성 137.9° ≥ 135°.
-    pose_offset_lo_deg: tuple = (-150.0, -45.0, -45.0)   # (ex, ey, ez)
-    pose_offset_hi_deg: tuple = (45.0, 45.0, 45.0)
-    # receiver 자세는 warm 측정값 고정(직립 유지) — 액션 없음.
-
-    # ---- 인계 안정화 (pour_v1 실측 근거 이식) --------------------------------------
-    # hold: 팔 목표 = 측정 pose 동결 + 종료 억제(비드 정착 대기).
-    hold_steps: int = 120
-    # ramp: hold 해제 직후 anchor→정책 목표 선형 보간. pour_v1 의 106.8mm 계단 킥
-    # (사망 51/128) 근거. slew 가 1차 방어지만 회전 점프는 ramp 가 추가로 막는다.
-    handover_ramp_steps: int = 30
-    # pour_v1 의 z_boost(hold 중 목표 조작)는 계단 킥의 공범이라 이식하지 않는다(기본 0).
-
-    # ---- 비드 / 컵 판정 기하 (pour_v1 실측 .usd 기준) ------------------------------
-    bead_count: int = DEFAULT_BEAD_COUNT      # ★수집·소비 동일 필수(bead_assets 단일 출처)
+    # ---- 작업면·컵 기하 -------------------------------------------------------------
+    table_surface_z: float = 0.205
+    object_origin_offset_z: float = POUR_CUP_ORIGIN_OFFSET_Z
+    object_spawn_pad: float = 0.005           # 스폰 침투 반동 방지
+    object_spawn_range: float = 0.02          # 스폰 중심 xy 균등 ± [m]
     cup_inner_radius: float = 0.041
     cup_inside_z_min: float = -0.070          # bottom(-0.077) + bead 반경 여유
     cup_inside_z_max: float = 0.100           # 림
     cup_mouth_z: float = 0.100
+    bead_count: int = DEFAULT_BEAD_COUNT
+    # 리셋 직후 비드 정착 대기 — 이 동안 팔은 시작 자세에 고정되고 액션은 무시된다.
+    hold_steps: int = 30
 
-    # ---- 성공 판정 (pour_v1 그대로) -----------------------------------------------
-    success_fill_ratio: float = 0.50          # ADR 켜면 0.20 → 0.50
+    # ---- Fabrics (= grasp_s2r 현행) -------------------------------------------------
+    fabrics_dt: float = 1.0 / 60.0
+    fabric_decimation: int = 2
+    fabrics_damping_gain: float = 10.0
+    fabrics_max_objects_per_env: int = 8
+    fabric_use_cuda_graph: bool = False
+    fabric_velocity_ff_scale: float = 1.0
+    use_hand_repulsion: bool = False
+    use_body_repulsion_pairs: bool = True
+    fabric_table_obstacle: bool = True
+    fabric_table_margin_xy: float = 0.10
+    fabric_table_thickness: float = 0.05
+    fabric_fk_pos_tol: float = 0.002          # 부팅 게이트: fabric FK vs USD palm
+
+    # ---- 팔 액션: palm 6D = 앵커(시작 자세 palm 실측) + 델타 ---------------------------
+    # 델타 박스 (x,y,z [m] · ez,ey,ex [deg]) — lo/hi 비대칭. a=0 이 앵커(=컵 옆 시작 자세).
+    # 소스: 붓기 tilt 축 구간을 깊게 연다.
+    # ★회전 슬롯 순서 = `_palm_pose_6d` [yaw(ez), pitch(ey), roll(ex)] = fabric "euler_zyx" 지령.
+    #   ★09.13 프로브 실측(접근→파지→리프트 뒤 슬롯별 −1 지령): 슬롯 3(yaw)에 −150° 는 도달
+    #     불가(회전오차 110°, 컵 tilt 24°)이고 **슬롯 5(roll)** 가 오차 1.3° 로 추종해 컵 tilt 가
+    #     지령대로 나온다(−45° → 44.4°). 붓기 축은 **roll = 슬롯 5** 다 — 구 pour cfg 주석
+    #     ("첫 슬롯이 roll")은 틀렸다. 리시버(좌)는 별도 cfg(대칭 ±30°)라 미러 문제 없음.
+    src_palm_delta_lo: tuple = (-0.15, -0.10, -0.12, -45.0, -45.0, -150.0)
+    src_palm_delta_hi: tuple = (0.15, 0.40, 0.25, 45.0, 45.0, 45.0)
+    rcv_palm_delta_lo: tuple = (-0.15, -0.40, -0.12, -30.0, -30.0, -30.0)
+    rcv_palm_delta_hi: tuple = (0.15, 0.10, 0.25, 30.0, 30.0, 30.0)
+    # 위치는 프로필 palm 박스로 추가 clamp(회전은 델타 박스만).
+
+    # ---- 손: 관절공간 시너지 (= grasp_s2r 현행 coupled3) --------------------------------
+    synergy_close_speed: float = 0.005        # 폐쇄도 변화율 상한 / 정책 스텝
+    synergy_contact_freeze: bool = True       # 닿은 마디의 관절만 정지 → 감쌈
+    synergy_freeze_scope: str = "joint"       # "joint" | "finger"
+    couple_four_fingers: bool = True          # 엄지 독립, 나머지 4지 채널별 평균
+    finger_residual_scale: float = 0.0
+    # 대향 관절(엄지 ch1) grip = open + delta — grasp_s2r D3 기본. **소스 팔 부호 기준**,
+    # 리시버(좌)는 미러 부호(thumb_2 축 Z → −1)를 env 가 적용한다.
+    oppose_grip_delta_rad: float = -0.6
+    hand_velocity_ff_scale: float = 1.0
+    joint_pos_err_max: float = 1.2            # obs 정규화 [rad]
+    # 닫기 게이트: palm 이 자기 컵에 이 반경 안으로 와야 오므릴 수 있다(램프). 파지 성립 후 해제.
+    # ★09.13 부팅 실측: 시작 자세에서 palm↔컵 중심이 약 0.16 m(손끝이 3 cm 앞) — 반경은
+    #   그보다 커야 시작 자세에서 닫을 수 있다. 0.22/램프 0.3 → 0.154 m 안쪽은 게이트 1.0.
+    close_gate_enabled: bool = True
+    close_gate_radius: float = 0.22
+    close_gate_ramp: float = 0.3
+
+    # ---- 접촉 --------------------------------------------------------------------
+    contact_force_threshold: float = 1.0      # N — 파지(대향) 게이트·동결 판정
+    contact_obs_clip: float = 20.0
+
+    # ---- 성공 판정 (pour_v1 계승) — 보상과 분리된 **기준 지표** ----------------------
+    success_fill_ratio: float = 0.50
     success_spill_max: float = 0.40
     success_xy_thresh: float = 0.20           # 두 컵 중심 xy 거리
-    success_hold_steps: int = 10              # 로깅용: 이만큼 유지해야 episode_success
+    success_hold_steps: int = 10
 
-    # ---- 낙하 판정 (pour_v1 left_cup_drop 기하 기준 — 양쪽에 적용) ------------------
-    # ★임계는 물리 검증된 적 없다(pour_v1 CLAUDE.md) — P2 probe 에서 재실측 대상.
-    drop_dist_m: float = 0.06                 # palm↔컵 거리가 기준 대비 이만큼 벌어짐
-    drop_z_m: float = 0.08                    # 컵이 기준 대비 이만큼 하강
+    # ---- 종료 --------------------------------------------------------------------
+    runaway_joint_vel: float = 20.0
+    drop_below_table_m: float = 0.03          # 컵 원점이 (테이블 상면 + 원점오프셋 − 이 값) 아래면 낙하
 
-    # ---- 보상 (rewards.py 9항) ----------------------------------------------------
-    hold_source_weight: float = 2.0
-    hold_receiver_weight: float = 1.0
-    hold_envelope_credit: float = 0.6
-    hold_grip_credit: float = 0.4
-    aim_weight: float = 1.5
-    aim_sharpness: float = 4.0
-    aim_height_offset: float = 0.05           # target 개구 위 조준점 높이
-    tilt_weight: float = 2.0
-    tilt_target_deg: float = 110.0
-    tilt_prox_std: float = 0.10
-    pour_capture_weight: float = 25.0
-    pour_release_weight: float = 0.0          # ★기본 0 — 바닥 붓기 보상 위험(주석 참조)
-    success_weight: float = 10.0
-    spill_weight: float = -2.0
-    spill_step_cap: float = 0.5
-    drop_penalty_weight: float = -5.0
-    action_rate_weight: float = -0.3
-    # ★임계 3종 분리 — grasp_lift_fabric 정렬(08.23). 하나로 쓰면 스침을 막으려
-    #   올린 값이 참여 판정까지 올려 약한 접촉을 누락시킨다.
-    contact_force_threshold: float = 1.0      # N — 대향 게이트·감쌈 마디 판정
-    participation_force_threshold: float = 0.1   # N — grip_frac 참여 판정
-    envelope_force_threshold: float = 0.5     # N — 엄격 감쌈(전 마디 동시), 진단 전용
-
-    # ---- 태스크 -------------------------------------------------------------------
     console_log_interval: int = 600
-    runaway_joint_vel: float = 20.0           # = grasp_lift_fabric
-
-    # ---- ADR (축 하나: success fill ratio 0.20 → 0.50) ----------------------------
-    enable_adr: bool = False
-    adr_fill_initial: float = 0.20
-    adr_fill_final: float = 0.50
-    adr_num_increments: int = 30
-    adr_increment_interval: int = 3000
-    adr_trigger_threshold: float = 0.3
-
-    # ---- 물리 스위치 (기본 ON — fab_test10 베이스라인 정합) --------------------------
-    enable_gravity: bool = True
-    gravity_compensation: float = 1.0
-    enable_self_collisions: bool = True
-
-    # ---- 씬 픽스처 (= grasp_lift_fabric) ------------------------------------------
-    env_fixture_spawn: sim_utils.UsdFileCfg = ENV_FIXTURE_SPAWN
-    ground_plane_z: float = -0.10
-
-    # ---- 접촉 필터 (resolve_cfg 파생 — 컵 루트 prim, cup_big_sdf 는 루트가 rigid body)
-    source_contact_filter: tuple = ()
-    receiver_contact_filter: tuple = ()
 
     # ---- 파생 자산 cfg -------------------------------------------------------------
     robot_cfg: ArticulationCfg = None
     source_cup_cfg: RigidObjectCfg = None
     receiver_cup_cfg: RigidObjectCfg = None
     beads_cfg = None
+    table_spawn: sim_utils.UsdFileCfg = TABLE_SPAWN
+    source_contact_filter: tuple = ()
+    receiver_contact_filter: tuple = ()
 
     observation_space: int = 0
     action_space: int = 0
     state_space: int = 0
+    # 파생 폭(로깅·검증용) — resolve_cfg 가 채운다
+    num_actions_per_side: int = 0
 
     def __post_init__(self) -> None:
         resolve_cfg(self)
 
 
-# 액션 폭 상수: source palm 6 + receiver palm xyz 3.
-# ★receiver_control_mode 와 무관하게 **불변**이다 — frozen 은 [6:9] 를 무시할 뿐.
-#   pour_v1 의 "frozen→learned 체크포인트 인계" 규약 계승.
-NUM_ACTIONS = 9
+def _hand_action_width(profile) -> int:
+    """손가락 수 × 채널 수 (grasp_s2r `_derive_spaces` coupled3 와 동일 규약)."""
+    n_ch = len(set(profile.hand_channel_of_joint.values()))
+    return n_ch * len(profile.finger_sensor_bodies)
 
 
 def resolve_cfg(cfg: "PourFabricEnvCfg") -> None:
-    """스위치 → 자산 cfg · 차원 파생. **멱등** — hydra 오버라이드 후 env 가 재호출한다.
-
-    (근거는 grasp_lift_fabric.resolve_cfg 와 동일: hydra 는 필드만 덮어쓰고
-     __post_init__ 을 다시 돌리지 않는다.)
-    """
+    """스위치 → 자산 cfg · 차원 파생. **멱등** — hydra 오버라이드 후 env 가 재호출한다."""
     pair = _bm.get_pair(cfg.pair_name)
-
-    if cfg.receiver_control_mode not in ("frozen", "learned"):
-        raise ValueError(
-            f"receiver_control_mode='{cfg.receiver_control_mode}' — frozen|learned 만.")
 
     cfg.robot_cfg = build_robot_cfg(pair, self_collisions=cfg.enable_self_collisions,
                                     gravity=cfg.enable_gravity)
     cfg.source_cup_cfg = build_cup_cfg(SOURCE_CUP_PRIM)
     cfg.receiver_cup_cfg = build_cup_cfg(RECEIVER_CUP_PRIM)
     cfg.beads_cfg = make_beads_cfg(_ASSETS_DIR, n=int(cfg.bead_count))
-    # cup_big_sdf: RigidBodyAPI = 루트 prim → 필터도 루트.
     cfg.source_contact_filter = (SOURCE_CUP_PRIM,)
     cfg.receiver_contact_filter = (RECEIVER_CUP_PRIM,)
 
-    if not cfg.warm_bank_source_path:
-        cfg.warm_bank_source_path = os.path.join(
-            _HDGP_ROOT, "data", f"pour_fab_warm_{pair.name}_src.hdf5")
-    if not cfg.warm_bank_receiver_path:
-        cfg.warm_bank_receiver_path = os.path.join(
-            _HDGP_ROOT, "data", f"pour_fab_warm_{pair.name}_rcv.hdf5")
+    for p in (pair.source, pair.receiver):
+        if _hand_action_width(p) != _hand_action_width(pair.source):
+            raise ValueError("양팔 손 액션 폭이 다르다 — 같은 손 자산이어야 한다")
+    hand_w = _hand_action_width(pair.source)
+    cfg.num_actions_per_side = 6 + hand_w
+    cfg.action_space = 2 * cfg.num_actions_per_side
 
-    j = (pair.source.num_arm_joints + pair.source.num_hand_joints
-         + pair.receiver.num_arm_joints + pair.receiver.num_hand_joints)
-    f = len(pair.source.fingers) + len(pair.receiver.fingers)
-    cfg.action_space = NUM_ACTIONS
-    # joint pos/vel/effort(3j) + 접촉력(f)
-    # + source컵 pose(src palm 프레임, 7) + receiver컵 pose(rcv palm 프레임, 7)
-    # + 주둥이→개구 delta(3) + source컵 up-axis(3)
-    # + prev_action(A) + palm 지령 상태(A — slew 지령은 액션의 저역통과라 상태다.
-    #   grasp_lift_fabric 의 +6 규약을 액션 폭으로 일반화)
-    cfg.observation_space = 3 * j + f + 7 + 7 + 3 + 3 + 2 * cfg.action_space
-    # critic = policy + 비드 분율 4(in_src/in_tgt/spill/crossed)
-    #        + 비드 무게중심(receiver 프레임, 3) + 두 컵 lin/ang vel(12)
-    # ★비드 ground truth 는 **critic 전용** — 실기에 비드 추적이 없다(actor 금지).
-    cfg.state_space = cfg.observation_space + 4 + 3 + 12
+    # policy obs (팔마다): arm q/qd(2·A) + hand q/qd(2·H) + palm_pos 3 + palm_axes 6
+    #   + tips_rel_palm 3F + palm_to_cup 3 + cup_to_tips 3F + joint_err H + cup_up 3
+    # + 공통: src_cup→rcv_cup 3 + 주둥이→개구 3 + prev_action Dact
+    per = 0
+    for p in (pair.source, pair.receiver):
+        a, h, f = p.num_arm_joints, p.num_hand_joints, len(p.finger_sensor_bodies)
+        per += 2 * a + 2 * h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3
+    cfg.observation_space = per + 3 + 3 + cfg.action_space
+    # critic = policy + 비드 분율 4 + 비드 무게중심(rcv 프레임) 3 + 두 컵 lin/ang vel 12
+    #        + 진행도 1 + 손가락 접촉력 2F
+    f_src = len(pair.source.finger_sensor_bodies)
+    f_rcv = len(pair.receiver.finger_sensor_bodies)
+    cfg.state_space = cfg.observation_space + 4 + 3 + 12 + 1 + f_src + f_rcv
 
 
 @configclass
