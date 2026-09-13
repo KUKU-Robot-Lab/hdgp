@@ -41,6 +41,7 @@ FJ_REWARD_TERMS = (
     "hand_floor",
     "cmd_rate",
     "wrap",
+    "palm_progress",
 )
 
 # 왜: 손끝 진행량 clamp 상한(10 m) — 사실상 무한이지만 NaN/inf 값이 폭주하는 것만 막는다.
@@ -108,10 +109,31 @@ class FJRewardCfg:
     # ★09.07 kp_a7: 래치는 sticky 라 튕겨 올라갔다 상판에 놓인 컵도 lifted 다 — 그 env 에 벌점이 500 스텝 붙어
     #   접근 자체가 죽었다. **들고 있을 때**(dz > hold_dz)만 벌한다. env 의 drop_frac 판정선과 같은 값.
     cmd_rate_hold_dz: float = 0.03
+    # ★★09.13 Phase 1 — 둘 다 기본값이면 **꺼짐**(현행과 비트 동일).
+    #   palm_scale: 손바닥–물체 표면 간극의 진행형(들기 전). 손끝–물체 **중심** 거리(fingertip_progress)는
+    #     손가락을 굽히면 손끝이 중심에서 멀어져 굽힘을 벌할 수 있다(관찰 #110). 손바닥은 손가락의
+    #     상류라 굽힘과 무관하다.
+    #   grasp_g_min/q_lo/q_hi: 들기·성공 보너스 × g(q), g = g_min + (1−g_min)·clip((q−q_lo)/(q_hi−q_lo), 0, 1).
+    #     q = 5손가락 파지 품질(`grasp_quality`). 성공 술어는 안 건드린다 — fj_h2 는 술어에 감쌈 사다리를
+    #     걸었다가 0.627 에 잠겨 성공이 무너졌다. g_min > 0 이라 평손도 수입이 남는다(무행동 함정 방지).
+    palm_scale: float = 0.0
+    grasp_g_min: float = 1.0
+    grasp_q_lo: float = 0.0
+    grasp_q_hi: float = 1.0
 
     def __post_init__(self):
         if self.success_steps < 1:
             raise ValueError(f"success_steps must be ≥ 1, got {self.success_steps}")
+        if self.palm_scale < 0.0:
+            raise ValueError(f"palm_scale must be non-negative, got {self.palm_scale}")
+        if not (0.0 < self.grasp_g_min <= 1.0):
+            raise ValueError(f"grasp_g_min must be in (0, 1], got {self.grasp_g_min}")
+        if not (self.grasp_q_lo < self.grasp_q_hi):
+            raise ValueError(f"grasp_q_lo {self.grasp_q_lo} must be < grasp_q_hi {self.grasp_q_hi}")
+        # ★g(q) 는 성공 순간 **1회 전액** 지급과만 설계됐다. 분할 지급(near_goal 스텝마다)에 곱하면 스텝마다
+        #   다른 g 가 걸려 할인 구조가 달라진다 — 설계 없이 켜지지 않게 막는다(09.13 리뷰).
+        if self.grasp_g_min < 1.0 and not self.goal_one_shot:
+            raise ValueError("grasp_g_min < 1 은 goal_one_shot=True(연속 판정·1회 전액)와만 쓴다")
         if self.hand_floor_max < 0.0 or self.lift_clip < 0.0:
             raise ValueError("hand_floor_max / lift_clip must be non-negative")
         if self.cmd_rate_scale < 0.0:
@@ -215,6 +237,9 @@ def compute_fj_reward(
     cmd_rate: torch.Tensor,
     wrap_frac: torch.Tensor | None = None,
     wrap_closest: torch.Tensor | None = None,
+    grasp_q: torch.Tensor | None = None,
+    palm_gap: torch.Tensor | None = None,
+    closest_palm: torch.Tensor | None = None,
     cfg: FJRewardCfg,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """B 보상. 반환 (total (N,), terms dict, out dict).
@@ -226,6 +251,9 @@ def compute_fj_reward(
     - cmd_rate(N,) ≥ 0 는 env 가 준 정규화 지령 변화율 — lifted 이고 **들고 있을 때**만 벌한다.
     - hand_curl(N,) ∈ [0,1] 은 env 가 준 **실측** 뿌리·중간 마디 정규화 굴곡. `wrap_scale`
       이 0 이거나 안 넘기면 `wrap` 항은 0 이라, 켜지 않은 런은 현행과 비트 동일하다.
+    - ★09.13 grasp_q(N,) ∈ [0,1] 은 5손가락 파지 품질(`grasp_quality`). `grasp_g_min < 1` 이면 lift_bonus·
+      goal_bonus 에 g(q) 가 곱해진다. palm_gap/closest_palm(N,) 은 손바닥 표면 간극과 그 래칫 —
+      `palm_scale > 0` 이면 `palm_progress` 가 켜진다. 둘 다 기본값이면 꺼짐.
     """
     n = obj_z.shape[0]
     _check_shapes(n, obj_z=obj_z, settled_z=settled_z, lifted_prev=lifted_prev, ft_dist=ft_dist,
@@ -253,15 +281,35 @@ def compute_fj_reward(
         wrap_delta = torch.zeros_like(obj_z)
         new_wrap_closest = wrap_closest
     kp_delta, new_closest_kp = _progress_delta(kp_dist, closest_kp)
+    # ★★09.13 파지 계수 g(q) — 들기·성공 **지급 순간**의 보너스에만 곱한다. g_min 1.0 이면 g ≡ 1(꺼짐).
+    if cfg.grasp_g_min < 1.0:
+        if grasp_q is None:
+            raise ValueError("grasp_g_min < 1 인데 grasp_q 가 없다 — 조용히 전액 지급이 된다")
+        if grasp_q.shape != obj_z.shape:
+            raise ValueError(f"grasp_q {tuple(grasp_q.shape)} ≠ {tuple(obj_z.shape)}")
+        _ramp = ((grasp_q - cfg.grasp_q_lo) / (cfg.grasp_q_hi - cfg.grasp_q_lo)).clamp(0.0, 1.0)
+        grasp_g = cfg.grasp_g_min + (1.0 - cfg.grasp_g_min) * _ramp
+    else:
+        grasp_g = torch.ones_like(obj_z)
+    # ★★09.13 손바닥 접근 진행형 — 표면 간극의 에피소드 최단거리 갱신분(들기 전). 래칫 규약은 손끝과 같다.
+    if cfg.palm_scale > 0.0:
+        if palm_gap is None or closest_palm is None:
+            raise ValueError("palm_scale > 0 인데 palm_gap/closest_palm 이 없다 — 조용히 0 이 된다")
+        if palm_gap.shape != obj_z.shape or closest_palm.shape != obj_z.shape:
+            raise ValueError(f"palm_gap {tuple(palm_gap.shape)} · closest_palm {tuple(closest_palm.shape)} "
+                             f"≠ {tuple(obj_z.shape)}")
+        palm_delta, new_closest_palm = _progress_delta(palm_gap, closest_palm)
+    else:
+        palm_delta, new_closest_palm = torch.zeros_like(obj_z), closest_palm
 
     terms = {
         "fingertip_progress": cfg.ft_scale * ft_delta.clamp(0.0, FT_PROGRESS_CLIP).sum(dim=-1) * not_lifted,
         "lift": cfg.lift_scale * (cfg.lift_base + dz).clamp(0.0, cfg.lift_clip) * not_lifted,
-        "lift_bonus": cfg.lift_bonus * just_lifted.float(),
+        "lift_bonus": cfg.lift_bonus * just_lifted.float() * grasp_g,
         "keypoint_progress": cfg.kp_scale * kp_delta.clamp(0.0, KP_PROGRESS_CLIP) * lifted_f,
-        # ★술어와 짝을 이룬 지급(위 cfg 주석). 연속=1회 전액 · 누적=A 와 같은 분할.
-        "goal_bonus": (cfg.goal_bonus * is_success.float()) if cfg.goal_one_shot
-                      else (cfg.goal_bonus / cfg.success_steps) * near_goal.float(),
+        # ★술어와 짝을 이룬 지급(위 cfg 주석). 연속=1회 전액 · 누적=A 와 같은 분할. 둘 다 파지 계수 g 를 곱한다.
+        "goal_bonus": ((cfg.goal_bonus * is_success.float()) if cfg.goal_one_shot
+                       else (cfg.goal_bonus / cfg.success_steps) * near_goal.float()) * grasp_g,
         "arm_vel": -cfg.arm_vel_scale * arm_qd.abs().sum(dim=-1),
         "hand_vel": -cfg.hand_vel_scale * hand_qd.abs().sum(dim=-1),
         # 왜: 센서 없이 상판 관통을 벌하는 기하 항 — 상판(hand_floor_z) 아래 깊이에 비례, 상한 hand_floor_max.
@@ -273,6 +321,8 @@ def compute_fj_reward(
         #   총보상의 40% 가 **공짜**였다 — ep69 lifted_frac g1 0.618 vs h1 0.0065. 컵 옆에 붙어
         #   wrap 만 벌고 들지 않았다. 유지는 전제조건(wrap_frac ≥ wrap_tol)·goal_bonus 가 맡는다.
         "wrap": cfg.wrap_scale * wrap_delta,
+        # ★★09.13 손바닥 접근 진행형(들기 전) — 손끝 기준(fingertip_progress)의 대체. 끄면 정확히 0.
+        "palm_progress": cfg.palm_scale * palm_delta.clamp(0.0, FT_PROGRESS_CLIP) * not_lifted,
     }
     if tuple(terms) != FJ_REWARD_TERMS:
         raise RuntimeError(f"term order drifted: {tuple(terms)} != {FJ_REWARD_TERMS}")
@@ -280,5 +330,5 @@ def compute_fj_reward(
     # 왜: NaN 물리값(폭발 env)이 total 을 오염시켜 PPO 전체를 죽이지 않게 — abnormal 종료는 env 가 따로 한다.
     total = torch.nan_to_num(torch.stack(list(terms.values()), dim=0).sum(dim=0), nan=0.0, posinf=0.0, neginf=0.0)
     out = {"lifted": lifted, "just_lifted": just_lifted, "closest_ft": new_closest_ft, "closest_kp": new_closest_kp,
-           "wrap_closest": new_wrap_closest}
+           "wrap_closest": new_wrap_closest, "closest_palm": new_closest_palm}
     return total, terms, out

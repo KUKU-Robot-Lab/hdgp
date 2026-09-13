@@ -119,6 +119,13 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
     rw_grasp_tau_q: float = 0.1
     # 손바닥 법선(`_palm_ee_R()` 열 0)과 손바닥→물체 방향의 cos 하한. 이하면 q = 0(손등 파지, 관찰 #68).
     rw_grasp_palm_cos_min: float = 0.0
+    # ★★09.13 Phase 1 — 기본값은 전부 **꺼짐**(형제 트랙 `grasp_fj_rh` 가 이 base 를 상속한다). 켜는 값은 leaf.
+    #   `rw_palm_scale`: 손바닥–물체 표면 간극의 진행형(들기 전) — 손끝 기준(`rw_ft_scale`)의 대체.
+    #   `rw_grasp_g_min/q_lo/q_hi`: 들기·성공 보너스에 곱하는 파지 계수 g(q). g_min 1.0 = 끔(g ≡ 1).
+    rw_palm_scale: float = 0.0
+    rw_grasp_g_min: float = 1.0
+    rw_grasp_q_lo: float = 0.0
+    rw_grasp_q_hi: float = 1.0
 
     # ★09.08 손 20관절 **독립** 지령 스위치. 기본 False.
     #   왜 기본이 False 인가: (1) 기존 계약 22/131/155 와 fj_b9 체크포인트를 그대로 둔다.
@@ -282,6 +289,10 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
                            wrap_scale=float(self.rw_wrap_scale),
                            wrap_tau_xy=float(self.rw_wrap_tau_xy),
                            wrap_tau_z=float(self.rw_wrap_tau_z),
+                           palm_scale=float(self.rw_palm_scale),
+                           grasp_g_min=float(self.rw_grasp_g_min),
+                           grasp_q_lo=float(self.rw_grasp_q_lo),
+                           grasp_q_hi=float(self.rw_grasp_q_hi),
                            **{f.name: getattr(a, f.name) for f in fields(a)})
 
 
@@ -373,6 +384,31 @@ class GraspFJTesolloRightEnvCfg(GraspFJEnvCfg):
     #   REWARD_AUDIT.md 09.08 D1-a 절: 목표당 keypoint_progress 잔여 ≤ 200×tol = 22.5 ≪ goal_bonus 1000.
     goal_delta_distance: float = 0.0
     goal_max: int = 5
+
+    # ── ★★09.13 보상 개편 — 5손가락 파지 품질(사용자 확정 · reward-audit REVISE → 재생 보정 후 적용) ──
+    # 문제(fj_h3 ep 8,270): 성공 5개 중 4.72개인데 컵을 손바닥–엄지 사이에 끼우거나 손끝 몇 개로 든다.
+    #   성공 보너스가 총점의 93.5% 인데 성공 술어가 컵 자세만 봐서 **어떻게 잡았는지가 점수에 없다**.
+    #   h3 는 학습할수록 손가락을 폈다(hand_curl 0.27→0.19 · 중간마디 실측 0.28→0.17).
+    # ① 손끝 진행 → 손바닥 접근 진행. 손끝–물체 **중심** 거리는 굽힐수록 멀어져 굽힘을 벌할 수 있다(관찰 #110).
+    rw_ft_scale: float = 0.0
+    rw_palm_scale: float = 50.0
+    # ② wrap 진행형 끔 — 스텝당 0.046(총점 0.15%)이고 8천 epoch 동안 리셋 값에 머물렀다. 같은 커널이 ⑤의 q 로 간다.
+    rw_wrap_scale: float = 0.0
+    # ③ cmd_rate 끔 — 09.07 B-v(리프트 후 팔 액션 반전 벌점). h3 에서 켜져 있었고(armed 1) −0.13/step(0.4%),
+    #   측도가 탐색 잡음이다(관찰 #102). 팔 실효 slew 0.15 rad/s 라 반전해도 컵이 안 흔들린다(arm_qd p99 0.94).
+    rw_cmd_rate_scale: float = 0.0
+    # ④ 감쌈 전제조건 끔 — fj_h2 에서 오르기만 하는 사다리가 0.627 에 잠겨 성공이 무너졌다.
+    grasp_wrap_start: float = 0.0
+    # ⑤ 파지 계수 g(q) = g_min + (1−g_min)·clip((q−q_lo)/(q_hi−q_lo), 0, 1) — **들기·성공 보너스에만** 곱한다.
+    #   q = 5손가락 soft-min(τq 0.1) × 손바닥 방향. 임계는 09.13 재생 분포(1,200 env × 900 스텝, 학습 호스트):
+    #     성공 순간 q  h3(평손) p10/50/90 = 0.085/0.127/0.154 · h2(감쌈) 0.179/0.383/0.440 (max 0.506)
+    #   q_lo = h3 p50 → 평손 운반은 g_min. q_hi = h2 p90 → 롤아웃에서 도달한 천장(관찰 #131·#213).
+    #   g_min 0.5: 첫 성공이 300 스텝으로 늦어도 평손 과제 가치 106 > 무행동 100(할인형 Check 1, 테스트가 잠근다).
+    #   ⚠두 런 모두 다섯 손가락이 전부 w_f ≥ 0.5 인 순간은 0 이다(h2 약한 손가락 = 엄지 53% · 새끼 43%).
+    #     새 정책의 성공 p90 이 q_hi 에 붙으면 q_hi 를 **재측정으로** 올린다 — 자동 사다리는 두지 않는다.
+    rw_grasp_g_min: float = 0.5
+    rw_grasp_q_lo: float = 0.13
+    rw_grasp_q_hi: float = 0.44
 
 
 @configclass

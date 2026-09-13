@@ -663,6 +663,47 @@ def test_grasp_trace_is_play_only():
     assert "if self._grasp_trace is not None:" in _fn_block(_ENV, "_progress_reward")
 
 
+# ---------------------------------------------------------------- 09.13 Phase 1 — 파지 계수·손바닥 접근·정리
+def test_phase1_reward_inputs_are_wired_through_the_seam():
+    """새 입력(q·손바닥 간극)은 이음매 `_progress_reward` 가 만들어 넘기고, 래칫 상태는 여기서 되먹인다.
+    손바닥 래칫은 **에피소드 경계에서만** 푼다(wrap 래칫과 같은 규약)."""
+    _pr = _fn_block(_ENV, "_progress_reward")
+    for tok in ("grasp_q=", "palm_gap=", "closest_palm=self._closest_palm",
+                'self._closest_palm = out["closest_palm"]'):
+        assert tok in _pr, tok
+    assert "self._closest_palm = torch.full(" in _fn_block(_ENV, "_setup_fabrics")
+    _ordered(_fn_block(_ENV, "_reset_idx"), [
+        "super()._reset_idx(env_ids)",
+        "self._closest_palm[env_ids] = -1.0",
+    ])
+
+
+def test_phase1_reward_cfg_fields_are_passed_explicitly():
+    """★부모 cfg(`a`)는 B 고유 필드를 모른다 — 명시적으로 안 넘기면 hydra 로 값을 줘도 조용히
+    기본값(꺼짐)이 되어 실험이 no-op 이 된다(wrap_* 때 한 번 겪은 함정)."""
+    blk = _fn_block(_CFG, "progress_reward_cfg")
+    for f in ("palm_scale", "grasp_g_min", "grasp_q_lo", "grasp_q_hi"):
+        assert f"{f}=float(self.rw_{f})" in blk, f
+
+
+def test_phase1_leaf_decisions_09_13():
+    """09.13 사용자 확정 — 손끝 진행 → 손바닥 접근, wrap 진행형·cmd_rate 끔, 감쌈 전제조건 끔, g_min 0.5.
+
+    ★끈 항은 **지우지 않는다**(관찰 #179: 계약은 뒤집는다). 계수 0 으로 두고, 무엇을 막으려던
+      항이었는지(cmd_rate = 09.07 B-v 리프트 후 팔 액션 반전)가 base 주석에 남는다.
+    ★감쌈 전제조건은 fj_h2 에서 오르기만 하는 사다리가 0.627 에 잠겨 성공을 무너뜨렸다 —
+      이번에는 성공 술어를 건드리지 않고 보너스 크기만 파지 품질로 가른다.
+    """
+    leaf = _class_body(_CFG, "GraspFJTesolloRightEnvCfg")
+    for tok in ("rw_ft_scale: float = 0.0", "rw_palm_scale: float = 50.0", "rw_wrap_scale: float = 0.0",
+                "rw_cmd_rate_scale: float = 0.0", "grasp_wrap_start: float = 0.0",
+                "rw_grasp_g_min: float = 0.5"):
+        assert tok in leaf, tok
+    lo = float(re.search(r"rw_grasp_q_lo: float = ([0-9.]+)", leaf).group(1))
+    hi = float(re.search(r"rw_grasp_q_hi: float = ([0-9.]+)", leaf).group(1))
+    assert 0.0 <= lo < hi <= 1.0, f"q_lo {lo} · q_hi {hi}"
+
+
 # ---------------------------------------------------------------- SAPG yaml = b1 하이퍼 + SAPG 덮개 (09.07 B-iv)
 def test_sapg_yaml_is_b1_hyperparameters_plus_sapg_overlay():
     """b1→b2 에서 9개 키가 한꺼번에 바뀌었고 b2~b6 는 전부 e100~150 에 같은 서명으로 무너졌다.

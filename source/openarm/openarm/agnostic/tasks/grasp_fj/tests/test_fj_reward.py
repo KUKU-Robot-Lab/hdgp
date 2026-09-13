@@ -69,14 +69,17 @@ def test_field_sets_are_identical():
     #   wrap_scale/wrap_tau_xy/wrap_tau_z 감쌈 보상(09.09 도입 → 09.11 표면 기준 재정의).
     #     `wrap_scale=0.0` 이면 항이 정확히 0 이라 A 와 수치가 같다 — 그 동치는
     #     `test_only_goal_bonus_diverged` 가 계속 고정한다.
-    assert b - a == {"goal_one_shot", "wrap_scale", "wrap_tau_xy", "wrap_tau_z"}, b - a
+    #   ★09.13 palm_scale · grasp_g_min/grasp_q_lo/grasp_q_hi — 손바닥 접근 진행형 · 파지 계수 g(q).
+    #     둘 다 기본값이면 꺼짐이라 A 와 수치가 같다(`test_grasp_factor_and_palm_progress_are_off_by_default`).
+    assert b - a == {"goal_one_shot", "wrap_scale", "wrap_tau_xy", "wrap_tau_z",
+                     "palm_scale", "grasp_g_min", "grasp_q_lo", "grasp_q_hi"}, b - a
     assert a - b == set(), a - b
-    # ★항 이름·순서: 공유 9항이 **접두사로** 같고, B 가 끝에 `wrap` 하나를 더 갖는다.
+    # ★항 이름·순서: 공유 9항이 **접두사로** 같고, B 고유 항(wrap · palm_progress)이 끝에 붙는다.
     #   끝에 붙여야 로깅·순서 가드가 기존 항의 자리를 안 바꾼다.
     assert FJ_REWARD_TERMS[:len(PROGRESS_REWARD_TERMS)] == PROGRESS_REWARD_TERMS, \
         "공유 항의 이름·순서가 어긋났다"
-    assert FJ_REWARD_TERMS[len(PROGRESS_REWARD_TERMS):] == ("wrap",), \
-        "B 고유 항은 wrap 하나이고 맨 끝이어야 한다"
+    assert FJ_REWARD_TERMS[len(PROGRESS_REWARD_TERMS):] == ("wrap", "palm_progress"), \
+        "B 고유 항은 wrap · palm_progress 순서로 맨 끝이어야 한다"
 
 
 def test_only_goal_bonus_diverged():
@@ -322,3 +325,123 @@ def test_grasp_quality_rejects_bad_inputs_loudly():
         grasp_quality(**{**base, "e_z": torch.zeros(2, 14)})
     with pytest.raises(ValueError):
         grasp_quality(**{**base, "palm_cos": torch.ones(3)})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 09.13 Phase 1 — 파지 계수 g(q) · 손바닥 접근 진행형 palm_progress
+#   g(q) = g_min + (1−g_min)·clip((q−q_lo)/(q_hi−q_lo), 0, 1) 를 **지급 순간**의 보너스에만 곱한다:
+#     lift_bonus × g(q) (들어 올리는 순간의 파지 = "들기 전에 파지 형태를 맞춘다")
+#     goal_bonus × g(q) (성공 순간의 파지)
+#   성공 술어 자체는 그대로다 — 공차 커리큘럼·게이트가 안 흔들린다(fj_h2 사다리 잠김 경로 없음).
+#   palm_progress: 손바닥–물체 표면 간극의 에피소드 최단거리 갱신분(들기 전) — 손끝 기준의 대체.
+#   두 기능 모두 기본값이면 **꺼짐**이고 현행과 비트 동일해야 한다.
+# ══════════════════════════════════════════════════════════════════════════════
+def _g_ref(q: float, g_min: float, lo: float, hi: float) -> float:
+    return g_min + (1.0 - g_min) * min(max((q - lo) / (hi - lo), 0.0), 1.0)
+
+
+def test_grasp_factor_and_palm_progress_are_off_by_default():
+    """기본 cfg 는 새 입력을 넘겨도 모든 항이 현행과 **비트 동일**하다 — 켜지 않은 런·형제 트랙 보호."""
+    kw = _inputs()
+    succ = torch.tensor([False, False, False, False, True, False])
+    cfg = FJRewardCfg(goal_one_shot=True)
+    _, t0, _ = compute_fj_reward(cfg=cfg, is_success=succ, **kw)
+    _, t1, _ = compute_fj_reward(cfg=cfg, is_success=succ, grasp_q=torch.zeros(N),
+                                 palm_gap=torch.full((N,), 0.05), closest_palm=torch.full((N,), 0.2), **kw)
+    for k in FJ_REWARD_TERMS:
+        assert torch.equal(t0[k], t1[k]), f"기본값인데 {k} 가 바뀌었다"
+    assert torch.all(t1["palm_progress"] == 0.0)
+
+
+def test_grasp_factor_scales_only_the_bonus_payments():
+    """g(q) 는 들기·성공 **지급 스텝**의 보너스에만 걸린다. 나머지 항은 한 비트도 안 바뀐다."""
+    kw = _inputs()                       # dz 0.15(3)·0.12(5) 가 이번에 래치 → just_lifted = 3, 5
+    succ = torch.tensor([False, False, False, False, True, False])
+    q = torch.tensor([0.9, 0.9, 0.9, 0.1, 0.4, 0.9])
+    base = FJRewardCfg(goal_one_shot=True)
+    cfg = dataclasses.replace(base, grasp_g_min=0.5, grasp_q_lo=0.2, grasp_q_hi=0.6)
+    _, t0, _ = compute_fj_reward(cfg=base, is_success=succ, **kw)
+    _, t1, _ = compute_fj_reward(cfg=cfg, is_success=succ, grasp_q=q, **kw)
+    assert float(t1["lift_bonus"][3]) == pytest.approx(300.0 * _g_ref(0.1, 0.5, 0.2, 0.6))   # 평손 들기 = 절반
+    assert float(t1["lift_bonus"][5]) == pytest.approx(300.0 * _g_ref(0.9, 0.5, 0.2, 0.6))   # 감싸 들기 = 전액
+    assert float(t1["goal_bonus"][4]) == pytest.approx(1000.0 * _g_ref(0.4, 0.5, 0.2, 0.6))
+    for k in FJ_REWARD_TERMS:
+        if k not in ("lift_bonus", "goal_bonus"):
+            assert torch.equal(t0[k], t1[k]), f"{k} 는 계수와 무관해야 한다"
+
+
+def test_grasp_factor_is_floor_linear_ceiling():
+    """q ≤ q_lo → g_min(평손도 들기·성공 수입은 남는다 — 무행동 함정 방지) · q ≥ q_hi → 1 · 사이는 선형."""
+    kw = _inputs()
+    succ = torch.ones(N, dtype=torch.bool)
+    cfg = FJRewardCfg(goal_one_shot=True, grasp_g_min=0.5, grasp_q_lo=0.2, grasp_q_hi=0.6)
+    qs = torch.tensor([0.0, 0.2, 0.3, 0.4, 0.6, 1.0])
+    _, t, _ = compute_fj_reward(cfg=cfg, is_success=succ, grasp_q=qs, **kw)
+    for i, qv in enumerate(qs.tolist()):
+        assert float(t["goal_bonus"][i]) == pytest.approx(1000.0 * _g_ref(qv, 0.5, 0.2, 0.6))
+
+
+def test_palm_progress_pays_only_new_approach_before_lift():
+    """진행형 규약 그대로 — 첫 스텝 0 · 유지 0 · 새로 줄인 만큼 · 후퇴 0 · 들고 나면 0."""
+    cfg = FJRewardCfg(palm_scale=50.0)
+    kw = _inputs()                       # env 3·4·5 는 lifted
+    succ = torch.zeros(N, dtype=torch.bool)
+
+    def step(gap: float, cl: torch.Tensor):
+        _, t, o = compute_fj_reward(cfg=cfg, is_success=succ, palm_gap=torch.full((N,), gap),
+                                    closest_palm=cl, **kw)
+        return t["palm_progress"], o["closest_palm"]
+
+    r, cl = step(0.12, torch.full((N,), -1.0))
+    assert torch.all(r == 0.0), "센티널 스텝은 0 — 리셋 자세의 간극을 사면 안 된다"
+    r, cl = step(0.12, cl)
+    assert torch.all(r == 0.0), "간극 유지에 지급됐다"
+    r, cl = step(0.10, cl)
+    assert float(r[0]) == pytest.approx(50.0 * 0.02, abs=1e-5)
+    assert torch.all(r[3:] == 0.0), "들고 난 env 에 접근 보상이 나갔다"
+    r, cl = step(0.11, cl)
+    assert torch.all(r == 0.0), "후퇴에 지급됐다"
+
+
+def test_grasp_factor_and_palm_inputs_are_validated():
+    """켜 놓고 입력을 안 넘기면 조용히 1·0 이 되는 대신 죽는다. 경계가 뒤집힌 cfg 도 죽는다."""
+    with pytest.raises(ValueError):
+        FJRewardCfg(grasp_g_min=0.0)
+    with pytest.raises(ValueError):
+        FJRewardCfg(grasp_g_min=1.2)
+    with pytest.raises(ValueError):
+        FJRewardCfg(goal_one_shot=True, grasp_g_min=0.5, grasp_q_lo=0.6, grasp_q_hi=0.6)
+    with pytest.raises(ValueError):
+        FJRewardCfg(palm_scale=-1.0)
+    with pytest.raises(ValueError):                 # g(q) 는 1회 전액 지급과만 짝이다(분할 지급은 설계 밖)
+        FJRewardCfg(goal_one_shot=False, grasp_g_min=0.5, grasp_q_lo=0.2, grasp_q_hi=0.6)
+    kw = _inputs()
+    succ = torch.zeros(N, dtype=torch.bool)
+    with pytest.raises(ValueError):
+        compute_fj_reward(cfg=FJRewardCfg(goal_one_shot=True, grasp_g_min=0.5, grasp_q_lo=0.2, grasp_q_hi=0.6),
+                          is_success=succ, **kw)
+    with pytest.raises(ValueError):
+        compute_fj_reward(cfg=FJRewardCfg(palm_scale=50.0), is_success=succ, **kw)
+
+
+def test_flat_grasp_still_beats_doing_nothing_when_first_success_is_late():
+    """★reward-audit Check 1(할인형, 관찰 #160) — 평손 파지(g = g_min)의 과제 가치가 무행동 가치보다 커야
+    FRESH 초반에 '안 드는' 해로 무너지지 않는다. 무행동 가치 = 들기 전 lift 상수 20×0.05 = 1.0/step → 100.
+
+    느린 초반을 가정한다: 첫 들기 290 · 첫 성공 300 스텝 · 목표 간격 12 스텝 · 5목표.
+    g_min 0.5 → 106(1.06배) 로 통과, 0.3 → 63 으로 미달 — 09.13 D2(0.5) 결정의 근거를 잠근다.
+    """
+    import re as _re
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parent.parent / "grasp_fj_env_cfg.py").read_text(encoding="utf-8")
+    leaf = src.split("class GraspFJTesolloRightEnvCfg")[1].split("\nclass ")[0]
+    # 아래 산술은 들기·성공 보너스와 lift 상수를 `FJRewardCfg` 기본값으로 읽는다 — leaf 가 덮으면 틀린 수를 검사한다.
+    for f in ("rw_lift_bonus", "rw_goal_bonus", "rw_lift_scale", "rw_lift_base"):
+        assert f not in leaf, f"leaf 가 {f} 를 덮는다 — 이 테스트의 기본값 전제가 깨졌다"
+    g_min = float(_re.search(r"rw_grasp_g_min: float = ([0-9.]+)", leaf).group(1))
+    cfg = FJRewardCfg()
+    gamma, t_lift, t_first, gap = 0.99, 290, 300, 12
+    v_task = g_min * (cfg.lift_bonus * gamma ** t_lift
+                      + cfg.goal_bonus * sum(gamma ** (t_first + k * gap) for k in range(5)))
+    v_idle = cfg.lift_scale * cfg.lift_base / (1.0 - gamma)
+    assert v_task > v_idle, f"평손 과제 가치 {v_task:.1f} ≤ 무행동 {v_idle:.1f} (g_min {g_min})"

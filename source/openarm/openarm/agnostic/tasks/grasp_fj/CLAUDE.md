@@ -22,7 +22,7 @@
 | obs `cmd_state` = 팔 `q*_{t-1}`(7) · 액션 블록 27 = 팔 지연 액션 7 + **손 정규화 관절 목표 20**(`_action_obs` 이음매) → **actor 136 / critic 160, action 27** | SimToolReal 은 post-EMA `prev_action_targets` 를 관측한다. 손 EMA 상태(τ≈10스텝)는 a_{t-1}·hand_q 로 복원 불가(09.08 리뷰). A 는 `self.actions` 그대로(산술 불변). fj_b9(22/131/155)와 **호환 안 됨** — FRESH |
 | 성공 = **연속** 10회 · tol 0.1125→0.015 · 커리큘럼 게이트 **2.0**(= goal_max 5 의 40%; 상류 3/50 = 6%, 3.0 은 60% 라 10배 엄격) · 스텝 예산 **목표당**(성공 시 시계→2, 0/1 은 검증기 거부) | SimToolReal `env.py:2437`·`utils.py:238`. 공차·연속·`goal_first_z_range (0.2125,0.28)` 는 **3중 잠금쌍**(래치 0.10 불변식). 게이트 입력 = `ctrl/prev_ep_successes_mean` |
 | **목표열 = 제자리 유지**: `goal_delta_distance 0.0` · `goal_max 5`(> 게이트 2.0, 검증기) · 회전 0° 상속 | D1-a. 첫 목표 = 리프트 높이, 이후 같은 자리 → "들고 정지" 가 성공. 5목표 후 truncated(value_bootstrap). `REWARD_AUDIT.md` 09.08 2판 ACCEPT |
-| 보상 = `fj_reward.py`(**포크**), `goal_bonus` 만 A 와 다름(성공 순간 1회 전액) | `_get_rewards` 는 안 덮는다 — A 의 이음매 `_progress_reward` 만 덮는다 |
+| 보상 = `fj_reward.py`(**포크**), `goal_bonus` 성공 순간 1회 전액 · ★09.13 들기·성공 보너스 × 파지 계수 g(q) · 손끝 진행 → `palm_progress` · `wrap`·`cmd_rate` 계수 0 · 감쌈 전제조건 끔 | `_get_rewards` 는 안 덮는다 — 이음매 `_progress_reward` 가 q·손바닥 간극을 만들어 넘긴다. 근거·보정 수치는 아래 "09.13 보상 개편" |
 | 외란 2.7 N/kg · 0.27 N·m/kg (A 의 1/7.5) | Kuka 어깨 300 N·m vs OpenArm 40 N·m. 파지 품질을 강제하는 유일한 장치 |
 | fabric 런타임 0(`self.fabric = None`), 부모 버퍼(`fabric_q`·`palm_targets`·`_palm_lo`…)는 모양만 유지 | 부모 리셋·앵커·박스 부트스트랩이 읽는다 |
 | A 를 덮는 훅은 팔·손 어댑터 + 이음매뿐 (`_get_rewards`·`_get_dones`·`_hand_command` 금지) | 보상·종료 본체를 덮으면 A/B 가 같은 과제가 아니다 |
@@ -39,6 +39,16 @@
 2. **정합**: 같은 체크포인트·같은 액션열을 sim(이 env)과 실기 pd 노드에 넣었을 때 관절 궤적 오차가 A 경로보다 작다.
 3. `ctrl/joint_err_max` < 0.1 rad · `ctrl/arm_limit_sat` ≈ 0 · `task/hand_floor_depth_max` ≈ 0 · `done/hand_floor` ≈ 0.
 4. 3노드 배포에서 fabric 노드 없이 정책 출력이 pd 노드 계약(`policy_control` v2)에 바로 실린다.
+
+## 09.13 보상 개편 — 5손가락 파지 품질
+- **문제**: fj_h3 는 성공 4.72/5 인데 컵을 손바닥–엄지 사이에 끼우거나 손끝 몇 개로 든다. 성공 보너스가 총점의 93.5% 인데 술어가 컵 자세만 본다 — 어떻게 잡았는지가 점수에 없다.
+- **q** (`fj_reward.grasp_quality`): 손가락마다 마디(_3·_4·tip) 표면 커널 평균 w_f → 5손가락 soft-min(τq 0.1) × 손바닥이 물체를 향함(cos > 0). 가장 약한 손가락이 지배한다(사용자 확정 "안전한 파지는 5손가락 개입").
+- **g(q)** = g_min + (1−g_min)·clip((q−q_lo)/(q_hi−q_lo), 0, 1) 를 **들기·성공 지급 순간에만** 곱한다. 성공 술어·공차 커리큘럼은 그대로다(fj_h2 사다리 잠김 경로 없음).
+- **보정**(09.13 재생, `ep_8000` 1,200 env × 900 스텝, 서버): 성공 순간 q — h3 p10/50/90 0.085/0.127/0.154 · h2 0.179/0.383/0.440(max 0.506). q_lo 0.13(h3 p50) · q_hi 0.44(h2 p90) · g_min 0.5(할인형 Check 1: 첫 성공이 300 스텝이어도 평손 과제 가치 106 > 무행동 100). 손바닥 cos 는 들고 있는 동안 p10 0.66 이상 — 법선 부호 확인. 원자료 `~/rl_ws/our_source/fj_grasp_dump/`.
+- ⚠두 런 모두 다섯 손가락이 전부 w_f ≥ 0.5 인 순간이 없다(h2 약한 손가락: 엄지 53% · 새끼 43%, 작은 셰이커일수록 q 가 낮다). 새 정책의 성공 p90 이 q_hi 에 붙으면 **재측정으로** q_hi 를 올린다 — 자동 사다리 금지.
+- **판정 지표**: `task/grasp_q_at_success`(1순위, 같은 tol 에서 비교) · `task/grasp_wf_<손가락>_at_success` · `task/grasp_q_at_lift` · `task/palm_facing_at_success`(1.0 근처가 정상) · `reward/palm_progress` · 기존 `ctrl/drop_sticky_frac`·`task/tilt_deg`·`ctrl/prev_ep_successes_mean`.
+- **대조 설계**: GPU0 에 12,288 env 두 런, 같은 seed. i1 = 정리만(`env.rw_grasp_g_min=1.0`), i2 = 정리 + g(q)(leaf 기본값). i2−i1 이 g(q) 효과다. 12,288 env 는 SAPG 블록 2048 을 EXTRA 로 줘야 6블록이다(런처는 BLK 를 train.py 에 넘기지 않는다).
+- **재생 보정**: `play.py --dump_grasp <npz>` — ⚠play 는 `params/env.yaml` 복원이 CLI 의 `env.*` 를 되돌린다(`tol_eval` 만 되살림). 적용값은 `--dump_extras task/tol,task/wrap_tol` 로 확인할 것.
 
 ## 기동
 ```bash

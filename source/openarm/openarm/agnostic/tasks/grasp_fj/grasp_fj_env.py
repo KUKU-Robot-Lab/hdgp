@@ -72,6 +72,9 @@ class GraspFJEnv(FJKeypointEnv):
         self._wf_succ_ema = None                  # (F,) — 손가락 수는 첫 계산에서 안다
         # play `--dump_grasp` 가 리스트로 바꿔 켠다. None 이면 학습 경로의 host 동기화 0.
         self._grasp_trace = None
+        # ★★09.13 Phase 1 — 손바닥 접근 진행형의 래칫(에피소드 최단 표면 간극). −1 = 이번 에피소드 관측 없음.
+        self._closest_palm = torch.full((self.num_envs,), -1.0, device=self.device)
+        self._palm_gap_last = torch.zeros(self.num_envs, device=self.device)
         self.fabric = None                        # 명시적 OFF — A 의 `_log_fabric_metrics` 가 None 으로 분기
         self._fab_t = self._build_joint_index()
         self._syn_to_fab_idx = self._build_syn_to_fab_idx()
@@ -416,11 +419,23 @@ class GraspFJEnv(FJKeypointEnv):
         ★09.09 `hand_curl` 을 여기서 만들어 넘긴다. 부모 `_get_rewards` 는 계약 금지 훅이라
           인자를 추가할 수 없는데, 이 이음매는 `self` 를 갖는다 — 그래서 여기가 유일한 지점이다.
         """
+        # ★★09.13 Phase 1 — 파지 품질 q(들기·성공 보너스 계수)와 손바닥 표면 간극(접근 진행형)도 여기서 만든다.
+        q, _, _ = self._grasp_quality_geom()
+        if not getattr(self, "_rw_boot_printed", False):
+            # ★적용값을 부팅 로그에 한 번 찍는다(관찰 #168) — 대조군이 CLI 로만 갈리므로 두 런의 이 줄이 달라야 한다.
+            self._rw_boot_printed = True
+            rc = kw["cfg"]
+            print(f"[grasp_fj] 보상 계수(적용값) ft {rc.ft_scale} · palm {rc.palm_scale} · wrap {rc.wrap_scale} · "
+                  f"cmd_rate {rc.cmd_rate_scale} · g(q) g_min {rc.grasp_g_min} q∈[{rc.grasp_q_lo}, {rc.grasp_q_hi}] · "
+                  f"감쌈 전제조건 start {self.cfg.grasp_wrap_start}", flush=True)
         total, terms, out = compute_fj_reward(
-            wrap_frac=self._wrap_frac_geom(), wrap_closest=self._wrap_closest, **kw)
+            wrap_frac=self._wrap_frac_geom(), wrap_closest=self._wrap_closest,
+            grasp_q=q, palm_gap=self._palm_gap_last, closest_palm=self._closest_palm, **kw)
         # 무상태 모듈 — 래칫 상태는 여기서 되먹인다(부모가 closest_ft 를 되먹이는 것과 같은 규약).
         if out["wrap_closest"] is not None:
             self._wrap_closest = out["wrap_closest"]
+        if out["closest_palm"] is not None:
+            self._closest_palm = out["closest_palm"]
         # ★09.13 들기 순간은 모듈 안에서만 생긴다 — 같은 스텝의 로그(`_log_grasp_quality`)가 읽게 남긴다.
         self._just_lifted_now = out["just_lifted"]
         if self._grasp_trace is not None:
@@ -444,6 +459,9 @@ class GraspFJEnv(FJKeypointEnv):
         palm = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
         d = self._env_local(self.object.data.root_pos_w) - palm
         cos = (self._palm_ee_R()[:, :, 0] * d).sum(dim=-1) / d.norm(dim=-1).clamp(min=1e-6)
+        # ★09.13 손바닥 표면 간극 = 수평(물체 축까지 − R) + 높이(파지 띠 밖) — 마디 커널과 같은 기하.
+        self._palm_gap_last = ((d[:, :2].norm(dim=-1) - self._obj_grasp_r).clamp(min=0.0)
+                               + (d[:, 2].abs() - self._obj_grasp_h).clamp(min=0.0))
         rc = self._rw_cfg
         q, wf = grasp_quality(
             e_xy=self._wrap_e_xy, e_z=self._wrap_e_z, finger_sizes=self._grasp_finger_sizes,
@@ -769,6 +787,7 @@ class GraspFJEnv(FJKeypointEnv):
         # ★진행형 wrap 래칫은 **에피소드 경계에서만** 풀린다. 목표 재시작(`_restart_goal_clock`)
         #   에서는 안 푼다 — 파지는 목표를 넘어 이어지고, 풀면 같은 포위를 목표마다 재지급한다.
         self._wrap_closest[env_ids] = -1.0
+        self._closest_palm[env_ids] = -1.0          # ★09.13 손바닥 접근 래칫도 에피소드 경계에서만 푼다
         # 리셋은 홈 텔레포트라 q*_{-1} = 홈 q = 실측 q (DESIGN §1 B).
         self._arm_q_target[env_ids] = self._default_q[env_ids][:, self._arm_ids_t]
         self._prev_arm_q_target[env_ids] = self._arm_q_target[env_ids]   # 리셋 스텝을 큰 이동으로 세지 않는다
