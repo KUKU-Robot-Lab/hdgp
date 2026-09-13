@@ -1,9 +1,16 @@
 {
- "iter": 0,
- "label": "t2r_i00fix",
- "round": 1,
+ "iter": 1,
+ "label": "t2r_i01",
+ "round": 2,
  "best": null,
  "started": 1789282006.5596128,
  "success_ticks": 0,
- "restart": "09.13 nesting hacking \uc218\uc815 \ud6c4 \uac19\uc740 iter_00 \ubcf4\uc0c1\uc73c\ub85c \uc7ac\ud559\uc2b5"
+ "restart": "09.13 nesting hacking \uc218\uc815 \ud6c4 \uac19\uc740 iter_00 \ubcf4\uc0c1\uc73c\ub85c \uc7ac\ud559\uc2b5",
+ "prev": {
+  "iter": 0,
+  "label": "t2r_i00fix",
+  "epoch": 626,
+  "episode_success": 0.0,
+  "rcv_grasped": 0.0001
+ }
 }
