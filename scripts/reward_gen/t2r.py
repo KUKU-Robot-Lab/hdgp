@@ -38,7 +38,7 @@ DEFAULT_ROOT = _HDGP / "reward_gen"
 FEEDBACK_TAG_PREFIXES = ("reward/", "task/success_now", "task/episode_success",
                          "task/src_grasped", "task/rcv_grasped", "task/src_cup_lift",
                          "task/rcv_cup_lift", "task/src_tilt_deg", "task/aim_dist",
-                         "bead/in_target", "bead/spill", "done/drop", "episode_lengths")
+                         "bead/in_target", "bead/spill", "done/drop", "episode_lengths/step", "rewards/step")
 
 
 def _iter_dir(root: Path, track: str, n: int) -> Path:
@@ -114,7 +114,8 @@ def cmd_reflect(a) -> int:
     series: dict[str, list[float]] = {}
     for ev in a.events:
         data = load_tfevents(ev)
-        for tag, pts in data.items():
+        for raw, pts in data.items():
+            tag = raw[:-5] if raw.endswith("/iter") else raw   # rl_games: env extras → <tag>/iter
             if any(tag.startswith(p) for p in FEEDBACK_TAG_PREFIXES):
                 series.setdefault(tag, []).extend(v for _, v in pts)
     if not series:

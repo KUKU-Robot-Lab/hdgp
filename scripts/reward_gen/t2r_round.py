@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import os
 import subprocess
 import sys
 import time
@@ -91,7 +90,8 @@ def summarize(events_dir: Path, last_n: int = 50) -> dict:
         return {}
     data = load_tfevents(files[-1])
     out = {}
-    for tag, pts in data.items():
+    for raw, pts in data.items():
+        tag = raw[:-5] if raw.endswith("/iter") else raw     # rl_games 는 env extras 를 <tag>/iter 로 쓴다
         if tag in KEY_TAGS or tag.startswith("reward/"):
             vals = [v for _, v in pts]
             if vals:
