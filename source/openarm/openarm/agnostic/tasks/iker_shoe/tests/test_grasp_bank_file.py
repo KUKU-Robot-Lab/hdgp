@@ -56,8 +56,15 @@ def test_bank_entries_have_no_finger_at_an_opposite_or_beyond_limit():
     start_row[thumb3_idx] = (lo + hi) / 2.0
     start_pose = torch.tensor(start_row, dtype=torch.float32).unsqueeze(0).expand(joint_pos.shape[0], -1)
 
-    valid = gb.hand_state_valid(joint_pos, start_pose, grip_pose, lower, upper)
-    assert valid.all(), f"{int((~valid).sum())} of {valid.numel()} bank entries have a finger at an opposite or beyond limit"
+    # The bank's real r_hj_thumb_3 start varies within THUMB3_RANGE, so the midpoint start used above is off
+    # by up to half the range -- widen the back-bend allowance for that joint only.
+    thumb3_slack = (hi - lo) / 2.0
+    others = [i for i in range(len(profile.hand_joint_names)) if i != thumb3_idx]
+    worst_other = gb.worst_backbend(joint_pos[:, others], start_pose[:, others], grip_pose[others])
+    worst_thumb3 = gb.worst_backbend(joint_pos[:, [thumb3_idx]], start_pose[:, [thumb3_idx]], grip_pose[[thumb3_idx]])
+    hand_ok = gb.hand_state_valid(joint_pos, start_pose, grip_pose, lower, upper)
+    valid = hand_ok & (worst_other <= gb.MAX_BACKBEND_RAD) & (worst_thumb3 <= gb.MAX_BACKBEND_RAD + thumb3_slack)
+    assert valid.all(), f"{int((~valid).sum())} of {valid.numel()} bank entries have a finger at an opposite/beyond limit or excess back-bend"
 
 
 def test_bank_was_built_for_the_selected_robot():

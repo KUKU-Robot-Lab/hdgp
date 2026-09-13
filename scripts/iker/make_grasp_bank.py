@@ -101,6 +101,7 @@ def main() -> int:
     open_pose = torch.tensor(prof.hand_open_pose, device=dev)
     grip_pose = torch.tensor(prof.hand_grip_pose, device=dev)
     thumb3 = list(prof.hand_joint_names).index("r_hj_thumb_3")
+    finger_ids = gb.finger_index(prof.hand_joint_names).to(dev)
     ik = DifferentialIKController(DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls"), num_envs=n, device=dev)
     home = arm.data.default_joint_pos.clone()
     shoe_obj = meta["objects"][layout.MOVING_SHOE]
@@ -163,14 +164,15 @@ def main() -> int:
         write_shoe(start.expand(n, 7))
         run(SETTLE_STEPS, goal, palm_quat, start_hand)
         # Diagnostic: fingers already bent back before closing means the teleport overlap is the cause.
-        settle_bad = ~gb.hand_state_valid(arm.data.joint_pos[:, hand_ids], start_hand, grip_pose, lower, upper)
-        state = {"close": torch.zeros_like(start_hand), "target": start_hand.clone()}
+        settle_bad = ~gb.grasp_acceptable(arm.data.joint_pos[:, hand_ids], start_hand, grip_pose, lower, upper)
+        state = gb.FingerStopState.start(start_hand)
 
         def closing():
-            state["close"], state["target"] = gb.synergy_step(
-                state["close"], state["target"], arm.data.joint_pos[:, hand_ids], start_hand, grip_pose, lower, upper
+            nonlocal state
+            state = gb.finger_stop_step(
+                state, arm.data.joint_pos[:, hand_ids], start_hand, grip_pose, lower, upper, finger_ids
             )
-            return state["target"]
+            return state.target
 
         run(CLOSE_STEPS, goal, palm_quat, closing)
         record = {
@@ -179,8 +181,8 @@ def main() -> int:
             "shoe_pose": torch.cat([shoe.data.root_pos_w - origins, shoe.data.root_quat_w], dim=-1),
             "palm_pose": torch.cat([arm.data.body_pos_w[:, palm] - origins, arm.data.body_quat_w[:, palm]], dim=-1),
         }
-        hand_ok = gb.hand_state_valid(record["joint_pos"][:, hand_ids], start_hand, grip_pose, lower, upper)
-        held = lift_test(goal, palm_quat, state["target"])
+        hand_ok = gb.grasp_acceptable(record["joint_pos"][:, hand_ids], start_hand, grip_pose, lower, upper)
+        held = lift_test(goal, palm_quat, state.target)
 
         # Replay: restore the recorded state as an environment reset would, then lift again.
         arm.write_joint_state_to_sim(record["joint_pos"], torch.zeros_like(record["joint_pos"]))
@@ -227,6 +229,14 @@ def main() -> int:
         "shoe_meta_sha256": hashlib.sha256(layout.SHOE_META_PATH.read_bytes()).hexdigest(),
         "seed": args.seed,
         "rounds": stats,
+        "closing": {
+            "rule": "finger_stop",
+            "trigger_backbend_rad": gb.FINGER_TRIGGER_BACKBEND_RAD,
+            "trigger_error_rad": gb.BLOCKED_ERR_RAD,
+            "squeeze_rad": gb.FINGER_SQUEEZE_RAD,
+            "close_rate_per_step": gb.CLOSE_RATE_PER_STEP,
+            "max_backbend_rad": gb.MAX_BACKBEND_RAD,
+        },
     }
     out = layout.RUNS_DIR / f"config_{config.index:02d}" / "grasp_bank.json"
     run_files.write_json(out, gb.bank_document(entries, arm.data.joint_names, metadata))

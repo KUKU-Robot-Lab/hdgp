@@ -22,6 +22,10 @@ LIMIT_TOLERANCE_RAD = 0.05
 CLOSE_RATE_PER_STEP = 1.0 / 150.0  # full open -> grip in 1.25 s at 120 Hz
 MIN_RISE_M = 0.05  # spec §8: the palm lifts 0.10 m; the shoe must follow at least half of it
 MAX_HOLD_SLIP_M = 0.01  # spec §8: shoe-to-palm drift over the hold after lifting
+FINGER_TRIGGER_BACKBEND_RAD = 0.10  # a joint bent back this far against its closing direction triggers its finger
+FINGER_SQUEEZE_RAD = 0.15  # a triggered finger's frozen target sits this far past its trigger position
+MAX_BACKBEND_RAD = 0.30  # bank acceptance: no finger bent back further than this after closing
+FINGERS = ("thumb", "index", "middle", "ring", "pinky")
 
 # Pre-grasp distribution measured with probes on configuration 0 (scratchpad notes 2026-09-13).
 TILT_DEG_RANGE = (-40.0, -15.0)
@@ -78,6 +82,26 @@ def palm_goal_positions(
     x = shoe_xy[0] + along * math.cos(yaw) - lateral * math.sin(yaw)
     y = shoe_xy[1] + along * math.sin(yaw) + lateral * math.cos(yaw)
     return torch.stack([x, y, shoe_top_z + pregrasp.height_above_top], dim=-1)
+
+
+def finger_index(joint_names: Sequence[str]) -> torch.Tensor:
+    """(J,) long ids into ``FINGERS``, parsed from hand joint names shaped ``r_hj_<finger>_<k>``."""
+    ids = []
+    for name in joint_names:
+        parts = name.split("_")
+        finger = parts[-2] if len(parts) >= 2 else ""
+        if finger not in FINGERS:
+            raise ValueError(f"joint name {name!r} does not parse as r_hj_<finger>_<k>")
+        ids.append(FINGERS.index(finger))
+    return torch.tensor(ids, dtype=torch.long)
+
+
+def worst_backbend(joint_pos: torch.Tensor, start_pose: torch.Tensor, grip_pose: torch.Tensor) -> torch.Tensor:
+    """(N,): the max over joints of ``back_bend = -(joint_pos - start_pose) . direction``, positive meaning
+    bent against the closing direction. ``joint_pos``/``start_pose`` are (N, J); ``grip_pose`` is (J,)."""
+    direction = torch.sign(grip_pose.unsqueeze(0) - start_pose)
+    back_bend = -(joint_pos - start_pose) * direction
+    return back_bend.max(dim=-1).values
 
 
 def synergy_step(
@@ -141,6 +165,78 @@ def hand_state_valid(
     beyond_limit = (joint_pos < lower - LIMIT_TOLERANCE_RAD) | (joint_pos > upper + LIMIT_TOLERANCE_RAD)
     invalid = (movable & at_opposite_limit).any(dim=-1) | beyond_limit.any(dim=-1)
     return ~invalid
+
+
+@dataclass(frozen=True)
+class FingerStopState:
+    close: torch.Tensor  # (N, J), passed through to/from synergy_step for untriggered joints
+    target: torch.Tensor  # (N, J), the commanded target
+    triggered: torch.Tensor  # (N, J) bool, sticky once a finger's joint triggers
+    trigger_q: torch.Tensor  # (N, J), joint_pos recorded at each finger's first trigger
+
+    @classmethod
+    def start(cls, start_pose: torch.Tensor) -> "FingerStopState":
+        return cls(
+            close=torch.zeros_like(start_pose),
+            target=start_pose,
+            triggered=torch.zeros_like(start_pose, dtype=torch.bool),
+            trigger_q=start_pose,
+        )
+
+
+def finger_stop_step(
+    state: FingerStopState,
+    joint_pos: torch.Tensor,
+    start_pose: torch.Tensor,
+    grip_pose: torch.Tensor,
+    lower: torch.Tensor,
+    upper: torch.Tensor,
+    finger_ids: torch.Tensor,
+) -> FingerStopState:
+    """One closing step of the per-finger stop-on-contact rule.
+
+    ``synergy_step``'s per-joint freeze lets a finger's ``_2`` keep closing after ``_3`` of the same finger
+    is already blocked by the shoe, driving ``_2`` into the shoe and folding ``_3`` back past its own closing
+    direction. Here, any movable joint of a finger crossing a back-bend or tracking-error threshold triggers
+    the whole finger: every movable joint of that finger freezes at its position when the finger first
+    triggered, offset by a fixed squeeze, sticky for the rest of closing (and lifting/holding, since callers
+    keep calling this after closing ends). Untriggered joints keep advancing via ``synergy_step``.
+    ``joint_pos``/``start_pose`` are (N, J); ``grip_pose``/``lower``/``upper``/``finger_ids`` are (J,). Does
+    not mutate ``state``; returns a new one.
+    """
+    direction = torch.sign(grip_pose.unsqueeze(0) - start_pose)
+    movable = (grip_pose.unsqueeze(0) - start_pose).abs() > 1e-4
+    back_bend = -(joint_pos - start_pose) * direction
+    err = (state.target - joint_pos).abs()
+    joint_trigger_now = ((back_bend > FINGER_TRIGGER_BACKBEND_RAD) | (err > BLOCKED_ERR_RAD)) & movable
+
+    finger_trigger_now = torch.zeros_like(joint_trigger_now)
+    for finger_id in range(len(FINGERS)):
+        mask = (finger_ids == finger_id).unsqueeze(0)
+        any_trig = (joint_trigger_now & mask).any(dim=-1, keepdim=True) & mask
+        finger_trigger_now = finger_trigger_now | any_trig
+
+    newly = finger_trigger_now & ~state.triggered
+    triggered = state.triggered | finger_trigger_now
+    trigger_q = torch.where(newly, joint_pos, state.trigger_q)
+
+    close, std_target = synergy_step(state.close, state.target, joint_pos, start_pose, grip_pose, lower, upper)
+    frozen_target = torch.clamp(trigger_q + FINGER_SQUEEZE_RAD * direction, lower.unsqueeze(0), upper.unsqueeze(0))
+    target = torch.where(triggered, frozen_target, std_target)
+    return FingerStopState(close=close, target=target, triggered=triggered, trigger_q=trigger_q)
+
+
+def grasp_acceptable(
+    joint_pos: torch.Tensor,
+    start_pose: torch.Tensor,
+    grip_pose: torch.Tensor,
+    lower: torch.Tensor,
+    upper: torch.Tensor,
+) -> torch.Tensor:
+    """(N,) bool: a plausible grasp (see ``hand_state_valid``) with no finger bent back past ``MAX_BACKBEND_RAD``."""
+    return hand_state_valid(joint_pos, start_pose, grip_pose, lower, upper) & (
+        worst_backbend(joint_pos, start_pose, grip_pose) <= MAX_BACKBEND_RAD
+    )
 
 
 def lift_held(shoe_z_start: torch.Tensor, shoe_z_end: torch.Tensor, rel_after_lift: torch.Tensor, rel_after_hold: torch.Tensor) -> torch.Tensor:

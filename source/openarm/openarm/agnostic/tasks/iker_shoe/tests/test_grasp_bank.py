@@ -76,6 +76,74 @@ def test_hand_state_valid_accepts_a_joint_resting_at_its_opposite_limit_from_sta
     assert valid.tolist() == [True, False]
 
 
+FINGER_JOINTS = ["r_hj_index_2", "r_hj_index_3", "r_hj_middle_2", "r_hj_middle_3"]
+FSTART = torch.tensor([[0.0, 0.0, 0.0, 0.0]])
+FGRIP = torch.tensor([1.0, 1.0, 1.0, 1.0])
+FLOWER = torch.tensor([-1.0, -1.0, -1.0, -1.0])
+FUPPER = torch.tensor([2.0, 2.0, 2.0, 2.0])
+
+
+def test_finger_index_groups_joints_by_finger_and_rejects_unknown_names():
+    names = FINGER_JOINTS + ["r_hj_thumb_1", "r_hj_ring_1", "r_hj_pinky_1"]
+    ids = gb.finger_index(names)
+    expected = [gb.FINGERS.index(f) for f in ("index", "index", "middle", "middle", "thumb", "ring", "pinky")]
+    assert ids.tolist() == expected
+    with pytest.raises(ValueError, match="joint_x"):
+        gb.finger_index(["joint_x"])
+
+
+def test_worst_backbend_counts_motion_against_the_closing_direction():
+    joint_pos = torch.tensor([[-0.2, 0.05, 0.1, 0.05]])  # index_2 back-bent 0.2; others closing normally
+    assert gb.worst_backbend(joint_pos, FSTART, FGRIP).tolist() == pytest.approx([0.2])
+
+
+def test_finger_stop_freezes_the_whole_finger_when_one_joint_bends_back():
+    finger_ids = gb.finger_index(FINGER_JOINTS)
+    state = gb.FingerStopState.start(FSTART)
+    joint_pos = torch.tensor([[0.05, -0.15, 0.05, 0.05]])  # index_3 back-bends 0.15 > FINGER_TRIGGER_BACKBEND_RAD
+    state = gb.finger_stop_step(state, joint_pos, FSTART, FGRIP, FLOWER, FUPPER, finger_ids)
+    assert state.triggered.tolist() == [[True, True, False, False]]
+    expected_index = torch.tensor([0.05, -0.15]) + gb.FINGER_SQUEEZE_RAD
+    assert torch.allclose(state.target[0, :2], expected_index)
+    assert state.target[0, 2] == pytest.approx(gb.CLOSE_RATE_PER_STEP)
+    assert state.target[0, 3] == pytest.approx(gb.CLOSE_RATE_PER_STEP)
+
+    # Second step, the back-bend condition clears -- the index finger stays frozen at the first-trigger values.
+    joint_pos2 = torch.tensor([[0.2, 0.0, gb.CLOSE_RATE_PER_STEP, gb.CLOSE_RATE_PER_STEP]])
+    state2 = gb.finger_stop_step(state, joint_pos2, FSTART, FGRIP, FLOWER, FUPPER, finger_ids)
+    assert torch.allclose(state2.target[0, :2], expected_index)
+    # The untriggered middle joints keep advancing by CLOSE_RATE_PER_STEP each step.
+    assert state2.target[0, 2] == pytest.approx(2 * gb.CLOSE_RATE_PER_STEP)
+    assert state2.target[0, 3] == pytest.approx(2 * gb.CLOSE_RATE_PER_STEP)
+
+
+def test_finger_stop_triggers_on_tracking_error():
+    finger_ids = gb.finger_index(FINGER_JOINTS)
+    # index_2's previous commanded target ran far ahead of the (blocked) actual joint position.
+    state = gb.FingerStopState(
+        close=torch.zeros_like(FSTART),
+        target=torch.tensor([[0.5, 0.0, 0.0, 0.0]]),
+        triggered=torch.zeros_like(FSTART, dtype=torch.bool),
+        trigger_q=FSTART.clone(),
+    )
+    joint_pos = torch.tensor([[0.0, 0.0, 0.0, 0.0]])  # err = |0.5 - 0.0| = 0.5 > BLOCKED_ERR_RAD; no back-bend
+    new_state = gb.finger_stop_step(state, joint_pos, FSTART, FGRIP, FLOWER, FUPPER, finger_ids)
+    assert new_state.triggered[0, :2].tolist() == [True, True]
+    assert new_state.trigger_q[0, 0] == pytest.approx(0.0)
+
+
+def test_grasp_acceptable_rejects_backbend_above_the_limit():
+    joint_pos = torch.tensor(
+        [
+            [-0.35, 0.05, 0.1, 0.05],  # index_2 back-bent 0.35 > MAX_BACKBEND_RAD
+            [-0.1, 0.05, 0.1, 0.05],  # ordinary mid-closing position, within the limit
+        ]
+    )
+    start = FSTART.expand(2, 4)
+    ok = gb.grasp_acceptable(joint_pos, start, FGRIP, FLOWER, FUPPER)
+    assert ok.tolist() == [False, True]
+
+
 def test_zero_tilt_palm_faces_down_with_fingers_toward_plus_y():
     rot = gb.palm_rotations(torch.tensor([0.0]), torch.tensor([0.0]))[0]
     assert torch.allclose(rot[:, 0], torch.tensor([0.0, 0.0, -1.0]))  # palmar side
