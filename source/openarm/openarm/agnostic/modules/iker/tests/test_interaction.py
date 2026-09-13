@@ -63,11 +63,25 @@ def test_exactly_one_python_block_is_required(response):
         (_function("try:\n    return None\nexcept Exception:\n    return None"), "Try"),
         ("def other(k):\n    return None\n", "no top-level function"),
         ("def get_interaction_data(k:\n", "syntax error"),
+        ("import numpy\n" + _function("return numpy.lib.npyio.os.getcwd()"), "attribute 'getcwd'"),
+        (_function("k['1'].tofile('keypoint.bin')\nreturn None"), "attribute 'tofile'"),
     ],
 )
 def test_forbidden_code_is_rejected_before_running(code, fragment):
     with pytest.raises(InteractionError, match=fragment):
         check_code(code)
+
+
+def test_common_numpy_math_on_keypoints_is_allowed():
+    body = (
+        "centre = np.mean(np.stack([k['1'], k['2']]), axis=0)\n"
+        "offset = np.linalg.norm(k['3'] - centre) * np.array([0.0, 1.0, 0.0])\n"
+        "for key, value in list(k.items()):\n"
+        "    k[key] = value.copy() + np.cross(offset, np.array([0.0, 0.0, 1.0])) * 0.0\n"
+        "return 'shoe', [1, 2, 3, 4], True, k"
+    )
+    result = run_interaction("import numpy as np\n" + _function(body), KEYPOINTS)
+    assert result.keypoint_ids == (1, 2, 3, 4) and np.allclose(result.coordinates[1], KEYPOINTS[1])
 
 
 def test_runtime_errors_and_timeouts_become_interaction_errors():

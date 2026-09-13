@@ -1,9 +1,11 @@
 """Run a VLM ``get_interaction_data`` response in a restricted namespace (design spec §6).
 
 The response must contain exactly one fenced Python block that defines ``get_interaction_data``.
-Only ``import numpy`` is allowed. Dunder names and attributes, ``try``, classes and the builtins that
-reach the interpreter (``open``, ``exec``, ``eval``, ``getattr`` ...) are rejected before anything
-runs, and the call itself runs under a wall-clock limit.
+Only ``import numpy`` is allowed. Attribute access is limited to an explicit list of names, so the
+numpy module graph cannot be walked to other modules (``numpy.lib.npyio.os``) and arrays cannot write
+files (``ndarray.tofile``). Dunder names, ``try``, classes and the builtins that reach the interpreter
+(``open``, ``exec``, ``eval``, ``getattr`` ...) are rejected before anything runs, and the call itself
+runs under a wall-clock limit.
 """
 
 from __future__ import annotations
@@ -30,6 +32,27 @@ _BANNED_NAMES = frozenset(
 _BANNED_NODES = (
     ast.ClassDef, ast.AsyncFunctionDef, ast.Global, ast.Nonlocal, ast.Try, getattr(ast, "TryStar", ast.Try),
     ast.Yield, ast.YieldFrom, ast.Await,
+)
+# Every attribute name the code may use: numpy math, ndarray/list/dict/str helpers. Anything else is
+# rejected at parse time, whatever object it is taken from.
+_ALLOWED_ATTRIBUTES = frozenset(
+    {
+        # numpy functions and constants
+        "abs", "absolute", "allclose", "arange", "arccos", "arcsin", "arctan", "arctan2", "argmax", "argmin",
+        "argsort", "array", "asarray", "average", "ceil", "clip", "concatenate", "copy", "cos", "cross",
+        "cumsum", "deg2rad", "degrees", "det", "diff", "dot", "e", "exp", "expand_dims", "eye", "flip",
+        "float32", "float64", "floor", "full", "hstack", "hypot", "inf", "int32", "int64", "inv", "isclose",
+        "isfinite", "isnan", "linalg", "linspace", "log", "matmul", "max", "maximum", "mean", "median", "min",
+        "minimum", "nan", "ndarray", "norm", "ones", "outer", "pi", "pinv", "prod", "rad2deg", "radians",
+        "reshape", "round", "sign", "sin", "solve", "sort", "sqrt", "square", "squeeze", "stack", "sum", "svd",
+        "tan", "transpose", "vstack", "where", "zeros",
+        # ndarray attributes and methods without I/O
+        "T", "all", "any", "astype", "dtype", "flatten", "item", "ndim", "ravel", "shape", "size", "std",
+        "tolist",
+        # list, dict and str helpers
+        "append", "endswith", "extend", "get", "index", "items", "join", "keys", "lower", "pop", "replace",
+        "split", "startswith", "strip", "update", "upper", "values",
+    }
 )
 _ALLOWED_BUILTINS = {
     name: getattr(builtins, name)
@@ -92,7 +115,7 @@ def _check_node(node: ast.AST) -> None:
         raise InteractionError(f"{type(node).__name__} is not allowed (line {line})")
     elif isinstance(node, ast.Name) and (node.id in _BANNED_NAMES or node.id.startswith("__")):
         raise InteractionError(f"name {node.id!r} is not allowed (line {line})")
-    elif isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+    elif isinstance(node, ast.Attribute) and node.attr not in _ALLOWED_ATTRIBUTES:
         raise InteractionError(f"attribute {node.attr!r} is not allowed (line {line})")
 
 
