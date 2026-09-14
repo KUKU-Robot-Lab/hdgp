@@ -13,6 +13,7 @@ parser.add_argument("--approach", type=str, default="", help="'cup' = 케이지�
 parser.add_argument("--z_off", type=float, default=0.04, help="케이지 목표 높이 = 컵 원점 + z_off [m]")
 parser.add_argument("--dey", type=float, default=0.0, help="palm pitch(ey) 델타 [deg] (음수 = 손가락을 수평 쪽으로)")
 parser.add_argument("--quiet", action="store_true")
+parser.add_argument("--cup_scale", type=float, default=-1.0, help="컵 스케일 override(<0 = cfg 값)")
 parser.add_argument("--side_axis", type=str, default="x", choices=["x", "y"])
 parser.add_argument("--side_m", type=float, default=0.10, help="cup2: 컵 옆 대기 오프셋(−y, 바깥쪽) [m]")
 parser.add_argument("--table_obstacle", type=int, default=1, help="0 = fabric 테이블 장애물 OFF(팔이 못 내려가는 원인 분리용)")
@@ -27,6 +28,9 @@ import openarm.tasks  # noqa
 import openarm.agnostic.tasks.pour_fabric_mimic.config  # noqa
 cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
 cfg.fabric_table_obstacle = bool(args.table_obstacle)
+if args.cup_scale > 0:
+    cfg.cup_scale = args.cup_scale
+    from openarm.agnostic.tasks.pour_fabric_mimic.pour_fabric_env_cfg import resolve_cfg as _rc; _rc(cfg)
 env = gym.make(args.task, cfg=cfg).unwrapped
 obs, _ = env.reset(); N, A, hold, half = env.num_envs, env.cfg.action_space, int(env.cfg.hold_steps), env.cfg.action_space // 2
 rig = env.src; jn = env.robot.data.joint_names
@@ -69,7 +73,7 @@ for t in range(args.steps):
         print(f"[reset t={t}] terminated envs={int(term.sum())} runaway={float(ex['task/runaway_rate']):.2f} drop={float(ex['done/drop']):.2f} "
               f"tiltS={float(ex['task/src_tilt_deg']):.1f} mimic={float(ex['ctrl/mimic_err_max']):.2f}", flush=True)
     if args.approach == "cup2" and (u in (79, 85, 90, 95, 100, 110)):
-        # 손 링크 기하 덤프: 어떤 링크가 컵 높이/발자국 안에 있는가 (컵 원점 기준, 외경 r=0.036·림 z=+0.08·바닥 −0.062 @0.8)
+        # 손 링크 기하 덤프(컵 원점 기준)
         c = cup_local()[0]; bn = env.robot.data.body_names
         rows = []
         for i, n in enumerate(bn):
