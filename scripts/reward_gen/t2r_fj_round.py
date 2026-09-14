@@ -25,6 +25,9 @@
       ★왜 커리큘럼을 보나(09.14 i00 실측): 공차는 3000 프레임(≈188 epoch)마다 성공 평균 ≥ 2.0 이면 ×0.9 로만 조여진다
         (e562·e749·e937). 조일 때마다 성공 수가 떨어져(3.46→2.72) 성공은 게이트 2.0 근처로 수렴한다 —
         성공만 보면 들기·접촉이 오르는 중인 런을 죽인다.
+  · 둘 다 아니어도 에피소드 퍼널(`stage/<단계>_ep`: 접근 → 파지 → 인벨롭 → 리프트 → 성공) 어느 단계가 최근 TOL_WINDOW epoch 에
+      STAGE_EPS 이상 올랐으면 epoch < 2×ROUND_EPOCHS · 경과 < 2×ROUND_HOURS 까지 continue(stage)
+      ★09.14 reach(사용자 "접근·파지·리프트가 잘 되는지 틱을 확인"): zero-shot 초반은 성공이 0 인 채 접근·파지가 오른다.
   · 유지가 아니고 epoch ≥ ROUND_EPOCHS 또는 ROUND_HOURS 경과 → advance
 """
 
@@ -46,25 +49,31 @@ from parse_tfevents import load_tfevents   # noqa: E402
 #:   ROUND 1000 epoch(~3h) 안에 들기·성공이 안 서면 보상이 신호를 못 주는 것으로 본다.
 #:   KEEP 2.0 = 공차 커리큘럼 게이트(tol_success_threshold). TOL_WINDOW 200 = 커리큘럼 점검 간격(3000 프레임 ≈ 188 epoch)+여유.
 #:   DONE_TOL 0.03 = 느슨한 공차(시작 0.1125)의 성공은 종료 근거가 아니다. 인벨롭 = 사용자 09.13 "5손가락 개입".
+#:   STAGE_EPS 0.02 = 퍼널 에피소드 비율이 200 epoch 에 2%p 이상 오르면 "오르는 중"(이벤트 EMA 흔들림보다 크게).
 ROUND_POLICY = {"ROUND_EPOCHS": 1000, "ROUND_HOURS": 4.0, "KEEP_SUCCESSES": 2.0, "TOL_WINDOW": 200, "TOL_EPS": 1e-4,
                 "DONE_SUCCESSES": 4.0, "DONE_TOL": 0.03, "DONE_FINGERS": 4.0, "DONE_PALM": 0.5,
-                "MAX_ROUNDS": 8, "LAST_N": 50}
+                "STAGE_EPS": 0.02, "MAX_ROUNDS": 8, "LAST_N": 50}
 SERVER = "server"
 SERVER_HDGP = "/home/oem/rl_ws/hdgp"
 SERVER_CONSOLE = "/home/oem/rl_ws/our_source/fj_t2r_runs"
 GPU = "0"                     # ★사용자 09.13: fj 실험은 GPU0 만(GPU1 = 붓기 루프)
 SAPG_BLOCKS = 6               # run_fj.sh 상류 규약: num_envs ÷ 6 = expl_coef_block_size
-#: 트랙(reward_gen/<track>) → gym id·play id·로그 폴더. ★09.14 reach(최종 목표 env: 테이블 가장자리 시작·cup_family) 추가.
+#: 트랙(reward_gen/<track>) → gym id·play id·로그 폴더·영상 길이(스텝). ★09.14 reach(최종 목표 env: 테이블 가장자리 시작·
+#:   cup_family·15 s) 추가 — 영상은 한 에피소드(900 스텝)를 다 담는다.
 TRACKS: dict[str, dict] = {
     "grasp_fj_envelope": {"task": "open-short_r_grasp_fj_t2r-lstm-sapg",
-                          "play": "open-short_r_grasp_fj_t2r-play-lstm-sapg", "logdir": "grasp-fj-t2r"},
+                          "play": "open-short_r_grasp_fj_t2r-play-lstm-sapg", "logdir": "grasp-fj-t2r",
+                          "video_length": 700},
     "grasp_fj_reach": {"task": "open-short_r_grasp_fj_t2r_reach-lstm-sapg",
-                       "play": "open-short_r_grasp_fj_t2r_reach-play-lstm-sapg", "logdir": "grasp-fj-t2r-reach"},
+                       "play": "open-short_r_grasp_fj_t2r_reach-play-lstm-sapg", "logdir": "grasp-fj-t2r-reach",
+                       "video_length": 900},
 }
 SUCCESS_TAG = "ctrl/prev_ep_successes_mean"
 KEY_TAGS = (SUCCESS_TAG, "task/successes_mean", "task/lifted_frac", "task/tol", "task/tilt_deg",
             "task/grasp_q_at_success", "done/tipped", "done/fell", "done/out_xy", "done/hand_floor",
             "done/abnormal", "done/max_goals")
+#: 에피소드 퍼널 단계 — env `grasp_fj_t2r/stage_funnel.STAGES` 와 같은 순서(테스트가 대조한다).
+STAGE_NAMES = ("reach", "grasp", "envelope", "lift", "success")
 _CRASH_WORDS = ("Traceback", "Killed", "overflow")
 
 
@@ -143,7 +152,7 @@ def summarize(data: dict, last_n: int, window: int) -> dict:
         if not raw.endswith("/iter"):
             continue
         tag = raw[:-5]
-        if tag in KEY_TAGS or tag.startswith(("reward/", "contact/")):
+        if tag in KEY_TAGS or tag.startswith(("reward/", "contact/", "stage/")):
             vals = [v for _, v in pts if v == v]
             if vals:
                 tail = vals[-last_n:]
@@ -168,13 +177,29 @@ def curriculum_moving(summary: dict, policy: dict = ROUND_POLICY) -> bool:
     return bool(t) and (t["ago"] - t["now"]) > policy["TOL_EPS"]
 
 
+def stage_funnel(summary: dict) -> dict:
+    """에피소드 퍼널 {단계: (now, ago)} — 태그가 없거나 아직 끝난 에피소드가 없으면(−1) None. ago 의 −1 은 0 으로 본다."""
+    out = {}
+    for s in STAGE_NAMES:
+        m = summary.get(f"stage/{s}_ep")
+        out[s] = None if (not m or m["now"] < 0) else (m["now"], max(m["ago"], 0.0))
+    return out
+
+
+def stage_moving(summary: dict, policy: dict = ROUND_POLICY) -> bool:
+    """최근 TOL_WINDOW epoch 안에 퍼널 어느 단계든 STAGE_EPS 이상 올랐나."""
+    return any(v is not None and v[0] - v[1] >= policy["STAGE_EPS"] for v in stage_funnel(summary).values())
+
+
 def judge(summary: dict, st: dict, hours: float | None, policy: dict = ROUND_POLICY) -> tuple[str, dict]:
     epoch = st.get("epoch") or 0
     succ = summary.get(SUCCESS_TAG, {}).get("last", 0.0)
     tol = summary.get("task/tol", {}).get("now")
     env_ok = envelope_ok(summary, policy)
     moving = curriculum_moving(summary, policy)
-    info = {"epoch": epoch, "successes": succ, "tol": tol, "curriculum_moving": moving, "envelope_ok": env_ok}
+    stage_up = stage_moving(summary, policy)
+    info = {"epoch": epoch, "successes": succ, "tol": tol, "curriculum_moving": moving, "stage_moving": stage_up,
+            "envelope_ok": env_ok}
     if st.get("crashed") or (not st.get("alive") and epoch < 10):
         return "crashed", info
     if not st.get("alive"):
@@ -187,6 +212,8 @@ def judge(summary: dict, st: dict, hours: float | None, policy: dict = ROUND_POL
         if env_ok is False and epoch >= 2 * policy["ROUND_EPOCHS"]:
             return "advance(envelope)", info
         return ("continue(success)" if keep_succ else "continue(curriculum)"), info
+    if stage_up and epoch < 2 * policy["ROUND_EPOCHS"] and (hours or 0.0) < 2 * policy["ROUND_HOURS"]:
+        return "continue(stage)", info
     if epoch >= policy["ROUND_EPOCHS"] or (hours or 0.0) >= policy["ROUND_HOURS"]:
         return "advance", info
     return "continue", info
@@ -305,15 +332,19 @@ def cmd_status(a) -> int:
     n_tb = max((v["n"] for v in summ.values()), default=0)
     st["epoch"] = max(st["epoch"] or 0, n_tb)      # ★콘솔은 블록 버퍼라 뒤처진다 — TB 점 개수와 큰 쪽
     verdict, info = judge(summ, st, hours)
+    funnel = stage_funnel(summ)
     rep = {"track": a.track, "label": a.label, "verdict": verdict, **info, "alive": st["alive"], "procs": st["procs"],
            "crashed_log": st["crashed"], "hours": round(hours, 2) if hours else None, "mirror": str(mirror),
-           "policy": ROUND_POLICY, "metrics": summ}
+           "funnel": funnel, "policy": ROUND_POLICY, "metrics": summ}
     (it / "status.json").write_text(json.dumps(rep, indent=1, ensure_ascii=False), encoding="utf-8")
     print(json.dumps({k: rep[k] for k in ("track", "label", "verdict", "epoch", "successes", "tol",
-                                          "curriculum_moving", "envelope_ok", "alive", "hours")}, ensure_ascii=False))
-    for tag in (SUCCESS_TAG, "task/lifted_frac", "task/tol", "contact/fingers_touching_at_success",
-                "contact/palm_touching_at_success", "contact/fingers_touching", "contact/palm_touching",
-                "reward/envelope", "reward/total", "done/tipped"):
+                                          "curriculum_moving", "stage_moving", "envelope_ok", "alive", "hours")},
+                     ensure_ascii=False))
+    print("  funnel(ep) " + " → ".join(
+        f"{s} " + ("—" if v is None else f"{v[0]:.2f}({v[0] - v[1]:+.2f})") for s, v in funnel.items()))
+    for tag in (SUCCESS_TAG, "task/lifted_frac", "task/tol", "stage/palm_cup_gap",
+                "contact/fingers_touching_at_success", "contact/palm_touching_at_success",
+                "contact/fingers_touching", "contact/palm_touching", "reward/total", "done/tipped"):
         if tag in summ:
             m = summ[tag]
             print(f"  {tag:38s} last {m['last']:+.3f}  now {m['now']:+.3f}  ago {m['ago']:+.3f}  max {m['max']:+.3f}")
@@ -343,7 +374,7 @@ def cmd_video(a) -> int:
         raise SystemExit("[round_fj] 재생 tol 을 모른다 — status 를 먼저 돌리거나 --tol 로 준다")
     ts = time.strftime("%m%d_%H%M")
     out = _ssh(video_command(run_dir_for(a.label, t["server_logdir"]), a.label, float(tol), ts,
-                             task=t["task"], play_task=t["play"]), timeout=1800)
+                             length=t["video_length"], task=t["task"], play_task=t["play"]), timeout=1800)
     print(out.strip()[-600:])
     remote = next((ln.split(" ", 1)[1].strip() for ln in out.splitlines() if ln.startswith("VIDEO ")), None)
     if not remote:

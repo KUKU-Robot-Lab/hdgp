@@ -57,6 +57,10 @@ ssh server "cd ~/rl_ws/hdgp && TASK=open-short_r_grasp_fj_t2r-lstm-sapg RUN=fj_t
 `contact/fingers_touching`(0~5) · `contact/finger_<손가락>` · `contact/palm_touching` · `task/grasp_q_at_success`(B 계측 유지) ·
 `ctrl/prev_ep_successes_mean` · `ctrl/drop_sticky_frac` · `task/tilt_deg` · `reward/<생성 항>`. 지표만으로 종료하지 않는다 — 영상 확인(붓기 트랙 09.13 교훈).
 ★성공 **순간** 접촉(이벤트 EMA, −1 = 아직 성공 없음): `contact/{fingers,links,palm}_touching_at_success` · `contact/finger_<손가락>_at_success`.
+★에피소드 퍼널(`stage_funnel.py`, 09.14 사용자 "접근·파지·리프트가 잘 되는지 틱 확인" — 로그 전용, 보상·관측 아님):
+`stage/{reach,grasp,envelope,lift,success}_ep` = 끝난 에피소드 중 그 단계에 한 번이라도 닿은 비율(이벤트 EMA, −1 = 아직 없음) ·
+`stage/palm_cup_gap` = 손바닥 원점 → 컵 파지 띠 거리(스텝 평균). 접근 = 간극 ≤ 5 cm · 파지 = 닿은 손가락 ≥ 3 · 인벨롭 = 손바닥 + 5손가락 동시.
+단계끼리 포함 관계를 강제하지 않는다(파지 없이 밀어 올려도 lift 가 선다).
 
 ## t2r 루프 (09.14 사용자: "루프 틱을 검사하면서 보상함수 설계가 제대로 되고 있는지 피드백 구조")
 - 틱 절차 `scripts/reward_gen/LOOP_PROMPT_fj.md` · 상태 `reward_gen/grasp_fj_envelope/LOOP_STATE.json` · cron(세션 한정).

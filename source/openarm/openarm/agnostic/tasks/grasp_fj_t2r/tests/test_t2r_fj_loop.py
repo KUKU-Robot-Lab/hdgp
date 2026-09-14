@@ -71,10 +71,32 @@ RE = R.ROUND_POLICY["ROUND_EPOCHS"]
     (_summ(4.3, fingers=2.0, palm=0.0, tol=0.02), {**ALIVE, "epoch": 1500}, 4.5, "continue(success)"),
     (_summ(4.3, tol=0.02), {**ALIVE, "epoch": 3000}, 9.0, "done_candidate"),         # 인벨롭 지표 없음 → 영상
     (_summ(4.3, fingers=-1.0, palm=-1.0, tol=0.02), {**ALIVE, "epoch": 3000}, 9.0, "done_candidate"),
+    # ★09.14 reach(사용자: 접근·파지·리프트가 잘 되는지 틱 확인): 성공·공차가 멈춰도 퍼널 단계가 오르는 중이면 2×ROUND 까지 유지
+    ({**_summ(0.0), "stage/reach_ep": {"now": 0.62, "ago": 0.40}}, {**ALIVE, "epoch": RE + 100}, 4.2, "continue(stage)"),
+    ({**_summ(0.0), "stage/lift_ep": {"now": 0.05, "ago": -1.0}}, {**ALIVE, "epoch": RE}, 3.0, "continue(stage)"),
+    ({**_summ(0.0), "stage/reach_ep": {"now": 0.62, "ago": 0.61}}, {**ALIVE, "epoch": RE + 100}, 4.2, "advance"),
+    ({**_summ(0.0), "stage/lift_ep": {"now": 0.30, "ago": 0.10}}, {**ALIVE, "epoch": 2 * RE}, 6.0, "advance"),
+    ({**_summ(0.0), "stage/grasp_ep": {"now": -1.0, "ago": -1.0}}, {**ALIVE, "epoch": RE}, 3.0, "advance"),
 ])
 def test_judge_follows_the_round_policy(summary, st, hours, want):
     verdict, info = R.judge(summary, st, hours)
     assert verdict == want, info
+
+
+def test_stage_funnel_reads_episode_fractions_in_the_env_order():
+    from openarm.agnostic.tasks.grasp_fj_t2r import stage_funnel as SF
+    assert R.STAGE_NAMES == SF.STAGES
+    data = {"stage/reach_ep/iter": [(0, -1.0), (1, 0.2), (2, 0.5)], "stage/palm_cup_gap/iter": [(0, 0.3)]}
+    s = R.summarize(data, last_n=2, window=1)
+    assert "stage/palm_cup_gap" in s
+    fun = R.stage_funnel(s)
+    assert fun["reach"] == (0.5, 0.2) and fun["success"] is None and list(fun) == list(SF.STAGES)
+    assert R.stage_moving(s)
+
+
+def test_reach_track_video_covers_a_full_episode():
+    assert R.TRACKS["grasp_fj_reach"]["video_length"] >= 900
+    assert R.TRACKS["grasp_fj_envelope"]["video_length"] == 700
 
 
 def test_parse_tail_reads_console_epoch_and_label_checked_pids():

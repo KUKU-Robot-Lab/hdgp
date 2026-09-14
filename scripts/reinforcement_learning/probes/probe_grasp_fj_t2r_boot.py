@@ -139,10 +139,13 @@ for t in range(args.steps):
               f"tilt {float(extras.get('task/tilt_deg', -1)):.1f}° rew {float(rew.mean()):+.4f}", flush=True)
 
 summary["contact_keys"] = sorted(k for k in extras if k.startswith("contact/"))
+# 에피소드 퍼널(루프 틱 재료) — 마지막 스텝 값. *_ep 는 끝난 에피소드가 없으면 −1.
+summary["stage"] = {k: round(float(v), 4) for k, v in extras.items() if k.startswith("stage/")}
 summary["reward_mean"] = sum(summary["reward_mean"]) / max(len(summary["reward_mean"]), 1)
 summary["terms"] = {k: sum(v) / len(v) for k, v in summary["terms"].items()}
 gate = (summary["nan_steps"] == 0 and "reward/total" in summary["terms"]
         and "contact/fingers_touching" in summary["contact_keys"]
+        and "stage/palm_cup_gap" in summary["stage"]
         and summary["prev_actions_nonzero_after_reset"] == 0)
 summary["prompt_joint_table"] = joint_table
 gate = gate and joint_table["order_ok"] and (joint_table["range_max_abs_err"] or 1.0) <= 2e-3

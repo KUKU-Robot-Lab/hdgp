@@ -18,8 +18,12 @@
 1. `python3 scripts/reward_gen/t2r_fj_round.py status --track <track> --label <label> --iter reward_gen/<track>/iter_NN` → verdict.
 2. `LOOP_STATE.awaiting` 이 있으면(사용자 승인 대기) 한 줄 요약만 남기고 끝낸다 — 런은 계속 학습한다. 영상·초안을 다시 만들지 않는다.
 3. verdict 별
-   - `continue` / `continue(success)` / `continue(curriculum)`: 한 줄 요약(epoch · 성공 · tol · lifted · 접촉 · envelope 항)만. success_ticks 0.
+   - `continue` / `continue(success)` / `continue(curriculum)` / `continue(stage)`: 한 줄 요약만. success_ticks 0.
+     요약 = epoch · 성공 · tol · **퍼널(에피소드 비율, 200 epoch 변화): 접근 → 파지 → 인벨롭 → 리프트 → 성공** · 손바닥↔컵 간극 ·
+     성공 순간 손가락/손바닥. ★사용자 09.14 "컵에 접근, 파지, 리프트가 잘 되는지 틱을 확인" — 막힌 단계(앞 단계보다 크게 떨어지는 곳)를
+     한 단어로 적는다. 퍼널만 보고 보상을 바꾸지 않는다(바꾸는 것은 라운드 끝 영상 → 승인 뒤).
      (`continue(curriculum)` = 성공은 2.0 아래지만 공차가 최근 200 epoch 안에 조여졌다 — 조일 때마다 성공이 떨어지는 게 정상이다.)
+     (`continue(stage)` = 성공·공차는 안 움직였지만 퍼널 어느 단계가 최근 200 epoch 에 2%p 이상 올랐다 — 2×ROUND_EPOCHS 까지.)
    - `crashed` / `dead`: 콘솔 `~/rl_ws/our_source/fj_t2r_runs/<label>.out` 의 Traceback 확인.
        · 생성 코드 런타임 오류 → 오류 문장을 관찰로, 고칠 점을 피드백으로 초안 → 4c(승인 요청).
        · env/인프라 오류(OOM·PhysX 등) → 사용자 보고·루프 정지.

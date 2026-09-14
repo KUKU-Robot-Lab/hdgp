@@ -6,7 +6,8 @@
                           손바닥, 전부 컵에만 필터. 관측에는 넣지 않는다(09.14 사용자 결정).
   3. `_progress_reward` — B 모듈을 그대로 돌려 에피소드 상태(lifted 래치·추적기)를 갱신한 뒤,
                           총보상과 항은 `compute_reward(ctx)` 결과로 바꿔 돌려준다.
-  4. `_log_fabric_metrics`·`_reset_idx` — 접촉 진단 로그 · 직전 액션 버퍼 리셋.
+  4. `_log_fabric_metrics`·`_reset_idx` — 접촉 진단 · 에피소드 단계 퍼널(접근→파지→인벨롭→리프트→성공, 루프 틱 재료)
+                          로그 · 직전 액션 버퍼 리셋.
 
 ★관측·액션·종료·성공 판정·공차 커리큘럼은 B 그대로다 — 보상만 바뀐 같은 과제다.
 """
@@ -20,6 +21,7 @@ from isaaclab.utils.math import quat_apply
 from ..grasp_fj.grasp_fj_env import GraspFJEnv
 from ..grasp_fj.robot_profiles import PROFILES
 from .grasp_fj_t2r_env_cfg import GraspFJT2RRightShortEnvCfg
+from .stage_funnel import STAGES, palm_band_gap, step_flags
 from .t2r.context import RewardContext
 from .t2r.loader import call_reward_fn, load_reward_fn
 
@@ -38,6 +40,9 @@ class GraspFJT2REnv(GraspFJEnv):
         # 성공 순간 접촉 이벤트 EMA — [손가락 수 · 마디 수 · 손바닥] 과 손가락별. 음수 = 아직 성공 없음(센티널).
         self._t2r_succ_ema = torch.full((3,), -1.0, device=self.device)
         self._t2r_finger_succ_ema = torch.full((len(self._finger_names),), -1.0, device=self.device)
+        # 에피소드 단계 퍼널 — 에피소드 동안 한 번이라도 닿았나(래치) → 에피소드가 끝날 때 이벤트 EMA. 음수 = 끝난 에피소드 없음.
+        self._t2r_stage_latch = torch.zeros(self.num_envs, len(STAGES), dtype=torch.bool, device=self.device)
+        self._t2r_stage_ema = torch.full((len(STAGES),), -1.0, device=self.device)
         _n = sum(len(v) for v in self._t2r_link_sensors.values())
         print(f"[grasp_fj_t2r] 보상 = {self._reward_src} · 보상 전용 컵 접촉 센서 {_n}+1(손바닥) · "
               f"필터 {self._t2r_filter} · 관측 불변", flush=True)
@@ -158,7 +163,7 @@ class GraspFJT2REnv(GraspFJEnv):
 
     # ------------------------------------------------------------------
     def _log_fabric_metrics(self) -> None:
-        """B 진단 + 컵 접촉 진단(보상 전용 센서) — 생성 보상의 피드백 재료. host 동기화 0."""
+        """B 진단 + 컵 접촉 진단(보상 전용 센서) + 에피소드 단계 퍼널 — 생성 보상의 피드백 재료. host 동기화 0."""
         super()._log_fabric_metrics()
         ctx = self._t2r_ctx
         if ctx is None:
@@ -182,10 +187,25 @@ class GraspFJT2REnv(GraspFJEnv):
             ex[f"contact/{name}_at_success"] = self._t2r_succ_ema[k]
         for k, finger in enumerate(self._finger_names):
             ex[f"contact/finger_{finger}_at_success"] = self._t2r_finger_succ_ema[k]
+        # ★에피소드 단계 퍼널(09.14 사용자 "컵에 접근, 파지, 리프트가 잘 되는지 틱을 확인") — 스텝 평균은 접근 중 스텝이 섞인다.
+        #   이 스텝 ctx 로 래치를 켠다(`_get_rewards`→`_log_step` 경로라 리셋 전). 에피소드가 끝날 때 `_reset_idx` 가 EMA 로 민다.
+        gap = palm_band_gap(ctx.palm_pos, ctx.cup_pos, ctx.cup_axis, ctx.cup_radius, ctx.cup_half_height)
+        self._t2r_stage_latch |= step_flags(gap, ctx.link_cup_force > _TOUCH_LOG_N, ctx.palm_cup_force > _TOUCH_LOG_N,
+                                            ctx.lifted, ctx.num_successes)
+        ex["stage/palm_cup_gap"] = gap.mean()
+        for k, name in enumerate(STAGES):
+            ex[f"stage/{name}_ep"] = self._t2r_stage_ema[k]
 
     def _reset_idx(self, env_ids) -> None:
-        super()._reset_idx(env_ids)
         ids = self.robot._ALL_INDICES if env_ids is None else env_ids
+        latch = getattr(self, "_t2r_stage_latch", None)
+        if latch is not None:
+            # 에피소드 결과는 부모 리셋이 길이·추적기를 지우기 **전에** 읽는다. 길이 0 = 첫 reset() — 에피소드 끝이 아니다.
+            ended = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            ended[ids] = self.episode_length_buf[ids] > 0
+            self._t2r_stage_ema = self._event_ema(self._t2r_stage_ema, latch.float(), ended)
+            latch[ids] = False
+        super()._reset_idx(env_ids)
         prev = getattr(self, "_t2r_prev_actions", None)
         if prev is not None:
             prev[ids] = 0.0

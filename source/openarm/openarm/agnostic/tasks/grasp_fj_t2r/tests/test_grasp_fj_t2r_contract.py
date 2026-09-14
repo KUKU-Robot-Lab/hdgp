@@ -85,6 +85,18 @@ def test_contact_at_success_is_logged_for_the_loop_judge():
         assert tok in blk, tok
 
 
+def test_stage_funnel_is_latched_per_episode_for_the_loop_ticks():
+    # ★09.14 사용자 "컵에 접근, 파지, 리프트가 잘 되는지 틱을 확인" — 에피소드 래치 → 끝날 때 이벤트 EMA. 로그 전용.
+    lg = _fn_block(_ENV, "_log_fabric_metrics")
+    for tok in ("palm_band_gap(", "step_flags(", "self._t2r_stage_latch |=", '"stage/palm_cup_gap"',
+                'f"stage/{name}_ep"'):
+        assert tok in lg, tok
+    rs = _fn_block(_ENV, "_reset_idx")
+    _ordered(rs, ["self._event_ema(self._t2r_stage_ema", "latch[ids] = False", "super()._reset_idx(env_ids)"])
+    assert "self.episode_length_buf[ids] > 0" in rs, "첫 reset()(길이 0)은 에피소드 끝이 아니다"
+    assert "stage" not in _fn_block(_ENV, "_build_context"), "퍼널은 보상 ctx 에 들어가지 않는다"
+
+
 def test_reward_code_path_defaults_empty_and_leaf_is_the_short_tl_hand():
     assert 'reward_code_path: str = ""' in _CFG
     assert "(GraspFJTesolloRightShortEnvCfg)" in _CFG
