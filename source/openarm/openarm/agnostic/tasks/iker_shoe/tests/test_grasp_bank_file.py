@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Sequence
 
+import pytest
 import torch
 
 from openarm.agnostic.modules import robot_profiles
@@ -31,19 +32,33 @@ def _hand_joint_limits(urdf_path: Path, names: Sequence[str]) -> tuple[torch.Ten
     return lower, upper
 
 
+def _skip_if_bank_is_for_the_other_arm(doc, profile) -> None:
+    # Banks record the grasping arm's side since 2026-09-14; older banks were all built with the right arm.
+    bank_side = float(doc["metadata"].get("side_sign", 1.0))
+    if bank_side != gb.side_sign(profile.hand_joint_names):
+        pytest.skip(
+            f"grasp_bank.json was built for side_sign {bank_side} but {profile.name} grasps with the other arm -- "
+            "the right-arm K1 bank stays committed until plan 2c replaces it with the learned left-arm bank"
+        )
+
+
 def test_bank_entries_have_no_finger_at_an_opposite_or_beyond_limit():
     doc = run_files.read_json(layout.RUNS_DIR / "config_00" / "grasp_bank.json")
     profile = robot_profiles.PROFILES[layout.PROFILE_NAME]
+    _skip_if_bank_is_for_the_other_arm(doc, profile)
 
     urdf_path = layout.HDGP_ROOT / "assets" / Path(profile.usd_relpath).with_suffix(".urdf")
     assert urdf_path.is_file(), f"missing URDF for profile {profile.name!r}: {urdf_path}"
 
-    thumb3_idx = profile.hand_joint_names.index("r_hj_thumb_3")
+    thumb3_name = gb.hand_joint_name(profile.hand_joint_names, "thumb", 3)
+    thumb3_idx = profile.hand_joint_names.index(thumb3_name)
     grip_thumb3 = profile.hand_grip_pose[thumb3_idx]
-    lo, hi = gb.THUMB3_RANGE
+    # The left hand is the right one mirrored: its thumb_3 pre-curl range carries the side sign.
+    sign = gb.side_sign(profile.hand_joint_names)
+    lo, hi = sorted((sign * gb.THUMB3_RANGE[0], sign * gb.THUMB3_RANGE[1]))
     assert not (lo <= grip_thumb3 <= hi), (
-        f"NEEDS_CONTEXT: THUMB3_RANGE {gb.THUMB3_RANGE} straddles the grip value {grip_thumb3} "
-        "for r_hj_thumb_3 -- the start pose used here would not have an unambiguous closing direction"
+        f"NEEDS_CONTEXT: THUMB3_RANGE {(lo, hi)} straddles the grip value {grip_thumb3} "
+        f"for {thumb3_name} -- the start pose used here would not have an unambiguous closing direction"
     )
 
     lower, upper = _hand_joint_limits(urdf_path, profile.hand_joint_names)

@@ -61,38 +61,81 @@ def sample_pregrasp(count: int, generator: torch.Generator, device: str | torch.
     )
 
 
-def palm_rotations(tilt_deg: torch.Tensor, yaw_deg: torch.Tensor) -> torch.Tensor:
+SIDE_SIGNS = {"r": 1.0, "l": -1.0}  # the left arm is the right arm reflected through the XZ plane (y -> -y)
+
+
+def _check_side_sign(side_sign: float) -> None:
+    if side_sign not in (1.0, -1.0):
+        raise ValueError(f"side_sign must be +1 (right arm) or -1 (left arm), got {side_sign}")
+
+
+def palm_rotations(tilt_deg: torch.Tensor, yaw_deg: torch.Tensor, side_sign: float = 1.0) -> torch.Tensor:
     """(N, 3, 3) palm orientations: palmar side down, fingers across the shoe toward +y, tilted about world x
-    (negative tilt turns the palmar side toward -y) and yawed about world z."""
+    (negative tilt turns the palmar side toward -y) and yawed about world z.
+
+    ``side_sign`` -1 gives the left arm's orientation, the right one reflected through the XZ plane (S R S with
+    S = diag(1, -1, 1)): palmar side and fingers are mirrored in y and the matrix stays a proper rotation."""
+    _check_side_sign(side_sign)
     down = torch.tensor([[0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]], dtype=tilt_deg.dtype, device=tilt_deg.device)
     t, y = torch.deg2rad(tilt_deg), torch.deg2rad(yaw_deg)
     zeros, ones = torch.zeros_like(t), torch.ones_like(t)
     rx = torch.stack([ones, zeros, zeros, zeros, t.cos(), -t.sin(), zeros, t.sin(), t.cos()], dim=-1).view(-1, 3, 3)
     rz = torch.stack([y.cos(), -y.sin(), zeros, y.sin(), y.cos(), zeros, zeros, zeros, ones], dim=-1).view(-1, 3, 3)
-    return rz @ rx @ down
+    rotation = rz @ rx @ down
+    if side_sign > 0:
+        return rotation
+    mirror = torch.diag(torch.tensor([1.0, -1.0, 1.0], dtype=tilt_deg.dtype, device=tilt_deg.device))
+    return mirror @ rotation @ mirror
 
 
 def palm_goal_positions(
-    pregrasp: PreGrasp, shoe_xy: Sequence[float], shoe_yaw_deg: float, shoe_half_width: float, shoe_top_z: float
+    pregrasp: PreGrasp,
+    shoe_xy: Sequence[float],
+    shoe_yaw_deg: float,
+    shoe_half_width: float,
+    shoe_top_z: float,
+    side_sign: float = 1.0,
 ) -> torch.Tensor:
-    """(N, 3) palm origin goals: above the shoe top, offset toward the shoe's near (-y) side."""
+    """(N, 3) palm origin goals: above the shoe top, offset toward the shoe's side facing the arm (-y for the right
+    arm, +y for the left arm)."""
+    _check_side_sign(side_sign)
     yaw = math.radians(shoe_yaw_deg)
     along = pregrasp.along_length
-    lateral = -(shoe_half_width + pregrasp.near_side_clearance)
+    lateral = -side_sign * (shoe_half_width + pregrasp.near_side_clearance)
     x = shoe_xy[0] + along * math.cos(yaw) - lateral * math.sin(yaw)
     y = shoe_xy[1] + along * math.sin(yaw) + lateral * math.cos(yaw)
     return torch.stack([x, y, shoe_top_z + pregrasp.height_above_top], dim=-1)
 
 
+def hand_side(joint_names: Sequence[str]) -> str:
+    """'r' or 'l', the common prefix of hand joint names shaped ``<side>_hj_<finger>_<k>``; mixed sides are an error."""
+    sides = {name.split("_")[0] for name in joint_names}
+    if len(sides) != 1 or next(iter(sides)) not in SIDE_SIGNS:
+        raise ValueError(f"hand joint names must share one side prefix out of {sorted(SIDE_SIGNS)}, got {sorted(sides)}")
+    return next(iter(sides))
+
+
+def side_sign(joint_names: Sequence[str]) -> float:
+    return SIDE_SIGNS[hand_side(joint_names)]
+
+
+def hand_joint_name(joint_names: Sequence[str], finger: str, k: int) -> str:
+    name = f"{hand_side(joint_names)}_hj_{finger}_{k}"
+    if name not in joint_names:
+        raise ValueError(f"{name!r} is not one of the hand joints {list(joint_names)}")
+    return name
+
+
 def finger_index(joint_names: Sequence[str]) -> torch.Tensor:
-    """(J,) long ids into ``FINGERS``, parsed from hand joint names shaped ``r_hj_<finger>_<k>``."""
+    """(J,) long ids into ``FINGERS``, parsed from hand joint names shaped ``<side>_hj_<finger>_<k>``."""
     ids = []
     for name in joint_names:
         parts = name.split("_")
         finger = parts[-2] if len(parts) >= 2 else ""
         if finger not in FINGERS:
-            raise ValueError(f"joint name {name!r} does not parse as r_hj_<finger>_<k>")
+            raise ValueError(f"joint name {name!r} does not parse as <side>_hj_<finger>_<k>")
         ids.append(FINGERS.index(finger))
+    hand_side(joint_names)
     return torch.tensor(ids, dtype=torch.long)
 
 

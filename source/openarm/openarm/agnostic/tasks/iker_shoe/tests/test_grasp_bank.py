@@ -159,6 +159,36 @@ def test_palm_goal_sits_beside_the_near_side_above_the_top():
     assert torch.allclose(goal, torch.tensor([0.25 + 0.068, 0.14 + 0.01, 0.339]), atol=1e-6)
 
 
+def test_left_arm_pregrasp_is_the_right_one_mirrored_in_y():
+    tilt, yaw = torch.tensor([-20.0, -35.0]), torch.tensor([5.0, -8.0])
+    right = gb.palm_rotations(tilt, yaw)
+    left = gb.palm_rotations(tilt, yaw, side_sign=-1.0)
+    mirror = torch.diag(torch.tensor([1.0, -1.0, 1.0]))
+    assert torch.allclose(left[:, :, 0], (mirror @ right[:, :, 0:1]).squeeze(-1), atol=1e-6)  # palmar side
+    assert torch.allclose(left[:, :, 2], (mirror @ right[:, :, 2:3]).squeeze(-1), atol=1e-6)  # fingers
+    assert torch.allclose(torch.linalg.det(left), torch.ones(2), atol=1e-6)
+    flat = gb.palm_rotations(torch.tensor([0.0]), torch.tensor([0.0]), side_sign=-1.0)[0]
+    assert torch.allclose(flat[:, 0], torch.tensor([0.0, 0.0, -1.0]))  # palmar side still down
+    assert torch.allclose(flat[:, 2], torch.tensor([0.0, -1.0, 0.0]))  # fingers toward -y, across the shoe from the left
+    pre = gb.PreGrasp(*(torch.tensor([v]) for v in (-20.0, 0.03, 0.02, 0.01, 0.0, 0.4)))
+    goal = gb.palm_goal_positions(pre, (0.25, 0.14), 0.0, 0.048, 0.309, side_sign=-1.0)[0]
+    assert torch.allclose(goal, torch.tensor([0.25 + 0.01, 0.14 + 0.068, 0.339]), atol=1e-6)
+    with pytest.raises(ValueError, match="side_sign"):
+        gb.palm_rotations(tilt, yaw, side_sign=0.5)
+
+
+def test_hand_side_reads_the_prefix_and_rejects_mixed_hands():
+    left = ["l_hj_thumb_3", "l_hj_index_2"]
+    assert gb.hand_side(left) == "l" and gb.side_sign(left) == -1.0
+    assert gb.side_sign(FINGER_JOINTS) == 1.0
+    assert gb.hand_joint_name(left, "thumb", 3) == "l_hj_thumb_3"
+    assert gb.finger_index(left).tolist() == [gb.FINGERS.index("thumb"), gb.FINGERS.index("index")]
+    with pytest.raises(ValueError, match="one side prefix"):
+        gb.finger_index(["l_hj_thumb_3", "r_hj_index_2"])
+    with pytest.raises(ValueError, match="not one of the hand joints"):
+        gb.hand_joint_name(left, "pinky", 4)
+
+
 def test_samples_stay_in_their_ranges():
     pre = gb.sample_pregrasp(500, torch.Generator().manual_seed(0))
     for value, bounds in ((pre.tilt_deg, gb.TILT_DEG_RANGE), (pre.thumb3, gb.THUMB3_RANGE), (pre.along_length, gb.ALONG_LENGTH_RANGE)):

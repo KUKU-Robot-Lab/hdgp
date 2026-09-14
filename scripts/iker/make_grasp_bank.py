@@ -100,7 +100,8 @@ def main() -> int:
     upper = arm.data.soft_joint_pos_limits[0, hand_ids, 1]
     open_pose = torch.tensor(prof.hand_open_pose, device=dev)
     grip_pose = torch.tensor(prof.hand_grip_pose, device=dev)
-    thumb3 = list(prof.hand_joint_names).index("r_hj_thumb_3")
+    thumb3 = list(prof.hand_joint_names).index(gb.hand_joint_name(prof.hand_joint_names, "thumb", 3))
+    side_sign = gb.side_sign(prof.hand_joint_names)  # +1 right arm, -1 left arm (y-mirrored pre-grasp)
     finger_ids = gb.finger_index(prof.hand_joint_names).to(dev)
     ik = DifferentialIKController(DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls"), num_envs=n, device=dev)
     home = arm.data.default_joint_pos.clone()
@@ -153,10 +154,10 @@ def main() -> int:
         arm.set_joint_position_target(home)
         ik.reset()
         pre = gb.sample_pregrasp(n, generator, dev)
-        palm_quat = quat_from_matrix(gb.palm_rotations(pre.tilt_deg, pre.yaw_deg))
-        goal = gb.palm_goal_positions(pre, (config.move_x, config.move_y), config.move_yaw_deg, half_width, top_z)
+        palm_quat = quat_from_matrix(gb.palm_rotations(pre.tilt_deg, pre.yaw_deg, side_sign))
+        goal = gb.palm_goal_positions(pre, (config.move_x, config.move_y), config.move_yaw_deg, half_width, top_z, side_sign)
         start_hand = open_pose.expand(n, -1).clone()
-        start_hand[:, thumb3] = pre.thumb3
+        start_hand[:, thumb3] = side_sign * pre.thumb3
         start_hand = torch.max(torch.min(start_hand, upper), lower)
         above = goal + torch.tensor([0.0, 0.0, 0.12], device=dev)
         run(APPROACH_STEPS, above, palm_quat, start_hand, parked=True)
@@ -229,6 +230,7 @@ def main() -> int:
         "shoe_meta_sha256": hashlib.sha256(layout.SHOE_META_PATH.read_bytes()).hexdigest(),
         "seed": args.seed,
         "rounds": stats,
+        "side_sign": side_sign,
         "closing": {
             "rule": "finger_stop",
             "trigger_backbend_rad": gb.FINGER_TRIGGER_BACKBEND_RAD,
