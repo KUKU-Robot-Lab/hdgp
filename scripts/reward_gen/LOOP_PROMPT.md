@@ -3,6 +3,10 @@
 상태 파일: `reward_gen/pour_bi/LOOP_STATE.json` = {"iter": N, "label": "...", "round": k, "best": {...}}
 실행 위치: `cd ~/rl_ws/hdgp`
 
+0. ★HOLD: `LOOP_STATE.hold.label == label` 이면 **사용자가 해제를 요청할 때까지 그 런을 계속 학습**한다
+   (09.14 사용자 지시 "이번엔 요청 전까지 계속 학습"). advance·kill·재생성 금지, 틱 보고만.
+   status 는 이때 advance 대신 `continue(hold)` 를 낸다. crashed/dead 면 같은 iter 를 재기동한다.
+   성공 조건에 닿아도 종료하지 않고 보고만 한다(영상 확인은 해도 된다). 해제는 사용자 요청으로만 `hold` 키를 지운다.
 1. `python3 scripts/reward_gen/t2r_round.py status --label <label> --iter reward_gen/pour_bi/iter_NN`
    → verdict 를 읽는다.
 2. verdict 별 행동

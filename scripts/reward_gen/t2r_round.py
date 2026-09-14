@@ -104,6 +104,17 @@ def summarize(events_dir: Path, last_n: int = 50) -> dict:
     return out
 
 
+def _hold_label(iter_dir: Path) -> str | None:
+    """LOOP_STATE.hold.label — 사용자 요청 전까지 advance 하지 않을 런(없으면 None)."""
+    state_p = iter_dir.parent / "LOOP_STATE.json"
+    if not state_p.exists():
+        return None
+    try:
+        return (json.loads(state_p.read_text()).get("hold") or {}).get("label")
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"[round] LOOP_STATE 파싱 실패: {state_p}: {e}")
+
+
 def cmd_status(a) -> int:
     st = tail_state(a.label)
     mirror = sync(a.label)
@@ -128,6 +139,10 @@ def cmd_status(a) -> int:
         verdict = "dead"
     else:
         verdict = "continue"
+    # ★09.14 사용자 지시 "이번엔 요청 전까지 계속 학습": LOOP_STATE.hold 대상 런은 advance 하지 않는다.
+    hold = _hold_label(Path(a.iter))
+    if hold == a.label and verdict == "advance":
+        verdict = "continue(hold)"
     rep = {"label": a.label, "verdict": verdict, "epoch": st["epoch"], "alive": st["alive"],
            "pids": st["pids"], "hours": round(hours, 2) if hours else None, "mirror": str(mirror),
            "metrics": summ, "policy": ROUND_POLICY}
@@ -137,6 +152,9 @@ def cmd_status(a) -> int:
 
 
 def cmd_advance(a) -> int:
+    if _hold_label(Path(a.iter)) == a.label:
+        raise SystemExit(f"[round] {a.label} 은 HOLD(사용자 요청 전까지 계속 학습) — advance 거부. "
+                         "해제는 사용자 요청 후 LOOP_STATE 의 hold 키 삭제.")
     mirror = sync(a.label)
     files = sorted(glob.glob(str(mirror / "summaries" / "events.out.tfevents.*")))
     if not files:
