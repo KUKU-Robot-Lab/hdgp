@@ -8,7 +8,7 @@ import torch
 from openarm.agnostic.tasks.iker_shoe import grasp_stage as gs
 
 NAMES = ("l_hj_thumb_3", "l_hj_index_3", "l_hj_index_4", "l_hj_index_1")
-CFG = gs.Stage1RewardCfg(q_lo=0.2, q_hi=0.6)
+CFG = gs.Stage1RewardCfg(g_min=0.5, q_lo=0.2, q_hi=0.6)
 
 
 def _step(state, **overrides):
@@ -217,6 +217,12 @@ def test_reset_rows_restores_only_the_given_envs():
     assert state.latched.tolist() == [True, True]
 
 
+def test_reward_cfg_defaults_to_phase_a_with_the_grasp_factor_off():
+    cfg = gs.Stage1RewardCfg()
+    assert cfg.g_min == 1.0
+    assert gs.g_factor(torch.tensor([0.0, 0.5, 1.0]), cfg).tolist() == pytest.approx([1.0, 1.0, 1.0])
+
+
 def test_reward_cfg_rejects_inconsistent_values():
     with pytest.raises(ValueError):
         gs.Stage1RewardCfg(q_lo=0.5, q_hi=0.5)
@@ -224,3 +230,11 @@ def test_reward_cfg_rejects_inconsistent_values():
         gs.Stage1RewardCfg(g_min=0.0)
     with pytest.raises(ValueError):
         gs.Stage1RewardCfg(latch_steps=25, success_steps=20)
+    with pytest.raises(ValueError):
+        gs.Stage1RewardCfg(lift_deadband_m=0.05, lift_height_m=0.05)
+    with pytest.raises(ValueError):
+        gs.Stage1RewardCfg(success_bonus=-1.0)
+    overridden = gs.Stage1RewardCfg()
+    overridden.q_hi = overridden.q_lo  # a hydra override assigns with setattr and skips __post_init__
+    with pytest.raises(ValueError, match="q_lo"):
+        overridden.validate()

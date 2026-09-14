@@ -24,11 +24,12 @@ RACK_MARGIN_M = 0.01  # a shoe hull point this close to the rack's footprint cou
 
 @dataclass
 class Stage1RewardCfg:
-    """Design §6. ``q_lo``/``q_hi`` are measured on the shoe before training (design §5).
+    """Design §6. ``g_min`` defaults to phase A (g == 1, design §5); ``q_lo``/``q_hi`` are then inert, and whenever
+    ``g_min < 1`` the environment replaces them with the values measured on the shoe (grasp_quality_calibration.json).
 
     Not frozen: Isaac Lab's hydra round trip assigns every nested config field with ``setattr`` and a frozen
-    dataclass raises there (the same reason as ``IkerRewardCfg``). The environment calls ``validate`` after the
-    round trip; ``stage1_step`` never mutates it.
+    dataclass raises there (the same reason as ``IkerRewardCfg``). ``setattr`` skips ``__post_init__``, so the
+    environment calls ``validate`` after the round trip; ``stage1_step`` never mutates it.
     """
 
     palm_scale: float = 50.0
@@ -48,20 +49,25 @@ class Stage1RewardCfg:
     hand_floor_cap: float = 5.0
     arm_vel_scale: float = 0.0
     hand_vel_scale: float = 0.0
-    g_min: float = 0.5
-    q_lo: float = 0.13
-    q_hi: float = 0.44
+    g_min: float = 1.0
+    q_lo: float = 0.0  # placeholders, not a calibration: the whole q range, inert while g_min is 1
+    q_hi: float = 1.0
 
     def __post_init__(self):
+        self.validate()
+
+    def validate(self) -> None:
         if not 0.0 < self.g_min <= 1.0:
             raise ValueError(f"g_min must be in (0, 1], got {self.g_min}")
         if not self.q_lo < self.q_hi:
             raise ValueError(f"q_lo {self.q_lo} must be < q_hi {self.q_hi}")
         if not 1 <= self.latch_steps <= self.success_steps:
             raise ValueError(f"need 1 <= latch_steps {self.latch_steps} <= success_steps {self.success_steps}")
-        if min(self.palm_scale, self.lift_progress_scale, self.hand_floor_scale, self.hand_floor_cap,
-               self.arm_vel_scale, self.hand_vel_scale) < 0.0:
-            raise ValueError("reward scales must be non-negative")
+        if not 0.0 <= self.lift_deadband_m < self.lift_height_m:
+            raise ValueError(f"need 0 <= lift_deadband_m {self.lift_deadband_m} < lift_height_m {self.lift_height_m}")
+        if min(self.palm_scale, self.lift_progress_scale, self.lift_bonus, self.success_bonus, self.hand_floor_scale,
+               self.hand_floor_cap, self.arm_vel_scale, self.hand_vel_scale) < 0.0:
+            raise ValueError("reward scales and bonuses must be non-negative")
 
 
 REWARD_TERMS = ("palm_progress", "lift_progress", "lift_bonus", "success_bonus", "hand_floor", "arm_vel", "hand_vel")
@@ -246,8 +252,6 @@ def stage1_step(
     first = state.closest_palm < 0.0
     palm_delta = torch.where(first, torch.zeros_like(palm_gap), (state.closest_palm - palm_gap).clamp(min=0.0))
     closest_palm = torch.where(first, palm_gap, torch.minimum(state.closest_palm, palm_gap))
-    if not 0.0 <= cfg.lift_deadband_m < cfg.lift_height_m:
-        raise ValueError(f"need 0 <= lift_deadband_m {cfg.lift_deadband_m} < lift_height_m {cfg.lift_height_m}")
     lift_level = (dz_free - cfg.lift_deadband_m).clamp(0.0, cfg.lift_height_m - cfg.lift_deadband_m)
     lift_delta = (lift_level - state.best_lift).clamp(min=0.0)
     best_lift = torch.maximum(state.best_lift, lift_level)
