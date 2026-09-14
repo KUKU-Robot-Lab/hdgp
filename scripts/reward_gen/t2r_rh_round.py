@@ -29,7 +29,7 @@ from parse_tfevents import load_tfevents   # noqa: E402
 
 ROUND_POLICY = {"ROUND_EPOCHS": 600, "ROUND_HOURS": 8.0, "KEEP_SUCCESS": 0.30, "MAX_ROUNDS": 8}   # 3090: 서버 대비 ~1/3 처리량
 SERVER = "vision-3090"
-SERVER_LOGDIR = "~/rl_ws/hdgp/log/rl_games/open-rh/b/pour-fab-mimic"
+SERVER_LOGDIR = "~/rl_ws/hdgp/log/rl_games/open-rh/both/pour-fab-mimic"
 LOCAL_MIRROR = _HDGP / "log" / "pour_fabric_mimic" / "mirror"
 KEY_TAGS = ("task/episode_success", "task/success_now", "task/src_grasped", "task/rcv_grasped",
             "task/src_cup_lift", "task/rcv_cup_lift", "task/src_tilt_deg", "task/aim_dist",

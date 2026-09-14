@@ -9,7 +9,7 @@
 사용자 결정 09.14: "원본 냅두고, 저차원 핸드 전용을 새로 만든다". 원본 파일은 이 트랙 때문에 바뀌지 않는다
 (`tests/test_mimic_contract.py::test_original_pour_fabric_untouched_by_this_track` 가 잠근다).
 
-- gym id `open-rh_b_pour_fab_mimic` (+`-play`, `-lstm`) · 로그 `log/rl_games/open-rh/b/pour-fab-mimic/`
+- gym id `open-rh_b_pour_fab_mimic` (+`-play`, `-lstm`) · 로그 `log/rl_games/open-rh/both/pour-fab-mimic/`
 - 액션 **24** = (palm 6 + 손 6) × 2 · actor obs **172** · critic **214**
 - 보상: `reward_gen/pour_bi_rh/iter_NN/compute_reward.py` (`RewardContext` 는 원본과 **동일 클래스** — F=5 손가락, 손 폐쇄도·접촉력 필드 의미 그대로)
 - 학습 호스트: **vision-3090**(RTX 3090 24 GB) — 루프 도구 `scripts/reward_gen/t2r_rh_round.py` · `LOOP_PROMPT_rh.md` · `run_pour_t2r_rh.sh`

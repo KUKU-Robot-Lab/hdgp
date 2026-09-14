@@ -1,7 +1,7 @@
 """gym 등록 — 자산 쌍마다 id 4개 (train/play × mlp/lstm). 원본 pour_fabric 규약 그대로.
 
 ★id: `open-<short>_b_pour_fab_mimic` (예: open-rh_b_pour_fab_mimic)
-  → 로그 `log/rl_games/open-rh/b/pour-fab-mimic/`.
+  → 로그 `log/rl_games/open-rh/both/pour-fab-mimic/`.
 """
 
 import gymnasium as gym
