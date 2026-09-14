@@ -5,13 +5,27 @@
  "label_prefix": "fj_reach_i",
  "round": 2,
  "status": "running",
- "awaiting": null,
+ "awaiting": "approval_iter_01",
  "best": null,
  "success_ticks": 0,
  "started": 1789374664,
  "pid": 3600558,
  "commit": "2e1724a4",
- "algo": {"iter_00": "SAPG 12,288 (open-short_r_grasp_fj_t2r_reach-lstm-sapg)", "from_iter_01": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"},
+ "algo": {
+  "iter_00": "SAPG 12,288 (open-short_r_grasp_fj_t2r_reach-lstm-sapg)",
+  "from_iter_01": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"
+ },
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY",
- "note": "round 2 = iter_01(788adfdd): 사용자 교정 '손을 회전하는 상태로 접근' · 'palm_ee = 손바닥 중심' 반영(ea2f3e83) · 방향 게이트·stall 감쇠 보상. PPO-LSTM 4096 env(사용자 결정). 첫 기동(PID 3587663)은 학습기 생성에서 크래시(fork fixed_sigma True → Linear) → yaml fixed_sigma: fixed(2e1724a4) 후 재기동(PID 3600558). 크래시 콘솔 fj_reach_i01.crash_sigma.out. 런 폴더는 fj_reach_i01-r1 로 갈릴 수 있다. i00 퍼널 간극은 손목 쪽 원점 기준이라 i01 과 비교 금지."
+ "note": "round 2 = iter_01(788adfdd): 사용자 교정 '손을 회전하는 상태로 접근' · 'palm_ee = 손바닥 중심' 반영(ea2f3e83) · 방향 게이트·stall 감쇠 보상. PPO-LSTM 4096 env(사용자 결정). 첫 기동(PID 3587663)은 학습기 생성에서 크래시(fork fixed_sigma True → Linear) → yaml fixed_sigma: fixed(2e1724a4) 후 재기동(PID 3600558). 크래시 콘솔 fj_reach_i01.crash_sigma.out. 런 폴더는 fj_reach_i01-r1 로 갈릴 수 있다. i00 퍼널 간극은 손목 쪽 원점 기준이라 i01 과 비교 금지.",
+ "round_end": {
+  "epoch": 1256,
+  "hours": 1.87,
+  "verdict": "advance(stuck:grasp)",
+  "checked": "09-14 19:23",
+  "video": "our_source/fj_t2r_videos/fj_reach_i01_0914_1923.mp4",
+  "drafts": [
+   "iter_01/observation.md",
+   "iter_01/improvement.md"
+  ]
+ }
 }
