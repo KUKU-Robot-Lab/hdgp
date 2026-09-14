@@ -40,6 +40,8 @@ def test_reward_total_comes_from_generated_code_but_state_from_track_b():
     _ordered(pr, ["super()._progress_reward(", "self._build_context(", "call_reward_fn(self._reward_fn"])
     assert "nan_to_num" in pr, "폭발 env 의 NaN 이 PPO 전체를 오염시키지 않게"
     assert "return total, terms, out" in pr, "래치·추적기 되먹임(out)은 B 모듈 것을 그대로 돌려준다"
+    # ★09.14 reach 스모크: runaway env 에서 생성 속도 제곱 항이 −1e9 급 — 이번 스텝 abnormal env 는 보상·로그 항 모두 가린다
+    _ordered(pr, ["call_reward_fn(self._reward_fn", "ok = ~self._abnormal", "torch.where(ok,", "terms = {k: torch.where(ok,"])
 
 
 def test_generated_code_is_loaded_before_the_env_boots():

@@ -41,6 +41,8 @@ R=$PWD/reward_gen/grasp_fj_envelope/iter_00/compute_reward.py
 ```
 프로브 GATE: NaN 0 · `reward/total`·`contact/*` 존재 · 리셋 직후 prev_actions 0 · 프롬프트 손 관절표 = 부팅 실측(±2e-3) ·
 (wire) 검~새끼 자기 행만 섬 + 전부 묶음에서 엄지 행. ★엄지 행은 한 손가락 묶음에서도 선다(굽힌 손가락이 컵을 엄지에 민다).
+★reach 트랙에선 wire GATE FAIL 이 정상이다 — wire 는 컵을 수평으로만 옮기는데 시작 손가락이 컵보다 0.16 m 위(테이블 가장자리 밖)라
+기하상 대부분 안 닿는다. 판정은 "닿은 행이 자기 행뿐인가 · 힘이 0 이 아닌가"(09.14: 약지 3.9 N·새끼 0.16 N 자기 행만 → `Object/baseLink` 필터 매칭).
 gym id `open-short_r_grasp_fj_t2r-lstm-sapg`, 보상은 `env.reward_code_path=<절대경로>`. 학습 기동은 사용자 승인 후.
 t2r 트랙이라 reward-audit 은 쓰지 않는다(사용자 09.14) — 검증은 위 검증기 + 실제 장치 스모크.
 

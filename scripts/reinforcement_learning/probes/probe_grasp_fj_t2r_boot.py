@@ -126,9 +126,13 @@ for t in range(args.steps):
         force_max = torch.maximum(force_max, ctx.link_cup_force)
         palm_max = torch.maximum(palm_max, ctx.palm_cup_force)
     summary["reward_mean"].append(float(rew.mean()))
+    # ★09.14 reach 스모크: 반환 보상 평균 +0.28 인데 로그 항 평균이 −67,185 였다 — 둘의 스텝별 최대 절댓값을 따로 잰다.
+    summary["rew_abs_max"] = max(summary.get("rew_abs_max", 0.0), float(rew.abs().max()))
     for k, v in extras.items():
         if k.startswith("reward/"):
             summary["terms"].setdefault(k, []).append(float(v))
+            _am = summary.setdefault("terms_absmax", {})
+            _am[k] = max(_am.get(k, 0.0), abs(float(v)))
         elif k.startswith("done/") and "qd_max" not in k and "beyond_j" not in k:
             # 종료 사유별 env 수(스텝 평균 × N 누적) — 리셋이 났을 때 무엇 때문인지 가른다.
             summary["done_counts"][k] = summary["done_counts"].get(k, 0.0) + float(v) * N
@@ -146,6 +150,9 @@ summary["terms"] = {k: sum(v) / len(v) for k, v in summary["terms"].items()}
 gate = (summary["nan_steps"] == 0 and "reward/total" in summary["terms"]
         and "contact/fingers_touching" in summary["contact_keys"]
         and "stage/palm_cup_gap" in summary["stage"]
+        # 물리 폭발 스텝이 반환 보상·로그 항으로 새지 않는다(생성 항의 정상 범위는 |·| ≲ 30)
+        and summary.get("rew_abs_max", 0.0) < 1e3
+        and max(summary.get("terms_absmax", {}).values(), default=0.0) < 1e3
         and summary["prev_actions_nonzero_after_reset"] == 0)
 summary["prompt_joint_table"] = joint_table
 gate = gate and joint_table["order_ok"] and (joint_table["range_max_abs_err"] or 1.0) <= 2e-3

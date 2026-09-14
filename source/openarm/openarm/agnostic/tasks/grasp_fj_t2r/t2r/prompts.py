@@ -146,7 +146,7 @@ succeeds more often during training. You may add a bonus on `ctx.success`.
 episode ends early when the cup falls below z = 0.15 (off the table), leaves the allowed area around the table, or \
 tilts more than 60 degrees; when any hand link goes below z = table_z - 0.03 (wherever the hand is); or when an arm joint goes \
 past its limit or moves faster than 20 rad/s. On that last kind of physics violation the environment \
-also adds a fixed -1 to the reward, outside your function.
+replaces the reward of that step with a fixed -1 (your function's value is not used on that step).
 9. Do not keep any state between calls (no globals, no attributes); the function must be pure.
 10. Each component you return is logged separately during training and may be shown back to you after \
 training, so name components meaningfully (e.g. "approach", "lift", "success_bonus").

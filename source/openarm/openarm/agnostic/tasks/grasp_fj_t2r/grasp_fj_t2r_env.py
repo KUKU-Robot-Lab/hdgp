@@ -111,7 +111,13 @@ class GraspFJT2REnv(GraspFJEnv):
         _fj_total, _fj_terms, out = super()._progress_reward(**kw)
         ctx = self._build_context(kw, out)
         total, terms = call_reward_fn(self._reward_fn, ctx)
-        total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
+        # ★09.14 reach 스모크(random 64env): 팔 runaway(>20 rad/s) env 에서 생성 코드의 속도 제곱 항이 터져
+        #   `reward/joint_vel_penalty` 평균이 −67,185 였다. 물리가 깨진 스텝(`_get_dones` 가 이번 스텝에 `_abnormal` 로 표시)의
+        #   상태는 보상 근거가 못 된다 — 그 env 는 생성 보상 0 + B 의 abnormal_penalty 만 받고, 로그 항도 같이 가린다.
+        ok = ~self._abnormal
+        total = torch.where(ok, torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0), torch.zeros_like(total))
+        terms = {k: torch.where(ok, torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0), torch.zeros_like(v))
+                 for k, v in terms.items()}
         self._t2r_ctx = ctx
         self._t2r_prev_actions = ctx.actions.clone()
         return total, terms, out
