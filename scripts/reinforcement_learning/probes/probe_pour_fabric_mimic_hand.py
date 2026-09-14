@@ -13,6 +13,7 @@ parser.add_argument("--approach", type=str, default="", help="'cup' = 케이지�
 parser.add_argument("--z_off", type=float, default=0.04, help="케이지 목표 높이 = 컵 원점 + z_off [m]")
 parser.add_argument("--dey", type=float, default=0.0, help="palm pitch(ey) 델타 [deg] (음수 = 손가락을 수평 쪽으로)")
 parser.add_argument("--quiet", action="store_true")
+parser.add_argument("--side_axis", type=str, default="x", choices=["x", "y"])
 parser.add_argument("--side_m", type=float, default=0.10, help="cup2: 컵 옆 대기 오프셋(−y, 바깥쪽) [m]")
 parser.add_argument("--table_obstacle", type=int, default=1, help="0 = fabric 테이블 장애물 OFF(팔이 못 내려가는 원인 분리용)")
 parser.add_argument("--cage_dz", type=float, default=-0.018, help="palm→케이지 z 오프셋 [m] (Track B 실측 −0.018)")
@@ -41,7 +42,10 @@ for t in range(args.steps):
     if u >= 0 and args.approach in ("cup", "cup2"):
         # cup2: 컵 **옆**(바깥쪽 −y 로 side_m)에 먼저 서서 높이를 맞춘 뒤(u<80) 옆에서 밀어 넣는다(80~140).
         #   straight 접근(cup)은 아래로 향한 손가락이 컵 벽을 위에서 치며 들어가 컵을 넘어뜨린다(09.14 실측 tilt 50~80°).
-        side = torch.tensor([0.0, -args.side_m, 0.0], device=env.device) if (args.approach == "cup2" and u < 80) else torch.zeros(3, device=env.device)
+        # 손 개구(엄지↔4지 사이)는 **손끝 쪽(+x)** 으로 열려 있다(palm 법선 +y·손가락 +x, Track B 기준자세).
+        #   컵은 손끝 쪽에서 케이지로 들어와야 하므로 대기 위치는 컵 뒤(−x). (−y 옆에서 밀면 4지가 컵 벽을 민다 — 09.14 실측 15~55 N·전도)
+        _ax = {"x": [-args.side_m, 0.0, 0.0], "y": [0.0, -args.side_m, 0.0]}[args.side_axis]
+        side = torch.tensor(_ax, device=env.device) if (args.approach == "cup2" and u < 80) else torch.zeros(3, device=env.device)
         tgt_palm = cup_local() + torch.tensor([0.0, 0.0, args.z_off], device=env.device) + side - CAGE_OFF
         d = tgt_palm - rig.anchor_env[:, :3]
         for k in range(3):
