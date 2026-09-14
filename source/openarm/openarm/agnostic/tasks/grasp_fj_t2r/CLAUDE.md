@@ -27,6 +27,7 @@ text2reward 방식으로 생성한다: 환경 설명(RewardContext 소스)+과�
 | `_progress_reward` 는 B 모듈을 먼저 돌리고(`out` = lifted 래치·추적기) 총보상·항만 생성 코드 결과로 바꾼다 | 에피소드 상태가 생성 코드에 좌우되면 판정이 흔들린다 |
 | 보상 전용 컵 접촉 센서: 마디(`_3`·`_4`·tip) body 하나당 센서 하나 + 손바닥 | 다중 body 를 한 센서에 묶으면 `force_matrix_w` 가 조용히 0. 관측에는 넣지 않는다(09.14 사용자 결정) |
 | 컵 필터는 env_0 스테이지의 RigidBodyAPI 프림으로 만든다(`_cup_contact_filter`) — cfg `object_contact_filter` 금지 | ★09.14 스모크: cfg 값이 shaker_sweep 에서 `Object/ShakerFDM5mm`(없는 경로, 0개 매칭)라 PhysX 에러 로그만 남고 힘이 전부 0 이었다. 셰이커 USD 루트가 참조로 `Object` 자체가 된다 |
+| `ctx.palm_pos` = 손바닥 중심 **palm_ee**(collision 없는 가상 점) = 손바닥 링크 원점 + R·URDF `r_hj_palm_ee` 오프셋 (28, 0, 40) mm — `palm_frame.py`, rpy ≠ 0 이면 부팅 거부 | ★09.14 사용자 "손바닥의 중심쪽은 palm_ee xform · collision 없는 가상의 점". `palm_idx`(프로필 `r_hl_palm`)는 손목 쪽이라 reach i00 보상이 손목 끝을 컵에 붙였다. 접촉 센서는 collider 가 있는 `r_hl_palm` 그대로(손등·손목 접촉도 센다 — 방향은 보상이 `palm_normal` 로 가려야 한다) |
 | `reward_code_path` 기본 "" = 영 보상 · env `__init__` 에서 읽는다 | 부팅 스모크용. hydra 가 `__post_init__` 에 구워지는 함정 없음 |
 | t2r 포크(`t2r/`): 컨텍스트 소스 = 프롬프트 환경 설명 · 검증기(정적+드라이런) · 프롬프트는 **환경 사실만** | 생성기에 이 세션의 설계 의견을 흘리지 않는다(09.14 사용자 결정: 새 에이전트 · 지난 결과 미포함) |
 

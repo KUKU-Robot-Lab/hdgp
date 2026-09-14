@@ -27,7 +27,7 @@ class RewardContext:
     max_successes: int             # the episode ends after this many successes
 
     # ---- hand: right Tesollo DG-5F, finger index 0 thumb, 1 index, 2 middle, 3 ring, 4 pinky ----
-    palm_pos: torch.Tensor         # (N,3) palm frame origin
+    palm_pos: torch.Tensor         # (N,3) centre of the palm (a virtual point on the palm, not a collision surface)
     palm_normal: torch.Tensor      # (N,3) unit vector pointing out of the palm surface, towards an object held in the hand
     palm_side: torch.Tensor        # (N,3) unit vector lying in the palm plane (palm frame y axis)
     link_pos: torch.Tensor         # (N,5,3,3) finger link positions: [:, f, 0] link moved by joint _3, [:, f, 1] link moved by joint _4, [:, f, 2] fingertip

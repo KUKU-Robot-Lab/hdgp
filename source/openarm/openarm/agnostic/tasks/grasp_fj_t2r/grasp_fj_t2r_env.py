@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.utils.math import quat_apply
@@ -21,6 +23,7 @@ from isaaclab.utils.math import quat_apply
 from ..grasp_fj.grasp_fj_env import GraspFJEnv
 from ..grasp_fj.robot_profiles import PROFILES
 from .grasp_fj_t2r_env_cfg import GraspFJT2RRightShortEnvCfg
+from .palm_frame import palm_center_offset
 from .stage_funnel import STAGES, palm_band_gap, step_flags
 from .t2r.context import RewardContext
 from .t2r.loader import call_reward_fn, load_reward_fn
@@ -43,9 +46,15 @@ class GraspFJT2REnv(GraspFJEnv):
         # 에피소드 단계 퍼널 — 에피소드 동안 한 번이라도 닿았나(래치) → 에피소드가 끝날 때 이벤트 EMA. 음수 = 끝난 에피소드 없음.
         self._t2r_stage_latch = torch.zeros(self.num_envs, len(STAGES), dtype=torch.bool, device=self.device)
         self._t2r_stage_ema = torch.full((len(STAGES),), -1.0, device=self.device)
+        # ★09.14 사용자 "손바닥의 중심쪽은 palm_ee xform" — palm_idx 는 프로필 palm_body(손바닥 링크 원점, 손목 쪽)다.
+        #   ctx.palm_pos 는 자산 URDF 의 palm_ee fixed 조인트 오프셋만큼 옮긴 손바닥 중심을 넘긴다(회전은 같아 법선은 그대로).
+        _prof = PROFILES[self.cfg.profile_name]
+        _off = palm_center_offset(Path(self.cfg.robot_cfg.spawn.usd_path).with_suffix(".urdf"), _prof.palm_body)
+        self._t2r_palm_center_off = torch.tensor(_off, device=self.device)
         _n = sum(len(v) for v in self._t2r_link_sensors.values())
         print(f"[grasp_fj_t2r] 보상 = {self._reward_src} · 보상 전용 컵 접촉 센서 {_n}+1(손바닥) · "
-              f"필터 {self._t2r_filter} · 관측 불변", flush=True)
+              f"필터 {self._t2r_filter} · 손바닥 중심 = {_prof.palm_body} + {tuple(round(v, 4) for v in _off)} m(palm_ee) · "
+              f"관측 불변", flush=True)
 
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
@@ -128,6 +137,9 @@ class GraspFJT2REnv(GraspFJEnv):
         if links_f.shape[1:] != (5, 3):
             raise RuntimeError(f"[grasp_fj_t2r] 마디 접촉력 {tuple(links_f.shape)} — 프롬프트 계약은 (N,5,3)")
         R = self._palm_ee_R()
+        # 손바닥 중심(palm_ee) = 손바닥 링크 원점 + R·오프셋 — `__init__` 주석 참조
+        palm_link = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
+        palm_center = palm_link + torch.einsum("nij,j->ni", R, self._t2r_palm_center_off)
         link_pos = (self.robot.data.body_pos_w[:, self._hull_all_t]
                     - self.scene.env_origins[:, None, :]).view(n, len(self._finger_names), -1, 3)
         q = self.robot.data.joint_pos[:, self._syn_ids]
@@ -140,7 +152,7 @@ class GraspFJT2REnv(GraspFJEnv):
             lift_latch_height=float(self._rw_cfg.lift_latch_height),
             success_hold_steps=int(self.cfg.goal_success_steps),
             max_successes=int(self.cfg.goal_max),
-            palm_pos=self._env_local(self.robot.data.body_pos_w[:, self.palm_idx]),
+            palm_pos=palm_center,
             palm_normal=R[:, :, 0], palm_side=R[:, :, 1],
             link_pos=link_pos, link_cup_force=links_f, palm_cup_force=palm_f,
             hand_q=q,

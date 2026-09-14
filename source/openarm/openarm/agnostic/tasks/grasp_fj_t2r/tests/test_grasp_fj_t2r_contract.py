@@ -74,6 +74,17 @@ def test_context_is_built_from_the_same_step_state():
         assert tok in bc, tok
 
 
+def test_palm_pos_is_the_palm_centre_not_the_palm_link_origin():
+    # ★09.14 사용자 "손바닥의 중심쪽은 palm_ee xform" — palm_idx(프로필 palm_body `r_hl_palm`)는 손목 쪽 링크 원점이다.
+    #   생성 보상의 접근·근접 항이 그 점을 컵에 붙이자 손목 끝이 컵에 닿는 자세가 나왔다(reach i00 영상).
+    init = _fn_block(_ENV, "__init__")
+    for tok in ("palm_center_offset(", "robot_cfg.spawn.usd_path", "self._t2r_palm_center_off"):
+        assert tok in init, tok
+    bc = _fn_block(_ENV, "_build_context")
+    _ordered(bc, ["self._t2r_palm_center_off", "palm_pos=palm_center"])
+    assert "palm_pos=self._env_local(" not in bc
+
+
 def test_context_tensors_are_copies_not_live_env_buffers():
     # ★09.14 리뷰(HIGH): goal_pos·lifted·is_success·_obj_grasp_r 등은 env 가 보상 **뒤에** 다시 읽는 버퍼다.
     #   생성 코드가 제자리 연산을 하면 학습 내내 조용히 오염된다 — ctx 에는 복사본만 넣는다.
