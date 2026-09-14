@@ -21,3 +21,19 @@ for _suffix, _cfg_name in (("", "IkerShoeEnvCfg"), ("-play", "IkerShoePlayEnvCfg
             "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
         },
     )
+
+# Stage-1 grasp policy (design 2026-09-14). The side letter is the left arm that grasps; logs go to
+# log/rl_games/open-sens/left/iker-shoe-grasp/.
+_GRASP_ENTRY = "openarm.agnostic.tasks.iker_shoe.iker_shoe_grasp_env:IkerShoeGraspEnv"
+_GRASP_CFG_MODULE = "openarm.agnostic.tasks.iker_shoe.iker_shoe_grasp_env_cfg"
+
+for _suffix, _cfg_name in (("", "IkerShoeGraspEnvCfg"), ("-play", "IkerShoeGraspPlayEnvCfg")):
+    gym.register(
+        id=f"open-sens_l_iker_shoe_grasp{_suffix}",
+        entry_point=_GRASP_ENTRY,
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{_GRASP_CFG_MODULE}:{_cfg_name}",
+            "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_grasp_ppo_cfg.yaml",
+        },
+    )
