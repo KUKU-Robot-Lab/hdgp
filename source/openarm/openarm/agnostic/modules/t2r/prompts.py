@@ -133,12 +133,13 @@ class PromptSpec:
     previous_code: str | None = None
     feedback: str | None = None       # 렌더된 지표 표(reflect 가 만든다)
     user_notes: str | None = None     # 사용자 관찰(선택)
+    robot_description: str | None = None   # 다른 로봇(예: RH56F1 트랙)의 설명 — None 이면 DG-5F 기본 문장
 
 
 def render_prompt(spec: PromptSpec) -> str:
     parts = [
         "You are an expert in robotics, reinforcement learning and code generation.",
-        ROBOT_DESCRIPTION.format(num_beads=spec.num_beads, num_actions=spec.num_actions),
+        (spec.robot_description or ROBOT_DESCRIPTION).format(num_beads=spec.num_beads, num_actions=spec.num_actions),
         "Now I want you to help me write a reward function for reinforcement learning.",
         REWARD_STRUCTURE,
         "The reward function receives a single argument `ctx`, an instance of this class "

@@ -63,10 +63,12 @@ def cmd_render(a) -> int:
     spec = P.PromptSpec(task=task, num_actions=a.num_actions, num_beads=a.num_beads,
                         previous_code=Path(a.prev_code).read_text() if a.prev_code else None,
                         feedback=Path(a.feedback).read_text() if a.feedback else None,
-                        user_notes=Path(a.notes).read_text() if a.notes else None)
+                        user_notes=Path(a.notes).read_text() if a.notes else None,
+                        robot_description=Path(a.robot_file).read_text() if a.robot_file else None)
     (d / "prompt.md").write_text(P.render_prompt(spec))
     meta = {"track": a.track, "iter": n, "task": task, "created": datetime.now().isoformat(),
-            "prev_code": a.prev_code, "feedback": a.feedback, "notes": a.notes}
+            "prev_code": a.prev_code, "feedback": a.feedback, "notes": a.notes,
+            "robot_file": a.robot_file, "num_actions": a.num_actions}
     (d / "meta.json").write_text(json.dumps(meta, indent=1, ensure_ascii=False))
     print(f"[t2r] prompt → {d / 'prompt.md'}  (다음: response.md 를 여기 쓰고 `ingest --iter {d}`)")
     return 0
@@ -128,14 +130,16 @@ def cmd_reflect(a) -> int:
     n_next = a.next_iter if a.next_iter is not None else meta["iter"] + 1
     nd = _iter_dir(a.root, meta["track"], n_next)
     nd.mkdir(parents=True, exist_ok=True)
+    rf = a.robot_file or meta.get("robot_file")
     spec = P.PromptSpec(task=meta["task"], num_actions=a.num_actions, num_beads=a.num_beads,
                         previous_code=code, feedback=fb,
-                        user_notes=Path(a.notes).read_text() if a.notes else None)
+                        user_notes=Path(a.notes).read_text() if a.notes else None,
+                        robot_description=Path(rf).read_text() if rf else None)
     (nd / "prompt.md").write_text(P.render_prompt(spec))
     (nd / "meta.json").write_text(json.dumps({
         "track": meta["track"], "iter": n_next, "task": meta["task"],
         "created": datetime.now().isoformat(), "prev_iter": str(d), "events": a.events,
-        "notes": a.notes}, indent=1, ensure_ascii=False))
+        "notes": a.notes, "robot_file": rf, "num_actions": a.num_actions}, indent=1, ensure_ascii=False))
     print(f"[t2r] feedback → {d / 'feedback.md'}  ({len(series)} tags)")
     print(f"[t2r] next prompt → {nd / 'prompt.md'}")
     return 0
@@ -148,6 +152,8 @@ def main(argv=None) -> int:
     ap.add_argument("--num-beads", type=int, default=20)
     ap.add_argument("--num-fingers", type=int, default=5)
     ap.add_argument("--num-arm", type=int, default=7)
+    ap.add_argument("--robot-file", default=None,
+                    help="로봇 설명 파일(프롬프트 ROBOT_DESCRIPTION 대체; {num_beads}/{num_actions} 치환). 미지정=DG-5F 기본")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("render")
     r.add_argument("--track", required=True)
