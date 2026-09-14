@@ -291,3 +291,16 @@ def test_reflect_carries_the_variant_into_the_next_prompt(tmp_path, fake_events)
     nxt = tmp_path / "grasp_fj_envelope" / "iter_01"
     assert "roughly 0.38 m" in (nxt / "prompt.md").read_text()
     assert json.loads((nxt / "meta.json").read_text())["variant"] == "reach"
+
+
+def test_reach_ppo_agent_yaml_builds_under_the_vendored_rl_games_fork():
+    # ★09.14 fj_reach_i01 크래시: run_fj.sh 는 PPO 여도 vendor/rl_games_sapg 를 PYTHONPATH 앞에 둔다. fork 는 fixed_sigma 가
+    #   문자열('fixed' 공유 Parameter · 'coef_cond' 블록별 · 그 밖 = Linear)이라 상류 불리언 True 는 sigma 를 Linear 로 만들어
+    #   초기화에서 죽는다. 'fixed' 는 상류(참 문자열)에서도 같은 뜻이다.
+    import re
+    agents = _HDGP / "source/openarm/openarm/agnostic/tasks/grasp_fj/config/agents"
+    ppo = (agents / "rl_games_ppo_lstm_cfg.yaml").read_text(encoding="utf-8")
+    sapg = (agents / "rl_games_ppo_lstm_sapg_cfg.yaml").read_text(encoding="utf-8")
+    assert re.findall(r"^\s*fixed_sigma:\s*(\S+)", ppo, re.M) == ["fixed"]
+    assert re.findall(r"^\s*fixed_sigma:\s*(\S+)", sapg, re.M) == ["coef_cond"]
+    assert R.TRACKS["grasp_fj_reach"]["task"].endswith("-lstm"), "reach 루프가 이 PPO-LSTM yaml 을 쓴다"

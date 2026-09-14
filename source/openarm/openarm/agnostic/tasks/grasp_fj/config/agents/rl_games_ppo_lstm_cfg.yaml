@@ -32,7 +32,10 @@ params:
         sigma_init:
           name: const_initializer
           val: 0
-        fixed_sigma: True
+        # ★09.14 fj_reach_i01 크래시: run_fj.sh 는 PPO 여도 vendor/rl_games_sapg(fork)를 PYTHONPATH 앞에 둔다. fork 는 fixed_sigma 가
+        #   문자열('fixed' = 공유 Parameter · 'coef_cond' = 블록별 · 그 밖 = Linear)이라 불리언 True 는 sigma 가 Linear 가 되어
+        #   초기화에서 죽는다(`'Linear' object has no attribute 'fill_'`). 'fixed' 는 상류 rl_games(참 문자열)에서도 같은 뜻이다.
+        fixed_sigma: fixed
     mlp:
       units: [1024, 1024, 512, 512]
       activation: elu
