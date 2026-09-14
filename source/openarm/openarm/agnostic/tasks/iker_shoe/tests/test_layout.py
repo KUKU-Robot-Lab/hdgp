@@ -1,5 +1,7 @@
 """layout — scene constants, configuration sampling, gate config (no Isaac)."""
 
+import json
+
 import numpy as np
 
 from openarm.agnostic.modules import robot_profiles
@@ -31,7 +33,23 @@ def test_rack_is_checked_before_the_table():
 def test_rack_keypoints_form_the_inset_grid():
     grid = layout.rack_keypoints()
     assert grid.shape == (12, 3)
-    assert np.allclose(grid[0], [0.16, -0.28, 0.325]) and np.allclose(grid[-1], [0.38, -0.02, 0.325])
+    assert np.allclose(grid[0], [0.16, -0.28, 0.325]) and np.allclose(grid[-1], [0.38, -0.07, 0.325])
+
+
+def test_moving_shoe_leaves_a_hand_width_beside_the_rack():
+    # The grasping fingers reach across the shoe toward the rack; a 5.2 cm slot below the taller rack wall caught the
+    # hand (stage-1 training, 2026-09-14).
+    meta = json.loads(layout.SHOE_META_PATH.read_text())
+    hull = np.asarray(meta["objects"][layout.MOVING_SHOE]["hull_local"], dtype=float)
+
+    def gap(config):
+        position, quat = layout.shoe_start_poses(config, meta)[layout.MOVING_SHOE]
+        world = hull @ rotations.quat_wxyz_to_matrix(quat).T + position
+        return float(world[:, 1].min()) - layout.RACK_Y_RANGE[1]
+
+    configs = layout.sample_configs(200)
+    assert gap(configs[0]) >= 0.095
+    assert min(gap(config) for config in configs) >= 0.06
 
 
 def test_shoe_start_poses_rest_on_their_supports_with_the_config_yaw():

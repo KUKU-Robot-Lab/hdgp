@@ -30,7 +30,7 @@ TASK_INSTRUCTION = "Place the shoe on the rack next to the other shoe."
 
 TABLE_TOP_Z = 0.205
 RACK_X_RANGE = (0.11, 0.43)
-RACK_Y_RANGE = (-0.33, 0.03)
+RACK_Y_RANGE = (-0.33, -0.02)  # near edge 5 cm back from 0.03: the grasping fingers reach across the shoe toward the rack (2026-09-14)
 RACK_TOP_Z = 0.325
 RACK_KEYPOINT_INSET = 0.05
 RACK_GRID_SHAPE = (3, 4)
@@ -38,7 +38,7 @@ RACK_GRID_SHAPE = (3, 4)
 MOVING_SHOE = "shoe_move"
 OTHER_SHOE = "shoe_other"
 RACK = "rack"
-OTHER_SHOE_Y = -0.15
+OTHER_SHOE_Y = -0.20  # moved with the rack's near edge so the human target keeps its place relative to that edge
 OTHER_SHOE_YAW_DEG = 0.0
 SPAWN_CLEARANCE_M = 0.002  # drop the shoes from just above their support; the snapshot uses the settled pose
 
