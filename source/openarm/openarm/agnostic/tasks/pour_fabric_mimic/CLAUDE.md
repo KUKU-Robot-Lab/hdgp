@@ -41,6 +41,9 @@
 → 물체를 `shaker_closed_rl` × 0.65(지름 57 mm, Track B shaker_one 과 동일)로 바꾸고, **인벨롭 파지를 포기**(손끝 파지 OK),
 대본 파지 없이 학습을 시작한다(Track B 선례: 대본 전도 611회여도 RL 은 학습). 비드는 바닥 기준 재적층.
 
+## 09.14 폭주 리셋 (사용자 결정)
+한계 여유 3.0 으로도 리프트 시작 순간 mimic 오차 154 rad·종속 속도 519 rad/s 가 재현됐다 → 여유는 처방이 아니다. `mimic_runaway_dep_qd`(100 rad/s)를 넘는 env 는 runaway 로 종료·리셋한다(`done/mimic_runaway` 지표).
+
 ## 검증 게이트 (학습 전) — 원본 3종 + 언더액추(★2 는 이 트랙에서 면제)
 1. `probe_pour_fabric_mimic_boot.py` 무작위 300스텝: NaN 0 · runaway 0 · in_source ≥ 0.9 (09.14 PASS).
 2. `probe_pour_fabric_mimic_hand.py --approach cup`: 케이지→컵 접근·폐쇄·리프트 대본으로 파지 성립(`grasped`)·mimic 오차 ≤ 0.1 rad.

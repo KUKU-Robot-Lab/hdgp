@@ -702,9 +702,13 @@ class PourFabricMimicEnv(DirectRLEnv):
         qd = torch.cat([self.robot.data.joint_vel[:, self.src.arm_t],
                         self.robot.data.joint_vel[:, self.rcv.arm_t]], dim=1)
         runaway = (qd.abs() > float(cfg.runaway_joint_vel)).any(dim=-1)
-        terminated = runaway | self._dropped
+        # 언더액추 폭주: 종속관절 속도(mimic 제약이 깨진 서명) — 09.14 사용자 결정, 깨진 env 는 즉시 리셋.
+        dep_qd = self.robot.data.joint_vel[:, self._mim_dep_t].abs().max(dim=-1).values
+        mimic_runaway = dep_qd > float(cfg.mimic_runaway_dep_qd)
+        terminated = runaway | mimic_runaway | self._dropped
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         self.extras["task/runaway_rate"] = runaway.float().mean()
+        self.extras["done/mimic_runaway"] = mimic_runaway.float().mean()
         return terminated, truncated
 
     # ==================================================================

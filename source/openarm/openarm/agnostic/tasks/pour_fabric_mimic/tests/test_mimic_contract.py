@@ -181,6 +181,13 @@ def test_contact_filters_point_at_rigid_body_prim():
     assert rb == ["baseLink"], rb
 
 
+def test_mimic_blowup_terminates_episode():
+    """09.14 사용자 결정: mimic 결합이 깨진 env(종속관절 속도 폭주)는 리셋한다 — 한계 여유는 처방이 아니었다."""
+    assert re.search(r"mimic_runaway_dep_qd:\s*float\s*=\s*([0-9.]+)", _CFG)
+    assert "terminated = runaway | mimic_runaway | self._dropped" in _ENV
+    assert 'self.extras["done/mimic_runaway"]' in _ENV
+
+
 # 원본 계약 중 그대로 유지돼야 하는 것(보상 없음 · 성공은 env · a=0 = 앵커)
 def test_inherited_contracts_hold():
     assert "load_reward_fn" in _ENV and "RewardContext(" in _ENV

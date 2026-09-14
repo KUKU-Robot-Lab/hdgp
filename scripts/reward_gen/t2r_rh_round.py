@@ -36,7 +36,7 @@ KEY_TAGS = ("task/episode_success", "task/success_now", "task/src_grasped", "tas
             "bead/in_target", "bead/spill", "done/drop", "reward/total",
             "task/nested_rate", "task/cups_center_dist", "task/cup_collision_rate",
             "task/src_hand_foreign_rate", "task/rcv_hand_foreign_rate", "adr/progress", "dr/wrench_force_scale",
-            "ctrl/mimic_err_max", "ctrl/hand_dep_qd_max")
+            "ctrl/mimic_err_max", "ctrl/hand_dep_qd_max", "done/mimic_runaway")
 
 
 def _ssh(cmd: str, timeout: int = 60) -> str:
