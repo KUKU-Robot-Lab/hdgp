@@ -5,7 +5,7 @@
  "label_prefix": "fj_reach_i",
  "round": 3,
  "status": "running",
- "awaiting": null,
+ "awaiting": "approval_iter_02",
  "best": null,
  "success_ticks": 0,
  "started": 1789383661,
@@ -29,5 +29,18 @@
   ],
   "label": "fj_reach_i01",
   "killed": "SIGKILL 3600558 (user-approved, 20:00)"
+ },
+ "round_end": {
+  "label": "fj_reach_i02",
+  "epoch": 2418,
+  "hours": 3.37,
+  "verdict": "advance(stuck:grasp)",
+  "checked": "09-14 23:23",
+  "video": "our_source/fj_t2r_videos/fj_reach_i02_0914_2323.mp4",
+  "drafts": [
+   "iter_02/observation.md",
+   "iter_02/improvement.md"
+  ],
+  "note": "press-and-hold (reward 0.44-0.50) vs wrap-and-lift (0.15-0.35, first successes peak 1.4% e1970) alternate; video = press only"
  }
 }
