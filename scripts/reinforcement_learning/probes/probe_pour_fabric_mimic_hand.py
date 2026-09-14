@@ -45,8 +45,8 @@ for t in range(args.steps):
         # 손 개구(엄지↔4지 사이)는 **손끝 쪽(+x)** 으로 열려 있다(palm 법선 +y·손가락 +x, Track B 기준자세).
         #   컵은 손끝 쪽에서 케이지로 들어와야 하므로 대기 위치는 컵 뒤(−x). (−y 옆에서 밀면 4지가 컵 벽을 민다 — 09.14 실측 15~55 N·전도)
         _ax = {"x": [-args.side_m, 0.0, 0.0], "y": [0.0, -args.side_m, 0.0]}[args.side_axis]
-        side = torch.tensor(_ax, device=env.device) if (args.approach == "cup2" and u < 80) else torch.zeros(3, device=env.device)
-        tgt_palm = cup_local() + torch.tensor([0.0, 0.0, args.z_off], device=env.device) + side - CAGE_OFF
+        wait_off = torch.tensor(_ax, device=env.device) if (args.approach == "cup2" and u < 80) else torch.zeros(3, device=env.device)
+        tgt_palm = cup_local() + torch.tensor([0.0, 0.0, args.z_off], device=env.device) + wait_off - CAGE_OFF
         d = tgt_palm - rig.anchor_env[:, :3]
         for k in range(3):
             v = d[:, k]
@@ -68,14 +68,14 @@ for t in range(args.steps):
     if bool(term.any()):
         print(f"[reset t={t}] terminated envs={int(term.sum())} runaway={float(ex['task/runaway_rate']):.2f} drop={float(ex['done/drop']):.2f} "
               f"tiltS={float(ex['task/src_tilt_deg']):.1f} mimic={float(ex['ctrl/mimic_err_max']):.2f}", flush=True)
-    if args.approach == "cup2" and (u in (79, 100, 110, 120, 130)):
+    if args.approach == "cup2" and (u in (79, 85, 90, 95, 100, 110)):
         # 손 링크 기하 덤프: 어떤 링크가 컵 높이/발자국 안에 있는가 (컵 원점 기준, 외경 r=0.036·림 z=+0.08·바닥 −0.062 @0.8)
         c = cup_local()[0]; bn = env.robot.data.body_names
         rows = []
         for i, n in enumerate(bn):
-            if n.startswith(f"{side}_hl_"):
-                d = (env.robot.data.body_pos_w[0, i] - env.scene.env_origins[0]) - c
-                rows.append(f"{n.split('_hl_')[1]}({float(d[0]):+.3f},{float(d[1]):+.3f},{float(d[2]):+.3f})")
+            d = (env.robot.data.body_pos_w[0, i] - env.scene.env_origins[0]) - c
+            if float(d.norm()) < 0.16:          # 컵 근방 링크만(팔·손·센서 프레임 전부)
+                rows.append(f"{n}({float(d[0]):+.3f},{float(d[1]):+.3f},{float(d[2]):+.3f})")
         nets = {f: [round(float(s_.data.net_forces_w.view(N, -1, 3).sum(dim=1).norm(dim=-1)[0]), 1) for s_ in rig.sensors[f]] for f in rig.fingers}
         pn = round(float(rig.palm_sensor.data.net_forces_w.view(N, -1, 3).sum(dim=1).norm(dim=-1)[0]), 1)
         print(f"[geom u={u}] tilt={float(ex['task/src_tilt_deg']):.1f} palm_net={pn} net={nets}\n   " + " ".join(rows), flush=True)
